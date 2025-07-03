@@ -1,0 +1,93 @@
+// This file is auto-generated from node.def.
+// specializers
+
+static void
+SPECIALIZE_node_num(FILE *fp, NODE *n)
+{
+
+    const char *dispatcher_name = alloc_dispatcher_name(n); // SD_%lx % hash_node(n)
+    n->head.dispatcher_name = dispatcher_name;
+
+    // comment
+    fprintf(fp, "// ");
+    DUMP(fp, n, true);
+    fprintf(fp, "\n");
+
+
+
+    fprintf(fp, "static VALUE\n");
+    fprintf(fp, "%s(CTX *c,  NODE *n)\n", dispatcher_name);
+    fprintf(fp, "{\n");
+    fprintf(fp, "    dispatch_info(c, n, false);\n");
+    fprintf(fp, "    VALUE v = EVAL_node_num(c, n, \n");
+    fprintf(fp, "        %d", n->u.node_num.num);
+    fprintf(fp, "\n    );\n");
+    fprintf(fp, "    dispatch_info(c, n, true);\n");
+    fprintf(fp, "    return v;\n");
+    fprintf(fp, "}\n\n");
+}
+
+static void
+SPECIALIZE_node_add(FILE *fp, NODE *n)
+{
+    SPECIALIZE(fp, n->u.node_add.lv);
+    SPECIALIZE(fp, n->u.node_add.rv);
+    const char *dispatcher_name = alloc_dispatcher_name(n); // SD_%lx % hash_node(n)
+    n->head.dispatcher_name = dispatcher_name;
+
+    // comment
+    fprintf(fp, "// ");
+    DUMP(fp, n, true);
+    fprintf(fp, "\n");
+
+    if (n->u.node_add.lv) { fprintf(fp, "static inline VALUE %s(CTX *c, NODE *n);\n", n->u.node_add.lv->head.dispatcher_name); }
+    if (n->u.node_add.rv) { fprintf(fp, "static inline VALUE %s(CTX *c, NODE *n);\n", n->u.node_add.rv->head.dispatcher_name); }
+
+    fprintf(fp, "static VALUE\n");
+    fprintf(fp, "%s(CTX *c,  NODE *n)\n", dispatcher_name);
+    fprintf(fp, "{\n");
+    fprintf(fp, "    dispatch_info(c, n, false);\n");
+    fprintf(fp, "    VALUE v = EVAL_node_add(c, n, \n");
+    fprintf(fp, "        n->u.node_add.lv,\n");
+    fprintf(fp, "        %s", DISPATCHER_NAME(n->u.node_add.lv));
+    fprintf(fp, ",\n");
+    fprintf(fp, "        n->u.node_add.rv,\n");
+    fprintf(fp, "        %s", DISPATCHER_NAME(n->u.node_add.rv));
+    fprintf(fp, "\n    );\n");
+    fprintf(fp, "    dispatch_info(c, n, true);\n");
+    fprintf(fp, "    return v;\n");
+    fprintf(fp, "}\n\n");
+}
+
+static void
+SPECIALIZE_node_mul(FILE *fp, NODE *n)
+{
+    SPECIALIZE(fp, n->u.node_mul.lv);
+    SPECIALIZE(fp, n->u.node_mul.rv);
+    const char *dispatcher_name = alloc_dispatcher_name(n); // SD_%lx % hash_node(n)
+    n->head.dispatcher_name = dispatcher_name;
+
+    // comment
+    fprintf(fp, "// ");
+    DUMP(fp, n, true);
+    fprintf(fp, "\n");
+
+    if (n->u.node_mul.lv) { fprintf(fp, "static inline VALUE %s(CTX *c, NODE *n);\n", n->u.node_mul.lv->head.dispatcher_name); }
+    if (n->u.node_mul.rv) { fprintf(fp, "static inline VALUE %s(CTX *c, NODE *n);\n", n->u.node_mul.rv->head.dispatcher_name); }
+
+    fprintf(fp, "static VALUE\n");
+    fprintf(fp, "%s(CTX *c,  NODE *n)\n", dispatcher_name);
+    fprintf(fp, "{\n");
+    fprintf(fp, "    dispatch_info(c, n, false);\n");
+    fprintf(fp, "    VALUE v = EVAL_node_mul(c, n, \n");
+    fprintf(fp, "        n->u.node_mul.lv,\n");
+    fprintf(fp, "        %s", DISPATCHER_NAME(n->u.node_mul.lv));
+    fprintf(fp, ",\n");
+    fprintf(fp, "        n->u.node_mul.rv,\n");
+    fprintf(fp, "        %s", DISPATCHER_NAME(n->u.node_mul.rv));
+    fprintf(fp, "\n    );\n");
+    fprintf(fp, "    dispatch_info(c, n, true);\n");
+    fprintf(fp, "    return v;\n");
+    fprintf(fp, "}\n\n");
+}
+

@@ -1,0 +1,18 @@
+
+NODE_DEF
+node_num(CTX *c, NODE *n, int32_t num)
+{
+    return num;
+}
+
+NODE_DEF
+node_add(CTX *c, NODE *n, NODE *lv, NODE *rv)
+{
+    return EVAL_ARG(c, lv) + EVAL_ARG(c, rv);
+}
+
+NODE_DEF
+node_mul(CTX *c, NODE *n, NODE *lv, NODE *rv)
+{
+    return EVAL_ARG(c, lv) * EVAL_ARG(c, rv);
+}

@@ -1,0 +1,12 @@
+#! /bin/env ruby
+#
+# ASTro generator
+#
+# Usage:
+# $ astrogen node.def
+#
+# and you will get node.c
+
+require 'astrogen'
+
+ASTroGen.start(ARGV)

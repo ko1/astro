@@ -1,0 +1,327 @@
+
+// literal
+
+NODE_DEF
+node_num(CTX * restrict c, NODE * restrict n, int32_t num)
+{
+    return num;
+}
+
+// local variables
+
+NODE_DEF
+node_lget(CTX * restrict c, NODE * restrict n, uint32_t index)
+{
+    return c->fp[index];
+}
+
+NODE_DEF
+node_lset(CTX * restrict c, NODE * restrict n, uint32_t index, NODE *rhs)
+{
+    VALUE v = EVAL_ARG(c, rhs);
+    c->fp[index] = v;
+    return v;
+}
+
+// syntax
+
+NODE_DEF
+node_scope(CTX * restrict c, NODE * restrict n, uint32_t envsize, NODE *body)
+{
+#if NARUBY_DEBUG
+    VALUE *prev_fp = c->fp;
+#endif
+    c->fp += envsize;
+    VALUE v = EVAL_ARG(c, body);
+    c->fp -= envsize;
+
+    NARUBY_ASSERT(prev_fp == c->fp);
+
+    return v;
+}
+
+NODE_DEF
+node_seq(CTX * restrict c, NODE * restrict n, NODE *head, NODE *tail)
+{
+    EVAL_ARG(c, head);
+    return EVAL_ARG(c, tail);
+}
+
+NODE_DEF
+node_if(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *then_node, NODE *else_node)
+{
+    if (EVAL_ARG(c, cond)) {
+        return EVAL_ARG(c, then_node);
+    }
+    else {
+        return EVAL_ARG(c, else_node);
+    }
+}
+
+NODE_DEF
+node_while(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *body)
+{
+    while(EVAL_ARG(c, cond)) {
+        EVAL_ARG(c, body);
+    }
+    return 0;
+}
+
+// functions
+
+static struct function_entry *
+get_func_entry(CTX * restrict c, const char *name)
+{
+    for (int i=0; i<c->func_set_cnt; i++) {
+        // override
+        if (strcmp(c->func_set[i].name, name) == 0) {
+            return &c->func_set[i];
+        }
+    }
+    return &c->func_set[c->func_set_cnt++];
+}
+
+NODE_DEF @noinline
+node_def(CTX * restrict c, NODE * restrict n, const char *name, NODE *body, uint32_t params_cnt, uint32_t locals_cnt)
+{
+    struct function_entry *fe = get_func_entry(c, name);
+    fe->name = name;
+    fe->body = OPTIMIZE(body);
+    fe->params_cnt = params_cnt;
+    fe->locals_cnt = locals_cnt;
+    c->serial++;
+
+    return 0;
+}
+
+static struct function_entry *
+find_func_entry(CTX * restrict c, const char *name)
+{
+    for (int i=0; i < c->func_set_cnt; i++) {
+        struct function_entry *fe = &c->func_set[i];
+        if (strcmp(name, fe->name) == 0) {
+            return fe;
+        }
+    }
+
+    return NULL;
+}
+
+static void
+push_frame(CTX * restrict c, uint32_t arg_index)
+{
+    c->fp += arg_index;
+
+#if DEBUG_EVAL
+    c->frame_cnt++;
+#endif
+}
+
+static void
+pop_frame(CTX * restrict c, uint32_t arg_index)
+{
+    c->fp -= arg_index;
+
+#if DEBUG_EVAL
+    c->frame_cnt--;
+#endif
+}
+
+static void
+call_check(struct function_entry *fe, const char *name, uint32_t params_cnt)
+{
+    if (UNLIKELY(fe == NULL)) {
+        fprintf(stderr, "unknown function: %s\n", name);
+        exit(1);
+    }
+    else if (UNLIKELY(fe->params_cnt != params_cnt)) {
+        fprintf(stderr, "wrong parameter count for %s (%u for %u)\n", name, params_cnt, fe->params_cnt);
+    }
+}
+
+#define CALL_DEBUG 0
+
+static VALUE
+call_body(CTX * restrict c, uint32_t arg_index, NODE *body)
+{
+    push_frame(c, arg_index);
+    VALUE v = EVAL(c, body);
+    pop_frame(c, arg_index);
+    return v;
+}
+
+NODE_DEF
+node_call(CTX * restrict c, NODE * restrict n, const char *name, uint32_t params_cnt, uint32_t arg_index, struct callcache *cc)
+{
+    if (LIKELY(c->serial == cc->serial)) {
+        //fprintf(stderr, "name:%s / sp:%d hit\n", name, cached_body->head.flags.is_specialized);
+        return call_body(c, arg_index, cc->body);
+    }
+    else {
+        //fprintf(stderr, "name:%s miss\n", name);
+        struct function_entry *fe = find_func_entry(c, name);
+        call_check(fe, name, params_cnt);
+
+        cc->serial = c->serial;
+        cc->body = fe->body;
+
+        return call_body(c, arg_index, fe->body);
+    }
+}
+
+static VALUE
+__attribute__((noinline))
+node_call2_slowpath(CTX * restrict c, NODE * restrict n, const char *name, uint32_t params_cnt, uint32_t arg_index, struct callcache * restrict cc)
+{
+        if (CALL_DEBUG) fprintf(stderr, "name:%s miss1\n", name);
+        struct function_entry *fe = find_func_entry(c, name);
+        call_check(fe, name, params_cnt);
+        cc->serial = c->serial;
+        n->u.node_call2.sp_body = cc->body = fe->body;
+        return call_body(c, arg_index, fe->body);
+}
+
+NODE_DEF
+node_call2(CTX * restrict c, NODE * restrict n, const char *name, uint32_t params_cnt, uint32_t arg_index, struct callcache * restrict cc, NODE *sp_body)
+{
+    if (LIKELY(c->serial == cc->serial)) {
+        if (CALL_DEBUG) fprintf(stderr, "name:%s hit!\n", name);
+        push_frame(c, arg_index);
+        VALUE v = EVAL_ARG(c, sp_body);
+        pop_frame(c, arg_index);
+        return v;
+    }
+    else {
+        return node_call2_slowpath(c, n, name, params_cnt, arg_index, cc);
+    }
+}
+
+NODE_DEF
+node_call_static(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t arg_index)
+{
+    push_frame(c, arg_index);
+    VALUE v = EVAL_ARG(c, body);
+    pop_frame(c, arg_index);
+    return v;
+}
+
+NODE_DEF
+node_call_builtin(CTX * restrict c, NODE * restrict n, struct builtin_func *bf, builtin_func_ptr func_ptr, uint32_t params_cnt)
+{
+    switch (params_cnt) {
+      case 0:
+        return (*func_ptr)();
+      case 1:
+        return (*(builtin_func1_ptr)func_ptr)(c->fp[0]);
+      case 2:
+        return (*(builtin_func2_ptr)func_ptr)(c->fp[0], c->fp[1]);
+      case 3:
+        return (*(builtin_func3_ptr)func_ptr)(c->fp[0], c->fp[1], c->fp[2]);
+      case 4:
+        return (*(builtin_func4_ptr)func_ptr)(c->fp[0], c->fp[1], c->fp[2], c->fp[3]);
+      default:
+        fprintf(stderr, "too much params:%u\n", params_cnt);
+        return 0;
+    }
+}
+
+// binary operators
+
+NODE_DEF
+node_add(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs)
+{
+    VALUE l = EVAL_ARG(c, lhs);
+    VALUE r = EVAL_ARG(c, rhs);
+
+    return l + r;
+}
+
+NODE_DEF
+node_sub(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs)
+{
+    VALUE l = EVAL_ARG(c, lhs);
+    VALUE r = EVAL_ARG(c, rhs);
+
+    return l - r;
+}
+
+NODE_DEF
+node_mul(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs)
+{
+    VALUE l = EVAL_ARG(c, lhs);
+    VALUE r = EVAL_ARG(c, rhs);
+
+    return l * r;
+}
+
+NODE_DEF
+node_div(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs)
+{
+    VALUE l = EVAL_ARG(c, lhs);
+    VALUE r = EVAL_ARG(c, rhs);
+
+    return l / r;
+}
+
+NODE_DEF
+node_mod(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs)
+{
+    VALUE l = EVAL_ARG(c, lhs);
+    VALUE r = EVAL_ARG(c, rhs);
+
+    return l % r;
+}
+
+NODE_DEF
+node_lt(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs)
+{
+    VALUE l = EVAL_ARG(c, lhs);
+    VALUE r = EVAL_ARG(c, rhs);
+
+    return l < r;
+}
+
+NODE_DEF
+node_le(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs)
+{
+    VALUE l = EVAL_ARG(c, lhs);
+    VALUE r = EVAL_ARG(c, rhs);
+
+    return l <= r;
+}
+
+NODE_DEF
+node_gt(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs)
+{
+    VALUE l = EVAL_ARG(c, lhs);
+    VALUE r = EVAL_ARG(c, rhs);
+
+    return l > r;
+}
+
+NODE_DEF
+node_ge(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs)
+{
+    VALUE l = EVAL_ARG(c, lhs);
+    VALUE r = EVAL_ARG(c, rhs);
+
+    return l >= r;
+}
+
+NODE_DEF
+node_eq(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs)
+{
+    VALUE l = EVAL_ARG(c, lhs);
+    VALUE r = EVAL_ARG(c, rhs);
+
+    return l == r;
+}
+
+NODE_DEF
+node_neq(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs)
+{
+    VALUE l = EVAL_ARG(c, lhs);
+    VALUE r = EVAL_ARG(c, rhs);
+
+    return l != r;
+}

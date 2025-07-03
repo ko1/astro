@@ -1,0 +1,3 @@
+[submodule "sample/naruby/prism"]
+	path = sample/naruby/prism
+	url = https://github.com/ruby/prism.git
