@@ -35,7 +35,9 @@ SD_46d0ffe733329604(CTX *c,  NODE *n)
 }
 
 // (node_mul (node_num 2) (node_num 3))
-static VALUE SD_69455740963f43ed(CTX *c, NODE *n);static VALUE SD_46d0ffe733329604(CTX *c, NODE *n);static VALUE
+static inline VALUE SD_69455740963f43ed(CTX *c, NODE *n);
+static inline VALUE SD_46d0ffe733329604(CTX *c, NODE *n);
+static VALUE
 SD_fa5c4f2645bc412(CTX *c,  NODE *n)
 {
     dispatch_info(c, n, false);
@@ -50,7 +52,9 @@ SD_fa5c4f2645bc412(CTX *c,  NODE *n)
 }
 
 // (node_add (node_num 1) (node_mul (node_num 2) (node_num 3)))
-static VALUE SD_ef2d3a2c467c98a6(CTX *c, NODE *n);static VALUE SD_fa5c4f2645bc412(CTX *c, NODE *n);static VALUE
+static inline VALUE SD_ef2d3a2c467c98a6(CTX *c, NODE *n);
+static inline VALUE SD_fa5c4f2645bc412(CTX *c, NODE *n);
+static VALUE
 SD_dfb75fdabb0d5ef6(CTX *c,  NODE *n)
 {
     dispatch_info(c, n, false);
