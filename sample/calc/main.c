@@ -1,6 +1,8 @@
 #include "context.h"
 #include "node.h"
 
+struct calc_option OPTION;
+
 // code repository
 
 static struct code_repo {
@@ -53,7 +55,7 @@ code_repo_fnid(node_hash_t h)
 }
 
 void
-code_repo_add(const char *name, NODE *body)
+code_repo_add(const char *name, NODE *body, bool _)
 {
     if (body == NULL || code_repo_fnid(HASH(body))) {
         // ignore
@@ -125,10 +127,13 @@ main(int argc, char *argv[])
 {
     INIT();
     CTX *c = malloc(sizeof(CTX));
+
+    // 1 + 2 * 3
     NODE *ast = ALLOC_node_add(ALLOC_node_num(1),
                                ALLOC_node_mul(
                                    ALLOC_node_num(2),
                                    ALLOC_node_num(3)));
+
     printf("result: %ld\n", EVAL(c, ast));
     generate_specialized_code(ast);
     return 0;

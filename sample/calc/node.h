@@ -3,6 +3,9 @@
 
 #include "context.h"
 
+
+void sc_repo_clear(void);
+
 typedef struct Node NODE;
 typedef VALUE (*node_dispatcher_func_t)(CTX *c, NODE *n);
 typedef uint64_t node_hash_t;
@@ -17,8 +20,10 @@ void DUMP(FILE *fp, NODE *n, bool oneline);
 NODE *OPTIMIZE(NODE *n);
 void SPECIALIZE(FILE *fp, NODE *n);
 
+#define DISPATCHER_NAME(n) (n->head.flags.no_inline) ? (#n "->head.dispatcher") : (n->head.dispatcher_name)
+
 NODE *code_repo_fnid(node_hash_t h);
-void code_repo_add(const char *name, NODE *body);
+void code_repo_add(const char *name, NODE *body, bool _);
 
 struct NodeKind {
     const char *default_dispatcher_name;
@@ -34,6 +39,7 @@ struct NodeHead {
         bool is_specialized;
         bool is_specializing; // to prohibit recursive specializing
         bool is_dumping;      // to prohibit recursive dumping
+        bool no_inline;
     } flags;
 
     const struct NodeKind *kind;

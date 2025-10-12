@@ -5,12 +5,6 @@
 #include "node.h"
 #include "context.h"
 
-bool option_compile_only;
-bool option_no_compiled_code;
-bool option_no_generate_specialized_code;
-bool option_record_all;
-bool option_quiet;
-
 typedef uint64_t node_hash_t;
 
 static node_hash_t
@@ -219,7 +213,7 @@ fill_with_sc(NODE *n, struct specialized_code *sc)
 NODE *
 OPTIMIZE(NODE *n)
 {
-    if (option_no_compiled_code) {
+    if (OPTION.no_compiled_code) {
         return n;
     }
 
