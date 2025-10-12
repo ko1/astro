@@ -9,8 +9,8 @@ The companion tool **ASTroGen** automatically generates an interpreter (evaluato
 
 See the [`./sample`](./sample) directory for examples:
 
-- [`./sample/calc/`](./sample/calc/) ? A toy "Calc" language with three types of AST nodes.  
-- [`./sample/naruby/`](./sample/naruby/) ? "Not a Ruby": a minimal Ruby subset implemented for demonstration.
+- [`./sample/calc/`](./sample/calc/): A toy "Calc" language with three types of AST nodes.  
+- [`./sample/naruby/`](./sample/naruby/): "Not a Ruby": a minimal Ruby subset implemented for demonstration.
 
 ## Reference
 
