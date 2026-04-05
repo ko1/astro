@@ -5,6 +5,7 @@
 #include <alloca.h>
 #include "node.h"
 #include "context.h"
+#include "astro_jit.h"
 
 #define TRANSDUCE(n) transduce(tc, (pm_node_t *)(n), indent+1)
 
@@ -52,7 +53,7 @@ callsite_resolve(void)
 
     while (cs) {
         struct callsite *cs_prev = cs->prev;
-        NODE *body = code_repo_fnid_by_name(cs->name);
+        NODE *body = code_repo_find_by_name(cs->name);
         if (body == NULL) {
             printf("%s is not defined.\n", cs->name);
             exit(1);
@@ -68,7 +69,7 @@ static NODE *
 alloc_call(const char *fname, uint32_t args_cnt, uint32_t call_arg_idx)
 {
     if (OPTION.static_lang) {
-        NODE *body = code_repo_fnid_by_name(fname);
+        NODE *body = code_repo_find_by_name(fname);
         if (body == NULL) {
             body = ALLOC_node_call_static(NULL, call_arg_idx);
             callsite_add(fname, body);
@@ -1143,6 +1144,12 @@ parse_option(int argc, char *argv[])
 
               case 'q':
                 OPTION.quiet = true;
+                break;
+
+              case 'j':
+                OPTION.jit = true;
+                OPTION.no_generate_specialized_code = true;
+                astro_jit_start("/tmp/astrojit_l1.sock");
                 break;
 
               default:

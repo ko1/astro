@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "node.h"
+#include "astro_jit.h"
 
 NODE *PARSE(int argc, char *argv[]);
 
@@ -84,7 +85,7 @@ code_repo_new_entry(void)
 }
 
 NODE *
-code_repo_fnid(node_hash_t h)
+code_repo_find(node_hash_t h)
 {
     if (h != 0) {
         for (uint32_t i=0; i<code_repo.size; i++) {
@@ -99,7 +100,7 @@ code_repo_fnid(node_hash_t h)
 }
 
 NODE *
-code_repo_fnid_by_name(const char *name)
+code_repo_find_by_name(const char *name)
 {
     for (uint32_t i=0; i<code_repo.size; i++) {
         if (strcmp(code_repo.entries[i].name, name) == 0) {
@@ -113,7 +114,7 @@ code_repo_fnid_by_name(const char *name)
 void
 code_repo_add(const char *name, NODE *body, bool force_add)
 {
-    bool found = code_repo_fnid(HASH(body)) != NULL;
+    bool found = code_repo_find(HASH(body)) != NULL;
 
     if (body == NULL || (!force_add && found)) {
         // ignore
@@ -218,7 +219,7 @@ main(int argc, char *argv[])
     global_c = c;
     NODE *ast = PARSE(argc, argv);
 
-    if (!OPTION.quiet) {
+    if (0 && !OPTION.quiet) {
         DUMP(stdout, ast, true);
         printf("\n");
     }
@@ -236,4 +237,3 @@ main(int argc, char *argv[])
 
     return 0;
 }
-

@@ -24,6 +24,7 @@ struct naruby_option {
     bool no_compiled_code;
     bool no_generate_specialized_code;
     bool record_all;
+    bool jit;
 
     // misc
     bool quiet;

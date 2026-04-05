@@ -11,6 +11,7 @@ NODE_GENFILES=node_eval.c \
               node_alloc.c \
               node_hash.c \
               node_head.h
+
 optflags=-O3
 BITEM=fib
 ITEM=test.na.rb
@@ -22,10 +23,10 @@ clean_bench:
 clean: clean_bench
 	rm -fv compiled_* pg_* static_*
 
-NARUBY_OPT=
+NARUBY_OPT= -j
 
 run: naruby
-	./naruby $(NARUBY_OPT) test.na.rb
+	time -p ./naruby $(NARUBY_OPT) test.na.rb
 
 runb:
 	./naruby -b test.na.rb
@@ -102,10 +103,10 @@ bench: naruby
 	make bench_c         BITEM=$(BITEM)
 	ruby bench/bench.rb $(BITEM)
 
-naruby: *.c Makefile $(NODE_GENFILES) node.c
-	$(CC) -I./prism/include -I. $(optflags) -ggdb3 -Wall \
+naruby: *.c Makefile $(NODE_GENFILES) astro_jit.c node.c
+	$(CC) -I./prism/include -I. $(optflags) -ggdb3 -Wall  -rdynamic \
             -L ./prism/build -Wl,-rpath=$(CURDIR)/prism/build \
-            -o naruby main.c node.c naruby_parse.c -lprism
+            -o naruby main.c node.c naruby_parse.c astro_jit.c -lprism
 
 node_eval.c: ../../lib/* node.def
 	ruby -I ../../lib -r astrogen -e 'ASTroGen.start []'

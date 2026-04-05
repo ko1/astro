@@ -208,6 +208,8 @@ module ASTroGen
             _n->head.dispatcher_name = "DISPATCH_#{@name}";
             _n->head.kind = &kind_#{@name};
             _n->head.parent = NULL;
+            _n->head.jit_status = JIT_STATUS_Unknown;
+            _n->head.dispatch_cnt = 0;
             _n->head.flags.has_hash_value = false;
             _n->head.flags.is_specialized = false;
             _n->head.flags.is_specializing = false;
@@ -260,7 +262,7 @@ module ASTroGen
         if @option.include? '@noinline'
           return <<~C
           static void
-          SPECIALIZE_#{@name}(FILE *fp, NODE *n)
+          SPECIALIZE_#{@name}(FILE *fp, NODE *n, bool is_public)
           {
               /* do nothing */
           }
@@ -269,7 +271,7 @@ module ASTroGen
 
         <<~C
         static void
-        SPECIALIZE_#{@name}(FILE *fp, NODE *n)
+        SPECIALIZE_#{@name}(FILE *fp, NODE *n, bool is_public)
         {
         #{ child_nodes.join("\n")}
             const char *dispatcher_name = alloc_dispatcher_name(n); // SD_%lx % hash_node(n)
@@ -282,7 +284,8 @@ module ASTroGen
 
         #{ decls.join("\n") }
 
-            fprintf(fp, "static VALUE\\n");
+            if (!is_public) fprintf(fp, "static ");
+            fprintf(fp, "VALUE\\n");
             fprintf(fp, "%s(#{@prefix_args.join(', ')})\\n", dispatcher_name);
             fprintf(fp, "{\\n");
             fprintf(fp, "    dispatch_info(c, n, false);\\n");

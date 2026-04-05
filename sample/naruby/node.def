@@ -144,6 +144,21 @@ call_check(struct function_entry *fe, const char *name, uint32_t params_cnt)
 static VALUE
 call_body(CTX * restrict c, uint32_t arg_index, NODE *body)
 {
+#ifndef ASTRO_SPECIALIZED
+    // profile
+    if (OPTION.jit &&
+        (body->head.jit_status != JIT_STATUS_Compiled ||
+         body->head.jit_status != JIT_STATUS_Compiling)) {
+
+        body->head.dispatch_cnt++;
+        if (body->head.dispatch_cnt == 100) {
+            fprintf(stderr, "cnt:%d\n", body->head.dispatch_cnt);
+            void astro_jit_submit_compile(NODE *);
+            astro_jit_submit_compile(body);
+        }
+    }
+#endif
+
     push_frame(c, arg_index);
     VALUE v = EVAL(c, body);
     pop_frame(c, arg_index);

@@ -5,6 +5,7 @@
 
 #include "node.h"
 #include "context.h"
+#include "astro_jit.h"
 
 typedef uint64_t node_hash_t;
 
@@ -203,12 +204,6 @@ HASH(NODE *n)
     }
 }
 
-VALUE
-EVAL(CTX *c, NODE *n)
-{
-    return (*n->head.dispatcher)(c, n);
-}
-
 void
 DUMP(FILE *fp, NODE *n, bool oneline)
 {
@@ -242,16 +237,22 @@ OPTIMIZE(NODE *n)
     if (OPTION.no_compiled_code) {
         return n;
     }
-
-    node_hash_t h = hash_node(n);
-    struct specialized_code *sc = sc_repo_search(n, h);
-
-    if (sc) {
-        if (DEBUG_OPT) fprintf(stderr, "hit!: h:%16lx %s\n", h, n->head.kind->default_dispatcher_name);
-        fill_with_sc(n, sc);
+    else if (OPTION.jit) {
+        astro_jit_submit_query(n);
+        return n;
     }
     else {
-        if (DEBUG_OPT) fprintf(stderr, "miss: h:%16lx %s\n", h, n->head.kind->default_dispatcher_name);
+        // AOT compiled
+        node_hash_t h = hash_node(n);
+        struct specialized_code *sc = sc_repo_search(n, h);
+
+        if (sc) {
+            if (DEBUG_OPT) fprintf(stderr, "hit!: h:%16lx %s\n", h, n->head.kind->default_dispatcher_name);
+            fill_with_sc(n, sc);
+        }
+        else {
+            if (DEBUG_OPT) fprintf(stderr, "miss: h:%16lx %s\n", h, n->head.kind->default_dispatcher_name);
+        }
     }
 
     return n;
@@ -262,6 +263,7 @@ SPECIALIZE(FILE *fp, NODE *n)
 {
     if (n && n->head.kind->specializer) {
         node_hash_t h = HASH(n);
+
         struct specialized_code *sc = sc_repo_search(n, h);
 
         if (sc) {
@@ -281,7 +283,7 @@ SPECIALIZE(FILE *fp, NODE *n)
             }
 
             n->head.flags.is_specializing = true;
-            (*n->head.kind->specializer)(fp, n);
+            (*n->head.kind->specializer)(fp, n, false);
             n->head.flags.is_specializing = false;
 
             sc_repo_add(n, h);
@@ -290,6 +292,31 @@ SPECIALIZE(FILE *fp, NODE *n)
     else {
         // fprintf(stderr, "no specializer for %p\n", n);
     }
+}
+
+char *
+SPECIALIZED_SRC(NODE *n)
+{
+    if (n == NULL) return NULL;
+
+    sc_repo_clear();
+
+    char *buf = NULL;
+    size_t len = 0;
+
+    FILE *fp = open_memstream(&buf, &len);
+    if (fp == NULL) {
+        return NULL;
+    }
+
+    (*n->head.kind->specializer)(fp, n, true);
+
+    if (fclose(fp) != 0) {
+        free(buf);
+        return NULL;
+    }
+
+    return buf;
 }
 
 #include "node_eval.c"
