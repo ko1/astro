@@ -257,6 +257,7 @@ static void
 vm_mark(void *ptr)
 {
     struct abruby_vm *vm = (struct abruby_vm *)ptr;
+    rb_gc_mark(vm->ctx.self);
     rb_gc_mark_locations(vm->stack, vm->stack + STACK_SIZE);
 }
 
@@ -276,16 +277,16 @@ static struct abruby_vm *
 create_vm(void)
 {
     struct abruby_vm *vm = calloc(1, sizeof(struct abruby_vm));
-    vm->ctx.env = vm->stack;
-    vm->ctx.fp = vm->stack;
-    vm->ctx.self = Qnil;
-    vm->ctx.current_class = NULL;
-
     // Per-instance main class (inherits from Object)
     vm->main_class_body.klass = ab_class_class;
     vm->main_class_body.name = "main";
     vm->main_class_body.super = ab_object_class;
     vm->ctx.main_class = &vm->main_class_body;
+
+    vm->ctx.env = vm->stack;
+    vm->ctx.fp = vm->stack;
+    vm->ctx.self = abruby_new_object(&vm->main_class_body);
+    vm->ctx.current_class = NULL;
 
     for (int i = 0; i < STACK_SIZE; i++) {
         vm->stack[i] = Qnil;
@@ -570,9 +571,8 @@ rb_abruby_eval_ast(VALUE self, VALUE ast_obj)
         rb_raise(rb_eRuntimeError, "cannot eval NULL AST");
     }
 
-    // reset stack for each eval (classes/methods persist on main_class)
+    // reset stack for each eval (classes/methods/self persist)
     vm->ctx.fp = vm->ctx.env;
-    vm->ctx.self = Qnil;
     vm->ctx.current_class = NULL;
 
     VALUE result = EVAL(&vm->ctx, ast);

@@ -9,5 +9,9 @@ class TestLiterals < AbRubyTest
   def test_nil = assert_eval("nil", nil)
   def test_empty_string = assert_eval('""', "")
   def test_string = assert_eval('"hello"', "hello")
-  def test_self_at_top = assert_eval("self", nil)
+  def test_self_at_top
+    # self at top level is a main object (not nil)
+    result = AbRuby.eval("self")
+    refute_nil result
+  end
 end

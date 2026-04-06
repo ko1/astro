@@ -343,10 +343,6 @@ node_method_call(CTX * restrict c, NODE * restrict n, NODE *recv, const char *na
     VALUE recv_val = EVAL_ARG(c, recv);
     struct abruby_class *klass = AB_CLASS_OF(recv_val);
     struct abruby_method *method = abruby_class_find_method(klass, name);
-    // Top-level calls (self=nil): also check main_class for user-defined methods
-    if (!method && recv_val == Qnil) {
-        method = abruby_class_find_method(c->main_class, name);
-    }
     if (!method) {
         // try method_missing
         struct abruby_method *mm = abruby_class_find_method(klass, "method_missing");
