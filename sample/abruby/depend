@@ -14,6 +14,9 @@ run: all
 test: all
 	ruby test/run_all.rb
 
+bench: all
+	ruby benchmark/run.rb
+
 debug-test:
 	$(MAKE) clean
 	$(MAKE) cflags="$(cflags) -DABRUBY_DEBUG=1"
