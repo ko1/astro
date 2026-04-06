@@ -59,7 +59,8 @@
 - 追加: `<<` (Array#push, String 破壊的追加)
 
 ## ビルトインクラス
-- **Object**: inspect, to_s, ==, !=, !, nil?, class, p
+- **Kernel** (module, Object に include): p, raise
+- **Object**: inspect, to_s, ==, !=, !, nil?, class
 - **Module**: inspect, include
 - **Class**: new, inspect (Module を継承)
 - **Integer**: 算術, 比較, **, <=>, <<, >>, &, |, ^, ~, to_s, to_f, zero?, abs

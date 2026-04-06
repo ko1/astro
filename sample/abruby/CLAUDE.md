@@ -161,6 +161,7 @@ struct abruby_class {
 ```
 
 - ビルトインクラス: Object, Class, Integer, String, Array, Hash, TrueClass, FalseClass, NilClass
+- ビルトインモジュール: Kernel（Object に include、p/raise を提供）
 - 各クラスのメソッドは `builtin/<class>.c` で定義、`Init_abruby_<class>()` で登録
 - `Class#new` で `abruby_new_object` + `initialize` 呼び出し
 - メソッド検索は `abruby_class_find_method` で線形探索 + 継承チェーン走査

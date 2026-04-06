@@ -80,7 +80,7 @@
 
 ### 未実装クラス
 - [ ] IO/File
-- [ ] Comparable, Enumerable, Kernel
+- [ ] Comparable, Enumerable
 - [ ] Numeric (Integer/Float の共通親)
 
 ## ランタイム・内部実装

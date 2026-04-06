@@ -177,6 +177,7 @@ extern struct abruby_class *ab_array_class;
 extern struct abruby_class *ab_hash_class;
 extern struct abruby_class *ab_range_class;
 extern struct abruby_class *ab_regexp_class;
+extern struct abruby_class *ab_kernel_module;
 extern struct abruby_class *ab_module_class;
 extern struct abruby_class *ab_class_class;
 

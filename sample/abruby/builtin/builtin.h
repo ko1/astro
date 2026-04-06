@@ -71,6 +71,7 @@ AB_NUM_WRAP(VALUE v)
 }
 
 // Init functions
+void Init_abruby_kernel(void);
 void Init_abruby_object(void);
 void Init_abruby_class(void);
 void Init_abruby_integer(void);

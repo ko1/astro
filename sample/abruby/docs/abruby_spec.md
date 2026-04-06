@@ -267,7 +267,14 @@ Proxy.new.foo(42)  # "foo" と 42 を出力
 
 ## ビルトインクラスとメソッド
 
-### Object (全クラスの基底)
+### Kernel (module, Object に include)
+
+| メソッド | 引数 | 説明 |
+|---|---|---|
+| `p` | 1 | `inspect` を出力し、引数を返す |
+| `raise` | 0-1 | 例外を発生。引数が例外値になる |
+
+### Object (全クラスの基底, Kernel を include)
 
 | メソッド | 引数 | 説明 |
 |---|---|---|
@@ -278,7 +285,6 @@ Proxy.new.foo(42)  # "foo" と 42 を出力
 | `!` | 0 | `false` を返す (偽オブジェクトでオーバーライド) |
 | `nil?` | 0 | `false` |
 | `class` | 0 | クラス名を文字列で返す |
-| `p` | 1 | `inspect` を出力し、引数を返す |
 
 ### Class / Module
 

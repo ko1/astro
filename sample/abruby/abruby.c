@@ -14,6 +14,7 @@ static VALUE rb_cAbRubyNode;
 
 // Built-in abruby classes (klass field = ab_class_class, set in init)
 
+static struct abruby_class ab_kernel_module_body = { .name = "Kernel" };
 static struct abruby_class ab_module_class_body  = { .name = "Module" };
 static struct abruby_class ab_class_class_body   = { .name = "Class", .super = &ab_module_class_body };
 static struct abruby_class ab_object_class_body  = { .name = "Object" };
@@ -32,6 +33,7 @@ static struct abruby_class ab_nil_class_body     = { .name = "NilClass",   .supe
 struct abruby_class *ab_float_class   = &ab_float_class_body;
 struct abruby_class *ab_array_class   = &ab_array_class_body;
 struct abruby_class *ab_hash_class    = &ab_hash_class_body;
+struct abruby_class *ab_kernel_module = &ab_kernel_module_body;
 struct abruby_class *ab_module_class  = &ab_module_class_body;
 struct abruby_class *ab_class_class   = &ab_class_class_body;
 struct abruby_class *ab_object_class  = &ab_object_class_body;
@@ -71,7 +73,10 @@ static void abruby_data_mark(void *ptr) {
     else if (h->klass == ab_regexp_class) {
         rb_gc_mark(((struct abruby_regexp *)ptr)->rb_regexp);
     }
-    else if (h->klass != ab_class_class) {
+    else if (h->klass == ab_class_class || h->klass == ab_module_class) {
+        // class or module: no ivars to mark
+    }
+    else {
         // user object: mark ivars
         struct abruby_object *obj = (struct abruby_object *)ptr;
         for (unsigned int i = 0; i < obj->ivar_cnt; i++) {
@@ -264,8 +269,10 @@ abruby_class_add_cfunc(struct abruby_class *klass, const char *name,
 static void
 init_builtin_methods(void)
 {
+    Init_abruby_kernel();
     Init_abruby_class();
     Init_abruby_object();
+
     Init_abruby_integer();
     Init_abruby_string();
     Init_abruby_symbol();
@@ -376,6 +383,7 @@ init_builtin_consts(void)
     abruby_class_set_const(ab_object_class, "Object",     abruby_wrap_class(ab_object_class));
     abruby_class_set_const(ab_object_class, "Class",      abruby_wrap_class(ab_class_class));
     abruby_class_set_const(ab_object_class, "Module",     abruby_wrap_class(ab_module_class));
+    abruby_class_set_const(ab_object_class, "Kernel",     abruby_wrap_class(ab_kernel_module));
     abruby_class_set_const(ab_object_class, "Integer",    abruby_wrap_class(ab_integer_class));
     abruby_class_set_const(ab_object_class, "Float",      abruby_wrap_class(ab_float_class));
     abruby_class_set_const(ab_object_class, "String",     abruby_wrap_class(ab_string_class));
@@ -753,6 +761,7 @@ Init_abruby(void)
     ab_float_class->klass   = ab_class_class;
     ab_array_class->klass   = ab_class_class;
     ab_hash_class->klass    = ab_class_class;
+    ab_kernel_module->klass = ab_module_class;
     ab_module_class->klass  = ab_class_class;
     ab_class_class->klass   = ab_class_class;
     ab_object_class->klass  = ab_class_class;
@@ -766,6 +775,7 @@ Init_abruby(void)
     ab_nil_class->klass     = ab_class_class;
 
     // Wrap built-in classes as VALUE (must be after rb_cAbRubyNode is defined)
+    abruby_wrap_class(ab_kernel_module);
     abruby_wrap_class(ab_module_class);
     abruby_wrap_class(ab_class_class);
     abruby_wrap_class(ab_object_class);
@@ -780,6 +790,9 @@ Init_abruby(void)
     abruby_wrap_class(ab_true_class);
     abruby_wrap_class(ab_false_class);
     abruby_wrap_class(ab_nil_class);
+
+    // include Kernel in Object: Object -> Kernel -> nil
+    ab_object_class->super = ab_kernel_module;
 
     init_builtin_consts();
 
