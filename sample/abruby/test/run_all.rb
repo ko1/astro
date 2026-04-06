@@ -2,40 +2,23 @@
 
 dir = File.dirname(__FILE__)
 files = Dir.glob(File.join(dir, "test_*.rb")).sort
-
-total_tests = 0
-total_fails = 0
+failed = false
 
 files.each do |f|
-  name = File.basename(f, ".rb")
-  # run in subprocess to isolate
   output = `ruby #{f} 2>&1`
-  status = $?
-
-  if status.success?
-    if output =~ /All (\d+) tests passed/
-      count = $1.to_i
-      total_tests += count
-      puts "  #{name}: #{count} tests OK"
-    else
-      puts "  #{name}: OK (unknown count)"
+  if $?.success?
+    # extract minitest summary line
+    if output =~ /(\d+) runs, (\d+) assertions, (\d+) failures, (\d+) errors/
+      name = File.basename(f, ".rb")
+      puts "  #{name}: #{$1} runs, #{$3} failures, #{$4} errors"
+      failed = true if $3.to_i > 0 || $4.to_i > 0
     end
   else
-    lines = output.lines
-    fails = lines.select { |l| l.start_with?("FAIL:") }
-    if output =~ /(\d+) failures \/ (\d+) tests/
-      total_fails += $1.to_i
-      total_tests += $2.to_i
-    end
-    puts "  #{name}: FAILED"
-    fails.each { |l| puts "    #{l}" }
+    name = File.basename(f, ".rb")
+    puts "  #{name}: CRASHED"
+    puts output.lines.first(5).map { |l| "    #{l}" }.join
+    failed = true
   end
 end
 
-puts
-if total_fails > 0
-  puts "TOTAL: #{total_fails} failures / #{total_tests} tests"
-  exit 1
-else
-  puts "TOTAL: All #{total_tests} tests passed"
-end
+exit(failed ? 1 : 0)

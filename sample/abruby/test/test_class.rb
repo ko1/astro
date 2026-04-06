@@ -1,88 +1,40 @@
 require_relative 'test_helper'
 
-# node_class_def
-assert_eval "empty class", "class Foo; end; nil", nil
+class TestClass < AbRubyTest
+  def test_empty_class = assert_eval("class Foo; end; nil", nil)
+  def test_class_def_call = assert_eval("class Foo; def bar; 42; end; end; Foo.new.bar", 42)
+  def test_init_no_args = assert_eval("class Foo; def initialize; @x = 99; end; def x; @x; end; end; Foo.new.x", 99)
+  def test_init_1_arg = assert_eval("class Foo; def initialize(v); @v = v; end; def v; @v; end; end; Foo.new(42).v", 42)
+  def test_init_2_args = assert_eval("class P; def initialize(x, y); @x = x; @y = y; end; def sum; @x + @y; end; end; P.new(3, 4).sum", 7)
+  def test_reopen = assert_eval("class Foo; def a; 1; end; end; class Foo; def b; 2; end; end; Foo.new.a + Foo.new.b", 3)
+  def test_multiple_instances = assert_eval("class C; def initialize(v); @v = v; end; def v; @v; end; end; a = C.new(10); b = C.new(20); a.v + b.v", 30)
+  def test_instance_independence = assert_eval("class C; def initialize(v); @v = v; end; def v; @v; end; end; a = C.new(1); b = C.new(2); c = C.new(3); a.v + b.v + c.v", 6)
+  def test_ivar_default_nil = assert_eval("class C; def x; @x; end; end; C.new.x", nil)
+  def test_ivar_mutation = assert_eval("class C; def initialize; @x = 0; end; def inc; @x += 1; end; def x; @x; end; end; c = C.new; c.inc; c.inc; c.inc; c.x", 3)
+  def test_method_override = assert_eval("class Foo; def val; 1; end; end; a = Foo.new.val; class Foo; def val; 2; end; end; a + Foo.new.val", 3)
+  def test_custom_inspect = assert_eval('class Foo; def inspect; "hello"; end; end; Foo.new.inspect', "hello")
+  def test_self_method_dispatch = assert_eval("class Calc; def double(x); x * 2; end; def quad(x); self.double(self.double(x)); end; end; Calc.new.quad(3)", 12)
+  def test_class_operator = assert_eval("class Vec; def initialize(x); @x = x; end; def +(other); Vec.new(@x + other.x); end; def x; @x; end; end; a = Vec.new(3); b = Vec.new(4); c = a + b; c.x", 7)
+  def test_user_obj_eq_identity = assert_eval("class Foo; end; a = Foo.new; a == a", true)
+  def test_user_obj_eq_different = assert_eval("class Foo; end; Foo.new == Foo.new", false)
+  def test_user_obj_neq = assert_eval("class Foo; end; Foo.new != Foo.new", true)
+  def test_user_obj_nil_p = assert_eval("class Foo; end; Foo.new.nil?", false)
+  def test_user_obj_class = assert_eval("class MyClass; end; MyClass.new.class", "MyClass")
+  def test_method_missing_basic = assert_eval('class Ghost; def method_missing(n); "got:" + n; end; end; Ghost.new.anything', "got:anything")
+  def test_method_missing_fallback = assert_eval("class X; def foo; 1; end; def method_missing(n); 99; end; end; X.new.foo", 1)
 
-# class with method
-assert_eval "class def + call",
-  "class Foo; def bar; 42; end; end; Foo.new.bar", 42
+  # inheritance
+  def test_inherit_method = assert_eval("class A; def val; 42; end; end; class B < A; end; B.new.val", 42)
+  def test_inherit_override = assert_eval("class A; def val; 1; end; end; class B < A; def val; 2; end; end; B.new.val", 2)
+  def test_inherit_chain = assert_eval("class A; def a; 1; end; end; class B < A; def b; 2; end; end; class C < B; end; C.new.a + C.new.b", 3)
 
-# class with initialize
-assert_eval "initialize no args",
-  "class Foo; def initialize; @x = 99; end; def x; @x; end; end; Foo.new.x", 99
-
-assert_eval "initialize 1 arg",
-  "class Foo; def initialize(v); @v = v; end; def v; @v; end; end; Foo.new(42).v", 42
-
-assert_eval "initialize 2 args",
-  "class P; def initialize(x, y); @x = x; @y = y; end; " \
-  "def sum; @x + @y; end; end; P.new(3, 4).sum", 7
-
-# reopen class
-assert_eval "reopen class",
-  "class Foo; def a; 1; end; end; class Foo; def b; 2; end; end; Foo.new.a + Foo.new.b", 3
-
-# multiple instances
-assert_eval "multiple instances",
-  "class C; def initialize(v); @v = v; end; def v; @v; end; end; " \
-  "a = C.new(10); b = C.new(20); a.v + b.v", 30
-
-# instance independence
-assert_eval "instance independence",
-  "class C; def initialize(v); @v = v; end; def v; @v; end; end; " \
-  "a = C.new(1); b = C.new(2); c = C.new(3); a.v + b.v + c.v", 6
-
-# ivar default is nil
-assert_eval "ivar default nil",
-  "class C; def x; @x; end; end; C.new.x", nil
-
-# ivar mutation
-assert_eval "ivar mutation",
-  "class C; def initialize; @x = 0; end; def inc; @x += 1; end; def x; @x; end; end; " \
-  "c = C.new; c.inc; c.inc; c.inc; c.x", 3
-
-# method override
-assert_eval "method override",
-  "class Foo; def val; 1; end; end; a = Foo.new.val; " \
-  "class Foo; def val; 2; end; end; a + Foo.new.val", 3
-
-# inspect override
-assert_eval "custom inspect",
-  'class Foo; def inspect; "hello"; end; end; Foo.new.inspect', "hello"
-
-# class method calling other methods on self
-assert_eval "self method dispatch",
-  "class Calc; def double(x); x * 2; end; def quad(x); self.double(self.double(x)); end; end; " \
-  "Calc.new.quad(3)", 12
-
-# operator defined on class
-assert_eval "class operator",
-  "class Vec; def initialize(x); @x = x; end; def +(other); Vec.new(@x + other.x); end; " \
-  "def x; @x; end; end; " \
-  "a = Vec.new(3); b = Vec.new(4); c = a + b; c.x", 7
-
-# == on user object (inherits from Object)
-assert_eval "user obj == identity",
-  "class Foo; end; a = Foo.new; a == a", true
-assert_eval "user obj == different",
-  "class Foo; end; Foo.new == Foo.new", false
-
-# != on user object
-assert_eval "user obj !=",
-  "class Foo; end; Foo.new != Foo.new", true
-
-# nil? on user object
-assert_eval "user obj nil?",
-  "class Foo; end; Foo.new.nil?", false
-
-# class name
-assert_eval "user obj class",
-  "class MyClass; end; MyClass.new.class", "MyClass"
-
-# method_missing
-assert_eval "method_missing basic",
-  'class Ghost; def method_missing(n); "got:" + n; end; end; Ghost.new.anything', "got:anything"
-
-# method_missing does not override existing
-assert_eval "method_missing fallback",
-  "class X; def foo; 1; end; def method_missing(n); 99; end; end; X.new.foo", 1
+  # module / include
+  def test_module_include = assert_eval('module M; def hello; "hi"; end; end; class Foo; include M; end; Foo.new.hello', "hi")
+  def test_module_multi_include = assert_eval(
+    'module A; def a; 1; end; end; module B; def b; 2; end; end; ' \
+    'class Foo; include A; include B; end; Foo.new.a + Foo.new.b', 3)
+  def test_module_class_overrides = assert_eval(
+    'module M; def val; 1; end; end; class Foo; include M; def val; 2; end; end; Foo.new.val', 2)
+  def test_module_inherit_include = assert_eval(
+    'module M; def val; 42; end; end; class A; include M; end; class B < A; end; B.new.val', 42)
+end
