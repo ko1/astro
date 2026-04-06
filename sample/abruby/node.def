@@ -229,6 +229,28 @@ node_def(CTX * restrict c, NODE * restrict n, const char *name, NODE *body, uint
 // === OOP: class, method call with receiver, new ===
 
 NODE_DEF @noinline
+node_module_def(CTX * restrict c, NODE * restrict n, const char *name, NODE *body)
+{
+    struct abruby_class *mod = find_class(c, name);
+    if (!mod) {
+        mod = (struct abruby_class *)calloc(1, sizeof(struct abruby_class));
+        mod->klass = ab_module_class;
+        mod->name = name;
+        mod->super = NULL;
+        c->class_table[c->class_cnt++] = mod;
+    }
+
+    struct abruby_class *save_class = c->current_class;
+    VALUE save_self = c->self;
+    c->current_class = mod;
+    c->self = abruby_wrap_class(mod);
+    EVAL_ARG(c, body);
+    c->current_class = save_class;
+    c->self = save_self;
+    return abruby_wrap_class(mod);
+}
+
+NODE_DEF @noinline
 node_class_def(CTX * restrict c, NODE * restrict n, const char *name, const char *super_name, NODE *body)
 {
     struct abruby_class *klass = find_class(c, name);
@@ -248,9 +270,12 @@ node_class_def(CTX * restrict c, NODE * restrict n, const char *name, const char
     }
 
     struct abruby_class *save_class = c->current_class;
+    VALUE save_self = c->self;
     c->current_class = klass;
+    c->self = abruby_wrap_class(klass);
     EVAL_ARG(c, body);
     c->current_class = save_class;
+    c->self = save_self;
     return abruby_wrap_class(klass);
 }
 

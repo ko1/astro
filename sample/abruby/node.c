@@ -325,6 +325,9 @@ abruby_node_mark(void *ptr)
     else if (k == &kind_node_def) {
         mark_child(n->u.node_def.body);
     }
+    else if (k == &kind_node_module_def) {
+        mark_child(n->u.node_module_def.body);
+    }
     else if (k == &kind_node_class_def) {
         mark_child(n->u.node_class_def.body);
     }

@@ -230,6 +230,11 @@ class AbRuby
       when Prism::ConstantReadNode
         AbRuby.alloc_node_const_get(node.name.to_s)
 
+      when Prism::ModuleNode
+        name = node.constant_path.name.to_s
+        body = node.body ? transduce(node.body) : AbRuby.alloc_node_nil
+        AbRuby.alloc_node_module_def(name, body)
+
       when Prism::ClassNode
         name = node.constant_path.name.to_s
         super_name = node.superclass.is_a?(Prism::ConstantReadNode) ? node.superclass.name.to_s : ""

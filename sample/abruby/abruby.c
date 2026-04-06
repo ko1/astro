@@ -14,7 +14,8 @@ static VALUE rb_cAbRubyNode;
 
 // Built-in abruby classes (klass field = ab_class_class, set in init)
 
-static struct abruby_class ab_class_class_body   = { .name = "Class" };
+static struct abruby_class ab_module_class_body  = { .name = "Module" };
+static struct abruby_class ab_class_class_body   = { .name = "Class", .super = &ab_module_class_body };
 static struct abruby_class ab_object_class_body  = { .name = "Object" };
 static struct abruby_class ab_array_class_body   = { .name = "Array", .super = &ab_object_class_body };
 static struct abruby_class ab_hash_class_body    = { .name = "Hash",  .super = &ab_object_class_body };
@@ -26,6 +27,7 @@ static struct abruby_class ab_nil_class_body     = { .name = "NilClass",   .supe
 
 struct abruby_class *ab_array_class   = &ab_array_class_body;
 struct abruby_class *ab_hash_class    = &ab_hash_class_body;
+struct abruby_class *ab_module_class  = &ab_module_class_body;
 struct abruby_class *ab_class_class   = &ab_class_class_body;
 struct abruby_class *ab_object_class  = &ab_object_class_body;
 struct abruby_class *ab_integer_class = &ab_integer_class_body;
@@ -392,6 +394,13 @@ rb_alloc_node_ivar_set(VALUE self, VALUE name, VALUE value)
 // OOP nodes
 
 static VALUE
+rb_alloc_node_module_def(VALUE self, VALUE name, VALUE body)
+{
+    const char *cname = strdup(StringValueCStr(name));
+    return wrap_node(ALLOC_node_module_def(cname, unwrap_node(body)));
+}
+
+static VALUE
 rb_alloc_node_class_def(VALUE self, VALUE name, VALUE super_name, VALUE body)
 {
     const char *cname = strdup(StringValueCStr(name));
@@ -514,6 +523,7 @@ Init_abruby(void)
     // Set klass field on all built-in classes (common header)
     ab_array_class->klass   = ab_class_class;
     ab_hash_class->klass    = ab_class_class;
+    ab_module_class->klass  = ab_class_class;
     ab_class_class->klass   = ab_class_class;
     ab_object_class->klass  = ab_class_class;
     ab_integer_class->klass = ab_class_class;
@@ -523,6 +533,7 @@ Init_abruby(void)
     ab_nil_class->klass     = ab_class_class;
 
     // Wrap built-in classes as VALUE (must be after rb_cAbRubyNode is defined)
+    abruby_wrap_class(ab_module_class);
     abruby_wrap_class(ab_class_class);
     abruby_wrap_class(ab_object_class);
     abruby_wrap_class(ab_array_class);
@@ -560,6 +571,7 @@ Init_abruby(void)
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_hash_new", rb_alloc_node_hash_new, 2);
 
     // OOP
+    rb_define_singleton_method(rb_cAbRuby, "alloc_node_module_def", rb_alloc_node_module_def, 2);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_class_def", rb_alloc_node_class_def, 3);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_const_get", rb_alloc_node_const_get, 1);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_method_call", rb_alloc_node_method_call, 4);

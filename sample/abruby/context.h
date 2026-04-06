@@ -110,6 +110,7 @@ extern struct abruby_class *ab_false_class;
 extern struct abruby_class *ab_nil_class;
 extern struct abruby_class *ab_array_class;
 extern struct abruby_class *ab_hash_class;
+extern struct abruby_class *ab_module_class;
 extern struct abruby_class *ab_class_class;
 
 extern const rb_data_type_t abruby_data_type;
