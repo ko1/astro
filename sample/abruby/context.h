@@ -231,12 +231,23 @@ AB_CLASS_OF(VALUE obj)
     return ((struct abruby_header *)RTYPEDDATA_GET_DATA(obj))->klass;
 }
 
+#define ABRUBY_GVAR_MAX 64
+
+struct abruby_gvar_table {
+    unsigned int cnt;
+    struct {
+        const char *name;
+        VALUE value;
+    } entries[ABRUBY_GVAR_MAX];
+};
+
 struct CTX_struct {
     VALUE *env;
     VALUE *fp;
     VALUE self;
     struct abruby_class *current_class; // set during class body eval
     struct abruby_class *main_class;    // per-instance, inherits from Object
+    struct abruby_gvar_table *gvars;    // global variables
 };
 
 #define LIKELY(expr) __builtin_expect((expr), 1)

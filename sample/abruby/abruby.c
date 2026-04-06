@@ -333,6 +333,7 @@ struct abruby_vm {
     CTX ctx;
     VALUE stack[STACK_SIZE];
     struct abruby_class main_class_body;
+    struct abruby_gvar_table gvars;
 };
 
 static void
@@ -341,6 +342,9 @@ vm_mark(void *ptr)
     struct abruby_vm *vm = (struct abruby_vm *)ptr;
     rb_gc_mark(vm->ctx.self);
     rb_gc_mark_locations(vm->stack, vm->stack + STACK_SIZE);
+    for (unsigned int i = 0; i < vm->gvars.cnt; i++) {
+        rb_gc_mark(vm->gvars.entries[i].value);
+    }
 }
 
 static void
@@ -369,6 +373,7 @@ create_vm(void)
     vm->ctx.fp = vm->stack;
     vm->ctx.self = abruby_new_object(&vm->main_class_body);
     vm->ctx.current_class = NULL;
+    vm->ctx.gvars = &vm->gvars;
 
     for (int i = 0; i < STACK_SIZE; i++) {
         vm->stack[i] = Qnil;
@@ -558,6 +563,22 @@ rb_alloc_node_def(VALUE self, VALUE name, VALUE body, VALUE params_cnt, VALUE lo
 
 
 // ivar nodes
+
+// Global variable nodes
+
+static VALUE
+rb_alloc_node_gget(VALUE self, VALUE name)
+{
+    const char *cname = strdup(StringValueCStr(name));
+    return wrap_node(ALLOC_node_gget(cname));
+}
+
+static VALUE
+rb_alloc_node_gset(VALUE self, VALUE name, VALUE value)
+{
+    const char *cname = strdup(StringValueCStr(name));
+    return wrap_node(ALLOC_node_gset(cname, unwrap_node(value)));
+}
 
 static VALUE
 rb_alloc_node_ivar_get(VALUE self, VALUE name)
@@ -820,6 +841,8 @@ Init_abruby(void)
 
 
     // ivar
+    rb_define_singleton_method(rb_cAbRuby, "alloc_node_gget", rb_alloc_node_gget, 1);
+    rb_define_singleton_method(rb_cAbRuby, "alloc_node_gset", rb_alloc_node_gset, 2);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_ivar_get", rb_alloc_node_ivar_get, 1);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_ivar_set", rb_alloc_node_ivar_set, 2);
 

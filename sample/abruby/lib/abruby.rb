@@ -133,6 +133,24 @@ class AbRuby
           AbRuby.alloc_node_nil
         end
 
+      when Prism::GlobalVariableReadNode
+        AbRuby.alloc_node_gget(node.name.to_s)
+
+      when Prism::GlobalVariableWriteNode
+        AbRuby.alloc_node_gset(node.name.to_s, transduce(node.value))
+
+      when Prism::GlobalVariableOperatorWriteNode
+        op = node.binary_operator.to_s
+        call_arg_idx = arg_index
+        idx = inc_arg_index
+        store_rhs = AbRuby.alloc_node_lset(idx, transduce(node.value))
+        rewind_arg_index(call_arg_idx)
+
+        recv = AbRuby.alloc_node_gget(node.name.to_s)
+        call_node = AbRuby.alloc_node_method_call(recv, op, 1, call_arg_idx)
+        AbRuby.alloc_node_gset(node.name.to_s,
+          AbRuby.alloc_node_seq(store_rhs, call_node))
+
       when Prism::InstanceVariableReadNode
         AbRuby.alloc_node_ivar_get(node.name.to_s)
 

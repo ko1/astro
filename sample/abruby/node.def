@@ -271,6 +271,48 @@ node_ivar_set(CTX * restrict c, NODE * restrict n, const char *name, NODE *value
     return RESULT_OK(v);
 }
 
+// === Global Variables ===
+
+static VALUE
+abruby_gvar_get(CTX *c, const char *name)
+{
+    struct abruby_gvar_table *t = c->gvars;
+    for (unsigned int i = 0; i < t->cnt; i++) {
+        if (strcmp(t->entries[i].name, name) == 0)
+            return t->entries[i].value;
+    }
+    return Qnil;
+}
+
+static void
+abruby_gvar_set(CTX *c, const char *name, VALUE val)
+{
+    struct abruby_gvar_table *t = c->gvars;
+    for (unsigned int i = 0; i < t->cnt; i++) {
+        if (strcmp(t->entries[i].name, name) == 0) {
+            t->entries[i].value = val;
+            return;
+        }
+    }
+    t->entries[t->cnt].name = name;
+    t->entries[t->cnt].value = val;
+    t->cnt++;
+}
+
+NODE_DEF
+node_gget(CTX * restrict c, NODE * restrict n, const char *name)
+{
+    return RESULT_OK(abruby_gvar_get(c, name));
+}
+
+NODE_DEF
+node_gset(CTX * restrict c, NODE * restrict n, const char *name, NODE *rhs)
+{
+    VALUE v = UNWRAP(EVAL_ARG(c, rhs));
+    abruby_gvar_set(c, name, v);
+    return RESULT_OK(v);
+}
+
 // === Local Variables ===
 
 NODE_DEF
