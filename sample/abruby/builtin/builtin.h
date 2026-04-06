@@ -18,6 +18,7 @@ void abruby_class_add_cfunc(struct abruby_class *klass, const char *name,
 void Init_abruby_object(void);
 void Init_abruby_class(void);
 void Init_abruby_integer(void);
+void Init_abruby_float(void);
 void Init_abruby_string(void);
 void Init_abruby_array(void);
 void Init_abruby_hash(void);

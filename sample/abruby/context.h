@@ -108,6 +108,7 @@ extern struct abruby_class *ab_string_class;
 extern struct abruby_class *ab_true_class;
 extern struct abruby_class *ab_false_class;
 extern struct abruby_class *ab_nil_class;
+extern struct abruby_class *ab_float_class;
 extern struct abruby_class *ab_array_class;
 extern struct abruby_class *ab_hash_class;
 extern struct abruby_class *ab_module_class;
@@ -121,7 +122,7 @@ ab_verify(VALUE obj)
 {
     if (ABRUBY_DEBUG) {
         if (FIXNUM_P(obj) || obj == Qtrue || obj == Qfalse || obj == Qnil ||
-            RB_TYPE_P(obj, T_BIGNUM)) {
+            RB_TYPE_P(obj, T_BIGNUM) || RB_FLOAT_TYPE_P(obj)) {
             // immediates and CRuby-managed Bignum are always valid
             return;
         }
@@ -147,6 +148,7 @@ AB_CLASS_OF(VALUE obj)
 {
     ab_verify(obj);
     if (FIXNUM_P(obj) || RB_TYPE_P(obj, T_BIGNUM)) return ab_integer_class;
+    if (RB_FLOAT_TYPE_P(obj)) return ab_float_class;
     if (obj == Qtrue)  return ab_true_class;
     if (obj == Qfalse) return ab_false_class;
     if (obj == Qnil)   return ab_nil_class;

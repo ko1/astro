@@ -64,6 +64,9 @@ class AbRuby
         stmts = node.body.map { |n| transduce(n) }
         build_seq(stmts)
 
+      when Prism::FloatNode
+        AbRuby.alloc_node_float(node.value.to_s)
+
       when Prism::IntegerNode
         v = node.value
         if v >= -(2**30) && v < 2**30

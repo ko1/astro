@@ -116,6 +116,10 @@ static VALUE ab_integer_zero_p(CTX *c, VALUE self, unsigned int argc, VALUE *arg
     if (LIKELY(FIXNUM_P(self))) return FIX2LONG(self) == 0 ? Qtrue : Qfalse;
     return Qfalse;
 }
+static VALUE ab_integer_to_f(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    if (LIKELY(FIXNUM_P(self))) return rb_float_new((double)FIX2LONG(self));
+    return rb_funcall(self, rb_intern("to_f"), 0);
+}
 static VALUE ab_integer_abs(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     if (LIKELY(FIXNUM_P(self))) { long v = FIX2LONG(self); return LONG2NUM(v < 0 ? -v : v); }
     return rb_funcall(self, rb_intern("abs"), 0);
@@ -139,6 +143,7 @@ Init_abruby_integer(void)
     abruby_class_add_cfunc(ab_integer_class, ">=",     ab_integer_ge,      1);
     abruby_class_add_cfunc(ab_integer_class, "==",     ab_integer_eq,      1);
     abruby_class_add_cfunc(ab_integer_class, "!=",     ab_integer_neq,     1);
+    abruby_class_add_cfunc(ab_integer_class, "to_f",   ab_integer_to_f,    0);
     abruby_class_add_cfunc(ab_integer_class, "zero?",  ab_integer_zero_p,  0);
     abruby_class_add_cfunc(ab_integer_class, "abs",    ab_integer_abs,     0);
 }

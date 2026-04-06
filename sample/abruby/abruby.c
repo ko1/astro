@@ -17,6 +17,7 @@ static VALUE rb_cAbRubyNode;
 static struct abruby_class ab_module_class_body  = { .name = "Module" };
 static struct abruby_class ab_class_class_body   = { .name = "Class", .super = &ab_module_class_body };
 static struct abruby_class ab_object_class_body  = { .name = "Object" };
+static struct abruby_class ab_float_class_body   = { .name = "Float",   .super = &ab_object_class_body };
 static struct abruby_class ab_array_class_body   = { .name = "Array", .super = &ab_object_class_body };
 static struct abruby_class ab_hash_class_body    = { .name = "Hash",  .super = &ab_object_class_body };
 static struct abruby_class ab_integer_class_body = { .name = "Integer", .super = &ab_object_class_body };
@@ -25,6 +26,7 @@ static struct abruby_class ab_true_class_body    = { .name = "TrueClass",  .supe
 static struct abruby_class ab_false_class_body   = { .name = "FalseClass", .super = &ab_object_class_body };
 static struct abruby_class ab_nil_class_body     = { .name = "NilClass",   .super = &ab_object_class_body };
 
+struct abruby_class *ab_float_class   = &ab_float_class_body;
 struct abruby_class *ab_array_class   = &ab_array_class_body;
 struct abruby_class *ab_hash_class    = &ab_hash_class_body;
 struct abruby_class *ab_module_class  = &ab_module_class_body;
@@ -179,6 +181,7 @@ init_builtin_methods(void)
     Init_abruby_object();
     Init_abruby_integer();
     Init_abruby_string();
+    Init_abruby_float();
     Init_abruby_array();
     Init_abruby_hash();
     Init_abruby_true();
@@ -304,6 +307,13 @@ rb_alloc_node_bignum(VALUE self, VALUE str)
 {
     const char *cstr = strdup(StringValueCStr(str));
     return wrap_node(ALLOC_node_bignum(cstr));
+}
+
+static VALUE
+rb_alloc_node_float(VALUE self, VALUE str)
+{
+    const char *cstr = strdup(StringValueCStr(str));
+    return wrap_node(ALLOC_node_float(cstr));
 }
 
 static VALUE
@@ -528,6 +538,7 @@ Init_abruby(void)
     rb_undef_alloc_func(rb_cAbRubyNode);
 
     // Set klass field on all built-in classes (common header)
+    ab_float_class->klass   = ab_class_class;
     ab_array_class->klass   = ab_class_class;
     ab_hash_class->klass    = ab_class_class;
     ab_module_class->klass  = ab_class_class;
@@ -543,6 +554,7 @@ Init_abruby(void)
     abruby_wrap_class(ab_module_class);
     abruby_wrap_class(ab_class_class);
     abruby_wrap_class(ab_object_class);
+    abruby_wrap_class(ab_float_class);
     abruby_wrap_class(ab_array_class);
     abruby_wrap_class(ab_hash_class);
     abruby_wrap_class(ab_integer_class);
@@ -556,6 +568,7 @@ Init_abruby(void)
     // ALLOC wrappers
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_num", rb_alloc_node_num, 1);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_bignum", rb_alloc_node_bignum, 1);
+    rb_define_singleton_method(rb_cAbRuby, "alloc_node_float", rb_alloc_node_float, 1);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_str", rb_alloc_node_str, 1);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_true", rb_alloc_node_true, 0);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_false", rb_alloc_node_false, 0);
