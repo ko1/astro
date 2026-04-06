@@ -334,6 +334,32 @@ node_return(CTX * restrict c, NODE * restrict n, NODE *value)
     return (RESULT){v, RESULT_RETURN};
 }
 
+NODE_DEF
+node_raise(CTX * restrict c, NODE * restrict n, NODE *msg)
+{
+    VALUE v = UNWRAP(EVAL_ARG(c, msg));
+    return (RESULT){v, RESULT_RAISE};
+}
+
+NODE_DEF
+node_rescue(CTX * restrict c, NODE * restrict n, NODE *body, NODE *rescue_body, NODE *ensure_body, uint32_t exception_lvar_index)
+{
+    RESULT r = EVAL_ARG(c, body);
+
+    if (r.state == RESULT_RAISE) {
+        if (exception_lvar_index != UINT32_MAX) {
+            c->fp[exception_lvar_index] = r.value;
+        }
+        r = EVAL_ARG(c, rescue_body);
+    }
+
+    // ensure: always run; raise/return in ensure overrides original
+    RESULT er = EVAL_ARG(c, ensure_body);
+    if (er.state != RESULT_NORMAL) return er;
+
+    return r;
+}
+
 // === Method definition & call ===
 
 NODE_DEF @noinline

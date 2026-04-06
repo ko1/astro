@@ -111,6 +111,8 @@ sample/abruby/
 | | `node_if` | `NODE *cond, NODE *then_node, NODE *else_node` |
 | | `node_while` | `NODE *cond, NODE *body` |
 | | `node_return` | `NODE *value` |
+| 例外 | `node_raise` | `NODE *msg` |
+| | `node_rescue` | `NODE *body, NODE *rescue_body, NODE *ensure_body, uint32_t exception_lvar_index` |
 | メソッド | `node_def` @noinline | `const char *name, NODE *body, uint32_t params_cnt, uint32_t locals_cnt` |
 | | `node_method_call` | `NODE *recv, const char *name, uint32_t params_cnt, uint32_t arg_index` |
 | | `node_const_get` | `const char *name` |

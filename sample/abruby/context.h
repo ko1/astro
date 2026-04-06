@@ -231,6 +231,7 @@ struct CTX_struct {
 enum result_state {
     RESULT_NORMAL,
     RESULT_RETURN,
+    RESULT_RAISE,
 };
 
 typedef struct {

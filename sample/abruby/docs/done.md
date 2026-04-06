@@ -30,6 +30,8 @@
 - `&&` / `||` / `and` / `or`（短絡評価、値を返す）
 - `!` / `not`
 - `return`（明示的 return、値あり/なし）
+- `raise "msg"`（RuntimeError 限定）
+- `begin / rescue / ensure / end`（rescue はクラス引数なし、`=> e` で変数束縛可能）
 
 ## メソッド
 - `def name(args); end`

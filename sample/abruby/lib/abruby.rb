@@ -304,6 +304,31 @@ class AbRuby
         body = node.body ? transduce(node.body) : AbRuby.alloc_node_nil
         AbRuby.alloc_node_class_def(name, super_name, body)
 
+      when Prism::BeginNode
+        body = node.statements ? transduce(node.statements) : AbRuby.alloc_node_nil
+
+        rescue_clause = node.rescue_clause
+        if rescue_clause
+          rescue_body = rescue_clause.statements ? transduce(rescue_clause.statements) : AbRuby.alloc_node_nil
+
+          exception_lvar_index = if rescue_clause.reference.is_a?(Prism::LocalVariableTargetNode)
+            lvar_index(rescue_clause.reference.name)
+          else
+            0xFFFFFFFF
+          end
+        else
+          rescue_body = AbRuby.alloc_node_nil
+          exception_lvar_index = 0xFFFFFFFF
+        end
+
+        ensure_body = if node.ensure_clause&.statements
+          transduce(node.ensure_clause.statements)
+        else
+          AbRuby.alloc_node_nil
+        end
+
+        AbRuby.alloc_node_rescue(body, rescue_body, ensure_body, exception_lvar_index)
+
       when Prism::CallNode
         transduce_call(node)
 
@@ -315,6 +340,23 @@ class AbRuby
     def transduce_call(node)
       name = node.name
       args = node.arguments&.arguments || []
+
+      # Special form: raise
+      if name == :raise && node.receiver.nil?
+        if args.size == 1
+          # raise expr → raise(expr.to_s)
+          recv_idx = inc_arg_index
+          recv_store = AbRuby.alloc_node_lset(recv_idx, transduce(args[0]))
+          call_arg_idx = arg_index
+          recv_ref = AbRuby.alloc_node_lget(recv_idx)
+          to_s_call = AbRuby.alloc_node_method_call(recv_ref, "to_s", 0, call_arg_idx)
+          rewind_arg_index(recv_idx)
+          return AbRuby.alloc_node_seq(recv_store, AbRuby.alloc_node_raise(to_s_call))
+        else
+          # raise without args
+          return AbRuby.alloc_node_raise(AbRuby.alloc_node_str(""))
+        end
+      end
 
       # method call with receiver: obj.method(args)
       if node.receiver

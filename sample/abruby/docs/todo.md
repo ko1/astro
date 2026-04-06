@@ -8,7 +8,7 @@
 - [ ] `case / when / in`
 - [ ] `for .. in`
 - [ ] `break` / `next`
-- [ ] `begin / rescue / ensure / raise`（例外処理）
+- [x] `begin / rescue / ensure / raise`（例外処理）— RuntimeError 限定、rescue はクラス引数なし
 - [ ] `defined?`
 
 ### ブロック・Proc・lambda

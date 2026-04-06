@@ -105,6 +105,28 @@ end
 `return` はメソッドから即座に脱出する。`return expr` で値を返す。`return` のみは `nil` を返す。
 制御フロー（if, while 等）の中からも脱出可能。
 
+### 例外処理
+```ruby
+raise "error message"   # RuntimeError を発生（.to_s が呼ばれる）
+raise                   # 空メッセージで RuntimeError を発生
+
+begin
+  # body
+rescue => e
+  # e に例外メッセージ（文字列）が束縛される
+  p(e)
+ensure
+  # 常に実行される（正常時・例外時・return 時）
+end
+```
+
+- `raise` は RuntimeError のみ。引数は `.to_s` で文字列化される。
+- `rescue` はクラス引数を取らない（全ての raise をキャッチ）。
+- `rescue => e` で例外メッセージを変数に束縛可能。`=> e` 省略も可。
+- `ensure` は常に実行される。ensure 内の `raise` や `return` は元の結果を上書きする。
+- `begin/rescue/end` のみ（ensure なし）も可。`begin/ensure/end` のみ（rescue なし）も可。
+- CRuby の `rb_raise`（longjmp）ではなく、RESULT の state 伝播で実装。
+
 ### 論理演算子
 ```ruby
 a && b    # a が偽なら a、そうでなければ b（短絡評価、値を返す）
@@ -421,7 +443,6 @@ Ruby との相違点の詳細は [todo.md](todo.md) を参照。
 
 主な未サポート機能:
 - ブロック・Proc・lambda・イテレータ
-- 例外処理 (begin/rescue/ensure/raise)
 - break / next
 - super 呼び出し
 - case / when / in
