@@ -154,21 +154,27 @@ module ASTroGen
         end
       end
 
+      def comma_operands(ops)
+        ops.empty? ? "" : ", #{ops.join(", ")}"
+      end
+
       def build_eval_body
         operands = @operands.map{it.eval_param}
 
         <<~C.chomp
         static VALUE
-        EVAL_#{@name}(#{@prefix_args.join(', ')}, #{operands.join(", ")})
+        EVAL_#{@name}(#{@prefix_args.join(', ')}#{comma_operands(operands)})
         {
         #{@body}}
         C
       end
 
       def build_head_struct
+        fields = @operands.map{ "    #{it.join};\n"}.join
+        fields = "    char _dummy;\n" if fields.empty?
         <<~C
         struct #{name}_struct {
-        #{@operands.map{ "    #{it.join};\n"}.join}};
+        #{fields}};
         C
       end
 
@@ -191,7 +197,9 @@ module ASTroGen
       end
 
       def build_allocator_decl
-        "NODE *ALLOC_#{name}(#{@operands.map{it.join}.join(', ')});"
+        params = @operands.map{it.join}.join(', ')
+        params = 'void' if params.empty?
+        "NODE *ALLOC_#{name}(#{params});"
       end
 
       def no_inline?
@@ -202,7 +210,7 @@ module ASTroGen
         sname = "#{@name}_struct"
         <<~C
         NODE *
-        ALLOC_#{name}(#{@operands.map{it.join}.join(', ')}) {
+        ALLOC_#{name}(#{@operands.empty? ? 'void' : @operands.map{it.join}.join(', ')}) {
             NODE *_n = node_allocate(sizeof(struct NodeHead) + sizeof(struct #{sname}));
             _n->head.dispatcher = DISPATCH_#{@name};
             _n->head.dispatcher_name = "DISPATCH_#{@name}";
@@ -230,12 +238,12 @@ module ASTroGen
         DISPATCH_#{@name}(#{@prefix_args.join(', ')})
         {
             dispatch_info(c, n, 0);
-            VALUE v = EVAL_#{name}(c, n, #{
-              @operands.map{
+            VALUE v = EVAL_#{name}(c, n#{
+              comma_operands(@operands.map{
                 arg = +"n->u.#{name}.#{it.name}"
                 arg << ", n->u.#{name}.#{it.name}->head.dispatcher" if it.node?
                 arg
-              }.join(", ")
+              })
             });
             dispatch_info(c, n, 1);
 
@@ -289,10 +297,17 @@ module ASTroGen
             fprintf(fp, "%s(#{@prefix_args.join(', ')})\\n", dispatcher_name);
             fprintf(fp, "{\\n");
             fprintf(fp, "    dispatch_info(c, n, false);\\n");
-            fprintf(fp, "    VALUE v = EVAL_#{name}(c, n, \\n");
-        #{ args.join("\n    fprintf(fp, \",\\n\");\n")
-        }
-            fprintf(fp, "\\n    );\\n");
+#{  if args.empty?
+      '            fprintf(fp, "    VALUE v = EVAL_' + name + '(c, n);\\n");'
+    else
+      <<~INNER.chomp
+                  fprintf(fp, "    VALUE v = EVAL_#{name}(c, n, \\n");
+              #{ args.join("\n    fprintf(fp, \",\\n\");\n")
+              }
+                  fprintf(fp, "\\n    );\\n");
+      INNER
+    end
+}
             fprintf(fp, "    dispatch_info(c, n, true);\\n");
             fprintf(fp, "    return v;\\n");
             fprintf(fp, "}\\n\\n");
@@ -315,7 +330,7 @@ module ASTroGen
         DUMP_#{@name}(FILE *fp, NODE *n, bool oneline)
         {
             if (oneline) {
-                fprintf(fp, "(#{@name} ");
+                fprintf(fp, "(#{@name}#{op_dumpers.empty? ? "" : " "}");
           #{op_dumpers.join(";\n        fprintf(fp, \" \");\n");}
                 fprintf(fp, ")");
           }

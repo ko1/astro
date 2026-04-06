@@ -1,0 +1,39 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require_relative '../lib/abruby'
+require_relative '../lib/abruby/version'
+
+code = nil
+dump_mode = false
+
+opt = OptionParser.new
+opt.banner = "Usage: abruby [options] [file]"
+opt.on('-e CODE', 'evaluate CODE') { |v| code = v }
+opt.on('--dump', 'dump AST instead of evaluating') { dump_mode = true }
+opt.on('-v', '--version', 'show version') do
+  puts "abruby #{AbRuby::VERSION}"
+  exit
+end
+opt.parse!(ARGV)
+
+src = if code
+  code
+elsif ARGV[0]
+  file = ARGV[0]
+  unless File.exist?(file)
+    $stderr.puts "abruby: cannot load such file -- #{file}"
+    exit 1
+  end
+  File.read(file)
+end
+
+if src
+  if dump_mode
+    puts AbRuby.dump(src, pretty: true)
+  else
+    AbRuby.eval(src)
+  end
+else
+  opt.parse!(['--help'])
+end

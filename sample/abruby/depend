@@ -1,0 +1,26 @@
+# ASTroGen rules
+ASTROGEN = ruby -I ../../lib -r astrogen -e 'ASTroGen.start []'
+GENERATED = node_eval.c node_dispatch.c node_hash.c node_dump.c node_alloc.c node_specialize.c node_head.h
+
+$(GENERATED): node.def ../../lib/astrogen.rb
+	$(ASTROGEN)
+
+node.o: $(GENERATED)
+abruby.o: node_head.h
+
+run: all
+	ruby exe/abruby test.ab.rb
+
+test: all
+	ruby test/run_all.rb
+
+debug-test: all
+	make clean
+	ruby extconf.rb -- --enable-debug
+	make
+	ruby test/run_all.rb
+
+clean: clean-generated
+
+clean-generated:
+	$(Q)$(RM) $(GENERATED)

@@ -1,0 +1,288 @@
+// abruby node definitions
+// VALUE is CRuby's VALUE (tagged pointer)
+
+// helper functions (included before generated eval code)
+
+// class system helpers
+
+static void
+abruby_class_add_method(struct abruby_class *klass, const char *name,
+                        struct Node *body, unsigned int params_cnt, unsigned int locals_cnt)
+{
+    for (unsigned int i = 0; i < klass->method_cnt; i++) {
+        if (strcmp(klass->methods[i].name, name) == 0) {
+            klass->methods[i].type = ABRUBY_METHOD_AST;
+            klass->methods[i].u.ast.body = body;
+            klass->methods[i].u.ast.params_cnt = params_cnt;
+            klass->methods[i].u.ast.locals_cnt = locals_cnt;
+            return;
+        }
+    }
+    struct abruby_method *m = &klass->methods[klass->method_cnt++];
+    m->name = name;
+    m->type = ABRUBY_METHOD_AST;
+    m->u.ast.body = body;
+    m->u.ast.params_cnt = params_cnt;
+    m->u.ast.locals_cnt = locals_cnt;
+}
+
+static struct abruby_method *
+abruby_class_find_method(struct abruby_class *klass, const char *name)
+{
+    while (klass) {
+        for (unsigned int i = 0; i < klass->method_cnt; i++) {
+            if (strcmp(klass->methods[i].name, name) == 0) {
+                return &klass->methods[i];
+            }
+        }
+        klass = klass->super;
+    }
+    return NULL;
+}
+
+static struct abruby_class *
+find_class(CTX *c, const char *name)
+{
+    for (unsigned int i = 0; i < c->class_cnt; i++) {
+        if (strcmp(c->class_table[i]->name, name) == 0) {
+            return c->class_table[i];
+        }
+    }
+    return NULL;
+}
+
+static VALUE
+method_call_body(CTX *c, uint32_t arg_index, VALUE recv, struct Node *body)
+{
+    VALUE *save_fp = c->fp;
+    VALUE save_self = c->self;
+    c->fp = save_fp + arg_index;
+    c->self = recv;
+    VALUE v = EVAL(c, body);
+    c->fp = save_fp;
+    c->self = save_self;
+    return v;
+}
+
+extern VALUE abruby_new_object(struct abruby_class *klass);
+
+// === Literals ===
+
+NODE_DEF
+node_num(CTX * restrict c, NODE * restrict n, int32_t num)
+{
+    return INT2FIX(num);
+}
+
+NODE_DEF
+node_true(CTX * restrict c, NODE * restrict n)
+{
+    return Qtrue;
+}
+
+NODE_DEF
+node_false(CTX * restrict c, NODE * restrict n)
+{
+    return Qfalse;
+}
+
+NODE_DEF
+node_nil(CTX * restrict c, NODE * restrict n)
+{
+    return Qnil;
+}
+
+NODE_DEF
+node_str(CTX * restrict c, NODE * restrict n, const char *str)
+{
+    return abruby_str_new_cstr(str);
+}
+
+NODE_DEF
+node_self(CTX * restrict c, NODE * restrict n)
+{
+    return c->self;
+}
+
+NODE_DEF
+node_const_get(CTX * restrict c, NODE * restrict n, const char *name)
+{
+    struct abruby_class *klass = find_class(c, name);
+    if (!klass) {
+        rb_raise(rb_eNameError, "uninitialized constant %s", name);
+    }
+    return abruby_wrap_class(klass);
+}
+
+// === Array / Hash literals ===
+
+NODE_DEF
+node_array_new(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_index)
+{
+    VALUE ary = rb_ary_new_capa(argc);
+    for (uint32_t i = 0; i < argc; i++) {
+        rb_ary_push(ary, c->fp[arg_index + i]);
+    }
+    return abruby_ary_new(ary);
+}
+
+// Convert abruby value to CRuby value for use as Hash key
+static VALUE
+ab_to_hash_key(VALUE v)
+{
+    if (FIXNUM_P(v) || v == Qtrue || v == Qfalse || v == Qnil) return v;
+    struct abruby_header *h = (struct abruby_header *)RTYPEDDATA_GET_DATA(v);
+    if (h->klass == ab_string_class) return ((struct abruby_string *)h)->rb_str;
+    return v; // user objects as-is (identity based)
+}
+
+NODE_DEF
+node_hash_new(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_index)
+{
+    VALUE hash = rb_hash_new();
+    for (uint32_t i = 0; i < argc; i += 2) {
+        rb_hash_aset(hash, ab_to_hash_key(c->fp[arg_index + i]), c->fp[arg_index + i + 1]);
+    }
+    return abruby_hash_new_wrap(hash);
+}
+
+// === Instance Variables ===
+
+NODE_DEF
+node_ivar_get(CTX * restrict c, NODE * restrict n, const char *name)
+{
+    return abruby_ivar_get(c->self, name);
+}
+
+NODE_DEF
+node_ivar_set(CTX * restrict c, NODE * restrict n, const char *name, NODE *value)
+{
+    VALUE v = EVAL_ARG(c, value);
+    abruby_ivar_set(c->self, name, v);
+    return v;
+}
+
+// === Local Variables ===
+
+NODE_DEF
+node_lget(CTX * restrict c, NODE * restrict n, uint32_t index)
+{
+    return c->fp[index];
+}
+
+NODE_DEF
+node_lset(CTX * restrict c, NODE * restrict n, uint32_t index, NODE *rhs)
+{
+    VALUE v = EVAL_ARG(c, rhs);
+    c->fp[index] = v;
+    return v;
+}
+
+// === Control Flow ===
+
+NODE_DEF
+node_scope(CTX * restrict c, NODE * restrict n, uint32_t envsize, NODE *body)
+{
+    c->fp += envsize;
+    VALUE v = EVAL_ARG(c, body);
+    c->fp -= envsize;
+    return v;
+}
+
+NODE_DEF
+node_seq(CTX * restrict c, NODE * restrict n, NODE *head, NODE *tail)
+{
+    EVAL_ARG(c, head);
+    return EVAL_ARG(c, tail);
+}
+
+NODE_DEF
+node_if(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *then_node, NODE *else_node)
+{
+    if (RTEST(EVAL_ARG(c, cond))) {
+        return EVAL_ARG(c, then_node);
+    }
+    else {
+        return EVAL_ARG(c, else_node);
+    }
+}
+
+NODE_DEF
+node_while(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *body)
+{
+    while (RTEST(EVAL_ARG(c, cond))) {
+        EVAL_ARG(c, body);
+    }
+    return Qnil;
+}
+
+// === Method definition & call ===
+
+NODE_DEF @noinline
+node_def(CTX * restrict c, NODE * restrict n, const char *name, NODE *body, uint32_t params_cnt, uint32_t locals_cnt)
+{
+    struct abruby_class *klass = c->current_class ? c->current_class : ab_object_class;
+    abruby_class_add_method(klass, name, body, params_cnt, locals_cnt);
+    return Qnil;
+}
+
+// === OOP: class, method call with receiver, new ===
+
+NODE_DEF @noinline
+node_class_def(CTX * restrict c, NODE * restrict n, const char *name, const char *super_name, NODE *body)
+{
+    struct abruby_class *klass = find_class(c, name);
+    if (!klass) {
+        struct abruby_class *super = ab_object_class;
+        if (super_name[0] != '\0') {
+            super = find_class(c, super_name);
+            if (!super) {
+                rb_raise(rb_eNameError, "uninitialized constant %s", super_name);
+            }
+        }
+        klass = (struct abruby_class *)calloc(1, sizeof(struct abruby_class));
+        klass->klass = ab_class_class;
+        klass->name = name;
+        klass->super = super;
+        c->class_table[c->class_cnt++] = klass;
+    }
+
+    struct abruby_class *save_class = c->current_class;
+    c->current_class = klass;
+    EVAL_ARG(c, body);
+    c->current_class = save_class;
+    return abruby_wrap_class(klass);
+}
+
+NODE_DEF
+node_method_call(CTX * restrict c, NODE * restrict n, NODE *recv, const char *name, uint32_t params_cnt, uint32_t arg_index)
+{
+    VALUE recv_val = EVAL_ARG(c, recv);
+    struct abruby_class *klass = AB_CLASS_OF(recv_val);
+    struct abruby_method *method = abruby_class_find_method(klass, name);
+    if (!method) {
+        // try method_missing
+        struct abruby_method *mm = abruby_class_find_method(klass, "method_missing");
+        if (!mm) {
+            rb_raise(rb_eNoMethodError, "undefined method '%s' for %s", name, klass->name);
+        }
+        // shift args by 1, insert method name as first arg
+        for (int i = (int)params_cnt - 1; i >= 0; i--) {
+            c->fp[arg_index + i + 1] = c->fp[arg_index + i];
+        }
+        c->fp[arg_index] = abruby_str_new_cstr(name);
+        if (mm->type == ABRUBY_METHOD_CFUNC) {
+            return mm->u.cfunc.func(c, recv_val, params_cnt + 1, c->fp + arg_index);
+        }
+        else {
+            return method_call_body(c, arg_index, recv_val, mm->u.ast.body);
+        }
+    }
+    if (method->type == ABRUBY_METHOD_CFUNC) {
+        return method->u.cfunc.func(c, recv_val, params_cnt, c->fp + arg_index);
+    }
+    else {
+        return method_call_body(c, arg_index, recv_val, method->u.ast.body);
+    }
+}
+

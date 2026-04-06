@@ -34,6 +34,8 @@ ALLOC_node_num(int32_t num) {
     _n->head.dispatcher_name = "DISPATCH_node_num";
     _n->head.kind = &kind_node_num;
     _n->head.parent = NULL;
+    _n->head.jit_status = JIT_STATUS_Unknown;
+    _n->head.dispatch_cnt = 0;
     _n->head.flags.has_hash_value = false;
     _n->head.flags.is_specialized = false;
     _n->head.flags.is_specializing = false;
@@ -53,6 +55,8 @@ ALLOC_node_add(NODE * lv, NODE * rv) {
     _n->head.dispatcher_name = "DISPATCH_node_add";
     _n->head.kind = &kind_node_add;
     _n->head.parent = NULL;
+    _n->head.jit_status = JIT_STATUS_Unknown;
+    _n->head.dispatch_cnt = 0;
     _n->head.flags.has_hash_value = false;
     _n->head.flags.is_specialized = false;
     _n->head.flags.is_specializing = false;
@@ -74,6 +78,8 @@ ALLOC_node_mul(NODE * lv, NODE * rv) {
     _n->head.dispatcher_name = "DISPATCH_node_mul";
     _n->head.kind = &kind_node_mul;
     _n->head.parent = NULL;
+    _n->head.jit_status = JIT_STATUS_Unknown;
+    _n->head.dispatch_cnt = 0;
     _n->head.flags.has_hash_value = false;
     _n->head.flags.is_specialized = false;
     _n->head.flags.is_specializing = false;
