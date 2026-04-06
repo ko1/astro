@@ -30,6 +30,10 @@ static VALUE ab_object_class_name(CTX *c, VALUE self, unsigned int argc, VALUE *
     return abruby_str_new_cstr(AB_CLASS_OF(self)->name);
 }
 
+static VALUE ab_object_not(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    return RTEST(self) ? Qfalse : Qtrue;
+}
+
 static VALUE ab_object_p(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     VALUE str = ab_inspect_rstr(c, argv[0]);
     fwrite(RSTRING_PTR(str), 1, RSTRING_LEN(str), stdout);
@@ -47,5 +51,6 @@ Init_abruby_object(void)
     abruby_class_add_cfunc(ab_object_class, "!=",       ab_object_neq,        1);
     abruby_class_add_cfunc(ab_object_class, "nil?",     ab_object_nil_p,      0);
     abruby_class_add_cfunc(ab_object_class, "class",    ab_object_class_name, 0);
+    abruby_class_add_cfunc(ab_object_class, "!",        ab_object_not,        0);
     abruby_class_add_cfunc(ab_object_class, "p",        ab_object_p,          1);
 }

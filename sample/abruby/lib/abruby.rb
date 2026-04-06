@@ -192,6 +192,32 @@ class AbRuby
       when Prism::WhileNode
         AbRuby.alloc_node_while(transduce(node.predicate), transduce(node.statements))
 
+      when Prism::UntilNode
+        # until cond → while !cond
+        cond = transduce(node.predicate)
+        body = transduce(node.statements)
+        # !cond = if(cond, false, true)
+        not_cond = AbRuby.alloc_node_if(cond, AbRuby.alloc_node_false, AbRuby.alloc_node_true)
+        AbRuby.alloc_node_while(not_cond, body)
+
+      when Prism::AndNode
+        # a && b → tmp = a; if(tmp, b, tmp)
+        idx = inc_arg_index
+        store = AbRuby.alloc_node_lset(idx, transduce(node.left))
+        ref = AbRuby.alloc_node_lget(idx)
+        ref2 = AbRuby.alloc_node_lget(idx)
+        rewind_arg_index(idx)
+        AbRuby.alloc_node_seq(store, AbRuby.alloc_node_if(ref, transduce(node.right), ref2))
+
+      when Prism::OrNode
+        # a || b → tmp = a; if(tmp, tmp, b)
+        idx = inc_arg_index
+        store = AbRuby.alloc_node_lset(idx, transduce(node.left))
+        ref = AbRuby.alloc_node_lget(idx)
+        ref2 = AbRuby.alloc_node_lget(idx)
+        rewind_arg_index(idx)
+        AbRuby.alloc_node_seq(store, AbRuby.alloc_node_if(ref, ref2, transduce(node.right)))
+
       when Prism::DefNode
         name = node.name.to_s
         params = node.parameters
