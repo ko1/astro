@@ -24,6 +24,7 @@ void abruby_ivar_set(VALUE self, const char *name, VALUE val);
 struct abruby_method *abruby_find_method(struct abruby_class *klass, const char *name);
 
 VALUE abruby_wrap_class(struct abruby_class *klass);
+void abruby_class_set_const(struct abruby_class *klass, const char *name, VALUE val);
 struct abruby_class *abruby_unwrap_class(VALUE obj);
 VALUE abruby_new_object(struct abruby_class *klass);
 

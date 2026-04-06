@@ -76,6 +76,11 @@ static VALUE ab_float_round(CTX *c, VALUE self, unsigned int argc, VALUE *argv) 
 void
 Init_abruby_float(void)
 {
+    // constants
+    abruby_class_set_const(ab_float_class, "INFINITY", rb_float_new(HUGE_VAL));
+    abruby_class_set_const(ab_float_class, "NAN", rb_float_new(nan("")));
+
+
     abruby_class_add_cfunc(ab_float_class, "inspect", ab_float_inspect, 0);
     abruby_class_add_cfunc(ab_float_class, "to_s",   ab_float_to_s,    0);
     abruby_class_add_cfunc(ab_float_class, "to_i",   ab_float_to_i,    0);

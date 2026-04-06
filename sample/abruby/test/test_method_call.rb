@@ -65,27 +65,27 @@ class TestMethodCall < AbRubyTest
   def test_method_in_if = assert_eval('a = "hello"; if a.length > 3; true; else; false; end', true)
 
   # OOP
-  def test_class_method = assert_eval("class Foo; def bar; 42; end; end; Foo.new.bar", 42)
-  def test_class_method_with_args = assert_eval("class Foo; def add(a, b); a + b; end; end; Foo.new.add(3, 4)", 7)
-  def test_self_identity = assert_eval("class Foo; def me; self; end; end; f = Foo.new; f.me == f", true)
-  def test_self_method_call = assert_eval("class Foo; def a; 1; end; def b; self.a + 2; end; end; Foo.new.b", 3)
-  def test_chained_oop = assert_eval("class Foo; def val; 42; end; end; Foo.new.val.to_s", "42")
-  def test_ivar_in_method = assert_eval("class Foo; def initialize(x); @x = x; end; def x; @x; end; end; Foo.new(10).x", 10)
+  def test_class_method = assert_eval("class TmFoo; def bar; 42; end; end; TmFoo.new.bar", 42)
+  def test_class_method_with_args = assert_eval("class TmFoo; def add(a, b); a + b; end; end; TmFoo.new.add(3, 4)", 7)
+  def test_self_identity = assert_eval("class TmFoo; def me; self; end; end; f = TmFoo.new; f.me == f", true)
+  def test_self_method_call = assert_eval("class TmFoo; def a; 1; end; def b; self.a + 2; end; end; TmFoo.new.b", 3)
+  def test_chained_oop = assert_eval("class TmFoo; def val; 42; end; end; TmFoo.new.val.to_s", "42")
+  def test_ivar_in_method = assert_eval("class TmFoo; def initialize(x); @x = x; end; def x; @x; end; end; TmFoo.new(10).x", 10)
   def test_method_on_other_obj = assert_eval(
-    "class Foo; def initialize(v); @v = v; end; def v; @v; end; " \
+    "class TmFoo; def initialize(v); @v = v; end; def v; @v; end; " \
     "def add_v(other); @v + other.v; end; end; " \
-    "a = Foo.new(3); b = Foo.new(4); a.add_v(b)", 7)
+    "a = TmFoo.new(3); b = TmFoo.new(4); a.add_v(b)", 7)
   def test_new_multi_args = assert_eval(
-    "class P; def initialize(x, y); @x = x; @y = y; end; " \
-    "def sum; @x + @y; end; end; P.new(3, 4).sum", 7)
+    "class TmP; def initialize(x, y); @x = x; @y = y; end; " \
+    "def sum; @x + @y; end; end; TmP.new(3, 4).sum", 7)
   def test_method_missing = assert_eval(
-    'class G; def method_missing(name); "got:" + name; end; end; G.new.hello', "got:hello")
+    'class TmG; def method_missing(name); "got:" + name; end; end; TmG.new.hello', "got:hello")
   def test_method_missing_with_arg = assert_eval(
-    "class G; def method_missing(name, x); x * 2; end; end; G.new.foo(21)", 42)
+    "class TmG; def method_missing(name, x); x * 2; end; end; TmG.new.foo(21)", 42)
   def test_class_two_classes = assert_eval(
-    "class A; def val; 10; end; end; class B; def val; 20; end; end; A.new.val + B.new.val", 30)
+    "class TmA; def val; 10; end; end; class TmB; def val; 20; end; end; TmA.new.val + TmB.new.val", 30)
   def test_interpolation_as_method_result = assert_eval(
-    'class Foo; def initialize(n); @n = n; end; def to_s; "Foo(#{@n})"; end; end; Foo.new(42).to_s', "Foo(42)")
+    'class TmFoo; def initialize(n); @n = n; end; def to_s; "TmFoo(#{@n})"; end; end; TmFoo.new(42).to_s', "TmFoo(42)")
 
   # explicit dispatch
   def test_int_plus_dispatch = assert_eval("1.+(2)", 3)

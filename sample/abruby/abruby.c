@@ -144,6 +144,21 @@ abruby_unwrap_class(VALUE obj)
 
 // === Shared helpers and builtin infrastructure ===
 
+void
+abruby_class_set_const(struct abruby_class *klass, const char *name, VALUE val)
+{
+    // Check for existing, update
+    for (unsigned int i = 0; i < klass->const_cnt; i++) {
+        if (strcmp(klass->constants[i].name, name) == 0) {
+            klass->constants[i].value = val;
+            return;
+        }
+    }
+    klass->constants[klass->const_cnt].name = name;
+    klass->constants[klass->const_cnt].value = val;
+    klass->const_cnt++;
+}
+
 VALUE
 ab_inspect_rstr(CTX *c, VALUE v) {
     struct abruby_method *ins = abruby_find_method(AB_CLASS_OF(v), "inspect");
@@ -228,42 +243,71 @@ abruby_ivar_set(VALUE self, const char *name, VALUE val)
     obj->ivar_cnt++;
 }
 
-// CTX
+// Per-instance VM state
 
-#define STACK_SIZE  10000
+#define STACK_SIZE 10000
 
-static CTX global_ctx;
-static VALUE global_stack[STACK_SIZE];
-static VALUE rb_ctx_wrapper;
-
-static void
-ctx_mark(void *ptr)
-{
-    (void)ptr;
-    rb_gc_mark_locations(global_stack, global_stack + STACK_SIZE);
-}
-
-static const rb_data_type_t abruby_ctx_type = {
-    "AbRuby::CTX",
-    { ctx_mark, NULL, NULL },
-    0, 0, RUBY_TYPED_FREE_IMMEDIATELY
+struct abruby_vm {
+    CTX ctx;
+    VALUE stack[STACK_SIZE];
+    struct abruby_class main_class_body;
 };
 
 static void
-init_ctx(void)
+vm_mark(void *ptr)
 {
-    global_ctx.env = global_stack;
-    global_ctx.fp = global_stack;
-    global_ctx.self = Qnil;
-    global_ctx.current_class = NULL;
-    global_ctx.class_cnt = 0;
+    struct abruby_vm *vm = (struct abruby_vm *)ptr;
+    rb_gc_mark_locations(vm->stack, vm->stack + STACK_SIZE);
+}
+
+static void
+vm_free(void *ptr)
+{
+    free(ptr);
+}
+
+static const rb_data_type_t abruby_vm_type = {
+    "AbRuby",
+    { vm_mark, vm_free, NULL },
+    0, 0, RUBY_TYPED_FREE_IMMEDIATELY
+};
+
+static struct abruby_vm *
+create_vm(void)
+{
+    struct abruby_vm *vm = calloc(1, sizeof(struct abruby_vm));
+    vm->ctx.env = vm->stack;
+    vm->ctx.fp = vm->stack;
+    vm->ctx.self = Qnil;
+    vm->ctx.current_class = NULL;
+
+    // Per-instance main class (inherits from Object)
+    vm->main_class_body.klass = ab_class_class;
+    vm->main_class_body.name = "main";
+    vm->main_class_body.super = ab_object_class;
+    vm->ctx.main_class = &vm->main_class_body;
 
     for (int i = 0; i < STACK_SIZE; i++) {
-        global_stack[i] = Qnil;
+        vm->stack[i] = Qnil;
     }
 
-    rb_ctx_wrapper = TypedData_Wrap_Struct(rb_cObject, &abruby_ctx_type, &global_ctx);
-    rb_gc_register_mark_object(rb_ctx_wrapper);
+    return vm;
+}
+
+static void
+init_builtin_consts(void)
+{
+    abruby_class_set_const(ab_object_class, "Object",     abruby_wrap_class(ab_object_class));
+    abruby_class_set_const(ab_object_class, "Class",      abruby_wrap_class(ab_class_class));
+    abruby_class_set_const(ab_object_class, "Module",     abruby_wrap_class(ab_module_class));
+    abruby_class_set_const(ab_object_class, "Integer",    abruby_wrap_class(ab_integer_class));
+    abruby_class_set_const(ab_object_class, "Float",      abruby_wrap_class(ab_float_class));
+    abruby_class_set_const(ab_object_class, "String",     abruby_wrap_class(ab_string_class));
+    abruby_class_set_const(ab_object_class, "Array",      abruby_wrap_class(ab_array_class));
+    abruby_class_set_const(ab_object_class, "Hash",       abruby_wrap_class(ab_hash_class));
+    abruby_class_set_const(ab_object_class, "TrueClass",  abruby_wrap_class(ab_true_class));
+    abruby_class_set_const(ab_object_class, "FalseClass", abruby_wrap_class(ab_false_class));
+    abruby_class_set_const(ab_object_class, "NilClass",   abruby_wrap_class(ab_nil_class));
 }
 
 // NODE wrapper (T_DATA)
@@ -445,6 +489,14 @@ rb_alloc_node_const_get(VALUE self, VALUE name)
 }
 
 static VALUE
+rb_alloc_node_const_path_get(VALUE self, VALUE parent, VALUE name)
+{
+    const char *cparent = strdup(StringValueCStr(parent));
+    const char *cname = strdup(StringValueCStr(name));
+    return wrap_node(ALLOC_node_const_path_get(cparent, cname));
+}
+
+static VALUE
 rb_alloc_node_method_call(VALUE self, VALUE recv, VALUE name, VALUE params_cnt, VALUE arg_index)
 {
     const char *cname = strdup(StringValueCStr(name));
@@ -452,25 +504,6 @@ rb_alloc_node_method_call(VALUE self, VALUE recv, VALUE name, VALUE params_cnt, 
 }
 
 // dump
-
-static VALUE
-rb_abruby_dump_ast(VALUE self, VALUE ast_obj)
-{
-    NODE *ast = unwrap_node(ast_obj);
-    if (ast == NULL) return rb_str_new_cstr("<NULL>");
-
-    char *buf = NULL;
-    size_t len = 0;
-    FILE *fp = open_memstream(&buf, &len);
-    if (fp == NULL) rb_raise(rb_eRuntimeError, "open_memstream failed");
-
-    DUMP(fp, ast, true);
-    fclose(fp);
-
-    VALUE str = rb_str_new(buf, len);
-    free(buf);
-    return str;
-}
 
 // eval
 
@@ -509,22 +542,61 @@ abruby_to_ruby(VALUE v)
     return v;
 }
 
+// AbRuby#initialize
+static VALUE
+rb_abruby_initialize(VALUE self)
+{
+    struct abruby_vm *vm = create_vm();
+    DATA_PTR(self) = vm;
+    return self;
+}
+
+// AbRuby allocator
+static VALUE
+rb_abruby_alloc(VALUE klass)
+{
+    return TypedData_Wrap_Struct(klass, &abruby_vm_type, NULL);
+}
+
+// AbRuby#eval_ast
 static VALUE
 rb_abruby_eval_ast(VALUE self, VALUE ast_obj)
 {
+    struct abruby_vm *vm;
+    TypedData_Get_Struct(self, struct abruby_vm, &abruby_vm_type, vm);
+
     NODE *ast = unwrap_node(ast_obj);
     if (ast == NULL) {
         rb_raise(rb_eRuntimeError, "cannot eval NULL AST");
     }
 
-    // reset context for each eval
-    global_ctx.fp = global_ctx.env;
-    global_ctx.self = Qnil;
-    global_ctx.current_class = NULL;
-    global_ctx.class_cnt = 0;
+    // reset stack for each eval (classes/methods persist on main_class)
+    vm->ctx.fp = vm->ctx.env;
+    vm->ctx.self = Qnil;
+    vm->ctx.current_class = NULL;
 
-    VALUE result = EVAL(&global_ctx, ast);
+    VALUE result = EVAL(&vm->ctx, ast);
     return abruby_to_ruby(result);
+}
+
+// AbRuby#dump_ast
+static VALUE
+rb_abruby_dump_ast(VALUE self, VALUE ast_obj)
+{
+    NODE *ast = unwrap_node(ast_obj);
+    if (ast == NULL) return rb_str_new_cstr("<NULL>");
+
+    char *buf = NULL;
+    size_t len = 0;
+    FILE *fp = open_memstream(&buf, &len);
+    if (fp == NULL) rb_raise(rb_eRuntimeError, "open_memstream failed");
+
+    DUMP(fp, ast, true);
+    fclose(fp);
+
+    VALUE str = rb_str_new(buf, len);
+    free(buf);
+    return str;
 }
 
 void
@@ -534,6 +606,9 @@ Init_abruby(void)
     init_builtin_methods();
 
     rb_cAbRuby = rb_define_class("AbRuby", rb_cObject);
+    rb_define_alloc_func(rb_cAbRuby, rb_abruby_alloc);
+    rb_define_method(rb_cAbRuby, "initialize", rb_abruby_initialize, 0);
+
     rb_cAbRubyNode = rb_define_class_under(rb_cAbRuby, "Node", rb_cObject);
     rb_undef_alloc_func(rb_cAbRubyNode);
 
@@ -563,7 +638,7 @@ Init_abruby(void)
     abruby_wrap_class(ab_false_class);
     abruby_wrap_class(ab_nil_class);
 
-    init_ctx();
+    init_builtin_consts();
 
     // ALLOC wrappers
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_num", rb_alloc_node_num, 1);
@@ -595,10 +670,11 @@ Init_abruby(void)
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_module_def", rb_alloc_node_module_def, 2);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_class_def", rb_alloc_node_class_def, 3);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_const_get", rb_alloc_node_const_get, 1);
+    rb_define_singleton_method(rb_cAbRuby, "alloc_node_const_path_get", rb_alloc_node_const_path_get, 2);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_method_call", rb_alloc_node_method_call, 4);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_self", rb_alloc_node_self, 0);
 
     // eval / dump
-    rb_define_singleton_method(rb_cAbRuby, "eval_ast", rb_abruby_eval_ast, 1);
-    rb_define_singleton_method(rb_cAbRuby, "dump_ast", rb_abruby_dump_ast, 1);
+    rb_define_method(rb_cAbRuby, "eval_ast", rb_abruby_eval_ast, 1);
+    rb_define_method(rb_cAbRuby, "dump_ast", rb_abruby_dump_ast, 1);
 }

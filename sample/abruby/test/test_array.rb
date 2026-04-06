@@ -55,8 +55,8 @@ class TestArray < AbRubyTest
   def test_modify_and_read = assert_eval("a = [0, 0, 0]; a[0] = 1; a[1] = 2; a[2] = 3; a[0] + a[1] + a[2]", 6)
   def test_as_method_arg = assert_eval("def sum(arr); arr[0] + arr[1]; end; sum([10, 20, 30])", 30)
   def test_as_ivar = assert_eval(
-    "class Bag; def initialize; @items = []; end; def add(x); @items.push(x); end; " \
-    "def count; @items.length; end; end; b = Bag.new; b.add(1); b.add(2); b.add(3); b.count", 3)
+    "class TaBag; def initialize; @items = []; end; def add(x); @items.push(x); end; " \
+    "def count; @items.length; end; end; b = TaBag.new; b.add(1); b.add(2); b.add(3); b.count", 3)
 
   # GC pressure
   def test_gc_many_arrays = assert_eval(<<~'RUBY', 1000)

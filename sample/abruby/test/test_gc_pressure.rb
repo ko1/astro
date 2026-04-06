@@ -43,27 +43,27 @@ class TestGCPressure < AbRubyTest
   RUBY
 
   def test_many_objects = assert_eval(<<~'RUBY', 1000)
-    class Obj; def initialize(v); @v = v; end; def v; @v; end; end
+    class TgObj; def initialize(v); @v = v; end; def v; @v; end; end
     i = 0
     while i < 1000
-      o = Obj.new(i)
+      o = TgObj.new(i)
       i += 1
     end
     i
   RUBY
 
   def test_objects_with_string_ivars = assert_eval(<<~'RUBY', 500)
-    class Named; def initialize(n); @name = n; end; def name; @name; end; end
+    class TgNamed; def initialize(n); @name = n; end; def name; @name; end; end
     i = 0
     while i < 500
-      o = Named.new("item")
+      o = TgNamed.new("item")
       i += 1
     end
     i
   RUBY
 
   def test_object_chain = assert_eval(<<~'RUBY', 99)
-    class Node
+    class TgNode
       def initialize(val, nxt)
         @val = val
         @nxt = nxt
@@ -74,7 +74,7 @@ class TestGCPressure < AbRubyTest
     n = nil
     i = 0
     while i < 100
-      n = Node.new(i, n)
+      n = TgNode.new(i, n)
       i += 1
     end
     n.val
@@ -110,11 +110,11 @@ class TestGCPressure < AbRubyTest
   RUBY
 
   def test_array_of_objects = assert_eval(<<~'RUBY', 100)
-    class Box; def initialize(v); @v = v; end; end
+    class TgBox; def initialize(v); @v = v; end; end
     a = []
     i = 0
     while i < 100
-      a.push(Box.new(i))
+      a.push(TgBox.new(i))
       i += 1
     end
     a.length
@@ -151,7 +151,7 @@ class TestGCPressure < AbRubyTest
   RUBY
 
   def test_class_with_containers = assert_eval(<<~'RUBY', 50)
-    class Store
+    class TgStore
       def initialize
         @items = []
         @index = {}
@@ -164,7 +164,7 @@ class TestGCPressure < AbRubyTest
         @items.length
       end
     end
-    s = Store.new
+    s = TgStore.new
     i = 0
     while i < 50
       s.add("k", i)
@@ -196,12 +196,12 @@ class TestGCPressure < AbRubyTest
   RUBY
 
   def test_method_missing_alloc = assert_eval(<<~'RUBY', 100)
-    class Sink
+    class TgSink
       def method_missing(name)
         name.length
       end
     end
-    s = Sink.new
+    s = TgSink.new
     i = 0
     while i < 100
       s.foo
@@ -211,13 +211,13 @@ class TestGCPressure < AbRubyTest
   RUBY
 
   def test_inspect_under_pressure = assert_eval(<<~'RUBY', 100)
-    class Pt
+    class TgPt
       def initialize(x, y); @x = x; @y = y; end
       def inspect; "(#{@x}, #{@y})"; end
     end
     i = 0
     while i < 100
-      pt = Pt.new(i, i + 1)
+      pt = TgPt.new(i, i + 1)
       s = pt.inspect
       i += 1
     end
@@ -225,19 +225,19 @@ class TestGCPressure < AbRubyTest
   RUBY
 
   def test_complex_scenario = assert_eval(<<~'RUBY', 100)
-    class Person
+    class TgPerson
       def initialize(name, age)
         @name = name
         @age = age
       end
       def inspect
-        "Person(#{@name}, #{@age})"
+        "TgPerson(#{@name}, #{@age})"
       end
     end
     people = []
     i = 0
     while i < 100
-      people.push(Person.new("user", i))
+      people.push(TgPerson.new("user", i))
       i += 1
     end
     people.length

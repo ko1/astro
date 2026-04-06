@@ -64,5 +64,5 @@ class TestFloat < AbRubyTest
   # Float in containers
   def test_in_array = assert_eval("[1.0, 2.0, 3.0]", [1.0, 2.0, 3.0])
   def test_in_ivar = assert_eval(
-    'class F; def initialize(v); @v = v; end; def v; @v; end; end; F.new(3.14).v', 3.14)
+    'class TfF; def initialize(v); @v = v; end; def v; @v; end; end; TfF.new(3.14).v', 3.14)
 end

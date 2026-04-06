@@ -61,7 +61,7 @@ class TestBignum < AbRubyTest
   def test_big_in_array = assert_eval("[2 ** 100, 2 ** 200]", [2 ** 100, 2 ** 200])
   def test_big_in_hash = assert_eval('{1 => 2 ** 100}[1]', 2 ** 100)
   def test_big_in_ivar = assert_eval(
-    'class Big; def initialize(v); @v = v; end; def v; @v; end; end; Big.new(2 ** 100).v',
+    'class TbBig; def initialize(v); @v = v; end; def v; @v; end; end; TbBig.new(2 ** 100).v',
     2 ** 100)
 
   # === Bignum in loops ===

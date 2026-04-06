@@ -28,8 +28,8 @@ class TestHash < AbRubyTest
 
   def test_as_method_arg = assert_eval('def get(h); h["x"]; end; get({"x" => 42})', 42)
   def test_as_ivar = assert_eval(
-    'class Config; def initialize; @data = {}; end; def set(k, v); @data[k] = v; end; ' \
-    'def get(k); @data[k]; end; end; c = Config.new; c.set("port", 8080); c.get("port")', 8080)
+    'class ThConfig; def initialize; @data = {}; end; def set(k, v); @data[k] = v; end; ' \
+    'def get(k); @data[k]; end; end; c = ThConfig.new; c.set("port", 8080); c.get("port")', 8080)
   def test_array_value = assert_eval('{"nums" => [1, 2, 3]}["nums"]', [1, 2, 3])
   def test_nested = assert_eval('{"a" => {"b" => 42}}["a"]["b"]', 42)
 

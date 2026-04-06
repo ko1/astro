@@ -238,6 +238,13 @@ class AbRuby
       when Prism::ConstantReadNode
         AbRuby.alloc_node_const_get(node.name.to_s)
 
+      when Prism::ConstantPathNode
+        if node.parent.is_a?(Prism::ConstantReadNode)
+          AbRuby.alloc_node_const_path_get(node.parent.name.to_s, node.name.to_s)
+        else
+          raise "unsupported constant path: #{node.inspect}"
+        end
+
       when Prism::ModuleNode
         name = node.constant_path.name.to_s
         body = node.body ? transduce(node.body) : AbRuby.alloc_node_nil
@@ -321,15 +328,25 @@ class AbRuby
     end
   end
 
-  def self.eval(code)
+  # Instance methods
+  def eval(code)
     ast = Parser.new.parse(code)
     eval_ast(ast)
   end
 
-  def self.dump(code, pretty: false)
+  def dump(code, pretty: false)
     ast = Parser.new.parse(code)
     s = dump_ast(ast)
     pretty ? pretty_print_sexp(s) : s
+  end
+
+  # Class convenience methods (create temporary instance)
+  def self.eval(code)
+    new.eval(code)
+  end
+
+  def self.dump(code, pretty: false)
+    new.dump(code, pretty: pretty)
   end
 
   def self.pretty_print_sexp(s)

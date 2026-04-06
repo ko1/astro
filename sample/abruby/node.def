@@ -41,12 +41,30 @@ abruby_class_find_method(struct abruby_class *klass, const char *name)
 }
 
 static struct abruby_class *
+find_class_in(struct abruby_class *scope, const char *name)
+{
+    for (unsigned int i = 0; i < scope->const_cnt; i++) {
+        if (strcmp(scope->constants[i].name, name) == 0) {
+            VALUE v = scope->constants[i].value;
+            if (RB_TYPE_P(v, T_DATA)) {
+                struct abruby_header *h = (struct abruby_header *)RTYPEDDATA_GET_DATA(v);
+                if (h->klass == ab_class_class || h->klass == ab_module_class) {
+                    return (struct abruby_class *)h;
+                }
+            }
+        }
+    }
+    return NULL;
+}
+
+static struct abruby_class *
 find_class(CTX *c, const char *name)
 {
-    for (unsigned int i = 0; i < c->class_cnt; i++) {
-        if (strcmp(c->class_table[i]->name, name) == 0) {
-            return c->class_table[i];
-        }
+    // Check per-instance main_class first, then global Object
+    struct abruby_class *klass = find_class_in(c->main_class, name);
+    if (klass) return klass;
+    if (c->main_class != ab_object_class) {
+        return find_class_in(ab_object_class, name);
     }
     return NULL;
 }
@@ -116,14 +134,42 @@ node_self(CTX * restrict c, NODE * restrict n)
     return c->self;
 }
 
+static VALUE
+abruby_const_get(struct abruby_class *klass, const char *name)
+{
+    for (unsigned int i = 0; i < klass->const_cnt; i++) {
+        if (strcmp(klass->constants[i].name, name) == 0) {
+            return klass->constants[i].value;
+        }
+    }
+    rb_raise(rb_eNameError, "uninitialized constant %s::%s", klass->name, name);
+    return Qnil;
+}
+
+NODE_DEF
+node_const_path_get(CTX * restrict c, NODE * restrict n, const char *parent_name, const char *name)
+{
+    struct abruby_class *klass = find_class(c, parent_name);
+    if (!klass) {
+        rb_raise(rb_eNameError, "uninitialized constant %s", parent_name);
+    }
+    return abruby_const_get(klass, name);
+}
+
 NODE_DEF
 node_const_get(CTX * restrict c, NODE * restrict n, const char *name)
 {
-    struct abruby_class *klass = find_class(c, name);
-    if (!klass) {
-        rb_raise(rb_eNameError, "uninitialized constant %s", name);
+    // Check main_class first, then Object
+    for (unsigned int i = 0; i < c->main_class->const_cnt; i++) {
+        if (strcmp(c->main_class->constants[i].name, name) == 0) {
+            return c->main_class->constants[i].value;
+        }
     }
-    return abruby_wrap_class(klass);
+    if (c->main_class != ab_object_class) {
+        return abruby_const_get(ab_object_class, name);
+    }
+    rb_raise(rb_eNameError, "uninitialized constant %s", name);
+    return Qnil;
 }
 
 // === Array / Hash literals ===
@@ -233,7 +279,7 @@ node_while(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *body)
 NODE_DEF @noinline
 node_def(CTX * restrict c, NODE * restrict n, const char *name, NODE *body, uint32_t params_cnt, uint32_t locals_cnt)
 {
-    struct abruby_class *klass = c->current_class ? c->current_class : ab_object_class;
+    struct abruby_class *klass = c->current_class ? c->current_class : c->main_class;
     abruby_class_add_method(klass, name, body, params_cnt, locals_cnt);
     return Qnil;
 }
@@ -249,7 +295,7 @@ node_module_def(CTX * restrict c, NODE * restrict n, const char *name, NODE *bod
         mod->klass = ab_module_class;
         mod->name = name;
         mod->super = NULL;
-        c->class_table[c->class_cnt++] = mod;
+        abruby_class_set_const(c->main_class, name, abruby_wrap_class(mod));
     }
 
     struct abruby_class *save_class = c->current_class;
@@ -278,7 +324,7 @@ node_class_def(CTX * restrict c, NODE * restrict n, const char *name, const char
         klass->klass = ab_class_class;
         klass->name = name;
         klass->super = super;
-        c->class_table[c->class_cnt++] = klass;
+        abruby_class_set_const(c->main_class, name, abruby_wrap_class(klass));
     }
 
     struct abruby_class *save_class = c->current_class;
@@ -297,6 +343,10 @@ node_method_call(CTX * restrict c, NODE * restrict n, NODE *recv, const char *na
     VALUE recv_val = EVAL_ARG(c, recv);
     struct abruby_class *klass = AB_CLASS_OF(recv_val);
     struct abruby_method *method = abruby_class_find_method(klass, name);
+    // Top-level calls (self=nil): also check main_class for user-defined methods
+    if (!method && recv_val == Qnil) {
+        method = abruby_class_find_method(c->main_class, name);
+    }
     if (!method) {
         // try method_missing
         struct abruby_method *mm = abruby_class_find_method(klass, "method_missing");

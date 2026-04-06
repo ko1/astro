@@ -14,6 +14,8 @@ VALUE ab_inspect_rstr(CTX *c, VALUE v);
 void abruby_class_add_cfunc(struct abruby_class *klass, const char *name,
                             abruby_cfunc_t func, unsigned int params_cnt);
 
+// Constant registration (declared in node.h, defined in abruby.c)
+
 // Init functions
 void Init_abruby_object(void);
 void Init_abruby_class(void);

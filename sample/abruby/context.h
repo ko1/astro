@@ -66,6 +66,8 @@ struct abruby_header {
     struct abruby_class *klass;
 };
 
+#define ABRUBY_CONST_CAPA 64
+
 struct abruby_class {
     struct abruby_class *klass;  // offset 0: always ab_class_class
     const char *name;
@@ -73,6 +75,12 @@ struct abruby_class {
     struct abruby_method methods[ABRUBY_METHOD_CAPA];
     unsigned int method_cnt;
     VALUE rb_wrapper;
+    // constants
+    struct {
+        const char *name;
+        VALUE value;
+    } constants[ABRUBY_CONST_CAPA];
+    unsigned int const_cnt;
 };
 
 #define ABRUBY_IVAR_MAX 32
@@ -155,19 +163,12 @@ AB_CLASS_OF(VALUE obj)
     return ((struct abruby_header *)RTYPEDDATA_GET_DATA(obj))->klass;
 }
 
-// class table
-
-#define CLASS_TABLE_SIZE 100
-
 struct CTX_struct {
     VALUE *env;
     VALUE *fp;
     VALUE self;
     struct abruby_class *current_class; // set during class body eval
-
-    // class table
-    struct abruby_class *class_table[CLASS_TABLE_SIZE];
-    unsigned int class_cnt;
+    struct abruby_class *main_class;    // per-instance, inherits from Object
 };
 
 #define LIKELY(expr) __builtin_expect((expr), 1)
