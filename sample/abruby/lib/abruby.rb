@@ -341,23 +341,6 @@ class AbRuby
       name = node.name
       args = node.arguments&.arguments || []
 
-      # Special form: raise
-      if name == :raise && node.receiver.nil?
-        if args.size == 1
-          # raise expr → raise(expr.to_s)
-          recv_idx = inc_arg_index
-          recv_store = AbRuby.alloc_node_lset(recv_idx, transduce(args[0]))
-          call_arg_idx = arg_index
-          recv_ref = AbRuby.alloc_node_lget(recv_idx)
-          to_s_call = AbRuby.alloc_node_method_call(recv_ref, "to_s", 0, call_arg_idx)
-          rewind_arg_index(recv_idx)
-          return AbRuby.alloc_node_seq(recv_store, AbRuby.alloc_node_raise(to_s_call))
-        else
-          # raise without args
-          return AbRuby.alloc_node_raise(AbRuby.alloc_node_str(""))
-        end
-      end
-
       # method call with receiver: obj.method(args)
       if node.receiver
         # Reserve a slot for the receiver result to avoid slot collision

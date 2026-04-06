@@ -33,10 +33,27 @@ struct abruby_option {
 
 extern struct abruby_option OPTION;
 
+// RESULT: two-value return type for non-local exit support.
+// Fits in two registers (rax + rdx), no memory access needed.
+// Partial evaluation eliminates state checks via constant propagation.
+
+enum result_state {
+    RESULT_NORMAL,
+    RESULT_RETURN,
+    RESULT_RAISE,
+};
+
+typedef struct {
+    VALUE value;
+    enum result_state state;
+} RESULT;
+
+#define RESULT_OK(v) ((RESULT){(v), RESULT_NORMAL})
+
 // abruby class system
 
 typedef struct CTX_struct CTX;
-typedef VALUE (*abruby_cfunc_t)(CTX *c, VALUE self, unsigned int argc, VALUE *argv);
+typedef RESULT (*abruby_cfunc_t)(CTX *c, VALUE self, unsigned int argc, VALUE *argv);
 
 enum abruby_method_type {
     ABRUBY_METHOD_AST,
@@ -223,22 +240,5 @@ struct CTX_struct {
 
 #define LIKELY(expr) __builtin_expect((expr), 1)
 #define UNLIKELY(expr) __builtin_expect((expr), 0)
-
-// RESULT: two-value return type for non-local exit support.
-// Fits in two registers (rax + rdx), no memory access needed.
-// Partial evaluation eliminates state checks via constant propagation.
-
-enum result_state {
-    RESULT_NORMAL,
-    RESULT_RETURN,
-    RESULT_RAISE,
-};
-
-typedef struct {
-    VALUE value;
-    enum result_state state;
-} RESULT;
-
-#define RESULT_OK(v) ((RESULT){(v), RESULT_NORMAL})
 
 #endif

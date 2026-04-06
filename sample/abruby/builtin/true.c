@@ -1,7 +1,7 @@
 #include "builtin.h"
 
-static VALUE ab_true_inspect(CTX *c, VALUE self, unsigned int argc, VALUE *argv) { return abruby_str_new_cstr("true"); }
-static VALUE ab_true_to_s(CTX *c, VALUE self, unsigned int argc, VALUE *argv) { return abruby_str_new_cstr("true"); }
+static RESULT ab_true_inspect(CTX *c, VALUE self, unsigned int argc, VALUE *argv) { return RESULT_OK(abruby_str_new_cstr("true")); }
+static RESULT ab_true_to_s(CTX *c, VALUE self, unsigned int argc, VALUE *argv) { return RESULT_OK(abruby_str_new_cstr("true")); }
 
 void
 Init_abruby_true(void)

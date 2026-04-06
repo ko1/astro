@@ -17,10 +17,8 @@ class TestException < AbRubyTest
   end
 
   def test_raise_with_expression
-    # raise with non-string expression calls .to_s
-    assert_raises(RuntimeError) do
-      AbRuby.eval('raise 42')
-    end
+    # raise with non-string: value is passed as-is (no automatic .to_s)
+    assert_eval('begin; raise 42; rescue => e; e; end', 42)
   end
 
   # === begin/rescue ===

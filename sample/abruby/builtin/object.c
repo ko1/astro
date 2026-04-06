@@ -1,45 +1,50 @@
 #include "builtin.h"
 
-static VALUE ab_object_inspect(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+static RESULT ab_object_inspect(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     char buf[128];
     snprintf(buf, sizeof(buf), "#<%s:%p>", AB_CLASS_OF(self)->name, (void *)self);
-    return abruby_str_new_cstr(buf);
+    return RESULT_OK(abruby_str_new_cstr(buf));
 }
 
-static VALUE ab_object_to_s(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+static RESULT ab_object_to_s(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     struct abruby_method *inspect = abruby_find_method(AB_CLASS_OF(self), "inspect");
     if (inspect && inspect->type == ABRUBY_METHOD_CFUNC)
-        return inspect->u.cfunc.func(c, self, 0, NULL);
-    return ab_object_inspect(c, self, 0, NULL);
+        return RESULT_OK(inspect->u.cfunc.func(c, self, 0, NULL).value);
+    return RESULT_OK(ab_object_inspect(c, self, 0, NULL).value);
 }
 
-static VALUE ab_object_eq(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
-    return self == argv[0] ? Qtrue : Qfalse;
+static RESULT ab_object_eq(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    return RESULT_OK(self == argv[0] ? Qtrue : Qfalse);
 }
 
-static VALUE ab_object_neq(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+static RESULT ab_object_neq(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     struct abruby_method *eq = abruby_find_method(AB_CLASS_OF(self), "==");
-    return RTEST(eq->u.cfunc.func(c, self, 1, argv)) ? Qfalse : Qtrue;
+    return RESULT_OK(RTEST(eq->u.cfunc.func(c, self, 1, argv).value) ? Qfalse : Qtrue);
 }
 
-static VALUE ab_object_nil_p(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
-    return Qfalse;
+static RESULT ab_object_nil_p(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    return RESULT_OK(Qfalse);
 }
 
-static VALUE ab_object_class_name(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
-    return abruby_str_new_cstr(AB_CLASS_OF(self)->name);
+static RESULT ab_object_class_name(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    return RESULT_OK(abruby_str_new_cstr(AB_CLASS_OF(self)->name));
 }
 
-static VALUE ab_object_not(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
-    return RTEST(self) ? Qfalse : Qtrue;
+static RESULT ab_object_not(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    return RESULT_OK(RTEST(self) ? Qfalse : Qtrue);
 }
 
-static VALUE ab_object_p(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+static RESULT ab_object_p(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     VALUE str = ab_inspect_rstr(c, argv[0]);
     fwrite(RSTRING_PTR(str), 1, RSTRING_LEN(str), stdout);
     fputc('\n', stdout);
     fflush(stdout);
-    return argv[0];
+    return RESULT_OK(argv[0]);
+}
+
+static RESULT ab_object_raise(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    VALUE msg = (argc >= 1) ? argv[0] : abruby_str_new_cstr("");
+    return (RESULT){msg, RESULT_RAISE};
 }
 
 void
@@ -53,4 +58,5 @@ Init_abruby_object(void)
     abruby_class_add_cfunc(ab_object_class, "class",    ab_object_class_name, 0);
     abruby_class_add_cfunc(ab_object_class, "!",        ab_object_not,        0);
     abruby_class_add_cfunc(ab_object_class, "p",        ab_object_p,          1);
+    abruby_class_add_cfunc(ab_object_class, "raise",    ab_object_raise,      1);
 }

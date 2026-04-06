@@ -107,7 +107,7 @@ end
 
 ### 例外処理
 ```ruby
-raise "error message"   # RuntimeError を発生（.to_s が呼ばれる）
+raise "error message"   # RuntimeError を発生
 raise                   # 空メッセージで RuntimeError を発生
 
 begin
@@ -120,7 +120,7 @@ ensure
 end
 ```
 
-- `raise` は RuntimeError のみ。引数は `.to_s` で文字列化される。
+- `raise` は Object のメソッドとして実装。引数の VALUE がそのまま例外値になる。
 - `rescue` はクラス引数を取らない（全ての raise をキャッチ）。
 - `rescue => e` で例外メッセージを変数に束縛可能。`=> e` 省略も可。
 - `ensure` は常に実行される。ensure 内の `raise` や `return` は元の結果を上書きする。

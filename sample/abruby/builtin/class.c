@@ -1,33 +1,35 @@
 #include "builtin.h"
 
 // Class#new (only on Class, not Module)
-static VALUE ab_class_new(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+static RESULT ab_class_new(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     struct abruby_class *klass = abruby_unwrap_class(self);
     VALUE obj = abruby_new_object(klass);
     struct abruby_method *init = abruby_find_method(klass, "initialize");
     if (init) {
         if (init->type == ABRUBY_METHOD_CFUNC) {
-            init->u.cfunc.func(c, obj, argc, argv);
+            RESULT r = init->u.cfunc.func(c, obj, argc, argv);
+            if (r.state != RESULT_NORMAL) return r;
         } else {
             VALUE *save_fp = c->fp;
             VALUE save_self = c->self;
             c->fp = argv;
             c->self = obj;
-            EVAL(c, init->u.ast.body);
+            RESULT r = EVAL(c, init->u.ast.body);
             c->fp = save_fp;
             c->self = save_self;
+            if (r.state != RESULT_NORMAL) return r;
         }
     }
-    return obj;
+    return RESULT_OK(obj);
 }
 
 // Module#inspect (inherited by Class)
-static VALUE ab_module_inspect(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
-    return abruby_str_new_cstr(abruby_unwrap_class(self)->name);
+static RESULT ab_module_inspect(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    return RESULT_OK(abruby_str_new_cstr(abruby_unwrap_class(self)->name));
 }
 
 // Module#include — insert module into super chain of current_class
-static VALUE ab_module_include(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+static RESULT ab_module_include(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     // self is the class doing the include (current_class wrapped)
     // argv[0] is the module to include
     struct abruby_class *klass = abruby_unwrap_class(self);
@@ -45,7 +47,7 @@ static VALUE ab_module_include(CTX *c, VALUE self, unsigned int argc, VALUE *arg
     memcpy(proxy->methods, mod->methods, sizeof(struct abruby_method) * mod->method_cnt);
 
     klass->super = proxy;
-    return Qnil;
+    return RESULT_OK(Qnil);
 }
 
 void

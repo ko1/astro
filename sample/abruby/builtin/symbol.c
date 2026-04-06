@@ -1,26 +1,26 @@
 #include "builtin.h"
 
-static VALUE ab_symbol_inspect(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+static RESULT ab_symbol_inspect(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     const char *name = rb_id2name(SYM2ID(self));
     VALUE result = rb_str_new_cstr(":");
     rb_str_cat_cstr(result, name);
-    return abruby_str_new(result);
+    return RESULT_OK(abruby_str_new(result));
 }
 
-static VALUE ab_symbol_to_s(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
-    return abruby_str_new_cstr(rb_id2name(SYM2ID(self)));
+static RESULT ab_symbol_to_s(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    return RESULT_OK(abruby_str_new_cstr(rb_id2name(SYM2ID(self))));
 }
 
-static VALUE ab_symbol_to_sym(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
-    return self;
+static RESULT ab_symbol_to_sym(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    return RESULT_OK(self);
 }
 
-static VALUE ab_symbol_eq(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
-    return self == argv[0] ? Qtrue : Qfalse;
+static RESULT ab_symbol_eq(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    return RESULT_OK(self == argv[0] ? Qtrue : Qfalse);
 }
 
-static VALUE ab_symbol_neq(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
-    return self != argv[0] ? Qtrue : Qfalse;
+static RESULT ab_symbol_neq(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    return RESULT_OK(self != argv[0] ? Qtrue : Qfalse);
 }
 
 void

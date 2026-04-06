@@ -335,13 +335,6 @@ node_return(CTX * restrict c, NODE * restrict n, NODE *value)
 }
 
 NODE_DEF
-node_raise(CTX * restrict c, NODE * restrict n, NODE *msg)
-{
-    VALUE v = UNWRAP(EVAL_ARG(c, msg));
-    return (RESULT){v, RESULT_RAISE};
-}
-
-NODE_DEF
 node_rescue(CTX * restrict c, NODE * restrict n, NODE *body, NODE *rescue_body, NODE *ensure_body, uint32_t exception_lvar_index)
 {
     RESULT r = EVAL_ARG(c, body);
@@ -443,14 +436,14 @@ node_method_call(CTX * restrict c, NODE * restrict n, NODE *recv, const char *na
         }
         c->fp[arg_index] = abruby_str_new_cstr(name);
         if (mm->type == ABRUBY_METHOD_CFUNC) {
-            return RESULT_OK(mm->u.cfunc.func(c, recv_val, params_cnt + 1, c->fp + arg_index));
+            return mm->u.cfunc.func(c, recv_val, params_cnt + 1, c->fp + arg_index);
         }
         else {
             return method_call_body(c, arg_index, recv_val, mm->u.ast.body);
         }
     }
     if (method->type == ABRUBY_METHOD_CFUNC) {
-        return RESULT_OK(method->u.cfunc.func(c, recv_val, params_cnt, c->fp + arg_index));
+        return method->u.cfunc.func(c, recv_val, params_cnt, c->fp + arg_index);
     }
     else {
         return method_call_body(c, arg_index, recv_val, method->u.ast.body);
