@@ -141,14 +141,13 @@ end
 
 # Header
 name_width = [benchmarks.map { |bm| bm[:name].size }.max, 12].max
-col_width = [runners.map { |r| r[:name].size }.max + 2, 10].max
+ratio_labels = runners.size > 1 ? runners[1..].map { |r| "#{r[:name]}/#{runners[0][:name]}" } : []
+all_labels = runners.map { |r| r[:name] } + ratio_labels
+col_width = [all_labels.map { |l| l.size }.max + 2, 10].max
 
 header = "%-#{name_width}s" % ""
 runners.each { |r| header += "%#{col_width}s" % r[:name] }
-# ratio columns (vs first runner)
-if runners.size > 1
-  runners[1..].each { |r| header += "%#{col_width}s" % "vs #{runners[0][:name]}" }
-end
+ratio_labels.each { |l| header += "%#{col_width}s" % l }
 puts header
 puts "-" * header.size
 
