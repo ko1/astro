@@ -14,11 +14,61 @@ VALUE ab_inspect_rstr(CTX *c, VALUE v);
 void abruby_class_add_cfunc(struct abruby_class *klass, const char *name,
                             abruby_cfunc_t func, unsigned int params_cnt);
 
-// Constant registration (declared in node.h, defined in abruby.c)
-
-// helpers (defined in abruby.c)
+// Bignum/Float wrap helpers (defined in abruby.c)
+VALUE abruby_bignum_new(VALUE rb_bignum);
+VALUE abruby_float_new_wrap(VALUE rb_float);
 VALUE abruby_range_new(VALUE begin, VALUE end, int exclude_end);
 VALUE abruby_regexp_new(VALUE rb_regexp);
+
+/*
+ * Numeric unwrap/wrap helpers.
+ *
+ * abruby の Bignum/Float は abruby_header 付き T_DATA で wrap されている。
+ * CRuby の rb_funcall/rb_big_* に渡す前に内部の CRuby 値を取り出し（UNWRAP）、
+ * 結果を abruby 値に戻す（WRAP）必要がある。
+ *
+ * Fixnum/Symbol/true/false/nil は CRuby immediate なのでそのまま通す。
+ */
+
+// abruby integer → inner CRuby integer (Fixnum or T_BIGNUM)
+static inline VALUE
+AB_INT_UNWRAP(VALUE v)
+{
+    if (FIXNUM_P(v)) return v;
+    return ((struct abruby_bignum *)RTYPEDDATA_GET_DATA(v))->rb_bignum;
+}
+
+// abruby float → inner CRuby float
+static inline VALUE
+AB_FLOAT_UNWRAP(VALUE v)
+{
+    return ((struct abruby_float *)RTYPEDDATA_GET_DATA(v))->rb_float;
+}
+
+// abruby numeric → inner CRuby numeric (for mixed-type operations)
+static inline VALUE
+AB_NUM_UNWRAP(VALUE v)
+{
+    if (FIXNUM_P(v)) return v;
+    struct abruby_header *h = (struct abruby_header *)RTYPEDDATA_GET_DATA(v);
+    if (h->klass == ab_integer_class)
+        return ((struct abruby_bignum *)h)->rb_bignum;
+    if (h->klass == ab_float_class)
+        return ((struct abruby_float *)h)->rb_float;
+    return v;
+}
+
+// CRuby numeric result → abruby value
+// Fixnum はそのまま。T_BIGNUM は abruby_bignum で wrap。Float は abruby_float で wrap。
+static inline VALUE
+AB_NUM_WRAP(VALUE v)
+{
+    if (FIXNUM_P(v)) return v;
+    if (RB_TYPE_P(v, T_BIGNUM)) return abruby_bignum_new(v);
+    if (RB_FLOAT_TYPE_P(v)) return abruby_float_new_wrap(v);
+    // true/false/nil (e.g. from ==) pass through
+    return v;
+}
 
 // Init functions
 void Init_abruby_object(void);

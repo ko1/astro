@@ -92,16 +92,19 @@ node_num(CTX * restrict c, NODE * restrict n, int32_t num)
     return INT2FIX(num);
 }
 
+extern VALUE abruby_float_new_wrap(VALUE rb_float);
+extern VALUE abruby_bignum_new(VALUE rb_bignum);
+
 NODE_DEF
 node_float(CTX * restrict c, NODE * restrict n, const char *str)
 {
-    return rb_float_new(strtod(str, NULL));
+    return abruby_float_new_wrap(rb_float_new(strtod(str, NULL)));
 }
 
 NODE_DEF
 node_bignum(CTX * restrict c, NODE * restrict n, const char *str)
 {
-    return rb_cstr_to_inum(str, 10, 1);
+    return abruby_bignum_new(rb_cstr_to_inum(str, 10, 1));
 }
 
 NODE_DEF

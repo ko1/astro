@@ -48,7 +48,13 @@ struct abruby_class *ab_nil_class     = &ab_nil_class_body;
 
 static void abruby_data_mark(void *ptr) {
     struct abruby_header *h = (struct abruby_header *)ptr;
-    if (h->klass == ab_string_class) {
+    if (h->klass == ab_integer_class) {
+        rb_gc_mark(((struct abruby_bignum *)ptr)->rb_bignum);
+    }
+    else if (h->klass == ab_float_class) {
+        rb_gc_mark(((struct abruby_float *)ptr)->rb_float);
+    }
+    else if (h->klass == ab_string_class) {
         rb_gc_mark(((struct abruby_string *)ptr)->rb_str);
     }
     else if (h->klass == ab_array_class) {
@@ -88,6 +94,26 @@ abruby_new_object(struct abruby_class *klass)
     struct abruby_object *obj = calloc(1, sizeof(struct abruby_object));
     obj->klass = klass;
     return TypedData_Wrap_Struct(rb_cAbRubyNode, &abruby_data_type, obj);
+}
+
+// Bignum/Float wrap helpers (abruby VALUE invariant requires T_DATA wrapper)
+
+VALUE
+abruby_bignum_new(VALUE rb_bignum)
+{
+    struct abruby_bignum *b = calloc(1, sizeof(struct abruby_bignum));
+    b->klass = ab_integer_class;
+    b->rb_bignum = rb_bignum;
+    return TypedData_Wrap_Struct(rb_cAbRubyNode, &abruby_data_type, b);
+}
+
+VALUE
+abruby_float_new_wrap(VALUE rb_float)
+{
+    struct abruby_float *f = calloc(1, sizeof(struct abruby_float));
+    f->klass = ab_float_class;
+    f->rb_float = rb_float;
+    return TypedData_Wrap_Struct(rb_cAbRubyNode, &abruby_data_type, f);
 }
 
 // String helpers
@@ -579,6 +605,12 @@ abruby_to_ruby(VALUE v)
     if (RB_TYPE_P(v, T_DATA) && RTYPEDDATA_P(v) &&
         RTYPEDDATA_TYPE(v) == &abruby_data_type) {
         struct abruby_header *h = (struct abruby_header *)RTYPEDDATA_GET_DATA(v);
+        if (h->klass == ab_integer_class) {
+            return ((struct abruby_bignum *)h)->rb_bignum;
+        }
+        if (h->klass == ab_float_class) {
+            return ((struct abruby_float *)h)->rb_float;
+        }
         if (h->klass == ab_string_class) {
             return ((struct abruby_string *)h)->rb_str;
         }

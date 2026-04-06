@@ -1,31 +1,27 @@
 #include "builtin.h"
 
-// Fixnum fast path, Bignum via rb_big_* (self must be Bignum for rb_big_*)
-// When self is Fixnum but other is Bignum, use rb_funcall as safe fallback
-
-#define BIGNUM_OP(op_name, rb_big_func) \
-    if (LIKELY(FIXNUM_P(self) && FIXNUM_P(argv[0]))) { \
-        return rb_funcall(self, rb_intern(op_name), 1, argv[0]); \
-    } \
-    if (RB_TYPE_P(self, T_BIGNUM)) \
-        return rb_big_func(self, argv[0]); \
-    return rb_funcall(self, rb_intern(op_name), 1, argv[0]);
+// Fixnum fast path: 両方 Fixnum なら C 直接演算。
+// それ以外: AB_INT_UNWRAP/AB_NUM_UNWRAP で CRuby 値に戻し rb_funcall/rb_big_*、
+// 結果を AB_NUM_WRAP で abruby 値に変換。
 
 static VALUE ab_integer_add(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     if (LIKELY(FIXNUM_P(self) && FIXNUM_P(argv[0])))
-        return LONG2NUM(FIX2LONG(self) + FIX2LONG(argv[0]));
-    if (RB_TYPE_P(self, T_BIGNUM)) return rb_big_plus(self, argv[0]);
-    return rb_funcall(self, rb_intern("+"), 1, argv[0]);
+        return AB_NUM_WRAP(LONG2NUM(FIX2LONG(self) + FIX2LONG(argv[0])));
+    VALUE rs = AB_INT_UNWRAP(self), ra = AB_NUM_UNWRAP(argv[0]);
+    if (RB_TYPE_P(rs, T_BIGNUM)) return AB_NUM_WRAP(rb_big_plus(rs, ra));
+    return AB_NUM_WRAP(rb_funcall(rs, rb_intern("+"), 1, ra));
 }
 static VALUE ab_integer_sub(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     if (LIKELY(FIXNUM_P(self) && FIXNUM_P(argv[0])))
-        return LONG2NUM(FIX2LONG(self) - FIX2LONG(argv[0]));
-    if (RB_TYPE_P(self, T_BIGNUM)) return rb_big_minus(self, argv[0]);
-    return rb_funcall(self, rb_intern("-"), 1, argv[0]);
+        return AB_NUM_WRAP(LONG2NUM(FIX2LONG(self) - FIX2LONG(argv[0])));
+    VALUE rs = AB_INT_UNWRAP(self), ra = AB_NUM_UNWRAP(argv[0]);
+    if (RB_TYPE_P(rs, T_BIGNUM)) return AB_NUM_WRAP(rb_big_minus(rs, ra));
+    return AB_NUM_WRAP(rb_funcall(rs, rb_intern("-"), 1, ra));
 }
 static VALUE ab_integer_mul(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
-    if (RB_TYPE_P(self, T_BIGNUM)) return rb_big_mul(self, argv[0]);
-    return rb_funcall(self, rb_intern("*"), 1, argv[0]);
+    VALUE rs = AB_INT_UNWRAP(self), ra = AB_NUM_UNWRAP(argv[0]);
+    if (RB_TYPE_P(rs, T_BIGNUM)) return AB_NUM_WRAP(rb_big_mul(rs, ra));
+    return AB_NUM_WRAP(rb_funcall(rs, rb_intern("*"), 1, ra));
 }
 static VALUE ab_integer_div(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     if (LIKELY(FIXNUM_P(self) && FIXNUM_P(argv[0]))) {
@@ -35,8 +31,9 @@ static VALUE ab_integer_div(CTX *c, VALUE self, unsigned int argc, VALUE *argv) 
         if ((a ^ b) < 0 && d * b != a) d--;
         return LONG2FIX(d);
     }
-    if (RB_TYPE_P(self, T_BIGNUM)) return rb_big_div(self, argv[0]);
-    return rb_funcall(self, rb_intern("/"), 1, argv[0]);
+    VALUE rs = AB_INT_UNWRAP(self), ra = AB_NUM_UNWRAP(argv[0]);
+    if (RB_TYPE_P(rs, T_BIGNUM)) return AB_NUM_WRAP(rb_big_div(rs, ra));
+    return AB_NUM_WRAP(rb_funcall(rs, rb_intern("/"), 1, ra));
 }
 static VALUE ab_integer_mod(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     if (LIKELY(FIXNUM_P(self) && FIXNUM_P(argv[0]))) {
@@ -46,60 +43,69 @@ static VALUE ab_integer_mod(CTX *c, VALUE self, unsigned int argc, VALUE *argv) 
         if (r != 0 && (r ^ b) < 0) r += b;
         return LONG2FIX(r);
     }
-    if (RB_TYPE_P(self, T_BIGNUM)) return rb_big_modulo(self, argv[0]);
-    return rb_funcall(self, rb_intern("%"), 1, argv[0]);
+    VALUE rs = AB_INT_UNWRAP(self), ra = AB_NUM_UNWRAP(argv[0]);
+    if (RB_TYPE_P(rs, T_BIGNUM)) return AB_NUM_WRAP(rb_big_modulo(rs, ra));
+    return AB_NUM_WRAP(rb_funcall(rs, rb_intern("%"), 1, ra));
 }
 static VALUE ab_integer_pow(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
-    if (RB_TYPE_P(self, T_BIGNUM)) return rb_big_pow(self, argv[0]);
-    return rb_funcall(self, rb_intern("**"), 1, argv[0]);
+    VALUE rs = AB_INT_UNWRAP(self), ra = AB_NUM_UNWRAP(argv[0]);
+    if (RB_TYPE_P(rs, T_BIGNUM)) return AB_NUM_WRAP(rb_big_pow(rs, ra));
+    return AB_NUM_WRAP(rb_funcall(rs, rb_intern("**"), 1, ra));
 }
 static VALUE ab_integer_neg(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     if (LIKELY(FIXNUM_P(self)))
-        return LONG2NUM(-FIX2LONG(self));
-    return rb_funcall(self, rb_intern("-@"), 0);
+        return AB_NUM_WRAP(LONG2NUM(-FIX2LONG(self)));
+    VALUE rs = AB_INT_UNWRAP(self);
+    return AB_NUM_WRAP(rb_funcall(rs, rb_intern("-@"), 0));
 }
 
 static VALUE ab_integer_lt(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     if (LIKELY(FIXNUM_P(self) && FIXNUM_P(argv[0])))
         return FIX2LONG(self) < FIX2LONG(argv[0]) ? Qtrue : Qfalse;
-    if (RB_TYPE_P(self, T_BIGNUM))
-        return FIX2LONG(rb_big_cmp(self, argv[0])) < 0 ? Qtrue : Qfalse;
-    return RTEST(rb_funcall(self, rb_intern("<"), 1, argv[0])) ? Qtrue : Qfalse;
+    VALUE rs = AB_INT_UNWRAP(self), ra = AB_NUM_UNWRAP(argv[0]);
+    if (RB_TYPE_P(rs, T_BIGNUM))
+        return FIX2LONG(rb_big_cmp(rs, ra)) < 0 ? Qtrue : Qfalse;
+    return RTEST(rb_funcall(rs, rb_intern("<"), 1, ra)) ? Qtrue : Qfalse;
 }
 static VALUE ab_integer_le(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     if (LIKELY(FIXNUM_P(self) && FIXNUM_P(argv[0])))
         return FIX2LONG(self) <= FIX2LONG(argv[0]) ? Qtrue : Qfalse;
-    if (RB_TYPE_P(self, T_BIGNUM))
-        return FIX2LONG(rb_big_cmp(self, argv[0])) <= 0 ? Qtrue : Qfalse;
-    return RTEST(rb_funcall(self, rb_intern("<="), 1, argv[0])) ? Qtrue : Qfalse;
+    VALUE rs = AB_INT_UNWRAP(self), ra = AB_NUM_UNWRAP(argv[0]);
+    if (RB_TYPE_P(rs, T_BIGNUM))
+        return FIX2LONG(rb_big_cmp(rs, ra)) <= 0 ? Qtrue : Qfalse;
+    return RTEST(rb_funcall(rs, rb_intern("<="), 1, ra)) ? Qtrue : Qfalse;
 }
 static VALUE ab_integer_gt(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     if (LIKELY(FIXNUM_P(self) && FIXNUM_P(argv[0])))
         return FIX2LONG(self) > FIX2LONG(argv[0]) ? Qtrue : Qfalse;
-    if (RB_TYPE_P(self, T_BIGNUM))
-        return FIX2LONG(rb_big_cmp(self, argv[0])) > 0 ? Qtrue : Qfalse;
-    return RTEST(rb_funcall(self, rb_intern(">"), 1, argv[0])) ? Qtrue : Qfalse;
+    VALUE rs = AB_INT_UNWRAP(self), ra = AB_NUM_UNWRAP(argv[0]);
+    if (RB_TYPE_P(rs, T_BIGNUM))
+        return FIX2LONG(rb_big_cmp(rs, ra)) > 0 ? Qtrue : Qfalse;
+    return RTEST(rb_funcall(rs, rb_intern(">"), 1, ra)) ? Qtrue : Qfalse;
 }
 static VALUE ab_integer_ge(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     if (LIKELY(FIXNUM_P(self) && FIXNUM_P(argv[0])))
         return FIX2LONG(self) >= FIX2LONG(argv[0]) ? Qtrue : Qfalse;
-    if (RB_TYPE_P(self, T_BIGNUM))
-        return FIX2LONG(rb_big_cmp(self, argv[0])) >= 0 ? Qtrue : Qfalse;
-    return RTEST(rb_funcall(self, rb_intern(">="), 1, argv[0])) ? Qtrue : Qfalse;
+    VALUE rs = AB_INT_UNWRAP(self), ra = AB_NUM_UNWRAP(argv[0]);
+    if (RB_TYPE_P(rs, T_BIGNUM))
+        return FIX2LONG(rb_big_cmp(rs, ra)) >= 0 ? Qtrue : Qfalse;
+    return RTEST(rb_funcall(rs, rb_intern(">="), 1, ra)) ? Qtrue : Qfalse;
 }
 static VALUE ab_integer_eq(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     if (LIKELY(FIXNUM_P(self) && FIXNUM_P(argv[0])))
         return self == argv[0] ? Qtrue : Qfalse;
-    if (RB_TYPE_P(self, T_BIGNUM))
-        return rb_big_eq(self, argv[0]);
-    return RTEST(rb_funcall(self, rb_intern("=="), 1, argv[0])) ? Qtrue : Qfalse;
+    VALUE rs = AB_INT_UNWRAP(self), ra = AB_NUM_UNWRAP(argv[0]);
+    if (RB_TYPE_P(rs, T_BIGNUM))
+        return rb_big_eq(rs, ra);
+    return RTEST(rb_funcall(rs, rb_intern("=="), 1, ra)) ? Qtrue : Qfalse;
 }
 static VALUE ab_integer_neq(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     if (LIKELY(FIXNUM_P(self) && FIXNUM_P(argv[0])))
         return self != argv[0] ? Qtrue : Qfalse;
-    if (RB_TYPE_P(self, T_BIGNUM))
-        return RTEST(rb_big_eq(self, argv[0])) ? Qfalse : Qtrue;
-    return RTEST(rb_funcall(self, rb_intern("=="), 1, argv[0])) ? Qfalse : Qtrue;
+    VALUE rs = AB_INT_UNWRAP(self), ra = AB_NUM_UNWRAP(argv[0]);
+    if (RB_TYPE_P(rs, T_BIGNUM))
+        return RTEST(rb_big_eq(rs, ra)) ? Qfalse : Qtrue;
+    return RTEST(rb_funcall(rs, rb_intern("=="), 1, ra)) ? Qfalse : Qtrue;
 }
 
 static VALUE ab_integer_inspect(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
@@ -107,7 +113,7 @@ static VALUE ab_integer_inspect(CTX *c, VALUE self, unsigned int argc, VALUE *ar
         char buf[32]; snprintf(buf, sizeof(buf), "%ld", FIX2LONG(self));
         return abruby_str_new_cstr(buf);
     }
-    return abruby_str_new(rb_big2str(self, 10));
+    return abruby_str_new(rb_big2str(AB_INT_UNWRAP(self), 10));
 }
 static VALUE ab_integer_to_s(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     return ab_integer_inspect(c, self, 0, NULL);
@@ -117,12 +123,13 @@ static VALUE ab_integer_zero_p(CTX *c, VALUE self, unsigned int argc, VALUE *arg
     return Qfalse;
 }
 static VALUE ab_integer_to_f(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
-    if (LIKELY(FIXNUM_P(self))) return rb_float_new((double)FIX2LONG(self));
-    return rb_funcall(self, rb_intern("to_f"), 0);
+    if (LIKELY(FIXNUM_P(self)))
+        return abruby_float_new_wrap(rb_float_new((double)FIX2LONG(self)));
+    return abruby_float_new_wrap(rb_funcall(AB_INT_UNWRAP(self), rb_intern("to_f"), 0));
 }
 static VALUE ab_integer_abs(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
-    if (LIKELY(FIXNUM_P(self))) { long v = FIX2LONG(self); return LONG2NUM(v < 0 ? -v : v); }
-    return rb_funcall(self, rb_intern("abs"), 0);
+    if (LIKELY(FIXNUM_P(self))) { long v = FIX2LONG(self); return AB_NUM_WRAP(LONG2NUM(v < 0 ? -v : v)); }
+    return AB_NUM_WRAP(rb_funcall(AB_INT_UNWRAP(self), rb_intern("abs"), 0));
 }
 
 static VALUE ab_integer_cmp(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
@@ -130,34 +137,41 @@ static VALUE ab_integer_cmp(CTX *c, VALUE self, unsigned int argc, VALUE *argv) 
         long a = FIX2LONG(self), b = FIX2LONG(argv[0]);
         return LONG2FIX(a < b ? -1 : (a > b ? 1 : 0));
     }
-    if (RB_TYPE_P(self, T_BIGNUM)) return rb_big_cmp(self, argv[0]);
-    return rb_funcall(self, rb_intern("<=>"), 1, argv[0]);
+    VALUE rs = AB_INT_UNWRAP(self), ra = AB_NUM_UNWRAP(argv[0]);
+    if (RB_TYPE_P(rs, T_BIGNUM)) return rb_big_cmp(rs, ra);
+    return rb_funcall(rs, rb_intern("<=>"), 1, ra);
 }
 static VALUE ab_integer_lshift(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
-    return rb_funcall(self, rb_intern("<<"), 1, argv[0]);
+    VALUE rs = AB_INT_UNWRAP(self), ra = AB_NUM_UNWRAP(argv[0]);
+    return AB_NUM_WRAP(rb_funcall(rs, rb_intern("<<"), 1, ra));
 }
 static VALUE ab_integer_rshift(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
-    return rb_funcall(self, rb_intern(">>"), 1, argv[0]);
+    VALUE rs = AB_INT_UNWRAP(self), ra = AB_NUM_UNWRAP(argv[0]);
+    return AB_NUM_WRAP(rb_funcall(rs, rb_intern(">>"), 1, ra));
 }
 static VALUE ab_integer_band(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     if (LIKELY(FIXNUM_P(self) && FIXNUM_P(argv[0])))
         return LONG2FIX(FIX2LONG(self) & FIX2LONG(argv[0]));
-    return rb_funcall(self, rb_intern("&"), 1, argv[0]);
+    VALUE rs = AB_INT_UNWRAP(self), ra = AB_NUM_UNWRAP(argv[0]);
+    return AB_NUM_WRAP(rb_funcall(rs, rb_intern("&"), 1, ra));
 }
 static VALUE ab_integer_bor(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     if (LIKELY(FIXNUM_P(self) && FIXNUM_P(argv[0])))
         return LONG2FIX(FIX2LONG(self) | FIX2LONG(argv[0]));
-    return rb_funcall(self, rb_intern("|"), 1, argv[0]);
+    VALUE rs = AB_INT_UNWRAP(self), ra = AB_NUM_UNWRAP(argv[0]);
+    return AB_NUM_WRAP(rb_funcall(rs, rb_intern("|"), 1, ra));
 }
 static VALUE ab_integer_bxor(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     if (LIKELY(FIXNUM_P(self) && FIXNUM_P(argv[0])))
         return LONG2FIX(FIX2LONG(self) ^ FIX2LONG(argv[0]));
-    return rb_funcall(self, rb_intern("^"), 1, argv[0]);
+    VALUE rs = AB_INT_UNWRAP(self), ra = AB_NUM_UNWRAP(argv[0]);
+    return AB_NUM_WRAP(rb_funcall(rs, rb_intern("^"), 1, ra));
 }
 static VALUE ab_integer_bnot(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     if (LIKELY(FIXNUM_P(self)))
-        return LONG2NUM(~FIX2LONG(self));
-    return rb_funcall(self, rb_intern("~"), 0);
+        return AB_NUM_WRAP(LONG2NUM(~FIX2LONG(self)));
+    VALUE rs = AB_INT_UNWRAP(self);
+    return AB_NUM_WRAP(rb_funcall(rs, rb_intern("~"), 0));
 }
 
 void

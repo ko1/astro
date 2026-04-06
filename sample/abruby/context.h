@@ -61,6 +61,19 @@ struct abruby_method {
 
 #define ABRUBY_METHOD_CAPA 64
 
+/*
+ * abruby VALUE invariant:
+ *
+ * 全ての abruby VALUE は以下のいずれかでなければならない:
+ *   1. CRuby immediate: Fixnum, Symbol, true, false, nil
+ *   2. T_DATA (abruby_data_type) with abruby_header at offset 0
+ *
+ * CRuby の T_BIGNUM, T_FLOAT, T_STRING 等を直接使ってはならない。
+ * Bignum は abruby_bignum、Float は abruby_float で wrap する。
+ * これにより AB_CLASS_OF() は immediate チェック後、T_DATA の先頭から
+ * klass を読むだけでクラスを特定できる。
+ */
+
 // Common layout: ALL abruby T_DATA objects have klass at offset 0
 struct abruby_header {
     struct abruby_class *klass;
@@ -92,6 +105,20 @@ struct abruby_object {
         const char *name;
         VALUE value;
     } ivars[ABRUBY_IVAR_MAX];
+};
+
+// Bignum/Float は CRuby の T_BIGNUM/T_FLOAT を直接使わず、
+// abruby_header 付きの T_DATA で wrap する。
+// これにより AB_CLASS_OF() の統一的なクラス解決が可能になる。
+
+struct abruby_bignum {
+    struct abruby_class *klass;  // offset 0: always ab_integer_class
+    VALUE rb_bignum;             // inner CRuby Bignum (T_BIGNUM)
+};
+
+struct abruby_float {
+    struct abruby_class *klass;  // offset 0: always ab_float_class
+    VALUE rb_float;              // inner CRuby Float (Flonum or T_FLOAT)
 };
 
 struct abruby_string {
@@ -144,11 +171,13 @@ static inline void
 ab_verify(VALUE obj)
 {
     if (ABRUBY_DEBUG) {
-        if (FIXNUM_P(obj) || obj == Qtrue || obj == Qfalse || obj == Qnil ||
-            RB_TYPE_P(obj, T_BIGNUM) || RB_FLOAT_TYPE_P(obj) || SYMBOL_P(obj)) {
-            // immediates and CRuby-managed Bignum are always valid
+        // immediate values are always valid
+        if (FIXNUM_P(obj) || SYMBOL_P(obj) ||
+            obj == Qtrue || obj == Qfalse || obj == Qnil) {
             return;
         }
+        // Everything else must be T_DATA with abruby_data_type and non-NULL klass.
+        // Raw CRuby T_BIGNUM, T_FLOAT, T_STRING etc. are NOT valid abruby values.
         if (!RB_TYPE_P(obj, T_DATA)) {
             rb_bug("ab_verify: expected immediate or T_DATA, got type %d (%s:%d)", rb_type(obj), __FILE__, __LINE__);
         }
@@ -166,16 +195,22 @@ ab_verify(VALUE obj)
     }
 }
 
+/*
+ * AB_CLASS_OF(obj): abruby VALUE からクラスを取得する。
+ *
+ * immediate の場合は固定クラスポインタを返す。
+ * T_DATA の場合は先頭の abruby_header.klass を直接読む。
+ * abruby VALUE invariant により、この2パターンで全てカバーできる。
+ */
 static inline struct abruby_class *
 AB_CLASS_OF(VALUE obj)
 {
     ab_verify(obj);
-    if (FIXNUM_P(obj) || RB_TYPE_P(obj, T_BIGNUM)) return ab_integer_class;
-    if (RB_FLOAT_TYPE_P(obj)) return ab_float_class;
-    if (SYMBOL_P(obj)) return ab_symbol_class;
-    if (obj == Qtrue)  return ab_true_class;
-    if (obj == Qfalse) return ab_false_class;
-    if (obj == Qnil)   return ab_nil_class;
+    if (FIXNUM_P(obj))  return ab_integer_class;
+    if (SYMBOL_P(obj))  return ab_symbol_class;
+    if (obj == Qtrue)   return ab_true_class;
+    if (obj == Qfalse)  return ab_false_class;
+    if (obj == Qnil)    return ab_nil_class;
     return ((struct abruby_header *)RTYPEDDATA_GET_DATA(obj))->klass;
 }
 
