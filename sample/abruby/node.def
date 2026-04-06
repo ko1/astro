@@ -326,7 +326,7 @@ node_module_def(CTX * restrict c, NODE * restrict n, const char *name, NODE *bod
 {
     struct abruby_class *mod = find_class(c, name);
     if (!mod) {
-        mod = (struct abruby_class *)calloc(1, sizeof(struct abruby_class));
+        mod = (struct abruby_class *)ruby_xcalloc(1, sizeof(struct abruby_class));
         mod->klass = ab_module_class;
         mod->name = name;
         mod->super = NULL;
@@ -355,7 +355,7 @@ node_class_def(CTX * restrict c, NODE * restrict n, const char *name, const char
                 rb_raise(rb_eNameError, "uninitialized constant %s", super_name);
             }
         }
-        klass = (struct abruby_class *)calloc(1, sizeof(struct abruby_class));
+        klass = (struct abruby_class *)ruby_xcalloc(1, sizeof(struct abruby_class));
         klass->klass = ab_class_class;
         klass->name = name;
         klass->super = super;

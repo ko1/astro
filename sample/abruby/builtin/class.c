@@ -36,7 +36,7 @@ static VALUE ab_module_include(CTX *c, VALUE self, unsigned int argc, VALUE *arg
     // Create a proxy that copies module's method table pointer
     // Insert between klass and klass->super
     // Simple approach: create a proxy class that delegates to the module
-    struct abruby_class *proxy = (struct abruby_class *)calloc(1, sizeof(struct abruby_class));
+    struct abruby_class *proxy = (struct abruby_class *)ruby_xcalloc(1, sizeof(struct abruby_class));
     proxy->klass = ab_module_class;
     proxy->name = mod->name;
     proxy->super = klass->super;

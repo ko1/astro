@@ -8,8 +8,8 @@ def fact(n)
 end
 
 i = 0
-while i < 5000
-  fact(30)
+while i < 10000
+  fact(50)
   i += 1
 end
-p(fact(30))
+p(fact(50))

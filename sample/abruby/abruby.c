@@ -87,33 +87,40 @@ const rb_data_type_t abruby_data_type = {
 };
 
 // Object creation
+//
+// All wrap functions use TypedData_Make_Struct which allocates the Ruby
+// T_DATA object and the C struct in one step.  This avoids the GC hazard
+// that exists with separate calloc + TypedData_Wrap_Struct: between the
+// two calls, inner CRuby VALUEs stored in the calloc'd struct are
+// invisible to the GC and can be collected if GC triggers.
 
 VALUE
 abruby_new_object(struct abruby_class *klass)
 {
-    struct abruby_object *obj = calloc(1, sizeof(struct abruby_object));
+    struct abruby_object *obj;
+    VALUE wrapper = TypedData_Make_Struct(rb_cAbRubyNode, struct abruby_object, &abruby_data_type, obj);
     obj->klass = klass;
-    return TypedData_Wrap_Struct(rb_cAbRubyNode, &abruby_data_type, obj);
+    return wrapper;
 }
-
-// Bignum/Float wrap helpers (abruby VALUE invariant requires T_DATA wrapper)
 
 VALUE
 abruby_bignum_new(VALUE rb_bignum)
 {
-    struct abruby_bignum *b = calloc(1, sizeof(struct abruby_bignum));
+    struct abruby_bignum *b;
+    VALUE wrapper = TypedData_Make_Struct(rb_cAbRubyNode, struct abruby_bignum, &abruby_data_type, b);
     b->klass = ab_integer_class;
     b->rb_bignum = rb_bignum;
-    return TypedData_Wrap_Struct(rb_cAbRubyNode, &abruby_data_type, b);
+    return wrapper;
 }
 
 VALUE
 abruby_float_new_wrap(VALUE rb_float)
 {
-    struct abruby_float *f = calloc(1, sizeof(struct abruby_float));
+    struct abruby_float *f;
+    VALUE wrapper = TypedData_Make_Struct(rb_cAbRubyNode, struct abruby_float, &abruby_data_type, f);
     f->klass = ab_float_class;
     f->rb_float = rb_float;
-    return TypedData_Wrap_Struct(rb_cAbRubyNode, &abruby_data_type, f);
+    return wrapper;
 }
 
 // String helpers
@@ -121,10 +128,11 @@ abruby_float_new_wrap(VALUE rb_float)
 VALUE
 abruby_str_new(VALUE rb_str)
 {
-    struct abruby_string *s = calloc(1, sizeof(struct abruby_string));
+    struct abruby_string *s;
+    VALUE wrapper = TypedData_Make_Struct(rb_cAbRubyNode, struct abruby_string, &abruby_data_type, s);
     s->klass = ab_string_class;
     s->rb_str = rb_str;
-    return TypedData_Wrap_Struct(rb_cAbRubyNode, &abruby_data_type, s);
+    return wrapper;
 }
 
 VALUE
@@ -148,39 +156,43 @@ abruby_str_rstr(VALUE ab_str)
 VALUE
 abruby_ary_new(VALUE rb_ary)
 {
-    struct abruby_array *a = calloc(1, sizeof(struct abruby_array));
+    struct abruby_array *a;
+    VALUE wrapper = TypedData_Make_Struct(rb_cAbRubyNode, struct abruby_array, &abruby_data_type, a);
     a->klass = ab_array_class;
     a->rb_ary = rb_ary;
-    return TypedData_Wrap_Struct(rb_cAbRubyNode, &abruby_data_type, a);
+    return wrapper;
 }
 
 VALUE
 abruby_hash_new_wrap(VALUE rb_hash)
 {
-    struct abruby_hash *h = calloc(1, sizeof(struct abruby_hash));
+    struct abruby_hash *h;
+    VALUE wrapper = TypedData_Make_Struct(rb_cAbRubyNode, struct abruby_hash, &abruby_data_type, h);
     h->klass = ab_hash_class;
     h->rb_hash = rb_hash;
-    return TypedData_Wrap_Struct(rb_cAbRubyNode, &abruby_data_type, h);
+    return wrapper;
 }
 
 VALUE
 abruby_range_new(VALUE begin, VALUE end, bool exclude_end)
 {
-    struct abruby_range *r = calloc(1, sizeof(struct abruby_range));
+    struct abruby_range *r;
+    VALUE wrapper = TypedData_Make_Struct(rb_cAbRubyNode, struct abruby_range, &abruby_data_type, r);
     r->klass = ab_range_class;
     r->begin = begin;
     r->end = end;
     r->exclude_end = exclude_end;
-    return TypedData_Wrap_Struct(rb_cAbRubyNode, &abruby_data_type, r);
+    return wrapper;
 }
 
 VALUE
 abruby_regexp_new(VALUE rb_regexp)
 {
-    struct abruby_regexp *r = calloc(1, sizeof(struct abruby_regexp));
+    struct abruby_regexp *r;
+    VALUE wrapper = TypedData_Make_Struct(rb_cAbRubyNode, struct abruby_regexp, &abruby_data_type, r);
     r->klass = ab_regexp_class;
     r->rb_regexp = rb_regexp;
-    return TypedData_Wrap_Struct(rb_cAbRubyNode, &abruby_data_type, r);
+    return wrapper;
 }
 
 // Class wrapper
@@ -339,7 +351,7 @@ static const rb_data_type_t abruby_vm_type = {
 static struct abruby_vm *
 create_vm(void)
 {
-    struct abruby_vm *vm = calloc(1, sizeof(struct abruby_vm));
+    struct abruby_vm *vm = ruby_xcalloc(1, sizeof(struct abruby_vm));
     // Per-instance main class (inherits from Object)
     vm->main_class_body.klass = ab_class_class;
     vm->main_class_body.name = "main";
