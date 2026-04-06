@@ -49,14 +49,6 @@ module ASTroGen
             "hash_node(#{val})"
           when 'const char *'
             "hash_cstr(#{val})"
-          when 'struct builtin_func *'
-            "hash_builtin_func(#{val})"
-          when 'builtin_func_ptr'
-            '0'
-          when 'state_serial_t'
-            '0'
-          when 'struct callcache *'
-            '0'
           else
             raise "no hash function: #{self.join}"
           end
@@ -72,14 +64,6 @@ module ASTroGen
             "        fprintf(fp, \"%d\", n->u.#{name}.#{self.name});"
           when 'const char *'
             "        fprintf(fp, \"\\\"%s\\\"\", n->u.#{name}.#{self.name});"
-          when 'struct builtin_func *'
-            "        fprintf(fp, \"bf:%s\", n->u.#{name}.#{self.name}->name);"
-          when 'builtin_func_ptr'
-            "        fprintf(fp, \"<ptr>\");"
-          when 'state_serial_t'
-            "        fprintf(fp, \"<serial>\");"
-          when 'struct callcache *'
-            "        fprintf(fp, \"<cc>\");"
           else
             raise "unknown operand type: #{self.join}"
           end
@@ -97,21 +81,6 @@ module ASTroGen
             "    fprintf(fp, \"        %d\", n->u.#{name}.#{self.name});"
           when 'const char *'
             "    fprintf(fp, \"        \\\"%s\\\"\", n->u.#{name}.#{self.name});"
-          when 'struct builtin_func *'
-            "    fprintf(fp, \"        %s\", \"n->u.#{name}.#{self.name}\");"
-          when 'builtin_func_ptr'
-            <<~C
-                if (n->u.#{name}.bf->have_src) {
-                    fprintf(fp, "        (builtin_func_ptr)%s", n->u.#{name}.bf->func_name);
-                }
-                else {
-                    fprintf(fp, "        (builtin_func_ptr)%s", "n->u.#{name}.#{self.name}");
-                }
-            C
-          when 'state_serial_t'
-            "    fprintf(fp, \"        n->u.#{name}.#{self.name}\");"
-          when 'struct callcache *'
-            "    fprintf(fp, \"        n->u.#{name}.#{self.name}\");"
           else
             raise "unknown operand type: #{self.join}"
           end
@@ -133,9 +102,9 @@ module ASTroGen
         end.map do
           case it.strip
           when /(.+)\s+([a-zA-Z_][a-zA-Z0-9_]*)$/
-            Operand.new $1, $2
+            self.class::Operand.new $1, $2
           when /(.+\*)([a-zA-Z_][a-zA-Z0-9_]*)$/
-            Operand.new $1, $2
+            self.class::Operand.new $1, $2
           else
             raise "ill-formed field: #{it}"
           end
@@ -154,6 +123,8 @@ module ASTroGen
         end
       end
 
+      def result_type = "VALUE"
+
       def comma_operands(ops)
         ops.empty? ? "" : ", #{ops.join(", ")}"
       end
@@ -162,7 +133,7 @@ module ASTroGen
         operands = @operands.map{it.eval_param}
 
         <<~C.chomp
-        static VALUE
+        static #{result_type}
         EVAL_#{@name}(#{@prefix_args.join(', ')}#{comma_operands(operands)})
         {
         #{@body}}
@@ -234,11 +205,11 @@ module ASTroGen
 
       def build_eval_dispatch
         <<~C
-        static VALUE
+        static #{result_type}
         DISPATCH_#{@name}(#{@prefix_args.join(', ')})
         {
             dispatch_info(c, n, 0);
-            VALUE v = EVAL_#{name}(c, n#{
+            #{result_type} v = EVAL_#{name}(c, n#{
               comma_operands(@operands.map{
                 arg = +"n->u.#{name}.#{it.name}"
                 arg << ", n->u.#{name}.#{it.name}->head.dispatcher" if it.node?
@@ -264,7 +235,7 @@ module ASTroGen
 
         decls = @operands.find_all{it.node?}.map do
           field_name = "n->u.#{@name}.#{it.name}"
-          "    if (#{field_name}) { fprintf(fp, \"static inline VALUE %s(CTX *c, NODE *n);\\n\", #{field_name}->head.dispatcher_name); }"
+          "    if (#{field_name}) { fprintf(fp, \"static inline #{result_type} %s(CTX *c, NODE *n);\\n\", #{field_name}->head.dispatcher_name); }"
         end
 
         if @option.include? '@noinline'
@@ -293,15 +264,15 @@ module ASTroGen
         #{ decls.join("\n") }
 
             if (!is_public) fprintf(fp, "static ");
-            fprintf(fp, "VALUE\\n");
+            fprintf(fp, "#{result_type}\\n");
             fprintf(fp, "%s(#{@prefix_args.join(', ')})\\n", dispatcher_name);
             fprintf(fp, "{\\n");
             fprintf(fp, "    dispatch_info(c, n, false);\\n");
 #{  if args.empty?
-      '            fprintf(fp, "    VALUE v = EVAL_' + name + '(c, n);\\n");'
+      '            fprintf(fp, "    ' + result_type + ' v = EVAL_' + name + '(c, n);\\n");'
     else
       <<~INNER.chomp
-                  fprintf(fp, "    VALUE v = EVAL_#{name}(c, n, \\n");
+                  fprintf(fp, "    #{result_type} v = EVAL_#{name}(c, n, \\n");
               #{ args.join("\n    fprintf(fp, \",\\n\");\n")
               }
                   fprintf(fp, "\\n    );\\n");
@@ -350,7 +321,7 @@ module ASTroGen
     def parse_def_head(lines, option)
       head = lines.shift
       if /^(.+)\((.+)\)$/ =~ head
-        Node.new($1, $2, option)
+        self.class::Node.new($1, $2, option)
       else
         raise "illformed node header: #{head}"
       end
@@ -509,10 +480,10 @@ module ASTroGen
     opt
   end
 
-  def self.start argv
+  def self.start argv, node_def_class: NodeDef
     opt = parse_opt(argv)
 
-    nd = NodeDef.new(opt[:input], opt)
+    nd = node_def_class.new(opt[:input], opt)
     nd.parse
     nd.gen
   end

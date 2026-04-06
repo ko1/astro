@@ -108,8 +108,8 @@ naruby: *.c Makefile $(NODE_GENFILES) astro_jit.c node.c
             -L ./prism/build -Wl,-rpath=$(CURDIR)/prism/build \
             -o naruby main.c node.c naruby_parse.c astro_jit.c -lprism
 
-node_eval.c: ../../lib/* node.def
-	ruby -I ../../lib -r astrogen -e 'ASTroGen.start []'
+node_eval.c: ../../lib/* node.def naruby_gen.rb
+	ruby -I ../../lib -r ./naruby_gen -e 'ASTroGen.start([], node_def_class: NaRubyNodeDef)'
 
 node_specialized.c:
 	touch -t 200001010000 node_specialized.c
