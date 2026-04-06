@@ -17,7 +17,7 @@ void abruby_class_add_cfunc(struct abruby_class *klass, const char *name,
 // Bignum/Float wrap helpers (defined in abruby.c)
 VALUE abruby_bignum_new(VALUE rb_bignum);
 VALUE abruby_float_new_wrap(VALUE rb_float);
-VALUE abruby_range_new(VALUE begin, VALUE end, int exclude_end);
+VALUE abruby_range_new(VALUE begin, VALUE end, bool exclude_end);
 VALUE abruby_regexp_new(VALUE rb_regexp);
 
 /*

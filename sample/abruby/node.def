@@ -137,14 +137,14 @@ node_sym(CTX * restrict c, NODE * restrict n, const char *str)
     return ID2SYM(rb_intern(str));
 }
 
-extern VALUE abruby_range_new(VALUE begin, VALUE end, int exclude_end);
+extern VALUE abruby_range_new(VALUE begin, VALUE end, bool exclude_end);
 
 NODE_DEF
 node_range(CTX * restrict c, NODE * restrict n, NODE *begin_node, NODE *end_node, uint32_t exclude_end)
 {
     VALUE b = EVAL_ARG(c, begin_node);
     VALUE e = EVAL_ARG(c, end_node);
-    return abruby_range_new(b, e, (int)exclude_end);
+    return abruby_range_new(b, e, exclude_end != 0);
 }
 
 extern VALUE abruby_regexp_new(VALUE rb_regexp);

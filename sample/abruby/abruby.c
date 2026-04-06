@@ -164,7 +164,7 @@ abruby_hash_new_wrap(VALUE rb_hash)
 }
 
 VALUE
-abruby_range_new(VALUE begin, VALUE end, int exclude_end)
+abruby_range_new(VALUE begin, VALUE end, bool exclude_end)
 {
     struct abruby_range *r = calloc(1, sizeof(struct abruby_range));
     r->klass = ab_range_class;

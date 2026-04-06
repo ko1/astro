@@ -139,7 +139,7 @@ struct abruby_range {
     struct abruby_class *klass;  // offset 0
     VALUE begin;
     VALUE end;
-    int exclude_end;             // 1 for ..., 0 for ..
+    bool exclude_end;            // true for ..., false for ..
 };
 
 struct abruby_regexp {
