@@ -50,6 +50,12 @@ class TestBignum < AbRubyTest
   def test_big_big_eq = assert_eval("2 ** 100 + 2 ** 100 == 2 ** 101", true)
   def test_big_big_lt = assert_eval("2 ** 100 < 2 ** 100 + 1", true)
 
+  # === Bignum bit/shift ===
+  def test_big_lshift = assert_eval("1 << 100", 1 << 100)
+  def test_big_rshift = assert_eval("(2 ** 100) >> 50", (2 ** 100) >> 50)
+  def test_big_cmp = assert_eval("(2 ** 100) <=> (2 ** 99)", 1)
+  def test_big_cmp_eq = assert_eval("(2 ** 100) <=> (2 ** 100)", 0)
+
   # === Edge cases ===
   def test_pow_zero = assert_eval("2 ** 0", 1)
   def test_pow_one = assert_eval("2 ** 1", 2)

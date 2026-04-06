@@ -40,6 +40,7 @@ Init_abruby_array(void)
     abruby_class_add_cfunc(ab_array_class, "[]",       ab_array_get,       1);
     abruby_class_add_cfunc(ab_array_class, "[]=",      ab_array_set,       2);
     abruby_class_add_cfunc(ab_array_class, "push",     ab_array_push,      1);
+    abruby_class_add_cfunc(ab_array_class, "<<",       ab_array_push,      1);
     abruby_class_add_cfunc(ab_array_class, "pop",      ab_array_pop,       0);
     abruby_class_add_cfunc(ab_array_class, "length",   ab_array_length,    0);
     abruby_class_add_cfunc(ab_array_class, "size",     ab_array_length,    0);

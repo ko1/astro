@@ -53,16 +53,13 @@
 - [ ] `%w()`, `%i()` 等のリテラル
 
 ### 演算子
-- [ ] `<=>` (宇宙船演算子)
-- [ ] `<<` / `>>`（ビットシフト / 追加）
-- [ ] `&`, `|`, `^`, `~`（ビット演算）
+（基本演算子は実装済み。done.md 参照）
 
 ## ビルトインメソッドの差分
 
 ### Integer
 - [ ] `times`, `upto`, `downto`（ブロック必要）
 - [ ] `even?`, `odd?`
-- [ ] `<<`, `>>`, `&`, `|`, `^`, `~`
 
 ### Float
 - [ ] `nan?`, `infinite?`, `finite?`
@@ -73,14 +70,12 @@
 - [ ] `gsub` / `sub` / `match`（正規表現）
 - [ ] `split`, `strip`, `chomp`, `chop`
 - [ ] `start_with?`, `end_with?`
-- [ ] `<<`（破壊的追加）
 
 ### Array
 - [ ] `each`, `map`, `select`, `reject`, `reduce`（ブロック必要）
 - [ ] `sort`, `flatten`, `compact`, `uniq`
 - [ ] `shift`, `unshift`, `join`
 - [ ] `delete`, `delete_at`, `count`
-- [ ] `<<`（push の別名）
 
 ### Hash
 - [ ] `each`, `map`, `select`（ブロック必要）

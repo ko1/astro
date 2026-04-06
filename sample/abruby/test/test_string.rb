@@ -30,6 +30,10 @@ class TestString < AbRubyTest
   def test_interp_multi = assert_eval('"#{1}-#{2}-#{3}"', "1-2-3")
   def test_interp_empty = assert_eval('"hello#{""} world"', "hello world")
 
+  # <<
+  def test_shovel = assert_eval('s = "hello"; s << " world"; s', "hello world")
+  def test_shovel_chain = assert_eval('s = "a"; s << "b" << "c"; s', "abc")
+
   # chained
   def test_chain_upcase_reverse = assert_eval('"hello".upcase.reverse', "OLLEH")
   def test_chain_concat_length = assert_eval('("ab" + "cd").length', 4)

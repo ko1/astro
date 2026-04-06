@@ -61,6 +61,12 @@ static VALUE ab_string_include_p(CTX *c, VALUE self, unsigned int argc, VALUE *a
     return strstr(RSTRING_PTR(RSTR(self)), RSTRING_PTR(RSTR(argv[0]))) ? Qtrue : Qfalse;
 }
 
+static VALUE ab_string_concat(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    VALUE rs = RSTR(self), ra = RSTR(argv[0]);
+    rb_str_cat(rs, RSTRING_PTR(ra), RSTRING_LEN(ra));
+    return self;
+}
+
 void
 Init_abruby_string(void)
 {
@@ -68,6 +74,7 @@ Init_abruby_string(void)
     abruby_class_add_cfunc(ab_string_class, "to_s",     ab_string_to_s,      0);
     abruby_class_add_cfunc(ab_string_class, "to_i",     ab_string_to_i,      0);
     abruby_class_add_cfunc(ab_string_class, "+",        ab_string_add,       1);
+    abruby_class_add_cfunc(ab_string_class, "<<",       ab_string_concat,    1);
     abruby_class_add_cfunc(ab_string_class, "*",        ab_string_mul,       1);
     abruby_class_add_cfunc(ab_string_class, "==",       ab_string_eq,        1);
     abruby_class_add_cfunc(ab_string_class, "!=",       ab_string_neq,       1);

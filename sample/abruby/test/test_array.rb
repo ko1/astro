@@ -42,6 +42,10 @@ class TestArray < AbRubyTest
   def test_concat = assert_eval("[1, 2] + [3, 4]", [1, 2, 3, 4])
   def test_concat_empty = assert_eval("[] + [1]", [1])
 
+  # <<
+  def test_shovel = assert_eval("a = []; a << 1; a << 2; a", [1, 2])
+  def test_shovel_chain = assert_eval("a = []; a << 1 << 2 << 3; a", [1, 2, 3])
+
   # include?
   def test_include_yes = assert_eval("[1, 2, 3].include?(2)", true)
   def test_include_no = assert_eval("[1, 2, 3].include?(5)", false)

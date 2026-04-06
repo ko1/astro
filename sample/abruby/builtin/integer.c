@@ -125,6 +125,41 @@ static VALUE ab_integer_abs(CTX *c, VALUE self, unsigned int argc, VALUE *argv) 
     return rb_funcall(self, rb_intern("abs"), 0);
 }
 
+static VALUE ab_integer_cmp(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    if (LIKELY(FIXNUM_P(self) && FIXNUM_P(argv[0]))) {
+        long a = FIX2LONG(self), b = FIX2LONG(argv[0]);
+        return LONG2FIX(a < b ? -1 : (a > b ? 1 : 0));
+    }
+    if (RB_TYPE_P(self, T_BIGNUM)) return rb_big_cmp(self, argv[0]);
+    return rb_funcall(self, rb_intern("<=>"), 1, argv[0]);
+}
+static VALUE ab_integer_lshift(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    return rb_funcall(self, rb_intern("<<"), 1, argv[0]);
+}
+static VALUE ab_integer_rshift(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    return rb_funcall(self, rb_intern(">>"), 1, argv[0]);
+}
+static VALUE ab_integer_band(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    if (LIKELY(FIXNUM_P(self) && FIXNUM_P(argv[0])))
+        return LONG2FIX(FIX2LONG(self) & FIX2LONG(argv[0]));
+    return rb_funcall(self, rb_intern("&"), 1, argv[0]);
+}
+static VALUE ab_integer_bor(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    if (LIKELY(FIXNUM_P(self) && FIXNUM_P(argv[0])))
+        return LONG2FIX(FIX2LONG(self) | FIX2LONG(argv[0]));
+    return rb_funcall(self, rb_intern("|"), 1, argv[0]);
+}
+static VALUE ab_integer_bxor(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    if (LIKELY(FIXNUM_P(self) && FIXNUM_P(argv[0])))
+        return LONG2FIX(FIX2LONG(self) ^ FIX2LONG(argv[0]));
+    return rb_funcall(self, rb_intern("^"), 1, argv[0]);
+}
+static VALUE ab_integer_bnot(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    if (LIKELY(FIXNUM_P(self)))
+        return LONG2NUM(~FIX2LONG(self));
+    return rb_funcall(self, rb_intern("~"), 0);
+}
+
 void
 Init_abruby_integer(void)
 {
@@ -143,6 +178,13 @@ Init_abruby_integer(void)
     abruby_class_add_cfunc(ab_integer_class, ">=",     ab_integer_ge,      1);
     abruby_class_add_cfunc(ab_integer_class, "==",     ab_integer_eq,      1);
     abruby_class_add_cfunc(ab_integer_class, "!=",     ab_integer_neq,     1);
+    abruby_class_add_cfunc(ab_integer_class, "<=>",    ab_integer_cmp,     1);
+    abruby_class_add_cfunc(ab_integer_class, "<<",     ab_integer_lshift,  1);
+    abruby_class_add_cfunc(ab_integer_class, ">>",     ab_integer_rshift,  1);
+    abruby_class_add_cfunc(ab_integer_class, "&",      ab_integer_band,    1);
+    abruby_class_add_cfunc(ab_integer_class, "|",      ab_integer_bor,     1);
+    abruby_class_add_cfunc(ab_integer_class, "^",      ab_integer_bxor,    1);
+    abruby_class_add_cfunc(ab_integer_class, "~",      ab_integer_bnot,    0);
     abruby_class_add_cfunc(ab_integer_class, "to_f",   ab_integer_to_f,    0);
     abruby_class_add_cfunc(ab_integer_class, "zero?",  ab_integer_zero_p,  0);
     abruby_class_add_cfunc(ab_integer_class, "abs",    ab_integer_abs,     0);
