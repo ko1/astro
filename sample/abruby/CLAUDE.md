@@ -2,7 +2,20 @@
 
 ASTro フレームワークを用いた Ruby サブセット言語インタプリタ。CRuby の C extension として実装。
 
-言語仕様は [docs/abruby_spec.md](docs/abruby_spec.md) を参照。
+- 言語仕様: [docs/abruby_spec.md](docs/abruby_spec.md)
+- 実装済み機能: [docs/done.md](docs/done.md)
+- 未実装機能: [docs/todo.md](docs/todo.md)
+
+## 開発フロー
+
+機能追加・バグ修正の際は以下の手順に従うこと:
+
+1. **diff 確認** — `git diff` が空であることを確認。空でなければ、先にコミットするか聞く
+2. **実装** — コード変更
+3. **テスト** — しつこくテストを書く。境界値、異常系、組み合わせを網羅
+4. **テスト実行** — `make test` で通常テスト、`make debug-test` でデバッグモードテスト。両方通ること
+5. **docs/ 更新** — done.md / todo.md / abruby_spec.md を必要に応じて更新
+6. **コミット**
 
 ## ビルド・実行
 
