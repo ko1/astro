@@ -334,6 +334,10 @@ abruby_node_mark(void *ptr)
     else if (k == &kind_node_method_call) {
         mark_child(n->u.node_method_call.recv);
     }
+    else if (k == &kind_node_range) {
+        mark_child(n->u.node_range.begin_node);
+        mark_child(n->u.node_range.end_node);
+    }
 }
 
 struct abruby_method *

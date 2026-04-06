@@ -22,6 +22,9 @@ static struct abruby_class ab_array_class_body   = { .name = "Array", .super = &
 static struct abruby_class ab_hash_class_body    = { .name = "Hash",  .super = &ab_object_class_body };
 static struct abruby_class ab_integer_class_body = { .name = "Integer", .super = &ab_object_class_body };
 static struct abruby_class ab_string_class_body  = { .name = "String",  .super = &ab_object_class_body };
+static struct abruby_class ab_symbol_class_body  = { .name = "Symbol",  .super = &ab_object_class_body };
+static struct abruby_class ab_range_class_body   = { .name = "Range",   .super = &ab_object_class_body };
+static struct abruby_class ab_regexp_class_body  = { .name = "Regexp",  .super = &ab_object_class_body };
 static struct abruby_class ab_true_class_body    = { .name = "TrueClass",  .super = &ab_object_class_body };
 static struct abruby_class ab_false_class_body   = { .name = "FalseClass", .super = &ab_object_class_body };
 static struct abruby_class ab_nil_class_body     = { .name = "NilClass",   .super = &ab_object_class_body };
@@ -34,6 +37,9 @@ struct abruby_class *ab_class_class   = &ab_class_class_body;
 struct abruby_class *ab_object_class  = &ab_object_class_body;
 struct abruby_class *ab_integer_class = &ab_integer_class_body;
 struct abruby_class *ab_string_class  = &ab_string_class_body;
+struct abruby_class *ab_symbol_class  = &ab_symbol_class_body;
+struct abruby_class *ab_range_class   = &ab_range_class_body;
+struct abruby_class *ab_regexp_class  = &ab_regexp_class_body;
 struct abruby_class *ab_true_class    = &ab_true_class_body;
 struct abruby_class *ab_false_class   = &ab_false_class_body;
 struct abruby_class *ab_nil_class     = &ab_nil_class_body;
@@ -50,6 +56,14 @@ static void abruby_data_mark(void *ptr) {
     }
     else if (h->klass == ab_hash_class) {
         rb_gc_mark(((struct abruby_hash *)ptr)->rb_hash);
+    }
+    else if (h->klass == ab_range_class) {
+        struct abruby_range *r = (struct abruby_range *)ptr;
+        rb_gc_mark(r->begin);
+        rb_gc_mark(r->end);
+    }
+    else if (h->klass == ab_regexp_class) {
+        rb_gc_mark(((struct abruby_regexp *)ptr)->rb_regexp);
     }
     else if (h->klass != ab_class_class) {
         // user object: mark ivars
@@ -121,6 +135,26 @@ abruby_hash_new_wrap(VALUE rb_hash)
     h->klass = ab_hash_class;
     h->rb_hash = rb_hash;
     return TypedData_Wrap_Struct(rb_cAbRubyNode, &abruby_data_type, h);
+}
+
+VALUE
+abruby_range_new(VALUE begin, VALUE end, int exclude_end)
+{
+    struct abruby_range *r = calloc(1, sizeof(struct abruby_range));
+    r->klass = ab_range_class;
+    r->begin = begin;
+    r->end = end;
+    r->exclude_end = exclude_end;
+    return TypedData_Wrap_Struct(rb_cAbRubyNode, &abruby_data_type, r);
+}
+
+VALUE
+abruby_regexp_new(VALUE rb_regexp)
+{
+    struct abruby_regexp *r = calloc(1, sizeof(struct abruby_regexp));
+    r->klass = ab_regexp_class;
+    r->rb_regexp = rb_regexp;
+    return TypedData_Wrap_Struct(rb_cAbRubyNode, &abruby_data_type, r);
 }
 
 // Class wrapper
@@ -196,9 +230,12 @@ init_builtin_methods(void)
     Init_abruby_object();
     Init_abruby_integer();
     Init_abruby_string();
+    Init_abruby_symbol();
     Init_abruby_float();
     Init_abruby_array();
     Init_abruby_hash();
+    Init_abruby_range();
+    Init_abruby_regexp();
     Init_abruby_true();
     Init_abruby_false();
     Init_abruby_nil();
@@ -304,8 +341,11 @@ init_builtin_consts(void)
     abruby_class_set_const(ab_object_class, "Integer",    abruby_wrap_class(ab_integer_class));
     abruby_class_set_const(ab_object_class, "Float",      abruby_wrap_class(ab_float_class));
     abruby_class_set_const(ab_object_class, "String",     abruby_wrap_class(ab_string_class));
+    abruby_class_set_const(ab_object_class, "Symbol",     abruby_wrap_class(ab_symbol_class));
     abruby_class_set_const(ab_object_class, "Array",      abruby_wrap_class(ab_array_class));
     abruby_class_set_const(ab_object_class, "Hash",       abruby_wrap_class(ab_hash_class));
+    abruby_class_set_const(ab_object_class, "Range",      abruby_wrap_class(ab_range_class));
+    abruby_class_set_const(ab_object_class, "Regexp",     abruby_wrap_class(ab_regexp_class));
     abruby_class_set_const(ab_object_class, "TrueClass",  abruby_wrap_class(ab_true_class));
     abruby_class_set_const(ab_object_class, "FalseClass", abruby_wrap_class(ab_false_class));
     abruby_class_set_const(ab_object_class, "NilClass",   abruby_wrap_class(ab_nil_class));
@@ -366,6 +406,27 @@ rb_alloc_node_str(VALUE self, VALUE str)
 {
     const char *cstr = strdup(StringValueCStr(str));
     return wrap_node(ALLOC_node_str(cstr));
+}
+
+static VALUE
+rb_alloc_node_sym(VALUE self, VALUE str)
+{
+    const char *cstr = strdup(StringValueCStr(str));
+    return wrap_node(ALLOC_node_sym(cstr));
+}
+
+static VALUE
+rb_alloc_node_range(VALUE self, VALUE begin_node, VALUE end_node, VALUE exclude_end)
+{
+    return wrap_node(ALLOC_node_range(unwrap_node(begin_node), unwrap_node(end_node), FIX2UINT(exclude_end)));
+}
+
+static VALUE
+rb_alloc_node_regexp(VALUE self, VALUE source, VALUE flags)
+{
+    const char *csrc = strdup(StringValueCStr(source));
+    const char *cflags = strdup(StringValueCStr(flags));
+    return wrap_node(ALLOC_node_regexp(csrc, cflags));
 }
 
 static VALUE
@@ -512,6 +573,9 @@ rb_alloc_node_method_call(VALUE self, VALUE recv, VALUE name, VALUE params_cnt, 
 static VALUE
 abruby_to_ruby(VALUE v)
 {
+    // Symbols are CRuby immediates, pass through
+    if (SYMBOL_P(v)) return v;
+
     if (RB_TYPE_P(v, T_DATA) && RTYPEDDATA_P(v) &&
         RTYPEDDATA_TYPE(v) == &abruby_data_type) {
         struct abruby_header *h = (struct abruby_header *)RTYPEDDATA_GET_DATA(v);
@@ -534,10 +598,17 @@ abruby_to_ruby(VALUE v)
             VALUE result = rb_hash_new();
             for (long i = 0; i < len; i++) {
                 VALUE k = RARRAY_AREF(keys, i);
-                VALUE v = abruby_to_ruby(rb_hash_aref(hash, k));
-                rb_hash_aset(result, k, v);
+                VALUE val = abruby_to_ruby(rb_hash_aref(hash, k));
+                rb_hash_aset(result, k, val);
             }
             return result;
+        }
+        if (h->klass == ab_range_class) {
+            struct abruby_range *r = (struct abruby_range *)h;
+            return rb_range_new(abruby_to_ruby(r->begin), abruby_to_ruby(r->end), r->exclude_end);
+        }
+        if (h->klass == ab_regexp_class) {
+            return ((struct abruby_regexp *)h)->rb_regexp;
         }
     }
     return v;
@@ -621,6 +692,9 @@ Init_abruby(void)
     ab_object_class->klass  = ab_class_class;
     ab_integer_class->klass = ab_class_class;
     ab_string_class->klass  = ab_class_class;
+    ab_symbol_class->klass  = ab_class_class;
+    ab_range_class->klass   = ab_class_class;
+    ab_regexp_class->klass  = ab_class_class;
     ab_true_class->klass    = ab_class_class;
     ab_false_class->klass   = ab_class_class;
     ab_nil_class->klass     = ab_class_class;
@@ -634,6 +708,9 @@ Init_abruby(void)
     abruby_wrap_class(ab_hash_class);
     abruby_wrap_class(ab_integer_class);
     abruby_wrap_class(ab_string_class);
+    abruby_wrap_class(ab_symbol_class);
+    abruby_wrap_class(ab_range_class);
+    abruby_wrap_class(ab_regexp_class);
     abruby_wrap_class(ab_true_class);
     abruby_wrap_class(ab_false_class);
     abruby_wrap_class(ab_nil_class);
@@ -645,6 +722,9 @@ Init_abruby(void)
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_bignum", rb_alloc_node_bignum, 1);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_float", rb_alloc_node_float, 1);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_str", rb_alloc_node_str, 1);
+    rb_define_singleton_method(rb_cAbRuby, "alloc_node_sym", rb_alloc_node_sym, 1);
+    rb_define_singleton_method(rb_cAbRuby, "alloc_node_range", rb_alloc_node_range, 3);
+    rb_define_singleton_method(rb_cAbRuby, "alloc_node_regexp", rb_alloc_node_regexp, 2);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_true", rb_alloc_node_true, 0);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_false", rb_alloc_node_false, 0);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_nil", rb_alloc_node_nil, 0);

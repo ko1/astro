@@ -4,8 +4,14 @@
 - 整数 (Fixnum + Bignum): `42`, `-3`, `100000000000000000000`
 - 浮動小数点 (Flonum + heap Float): `1.5`, `3.14`, `1.0e100`
 - 文字列: `"hello"`, `"value is #{expr}"`（補間対応）
+- Symbol: `:foo`, `:empty?`, `:save!`
 - 配列: `[1, 2, 3]`, `[]`
-- ハッシュ: `{"a" => 1}`, `{a: 1}`, `{}`
+- ハッシュ: `{"a" => 1}`, `{a: 1}`（Symbol キー対応）, `{}`
+- Range: `1..10`（inclusive）, `1...10`（exclusive）
+- Regexp: `/pattern/`, `/pattern/i`
+- ヒアドキュメント: `<<~HEREDOC ... HEREDOC`
+- `%w(a b c)` → `["a", "b", "c"]`
+- `%i(a b c)` → `[:a, :b, :c]`
 - `true`, `false`, `nil`
 
 ## 変数
@@ -58,6 +64,9 @@
 - **String**: +, *, 比較, length/size, empty?, upcase, downcase, reverse, include?, to_s, to_i, inspect
 - **Array**: [], []=, push, pop, length/size, empty?, first, last, +, include?, inspect
 - **Hash**: [], []=, length/size, empty?, has_key?/key?, keys, values, inspect
+- **Symbol**: ==, !=, to_s, to_sym, inspect（CRuby 即値を直接利用）
+- **Range**: first, last, begin, end, exclude_end?, size/length, include?, to_a, ==, inspect, to_s
+- **Regexp**: match?, match, =~, ==, source, inspect, to_s（CRuby Regexp を内部利用）
 - **TrueClass / FalseClass / NilClass**: inspect, to_s, nil?
 
 ## 定数

@@ -255,8 +255,17 @@ class AbRuby
         seq_nodes.empty? ? hash_node : build_seq(seq_nodes + [hash_node])
 
       when Prism::SymbolNode
-        # Symbols are represented as strings in abruby
-        AbRuby.alloc_node_str(node.value.to_s)
+        AbRuby.alloc_node_sym(node.value.to_s)
+
+      when Prism::RangeNode
+        b = node.left ? transduce(node.left) : AbRuby.alloc_node_nil
+        e = node.right ? transduce(node.right) : AbRuby.alloc_node_nil
+        exclude = (node.operator == "...") ? 1 : 0
+        AbRuby.alloc_node_range(b, e, exclude)
+
+      when Prism::RegularExpressionNode
+        flags = extract_regexp_flags(node)
+        AbRuby.alloc_node_regexp(node.unescaped, flags)
 
       when Prism::SelfNode
         AbRuby.alloc_node_self
@@ -342,6 +351,24 @@ class AbRuby
         call_node = AbRuby.alloc_node_method_call(recv_ref, name.to_s, 0, call_arg_idx)
         AbRuby.alloc_node_seq(recv_store, call_node)
       end
+    end
+
+    def extract_regexp_flags(node)
+      flags = ""
+      # Check Prism flag constants
+      if defined?(Prism::RegularExpressionFlags::IGNORE_CASE) &&
+         node.respond_to?(:options)
+        opts = node.options rescue 0
+        flags += "i" if (opts & 1) != 0
+        flags += "x" if (opts & 2) != 0
+        flags += "m" if (opts & 4) != 0
+      end
+      # Fallback: parse the closing delimiter from source if available
+      if flags.empty? && node.respond_to?(:closing) && node.closing
+        closing = node.closing.delete("/")
+        flags = closing
+      end
+      flags
     end
 
     def build_seq(nodes)

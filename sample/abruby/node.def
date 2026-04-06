@@ -129,6 +129,38 @@ node_str(CTX * restrict c, NODE * restrict n, const char *str)
 }
 
 NODE_DEF
+node_sym(CTX * restrict c, NODE * restrict n, const char *str)
+{
+    return ID2SYM(rb_intern(str));
+}
+
+extern VALUE abruby_range_new(VALUE begin, VALUE end, int exclude_end);
+
+NODE_DEF
+node_range(CTX * restrict c, NODE * restrict n, NODE *begin_node, NODE *end_node, uint32_t exclude_end)
+{
+    VALUE b = EVAL_ARG(c, begin_node);
+    VALUE e = EVAL_ARG(c, end_node);
+    return abruby_range_new(b, e, (int)exclude_end);
+}
+
+extern VALUE abruby_regexp_new(VALUE rb_regexp);
+
+NODE_DEF
+node_regexp(CTX * restrict c, NODE * restrict n, const char *source, const char *flags)
+{
+    int options = 0;
+    for (const char *p = flags; *p; p++) {
+        if (*p == 'i') options |= 1;  // ONIG_OPTION_IGNORECASE
+        if (*p == 'x') options |= 2;  // ONIG_OPTION_EXTEND
+        if (*p == 'm') options |= 4;  // ONIG_OPTION_MULTILINE
+    }
+    VALUE src = rb_str_new_cstr(source);
+    VALUE re = rb_reg_new(RSTRING_PTR(src), RSTRING_LEN(src), options);
+    return abruby_regexp_new(re);
+}
+
+NODE_DEF
 node_self(CTX * restrict c, NODE * restrict n)
 {
     return c->self;
@@ -188,7 +220,7 @@ node_array_new(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_
 static VALUE
 ab_to_hash_key(VALUE v)
 {
-    if (FIXNUM_P(v) || v == Qtrue || v == Qfalse || v == Qnil) return v;
+    if (FIXNUM_P(v) || SYMBOL_P(v) || v == Qtrue || v == Qfalse || v == Qnil) return v;
     struct abruby_header *h = (struct abruby_header *)RTYPEDDATA_GET_DATA(v);
     if (h->klass == ab_string_class) return ((struct abruby_string *)h)->rb_str;
     return v; // user objects as-is (identity based)

@@ -46,11 +46,7 @@
 - [ ] 多重代入 (`a, b = 1, 2`)
 
 ### リテラル・型
-- [ ] Symbol (`:foo`)
-- [ ] Range (`1..10`, `1...10`)
-- [ ] Regexp (`/pattern/`)
-- [ ] ヒアドキュメント
-- [ ] `%w()`, `%i()` 等のリテラル
+（Symbol, Range, Regexp, ヒアドキュメント, %w, %i は実装済み。done.md 参照）
 
 ### 演算子
 （基本演算子は実装済み。done.md 参照）
@@ -83,7 +79,7 @@
 - [ ] `to_a`, `default`
 
 ### 未実装クラス
-- [ ] Symbol, Range, Regexp, IO/File
+- [ ] IO/File
 - [ ] Comparable, Enumerable, Kernel
 - [ ] Numeric (Integer/Float の共通親)
 

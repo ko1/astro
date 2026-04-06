@@ -4,7 +4,7 @@ class TestHash < AbRubyTest
   def test_empty = assert_eval("{}", {})
   def test_string_keys = assert_eval('{"a" => 1, "b" => 2}', {"a" => 1, "b" => 2})
   def test_int_keys = assert_eval("{1 => 10, 2 => 20}", {1 => 10, 2 => 20})
-  def test_symbol_keys = assert_eval("{a: 1, b: 2}", {"a" => 1, "b" => 2})
+  def test_symbol_keys = assert_eval("{a: 1, b: 2}", {a: 1, b: 2})
   def test_mixed_values = assert_eval('{"x" => 1, "y" => "hello", "z" => true}', {"x" => 1, "y" => "hello", "z" => true})
 
   def test_get_string = assert_eval('{"a" => 42}["a"]', 42)
