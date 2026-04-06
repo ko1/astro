@@ -23,11 +23,11 @@ VALUE abruby_regexp_new(VALUE rb_regexp);
 /*
  * Numeric unwrap/wrap helpers.
  *
- * abruby の Bignum/Float は abruby_header 付き T_DATA で wrap されている。
- * CRuby の rb_funcall/rb_big_* に渡す前に内部の CRuby 値を取り出し（UNWRAP）、
- * 結果を abruby 値に戻す（WRAP）必要がある。
+ * abruby Bignum/Float are wrapped in T_DATA with abruby_header.
+ * Before calling CRuby APIs (rb_funcall, rb_big_*, etc.), extract the
+ * inner CRuby value with UNWRAP.  Wrap the result back with WRAP.
  *
- * Fixnum/Symbol/true/false/nil は CRuby immediate なのでそのまま通す。
+ * Fixnum/Symbol/true/false/nil are CRuby immediates and pass through as-is.
  */
 
 // abruby integer → inner CRuby integer (Fixnum or T_BIGNUM)
@@ -59,7 +59,7 @@ AB_NUM_UNWRAP(VALUE v)
 }
 
 // CRuby numeric result → abruby value
-// Fixnum はそのまま。T_BIGNUM は abruby_bignum で wrap。Float は abruby_float で wrap。
+// Fixnum passes through. T_BIGNUM wraps in abruby_bignum. Float wraps in abruby_float.
 static inline VALUE
 AB_NUM_WRAP(VALUE v)
 {

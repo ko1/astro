@@ -64,14 +64,14 @@ struct abruby_method {
 /*
  * abruby VALUE invariant:
  *
- * 全ての abruby VALUE は以下のいずれかでなければならない:
+ * Every abruby VALUE must be one of:
  *   1. CRuby immediate: Fixnum, Symbol, true, false, nil
  *   2. T_DATA (abruby_data_type) with abruby_header at offset 0
  *
- * CRuby の T_BIGNUM, T_FLOAT, T_STRING 等を直接使ってはならない。
- * Bignum は abruby_bignum、Float は abruby_float で wrap する。
- * これにより AB_CLASS_OF() は immediate チェック後、T_DATA の先頭から
- * klass を読むだけでクラスを特定できる。
+ * Raw CRuby heap types (T_BIGNUM, T_FLOAT, T_STRING, etc.) must NOT be
+ * used directly. Bignum is wrapped in abruby_bignum, Float in abruby_float.
+ * This allows AB_CLASS_OF() to resolve the class by checking immediates
+ * first, then reading klass from the T_DATA header.
  */
 
 // Common layout: ALL abruby T_DATA objects have klass at offset 0
@@ -107,9 +107,8 @@ struct abruby_object {
     } ivars[ABRUBY_IVAR_MAX];
 };
 
-// Bignum/Float は CRuby の T_BIGNUM/T_FLOAT を直接使わず、
-// abruby_header 付きの T_DATA で wrap する。
-// これにより AB_CLASS_OF() の統一的なクラス解決が可能になる。
+// Bignum/Float are wrapped in T_DATA with abruby_header, not raw CRuby
+// T_BIGNUM/T_FLOAT.  This ensures uniform class resolution via AB_CLASS_OF().
 
 struct abruby_bignum {
     struct abruby_class *klass;  // offset 0: always ab_integer_class
@@ -196,11 +195,11 @@ ab_verify(VALUE obj)
 }
 
 /*
- * AB_CLASS_OF(obj): abruby VALUE からクラスを取得する。
+ * AB_CLASS_OF(obj): resolve the abruby class of a VALUE.
  *
- * immediate の場合は固定クラスポインタを返す。
- * T_DATA の場合は先頭の abruby_header.klass を直接読む。
- * abruby VALUE invariant により、この2パターンで全てカバーできる。
+ * Immediates return a fixed class pointer.
+ * T_DATA objects read klass directly from the abruby_header at offset 0.
+ * The abruby VALUE invariant guarantees these two cases are exhaustive.
  */
 static inline struct abruby_class *
 AB_CLASS_OF(VALUE obj)

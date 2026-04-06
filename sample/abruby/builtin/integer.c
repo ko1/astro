@@ -1,8 +1,8 @@
 #include "builtin.h"
 
-// Fixnum fast path: 両方 Fixnum なら C 直接演算。
-// それ以外: AB_INT_UNWRAP/AB_NUM_UNWRAP で CRuby 値に戻し rb_funcall/rb_big_*、
-// 結果を AB_NUM_WRAP で abruby 値に変換。
+// Fixnum fast path: both Fixnum -> direct C arithmetic.
+// Otherwise: AB_INT_UNWRAP/AB_NUM_UNWRAP to get raw CRuby values,
+// call rb_funcall/rb_big_*, wrap result with AB_NUM_WRAP.
 
 static VALUE ab_integer_add(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     if (LIKELY(FIXNUM_P(self) && FIXNUM_P(argv[0])))
