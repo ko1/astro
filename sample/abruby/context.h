@@ -120,8 +120,9 @@ static inline void
 ab_verify(VALUE obj)
 {
     if (ABRUBY_DEBUG) {
-        if (FIXNUM_P(obj) || obj == Qtrue || obj == Qfalse || obj == Qnil) {
-            // immediates are always valid
+        if (FIXNUM_P(obj) || obj == Qtrue || obj == Qfalse || obj == Qnil ||
+            RB_TYPE_P(obj, T_BIGNUM)) {
+            // immediates and CRuby-managed Bignum are always valid
             return;
         }
         if (!RB_TYPE_P(obj, T_DATA)) {
@@ -145,7 +146,7 @@ static inline struct abruby_class *
 AB_CLASS_OF(VALUE obj)
 {
     ab_verify(obj);
-    if (FIXNUM_P(obj)) return ab_integer_class;
+    if (FIXNUM_P(obj) || RB_TYPE_P(obj, T_BIGNUM)) return ab_integer_class;
     if (obj == Qtrue)  return ab_true_class;
     if (obj == Qfalse) return ab_false_class;
     if (obj == Qnil)   return ab_nil_class;

@@ -65,7 +65,12 @@ class AbRuby
         build_seq(stmts)
 
       when Prism::IntegerNode
-        AbRuby.alloc_node_num(node.value)
+        v = node.value
+        if v >= -(2**30) && v < 2**30
+          AbRuby.alloc_node_num(v)
+        else
+          AbRuby.alloc_node_bignum(v.to_s)
+        end
 
       when Prism::StringNode
         AbRuby.alloc_node_str(node.unescaped)

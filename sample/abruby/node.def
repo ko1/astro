@@ -75,6 +75,12 @@ node_num(CTX * restrict c, NODE * restrict n, int32_t num)
 }
 
 NODE_DEF
+node_bignum(CTX * restrict c, NODE * restrict n, const char *str)
+{
+    return rb_cstr_to_inum(str, 10, 1);
+}
+
+NODE_DEF
 node_true(CTX * restrict c, NODE * restrict n)
 {
     return Qtrue;
