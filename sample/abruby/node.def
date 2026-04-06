@@ -1,5 +1,20 @@
 // abruby node definitions
-// VALUE is CRuby's VALUE (tagged pointer)
+// RESULT is the return type for all node evaluators.
+// UNWRAP extracts VALUE from RESULT, propagating non-normal state.
+
+#define UNWRAP(r) ({ \
+    RESULT _r = (r); \
+    if (UNLIKELY(_r.state != RESULT_NORMAL)) return _r; \
+    _r.value; \
+})
+
+// UNWRAP_ALSO: like UNWRAP but does not propagate the specified state.
+// Used in method_call_body to catch RESULT_RETURN while propagating others.
+#define UNWRAP_ALSO(except_state, r) ({ \
+    RESULT _r = (r); \
+    if (UNLIKELY(_r.state != RESULT_NORMAL && _r.state != (except_state))) return _r; \
+    _r.value; \
+})
 
 // helper functions (included before generated eval code)
 
@@ -69,17 +84,17 @@ find_class(CTX *c, const char *name)
     return NULL;
 }
 
-static VALUE
+static RESULT
 method_call_body(CTX *c, uint32_t arg_index, VALUE recv, struct Node *body)
 {
     VALUE *save_fp = c->fp;
     VALUE save_self = c->self;
     c->fp = save_fp + arg_index;
     c->self = recv;
-    VALUE v = EVAL(c, body);
+    RESULT r = EVAL(c, body);
     c->fp = save_fp;
     c->self = save_self;
-    return v;
+    return RESULT_OK(UNWRAP_ALSO(RESULT_RETURN, r));
 }
 
 extern VALUE abruby_new_object(struct abruby_class *klass);
@@ -89,7 +104,7 @@ extern VALUE abruby_new_object(struct abruby_class *klass);
 NODE_DEF
 node_num(CTX * restrict c, NODE * restrict n, int32_t num)
 {
-    return INT2FIX(num);
+    return RESULT_OK(INT2FIX(num));
 }
 
 extern VALUE abruby_float_new_wrap(VALUE rb_float);
@@ -98,43 +113,43 @@ extern VALUE abruby_bignum_new(VALUE rb_bignum);
 NODE_DEF
 node_float(CTX * restrict c, NODE * restrict n, const char *str)
 {
-    return abruby_float_new_wrap(rb_float_new(strtod(str, NULL)));
+    return RESULT_OK(abruby_float_new_wrap(rb_float_new(strtod(str, NULL))));
 }
 
 NODE_DEF
 node_bignum(CTX * restrict c, NODE * restrict n, const char *str)
 {
-    return abruby_bignum_new(rb_cstr_to_inum(str, 10, 1));
+    return RESULT_OK(abruby_bignum_new(rb_cstr_to_inum(str, 10, 1)));
 }
 
 NODE_DEF
 node_true(CTX * restrict c, NODE * restrict n)
 {
-    return Qtrue;
+    return RESULT_OK(Qtrue);
 }
 
 NODE_DEF
 node_false(CTX * restrict c, NODE * restrict n)
 {
-    return Qfalse;
+    return RESULT_OK(Qfalse);
 }
 
 NODE_DEF
 node_nil(CTX * restrict c, NODE * restrict n)
 {
-    return Qnil;
+    return RESULT_OK(Qnil);
 }
 
 NODE_DEF
 node_str(CTX * restrict c, NODE * restrict n, const char *str)
 {
-    return abruby_str_new_cstr(str);
+    return RESULT_OK(abruby_str_new_cstr(str));
 }
 
 NODE_DEF
 node_sym(CTX * restrict c, NODE * restrict n, const char *str)
 {
-    return ID2SYM(rb_intern(str));
+    return RESULT_OK(ID2SYM(rb_intern(str)));
 }
 
 extern VALUE abruby_range_new(VALUE begin, VALUE end, bool exclude_end);
@@ -142,9 +157,9 @@ extern VALUE abruby_range_new(VALUE begin, VALUE end, bool exclude_end);
 NODE_DEF
 node_range(CTX * restrict c, NODE * restrict n, NODE *begin_node, NODE *end_node, uint32_t exclude_end)
 {
-    VALUE b = EVAL_ARG(c, begin_node);
-    VALUE e = EVAL_ARG(c, end_node);
-    return abruby_range_new(b, e, exclude_end != 0);
+    VALUE b = UNWRAP(EVAL_ARG(c, begin_node));
+    VALUE e = UNWRAP(EVAL_ARG(c, end_node));
+    return RESULT_OK(abruby_range_new(b, e, exclude_end != 0));
 }
 
 extern VALUE abruby_regexp_new(VALUE rb_regexp);
@@ -160,13 +175,13 @@ node_regexp(CTX * restrict c, NODE * restrict n, const char *source, const char 
     }
     VALUE src = rb_str_new_cstr(source);
     VALUE re = rb_reg_new(RSTRING_PTR(src), RSTRING_LEN(src), options);
-    return abruby_regexp_new(re);
+    return RESULT_OK(abruby_regexp_new(re));
 }
 
 NODE_DEF
 node_self(CTX * restrict c, NODE * restrict n)
 {
-    return c->self;
+    return RESULT_OK(c->self);
 }
 
 static VALUE
@@ -188,7 +203,8 @@ node_const_path_get(CTX * restrict c, NODE * restrict n, const char *parent_name
     if (!klass) {
         rb_raise(rb_eNameError, "uninitialized constant %s", parent_name);
     }
-    return abruby_const_get(klass, name);
+    // rb_raise does not return, but abruby_const_get may also rb_raise
+    return RESULT_OK(abruby_const_get(klass, name));
 }
 
 NODE_DEF
@@ -197,14 +213,14 @@ node_const_get(CTX * restrict c, NODE * restrict n, const char *name)
     // Check main_class first, then Object
     for (unsigned int i = 0; i < c->main_class->const_cnt; i++) {
         if (strcmp(c->main_class->constants[i].name, name) == 0) {
-            return c->main_class->constants[i].value;
+            return RESULT_OK(c->main_class->constants[i].value);
         }
     }
     if (c->main_class != ab_object_class) {
-        return abruby_const_get(ab_object_class, name);
+        return RESULT_OK(abruby_const_get(ab_object_class, name));
     }
     rb_raise(rb_eNameError, "uninitialized constant %s", name);
-    return Qnil;
+    return RESULT_OK(Qnil);
 }
 
 // === Array / Hash literals ===
@@ -216,7 +232,7 @@ node_array_new(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_
     for (uint32_t i = 0; i < argc; i++) {
         rb_ary_push(ary, c->fp[arg_index + i]);
     }
-    return abruby_ary_new(ary);
+    return RESULT_OK(abruby_ary_new(ary));
 }
 
 // Convert abruby value to CRuby value for use as Hash key
@@ -236,7 +252,7 @@ node_hash_new(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_i
     for (uint32_t i = 0; i < argc; i += 2) {
         rb_hash_aset(hash, ab_to_hash_key(c->fp[arg_index + i]), c->fp[arg_index + i + 1]);
     }
-    return abruby_hash_new_wrap(hash);
+    return RESULT_OK(abruby_hash_new_wrap(hash));
 }
 
 // === Instance Variables ===
@@ -244,15 +260,15 @@ node_hash_new(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_i
 NODE_DEF
 node_ivar_get(CTX * restrict c, NODE * restrict n, const char *name)
 {
-    return abruby_ivar_get(c->self, name);
+    return RESULT_OK(abruby_ivar_get(c->self, name));
 }
 
 NODE_DEF
 node_ivar_set(CTX * restrict c, NODE * restrict n, const char *name, NODE *value)
 {
-    VALUE v = EVAL_ARG(c, value);
+    VALUE v = UNWRAP(EVAL_ARG(c, value));
     abruby_ivar_set(c->self, name, v);
-    return v;
+    return RESULT_OK(v);
 }
 
 // === Local Variables ===
@@ -260,15 +276,15 @@ node_ivar_set(CTX * restrict c, NODE * restrict n, const char *name, NODE *value
 NODE_DEF
 node_lget(CTX * restrict c, NODE * restrict n, uint32_t index)
 {
-    return c->fp[index];
+    return RESULT_OK(c->fp[index]);
 }
 
 NODE_DEF
 node_lset(CTX * restrict c, NODE * restrict n, uint32_t index, NODE *rhs)
 {
-    VALUE v = EVAL_ARG(c, rhs);
+    VALUE v = UNWRAP(EVAL_ARG(c, rhs));
     c->fp[index] = v;
-    return v;
+    return RESULT_OK(v);
 }
 
 // === Control Flow ===
@@ -277,22 +293,22 @@ NODE_DEF
 node_scope(CTX * restrict c, NODE * restrict n, uint32_t envsize, NODE *body)
 {
     c->fp += envsize;
-    VALUE v = EVAL_ARG(c, body);
+    RESULT r = EVAL_ARG(c, body);
     c->fp -= envsize;
-    return v;
+    return r;
 }
 
 NODE_DEF
 node_seq(CTX * restrict c, NODE * restrict n, NODE *head, NODE *tail)
 {
-    EVAL_ARG(c, head);
+    UNWRAP(EVAL_ARG(c, head));
     return EVAL_ARG(c, tail);
 }
 
 NODE_DEF
 node_if(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *then_node, NODE *else_node)
 {
-    if (RTEST(EVAL_ARG(c, cond))) {
+    if (RTEST(UNWRAP(EVAL_ARG(c, cond)))) {
         return EVAL_ARG(c, then_node);
     }
     else {
@@ -303,10 +319,19 @@ node_if(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *then_node, NODE *
 NODE_DEF
 node_while(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *body)
 {
-    while (RTEST(EVAL_ARG(c, cond))) {
-        EVAL_ARG(c, body);
+    while (RTEST(UNWRAP(EVAL_ARG(c, cond)))) {
+        UNWRAP(EVAL_ARG(c, body));
     }
-    return Qnil;
+    return RESULT_OK(Qnil);
+}
+
+// === Non-local exit ===
+
+NODE_DEF
+node_return(CTX * restrict c, NODE * restrict n, NODE *value)
+{
+    VALUE v = UNWRAP(EVAL_ARG(c, value));
+    return (RESULT){v, RESULT_RETURN};
 }
 
 // === Method definition & call ===
@@ -316,7 +341,7 @@ node_def(CTX * restrict c, NODE * restrict n, const char *name, NODE *body, uint
 {
     struct abruby_class *klass = c->current_class ? c->current_class : c->main_class;
     abruby_class_add_method(klass, name, body, params_cnt, locals_cnt);
-    return Qnil;
+    return RESULT_OK(Qnil);
 }
 
 // === OOP: class, method call with receiver, new ===
@@ -337,10 +362,11 @@ node_module_def(CTX * restrict c, NODE * restrict n, const char *name, NODE *bod
     VALUE save_self = c->self;
     c->current_class = mod;
     c->self = abruby_wrap_class(mod);
-    EVAL_ARG(c, body);
+    RESULT _rb = EVAL_ARG(c, body);
     c->current_class = save_class;
     c->self = save_self;
-    return abruby_wrap_class(mod);
+    if (UNLIKELY(_rb.state != RESULT_NORMAL)) return _rb;
+    return RESULT_OK(abruby_wrap_class(mod));
 }
 
 NODE_DEF @noinline
@@ -366,16 +392,17 @@ node_class_def(CTX * restrict c, NODE * restrict n, const char *name, const char
     VALUE save_self = c->self;
     c->current_class = klass;
     c->self = abruby_wrap_class(klass);
-    EVAL_ARG(c, body);
+    RESULT _rb = EVAL_ARG(c, body);
     c->current_class = save_class;
     c->self = save_self;
-    return abruby_wrap_class(klass);
+    if (UNLIKELY(_rb.state != RESULT_NORMAL)) return _rb;
+    return RESULT_OK(abruby_wrap_class(klass));
 }
 
 NODE_DEF
 node_method_call(CTX * restrict c, NODE * restrict n, NODE *recv, const char *name, uint32_t params_cnt, uint32_t arg_index)
 {
-    VALUE recv_val = EVAL_ARG(c, recv);
+    VALUE recv_val = UNWRAP(EVAL_ARG(c, recv));
     struct abruby_class *klass = AB_CLASS_OF(recv_val);
     struct abruby_method *method = abruby_class_find_method(klass, name);
     if (!method) {
@@ -390,14 +417,14 @@ node_method_call(CTX * restrict c, NODE * restrict n, NODE *recv, const char *na
         }
         c->fp[arg_index] = abruby_str_new_cstr(name);
         if (mm->type == ABRUBY_METHOD_CFUNC) {
-            return mm->u.cfunc.func(c, recv_val, params_cnt + 1, c->fp + arg_index);
+            return RESULT_OK(mm->u.cfunc.func(c, recv_val, params_cnt + 1, c->fp + arg_index));
         }
         else {
             return method_call_body(c, arg_index, recv_val, mm->u.ast.body);
         }
     }
     if (method->type == ABRUBY_METHOD_CFUNC) {
-        return method->u.cfunc.func(c, recv_val, params_cnt, c->fp + arg_index);
+        return RESULT_OK(method->u.cfunc.func(c, recv_val, params_cnt, c->fp + arg_index));
     }
     else {
         return method_call_body(c, arg_index, recv_val, method->u.ast.body);

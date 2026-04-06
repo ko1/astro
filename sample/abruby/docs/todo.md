@@ -7,7 +7,7 @@
 ### 制御構造
 - [ ] `case / when / in`
 - [ ] `for .. in`
-- [ ] `break` / `next` / `return`（明示的 return）
+- [ ] `break` / `next`
 - [ ] `begin / rescue / ensure / raise`（例外処理）
 - [ ] `defined?`
 

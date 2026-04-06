@@ -29,6 +29,7 @@
 - 三項演算子: `cond ? a : b`
 - `&&` / `||` / `and` / `or`（短絡評価、値を返す）
 - `!` / `not`
+- `return`（明示的 return、値あり/なし）
 
 ## メソッド
 - `def name(args); end`

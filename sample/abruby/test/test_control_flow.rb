@@ -66,4 +66,41 @@ class TestControlFlow < AbRubyTest
 
   # seq
   def test_seq_returns_last = assert_eval("1; 2; 3", 3)
+
+  # return
+  def test_return_value
+    assert_eval("def f; return 42; end; f", 42)
+  end
+
+  def test_return_nil
+    assert_eval("def f; return; end; f", nil)
+  end
+
+  def test_return_early
+    assert_eval("def f; return 1; 2; end; f", 1)
+  end
+
+  def test_return_in_if
+    assert_eval("def f(x); if x > 0; return 1; end; return 2; end; f(5)", 1)
+  end
+
+  def test_return_in_if_else
+    assert_eval("def f(x); if x > 0; return 1; else; return 2; end; end; f(-1)", 2)
+  end
+
+  def test_return_in_while
+    assert_eval("def f; i = 0; while i < 10; if i == 5; return i; end; i += 1; end; end; f", 5)
+  end
+
+  def test_return_does_not_affect_caller
+    assert_eval("def f; return 10; end; f; 20", 20)
+  end
+
+  def test_return_nested_method
+    assert_eval("def inner; return 3; end; def outer; return inner + 1; end; outer", 4)
+  end
+
+  def test_return_with_expression
+    assert_eval("def f(a, b); return a + b; end; f(3, 4)", 7)
+  end
 end

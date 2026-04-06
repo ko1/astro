@@ -243,7 +243,7 @@ ab_inspect_rstr(CTX *c, VALUE v) {
         VALUE save_self = c->self;
         c->fp = save_fp + 16; // generous offset
         c->self = v;
-        ab_str = EVAL(c, ins->u.ast.body);
+        ab_str = EVAL(c, ins->u.ast.body).value;
         c->fp = save_fp;
         c->self = save_self;
     }
@@ -529,6 +529,12 @@ rb_alloc_node_while(VALUE self, VALUE cond, VALUE body)
 
 
 static VALUE
+rb_alloc_node_return(VALUE self, VALUE value)
+{
+    return wrap_node(ALLOC_node_return(unwrap_node(value)));
+}
+
+static VALUE
 rb_alloc_node_def(VALUE self, VALUE name, VALUE body, VALUE params_cnt, VALUE locals_cnt)
 {
     const char *cname = strdup(StringValueCStr(name));
@@ -690,8 +696,8 @@ rb_abruby_eval_ast(VALUE self, VALUE ast_obj)
     vm->ctx.fp = vm->ctx.env;
     vm->ctx.current_class = NULL;
 
-    VALUE result = EVAL(&vm->ctx, ast);
-    return abruby_to_ruby(result);
+    RESULT r = EVAL(&vm->ctx, ast);
+    return abruby_to_ruby(r.value);
 }
 
 // AbRuby#dump_ast
@@ -779,6 +785,7 @@ Init_abruby(void)
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_seq", rb_alloc_node_seq, 2);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_if", rb_alloc_node_if, 3);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_while", rb_alloc_node_while, 2);
+    rb_define_singleton_method(rb_cAbRuby, "alloc_node_return", rb_alloc_node_return, 1);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_def", rb_alloc_node_def, 4);
 
 

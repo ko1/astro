@@ -49,7 +49,7 @@ AbRuby.eval(code)
   → Ruby: Prism.parse(code)          # CRuby 内蔵パーサで AST 生成
   → Ruby: Parser#transduce(prism_ast) # Prism AST → AbRuby AST (ALLOC_* 呼び出し)
   → C:    EVAL(ctx, ast)              # ASTro インタプリタで実行
-  → VALUE                             # CRuby の VALUE として結果を返す
+  → RESULT {value, state}             # VALUE + 実行状態 (NORMAL/RETURN)
 ```
 
 ### ファイル構成
@@ -90,7 +90,7 @@ sample/abruby/
 └── example.ab.rb       # fib ベンチマーク
 ```
 
-### ノード一覧 (16種)
+### ノード一覧
 
 | カテゴリ | ノード | オペランド |
 |---|---|---|
@@ -110,6 +110,7 @@ sample/abruby/
 | 制御フロー | `node_seq` | `NODE *head, NODE *tail` |
 | | `node_if` | `NODE *cond, NODE *then_node, NODE *else_node` |
 | | `node_while` | `NODE *cond, NODE *body` |
+| | `node_return` | `NODE *value` |
 | メソッド | `node_def` @noinline | `const char *name, NODE *body, uint32_t params_cnt, uint32_t locals_cnt` |
 | | `node_method_call` | `NODE *recv, const char *name, uint32_t params_cnt, uint32_t arg_index` |
 | | `node_const_get` | `const char *name` |

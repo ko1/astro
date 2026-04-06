@@ -95,6 +95,16 @@ end
 ```
 返り値は常に `nil`。
 
+### return
+```ruby
+def f(x)
+  return x + 1 if x > 0
+  0
+end
+```
+`return` はメソッドから即座に脱出する。`return expr` で値を返す。`return` のみは `nil` を返す。
+制御フロー（if, while 等）の中からも脱出可能。
+
 ### 論理演算子
 ```ruby
 a && b    # a が偽なら a、そうでなければ b（短絡評価、値を返す）
@@ -412,7 +422,7 @@ Ruby との相違点の詳細は [todo.md](todo.md) を参照。
 主な未サポート機能:
 - ブロック・Proc・lambda・イテレータ
 - 例外処理 (begin/rescue/ensure/raise)
-- break / next / return
+- break / next
 - super 呼び出し
 - case / when / in
 - for .. in

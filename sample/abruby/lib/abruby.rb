@@ -218,6 +218,19 @@ class AbRuby
         rewind_arg_index(idx)
         AbRuby.alloc_node_seq(store, AbRuby.alloc_node_if(ref, ref2, transduce(node.right)))
 
+      when Prism::ReturnNode
+        value = if node.arguments
+                  args = node.arguments.arguments
+                  if args.size == 1
+                    transduce(args[0])
+                  else
+                    raise "return with multiple values not supported"
+                  end
+                else
+                  AbRuby.alloc_node_nil
+                end
+        AbRuby.alloc_node_return(value)
+
       when Prism::DefNode
         name = node.name.to_s
         params = node.parameters
