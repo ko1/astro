@@ -11,8 +11,4 @@ end
 $VPATH << "$(srcdir)/builtin"
 $INCFLAGS << " -I$(srcdir)"
 
-if enable_config('debug', false)
-  $defs << '-DABRUBY_DEBUG=1'
-end
-
 create_makefile('abruby')

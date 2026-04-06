@@ -170,9 +170,8 @@ struct abruby_class {
 - メソッド呼び出し時: レシーバをスロットに保存 → 引数を配置 → fp を移動して body を評価
 
 ### デバッグ
-- `ruby extconf.rb -- --enable-debug && make` で `ABRUBY_DEBUG=1` ビルド
+- `make debug-test` で `ABRUBY_DEBUG=1` ビルド + テスト + 通常ビルド復帰
 - `ab_verify(obj)` が AB_CLASS_OF 等で厳密なチェック (即値/T_DATA/TypedData/data_type/klass)
-- `make debug-test` でデバッグビルド + テスト実行
 
 ### テスト
 245 テスト (`make test`):

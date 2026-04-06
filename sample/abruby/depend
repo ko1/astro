@@ -16,9 +16,10 @@ test: all
 
 debug-test:
 	$(MAKE) clean
-	ruby extconf.rb -- --enable-debug
-	$(MAKE)
+	$(MAKE) cflags="$(cflags) -DABRUBY_DEBUG=1"
 	ruby test/run_all.rb
+	$(MAKE) clean
+	$(MAKE)
 
 clean: clean-generated
 
