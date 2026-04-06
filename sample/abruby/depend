@@ -14,10 +14,10 @@ run: all
 test: all
 	ruby test/run_all.rb
 
-debug-test: all
-	make clean
+debug-test:
+	$(MAKE) clean
 	ruby extconf.rb -- --enable-debug
-	make
+	$(MAKE)
 	ruby test/run_all.rb
 
 clean: clean-generated
