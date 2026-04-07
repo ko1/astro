@@ -73,7 +73,7 @@
 - **Object**: inspect, to_s, ==, !=, !, nil?, class, is_a?, kind_of?, instance_of?
 - **Module**: inspect, include, const_get, const_set
 - **Class**: new, inspect (Module を継承)
-- **Integer**: 算術, 比較, **, <=>, <<, >>, &, |, ^, ~, to_s, to_f, zero?, abs
+- **Integer**: 算術, 比較, **, <=>, <<, >>, &, |, ^, ~, [], to_s, to_f, zero?, abs
 - **Float**: 算術, 比較, **, to_s, to_i, to_f, abs, zero?, floor, ceil, round
 - **String**: +, *, 比較, length/size, empty?, upcase, downcase, reverse, include?, to_s, to_i, inspect
 - **Array**: [], []=, push, pop, length/size, empty?, first, last, +, include?, inspect

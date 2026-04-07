@@ -182,6 +182,18 @@ static RESULT ab_integer_bnot(CTX *c, VALUE self, unsigned int argc, VALUE *argv
     return RESULT_OK(AB_NUM_WRAP(rb_funcall(rs, rb_intern("~"), 0)));
 }
 
+static RESULT ab_integer_aref(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    if (LIKELY(FIXNUM_P(self) && FIXNUM_P(argv[0]))) {
+        long val = FIX2LONG(self);
+        long idx = FIX2LONG(argv[0]);
+        if (idx < 0) return RESULT_OK(INT2FIX(0));
+        if (idx >= (long)(sizeof(long) * 8)) return RESULT_OK(INT2FIX(val < 0 ? 1 : 0));
+        return RESULT_OK(INT2FIX((val >> idx) & 1));
+    }
+    VALUE rs = AB_INT_UNWRAP(self), ra = AB_INT_UNWRAP(argv[0]);
+    return RESULT_OK(rb_funcall(rs, rb_intern("[]"), 1, ra));
+}
+
 void
 Init_abruby_integer(void)
 {
@@ -210,4 +222,5 @@ Init_abruby_integer(void)
     abruby_class_add_cfunc(ab_integer_class, "to_f",   ab_integer_to_f,    0);
     abruby_class_add_cfunc(ab_integer_class, "zero?",  ab_integer_zero_p,  0);
     abruby_class_add_cfunc(ab_integer_class, "abs",    ab_integer_abs,     0);
+    abruby_class_add_cfunc(ab_integer_class, "[]",     ab_integer_aref,    1);
 }

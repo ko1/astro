@@ -47,4 +47,12 @@ class TestInteger < AbRubyTest
   def test_add_overflow = assert_eval("4611686018427387903 + 1", 4611686018427387904)
   def test_sub_underflow = assert_eval("-4611686018427387904 - 1", -4611686018427387905)
   def test_mul_overflow = assert_eval("1000000000 * 1000000000", 1000000000000000000)
+
+  # === Bit indexing ===
+  def test_aref_bit0 = assert_eval("5[0]", 1)
+  def test_aref_bit1 = assert_eval("5[1]", 0)
+  def test_aref_bit2 = assert_eval("5[2]", 1)
+  def test_aref_negative_idx = assert_eval("5[-1]", 0)
+  def test_aref_negative_val = assert_eval("-1[0]", 1)
+  def test_aref_zero = assert_eval("0[0]", 0)
 end

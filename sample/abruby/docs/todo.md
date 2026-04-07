@@ -17,7 +17,7 @@ benchmark/optcarrot/bin/optcarrot-bench を動かすために必要な機能。
 ### 重要（主要な処理パスで使用）
 
 - [ ] `Integer#times`（ブロック依存）
-- [ ] `Integer#[]`（ビットインデックス `num[bit]`）
+- [x] `Integer#[]`（ビットインデックス `num[bit]`）
 - [ ] Array: `each`, `map`, `select`, `reject`, `fill`, `flatten`, `clear`, `replace`, `concat`（ブロック依存多数）
 - [ ] Hash: `each`, `fetch`, `merge`, `delete`, `compare_by_identity`
 - [ ] String: `gsub`, `split`, `strip`, `chomp`, `bytes`, `pack`, `unpack`, `bytesize`, `[]`
