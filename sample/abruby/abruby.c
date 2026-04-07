@@ -453,10 +453,10 @@ rb_alloc_node_float(VALUE self, VALUE str)
 }
 
 static VALUE
-rb_alloc_node_str(VALUE self, VALUE str)
+rb_alloc_node_str_new(VALUE self, VALUE str)
 {
     const char *cstr = strdup(StringValueCStr(str));
-    return wrap_node(ALLOC_node_str(cstr));
+    return wrap_node(ALLOC_node_str_new(cstr));
 }
 
 static VALUE
@@ -618,9 +618,9 @@ rb_alloc_node_class_def(VALUE self, VALUE name, VALUE super_name, VALUE body)
 }
 
 static VALUE
-rb_alloc_node_array_new(VALUE self, VALUE argc, VALUE arg_index)
+rb_alloc_node_ary_new(VALUE self, VALUE argc, VALUE arg_index)
 {
-    return wrap_node(ALLOC_node_array_new(FIX2UINT(argc), FIX2UINT(arg_index)));
+    return wrap_node(ALLOC_node_ary_new(FIX2UINT(argc), FIX2UINT(arg_index)));
 }
 
 static VALUE
@@ -834,7 +834,7 @@ Init_abruby(void)
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_num", rb_alloc_node_num, 1);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_bignum", rb_alloc_node_bignum, 1);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_float", rb_alloc_node_float, 1);
-    rb_define_singleton_method(rb_cAbRuby, "alloc_node_str", rb_alloc_node_str, 1);
+    rb_define_singleton_method(rb_cAbRuby, "alloc_node_str_new", rb_alloc_node_str_new, 1);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_sym", rb_alloc_node_sym, 1);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_range", rb_alloc_node_range, 3);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_regexp", rb_alloc_node_regexp, 2);
@@ -861,7 +861,7 @@ Init_abruby(void)
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_ivar_set", rb_alloc_node_ivar_set, 2);
 
     // Array / Hash
-    rb_define_singleton_method(rb_cAbRuby, "alloc_node_array_new", rb_alloc_node_array_new, 2);
+    rb_define_singleton_method(rb_cAbRuby, "alloc_node_ary_new", rb_alloc_node_ary_new, 2);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_hash_new", rb_alloc_node_hash_new, 2);
 
     // OOP

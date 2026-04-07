@@ -76,7 +76,7 @@ class AbRuby
         end
 
       when Prism::StringNode
-        AbRuby.alloc_node_str(node.unescaped)
+        AbRuby.alloc_node_str_new(node.unescaped)
 
       when Prism::InterpolatedStringNode
         # "hello #{expr} world" → "hello " + expr.to_s + " world"
@@ -90,9 +90,9 @@ class AbRuby
         parts = node.parts.map do |part|
           case part
           when Prism::StringNode
-            AbRuby.alloc_node_str(part.unescaped)
+            AbRuby.alloc_node_str_new(part.unescaped)
           when Prism::EmbeddedStatementsNode
-            inner = part.statements ? transduce(part.statements) : AbRuby.alloc_node_str("")
+            inner = part.statements ? transduce(part.statements) : AbRuby.alloc_node_str_new("")
             # call to_s on the result
             recv_store = AbRuby.alloc_node_lset(tmp_to_s, inner)
             recv_ref = AbRuby.alloc_node_lget(tmp_to_s)
@@ -281,7 +281,7 @@ class AbRuby
           AbRuby.alloc_node_lset(idx, transduce(elem))
         end
         rewind_arg_index(base_idx)
-        ary_node = AbRuby.alloc_node_array_new(elements.size, base_idx)
+        ary_node = AbRuby.alloc_node_ary_new(elements.size, base_idx)
         seq_nodes.empty? ? ary_node : build_seq(seq_nodes + [ary_node])
 
       when Prism::HashNode

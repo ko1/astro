@@ -141,7 +141,7 @@ node_nil(CTX * restrict c, NODE * restrict n)
 }
 
 NODE_DEF
-node_str(CTX * restrict c, NODE * restrict n, const char *str)
+node_str_new(CTX * restrict c, NODE * restrict n, const char *str)
 {
     return RESULT_OK(abruby_str_new_cstr(str));
 }
@@ -235,7 +235,7 @@ node_const_get(CTX * restrict c, NODE * restrict n, const char *name)
 // === Array / Hash literals ===
 
 NODE_DEF
-node_array_new(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_index)
+node_ary_new(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_index)
 {
     VALUE ary = rb_ary_new_capa(argc);
     for (uint32_t i = 0; i < argc; i++) {
