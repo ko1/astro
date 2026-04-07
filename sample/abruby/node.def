@@ -502,7 +502,7 @@ node_method_call(CTX * restrict c, NODE * restrict n, NODE *recv, const char *na
     // Push call frame (C stack allocated, for backtrace)
     // Update parent frame's line to track the current call site
     if (c->current_frame) c->current_frame->line = n->head.line;
-    struct abruby_frame frame = {c->current_frame, name, n->head.line};
+    struct abruby_frame frame = {c->current_frame, name, c->source_file, n->head.line};
     c->current_frame = &frame;
 
     RESULT r;

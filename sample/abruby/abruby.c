@@ -426,8 +426,7 @@ static const rb_data_type_t abruby_vm_type = {
 VALUE
 abruby_exception_new(CTX *c, struct abruby_frame *frame, VALUE message)
 {
-    struct abruby_vm *vm = VM_FROM_CTX(c);
-    const char *file = NIL_P(vm->current_file) ? "(abruby)" : RSTRING_PTR(vm->current_file);
+    (void)c;
 
     // Walk frame list (innermost first)
     struct abruby_frame *frame_arr[128];
@@ -436,9 +435,10 @@ abruby_exception_new(CTX *c, struct abruby_frame *frame, VALUE message)
         frame_arr[cnt++] = f;
 
     // Build backtrace Array.
-    // Each entry shows the frame's call site line and name.
+    // Each entry shows the frame's file, call site line, and name.
     VALUE bt_ary = rb_ary_new();
     for (int i = 0; i < cnt; i++) {
+        const char *file = frame_arr[i]->file ? frame_arr[i]->file : "(abruby)";
         rb_ary_push(bt_ary, rb_sprintf("%s:%d:in `%s'", file,
             frame_arr[i]->line, frame_arr[i]->name));
     }
@@ -872,13 +872,16 @@ abruby_require_file(CTX *c, VALUE rb_path)
     NODE *ast = unwrap_node(ast_obj);
     VALUE *save_fp = c->fp;
     struct abruby_frame *save_frame = c->current_frame;
+    const char *save_source = c->source_file;
     c->fp = c->env;
     c->current_class = NULL;
-    struct abruby_frame req_frame = {save_frame, "<main>", 0};
+    c->source_file = RSTRING_PTR(abs_str);
+    struct abruby_frame req_frame = {save_frame, "<main>", c->source_file, 0};
     c->current_frame = &req_frame;
     RESULT r = EVAL(c, ast);
     c->fp = save_fp;
     c->current_frame = save_frame;
+    c->source_file = save_source;
 
     vm->current_file = save_file;
 
@@ -935,8 +938,11 @@ rb_abruby_eval_ast(VALUE self, VALUE ast_obj)
     vm->ctx.fp = vm->ctx.env;
     vm->ctx.current_class = NULL;
 
+    // Set source file for frame tracking
+    vm->ctx.source_file = NIL_P(vm->current_file) ? "(abruby)" : RSTRING_PTR(vm->current_file);
+
     // Push <main> frame so backtrace always has a bottom frame
-    struct abruby_frame main_frame = {NULL, "<main>", 0};
+    struct abruby_frame main_frame = {NULL, "<main>", vm->ctx.source_file, 0};
     vm->ctx.current_frame = &main_frame;
 
     RESULT r = EVAL(&vm->ctx, ast);

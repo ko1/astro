@@ -258,6 +258,7 @@ struct abruby_gvar_table {
 struct abruby_frame {
     struct abruby_frame *prev;
     const char *name;  // method name (or "<main>")
+    const char *file;  // source file name at push time
     int32_t line;      // call site line number
 };
 
@@ -269,6 +270,7 @@ struct CTX_struct {
     struct abruby_class *main_class;    // per-instance, inherits from Object
     struct abruby_gvar_table *gvars;    // global variables
     struct abruby_frame *current_frame; // head of call frame linked list
+    const char *source_file;            // current source file name (for frames)
 };
 
 // exception object
