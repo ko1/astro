@@ -519,7 +519,7 @@ node_method_call(CTX * restrict c, NODE * restrict n, NODE *recv, const char *na
     struct abruby_frame frame;
     frame.prev = c->current_frame;
     frame.method = method;
-    c->current_frame = &frame;
+    frame.klass = klass;
     c->current_frame = &frame;
 
     RESULT r;
@@ -550,6 +550,62 @@ node_method_call(CTX * restrict c, NODE * restrict n, NODE *recv, const char *na
     }
 
     // Pop call frame (always — backtrace is on exception object)
+    c->current_frame = frame.prev;
+    return r;
+}
+
+// === super ===
+
+// Find the super method: walk from frame->klass->super looking for same method name
+static struct abruby_method *
+find_super_method(struct abruby_frame *frame)
+{
+    if (!frame || !frame->method || !frame->klass) return NULL;
+    const char *name = frame->method->name;
+    struct abruby_class *klass = frame->klass->super;
+    while (klass) {
+        for (unsigned int i = 0; i < klass->method_cnt; i++) {
+            if (strcmp(klass->methods[i].name, name) == 0) {
+                return &klass->methods[i];
+            }
+        }
+        klass = klass->super;
+    }
+    return NULL;
+}
+
+// super(args) — call parent method with explicit arguments
+NODE_DEF
+node_super(CTX * restrict c, NODE * restrict n, uint32_t params_cnt, uint32_t arg_index)
+{
+    struct abruby_method *method = find_super_method(c->current_frame);
+    if (!method) {
+        VALUE exc = abruby_exception_new(c, c->current_frame,
+            abruby_str_new_cstr("super: no superclass method"));
+        return (RESULT){exc, RESULT_RAISE};
+    }
+
+    struct abruby_frame frame;
+    frame.prev = c->current_frame;
+    frame.method = method;
+    // Find which class owns this method for correct super chain
+    frame.klass = c->current_frame->klass->super;
+    while (frame.klass) {
+        for (unsigned int i = 0; i < frame.klass->method_cnt; i++) {
+            if (&frame.klass->methods[i] == method) goto found;
+        }
+        frame.klass = frame.klass->super;
+    }
+found:
+    c->current_frame = &frame;
+
+    RESULT r;
+    if (method->type == ABRUBY_METHOD_CFUNC) {
+        r = method->u.cfunc.func(c, c->self, params_cnt, c->fp + arg_index);
+    } else {
+        r = method_call_body(c, arg_index, c->self, method->u.ast.body);
+    }
+
     c->current_frame = frame.prev;
     return r;
 }
@@ -673,6 +729,7 @@ node_plus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
     if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
         if (SHOULD_REWRITE(n)) {
             NODE *sp = ALLOC_node_fixnum_plus(CUR_LEFT(n, node_plus), CUR_RIGHT(n, node_plus));
+            sp->u.node_fixnum_plus.replaced_from = n;
             node_replace(n, sp);
         }
         long result = FIX2LONG(lv) + FIX2LONG(rv);
@@ -682,7 +739,7 @@ node_plus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
     return node_arith_fallback(c, n, lv, rv, "+");
 }
 
-NODE_DEF
+NODE_DEF @rewritable
 node_fixnum_plus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
@@ -695,13 +752,14 @@ node_fixnum_plus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
     // Rewrite to node_integer_plus for Fixnum/Bignum mixed
     if (SHOULD_REWRITE(n)) {
         NODE *ip = ALLOC_node_integer_plus(CUR_LEFT(n, node_fixnum_plus), CUR_RIGHT(n, node_fixnum_plus));
+        ip->u.node_integer_plus.replaced_from = n;
         node_replace(n, ip);
         return EVAL(c, ip);
     }
     return node_arith_fallback(c, n, lv, rv, "+");
 }
 
-NODE_DEF
+NODE_DEF @rewritable
 node_integer_plus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
@@ -725,6 +783,7 @@ node_minus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
     if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
         if (SHOULD_REWRITE(n)) {
             NODE *sp = ALLOC_node_fixnum_minus(CUR_LEFT(n, node_minus), CUR_RIGHT(n, node_minus));
+            sp->u.node_fixnum_minus.replaced_from = n;
             node_replace(n, sp);
         }
         long result = FIX2LONG(lv) - FIX2LONG(rv);
@@ -734,7 +793,7 @@ node_minus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
     return node_arith_fallback(c, n, lv, rv, "-");
 }
 
-NODE_DEF
+NODE_DEF @rewritable
 node_fixnum_minus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
@@ -746,13 +805,14 @@ node_fixnum_minus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
     }
     if (SHOULD_REWRITE(n)) {
         NODE *ip = ALLOC_node_integer_minus(CUR_LEFT(n, node_fixnum_minus), CUR_RIGHT(n, node_fixnum_minus));
+        ip->u.node_integer_minus.replaced_from = n;
         node_replace(n, ip);
         return EVAL(c, ip);
     }
     return node_arith_fallback(c, n, lv, rv, "-");
 }
 
-NODE_DEF
+NODE_DEF @rewritable
 node_integer_minus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
@@ -776,6 +836,7 @@ node_mul(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
     if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
         if (SHOULD_REWRITE(n)) {
             NODE *sp = ALLOC_node_fixnum_mul(CUR_LEFT(n, node_mul), CUR_RIGHT(n, node_mul));
+            sp->u.node_fixnum_mul.replaced_from = n;
             node_replace(n, sp);
         }
         long a = FIX2LONG(lv), b = FIX2LONG(rv);
@@ -789,7 +850,7 @@ node_mul(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
     return node_arith_fallback(c, n, lv, rv, "*");
 }
 
-NODE_DEF
+NODE_DEF @rewritable
 node_fixnum_mul(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
@@ -805,13 +866,14 @@ node_fixnum_mul(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
     }
     if (SHOULD_REWRITE(n)) {
         NODE *ip = ALLOC_node_integer_mul(CUR_LEFT(n, node_fixnum_mul), CUR_RIGHT(n, node_fixnum_mul));
+        ip->u.node_integer_mul.replaced_from = n;
         node_replace(n, ip);
         return EVAL(c, ip);
     }
     return node_arith_fallback(c, n, lv, rv, "*");
 }
 
-NODE_DEF
+NODE_DEF @rewritable
 node_integer_mul(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
@@ -843,6 +905,7 @@ node_div(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
         }
         if (SHOULD_REWRITE(n)) {
             NODE *sp = ALLOC_node_fixnum_div(CUR_LEFT(n, node_div), CUR_RIGHT(n, node_div));
+            sp->u.node_fixnum_div.replaced_from = n;
             node_replace(n, sp);
         }
         long a = FIX2LONG(lv);
@@ -853,7 +916,7 @@ node_div(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
     return node_arith_fallback(c, n, lv, rv, "/");
 }
 
-NODE_DEF
+NODE_DEF @rewritable
 node_fixnum_div(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
@@ -872,13 +935,14 @@ node_fixnum_div(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
     }
     if (SHOULD_REWRITE(n)) {
         NODE *ip = ALLOC_node_integer_div(CUR_LEFT(n, node_fixnum_div), CUR_RIGHT(n, node_fixnum_div));
+        ip->u.node_integer_div.replaced_from = n;
         node_replace(n, ip);
         return EVAL(c, ip);
     }
     return node_arith_fallback(c, n, lv, rv, "/");
 }
 
-NODE_DEF
+NODE_DEF @rewritable
 node_integer_div(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
@@ -930,6 +994,7 @@ node_lt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
     if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
         if (SHOULD_REWRITE(n)) {
             NODE *sp = ALLOC_node_fixnum_lt(CUR_LEFT(n, node_lt), CUR_RIGHT(n, node_lt));
+            sp->u.node_fixnum_lt.replaced_from = n;
             node_replace(n, sp);
         }
         return RESULT_OK(FIX2LONG(lv) < FIX2LONG(rv) ? Qtrue : Qfalse);
@@ -937,7 +1002,7 @@ node_lt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
     return node_arith_fallback(c, n, lv, rv, "<");
 }
 
-NODE_DEF
+NODE_DEF @rewritable
 node_fixnum_lt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
@@ -956,6 +1021,7 @@ node_le(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
     if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
         if (SHOULD_REWRITE(n)) {
             NODE *sp = ALLOC_node_fixnum_le(CUR_LEFT(n, node_le), CUR_RIGHT(n, node_le));
+            sp->u.node_fixnum_le.replaced_from = n;
             node_replace(n, sp);
         }
         return RESULT_OK(FIX2LONG(lv) <= FIX2LONG(rv) ? Qtrue : Qfalse);
@@ -963,7 +1029,7 @@ node_le(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
     return node_arith_fallback(c, n, lv, rv, "<=");
 }
 
-NODE_DEF
+NODE_DEF @rewritable
 node_fixnum_le(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
@@ -982,6 +1048,7 @@ node_gt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
     if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
         if (SHOULD_REWRITE(n)) {
             NODE *sp = ALLOC_node_fixnum_gt(CUR_LEFT(n, node_gt), CUR_RIGHT(n, node_gt));
+            sp->u.node_fixnum_gt.replaced_from = n;
             node_replace(n, sp);
         }
         return RESULT_OK(FIX2LONG(lv) > FIX2LONG(rv) ? Qtrue : Qfalse);
@@ -989,7 +1056,7 @@ node_gt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
     return node_arith_fallback(c, n, lv, rv, ">");
 }
 
-NODE_DEF
+NODE_DEF @rewritable
 node_fixnum_gt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
@@ -1008,6 +1075,7 @@ node_ge(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
     if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
         if (SHOULD_REWRITE(n)) {
             NODE *sp = ALLOC_node_fixnum_ge(CUR_LEFT(n, node_ge), CUR_RIGHT(n, node_ge));
+            sp->u.node_fixnum_ge.replaced_from = n;
             node_replace(n, sp);
         }
         return RESULT_OK(FIX2LONG(lv) >= FIX2LONG(rv) ? Qtrue : Qfalse);
@@ -1015,7 +1083,7 @@ node_ge(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
     return node_arith_fallback(c, n, lv, rv, ">=");
 }
 
-NODE_DEF
+NODE_DEF @rewritable
 node_fixnum_ge(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));

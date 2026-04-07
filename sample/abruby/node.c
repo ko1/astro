@@ -374,39 +374,81 @@ abruby_node_mark(void *ptr)
         mark_child(n->u.node_rescue.rescue_body);
         mark_child(n->u.node_rescue.ensure_body);
     }
-    // Arithmetic and comparison type-specific nodes
-    else if (k == &kind_node_plus || k == &kind_node_fixnum_plus || k == &kind_node_integer_plus) {
+    // Arithmetic and comparison nodes (generic + type-specific)
+    else if (k == &kind_node_plus) {
         mark_child(n->u.node_plus.left);
         mark_child(n->u.node_plus.right);
     }
-    else if (k == &kind_node_minus || k == &kind_node_fixnum_minus || k == &kind_node_integer_minus) {
+    else if (k == &kind_node_fixnum_plus || k == &kind_node_integer_plus) {
+        mark_child(n->u.node_plus.left);
+        mark_child(n->u.node_plus.right);
+        // @rewritable: keep replaced (orphaned) node alive
+        mark_child(n->u.node_fixnum_plus.replaced_from);
+    }
+    else if (k == &kind_node_minus) {
         mark_child(n->u.node_minus.left);
         mark_child(n->u.node_minus.right);
     }
-    else if (k == &kind_node_mul || k == &kind_node_fixnum_mul || k == &kind_node_integer_mul) {
+    else if (k == &kind_node_fixnum_minus || k == &kind_node_integer_minus) {
+        mark_child(n->u.node_minus.left);
+        mark_child(n->u.node_minus.right);
+        mark_child(n->u.node_fixnum_minus.replaced_from);
+    }
+    else if (k == &kind_node_mul) {
         mark_child(n->u.node_mul.left);
         mark_child(n->u.node_mul.right);
     }
-    else if (k == &kind_node_div || k == &kind_node_fixnum_div || k == &kind_node_integer_div) {
+    else if (k == &kind_node_fixnum_mul || k == &kind_node_integer_mul) {
+        mark_child(n->u.node_mul.left);
+        mark_child(n->u.node_mul.right);
+        mark_child(n->u.node_fixnum_mul.replaced_from);
+    }
+    else if (k == &kind_node_div) {
         mark_child(n->u.node_div.left);
         mark_child(n->u.node_div.right);
     }
-    else if (k == &kind_node_lt || k == &kind_node_fixnum_lt) {
+    else if (k == &kind_node_fixnum_div || k == &kind_node_integer_div) {
+        mark_child(n->u.node_div.left);
+        mark_child(n->u.node_div.right);
+        mark_child(n->u.node_fixnum_div.replaced_from);
+    }
+    else if (k == &kind_node_lt) {
         mark_child(n->u.node_lt.left);
         mark_child(n->u.node_lt.right);
     }
-    else if (k == &kind_node_le || k == &kind_node_fixnum_le) {
+    else if (k == &kind_node_fixnum_lt) {
+        mark_child(n->u.node_lt.left);
+        mark_child(n->u.node_lt.right);
+        mark_child(n->u.node_fixnum_lt.replaced_from);
+    }
+    else if (k == &kind_node_le) {
         mark_child(n->u.node_le.left);
         mark_child(n->u.node_le.right);
     }
-    else if (k == &kind_node_gt || k == &kind_node_fixnum_gt) {
+    else if (k == &kind_node_fixnum_le) {
+        mark_child(n->u.node_le.left);
+        mark_child(n->u.node_le.right);
+        mark_child(n->u.node_fixnum_le.replaced_from);
+    }
+    else if (k == &kind_node_gt) {
         mark_child(n->u.node_gt.left);
         mark_child(n->u.node_gt.right);
     }
-    else if (k == &kind_node_ge || k == &kind_node_fixnum_ge) {
+    else if (k == &kind_node_fixnum_gt) {
+        mark_child(n->u.node_gt.left);
+        mark_child(n->u.node_gt.right);
+        mark_child(n->u.node_fixnum_gt.replaced_from);
+    }
+    else if (k == &kind_node_ge) {
         mark_child(n->u.node_ge.left);
         mark_child(n->u.node_ge.right);
     }
+    else if (k == &kind_node_fixnum_ge) {
+        mark_child(n->u.node_ge.left);
+        mark_child(n->u.node_ge.right);
+        mark_child(n->u.node_fixnum_ge.replaced_from);
+    }
+
 }
 
 struct abruby_method *
