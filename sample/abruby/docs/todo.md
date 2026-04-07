@@ -108,6 +108,7 @@ benchmark/optcarrot/bin/optcarrot-bench を動かすために必要な機能。
 ## ランタイム・内部実装
 
 - [x] ~~abruby オブジェクトの free（現在リーク前提）~~ → `RUBY_DEFAULT_FREE` で GC sweep 時に解放
+- [ ] case/when の最適化（現在 if/elsif チェーンに desugar。整数リテラルのみの when はジャンプテーブル化等）
 - [ ] インラインキャッシュ（現在 strcmp 線形探索）
 - [ ] メソッド/ivar/定数テーブルの動的拡張
 - [ ] スタックオーバーフロー検出
