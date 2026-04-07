@@ -325,6 +325,35 @@ class AbRuby
         body = node.body ? transduce(node.body) : AbRuby.alloc_node_nil
         AbRuby.alloc_node_class_def(name, super_name, body)
 
+      when Prism::MultiWriteNode
+        # a, b = 1, 2 — right side is always ArrayNode from parser
+        lefts = node.lefts
+        values = node.value
+
+        # Evaluate right-hand values into temp slots
+        if values.is_a?(Prism::ArrayNode)
+          rhs_nodes = values.elements.map { |e| transduce(e) }
+        else
+          raise "unsupported multi-assign RHS: #{values.class}"
+        end
+
+        assigns = []
+        lefts.each_with_index do |target, i|
+          rhs = i < rhs_nodes.size ? rhs_nodes[i] : AbRuby.alloc_node_nil
+          case target
+          when Prism::LocalVariableTargetNode
+            assigns << AbRuby.alloc_node_lset(lvar_index(target.name), rhs)
+          when Prism::InstanceVariableTargetNode
+            assigns << AbRuby.alloc_node_ivar_set(target.name.to_s, rhs)
+          when Prism::GlobalVariableTargetNode
+            assigns << AbRuby.alloc_node_gset(target.name.to_s, rhs)
+          else
+            raise "unsupported multi-assign target: #{target.class}"
+          end
+        end
+
+        build_seq(assigns)
+
       when Prism::BeginNode
         body = node.statements ? transduce(node.statements) : AbRuby.alloc_node_nil
 
