@@ -624,6 +624,13 @@ rb_alloc_node_hash_new(VALUE self, VALUE argc, VALUE arg_index)
 }
 
 static VALUE
+rb_alloc_node_const_set(VALUE self, VALUE name, VALUE value)
+{
+    const char *cname = strdup(StringValueCStr(name));
+    return wrap_node(ALLOC_node_const_set(cname, unwrap_node(value)));
+}
+
+static VALUE
 rb_alloc_node_const_get(VALUE self, VALUE name)
 {
     const char *cname = strdup(StringValueCStr(name));
@@ -853,6 +860,7 @@ Init_abruby(void)
     // OOP
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_module_def", rb_alloc_node_module_def, 2);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_class_def", rb_alloc_node_class_def, 3);
+    rb_define_singleton_method(rb_cAbRuby, "alloc_node_const_set", rb_alloc_node_const_set, 2);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_const_get", rb_alloc_node_const_get, 1);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_const_path_get", rb_alloc_node_const_path_get, 2);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_method_call", rb_alloc_node_method_call, 4);

@@ -208,6 +208,15 @@ node_const_path_get(CTX * restrict c, NODE * restrict n, const char *parent_name
 }
 
 NODE_DEF
+node_const_set(CTX * restrict c, NODE * restrict n, const char *name, NODE *value)
+{
+    VALUE v = UNWRAP(EVAL_ARG(c, value));
+    struct abruby_class *scope = c->current_class ? c->current_class : c->main_class;
+    abruby_class_set_const(scope, name, v);
+    return RESULT_OK(v);
+}
+
+NODE_DEF
 node_const_get(CTX * restrict c, NODE * restrict n, const char *name)
 {
     // Check main_class first, then Object

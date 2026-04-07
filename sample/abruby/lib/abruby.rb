@@ -301,6 +301,9 @@ class AbRuby
       when Prism::SelfNode
         AbRuby.alloc_node_self
 
+      when Prism::ConstantWriteNode
+        AbRuby.alloc_node_const_set(node.name.to_s, transduce(node.value))
+
       when Prism::ConstantReadNode
         AbRuby.alloc_node_const_get(node.name.to_s)
 

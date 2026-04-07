@@ -49,6 +49,7 @@
 - `Class#new` + `initialize`
 - クラスの再オープン
 - クラスオブジェクトは VALUE（定数参照で取得）
+- 定数代入: `FOO = 42`
 - 定数参照: `Float::INFINITY` 等 (`::` 構文)
 - Class < Module の継承関係
 
