@@ -27,7 +27,7 @@ static RESULT ab_integer_div(CTX *c, VALUE self, unsigned int argc, VALUE *argv)
     if (LIKELY(FIXNUM_P(self) && FIXNUM_P(argv[0]))) {
         long a = FIX2LONG(self), b = FIX2LONG(argv[0]);
         if (UNLIKELY(b == 0)) {
-            VALUE exc = abruby_exception_new(c, c->current_frame, abruby_str_new_cstr("divided by 0"));
+            VALUE exc = abruby_exception_new(c, c->current_frame, false, abruby_str_new_cstr("divided by 0"));
             return (RESULT){exc, RESULT_RAISE};
         }
         long d = a / b;
@@ -43,7 +43,7 @@ static RESULT ab_integer_mod(CTX *c, VALUE self, unsigned int argc, VALUE *argv)
     if (LIKELY(FIXNUM_P(self) && FIXNUM_P(argv[0]))) {
         long a = FIX2LONG(self), b = FIX2LONG(argv[0]);
         if (UNLIKELY(b == 0)) {
-            VALUE exc = abruby_exception_new(c, c->current_frame, abruby_str_new_cstr("divided by 0"));
+            VALUE exc = abruby_exception_new(c, c->current_frame, false, abruby_str_new_cstr("divided by 0"));
             return (RESULT){exc, RESULT_RAISE};
         }
         long r = a % b;

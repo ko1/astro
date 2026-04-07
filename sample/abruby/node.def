@@ -22,7 +22,8 @@
 
 static void
 abruby_class_add_method(struct abruby_class *klass, const char *name,
-                        struct Node *body, unsigned int params_cnt, unsigned int locals_cnt)
+                        struct Node *body, unsigned int params_cnt, unsigned int locals_cnt,
+                        const char *source_file)
 {
     for (unsigned int i = 0; i < klass->method_cnt; i++) {
         if (strcmp(klass->methods[i].name, name) == 0) {
@@ -30,6 +31,7 @@ abruby_class_add_method(struct abruby_class *klass, const char *name,
             klass->methods[i].u.ast.body = body;
             klass->methods[i].u.ast.params_cnt = params_cnt;
             klass->methods[i].u.ast.locals_cnt = locals_cnt;
+            klass->methods[i].u.ast.source_file = source_file;
             return;
         }
     }
@@ -39,6 +41,7 @@ abruby_class_add_method(struct abruby_class *klass, const char *name,
     m->u.ast.body = body;
     m->u.ast.params_cnt = params_cnt;
     m->u.ast.locals_cnt = locals_cnt;
+    m->u.ast.source_file = source_file;
 }
 
 static struct abruby_method *
@@ -85,15 +88,19 @@ find_class(CTX *c, const char *name)
 }
 
 static RESULT
-method_call_body(CTX *c, uint32_t arg_index, VALUE recv, struct Node *body)
+method_call_body(CTX *c, uint32_t arg_index, VALUE recv, struct Node *body,
+                 const char *method_source_file)
 {
     VALUE *save_fp = c->fp;
     VALUE save_self = c->self;
+    const char *save_source = c->source_file;
     c->fp = save_fp + arg_index;
     c->self = recv;
+    if (method_source_file) c->source_file = method_source_file;
     RESULT r = EVAL(c, body);
     c->fp = save_fp;
     c->self = save_self;
+    c->source_file = save_source;
     return RESULT_OK(UNWRAP_ALSO(RESULT_RETURN, r));
 }
 
@@ -433,7 +440,7 @@ NODE_DEF @noinline
 node_def(CTX * restrict c, NODE * restrict n, const char *name, NODE *body, uint32_t params_cnt, uint32_t locals_cnt)
 {
     struct abruby_class *klass = c->current_class ? c->current_class : c->main_class;
-    abruby_class_add_method(klass, name, body, params_cnt, locals_cnt);
+    abruby_class_add_method(klass, name, body, params_cnt, locals_cnt, c->source_file);
     return RESULT_OK(Qnil);
 }
 
@@ -500,8 +507,6 @@ node_method_call(CTX * restrict c, NODE * restrict n, NODE *recv, const char *na
     struct abruby_method *method = abruby_class_find_method(klass, name);
 
     // Push call frame (C stack allocated, for backtrace)
-    // Update parent frame's line to track the current call site
-    if (c->current_frame) c->current_frame->line = n->head.line;
     struct abruby_frame frame = {c->current_frame, name, c->source_file, n->head.line};
     c->current_frame = &frame;
 
@@ -522,14 +527,14 @@ node_method_call(CTX * restrict c, NODE * restrict n, NODE *recv, const char *na
             r = mm->u.cfunc.func(c, recv_val, params_cnt + 1, c->fp + arg_index);
         }
         else {
-            r = method_call_body(c, arg_index, recv_val, mm->u.ast.body);
+            r = method_call_body(c, arg_index, recv_val, mm->u.ast.body, mm->u.ast.source_file);
         }
     }
     else if (method->type == ABRUBY_METHOD_CFUNC) {
         r = method->u.cfunc.func(c, recv_val, params_cnt, c->fp + arg_index);
     }
     else {
-        r = method_call_body(c, arg_index, recv_val, method->u.ast.body);
+        r = method_call_body(c, arg_index, recv_val, method->u.ast.body, method->u.ast.source_file);
     }
 
     // Pop call frame (always — backtrace is on exception object)

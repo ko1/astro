@@ -69,6 +69,7 @@ struct abruby_method {
             struct Node *body;
             unsigned int params_cnt;
             unsigned int locals_cnt;
+            const char *source_file; // file where method was defined
         } ast;
         struct {
             abruby_cfunc_t func;

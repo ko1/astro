@@ -284,15 +284,18 @@ abruby_call_method(CTX *c, VALUE recv, struct abruby_method *method,
     } else {
         VALUE *save_fp = c->fp;
         VALUE save_self = c->self;
+        const char *save_source = c->source_file;
         c->fp = save_fp + 16;
         // copy args into frame
         for (unsigned int i = 0; i < argc; i++) {
             c->fp[i] = argv[i];
         }
         c->self = recv;
+        if (method->u.ast.source_file) c->source_file = method->u.ast.source_file;
         RESULT r = EVAL(c, method->u.ast.body);
         c->fp = save_fp;
         c->self = save_self;
+        c->source_file = save_source;
         // Catch RETURN at method boundary
         if (r.state == RESULT_RETURN) return RESULT_OK(r.value);
         return r;
@@ -424,23 +427,37 @@ static const rb_data_type_t abruby_vm_type = {
 
 // Create an exception object with backtrace captured from the current frame chain
 VALUE
-abruby_exception_new(CTX *c, struct abruby_frame *frame, VALUE message)
+abruby_exception_new(CTX *c, struct abruby_frame *start_frame, bool skip_first, VALUE message)
 {
     (void)c;
 
     // Walk frame list (innermost first)
     struct abruby_frame *frame_arr[128];
     int cnt = 0;
-    for (struct abruby_frame *f = frame; f && cnt < 128; f = f->prev)
+    for (struct abruby_frame *f = start_frame; f && cnt < 128; f = f->prev)
         frame_arr[cnt++] = f;
 
     // Build backtrace Array.
-    // Each entry shows the frame's file, call site line, and name.
+    //
+    // Shift model: entry[i] uses line/file from frame[i] and name from frame[i+1].
+    // This maps "call site line" to "containing method name" (CRuby-like).
+    //
+    // skip_first=true  (raise): full shift only — "raise" name disappears
+    // skip_first=false (cfunc): unshifted first entry (shows cfunc name), then full shift
     VALUE bt_ary = rb_ary_new();
-    for (int i = 0; i < cnt; i++) {
+
+    if (!skip_first && cnt >= 1) {
+        // Show the error-raising method itself (e.g. "/", "%")
+        const char *file = frame_arr[0]->file ? frame_arr[0]->file : "(abruby)";
+        rb_ary_push(bt_ary, rb_sprintf("%s:%d:in `%s'", file,
+            frame_arr[0]->line, frame_arr[0]->name));
+    }
+
+    // Shifted entries: line/file from frame[i], name from frame[i+1]
+    for (int i = 0; i + 1 < cnt; i++) {
         const char *file = frame_arr[i]->file ? frame_arr[i]->file : "(abruby)";
         rb_ary_push(bt_ary, rb_sprintf("%s:%d:in `%s'", file,
-            frame_arr[i]->line, frame_arr[i]->name));
+            frame_arr[i]->line, frame_arr[i + 1]->name));
     }
 
     // Create exception object

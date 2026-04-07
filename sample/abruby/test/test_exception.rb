@@ -232,9 +232,9 @@ class TestException < AbRubyTest
     code = "def a\nraise \"x\"\nend\ndef b\na\nend\nb"
     err = assert_raises(RuntimeError) { AbRuby.eval(code) }
     bt = err.backtrace
-    assert_match(/2:in `a'/, bt[0])       # raise at line 2 (inside a)
-    assert_match(/5:in `b'/, bt[1])       # a called at line 5 (inside b)
-    assert_match(/7:in `<main>'/, bt[2])  # b called at line 7 (in main)
+    assert_match(/2:in `a'/, bt[0])        # raise at line 2, containing method a
+    assert_match(/5:in `b'/, bt[1])        # a called at line 5, containing method b
+    assert_match(/7:in `<main>'/, bt[2])   # b called at line 7, at top level
   end
 
   def test_backtrace_deep_chain
@@ -252,7 +252,7 @@ class TestException < AbRubyTest
     bt = err.backtrace
     # backtrace is from "raise b" (line 6, inside f), not from "raise a"
     assert_match(/6:in `f'/, bt[0])
-    assert_match(/in `<main>'/, bt[1])
+    assert_match(/8:in `<main>'/, bt[1])
   end
 
   def test_exception_message_method
