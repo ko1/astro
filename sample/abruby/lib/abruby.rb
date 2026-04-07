@@ -5,9 +5,11 @@ class AbRuby
   class Parser
     def initialize
       @frames = []
+      @source_file = nil
     end
 
-    def parse(code)
+    def parse(code, source_file = nil)
+      @source_file = source_file
       result = Prism.parse(code)
       unless result.success?
         raise SyntaxError, "parse error: #{result.errors.map(&:message).join(', ')}"
@@ -490,7 +492,9 @@ class AbRuby
         end
 
       else
-        raise "unsupported node: #{node.class} (#{node.type})"
+        loc = node.location
+        file = @source_file || "(unknown)"
+        raise "unsupported node: #{node.class} at #{file}:#{loc.start_line}"
       end
     end
 

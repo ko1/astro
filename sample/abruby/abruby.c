@@ -936,7 +936,7 @@ abruby_require_file(CTX *c, VALUE rb_path)
 
     // Parse via AbRuby::Parser
     VALUE parser = rb_funcall(rb_const_get(rb_cAbRuby, rb_intern("Parser")), rb_intern("new"), 0);
-    VALUE ast_obj = rb_funcall(parser, rb_intern("parse"), 1, code);
+    VALUE ast_obj = rb_funcall(parser, rb_intern("parse"), 2, code, abs_str);
 
     // Mark as loaded
     rb_ary_push(vm->loaded_files, abs_str);
