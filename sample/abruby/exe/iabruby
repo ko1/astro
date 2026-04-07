@@ -1,0 +1,28 @@
+#!/usr/bin/env ruby
+
+require_relative '../lib/abruby'
+require_relative '../lib/abruby/version'
+require 'readline'
+
+puts "iabruby #{AbRuby::VERSION} (AbRuby interactive shell)"
+
+vm = AbRuby.new
+
+loop do
+  line = Readline.readline("abruby> ", true)
+  break unless line
+
+  line.strip!
+  next if line.empty?
+
+  begin
+    result = vm.eval(line)
+    puts "=> #{result.inspect}"
+  rescue SyntaxError => e
+    puts "SyntaxError: #{e.message}"
+  rescue => e
+    puts "#{e.class}: #{e.message}"
+  end
+end
+
+puts
