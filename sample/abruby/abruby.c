@@ -876,7 +876,7 @@ abruby_require_file(CTX *c, VALUE rb_path)
     c->fp = c->env;
     c->current_class = NULL;
     c->source_file = RSTRING_PTR(abs_str);
-    struct abruby_frame req_frame = {save_frame, "<main>", c->source_file, 0};
+    struct abruby_frame req_frame = {save_frame, "<top (required)>", c->source_file, 0};
     c->current_frame = &req_frame;
     RESULT r = EVAL(c, ast);
     c->fp = save_fp;
