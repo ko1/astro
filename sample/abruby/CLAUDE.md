@@ -100,22 +100,22 @@ sample/abruby/
 | カテゴリ | ノード | オペランド |
 |---|---|---|
 | リテラル | `node_num` | `int32_t num` |
-| | `node_float` | `const char *str` |
-| | `node_bignum` | `const char *str` |
+| | `node_float_new` | `const char *str` |
+| | `node_bignum_new` | `const char *str` |
 | | `node_true` | (なし) |
 | | `node_false` | (なし) |
 | | `node_nil` | (なし) |
 | | `node_str_new` | `const char *str` |
 | | `node_sym` | `const char *str` |
 | | `node_self` | (なし) |
-| | `node_range` | `NODE *begin_node, NODE *end_node, uint32_t exclude_end` |
-| | `node_regexp` | `const char *source, const char *flags` |
+| | `node_range_new` | `NODE *begin_node, NODE *end_node, uint32_t exclude_end` |
+| | `node_regexp_new` | `const char *source, const char *flags` |
 | コンテナ | `node_ary_new` | `uint32_t argc, uint32_t arg_index` |
 | | `node_hash_new` | `uint32_t argc, uint32_t arg_index` |
-| 変数 | `node_lget` | `uint32_t index` |
-| | `node_lset` | `uint32_t index, NODE *rhs` |
-| | `node_gget` | `const char *name` |
-| | `node_gset` | `const char *name, NODE *rhs` |
+| 変数 | `node_lvar_get` | `uint32_t index` |
+| | `node_lvar_set` | `uint32_t index, NODE *rhs` |
+| | `node_gvar_get` | `const char *name` |
+| | `node_gvar_set` | `const char *name, NODE *rhs` |
 | | `node_ivar_get` | `const char *name` |
 | | `node_ivar_set` | `const char *name, NODE *value` |
 | スコープ | `node_scope` | `uint32_t envsize, NODE *body` |

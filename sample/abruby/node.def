@@ -111,13 +111,13 @@ extern VALUE abruby_float_new_wrap(VALUE rb_float);
 extern VALUE abruby_bignum_new(VALUE rb_bignum);
 
 NODE_DEF
-node_float(CTX * restrict c, NODE * restrict n, const char *str)
+node_float_new(CTX * restrict c, NODE * restrict n, const char *str)
 {
     return RESULT_OK(abruby_float_new_wrap(rb_float_new(strtod(str, NULL))));
 }
 
 NODE_DEF
-node_bignum(CTX * restrict c, NODE * restrict n, const char *str)
+node_bignum_new(CTX * restrict c, NODE * restrict n, const char *str)
 {
     return RESULT_OK(abruby_bignum_new(rb_cstr_to_inum(str, 10, 1)));
 }
@@ -155,7 +155,7 @@ node_sym(CTX * restrict c, NODE * restrict n, const char *str)
 extern VALUE abruby_range_new(VALUE begin, VALUE end, bool exclude_end);
 
 NODE_DEF
-node_range(CTX * restrict c, NODE * restrict n, NODE *begin_node, NODE *end_node, uint32_t exclude_end)
+node_range_new(CTX * restrict c, NODE * restrict n, NODE *begin_node, NODE *end_node, uint32_t exclude_end)
 {
     VALUE b = UNWRAP(EVAL_ARG(c, begin_node));
     VALUE e = UNWRAP(EVAL_ARG(c, end_node));
@@ -165,7 +165,7 @@ node_range(CTX * restrict c, NODE * restrict n, NODE *begin_node, NODE *end_node
 extern VALUE abruby_regexp_new(VALUE rb_regexp);
 
 NODE_DEF
-node_regexp(CTX * restrict c, NODE * restrict n, const char *source, const char *flags)
+node_regexp_new(CTX * restrict c, NODE * restrict n, const char *source, const char *flags)
 {
     int options = 0;
     for (const char *p = flags; *p; p++) {
@@ -309,13 +309,13 @@ abruby_gvar_set(CTX *c, const char *name, VALUE val)
 }
 
 NODE_DEF
-node_gget(CTX * restrict c, NODE * restrict n, const char *name)
+node_gvar_get(CTX * restrict c, NODE * restrict n, const char *name)
 {
     return RESULT_OK(abruby_gvar_get(c, name));
 }
 
 NODE_DEF
-node_gset(CTX * restrict c, NODE * restrict n, const char *name, NODE *rhs)
+node_gvar_set(CTX * restrict c, NODE * restrict n, const char *name, NODE *rhs)
 {
     VALUE v = UNWRAP(EVAL_ARG(c, rhs));
     abruby_gvar_set(c, name, v);
@@ -325,13 +325,13 @@ node_gset(CTX * restrict c, NODE * restrict n, const char *name, NODE *rhs)
 // === Local Variables ===
 
 NODE_DEF
-node_lget(CTX * restrict c, NODE * restrict n, uint32_t index)
+node_lvar_get(CTX * restrict c, NODE * restrict n, uint32_t index)
 {
     return RESULT_OK(c->fp[index]);
 }
 
 NODE_DEF
-node_lset(CTX * restrict c, NODE * restrict n, uint32_t index, NODE *rhs)
+node_lvar_set(CTX * restrict c, NODE * restrict n, uint32_t index, NODE *rhs)
 {
     VALUE v = UNWRAP(EVAL_ARG(c, rhs));
     c->fp[index] = v;

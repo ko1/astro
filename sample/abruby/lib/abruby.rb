@@ -65,14 +65,14 @@ class AbRuby
         build_seq(stmts)
 
       when Prism::FloatNode
-        AbRuby.alloc_node_float(node.value.to_s)
+        AbRuby.alloc_node_float_new(node.value.to_s)
 
       when Prism::IntegerNode
         v = node.value
         if v >= -(2**30) && v < 2**30
           AbRuby.alloc_node_num(v)
         else
-          AbRuby.alloc_node_bignum(v.to_s)
+          AbRuby.alloc_node_bignum_new(v.to_s)
         end
 
       when Prism::StringNode
@@ -94,8 +94,8 @@ class AbRuby
           when Prism::EmbeddedStatementsNode
             inner = part.statements ? transduce(part.statements) : AbRuby.alloc_node_str_new("")
             # call to_s on the result
-            recv_store = AbRuby.alloc_node_lset(tmp_to_s, inner)
-            recv_ref = AbRuby.alloc_node_lget(tmp_to_s)
+            recv_store = AbRuby.alloc_node_lvar_set(tmp_to_s, inner)
+            recv_ref = AbRuby.alloc_node_lvar_get(tmp_to_s)
             to_s_call = AbRuby.alloc_node_method_call(recv_ref, "to_s", 0, tmp_to_s + 1)
             AbRuby.alloc_node_seq(recv_store, to_s_call)
           else
@@ -107,9 +107,9 @@ class AbRuby
 
         # concatenate with +
         parts.reduce do |left, right|
-          recv_store = AbRuby.alloc_node_lset(tmp_recv, left)
-          arg_store = AbRuby.alloc_node_lset(tmp_arg, right)
-          recv_ref = AbRuby.alloc_node_lget(tmp_recv)
+          recv_store = AbRuby.alloc_node_lvar_set(tmp_recv, left)
+          arg_store = AbRuby.alloc_node_lvar_set(tmp_arg, right)
+          recv_ref = AbRuby.alloc_node_lvar_get(tmp_recv)
           concat = AbRuby.alloc_node_method_call(recv_ref, "+", 1, tmp_arg)
           build_seq([recv_store, arg_store, concat])
         end
@@ -134,21 +134,21 @@ class AbRuby
         end
 
       when Prism::GlobalVariableReadNode
-        AbRuby.alloc_node_gget(node.name.to_s)
+        AbRuby.alloc_node_gvar_get(node.name.to_s)
 
       when Prism::GlobalVariableWriteNode
-        AbRuby.alloc_node_gset(node.name.to_s, transduce(node.value))
+        AbRuby.alloc_node_gvar_set(node.name.to_s, transduce(node.value))
 
       when Prism::GlobalVariableOperatorWriteNode
         op = node.binary_operator.to_s
         call_arg_idx = arg_index
         idx = inc_arg_index
-        store_rhs = AbRuby.alloc_node_lset(idx, transduce(node.value))
+        store_rhs = AbRuby.alloc_node_lvar_set(idx, transduce(node.value))
         rewind_arg_index(call_arg_idx)
 
-        recv = AbRuby.alloc_node_gget(node.name.to_s)
+        recv = AbRuby.alloc_node_gvar_get(node.name.to_s)
         call_node = AbRuby.alloc_node_method_call(recv, op, 1, call_arg_idx)
-        AbRuby.alloc_node_gset(node.name.to_s,
+        AbRuby.alloc_node_gvar_set(node.name.to_s,
           AbRuby.alloc_node_seq(store_rhs, call_node))
 
       when Prism::InstanceVariableReadNode
@@ -161,7 +161,7 @@ class AbRuby
         op = node.binary_operator.to_s
         call_arg_idx = arg_index
         idx = inc_arg_index
-        store_rhs = AbRuby.alloc_node_lset(idx, transduce(node.value))
+        store_rhs = AbRuby.alloc_node_lvar_set(idx, transduce(node.value))
         rewind_arg_index(call_arg_idx)
 
         recv = AbRuby.alloc_node_ivar_get(node.name.to_s)
@@ -170,22 +170,22 @@ class AbRuby
           AbRuby.alloc_node_seq(store_rhs, call_node))
 
       when Prism::LocalVariableReadNode
-        AbRuby.alloc_node_lget(lvar_index(node.name))
+        AbRuby.alloc_node_lvar_get(lvar_index(node.name))
 
       when Prism::LocalVariableWriteNode
-        AbRuby.alloc_node_lset(lvar_index(node.name), transduce(node.value))
+        AbRuby.alloc_node_lvar_set(lvar_index(node.name), transduce(node.value))
 
       when Prism::LocalVariableOperatorWriteNode
         # a += 1 => a = a.+(1)
         op = node.binary_operator.to_s
         call_arg_idx = arg_index
         idx = inc_arg_index
-        store_rhs = AbRuby.alloc_node_lset(idx, transduce(node.value))
+        store_rhs = AbRuby.alloc_node_lvar_set(idx, transduce(node.value))
         rewind_arg_index(call_arg_idx)
 
-        recv = AbRuby.alloc_node_lget(lvar_index(node.name))
+        recv = AbRuby.alloc_node_lvar_get(lvar_index(node.name))
         call_node = AbRuby.alloc_node_method_call(recv, op, 1, call_arg_idx)
-        AbRuby.alloc_node_lset(lvar_index(node.name),
+        AbRuby.alloc_node_lvar_set(lvar_index(node.name),
           AbRuby.alloc_node_seq(store_rhs, call_node))
 
       when Prism::IfNode
@@ -221,18 +221,18 @@ class AbRuby
       when Prism::AndNode
         # a && b → tmp = a; if(tmp, b, tmp)
         idx = inc_arg_index
-        store = AbRuby.alloc_node_lset(idx, transduce(node.left))
-        ref = AbRuby.alloc_node_lget(idx)
-        ref2 = AbRuby.alloc_node_lget(idx)
+        store = AbRuby.alloc_node_lvar_set(idx, transduce(node.left))
+        ref = AbRuby.alloc_node_lvar_get(idx)
+        ref2 = AbRuby.alloc_node_lvar_get(idx)
         rewind_arg_index(idx)
         AbRuby.alloc_node_seq(store, AbRuby.alloc_node_if(ref, transduce(node.right), ref2))
 
       when Prism::OrNode
         # a || b → tmp = a; if(tmp, tmp, b)
         idx = inc_arg_index
-        store = AbRuby.alloc_node_lset(idx, transduce(node.left))
-        ref = AbRuby.alloc_node_lget(idx)
-        ref2 = AbRuby.alloc_node_lget(idx)
+        store = AbRuby.alloc_node_lvar_set(idx, transduce(node.left))
+        ref = AbRuby.alloc_node_lvar_get(idx)
+        ref2 = AbRuby.alloc_node_lvar_get(idx)
         rewind_arg_index(idx)
         AbRuby.alloc_node_seq(store, AbRuby.alloc_node_if(ref, ref2, transduce(node.right)))
 
@@ -278,7 +278,7 @@ class AbRuby
         base_idx = arg_index
         seq_nodes = elements.map do |elem|
           idx = inc_arg_index
-          AbRuby.alloc_node_lset(idx, transduce(elem))
+          AbRuby.alloc_node_lvar_set(idx, transduce(elem))
         end
         rewind_arg_index(base_idx)
         ary_node = AbRuby.alloc_node_ary_new(elements.size, base_idx)
@@ -291,8 +291,8 @@ class AbRuby
         pairs.each do |assoc|
           k_idx = inc_arg_index
           v_idx = inc_arg_index
-          seq_nodes << AbRuby.alloc_node_lset(k_idx, transduce(assoc.key))
-          seq_nodes << AbRuby.alloc_node_lset(v_idx, transduce(assoc.value))
+          seq_nodes << AbRuby.alloc_node_lvar_set(k_idx, transduce(assoc.key))
+          seq_nodes << AbRuby.alloc_node_lvar_set(v_idx, transduce(assoc.value))
         end
         rewind_arg_index(base_idx)
         hash_node = AbRuby.alloc_node_hash_new(pairs.size * 2, base_idx)
@@ -305,11 +305,11 @@ class AbRuby
         b = node.left ? transduce(node.left) : AbRuby.alloc_node_nil
         e = node.right ? transduce(node.right) : AbRuby.alloc_node_nil
         exclude = (node.operator == "...") ? 1 : 0
-        AbRuby.alloc_node_range(b, e, exclude)
+        AbRuby.alloc_node_range_new(b, e, exclude)
 
       when Prism::RegularExpressionNode
         flags = extract_regexp_flags(node)
-        AbRuby.alloc_node_regexp(node.unescaped, flags)
+        AbRuby.alloc_node_regexp_new(node.unescaped, flags)
 
       when Prism::SelfNode
         AbRuby.alloc_node_self
@@ -355,11 +355,11 @@ class AbRuby
           rhs = i < rhs_nodes.size ? rhs_nodes[i] : AbRuby.alloc_node_nil
           case target
           when Prism::LocalVariableTargetNode
-            assigns << AbRuby.alloc_node_lset(lvar_index(target.name), rhs)
+            assigns << AbRuby.alloc_node_lvar_set(lvar_index(target.name), rhs)
           when Prism::InstanceVariableTargetNode
             assigns << AbRuby.alloc_node_ivar_set(target.name.to_s, rhs)
           when Prism::GlobalVariableTargetNode
-            assigns << AbRuby.alloc_node_gset(target.name.to_s, rhs)
+            assigns << AbRuby.alloc_node_gvar_set(target.name.to_s, rhs)
           else
             raise "unsupported multi-assign target: #{target.class}"
           end
@@ -409,22 +409,22 @@ class AbRuby
         # Reserve a slot for the receiver result to avoid slot collision
         # with args that may contain nested calls
         recv_idx = inc_arg_index
-        recv_store = AbRuby.alloc_node_lset(recv_idx, transduce(node.receiver))
+        recv_store = AbRuby.alloc_node_lvar_set(recv_idx, transduce(node.receiver))
 
         call_arg_idx = arg_index
         if args.any?
           seq_nodes = args.map do |arg|
             idx = inc_arg_index
-            AbRuby.alloc_node_lset(idx, transduce(arg))
+            AbRuby.alloc_node_lvar_set(idx, transduce(arg))
           end
           rewind_arg_index(recv_idx)
 
-          recv_ref = AbRuby.alloc_node_lget(recv_idx)
+          recv_ref = AbRuby.alloc_node_lvar_get(recv_idx)
           call_node = AbRuby.alloc_node_method_call(recv_ref, name.to_s, args.size, call_arg_idx)
           return build_seq([recv_store] + seq_nodes + [call_node])
         else
           rewind_arg_index(recv_idx)
-          recv_ref = AbRuby.alloc_node_lget(recv_idx)
+          recv_ref = AbRuby.alloc_node_lvar_get(recv_idx)
           call_node = AbRuby.alloc_node_method_call(recv_ref, name.to_s, 0, call_arg_idx)
           return AbRuby.alloc_node_seq(recv_store, call_node)
         end
@@ -433,22 +433,22 @@ class AbRuby
       # function call (no receiver) → self.method(args)
       self_node = AbRuby.alloc_node_self
       recv_idx = inc_arg_index
-      recv_store = AbRuby.alloc_node_lset(recv_idx, self_node)
+      recv_store = AbRuby.alloc_node_lvar_set(recv_idx, self_node)
       call_arg_idx = arg_index
 
       if args.any?
         seq_nodes = args.map do |arg|
           idx = inc_arg_index
-          AbRuby.alloc_node_lset(idx, transduce(arg))
+          AbRuby.alloc_node_lvar_set(idx, transduce(arg))
         end
         rewind_arg_index(recv_idx)
 
-        recv_ref = AbRuby.alloc_node_lget(recv_idx)
+        recv_ref = AbRuby.alloc_node_lvar_get(recv_idx)
         call_node = AbRuby.alloc_node_method_call(recv_ref, name.to_s, args.size, call_arg_idx)
         build_seq([recv_store] + seq_nodes + [call_node])
       else
         rewind_arg_index(recv_idx)
-        recv_ref = AbRuby.alloc_node_lget(recv_idx)
+        recv_ref = AbRuby.alloc_node_lvar_get(recv_idx)
         call_node = AbRuby.alloc_node_method_call(recv_ref, name.to_s, 0, call_arg_idx)
         AbRuby.alloc_node_seq(recv_store, call_node)
       end

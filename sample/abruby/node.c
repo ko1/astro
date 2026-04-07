@@ -303,8 +303,8 @@ abruby_node_mark(void *ptr)
     if (k == &kind_node_ivar_set) {
         mark_child(n->u.node_ivar_set.value);
     }
-    else if (k == &kind_node_lset) {
-        mark_child(n->u.node_lset.rhs);
+    else if (k == &kind_node_lvar_set) {
+        mark_child(n->u.node_lvar_set.rhs);
     }
     else if (k == &kind_node_scope) {
         mark_child(n->u.node_scope.body);
@@ -334,12 +334,26 @@ abruby_node_mark(void *ptr)
     else if (k == &kind_node_method_call) {
         mark_child(n->u.node_method_call.recv);
     }
-    else if (k == &kind_node_range) {
-        mark_child(n->u.node_range.begin_node);
-        mark_child(n->u.node_range.end_node);
+    else if (k == &kind_node_range_new) {
+        mark_child(n->u.node_range_new.begin_node);
+        mark_child(n->u.node_range_new.end_node);
     }
     else if (k == &kind_node_return) {
         mark_child(n->u.node_return.value);
+    }
+    else if (k == &kind_node_break) {
+        mark_child(n->u.node_break.value);
+    }
+    else if (k == &kind_node_gvar_set) {
+        mark_child(n->u.node_gvar_set.rhs);
+    }
+    else if (k == &kind_node_const_set) {
+        mark_child(n->u.node_const_set.value);
+    }
+    else if (k == &kind_node_rescue) {
+        mark_child(n->u.node_rescue.body);
+        mark_child(n->u.node_rescue.rescue_body);
+        mark_child(n->u.node_rescue.ensure_body);
     }
 }
 
