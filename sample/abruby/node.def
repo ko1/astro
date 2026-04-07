@@ -147,6 +147,18 @@ node_str_new(CTX * restrict c, NODE * restrict n, const char *str)
 }
 
 NODE_DEF
+node_str_concat(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_index)
+{
+    VALUE result = rb_str_new(NULL, 0);
+    for (uint32_t i = 0; i < argc; i++) {
+        VALUE part = c->fp[arg_index + i];
+        VALUE rs = abruby_str_rstr(part);
+        rb_str_cat(result, RSTRING_PTR(rs), RSTRING_LEN(rs));
+    }
+    return RESULT_OK(abruby_str_new(result));
+}
+
+NODE_DEF
 node_sym(CTX * restrict c, NODE * restrict n, const char *str)
 {
     return RESULT_OK(ID2SYM(rb_intern(str)));

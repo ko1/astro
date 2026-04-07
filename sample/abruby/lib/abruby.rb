@@ -79,40 +79,34 @@ class AbRuby
         AbRuby.alloc_node_str_new(node.unescaped)
 
       when Prism::InterpolatedStringNode
-        # "hello #{expr} world" → "hello " + expr.to_s + " world"
-        # Reserve dedicated temp slots for the whole interpolation
+        # "hello #{expr} world" → str_concat(["hello", expr.to_s, " world"])
+        # Evaluate all parts, then collect into contiguous slots for str_concat
         base_idx = arg_index
-        tmp_recv = inc_arg_index  # slot for left/recv of +
-        tmp_arg  = inc_arg_index  # slot for right/arg of +
-        tmp_to_s = inc_arg_index  # slot for to_s receiver
-        _tmp_pad = inc_arg_index  # padding slot for to_s arg_index
+        # Reserve contiguous result slots first
+        result_slots = node.parts.map { inc_arg_index }
+        # Reserve extra work slots for to_s calls
+        work_idx = arg_index
 
-        parts = node.parts.map do |part|
+        seq_nodes = node.parts.each_with_index.map do |part, i|
+          slot = result_slots[i]
           case part
           when Prism::StringNode
-            AbRuby.alloc_node_str_new(part.unescaped)
+            AbRuby.alloc_node_lvar_set(slot, AbRuby.alloc_node_str_new(part.unescaped))
           when Prism::EmbeddedStatementsNode
             inner = part.statements ? transduce(part.statements) : AbRuby.alloc_node_str_new("")
-            # call to_s on the result
-            recv_store = AbRuby.alloc_node_lvar_set(tmp_to_s, inner)
-            recv_ref = AbRuby.alloc_node_lvar_get(tmp_to_s)
-            to_s_call = AbRuby.alloc_node_method_call(recv_ref, "to_s", 0, tmp_to_s + 1)
-            AbRuby.alloc_node_seq(recv_store, to_s_call)
+            # store expr result, call to_s, store back
+            store = AbRuby.alloc_node_lvar_set(slot, inner)
+            recv_ref = AbRuby.alloc_node_lvar_get(slot)
+            to_s_call = AbRuby.alloc_node_method_call(recv_ref, "to_s", 0, work_idx)
+            AbRuby.alloc_node_seq(store, AbRuby.alloc_node_lvar_set(slot, to_s_call))
           else
             raise "unsupported interpolation part: #{part.class}"
           end
         end
 
         rewind_arg_index(base_idx)
-
-        # concatenate with +
-        parts.reduce do |left, right|
-          recv_store = AbRuby.alloc_node_lvar_set(tmp_recv, left)
-          arg_store = AbRuby.alloc_node_lvar_set(tmp_arg, right)
-          recv_ref = AbRuby.alloc_node_lvar_get(tmp_recv)
-          concat = AbRuby.alloc_node_method_call(recv_ref, "+", 1, tmp_arg)
-          build_seq([recv_store, arg_store, concat])
-        end
+        concat_node = AbRuby.alloc_node_str_concat(node.parts.size, base_idx)
+        build_seq(seq_nodes + [concat_node])
 
       when Prism::EmbeddedStatementsNode
         node.statements ? transduce(node.statements) : AbRuby.alloc_node_nil

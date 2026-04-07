@@ -460,6 +460,12 @@ rb_alloc_node_str_new(VALUE self, VALUE str)
 }
 
 static VALUE
+rb_alloc_node_str_concat(VALUE self, VALUE argc, VALUE arg_index)
+{
+    return wrap_node(ALLOC_node_str_concat(FIX2UINT(argc), FIX2UINT(arg_index)));
+}
+
+static VALUE
 rb_alloc_node_sym(VALUE self, VALUE str)
 {
     const char *cstr = strdup(StringValueCStr(str));
@@ -835,6 +841,7 @@ Init_abruby(void)
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_bignum_new", rb_alloc_node_bignum_new, 1);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_float_new", rb_alloc_node_float_new, 1);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_str_new", rb_alloc_node_str_new, 1);
+    rb_define_singleton_method(rb_cAbRuby, "alloc_node_str_concat", rb_alloc_node_str_concat, 2);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_sym", rb_alloc_node_sym, 1);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_range_new", rb_alloc_node_range_new, 3);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_regexp_new", rb_alloc_node_regexp_new, 2);
