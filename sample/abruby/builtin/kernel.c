@@ -27,11 +27,39 @@ static RESULT ab_kernel_Complex(CTX *c, VALUE self, unsigned int argc, VALUE *ar
     return RESULT_OK(abruby_complex_new(rb_complex_new(real, imag)));
 }
 
+// require(path) — load a file
+static RESULT ab_kernel_require(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    VALUE path = RSTR(argv[0]);  // abruby string -> CRuby string
+    // Append .ab.rb if no extension
+    if (!strstr(RSTRING_PTR(path), ".")) {
+        path = rb_str_cat_cstr(rb_str_dup(path), ".ab.rb");
+    }
+    return abruby_require_file(c, path);
+}
+
+// require_relative(path) — load a file relative to the current file
+static RESULT ab_kernel_require_relative(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    VALUE path = RSTR(argv[0]);
+    // Append .ab.rb if no extension
+    if (!strstr(RSTRING_PTR(path), ".")) {
+        path = rb_str_cat_cstr(rb_str_dup(path), ".ab.rb");
+    }
+    VALUE cur = abruby_current_file(c);
+    if (NIL_P(cur)) {
+        return abruby_require_file(c, path);
+    }
+    VALUE dir = rb_funcall(rb_cFile, rb_intern("dirname"), 1, cur);
+    VALUE full = rb_funcall(rb_cFile, rb_intern("join"), 2, dir, path);
+    return abruby_require_file(c, full);
+}
+
 void
 Init_abruby_kernel(void)
 {
     abruby_class_add_cfunc(ab_kernel_module, "p",        ab_kernel_p,        1);
     abruby_class_add_cfunc(ab_kernel_module, "raise",    ab_kernel_raise,    1);
     abruby_class_add_cfunc(ab_kernel_module, "Rational", ab_kernel_Rational, 2);
-    abruby_class_add_cfunc(ab_kernel_module, "Complex",  ab_kernel_Complex,  2);
+    abruby_class_add_cfunc(ab_kernel_module, "Complex",          ab_kernel_Complex,          2);
+    abruby_class_add_cfunc(ab_kernel_module, "require",          ab_kernel_require,          1);
+    abruby_class_add_cfunc(ab_kernel_module, "require_relative", ab_kernel_require_relative, 1);
 }

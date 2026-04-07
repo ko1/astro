@@ -13,6 +13,8 @@
 RESULT abruby_call_method(CTX *c, VALUE recv, struct abruby_method *method,
                           unsigned int argc, VALUE *argv);
 VALUE ab_inspect_rstr(CTX *c, VALUE v);
+RESULT abruby_require_file(CTX *c, VALUE rb_path);
+VALUE abruby_current_file(CTX *c);
 void abruby_class_add_cfunc(struct abruby_class *klass, const char *name,
                             abruby_cfunc_t func, unsigned int params_cnt);
 

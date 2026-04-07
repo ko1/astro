@@ -32,7 +32,9 @@ if src
   if dump_mode
     puts AbRuby.dump(src, pretty: true)
   else
-    AbRuby.eval(src)
+    vm = AbRuby.new
+    vm.current_file = file if file
+    vm.eval(src)
   end
 else
   opt.parse!(['--help'])

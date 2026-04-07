@@ -380,6 +380,9 @@ struct abruby_vm {
     VALUE stack[STACK_SIZE];
     struct abruby_class main_class_body;
     struct abruby_gvar_table gvars;
+    VALUE rb_self;           // Ruby-level AbRuby instance (for callbacks)
+    VALUE current_file;      // current file path (Ruby String or Qnil)
+    VALUE loaded_files;      // Ruby Array of loaded file paths
 };
 
 static void
@@ -391,6 +394,9 @@ vm_mark(void *ptr)
     for (unsigned int i = 0; i < vm->gvars.cnt; i++) {
         rb_gc_mark(vm->gvars.entries[i].value);
     }
+    rb_gc_mark(vm->rb_self);
+    rb_gc_mark(vm->current_file);
+    rb_gc_mark(vm->loaded_files);
 }
 
 static void
@@ -404,6 +410,9 @@ static const rb_data_type_t abruby_vm_type = {
     { vm_mark, vm_free, NULL },
     0, 0, RUBY_TYPED_FREE_IMMEDIATELY
 };
+
+// CTX is the first member of abruby_vm, so we can cast back
+#define VM_FROM_CTX(c) ((struct abruby_vm *)(c))
 
 static struct abruby_vm *
 create_vm(void)
@@ -420,6 +429,9 @@ create_vm(void)
     vm->ctx.self = abruby_new_object(&vm->main_class_body);
     vm->ctx.current_class = NULL;
     vm->ctx.gvars = &vm->gvars;
+    vm->rb_self = Qnil;
+    vm->current_file = Qnil;
+    vm->loaded_files = rb_ary_new();
 
     for (int i = 0; i < STACK_SIZE; i++) {
         vm->stack[i] = Qnil;
@@ -773,13 +785,79 @@ abruby_to_ruby(VALUE v)
     return v;
 }
 
+// require helper: load and eval a file in the VM's context
+// Returns Qtrue if loaded, Qfalse if already loaded.
+RESULT
+abruby_require_file(CTX *c, VALUE rb_path)
+{
+    struct abruby_vm *vm = VM_FROM_CTX(c);
+
+    // Resolve to absolute path
+    VALUE abs_path = rb_file_expand_path(rb_path, Qnil);
+    VALUE abs_str = rb_funcall(abs_path, rb_intern("to_s"), 0);
+
+    // Check if already loaded
+    if (RTEST(rb_funcall(vm->loaded_files, rb_intern("include?"), 1, abs_str))) {
+        return RESULT_OK(Qfalse);
+    }
+
+    // Check file exists
+    if (!RTEST(rb_funcall(rb_cFile, rb_intern("exist?"), 1, abs_str))) {
+        rb_raise(rb_eLoadError, "cannot load such file -- %s", StringValueCStr(abs_str));
+    }
+
+    // Read file
+    VALUE code = rb_funcall(rb_cFile, rb_intern("read"), 1, abs_str);
+
+    // Parse via AbRuby::Parser
+    VALUE parser = rb_funcall(rb_const_get(rb_cAbRuby, rb_intern("Parser")), rb_intern("new"), 0);
+    VALUE ast_obj = rb_funcall(parser, rb_intern("parse"), 1, code);
+
+    // Mark as loaded
+    rb_ary_push(vm->loaded_files, abs_str);
+
+    // Save/restore current_file
+    VALUE save_file = vm->current_file;
+    vm->current_file = abs_str;
+
+    // Eval AST
+    NODE *ast = unwrap_node(ast_obj);
+    VALUE *save_fp = c->fp;
+    c->fp = c->env;
+    c->current_class = NULL;
+    RESULT r = EVAL(c, ast);
+    c->fp = save_fp;
+
+    vm->current_file = save_file;
+
+    if (r.state == RESULT_RAISE) return r;
+    return RESULT_OK(Qtrue);
+}
+
+// Get current file path from VM
+VALUE
+abruby_current_file(CTX *c)
+{
+    return VM_FROM_CTX(c)->current_file;
+}
+
 // AbRuby#initialize
 static VALUE
 rb_abruby_initialize(VALUE self)
 {
     struct abruby_vm *vm = create_vm();
     DATA_PTR(self) = vm;
+    vm->rb_self = self;
     return self;
+}
+
+static VALUE
+rb_abruby_set_current_file(VALUE self, VALUE path)
+{
+    struct abruby_vm *vm;
+    TypedData_Get_Struct(self, struct abruby_vm, &abruby_vm_type, vm);
+    vm->current_file = NIL_P(path) ? Qnil : rb_file_expand_path(path, Qnil);
+    return path;
 }
 
 // AbRuby allocator
@@ -940,5 +1018,6 @@ Init_abruby(void)
 
     // eval / dump
     rb_define_method(rb_cAbRuby, "eval_ast", rb_abruby_eval_ast, 1);
+    rb_define_method(rb_cAbRuby, "current_file=", rb_abruby_set_current_file, 1);
     rb_define_method(rb_cAbRuby, "dump_ast", rb_abruby_dump_ast, 1);
 }
