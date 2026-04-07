@@ -12,6 +12,8 @@
 - ヒアドキュメント: `<<~HEREDOC ... HEREDOC`
 - `%w(a b c)` → `["a", "b", "c"]`
 - `%i(a b c)` → `[:a, :b, :c]`
+- Rational: `3r`, `Rational(1, 3)`
+- Complex: `2i`, `Complex(1, 2)`
 - `true`, `false`, `nil`
 
 ## 変数
