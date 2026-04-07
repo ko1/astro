@@ -10,8 +10,9 @@ static RESULT ab_kernel_p(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
 
 static RESULT ab_kernel_raise(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     VALUE msg = (argc >= 1) ? argv[0] : abruby_str_new_cstr("");
-    // skip_first: use raise's file/line but caller's method name
-    VALUE exc = abruby_exception_new(c, c->current_frame, true, msg);
+    // Start from caller's frame (skip the "raise" frame itself)
+    struct abruby_frame *caller = c->current_frame ? c->current_frame->prev : NULL;
+    VALUE exc = abruby_exception_new(c, caller, msg);
     return (RESULT){exc, RESULT_RAISE};
 }
 

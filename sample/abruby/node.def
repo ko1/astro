@@ -506,8 +506,15 @@ node_method_call(CTX * restrict c, NODE * restrict n, NODE *recv, const char *na
     struct abruby_class *klass = AB_CLASS_OF(recv_val);
     struct abruby_method *method = abruby_class_find_method(klass, name);
 
-    // Push call frame (C stack allocated, for backtrace)
-    struct abruby_frame frame = {c->current_frame, name, c->source_file, n->head.line};
+    // Update current frame's line to the call site
+    if (c->current_frame) c->current_frame->line = n->head.line;
+
+    // Push callee's frame (C stack allocated, for backtrace)
+    // For AST methods, file comes from the method definition site.
+    // For cfuncs/unknown, use the caller's source_file.
+    const char *callee_file = (method && method->type == ABRUBY_METHOD_AST && method->u.ast.source_file)
+        ? method->u.ast.source_file : c->source_file;
+    struct abruby_frame frame = {c->current_frame, name, callee_file, 0};
     c->current_frame = &frame;
 
     RESULT r;
