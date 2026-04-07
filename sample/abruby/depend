@@ -5,8 +5,13 @@ GENERATED = node_eval.c node_dispatch.c node_hash.c node_dump.c node_alloc.c nod
 $(GENERATED): node.def ../../lib/astrogen.rb abruby_gen.rb
 	$(ASTROGEN)
 
-node.o: $(GENERATED)
-abruby.o: node_head.h
+node.o: $(GENERATED) context.h node.h
+abruby.o: node_head.h context.h node.h
+
+BUILTIN_OBJS = array.o class.o complex.o false.o float.o hash.o integer.o \
+               kernel.o nil.o object.o range.o rational.o regexp.o string.o \
+               symbol.o true.o
+$(BUILTIN_OBJS): builtin/builtin.h context.h node.h
 
 run: all
 	ruby exe/abruby test.ab.rb
