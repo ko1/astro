@@ -30,11 +30,17 @@ static RESULT ab_kernel_Complex(CTX *c, VALUE self, unsigned int argc, VALUE *ar
     return RESULT_OK(abruby_complex_new(rb_complex_new(real, imag)));
 }
 
+// Check if path has a file extension (e.g., ".rb", ".so")
+// Only checks the basename to avoid false positives from ".." in paths.
+static bool has_extension(VALUE path) {
+    VALUE ext = rb_funcall(rb_cFile, rb_intern("extname"), 1, path);
+    return RSTRING_LEN(ext) > 0;
+}
+
 // require(path) — load a file
 static RESULT ab_kernel_require(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     VALUE path = RSTR(argv[0]);  // abruby string -> CRuby string
-    // Append .rb if no extension
-    if (!strstr(RSTRING_PTR(path), ".")) {
+    if (!has_extension(path)) {
         path = rb_str_cat_cstr(rb_str_dup(path), ".rb");
     }
     return abruby_require_file(c, path);
@@ -43,8 +49,7 @@ static RESULT ab_kernel_require(CTX *c, VALUE self, unsigned int argc, VALUE *ar
 // require_relative(path) — load a file relative to the current file
 static RESULT ab_kernel_require_relative(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     VALUE path = RSTR(argv[0]);
-    // Append .rb if no extension
-    if (!strstr(RSTRING_PTR(path), ".")) {
+    if (!has_extension(path)) {
         path = rb_str_cat_cstr(rb_str_dup(path), ".rb");
     }
     VALUE cur = abruby_current_file(c);
