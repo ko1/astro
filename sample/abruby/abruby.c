@@ -995,6 +995,14 @@ rb_abruby_initialize(VALUE self)
 }
 
 static VALUE
+rb_abruby_get_current_file(VALUE self)
+{
+    struct abruby_vm *vm;
+    TypedData_Get_Struct(self, struct abruby_vm, &abruby_vm_type, vm);
+    return vm->current_file;
+}
+
+static VALUE
 rb_abruby_set_current_file(VALUE self, VALUE path)
 {
     struct abruby_vm *vm;
@@ -1196,6 +1204,7 @@ Init_abruby(void)
 
     // eval / dump
     rb_define_method(rb_cAbRuby, "eval_ast", rb_abruby_eval_ast, 1);
+    rb_define_method(rb_cAbRuby, "current_file",  rb_abruby_get_current_file, 0);
     rb_define_method(rb_cAbRuby, "current_file=", rb_abruby_set_current_file, 1);
     rb_define_method(rb_cAbRuby, "dump_ast", rb_abruby_dump_ast, 1);
 }

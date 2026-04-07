@@ -628,7 +628,7 @@ class AbRuby
 
   # Instance methods
   def eval(code)
-    ast = Parser.new.parse(code)
+    ast = Parser.new.parse(code, current_file)
     eval_ast(ast)
   end
 
