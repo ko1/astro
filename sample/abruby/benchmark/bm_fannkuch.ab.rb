@@ -32,8 +32,7 @@ def fannkuch(n)
     i += 1
   end
 
-  done = false
-  until done
+  while true
     # copy perm1 to perm
     i = 0
     while i < n
@@ -71,7 +70,7 @@ def fannkuch(n)
 
     # next permutation
     i = 1
-    done = true
+    found = false
     while i < n
       # rotate perm1[0..i]
       tmp = perm1[0]
@@ -84,13 +83,14 @@ def fannkuch(n)
 
       count[i] = count[i] - 1
       if count[i] > 0
-        done = false
+        found = true
         break
       else
         count[i] = i + 1
         i += 1
       end
     end
+    break unless found
   end
 
   p(checksum)
