@@ -926,8 +926,8 @@ abruby_require_file(CTX *c, VALUE rb_path)
         return RESULT_OK(Qfalse);
     }
 
-    // Check file exists
-    if (!RTEST(rb_funcall(rb_cFile, rb_intern("exist?"), 1, abs_str))) {
+    // Check file exists (use file? to exclude directories)
+    if (!RTEST(rb_funcall(rb_cFile, rb_intern("file?"), 1, abs_str))) {
         rb_raise(rb_eLoadError, "cannot load such file -- %s", StringValueCStr(abs_str));
     }
 
