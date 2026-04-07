@@ -39,9 +39,13 @@ VALUE abruby_hash_new_wrap(VALUE rb_hash);
 void abruby_node_mark(void *ptr);
 
 void code_repo_add(const char *name, NODE *body, bool force_add);
+void node_replace(NODE *old_node, NODE *new_node);
+VALUE abruby_wrap_node(NODE *n);
 
 // exception support
 VALUE abruby_exception_new(CTX *c, struct abruby_frame *frame, VALUE message);
+
+typedef void (*node_replace_child_func_t)(NODE *parent, NODE *old_child, NODE *new_child);
 
 struct NodeKind {
     const char *default_dispatcher_name;
@@ -49,6 +53,7 @@ struct NodeKind {
     node_hash_func_t hash_func;
     node_specializer_func_t specializer;
     node_dumper_func_t dumper;
+    node_replace_child_func_t replace_child;
 };
 
 struct NodeHead {

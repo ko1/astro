@@ -1,14 +1,49 @@
+class Point
+  def initialize(x, y)
+    @x = x
+    @y = y
+  end
+  def x = @x
+  def y = @y
+  def dist
+    @x * @x + @y * @y
+  end
+end
+
+sum = 0
+i = 0
+while i < 500000
+  pt = Point.new(i, i + 1)
+  sum += pt.dist
+  i += 1
+end
+p(sum)
+
+__END__
+
+def fact(n)
+  if n < 2
+    1
+  else
+    n * fact(n - 1)
+  end
+end
+
+i = 0
+while i < 100
+  fact(50)
+  i += 1
+end
+p(fact(50))
+
+__END__
 
 def f
-  g
+  require_relative 'a.ab.rb'
 end
 
-def g
-  1/0
-end
-
-p f
-
+f
+g
 
 __END__
 require_relative 'a.ab.rb'

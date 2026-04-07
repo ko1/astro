@@ -159,6 +159,22 @@ clear_hash(NODE *n)
     }
 }
 
+// Replace old_node with new_node in the AST tree.
+// Updates the parent's child pointer and invalidates hash.
+void
+node_replace(NODE *old_node, NODE *new_node)
+{
+    NODE *parent = old_node->head.parent;
+    if (parent && parent->head.kind->replace_child) {
+        parent->head.kind->replace_child(parent, old_node, new_node);
+    }
+    new_node->head.parent = parent;
+    old_node->head.parent = NULL;
+    // Ensure new node is GC-managed
+    abruby_wrap_node(new_node);
+    clear_hash(parent);
+}
+
 node_hash_t
 HASH(NODE *n)
 {
@@ -299,6 +315,8 @@ abruby_node_mark(void *ptr)
 {
     NODE *n = (NODE *)ptr;
     const struct NodeKind *k = n->head.kind;
+    // Note: k can be NULL for detached nodes (replaced by node_replace)
+    // but we don't skip — the mark will fall through the if/else chain harmlessly
 
     if (k == &kind_node_ivar_set) {
         mark_child(n->u.node_ivar_set.value);
@@ -354,6 +372,23 @@ abruby_node_mark(void *ptr)
         mark_child(n->u.node_rescue.body);
         mark_child(n->u.node_rescue.rescue_body);
         mark_child(n->u.node_rescue.ensure_body);
+    }
+    // Arithmetic type-specific nodes
+    else if (k == &kind_node_plus || k == &kind_node_fixnum_plus) {
+        mark_child(n->u.node_plus.left);
+        mark_child(n->u.node_plus.right);
+    }
+    else if (k == &kind_node_minus || k == &kind_node_fixnum_minus) {
+        mark_child(n->u.node_minus.left);
+        mark_child(n->u.node_minus.right);
+    }
+    else if (k == &kind_node_mul || k == &kind_node_fixnum_mul) {
+        mark_child(n->u.node_mul.left);
+        mark_child(n->u.node_mul.right);
+    }
+    else if (k == &kind_node_div || k == &kind_node_fixnum_div) {
+        mark_child(n->u.node_div.left);
+        mark_child(n->u.node_div.right);
     }
 }
 

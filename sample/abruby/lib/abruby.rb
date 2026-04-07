@@ -166,15 +166,19 @@ class AbRuby
 
       when Prism::GlobalVariableOperatorWriteNode
         op = node.binary_operator.to_s
-        call_arg_idx = arg_index
-        idx = inc_arg_index
-        store_rhs = AbRuby.alloc_node_lvar_set(idx, transduce(node.value))
-        rewind_arg_index(call_arg_idx)
-
         recv = AbRuby.alloc_node_gvar_get(node.name.to_s)
-        call_node = set_line(AbRuby.alloc_node_method_call(recv, op, 1, call_arg_idx), node)
-        AbRuby.alloc_node_gvar_set(node.name.to_s,
-          AbRuby.alloc_node_seq(store_rhs, call_node))
+        rhs = transduce(node.value)
+        if BINOP_MAP.key?(op)
+          call_node = set_line(AbRuby.send("alloc_node_#{BINOP_MAP[op]}", recv, rhs), node)
+        else
+          call_arg_idx = arg_index
+          idx = inc_arg_index
+          store_rhs = AbRuby.alloc_node_lvar_set(idx, rhs)
+          rewind_arg_index(call_arg_idx)
+          call_node = AbRuby.alloc_node_seq(store_rhs,
+            set_line(AbRuby.alloc_node_method_call(recv, op, 1, call_arg_idx), node))
+        end
+        AbRuby.alloc_node_gvar_set(node.name.to_s, call_node)
 
       when Prism::InstanceVariableReadNode
         AbRuby.alloc_node_ivar_get(node.name.to_s)
@@ -184,15 +188,19 @@ class AbRuby
 
       when Prism::InstanceVariableOperatorWriteNode
         op = node.binary_operator.to_s
-        call_arg_idx = arg_index
-        idx = inc_arg_index
-        store_rhs = AbRuby.alloc_node_lvar_set(idx, transduce(node.value))
-        rewind_arg_index(call_arg_idx)
-
         recv = AbRuby.alloc_node_ivar_get(node.name.to_s)
-        call_node = set_line(AbRuby.alloc_node_method_call(recv, op, 1, call_arg_idx), node)
-        AbRuby.alloc_node_ivar_set(node.name.to_s,
-          AbRuby.alloc_node_seq(store_rhs, call_node))
+        rhs = transduce(node.value)
+        if BINOP_MAP.key?(op)
+          call_node = set_line(AbRuby.send("alloc_node_#{BINOP_MAP[op]}", recv, rhs), node)
+        else
+          call_arg_idx = arg_index
+          idx = inc_arg_index
+          store_rhs = AbRuby.alloc_node_lvar_set(idx, rhs)
+          rewind_arg_index(call_arg_idx)
+          call_node = AbRuby.alloc_node_seq(store_rhs,
+            set_line(AbRuby.alloc_node_method_call(recv, op, 1, call_arg_idx), node))
+        end
+        AbRuby.alloc_node_ivar_set(node.name.to_s, call_node)
 
       when Prism::LocalVariableReadNode
         AbRuby.alloc_node_lvar_get(lvar_index(node.name))
@@ -203,15 +211,19 @@ class AbRuby
       when Prism::LocalVariableOperatorWriteNode
         # a += 1 => a = a.+(1)
         op = node.binary_operator.to_s
-        call_arg_idx = arg_index
-        idx = inc_arg_index
-        store_rhs = AbRuby.alloc_node_lvar_set(idx, transduce(node.value))
-        rewind_arg_index(call_arg_idx)
-
         recv = AbRuby.alloc_node_lvar_get(lvar_index(node.name))
-        call_node = set_line(AbRuby.alloc_node_method_call(recv, op, 1, call_arg_idx), node)
-        AbRuby.alloc_node_lvar_set(lvar_index(node.name),
-          AbRuby.alloc_node_seq(store_rhs, call_node))
+        rhs = transduce(node.value)
+        if BINOP_MAP.key?(op)
+          call_node = set_line(AbRuby.send("alloc_node_#{BINOP_MAP[op]}", recv, rhs), node)
+        else
+          call_arg_idx = arg_index
+          idx = inc_arg_index
+          store_rhs = AbRuby.alloc_node_lvar_set(idx, rhs)
+          rewind_arg_index(call_arg_idx)
+          call_node = AbRuby.alloc_node_seq(store_rhs,
+            set_line(AbRuby.alloc_node_method_call(recv, op, 1, call_arg_idx), node))
+        end
+        AbRuby.alloc_node_lvar_set(lvar_index(node.name), call_node)
 
       when Prism::IfNode
         cond = transduce(node.predicate)
@@ -418,11 +430,26 @@ class AbRuby
         AbRuby.alloc_node_rescue(body, rescue_body, ensure_body, exception_lvar_index)
 
       when Prism::CallNode
-        transduce_call(node)
+        if node.receiver &&
+           %w[+ - * /].include?(node.name.to_s) &&
+           node.arguments&.arguments&.size == 1
+          transduce_binop(node)
+        else
+          transduce_call(node)
+        end
 
       else
         raise "unsupported node: #{node.class} (#{node.type})"
       end
+    end
+
+    BINOP_MAP = { "+" => "plus", "-" => "minus", "*" => "mul", "/" => "div" }.freeze
+
+    def transduce_binop(node)
+      left = transduce(node.receiver)
+      right = transduce(node.arguments.arguments[0])
+      alloc_method = "alloc_node_#{BINOP_MAP[node.name.to_s]}"
+      set_line(AbRuby.send(alloc_method, left, right), node)
     end
 
     def transduce_call(node)

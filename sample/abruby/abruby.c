@@ -519,8 +519,8 @@ const rb_data_type_t abruby_node_type = {
     0, 0, RUBY_TYPED_FREE_IMMEDIATELY
 };
 
-static VALUE
-wrap_node(NODE *n)
+VALUE
+abruby_wrap_node(NODE *n)
 {
     if (n == NULL) return Qnil;
     if (n->head.rb_wrapper) return n->head.rb_wrapper;
@@ -528,6 +528,12 @@ wrap_node(NODE *n)
     VALUE obj = TypedData_Wrap_Struct(rb_cAbRubyNode, &abruby_node_type, n);
     n->head.rb_wrapper = obj;
     return obj;
+}
+
+static VALUE
+wrap_node(NODE *n)
+{
+    return abruby_wrap_node(n);
 }
 
 static NODE *
@@ -779,6 +785,20 @@ rb_set_node_line(VALUE self, VALUE node_obj, VALUE line)
     NODE *n = unwrap_node(node_obj);
     if (n) n->head.line = FIX2INT(line);
     return node_obj;
+}
+
+// Arithmetic node alloc wrappers
+static VALUE rb_alloc_node_plus(VALUE self, VALUE left, VALUE right) {
+    return wrap_node(ALLOC_node_plus(unwrap_node(left), unwrap_node(right)));
+}
+static VALUE rb_alloc_node_minus(VALUE self, VALUE left, VALUE right) {
+    return wrap_node(ALLOC_node_minus(unwrap_node(left), unwrap_node(right)));
+}
+static VALUE rb_alloc_node_mul(VALUE self, VALUE left, VALUE right) {
+    return wrap_node(ALLOC_node_mul(unwrap_node(left), unwrap_node(right)));
+}
+static VALUE rb_alloc_node_div(VALUE self, VALUE left, VALUE right) {
+    return wrap_node(ALLOC_node_div(unwrap_node(left), unwrap_node(right)));
 }
 
 // dump
@@ -1100,6 +1120,10 @@ Init_abruby(void)
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_const_get", rb_alloc_node_const_get, 1);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_const_path_get", rb_alloc_node_const_path_get, 2);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_method_call", rb_alloc_node_method_call, 4);
+    rb_define_singleton_method(rb_cAbRuby, "alloc_node_plus", rb_alloc_node_plus, 2);
+    rb_define_singleton_method(rb_cAbRuby, "alloc_node_minus", rb_alloc_node_minus, 2);
+    rb_define_singleton_method(rb_cAbRuby, "alloc_node_mul", rb_alloc_node_mul, 2);
+    rb_define_singleton_method(rb_cAbRuby, "alloc_node_div", rb_alloc_node_div, 2);
     rb_define_singleton_method(rb_cAbRuby, "set_node_line", rb_set_node_line, 2);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_self", rb_alloc_node_self, 0);
 

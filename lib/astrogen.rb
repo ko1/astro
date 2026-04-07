@@ -291,6 +291,20 @@ module ASTroGen
         C
       end
 
+      def build_replace_child
+        node_ops = @operands.select(&:node?)
+        checks = node_ops.map do |op|
+          "    if (parent->u.#{@name}.#{op.name} == old_child) parent->u.#{@name}.#{op.name} = new_child;"
+        end
+        <<~C
+        static void
+        REPLACE_CHILD_#{@name}(NODE *parent, NODE *old_child, NODE *new_child)
+        {
+        #{checks.join("\n")}
+        }
+        C
+      end
+
       def build_dumper
         op_dumpers = @operands.map do
           it.build_dumper @name
@@ -398,16 +412,20 @@ module ASTroGen
     def build_alloc
       allocators = <<~C__
       // This file is auto-generated from #{@file}.
+      // replace_child functions
+      #{@nodes.map{|name, n| n.build_replace_child}.join("\n")}
+
       // kinds
       #{
         @nodes.map{|name, n|
           <<~STRUCT
-          static const struct NodeKind kind_#{name} = {
+          const struct NodeKind kind_#{name} = {
               .default_dispatcher_name = "DISPATCH_#{name}",
               .default_dispatcher = DISPATCH_#{name},
               .hash_func = HASH_#{name},
               .specializer = SPECIALIZE_#{name},
               .dumper = DUMP_#{name},
+              .replace_child = REPLACE_CHILD_#{name},
           };
           STRUCT
         }.join("\n")
