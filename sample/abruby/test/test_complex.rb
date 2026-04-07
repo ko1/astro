@@ -46,9 +46,15 @@ class TestComplex < AbRubyTest
     assert_eval('Complex(1, 2).inspect', "(1+2i)")
   end
 
-  # TODO: 1 + 2i requires Integer#+ to handle Complex argument
-  # which involves nested method calls in argument position
-  # def test_complex_from_expression
-  #   assert_eval('1 + 2i', Complex(1, 2))
-  # end
+  def test_complex_from_expression
+    assert_eval('1 + 2i', Complex(1, 2))
+  end
+
+  def test_integer_plus_complex
+    assert_eval('1 + Complex(0, 2)', Complex(1, 2))
+  end
+
+  def test_integer_plus_rational
+    assert_eval('1 + Rational(1, 2)', Rational(3, 2))
+  end
 end
