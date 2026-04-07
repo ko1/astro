@@ -33,9 +33,9 @@ static RESULT ab_kernel_Complex(CTX *c, VALUE self, unsigned int argc, VALUE *ar
 // require(path) — load a file
 static RESULT ab_kernel_require(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     VALUE path = RSTR(argv[0]);  // abruby string -> CRuby string
-    // Append .ab.rb if no extension
+    // Append .rb if no extension
     if (!strstr(RSTRING_PTR(path), ".")) {
-        path = rb_str_cat_cstr(rb_str_dup(path), ".ab.rb");
+        path = rb_str_cat_cstr(rb_str_dup(path), ".rb");
     }
     return abruby_require_file(c, path);
 }
@@ -43,9 +43,9 @@ static RESULT ab_kernel_require(CTX *c, VALUE self, unsigned int argc, VALUE *ar
 // require_relative(path) — load a file relative to the current file
 static RESULT ab_kernel_require_relative(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     VALUE path = RSTR(argv[0]);
-    // Append .ab.rb if no extension
+    // Append .rb if no extension
     if (!strstr(RSTRING_PTR(path), ".")) {
-        path = rb_str_cat_cstr(rb_str_dup(path), ".ab.rb");
+        path = rb_str_cat_cstr(rb_str_dup(path), ".rb");
     }
     VALUE cur = abruby_current_file(c);
     if (NIL_P(cur)) {
