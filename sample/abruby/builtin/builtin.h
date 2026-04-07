@@ -21,6 +21,8 @@ VALUE abruby_bignum_new(VALUE rb_bignum);
 VALUE abruby_float_new_wrap(VALUE rb_float);
 VALUE abruby_range_new(VALUE begin, VALUE end, bool exclude_end);
 VALUE abruby_regexp_new(VALUE rb_regexp);
+VALUE abruby_rational_new(VALUE rb_rational);
+VALUE abruby_complex_new(VALUE rb_complex);
 
 /*
  * Numeric unwrap/wrap helpers.
@@ -57,6 +59,10 @@ AB_NUM_UNWRAP(VALUE v)
         return ((struct abruby_bignum *)h)->rb_bignum;
     if (h->klass == ab_float_class)
         return ((struct abruby_float *)h)->rb_float;
+    if (h->klass == ab_rational_class)
+        return ((struct abruby_rational *)h)->rb_rational;
+    if (h->klass == ab_complex_class)
+        return ((struct abruby_complex *)h)->rb_complex;
     return v;
 }
 
@@ -68,6 +74,8 @@ AB_NUM_WRAP(VALUE v)
     if (FIXNUM_P(v)) return v;
     if (RB_TYPE_P(v, T_BIGNUM)) return abruby_bignum_new(v);
     if (RB_FLOAT_TYPE_P(v)) return abruby_float_new_wrap(v);
+    if (RB_TYPE_P(v, T_RATIONAL)) return abruby_rational_new(v);
+    if (RB_TYPE_P(v, T_COMPLEX)) return abruby_complex_new(v);
     // true/false/nil (e.g. from ==) pass through
     return v;
 }
@@ -84,6 +92,8 @@ void Init_abruby_array(void);
 void Init_abruby_hash(void);
 void Init_abruby_range(void);
 void Init_abruby_regexp(void);
+void Init_abruby_rational(void);
+void Init_abruby_complex(void);
 void Init_abruby_true(void);
 void Init_abruby_false(void);
 void Init_abruby_nil(void);

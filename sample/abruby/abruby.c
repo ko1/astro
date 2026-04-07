@@ -26,6 +26,8 @@ static struct abruby_class ab_string_class_body  = { .name = "String",  .super =
 static struct abruby_class ab_symbol_class_body  = { .name = "Symbol",  .super = &ab_object_class_body };
 static struct abruby_class ab_range_class_body   = { .name = "Range",   .super = &ab_object_class_body };
 static struct abruby_class ab_regexp_class_body  = { .name = "Regexp",  .super = &ab_object_class_body };
+static struct abruby_class ab_rational_class_body = { .name = "Rational", .super = &ab_object_class_body };
+static struct abruby_class ab_complex_class_body  = { .name = "Complex",  .super = &ab_object_class_body };
 static struct abruby_class ab_true_class_body    = { .name = "TrueClass",  .super = &ab_object_class_body };
 static struct abruby_class ab_false_class_body   = { .name = "FalseClass", .super = &ab_object_class_body };
 static struct abruby_class ab_nil_class_body     = { .name = "NilClass",   .super = &ab_object_class_body };
@@ -42,6 +44,8 @@ struct abruby_class *ab_string_class  = &ab_string_class_body;
 struct abruby_class *ab_symbol_class  = &ab_symbol_class_body;
 struct abruby_class *ab_range_class   = &ab_range_class_body;
 struct abruby_class *ab_regexp_class  = &ab_regexp_class_body;
+struct abruby_class *ab_rational_class = &ab_rational_class_body;
+struct abruby_class *ab_complex_class  = &ab_complex_class_body;
 struct abruby_class *ab_true_class    = &ab_true_class_body;
 struct abruby_class *ab_false_class   = &ab_false_class_body;
 struct abruby_class *ab_nil_class     = &ab_nil_class_body;
@@ -72,6 +76,12 @@ static void abruby_data_mark(void *ptr) {
     }
     else if (h->klass == ab_regexp_class) {
         rb_gc_mark(((struct abruby_regexp *)ptr)->rb_regexp);
+    }
+    else if (h->klass == ab_rational_class) {
+        rb_gc_mark(((struct abruby_rational *)ptr)->rb_rational);
+    }
+    else if (h->klass == ab_complex_class) {
+        rb_gc_mark(((struct abruby_complex *)ptr)->rb_complex);
     }
     else if (h->klass == ab_class_class || h->klass == ab_module_class) {
         // class or module: no ivars to mark
@@ -200,6 +210,26 @@ abruby_regexp_new(VALUE rb_regexp)
     return wrapper;
 }
 
+VALUE
+abruby_rational_new(VALUE rb_rational)
+{
+    struct abruby_rational *r;
+    VALUE wrapper = TypedData_Make_Struct(rb_cAbRubyNode, struct abruby_rational, &abruby_data_type, r);
+    r->klass = ab_rational_class;
+    r->rb_rational = rb_rational;
+    return wrapper;
+}
+
+VALUE
+abruby_complex_new(VALUE rb_complex)
+{
+    struct abruby_complex *cx;
+    VALUE wrapper = TypedData_Make_Struct(rb_cAbRubyNode, struct abruby_complex, &abruby_data_type, cx);
+    cx->klass = ab_complex_class;
+    cx->rb_complex = rb_complex;
+    return wrapper;
+}
+
 // Class wrapper
 
 VALUE
@@ -295,6 +325,8 @@ init_builtin_methods(void)
     Init_abruby_hash();
     Init_abruby_range();
     Init_abruby_regexp();
+    Init_abruby_rational();
+    Init_abruby_complex();
     Init_abruby_true();
     Init_abruby_false();
     Init_abruby_nil();
@@ -411,6 +443,8 @@ init_builtin_consts(void)
     abruby_class_set_const(ab_object_class, "Hash",       abruby_wrap_class(ab_hash_class));
     abruby_class_set_const(ab_object_class, "Range",      abruby_wrap_class(ab_range_class));
     abruby_class_set_const(ab_object_class, "Regexp",     abruby_wrap_class(ab_regexp_class));
+    abruby_class_set_const(ab_object_class, "Rational",   abruby_wrap_class(ab_rational_class));
+    abruby_class_set_const(ab_object_class, "Complex",    abruby_wrap_class(ab_complex_class));
     abruby_class_set_const(ab_object_class, "TrueClass",  abruby_wrap_class(ab_true_class));
     abruby_class_set_const(ab_object_class, "FalseClass", abruby_wrap_class(ab_false_class));
     abruby_class_set_const(ab_object_class, "NilClass",   abruby_wrap_class(ab_nil_class));
@@ -729,6 +763,12 @@ abruby_to_ruby(VALUE v)
         if (h->klass == ab_regexp_class) {
             return ((struct abruby_regexp *)h)->rb_regexp;
         }
+        if (h->klass == ab_rational_class) {
+            return ((struct abruby_rational *)h)->rb_rational;
+        }
+        if (h->klass == ab_complex_class) {
+            return ((struct abruby_complex *)h)->rb_complex;
+        }
     }
     return v;
 }
@@ -824,6 +864,8 @@ Init_abruby(void)
     ab_symbol_class->klass  = ab_class_class;
     ab_range_class->klass   = ab_class_class;
     ab_regexp_class->klass  = ab_class_class;
+    ab_rational_class->klass = ab_class_class;
+    ab_complex_class->klass  = ab_class_class;
     ab_true_class->klass    = ab_class_class;
     ab_false_class->klass   = ab_class_class;
     ab_nil_class->klass     = ab_class_class;
@@ -841,6 +883,8 @@ Init_abruby(void)
     abruby_wrap_class(ab_symbol_class);
     abruby_wrap_class(ab_range_class);
     abruby_wrap_class(ab_regexp_class);
+    abruby_wrap_class(ab_rational_class);
+    abruby_wrap_class(ab_complex_class);
     abruby_wrap_class(ab_true_class);
     abruby_wrap_class(ab_false_class);
     abruby_wrap_class(ab_nil_class);

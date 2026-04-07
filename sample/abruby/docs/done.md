@@ -63,7 +63,7 @@
 - 追加: `<<` (Array#push, String 破壊的追加)
 
 ## ビルトインクラス
-- **Kernel** (module, Object に include): p, raise
+- **Kernel** (module, Object に include): p, raise, Rational(), Complex()
 - **Object**: inspect, to_s, ==, !=, !, nil?, class
 - **Module**: inspect, include
 - **Class**: new, inspect (Module を継承)
@@ -75,6 +75,8 @@
 - **Symbol**: ==, !=, to_s, to_sym, inspect（CRuby 即値を直接利用）
 - **Range**: first, last, begin, end, exclude_end?, size/length, include?, to_a, ==, inspect, to_s
 - **Regexp**: match?, match, =~, ==, source, inspect, to_s（CRuby Regexp を内部利用）
+- **Rational**: 算術, 比較, numerator, denominator, to_f, to_i, inspect, to_s
+- **Complex**: 算術, ==, real, imaginary, abs, conjugate, rectangular, inspect, to_s
 - **TrueClass / FalseClass / NilClass**: inspect, to_s, nil?
 
 ## 定数

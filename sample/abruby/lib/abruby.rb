@@ -111,6 +111,37 @@ class AbRuby
       when Prism::EmbeddedStatementsNode
         node.statements ? transduce(node.statements) : AbRuby.alloc_node_nil
 
+      when Prism::RationalNode
+        # 3r → Rational(3, 1)
+        num = node.numerator
+        den = node.denominator
+        recv_idx = inc_arg_index
+        recv_store = AbRuby.alloc_node_lvar_set(recv_idx, AbRuby.alloc_node_self)
+        call_arg_idx = arg_index
+        idx_num = inc_arg_index
+        idx_den = inc_arg_index
+        store_num = AbRuby.alloc_node_lvar_set(idx_num, AbRuby.alloc_node_num(num))
+        store_den = AbRuby.alloc_node_lvar_set(idx_den, AbRuby.alloc_node_num(den))
+        rewind_arg_index(recv_idx)
+        recv_ref = AbRuby.alloc_node_lvar_get(recv_idx)
+        call_node = AbRuby.alloc_node_method_call(recv_ref, "Rational", 2, call_arg_idx)
+        build_seq([recv_store, store_num, store_den, call_node])
+
+      when Prism::ImaginaryNode
+        # 2i → Complex(0, 2)
+        inner = node.numeric
+        recv_idx = inc_arg_index
+        recv_store = AbRuby.alloc_node_lvar_set(recv_idx, AbRuby.alloc_node_self)
+        call_arg_idx = arg_index
+        idx_real = inc_arg_index
+        idx_imag = inc_arg_index
+        store_real = AbRuby.alloc_node_lvar_set(idx_real, AbRuby.alloc_node_num(0))
+        store_imag = AbRuby.alloc_node_lvar_set(idx_imag, transduce(inner))
+        rewind_arg_index(recv_idx)
+        recv_ref = AbRuby.alloc_node_lvar_get(recv_idx)
+        call_node = AbRuby.alloc_node_method_call(recv_ref, "Complex", 2, call_arg_idx)
+        build_seq([recv_store, store_real, store_imag, call_node])
+
       when Prism::TrueNode
         AbRuby.alloc_node_true
 

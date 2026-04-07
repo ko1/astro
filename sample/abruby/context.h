@@ -165,6 +165,16 @@ struct abruby_regexp {
     VALUE rb_regexp;             // inner CRuby Regexp
 };
 
+struct abruby_rational {
+    struct abruby_class *klass;  // offset 0: always ab_rational_class
+    VALUE rb_rational;           // inner CRuby Rational
+};
+
+struct abruby_complex {
+    struct abruby_class *klass;  // offset 0: always ab_complex_class
+    VALUE rb_complex;            // inner CRuby Complex
+};
+
 // built-in abruby classes (defined in abruby.c)
 extern struct abruby_class *ab_object_class;
 extern struct abruby_class *ab_integer_class;
@@ -179,6 +189,8 @@ extern struct abruby_class *ab_hash_class;
 extern struct abruby_class *ab_range_class;
 extern struct abruby_class *ab_regexp_class;
 extern struct abruby_class *ab_kernel_module;
+extern struct abruby_class *ab_rational_class;
+extern struct abruby_class *ab_complex_class;
 extern struct abruby_class *ab_module_class;
 extern struct abruby_class *ab_class_class;
 
