@@ -383,9 +383,17 @@ class AbRuby
         values = node.value
 
         # Evaluate right-hand values into temp slots
-        if values.is_a?(Prism::ArrayNode)
+        if values.is_a?(Prism::ArrayNode) &&
+           values.elements.none? { |e| e.is_a?(Prism::SplatNode) }
           rhs_nodes = values.elements.map { |e| transduce(e) }
-        else
+        elsif values.is_a?(Prism::ArrayNode) &&
+              values.elements.size == 1 && values.elements[0].is_a?(Prism::SplatNode)
+          # a, b = *expr → treat expr as the array to decompose
+          values = values.elements[0].expression
+        end
+
+        # RHS is a single expression yielding an array: decompose via [0], [1], ...
+        unless rhs_nodes
           # RHS is a single expression (e.g., method call returning array)
           # Evaluate into temp, then access via [0], [1], ...
           ary_idx = inc_arg_index

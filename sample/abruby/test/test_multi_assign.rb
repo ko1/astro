@@ -50,6 +50,11 @@ class TestMultiAssign < AbRubyTest
     assert_eval('a = 1; b = 2; a, b = b, a; a', 2)
   end
 
+  # splat in multi-assign
+  def test_splat_assign
+    assert_eval('ary = [10, 20, 30]; a, b = *ary; a + b', 30)
+  end
+
   # RHS is a method call returning array
   def test_multi_assign_from_call
     assert_eval('
