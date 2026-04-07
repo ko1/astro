@@ -443,7 +443,10 @@ class AbRuby
       end
     end
 
-    BINOP_MAP = { "+" => "plus", "-" => "minus", "*" => "mul", "/" => "div" }.freeze
+    BINOP_MAP = {
+      "+" => "plus", "-" => "minus", "*" => "mul", "/" => "div",
+      "<" => "lt", "<=" => "le", ">" => "gt", ">=" => "ge",
+    }.freeze
 
     def transduce_binop(node)
       left = transduce(node.receiver)

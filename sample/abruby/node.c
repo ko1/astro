@@ -5,6 +5,7 @@
 
 #include "node.h"
 #include "context.h"
+#include "builtin/builtin.h"
 
 typedef uint64_t node_hash_t;
 
@@ -373,22 +374,38 @@ abruby_node_mark(void *ptr)
         mark_child(n->u.node_rescue.rescue_body);
         mark_child(n->u.node_rescue.ensure_body);
     }
-    // Arithmetic type-specific nodes
-    else if (k == &kind_node_plus || k == &kind_node_fixnum_plus) {
+    // Arithmetic and comparison type-specific nodes
+    else if (k == &kind_node_plus || k == &kind_node_fixnum_plus || k == &kind_node_integer_plus) {
         mark_child(n->u.node_plus.left);
         mark_child(n->u.node_plus.right);
     }
-    else if (k == &kind_node_minus || k == &kind_node_fixnum_minus) {
+    else if (k == &kind_node_minus || k == &kind_node_fixnum_minus || k == &kind_node_integer_minus) {
         mark_child(n->u.node_minus.left);
         mark_child(n->u.node_minus.right);
     }
-    else if (k == &kind_node_mul || k == &kind_node_fixnum_mul) {
+    else if (k == &kind_node_mul || k == &kind_node_fixnum_mul || k == &kind_node_integer_mul) {
         mark_child(n->u.node_mul.left);
         mark_child(n->u.node_mul.right);
     }
-    else if (k == &kind_node_div || k == &kind_node_fixnum_div) {
+    else if (k == &kind_node_div || k == &kind_node_fixnum_div || k == &kind_node_integer_div) {
         mark_child(n->u.node_div.left);
         mark_child(n->u.node_div.right);
+    }
+    else if (k == &kind_node_lt || k == &kind_node_fixnum_lt) {
+        mark_child(n->u.node_lt.left);
+        mark_child(n->u.node_lt.right);
+    }
+    else if (k == &kind_node_le || k == &kind_node_fixnum_le) {
+        mark_child(n->u.node_le.left);
+        mark_child(n->u.node_le.right);
+    }
+    else if (k == &kind_node_gt || k == &kind_node_fixnum_gt) {
+        mark_child(n->u.node_gt.left);
+        mark_child(n->u.node_gt.right);
+    }
+    else if (k == &kind_node_ge || k == &kind_node_fixnum_ge) {
+        mark_child(n->u.node_ge.left);
+        mark_child(n->u.node_ge.right);
     }
 }
 
