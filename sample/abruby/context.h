@@ -261,6 +261,7 @@ struct abruby_gvar_table {
 struct abruby_frame {
     struct abruby_frame *prev;
     struct abruby_method *method;
+    struct abruby_class *klass;   // receiver's class at call time (for super)
     union {
         struct Node *node;        // method frame: updated by child push
         const char *source_file;  // <main>/<top>: set at push time

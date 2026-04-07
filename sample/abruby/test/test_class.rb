@@ -37,4 +37,60 @@ class TestClass < AbRubyTest
     'module TcM; def val; 1; end; end; class TcFoo; include TcM; def val; 2; end; end; TcFoo.new.val', 2)
   def test_module_inherit_include = assert_eval(
     'module TcM; def val; 42; end; end; class TcA; include TcM; end; class TcB < TcA; end; TcB.new.val', 42)
+
+  # attr_reader / attr_writer / attr_accessor
+  def test_attr_reader = assert_eval(
+    'class TcAR; attr_reader :x; def initialize(v); @x = v; end; end; TcAR.new(42).x', 42)
+  def test_attr_writer = assert_eval(
+    'class TcAW; attr_writer :x; def x; @x; end; def initialize; @x = 0; end; end; o = TcAW.new; o.x = 99; o.x', 99)
+  def test_attr_accessor = assert_eval(
+    'class TcAA; attr_accessor :x; def initialize; @x = 0; end; end; o = TcAA.new; o.x = 7; o.x', 7)
+  def test_attr_reader_multiple = assert_eval(
+    'class TcARM; attr_reader :a, :b; def initialize(x, y); @a = x; @b = y; end; end; o = TcARM.new(3, 4); o.a + o.b', 7)
+  def test_attr_accessor_default_nil = assert_eval(
+    'class TcADN; attr_accessor :v; end; TcADN.new.v', nil)
+
+  # is_a? / kind_of? / instance_of?
+  def test_is_a_same_class = assert_eval(
+    'class TcIA; end; TcIA.new.is_a?(TcIA)', true)
+  def test_is_a_parent = assert_eval(
+    'class TcIA; end; class TcIB < TcIA; end; TcIB.new.is_a?(TcIA)', true)
+  def test_is_a_false = assert_eval(
+    'class TcIA; end; class TcIB; end; TcIA.new.is_a?(TcIB)', false)
+  def test_is_a_object = assert_eval(
+    'class TcIA; end; TcIA.new.is_a?(Object)', true)
+  def test_kind_of = assert_eval(
+    'class TcIA; end; class TcIB < TcIA; end; TcIB.new.kind_of?(TcIA)', true)
+  def test_instance_of_exact = assert_eval(
+    'class TcIA; end; TcIA.new.instance_of?(TcIA)', true)
+  def test_instance_of_parent = assert_eval(
+    'class TcIA; end; class TcIB < TcIA; end; TcIB.new.instance_of?(TcIA)', false)
+  def test_is_a_integer = assert_eval('5.is_a?(Integer)', true)
+  def test_is_a_string = assert_eval('"hello".is_a?(String)', true)
+
+  # super
+  def test_super_bare = assert_eval(
+    'class TcSA; def val(x); x * 2; end; end; ' \
+    'class TcSB < TcSA; def val(x); super + 1; end; end; TcSB.new.val(5)', 11)
+  def test_super_no_args = assert_eval(
+    'class TcSA; def greet; "hello"; end; end; ' \
+    'class TcSB < TcSA; def greet; super; end; end; TcSB.new.greet', "hello")
+  def test_super_with_args = assert_eval(
+    'class TcSA; def calc(x); x + 10; end; end; ' \
+    'class TcSB < TcSA; def calc(x); super(x * 2); end; end; TcSB.new.calc(3)', 16)
+  def test_super_empty_parens = assert_eval(
+    'class TcSA; def val; 42; end; end; ' \
+    'class TcSB < TcSA; def val; super(); end; end; TcSB.new.val', 42)
+  def test_super_initialize = assert_eval(
+    'class TcSA; def initialize(x); @x = x; end; end; ' \
+    'class TcSB < TcSA; def initialize(x); super; @y = x + 1; end; def sum; @x + @y; end; end; ' \
+    'TcSB.new(10).sum', 21)
+  def test_super_chain = assert_eval(
+    'class TcSA; def val; 1; end; end; ' \
+    'class TcSB < TcSA; def val; super + 10; end; end; ' \
+    'class TcSC < TcSB; def val; super + 100; end; end; TcSC.new.val', 111)
+
+  # eval (note: local variables from outer scope are not visible in eval)
+  def test_eval_basic = assert_eval('eval("1 + 2")', 3)
+  def test_eval_string = assert_eval('eval("\"hello\"")', "hello")
 end

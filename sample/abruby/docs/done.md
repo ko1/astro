@@ -42,6 +42,8 @@
 ## メソッド
 - `def name(args); end`
 - endless method: `def name(args) = expr`
+- `attr_reader`, `attr_writer`, `attr_accessor`
+- `super`（bare / 引数付き / 引数なし）
 - 再帰呼び出し
 - 全メソッド呼び出しは OOP ディスパッチ（`node_method_call` に統一）
 - `method_missing(name, ...)`
@@ -66,10 +68,10 @@
 - 追加: `<<` (Array#push, String 破壊的追加)
 
 ## ビルトインクラス
-- **Kernel** (module, Object に include): p, raise, Rational(), Complex(), require, require_relative
+- **Kernel** (module, Object に include): p, raise, eval, Rational(), Complex(), require, require_relative
 - **RuntimeError**: message, backtrace, to_s, inspect（例外オブジェクト）
-- **Object**: inspect, to_s, ==, !=, !, nil?, class
-- **Module**: inspect, include
+- **Object**: inspect, to_s, ==, !=, !, nil?, class, is_a?, kind_of?, instance_of?
+- **Module**: inspect, include, const_get, const_set
 - **Class**: new, inspect (Module を継承)
 - **Integer**: 算術, 比較, **, <=>, <<, >>, &, |, ^, ~, to_s, to_f, zero?, abs
 - **Float**: 算術, 比較, **, to_s, to_i, to_f, abs, zero?, floor, ceil, round

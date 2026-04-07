@@ -807,6 +807,13 @@ rb_alloc_node_method_call(VALUE self, VALUE recv, VALUE name, VALUE params_cnt, 
 }
 
 static VALUE
+rb_alloc_node_super(VALUE self, VALUE params_cnt, VALUE arg_index)
+{
+    return wrap_node(ALLOC_node_super(FIX2UINT(params_cnt), FIX2UINT(arg_index)));
+}
+
+
+static VALUE
 rb_set_node_line(VALUE self, VALUE node_obj, VALUE line)
 {
     NODE *n = unwrap_node(node_obj);
@@ -944,7 +951,7 @@ abruby_require_file(CTX *c, VALUE rb_path)
     struct abruby_frame *save_frame = c->current_frame;
     c->fp = c->env;
     c->current_class = NULL;
-    struct abruby_frame req_frame = {save_frame, NULL, {.source_file = RSTRING_PTR(abs_str)}};
+    struct abruby_frame req_frame = {save_frame, NULL, NULL, {.source_file = RSTRING_PTR(abs_str)}};
     c->current_frame = &req_frame;
     RESULT r = EVAL(c, ast);
     c->fp = save_fp;
@@ -954,6 +961,20 @@ abruby_require_file(CTX *c, VALUE rb_path)
 
     if (r.state == RESULT_RAISE) return r;
     return RESULT_OK(Qtrue);
+}
+
+// eval(code_string) — parse and evaluate a string in the current context
+RESULT
+abruby_eval_string(CTX *c, VALUE rb_code)
+{
+    // Parse via AbRuby::Parser
+    VALUE parser = rb_funcall(rb_const_get(rb_cAbRuby, rb_intern("Parser")), rb_intern("new"), 0);
+    VALUE ast_obj = rb_funcall(parser, rb_intern("parse"), 1, rb_code);
+
+    // Eval AST in current context
+    NODE *ast = unwrap_node(ast_obj);
+    RESULT r = EVAL(c, ast);
+    return r;
 }
 
 // Get current file path from VM
@@ -1007,7 +1028,7 @@ rb_abruby_eval_ast(VALUE self, VALUE ast_obj)
 
     // Push <main> frame so backtrace always has a bottom frame
     const char *eval_file = NIL_P(vm->current_file) ? "(abruby)" : RSTRING_PTR(vm->current_file);
-    struct abruby_frame main_frame = {NULL, NULL, {.source_file = eval_file}};
+    struct abruby_frame main_frame = {NULL, NULL, NULL, {.source_file = eval_file}};
     vm->ctx.current_frame = &main_frame;
 
     RESULT r = EVAL(&vm->ctx, ast);
@@ -1161,6 +1182,7 @@ Init_abruby(void)
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_const_get", rb_alloc_node_const_get, 1);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_const_path_get", rb_alloc_node_const_path_get, 2);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_method_call", rb_alloc_node_method_call, 4);
+    rb_define_singleton_method(rb_cAbRuby, "alloc_node_super", rb_alloc_node_super, 2);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_plus", rb_alloc_node_plus, 2);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_minus", rb_alloc_node_minus, 2);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_mul", rb_alloc_node_mul, 2);

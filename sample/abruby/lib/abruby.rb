@@ -17,8 +17,8 @@ class AbRuby
 
     private
 
-    def push_frame(locals)
-      @frames.push({ locals: locals.map(&:to_s), arg_index: locals.size, max: locals.size })
+    def push_frame(locals, params_cnt: 0)
+      @frames.push({ locals: locals.map(&:to_s), arg_index: locals.size, max: locals.size, params_cnt: params_cnt })
     end
 
     def pop_frame
@@ -304,7 +304,7 @@ class AbRuby
         params = node.parameters
         params_cnt = params ? params.requireds.size : 0
 
-        push_frame(node.locals)
+        push_frame(node.locals, params_cnt: params_cnt)
         body = node.body ? transduce(node.body) : AbRuby.alloc_node_nil
         frame = pop_frame
 
@@ -430,7 +430,9 @@ class AbRuby
         AbRuby.alloc_node_rescue(body, rescue_body, ensure_body, exception_lvar_index)
 
       when Prism::CallNode
-        if node.receiver &&
+        if !node.receiver && %w[attr_reader attr_writer attr_accessor].include?(node.name.to_s)
+          transduce_attr(node)
+        elsif node.receiver &&
            %w[+ - * /].include?(node.name.to_s) &&
            node.arguments&.arguments&.size == 1
           transduce_binop(node)
@@ -438,9 +440,66 @@ class AbRuby
           transduce_call(node)
         end
 
+      when Prism::ForwardingSuperNode
+        # super (bare) — forward all args by expanding to super(param0, param1, ...)
+        params_cnt = current_frame[:params_cnt]
+        if params_cnt == 0
+          AbRuby.alloc_node_super(0, arg_index)
+        else
+          base_idx = arg_index
+          seq_nodes = (0...params_cnt).map do |i|
+            idx = inc_arg_index
+            AbRuby.alloc_node_lvar_set(idx, AbRuby.alloc_node_lvar_get(i))
+          end
+          rewind_arg_index(base_idx)
+          call_node = AbRuby.alloc_node_super(params_cnt, base_idx)
+          build_seq(seq_nodes + [call_node])
+        end
+
+      when Prism::SuperNode
+        # super() or super(args)
+        args = node.arguments&.arguments || []
+        if args.empty?
+          AbRuby.alloc_node_super(0, arg_index)
+        else
+          base_idx = arg_index
+          seq_nodes = args.map do |arg|
+            idx = inc_arg_index
+            AbRuby.alloc_node_lvar_set(idx, transduce(arg))
+          end
+          rewind_arg_index(base_idx)
+          call_node = AbRuby.alloc_node_super(args.size, base_idx)
+          build_seq(seq_nodes + [call_node])
+        end
+
       else
         raise "unsupported node: #{node.class} (#{node.type})"
       end
+    end
+
+    def transduce_attr(node)
+      kind = node.name.to_s
+      syms = node.arguments.arguments.map { |a| a.value.to_s }
+      defs = []
+
+      syms.each do |attr|
+        ivar = "@#{attr}"
+        if kind == "attr_reader" || kind == "attr_accessor"
+          # def attr; @attr; end
+          body = AbRuby.alloc_node_ivar_get(ivar)
+          defs << AbRuby.alloc_node_def(attr, body, 0, 0)
+        end
+        if kind == "attr_writer" || kind == "attr_accessor"
+          # def attr=(value); @attr = value; end
+          push_frame([:"#{attr}_value"])
+          param_ref = AbRuby.alloc_node_lvar_get(0)
+          body = AbRuby.alloc_node_ivar_set(ivar, param_ref)
+          pop_frame
+          defs << AbRuby.alloc_node_def("#{attr}=", body, 1, 1)
+        end
+      end
+
+      defs.size == 1 ? defs[0] : build_seq(defs)
     end
 
     BINOP_MAP = {

@@ -36,6 +36,22 @@ static RESULT ab_object_not(CTX *c, VALUE self, unsigned int argc, VALUE *argv) 
     return RESULT_OK(RTEST(self) ? Qfalse : Qtrue);
 }
 
+static RESULT ab_object_is_a(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    struct abruby_class *obj_class = AB_CLASS_OF(self);
+    struct abruby_class *check_class = abruby_unwrap_class(argv[0]);
+    while (obj_class) {
+        if (obj_class == check_class) return RESULT_OK(Qtrue);
+        obj_class = obj_class->super;
+    }
+    return RESULT_OK(Qfalse);
+}
+
+static RESULT ab_object_instance_of(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    struct abruby_class *obj_class = AB_CLASS_OF(self);
+    struct abruby_class *check_class = abruby_unwrap_class(argv[0]);
+    return RESULT_OK(obj_class == check_class ? Qtrue : Qfalse);
+}
+
 void
 Init_abruby_object(void)
 {
@@ -46,4 +62,7 @@ Init_abruby_object(void)
     abruby_class_add_cfunc(ab_object_class, "nil?",     ab_object_nil_p,      0);
     abruby_class_add_cfunc(ab_object_class, "class",    ab_object_class_name, 0);
     abruby_class_add_cfunc(ab_object_class, "!",        ab_object_not,        0);
+    abruby_class_add_cfunc(ab_object_class, "is_a?",     ab_object_is_a,       1);
+    abruby_class_add_cfunc(ab_object_class, "kind_of?",  ab_object_is_a,       1);
+    abruby_class_add_cfunc(ab_object_class, "instance_of?", ab_object_instance_of, 1);
 }

@@ -2,82 +2,103 @@
 
 実装済み機能は [done.md](done.md) を参照。
 
-## 言語機能
+## optcarrot 対応
+
+benchmark/optcarrot/bin/optcarrot-bench を動かすために必要な機能。
+優先度順にリストアップ。
+
+### 致命的（これがないと何も動かない）
+
+- [ ] ブロック / yield / Proc（全イテレータの基盤）
+- [ ] `case / when`
+- [x] `attr_reader` / `attr_writer` / `attr_accessor`
+- [ ] デフォルト引数 (`def f(a, b = 1)`)
+
+### 重要（主要な処理パスで使用）
+
+- [ ] `Integer#times`（ブロック依存）
+- [ ] `Integer#[]`（ビットインデックス `num[bit]`）
+- [ ] Array: `each`, `map`, `select`, `reject`, `fill`, `flatten`, `clear`, `replace`, `concat`（ブロック依存多数）
+- [ ] Hash: `each`, `fetch`, `merge`, `delete`, `compare_by_identity`
+- [ ] String: `gsub`, `split`, `strip`, `chomp`, `bytes`, `pack`, `unpack`, `bytesize`, `[]`
+- [x] `super`（bare super で引数転送、super(args) で明示的引数、super() で引数なし）
+- [ ] `private` / `public` / `protected`
+- [ ] `module_function`
+- [x] `until` ループ（基本形は実装済み。`begin...end until` は未対応）
+
+### 中程度（特定機能で必要）
+
+- [x] `eval`（ローカル変数は外部スコープ不可）
+- [ ] `Struct.new`
+- [ ] `method(:name)`（メソッドオブジェクト）
+- [x] `const_get` / `const_set`（動的定数参照）
+- [x] `is_a?` / `kind_of?` / `instance_of?`
+- [ ] `defined?`
+- [ ] クラス変数 (`@@var`)
+- [ ] 可変長引数 (`*args`, `**kwargs`)
+- [ ] `&:symbol`（ブロック引数のシンボル記法）
+
+### 標準ライブラリ
+
+- [ ] Zlib（ROM 解凍）
+- [ ] File I/O（ROM 読み込み）
+- [ ] Marshal（シリアライゼーション）
+
+## その他の未実装機能
 
 ### 制御構造
-- [ ] `case / when / in`
 - [ ] `for .. in`
-- [x] `break`（while/until から脱出、値付き対応）
 - [ ] `next`
-- [x] `begin / rescue / ensure / raise`（例外処理）— RuntimeError 限定、rescue はクラス引数なし
-- [ ] `defined?`
 
 ### ブロック・Proc・lambda
-- [ ] ブロック渡し (`method { |x| ... }` / `method do |x| ... end`)
-- [ ] `yield`
 - [ ] `Proc.new` / `proc` / `lambda` / `->`
 - [ ] `&block` 引数
-- [ ] イテレータ (`each`, `map`, `select`, `reduce` 等)
 
 ### メソッド
-- [ ] `super`
-- [ ] デフォルト引数 (`def f(a, b = 1)`)
 - [ ] キーワード引数 (`def f(a:, b: 1)`)
-- [ ] 可変長引数 (`def f(*args)`)
-- [ ] `**kwargs`
-- [ ] `attr_reader` / `attr_writer` / `attr_accessor`
-- [ ] `public` / `private` / `protected`（アクセス制御）
 - [ ] クラスメソッド (`def self.foo`)
 - [ ] `alias` / `alias_method`
 - [ ] `respond_to?`
 
 ### クラス・モジュール
-- [ ] `super` 呼び出し
 - [ ] `prepend`
 - [ ] `extend`
 - [ ] ネストしたクラス/モジュール (`class A::B`)
 - [ ] シングルトンメソッド / 特異クラス
-- [ ] `is_a?` / `kind_of?` / `instance_of?`
 - [ ] `ancestors`
 
 ### 変数・定数
-- [x] グローバル変数 (`$var`)
 - [ ] クラス変数 (`@@var`)
-- [x] 定数代入 (`FOO = 42`)
-- [x] 多重代入 (`a, b = 1, 2`)
 
-### リテラル・型
-（Symbol, Range, Regexp, ヒアドキュメント, %w, %i は実装済み。done.md 参照）
+### ビルトインメソッドの差分
 
-### 演算子
-（基本演算子は実装済み。done.md 参照）
-
-## ビルトインメソッドの差分
-
-### Integer
-- [ ] `times`, `upto`, `downto`（ブロック必要）
+#### Integer
+- [ ] `upto`, `downto`（ブロック必要）
+- [ ] `step`（ブロック必要）
 - [ ] `even?`, `odd?`
+- [ ] `bit_length`, `between?`
 
-### Float
+#### Float
 - [ ] `nan?`, `infinite?`, `finite?`
 - [ ] `truncate`
 
-### String
-- [ ] `[]` / `[]=`（部分文字列）
-- [ ] `gsub` / `sub` / `match`（正規表現）
-- [ ] `split`, `strip`, `chomp`, `chop`
+#### String
+- [ ] `[]=`（部分文字列代入）
+- [ ] `sub`, `match`（正規表現）
 - [ ] `start_with?`, `end_with?`
+- [ ] `tr`, `scan`
+- [ ] `%` フォーマット
 
-### Array
-- [ ] `each`, `map`, `select`, `reject`, `reduce`（ブロック必要）
-- [ ] `sort`, `flatten`, `compact`, `uniq`
+#### Array
+- [ ] `sort`, `compact`, `uniq`
 - [ ] `shift`, `unshift`, `join`
 - [ ] `delete`, `delete_at`, `count`
+- [ ] `each_slice`, `transpose`, `rotate`, `zip`
+- [ ] `inject` / `reduce`
 
-### Hash
-- [ ] `each`, `map`, `select`（ブロック必要）
-- [ ] `merge`, `delete`, `fetch`
+#### Hash
 - [ ] `to_a`, `default`
+- [ ] `each_key`, `each_value`
 
 ### 未実装クラス
 - [ ] IO/File
@@ -86,7 +107,7 @@
 
 ## ランタイム・内部実装
 
-- [ ] abruby オブジェクトの free（現在リーク前提）
+- [x] ~~abruby オブジェクトの free（現在リーク前提）~~ → `RUBY_DEFAULT_FREE` で GC sweep 時に解放
 - [ ] インラインキャッシュ（現在 strcmp 線形探索）
 - [ ] メソッド/ivar/定数テーブルの動的拡張
 - [ ] スタックオーバーフロー検出

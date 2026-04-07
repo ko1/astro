@@ -56,6 +56,12 @@ static RESULT ab_kernel_require_relative(CTX *c, VALUE self, unsigned int argc, 
     return abruby_require_file(c, full);
 }
 
+// eval(code) — parse and evaluate a string
+static RESULT ab_kernel_eval(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    VALUE code = RSTR(argv[0]);  // abruby string -> CRuby string
+    return abruby_eval_string(c, code);
+}
+
 void
 Init_abruby_kernel(void)
 {
@@ -65,4 +71,5 @@ Init_abruby_kernel(void)
     abruby_class_add_cfunc(ab_kernel_module, "Complex",          ab_kernel_Complex,          2);
     abruby_class_add_cfunc(ab_kernel_module, "require",          ab_kernel_require,          1);
     abruby_class_add_cfunc(ab_kernel_module, "require_relative", ab_kernel_require_relative, 1);
+    abruby_class_add_cfunc(ab_kernel_module, "eval",             ab_kernel_eval,             1);
 }

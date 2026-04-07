@@ -29,4 +29,21 @@ class TestConstants < AbRubyTest
   def test_const_with_expression
     assert_eval('MAX = 10 * 10; MAX', 100)
   end
+
+  # const_get / const_set
+  def test_const_get_symbol
+    assert_eval('class TcCG; FOO = 99; end; TcCG.const_get(:FOO)', 99)
+  end
+
+  def test_const_get_string
+    assert_eval('class TcCG; BAR = 7; end; TcCG.const_get("BAR")', 7)
+  end
+
+  def test_const_set_symbol
+    assert_eval('class TcCS; end; TcCS.const_set(:X, 42); TcCS::X', 42)
+  end
+
+  def test_const_set_string
+    assert_eval('class TcCS; end; TcCS.const_set("Y", 10); TcCS::Y', 10)
+  end
 end
