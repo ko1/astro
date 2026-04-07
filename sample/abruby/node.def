@@ -371,9 +371,20 @@ NODE_DEF
 node_while(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *body)
 {
     while (RTEST(UNWRAP(EVAL_ARG(c, cond)))) {
-        UNWRAP(EVAL_ARG(c, body));
+        RESULT r = EVAL_ARG(c, body);
+        if (UNLIKELY(r.state != RESULT_NORMAL)) {
+            if (r.state == RESULT_BREAK) return RESULT_OK(r.value);
+            return r;
+        }
     }
     return RESULT_OK(Qnil);
+}
+
+NODE_DEF
+node_break(CTX * restrict c, NODE * restrict n, NODE *value)
+{
+    VALUE v = UNWRAP(EVAL_ARG(c, value));
+    return (RESULT){v, RESULT_BREAK};
 }
 
 // === Non-local exit ===

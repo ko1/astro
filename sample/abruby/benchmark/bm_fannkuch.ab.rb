@@ -85,7 +85,7 @@ def fannkuch(n)
       count[i] = count[i] - 1
       if count[i] > 0
         done = false
-        i = n  # break
+        break
       else
         count[i] = i + 1
         i += 1

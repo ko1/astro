@@ -7,7 +7,8 @@
 ### 制御構造
 - [ ] `case / when / in`
 - [ ] `for .. in`
-- [ ] `break` / `next`
+- [x] `break`（while/until から脱出、値付き対応）
+- [ ] `next`
 - [x] `begin / rescue / ensure / raise`（例外処理）— RuntimeError 限定、rescue はクラス引数なし
 - [ ] `defined?`
 

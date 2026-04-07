@@ -41,6 +41,7 @@ enum result_state {
     RESULT_NORMAL,
     RESULT_RETURN,
     RESULT_RAISE,
+    RESULT_BREAK,
 };
 
 typedef struct {
