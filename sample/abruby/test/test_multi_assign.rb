@@ -49,4 +49,15 @@ class TestMultiAssign < AbRubyTest
   def test_swap
     assert_eval('a = 1; b = 2; a, b = b, a; a', 2)
   end
+
+  # RHS is a method call returning array
+  def test_multi_assign_from_call
+    assert_eval('
+      class TcMA
+        def vals; [10, 20, 30]; end
+      end
+      a, b, c = TcMA.new.vals
+      a + b + c
+    ', 60)
+  end
 end

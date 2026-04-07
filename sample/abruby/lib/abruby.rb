@@ -384,7 +384,24 @@ class AbRuby
         if values.is_a?(Prism::ArrayNode)
           rhs_nodes = values.elements.map { |e| transduce(e) }
         else
-          raise "unsupported multi-assign RHS: #{values.class}"
+          # RHS is a single expression (e.g., method call returning array)
+          # Evaluate into temp, then access via [0], [1], ...
+          ary_idx = inc_arg_index
+          ary_store = AbRuby.alloc_node_lvar_set(ary_idx, transduce(values))
+          rhs_nodes = lefts.each_index.map do |i|
+            ary_ref = AbRuby.alloc_node_lvar_get(ary_idx)
+            idx_node = AbRuby.alloc_node_num(i)
+            # ary_ref[i] via method call
+            recv_idx = inc_arg_index
+            recv_store = AbRuby.alloc_node_lvar_set(recv_idx, ary_ref)
+            arg_idx = inc_arg_index
+            arg_store = AbRuby.alloc_node_lvar_set(arg_idx, idx_node)
+            rewind_arg_index(recv_idx)
+            recv_ref = AbRuby.alloc_node_lvar_get(recv_idx)
+            call_node = AbRuby.alloc_node_method_call(recv_ref, "[]", 1, arg_idx)
+            build_seq([ary_store, recv_store, arg_store, call_node])
+          end
+          rewind_arg_index(ary_idx)
         end
 
         assigns = []
