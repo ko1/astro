@@ -91,7 +91,20 @@ static void abruby_data_mark(void *ptr) {
         rb_gc_mark(exc->backtrace);
     }
     else if (h->klass == ab_class_class || h->klass == ab_module_class) {
-        // class or module: no ivars to mark
+        struct abruby_class *cls = (struct abruby_class *)ptr;
+        // Mark AST method bodies so GC doesn't collect them
+        for (unsigned int i = 0; i < cls->method_cnt; i++) {
+            if (cls->methods[i].type == ABRUBY_METHOD_AST) {
+                NODE *body = cls->methods[i].u.ast.body;
+                if (body && body->head.rb_wrapper) {
+                    rb_gc_mark(body->head.rb_wrapper);
+                }
+            }
+        }
+        // Mark constant values
+        for (unsigned int i = 0; i < cls->const_cnt; i++) {
+            rb_gc_mark(cls->constants[i].value);
+        }
     }
     else {
         // user object: mark ivars
@@ -405,6 +418,20 @@ vm_mark(void *ptr)
     rb_gc_mark(vm->rb_self);
     rb_gc_mark(vm->current_file);
     rb_gc_mark(vm->loaded_files);
+    // Mark main_class method bodies and constants
+    // (main_class is embedded in VM, not wrapped as T_DATA)
+    struct abruby_class *mc = &vm->main_class_body;
+    for (unsigned int i = 0; i < mc->method_cnt; i++) {
+        if (mc->methods[i].type == ABRUBY_METHOD_AST) {
+            NODE *body = mc->methods[i].u.ast.body;
+            if (body && body->head.rb_wrapper) {
+                rb_gc_mark(body->head.rb_wrapper);
+            }
+        }
+    }
+    for (unsigned int i = 0; i < mc->const_cnt; i++) {
+        rb_gc_mark(mc->constants[i].value);
+    }
 }
 
 static void
