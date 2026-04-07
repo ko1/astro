@@ -385,10 +385,8 @@ node_if(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *then_node, NODE *
 NODE_DEF
 node_while(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *body)
 {
-    // Use EVAL (not EVAL_ARG) to re-read children from node on each iteration.
-    // Children may be rewritten to type-specific nodes during execution.
-    while (RTEST(UNWRAP(EVAL(c, n->u.node_while.cond)))) {
-        RESULT r = EVAL(c, n->u.node_while.body);
+    while (RTEST(UNWRAP(EVAL_ARG(c, cond)))) {
+        RESULT r = EVAL_ARG(c, body);
         if (UNLIKELY(r.state != RESULT_NORMAL)) {
             if (r.state == RESULT_BREAK) return RESULT_OK(r.value);
             return r;
