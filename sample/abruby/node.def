@@ -88,19 +88,15 @@ find_class(CTX *c, const char *name)
 }
 
 static RESULT
-method_call_body(CTX *c, uint32_t arg_index, VALUE recv, struct Node *body,
-                 const char *method_source_file)
+method_call_body(CTX *c, uint32_t arg_index, VALUE recv, struct Node *body)
 {
     VALUE *save_fp = c->fp;
     VALUE save_self = c->self;
-    const char *save_source = c->source_file;
     c->fp = save_fp + arg_index;
     c->self = recv;
-    if (method_source_file) c->source_file = method_source_file;
     RESULT r = EVAL(c, body);
     c->fp = save_fp;
     c->self = save_self;
-    c->source_file = save_source;
     return RESULT_OK(UNWRAP_ALSO(RESULT_RETURN, r));
 }
 
@@ -440,7 +436,15 @@ NODE_DEF @noinline
 node_def(CTX * restrict c, NODE * restrict n, const char *name, NODE *body, uint32_t params_cnt, uint32_t locals_cnt)
 {
     struct abruby_class *klass = c->current_class ? c->current_class : c->main_class;
-    abruby_class_add_method(klass, name, body, params_cnt, locals_cnt, c->source_file);
+    // Derive source file from current frame
+    const char *file = NULL;
+    if (c->current_frame) {
+        if (c->current_frame->method && c->current_frame->method->type == ABRUBY_METHOD_AST)
+            file = c->current_frame->method->u.ast.source_file;
+        else
+            file = c->current_frame->source_file;  // <main>/<top>
+    }
+    abruby_class_add_method(klass, name, body, params_cnt, locals_cnt, file);
     return RESULT_OK(Qnil);
 }
 
@@ -532,14 +536,14 @@ node_method_call(CTX * restrict c, NODE * restrict n, NODE *recv, const char *na
             r = mm->u.cfunc.func(c, recv_val, params_cnt + 1, c->fp + arg_index);
         }
         else {
-            r = method_call_body(c, arg_index, recv_val, mm->u.ast.body, mm->u.ast.source_file);
+            r = method_call_body(c, arg_index, recv_val, mm->u.ast.body);
         }
     }
     else if (method->type == ABRUBY_METHOD_CFUNC) {
         r = method->u.cfunc.func(c, recv_val, params_cnt, c->fp + arg_index);
     }
     else {
-        r = method_call_body(c, arg_index, recv_val, method->u.ast.body, method->u.ast.source_file);
+        r = method_call_body(c, arg_index, recv_val, method->u.ast.body);
     }
 
     // Pop call frame (always — backtrace is on exception object)

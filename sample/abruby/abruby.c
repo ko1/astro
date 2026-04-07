@@ -284,18 +284,15 @@ abruby_call_method(CTX *c, VALUE recv, struct abruby_method *method,
     } else {
         VALUE *save_fp = c->fp;
         VALUE save_self = c->self;
-        const char *save_source = c->source_file;
         c->fp = save_fp + 16;
         // copy args into frame
         for (unsigned int i = 0; i < argc; i++) {
             c->fp[i] = argv[i];
         }
         c->self = recv;
-        if (method->u.ast.source_file) c->source_file = method->u.ast.source_file;
         RESULT r = EVAL(c, method->u.ast.body);
         c->fp = save_fp;
         c->self = save_self;
-        c->source_file = save_source;
         // Catch RETURN at method boundary
         if (r.state == RESULT_RETURN) return RESULT_OK(r.value);
         return r;
@@ -884,16 +881,13 @@ abruby_require_file(CTX *c, VALUE rb_path)
     NODE *ast = unwrap_node(ast_obj);
     VALUE *save_fp = c->fp;
     struct abruby_frame *save_frame = c->current_frame;
-    const char *save_source = c->source_file;
     c->fp = c->env;
     c->current_class = NULL;
-    c->source_file = RSTRING_PTR(abs_str);
-    struct abruby_frame req_frame = {save_frame, NULL, {.source_file = c->source_file}};
+    struct abruby_frame req_frame = {save_frame, NULL, {.source_file = RSTRING_PTR(abs_str)}};
     c->current_frame = &req_frame;
     RESULT r = EVAL(c, ast);
     c->fp = save_fp;
     c->current_frame = save_frame;
-    c->source_file = save_source;
 
     vm->current_file = save_file;
 
@@ -950,11 +944,9 @@ rb_abruby_eval_ast(VALUE self, VALUE ast_obj)
     vm->ctx.fp = vm->ctx.env;
     vm->ctx.current_class = NULL;
 
-    // Set source file for frame tracking
-    vm->ctx.source_file = NIL_P(vm->current_file) ? "(abruby)" : RSTRING_PTR(vm->current_file);
-
     // Push <main> frame so backtrace always has a bottom frame
-    struct abruby_frame main_frame = {NULL, NULL, {.source_file = vm->ctx.source_file}};
+    const char *eval_file = NIL_P(vm->current_file) ? "(abruby)" : RSTRING_PTR(vm->current_file);
+    struct abruby_frame main_frame = {NULL, NULL, {.source_file = eval_file}};
     vm->ctx.current_frame = &main_frame;
 
     RESULT r = EVAL(&vm->ctx, ast);

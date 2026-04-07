@@ -12,14 +12,11 @@ static RESULT ab_class_new(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
         } else {
             VALUE *save_fp = c->fp;
             VALUE save_self = c->self;
-            const char *save_source = c->source_file;
             c->fp = argv;
             c->self = obj;
-            if (init->u.ast.source_file) c->source_file = init->u.ast.source_file;
             RESULT r = EVAL(c, init->u.ast.body);
             c->fp = save_fp;
             c->self = save_self;
-            c->source_file = save_source;
             if (r.state != RESULT_NORMAL) return r;
         }
     }
