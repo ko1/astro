@@ -51,18 +51,12 @@ class TestMultiAssign < AbRubyTest
   end
 
   # splat in multi-assign
-  def test_splat_assign
-    assert_eval('ary = [10, 20, 30]; a, b = *ary; a + b', 30)
-  end
+  def test_splat_same    = assert_eval('ary = [10, 20]; a, b = *ary; a + b', 30)
+  def test_splat_fewer   = assert_eval('ary = [1]; a, b = *ary; b', nil)
+  def test_splat_more    = assert_eval('ary = [1, 2, 3, 4]; a, b = *ary; a + b', 3)
 
   # RHS is a method call returning array
-  def test_multi_assign_from_call
-    assert_eval('
-      class TcMA
-        def vals; [10, 20, 30]; end
-      end
-      a, b, c = TcMA.new.vals
-      a + b + c
-    ', 60)
-  end
+  def test_call_same     = assert_eval('class TcMA; def v; [10, 20]; end; end; a, b = TcMA.new.v; a + b', 30)
+  def test_call_fewer    = assert_eval('class TcMA; def v; [1]; end; end; a, b = TcMA.new.v; b', nil)
+  def test_call_more     = assert_eval('class TcMA; def v; [1, 2, 3, 4]; end; end; a, b = TcMA.new.v; a + b', 3)
 end
