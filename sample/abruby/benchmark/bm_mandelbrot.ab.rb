@@ -3,18 +3,14 @@ def mandelbrot(cr, ci, max_iter)
   zr = 0.0
   zi = 0.0
   i = 0
-  result = max_iter
   while i < max_iter
     tr = zr * zr - zi * zi + cr
     zi = 2.0 * zr * zi + ci
     zr = tr
-    if zr * zr + zi * zi > 4.0
-      result = i
-      i = max_iter  # break
-    end
+    return i if zr * zr + zi * zi > 4.0
     i += 1
   end
-  result
+  max_iter
 end
 
 size = 80
