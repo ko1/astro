@@ -10,6 +10,8 @@
 #define RHSH(v) (((struct abruby_hash *)RTYPEDDATA_GET_DATA(v))->rb_hash)
 
 // shared helpers (defined in abruby.c)
+RESULT abruby_call_method(CTX *c, VALUE recv, struct abruby_method *method,
+                          unsigned int argc, VALUE *argv);
 VALUE ab_inspect_rstr(CTX *c, VALUE v);
 void abruby_class_add_cfunc(struct abruby_class *klass, const char *name,
                             abruby_cfunc_t func, unsigned int params_cnt);

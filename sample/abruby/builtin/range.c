@@ -74,18 +74,15 @@ static RESULT ab_range_eq(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     struct abruby_method *eq = abruby_find_method(AB_CLASS_OF(a->begin), "==");
     if (!eq) return RESULT_OK(Qfalse);
     VALUE args_b[1] = { b->begin };
-    VALUE args_e[1] = { b->end };
-    VALUE b_eq, e_eq;
-    if (eq->type == ABRUBY_METHOD_CFUNC) {
-        b_eq = eq->u.cfunc.func(c, a->begin, 1, args_b).value;
-    } else {
-        return RESULT_OK(Qfalse);
-    }
-    if (b_eq != Qtrue) return RESULT_OK(Qfalse);
+    RESULT rb = abruby_call_method(c, a->begin, eq, 1, args_b);
+    if (rb.state != RESULT_NORMAL) return rb;
+    if (rb.value != Qtrue) return RESULT_OK(Qfalse);
     eq = abruby_find_method(AB_CLASS_OF(a->end), "==");
-    if (!eq || eq->type != ABRUBY_METHOD_CFUNC) return RESULT_OK(Qfalse);
-    e_eq = eq->u.cfunc.func(c, a->end, 1, args_e).value;
-    return RESULT_OK(e_eq);
+    if (!eq) return RESULT_OK(Qfalse);
+    VALUE args_e[1] = { b->end };
+    RESULT re = abruby_call_method(c, a->end, eq, 1, args_e);
+    if (re.state != RESULT_NORMAL) return re;
+    return RESULT_OK(re.value);
 }
 
 static RESULT ab_range_inspect(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {

@@ -236,22 +236,36 @@ abruby_class_set_const(struct abruby_class *klass, const char *name, VALUE val)
     klass->const_cnt++;
 }
 
+// Call an abruby method (cfunc or AST) from C code.
+// Uses a generous frame offset to avoid clobbering caller's locals.
+RESULT
+abruby_call_method(CTX *c, VALUE recv, struct abruby_method *method,
+                   unsigned int argc, VALUE *argv)
+{
+    if (method->type == ABRUBY_METHOD_CFUNC) {
+        return method->u.cfunc.func(c, recv, argc, argv);
+    } else {
+        VALUE *save_fp = c->fp;
+        VALUE save_self = c->self;
+        c->fp = save_fp + 16;
+        // copy args into frame
+        for (unsigned int i = 0; i < argc; i++) {
+            c->fp[i] = argv[i];
+        }
+        c->self = recv;
+        RESULT r = EVAL(c, method->u.ast.body);
+        c->fp = save_fp;
+        c->self = save_self;
+        // Catch RETURN at method boundary
+        if (r.state == RESULT_RETURN) return RESULT_OK(r.value);
+        return r;
+    }
+}
+
 VALUE
 ab_inspect_rstr(CTX *c, VALUE v) {
     struct abruby_method *ins = abruby_find_method(AB_CLASS_OF(v), "inspect");
-    RESULT r;
-    if (ins->type == ABRUBY_METHOD_CFUNC) {
-        r = ins->u.cfunc.func(c, v, 0, NULL);
-    } else {
-        // AST inspect: call in a separate frame
-        VALUE *save_fp = c->fp;
-        VALUE save_self = c->self;
-        c->fp = save_fp + 16; // generous offset
-        c->self = v;
-        r = EVAL(c, ins->u.ast.body);
-        c->fp = save_fp;
-        c->self = save_self;
-    }
+    RESULT r = abruby_call_method(c, v, ins, 0, NULL);
     return RSTR(r.value);
 }
 

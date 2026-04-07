@@ -8,9 +8,9 @@ static RESULT ab_object_inspect(CTX *c, VALUE self, unsigned int argc, VALUE *ar
 
 static RESULT ab_object_to_s(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     struct abruby_method *inspect = abruby_find_method(AB_CLASS_OF(self), "inspect");
-    if (inspect && inspect->type == ABRUBY_METHOD_CFUNC)
-        return RESULT_OK(inspect->u.cfunc.func(c, self, 0, NULL).value);
-    return RESULT_OK(ab_object_inspect(c, self, 0, NULL).value);
+    if (inspect)
+        return abruby_call_method(c, self, inspect, 0, NULL);
+    return ab_object_inspect(c, self, 0, NULL);
 }
 
 static RESULT ab_object_eq(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
@@ -19,7 +19,9 @@ static RESULT ab_object_eq(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
 
 static RESULT ab_object_neq(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     struct abruby_method *eq = abruby_find_method(AB_CLASS_OF(self), "==");
-    return RESULT_OK(RTEST(eq->u.cfunc.func(c, self, 1, argv).value) ? Qfalse : Qtrue);
+    RESULT r = abruby_call_method(c, self, eq, 1, argv);
+    if (r.state != RESULT_NORMAL) return r;
+    return RESULT_OK(RTEST(r.value) ? Qfalse : Qtrue);
 }
 
 static RESULT ab_object_nil_p(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
