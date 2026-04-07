@@ -1,4 +1,22 @@
 
+def f
+  g
+end
+
+def g
+  1/0
+end
+
+p f
+
+
+__END__
+require_relative 'a.ab.rb'
+require_relative 'a.ab.rb'
+
+
+__END__
+
 class Point
   def initialize x, y
     @x = x

@@ -99,5 +99,6 @@ void Init_abruby_complex(void);
 void Init_abruby_true(void);
 void Init_abruby_false(void);
 void Init_abruby_nil(void);
+void Init_abruby_exception(void);
 
 #endif

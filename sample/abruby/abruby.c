@@ -31,6 +31,7 @@ static struct abruby_class ab_complex_class_body  = { .name = "Complex",  .super
 static struct abruby_class ab_true_class_body    = { .name = "TrueClass",  .super = &ab_object_class_body };
 static struct abruby_class ab_false_class_body   = { .name = "FalseClass", .super = &ab_object_class_body };
 static struct abruby_class ab_nil_class_body     = { .name = "NilClass",   .super = &ab_object_class_body };
+static struct abruby_class ab_runtime_error_class_body = { .name = "RuntimeError", .super = &ab_object_class_body };
 
 struct abruby_class *ab_float_class   = &ab_float_class_body;
 struct abruby_class *ab_array_class   = &ab_array_class_body;
@@ -49,6 +50,7 @@ struct abruby_class *ab_complex_class  = &ab_complex_class_body;
 struct abruby_class *ab_true_class    = &ab_true_class_body;
 struct abruby_class *ab_false_class   = &ab_false_class_body;
 struct abruby_class *ab_nil_class     = &ab_nil_class_body;
+struct abruby_class *ab_runtime_error_class = &ab_runtime_error_class_body;
 
 // Unified T_DATA type for all abruby heap objects
 
@@ -82,6 +84,11 @@ static void abruby_data_mark(void *ptr) {
     }
     else if (h->klass == ab_complex_class) {
         rb_gc_mark(((struct abruby_complex *)ptr)->rb_complex);
+    }
+    else if (h->klass == ab_runtime_error_class) {
+        struct abruby_exception *exc = (struct abruby_exception *)ptr;
+        rb_gc_mark(exc->message);
+        rb_gc_mark(exc->backtrace);
     }
     else if (h->klass == ab_class_class || h->klass == ab_module_class) {
         // class or module: no ivars to mark
@@ -330,6 +337,7 @@ init_builtin_methods(void)
     Init_abruby_true();
     Init_abruby_false();
     Init_abruby_nil();
+    Init_abruby_exception();
 }
 
 // ivar helpers
@@ -414,6 +422,37 @@ static const rb_data_type_t abruby_vm_type = {
 // CTX is the first member of abruby_vm, so we can cast back
 #define VM_FROM_CTX(c) ((struct abruby_vm *)(c))
 
+// Create an exception object with backtrace captured from the current frame chain
+VALUE
+abruby_exception_new(CTX *c, struct abruby_frame *frame, VALUE message)
+{
+    struct abruby_vm *vm = VM_FROM_CTX(c);
+    const char *file = NIL_P(vm->current_file) ? "(abruby)" : RSTRING_PTR(vm->current_file);
+
+    // Walk frame list (innermost first)
+    struct abruby_frame *frame_arr[128];
+    int cnt = 0;
+    for (struct abruby_frame *f = frame; f && cnt < 128; f = f->prev)
+        frame_arr[cnt++] = f;
+
+    // Build backtrace Array.
+    // Each entry shows the frame's call site line and name.
+    VALUE bt_ary = rb_ary_new();
+    for (int i = 0; i < cnt; i++) {
+        rb_ary_push(bt_ary, rb_sprintf("%s:%d:in `%s'", file,
+            frame_arr[i]->line, frame_arr[i]->name));
+    }
+
+    // Create exception object
+    struct abruby_exception *exc;
+    VALUE wrapper = TypedData_Make_Struct(rb_cAbRubyNode, struct abruby_exception,
+                                          &abruby_data_type, exc);
+    exc->klass = ab_runtime_error_class;
+    exc->message = message;
+    exc->backtrace = bt_ary;
+    return wrapper;
+}
+
 static struct abruby_vm *
 create_vm(void)
 {
@@ -459,7 +498,8 @@ init_builtin_consts(void)
     abruby_class_set_const(ab_object_class, "Complex",    abruby_wrap_class(ab_complex_class));
     abruby_class_set_const(ab_object_class, "TrueClass",  abruby_wrap_class(ab_true_class));
     abruby_class_set_const(ab_object_class, "FalseClass", abruby_wrap_class(ab_false_class));
-    abruby_class_set_const(ab_object_class, "NilClass",   abruby_wrap_class(ab_nil_class));
+    abruby_class_set_const(ab_object_class, "NilClass",      abruby_wrap_class(ab_nil_class));
+    abruby_class_set_const(ab_object_class, "RuntimeError", abruby_wrap_class(ab_runtime_error_class));
 }
 
 // NODE wrapper (T_DATA)
@@ -724,6 +764,14 @@ rb_alloc_node_method_call(VALUE self, VALUE recv, VALUE name, VALUE params_cnt, 
     return wrap_node(ALLOC_node_method_call(unwrap_node(recv), cname, FIX2UINT(params_cnt), FIX2UINT(arg_index)));
 }
 
+static VALUE
+rb_set_node_line(VALUE self, VALUE node_obj, VALUE line)
+{
+    NODE *n = unwrap_node(node_obj);
+    if (n) n->head.line = FIX2INT(line);
+    return node_obj;
+}
+
 // dump
 
 // eval
@@ -823,10 +871,14 @@ abruby_require_file(CTX *c, VALUE rb_path)
     // Eval AST
     NODE *ast = unwrap_node(ast_obj);
     VALUE *save_fp = c->fp;
+    struct abruby_frame *save_frame = c->current_frame;
     c->fp = c->env;
     c->current_class = NULL;
+    struct abruby_frame req_frame = {save_frame, "<main>", 0};
+    c->current_frame = &req_frame;
     RESULT r = EVAL(c, ast);
     c->fp = save_fp;
+    c->current_frame = save_frame;
 
     vm->current_file = save_file;
 
@@ -883,9 +935,31 @@ rb_abruby_eval_ast(VALUE self, VALUE ast_obj)
     vm->ctx.fp = vm->ctx.env;
     vm->ctx.current_class = NULL;
 
+    // Push <main> frame so backtrace always has a bottom frame
+    struct abruby_frame main_frame = {NULL, "<main>", 0};
+    vm->ctx.current_frame = &main_frame;
+
     RESULT r = EVAL(&vm->ctx, ast);
+    vm->ctx.current_frame = NULL;
     if (r.state == RESULT_RAISE) {
-        VALUE msg = abruby_to_ruby(r.value);
+        VALUE exc_val = r.value;
+        // Extract message and backtrace from exception object
+        if (RB_TYPE_P(exc_val, T_DATA) && RTYPEDDATA_P(exc_val) &&
+            RTYPEDDATA_TYPE(exc_val) == &abruby_data_type) {
+            struct abruby_header *h = (struct abruby_header *)RTYPEDDATA_GET_DATA(exc_val);
+            if (h->klass == ab_runtime_error_class) {
+                struct abruby_exception *exc = (struct abruby_exception *)h;
+                VALUE msg = abruby_to_ruby(exc->message);
+                VALUE msg_str = RB_TYPE_P(msg, T_STRING) ? msg : rb_funcall(msg, rb_intern("to_s"), 0);
+                VALUE rb_exc = rb_exc_new_str(rb_eRuntimeError, msg_str);
+                if (!NIL_P(exc->backtrace)) {
+                    rb_funcall(rb_exc, rb_intern("set_backtrace"), 1, exc->backtrace);
+                }
+                rb_exc_raise(rb_exc);
+            }
+        }
+        // Fallback for non-exception RAISE values
+        VALUE msg = abruby_to_ruby(exc_val);
         if (RB_TYPE_P(msg, T_STRING)) {
             rb_raise(rb_eRuntimeError, "%s", StringValueCStr(msg));
         } else {
@@ -947,6 +1021,7 @@ Init_abruby(void)
     ab_true_class->klass    = ab_class_class;
     ab_false_class->klass   = ab_class_class;
     ab_nil_class->klass     = ab_class_class;
+    ab_runtime_error_class->klass = ab_class_class;
 
     // Wrap built-in classes as VALUE (must be after rb_cAbRubyNode is defined)
     abruby_wrap_class(ab_kernel_module);
@@ -966,6 +1041,7 @@ Init_abruby(void)
     abruby_wrap_class(ab_true_class);
     abruby_wrap_class(ab_false_class);
     abruby_wrap_class(ab_nil_class);
+    abruby_wrap_class(ab_runtime_error_class);
 
     // include Kernel in Object: Object -> Kernel -> nil
     ab_object_class->super = ab_kernel_module;
@@ -1014,6 +1090,7 @@ Init_abruby(void)
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_const_get", rb_alloc_node_const_get, 1);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_const_path_get", rb_alloc_node_const_path_get, 2);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_method_call", rb_alloc_node_method_call, 4);
+    rb_define_singleton_method(rb_cAbRuby, "set_node_line", rb_set_node_line, 2);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_self", rb_alloc_node_self, 0);
 
     // eval / dump

@@ -18,7 +18,7 @@ class TestException < AbRubyTest
 
   def test_raise_with_expression
     # raise with non-string: value is passed as-is (no automatic .to_s)
-    assert_eval('begin; raise 42; rescue => e; e; end', 42)
+    assert_eval('begin; raise 42; rescue => e; e.message; end', 42)
   end
 
   # === begin/rescue ===
@@ -36,11 +36,11 @@ class TestException < AbRubyTest
   end
 
   def test_rescue_with_variable
-    assert_eval('begin; raise "hello"; rescue => e; e; end', "hello")
+    assert_eval('begin; raise "hello"; rescue => e; e.message; end', "hello")
   end
 
   def test_rescue_variable_is_string
-    assert_eval('begin; raise "msg"; rescue => e; e + "!"; end', "msg!")
+    assert_eval('begin; raise "msg"; rescue => e; e.message + "!"; end', "msg!")
   end
 
   def test_rescue_stops_propagation
@@ -157,7 +157,7 @@ class TestException < AbRubyTest
       begin
         f
       rescue => e
-        e
+        e.message
       end
     ', "boom")
   end
@@ -167,7 +167,7 @@ class TestException < AbRubyTest
       def a; raise "deep"; end
       def b; a; end
       def c; b; end
-      begin; c; rescue => e; e; end
+      begin; c; rescue => e; e.message; end
     ', "deep")
   end
 
@@ -194,10 +194,10 @@ class TestException < AbRubyTest
         begin
           raise "inner"
         rescue => e
-          e + " caught"
+          e.message + " caught"
         end
       rescue => e2
-        "outer: " + e2
+        "outer: " + e2.message
       end
     ', "inner caught")
   end
@@ -211,12 +211,62 @@ class TestException < AbRubyTest
           raise "y"
         end
       rescue => e2
-        e2
+        e2.message
       end
     ', "y")
   end
 
   def test_begin_without_rescue_or_ensure
     assert_eval('begin; 42; end', 42)
+  end
+
+  # === backtrace ===
+
+  def test_backtrace_on_uncaught
+    err = assert_raises(RuntimeError) { AbRuby.eval("raise \"boom\"") }
+    assert err.backtrace
+    assert_operator err.backtrace.size, :>=, 1
+  end
+
+  def test_backtrace_method_chain
+    code = "def a\nraise \"x\"\nend\ndef b\na\nend\nb"
+    err = assert_raises(RuntimeError) { AbRuby.eval(code) }
+    bt = err.backtrace
+    assert_match(/2:in `a'/, bt[0])       # raise at line 2 (inside a)
+    assert_match(/5:in `b'/, bt[1])       # a called at line 5 (inside b)
+    assert_match(/7:in `<main>'/, bt[2])  # b called at line 7 (in main)
+  end
+
+  def test_backtrace_deep_chain
+    code = "def a; raise \"deep\"; end\ndef b; a; end\ndef c; b; end\ndef d; c; end\nd"
+    err = assert_raises(RuntimeError) { AbRuby.eval(code) }
+    bt = err.backtrace
+    assert_equal 5, bt.size  # a, b, c, d, <main>
+    assert_match(/in `<main>'/, bt.last)
+  end
+
+  def test_backtrace_cleared_on_rescue
+    # Caught exception's backtrace doesn't leak into next exception
+    code = "def f\nbegin\nraise \"a\"\nrescue\nend\nraise \"b\"\nend\nf"
+    err = assert_raises(RuntimeError) { AbRuby.eval(code) }
+    bt = err.backtrace
+    # backtrace is from "raise b" (line 6, inside f), not from "raise a"
+    assert_match(/6:in `f'/, bt[0])
+    assert_match(/in `<main>'/, bt[1])
+  end
+
+  def test_exception_message_method
+    assert_eval('begin; raise "hello"; rescue => e; e.message; end', "hello")
+  end
+
+  def test_exception_backtrace_method
+    code = "begin\nraise \"x\"\nrescue => e\ne.backtrace\nend"
+    result = AbRuby.eval(code)
+    assert_kind_of Array, result
+    assert_operator result.size, :>=, 1
+  end
+
+  def test_exception_inspect
+    assert_eval('begin; raise "oops"; rescue => e; e.inspect; end', '#<RuntimeError: oops>')
   end
 end

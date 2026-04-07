@@ -498,10 +498,19 @@ node_method_call(CTX * restrict c, NODE * restrict n, NODE *recv, const char *na
     VALUE recv_val = UNWRAP(EVAL_ARG(c, recv));
     struct abruby_class *klass = AB_CLASS_OF(recv_val);
     struct abruby_method *method = abruby_class_find_method(klass, name);
+
+    // Push call frame (C stack allocated, for backtrace)
+    // Update parent frame's line to track the current call site
+    if (c->current_frame) c->current_frame->line = n->head.line;
+    struct abruby_frame frame = {c->current_frame, name, n->head.line};
+    c->current_frame = &frame;
+
+    RESULT r;
     if (!method) {
         // try method_missing
         struct abruby_method *mm = abruby_class_find_method(klass, "method_missing");
         if (!mm) {
+            c->current_frame = frame.prev;
             rb_raise(rb_eNoMethodError, "undefined method '%s' for %s", name, klass->name);
         }
         // shift args by 1, insert method name as first arg
@@ -510,17 +519,21 @@ node_method_call(CTX * restrict c, NODE * restrict n, NODE *recv, const char *na
         }
         c->fp[arg_index] = abruby_str_new_cstr(name);
         if (mm->type == ABRUBY_METHOD_CFUNC) {
-            return mm->u.cfunc.func(c, recv_val, params_cnt + 1, c->fp + arg_index);
+            r = mm->u.cfunc.func(c, recv_val, params_cnt + 1, c->fp + arg_index);
         }
         else {
-            return method_call_body(c, arg_index, recv_val, mm->u.ast.body);
+            r = method_call_body(c, arg_index, recv_val, mm->u.ast.body);
         }
     }
-    if (method->type == ABRUBY_METHOD_CFUNC) {
-        return method->u.cfunc.func(c, recv_val, params_cnt, c->fp + arg_index);
+    else if (method->type == ABRUBY_METHOD_CFUNC) {
+        r = method->u.cfunc.func(c, recv_val, params_cnt, c->fp + arg_index);
     }
     else {
-        return method_call_body(c, arg_index, recv_val, method->u.ast.body);
+        r = method_call_body(c, arg_index, recv_val, method->u.ast.body);
     }
+
+    // Pop call frame (always — backtrace is on exception object)
+    c->current_frame = frame.prev;
+    return r;
 }
 

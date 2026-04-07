@@ -35,8 +35,9 @@
 - `!` / `not`
 - `return`（明示的 return、値あり/なし）
 - `break`（while/until から脱出、値付き対応）
-- `raise "msg"`（RuntimeError 限定）
-- `begin / rescue / ensure / end`（rescue はクラス引数なし、`=> e` で変数束縛可能）
+- `raise "msg"`（RuntimeError 例外オブジェクトを生成、バックトレース付き）
+- `begin / rescue / ensure / end`（rescue はクラス引数なし、`=> e` で例外オブジェクトを束縛）
+- バックトレース（`err.backtrace` で `"file:line:in 'method'"` の配列を取得）
 
 ## メソッド
 - `def name(args); end`
@@ -65,7 +66,8 @@
 - 追加: `<<` (Array#push, String 破壊的追加)
 
 ## ビルトインクラス
-- **Kernel** (module, Object に include): p, raise, Rational(), Complex()
+- **Kernel** (module, Object に include): p, raise, Rational(), Complex(), require, require_relative
+- **RuntimeError**: message, backtrace, to_s, inspect（例外オブジェクト）
 - **Object**: inspect, to_s, ==, !=, !, nil?, class
 - **Module**: inspect, include
 - **Class**: new, inspect (Module を継承)

@@ -254,6 +254,13 @@ struct abruby_gvar_table {
     } entries[ABRUBY_GVAR_MAX];
 };
 
+// call frame for backtrace support
+struct abruby_frame {
+    struct abruby_frame *prev;
+    const char *name;  // method name (or "<main>")
+    int32_t line;      // call site line number
+};
+
 struct CTX_struct {
     VALUE *env;
     VALUE *fp;
@@ -261,7 +268,17 @@ struct CTX_struct {
     struct abruby_class *current_class; // set during class body eval
     struct abruby_class *main_class;    // per-instance, inherits from Object
     struct abruby_gvar_table *gvars;    // global variables
+    struct abruby_frame *current_frame; // head of call frame linked list
 };
+
+// exception object
+struct abruby_exception {
+    struct abruby_class *klass;  // offset 0: ab_runtime_error_class
+    VALUE message;               // abruby VALUE (usually abruby string)
+    VALUE backtrace;             // Ruby Array of Strings, or Qnil
+};
+
+extern struct abruby_class *ab_runtime_error_class;
 
 #define LIKELY(expr) __builtin_expect((expr), 1)
 #define UNLIKELY(expr) __builtin_expect((expr), 0)

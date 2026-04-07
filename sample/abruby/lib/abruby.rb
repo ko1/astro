@@ -97,7 +97,7 @@ class AbRuby
             # store expr result, call to_s, store back
             store = AbRuby.alloc_node_lvar_set(slot, inner)
             recv_ref = AbRuby.alloc_node_lvar_get(slot)
-            to_s_call = AbRuby.alloc_node_method_call(recv_ref, "to_s", 0, work_idx)
+            to_s_call = set_line(AbRuby.alloc_node_method_call(recv_ref, "to_s", 0, work_idx), node)
             AbRuby.alloc_node_seq(store, AbRuby.alloc_node_lvar_set(slot, to_s_call))
           else
             raise "unsupported interpolation part: #{part.class}"
@@ -124,7 +124,7 @@ class AbRuby
         store_den = AbRuby.alloc_node_lvar_set(idx_den, AbRuby.alloc_node_num(den))
         rewind_arg_index(recv_idx)
         recv_ref = AbRuby.alloc_node_lvar_get(recv_idx)
-        call_node = AbRuby.alloc_node_method_call(recv_ref, "Rational", 2, call_arg_idx)
+        call_node = set_line(AbRuby.alloc_node_method_call(recv_ref, "Rational", 2, call_arg_idx), node)
         build_seq([recv_store, store_num, store_den, call_node])
 
       when Prism::ImaginaryNode
@@ -139,7 +139,7 @@ class AbRuby
         store_imag = AbRuby.alloc_node_lvar_set(idx_imag, transduce(inner))
         rewind_arg_index(recv_idx)
         recv_ref = AbRuby.alloc_node_lvar_get(recv_idx)
-        call_node = AbRuby.alloc_node_method_call(recv_ref, "Complex", 2, call_arg_idx)
+        call_node = set_line(AbRuby.alloc_node_method_call(recv_ref, "Complex", 2, call_arg_idx), node)
         build_seq([recv_store, store_real, store_imag, call_node])
 
       when Prism::TrueNode
@@ -172,7 +172,7 @@ class AbRuby
         rewind_arg_index(call_arg_idx)
 
         recv = AbRuby.alloc_node_gvar_get(node.name.to_s)
-        call_node = AbRuby.alloc_node_method_call(recv, op, 1, call_arg_idx)
+        call_node = set_line(AbRuby.alloc_node_method_call(recv, op, 1, call_arg_idx), node)
         AbRuby.alloc_node_gvar_set(node.name.to_s,
           AbRuby.alloc_node_seq(store_rhs, call_node))
 
@@ -190,7 +190,7 @@ class AbRuby
         rewind_arg_index(call_arg_idx)
 
         recv = AbRuby.alloc_node_ivar_get(node.name.to_s)
-        call_node = AbRuby.alloc_node_method_call(recv, op, 1, call_arg_idx)
+        call_node = set_line(AbRuby.alloc_node_method_call(recv, op, 1, call_arg_idx), node)
         AbRuby.alloc_node_ivar_set(node.name.to_s,
           AbRuby.alloc_node_seq(store_rhs, call_node))
 
@@ -209,7 +209,7 @@ class AbRuby
         rewind_arg_index(call_arg_idx)
 
         recv = AbRuby.alloc_node_lvar_get(lvar_index(node.name))
-        call_node = AbRuby.alloc_node_method_call(recv, op, 1, call_arg_idx)
+        call_node = set_line(AbRuby.alloc_node_method_call(recv, op, 1, call_arg_idx), node)
         AbRuby.alloc_node_lvar_set(lvar_index(node.name),
           AbRuby.alloc_node_seq(store_rhs, call_node))
 
@@ -428,6 +428,7 @@ class AbRuby
     def transduce_call(node)
       name = node.name
       args = node.arguments&.arguments || []
+      line = node.location.start_line
 
       # method call with receiver: obj.method(args)
       if node.receiver
@@ -445,12 +446,12 @@ class AbRuby
           rewind_arg_index(recv_idx)
 
           recv_ref = AbRuby.alloc_node_lvar_get(recv_idx)
-          call_node = AbRuby.alloc_node_method_call(recv_ref, name.to_s, args.size, call_arg_idx)
+          call_node = set_line(AbRuby.alloc_node_method_call(recv_ref, name.to_s, args.size, call_arg_idx), node)
           return build_seq([recv_store] + seq_nodes + [call_node])
         else
           rewind_arg_index(recv_idx)
           recv_ref = AbRuby.alloc_node_lvar_get(recv_idx)
-          call_node = AbRuby.alloc_node_method_call(recv_ref, name.to_s, 0, call_arg_idx)
+          call_node = set_line(AbRuby.alloc_node_method_call(recv_ref, name.to_s, 0, call_arg_idx), node)
           return AbRuby.alloc_node_seq(recv_store, call_node)
         end
       end
@@ -469,12 +470,12 @@ class AbRuby
         rewind_arg_index(recv_idx)
 
         recv_ref = AbRuby.alloc_node_lvar_get(recv_idx)
-        call_node = AbRuby.alloc_node_method_call(recv_ref, name.to_s, args.size, call_arg_idx)
+        call_node = set_line(AbRuby.alloc_node_method_call(recv_ref, name.to_s, args.size, call_arg_idx), node)
         build_seq([recv_store] + seq_nodes + [call_node])
       else
         rewind_arg_index(recv_idx)
         recv_ref = AbRuby.alloc_node_lvar_get(recv_idx)
-        call_node = AbRuby.alloc_node_method_call(recv_ref, name.to_s, 0, call_arg_idx)
+        call_node = set_line(AbRuby.alloc_node_method_call(recv_ref, name.to_s, 0, call_arg_idx), node)
         AbRuby.alloc_node_seq(recv_store, call_node)
       end
     end
@@ -495,6 +496,14 @@ class AbRuby
         flags = closing
       end
       flags
+    end
+
+    # Set source line number on a node from a Prism AST node
+    def set_line(ab_node, prism_node)
+      if prism_node.respond_to?(:location) && prism_node.location
+        AbRuby.set_node_line(ab_node, prism_node.location.start_line)
+      end
+      ab_node
     end
 
     def build_seq(nodes)

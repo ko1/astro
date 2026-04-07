@@ -10,7 +10,10 @@ static RESULT ab_kernel_p(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
 
 static RESULT ab_kernel_raise(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     VALUE msg = (argc >= 1) ? argv[0] : abruby_str_new_cstr("");
-    return (RESULT){msg, RESULT_RAISE};
+    // Skip the "raise" frame itself — start backtrace from caller
+    struct abruby_frame *caller = c->current_frame ? c->current_frame->prev : NULL;
+    VALUE exc = abruby_exception_new(c, caller, msg);
+    return (RESULT){exc, RESULT_RAISE};
 }
 
 // Rational(num, den) — create Rational

@@ -144,25 +144,29 @@ end
 
 ### 例外処理
 ```ruby
-raise "error message"   # RuntimeError を発生
+raise "error message"   # RuntimeError を発生（バックトレース付き）
 raise                   # 空メッセージで RuntimeError を発生
 
 begin
   # body
 rescue => e
-  # e に例外メッセージ（文字列）が束縛される
-  p(e)
+  # e に RuntimeError 例外オブジェクトが束縛される
+  p(e.message)          # 例外メッセージ
+  p(e.backtrace)        # バックトレース（Array of String）
 ensure
   # 常に実行される（正常時・例外時・return 時）
 end
 ```
 
-- `raise` は Kernel のメソッドとして実装。引数の VALUE がそのまま例外値になる。
+- `raise` は Kernel のメソッドとして実装。RuntimeError 例外オブジェクトを生成する。
+- 例外オブジェクトは `message`（元の引数）と `backtrace`（呼び出し履歴）を持つ。
+- バックトレースは `"file:line:in 'method'"` 形式の文字列配列。
 - `rescue` はクラス引数を取らない（全ての raise をキャッチ）。
-- `rescue => e` で例外メッセージを変数に束縛可能。`=> e` 省略も可。
+- `rescue => e` で例外オブジェクトを変数に束縛可能。`=> e` 省略も可。
 - `ensure` は常に実行される。ensure 内の `raise` や `return` は元の結果を上書きする。
 - `begin/rescue/end` のみ（ensure なし）も可。`begin/ensure/end` のみ（rescue なし）も可。
 - CRuby の `rb_raise`（longjmp）ではなく、RESULT の state 伝播で実装。
+- バックトレースは `raise` 時点のフレーム linked list をスナップショットして構築。
 
 ### 論理演算子
 ```ruby

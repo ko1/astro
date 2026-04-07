@@ -8,7 +8,7 @@ $(GENERATED): node.def ../../lib/astrogen.rb abruby_gen.rb
 node.o: $(GENERATED) context.h node.h
 abruby.o: node_head.h context.h node.h
 
-BUILTIN_OBJS = array.o class.o complex.o false.o float.o hash.o integer.o \
+BUILTIN_OBJS = array.o class.o complex.o exception.o false.o float.o hash.o integer.o \
                kernel.o nil.o object.o range.o rational.o regexp.o string.o \
                symbol.o true.o
 $(BUILTIN_OBJS): builtin/builtin.h context.h node.h

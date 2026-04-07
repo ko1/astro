@@ -40,6 +40,9 @@ void abruby_node_mark(void *ptr);
 
 void code_repo_add(const char *name, NODE *body, bool force_add);
 
+// exception support
+VALUE abruby_exception_new(CTX *c, struct abruby_frame *frame, VALUE message);
+
 struct NodeKind {
     const char *default_dispatcher_name;
     node_dispatcher_func_t default_dispatcher;
@@ -72,6 +75,9 @@ struct NodeHead {
         JIT_STATUS_Unknown,
     } jit_status;
     unsigned int dispatch_cnt;
+
+    // source location (for backtrace)
+    int32_t line;
 };
 
 #define DISPATCHER_NAME(n) (n->head.flags.no_inline) ? (#n "->head.dispatcher") : (n->head.dispatcher_name)
