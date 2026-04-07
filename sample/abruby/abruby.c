@@ -432,13 +432,27 @@ abruby_exception_new(CTX *c, struct abruby_frame *start_frame, VALUE message)
     (void)c;
 
     // Build backtrace Array by walking the frame list.
-    // Each frame represents a currently executing method with its
-    // source file, name, and the line updated at each call site.
+    // Derive name/file/line from method and node pointers (cold path).
     VALUE bt_ary = rb_ary_new();
     for (struct abruby_frame *f = start_frame; f; f = f->prev) {
-        const char *file = f->file ? f->file : "(abruby)";
-        rb_ary_push(bt_ary, rb_sprintf("%s:%d:in `%s'", file,
-            f->line, f->name));
+        const char *name;
+        const char *file;
+        int32_t line;
+
+        if (f->method) {
+            // Normal method frame
+            name = f->method->name;
+            file = (f->method->type == ABRUBY_METHOD_AST && f->method->u.ast.source_file)
+                ? f->method->u.ast.source_file : "(abruby)";
+            line = f->node ? f->node->head.line : 0;
+        } else {
+            // <main> or <top (required)>: union holds source_file
+            name = f->prev ? "<top (required)>" : "<main>";
+            file = f->source_file ? f->source_file : "(abruby)";
+            line = 0;
+        }
+
+        rb_ary_push(bt_ary, rb_sprintf("%s:%d:in `%s'", file, line, name));
     }
 
     // Create exception object
@@ -874,7 +888,7 @@ abruby_require_file(CTX *c, VALUE rb_path)
     c->fp = c->env;
     c->current_class = NULL;
     c->source_file = RSTRING_PTR(abs_str);
-    struct abruby_frame req_frame = {save_frame, "<top (required)>", c->source_file, 0};
+    struct abruby_frame req_frame = {save_frame, NULL, {.source_file = c->source_file}};
     c->current_frame = &req_frame;
     RESULT r = EVAL(c, ast);
     c->fp = save_fp;
@@ -940,7 +954,7 @@ rb_abruby_eval_ast(VALUE self, VALUE ast_obj)
     vm->ctx.source_file = NIL_P(vm->current_file) ? "(abruby)" : RSTRING_PTR(vm->current_file);
 
     // Push <main> frame so backtrace always has a bottom frame
-    struct abruby_frame main_frame = {NULL, "<main>", vm->ctx.source_file, 0};
+    struct abruby_frame main_frame = {NULL, NULL, {.source_file = vm->ctx.source_file}};
     vm->ctx.current_frame = &main_frame;
 
     RESULT r = EVAL(&vm->ctx, ast);

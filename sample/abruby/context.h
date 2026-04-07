@@ -255,12 +255,16 @@ struct abruby_gvar_table {
     } entries[ABRUBY_GVAR_MAX];
 };
 
-// call frame for backtrace support
+// call frame for backtrace support (24 bytes)
+// method != NULL: normal method frame, node = call site node
+// method == NULL: <main>/<top (required)>, source_file = file name
 struct abruby_frame {
     struct abruby_frame *prev;
-    const char *name;  // method name (or "<main>")
-    const char *file;  // source file name at push time
-    int32_t line;      // call site line number
+    struct abruby_method *method;
+    union {
+        struct Node *node;        // method frame: updated by child push
+        const char *source_file;  // <main>/<top>: set at push time
+    };
 };
 
 struct CTX_struct {
