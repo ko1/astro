@@ -515,8 +515,11 @@ node_method_call(CTX * restrict c, NODE * restrict n, NODE *recv, const char *na
     if (c->current_frame && c->current_frame->method)
         c->current_frame->node = n;
 
-    // Push callee's frame
-    struct abruby_frame frame = {c->current_frame, method, {.node = NULL}};
+    // Push callee's frame (node left uninitialized — set by child's push)
+    struct abruby_frame frame;
+    frame.prev = c->current_frame;
+    frame.method = method;
+    c->current_frame = &frame;
     c->current_frame = &frame;
 
     RESULT r;
