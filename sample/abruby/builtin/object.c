@@ -36,6 +36,12 @@ static RESULT ab_object_not(CTX *c, VALUE self, unsigned int argc, VALUE *argv) 
     return RESULT_OK(RTEST(self) ? Qfalse : Qtrue);
 }
 
+// Object#=== defaults to ==
+static RESULT ab_object_case_eq(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    struct abruby_method *eq = abruby_find_method(AB_CLASS_OF(self), "==");
+    return abruby_call_method(c, self, eq, 1, argv);
+}
+
 static RESULT ab_object_is_a(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     struct abruby_class *obj_class = AB_CLASS_OF(self);
     struct abruby_class *check_class = abruby_unwrap_class(argv[0]);
@@ -62,6 +68,7 @@ Init_abruby_object(void)
     abruby_class_add_cfunc(ab_object_class, "nil?",     ab_object_nil_p,      0);
     abruby_class_add_cfunc(ab_object_class, "class",    ab_object_class_name, 0);
     abruby_class_add_cfunc(ab_object_class, "!",        ab_object_not,        0);
+    abruby_class_add_cfunc(ab_object_class, "===",       ab_object_case_eq,    1);
     abruby_class_add_cfunc(ab_object_class, "is_a?",     ab_object_is_a,       1);
     abruby_class_add_cfunc(ab_object_class, "kind_of?",  ab_object_is_a,       1);
     abruby_class_add_cfunc(ab_object_class, "instance_of?", ab_object_instance_of, 1);

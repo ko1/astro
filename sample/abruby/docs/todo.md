@@ -10,7 +10,7 @@ benchmark/optcarrot/bin/optcarrot-bench を動かすために必要な機能。
 ### 致命的（これがないと何も動かない）
 
 - [ ] ブロック / yield / Proc（全イテレータの基盤）
-- [ ] `case / when`
+- [x] `case / when`（if/elsif チェーンに desugar、=== メソッド対応）
 - [x] `attr_reader` / `attr_writer` / `attr_accessor`
 - [ ] デフォルト引数 (`def f(a, b = 1)`)
 

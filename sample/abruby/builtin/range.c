@@ -110,6 +110,7 @@ Init_abruby_range(void)
     abruby_class_add_cfunc(ab_range_class, "size",         ab_range_size,          0);
     abruby_class_add_cfunc(ab_range_class, "length",       ab_range_size,          0);
     abruby_class_add_cfunc(ab_range_class, "include?",     ab_range_include_p,     1);
+    abruby_class_add_cfunc(ab_range_class, "===",          ab_range_include_p,     1);
     abruby_class_add_cfunc(ab_range_class, "to_a",         ab_range_to_a,          0);
     abruby_class_add_cfunc(ab_range_class, "==",           ab_range_eq,            1);
     abruby_class_add_cfunc(ab_range_class, "inspect",      ab_range_inspect,       0);

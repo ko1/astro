@@ -456,6 +456,9 @@ class AbRuby
 
         AbRuby.alloc_node_rescue(body, rescue_body, ensure_body, exception_lvar_index)
 
+      when Prism::CaseNode
+        transduce_case(node)
+
       when Prism::CallNode
         if !node.receiver && %w[attr_reader attr_writer attr_accessor].include?(node.name.to_s)
           transduce_attr(node)
@@ -504,6 +507,58 @@ class AbRuby
         file = @source_file || "(unknown)"
         raise "unsupported node: #{node.class} at #{file}:#{loc.start_line}"
       end
+    end
+
+    # Desugar case/when into if/elsif chain with === calls
+    def transduce_case(node)
+      pred = node.predicate
+
+      # Store predicate in a temp variable
+      tmp_idx = inc_arg_index
+      tmp_store = AbRuby.alloc_node_lvar_set(tmp_idx, transduce(pred))
+
+      # Build from inside out: start with else
+      else_body = if node.else_clause&.statements
+                    transduce(node.else_clause.statements)
+                  else
+                    AbRuby.alloc_node_nil
+                  end
+
+      # Process when clauses in reverse to build nested if/elsif
+      result = node.conditions.reverse.reduce(else_body) do |else_node, when_node|
+        body = when_node.statements ? transduce(when_node.statements) : AbRuby.alloc_node_nil
+
+        # Build condition: cond1 === tmp || cond2 === tmp || ...
+        cond = when_node.conditions.map do |c|
+          # c === tmp  →  c.===(tmp)
+          cond_val = transduce(c)
+          tmp_ref = AbRuby.alloc_node_lvar_get(tmp_idx)
+          recv_idx = inc_arg_index
+          recv_store = AbRuby.alloc_node_lvar_set(recv_idx, cond_val)
+          arg_idx = inc_arg_index
+          arg_store = AbRuby.alloc_node_lvar_set(arg_idx, tmp_ref)
+          rewind_arg_index(recv_idx)
+          recv_ref = AbRuby.alloc_node_lvar_get(recv_idx)
+          call_node = AbRuby.alloc_node_method_call(recv_ref, "===", 1, arg_idx)
+          build_seq([recv_store, arg_store, call_node])
+        end
+
+        # OR conditions together: c1 || c2 || ...
+        combined = cond.reduce do |left, right|
+          # left || right → tmp2 = left; if(tmp2, tmp2, right)
+          or_idx = inc_arg_index
+          or_store = AbRuby.alloc_node_lvar_set(or_idx, left)
+          or_ref1 = AbRuby.alloc_node_lvar_get(or_idx)
+          or_ref2 = AbRuby.alloc_node_lvar_get(or_idx)
+          rewind_arg_index(or_idx)
+          AbRuby.alloc_node_seq(or_store, AbRuby.alloc_node_if(or_ref1, or_ref2, right))
+        end
+
+        AbRuby.alloc_node_if(combined, body, else_node)
+      end
+
+      rewind_arg_index(tmp_idx)
+      AbRuby.alloc_node_seq(tmp_store, result)
     end
 
     def transduce_attr(node)

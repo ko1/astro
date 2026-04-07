@@ -91,10 +91,22 @@ static RESULT ab_module_const_set(CTX *c, VALUE self, unsigned int argc, VALUE *
     return RESULT_OK(argv[1]);
 }
 
+// Module#=== — check if argv[0] is_a? self (class matching for case/when)
+static RESULT ab_module_case_eq(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    struct abruby_class *check_class = abruby_unwrap_class(self);
+    struct abruby_class *obj_class = AB_CLASS_OF(argv[0]);
+    while (obj_class) {
+        if (obj_class == check_class) return RESULT_OK(Qtrue);
+        obj_class = obj_class->super;
+    }
+    return RESULT_OK(Qfalse);
+}
+
 void
 Init_abruby_class(void)
 {
     // Module (parent of Class)
+    abruby_class_add_cfunc(ab_module_class, "===",       ab_module_case_eq,   1);
     abruby_class_add_cfunc(ab_module_class, "inspect",   ab_module_inspect,   0);
     abruby_class_add_cfunc(ab_module_class, "include",   ab_module_include,   1);
     abruby_class_add_cfunc(ab_module_class, "const_get", ab_module_const_get, 1);

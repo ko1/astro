@@ -35,6 +35,7 @@
 - `!` / `not`
 - `return`（明示的 return、値あり/なし）
 - `break`（while/until から脱出、値付き対応）
+- `case / when / else`（if/elsif に desugar、=== によるマッチング）
 - `raise "msg"`（RuntimeError 例外オブジェクトを生成、バックトレース付き）
 - `begin / rescue / ensure / end`（rescue はクラス引数なし、`=> e` で例外オブジェクトを束縛）
 - バックトレース（`err.backtrace` で `"file:line:in 'method'"` の配列を取得）
@@ -70,7 +71,7 @@
 ## ビルトインクラス
 - **Kernel** (module, Object に include): p, raise, eval, Rational(), Complex(), require, require_relative
 - **RuntimeError**: message, backtrace, to_s, inspect（例外オブジェクト）
-- **Object**: inspect, to_s, ==, !=, !, nil?, class, is_a?, kind_of?, instance_of?
+- **Object**: inspect, to_s, ==, !=, ===, !, nil?, class, is_a?, kind_of?, instance_of?
 - **Module**: inspect, include, const_get, const_set
 - **Class**: new, inspect (Module を継承)
 - **Integer**: 算術, 比較, **, <=>, <<, >>, &, |, ^, ~, [], to_s, to_f, zero?, abs

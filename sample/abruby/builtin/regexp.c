@@ -55,6 +55,7 @@ Init_abruby_regexp(void)
     abruby_class_add_cfunc(ab_regexp_class, "to_s",    ab_regexp_to_s,    0);
     abruby_class_add_cfunc(ab_regexp_class, "source",  ab_regexp_source,  0);
     abruby_class_add_cfunc(ab_regexp_class, "match?",  ab_regexp_match_p, 1);
+    abruby_class_add_cfunc(ab_regexp_class, "===",     ab_regexp_match_p, 1);
     abruby_class_add_cfunc(ab_regexp_class, "match",   ab_regexp_match,   1);
     abruby_class_add_cfunc(ab_regexp_class, "==",      ab_regexp_eq,      1);
     abruby_class_add_cfunc(ab_regexp_class, "=~",      ab_regexp_eqtilde, 1);
