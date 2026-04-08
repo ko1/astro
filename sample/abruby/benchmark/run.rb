@@ -74,11 +74,9 @@ end
 def run_benchmark(runner, path, repeat)
   results = repeat.times.map { run_once(runner, path) }
   best = results.select { |r| r[:ok] }.min_by { |r| r[:time] }
-  if best
-    best
-  else
-    results.last  # return last failure for error reporting
-  end
+  best ||= results.last  # return last failure for error reporting
+  best[:all_times] = results.select { |r| r[:ok] }.map { |r| r[:time] }
+  best
 end
 
 def format_time(t)
@@ -106,12 +104,14 @@ end
 repeat = 3
 selected_runners = nil
 list_mode = false
+show_all = false
 
 opt = OptionParser.new
 opt.banner = "Usage: ruby benchmark/run.rb [options] [benchmark...]"
 opt.on('-r RUNNERS', 'Comma-separated runner names') { |v| selected_runners = v.split(',') }
 opt.on('-n N', Integer, 'Repeat count (take best)') { |v| repeat = v }
 opt.on('-l', 'List available benchmarks') { list_mode = true }
+opt.on('-a', '--all', 'Show all iteration times') { show_all = true }
 opt.parse!(ARGV)
 
 benchmarks = discover_benchmarks
@@ -162,16 +162,20 @@ benchmarks.each do |bm|
   times = []
   outputs = []
 
+  all_detail = []
+
   runners.each do |runner|
     result = run_benchmark(runner, bm[:path], repeat)
     if result[:ok]
       row += "%#{col_width}s" % format_time(result[:time])
       times << result[:time]
       outputs << result[:output]
+      all_detail << [runner[:name], result[:all_times]]
     else
       row += "%#{col_width}s" % "ERROR"
       times << nil
       outputs << nil
+      all_detail << [runner[:name], []]
     end
   end
 
@@ -193,6 +197,13 @@ benchmarks.each do |bm|
   row += "  *** MISMATCH ***" if mismatch
 
   puts row
+
+  if show_all && repeat > 1
+    all_detail.each do |name, atimes|
+      next if atimes.empty?
+      puts "  %-#{name_width}s %s" % [name, atimes.map { |t| format_time(t) }.join(", ")]
+    end
+  end
 
   if mismatch
     runners.each_with_index do |r, i|
