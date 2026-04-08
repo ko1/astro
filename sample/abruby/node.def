@@ -1233,12 +1233,6 @@ node_mod(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 static __attribute__((noinline, cold)) RESULT
 node_fixnum_mod_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
 {
-    if (SHOULD_REWRITE(n) && n->head.kind == &kind_node_fixnum_mod) {
-        NODE *ip = ALLOC_node_fixnum_mod(CUR_LEFT(n, node_fixnum_mod), CUR_RIGHT(n, node_fixnum_mod));
-        ip->u.node_fixnum_mod.replaced_from = n;
-        node_replace(n, ip);
-        return EVAL(c, ip);
-    }
     return node_arith_fallback(c, n, lv, rv, "%");
 }
 
