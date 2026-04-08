@@ -6,9 +6,6 @@
 typedef struct Node NODE;
 typedef RESULT (*node_dispatcher_func_t)(CTX *c, NODE *n);
 typedef uint64_t node_hash_t;
-typedef node_hash_t (*node_hash_func_t)(NODE *n);
-typedef void (*node_specializer_func_t)(FILE *f, NODE *n, bool public_func);
-typedef void (*node_dumper_func_t)(FILE *f, NODE *n, bool online);
 
 void INIT(void);
 node_hash_t HASH(NODE *n);
@@ -45,17 +42,6 @@ VALUE abruby_wrap_node(NODE *n);
 // exception support
 VALUE abruby_exception_new(CTX *c, struct abruby_frame *frame, VALUE message);
 
-typedef void (*node_replace_child_func_t)(NODE *parent, NODE *old_child, NODE *new_child);
-
-struct NodeKind {
-    const char *default_dispatcher_name;
-    node_dispatcher_func_t default_dispatcher;
-    node_hash_func_t hash_func;
-    node_specializer_func_t specializer;
-    node_dumper_func_t dumper;
-    node_replace_child_func_t replace_child;
-};
-
 struct NodeHead {
     struct NodeFlags {
         bool has_hash_value;
@@ -87,6 +73,8 @@ struct NodeHead {
 
 #define DISPATCHER_NAME(n) (n->head.flags.no_inline) ? (#n "->head.dispatcher") : (n->head.dispatcher_name)
 
+// NodeKind struct and function pointer typedefs are generated here.
+// Node struct definitions follow NodeHead.
 #include "node_head.h"
 
 static inline RESULT
