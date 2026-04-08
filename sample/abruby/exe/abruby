@@ -9,7 +9,7 @@ require_relative '../lib/abruby/version'
 RUBY_CFLAGS = "-I#{RbConfig::CONFIG['rubyhdrdir']} -I#{RbConfig::CONFIG['rubyarchhdrdir']}"
 
 code = nil
-mode = :run          # :run, :plain, :compile, :pg
+mode = :run          # :run, :plain, :compile, :compile_first, :pg
 compile_files = nil  # files to compile (--compile)
 run_file = nil       # file to run after --compile (--run)
 run_args = []        # args for --run
@@ -31,6 +31,7 @@ opt.on('--dump[=MODE]', 'dump AST (default) or disasm') do |v|
 end
 opt.on('--plain', 'run without code store') { mode = :plain }
 opt.on('--compile', 'compile files (AOT)') { mode = :compile }
+opt.on('--compile-first', 'compile then run') { mode = :compile_first }
 opt.on('--pg', 'run then compile (profile-guided)') { mode = :pg }
 opt.on('--verbose', 'show code store operations') { verbose = true }
 opt.on('-v', '--version', 'show version') do
@@ -161,6 +162,44 @@ when :pg
   end
   AbRuby.cs_build(RUBY_CFLAGS)
   $stderr.puts "pg: done" if verbose
+
+when :compile_first
+  src = code || (ARGV[0] && read_file.(ARGV[0]))
+  unless src
+    opt.parse!(['--help'])
+    exit
+  end
+
+  cs_init.()
+
+  vm = AbRuby.new
+  vm.current_file = ARGV[0] if ARGV[0]
+
+  # Compile
+  ast = vm.parse(src)
+  entries = [[ARGV[0] || '-e', ast]]
+  vm.last_entries.each { |name, body| entries << [name, body] }
+  entries.each { |label, node| cs_compile.(node, label) }
+
+  $stderr.puts "cs_build" if verbose
+  AbRuby.cs_build(RUBY_CFLAGS)
+  AbRuby.cs_reload
+  entries.each { |_, node| AbRuby.cs_load(node) }
+
+  if dump_mode == :disasm
+    entries.each do |label, node|
+      $stdout.flush
+      puts "--- #{label} ---"
+      $stdout.flush
+      puts vm.dump_ast(node)
+      $stdout.flush
+      AbRuby.cs_disasm(node)
+    end
+  end
+
+  # Run
+  $stderr.puts "run: #{ARGV[0] || '-e'}" if verbose
+  vm.eval_ast(ast)
 
 when :run
   src = code || (ARGV[0] && read_file.(ARGV[0]))
