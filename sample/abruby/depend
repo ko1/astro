@@ -16,11 +16,23 @@ $(BUILTIN_OBJS): builtin/builtin.h context.h node.h
 run: all
 	ruby exe/abruby test.ab.rb
 
-test: all
-	ruby test/run_all.rb
+test: test-interp test-compiled
+
+test-interp: all
+	@echo "=== test-interp (--plain) ==="
+	ABRUBY_MODE=plain ruby test/run_all.rb
+
+test-compiled: all
+	@echo "=== test-compiled (compile + run) ==="
+	$(Q)$(RM) -rf code_store
+	ruby test/compile_all.rb
+	ABRUBY_MODE=compiled ruby test/run_all.rb
 
 bench: all
 	ruby benchmark/run.rb
+
+bench-optcarrot: all
+	exe/abruby benchmark/optcarrot/bin/optcarrot-bench
 
 debug-test:
 	$(MAKE) clean
@@ -33,3 +45,4 @@ clean: clean-generated
 
 clean-generated:
 	$(Q)$(RM) $(GENERATED)
+

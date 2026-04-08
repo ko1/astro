@@ -83,4 +83,7 @@ EVAL(CTX *c, NODE *n)
     return (*n->head.dispatcher)(c, n);
 }
 
+// Include builtin macros needed by node_eval.c (AB_NUM_WRAP, AB_INT_UNWRAP, etc.)
+#include "builtin/builtin.h"
+
 #endif

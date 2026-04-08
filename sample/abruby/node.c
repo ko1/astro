@@ -7,132 +7,8 @@
 #include "context.h"
 #include "builtin/builtin.h"
 
-typedef uint64_t node_hash_t;
+// --- User-provided: allocation ---
 
-static node_hash_t
-hash_merge(node_hash_t h, node_hash_t v)
-{
-    h ^= v + 0x9e3779b97f4a7c15ULL + (h << 12) + (h >> 4);
-    return h;
-}
-
-static node_hash_t
-hash_cstr(const char *s)
-{
-    node_hash_t h = 14695981039346656037ULL;
-    const node_hash_t FNV_PRIME = 1099511628211ULL;
-
-    while (*s) {
-        h ^= (unsigned char)(*s++);
-        h *= FNV_PRIME;
-    }
-
-    return h;
-}
-
-static node_hash_t
-hash_uint32(uint32_t ui)
-{
-    node_hash_t x = (node_hash_t)ui;
-
-    x ^= x >> 33;
-    x *= 0xff51afd7ed558ccdULL;
-    x ^= x >> 33;
-    x *= 0xc4ceb9fe1a85ec53ULL;
-    x ^= x >> 33;
-
-    return x;
-}
-
-static node_hash_t
-hash_node(NODE *n)
-{
-    if (!n) return 0;
-    if (n->head.flags.has_hash_value) {
-        return n->head.hash_value;
-    }
-    else {
-        return HASH(n);
-    }
-}
-
-// specialized code repo
-
-static struct specialized_code_repo {
-    uint32_t size;
-    uint32_t capa;
-
-    struct specialized_code {
-        node_hash_t hash;
-        const char *dispatcher_name;
-        node_dispatcher_func_t dispatcher;
-    } *entries;
-} sc_repo;
-
-static struct specialized_code *
-sc_repo_search(NODE *n, node_hash_t h)
-{
-    for (uint32_t i = 0; i < sc_repo.size; i++) {
-        if (sc_repo.entries[i].hash == h) {
-            return &sc_repo.entries[i];
-        }
-    }
-    return NULL;
-}
-
-static struct specialized_code *
-sc_repo_new_entry(void)
-{
-    if (sc_repo.size < sc_repo.capa) {
-        return &sc_repo.entries[sc_repo.size++];
-    }
-    else {
-        uint32_t capa = sc_repo.capa * 2;
-        sc_repo.entries = realloc(sc_repo.entries, sizeof(struct specialized_code) * capa);
-
-        if (sc_repo.entries) {
-            sc_repo.capa = capa;
-            return sc_repo_new_entry();
-        }
-        else {
-            fprintf(stderr, "no memory for capa:%u\n", capa);
-            exit(1);
-        }
-    }
-}
-
-static void
-sc_repo_add(NODE *n, node_hash_t h)
-{
-    struct specialized_code *sc = sc_repo_new_entry();
-    sc->hash = h;
-    sc->dispatcher_name = n->head.dispatcher_name;
-    sc->dispatcher = n->head.dispatcher;
-}
-
-static void
-sc_repo_clear(void)
-{
-    sc_repo.size = 0;
-}
-
-static const char *
-alloc_dispatcher_name(NODE *n)
-{
-    char buff[128], *name;
-    snprintf(buff, 128, "SD_%lx", hash_node(n));
-    name = malloc(strlen(buff) + 1);
-    strcpy(name, buff);
-    return name;
-}
-
-static void
-dispatch_info(CTX *c, NODE *n, bool end)
-{
-    (void)c; (void)n; (void)end;
-}
-
-// allocation
 size_t node_cnt = 0;
 
 static NODE *
@@ -149,7 +25,23 @@ node_allocate(size_t size)
     return n;
 }
 
-// general node operations
+// --- User-provided: dispatch tracing ---
+
+static void
+dispatch_info(CTX *c, NODE *n, bool end)
+{
+    (void)c; (void)n; (void)end;
+}
+
+// --- ASTro node infrastructure (hash functions, HASH, DUMP) ---
+
+#include "astro_node.c"
+
+// --- Code store (SPECIALIZE, astro_cs_*) ---
+
+#include "astro_code_store.c"
+
+// --- General node operations ---
 
 void
 clear_hash(NODE *n)
@@ -176,47 +68,7 @@ node_replace(NODE *old_node, NODE *new_node)
     clear_hash(parent);
 }
 
-node_hash_t
-HASH(NODE *n)
-{
-    if (n == NULL) {
-        return 0;
-    }
-    else if (n->head.flags.has_hash_value) {
-        return n->head.hash_value;
-    }
-    else if (n->head.kind->hash_func) {
-        n->head.flags.has_hash_value = true;
-        return n->head.hash_value = (*n->head.kind->hash_func)(n);
-    }
-    else {
-        return 0;
-    }
-}
-
-void
-DUMP(FILE *fp, NODE *n, bool oneline)
-{
-    if (!n) {
-        fprintf(fp, "<NULL>");
-    }
-    else if (n->head.flags.is_dumping) {
-        fprintf(fp, "...");
-    }
-    else {
-        n->head.flags.is_dumping = true;
-        (*n->head.kind->dumper)(fp, n, oneline);
-        n->head.flags.is_dumping = false;
-    }
-}
-
-static void
-fill_with_sc(NODE *n, struct specialized_code *sc)
-{
-    n->head.dispatcher_name = sc->dispatcher_name;
-    n->head.dispatcher = sc->dispatcher;
-    n->head.flags.is_specialized = true;
-}
+// --- User-provided: OPTIMIZE ---
 
 NODE *
 OPTIMIZE(NODE *n)
@@ -225,37 +77,17 @@ OPTIMIZE(NODE *n)
         return n;
     }
 
-    node_hash_t h = hash_node(n);
-    struct specialized_code *sc = sc_repo_search(n, h);
-    if (sc) {
-        fill_with_sc(n, sc);
+    if (astro_cs_load(n)) {
+        if (!OPTION.quiet) {
+            fprintf(stderr, "hit!: h:%16lx %s ",
+                    (unsigned long)hash_node(n),
+                    n->head.kind->default_dispatcher_name);
+            DUMP(stderr, n, true);
+            fprintf(stderr, "\n");
+        }
     }
 
     return n;
-}
-
-void
-SPECIALIZE(FILE *fp, NODE *n)
-{
-    if (n && n->head.kind->specializer) {
-        node_hash_t h = HASH(n);
-        struct specialized_code *sc = sc_repo_search(n, h);
-
-        if (sc) {
-            if (!n->head.flags.is_specialized) {
-                fill_with_sc(n, sc);
-            }
-        }
-        else if (n->head.flags.is_specializing) {
-            // recursive
-        }
-        else {
-            n->head.flags.is_specializing = true;
-            (*n->head.kind->specializer)(fp, n, false);
-            n->head.flags.is_specializing = false;
-            sc_repo_add(n, h);
-        }
-    }
 }
 
 char *
@@ -263,7 +95,7 @@ SPECIALIZED_SRC(NODE *n)
 {
     if (n == NULL) return NULL;
 
-    sc_repo_clear();
+    astro_spec_dedup_clear();
 
     char *buf = NULL;
     size_t len = 0;
@@ -287,6 +119,8 @@ code_repo_add(const char *name, NODE *body, bool force_add)
     (void)name; (void)body; (void)force_add;
 }
 
+// --- Generated code ---
+
 #include "node_eval.c"
 #include "node_dispatch.c"
 #include "node_dump.c"
@@ -307,12 +141,6 @@ mark_child(NODE *child)
 #include "node_mark.c"
 #include "node_alloc.c"
 
-#include "node_specialized.c"
-
-#ifndef NODE_SPECIALIZED_INCLUDED
-static struct specialized_code sc_entries[] = {};
-#endif
-
 void
 abruby_node_mark(void *ptr)
 {
@@ -331,8 +159,5 @@ abruby_find_method(struct abruby_class *klass, const char *name)
 void
 INIT(void)
 {
-    sc_repo.size = sizeof(sc_entries) / sizeof(sc_entries[0]);
-    sc_repo.capa = sc_repo.size == 0 ? 2 : sc_repo.size * 2;
-    sc_repo.entries = malloc(sc_repo.capa * sizeof(struct specialized_code));
-    memcpy(sc_repo.entries, sc_entries, sizeof(sc_entries));
+    // code store is initialized from Ruby via AbRuby.cs_init
 }

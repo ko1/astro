@@ -690,13 +690,17 @@ class AbRuby
   end
 
   # Instance methods
+  def parse(code, source_file = nil)
+    Parser.new.parse(code, source_file || current_file)
+  end
+
   def eval(code)
-    ast = Parser.new.parse(code, current_file)
+    ast = parse(code)
     eval_ast(ast)
   end
 
   def dump(code, pretty: false)
-    ast = Parser.new.parse(code)
+    ast = parse(code)
     s = dump_ast(ast)
     pretty ? pretty_print_sexp(s) : s
   end

@@ -2,6 +2,7 @@
 #include "node.h"
 #include "context.h"
 #include "builtin/builtin.h"
+#include "astro_code_store.h"
 
 struct abruby_option OPTION = {
     .no_compiled_code = true,
@@ -1090,6 +1091,54 @@ rb_abruby_dump_ast(VALUE self, VALUE ast_obj)
     return str;
 }
 
+// --- Code Store Ruby API ---
+
+// AbRuby.cs_init(store_dir, src_dir)
+static VALUE
+rb_astro_cs_init(VALUE self, VALUE store_dir, VALUE src_dir)
+{
+    astro_cs_init(StringValueCStr(store_dir), StringValueCStr(src_dir));
+    OPTION.no_compiled_code = false;
+    return Qnil;
+}
+
+// AbRuby.cs_compile(node)
+static VALUE
+rb_astro_cs_compile(VALUE self, VALUE node_val)
+{
+    NODE *n = DATA_PTR(node_val);
+    astro_cs_compile(n);
+    return Qnil;
+}
+
+// AbRuby.cs_build(cflags = nil)
+static VALUE
+rb_astro_cs_build(int argc, VALUE *argv, VALUE self)
+{
+    VALUE cflags_val;
+    rb_scan_args(argc, argv, "01", &cflags_val);
+    const char *cflags = NIL_P(cflags_val) ? NULL : StringValueCStr(cflags_val);
+    astro_cs_build(cflags);
+    return Qnil;
+}
+
+// AbRuby.cs_reload
+static VALUE
+rb_astro_cs_reload(VALUE self)
+{
+    astro_cs_reload();
+    return Qnil;
+}
+
+// AbRuby.cs_disasm(node)
+static VALUE
+rb_astro_cs_disasm(VALUE self, VALUE node_val)
+{
+    NODE *n = DATA_PTR(node_val);
+    astro_cs_disasm(n);
+    return Qnil;
+}
+
 void
 Init_abruby(void)
 {
@@ -1207,4 +1256,11 @@ Init_abruby(void)
     rb_define_method(rb_cAbRuby, "current_file",  rb_abruby_get_current_file, 0);
     rb_define_method(rb_cAbRuby, "current_file=", rb_abruby_set_current_file, 1);
     rb_define_method(rb_cAbRuby, "dump_ast", rb_abruby_dump_ast, 1);
+
+    // code store
+    rb_define_singleton_method(rb_cAbRuby, "cs_init", rb_astro_cs_init, 2);
+    rb_define_singleton_method(rb_cAbRuby, "cs_compile", rb_astro_cs_compile, 1);
+    rb_define_singleton_method(rb_cAbRuby, "cs_build", rb_astro_cs_build, -1);
+    rb_define_singleton_method(rb_cAbRuby, "cs_reload", rb_astro_cs_reload, 0);
+    rb_define_singleton_method(rb_cAbRuby, "cs_disasm", rb_astro_cs_disasm, 1);
 }

@@ -1,41 +1,170 @@
 #!/usr/bin/env ruby
 
 require 'optparse'
+require 'rbconfig'
 require_relative '../lib/abruby'
 require_relative '../lib/abruby/version'
 
+# CFLAGS needed to compile specialized code (needs ruby.h)
+RUBY_CFLAGS = "-I#{RbConfig::CONFIG['rubyhdrdir']} -I#{RbConfig::CONFIG['rubyarchhdrdir']}"
+
 code = nil
-dump_mode = false
+mode = :run          # :run, :plain, :compile, :pg
+compile_files = nil  # files to compile (--compile)
+run_file = nil       # file to run after --compile (--run)
+run_args = []        # args for --run
+dump_mode = nil      # nil, :ast, :disasm
+verbose = false
 
 opt = OptionParser.new
-opt.banner = "Usage: abruby [options] [file]"
+opt.banner = "Usage: abruby [options] [file] [args...]"
+
 opt.on('-e CODE', 'evaluate CODE') { |v| code = v }
-opt.on('--dump', 'dump AST instead of evaluating') { dump_mode = true }
+opt.on('--dump[=MODE]', 'dump AST (default) or disasm') do |v|
+  dump_mode = case v
+  when nil, 'ast' then :ast
+  when 'disasm'   then :disasm
+  else
+    $stderr.puts "unknown dump mode: #{v} (use ast or disasm)"
+    exit 1
+  end
+end
+opt.on('--plain', 'run without code store') { mode = :plain }
+opt.on('--compile', 'compile files (AOT)') { mode = :compile }
+opt.on('--pg', 'run then compile (profile-guided)') { mode = :pg }
+opt.on('--verbose', 'show code store operations') { verbose = true }
 opt.on('-v', '--version', 'show version') do
   puts "abruby #{AbRuby::VERSION}"
   exit
 end
-opt.parse!(ARGV)
 
-src = if code
-  code
-elsif ARGV[0]
-  file = ARGV[0]
-  unless File.exist?(file)
-    $stderr.puts "abruby: cannot load such file -- #{file}"
-    exit 1
-  end
-  File.read(file)
+# Handle --run (appears after --compile file list)
+argv = ARGV.dup
+run_idx = argv.index('--run')
+if run_idx
+  compile_argv = argv[0...run_idx]
+  run_argv = argv[(run_idx + 1)..]
+  opt.parse!(compile_argv)
+  compile_files = compile_argv
+  run_file = run_argv.shift
+  run_args = run_argv
+  mode = :compile unless mode == :pg
+else
+  opt.parse!(ARGV)
 end
 
-if src
-  if dump_mode
-    puts AbRuby.dump(src, pretty: true)
+# Read source file
+read_file = ->(path) {
+  unless File.exist?(path)
+    $stderr.puts "abruby: cannot load such file -- #{path}"
+    exit 1
+  end
+  File.read(path)
+}
+
+# Initialize code store (shared by all modes except --plain)
+cs_init = ->(src_dir = '.') {
+  store_dir = File.join(src_dir, 'code_store')
+  $stderr.puts "cs_init: #{store_dir} (src: #{src_dir})" if verbose
+  AbRuby.cs_init(store_dir, src_dir)
+}
+
+# Compile an AST entry node
+cs_compile = ->(ast, label = nil) {
+  $stderr.puts "cs_compile: #{label}" if verbose
+  AbRuby.cs_compile(ast)
+}
+
+case mode
+when :plain
+  src = code || (ARGV[0] && read_file.(ARGV[0]))
+  unless src
+    opt.parse!(['--help'])
+    exit
+  end
+  vm = AbRuby.new
+  if dump_mode == :ast
+    puts vm.dump(src)
   else
-    vm = AbRuby.new
-    vm.current_file = file if file
+    vm.current_file = ARGV[0] if ARGV[0]
     vm.eval(src)
   end
-else
-  opt.parse!(['--help'])
+
+when :compile
+  files = compile_files || ARGV.dup
+  if files.empty?
+    $stderr.puts "abruby: --compile requires at least one file"
+    exit 1
+  end
+
+  src_dir = File.dirname(File.expand_path(files[0]))
+  cs_init.(src_dir)
+
+  vm = AbRuby.new
+  files.each do |f|
+    src = read_file.(f)
+    $stderr.puts "compile: #{f}" if verbose
+    ast = vm.parse(src, f)
+    cs_compile.(ast, f)
+  end
+
+  $stderr.puts "cs_build" if verbose
+  AbRuby.cs_build(RUBY_CFLAGS)
+  AbRuby.cs_reload
+
+  if run_file
+    src = read_file.(run_file)
+    $stderr.puts "run: #{run_file}" if verbose
+    vm.current_file = run_file
+    vm.eval(src)
+
+    if dump_mode == :disasm
+      # TODO: iterate specialized nodes and show disasm
+    end
+  end
+
+when :pg
+  src = code || (ARGV[0] && read_file.(ARGV[0]))
+  unless src
+    opt.parse!(['--help'])
+    exit
+  end
+
+  src_dir = ARGV[0] ? File.dirname(File.expand_path(ARGV[0])) : '.'
+  cs_init.(src_dir)
+
+  vm = AbRuby.new
+  vm.current_file = ARGV[0] if ARGV[0]
+  $stderr.puts "pg: running #{ARGV[0] || '-e'}" if verbose
+  ast = vm.parse(src)
+  vm.eval_ast(ast)
+
+  $stderr.puts "pg: compiling" if verbose
+  cs_compile.(ast, ARGV[0] || '-e')
+  AbRuby.cs_build(RUBY_CFLAGS)
+  $stderr.puts "pg: done" if verbose
+
+when :run
+  src = code || (ARGV[0] && read_file.(ARGV[0]))
+  unless src
+    opt.parse!(['--help'])
+    exit
+  end
+
+  if dump_mode == :ast
+    vm = AbRuby.new
+    puts vm.dump(src)
+  else
+    src_dir = ARGV[0] ? File.dirname(File.expand_path(ARGV[0])) : '.'
+    cs_init.(src_dir)
+
+    vm = AbRuby.new
+    vm.current_file = ARGV[0] if ARGV[0]
+    $stderr.puts "run: #{ARGV[0] || '-e'}" if verbose
+    vm.eval(src)
+
+    if dump_mode == :disasm
+      # TODO: iterate specialized nodes and show disasm
+    end
+  end
 end
