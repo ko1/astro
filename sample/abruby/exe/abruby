@@ -32,7 +32,7 @@ opt.on('--dump[=MODE]', 'dump AST (default) or disasm') do |v|
 end
 opt.on('--plain', 'run without code store') { mode = :plain }
 opt.on('--compile', 'compile files (AOT)') { mode = :compile }
-opt.on('--compile-first', 'compile then run') { mode = :compile_first }
+opt.on('-c', '--compile-first', 'compile then run') { mode = :compile_first }
 opt.on('--pg', 'run then compile (profile-guided)') { mode = :pg }
 opt.on('--verbose', 'show code store operations') { verbose = true }
 opt.on('-v', '--version', 'show version') do
