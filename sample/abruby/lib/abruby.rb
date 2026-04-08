@@ -3,13 +3,17 @@ require_relative '../abruby'
 
 class AbRuby
   class Parser
+    attr_reader :entries  # [(name, body_node)] for @noinline nodes (def, class, module)
+
     def initialize
       @frames = []
       @source_file = nil
+      @entries = []
     end
 
     def parse(code, source_file = nil)
       @source_file = source_file
+      @entries = []
       result = Prism.parse(code)
       unless result.success?
         raise SyntaxError, "parse error: #{result.errors.map(&:message).join(', ')}"
@@ -310,6 +314,7 @@ class AbRuby
         body = node.body ? transduce(node.body) : AbRuby.alloc_node_nil
         frame = pop_frame
 
+        @entries << [name, body]
         AbRuby.alloc_node_def(name, body, params_cnt, frame[:max])
 
       when Prism::ArrayNode
@@ -369,12 +374,14 @@ class AbRuby
       when Prism::ModuleNode
         name = node.constant_path.name.to_s
         body = node.body ? transduce(node.body) : AbRuby.alloc_node_nil
+        @entries << ["module:#{name}", body]
         AbRuby.alloc_node_module_def(name, body)
 
       when Prism::ClassNode
         name = node.constant_path.name.to_s
         super_name = node.superclass.is_a?(Prism::ConstantReadNode) ? node.superclass.name.to_s : ""
         body = node.body ? transduce(node.body) : AbRuby.alloc_node_nil
+        @entries << ["class:#{name}", body]
         AbRuby.alloc_node_class_def(name, super_name, body)
 
       when Prism::MultiWriteNode
@@ -690,8 +697,13 @@ class AbRuby
   end
 
   # Instance methods
+  attr_reader :last_entries  # [(name, body_node)] from last parse
+
   def parse(code, source_file = nil)
-    Parser.new.parse(code, source_file || current_file)
+    parser = Parser.new
+    ast = parser.parse(code, source_file || current_file)
+    @last_entries = parser.entries
+    ast
   end
 
   def eval(code)

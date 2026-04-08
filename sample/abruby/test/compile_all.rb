@@ -1,5 +1,5 @@
 #!/usr/bin/env ruby
-# Compile all test files into code store for test-compiled mode.
+# Compile all test expressions into code store for test-compiled mode.
 
 require 'rbconfig'
 require_relative '../lib/abruby'
@@ -18,13 +18,13 @@ vm = AbRuby.new
 
 files.each do |f|
   src = File.read(f)
-  # Extract eval strings from assert_eval calls and compile them
+  # Extract eval strings from assert_eval calls
   src.scan(/assert_eval\s*\(\s*(['"])(.*?)\1/m) do |_q, code|
     begin
       ast = vm.parse(code)
       AbRuby.cs_compile(ast)
+      vm.last_entries.each { |_name, body| AbRuby.cs_compile(body) }
     rescue Exception
-      # skip unparseable fragments
     end
   end
   # Also try multi-line heredoc-style strings
@@ -32,11 +32,12 @@ files.each do |f|
     begin
       ast = vm.parse(code)
       AbRuby.cs_compile(ast)
+      vm.last_entries.each { |_name, body| AbRuby.cs_compile(body) }
     rescue Exception
-      # skip
     end
   end
 end
 
 AbRuby.cs_build(cflags)
-puts "compiled #{Dir.glob(File.join(store_dir, 'c', 'SD_*.c')).size} entries"
+entries = Dir.glob(File.join(store_dir, 'c', 'SD_*.c')).size
+puts "compiled #{entries} entries"

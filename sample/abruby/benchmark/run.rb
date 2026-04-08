@@ -39,7 +39,12 @@ RUNNERS = [
   },
   {
     name: 'abruby',
+    cmd:  "ruby -I #{ABRUBY_DIR}/lib #{ABRUBY_DIR}/exe/abruby --plain %s",
+  },
+  {
+    name: 'abruby/compiled',
     cmd:  "ruby -I #{ABRUBY_DIR}/lib #{ABRUBY_DIR}/exe/abruby %s",
+    # Requires prior: ruby benchmark/compile_benchmarks.rb
   },
 ]
 

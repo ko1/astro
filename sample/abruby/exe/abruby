@@ -63,10 +63,12 @@ read_file = ->(path) {
 }
 
 # Initialize code store (shared by all modes except --plain)
-cs_init = ->(src_dir = '.') {
-  store_dir = File.join(src_dir, 'code_store')
-  $stderr.puts "cs_init: #{store_dir} (src: #{src_dir})" if verbose
-  AbRuby.cs_init(store_dir, src_dir)
+ABRUBY_DIR = File.expand_path('..', __dir__)
+
+cs_init = ->() {
+  store_dir = File.join(ABRUBY_DIR, 'code_store')
+  $stderr.puts "cs_init: #{store_dir} (src: #{ABRUBY_DIR})" if verbose
+  AbRuby.cs_init(store_dir, ABRUBY_DIR)
 }
 
 # Compile an AST entry node
@@ -97,8 +99,7 @@ when :compile
     exit 1
   end
 
-  src_dir = File.dirname(File.expand_path(files[0]))
-  cs_init.(src_dir)
+  cs_init.()
 
   vm = AbRuby.new
   files.each do |f|
@@ -106,6 +107,9 @@ when :compile
     $stderr.puts "compile: #{f}" if verbose
     ast = vm.parse(src, f)
     cs_compile.(ast, f)
+    vm.last_entries.each do |name, body|
+      cs_compile.(body, "#{f}:#{name}")
+    end
   end
 
   $stderr.puts "cs_build" if verbose
@@ -130,8 +134,8 @@ when :pg
     exit
   end
 
-  src_dir = ARGV[0] ? File.dirname(File.expand_path(ARGV[0])) : '.'
-  cs_init.(src_dir)
+  cs_init.()
+
 
   vm = AbRuby.new
   vm.current_file = ARGV[0] if ARGV[0]
@@ -141,6 +145,9 @@ when :pg
 
   $stderr.puts "pg: compiling" if verbose
   cs_compile.(ast, ARGV[0] || '-e')
+  vm.last_entries.each do |name, body|
+    cs_compile.(body, name)
+  end
   AbRuby.cs_build(RUBY_CFLAGS)
   $stderr.puts "pg: done" if verbose
 
@@ -155,8 +162,7 @@ when :run
     vm = AbRuby.new
     puts vm.dump(src)
   else
-    src_dir = ARGV[0] ? File.dirname(File.expand_path(ARGV[0])) : '.'
-    cs_init.(src_dir)
+    cs_init.()
 
     vm = AbRuby.new
     vm.current_file = ARGV[0] if ARGV[0]

@@ -29,6 +29,8 @@ test-compiled: all
 	ABRUBY_MODE=compiled ruby test/run_all.rb
 
 bench: all
+	$(Q)$(RM) -rf code_store
+	ruby benchmark/compile_benchmarks.rb
 	ruby benchmark/run.rb
 
 bench-optcarrot: all
