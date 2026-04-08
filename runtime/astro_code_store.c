@@ -7,90 +7,59 @@
 #include <unistd.h>
 
 // ---------------------------------------------------------------------------
-// Specialized code repository (in-memory cache)
+// Specialize dedup: tracks which hashes have been generated during a single
+// astro_cs_compile() call to avoid emitting duplicate SD_ functions.
 // ---------------------------------------------------------------------------
 
-static struct astro_sc_repo {
+static struct {
     uint32_t size;
     uint32_t capa;
+    node_hash_t *hashes;
+} astro_spec_dedup;
 
-    struct astro_sc_entry {
-        node_hash_t hash;
-        const char *dispatcher_name;
-        node_dispatcher_func_t dispatcher;
-    } *entries;
-} astro_sc_repo;
-
-static struct astro_sc_entry *
-astro_sc_repo_search(node_hash_t h)
+static bool
+astro_spec_dedup_has(node_hash_t h)
 {
-    for (uint32_t i = 0; i < astro_sc_repo.size; i++) {
-        if (astro_sc_repo.entries[i].hash == h) {
-            return &astro_sc_repo.entries[i];
-        }
+    for (uint32_t i = 0; i < astro_spec_dedup.size; i++) {
+        if (astro_spec_dedup.hashes[i] == h) return true;
     }
-    return NULL;
+    return false;
 }
 
-static struct astro_sc_entry *
-astro_sc_repo_new_entry(void)
+static void
+astro_spec_dedup_add(node_hash_t h)
 {
-    if (astro_sc_repo.size < astro_sc_repo.capa) {
-        return &astro_sc_repo.entries[astro_sc_repo.size++];
-    }
-    else {
-        uint32_t capa = astro_sc_repo.capa == 0 ? 8 : astro_sc_repo.capa * 2;
-        astro_sc_repo.entries = realloc(astro_sc_repo.entries,
-                                        sizeof(struct astro_sc_entry) * capa);
-        if (astro_sc_repo.entries) {
-            astro_sc_repo.capa = capa;
-            return astro_sc_repo_new_entry();
-        }
-        else {
-            fprintf(stderr, "astro_code_store: out of memory (capa=%u)\n", capa);
+    if (astro_spec_dedup.size >= astro_spec_dedup.capa) {
+        uint32_t capa = astro_spec_dedup.capa == 0 ? 16 : astro_spec_dedup.capa * 2;
+        astro_spec_dedup.hashes = realloc(astro_spec_dedup.hashes,
+                                          sizeof(node_hash_t) * capa);
+        if (!astro_spec_dedup.hashes) {
+            fprintf(stderr, "astro_spec_dedup: out of memory\n");
             exit(1);
         }
+        astro_spec_dedup.capa = capa;
     }
+    astro_spec_dedup.hashes[astro_spec_dedup.size++] = h;
 }
 
 static void
-astro_sc_repo_add(node_hash_t h, const char *name, node_dispatcher_func_t func)
+astro_spec_dedup_clear(void)
 {
-    struct astro_sc_entry *sc = astro_sc_repo_new_entry();
-    sc->hash = h;
-    sc->dispatcher_name = name;
-    sc->dispatcher = func;
-}
-
-static void
-astro_sc_repo_clear(void)
-{
-    astro_sc_repo.size = 0;
+    astro_spec_dedup.size = 0;
 }
 
 // ---------------------------------------------------------------------------
-// Specialization helpers
+// SPECIALIZE: generate specialized code, dedup within a compile session
 // ---------------------------------------------------------------------------
-
-static void
-astro_fill_specialized(NODE *n, const char *name, node_dispatcher_func_t func)
-{
-    n->head.dispatcher_name = name;
-    n->head.dispatcher = func;
-    n->head.flags.is_specialized = true;
-}
 
 void
 SPECIALIZE(FILE *fp, NODE *n)
 {
     if (n && n->head.kind->specializer) {
         node_hash_t h = HASH(n);
-        struct astro_sc_entry *sc = astro_sc_repo_search(h);
 
-        if (sc) {
-            if (!n->head.flags.is_specialized) {
-                astro_fill_specialized(n, sc->dispatcher_name, sc->dispatcher);
-            }
+        if (astro_spec_dedup_has(h)) {
+            // already generated in this compile session
         }
         else if (n->head.flags.is_specializing) {
             // recursive specializing - skip
@@ -100,7 +69,7 @@ SPECIALIZE(FILE *fp, NODE *n)
             (*n->head.kind->specializer)(fp, n, false);
             n->head.flags.is_specializing = false;
 
-            astro_sc_repo_add(h, n->head.dispatcher_name, n->head.dispatcher);
+            astro_spec_dedup_add(h);
         }
     }
 }
@@ -241,7 +210,7 @@ astro_cs_init(const char *store_dir, const char *src_dir)
 }
 
 // ---------------------------------------------------------------------------
-// astro_cs_load: look up SD_<hash> and apply to node
+// astro_cs_load: look up SD_<hash> in all.so and apply to node
 // ---------------------------------------------------------------------------
 
 bool
@@ -250,15 +219,6 @@ astro_cs_load(NODE *n)
     if (!astro_cs.all_handle) return false;
 
     node_hash_t h = hash_node(n);
-
-    // Check in-memory cache first
-    struct astro_sc_entry *sc = astro_sc_repo_search(h);
-    if (sc) {
-        astro_fill_specialized(n, sc->dispatcher_name, sc->dispatcher);
-        return true;
-    }
-
-    // Look up in all.so
     char sym_name[128];
     snprintf(sym_name, sizeof(sym_name), "SD_%lx", (unsigned long)h);
 
@@ -266,9 +226,9 @@ astro_cs_load(NODE *n)
         (node_dispatcher_func_t)dlsym(astro_cs.all_handle, sym_name);
 
     if (func) {
-        const char *name = alloc_dispatcher_name(n);
-        astro_fill_specialized(n, name, func);
-        astro_sc_repo_add(h, name, func);
+        n->head.dispatcher_name = alloc_dispatcher_name(n);
+        n->head.dispatcher = func;
+        n->head.flags.is_specialized = true;
         return true;
     }
 
@@ -313,7 +273,7 @@ astro_cs_compile(NODE *entry)
     fprintf(fp, "#include \"%s/node_eval.c\"\n\n", astro_cs.src_dir);
 
     // Generate specialized code (entry is public, children are static)
-    astro_sc_repo_clear();
+    astro_spec_dedup_clear();
     (*entry->head.kind->specializer)(fp, entry, true);
 
     fclose(fp);
@@ -379,9 +339,6 @@ astro_cs_reload(void)
         dlclose(astro_cs.all_handle);
         astro_cs.all_handle = NULL;
     }
-
-    // Clear in-memory cache (old function pointers are now invalid)
-    astro_sc_repo_clear();
 
     char path[ASTRO_CS_PATH_MAX];
     astro_cs_path(path, sizeof(path), astro_cs.store_dir, "all.so");
