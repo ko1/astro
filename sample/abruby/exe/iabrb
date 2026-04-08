@@ -68,10 +68,11 @@ loop do
       entries.each do |name, node|
         if entries.size > 1
           $stdout.flush
-          $stderr.flush
           puts "--- #{name || '<toplevel>'} ---"
           $stdout.flush
         end
+        puts vm.dump_ast(node)
+        $stdout.flush
         AbRuby.cs_disasm(node)
       end
     end
