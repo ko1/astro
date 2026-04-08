@@ -12,7 +12,25 @@ node_add(CTX *c, NODE *n, NODE *lv, NODE *rv)
 }
 
 NODE_DEF
+node_sub(CTX *c, NODE *n, NODE *lv, NODE *rv)
+{
+    return EVAL_ARG(c, lv) - EVAL_ARG(c, rv);
+}
+
+NODE_DEF
 node_mul(CTX *c, NODE *n, NODE *lv, NODE *rv)
 {
     return EVAL_ARG(c, lv) * EVAL_ARG(c, rv);
+}
+
+NODE_DEF
+node_div(CTX *c, NODE *n, NODE *lv, NODE *rv)
+{
+    return EVAL_ARG(c, lv) / EVAL_ARG(c, rv);
+}
+
+NODE_DEF
+node_mod(CTX *c, NODE *n, NODE *lv, NODE *rv)
+{
+    return EVAL_ARG(c, lv) % EVAL_ARG(c, rv);
 }
