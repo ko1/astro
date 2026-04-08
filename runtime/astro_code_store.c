@@ -60,6 +60,8 @@ SPECIALIZE(FILE *fp, NODE *n)
 
         if (astro_spec_dedup_has(h)) {
             // already generated in this compile session
+            // but still need to set dispatcher_name for this node instance
+            n->head.dispatcher_name = alloc_dispatcher_name(n);
         }
         else if (n->head.flags.is_specializing) {
             // recursive specializing - skip
@@ -346,7 +348,7 @@ astro_cs_disasm(NODE *n)
 
     char cmd[ASTRO_CS_PATH_MAX + 256];
     snprintf(cmd, sizeof(cmd),
-             "objdump -d --no-show-raw-insn %s "
+             "objdump -Cd --no-show-raw-insn %s "
              "| sed -n '/<%s>:/,/^$/p'",
              so_path, sym_name);
 
