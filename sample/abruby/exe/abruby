@@ -20,6 +20,7 @@ opt = OptionParser.new
 opt.banner = "Usage: abruby [options] [file] [args...]"
 
 opt.on('-e CODE', 'evaluate CODE') { |v| code = v }
+opt.on('-d', 'dump disasm (shorthand for --dump=disasm)') { dump_mode = :disasm }
 opt.on('--dump[=MODE]', 'dump AST (default) or disasm') do |v|
   dump_mode = case v
   when nil, 'ast' then :ast
