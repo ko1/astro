@@ -596,7 +596,8 @@ class AbRuby
     BINOP_MAP = {
       "+" => "fixnum_plus", "-" => "fixnum_minus",
       "*" => "fixnum_mul", "/" => "fixnum_div",
-      "<" => "lt", "<=" => "le", ">" => "gt", ">=" => "ge",
+      "<" => "fixnum_lt", "<=" => "fixnum_le",
+      ">" => "fixnum_gt", ">=" => "fixnum_ge",
     }.freeze
 
     def transduce_binop(node)
@@ -613,6 +614,12 @@ class AbRuby
 
       # method call with receiver: obj.method(args)
       if node.receiver
+        # Binary operators → specialized nodes
+        op = name.to_s
+        if BINOP_MAP.key?(op) && args.size == 1
+          return transduce_binop(node)
+        end
+
         # Reserve a slot for the receiver result to avoid slot collision
         # with args that may contain nested calls
         recv_idx = inc_arg_index

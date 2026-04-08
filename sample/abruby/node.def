@@ -621,7 +621,7 @@ found:
 // === Arithmetic rewrite (type-specific nodes) ===
 
 // Fallback: general method call for arithmetic operators
-static RESULT
+static __attribute__((noinline, cold)) RESULT
 node_arith_fallback(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, const char *op)
 {
     struct abruby_class *klass = AB_CLASS_OF(lv);
@@ -765,9 +765,10 @@ node_fixnum_plus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
     if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
-        long result = FIX2LONG(lv) + FIX2LONG(rv);
-        if (LIKELY(FIXABLE(result))) return RESULT_OK(LONG2FIX(result));
-        return RESULT_OK(abruby_bignum_new(LONG2NUM(result)));
+        long result;
+        if (LIKELY(!__builtin_add_overflow((long)lv, (long)(rv - 1), &result)))
+            return RESULT_OK((VALUE)result);
+        return RESULT_OK(abruby_bignum_new(LONG2NUM(FIX2LONG(lv) + FIX2LONG(rv))));
     }
     return node_fixnum_plus_slow(c, n, lv, rv);
 }
@@ -824,9 +825,10 @@ node_fixnum_minus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
     if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
-        long result = FIX2LONG(lv) - FIX2LONG(rv);
-        if (LIKELY(FIXABLE(result))) return RESULT_OK(LONG2FIX(result));
-        return RESULT_OK(abruby_bignum_new(LONG2NUM(result)));
+        long result;
+        if (LIKELY(!__builtin_sub_overflow((long)lv, (long)(rv - 1), &result)))
+            return RESULT_OK((VALUE)result);
+        return RESULT_OK(abruby_bignum_new(LONG2NUM(FIX2LONG(lv) - FIX2LONG(rv))));
     }
     return node_fixnum_minus_slow(c, n, lv, rv);
 }
@@ -1039,7 +1041,7 @@ node_fixnum_lt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
     if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
-        return RESULT_OK(FIX2LONG(lv) < FIX2LONG(rv) ? Qtrue : Qfalse);
+        return RESULT_OK((long)lv < (long)rv ? Qtrue : Qfalse);
     }
     return node_arith_fallback(c, n, lv, rv, "<");
 }
@@ -1066,7 +1068,7 @@ node_fixnum_le(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
     if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
-        return RESULT_OK(FIX2LONG(lv) <= FIX2LONG(rv) ? Qtrue : Qfalse);
+        return RESULT_OK((long)lv <= (long)rv ? Qtrue : Qfalse);
     }
     return node_arith_fallback(c, n, lv, rv, "<=");
 }
@@ -1093,7 +1095,7 @@ node_fixnum_gt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
     if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
-        return RESULT_OK(FIX2LONG(lv) > FIX2LONG(rv) ? Qtrue : Qfalse);
+        return RESULT_OK((long)lv > (long)rv ? Qtrue : Qfalse);
     }
     return node_arith_fallback(c, n, lv, rv, ">");
 }
@@ -1109,7 +1111,7 @@ node_ge(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
             sp->u.node_fixnum_ge.replaced_from = n;
             node_replace(n, sp);
         }
-        return RESULT_OK(FIX2LONG(lv) >= FIX2LONG(rv) ? Qtrue : Qfalse);
+        return RESULT_OK((long)lv >= (long)rv ? Qtrue : Qfalse);
     }
     return node_arith_fallback(c, n, lv, rv, ">=");
 }
@@ -1120,7 +1122,7 @@ node_fixnum_ge(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
     if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
-        return RESULT_OK(FIX2LONG(lv) >= FIX2LONG(rv) ? Qtrue : Qfalse);
+        return RESULT_OK((long)lv >= (long)rv ? Qtrue : Qfalse);
     }
     return node_arith_fallback(c, n, lv, rv, ">=");
 }
