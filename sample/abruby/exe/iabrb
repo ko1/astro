@@ -16,9 +16,11 @@ require_relative '../lib/abruby/version'
 
 compile = false
 disasm = false
+initial_exprs = []
 
 opt = OptionParser.new
 opt.banner = "Usage: iabrb [options]"
+opt.on('-e CODE', 'evaluate CODE before entering REPL') { |v| initial_exprs << v }
 opt.on('--compile', 'compile each input before execution') { compile = true }
 opt.on('--disasm', 'show disassembly after compile (implies --compile)') { disasm = true; compile = true }
 opt.on('-v', '--version', 'show version') { puts "iabrb #{AbRuby::VERSION}"; exit }
@@ -31,6 +33,38 @@ if compile
 end
 
 vm = AbRuby.new
+
+eval_line = ->(line) {
+  ast = vm.parse(line)
+  entries = [[nil, ast]] + vm.last_entries
+
+  if compile
+    entries.each { |_, node| AbRuby.cs_compile(node) }
+    AbRuby.cs_build(cflags)
+    AbRuby.cs_reload
+    entries.each { |_, node| AbRuby.cs_load(node) }
+  end
+
+  result = vm.eval_ast(ast)
+
+  if disasm
+    entries.each do |name, node|
+      if entries.size > 1
+        $stdout.flush
+        puts "--- #{name || '<toplevel>'} ---"
+        $stdout.flush
+      end
+      puts vm.dump_ast(node)
+      $stdout.flush
+      AbRuby.cs_disasm(node)
+    end
+  end
+
+  puts "=> #{result.inspect}"
+}
+
+# Execute initial expressions
+initial_exprs.each { |expr| eval_line.(expr) }
 
 puts "iabrb #{AbRuby::VERSION}#{compile ? ' (compile' + (disasm ? '+disasm' : '') + ')' : ''}"
 
@@ -52,32 +86,7 @@ loop do
   next if line.strip.empty?
 
   begin
-    ast = vm.parse(line)
-    entries = [[nil, ast]] + vm.last_entries
-
-    if compile
-      entries.each { |_, node| AbRuby.cs_compile(node) }
-      AbRuby.cs_build(cflags)
-      AbRuby.cs_reload
-      entries.each { |_, node| AbRuby.cs_load(node) }
-    end
-
-    result = vm.eval_ast(ast)
-
-    if disasm
-      entries.each do |name, node|
-        if entries.size > 1
-          $stdout.flush
-          puts "--- #{name || '<toplevel>'} ---"
-          $stdout.flush
-        end
-        puts vm.dump_ast(node)
-        $stdout.flush
-        AbRuby.cs_disasm(node)
-      end
-    end
-
-    puts "=> #{result.inspect}"
+    eval_line.(line)
   rescue SyntaxError => e
     puts "SyntaxError: #{e.message}"
   rescue => e
