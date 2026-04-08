@@ -8,7 +8,7 @@ def fact(n)
 end
 
 i = 0
-while i < 10000
+while i < 160_000
   fact(50)
   i += 1
 end

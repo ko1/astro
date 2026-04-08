@@ -11,7 +11,7 @@ end
 
 c = Counter.new
 i = 0
-while i < 3000000
+while i < 36_000_000
   c.incr
   i += 1
 end

@@ -80,23 +80,13 @@ def run_benchmark(runner, path, repeat)
 end
 
 def format_time(t)
-  if t < 0.01
-    "%.1fms" % (t * 1000)
-  elsif t < 1.0
-    "%.0fms" % (t * 1000)
-  else
-    "%.3fs" % t
-  end
+  "%.3fs" % t
 end
 
 def format_ratio(t, base)
   return "" if base.nil? || t.nil?
   ratio = t / base
-  if ratio >= 1.0
-    "%.1fx" % ratio
-  else
-    "%.2fx" % ratio
-  end
+  "%.2fx" % ratio
 end
 
 # --- Main -----------------------------------------------------------------

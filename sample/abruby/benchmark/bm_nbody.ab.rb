@@ -84,7 +84,7 @@ bodies = [
 ]
 
 i = 0
-while i < 100000
+while i < 30000
   advance(bodies, 0.01)
   i += 1
 end

@@ -4,7 +4,7 @@ def incr(x)
 end
 
 i = 0
-while i < 5000000
+while i < 50_000_000
   i = incr(i)
 end
 p(i)

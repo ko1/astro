@@ -9,7 +9,7 @@ end
 
 sum = 0
 i = 1
-while i <= 500000
+while i <= 3_500_000
   sum += gcd(i, i + 7)
   i += 1
 end

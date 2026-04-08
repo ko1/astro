@@ -1,5 +1,5 @@
 # Sieve of Eratosthenes (array-heavy)
-n = 30000
+n = 6_000_000
 sieve = []
 i = 0
 while i <= n

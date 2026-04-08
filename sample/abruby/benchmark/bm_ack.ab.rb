@@ -9,4 +9,9 @@ def ack(m, n)
   end
 end
 
+i = 0
+while i < 15
+  ack(3, 7)
+  i += 1
+end
 p(ack(3, 7))

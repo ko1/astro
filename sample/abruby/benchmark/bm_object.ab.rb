@@ -13,7 +13,7 @@ end
 
 sum = 0
 i = 0
-while i < 500000
+while i < 3_500_000
   pt = Point.new(i, i + 1)
   sum += pt.dist
   i += 1

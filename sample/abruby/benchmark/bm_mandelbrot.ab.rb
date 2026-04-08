@@ -13,7 +13,7 @@ def mandelbrot(cr, ci, max_iter)
   max_iter
 end
 
-size = 80
+size = 210
 max_iter = 50
 sum = 0
 y = 0

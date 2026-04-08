@@ -21,6 +21,6 @@ def make_tree(depth)
   end
 end
 
-max_depth = 14
+max_depth = 19
 tree = make_tree(max_depth)
 p(tree.check)

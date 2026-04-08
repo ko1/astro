@@ -7,4 +7,9 @@ def tak(x, y, z)
   end
 end
 
+i = 0
+while i < 500
+  tak(18, 12, 6)
+  i += 1
+end
 p(tak(18, 12, 6))
