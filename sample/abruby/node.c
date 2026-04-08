@@ -166,7 +166,7 @@ void
 node_replace(NODE *old_node, NODE *new_node)
 {
     NODE *parent = old_node->head.parent;
-    if (parent && parent->head.kind->replacer) {
+    if (parent) {
         parent->head.kind->replacer(parent, old_node, new_node);
     }
     new_node->head.parent = parent;
