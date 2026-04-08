@@ -1122,6 +1122,14 @@ rb_astro_cs_init(VALUE self, VALUE store_dir, VALUE src_dir)
     return Qnil;
 }
 
+// AbRuby.cs_load(node) → true/false
+static VALUE
+rb_astro_cs_load(VALUE self, VALUE node_val)
+{
+    NODE *n = DATA_PTR(node_val);
+    return astro_cs_load(n) ? Qtrue : Qfalse;
+}
+
 // AbRuby.cs_compile(node)
 static VALUE
 rb_astro_cs_compile(VALUE self, VALUE node_val)
@@ -1286,6 +1294,7 @@ Init_abruby(void)
 
     // code store
     rb_define_singleton_method(rb_cAbRuby, "cs_init", rb_astro_cs_init, 2);
+    rb_define_singleton_method(rb_cAbRuby, "cs_load", rb_astro_cs_load, 1);
     rb_define_singleton_method(rb_cAbRuby, "cs_compile", rb_astro_cs_compile, 1);
     rb_define_singleton_method(rb_cAbRuby, "cs_build", rb_astro_cs_build, -1);
     rb_define_singleton_method(rb_cAbRuby, "cs_reload", rb_astro_cs_reload, 0);

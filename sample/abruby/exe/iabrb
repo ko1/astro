@@ -1,22 +1,70 @@
 #!/usr/bin/env ruby
+# iabrb: interactive abruby REPL with code store compilation and disasm
+
+require 'optparse'
+require 'rbconfig'
+
+begin
+  require 'readline'
+  HAS_READLINE = true
+rescue LoadError
+  HAS_READLINE = false
+end
 
 require_relative '../lib/abruby'
 require_relative '../lib/abruby/version'
-require 'readline'
 
-puts "iabruby #{AbRuby::VERSION} (AbRuby interactive shell)"
+compile = false
+disasm = false
+
+opt = OptionParser.new
+opt.banner = "Usage: iabrb [options]"
+opt.on('--compile', 'compile each input before execution') { compile = true }
+opt.on('--disasm', 'show disassembly after compile (implies --compile)') { disasm = true; compile = true }
+opt.on('-v', '--version', 'show version') { puts "iabrb #{AbRuby::VERSION}"; exit }
+opt.parse!(ARGV)
+
+if compile
+  abruby_dir = File.expand_path('..', __dir__)
+  cflags = "-I#{RbConfig::CONFIG['rubyhdrdir']} -I#{RbConfig::CONFIG['rubyarchhdrdir']}"
+  AbRuby.cs_init(File.join(abruby_dir, 'code_store'), abruby_dir)
+end
 
 vm = AbRuby.new
 
-loop do
-  line = Readline.readline("abruby> ", true)
-  break unless line
+puts "iabrb #{AbRuby::VERSION}#{compile ? ' (compile' + (disasm ? '+disasm' : '') + ')' : ''}"
 
-  line.strip!
-  next if line.empty?
+loop do
+  line = if HAS_READLINE
+    Readline.readline("iabrb> ", true)
+  else
+    print "iabrb> "
+    $stdout.flush
+    $stdin.gets&.chomp
+  end
+
+  break unless line
+  next if line.strip.empty?
 
   begin
-    result = vm.eval(line)
+    ast = vm.parse(line)
+    entries = [[nil, ast]] + vm.last_entries
+
+    if compile
+      entries.each { |_, node| AbRuby.cs_compile(node) }
+      AbRuby.cs_build(cflags)
+      AbRuby.cs_reload
+      entries.each { |_, node| AbRuby.cs_load(node) }
+    end
+
+    result = vm.eval_ast(ast)
+
+    if disasm
+      entries.each do |name, node|
+        AbRuby.cs_disasm(node)
+      end
+    end
+
     puts "=> #{result.inspect}"
   rescue SyntaxError => e
     puts "SyntaxError: #{e.message}"

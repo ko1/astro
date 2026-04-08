@@ -324,7 +324,7 @@ astro_cs_build(const char *extra_cflags)
     fclose(fp);
 
     char cmd[ASTRO_CS_PATH_MAX * 2];
-    snprintf(cmd, sizeof(cmd), "make -C %s -j --no-print-directory -s all.so",
+    snprintf(cmd, sizeof(cmd), "make -C %s -j --no-print-directory -s all.so 2>&1 >/dev/null",
              astro_cs.store_dir);
 
     int ret = system(cmd);
