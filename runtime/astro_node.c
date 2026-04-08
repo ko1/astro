@@ -97,6 +97,27 @@ DUMP(FILE *fp, NODE *n, bool oneline)
 }
 
 // ---------------------------------------------------------------------------
+// Print a C string literal with proper escaping (used by generated node_specialize.c)
+// ---------------------------------------------------------------------------
+
+__attribute__((unused)) static void
+astro_fprint_cstr(FILE *fp, const char *s)
+{
+    fprintf(fp, "        \"");
+    for (; *s; s++) {
+        switch (*s) {
+        case '"':  fprintf(fp, "\\\""); break;
+        case '\\': fprintf(fp, "\\\\"); break;
+        case '\n': fprintf(fp, "\\n"); break;
+        case '\r': fprintf(fp, "\\r"); break;
+        case '\t': fprintf(fp, "\\t"); break;
+        default:   fputc(*s, fp);
+        }
+    }
+    fprintf(fp, "\"");
+}
+
+// ---------------------------------------------------------------------------
 // Dispatcher name allocation (used by generated node_specialize.c)
 // ---------------------------------------------------------------------------
 

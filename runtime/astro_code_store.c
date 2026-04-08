@@ -270,7 +270,8 @@ astro_cs_compile(NODE *entry)
     fprintf(fp, "static void dispatch_info(CTX *c, NODE *n, bool end) {\n");
     fprintf(fp, "    (void)c; (void)n; (void)end;\n");
     fprintf(fp, "}\n\n");
-    fprintf(fp, "#include \"%s/node_eval.c\"\n\n", astro_cs.src_dir);
+    fprintf(fp, "#include \"%s/node_eval.c\"\n", astro_cs.src_dir);
+    fprintf(fp, "#include \"%s/node_dispatch.c\"\n\n", astro_cs.src_dir);
 
     // Generate specialized code (entry is public, children are static)
     astro_spec_dedup_clear();
@@ -284,7 +285,7 @@ astro_cs_compile(NODE *entry)
 // ---------------------------------------------------------------------------
 
 void
-astro_cs_build(void)
+astro_cs_build(const char *extra_cflags)
 {
     char makefile_path[ASTRO_CS_PATH_MAX];
     astro_cs_path(makefile_path, sizeof(makefile_path),
@@ -297,7 +298,11 @@ astro_cs_build(void)
     }
 
     fprintf(fp, "CC ?= gcc\n");
-    fprintf(fp, "CFLAGS ?= -O3 -fPIC\n");
+    fprintf(fp, "CFLAGS ?= -O3 -fPIC");
+    if (extra_cflags && extra_cflags[0]) {
+        fprintf(fp, " %s", extra_cflags);
+    }
+    fprintf(fp, "\n");
     fprintf(fp, "\n");
     fprintf(fp, "SRCS = $(wildcard c/SD_*.c)\n");
     fprintf(fp, "OBJS = $(patsubst c/%%.c,o/%%.o,$(SRCS))\n");

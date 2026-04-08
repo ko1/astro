@@ -25,7 +25,8 @@ bool astro_cs_load(NODE *n);
 void astro_cs_compile(NODE *entry);
 
 // Build all SD_*.c in store_dir into all.so (make -j).
-void astro_cs_build(void);
+// extra_cflags: additional compiler flags (e.g., Ruby include paths). Can be NULL.
+void astro_cs_build(const char *extra_cflags);
 
 // Reload all.so (dlclose + dlopen). Use after build to apply immediately.
 void astro_cs_reload(void);

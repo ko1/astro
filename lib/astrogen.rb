@@ -117,7 +117,7 @@ module ASTroGen
           when 'int32_t'
             "    fprintf(fp, \"        %d\", n->u.#{name}.#{self.name});"
           when 'const char *'
-            "    fprintf(fp, \"        \\\"%s\\\"\", n->u.#{name}.#{self.name});"
+            "    astro_fprint_cstr(fp, n->u.#{name}.#{self.name});"
           else
             raise "unknown operand type: #{self.join}"
           end
