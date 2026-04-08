@@ -64,6 +64,7 @@ read_file = ->(path) {
 
 # Initialize code store (shared by all modes except --plain)
 ABRUBY_DIR = File.expand_path('..', __dir__)
+AbRuby.verbose = verbose
 
 cs_init = ->() {
   store_dir = File.join(ABRUBY_DIR, 'code_store')

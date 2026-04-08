@@ -594,7 +594,8 @@ class AbRuby
     end
 
     BINOP_MAP = {
-      "+" => "plus", "-" => "minus", "*" => "mul", "/" => "div",
+      "+" => "fixnum_plus", "-" => "fixnum_minus",
+      "*" => "fixnum_mul", "/" => "fixnum_div",
       "<" => "lt", "<=" => "le", ">" => "gt", ">=" => "ge",
     }.freeze
 

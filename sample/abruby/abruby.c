@@ -829,6 +829,18 @@ static VALUE rb_alloc_node_plus(VALUE self, VALUE left, VALUE right) {
 static VALUE rb_alloc_node_minus(VALUE self, VALUE left, VALUE right) {
     return wrap_node(ALLOC_node_minus(unwrap_node(left), unwrap_node(right)));
 }
+static VALUE rb_alloc_node_fixnum_plus(VALUE self, VALUE left, VALUE right) {
+    return wrap_node(ALLOC_node_fixnum_plus(unwrap_node(left), unwrap_node(right)));
+}
+static VALUE rb_alloc_node_fixnum_minus(VALUE self, VALUE left, VALUE right) {
+    return wrap_node(ALLOC_node_fixnum_minus(unwrap_node(left), unwrap_node(right)));
+}
+static VALUE rb_alloc_node_fixnum_mul(VALUE self, VALUE left, VALUE right) {
+    return wrap_node(ALLOC_node_fixnum_mul(unwrap_node(left), unwrap_node(right)));
+}
+static VALUE rb_alloc_node_fixnum_div(VALUE self, VALUE left, VALUE right) {
+    return wrap_node(ALLOC_node_fixnum_div(unwrap_node(left), unwrap_node(right)));
+}
 static VALUE rb_alloc_node_mul(VALUE self, VALUE left, VALUE right) {
     return wrap_node(ALLOC_node_mul(unwrap_node(left), unwrap_node(right)));
 }
@@ -1093,6 +1105,14 @@ rb_abruby_dump_ast(VALUE self, VALUE ast_obj)
 
 // --- Code Store Ruby API ---
 
+// AbRuby.verbose = bool
+static VALUE
+rb_astro_set_verbose(VALUE self, VALUE val)
+{
+    OPTION.verbose = RTEST(val);
+    return val;
+}
+
 // AbRuby.cs_init(store_dir, src_dir)
 static VALUE
 rb_astro_cs_init(VALUE self, VALUE store_dir, VALUE src_dir)
@@ -1244,6 +1264,10 @@ Init_abruby(void)
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_minus", rb_alloc_node_minus, 2);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_mul", rb_alloc_node_mul, 2);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_div", rb_alloc_node_div, 2);
+    rb_define_singleton_method(rb_cAbRuby, "alloc_node_fixnum_plus", rb_alloc_node_fixnum_plus, 2);
+    rb_define_singleton_method(rb_cAbRuby, "alloc_node_fixnum_minus", rb_alloc_node_fixnum_minus, 2);
+    rb_define_singleton_method(rb_cAbRuby, "alloc_node_fixnum_mul", rb_alloc_node_fixnum_mul, 2);
+    rb_define_singleton_method(rb_cAbRuby, "alloc_node_fixnum_div", rb_alloc_node_fixnum_div, 2);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_lt", rb_alloc_node_lt, 2);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_le", rb_alloc_node_le, 2);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_gt", rb_alloc_node_gt, 2);
@@ -1256,6 +1280,9 @@ Init_abruby(void)
     rb_define_method(rb_cAbRuby, "current_file",  rb_abruby_get_current_file, 0);
     rb_define_method(rb_cAbRuby, "current_file=", rb_abruby_set_current_file, 1);
     rb_define_method(rb_cAbRuby, "dump_ast", rb_abruby_dump_ast, 1);
+
+    // options
+    rb_define_singleton_method(rb_cAbRuby, "verbose=", rb_astro_set_verbose, 1);
 
     // code store
     rb_define_singleton_method(rb_cAbRuby, "cs_init", rb_astro_cs_init, 2);

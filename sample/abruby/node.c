@@ -78,7 +78,7 @@ OPTIMIZE(NODE *n)
     }
 
     if (astro_cs_load(n)) {
-        if (!OPTION.quiet) {
+        if (OPTION.verbose) {
             fprintf(stderr, "hit!: h:%16lx %s ",
                     (unsigned long)hash_node(n),
                     n->head.kind->default_dispatcher_name);

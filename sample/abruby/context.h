@@ -29,6 +29,7 @@ struct abruby_option {
     bool no_compiled_code;
     bool record_all;
     bool quiet;
+    bool verbose;
 };
 
 extern struct abruby_option OPTION;
