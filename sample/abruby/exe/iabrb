@@ -66,6 +66,12 @@ loop do
 
     if disasm
       entries.each do |name, node|
+        if entries.size > 1
+          $stdout.flush
+          $stderr.flush
+          puts "--- #{name || '<toplevel>'} ---"
+          $stdout.flush
+        end
         AbRuby.cs_disasm(node)
       end
     end
