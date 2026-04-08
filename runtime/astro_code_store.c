@@ -213,13 +213,17 @@ astro_cs_compile(NODE *entry)
     if (!entry || !entry->head.kind->specializer) return;
 
     node_hash_t h = HASH(entry);
+
+    // Create store_dir/c/ if it doesn't exist
+    mkdir(astro_cs.store_dir, 0755);
+    char c_dir[ASTRO_CS_PATH_MAX];
+    astro_cs_path(c_dir, sizeof(c_dir), astro_cs.store_dir, "c");
+    mkdir(c_dir, 0755);
+
     char filename[128];
-    snprintf(filename, sizeof(filename), "SD_%lx.c", (unsigned long)h);
+    snprintf(filename, sizeof(filename), "c/SD_%lx.c", (unsigned long)h);
     char path[ASTRO_CS_PATH_MAX];
     astro_cs_path(path, sizeof(path), astro_cs.store_dir, filename);
-
-    // Create store_dir if it doesn't exist
-    mkdir(astro_cs.store_dir, 0755);
 
     FILE *fp = fopen(path, "w");
     if (!fp) {
@@ -263,19 +267,22 @@ astro_cs_build(void)
     fprintf(fp, "CC ?= gcc\n");
     fprintf(fp, "CFLAGS ?= -O3 -fPIC\n");
     fprintf(fp, "\n");
-    fprintf(fp, "SRCS = $(wildcard SD_*.c)\n");
-    fprintf(fp, "OBJS = $(SRCS:.c=.o)\n");
+    fprintf(fp, "SRCS = $(wildcard c/SD_*.c)\n");
+    fprintf(fp, "OBJS = $(patsubst c/%%.c,o/%%.o,$(SRCS))\n");
     fprintf(fp, "\n");
     fprintf(fp, "all: all.so\n");
     fprintf(fp, "\n");
     fprintf(fp, "all.so: $(OBJS)\n");
     fprintf(fp, "\t$(CC) -shared -o $@ $^\n");
     fprintf(fp, "\n");
-    fprintf(fp, "%%.o: %%.c\n");
+    fprintf(fp, "o/%%.o: c/%%.c | o\n");
     fprintf(fp, "\t$(CC) $(CFLAGS) -c $< -o $@\n");
     fprintf(fp, "\n");
+    fprintf(fp, "o:\n");
+    fprintf(fp, "\tmkdir -p o\n");
+    fprintf(fp, "\n");
     fprintf(fp, "clean:\n");
-    fprintf(fp, "\trm -f *.o all.so\n");
+    fprintf(fp, "\trm -rf o all.so\n");
 
     fclose(fp);
 
