@@ -503,6 +503,28 @@ node_class_def(CTX * restrict c, NODE * restrict n, const char *name, const char
     return RESULT_OK(abruby_wrap_class(klass));
 }
 
+static __attribute__((noinline)) RESULT
+method_missing_dispatch(CTX *c, NODE *n, struct abruby_class *klass,
+                        const char *name, VALUE recv_val,
+                        uint32_t params_cnt, uint32_t arg_index)
+{
+    struct abruby_method *mm = abruby_class_find_method(klass, "method_missing");
+    if (!mm) {
+        rb_raise(rb_eNoMethodError, "undefined method '%s' for %s", name, klass->name);
+    }
+    // shift args by 1, insert method name as first arg
+    for (int i = (int)params_cnt - 1; i >= 0; i--) {
+        c->fp[arg_index + i + 1] = c->fp[arg_index + i];
+    }
+    c->fp[arg_index] = abruby_str_new_cstr(name);
+    if (mm->type == ABRUBY_METHOD_CFUNC) {
+        return mm->u.cfunc.func(c, recv_val, params_cnt + 1, c->fp + arg_index);
+    }
+    else {
+        return method_call_body(c, arg_index, recv_val, mm->u.ast.body);
+    }
+}
+
 NODE_DEF
 node_method_call(CTX * restrict c, NODE * restrict n, NODE *recv, const char *name, uint32_t params_cnt, uint32_t arg_index)
 {
@@ -523,30 +545,16 @@ node_method_call(CTX * restrict c, NODE * restrict n, NODE *recv, const char *na
     c->current_frame = &frame;
 
     RESULT r;
-    if (!method) {
-        // try method_missing
-        struct abruby_method *mm = abruby_class_find_method(klass, "method_missing");
-        if (!mm) {
-            c->current_frame = frame.prev;
-            rb_raise(rb_eNoMethodError, "undefined method '%s' for %s", name, klass->name);
-        }
-        // shift args by 1, insert method name as first arg
-        for (int i = (int)params_cnt - 1; i >= 0; i--) {
-            c->fp[arg_index + i + 1] = c->fp[arg_index + i];
-        }
-        c->fp[arg_index] = abruby_str_new_cstr(name);
-        if (mm->type == ABRUBY_METHOD_CFUNC) {
-            r = mm->u.cfunc.func(c, recv_val, params_cnt + 1, c->fp + arg_index);
+    if (LIKELY(method != NULL)) {
+        if (method->type == ABRUBY_METHOD_CFUNC) {
+            r = method->u.cfunc.func(c, recv_val, params_cnt, c->fp + arg_index);
         }
         else {
-            r = method_call_body(c, arg_index, recv_val, mm->u.ast.body);
+            r = method_call_body(c, arg_index, recv_val, method->u.ast.body);
         }
     }
-    else if (method->type == ABRUBY_METHOD_CFUNC) {
-        r = method->u.cfunc.func(c, recv_val, params_cnt, c->fp + arg_index);
-    }
     else {
-        r = method_call_body(c, arg_index, recv_val, method->u.ast.body);
+        r = method_missing_dispatch(c, n, klass, name, recv_val, params_cnt, arg_index);
     }
 
     // Pop call frame (always — backtrace is on exception object)
