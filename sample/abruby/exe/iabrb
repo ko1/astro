@@ -35,12 +35,17 @@ vm = AbRuby.new
 puts "iabrb #{AbRuby::VERSION}#{compile ? ' (compile' + (disasm ? '+disasm' : '') + ')' : ''}"
 
 loop do
-  line = if HAS_READLINE
-    Readline.readline("iabrb> ", true)
-  else
-    print "iabrb> "
-    $stdout.flush
-    $stdin.gets&.chomp
+  begin
+    line = if HAS_READLINE
+      Readline.readline("iabrb> ", true)
+    else
+      print "iabrb> "
+      $stdout.flush
+      $stdin.gets&.chomp
+    end
+  rescue Interrupt
+    puts
+    next
   end
 
   break unless line
