@@ -1125,11 +1125,12 @@ rb_astro_set_verbose(VALUE self, VALUE val)
     return val;
 }
 
-// AbRuby.cs_init(store_dir, src_dir)
+// AbRuby.cs_init(store_dir, src_dir, version)
 static VALUE
-rb_astro_cs_init(VALUE self, VALUE store_dir, VALUE src_dir)
+rb_astro_cs_init(VALUE self, VALUE store_dir, VALUE src_dir, VALUE version)
 {
-    astro_cs_init(StringValueCStr(store_dir), StringValueCStr(src_dir));
+    astro_cs_init(StringValueCStr(store_dir), StringValueCStr(src_dir),
+                  NUM2ULL(version));
     OPTION.no_compiled_code = false;
     return Qnil;
 }
@@ -1309,7 +1310,7 @@ Init_abruby(void)
     rb_define_singleton_method(rb_cAbRuby, "verbose=", rb_astro_set_verbose, 1);
 
     // code store
-    rb_define_singleton_method(rb_cAbRuby, "cs_init", rb_astro_cs_init, 2);
+    rb_define_singleton_method(rb_cAbRuby, "cs_init", rb_astro_cs_init, 3);
     rb_define_singleton_method(rb_cAbRuby, "cs_load", rb_astro_cs_load, 1);
     rb_define_singleton_method(rb_cAbRuby, "cs_compile", rb_astro_cs_compile, 1);
     rb_define_singleton_method(rb_cAbRuby, "cs_build", rb_astro_cs_build, -1);

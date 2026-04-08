@@ -107,5 +107,5 @@ code_repo_add(const char *name, NODE *body, bool force)
 void
 INIT(void)
 {
-    astro_cs_init("code_store", ".");
+    astro_cs_init("code_store", ".", 0);
 }

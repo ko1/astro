@@ -14,7 +14,9 @@
 // Initialize code store and load all.so from store_dir (if it exists).
 // src_dir: directory containing node.h, node_eval.c etc. (used for #include in generated .c)
 //          Can be overridden by ASTRO_CS_SRC_DIR environment variable.
-void astro_cs_init(const char *store_dir, const char *src_dir);
+// version: cache version (e.g., mtime of host binary). 0 to skip version check.
+//          If changed from stored version, code store is cleared and rebuilt.
+void astro_cs_init(const char *store_dir, const char *src_dir, uint64_t version);
 
 // Look up specialized code for node's hash in code store.
 // If found, replaces the node's dispatcher and returns true.

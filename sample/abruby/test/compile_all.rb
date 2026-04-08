@@ -7,7 +7,8 @@ require_relative '../lib/abruby'
 src_dir = File.expand_path('..', __dir__)
 store_dir = File.join(src_dir, 'code_store')
 
-AbRuby.cs_init(store_dir, src_dir)
+so_mtime = File.mtime(File.join(src_dir, 'abruby.so')).to_i rescue 0
+AbRuby.cs_init(store_dir, src_dir, so_mtime)
 
 cflags = "-I#{RbConfig::CONFIG['rubyhdrdir']} -I#{RbConfig::CONFIG['rubyarchhdrdir']}"
 

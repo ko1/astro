@@ -68,10 +68,12 @@ read_file = ->(path) {
 ABRUBY_DIR = File.expand_path('..', __dir__)
 AbRuby.verbose = verbose
 
+ABRUBY_SO_MTIME = File.mtime(File.join(ABRUBY_DIR, 'abruby.so')).to_i rescue 0
+
 cs_init = ->() {
   store_dir = File.join(ABRUBY_DIR, 'code_store')
-  $stderr.puts "cs_init: #{store_dir} (src: #{ABRUBY_DIR})" if verbose
-  AbRuby.cs_init(store_dir, ABRUBY_DIR)
+  $stderr.puts "cs_init: #{store_dir} (src: #{ABRUBY_DIR}, ver: #{ABRUBY_SO_MTIME})" if verbose
+  AbRuby.cs_init(store_dir, ABRUBY_DIR, ABRUBY_SO_MTIME)
 }
 
 # Compile an AST entry node

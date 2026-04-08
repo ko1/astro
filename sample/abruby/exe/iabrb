@@ -29,7 +29,8 @@ opt.parse!(ARGV)
 if compile
   abruby_dir = File.expand_path('..', __dir__)
   cflags = "-I#{RbConfig::CONFIG['rubyhdrdir']} -I#{RbConfig::CONFIG['rubyarchhdrdir']}"
-  AbRuby.cs_init(File.join(abruby_dir, 'code_store'), abruby_dir)
+  so_mtime = File.mtime(File.join(abruby_dir, 'abruby.so')).to_i rescue 0
+  AbRuby.cs_init(File.join(abruby_dir, 'code_store'), abruby_dir, so_mtime)
 end
 
 vm = AbRuby.new

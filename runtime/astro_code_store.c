@@ -119,34 +119,12 @@ astro_cs_resolve_dir(char *buf, size_t bufsz, const char *dir)
     }
 }
 
-// Compute FNV-1a hash of a file's contents. Returns 0 on error.
-static uint64_t
-astro_cs_file_hash(const char *path)
-{
-    FILE *fp = fopen(path, "r");
-    if (!fp) return 0;
-
-    uint64_t h = 14695981039346656037ULL;
-    const uint64_t FNV_PRIME = 1099511628211ULL;
-    int c;
-    while ((c = fgetc(fp)) != EOF) {
-        h ^= (unsigned char)c;
-        h *= FNV_PRIME;
-    }
-    fclose(fp);
-    return h;
-}
-
-// Check if node.def has changed since last build. If so, clear the store.
+// Check if version has changed since last compile. If so, clear the store.
+// version = 0 means skip check.
 static void
-astro_cs_check_version(void)
+astro_cs_check_version(uint64_t current)
 {
-    char node_def_path[ASTRO_CS_PATH_MAX];
-    astro_cs_path(node_def_path, sizeof(node_def_path),
-                  astro_cs.src_dir, "node.def");
-
-    uint64_t current = astro_cs_file_hash(node_def_path);
-    if (current == 0) return; // node.def not found, skip check
+    if (current == 0) return;
 
     char version_path[ASTRO_CS_PATH_MAX];
     astro_cs_path(version_path, sizeof(version_path),
@@ -187,7 +165,7 @@ astro_cs_check_version(void)
 }
 
 void
-astro_cs_init(const char *store_dir, const char *src_dir)
+astro_cs_init(const char *store_dir, const char *src_dir, uint64_t version)
 {
     astro_cs_resolve_dir(astro_cs.store_dir, ASTRO_CS_DIR_MAX, store_dir);
 
@@ -197,7 +175,7 @@ astro_cs_init(const char *store_dir, const char *src_dir)
 
     // Check version and clear stale cache
     if (store_dir) {
-        astro_cs_check_version();
+        astro_cs_check_version(version);
     }
 
     // Try to load all.so
