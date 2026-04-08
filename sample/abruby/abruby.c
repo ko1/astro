@@ -861,6 +861,15 @@ static VALUE rb_alloc_node_fixnum_gt(VALUE self, VALUE left, VALUE right) {
 static VALUE rb_alloc_node_fixnum_ge(VALUE self, VALUE left, VALUE right) {
     return wrap_node(ALLOC_node_fixnum_ge(unwrap_node(left), unwrap_node(right)));
 }
+static VALUE rb_alloc_node_fixnum_eq(VALUE self, VALUE left, VALUE right) {
+    return wrap_node(ALLOC_node_fixnum_eq(unwrap_node(left), unwrap_node(right)));
+}
+static VALUE rb_alloc_node_fixnum_neq(VALUE self, VALUE left, VALUE right) {
+    return wrap_node(ALLOC_node_fixnum_neq(unwrap_node(left), unwrap_node(right)));
+}
+static VALUE rb_alloc_node_fixnum_mod(VALUE self, VALUE left, VALUE right) {
+    return wrap_node(ALLOC_node_fixnum_mod(unwrap_node(left), unwrap_node(right)));
+}
 static VALUE rb_alloc_node_lt(VALUE self, VALUE left, VALUE right) {
     return wrap_node(ALLOC_node_lt(unwrap_node(left), unwrap_node(right)));
 }
@@ -1293,6 +1302,9 @@ Init_abruby(void)
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_le", rb_alloc_node_le, 2);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_gt", rb_alloc_node_gt, 2);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_ge", rb_alloc_node_ge, 2);
+    rb_define_singleton_method(rb_cAbRuby, "alloc_node_fixnum_eq", rb_alloc_node_fixnum_eq, 2);
+    rb_define_singleton_method(rb_cAbRuby, "alloc_node_fixnum_neq", rb_alloc_node_fixnum_neq, 2);
+    rb_define_singleton_method(rb_cAbRuby, "alloc_node_fixnum_mod", rb_alloc_node_fixnum_mod, 2);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_fixnum_lt", rb_alloc_node_fixnum_lt, 2);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_fixnum_le", rb_alloc_node_fixnum_le, 2);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_fixnum_gt", rb_alloc_node_fixnum_gt, 2);

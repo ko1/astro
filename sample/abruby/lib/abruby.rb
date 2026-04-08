@@ -598,6 +598,7 @@ class AbRuby
       "*" => "fixnum_mul", "/" => "fixnum_div",
       "<" => "fixnum_lt", "<=" => "fixnum_le",
       ">" => "fixnum_gt", ">=" => "fixnum_ge",
+      "==" => "fixnum_eq", "!=" => "fixnum_neq",
     }.freeze
 
     def transduce_binop(node)
