@@ -34,11 +34,10 @@ module ASTroGen
       func_typedef: "typedef void (*node_dumper_func_t)(FILE *fp, struct Node *n, bool oneline);",
       func_prefix: "DUMP_",
       kind_field: "node_dumper_func_t dumper"
-    register_gen_task :replace_child,
-      func_typedef: "typedef void (*node_replace_child_func_t)(struct Node *parent, struct Node *old_child, struct Node *new_child);",
-      func_prefix: "REPLACE_CHILD_",
-      kind_field: "node_replace_child_func_t replace_child",
-      generate_file: false  # included in alloc
+    register_gen_task :replacer,
+      func_typedef: "typedef void (*node_replacer_func_t)(struct Node *parent, struct Node *old_child, struct Node *new_child);",
+      func_prefix: "REPLACER_",
+      kind_field: "node_replacer_func_t replacer"
 
     def initialize file, opt
       @file = file
@@ -335,14 +334,17 @@ module ASTroGen
         C
       end
 
-      def build_replace_child
+      def build_replacer
         node_ops = @operands.select(&:node?)
+        if node_ops.empty?
+          return "#define REPLACER_#{@name} NULL\n"
+        end
         checks = node_ops.map do |op|
           "    if (parent->u.#{@name}.#{op.name} == old_child) parent->u.#{@name}.#{op.name} = new_child;"
         end
         <<~C
         static void
-        REPLACE_CHILD_#{@name}(NODE *parent, NODE *old_child, NODE *new_child)
+        REPLACER_#{@name}(NODE *parent, NODE *old_child, NODE *new_child)
         {
         #{checks.join("\n")}
         }
@@ -453,11 +455,17 @@ module ASTroGen
       C__
     end
 
+    def build_replacer
+      <<~C__
+      // This file is auto-generated from #{@file}.
+      // replacer functions
+      #{@nodes.map{|name, n| n.build_replacer}.join("\n")}
+      C__
+    end
+
     def build_alloc
       allocators = <<~C__
       // This file is auto-generated from #{@file}.
-      // replace_child functions
-      #{@nodes.map{|name, n| n.build_replace_child}.join("\n")}
 
       // kinds
       #{

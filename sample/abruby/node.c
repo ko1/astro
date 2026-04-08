@@ -166,8 +166,8 @@ void
 node_replace(NODE *old_node, NODE *new_node)
 {
     NODE *parent = old_node->head.parent;
-    if (parent && parent->head.kind->replace_child) {
-        parent->head.kind->replace_child(parent, old_node, new_node);
+    if (parent && parent->head.kind->replacer) {
+        parent->head.kind->replacer(parent, old_node, new_node);
     }
     new_node->head.parent = parent;
     old_node->head.parent = NULL;
@@ -303,6 +303,7 @@ mark_child(NODE *child)
 }
 #define MARK(child) mark_child(child)
 
+#include "node_replacer.c"
 #include "node_mark.c"
 #include "node_alloc.c"
 
