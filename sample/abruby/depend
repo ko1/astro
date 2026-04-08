@@ -14,7 +14,10 @@ BUILTIN_OBJS = array.o class.o complex.o exception.o false.o float.o hash.o inte
 $(BUILTIN_OBJS): builtin/builtin.h context.h node.h
 
 run: all
-	ruby exe/abruby test.ab.rb
+	ruby exe/abruby test.rb
+
+i: all
+	ruby exe/iabrb --disasm
 
 test: test-interp test-compiled
 
@@ -30,7 +33,6 @@ test-compiled: all
 
 bench: all
 	$(Q)$(RM) -rf code_store
-	ruby benchmark/compile_benchmarks.rb
 	ruby benchmark/run.rb
 
 bench-optcarrot: all
@@ -47,4 +49,3 @@ clean: clean-generated
 
 clean-generated:
 	$(Q)$(RM) $(GENERATED)
-
