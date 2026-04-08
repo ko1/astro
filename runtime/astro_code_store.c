@@ -150,6 +150,73 @@ astro_cs_resolve_dir(char *buf, size_t bufsz, const char *dir)
     }
 }
 
+// Compute FNV-1a hash of a file's contents. Returns 0 on error.
+static uint64_t
+astro_cs_file_hash(const char *path)
+{
+    FILE *fp = fopen(path, "r");
+    if (!fp) return 0;
+
+    uint64_t h = 14695981039346656037ULL;
+    const uint64_t FNV_PRIME = 1099511628211ULL;
+    int c;
+    while ((c = fgetc(fp)) != EOF) {
+        h ^= (unsigned char)c;
+        h *= FNV_PRIME;
+    }
+    fclose(fp);
+    return h;
+}
+
+// Check if node.def has changed since last build. If so, clear the store.
+static void
+astro_cs_check_version(void)
+{
+    char node_def_path[ASTRO_CS_PATH_MAX];
+    astro_cs_path(node_def_path, sizeof(node_def_path),
+                  astro_cs.src_dir, "node.def");
+
+    uint64_t current = astro_cs_file_hash(node_def_path);
+    if (current == 0) return; // node.def not found, skip check
+
+    char version_path[ASTRO_CS_PATH_MAX];
+    astro_cs_path(version_path, sizeof(version_path),
+                  astro_cs.store_dir, "version");
+
+    // Read saved version
+    uint64_t saved = 0;
+    FILE *fp = fopen(version_path, "r");
+    if (fp) {
+        if (fscanf(fp, "%lx", &saved) != 1) saved = 0;
+        fclose(fp);
+    }
+
+    if (saved == current) return; // up to date
+
+    // Version mismatch: clear c/, o/, all.so
+    char path[ASTRO_CS_PATH_MAX];
+
+    astro_cs_path(path, sizeof(path), astro_cs.store_dir, "c");
+    char cmd[ASTRO_CS_PATH_MAX + 16];
+    snprintf(cmd, sizeof(cmd), "rm -rf %s", path);
+    (void)!system(cmd);
+
+    astro_cs_path(path, sizeof(path), astro_cs.store_dir, "o");
+    snprintf(cmd, sizeof(cmd), "rm -rf %s", path);
+    (void)!system(cmd);
+
+    astro_cs_path(path, sizeof(path), astro_cs.store_dir, "all.so");
+    remove(path);
+
+    // Save new version
+    mkdir(astro_cs.store_dir, 0755);
+    fp = fopen(version_path, "w");
+    if (fp) {
+        fprintf(fp, "%lx\n", current);
+        fclose(fp);
+    }
+}
+
 void
 astro_cs_init(const char *store_dir, const char *src_dir)
 {
@@ -158,6 +225,11 @@ astro_cs_init(const char *store_dir, const char *src_dir)
     // Environment variable overrides src_dir argument
     const char *env = getenv("ASTRO_CS_SRC_DIR");
     astro_cs_resolve_dir(astro_cs.src_dir, ASTRO_CS_DIR_MAX, env ? env : src_dir);
+
+    // Check version and clear stale cache
+    if (store_dir) {
+        astro_cs_check_version();
+    }
 
     // Try to load all.so
     if (store_dir) {
