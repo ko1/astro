@@ -303,7 +303,7 @@ mark_child(NODE *child)
 }
 #define MARK(child) mark_child(child)
 
-#include "node_replacer.c"
+#include "node_replace.c"
 #include "node_mark.c"
 #include "node_alloc.c"
 

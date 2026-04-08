@@ -34,7 +34,7 @@ module ASTroGen
       func_typedef: "typedef void (*node_dumper_func_t)(FILE *fp, struct Node *n, bool oneline);",
       func_prefix: "DUMP_",
       kind_field: "node_dumper_func_t dumper"
-    register_gen_task :replacer,
+    register_gen_task :replace,
       func_typedef: "typedef void (*node_replacer_func_t)(struct Node *parent, struct Node *old_child, struct Node *new_child);",
       func_prefix: "REPLACER_",
       kind_field: "node_replacer_func_t replacer"
@@ -334,7 +334,7 @@ module ASTroGen
         C
       end
 
-      def build_replacer
+      def build_replace
         node_ops = @operands.select(&:node?)
         if node_ops.empty?
           return "#define REPLACER_#{@name} NULL\n"
@@ -455,11 +455,11 @@ module ASTroGen
       C__
     end
 
-    def build_replacer
+    def build_replace
       <<~C__
       // This file is auto-generated from #{@file}.
       // replacer functions
-      #{@nodes.map{|name, n| n.build_replacer}.join("\n")}
+      #{@nodes.map{|name, n| n.build_replace}.join("\n")}
       C__
     end
 
