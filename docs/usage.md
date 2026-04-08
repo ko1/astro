@@ -32,13 +32,14 @@ ASTroGen generates infrastructure code from your node definitions. You provide t
 
 | File | Contents |
 |------|----------|
-| `node_head.h` | Struct definitions for each node type, `Node` union, allocator declarations |
+| `node_head.h` | Function pointer typedefs, `NodeKind` struct, node struct definitions, `Node` union, allocator declarations |
 | `node_eval.c` | `EVAL_xxx()` — unwraps node fields and calls your evaluator |
 | `node_dispatch.c` | `DISPATCH_xxx()` — dispatcher wrappers (the specialization target) |
 | `node_alloc.c` | `ALLOC_xxx()` — node allocators + `NodeKind` tables |
 | `node_hash.c` | `HASH_xxx()` — Merkle tree hash for each node type |
 | `node_dump.c` | `DUMP_xxx()` — AST pretty-printer |
 | `node_specialize.c` | `SPECIALIZE_xxx()` — generates specialized C code |
+| `node_replace.c` | `REPLACER_xxx()` — replaces a child node with another node |
 
 ## Writing `node.def`
 
@@ -89,6 +90,7 @@ node_def(CTX *c, NODE *n, const char *name, NODE *body, uint32_t params_cnt)
 ```
 
 - `@noinline` — prevents specialization from inlining this node's dispatched calls.
+- `@rewritable` — adds a `replaced_from` field to the node struct for runtime AST rewriting (e.g., type-specializing `node_plus` → `node_fixnum_plus`).
 
 ## Writing `context.h`
 
@@ -127,7 +129,9 @@ typedef struct {
 
 ## Writing `node.h`
 
-Declare types and functions that both your code and generated code use:
+Declare types and functions that both your code and generated code use.
+
+Note: `node_head.h` (generated) provides function pointer typedefs (`node_hash_func_t`, `node_specializer_func_t`, `node_dumper_func_t`, `node_replacer_func_t`), the `NodeKind` struct, node struct definitions, and `ALLOC` declarations. You only need to define the base types (`NODE`, `node_dispatcher_func_t`, `node_hash_t`) and `NodeHead` before `#include "node_head.h"`.
 
 ```c
 #include "context.h"
@@ -135,9 +139,6 @@ Declare types and functions that both your code and generated code use:
 typedef struct Node NODE;
 typedef VALUE (*node_dispatcher_func_t)(CTX *c, NODE *n);
 typedef uint64_t node_hash_t;
-typedef node_hash_t (*node_hash_func_t)(NODE *n);
-typedef void (*node_specializer_func_t)(FILE *f, NODE *n);
-typedef void (*node_dumper_func_t)(FILE *f, NODE *n, bool oneline);
 
 void INIT(void);
 node_hash_t HASH(NODE *n);
@@ -149,16 +150,8 @@ void SPECIALIZE(FILE *fp, NODE *n);
 #define DISPATCHER_NAME(n) \
     (n->head.flags.no_inline) ? (#n "->head.dispatcher") : (n->head.dispatcher_name)
 
-NODE *code_repo_fnid(node_hash_t h);
+NODE *code_repo_find(node_hash_t h);
 void code_repo_add(const char *name, NODE *body, bool force);
-
-struct NodeKind {
-    const char *default_dispatcher_name;
-    node_dispatcher_func_t default_dispatcher;
-    node_hash_func_t hash_func;
-    node_specializer_func_t specializer;
-    node_dumper_func_t dumper;
-};
 
 struct NodeHead {
     struct NodeFlags {
@@ -173,9 +166,21 @@ struct NodeHead {
     node_hash_t hash_value;
     const char *dispatcher_name;
     node_dispatcher_func_t dispatcher;
+
+    // Required by generated allocators:
+    enum jit_status {
+        JIT_STATUS_Unknown,
+        // JIT_STATUS_Querying, JIT_STATUS_NotFound, etc. (if using JIT)
+    } jit_status;
+    unsigned int dispatch_cnt;
 };
 
-#include "node_head.h"  // generated: node structs, Node union, ALLOC declarations
+// node_head.h provides:
+//   - Function pointer typedefs (node_hash_func_t, node_specializer_func_t, etc.)
+//   - struct NodeKind { ... };
+//   - Node struct definitions and Node union
+//   - ALLOC_xxx declarations
+#include "node_head.h"
 ```
 
 ## Writing `node.c`
@@ -210,6 +215,7 @@ static void dispatch_info(CTX *c, NODE *n, bool end) { /* optional */ }
 #include "node_dump.c"
 #include "node_hash.c"
 #include "node_specialize.c"
+#include "node_replace.c"
 #include "node_alloc.c"
 #include "node_specialized.c"
 
@@ -228,7 +234,8 @@ void INIT(void) {
 
 ```makefile
 GENERATED = node_eval.c node_dispatch.c node_hash.c \
-            node_dump.c node_alloc.c node_specialize.c node_head.h
+            node_dump.c node_alloc.c node_specialize.c \
+            node_replace.c node_head.h
 
 # Generate from node.def
 $(GENERATED): node.def
@@ -259,6 +266,60 @@ ASTroGen (module)
 ```
 
 Each level uses `self.class::ClassName` for dispatch, so subclasses are automatically picked up.
+
+### Adding custom generation tasks
+
+Use `register_gen_task` to add new per-node code generation tasks. Each task generates a `node_<name>.c` file and optionally adds a function pointer typedef and a field to `NodeKind`.
+
+For example, `sample/abruby/` adds a GC mark function generator:
+
+```ruby
+# abruby_gen.rb
+require 'astrogen'
+
+class AbRubyNodeDef < ASTroGen::NodeDef
+  register_gen_task :mark,
+    func_typedef: "typedef void (*node_marker_func_t)(struct Node *n);",
+    func_prefix: "MARKER_",
+    kind_field: "node_marker_func_t marker"
+
+  class Node < ASTroGen::NodeDef::Node
+    def result_type = "RESULT"
+
+    def build_marker
+      node_ops = @operands.select(&:node?)
+      marks = node_ops.map { |op| "    MARK(n->u.#{@name}.#{op.name});" }
+      marks << "    MARK(n->u.#{@name}.replaced_from);" if rewritable?
+      <<~C
+      static void
+      MARKER_#{@name}(NODE *n)
+      {
+      #{marks.join("\n")}
+      }
+      C
+    end
+  end
+
+  def build_mark
+    <<~C
+    // This file is auto-generated from #{@file}.
+    // GC mark functions
+    #{@nodes.map{|name, n| n.build_marker}.join("\n")}
+    C
+  end
+end
+```
+
+`register_gen_task` options:
+
+| Option | Description |
+|--------|-------------|
+| `func_typedef:` | C typedef for the function pointer (added to `node_head.h`) |
+| `func_prefix:` | Prefix for per-node functions (e.g., `"MARKER_"` → `MARKER_node_if`) |
+| `kind_field:` | Field declaration for `NodeKind` struct (e.g., `"node_marker_func_t marker"`) |
+| `generate_file:` | Whether to generate `node_<name>.c` (default: `true`) |
+
+The generator looks for a `build_<name>` method on `NodeDef` to produce the file contents, and a `build_<name>` or `build_marker` (etc.) method on `Node` for per-node code.
 
 ### Adding custom operand types
 
@@ -306,9 +367,11 @@ end
 Invoke with:
 
 ```makefile
-$(GENERATED): node.def my_lang_gen.rb
-	ruby -I path/to/astro/lib -r ./my_lang_gen \
-	     -e 'ASTroGen.start([], node_def_class: MyLangNodeDef)'
+ASTROGEN = ruby -I path/to/astro/lib -r ./my_lang_gen \
+               -e 'ASTroGen.start([], node_def_class: MyLangNodeDef)'
+
+$(GENERATED): node.def path/to/astro/lib/astrogen.rb my_lang_gen.rb
+	$(ASTROGEN)
 ```
 
 ### Overriding `result_type`
@@ -356,11 +419,12 @@ ruby -r astrogen -e 'ASTroGen.start ARGV' -- [options]
   --input=FILE          Input node.def file (default: node.def)
   --output-prefix=STR   Output file prefix (default: node)
   --output-head=FILE    Header output file (default: node_head.h)
+  --output-dir=DIR      Output directory (default: current directory)
   --verbose             Enable verbose output
 ```
 
 ### Examples
 
 - `sample/calc/` — Minimal calculator (3 nodes). Good starting point.
-- `sample/naruby/` — Ruby subset with functions, variables, operators, JIT support.
-- `sample/abruby/` — Ruby subset as a CRuby C extension with classes, methods, GC integration.
+- `sample/naruby/` — Ruby subset (21 nodes) with functions, variables, operators, JIT support. Standalone C program.
+- `sample/abruby/` — Ruby subset (40+ nodes) as a CRuby C extension. Classes, methods, GC integration, builtins. Demonstrates `register_gen_task` for custom mark function generation and `@rewritable` for runtime AST node rewriting.
