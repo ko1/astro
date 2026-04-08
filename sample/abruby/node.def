@@ -750,7 +750,7 @@ node_fixnum_plus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
         return RESULT_OK(abruby_bignum_new(LONG2NUM(result)));
     }
     // Rewrite to node_integer_plus for Fixnum/Bignum mixed
-    if (SHOULD_REWRITE(n)) {
+    if (SHOULD_REWRITE(n) && n->head.kind == &kind_node_fixnum_plus) {
         NODE *ip = ALLOC_node_integer_plus(CUR_LEFT(n, node_fixnum_plus), CUR_RIGHT(n, node_fixnum_plus));
         ip->u.node_integer_plus.replaced_from = n;
         node_replace(n, ip);
@@ -803,7 +803,7 @@ node_fixnum_minus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
         if (LIKELY(FIXABLE(result))) return RESULT_OK(LONG2FIX(result));
         return RESULT_OK(abruby_bignum_new(LONG2NUM(result)));
     }
-    if (SHOULD_REWRITE(n)) {
+    if (SHOULD_REWRITE(n) && n->head.kind == &kind_node_fixnum_minus) {
         NODE *ip = ALLOC_node_integer_minus(CUR_LEFT(n, node_fixnum_minus), CUR_RIGHT(n, node_fixnum_minus));
         ip->u.node_integer_minus.replaced_from = n;
         node_replace(n, ip);
@@ -864,7 +864,7 @@ node_fixnum_mul(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
         if (FIXNUM_P(big_result)) return RESULT_OK(big_result);
         return RESULT_OK(abruby_bignum_new(big_result));
     }
-    if (SHOULD_REWRITE(n)) {
+    if (SHOULD_REWRITE(n) && n->head.kind == &kind_node_fixnum_mul) {
         NODE *ip = ALLOC_node_integer_mul(CUR_LEFT(n, node_fixnum_mul), CUR_RIGHT(n, node_fixnum_mul));
         ip->u.node_integer_mul.replaced_from = n;
         node_replace(n, ip);
@@ -933,7 +933,7 @@ node_fixnum_div(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
         if ((a ^ b) < 0 && d * b != a) d--;
         return RESULT_OK(LONG2FIX(d));
     }
-    if (SHOULD_REWRITE(n)) {
+    if (SHOULD_REWRITE(n) && n->head.kind == &kind_node_fixnum_div) {
         NODE *ip = ALLOC_node_integer_div(CUR_LEFT(n, node_fixnum_div), CUR_RIGHT(n, node_fixnum_div));
         ip->u.node_integer_div.replaced_from = n;
         node_replace(n, ip);
