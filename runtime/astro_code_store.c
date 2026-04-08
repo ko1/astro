@@ -369,8 +369,7 @@ astro_cs_disasm(NODE *n)
     char cmd[ASTRO_CS_PATH_MAX + 256];
     snprintf(cmd, sizeof(cmd),
              "objdump -d --no-show-raw-insn %s "
-             "| sed -n '/<%s>:/,/^$/p' "
-             "| grep -v 'endbr\\|nopl\\|nopw\\|cs nop\\|^$'",
+             "| sed -n '/<%s>:/,/^$/p'",
              so_path, sym_name);
 
     (void)!system(cmd);

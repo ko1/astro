@@ -65,11 +65,10 @@ loop do
     result = vm.eval_ast(ast)
 
     if disasm
-      show = entries.size > 1 ? entries.reject { |name, _| name.nil? } : entries
-      show.each do |name, node|
-        if show.size > 1
+      entries.each do |name, node|
+        if entries.size > 1
           $stdout.flush
-          puts "--- #{name} ---"
+          puts "--- #{name || '<toplevel>'} ---"
           $stdout.flush
         end
         puts vm.dump_ast(node)
