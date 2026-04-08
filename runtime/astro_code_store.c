@@ -357,7 +357,7 @@ astro_cs_reload(void)
 void
 astro_cs_disasm(NODE *n)
 {
-    if (!n || !n->head.flags.is_specialized) return;
+    if (!n) return;
 
     char sym_name[128];
     snprintf(sym_name, sizeof(sym_name), "SD_%lx",
