@@ -39,7 +39,11 @@ dispatch_info(CTX *c, NODE *n, bool end)
 #endif
 }
 
-// --- Code store (hash functions, HASH, DUMP, SPECIALIZE, sc_repo, astro_cs_*) ---
+// --- ASTro node infrastructure (hash functions, HASH, DUMP) ---
+
+#include "astro_node.c"
+
+// --- Code store (sc_repo, SPECIALIZE, astro_cs_*) ---
 
 #include "astro_code_store.c"
 
