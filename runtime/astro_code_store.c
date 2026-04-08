@@ -340,14 +340,14 @@ astro_cs_build(const char *extra_cflags)
 void
 astro_cs_reload(void)
 {
-    if (astro_cs.all_handle) {
-        dlclose(astro_cs.all_handle);
-        astro_cs.all_handle = NULL;
-    }
-
+    // Don't dlclose the old handle — previously specialized nodes may still
+    // hold function pointers into it.  Just open the new all.so alongside.
     char path[ASTRO_CS_PATH_MAX];
     astro_cs_path(path, sizeof(path), astro_cs.store_dir, "all.so");
-    astro_cs.all_handle = dlopen(path, RTLD_LAZY);
+    void *new_handle = dlopen(path, RTLD_LAZY);
+    if (new_handle) {
+        astro_cs.all_handle = new_handle;
+    }
 }
 
 // ---------------------------------------------------------------------------
