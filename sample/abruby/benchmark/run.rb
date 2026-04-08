@@ -42,9 +42,8 @@ RUNNERS = [
     cmd:  "ruby -I #{ABRUBY_DIR}/lib #{ABRUBY_DIR}/exe/abruby --plain %s",
   },
   {
-    name: 'abruby/compiled',
+    name: 'abruby/cf', # compile first
     cmd:  "ruby -I #{ABRUBY_DIR}/lib #{ABRUBY_DIR}/exe/abruby -c %s",
-    # Requires prior: ruby benchmark/compile_benchmarks.rb
   },
 ]
 
