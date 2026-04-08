@@ -6,9 +6,6 @@
 typedef struct Node NODE;
 typedef VALUE (*node_dispatcher_func_t)(CTX *c, NODE *n);
 typedef uint64_t node_hash_t;
-typedef node_hash_t (*node_hash_func_t)(NODE *n);
-typedef void (*node_specializer_func_t)(FILE *f, NODE *n, bool public_func);
-typedef void (*node_dumper_func_t)(FILE *f, NODE *n, bool online);
 
 void INIT(void);
 node_hash_t HASH(NODE *n);
@@ -22,14 +19,6 @@ void clear_hash(NODE *n);
 NODE *code_repo_find(node_hash_t h);
 NODE *code_repo_find_by_name(const char *name);
 void code_repo_add(const char *name, NODE *body, bool force_add);
-
-struct NodeKind {
-    const char *default_dispatcher_name;
-    node_dispatcher_func_t default_dispatcher;
-    node_hash_func_t hash_func;
-    node_specializer_func_t specializer;
-    node_dumper_func_t dumper;
-};
 
 struct NodeHead {
     struct NodeFlags {

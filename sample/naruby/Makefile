@@ -8,6 +8,7 @@ NODE_GENFILES=node_eval.c \
               node_dump.c \
               node_specialize.c \
               node_specialized.c \
+              node_replace.c \
               node_alloc.c \
               node_hash.c \
               node_head.h

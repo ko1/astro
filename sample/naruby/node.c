@@ -324,6 +324,7 @@ SPECIALIZED_SRC(NODE *n)
 #include "node_dump.c"
 #include "node_hash.c"
 #include "node_specialize.c"
+#include "node_replace.c"
 #include "node_alloc.c"
 
 #include "node_specialized.c"

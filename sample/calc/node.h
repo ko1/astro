@@ -3,15 +3,9 @@
 
 #include "context.h"
 
-
-void sc_repo_clear(void);
-
 typedef struct Node NODE;
 typedef VALUE (*node_dispatcher_func_t)(CTX *c, NODE *n);
 typedef uint64_t node_hash_t;
-typedef node_hash_t (*node_hash_func_t)(NODE *n);
-typedef void (*node_specializer_func_t)(FILE *f, NODE *n);
-typedef void (*node_dumper_func_t)(FILE *f, NODE *n, bool online);
 
 void INIT(void);
 node_hash_t HASH(NODE *n);
@@ -21,17 +15,6 @@ NODE *OPTIMIZE(NODE *n);
 void SPECIALIZE(FILE *fp, NODE *n);
 
 #define DISPATCHER_NAME(n) (n->head.flags.no_inline) ? (#n "->head.dispatcher") : (n->head.dispatcher_name)
-
-NODE *code_repo_fnid(node_hash_t h);
-void code_repo_add(const char *name, NODE *body, bool _);
-
-struct NodeKind {
-    const char *default_dispatcher_name;
-    node_dispatcher_func_t default_dispatcher;
-    node_hash_func_t hash_func;
-    node_specializer_func_t specializer;
-    node_dumper_func_t dumper;
-};
 
 struct NodeHead {
     struct NodeFlags {
@@ -51,6 +34,11 @@ struct NodeHead {
 
     // use in exec
     node_dispatcher_func_t dispatcher;
+
+    enum jit_status {
+        JIT_STATUS_Unknown,
+    } jit_status;
+    unsigned int dispatch_cnt;
 };
 
 #include "node_head.h"
