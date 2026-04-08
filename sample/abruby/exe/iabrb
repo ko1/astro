@@ -21,8 +21,8 @@ initial_exprs = []
 opt = OptionParser.new
 opt.banner = "Usage: iabrb [options]"
 opt.on('-e CODE', 'evaluate CODE before entering REPL') { |v| initial_exprs << v }
-opt.on('--compile', 'compile each input before execution') { compile = true }
-opt.on('--disasm', 'show disassembly after compile (implies --compile)') { disasm = true; compile = true }
+opt.on('--compile-first', 'compile each input before execution') { compile = true }
+opt.on('--disasm', 'show disassembly after compile (implies --compile-first)') { disasm = true; compile = true }
 opt.on('-v', '--version', 'show version') { puts "iabrb #{AbRuby::VERSION}"; exit }
 opt.parse!(ARGV)
 
