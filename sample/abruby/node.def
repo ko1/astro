@@ -504,7 +504,7 @@ node_class_def(CTX * restrict c, NODE * restrict n, const char *name, const char
 }
 
 static __attribute__((noinline)) RESULT
-method_missing_dispatch(CTX *c, NODE *n, struct abruby_class *klass,
+method_missing_dispatch(CTX * restrict c, NODE * restrict n, struct abruby_class *klass,
                         const char *name, VALUE recv_val,
                         uint32_t params_cnt, uint32_t arg_index)
 {
@@ -622,7 +622,7 @@ found:
 
 // Fallback: general method call for arithmetic operators
 static RESULT
-node_arith_fallback(CTX *c, NODE *n, VALUE lv, VALUE rv, const char *op)
+node_arith_fallback(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, const char *op)
 {
     struct abruby_class *klass = AB_CLASS_OF(lv);
     struct abruby_method *method = abruby_class_find_method(klass, op);
@@ -747,6 +747,18 @@ node_plus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
     return node_arith_fallback(c, n, lv, rv, "+");
 }
 
+static __attribute__((noinline, cold)) RESULT
+node_fixnum_plus_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
+{
+    if (SHOULD_REWRITE(n) && n->head.kind == &kind_node_fixnum_plus) {
+        NODE *ip = ALLOC_node_integer_plus(CUR_LEFT(n, node_fixnum_plus), CUR_RIGHT(n, node_fixnum_plus));
+        ip->u.node_integer_plus.replaced_from = n;
+        node_replace(n, ip);
+        return EVAL(c, ip);
+    }
+    return node_arith_fallback(c, n, lv, rv, "+");
+}
+
 NODE_DEF @rewritable
 node_fixnum_plus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
@@ -757,14 +769,7 @@ node_fixnum_plus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
         if (LIKELY(FIXABLE(result))) return RESULT_OK(LONG2FIX(result));
         return RESULT_OK(abruby_bignum_new(LONG2NUM(result)));
     }
-    // Rewrite to node_integer_plus for Fixnum/Bignum mixed
-    if (SHOULD_REWRITE(n) && n->head.kind == &kind_node_fixnum_plus) {
-        NODE *ip = ALLOC_node_integer_plus(CUR_LEFT(n, node_fixnum_plus), CUR_RIGHT(n, node_fixnum_plus));
-        ip->u.node_integer_plus.replaced_from = n;
-        node_replace(n, ip);
-        return EVAL(c, ip);
-    }
-    return node_arith_fallback(c, n, lv, rv, "+");
+    return node_fixnum_plus_slow(c, n, lv, rv);
 }
 
 NODE_DEF @rewritable
@@ -801,6 +806,18 @@ node_minus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
     return node_arith_fallback(c, n, lv, rv, "-");
 }
 
+static __attribute__((noinline, cold)) RESULT
+node_fixnum_minus_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
+{
+    if (SHOULD_REWRITE(n) && n->head.kind == &kind_node_fixnum_minus) {
+        NODE *ip = ALLOC_node_integer_minus(CUR_LEFT(n, node_fixnum_minus), CUR_RIGHT(n, node_fixnum_minus));
+        ip->u.node_integer_minus.replaced_from = n;
+        node_replace(n, ip);
+        return EVAL(c, ip);
+    }
+    return node_arith_fallback(c, n, lv, rv, "-");
+}
+
 NODE_DEF @rewritable
 node_fixnum_minus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
@@ -811,13 +828,7 @@ node_fixnum_minus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
         if (LIKELY(FIXABLE(result))) return RESULT_OK(LONG2FIX(result));
         return RESULT_OK(abruby_bignum_new(LONG2NUM(result)));
     }
-    if (SHOULD_REWRITE(n) && n->head.kind == &kind_node_fixnum_minus) {
-        NODE *ip = ALLOC_node_integer_minus(CUR_LEFT(n, node_fixnum_minus), CUR_RIGHT(n, node_fixnum_minus));
-        ip->u.node_integer_minus.replaced_from = n;
-        node_replace(n, ip);
-        return EVAL(c, ip);
-    }
-    return node_arith_fallback(c, n, lv, rv, "-");
+    return node_fixnum_minus_slow(c, n, lv, rv);
 }
 
 NODE_DEF @rewritable
@@ -858,6 +869,18 @@ node_mul(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
     return node_arith_fallback(c, n, lv, rv, "*");
 }
 
+static __attribute__((noinline, cold)) RESULT
+node_fixnum_mul_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
+{
+    if (SHOULD_REWRITE(n) && n->head.kind == &kind_node_fixnum_mul) {
+        NODE *ip = ALLOC_node_integer_mul(CUR_LEFT(n, node_fixnum_mul), CUR_RIGHT(n, node_fixnum_mul));
+        ip->u.node_integer_mul.replaced_from = n;
+        node_replace(n, ip);
+        return EVAL(c, ip);
+    }
+    return node_arith_fallback(c, n, lv, rv, "*");
+}
+
 NODE_DEF @rewritable
 node_fixnum_mul(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
@@ -872,13 +895,7 @@ node_fixnum_mul(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
         if (FIXNUM_P(big_result)) return RESULT_OK(big_result);
         return RESULT_OK(abruby_bignum_new(big_result));
     }
-    if (SHOULD_REWRITE(n) && n->head.kind == &kind_node_fixnum_mul) {
-        NODE *ip = ALLOC_node_integer_mul(CUR_LEFT(n, node_fixnum_mul), CUR_RIGHT(n, node_fixnum_mul));
-        ip->u.node_integer_mul.replaced_from = n;
-        node_replace(n, ip);
-        return EVAL(c, ip);
-    }
-    return node_arith_fallback(c, n, lv, rv, "*");
+    return node_fixnum_mul_slow(c, n, lv, rv);
 }
 
 NODE_DEF @rewritable
@@ -924,6 +941,18 @@ node_div(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
     return node_arith_fallback(c, n, lv, rv, "/");
 }
 
+static __attribute__((noinline, cold)) RESULT
+node_fixnum_div_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
+{
+    if (SHOULD_REWRITE(n) && n->head.kind == &kind_node_fixnum_div) {
+        NODE *ip = ALLOC_node_integer_div(CUR_LEFT(n, node_fixnum_div), CUR_RIGHT(n, node_fixnum_div));
+        ip->u.node_integer_div.replaced_from = n;
+        node_replace(n, ip);
+        return EVAL(c, ip);
+    }
+    return node_arith_fallback(c, n, lv, rv, "/");
+}
+
 NODE_DEF @rewritable
 node_fixnum_div(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
@@ -941,13 +970,7 @@ node_fixnum_div(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
         if ((a ^ b) < 0 && d * b != a) d--;
         return RESULT_OK(LONG2FIX(d));
     }
-    if (SHOULD_REWRITE(n) && n->head.kind == &kind_node_fixnum_div) {
-        NODE *ip = ALLOC_node_integer_div(CUR_LEFT(n, node_fixnum_div), CUR_RIGHT(n, node_fixnum_div));
-        ip->u.node_integer_div.replaced_from = n;
-        node_replace(n, ip);
-        return EVAL(c, ip);
-    }
-    return node_arith_fallback(c, n, lv, rv, "/");
+    return node_fixnum_div_slow(c, n, lv, rv);
 }
 
 NODE_DEF @rewritable
