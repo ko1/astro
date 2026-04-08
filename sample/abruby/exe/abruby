@@ -103,13 +103,16 @@ when :compile
   cs_init.()
 
   vm = AbRuby.new
+  all_entries = []
   files.each do |f|
     src = read_file.(f)
     $stderr.puts "compile: #{f}" if verbose
     ast = vm.parse(src, f)
     cs_compile.(ast, f)
+    all_entries << [f, ast]
     vm.last_entries.each do |name, body|
       cs_compile.(body, "#{f}:#{name}")
+      all_entries << ["#{f}:#{name}", body]
     end
   end
 
@@ -117,15 +120,22 @@ when :compile
   AbRuby.cs_build(RUBY_CFLAGS)
   AbRuby.cs_reload
 
+  if dump_mode == :disasm
+    all_entries.each do |label, node|
+      $stdout.flush
+      puts "--- #{label} ---"
+      $stdout.flush
+      puts vm.dump_ast(node)
+      $stdout.flush
+      AbRuby.cs_disasm(node)
+    end
+  end
+
   if run_file
     src = read_file.(run_file)
     $stderr.puts "run: #{run_file}" if verbose
     vm.current_file = run_file
     vm.eval(src)
-
-    if dump_mode == :disasm
-      # TODO: iterate specialized nodes and show disasm
-    end
   end
 
 when :pg
