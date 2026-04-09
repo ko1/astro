@@ -183,7 +183,7 @@ module ASTroGen
 
       def build_head_struct
         fields = @operands.map{ "    #{it.join};\n"}.join
-        fields += "    NODE *replaced_from;\n" if rewritable?
+
         fields = "    char _dummy;\n" if fields.empty?
         <<~C
         struct #{name}_struct {
@@ -219,9 +219,6 @@ module ASTroGen
         @option.include? '@noinline'
       end
 
-      def rewritable?
-        @option.include? '@rewritable'
-      end
 
       def build_allocator
         sname = "#{@name}_struct"
@@ -242,7 +239,7 @@ module ASTroGen
             _n->head.flags.no_inline = #{no_inline? ? true : false};
         #{@operands.map{"    _n->u.#{name}.#{it.name} = #{it.name};"}.join("\n")}
         #{@operands.map{"    if (_n->u.#{name}.#{it.name}) {_n->u.#{name}.#{it.name}->head.parent = _n;}" if it.node?}.join("\n")}
-        #{"    _n->u.#{name}.replaced_from = NULL;" if rewritable?}
+
             OPTIMIZE(_n);
             if (OPTION.record_all) code_repo_add(NULL, _n, false);
             return _n;

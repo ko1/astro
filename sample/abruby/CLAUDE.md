@@ -194,7 +194,7 @@ struct abruby_class {
 - mark 関数が klass で分岐: String→rb_str, Array→rb_ary, Hash→rb_hash, Object→ivars をマーク
 - NODE は別の `abruby_node_type` の T_DATA、`abruby_node_mark()` で子ノードをマーク
 - VALUE スタック (グローバル配列) は CTX の T_DATA ラッパー経由で `rb_gc_mark_locations` でマーク
-- NODE は `RUBY_DEFAULT_FREE` で GC sweep 時に解放される。rewrite で置換された旧ノードは、新ノードの `replaced_from` フィールド経由で mark され、C スタックからの参照が残る間も生存する
+- NODE は `RUBY_DEFAULT_FREE` で GC sweep 時に解放される
 
 ### VALUE スタック
 - グローバルな VALUE 配列 (固定サイズ 10000)
