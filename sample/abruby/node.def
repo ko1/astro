@@ -20,11 +20,6 @@
 
 // class system helpers
 
-// Interned IDs for operator methods and common names (defined in node.c)
-extern ID id_op_plus, id_op_minus, id_op_mul, id_op_div;
-extern ID id_op_lt, id_op_le, id_op_gt, id_op_ge;
-extern ID id_op_eq, id_op_mod;
-extern ID id_method_missing, id_initialize;
 
 static void
 abruby_class_add_method(struct abruby_class *klass, ID name,
@@ -563,7 +558,7 @@ method_missing_dispatch(CTX * restrict c, NODE * restrict n, struct abruby_class
                         ID name, VALUE recv_val,
                         uint32_t params_cnt, uint32_t arg_index)
 {
-    struct abruby_method *mm = abruby_class_find_method(klass, id_method_missing);
+    struct abruby_method *mm = abruby_class_find_method(klass, rb_intern("method_missing"));
     if (!mm) {
         rb_raise(rb_eNoMethodError, "undefined method '%s' for %s", rb_id2name(name), rb_id2name(klass->name));
     }
@@ -647,7 +642,7 @@ node_arith_fallback(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, ID 
     struct abruby_class *klass = AB_CLASS_OF(lv);
     struct abruby_method *method = abruby_class_find_method(klass, op);
     if (!method) {
-        method = abruby_class_find_method(klass, id_method_missing);
+        method = abruby_class_find_method(klass, rb_intern("method_missing"));
         if (!method) {
             rb_raise(rb_eNoMethodError, "undefined method '%s' for %s", rb_id2name(op), rb_id2name(klass->name));
         }
@@ -733,7 +728,7 @@ node_plus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    return node_arith_fallback(c, n, lv, rv, id_op_plus);
+    return node_arith_fallback(c, n, lv, rv, rb_intern("+"));
 }
 
 static __attribute__((noinline, cold)) RESULT
@@ -745,7 +740,7 @@ node_fixnum_plus_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
     }
     else {
         swap_dispatcher(n, &kind_node_plus);
-        return node_arith_fallback(c, n, lv, rv, id_op_plus);
+        return node_arith_fallback(c, n, lv, rv, rb_intern("+"));
     }
 }
 
@@ -781,7 +776,7 @@ node_integer_plus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
     if (ab_is_integer(lv) && ab_is_integer(rv)) {
         return integer_plus_calc(lv, rv);
     }
-    return node_arith_fallback(c, n, lv, rv, id_op_plus);
+    return node_arith_fallback(c, n, lv, rv, rb_intern("+"));
 }
 
 NODE_DEF
@@ -789,7 +784,7 @@ node_minus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    return node_arith_fallback(c, n, lv, rv, id_op_minus);
+    return node_arith_fallback(c, n, lv, rv, rb_intern("-"));
 }
 
 static __attribute__((noinline, cold)) RESULT
@@ -801,7 +796,7 @@ node_fixnum_minus_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
     }
     else {
         swap_dispatcher(n, &kind_node_minus);
-        return node_arith_fallback(c, n, lv, rv, id_op_minus);
+        return node_arith_fallback(c, n, lv, rv, rb_intern("-"));
     }
 }
 
@@ -837,7 +832,7 @@ node_integer_minus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
     if (ab_is_integer(lv) && ab_is_integer(rv)) {
         return integer_minus_calc(lv, rv);
     }
-    return node_arith_fallback(c, n, lv, rv, id_op_minus);
+    return node_arith_fallback(c, n, lv, rv, rb_intern("-"));
 }
 
 NODE_DEF
@@ -845,7 +840,7 @@ node_mul(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    return node_arith_fallback(c, n, lv, rv, id_op_mul);
+    return node_arith_fallback(c, n, lv, rv, rb_intern("*"));
 }
 
 static __attribute__((noinline, cold)) RESULT
@@ -857,7 +852,7 @@ node_fixnum_mul_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
     }
     else {
         swap_dispatcher(n, &kind_node_mul);
-        return node_arith_fallback(c, n, lv, rv, id_op_mul);
+        return node_arith_fallback(c, n, lv, rv, rb_intern("*"));
     }
 }
 
@@ -896,7 +891,7 @@ node_integer_mul(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
     if (ab_is_integer(lv) && ab_is_integer(rv)) {
         return integer_mul_calc(lv, rv);
     }
-    return node_arith_fallback(c, n, lv, rv, id_op_mul);
+    return node_arith_fallback(c, n, lv, rv, rb_intern("*"));
 }
 
 NODE_DEF
@@ -904,7 +899,7 @@ node_div(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    return node_arith_fallback(c, n, lv, rv, id_op_div);
+    return node_arith_fallback(c, n, lv, rv, rb_intern("/"));
 }
 
 static __attribute__((noinline, cold)) RESULT
@@ -916,7 +911,7 @@ node_fixnum_div_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
     }
     else {
         swap_dispatcher(n, &kind_node_div);
-        return node_arith_fallback(c, n, lv, rv, id_op_div);
+        return node_arith_fallback(c, n, lv, rv, rb_intern("/"));
     }
 }
 
@@ -960,7 +955,7 @@ node_integer_div(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
     if (ab_is_integer(lv) && ab_is_integer(rv)) {
         return integer_div_calc(lv, rv);
     }
-    return node_arith_fallback(c, n, lv, rv, id_op_div);
+    return node_arith_fallback(c, n, lv, rv, rb_intern("/"));
 }
 
 // === Comparison rewrite (type-specific nodes) ===
@@ -988,14 +983,14 @@ node_lt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    return node_arith_fallback(c, n, lv, rv, id_op_lt);
+    return node_arith_fallback(c, n, lv, rv, rb_intern("<"));
 }
 
 static __attribute__((noinline, cold)) RESULT
 node_fixnum_lt_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
 {
     swap_dispatcher(n, &kind_node_lt);
-    return node_arith_fallback(c, n, lv, rv, id_op_lt);
+    return node_arith_fallback(c, n, lv, rv, rb_intern("<"));
 }
 
 NODE_DEF
@@ -1014,14 +1009,14 @@ node_le(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    return node_arith_fallback(c, n, lv, rv, id_op_le);
+    return node_arith_fallback(c, n, lv, rv, rb_intern("<="));
 }
 
 static __attribute__((noinline, cold)) RESULT
 node_fixnum_le_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
 {
     swap_dispatcher(n, &kind_node_le);
-    return node_arith_fallback(c, n, lv, rv, id_op_le);
+    return node_arith_fallback(c, n, lv, rv, rb_intern("<="));
 }
 
 NODE_DEF
@@ -1040,14 +1035,14 @@ node_gt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    return node_arith_fallback(c, n, lv, rv, id_op_gt);
+    return node_arith_fallback(c, n, lv, rv, rb_intern(">"));
 }
 
 static __attribute__((noinline, cold)) RESULT
 node_fixnum_gt_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
 {
     swap_dispatcher(n, &kind_node_gt);
-    return node_arith_fallback(c, n, lv, rv, id_op_gt);
+    return node_arith_fallback(c, n, lv, rv, rb_intern(">"));
 }
 
 NODE_DEF
@@ -1066,14 +1061,14 @@ node_ge(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    return node_arith_fallback(c, n, lv, rv, id_op_ge);
+    return node_arith_fallback(c, n, lv, rv, rb_intern(">="));
 }
 
 static __attribute__((noinline, cold)) RESULT
 node_fixnum_ge_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
 {
     swap_dispatcher(n, &kind_node_ge);
-    return node_arith_fallback(c, n, lv, rv, id_op_ge);
+    return node_arith_fallback(c, n, lv, rv, rb_intern(">="));
 }
 
 NODE_DEF
@@ -1108,14 +1103,14 @@ node_eq(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    return node_arith_fallback(c, n, lv, rv, id_op_eq);
+    return node_arith_fallback(c, n, lv, rv, rb_intern("=="));
 }
 
 static __attribute__((noinline, cold)) RESULT
 node_fixnum_eq_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
 {
     swap_dispatcher(n, &kind_node_eq);
-    return node_arith_fallback(c, n, lv, rv, id_op_eq);
+    return node_arith_fallback(c, n, lv, rv, rb_intern("=="));
 }
 
 NODE_DEF
@@ -1135,7 +1130,7 @@ node_neq(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
     // != is defined as !(==), fallback through ==
-    RESULT eq = node_arith_fallback(c, n, lv, rv, id_op_eq);
+    RESULT eq = node_arith_fallback(c, n, lv, rv, rb_intern("=="));
     if (eq.state != RESULT_NORMAL) return eq;
     return RESULT_OK(RTEST(eq.value) ? Qfalse : Qtrue);
 }
@@ -1145,7 +1140,7 @@ node_fixnum_neq_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
 {
     swap_dispatcher(n, &kind_node_neq);
     // != is defined as !(==), fallback through ==
-    RESULT eq = node_arith_fallback(c, n, lv, rv, id_op_eq);
+    RESULT eq = node_arith_fallback(c, n, lv, rv, rb_intern("=="));
     if (eq.state != RESULT_NORMAL) return eq;
     return RESULT_OK(RTEST(eq.value) ? Qfalse : Qtrue);
 }
@@ -1166,14 +1161,14 @@ node_mod(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    return node_arith_fallback(c, n, lv, rv, id_op_mod);
+    return node_arith_fallback(c, n, lv, rv, rb_intern("%"));
 }
 
 static __attribute__((noinline, cold)) RESULT
 node_fixnum_mod_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
 {
     swap_dispatcher(n, &kind_node_mod);
-    return node_arith_fallback(c, n, lv, rv, id_op_mod);
+    return node_arith_fallback(c, n, lv, rv, rb_intern("%"));
 }
 
 NODE_DEF

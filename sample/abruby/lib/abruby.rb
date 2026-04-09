@@ -379,9 +379,10 @@ class AbRuby
 
       when Prism::ClassNode
         name = node.constant_path.name.to_s
-        super_expr = node.superclass ? transduce(node.superclass) : nil
+        super_expr = node.superclass ? transduce(node.superclass) : AbRuby.alloc_node_nil
         body = node.body ? transduce(node.body) : AbRuby.alloc_node_nil
         @entries << ["class:#{name}", body]
+        @entries << ["class:#{name}:super", super_expr]
         AbRuby.alloc_node_class_def(name, super_expr, body)
 
       when Prism::MultiWriteNode

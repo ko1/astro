@@ -8,7 +8,6 @@ typedef RESULT (*node_dispatcher_func_t)(CTX *c, NODE *n);
 typedef uint64_t node_hash_t;
 
 void INIT(void);
-void init_interned_ids(void);
 node_hash_t HASH(NODE *n);
 void DUMP(FILE *fp, NODE *n, bool oneline);
 NODE *OPTIMIZE(NODE *n);

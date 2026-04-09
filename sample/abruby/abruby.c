@@ -762,7 +762,7 @@ static VALUE
 rb_alloc_node_class_def(VALUE self, VALUE name, VALUE super_expr, VALUE body)
 {
     ID cname = rb_intern_str(name);
-    NODE *super_node = NIL_P(super_expr) ? ALLOC_node_nil() : unwrap_node(super_expr);
+    NODE *super_node = unwrap_node(super_expr);
     return wrap_node(ALLOC_node_class_def(cname, super_node, unwrap_node(body)));
 }
 
@@ -1233,7 +1233,6 @@ Init_abruby(void)
     ab_nil_class_body.name = rb_intern("NilClass");
     ab_runtime_error_class_body.name = rb_intern("RuntimeError");
 
-    init_interned_ids();
     INIT();
     init_builtin_methods();
 
