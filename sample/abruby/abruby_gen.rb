@@ -11,7 +11,7 @@ class AbRubyNodeDef < ASTroGen::NodeDef
       def hash_call(val)
         case @type
         when 'ID'
-          "(#{val} ? hash_cstr(rb_id2name(#{val})) : hash_uint32(0))"
+          "hash_cstr(rb_id2name(#{val}))"
         else
           super
         end
@@ -20,7 +20,7 @@ class AbRubyNodeDef < ASTroGen::NodeDef
       def build_dumper(name)
         case @type
         when 'ID'
-          "        fprintf(fp, \"%s\", #{id_to_name("n->u.#{name}.#{self.name}")});"
+          "        fprintf(fp, \"%s\", rb_id2name(n->u.#{name}.#{self.name}));"
         else
           super
         end
@@ -29,19 +29,11 @@ class AbRubyNodeDef < ASTroGen::NodeDef
       def build_specializer(name)
         case @type
         when 'ID'
-          field = "n->u.#{name}.#{self.name}"
-          arg = "    if (#{field}) fprintf(fp, \"        rb_intern(\\\"%s\\\")\", rb_id2name(#{field}));\n" \
-                "    else fprintf(fp, \"        (ID)0\");"
+          arg = "    fprintf(fp, \"        rb_intern(\\\"%s\\\")\", rb_id2name(n->u.#{name}.#{self.name}));"
           return nil, arg
         else
           super
         end
-      end
-
-      private
-
-      def id_to_name(expr)
-        "(#{expr} ? rb_id2name(#{expr}) : \"\")"
       end
     end
 
