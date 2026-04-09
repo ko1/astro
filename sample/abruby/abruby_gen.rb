@@ -10,7 +10,7 @@ class AbRubyNodeDef < ASTroGen::NodeDef
     def result_type = "RESULT"
 
     def alloc_dispatcher_expr
-      if no_inline?
+      if no_inline? || rewritable?
         "DISPATCH_#{@name}"
       else
         "(OPTION.compiled_only ? NULL : DISPATCH_#{@name})"

@@ -503,6 +503,52 @@ node_class_def(CTX * restrict c, NODE * restrict n, const char *name, const char
     return RESULT_OK(abruby_wrap_class(klass));
 }
 
+// Common method dispatch: push frame, call method, pop frame.
+// Shared by node_method_call, node_arith_fallback, and node_super.
+static RESULT
+dispatch_method_with_klass(CTX * restrict c, NODE * restrict call_site,
+                           VALUE recv, struct abruby_class *klass,
+                           struct abruby_method *method,
+                           unsigned int argc, VALUE *argv)
+{
+    if (c->current_frame && c->current_frame->method)
+        c->current_frame->node = call_site;
+
+    struct abruby_frame frame;
+    frame.prev = c->current_frame;
+    frame.method = method;
+    frame.klass = klass;
+    c->current_frame = &frame;
+
+    RESULT r;
+    if (method->type == ABRUBY_METHOD_CFUNC) {
+        r = method->u.cfunc.func(c, recv, argc, argv);
+    } else {
+        // Place args at a safe fp offset, then call body
+        uint32_t offset = (unsigned int)(argv - c->fp);
+        // If argv is not already on the fp stack (e.g. from arith_fallback),
+        // copy args to a safe offset
+        if (argv < c->fp || argv >= c->fp + 1024) {
+            offset = 16;
+            for (unsigned int i = 0; i < argc; i++)
+                c->fp[offset + i] = argv[i];
+        }
+        r = method_call_body(c, offset, recv, method->u.ast.body);
+    }
+
+    c->current_frame = frame.prev;
+    return r;
+}
+
+// Convenience wrapper: klass = AB_CLASS_OF(recv)
+static inline RESULT
+dispatch_method(CTX * restrict c, NODE * restrict call_site,
+                VALUE recv, struct abruby_method *method,
+                unsigned int argc, VALUE *argv)
+{
+    return dispatch_method_with_klass(c, call_site, recv, AB_CLASS_OF(recv), method, argc, argv);
+}
+
 static __attribute__((noinline)) RESULT
 method_missing_dispatch(CTX * restrict c, NODE * restrict n, struct abruby_class *klass,
                         const char *name, VALUE recv_val,
@@ -532,34 +578,12 @@ node_method_call(CTX * restrict c, NODE * restrict n, NODE *recv, const char *na
     struct abruby_class *klass = AB_CLASS_OF(recv_val);
     struct abruby_method *method = abruby_class_find_method(klass, name);
 
-    // Update parent frame's call site node (only for method frames;
-    // <main>/<top> frames keep their source_file in the union)
-    if (c->current_frame && c->current_frame->method)
-        c->current_frame->node = n;
-
-    // Push callee's frame (node left uninitialized — set by child's push)
-    struct abruby_frame frame;
-    frame.prev = c->current_frame;
-    frame.method = method;
-    frame.klass = klass;
-    c->current_frame = &frame;
-
-    RESULT r;
     if (LIKELY(method != NULL)) {
-        if (method->type == ABRUBY_METHOD_CFUNC) {
-            r = method->u.cfunc.func(c, recv_val, params_cnt, c->fp + arg_index);
-        }
-        else {
-            r = method_call_body(c, arg_index, recv_val, method->u.ast.body);
-        }
+        return dispatch_method_with_klass(c, n, recv_val, klass, method, params_cnt, c->fp + arg_index);
     }
     else {
-        r = method_missing_dispatch(c, n, klass, name, recv_val, params_cnt, arg_index);
+        return method_missing_dispatch(c, n, klass, name, recv_val, params_cnt, arg_index);
     }
-
-    // Pop call frame (always — backtrace is on exception object)
-    c->current_frame = frame.prev;
-    return r;
 }
 
 // === super ===
@@ -593,102 +617,42 @@ node_super(CTX * restrict c, NODE * restrict n, uint32_t params_cnt, uint32_t ar
         return (RESULT){exc, RESULT_RAISE};
     }
 
-    struct abruby_frame frame;
-    frame.prev = c->current_frame;
-    frame.method = method;
     // Find which class owns this method for correct super chain
-    frame.klass = c->current_frame->klass->super;
-    while (frame.klass) {
-        for (unsigned int i = 0; i < frame.klass->method_cnt; i++) {
-            if (&frame.klass->methods[i] == method) goto found;
+    struct abruby_class *klass = c->current_frame->klass->super;
+    while (klass) {
+        for (unsigned int i = 0; i < klass->method_cnt; i++) {
+            if (&klass->methods[i] == method) goto found_super;
         }
-        frame.klass = frame.klass->super;
+        klass = klass->super;
     }
-found:
-    c->current_frame = &frame;
-
-    RESULT r;
-    if (method->type == ABRUBY_METHOD_CFUNC) {
-        r = method->u.cfunc.func(c, c->self, params_cnt, c->fp + arg_index);
-    } else {
-        r = method_call_body(c, arg_index, c->self, method->u.ast.body);
-    }
-
-    c->current_frame = frame.prev;
-    return r;
+found_super:
+    return dispatch_method_with_klass(c, n, c->self, klass, method, params_cnt, c->fp + arg_index);
 }
 
 // === Arithmetic rewrite (type-specific nodes) ===
 
-// Fallback: general method call for arithmetic operators
+// Fallback: general method call for arithmetic operators (recv=lv, arg=rv)
 static __attribute__((noinline, cold)) RESULT
 node_arith_fallback(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, const char *op)
 {
     struct abruby_class *klass = AB_CLASS_OF(lv);
     struct abruby_method *method = abruby_class_find_method(klass, op);
     if (!method) {
-        // Try method_missing
         method = abruby_class_find_method(klass, "method_missing");
         if (!method) {
             rb_raise(rb_eNoMethodError, "undefined method '%s' for %s", op, klass->name);
         }
-        // Call method_missing(op_name, rv)
         VALUE args[2] = {abruby_str_new_cstr(op), rv};
-
-        if (c->current_frame && c->current_frame->method)
-            c->current_frame->node = n;
-        struct abruby_frame frame;
-        frame.prev = c->current_frame;
-        frame.method = method;
-        c->current_frame = &frame;
-
-        RESULT r;
-        if (method->type == ABRUBY_METHOD_CFUNC) {
-            r = method->u.cfunc.func(c, lv, 2, args);
-        } else {
-            uint32_t offset = 16;
-            VALUE *save_fp = c->fp;
-            c->fp = save_fp + offset;
-            c->fp[0] = args[0];
-            c->fp[1] = args[1];
-            VALUE save_self = c->self;
-            c->self = lv;
-            r = EVAL(c, method->u.ast.body);
-            c->fp = save_fp;
-            c->self = save_self;
-            if (r.state == RESULT_RETURN) r = RESULT_OK(r.value);
-        }
-        c->current_frame = frame.prev;
-        return r;
+        return dispatch_method(c, n, lv, method, 2, args);
     }
+    return dispatch_method(c, n, lv, method, 1, &rv);
+}
 
-    // Push call frame for backtrace
-    if (c->current_frame && c->current_frame->method)
-        c->current_frame->node = n;
-    struct abruby_frame frame;
-    frame.prev = c->current_frame;
-    frame.method = method;
-    c->current_frame = &frame;
-
-    RESULT r;
-    if (method->type == ABRUBY_METHOD_CFUNC) {
-        r = method->u.cfunc.func(c, lv, 1, &rv);
-    } else {
-        // For AST method: place arg at fp offset and call body
-        uint32_t offset = 16; // generous offset to avoid clobbering
-        VALUE *save_fp = c->fp;
-        c->fp = save_fp + offset;
-        c->fp[0] = rv;
-        VALUE save_self = c->self;
-        c->self = lv;
-        r = EVAL(c, method->u.ast.body);
-        c->fp = save_fp;
-        c->self = save_self;
-        if (r.state == RESULT_RETURN) r = RESULT_OK(r.value);
-    }
-
-    c->current_frame = frame.prev;
-    return r;
+// Integer arithmetic helper (works for both fixnum and bignum)
+static inline bool
+ab_is_integer(VALUE v)
+{
+    return FIXNUM_P(v) || AB_CLASS_OF(v) == ab_integer_class;
 }
 
 // Forward declarations for cross-referencing dispatchers
@@ -718,6 +682,31 @@ extern const struct NodeKind kind_node_div;
 extern const struct NodeKind kind_node_fixnum_div;
 extern const struct NodeKind kind_node_integer_div;
 
+// Integer calc helpers (used by fixnum_*_slow and integer_* nodes)
+static inline RESULT
+integer_plus_calc(VALUE lv, VALUE rv)
+{
+    return RESULT_OK(AB_NUM_WRAP(rb_funcall(AB_INT_UNWRAP(lv), rb_intern("+"), 1, AB_INT_UNWRAP(rv))));
+}
+
+static inline RESULT
+integer_minus_calc(VALUE lv, VALUE rv)
+{
+    return RESULT_OK(AB_NUM_WRAP(rb_funcall(AB_INT_UNWRAP(lv), rb_intern("-"), 1, AB_INT_UNWRAP(rv))));
+}
+
+static inline RESULT
+integer_mul_calc(VALUE lv, VALUE rv)
+{
+    return RESULT_OK(AB_NUM_WRAP(rb_funcall(AB_INT_UNWRAP(lv), rb_intern("*"), 1, AB_INT_UNWRAP(rv))));
+}
+
+static inline RESULT
+integer_div_calc(VALUE lv, VALUE rv)
+{
+    return RESULT_OK(AB_NUM_WRAP(rb_funcall(AB_INT_UNWRAP(lv), rb_intern("/"), 1, AB_INT_UNWRAP(rv))));
+}
+
 // Helper: re-read current children from node after EVAL_ARG.
 // Children may have been rewritten to type-specific nodes during evaluation,
 // which updates the parent's child field via node_replace.
@@ -729,34 +718,41 @@ extern const struct NodeKind kind_node_integer_div;
 // Arithmetic/comparison nodes always have a parent when live in the tree.
 #define SHOULD_REWRITE(n) ((n)->head.parent != NULL)
 
+// Rewrite helper: rewrite n to target kind if not already rewritten
+static inline void
+try_rewrite_binop(NODE *n, const struct NodeKind *target_kind,
+                  NODE *(*alloc_func)(NODE *, NODE *),
+                  NODE *left, NODE *right)
+{
+    if (SHOULD_REWRITE(n) && n->head.kind != target_kind) {
+        NODE *sp = alloc_func(left, right);
+        sp->u.node_fixnum_plus.replaced_from = n; // same offset for all rewritable binops
+        node_replace(n, sp);
+    }
+}
+
+// node_plus: generic fallback (method dispatch via "+")
 NODE_DEF
 node_plus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
-        if (SHOULD_REWRITE(n)) {
-            NODE *sp = ALLOC_node_fixnum_plus(CUR_LEFT(n, node_plus), CUR_RIGHT(n, node_plus));
-            sp->u.node_fixnum_plus.replaced_from = n;
-            node_replace(n, sp);
-        }
-        long result = FIX2LONG(lv) + FIX2LONG(rv);
-        if (LIKELY(FIXABLE(result))) return RESULT_OK(LONG2FIX(result));
-        return RESULT_OK(abruby_bignum_new(LONG2NUM(result)));
-    }
     return node_arith_fallback(c, n, lv, rv, "+");
 }
 
 static __attribute__((noinline, cold)) RESULT
 node_fixnum_plus_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
 {
-    if (SHOULD_REWRITE(n) && n->head.kind == &kind_node_fixnum_plus) {
-        NODE *ip = ALLOC_node_integer_plus(CUR_LEFT(n, node_fixnum_plus), CUR_RIGHT(n, node_fixnum_plus));
-        ip->u.node_integer_plus.replaced_from = n;
-        node_replace(n, ip);
-        return EVAL(c, ip);
+    if (ab_is_integer(lv) && ab_is_integer(rv)) {
+        try_rewrite_binop(n, &kind_node_integer_plus, ALLOC_node_integer_plus,
+                          CUR_LEFT(n, node_fixnum_plus), CUR_RIGHT(n, node_fixnum_plus));
+        return integer_plus_calc(lv, rv);
     }
-    return node_arith_fallback(c, n, lv, rv, "+");
+    else {
+        try_rewrite_binop(n, &kind_node_plus, ALLOC_node_plus,
+                          CUR_LEFT(n, node_fixnum_plus), CUR_RIGHT(n, node_fixnum_plus));
+        return node_arith_fallback(c, n, lv, rv, "+");
+    }
 }
 
 static __attribute__((noinline, cold)) RESULT
@@ -788,9 +784,8 @@ node_integer_plus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
         long result = FIX2LONG(lv) + FIX2LONG(rv);
         if (LIKELY(FIXABLE(result))) return RESULT_OK(LONG2FIX(result));
     }
-    if ((FIXNUM_P(lv) || AB_CLASS_OF(lv) == ab_integer_class) &&
-        (FIXNUM_P(rv) || AB_CLASS_OF(rv) == ab_integer_class)) {
-        return RESULT_OK(AB_NUM_WRAP(rb_funcall(AB_INT_UNWRAP(lv), rb_intern("+"), 1, AB_INT_UNWRAP(rv))));
+    if (ab_is_integer(lv) && ab_is_integer(rv)) {
+        return integer_plus_calc(lv, rv);
     }
     return node_arith_fallback(c, n, lv, rv, "+");
 }
@@ -800,29 +795,22 @@ node_minus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
-        if (SHOULD_REWRITE(n)) {
-            NODE *sp = ALLOC_node_fixnum_minus(CUR_LEFT(n, node_minus), CUR_RIGHT(n, node_minus));
-            sp->u.node_fixnum_minus.replaced_from = n;
-            node_replace(n, sp);
-        }
-        long result = FIX2LONG(lv) - FIX2LONG(rv);
-        if (LIKELY(FIXABLE(result))) return RESULT_OK(LONG2FIX(result));
-        return RESULT_OK(abruby_bignum_new(LONG2NUM(result)));
-    }
     return node_arith_fallback(c, n, lv, rv, "-");
 }
 
 static __attribute__((noinline, cold)) RESULT
 node_fixnum_minus_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
 {
-    if (SHOULD_REWRITE(n) && n->head.kind == &kind_node_fixnum_minus) {
-        NODE *ip = ALLOC_node_integer_minus(CUR_LEFT(n, node_fixnum_minus), CUR_RIGHT(n, node_fixnum_minus));
-        ip->u.node_integer_minus.replaced_from = n;
-        node_replace(n, ip);
-        return EVAL(c, ip);
+    if (ab_is_integer(lv) && ab_is_integer(rv)) {
+        try_rewrite_binop(n, &kind_node_integer_minus, ALLOC_node_integer_minus,
+                          CUR_LEFT(n, node_fixnum_minus), CUR_RIGHT(n, node_fixnum_minus));
+        return integer_minus_calc(lv, rv);
     }
-    return node_arith_fallback(c, n, lv, rv, "-");
+    else {
+        try_rewrite_binop(n, &kind_node_minus, ALLOC_node_minus,
+                          CUR_LEFT(n, node_fixnum_minus), CUR_RIGHT(n, node_fixnum_minus));
+        return node_arith_fallback(c, n, lv, rv, "-");
+    }
 }
 
 static __attribute__((noinline, cold)) RESULT
@@ -854,9 +842,8 @@ node_integer_minus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
         long result = FIX2LONG(lv) - FIX2LONG(rv);
         if (LIKELY(FIXABLE(result))) return RESULT_OK(LONG2FIX(result));
     }
-    if ((FIXNUM_P(lv) || AB_CLASS_OF(lv) == ab_integer_class) &&
-        (FIXNUM_P(rv) || AB_CLASS_OF(rv) == ab_integer_class)) {
-        return RESULT_OK(AB_NUM_WRAP(rb_funcall(AB_INT_UNWRAP(lv), rb_intern("-"), 1, AB_INT_UNWRAP(rv))));
+    if (ab_is_integer(lv) && ab_is_integer(rv)) {
+        return integer_minus_calc(lv, rv);
     }
     return node_arith_fallback(c, n, lv, rv, "-");
 }
@@ -866,41 +853,28 @@ node_mul(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
-        if (SHOULD_REWRITE(n)) {
-            NODE *sp = ALLOC_node_fixnum_mul(CUR_LEFT(n, node_mul), CUR_RIGHT(n, node_mul));
-            sp->u.node_fixnum_mul.replaced_from = n;
-            node_replace(n, sp);
-        }
-        long a = FIX2LONG(lv), b = FIX2LONG(rv);
-        long result;
-        if (LIKELY(!__builtin_mul_overflow(a, b, &result) && FIXABLE(result)))
-            return RESULT_OK(LONG2FIX(result));
-        VALUE big_result = rb_funcall(LONG2NUM(a), rb_intern("*"), 1, LONG2NUM(b));
-        if (FIXNUM_P(big_result)) return RESULT_OK(big_result);
-        return RESULT_OK(abruby_bignum_new(big_result));
-    }
     return node_arith_fallback(c, n, lv, rv, "*");
 }
 
 static __attribute__((noinline, cold)) RESULT
 node_fixnum_mul_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
 {
-    if (SHOULD_REWRITE(n) && n->head.kind == &kind_node_fixnum_mul) {
-        NODE *ip = ALLOC_node_integer_mul(CUR_LEFT(n, node_fixnum_mul), CUR_RIGHT(n, node_fixnum_mul));
-        ip->u.node_integer_mul.replaced_from = n;
-        node_replace(n, ip);
-        return EVAL(c, ip);
+    if (ab_is_integer(lv) && ab_is_integer(rv)) {
+        try_rewrite_binop(n, &kind_node_integer_mul, ALLOC_node_integer_mul,
+                          CUR_LEFT(n, node_fixnum_mul), CUR_RIGHT(n, node_fixnum_mul));
+        return integer_mul_calc(lv, rv);
     }
-    return node_arith_fallback(c, n, lv, rv, "*");
+    else {
+        try_rewrite_binop(n, &kind_node_mul, ALLOC_node_mul,
+                          CUR_LEFT(n, node_fixnum_mul), CUR_RIGHT(n, node_fixnum_mul));
+        return node_arith_fallback(c, n, lv, rv, "*");
+    }
 }
 
 static __attribute__((noinline, cold)) RESULT
 node_fixnum_mul_overflow(long a, long b)
 {
-    VALUE big_result = rb_funcall(LONG2NUM(a), rb_intern("*"), 1, LONG2NUM(b));
-    if (FIXNUM_P(big_result)) return RESULT_OK(big_result);
-    return RESULT_OK(abruby_bignum_new(big_result));
+    return integer_mul_calc(LONG2FIX(a), LONG2FIX(b));
 }
 
 NODE_DEF @rewritable
@@ -929,9 +903,8 @@ node_integer_mul(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
         if (LIKELY(!__builtin_mul_overflow(a, b, &result) && FIXABLE(result)))
             return RESULT_OK(LONG2FIX(result));
     }
-    if ((FIXNUM_P(lv) || AB_CLASS_OF(lv) == ab_integer_class) &&
-        (FIXNUM_P(rv) || AB_CLASS_OF(rv) == ab_integer_class)) {
-        return RESULT_OK(AB_NUM_WRAP(rb_funcall(AB_INT_UNWRAP(lv), rb_intern("*"), 1, AB_INT_UNWRAP(rv))));
+    if (ab_is_integer(lv) && ab_is_integer(rv)) {
+        return integer_mul_calc(lv, rv);
     }
     return node_arith_fallback(c, n, lv, rv, "*");
 }
@@ -941,36 +914,22 @@ node_div(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
-        long b = FIX2LONG(rv);
-        if (UNLIKELY(b == 0)) {
-            VALUE exc = abruby_exception_new(c, c->current_frame->prev,
-                abruby_str_new_cstr("divided by 0"));
-            return (RESULT){exc, RESULT_RAISE};
-        }
-        if (SHOULD_REWRITE(n)) {
-            NODE *sp = ALLOC_node_fixnum_div(CUR_LEFT(n, node_div), CUR_RIGHT(n, node_div));
-            sp->u.node_fixnum_div.replaced_from = n;
-            node_replace(n, sp);
-        }
-        long a = FIX2LONG(lv);
-        long d = a / b;
-        if ((a ^ b) < 0 && d * b != a) d--;
-        return RESULT_OK(LONG2FIX(d));
-    }
     return node_arith_fallback(c, n, lv, rv, "/");
 }
 
 static __attribute__((noinline, cold)) RESULT
 node_fixnum_div_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
 {
-    if (SHOULD_REWRITE(n) && n->head.kind == &kind_node_fixnum_div) {
-        NODE *ip = ALLOC_node_integer_div(CUR_LEFT(n, node_fixnum_div), CUR_RIGHT(n, node_fixnum_div));
-        ip->u.node_integer_div.replaced_from = n;
-        node_replace(n, ip);
-        return EVAL(c, ip);
+    if (ab_is_integer(lv) && ab_is_integer(rv)) {
+        try_rewrite_binop(n, &kind_node_integer_div, ALLOC_node_integer_div,
+                          CUR_LEFT(n, node_fixnum_div), CUR_RIGHT(n, node_fixnum_div));
+        return integer_div_calc(lv, rv);
     }
-    return node_arith_fallback(c, n, lv, rv, "/");
+    else {
+        try_rewrite_binop(n, &kind_node_div, ALLOC_node_div,
+                          CUR_LEFT(n, node_fixnum_div), CUR_RIGHT(n, node_fixnum_div));
+        return node_arith_fallback(c, n, lv, rv, "/");
+    }
 }
 
 NODE_DEF @rewritable
@@ -1010,9 +969,8 @@ node_integer_div(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
         if ((a ^ b) < 0 && d * b != a) d--;
         return RESULT_OK(LONG2FIX(d));
     }
-    if ((FIXNUM_P(lv) || AB_CLASS_OF(lv) == ab_integer_class) &&
-        (FIXNUM_P(rv) || AB_CLASS_OF(rv) == ab_integer_class)) {
-        return RESULT_OK(AB_NUM_WRAP(rb_funcall(AB_INT_UNWRAP(lv), rb_intern("/"), 1, AB_INT_UNWRAP(rv))));
+    if (ab_is_integer(lv) && ab_is_integer(rv)) {
+        return integer_div_calc(lv, rv);
     }
     return node_arith_fallback(c, n, lv, rv, "/");
 }
