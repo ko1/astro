@@ -66,7 +66,7 @@ static RESULT ab_range_to_a(CTX *c, VALUE self, unsigned int argc, VALUE *argv) 
 }
 
 static RESULT ab_range_eq(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
-    if (AB_CLASS_OF(argv[0]) != ab_range_class) return RESULT_OK(Qfalse);
+    if (!AB_CLASS_P(argv[0], ab_range_class)) return RESULT_OK(Qfalse);
     struct abruby_range *a = RRANGE(self);
     struct abruby_range *b = RRANGE(argv[0]);
     if (a->exclude_end != b->exclude_end) return RESULT_OK(Qfalse);

@@ -247,6 +247,8 @@ AB_CLASS_OF(VALUE obj)
     return ((struct abruby_header *)RTYPEDDATA_GET_DATA(obj))->klass;
 }
 
+#define AB_CLASS_P(obj, klass) (AB_CLASS_OF(obj) == (klass))
+
 #define ABRUBY_GVAR_MAX 64
 
 struct abruby_gvar_table {

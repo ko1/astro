@@ -23,11 +23,11 @@ static RESULT ab_string_mul(CTX *c, VALUE self, unsigned int argc, VALUE *argv) 
     return RESULT_OK(abruby_str_new(result));
 }
 static RESULT ab_string_eq(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
-    if (AB_CLASS_OF(argv[0]) != ab_string_class) return RESULT_OK(Qfalse);
+    if (!AB_CLASS_P(argv[0], ab_string_class)) return RESULT_OK(Qfalse);
     return RESULT_OK(rb_str_equal(RSTR(self), RSTR(argv[0])));
 }
 static RESULT ab_string_neq(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
-    if (AB_CLASS_OF(argv[0]) != ab_string_class) return RESULT_OK(Qtrue);
+    if (!AB_CLASS_P(argv[0], ab_string_class)) return RESULT_OK(Qtrue);
     return RESULT_OK(rb_str_equal(RSTR(self), RSTR(argv[0])) == Qtrue ? Qfalse : Qtrue);
 }
 static RESULT ab_string_lt(CTX *c, VALUE self, unsigned int argc, VALUE *argv) { return RESULT_OK(rb_str_cmp(RSTR(self), RSTR(argv[0])) < 0 ? Qtrue : Qfalse); }

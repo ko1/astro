@@ -35,7 +35,7 @@ static RESULT ab_regexp_match(CTX *c, VALUE self, unsigned int argc, VALUE *argv
 }
 
 static RESULT ab_regexp_eq(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
-    if (AB_CLASS_OF(argv[0]) != ab_regexp_class) return RESULT_OK(Qfalse);
+    if (!AB_CLASS_P(argv[0], ab_regexp_class)) return RESULT_OK(Qfalse);
     VALUE a = RREGEXP_VAL(self);
     VALUE b = RREGEXP_VAL(argv[0]);
     return RESULT_OK(rb_funcall(a, rb_intern("=="), 1, b));
