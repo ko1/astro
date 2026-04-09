@@ -1134,6 +1134,27 @@ rb_astro_set_verbose(VALUE self, VALUE val)
     return val;
 }
 
+// AbRuby.compiled_only = bool — set before parsing; non-noinline nodes get NULL dispatcher
+static VALUE
+rb_astro_set_compiled_only(VALUE self, VALUE val)
+{
+    OPTION.compiled_only = RTEST(val);
+    return val;
+}
+
+// AbRuby.verify_compiled(node) — check a node's top-level is specialized.
+// Child nodes are called directly by the SD function (not via default dispatcher),
+// so verifying the top entry node is sufficient.
+static VALUE
+rb_astro_verify_compiled(VALUE self, VALUE node_val)
+{
+    NODE *n = DATA_PTR(node_val);
+    if (!n->head.flags.no_inline && !n->head.flags.is_specialized) {
+        return rb_str_new_cstr(n->head.kind->default_dispatcher_name);
+    }
+    return Qnil;
+}
+
 // AbRuby.cs_init(store_dir, src_dir, version)
 static VALUE
 rb_astro_cs_init(VALUE self, VALUE store_dir, VALUE src_dir, VALUE version)
@@ -1320,6 +1341,8 @@ Init_abruby(void)
 
     // options
     rb_define_singleton_method(rb_cAbRuby, "verbose=", rb_astro_set_verbose, 1);
+    rb_define_singleton_method(rb_cAbRuby, "compiled_only=", rb_astro_set_compiled_only, 1);
+    rb_define_singleton_method(rb_cAbRuby, "verify_compiled", rb_astro_verify_compiled, 1);
 
     // code store
     rb_define_singleton_method(rb_cAbRuby, "cs_init", rb_astro_cs_init, 3);

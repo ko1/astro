@@ -9,6 +9,14 @@ class AbRubyNodeDef < ASTroGen::NodeDef
   class Node < ASTroGen::NodeDef::Node
     def result_type = "RESULT"
 
+    def alloc_dispatcher_expr
+      if no_inline?
+        "DISPATCH_#{@name}"
+      else
+        "(OPTION.compiled_only ? NULL : DISPATCH_#{@name})"
+      end
+    end
+
     def build_marker
       node_ops = @operands.select(&:node?)
       marks = node_ops.map { |op| "    MARK(n->u.#{@name}.#{op.name});" }

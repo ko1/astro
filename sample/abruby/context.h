@@ -27,6 +27,7 @@
 
 struct abruby_option {
     bool no_compiled_code;
+    bool compiled_only;  // set dispatcher to NULL in ALLOC (crash if uncompiled node is called)
     bool record_all;
     bool quiet;
     bool verbose;

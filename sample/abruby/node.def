@@ -759,6 +759,12 @@ node_fixnum_plus_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
     return node_arith_fallback(c, n, lv, rv, "+");
 }
 
+static __attribute__((noinline, cold)) RESULT
+node_fixnum_plus_overflow(VALUE lv, VALUE rv)
+{
+    return RESULT_OK(abruby_bignum_new(LONG2NUM(FIX2LONG(lv) + FIX2LONG(rv))));
+}
+
 NODE_DEF @rewritable
 node_fixnum_plus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
@@ -768,7 +774,7 @@ node_fixnum_plus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
         long result;
         if (LIKELY(!__builtin_add_overflow((long)lv, (long)(rv - 1), &result)))
             return RESULT_OK((VALUE)result);
-        return RESULT_OK(abruby_bignum_new(LONG2NUM(FIX2LONG(lv) + FIX2LONG(rv))));
+        return node_fixnum_plus_overflow(lv, rv);
     }
     return node_fixnum_plus_slow(c, n, lv, rv);
 }
@@ -819,6 +825,12 @@ node_fixnum_minus_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
     return node_arith_fallback(c, n, lv, rv, "-");
 }
 
+static __attribute__((noinline, cold)) RESULT
+node_fixnum_minus_overflow(VALUE lv, VALUE rv)
+{
+    return RESULT_OK(abruby_bignum_new(LONG2NUM(FIX2LONG(lv) - FIX2LONG(rv))));
+}
+
 NODE_DEF @rewritable
 node_fixnum_minus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
@@ -828,7 +840,7 @@ node_fixnum_minus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
         long result;
         if (LIKELY(!__builtin_sub_overflow((long)lv, (long)(rv - 1), &result)))
             return RESULT_OK((VALUE)result);
-        return RESULT_OK(abruby_bignum_new(LONG2NUM(FIX2LONG(lv) - FIX2LONG(rv))));
+        return node_fixnum_minus_overflow(lv, rv);
     }
     return node_fixnum_minus_slow(c, n, lv, rv);
 }
@@ -883,6 +895,14 @@ node_fixnum_mul_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
     return node_arith_fallback(c, n, lv, rv, "*");
 }
 
+static __attribute__((noinline, cold)) RESULT
+node_fixnum_mul_overflow(long a, long b)
+{
+    VALUE big_result = rb_funcall(LONG2NUM(a), rb_intern("*"), 1, LONG2NUM(b));
+    if (FIXNUM_P(big_result)) return RESULT_OK(big_result);
+    return RESULT_OK(abruby_bignum_new(big_result));
+}
+
 NODE_DEF @rewritable
 node_fixnum_mul(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
@@ -893,9 +913,7 @@ node_fixnum_mul(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
         long result;
         if (LIKELY(!__builtin_mul_overflow(a, b, &result) && FIXABLE(result)))
             return RESULT_OK(LONG2FIX(result));
-        VALUE big_result = rb_funcall(LONG2NUM(a), rb_intern("*"), 1, LONG2NUM(b));
-        if (FIXNUM_P(big_result)) return RESULT_OK(big_result);
-        return RESULT_OK(abruby_bignum_new(big_result));
+        return node_fixnum_mul_overflow(a, b);
     }
     return node_fixnum_mul_slow(c, n, lv, rv);
 }

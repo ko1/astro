@@ -162,6 +162,10 @@ module ASTroGen
 
       def result_type = "VALUE"
 
+      def alloc_dispatcher_expr
+        "DISPATCH_#{@name}"
+      end
+
       def comma_operands(ops)
         ops.empty? ? "" : ", #{ops.join(", ")}"
       end
@@ -225,7 +229,7 @@ module ASTroGen
         NODE *
         ALLOC_#{name}(#{@operands.empty? ? 'void' : @operands.map{it.join}.join(', ')}) {
             NODE *_n = node_allocate(sizeof(struct NodeHead) + sizeof(struct #{sname}));
-            _n->head.dispatcher = DISPATCH_#{@name};
+            _n->head.dispatcher = #{alloc_dispatcher_expr};
             _n->head.dispatcher_name = "DISPATCH_#{@name}";
             _n->head.kind = &kind_#{@name};
             _n->head.parent = NULL;

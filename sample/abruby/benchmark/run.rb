@@ -34,16 +34,20 @@ RUNNERS = [
     cmd:  "ruby %s",
   },
   {
-    name: 'ruby/jit',
+    name: 'ruby+jit',
     cmd:  'ruby --jit %s',
   },
   {
-    name: 'abruby',
+    name: 'abruby+plain',
     cmd:  "ruby -I #{ABRUBY_DIR}/lib #{ABRUBY_DIR}/exe/abruby --plain %s",
   },
   {
-    name: 'abruby/cf', # compile first
+    name: 'abruby+cf', # compile first
     cmd:  "ruby -I #{ABRUBY_DIR}/lib #{ABRUBY_DIR}/exe/abruby -c %s",
+  },
+  {
+    name: 'abruby+compiled',
+    cmd:  "ruby -I #{ABRUBY_DIR}/lib #{ABRUBY_DIR}/exe/abruby --compiled-only %s",
   },
 ]
 

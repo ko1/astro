@@ -15,6 +15,7 @@ run_file = nil       # file to run after --compile (--run)
 run_args = []        # args for --run
 dump_mode = nil      # nil, :ast, :disasm
 verbose = false
+compiled_only = false
 
 opt = OptionParser.new
 opt.banner = "Usage: abruby [options] [file] [args...]"
@@ -35,6 +36,7 @@ opt.on('--compile', 'compile files (AOT)') { mode = :compile }
 opt.on('-c', '--compile-first', 'compile then run') { mode = :compile_first }
 opt.on('--pg', 'run then compile (profile-guided)') { mode = :pg }
 opt.on('--verbose', 'show code store operations') { verbose = true }
+opt.on('--compiled-only', 'abort if default dispatcher is used') { compiled_only = true }
 opt.on('-v', '--version', 'show version') do
   puts "abruby #{AbRuby::VERSION}"
   exit
@@ -174,6 +176,7 @@ when :compile_first
   end
 
   cs_init.()
+  AbRuby.compiled_only = true if compiled_only
 
   vm = AbRuby.new
   vm.current_file = ARGV[0] if ARGV[0]
@@ -216,6 +219,7 @@ when :run
     puts vm.dump(src)
   else
     cs_init.()
+    AbRuby.compiled_only = true if compiled_only
 
     vm = AbRuby.new
     vm.current_file = ARGV[0] if ARGV[0]
