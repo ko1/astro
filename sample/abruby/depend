@@ -33,7 +33,8 @@ test-compiled: all
 
 bench: all
 	$(Q)$(RM) -rf code_store
-	ruby benchmark/run.rb
+	$(Q)mkdir -p benchmark/report
+	ruby benchmark/run.rb | tee benchmark/report/$$(date +%Y%m%d)-$$(git rev-parse --short HEAD).txt
 
 bench-optcarrot: all
 	exe/abruby benchmark/optcarrot/bin/optcarrot-bench
