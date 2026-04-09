@@ -231,20 +231,24 @@ ab_verify(VALUE obj)
 /*
  * AB_CLASS_OF(obj): resolve the abruby class of a VALUE.
  *
- * Immediates return a fixed class pointer.
- * T_DATA objects read klass directly from the abruby_header at offset 0.
- * The abruby VALUE invariant guarantees these two cases are exhaustive.
+ * Heap objects (T_DATA) are checked first since they are the most common
+ * receivers in node_method_call — Fixnum arithmetic goes through
+ * type-specialized nodes (fixnum_plus, etc.) and rarely reaches here.
+ * The abruby VALUE invariant guarantees obj is either a CRuby immediate
+ * or T_DATA with abruby_header at offset 0.
  */
 static inline struct abruby_class *
 AB_CLASS_OF(VALUE obj)
 {
     ab_verify(obj);
-    if (FIXNUM_P(obj))  return ab_integer_class;
-    if (SYMBOL_P(obj))  return ab_symbol_class;
-    if (obj == Qtrue)   return ab_true_class;
-    if (obj == Qfalse)  return ab_false_class;
-    if (obj == Qnil)    return ab_nil_class;
-    return ((struct abruby_header *)RTYPEDDATA_GET_DATA(obj))->klass;
+    if (!RB_SPECIAL_CONST_P(obj)) {
+        return ((struct abruby_header *)RTYPEDDATA_GET_DATA(obj))->klass;
+    }
+    else if (FIXNUM_P(obj))  return ab_integer_class;
+    else if (SYMBOL_P(obj))  return ab_symbol_class;
+    else if (obj == Qtrue)   return ab_true_class;
+    else if (obj == Qfalse)  return ab_false_class;
+    else                     return ab_nil_class;
 }
 
 #define AB_CLASS_P(obj, klass) (AB_CLASS_OF(obj) == (klass))
