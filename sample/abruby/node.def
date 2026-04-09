@@ -707,17 +707,6 @@ integer_div_calc(VALUE lv, VALUE rv)
     return RESULT_OK(AB_NUM_WRAP(rb_funcall(AB_INT_UNWRAP(lv), rb_intern("/"), 1, AB_INT_UNWRAP(rv))));
 }
 
-// Helper: re-read current children from node after EVAL_ARG.
-// Children may have been rewritten to type-specific nodes during evaluation,
-// which updates the parent's child field via node_replace.
-#define CUR_LEFT(n, kind)  (n->u.kind.left)
-#define CUR_RIGHT(n, kind) (n->u.kind.right)
-
-// Skip rewrite for orphaned nodes (already replaced by a prior rewrite).
-// After node_replace, old_node->head.parent is set to NULL.
-// Arithmetic/comparison nodes always have a parent when live in the tree.
-#define SHOULD_REWRITE(n) ((n)->head.parent != NULL)
-
 // Dispatcher swap: change the dispatcher without creating a new node.
 // kind is also updated for consistency (DUMP, HASH).
 static inline void
@@ -757,7 +746,7 @@ node_fixnum_plus_overflow(VALUE lv, VALUE rv)
     return RESULT_OK(abruby_bignum_new(LONG2NUM(FIX2LONG(lv) + FIX2LONG(rv))));
 }
 
-NODE_DEF @rewritable
+NODE_DEF
 node_fixnum_plus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
@@ -771,7 +760,7 @@ node_fixnum_plus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
     return node_fixnum_plus_slow(c, n, lv, rv);
 }
 
-NODE_DEF @rewritable
+NODE_DEF
 node_integer_plus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
@@ -813,7 +802,7 @@ node_fixnum_minus_overflow(VALUE lv, VALUE rv)
     return RESULT_OK(abruby_bignum_new(LONG2NUM(FIX2LONG(lv) - FIX2LONG(rv))));
 }
 
-NODE_DEF @rewritable
+NODE_DEF
 node_fixnum_minus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
@@ -827,7 +816,7 @@ node_fixnum_minus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
     return node_fixnum_minus_slow(c, n, lv, rv);
 }
 
-NODE_DEF @rewritable
+NODE_DEF
 node_integer_minus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
@@ -869,7 +858,7 @@ node_fixnum_mul_overflow(long a, long b)
     return integer_mul_calc(LONG2FIX(a), LONG2FIX(b));
 }
 
-NODE_DEF @rewritable
+NODE_DEF
 node_fixnum_mul(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
@@ -884,7 +873,7 @@ node_fixnum_mul(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
     return node_fixnum_mul_slow(c, n, lv, rv);
 }
 
-NODE_DEF @rewritable
+NODE_DEF
 node_integer_mul(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
@@ -922,7 +911,7 @@ node_fixnum_div_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
     }
 }
 
-NODE_DEF @rewritable
+NODE_DEF
 node_fixnum_div(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
@@ -942,7 +931,7 @@ node_fixnum_div(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
     return node_fixnum_div_slow(c, n, lv, rv);
 }
 
-NODE_DEF @rewritable
+NODE_DEF
 node_integer_div(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
@@ -990,18 +979,17 @@ node_lt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
-        if (SHOULD_REWRITE(n)) {
-            NODE *sp = ALLOC_node_fixnum_lt(CUR_LEFT(n, node_lt), CUR_RIGHT(n, node_lt));
-            sp->u.node_fixnum_lt.replaced_from = n;
-            node_replace(n, sp);
-        }
-        return RESULT_OK(FIX2LONG(lv) < FIX2LONG(rv) ? Qtrue : Qfalse);
-    }
     return node_arith_fallback(c, n, lv, rv, "<");
 }
 
-NODE_DEF @rewritable
+static __attribute__((noinline, cold)) RESULT
+node_fixnum_lt_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
+{
+    swap_dispatcher(n, &kind_node_lt);
+    return node_arith_fallback(c, n, lv, rv, "<");
+}
+
+NODE_DEF
 node_fixnum_lt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
@@ -1009,7 +997,7 @@ node_fixnum_lt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
     if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
         return RESULT_OK((long)lv < (long)rv ? Qtrue : Qfalse);
     }
-    return node_arith_fallback(c, n, lv, rv, "<");
+    return node_fixnum_lt_slow(c, n, lv, rv);
 }
 
 NODE_DEF
@@ -1017,18 +1005,17 @@ node_le(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
-        if (SHOULD_REWRITE(n)) {
-            NODE *sp = ALLOC_node_fixnum_le(CUR_LEFT(n, node_le), CUR_RIGHT(n, node_le));
-            sp->u.node_fixnum_le.replaced_from = n;
-            node_replace(n, sp);
-        }
-        return RESULT_OK(FIX2LONG(lv) <= FIX2LONG(rv) ? Qtrue : Qfalse);
-    }
     return node_arith_fallback(c, n, lv, rv, "<=");
 }
 
-NODE_DEF @rewritable
+static __attribute__((noinline, cold)) RESULT
+node_fixnum_le_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
+{
+    swap_dispatcher(n, &kind_node_le);
+    return node_arith_fallback(c, n, lv, rv, "<=");
+}
+
+NODE_DEF
 node_fixnum_le(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
@@ -1036,7 +1023,7 @@ node_fixnum_le(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
     if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
         return RESULT_OK((long)lv <= (long)rv ? Qtrue : Qfalse);
     }
-    return node_arith_fallback(c, n, lv, rv, "<=");
+    return node_fixnum_le_slow(c, n, lv, rv);
 }
 
 NODE_DEF
@@ -1044,18 +1031,17 @@ node_gt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
-        if (SHOULD_REWRITE(n)) {
-            NODE *sp = ALLOC_node_fixnum_gt(CUR_LEFT(n, node_gt), CUR_RIGHT(n, node_gt));
-            sp->u.node_fixnum_gt.replaced_from = n;
-            node_replace(n, sp);
-        }
-        return RESULT_OK(FIX2LONG(lv) > FIX2LONG(rv) ? Qtrue : Qfalse);
-    }
     return node_arith_fallback(c, n, lv, rv, ">");
 }
 
-NODE_DEF @rewritable
+static __attribute__((noinline, cold)) RESULT
+node_fixnum_gt_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
+{
+    swap_dispatcher(n, &kind_node_gt);
+    return node_arith_fallback(c, n, lv, rv, ">");
+}
+
+NODE_DEF
 node_fixnum_gt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
@@ -1063,7 +1049,7 @@ node_fixnum_gt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
     if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
         return RESULT_OK((long)lv > (long)rv ? Qtrue : Qfalse);
     }
-    return node_arith_fallback(c, n, lv, rv, ">");
+    return node_fixnum_gt_slow(c, n, lv, rv);
 }
 
 NODE_DEF
@@ -1071,18 +1057,17 @@ node_ge(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
-        if (SHOULD_REWRITE(n)) {
-            NODE *sp = ALLOC_node_fixnum_ge(CUR_LEFT(n, node_ge), CUR_RIGHT(n, node_ge));
-            sp->u.node_fixnum_ge.replaced_from = n;
-            node_replace(n, sp);
-        }
-        return RESULT_OK((long)lv >= (long)rv ? Qtrue : Qfalse);
-    }
     return node_arith_fallback(c, n, lv, rv, ">=");
 }
 
-NODE_DEF @rewritable
+static __attribute__((noinline, cold)) RESULT
+node_fixnum_ge_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
+{
+    swap_dispatcher(n, &kind_node_ge);
+    return node_arith_fallback(c, n, lv, rv, ">=");
+}
+
+NODE_DEF
 node_fixnum_ge(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
@@ -1090,7 +1075,7 @@ node_fixnum_ge(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
     if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
         return RESULT_OK((long)lv >= (long)rv ? Qtrue : Qfalse);
     }
-    return node_arith_fallback(c, n, lv, rv, ">=");
+    return node_fixnum_ge_slow(c, n, lv, rv);
 }
 
 // === Equality / Modulo ===
@@ -1114,18 +1099,17 @@ node_eq(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
-        if (SHOULD_REWRITE(n)) {
-            NODE *sp = ALLOC_node_fixnum_eq(CUR_LEFT(n, node_eq), CUR_RIGHT(n, node_eq));
-            sp->u.node_fixnum_eq.replaced_from = n;
-            node_replace(n, sp);
-        }
-        return RESULT_OK(lv == rv ? Qtrue : Qfalse);
-    }
     return node_arith_fallback(c, n, lv, rv, "==");
 }
 
-NODE_DEF @rewritable
+static __attribute__((noinline, cold)) RESULT
+node_fixnum_eq_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
+{
+    swap_dispatcher(n, &kind_node_eq);
+    return node_arith_fallback(c, n, lv, rv, "==");
+}
+
+NODE_DEF
 node_fixnum_eq(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
@@ -1133,7 +1117,7 @@ node_fixnum_eq(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
     if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
         return RESULT_OK(lv == rv ? Qtrue : Qfalse);
     }
-    return node_arith_fallback(c, n, lv, rv, "==");
+    return node_fixnum_eq_slow(c, n, lv, rv);
 }
 
 NODE_DEF
@@ -1141,30 +1125,16 @@ node_neq(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
-        if (SHOULD_REWRITE(n)) {
-            NODE *sp = ALLOC_node_fixnum_neq(CUR_LEFT(n, node_neq), CUR_RIGHT(n, node_neq));
-            sp->u.node_fixnum_neq.replaced_from = n;
-            node_replace(n, sp);
-        }
-        return RESULT_OK(lv != rv ? Qtrue : Qfalse);
-    }
     // != is defined as !(==), fallback through ==
-    {
-        RESULT eq = node_arith_fallback(c, n, lv, rv, "==");
-        if (eq.state != RESULT_NORMAL) return eq;
-        return RESULT_OK(RTEST(eq.value) ? Qfalse : Qtrue);
-    }
+    RESULT eq = node_arith_fallback(c, n, lv, rv, "==");
+    if (eq.state != RESULT_NORMAL) return eq;
+    return RESULT_OK(RTEST(eq.value) ? Qfalse : Qtrue);
 }
 
-NODE_DEF @rewritable
-node_fixnum_neq(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
+static __attribute__((noinline, cold)) RESULT
+node_fixnum_neq_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
 {
-    VALUE lv = UNWRAP(EVAL_ARG(c, left));
-    VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
-        return RESULT_OK(lv != rv ? Qtrue : Qfalse);
-    }
+    swap_dispatcher(n, &kind_node_neq);
     // != is defined as !(==), fallback through ==
     RESULT eq = node_arith_fallback(c, n, lv, rv, "==");
     if (eq.state != RESULT_NORMAL) return eq;
@@ -1172,37 +1142,32 @@ node_fixnum_neq(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 }
 
 NODE_DEF
-node_mod(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
+node_fixnum_neq(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
     if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
-        long b = FIX2LONG(rv);
-        if (UNLIKELY(b == 0)) {
-            VALUE exc = abruby_exception_new(c, c->current_frame->prev,
-                abruby_str_new_cstr("divided by 0"));
-            return (RESULT){exc, RESULT_RAISE};
-        }
-        if (SHOULD_REWRITE(n)) {
-            NODE *sp = ALLOC_node_fixnum_mod(CUR_LEFT(n, node_mod), CUR_RIGHT(n, node_mod));
-            sp->u.node_fixnum_mod.replaced_from = n;
-            node_replace(n, sp);
-        }
-        long a = FIX2LONG(lv);
-        long r = a % b;
-        if (r && (a ^ b) < 0) r += b;
-        return RESULT_OK(LONG2FIX(r));
+        return RESULT_OK(lv != rv ? Qtrue : Qfalse);
     }
+    return node_fixnum_neq_slow(c, n, lv, rv);
+}
+
+NODE_DEF
+node_mod(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
+{
+    VALUE lv = UNWRAP(EVAL_ARG(c, left));
+    VALUE rv = UNWRAP(EVAL_ARG(c, right));
     return node_arith_fallback(c, n, lv, rv, "%");
 }
 
 static __attribute__((noinline, cold)) RESULT
 node_fixnum_mod_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
 {
+    swap_dispatcher(n, &kind_node_mod);
     return node_arith_fallback(c, n, lv, rv, "%");
 }
 
-NODE_DEF @rewritable
+NODE_DEF
 node_fixnum_mod(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));

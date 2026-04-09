@@ -43,31 +43,6 @@ dispatch_info(CTX *c, NODE *n, bool end)
 
 // --- General node operations ---
 
-void
-clear_hash(NODE *n)
-{
-    while (n) {
-        n->head.flags.has_hash_value = false;
-        n = n->head.parent;
-    }
-}
-
-// Replace old_node with new_node in the AST tree.
-// Updates the parent's child pointer and invalidates hash.
-void
-node_replace(NODE *old_node, NODE *new_node)
-{
-    NODE *parent = old_node->head.parent;
-    if (parent) {
-        parent->head.kind->replacer(parent, old_node, new_node);
-    }
-    new_node->head.parent = parent;
-    old_node->head.parent = NULL;
-    // Ensure new node is GC-managed
-    abruby_wrap_node(new_node);
-    clear_hash(parent);
-}
-
 // --- User-provided: OPTIMIZE ---
 
 NODE *

@@ -10,7 +10,7 @@ class AbRubyNodeDef < ASTroGen::NodeDef
     def result_type = "RESULT"
 
     def alloc_dispatcher_expr
-      if no_inline? || rewritable?
+      if no_inline?
         "DISPATCH_#{@name}"
       else
         "(OPTION.compiled_only ? NULL : DISPATCH_#{@name})"
@@ -20,7 +20,6 @@ class AbRubyNodeDef < ASTroGen::NodeDef
     def build_marker
       node_ops = @operands.select(&:node?)
       marks = node_ops.map { |op| "    MARK(n->u.#{@name}.#{op.name});" }
-      marks << "    MARK(n->u.#{@name}.replaced_from);" if rewritable?
       <<~C
       static void
       MARKER_#{@name}(NODE *n)

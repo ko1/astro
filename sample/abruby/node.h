@@ -14,8 +14,6 @@ NODE *OPTIMIZE(NODE *n);
 void SPECIALIZE(FILE *fp, NODE *n);
 char *SPECIALIZED_SRC(NODE *n);
 
-void clear_hash(NODE *n);
-
 VALUE abruby_ivar_get(VALUE self, const char *name);
 void abruby_ivar_set(VALUE self, const char *name, VALUE val);
 struct abruby_method *abruby_find_method(struct abruby_class *klass, const char *name);
@@ -36,7 +34,6 @@ VALUE abruby_hash_new_wrap(VALUE rb_hash);
 void abruby_node_mark(void *ptr);
 
 void code_repo_add(const char *name, NODE *body, bool force_add);
-void node_replace(NODE *old_node, NODE *new_node);
 VALUE abruby_wrap_node(NODE *n);
 
 // exception support
