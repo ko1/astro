@@ -105,11 +105,49 @@ benchmark/optcarrot/bin/optcarrot-bench を動かすために必要な機能。
 - [ ] Comparable, Enumerable
 - [ ] Numeric (Integer/Float の共通親)
 
+## 高速化
+
+fib ベンチマークでは実行時間の約95%がメソッドディスパッチ
+（`node_method_call` → `abruby_class_find_method` の strcmp 線形探索 + フレーム push/pop）。
+算術演算は fixnum_* ノードで bypass されておりほぼコストゼロ。
+メソッドディスパッチの改善が最優先。
+
+### メソッドディスパッチ
+
+- [ ] メソッド名インターン化 — 全メソッド名をパース時に intern し、strcmp をポインタ比較に置換。実装容易・効果大
+- [ ] インラインキャッシュ — `node_method_call` に `(cached_class, cached_method)` を持たせ、ヒット時に `abruby_class_find_method` を完全スキップ。fib で最大の効果
+- [ ] メソッドテーブルのハッシュ化 — 固定64スロット配列をオープンアドレスハッシュに。IC ミス時のフォールバック高速化
+
+### AOT / JIT（ASTro 部分評価）
+
+- [ ] AOT ベンチマーク測定 — `make bench` で plain vs compiled の性能差を把握。compiled テストは通っているので基盤は動作済み
+- [ ] ループ選択的 JIT — `dispatch_cnt` 閾値超えノードをバックグラウンドで gcc コンパイル → dlopen → swap_dispatcher
+- [ ] specialize でのメソッドインライン化 — 現在 `node_def` は `@noinline` で specialize をブロック。型フィードバックと組み合わせてメソッドボディを展開できれば、method lookup + frame push/pop が消える
+- [ ] specialize でのローカル変数レジスタ化 — gcc LICM はポインタエイリアスで `c->fp[i]` をホイストできない。specialize レベルで C ローカル変数にマッピングすれば回避可能
+- [ ] ガード削除 — ループ内の型安定変数に対し、ループ入口で1回だけ型チェックし、ボディ内の FIXNUM_P チェックを除去（Truffle/Graal の speculation + deopt パターン）
+
+### インタプリタ改善
+
+- [ ] スーパーインストラクション — 頻出パターン（`while(lvar < const)`, `lvar = lvar + num` 等）を融合ノードに。AOT 無効時のインタプリタ高速化
+- [ ] NodeHead スリム化 — `parent`(8), `hash_value`(8), `dispatcher_name`(8), `jit_status`(4), `dispatch_cnt`(4) はホットパスで不要。32B 削減すれば union データが dispatcher と同一キャッシュラインに収まる。コアジェネレータ変更が必要
+- [ ] 末尾呼び出し最適化 — `return method_call(...)` パターンを検出しフレーム再利用。再帰のスタック消費削減
+
+### メモリ・GC
+
+- [ ] ノードのアリーナアロケータ — 個別 malloc → バンプポインタ。同一スコープのノードが隣接しキャッシュ局所性向上
+- [ ] VALUE スタック遅延 GC マーク — 現在 10,000 スロット全体をマーク。`fp + frame_size` までに限定
+
+### オブジェクトシステム
+
+- [ ] シェイプベース ivar アクセス — ivar の名前線形探索を固定オフセットに。CRuby のオブジェクトシェイプと同様の手法
+- [ ] case/when ジャンプテーブル — 現在 if/elsif チェーンに desugar。整数リテラル when はジャンプテーブル化
+
+### 機能追加（最適化の前提条件）
+
+- [ ] ブロック / yield + インライン化 — optcarrot 必須。specialize でブロック呼び出しを展開できればイテレータのオーバーヘッド除去
+
 ## ランタイム・内部実装
 
 - [x] ~~abruby オブジェクトの free（現在リーク前提）~~ → `RUBY_DEFAULT_FREE` で GC sweep 時に解放
-- [ ] case/when の最適化（現在 if/elsif チェーンに desugar。整数リテラルのみの when はジャンプテーブル化等）
-- [ ] インラインキャッシュ（現在 strcmp 線形探索）
 - [ ] メソッド/ivar/定数テーブルの動的拡張
 - [ ] スタックオーバーフロー検出
-- [ ] ASTro 部分評価 / JIT / AOT

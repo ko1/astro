@@ -20,13 +20,19 @@
 
 // class system helpers
 
+// Interned IDs for operator methods and common names (defined in node.c)
+extern ID id_op_plus, id_op_minus, id_op_mul, id_op_div;
+extern ID id_op_lt, id_op_le, id_op_gt, id_op_ge;
+extern ID id_op_eq, id_op_mod;
+extern ID id_method_missing, id_initialize;
+
 static void
-abruby_class_add_method(struct abruby_class *klass, const char *name,
+abruby_class_add_method(struct abruby_class *klass, ID name,
                         struct Node *body, unsigned int params_cnt, unsigned int locals_cnt,
                         const char *source_file)
 {
     for (unsigned int i = 0; i < klass->method_cnt; i++) {
-        if (strcmp(klass->methods[i].name, name) == 0) {
+        if (klass->methods[i].name == name) {
             klass->methods[i].type = ABRUBY_METHOD_AST;
             klass->methods[i].u.ast.body = body;
             klass->methods[i].u.ast.params_cnt = params_cnt;
@@ -45,11 +51,11 @@ abruby_class_add_method(struct abruby_class *klass, const char *name,
 }
 
 static struct abruby_method *
-abruby_class_find_method(struct abruby_class *klass, const char *name)
+abruby_class_find_method(struct abruby_class *klass, ID name)
 {
     while (klass) {
         for (unsigned int i = 0; i < klass->method_cnt; i++) {
-            if (strcmp(klass->methods[i].name, name) == 0) {
+            if (klass->methods[i].name == name) {
                 return &klass->methods[i];
             }
         }
@@ -59,10 +65,10 @@ abruby_class_find_method(struct abruby_class *klass, const char *name)
 }
 
 static struct abruby_class *
-find_class_in(struct abruby_class *scope, const char *name)
+find_class_in(struct abruby_class *scope, ID name)
 {
     for (unsigned int i = 0; i < scope->const_cnt; i++) {
-        if (strcmp(scope->constants[i].name, name) == 0) {
+        if (scope->constants[i].name == name) {
             VALUE v = scope->constants[i].value;
             if (RB_TYPE_P(v, T_DATA)) {
                 struct abruby_header *h = (struct abruby_header *)RTYPEDDATA_GET_DATA(v);
@@ -76,7 +82,7 @@ find_class_in(struct abruby_class *scope, const char *name)
 }
 
 static struct abruby_class *
-find_class(CTX *c, const char *name)
+find_class(CTX *c, ID name)
 {
     // Check per-instance main_class first, then global Object
     struct abruby_class *klass = find_class_in(c->main_class, name);
@@ -200,30 +206,30 @@ node_self(CTX * restrict c, NODE * restrict n)
 }
 
 static VALUE
-abruby_const_get(struct abruby_class *klass, const char *name)
+abruby_const_get(struct abruby_class *klass, ID name)
 {
     for (unsigned int i = 0; i < klass->const_cnt; i++) {
-        if (strcmp(klass->constants[i].name, name) == 0) {
+        if (klass->constants[i].name == name) {
             return klass->constants[i].value;
         }
     }
-    rb_raise(rb_eNameError, "uninitialized constant %s::%s", klass->name, name);
+    rb_raise(rb_eNameError, "uninitialized constant %s::%s", rb_id2name(klass->name), rb_id2name(name));
     return Qnil;
 }
 
 NODE_DEF
-node_const_path_get(CTX * restrict c, NODE * restrict n, const char *parent_name, const char *name)
+node_const_path_get(CTX * restrict c, NODE * restrict n, ID parent_name, ID name)
 {
     struct abruby_class *klass = find_class(c, parent_name);
     if (!klass) {
-        rb_raise(rb_eNameError, "uninitialized constant %s", parent_name);
+        rb_raise(rb_eNameError, "uninitialized constant %s", rb_id2name(parent_name));
     }
     // rb_raise does not return, but abruby_const_get may also rb_raise
     return RESULT_OK(abruby_const_get(klass, name));
 }
 
 NODE_DEF
-node_const_set(CTX * restrict c, NODE * restrict n, const char *name, NODE *value)
+node_const_set(CTX * restrict c, NODE * restrict n, ID name, NODE *value)
 {
     VALUE v = UNWRAP(EVAL_ARG(c, value));
     struct abruby_class *scope = c->current_class ? c->current_class : c->main_class;
@@ -232,18 +238,18 @@ node_const_set(CTX * restrict c, NODE * restrict n, const char *name, NODE *valu
 }
 
 NODE_DEF
-node_const_get(CTX * restrict c, NODE * restrict n, const char *name)
+node_const_get(CTX * restrict c, NODE * restrict n, ID name)
 {
     // Check main_class first, then Object
     for (unsigned int i = 0; i < c->main_class->const_cnt; i++) {
-        if (strcmp(c->main_class->constants[i].name, name) == 0) {
+        if (c->main_class->constants[i].name == name) {
             return RESULT_OK(c->main_class->constants[i].value);
         }
     }
     if (c->main_class != ab_object_class) {
         return RESULT_OK(abruby_const_get(ab_object_class, name));
     }
-    rb_raise(rb_eNameError, "uninitialized constant %s", name);
+    rb_raise(rb_eNameError, "uninitialized constant %s", rb_id2name(name));
     return RESULT_OK(Qnil);
 }
 
@@ -282,13 +288,13 @@ node_hash_new(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_i
 // === Instance Variables ===
 
 NODE_DEF
-node_ivar_get(CTX * restrict c, NODE * restrict n, const char *name)
+node_ivar_get(CTX * restrict c, NODE * restrict n, ID name)
 {
     return RESULT_OK(abruby_ivar_get(c->self, name));
 }
 
 NODE_DEF
-node_ivar_set(CTX * restrict c, NODE * restrict n, const char *name, NODE *value)
+node_ivar_set(CTX * restrict c, NODE * restrict n, ID name, NODE *value)
 {
     VALUE v = UNWRAP(EVAL_ARG(c, value));
     abruby_ivar_set(c->self, name, v);
@@ -298,22 +304,22 @@ node_ivar_set(CTX * restrict c, NODE * restrict n, const char *name, NODE *value
 // === Global Variables ===
 
 static VALUE
-abruby_gvar_get(CTX *c, const char *name)
+abruby_gvar_get(CTX *c, ID name)
 {
     struct abruby_gvar_table *t = c->gvars;
     for (unsigned int i = 0; i < t->cnt; i++) {
-        if (strcmp(t->entries[i].name, name) == 0)
+        if (t->entries[i].name == name)
             return t->entries[i].value;
     }
     return Qnil;
 }
 
 static void
-abruby_gvar_set(CTX *c, const char *name, VALUE val)
+abruby_gvar_set(CTX *c, ID name, VALUE val)
 {
     struct abruby_gvar_table *t = c->gvars;
     for (unsigned int i = 0; i < t->cnt; i++) {
-        if (strcmp(t->entries[i].name, name) == 0) {
+        if (t->entries[i].name == name) {
             t->entries[i].value = val;
             return;
         }
@@ -324,13 +330,13 @@ abruby_gvar_set(CTX *c, const char *name, VALUE val)
 }
 
 NODE_DEF
-node_gvar_get(CTX * restrict c, NODE * restrict n, const char *name)
+node_gvar_get(CTX * restrict c, NODE * restrict n, ID name)
 {
     return RESULT_OK(abruby_gvar_get(c, name));
 }
 
 NODE_DEF
-node_gvar_set(CTX * restrict c, NODE * restrict n, const char *name, NODE *rhs)
+node_gvar_set(CTX * restrict c, NODE * restrict n, ID name, NODE *rhs)
 {
     VALUE v = UNWRAP(EVAL_ARG(c, rhs));
     abruby_gvar_set(c, name, v);
@@ -433,7 +439,7 @@ node_rescue(CTX * restrict c, NODE * restrict n, NODE *body, NODE *rescue_body, 
 // === Method definition & call ===
 
 NODE_DEF @noinline
-node_def(CTX * restrict c, NODE * restrict n, const char *name, NODE *body, uint32_t params_cnt, uint32_t locals_cnt)
+node_def(CTX * restrict c, NODE * restrict n, ID name, NODE *body, uint32_t params_cnt, uint32_t locals_cnt)
 {
     struct abruby_class *klass = c->current_class ? c->current_class : c->main_class;
     // Derive source file from current frame
@@ -451,7 +457,7 @@ node_def(CTX * restrict c, NODE * restrict n, const char *name, NODE *body, uint
 // === OOP: class, method call with receiver, new ===
 
 NODE_DEF @noinline
-node_module_def(CTX * restrict c, NODE * restrict n, const char *name, NODE *body)
+node_module_def(CTX * restrict c, NODE * restrict n, ID name, NODE *body)
 {
     struct abruby_class *mod = find_class(c, name);
     if (!mod) {
@@ -474,15 +480,15 @@ node_module_def(CTX * restrict c, NODE * restrict n, const char *name, NODE *bod
 }
 
 NODE_DEF @noinline
-node_class_def(CTX * restrict c, NODE * restrict n, const char *name, const char *super_name, NODE *body)
+node_class_def(CTX * restrict c, NODE * restrict n, ID name, ID super_name, NODE *body)
 {
     struct abruby_class *klass = find_class(c, name);
     if (!klass) {
         struct abruby_class *super = ab_object_class;
-        if (super_name[0] != '\0') {
+        if (super_name != 0) {
             super = find_class(c, super_name);
             if (!super) {
-                rb_raise(rb_eNameError, "uninitialized constant %s", super_name);
+                rb_raise(rb_eNameError, "uninitialized constant %s", rb_id2name(super_name));
             }
         }
         klass = (struct abruby_class *)ruby_xcalloc(1, sizeof(struct abruby_class));
@@ -551,18 +557,18 @@ dispatch_method(CTX * restrict c, NODE * restrict call_site,
 
 static __attribute__((noinline)) RESULT
 method_missing_dispatch(CTX * restrict c, NODE * restrict n, struct abruby_class *klass,
-                        const char *name, VALUE recv_val,
+                        ID name, VALUE recv_val,
                         uint32_t params_cnt, uint32_t arg_index)
 {
-    struct abruby_method *mm = abruby_class_find_method(klass, "method_missing");
+    struct abruby_method *mm = abruby_class_find_method(klass, id_method_missing);
     if (!mm) {
-        rb_raise(rb_eNoMethodError, "undefined method '%s' for %s", name, klass->name);
+        rb_raise(rb_eNoMethodError, "undefined method '%s' for %s", rb_id2name(name), rb_id2name(klass->name));
     }
     // shift args by 1, insert method name as first arg
     for (int i = (int)params_cnt - 1; i >= 0; i--) {
         c->fp[arg_index + i + 1] = c->fp[arg_index + i];
     }
-    c->fp[arg_index] = abruby_str_new_cstr(name);
+    c->fp[arg_index] = abruby_str_new_cstr(rb_id2name(name));
     if (mm->type == ABRUBY_METHOD_CFUNC) {
         return mm->u.cfunc.func(c, recv_val, params_cnt + 1, c->fp + arg_index);
     }
@@ -572,7 +578,7 @@ method_missing_dispatch(CTX * restrict c, NODE * restrict n, struct abruby_class
 }
 
 NODE_DEF
-node_method_call(CTX * restrict c, NODE * restrict n, NODE *recv, const char *name, uint32_t params_cnt, uint32_t arg_index)
+node_method_call(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, uint32_t params_cnt, uint32_t arg_index)
 {
     VALUE recv_val = UNWRAP(EVAL_ARG(c, recv));
     struct abruby_class *klass = AB_CLASS_OF(recv_val);
@@ -593,11 +599,11 @@ static struct abruby_method *
 find_super_method(struct abruby_frame *frame)
 {
     if (!frame || !frame->method || !frame->klass) return NULL;
-    const char *name = frame->method->name;
+    ID name = frame->method->name;
     struct abruby_class *klass = frame->klass->super;
     while (klass) {
         for (unsigned int i = 0; i < klass->method_cnt; i++) {
-            if (strcmp(klass->methods[i].name, name) == 0) {
+            if (klass->methods[i].name == name) {
                 return &klass->methods[i];
             }
         }
@@ -633,16 +639,16 @@ found_super:
 
 // Fallback: general method call for arithmetic operators (recv=lv, arg=rv)
 static __attribute__((noinline, cold)) RESULT
-node_arith_fallback(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, const char *op)
+node_arith_fallback(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, ID op)
 {
     struct abruby_class *klass = AB_CLASS_OF(lv);
     struct abruby_method *method = abruby_class_find_method(klass, op);
     if (!method) {
-        method = abruby_class_find_method(klass, "method_missing");
+        method = abruby_class_find_method(klass, id_method_missing);
         if (!method) {
-            rb_raise(rb_eNoMethodError, "undefined method '%s' for %s", op, klass->name);
+            rb_raise(rb_eNoMethodError, "undefined method '%s' for %s", rb_id2name(op), rb_id2name(klass->name));
         }
-        VALUE args[2] = {abruby_str_new_cstr(op), rv};
+        VALUE args[2] = {abruby_str_new_cstr(rb_id2name(op)), rv};
         return dispatch_method(c, n, lv, method, 2, args);
     }
     return dispatch_method(c, n, lv, method, 1, &rv);
@@ -724,7 +730,7 @@ node_plus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    return node_arith_fallback(c, n, lv, rv, "+");
+    return node_arith_fallback(c, n, lv, rv, id_op_plus);
 }
 
 static __attribute__((noinline, cold)) RESULT
@@ -736,7 +742,7 @@ node_fixnum_plus_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
     }
     else {
         swap_dispatcher(n, &kind_node_plus);
-        return node_arith_fallback(c, n, lv, rv, "+");
+        return node_arith_fallback(c, n, lv, rv, id_op_plus);
     }
 }
 
@@ -772,7 +778,7 @@ node_integer_plus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
     if (ab_is_integer(lv) && ab_is_integer(rv)) {
         return integer_plus_calc(lv, rv);
     }
-    return node_arith_fallback(c, n, lv, rv, "+");
+    return node_arith_fallback(c, n, lv, rv, id_op_plus);
 }
 
 NODE_DEF
@@ -780,7 +786,7 @@ node_minus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    return node_arith_fallback(c, n, lv, rv, "-");
+    return node_arith_fallback(c, n, lv, rv, id_op_minus);
 }
 
 static __attribute__((noinline, cold)) RESULT
@@ -792,7 +798,7 @@ node_fixnum_minus_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
     }
     else {
         swap_dispatcher(n, &kind_node_minus);
-        return node_arith_fallback(c, n, lv, rv, "-");
+        return node_arith_fallback(c, n, lv, rv, id_op_minus);
     }
 }
 
@@ -828,7 +834,7 @@ node_integer_minus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
     if (ab_is_integer(lv) && ab_is_integer(rv)) {
         return integer_minus_calc(lv, rv);
     }
-    return node_arith_fallback(c, n, lv, rv, "-");
+    return node_arith_fallback(c, n, lv, rv, id_op_minus);
 }
 
 NODE_DEF
@@ -836,7 +842,7 @@ node_mul(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    return node_arith_fallback(c, n, lv, rv, "*");
+    return node_arith_fallback(c, n, lv, rv, id_op_mul);
 }
 
 static __attribute__((noinline, cold)) RESULT
@@ -848,7 +854,7 @@ node_fixnum_mul_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
     }
     else {
         swap_dispatcher(n, &kind_node_mul);
-        return node_arith_fallback(c, n, lv, rv, "*");
+        return node_arith_fallback(c, n, lv, rv, id_op_mul);
     }
 }
 
@@ -887,7 +893,7 @@ node_integer_mul(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
     if (ab_is_integer(lv) && ab_is_integer(rv)) {
         return integer_mul_calc(lv, rv);
     }
-    return node_arith_fallback(c, n, lv, rv, "*");
+    return node_arith_fallback(c, n, lv, rv, id_op_mul);
 }
 
 NODE_DEF
@@ -895,7 +901,7 @@ node_div(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    return node_arith_fallback(c, n, lv, rv, "/");
+    return node_arith_fallback(c, n, lv, rv, id_op_div);
 }
 
 static __attribute__((noinline, cold)) RESULT
@@ -907,7 +913,7 @@ node_fixnum_div_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
     }
     else {
         swap_dispatcher(n, &kind_node_div);
-        return node_arith_fallback(c, n, lv, rv, "/");
+        return node_arith_fallback(c, n, lv, rv, id_op_div);
     }
 }
 
@@ -951,7 +957,7 @@ node_integer_div(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
     if (ab_is_integer(lv) && ab_is_integer(rv)) {
         return integer_div_calc(lv, rv);
     }
-    return node_arith_fallback(c, n, lv, rv, "/");
+    return node_arith_fallback(c, n, lv, rv, id_op_div);
 }
 
 // === Comparison rewrite (type-specific nodes) ===
@@ -979,14 +985,14 @@ node_lt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    return node_arith_fallback(c, n, lv, rv, "<");
+    return node_arith_fallback(c, n, lv, rv, id_op_lt);
 }
 
 static __attribute__((noinline, cold)) RESULT
 node_fixnum_lt_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
 {
     swap_dispatcher(n, &kind_node_lt);
-    return node_arith_fallback(c, n, lv, rv, "<");
+    return node_arith_fallback(c, n, lv, rv, id_op_lt);
 }
 
 NODE_DEF
@@ -1005,14 +1011,14 @@ node_le(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    return node_arith_fallback(c, n, lv, rv, "<=");
+    return node_arith_fallback(c, n, lv, rv, id_op_le);
 }
 
 static __attribute__((noinline, cold)) RESULT
 node_fixnum_le_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
 {
     swap_dispatcher(n, &kind_node_le);
-    return node_arith_fallback(c, n, lv, rv, "<=");
+    return node_arith_fallback(c, n, lv, rv, id_op_le);
 }
 
 NODE_DEF
@@ -1031,14 +1037,14 @@ node_gt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    return node_arith_fallback(c, n, lv, rv, ">");
+    return node_arith_fallback(c, n, lv, rv, id_op_gt);
 }
 
 static __attribute__((noinline, cold)) RESULT
 node_fixnum_gt_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
 {
     swap_dispatcher(n, &kind_node_gt);
-    return node_arith_fallback(c, n, lv, rv, ">");
+    return node_arith_fallback(c, n, lv, rv, id_op_gt);
 }
 
 NODE_DEF
@@ -1057,14 +1063,14 @@ node_ge(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    return node_arith_fallback(c, n, lv, rv, ">=");
+    return node_arith_fallback(c, n, lv, rv, id_op_ge);
 }
 
 static __attribute__((noinline, cold)) RESULT
 node_fixnum_ge_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
 {
     swap_dispatcher(n, &kind_node_ge);
-    return node_arith_fallback(c, n, lv, rv, ">=");
+    return node_arith_fallback(c, n, lv, rv, id_op_ge);
 }
 
 NODE_DEF
@@ -1099,14 +1105,14 @@ node_eq(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    return node_arith_fallback(c, n, lv, rv, "==");
+    return node_arith_fallback(c, n, lv, rv, id_op_eq);
 }
 
 static __attribute__((noinline, cold)) RESULT
 node_fixnum_eq_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
 {
     swap_dispatcher(n, &kind_node_eq);
-    return node_arith_fallback(c, n, lv, rv, "==");
+    return node_arith_fallback(c, n, lv, rv, id_op_eq);
 }
 
 NODE_DEF
@@ -1126,7 +1132,7 @@ node_neq(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
     // != is defined as !(==), fallback through ==
-    RESULT eq = node_arith_fallback(c, n, lv, rv, "==");
+    RESULT eq = node_arith_fallback(c, n, lv, rv, id_op_eq);
     if (eq.state != RESULT_NORMAL) return eq;
     return RESULT_OK(RTEST(eq.value) ? Qfalse : Qtrue);
 }
@@ -1136,7 +1142,7 @@ node_fixnum_neq_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
 {
     swap_dispatcher(n, &kind_node_neq);
     // != is defined as !(==), fallback through ==
-    RESULT eq = node_arith_fallback(c, n, lv, rv, "==");
+    RESULT eq = node_arith_fallback(c, n, lv, rv, id_op_eq);
     if (eq.state != RESULT_NORMAL) return eq;
     return RESULT_OK(RTEST(eq.value) ? Qfalse : Qtrue);
 }
@@ -1157,14 +1163,14 @@ node_mod(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    return node_arith_fallback(c, n, lv, rv, "%");
+    return node_arith_fallback(c, n, lv, rv, id_op_mod);
 }
 
 static __attribute__((noinline, cold)) RESULT
 node_fixnum_mod_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
 {
     swap_dispatcher(n, &kind_node_mod);
-    return node_arith_fallback(c, n, lv, rv, "%");
+    return node_arith_fallback(c, n, lv, rv, id_op_mod);
 }
 
 NODE_DEF

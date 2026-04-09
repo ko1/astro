@@ -70,11 +70,11 @@ static RESULT ab_kernel_eval(CTX *c, VALUE self, unsigned int argc, VALUE *argv)
 void
 Init_abruby_kernel(void)
 {
-    abruby_class_add_cfunc(ab_kernel_module, "p",        ab_kernel_p,        1);
-    abruby_class_add_cfunc(ab_kernel_module, "raise",    ab_kernel_raise,    1);
-    abruby_class_add_cfunc(ab_kernel_module, "Rational", ab_kernel_Rational, 2);
-    abruby_class_add_cfunc(ab_kernel_module, "Complex",          ab_kernel_Complex,          2);
-    abruby_class_add_cfunc(ab_kernel_module, "require",          ab_kernel_require,          1);
-    abruby_class_add_cfunc(ab_kernel_module, "require_relative", ab_kernel_require_relative, 1);
-    abruby_class_add_cfunc(ab_kernel_module, "eval",             ab_kernel_eval,             1);
+    abruby_class_add_cfunc(ab_kernel_module, rb_intern("p"),        ab_kernel_p,        1);
+    abruby_class_add_cfunc(ab_kernel_module, rb_intern("raise"),    ab_kernel_raise,    1);
+    abruby_class_add_cfunc(ab_kernel_module, rb_intern("Rational"), ab_kernel_Rational, 2);
+    abruby_class_add_cfunc(ab_kernel_module, rb_intern("Complex"),          ab_kernel_Complex,          2);
+    abruby_class_add_cfunc(ab_kernel_module, rb_intern("require"),          ab_kernel_require,          1);
+    abruby_class_add_cfunc(ab_kernel_module, rb_intern("require_relative"), ab_kernel_require_relative, 1);
+    abruby_class_add_cfunc(ab_kernel_module, rb_intern("eval"),             ab_kernel_eval,             1);
 }

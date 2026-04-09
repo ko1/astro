@@ -41,8 +41,8 @@ static RESULT ab_exception_inspect(CTX *c, VALUE self, unsigned int argc, VALUE 
 void
 Init_abruby_exception(void)
 {
-    abruby_class_add_cfunc(ab_runtime_error_class, "message",   ab_exception_message,   0);
-    abruby_class_add_cfunc(ab_runtime_error_class, "backtrace", ab_exception_backtrace, 0);
-    abruby_class_add_cfunc(ab_runtime_error_class, "to_s",      ab_exception_to_s,      0);
-    abruby_class_add_cfunc(ab_runtime_error_class, "inspect",   ab_exception_inspect,   0);
+    abruby_class_add_cfunc(ab_runtime_error_class, rb_intern("message"),   ab_exception_message,   0);
+    abruby_class_add_cfunc(ab_runtime_error_class, rb_intern("backtrace"), ab_exception_backtrace, 0);
+    abruby_class_add_cfunc(ab_runtime_error_class, rb_intern("to_s"),      ab_exception_to_s,      0);
+    abruby_class_add_cfunc(ab_runtime_error_class, rb_intern("inspect"),   ab_exception_inspect,   0);
 }

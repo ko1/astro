@@ -197,30 +197,30 @@ static RESULT ab_integer_aref(CTX *c, VALUE self, unsigned int argc, VALUE *argv
 void
 Init_abruby_integer(void)
 {
-    abruby_class_add_cfunc(ab_integer_class, "inspect", ab_integer_inspect, 0);
-    abruby_class_add_cfunc(ab_integer_class, "to_s",   ab_integer_to_s,    0);
-    abruby_class_add_cfunc(ab_integer_class, "+",      ab_integer_add,     1);
-    abruby_class_add_cfunc(ab_integer_class, "-",      ab_integer_sub,     1);
-    abruby_class_add_cfunc(ab_integer_class, "*",      ab_integer_mul,     1);
-    abruby_class_add_cfunc(ab_integer_class, "/",      ab_integer_div,     1);
-    abruby_class_add_cfunc(ab_integer_class, "%",      ab_integer_mod,     1);
-    abruby_class_add_cfunc(ab_integer_class, "**",     ab_integer_pow,     1);
-    abruby_class_add_cfunc(ab_integer_class, "-@",     ab_integer_neg,     0);
-    abruby_class_add_cfunc(ab_integer_class, "<",      ab_integer_lt,      1);
-    abruby_class_add_cfunc(ab_integer_class, "<=",     ab_integer_le,      1);
-    abruby_class_add_cfunc(ab_integer_class, ">",      ab_integer_gt,      1);
-    abruby_class_add_cfunc(ab_integer_class, ">=",     ab_integer_ge,      1);
-    abruby_class_add_cfunc(ab_integer_class, "==",     ab_integer_eq,      1);
-    abruby_class_add_cfunc(ab_integer_class, "!=",     ab_integer_neq,     1);
-    abruby_class_add_cfunc(ab_integer_class, "<=>",    ab_integer_cmp,     1);
-    abruby_class_add_cfunc(ab_integer_class, "<<",     ab_integer_lshift,  1);
-    abruby_class_add_cfunc(ab_integer_class, ">>",     ab_integer_rshift,  1);
-    abruby_class_add_cfunc(ab_integer_class, "&",      ab_integer_band,    1);
-    abruby_class_add_cfunc(ab_integer_class, "|",      ab_integer_bor,     1);
-    abruby_class_add_cfunc(ab_integer_class, "^",      ab_integer_bxor,    1);
-    abruby_class_add_cfunc(ab_integer_class, "~",      ab_integer_bnot,    0);
-    abruby_class_add_cfunc(ab_integer_class, "to_f",   ab_integer_to_f,    0);
-    abruby_class_add_cfunc(ab_integer_class, "zero?",  ab_integer_zero_p,  0);
-    abruby_class_add_cfunc(ab_integer_class, "abs",    ab_integer_abs,     0);
-    abruby_class_add_cfunc(ab_integer_class, "[]",     ab_integer_aref,    1);
+    abruby_class_add_cfunc(ab_integer_class, rb_intern("inspect"), ab_integer_inspect, 0);
+    abruby_class_add_cfunc(ab_integer_class, rb_intern("to_s"),   ab_integer_to_s,    0);
+    abruby_class_add_cfunc(ab_integer_class, rb_intern("+"),      ab_integer_add,     1);
+    abruby_class_add_cfunc(ab_integer_class, rb_intern("-"),      ab_integer_sub,     1);
+    abruby_class_add_cfunc(ab_integer_class, rb_intern("*"),      ab_integer_mul,     1);
+    abruby_class_add_cfunc(ab_integer_class, rb_intern("/"),      ab_integer_div,     1);
+    abruby_class_add_cfunc(ab_integer_class, rb_intern("%"),      ab_integer_mod,     1);
+    abruby_class_add_cfunc(ab_integer_class, rb_intern("**"),     ab_integer_pow,     1);
+    abruby_class_add_cfunc(ab_integer_class, rb_intern("-@"),     ab_integer_neg,     0);
+    abruby_class_add_cfunc(ab_integer_class, rb_intern("<"),      ab_integer_lt,      1);
+    abruby_class_add_cfunc(ab_integer_class, rb_intern("<="),     ab_integer_le,      1);
+    abruby_class_add_cfunc(ab_integer_class, rb_intern(">"),      ab_integer_gt,      1);
+    abruby_class_add_cfunc(ab_integer_class, rb_intern(">="),     ab_integer_ge,      1);
+    abruby_class_add_cfunc(ab_integer_class, rb_intern("=="),     ab_integer_eq,      1);
+    abruby_class_add_cfunc(ab_integer_class, rb_intern("!="),     ab_integer_neq,     1);
+    abruby_class_add_cfunc(ab_integer_class, rb_intern("<=>"),    ab_integer_cmp,     1);
+    abruby_class_add_cfunc(ab_integer_class, rb_intern("<<"),     ab_integer_lshift,  1);
+    abruby_class_add_cfunc(ab_integer_class, rb_intern(">>"),     ab_integer_rshift,  1);
+    abruby_class_add_cfunc(ab_integer_class, rb_intern("&"),      ab_integer_band,    1);
+    abruby_class_add_cfunc(ab_integer_class, rb_intern("|"),      ab_integer_bor,     1);
+    abruby_class_add_cfunc(ab_integer_class, rb_intern("^"),      ab_integer_bxor,    1);
+    abruby_class_add_cfunc(ab_integer_class, rb_intern("~"),      ab_integer_bnot,    0);
+    abruby_class_add_cfunc(ab_integer_class, rb_intern("to_f"),   ab_integer_to_f,    0);
+    abruby_class_add_cfunc(ab_integer_class, rb_intern("zero?"),  ab_integer_zero_p,  0);
+    abruby_class_add_cfunc(ab_integer_class, rb_intern("abs"),    ab_integer_abs,     0);
+    abruby_class_add_cfunc(ab_integer_class, rb_intern("[]"),     ab_integer_aref,    1);
 }

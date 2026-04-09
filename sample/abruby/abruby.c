@@ -15,24 +15,24 @@ static VALUE rb_cAbRubyNode;
 
 // Built-in abruby classes (klass field = ab_class_class, set in init)
 
-static struct abruby_class ab_kernel_module_body = { .name = "Kernel" };
-static struct abruby_class ab_module_class_body  = { .name = "Module" };
-static struct abruby_class ab_class_class_body   = { .name = "Class", .super = &ab_module_class_body };
-static struct abruby_class ab_object_class_body  = { .name = "Object" };
-static struct abruby_class ab_float_class_body   = { .name = "Float",   .super = &ab_object_class_body };
-static struct abruby_class ab_array_class_body   = { .name = "Array", .super = &ab_object_class_body };
-static struct abruby_class ab_hash_class_body    = { .name = "Hash",  .super = &ab_object_class_body };
-static struct abruby_class ab_integer_class_body = { .name = "Integer", .super = &ab_object_class_body };
-static struct abruby_class ab_string_class_body  = { .name = "String",  .super = &ab_object_class_body };
-static struct abruby_class ab_symbol_class_body  = { .name = "Symbol",  .super = &ab_object_class_body };
-static struct abruby_class ab_range_class_body   = { .name = "Range",   .super = &ab_object_class_body };
-static struct abruby_class ab_regexp_class_body  = { .name = "Regexp",  .super = &ab_object_class_body };
-static struct abruby_class ab_rational_class_body = { .name = "Rational", .super = &ab_object_class_body };
-static struct abruby_class ab_complex_class_body  = { .name = "Complex",  .super = &ab_object_class_body };
-static struct abruby_class ab_true_class_body    = { .name = "TrueClass",  .super = &ab_object_class_body };
-static struct abruby_class ab_false_class_body   = { .name = "FalseClass", .super = &ab_object_class_body };
-static struct abruby_class ab_nil_class_body     = { .name = "NilClass",   .super = &ab_object_class_body };
-static struct abruby_class ab_runtime_error_class_body = { .name = "RuntimeError", .super = &ab_object_class_body };
+static struct abruby_class ab_kernel_module_body = { .name = 0 };
+static struct abruby_class ab_module_class_body  = { .name = 0 };
+static struct abruby_class ab_class_class_body   = { .name = 0, .super = &ab_module_class_body };
+static struct abruby_class ab_object_class_body  = { .name = 0 };
+static struct abruby_class ab_float_class_body   = { .name = 0, .super = &ab_object_class_body };
+static struct abruby_class ab_array_class_body   = { .name = 0, .super = &ab_object_class_body };
+static struct abruby_class ab_hash_class_body    = { .name = 0, .super = &ab_object_class_body };
+static struct abruby_class ab_integer_class_body = { .name = 0, .super = &ab_object_class_body };
+static struct abruby_class ab_string_class_body  = { .name = 0, .super = &ab_object_class_body };
+static struct abruby_class ab_symbol_class_body  = { .name = 0, .super = &ab_object_class_body };
+static struct abruby_class ab_range_class_body   = { .name = 0, .super = &ab_object_class_body };
+static struct abruby_class ab_regexp_class_body  = { .name = 0, .super = &ab_object_class_body };
+static struct abruby_class ab_rational_class_body = { .name = 0, .super = &ab_object_class_body };
+static struct abruby_class ab_complex_class_body  = { .name = 0, .super = &ab_object_class_body };
+static struct abruby_class ab_true_class_body    = { .name = 0, .super = &ab_object_class_body };
+static struct abruby_class ab_false_class_body   = { .name = 0, .super = &ab_object_class_body };
+static struct abruby_class ab_nil_class_body     = { .name = 0, .super = &ab_object_class_body };
+static struct abruby_class ab_runtime_error_class_body = { .name = 0, .super = &ab_object_class_body };
 
 struct abruby_class *ab_float_class   = &ab_float_class_body;
 struct abruby_class *ab_array_class   = &ab_array_class_body;
@@ -273,11 +273,11 @@ abruby_unwrap_class(VALUE obj)
 // === Shared helpers and builtin infrastructure ===
 
 void
-abruby_class_set_const(struct abruby_class *klass, const char *name, VALUE val)
+abruby_class_set_const(struct abruby_class *klass, ID name, VALUE val)
 {
     // Check for existing, update
     for (unsigned int i = 0; i < klass->const_cnt; i++) {
-        if (strcmp(klass->constants[i].name, name) == 0) {
+        if (klass->constants[i].name == name) {
             klass->constants[i].value = val;
             return;
         }
@@ -315,13 +315,13 @@ abruby_call_method(CTX *c, VALUE recv, struct abruby_method *method,
 
 VALUE
 ab_inspect_rstr(CTX *c, VALUE v) {
-    struct abruby_method *ins = abruby_find_method(AB_CLASS_OF(v), "inspect");
+    struct abruby_method *ins = abruby_find_method(AB_CLASS_OF(v), rb_intern("inspect"));
     RESULT r = abruby_call_method(c, v, ins, 0, NULL);
     return RSTR(r.value);
 }
 
 void
-abruby_class_add_cfunc(struct abruby_class *klass, const char *name,
+abruby_class_add_cfunc(struct abruby_class *klass, ID name,
                        abruby_cfunc_t func, unsigned int params_cnt)
 {
     struct abruby_method *m = &klass->methods[klass->method_cnt++];
@@ -357,13 +357,13 @@ init_builtin_methods(void)
 // ivar helpers
 
 VALUE
-abruby_ivar_get(VALUE self, const char *name)
+abruby_ivar_get(VALUE self, ID name)
 {
     ab_verify(self);
     struct abruby_object *obj;
     TypedData_Get_Struct(self, struct abruby_object, &abruby_data_type, obj);
     for (unsigned int i = 0; i < obj->ivar_cnt; i++) {
-        if (strcmp(obj->ivars[i].name, name) == 0) {
+        if (obj->ivars[i].name == name) {
             return obj->ivars[i].value;
         }
     }
@@ -371,7 +371,7 @@ abruby_ivar_get(VALUE self, const char *name)
 }
 
 void
-abruby_ivar_set(VALUE self, const char *name, VALUE val)
+abruby_ivar_set(VALUE self, ID name, VALUE val)
 {
     ab_verify(self);
     if (!RB_TYPE_P(self, T_DATA)) {
@@ -380,7 +380,7 @@ abruby_ivar_set(VALUE self, const char *name, VALUE val)
     struct abruby_object *obj;
     TypedData_Get_Struct(self, struct abruby_object, &abruby_data_type, obj);
     for (unsigned int i = 0; i < obj->ivar_cnt; i++) {
-        if (strcmp(obj->ivars[i].name, name) == 0) {
+        if (obj->ivars[i].name == name) {
             obj->ivars[i].value = val;
             return;
         }
@@ -466,7 +466,7 @@ abruby_exception_new(CTX *c, struct abruby_frame *start_frame, VALUE message)
 
         if (f->method) {
             // Normal method frame
-            name = f->method->name;
+            name = rb_id2name(f->method->name);
             file = (f->method->type == ABRUBY_METHOD_AST && f->method->u.ast.source_file)
                 ? f->method->u.ast.source_file : "(abruby)";
             line = f->node ? f->node->head.line : 0;
@@ -496,7 +496,7 @@ create_vm(void)
     struct abruby_vm *vm = ruby_xcalloc(1, sizeof(struct abruby_vm));
     // Per-instance main class (inherits from Object)
     vm->main_class_body.klass = ab_class_class;
-    vm->main_class_body.name = "main";
+    vm->main_class_body.name = rb_intern("main");
     vm->main_class_body.super = ab_object_class;
     vm->ctx.main_class = &vm->main_class_body;
 
@@ -519,24 +519,24 @@ create_vm(void)
 static void
 init_builtin_consts(void)
 {
-    abruby_class_set_const(ab_object_class, "Object",     abruby_wrap_class(ab_object_class));
-    abruby_class_set_const(ab_object_class, "Class",      abruby_wrap_class(ab_class_class));
-    abruby_class_set_const(ab_object_class, "Module",     abruby_wrap_class(ab_module_class));
-    abruby_class_set_const(ab_object_class, "Kernel",     abruby_wrap_class(ab_kernel_module));
-    abruby_class_set_const(ab_object_class, "Integer",    abruby_wrap_class(ab_integer_class));
-    abruby_class_set_const(ab_object_class, "Float",      abruby_wrap_class(ab_float_class));
-    abruby_class_set_const(ab_object_class, "String",     abruby_wrap_class(ab_string_class));
-    abruby_class_set_const(ab_object_class, "Symbol",     abruby_wrap_class(ab_symbol_class));
-    abruby_class_set_const(ab_object_class, "Array",      abruby_wrap_class(ab_array_class));
-    abruby_class_set_const(ab_object_class, "Hash",       abruby_wrap_class(ab_hash_class));
-    abruby_class_set_const(ab_object_class, "Range",      abruby_wrap_class(ab_range_class));
-    abruby_class_set_const(ab_object_class, "Regexp",     abruby_wrap_class(ab_regexp_class));
-    abruby_class_set_const(ab_object_class, "Rational",   abruby_wrap_class(ab_rational_class));
-    abruby_class_set_const(ab_object_class, "Complex",    abruby_wrap_class(ab_complex_class));
-    abruby_class_set_const(ab_object_class, "TrueClass",  abruby_wrap_class(ab_true_class));
-    abruby_class_set_const(ab_object_class, "FalseClass", abruby_wrap_class(ab_false_class));
-    abruby_class_set_const(ab_object_class, "NilClass",      abruby_wrap_class(ab_nil_class));
-    abruby_class_set_const(ab_object_class, "RuntimeError", abruby_wrap_class(ab_runtime_error_class));
+    abruby_class_set_const(ab_object_class, rb_intern("Object"),       abruby_wrap_class(ab_object_class));
+    abruby_class_set_const(ab_object_class, rb_intern("Class"),        abruby_wrap_class(ab_class_class));
+    abruby_class_set_const(ab_object_class, rb_intern("Module"),       abruby_wrap_class(ab_module_class));
+    abruby_class_set_const(ab_object_class, rb_intern("Kernel"),       abruby_wrap_class(ab_kernel_module));
+    abruby_class_set_const(ab_object_class, rb_intern("Integer"),      abruby_wrap_class(ab_integer_class));
+    abruby_class_set_const(ab_object_class, rb_intern("Float"),        abruby_wrap_class(ab_float_class));
+    abruby_class_set_const(ab_object_class, rb_intern("String"),       abruby_wrap_class(ab_string_class));
+    abruby_class_set_const(ab_object_class, rb_intern("Symbol"),       abruby_wrap_class(ab_symbol_class));
+    abruby_class_set_const(ab_object_class, rb_intern("Array"),        abruby_wrap_class(ab_array_class));
+    abruby_class_set_const(ab_object_class, rb_intern("Hash"),         abruby_wrap_class(ab_hash_class));
+    abruby_class_set_const(ab_object_class, rb_intern("Range"),        abruby_wrap_class(ab_range_class));
+    abruby_class_set_const(ab_object_class, rb_intern("Regexp"),       abruby_wrap_class(ab_regexp_class));
+    abruby_class_set_const(ab_object_class, rb_intern("Rational"),     abruby_wrap_class(ab_rational_class));
+    abruby_class_set_const(ab_object_class, rb_intern("Complex"),      abruby_wrap_class(ab_complex_class));
+    abruby_class_set_const(ab_object_class, rb_intern("TrueClass"),    abruby_wrap_class(ab_true_class));
+    abruby_class_set_const(ab_object_class, rb_intern("FalseClass"),   abruby_wrap_class(ab_false_class));
+    abruby_class_set_const(ab_object_class, rb_intern("NilClass"),     abruby_wrap_class(ab_nil_class));
+    abruby_class_set_const(ab_object_class, rb_intern("RuntimeError"), abruby_wrap_class(ab_runtime_error_class));
 }
 
 // NODE wrapper (T_DATA)
@@ -712,7 +712,7 @@ rb_alloc_node_rescue(VALUE self, VALUE body, VALUE rescue_body, VALUE ensure_bod
 static VALUE
 rb_alloc_node_def(VALUE self, VALUE name, VALUE body, VALUE params_cnt, VALUE locals_cnt)
 {
-    const char *cname = strdup(StringValueCStr(name));
+    ID cname = rb_intern_str(name);
     return wrap_node(ALLOC_node_def(cname, unwrap_node(body), FIX2UINT(params_cnt), FIX2UINT(locals_cnt)));
 }
 
@@ -724,28 +724,28 @@ rb_alloc_node_def(VALUE self, VALUE name, VALUE body, VALUE params_cnt, VALUE lo
 static VALUE
 rb_alloc_node_gvar_get(VALUE self, VALUE name)
 {
-    const char *cname = strdup(StringValueCStr(name));
+    ID cname = rb_intern_str(name);
     return wrap_node(ALLOC_node_gvar_get(cname));
 }
 
 static VALUE
 rb_alloc_node_gvar_set(VALUE self, VALUE name, VALUE value)
 {
-    const char *cname = strdup(StringValueCStr(name));
+    ID cname = rb_intern_str(name);
     return wrap_node(ALLOC_node_gvar_set(cname, unwrap_node(value)));
 }
 
 static VALUE
 rb_alloc_node_ivar_get(VALUE self, VALUE name)
 {
-    const char *cname = strdup(StringValueCStr(name));
+    ID cname = rb_intern_str(name);
     return wrap_node(ALLOC_node_ivar_get(cname));
 }
 
 static VALUE
 rb_alloc_node_ivar_set(VALUE self, VALUE name, VALUE value)
 {
-    const char *cname = strdup(StringValueCStr(name));
+    ID cname = rb_intern_str(name);
     return wrap_node(ALLOC_node_ivar_set(cname, unwrap_node(value)));
 }
 
@@ -754,15 +754,15 @@ rb_alloc_node_ivar_set(VALUE self, VALUE name, VALUE value)
 static VALUE
 rb_alloc_node_module_def(VALUE self, VALUE name, VALUE body)
 {
-    const char *cname = strdup(StringValueCStr(name));
+    ID cname = rb_intern_str(name);
     return wrap_node(ALLOC_node_module_def(cname, unwrap_node(body)));
 }
 
 static VALUE
 rb_alloc_node_class_def(VALUE self, VALUE name, VALUE super_name, VALUE body)
 {
-    const char *cname = strdup(StringValueCStr(name));
-    const char *csup = strdup(StringValueCStr(super_name));
+    ID cname = rb_intern_str(name);
+    ID csup = RSTRING_LEN(super_name) == 0 ? 0 : rb_intern_str(super_name);
     return wrap_node(ALLOC_node_class_def(cname, csup, unwrap_node(body)));
 }
 
@@ -781,29 +781,29 @@ rb_alloc_node_hash_new(VALUE self, VALUE argc, VALUE arg_index)
 static VALUE
 rb_alloc_node_const_set(VALUE self, VALUE name, VALUE value)
 {
-    const char *cname = strdup(StringValueCStr(name));
+    ID cname = rb_intern_str(name);
     return wrap_node(ALLOC_node_const_set(cname, unwrap_node(value)));
 }
 
 static VALUE
 rb_alloc_node_const_get(VALUE self, VALUE name)
 {
-    const char *cname = strdup(StringValueCStr(name));
+    ID cname = rb_intern_str(name);
     return wrap_node(ALLOC_node_const_get(cname));
 }
 
 static VALUE
 rb_alloc_node_const_path_get(VALUE self, VALUE parent, VALUE name)
 {
-    const char *cparent = strdup(StringValueCStr(parent));
-    const char *cname = strdup(StringValueCStr(name));
+    ID cparent = rb_intern_str(parent);
+    ID cname = rb_intern_str(name);
     return wrap_node(ALLOC_node_const_path_get(cparent, cname));
 }
 
 static VALUE
 rb_alloc_node_method_call(VALUE self, VALUE recv, VALUE name, VALUE params_cnt, VALUE arg_index)
 {
-    const char *cname = strdup(StringValueCStr(name));
+    ID cname = rb_intern_str(name);
     return wrap_node(ALLOC_node_method_call(unwrap_node(recv), cname, FIX2UINT(params_cnt), FIX2UINT(arg_index)));
 }
 
@@ -1213,6 +1213,27 @@ rb_astro_cs_disasm(VALUE self, VALUE node_val)
 void
 Init_abruby(void)
 {
+    // Initialize class names (can't use rb_intern in static initializers)
+    ab_kernel_module_body.name = rb_intern("Kernel");
+    ab_module_class_body.name = rb_intern("Module");
+    ab_class_class_body.name = rb_intern("Class");
+    ab_object_class_body.name = rb_intern("Object");
+    ab_float_class_body.name = rb_intern("Float");
+    ab_array_class_body.name = rb_intern("Array");
+    ab_hash_class_body.name = rb_intern("Hash");
+    ab_integer_class_body.name = rb_intern("Integer");
+    ab_string_class_body.name = rb_intern("String");
+    ab_symbol_class_body.name = rb_intern("Symbol");
+    ab_range_class_body.name = rb_intern("Range");
+    ab_regexp_class_body.name = rb_intern("Regexp");
+    ab_rational_class_body.name = rb_intern("Rational");
+    ab_complex_class_body.name = rb_intern("Complex");
+    ab_true_class_body.name = rb_intern("TrueClass");
+    ab_false_class_body.name = rb_intern("FalseClass");
+    ab_nil_class_body.name = rb_intern("NilClass");
+    ab_runtime_error_class_body.name = rb_intern("RuntimeError");
+
+    init_interned_ids();
     INIT();
     init_builtin_methods();
 

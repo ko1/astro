@@ -35,18 +35,18 @@ static RESULT ab_array_include_p(CTX *c, VALUE self, unsigned int argc, VALUE *a
 void
 Init_abruby_array(void)
 {
-    abruby_class_add_cfunc(ab_array_class, "inspect",  ab_array_inspect,   0);
-    abruby_class_add_cfunc(ab_array_class, "to_s",     ab_array_to_s,      0);
-    abruby_class_add_cfunc(ab_array_class, "[]",       ab_array_get,       1);
-    abruby_class_add_cfunc(ab_array_class, "[]=",      ab_array_set,       2);
-    abruby_class_add_cfunc(ab_array_class, "push",     ab_array_push,      1);
-    abruby_class_add_cfunc(ab_array_class, "<<",       ab_array_push,      1);
-    abruby_class_add_cfunc(ab_array_class, "pop",      ab_array_pop,       0);
-    abruby_class_add_cfunc(ab_array_class, "length",   ab_array_length,    0);
-    abruby_class_add_cfunc(ab_array_class, "size",     ab_array_length,    0);
-    abruby_class_add_cfunc(ab_array_class, "empty?",   ab_array_empty_p,   0);
-    abruby_class_add_cfunc(ab_array_class, "first",    ab_array_first,     0);
-    abruby_class_add_cfunc(ab_array_class, "last",     ab_array_last,      0);
-    abruby_class_add_cfunc(ab_array_class, "+",        ab_array_add,       1);
-    abruby_class_add_cfunc(ab_array_class, "include?", ab_array_include_p, 1);
+    abruby_class_add_cfunc(ab_array_class, rb_intern("inspect"),  ab_array_inspect,   0);
+    abruby_class_add_cfunc(ab_array_class, rb_intern("to_s"),     ab_array_to_s,      0);
+    abruby_class_add_cfunc(ab_array_class, rb_intern("[]"),       ab_array_get,       1);
+    abruby_class_add_cfunc(ab_array_class, rb_intern("[]="),      ab_array_set,       2);
+    abruby_class_add_cfunc(ab_array_class, rb_intern("push"),     ab_array_push,      1);
+    abruby_class_add_cfunc(ab_array_class, rb_intern("<<"),       ab_array_push,      1);
+    abruby_class_add_cfunc(ab_array_class, rb_intern("pop"),      ab_array_pop,       0);
+    abruby_class_add_cfunc(ab_array_class, rb_intern("length"),   ab_array_length,    0);
+    abruby_class_add_cfunc(ab_array_class, rb_intern("size"),     ab_array_length,    0);
+    abruby_class_add_cfunc(ab_array_class, rb_intern("empty?"),   ab_array_empty_p,   0);
+    abruby_class_add_cfunc(ab_array_class, rb_intern("first"),    ab_array_first,     0);
+    abruby_class_add_cfunc(ab_array_class, rb_intern("last"),     ab_array_last,      0);
+    abruby_class_add_cfunc(ab_array_class, rb_intern("+"),        ab_array_add,       1);
+    abruby_class_add_cfunc(ab_array_class, rb_intern("include?"), ab_array_include_p, 1);
 }

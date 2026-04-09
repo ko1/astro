@@ -60,20 +60,20 @@ static RESULT ab_complex_rectangular(CTX *c, VALUE self, unsigned int argc, VALU
 void
 Init_abruby_complex(void)
 {
-    abruby_class_add_cfunc(ab_complex_class, "inspect",     ab_complex_inspect,     0);
-    abruby_class_add_cfunc(ab_complex_class, "to_s",        ab_complex_to_s,        0);
-    abruby_class_add_cfunc(ab_complex_class, "to_f",        ab_complex_to_f,        0);
-    abruby_class_add_cfunc(ab_complex_class, "to_c",        ab_complex_to_c,        0);
-    abruby_class_add_cfunc(ab_complex_class, "+",           ab_complex_add,         1);
-    abruby_class_add_cfunc(ab_complex_class, "-",           ab_complex_sub,         1);
-    abruby_class_add_cfunc(ab_complex_class, "*",           ab_complex_mul,         1);
-    abruby_class_add_cfunc(ab_complex_class, "/",           ab_complex_div,         1);
-    abruby_class_add_cfunc(ab_complex_class, "**",          ab_complex_pow,         1);
-    abruby_class_add_cfunc(ab_complex_class, "-@",          ab_complex_neg,         0);
-    abruby_class_add_cfunc(ab_complex_class, "==",          ab_complex_eq,          1);
-    abruby_class_add_cfunc(ab_complex_class, "real",        ab_complex_real,        0);
-    abruby_class_add_cfunc(ab_complex_class, "imaginary",   ab_complex_imaginary,   0);
-    abruby_class_add_cfunc(ab_complex_class, "abs",         ab_complex_abs,         0);
-    abruby_class_add_cfunc(ab_complex_class, "conjugate",   ab_complex_conjugate,   0);
-    abruby_class_add_cfunc(ab_complex_class, "rectangular",  ab_complex_rectangular, 0);
+    abruby_class_add_cfunc(ab_complex_class, rb_intern("inspect"),     ab_complex_inspect,     0);
+    abruby_class_add_cfunc(ab_complex_class, rb_intern("to_s"),        ab_complex_to_s,        0);
+    abruby_class_add_cfunc(ab_complex_class, rb_intern("to_f"),        ab_complex_to_f,        0);
+    abruby_class_add_cfunc(ab_complex_class, rb_intern("to_c"),        ab_complex_to_c,        0);
+    abruby_class_add_cfunc(ab_complex_class, rb_intern("+"),           ab_complex_add,         1);
+    abruby_class_add_cfunc(ab_complex_class, rb_intern("-"),           ab_complex_sub,         1);
+    abruby_class_add_cfunc(ab_complex_class, rb_intern("*"),           ab_complex_mul,         1);
+    abruby_class_add_cfunc(ab_complex_class, rb_intern("/"),           ab_complex_div,         1);
+    abruby_class_add_cfunc(ab_complex_class, rb_intern("**"),          ab_complex_pow,         1);
+    abruby_class_add_cfunc(ab_complex_class, rb_intern("-@"),          ab_complex_neg,         0);
+    abruby_class_add_cfunc(ab_complex_class, rb_intern("=="),          ab_complex_eq,          1);
+    abruby_class_add_cfunc(ab_complex_class, rb_intern("real"),        ab_complex_real,        0);
+    abruby_class_add_cfunc(ab_complex_class, rb_intern("imaginary"),   ab_complex_imaginary,   0);
+    abruby_class_add_cfunc(ab_complex_class, rb_intern("abs"),         ab_complex_abs,         0);
+    abruby_class_add_cfunc(ab_complex_class, rb_intern("conjugate"),   ab_complex_conjugate,   0);
+    abruby_class_add_cfunc(ab_complex_class, rb_intern("rectangular"),  ab_complex_rectangular, 0);
 }

@@ -26,9 +26,9 @@ static RESULT ab_symbol_neq(CTX *c, VALUE self, unsigned int argc, VALUE *argv) 
 void
 Init_abruby_symbol(void)
 {
-    abruby_class_add_cfunc(ab_symbol_class, "inspect", ab_symbol_inspect, 0);
-    abruby_class_add_cfunc(ab_symbol_class, "to_s",    ab_symbol_to_s,    0);
-    abruby_class_add_cfunc(ab_symbol_class, "to_sym",  ab_symbol_to_sym,  0);
-    abruby_class_add_cfunc(ab_symbol_class, "==",      ab_symbol_eq,      1);
-    abruby_class_add_cfunc(ab_symbol_class, "!=",      ab_symbol_neq,     1);
+    abruby_class_add_cfunc(ab_symbol_class, rb_intern("inspect"), ab_symbol_inspect, 0);
+    abruby_class_add_cfunc(ab_symbol_class, rb_intern("to_s"),    ab_symbol_to_s,    0);
+    abruby_class_add_cfunc(ab_symbol_class, rb_intern("to_sym"),  ab_symbol_to_sym,  0);
+    abruby_class_add_cfunc(ab_symbol_class, rb_intern("=="),      ab_symbol_eq,      1);
+    abruby_class_add_cfunc(ab_symbol_class, rb_intern("!="),      ab_symbol_neq,     1);
 }

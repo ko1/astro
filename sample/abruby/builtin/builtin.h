@@ -16,7 +16,7 @@ VALUE ab_inspect_rstr(CTX *c, VALUE v);
 RESULT abruby_require_file(CTX *c, VALUE rb_path);
 RESULT abruby_eval_string(CTX *c, VALUE rb_code);
 VALUE abruby_current_file(CTX *c);
-void abruby_class_add_cfunc(struct abruby_class *klass, const char *name,
+void abruby_class_add_cfunc(struct abruby_class *klass, ID name,
                             abruby_cfunc_t func, unsigned int params_cnt);
 
 // Bignum/Float wrap helpers (defined in abruby.c)

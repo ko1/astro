@@ -2,12 +2,12 @@
 
 static RESULT ab_object_inspect(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     char buf[128];
-    snprintf(buf, sizeof(buf), "#<%s:%p>", AB_CLASS_OF(self)->name, (void *)self);
+    snprintf(buf, sizeof(buf), "#<%s:%p>", rb_id2name(AB_CLASS_OF(self)->name), (void *)self);
     return RESULT_OK(abruby_str_new_cstr(buf));
 }
 
 static RESULT ab_object_to_s(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
-    struct abruby_method *inspect = abruby_find_method(AB_CLASS_OF(self), "inspect");
+    struct abruby_method *inspect = abruby_find_method(AB_CLASS_OF(self), rb_intern("inspect"));
     if (inspect)
         return abruby_call_method(c, self, inspect, 0, NULL);
     return ab_object_inspect(c, self, 0, NULL);
@@ -18,7 +18,7 @@ static RESULT ab_object_eq(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
 }
 
 static RESULT ab_object_neq(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
-    struct abruby_method *eq = abruby_find_method(AB_CLASS_OF(self), "==");
+    struct abruby_method *eq = abruby_find_method(AB_CLASS_OF(self), rb_intern("=="));
     RESULT r = abruby_call_method(c, self, eq, 1, argv);
     if (r.state != RESULT_NORMAL) return r;
     return RESULT_OK(RTEST(r.value) ? Qfalse : Qtrue);
@@ -29,7 +29,7 @@ static RESULT ab_object_nil_p(CTX *c, VALUE self, unsigned int argc, VALUE *argv
 }
 
 static RESULT ab_object_class_name(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
-    return RESULT_OK(abruby_str_new_cstr(AB_CLASS_OF(self)->name));
+    return RESULT_OK(abruby_str_new_cstr(rb_id2name(AB_CLASS_OF(self)->name)));
 }
 
 static RESULT ab_object_not(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
@@ -38,7 +38,7 @@ static RESULT ab_object_not(CTX *c, VALUE self, unsigned int argc, VALUE *argv) 
 
 // Object#=== defaults to ==
 static RESULT ab_object_case_eq(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
-    struct abruby_method *eq = abruby_find_method(AB_CLASS_OF(self), "==");
+    struct abruby_method *eq = abruby_find_method(AB_CLASS_OF(self), rb_intern("=="));
     return abruby_call_method(c, self, eq, 1, argv);
 }
 
@@ -61,15 +61,15 @@ static RESULT ab_object_instance_of(CTX *c, VALUE self, unsigned int argc, VALUE
 void
 Init_abruby_object(void)
 {
-    abruby_class_add_cfunc(ab_object_class, "inspect",  ab_object_inspect,    0);
-    abruby_class_add_cfunc(ab_object_class, "to_s",     ab_object_to_s,       0);
-    abruby_class_add_cfunc(ab_object_class, "==",       ab_object_eq,         1);
-    abruby_class_add_cfunc(ab_object_class, "!=",       ab_object_neq,        1);
-    abruby_class_add_cfunc(ab_object_class, "nil?",     ab_object_nil_p,      0);
-    abruby_class_add_cfunc(ab_object_class, "class",    ab_object_class_name, 0);
-    abruby_class_add_cfunc(ab_object_class, "!",        ab_object_not,        0);
-    abruby_class_add_cfunc(ab_object_class, "===",       ab_object_case_eq,    1);
-    abruby_class_add_cfunc(ab_object_class, "is_a?",     ab_object_is_a,       1);
-    abruby_class_add_cfunc(ab_object_class, "kind_of?",  ab_object_is_a,       1);
-    abruby_class_add_cfunc(ab_object_class, "instance_of?", ab_object_instance_of, 1);
+    abruby_class_add_cfunc(ab_object_class, rb_intern("inspect"),  ab_object_inspect,    0);
+    abruby_class_add_cfunc(ab_object_class, rb_intern("to_s"),     ab_object_to_s,       0);
+    abruby_class_add_cfunc(ab_object_class, rb_intern("=="),       ab_object_eq,         1);
+    abruby_class_add_cfunc(ab_object_class, rb_intern("!="),       ab_object_neq,        1);
+    abruby_class_add_cfunc(ab_object_class, rb_intern("nil?"),     ab_object_nil_p,      0);
+    abruby_class_add_cfunc(ab_object_class, rb_intern("class"),    ab_object_class_name, 0);
+    abruby_class_add_cfunc(ab_object_class, rb_intern("!"),        ab_object_not,        0);
+    abruby_class_add_cfunc(ab_object_class, rb_intern("==="),       ab_object_case_eq,    1);
+    abruby_class_add_cfunc(ab_object_class, rb_intern("is_a?"),     ab_object_is_a,       1);
+    abruby_class_add_cfunc(ab_object_class, rb_intern("kind_of?"),  ab_object_is_a,       1);
+    abruby_class_add_cfunc(ab_object_class, rb_intern("instance_of?"), ab_object_instance_of, 1);
 }

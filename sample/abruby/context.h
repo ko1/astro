@@ -64,7 +64,7 @@ enum abruby_method_type {
 };
 
 struct abruby_method {
-    const char *name;
+    ID name;
     enum abruby_method_type type;
     union {
         struct {
@@ -104,14 +104,14 @@ struct abruby_header {
 
 struct abruby_class {
     struct abruby_class *klass;  // offset 0: always ab_class_class
-    const char *name;
+    ID name;
     struct abruby_class *super;
     struct abruby_method methods[ABRUBY_METHOD_CAPA];
     unsigned int method_cnt;
     VALUE rb_wrapper;
     // constants
     struct {
-        const char *name;
+        ID name;
         VALUE value;
     } constants[ABRUBY_CONST_CAPA];
     unsigned int const_cnt;
@@ -123,7 +123,7 @@ struct abruby_object {
     struct abruby_class *klass;  // offset 0
     unsigned int ivar_cnt;
     struct {
-        const char *name;
+        ID name;
         VALUE value;
     } ivars[ABRUBY_IVAR_MAX];
 };
@@ -252,7 +252,7 @@ AB_CLASS_OF(VALUE obj)
 struct abruby_gvar_table {
     unsigned int cnt;
     struct {
-        const char *name;
+        ID name;
         VALUE value;
     } entries[ABRUBY_GVAR_MAX];
 };

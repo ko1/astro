@@ -7,7 +7,7 @@ static RESULT ab_nil_nil_p(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
 void
 Init_abruby_nil(void)
 {
-    abruby_class_add_cfunc(ab_nil_class, "inspect", ab_nil_inspect, 0);
-    abruby_class_add_cfunc(ab_nil_class, "to_s",    ab_nil_to_s,    0);
-    abruby_class_add_cfunc(ab_nil_class, "nil?",    ab_nil_nil_p,   0);
+    abruby_class_add_cfunc(ab_nil_class, rb_intern("inspect"), ab_nil_inspect, 0);
+    abruby_class_add_cfunc(ab_nil_class, rb_intern("to_s"),    ab_nil_to_s,    0);
+    abruby_class_add_cfunc(ab_nil_class, rb_intern("nil?"),    ab_nil_nil_p,   0);
 }

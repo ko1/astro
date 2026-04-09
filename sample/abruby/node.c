@@ -7,6 +7,25 @@
 #include "context.h"
 #include "builtin/builtin.h"
 
+// --- Interned IDs for operator methods and common names ---
+
+ID id_op_plus, id_op_minus, id_op_mul, id_op_div;
+ID id_op_lt, id_op_le, id_op_gt, id_op_ge;
+ID id_op_eq, id_op_mod;
+ID id_method_missing, id_initialize;
+
+void
+init_interned_ids(void)
+{
+    id_op_plus = rb_intern("+"); id_op_minus = rb_intern("-");
+    id_op_mul = rb_intern("*");  id_op_div = rb_intern("/");
+    id_op_lt = rb_intern("<");   id_op_le = rb_intern("<=");
+    id_op_gt = rb_intern(">");   id_op_ge = rb_intern(">=");
+    id_op_eq = rb_intern("==");  id_op_mod = rb_intern("%");
+    id_method_missing = rb_intern("method_missing");
+    id_initialize = rb_intern("initialize");
+}
+
 // --- User-provided: allocation ---
 
 size_t node_cnt = 0;
@@ -126,7 +145,7 @@ abruby_node_mark(void *ptr)
 }
 
 struct abruby_method *
-abruby_find_method(struct abruby_class *klass, const char *name)
+abruby_find_method(struct abruby_class *klass, ID name)
 {
     return abruby_class_find_method(klass, name);
 }

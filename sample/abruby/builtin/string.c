@@ -70,23 +70,23 @@ static RESULT ab_string_concat(CTX *c, VALUE self, unsigned int argc, VALUE *arg
 void
 Init_abruby_string(void)
 {
-    abruby_class_add_cfunc(ab_string_class, "inspect",  ab_string_inspect,   0);
-    abruby_class_add_cfunc(ab_string_class, "to_s",     ab_string_to_s,      0);
-    abruby_class_add_cfunc(ab_string_class, "to_i",     ab_string_to_i,      0);
-    abruby_class_add_cfunc(ab_string_class, "+",        ab_string_add,       1);
-    abruby_class_add_cfunc(ab_string_class, "<<",       ab_string_concat,    1);
-    abruby_class_add_cfunc(ab_string_class, "*",        ab_string_mul,       1);
-    abruby_class_add_cfunc(ab_string_class, "==",       ab_string_eq,        1);
-    abruby_class_add_cfunc(ab_string_class, "!=",       ab_string_neq,       1);
-    abruby_class_add_cfunc(ab_string_class, "<",        ab_string_lt,        1);
-    abruby_class_add_cfunc(ab_string_class, "<=",       ab_string_le,        1);
-    abruby_class_add_cfunc(ab_string_class, ">",        ab_string_gt,        1);
-    abruby_class_add_cfunc(ab_string_class, ">=",       ab_string_ge,        1);
-    abruby_class_add_cfunc(ab_string_class, "length",   ab_string_length,    0);
-    abruby_class_add_cfunc(ab_string_class, "size",     ab_string_length,    0);
-    abruby_class_add_cfunc(ab_string_class, "empty?",   ab_string_empty_p,   0);
-    abruby_class_add_cfunc(ab_string_class, "upcase",   ab_string_upcase,    0);
-    abruby_class_add_cfunc(ab_string_class, "downcase", ab_string_downcase,  0);
-    abruby_class_add_cfunc(ab_string_class, "reverse",  ab_string_reverse,   0);
-    abruby_class_add_cfunc(ab_string_class, "include?", ab_string_include_p, 1);
+    abruby_class_add_cfunc(ab_string_class, rb_intern("inspect"),  ab_string_inspect,   0);
+    abruby_class_add_cfunc(ab_string_class, rb_intern("to_s"),     ab_string_to_s,      0);
+    abruby_class_add_cfunc(ab_string_class, rb_intern("to_i"),     ab_string_to_i,      0);
+    abruby_class_add_cfunc(ab_string_class, rb_intern("+"),        ab_string_add,       1);
+    abruby_class_add_cfunc(ab_string_class, rb_intern("<<"),       ab_string_concat,    1);
+    abruby_class_add_cfunc(ab_string_class, rb_intern("*"),        ab_string_mul,       1);
+    abruby_class_add_cfunc(ab_string_class, rb_intern("=="),       ab_string_eq,        1);
+    abruby_class_add_cfunc(ab_string_class, rb_intern("!="),       ab_string_neq,       1);
+    abruby_class_add_cfunc(ab_string_class, rb_intern("<"),        ab_string_lt,        1);
+    abruby_class_add_cfunc(ab_string_class, rb_intern("<="),       ab_string_le,        1);
+    abruby_class_add_cfunc(ab_string_class, rb_intern(">"),        ab_string_gt,        1);
+    abruby_class_add_cfunc(ab_string_class, rb_intern(">="),       ab_string_ge,        1);
+    abruby_class_add_cfunc(ab_string_class, rb_intern("length"),   ab_string_length,    0);
+    abruby_class_add_cfunc(ab_string_class, rb_intern("size"),     ab_string_length,    0);
+    abruby_class_add_cfunc(ab_string_class, rb_intern("empty?"),   ab_string_empty_p,   0);
+    abruby_class_add_cfunc(ab_string_class, rb_intern("upcase"),   ab_string_upcase,    0);
+    abruby_class_add_cfunc(ab_string_class, rb_intern("downcase"), ab_string_downcase,  0);
+    abruby_class_add_cfunc(ab_string_class, rb_intern("reverse"),  ab_string_reverse,   0);
+    abruby_class_add_cfunc(ab_string_class, rb_intern("include?"), ab_string_include_p, 1);
 }

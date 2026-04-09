@@ -66,23 +66,23 @@ static RESULT ab_rational_denominator(CTX *c, VALUE self, unsigned int argc, VAL
 void
 Init_abruby_rational(void)
 {
-    abruby_class_add_cfunc(ab_rational_class, "inspect",     ab_rational_inspect,     0);
-    abruby_class_add_cfunc(ab_rational_class, "to_s",        ab_rational_to_s,        0);
-    abruby_class_add_cfunc(ab_rational_class, "to_f",        ab_rational_to_f,        0);
-    abruby_class_add_cfunc(ab_rational_class, "to_i",        ab_rational_to_i,        0);
-    abruby_class_add_cfunc(ab_rational_class, "to_r",        ab_rational_to_r,        0);
-    abruby_class_add_cfunc(ab_rational_class, "+",           ab_rational_add,         1);
-    abruby_class_add_cfunc(ab_rational_class, "-",           ab_rational_sub,         1);
-    abruby_class_add_cfunc(ab_rational_class, "*",           ab_rational_mul,         1);
-    abruby_class_add_cfunc(ab_rational_class, "/",           ab_rational_div,         1);
-    abruby_class_add_cfunc(ab_rational_class, "**",          ab_rational_pow,         1);
-    abruby_class_add_cfunc(ab_rational_class, "-@",          ab_rational_neg,         0);
-    abruby_class_add_cfunc(ab_rational_class, "==",          ab_rational_eq,          1);
-    abruby_class_add_cfunc(ab_rational_class, "<",           ab_rational_lt,          1);
-    abruby_class_add_cfunc(ab_rational_class, "<=",          ab_rational_le,          1);
-    abruby_class_add_cfunc(ab_rational_class, ">",           ab_rational_gt,          1);
-    abruby_class_add_cfunc(ab_rational_class, ">=",          ab_rational_ge,          1);
-    abruby_class_add_cfunc(ab_rational_class, "<=>",         ab_rational_cmp,         1);
-    abruby_class_add_cfunc(ab_rational_class, "numerator",   ab_rational_numerator,   0);
-    abruby_class_add_cfunc(ab_rational_class, "denominator", ab_rational_denominator, 0);
+    abruby_class_add_cfunc(ab_rational_class, rb_intern("inspect"),     ab_rational_inspect,     0);
+    abruby_class_add_cfunc(ab_rational_class, rb_intern("to_s"),        ab_rational_to_s,        0);
+    abruby_class_add_cfunc(ab_rational_class, rb_intern("to_f"),        ab_rational_to_f,        0);
+    abruby_class_add_cfunc(ab_rational_class, rb_intern("to_i"),        ab_rational_to_i,        0);
+    abruby_class_add_cfunc(ab_rational_class, rb_intern("to_r"),        ab_rational_to_r,        0);
+    abruby_class_add_cfunc(ab_rational_class, rb_intern("+"),           ab_rational_add,         1);
+    abruby_class_add_cfunc(ab_rational_class, rb_intern("-"),           ab_rational_sub,         1);
+    abruby_class_add_cfunc(ab_rational_class, rb_intern("*"),           ab_rational_mul,         1);
+    abruby_class_add_cfunc(ab_rational_class, rb_intern("/"),           ab_rational_div,         1);
+    abruby_class_add_cfunc(ab_rational_class, rb_intern("**"),          ab_rational_pow,         1);
+    abruby_class_add_cfunc(ab_rational_class, rb_intern("-@"),          ab_rational_neg,         0);
+    abruby_class_add_cfunc(ab_rational_class, rb_intern("=="),          ab_rational_eq,          1);
+    abruby_class_add_cfunc(ab_rational_class, rb_intern("<"),           ab_rational_lt,          1);
+    abruby_class_add_cfunc(ab_rational_class, rb_intern("<="),          ab_rational_le,          1);
+    abruby_class_add_cfunc(ab_rational_class, rb_intern(">"),           ab_rational_gt,          1);
+    abruby_class_add_cfunc(ab_rational_class, rb_intern(">="),          ab_rational_ge,          1);
+    abruby_class_add_cfunc(ab_rational_class, rb_intern("<=>"),         ab_rational_cmp,         1);
+    abruby_class_add_cfunc(ab_rational_class, rb_intern("numerator"),   ab_rational_numerator,   0);
+    abruby_class_add_cfunc(ab_rational_class, rb_intern("denominator"), ab_rational_denominator, 0);
 }

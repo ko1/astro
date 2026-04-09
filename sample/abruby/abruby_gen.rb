@@ -7,6 +7,44 @@ class AbRubyNodeDef < ASTroGen::NodeDef
     kind_field: "node_marker_func_t marker"
 
   class Node < ASTroGen::NodeDef::Node
+    class Operand < ASTroGen::NodeDef::Node::Operand
+      def hash_call(val)
+        case @type
+        when 'ID'
+          "(#{val} ? hash_cstr(rb_id2name(#{val})) : hash_uint32(0))"
+        else
+          super
+        end
+      end
+
+      def build_dumper(name)
+        case @type
+        when 'ID'
+          "        fprintf(fp, \"%s\", #{id_to_name("n->u.#{name}.#{self.name}")});"
+        else
+          super
+        end
+      end
+
+      def build_specializer(name)
+        case @type
+        when 'ID'
+          field = "n->u.#{name}.#{self.name}"
+          arg = "    if (#{field}) fprintf(fp, \"        rb_intern(\\\"%s\\\")\", rb_id2name(#{field}));\n" \
+                "    else fprintf(fp, \"        (ID)0\");"
+          return nil, arg
+        else
+          super
+        end
+      end
+
+      private
+
+      def id_to_name(expr)
+        "(#{expr} ? rb_id2name(#{expr}) : \"\")"
+      end
+    end
+
     def result_type = "RESULT"
 
     def alloc_dispatcher_expr

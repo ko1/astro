@@ -4,7 +4,7 @@
 static RESULT ab_class_new(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     struct abruby_class *klass = abruby_unwrap_class(self);
     VALUE obj = abruby_new_object(klass);
-    struct abruby_method *init = abruby_find_method(klass, "initialize");
+    struct abruby_method *init = abruby_find_method(klass, rb_intern("initialize"));
     if (init) {
         // Push frame for initialize (needed for super to find the class)
         struct abruby_frame frame;
@@ -34,7 +34,7 @@ static RESULT ab_class_new(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
 
 // Module#inspect (inherited by Class)
 static RESULT ab_module_inspect(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
-    return RESULT_OK(abruby_str_new_cstr(abruby_unwrap_class(self)->name));
+    return RESULT_OK(abruby_str_new_cstr(rb_id2name(abruby_unwrap_class(self)->name)));
 }
 
 // Module#include — insert module into super chain of current_class
@@ -62,14 +62,14 @@ static RESULT ab_module_include(CTX *c, VALUE self, unsigned int argc, VALUE *ar
 // Module#const_get(name) — get constant by name (String or Symbol)
 static RESULT ab_module_const_get(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     struct abruby_class *klass = abruby_unwrap_class(self);
-    const char *name;
+    ID name_id;
     if (SYMBOL_P(argv[0])) {
-        name = rb_id2name(SYM2ID(argv[0]));
+        name_id = SYM2ID(argv[0]);
     } else {
-        name = RSTRING_PTR(RSTR(argv[0]));
+        name_id = rb_intern_str(RSTR(argv[0]));
     }
     for (unsigned int i = 0; i < klass->const_cnt; i++) {
-        if (strcmp(klass->constants[i].name, name) == 0) {
+        if (klass->constants[i].name == name_id) {
             return RESULT_OK(klass->constants[i].value);
         }
     }
@@ -81,13 +81,13 @@ static RESULT ab_module_const_get(CTX *c, VALUE self, unsigned int argc, VALUE *
 // Module#const_set(name, value) — set constant by name
 static RESULT ab_module_const_set(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     struct abruby_class *klass = abruby_unwrap_class(self);
-    const char *name;
+    ID name_id;
     if (SYMBOL_P(argv[0])) {
-        name = rb_id2name(SYM2ID(argv[0]));
+        name_id = SYM2ID(argv[0]);
     } else {
-        name = RSTRING_PTR(RSTR(argv[0]));
+        name_id = rb_intern_str(RSTR(argv[0]));
     }
-    abruby_class_set_const(klass, name, argv[1]);
+    abruby_class_set_const(klass, name_id, argv[1]);
     return RESULT_OK(argv[1]);
 }
 
@@ -106,12 +106,12 @@ void
 Init_abruby_class(void)
 {
     // Module (parent of Class)
-    abruby_class_add_cfunc(ab_module_class, "===",       ab_module_case_eq,   1);
-    abruby_class_add_cfunc(ab_module_class, "inspect",   ab_module_inspect,   0);
-    abruby_class_add_cfunc(ab_module_class, "include",   ab_module_include,   1);
-    abruby_class_add_cfunc(ab_module_class, "const_get", ab_module_const_get, 1);
-    abruby_class_add_cfunc(ab_module_class, "const_set", ab_module_const_set, 2);
+    abruby_class_add_cfunc(ab_module_class, rb_intern("==="),       ab_module_case_eq,   1);
+    abruby_class_add_cfunc(ab_module_class, rb_intern("inspect"),   ab_module_inspect,   0);
+    abruby_class_add_cfunc(ab_module_class, rb_intern("include"),   ab_module_include,   1);
+    abruby_class_add_cfunc(ab_module_class, rb_intern("const_get"), ab_module_const_get, 1);
+    abruby_class_add_cfunc(ab_module_class, rb_intern("const_set"), ab_module_const_set, 2);
 
     // Class (inherits Module, adds new)
-    abruby_class_add_cfunc(ab_class_class, "new", ab_class_new, -1);
+    abruby_class_add_cfunc(ab_class_class, rb_intern("new"), ab_class_new, -1);
 }

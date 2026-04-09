@@ -68,15 +68,15 @@ static RESULT ab_hash_values(CTX *c, VALUE self, unsigned int argc, VALUE *argv)
 void
 Init_abruby_hash(void)
 {
-    abruby_class_add_cfunc(ab_hash_class, "inspect",  ab_hash_inspect,  0);
-    abruby_class_add_cfunc(ab_hash_class, "to_s",     ab_hash_to_s,     0);
-    abruby_class_add_cfunc(ab_hash_class, "[]",       ab_hash_get,      1);
-    abruby_class_add_cfunc(ab_hash_class, "[]=",      ab_hash_set,      2);
-    abruby_class_add_cfunc(ab_hash_class, "length",   ab_hash_length,   0);
-    abruby_class_add_cfunc(ab_hash_class, "size",     ab_hash_length,   0);
-    abruby_class_add_cfunc(ab_hash_class, "empty?",   ab_hash_empty_p,  0);
-    abruby_class_add_cfunc(ab_hash_class, "has_key?", ab_hash_has_key_p,1);
-    abruby_class_add_cfunc(ab_hash_class, "key?",     ab_hash_has_key_p,1);
-    abruby_class_add_cfunc(ab_hash_class, "keys",     ab_hash_keys,     0);
-    abruby_class_add_cfunc(ab_hash_class, "values",   ab_hash_values,   0);
+    abruby_class_add_cfunc(ab_hash_class, rb_intern("inspect"),  ab_hash_inspect,  0);
+    abruby_class_add_cfunc(ab_hash_class, rb_intern("to_s"),     ab_hash_to_s,     0);
+    abruby_class_add_cfunc(ab_hash_class, rb_intern("[]"),       ab_hash_get,      1);
+    abruby_class_add_cfunc(ab_hash_class, rb_intern("[]="),      ab_hash_set,      2);
+    abruby_class_add_cfunc(ab_hash_class, rb_intern("length"),   ab_hash_length,   0);
+    abruby_class_add_cfunc(ab_hash_class, rb_intern("size"),     ab_hash_length,   0);
+    abruby_class_add_cfunc(ab_hash_class, rb_intern("empty?"),   ab_hash_empty_p,  0);
+    abruby_class_add_cfunc(ab_hash_class, rb_intern("has_key?"), ab_hash_has_key_p,1);
+    abruby_class_add_cfunc(ab_hash_class, rb_intern("key?"),     ab_hash_has_key_p,1);
+    abruby_class_add_cfunc(ab_hash_class, rb_intern("keys"),     ab_hash_keys,     0);
+    abruby_class_add_cfunc(ab_hash_class, rb_intern("values"),   ab_hash_values,   0);
 }
