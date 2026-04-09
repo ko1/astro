@@ -272,6 +272,14 @@ struct abruby_frame {
     };
 };
 
+// Cached interned IDs for operator methods and common names
+struct abruby_id_cache {
+    ID op_plus, op_minus, op_mul, op_div;
+    ID op_lt, op_le, op_gt, op_ge;
+    ID op_eq, op_mod;
+    ID method_missing;
+};
+
 struct CTX_struct {
     VALUE *env;
     VALUE *fp;
@@ -280,6 +288,7 @@ struct CTX_struct {
     struct abruby_class *main_class;    // per-instance, inherits from Object
     struct abruby_gvar_table *gvars;    // global variables
     struct abruby_frame *current_frame; // head of call frame linked list
+    const struct abruby_id_cache *ids;   // cached rb_intern results (shared, owned by VM)
 };
 
 // exception object

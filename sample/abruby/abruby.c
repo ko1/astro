@@ -402,6 +402,7 @@ struct abruby_vm {
     VALUE stack[STACK_SIZE];
     struct abruby_class main_class_body;
     struct abruby_gvar_table gvars;
+    struct abruby_id_cache id_cache;
     VALUE rb_self;           // Ruby-level AbRuby instance (for callbacks)
     VALUE current_file;      // current file path (Ruby String or Qnil)
     VALUE loaded_files;      // Ruby Array of loaded file paths
@@ -505,6 +506,18 @@ create_vm(void)
     vm->ctx.self = abruby_new_object(&vm->main_class_body);
     vm->ctx.current_class = NULL;
     vm->ctx.gvars = &vm->gvars;
+    vm->id_cache.op_plus = rb_intern("+");
+    vm->id_cache.op_minus = rb_intern("-");
+    vm->id_cache.op_mul = rb_intern("*");
+    vm->id_cache.op_div = rb_intern("/");
+    vm->id_cache.op_lt = rb_intern("<");
+    vm->id_cache.op_le = rb_intern("<=");
+    vm->id_cache.op_gt = rb_intern(">");
+    vm->id_cache.op_ge = rb_intern(">=");
+    vm->id_cache.op_eq = rb_intern("==");
+    vm->id_cache.op_mod = rb_intern("%");
+    vm->id_cache.method_missing = rb_intern("method_missing");
+    vm->ctx.ids = &vm->id_cache;
     vm->rb_self = Qnil;
     vm->current_file = Qnil;
     vm->loaded_files = rb_ary_new();
