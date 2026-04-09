@@ -90,6 +90,23 @@ class TestClass < AbRubyTest
     'class TcSB < TcSA; def val; super + 10; end; end; ' \
     'class TcSC < TcSB; def val; super + 100; end; end; TcSC.new.val', 111)
 
+  # superclass must be a Class
+  def test_inherit_non_class_integer
+    assert_eval('begin; class TcBad < 123; end; rescue => e; e.message; end',
+                "superclass must be a Class")
+  end
+  def test_inherit_non_class_string
+    assert_eval('begin; class TcBad < "hello"; end; rescue => e; e.message; end',
+                "superclass must be a Class")
+  end
+
+  # superclass as expression
+  def test_inherit_expr
+    assert_eval(
+      'class TcBase; def val; 42; end; end; ' \
+      'x = TcBase; class TcChild < x; end; TcChild.new.val', 42)
+  end
+
   # eval (note: local variables from outer scope are not visible in eval)
   def test_eval_basic = assert_eval('eval("1 + 2")', 3)
   def test_eval_string = assert_eval('eval("\"hello\"")', "hello")

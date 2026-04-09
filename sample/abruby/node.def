@@ -487,6 +487,11 @@ node_class_def(CTX * restrict c, NODE * restrict n, ID name, NODE *super_expr, N
         struct abruby_class *super = ab_object_class;
         VALUE sv = UNWRAP(EVAL_ARG(c, super_expr));
         if (sv != Qnil) {
+            if (AB_CLASS_OF(sv) != ab_class_class) {
+                VALUE exc = abruby_exception_new(c, c->current_frame,
+                    abruby_str_new_cstr("superclass must be a Class"));
+                return (RESULT){exc, RESULT_RAISE};
+            }
             super = abruby_unwrap_class(sv);
         }
         klass = (struct abruby_class *)ruby_xcalloc(1, sizeof(struct abruby_class));
