@@ -36,7 +36,7 @@ class AbRubyNodeDef < ASTroGen::NodeDef
         end
         case @type
         when 'ID'
-          arg = "    fprintf(fp, \"        rb_intern(\\\"%s\\\")\", rb_id2name(n->u.#{name}.#{self.name}));"
+          arg = "    fprintf(fp, \"        n->u.#{name}.#{self.name}\");"
           return nil, arg
         else
           super
