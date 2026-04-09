@@ -56,16 +56,22 @@ module ASTroGen
         attr_reader :name
 
         def initialize type, name
+          @ref = name.end_with?('@ref')
+          name = name.sub(/@ref$/, '') if @ref
           @type = type.sub(/\s*\brestrict\s*/, '')
           @name = name
         end
 
+        def ref? = @ref
+
         def node?
-          /NODE\s\*/ =~ @type
+          !ref? && /NODE\s\*/ =~ @type
         end
 
         def eval_param
-          if node?
+          if ref?
+            "#{@type} #{@name}"
+          elsif node?
             "#{@type} #{@name}, node_dispatcher_func_t #{@name}_dispatcher"
           else
             "#{@type} #{@name}"
@@ -74,6 +80,15 @@ module ASTroGen
 
         def join
           "#{@type} #{@name}"
+        end
+
+        # For struct field: @ref strips the pointer — value is stored inline
+        def struct_field_join
+          if ref?
+            "#{@type.sub(/\s*\*\s*$/, '')} #{@name}"
+          else
+            join
+          end
         end
 
         def hash_call val
@@ -138,9 +153,9 @@ module ASTroGen
           @prefix_args = it.shift(2)
         end.map do
           case it.strip
-          when /(.+)\s+([a-zA-Z_][a-zA-Z0-9_]*)$/
+          when /(.+)\s+([a-zA-Z_][a-zA-Z0-9_]*(?:@ref)?)$/
             self.class::Operand.new $1, $2
-          when /(.+\*)([a-zA-Z_][a-zA-Z0-9_]*)$/
+          when /(.+\*)([a-zA-Z_][a-zA-Z0-9_]*(?:@ref)?)$/
             self.class::Operand.new $1, $2
           else
             raise "ill-formed field: #{it}"
@@ -182,7 +197,7 @@ module ASTroGen
       end
 
       def build_head_struct
-        fields = @operands.map{ "    #{it.join};\n"}.join
+        fields = @operands.map{ "    #{it.struct_field_join};\n"}.join
 
         fields = "    char _dummy;\n" if fields.empty?
         <<~C
@@ -210,7 +225,8 @@ module ASTroGen
       end
 
       def build_allocator_decl
-        params = @operands.map{it.join}.join(', ')
+        alloc_ops = @operands.reject(&:ref?)
+        params = alloc_ops.map{it.join}.join(', ')
         params = 'void' if params.empty?
         "NODE *ALLOC_#{name}(#{params});"
       end
@@ -221,10 +237,12 @@ module ASTroGen
 
 
       def build_allocator
+        alloc_ops = @operands.reject(&:ref?)
+        ref_ops = @operands.select(&:ref?)
         sname = "#{@name}_struct"
         <<~C
         NODE *
-        ALLOC_#{name}(#{@operands.empty? ? 'void' : @operands.map{it.join}.join(', ')}) {
+        ALLOC_#{name}(#{alloc_ops.empty? ? 'void' : alloc_ops.map{it.join}.join(', ')}) {
             NODE *_n = node_allocate(sizeof(struct NodeHead) + sizeof(struct #{sname}));
             _n->head.dispatcher = #{alloc_dispatcher_expr};
             _n->head.dispatcher_name = "DISPATCH_#{@name}";
@@ -237,9 +255,9 @@ module ASTroGen
             _n->head.flags.is_specializing = false;
             _n->head.flags.is_dumping = false;
             _n->head.flags.no_inline = #{no_inline? ? true : false};
-        #{@operands.map{"    _n->u.#{name}.#{it.name} = #{it.name};"}.join("\n")}
-        #{@operands.map{"    if (_n->u.#{name}.#{it.name}) {_n->u.#{name}.#{it.name}->head.parent = _n;}" if it.node?}.join("\n")}
-
+        #{alloc_ops.map{"    _n->u.#{name}.#{it.name} = #{it.name};"}.join("\n")}
+        #{alloc_ops.map{"    if (_n->u.#{name}.#{it.name}) {_n->u.#{name}.#{it.name}->head.parent = _n;}" if it.node?}.join("\n")}
+        #{ref_ops.map{"    memset(&_n->u.#{name}.#{it.name}, 0, sizeof(_n->u.#{name}.#{it.name}));"}.join("\n")}
             OPTIMIZE(_n);
             if (OPTION.record_all) code_repo_add(NULL, _n, false);
             return _n;
@@ -255,9 +273,13 @@ module ASTroGen
             dispatch_info(c, n, 0);
             #{result_type} v = EVAL_#{name}(c, n#{
               comma_operands(@operands.map{
-                arg = +"n->u.#{name}.#{it.name}"
-                arg << ", n->u.#{name}.#{it.name}->head.dispatcher" if it.node?
-                arg
+                if it.ref?
+                  "&n->u.#{name}.#{it.name}"
+                else
+                  arg = +"n->u.#{name}.#{it.name}"
+                  arg << ", n->u.#{name}.#{it.name}->head.dispatcher" if it.node?
+                  arg
+                end
               })
             });
             dispatch_info(c, n, 1);
@@ -353,7 +375,7 @@ module ASTroGen
       end
 
       def build_dumper
-        op_dumpers = @operands.map do
+        op_dumpers = @operands.filter_map do
           it.build_dumper @name
         end
 

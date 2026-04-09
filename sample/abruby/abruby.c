@@ -4,6 +4,8 @@
 #include "builtin/builtin.h"
 #include "astro_code_store.h"
 
+uint32_t abruby_method_serial = 1;
+
 struct abruby_option OPTION = {
     .no_compiled_code = true,
     .record_all = false,
@@ -329,6 +331,7 @@ abruby_class_add_cfunc(struct abruby_class *klass, ID name,
     m->type = ABRUBY_METHOD_CFUNC;
     m->u.cfunc.func = func;
     m->u.cfunc.params_cnt = params_cnt;
+    abruby_method_serial++;
 }
 
 static void

@@ -94,4 +94,22 @@ class TestMethodCall < AbRubyTest
   def test_int_lt_dispatch = assert_eval("1.<(2)", true)
   def test_int_eq_dispatch = assert_eval("3.==(3)", true)
   def test_str_plus_dispatch = assert_eval('"a".+("b")', "ab")
+
+  # inline cache
+  def test_ic_hit = assert_eval(
+    "class ICFoo; def val; 42; end; end; f = ICFoo.new; f.val; f.val; f.val", 42)
+  def test_ic_invalidation_redef = assert_eval(
+    "class ICA; def val; 1; end; end; a = ICA.new; x = a.val; " \
+    "class ICA; def val; 2; end; end; x + a.val", 3)
+  def test_ic_invalidation_subclass = assert_eval(
+    "class ICB; def foo; 1; end; end; class ICC < ICB; end; " \
+    "c = ICC.new; x = c.foo; " \
+    "class ICC; def foo; 2; end; end; x + c.foo", 3)
+  def test_ic_polymorphic = assert_eval(
+    "class ICD; def val; 10; end; end; class ICE; def val; 20; end; end; " \
+    "d = ICD.new; e = ICE.new; d.val + e.val", 30)
+  def test_ic_invalidation_include = assert_eval(
+    "class ICBase; def foo; 1; end; end; class ICF < ICBase; end; " \
+    "f = ICF.new; x = f.foo; " \
+    "module ICM; def foo; 2; end; end; class ICF; include ICM; end; x + f.foo", 3)
 end

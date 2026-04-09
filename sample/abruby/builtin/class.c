@@ -56,6 +56,7 @@ static RESULT ab_module_include(CTX *c, VALUE self, unsigned int argc, VALUE *ar
     memcpy(proxy->methods, mod->methods, sizeof(struct abruby_method) * mod->method_cnt);
 
     klass->super = proxy;
+    abruby_method_serial++;
     return RESULT_OK(Qnil);
 }
 

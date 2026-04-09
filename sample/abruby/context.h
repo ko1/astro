@@ -300,6 +300,15 @@ struct abruby_exception {
 
 extern struct abruby_class *ab_runtime_error_class;
 
+// inline method cache per call site
+struct method_cache {
+    struct abruby_class *klass;
+    struct abruby_method *method;
+    uint32_t serial;
+};
+
+extern uint32_t abruby_method_serial;
+
 #define LIKELY(expr) __builtin_expect((expr), 1)
 #define UNLIKELY(expr) __builtin_expect((expr), 0)
 

@@ -43,6 +43,7 @@ abruby_class_add_method(struct abruby_class *klass, ID name,
     m->u.ast.params_cnt = params_cnt;
     m->u.ast.locals_cnt = locals_cnt;
     m->u.ast.source_file = source_file;
+    abruby_method_serial++;
 }
 
 static struct abruby_method *
@@ -576,18 +577,28 @@ method_missing_dispatch(CTX * restrict c, NODE * restrict n, struct abruby_class
 }
 
 NODE_DEF
-node_method_call(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, uint32_t params_cnt, uint32_t arg_index)
+node_method_call(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, uint32_t params_cnt, uint32_t arg_index, struct method_cache *mc@ref)
 {
     VALUE recv_val = UNWRAP(EVAL_ARG(c, recv));
     struct abruby_class *klass = AB_CLASS_OF(recv_val);
-    struct abruby_method *method = abruby_class_find_method(klass, name);
 
-    if (LIKELY(method != NULL)) {
-        return dispatch_method_with_klass(c, n, recv_val, klass, method, params_cnt, c->fp + arg_index);
+    // inline cache check
+    struct abruby_method *method;
+    if (LIKELY(mc->klass == klass && mc->serial == abruby_method_serial)) {
+        method = mc->method;
     }
     else {
-        return method_missing_dispatch(c, n, klass, name, recv_val, params_cnt, arg_index);
+        method = abruby_class_find_method(klass, name);
+        if (UNLIKELY(method == NULL)) {
+            return method_missing_dispatch(c, n, klass, name, recv_val, params_cnt, arg_index);
+        }
+        // update cache
+        mc->klass = klass;
+        mc->method = method;
+        mc->serial = abruby_method_serial;
     }
+
+    return dispatch_method_with_klass(c, n, recv_val, klass, method, params_cnt, c->fp + arg_index);
 }
 
 // === super ===

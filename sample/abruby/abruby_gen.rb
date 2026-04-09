@@ -9,6 +9,7 @@ class AbRubyNodeDef < ASTroGen::NodeDef
   class Node < ASTroGen::NodeDef::Node
     class Operand < ASTroGen::NodeDef::Node::Operand
       def hash_call(val)
+        return "0" if ref?
         case @type
         when 'ID'
           "hash_cstr(rb_id2name(#{val}))"
@@ -18,6 +19,7 @@ class AbRubyNodeDef < ASTroGen::NodeDef
       end
 
       def build_dumper(name)
+        return nil if ref?
         case @type
         when 'ID'
           "        fprintf(fp, \"%s\", rb_id2name(n->u.#{name}.#{self.name}));"
@@ -27,6 +29,11 @@ class AbRubyNodeDef < ASTroGen::NodeDef
       end
 
       def build_specializer(name)
+        if ref?
+          # pass runtime address (not specialized)
+          arg = "    fprintf(fp, \"        &n->u.#{name}.#{self.name}\");"
+          return nil, arg
+        end
         case @type
         when 'ID'
           arg = "    fprintf(fp, \"        rb_intern(\\\"%s\\\")\", rb_id2name(n->u.#{name}.#{self.name}));"
@@ -48,7 +55,7 @@ class AbRubyNodeDef < ASTroGen::NodeDef
     end
 
     def build_marker
-      node_ops = @operands.select(&:node?)
+      node_ops = @operands.reject(&:ref?).select(&:node?)
       marks = node_ops.map { |op| "    MARK(n->u.#{@name}.#{op.name});" }
       <<~C
       static void
