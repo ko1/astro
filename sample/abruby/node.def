@@ -480,16 +480,14 @@ node_module_def(CTX * restrict c, NODE * restrict n, ID name, NODE *body)
 }
 
 NODE_DEF @noinline
-node_class_def(CTX * restrict c, NODE * restrict n, ID name, ID super_name, NODE *body)
+node_class_def(CTX * restrict c, NODE * restrict n, ID name, NODE *super_expr, NODE *body)
 {
     struct abruby_class *klass = find_class(c, name);
     if (!klass) {
         struct abruby_class *super = ab_object_class;
-        if (super_name != 0) {
-            super = find_class(c, super_name);
-            if (!super) {
-                rb_raise(rb_eNameError, "uninitialized constant %s", rb_id2name(super_name));
-            }
+        VALUE sv = UNWRAP(EVAL_ARG(c, super_expr));
+        if (sv != Qnil) {
+            super = abruby_unwrap_class(sv);
         }
         klass = (struct abruby_class *)ruby_xcalloc(1, sizeof(struct abruby_class));
         klass->klass = ab_class_class;

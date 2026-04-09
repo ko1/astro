@@ -379,10 +379,10 @@ class AbRuby
 
       when Prism::ClassNode
         name = node.constant_path.name.to_s
-        super_name = node.superclass.is_a?(Prism::ConstantReadNode) ? node.superclass.name.to_s : ""
+        super_expr = node.superclass ? transduce(node.superclass) : nil
         body = node.body ? transduce(node.body) : AbRuby.alloc_node_nil
         @entries << ["class:#{name}", body]
-        AbRuby.alloc_node_class_def(name, super_name, body)
+        AbRuby.alloc_node_class_def(name, super_expr, body)
 
       when Prism::MultiWriteNode
         # a, b = 1, 2 — right side is always ArrayNode from parser

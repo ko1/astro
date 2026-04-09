@@ -759,11 +759,11 @@ rb_alloc_node_module_def(VALUE self, VALUE name, VALUE body)
 }
 
 static VALUE
-rb_alloc_node_class_def(VALUE self, VALUE name, VALUE super_name, VALUE body)
+rb_alloc_node_class_def(VALUE self, VALUE name, VALUE super_expr, VALUE body)
 {
     ID cname = rb_intern_str(name);
-    ID csup = RSTRING_LEN(super_name) == 0 ? 0 : rb_intern_str(super_name);
-    return wrap_node(ALLOC_node_class_def(cname, csup, unwrap_node(body)));
+    NODE *super_node = NIL_P(super_expr) ? ALLOC_node_nil() : unwrap_node(super_expr);
+    return wrap_node(ALLOC_node_class_def(cname, super_node, unwrap_node(body)));
 }
 
 static VALUE
