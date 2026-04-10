@@ -97,6 +97,24 @@ struct abruby_method {
  * first, then reading klass from the T_DATA header.
  */
 
+// Object type tag — used by GC mark to determine marking strategy
+// without comparing class pointers (which are per-instance).
+enum abruby_obj_type {
+    ABRUBY_OBJ_GENERIC,    // abruby_object (ivars)
+    ABRUBY_OBJ_STRING,
+    ABRUBY_OBJ_ARRAY,
+    ABRUBY_OBJ_HASH,
+    ABRUBY_OBJ_RANGE,
+    ABRUBY_OBJ_REGEXP,
+    ABRUBY_OBJ_BIGNUM,
+    ABRUBY_OBJ_FLOAT,
+    ABRUBY_OBJ_RATIONAL,
+    ABRUBY_OBJ_COMPLEX,
+    ABRUBY_OBJ_CLASS,
+    ABRUBY_OBJ_MODULE,
+    ABRUBY_OBJ_EXCEPTION,
+};
+
 // Common layout: ALL abruby T_DATA objects have klass at offset 0
 struct abruby_header {
     struct abruby_class *klass;
@@ -104,6 +122,7 @@ struct abruby_header {
 
 struct abruby_class {
     struct abruby_class *klass;  // offset 0: always ab_class_class
+    enum abruby_obj_type obj_type; // what kind of instances this class creates
     ID name;
     struct abruby_class *super;
     struct ab_id_table methods;    // key=method_name, val=(VALUE)(struct abruby_method*)
@@ -297,7 +316,7 @@ struct abruby_fiber {
 struct abruby_machine {
     uint32_t method_serial;              // method version (for inline cache invalidation)
     struct abruby_fiber *current_fiber;  // currently running fiber
-    struct abruby_class main_class_body; // per-instance Object subclass
+    struct abruby_class main_class_body; // per-instance Object subclass (temporary, will be replaced by per-instance classes)
     struct ab_id_table gvars;            // global variables
     struct abruby_id_cache id_cache;     // cached rb_intern results
     VALUE rb_self;                       // Ruby-level AbRuby instance

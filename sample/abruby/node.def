@@ -460,6 +460,7 @@ node_module_def(CTX * restrict c, NODE * restrict n, ID name, NODE *body)
     if (!mod) {
         mod = (struct abruby_class *)ruby_xcalloc(1, sizeof(struct abruby_class));
         mod->klass = ab_module_class;
+        mod->obj_type = ABRUBY_OBJ_MODULE;
         mod->name = name;
         mod->super = NULL;
         abruby_class_set_const(CTX_MAIN_CLASS(c), name, abruby_wrap_class(mod));
@@ -496,6 +497,7 @@ node_class_def(CTX * restrict c, NODE * restrict n, ID name, NODE *super_expr, N
         }
         klass = (struct abruby_class *)ruby_xcalloc(1, sizeof(struct abruby_class));
         klass->klass = ab_class_class;
+        klass->obj_type = ABRUBY_OBJ_GENERIC;  // instances are user objects
         klass->name = name;
         klass->super = super;
         abruby_class_set_const(CTX_MAIN_CLASS(c), name, abruby_wrap_class(klass));

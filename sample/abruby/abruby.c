@@ -17,24 +17,24 @@ static VALUE rb_cAbRubyNode;
 
 // Built-in abruby classes (klass field = ab_class_class, set in init)
 
-static struct abruby_class ab_kernel_module_body = { .name = 0 };
-static struct abruby_class ab_module_class_body  = { .name = 0 };
-static struct abruby_class ab_class_class_body   = { .name = 0, .super = &ab_module_class_body };
-static struct abruby_class ab_object_class_body  = { .name = 0 };
-static struct abruby_class ab_float_class_body   = { .name = 0, .super = &ab_object_class_body };
-static struct abruby_class ab_array_class_body   = { .name = 0, .super = &ab_object_class_body };
-static struct abruby_class ab_hash_class_body    = { .name = 0, .super = &ab_object_class_body };
-static struct abruby_class ab_integer_class_body = { .name = 0, .super = &ab_object_class_body };
-static struct abruby_class ab_string_class_body  = { .name = 0, .super = &ab_object_class_body };
-static struct abruby_class ab_symbol_class_body  = { .name = 0, .super = &ab_object_class_body };
-static struct abruby_class ab_range_class_body   = { .name = 0, .super = &ab_object_class_body };
-static struct abruby_class ab_regexp_class_body  = { .name = 0, .super = &ab_object_class_body };
-static struct abruby_class ab_rational_class_body = { .name = 0, .super = &ab_object_class_body };
-static struct abruby_class ab_complex_class_body  = { .name = 0, .super = &ab_object_class_body };
-static struct abruby_class ab_true_class_body    = { .name = 0, .super = &ab_object_class_body };
-static struct abruby_class ab_false_class_body   = { .name = 0, .super = &ab_object_class_body };
-static struct abruby_class ab_nil_class_body     = { .name = 0, .super = &ab_object_class_body };
-static struct abruby_class ab_runtime_error_class_body = { .name = 0, .super = &ab_object_class_body };
+static struct abruby_class ab_kernel_module_body = { .obj_type = ABRUBY_OBJ_MODULE };
+static struct abruby_class ab_module_class_body  = { .obj_type = ABRUBY_OBJ_CLASS };
+static struct abruby_class ab_class_class_body   = { .obj_type = ABRUBY_OBJ_CLASS, .super = &ab_module_class_body };
+static struct abruby_class ab_object_class_body  = { .obj_type = ABRUBY_OBJ_GENERIC };
+static struct abruby_class ab_float_class_body   = { .obj_type = ABRUBY_OBJ_FLOAT,     .super = &ab_object_class_body };
+static struct abruby_class ab_array_class_body   = { .obj_type = ABRUBY_OBJ_ARRAY,     .super = &ab_object_class_body };
+static struct abruby_class ab_hash_class_body    = { .obj_type = ABRUBY_OBJ_HASH,      .super = &ab_object_class_body };
+static struct abruby_class ab_integer_class_body = { .obj_type = ABRUBY_OBJ_BIGNUM,    .super = &ab_object_class_body };
+static struct abruby_class ab_string_class_body  = { .obj_type = ABRUBY_OBJ_STRING,    .super = &ab_object_class_body };
+static struct abruby_class ab_symbol_class_body  = { .obj_type = ABRUBY_OBJ_GENERIC,   .super = &ab_object_class_body };
+static struct abruby_class ab_range_class_body   = { .obj_type = ABRUBY_OBJ_RANGE,     .super = &ab_object_class_body };
+static struct abruby_class ab_regexp_class_body  = { .obj_type = ABRUBY_OBJ_REGEXP,    .super = &ab_object_class_body };
+static struct abruby_class ab_rational_class_body = { .obj_type = ABRUBY_OBJ_RATIONAL, .super = &ab_object_class_body };
+static struct abruby_class ab_complex_class_body  = { .obj_type = ABRUBY_OBJ_COMPLEX,  .super = &ab_object_class_body };
+static struct abruby_class ab_true_class_body    = { .obj_type = ABRUBY_OBJ_GENERIC,   .super = &ab_object_class_body };
+static struct abruby_class ab_false_class_body   = { .obj_type = ABRUBY_OBJ_GENERIC,   .super = &ab_object_class_body };
+static struct abruby_class ab_nil_class_body     = { .obj_type = ABRUBY_OBJ_GENERIC,   .super = &ab_object_class_body };
+static struct abruby_class ab_runtime_error_class_body = { .obj_type = ABRUBY_OBJ_EXCEPTION, .super = &ab_object_class_body };
 
 struct abruby_class *ab_float_class   = &ab_float_class_body;
 struct abruby_class *ab_array_class   = &ab_array_class_body;
@@ -59,60 +59,67 @@ struct abruby_class *ab_runtime_error_class = &ab_runtime_error_class_body;
 
 static void abruby_data_mark(void *ptr) {
     struct abruby_header *h = (struct abruby_header *)ptr;
-    if (h->klass == ab_integer_class) {
+    if (!h->klass) return;
+
+    switch (h->klass->obj_type) {
+    case ABRUBY_OBJ_BIGNUM:
         rb_gc_mark(((struct abruby_bignum *)ptr)->rb_bignum);
-    }
-    else if (h->klass == ab_float_class) {
+        break;
+    case ABRUBY_OBJ_FLOAT:
         rb_gc_mark(((struct abruby_float *)ptr)->rb_float);
-    }
-    else if (h->klass == ab_string_class) {
+        break;
+    case ABRUBY_OBJ_STRING:
         rb_gc_mark(((struct abruby_string *)ptr)->rb_str);
-    }
-    else if (h->klass == ab_array_class) {
+        break;
+    case ABRUBY_OBJ_ARRAY:
         rb_gc_mark(((struct abruby_array *)ptr)->rb_ary);
-    }
-    else if (h->klass == ab_hash_class) {
+        break;
+    case ABRUBY_OBJ_HASH:
         rb_gc_mark(((struct abruby_hash *)ptr)->rb_hash);
-    }
-    else if (h->klass == ab_range_class) {
+        break;
+    case ABRUBY_OBJ_RANGE: {
         struct abruby_range *r = (struct abruby_range *)ptr;
         rb_gc_mark(r->begin);
         rb_gc_mark(r->end);
+        break;
     }
-    else if (h->klass == ab_regexp_class) {
+    case ABRUBY_OBJ_REGEXP:
         rb_gc_mark(((struct abruby_regexp *)ptr)->rb_regexp);
-    }
-    else if (h->klass == ab_rational_class) {
+        break;
+    case ABRUBY_OBJ_RATIONAL:
         rb_gc_mark(((struct abruby_rational *)ptr)->rb_rational);
-    }
-    else if (h->klass == ab_complex_class) {
+        break;
+    case ABRUBY_OBJ_COMPLEX:
         rb_gc_mark(((struct abruby_complex *)ptr)->rb_complex);
-    }
-    else if (h->klass == ab_runtime_error_class) {
+        break;
+    case ABRUBY_OBJ_EXCEPTION: {
         struct abruby_exception *exc = (struct abruby_exception *)ptr;
         rb_gc_mark(exc->message);
         rb_gc_mark(exc->backtrace);
+        break;
     }
-    else if (h->klass == ab_class_class || h->klass == ab_module_class) {
+    case ABRUBY_OBJ_CLASS:
+    case ABRUBY_OBJ_MODULE: {
         struct abruby_class *cls = (struct abruby_class *)ptr;
-        // Mark AST method bodies so GC doesn't collect them
         ab_id_table_foreach(&cls->methods, _mk, _mv, {
             struct abruby_method *m = (struct abruby_method *)_mv;
             if (m->type == ABRUBY_METHOD_AST && m->u.ast.body && m->u.ast.body->head.rb_wrapper) {
                 rb_gc_mark(m->u.ast.body->head.rb_wrapper);
             }
         });
-        // Mark constant values
         ab_id_table_foreach(&cls->constants, _ck, _cv, {
             rb_gc_mark(_cv);
         });
+        break;
     }
-    else {
-        // user object: mark ivars
+    case ABRUBY_OBJ_GENERIC:
+    default: {
         struct abruby_object *obj = (struct abruby_object *)ptr;
-        ab_id_table_foreach(&obj->ivars, _k, _v, {
-            rb_gc_mark(_v);
+        ab_id_table_foreach(&obj->ivars, _ik, _iv, {
+            rb_gc_mark(_iv);
         });
+        break;
+    }
     }
 }
 

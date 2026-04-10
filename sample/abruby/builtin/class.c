@@ -49,6 +49,7 @@ static RESULT ab_module_include(CTX *c, VALUE self, unsigned int argc, VALUE *ar
     // Simple approach: create a proxy class that delegates to the module
     struct abruby_class *proxy = (struct abruby_class *)ruby_xcalloc(1, sizeof(struct abruby_class));
     proxy->klass = ab_module_class;
+    proxy->obj_type = ABRUBY_OBJ_MODULE;
     proxy->name = mod->name;
     proxy->super = klass->super;
     // Copy method table from module to proxy
