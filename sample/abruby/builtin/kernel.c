@@ -10,9 +10,7 @@ static RESULT ab_kernel_p(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
 
 static RESULT ab_kernel_raise(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     VALUE msg = (argc >= 1) ? argv[0] : abruby_str_new_cstr("");
-    // Start from caller's frame (skip the "raise" frame itself)
-    struct abruby_frame *caller = c->current_frame ? c->current_frame->prev : NULL;
-    VALUE exc = abruby_exception_new(c, caller, msg);
+    VALUE exc = abruby_exception_new(c, c->current_frame, msg);
     return (RESULT){exc, RESULT_RAISE};
 }
 

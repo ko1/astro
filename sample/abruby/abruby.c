@@ -461,24 +461,22 @@ abruby_exception_new(CTX *c, struct abruby_frame *start_frame, VALUE message)
     (void)c;
 
     // Build backtrace Array by walking the frame list.
-    // Derive name/file/line from method and node pointers (cold path).
+    // With caller_node scheme: each frame's caller_node stores the call site
+    // in the PARENT method.  Pair f->caller_node (line) with f->prev (method name).
     VALUE bt_ary = rb_ary_new();
-    for (struct abruby_frame *f = start_frame; f; f = f->prev) {
+    for (struct abruby_frame *f = start_frame; f && f->prev; f = f->prev) {
+        struct abruby_frame *parent = f->prev;
         const char *name;
         const char *file;
-        int32_t line;
+        int32_t line = f->caller_node ? f->caller_node->head.line : 0;
 
-        if (f->method) {
-            // Normal method frame
-            name = rb_id2name(f->method->name);
-            file = (f->method->type == ABRUBY_METHOD_AST && f->method->u.ast.source_file)
-                ? f->method->u.ast.source_file : "(abruby)";
-            line = f->caller_node ? f->caller_node->head.line : 0;
+        if (parent->method) {
+            name = rb_id2name(parent->method->name);
+            file = (parent->method->type == ABRUBY_METHOD_AST && parent->method->u.ast.source_file)
+                ? parent->method->u.ast.source_file : "(abruby)";
         } else {
-            // <main> or <top (required)>: union holds source_file
-            name = f->prev ? "<top (required)>" : "<main>";
-            file = f->source_file ? f->source_file : "(abruby)";
-            line = 0;
+            name = parent->prev ? "<top (required)>" : "<main>";
+            file = parent->source_file ? parent->source_file : "(abruby)";
         }
 
         rb_ary_push(bt_ary, rb_sprintf("%s:%d:in `%s'", file, line, name));
