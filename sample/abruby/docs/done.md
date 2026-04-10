@@ -46,8 +46,9 @@
 - `attr_reader`, `attr_writer`, `attr_accessor`
 - `super`（bare / 引数付き / 引数なし）
 - 再帰呼び出し
-- 全メソッド呼び出しは OOP ディスパッチ（`node_method_call` に統一）
+- `node_method_call`（明示的レシーバ）/ `node_func_call`（暗黙 self-call、recv 操作なし）
 - `method_missing(name, ...)`
+- インラインキャッシュ（`method_cache`: klass + method + serial + body + dispatcher）
 
 ## クラス・モジュール
 - `class Name; end`
@@ -93,9 +94,13 @@
 
 ## ランタイム
 - AbRuby インスタンスごとに独立した VM 状態
+- `abruby_vm_global`（グローバル VM 状態: method_serial）
 - `AbRuby.new` で新しい環境、`AbRuby.eval` は一時インスタンス
 - T_DATA 統一構造（全ヒープオブジェクトの先頭に klass）
-- `AB_CLASS_OF` は static inline（Fixnum/Bignum/Float は即値チェック、T_DATA は直引き）
+- `AB_CLASS_OF` は static inline（即値は `AB_CLASS_OF_IMM` に分離）
 - `ab_verify()` によるデバッグアサーション（`--enable-debug`）
 - AST pretty print（`--dump`）
 - builtin/ にクラスごとのソース分離
+- `caller_node` フレーム方式（各フレ���ムが呼び出し元を記録、backtrace 生成に使用）
+- `PUSH_FRAME` / `POP_FRAME` マクロ（インライン例外で backtrace 位置を記録）
+- `no_stack_protector` 属性（DISPATCH / コードストア SD_ 関数）

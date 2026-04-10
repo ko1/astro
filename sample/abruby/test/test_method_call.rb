@@ -112,4 +112,93 @@ class TestMethodCall < AbRubyTest
     "class ICBase; def foo; 1; end; end; class ICF < ICBase; end; " \
     "f = ICF.new; x = f.foo; " \
     "module ICM; def foo; 2; end; end; class ICF; include ICM; end; x + f.foo", 3)
+
+  # === node_func_call (implicit self-call optimization) ===
+
+  def test_func_call_no_args = assert_eval("def f; 99; end; f", 99)
+  def test_func_call_one_arg = assert_eval("def f(x); x * 2; end; f(21)", 42)
+  def test_func_call_two_args = assert_eval("def f(a, b); a - b; end; f(10, 3)", 7)
+  def test_func_call_three_args = assert_eval("def f(a, b, c); a + b + c; end; f(1, 2, 3)", 6)
+  def test_func_call_nested = assert_eval("def f(x); x + 1; end; def g(x); f(f(x)); end; g(5)", 7)
+  def test_func_call_recursive = assert_eval("def f(n); if n < 1; 0; else; n + f(n - 1); end; end; f(10)", 55)
+  def test_func_call_mutual = assert_eval(
+    "def even(n); if n == 0; true; else; odd(n - 1); end; end; " \
+    "def odd(n); if n == 0; false; else; even(n - 1); end; end; " \
+    "even(10)", true)
+  def test_func_call_in_class = assert_eval(
+    "class FC; def a; 1; end; def b; a + 2; end; end; FC.new.b", 3)
+  def test_func_call_cfunc = assert_eval(
+    "def f; p(42); end; f", 42)
+  def test_func_call_method_missing = assert_eval(
+    "class FMM; def method_missing(name); \"missing:\" + name; end; " \
+    "def test; foo; end; end; FMM.new.test", "missing:foo")
+  def test_func_call_with_explicit_self = assert_eval(
+    "class FS; def a; 10; end; def b; self.a + a; end; end; FS.new.b", 20)
+  def test_func_call_redefine = assert_eval(
+    "def f; 1; end; a = f; def f; 2; end; b = f; a + b", 3)
+
+  # === Float arithmetic in complex expressions (arith_fallback arg_index) ===
+
+  def test_float_multi_var_expr = assert_eval(
+    "a = 1.5; b = 2.5; c = 3.0; a * b + c", 6.75)
+  def test_float_many_locals = assert_eval(
+    "a = 1.0; b = 2.0; c = 3.0; d = 4.0; e = 5.0; f = 6.0; " \
+    "g = 7.0; h = 8.0; i = 9.0; j = 10.0; " \
+    "a + b + c + d + e + f + g + h + i + j", 55.0)
+  def test_float_in_method_many_locals = assert_eval(
+    "def calc; a = 1.0; b = 2.0; c = 3.0; d = 4.0; e = 5.0; " \
+    "f = 6.0; g = 7.0; h = 8.0; i = 9.0; j = 10.0; " \
+    "a * b + c * d - e * f + g * h - i * j; end; calc", -50.0)
+  def test_float_chained_mul = assert_eval(
+    "a = 2.0; b = 3.0; c = 4.0; a * b * c", 24.0)
+  def test_float_method_call_in_arith = assert_eval(
+    "class P; def initialize(x); @x = x; end; def x; @x; end; end; " \
+    "p1 = P.new(3.0); p2 = P.new(4.0); p1.x * p1.x + p2.x * p2.x", 25.0)
+  def test_float_nbody_pattern = assert_eval(
+    "class B; def initialize(v, m); @v = v; @m = m; end; " \
+    "def v; @v; end; def m; @m; end; def set_v(nv); @v = nv; end; end; " \
+    "b = B.new(1.0, 2.0); b.set_v(b.v + 0.5 * b.m * 0.01); b.v", 1.01)
+  def test_float_division_chain = assert_eval(
+    "dt = 0.01; dsq = 25.0; dist = 5.0; dt / (dsq * dist)", 8.0e-05)
+  def test_float_pow = assert_eval("4.0 ** 0.5", 2.0)
+  def test_float_comparison_chain = assert_eval(
+    "a = 1.5; b = 2.5; c = 3.5; a < b && b < c", true)
+
+  # === Mixed type arithmetic ===
+
+  def test_int_plus_float = assert_eval("1 + 1.5", 2.5)
+  def test_float_plus_int = assert_eval("1.5 + 1", 2.5)
+  def test_int_mul_float = assert_eval("3 * 2.5", 7.5)
+  def test_float_mul_int = assert_eval("2.5 * 3", 7.5)
+  def test_int_div_float = assert_eval("1 / 2.0", 0.5)
+  def test_int_lt_float = assert_eval("1 < 1.5", true)
+  def test_float_lt_int = assert_eval("0.5 < 1", true)
+  def test_int_eq_float = assert_eval("1 == 1.0", true)
+  def test_mixed_complex_expr = assert_eval(
+    "a = 3; b = 1.5; c = 2; a * b + c", 6.5)
+
+  # === method_cache body/dispatcher caching ===
+
+  def test_cache_hit_repeated = assert_eval(
+    "class CH; def f; 1; end; end; o = CH.new; " \
+    "o.f + o.f + o.f + o.f + o.f", 5)
+  def test_cache_across_instances = assert_eval(
+    "class CI; def f; 42; end; end; CI.new.f + CI.new.f", 84)
+  def test_cache_cfunc_repeated = assert_eval(
+    "a = [1, 2, 3]; a.length + a.length", 6)
+  def test_cache_after_redefine = assert_eval(
+    "class CR; def f; 1; end; end; o = CR.new; x = o.f; " \
+    "class CR; def f; 10; end; end; x + o.f", 11)
+  def test_cache_inherited_then_override = assert_eval(
+    "class CP; def f; 1; end; end; class CQ < CP; end; " \
+    "q = CQ.new; x = q.f; class CQ; def f; 2; end; end; x + q.f", 3)
+
+  # === Operator assignment with various types ===
+
+  def test_pluseq_float = assert_eval("a = 1.0; a += 0.5; a", 1.5)
+  def test_minuseq_float = assert_eval("a = 3.0; a -= 1.5; a", 1.5)
+  def test_muleq_float = assert_eval("a = 2.0; a *= 3.0; a", 6.0)
+  def test_pluseq_in_loop = assert_eval(
+    "a = 0.0; i = 0; while i < 10; a += 1.5; i += 1; end; a", 15.0)
+  def test_pluseq_string = assert_eval('a = "hello"; a += " world"; a', "hello world")
 end
