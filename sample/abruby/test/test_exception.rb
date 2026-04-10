@@ -269,4 +269,116 @@ class TestException < AbRubyTest
   def test_exception_inspect
     assert_eval('begin; raise "oops"; rescue => e; e.inspect; end', '#<RuntimeError: oops>')
   end
+
+  # === Backtrace line number accuracy (caller_node scheme) ===
+
+  def test_backtrace_raise_line
+    # raise location should be the first backtrace entry
+    code = "def f\n1\nraise \"x\"\nend\nf"
+    err = assert_raises(RuntimeError) { AbRuby.eval(code) }
+    assert_match(/3:in `f'/, err.backtrace[0])  # raise on line 3
+  end
+
+  def test_backtrace_toplevel_raise
+    code = "1\n2\nraise \"x\""
+    err = assert_raises(RuntimeError) { AbRuby.eval(code) }
+    assert_match(/3:.*<main>/, err.backtrace[0])
+  end
+
+  def test_backtrace_division_by_zero
+    code = "def a\n1 / 0\nend\ndef b\na\nend\nb"
+    err = assert_raises(RuntimeError) { AbRuby.eval(code) }
+    bt = err.backtrace
+    assert_match(/2:in `a'/, bt[0])   # 1/0 on line 2
+    assert_match(/5:in `b'/, bt[1])   # a called on line 5
+    assert_match(/in `<main>'/, bt[2])
+  end
+
+  def test_backtrace_division_by_zero_toplevel
+    code = "1 / 0"
+    err = assert_raises(RuntimeError) { AbRuby.eval(code) }
+    bt = err.backtrace
+    assert_match(/1:.*<main>/, bt[0])
+  end
+
+  def test_backtrace_modulo_by_zero
+    code = "def f\n1 % 0\nend\nf"
+    err = assert_raises(RuntimeError) { AbRuby.eval(code) }
+    assert_match(/2:in `f'/, err.backtrace[0])
+  end
+
+  def test_backtrace_deep_chain_lines
+    code = "def a\nraise \"x\"\nend\ndef b\na\nend\ndef c\nb\nend\ndef d\nc\nend\nd"
+    err = assert_raises(RuntimeError) { AbRuby.eval(code) }
+    bt = err.backtrace
+    assert_equal 5, bt.size
+    assert_match(/2:in `a'/, bt[0])    # raise
+    assert_match(/5:in `b'/, bt[1])    # a called
+    assert_match(/8:in `c'/, bt[2])    # b called
+    assert_match(/11:in `d'/, bt[3])   # c called
+    assert_match(/13:.*<main>/, bt[4]) # d called
+  end
+
+  def test_backtrace_recursive
+    code = "def f(n)\nif n < 1\nraise \"x\"\nend\nf(n - 1)\nend\nf(3)"
+    err = assert_raises(RuntimeError) { AbRuby.eval(code) }
+    bt = err.backtrace
+    # f(0) raises on line 3, f(1) calls f on line 5, f(2) calls f on line 5, f(3) calls f on line 5
+    assert_match(/3:in `f'/, bt[0])
+    assert_match(/5:in `f'/, bt[1])
+    assert_match(/5:in `f'/, bt[2])
+    assert_match(/5:in `f'/, bt[3])
+    assert_match(/7:.*<main>/, bt[4])
+    assert_equal 5, bt.size
+  end
+
+  def test_backtrace_self_method_call
+    # func_call (implicit self) should have correct backtrace
+    code = "def inner\nraise \"x\"\nend\ndef outer\ninner\nend\nouter"
+    err = assert_raises(RuntimeError) { AbRuby.eval(code) }
+    bt = err.backtrace
+    assert_match(/2:in `inner'/, bt[0])
+    assert_match(/5:in `outer'/, bt[1])
+    assert_match(/in `<main>'/, bt[2])
+  end
+
+  def test_backtrace_explicit_self_call
+    code = "class C\ndef a\nraise \"x\"\nend\ndef b\nself.a\nend\nend\nC.new.b"
+    err = assert_raises(RuntimeError) { AbRuby.eval(code) }
+    bt = err.backtrace
+    assert_match(/3:in `a'/, bt[0])
+    assert_match(/6:in `b'/, bt[1])
+  end
+
+  def test_backtrace_class_method_call
+    code = "class Foo\ndef bar\nraise \"x\"\nend\nend\ndef go\nFoo.new.bar\nend\ngo"
+    err = assert_raises(RuntimeError) { AbRuby.eval(code) }
+    bt = err.backtrace
+    assert_match(/3:in `bar'/, bt[0])
+    assert_match(/7:in `go'/, bt[1])
+    assert_match(/in `<main>'/, bt[2])
+  end
+
+  def test_backtrace_rescue_and_reraise
+    code = "def f\nbegin\nraise \"a\"\nrescue => e\nraise \"b\"\nend\nend\nf"
+    err = assert_raises(RuntimeError) { AbRuby.eval(code) }
+    bt = err.backtrace
+    assert_equal "b", err.message
+    assert_match(/5:in `f'/, bt[0])   # re-raise on line 5
+  end
+
+  def test_backtrace_nested_rescue
+    code = "def f\nbegin\nraise \"inner\"\nrescue\nend\nraise \"outer\"\nend\nf"
+    err = assert_raises(RuntimeError) { AbRuby.eval(code) }
+    assert_equal "outer", err.message
+    assert_match(/6:in `f'/, err.backtrace[0])
+  end
+
+  def test_backtrace_size_with_require
+    # require_relative pushes a <top (required)> frame
+    # Just verify backtrace is non-empty and reasonable
+    code = "def f; raise \"x\"; end; f"
+    err = assert_raises(RuntimeError) { AbRuby.eval(code) }
+    assert_operator err.backtrace.size, :>=, 2
+  end
 end
