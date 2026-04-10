@@ -4,7 +4,7 @@
 #include "builtin/builtin.h"
 #include "astro_code_store.h"
 
-uint32_t abruby_method_serial = 1;
+struct abruby_vm_global abruby_vm_global = { .method_serial = 1 };
 
 struct abruby_option OPTION = {
     .no_compiled_code = true,
@@ -331,7 +331,7 @@ abruby_class_add_cfunc(struct abruby_class *klass, ID name,
     m->type = ABRUBY_METHOD_CFUNC;
     m->u.cfunc.func = func;
     m->u.cfunc.params_cnt = params_cnt;
-    abruby_method_serial++;
+    abruby_vm_global.method_serial++;
 }
 
 static void
@@ -473,7 +473,7 @@ abruby_exception_new(CTX *c, struct abruby_frame *start_frame, VALUE message)
             name = rb_id2name(f->method->name);
             file = (f->method->type == ABRUBY_METHOD_AST && f->method->u.ast.source_file)
                 ? f->method->u.ast.source_file : "(abruby)";
-            line = f->node ? f->node->head.line : 0;
+            line = f->caller_node ? f->caller_node->head.line : 0;
         } else {
             // <main> or <top (required)>: union holds source_file
             name = f->prev ? "<top (required)>" : "<main>";
@@ -521,6 +521,7 @@ create_vm(void)
     vm->id_cache.op_mod = rb_intern("%");
     vm->id_cache.method_missing = rb_intern("method_missing");
     vm->ctx.ids = &vm->id_cache;
+    vm->ctx.vm = &abruby_vm_global;
     vm->rb_self = Qnil;
     vm->current_file = Qnil;
     vm->loaded_files = rb_ary_new();
@@ -821,6 +822,13 @@ rb_alloc_node_method_call(VALUE self, VALUE recv, VALUE name, VALUE params_cnt, 
 {
     ID cname = rb_intern_str(name);
     return wrap_node(ALLOC_node_method_call(unwrap_node(recv), cname, FIX2UINT(params_cnt), FIX2UINT(arg_index)));
+}
+
+static VALUE
+rb_alloc_node_func_call(VALUE self, VALUE name, VALUE params_cnt, VALUE arg_index)
+{
+    ID cname = rb_intern_str(name);
+    return wrap_node(ALLOC_node_func_call(cname, FIX2UINT(params_cnt), FIX2UINT(arg_index)));
 }
 
 static VALUE
@@ -1346,6 +1354,7 @@ Init_abruby(void)
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_const_get", rb_alloc_node_const_get, 1);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_const_path_get", rb_alloc_node_const_path_get, 2);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_method_call", rb_alloc_node_method_call, 4);
+    rb_define_singleton_method(rb_cAbRuby, "alloc_node_func_call", rb_alloc_node_func_call, 3);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_super", rb_alloc_node_super, 2);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_plus", rb_alloc_node_plus, 2);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_minus", rb_alloc_node_minus, 2);

@@ -43,7 +43,7 @@ abruby_class_add_method(struct abruby_class *klass, ID name,
     m->u.ast.params_cnt = params_cnt;
     m->u.ast.locals_cnt = locals_cnt;
     m->u.ast.source_file = source_file;
-    abruby_method_serial++;
+    abruby_vm_global.method_serial++;
 }
 
 static struct abruby_method *
@@ -89,18 +89,7 @@ find_class(CTX *c, ID name)
     return NULL;
 }
 
-static RESULT
-method_call_body(CTX *c, uint32_t arg_index, VALUE recv, struct Node *body)
-{
-    VALUE *save_fp = c->fp;
-    VALUE save_self = c->self;
-    c->fp = save_fp + arg_index;
-    c->self = recv;
-    RESULT r = EVAL(c, body);
-    c->fp = save_fp;
-    c->self = save_self;
-    return RESULT_OK(UNWRAP_ALSO(RESULT_RETURN, r));
-}
+// (method_call_body removed: absorbed into dispatch_method_with_klass)
 
 extern VALUE abruby_new_object(struct abruby_class *klass);
 
@@ -508,50 +497,69 @@ node_class_def(CTX * restrict c, NODE * restrict n, ID name, NODE *super_expr, N
     return RESULT_OK(abruby_wrap_class(klass));
 }
 
-// Common method dispatch: push frame, call method, pop frame.
-// Shared by node_method_call, node_arith_fallback, and node_super.
-static RESULT
-dispatch_method_with_klass(CTX * restrict c, NODE * restrict call_site,
-                           VALUE recv, struct abruby_class *klass,
-                           struct abruby_method *method,
-                           unsigned int argc, VALUE *argv)
+// Populate cached fields in method_cache.
+static inline void
+method_cache_fill(struct method_cache *mc, struct abruby_class *klass,
+                  struct abruby_method *method)
 {
-    if (c->current_frame && c->current_frame->method)
-        c->current_frame->node = call_site;
+    mc->klass = klass;
+    mc->method = method;
+    mc->serial = abruby_vm_global.method_serial;
+    if (method->type == ABRUBY_METHOD_AST) {
+        mc->body = method->u.ast.body;
+        mc->dispatcher = method->u.ast.body->head.dispatcher;
+    } else {
+        mc->body = NULL;
+        mc->dispatcher = NULL;
+    }
+}
 
+// Inner dispatch using cached method_cache.
+// Does NOT save/restore c->self — caller is responsible.
+// Cache hit paths call this directly; non-cache paths go through dispatch_method_with_klass.
+static inline RESULT
+dispatch_method_frame(CTX * restrict c, NODE * restrict call_site,
+                      struct abruby_class *klass,
+                      struct method_cache *mc,
+                      unsigned int argc, uint32_t arg_index)
+{
     struct abruby_frame frame;
     frame.prev = c->current_frame;
-    frame.method = method;
+    frame.method = mc->method;
     frame.klass = klass;
+    frame.caller_node = call_site;
     c->current_frame = &frame;
 
     RESULT r;
-    if (method->type == ABRUBY_METHOD_CFUNC) {
-        r = method->u.cfunc.func(c, recv, argc, argv);
+    if (LIKELY(mc->body != NULL)) {
+        VALUE *save_fp = c->fp;
+        c->fp = save_fp + arg_index;
+        r = mc->dispatcher(c, mc->body);
+        c->fp = save_fp;
+        r = RESULT_OK(UNWRAP_ALSO(RESULT_RETURN, r));
     } else {
-        // Place args at a safe fp offset, then call body
-        uint32_t offset = (unsigned int)(argv - c->fp);
-        // If argv is not already on the fp stack (e.g. from arith_fallback),
-        // copy args to a safe offset
-        if (argv < c->fp || argv >= c->fp + 1024) {
-            offset = 16;
-            for (unsigned int i = 0; i < argc; i++)
-                c->fp[offset + i] = argv[i];
-        }
-        r = method_call_body(c, offset, recv, method->u.ast.body);
+        r = mc->method->u.cfunc.func(c, c->self, argc, c->fp + arg_index);
     }
 
     c->current_frame = frame.prev;
     return r;
 }
 
-// Convenience wrapper: klass = AB_CLASS_OF(recv)
+// Outer dispatch for non-cache paths: build temp mc, save/restore self.
+// Used by method_missing_dispatch, node_super, node_arith_fallback.
 static inline RESULT
-dispatch_method(CTX * restrict c, NODE * restrict call_site,
-                VALUE recv, struct abruby_method *method,
-                unsigned int argc, VALUE *argv)
+dispatch_method_with_klass(CTX * restrict c, NODE * restrict call_site,
+                           VALUE recv, struct abruby_class *klass,
+                           struct abruby_method *method,
+                           unsigned int argc, uint32_t arg_index)
 {
-    return dispatch_method_with_klass(c, call_site, recv, AB_CLASS_OF(recv), method, argc, argv);
+    struct method_cache mc;
+    method_cache_fill(&mc, klass, method);
+    VALUE save_self = c->self;
+    c->self = recv;
+    RESULT r = dispatch_method_frame(c, call_site, klass, &mc, argc, arg_index);
+    c->self = save_self;
+    return r;
 }
 
 static __attribute__((noinline)) RESULT
@@ -568,12 +576,7 @@ method_missing_dispatch(CTX * restrict c, NODE * restrict n, struct abruby_class
         c->fp[arg_index + i + 1] = c->fp[arg_index + i];
     }
     c->fp[arg_index] = abruby_str_new_cstr(rb_id2name(name));
-    if (mm->type == ABRUBY_METHOD_CFUNC) {
-        return mm->u.cfunc.func(c, recv_val, params_cnt + 1, c->fp + arg_index);
-    }
-    else {
-        return method_call_body(c, arg_index, recv_val, mm->u.ast.body);
-    }
+    return dispatch_method_with_klass(c, n, recv_val, klass, mm, params_cnt + 1, arg_index);
 }
 
 static __attribute__((noinline, cold)) RESULT
@@ -586,10 +589,8 @@ node_method_call_slow(CTX * restrict c, NODE * restrict n,
     if (UNLIKELY(method == NULL)) {
         return method_missing_dispatch(c, n, klass, name, recv_val, params_cnt, arg_index);
     }
-    mc->klass = klass;
-    mc->method = method;
-    mc->serial = abruby_method_serial;
-    return dispatch_method_with_klass(c, n, recv_val, klass, method, params_cnt, c->fp + arg_index);
+    method_cache_fill(mc, klass, method);
+    return dispatch_method_with_klass(c, n, recv_val, klass, method, params_cnt, arg_index);
 }
 
 NODE_DEF
@@ -598,11 +599,33 @@ node_method_call(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, uint3
     VALUE recv_val = UNWRAP(EVAL_ARG(c, recv));
     struct abruby_class *klass = AB_CLASS_OF(recv_val);
 
-    if (LIKELY(mc->klass == klass && mc->serial == abruby_method_serial)) {
-        return dispatch_method_with_klass(c, n, recv_val, klass, mc->method, params_cnt, c->fp + arg_index);
+    if (LIKELY(mc->klass == klass && mc->serial == c->vm->method_serial)) {
+        VALUE save_self = c->self;
+        c->self = recv_val;
+        RESULT r = dispatch_method_frame(c, n, klass, mc, params_cnt, arg_index);
+        c->self = save_self;
+        return r;
     }
     else {
         return node_method_call_slow(c, n, recv_val, klass, name, params_cnt, arg_index, mc);
+    }
+}
+
+// Function call (implicit self as receiver, no recv operand).
+// Uses dispatch_method_frame directly (no self save/restore needed).
+// Shares node_method_call_slow for cache miss path.
+NODE_DEF
+node_func_call(CTX * restrict c, NODE * restrict n, ID name, uint32_t params_cnt, uint32_t arg_index, struct method_cache *mc@ref)
+{
+    struct abruby_class *klass = AB_CLASS_OF(c->self);
+
+    if (LIKELY(mc->klass == klass && mc->serial == c->vm->method_serial)) {
+        return dispatch_method_frame(c, n, klass, mc,
+                                     params_cnt, arg_index);
+    }
+    else {
+        return node_method_call_slow(c, n, c->self, klass, name,
+                                     params_cnt, arg_index, mc);
     }
 }
 
@@ -646,7 +669,7 @@ node_super(CTX * restrict c, NODE * restrict n, uint32_t params_cnt, uint32_t ar
         klass = klass->super;
     }
 found_super:
-    return dispatch_method_with_klass(c, n, c->self, klass, method, params_cnt, c->fp + arg_index);
+    return dispatch_method_with_klass(c, n, c->self, klass, method, params_cnt, arg_index);
 }
 
 // === Arithmetic rewrite (type-specific nodes) ===
@@ -662,10 +685,12 @@ node_arith_fallback(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, ID 
         if (!method) {
             rb_raise(rb_eNoMethodError, "undefined method '%s' for %s", rb_id2name(op), rb_id2name(klass->name));
         }
-        VALUE args[2] = {abruby_str_new_cstr(rb_id2name(op)), rv};
-        return dispatch_method(c, n, lv, method, 2, args);
+        c->fp[16] = abruby_str_new_cstr(rb_id2name(op));
+        c->fp[17] = rv;
+        return dispatch_method_with_klass(c, n, lv, klass, method, 2, 16);
     }
-    return dispatch_method(c, n, lv, method, 1, &rv);
+    c->fp[16] = rv;
+    return dispatch_method_with_klass(c, n, lv, klass, method, 1, 16);
 }
 
 // Integer arithmetic helper (works for both fixnum and bignum)

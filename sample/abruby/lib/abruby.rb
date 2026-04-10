@@ -623,6 +623,22 @@ class AbRuby
           return transduce_binop(node)
         end
 
+        # Explicit self.method() → node_func_call (skip recv slot)
+        if node.receiver.is_a?(Prism::SelfNode)
+          call_arg_idx = arg_index
+          if args.any?
+            seq_nodes = args.map do |arg|
+              idx = inc_arg_index
+              AbRuby.alloc_node_lvar_set(idx, transduce(arg))
+            end
+            rewind_arg_index(call_arg_idx)
+            call_node = set_line(AbRuby.alloc_node_func_call(name.to_s, args.size, call_arg_idx), node)
+            return build_seq(seq_nodes + [call_node])
+          else
+            return set_line(AbRuby.alloc_node_func_call(name.to_s, 0, call_arg_idx), node)
+          end
+        end
+
         # Reserve a slot for the receiver result to avoid slot collision
         # with args that may contain nested calls
         recv_idx = inc_arg_index
@@ -647,10 +663,7 @@ class AbRuby
         end
       end
 
-      # function call (no receiver) → self.method(args)
-      self_node = AbRuby.alloc_node_self
-      recv_idx = inc_arg_index
-      recv_store = AbRuby.alloc_node_lvar_set(recv_idx, self_node)
+      # function call (no receiver) → node_func_call (optimized self-call)
       call_arg_idx = arg_index
 
       if args.any?
@@ -658,16 +671,12 @@ class AbRuby
           idx = inc_arg_index
           AbRuby.alloc_node_lvar_set(idx, transduce(arg))
         end
-        rewind_arg_index(recv_idx)
+        rewind_arg_index(call_arg_idx)
 
-        recv_ref = AbRuby.alloc_node_lvar_get(recv_idx)
-        call_node = set_line(AbRuby.alloc_node_method_call(recv_ref, name.to_s, args.size, call_arg_idx), node)
-        build_seq([recv_store] + seq_nodes + [call_node])
+        call_node = set_line(AbRuby.alloc_node_func_call(name.to_s, args.size, call_arg_idx), node)
+        build_seq(seq_nodes + [call_node])
       else
-        rewind_arg_index(recv_idx)
-        recv_ref = AbRuby.alloc_node_lvar_get(recv_idx)
-        call_node = set_line(AbRuby.alloc_node_method_call(recv_ref, name.to_s, 0, call_arg_idx), node)
-        AbRuby.alloc_node_seq(recv_store, call_node)
+        set_line(AbRuby.alloc_node_func_call(name.to_s, 0, call_arg_idx), node)
       end
     end
 

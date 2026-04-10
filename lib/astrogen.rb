@@ -267,7 +267,7 @@ module ASTroGen
 
       def build_eval_dispatch
         <<~C
-        static #{result_type}
+        static __attribute__((no_stack_protector)) #{result_type}
         DISPATCH_#{@name}(#{@prefix_args.join(', ')})
         {
             dispatch_info(c, n, 0);
@@ -330,7 +330,7 @@ module ASTroGen
         #{ decls.join("\n") }
 
             if (!is_public) fprintf(fp, "static ");
-            fprintf(fp, "#{result_type}\\n");
+            fprintf(fp, "__attribute__((no_stack_protector)) #{result_type}\\n");
             fprintf(fp, "%s(#{@prefix_args.join(', ')})\\n", dispatcher_name);
             fprintf(fp, "{\\n");
             fprintf(fp, "    dispatch_info(c, n, false);\\n");

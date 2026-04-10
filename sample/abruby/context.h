@@ -228,6 +228,16 @@ ab_verify(VALUE obj)
     }
 }
 
+static __attribute__((unused)) struct abruby_class *
+AB_CLASS_OF_IMM(VALUE obj)
+{
+    if (FIXNUM_P(obj))       return ab_integer_class;
+    else if (SYMBOL_P(obj))  return ab_symbol_class;
+    else if (obj == Qtrue)   return ab_true_class;
+    else if (obj == Qfalse)  return ab_false_class;
+    else                     return ab_nil_class;
+}
+
 /*
  * AB_CLASS_OF(obj): resolve the abruby class of a VALUE.
  *
@@ -237,7 +247,7 @@ ab_verify(VALUE obj)
  * The abruby VALUE invariant guarantees obj is either a CRuby immediate
  * or T_DATA with abruby_header at offset 0.
  */
-static __attribute__((unused)) struct abruby_class *
+static inline struct abruby_class *
 AB_CLASS_OF(VALUE obj)
 {
     ab_verify(obj);
@@ -246,11 +256,7 @@ AB_CLASS_OF(VALUE obj)
         return ((struct abruby_header *)RTYPEDDATA_GET_DATA(obj))->klass;
     }
     else {
-        if (FIXNUM_P(obj))       return ab_integer_class;
-        else if (SYMBOL_P(obj))  return ab_symbol_class;
-        else if (obj == Qtrue)   return ab_true_class;
-        else if (obj == Qfalse)  return ab_false_class;
-        else                     return ab_nil_class;
+        return AB_CLASS_OF_IMM(obj);
     }
 }
 
@@ -266,15 +272,15 @@ struct abruby_gvar_table {
     } entries[ABRUBY_GVAR_MAX];
 };
 
-// call frame for backtrace support (24 bytes)
-// method != NULL: normal method frame, node = call site node
-// method == NULL: <main>/<top (required)>, source_file = file name
+// call frame for backtrace support (32 bytes)
+// method != NULL: normal method frame
+// method == NULL: <main>/<top (required)>
 struct abruby_frame {
     struct abruby_frame *prev;
     struct abruby_method *method;
     struct abruby_class *klass;   // receiver's class at call time (for super)
     union {
-        struct Node *node;        // method frame: updated by child push
+        struct Node *caller_node; // method frame: call site in the caller (set at push time)
         const char *source_file;  // <main>/<top>: set at push time
     };
 };
@@ -287,7 +293,13 @@ struct abruby_id_cache {
     ID method_missing;
 };
 
+// Global VM state (shared across all CTX instances)
+struct abruby_vm_global {
+    uint32_t method_serial;
+};
+
 struct CTX_struct {
+    struct abruby_vm_global *vm;
     VALUE *env;
     VALUE *fp;
     VALUE self;
@@ -312,9 +324,11 @@ struct method_cache {
     struct abruby_class *klass;
     struct abruby_method *method;
     uint32_t serial;
+    struct Node *body;                  // cached method->u.ast.body (NULL for CFUNC)
+    RESULT (*dispatcher)(struct CTX_struct *, struct Node *); // cached body->head.dispatcher
 };
 
-extern uint32_t abruby_method_serial;
+extern struct abruby_vm_global abruby_vm_global;
 
 #define LIKELY(expr) __builtin_expect((expr), 1)
 #define UNLIKELY(expr) __builtin_expect((expr), 0)
