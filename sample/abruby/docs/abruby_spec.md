@@ -196,18 +196,21 @@ def double(x) = x * 2
 
 ## メソッド呼び出し
 
-全てのメソッド呼び出しは OOP メソッドディスパッチ経由 (`node_method_call` に統一)。
+レシーバ付きは `node_method_call`、レシーバなし（暗黙 self）は `node_func_call` で処理。
 
 ```ruby
-# レシーバ付き
+# レシーバ付き → node_method_call
 obj.method(arg1, arg2)
 1 + 2           # 1.+(2) と同じ
 a[0]            # a.[](0) と同じ
 a[0] = 1        # a.[]=(0, 1) と同じ
 
-# レシーバなし (self に対する呼び出し)
+# レシーバなし → node_func_call (recv 操作なし、self を暗黙使用)
 foo(1, 2)       # self.foo(1, 2) と同じ
 p(42)           # self.p(42) と同じ
+
+# 明示的 self → node_func_call (SelfNode 検出で最適化)
+self.foo(1, 2)
 ```
 
 ## 演算子
