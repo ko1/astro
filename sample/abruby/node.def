@@ -9,7 +9,7 @@
 })
 
 // UNWRAP_ALSO: like UNWRAP but does not propagate the specified state.
-// Used in method_call_body to catch RESULT_RETURN while propagating others.
+// Used in dispatch_method_frame to catch RESULT_RETURN while propagating others.
 #define UNWRAP_ALSO(except_state, r) ({ \
     RESULT _r = (r); \
     if (UNLIKELY(_r.state != RESULT_NORMAL && _r.state != (except_state))) return _r; \
@@ -107,7 +107,6 @@ find_class(CTX *c, ID name)
     return NULL;
 }
 
-// (method_call_body removed: absorbed into dispatch_method_with_klass)
 
 extern VALUE abruby_new_object(struct abruby_class *klass);
 

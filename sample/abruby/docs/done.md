@@ -94,7 +94,7 @@
 
 ## ランタイム
 - AbRuby インスタンスごとに独立した VM 状態
-- `abruby_vm_global`（グローバル VM 状態: method_serial）
+- `abruby_machine` に `method_serial`（インラインキャッシュ無効化用、インスタンスごと）
 - `AbRuby.new` で新しい環境、`AbRuby.eval` は一時インスタンス
 - T_DATA 統一構造（全ヒープオブジェクトの先頭に klass）
 - `AB_CLASS_OF` は static inline（即値は `AB_CLASS_OF_IMM` に分離）
