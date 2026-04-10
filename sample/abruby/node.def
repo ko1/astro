@@ -676,7 +676,7 @@ found_super:
 
 // Fallback: general method call for arithmetic operators (recv=lv, arg=rv)
 static __attribute__((noinline, cold)) RESULT
-node_arith_fallback(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, ID op)
+node_arith_fallback(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, ID op, uint32_t arg_index)
 {
     struct abruby_class *klass = AB_CLASS_OF(lv);
     struct abruby_method *method = abruby_class_find_method(klass, op);
@@ -685,12 +685,12 @@ node_arith_fallback(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, ID 
         if (!method) {
             rb_raise(rb_eNoMethodError, "undefined method '%s' for %s", rb_id2name(op), rb_id2name(klass->name));
         }
-        c->fp[16] = abruby_str_new_cstr(rb_id2name(op));
-        c->fp[17] = rv;
-        return dispatch_method_with_klass(c, n, lv, klass, method, 2, 16);
+        c->fp[arg_index] = abruby_str_new_cstr(rb_id2name(op));
+        c->fp[arg_index + 1] = rv;
+        return dispatch_method_with_klass(c, n, lv, klass, method, 2, arg_index);
     }
-    c->fp[16] = rv;
-    return dispatch_method_with_klass(c, n, lv, klass, method, 1, 16);
+    c->fp[arg_index] = rv;
+    return dispatch_method_with_klass(c, n, lv, klass, method, 1, arg_index);
 }
 
 // Integer arithmetic helper (works for both fixnum and bignum)
@@ -765,15 +765,15 @@ swap_dispatcher(NODE *n, const struct NodeKind *target_kind)
 
 // node_plus: generic fallback (method dispatch via "+")
 NODE_DEF
-node_plus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
+node_plus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    return node_arith_fallback(c, n, lv, rv, c->ids->op_plus);
+    return node_arith_fallback(c, n, lv, rv, c->ids->op_plus, arg_index);
 }
 
 static __attribute__((noinline, cold)) RESULT
-node_fixnum_plus_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
+node_fixnum_plus_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
 {
     if (ab_is_integer(lv) && ab_is_integer(rv)) {
         swap_dispatcher(n, &kind_node_integer_plus);
@@ -781,7 +781,7 @@ node_fixnum_plus_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
     }
     else {
         swap_dispatcher(n, &kind_node_plus);
-        return node_arith_fallback(c, n, lv, rv, c->ids->op_plus);
+        return node_arith_fallback(c, n, lv, rv, c->ids->op_plus, arg_index);
     }
 }
 
@@ -792,7 +792,7 @@ node_fixnum_plus_overflow(VALUE lv, VALUE rv)
 }
 
 NODE_DEF
-node_fixnum_plus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
+node_fixnum_plus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
@@ -802,11 +802,11 @@ node_fixnum_plus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
             return RESULT_OK((VALUE)result);
         return node_fixnum_plus_overflow(lv, rv);
     }
-    return node_fixnum_plus_slow(c, n, lv, rv);
+    return node_fixnum_plus_slow(c, n, lv, rv, arg_index);
 }
 
 NODE_DEF
-node_integer_plus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
+node_integer_plus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
@@ -817,19 +817,19 @@ node_integer_plus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
     if (ab_is_integer(lv) && ab_is_integer(rv)) {
         return integer_plus_calc(lv, rv);
     }
-    return node_arith_fallback(c, n, lv, rv, c->ids->op_plus);
+    return node_arith_fallback(c, n, lv, rv, c->ids->op_plus, arg_index);
 }
 
 NODE_DEF
-node_minus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
+node_minus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    return node_arith_fallback(c, n, lv, rv, c->ids->op_minus);
+    return node_arith_fallback(c, n, lv, rv, c->ids->op_minus, arg_index);
 }
 
 static __attribute__((noinline, cold)) RESULT
-node_fixnum_minus_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
+node_fixnum_minus_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
 {
     if (ab_is_integer(lv) && ab_is_integer(rv)) {
         swap_dispatcher(n, &kind_node_integer_minus);
@@ -837,7 +837,7 @@ node_fixnum_minus_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
     }
     else {
         swap_dispatcher(n, &kind_node_minus);
-        return node_arith_fallback(c, n, lv, rv, c->ids->op_minus);
+        return node_arith_fallback(c, n, lv, rv, c->ids->op_minus, arg_index);
     }
 }
 
@@ -848,7 +848,7 @@ node_fixnum_minus_overflow(VALUE lv, VALUE rv)
 }
 
 NODE_DEF
-node_fixnum_minus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
+node_fixnum_minus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
@@ -858,11 +858,11 @@ node_fixnum_minus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
             return RESULT_OK((VALUE)result);
         return node_fixnum_minus_overflow(lv, rv);
     }
-    return node_fixnum_minus_slow(c, n, lv, rv);
+    return node_fixnum_minus_slow(c, n, lv, rv, arg_index);
 }
 
 NODE_DEF
-node_integer_minus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
+node_integer_minus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
@@ -873,19 +873,19 @@ node_integer_minus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
     if (ab_is_integer(lv) && ab_is_integer(rv)) {
         return integer_minus_calc(lv, rv);
     }
-    return node_arith_fallback(c, n, lv, rv, c->ids->op_minus);
+    return node_arith_fallback(c, n, lv, rv, c->ids->op_minus, arg_index);
 }
 
 NODE_DEF
-node_mul(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
+node_mul(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    return node_arith_fallback(c, n, lv, rv, c->ids->op_mul);
+    return node_arith_fallback(c, n, lv, rv, c->ids->op_mul, arg_index);
 }
 
 static __attribute__((noinline, cold)) RESULT
-node_fixnum_mul_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
+node_fixnum_mul_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
 {
     if (ab_is_integer(lv) && ab_is_integer(rv)) {
         swap_dispatcher(n, &kind_node_integer_mul);
@@ -893,7 +893,7 @@ node_fixnum_mul_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
     }
     else {
         swap_dispatcher(n, &kind_node_mul);
-        return node_arith_fallback(c, n, lv, rv, c->ids->op_mul);
+        return node_arith_fallback(c, n, lv, rv, c->ids->op_mul, arg_index);
     }
 }
 
@@ -904,7 +904,7 @@ node_fixnum_mul_overflow(long a, long b)
 }
 
 NODE_DEF
-node_fixnum_mul(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
+node_fixnum_mul(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
@@ -915,11 +915,11 @@ node_fixnum_mul(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
             return RESULT_OK(LONG2FIX(result));
         return node_fixnum_mul_overflow(a, b);
     }
-    return node_fixnum_mul_slow(c, n, lv, rv);
+    return node_fixnum_mul_slow(c, n, lv, rv, arg_index);
 }
 
 NODE_DEF
-node_integer_mul(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
+node_integer_mul(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
@@ -932,19 +932,19 @@ node_integer_mul(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
     if (ab_is_integer(lv) && ab_is_integer(rv)) {
         return integer_mul_calc(lv, rv);
     }
-    return node_arith_fallback(c, n, lv, rv, c->ids->op_mul);
+    return node_arith_fallback(c, n, lv, rv, c->ids->op_mul, arg_index);
 }
 
 NODE_DEF
-node_div(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
+node_div(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    return node_arith_fallback(c, n, lv, rv, c->ids->op_div);
+    return node_arith_fallback(c, n, lv, rv, c->ids->op_div, arg_index);
 }
 
 static __attribute__((noinline, cold)) RESULT
-node_fixnum_div_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
+node_fixnum_div_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
 {
     if (ab_is_integer(lv) && ab_is_integer(rv)) {
         swap_dispatcher(n, &kind_node_integer_div);
@@ -952,12 +952,12 @@ node_fixnum_div_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
     }
     else {
         swap_dispatcher(n, &kind_node_div);
-        return node_arith_fallback(c, n, lv, rv, c->ids->op_div);
+        return node_arith_fallback(c, n, lv, rv, c->ids->op_div, arg_index);
     }
 }
 
 NODE_DEF
-node_fixnum_div(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
+node_fixnum_div(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
@@ -973,11 +973,11 @@ node_fixnum_div(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
         if ((a ^ b) < 0 && d * b != a) d--;
         return RESULT_OK(LONG2FIX(d));
     }
-    return node_fixnum_div_slow(c, n, lv, rv);
+    return node_fixnum_div_slow(c, n, lv, rv, arg_index);
 }
 
 NODE_DEF
-node_integer_div(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
+node_integer_div(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
@@ -996,7 +996,7 @@ node_integer_div(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
     if (ab_is_integer(lv) && ab_is_integer(rv)) {
         return integer_div_calc(lv, rv);
     }
-    return node_arith_fallback(c, n, lv, rv, c->ids->op_div);
+    return node_arith_fallback(c, n, lv, rv, c->ids->op_div, arg_index);
 }
 
 // === Comparison rewrite (type-specific nodes) ===
@@ -1020,107 +1020,107 @@ extern const struct NodeKind kind_node_ge;
 extern const struct NodeKind kind_node_fixnum_ge;
 
 NODE_DEF
-node_lt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
+node_lt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    return node_arith_fallback(c, n, lv, rv, c->ids->op_lt);
+    return node_arith_fallback(c, n, lv, rv, c->ids->op_lt, arg_index);
 }
 
 static __attribute__((noinline, cold)) RESULT
-node_fixnum_lt_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
+node_fixnum_lt_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
 {
     swap_dispatcher(n, &kind_node_lt);
-    return node_arith_fallback(c, n, lv, rv, c->ids->op_lt);
+    return node_arith_fallback(c, n, lv, rv, c->ids->op_lt, arg_index);
 }
 
 NODE_DEF
-node_fixnum_lt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
+node_fixnum_lt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
     if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
         return RESULT_OK((long)lv < (long)rv ? Qtrue : Qfalse);
     }
-    return node_fixnum_lt_slow(c, n, lv, rv);
+    return node_fixnum_lt_slow(c, n, lv, rv, arg_index);
 }
 
 NODE_DEF
-node_le(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
+node_le(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    return node_arith_fallback(c, n, lv, rv, c->ids->op_le);
+    return node_arith_fallback(c, n, lv, rv, c->ids->op_le, arg_index);
 }
 
 static __attribute__((noinline, cold)) RESULT
-node_fixnum_le_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
+node_fixnum_le_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
 {
     swap_dispatcher(n, &kind_node_le);
-    return node_arith_fallback(c, n, lv, rv, c->ids->op_le);
+    return node_arith_fallback(c, n, lv, rv, c->ids->op_le, arg_index);
 }
 
 NODE_DEF
-node_fixnum_le(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
+node_fixnum_le(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
     if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
         return RESULT_OK((long)lv <= (long)rv ? Qtrue : Qfalse);
     }
-    return node_fixnum_le_slow(c, n, lv, rv);
+    return node_fixnum_le_slow(c, n, lv, rv, arg_index);
 }
 
 NODE_DEF
-node_gt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
+node_gt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    return node_arith_fallback(c, n, lv, rv, c->ids->op_gt);
+    return node_arith_fallback(c, n, lv, rv, c->ids->op_gt, arg_index);
 }
 
 static __attribute__((noinline, cold)) RESULT
-node_fixnum_gt_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
+node_fixnum_gt_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
 {
     swap_dispatcher(n, &kind_node_gt);
-    return node_arith_fallback(c, n, lv, rv, c->ids->op_gt);
+    return node_arith_fallback(c, n, lv, rv, c->ids->op_gt, arg_index);
 }
 
 NODE_DEF
-node_fixnum_gt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
+node_fixnum_gt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
     if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
         return RESULT_OK((long)lv > (long)rv ? Qtrue : Qfalse);
     }
-    return node_fixnum_gt_slow(c, n, lv, rv);
+    return node_fixnum_gt_slow(c, n, lv, rv, arg_index);
 }
 
 NODE_DEF
-node_ge(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
+node_ge(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    return node_arith_fallback(c, n, lv, rv, c->ids->op_ge);
+    return node_arith_fallback(c, n, lv, rv, c->ids->op_ge, arg_index);
 }
 
 static __attribute__((noinline, cold)) RESULT
-node_fixnum_ge_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
+node_fixnum_ge_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
 {
     swap_dispatcher(n, &kind_node_ge);
-    return node_arith_fallback(c, n, lv, rv, c->ids->op_ge);
+    return node_arith_fallback(c, n, lv, rv, c->ids->op_ge, arg_index);
 }
 
 NODE_DEF
-node_fixnum_ge(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
+node_fixnum_ge(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
     if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
         return RESULT_OK((long)lv >= (long)rv ? Qtrue : Qfalse);
     }
-    return node_fixnum_ge_slow(c, n, lv, rv);
+    return node_fixnum_ge_slow(c, n, lv, rv, arg_index);
 }
 
 // === Equality / Modulo ===
@@ -1140,80 +1140,80 @@ extern const struct NodeKind kind_node_mod;
 extern const struct NodeKind kind_node_fixnum_mod;
 
 NODE_DEF
-node_eq(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
+node_eq(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    return node_arith_fallback(c, n, lv, rv, c->ids->op_eq);
+    return node_arith_fallback(c, n, lv, rv, c->ids->op_eq, arg_index);
 }
 
 static __attribute__((noinline, cold)) RESULT
-node_fixnum_eq_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
+node_fixnum_eq_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
 {
     swap_dispatcher(n, &kind_node_eq);
-    return node_arith_fallback(c, n, lv, rv, c->ids->op_eq);
+    return node_arith_fallback(c, n, lv, rv, c->ids->op_eq, arg_index);
 }
 
 NODE_DEF
-node_fixnum_eq(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
+node_fixnum_eq(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
     if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
         return RESULT_OK(lv == rv ? Qtrue : Qfalse);
     }
-    return node_fixnum_eq_slow(c, n, lv, rv);
+    return node_fixnum_eq_slow(c, n, lv, rv, arg_index);
 }
 
 NODE_DEF
-node_neq(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
+node_neq(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
     // != is defined as !(==), fallback through ==
-    RESULT eq = node_arith_fallback(c, n, lv, rv, c->ids->op_eq);
+    RESULT eq = node_arith_fallback(c, n, lv, rv, c->ids->op_eq, arg_index);
     if (eq.state != RESULT_NORMAL) return eq;
     return RESULT_OK(RTEST(eq.value) ? Qfalse : Qtrue);
 }
 
 static __attribute__((noinline, cold)) RESULT
-node_fixnum_neq_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
+node_fixnum_neq_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
 {
     swap_dispatcher(n, &kind_node_neq);
     // != is defined as !(==), fallback through ==
-    RESULT eq = node_arith_fallback(c, n, lv, rv, c->ids->op_eq);
+    RESULT eq = node_arith_fallback(c, n, lv, rv, c->ids->op_eq, arg_index);
     if (eq.state != RESULT_NORMAL) return eq;
     return RESULT_OK(RTEST(eq.value) ? Qfalse : Qtrue);
 }
 
 NODE_DEF
-node_fixnum_neq(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
+node_fixnum_neq(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
     if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
         return RESULT_OK(lv != rv ? Qtrue : Qfalse);
     }
-    return node_fixnum_neq_slow(c, n, lv, rv);
+    return node_fixnum_neq_slow(c, n, lv, rv, arg_index);
 }
 
 NODE_DEF
-node_mod(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
+node_mod(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    return node_arith_fallback(c, n, lv, rv, c->ids->op_mod);
+    return node_arith_fallback(c, n, lv, rv, c->ids->op_mod, arg_index);
 }
 
 static __attribute__((noinline, cold)) RESULT
-node_fixnum_mod_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv)
+node_fixnum_mod_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
 {
     swap_dispatcher(n, &kind_node_mod);
-    return node_arith_fallback(c, n, lv, rv, c->ids->op_mod);
+    return node_arith_fallback(c, n, lv, rv, c->ids->op_mod, arg_index);
 }
 
 NODE_DEF
-node_fixnum_mod(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
+node_fixnum_mod(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
@@ -1229,6 +1229,6 @@ node_fixnum_mod(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
         if (r && (a ^ b) < 0) r += b;
         return RESULT_OK(LONG2FIX(r));
     }
-    return node_fixnum_mod_slow(c, n, lv, rv);
+    return node_fixnum_mod_slow(c, n, lv, rv, arg_index);
 }
 

@@ -175,7 +175,7 @@ class AbRuby
         recv = AbRuby.alloc_node_gvar_get(node.name.to_s)
         rhs = transduce(node.value)
         if BINOP_MAP.key?(op)
-          call_node = set_line(AbRuby.send("alloc_node_#{BINOP_MAP[op]}", recv, rhs), node)
+          call_node = set_line(AbRuby.send("alloc_node_#{BINOP_MAP[op]}", recv, rhs, inc_arg_index.tap { rewind_arg_index(_1) }), node)
         else
           call_arg_idx = arg_index
           idx = inc_arg_index
@@ -197,7 +197,7 @@ class AbRuby
         recv = AbRuby.alloc_node_ivar_get(node.name.to_s)
         rhs = transduce(node.value)
         if BINOP_MAP.key?(op)
-          call_node = set_line(AbRuby.send("alloc_node_#{BINOP_MAP[op]}", recv, rhs), node)
+          call_node = set_line(AbRuby.send("alloc_node_#{BINOP_MAP[op]}", recv, rhs, inc_arg_index.tap { rewind_arg_index(_1) }), node)
         else
           call_arg_idx = arg_index
           idx = inc_arg_index
@@ -220,7 +220,7 @@ class AbRuby
         recv = AbRuby.alloc_node_lvar_get(lvar_index(node.name))
         rhs = transduce(node.value)
         if BINOP_MAP.key?(op)
-          call_node = set_line(AbRuby.send("alloc_node_#{BINOP_MAP[op]}", recv, rhs), node)
+          call_node = set_line(AbRuby.send("alloc_node_#{BINOP_MAP[op]}", recv, rhs, inc_arg_index.tap { rewind_arg_index(_1) }), node)
         else
           call_arg_idx = arg_index
           idx = inc_arg_index
@@ -606,8 +606,11 @@ class AbRuby
     def transduce_binop(node)
       left = transduce(node.receiver)
       right = transduce(node.arguments.arguments[0])
+      # Reserve a fallback slot for arith method dispatch (e.g., Float + Float)
+      fallback_idx = inc_arg_index
+      rewind_arg_index(fallback_idx)
       alloc_method = "alloc_node_#{BINOP_MAP[node.name.to_s]}"
-      set_line(AbRuby.send(alloc_method, left, right), node)
+      set_line(AbRuby.send(alloc_method, left, right, fallback_idx), node)
     end
 
     def transduce_call(node)
