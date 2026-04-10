@@ -11,7 +11,8 @@ abruby.o: node_eval.c context.h node.h
 BUILTIN_OBJS = array.o class.o complex.o exception.o false.o float.o hash.o integer.o \
                kernel.o nil.o object.o range.o rational.o regexp.o string.o \
                symbol.o true.o
-$(BUILTIN_OBJS): builtin/builtin.h context.h node.h
+$(BUILTIN_OBJS): builtin/builtin.h context.h node.h node_head.h
+node_head.h: node_eval.c
 
 run: all
 	ruby exe/abruby test.rb
