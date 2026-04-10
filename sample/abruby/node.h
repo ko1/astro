@@ -24,13 +24,13 @@ struct abruby_class *abruby_unwrap_class(VALUE obj);
 VALUE abruby_new_object(struct abruby_class *klass);
 
 // String helpers
-VALUE abruby_str_new(VALUE rb_str);
-VALUE abruby_str_new_cstr(const char *s);
+VALUE abruby_str_new(CTX *c, VALUE rb_str);
+VALUE abruby_str_new_cstr(CTX *c, const char *s);
 VALUE abruby_str_rstr(VALUE ab_str);
 
 // Array/Hash helpers
-VALUE abruby_ary_new(VALUE rb_ary);
-VALUE abruby_hash_new_wrap(VALUE rb_hash);
+VALUE abruby_ary_new(CTX *c, VALUE rb_ary);
+VALUE abruby_hash_new_wrap(CTX *c, VALUE rb_hash);
 void abruby_node_mark(void *ptr);
 
 void code_repo_add(const char *name, NODE *body, bool force_add);

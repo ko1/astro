@@ -52,13 +52,24 @@ struct abruby_machine {
     uint32_t method_serial;              // メソッドバージョン (キャッシュ無効化用)
     struct abruby_fiber *current_fiber;  // 現在実行中のファイバー
     struct abruby_class main_class_body; // インスタンスごとの Object サブクラス
-    struct abruby_gvar_table gvars;      // グローバル変数
+    struct ab_id_table gvars;            // グローバル変数
     struct abruby_id_cache id_cache;     // ID キャッシュ (+, -, <, method_missing 等)
     VALUE rb_self;                       // Ruby 側の AbRuby インスタンス
     VALUE current_file;                  // 実行中ファイルパス
     VALUE loaded_files;                  // require 済みファイル一覧
+    // Per-instance built-in classes (cloned from templates at create_vm)
+    struct abruby_class *object_class, *integer_class, *float_class,
+                        *string_class, *symbol_class, *array_class, *hash_class,
+                        *range_class, *regexp_class, *rational_class, *complex_class,
+                        *true_class, *false_class, *nil_class,
+                        *kernel_module, *module_class, *class_class,
+                        *runtime_error_class;
 };
 ```
+
+**Per-instance 組み込みクラス**: 18 個の組み込みクラス（Integer, String, Float, Class, Module 等）は `abruby_machine` インスタンスごとに独立する。`Init_abruby()` 時に静的なテンプレートクラス (`_body` 変数) にメソッドを登録し、`create_vm()` の `init_instance_classes()` でテンプレートからメソッドテーブルを clone して per-instance にコピーする。これにより、あるインスタンスでの `class Integer; def foo; end; end` が他のインスタンスに影響しない。
+
+ランタイムコードはすべて `c->abm->xxx_class` 経由で per-instance クラスにアクセスする (`AB_CLASS_OF_IMM` も CTX を受け取って即値を per-instance クラスに解決する)。
 
 ### CTX (実行コンテキスト)
 

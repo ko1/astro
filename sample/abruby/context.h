@@ -121,7 +121,7 @@ struct abruby_header {
 };
 
 struct abruby_class {
-    struct abruby_class *klass;  // offset 0: always ab_class_class
+    struct abruby_class *klass;  // offset 0: metaclass (per-instance class_class or module_class)
     enum abruby_obj_type obj_type; // what kind of instances this class creates
     ID name;
     struct abruby_class *super;
@@ -139,17 +139,17 @@ struct abruby_object {
 // T_BIGNUM/T_FLOAT.  This ensures uniform class resolution via AB_CLASS_OF().
 
 struct abruby_bignum {
-    struct abruby_class *klass;  // offset 0: always ab_integer_class
+    struct abruby_class *klass;  // offset 0: per-instance integer_class
     VALUE rb_bignum;             // inner CRuby Bignum (T_BIGNUM)
 };
 
 struct abruby_float {
-    struct abruby_class *klass;  // offset 0: always ab_float_class
+    struct abruby_class *klass;  // offset 0: per-instance float_class
     VALUE rb_float;              // inner CRuby Float (Flonum or T_FLOAT)
 };
 
 struct abruby_string {
-    struct abruby_class *klass;  // offset 0: always ab_string_class
+    struct abruby_class *klass;  // offset 0: per-instance string_class
     VALUE rb_str;                // inner CRuby String
 };
 
@@ -176,33 +176,17 @@ struct abruby_regexp {
 };
 
 struct abruby_rational {
-    struct abruby_class *klass;  // offset 0: always ab_rational_class
+    struct abruby_class *klass;  // offset 0: per-instance rational_class
     VALUE rb_rational;           // inner CRuby Rational
 };
 
 struct abruby_complex {
-    struct abruby_class *klass;  // offset 0: always ab_complex_class
+    struct abruby_class *klass;  // offset 0: per-instance complex_class
     VALUE rb_complex;            // inner CRuby Complex
 };
 
-// built-in abruby classes (defined in abruby.c)
-extern struct abruby_class *ab_object_class;
-extern struct abruby_class *ab_integer_class;
-extern struct abruby_class *ab_string_class;
-extern struct abruby_class *ab_symbol_class;
-extern struct abruby_class *ab_true_class;
-extern struct abruby_class *ab_false_class;
-extern struct abruby_class *ab_nil_class;
-extern struct abruby_class *ab_float_class;
-extern struct abruby_class *ab_array_class;
-extern struct abruby_class *ab_hash_class;
-extern struct abruby_class *ab_range_class;
-extern struct abruby_class *ab_regexp_class;
-extern struct abruby_class *ab_kernel_module;
-extern struct abruby_class *ab_rational_class;
-extern struct abruby_class *ab_complex_class;
-extern struct abruby_class *ab_module_class;
-extern struct abruby_class *ab_class_class;
+// Built-in abruby classes are per-instance (stored in abruby_machine).
+// Access via c->abm->integer_class etc. at runtime.
 
 extern const rb_data_type_t abruby_data_type;
 extern const rb_data_type_t abruby_node_type;
@@ -235,38 +219,6 @@ ab_verify(VALUE obj)
     }
 }
 
-static __attribute__((unused)) struct abruby_class *
-AB_CLASS_OF_IMM(VALUE obj)
-{
-    if (FIXNUM_P(obj))       return ab_integer_class;
-    else if (SYMBOL_P(obj))  return ab_symbol_class;
-    else if (obj == Qtrue)   return ab_true_class;
-    else if (obj == Qfalse)  return ab_false_class;
-    else                     return ab_nil_class;
-}
-
-/*
- * AB_CLASS_OF(obj): resolve the abruby class of a VALUE.
- *
- * Heap objects (T_DATA) are checked first since they are the most common
- * receivers in node_method_call — Fixnum arithmetic goes through
- * type-specialized nodes (fixnum_plus, etc.) and rarely reaches here.
- * The abruby VALUE invariant guarantees obj is either a CRuby immediate
- * or T_DATA with abruby_header at offset 0.
- */
-static inline struct abruby_class *
-AB_CLASS_OF(VALUE obj)
-{
-    ab_verify(obj);
-
-    if (RB_LIKELY(!RB_SPECIAL_CONST_P(obj))) {
-        return ((struct abruby_header *)RTYPEDDATA_GET_DATA(obj))->klass;
-    }
-    else {
-        return AB_CLASS_OF_IMM(obj);
-    }
-}
-
 // Type check by obj_type (instance-independent, works with per-instance classes)
 static inline bool
 ab_obj_type_p(VALUE obj, enum abruby_obj_type type)
@@ -276,8 +228,8 @@ ab_obj_type_p(VALUE obj, enum abruby_obj_type type)
     return h->klass && h->klass->obj_type == type;
 }
 
-// Legacy macro (uses AB_CLASS_OF which requires per-instance resolution for immediates)
-#define AB_CLASS_P(obj, klass) (AB_CLASS_OF(obj) == (klass))
+// AB_CLASS_OF / AB_CLASS_OF_IMM are defined below after struct CTX_struct / abruby_machine.
+// AB_CLASS_P removed: use ab_obj_type_p() or AB_CLASS_OF(c, obj) == c->abm->xxx_class
 
 // Global variables are stored in an ab_id_table in abruby_machine.
 // (struct abruby_gvar_table removed)
@@ -355,12 +307,10 @@ struct abruby_machine {
 
 // exception object
 struct abruby_exception {
-    struct abruby_class *klass;  // offset 0: ab_runtime_error_class
+    struct abruby_class *klass;  // offset 0: per-instance runtime_error_class
     VALUE message;               // abruby VALUE (usually abruby string)
     VALUE backtrace;             // Ruby Array of Strings, or Qnil
 };
-
-extern struct abruby_class *ab_runtime_error_class;
 
 // inline method cache per call site
 struct method_cache {
@@ -374,5 +324,40 @@ struct method_cache {
 
 #define LIKELY(expr) __builtin_expect((expr), 1)
 #define UNLIKELY(expr) __builtin_expect((expr), 0)
+
+// Class resolution helpers — defined after abruby_machine so that c->abm->xxx_class
+// can be dereferenced inline.
+
+static __attribute__((unused)) struct abruby_class *
+AB_CLASS_OF_IMM(CTX *c, VALUE obj)
+{
+    if (FIXNUM_P(obj))       return c->abm->integer_class;
+    else if (SYMBOL_P(obj))  return c->abm->symbol_class;
+    else if (obj == Qtrue)   return c->abm->true_class;
+    else if (obj == Qfalse)  return c->abm->false_class;
+    else                     return c->abm->nil_class;
+}
+
+/*
+ * AB_CLASS_OF(c, obj): resolve the abruby class of a VALUE.
+ *
+ * Heap objects (T_DATA) are checked first since they are the most common
+ * receivers in node_method_call — Fixnum arithmetic goes through
+ * type-specialized nodes (fixnum_plus, etc.) and rarely reaches here.
+ * The abruby VALUE invariant guarantees obj is either a CRuby immediate
+ * or T_DATA with abruby_header at offset 0.
+ */
+static inline struct abruby_class *
+AB_CLASS_OF(CTX *c, VALUE obj)
+{
+    ab_verify(obj);
+
+    if (RB_LIKELY(!RB_SPECIAL_CONST_P(obj))) {
+        return ((struct abruby_header *)RTYPEDDATA_GET_DATA(obj))->klass;
+    }
+    else {
+        return AB_CLASS_OF_IMM(c, obj);
+    }
+}
 
 #endif

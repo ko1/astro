@@ -4,7 +4,7 @@ static VALUE ab_to_hash_key(VALUE v) {
     if (FIXNUM_P(v) || v == Qtrue || v == Qfalse || v == Qnil) return v;
     if (RB_TYPE_P(v, T_DATA)) {
         struct abruby_header *h = (struct abruby_header *)RTYPEDDATA_GET_DATA(v);
-        if (h->klass == ab_string_class) return ((struct abruby_string *)h)->rb_str;
+        if (h->klass->obj_type == ABRUBY_OBJ_STRING) return ((struct abruby_string *)h)->rb_str;
     }
     return v;
 }
@@ -33,7 +33,7 @@ static RESULT ab_hash_inspect(CTX *c, VALUE self, unsigned int argc, VALUE *argv
         rb_str_cat(result, RSTRING_PTR(vs), RSTRING_LEN(vs));
     }
     rb_str_cat_cstr(result, "}");
-    return RESULT_OK(abruby_str_new(result));
+    return RESULT_OK(abruby_str_new(c, result));
 }
 static RESULT ab_hash_to_s(CTX *c, VALUE self, unsigned int argc, VALUE *argv) { return RESULT_OK(ab_hash_inspect(c, self, 0, NULL).value); }
 static RESULT ab_hash_get(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
@@ -56,27 +56,27 @@ static RESULT ab_hash_keys(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     VALUE result = rb_ary_new_capa(len);
     for (long i = 0; i < len; i++) {
         VALUE k = RARRAY_AREF(raw_keys, i);
-        if (RB_TYPE_P(k, T_STRING)) k = abruby_str_new(k);
+        if (RB_TYPE_P(k, T_STRING)) k = abruby_str_new(c, k);
         rb_ary_push(result, k);
     }
-    return RESULT_OK(abruby_ary_new(result));
+    return RESULT_OK(abruby_ary_new(c, result));
 }
 static RESULT ab_hash_values(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
-    return RESULT_OK(abruby_ary_new(rb_funcall(RHSH(self), rb_intern("values"), 0)));
+    return RESULT_OK(abruby_ary_new(c, rb_funcall(RHSH(self), rb_intern("values"), 0)));
 }
 
 void
 Init_abruby_hash(void)
 {
-    abruby_class_add_cfunc(ab_hash_class, rb_intern("inspect"),  ab_hash_inspect,  0);
-    abruby_class_add_cfunc(ab_hash_class, rb_intern("to_s"),     ab_hash_to_s,     0);
-    abruby_class_add_cfunc(ab_hash_class, rb_intern("[]"),       ab_hash_get,      1);
-    abruby_class_add_cfunc(ab_hash_class, rb_intern("[]="),      ab_hash_set,      2);
-    abruby_class_add_cfunc(ab_hash_class, rb_intern("length"),   ab_hash_length,   0);
-    abruby_class_add_cfunc(ab_hash_class, rb_intern("size"),     ab_hash_length,   0);
-    abruby_class_add_cfunc(ab_hash_class, rb_intern("empty?"),   ab_hash_empty_p,  0);
-    abruby_class_add_cfunc(ab_hash_class, rb_intern("has_key?"), ab_hash_has_key_p,1);
-    abruby_class_add_cfunc(ab_hash_class, rb_intern("key?"),     ab_hash_has_key_p,1);
-    abruby_class_add_cfunc(ab_hash_class, rb_intern("keys"),     ab_hash_keys,     0);
-    abruby_class_add_cfunc(ab_hash_class, rb_intern("values"),   ab_hash_values,   0);
+    abruby_class_add_cfunc(ab_tmpl_hash_class, rb_intern("inspect"),  ab_hash_inspect,  0);
+    abruby_class_add_cfunc(ab_tmpl_hash_class, rb_intern("to_s"),     ab_hash_to_s,     0);
+    abruby_class_add_cfunc(ab_tmpl_hash_class, rb_intern("[]"),       ab_hash_get,      1);
+    abruby_class_add_cfunc(ab_tmpl_hash_class, rb_intern("[]="),      ab_hash_set,      2);
+    abruby_class_add_cfunc(ab_tmpl_hash_class, rb_intern("length"),   ab_hash_length,   0);
+    abruby_class_add_cfunc(ab_tmpl_hash_class, rb_intern("size"),     ab_hash_length,   0);
+    abruby_class_add_cfunc(ab_tmpl_hash_class, rb_intern("empty?"),   ab_hash_empty_p,  0);
+    abruby_class_add_cfunc(ab_tmpl_hash_class, rb_intern("has_key?"), ab_hash_has_key_p,1);
+    abruby_class_add_cfunc(ab_tmpl_hash_class, rb_intern("key?"),     ab_hash_has_key_p,1);
+    abruby_class_add_cfunc(ab_tmpl_hash_class, rb_intern("keys"),     ab_hash_keys,     0);
+    abruby_class_add_cfunc(ab_tmpl_hash_class, rb_intern("values"),   ab_hash_values,   0);
 }

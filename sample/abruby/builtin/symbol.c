@@ -4,11 +4,11 @@ static RESULT ab_symbol_inspect(CTX *c, VALUE self, unsigned int argc, VALUE *ar
     const char *name = rb_id2name(SYM2ID(self));
     VALUE result = rb_str_new_cstr(":");
     rb_str_cat_cstr(result, name);
-    return RESULT_OK(abruby_str_new(result));
+    return RESULT_OK(abruby_str_new(c, result));
 }
 
 static RESULT ab_symbol_to_s(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
-    return RESULT_OK(abruby_str_new_cstr(rb_id2name(SYM2ID(self))));
+    return RESULT_OK(abruby_str_new_cstr(c, rb_id2name(SYM2ID(self))));
 }
 
 static RESULT ab_symbol_to_sym(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
@@ -26,9 +26,9 @@ static RESULT ab_symbol_neq(CTX *c, VALUE self, unsigned int argc, VALUE *argv) 
 void
 Init_abruby_symbol(void)
 {
-    abruby_class_add_cfunc(ab_symbol_class, rb_intern("inspect"), ab_symbol_inspect, 0);
-    abruby_class_add_cfunc(ab_symbol_class, rb_intern("to_s"),    ab_symbol_to_s,    0);
-    abruby_class_add_cfunc(ab_symbol_class, rb_intern("to_sym"),  ab_symbol_to_sym,  0);
-    abruby_class_add_cfunc(ab_symbol_class, rb_intern("=="),      ab_symbol_eq,      1);
-    abruby_class_add_cfunc(ab_symbol_class, rb_intern("!="),      ab_symbol_neq,     1);
+    abruby_class_add_cfunc(ab_tmpl_symbol_class, rb_intern("inspect"), ab_symbol_inspect, 0);
+    abruby_class_add_cfunc(ab_tmpl_symbol_class, rb_intern("to_s"),    ab_symbol_to_s,    0);
+    abruby_class_add_cfunc(ab_tmpl_symbol_class, rb_intern("to_sym"),  ab_symbol_to_sym,  0);
+    abruby_class_add_cfunc(ab_tmpl_symbol_class, rb_intern("=="),      ab_symbol_eq,      1);
+    abruby_class_add_cfunc(ab_tmpl_symbol_class, rb_intern("!="),      ab_symbol_neq,     1);
 }

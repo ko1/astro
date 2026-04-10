@@ -5,19 +5,19 @@
 static RESULT ab_regexp_inspect(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     VALUE re = RREGEXP_VAL(self);
     VALUE s = rb_funcall(re, rb_intern("inspect"), 0);
-    return RESULT_OK(abruby_str_new(s));
+    return RESULT_OK(abruby_str_new(c, s));
 }
 
 static RESULT ab_regexp_to_s(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     VALUE re = RREGEXP_VAL(self);
     VALUE s = rb_funcall(re, rb_intern("to_s"), 0);
-    return RESULT_OK(abruby_str_new(s));
+    return RESULT_OK(abruby_str_new(c, s));
 }
 
 static RESULT ab_regexp_source(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     VALUE re = RREGEXP_VAL(self);
     VALUE s = rb_funcall(re, rb_intern("source"), 0);
-    return RESULT_OK(abruby_str_new(s));
+    return RESULT_OK(abruby_str_new(c, s));
 }
 
 static RESULT ab_regexp_match_p(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
@@ -35,7 +35,7 @@ static RESULT ab_regexp_match(CTX *c, VALUE self, unsigned int argc, VALUE *argv
 }
 
 static RESULT ab_regexp_eq(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
-    if (!AB_CLASS_P(argv[0], ab_regexp_class)) return RESULT_OK(Qfalse);
+    if (!ab_obj_type_p(argv[0], ABRUBY_OBJ_REGEXP)) return RESULT_OK(Qfalse);
     VALUE a = RREGEXP_VAL(self);
     VALUE b = RREGEXP_VAL(argv[0]);
     return RESULT_OK(rb_funcall(a, rb_intern("=="), 1, b));
@@ -51,12 +51,12 @@ static RESULT ab_regexp_eqtilde(CTX *c, VALUE self, unsigned int argc, VALUE *ar
 void
 Init_abruby_regexp(void)
 {
-    abruby_class_add_cfunc(ab_regexp_class, rb_intern("inspect"), ab_regexp_inspect, 0);
-    abruby_class_add_cfunc(ab_regexp_class, rb_intern("to_s"),    ab_regexp_to_s,    0);
-    abruby_class_add_cfunc(ab_regexp_class, rb_intern("source"),  ab_regexp_source,  0);
-    abruby_class_add_cfunc(ab_regexp_class, rb_intern("match?"),  ab_regexp_match_p, 1);
-    abruby_class_add_cfunc(ab_regexp_class, rb_intern("==="),     ab_regexp_match_p, 1);
-    abruby_class_add_cfunc(ab_regexp_class, rb_intern("match"),   ab_regexp_match,   1);
-    abruby_class_add_cfunc(ab_regexp_class, rb_intern("=="),      ab_regexp_eq,      1);
-    abruby_class_add_cfunc(ab_regexp_class, rb_intern("=~"),      ab_regexp_eqtilde, 1);
+    abruby_class_add_cfunc(ab_tmpl_regexp_class, rb_intern("inspect"), ab_regexp_inspect, 0);
+    abruby_class_add_cfunc(ab_tmpl_regexp_class, rb_intern("to_s"),    ab_regexp_to_s,    0);
+    abruby_class_add_cfunc(ab_tmpl_regexp_class, rb_intern("source"),  ab_regexp_source,  0);
+    abruby_class_add_cfunc(ab_tmpl_regexp_class, rb_intern("match?"),  ab_regexp_match_p, 1);
+    abruby_class_add_cfunc(ab_tmpl_regexp_class, rb_intern("==="),     ab_regexp_match_p, 1);
+    abruby_class_add_cfunc(ab_tmpl_regexp_class, rb_intern("match"),   ab_regexp_match,   1);
+    abruby_class_add_cfunc(ab_tmpl_regexp_class, rb_intern("=="),      ab_regexp_eq,      1);
+    abruby_class_add_cfunc(ab_tmpl_regexp_class, rb_intern("=~"),      ab_regexp_eqtilde, 1);
 }

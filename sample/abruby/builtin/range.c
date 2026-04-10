@@ -59,26 +59,26 @@ static RESULT ab_range_to_a(CTX *c, VALUE self, unsigned int argc, VALUE *argv) 
         for (long i = b; i <= e; i++) {
             rb_ary_push(ary, LONG2FIX(i));
         }
-        return RESULT_OK(abruby_ary_new(ary));
+        return RESULT_OK(abruby_ary_new(c, ary));
     }
     VALUE exc = abruby_exception_new(c, c->current_frame,
-        abruby_str_new_cstr("can't convert Range to Array (non-integer)"));
+        abruby_str_new_cstr(c, "can't convert Range to Array (non-integer)"));
     return (RESULT){exc, RESULT_RAISE};
 }
 
 static RESULT ab_range_eq(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
-    if (!AB_CLASS_P(argv[0], ab_range_class)) return RESULT_OK(Qfalse);
+    if (!ab_obj_type_p(argv[0], ABRUBY_OBJ_RANGE)) return RESULT_OK(Qfalse);
     struct abruby_range *a = RRANGE(self);
     struct abruby_range *b = RRANGE(argv[0]);
     if (a->exclude_end != b->exclude_end) return RESULT_OK(Qfalse);
     // Compare begin and end using ==
-    struct abruby_method *eq = abruby_find_method(AB_CLASS_OF(a->begin), rb_intern("=="));
+    struct abruby_method *eq = abruby_find_method(AB_CLASS_OF(c, a->begin), rb_intern("=="));
     if (!eq) return RESULT_OK(Qfalse);
     VALUE args_b[1] = { b->begin };
     RESULT rb = abruby_call_method(c, a->begin, eq, 1, args_b);
     if (rb.state != RESULT_NORMAL) return rb;
     if (rb.value != Qtrue) return RESULT_OK(Qfalse);
-    eq = abruby_find_method(AB_CLASS_OF(a->end), rb_intern("=="));
+    eq = abruby_find_method(AB_CLASS_OF(c, a->end), rb_intern("=="));
     if (!eq) return RESULT_OK(Qfalse);
     VALUE args_e[1] = { b->end };
     RESULT re = abruby_call_method(c, a->end, eq, 1, args_e);
@@ -93,7 +93,7 @@ static RESULT ab_range_inspect(CTX *c, VALUE self, unsigned int argc, VALUE *arg
     VALUE result = rb_str_new(RSTRING_PTR(begin_s), RSTRING_LEN(begin_s));
     rb_str_cat_cstr(result, r->exclude_end ? "..." : "..");
     rb_str_cat(result, RSTRING_PTR(end_s), RSTRING_LEN(end_s));
-    return RESULT_OK(abruby_str_new(result));
+    return RESULT_OK(abruby_str_new(c, result));
 }
 
 static RESULT ab_range_to_s(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
@@ -103,17 +103,17 @@ static RESULT ab_range_to_s(CTX *c, VALUE self, unsigned int argc, VALUE *argv) 
 void
 Init_abruby_range(void)
 {
-    abruby_class_add_cfunc(ab_range_class, rb_intern("first"),        ab_range_first,         0);
-    abruby_class_add_cfunc(ab_range_class, rb_intern("last"),         ab_range_last,          0);
-    abruby_class_add_cfunc(ab_range_class, rb_intern("begin"),        ab_range_begin,         0);
-    abruby_class_add_cfunc(ab_range_class, rb_intern("end"),          ab_range_end,           0);
-    abruby_class_add_cfunc(ab_range_class, rb_intern("exclude_end?"), ab_range_exclude_end_p, 0);
-    abruby_class_add_cfunc(ab_range_class, rb_intern("size"),         ab_range_size,          0);
-    abruby_class_add_cfunc(ab_range_class, rb_intern("length"),       ab_range_size,          0);
-    abruby_class_add_cfunc(ab_range_class, rb_intern("include?"),     ab_range_include_p,     1);
-    abruby_class_add_cfunc(ab_range_class, rb_intern("==="),          ab_range_include_p,     1);
-    abruby_class_add_cfunc(ab_range_class, rb_intern("to_a"),         ab_range_to_a,          0);
-    abruby_class_add_cfunc(ab_range_class, rb_intern("=="),           ab_range_eq,            1);
-    abruby_class_add_cfunc(ab_range_class, rb_intern("inspect"),      ab_range_inspect,       0);
-    abruby_class_add_cfunc(ab_range_class, rb_intern("to_s"),         ab_range_to_s,          0);
+    abruby_class_add_cfunc(ab_tmpl_range_class, rb_intern("first"),        ab_range_first,         0);
+    abruby_class_add_cfunc(ab_tmpl_range_class, rb_intern("last"),         ab_range_last,          0);
+    abruby_class_add_cfunc(ab_tmpl_range_class, rb_intern("begin"),        ab_range_begin,         0);
+    abruby_class_add_cfunc(ab_tmpl_range_class, rb_intern("end"),          ab_range_end,           0);
+    abruby_class_add_cfunc(ab_tmpl_range_class, rb_intern("exclude_end?"), ab_range_exclude_end_p, 0);
+    abruby_class_add_cfunc(ab_tmpl_range_class, rb_intern("size"),         ab_range_size,          0);
+    abruby_class_add_cfunc(ab_tmpl_range_class, rb_intern("length"),       ab_range_size,          0);
+    abruby_class_add_cfunc(ab_tmpl_range_class, rb_intern("include?"),     ab_range_include_p,     1);
+    abruby_class_add_cfunc(ab_tmpl_range_class, rb_intern("==="),          ab_range_include_p,     1);
+    abruby_class_add_cfunc(ab_tmpl_range_class, rb_intern("to_a"),         ab_range_to_a,          0);
+    abruby_class_add_cfunc(ab_tmpl_range_class, rb_intern("=="),           ab_range_eq,            1);
+    abruby_class_add_cfunc(ab_tmpl_range_class, rb_intern("inspect"),      ab_range_inspect,       0);
+    abruby_class_add_cfunc(ab_tmpl_range_class, rb_intern("to_s"),         ab_range_to_s,          0);
 }

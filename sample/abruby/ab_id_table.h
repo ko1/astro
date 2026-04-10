@@ -92,6 +92,20 @@ ab_id_table_delete(struct ab_id_table *t, ID key)
     return false;
 }
 
+// Shallow clone: copy entries (values are not deep-copied).
+static inline void
+ab_id_table_clone(struct ab_id_table *dst, const struct ab_id_table *src)
+{
+    dst->cnt = src->cnt;
+    dst->capa = src->cnt;  // tight allocation
+    if (src->cnt > 0) {
+        dst->entries = ruby_xmalloc2(src->cnt, sizeof(struct ab_id_table_entry));
+        memcpy(dst->entries, src->entries, src->cnt * sizeof(struct ab_id_table_entry));
+    } else {
+        dst->entries = NULL;
+    }
+}
+
 // Iterate over all entries. Callback receives key and val.
 #define ab_id_table_foreach(t, key_var, val_var, body) \
     for (unsigned int _i = 0; _i < (t)->cnt; _i++) { \

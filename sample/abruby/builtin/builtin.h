@@ -20,12 +20,12 @@ void abruby_class_add_cfunc(struct abruby_class *klass, ID name,
                             abruby_cfunc_t func, unsigned int params_cnt);
 
 // Bignum/Float wrap helpers (defined in abruby.c)
-VALUE abruby_bignum_new(VALUE rb_bignum);
-VALUE abruby_float_new_wrap(VALUE rb_float);
-VALUE abruby_range_new(VALUE begin, VALUE end, bool exclude_end);
-VALUE abruby_regexp_new(VALUE rb_regexp);
-VALUE abruby_rational_new(VALUE rb_rational);
-VALUE abruby_complex_new(VALUE rb_complex);
+VALUE abruby_bignum_new(CTX *c, VALUE rb_bignum);
+VALUE abruby_float_new_wrap(CTX *c, VALUE rb_float);
+VALUE abruby_range_new(CTX *c, VALUE begin, VALUE end, bool exclude_end);
+VALUE abruby_regexp_new(CTX *c, VALUE rb_regexp);
+VALUE abruby_rational_new(CTX *c, VALUE rb_rational);
+VALUE abruby_complex_new(CTX *c, VALUE rb_complex);
 
 /*
  * Numeric unwrap/wrap helpers.
@@ -70,16 +70,37 @@ AB_NUM_UNWRAP(VALUE v)
 // CRuby numeric result → abruby value
 // Fixnum passes through. T_BIGNUM wraps in abruby_bignum. Float wraps in abruby_float.
 static inline VALUE
-AB_NUM_WRAP(VALUE v)
+AB_NUM_WRAP(CTX *c, VALUE v)
 {
     if (FIXNUM_P(v)) return v;
-    if (RB_TYPE_P(v, T_BIGNUM)) return abruby_bignum_new(v);
-    if (RB_FLOAT_TYPE_P(v)) return abruby_float_new_wrap(v);
-    if (RB_TYPE_P(v, T_RATIONAL)) return abruby_rational_new(v);
-    if (RB_TYPE_P(v, T_COMPLEX)) return abruby_complex_new(v);
+    if (RB_TYPE_P(v, T_BIGNUM)) return abruby_bignum_new(c, v);
+    if (RB_FLOAT_TYPE_P(v)) return abruby_float_new_wrap(c, v);
+    if (RB_TYPE_P(v, T_RATIONAL)) return abruby_rational_new(c, v);
+    if (RB_TYPE_P(v, T_COMPLEX)) return abruby_complex_new(c, v);
     // true/false/nil (e.g. from ==) pass through
     return v;
 }
+
+// Template class pointers — Init_abruby_* functions register methods on these.
+// Runtime code must NOT use these directly; use c->abm->xxx_class instead.
+extern struct abruby_class *ab_tmpl_object_class;
+extern struct abruby_class *ab_tmpl_integer_class;
+extern struct abruby_class *ab_tmpl_string_class;
+extern struct abruby_class *ab_tmpl_symbol_class;
+extern struct abruby_class *ab_tmpl_true_class;
+extern struct abruby_class *ab_tmpl_false_class;
+extern struct abruby_class *ab_tmpl_nil_class;
+extern struct abruby_class *ab_tmpl_float_class;
+extern struct abruby_class *ab_tmpl_array_class;
+extern struct abruby_class *ab_tmpl_hash_class;
+extern struct abruby_class *ab_tmpl_range_class;
+extern struct abruby_class *ab_tmpl_regexp_class;
+extern struct abruby_class *ab_tmpl_kernel_module;
+extern struct abruby_class *ab_tmpl_rational_class;
+extern struct abruby_class *ab_tmpl_complex_class;
+extern struct abruby_class *ab_tmpl_module_class;
+extern struct abruby_class *ab_tmpl_class_class;
+extern struct abruby_class *ab_tmpl_runtime_error_class;
 
 // Init functions
 void Init_abruby_kernel(void);

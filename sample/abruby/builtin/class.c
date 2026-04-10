@@ -34,7 +34,7 @@ static RESULT ab_class_new(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
 
 // Module#inspect (inherited by Class)
 static RESULT ab_module_inspect(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
-    return RESULT_OK(abruby_str_new_cstr(rb_id2name(abruby_unwrap_class(self)->name)));
+    return RESULT_OK(abruby_str_new_cstr(c, rb_id2name(abruby_unwrap_class(self)->name)));
 }
 
 // Module#include — insert module into super chain of current_class
@@ -48,7 +48,7 @@ static RESULT ab_module_include(CTX *c, VALUE self, unsigned int argc, VALUE *ar
     // Insert between klass and klass->super
     // Simple approach: create a proxy class that delegates to the module
     struct abruby_class *proxy = (struct abruby_class *)ruby_xcalloc(1, sizeof(struct abruby_class));
-    proxy->klass = ab_module_class;
+    proxy->klass = c->abm->module_class;
     proxy->obj_type = ABRUBY_OBJ_MODULE;
     proxy->name = mod->name;
     proxy->super = klass->super;
@@ -76,7 +76,7 @@ static RESULT ab_module_const_get(CTX *c, VALUE self, unsigned int argc, VALUE *
         return RESULT_OK(v);
     }
     VALUE exc = abruby_exception_new(c, c->current_frame,
-        abruby_str_new_cstr("uninitialized constant"));
+        abruby_str_new_cstr(c, "uninitialized constant"));
     return (RESULT){exc, RESULT_RAISE};
 }
 
@@ -96,7 +96,7 @@ static RESULT ab_module_const_set(CTX *c, VALUE self, unsigned int argc, VALUE *
 // Module#=== — check if argv[0] is_a? self (class matching for case/when)
 static RESULT ab_module_case_eq(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     struct abruby_class *check_class = abruby_unwrap_class(self);
-    struct abruby_class *obj_class = AB_CLASS_OF(argv[0]);
+    struct abruby_class *obj_class = AB_CLASS_OF(c, argv[0]);
     while (obj_class) {
         if (obj_class == check_class) return RESULT_OK(Qtrue);
         obj_class = obj_class->super;
@@ -108,12 +108,12 @@ void
 Init_abruby_class(void)
 {
     // Module (parent of Class)
-    abruby_class_add_cfunc(ab_module_class, rb_intern("==="),       ab_module_case_eq,   1);
-    abruby_class_add_cfunc(ab_module_class, rb_intern("inspect"),   ab_module_inspect,   0);
-    abruby_class_add_cfunc(ab_module_class, rb_intern("include"),   ab_module_include,   1);
-    abruby_class_add_cfunc(ab_module_class, rb_intern("const_get"), ab_module_const_get, 1);
-    abruby_class_add_cfunc(ab_module_class, rb_intern("const_set"), ab_module_const_set, 2);
+    abruby_class_add_cfunc(ab_tmpl_module_class, rb_intern("==="),       ab_module_case_eq,   1);
+    abruby_class_add_cfunc(ab_tmpl_module_class, rb_intern("inspect"),   ab_module_inspect,   0);
+    abruby_class_add_cfunc(ab_tmpl_module_class, rb_intern("include"),   ab_module_include,   1);
+    abruby_class_add_cfunc(ab_tmpl_module_class, rb_intern("const_get"), ab_module_const_get, 1);
+    abruby_class_add_cfunc(ab_tmpl_module_class, rb_intern("const_set"), ab_module_const_set, 2);
 
     // Class (inherits Module, adds new)
-    abruby_class_add_cfunc(ab_class_class, rb_intern("new"), ab_class_new, -1);
+    abruby_class_add_cfunc(ab_tmpl_class_class, rb_intern("new"), ab_class_new, -1);
 }

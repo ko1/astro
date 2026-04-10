@@ -9,7 +9,7 @@ static RESULT ab_kernel_p(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
 }
 
 static RESULT ab_kernel_raise(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
-    VALUE msg = (argc >= 1) ? argv[0] : abruby_str_new_cstr("");
+    VALUE msg = (argc >= 1) ? argv[0] : abruby_str_new_cstr(c, "");
     VALUE exc = abruby_exception_new(c, c->current_frame, msg);
     return (RESULT){exc, RESULT_RAISE};
 }
@@ -18,14 +18,14 @@ static RESULT ab_kernel_raise(CTX *c, VALUE self, unsigned int argc, VALUE *argv
 static RESULT ab_kernel_Rational(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     VALUE num = AB_NUM_UNWRAP(argv[0]);
     VALUE den = (argc >= 2) ? AB_NUM_UNWRAP(argv[1]) : INT2FIX(1);
-    return RESULT_OK(abruby_rational_new(rb_rational_new(num, den)));
+    return RESULT_OK(abruby_rational_new(c, rb_rational_new(num, den)));
 }
 
 // Complex(real, imag) — create Complex
 static RESULT ab_kernel_Complex(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     VALUE real = AB_NUM_UNWRAP(argv[0]);
     VALUE imag = (argc >= 2) ? AB_NUM_UNWRAP(argv[1]) : INT2FIX(0);
-    return RESULT_OK(abruby_complex_new(rb_complex_new(real, imag)));
+    return RESULT_OK(abruby_complex_new(c, rb_complex_new(real, imag)));
 }
 
 // Check if path has a file extension (e.g., ".rb", ".so")
@@ -68,11 +68,11 @@ static RESULT ab_kernel_eval(CTX *c, VALUE self, unsigned int argc, VALUE *argv)
 void
 Init_abruby_kernel(void)
 {
-    abruby_class_add_cfunc(ab_kernel_module, rb_intern("p"),        ab_kernel_p,        1);
-    abruby_class_add_cfunc(ab_kernel_module, rb_intern("raise"),    ab_kernel_raise,    1);
-    abruby_class_add_cfunc(ab_kernel_module, rb_intern("Rational"), ab_kernel_Rational, 2);
-    abruby_class_add_cfunc(ab_kernel_module, rb_intern("Complex"),          ab_kernel_Complex,          2);
-    abruby_class_add_cfunc(ab_kernel_module, rb_intern("require"),          ab_kernel_require,          1);
-    abruby_class_add_cfunc(ab_kernel_module, rb_intern("require_relative"), ab_kernel_require_relative, 1);
-    abruby_class_add_cfunc(ab_kernel_module, rb_intern("eval"),             ab_kernel_eval,             1);
+    abruby_class_add_cfunc(ab_tmpl_kernel_module, rb_intern("p"),        ab_kernel_p,        1);
+    abruby_class_add_cfunc(ab_tmpl_kernel_module, rb_intern("raise"),    ab_kernel_raise,    1);
+    abruby_class_add_cfunc(ab_tmpl_kernel_module, rb_intern("Rational"), ab_kernel_Rational, 2);
+    abruby_class_add_cfunc(ab_tmpl_kernel_module, rb_intern("Complex"),          ab_kernel_Complex,          2);
+    abruby_class_add_cfunc(ab_tmpl_kernel_module, rb_intern("require"),          ab_kernel_require,          1);
+    abruby_class_add_cfunc(ab_tmpl_kernel_module, rb_intern("require_relative"), ab_kernel_require_relative, 1);
+    abruby_class_add_cfunc(ab_tmpl_kernel_module, rb_intern("eval"),             ab_kernel_eval,             1);
 }

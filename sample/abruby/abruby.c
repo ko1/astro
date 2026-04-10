@@ -15,45 +15,51 @@ struct abruby_option OPTION = {
 static VALUE rb_cAbRuby;
 static VALUE rb_cAbRubyNode;
 
-// Built-in abruby classes (klass field = ab_class_class, set in init)
+// Built-in abruby classes (klass field = ab_tmpl_class_class, set in init)
 
-static struct abruby_class ab_kernel_module_body = { .obj_type = ABRUBY_OBJ_MODULE };
-static struct abruby_class ab_module_class_body  = { .obj_type = ABRUBY_OBJ_CLASS };
-static struct abruby_class ab_class_class_body   = { .obj_type = ABRUBY_OBJ_CLASS, .super = &ab_module_class_body };
-static struct abruby_class ab_object_class_body  = { .obj_type = ABRUBY_OBJ_GENERIC };
-static struct abruby_class ab_float_class_body   = { .obj_type = ABRUBY_OBJ_FLOAT,     .super = &ab_object_class_body };
-static struct abruby_class ab_array_class_body   = { .obj_type = ABRUBY_OBJ_ARRAY,     .super = &ab_object_class_body };
-static struct abruby_class ab_hash_class_body    = { .obj_type = ABRUBY_OBJ_HASH,      .super = &ab_object_class_body };
-static struct abruby_class ab_integer_class_body = { .obj_type = ABRUBY_OBJ_BIGNUM,    .super = &ab_object_class_body };
-static struct abruby_class ab_string_class_body  = { .obj_type = ABRUBY_OBJ_STRING,    .super = &ab_object_class_body };
-static struct abruby_class ab_symbol_class_body  = { .obj_type = ABRUBY_OBJ_GENERIC,   .super = &ab_object_class_body };
-static struct abruby_class ab_range_class_body   = { .obj_type = ABRUBY_OBJ_RANGE,     .super = &ab_object_class_body };
-static struct abruby_class ab_regexp_class_body  = { .obj_type = ABRUBY_OBJ_REGEXP,    .super = &ab_object_class_body };
-static struct abruby_class ab_rational_class_body = { .obj_type = ABRUBY_OBJ_RATIONAL, .super = &ab_object_class_body };
-static struct abruby_class ab_complex_class_body  = { .obj_type = ABRUBY_OBJ_COMPLEX,  .super = &ab_object_class_body };
-static struct abruby_class ab_true_class_body    = { .obj_type = ABRUBY_OBJ_GENERIC,   .super = &ab_object_class_body };
-static struct abruby_class ab_false_class_body   = { .obj_type = ABRUBY_OBJ_GENERIC,   .super = &ab_object_class_body };
-static struct abruby_class ab_nil_class_body     = { .obj_type = ABRUBY_OBJ_GENERIC,   .super = &ab_object_class_body };
-static struct abruby_class ab_runtime_error_class_body = { .obj_type = ABRUBY_OBJ_EXCEPTION, .super = &ab_object_class_body };
+static struct abruby_class ab_tmpl_kernel_module_body = { .obj_type = ABRUBY_OBJ_MODULE };
+static struct abruby_class ab_tmpl_module_class_body  = { .obj_type = ABRUBY_OBJ_CLASS };
+static struct abruby_class ab_tmpl_class_class_body   = { .obj_type = ABRUBY_OBJ_CLASS, .super = &ab_tmpl_module_class_body };
+static struct abruby_class ab_tmpl_object_class_body  = { .obj_type = ABRUBY_OBJ_GENERIC };
+static struct abruby_class ab_tmpl_float_class_body   = { .obj_type = ABRUBY_OBJ_FLOAT,     .super = &ab_tmpl_object_class_body };
+static struct abruby_class ab_tmpl_array_class_body   = { .obj_type = ABRUBY_OBJ_ARRAY,     .super = &ab_tmpl_object_class_body };
+static struct abruby_class ab_tmpl_hash_class_body    = { .obj_type = ABRUBY_OBJ_HASH,      .super = &ab_tmpl_object_class_body };
+static struct abruby_class ab_tmpl_integer_class_body = { .obj_type = ABRUBY_OBJ_BIGNUM,    .super = &ab_tmpl_object_class_body };
+static struct abruby_class ab_tmpl_string_class_body  = { .obj_type = ABRUBY_OBJ_STRING,    .super = &ab_tmpl_object_class_body };
+static struct abruby_class ab_tmpl_symbol_class_body  = { .obj_type = ABRUBY_OBJ_GENERIC,   .super = &ab_tmpl_object_class_body };
+static struct abruby_class ab_tmpl_range_class_body   = { .obj_type = ABRUBY_OBJ_RANGE,     .super = &ab_tmpl_object_class_body };
+static struct abruby_class ab_tmpl_regexp_class_body  = { .obj_type = ABRUBY_OBJ_REGEXP,    .super = &ab_tmpl_object_class_body };
+static struct abruby_class ab_tmpl_rational_class_body = { .obj_type = ABRUBY_OBJ_RATIONAL, .super = &ab_tmpl_object_class_body };
+static struct abruby_class ab_tmpl_complex_class_body  = { .obj_type = ABRUBY_OBJ_COMPLEX,  .super = &ab_tmpl_object_class_body };
+static struct abruby_class ab_tmpl_true_class_body    = { .obj_type = ABRUBY_OBJ_GENERIC,   .super = &ab_tmpl_object_class_body };
+static struct abruby_class ab_tmpl_false_class_body   = { .obj_type = ABRUBY_OBJ_GENERIC,   .super = &ab_tmpl_object_class_body };
+static struct abruby_class ab_tmpl_nil_class_body     = { .obj_type = ABRUBY_OBJ_GENERIC,   .super = &ab_tmpl_object_class_body };
+static struct abruby_class ab_tmpl_runtime_error_class_body = { .obj_type = ABRUBY_OBJ_EXCEPTION, .super = &ab_tmpl_object_class_body };
 
-struct abruby_class *ab_float_class   = &ab_float_class_body;
-struct abruby_class *ab_array_class   = &ab_array_class_body;
-struct abruby_class *ab_hash_class    = &ab_hash_class_body;
-struct abruby_class *ab_kernel_module = &ab_kernel_module_body;
-struct abruby_class *ab_module_class  = &ab_module_class_body;
-struct abruby_class *ab_class_class   = &ab_class_class_body;
-struct abruby_class *ab_object_class  = &ab_object_class_body;
-struct abruby_class *ab_integer_class = &ab_integer_class_body;
-struct abruby_class *ab_string_class  = &ab_string_class_body;
-struct abruby_class *ab_symbol_class  = &ab_symbol_class_body;
-struct abruby_class *ab_range_class   = &ab_range_class_body;
-struct abruby_class *ab_regexp_class  = &ab_regexp_class_body;
-struct abruby_class *ab_rational_class = &ab_rational_class_body;
-struct abruby_class *ab_complex_class  = &ab_complex_class_body;
-struct abruby_class *ab_true_class    = &ab_true_class_body;
-struct abruby_class *ab_false_class   = &ab_false_class_body;
-struct abruby_class *ab_nil_class     = &ab_nil_class_body;
-struct abruby_class *ab_runtime_error_class = &ab_runtime_error_class_body;
+// Template class pointers.
+//
+// These are templates populated by Init_abruby_* (method/constant registration).
+// They are cloned per abruby_machine instance in init_instance_classes().
+// Only Init_abruby_* functions in builtin/*.c should reference these directly.
+// Runtime code must use c->abm->xxx_class for per-instance resolution.
+struct abruby_class *ab_tmpl_float_class   = &ab_tmpl_float_class_body;
+struct abruby_class *ab_tmpl_array_class   = &ab_tmpl_array_class_body;
+struct abruby_class *ab_tmpl_hash_class    = &ab_tmpl_hash_class_body;
+struct abruby_class *ab_tmpl_kernel_module = &ab_tmpl_kernel_module_body;
+struct abruby_class *ab_tmpl_module_class  = &ab_tmpl_module_class_body;
+struct abruby_class *ab_tmpl_class_class   = &ab_tmpl_class_class_body;
+struct abruby_class *ab_tmpl_object_class  = &ab_tmpl_object_class_body;
+struct abruby_class *ab_tmpl_integer_class = &ab_tmpl_integer_class_body;
+struct abruby_class *ab_tmpl_string_class  = &ab_tmpl_string_class_body;
+struct abruby_class *ab_tmpl_symbol_class  = &ab_tmpl_symbol_class_body;
+struct abruby_class *ab_tmpl_range_class   = &ab_tmpl_range_class_body;
+struct abruby_class *ab_tmpl_regexp_class  = &ab_tmpl_regexp_class_body;
+struct abruby_class *ab_tmpl_rational_class = &ab_tmpl_rational_class_body;
+struct abruby_class *ab_tmpl_complex_class  = &ab_tmpl_complex_class_body;
+struct abruby_class *ab_tmpl_true_class    = &ab_tmpl_true_class_body;
+struct abruby_class *ab_tmpl_false_class   = &ab_tmpl_false_class_body;
+struct abruby_class *ab_tmpl_nil_class     = &ab_tmpl_nil_class_body;
+struct abruby_class *ab_tmpl_runtime_error_class = &ab_tmpl_runtime_error_class_body;
 
 // Unified T_DATA type for all abruby heap objects
 
@@ -123,9 +129,40 @@ static void abruby_data_mark(void *ptr) {
     }
 }
 
+// Custom free: for class/module T_DATAs, free the nested methods/constants
+// tables before freeing the struct. For generic objects, free the ivars table.
+// Other types (bignum, float, string, ...) just free the struct.
+// Templates (ab_tmpl_*_class_body) are static memory and never wrapped as
+// T_DATA, so they are never passed to this function.
+static void
+abruby_data_free(void *ptr)
+{
+    if (!ptr) return;
+    struct abruby_header *h = (struct abruby_header *)ptr;
+    if (h->klass) {
+        switch (h->klass->obj_type) {
+        case ABRUBY_OBJ_CLASS:
+        case ABRUBY_OBJ_MODULE: {
+            struct abruby_class *cls = (struct abruby_class *)ptr;
+            ab_id_table_free(&cls->methods);
+            ab_id_table_free(&cls->constants);
+            break;
+        }
+        case ABRUBY_OBJ_GENERIC: {
+            struct abruby_object *obj = (struct abruby_object *)ptr;
+            ab_id_table_free(&obj->ivars);
+            break;
+        }
+        default:
+            break;
+        }
+    }
+    ruby_xfree(ptr);
+}
+
 const rb_data_type_t abruby_data_type = {
     "AbRuby::Data",
-    { abruby_data_mark, NULL, NULL },
+    { abruby_data_mark, abruby_data_free, NULL },
     0, 0, RUBY_TYPED_FREE_IMMEDIATELY
 };
 
@@ -147,21 +184,21 @@ abruby_new_object(struct abruby_class *klass)
 }
 
 VALUE
-abruby_bignum_new(VALUE rb_bignum)
+abruby_bignum_new(CTX *c, VALUE rb_bignum)
 {
     struct abruby_bignum *b;
     VALUE wrapper = TypedData_Make_Struct(rb_cAbRubyNode, struct abruby_bignum, &abruby_data_type, b);
-    b->klass = ab_integer_class;
+    b->klass = c->abm->integer_class;
     b->rb_bignum = rb_bignum;
     return wrapper;
 }
 
 VALUE
-abruby_float_new_wrap(VALUE rb_float)
+abruby_float_new_wrap(CTX *c, VALUE rb_float)
 {
     struct abruby_float *f;
     VALUE wrapper = TypedData_Make_Struct(rb_cAbRubyNode, struct abruby_float, &abruby_data_type, f);
-    f->klass = ab_float_class;
+    f->klass = c->abm->float_class;
     f->rb_float = rb_float;
     return wrapper;
 }
@@ -169,19 +206,19 @@ abruby_float_new_wrap(VALUE rb_float)
 // String helpers
 
 VALUE
-abruby_str_new(VALUE rb_str)
+abruby_str_new(CTX *c, VALUE rb_str)
 {
     struct abruby_string *s;
     VALUE wrapper = TypedData_Make_Struct(rb_cAbRubyNode, struct abruby_string, &abruby_data_type, s);
-    s->klass = ab_string_class;
+    s->klass = c->abm->string_class;
     s->rb_str = rb_str;
     return wrapper;
 }
 
 VALUE
-abruby_str_new_cstr(const char *str)
+abruby_str_new_cstr(CTX *c, const char *str)
 {
-    return abruby_str_new(rb_str_new_cstr(str));
+    return abruby_str_new(c, rb_str_new_cstr(str));
 }
 
 VALUE
@@ -197,31 +234,31 @@ abruby_str_rstr(VALUE ab_str)
 #define RHSH(v) (((struct abruby_hash *)RTYPEDDATA_GET_DATA(v))->rb_hash)
 
 VALUE
-abruby_ary_new(VALUE rb_ary)
+abruby_ary_new(CTX *c, VALUE rb_ary)
 {
     struct abruby_array *a;
     VALUE wrapper = TypedData_Make_Struct(rb_cAbRubyNode, struct abruby_array, &abruby_data_type, a);
-    a->klass = ab_array_class;
+    a->klass = c->abm->array_class;
     a->rb_ary = rb_ary;
     return wrapper;
 }
 
 VALUE
-abruby_hash_new_wrap(VALUE rb_hash)
+abruby_hash_new_wrap(CTX *c, VALUE rb_hash)
 {
     struct abruby_hash *h;
     VALUE wrapper = TypedData_Make_Struct(rb_cAbRubyNode, struct abruby_hash, &abruby_data_type, h);
-    h->klass = ab_hash_class;
+    h->klass = c->abm->hash_class;
     h->rb_hash = rb_hash;
     return wrapper;
 }
 
 VALUE
-abruby_range_new(VALUE begin, VALUE end, bool exclude_end)
+abruby_range_new(CTX *c, VALUE begin, VALUE end, bool exclude_end)
 {
     struct abruby_range *r;
     VALUE wrapper = TypedData_Make_Struct(rb_cAbRubyNode, struct abruby_range, &abruby_data_type, r);
-    r->klass = ab_range_class;
+    r->klass = c->abm->range_class;
     r->begin = begin;
     r->end = end;
     r->exclude_end = exclude_end;
@@ -229,44 +266,47 @@ abruby_range_new(VALUE begin, VALUE end, bool exclude_end)
 }
 
 VALUE
-abruby_regexp_new(VALUE rb_regexp)
+abruby_regexp_new(CTX *c, VALUE rb_regexp)
 {
     struct abruby_regexp *r;
     VALUE wrapper = TypedData_Make_Struct(rb_cAbRubyNode, struct abruby_regexp, &abruby_data_type, r);
-    r->klass = ab_regexp_class;
+    r->klass = c->abm->regexp_class;
     r->rb_regexp = rb_regexp;
     return wrapper;
 }
 
 VALUE
-abruby_rational_new(VALUE rb_rational)
+abruby_rational_new(CTX *c, VALUE rb_rational)
 {
     struct abruby_rational *r;
     VALUE wrapper = TypedData_Make_Struct(rb_cAbRubyNode, struct abruby_rational, &abruby_data_type, r);
-    r->klass = ab_rational_class;
+    r->klass = c->abm->rational_class;
     r->rb_rational = rb_rational;
     return wrapper;
 }
 
 VALUE
-abruby_complex_new(VALUE rb_complex)
+abruby_complex_new(CTX *c, VALUE rb_complex)
 {
     struct abruby_complex *cx;
     VALUE wrapper = TypedData_Make_Struct(rb_cAbRubyNode, struct abruby_complex, &abruby_data_type, cx);
-    cx->klass = ab_complex_class;
+    cx->klass = c->abm->complex_class;
     cx->rb_complex = rb_complex;
     return wrapper;
 }
 
-// Class wrapper
-
+// Class wrapper.
+//
+// Per-instance built-in classes are kept alive via vm_mark (which marks their
+// rb_wrapper). User-defined classes are kept alive via their parent class's
+// constants table (marked by vm_mark or by abruby_data_mark of the parent).
+// Templates (ab_tmpl_*) are never wrapped — they are not exposed to Ruby.
 VALUE
 abruby_wrap_class(struct abruby_class *klass)
 {
     if (klass->rb_wrapper) return klass->rb_wrapper;
     VALUE obj = TypedData_Wrap_Struct(rb_cAbRubyNode, &abruby_data_type, klass);
     klass->rb_wrapper = obj;
-    rb_gc_register_mark_object(obj);
     return obj;
 }
 
@@ -313,7 +353,7 @@ abruby_call_method(CTX *c, VALUE recv, struct abruby_method *method,
 
 VALUE
 ab_inspect_rstr(CTX *c, VALUE v) {
-    struct abruby_method *ins = abruby_find_method(AB_CLASS_OF(v), rb_intern("inspect"));
+    struct abruby_method *ins = abruby_find_method(AB_CLASS_OF(c, v), rb_intern("inspect"));
     RESULT r = abruby_call_method(c, v, ins, 0, NULL);
     return RSTR(r.value);
 }
@@ -409,14 +449,41 @@ vm_mark(void *ptr)
     ab_id_table_foreach(&vm->gvars, _k3, _v3, {
         rb_gc_mark(_v3);
     });
+    // Mark per-instance built-in class wrappers. When the vm is collected,
+    // these wrappers become unreachable and get freed via abruby_data_free.
+    if (vm->kernel_module       && vm->kernel_module->rb_wrapper)        rb_gc_mark(vm->kernel_module->rb_wrapper);
+    if (vm->module_class        && vm->module_class->rb_wrapper)         rb_gc_mark(vm->module_class->rb_wrapper);
+    if (vm->class_class         && vm->class_class->rb_wrapper)          rb_gc_mark(vm->class_class->rb_wrapper);
+    if (vm->object_class        && vm->object_class->rb_wrapper)         rb_gc_mark(vm->object_class->rb_wrapper);
+    if (vm->integer_class       && vm->integer_class->rb_wrapper)        rb_gc_mark(vm->integer_class->rb_wrapper);
+    if (vm->float_class         && vm->float_class->rb_wrapper)          rb_gc_mark(vm->float_class->rb_wrapper);
+    if (vm->string_class        && vm->string_class->rb_wrapper)         rb_gc_mark(vm->string_class->rb_wrapper);
+    if (vm->symbol_class        && vm->symbol_class->rb_wrapper)         rb_gc_mark(vm->symbol_class->rb_wrapper);
+    if (vm->array_class         && vm->array_class->rb_wrapper)          rb_gc_mark(vm->array_class->rb_wrapper);
+    if (vm->hash_class          && vm->hash_class->rb_wrapper)           rb_gc_mark(vm->hash_class->rb_wrapper);
+    if (vm->range_class         && vm->range_class->rb_wrapper)          rb_gc_mark(vm->range_class->rb_wrapper);
+    if (vm->regexp_class        && vm->regexp_class->rb_wrapper)         rb_gc_mark(vm->regexp_class->rb_wrapper);
+    if (vm->rational_class      && vm->rational_class->rb_wrapper)       rb_gc_mark(vm->rational_class->rb_wrapper);
+    if (vm->complex_class       && vm->complex_class->rb_wrapper)        rb_gc_mark(vm->complex_class->rb_wrapper);
+    if (vm->true_class          && vm->true_class->rb_wrapper)           rb_gc_mark(vm->true_class->rb_wrapper);
+    if (vm->false_class         && vm->false_class->rb_wrapper)          rb_gc_mark(vm->false_class->rb_wrapper);
+    if (vm->nil_class           && vm->nil_class->rb_wrapper)            rb_gc_mark(vm->nil_class->rb_wrapper);
+    if (vm->runtime_error_class && vm->runtime_error_class->rb_wrapper)  rb_gc_mark(vm->runtime_error_class->rb_wrapper);
 }
 
 static void
 vm_free(void *ptr)
 {
     struct abruby_machine *vm = (struct abruby_machine *)ptr;
-    if (vm->current_fiber) free(vm->current_fiber);
-    free(vm);
+    // Free embedded main_class_body's id_tables (main_class_body itself is
+    // embedded in vm struct, not separately allocated).
+    ab_id_table_free(&vm->main_class_body.methods);
+    ab_id_table_free(&vm->main_class_body.constants);
+    ab_id_table_free(&vm->gvars);
+    // Per-instance built-in classes are T_DATA-wrapped; their structs and
+    // inner tables are freed by abruby_data_free when their wrapper is GC'd.
+    if (vm->current_fiber) ruby_xfree(vm->current_fiber);
+    ruby_xfree(vm);
 }
 
 static size_t
@@ -463,10 +530,143 @@ abruby_exception_new(CTX *c, struct abruby_frame *start_frame, VALUE message)
     struct abruby_exception *exc;
     VALUE wrapper = TypedData_Make_Struct(rb_cAbRubyNode, struct abruby_exception,
                                           &abruby_data_type, exc);
-    exc->klass = ab_runtime_error_class;
+    exc->klass = c->abm->runtime_error_class;
     exc->message = message;
     exc->backtrace = bt_ary;
     return wrapper;
+}
+
+// Clone a template class: copy obj_type, name, methods (not constants).
+static struct abruby_class *
+clone_class(struct abruby_class *tmpl)
+{
+    struct abruby_class *c = ruby_xcalloc(1, sizeof(struct abruby_class));
+    c->obj_type = tmpl->obj_type;
+    c->name = tmpl->name;
+    ab_id_table_clone(&c->methods, &tmpl->methods);
+    // constants are NOT cloned (they reference template wrappers)
+    return c;
+}
+
+// Create per-instance copies of all built-in classes from templates.
+static void
+init_instance_classes(struct abruby_machine *vm)
+{
+    // Clone all 18 template classes
+    vm->kernel_module      = clone_class(ab_tmpl_kernel_module);
+    vm->module_class       = clone_class(ab_tmpl_module_class);
+    vm->class_class        = clone_class(ab_tmpl_class_class);
+    vm->object_class       = clone_class(ab_tmpl_object_class);
+    vm->integer_class      = clone_class(ab_tmpl_integer_class);
+    vm->float_class        = clone_class(ab_tmpl_float_class);
+    vm->string_class       = clone_class(ab_tmpl_string_class);
+    vm->symbol_class       = clone_class(ab_tmpl_symbol_class);
+    vm->array_class        = clone_class(ab_tmpl_array_class);
+    vm->hash_class         = clone_class(ab_tmpl_hash_class);
+    vm->range_class        = clone_class(ab_tmpl_range_class);
+    vm->regexp_class       = clone_class(ab_tmpl_regexp_class);
+    vm->rational_class     = clone_class(ab_tmpl_rational_class);
+    vm->complex_class      = clone_class(ab_tmpl_complex_class);
+    vm->true_class         = clone_class(ab_tmpl_true_class);
+    vm->false_class        = clone_class(ab_tmpl_false_class);
+    vm->nil_class          = clone_class(ab_tmpl_nil_class);
+    vm->runtime_error_class = clone_class(ab_tmpl_runtime_error_class);
+
+    // Fix up klass pointers (metaclass)
+    vm->kernel_module->klass       = vm->module_class;
+    vm->module_class->klass        = vm->class_class;
+    vm->class_class->klass         = vm->class_class;
+    vm->object_class->klass        = vm->class_class;
+    vm->integer_class->klass       = vm->class_class;
+    vm->float_class->klass         = vm->class_class;
+    vm->string_class->klass        = vm->class_class;
+    vm->symbol_class->klass        = vm->class_class;
+    vm->array_class->klass         = vm->class_class;
+    vm->hash_class->klass          = vm->class_class;
+    vm->range_class->klass         = vm->class_class;
+    vm->regexp_class->klass        = vm->class_class;
+    vm->rational_class->klass      = vm->class_class;
+    vm->complex_class->klass       = vm->class_class;
+    vm->true_class->klass          = vm->class_class;
+    vm->false_class->klass         = vm->class_class;
+    vm->nil_class->klass           = vm->class_class;
+    vm->runtime_error_class->klass = vm->class_class;
+
+    // Fix up super pointers (inheritance chain)
+    vm->class_class->super         = vm->module_class;
+    vm->object_class->super        = vm->kernel_module;  // Object includes Kernel
+    vm->integer_class->super       = vm->object_class;
+    vm->float_class->super         = vm->object_class;
+    vm->string_class->super        = vm->object_class;
+    vm->symbol_class->super        = vm->object_class;
+    vm->array_class->super         = vm->object_class;
+    vm->hash_class->super          = vm->object_class;
+    vm->range_class->super         = vm->object_class;
+    vm->regexp_class->super        = vm->object_class;
+    vm->rational_class->super      = vm->object_class;
+    vm->complex_class->super       = vm->object_class;
+    vm->true_class->super          = vm->object_class;
+    vm->false_class->super         = vm->object_class;
+    vm->nil_class->super           = vm->object_class;
+    vm->runtime_error_class->super = vm->object_class;
+    vm->kernel_module->super       = NULL;
+    vm->module_class->super        = NULL;
+
+    // Wrap each per-instance class as a VALUE (for constant table, Ruby-level access)
+    abruby_wrap_class(vm->kernel_module);
+    abruby_wrap_class(vm->module_class);
+    abruby_wrap_class(vm->class_class);
+    abruby_wrap_class(vm->object_class);
+    abruby_wrap_class(vm->integer_class);
+    abruby_wrap_class(vm->float_class);
+    abruby_wrap_class(vm->string_class);
+    abruby_wrap_class(vm->symbol_class);
+    abruby_wrap_class(vm->array_class);
+    abruby_wrap_class(vm->hash_class);
+    abruby_wrap_class(vm->range_class);
+    abruby_wrap_class(vm->regexp_class);
+    abruby_wrap_class(vm->rational_class);
+    abruby_wrap_class(vm->complex_class);
+    abruby_wrap_class(vm->true_class);
+    abruby_wrap_class(vm->false_class);
+    abruby_wrap_class(vm->nil_class);
+    abruby_wrap_class(vm->runtime_error_class);
+
+    // Register class name constants on per-instance Object
+    struct abruby_class *obj = vm->object_class;
+    abruby_class_set_const(obj, rb_intern("Object"),       abruby_wrap_class(vm->object_class));
+    abruby_class_set_const(obj, rb_intern("Class"),        abruby_wrap_class(vm->class_class));
+    abruby_class_set_const(obj, rb_intern("Module"),       abruby_wrap_class(vm->module_class));
+    abruby_class_set_const(obj, rb_intern("Kernel"),       abruby_wrap_class(vm->kernel_module));
+    abruby_class_set_const(obj, rb_intern("Integer"),      abruby_wrap_class(vm->integer_class));
+    abruby_class_set_const(obj, rb_intern("Float"),        abruby_wrap_class(vm->float_class));
+    abruby_class_set_const(obj, rb_intern("String"),       abruby_wrap_class(vm->string_class));
+    abruby_class_set_const(obj, rb_intern("Symbol"),       abruby_wrap_class(vm->symbol_class));
+    abruby_class_set_const(obj, rb_intern("Array"),        abruby_wrap_class(vm->array_class));
+    abruby_class_set_const(obj, rb_intern("Hash"),         abruby_wrap_class(vm->hash_class));
+    abruby_class_set_const(obj, rb_intern("Range"),        abruby_wrap_class(vm->range_class));
+    abruby_class_set_const(obj, rb_intern("Regexp"),       abruby_wrap_class(vm->regexp_class));
+    abruby_class_set_const(obj, rb_intern("Rational"),     abruby_wrap_class(vm->rational_class));
+    abruby_class_set_const(obj, rb_intern("Complex"),      abruby_wrap_class(vm->complex_class));
+    abruby_class_set_const(obj, rb_intern("TrueClass"),    abruby_wrap_class(vm->true_class));
+    abruby_class_set_const(obj, rb_intern("FalseClass"),   abruby_wrap_class(vm->false_class));
+    abruby_class_set_const(obj, rb_intern("NilClass"),     abruby_wrap_class(vm->nil_class));
+    abruby_class_set_const(obj, rb_intern("RuntimeError"), abruby_wrap_class(vm->runtime_error_class));
+
+    // Float constants (must be per-instance abruby values, not raw CRuby Floats)
+    {
+        struct abruby_float *inf;
+        VALUE inf_w = TypedData_Make_Struct(rb_cAbRubyNode, struct abruby_float, &abruby_data_type, inf);
+        inf->klass = vm->float_class;
+        inf->rb_float = rb_float_new(HUGE_VAL);
+        abruby_class_set_const(vm->float_class, rb_intern("INFINITY"), inf_w);
+
+        struct abruby_float *nan_v;
+        VALUE nan_w = TypedData_Make_Struct(rb_cAbRubyNode, struct abruby_float, &abruby_data_type, nan_v);
+        nan_v->klass = vm->float_class;
+        nan_v->rb_float = rb_float_new(nan(""));
+        abruby_class_set_const(vm->float_class, rb_intern("NAN"), nan_w);
+    }
 }
 
 static struct abruby_machine *
@@ -475,10 +675,14 @@ create_vm(void)
     struct abruby_machine *vm = ruby_xcalloc(1, sizeof(struct abruby_machine));
     vm->method_serial = 1;
     vm->current_fiber = ruby_xcalloc(1, sizeof(struct abruby_fiber));
+
+    // Create per-instance built-in classes (must be before main_class_body setup)
+    init_instance_classes(vm);
+
     // Per-instance main class (inherits from Object)
-    vm->main_class_body.klass = ab_class_class;
+    vm->main_class_body.klass = vm->class_class;
     vm->main_class_body.name = rb_intern("main");
-    vm->main_class_body.super = ab_object_class;
+    vm->main_class_body.super = vm->object_class;
 
     vm->current_fiber->ctx.fp = vm->current_fiber->ctx.stack;
     vm->current_fiber->ctx.self = abruby_new_object(&vm->main_class_body);
@@ -507,28 +711,7 @@ create_vm(void)
     return vm;
 }
 
-static void
-init_builtin_consts(void)
-{
-    abruby_class_set_const(ab_object_class, rb_intern("Object"),       abruby_wrap_class(ab_object_class));
-    abruby_class_set_const(ab_object_class, rb_intern("Class"),        abruby_wrap_class(ab_class_class));
-    abruby_class_set_const(ab_object_class, rb_intern("Module"),       abruby_wrap_class(ab_module_class));
-    abruby_class_set_const(ab_object_class, rb_intern("Kernel"),       abruby_wrap_class(ab_kernel_module));
-    abruby_class_set_const(ab_object_class, rb_intern("Integer"),      abruby_wrap_class(ab_integer_class));
-    abruby_class_set_const(ab_object_class, rb_intern("Float"),        abruby_wrap_class(ab_float_class));
-    abruby_class_set_const(ab_object_class, rb_intern("String"),       abruby_wrap_class(ab_string_class));
-    abruby_class_set_const(ab_object_class, rb_intern("Symbol"),       abruby_wrap_class(ab_symbol_class));
-    abruby_class_set_const(ab_object_class, rb_intern("Array"),        abruby_wrap_class(ab_array_class));
-    abruby_class_set_const(ab_object_class, rb_intern("Hash"),         abruby_wrap_class(ab_hash_class));
-    abruby_class_set_const(ab_object_class, rb_intern("Range"),        abruby_wrap_class(ab_range_class));
-    abruby_class_set_const(ab_object_class, rb_intern("Regexp"),       abruby_wrap_class(ab_regexp_class));
-    abruby_class_set_const(ab_object_class, rb_intern("Rational"),     abruby_wrap_class(ab_rational_class));
-    abruby_class_set_const(ab_object_class, rb_intern("Complex"),      abruby_wrap_class(ab_complex_class));
-    abruby_class_set_const(ab_object_class, rb_intern("TrueClass"),    abruby_wrap_class(ab_true_class));
-    abruby_class_set_const(ab_object_class, rb_intern("FalseClass"),   abruby_wrap_class(ab_false_class));
-    abruby_class_set_const(ab_object_class, rb_intern("NilClass"),     abruby_wrap_class(ab_nil_class));
-    abruby_class_set_const(ab_object_class, rb_intern("RuntimeError"), abruby_wrap_class(ab_runtime_error_class));
-}
+// init_builtin_consts removed: constants are now registered per-instance in init_instance_classes()
 
 // NODE wrapper (T_DATA)
 
@@ -895,16 +1078,15 @@ abruby_to_ruby(VALUE v)
     if (RB_TYPE_P(v, T_DATA) && RTYPEDDATA_P(v) &&
         RTYPEDDATA_TYPE(v) == &abruby_data_type) {
         struct abruby_header *h = (struct abruby_header *)RTYPEDDATA_GET_DATA(v);
-        if (h->klass == ab_integer_class) {
+        if (!h->klass) return v;
+        switch (h->klass->obj_type) {
+        case ABRUBY_OBJ_BIGNUM:
             return ((struct abruby_bignum *)h)->rb_bignum;
-        }
-        if (h->klass == ab_float_class) {
+        case ABRUBY_OBJ_FLOAT:
             return ((struct abruby_float *)h)->rb_float;
-        }
-        if (h->klass == ab_string_class) {
+        case ABRUBY_OBJ_STRING:
             return ((struct abruby_string *)h)->rb_str;
-        }
-        if (h->klass == ab_array_class) {
+        case ABRUBY_OBJ_ARRAY: {
             VALUE ary = ((struct abruby_array *)h)->rb_ary;
             long len = RARRAY_LEN(ary);
             VALUE result = rb_ary_new_capa(len);
@@ -913,7 +1095,7 @@ abruby_to_ruby(VALUE v)
             }
             return result;
         }
-        if (h->klass == ab_hash_class) {
+        case ABRUBY_OBJ_HASH: {
             VALUE hash = ((struct abruby_hash *)h)->rb_hash;
             VALUE keys = rb_funcall(hash, rb_intern("keys"), 0);
             long len = RARRAY_LEN(keys);
@@ -925,18 +1107,18 @@ abruby_to_ruby(VALUE v)
             }
             return result;
         }
-        if (h->klass == ab_range_class) {
+        case ABRUBY_OBJ_RANGE: {
             struct abruby_range *r = (struct abruby_range *)h;
             return rb_range_new(abruby_to_ruby(r->begin), abruby_to_ruby(r->end), r->exclude_end);
         }
-        if (h->klass == ab_regexp_class) {
+        case ABRUBY_OBJ_REGEXP:
             return ((struct abruby_regexp *)h)->rb_regexp;
-        }
-        if (h->klass == ab_rational_class) {
+        case ABRUBY_OBJ_RATIONAL:
             return ((struct abruby_rational *)h)->rb_rational;
-        }
-        if (h->klass == ab_complex_class) {
+        case ABRUBY_OBJ_COMPLEX:
             return ((struct abruby_complex *)h)->rb_complex;
+        default:
+            break;
         }
     }
     return v;
@@ -1079,7 +1261,7 @@ rb_abruby_eval_ast(VALUE self, VALUE ast_obj)
         if (RB_TYPE_P(exc_val, T_DATA) && RTYPEDDATA_P(exc_val) &&
             RTYPEDDATA_TYPE(exc_val) == &abruby_data_type) {
             struct abruby_header *h = (struct abruby_header *)RTYPEDDATA_GET_DATA(exc_val);
-            if (h->klass == ab_runtime_error_class) {
+            if (h->klass && h->klass->obj_type == ABRUBY_OBJ_EXCEPTION) {
                 struct abruby_exception *exc = (struct abruby_exception *)h;
                 VALUE msg = abruby_to_ruby(exc->message);
                 VALUE msg_str = RB_TYPE_P(msg, T_STRING) ? msg : rb_funcall(msg, rb_intern("to_s"), 0);
@@ -1212,24 +1394,24 @@ void
 Init_abruby(void)
 {
     // Initialize class names (can't use rb_intern in static initializers)
-    ab_kernel_module_body.name = rb_intern("Kernel");
-    ab_module_class_body.name = rb_intern("Module");
-    ab_class_class_body.name = rb_intern("Class");
-    ab_object_class_body.name = rb_intern("Object");
-    ab_float_class_body.name = rb_intern("Float");
-    ab_array_class_body.name = rb_intern("Array");
-    ab_hash_class_body.name = rb_intern("Hash");
-    ab_integer_class_body.name = rb_intern("Integer");
-    ab_string_class_body.name = rb_intern("String");
-    ab_symbol_class_body.name = rb_intern("Symbol");
-    ab_range_class_body.name = rb_intern("Range");
-    ab_regexp_class_body.name = rb_intern("Regexp");
-    ab_rational_class_body.name = rb_intern("Rational");
-    ab_complex_class_body.name = rb_intern("Complex");
-    ab_true_class_body.name = rb_intern("TrueClass");
-    ab_false_class_body.name = rb_intern("FalseClass");
-    ab_nil_class_body.name = rb_intern("NilClass");
-    ab_runtime_error_class_body.name = rb_intern("RuntimeError");
+    ab_tmpl_kernel_module_body.name = rb_intern("Kernel");
+    ab_tmpl_module_class_body.name = rb_intern("Module");
+    ab_tmpl_class_class_body.name = rb_intern("Class");
+    ab_tmpl_object_class_body.name = rb_intern("Object");
+    ab_tmpl_float_class_body.name = rb_intern("Float");
+    ab_tmpl_array_class_body.name = rb_intern("Array");
+    ab_tmpl_hash_class_body.name = rb_intern("Hash");
+    ab_tmpl_integer_class_body.name = rb_intern("Integer");
+    ab_tmpl_string_class_body.name = rb_intern("String");
+    ab_tmpl_symbol_class_body.name = rb_intern("Symbol");
+    ab_tmpl_range_class_body.name = rb_intern("Range");
+    ab_tmpl_regexp_class_body.name = rb_intern("Regexp");
+    ab_tmpl_rational_class_body.name = rb_intern("Rational");
+    ab_tmpl_complex_class_body.name = rb_intern("Complex");
+    ab_tmpl_true_class_body.name = rb_intern("TrueClass");
+    ab_tmpl_false_class_body.name = rb_intern("FalseClass");
+    ab_tmpl_nil_class_body.name = rb_intern("NilClass");
+    ab_tmpl_runtime_error_class_body.name = rb_intern("RuntimeError");
 
     INIT();
     init_builtin_methods();
@@ -1242,49 +1424,33 @@ Init_abruby(void)
     rb_undef_alloc_func(rb_cAbRubyNode);
 
     // Set klass field on all built-in classes (common header)
-    ab_float_class->klass   = ab_class_class;
-    ab_array_class->klass   = ab_class_class;
-    ab_hash_class->klass    = ab_class_class;
-    ab_kernel_module->klass = ab_module_class;
-    ab_module_class->klass  = ab_class_class;
-    ab_class_class->klass   = ab_class_class;
-    ab_object_class->klass  = ab_class_class;
-    ab_integer_class->klass = ab_class_class;
-    ab_string_class->klass  = ab_class_class;
-    ab_symbol_class->klass  = ab_class_class;
-    ab_range_class->klass   = ab_class_class;
-    ab_regexp_class->klass  = ab_class_class;
-    ab_rational_class->klass = ab_class_class;
-    ab_complex_class->klass  = ab_class_class;
-    ab_true_class->klass    = ab_class_class;
-    ab_false_class->klass   = ab_class_class;
-    ab_nil_class->klass     = ab_class_class;
-    ab_runtime_error_class->klass = ab_class_class;
+    ab_tmpl_float_class->klass   = ab_tmpl_class_class;
+    ab_tmpl_array_class->klass   = ab_tmpl_class_class;
+    ab_tmpl_hash_class->klass    = ab_tmpl_class_class;
+    ab_tmpl_kernel_module->klass = ab_tmpl_module_class;
+    ab_tmpl_module_class->klass  = ab_tmpl_class_class;
+    ab_tmpl_class_class->klass   = ab_tmpl_class_class;
+    ab_tmpl_object_class->klass  = ab_tmpl_class_class;
+    ab_tmpl_integer_class->klass = ab_tmpl_class_class;
+    ab_tmpl_string_class->klass  = ab_tmpl_class_class;
+    ab_tmpl_symbol_class->klass  = ab_tmpl_class_class;
+    ab_tmpl_range_class->klass   = ab_tmpl_class_class;
+    ab_tmpl_regexp_class->klass  = ab_tmpl_class_class;
+    ab_tmpl_rational_class->klass = ab_tmpl_class_class;
+    ab_tmpl_complex_class->klass  = ab_tmpl_class_class;
+    ab_tmpl_true_class->klass    = ab_tmpl_class_class;
+    ab_tmpl_false_class->klass   = ab_tmpl_class_class;
+    ab_tmpl_nil_class->klass     = ab_tmpl_class_class;
+    ab_tmpl_runtime_error_class->klass = ab_tmpl_class_class;
 
-    // Wrap built-in classes as VALUE (must be after rb_cAbRubyNode is defined)
-    abruby_wrap_class(ab_kernel_module);
-    abruby_wrap_class(ab_module_class);
-    abruby_wrap_class(ab_class_class);
-    abruby_wrap_class(ab_object_class);
-    abruby_wrap_class(ab_float_class);
-    abruby_wrap_class(ab_array_class);
-    abruby_wrap_class(ab_hash_class);
-    abruby_wrap_class(ab_integer_class);
-    abruby_wrap_class(ab_string_class);
-    abruby_wrap_class(ab_symbol_class);
-    abruby_wrap_class(ab_range_class);
-    abruby_wrap_class(ab_regexp_class);
-    abruby_wrap_class(ab_rational_class);
-    abruby_wrap_class(ab_complex_class);
-    abruby_wrap_class(ab_true_class);
-    abruby_wrap_class(ab_false_class);
-    abruby_wrap_class(ab_nil_class);
-    abruby_wrap_class(ab_runtime_error_class);
+    // Templates are NOT wrapped as T_DATA — they are in static memory and
+    // would crash abruby_data_free (which calls ruby_xfree). Templates are
+    // only accessed by Init_abruby_* for method registration, not by runtime.
 
-    // include Kernel in Object: Object -> Kernel -> nil
-    ab_object_class->super = ab_kernel_module;
+    // include Kernel in Object (template): Object -> Kernel -> nil
+    ab_tmpl_object_class->super = ab_tmpl_kernel_module;
 
-    init_builtin_consts();
+    // init_builtin_consts moved to init_instance_classes (per-instance)
 
     // ALLOC wrappers
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_num", rb_alloc_node_num, 1);

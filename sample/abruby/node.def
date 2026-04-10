@@ -87,7 +87,7 @@ find_class_in(struct abruby_class *scope, ID name)
     VALUE v;
     if (ab_id_table_lookup(&scope->constants, name, &v) && RB_TYPE_P(v, T_DATA)) {
         struct abruby_header *h = (struct abruby_header *)RTYPEDDATA_GET_DATA(v);
-        if (h->klass == ab_class_class || h->klass == ab_module_class) {
+        if (h->klass->obj_type == ABRUBY_OBJ_CLASS || h->klass->obj_type == ABRUBY_OBJ_MODULE) {
             return (struct abruby_class *)h;
         }
     }
@@ -97,11 +97,11 @@ find_class_in(struct abruby_class *scope, ID name)
 static struct abruby_class *
 find_class(CTX *c, ID name)
 {
-    // Check per-instance main_class first, then global Object
+    // Check per-instance main_class first, then per-instance Object
     struct abruby_class *klass = find_class_in(CTX_MAIN_CLASS(c), name);
     if (klass) return klass;
-    if (CTX_MAIN_CLASS(c) != ab_object_class) {
-        return find_class_in(ab_object_class, name);
+    if (CTX_MAIN_CLASS(c) != c->abm->object_class) {
+        return find_class_in(c->abm->object_class, name);
     }
     return NULL;
 }
@@ -117,19 +117,19 @@ node_num(CTX * restrict c, NODE * restrict n, int32_t num)
     return RESULT_OK(INT2FIX(num));
 }
 
-extern VALUE abruby_float_new_wrap(VALUE rb_float);
-extern VALUE abruby_bignum_new(VALUE rb_bignum);
+extern VALUE abruby_float_new_wrap(CTX *c, VALUE rb_float);
+extern VALUE abruby_bignum_new(CTX *c, VALUE rb_bignum);
 
 NODE_DEF
 node_float_new(CTX * restrict c, NODE * restrict n, const char *str)
 {
-    return RESULT_OK(abruby_float_new_wrap(rb_float_new(strtod(str, NULL))));
+    return RESULT_OK(abruby_float_new_wrap(c, rb_float_new(strtod(str, NULL))));
 }
 
 NODE_DEF
 node_bignum_new(CTX * restrict c, NODE * restrict n, const char *str)
 {
-    return RESULT_OK(abruby_bignum_new(rb_cstr_to_inum(str, 10, 1)));
+    return RESULT_OK(abruby_bignum_new(c, rb_cstr_to_inum(str, 10, 1)));
 }
 
 NODE_DEF
@@ -153,7 +153,7 @@ node_nil(CTX * restrict c, NODE * restrict n)
 NODE_DEF
 node_str_new(CTX * restrict c, NODE * restrict n, const char *str)
 {
-    return RESULT_OK(abruby_str_new_cstr(str));
+    return RESULT_OK(abruby_str_new_cstr(c, str));
 }
 
 NODE_DEF
@@ -165,7 +165,7 @@ node_str_concat(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg
         VALUE rs = abruby_str_rstr(part);
         rb_str_cat(result, RSTRING_PTR(rs), RSTRING_LEN(rs));
     }
-    return RESULT_OK(abruby_str_new(result));
+    return RESULT_OK(abruby_str_new(c, result));
 }
 
 NODE_DEF
@@ -174,17 +174,17 @@ node_sym(CTX * restrict c, NODE * restrict n, const char *str)
     return RESULT_OK(ID2SYM(rb_intern(str)));
 }
 
-extern VALUE abruby_range_new(VALUE begin, VALUE end, bool exclude_end);
+extern VALUE abruby_range_new(CTX *c, VALUE begin, VALUE end, bool exclude_end);
 
 NODE_DEF
 node_range_new(CTX * restrict c, NODE * restrict n, NODE *begin_node, NODE *end_node, uint32_t exclude_end)
 {
     VALUE b = UNWRAP(EVAL_ARG(c, begin_node));
     VALUE e = UNWRAP(EVAL_ARG(c, end_node));
-    return RESULT_OK(abruby_range_new(b, e, exclude_end != 0));
+    return RESULT_OK(abruby_range_new(c, b, e, exclude_end != 0));
 }
 
-extern VALUE abruby_regexp_new(VALUE rb_regexp);
+extern VALUE abruby_regexp_new(CTX *c, VALUE rb_regexp);
 
 NODE_DEF
 node_regexp_new(CTX * restrict c, NODE * restrict n, const char *source, const char *flags)
@@ -197,7 +197,7 @@ node_regexp_new(CTX * restrict c, NODE * restrict n, const char *source, const c
     }
     VALUE src = rb_str_new_cstr(source);
     VALUE re = rb_reg_new(RSTRING_PTR(src), RSTRING_LEN(src), options);
-    return RESULT_OK(abruby_regexp_new(re));
+    return RESULT_OK(abruby_regexp_new(c, re));
 }
 
 NODE_DEF
@@ -215,7 +215,7 @@ abruby_const_get(CTX *c, NODE *n, struct abruby_class *klass, ID name)
     VALUE exc;
     PUSH_FRAME(n);
     exc = abruby_exception_new(c, c->current_frame,
-        abruby_str_new_cstr("uninitialized constant"));
+        abruby_str_new_cstr(c,"uninitialized constant"));
     POP_FRAME();
     return (RESULT){exc, RESULT_RAISE};
 }
@@ -228,7 +228,7 @@ node_const_path_get(CTX * restrict c, NODE * restrict n, ID parent_name, ID name
         VALUE exc;
         PUSH_FRAME(n);
         exc = abruby_exception_new(c, c->current_frame,
-            abruby_str_new_cstr("uninitialized constant"));
+            abruby_str_new_cstr(c,"uninitialized constant"));
         POP_FRAME();
         return (RESULT){exc, RESULT_RAISE};
     }
@@ -251,13 +251,13 @@ node_const_get(CTX * restrict c, NODE * restrict n, ID name)
     VALUE v;
     if (ab_id_table_lookup(&CTX_MAIN_CLASS(c)->constants, name, &v))
         return RESULT_OK(v);
-    if (CTX_MAIN_CLASS(c) != ab_object_class) {
-        return abruby_const_get(c, n, ab_object_class, name);
+    if (CTX_MAIN_CLASS(c) != c->abm->object_class) {
+        return abruby_const_get(c, n, c->abm->object_class, name);
     }
     VALUE exc;
     PUSH_FRAME(n);
     exc = abruby_exception_new(c, c->current_frame,
-        abruby_str_new_cstr("uninitialized constant"));
+        abruby_str_new_cstr(c,"uninitialized constant"));
     POP_FRAME();
     return (RESULT){exc, RESULT_RAISE};
 }
@@ -271,7 +271,7 @@ node_ary_new(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_in
     for (uint32_t i = 0; i < argc; i++) {
         rb_ary_push(ary, c->fp[arg_index + i]);
     }
-    return RESULT_OK(abruby_ary_new(ary));
+    return RESULT_OK(abruby_ary_new(c, ary));
 }
 
 // Convert abruby value to CRuby value for use as Hash key
@@ -280,7 +280,7 @@ ab_to_hash_key(VALUE v)
 {
     if (FIXNUM_P(v) || SYMBOL_P(v) || v == Qtrue || v == Qfalse || v == Qnil) return v;
     struct abruby_header *h = (struct abruby_header *)RTYPEDDATA_GET_DATA(v);
-    if (h->klass == ab_string_class) return ((struct abruby_string *)h)->rb_str;
+    if (h->klass->obj_type == ABRUBY_OBJ_STRING) return ((struct abruby_string *)h)->rb_str;
     return v; // user objects as-is (identity based)
 }
 
@@ -291,7 +291,7 @@ node_hash_new(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_i
     for (uint32_t i = 0; i < argc; i += 2) {
         rb_hash_aset(hash, ab_to_hash_key(c->fp[arg_index + i]), c->fp[arg_index + i + 1]);
     }
-    return RESULT_OK(abruby_hash_new_wrap(hash));
+    return RESULT_OK(abruby_hash_new_wrap(c, hash));
 }
 
 // === Instance Variables ===
@@ -459,7 +459,7 @@ node_module_def(CTX * restrict c, NODE * restrict n, ID name, NODE *body)
     struct abruby_class *mod = find_class(c, name);
     if (!mod) {
         mod = (struct abruby_class *)ruby_xcalloc(1, sizeof(struct abruby_class));
-        mod->klass = ab_module_class;
+        mod->klass = c->abm->module_class;
         mod->obj_type = ABRUBY_OBJ_MODULE;
         mod->name = name;
         mod->super = NULL;
@@ -482,21 +482,21 @@ node_class_def(CTX * restrict c, NODE * restrict n, ID name, NODE *super_expr, N
 {
     struct abruby_class *klass = find_class(c, name);
     if (!klass) {
-        struct abruby_class *super = ab_object_class;
+        struct abruby_class *super = c->abm->object_class;
         VALUE sv = UNWRAP(EVAL_ARG(c, super_expr));
         if (sv != Qnil) {
-            if (!AB_CLASS_P(sv, ab_class_class)) {
+            if (AB_CLASS_OF(c, sv) != c->abm->class_class) {
                 VALUE exc;
                 PUSH_FRAME(n);
                 exc = abruby_exception_new(c, c->current_frame,
-                    abruby_str_new_cstr("superclass must be a Class"));
+                    abruby_str_new_cstr(c,"superclass must be a Class"));
                 POP_FRAME();
                 return (RESULT){exc, RESULT_RAISE};
             }
             super = abruby_unwrap_class(sv);
         }
         klass = (struct abruby_class *)ruby_xcalloc(1, sizeof(struct abruby_class));
-        klass->klass = ab_class_class;
+        klass->klass = c->abm->class_class;
         klass->obj_type = ABRUBY_OBJ_GENERIC;  // instances are user objects
         klass->name = name;
         klass->super = super;
@@ -589,7 +589,7 @@ method_missing_dispatch(CTX * restrict c, NODE * restrict n, struct abruby_class
         VALUE exc;
         PUSH_FRAME(n);
         exc = abruby_exception_new(c, c->current_frame,
-            abruby_str_new_cstr("undefined method"));
+            abruby_str_new_cstr(c,"undefined method"));
         POP_FRAME();
         return (RESULT){exc, RESULT_RAISE};
     }
@@ -597,7 +597,7 @@ method_missing_dispatch(CTX * restrict c, NODE * restrict n, struct abruby_class
     for (int i = (int)params_cnt - 1; i >= 0; i--) {
         c->fp[arg_index + i + 1] = c->fp[arg_index + i];
     }
-    c->fp[arg_index] = abruby_str_new_cstr(rb_id2name(name));
+    c->fp[arg_index] = abruby_str_new_cstr(c,rb_id2name(name));
     return dispatch_method_with_klass(c, n, recv_val, klass, mm, params_cnt + 1, arg_index);
 }
 
@@ -619,7 +619,7 @@ NODE_DEF
 node_method_call(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, uint32_t params_cnt, uint32_t arg_index, struct method_cache *mc@ref)
 {
     VALUE recv_val = UNWRAP(EVAL_ARG(c, recv));
-    struct abruby_class *klass = AB_CLASS_OF(recv_val);
+    struct abruby_class *klass = AB_CLASS_OF(c, recv_val);
 
     if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
         VALUE save_self = c->self;
@@ -639,7 +639,7 @@ node_method_call(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, uint3
 NODE_DEF
 node_func_call(CTX * restrict c, NODE * restrict n, ID name, uint32_t params_cnt, uint32_t arg_index, struct method_cache *mc@ref)
 {
-    struct abruby_class *klass = AB_CLASS_OF(c->self);
+    struct abruby_class *klass = AB_CLASS_OF(c, c->self);
 
     if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
         return dispatch_method_frame(c, n, klass, mc,
@@ -672,7 +672,7 @@ node_super(CTX * restrict c, NODE * restrict n, uint32_t params_cnt, uint32_t ar
         VALUE exc;
         PUSH_FRAME(n);
         exc = abruby_exception_new(c, c->current_frame,
-            abruby_str_new_cstr("super: no superclass method"));
+            abruby_str_new_cstr(c,"super: no superclass method"));
         POP_FRAME();
         return (RESULT){exc, RESULT_RAISE};
     }
@@ -696,7 +696,7 @@ found_super:
 static __attribute__((noinline, cold)) RESULT
 node_arith_fallback(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, ID op, uint32_t arg_index)
 {
-    struct abruby_class *klass = AB_CLASS_OF(lv);
+    struct abruby_class *klass = AB_CLASS_OF(c, lv);
     struct abruby_method *method = abruby_class_find_method(klass, op);
     if (!method) {
         method = abruby_class_find_method(klass, c->ids->method_missing);
@@ -704,11 +704,11 @@ node_arith_fallback(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, ID 
             VALUE exc;
             PUSH_FRAME(n);
             exc = abruby_exception_new(c, c->current_frame,
-                abruby_str_new_cstr("undefined method"));
+                abruby_str_new_cstr(c,"undefined method"));
             POP_FRAME();
             return (RESULT){exc, RESULT_RAISE};
         }
-        c->fp[arg_index] = abruby_str_new_cstr(rb_id2name(op));
+        c->fp[arg_index] = abruby_str_new_cstr(c,rb_id2name(op));
         c->fp[arg_index + 1] = rv;
         return dispatch_method_with_klass(c, n, lv, klass, method, 2, arg_index);
     }
@@ -720,7 +720,7 @@ node_arith_fallback(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, ID 
 static inline bool
 ab_is_integer(VALUE v)
 {
-    return FIXNUM_P(v) || AB_CLASS_P(v, ab_integer_class);
+    return FIXNUM_P(v) || ab_obj_type_p(v, ABRUBY_OBJ_BIGNUM);
 }
 
 // Forward declarations for cross-referencing dispatchers
@@ -752,27 +752,27 @@ extern const struct NodeKind kind_node_integer_div;
 
 // Integer calc helpers (used by fixnum_*_slow and integer_* nodes)
 static inline RESULT
-integer_plus_calc(VALUE lv, VALUE rv)
+integer_plus_calc(CTX *c, VALUE lv, VALUE rv)
 {
-    return RESULT_OK(AB_NUM_WRAP(rb_funcall(AB_INT_UNWRAP(lv), rb_intern("+"), 1, AB_INT_UNWRAP(rv))));
+    return RESULT_OK(AB_NUM_WRAP(c, rb_funcall(AB_INT_UNWRAP(lv), rb_intern("+"), 1, AB_INT_UNWRAP(rv))));
 }
 
 static inline RESULT
-integer_minus_calc(VALUE lv, VALUE rv)
+integer_minus_calc(CTX *c, VALUE lv, VALUE rv)
 {
-    return RESULT_OK(AB_NUM_WRAP(rb_funcall(AB_INT_UNWRAP(lv), rb_intern("-"), 1, AB_INT_UNWRAP(rv))));
+    return RESULT_OK(AB_NUM_WRAP(c, rb_funcall(AB_INT_UNWRAP(lv), rb_intern("-"), 1, AB_INT_UNWRAP(rv))));
 }
 
 static inline RESULT
-integer_mul_calc(VALUE lv, VALUE rv)
+integer_mul_calc(CTX *c, VALUE lv, VALUE rv)
 {
-    return RESULT_OK(AB_NUM_WRAP(rb_funcall(AB_INT_UNWRAP(lv), rb_intern("*"), 1, AB_INT_UNWRAP(rv))));
+    return RESULT_OK(AB_NUM_WRAP(c, rb_funcall(AB_INT_UNWRAP(lv), rb_intern("*"), 1, AB_INT_UNWRAP(rv))));
 }
 
 static inline RESULT
-integer_div_calc(VALUE lv, VALUE rv)
+integer_div_calc(CTX *c, VALUE lv, VALUE rv)
 {
-    return RESULT_OK(AB_NUM_WRAP(rb_funcall(AB_INT_UNWRAP(lv), rb_intern("/"), 1, AB_INT_UNWRAP(rv))));
+    return RESULT_OK(AB_NUM_WRAP(c, rb_funcall(AB_INT_UNWRAP(lv), rb_intern("/"), 1, AB_INT_UNWRAP(rv))));
 }
 
 // Dispatcher swap: change the dispatcher without creating a new node.
@@ -800,7 +800,7 @@ node_fixnum_plus_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, u
 {
     if (ab_is_integer(lv) && ab_is_integer(rv)) {
         swap_dispatcher(n, &kind_node_integer_plus);
-        return integer_plus_calc(lv, rv);
+        return integer_plus_calc(c, lv, rv);
     }
     else {
         swap_dispatcher(n, &kind_node_plus);
@@ -809,9 +809,9 @@ node_fixnum_plus_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, u
 }
 
 static __attribute__((noinline, cold)) RESULT
-node_fixnum_plus_overflow(VALUE lv, VALUE rv)
+node_fixnum_plus_overflow(CTX *c, VALUE lv, VALUE rv)
 {
-    return RESULT_OK(abruby_bignum_new(LONG2NUM(FIX2LONG(lv) + FIX2LONG(rv))));
+    return RESULT_OK(abruby_bignum_new(c, LONG2NUM(FIX2LONG(lv) + FIX2LONG(rv))));
 }
 
 NODE_DEF
@@ -823,7 +823,7 @@ node_fixnum_plus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, u
         long result;
         if (LIKELY(!__builtin_add_overflow((long)lv, (long)(rv - 1), &result)))
             return RESULT_OK((VALUE)result);
-        return node_fixnum_plus_overflow(lv, rv);
+        return node_fixnum_plus_overflow(c, lv, rv);
     }
     return node_fixnum_plus_slow(c, n, lv, rv, arg_index);
 }
@@ -838,7 +838,7 @@ node_integer_plus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, 
         if (LIKELY(FIXABLE(result))) return RESULT_OK(LONG2FIX(result));
     }
     if (ab_is_integer(lv) && ab_is_integer(rv)) {
-        return integer_plus_calc(lv, rv);
+        return integer_plus_calc(c, lv, rv);
     }
     return node_arith_fallback(c, n, lv, rv, c->ids->op_plus, arg_index);
 }
@@ -856,7 +856,7 @@ node_fixnum_minus_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, 
 {
     if (ab_is_integer(lv) && ab_is_integer(rv)) {
         swap_dispatcher(n, &kind_node_integer_minus);
-        return integer_minus_calc(lv, rv);
+        return integer_minus_calc(c, lv, rv);
     }
     else {
         swap_dispatcher(n, &kind_node_minus);
@@ -865,9 +865,9 @@ node_fixnum_minus_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, 
 }
 
 static __attribute__((noinline, cold)) RESULT
-node_fixnum_minus_overflow(VALUE lv, VALUE rv)
+node_fixnum_minus_overflow(CTX *c, VALUE lv, VALUE rv)
 {
-    return RESULT_OK(abruby_bignum_new(LONG2NUM(FIX2LONG(lv) - FIX2LONG(rv))));
+    return RESULT_OK(abruby_bignum_new(c, LONG2NUM(FIX2LONG(lv) - FIX2LONG(rv))));
 }
 
 NODE_DEF
@@ -879,7 +879,7 @@ node_fixnum_minus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, 
         long result;
         if (LIKELY(!__builtin_sub_overflow((long)lv, (long)(rv - 1), &result)))
             return RESULT_OK((VALUE)result);
-        return node_fixnum_minus_overflow(lv, rv);
+        return node_fixnum_minus_overflow(c, lv, rv);
     }
     return node_fixnum_minus_slow(c, n, lv, rv, arg_index);
 }
@@ -894,7 +894,7 @@ node_integer_minus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right,
         if (LIKELY(FIXABLE(result))) return RESULT_OK(LONG2FIX(result));
     }
     if (ab_is_integer(lv) && ab_is_integer(rv)) {
-        return integer_minus_calc(lv, rv);
+        return integer_minus_calc(c, lv, rv);
     }
     return node_arith_fallback(c, n, lv, rv, c->ids->op_minus, arg_index);
 }
@@ -912,7 +912,7 @@ node_fixnum_mul_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, ui
 {
     if (ab_is_integer(lv) && ab_is_integer(rv)) {
         swap_dispatcher(n, &kind_node_integer_mul);
-        return integer_mul_calc(lv, rv);
+        return integer_mul_calc(c, lv, rv);
     }
     else {
         swap_dispatcher(n, &kind_node_mul);
@@ -921,9 +921,9 @@ node_fixnum_mul_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, ui
 }
 
 static __attribute__((noinline, cold)) RESULT
-node_fixnum_mul_overflow(long a, long b)
+node_fixnum_mul_overflow(CTX *c, long a, long b)
 {
-    return integer_mul_calc(LONG2FIX(a), LONG2FIX(b));
+    return integer_mul_calc(c, LONG2FIX(a), LONG2FIX(b));
 }
 
 NODE_DEF
@@ -936,7 +936,7 @@ node_fixnum_mul(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, ui
         long result;
         if (LIKELY(!__builtin_mul_overflow(a, b, &result) && FIXABLE(result)))
             return RESULT_OK(LONG2FIX(result));
-        return node_fixnum_mul_overflow(a, b);
+        return node_fixnum_mul_overflow(c, a, b);
     }
     return node_fixnum_mul_slow(c, n, lv, rv, arg_index);
 }
@@ -953,7 +953,7 @@ node_integer_mul(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, u
             return RESULT_OK(LONG2FIX(result));
     }
     if (ab_is_integer(lv) && ab_is_integer(rv)) {
-        return integer_mul_calc(lv, rv);
+        return integer_mul_calc(c, lv, rv);
     }
     return node_arith_fallback(c, n, lv, rv, c->ids->op_mul, arg_index);
 }
@@ -971,7 +971,7 @@ node_fixnum_div_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, ui
 {
     if (ab_is_integer(lv) && ab_is_integer(rv)) {
         swap_dispatcher(n, &kind_node_integer_div);
-        return integer_div_calc(lv, rv);
+        return integer_div_calc(c, lv, rv);
     }
     else {
         swap_dispatcher(n, &kind_node_div);
@@ -990,7 +990,7 @@ node_fixnum_div(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, ui
             VALUE exc;
             PUSH_FRAME(n);
             exc = abruby_exception_new(c, c->current_frame,
-                abruby_str_new_cstr("divided by 0"));
+                abruby_str_new_cstr(c,"divided by 0"));
             POP_FRAME();
             return (RESULT){exc, RESULT_RAISE};
         }
@@ -1013,7 +1013,7 @@ node_integer_div(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, u
             VALUE exc;
             PUSH_FRAME(n);
             exc = abruby_exception_new(c, c->current_frame,
-                abruby_str_new_cstr("divided by 0"));
+                abruby_str_new_cstr(c,"divided by 0"));
             POP_FRAME();
             return (RESULT){exc, RESULT_RAISE};
         }
@@ -1023,7 +1023,7 @@ node_integer_div(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, u
         return RESULT_OK(LONG2FIX(d));
     }
     if (ab_is_integer(lv) && ab_is_integer(rv)) {
-        return integer_div_calc(lv, rv);
+        return integer_div_calc(c, lv, rv);
     }
     return node_arith_fallback(c, n, lv, rv, c->ids->op_div, arg_index);
 }
@@ -1252,7 +1252,7 @@ node_fixnum_mod(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, ui
             VALUE exc;
             PUSH_FRAME(n);
             exc = abruby_exception_new(c, c->current_frame,
-                abruby_str_new_cstr("divided by 0"));
+                abruby_str_new_cstr(c,"divided by 0"));
             POP_FRAME();
             return (RESULT){exc, RESULT_RAISE};
         }

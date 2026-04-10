@@ -17,9 +17,9 @@ static RESULT ab_exception_backtrace(CTX *c, VALUE self, unsigned int argc, VALU
     VALUE ary = rb_ary_new();
     long len = RARRAY_LEN(bt);
     for (long i = 0; i < len; i++) {
-        rb_ary_push(ary, abruby_str_new(RARRAY_AREF(bt, i)));
+        rb_ary_push(ary, abruby_str_new(c, RARRAY_AREF(bt, i)));
     }
-    return RESULT_OK(abruby_ary_new(ary));
+    return RESULT_OK(abruby_ary_new(c, ary));
 }
 
 // RuntimeError#to_s — returns message
@@ -35,14 +35,14 @@ static RESULT ab_exception_inspect(CTX *c, VALUE self, unsigned int argc, VALUE 
     struct abruby_exception *exc = (struct abruby_exception *)RTYPEDDATA_GET_DATA(self);
     VALUE msg_rs = RSTR(exc->message);
     VALUE result = rb_sprintf("#<RuntimeError: %s>", RSTRING_PTR(msg_rs));
-    return RESULT_OK(abruby_str_new(result));
+    return RESULT_OK(abruby_str_new(c, result));
 }
 
 void
 Init_abruby_exception(void)
 {
-    abruby_class_add_cfunc(ab_runtime_error_class, rb_intern("message"),   ab_exception_message,   0);
-    abruby_class_add_cfunc(ab_runtime_error_class, rb_intern("backtrace"), ab_exception_backtrace, 0);
-    abruby_class_add_cfunc(ab_runtime_error_class, rb_intern("to_s"),      ab_exception_to_s,      0);
-    abruby_class_add_cfunc(ab_runtime_error_class, rb_intern("inspect"),   ab_exception_inspect,   0);
+    abruby_class_add_cfunc(ab_tmpl_runtime_error_class, rb_intern("message"),   ab_exception_message,   0);
+    abruby_class_add_cfunc(ab_tmpl_runtime_error_class, rb_intern("backtrace"), ab_exception_backtrace, 0);
+    abruby_class_add_cfunc(ab_tmpl_runtime_error_class, rb_intern("to_s"),      ab_exception_to_s,      0);
+    abruby_class_add_cfunc(ab_tmpl_runtime_error_class, rb_intern("inspect"),   ab_exception_inspect,   0);
 }
