@@ -7,20 +7,23 @@ abruby_vm_global (グローバル、1つだけ)
   method_serial          ← メソッド定義時にインクリメント
 
 abruby_vm (AbRuby インスタンスごと)
-  CTX ctx                ← 実行コンテキスト
+  running_ctx            ← 実行コンテキスト (CTX)
+    ivm ──────────────→ abruby_vm (自分の VM への逆参照)
     vm  ──────────────→ abruby_vm_global
     env ──────────────→ stack[0]
     fp  ──────────────→ stack[N]  (現在のフレームポインタ)
     self                 ← 現在のレシーバ
     current_class        ← クラス定義中のクラス
-    main_class ────────→ main_class_body
-    gvars ─────────────→ gvars
     current_frame ─────→ abruby_frame linked list
     ids ───────────────→ id_cache
   stack[10000]           ← VALUE スタック (ローカル変数 + 引数)
   main_class_body        ← インスタンスごとの Object サブクラス
   gvars                  ← グローバル変数テーブル
   id_cache               ← rb_intern 結果のキャッシュ
+
+CTX から VM のフィールドへはマクロでアクセス:
+  CTX_MAIN_CLASS(c) → &c->ivm->main_class_body
+  CTX_GVARS(c)      → &c->ivm->gvars
 ```
 
 ## データ構造
@@ -43,17 +46,18 @@ typedef struct {
 
 ```c
 struct CTX_struct {
+    struct abruby_vm *ivm;           // per-instance VM (owner)
     struct abruby_vm_global *vm;     // グローバル VM 状態
     VALUE *env;                      // スタックのベース
     VALUE *fp;                       // フレームポインタ
     VALUE self;                      // 現在の self
     struct abruby_class *current_class;
-    struct abruby_class *main_class;
-    struct abruby_gvar_table *gvars;
     struct abruby_frame *current_frame; // フレームリンクリスト先頭
     const struct abruby_id_cache *ids;  // ID キャッシュ
 };
 ```
+
+gvars と main_class は VM 側に持ち、CTX からは `c->ivm->` 経由でアクセスする。
 
 ### abruby_frame (呼び出しフレーム)
 

@@ -298,16 +298,31 @@ struct abruby_vm_global {
     uint32_t method_serial;
 };
 
+struct abruby_vm;  // forward declaration
+
 struct CTX_struct {
-    struct abruby_vm_global *vm;
+    struct abruby_vm *ivm;               // per-instance VM (owner)
+    struct abruby_vm_global *vm;         // global VM state
     VALUE *env;
     VALUE *fp;
     VALUE self;
-    struct abruby_class *current_class; // set during class body eval
-    struct abruby_class *main_class;    // per-instance, inherits from Object
-    struct abruby_gvar_table *gvars;    // global variables
-    struct abruby_frame *current_frame; // head of call frame linked list
-    const struct abruby_id_cache *ids;   // cached rb_intern results (shared, owned by VM)
+    struct abruby_class *current_class;  // set during class body eval
+    struct abruby_frame *current_frame;  // head of call frame linked list
+    const struct abruby_id_cache *ids;   // cached rb_intern results
+};
+
+// Per-instance VM state.
+#define ABRUBY_STACK_SIZE 10000
+
+struct abruby_vm {
+    CTX running_ctx;                     // execution context
+    VALUE stack[ABRUBY_STACK_SIZE];      // VALUE stack (locals + args)
+    struct abruby_class main_class_body; // per-instance Object subclass
+    struct abruby_gvar_table gvars;      // global variables
+    struct abruby_id_cache id_cache;     // cached rb_intern results
+    VALUE rb_self;                       // Ruby-level AbRuby instance
+    VALUE current_file;                  // current file path
+    VALUE loaded_files;                  // loaded file paths
 };
 
 // exception object

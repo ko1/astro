@@ -32,6 +32,10 @@
 
 // helper functions (included before generated eval code)
 
+// VM accessor helpers
+#define CTX_MAIN_CLASS(c) (&(c)->ivm->main_class_body)
+#define CTX_GVARS(c)      (&(c)->ivm->gvars)
+
 // class system helpers
 
 
@@ -95,9 +99,9 @@ static struct abruby_class *
 find_class(CTX *c, ID name)
 {
     // Check per-instance main_class first, then global Object
-    struct abruby_class *klass = find_class_in(c->main_class, name);
+    struct abruby_class *klass = find_class_in(CTX_MAIN_CLASS(c), name);
     if (klass) return klass;
-    if (c->main_class != ab_object_class) {
+    if (CTX_MAIN_CLASS(c) != ab_object_class) {
         return find_class_in(ab_object_class, name);
     }
     return NULL;
@@ -231,7 +235,7 @@ NODE_DEF
 node_const_set(CTX * restrict c, NODE * restrict n, ID name, NODE *value)
 {
     VALUE v = UNWRAP(EVAL_ARG(c, value));
-    struct abruby_class *scope = c->current_class ? c->current_class : c->main_class;
+    struct abruby_class *scope = c->current_class ? c->current_class : CTX_MAIN_CLASS(c);
     abruby_class_set_const(scope, name, v);
     return RESULT_OK(v);
 }
@@ -240,12 +244,12 @@ NODE_DEF
 node_const_get(CTX * restrict c, NODE * restrict n, ID name)
 {
     // Check main_class first, then Object
-    for (unsigned int i = 0; i < c->main_class->const_cnt; i++) {
-        if (c->main_class->constants[i].name == name) {
-            return RESULT_OK(c->main_class->constants[i].value);
+    for (unsigned int i = 0; i < CTX_MAIN_CLASS(c)->const_cnt; i++) {
+        if (CTX_MAIN_CLASS(c)->constants[i].name == name) {
+            return RESULT_OK(CTX_MAIN_CLASS(c)->constants[i].value);
         }
     }
-    if (c->main_class != ab_object_class) {
+    if (CTX_MAIN_CLASS(c) != ab_object_class) {
         return RESULT_OK(abruby_const_get(ab_object_class, name));
     }
     rb_raise(rb_eNameError, "uninitialized constant %s", rb_id2name(name));
@@ -305,7 +309,7 @@ node_ivar_set(CTX * restrict c, NODE * restrict n, ID name, NODE *value)
 static VALUE
 abruby_gvar_get(CTX *c, ID name)
 {
-    struct abruby_gvar_table *t = c->gvars;
+    struct abruby_gvar_table *t = CTX_GVARS(c);
     for (unsigned int i = 0; i < t->cnt; i++) {
         if (t->entries[i].name == name)
             return t->entries[i].value;
@@ -316,7 +320,7 @@ abruby_gvar_get(CTX *c, ID name)
 static void
 abruby_gvar_set(CTX *c, ID name, VALUE val)
 {
-    struct abruby_gvar_table *t = c->gvars;
+    struct abruby_gvar_table *t = CTX_GVARS(c);
     for (unsigned int i = 0; i < t->cnt; i++) {
         if (t->entries[i].name == name) {
             t->entries[i].value = val;
@@ -440,7 +444,7 @@ node_rescue(CTX * restrict c, NODE * restrict n, NODE *body, NODE *rescue_body, 
 NODE_DEF @noinline
 node_def(CTX * restrict c, NODE * restrict n, ID name, NODE *body, uint32_t params_cnt, uint32_t locals_cnt)
 {
-    struct abruby_class *klass = c->current_class ? c->current_class : c->main_class;
+    struct abruby_class *klass = c->current_class ? c->current_class : CTX_MAIN_CLASS(c);
     // Derive source file from current frame
     const char *file = NULL;
     if (c->current_frame) {
@@ -464,7 +468,7 @@ node_module_def(CTX * restrict c, NODE * restrict n, ID name, NODE *body)
         mod->klass = ab_module_class;
         mod->name = name;
         mod->super = NULL;
-        abruby_class_set_const(c->main_class, name, abruby_wrap_class(mod));
+        abruby_class_set_const(CTX_MAIN_CLASS(c), name, abruby_wrap_class(mod));
     }
 
     struct abruby_class *save_class = c->current_class;
@@ -499,7 +503,7 @@ node_class_def(CTX * restrict c, NODE * restrict n, ID name, NODE *super_expr, N
         klass->klass = ab_class_class;
         klass->name = name;
         klass->super = super;
-        abruby_class_set_const(c->main_class, name, abruby_wrap_class(klass));
+        abruby_class_set_const(CTX_MAIN_CLASS(c), name, abruby_wrap_class(klass));
     }
 
     struct abruby_class *save_class = c->current_class;
