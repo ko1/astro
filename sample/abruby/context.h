@@ -293,30 +293,24 @@ struct abruby_id_cache {
     ID method_missing;
 };
 
-// Global VM state (shared across all CTX instances)
-struct abruby_vm_global {
-    uint32_t method_serial;
-};
-
 struct abruby_machine;  // forward declaration
+
+#define ABRUBY_STACK_SIZE 10000
 
 struct CTX_struct {
     struct abruby_machine *abm;          // per-instance machine (owner)
-    struct abruby_vm_global *vm;         // global VM state
-    VALUE *env;
-    VALUE *fp;
+    VALUE stack[ABRUBY_STACK_SIZE];      // VALUE stack (locals + args)
+    VALUE *env;                          // base of stack (= stack)
+    VALUE *fp;                           // frame pointer into stack
     VALUE self;
     struct abruby_class *current_class;  // set during class body eval
     struct abruby_frame *current_frame;  // head of call frame linked list
     const struct abruby_id_cache *ids;   // cached rb_intern results
 };
 
-// Per-instance VM state.
-#define ABRUBY_STACK_SIZE 10000
-
 struct abruby_machine {
-    CTX running_ctx;                     // execution context
-    VALUE stack[ABRUBY_STACK_SIZE];      // VALUE stack (locals + args)
+    uint32_t method_serial;              // method version (for inline cache invalidation)
+    CTX *running_ctx;                    // execution context (heap-allocated)
     struct abruby_class main_class_body; // per-instance Object subclass
     struct abruby_gvar_table gvars;      // global variables
     struct abruby_id_cache id_cache;     // cached rb_intern results
@@ -343,7 +337,6 @@ struct method_cache {
     RESULT (*dispatcher)(struct CTX_struct *, struct Node *); // cached body->head.dispatcher
 };
 
-extern struct abruby_vm_global abruby_vm_global;
 
 #define LIKELY(expr) __builtin_expect((expr), 1)
 #define UNLIKELY(expr) __builtin_expect((expr), 0)

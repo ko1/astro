@@ -4,7 +4,7 @@
 #include "builtin/builtin.h"
 #include "astro_code_store.h"
 
-struct abruby_vm_global abruby_vm_global = { .method_serial = 1 };
+// (abruby_vm_global removed: method_serial moved to abruby_machine)
 
 struct abruby_option OPTION = {
     .no_compiled_code = true,
@@ -331,7 +331,8 @@ abruby_class_add_cfunc(struct abruby_class *klass, ID name,
     m->type = ABRUBY_METHOD_CFUNC;
     m->u.cfunc.func = func;
     m->u.cfunc.params_cnt = params_cnt;
-    abruby_vm_global.method_serial++;
+    // method_serial not bumped during init (no machine exists yet;
+    // caches start at serial=0, machine starts at serial=1, so first access misses)
 }
 
 static void
@@ -402,8 +403,8 @@ static void
 vm_mark(void *ptr)
 {
     struct abruby_machine *vm = (struct abruby_machine *)ptr;
-    rb_gc_mark(vm->running_ctx.self);
-    rb_gc_mark_locations(vm->stack, vm->stack + ABRUBY_STACK_SIZE);
+    rb_gc_mark(vm->running_ctx->self);
+    rb_gc_mark_locations(vm->running_ctx->stack, vm->running_ctx->stack + ABRUBY_STACK_SIZE);
     for (unsigned int i = 0; i < vm->gvars.cnt; i++) {
         rb_gc_mark(vm->gvars.entries[i].value);
     }
@@ -480,15 +481,17 @@ static struct abruby_machine *
 create_vm(void)
 {
     struct abruby_machine *vm = ruby_xcalloc(1, sizeof(struct abruby_machine));
+    vm->method_serial = 1;
+    vm->running_ctx = ruby_xcalloc(1, sizeof(CTX));
     // Per-instance main class (inherits from Object)
     vm->main_class_body.klass = ab_class_class;
     vm->main_class_body.name = rb_intern("main");
     vm->main_class_body.super = ab_object_class;
 
-    vm->running_ctx.env = vm->stack;
-    vm->running_ctx.fp = vm->stack;
-    vm->running_ctx.self = abruby_new_object(&vm->main_class_body);
-    vm->running_ctx.current_class = NULL;
+    vm->running_ctx->env = vm->running_ctx->stack;
+    vm->running_ctx->fp = vm->running_ctx->stack;
+    vm->running_ctx->self = abruby_new_object(&vm->main_class_body);
+    vm->running_ctx->current_class = NULL;
     vm->id_cache.op_plus = rb_intern("+");
     vm->id_cache.op_minus = rb_intern("-");
     vm->id_cache.op_mul = rb_intern("*");
@@ -500,15 +503,14 @@ create_vm(void)
     vm->id_cache.op_eq = rb_intern("==");
     vm->id_cache.op_mod = rb_intern("%");
     vm->id_cache.method_missing = rb_intern("method_missing");
-    vm->running_ctx.ids = &vm->id_cache;
-    vm->running_ctx.abm = vm;
-    vm->running_ctx.vm = &abruby_vm_global;
+    vm->running_ctx->ids = &vm->id_cache;
+    vm->running_ctx->abm = vm;
     vm->rb_self = Qnil;
     vm->current_file = Qnil;
     vm->loaded_files = rb_ary_new();
 
     for (int i = 0; i < ABRUBY_STACK_SIZE; i++) {
-        vm->stack[i] = Qnil;
+        vm->running_ctx->stack[i] = Qnil;
     }
 
     return vm;
@@ -1070,16 +1072,16 @@ rb_abruby_eval_ast(VALUE self, VALUE ast_obj)
     }
 
     // reset stack for each eval (classes/methods/self persist)
-    vm->running_ctx.fp = vm->running_ctx.env;
-    vm->running_ctx.current_class = NULL;
+    vm->running_ctx->fp = vm->running_ctx->env;
+    vm->running_ctx->current_class = NULL;
 
     // Push <main> frame so backtrace always has a bottom frame
     const char *eval_file = NIL_P(vm->current_file) ? "(abruby)" : RSTRING_PTR(vm->current_file);
     struct abruby_frame main_frame = {NULL, NULL, NULL, {.source_file = eval_file}};
-    vm->running_ctx.current_frame = &main_frame;
+    vm->running_ctx->current_frame = &main_frame;
 
-    RESULT r = EVAL(&vm->running_ctx, ast);
-    vm->running_ctx.current_frame = NULL;
+    RESULT r = EVAL(vm->running_ctx, ast);
+    vm->running_ctx->current_frame = NULL;
     if (r.state == RESULT_RAISE) {
         VALUE exc_val = r.value;
         // Extract message and backtrace from exception object

@@ -40,7 +40,7 @@
 
 
 static void
-abruby_class_add_method(struct abruby_class *klass, ID name,
+abruby_class_add_method(CTX *c, struct abruby_class *klass, ID name,
                         struct Node *body, unsigned int params_cnt, unsigned int locals_cnt,
                         const char *source_file)
 {
@@ -61,7 +61,7 @@ abruby_class_add_method(struct abruby_class *klass, ID name,
     m->u.ast.params_cnt = params_cnt;
     m->u.ast.locals_cnt = locals_cnt;
     m->u.ast.source_file = source_file;
-    abruby_vm_global.method_serial++;
+    c->abm->method_serial++;
 }
 
 static struct abruby_method *
@@ -453,7 +453,7 @@ node_def(CTX * restrict c, NODE * restrict n, ID name, NODE *body, uint32_t para
         else
             file = c->current_frame->source_file;  // <main>/<top>
     }
-    abruby_class_add_method(klass, name, body, params_cnt, locals_cnt, file);
+    abruby_class_add_method(c, klass, name, body, params_cnt, locals_cnt, file);
     return RESULT_OK(Qnil);
 }
 
@@ -519,12 +519,12 @@ node_class_def(CTX * restrict c, NODE * restrict n, ID name, NODE *super_expr, N
 
 // Populate cached fields in method_cache.
 static inline void
-method_cache_fill(struct method_cache *mc, struct abruby_class *klass,
+method_cache_fill(CTX *c, struct method_cache *mc, struct abruby_class *klass,
                   struct abruby_method *method)
 {
     mc->klass = klass;
     mc->method = method;
-    mc->serial = abruby_vm_global.method_serial;
+    mc->serial = c->abm->method_serial;
     if (method->type == ABRUBY_METHOD_AST) {
         mc->body = method->u.ast.body;
         mc->dispatcher = method->u.ast.body->head.dispatcher;
@@ -574,7 +574,7 @@ dispatch_method_with_klass(CTX * restrict c, NODE * restrict call_site,
                            unsigned int argc, uint32_t arg_index)
 {
     struct method_cache mc;
-    method_cache_fill(&mc, klass, method);
+    method_cache_fill(c, &mc, klass, method);
     VALUE save_self = c->self;
     c->self = recv;
     RESULT r = dispatch_method_frame(c, call_site, klass, &mc, argc, arg_index);
@@ -609,7 +609,7 @@ node_method_call_slow(CTX * restrict c, NODE * restrict n,
     if (UNLIKELY(method == NULL)) {
         return method_missing_dispatch(c, n, klass, name, recv_val, params_cnt, arg_index);
     }
-    method_cache_fill(mc, klass, method);
+    method_cache_fill(c, mc, klass, method);
     return dispatch_method_with_klass(c, n, recv_val, klass, method, params_cnt, arg_index);
 }
 
@@ -619,7 +619,7 @@ node_method_call(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, uint3
     VALUE recv_val = UNWRAP(EVAL_ARG(c, recv));
     struct abruby_class *klass = AB_CLASS_OF(recv_val);
 
-    if (LIKELY(mc->klass == klass && mc->serial == c->vm->method_serial)) {
+    if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
         VALUE save_self = c->self;
         c->self = recv_val;
         RESULT r = dispatch_method_frame(c, n, klass, mc, params_cnt, arg_index);
@@ -639,7 +639,7 @@ node_func_call(CTX * restrict c, NODE * restrict n, ID name, uint32_t params_cnt
 {
     struct abruby_class *klass = AB_CLASS_OF(c->self);
 
-    if (LIKELY(mc->klass == klass && mc->serial == c->vm->method_serial)) {
+    if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
         return dispatch_method_frame(c, n, klass, mc,
                                      params_cnt, arg_index);
     }
