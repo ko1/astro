@@ -1,4 +1,4 @@
-# Binary trees (allocation + recursion)
+# Binary trees (recursive allocation + recursive walk)
 class TreeNode
   def initialize(left, right)
     @left = left
@@ -21,6 +21,6 @@ def make_tree(depth)
   end
 end
 
-max_depth = 19
+max_depth = 20
 tree = make_tree(max_depth)
 p(tree.check)

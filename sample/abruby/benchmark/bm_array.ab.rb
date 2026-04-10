@@ -1,16 +1,26 @@
 # Array operations (push, index, length)
-a = []
-i = 0
-while i < 20_000_000
-  a.push(i)
-  i += 1
+def bench
+  a = []
+  i = 0
+  while i < 15_000
+    a.push(i)
+    i += 1
+  end
+
+  sum = 0
+  i = 0
+  len = a.length
+  while i < len
+    sum += a[i]
+    i += 1
+  end
+  sum
 end
 
-sum = 0
+result = 0
 i = 0
-len = a.length
-while i < len
-  sum += a[i]
+while i < 1000
+  result = bench
   i += 1
 end
-p(sum)
+p(result)

@@ -12,10 +12,20 @@ def collatz_steps(n)
   steps
 end
 
-total = 0
-i = 1
-while i <= 100000
-  total += collatz_steps(i)
+def bench
+  total = 0
+  i = 1
+  while i <= 600
+    total += collatz_steps(i)
+    i += 1
+  end
+  total
+end
+
+result = 0
+i = 0
+while i < 1000
+  result = bench
   i += 1
 end
-p(total)
+p(result)

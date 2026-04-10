@@ -63,6 +63,14 @@ def advance(bodies, dt)
   end
 end
 
+def bench(bodies)
+  i = 0
+  while i < 18
+    advance(bodies, 0.01)
+    i += 1
+  end
+end
+
 pi = 3.141592653589793
 solar_mass = 4.0 * pi * pi
 days_per_year = 365.24
@@ -84,8 +92,8 @@ bodies = [
 ]
 
 i = 0
-while i < 30000
-  advance(bodies, 0.01)
+while i < 1000
+  bench(bodies)
   i += 1
 end
 # Print x of sun as checksum

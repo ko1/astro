@@ -1,7 +1,16 @@
 # Simple while loop (measures loop + fixnum add overhead)
-i = 0
-while i < 300_000_000
-  i += 1
+def bench
+  i = 0
+  while i < 130_000
+    i += 1
+  end
+  i
 end
 
-p i
+result = 0
+i = 0
+while i < 1000
+  result = bench
+  i += 1
+end
+p(result)

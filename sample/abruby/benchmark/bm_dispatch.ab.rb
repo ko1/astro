@@ -9,12 +9,22 @@ class Leaf < Mid
   def value = 3
 end
 
+def bench(objs)
+  sum = 0
+  i = 0
+  while i < 24_000
+    sum += objs[i % 3].value
+    i += 1
+  end
+  sum
+end
+
 objs = [Base.new, Mid.new, Leaf.new]
 
-sum = 0
+result = 0
 i = 0
-while i < 24_000_000
-  sum += objs[i % 3].value
+while i < 1000
+  result = bench(objs)
   i += 1
 end
-p(sum)
+p(result)

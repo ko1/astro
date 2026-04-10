@@ -93,8 +93,17 @@ def fannkuch(n)
     break unless found
   end
 
-  p(checksum)
   max_flips
 end
 
-p(fannkuch(9))
+def bench
+  fannkuch(6)
+end
+
+result = 0
+i = 0
+while i < 1000
+  result = bench
+  i += 1
+end
+p(result)

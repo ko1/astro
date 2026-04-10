@@ -7,4 +7,4 @@ def fib(n)
   end
 end
 
-p(fib(37))
+p(fib(36))

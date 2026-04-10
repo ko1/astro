@@ -9,10 +9,20 @@ class Counter
   def count = @count
 end
 
-c = Counter.new
+def bench
+  c = Counter.new
+  i = 0
+  while i < 32_000
+    c.incr
+    i += 1
+  end
+  c.count
+end
+
+result = 0
 i = 0
-while i < 36_000_000
-  c.incr
+while i < 1000
+  result = bench
   i += 1
 end
-p(c.count)
+p(result)

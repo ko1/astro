@@ -1,4 +1,4 @@
-# Ackermann function
+# Ackermann function (recursive)
 def ack(m, n)
   if m == 0
     n + 1
@@ -10,7 +10,7 @@ def ack(m, n)
 end
 
 i = 0
-while i < 15
+while i < 60
   ack(3, 7)
   i += 1
 end
