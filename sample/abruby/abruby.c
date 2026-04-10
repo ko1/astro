@@ -379,8 +379,10 @@ static void
 vm_mark(void *ptr)
 {
     struct abruby_machine *vm = (struct abruby_machine *)ptr;
-    rb_gc_mark(vm->current_fiber->ctx.self);
-    rb_gc_mark_locations(vm->current_fiber->ctx.stack, vm->current_fiber->ctx.stack + ABRUBY_STACK_SIZE);
+    if (vm->current_fiber) {
+        rb_gc_mark(vm->current_fiber->ctx.self);
+        rb_gc_mark_locations(vm->current_fiber->ctx.stack, vm->current_fiber->ctx.stack + ABRUBY_STACK_SIZE);
+    }
     rb_gc_mark(vm->rb_self);
     rb_gc_mark(vm->current_file);
     rb_gc_mark(vm->loaded_files);
