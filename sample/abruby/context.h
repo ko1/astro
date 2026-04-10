@@ -237,18 +237,21 @@ ab_verify(VALUE obj)
  * The abruby VALUE invariant guarantees obj is either a CRuby immediate
  * or T_DATA with abruby_header at offset 0.
  */
-static inline struct abruby_class *
+static __attribute__((unused)) struct abruby_class *
 AB_CLASS_OF(VALUE obj)
 {
     ab_verify(obj);
-    if (!RB_SPECIAL_CONST_P(obj)) {
+
+    if (RB_LIKELY(!RB_SPECIAL_CONST_P(obj))) {
         return ((struct abruby_header *)RTYPEDDATA_GET_DATA(obj))->klass;
     }
-    else if (FIXNUM_P(obj))  return ab_integer_class;
-    else if (SYMBOL_P(obj))  return ab_symbol_class;
-    else if (obj == Qtrue)   return ab_true_class;
-    else if (obj == Qfalse)  return ab_false_class;
-    else                     return ab_nil_class;
+    else {
+        if (FIXNUM_P(obj))       return ab_integer_class;
+        else if (SYMBOL_P(obj))  return ab_symbol_class;
+        else if (obj == Qtrue)   return ab_true_class;
+        else if (obj == Qfalse)  return ab_false_class;
+        else                     return ab_nil_class;
+    }
 }
 
 #define AB_CLASS_P(obj, klass) (AB_CLASS_OF(obj) == (klass))
