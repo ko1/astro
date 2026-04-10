@@ -3,14 +3,14 @@
 // RuntimeError#message
 static RESULT ab_exception_message(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     (void)c; (void)argc; (void)argv;
-    struct abruby_exception *exc = (struct abruby_exception *)RTYPEDDATA_GET_DATA(self);
+    const struct abruby_exception *exc = (const struct abruby_exception *)RTYPEDDATA_GET_DATA(self);
     return RESULT_OK(exc->message);
 }
 
 // RuntimeError#backtrace — returns abruby Array of abruby Strings
 static RESULT ab_exception_backtrace(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     (void)c; (void)argc; (void)argv;
-    struct abruby_exception *exc = (struct abruby_exception *)RTYPEDDATA_GET_DATA(self);
+    const struct abruby_exception *exc = (const struct abruby_exception *)RTYPEDDATA_GET_DATA(self);
     VALUE bt = exc->backtrace;
     if (NIL_P(bt)) return RESULT_OK(Qnil);
     // Convert Ruby Array of Ruby Strings to abruby Array of abruby Strings
@@ -25,14 +25,14 @@ static RESULT ab_exception_backtrace(CTX *c, VALUE self, unsigned int argc, VALU
 // RuntimeError#to_s — returns message
 static RESULT ab_exception_to_s(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     (void)c; (void)argc; (void)argv;
-    struct abruby_exception *exc = (struct abruby_exception *)RTYPEDDATA_GET_DATA(self);
+    const struct abruby_exception *exc = (const struct abruby_exception *)RTYPEDDATA_GET_DATA(self);
     return RESULT_OK(exc->message);
 }
 
 // RuntimeError#inspect
 static RESULT ab_exception_inspect(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     (void)c; (void)argc; (void)argv;
-    struct abruby_exception *exc = (struct abruby_exception *)RTYPEDDATA_GET_DATA(self);
+    const struct abruby_exception *exc = (const struct abruby_exception *)RTYPEDDATA_GET_DATA(self);
     VALUE msg_rs = RSTR(exc->message);
     VALUE result = rb_sprintf("#<RuntimeError: %s>", RSTRING_PTR(msg_rs));
     return RESULT_OK(abruby_str_new(c, result));

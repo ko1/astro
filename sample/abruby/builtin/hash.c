@@ -3,8 +3,8 @@
 static VALUE ab_to_hash_key(VALUE v) {
     if (FIXNUM_P(v) || v == Qtrue || v == Qfalse || v == Qnil) return v;
     if (RB_TYPE_P(v, T_DATA)) {
-        struct abruby_header *h = (struct abruby_header *)RTYPEDDATA_GET_DATA(v);
-        if (h->klass->obj_type == ABRUBY_OBJ_STRING) return ((struct abruby_string *)h)->rb_str;
+        const struct abruby_header *h = (const struct abruby_header *)RTYPEDDATA_GET_DATA(v);
+        if (h->klass->obj_type == ABRUBY_OBJ_STRING) return ((const struct abruby_string *)h)->rb_str;
     }
     return v;
 }

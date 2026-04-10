@@ -16,7 +16,7 @@ char *SPECIALIZED_SRC(NODE *n);
 
 VALUE abruby_ivar_get(VALUE self, ID name);
 void abruby_ivar_set(VALUE self, ID name, VALUE val);
-struct abruby_method *abruby_find_method(struct abruby_class *klass, ID name);
+struct abruby_method *abruby_find_method(const struct abruby_class *klass, ID name);
 
 VALUE abruby_wrap_class(struct abruby_class *klass);
 void abruby_class_set_const(struct abruby_class *klass, ID name, VALUE val);
@@ -37,7 +37,7 @@ void code_repo_add(const char *name, NODE *body, bool force_add);
 VALUE abruby_wrap_node(NODE *n);
 
 // exception support
-VALUE abruby_exception_new(CTX *c, struct abruby_frame *frame, VALUE message);
+VALUE abruby_exception_new(CTX *c, const struct abruby_frame *frame, VALUE message);
 
 struct NodeHead {
     struct NodeFlags {

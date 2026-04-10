@@ -10,12 +10,12 @@
 #define RHSH(v) (((struct abruby_hash *)RTYPEDDATA_GET_DATA(v))->rb_hash)
 
 // shared helpers (defined in abruby.c)
-RESULT abruby_call_method(CTX *c, VALUE recv, struct abruby_method *method,
+RESULT abruby_call_method(CTX *c, VALUE recv, const struct abruby_method *method,
                           unsigned int argc, VALUE *argv);
 VALUE ab_inspect_rstr(CTX *c, VALUE v);
 RESULT abruby_require_file(CTX *c, VALUE rb_path);
 RESULT abruby_eval_string(CTX *c, VALUE rb_code);
-VALUE abruby_current_file(CTX *c);
+VALUE abruby_current_file(const CTX *c);
 void abruby_class_add_cfunc(struct abruby_class *klass, ID name,
                             abruby_cfunc_t func, unsigned int params_cnt);
 
@@ -42,14 +42,14 @@ static inline VALUE
 AB_INT_UNWRAP(VALUE v)
 {
     if (FIXNUM_P(v)) return v;
-    return ((struct abruby_bignum *)RTYPEDDATA_GET_DATA(v))->rb_bignum;
+    return ((const struct abruby_bignum *)RTYPEDDATA_GET_DATA(v))->rb_bignum;
 }
 
 // abruby float → inner CRuby float
 static inline VALUE
 AB_FLOAT_UNWRAP(VALUE v)
 {
-    return ((struct abruby_float *)RTYPEDDATA_GET_DATA(v))->rb_float;
+    return ((const struct abruby_float *)RTYPEDDATA_GET_DATA(v))->rb_float;
 }
 
 // abruby numeric → inner CRuby numeric (for mixed-type operations)
@@ -57,12 +57,12 @@ static inline VALUE
 AB_NUM_UNWRAP(VALUE v)
 {
     if (FIXNUM_P(v)) return v;
-    struct abruby_header *h = (struct abruby_header *)RTYPEDDATA_GET_DATA(v);
+    const struct abruby_header *h = (const struct abruby_header *)RTYPEDDATA_GET_DATA(v);
     switch (h->klass->obj_type) {
-    case ABRUBY_OBJ_BIGNUM:   return ((struct abruby_bignum *)h)->rb_bignum;
-    case ABRUBY_OBJ_FLOAT:    return ((struct abruby_float *)h)->rb_float;
-    case ABRUBY_OBJ_RATIONAL: return ((struct abruby_rational *)h)->rb_rational;
-    case ABRUBY_OBJ_COMPLEX:  return ((struct abruby_complex *)h)->rb_complex;
+    case ABRUBY_OBJ_BIGNUM:   return ((const struct abruby_bignum *)h)->rb_bignum;
+    case ABRUBY_OBJ_FLOAT:    return ((const struct abruby_float *)h)->rb_float;
+    case ABRUBY_OBJ_RATIONAL: return ((const struct abruby_rational *)h)->rb_rational;
+    case ABRUBY_OBJ_COMPLEX:  return ((const struct abruby_complex *)h)->rb_complex;
     default: return v;
     }
 }
@@ -83,24 +83,24 @@ AB_NUM_WRAP(CTX *c, VALUE v)
 
 // Template class pointers — Init_abruby_* functions register methods on these.
 // Runtime code must NOT use these directly; use c->abm->xxx_class instead.
-extern struct abruby_class *ab_tmpl_object_class;
-extern struct abruby_class *ab_tmpl_integer_class;
-extern struct abruby_class *ab_tmpl_string_class;
-extern struct abruby_class *ab_tmpl_symbol_class;
-extern struct abruby_class *ab_tmpl_true_class;
-extern struct abruby_class *ab_tmpl_false_class;
-extern struct abruby_class *ab_tmpl_nil_class;
-extern struct abruby_class *ab_tmpl_float_class;
-extern struct abruby_class *ab_tmpl_array_class;
-extern struct abruby_class *ab_tmpl_hash_class;
-extern struct abruby_class *ab_tmpl_range_class;
-extern struct abruby_class *ab_tmpl_regexp_class;
-extern struct abruby_class *ab_tmpl_kernel_module;
-extern struct abruby_class *ab_tmpl_rational_class;
-extern struct abruby_class *ab_tmpl_complex_class;
-extern struct abruby_class *ab_tmpl_module_class;
-extern struct abruby_class *ab_tmpl_class_class;
-extern struct abruby_class *ab_tmpl_runtime_error_class;
+extern struct abruby_class *const ab_tmpl_object_class;
+extern struct abruby_class *const ab_tmpl_integer_class;
+extern struct abruby_class *const ab_tmpl_string_class;
+extern struct abruby_class *const ab_tmpl_symbol_class;
+extern struct abruby_class *const ab_tmpl_true_class;
+extern struct abruby_class *const ab_tmpl_false_class;
+extern struct abruby_class *const ab_tmpl_nil_class;
+extern struct abruby_class *const ab_tmpl_float_class;
+extern struct abruby_class *const ab_tmpl_array_class;
+extern struct abruby_class *const ab_tmpl_hash_class;
+extern struct abruby_class *const ab_tmpl_range_class;
+extern struct abruby_class *const ab_tmpl_regexp_class;
+extern struct abruby_class *const ab_tmpl_kernel_module;
+extern struct abruby_class *const ab_tmpl_rational_class;
+extern struct abruby_class *const ab_tmpl_complex_class;
+extern struct abruby_class *const ab_tmpl_module_class;
+extern struct abruby_class *const ab_tmpl_class_class;
+extern struct abruby_class *const ab_tmpl_runtime_error_class;
 
 // Init functions
 void Init_abruby_kernel(void);

@@ -1,6 +1,6 @@
 #include "builtin.h"
 
-#define RRANGE(v) ((struct abruby_range *)RTYPEDDATA_GET_DATA(v))
+#define RRANGE(v) ((const struct abruby_range *)RTYPEDDATA_GET_DATA(v))
 
 static RESULT ab_range_first(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     return RESULT_OK(RRANGE(self)->begin);
@@ -23,7 +23,7 @@ static RESULT ab_range_end(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
 }
 
 static RESULT ab_range_size(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
-    struct abruby_range *r = RRANGE(self);
+    const struct abruby_range *r = RRANGE(self);
     if (FIXNUM_P(r->begin) && FIXNUM_P(r->end)) {
         long b = FIX2LONG(r->begin);
         long e = FIX2LONG(r->end);
@@ -34,7 +34,7 @@ static RESULT ab_range_size(CTX *c, VALUE self, unsigned int argc, VALUE *argv) 
 }
 
 static RESULT ab_range_include_p(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
-    struct abruby_range *r = RRANGE(self);
+    const struct abruby_range *r = RRANGE(self);
     VALUE val = argv[0];
     // Integer fast path
     if (FIXNUM_P(r->begin) && FIXNUM_P(r->end) && FIXNUM_P(val)) {
@@ -50,7 +50,7 @@ static RESULT ab_range_include_p(CTX *c, VALUE self, unsigned int argc, VALUE *a
 }
 
 static RESULT ab_range_to_a(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
-    struct abruby_range *r = RRANGE(self);
+    const struct abruby_range *r = RRANGE(self);
     if (FIXNUM_P(r->begin) && FIXNUM_P(r->end)) {
         long b = FIX2LONG(r->begin);
         long e = FIX2LONG(r->end);
@@ -68,11 +68,11 @@ static RESULT ab_range_to_a(CTX *c, VALUE self, unsigned int argc, VALUE *argv) 
 
 static RESULT ab_range_eq(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     if (!ab_obj_type_p(argv[0], ABRUBY_OBJ_RANGE)) return RESULT_OK(Qfalse);
-    struct abruby_range *a = RRANGE(self);
-    struct abruby_range *b = RRANGE(argv[0]);
+    const struct abruby_range *a = RRANGE(self);
+    const struct abruby_range *b = RRANGE(argv[0]);
     if (a->exclude_end != b->exclude_end) return RESULT_OK(Qfalse);
     // Compare begin and end using ==
-    struct abruby_method *eq = abruby_find_method(AB_CLASS_OF(c, a->begin), rb_intern("=="));
+    const struct abruby_method *eq = abruby_find_method(AB_CLASS_OF(c, a->begin), rb_intern("=="));
     if (!eq) return RESULT_OK(Qfalse);
     VALUE args_b[1] = { b->begin };
     RESULT rb = abruby_call_method(c, a->begin, eq, 1, args_b);
@@ -87,7 +87,7 @@ static RESULT ab_range_eq(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
 }
 
 static RESULT ab_range_inspect(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
-    struct abruby_range *r = RRANGE(self);
+    const struct abruby_range *r = RRANGE(self);
     VALUE begin_s = ab_inspect_rstr(c, r->begin);
     VALUE end_s = ab_inspect_rstr(c, r->end);
     VALUE result = rb_str_new(RSTRING_PTR(begin_s), RSTRING_LEN(begin_s));

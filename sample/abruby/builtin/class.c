@@ -4,7 +4,7 @@
 static RESULT ab_class_new(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     struct abruby_class *klass = abruby_unwrap_class(self);
     VALUE obj = abruby_new_object(klass);
-    struct abruby_method *init = abruby_find_method(klass, rb_intern("initialize"));
+    const struct abruby_method *init = abruby_find_method(klass, rb_intern("initialize"));
     if (init) {
         // Push frame for initialize (needed for super to find the class)
         struct abruby_frame frame;
@@ -42,7 +42,7 @@ static RESULT ab_module_include(CTX *c, VALUE self, unsigned int argc, VALUE *ar
     // self is the class doing the include (current_class wrapped)
     // argv[0] is the module to include
     struct abruby_class *klass = abruby_unwrap_class(self);
-    struct abruby_class *mod = abruby_unwrap_class(argv[0]);
+    const struct abruby_class *mod = abruby_unwrap_class(argv[0]);
 
     // Create a proxy that copies module's method table pointer
     // Insert between klass and klass->super
@@ -64,7 +64,7 @@ static RESULT ab_module_include(CTX *c, VALUE self, unsigned int argc, VALUE *ar
 
 // Module#const_get(name) — get constant by name (String or Symbol)
 static RESULT ab_module_const_get(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
-    struct abruby_class *klass = abruby_unwrap_class(self);
+    const struct abruby_class *klass = abruby_unwrap_class(self);
     ID name_id;
     if (SYMBOL_P(argv[0])) {
         name_id = SYM2ID(argv[0]);
@@ -95,8 +95,8 @@ static RESULT ab_module_const_set(CTX *c, VALUE self, unsigned int argc, VALUE *
 
 // Module#=== — check if argv[0] is_a? self (class matching for case/when)
 static RESULT ab_module_case_eq(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
-    struct abruby_class *check_class = abruby_unwrap_class(self);
-    struct abruby_class *obj_class = AB_CLASS_OF(c, argv[0]);
+    const struct abruby_class *check_class = abruby_unwrap_class(self);
+    const struct abruby_class *obj_class = AB_CLASS_OF(c, argv[0]);
     while (obj_class) {
         if (obj_class == check_class) return RESULT_OK(Qtrue);
         obj_class = obj_class->super;

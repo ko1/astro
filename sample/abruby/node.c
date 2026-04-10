@@ -125,7 +125,7 @@ abruby_node_mark(void *ptr)
 }
 
 struct abruby_method *
-abruby_find_method(struct abruby_class *klass, ID name)
+abruby_find_method(const struct abruby_class *klass, ID name)
 {
     return abruby_class_find_method(klass, name);
 }

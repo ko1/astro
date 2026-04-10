@@ -212,7 +212,8 @@ ab_verify(VALUE obj)
             rb_bug("ab_verify: wrong data type '%s', expected abruby_data_type (%s:%d)",
                    RTYPEDDATA_TYPE(obj)->wrap_struct_name, __FILE__, __LINE__);
         }
-        struct abruby_class *klass = ((struct abruby_header *)RTYPEDDATA_GET_DATA(obj))->klass;
+        const struct abruby_class *klass =
+            ((const struct abruby_header *)RTYPEDDATA_GET_DATA(obj))->klass;
         if (klass == NULL) {
             rb_bug("ab_verify: klass is NULL (%s:%d)", __FILE__, __LINE__);
         }
@@ -224,7 +225,7 @@ static inline bool
 ab_obj_type_p(VALUE obj, enum abruby_obj_type type)
 {
     if (RB_SPECIAL_CONST_P(obj)) return false;
-    struct abruby_header *h = (struct abruby_header *)RTYPEDDATA_GET_DATA(obj);
+    const struct abruby_header *h = (const struct abruby_header *)RTYPEDDATA_GET_DATA(obj);
     return h->klass && h->klass->obj_type == type;
 }
 
@@ -239,11 +240,11 @@ ab_obj_type_p(VALUE obj, enum abruby_obj_type type)
 // method == NULL: <main>/<top (required)>
 struct abruby_frame {
     struct abruby_frame *prev;
-    struct abruby_method *method;
-    struct abruby_class *klass;   // receiver's class at call time (for super)
+    const struct abruby_method *method;  // frame reads only
+    const struct abruby_class *klass;    // receiver's class at call time (for super)
     union {
-        struct Node *caller_node; // method frame: call site in the caller (set at push time)
-        const char *source_file;  // <main>/<top>: set at push time
+        const struct Node *caller_node;  // method frame: call site in the caller (set at push time)
+        const char *source_file;         // <main>/<top>: set at push time
     };
 };
 
@@ -314,8 +315,8 @@ struct abruby_exception {
 
 // inline method cache per call site
 struct method_cache {
-    struct abruby_class *klass;
-    struct abruby_method *method;
+    const struct abruby_class *klass;    // read-only after fill
+    const struct abruby_method *method;  // read-only after fill
     uint32_t serial;
     struct Node *body;                  // cached method->u.ast.body (NULL for CFUNC)
     RESULT (*dispatcher)(struct CTX_struct *, struct Node *); // cached body->head.dispatcher
@@ -329,7 +330,7 @@ struct method_cache {
 // can be dereferenced inline.
 
 static __attribute__((unused)) struct abruby_class *
-AB_CLASS_OF_IMM(CTX *c, VALUE obj)
+AB_CLASS_OF_IMM(const CTX *c, VALUE obj)
 {
     if (FIXNUM_P(obj))       return c->abm->integer_class;
     else if (SYMBOL_P(obj))  return c->abm->symbol_class;
@@ -348,7 +349,7 @@ AB_CLASS_OF_IMM(CTX *c, VALUE obj)
  * or T_DATA with abruby_header at offset 0.
  */
 static inline struct abruby_class *
-AB_CLASS_OF(CTX *c, VALUE obj)
+AB_CLASS_OF(const CTX *c, VALUE obj)
 {
     ab_verify(obj);
 

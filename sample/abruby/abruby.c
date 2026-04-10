@@ -42,73 +42,73 @@ static struct abruby_class ab_tmpl_runtime_error_class_body = { .obj_type = ABRU
 // They are cloned per abruby_machine instance in init_instance_classes().
 // Only Init_abruby_* functions in builtin/*.c should reference these directly.
 // Runtime code must use c->abm->xxx_class for per-instance resolution.
-struct abruby_class *ab_tmpl_float_class   = &ab_tmpl_float_class_body;
-struct abruby_class *ab_tmpl_array_class   = &ab_tmpl_array_class_body;
-struct abruby_class *ab_tmpl_hash_class    = &ab_tmpl_hash_class_body;
-struct abruby_class *ab_tmpl_kernel_module = &ab_tmpl_kernel_module_body;
-struct abruby_class *ab_tmpl_module_class  = &ab_tmpl_module_class_body;
-struct abruby_class *ab_tmpl_class_class   = &ab_tmpl_class_class_body;
-struct abruby_class *ab_tmpl_object_class  = &ab_tmpl_object_class_body;
-struct abruby_class *ab_tmpl_integer_class = &ab_tmpl_integer_class_body;
-struct abruby_class *ab_tmpl_string_class  = &ab_tmpl_string_class_body;
-struct abruby_class *ab_tmpl_symbol_class  = &ab_tmpl_symbol_class_body;
-struct abruby_class *ab_tmpl_range_class   = &ab_tmpl_range_class_body;
-struct abruby_class *ab_tmpl_regexp_class  = &ab_tmpl_regexp_class_body;
-struct abruby_class *ab_tmpl_rational_class = &ab_tmpl_rational_class_body;
-struct abruby_class *ab_tmpl_complex_class  = &ab_tmpl_complex_class_body;
-struct abruby_class *ab_tmpl_true_class    = &ab_tmpl_true_class_body;
-struct abruby_class *ab_tmpl_false_class   = &ab_tmpl_false_class_body;
-struct abruby_class *ab_tmpl_nil_class     = &ab_tmpl_nil_class_body;
-struct abruby_class *ab_tmpl_runtime_error_class = &ab_tmpl_runtime_error_class_body;
+struct abruby_class *const ab_tmpl_float_class   = &ab_tmpl_float_class_body;
+struct abruby_class *const ab_tmpl_array_class   = &ab_tmpl_array_class_body;
+struct abruby_class *const ab_tmpl_hash_class    = &ab_tmpl_hash_class_body;
+struct abruby_class *const ab_tmpl_kernel_module = &ab_tmpl_kernel_module_body;
+struct abruby_class *const ab_tmpl_module_class  = &ab_tmpl_module_class_body;
+struct abruby_class *const ab_tmpl_class_class   = &ab_tmpl_class_class_body;
+struct abruby_class *const ab_tmpl_object_class  = &ab_tmpl_object_class_body;
+struct abruby_class *const ab_tmpl_integer_class = &ab_tmpl_integer_class_body;
+struct abruby_class *const ab_tmpl_string_class  = &ab_tmpl_string_class_body;
+struct abruby_class *const ab_tmpl_symbol_class  = &ab_tmpl_symbol_class_body;
+struct abruby_class *const ab_tmpl_range_class   = &ab_tmpl_range_class_body;
+struct abruby_class *const ab_tmpl_regexp_class  = &ab_tmpl_regexp_class_body;
+struct abruby_class *const ab_tmpl_rational_class = &ab_tmpl_rational_class_body;
+struct abruby_class *const ab_tmpl_complex_class  = &ab_tmpl_complex_class_body;
+struct abruby_class *const ab_tmpl_true_class    = &ab_tmpl_true_class_body;
+struct abruby_class *const ab_tmpl_false_class   = &ab_tmpl_false_class_body;
+struct abruby_class *const ab_tmpl_nil_class     = &ab_tmpl_nil_class_body;
+struct abruby_class *const ab_tmpl_runtime_error_class = &ab_tmpl_runtime_error_class_body;
 
 // Unified T_DATA type for all abruby heap objects
 
 static void abruby_data_mark(void *ptr) {
-    struct abruby_header *h = (struct abruby_header *)ptr;
+    const struct abruby_header *h = (const struct abruby_header *)ptr;
     if (!h->klass) return;
 
     switch (h->klass->obj_type) {
     case ABRUBY_OBJ_BIGNUM:
-        rb_gc_mark(((struct abruby_bignum *)ptr)->rb_bignum);
+        rb_gc_mark(((const struct abruby_bignum *)ptr)->rb_bignum);
         break;
     case ABRUBY_OBJ_FLOAT:
-        rb_gc_mark(((struct abruby_float *)ptr)->rb_float);
+        rb_gc_mark(((const struct abruby_float *)ptr)->rb_float);
         break;
     case ABRUBY_OBJ_STRING:
-        rb_gc_mark(((struct abruby_string *)ptr)->rb_str);
+        rb_gc_mark(((const struct abruby_string *)ptr)->rb_str);
         break;
     case ABRUBY_OBJ_ARRAY:
-        rb_gc_mark(((struct abruby_array *)ptr)->rb_ary);
+        rb_gc_mark(((const struct abruby_array *)ptr)->rb_ary);
         break;
     case ABRUBY_OBJ_HASH:
-        rb_gc_mark(((struct abruby_hash *)ptr)->rb_hash);
+        rb_gc_mark(((const struct abruby_hash *)ptr)->rb_hash);
         break;
     case ABRUBY_OBJ_RANGE: {
-        struct abruby_range *r = (struct abruby_range *)ptr;
+        const struct abruby_range *r = (const struct abruby_range *)ptr;
         rb_gc_mark(r->begin);
         rb_gc_mark(r->end);
         break;
     }
     case ABRUBY_OBJ_REGEXP:
-        rb_gc_mark(((struct abruby_regexp *)ptr)->rb_regexp);
+        rb_gc_mark(((const struct abruby_regexp *)ptr)->rb_regexp);
         break;
     case ABRUBY_OBJ_RATIONAL:
-        rb_gc_mark(((struct abruby_rational *)ptr)->rb_rational);
+        rb_gc_mark(((const struct abruby_rational *)ptr)->rb_rational);
         break;
     case ABRUBY_OBJ_COMPLEX:
-        rb_gc_mark(((struct abruby_complex *)ptr)->rb_complex);
+        rb_gc_mark(((const struct abruby_complex *)ptr)->rb_complex);
         break;
     case ABRUBY_OBJ_EXCEPTION: {
-        struct abruby_exception *exc = (struct abruby_exception *)ptr;
+        const struct abruby_exception *exc = (const struct abruby_exception *)ptr;
         rb_gc_mark(exc->message);
         rb_gc_mark(exc->backtrace);
         break;
     }
     case ABRUBY_OBJ_CLASS:
     case ABRUBY_OBJ_MODULE: {
-        struct abruby_class *cls = (struct abruby_class *)ptr;
+        const struct abruby_class *cls = (const struct abruby_class *)ptr;
         ab_id_table_foreach(&cls->methods, _mk, _mv, {
-            struct abruby_method *m = (struct abruby_method *)_mv;
+            const struct abruby_method *m = (const struct abruby_method *)_mv;
             if (m->type == ABRUBY_METHOD_AST && m->u.ast.body && m->u.ast.body->head.rb_wrapper) {
                 rb_gc_mark(m->u.ast.body->head.rb_wrapper);
             }
@@ -120,7 +120,7 @@ static void abruby_data_mark(void *ptr) {
     }
     case ABRUBY_OBJ_GENERIC:
     default: {
-        struct abruby_object *obj = (struct abruby_object *)ptr;
+        const struct abruby_object *obj = (const struct abruby_object *)ptr;
         ab_id_table_foreach(&obj->ivars, _ik, _iv, {
             rb_gc_mark(_iv);
         });
@@ -138,7 +138,7 @@ static void
 abruby_data_free(void *ptr)
 {
     if (!ptr) return;
-    struct abruby_header *h = (struct abruby_header *)ptr;
+    const struct abruby_header *h = (const struct abruby_header *)ptr;
     if (h->klass) {
         switch (h->klass->obj_type) {
         case ABRUBY_OBJ_CLASS:
@@ -328,7 +328,7 @@ abruby_class_set_const(struct abruby_class *klass, ID name, VALUE val)
 // Call an abruby method (cfunc or AST) from C code.
 // Uses a generous frame offset to avoid clobbering caller's locals.
 RESULT
-abruby_call_method(CTX *c, VALUE recv, struct abruby_method *method,
+abruby_call_method(CTX *c, VALUE recv, const struct abruby_method *method,
                    unsigned int argc, VALUE *argv)
 {
     if (method->type == ABRUBY_METHOD_CFUNC) {
@@ -353,7 +353,7 @@ abruby_call_method(CTX *c, VALUE recv, struct abruby_method *method,
 
 VALUE
 ab_inspect_rstr(CTX *c, VALUE v) {
-    struct abruby_method *ins = abruby_find_method(AB_CLASS_OF(c, v), rb_intern("inspect"));
+    const struct abruby_method *ins = abruby_find_method(AB_CLASS_OF(c, v), rb_intern("inspect"));
     RESULT r = abruby_call_method(c, v, ins, 0, NULL);
     return RSTR(r.value);
 }
@@ -401,8 +401,8 @@ VALUE
 abruby_ivar_get(VALUE self, ID name)
 {
     ab_verify(self);
-    struct abruby_object *obj;
-    TypedData_Get_Struct(self, struct abruby_object, &abruby_data_type, obj);
+    const struct abruby_object *obj =
+        (const struct abruby_object *)RTYPEDDATA_GET_DATA(self);
     VALUE v;
     if (ab_id_table_lookup(&obj->ivars, name, &v)) return v;
     return Qnil;
@@ -425,7 +425,7 @@ abruby_ivar_set(VALUE self, ID name, VALUE val)
 static void
 vm_mark(void *ptr)
 {
-    struct abruby_machine *vm = (struct abruby_machine *)ptr;
+    const struct abruby_machine *vm = (const struct abruby_machine *)ptr;
     if (vm->current_fiber) {
         rb_gc_mark(vm->current_fiber->ctx.self);
         rb_gc_mark_locations(vm->current_fiber->ctx.stack, vm->current_fiber->ctx.stack + ABRUBY_STACK_SIZE);
@@ -435,9 +435,9 @@ vm_mark(void *ptr)
     rb_gc_mark(vm->loaded_files);
     // Mark main_class method bodies and constants
     // (main_class is embedded in VM, not wrapped as T_DATA)
-    struct abruby_class *mc = &vm->main_class_body;
+    const struct abruby_class *mc = &vm->main_class_body;
     ab_id_table_foreach(&mc->methods, _k, _v, {
-        struct abruby_method *m = (struct abruby_method *)_v;
+        const struct abruby_method *m = (const struct abruby_method *)_v;
         if (m->type == ABRUBY_METHOD_AST && m->u.ast.body && m->u.ast.body->head.rb_wrapper) {
             rb_gc_mark(m->u.ast.body->head.rb_wrapper);
         }
@@ -500,16 +500,14 @@ static const rb_data_type_t abruby_machine_type = {
 
 // Create an exception object with backtrace captured from the current frame chain
 VALUE
-abruby_exception_new(CTX *c, struct abruby_frame *start_frame, VALUE message)
+abruby_exception_new(CTX *c, const struct abruby_frame *start_frame, VALUE message)
 {
-    (void)c;
-
     // Build backtrace Array by walking the frame list.
     // With caller_node scheme: each frame's caller_node stores the call site
     // in the PARENT method.  Pair f->caller_node (line) with f->prev (method name).
     VALUE bt_ary = rb_ary_new();
-    for (struct abruby_frame *f = start_frame; f && f->prev; f = f->prev) {
-        struct abruby_frame *parent = f->prev;
+    for (const struct abruby_frame *f = start_frame; f && f->prev; f = f->prev) {
+        const struct abruby_frame *parent = f->prev;
         const char *name;
         const char *file;
         int32_t line = f->caller_node ? f->caller_node->head.line : 0;
@@ -538,7 +536,7 @@ abruby_exception_new(CTX *c, struct abruby_frame *start_frame, VALUE message)
 
 // Clone a template class: copy obj_type, name, methods (not constants).
 static struct abruby_class *
-clone_class(struct abruby_class *tmpl)
+clone_class(const struct abruby_class *tmpl)
 {
     struct abruby_class *c = ruby_xcalloc(1, sizeof(struct abruby_class));
     c->obj_type = tmpl->obj_type;
@@ -1077,17 +1075,17 @@ abruby_to_ruby(VALUE v)
 
     if (RB_TYPE_P(v, T_DATA) && RTYPEDDATA_P(v) &&
         RTYPEDDATA_TYPE(v) == &abruby_data_type) {
-        struct abruby_header *h = (struct abruby_header *)RTYPEDDATA_GET_DATA(v);
+        const struct abruby_header *h = (const struct abruby_header *)RTYPEDDATA_GET_DATA(v);
         if (!h->klass) return v;
         switch (h->klass->obj_type) {
         case ABRUBY_OBJ_BIGNUM:
-            return ((struct abruby_bignum *)h)->rb_bignum;
+            return ((const struct abruby_bignum *)h)->rb_bignum;
         case ABRUBY_OBJ_FLOAT:
-            return ((struct abruby_float *)h)->rb_float;
+            return ((const struct abruby_float *)h)->rb_float;
         case ABRUBY_OBJ_STRING:
-            return ((struct abruby_string *)h)->rb_str;
+            return ((const struct abruby_string *)h)->rb_str;
         case ABRUBY_OBJ_ARRAY: {
-            VALUE ary = ((struct abruby_array *)h)->rb_ary;
+            VALUE ary = ((const struct abruby_array *)h)->rb_ary;
             long len = RARRAY_LEN(ary);
             VALUE result = rb_ary_new_capa(len);
             for (long i = 0; i < len; i++) {
@@ -1096,7 +1094,7 @@ abruby_to_ruby(VALUE v)
             return result;
         }
         case ABRUBY_OBJ_HASH: {
-            VALUE hash = ((struct abruby_hash *)h)->rb_hash;
+            VALUE hash = ((const struct abruby_hash *)h)->rb_hash;
             VALUE keys = rb_funcall(hash, rb_intern("keys"), 0);
             long len = RARRAY_LEN(keys);
             VALUE result = rb_hash_new();
@@ -1108,15 +1106,15 @@ abruby_to_ruby(VALUE v)
             return result;
         }
         case ABRUBY_OBJ_RANGE: {
-            struct abruby_range *r = (struct abruby_range *)h;
+            const struct abruby_range *r = (const struct abruby_range *)h;
             return rb_range_new(abruby_to_ruby(r->begin), abruby_to_ruby(r->end), r->exclude_end);
         }
         case ABRUBY_OBJ_REGEXP:
-            return ((struct abruby_regexp *)h)->rb_regexp;
+            return ((const struct abruby_regexp *)h)->rb_regexp;
         case ABRUBY_OBJ_RATIONAL:
-            return ((struct abruby_rational *)h)->rb_rational;
+            return ((const struct abruby_rational *)h)->rb_rational;
         case ABRUBY_OBJ_COMPLEX:
-            return ((struct abruby_complex *)h)->rb_complex;
+            return ((const struct abruby_complex *)h)->rb_complex;
         default:
             break;
         }
@@ -1193,7 +1191,7 @@ abruby_eval_string(CTX *c, VALUE rb_code)
 
 // Get current file path from VM
 VALUE
-abruby_current_file(CTX *c)
+abruby_current_file(const CTX *c)
 {
     return c->abm->current_file;
 }
@@ -1260,9 +1258,9 @@ rb_abruby_eval_ast(VALUE self, VALUE ast_obj)
         // Extract message and backtrace from exception object
         if (RB_TYPE_P(exc_val, T_DATA) && RTYPEDDATA_P(exc_val) &&
             RTYPEDDATA_TYPE(exc_val) == &abruby_data_type) {
-            struct abruby_header *h = (struct abruby_header *)RTYPEDDATA_GET_DATA(exc_val);
+            const struct abruby_header *h = (const struct abruby_header *)RTYPEDDATA_GET_DATA(exc_val);
             if (h->klass && h->klass->obj_type == ABRUBY_OBJ_EXCEPTION) {
-                struct abruby_exception *exc = (struct abruby_exception *)h;
+                const struct abruby_exception *exc = (const struct abruby_exception *)h;
                 VALUE msg = abruby_to_ruby(exc->message);
                 VALUE msg_str = RB_TYPE_P(msg, T_STRING) ? msg : rb_funcall(msg, rb_intern("to_s"), 0);
                 VALUE rb_exc = rb_exc_new_str(rb_eRuntimeError, msg_str);
