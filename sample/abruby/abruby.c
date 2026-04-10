@@ -96,25 +96,23 @@ static void abruby_data_mark(void *ptr) {
     else if (h->klass == ab_class_class || h->klass == ab_module_class) {
         struct abruby_class *cls = (struct abruby_class *)ptr;
         // Mark AST method bodies so GC doesn't collect them
-        for (unsigned int i = 0; i < cls->method_cnt; i++) {
-            if (cls->methods[i].type == ABRUBY_METHOD_AST) {
-                NODE *body = cls->methods[i].u.ast.body;
-                if (body && body->head.rb_wrapper) {
-                    rb_gc_mark(body->head.rb_wrapper);
-                }
+        ab_id_table_foreach(&cls->methods, _mk, _mv, {
+            struct abruby_method *m = (struct abruby_method *)_mv;
+            if (m->type == ABRUBY_METHOD_AST && m->u.ast.body && m->u.ast.body->head.rb_wrapper) {
+                rb_gc_mark(m->u.ast.body->head.rb_wrapper);
             }
-        }
+        });
         // Mark constant values
-        for (unsigned int i = 0; i < cls->const_cnt; i++) {
-            rb_gc_mark(cls->constants[i].value);
-        }
+        ab_id_table_foreach(&cls->constants, _ck, _cv, {
+            rb_gc_mark(_cv);
+        });
     }
     else {
         // user object: mark ivars
         struct abruby_object *obj = (struct abruby_object *)ptr;
-        for (unsigned int i = 0; i < obj->ivar_cnt; i++) {
-            rb_gc_mark(obj->ivars[i].value);
-        }
+        ab_id_table_foreach(&obj->ivars, _k, _v, {
+            rb_gc_mark(_v);
+        });
     }
 }
 
@@ -277,16 +275,7 @@ abruby_unwrap_class(VALUE obj)
 void
 abruby_class_set_const(struct abruby_class *klass, ID name, VALUE val)
 {
-    // Check for existing, update
-    for (unsigned int i = 0; i < klass->const_cnt; i++) {
-        if (klass->constants[i].name == name) {
-            klass->constants[i].value = val;
-            return;
-        }
-    }
-    klass->constants[klass->const_cnt].name = name;
-    klass->constants[klass->const_cnt].value = val;
-    klass->const_cnt++;
+    ab_id_table_insert(&klass->constants, name, val);
 }
 
 // Call an abruby method (cfunc or AST) from C code.
@@ -326,11 +315,12 @@ void
 abruby_class_add_cfunc(struct abruby_class *klass, ID name,
                        abruby_cfunc_t func, unsigned int params_cnt)
 {
-    struct abruby_method *m = &klass->methods[klass->method_cnt++];
+    struct abruby_method *m = ruby_xcalloc(1, sizeof(struct abruby_method));
     m->name = name;
     m->type = ABRUBY_METHOD_CFUNC;
     m->u.cfunc.func = func;
     m->u.cfunc.params_cnt = params_cnt;
+    ab_id_table_insert(&klass->methods, name, (VALUE)m);
     // method_serial not bumped during init (no machine exists yet;
     // caches start at serial=0, machine starts at serial=1, so first access misses)
 }
@@ -366,11 +356,8 @@ abruby_ivar_get(VALUE self, ID name)
     ab_verify(self);
     struct abruby_object *obj;
     TypedData_Get_Struct(self, struct abruby_object, &abruby_data_type, obj);
-    for (unsigned int i = 0; i < obj->ivar_cnt; i++) {
-        if (obj->ivars[i].name == name) {
-            return obj->ivars[i].value;
-        }
-    }
+    VALUE v;
+    if (ab_id_table_lookup(&obj->ivars, name, &v)) return v;
     return Qnil;
 }
 
@@ -383,18 +370,7 @@ abruby_ivar_set(VALUE self, ID name, VALUE val)
     }
     struct abruby_object *obj;
     TypedData_Get_Struct(self, struct abruby_object, &abruby_data_type, obj);
-    for (unsigned int i = 0; i < obj->ivar_cnt; i++) {
-        if (obj->ivars[i].name == name) {
-            obj->ivars[i].value = val;
-            return;
-        }
-    }
-    if (obj->ivar_cnt >= ABRUBY_IVAR_MAX) {
-        rb_raise(rb_eRuntimeError, "too many instance variables");
-    }
-    obj->ivars[obj->ivar_cnt].name = name;
-    obj->ivars[obj->ivar_cnt].value = val;
-    obj->ivar_cnt++;
+    ab_id_table_insert(&obj->ivars, name, val);
 }
 
 // Per-instance VM state (struct abruby_machine defined in context.h)
@@ -405,26 +381,25 @@ vm_mark(void *ptr)
     struct abruby_machine *vm = (struct abruby_machine *)ptr;
     rb_gc_mark(vm->running_ctx->self);
     rb_gc_mark_locations(vm->running_ctx->stack, vm->running_ctx->stack + ABRUBY_STACK_SIZE);
-    for (unsigned int i = 0; i < vm->gvars.cnt; i++) {
-        rb_gc_mark(vm->gvars.entries[i].value);
-    }
     rb_gc_mark(vm->rb_self);
     rb_gc_mark(vm->current_file);
     rb_gc_mark(vm->loaded_files);
     // Mark main_class method bodies and constants
     // (main_class is embedded in VM, not wrapped as T_DATA)
     struct abruby_class *mc = &vm->main_class_body;
-    for (unsigned int i = 0; i < mc->method_cnt; i++) {
-        if (mc->methods[i].type == ABRUBY_METHOD_AST) {
-            NODE *body = mc->methods[i].u.ast.body;
-            if (body && body->head.rb_wrapper) {
-                rb_gc_mark(body->head.rb_wrapper);
-            }
+    ab_id_table_foreach(&mc->methods, _k, _v, {
+        struct abruby_method *m = (struct abruby_method *)_v;
+        if (m->type == ABRUBY_METHOD_AST && m->u.ast.body && m->u.ast.body->head.rb_wrapper) {
+            rb_gc_mark(m->u.ast.body->head.rb_wrapper);
         }
-    }
-    for (unsigned int i = 0; i < mc->const_cnt; i++) {
-        rb_gc_mark(mc->constants[i].value);
-    }
+    });
+    ab_id_table_foreach(&mc->constants, _k2, _v2, {
+        rb_gc_mark(_v2);
+    });
+    // Mark gvars
+    ab_id_table_foreach(&vm->gvars, _k3, _v3, {
+        rb_gc_mark(_v3);
+    });
 }
 
 static void

@@ -48,23 +48,24 @@ abruby_class_add_method(CTX *c, struct abruby_class *klass, ID name,
                         struct Node *body, unsigned int params_cnt, unsigned int locals_cnt,
                         const char *source_file)
 {
-    for (unsigned int i = 0; i < klass->method_cnt; i++) {
-        if (klass->methods[i].name == name) {
-            klass->methods[i].type = ABRUBY_METHOD_AST;
-            klass->methods[i].u.ast.body = body;
-            klass->methods[i].u.ast.params_cnt = params_cnt;
-            klass->methods[i].u.ast.locals_cnt = locals_cnt;
-            klass->methods[i].u.ast.source_file = source_file;
-            return;
-        }
+    VALUE existing;
+    if (ab_id_table_lookup(&klass->methods, name, &existing)) {
+        struct abruby_method *m = (struct abruby_method *)existing;
+        m->type = ABRUBY_METHOD_AST;
+        m->u.ast.body = body;
+        m->u.ast.params_cnt = params_cnt;
+        m->u.ast.locals_cnt = locals_cnt;
+        m->u.ast.source_file = source_file;
+        return;
     }
-    struct abruby_method *m = &klass->methods[klass->method_cnt++];
+    struct abruby_method *m = ruby_xcalloc(1, sizeof(struct abruby_method));
     m->name = name;
     m->type = ABRUBY_METHOD_AST;
     m->u.ast.body = body;
     m->u.ast.params_cnt = params_cnt;
     m->u.ast.locals_cnt = locals_cnt;
     m->u.ast.source_file = source_file;
+    ab_id_table_insert(&klass->methods, name, (VALUE)m);
     c->abm->method_serial++;
 }
 
@@ -72,11 +73,9 @@ static struct abruby_method *
 abruby_class_find_method(struct abruby_class *klass, ID name)
 {
     while (klass) {
-        for (unsigned int i = 0; i < klass->method_cnt; i++) {
-            if (klass->methods[i].name == name) {
-                return &klass->methods[i];
-            }
-        }
+        VALUE v;
+        if (ab_id_table_lookup(&klass->methods, name, &v))
+            return (struct abruby_method *)v;
         klass = klass->super;
     }
     return NULL;
@@ -85,15 +84,11 @@ abruby_class_find_method(struct abruby_class *klass, ID name)
 static struct abruby_class *
 find_class_in(struct abruby_class *scope, ID name)
 {
-    for (unsigned int i = 0; i < scope->const_cnt; i++) {
-        if (scope->constants[i].name == name) {
-            VALUE v = scope->constants[i].value;
-            if (RB_TYPE_P(v, T_DATA)) {
-                struct abruby_header *h = (struct abruby_header *)RTYPEDDATA_GET_DATA(v);
-                if (h->klass == ab_class_class || h->klass == ab_module_class) {
-                    return (struct abruby_class *)h;
-                }
-            }
+    VALUE v;
+    if (ab_id_table_lookup(&scope->constants, name, &v) && RB_TYPE_P(v, T_DATA)) {
+        struct abruby_header *h = (struct abruby_header *)RTYPEDDATA_GET_DATA(v);
+        if (h->klass == ab_class_class || h->klass == ab_module_class) {
+            return (struct abruby_class *)h;
         }
     }
     return NULL;
@@ -214,11 +209,9 @@ node_self(CTX * restrict c, NODE * restrict n)
 static RESULT
 abruby_const_get(CTX *c, NODE *n, struct abruby_class *klass, ID name)
 {
-    for (unsigned int i = 0; i < klass->const_cnt; i++) {
-        if (klass->constants[i].name == name) {
-            return RESULT_OK(klass->constants[i].value);
-        }
-    }
+    VALUE v;
+    if (ab_id_table_lookup(&klass->constants, name, &v))
+        return RESULT_OK(v);
     VALUE exc;
     PUSH_FRAME(n);
     exc = abruby_exception_new(c, c->current_frame,
@@ -255,11 +248,9 @@ NODE_DEF
 node_const_get(CTX * restrict c, NODE * restrict n, ID name)
 {
     // Check main_class first, then Object
-    for (unsigned int i = 0; i < CTX_MAIN_CLASS(c)->const_cnt; i++) {
-        if (CTX_MAIN_CLASS(c)->constants[i].name == name) {
-            return RESULT_OK(CTX_MAIN_CLASS(c)->constants[i].value);
-        }
-    }
+    VALUE v;
+    if (ab_id_table_lookup(&CTX_MAIN_CLASS(c)->constants, name, &v))
+        return RESULT_OK(v);
     if (CTX_MAIN_CLASS(c) != ab_object_class) {
         return abruby_const_get(c, n, ab_object_class, name);
     }
@@ -324,27 +315,15 @@ node_ivar_set(CTX * restrict c, NODE * restrict n, ID name, NODE *value)
 static VALUE
 abruby_gvar_get(CTX *c, ID name)
 {
-    struct abruby_gvar_table *t = CTX_GVARS(c);
-    for (unsigned int i = 0; i < t->cnt; i++) {
-        if (t->entries[i].name == name)
-            return t->entries[i].value;
-    }
+    VALUE v;
+    if (ab_id_table_lookup(CTX_GVARS(c), name, &v)) return v;
     return Qnil;
 }
 
 static void
 abruby_gvar_set(CTX *c, ID name, VALUE val)
 {
-    struct abruby_gvar_table *t = CTX_GVARS(c);
-    for (unsigned int i = 0; i < t->cnt; i++) {
-        if (t->entries[i].name == name) {
-            t->entries[i].value = val;
-            return;
-        }
-    }
-    t->entries[t->cnt].name = name;
-    t->entries[t->cnt].value = val;
-    t->cnt++;
+    ab_id_table_insert(CTX_GVARS(c), name, val);
 }
 
 NODE_DEF
@@ -679,15 +658,7 @@ find_super_method(struct abruby_frame *frame)
     if (!frame || !frame->method || !frame->klass) return NULL;
     ID name = frame->method->name;
     struct abruby_class *klass = frame->klass->super;
-    while (klass) {
-        for (unsigned int i = 0; i < klass->method_cnt; i++) {
-            if (klass->methods[i].name == name) {
-                return &klass->methods[i];
-            }
-        }
-        klass = klass->super;
-    }
-    return NULL;
+    return abruby_class_find_method(klass, name);
 }
 
 // super(args) — call parent method with explicit arguments
@@ -707,9 +678,10 @@ node_super(CTX * restrict c, NODE * restrict n, uint32_t params_cnt, uint32_t ar
     // Find which class owns this method for correct super chain
     struct abruby_class *klass = c->current_frame->klass->super;
     while (klass) {
-        for (unsigned int i = 0; i < klass->method_cnt; i++) {
-            if (&klass->methods[i] == method) goto found_super;
-        }
+        VALUE v;
+        if (ab_id_table_lookup(&klass->methods, method->name, &v) &&
+            (struct abruby_method *)v == method)
+            goto found_super;
         klass = klass->super;
     }
 found_super:

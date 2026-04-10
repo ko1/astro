@@ -51,9 +51,10 @@ static RESULT ab_module_include(CTX *c, VALUE self, unsigned int argc, VALUE *ar
     proxy->klass = ab_module_class;
     proxy->name = mod->name;
     proxy->super = klass->super;
-    // Copy methods from module to proxy
-    proxy->method_cnt = mod->method_cnt;
-    memcpy(proxy->methods, mod->methods, sizeof(struct abruby_method) * mod->method_cnt);
+    // Copy method table from module to proxy
+    ab_id_table_foreach(&mod->methods, _k, _v, {
+        ab_id_table_insert(&proxy->methods, _k, _v);
+    });
 
     klass->super = proxy;
     c->abm->method_serial++;
@@ -69,10 +70,9 @@ static RESULT ab_module_const_get(CTX *c, VALUE self, unsigned int argc, VALUE *
     } else {
         name_id = rb_intern_str(RSTR(argv[0]));
     }
-    for (unsigned int i = 0; i < klass->const_cnt; i++) {
-        if (klass->constants[i].name == name_id) {
-            return RESULT_OK(klass->constants[i].value);
-        }
+    VALUE v;
+    if (ab_id_table_lookup(&klass->constants, name_id, &v)) {
+        return RESULT_OK(v);
     }
     VALUE exc = abruby_exception_new(c, c->current_frame,
         abruby_str_new_cstr("uninitialized constant"));

@@ -8,6 +8,8 @@
 #include <stdbool.h>
 #include <assert.h>
 
+#include "ab_id_table.h"
+
 // VALUE is defined by ruby.h
 
 #ifndef ABRUBY_DEBUG
@@ -80,7 +82,7 @@ struct abruby_method {
     } u;
 };
 
-#define ABRUBY_METHOD_CAPA 64
+// (ABRUBY_METHOD_CAPA removed: methods are now in ab_id_table)
 
 /*
  * abruby VALUE invariant:
@@ -100,32 +102,18 @@ struct abruby_header {
     struct abruby_class *klass;
 };
 
-#define ABRUBY_CONST_CAPA 64
-
 struct abruby_class {
     struct abruby_class *klass;  // offset 0: always ab_class_class
     ID name;
     struct abruby_class *super;
-    struct abruby_method methods[ABRUBY_METHOD_CAPA];
-    unsigned int method_cnt;
+    struct ab_id_table methods;    // key=method_name, val=(VALUE)(struct abruby_method*)
     VALUE rb_wrapper;
-    // constants
-    struct {
-        ID name;
-        VALUE value;
-    } constants[ABRUBY_CONST_CAPA];
-    unsigned int const_cnt;
+    struct ab_id_table constants;  // key=const_name, val=const_value
 };
-
-#define ABRUBY_IVAR_MAX 32
 
 struct abruby_object {
     struct abruby_class *klass;  // offset 0
-    unsigned int ivar_cnt;
-    struct {
-        ID name;
-        VALUE value;
-    } ivars[ABRUBY_IVAR_MAX];
+    struct ab_id_table ivars;    // key=ivar_name, val=ivar_value
 };
 
 // Bignum/Float are wrapped in T_DATA with abruby_header, not raw CRuby
@@ -262,15 +250,8 @@ AB_CLASS_OF(VALUE obj)
 
 #define AB_CLASS_P(obj, klass) (AB_CLASS_OF(obj) == (klass))
 
-#define ABRUBY_GVAR_MAX 64
-
-struct abruby_gvar_table {
-    unsigned int cnt;
-    struct {
-        ID name;
-        VALUE value;
-    } entries[ABRUBY_GVAR_MAX];
-};
+// Global variables are stored in an ab_id_table in abruby_machine.
+// (struct abruby_gvar_table removed)
 
 // call frame for backtrace support (32 bytes)
 // method != NULL: normal method frame
@@ -311,7 +292,7 @@ struct abruby_machine {
     uint32_t method_serial;              // method version (for inline cache invalidation)
     CTX *running_ctx;                    // execution context (heap-allocated)
     struct abruby_class main_class_body; // per-instance Object subclass
-    struct abruby_gvar_table gvars;      // global variables
+    struct ab_id_table gvars;            // global variables
     struct abruby_id_cache id_cache;     // cached rb_intern results
     VALUE rb_self;                       // Ruby-level AbRuby instance
     VALUE current_file;                  // current file path
