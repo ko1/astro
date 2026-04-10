@@ -211,16 +211,20 @@ node_self(CTX * restrict c, NODE * restrict n)
     return RESULT_OK(c->self);
 }
 
-static VALUE
-abruby_const_get(struct abruby_class *klass, ID name)
+static RESULT
+abruby_const_get(CTX *c, NODE *n, struct abruby_class *klass, ID name)
 {
     for (unsigned int i = 0; i < klass->const_cnt; i++) {
         if (klass->constants[i].name == name) {
-            return klass->constants[i].value;
+            return RESULT_OK(klass->constants[i].value);
         }
     }
-    rb_raise(rb_eNameError, "uninitialized constant %s::%s", rb_id2name(klass->name), rb_id2name(name));
-    return Qnil;
+    VALUE exc;
+    PUSH_FRAME(n);
+    exc = abruby_exception_new(c, c->current_frame,
+        abruby_str_new_cstr("uninitialized constant"));
+    POP_FRAME();
+    return (RESULT){exc, RESULT_RAISE};
 }
 
 NODE_DEF
@@ -228,10 +232,14 @@ node_const_path_get(CTX * restrict c, NODE * restrict n, ID parent_name, ID name
 {
     struct abruby_class *klass = find_class(c, parent_name);
     if (!klass) {
-        rb_raise(rb_eNameError, "uninitialized constant %s", rb_id2name(parent_name));
+        VALUE exc;
+        PUSH_FRAME(n);
+        exc = abruby_exception_new(c, c->current_frame,
+            abruby_str_new_cstr("uninitialized constant"));
+        POP_FRAME();
+        return (RESULT){exc, RESULT_RAISE};
     }
-    // rb_raise does not return, but abruby_const_get may also rb_raise
-    return RESULT_OK(abruby_const_get(klass, name));
+    return abruby_const_get(c, n, klass, name);
 }
 
 NODE_DEF
@@ -253,10 +261,14 @@ node_const_get(CTX * restrict c, NODE * restrict n, ID name)
         }
     }
     if (CTX_MAIN_CLASS(c) != ab_object_class) {
-        return RESULT_OK(abruby_const_get(ab_object_class, name));
+        return abruby_const_get(c, n, ab_object_class, name);
     }
-    rb_raise(rb_eNameError, "uninitialized constant %s", rb_id2name(name));
-    return RESULT_OK(Qnil);
+    VALUE exc;
+    PUSH_FRAME(n);
+    exc = abruby_exception_new(c, c->current_frame,
+        abruby_str_new_cstr("uninitialized constant"));
+    POP_FRAME();
+    return (RESULT){exc, RESULT_RAISE};
 }
 
 // === Array / Hash literals ===
@@ -593,7 +605,12 @@ method_missing_dispatch(CTX * restrict c, NODE * restrict n, struct abruby_class
 {
     struct abruby_method *mm = abruby_class_find_method(klass, c->ids->method_missing);
     if (!mm) {
-        rb_raise(rb_eNoMethodError, "undefined method '%s' for %s", rb_id2name(name), rb_id2name(klass->name));
+        VALUE exc;
+        PUSH_FRAME(n);
+        exc = abruby_exception_new(c, c->current_frame,
+            abruby_str_new_cstr("undefined method"));
+        POP_FRAME();
+        return (RESULT){exc, RESULT_RAISE};
     }
     // shift args by 1, insert method name as first arg
     for (int i = (int)params_cnt - 1; i >= 0; i--) {
@@ -710,7 +727,12 @@ node_arith_fallback(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, ID 
     if (!method) {
         method = abruby_class_find_method(klass, c->ids->method_missing);
         if (!method) {
-            rb_raise(rb_eNoMethodError, "undefined method '%s' for %s", rb_id2name(op), rb_id2name(klass->name));
+            VALUE exc;
+            PUSH_FRAME(n);
+            exc = abruby_exception_new(c, c->current_frame,
+                abruby_str_new_cstr("undefined method"));
+            POP_FRAME();
+            return (RESULT){exc, RESULT_RAISE};
         }
         c->fp[arg_index] = abruby_str_new_cstr(rb_id2name(op));
         c->fp[arg_index + 1] = rv;

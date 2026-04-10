@@ -61,8 +61,9 @@ static RESULT ab_range_to_a(CTX *c, VALUE self, unsigned int argc, VALUE *argv) 
         }
         return RESULT_OK(abruby_ary_new(ary));
     }
-    rb_raise(rb_eRuntimeError, "can't convert Range to Array (non-integer)");
-    return RESULT_OK(Qnil);
+    VALUE exc = abruby_exception_new(c, c->current_frame,
+        abruby_str_new_cstr("can't convert Range to Array (non-integer)"));
+    return (RESULT){exc, RESULT_RAISE};
 }
 
 static RESULT ab_range_eq(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
