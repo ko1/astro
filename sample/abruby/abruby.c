@@ -396,12 +396,12 @@ abruby_ivar_set(VALUE self, ID name, VALUE val)
     obj->ivar_cnt++;
 }
 
-// Per-instance VM state (struct abruby_vm defined in context.h)
+// Per-instance VM state (struct abruby_machine defined in context.h)
 
 static void
 vm_mark(void *ptr)
 {
-    struct abruby_vm *vm = (struct abruby_vm *)ptr;
+    struct abruby_machine *vm = (struct abruby_machine *)ptr;
     rb_gc_mark(vm->running_ctx.self);
     rb_gc_mark_locations(vm->stack, vm->stack + ABRUBY_STACK_SIZE);
     for (unsigned int i = 0; i < vm->gvars.cnt; i++) {
@@ -432,7 +432,7 @@ vm_free(void *ptr)
     free(ptr);
 }
 
-static const rb_data_type_t abruby_vm_type = {
+static const rb_data_type_t abruby_machine_type = {
     "AbRuby",
     { vm_mark, vm_free, NULL },
     0, 0, RUBY_TYPED_FREE_IMMEDIATELY
@@ -476,10 +476,10 @@ abruby_exception_new(CTX *c, struct abruby_frame *start_frame, VALUE message)
     return wrapper;
 }
 
-static struct abruby_vm *
+static struct abruby_machine *
 create_vm(void)
 {
-    struct abruby_vm *vm = ruby_xcalloc(1, sizeof(struct abruby_vm));
+    struct abruby_machine *vm = ruby_xcalloc(1, sizeof(struct abruby_machine));
     // Per-instance main class (inherits from Object)
     vm->main_class_body.klass = ab_class_class;
     vm->main_class_body.name = rb_intern("main");
@@ -501,7 +501,7 @@ create_vm(void)
     vm->id_cache.op_mod = rb_intern("%");
     vm->id_cache.method_missing = rb_intern("method_missing");
     vm->running_ctx.ids = &vm->id_cache;
-    vm->running_ctx.ivm = vm;
+    vm->running_ctx.abm = vm;
     vm->running_ctx.vm = &abruby_vm_global;
     vm->rb_self = Qnil;
     vm->current_file = Qnil;
@@ -954,7 +954,7 @@ abruby_to_ruby(VALUE v)
 RESULT
 abruby_require_file(CTX *c, VALUE rb_path)
 {
-    struct abruby_vm *vm = c->ivm;
+    struct abruby_machine *vm = c->abm;
 
     // Resolve to absolute path
     VALUE abs_path = rb_file_expand_path(rb_path, Qnil);
@@ -1020,14 +1020,14 @@ abruby_eval_string(CTX *c, VALUE rb_code)
 VALUE
 abruby_current_file(CTX *c)
 {
-    return c->ivm->current_file;
+    return c->abm->current_file;
 }
 
 // AbRuby#initialize
 static VALUE
 rb_abruby_initialize(VALUE self)
 {
-    struct abruby_vm *vm = create_vm();
+    struct abruby_machine *vm = create_vm();
     DATA_PTR(self) = vm;
     vm->rb_self = self;
     return self;
@@ -1036,16 +1036,16 @@ rb_abruby_initialize(VALUE self)
 static VALUE
 rb_abruby_get_current_file(VALUE self)
 {
-    struct abruby_vm *vm;
-    TypedData_Get_Struct(self, struct abruby_vm, &abruby_vm_type, vm);
+    struct abruby_machine *vm;
+    TypedData_Get_Struct(self, struct abruby_machine, &abruby_machine_type, vm);
     return vm->current_file;
 }
 
 static VALUE
 rb_abruby_set_current_file(VALUE self, VALUE path)
 {
-    struct abruby_vm *vm;
-    TypedData_Get_Struct(self, struct abruby_vm, &abruby_vm_type, vm);
+    struct abruby_machine *vm;
+    TypedData_Get_Struct(self, struct abruby_machine, &abruby_machine_type, vm);
     vm->current_file = NIL_P(path) ? Qnil : rb_file_expand_path(path, Qnil);
     return path;
 }
@@ -1054,15 +1054,15 @@ rb_abruby_set_current_file(VALUE self, VALUE path)
 static VALUE
 rb_abruby_alloc(VALUE klass)
 {
-    return TypedData_Wrap_Struct(klass, &abruby_vm_type, NULL);
+    return TypedData_Wrap_Struct(klass, &abruby_machine_type, NULL);
 }
 
 // AbRuby#eval_ast
 static VALUE
 rb_abruby_eval_ast(VALUE self, VALUE ast_obj)
 {
-    struct abruby_vm *vm;
-    TypedData_Get_Struct(self, struct abruby_vm, &abruby_vm_type, vm);
+    struct abruby_machine *vm;
+    TypedData_Get_Struct(self, struct abruby_machine, &abruby_machine_type, vm);
 
     NODE *ast = unwrap_node(ast_obj);
     if (ast == NULL) {

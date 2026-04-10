@@ -298,10 +298,10 @@ struct abruby_vm_global {
     uint32_t method_serial;
 };
 
-struct abruby_vm;  // forward declaration
+struct abruby_machine;  // forward declaration
 
 struct CTX_struct {
-    struct abruby_vm *ivm;               // per-instance VM (owner)
+    struct abruby_machine *abm;          // per-instance machine (owner)
     struct abruby_vm_global *vm;         // global VM state
     VALUE *env;
     VALUE *fp;
@@ -314,7 +314,7 @@ struct CTX_struct {
 // Per-instance VM state.
 #define ABRUBY_STACK_SIZE 10000
 
-struct abruby_vm {
+struct abruby_machine {
     CTX running_ctx;                     // execution context
     VALUE stack[ABRUBY_STACK_SIZE];      // VALUE stack (locals + args)
     struct abruby_class main_class_body; // per-instance Object subclass

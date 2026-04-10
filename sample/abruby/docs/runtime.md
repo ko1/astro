@@ -6,9 +6,9 @@
 abruby_vm_global (グローバル、1つだけ)
   method_serial          ← メソッド定義時にインクリメント
 
-abruby_vm (AbRuby インスタンスごと)
+abruby_machine (AbRuby インスタンスごと)
   running_ctx            ← 実行コンテキスト (CTX)
-    ivm ──────────────→ abruby_vm (自分の VM への逆参照)
+    abm ──────────────→ abruby_machine (自分の machine への逆参照)
     vm  ──────────────→ abruby_vm_global
     env ──────────────→ stack[0]
     fp  ──────────────→ stack[N]  (現在のフレームポインタ)
@@ -22,8 +22,8 @@ abruby_vm (AbRuby インスタンスごと)
   id_cache               ← rb_intern 結果のキャッシュ
 
 CTX から VM のフィールドへはマクロでアクセス:
-  CTX_MAIN_CLASS(c) → &c->ivm->main_class_body
-  CTX_GVARS(c)      → &c->ivm->gvars
+  CTX_MAIN_CLASS(c) → &c->abm->main_class_body
+  CTX_GVARS(c)      → &c->abm->gvars
 ```
 
 ## データ構造
@@ -46,7 +46,7 @@ typedef struct {
 
 ```c
 struct CTX_struct {
-    struct abruby_vm *ivm;           // per-instance VM (owner)
+    struct abruby_machine *abm;      // per-instance machine (owner)
     struct abruby_vm_global *vm;     // グローバル VM 状態
     VALUE *env;                      // スタックのベース
     VALUE *fp;                       // フレームポインタ
@@ -57,7 +57,7 @@ struct CTX_struct {
 };
 ```
 
-gvars と main_class は VM 側に持ち、CTX からは `c->ivm->` 経由でアクセスする。
+gvars と main_class は machine 側に持ち、CTX からは `c->abm->` 経由でアクセスする。
 
 ### abruby_frame (呼び出しフレーム)
 
