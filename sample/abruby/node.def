@@ -19,16 +19,20 @@
 // Push/pop a lightweight frame to record the current execution point.
 // Used before creating inline exceptions (e.g., division by zero) so that
 // the backtrace includes the correct source location.
-#define PUSH_FRAME(node) \
+// PUSH_FRAME opens a do { block; POP_FRAME closes it with } while (0).
+// This scoping prevents accidental nesting of _push_frame variable names.
+// Variables needed after POP_FRAME must be declared BEFORE PUSH_FRAME.
+#define PUSH_FRAME(node) do { \
     struct abruby_frame _push_frame; \
     _push_frame.prev = c->current_frame; \
     _push_frame.method = NULL; \
     _push_frame.klass = NULL; \
     _push_frame.caller_node = (node); \
-    c->current_frame = &_push_frame;
+    c->current_frame = &_push_frame
 
 #define POP_FRAME() \
-    c->current_frame = _push_frame.prev;
+    c->current_frame = _push_frame.prev; \
+    } while (0)
 
 // helper functions (included before generated eval code)
 
@@ -490,8 +494,9 @@ node_class_def(CTX * restrict c, NODE * restrict n, ID name, NODE *super_expr, N
         VALUE sv = UNWRAP(EVAL_ARG(c, super_expr));
         if (sv != Qnil) {
             if (!AB_CLASS_P(sv, ab_class_class)) {
+                VALUE exc;
                 PUSH_FRAME(n);
-                VALUE exc = abruby_exception_new(c, c->current_frame,
+                exc = abruby_exception_new(c, c->current_frame,
                     abruby_str_new_cstr("superclass must be a Class"));
                 POP_FRAME();
                 return (RESULT){exc, RESULT_RAISE};
@@ -674,8 +679,9 @@ node_super(CTX * restrict c, NODE * restrict n, uint32_t params_cnt, uint32_t ar
 {
     struct abruby_method *method = find_super_method(c->current_frame);
     if (!method) {
+        VALUE exc;
         PUSH_FRAME(n);
-        VALUE exc = abruby_exception_new(c, c->current_frame,
+        exc = abruby_exception_new(c, c->current_frame,
             abruby_str_new_cstr("super: no superclass method"));
         POP_FRAME();
         return (RESULT){exc, RESULT_RAISE};
@@ -985,8 +991,9 @@ node_fixnum_div(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, ui
     if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
         long b = FIX2LONG(rv);
         if (UNLIKELY(b == 0)) {
+            VALUE exc;
             PUSH_FRAME(n);
-            VALUE exc = abruby_exception_new(c, c->current_frame,
+            exc = abruby_exception_new(c, c->current_frame,
                 abruby_str_new_cstr("divided by 0"));
             POP_FRAME();
             return (RESULT){exc, RESULT_RAISE};
@@ -1007,8 +1014,9 @@ node_integer_div(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, u
     if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
         long b = FIX2LONG(rv);
         if (UNLIKELY(b == 0)) {
+            VALUE exc;
             PUSH_FRAME(n);
-            VALUE exc = abruby_exception_new(c, c->current_frame,
+            exc = abruby_exception_new(c, c->current_frame,
                 abruby_str_new_cstr("divided by 0"));
             POP_FRAME();
             return (RESULT){exc, RESULT_RAISE};
@@ -1245,8 +1253,9 @@ node_fixnum_mod(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, ui
     if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
         long b = FIX2LONG(rv);
         if (UNLIKELY(b == 0)) {
+            VALUE exc;
             PUSH_FRAME(n);
-            VALUE exc = abruby_exception_new(c, c->current_frame,
+            exc = abruby_exception_new(c, c->current_frame,
                 abruby_str_new_cstr("divided by 0"));
             POP_FRAME();
             return (RESULT){exc, RESULT_RAISE};

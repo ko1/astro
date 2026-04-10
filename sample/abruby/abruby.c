@@ -430,12 +430,20 @@ vm_mark(void *ptr)
 static void
 vm_free(void *ptr)
 {
-    free(ptr);
+    struct abruby_machine *vm = (struct abruby_machine *)ptr;
+    if (vm->running_ctx) free(vm->running_ctx);
+    free(vm);
+}
+
+static size_t
+vm_memsize(const void *ptr)
+{
+    return sizeof(struct abruby_machine) + sizeof(CTX);
 }
 
 static const rb_data_type_t abruby_machine_type = {
     "AbRuby",
-    { vm_mark, vm_free, NULL },
+    { vm_mark, vm_free, vm_memsize },
     0, 0, RUBY_TYPED_FREE_IMMEDIATELY
 };
 
@@ -488,7 +496,6 @@ create_vm(void)
     vm->main_class_body.name = rb_intern("main");
     vm->main_class_body.super = ab_object_class;
 
-    vm->running_ctx->env = vm->running_ctx->stack;
     vm->running_ctx->fp = vm->running_ctx->stack;
     vm->running_ctx->self = abruby_new_object(&vm->main_class_body);
     vm->running_ctx->current_class = NULL;
@@ -990,7 +997,7 @@ abruby_require_file(CTX *c, VALUE rb_path)
     NODE *ast = unwrap_node(ast_obj);
     VALUE *save_fp = c->fp;
     struct abruby_frame *save_frame = c->current_frame;
-    c->fp = c->env;
+    c->fp = c->stack;
     c->current_class = NULL;
     struct abruby_frame req_frame = {save_frame, NULL, NULL, {.source_file = RSTRING_PTR(abs_str)}};
     c->current_frame = &req_frame;
@@ -1072,7 +1079,7 @@ rb_abruby_eval_ast(VALUE self, VALUE ast_obj)
     }
 
     // reset stack for each eval (classes/methods/self persist)
-    vm->running_ctx->fp = vm->running_ctx->env;
+    vm->running_ctx->fp = vm->running_ctx->stack;
     vm->running_ctx->current_class = NULL;
 
     // Push <main> frame so backtrace always has a bottom frame

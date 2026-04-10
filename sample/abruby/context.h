@@ -300,7 +300,6 @@ struct abruby_machine;  // forward declaration
 struct CTX_struct {
     struct abruby_machine *abm;          // per-instance machine (owner)
     VALUE stack[ABRUBY_STACK_SIZE];      // VALUE stack (locals + args)
-    VALUE *env;                          // base of stack (= stack)
     VALUE *fp;                           // frame pointer into stack
     VALUE self;
     struct abruby_class *current_class;  // set during class body eval
