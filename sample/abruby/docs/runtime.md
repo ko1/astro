@@ -5,7 +5,8 @@
 ```
 abruby_machine (AbRuby インスタンスごと)
   method_serial          ← メソッド定義時にインクリメント
-  running_ctx ─────────→ CTX (実行コンテキスト、別途ヒープ確保)
+  current_fiber ───────→ abruby_fiber (実行ファイバー)
+    ctx                  ← CTX (実行コンテキスト、stack 含む)
   main_class_body        ← インスタンスごとの Object サブクラス
   gvars                  ← グローバル変数テーブル
   id_cache               ← rb_intern 結果のキャッシュ
@@ -32,6 +33,16 @@ CTX_GVARS(c)       // → &c->abm->gvars
 
 ## データ構造
 
+### abruby_fiber (ファイバー)
+
+CTX（実行コンテキスト）を所有する。将来的に複数 Fiber の切り替えに対応。
+
+```c
+struct abruby_fiber {
+    CTX ctx;                             // 実行コンテキスト (stack 含む)
+};
+```
+
 ### abruby_machine (実行マシン)
 
 AbRuby インスタンスごとに1つ。
@@ -39,7 +50,7 @@ AbRuby インスタンスごとに1つ。
 ```c
 struct abruby_machine {
     uint32_t method_serial;              // メソッドバージョン (キャッシュ無効化用)
-    CTX *running_ctx;                    // 実行コンテキスト (別途ヒープ確保)
+    struct abruby_fiber *current_fiber;  // 現在実行中のファイバー
     struct abruby_class main_class_body; // インスタンスごとの Object サブクラス
     struct abruby_gvar_table gvars;      // グローバル変数
     struct abruby_id_cache id_cache;     // ID キャッシュ (+, -, <, method_missing 等)

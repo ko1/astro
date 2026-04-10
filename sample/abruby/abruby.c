@@ -379,8 +379,8 @@ static void
 vm_mark(void *ptr)
 {
     struct abruby_machine *vm = (struct abruby_machine *)ptr;
-    rb_gc_mark(vm->running_ctx->self);
-    rb_gc_mark_locations(vm->running_ctx->stack, vm->running_ctx->stack + ABRUBY_STACK_SIZE);
+    rb_gc_mark(vm->current_fiber->ctx.self);
+    rb_gc_mark_locations(vm->current_fiber->ctx.stack, vm->current_fiber->ctx.stack + ABRUBY_STACK_SIZE);
     rb_gc_mark(vm->rb_self);
     rb_gc_mark(vm->current_file);
     rb_gc_mark(vm->loaded_files);
@@ -406,14 +406,14 @@ static void
 vm_free(void *ptr)
 {
     struct abruby_machine *vm = (struct abruby_machine *)ptr;
-    if (vm->running_ctx) free(vm->running_ctx);
+    if (vm->current_fiber) free(vm->current_fiber);
     free(vm);
 }
 
 static size_t
 vm_memsize(const void *ptr)
 {
-    return sizeof(struct abruby_machine) + sizeof(CTX);
+    return sizeof(struct abruby_machine) + sizeof(struct abruby_fiber);
 }
 
 static const rb_data_type_t abruby_machine_type = {
@@ -465,15 +465,15 @@ create_vm(void)
 {
     struct abruby_machine *vm = ruby_xcalloc(1, sizeof(struct abruby_machine));
     vm->method_serial = 1;
-    vm->running_ctx = ruby_xcalloc(1, sizeof(CTX));
+    vm->current_fiber = ruby_xcalloc(1, sizeof(struct abruby_fiber));
     // Per-instance main class (inherits from Object)
     vm->main_class_body.klass = ab_class_class;
     vm->main_class_body.name = rb_intern("main");
     vm->main_class_body.super = ab_object_class;
 
-    vm->running_ctx->fp = vm->running_ctx->stack;
-    vm->running_ctx->self = abruby_new_object(&vm->main_class_body);
-    vm->running_ctx->current_class = NULL;
+    vm->current_fiber->ctx.fp = vm->current_fiber->ctx.stack;
+    vm->current_fiber->ctx.self = abruby_new_object(&vm->main_class_body);
+    vm->current_fiber->ctx.current_class = NULL;
     vm->id_cache.op_plus = rb_intern("+");
     vm->id_cache.op_minus = rb_intern("-");
     vm->id_cache.op_mul = rb_intern("*");
@@ -485,14 +485,14 @@ create_vm(void)
     vm->id_cache.op_eq = rb_intern("==");
     vm->id_cache.op_mod = rb_intern("%");
     vm->id_cache.method_missing = rb_intern("method_missing");
-    vm->running_ctx->ids = &vm->id_cache;
-    vm->running_ctx->abm = vm;
+    vm->current_fiber->ctx.ids = &vm->id_cache;
+    vm->current_fiber->ctx.abm = vm;
     vm->rb_self = Qnil;
     vm->current_file = Qnil;
     vm->loaded_files = rb_ary_new();
 
     for (int i = 0; i < ABRUBY_STACK_SIZE; i++) {
-        vm->running_ctx->stack[i] = Qnil;
+        vm->current_fiber->ctx.stack[i] = Qnil;
     }
 
     return vm;
@@ -1054,16 +1054,16 @@ rb_abruby_eval_ast(VALUE self, VALUE ast_obj)
     }
 
     // reset stack for each eval (classes/methods/self persist)
-    vm->running_ctx->fp = vm->running_ctx->stack;
-    vm->running_ctx->current_class = NULL;
+    vm->current_fiber->ctx.fp = vm->current_fiber->ctx.stack;
+    vm->current_fiber->ctx.current_class = NULL;
 
     // Push <main> frame so backtrace always has a bottom frame
     const char *eval_file = NIL_P(vm->current_file) ? "(abruby)" : RSTRING_PTR(vm->current_file);
     struct abruby_frame main_frame = {NULL, NULL, NULL, {.source_file = eval_file}};
-    vm->running_ctx->current_frame = &main_frame;
+    vm->current_fiber->ctx.current_frame = &main_frame;
 
-    RESULT r = EVAL(vm->running_ctx, ast);
-    vm->running_ctx->current_frame = NULL;
+    RESULT r = EVAL(&vm->current_fiber->ctx, ast);
+    vm->current_fiber->ctx.current_frame = NULL;
     if (r.state == RESULT_RAISE) {
         VALUE exc_val = r.value;
         // Extract message and backtrace from exception object

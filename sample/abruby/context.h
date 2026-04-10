@@ -288,9 +288,15 @@ struct CTX_struct {
     const struct abruby_id_cache *ids;   // cached rb_intern results
 };
 
+// Fiber: owns a CTX (execution context with its own stack).
+// Currently only main fiber exists; future: multiple fibers with switching.
+struct abruby_fiber {
+    CTX ctx;                             // execution context (stack included)
+};
+
 struct abruby_machine {
     uint32_t method_serial;              // method version (for inline cache invalidation)
-    CTX *running_ctx;                    // execution context (heap-allocated)
+    struct abruby_fiber *current_fiber;  // currently running fiber
     struct abruby_class main_class_body; // per-instance Object subclass
     struct ab_id_table gvars;            // global variables
     struct abruby_id_cache id_cache;     // cached rb_intern results
