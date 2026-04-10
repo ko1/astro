@@ -3,30 +3,81 @@
 ## 全体像
 
 ```
-abruby_vm_global (グローバル、1つだけ)
-  method_serial          ← メソッド定義時にインクリメント
-
 abruby_machine (AbRuby インスタンスごと)
-  running_ctx            ← 実行コンテキスト (CTX)
-    abm ──────────────→ abruby_machine (自分の machine への逆参照)
-    vm  ──────────────→ abruby_vm_global
-    env ──────────────→ stack[0]
-    fp  ──────────────→ stack[N]  (現在のフレームポインタ)
-    self                 ← 現在のレシーバ
-    current_class        ← クラス定義中のクラス
-    current_frame ─────→ abruby_frame linked list
-    ids ───────────────→ id_cache
+  running_ctx ─────────→ CTX (実行コンテキスト)
   stack[10000]           ← VALUE スタック (ローカル変数 + 引数)
   main_class_body        ← インスタンスごとの Object サブクラス
   gvars                  ← グローバル変数テーブル
   id_cache               ← rb_intern 結果のキャッシュ
+  rb_self                ← Ruby 側の AbRuby インスタンス
+  current_file           ← 実行中のファイルパス
+  loaded_files           ← require 済みファイル一覧
 
-CTX から VM のフィールドへはマクロでアクセス:
-  CTX_MAIN_CLASS(c) → &c->abm->main_class_body
-  CTX_GVARS(c)      → &c->abm->gvars
+CTX (実行コンテキスト、ノード評価関数の第1引数)
+  abm ────────────────→ abruby_machine (所属する machine)
+  vm  ────────────────→ abruby_vm_global (グローバル状態)
+  env ────────────────→ stack[0]
+  fp  ────────────────→ stack[N]  (現在のフレームポインタ)
+  self                   ← 現在のレシーバ
+  current_class          ← クラス定義中のクラス (通常 NULL)
+  current_frame ───────→ abruby_frame linked list
+  ids ─────────────────→ id_cache
+
+abruby_vm_global (グローバル状態、プロセスに1つ)
+  method_serial          ← メソッド定義時にインクリメント
+```
+
+CTX から machine のフィールドへはマクロでアクセス:
+```c
+CTX_MAIN_CLASS(c)  // → &c->abm->main_class_body
+CTX_GVARS(c)       // → &c->abm->gvars
 ```
 
 ## データ構造
+
+### abruby_machine (実行マシン)
+
+AbRuby インスタンスごとに1つ。実行状態の全てを保持する。
+
+```c
+struct abruby_machine {
+    CTX running_ctx;                     // 実行コンテキスト
+    VALUE stack[ABRUBY_STACK_SIZE];      // VALUE スタック (10000)
+    struct abruby_class main_class_body; // インスタンスごとの Object サブクラス
+    struct abruby_gvar_table gvars;      // グローバル変数
+    struct abruby_id_cache id_cache;     // ID キャッシュ (+, -, <, method_missing 等)
+    VALUE rb_self;                       // Ruby 側の AbRuby インスタンス
+    VALUE current_file;                  // 実行中ファイルパス
+    VALUE loaded_files;                  // require 済みファイル一覧
+};
+```
+
+### CTX (実行コンテキスト)
+
+ノード評価関数の第1引数。実行中の状態を指す。
+
+```c
+struct CTX_struct {
+    struct abruby_machine *abm;      // 所属する machine
+    struct abruby_vm_global *vm;     // グローバル状態
+    VALUE *env;                      // スタックのベース
+    VALUE *fp;                       // フレームポインタ (ローカル変数の先頭)
+    VALUE self;                      // 現在のレシーバ
+    struct abruby_class *current_class;  // クラス定義の評価中のみ非 NULL
+    struct abruby_frame *current_frame;  // フレーム linked list の先頭
+    const struct abruby_id_cache *ids;   // ID キャッシュへのポインタ
+};
+```
+
+### abruby_vm_global (グローバル状態)
+
+全 machine インスタンスで共有。インラインキャッシュの無効化に使う。
+
+```c
+struct abruby_vm_global {
+    uint32_t method_serial;  // メソッド定義ごとにインクリメント
+};
+```
 
 ### RESULT (実行結果)
 
@@ -39,29 +90,12 @@ typedef struct {
 } RESULT;
 ```
 
-非局所脱出 (return, raise, break) は RESULT の state で伝播。
-`UNWRAP(r)` マクロで state が NORMAL でなければ即 return。
-
-### CTX (実行コンテキスト)
-
-```c
-struct CTX_struct {
-    struct abruby_machine *abm;      // per-instance machine (owner)
-    struct abruby_vm_global *vm;     // グローバル VM 状態
-    VALUE *env;                      // スタックのベース
-    VALUE *fp;                       // フレームポインタ
-    VALUE self;                      // 現在の self
-    struct abruby_class *current_class;
-    struct abruby_frame *current_frame; // フレームリンクリスト先頭
-    const struct abruby_id_cache *ids;  // ID キャッシュ
-};
-```
-
-gvars と main_class は machine 側に持ち、CTX からは `c->abm->` 経由でアクセスする。
+非局所脱出 (return, raise, break) は state で伝播する。
+`UNWRAP(r)` マクロは state が NORMAL でなければ即座に return する。
 
 ### abruby_frame (呼び出しフレーム)
 
-バックトレース用のフレーム。C スタック上に確保し、linked list で管理。
+バックトレース用。C スタック上に確保し、linked list で管理。
 
 ```c
 struct abruby_frame {
@@ -69,18 +103,26 @@ struct abruby_frame {
     struct abruby_method *method;   // 実行中のメソッド (NULL = <main>)
     struct abruby_class *klass;     // レシーバのクラス (super 用)
     union {
-        struct Node *caller_node;   // 呼び出し元のノード (行番号を持つ)
-        const char *source_file;    // <main> のファイルパス
+        struct Node *caller_node;   // メソッドフレーム: 呼び出し元ノード
+        const char *source_file;    // <main>: ファイルパス
     };
 };
 ```
 
-`caller_node` 方式: 各フレームが「自分がどこから呼ばれたか」を記録。
-backtrace 構築時は `f->caller_node->line` と `f->prev->method->name` をペアにする。
+**caller_node 方式**: 各フレームが「自分がどこから呼ばれたか」を記録する。
+backtrace 構築時は `f->caller_node->line`（行番号）と `f->prev->method->name`（メソッド名）をペアにする。
+
+**PUSH_FRAME / POP_FRAME マクロ**: インライン例外（0除算など dispatch_method_frame を経由しない箇所）で、例外発生位置を backtrace に含めるための軽量フレーム push/pop。
+
+```c
+PUSH_FRAME(node);     // caller_node = node のフレームを push
+// ... abruby_exception_new(c, ...) ...
+POP_FRAME();          // フレームを pop
+```
 
 ### method_cache (インラインキャッシュ)
 
-各メソッド呼び出しノードに `@ref` で埋め込まれる。
+各 node_method_call / node_func_call に `@ref` で埋め込まれる。
 
 ```c
 struct method_cache {
@@ -92,8 +134,7 @@ struct method_cache {
 };
 ```
 
-`body` と `dispatcher` のキャッシュにより、cache hit 時に
-method 構造体を経由する間接参照 2段を省略。
+`body` と `dispatcher` をキャッシュすることで、cache hit 時に method 構造体を経由する間接参照 2段を省略する。
 
 ### abruby_class (クラス)
 
@@ -110,6 +151,8 @@ struct abruby_class {
 };
 ```
 
+メソッド検索は `abruby_class_find_method` で methods を線形探索し、見つからなければ super チェーンを辿る。
+
 ### abruby_method (メソッド)
 
 ```c
@@ -117,20 +160,28 @@ struct abruby_method {
     ID name;
     enum abruby_method_type type;   // AST or CFUNC
     union {
-        struct { NODE *body; uint params_cnt; uint locals_cnt; const char *source_file; } ast;
-        struct { abruby_cfunc_t func; uint params_cnt; } cfunc;
+        struct {
+            NODE *body;
+            unsigned int params_cnt;
+            unsigned int locals_cnt;
+            const char *source_file;
+        } ast;
+        struct {
+            abruby_cfunc_t func;    // RESULT (*)(CTX*, VALUE, uint, VALUE*)
+            unsigned int params_cnt;
+        } cfunc;
     } u;
 };
 ```
 
 ### オブジェクト表現
 
-全ヒープオブジェクトは T_DATA で、先頭に `abruby_header` (klass ポインタ) を持つ。
+全ヒープオブジェクトは CRuby の T_DATA で、先頭に `abruby_header` (klass ポインタ) を持つ。
 
 ```
 即値 (Fixnum, Symbol, true, false, nil)
   → CRuby 即値をそのまま使用
-  → AB_CLASS_OF で対応クラスに解決
+  → AB_CLASS_OF → AB_CLASS_OF_IMM で対応クラスに解決
 
 T_DATA ヒープオブジェクト
   → 先頭に abruby_header { klass } を持つ
@@ -151,22 +202,25 @@ T_DATA ヒープオブジェクト
 
 ### NodeHead (AST ノードヘッダ)
 
-全 AST ノードの先頭。ノード固有データはこの後に続く。
+全 AST ノード共通のヘッダ。ノード固有データ（オペランド）はこの後に続く。
 
 ```c
 struct NodeHead {
-    struct NodeFlags flags;        // specialized, no_inline 等
-    const struct NodeKind *kind;   // ノード種別 (関数ポインタ群)
-    struct Node *parent;           // 親ノード
-    node_hash_t hash_value;        // コードストア用ハッシュ
-    const char *dispatcher_name;   // デバッグ用
+    struct NodeFlags flags;            // specialized, no_inline 等
+    const struct NodeKind *kind;       // ノード種別 (関数ポインタ群)
+    struct Node *parent;               // 親ノード
+    node_hash_t hash_value;            // コードストア用ハッシュ
+    const char *dispatcher_name;       // デバッグ用
     node_dispatcher_func_t dispatcher; // EVAL 時に呼ばれる関数
-    VALUE rb_wrapper;              // GC 用
+    VALUE rb_wrapper;                  // GC 用 T_DATA ラッパー
     enum jit_status jit_status;
     unsigned int dispatch_cnt;
-    int32_t line;                  // ソース行番号
+    int32_t line;                      // ソース行番号 (backtrace 用)
 };
 ```
+
+`EVAL(c, n)` は `(*n->head.dispatcher)(c, n)` を呼ぶ。
+コードストアで特殊化された場合、dispatcher は SD_* 関数に置き換わる。
 
 ## メソッド呼び出しの流れ
 
@@ -201,7 +255,7 @@ recv ノードを持たず、`c->self` を直接使う。
 
 ### dispatch_method_frame (共通ディスパッチ)
 
-cache hit パスで使用。self の save/restore はしない。
+cache hit パスで使用。self の save/restore はしない（呼び出し側が責任を持つ）。
 
 ```
 1. フレーム push
@@ -237,7 +291,7 @@ cache miss、method_missing、super、算術フォールバックで使用。
 呼び出し: main → b() → a() → raise
 
 フレームチェーン:
-  raise_frame { caller_node=raise行, method=Kernel#raise }
+  raise_frame { caller_node=a内のraise呼出行, method=Kernel#raise(CFUNC) }
     ↓ prev
   a_frame { caller_node=b内のa呼出行, method=a }
     ↓ prev
@@ -251,6 +305,9 @@ backtrace 構築 (f->caller_node.line + f->prev->method.name):
   b_frame.caller_node.line     + main_frame         → "7:in `<main>'"
 ```
 
+インライン例外 (0除算など) では PUSH_FRAME で軽量フレームを積み、
+backtrace に例外発生行を含める。
+
 ### 算術演算のフォールバック
 
 `a + b` はパース時に `node_fixnum_plus(a, b, arg_index)` になる。
@@ -262,14 +319,15 @@ node_fixnum_plus:
   両方 Fixnum?
   ├─ YES: tagged 加算 (1命令)
   └─ NO:  node_fixnum_plus_slow
-            ├─ 両方 Integer? → swap to node_integer_plus
-            └─ それ以外?     → swap to node_plus
+            ├─ 両方 Integer? → swap_dispatcher to node_integer_plus
+            └─ それ以外?     → swap_dispatcher to node_plus
                                 → node_arith_fallback
                                    c->fp[arg_index] = rv
-                                   dispatch_method_with_klass  ← メソッド呼び出し
+                                   dispatch_method_with_klass
 
 arg_index はパース時に確保済みのスロット番号。
 これにより fp 上の安全な位置に引数を配置できる。
+swap_dispatcher はノードの dispatcher を書き換え、次回以降は新しいパスを通る。
 ```
 
 ### インラインキャッシュの無効化
@@ -283,5 +341,5 @@ method_serial (abruby_vm_global.method_serial):
 cache hit 条件:
   mc->klass == AB_CLASS_OF(recv) && mc->serial == vm->method_serial
 
-serial が変わると全キャッシュが無効化される (global invalidation)。
+serial が変わると全キャッシュが miss する (global invalidation)。
 ```
