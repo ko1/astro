@@ -58,15 +58,13 @@ AB_NUM_UNWRAP(VALUE v)
 {
     if (FIXNUM_P(v)) return v;
     struct abruby_header *h = (struct abruby_header *)RTYPEDDATA_GET_DATA(v);
-    if (h->klass == ab_integer_class)
-        return ((struct abruby_bignum *)h)->rb_bignum;
-    if (h->klass == ab_float_class)
-        return ((struct abruby_float *)h)->rb_float;
-    if (h->klass == ab_rational_class)
-        return ((struct abruby_rational *)h)->rb_rational;
-    if (h->klass == ab_complex_class)
-        return ((struct abruby_complex *)h)->rb_complex;
-    return v;
+    switch (h->klass->obj_type) {
+    case ABRUBY_OBJ_BIGNUM:   return ((struct abruby_bignum *)h)->rb_bignum;
+    case ABRUBY_OBJ_FLOAT:    return ((struct abruby_float *)h)->rb_float;
+    case ABRUBY_OBJ_RATIONAL: return ((struct abruby_rational *)h)->rb_rational;
+    case ABRUBY_OBJ_COMPLEX:  return ((struct abruby_complex *)h)->rb_complex;
+    default: return v;
+    }
 }
 
 // CRuby numeric result → abruby value

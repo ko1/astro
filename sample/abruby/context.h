@@ -267,6 +267,16 @@ AB_CLASS_OF(VALUE obj)
     }
 }
 
+// Type check by obj_type (instance-independent, works with per-instance classes)
+static inline bool
+ab_obj_type_p(VALUE obj, enum abruby_obj_type type)
+{
+    if (RB_SPECIAL_CONST_P(obj)) return false;
+    struct abruby_header *h = (struct abruby_header *)RTYPEDDATA_GET_DATA(obj);
+    return h->klass && h->klass->obj_type == type;
+}
+
+// Legacy macro (uses AB_CLASS_OF which requires per-instance resolution for immediates)
 #define AB_CLASS_P(obj, klass) (AB_CLASS_OF(obj) == (klass))
 
 // Global variables are stored in an ab_id_table in abruby_machine.
@@ -316,12 +326,31 @@ struct abruby_fiber {
 struct abruby_machine {
     uint32_t method_serial;              // method version (for inline cache invalidation)
     struct abruby_fiber *current_fiber;  // currently running fiber
-    struct abruby_class main_class_body; // per-instance Object subclass (temporary, will be replaced by per-instance classes)
+    struct abruby_class main_class_body; // per-instance Object subclass (temporary)
     struct ab_id_table gvars;            // global variables
     struct abruby_id_cache id_cache;     // cached rb_intern results
     VALUE rb_self;                       // Ruby-level AbRuby instance
     VALUE current_file;                  // current file path
     VALUE loaded_files;                  // loaded file paths
+    // Per-instance class pointers (each instance has its own class hierarchy)
+    struct abruby_class *object_class;
+    struct abruby_class *integer_class;
+    struct abruby_class *float_class;
+    struct abruby_class *string_class;
+    struct abruby_class *symbol_class;
+    struct abruby_class *array_class;
+    struct abruby_class *hash_class;
+    struct abruby_class *range_class;
+    struct abruby_class *regexp_class;
+    struct abruby_class *rational_class;
+    struct abruby_class *complex_class;
+    struct abruby_class *true_class;
+    struct abruby_class *false_class;
+    struct abruby_class *nil_class;
+    struct abruby_class *kernel_module;
+    struct abruby_class *module_class;
+    struct abruby_class *class_class;
+    struct abruby_class *runtime_error_class;
 };
 
 // exception object
