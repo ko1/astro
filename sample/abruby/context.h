@@ -141,6 +141,11 @@ struct abruby_class {
     struct ab_id_table methods;    // key=method_name, val=(VALUE)(struct abruby_method*)
     VALUE rb_wrapper;
     struct ab_id_table constants;  // key=const_name, val=const_value
+    // Shape: ivar slot layout for instances of this class.
+    // Each ivar name first seen via node_ivar_set_slow is appended here with val=0.
+    // abruby_new_object clones this into the new object's ivars (slots filled with Qnil),
+    // so subsequent ivar_set IC hits immediately without a growth/insert.
+    struct ab_id_table ivar_shape;
 };
 
 struct abruby_object {

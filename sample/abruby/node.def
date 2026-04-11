@@ -330,6 +330,13 @@ node_ivar_set_slow(struct abruby_object *obj, ID name, VALUE v, struct ivar_cach
 {
     unsigned int slot;
     ab_id_table_insert_slot(&obj->ivars, name, v, &slot);
+    // Register this ivar in the class shape so that future instances of the same
+    // class start with the slot pre-allocated (keeps the IC hit path valid).
+    struct abruby_class *klass = (struct abruby_class *)obj->klass;
+    VALUE placeholder;
+    if (!ab_id_table_lookup(&klass->ivar_shape, name, &placeholder)) {
+        ab_id_table_insert(&klass->ivar_shape, name, 0);
+    }
     ic->klass = obj->klass;
     ic->slot = slot;
 }
@@ -844,39 +851,44 @@ integer_div_calc(CTX *c, VALUE lv, VALUE rv)
     return RESULT_OK(AB_NUM_WRAP(c, result));
 }
 
+// Wrap a double result back into an abruby value.
+// Common case (Flonum-representable) is a pure constant-fold: DBL2NUM returns
+// an immediate Flonum and the RB_FLONUM_P branch falls through with no call.
+// Only out-of-range doubles (some NaNs/Infs/denormals) fall back to the
+// abruby_float_new_wrap T_DATA allocation.
+static inline RESULT
+flonum_result(CTX *c, double d)
+{
+    VALUE v = DBL2NUM(d);
+    if (LIKELY(RB_FLONUM_P(v))) return RESULT_OK(v);
+    return RESULT_OK(abruby_float_new_wrap(c, v));
+}
+
 // Float calc helpers (used by fixnum_*_slow promotion and flonum_* nodes).
 // Input values must pass ab_is_float().
 static inline RESULT
 flonum_plus_calc(CTX *c, VALUE lv, VALUE rv)
 {
-    double lf = RFLOAT_VALUE(AB_FLOAT_UNWRAP(lv));
-    double rf = RFLOAT_VALUE(AB_FLOAT_UNWRAP(rv));
-    return RESULT_OK(abruby_float_new_wrap(c, DBL2NUM(lf + rf)));
+    return flonum_result(c, RFLOAT_VALUE(AB_FLOAT_UNWRAP(lv)) + RFLOAT_VALUE(AB_FLOAT_UNWRAP(rv)));
 }
 
 static inline RESULT
 flonum_minus_calc(CTX *c, VALUE lv, VALUE rv)
 {
-    double lf = RFLOAT_VALUE(AB_FLOAT_UNWRAP(lv));
-    double rf = RFLOAT_VALUE(AB_FLOAT_UNWRAP(rv));
-    return RESULT_OK(abruby_float_new_wrap(c, DBL2NUM(lf - rf)));
+    return flonum_result(c, RFLOAT_VALUE(AB_FLOAT_UNWRAP(lv)) - RFLOAT_VALUE(AB_FLOAT_UNWRAP(rv)));
 }
 
 static inline RESULT
 flonum_mul_calc(CTX *c, VALUE lv, VALUE rv)
 {
-    double lf = RFLOAT_VALUE(AB_FLOAT_UNWRAP(lv));
-    double rf = RFLOAT_VALUE(AB_FLOAT_UNWRAP(rv));
-    return RESULT_OK(abruby_float_new_wrap(c, DBL2NUM(lf * rf)));
+    return flonum_result(c, RFLOAT_VALUE(AB_FLOAT_UNWRAP(lv)) * RFLOAT_VALUE(AB_FLOAT_UNWRAP(rv)));
 }
 
 static inline RESULT
 flonum_div_calc(CTX *c, VALUE lv, VALUE rv)
 {
     // Float division: no ZeroDivisionError; IEEE 754 handles 0 → inf/nan.
-    double lf = RFLOAT_VALUE(AB_FLOAT_UNWRAP(lv));
-    double rf = RFLOAT_VALUE(AB_FLOAT_UNWRAP(rv));
-    return RESULT_OK(abruby_float_new_wrap(c, DBL2NUM(lf / rf)));
+    return flonum_result(c, RFLOAT_VALUE(AB_FLOAT_UNWRAP(lv)) / RFLOAT_VALUE(AB_FLOAT_UNWRAP(rv)));
 }
 
 // Dispatcher swap: change the dispatcher without creating a new node.

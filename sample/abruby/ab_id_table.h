@@ -334,13 +334,21 @@ ab_id_table_delete(struct ab_id_table *t, ID key)
 static inline void
 ab_id_table_clone(struct ab_id_table *dst, const struct ab_id_table *src)
 {
-    dst->cnt = src->cnt;
-    dst->capa = src->capa;
+    // IMPORTANT: allocate entries before publishing cnt/capa.
+    // If dst is embedded in a T_DATA already visible to the GC, a GC triggered
+    // by ruby_xmalloc2 would otherwise find cnt/capa set with NULL entries and
+    // segfault while iterating.
     if (src->capa > 0) {
-        dst->entries = (struct ab_id_table_entry *)ruby_xmalloc2(src->capa, sizeof(struct ab_id_table_entry));
-        memcpy(dst->entries, src->entries, src->capa * sizeof(struct ab_id_table_entry));
+        struct ab_id_table_entry *new_entries =
+            (struct ab_id_table_entry *)ruby_xmalloc2(src->capa, sizeof(struct ab_id_table_entry));
+        memcpy(new_entries, src->entries, src->capa * sizeof(struct ab_id_table_entry));
+        dst->entries = new_entries;
+        dst->capa = src->capa;
+        dst->cnt = src->cnt;
     } else {
         dst->entries = NULL;
+        dst->capa = 0;
+        dst->cnt = 0;
     }
 }
 

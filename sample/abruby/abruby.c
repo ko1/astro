@@ -180,6 +180,16 @@ abruby_new_object(struct abruby_class *klass)
     struct abruby_object *obj;
     VALUE wrapper = TypedData_Make_Struct(rb_cAbRubyNode, struct abruby_object, &abruby_data_type, obj);
     obj->klass = klass;
+    // Pre-populate ivars from the class shape so that ivar_set IC hits from
+    // the very first access on a fresh instance.
+    const struct ab_id_table *shape = &klass->ivar_shape;
+    if (shape->cnt > 0) {
+        ab_id_table_clone(&obj->ivars, shape);
+        // Reset all values to Qnil (shape stores val=0 as a placeholder).
+        for (unsigned int i = 0; i < obj->ivars.capa; i++) {
+            if (obj->ivars.entries[i].key != 0) obj->ivars.entries[i].val = Qnil;
+        }
+    }
     return wrapper;
 }
 
