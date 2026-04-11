@@ -53,6 +53,49 @@ AB_FLOAT_UNWRAP(VALUE v)
     return ((const struct abruby_float *)RTYPEDDATA_GET_DATA(v))->rb_float;
 }
 
+// Inline flonum decode (mirrors CRuby internal/numeric.h
+// rb_float_flonum_value).  Avoids the external rb_float_value call that
+// dominates mandelbrot's inner loop.
+static inline double
+ab_flonum_value(VALUE v)
+{
+    if (v != (VALUE)0x8000000000000002) {
+        union { double d; VALUE v; } t;
+        VALUE b63 = (v >> 63);
+        t.v = ((2 - b63) | (v & ~(VALUE)0x03));
+        // rotate right by 3 bits
+        t.v = (t.v >> 3) | (t.v << 61);
+        return t.d;
+    }
+    return 0.0;
+}
+
+// abruby float → C double, skipping rb_float_value for flonums.
+static inline double
+AB_FLOAT_TO_DOUBLE(VALUE v)
+{
+    if (RB_FLONUM_P(v)) return ab_flonum_value(v);
+    return RFLOAT_VALUE(((const struct abruby_float *)RTYPEDDATA_GET_DATA(v))->rb_float);
+}
+
+// Inline flonum encode (mirrors CRuby internal/numeric.h
+// rb_float_new_inline).  Returns either a flonum-tagged VALUE or 0 if
+// the value is out of flonum range; callers must handle the fallback.
+static inline VALUE
+ab_flonum_encode(double d)
+{
+    union { double d; VALUE v; } t;
+    int bits;
+    t.d = d;
+    bits = (int)((VALUE)(t.v >> 60) & 0x7);
+    if (t.v != 0x3000000000000000 && !((bits - 3) & ~0x01)) {
+        VALUE rot = (t.v << 3) | (t.v >> 61);
+        return (rot & ~(VALUE)0x01) | 0x02;
+    }
+    if (t.v == (VALUE)0) return 0x8000000000000002;
+    return 0;  // out-of-range: caller falls back to rb_float_new
+}
+
 // abruby numeric → inner CRuby numeric (for mixed-type operations)
 static inline VALUE
 AB_NUM_UNWRAP(VALUE v)

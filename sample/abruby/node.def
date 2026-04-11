@@ -984,17 +984,16 @@ integer_div_calc(CTX *c, VALUE lv, VALUE rv)
     return RESULT_OK(AB_NUM_WRAP(c, result));
 }
 
-// Wrap a double result back into an abruby value.
-// Common case (Flonum-representable) is a pure constant-fold: DBL2NUM returns
-// an immediate Flonum and the RB_FLONUM_P branch falls through with no call.
-// Only out-of-range doubles (some NaNs/Infs/denormals) fall back to the
-// abruby_float_new_wrap T_DATA allocation.
+// Wrap a double result back into an abruby value.  Uses the inline
+// flonum encoder so the common case never calls rb_float_new.  Only
+// out-of-range doubles (NaN/Inf/denormals/0x3000…) fall back to the
+// heap-allocated abruby_float wrapper.
 static inline RESULT
 flonum_result(CTX *c, double d)
 {
-    VALUE v = DBL2NUM(d);
-    if (LIKELY(RB_FLONUM_P(v))) return RESULT_OK(v);
-    return RESULT_OK(abruby_float_new_wrap(c, v));
+    VALUE flo = ab_flonum_encode(d);
+    if (LIKELY(flo != 0)) return RESULT_OK(flo);
+    return RESULT_OK(abruby_float_new_wrap(c, rb_float_new(d)));
 }
 
 // Float calc helpers (used by fixnum_*_slow promotion and flonum_* nodes).
@@ -1002,26 +1001,26 @@ flonum_result(CTX *c, double d)
 static inline RESULT
 flonum_plus_calc(CTX *c, VALUE lv, VALUE rv)
 {
-    return flonum_result(c, RFLOAT_VALUE(AB_FLOAT_UNWRAP(lv)) + RFLOAT_VALUE(AB_FLOAT_UNWRAP(rv)));
+    return flonum_result(c, AB_FLOAT_TO_DOUBLE(lv) + AB_FLOAT_TO_DOUBLE(rv));
 }
 
 static inline RESULT
 flonum_minus_calc(CTX *c, VALUE lv, VALUE rv)
 {
-    return flonum_result(c, RFLOAT_VALUE(AB_FLOAT_UNWRAP(lv)) - RFLOAT_VALUE(AB_FLOAT_UNWRAP(rv)));
+    return flonum_result(c, AB_FLOAT_TO_DOUBLE(lv) - AB_FLOAT_TO_DOUBLE(rv));
 }
 
 static inline RESULT
 flonum_mul_calc(CTX *c, VALUE lv, VALUE rv)
 {
-    return flonum_result(c, RFLOAT_VALUE(AB_FLOAT_UNWRAP(lv)) * RFLOAT_VALUE(AB_FLOAT_UNWRAP(rv)));
+    return flonum_result(c, AB_FLOAT_TO_DOUBLE(lv) * AB_FLOAT_TO_DOUBLE(rv));
 }
 
 static inline RESULT
 flonum_div_calc(CTX *c, VALUE lv, VALUE rv)
 {
     // Float division: no ZeroDivisionError; IEEE 754 handles 0 → inf/nan.
-    return flonum_result(c, RFLOAT_VALUE(AB_FLOAT_UNWRAP(lv)) / RFLOAT_VALUE(AB_FLOAT_UNWRAP(rv)));
+    return flonum_result(c, AB_FLOAT_TO_DOUBLE(lv) / AB_FLOAT_TO_DOUBLE(rv));
 }
 
 // Dispatcher swap: change the dispatcher without creating a new node.
