@@ -10,16 +10,21 @@ static RESULT ab_string_inspect(CTX *c, VALUE self, unsigned int argc, VALUE *ar
 static RESULT ab_string_to_s(CTX *c, VALUE self, unsigned int argc, VALUE *argv) { return RESULT_OK(self); }
 static RESULT ab_string_to_i(CTX *c, VALUE self, unsigned int argc, VALUE *argv) { return RESULT_OK(LONG2FIX(strtol(RSTRING_PTR(RSTR(self)), NULL, 10))); }
 static RESULT ab_string_add(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    // Pre-size the result buffer so rb_str_cat doesn't need to realloc.
     VALUE rs = RSTR(self), ra = RSTR(argv[0]);
-    VALUE result = rb_str_new(RSTRING_PTR(rs), RSTRING_LEN(rs));
-    rb_str_cat(result, RSTRING_PTR(ra), RSTRING_LEN(ra));
+    long rs_len = RSTRING_LEN(rs), ra_len = RSTRING_LEN(ra);
+    VALUE result = rb_str_buf_new(rs_len + ra_len);
+    rb_str_cat(result, RSTRING_PTR(rs), rs_len);
+    rb_str_cat(result, RSTRING_PTR(ra), ra_len);
     return RESULT_OK(abruby_str_new(c, result));
 }
 static RESULT ab_string_mul(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     VALUE rs = RSTR(self);
     long times = FIX2LONG(argv[0]);
-    VALUE result = rb_str_new(NULL, 0);
-    for (long i = 0; i < times; i++) rb_str_cat(result, RSTRING_PTR(rs), RSTRING_LEN(rs));
+    long rs_len = RSTRING_LEN(rs);
+    VALUE result = rb_str_buf_new(rs_len * times);  // pre-size exact
+    const char *src = RSTRING_PTR(rs);
+    for (long i = 0; i < times; i++) rb_str_cat(result, src, rs_len);
     return RESULT_OK(abruby_str_new(c, result));
 }
 static RESULT ab_string_eq(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
