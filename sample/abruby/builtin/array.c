@@ -32,6 +32,66 @@ static RESULT ab_array_include_p(CTX *c, VALUE self, unsigned int argc, VALUE *a
     return RESULT_OK(Qfalse);
 }
 
+// Array#each { |x| ... } — yields each element in order, returns self.
+// BREAK (block-break) is demoted to its payload value by the surrounding
+// dispatch_method_frame_with_block boundary, so we just return it and
+// the outer dispatch will unwrap.  The same holds for RETURN/RAISE.
+static RESULT ab_array_each(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    VALUE ary = RARY(self);
+    long len = RARRAY_LEN(ary);
+    for (long i = 0; i < len; i++) {
+        VALUE elem = RARRAY_AREF(ary, i);
+        RESULT r = abruby_yield(c, 1, &elem);
+        if (UNLIKELY(r.state != RESULT_NORMAL)) return r;
+    }
+    return RESULT_OK(self);
+}
+
+// Array#map { |x| ... } — collects yielded values into a new array.
+// If a block breaks, the break value is returned (the in-progress array
+// is discarded, matching Ruby).  If the block raises or does a non-local
+// return, the state propagates up unchanged.
+static RESULT ab_array_map(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    VALUE ary = RARY(self);
+    long len = RARRAY_LEN(ary);
+    VALUE result = rb_ary_new_capa(len);
+    for (long i = 0; i < len; i++) {
+        VALUE elem = RARRAY_AREF(ary, i);
+        RESULT r = abruby_yield(c, 1, &elem);
+        if (UNLIKELY(r.state != RESULT_NORMAL)) return r;
+        rb_ary_push(result, r.value);
+    }
+    return RESULT_OK(abruby_ary_new(c, result));
+}
+
+// Array#select { |x| pred } — keeps elements where the block returns truthy.
+static RESULT ab_array_select(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    VALUE ary = RARY(self);
+    long len = RARRAY_LEN(ary);
+    VALUE result = rb_ary_new_capa(0);
+    for (long i = 0; i < len; i++) {
+        VALUE elem = RARRAY_AREF(ary, i);
+        RESULT r = abruby_yield(c, 1, &elem);
+        if (UNLIKELY(r.state != RESULT_NORMAL)) return r;
+        if (RTEST(r.value)) rb_ary_push(result, elem);
+    }
+    return RESULT_OK(abruby_ary_new(c, result));
+}
+
+// Array#reject { |x| pred } — keeps elements where the block returns falsy.
+static RESULT ab_array_reject(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    VALUE ary = RARY(self);
+    long len = RARRAY_LEN(ary);
+    VALUE result = rb_ary_new_capa(0);
+    for (long i = 0; i < len; i++) {
+        VALUE elem = RARRAY_AREF(ary, i);
+        RESULT r = abruby_yield(c, 1, &elem);
+        if (UNLIKELY(r.state != RESULT_NORMAL)) return r;
+        if (!RTEST(r.value)) rb_ary_push(result, elem);
+    }
+    return RESULT_OK(abruby_ary_new(c, result));
+}
+
 void
 Init_abruby_array(void)
 {
@@ -49,4 +109,10 @@ Init_abruby_array(void)
     abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("last"),     ab_array_last,      0);
     abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("+"),        ab_array_add,       1);
     abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("include?"), ab_array_include_p, 1);
+    abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("each"),     ab_array_each,      0);
+    abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("map"),      ab_array_map,       0);
+    abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("collect"),  ab_array_map,       0);
+    abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("select"),   ab_array_select,    0);
+    abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("filter"),   ab_array_select,    0);
+    abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("reject"),   ab_array_reject,    0);
 }

@@ -50,6 +50,22 @@
 - `method_missing(name, ...)`
 - インラインキャッシュ（`method_cache`: klass + method + serial + body + dispatcher）
 
+## ブロック
+- ブロックリテラル: `obj.m { |x| ... }` / `obj.m do |x, y| ... end`
+- `yield` / `yield args`（`def f; yield; end` 形式）
+- `block_given?`（Kernel メソッド、current_frame->prev->block を参照）
+- `next` / `next value`（block body から脱出、yield の返り値に）
+- `break` / `break value`（block から脱出 → yielding メソッドの call から戻る）
+- **非ローカル `return`**（block 内 `return` は block を *定義した* メソッドから脱出）
+- outer method のローカル変数への closure アクセス
+- `super` が現メソッドの block を暗黙に転送、`super() { ... }` で明示的置き換え
+- `node_method_call_with_block` / `node_func_call_with_block` / `node_super_with_block` — block 無し hot path を汚さないための分離ノード
+- Block 情報は call サイトの `node_block_literal`（body, params_cnt, param_base）から C スタックの `struct abruby_block` に組み立て、`struct abruby_frame` の block ポインタに格納
+- Block 内の `yield` / `super` は block の defining_frame を参照（呼び出し元メソッドの block に到達）
+- `abruby_yield` C helper で builtin iterator (`Integer#times`, `Array#each/map/select/reject`, `Hash#each`, `Range#each`) を実装
+- RESULT state 拡張: `NORMAL=0, RETURN=1, RAISE=2, BREAK=4, NEXT=8`（bit flag）
+- Frame ID 方式の非ローカル return: `CTX::return_target_frame_id` が 0 (wildcard) か `frame.frame_id` 一致で demote、block return のみ defining frame id を target 化
+
 ## クラス・モジュール
 - `class Name; end`
 - `class Child < Parent; end`（継承）
@@ -75,13 +91,13 @@
 - **Object**: inspect, to_s, ==, !=, ===, !, nil?, class, is_a?, kind_of?, instance_of?
 - **Module**: inspect, include, const_get, const_set
 - **Class**: new, inspect (Module を継承)
-- **Integer**: 算術, 比較, **, <=>, <<, >>, &, |, ^, ~, [], to_s, to_f, zero?, abs
+- **Integer**: 算術, 比較, **, <=>, <<, >>, &, |, ^, ~, [], to_s, to_f, zero?, abs, **times**
 - **Float**: 算術, 比較, **, to_s, to_i, to_f, abs, zero?, floor, ceil, round
 - **String**: +, *, 比較, length/size, empty?, upcase, downcase, reverse, include?, to_s, to_i, inspect
-- **Array**: [], []=, push, pop, length/size, empty?, first, last, +, include?, inspect
-- **Hash**: [], []=, length/size, empty?, has_key?/key?, keys, values, inspect
+- **Array**: [], []=, push, pop, length/size, empty?, first, last, +, include?, inspect, **each**, **map** (alias collect), **select** (alias filter), **reject**
+- **Hash**: [], []=, length/size, empty?, has_key?/key?, keys, values, inspect, **each** (alias each_pair)
 - **Symbol**: ==, !=, to_s, to_sym, inspect（CRuby 即値を直接利用）
-- **Range**: first, last, begin, end, exclude_end?, size/length, include?, to_a, ==, inspect, to_s
+- **Range**: first, last, begin, end, exclude_end?, size/length, include?, to_a, ==, inspect, to_s, **each**
 - **Regexp**: match?, match, =~, ==, source, inspect, to_s（CRuby Regexp を内部利用）
 - **Rational**: 算術, 比較, numerator, denominator, to_f, to_i, inspect, to_s
 - **Complex**: 算術, ==, real, imaginary, abs, conjugate, rectangular, inspect, to_s

@@ -23,8 +23,50 @@ class AbRuby
 
     private
 
-    def push_frame(locals, params_cnt: 0)
-      @frames.push({ locals: locals.map(&:to_s), arg_index: locals.size, max: locals.size, params_cnt: params_cnt })
+    # method_body: the AST to pre-walk for block-local slot accounting.
+    # Any BlockNode discovered in this subtree (before hitting another
+    # method/class/module boundary) contributes params + block-new-locals
+    # to the outer frame's slot count.  The block slots sit between the
+    # outer method's named locals and its expression-temp region, so
+    # arg_index starts past them.
+    def push_frame(locals, params_cnt: 0, method_body: nil)
+      locals_arr = locals.map(&:to_s)
+      max_block_slots = method_body ? count_block_slots(method_body) : 0
+      frame_size = locals_arr.size + max_block_slots
+      @frames.push({
+        locals: locals_arr,
+        arg_index: frame_size,
+        max: frame_size,
+        params_cnt: params_cnt,
+        block_slot_next: locals_arr.size,   # cursor for assigning block literal slots
+        block_scope_stack: [],              # stack of {name => slot} per active block scope
+      })
+    end
+
+    # Walk a subtree and sum the block local slot requirement.  Stops at
+    # DefNode / ClassNode / ModuleNode boundaries (those introduce their
+    # own frames).  A BlockNode contributes (params + block-new-locals)
+    # slots and then recurses into its body (nested blocks share the
+    # same outer frame).
+    def count_block_slots(node)
+      return 0 if node.nil?
+      case node
+      when Prism::BlockNode
+        params = node.parameters
+        requireds = (params && params.parameters) ? params.parameters.requireds : []
+        param_names = requireds.map { |p| p.name.to_s }
+        other_locals = node.locals.map(&:to_s) - param_names
+        slots = param_names.size + other_locals.size
+        slots + (node.body ? count_block_slots(node.body) : 0)
+      when Prism::DefNode, Prism::ClassNode, Prism::ModuleNode
+        0
+      else
+        if node.respond_to?(:child_nodes)
+          node.child_nodes.compact.sum { |c| count_block_slots(c) }
+        else
+          0
+        end
+      end
     end
 
     def pop_frame
@@ -36,7 +78,12 @@ class AbRuby
     end
 
     def lvar_index(name)
-      idx = current_frame[:locals].index(name.to_s)
+      frame = current_frame
+      # Innermost block scope wins (shadows outer method locals).
+      frame[:block_scope_stack].reverse_each do |scope|
+        return scope[name.to_s] if scope.key?(name.to_s)
+      end
+      idx = frame[:locals].index(name.to_s)
       raise "unknown local variable: #{name}" unless idx
       idx
     end
@@ -61,7 +108,7 @@ class AbRuby
     def transduce(node)
       case node
       when Prism::ProgramNode
-        push_frame(node.locals)
+        push_frame(node.locals, method_body: node.statements)
         body = transduce(node.statements)
         frame = pop_frame
         AbRuby.alloc_node_scope(frame[:max], body)
@@ -296,6 +343,19 @@ class AbRuby
                 end
         AbRuby.alloc_node_break(value)
 
+      when Prism::NextNode
+        value = if node.arguments
+                  args = node.arguments.arguments
+                  if args.size == 1
+                    transduce(args[0])
+                  else
+                    raise "next with multiple values not supported"
+                  end
+                else
+                  AbRuby.alloc_node_nil
+                end
+        AbRuby.alloc_node_next(value)
+
       when Prism::ReturnNode
         value = if node.arguments
                   args = node.arguments.arguments
@@ -309,12 +369,27 @@ class AbRuby
                 end
         AbRuby.alloc_node_return(value)
 
+      when Prism::YieldNode
+        args = node.arguments&.arguments || []
+        call_arg_idx = arg_index
+        if args.any?
+          seq_nodes = args.map do |arg|
+            idx = inc_arg_index
+            AbRuby.alloc_node_lvar_set(idx, transduce(arg))
+          end
+          rewind_arg_index(call_arg_idx)
+          yield_node = set_line(AbRuby.alloc_node_yield(args.size, call_arg_idx), node)
+          build_seq(seq_nodes + [yield_node])
+        else
+          set_line(AbRuby.alloc_node_yield(0, call_arg_idx), node)
+        end
+
       when Prism::DefNode
         name = node.name.to_s
         params = node.parameters
         params_cnt = params ? params.requireds.size : 0
 
-        push_frame(node.locals, params_cnt: params_cnt)
+        push_frame(node.locals, params_cnt: params_cnt, method_body: node.body)
         body = node.body ? transduce(node.body) : AbRuby.alloc_node_nil
         frame = pop_frame
 
@@ -499,10 +574,19 @@ class AbRuby
         end
 
       when Prism::SuperNode
-        # super() or super(args)
+        # super() or super(args), optionally with an explicit { ... } block.
+        # If no explicit block, the current method's received block is
+        # implicitly forwarded by node_super at runtime.
         args = node.arguments&.arguments || []
+        has_block = node.respond_to?(:block) && node.block
+        block_literal = has_block ? transduce_block_literal(node.block) : nil
+
         if args.empty?
-          AbRuby.alloc_node_super(0, arg_index)
+          if block_literal
+            set_line(AbRuby.alloc_node_super_with_block(0, arg_index, block_literal), node)
+          else
+            AbRuby.alloc_node_super(0, arg_index)
+          end
         else
           base_idx = arg_index
           seq_nodes = args.map do |arg|
@@ -510,7 +594,12 @@ class AbRuby
             AbRuby.alloc_node_lvar_set(idx, transduce(arg))
           end
           rewind_arg_index(base_idx)
-          call_node = AbRuby.alloc_node_super(args.size, base_idx)
+          call_node =
+            if block_literal
+              set_line(AbRuby.alloc_node_super_with_block(args.size, base_idx, block_literal), node)
+            else
+              AbRuby.alloc_node_super(args.size, base_idx)
+            end
           build_seq(seq_nodes + [call_node])
         end
 
@@ -617,6 +706,68 @@ class AbRuby
       set_line(AbRuby.send(alloc_method, left, right, fallback_idx), node)
     end
 
+    # Parse a Prism::BlockNode into a node_block_literal.
+    #
+    # Slot allocation strategy:
+    #  - The outer method's frame size was pre-extended by push_frame with
+    #    count_block_slots(method_body), so there is a guaranteed-free
+    #    range [locals.size .. locals.size + total_block_slots).
+    #  - Each block literal encountered in transduce order consumes a
+    #    fresh chunk from the cursor frame[:block_slot_next], regardless
+    #    of whether names clash with other blocks (sibling blocks get
+    #    disjoint slot ranges; nested blocks too).
+    #  - Block param and block-new-local names are registered in a
+    #    per-block scope hash that lvar_index consults before falling
+    #    through to the outer method locals — this is how shadowing of
+    #    an outer-method variable by a same-named block param is
+    #    implemented.
+    #  - captured_fp (= outer fp at call time) + param_base gives the
+    #    absolute slot address; yield writes args there before running
+    #    the body.
+    #  - arg_index stays pointing at the expression-temp region above
+    #    block locals; the outer call's args/recv go there and the
+    #    callee's fp starts beyond block locals, so captured writes
+    #    never collide with callee frame memory.
+    def transduce_block_literal(block_node)
+      params = block_node.parameters
+      requireds = []
+      if params
+        inner = params.parameters
+        requireds = inner ? inner.requireds : []
+        unsupported = [
+          inner&.optionals, inner&.rest, inner&.posts,
+          inner&.keywords, inner&.keyword_rest, inner&.block
+        ].compact.flat_map { |x| x.respond_to?(:each) ? x.to_a : [x] }.compact
+        unless unsupported.empty?
+          raise "block parameters other than required are not supported (Phase 2): #{unsupported.inspect}"
+        end
+        if params.respond_to?(:locals) && params.locals && !params.locals.empty?
+          raise "block-local variables |..;x,y| not supported (Phase 2)"
+        end
+      end
+      param_names = requireds.map { |p| p.name.to_s }
+      other_locals = block_node.locals.map(&:to_s) - param_names
+
+      frame = current_frame
+      param_base = frame[:block_slot_next]
+      slot_cnt = param_names.size + other_locals.size
+      frame[:block_slot_next] = param_base + slot_cnt
+
+      scope = {}
+      param_names.each_with_index { |n, i| scope[n] = param_base + i }
+      other_locals.each_with_index { |n, i| scope[n] = param_base + param_names.size + i }
+      frame[:block_scope_stack].push(scope)
+
+      body = block_node.body ? transduce(block_node.body) : AbRuby.alloc_node_nil
+
+      frame[:block_scope_stack].pop
+      # block_slot_next stays advanced — sibling/later blocks in the
+      # same outer method get a fresh range, matching the pre-walk in
+      # count_block_slots so max is respected.
+
+      set_line(AbRuby.alloc_node_block_literal(body, param_names.size, param_base), block_node)
+    end
+
     def transduce_call(node)
       name = node.name
       args = node.arguments&.arguments || []
@@ -627,6 +778,9 @@ class AbRuby
         # Binary operators → specialized nodes
         op = name.to_s
         if BINOP_MAP.key?(op) && args.size == 1
+          if node.respond_to?(:block) && node.block
+            raise "binary operator with block is not supported"
+          end
           return transduce_binop(node)
         end
 
@@ -639,10 +793,20 @@ class AbRuby
               AbRuby.alloc_node_lvar_set(idx, transduce(arg))
             end
             rewind_arg_index(call_arg_idx)
-            call_node = set_line(AbRuby.alloc_node_func_call(name.to_s, args.size, call_arg_idx), node)
+            if node.respond_to?(:block) && node.block
+              block_literal = transduce_block_literal(node.block)
+              call_node = set_line(AbRuby.alloc_node_func_call_with_block(name.to_s, args.size, call_arg_idx, block_literal), node)
+            else
+              call_node = set_line(AbRuby.alloc_node_func_call(name.to_s, args.size, call_arg_idx), node)
+            end
             return build_seq(seq_nodes + [call_node])
           else
-            return set_line(AbRuby.alloc_node_func_call(name.to_s, 0, call_arg_idx), node)
+            if node.respond_to?(:block) && node.block
+              block_literal = transduce_block_literal(node.block)
+              return set_line(AbRuby.alloc_node_func_call_with_block(name.to_s, 0, call_arg_idx, block_literal), node)
+            else
+              return set_line(AbRuby.alloc_node_func_call(name.to_s, 0, call_arg_idx), node)
+            end
           end
         end
 
@@ -660,12 +824,22 @@ class AbRuby
           rewind_arg_index(recv_idx)
 
           recv_ref = AbRuby.alloc_node_lvar_get(recv_idx)
-          call_node = set_line(AbRuby.alloc_node_method_call(recv_ref, name.to_s, args.size, call_arg_idx), node)
+          if node.respond_to?(:block) && node.block
+            block_literal = transduce_block_literal(node.block)
+            call_node = set_line(AbRuby.alloc_node_method_call_with_block(recv_ref, name.to_s, args.size, call_arg_idx, block_literal), node)
+          else
+            call_node = set_line(AbRuby.alloc_node_method_call(recv_ref, name.to_s, args.size, call_arg_idx), node)
+          end
           return build_seq([recv_store] + seq_nodes + [call_node])
         else
           rewind_arg_index(recv_idx)
           recv_ref = AbRuby.alloc_node_lvar_get(recv_idx)
-          call_node = set_line(AbRuby.alloc_node_method_call(recv_ref, name.to_s, 0, call_arg_idx), node)
+          if node.respond_to?(:block) && node.block
+            block_literal = transduce_block_literal(node.block)
+            call_node = set_line(AbRuby.alloc_node_method_call_with_block(recv_ref, name.to_s, 0, call_arg_idx, block_literal), node)
+          else
+            call_node = set_line(AbRuby.alloc_node_method_call(recv_ref, name.to_s, 0, call_arg_idx), node)
+          end
           return AbRuby.alloc_node_seq(recv_store, call_node)
         end
       end
@@ -680,10 +854,20 @@ class AbRuby
         end
         rewind_arg_index(call_arg_idx)
 
-        call_node = set_line(AbRuby.alloc_node_func_call(name.to_s, args.size, call_arg_idx), node)
+        if node.respond_to?(:block) && node.block
+          block_literal = transduce_block_literal(node.block)
+          call_node = set_line(AbRuby.alloc_node_func_call_with_block(name.to_s, args.size, call_arg_idx, block_literal), node)
+        else
+          call_node = set_line(AbRuby.alloc_node_func_call(name.to_s, args.size, call_arg_idx), node)
+        end
         build_seq(seq_nodes + [call_node])
       else
-        set_line(AbRuby.alloc_node_func_call(name.to_s, 0, call_arg_idx), node)
+        if node.respond_to?(:block) && node.block
+          block_literal = transduce_block_literal(node.block)
+          set_line(AbRuby.alloc_node_func_call_with_block(name.to_s, 0, call_arg_idx, block_literal), node)
+        else
+          set_line(AbRuby.alloc_node_func_call(name.to_s, 0, call_arg_idx), node)
+        end
       end
     end
 

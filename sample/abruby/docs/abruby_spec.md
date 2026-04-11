@@ -142,6 +142,38 @@ end
 ```
 `break` は最も内側の while/until から脱出する。値を指定しない場合は `nil`。
 
+### ブロック / yield
+
+```ruby
+def each_pair
+  yield 1, 2
+  yield 3, 4
+  self
+end
+
+sum = 0
+each_pair { |a, b| sum += a + b }   # => 10
+```
+
+- `{ ... }` / `do ... end` の両方でブロックリテラルを書ける
+- パラメータ: `|x|`, `|x, y|`, `|| ...|`（空 params）, なし
+  - MVP は required パラメータのみ（デフォルト値/可変長/キーワード/`_1`/`_2` は未対応）
+- `yield` / `yield args` でブロックを実行。ブロック無しで呼び出されたメソッドで `yield` すると `"no block given (yield)"` の例外が発生
+- `block_given?` — メソッドが block 付きで呼ばれたかを判定
+- `next` / `next value` — block body から脱出、yield の返り値になる
+- `break` / `break value` — block から脱出、yielding メソッドの呼び出し元に値を返す
+- **非ローカル `return`** — block 内 `return` は block を *定義した* メソッドから脱出する（Ruby 互換）。yield 連鎖が深くても正しく unwind する
+- ブロックは closure: 外側メソッドのローカル変数を読み書きできる
+- 同名のブロックパラメータは外側のローカル変数をシャドーする（outer の値は変更されない）
+- `super`（暗黙）は現メソッドが受け取ったブロックを親メソッドに転送。`super() { ... }` で明示的に別ブロックを渡せる
+
+#### ブロック関連の制約（Phase 1）
+
+- `Proc.new` / `proc` / `lambda` / `->` / `Proc#call` は未対応
+- `def f(&blk)` の block パラメータ受け取り、`&proc_var` 転送、`&:symbol` sugar は未対応
+- block 内 `return` 対応の副作用として、**ブロックは C スタック上にのみ存在**し、heap に escape しない（現在の MVP では Proc 化できないので問題ない）
+- block 本体内で例外が発生した場合、backtrace は yielding メソッドの yield 位置を示す（block の行ではない）
+
 ### 例外処理
 ```ruby
 raise "error message"   # RuntimeError を発生（バックトレース付き）
@@ -353,6 +385,7 @@ Proxy.new.foo(42)  # "foo" と 42 を出力
 | `to_f` | 0 | Float に変換 |
 | `zero?` | 0 | 0 かどうか |
 | `abs` | 0 | 絶対値 |
+| `times` | 0 + block | `|i|` で 0..self-1 をループ、self を返す |
 
 Fixnum 範囲を超えると自動的に Bignum になる。Fixnum/Bignum/Float の混在演算に対応。
 除算は Ruby floor division（C の切り捨てではなく負の無限大方向に丸める）。
@@ -425,6 +458,10 @@ Hash キーとして使用可能 (`{a: 1}` は `{:a => 1}` と同等)。
 | `last` | 0 | 末尾要素 (空なら nil) |
 | `+` | 1 | 配列結合 (新しい配列を返す) |
 | `include?` | 1 | 要素の存在チェック |
+| `each` | 0 + block | 各要素を yield、self を返す |
+| `map` / `collect` | 0 + block | 各要素の yield 結果を新配列に |
+| `select` / `filter` | 0 + block | ブロックが真を返す要素を新配列に |
+| `reject` | 0 + block | ブロックが偽を返す要素を新配列に |
 
 ### Hash
 
@@ -441,6 +478,7 @@ Hash キーとして使用可能 (`{a: 1}` は `{:a => 1}` と同等)。
 | `has_key?`, `key?` | 1 | キーの存在チェック |
 | `keys` | 0 | キーの配列を返す |
 | `values` | 0 | 値の配列を返す |
+| `each` / `each_pair` | 0 + block | `|k, v|` で各ペアを yield、self を返す |
 
 ### Range
 
@@ -456,6 +494,7 @@ Hash キーとして使用可能 (`{a: 1}` は `{:a => 1}` と同等)。
 | `include?` | 1 | 含まれるか (Integer のみ) |
 | `to_a` | 0 | 配列に変換 (Integer のみ) |
 | `==` | 1 | 等値比較 |
+| `each` | 0 + block | `|i|` で範囲を走査 (Integer のみ)、self を返す |
 
 ### Regexp
 
@@ -531,12 +570,10 @@ Hash キーとして使用可能 (`{a: 1}` は `{:a => 1}` と同等)。
 Ruby との相違点の詳細は [todo.md](todo.md) を参照。
 
 主な未サポート機能:
-- ブロック・Proc・lambda・イテレータ
-- next
-- super 呼び出し
-- case / when / in
+- Proc / lambda / `->` / `&blk` パラメータ / `&:sym` sugar
 - for .. in
-- require / load
+- require / load（一部対応、`require_relative` あり）
 - アクセス制御 (public/private/protected)
 - デフォルト引数・キーワード引数・可変長引数
 - クラス変数 (`@@var`)
+- block 内 numbered parameters (`_1`, `_2`) / `redo`

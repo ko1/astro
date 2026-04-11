@@ -9,17 +9,17 @@ benchmark/optcarrot/bin/optcarrot-bench を動かすために必要な機能。
 
 ### 致命的（これがないと何も動かない）
 
-- [ ] ブロック / yield / Proc（全イテレータの基盤）
+- [x] ブロック / yield（block 基盤、`{ ... }` / `do...end`, `yield`, `block_given?`, `next`, `break`, 非ローカル `return`, closure, super block forwarding）— Proc/lambda/&blk は Phase 2
 - [x] `case / when`（if/elsif チェーンに desugar、=== メソッド対応）
 - [x] `attr_reader` / `attr_writer` / `attr_accessor`
 - [ ] デフォルト引数 (`def f(a, b = 1)`)
 
 ### 重要（主要な処理パスで使用）
 
-- [ ] `Integer#times`（ブロック依存）
+- [x] `Integer#times`
 - [x] `Integer#[]`（ビットインデックス `num[bit]`）
-- [ ] Array: `each`, `map`, `select`, `reject`, `fill`, `flatten`, `clear`, `replace`, `concat`（ブロック依存多数）
-- [ ] Hash: `each`, `fetch`, `merge`, `delete`, `compare_by_identity`
+- [x] Array: `each`, `map` (collect), `select` (filter), `reject` — `fill`, `flatten`, `clear`, `replace`, `concat` は未
+- [x] Hash: `each` (each_pair) — `fetch`, `merge`, `delete`, `compare_by_identity` は未
 - [ ] String: `gsub`, `split`, `strip`, `chomp`, `bytes`, `pack`, `unpack`, `bytesize`, `[]`
 - [x] `super`（bare super で引数転送、super(args) で明示的引数、super() で引数なし）
 - [ ] `private` / `public` / `protected`
@@ -48,11 +48,15 @@ benchmark/optcarrot/bin/optcarrot-bench を動かすために必要な機能。
 
 ### 制御構造
 - [ ] `for .. in`
-- [ ] `next`
+- [x] `next`（block body から、値付き/値なし両対応）
 
 ### ブロック・Proc・lambda
-- [ ] `Proc.new` / `proc` / `lambda` / `->`
-- [ ] `&block` 引数
+- [ ] `Proc.new` / `proc` / `lambda` / `->` — 現状は block を heap に escape させない前提（C スタック上の `struct abruby_block` のみ）
+- [ ] `&block` 引数 / `&proc_var` 転送
+- [ ] `&:symbol` sugar
+- [ ] block 内 default / *args / **kwargs パラメータ
+- [ ] `_1`, `_2` 番号付きパラメータ
+- [ ] `redo`
 
 ### メソッド
 - [ ] キーワード引数 (`def f(a:, b: 1)`)
@@ -73,8 +77,8 @@ benchmark/optcarrot/bin/optcarrot-bench を動かすために必要な機能。
 ### ビルトインメソッドの差分
 
 #### Integer
-- [ ] `upto`, `downto`（ブロック必要）
-- [ ] `step`（ブロック必要）
+- [ ] `upto`, `downto`（Phase 2）
+- [ ] `step`（Phase 2）
 - [ ] `even?`, `odd?`
 - [ ] `bit_length`, `between?`
 

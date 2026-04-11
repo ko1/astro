@@ -350,6 +350,60 @@ abruby_class_set_const(struct abruby_class *klass, ID name, VALUE val)
     ab_id_table_insert(&klass->constants, name, val);
 }
 
+// Invoke the block attached to the current frame from a cfunc body.
+// Used by builtin iterators (Integer#times, Array#each, ...).
+// Contract (mirrors node_yield):
+//   - Reads c->current_frame->block; raises LocalJumpError if NULL.
+//   - Transfers argv[0..argc) into the block's captured fp at param_base,
+//     pad-with-nil for missing, drop-extra semantics (proc-style).
+//   - Swaps fp/self/current_block/in_block to the captured env, runs the
+//     block body, then restores.
+//   - Demotes RESULT_NEXT to NORMAL (next returns from the block).
+//   - Leaves BREAK / RAISE / RETURN intact; the cfunc must return these
+//     states unchanged so dispatch_method_frame_with_block demotes them.
+RESULT
+abruby_yield(CTX *c, unsigned int argc, VALUE *argv)
+{
+    const struct abruby_block *blk = c->current_frame->block;
+    if (UNLIKELY(blk == NULL)) {
+        VALUE exc = abruby_exception_new(c, c->current_frame,
+            abruby_str_new_cstr(c, "no block given (yield)"));
+        return (RESULT){exc, RESULT_RAISE};
+    }
+
+    unsigned int n_params = blk->params_cnt;
+    unsigned int n_copy = argc < n_params ? argc : n_params;
+    for (unsigned int i = 0; i < n_copy; i++) {
+        blk->captured_fp[blk->param_base + i] = argv[i];
+    }
+    for (unsigned int i = n_copy; i < n_params; i++) {
+        blk->captured_fp[blk->param_base + i] = Qnil;
+    }
+
+    VALUE *save_fp = c->fp;
+    VALUE save_self = c->self;
+    struct abruby_frame *save_frame = c->current_frame;
+    const struct abruby_block *save_current_block = c->current_block;
+    bool save_in_block = c->in_block;
+
+    c->fp = blk->captured_fp;
+    c->self = blk->captured_self;
+    c->current_frame = blk->defining_frame;
+    c->current_block = blk;
+    c->in_block = true;
+
+    RESULT r = EVAL(c, blk->body);
+
+    c->fp = save_fp;
+    c->self = save_self;
+    c->current_frame = save_frame;
+    c->current_block = save_current_block;
+    c->in_block = save_in_block;
+
+    r.state &= ~(unsigned)RESULT_NEXT;
+    return r;
+}
+
 // Call an abruby method (cfunc or AST) from C code.
 // Uses a generous frame offset to avoid clobbering caller's locals.
 RESULT
@@ -370,8 +424,15 @@ abruby_call_method(CTX *c, VALUE recv, const struct abruby_method *method,
         RESULT r = EVAL(c, method->u.ast.body);
         c->fp = save_fp;
         c->self = save_self;
-        // Catch RETURN at method boundary (bitwise: RETURN -> NORMAL, others unchanged)
-        r.state &= ~(unsigned)RESULT_RETURN;
+        // Catch RETURN at this C-boundary method call.  This path pushes no
+        // frame, so it cannot participate in targeted non-local return
+        // matching; treat it as an implicit wildcard catch (the historic
+        // behavior) and clear any target that may have been set so it does
+        // not bleed into subsequent evaluation.
+        if (r.state & RESULT_RETURN) {
+            r.state &= ~(unsigned)RESULT_RETURN;
+            c->return_target_frame_id = 0;
+        }
         return r;
     }
 }
@@ -1083,6 +1144,53 @@ rb_alloc_node_super(VALUE self, VALUE params_cnt, VALUE arg_index)
     return wrap_node(ALLOC_node_super(FIX2UINT(params_cnt), FIX2UINT(arg_index)));
 }
 
+// === Block support ===
+
+static VALUE
+rb_alloc_node_block_literal(VALUE self, VALUE body, VALUE params_cnt, VALUE param_base)
+{
+    return wrap_node(ALLOC_node_block_literal(unwrap_node(body),
+                                              FIX2UINT(params_cnt),
+                                              FIX2UINT(param_base)));
+}
+
+static VALUE
+rb_alloc_node_yield(VALUE self, VALUE argc, VALUE arg_index)
+{
+    return wrap_node(ALLOC_node_yield(FIX2UINT(argc), FIX2UINT(arg_index)));
+}
+
+static VALUE
+rb_alloc_node_next(VALUE self, VALUE value)
+{
+    return wrap_node(ALLOC_node_next(unwrap_node(value)));
+}
+
+static VALUE
+rb_alloc_node_method_call_with_block(VALUE self, VALUE recv, VALUE name, VALUE params_cnt, VALUE arg_index, VALUE block_literal)
+{
+    ID cname = rb_intern_str(name);
+    return wrap_node(ALLOC_node_method_call_with_block(unwrap_node(recv), cname,
+                                                       FIX2UINT(params_cnt), FIX2UINT(arg_index),
+                                                       unwrap_node(block_literal)));
+}
+
+static VALUE
+rb_alloc_node_func_call_with_block(VALUE self, VALUE name, VALUE params_cnt, VALUE arg_index, VALUE block_literal)
+{
+    ID cname = rb_intern_str(name);
+    return wrap_node(ALLOC_node_func_call_with_block(cname,
+                                                     FIX2UINT(params_cnt), FIX2UINT(arg_index),
+                                                     unwrap_node(block_literal)));
+}
+
+static VALUE
+rb_alloc_node_super_with_block(VALUE self, VALUE params_cnt, VALUE arg_index, VALUE block_literal)
+{
+    return wrap_node(ALLOC_node_super_with_block(FIX2UINT(params_cnt), FIX2UINT(arg_index),
+                                                 unwrap_node(block_literal)));
+}
+
 
 static VALUE
 rb_set_node_line(VALUE self, VALUE node_obj, VALUE line)
@@ -1254,7 +1362,7 @@ abruby_require_file(CTX *c, VALUE rb_path)
     struct abruby_frame *save_frame = c->current_frame;
     c->fp = c->stack;
     c->current_class = NULL;
-    struct abruby_frame req_frame = {save_frame, NULL, {.source_file = RSTRING_PTR(abs_str)}};
+    struct abruby_frame req_frame = {save_frame, NULL, {.source_file = RSTRING_PTR(abs_str)}, NULL, ++c->frame_id_counter};
     c->current_frame = &req_frame;
     RESULT r = EVAL(c, ast);
     c->fp = save_fp;
@@ -1339,7 +1447,7 @@ rb_abruby_eval_ast(VALUE self, VALUE ast_obj)
 
     // Push <main> frame so backtrace always has a bottom frame
     const char *eval_file = NIL_P(vm->current_file) ? "(abruby)" : RSTRING_PTR(vm->current_file);
-    struct abruby_frame main_frame = {NULL, NULL, {.source_file = eval_file}};
+    struct abruby_frame main_frame = {NULL, NULL, {.source_file = eval_file}, NULL, ++vm->current_fiber->ctx.frame_id_counter};
     vm->current_fiber->ctx.current_frame = &main_frame;
 
     RESULT r = EVAL(&vm->current_fiber->ctx, ast);
@@ -1586,6 +1694,12 @@ Init_abruby(void)
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_method_call", rb_alloc_node_method_call, 4);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_func_call", rb_alloc_node_func_call, 3);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_super", rb_alloc_node_super, 2);
+    rb_define_singleton_method(rb_cAbRuby, "alloc_node_block_literal", rb_alloc_node_block_literal, 3);
+    rb_define_singleton_method(rb_cAbRuby, "alloc_node_yield", rb_alloc_node_yield, 2);
+    rb_define_singleton_method(rb_cAbRuby, "alloc_node_next", rb_alloc_node_next, 1);
+    rb_define_singleton_method(rb_cAbRuby, "alloc_node_method_call_with_block", rb_alloc_node_method_call_with_block, 5);
+    rb_define_singleton_method(rb_cAbRuby, "alloc_node_func_call_with_block", rb_alloc_node_func_call_with_block, 4);
+    rb_define_singleton_method(rb_cAbRuby, "alloc_node_super_with_block", rb_alloc_node_super_with_block, 3);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_plus", rb_alloc_node_plus, 3);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_minus", rb_alloc_node_minus, 3);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_mul", rb_alloc_node_mul, 3);

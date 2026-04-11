@@ -182,6 +182,28 @@ static RESULT ab_integer_bnot(CTX *c, VALUE self, unsigned int argc, VALUE *argv
     return RESULT_OK(AB_NUM_WRAP(c, rb_funcall(rs, rb_intern("~"), 0)));
 }
 
+// Integer#times { |i| ... } — yields i = 0, 1, ..., self - 1.
+// Returns self (Ruby semantics).  BREAK / RAISE / RETURN propagate up
+// for the surrounding dispatch_method_frame_with_block to handle.
+static RESULT ab_integer_times(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    if (UNLIKELY(!FIXNUM_P(self))) {
+        // Bignum#times: iterate up to self by integer increment.  Rare
+        // enough to just convert to long and fall through; abruby's
+        // Bignum wrapping makes this slightly awkward, so for MVP we
+        // only support Fixnum receivers.
+        VALUE exc = abruby_exception_new(c, c->current_frame,
+            abruby_str_new_cstr(c, "Bignum#times is not supported in Phase 1"));
+        return (RESULT){exc, RESULT_RAISE};
+    }
+    long n = FIX2LONG(self);
+    for (long i = 0; i < n; i++) {
+        VALUE iv = LONG2FIX(i);
+        RESULT r = abruby_yield(c, 1, &iv);
+        if (UNLIKELY(r.state != RESULT_NORMAL)) return r;
+    }
+    return RESULT_OK(self);
+}
+
 static RESULT ab_integer_aref(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     if (LIKELY(FIXNUM_P(self) && FIXNUM_P(argv[0]))) {
         long val = FIX2LONG(self);
@@ -223,4 +245,5 @@ Init_abruby_integer(void)
     abruby_class_add_cfunc(ab_tmpl_integer_class, rb_intern("zero?"),  ab_integer_zero_p,  0);
     abruby_class_add_cfunc(ab_tmpl_integer_class, rb_intern("abs"),    ab_integer_abs,     0);
     abruby_class_add_cfunc(ab_tmpl_integer_class, rb_intern("[]"),     ab_integer_aref,    1);
+    abruby_class_add_cfunc(ab_tmpl_integer_class, rb_intern("times"),  ab_integer_times,   0);
 }

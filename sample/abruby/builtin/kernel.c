@@ -65,6 +65,18 @@ static RESULT ab_kernel_eval(CTX *c, VALUE self, unsigned int argc, VALUE *argv)
     return abruby_eval_string(c, code);
 }
 
+// block_given? — true if the method invoking us was itself given a block.
+//
+// Implementation note: this cfunc gets its own frame pushed by
+// dispatch_method_frame, so the "method that received the block" is one
+// frame up (c->current_frame->prev).  For the top-level <main> case,
+// prev may be NULL (or a frame with no method) — we return false then.
+static RESULT ab_kernel_block_given_p(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    const struct abruby_frame *caller = c->current_frame ? c->current_frame->prev : NULL;
+    bool given = caller && caller->block != NULL;
+    return RESULT_OK(given ? Qtrue : Qfalse);
+}
+
 void
 Init_abruby_kernel(void)
 {
@@ -75,4 +87,5 @@ Init_abruby_kernel(void)
     abruby_class_add_cfunc(ab_tmpl_kernel_module, rb_intern("require"),          ab_kernel_require,          1);
     abruby_class_add_cfunc(ab_tmpl_kernel_module, rb_intern("require_relative"), ab_kernel_require_relative, 1);
     abruby_class_add_cfunc(ab_tmpl_kernel_module, rb_intern("eval"),             ab_kernel_eval,             1);
+    abruby_class_add_cfunc(ab_tmpl_kernel_module, rb_intern("block_given?"),     ab_kernel_block_given_p,    0);
 }

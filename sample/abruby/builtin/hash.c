@@ -65,6 +65,24 @@ static RESULT ab_hash_values(CTX *c, VALUE self, unsigned int argc, VALUE *argv)
     return RESULT_OK(abruby_ary_new(c, rb_funcall(RHSH(self), rb_intern("values"), 0)));
 }
 
+// Hash#each { |k, v| ... } — yields key/value pairs and returns self.
+// Hash keys stored as raw CRuby strings are re-wrapped as abruby strings
+// before yielding, matching the abruby VALUE invariant.
+static RESULT ab_hash_each(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    VALUE hash = RHSH(self);
+    VALUE raw_keys = rb_funcall(hash, rb_intern("keys"), 0);
+    long len = RARRAY_LEN(raw_keys);
+    for (long i = 0; i < len; i++) {
+        VALUE raw_k = RARRAY_AREF(raw_keys, i);
+        VALUE raw_v = rb_hash_aref(hash, raw_k);
+        VALUE k = RB_TYPE_P(raw_k, T_STRING) ? abruby_str_new(c, raw_k) : raw_k;
+        VALUE pair[2] = { k, raw_v };
+        RESULT r = abruby_yield(c, 2, pair);
+        if (UNLIKELY(r.state != RESULT_NORMAL)) return r;
+    }
+    return RESULT_OK(self);
+}
+
 void
 Init_abruby_hash(void)
 {
@@ -79,4 +97,6 @@ Init_abruby_hash(void)
     abruby_class_add_cfunc(ab_tmpl_hash_class, rb_intern("key?"),     ab_hash_has_key_p,1);
     abruby_class_add_cfunc(ab_tmpl_hash_class, rb_intern("keys"),     ab_hash_keys,     0);
     abruby_class_add_cfunc(ab_tmpl_hash_class, rb_intern("values"),   ab_hash_values,   0);
+    abruby_class_add_cfunc(ab_tmpl_hash_class, rb_intern("each"),     ab_hash_each,     0);
+    abruby_class_add_cfunc(ab_tmpl_hash_class, rb_intern("each_pair"),ab_hash_each,     0);
 }

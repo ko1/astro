@@ -55,6 +55,9 @@ enum result_state {
     RESULT_RETURN = 1,  // bit 0
     RESULT_RAISE  = 2,  // bit 1
     RESULT_BREAK  = 4,  // bit 2
+    RESULT_NEXT   = 8,  // bit 3 — block `next` (caught by yield site)
+    // Up to bit 15 reserved for future states (e.g., RESULT_REDO).
+    // `state` is stored as an enum but compiled to int; keep bits <= 15.
 };
 
 typedef struct {
@@ -280,9 +283,41 @@ ab_obj_type_p(VALUE obj, enum abruby_obj_type type)
 // Global variables are stored in an ab_id_table in abruby_machine.
 // (struct abruby_gvar_table removed)
 
-// call frame for backtrace support (32 bytes)
+// A block literal captured at a call site.  Lives on the C stack of the call
+// path that set it; does NOT outlive that call.  (Proc.new / lambda / &blk
+// parameters — which would require copying this into a heap object — are
+// deliberately out of scope for Phase 1 block support.)
+//
+// defining_frame is the caller's frame at the point the block was created
+// — the "enclosing method frame" in Ruby terms.  While the block body is
+// running, current_frame is swapped to this frame so that `yield` inside
+// the block refers to the *defining method's* block (Ruby semantics:
+// `yield` is tied to the method where the block syntactically appears,
+// not the method currently executing the block).  The `super` call inside
+// a block also walks from the defining method's class, which matches
+// Ruby's non-local semantics.
+struct abruby_block {
+    struct Node *body;                  // block body AST (also pinned via the AST)
+    VALUE *captured_fp;                 // caller's fp at call time (closure env)
+    VALUE captured_self;                // caller's self
+    struct abruby_frame *defining_frame; // enclosing method frame at capture time
+    uint32_t params_cnt;                // number of required params (|x, y|) — MVP has no opt/rest
+    uint32_t param_base;                // block params live at captured_fp[param_base..+params_cnt]
+};
+
+// call frame for backtrace support
 // method != NULL: normal method frame
 // method == NULL: <main>/<top (required)>
+//
+// frame_id is a machine-local monotonic id assigned at push time.  Used as a
+// "return target" for non-local returns from blocks: CTX.return_target_frame_id
+// names which frame should catch a propagating RETURN.  0 is the wildcard
+// meaning "nearest method boundary catches" — that is the default used by
+// normal (non-block) `return` and preserves pre-block semantics exactly.
+//
+// block is the block passed in at this call (NULL if the method was called
+// without one).  A non-NULL block tells the method boundary to also demote
+// RESULT_BREAK — that is where `break` from the block lands (Ruby semantics).
 struct abruby_frame {
     struct abruby_frame *prev;
     const struct abruby_method *method;  // super walks from method->defining_class->super
@@ -290,6 +325,8 @@ struct abruby_frame {
         const struct Node *caller_node;  // method frame: call site in the caller (set at push time)
         const char *source_file;         // <main>/<top>: set at push time
     };
+    const struct abruby_block *block;    // block received by this call, or NULL
+    uint32_t frame_id;                   // unique id per live frame (CTX-local counter)
 };
 
 // Cached interned IDs for operator methods and common names
@@ -313,6 +350,21 @@ struct CTX_struct {
     struct abruby_class *current_class;  // set during class body eval
     struct abruby_frame *current_frame;  // head of call frame linked list
     const struct abruby_id_cache *ids;   // cached rb_intern results
+    // Non-local return target: 0 = wildcard (catch at nearest method boundary),
+    // non-0 = only the frame whose frame_id matches should demote RETURN.
+    // Set by `return` inside a block (to the block's defining frame id);
+    // cleared by whichever method boundary catches.
+    uint32_t return_target_frame_id;
+    // Monotonic counter for assigning fresh frame_id at push time.
+    // CTX-local (not machine-local) so that fibers get independent numbering.
+    uint32_t frame_id_counter;
+    // Block-execution context.  When yield / abruby_yield swaps fp/self to a
+    // block's captured environment, it also saves the previous current_block
+    // and sets in_block=true.  `return` inside a block reads current_block
+    // to find the defining frame id and sets return_target_frame_id to it.
+    // Nested yields just stack-save and restore these like any other local.
+    const struct abruby_block *current_block;
+    bool in_block;
 };
 
 // Fiber: owns a CTX (execution context with its own stack).

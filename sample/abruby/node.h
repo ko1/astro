@@ -39,6 +39,14 @@ VALUE abruby_wrap_node(NODE *n);
 // exception support
 VALUE abruby_exception_new(CTX *c, const struct abruby_frame *frame, VALUE message);
 
+// Invoke the block attached to the current frame from a cfunc body.
+// Returns the block's result.  Propagates RAISE / RETURN / BREAK upward
+// (the cfunc should return these unchanged so the surrounding
+// dispatch_method_frame_with_block demotes them); NEXT is caught here and
+// demoted to NORMAL with the next value.  If no block is attached, returns
+// a RESULT_RAISE with a LocalJumpError-style abruby exception.
+RESULT abruby_yield(CTX *c, unsigned int argc, VALUE *argv);
+
 struct NodeHead {
     struct NodeFlags {
         bool has_hash_value;

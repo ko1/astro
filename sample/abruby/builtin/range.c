@@ -49,6 +49,26 @@ static RESULT ab_range_include_p(CTX *c, VALUE self, unsigned int argc, VALUE *a
     return RESULT_OK(Qfalse);
 }
 
+// Range#each { |i| ... } — integer ranges only (matches abruby spec).
+// Returns self.  BREAK/RAISE/RETURN propagate.
+static RESULT ab_range_each(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    const struct abruby_range *r = RRANGE(self);
+    if (!FIXNUM_P(r->begin) || !FIXNUM_P(r->end)) {
+        VALUE exc = abruby_exception_new(c, c->current_frame,
+            abruby_str_new_cstr(c, "can't iterate non-integer Range"));
+        return (RESULT){exc, RESULT_RAISE};
+    }
+    long b = FIX2LONG(r->begin);
+    long e = FIX2LONG(r->end);
+    if (r->exclude_end) e--;
+    for (long i = b; i <= e; i++) {
+        VALUE iv = LONG2FIX(i);
+        RESULT rr = abruby_yield(c, 1, &iv);
+        if (UNLIKELY(rr.state != RESULT_NORMAL)) return rr;
+    }
+    return RESULT_OK(self);
+}
+
 static RESULT ab_range_to_a(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     const struct abruby_range *r = RRANGE(self);
     if (FIXNUM_P(r->begin) && FIXNUM_P(r->end)) {
@@ -116,4 +136,5 @@ Init_abruby_range(void)
     abruby_class_add_cfunc(ab_tmpl_range_class, rb_intern("=="),           ab_range_eq,            1);
     abruby_class_add_cfunc(ab_tmpl_range_class, rb_intern("inspect"),      ab_range_inspect,       0);
     abruby_class_add_cfunc(ab_tmpl_range_class, rb_intern("to_s"),         ab_range_to_s,          0);
+    abruby_class_add_cfunc(ab_tmpl_range_class, rb_intern("each"),         ab_range_each,          0);
 }

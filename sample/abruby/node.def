@@ -27,6 +27,8 @@
     _push_frame.prev = c->current_frame; \
     _push_frame.method = NULL; \
     _push_frame.caller_node = (node); \
+    _push_frame.block = NULL; \
+    _push_frame.frame_id = ++c->frame_id_counter; \
     c->current_frame = &_push_frame
 
 #define POP_FRAME() \
@@ -529,7 +531,106 @@ NODE_DEF
 node_return(CTX * restrict c, NODE * restrict n, NODE *value)
 {
     VALUE v = UNWRAP(EVAL_ARG(c, value));
+    // Non-local return target:
+    //   - executing inside a block body: target the block's defining
+    //     frame so the return unwinds past intervening yielding methods.
+    //   - otherwise: target=0 (wildcard) catches at the nearest method
+    //     boundary, matching pre-block semantics exactly.
+    if (UNLIKELY(c->in_block)) {
+        c->return_target_frame_id = c->current_block->defining_frame->frame_id;
+    } else {
+        c->return_target_frame_id = 0;
+    }
     return (RESULT){v, RESULT_RETURN};
+}
+
+// `next` inside a block returns (value) to the yielding call site, which
+// demotes NEXT back to NORMAL with that value.  Outside a block this still
+// propagates RESULT_NEXT; there is no enclosing catcher, so a LocalJumpError
+// is the intended Ruby behavior.  In MVP we leave that to fall out naturally.
+NODE_DEF
+node_next(CTX * restrict c, NODE * restrict n, NODE *value)
+{
+    VALUE v = UNWRAP(EVAL_ARG(c, value));
+    return (RESULT){v, RESULT_NEXT};
+}
+
+// Data-only node carrying a block literal attached to a call site.  Parser
+// emits it as the `block_literal` operand of a node_*_call_with_block; the
+// call node unpacks `body`, `params_cnt`, `param_base` directly from the
+// NODE union at dispatch time.  It should never be dispatched on its own;
+// the @noinline annotation keeps it out of specialization, and the body is
+// a safety net that returns nil (asserting in debug builds).
+NODE_DEF @noinline
+node_block_literal(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t params_cnt, uint32_t param_base)
+{
+    (void)c; (void)body; (void)params_cnt; (void)param_base;
+    ABRUBY_ASSERT(!"node_block_literal must not be EVAL'd directly");
+    (void)n;
+    return RESULT_OK(Qnil);
+}
+
+// `yield args` from within an AST method body.
+// Looks up the block attached to the current frame, transfers argc values
+// into the block's captured frame at param_base, swaps the execution context
+// into the block (fp/self/current_block/in_block), evaluates the block body,
+// then restores the swapped state.  NEXT is demoted to NORMAL here so `next`
+// returns from the block cleanly; BREAK / RAISE / RETURN keep propagating.
+NODE_DEF
+node_yield(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_index)
+{
+    const struct abruby_block *blk = c->current_frame->block;
+    if (UNLIKELY(blk == NULL)) {
+        VALUE exc;
+        PUSH_FRAME(n);
+        exc = abruby_exception_new(c, c->current_frame,
+            abruby_str_new_cstr(c, "no block given (yield)"));
+        POP_FRAME();
+        return (RESULT){exc, RESULT_RAISE};
+    }
+
+    // Transfer args into the block's captured fp at param_base.
+    // Missing args default to nil; extra args are dropped (MVP semantics
+    // — matches the Ruby "proc" (not lambda) convention, which is the
+    // right one for `yield`).
+    uint32_t n_params = blk->params_cnt;
+    uint32_t n_copy = argc < n_params ? argc : n_params;
+    for (uint32_t i = 0; i < n_copy; i++) {
+        blk->captured_fp[blk->param_base + i] = c->fp[arg_index + i];
+    }
+    for (uint32_t i = n_copy; i < n_params; i++) {
+        blk->captured_fp[blk->param_base + i] = Qnil;
+    }
+
+    // Swap execution context into the block's captured environment.
+    // current_frame is rerouted to the defining frame so that `yield`
+    // and `super` inside the block body see the *enclosing method's*
+    // context, not the method currently yielding (which is the Ruby
+    // semantics: `yield` is bound at the block's definition site).
+    VALUE *save_fp = c->fp;
+    VALUE save_self = c->self;
+    struct abruby_frame *save_frame = c->current_frame;
+    const struct abruby_block *save_current_block = c->current_block;
+    bool save_in_block = c->in_block;
+
+    c->fp = blk->captured_fp;
+    c->self = blk->captured_self;
+    c->current_frame = blk->defining_frame;
+    c->current_block = blk;
+    c->in_block = true;
+
+    RESULT r = EVAL(c, blk->body);
+
+    c->fp = save_fp;
+    c->self = save_self;
+    c->current_frame = save_frame;
+    c->current_block = save_current_block;
+    c->in_block = save_in_block;
+
+    // Demote NEXT → NORMAL (value retained).  BREAK / RAISE / RETURN
+    // pass through for upper-layer catches.
+    r.state &= ~(unsigned)RESULT_NEXT;
+    return r;
 }
 
 NODE_DEF
@@ -730,6 +831,8 @@ dispatch_method_frame(CTX * restrict c, NODE * restrict call_site,
     frame.prev = c->current_frame;
     frame.method = mc->method;
     frame.caller_node = call_site;
+    frame.block = NULL;
+    frame.frame_id = ++c->frame_id_counter;
     c->current_frame = &frame;
 
     RESULT r;
@@ -738,9 +841,18 @@ dispatch_method_frame(CTX * restrict c, NODE * restrict call_site,
         c->fp = save_fp + arg_index;
         r = mc->dispatcher(c, mc->body);
         c->fp = save_fp;
-        // Method boundary catch: RETURN -> NORMAL (bitwise, no branch).
-        // RAISE/BREAK stay set and propagate up via the caller's UNWRAP.
-        r.state &= ~(unsigned)RESULT_RETURN;
+        // Method boundary catch:
+        //   RETURN is caught iff return_target_frame_id is 0 (wildcard,
+        //   the common case — plain `return` inside this method) or it
+        //   names this frame (non-local return from a block whose
+        //   defining frame is this one).  Otherwise RETURN keeps
+        //   propagating up to its true target.
+        //   RAISE/BREAK/NEXT stay set for the caller's UNWRAP.
+        uint32_t tgt = c->return_target_frame_id;
+        if (tgt == 0 || tgt == frame.frame_id) {
+            r.state &= ~(unsigned)RESULT_RETURN;
+            c->return_target_frame_id = 0;
+        }
     } else {
         r = mc->method->u.cfunc.func(c, c->self, argc, c->fp + arg_index);
     }
@@ -762,6 +874,74 @@ dispatch_method_with_klass(CTX * restrict c, NODE * restrict call_site,
     VALUE save_self = c->self;
     c->self = recv;
     RESULT r = dispatch_method_frame(c, call_site, &mc, argc, arg_index);
+    c->self = save_self;
+    return r;
+}
+
+// Block-carrying variant of dispatch_method_frame.
+// Same structure as dispatch_method_frame but:
+//   - Installs `blk` on the pushed frame.
+//   - On method boundary, also demotes RESULT_BREAK (break from the
+//     block lands here — Ruby semantics).
+// IVAR_GETTER/SETTER fast path is NOT taken: block-carrying calls always
+// go through a full frame so the block is visible to a `yield` inside.
+// The ivar-accessor optimization is irrelevant anyway when a block is
+// attached (Ruby-side warning-and-ignore; we just ignore).
+static inline RESULT
+dispatch_method_frame_with_block(CTX * restrict c, NODE * restrict call_site,
+                                 const struct method_cache *mc,
+                                 unsigned int argc, uint32_t arg_index,
+                                 const struct abruby_block *blk)
+{
+    struct abruby_frame frame;
+    frame.prev = c->current_frame;
+    frame.method = mc->method;
+    frame.caller_node = call_site;
+    frame.block = blk;
+    frame.frame_id = ++c->frame_id_counter;
+    c->current_frame = &frame;
+
+    RESULT r;
+    if (LIKELY(mc->body != NULL)) {
+        VALUE *save_fp = c->fp;
+        c->fp = save_fp + arg_index;
+        r = mc->dispatcher(c, mc->body);
+        c->fp = save_fp;
+    } else {
+        r = mc->method->u.cfunc.func(c, c->self, argc, c->fp + arg_index);
+    }
+
+    // Method boundary catch:
+    //   BREAK → always demoted (the block that broke was passed to *this* method).
+    //   RETURN → demoted if target matches (wildcard or this frame_id).
+    //   RAISE / NEXT are not touched.
+    uint32_t tgt = c->return_target_frame_id;
+    if (tgt == 0 || tgt == frame.frame_id) {
+        r.state &= ~(unsigned)(RESULT_RETURN | RESULT_BREAK);
+        c->return_target_frame_id = 0;
+    } else {
+        r.state &= ~(unsigned)RESULT_BREAK;
+    }
+
+    c->current_frame = frame.prev;
+    return r;
+}
+
+// Slow-path wrapper that fills a method_cache and delegates to the
+// block-carrying dispatcher.  Saves/restores self like
+// dispatch_method_with_klass does.
+static inline RESULT
+dispatch_method_with_klass_with_block(CTX * restrict c, NODE * restrict call_site,
+                                      VALUE recv, const struct abruby_class *klass,
+                                      const struct abruby_method *method,
+                                      unsigned int argc, uint32_t arg_index,
+                                      const struct abruby_block *blk)
+{
+    struct method_cache mc;
+    method_cache_fill(c, &mc, klass, method);
+    VALUE save_self = c->self;
+    c->self = recv;
+    RESULT r = dispatch_method_frame_with_block(c, call_site, &mc, argc, arg_index, blk);
     c->self = save_self;
     return r;
 }
@@ -840,6 +1020,89 @@ node_func_call(CTX * restrict c, NODE * restrict n, ID name, uint32_t params_cnt
     }
 }
 
+// === Block-carrying call nodes ===
+//
+// Parser routes every call that has a block literal (`{ ... }` / `do..end`)
+// to these nodes.  Block-less call paths are unchanged so the block-less
+// hot path pays zero extra cost.
+//
+// Common contract:
+//   - block_literal is a NODE * whose kind is node_block_literal; its
+//     union field holds (body, params_cnt, param_base).
+//   - At call time we materialize a `struct abruby_block` on the C stack,
+//     capturing the caller's fp/self/frame_id so `yield` in the callee
+//     (or in cfunc via abruby_yield) can execute the block closure.
+//   - Dispatch goes through dispatch_method_frame_with_block, which sets
+//     frame.block = blk and demotes RESULT_BREAK on method boundary.
+
+static __attribute__((noinline)) RESULT
+node_method_call_with_block_slow(CTX * restrict c, NODE * restrict n,
+                                 VALUE recv_val, const struct abruby_class *klass, ID name,
+                                 uint32_t params_cnt, uint32_t arg_index,
+                                 struct method_cache *mc,
+                                 const struct abruby_block *blk)
+{
+    const struct abruby_method *method = abruby_class_find_method(klass, name);
+    if (UNLIKELY(method == NULL)) {
+        // method_missing: block is silently dropped in MVP.  Ruby passes
+        // the block through to method_missing, but that adds complexity we
+        // do not need for Phase 1 iterators.
+        return method_missing_dispatch(c, n, klass, name, recv_val, params_cnt, arg_index);
+    }
+    method_cache_fill(c, mc, klass, method);
+    return dispatch_method_with_klass_with_block(c, n, recv_val, klass, method,
+                                                 params_cnt, arg_index, blk);
+}
+
+NODE_DEF
+node_method_call_with_block(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, uint32_t params_cnt, uint32_t arg_index, struct method_cache *mc@ref, NODE *block_literal)
+{
+    VALUE recv_val = UNWRAP(EVAL_ARG(c, recv));
+    const struct abruby_class *klass = AB_CLASS_OF(c, recv_val);
+
+    struct abruby_block blk;
+    blk.body              = block_literal->u.node_block_literal.body;
+    blk.captured_fp       = c->fp;
+    blk.captured_self     = c->self;
+    blk.defining_frame    = c->current_frame;
+    blk.params_cnt        = block_literal->u.node_block_literal.params_cnt;
+    blk.param_base        = block_literal->u.node_block_literal.param_base;
+
+    if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
+        VALUE save_self = c->self;
+        c->self = recv_val;
+        RESULT r = dispatch_method_frame_with_block(c, n, mc, params_cnt, arg_index, &blk);
+        c->self = save_self;
+        return r;
+    }
+    else {
+        return node_method_call_with_block_slow(c, n, recv_val, klass, name,
+                                                params_cnt, arg_index, mc, &blk);
+    }
+}
+
+NODE_DEF
+node_func_call_with_block(CTX * restrict c, NODE * restrict n, ID name, uint32_t params_cnt, uint32_t arg_index, struct method_cache *mc@ref, NODE *block_literal)
+{
+    const struct abruby_class *klass = AB_CLASS_OF(c, c->self);
+
+    struct abruby_block blk;
+    blk.body              = block_literal->u.node_block_literal.body;
+    blk.captured_fp       = c->fp;
+    blk.captured_self     = c->self;
+    blk.defining_frame    = c->current_frame;
+    blk.params_cnt        = block_literal->u.node_block_literal.params_cnt;
+    blk.param_base        = block_literal->u.node_block_literal.param_base;
+
+    if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
+        return dispatch_method_frame_with_block(c, n, mc, params_cnt, arg_index, &blk);
+    }
+    else {
+        return node_method_call_with_block_slow(c, n, c->self, klass, name,
+                                                params_cnt, arg_index, mc, &blk);
+    }
+}
+
 // === super ===
 
 // Find the super method: walk from method->defining_class->super looking for the same name.
@@ -852,7 +1115,10 @@ find_super_method(const struct abruby_frame *frame)
     return abruby_class_find_method(klass, name);
 }
 
-// super(args) — call parent method with explicit arguments
+// super(args) — call parent method with explicit arguments.
+// Any block the current method received is implicitly forwarded to the
+// parent (matching Ruby), unless the parser emitted node_super_with_block
+// for an explicit `super(...) { ... }` form.
 NODE_DEF
 node_super(CTX * restrict c, NODE * restrict n, uint32_t params_cnt, uint32_t arg_index)
 {
@@ -867,7 +1133,39 @@ node_super(CTX * restrict c, NODE * restrict n, uint32_t params_cnt, uint32_t ar
     }
     // dispatch via the defining class (receiver stays the same).
     const struct abruby_class *klass = method->defining_class;
+    const struct abruby_block *inherited = c->current_frame->block;
+    if (inherited != NULL) {
+        return dispatch_method_with_klass_with_block(c, n, c->self, klass, method,
+                                                     params_cnt, arg_index, inherited);
+    }
     return dispatch_method_with_klass(c, n, c->self, klass, method, params_cnt, arg_index);
+}
+
+// Explicit `super(args) { |x| ... }` — parser routes here when an
+// explicit block literal is supplied at the super call site.  The
+// caller-provided block always wins over the implicitly inherited one.
+NODE_DEF
+node_super_with_block(CTX * restrict c, NODE * restrict n, uint32_t params_cnt, uint32_t arg_index, NODE *block_literal)
+{
+    const struct abruby_method *method = find_super_method(c->current_frame);
+    if (!method) {
+        VALUE exc;
+        PUSH_FRAME(n);
+        exc = abruby_exception_new(c, c->current_frame,
+            abruby_str_new_cstr(c,"super: no superclass method"));
+        POP_FRAME();
+        return (RESULT){exc, RESULT_RAISE};
+    }
+    struct abruby_block blk;
+    blk.body              = block_literal->u.node_block_literal.body;
+    blk.captured_fp       = c->fp;
+    blk.captured_self     = c->self;
+    blk.defining_frame    = c->current_frame;
+    blk.params_cnt        = block_literal->u.node_block_literal.params_cnt;
+    blk.param_base        = block_literal->u.node_block_literal.param_base;
+    const struct abruby_class *klass = method->defining_class;
+    return dispatch_method_with_klass_with_block(c, n, c->self, klass, method,
+                                                 params_cnt, arg_index, &blk);
 }
 
 // === Arithmetic rewrite (type-specific nodes) ===
