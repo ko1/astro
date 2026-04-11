@@ -56,7 +56,7 @@ AB_FLOAT_UNWRAP(VALUE v)
 // Inline flonum decode (mirrors CRuby internal/numeric.h
 // rb_float_flonum_value).  Avoids the external rb_float_value call that
 // dominates mandelbrot's inner loop.
-static inline double
+static inline __attribute__((always_inline)) double
 ab_flonum_value(VALUE v)
 {
     if (v != (VALUE)0x8000000000000002) {
@@ -71,7 +71,7 @@ ab_flonum_value(VALUE v)
 }
 
 // abruby float → C double, skipping rb_float_value for flonums.
-static inline double
+static inline __attribute__((always_inline)) double
 AB_FLOAT_TO_DOUBLE(VALUE v)
 {
     if (RB_FLONUM_P(v)) return ab_flonum_value(v);
@@ -81,7 +81,7 @@ AB_FLOAT_TO_DOUBLE(VALUE v)
 // Inline flonum encode (mirrors CRuby internal/numeric.h
 // rb_float_new_inline).  Returns either a flonum-tagged VALUE or 0 if
 // the value is out of flonum range; callers must handle the fallback.
-static inline VALUE
+static inline __attribute__((always_inline)) VALUE
 ab_flonum_encode(double d)
 {
     union { double d; VALUE v; } t;
