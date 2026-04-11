@@ -141,16 +141,21 @@ struct abruby_class {
     struct ab_id_table methods;    // key=method_name, val=(VALUE)(struct abruby_method*)
     VALUE rb_wrapper;
     struct ab_id_table constants;  // key=const_name, val=const_value
-    // Shape: ivar slot layout for instances of this class.
-    // Each ivar name first seen via node_ivar_set_slow is appended here with val=0.
-    // abruby_new_object clones this into the new object's ivars (slots filled with Qnil),
-    // so subsequent ivar_set IC hits immediately without a growth/insert.
+    // Shape: ivar_name -> slot index in abruby_object::ivars (as LONG2FIX(slot)).
+    // First seen names are assigned sequential slots. The IC caches (klass, slot)
+    // and reads/writes obj->ivars[slot] directly with no per-object table lookup.
     struct ab_id_table ivar_shape;
 };
 
+// Direct-indexed instance variables.
+// Slots are assigned by the class shape (see abruby_class::ivar_shape) and
+// accessed as obj->ivars[slot] with no per-object hash table.
+#define ABRUBY_OBJECT_IVAR_CAPA 8
+
 struct abruby_object {
-    struct abruby_class *klass;  // offset 0
-    struct ab_id_table ivars;    // key=ivar_name, val=ivar_value
+    struct abruby_class *klass;                    // offset 0
+    uint32_t ivar_cnt;                              // number of live ivars (for mark)
+    VALUE ivars[ABRUBY_OBJECT_IVAR_CAPA];           // Qnil-initialized
 };
 
 // Bignum/Float are wrapped in T_DATA with abruby_header, not raw CRuby
@@ -344,12 +349,11 @@ struct method_cache {
 };
 
 // inline ivar cache per node_ivar_get / node_ivar_set site.
-// Guard: klass matches obj's klass, and obj->ivars.entries[slot].key == expected name.
-// If the guard holds, obj->ivars.entries[slot] is the correct entry — read/write directly.
-// When an ivar table grows and rehashes, slot becomes stale, guard fails, cache refills.
+// Guard: klass matches obj's klass. If so, slot is authoritative (the class
+// shape guarantees every instance of klass has this ivar at this slot).
 struct ivar_cache {
     const struct abruby_class *klass;  // NULL means not yet filled
-    unsigned int slot;                 // index into obj->ivars.entries
+    unsigned int slot;                 // direct index into obj->ivars
 };
 
 

@@ -297,18 +297,19 @@ node_hash_new(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_i
 
 // === Instance Variables ===
 
-// Slow path for ivar cache miss: do the real lookup, then fill the cache.
-static __attribute__((noinline, cold)) VALUE
+// Slow path for ivar get cache miss: consult the class shape, update the IC.
+static __attribute__((noinline)) VALUE
 node_ivar_get_slow(const struct abruby_object *obj, ID name, struct ivar_cache *ic)
 {
-    VALUE v;
-    unsigned int slot;
-    if (ab_id_table_lookup_slot(&obj->ivars, name, &v, &slot)) {
+    VALUE slot_fix;
+    if (ab_id_table_lookup(&obj->klass->ivar_shape, name, &slot_fix)) {
+        unsigned int slot = (unsigned int)FIX2ULONG(slot_fix);
         ic->klass = obj->klass;
         ic->slot = slot;
-        return v;
+        if (slot < obj->ivar_cnt && slot < ABRUBY_OBJECT_IVAR_CAPA) {
+            return obj->ivars[slot];
+        }
     }
-    ic->klass = NULL;  // don't cache a missing ivar
     return Qnil;
 }
 
@@ -318,25 +319,34 @@ node_ivar_get(CTX * restrict c, NODE * restrict n, ID name, struct ivar_cache *i
     ab_verify(c->self);
     const struct abruby_object *obj =
         (const struct abruby_object *)RTYPEDDATA_GET_DATA(c->self);
-    if (LIKELY(ic->klass == obj->klass && ic->slot < obj->ivars.capa &&
-               obj->ivars.entries[ic->slot].key == name)) {
-        return RESULT_OK(obj->ivars.entries[ic->slot].val);
+    if (LIKELY(ic->klass == obj->klass && ic->slot < obj->ivar_cnt)) {
+        return RESULT_OK(obj->ivars[ic->slot]);
     }
     return RESULT_OK(node_ivar_get_slow(obj, name, ic));
 }
 
-static __attribute__((noinline, cold)) void
+static __attribute__((noinline)) void
 node_ivar_set_slow(struct abruby_object *obj, ID name, VALUE v, struct ivar_cache *ic)
 {
-    unsigned int slot;
-    ab_id_table_insert_slot(&obj->ivars, name, v, &slot);
-    // Register this ivar in the class shape so that future instances of the same
-    // class start with the slot pre-allocated (keeps the IC hit path valid).
+    // Look up the slot in the class shape; add it if new.
     struct abruby_class *klass = (struct abruby_class *)obj->klass;
-    VALUE placeholder;
-    if (!ab_id_table_lookup(&klass->ivar_shape, name, &placeholder)) {
-        ab_id_table_insert(&klass->ivar_shape, name, 0);
+    VALUE slot_fix;
+    unsigned int slot;
+    if (ab_id_table_lookup(&klass->ivar_shape, name, &slot_fix)) {
+        slot = (unsigned int)FIX2ULONG(slot_fix);
+    } else {
+        slot = klass->ivar_shape.cnt;
+        if (UNLIKELY(slot >= ABRUBY_OBJECT_IVAR_CAPA)) {
+            rb_raise(rb_eRuntimeError, "too many ivars on class (max %d)", ABRUBY_OBJECT_IVAR_CAPA);
+        }
+        ab_id_table_insert(&klass->ivar_shape, name, LONG2FIX((long)slot));
     }
+    // Extend the live slot count if we just introduced a later slot.
+    if (slot >= obj->ivar_cnt) {
+        for (unsigned int i = obj->ivar_cnt; i <= slot; i++) obj->ivars[i] = Qnil;
+        obj->ivar_cnt = slot + 1;
+    }
+    obj->ivars[slot] = v;
     ic->klass = obj->klass;
     ic->slot = slot;
 }
@@ -351,9 +361,8 @@ node_ivar_set(CTX * restrict c, NODE * restrict n, ID name, NODE *value, struct 
     }
     struct abruby_object *obj =
         (struct abruby_object *)RTYPEDDATA_GET_DATA(c->self);
-    if (LIKELY(ic->klass == obj->klass && ic->slot < obj->ivars.capa &&
-               obj->ivars.entries[ic->slot].key == name)) {
-        obj->ivars.entries[ic->slot].val = v;
+    if (LIKELY(ic->klass == obj->klass && ic->slot < obj->ivar_cnt)) {
+        obj->ivars[ic->slot] = v;
         return RESULT_OK(v);
     }
     node_ivar_set_slow(obj, name, v, ic);

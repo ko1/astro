@@ -121,9 +121,9 @@ static void abruby_data_mark(void *ptr) {
     case ABRUBY_OBJ_GENERIC:
     default: {
         const struct abruby_object *obj = (const struct abruby_object *)ptr;
-        ab_id_table_foreach(&obj->ivars, _ik, _iv, {
-            rb_gc_mark(_iv);
-        });
+        unsigned int n = obj->ivar_cnt;
+        if (n > ABRUBY_OBJECT_IVAR_CAPA) n = ABRUBY_OBJECT_IVAR_CAPA;
+        for (unsigned int i = 0; i < n; i++) rb_gc_mark(obj->ivars[i]);
         break;
     }
     }
@@ -149,8 +149,7 @@ abruby_data_free(void *ptr)
             break;
         }
         case ABRUBY_OBJ_GENERIC: {
-            struct abruby_object *obj = (struct abruby_object *)ptr;
-            ab_id_table_free(&obj->ivars);
+            // No heap to free: ivars are inline.
             break;
         }
         default:
@@ -180,16 +179,12 @@ abruby_new_object(struct abruby_class *klass)
     struct abruby_object *obj;
     VALUE wrapper = TypedData_Make_Struct(rb_cAbRubyNode, struct abruby_object, &abruby_data_type, obj);
     obj->klass = klass;
-    // Pre-populate ivars from the class shape so that ivar_set IC hits from
-    // the very first access on a fresh instance.
-    const struct ab_id_table *shape = &klass->ivar_shape;
-    if (shape->cnt > 0) {
-        ab_id_table_clone(&obj->ivars, shape);
-        // Reset all values to Qnil (shape stores val=0 as a placeholder).
-        for (unsigned int i = 0; i < obj->ivars.capa; i++) {
-            if (obj->ivars.entries[i].key != 0) obj->ivars.entries[i].val = Qnil;
-        }
-    }
+    obj->ivar_cnt = klass->ivar_shape.cnt;
+    // Initialize the live slots to Qnil (mark function reads them).
+    // TypedData_Make_Struct already zeroed the struct, but Qnil != 0 on CRuby.
+    unsigned int live = obj->ivar_cnt;
+    if (live > ABRUBY_OBJECT_IVAR_CAPA) live = ABRUBY_OBJECT_IVAR_CAPA;
+    for (unsigned int i = 0; i < live; i++) obj->ivars[i] = Qnil;
     return wrapper;
 }
 
@@ -418,8 +413,11 @@ abruby_ivar_get(VALUE self, ID name)
     ab_verify(self);
     const struct abruby_object *obj =
         (const struct abruby_object *)RTYPEDDATA_GET_DATA(self);
-    VALUE v;
-    if (ab_id_table_lookup(&obj->ivars, name, &v)) return v;
+    VALUE slot_fix;
+    if (ab_id_table_lookup(&obj->klass->ivar_shape, name, &slot_fix)) {
+        unsigned int slot = (unsigned int)FIX2ULONG(slot_fix);
+        if (slot < obj->ivar_cnt && slot < ABRUBY_OBJECT_IVAR_CAPA) return obj->ivars[slot];
+    }
     return Qnil;
 }
 
@@ -432,7 +430,24 @@ abruby_ivar_set(VALUE self, ID name, VALUE val)
     }
     struct abruby_object *obj;
     TypedData_Get_Struct(self, struct abruby_object, &abruby_data_type, obj);
-    ab_id_table_insert(&obj->ivars, name, val);
+    struct abruby_class *klass = (struct abruby_class *)obj->klass;
+    VALUE slot_fix;
+    unsigned int slot;
+    if (ab_id_table_lookup(&klass->ivar_shape, name, &slot_fix)) {
+        slot = (unsigned int)FIX2ULONG(slot_fix);
+    } else {
+        slot = klass->ivar_shape.cnt;
+        if (slot >= ABRUBY_OBJECT_IVAR_CAPA) {
+            rb_raise(rb_eRuntimeError, "too many ivars on class (max %d)", ABRUBY_OBJECT_IVAR_CAPA);
+        }
+        ab_id_table_insert(&klass->ivar_shape, name, LONG2FIX((long)slot));
+    }
+    if (slot >= obj->ivar_cnt) {
+        // Extend: initialize new slots to Qnil
+        for (unsigned int i = obj->ivar_cnt; i <= slot; i++) obj->ivars[i] = Qnil;
+        obj->ivar_cnt = slot + 1;
+    }
+    obj->ivars[slot] = val;
 }
 
 // Per-instance VM state (struct abruby_machine defined in context.h)
