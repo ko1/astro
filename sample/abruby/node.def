@@ -160,7 +160,24 @@ extern VALUE abruby_bignum_new(CTX *c, VALUE rb_bignum);
 NODE_DEF
 node_float_new(CTX * restrict c, NODE * restrict n, double val)
 {
+    // Non-flonum fallback only. Flonum-representable literals are
+    // pre-encoded at parse time by rb_alloc_node_float_new and routed
+    // to node_literal instead.
     return RESULT_OK(abruby_float_new_wrap(c, rb_float_new(val)));
+}
+
+// Immediate-valued literal.  The uint64_t operand is any Ruby VALUE
+// whose bit pattern is stable across processes — today only the CRuby
+// flonum encoding (a pure function of the source double, computed once
+// by rb_alloc_node_float_new via ab_flonum_encode); in the future,
+// node_num/node_sym/node_true/node_false/node_nil could collapse into
+// this node for uniform handling.  EVAL just returns the stored VALUE.
+// The code store serializes the operand as a C integer literal.
+NODE_DEF
+node_literal(CTX * restrict c, NODE * restrict n, uint64_t val)
+{
+    (void)c; (void)n;
+    return RESULT_OK((VALUE)val);
 }
 
 NODE_DEF

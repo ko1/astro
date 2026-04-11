@@ -97,6 +97,8 @@ module ASTroGen
             "hash_uint32(#{val})"
           when 'int32_t'
             "hash_uint32((uint32_t)#{val})"
+          when 'uint64_t'
+            "hash_uint64(#{val})"
           when 'NODE *'
             "hash_node(#{val})"
           when 'const char *'
@@ -116,6 +118,8 @@ module ASTroGen
             "        fprintf(fp, \"%u\", n->u.#{name}.#{self.name});"
           when 'int32_t'
             "        fprintf(fp, \"%d\", n->u.#{name}.#{self.name});"
+          when 'uint64_t'
+            "        fprintf(fp, \"%lluULL\", (unsigned long long)n->u.#{name}.#{self.name});"
           when 'const char *'
             "        fprintf(fp, \"\\\"%s\\\"\", n->u.#{name}.#{self.name});"
           when 'double'
@@ -135,6 +139,8 @@ module ASTroGen
             "    fprintf(fp, \"        %u\", n->u.#{name}.#{self.name});"
           when 'int32_t'
             "    fprintf(fp, \"        %d\", n->u.#{name}.#{self.name});"
+          when 'uint64_t'
+            "    fprintf(fp, \"        (VALUE)%lluULL\", (unsigned long long)n->u.#{name}.#{self.name});"
           when 'const char *'
             "    astro_fprint_cstr(fp, n->u.#{name}.#{self.name});"
           when 'double'

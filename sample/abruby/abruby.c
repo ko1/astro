@@ -826,7 +826,20 @@ rb_alloc_node_bignum_new(VALUE self, VALUE str)
 static VALUE
 rb_alloc_node_float_new(VALUE self, VALUE num)
 {
-    return wrap_node(ALLOC_node_float_new(NUM2DBL(num)));
+    double val = NUM2DBL(num);
+    // Common case: the literal fits in the CRuby flonum encoding, so we
+    // can store the pre-computed VALUE directly on the node and let EVAL
+    // return it with no arithmetic.  The encoded flonum is a pure
+    // function of the double, so the operand is process-stable and the
+    // code store serializes it as a plain C integer literal.
+    VALUE flo = ab_flonum_encode(val);
+    if (LIKELY(flo != 0)) {
+        return wrap_node(ALLOC_node_literal((uint64_t)flo));
+    }
+    // Out-of-range doubles (NaN/Inf/denormals/0x3000_…) keep the
+    // heap-wrapper path; node_float_new EVAL pays a rb_float_new call
+    // but literals of this kind are rare in real source.
+    return wrap_node(ALLOC_node_float_new(val));
 }
 
 static VALUE

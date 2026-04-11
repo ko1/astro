@@ -47,6 +47,20 @@ hash_uint32(uint32_t ui)
 }
 
 static node_hash_t
+hash_uint64(uint64_t u)
+{
+    node_hash_t x = (node_hash_t)u;
+
+    x ^= x >> 33;
+    x *= 0xff51afd7ed558ccdULL;
+    x ^= x >> 33;
+    x *= 0xc4ceb9fe1a85ec53ULL;
+    x ^= x >> 33;
+
+    return x;
+}
+
+static node_hash_t
 hash_double(double d)
 {
     union { double d; uint64_t u; } conv;
