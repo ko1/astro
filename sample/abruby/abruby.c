@@ -18,7 +18,8 @@ static VALUE rb_cAbRubyNode;
 // Built-in abruby classes (klass field = ab_tmpl_class_class, set in init)
 
 static struct abruby_class ab_tmpl_kernel_module_body = { .obj_type = ABRUBY_OBJ_MODULE };
-static struct abruby_class ab_tmpl_module_class_body  = { .obj_type = ABRUBY_OBJ_CLASS };
+static struct abruby_class ab_tmpl_object_class_body;
+static struct abruby_class ab_tmpl_module_class_body  = { .obj_type = ABRUBY_OBJ_CLASS, .super = &ab_tmpl_object_class_body };
 static struct abruby_class ab_tmpl_class_class_body   = { .obj_type = ABRUBY_OBJ_CLASS, .super = &ab_tmpl_module_class_body };
 static struct abruby_class ab_tmpl_object_class_body  = { .obj_type = ABRUBY_OBJ_GENERIC };
 static struct abruby_class ab_tmpl_float_class_body   = { .obj_type = ABRUBY_OBJ_FLOAT,     .super = &ab_tmpl_object_class_body };
@@ -754,7 +755,10 @@ init_instance_classes(struct abruby_machine *vm)
     vm->nil_class->super           = vm->object_class;
     vm->runtime_error_class->super = vm->object_class;
     vm->kernel_module->super       = NULL;
-    vm->module_class->super        = NULL;
+    // Module inherits from Object so Class (and class-body self) can see
+    // Kernel methods (`p`, `require_relative`, etc.) via the super chain:
+    //   Class -> Module -> Object -> Kernel -> nil
+    vm->module_class->super        = vm->object_class;
 
     // Wrap each per-instance class as a VALUE (for constant table, Ruby-level access)
     abruby_wrap_class(vm->kernel_module);

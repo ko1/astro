@@ -302,10 +302,19 @@ node_const_set(CTX * restrict c, NODE * restrict n, ID name, NODE *value)
 NODE_DEF
 node_const_get(CTX * restrict c, NODE * restrict n, ID name)
 {
-    // Check main_class first, then Object
     VALUE v;
+    // 1) Walk the current class / module and its super chain for
+    //    inherited constants.  This is needed when a class body reads a
+    //    constant defined in the same class (e.g., `class ROM;
+    //    MAPPER_DB = {}; end; class MMC1 < ROM; MAPPER_DB[...] end`).
+    for (const struct abruby_class *k = c->current_class; k; k = k->super) {
+        if (ab_id_table_lookup(&k->constants, name, &v))
+            return RESULT_OK(v);
+    }
+    // 2) Top-level / main class constants.
     if (ab_id_table_lookup(&CTX_MAIN_CLASS(c)->constants, name, &v))
         return RESULT_OK(v);
+    // 3) Object class constants (built-ins like Float::INFINITY source).
     if (CTX_MAIN_CLASS(c) != c->abm->object_class) {
         return abruby_const_get(c, n, c->abm->object_class, name);
     }

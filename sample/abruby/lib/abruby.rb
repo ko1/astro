@@ -357,12 +357,14 @@ class AbRuby
         AbRuby.alloc_node_next(value)
 
       when Prism::ReturnNode
+        # `return a, b, c` desugars to `return [a, b, c]` — Ruby semantics.
+        # `return *ary` isn't supported (rare in practice).
         value = if node.arguments
                   args = node.arguments.arguments
-                  if args.size == 1
+                  if args.size == 1 && !args[0].is_a?(Prism::SplatNode)
                     transduce(args[0])
                   else
-                    raise "return with multiple values not supported"
+                    build_ary_literal(args)
                   end
                 else
                   AbRuby.alloc_node_nil
@@ -407,7 +409,10 @@ class AbRuby
         ary_node = AbRuby.alloc_node_ary_new(elements.size, base_idx)
         seq_nodes.empty? ? ary_node : build_seq(seq_nodes + [ary_node])
 
-      when Prism::HashNode
+      when Prism::HashNode, Prism::KeywordHashNode
+        # KeywordHashNode appears when a call is written as `foo(a: 1, b: 2)`;
+        # Ruby semantics for our purposes is "pass a Hash as the last arg".
+        # Treat it exactly like a HashNode.
         pairs = node.elements
         base_idx = arg_index
         seq_nodes = []

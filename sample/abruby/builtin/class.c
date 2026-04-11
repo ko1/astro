@@ -106,6 +106,16 @@ static RESULT ab_module_const_set(CTX *c, VALUE self, unsigned int argc, VALUE *
     return RESULT_OK(argv[1]);
 }
 
+// Module#private / #public / #protected — no-op visibility controls.
+// abruby does not enforce method visibility, so these are placeholders
+// that accept arbitrary arguments and return self (matching Ruby's
+// "return self when called with no args, otherwise return first arg").
+static RESULT ab_module_visibility_noop(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)c;
+    if (argc == 0) return RESULT_OK(self);
+    return RESULT_OK(argv[0]);
+}
+
 // Module#=== — check if argv[0] is_a? self (class matching for case/when)
 static RESULT ab_module_case_eq(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     const struct abruby_class *check_class = abruby_unwrap_class(self);
@@ -126,6 +136,10 @@ Init_abruby_class(void)
     abruby_class_add_cfunc(ab_tmpl_module_class, rb_intern("include"),   ab_module_include,   1);
     abruby_class_add_cfunc(ab_tmpl_module_class, rb_intern("const_get"), ab_module_const_get, 1);
     abruby_class_add_cfunc(ab_tmpl_module_class, rb_intern("const_set"), ab_module_const_set, 2);
+    abruby_class_add_cfunc(ab_tmpl_module_class, rb_intern("private"),   ab_module_visibility_noop, 0);
+    abruby_class_add_cfunc(ab_tmpl_module_class, rb_intern("public"),    ab_module_visibility_noop, 0);
+    abruby_class_add_cfunc(ab_tmpl_module_class, rb_intern("protected"), ab_module_visibility_noop, 0);
+    abruby_class_add_cfunc(ab_tmpl_module_class, rb_intern("module_function"), ab_module_visibility_noop, 0);
 
     // Class (inherits Module, adds new)
     abruby_class_add_cfunc(ab_tmpl_class_class, rb_intern("new"), ab_class_new, -1);
