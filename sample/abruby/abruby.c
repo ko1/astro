@@ -816,6 +816,22 @@ rb_alloc_node_num(VALUE self, VALUE num)
     return wrap_node(ALLOC_node_num(FIX2INT(num)));
 }
 
+// Wrap any process-stable immediate VALUE (Fixnum, Flonum, Symbol,
+// true/false/nil) on a node_literal.  The caller — lib/abruby.rb parser
+// — is responsible for ensuring `v` is actually an immediate; we assert
+// here under ABRUBY_DEBUG.
+static VALUE
+rb_alloc_node_literal(VALUE self, VALUE v)
+{
+#if ABRUBY_DEBUG
+    if (!RB_SPECIAL_CONST_P(v)) {
+        rb_raise(rb_eArgError,
+                 "alloc_node_literal requires an immediate VALUE (got heap object)");
+    }
+#endif
+    return wrap_node(ALLOC_node_literal((uint64_t)v));
+}
+
 static VALUE
 rb_alloc_node_bignum_new(VALUE self, VALUE str)
 {
@@ -1527,6 +1543,7 @@ Init_abruby(void)
 
     // ALLOC wrappers
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_num", rb_alloc_node_num, 1);
+    rb_define_singleton_method(rb_cAbRuby, "alloc_node_literal", rb_alloc_node_literal, 1);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_bignum_new", rb_alloc_node_bignum_new, 1);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_float_new", rb_alloc_node_float_new, 1);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_str_new", rb_alloc_node_str_new, 1);

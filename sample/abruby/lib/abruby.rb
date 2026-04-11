@@ -75,8 +75,12 @@ class AbRuby
 
       when Prism::IntegerNode
         v = node.value
-        if v >= -(2**30) && v < 2**30
-          AbRuby.alloc_node_num(v)
+        # Fixnum literals (anything that fits in a CRuby Fixnum,
+        # ~63 bits on a 64-bit VM) are pre-encoded into a node_literal
+        # at parse time and returned directly from EVAL as the stored
+        # VALUE.  Larger literals stay on the bignum parse path.
+        if v.is_a?(Integer) && v.bit_length < 63
+          AbRuby.alloc_node_literal(v)
         else
           AbRuby.alloc_node_bignum_new(v.to_s)
         end
