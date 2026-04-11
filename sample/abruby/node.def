@@ -28,7 +28,6 @@
     _push_frame.method = NULL; \
     _push_frame.caller_node = (node); \
     _push_frame.block = NULL; \
-    _push_frame.frame_id = ++c->frame_id_counter; \
     c->current_frame = &_push_frame
 
 #define POP_FRAME() \
@@ -531,17 +530,27 @@ NODE_DEF
 node_return(CTX * restrict c, NODE * restrict n, NODE *value)
 {
     VALUE v = UNWRAP(EVAL_ARG(c, value));
-    // Non-local return target:
-    //   - executing inside a block body: target the block's defining
-    //     frame so the return unwinds past intervening yielding methods.
-    //   - otherwise: target=0 (wildcard) catches at the nearest method
-    //     boundary, matching pre-block semantics exactly.
-    if (UNLIKELY(c->in_block)) {
-        c->return_target_frame_id = c->current_block->defining_frame->frame_id;
-    } else {
-        c->return_target_frame_id = 0;
+    // Non-local return encoding:
+    //   - Plain `return` from a method body (not in a block): skip count = 0
+    //     → caught at the nearest method boundary.  Zero-cost for the
+    //     common case: no CTX writes, no frame walks.
+    //   - `return` inside a block body: walk from c->current_frame up to
+    //     c->current_block->defining_frame and count the intervening method
+    //     frames.  That count is the skip count — each method boundary on
+    //     the way up decrements it, and only the frame with skip == 0
+    //     catches.  The walk is O(nesting depth) and happens only on this
+    //     rare exceptional path, not on every frame push.
+    unsigned int state = RESULT_RETURN;
+    if (UNLIKELY(abruby_in_block(c))) {
+        const struct abruby_frame *target = c->current_block->defining_frame;
+        unsigned int skip = 0;
+        for (const struct abruby_frame *f = c->current_frame;
+             f != target; f = f->prev) {
+            skip++;
+        }
+        state |= (skip << RESULT_SKIP_SHIFT);
     }
-    return (RESULT){v, RESULT_RETURN};
+    return (RESULT){v, state};
 }
 
 // `next` inside a block returns (value) to the yielding call site, which
@@ -573,13 +582,20 @@ node_block_literal(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t par
 // `yield args` from within an AST method body.
 // Looks up the block attached to the current frame, transfers argc values
 // into the block's captured frame at param_base, swaps the execution context
-// into the block (fp/self/current_block/in_block), evaluates the block body,
+// into the block (fp/self/current_block/current_block_frame), evaluates the block body,
 // then restores the swapped state.  NEXT is demoted to NORMAL here so `next`
 // returns from the block cleanly; BREAK / RAISE / RETURN keep propagating.
 NODE_DEF
 node_yield(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_index)
 {
-    const struct abruby_block *blk = c->current_frame->block;
+    // The block to yield to is the one attached to the lexically enclosing
+    // method frame.  When executing inside a block body a nested `yield` must
+    // reach the *outer* block — i.e. the block received by the defining
+    // method of the currently-executing block, not the block received by the
+    // physical yielding method.  abruby_context_frame() returns that lexical
+    // enclosing frame (physical current_frame outside blocks, defining_frame
+    // of the current block inside blocks).
+    const struct abruby_block *blk = abruby_context_frame(c)->block;
     if (UNLIKELY(blk == NULL)) {
         VALUE exc;
         PUSH_FRAME(n);
@@ -602,30 +618,34 @@ node_yield(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_inde
         blk->captured_fp[blk->param_base + i] = Qnil;
     }
 
-    // Swap execution context into the block's captured environment.
-    // current_frame is rerouted to the defining frame so that `yield`
-    // and `super` inside the block body see the *enclosing method's*
-    // context, not the method currently yielding (which is the Ruby
-    // semantics: `yield` is bound at the block's definition site).
+    // Swap closure environment (fp / self) and block-execution markers.
+    // current_frame is NOT swapped — it stays pointing at the physical
+    // yielding method's frame so the call stack chain linked through
+    // frame->prev remains the real chain.  This is load-bearing for
+    // non-local return skip counting: node_return walks current_frame up
+    // to current_block->defining_frame and expects the walk length to
+    // equal the number of method boundaries the RETURN has to cross.
+    //
+    // current_block_frame is set to c->current_frame so that
+    // abruby_in_block(c) returns true while we're evaluating the block
+    // body but flips to false the moment a callee method pushes a new
+    // physical frame — giving that callee its own non-block context.
     VALUE *save_fp = c->fp;
     VALUE save_self = c->self;
-    struct abruby_frame *save_frame = c->current_frame;
     const struct abruby_block *save_current_block = c->current_block;
-    bool save_in_block = c->in_block;
+    const struct abruby_frame *save_current_block_frame = c->current_block_frame;
 
     c->fp = blk->captured_fp;
     c->self = blk->captured_self;
-    c->current_frame = blk->defining_frame;
     c->current_block = blk;
-    c->in_block = true;
+    c->current_block_frame = c->current_frame;
 
     RESULT r = EVAL(c, blk->body);
 
     c->fp = save_fp;
     c->self = save_self;
-    c->current_frame = save_frame;
     c->current_block = save_current_block;
-    c->in_block = save_in_block;
+    c->current_block_frame = save_current_block_frame;
 
     // Demote NEXT → NORMAL (value retained).  BREAK / RAISE / RETURN
     // pass through for upper-layer catches.
@@ -832,7 +852,6 @@ dispatch_method_frame(CTX * restrict c, NODE * restrict call_site,
     frame.method = mc->method;
     frame.caller_node = call_site;
     frame.block = NULL;
-    frame.frame_id = ++c->frame_id_counter;
     c->current_frame = &frame;
 
     RESULT r;
@@ -841,20 +860,25 @@ dispatch_method_frame(CTX * restrict c, NODE * restrict call_site,
         c->fp = save_fp + arg_index;
         r = mc->dispatcher(c, mc->body);
         c->fp = save_fp;
-        // Method boundary catch:
-        //   RETURN is caught iff return_target_frame_id is 0 (wildcard,
-        //   the common case — plain `return` inside this method) or it
-        //   names this frame (non-local return from a block whose
-        //   defining frame is this one).  Otherwise RETURN keeps
-        //   propagating up to its true target.
-        //   RAISE/BREAK/NEXT stay set for the caller's UNWRAP.
-        uint32_t tgt = c->return_target_frame_id;
-        if (tgt == 0 || tgt == frame.frame_id) {
-            r.state &= ~(unsigned)RESULT_RETURN;
-            c->return_target_frame_id = 0;
-        }
     } else {
         r = mc->method->u.cfunc.func(c, c->self, argc, c->fp + arg_index);
+    }
+
+    // Method boundary: handle RESULT_RETURN via skip-count encoded in state.
+    //   skip == 0: this frame is the target, clear RETURN (and skip bits).
+    //   skip  > 0: decrement and keep propagating.
+    // RAISE / BREAK / NEXT are untouched (BREAK is dropped only by the
+    // block-carrying variant below).  The entire block is gated on
+    // r.state != 0, so the common "plain return path" pays just one compare
+    // and branch — no memory loads, no CTX writes.
+    if (UNLIKELY(r.state)) {
+        if (r.state & RESULT_RETURN) {
+            if ((r.state & RESULT_SKIP_MASK) == 0) {
+                r.state &= ~(unsigned)RESULT_RETURN_CATCH_MASK;
+            } else {
+                r.state -= RESULT_SKIP_UNIT;
+            }
+        }
     }
 
     c->current_frame = frame.prev;
@@ -898,7 +922,6 @@ dispatch_method_frame_with_block(CTX * restrict c, NODE * restrict call_site,
     frame.method = mc->method;
     frame.caller_node = call_site;
     frame.block = blk;
-    frame.frame_id = ++c->frame_id_counter;
     c->current_frame = &frame;
 
     RESULT r;
@@ -911,16 +934,20 @@ dispatch_method_frame_with_block(CTX * restrict c, NODE * restrict call_site,
         r = mc->method->u.cfunc.func(c, c->self, argc, c->fp + arg_index);
     }
 
-    // Method boundary catch:
-    //   BREAK → always demoted (the block that broke was passed to *this* method).
-    //   RETURN → demoted if target matches (wildcard or this frame_id).
-    //   RAISE / NEXT are not touched.
-    uint32_t tgt = c->return_target_frame_id;
-    if (tgt == 0 || tgt == frame.frame_id) {
-        r.state &= ~(unsigned)(RESULT_RETURN | RESULT_BREAK);
-        c->return_target_frame_id = 0;
-    } else {
+    // Method boundary catch (block-carrying variant):
+    //   BREAK → always demoted (the block that broke was passed to *this*
+    //           method, Ruby semantics).
+    //   RETURN → skip-count driven: skip==0 catches, otherwise decrement.
+    //   RAISE / NEXT untouched.
+    if (UNLIKELY(r.state)) {
         r.state &= ~(unsigned)RESULT_BREAK;
+        if (r.state & RESULT_RETURN) {
+            if ((r.state & RESULT_SKIP_MASK) == 0) {
+                r.state &= ~(unsigned)RESULT_RETURN_CATCH_MASK;
+            } else {
+                r.state -= RESULT_SKIP_UNIT;
+            }
+        }
     }
 
     c->current_frame = frame.prev;
@@ -1030,7 +1057,7 @@ node_func_call(CTX * restrict c, NODE * restrict n, ID name, uint32_t params_cnt
 //   - block_literal is a NODE * whose kind is node_block_literal; its
 //     union field holds (body, params_cnt, param_base).
 //   - At call time we materialize a `struct abruby_block` on the C stack,
-//     capturing the caller's fp/self/frame_id so `yield` in the callee
+//     capturing the caller's fp/self/defining_frame so `yield` in the callee
 //     (or in cfunc via abruby_yield) can execute the block closure.
 //   - Dispatch goes through dispatch_method_frame_with_block, which sets
 //     frame.block = blk and demotes RESULT_BREAK on method boundary.
@@ -1060,11 +1087,15 @@ node_method_call_with_block(CTX * restrict c, NODE * restrict n, NODE *recv, ID 
     VALUE recv_val = UNWRAP(EVAL_ARG(c, recv));
     const struct abruby_class *klass = AB_CLASS_OF(c, recv_val);
 
+    // defining_frame is the *lexical* enclosing method frame — the one where
+    // this block literal textually lives.  When capturing inside a block body
+    // (e.g. `each { helper { ... } }`), the inner block still belongs to the
+    // outermost enclosing method; abruby_context_frame() resolves that.
     struct abruby_block blk;
     blk.body              = block_literal->u.node_block_literal.body;
     blk.captured_fp       = c->fp;
     blk.captured_self     = c->self;
-    blk.defining_frame    = c->current_frame;
+    blk.defining_frame    = (struct abruby_frame *)abruby_context_frame(c);
     blk.params_cnt        = block_literal->u.node_block_literal.params_cnt;
     blk.param_base        = block_literal->u.node_block_literal.param_base;
 
@@ -1090,7 +1121,7 @@ node_func_call_with_block(CTX * restrict c, NODE * restrict n, ID name, uint32_t
     blk.body              = block_literal->u.node_block_literal.body;
     blk.captured_fp       = c->fp;
     blk.captured_self     = c->self;
-    blk.defining_frame    = c->current_frame;
+    blk.defining_frame    = (struct abruby_frame *)abruby_context_frame(c);
     blk.params_cnt        = block_literal->u.node_block_literal.params_cnt;
     blk.param_base        = block_literal->u.node_block_literal.param_base;
 
@@ -1122,7 +1153,11 @@ find_super_method(const struct abruby_frame *frame)
 NODE_DEF
 node_super(CTX * restrict c, NODE * restrict n, uint32_t params_cnt, uint32_t arg_index)
 {
-    const struct abruby_method *method = find_super_method(c->current_frame);
+    // `super` walks from the lexical enclosing method's defining class,
+    // not necessarily the physical caller.  Inside a block body, lookup
+    // and inherited-block forwarding use the block's defining frame.
+    const struct abruby_frame *lex = abruby_context_frame(c);
+    const struct abruby_method *method = find_super_method(lex);
     if (!method) {
         VALUE exc;
         PUSH_FRAME(n);
@@ -1133,7 +1168,7 @@ node_super(CTX * restrict c, NODE * restrict n, uint32_t params_cnt, uint32_t ar
     }
     // dispatch via the defining class (receiver stays the same).
     const struct abruby_class *klass = method->defining_class;
-    const struct abruby_block *inherited = c->current_frame->block;
+    const struct abruby_block *inherited = lex->block;
     if (inherited != NULL) {
         return dispatch_method_with_klass_with_block(c, n, c->self, klass, method,
                                                      params_cnt, arg_index, inherited);
@@ -1147,7 +1182,8 @@ node_super(CTX * restrict c, NODE * restrict n, uint32_t params_cnt, uint32_t ar
 NODE_DEF
 node_super_with_block(CTX * restrict c, NODE * restrict n, uint32_t params_cnt, uint32_t arg_index, NODE *block_literal)
 {
-    const struct abruby_method *method = find_super_method(c->current_frame);
+    const struct abruby_frame *lex = abruby_context_frame(c);
+    const struct abruby_method *method = find_super_method(lex);
     if (!method) {
         VALUE exc;
         PUSH_FRAME(n);
@@ -1160,7 +1196,7 @@ node_super_with_block(CTX * restrict c, NODE * restrict n, uint32_t params_cnt, 
     blk.body              = block_literal->u.node_block_literal.body;
     blk.captured_fp       = c->fp;
     blk.captured_self     = c->self;
-    blk.defining_frame    = c->current_frame;
+    blk.defining_frame    = (struct abruby_frame *)lex;
     blk.params_cnt        = block_literal->u.node_block_literal.params_cnt;
     blk.param_base        = block_literal->u.node_block_literal.param_base;
     const struct abruby_class *klass = method->defining_class;

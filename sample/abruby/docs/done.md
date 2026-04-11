@@ -64,7 +64,7 @@
 - Block 内の `yield` / `super` は block の defining_frame を参照（呼び出し元メソッドの block に到達）
 - `abruby_yield` C helper で builtin iterator (`Integer#times`, `Array#each/map/select/reject`, `Hash#each`, `Range#each`) を実装
 - RESULT state 拡張: `NORMAL=0, RETURN=1, RAISE=2, BREAK=4, NEXT=8`（bit flag）
-- Frame ID 方式の非ローカル return: `CTX::return_target_frame_id` が 0 (wildcard) か `frame.frame_id` 一致で demote、block return のみ defining frame id を target 化
+- RESULT skip-count 方式の非ローカル return: `RESULT.state` の上位ビット（`RESULT_SKIP_SHIFT` 以降）に「何回 method boundary を skip するか」を埋め、method 境界で skip==0 なら catch、そうでなければ decrement して propagate。frame push 時にカウンタを増やす必要がなく、非ブロック経路の `return` は追加コスト 0
 
 ## クラス・モジュール
 - `class Name; end`

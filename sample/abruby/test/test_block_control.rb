@@ -297,6 +297,61 @@ class TestBlockControl < AbRubyTest
     ', :deep)
   end
 
+  def test_return_from_triple_nested_block_unwinds_correctly
+    # Three levels of yield chains, all blocks defined in outer.
+    # skip count must be 3 so the RETURN walks past g/g/g.
+    assert_eval('
+      def g; yield; end
+      def outer
+        g { g { g { return :triple } } }
+        :never
+      end
+      outer
+    ', :triple)
+  end
+
+  def test_return_from_block_with_method_call_between_yield_and_return
+    # The block body calls a helper method. `return` inside the helper is
+    # LOCAL (returns from the helper), not non-local, because the helper is
+    # not lexically inside the block. After helper returns, the block still
+    # does a non-local return.
+    assert_eval('
+      def helper; return :local; end
+      def inner; yield; end
+      def outer
+        inner { h = helper; return [:outer, h] }
+        :never
+      end
+      outer
+    ', [:outer, :local])
+  end
+
+  def test_block_forwarded_through_helper_return_targets_original_method
+    # Block captured in `a`, forwarded via `b` (which yields in c). The
+    # non-local return must target `a`, skipping both `b` and `c`.
+    assert_eval('
+      def a; b { return 1 }; :no_a; end
+      def b; c { yield }; :no_b; end
+      def c; yield; :no_c; end
+      a
+    ', 1)
+  end
+
+  def test_return_from_block_inside_helper_called_from_block
+    # helper is called from within a block body; `return :h` inside helper
+    # is a LOCAL return from helper (the block body keeps running after).
+    assert_eval('
+      def helper; return :h; end
+      def f; yield; end
+      def outer
+        v = nil
+        f { v = helper }
+        v
+      end
+      outer
+    ', :h)
+  end
+
   # === C7. LocalJumpError: yield with no block ===
 
   def test_yield_without_block_raises

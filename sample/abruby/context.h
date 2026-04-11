@@ -49,20 +49,38 @@ extern struct abruby_option OPTION;
 //   r.state &= ~RESULT_BREAK;   // at while boundary:  BREAK  -> NORMAL, others unchanged
 //
 // NORMAL is 0 so the common "is state normal?" test is still a plain zero check.
+//
+// Non-local return from a block uses the high bits of `state` as a "skip
+// count": how many method boundaries a RESULT_RETURN should cross before being
+// caught.  `node_return` computes the skip count by walking from c->current_frame
+// up to c->current_block->defining_frame (a rare, one-shot cost paid only at
+// block-level `return`).  Every method boundary checks: if RETURN bit is set
+// and skip count == 0 this is the true target and clears RETURN; otherwise
+// decrement the skip count and keep propagating.  Normal (non-block) `return`
+// has skip count 0 and is caught immediately at the nearest method boundary,
+// which means non-block code pays zero per-frame cost for this mechanism.
 
-enum result_state {
-    RESULT_NORMAL = 0,
-    RESULT_RETURN = 1,  // bit 0
-    RESULT_RAISE  = 2,  // bit 1
-    RESULT_BREAK  = 4,  // bit 2
-    RESULT_NEXT   = 8,  // bit 3 — block `next` (caught by yield site)
-    // Up to bit 15 reserved for future states (e.g., RESULT_REDO).
-    // `state` is stored as an enum but compiled to int; keep bits <= 15.
-};
+// Low bits — exceptional state flags (bit-flag, can be OR'd):
+#define RESULT_NORMAL 0u
+#define RESULT_RETURN 1u  // bit 0
+#define RESULT_RAISE  2u  // bit 1
+#define RESULT_BREAK  4u  // bit 2
+#define RESULT_NEXT   8u  // bit 3 — block `next` (caught by yield site)
+// bits 4..15 reserved for future states.
+
+// High bits — skip count (only meaningful when RESULT_RETURN bit is also set).
+#define RESULT_SKIP_SHIFT 16u
+#define RESULT_SKIP_UNIT  (1u << RESULT_SKIP_SHIFT)
+#define RESULT_SKIP_MASK  (~((1u << RESULT_SKIP_SHIFT) - 1u))
+
+// Mask used when catching a non-local return: clears the RETURN flag AND any
+// leftover skip-count bits, so the caller sees a clean NORMAL state (plus any
+// other simultaneously-set flags, which should not happen for RETURN).
+#define RESULT_RETURN_CATCH_MASK (RESULT_RETURN | RESULT_SKIP_MASK)
 
 typedef struct {
     VALUE value;
-    enum result_state state;
+    unsigned int state;
 } RESULT;
 
 #define RESULT_OK(v) ((RESULT){(v), RESULT_NORMAL})
@@ -309,15 +327,15 @@ struct abruby_block {
 // method != NULL: normal method frame
 // method == NULL: <main>/<top (required)>
 //
-// frame_id is a machine-local monotonic id assigned at push time.  Used as a
-// "return target" for non-local returns from blocks: CTX.return_target_frame_id
-// names which frame should catch a propagating RETURN.  0 is the wildcard
-// meaning "nearest method boundary catches" — that is the default used by
-// normal (non-block) `return` and preserves pre-block semantics exactly.
-//
 // block is the block passed in at this call (NULL if the method was called
 // without one).  A non-NULL block tells the method boundary to also demote
 // RESULT_BREAK — that is where `break` from the block lands (Ruby semantics).
+//
+// Non-local returns from blocks no longer use a per-frame id: instead
+// `node_return` encodes the number of method boundaries to skip in the
+// high bits of RESULT.state (see RESULT_SKIP_SHIFT).  Plain (non-block)
+// `return` uses skip count 0 and is caught at the nearest method boundary,
+// so this path imposes zero per-frame cost outside block return.
 struct abruby_frame {
     struct abruby_frame *prev;
     const struct abruby_method *method;  // super walks from method->defining_class->super
@@ -326,7 +344,6 @@ struct abruby_frame {
         const char *source_file;         // <main>/<top>: set at push time
     };
     const struct abruby_block *block;    // block received by this call, or NULL
-    uint32_t frame_id;                   // unique id per live frame (CTX-local counter)
 };
 
 // Cached interned IDs for operator methods and common names
@@ -342,6 +359,41 @@ struct abruby_machine;  // forward declaration
 
 #define ABRUBY_STACK_SIZE 10000
 
+// Forward decls for the helpers below.
+struct CTX_struct;
+struct abruby_frame;
+
+// "Am I currently executing a block body?"
+//
+// c->current_block_frame is the physical frame that was active when the
+// innermost enclosing `yield` entered the block body — i.e. the yielding
+// method's frame.  While that same frame is the top of the physical chain
+// (= c->current_frame) we are running block body code.  Method calls made
+// from within the block body push a new frame, shifting c->current_frame
+// away from c->current_block_frame, and the check flips to false for the
+// duration of that method's body — exactly what we want because `yield` /
+// `return` inside that callee refers to its own method, not the block.
+//
+// This design lets dispatch_method_frame stay completely untouched: no
+// per-call save/restore of block-execution state, no CTX writes on the
+// non-block hot path.  Only node_yield / abruby_yield pay the cost of
+// pushing/popping current_block / current_block_frame (a rare event).
+static inline bool
+abruby_in_block(const struct CTX_struct *c);
+
+// Lexical context frame: the method frame whose `yield` / `super` / enclosing
+// scope a piece of code at the current execution point refers to.
+//
+//   - Outside a block body: the current physical frame.
+//   - Inside a block body: the defining frame of the currently-executing
+//     block (the method where the block literal lexically appears).
+//
+// We intentionally keep `c->current_frame` as the physical call stack chain
+// (the one that frame pushes link together) so that non-local return skip
+// counting, backtrace, and inline-exception location all see real frames.
+static inline const struct abruby_frame *
+abruby_context_frame(const struct CTX_struct *c);
+
 struct CTX_struct {
     struct abruby_machine *abm;          // per-instance machine (owner)
     VALUE stack[ABRUBY_STACK_SIZE];      // VALUE stack (locals + args)
@@ -350,22 +402,28 @@ struct CTX_struct {
     struct abruby_class *current_class;  // set during class body eval
     struct abruby_frame *current_frame;  // head of call frame linked list
     const struct abruby_id_cache *ids;   // cached rb_intern results
-    // Non-local return target: 0 = wildcard (catch at nearest method boundary),
-    // non-0 = only the frame whose frame_id matches should demote RETURN.
-    // Set by `return` inside a block (to the block's defining frame id);
-    // cleared by whichever method boundary catches.
-    uint32_t return_target_frame_id;
-    // Monotonic counter for assigning fresh frame_id at push time.
-    // CTX-local (not machine-local) so that fibers get independent numbering.
-    uint32_t frame_id_counter;
-    // Block-execution context.  When yield / abruby_yield swaps fp/self to a
-    // block's captured environment, it also saves the previous current_block
-    // and sets in_block=true.  `return` inside a block reads current_block
-    // to find the defining frame id and sets return_target_frame_id to it.
-    // Nested yields just stack-save and restore these like any other local.
+    // Block-execution context.  `yield` / `abruby_yield` sets both fields
+    // on entry (saving the previous values to C stack locals) and restores
+    // on exit.  dispatch_method_frame does NOT touch these — the condition
+    // `current_block_frame == current_frame` naturally goes false when a
+    // method call pushes a new physical frame, so block-context state is
+    // frame-scoped without any per-call save/restore cost.
     const struct abruby_block *current_block;
-    bool in_block;
+    const struct abruby_frame *current_block_frame;
 };
+
+// Definitions of the helpers (forward-declared earlier).
+static inline bool
+abruby_in_block(const struct CTX_struct *c)
+{
+    return c->current_block_frame == c->current_frame;
+}
+
+static inline const struct abruby_frame *
+abruby_context_frame(const struct CTX_struct *c)
+{
+    return abruby_in_block(c) ? c->current_block->defining_frame : c->current_frame;
+}
 
 // Fiber: owns a CTX (execution context with its own stack).
 // Currently only main fiber exists; future: multiple fibers with switching.

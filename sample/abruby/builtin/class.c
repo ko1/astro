@@ -12,7 +12,6 @@ static RESULT ab_class_new(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
         frame.prev = c->current_frame;
         frame.method = init;
         frame.block = NULL;
-        frame.frame_id = ++c->frame_id_counter;
         c->current_frame = &frame;
 
         RESULT r = RESULT_OK(Qnil);

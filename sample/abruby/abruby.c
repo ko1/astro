@@ -350,21 +350,25 @@ abruby_class_set_const(struct abruby_class *klass, ID name, VALUE val)
     ab_id_table_insert(&klass->constants, name, val);
 }
 
-// Invoke the block attached to the current frame from a cfunc body.
-// Used by builtin iterators (Integer#times, Array#each, ...).
+// Invoke the block attached to the lexically-enclosing method from a cfunc
+// body.  Used by builtin iterators (Integer#times, Array#each, ...).
 // Contract (mirrors node_yield):
-//   - Reads c->current_frame->block; raises LocalJumpError if NULL.
+//   - Reads abruby_context_frame(c)->block; raises LocalJumpError if NULL.
 //   - Transfers argv[0..argc) into the block's captured fp at param_base,
 //     pad-with-nil for missing, drop-extra semantics (proc-style).
-//   - Swaps fp/self/current_block/in_block to the captured env, runs the
-//     block body, then restores.
+//   - Swaps fp/self/current_block/current_block_frame to the captured env,
+//     runs the block body, then restores.  current_frame is NOT swapped —
+//     it stays as the physical call chain so non-local return skip counting
+//     works.  current_block_frame is set to c->current_frame so that
+//     abruby_in_block(c) returns true inside the block body but naturally
+//     flips to false the moment a callee method pushes a new frame.
 //   - Demotes RESULT_NEXT to NORMAL (next returns from the block).
 //   - Leaves BREAK / RAISE / RETURN intact; the cfunc must return these
 //     states unchanged so dispatch_method_frame_with_block demotes them.
 RESULT
 abruby_yield(CTX *c, unsigned int argc, VALUE *argv)
 {
-    const struct abruby_block *blk = c->current_frame->block;
+    const struct abruby_block *blk = abruby_context_frame(c)->block;
     if (UNLIKELY(blk == NULL)) {
         VALUE exc = abruby_exception_new(c, c->current_frame,
             abruby_str_new_cstr(c, "no block given (yield)"));
@@ -382,23 +386,20 @@ abruby_yield(CTX *c, unsigned int argc, VALUE *argv)
 
     VALUE *save_fp = c->fp;
     VALUE save_self = c->self;
-    struct abruby_frame *save_frame = c->current_frame;
     const struct abruby_block *save_current_block = c->current_block;
-    bool save_in_block = c->in_block;
+    const struct abruby_frame *save_current_block_frame = c->current_block_frame;
 
     c->fp = blk->captured_fp;
     c->self = blk->captured_self;
-    c->current_frame = blk->defining_frame;
     c->current_block = blk;
-    c->in_block = true;
+    c->current_block_frame = c->current_frame;
 
     RESULT r = EVAL(c, blk->body);
 
     c->fp = save_fp;
     c->self = save_self;
-    c->current_frame = save_frame;
     c->current_block = save_current_block;
-    c->in_block = save_in_block;
+    c->current_block_frame = save_current_block_frame;
 
     r.state &= ~(unsigned)RESULT_NEXT;
     return r;
@@ -427,11 +428,9 @@ abruby_call_method(CTX *c, VALUE recv, const struct abruby_method *method,
         // Catch RETURN at this C-boundary method call.  This path pushes no
         // frame, so it cannot participate in targeted non-local return
         // matching; treat it as an implicit wildcard catch (the historic
-        // behavior) and clear any target that may have been set so it does
-        // not bleed into subsequent evaluation.
+        // behavior) and strip both RETURN and any residual skip-count bits.
         if (r.state & RESULT_RETURN) {
-            r.state &= ~(unsigned)RESULT_RETURN;
-            c->return_target_frame_id = 0;
+            r.state &= ~(unsigned)RESULT_RETURN_CATCH_MASK;
         }
         return r;
     }
@@ -1362,7 +1361,7 @@ abruby_require_file(CTX *c, VALUE rb_path)
     struct abruby_frame *save_frame = c->current_frame;
     c->fp = c->stack;
     c->current_class = NULL;
-    struct abruby_frame req_frame = {save_frame, NULL, {.source_file = RSTRING_PTR(abs_str)}, NULL, ++c->frame_id_counter};
+    struct abruby_frame req_frame = {save_frame, NULL, {.source_file = RSTRING_PTR(abs_str)}, NULL};
     c->current_frame = &req_frame;
     RESULT r = EVAL(c, ast);
     c->fp = save_fp;
@@ -1447,7 +1446,7 @@ rb_abruby_eval_ast(VALUE self, VALUE ast_obj)
 
     // Push <main> frame so backtrace always has a bottom frame
     const char *eval_file = NIL_P(vm->current_file) ? "(abruby)" : RSTRING_PTR(vm->current_file);
-    struct abruby_frame main_frame = {NULL, NULL, {.source_file = eval_file}, NULL, ++vm->current_fiber->ctx.frame_id_counter};
+    struct abruby_frame main_frame = {NULL, NULL, {.source_file = eval_file}, NULL};
     vm->current_fiber->ctx.current_frame = &main_frame;
 
     RESULT r = EVAL(&vm->current_fiber->ctx, ast);
