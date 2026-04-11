@@ -196,6 +196,10 @@ abruby_bignum_new(CTX *c, VALUE rb_bignum)
 VALUE
 abruby_float_new_wrap(CTX *c, VALUE rb_float)
 {
+    // Pass Flonum through as an immediate; AB_CLASS_OF_IMM resolves it to
+    // float_class. Only heap T_FLOAT (out-of-Flonum-range values like NaN,
+    // some infinities) needs the T_DATA wrapper.
+    if (RB_FLONUM_P(rb_float)) return rb_float;
     struct abruby_float *f;
     VALUE wrapper = TypedData_Make_Struct(rb_cAbRubyNode, struct abruby_float, &abruby_data_type, f);
     f->klass = c->abm->float_class;
@@ -651,20 +655,12 @@ init_instance_classes(struct abruby_machine *vm)
     abruby_class_set_const(obj, rb_intern("NilClass"),     abruby_wrap_class(vm->nil_class));
     abruby_class_set_const(obj, rb_intern("RuntimeError"), abruby_wrap_class(vm->runtime_error_class));
 
-    // Float constants (must be per-instance abruby values, not raw CRuby Floats)
-    {
-        struct abruby_float *inf;
-        VALUE inf_w = TypedData_Make_Struct(rb_cAbRubyNode, struct abruby_float, &abruby_data_type, inf);
-        inf->klass = vm->float_class;
-        inf->rb_float = rb_float_new(HUGE_VAL);
-        abruby_class_set_const(vm->float_class, rb_intern("INFINITY"), inf_w);
-
-        struct abruby_float *nan_v;
-        VALUE nan_w = TypedData_Make_Struct(rb_cAbRubyNode, struct abruby_float, &abruby_data_type, nan_v);
-        nan_v->klass = vm->float_class;
-        nan_v->rb_float = rb_float_new(nan(""));
-        abruby_class_set_const(vm->float_class, rb_intern("NAN"), nan_w);
-    }
+    // Float constants. abruby_float_new_wrap passes Flonum through and only
+    // wraps heap T_FLOAT in T_DATA, so it works for both representations.
+    abruby_class_set_const(vm->float_class, rb_intern("INFINITY"),
+        abruby_float_new_wrap(&vm->current_fiber->ctx, rb_float_new(HUGE_VAL)));
+    abruby_class_set_const(vm->float_class, rb_intern("NAN"),
+        abruby_float_new_wrap(&vm->current_fiber->ctx, rb_float_new(nan(""))));
 }
 
 static struct abruby_machine *
@@ -673,6 +669,9 @@ create_vm(void)
     struct abruby_machine *vm = ruby_xcalloc(1, sizeof(struct abruby_machine));
     vm->method_serial = 1;
     vm->current_fiber = ruby_xcalloc(1, sizeof(struct abruby_fiber));
+    // Wire ctx.abm early so init_instance_classes can use abruby_float_new_wrap
+    // (which reads c->abm->float_class) when creating Float constants.
+    vm->current_fiber->ctx.abm = vm;
 
     // Create per-instance built-in classes (must be before main_class_body setup)
     init_instance_classes(vm);

@@ -1,7 +1,7 @@
 #include "builtin.h"
 
 static VALUE ab_to_hash_key(VALUE v) {
-    if (FIXNUM_P(v) || v == Qtrue || v == Qfalse || v == Qnil) return v;
+    if (FIXNUM_P(v) || RB_FLONUM_P(v) || v == Qtrue || v == Qfalse || v == Qnil) return v;
     if (RB_TYPE_P(v, T_DATA)) {
         const struct abruby_header *h = (const struct abruby_header *)RTYPEDDATA_GET_DATA(v);
         if (h->klass->obj_type == ABRUBY_OBJ_STRING) return ((const struct abruby_string *)h)->rb_str;

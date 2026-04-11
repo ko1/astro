@@ -278,7 +278,8 @@ node_ary_new(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_in
 static VALUE
 ab_to_hash_key(VALUE v)
 {
-    if (FIXNUM_P(v) || SYMBOL_P(v) || v == Qtrue || v == Qfalse || v == Qnil) return v;
+    if (FIXNUM_P(v) || SYMBOL_P(v) || RB_FLONUM_P(v) ||
+        v == Qtrue || v == Qfalse || v == Qnil) return v;
     const struct abruby_header *h = (const struct abruby_header *)RTYPEDDATA_GET_DATA(v);
     if (h->klass->obj_type == ABRUBY_OBJ_STRING) return ((const struct abruby_string *)h)->rb_str;
     return v; // user objects as-is (identity based)

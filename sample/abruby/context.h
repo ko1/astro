@@ -196,7 +196,7 @@ ab_verify(VALUE obj)
 {
     if (ABRUBY_DEBUG) {
         // immediate values are always valid
-        if (FIXNUM_P(obj) || SYMBOL_P(obj) ||
+        if (FIXNUM_P(obj) || SYMBOL_P(obj) || RB_FLONUM_P(obj) ||
             obj == Qtrue || obj == Qfalse || obj == Qnil) {
             return;
         }
@@ -220,11 +220,15 @@ ab_verify(VALUE obj)
     }
 }
 
-// Type check by obj_type (instance-independent, works with per-instance classes)
+// Type check by obj_type (instance-independent, works with per-instance classes).
+// Equivalent to AB_CLASS_OF(obj)->obj_type == type, but doesn't need a CTX.
+// Hardcodes the immediate→obj_type mapping (it's fixed across all machines).
 static inline bool
 ab_obj_type_p(VALUE obj, enum abruby_obj_type type)
 {
-    if (RB_SPECIAL_CONST_P(obj)) return false;
+    if (FIXNUM_P(obj))           return type == ABRUBY_OBJ_BIGNUM;  // integer_class.obj_type
+    if (RB_FLONUM_P(obj))        return type == ABRUBY_OBJ_FLOAT;
+    if (RB_SPECIAL_CONST_P(obj)) return type == ABRUBY_OBJ_GENERIC; // symbol/true/false/nil
     const struct abruby_header *h = (const struct abruby_header *)RTYPEDDATA_GET_DATA(obj);
     return h->klass && h->klass->obj_type == type;
 }
@@ -333,6 +337,7 @@ static __attribute__((unused)) struct abruby_class *
 AB_CLASS_OF_IMM(const CTX *c, VALUE obj)
 {
     if (FIXNUM_P(obj))       return c->abm->integer_class;
+    else if (RB_FLONUM_P(obj)) return c->abm->float_class;
     else if (SYMBOL_P(obj))  return c->abm->symbol_class;
     else if (obj == Qtrue)   return c->abm->true_class;
     else if (obj == Qfalse)  return c->abm->false_class;

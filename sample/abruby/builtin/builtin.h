@@ -49,6 +49,7 @@ AB_INT_UNWRAP(VALUE v)
 static inline VALUE
 AB_FLOAT_UNWRAP(VALUE v)
 {
+    if (RB_FLONUM_P(v)) return v;
     return ((const struct abruby_float *)RTYPEDDATA_GET_DATA(v))->rb_float;
 }
 
@@ -57,6 +58,7 @@ static inline VALUE
 AB_NUM_UNWRAP(VALUE v)
 {
     if (FIXNUM_P(v)) return v;
+    if (RB_FLONUM_P(v)) return v;
     const struct abruby_header *h = (const struct abruby_header *)RTYPEDDATA_GET_DATA(v);
     switch (h->klass->obj_type) {
     case ABRUBY_OBJ_BIGNUM:   return ((const struct abruby_bignum *)h)->rb_bignum;
