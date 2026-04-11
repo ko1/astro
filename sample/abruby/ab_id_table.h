@@ -27,13 +27,29 @@ struct ab_id_table_entry {
     VALUE val;
 };
 
+// Table with embedded inline storage. Small tables (<= SMALL_CAPA entries)
+// live entirely inside the struct with zero separate allocations — crucial
+// for abruby_object's ivars where binary-trees-style workloads allocate
+// millions of objects and paying an extra ruby_xmalloc2 per object is the
+// dominant cost.  When a table outgrows the inline storage,
+// ab_id_table_grow allocates a heap buffer and `entries` is switched; the
+// inline storage stays resident but unused.
 struct ab_id_table {
     unsigned int cnt;
     unsigned int capa;
     struct ab_id_table_entry *entries;
+    struct ab_id_table_entry inline_storage[AB_ID_TABLE_SMALL_CAPA];
 };
 
-#define AB_ID_TABLE_INIT {0, 0, NULL}
+// Static zero-initialization: capa=0, entries=NULL. On first insert,
+// reserve_one switches `entries` to `inline_storage` with capa=SMALL_CAPA.
+#define AB_ID_TABLE_INIT {0, 0, NULL, {{0, 0}, {0, 0}, {0, 0}, {0, 0}}}
+
+static inline bool
+ab_id_table_is_inline(const struct ab_id_table *t)
+{
+    return t->entries == &t->inline_storage[0];
+}
 
 static inline void
 ab_id_table_init(struct ab_id_table *t)
@@ -41,15 +57,16 @@ ab_id_table_init(struct ab_id_table *t)
     t->cnt = 0;
     t->capa = 0;
     t->entries = NULL;
+    memset(t->inline_storage, 0, sizeof(t->inline_storage));
 }
 
 static inline void
 ab_id_table_free(struct ab_id_table *t)
 {
-    if (t->entries) {
+    if (t->entries && !ab_id_table_is_inline(t)) {
         ruby_xfree(t->entries);
-        t->entries = NULL;
     }
+    t->entries = NULL;
     t->cnt = t->capa = 0;
 }
 
@@ -145,13 +162,27 @@ ab_id_table_hash_insert_nogrow(struct ab_id_table *t, ID key, VALUE val)
 }
 
 // Grow to new_capa. Handles both the small-packed -> hash and hash -> hash transitions.
+// If new_capa fits in inline_storage and we're not already using it, prefer inline.
 static inline void
 ab_id_table_grow(struct ab_id_table *t, unsigned int new_capa)
 {
     struct ab_id_table_entry *old_entries = t->entries;
     unsigned int old_capa = t->capa;
     unsigned int old_cnt = t->cnt;
-    t->entries = (struct ab_id_table_entry *)ruby_xcalloc(new_capa, sizeof(struct ab_id_table_entry));
+    bool old_was_inline = old_entries && ab_id_table_is_inline(t);
+
+    struct ab_id_table_entry *new_entries;
+    bool new_is_inline;
+    if (new_capa <= AB_ID_TABLE_SMALL_CAPA && !old_was_inline) {
+        // Fresh inline transition: use the embedded storage, no malloc.
+        new_entries = t->inline_storage;
+        memset(new_entries, 0, AB_ID_TABLE_SMALL_CAPA * sizeof(struct ab_id_table_entry));
+        new_is_inline = true;
+    } else {
+        new_entries = (struct ab_id_table_entry *)ruby_xcalloc(new_capa, sizeof(struct ab_id_table_entry));
+        new_is_inline = false;
+    }
+    t->entries = new_entries;
     t->capa = new_capa;
     t->cnt = 0;
     if (new_capa <= AB_ID_TABLE_SMALL_CAPA) {
@@ -171,7 +202,14 @@ ab_id_table_grow(struct ab_id_table *t, unsigned int new_capa)
             }
         }
     }
-    if (old_entries) ruby_xfree(old_entries);
+    // Only free if the old buffer was a heap allocation.
+    if (old_entries && !old_was_inline && !new_is_inline) {
+        ruby_xfree(old_entries);
+    } else if (old_entries && !old_was_inline && new_is_inline) {
+        // Unlikely shrinking path into inline.
+        ruby_xfree(old_entries);
+    }
+    (void)new_is_inline;
 }
 
 // Grow the table if the upcoming insert would exceed capacity / load factor.
@@ -334,22 +372,28 @@ ab_id_table_delete(struct ab_id_table *t, ID key)
 static inline void
 ab_id_table_clone(struct ab_id_table *dst, const struct ab_id_table *src)
 {
-    // IMPORTANT: allocate entries before publishing cnt/capa.
-    // If dst is embedded in a T_DATA already visible to the GC, a GC triggered
-    // by ruby_xmalloc2 would otherwise find cnt/capa set with NULL entries and
-    // segfault while iterating.
-    if (src->capa > 0) {
-        struct ab_id_table_entry *new_entries =
-            (struct ab_id_table_entry *)ruby_xmalloc2(src->capa, sizeof(struct ab_id_table_entry));
-        memcpy(new_entries, src->entries, src->capa * sizeof(struct ab_id_table_entry));
-        dst->entries = new_entries;
-        dst->capa = src->capa;
-        dst->cnt = src->cnt;
-    } else {
+    if (src->capa == 0) {
         dst->entries = NULL;
         dst->capa = 0;
         dst->cnt = 0;
+        return;
     }
+    if (src->capa <= AB_ID_TABLE_SMALL_CAPA) {
+        // Fits in the destination's inline storage — no allocation.
+        memcpy(dst->inline_storage, src->entries, src->capa * sizeof(struct ab_id_table_entry));
+        dst->entries = dst->inline_storage;
+        dst->capa = src->capa;
+        dst->cnt = src->cnt;
+        return;
+    }
+    // Larger than inline: heap-allocate.  Publish `entries` before cnt/capa
+    // so a GC triggered by ruby_xmalloc2 never sees a half-built table.
+    struct ab_id_table_entry *new_entries =
+        (struct ab_id_table_entry *)ruby_xmalloc2(src->capa, sizeof(struct ab_id_table_entry));
+    memcpy(new_entries, src->entries, src->capa * sizeof(struct ab_id_table_entry));
+    dst->entries = new_entries;
+    dst->capa = src->capa;
+    dst->cnt = src->cnt;
 }
 
 // Iterate over all live entries. Small tables are packed in [0, cnt);
