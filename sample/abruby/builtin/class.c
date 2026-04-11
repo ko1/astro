@@ -13,10 +13,12 @@ static RESULT ab_class_new(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
         frame.method = init;
         c->current_frame = &frame;
 
-        RESULT r;
-        if (init->type == ABRUBY_METHOD_CFUNC) {
+        RESULT r = RESULT_OK(Qnil);
+        switch (init->type) {
+          case ABRUBY_METHOD_CFUNC:
             r = init->u.cfunc.func(c, obj, argc, argv);
-        } else {
+            break;
+          case ABRUBY_METHOD_AST: {
             VALUE *save_fp = c->fp;
             VALUE save_self = c->self;
             c->fp = argv;
@@ -24,6 +26,16 @@ static RESULT ab_class_new(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
             r = EVAL(c, init->u.ast.body);
             c->fp = save_fp;
             c->self = save_self;
+            break;
+          }
+          case ABRUBY_METHOD_IVAR_SETTER:
+            // def initialize(v); @name = v; end — collapsed to ivar setter.
+            // Write argv[0] into the named slot on the new obj (via its own shape).
+            abruby_ivar_set(obj, init->u.ivar_accessor.ivar_name, argv[0]);
+            break;
+          case ABRUBY_METHOD_IVAR_GETTER:
+            // def initialize; @name; end — no side-effect for a constructor.
+            break;
         }
 
         c->current_frame = frame.prev;

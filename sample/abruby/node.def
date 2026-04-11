@@ -658,13 +658,27 @@ dispatch_method_frame(CTX * restrict c, NODE * restrict call_site,
 {
     // Fast path: attr_reader / attr_writer. Skip the frame dance entirely
     // and touch obj->ivars[slot] directly. mc->ivar_slot was resolved at
-    // fill time from the receiver klass's shape.
+    // fill time from mc->klass's shape; if the receiver's class matches, we
+    // can use it directly. When it differs (e.g. super call where the method
+    // is inherited), fall back to looking up the slot in the receiver's own
+    // class shape so inherited attr_accessors see per-subclass ivar layout.
     enum abruby_method_type mtype = mc->method->type;
     if (mtype == ABRUBY_METHOD_IVAR_GETTER) {
         const struct abruby_object *obj =
             (const struct abruby_object *)RTYPEDDATA_GET_DATA(c->self);
-        if (LIKELY(mc->ivar_slot < obj->ivar_cnt)) {
-            return RESULT_OK(abruby_object_ivar_read(obj, mc->ivar_slot));
+        unsigned int slot;
+        if (LIKELY(mc->klass == obj->klass)) {
+            slot = mc->ivar_slot;
+        } else {
+            VALUE slot_fix;
+            if (!ab_id_table_lookup(&obj->klass->ivar_shape,
+                                    mc->method->u.ivar_accessor.ivar_name, &slot_fix)) {
+                return RESULT_OK(Qnil);
+            }
+            slot = (unsigned int)FIX2ULONG(slot_fix);
+        }
+        if (LIKELY(slot < obj->ivar_cnt)) {
+            return RESULT_OK(abruby_object_ivar_read(obj, slot));
         }
         return RESULT_OK(Qnil);
     }
@@ -672,7 +686,20 @@ dispatch_method_frame(CTX * restrict c, NODE * restrict call_site,
         struct abruby_object *obj =
             (struct abruby_object *)RTYPEDDATA_GET_DATA(c->self);
         VALUE v = c->fp[arg_index];
-        unsigned int slot = mc->ivar_slot;
+        unsigned int slot;
+        if (LIKELY(mc->klass == obj->klass)) {
+            slot = mc->ivar_slot;
+        } else {
+            struct abruby_class *obj_klass = obj->klass;
+            ID ivar_name = mc->method->u.ivar_accessor.ivar_name;
+            VALUE slot_fix;
+            if (ab_id_table_lookup(&obj_klass->ivar_shape, ivar_name, &slot_fix)) {
+                slot = (unsigned int)FIX2ULONG(slot_fix);
+            } else {
+                slot = obj_klass->ivar_shape.cnt;
+                ab_id_table_insert(&obj_klass->ivar_shape, ivar_name, LONG2FIX((long)slot));
+            }
+        }
         if (slot >= obj->ivar_cnt) abruby_object_grow_ivars(obj, slot + 1);
         if (LIKELY(slot < ABRUBY_OBJECT_INLINE_IVARS)) {
             obj->ivars[slot] = v;
