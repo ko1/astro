@@ -1070,6 +1070,96 @@ node_func_call(CTX * restrict c, NODE * restrict n, ID name, uint32_t params_cnt
     }
 }
 
+// === Apply (splat) call nodes ===
+//
+// Used when a call has a splat argument (`foo(a, *b, c)`).  The parser
+// lowers the full argument list to a single Array-valued expression and
+// passes it here via the `args` operand.
+//
+// Runtime contract:
+//   - Evaluate `args` to an abruby Array (parser guarantees this).
+//   - Store the array VALUE at c->fp[arg_index] to keep it GC-pinned for
+//     the duration of the dispatched call.
+//   - Copy its elements into c->fp[arg_index+1 .. arg_index+1+argc].
+//   - Dispatch with (argc, arg_index+1).
+//
+// The parser reserves ABRUBY_APPLY_MAX_ARGS + 1 slots at arg_index so the
+// runtime copy cannot overflow the caller's frame.  If argc exceeds the
+// reservation, we raise a RuntimeError.
+
+#define ABRUBY_APPLY_MAX_ARGS 32
+
+static inline RESULT
+apply_unpack(CTX * restrict c, NODE * restrict n,
+             VALUE args_val, uint32_t arg_index, uint32_t *out_argc)
+{
+    // args_val must be an abruby Array.
+    if (!ab_obj_type_p(args_val, ABRUBY_OBJ_ARRAY)) {
+        VALUE exc;
+        PUSH_FRAME(n);
+        exc = abruby_exception_new(c, c->current_frame,
+            abruby_str_new_cstr(c, "splat argument must be an Array"));
+        POP_FRAME();
+        return (RESULT){exc, RESULT_RAISE};
+    }
+    VALUE rb_ary = RARY(args_val);
+    long n_args = RARRAY_LEN(rb_ary);
+    if (n_args > ABRUBY_APPLY_MAX_ARGS) {
+        VALUE exc;
+        PUSH_FRAME(n);
+        exc = abruby_exception_new(c, c->current_frame,
+            abruby_str_new_cstr(c, "too many arguments in splat call"));
+        POP_FRAME();
+        return (RESULT){exc, RESULT_RAISE};
+    }
+    // Keep the array pinned at fp[arg_index] so GC during dispatch sees it.
+    c->fp[arg_index] = args_val;
+    for (long i = 0; i < n_args; i++) {
+        c->fp[arg_index + 1 + i] = RARRAY_AREF(rb_ary, i);
+    }
+    *out_argc = (uint32_t)n_args;
+    return RESULT_OK(Qnil);
+}
+
+NODE_DEF
+node_func_call_apply(CTX * restrict c, NODE * restrict n, ID name, NODE *args, uint32_t arg_index, struct method_cache *mc@ref)
+{
+    VALUE args_val = UNWRAP(EVAL_ARG(c, args));
+    uint32_t argc;
+    RESULT rr = apply_unpack(c, n, args_val, arg_index, &argc);
+    if (UNLIKELY(rr.state != RESULT_NORMAL)) return rr;
+
+    const struct abruby_class *klass = AB_CLASS_OF(c, c->self);
+    if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
+        return dispatch_method_frame(c, n, mc, argc, arg_index + 1);
+    }
+    return node_method_call_slow(c, n, c->self, klass, name, argc, arg_index + 1, mc);
+}
+
+NODE_DEF
+node_method_call_apply(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, NODE *args, uint32_t arg_index, struct method_cache *mc@ref)
+{
+    VALUE recv_val = UNWRAP(EVAL_ARG(c, recv));
+    // Keep recv alive across args evaluation by pinning at arg_index; we
+    // will overwrite the slot with the args array before dispatch.
+    c->fp[arg_index] = recv_val;
+    VALUE args_val = UNWRAP(EVAL_ARG(c, args));
+    recv_val = c->fp[arg_index]; // reload (GC moved? nothing, but be safe)
+    uint32_t argc;
+    RESULT rr = apply_unpack(c, n, args_val, arg_index, &argc);
+    if (UNLIKELY(rr.state != RESULT_NORMAL)) return rr;
+
+    const struct abruby_class *klass = AB_CLASS_OF(c, recv_val);
+    if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
+        VALUE save_self = c->self;
+        c->self = recv_val;
+        RESULT r = dispatch_method_frame(c, n, mc, argc, arg_index + 1);
+        c->self = save_self;
+        return r;
+    }
+    return node_method_call_slow(c, n, recv_val, klass, name, argc, arg_index + 1, mc);
+}
+
 // === Block-carrying call nodes ===
 //
 // Parser routes every call that has a block literal (`{ ... }` / `do..end`)

@@ -1162,6 +1162,20 @@ rb_alloc_node_super(VALUE self, VALUE params_cnt, VALUE arg_index)
     return wrap_node(ALLOC_node_super(FIX2UINT(params_cnt), FIX2UINT(arg_index)));
 }
 
+static VALUE
+rb_alloc_node_func_call_apply(VALUE self, VALUE name, VALUE args, VALUE arg_index)
+{
+    ID cname = rb_intern_str(name);
+    return wrap_node(ALLOC_node_func_call_apply(cname, unwrap_node(args), FIX2UINT(arg_index)));
+}
+
+static VALUE
+rb_alloc_node_method_call_apply(VALUE self, VALUE recv, VALUE name, VALUE args, VALUE arg_index)
+{
+    ID cname = rb_intern_str(name);
+    return wrap_node(ALLOC_node_method_call_apply(unwrap_node(recv), cname, unwrap_node(args), FIX2UINT(arg_index)));
+}
+
 // === Block support ===
 
 static VALUE
@@ -1711,6 +1725,8 @@ Init_abruby(void)
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_const_path_get", rb_alloc_node_const_path_get, 2);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_method_call", rb_alloc_node_method_call, 4);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_func_call", rb_alloc_node_func_call, 3);
+    rb_define_singleton_method(rb_cAbRuby, "alloc_node_func_call_apply", rb_alloc_node_func_call_apply, 3);
+    rb_define_singleton_method(rb_cAbRuby, "alloc_node_method_call_apply", rb_alloc_node_method_call_apply, 4);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_super", rb_alloc_node_super, 2);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_block_literal", rb_alloc_node_block_literal, 3);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_yield", rb_alloc_node_yield, 2);

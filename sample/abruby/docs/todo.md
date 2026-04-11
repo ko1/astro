@@ -35,7 +35,7 @@ benchmark/optcarrot/bin/optcarrot-bench を動かすために必要な機能。
 - [x] `is_a?` / `kind_of?` / `instance_of?`
 - [ ] `defined?`
 - [ ] クラス変数 (`@@var`)
-- [ ] 可変長引数 (`*args`, `**kwargs`)
+- [ ] 可変長引数 受け取り (`def f(*args)`, `def f(**kwargs)`) — 呼び出し側 splat は実装済
 - [ ] `&:symbol`（ブロック引数のシンボル記法）
 
 ### 標準ライブラリ

@@ -43,6 +43,11 @@
 ## メソッド
 - `def name(args); end`
 - endless method: `def name(args) = expr`
+- splat 引数 (`foo(*args)`, `foo(a, *b, c)`, `obj.m(*x, y)`) — 呼び出し側の展開。
+  パース時に `[a] + b + [c]` 形式の Array 式に lower し、新ノード
+  `node_func_call_apply` / `node_method_call_apply` が実行時に Array を
+  c->fp に unpack してディスパッチ。最大 `ABRUBY_APPLY_MAX_ARGS=32` 要素。
+  メソッド定義側の `*rest` 受け取りは未対応（Phase 2）
 - `attr_reader`, `attr_writer`, `attr_accessor`
 - `super`（bare / 引数付き / 引数なし）
 - 再帰呼び出し

@@ -768,10 +768,114 @@ class AbRuby
       set_line(AbRuby.alloc_node_block_literal(body, param_names.size, param_base), block_node)
     end
 
+    # Maximum dynamic args for a splat call; must match
+    # ABRUBY_APPLY_MAX_ARGS in node.def.
+    APPLY_MAX_ARGS = 32
+
+    # Does this argument list contain a splat?
+    def args_have_splat?(args)
+      args.any? { |a| a.is_a?(Prism::SplatNode) }
+    end
+
+    # Build an AST that evaluates to an Array of one element: transduce(arg)
+    def build_single_ary(arg)
+      base_idx = arg_index
+      slot = inc_arg_index
+      rewind_arg_index(base_idx)
+      build_seq([
+        AbRuby.alloc_node_lvar_set(slot, transduce(arg)),
+        AbRuby.alloc_node_ary_new(1, base_idx),
+      ])
+    end
+
+    # Build an AST that evaluates to an Array literal containing the given args.
+    def build_ary_literal(args)
+      return AbRuby.alloc_node_ary_new(0, arg_index) if args.empty?
+      base_idx = arg_index
+      slots = args.map { inc_arg_index }
+      seq = args.each_with_index.map do |a, i|
+        AbRuby.alloc_node_lvar_set(slots[i], transduce(a))
+      end
+      rewind_arg_index(base_idx)
+      build_seq(seq + [AbRuby.alloc_node_ary_new(args.size, base_idx)])
+    end
+
+    # Lower a mixed splat/non-splat arg list to a single Array expression.
+    # `foo(a, *b, c, *d)` -> `[a] + b + [c] + d`
+    # Splat argument expressions must already evaluate to an Array.
+    def build_splat_args_array(args)
+      parts = []   # list of array-valued AST expressions
+      buf = []     # buffered non-splat args
+
+      flush = -> {
+        unless buf.empty?
+          parts << build_ary_literal(buf)
+          buf = []
+        end
+      }
+
+      args.each do |a|
+        if a.is_a?(Prism::SplatNode)
+          flush.()
+          # *expr: expect an Array
+          parts << transduce(a.expression)
+        else
+          buf << a
+        end
+      end
+      flush.()
+
+      # Fold with Array#+.
+      parts.reduce do |acc, x|
+        fallback_idx = inc_arg_index
+        rewind_arg_index(fallback_idx)
+        AbRuby.alloc_node_plus(acc, x, fallback_idx)
+      end
+    end
+
+    # Emit an apply-call node when a call has splat arguments.
+    # recv_node is nil for implicit-self calls (func_call_apply).
+    def transduce_splat_call(node, recv_node, name, args)
+      # Reserve 1 + APPLY_MAX_ARGS slots at call_arg_idx.  The runtime pins
+      # the args array at fp[call_arg_idx] and unpacks into
+      # fp[call_arg_idx+1 .. call_arg_idx+1+argc].  Any intermediate
+      # compile-time temps used by recv/args subexpressions must sit PAST
+      # the reservation, so we leave arg_index advanced and only rewind at
+      # the end.
+      call_arg_idx = arg_index
+      (1 + APPLY_MAX_ARGS).times { inc_arg_index }
+
+      recv_ast = recv_node ? transduce(recv_node) : nil
+      args_expr = build_splat_args_array(args)
+
+      rewind_arg_index(call_arg_idx)
+
+      if recv_ast
+        set_line(AbRuby.alloc_node_method_call_apply(recv_ast, name.to_s, args_expr, call_arg_idx), node)
+      else
+        set_line(AbRuby.alloc_node_func_call_apply(name.to_s, args_expr, call_arg_idx), node)
+      end
+    end
+
     def transduce_call(node)
       name = node.name
       args = node.arguments&.arguments || []
       line = node.location.start_line
+
+      # Splat in call arguments → apply-call form.
+      if args_have_splat?(args)
+        if node.respond_to?(:block) && node.block
+          raise "splat call with block is not supported yet"
+        end
+        recv = node.receiver
+        if recv.is_a?(Prism::SelfNode)
+          return transduce_splat_call(node, nil, name, args)
+        elsif recv
+          return transduce_splat_call(node, recv, name, args)
+        else
+          return transduce_splat_call(node, nil, name, args)
+        end
+      end
 
       # method call with receiver: obj.method(args)
       if node.receiver
