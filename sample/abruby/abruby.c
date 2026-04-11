@@ -123,10 +123,17 @@ static void abruby_data_mark(void *ptr) {
         const struct abruby_object *obj = (const struct abruby_object *)ptr;
         unsigned int n = obj->ivar_cnt;
         unsigned int inline_n = n < ABRUBY_OBJECT_INLINE_IVARS ? n : ABRUBY_OBJECT_INLINE_IVARS;
-        for (unsigned int i = 0; i < inline_n; i++) rb_gc_mark(obj->ivars[i]);
+        for (unsigned int i = 0; i < inline_n; i++) {
+            VALUE v = obj->ivars[i];
+            // Skip the rb_gc_mark call overhead for immediates (nil, Fixnum, etc.).
+            if (!RB_SPECIAL_CONST_P(v)) rb_gc_mark(v);
+        }
         if (n > ABRUBY_OBJECT_INLINE_IVARS && obj->extra_ivars) {
             unsigned int extra = n - ABRUBY_OBJECT_INLINE_IVARS;
-            for (unsigned int i = 0; i < extra; i++) rb_gc_mark(obj->extra_ivars[i]);
+            for (unsigned int i = 0; i < extra; i++) {
+                VALUE v = obj->extra_ivars[i];
+                if (!RB_SPECIAL_CONST_P(v)) rb_gc_mark(v);
+            }
         }
         break;
     }
@@ -751,6 +758,7 @@ create_vm(void)
     vm->id_cache.op_eq = rb_intern("==");
     vm->id_cache.op_mod = rb_intern("%");
     vm->id_cache.method_missing = rb_intern("method_missing");
+    vm->id_cache.initialize = rb_intern("initialize");
     vm->current_fiber->ctx.ids = &vm->id_cache;
     vm->current_fiber->ctx.abm = vm;
     vm->rb_self = Qnil;

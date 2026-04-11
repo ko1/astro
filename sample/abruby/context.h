@@ -298,6 +298,7 @@ struct abruby_id_cache {
     ID op_lt, op_le, op_gt, op_ge;
     ID op_eq, op_mod;
     ID method_missing;
+    ID initialize;
 };
 
 struct abruby_machine;  // forward declaration

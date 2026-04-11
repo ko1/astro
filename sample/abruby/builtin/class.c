@@ -4,7 +4,7 @@
 static RESULT ab_class_new(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     struct abruby_class *klass = abruby_unwrap_class(self);
     VALUE obj = abruby_new_object(klass);
-    const struct abruby_method *init = abruby_find_method(klass, rb_intern("initialize"));
+    const struct abruby_method *init = abruby_find_method(klass, c->ids->initialize);
     if (init) {
         // Push frame for initialize (needed for super to find the class).
         // super walks method->defining_class->super, not frame.klass.
