@@ -101,6 +101,8 @@ module ASTroGen
             "hash_node(#{val})"
           when 'const char *'
             "hash_cstr(#{val})"
+          when 'double'
+            "hash_double(#{val})"
           else
             raise "no hash function: #{self.join}"
           end
@@ -116,6 +118,8 @@ module ASTroGen
             "        fprintf(fp, \"%d\", n->u.#{name}.#{self.name});"
           when 'const char *'
             "        fprintf(fp, \"\\\"%s\\\"\", n->u.#{name}.#{self.name});"
+          when 'double'
+            "        fprintf(fp, \"%.17g\", n->u.#{name}.#{self.name});"
           else
             raise "unknown operand type: #{self.join}"
           end
@@ -133,6 +137,8 @@ module ASTroGen
             "    fprintf(fp, \"        %d\", n->u.#{name}.#{self.name});"
           when 'const char *'
             "    astro_fprint_cstr(fp, n->u.#{name}.#{self.name});"
+          when 'double'
+            "    fprintf(fp, \"        %.17g\", n->u.#{name}.#{self.name});"
           else
             raise "unknown operand type: #{self.join}"
           end

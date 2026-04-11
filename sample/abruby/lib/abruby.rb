@@ -71,7 +71,7 @@ class AbRuby
         build_seq(stmts)
 
       when Prism::FloatNode
-        AbRuby.alloc_node_float_new(node.value.to_s)
+        AbRuby.alloc_node_float_new(node.value)
 
       when Prism::IntegerNode
         v = node.value

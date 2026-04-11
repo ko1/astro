@@ -824,10 +824,9 @@ rb_alloc_node_bignum_new(VALUE self, VALUE str)
 }
 
 static VALUE
-rb_alloc_node_float_new(VALUE self, VALUE str)
+rb_alloc_node_float_new(VALUE self, VALUE num)
 {
-    const char *cstr = strdup(StringValueCStr(str));
-    return wrap_node(ALLOC_node_float_new(cstr));
+    return wrap_node(ALLOC_node_float_new(NUM2DBL(num)));
 }
 
 static VALUE

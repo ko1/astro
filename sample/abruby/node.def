@@ -158,9 +158,9 @@ extern VALUE abruby_float_new_wrap(CTX *c, VALUE rb_float);
 extern VALUE abruby_bignum_new(CTX *c, VALUE rb_bignum);
 
 NODE_DEF
-node_float_new(CTX * restrict c, NODE * restrict n, const char *str)
+node_float_new(CTX * restrict c, NODE * restrict n, double val)
 {
-    return RESULT_OK(abruby_float_new_wrap(c, rb_float_new(strtod(str, NULL))));
+    return RESULT_OK(abruby_float_new_wrap(c, rb_float_new(val)));
 }
 
 NODE_DEF
