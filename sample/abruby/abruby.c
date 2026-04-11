@@ -819,6 +819,9 @@ create_vm(void)
     vm->id_cache.op_mod = rb_intern("%");
     vm->id_cache.method_missing = rb_intern("method_missing");
     vm->id_cache.initialize = rb_intern("initialize");
+    vm->id_cache.times = rb_intern("times");
+    vm->id_cache.each  = rb_intern("each");
+    vm->id_cache.map   = rb_intern("map");
     vm->current_fiber->ctx.ids = &vm->id_cache;
     vm->current_fiber->ctx.abm = vm;
     vm->rb_self = Qnil;
