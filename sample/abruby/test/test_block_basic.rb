@@ -148,6 +148,64 @@ class TestBlockBasic < AbRubyTest
     assert_eval('def f; yield; end; [f { || 1 }, f { 2 }]', [1, 2])
   end
 
+  # === B3b. Implicit array destructuring (Ruby proc semantics) ===
+  # When the block declares 2+ required params and exactly one Array
+  # argument is yielded, the array is auto-splatted into the params.
+
+  def test_autosplat_basic
+    # yield [1, 2] to |a, b| binds a=1, b=2
+    assert_eval('def f; yield [1, 2]; end; f { |a, b| [a, b] }', [1, 2])
+  end
+
+  def test_autosplat_single_param_keeps_array
+    # single-param block must NOT auto-splat
+    assert_eval('def f; yield [1, 2]; end; f { |a| a }', [1, 2])
+  end
+
+  def test_autosplat_extra_elements_dropped
+    assert_eval('def f; yield [1, 2, 3]; end; f { |a, b| [a, b] }', [1, 2])
+  end
+
+  def test_autosplat_short_array_pads_nil
+    assert_eval('def f; yield [1]; end; f { |a, b| [a, b] }', [1, nil])
+  end
+
+  def test_autosplat_three_params
+    assert_eval('def f; yield [1, 2, 3]; end; f { |a, b, c| [a, b, c] }', [1, 2, 3])
+  end
+
+  def test_autosplat_empty_array_pads_all_nil
+    assert_eval('def f; yield []; end; f { |a, b| [a, b] }', [nil, nil])
+  end
+
+  def test_autosplat_non_array_arg_does_not_splat
+    # single non-Array arg: first param = value, rest = nil (no splat)
+    assert_eval('def f; yield "str"; end; f { |a, b| [a, b] }', ["str", nil])
+    assert_eval('def f; yield 42; end;    f { |a, b| [a, b] }', [42, nil])
+    assert_eval('def f; yield nil; end;   f { |a, b| [a, b] }', [nil, nil])
+  end
+
+  def test_autosplat_multi_arg_yield_not_splatted
+    # argc >= 2 never triggers the splat rule even if arg0 is an Array.
+    assert_eval('def f; yield [1, 2], 99; end; f { |a, b| [a, b] }', [[1, 2], 99])
+  end
+
+  def test_autosplat_via_cfunc_iterator_hash_each
+    # Hash#each yields [key, value] and the common 2-param block
+    # relies on auto-splat to see key/value as scalars.
+    assert_eval('
+      r = []
+      {a: 1, b: 2}.each { |k, v| r.push([k, v]) }
+      r
+    ', [[:a, 1], [:b, 2]])
+  end
+
+  def test_autosplat_nested_array
+    # Nested arrays: only one level of splat.
+    assert_eval('def f; yield [[1, 2], [3, 4]]; end; f { |a, b| [a, b] }',
+                [[1, 2], [3, 4]])
+  end
+
   # === B4. Closure (outer method locals) ===
 
   def test_closure_read_outer_local

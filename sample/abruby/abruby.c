@@ -375,13 +375,32 @@ abruby_yield(CTX *c, unsigned int argc, VALUE *argv)
         return (RESULT){exc, RESULT_RAISE};
     }
 
+    // Proc-style arg binding, mirroring node_yield:
+    //   - pad missing with nil, drop extras
+    //   - n_params >= 2 && argc == 1 && arg0 is Array → auto-splat
+    // See node.def node_yield for the full spec discussion.
     unsigned int n_params = blk->params_cnt;
-    unsigned int n_copy = argc < n_params ? argc : n_params;
-    for (unsigned int i = 0; i < n_copy; i++) {
-        blk->captured_fp[blk->param_base + i] = argv[i];
+    VALUE * restrict dst = blk->captured_fp + blk->param_base;
+    if (n_params >= 2 && argc == 1 &&
+            AB_CLASS_OF(c, argv[0]) == c->abm->array_class) {
+        VALUE rb_ary = RARY(argv[0]);
+        long len = RARRAY_LEN(rb_ary);
+        unsigned int n_copy = ((unsigned long)len < n_params) ? (unsigned int)len : n_params;
+        for (unsigned int i = 0; i < n_copy; i++) {
+            dst[i] = RARRAY_AREF(rb_ary, i);
+        }
+        for (unsigned int i = n_copy; i < n_params; i++) {
+            dst[i] = Qnil;
+        }
     }
-    for (unsigned int i = n_copy; i < n_params; i++) {
-        blk->captured_fp[blk->param_base + i] = Qnil;
+    else {
+        unsigned int n_copy = argc < n_params ? argc : n_params;
+        for (unsigned int i = 0; i < n_copy; i++) {
+            dst[i] = argv[i];
+        }
+        for (unsigned int i = n_copy; i < n_params; i++) {
+            dst[i] = Qnil;
+        }
     }
 
     VALUE *save_fp = c->fp;

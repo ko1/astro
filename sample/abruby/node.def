@@ -606,16 +606,39 @@ node_yield(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_inde
     }
 
     // Transfer args into the block's captured fp at param_base.
-    // Missing args default to nil; extra args are dropped (MVP semantics
-    // — matches the Ruby "proc" (not lambda) convention, which is the
-    // right one for `yield`).
+    // Ruby proc-style semantics (yield / proc, NOT lambda):
+    //   - Missing args default to nil.
+    //   - Extra args are dropped.
+    //   - **Implicit array destructuring**: if the block declares 2+
+    //     required params and exactly one argument is yielded, and that
+    //     argument is an Array, splat it.  So
+    //       def f; yield [1, 2]; end
+    //       f { |a, b| ... }
+    //     binds a=1, b=2 (not a=[1,2], b=nil).  Single-param blocks and
+    //     multi-arg yields skip this path.
     uint32_t n_params = blk->params_cnt;
-    uint32_t n_copy = argc < n_params ? argc : n_params;
-    for (uint32_t i = 0; i < n_copy; i++) {
-        blk->captured_fp[blk->param_base + i] = c->fp[arg_index + i];
+    VALUE * restrict dst = blk->captured_fp + blk->param_base;
+    const VALUE *src = c->fp + arg_index;
+    if (n_params >= 2 && argc == 1 &&
+            AB_CLASS_OF(c, src[0]) == c->abm->array_class) {
+        VALUE rb_ary = RARY(src[0]);
+        long len = RARRAY_LEN(rb_ary);
+        uint32_t n_copy = ((unsigned long)len < n_params) ? (uint32_t)len : n_params;
+        for (uint32_t i = 0; i < n_copy; i++) {
+            dst[i] = RARRAY_AREF(rb_ary, i);
+        }
+        for (uint32_t i = n_copy; i < n_params; i++) {
+            dst[i] = Qnil;
+        }
     }
-    for (uint32_t i = n_copy; i < n_params; i++) {
-        blk->captured_fp[blk->param_base + i] = Qnil;
+    else {
+        uint32_t n_copy = argc < n_params ? argc : n_params;
+        for (uint32_t i = 0; i < n_copy; i++) {
+            dst[i] = src[i];
+        }
+        for (uint32_t i = n_copy; i < n_params; i++) {
+            dst[i] = Qnil;
+        }
     }
 
     // Swap closure environment (fp / self) and block-execution markers.
