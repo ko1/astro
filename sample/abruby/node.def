@@ -651,7 +651,9 @@ method_missing_dispatch(CTX * restrict c, NODE * restrict n, const struct abruby
     return dispatch_method_with_klass(c, n, recv_val, klass, mm, params_cnt + 1, arg_index);
 }
 
-static __attribute__((noinline, cold)) RESULT
+// Not marked `cold`: polymorphic dispatch sites (e.g. bm_dispatch) hit this
+// path every other iteration, and sending it to the cold section wrecks icache.
+static __attribute__((noinline)) RESULT
 node_method_call_slow(CTX * restrict c, NODE * restrict n,
                       VALUE recv_val, const struct abruby_class *klass, ID name,
                       uint32_t params_cnt, uint32_t arg_index,
