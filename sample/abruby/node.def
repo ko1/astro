@@ -297,17 +297,59 @@ node_hash_new(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_i
 
 // === Instance Variables ===
 
-NODE_DEF
-node_ivar_get(CTX * restrict c, NODE * restrict n, ID name)
+// Slow path for ivar cache miss: do the real lookup, then fill the cache.
+static __attribute__((noinline, cold)) VALUE
+node_ivar_get_slow(const struct abruby_object *obj, ID name, struct ivar_cache *ic)
 {
-    return RESULT_OK(abruby_ivar_get(c->self, name));
+    VALUE v;
+    unsigned int slot;
+    if (ab_id_table_lookup_slot(&obj->ivars, name, &v, &slot)) {
+        ic->klass = obj->klass;
+        ic->slot = slot;
+        return v;
+    }
+    ic->klass = NULL;  // don't cache a missing ivar
+    return Qnil;
 }
 
 NODE_DEF
-node_ivar_set(CTX * restrict c, NODE * restrict n, ID name, NODE *value)
+node_ivar_get(CTX * restrict c, NODE * restrict n, ID name, struct ivar_cache *ic@ref)
+{
+    ab_verify(c->self);
+    const struct abruby_object *obj =
+        (const struct abruby_object *)RTYPEDDATA_GET_DATA(c->self);
+    if (LIKELY(ic->klass == obj->klass && ic->slot < obj->ivars.capa &&
+               obj->ivars.entries[ic->slot].key == name)) {
+        return RESULT_OK(obj->ivars.entries[ic->slot].val);
+    }
+    return RESULT_OK(node_ivar_get_slow(obj, name, ic));
+}
+
+static __attribute__((noinline, cold)) void
+node_ivar_set_slow(struct abruby_object *obj, ID name, VALUE v, struct ivar_cache *ic)
+{
+    unsigned int slot;
+    ab_id_table_insert_slot(&obj->ivars, name, v, &slot);
+    ic->klass = obj->klass;
+    ic->slot = slot;
+}
+
+NODE_DEF
+node_ivar_set(CTX * restrict c, NODE * restrict n, ID name, NODE *value, struct ivar_cache *ic@ref)
 {
     VALUE v = UNWRAP(EVAL_ARG(c, value));
-    abruby_ivar_set(c->self, name, v);
+    ab_verify(c->self);
+    if (UNLIKELY(!RB_TYPE_P(c->self, T_DATA))) {
+        rb_raise(rb_eRuntimeError, "can't set instance variable on non-object");
+    }
+    struct abruby_object *obj =
+        (struct abruby_object *)RTYPEDDATA_GET_DATA(c->self);
+    if (LIKELY(ic->klass == obj->klass && ic->slot < obj->ivars.capa &&
+               obj->ivars.entries[ic->slot].key == name)) {
+        obj->ivars.entries[ic->slot].val = v;
+        return RESULT_OK(v);
+    }
+    node_ivar_set_slow(obj, name, v, ic);
     return RESULT_OK(v);
 }
 
@@ -724,56 +766,126 @@ ab_is_integer(VALUE v)
     return FIXNUM_P(v) || ab_obj_type_p(v, ABRUBY_OBJ_BIGNUM);
 }
 
+// Float type check (Flonum immediate or heap Float wrapped in abruby_float)
+static inline bool
+ab_is_float(VALUE v)
+{
+    return RB_FLONUM_P(v) || ab_obj_type_p(v, ABRUBY_OBJ_FLOAT);
+}
+
 // Forward declarations for cross-referencing dispatchers
 static RESULT DISPATCH_node_plus(CTX *c, NODE *n);
 static RESULT DISPATCH_node_fixnum_plus(CTX *c, NODE *n);
 static RESULT DISPATCH_node_integer_plus(CTX *c, NODE *n);
+static RESULT DISPATCH_node_flonum_plus(CTX *c, NODE *n);
 static RESULT DISPATCH_node_minus(CTX *c, NODE *n);
 static RESULT DISPATCH_node_fixnum_minus(CTX *c, NODE *n);
 static RESULT DISPATCH_node_integer_minus(CTX *c, NODE *n);
+static RESULT DISPATCH_node_flonum_minus(CTX *c, NODE *n);
 static RESULT DISPATCH_node_mul(CTX *c, NODE *n);
 static RESULT DISPATCH_node_fixnum_mul(CTX *c, NODE *n);
 static RESULT DISPATCH_node_integer_mul(CTX *c, NODE *n);
+static RESULT DISPATCH_node_flonum_mul(CTX *c, NODE *n);
 static RESULT DISPATCH_node_div(CTX *c, NODE *n);
 static RESULT DISPATCH_node_fixnum_div(CTX *c, NODE *n);
 static RESULT DISPATCH_node_integer_div(CTX *c, NODE *n);
+static RESULT DISPATCH_node_flonum_div(CTX *c, NODE *n);
 
 extern const struct NodeKind kind_node_plus;
 extern const struct NodeKind kind_node_fixnum_plus;
 extern const struct NodeKind kind_node_integer_plus;
+extern const struct NodeKind kind_node_flonum_plus;
 extern const struct NodeKind kind_node_minus;
 extern const struct NodeKind kind_node_fixnum_minus;
 extern const struct NodeKind kind_node_integer_minus;
+extern const struct NodeKind kind_node_flonum_minus;
 extern const struct NodeKind kind_node_mul;
 extern const struct NodeKind kind_node_fixnum_mul;
 extern const struct NodeKind kind_node_integer_mul;
+extern const struct NodeKind kind_node_flonum_mul;
 extern const struct NodeKind kind_node_div;
 extern const struct NodeKind kind_node_fixnum_div;
 extern const struct NodeKind kind_node_integer_div;
+extern const struct NodeKind kind_node_flonum_div;
 
-// Integer calc helpers (used by fixnum_*_slow and integer_* nodes)
+// Integer calc helpers (used by fixnum_*_slow and integer_* nodes).
+// Use rb_big_* directly when a Bignum is involved to skip rb_funcall overhead.
+// rb_big_*(x, y) requires x to be a Bignum but accepts any y.
 static inline RESULT
 integer_plus_calc(CTX *c, VALUE lv, VALUE rv)
 {
-    return RESULT_OK(AB_NUM_WRAP(c, rb_funcall(AB_INT_UNWRAP(lv), rb_intern("+"), 1, AB_INT_UNWRAP(rv))));
+    VALUE l = AB_INT_UNWRAP(lv), r = AB_INT_UNWRAP(rv);
+    VALUE result;
+    if (RB_TYPE_P(l, T_BIGNUM))      result = rb_big_plus(l, r);
+    else if (RB_TYPE_P(r, T_BIGNUM)) result = rb_big_plus(r, l);  // commutative
+    else                     result = rb_funcall(l, c->ids->op_plus, 1, r);
+    return RESULT_OK(AB_NUM_WRAP(c, result));
 }
 
 static inline RESULT
 integer_minus_calc(CTX *c, VALUE lv, VALUE rv)
 {
-    return RESULT_OK(AB_NUM_WRAP(c, rb_funcall(AB_INT_UNWRAP(lv), rb_intern("-"), 1, AB_INT_UNWRAP(rv))));
+    VALUE l = AB_INT_UNWRAP(lv), r = AB_INT_UNWRAP(rv);
+    VALUE result;
+    if (RB_TYPE_P(l, T_BIGNUM)) result = rb_big_minus(l, r);
+    else                result = rb_funcall(l, c->ids->op_minus, 1, r);
+    return RESULT_OK(AB_NUM_WRAP(c, result));
 }
 
 static inline RESULT
 integer_mul_calc(CTX *c, VALUE lv, VALUE rv)
 {
-    return RESULT_OK(AB_NUM_WRAP(c, rb_funcall(AB_INT_UNWRAP(lv), rb_intern("*"), 1, AB_INT_UNWRAP(rv))));
+    VALUE l = AB_INT_UNWRAP(lv), r = AB_INT_UNWRAP(rv);
+    VALUE result;
+    if (RB_TYPE_P(l, T_BIGNUM))      result = rb_big_mul(l, r);
+    else if (RB_TYPE_P(r, T_BIGNUM)) result = rb_big_mul(r, l);  // commutative
+    else                     result = rb_funcall(l, c->ids->op_mul, 1, r);
+    return RESULT_OK(AB_NUM_WRAP(c, result));
 }
 
 static inline RESULT
 integer_div_calc(CTX *c, VALUE lv, VALUE rv)
 {
-    return RESULT_OK(AB_NUM_WRAP(c, rb_funcall(AB_INT_UNWRAP(lv), rb_intern("/"), 1, AB_INT_UNWRAP(rv))));
+    VALUE l = AB_INT_UNWRAP(lv), r = AB_INT_UNWRAP(rv);
+    VALUE result;
+    if (RB_TYPE_P(l, T_BIGNUM)) result = rb_big_div(l, r);
+    else                result = rb_funcall(l, c->ids->op_div, 1, r);
+    return RESULT_OK(AB_NUM_WRAP(c, result));
+}
+
+// Float calc helpers (used by fixnum_*_slow promotion and flonum_* nodes).
+// Input values must pass ab_is_float().
+static inline RESULT
+flonum_plus_calc(CTX *c, VALUE lv, VALUE rv)
+{
+    double lf = RFLOAT_VALUE(AB_FLOAT_UNWRAP(lv));
+    double rf = RFLOAT_VALUE(AB_FLOAT_UNWRAP(rv));
+    return RESULT_OK(abruby_float_new_wrap(c, DBL2NUM(lf + rf)));
+}
+
+static inline RESULT
+flonum_minus_calc(CTX *c, VALUE lv, VALUE rv)
+{
+    double lf = RFLOAT_VALUE(AB_FLOAT_UNWRAP(lv));
+    double rf = RFLOAT_VALUE(AB_FLOAT_UNWRAP(rv));
+    return RESULT_OK(abruby_float_new_wrap(c, DBL2NUM(lf - rf)));
+}
+
+static inline RESULT
+flonum_mul_calc(CTX *c, VALUE lv, VALUE rv)
+{
+    double lf = RFLOAT_VALUE(AB_FLOAT_UNWRAP(lv));
+    double rf = RFLOAT_VALUE(AB_FLOAT_UNWRAP(rv));
+    return RESULT_OK(abruby_float_new_wrap(c, DBL2NUM(lf * rf)));
+}
+
+static inline RESULT
+flonum_div_calc(CTX *c, VALUE lv, VALUE rv)
+{
+    // Float division: no ZeroDivisionError; IEEE 754 handles 0 → inf/nan.
+    double lf = RFLOAT_VALUE(AB_FLOAT_UNWRAP(lv));
+    double rf = RFLOAT_VALUE(AB_FLOAT_UNWRAP(rv));
+    return RESULT_OK(abruby_float_new_wrap(c, DBL2NUM(lf / rf)));
 }
 
 // Dispatcher swap: change the dispatcher without creating a new node.
@@ -799,14 +911,34 @@ node_plus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t
 static __attribute__((noinline, cold)) RESULT
 node_fixnum_plus_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
 {
+    if (ab_is_float(lv) && ab_is_float(rv)) {
+        swap_dispatcher(n, &kind_node_flonum_plus);
+        return flonum_plus_calc(c, lv, rv);
+    }
     if (ab_is_integer(lv) && ab_is_integer(rv)) {
         swap_dispatcher(n, &kind_node_integer_plus);
         return integer_plus_calc(c, lv, rv);
     }
-    else {
-        swap_dispatcher(n, &kind_node_plus);
-        return node_arith_fallback(c, n, lv, rv, c->ids->op_plus, arg_index);
+    swap_dispatcher(n, &kind_node_plus);
+    return node_arith_fallback(c, n, lv, rv, c->ids->op_plus, arg_index);
+}
+
+static __attribute__((noinline, cold)) RESULT
+node_flonum_plus_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
+{
+    swap_dispatcher(n, &kind_node_plus);
+    return node_arith_fallback(c, n, lv, rv, c->ids->op_plus, arg_index);
+}
+
+NODE_DEF
+node_flonum_plus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
+{
+    VALUE lv = UNWRAP(EVAL_ARG(c, left));
+    VALUE rv = UNWRAP(EVAL_ARG(c, right));
+    if (LIKELY(ab_is_float(lv) && ab_is_float(rv))) {
+        return flonum_plus_calc(c, lv, rv);
     }
+    return node_flonum_plus_slow(c, n, lv, rv, arg_index);
 }
 
 static __attribute__((noinline, cold)) RESULT
@@ -855,14 +987,34 @@ node_minus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_
 static __attribute__((noinline, cold)) RESULT
 node_fixnum_minus_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
 {
+    if (ab_is_float(lv) && ab_is_float(rv)) {
+        swap_dispatcher(n, &kind_node_flonum_minus);
+        return flonum_minus_calc(c, lv, rv);
+    }
     if (ab_is_integer(lv) && ab_is_integer(rv)) {
         swap_dispatcher(n, &kind_node_integer_minus);
         return integer_minus_calc(c, lv, rv);
     }
-    else {
-        swap_dispatcher(n, &kind_node_minus);
-        return node_arith_fallback(c, n, lv, rv, c->ids->op_minus, arg_index);
+    swap_dispatcher(n, &kind_node_minus);
+    return node_arith_fallback(c, n, lv, rv, c->ids->op_minus, arg_index);
+}
+
+static __attribute__((noinline, cold)) RESULT
+node_flonum_minus_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
+{
+    swap_dispatcher(n, &kind_node_minus);
+    return node_arith_fallback(c, n, lv, rv, c->ids->op_minus, arg_index);
+}
+
+NODE_DEF
+node_flonum_minus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
+{
+    VALUE lv = UNWRAP(EVAL_ARG(c, left));
+    VALUE rv = UNWRAP(EVAL_ARG(c, right));
+    if (LIKELY(ab_is_float(lv) && ab_is_float(rv))) {
+        return flonum_minus_calc(c, lv, rv);
     }
+    return node_flonum_minus_slow(c, n, lv, rv, arg_index);
 }
 
 static __attribute__((noinline, cold)) RESULT
@@ -911,14 +1063,34 @@ node_mul(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t 
 static __attribute__((noinline, cold)) RESULT
 node_fixnum_mul_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
 {
+    if (ab_is_float(lv) && ab_is_float(rv)) {
+        swap_dispatcher(n, &kind_node_flonum_mul);
+        return flonum_mul_calc(c, lv, rv);
+    }
     if (ab_is_integer(lv) && ab_is_integer(rv)) {
         swap_dispatcher(n, &kind_node_integer_mul);
         return integer_mul_calc(c, lv, rv);
     }
-    else {
-        swap_dispatcher(n, &kind_node_mul);
-        return node_arith_fallback(c, n, lv, rv, c->ids->op_mul, arg_index);
+    swap_dispatcher(n, &kind_node_mul);
+    return node_arith_fallback(c, n, lv, rv, c->ids->op_mul, arg_index);
+}
+
+static __attribute__((noinline, cold)) RESULT
+node_flonum_mul_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
+{
+    swap_dispatcher(n, &kind_node_mul);
+    return node_arith_fallback(c, n, lv, rv, c->ids->op_mul, arg_index);
+}
+
+NODE_DEF
+node_flonum_mul(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
+{
+    VALUE lv = UNWRAP(EVAL_ARG(c, left));
+    VALUE rv = UNWRAP(EVAL_ARG(c, right));
+    if (LIKELY(ab_is_float(lv) && ab_is_float(rv))) {
+        return flonum_mul_calc(c, lv, rv);
     }
+    return node_flonum_mul_slow(c, n, lv, rv, arg_index);
 }
 
 static __attribute__((noinline, cold)) RESULT
@@ -970,14 +1142,34 @@ node_div(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t 
 static __attribute__((noinline, cold)) RESULT
 node_fixnum_div_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
 {
+    if (ab_is_float(lv) && ab_is_float(rv)) {
+        swap_dispatcher(n, &kind_node_flonum_div);
+        return flonum_div_calc(c, lv, rv);
+    }
     if (ab_is_integer(lv) && ab_is_integer(rv)) {
         swap_dispatcher(n, &kind_node_integer_div);
         return integer_div_calc(c, lv, rv);
     }
-    else {
-        swap_dispatcher(n, &kind_node_div);
-        return node_arith_fallback(c, n, lv, rv, c->ids->op_div, arg_index);
+    swap_dispatcher(n, &kind_node_div);
+    return node_arith_fallback(c, n, lv, rv, c->ids->op_div, arg_index);
+}
+
+static __attribute__((noinline, cold)) RESULT
+node_flonum_div_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
+{
+    swap_dispatcher(n, &kind_node_div);
+    return node_arith_fallback(c, n, lv, rv, c->ids->op_div, arg_index);
+}
+
+NODE_DEF
+node_flonum_div(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
+{
+    VALUE lv = UNWRAP(EVAL_ARG(c, left));
+    VALUE rv = UNWRAP(EVAL_ARG(c, right));
+    if (LIKELY(ab_is_float(lv) && ab_is_float(rv))) {
+        return flonum_div_calc(c, lv, rv);
     }
+    return node_flonum_div_slow(c, n, lv, rv, arg_index);
 }
 
 NODE_DEF
@@ -1039,6 +1231,10 @@ static RESULT DISPATCH_node_gt(CTX *c, NODE *n);
 static RESULT DISPATCH_node_fixnum_gt(CTX *c, NODE *n);
 static RESULT DISPATCH_node_ge(CTX *c, NODE *n);
 static RESULT DISPATCH_node_fixnum_ge(CTX *c, NODE *n);
+static RESULT DISPATCH_node_flonum_lt(CTX *c, NODE *n);
+static RESULT DISPATCH_node_flonum_le(CTX *c, NODE *n);
+static RESULT DISPATCH_node_flonum_gt(CTX *c, NODE *n);
+static RESULT DISPATCH_node_flonum_ge(CTX *c, NODE *n);
 
 extern const struct NodeKind kind_node_lt;
 extern const struct NodeKind kind_node_fixnum_lt;
@@ -1048,6 +1244,10 @@ extern const struct NodeKind kind_node_gt;
 extern const struct NodeKind kind_node_fixnum_gt;
 extern const struct NodeKind kind_node_ge;
 extern const struct NodeKind kind_node_fixnum_ge;
+extern const struct NodeKind kind_node_flonum_lt;
+extern const struct NodeKind kind_node_flonum_le;
+extern const struct NodeKind kind_node_flonum_gt;
+extern const struct NodeKind kind_node_flonum_ge;
 
 NODE_DEF
 node_lt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
@@ -1060,6 +1260,12 @@ node_lt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t a
 static __attribute__((noinline, cold)) RESULT
 node_fixnum_lt_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
 {
+    if (ab_is_float(lv) && ab_is_float(rv)) {
+        swap_dispatcher(n, &kind_node_flonum_lt);
+        double lf = RFLOAT_VALUE(AB_FLOAT_UNWRAP(lv));
+        double rf = RFLOAT_VALUE(AB_FLOAT_UNWRAP(rv));
+        return RESULT_OK(lf < rf ? Qtrue : Qfalse);
+    }
     swap_dispatcher(n, &kind_node_lt);
     return node_arith_fallback(c, n, lv, rv, c->ids->op_lt, arg_index);
 }
@@ -1075,6 +1281,26 @@ node_fixnum_lt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uin
     return node_fixnum_lt_slow(c, n, lv, rv, arg_index);
 }
 
+static __attribute__((noinline, cold)) RESULT
+node_flonum_lt_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
+{
+    swap_dispatcher(n, &kind_node_lt);
+    return node_arith_fallback(c, n, lv, rv, c->ids->op_lt, arg_index);
+}
+
+NODE_DEF
+node_flonum_lt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
+{
+    VALUE lv = UNWRAP(EVAL_ARG(c, left));
+    VALUE rv = UNWRAP(EVAL_ARG(c, right));
+    if (LIKELY(ab_is_float(lv) && ab_is_float(rv))) {
+        double lf = RFLOAT_VALUE(AB_FLOAT_UNWRAP(lv));
+        double rf = RFLOAT_VALUE(AB_FLOAT_UNWRAP(rv));
+        return RESULT_OK(lf < rf ? Qtrue : Qfalse);
+    }
+    return node_flonum_lt_slow(c, n, lv, rv, arg_index);
+}
+
 NODE_DEF
 node_le(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
@@ -1086,6 +1312,12 @@ node_le(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t a
 static __attribute__((noinline, cold)) RESULT
 node_fixnum_le_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
 {
+    if (ab_is_float(lv) && ab_is_float(rv)) {
+        swap_dispatcher(n, &kind_node_flonum_le);
+        double lf = RFLOAT_VALUE(AB_FLOAT_UNWRAP(lv));
+        double rf = RFLOAT_VALUE(AB_FLOAT_UNWRAP(rv));
+        return RESULT_OK(lf <= rf ? Qtrue : Qfalse);
+    }
     swap_dispatcher(n, &kind_node_le);
     return node_arith_fallback(c, n, lv, rv, c->ids->op_le, arg_index);
 }
@@ -1101,6 +1333,26 @@ node_fixnum_le(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uin
     return node_fixnum_le_slow(c, n, lv, rv, arg_index);
 }
 
+static __attribute__((noinline, cold)) RESULT
+node_flonum_le_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
+{
+    swap_dispatcher(n, &kind_node_le);
+    return node_arith_fallback(c, n, lv, rv, c->ids->op_le, arg_index);
+}
+
+NODE_DEF
+node_flonum_le(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
+{
+    VALUE lv = UNWRAP(EVAL_ARG(c, left));
+    VALUE rv = UNWRAP(EVAL_ARG(c, right));
+    if (LIKELY(ab_is_float(lv) && ab_is_float(rv))) {
+        double lf = RFLOAT_VALUE(AB_FLOAT_UNWRAP(lv));
+        double rf = RFLOAT_VALUE(AB_FLOAT_UNWRAP(rv));
+        return RESULT_OK(lf <= rf ? Qtrue : Qfalse);
+    }
+    return node_flonum_le_slow(c, n, lv, rv, arg_index);
+}
+
 NODE_DEF
 node_gt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
@@ -1112,6 +1364,12 @@ node_gt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t a
 static __attribute__((noinline, cold)) RESULT
 node_fixnum_gt_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
 {
+    if (ab_is_float(lv) && ab_is_float(rv)) {
+        swap_dispatcher(n, &kind_node_flonum_gt);
+        double lf = RFLOAT_VALUE(AB_FLOAT_UNWRAP(lv));
+        double rf = RFLOAT_VALUE(AB_FLOAT_UNWRAP(rv));
+        return RESULT_OK(lf > rf ? Qtrue : Qfalse);
+    }
     swap_dispatcher(n, &kind_node_gt);
     return node_arith_fallback(c, n, lv, rv, c->ids->op_gt, arg_index);
 }
@@ -1127,6 +1385,26 @@ node_fixnum_gt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uin
     return node_fixnum_gt_slow(c, n, lv, rv, arg_index);
 }
 
+static __attribute__((noinline, cold)) RESULT
+node_flonum_gt_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
+{
+    swap_dispatcher(n, &kind_node_gt);
+    return node_arith_fallback(c, n, lv, rv, c->ids->op_gt, arg_index);
+}
+
+NODE_DEF
+node_flonum_gt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
+{
+    VALUE lv = UNWRAP(EVAL_ARG(c, left));
+    VALUE rv = UNWRAP(EVAL_ARG(c, right));
+    if (LIKELY(ab_is_float(lv) && ab_is_float(rv))) {
+        double lf = RFLOAT_VALUE(AB_FLOAT_UNWRAP(lv));
+        double rf = RFLOAT_VALUE(AB_FLOAT_UNWRAP(rv));
+        return RESULT_OK(lf > rf ? Qtrue : Qfalse);
+    }
+    return node_flonum_gt_slow(c, n, lv, rv, arg_index);
+}
+
 NODE_DEF
 node_ge(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
@@ -1138,6 +1416,12 @@ node_ge(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t a
 static __attribute__((noinline, cold)) RESULT
 node_fixnum_ge_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
 {
+    if (ab_is_float(lv) && ab_is_float(rv)) {
+        swap_dispatcher(n, &kind_node_flonum_ge);
+        double lf = RFLOAT_VALUE(AB_FLOAT_UNWRAP(lv));
+        double rf = RFLOAT_VALUE(AB_FLOAT_UNWRAP(rv));
+        return RESULT_OK(lf >= rf ? Qtrue : Qfalse);
+    }
     swap_dispatcher(n, &kind_node_ge);
     return node_arith_fallback(c, n, lv, rv, c->ids->op_ge, arg_index);
 }
@@ -1151,6 +1435,26 @@ node_fixnum_ge(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uin
         return RESULT_OK((long)lv >= (long)rv ? Qtrue : Qfalse);
     }
     return node_fixnum_ge_slow(c, n, lv, rv, arg_index);
+}
+
+static __attribute__((noinline, cold)) RESULT
+node_flonum_ge_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
+{
+    swap_dispatcher(n, &kind_node_ge);
+    return node_arith_fallback(c, n, lv, rv, c->ids->op_ge, arg_index);
+}
+
+NODE_DEF
+node_flonum_ge(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
+{
+    VALUE lv = UNWRAP(EVAL_ARG(c, left));
+    VALUE rv = UNWRAP(EVAL_ARG(c, right));
+    if (LIKELY(ab_is_float(lv) && ab_is_float(rv))) {
+        double lf = RFLOAT_VALUE(AB_FLOAT_UNWRAP(lv));
+        double rf = RFLOAT_VALUE(AB_FLOAT_UNWRAP(rv));
+        return RESULT_OK(lf >= rf ? Qtrue : Qfalse);
+    }
+    return node_flonum_ge_slow(c, n, lv, rv, arg_index);
 }
 
 // === Equality / Modulo ===

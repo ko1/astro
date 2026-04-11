@@ -326,6 +326,15 @@ struct method_cache {
     RESULT (*dispatcher)(struct CTX_struct *, struct Node *); // cached body->head.dispatcher
 };
 
+// inline ivar cache per node_ivar_get / node_ivar_set site.
+// Guard: klass matches obj's klass, and obj->ivars.entries[slot].key == expected name.
+// If the guard holds, obj->ivars.entries[slot] is the correct entry — read/write directly.
+// When an ivar table grows and rehashes, slot becomes stale, guard fails, cache refills.
+struct ivar_cache {
+    const struct abruby_class *klass;  // NULL means not yet filled
+    unsigned int slot;                 // index into obj->ivars.entries
+};
+
 
 #define LIKELY(expr) __builtin_expect((expr), 1)
 #define UNLIKELY(expr) __builtin_expect((expr), 0)
