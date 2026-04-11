@@ -13,7 +13,7 @@ static RESULT ab_object_to_s(CTX *c, VALUE self, unsigned int argc, VALUE *argv)
     return ab_object_inspect(c, self, 0, NULL);
 }
 
-static RESULT ab_object_eq(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+RESULT ab_object_eq(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     return RESULT_OK(self == argv[0] ? Qtrue : Qfalse);
 }
 

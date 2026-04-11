@@ -828,12 +828,23 @@ node_super(CTX * restrict c, NODE * restrict n, uint32_t params_cnt, uint32_t ar
 
 // === Arithmetic rewrite (type-specific nodes) ===
 
+// Forward decl: default Object#==. When method dispatch resolves to this
+// function we skip the full dispatch and use identity comparison directly.
+extern RESULT ab_object_eq(CTX *c, VALUE self, unsigned int argc, VALUE *argv);
+
 // Fallback: general method call for arithmetic operators (recv=lv, arg=rv)
 static __attribute__((noinline, cold)) RESULT
 node_arith_fallback(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, ID op, uint32_t arg_index)
 {
     const struct abruby_class *klass = AB_CLASS_OF(c, lv);
     const struct abruby_method *method = abruby_class_find_method(klass, op);
+    // Inline default Object#== when it resolves here: short-circuit the
+    // dispatch to a pointer comparison. Correct so long as the class hasn't
+    // overridden == (method would not be ab_object_eq in that case).
+    if (method && method->type == ABRUBY_METHOD_CFUNC &&
+        method->u.cfunc.func == ab_object_eq) {
+        return RESULT_OK(lv == rv ? Qtrue : Qfalse);
+    }
     if (!method) {
         method = abruby_class_find_method(klass, c->ids->method_missing);
         if (!method) {
@@ -1576,6 +1587,10 @@ node_eq(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t a
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
+    // Object identity fast path: if lv and rv are the same VALUE, == always
+    // returns true regardless of the == method override. Skips method dispatch
+    // for common patterns like `@left == nil`, symbol equality, etc.
+    if (lv == rv) return RESULT_OK(Qtrue);
     return node_arith_fallback(c, n, lv, rv, c->ids->op_eq, arg_index);
 }
 
@@ -1602,6 +1617,8 @@ node_neq(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t 
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
+    // Identity fast path for the converse of == above.
+    if (lv == rv) return RESULT_OK(Qfalse);
     // != is defined as !(==), fallback through ==
     RESULT eq = node_arith_fallback(c, n, lv, rv, c->ids->op_eq, arg_index);
     if (eq.state != RESULT_NORMAL) return eq;
