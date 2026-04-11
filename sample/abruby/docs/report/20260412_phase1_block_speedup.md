@@ -75,7 +75,20 @@ commit: `d6140d3 abruby: add block-heavy microbenchmarks`
 
 - **(1) ブロックコミット前**: `benchmark/report/20260411-eac1ee4.txt`
 - **(2) ブロックコミット後**: `benchmark/report/20260412-4a8c954.txt`
-- **(3) Phase 1 採用後 (Phase 3 revert 後)**: 本セッション末で再計測する (データファイルは追って追加)
+- **(3) Phase 1 採用後 (Phase 3 revert 後)**: `benchmark/report/20260412-phase1-final.txt`
+
+### ブロックベンチマーク (Phase 1 単独)
+
+`abruby+plain` (秒), n=5 best-of:
+
+| bench | (2) blocks | (3) Phase 1 | 備考 |
+|---|---|---|---|
+| `bm_times`  | — | 0.376s | yield per-iter full save/restore で支配される |
+| `bm_each`   | — | 0.321s | 同上 |
+| `bm_map`    | — | 0.112s | allocation bound |
+| `bm_inject` | — | 0.199s | each 呼び出しのオーバーヘッド |
+
+(2) の時点ではブロックベンチは存在しないので比較カラム無し。これらは iterator+block inlining が入った将来のために残してある土台。
 
 ### 判断材料となった Phase 3 前後の差分 (参考)
 
