@@ -41,6 +41,37 @@
 
 // class system helpers
 
+// Forward declarations so abruby_class_add_method can recognize attr_reader /
+// attr_writer style bodies and mark the method as an IVAR accessor.
+extern const struct NodeKind kind_node_ivar_get;
+extern const struct NodeKind kind_node_ivar_set;
+extern const struct NodeKind kind_node_lvar_get;
+
+// Detect the AST shapes the parser emits for attr_reader / attr_writer:
+//   def x;       @x;                     end  -> node_ivar_get
+//   def x=(v);   @x = v;                 end  -> node_ivar_set(name, node_lvar_get(0))
+// If matched, mark the method so the dispatch hot path skips the frame setup.
+static inline bool
+abruby_method_try_set_ivar_accessor(struct abruby_method *m, struct Node *body,
+                                    unsigned int params_cnt)
+{
+    if (body == NULL) return false;
+    if (params_cnt == 0 && body->head.kind == &kind_node_ivar_get) {
+        m->type = ABRUBY_METHOD_IVAR_GETTER;
+        m->u.ivar_accessor.ivar_name = body->u.node_ivar_get.name;
+        return true;
+    }
+    if (params_cnt == 1 && body->head.kind == &kind_node_ivar_set) {
+        const NODE *rhs = body->u.node_ivar_set.value;
+        if (rhs && rhs->head.kind == &kind_node_lvar_get &&
+            rhs->u.node_lvar_get.index == 0) {
+            m->type = ABRUBY_METHOD_IVAR_SETTER;
+            m->u.ivar_accessor.ivar_name = body->u.node_ivar_set.name;
+            return true;
+        }
+    }
+    return false;
+}
 
 static void
 abruby_class_add_method(CTX *c, struct abruby_class *klass, ID name,
@@ -50,21 +81,26 @@ abruby_class_add_method(CTX *c, struct abruby_class *klass, ID name,
     VALUE existing;
     if (ab_id_table_lookup(&klass->methods, name, &existing)) {
         struct abruby_method *m = (struct abruby_method *)existing;
+        if (!abruby_method_try_set_ivar_accessor(m, body, params_cnt)) {
+            m->type = ABRUBY_METHOD_AST;
+            m->u.ast.body = body;
+            m->u.ast.params_cnt = params_cnt;
+            m->u.ast.locals_cnt = locals_cnt;
+            m->u.ast.source_file = source_file;
+        }
+        c->abm->method_serial++;
+        return;
+    }
+    struct abruby_method *m = ruby_xcalloc(1, sizeof(struct abruby_method));
+    m->name = name;
+    m->defining_class = klass;
+    if (!abruby_method_try_set_ivar_accessor(m, body, params_cnt)) {
         m->type = ABRUBY_METHOD_AST;
         m->u.ast.body = body;
         m->u.ast.params_cnt = params_cnt;
         m->u.ast.locals_cnt = locals_cnt;
         m->u.ast.source_file = source_file;
-        return;
     }
-    struct abruby_method *m = ruby_xcalloc(1, sizeof(struct abruby_method));
-    m->name = name;
-    m->type = ABRUBY_METHOD_AST;
-    m->defining_class = klass;
-    m->u.ast.body = body;
-    m->u.ast.params_cnt = params_cnt;
-    m->u.ast.locals_cnt = locals_cnt;
-    m->u.ast.source_file = source_file;
     ab_id_table_insert(&klass->methods, name, (VALUE)m);
     c->abm->method_serial++;
 }
@@ -581,9 +617,30 @@ method_cache_fill(CTX *c, struct method_cache *mc, const struct abruby_class *kl
     mc->klass = klass;
     mc->method = method;
     mc->serial = c->abm->method_serial;
+    mc->ivar_slot = 0;
     if (method->type == ABRUBY_METHOD_AST) {
         mc->body = method->u.ast.body;
         mc->dispatcher = method->u.ast.body->head.dispatcher;
+    } else if (method->type == ABRUBY_METHOD_IVAR_GETTER ||
+               method->type == ABRUBY_METHOD_IVAR_SETTER) {
+        mc->body = NULL;
+        mc->dispatcher = NULL;
+        // Resolve (or register) the ivar's slot in the receiver's class shape.
+        struct abruby_class *klass_mut = (struct abruby_class *)klass;
+        ID ivar_name = method->u.ivar_accessor.ivar_name;
+        VALUE slot_fix;
+        if (ab_id_table_lookup(&klass_mut->ivar_shape, ivar_name, &slot_fix)) {
+            mc->ivar_slot = (uint32_t)FIX2ULONG(slot_fix);
+        } else {
+            uint32_t new_slot = klass_mut->ivar_shape.cnt;
+            if (new_slot < ABRUBY_OBJECT_IVAR_CAPA) {
+                ab_id_table_insert(&klass_mut->ivar_shape, ivar_name, LONG2FIX((long)new_slot));
+                mc->ivar_slot = new_slot;
+            } else {
+                // Shape overflow: fall back to a no-op hit that will read Qnil.
+                mc->ivar_slot = UINT32_MAX;
+            }
+        }
     } else {
         mc->body = NULL;
         mc->dispatcher = NULL;
@@ -598,6 +655,32 @@ dispatch_method_frame(CTX * restrict c, NODE * restrict call_site,
                       const struct method_cache *mc,
                       unsigned int argc, uint32_t arg_index)
 {
+    // Fast path: attr_reader / attr_writer. Skip the frame dance entirely
+    // and touch obj->ivars[slot] directly. mc->ivar_slot was resolved at
+    // fill time from the receiver klass's shape.
+    enum abruby_method_type mtype = mc->method->type;
+    if (mtype == ABRUBY_METHOD_IVAR_GETTER) {
+        const struct abruby_object *obj =
+            (const struct abruby_object *)RTYPEDDATA_GET_DATA(c->self);
+        if (LIKELY(mc->ivar_slot < obj->ivar_cnt)) {
+            return RESULT_OK(obj->ivars[mc->ivar_slot]);
+        }
+        return RESULT_OK(Qnil);
+    }
+    if (mtype == ABRUBY_METHOD_IVAR_SETTER) {
+        struct abruby_object *obj =
+            (struct abruby_object *)RTYPEDDATA_GET_DATA(c->self);
+        VALUE v = c->fp[arg_index];
+        unsigned int slot = mc->ivar_slot;
+        if (UNLIKELY(slot >= ABRUBY_OBJECT_IVAR_CAPA)) return RESULT_OK(v);
+        if (slot >= obj->ivar_cnt) {
+            for (unsigned int i = obj->ivar_cnt; i <= slot; i++) obj->ivars[i] = Qnil;
+            obj->ivar_cnt = slot + 1;
+        }
+        obj->ivars[slot] = v;
+        return RESULT_OK(v);
+    }
+
     struct abruby_frame frame;
     frame.prev = c->current_frame;
     frame.method = mc->method;

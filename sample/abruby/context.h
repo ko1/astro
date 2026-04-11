@@ -72,6 +72,8 @@ typedef RESULT (*abruby_cfunc_t)(CTX *c, VALUE self, unsigned int argc, VALUE *a
 enum abruby_method_type {
     ABRUBY_METHOD_AST,
     ABRUBY_METHOD_CFUNC,
+    ABRUBY_METHOD_IVAR_GETTER,  // body was { @name } — inlined in dispatch hot path
+    ABRUBY_METHOD_IVAR_SETTER,  // body was { @name = arg } — inlined
 };
 
 struct abruby_method {
@@ -92,6 +94,9 @@ struct abruby_method {
             abruby_cfunc_t func;
             unsigned int params_cnt;
         } cfunc;
+        struct {
+            ID ivar_name;  // e.g. @x — looked up in receiver's klass->ivar_shape at call time
+        } ivar_accessor;
     } u;
 };
 
@@ -344,6 +349,7 @@ struct method_cache {
     const struct abruby_class *klass;    // read-only after fill
     const struct abruby_method *method;  // read-only after fill
     uint32_t serial;
+    uint32_t ivar_slot;                 // for IVAR_GETTER/SETTER: cached slot in receiver's shape
     struct Node *body;                  // cached method->u.ast.body (NULL for CFUNC)
     RESULT (*dispatcher)(struct CTX_struct *, struct Node *); // cached body->head.dispatcher
 };
