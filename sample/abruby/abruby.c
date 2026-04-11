@@ -800,6 +800,26 @@ init_instance_classes(struct abruby_machine *vm)
     abruby_class_set_const(obj, rb_intern("FalseClass"),   abruby_wrap_class(vm->false_class));
     abruby_class_set_const(obj, rb_intern("NilClass"),     abruby_wrap_class(vm->nil_class));
     abruby_class_set_const(obj, rb_intern("RuntimeError"), abruby_wrap_class(vm->runtime_error_class));
+    // No exception class hierarchy in abruby — alias common parent /
+    // sibling classes to the single RuntimeError so user code like
+    // `class X < StandardError` or `raise NotImplementedError, "msg"` parses
+    // and runs.  They all share the same cfunc-level behavior (a simple
+    // exception object with a message).
+    abruby_class_set_const(obj, rb_intern("Exception"),        abruby_wrap_class(vm->runtime_error_class));
+    abruby_class_set_const(obj, rb_intern("StandardError"),    abruby_wrap_class(vm->runtime_error_class));
+    abruby_class_set_const(obj, rb_intern("NotImplementedError"), abruby_wrap_class(vm->runtime_error_class));
+    abruby_class_set_const(obj, rb_intern("ArgumentError"),    abruby_wrap_class(vm->runtime_error_class));
+    abruby_class_set_const(obj, rb_intern("TypeError"),        abruby_wrap_class(vm->runtime_error_class));
+    abruby_class_set_const(obj, rb_intern("NameError"),        abruby_wrap_class(vm->runtime_error_class));
+    abruby_class_set_const(obj, rb_intern("NoMethodError"),    abruby_wrap_class(vm->runtime_error_class));
+    abruby_class_set_const(obj, rb_intern("IndexError"),       abruby_wrap_class(vm->runtime_error_class));
+    abruby_class_set_const(obj, rb_intern("KeyError"),         abruby_wrap_class(vm->runtime_error_class));
+    abruby_class_set_const(obj, rb_intern("RangeError"),       abruby_wrap_class(vm->runtime_error_class));
+    abruby_class_set_const(obj, rb_intern("ZeroDivisionError"),abruby_wrap_class(vm->runtime_error_class));
+    abruby_class_set_const(obj, rb_intern("FloatDomainError"), abruby_wrap_class(vm->runtime_error_class));
+    abruby_class_set_const(obj, rb_intern("IOError"),          abruby_wrap_class(vm->runtime_error_class));
+    abruby_class_set_const(obj, rb_intern("LoadError"),        abruby_wrap_class(vm->runtime_error_class));
+    abruby_class_set_const(obj, rb_intern("StopIteration"),    abruby_wrap_class(vm->runtime_error_class));
 
     // Float constants. abruby_float_new_wrap passes Flonum through and only
     // wraps heap T_FLOAT in T_DATA, so it works for both representations.

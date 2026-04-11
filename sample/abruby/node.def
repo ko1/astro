@@ -1014,8 +1014,10 @@ method_missing_dispatch(CTX * restrict c, NODE * restrict n, const struct abruby
     if (!mm) {
         VALUE exc;
         PUSH_FRAME(n);
-        exc = abruby_exception_new(c, c->current_frame,
-            abruby_str_new_cstr(c,"undefined method"));
+        VALUE mstr = rb_str_new_cstr("undefined method `");
+        rb_str_cat_cstr(mstr, rb_id2name(name));
+        rb_str_cat_cstr(mstr, "'");
+        exc = abruby_exception_new(c, c->current_frame, mstr);
         POP_FRAME();
         return (RESULT){exc, RESULT_RAISE};
     }

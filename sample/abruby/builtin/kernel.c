@@ -9,7 +9,36 @@ static RESULT ab_kernel_p(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
 }
 
 static RESULT ab_kernel_raise(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
-    VALUE msg = (argc >= 1) ? argv[0] : abruby_str_new_cstr(c, "");
+    // Accepted forms:
+    //   raise                      — re-raise or empty RuntimeError
+    //   raise "msg"                — RuntimeError with message
+    //   raise ExcClass             — ExcClass with empty message
+    //   raise ExcClass, "msg"      — ExcClass with message
+    //   raise ExcInstance          — re-raise the instance (message inherited)
+    // abruby has a flat exception hierarchy (all aliased to RuntimeError
+    // for now), so the class argument is accepted but only the message
+    // is actually propagated.
+    VALUE msg;
+    if (argc == 0) {
+        msg = abruby_str_new_cstr(c, "");
+    } else if (argc == 1) {
+        VALUE a = argv[0];
+        if (ab_obj_type_p(a, ABRUBY_OBJ_EXCEPTION)) {
+            // re-raise: propagate the existing exception as-is
+            return (RESULT){a, RESULT_RAISE};
+        }
+        // String, integer, or anything else — treat as message.  The
+        // exception constructor stores the value as-is and `message`
+        // returns it.  (Existing tests rely on `raise 42` behaving like
+        // this.)  An exception *class* with no message is handled by
+        // Ruby-level code as `raise ExcClass, ""`, so we wouldn't get
+        // here unless the user intentionally raised a class object
+        // without a message — which we also tolerate.
+        msg = a;
+    } else {
+        // argv[0] is expected to be the class, argv[1] the message
+        msg = argv[1];
+    }
     VALUE exc = abruby_exception_new(c, c->current_frame, msg);
     return (RESULT){exc, RESULT_RAISE};
 }

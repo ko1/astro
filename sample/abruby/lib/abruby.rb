@@ -516,6 +516,37 @@ class AbRuby
             assigns << AbRuby.alloc_node_ivar_set(target.name.to_s, rhs)
           when Prism::GlobalVariableTargetNode
             assigns << AbRuby.alloc_node_gvar_set(target.name.to_s, rhs)
+          when Prism::IndexTargetNode
+            # Lower `recv[idx...] = rhs` to `recv.[]=(idx..., rhs)`.
+            recv_ast = transduce(target.receiver)
+            idx_nodes = target.arguments ? target.arguments.arguments : []
+            recv_idx = inc_arg_index
+            recv_store = AbRuby.alloc_node_lvar_set(recv_idx, recv_ast)
+            call_arg_idx = arg_index
+            arg_seq = []
+            idx_nodes.each do |ix|
+              slot = inc_arg_index
+              arg_seq << AbRuby.alloc_node_lvar_set(slot, transduce(ix))
+            end
+            rhs_slot = inc_arg_index
+            arg_seq << AbRuby.alloc_node_lvar_set(rhs_slot, rhs)
+            rewind_arg_index(recv_idx)
+            recv_ref = AbRuby.alloc_node_lvar_get(recv_idx)
+            call = AbRuby.alloc_node_method_call(recv_ref, "[]=", idx_nodes.size + 1, call_arg_idx)
+            assigns << build_seq([recv_store] + arg_seq + [call])
+          when Prism::CallTargetNode
+            # Lower `recv.attr = rhs` to `recv.attr=(rhs)`.
+            recv_ast = transduce(target.receiver)
+            attr_name = target.name.to_s  # already ends in "=" for CallTargetNode
+            recv_idx = inc_arg_index
+            recv_store = AbRuby.alloc_node_lvar_set(recv_idx, recv_ast)
+            call_arg_idx = arg_index
+            rhs_slot = inc_arg_index
+            rhs_store = AbRuby.alloc_node_lvar_set(rhs_slot, rhs)
+            rewind_arg_index(recv_idx)
+            recv_ref = AbRuby.alloc_node_lvar_get(recv_idx)
+            call = AbRuby.alloc_node_method_call(recv_ref, attr_name, 1, call_arg_idx)
+            assigns << build_seq([recv_store, rhs_store, call])
           else
             raise "unsupported multi-assign target: #{target.class}"
           end
