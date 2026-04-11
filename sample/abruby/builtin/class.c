@@ -6,11 +6,11 @@ static RESULT ab_class_new(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     VALUE obj = abruby_new_object(klass);
     const struct abruby_method *init = abruby_find_method(klass, rb_intern("initialize"));
     if (init) {
-        // Push frame for initialize (needed for super to find the class)
+        // Push frame for initialize (needed for super to find the class).
+        // super walks method->defining_class->super, not frame.klass.
         struct abruby_frame frame;
         frame.prev = c->current_frame;
         frame.method = init;
-        frame.klass = klass;
         c->current_frame = &frame;
 
         RESULT r;

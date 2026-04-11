@@ -26,7 +26,6 @@
     struct abruby_frame _push_frame; \
     _push_frame.prev = c->current_frame; \
     _push_frame.method = NULL; \
-    _push_frame.klass = NULL; \
     _push_frame.caller_node = (node); \
     c->current_frame = &_push_frame
 
@@ -61,6 +60,7 @@ abruby_class_add_method(CTX *c, struct abruby_class *klass, ID name,
     struct abruby_method *m = ruby_xcalloc(1, sizeof(struct abruby_method));
     m->name = name;
     m->type = ABRUBY_METHOD_AST;
+    m->defining_class = klass;
     m->u.ast.body = body;
     m->u.ast.params_cnt = params_cnt;
     m->u.ast.locals_cnt = locals_cnt;
@@ -579,14 +579,12 @@ method_cache_fill(CTX *c, struct method_cache *mc, const struct abruby_class *kl
 // Cache hit paths call this directly; non-cache paths go through dispatch_method_with_klass.
 static inline RESULT
 dispatch_method_frame(CTX * restrict c, NODE * restrict call_site,
-                      const struct abruby_class *klass,
                       const struct method_cache *mc,
                       unsigned int argc, uint32_t arg_index)
 {
     struct abruby_frame frame;
     frame.prev = c->current_frame;
     frame.method = mc->method;
-    frame.klass = klass;
     frame.caller_node = call_site;
     c->current_frame = &frame;
 
@@ -596,7 +594,9 @@ dispatch_method_frame(CTX * restrict c, NODE * restrict call_site,
         c->fp = save_fp + arg_index;
         r = mc->dispatcher(c, mc->body);
         c->fp = save_fp;
-        r = RESULT_OK(UNWRAP_ALSO(RESULT_RETURN, r));
+        // Method boundary catch: RETURN -> NORMAL (bitwise, no branch).
+        // RAISE/BREAK stay set and propagate up via the caller's UNWRAP.
+        r.state &= ~(unsigned)RESULT_RETURN;
     } else {
         r = mc->method->u.cfunc.func(c, c->self, argc, c->fp + arg_index);
     }
@@ -617,7 +617,7 @@ dispatch_method_with_klass(CTX * restrict c, NODE * restrict call_site,
     method_cache_fill(c, &mc, klass, method);
     VALUE save_self = c->self;
     c->self = recv;
-    RESULT r = dispatch_method_frame(c, call_site, klass, &mc, argc, arg_index);
+    RESULT r = dispatch_method_frame(c, call_site, &mc, argc, arg_index);
     c->self = save_self;
     return r;
 }
@@ -667,7 +667,7 @@ node_method_call(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, uint3
     if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
         VALUE save_self = c->self;
         c->self = recv_val;
-        RESULT r = dispatch_method_frame(c, n, klass, mc, params_cnt, arg_index);
+        RESULT r = dispatch_method_frame(c, n, mc, params_cnt, arg_index);
         c->self = save_self;
         return r;
     }
@@ -685,7 +685,7 @@ node_func_call(CTX * restrict c, NODE * restrict n, ID name, uint32_t params_cnt
     const struct abruby_class *klass = AB_CLASS_OF(c, c->self);
 
     if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
-        return dispatch_method_frame(c, n, klass, mc,
+        return dispatch_method_frame(c, n, mc,
                                      params_cnt, arg_index);
     }
     else {
@@ -696,13 +696,13 @@ node_func_call(CTX * restrict c, NODE * restrict n, ID name, uint32_t params_cnt
 
 // === super ===
 
-// Find the super method: walk from frame->klass->super looking for same method name
+// Find the super method: walk from method->defining_class->super looking for the same name.
 static struct abruby_method *
 find_super_method(const struct abruby_frame *frame)
 {
-    if (!frame || !frame->method || !frame->klass) return NULL;
+    if (!frame || !frame->method || !frame->method->defining_class) return NULL;
     ID name = frame->method->name;
-    const struct abruby_class *klass = frame->klass->super;
+    const struct abruby_class *klass = frame->method->defining_class->super;
     return abruby_class_find_method(klass, name);
 }
 
@@ -719,17 +719,8 @@ node_super(CTX * restrict c, NODE * restrict n, uint32_t params_cnt, uint32_t ar
         POP_FRAME();
         return (RESULT){exc, RESULT_RAISE};
     }
-
-    // Find which class owns this method for correct super chain
-    const struct abruby_class *klass = c->current_frame->klass->super;
-    while (klass) {
-        VALUE v;
-        if (ab_id_table_lookup(&klass->methods, method->name, &v) &&
-            (const struct abruby_method *)v == method)
-            goto found_super;
-        klass = klass->super;
-    }
-found_super:
+    // dispatch via the defining class (receiver stays the same).
+    const struct abruby_class *klass = method->defining_class;
     return dispatch_method_with_klass(c, n, c->self, klass, method, params_cnt, arg_index);
 }
 

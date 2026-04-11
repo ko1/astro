@@ -40,12 +40,21 @@ extern struct abruby_option OPTION;
 // RESULT: two-value return type for non-local exit support.
 // Fits in two registers (rax + rdx), no memory access needed.
 // Partial evaluation eliminates state checks via constant propagation.
+//
+// State values are bit flags so that "catch state X and demote to NORMAL" at a
+// boundary (method return catch, loop break catch) can be done with a single
+// AND instruction instead of a branching check:
+//
+//   r.state &= ~RESULT_RETURN;  // at method boundary: RETURN -> NORMAL, others unchanged
+//   r.state &= ~RESULT_BREAK;   // at while boundary:  BREAK  -> NORMAL, others unchanged
+//
+// NORMAL is 0 so the common "is state normal?" test is still a plain zero check.
 
 enum result_state {
-    RESULT_NORMAL,
-    RESULT_RETURN,
-    RESULT_RAISE,
-    RESULT_BREAK,
+    RESULT_NORMAL = 0,
+    RESULT_RETURN = 1,  // bit 0
+    RESULT_RAISE  = 2,  // bit 1
+    RESULT_BREAK  = 4,  // bit 2
 };
 
 typedef struct {
@@ -68,6 +77,10 @@ enum abruby_method_type {
 struct abruby_method {
     ID name;
     enum abruby_method_type type;
+    // Class where this method was defined (for super chain resolution).
+    // Set by abruby_class_add_method. Preserved across per-instance clones so
+    // that super dispatch works correctly without storing klass in every frame.
+    const struct abruby_class *defining_class;
     union {
         struct {
             struct Node *body;
@@ -244,8 +257,7 @@ ab_obj_type_p(VALUE obj, enum abruby_obj_type type)
 // method == NULL: <main>/<top (required)>
 struct abruby_frame {
     struct abruby_frame *prev;
-    const struct abruby_method *method;  // frame reads only
-    const struct abruby_class *klass;    // receiver's class at call time (for super)
+    const struct abruby_method *method;  // super walks from method->defining_class->super
     union {
         const struct Node *caller_node;  // method frame: call site in the caller (set at push time)
         const char *source_file;         // <main>/<top>: set at push time

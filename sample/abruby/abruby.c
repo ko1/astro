@@ -349,8 +349,8 @@ abruby_call_method(CTX *c, VALUE recv, const struct abruby_method *method,
         RESULT r = EVAL(c, method->u.ast.body);
         c->fp = save_fp;
         c->self = save_self;
-        // Catch RETURN at method boundary
-        if (r.state == RESULT_RETURN) return RESULT_OK(r.value);
+        // Catch RETURN at method boundary (bitwise: RETURN -> NORMAL, others unchanged)
+        r.state &= ~(unsigned)RESULT_RETURN;
         return r;
     }
 }
@@ -369,6 +369,7 @@ abruby_class_add_cfunc(struct abruby_class *klass, ID name,
     struct abruby_method *m = ruby_xcalloc(1, sizeof(struct abruby_method));
     m->name = name;
     m->type = ABRUBY_METHOD_CFUNC;
+    m->defining_class = klass;
     m->u.cfunc.func = func;
     m->u.cfunc.params_cnt = params_cnt;
     ab_id_table_insert(&klass->methods, name, (VALUE)m);
@@ -1162,7 +1163,7 @@ abruby_require_file(CTX *c, VALUE rb_path)
     struct abruby_frame *save_frame = c->current_frame;
     c->fp = c->stack;
     c->current_class = NULL;
-    struct abruby_frame req_frame = {save_frame, NULL, NULL, {.source_file = RSTRING_PTR(abs_str)}};
+    struct abruby_frame req_frame = {save_frame, NULL, {.source_file = RSTRING_PTR(abs_str)}};
     c->current_frame = &req_frame;
     RESULT r = EVAL(c, ast);
     c->fp = save_fp;
@@ -1247,7 +1248,7 @@ rb_abruby_eval_ast(VALUE self, VALUE ast_obj)
 
     // Push <main> frame so backtrace always has a bottom frame
     const char *eval_file = NIL_P(vm->current_file) ? "(abruby)" : RSTRING_PTR(vm->current_file);
-    struct abruby_frame main_frame = {NULL, NULL, NULL, {.source_file = eval_file}};
+    struct abruby_frame main_frame = {NULL, NULL, {.source_file = eval_file}};
     vm->current_fiber->ctx.current_frame = &main_frame;
 
     RESULT r = EVAL(&vm->current_fiber->ctx, ast);
