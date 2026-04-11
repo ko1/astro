@@ -156,7 +156,7 @@ benchmark/optcarrot/bin/optcarrot-bench を動かすために必要な機能。
 
 ### 機能追加（最適化の前提条件）
 
-- [ ] ブロック / yield + インライン化 — optcarrot 必須。specialize でブロック呼び出しを展開できればイテレータのオーバーヘッド除去
+- [ ] ブロック / yield + インライン化 — optcarrot 必須。specialize でブロック呼び出しを展開できればイテレータのオーバーヘッド除去。**method inlining の基盤が先に必要**。20260412 に iterator ごとに融合ノードを手書きする方式を試したが、N イテレータで N ノードが必要になり scale せず、かつフレーム共有が `binding` 等で破綻するため差し戻し (詳細: `docs/report/20260412_phase1_block_speedup.md`)。正しい方向は PE + inlining で (1) cfunc iterator または (2) AST で書き直した iterator を inline 展開
 
 ## ランタイム・内部実装
 

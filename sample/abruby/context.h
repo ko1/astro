@@ -353,11 +353,6 @@ struct abruby_id_cache {
     ID op_eq, op_mod;
     ID method_missing;
     ID initialize;
-    // Specialized iterator method names — used to match call sites that
-    // should be rewritten into fused iterator+block nodes at runtime.
-    ID times;           // Integer#times
-    ID each;            // Array#each / Range#each
-    ID map;             // Array#map / Array#collect
 };
 
 struct abruby_machine;  // forward declaration
