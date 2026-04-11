@@ -101,6 +101,18 @@
 - `ab_verify()` によるデバッグアサーション（`--enable-debug`）
 - AST pretty print（`--dump`）
 - builtin/ にクラスごとのソース分離
-- `caller_node` フレーム方式（各フレ���ムが呼び出し元を記録、backtrace 生成に使用）
+- `caller_node` フレーム方式（各フレームが呼び出し元を記録、backtrace 生成に使用）
 - `PUSH_FRAME` / `POP_FRAME` マクロ（インライン例外で backtrace 位置を記録）
 - `no_stack_protector` 属性（DISPATCH / コードストア SD_ 関数）
+
+## 高速化
+- **Float 算術 fast path**: `node_flonum_plus/minus/mul/div` と `node_flonum_lt/le/gt/ge` を追加。
+  `node_fixnum_*_slow` が Flonum/Float の両オペランドを観測したら `swap_dispatcher` で flonum 系に昇格。
+  mandelbrot/nbody 等の Float-heavy ベンチが大幅改善
+- **ivar インラインキャッシュ**: `node_ivar_get/set` に `struct ivar_cache *@ref` を埋め込み。
+  `(klass, slot)` で直接 `obj->ivars.entries[slot]` を読み書き。キー名の一致でガード、grow/rehash で自動失効。
+  ivar/nbody/object 等で効く
+- **ab_id_table ハイブリッド化**: 小テーブル（capa ≤ 4）は packed linear、大テーブルは open-addressing
+  Fibonacci ハッシュ。method / ivar / const / gvar 全テーブルで同じ実装。小クラスは従来通り線形、
+  builtin クラスやホット ivar テーブルは O(1) ルックアップ
+- **Bignum 演算**: `integer_*_calc` を `rb_big_*` 直接呼び出しに変更（rb_funcall バイパス）。factorial が改善
