@@ -155,13 +155,26 @@ struct abruby_class {
 // Direct-indexed instance variables.
 // Slots are assigned by the class shape (see abruby_class::ivar_shape) and
 // accessed as obj->ivars[slot] with no per-object hash table.
-#define ABRUBY_OBJECT_IVAR_CAPA 8
+//
+// Up to ABRUBY_OBJECT_INLINE_IVARS fit in the inline `ivars` array — common
+// cases (binary_trees 2, Point 2, Counter 1) avoid any extra allocation.
+// Classes with more ivars (nbody Body 7) use heap extra_ivars for slots >= 4.
+#define ABRUBY_OBJECT_INLINE_IVARS 4
 
 struct abruby_object {
-    struct abruby_class *klass;                    // offset 0
-    uint32_t ivar_cnt;                              // number of live ivars (for mark)
-    VALUE ivars[ABRUBY_OBJECT_IVAR_CAPA];           // Qnil-initialized
+    struct abruby_class *klass;                // offset 0
+    uint32_t ivar_cnt;                         // number of live slots (total across inline + extra)
+    VALUE *extra_ivars;                        // NULL if cnt <= INLINE; else slots [INLINE .. cnt)
+    VALUE ivars[ABRUBY_OBJECT_INLINE_IVARS];
 };
+
+// Unified accessor for ivar slots (read).
+static inline VALUE
+abruby_object_ivar_read(const struct abruby_object *obj, unsigned int slot)
+{
+    if (slot < ABRUBY_OBJECT_INLINE_IVARS) return obj->ivars[slot];
+    return obj->extra_ivars[slot - ABRUBY_OBJECT_INLINE_IVARS];
+}
 
 // Bignum/Float are wrapped in T_DATA with abruby_header, not raw CRuby
 // T_BIGNUM/T_FLOAT.  This ensures uniform class resolution via AB_CLASS_OF().

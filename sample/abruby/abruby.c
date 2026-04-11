@@ -122,8 +122,12 @@ static void abruby_data_mark(void *ptr) {
     default: {
         const struct abruby_object *obj = (const struct abruby_object *)ptr;
         unsigned int n = obj->ivar_cnt;
-        if (n > ABRUBY_OBJECT_IVAR_CAPA) n = ABRUBY_OBJECT_IVAR_CAPA;
-        for (unsigned int i = 0; i < n; i++) rb_gc_mark(obj->ivars[i]);
+        unsigned int inline_n = n < ABRUBY_OBJECT_INLINE_IVARS ? n : ABRUBY_OBJECT_INLINE_IVARS;
+        for (unsigned int i = 0; i < inline_n; i++) rb_gc_mark(obj->ivars[i]);
+        if (n > ABRUBY_OBJECT_INLINE_IVARS && obj->extra_ivars) {
+            unsigned int extra = n - ABRUBY_OBJECT_INLINE_IVARS;
+            for (unsigned int i = 0; i < extra; i++) rb_gc_mark(obj->extra_ivars[i]);
+        }
         break;
     }
     }
@@ -149,7 +153,8 @@ abruby_data_free(void *ptr)
             break;
         }
         case ABRUBY_OBJ_GENERIC: {
-            // No heap to free: ivars are inline.
+            struct abruby_object *obj = (struct abruby_object *)ptr;
+            if (obj->extra_ivars) ruby_xfree(obj->extra_ivars);
             break;
         }
         default:
@@ -179,12 +184,16 @@ abruby_new_object(struct abruby_class *klass)
     struct abruby_object *obj;
     VALUE wrapper = TypedData_Make_Struct(rb_cAbRubyNode, struct abruby_object, &abruby_data_type, obj);
     obj->klass = klass;
-    obj->ivar_cnt = klass->ivar_shape.cnt;
-    // Initialize the live slots to Qnil (mark function reads them).
-    // TypedData_Make_Struct already zeroed the struct, but Qnil != 0 on CRuby.
-    unsigned int live = obj->ivar_cnt;
-    if (live > ABRUBY_OBJECT_IVAR_CAPA) live = ABRUBY_OBJECT_IVAR_CAPA;
-    for (unsigned int i = 0; i < live; i++) obj->ivars[i] = Qnil;
+    unsigned int n = klass->ivar_shape.cnt;
+    obj->ivar_cnt = n;
+    // Initialize inline slots (mark reads them).
+    unsigned int inline_n = n < ABRUBY_OBJECT_INLINE_IVARS ? n : ABRUBY_OBJECT_INLINE_IVARS;
+    for (unsigned int i = 0; i < inline_n; i++) obj->ivars[i] = Qnil;
+    if (n > ABRUBY_OBJECT_INLINE_IVARS) {
+        unsigned int extra = n - ABRUBY_OBJECT_INLINE_IVARS;
+        obj->extra_ivars = (VALUE *)ruby_xmalloc2(extra, sizeof(VALUE));
+        for (unsigned int i = 0; i < extra; i++) obj->extra_ivars[i] = Qnil;
+    }
     return wrapper;
 }
 
@@ -407,6 +416,34 @@ init_builtin_methods(void)
 
 // ivar helpers
 
+// Ensure obj has at least `new_cnt` ivar slots (growing inline + extra as needed).
+void
+abruby_object_grow_ivars(struct abruby_object *obj, unsigned int new_cnt)
+{
+    if (new_cnt <= obj->ivar_cnt) return;
+    // Initialize newly-live inline slots.
+    unsigned int inline_end = new_cnt < ABRUBY_OBJECT_INLINE_IVARS ? new_cnt : ABRUBY_OBJECT_INLINE_IVARS;
+    for (unsigned int i = obj->ivar_cnt; i < inline_end; i++) obj->ivars[i] = Qnil;
+    // Grow/allocate extra_ivars if needed.
+    if (new_cnt > ABRUBY_OBJECT_INLINE_IVARS) {
+        unsigned int new_extra = new_cnt - ABRUBY_OBJECT_INLINE_IVARS;
+        unsigned int old_extra = obj->ivar_cnt > ABRUBY_OBJECT_INLINE_IVARS
+            ? obj->ivar_cnt - ABRUBY_OBJECT_INLINE_IVARS : 0;
+        if (new_extra > old_extra) {
+            obj->extra_ivars = (VALUE *)ruby_xrealloc2(obj->extra_ivars, new_extra, sizeof(VALUE));
+            for (unsigned int i = old_extra; i < new_extra; i++) obj->extra_ivars[i] = Qnil;
+        }
+    }
+    obj->ivar_cnt = new_cnt;
+}
+
+static inline VALUE *
+abruby_object_ivar_slot(struct abruby_object *obj, unsigned int slot)
+{
+    if (slot < ABRUBY_OBJECT_INLINE_IVARS) return &obj->ivars[slot];
+    return &obj->extra_ivars[slot - ABRUBY_OBJECT_INLINE_IVARS];
+}
+
 VALUE
 abruby_ivar_get(VALUE self, ID name)
 {
@@ -416,7 +453,7 @@ abruby_ivar_get(VALUE self, ID name)
     VALUE slot_fix;
     if (ab_id_table_lookup(&obj->klass->ivar_shape, name, &slot_fix)) {
         unsigned int slot = (unsigned int)FIX2ULONG(slot_fix);
-        if (slot < obj->ivar_cnt && slot < ABRUBY_OBJECT_IVAR_CAPA) return obj->ivars[slot];
+        if (slot < obj->ivar_cnt) return abruby_object_ivar_read(obj, slot);
     }
     return Qnil;
 }
@@ -437,17 +474,10 @@ abruby_ivar_set(VALUE self, ID name, VALUE val)
         slot = (unsigned int)FIX2ULONG(slot_fix);
     } else {
         slot = klass->ivar_shape.cnt;
-        if (slot >= ABRUBY_OBJECT_IVAR_CAPA) {
-            rb_raise(rb_eRuntimeError, "too many ivars on class (max %d)", ABRUBY_OBJECT_IVAR_CAPA);
-        }
         ab_id_table_insert(&klass->ivar_shape, name, LONG2FIX((long)slot));
     }
-    if (slot >= obj->ivar_cnt) {
-        // Extend: initialize new slots to Qnil
-        for (unsigned int i = obj->ivar_cnt; i <= slot; i++) obj->ivars[i] = Qnil;
-        obj->ivar_cnt = slot + 1;
-    }
-    obj->ivars[slot] = val;
+    abruby_object_grow_ivars(obj, slot + 1);
+    *abruby_object_ivar_slot(obj, slot) = val;
 }
 
 // Per-instance VM state (struct abruby_machine defined in context.h)

@@ -144,6 +144,7 @@ find_class(const CTX *c, ID name)
 
 
 extern VALUE abruby_new_object(struct abruby_class *klass);
+extern void abruby_object_grow_ivars(struct abruby_object *obj, unsigned int new_cnt);
 
 // === Literals ===
 
@@ -342,8 +343,8 @@ node_ivar_get_slow(const struct abruby_object *obj, ID name, struct ivar_cache *
         unsigned int slot = (unsigned int)FIX2ULONG(slot_fix);
         ic->klass = obj->klass;
         ic->slot = slot;
-        if (slot < obj->ivar_cnt && slot < ABRUBY_OBJECT_IVAR_CAPA) {
-            return obj->ivars[slot];
+        if (slot < obj->ivar_cnt) {
+            return abruby_object_ivar_read(obj, slot);
         }
     }
     return Qnil;
@@ -356,7 +357,11 @@ node_ivar_get(CTX * restrict c, NODE * restrict n, ID name, struct ivar_cache *i
     const struct abruby_object *obj =
         (const struct abruby_object *)RTYPEDDATA_GET_DATA(c->self);
     if (LIKELY(ic->klass == obj->klass && ic->slot < obj->ivar_cnt)) {
-        return RESULT_OK(obj->ivars[ic->slot]);
+        // Branch-free inline slot fast path: most ivars fit inline.
+        if (LIKELY(ic->slot < ABRUBY_OBJECT_INLINE_IVARS)) {
+            return RESULT_OK(obj->ivars[ic->slot]);
+        }
+        return RESULT_OK(obj->extra_ivars[ic->slot - ABRUBY_OBJECT_INLINE_IVARS]);
     }
     return RESULT_OK(node_ivar_get_slow(obj, name, ic));
 }
@@ -372,17 +377,14 @@ node_ivar_set_slow(struct abruby_object *obj, ID name, VALUE v, struct ivar_cach
         slot = (unsigned int)FIX2ULONG(slot_fix);
     } else {
         slot = klass->ivar_shape.cnt;
-        if (UNLIKELY(slot >= ABRUBY_OBJECT_IVAR_CAPA)) {
-            rb_raise(rb_eRuntimeError, "too many ivars on class (max %d)", ABRUBY_OBJECT_IVAR_CAPA);
-        }
         ab_id_table_insert(&klass->ivar_shape, name, LONG2FIX((long)slot));
     }
-    // Extend the live slot count if we just introduced a later slot.
-    if (slot >= obj->ivar_cnt) {
-        for (unsigned int i = obj->ivar_cnt; i <= slot; i++) obj->ivars[i] = Qnil;
-        obj->ivar_cnt = slot + 1;
+    abruby_object_grow_ivars(obj, slot + 1);
+    if (slot < ABRUBY_OBJECT_INLINE_IVARS) {
+        obj->ivars[slot] = v;
+    } else {
+        obj->extra_ivars[slot - ABRUBY_OBJECT_INLINE_IVARS] = v;
     }
-    obj->ivars[slot] = v;
     ic->klass = obj->klass;
     ic->slot = slot;
 }
@@ -398,7 +400,11 @@ node_ivar_set(CTX * restrict c, NODE * restrict n, ID name, NODE *value, struct 
     struct abruby_object *obj =
         (struct abruby_object *)RTYPEDDATA_GET_DATA(c->self);
     if (LIKELY(ic->klass == obj->klass && ic->slot < obj->ivar_cnt)) {
-        obj->ivars[ic->slot] = v;
+        if (LIKELY(ic->slot < ABRUBY_OBJECT_INLINE_IVARS)) {
+            obj->ivars[ic->slot] = v;
+        } else {
+            obj->extra_ivars[ic->slot - ABRUBY_OBJECT_INLINE_IVARS] = v;
+        }
         return RESULT_OK(v);
     }
     node_ivar_set_slow(obj, name, v, ic);
@@ -633,13 +639,8 @@ method_cache_fill(CTX *c, struct method_cache *mc, const struct abruby_class *kl
             mc->ivar_slot = (uint32_t)FIX2ULONG(slot_fix);
         } else {
             uint32_t new_slot = klass_mut->ivar_shape.cnt;
-            if (new_slot < ABRUBY_OBJECT_IVAR_CAPA) {
-                ab_id_table_insert(&klass_mut->ivar_shape, ivar_name, LONG2FIX((long)new_slot));
-                mc->ivar_slot = new_slot;
-            } else {
-                // Shape overflow: fall back to a no-op hit that will read Qnil.
-                mc->ivar_slot = UINT32_MAX;
-            }
+            ab_id_table_insert(&klass_mut->ivar_shape, ivar_name, LONG2FIX((long)new_slot));
+            mc->ivar_slot = new_slot;
         }
     } else {
         mc->body = NULL;
@@ -663,7 +664,7 @@ dispatch_method_frame(CTX * restrict c, NODE * restrict call_site,
         const struct abruby_object *obj =
             (const struct abruby_object *)RTYPEDDATA_GET_DATA(c->self);
         if (LIKELY(mc->ivar_slot < obj->ivar_cnt)) {
-            return RESULT_OK(obj->ivars[mc->ivar_slot]);
+            return RESULT_OK(abruby_object_ivar_read(obj, mc->ivar_slot));
         }
         return RESULT_OK(Qnil);
     }
@@ -672,12 +673,12 @@ dispatch_method_frame(CTX * restrict c, NODE * restrict call_site,
             (struct abruby_object *)RTYPEDDATA_GET_DATA(c->self);
         VALUE v = c->fp[arg_index];
         unsigned int slot = mc->ivar_slot;
-        if (UNLIKELY(slot >= ABRUBY_OBJECT_IVAR_CAPA)) return RESULT_OK(v);
-        if (slot >= obj->ivar_cnt) {
-            for (unsigned int i = obj->ivar_cnt; i <= slot; i++) obj->ivars[i] = Qnil;
-            obj->ivar_cnt = slot + 1;
+        if (slot >= obj->ivar_cnt) abruby_object_grow_ivars(obj, slot + 1);
+        if (LIKELY(slot < ABRUBY_OBJECT_INLINE_IVARS)) {
+            obj->ivars[slot] = v;
+        } else {
+            obj->extra_ivars[slot - ABRUBY_OBJECT_INLINE_IVARS] = v;
         }
-        obj->ivars[slot] = v;
         return RESULT_OK(v);
     }
 
