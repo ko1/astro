@@ -109,10 +109,25 @@
 - **Float 算術 fast path**: `node_flonum_plus/minus/mul/div` と `node_flonum_lt/le/gt/ge` を追加。
   `node_fixnum_*_slow` が Flonum/Float の両オペランドを観測したら `swap_dispatcher` で flonum 系に昇格。
   mandelbrot/nbody 等の Float-heavy ベンチが大幅改善
-- **ivar インラインキャッシュ**: `node_ivar_get/set` に `struct ivar_cache *@ref` を埋め込み。
-  `(klass, slot)` で直接 `obj->ivars.entries[slot]` を読み書き。キー名の一致でガード、grow/rehash で自動失効。
-  ivar/nbody/object 等で効く
-- **ab_id_table ハイブリッド化**: 小テーブル（capa ≤ 4）は packed linear、大テーブルは open-addressing
-  Fibonacci ハッシュ。method / ivar / const / gvar 全テーブルで同じ実装。小クラスは従来通り線形、
-  builtin クラスやホット ivar テーブルは O(1) ルックアップ
+- **ivar インラインキャッシュ + 直接インデックス**: `abruby_object` は `klass` + `ivar_cnt` + inline 4 slots
+  + heap extra。クラスの `ivar_shape` (name → slot_idx) で shape-based slot 割当。
+  `node_ivar_get/set` は IC cache `(klass, slot)` のみでガード、直接 `obj->ivars[slot]` アクセス
+- **attr_reader / attr_writer の dispatch インライン化**: `abruby_class_add_method` で
+  `def x; @x; end` / `def x=(v); @x = v; end` の AST 形を検出し `ABRUBY_METHOD_IVAR_GETTER/SETTER`
+  として保存。`method_cache_fill` で slot を先計算、`dispatch_method_frame` の先頭で frame 構築を
+  スキップして直接 ivar 読み書き
+- **ab_id_table ハイブリッド化 + inline storage**: 小テーブル（capa ≤ 4）は packed linear、
+  大テーブルは open-addressing Fibonacci ハッシュ。テーブル構造体内に `inline_storage[4]` を埋め込み、
+  小テーブルは別途 alloc 不要
 - **Bignum 演算**: `integer_*_calc` を `rb_big_*` 直接呼び出しに変更（rb_funcall バイパス）。factorial が改善
+- **String#+ / String#* のバッファ事前確保**: `rb_str_buf_new(total_size)` で再 alloc を回避
+- **RESULT state ビットフラグ化**: `RETURN=1, RAISE=2, BREAK=4` に変更。メソッド境界での RETURN catch は
+  `r.state &= ~RESULT_RETURN` の 1 命令に
+- **frame.klass 削除**: `abruby_method::defining_class` に移し、`dispatch_method_frame` の
+  frame 構築コストを 1 store 分減らす
+- **EVAL_* を `static inline`**: 生成された evaluator 関数に `inline` キーワードを付け、specializer が
+  出力する SD_ ラッパーとの組み合わせで gcc が木全体を cross-node 最適化しやすくする
+- **GC mark の最適化**: `abruby_data_mark` が immediate value (nil, Fixnum, Symbol, Flonum, true/false)
+  を `rb_gc_mark` に渡さずスキップ。binary_trees の leaf node mark コスト削減
+- **Object#== の identity 短絡**: `node_eq` / `node_neq` で `lv == rv` なら method dispatch せず直接返す。
+  `node_arith_fallback` は method が `ab_object_eq` に解決された場合も identity でショートカット
