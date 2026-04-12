@@ -78,7 +78,7 @@ node_name(CTX *c, NODE *n, type1 operand1, type2 operand2, ...)
 - 最初の2引数 `CTX *c, NODE *n` は必須（コンテキストとノード自身）
 - `NODE *` 型のオペランドは子ノード（ディスパッチャが自動的にディスパッチ関数ポインタも渡す）
 - `@noinline` オプションで特化時のインライン抑制が可能
-- `@rewritable` オプションで `replaced_from` フィールドを追加（実行時のノード書き換え対応）
+- オペランド名末尾に `@ref` を付けると、ノード本体に値を埋め込まずポインタ経由で扱う（インラインキャッシュ等のミュータブルな副情報用）
 
 ### 3.2 サポートするオペランド型
 
@@ -352,44 +352,3 @@ code store はハッシュ→dispatcher マップの管理と `.so` のロード
 
 ### 静的型システム
 - 現在は動的型付き言語のみ検証。静的型情報を活用した最適化は未探索
-
-## 8. リポジトリ構成
-
-```
-/home/ko1/ruby/astro/
-├── lib/
-│   └── astrogen.rb           # ASTroGen コア (約580行 Ruby)
-├── runtime/
-│   ├── astro_code_store.h    # Code Store API 宣言
-│   └── astro_code_store.c    # Code Store 実装 (hash, HASH, DUMP, SPECIALIZE, dlopen)
-├── sample/
-│   ├── calc/                 # 最小例 (3ノード: num, add, mul)
-│   │   └── node.def
-│   ├── naruby/               # Ruby サブセット (21ノード、JIT対応)
-│   │   ├── node.def          # ノード定義 (約300行)
-│   │   ├── Makefile
-│   │   ├── main.c            # エントリポイント
-│   │   ├── naruby_parse.c    # Prism パーサ連携
-│   │   ├── node.c            # ノード実装
-│   │   ├── astro_jit.c       # JIT 実装 (L0)
-│   │   ├── astro_jit.h
-│   │   ├── context.h         # 実行コンテキスト
-│   │   ├── prism/            # Prism パーサ (submodule)
-│   │   └── bench/            # ベンチマーク
-│   └── abruby/               # Ruby サブセット (40+ノード、CRuby C extension)
-│       ├── node.def          # ノード定義
-│       ├── abruby_gen.rb     # ASTroGen 拡張 (GC マーク関数生成)
-│       ├── abruby.c          # C extension エントリ
-│       ├── node.c            # ランタイム
-│       ├── context.h         # 実行コンテキスト
-│       ├── node.h            # ノード宣言
-│       ├── builtin/          # ビルトインクラス (Integer, String, Array 等)
-│       ├── lib/abruby.rb     # Prism AST → AbRuby AST 変換
-│       ├── exe/abruby        # CLI ツール
-│       └── test/             # テスト (607 tests)
-└── docs/
-    ├── idea.md               # 設計思想
-    ├── usage.md              # 使い方ガイド
-    ├── 2025_astro_VMIL2025.pdf
-    └── ppl2026_astro_jit_cr.pdf
-```

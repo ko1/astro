@@ -90,7 +90,10 @@ node_def(CTX *c, NODE *n, const char *name, NODE *body, uint32_t params_cnt)
 ```
 
 - `@noinline` — prevents specialization from inlining this node's dispatched calls.
-- `@rewritable` — adds a `replaced_from` field to the node struct for runtime AST rewriting (e.g., type-specializing `node_plus` → `node_fixnum_plus`).
+
+Operand-level annotation:
+
+- `<type> <name>@ref` — store the operand by reference rather than embedding its value in the node struct. Use this for mutable side data such as inline method caches that should be shared across specialized copies. `@ref` operands are skipped by the hash function.
 
 ## Writing `context.h`
 
@@ -287,9 +290,8 @@ class AbRubyNodeDef < ASTroGen::NodeDef
     def result_type = "RESULT"
 
     def build_marker
-      node_ops = @operands.select(&:node?)
+      node_ops = @operands.reject(&:ref?).select(&:node?)
       marks = node_ops.map { |op| "    MARK(n->u.#{@name}.#{op.name});" }
-      marks << "    MARK(n->u.#{@name}.replaced_from);" if rewritable?
       <<~C
       static void
       MARKER_#{@name}(NODE *n)
@@ -425,6 +427,6 @@ ruby -r astrogen -e 'ASTroGen.start ARGV' -- [options]
 
 ### Examples
 
-- `sample/calc/` — Minimal calculator (3 nodes). Good starting point.
-- `sample/naruby/` — Ruby subset (21 nodes) with functions, variables, operators, JIT support. Standalone C program.
-- `sample/abruby/` — Ruby subset (40+ nodes) as a CRuby C extension. Classes, methods, GC integration, builtins. Demonstrates `register_gen_task` for custom mark function generation and `@rewritable` for runtime AST node rewriting.
+- `sample/calc/` — Minimal calculator. Good starting point.
+- `sample/naruby/` — Ruby subset with functions, variables, operators, JIT support. Standalone C program.
+- `sample/abruby/` — Ruby subset as a CRuby C extension. Classes, methods, blocks, GC integration, builtins. Demonstrates `register_gen_task` for custom mark function generation and `@ref` operands for inline caches.
