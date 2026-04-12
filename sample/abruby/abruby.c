@@ -567,7 +567,9 @@ abruby_call_method(CTX *c, VALUE recv, const struct abruby_method *method,
         VALUE *save_fp = c->fp;
         VALUE save_self = c->self;
         const struct abruby_cref *save_cref = c->cref;
-        c->fp = save_fp + 16;
+        unsigned int gap = method->u.ast.locals_cnt;
+        if (gap < 16) gap = 16;
+        c->fp = save_fp + gap;
         for (unsigned int i = 0; i < argc; i++) {
             c->fp[i] = argv[i];
         }
