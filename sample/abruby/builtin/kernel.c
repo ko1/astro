@@ -198,6 +198,33 @@ static RESULT ab_kernel_require(CTX *c, VALUE self, unsigned int argc, VALUE *ar
     return abruby_require_file(c, path);
 }
 
+// GC.{disable,enable,start} — facade over CRuby GC for diagnostic
+// scripts that toggle the collector.
+RESULT ab_gc_disable(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)c; (void)self; (void)argc; (void)argv;
+    return RESULT_OK(rb_funcall(rb_const_get(rb_cObject, rb_intern("GC")), rb_intern("disable"), 0));
+}
+RESULT ab_gc_enable(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)c; (void)self; (void)argc; (void)argv;
+    return RESULT_OK(rb_funcall(rb_const_get(rb_cObject, rb_intern("GC")), rb_intern("enable"), 0));
+}
+RESULT ab_gc_start(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)c; (void)self; (void)argc; (void)argv;
+    return RESULT_OK(rb_funcall(rb_const_get(rb_cObject, rb_intern("GC")), rb_intern("start"), 0));
+}
+
+// Process.clock_gettime(*) — return monotonic time as a Float.  We
+// ignore the clock-id argument and always use CLOCK_MONOTONIC.
+RESULT ab_process_clock_gettime(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)self; (void)argc; (void)argv;
+    VALUE r = rb_funcall(rb_const_get(rb_cObject, rb_intern("Process")),
+                         rb_intern("clock_gettime"), 1,
+                         rb_const_get(rb_const_get(rb_cObject, rb_intern("Process")),
+                                      rb_intern("CLOCK_MONOTONIC")));
+    // r is a CRuby Float; wrap as abruby Float.
+    return RESULT_OK(abruby_float_new_wrap(c, r));
+}
+
 // Kernel#loop { ... } — yield to the block forever (until break or
 // StopIteration).  Used by optcarrot's CPU dispatch loop.
 RESULT ab_kernel_loop(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {

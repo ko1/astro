@@ -334,7 +334,15 @@ found:
         return (RESULT){exc, RESULT_RAISE};
     }
     struct abruby_header *h = (struct abruby_header *)RTYPEDDATA_GET_DATA(parent_v);
-    if (h->klass != c->abm->class_class && h->klass != c->abm->module_class) {
+    // Accept anything that's a class/module value: per-instance
+    // metaclasses (h->klass == class_class/module_class) AND the
+    // self-referential singleton classes we use for File / Struct /
+    // Process / Proc / Fiber / Method.
+    bool is_class_value =
+        h->klass == c->abm->class_class ||
+        h->klass == c->abm->module_class ||
+        h->klass == (struct abruby_class *)h;  // self-referential
+    if (!is_class_value) {
         VALUE exc;
         PUSH_FRAME(n);
         exc = abruby_exception_new(c, c->current_frame,

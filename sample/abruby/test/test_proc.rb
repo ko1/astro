@@ -118,6 +118,32 @@ class TestProc < AbRubyTest
     [1, 2, 3].map(&sq)
   RUBY
 
+  # Regression: when the proc body calls methods, the body's fp must have
+  # headroom on the CTX's own VALUE stack — not the (small) captured-env
+  # heap buffer.  Previously `c->fp = p->env` + a method call inside the
+  # body wrote past p->env's allocation and corrupted adjacent heap
+  # (observable as a random ivar on a long-lived object flipping type).
+  def test_proc_body_deep_call = assert_eval(<<~RUBY, 55)
+    def fib(n)
+      return n if n < 2
+      fib(n - 1) + fib(n - 2)
+    end
+    Proc.new { fib(10) }.call
+  RUBY
+
+  # Regression: a proc body that itself calls a method whose body calls
+  # another method.  Each layer advances fp; without the stack copy the
+  # innermost call corrupts heap.
+  def test_proc_body_chained_calls = assert_eval(<<~RUBY, 42)
+    class TmAccum
+      def initialize; @n = 0; end
+      def add(x); @n += x; self; end
+      def value; @n; end
+    end
+    a = TmAccum.new
+    Proc.new { a.add(10).add(20).add(12).value }.call
+  RUBY
+
   # Closure inside a block
   def test_block_in_block_closure = assert_eval(<<~RUBY, [1, 2, 3])
     def make

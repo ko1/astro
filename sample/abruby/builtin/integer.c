@@ -204,6 +204,47 @@ static RESULT ab_integer_times(CTX *c, VALUE self, unsigned int argc, VALUE *arg
     return RESULT_OK(self);
 }
 
+// Integer#step(limit, step=1) { |i| ... } — yields self, self+step, ...
+// until i would cross `limit`.  Supports negative step (counts down).  Only
+// Fixnum receivers/args are supported (matches Integer#times scope).
+static RESULT ab_integer_step(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    if (UNLIKELY(!FIXNUM_P(self)) || argc < 1 || !FIXNUM_P(argv[0])) {
+        VALUE exc = abruby_exception_new(c, c->current_frame,
+            abruby_str_new_cstr(c, "Integer#step: only Fixnum self/limit supported"));
+        return (RESULT){exc, RESULT_RAISE};
+    }
+    long start = FIX2LONG(self);
+    long limit = FIX2LONG(argv[0]);
+    long step  = 1;
+    if (argc >= 2) {
+        if (!FIXNUM_P(argv[1])) {
+            VALUE exc = abruby_exception_new(c, c->current_frame,
+                abruby_str_new_cstr(c, "Integer#step: only Fixnum step supported"));
+            return (RESULT){exc, RESULT_RAISE};
+        }
+        step = FIX2LONG(argv[1]);
+    }
+    if (step == 0) {
+        VALUE exc = abruby_exception_new(c, c->current_frame,
+            abruby_str_new_cstr(c, "Integer#step: step can't be zero"));
+        return (RESULT){exc, RESULT_RAISE};
+    }
+    if (step > 0) {
+        for (long i = start; i <= limit; i += step) {
+            VALUE iv = LONG2FIX(i);
+            RESULT r = abruby_yield(c, 1, &iv);
+            if (UNLIKELY(r.state != RESULT_NORMAL)) return r;
+        }
+    } else {
+        for (long i = start; i >= limit; i += step) {
+            VALUE iv = LONG2FIX(i);
+            RESULT r = abruby_yield(c, 1, &iv);
+            if (UNLIKELY(r.state != RESULT_NORMAL)) return r;
+        }
+    }
+    return RESULT_OK(self);
+}
+
 static RESULT ab_integer_aref(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     if (LIKELY(FIXNUM_P(self) && FIXNUM_P(argv[0]))) {
         long val = FIX2LONG(self);
@@ -246,4 +287,5 @@ Init_abruby_integer(void)
     abruby_class_add_cfunc(ab_tmpl_integer_class, rb_intern("abs"),    ab_integer_abs,     0);
     abruby_class_add_cfunc(ab_tmpl_integer_class, rb_intern("[]"),     ab_integer_aref,    1);
     abruby_class_add_cfunc(ab_tmpl_integer_class, rb_intern("times"),  ab_integer_times,   0);
+    abruby_class_add_cfunc(ab_tmpl_integer_class, rb_intern("step"),   ab_integer_step,   -1);
 }

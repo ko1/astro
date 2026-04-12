@@ -100,7 +100,14 @@ RESULT ab_proc_call(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
         .block = NULL,
     };
 
-    c->fp = p->env;
+    // Copy captured env onto the CTX's VALUE stack so method calls
+    // inside the body have headroom to grow fp upward.  Using p->env
+    // as fp directly overflows the heap env buffer as soon as the body
+    // calls any method (callee fp = p->env + arg_index would land in
+    // memory past p->env's allocation, corrupting adjacent heap).
+    VALUE *new_fp = argv + argc;
+    for (uint32_t i = 0; i < p->env_size; i++) new_fp[i] = p->env[i];
+    c->fp = new_fp;
     c->self = p->captured_self;
     c->cref = p->cref;
     c->current_block = NULL;
@@ -109,6 +116,9 @@ RESULT ab_proc_call(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
 
     RESULT r = EVAL(c, p->body);
 
+    // Propagate closure-local writes back to the heap env so other
+    // escapes of the same closure observe them.
+    for (uint32_t i = 0; i < p->env_size; i++) p->env[i] = new_fp[i];
     c->fp = save_fp;
     c->self = save_self;
     c->cref = save_cref;

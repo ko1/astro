@@ -675,9 +675,11 @@ class AbRuby
         # would update `a` before `a + b` is computed and produce
         # wrong values (the famous Fibonacci bug).
         rhs_pre_seq = nil
+        first_temp_slot = nil
         if values.is_a?(Prism::ArrayNode) &&
            values.elements.none? { |e| e.is_a?(Prism::SplatNode) }
           temp_slots = values.elements.map { inc_arg_index }
+          first_temp_slot = temp_slots.first
           rhs_pre_seq = values.elements.each_with_index.map do |e, i|
             AbRuby.alloc_node_lvar_set(temp_slots[i], transduce(e))
           end
@@ -775,7 +777,14 @@ class AbRuby
           end
         end
 
-        rewind_arg_index(ary_idx) if ary_idx
+        # Rewind temp slots back to the beginning of whatever block of
+        # the parser frame we used.  Both paths (single-RHS-expression
+        # ary_idx and explicit-ArrayNode rhs_pre_seq temp slots) live
+        # in [first_used .. arg_index), so rewind to the lower of the
+        # two if both are present.
+        rewind_to = first_temp_slot
+        rewind_to = ary_idx if ary_idx && (rewind_to.nil? || ary_idx < rewind_to)
+        rewind_arg_index(rewind_to) if rewind_to
         prelude = []
         prelude.concat(rhs_pre_seq) if rhs_pre_seq
         prelude << rhs_pre_store if rhs_pre_store

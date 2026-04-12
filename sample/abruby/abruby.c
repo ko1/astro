@@ -707,6 +707,9 @@ vm_mark(void *ptr)
         rb_gc_mark(vm->current_fiber->ctx.self);
         rb_gc_mark_locations(vm->current_fiber->ctx.stack, vm->current_fiber->ctx.stack + ABRUBY_STACK_SIZE);
     }
+    // Suspended non-main fibers are kept alive via their VALUE
+    // wrapper; abruby_fiber_mark walks their per-fiber state.
+    // We additionally need to mark the *root* fiber's wrapper if any.
     rb_gc_mark(vm->rb_self);
     rb_gc_mark(vm->current_file);
     rb_gc_mark(vm->loaded_files);
@@ -1101,6 +1104,58 @@ init_instance_classes(struct abruby_machine *vm)
         }
         vm->method_class = m_klass;
         abruby_class_set_const(obj, rb_intern("Method"), abruby_wrap_class(m_klass));
+    }
+
+    // GC: thin facade so user code can call GC.disable / GC.enable.
+    // Delegates to CRuby's GC.
+    {
+        struct abruby_class *gc_klass = (struct abruby_class *)ruby_xcalloc(1, sizeof(struct abruby_class));
+        gc_klass->klass = gc_klass;
+        gc_klass->obj_type = ABRUBY_OBJ_CLASS;
+        gc_klass->name = rb_intern("GC");
+        gc_klass->super = vm->object_class;
+        extern RESULT ab_gc_disable(CTX *, VALUE, unsigned int, VALUE *);
+        extern RESULT ab_gc_enable(CTX *, VALUE, unsigned int, VALUE *);
+        extern RESULT ab_gc_start(CTX *, VALUE, unsigned int, VALUE *);
+        struct {
+            const char *name;
+            abruby_cfunc_t fn;
+        } gc_entries[] = {
+            {"disable", ab_gc_disable},
+            {"enable",  ab_gc_enable},
+            {"start",   ab_gc_start},
+        };
+        for (size_t i = 0; i < sizeof(gc_entries)/sizeof(gc_entries[0]); i++) {
+            struct abruby_method *m = ruby_xcalloc(1, sizeof(struct abruby_method));
+            m->name = rb_intern(gc_entries[i].name);
+            m->type = ABRUBY_METHOD_CFUNC;
+            m->defining_class = gc_klass;
+            m->u.cfunc.func = gc_entries[i].fn;
+            ab_id_table_insert(&gc_klass->methods, m->name, (VALUE)m);
+        }
+        abruby_class_set_const(obj, rb_intern("GC"), abruby_wrap_class(gc_klass));
+    }
+
+    // Process: minimal stub class with `clock_gettime` and the
+    // CLOCK_MONOTONIC constant.  Optcarrot uses these for FPS timing.
+    {
+        struct abruby_class *proc_klass = (struct abruby_class *)ruby_xcalloc(1, sizeof(struct abruby_class));
+        proc_klass->klass = proc_klass;
+        proc_klass->obj_type = ABRUBY_OBJ_CLASS;
+        proc_klass->name = rb_intern("Process");
+        proc_klass->super = vm->object_class;
+        extern RESULT ab_process_clock_gettime(CTX *, VALUE, unsigned int, VALUE *);
+        struct abruby_method *m_clock = ruby_xcalloc(1, sizeof(struct abruby_method));
+        m_clock->name = rb_intern("clock_gettime");
+        m_clock->type = ABRUBY_METHOD_CFUNC;
+        m_clock->defining_class = proc_klass;
+        m_clock->u.cfunc.func = ab_process_clock_gettime;
+        ab_id_table_insert(&proc_klass->methods, m_clock->name, (VALUE)m_clock);
+        // Process::CLOCK_MONOTONIC — symbol stub.  abruby's
+        // ab_process_clock_gettime ignores the argument anyway.
+        abruby_class_set_const(proc_klass, rb_intern("CLOCK_MONOTONIC"),
+                               ID2SYM(rb_intern("CLOCK_MONOTONIC")));
+        abruby_class_set_const(obj, rb_intern("Process"), abruby_wrap_class(proc_klass));
     }
 
     // ARGV: empty abruby Array stub.  abruby doesn't propagate the

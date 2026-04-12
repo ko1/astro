@@ -7,6 +7,38 @@ require_relative 'test_helper'
 class TestBlockIterator < AbRubyTest
   # === I1. Integer#times ===
 
+  def test_step_ascending
+    assert_eval('
+      a = []
+      1.step(9, 2) { |i| a << i }
+      a
+    ', [1, 3, 5, 7, 9])
+  end
+
+  def test_step_descending
+    assert_eval('
+      a = []
+      10.step(2, -2) { |i| a << i }
+      a
+    ', [10, 8, 6, 4, 2])
+  end
+
+  def test_step_default_step
+    assert_eval('
+      a = []
+      3.step(6) { |i| a << i }
+      a
+    ', [3, 4, 5, 6])
+  end
+
+  def test_step_skips_when_limit_before_start
+    assert_eval('
+      a = []
+      5.step(2, 1) { |i| a << i }
+      a
+    ', [])
+  end
+
   def test_times_yields_indices
     assert_eval('
       a = []

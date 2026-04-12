@@ -19,9 +19,9 @@
 #include <unistd.h>
 #include <string.h>
 
-// Default per-fiber C stack size.  256 KB is plenty for the recursive
-// EVAL calls we currently generate.  Bumped if optcarrot needs more.
-#define ABRUBY_FIBER_CSTACK_SIZE (256 * 1024)
+// Default per-fiber C stack size.  Optcarrot's main_loop is deep
+// (large state machine + cached locals) so 2 MB is the safe default.
+#define ABRUBY_FIBER_CSTACK_SIZE (2 * 1024 * 1024)
 
 // Hold the ucontext separately so context.h doesn't need to include
 // <ucontext.h>.

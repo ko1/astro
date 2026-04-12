@@ -164,6 +164,12 @@ static RESULT ab_string_to_sym(CTX *c, VALUE self, unsigned int argc, VALUE *arg
     return RESULT_OK(rb_str_intern(RSTR(self)));
 }
 static RESULT ab_string_add(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)argc;
+    if (!ab_obj_type_p(argv[0], ABRUBY_OBJ_STRING)) {
+        VALUE exc = abruby_exception_new(c, c->current_frame,
+            abruby_str_new_cstr(c, "no implicit conversion into String"));
+        return (RESULT){exc, RESULT_RAISE};
+    }
     // Pre-size the result buffer so rb_str_cat doesn't need to realloc.
     VALUE rs = RSTR(self), ra = RSTR(argv[0]);
     long rs_len = RSTRING_LEN(rs), ra_len = RSTRING_LEN(ra);
