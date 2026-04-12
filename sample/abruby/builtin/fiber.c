@@ -295,7 +295,7 @@ void abruby_fiber_mark(struct abruby_fiber *f) {
     if (top && top >= base) {
         for (VALUE *p = base; p < top; p++) {
             VALUE v = *p;
-            if (!RB_SPECIAL_CONST_P(v)) rb_gc_mark(v);
+            if (!RB_SPECIAL_CONST_P(v) && v != 0) rb_gc_mark_maybe(v);
         }
     }
 }

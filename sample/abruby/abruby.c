@@ -590,12 +590,21 @@ abruby_call_method(CTX *c, VALUE recv, const struct abruby_method *method,
         }
         c->self = recv;
         c->cref = method->u.ast.cref;
+        struct abruby_frame *save_frame = c->current_frame;
+        struct abruby_frame frame = {
+            .prev = save_frame,
+            .method = method,
+            .source_file = "(method_call)",
+            .block = NULL,
+        };
+        c->current_frame = &frame;
         RESULT r = EVAL(c, method->u.ast.body);
+        c->current_frame = save_frame;
         c->fp = save_fp;
         c->self = save_self;
         c->cref = save_cref;
-        // Catch RETURN at this C-boundary method call.  This path pushes no
-        // frame, so it cannot participate in targeted non-local return
+        // Catch RETURN at this C-boundary method call.  This frame now
+        // supports super lookup.  The historic wildcard-catch for non-local
         // matching; treat it as an implicit wildcard catch (the historic
         // behavior) and strip both RETURN and any residual skip-count bits.
         if (r.state & RESULT_RETURN) {

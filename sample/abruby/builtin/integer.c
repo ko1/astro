@@ -210,6 +210,16 @@ static RESULT ab_integer_times(CTX *c, VALUE self, unsigned int argc, VALUE *arg
 // Integer#step(limit, step=1) { |i| ... } — yields self, self+step, ...
 // until i would cross `limit`.  Supports negative step (counts down).  Only
 // Fixnum receivers/args are supported (matches Integer#times scope).
+static RESULT ab_integer_even_p(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)c; (void)argc; (void)argv;
+    long v = FIXNUM_P(self) ? FIX2LONG(self) : NUM2LONG(AB_INT_UNWRAP(self));
+    return RESULT_OK(v % 2 == 0 ? Qtrue : Qfalse);
+}
+static RESULT ab_integer_odd_p(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)c; (void)argc; (void)argv;
+    long v = FIXNUM_P(self) ? FIX2LONG(self) : NUM2LONG(AB_INT_UNWRAP(self));
+    return RESULT_OK(v % 2 != 0 ? Qtrue : Qfalse);
+}
 static RESULT ab_integer_step(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     if (UNLIKELY(!FIXNUM_P(self)) || argc < 1 || !FIXNUM_P(argv[0])) {
         VALUE exc = abruby_exception_new(c, c->current_frame,
@@ -299,6 +309,8 @@ Init_abruby_integer(void)
     abruby_class_add_cfunc(ab_tmpl_integer_class, rb_intern("zero?"),  ab_integer_zero_p,  0);
     abruby_class_add_cfunc(ab_tmpl_integer_class, rb_intern("abs"),    ab_integer_abs,     0);
     abruby_class_add_cfunc(ab_tmpl_integer_class, rb_intern("[]"),     ab_integer_aref,    1);
+    abruby_class_add_cfunc(ab_tmpl_integer_class, rb_intern("even?"),  ab_integer_even_p,  0);
+    abruby_class_add_cfunc(ab_tmpl_integer_class, rb_intern("odd?"),   ab_integer_odd_p,   0);
     abruby_class_add_cfunc(ab_tmpl_integer_class, rb_intern("times"),  ab_integer_times,   0);
     abruby_class_add_cfunc(ab_tmpl_integer_class, rb_intern("step"),   ab_integer_step,   -1);
 }
