@@ -2,9 +2,11 @@
 
 static VALUE ab_to_hash_key(VALUE v) {
     if (FIXNUM_P(v) || RB_FLONUM_P(v) || v == Qtrue || v == Qfalse || v == Qnil) return v;
+    if (SYMBOL_P(v)) return v;
     if (RB_TYPE_P(v, T_DATA)) {
         const struct abruby_header *h = (const struct abruby_header *)RTYPEDDATA_GET_DATA(v);
         if (h->klass->obj_type == ABRUBY_OBJ_STRING) return ((const struct abruby_string *)h)->rb_str;
+        if (h->klass->obj_type == ABRUBY_OBJ_ARRAY)  return ((const struct abruby_array *)h)->rb_ary;
     }
     return v;
 }
@@ -157,7 +159,7 @@ Init_abruby_hash(void)
 {
     abruby_class_add_cfunc(ab_tmpl_hash_class, rb_intern("inspect"),  ab_hash_inspect,  0);
     abruby_class_add_cfunc(ab_tmpl_hash_class, rb_intern("to_s"),     ab_hash_to_s,     0);
-    abruby_class_add_cfunc(ab_tmpl_hash_class, rb_intern("[]"),       ab_hash_get,      1);
+    abruby_class_add_cfunc(ab_tmpl_hash_class, rb_intern("[]"),       ab_hash_get, 1);
     abruby_class_add_cfunc(ab_tmpl_hash_class, rb_intern("[]="),      ab_hash_set,      2);
     abruby_class_add_cfunc(ab_tmpl_hash_class, rb_intern("length"),   ab_hash_length,   0);
     abruby_class_add_cfunc(ab_tmpl_hash_class, rb_intern("size"),     ab_hash_length,   0);

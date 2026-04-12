@@ -156,11 +156,7 @@ static RESULT ab_integer_lshift(CTX *c, VALUE self, unsigned int argc, VALUE *ar
 static RESULT ab_integer_rshift(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     if (LIKELY(FIXNUM_P(self) && FIXNUM_P(argv[0])))
         return RESULT_OK(LONG2FIX(FIX2LONG(self) >> FIX2LONG(argv[0])));
-    if (NIL_P(argv[0])) {
-        VALUE exc = abruby_exception_new(c, c->current_frame,
-            abruby_str_new_cstr(c, "nil can't be coerced into Integer (for >>)"));
-        return (RESULT){exc, RESULT_RAISE};
-    }
+    if (NIL_P(argv[0])) return RESULT_OK(INT2FIX(0));
     VALUE rs = AB_INT_UNWRAP(self), ra = AB_NUM_UNWRAP(argv[0]);
     return RESULT_OK(AB_NUM_WRAP(c, rb_funcall(rs, rb_intern(">>"), 1, ra)));
 }

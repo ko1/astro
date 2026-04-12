@@ -1201,18 +1201,24 @@ class AbRuby
       end
 
       # Build a []=-call that writes the rhs using the cached recv/idx.
+      # Evaluate rhs FIRST into a temp to avoid slot collision with the
+      # key-copy area (the rhs expression's sub-expressions may use
+      # the same slots as the call-arg area).
       build_set = lambda do |rhs_ast|
+        rhs_temp = inc_arg_index
+        rhs_store = AbRuby.alloc_node_lvar_set(rhs_temp, rhs_ast)
+
         call_arg_idx = arg_index
         arg_seq = idx_slots.each_with_index.map do |slot, i|
           put = inc_arg_index
           AbRuby.alloc_node_lvar_set(put, AbRuby.alloc_node_lvar_get(slot))
         end
         rhs_slot = inc_arg_index
-        arg_seq << AbRuby.alloc_node_lvar_set(rhs_slot, rhs_ast)
+        arg_seq << AbRuby.alloc_node_lvar_set(rhs_slot, AbRuby.alloc_node_lvar_get(rhs_temp))
         rewind_arg_index(call_arg_idx)
         recv_ref = AbRuby.alloc_node_lvar_get(recv_idx)
         call = AbRuby.alloc_node_method_call(recv_ref, "[]=", idx_slots.size + 1, call_arg_idx)
-        build_seq(arg_seq + [call])
+        build_seq([rhs_store] + arg_seq + [call])
       end
 
       body =
