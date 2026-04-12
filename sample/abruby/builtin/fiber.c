@@ -292,6 +292,8 @@ void abruby_fiber_mark(struct abruby_fiber *f) {
     // stay alive across the switch.
     VALUE *base = f->ctx.stack;
     VALUE *top = f->ctx.fp;
+    VALUE *limit = f->ctx.stack + ABRUBY_STACK_SIZE;
+    if (top > limit) top = limit;
     if (top && top >= base) {
         for (VALUE *p = base; p < top; p++) {
             VALUE v = *p;
