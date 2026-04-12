@@ -229,20 +229,30 @@ static RESULT ab_integer_step(CTX *c, VALUE self, unsigned int argc, VALUE *argv
             abruby_str_new_cstr(c, "Integer#step: step can't be zero"));
         return (RESULT){exc, RESULT_RAISE};
     }
-    if (step > 0) {
-        for (long i = start; i <= limit; i += step) {
-            VALUE iv = LONG2FIX(i);
-            RESULT r = abruby_yield(c, 1, &iv);
-            if (UNLIKELY(r.state != RESULT_NORMAL)) return r;
+    bool has_block = c->current_frame && c->current_frame->block;
+    if (has_block) {
+        if (step > 0) {
+            for (long i = start; i <= limit; i += step) {
+                VALUE iv = LONG2FIX(i);
+                RESULT r = abruby_yield(c, 1, &iv);
+                if (UNLIKELY(r.state != RESULT_NORMAL)) return r;
+            }
+        } else {
+            for (long i = start; i >= limit; i += step) {
+                VALUE iv = LONG2FIX(i);
+                RESULT r = abruby_yield(c, 1, &iv);
+                if (UNLIKELY(r.state != RESULT_NORMAL)) return r;
+            }
         }
-    } else {
-        for (long i = start; i >= limit; i += step) {
-            VALUE iv = LONG2FIX(i);
-            RESULT r = abruby_yield(c, 1, &iv);
-            if (UNLIKELY(r.state != RESULT_NORMAL)) return r;
-        }
+        return RESULT_OK(self);
     }
-    return RESULT_OK(self);
+    VALUE rb_ary = rb_ary_new();
+    if (step > 0) {
+        for (long i = start; i <= limit; i += step) rb_ary_push(rb_ary, LONG2FIX(i));
+    } else {
+        for (long i = start; i >= limit; i += step) rb_ary_push(rb_ary, LONG2FIX(i));
+    }
+    return RESULT_OK(abruby_ary_new(c, rb_ary));
 }
 
 static RESULT ab_integer_aref(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {

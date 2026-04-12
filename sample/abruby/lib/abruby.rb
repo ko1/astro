@@ -525,13 +525,15 @@ class AbRuby
           slot = current_frame[:locals].index(opt_node.name.to_s)
           next nil unless slot
           default_ast = transduce(opt_node.value)
-          # `if slot == nil then slot = default end`
-          check = AbRuby.alloc_node_lvar_get(slot)
+          # `slot = default if slot.nil?` — use nil? method call so
+          # callers that pass false/0 don't trigger the default.
+          get = AbRuby.alloc_node_lvar_get(slot)
           assign = AbRuby.alloc_node_lvar_set(slot, default_ast)
+          nil_check = AbRuby.alloc_node_method_call(get, "nil?", 0, inc_arg_index)
           AbRuby.alloc_node_if(
-            check,
-            AbRuby.alloc_node_nil, # then: slot already has value
-            assign                 # else (nil): use default
+            nil_check,
+            assign,               # then (nil): use default
+            AbRuby.alloc_node_nil # else: keep value
           )
         end.compact
 
