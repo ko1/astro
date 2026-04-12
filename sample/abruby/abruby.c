@@ -563,6 +563,21 @@ abruby_call_method(CTX *c, VALUE recv, const struct abruby_method *method,
 {
     if (method->type == ABRUBY_METHOD_CFUNC) {
         return method->u.cfunc.func(c, recv, argc, argv);
+    } else if (method->type == ABRUBY_METHOD_IVAR_GETTER) {
+        VALUE save_self = c->self;
+        c->self = recv;
+        ID ivar_name = method->u.ivar_accessor.ivar_name;
+        VALUE v = abruby_ivar_get(recv, ivar_name);
+        c->self = save_self;
+        return RESULT_OK(v);
+    } else if (method->type == ABRUBY_METHOD_IVAR_SETTER) {
+        VALUE save_self = c->self;
+        c->self = recv;
+        ID ivar_name = method->u.ivar_accessor.ivar_name;
+        VALUE v = (argc >= 1) ? argv[0] : Qnil;
+        abruby_ivar_set(recv, ivar_name, v);
+        c->self = save_self;
+        return RESULT_OK(v);
     } else {
         VALUE *save_fp = c->fp;
         VALUE save_self = c->self;
@@ -1671,7 +1686,12 @@ rb_set_node_line(VALUE self, VALUE node_obj, VALUE line)
 
 // Arithmetic node alloc wrappers
 static VALUE rb_alloc_node_plus(VALUE self, VALUE left, VALUE right, VALUE arg_index) {
-    return wrap_node(ALLOC_node_plus(unwrap_node(left), unwrap_node(right), FIX2UINT(arg_index)));
+    NODE *l = unwrap_node(left), *r = unwrap_node(right);
+    NODE *result = ALLOC_node_plus(l, r, FIX2UINT(arg_index));
+    if (r && r->head.kind == NULL) {
+        fprintf(stderr, "[alloc_node_plus: right kind=NULL! right=%p]\n", (void*)r);
+    }
+    return wrap_node(result);
 }
 static VALUE rb_alloc_node_minus(VALUE self, VALUE left, VALUE right, VALUE arg_index) {
     return wrap_node(ALLOC_node_minus(unwrap_node(left), unwrap_node(right), FIX2UINT(arg_index)));
