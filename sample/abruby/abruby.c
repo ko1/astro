@@ -566,15 +566,17 @@ abruby_call_method(CTX *c, VALUE recv, const struct abruby_method *method,
     } else {
         VALUE *save_fp = c->fp;
         VALUE save_self = c->self;
+        const struct abruby_cref *save_cref = c->cref;
         c->fp = save_fp + 16;
-        // copy args into frame
         for (unsigned int i = 0; i < argc; i++) {
             c->fp[i] = argv[i];
         }
         c->self = recv;
+        c->cref = method->u.ast.cref;
         RESULT r = EVAL(c, method->u.ast.body);
         c->fp = save_fp;
         c->self = save_self;
+        c->cref = save_cref;
         // Catch RETURN at this C-boundary method call.  This path pushes no
         // frame, so it cannot participate in targeted non-local return
         // matching; treat it as an implicit wildcard catch (the historic

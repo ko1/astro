@@ -544,6 +544,13 @@ static RESULT ab_array_each_with_index(CTX *c, VALUE self, unsigned int argc, VA
     return RESULT_OK(self);
 }
 
+static RESULT ab_array_rotate_bang(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    long n = (argc >= 1 && FIXNUM_P(argv[0])) ? FIX2LONG(argv[0]) : 1;
+    VALUE ary = RARY(self);
+    rb_funcall(ary, rb_intern("rotate!"), 1, LONG2FIX(n));
+    return RESULT_OK(self);
+}
+
 // Array#reject { |x| pred } — keeps elements where the block returns falsy.
 static RESULT ab_array_reject(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     VALUE ary = RARY(self);
@@ -564,6 +571,7 @@ Init_abruby_array(void)
     abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("inspect"),  ab_array_inspect,   0);
     abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("to_s"),     ab_array_to_s,      0);
     abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("[]"),       ab_array_get,       2);
+    abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("rotate!"),  ab_array_rotate_bang, -1);
     abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("[]="),      ab_array_set,       -1);
     abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("push"),     ab_array_push,      1);
     abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("<<"),       ab_array_push,      1);

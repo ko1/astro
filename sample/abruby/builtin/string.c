@@ -232,6 +232,21 @@ static RESULT ab_string_concat(CTX *c, VALUE self, unsigned int argc, VALUE *arg
     return RESULT_OK(self);
 }
 
+static RESULT ab_string_format(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    VALUE fmt = RSTR(self);
+    VALUE arg = argv[0];
+    VALUE rb_arg;
+    if (ab_obj_type_p(arg, ABRUBY_OBJ_ARRAY)) {
+        rb_arg = RARY(arg);
+    } else {
+        rb_arg = rb_ary_new3(1, RB_SPECIAL_CONST_P(arg) ? arg :
+                 (ab_obj_type_p(arg, ABRUBY_OBJ_FLOAT) ?
+                  ((const struct abruby_float *)RTYPEDDATA_GET_DATA(arg))->rb_float : arg));
+    }
+    VALUE result = rb_str_format(RARRAY_LEN(rb_arg), RARRAY_CONST_PTR(rb_arg), fmt);
+    return RESULT_OK(abruby_str_new(c, result));
+}
+
 void
 Init_abruby_string(void)
 {
@@ -264,6 +279,7 @@ Init_abruby_string(void)
     abruby_class_add_cfunc(ab_tmpl_string_class, rb_intern("=~"),       ab_string_match_op,  1);
     abruby_class_add_cfunc(ab_tmpl_string_class, rb_intern("tr"),       ab_string_tr,        2);
     abruby_class_add_cfunc(ab_tmpl_string_class, rb_intern("bytes"),    ab_string_bytes,     0);
+    abruby_class_add_cfunc(ab_tmpl_string_class, rb_intern("%"),       ab_string_format,    1);
     abruby_class_add_cfunc(ab_tmpl_string_class, rb_intern("bytesize"), ab_string_bytesize,  0);
     abruby_class_add_cfunc(ab_tmpl_string_class, rb_intern("unpack"),   ab_string_unpack,    1);
 }
