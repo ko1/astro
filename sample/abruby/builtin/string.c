@@ -247,6 +247,13 @@ static RESULT ab_string_format(CTX *c, VALUE self, unsigned int argc, VALUE *arg
     return RESULT_OK(abruby_str_new(c, result));
 }
 
+static RESULT ab_string_sum(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    VALUE rs = RSTR(self);
+    long bits = (argc >= 1 && FIXNUM_P(argv[0])) ? FIX2LONG(argv[0]) : 16;
+    VALUE result = rb_funcall(rs, rb_intern("sum"), 1, LONG2FIX(bits));
+    return RESULT_OK(FIXNUM_P(result) ? result : abruby_bignum_new(c, result));
+}
+
 void
 Init_abruby_string(void)
 {
@@ -280,6 +287,7 @@ Init_abruby_string(void)
     abruby_class_add_cfunc(ab_tmpl_string_class, rb_intern("tr"),       ab_string_tr,        2);
     abruby_class_add_cfunc(ab_tmpl_string_class, rb_intern("bytes"),    ab_string_bytes,     0);
     abruby_class_add_cfunc(ab_tmpl_string_class, rb_intern("%"),       ab_string_format,    1);
+    abruby_class_add_cfunc(ab_tmpl_string_class, rb_intern("sum"),     ab_string_sum,      -1);
     abruby_class_add_cfunc(ab_tmpl_string_class, rb_intern("bytesize"), ab_string_bytesize,  0);
     abruby_class_add_cfunc(ab_tmpl_string_class, rb_intern("unpack"),   ab_string_unpack,    1);
 }

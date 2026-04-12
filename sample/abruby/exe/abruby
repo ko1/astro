@@ -86,7 +86,8 @@ cs_compile = ->(ast, label = nil) {
 
 case mode
 when :plain
-  src = code || (ARGV[0] && read_file.(ARGV[0]))
+  script_file = code ? nil : ARGV.shift
+  src = code || (script_file && read_file.(script_file))
   unless src
     opt.parse!(['--help'])
     exit
@@ -95,7 +96,7 @@ when :plain
   if dump_mode == :ast
     puts vm.dump(src)
   else
-    vm.current_file = ARGV[0] if ARGV[0]
+    vm.current_file = script_file if script_file
     vm.eval(src)
   end
 
@@ -208,7 +209,8 @@ when :compile_first
   vm.eval_ast(ast)
 
 when :run
-  src = code || (ARGV[0] && read_file.(ARGV[0]))
+  run_script = code ? nil : ARGV.shift
+  src = code || (run_script && read_file.(run_script))
   unless src
     opt.parse!(['--help'])
     exit
@@ -222,7 +224,7 @@ when :run
     AbRuby.compiled_only = true if compiled_only
 
     vm = AbRuby.new
-    vm.current_file = ARGV[0] if ARGV[0]
+    vm.current_file = run_script if run_script
     $stderr.puts "run: #{ARGV[0] || '-e'}" if verbose
     vm.eval(src)
 

@@ -551,6 +551,14 @@ static RESULT ab_array_rotate_bang(CTX *c, VALUE self, unsigned int argc, VALUE 
     return RESULT_OK(self);
 }
 
+static RESULT ab_array_pack(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    VALUE fmt = (argc >= 1 && ab_obj_type_p(argv[0], ABRUBY_OBJ_STRING))
+        ? RSTR(argv[0]) : rb_str_new_cstr("C*");
+    VALUE ary = RARY(self);
+    VALUE result = rb_funcall(ary, rb_intern("pack"), 1, fmt);
+    return RESULT_OK(abruby_str_new(c, result));
+}
+
 // Array#reject { |x| pred } — keeps elements where the block returns falsy.
 static RESULT ab_array_reject(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     VALUE ary = RARY(self);
@@ -607,6 +615,7 @@ Init_abruby_array(void)
     abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("zip"),       ab_array_zip,       1);
     abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("flat_map"),  ab_array_flat_map,  0);
     abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("collect_concat"), ab_array_flat_map, 0);
+    abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("pack"),    ab_array_pack,      1);
     abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("inject"),    ab_array_inject,    0);
     abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("reduce"),    ab_array_inject,    0);
     abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("*"),         ab_array_mul,       1);

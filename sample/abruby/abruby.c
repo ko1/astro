@@ -1186,11 +1186,18 @@ init_instance_classes(struct abruby_machine *vm)
         abruby_class_set_const(obj, rb_intern("Process"), abruby_wrap_class(proc_klass));
     }
 
-    // ARGV: empty abruby Array stub.  abruby doesn't propagate the
-    // process argv to scripts; tests/benches that need args inject them
-    // explicitly.  An empty array is enough for `ARGV.dup` etc.
-    abruby_class_set_const(obj, rb_intern("ARGV"),
-        abruby_ary_new(&vm->current_fiber->ctx, rb_ary_new()));
+    // ARGV: mirror CRuby's ARGV so scripts can read command-line args.
+    {
+        VALUE cruby_argv = rb_const_get(rb_cObject, rb_intern("ARGV"));
+        long len = RARRAY_LEN(cruby_argv);
+        VALUE ab_ary = rb_ary_new_capa(len);
+        CTX *c0 = &vm->current_fiber->ctx;
+        for (long i = 0; i < len; i++) {
+            VALUE s = RARRAY_AREF(cruby_argv, i);
+            rb_ary_push(ab_ary, RB_TYPE_P(s, T_STRING) ? abruby_str_new(c0, s) : s);
+        }
+        abruby_class_set_const(obj, rb_intern("ARGV"), abruby_ary_new(c0, ab_ary));
+    }
 
     // ENV: empty abruby Hash stub.  abruby has no environment access; the
     // bench only does `ENV["OPTCARROT_DUMMY_RACTOR"]` to optionally enable
@@ -1259,6 +1266,7 @@ create_vm(void)
 
     vm->current_fiber->ctx.fp = vm->current_fiber->ctx.stack;
     vm->current_fiber->ctx.self = abruby_new_object(&vm->main_class_body);
+
     vm->current_fiber->ctx.current_class = NULL;
     vm->current_fiber->ctx.cref = NULL;
     vm->id_cache.op_plus = rb_intern("+");
