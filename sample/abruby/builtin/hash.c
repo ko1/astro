@@ -172,7 +172,7 @@ Init_abruby_hash(void)
     abruby_class_add_cfunc(ab_tmpl_hash_class, rb_intern("each_value"),ab_hash_each_value, 0);
     abruby_class_add_cfunc(ab_tmpl_hash_class, rb_intern("merge"),    ab_hash_merge,    1);
     abruby_class_add_cfunc(ab_tmpl_hash_class, rb_intern("delete"),   ab_hash_delete,   1);
-    abruby_class_add_cfunc(ab_tmpl_hash_class, rb_intern("fetch"),    ab_hash_fetch,    1);
+    abruby_class_add_cfunc(ab_tmpl_hash_class, rb_intern("fetch"),    ab_hash_fetch,    -1);
     abruby_class_add_cfunc(ab_tmpl_hash_class, rb_intern("dup"),      ab_hash_dup,      0);
     abruby_class_add_cfunc(ab_tmpl_hash_class, rb_intern("compare_by_identity"), ab_hash_compare_by_identity, 0);
 }

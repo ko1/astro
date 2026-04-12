@@ -511,11 +511,32 @@ class AbRuby
       when Prism::DefNode
         name = node.name.to_s
         params = node.parameters
-        params_cnt = params ? params.requireds.size : 0
+        required_cnt = params ? params.requireds.size : 0
+        optionals = params ? (params.optionals || []) : []
+        params_cnt = required_cnt + optionals.size
         block_param_name = (params && params.block) ? params.block.name&.to_s : nil
 
         push_frame(node.locals, params_cnt: params_cnt, method_body: node.body)
+
+        # Generate default-init prelude for optional params.
+        # The dispatcher fills unpassed slots with Qnil; the prelude
+        # overwrites each nil-valued optional with its declared default.
+        opt_prelude = optionals.map do |opt_node|
+          slot = current_frame[:locals].index(opt_node.name.to_s)
+          next nil unless slot
+          default_ast = transduce(opt_node.value)
+          # `if slot == nil then slot = default end`
+          check = AbRuby.alloc_node_lvar_get(slot)
+          assign = AbRuby.alloc_node_lvar_set(slot, default_ast)
+          AbRuby.alloc_node_if(
+            check,
+            AbRuby.alloc_node_nil, # then: slot already has value
+            assign                 # else (nil): use default
+          )
+        end.compact
+
         body = node.body ? transduce(node.body) : AbRuby.alloc_node_nil
+        body = build_seq(opt_prelude + [body]) unless opt_prelude.empty?
 
         if block_param_name
           # `def f(&blk)`: prepend a node_block_param that converts the

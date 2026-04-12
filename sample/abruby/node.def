@@ -1025,8 +1025,8 @@ dispatch_method_frame(CTX * restrict c, NODE * restrict call_site,
         VALUE *save_fp = c->fp;
         const struct abruby_cref *save_cref = c->cref;
         c->fp = save_fp + arg_index;
-        // Install the lexical const scope captured at def time so bare
-        // constant lookups inside the method body see the right modules.
+        unsigned int mparams = mc->method->u.ast.params_cnt;
+        for (unsigned int i = argc; i < mparams; i++) c->fp[i] = Qnil;
         c->cref = mc->method->u.ast.cref;
         r = mc->dispatcher(c, mc->body);
         c->fp = save_fp;
@@ -1100,6 +1100,8 @@ dispatch_method_frame_with_block(CTX * restrict c, NODE * restrict call_site,
         VALUE *save_fp = c->fp;
         const struct abruby_cref *save_cref = c->cref;
         c->fp = save_fp + arg_index;
+        unsigned int mparams = mc->method->u.ast.params_cnt;
+        for (unsigned int i = argc; i < mparams; i++) c->fp[i] = Qnil;
         c->cref = mc->method->u.ast.cref;
         r = mc->dispatcher(c, mc->body);
         c->fp = save_fp;
