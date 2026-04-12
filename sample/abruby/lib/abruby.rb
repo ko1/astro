@@ -668,15 +668,19 @@ class AbRuby
         # prepended to the final assigns sequence; rhs_nodes only carry
         # the per-element [] calls.
         rhs_pre_store = nil
+        ary_idx = nil
         unless rhs_nodes
-          ary_idx = inc_arg_index
+          ary_idx = inc_arg_index   # this slot stays live for the
+                                    # whole multi-assign — we cache
+                                    # the RHS here and read [i] off it
+                                    # for each LHS.
           rhs_pre_store = AbRuby.alloc_node_lvar_set(ary_idx, transduce(values))
           rhs_nodes = lefts.each_index.map do |i|
             ary_ref = AbRuby.alloc_node_lvar_get(ary_idx)
             idx_node = AbRuby.alloc_node_num(i)
             # ary_ref[i] via method call.  recv/arg slots are reused
-            # across iterations because the call is fully consumed
-            # within the lvar_set that follows.
+            # across iterations *within* this loop — they're rewound
+            # before the next iteration — but we never touch ary_idx.
             recv_idx = inc_arg_index
             recv_store = AbRuby.alloc_node_lvar_set(recv_idx, ary_ref)
             arg_idx = inc_arg_index
@@ -686,7 +690,9 @@ class AbRuby
             call_node = AbRuby.alloc_node_method_call(recv_ref, "[]", 1, arg_idx)
             build_seq([recv_store, arg_store, call_node])
           end
-          rewind_arg_index(ary_idx)
+          # Do NOT rewind to ary_idx here — the per-LHS assigns below
+          # may also need scratch slots, and they must not stomp on the
+          # cached RHS array.  We rewind past the multi-assign instead.
         end
 
         assigns = []
@@ -720,23 +726,30 @@ class AbRuby
           when Prism::ConstantTargetNode
             assigns << AbRuby.alloc_node_const_set(target.name.to_s, rhs)
           when Prism::CallTargetNode
-            # Lower `recv.attr = rhs` to `recv.attr=(rhs)`.
+            # Lower `recv.attr = rhs` to `recv.attr=(rhs)`.  Evaluate
+            # rhs FIRST so that any temp slots it needs (e.g. the inner
+            # `[]` call from a multi-assign decompose that reuses
+            # nearby slots) are released before we materialise our own
+            # recv slot.
+            rhs_eval_slot = inc_arg_index
+            rhs_eval_store = AbRuby.alloc_node_lvar_set(rhs_eval_slot, rhs)
             recv_ast = transduce(target.receiver)
-            attr_name = target.name.to_s  # already ends in "=" for CallTargetNode
             recv_idx = inc_arg_index
             recv_store = AbRuby.alloc_node_lvar_set(recv_idx, recv_ast)
             call_arg_idx = arg_index
             rhs_slot = inc_arg_index
-            rhs_store = AbRuby.alloc_node_lvar_set(rhs_slot, rhs)
-            rewind_arg_index(recv_idx)
+            rhs_store = AbRuby.alloc_node_lvar_set(rhs_slot, AbRuby.alloc_node_lvar_get(rhs_eval_slot))
+            rewind_arg_index(rhs_eval_slot)
             recv_ref = AbRuby.alloc_node_lvar_get(recv_idx)
+            attr_name = target.name.to_s  # already ends in "=" for CallTargetNode
             call = AbRuby.alloc_node_method_call(recv_ref, attr_name, 1, call_arg_idx)
-            assigns << build_seq([recv_store, rhs_store, call])
+            assigns << build_seq([rhs_eval_store, recv_store, rhs_store, call])
           else
             raise "unsupported multi-assign target: #{target.class}"
           end
         end
 
+        rewind_arg_index(ary_idx) if ary_idx
         build_seq(rhs_pre_store ? [rhs_pre_store] + assigns : assigns)
 
       when Prism::BeginNode
@@ -1215,7 +1228,7 @@ class AbRuby
       args.each do |a|
         if a.is_a?(Prism::SplatNode)
           flush.()
-          # *expr: expect an Array
+          # *expr: expect an Array (or Range/nil — handled by Array#+ at runtime)
           parts << transduce(a.expression)
         else
           buf << a
@@ -1223,8 +1236,13 @@ class AbRuby
       end
       flush.()
 
-      # Fold with Array#+.
-      parts.reduce do |acc, x|
+      # Always start with an empty array literal so the result of
+      # Array#+ folding is a real Array even when the args list is a
+      # single splat (`[*x]` or `foo(*x)`).  Otherwise the bare splat
+      # expression — which may be a Range, nil, etc. — leaks out.
+      empty_idx = arg_index
+      empty_ary = AbRuby.alloc_node_ary_new(0, empty_idx)
+      [empty_ary, *parts].reduce do |acc, x|
         fallback_idx = inc_arg_index
         rewind_arg_index(fallback_idx)
         AbRuby.alloc_node_plus(acc, x, fallback_idx)

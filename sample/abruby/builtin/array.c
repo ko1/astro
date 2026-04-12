@@ -13,7 +13,41 @@ static RESULT ab_array_inspect(CTX *c, VALUE self, unsigned int argc, VALUE *arg
     return RESULT_OK(abruby_str_new(c, result));
 }
 static RESULT ab_array_to_s(CTX *c, VALUE self, unsigned int argc, VALUE *argv) { return RESULT_OK(ab_array_inspect(c, self, 0, NULL).value); }
-static RESULT ab_array_get(CTX *c, VALUE self, unsigned int argc, VALUE *argv) { return RESULT_OK(rb_ary_entry(RARY(self), FIX2LONG(argv[0]))); }
+static RESULT ab_array_get(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    if (argc == 1 && FIXNUM_P(argv[0])) {
+        return RESULT_OK(rb_ary_entry(RARY(self), FIX2LONG(argv[0])));
+    }
+    if (argc == 2 && FIXNUM_P(argv[0]) && FIXNUM_P(argv[1])) {
+        VALUE ary = RARY(self);
+        long len = RARRAY_LEN(ary);
+        long start = FIX2LONG(argv[0]);
+        long take  = FIX2LONG(argv[1]);
+        if (start < 0) start += len;
+        if (start < 0 || start > len || take < 0) return RESULT_OK(Qnil);
+        if (start + take > len) take = len - start;
+        VALUE result = rb_ary_new_capa(take);
+        for (long i = 0; i < take; i++) rb_ary_push(result, RARRAY_AREF(ary, start + i));
+        return RESULT_OK(abruby_ary_new(c, result));
+    }
+    if (argc == 1 && ab_obj_type_p(argv[0], ABRUBY_OBJ_RANGE)) {
+        VALUE ary = RARY(self);
+        long len = RARRAY_LEN(ary);
+        const struct abruby_range *r = (const struct abruby_range *)RTYPEDDATA_GET_DATA(argv[0]);
+        if (FIXNUM_P(r->begin) && FIXNUM_P(r->end)) {
+            long b = FIX2LONG(r->begin);
+            long e = FIX2LONG(r->end);
+            if (r->exclude_end) e--;
+            if (b < 0) b += len;
+            if (e < 0) e += len;
+            if (b < 0 || b > len) return RESULT_OK(Qnil);
+            if (e >= len) e = len - 1;
+            VALUE result = rb_ary_new_capa(e - b + 1);
+            for (long i = b; i <= e; i++) rb_ary_push(result, RARRAY_AREF(ary, i));
+            return RESULT_OK(abruby_ary_new(c, result));
+        }
+    }
+    return RESULT_OK(Qnil);
+}
 static RESULT ab_array_set(CTX *c, VALUE self, unsigned int argc, VALUE *argv) { rb_ary_store(RARY(self), FIX2LONG(argv[0]), argv[1]); return RESULT_OK(argv[1]); }
 static RESULT ab_array_push(CTX *c, VALUE self, unsigned int argc, VALUE *argv) { rb_ary_push(RARY(self), argv[0]); return RESULT_OK(self); }
 static RESULT ab_array_pop(CTX *c, VALUE self, unsigned int argc, VALUE *argv) { return RESULT_OK(rb_ary_pop(RARY(self))); }
@@ -27,14 +61,22 @@ static RESULT ab_array_add(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     if (ab_obj_type_p(argv[0], ABRUBY_OBJ_ARRAY)) {
         rb_ary_concat(result, RARY(argv[0]));
     } else if (argv[0] == Qnil) {
-        // Ruby splat semantics for `[*nil]`: treat as empty.  abruby's
-        // splat lowering emits `[a] + expr + [b]`, and `expr` may
-        // evaluate to nil — fold it as a no-op rather than raising.
+        // Ruby splat semantics for `[*nil]`: treat as empty.
+    } else if (ab_obj_type_p(argv[0], ABRUBY_OBJ_RANGE)) {
+        // `[*range]` semantics — splat a Range by calling to_a.
+        const struct abruby_range *r = (const struct abruby_range *)RTYPEDDATA_GET_DATA(argv[0]);
+        if (FIXNUM_P(r->begin) && FIXNUM_P(r->end)) {
+            long b = FIX2LONG(r->begin);
+            long e = FIX2LONG(r->end);
+            if (r->exclude_end) e--;
+            for (long i = b; i <= e; i++) rb_ary_push(result, LONG2FIX(i));
+        } else {
+            rb_ary_push(result, argv[0]);
+        }
     } else {
         // Splat semantics for non-array values: treat as 1-element array.
-        // This deliberately makes Array#+ more permissive than Ruby's
-        // strict behavior so the parser-side splat lowering survives
-        // dynamic-typed splat targets.
+        // Pragmatic relaxation; lets the parser-side splat lowering
+        // survive dynamic-typed splat targets without bailing.
         rb_ary_push(result, argv[0]);
     }
     return RESULT_OK(abruby_ary_new(c, result));
@@ -275,6 +317,113 @@ static RESULT ab_array_mul(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     return (RESULT){exc, RESULT_RAISE};
 }
 
+// Array#all? / any? — block versions only (no block-less form yet).
+static RESULT ab_array_all_p(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)argc; (void)argv;
+    VALUE ary = RARY(self);
+    long len = RARRAY_LEN(ary);
+    for (long i = 0; i < len; i++) {
+        VALUE elem = RARRAY_AREF(ary, i);
+        RESULT r = abruby_yield(c, 1, &elem);
+        if (r.state != RESULT_NORMAL) return r;
+        if (!RTEST(r.value)) return RESULT_OK(Qfalse);
+    }
+    return RESULT_OK(Qtrue);
+}
+static RESULT ab_array_any_p(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)argc; (void)argv;
+    VALUE ary = RARY(self);
+    long len = RARRAY_LEN(ary);
+    for (long i = 0; i < len; i++) {
+        VALUE elem = RARRAY_AREF(ary, i);
+        RESULT r = abruby_yield(c, 1, &elem);
+        if (r.state != RESULT_NORMAL) return r;
+        if (RTEST(r.value)) return RESULT_OK(Qtrue);
+    }
+    return RESULT_OK(Qfalse);
+}
+static RESULT ab_array_none_p(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    RESULT r = ab_array_any_p(c, self, argc, argv);
+    return RESULT_OK(r.value == Qtrue ? Qfalse : Qtrue);
+}
+
+// Array#==(other) — element-wise equality.
+static RESULT ab_array_eq(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)c; (void)argc;
+    if (!ab_obj_type_p(argv[0], ABRUBY_OBJ_ARRAY)) return RESULT_OK(Qfalse);
+    VALUE a = RARY(self), b = RARY(argv[0]);
+    long la = RARRAY_LEN(a), lb = RARRAY_LEN(b);
+    if (la != lb) return RESULT_OK(Qfalse);
+    for (long i = 0; i < la; i++) {
+        VALUE x = RARRAY_AREF(a, i), y = RARRAY_AREF(b, i);
+        if (!RTEST(rb_equal(x, y))) return RESULT_OK(Qfalse);
+    }
+    return RESULT_OK(Qtrue);
+}
+static RESULT ab_array_neq(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    RESULT r = ab_array_eq(c, self, argc, argv);
+    return RESULT_OK(r.value == Qtrue ? Qfalse : Qtrue);
+}
+
+// Array#slice!(start, length) — remove length elements starting at
+// `start` and return them as a new array.  Mutates self.  Returns nil
+// if `start` is out of bounds.
+static RESULT ab_array_slice_bang(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    VALUE ary = RARY(self);
+    long len = RARRAY_LEN(ary);
+    if (argc < 1 || !FIXNUM_P(argv[0])) return RESULT_OK(Qnil);
+    long start = FIX2LONG(argv[0]);
+    if (start < 0) start += len;
+    if (start < 0 || start > len) return RESULT_OK(Qnil);
+    long take = (argc >= 2 && FIXNUM_P(argv[1])) ? FIX2LONG(argv[1]) : 1;
+    if (take < 0) return RESULT_OK(Qnil);
+    if (start + take > len) take = len - start;
+    VALUE result = rb_ary_new_capa(take);
+    for (long i = 0; i < take; i++) rb_ary_push(result, RARRAY_AREF(ary, start + i));
+    // Remove the slice from self in place via Array#[]= with a Range.
+    rb_funcall(ary, rb_intern("slice!"), 2, LONG2FIX(start), LONG2FIX(take));
+    return RESULT_OK(abruby_ary_new(c, result));
+}
+
+// Array#slice / Array#[].  Same as ab_array_get for the basic 1-arg
+// form, but also accept (start, length) returning a sub-array.
+static RESULT ab_array_slice(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    VALUE ary = RARY(self);
+    long len = RARRAY_LEN(ary);
+    if (argc == 1 && FIXNUM_P(argv[0])) {
+        return RESULT_OK(rb_ary_entry(ary, FIX2LONG(argv[0])));
+    }
+    if (argc == 2 && FIXNUM_P(argv[0]) && FIXNUM_P(argv[1])) {
+        long start = FIX2LONG(argv[0]);
+        long take  = FIX2LONG(argv[1]);
+        if (start < 0) start += len;
+        if (start < 0 || start > len || take < 0) return RESULT_OK(Qnil);
+        if (start + take > len) take = len - start;
+        VALUE result = rb_ary_new_capa(take);
+        for (long i = 0; i < take; i++) rb_ary_push(result, RARRAY_AREF(ary, start + i));
+        return RESULT_OK(abruby_ary_new(c, result));
+    }
+    return RESULT_OK(Qnil);
+}
+
+// Array#uniq / Array#uniq! — remove duplicate entries (identity / ==).
+// Block form not supported.
+static RESULT ab_array_uniq(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)argc; (void)argv;
+    return RESULT_OK(abruby_ary_new(c, rb_funcall(RARY(self), rb_intern("uniq"), 0)));
+}
+static RESULT ab_array_uniq_bang(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)c; (void)argc; (void)argv;
+    rb_funcall(RARY(self), rb_intern("uniq!"), 0);
+    return RESULT_OK(self);
+}
+
+// Array#compact / compact! — remove nil entries.
+static RESULT ab_array_compact(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)argc; (void)argv;
+    return RESULT_OK(abruby_ary_new(c, rb_funcall(RARY(self), rb_intern("compact"), 0)));
+}
+
 // Array#flat_map / collect_concat — like map but flattens one level.
 static RESULT ab_array_flat_map(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     (void)argc; (void)argv;
@@ -403,7 +552,7 @@ Init_abruby_array(void)
 {
     abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("inspect"),  ab_array_inspect,   0);
     abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("to_s"),     ab_array_to_s,      0);
-    abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("[]"),       ab_array_get,       1);
+    abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("[]"),       ab_array_get,       2);
     abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("[]="),      ab_array_set,       2);
     abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("push"),     ab_array_push,      1);
     abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("<<"),       ab_array_push,      1);
@@ -442,4 +591,14 @@ Init_abruby_array(void)
     abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("inject"),    ab_array_inject,    0);
     abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("reduce"),    ab_array_inject,    0);
     abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("*"),         ab_array_mul,       1);
+    abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("uniq"),      ab_array_uniq,      0);
+    abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("uniq!"),     ab_array_uniq_bang, 0);
+    abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("compact"),   ab_array_compact,   0);
+    abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("slice!"),    ab_array_slice_bang, 2);
+    abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("slice"),     ab_array_slice,     2);
+    abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("=="),        ab_array_eq,        1);
+    abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("!="),        ab_array_neq,       1);
+    abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("all?"),      ab_array_all_p,     0);
+    abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("any?"),      ab_array_any_p,     0);
+    abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("none?"),     ab_array_none_p,    0);
 }

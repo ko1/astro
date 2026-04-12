@@ -105,6 +105,11 @@ static void abruby_data_mark(void *ptr) {
         rb_gc_mark(exc->backtrace);
         break;
     }
+    case ABRUBY_OBJ_BOUND_METHOD: {
+        const struct abruby_bound_method *bm = (const struct abruby_bound_method *)ptr;
+        if (!RB_SPECIAL_CONST_P(bm->recv)) rb_gc_mark(bm->recv);
+        break;
+    }
     case ABRUBY_OBJ_CLASS:
     case ABRUBY_OBJ_MODULE: {
         const struct abruby_class *cls = (const struct abruby_class *)ptr;
@@ -252,6 +257,18 @@ abruby_str_rstr(VALUE ab_str)
 {
     ab_verify(ab_str);
     return ((struct abruby_string *)RTYPEDDATA_GET_DATA(ab_str))->rb_str;
+}
+
+VALUE
+abruby_bound_method_new(CTX *c, VALUE recv, ID name)
+{
+    struct abruby_bound_method *bm;
+    VALUE wrapper = TypedData_Make_Struct(rb_cAbRubyNode, struct abruby_bound_method,
+                                          &abruby_data_type, bm);
+    bm->klass = c->abm->method_class;
+    bm->recv = recv;
+    bm->method_name = name;
+    return wrapper;
 }
 
 // shorthand macros
@@ -864,6 +881,36 @@ init_instance_classes(struct abruby_machine *vm)
             ab_id_table_insert(&file_klass->methods, m->name, (VALUE)m);
         }
         abruby_class_set_const(obj, rb_intern("File"), abruby_wrap_class(file_klass));
+    }
+
+    // Method: a class object whose own methods table holds `call` /
+    // `[]` cfuncs that dispatch the bound method.  Instances are
+    // abruby_bound_method T_DATAs (recv, method_name).
+    {
+        struct abruby_class *m_klass = (struct abruby_class *)ruby_xcalloc(1, sizeof(struct abruby_class));
+        m_klass->klass = vm->class_class;
+        m_klass->obj_type = ABRUBY_OBJ_BOUND_METHOD;
+        m_klass->name = rb_intern("Method");
+        m_klass->super = vm->object_class;
+        extern RESULT ab_method_call(CTX *, VALUE, unsigned int, VALUE *);
+        struct {
+            const char *name;
+            abruby_cfunc_t fn;
+        } entries[] = {
+            {"call", ab_method_call},
+            {"[]",   ab_method_call},
+            {"()",   ab_method_call},
+        };
+        for (size_t i = 0; i < sizeof(entries)/sizeof(entries[0]); i++) {
+            struct abruby_method *mm = ruby_xcalloc(1, sizeof(struct abruby_method));
+            mm->name = rb_intern(entries[i].name);
+            mm->type = ABRUBY_METHOD_CFUNC;
+            mm->defining_class = m_klass;
+            mm->u.cfunc.func = entries[i].fn;
+            ab_id_table_insert(&m_klass->methods, mm->name, (VALUE)mm);
+        }
+        vm->method_class = m_klass;
+        abruby_class_set_const(obj, rb_intern("Method"), abruby_wrap_class(m_klass));
     }
 
     // ARGV: empty abruby Array stub.  abruby doesn't propagate the
@@ -1504,15 +1551,20 @@ abruby_require_file(CTX *c, VALUE rb_path)
     VALUE *save_fp = c->fp;
     struct abruby_frame *save_frame = c->current_frame;
     const struct abruby_cref *save_cref = c->cref;
+    struct abruby_class *save_class = c->current_class;
+    VALUE save_self = c->self;
     c->fp = c->stack;
     c->current_class = NULL;
     c->cref = NULL;
+    c->self = abruby_new_object(&vm->main_class_body);
     struct abruby_frame req_frame = {save_frame, NULL, {.source_file = RSTRING_PTR(abs_str)}, NULL};
     c->current_frame = &req_frame;
     RESULT r = EVAL(c, ast);
     c->fp = save_fp;
     c->current_frame = save_frame;
     c->cref = save_cref;
+    c->current_class = save_class;
+    c->self = save_self;
 
     vm->current_file = save_file;
 

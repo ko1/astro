@@ -63,6 +63,36 @@ static RESULT ab_string_strip(CTX *c, VALUE self, unsigned int argc, VALUE *argv
     while (end > start && (p[end-1] == ' ' || p[end-1] == '\t' || p[end-1] == '\n' || p[end-1] == '\r')) end--;
     return RESULT_OK(abruby_str_new(c, rb_str_new(p + start, end - start)));
 }
+// String#bytes — array of byte integers.
+static RESULT ab_string_bytes(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)argc; (void)argv;
+    VALUE rs = RSTR(self);
+    long len = RSTRING_LEN(rs);
+    const unsigned char *p = (const unsigned char *)RSTRING_PTR(rs);
+    VALUE ary = rb_ary_new_capa(len);
+    for (long i = 0; i < len; i++) rb_ary_push(ary, LONG2FIX(p[i]));
+    return RESULT_OK(abruby_ary_new(c, ary));
+}
+// String#bytesize — number of bytes.
+static RESULT ab_string_bytesize(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)c; (void)argc; (void)argv;
+    return RESULT_OK(LONG2FIX(RSTRING_LEN(RSTR(self))));
+}
+// String#unpack — delegate to CRuby.
+static RESULT ab_string_unpack(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)argc;
+    if (!ab_obj_type_p(argv[0], ABRUBY_OBJ_STRING)) return RESULT_OK(abruby_ary_new(c, rb_ary_new()));
+    VALUE r = rb_funcall(RSTR(self), rb_intern("unpack"), 1, RSTR(argv[0]));
+    // Convert any string elements back to abruby strings.
+    long len = RARRAY_LEN(r);
+    VALUE result = rb_ary_new_capa(len);
+    for (long i = 0; i < len; i++) {
+        VALUE e = RARRAY_AREF(r, i);
+        rb_ary_push(result, RB_TYPE_P(e, T_STRING) ? abruby_str_new(c, e) : e);
+    }
+    return RESULT_OK(abruby_ary_new(c, result));
+}
+
 // String#tr(from, to) — translate.  Delegates to CRuby.
 static RESULT ab_string_tr(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     (void)argc;
@@ -227,4 +257,7 @@ Init_abruby_string(void)
     abruby_class_add_cfunc(ab_tmpl_string_class, rb_intern("split"),    ab_string_split,     0);
     abruby_class_add_cfunc(ab_tmpl_string_class, rb_intern("=~"),       ab_string_match_op,  1);
     abruby_class_add_cfunc(ab_tmpl_string_class, rb_intern("tr"),       ab_string_tr,        2);
+    abruby_class_add_cfunc(ab_tmpl_string_class, rb_intern("bytes"),    ab_string_bytes,     0);
+    abruby_class_add_cfunc(ab_tmpl_string_class, rb_intern("bytesize"), ab_string_bytesize,  0);
+    abruby_class_add_cfunc(ab_tmpl_string_class, rb_intern("unpack"),   ab_string_unpack,    1);
 }

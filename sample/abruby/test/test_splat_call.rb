@@ -71,14 +71,10 @@ class TestSplatCall < AbRubyTest
     f(*g(1,2), *g(3,4))
   RUBY
 
-  # error: non-array passed to splat
-  def test_splat_non_array_raises = assert_eval(<<~RUBY, "rescued")
+  # Ruby's splat treats a non-Array as a 1-element array (`[*42] == [42]`).
+  # abruby's Array#+ is lenient enough to follow that.
+  def test_splat_non_array_wraps = assert_eval(<<~RUBY, 42)
     def f(a); a; end
-    begin
-      f(*42)
-      "no raise"
-    rescue => e
-      "rescued"
-    end
+    f(*42)
   RUBY
 end

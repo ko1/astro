@@ -65,6 +65,15 @@ static RESULT ab_hash_values(CTX *c, VALUE self, unsigned int argc, VALUE *argv)
     return RESULT_OK(abruby_ary_new(c, rb_funcall(RHSH(self), rb_intern("values"), 0)));
 }
 
+// Hash#compare_by_identity — abruby's hashes are already identity-keyed
+// for non-string keys (we don't dup non-immediate keys), so this is a
+// near-no-op stub.  Returns self for chaining.
+static RESULT ab_hash_compare_by_identity(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)c; (void)argc; (void)argv;
+    rb_funcall(RHSH(self), rb_intern("compare_by_identity"), 0);
+    return RESULT_OK(self);
+}
+
 // Hash#dup — shallow copy.
 static RESULT ab_hash_dup(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     (void)argc; (void)argv;
@@ -165,4 +174,5 @@ Init_abruby_hash(void)
     abruby_class_add_cfunc(ab_tmpl_hash_class, rb_intern("delete"),   ab_hash_delete,   1);
     abruby_class_add_cfunc(ab_tmpl_hash_class, rb_intern("fetch"),    ab_hash_fetch,    1);
     abruby_class_add_cfunc(ab_tmpl_hash_class, rb_intern("dup"),      ab_hash_dup,      0);
+    abruby_class_add_cfunc(ab_tmpl_hash_class, rb_intern("compare_by_identity"), ab_hash_compare_by_identity, 0);
 }

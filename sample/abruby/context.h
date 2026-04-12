@@ -153,6 +153,7 @@ enum abruby_obj_type {
     ABRUBY_OBJ_CLASS,
     ABRUBY_OBJ_MODULE,
     ABRUBY_OBJ_EXCEPTION,
+    ABRUBY_OBJ_BOUND_METHOD,
 };
 
 // Common layout: ALL abruby T_DATA objects have klass at offset 0
@@ -236,6 +237,17 @@ struct abruby_range {
 struct abruby_regexp {
     struct abruby_class *klass;  // offset 0
     VALUE rb_regexp;             // inner CRuby Regexp
+};
+
+// Method object — produced by Object#method(:name).  Wraps a (receiver,
+// method_name) pair and exposes `call` / `[]` as a way to dispatch the
+// underlying method later.  No real Method class hierarchy in abruby;
+// these are just plain objects of the per-instance method_class with a
+// custom data layout.
+struct abruby_bound_method {
+    struct abruby_class *klass;  // offset 0
+    VALUE recv;
+    ID method_name;
 };
 
 struct abruby_rational {
@@ -492,6 +504,7 @@ struct abruby_machine {
     struct abruby_class *module_class;
     struct abruby_class *class_class;
     struct abruby_class *runtime_error_class;
+    struct abruby_class *method_class;       // for Object#method results
 };
 
 // exception object

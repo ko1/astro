@@ -69,6 +69,64 @@ static RESULT ab_range_each(CTX *c, VALUE self, unsigned int argc, VALUE *argv) 
     return RESULT_OK(self);
 }
 
+// Range#all? / any? — block forms only.
+static RESULT ab_range_all_p(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)argc; (void)argv;
+    const struct abruby_range *r = RRANGE(self);
+    if (!FIXNUM_P(r->begin) || !FIXNUM_P(r->end)) return RESULT_OK(Qtrue);
+    long b = FIX2LONG(r->begin);
+    long e = FIX2LONG(r->end);
+    if (r->exclude_end) e--;
+    for (long i = b; i <= e; i++) {
+        VALUE iv = LONG2FIX(i);
+        RESULT rr = abruby_yield(c, 1, &iv);
+        if (rr.state != RESULT_NORMAL) return rr;
+        if (!RTEST(rr.value)) return RESULT_OK(Qfalse);
+    }
+    return RESULT_OK(Qtrue);
+}
+static RESULT ab_range_any_p(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)argc; (void)argv;
+    const struct abruby_range *r = RRANGE(self);
+    if (!FIXNUM_P(r->begin) || !FIXNUM_P(r->end)) return RESULT_OK(Qfalse);
+    long b = FIX2LONG(r->begin);
+    long e = FIX2LONG(r->end);
+    if (r->exclude_end) e--;
+    for (long i = b; i <= e; i++) {
+        VALUE iv = LONG2FIX(i);
+        RESULT rr = abruby_yield(c, 1, &iv);
+        if (rr.state != RESULT_NORMAL) return rr;
+        if (RTEST(rr.value)) return RESULT_OK(Qtrue);
+    }
+    return RESULT_OK(Qfalse);
+}
+// Range#inject(initial=nil) { |acc, i| ... }
+static RESULT ab_range_inject(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    const struct abruby_range *r = RRANGE(self);
+    if (!FIXNUM_P(r->begin) || !FIXNUM_P(r->end)) return RESULT_OK(Qnil);
+    long b = FIX2LONG(r->begin);
+    long e = FIX2LONG(r->end);
+    if (r->exclude_end) e--;
+    VALUE acc;
+    long start;
+    if (argc >= 1) {
+        acc = argv[0];
+        start = b;
+    } else if (b > e) {
+        return RESULT_OK(Qnil);
+    } else {
+        acc = LONG2FIX(b);
+        start = b + 1;
+    }
+    for (long i = start; i <= e; i++) {
+        VALUE pair[2] = { acc, LONG2FIX(i) };
+        RESULT rr = abruby_yield(c, 2, pair);
+        if (rr.state != RESULT_NORMAL) return rr;
+        acc = rr.value;
+    }
+    return RESULT_OK(acc);
+}
+
 // Range#map { |i| ... } -> Array
 static RESULT ab_range_map(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     const struct abruby_range *r = RRANGE(self);
@@ -161,4 +219,8 @@ Init_abruby_range(void)
     abruby_class_add_cfunc(ab_tmpl_range_class, rb_intern("each"),         ab_range_each,          0);
     abruby_class_add_cfunc(ab_tmpl_range_class, rb_intern("map"),          ab_range_map,           0);
     abruby_class_add_cfunc(ab_tmpl_range_class, rb_intern("collect"),      ab_range_map,           0);
+    abruby_class_add_cfunc(ab_tmpl_range_class, rb_intern("all?"),         ab_range_all_p,         0);
+    abruby_class_add_cfunc(ab_tmpl_range_class, rb_intern("any?"),         ab_range_any_p,         0);
+    abruby_class_add_cfunc(ab_tmpl_range_class, rb_intern("inject"),       ab_range_inject,        0);
+    abruby_class_add_cfunc(ab_tmpl_range_class, rb_intern("reduce"),       ab_range_inject,        0);
 }
