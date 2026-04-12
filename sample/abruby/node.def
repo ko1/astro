@@ -637,6 +637,26 @@ node_next(CTX * restrict c, NODE * restrict n, NODE *value)
     return (RESULT){v, RESULT_NEXT};
 }
 
+// Materialise the implicit block of the current method as a Proc and
+// store it in the named local slot.  Emitted by the parser at the
+// start of methods that have a `&blk` parameter.  When no block was
+// passed, the slot gets nil.  See builtin/proc.c::abruby_block_to_proc
+// for the actual heap conversion.
+extern VALUE abruby_block_to_proc(CTX *c, const struct abruby_block *blk, bool is_lambda);
+
+NODE_DEF
+node_block_param(CTX * restrict c, NODE * restrict n, uint32_t lvar_index)
+{
+    (void)n;
+    const struct abruby_block *blk = c->current_frame ? c->current_frame->block : NULL;
+    if (blk == NULL) {
+        c->fp[lvar_index] = Qnil;
+    } else {
+        c->fp[lvar_index] = abruby_block_to_proc(c, blk, /*is_lambda=*/false);
+    }
+    return RESULT_OK(c->fp[lvar_index]);
+}
+
 // Data-only node carrying a block literal attached to a call site.  Parser
 // emits it as the `block_literal` operand of a node_*_call_with_block; the
 // call node unpacks `body`, `params_cnt`, `param_base` directly from the
@@ -644,9 +664,9 @@ node_next(CTX * restrict c, NODE * restrict n, NODE *value)
 // the @noinline annotation keeps it out of specialization, and the body is
 // a safety net that returns nil (asserting in debug builds).
 NODE_DEF @noinline
-node_block_literal(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t params_cnt, uint32_t param_base)
+node_block_literal(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t params_cnt, uint32_t param_base, uint32_t env_size)
 {
-    (void)c; (void)body; (void)params_cnt; (void)param_base;
+    (void)c; (void)body; (void)params_cnt; (void)param_base; (void)env_size;
     ABRUBY_ASSERT(!"node_block_literal must not be EVAL'd directly");
     (void)n;
     return RESULT_OK(Qnil);
@@ -1365,8 +1385,10 @@ node_method_call_with_block(CTX * restrict c, NODE * restrict n, NODE *recv, ID 
     blk.captured_fp       = c->fp;
     blk.captured_self     = c->self;
     blk.defining_frame    = (struct abruby_frame *)abruby_context_frame(c);
+    blk.cref              = c->cref;
     blk.params_cnt        = block_literal->u.node_block_literal.params_cnt;
     blk.param_base        = block_literal->u.node_block_literal.param_base;
+    blk.env_size          = block_literal->u.node_block_literal.env_size;
 
     if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
         VALUE save_self = c->self;
@@ -1391,8 +1413,10 @@ node_func_call_with_block(CTX * restrict c, NODE * restrict n, ID name, uint32_t
     blk.captured_fp       = c->fp;
     blk.captured_self     = c->self;
     blk.defining_frame    = (struct abruby_frame *)abruby_context_frame(c);
+    blk.cref              = c->cref;
     blk.params_cnt        = block_literal->u.node_block_literal.params_cnt;
     blk.param_base        = block_literal->u.node_block_literal.param_base;
+    blk.env_size          = block_literal->u.node_block_literal.env_size;
 
     if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
         return dispatch_method_frame_with_block(c, n, mc, params_cnt, arg_index, &blk);
@@ -1401,6 +1425,87 @@ node_func_call_with_block(CTX * restrict c, NODE * restrict n, ID name, uint32_t
         return node_method_call_with_block_slow(c, n, c->self, klass, name,
                                                 params_cnt, arg_index, mc, &blk);
     }
+}
+
+// === Runtime-block call nodes ===
+//
+// Like the _with_block variants but the block comes from a runtime
+// expression (the `&expr` form at a call site).  We evaluate the
+// expression, expect a Proc, and build a temporary `struct abruby_block`
+// pointing into the Proc's heap env.
+
+static inline RESULT
+build_block_from_proc_value(CTX *c, NODE *call_site, VALUE proc_val, struct abruby_block *out_blk)
+{
+    if (proc_val == Qnil) {
+        return RESULT_OK(Qnil);   // signal "no block"
+    }
+    if (!ab_obj_type_p(proc_val, ABRUBY_OBJ_PROC)) {
+        VALUE exc;
+        PUSH_FRAME(call_site);
+        exc = abruby_exception_new(c, c->current_frame,
+            abruby_str_new_cstr(c, "wrong argument type (expected Proc) for &arg"));
+        POP_FRAME();
+        return (RESULT){exc, RESULT_RAISE};
+    }
+    const struct abruby_proc *p = (const struct abruby_proc *)RTYPEDDATA_GET_DATA(proc_val);
+    out_blk->body          = p->body;
+    out_blk->captured_fp   = p->env;
+    out_blk->captured_self = p->captured_self;
+    out_blk->defining_frame = NULL;  // proc may have escaped — no live frame
+    out_blk->cref          = p->cref;
+    out_blk->params_cnt    = p->params_cnt;
+    out_blk->param_base    = p->param_base;
+    out_blk->env_size      = p->env_size;
+    return RESULT_OK(Qtrue);  // signal "have block"
+}
+
+NODE_DEF
+node_method_call_with_block_arg(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, uint32_t params_cnt, uint32_t arg_index, struct method_cache *mc@ref, NODE *block_arg_expr)
+{
+    VALUE recv_val = UNWRAP(EVAL_ARG(c, recv));
+    VALUE proc_val = UNWRAP(EVAL_ARG(c, block_arg_expr));
+    struct abruby_block blk;
+    RESULT br = build_block_from_proc_value(c, n, proc_val, &blk);
+    if (br.state != RESULT_NORMAL) return br;
+    const struct abruby_class *klass = AB_CLASS_OF(c, recv_val);
+    if (br.value == Qnil) {
+        // No block — fall back to plain dispatch.
+        VALUE save_self = c->self;
+        c->self = recv_val;
+        RESULT r = (mc->klass == klass && mc->serial == c->abm->method_serial)
+            ? dispatch_method_frame(c, n, mc, params_cnt, arg_index)
+            : node_method_call_slow(c, n, recv_val, klass, name, params_cnt, arg_index, mc);
+        c->self = save_self;
+        return r;
+    }
+    if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
+        VALUE save_self = c->self;
+        c->self = recv_val;
+        RESULT r = dispatch_method_frame_with_block(c, n, mc, params_cnt, arg_index, &blk);
+        c->self = save_self;
+        return r;
+    }
+    return node_method_call_with_block_slow(c, n, recv_val, klass, name, params_cnt, arg_index, mc, &blk);
+}
+
+NODE_DEF
+node_func_call_with_block_arg(CTX * restrict c, NODE * restrict n, ID name, uint32_t params_cnt, uint32_t arg_index, struct method_cache *mc@ref, NODE *block_arg_expr)
+{
+    VALUE proc_val = UNWRAP(EVAL_ARG(c, block_arg_expr));
+    struct abruby_block blk;
+    RESULT br = build_block_from_proc_value(c, n, proc_val, &blk);
+    if (br.state != RESULT_NORMAL) return br;
+    const struct abruby_class *klass = AB_CLASS_OF(c, c->self);
+    if (br.value == Qnil) {
+        return (mc->klass == klass && mc->serial == c->abm->method_serial)
+            ? dispatch_method_frame(c, n, mc, params_cnt, arg_index)
+            : node_method_call_slow(c, n, c->self, klass, name, params_cnt, arg_index, mc);
+    }
+    if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
+        return dispatch_method_frame_with_block(c, n, mc, params_cnt, arg_index, &blk);
+    }
+    return node_method_call_with_block_slow(c, n, c->self, klass, name, params_cnt, arg_index, mc, &blk);
 }
 
 // === super ===

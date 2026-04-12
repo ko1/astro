@@ -512,11 +512,24 @@ class AbRuby
         name = node.name.to_s
         params = node.parameters
         params_cnt = params ? params.requireds.size : 0
+        block_param_name = (params && params.block) ? params.block.name&.to_s : nil
 
         push_frame(node.locals, params_cnt: params_cnt, method_body: node.body)
         body = node.body ? transduce(node.body) : AbRuby.alloc_node_nil
-        frame = pop_frame
 
+        if block_param_name
+          # `def f(&blk)`: prepend a node_block_param that converts the
+          # method's implicit block (current_frame->block) to a Proc and
+          # stores it in `blk`'s local slot.  When the method was called
+          # without a block, the slot is set to nil.
+          slot = current_frame[:locals].index(block_param_name)
+          if slot
+            block_param_node = AbRuby.alloc_node_block_param(slot)
+            body = build_seq([block_param_node, body])
+          end
+        end
+
+        frame = pop_frame
         @entries << [name, body]
         AbRuby.alloc_node_def(name, body, params_cnt, frame[:max])
 
@@ -1003,7 +1016,37 @@ class AbRuby
       # same outer method get a fresh range, matching the pre-walk in
       # count_block_slots so max is respected.
 
-      set_line(AbRuby.alloc_node_block_literal(body, param_names.size, param_base), block_node)
+      # env_size = the enclosing frame's max slot count.  When the block
+      # is converted to a Proc and outlives the enclosing method, the
+      # runtime snapshots `captured_fp[0..env_size]` to a heap env so
+      # the body can still read its closure locals.
+      env_size = frame[:max]
+      set_line(AbRuby.alloc_node_block_literal(body, param_names.size, param_base, env_size), block_node)
+    end
+
+    # Build a call node that carries a block — either a literal
+    # `{ ... }` (BlockNode) or a `&proc_var` runtime expression
+    # (BlockArgumentNode).  recv is the already-transduced receiver
+    # AST, or nil for an implicit-self call.  name is a String.
+    def alloc_call_with_block(node_block, recv, name, args_count, call_arg_idx)
+      case node_block
+      when Prism::BlockNode
+        block_literal = transduce_block_literal(node_block)
+        if recv
+          AbRuby.alloc_node_method_call_with_block(recv, name, args_count, call_arg_idx, block_literal)
+        else
+          AbRuby.alloc_node_func_call_with_block(name, args_count, call_arg_idx, block_literal)
+        end
+      when Prism::BlockArgumentNode
+        expr_ast = node_block.expression ? transduce(node_block.expression) : AbRuby.alloc_node_nil
+        if recv
+          AbRuby.alloc_node_method_call_with_block_arg(recv, name, args_count, call_arg_idx, expr_ast)
+        else
+          AbRuby.alloc_node_func_call_with_block_arg(name, args_count, call_arg_idx, expr_ast)
+        end
+      else
+        raise "unsupported block kind: #{node_block.class}"
+      end
     end
 
     # Push a scope for class/module body locals.  Allocates outer-frame
@@ -1314,16 +1357,14 @@ class AbRuby
             end
             rewind_arg_index(call_arg_idx)
             if node.respond_to?(:block) && node.block
-              block_literal = transduce_block_literal(node.block)
-              call_node = set_line(AbRuby.alloc_node_func_call_with_block(name.to_s, args.size, call_arg_idx, block_literal), node)
+              call_node = set_line(alloc_call_with_block(node.block, nil, name.to_s, args.size, call_arg_idx), node)
             else
               call_node = set_line(AbRuby.alloc_node_func_call(name.to_s, args.size, call_arg_idx), node)
             end
             return build_seq(seq_nodes + [call_node])
           else
             if node.respond_to?(:block) && node.block
-              block_literal = transduce_block_literal(node.block)
-              return set_line(AbRuby.alloc_node_func_call_with_block(name.to_s, 0, call_arg_idx, block_literal), node)
+              return set_line(alloc_call_with_block(node.block, nil, name.to_s, 0, call_arg_idx), node)
             else
               return set_line(AbRuby.alloc_node_func_call(name.to_s, 0, call_arg_idx), node)
             end
@@ -1345,8 +1386,7 @@ class AbRuby
 
           recv_ref = AbRuby.alloc_node_lvar_get(recv_idx)
           if node.respond_to?(:block) && node.block
-            block_literal = transduce_block_literal(node.block)
-            call_node = set_line(AbRuby.alloc_node_method_call_with_block(recv_ref, name.to_s, args.size, call_arg_idx, block_literal), node)
+            call_node = set_line(alloc_call_with_block(node.block, recv_ref, name.to_s, args.size, call_arg_idx), node)
           else
             call_node = set_line(AbRuby.alloc_node_method_call(recv_ref, name.to_s, args.size, call_arg_idx), node)
           end
@@ -1355,8 +1395,7 @@ class AbRuby
           rewind_arg_index(recv_idx)
           recv_ref = AbRuby.alloc_node_lvar_get(recv_idx)
           if node.respond_to?(:block) && node.block
-            block_literal = transduce_block_literal(node.block)
-            call_node = set_line(AbRuby.alloc_node_method_call_with_block(recv_ref, name.to_s, 0, call_arg_idx, block_literal), node)
+            call_node = set_line(alloc_call_with_block(node.block, recv_ref, name.to_s, 0, call_arg_idx), node)
           else
             call_node = set_line(AbRuby.alloc_node_method_call(recv_ref, name.to_s, 0, call_arg_idx), node)
           end
@@ -1375,16 +1414,14 @@ class AbRuby
         rewind_arg_index(call_arg_idx)
 
         if node.respond_to?(:block) && node.block
-          block_literal = transduce_block_literal(node.block)
-          call_node = set_line(AbRuby.alloc_node_func_call_with_block(name.to_s, args.size, call_arg_idx, block_literal), node)
+          call_node = set_line(alloc_call_with_block(node.block, nil, name.to_s, args.size, call_arg_idx), node)
         else
           call_node = set_line(AbRuby.alloc_node_func_call(name.to_s, args.size, call_arg_idx), node)
         end
         build_seq(seq_nodes + [call_node])
       else
         if node.respond_to?(:block) && node.block
-          block_literal = transduce_block_literal(node.block)
-          set_line(AbRuby.alloc_node_func_call_with_block(name.to_s, 0, call_arg_idx, block_literal), node)
+          set_line(alloc_call_with_block(node.block, nil, name.to_s, 0, call_arg_idx), node)
         else
           set_line(AbRuby.alloc_node_func_call(name.to_s, 0, call_arg_idx), node)
         end

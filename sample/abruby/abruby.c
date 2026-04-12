@@ -110,6 +110,33 @@ static void abruby_data_mark(void *ptr) {
         if (!RB_SPECIAL_CONST_P(bm->recv)) rb_gc_mark(bm->recv);
         break;
     }
+    case ABRUBY_OBJ_PROC: {
+        // See abruby_data_free's PROC case for the self-ref vs instance
+        // distinction.  When ptr is the metaclass itself, mark it as a
+        // class (constants + methods).
+        if (ptr == (const void *)h->klass) {
+            const struct abruby_class *cls = (const struct abruby_class *)ptr;
+            ab_id_table_foreach(&cls->methods, _mk, _mv, {
+                const struct abruby_method *m = (const struct abruby_method *)_mv;
+                if (m->type == ABRUBY_METHOD_AST && m->u.ast.body && m->u.ast.body->head.rb_wrapper) {
+                    rb_gc_mark(m->u.ast.body->head.rb_wrapper);
+                }
+            });
+            ab_id_table_foreach(&cls->constants, _ck, _cv, {
+                rb_gc_mark(_cv);
+            });
+        } else {
+            const struct abruby_proc *p = (const struct abruby_proc *)ptr;
+            if (!RB_SPECIAL_CONST_P(p->captured_self)) rb_gc_mark(p->captured_self);
+            if (p->env) {
+                for (uint32_t i = 0; i < p->env_size; i++) {
+                    VALUE v = p->env[i];
+                    if (!RB_SPECIAL_CONST_P(v)) rb_gc_mark(v);
+                }
+            }
+        }
+        break;
+    }
     case ABRUBY_OBJ_CLASS:
     case ABRUBY_OBJ_MODULE: {
         const struct abruby_class *cls = (const struct abruby_class *)ptr;
@@ -168,6 +195,20 @@ abruby_data_free(void *ptr)
         case ABRUBY_OBJ_GENERIC: {
             struct abruby_object *obj = (struct abruby_object *)ptr;
             if (obj->extra_ivars) ruby_xfree(obj->extra_ivars);
+            break;
+        }
+        case ABRUBY_OBJ_PROC: {
+            // Distinguish "the proc metaclass" (self-referential klass)
+            // from "an actual abruby_proc instance".  Self-ref means
+            // ptr IS the metaclass struct, so free it as a class.
+            if (ptr == (void *)h->klass) {
+                struct abruby_class *cls = (struct abruby_class *)ptr;
+                ab_id_table_free(&cls->methods);
+                ab_id_table_free(&cls->constants);
+            } else {
+                struct abruby_proc *p = (struct abruby_proc *)ptr;
+                if (p->env) ruby_xfree(p->env);
+            }
             break;
         }
         default:
@@ -257,6 +298,35 @@ abruby_str_rstr(VALUE ab_str)
 {
     ab_verify(ab_str);
     return ((struct abruby_string *)RTYPEDDATA_GET_DATA(ab_str))->rb_str;
+}
+
+// Convert a stack-allocated abruby_block (or one passed via the
+// current frame) into a heap Proc.  The captured locals are *copied*
+// out of the original captured_fp into a fresh heap env so the Proc
+// remains valid after the enclosing method returns.
+VALUE
+abruby_block_to_proc(CTX *c, const struct abruby_block *blk, bool is_lambda)
+{
+    struct abruby_proc *p;
+    VALUE wrapper = TypedData_Make_Struct(rb_cAbRubyNode, struct abruby_proc,
+                                          &abruby_data_type, p);
+    p->klass        = c->abm->proc_class;
+    p->body         = blk->body;
+    p->env_size     = blk->env_size;
+    p->params_cnt   = blk->params_cnt;
+    p->param_base   = blk->param_base;
+    p->captured_self = blk->captured_self;
+    p->cref         = blk->cref;
+    p->is_lambda    = is_lambda;
+    if (p->env_size > 0) {
+        p->env = (VALUE *)ruby_xcalloc(p->env_size, sizeof(VALUE));
+        if (blk->captured_fp) {
+            for (uint32_t i = 0; i < p->env_size; i++) {
+                p->env[i] = blk->captured_fp[i];
+            }
+        }
+    }
+    return wrapper;
 }
 
 VALUE
@@ -883,6 +953,49 @@ init_instance_classes(struct abruby_machine *vm)
         abruby_class_set_const(obj, rb_intern("File"), abruby_wrap_class(file_klass));
     }
 
+    // Proc: a class object whose own methods table holds the
+    // Proc#call / Proc#[] cfuncs.  Instances are abruby_proc T_DATAs.
+    {
+        struct abruby_class *p_klass = (struct abruby_class *)ruby_xcalloc(1, sizeof(struct abruby_class));
+        p_klass->klass = p_klass;        // self-referential so `Proc.new` finds our `new`
+        // obj_type = PROC tags Proc *instances* (the abruby_proc heap
+        // structs whose `klass` field points at p_klass) so the GC
+        // mark / free dispatch on `h->klass->obj_type` finds the proc
+        // case rather than the class case.
+        p_klass->obj_type = ABRUBY_OBJ_PROC;
+        p_klass->name = rb_intern("Proc");
+        p_klass->super = vm->object_class;
+        extern RESULT ab_proc_new(CTX *, VALUE, unsigned int, VALUE *);
+        extern RESULT ab_proc_call(CTX *, VALUE, unsigned int, VALUE *);
+        extern RESULT ab_proc_lambda_p(CTX *, VALUE, unsigned int, VALUE *);
+        extern RESULT ab_proc_arity(CTX *, VALUE, unsigned int, VALUE *);
+        extern RESULT ab_proc_to_proc(CTX *, VALUE, unsigned int, VALUE *);
+        struct {
+            const char *name;
+            abruby_cfunc_t fn;
+        } entries[] = {
+            {"new",       ab_proc_new},
+            {"call",      ab_proc_call},
+            {"[]",        ab_proc_call},
+            {"()",        ab_proc_call},
+            {"===",       ab_proc_call},  // Proc#=== invokes call (case/when match)
+            {"yield",     ab_proc_call},
+            {"lambda?",   ab_proc_lambda_p},
+            {"arity",     ab_proc_arity},
+            {"to_proc",   ab_proc_to_proc},
+        };
+        for (size_t i = 0; i < sizeof(entries)/sizeof(entries[0]); i++) {
+            struct abruby_method *mm = ruby_xcalloc(1, sizeof(struct abruby_method));
+            mm->name = rb_intern(entries[i].name);
+            mm->type = ABRUBY_METHOD_CFUNC;
+            mm->defining_class = p_klass;
+            mm->u.cfunc.func = entries[i].fn;
+            ab_id_table_insert(&p_klass->methods, mm->name, (VALUE)mm);
+        }
+        vm->proc_class = p_klass;
+        abruby_class_set_const(obj, rb_intern("Proc"), abruby_wrap_class(p_klass));
+    }
+
     // Method: a class object whose own methods table holds `call` /
     // `[]` cfuncs that dispatch the bound method.  Instances are
     // abruby_bound_method T_DATAs (recv, method_name).
@@ -1334,11 +1447,18 @@ rb_alloc_node_method_call_apply(VALUE self, VALUE recv, VALUE name, VALUE args, 
 // === Block support ===
 
 static VALUE
-rb_alloc_node_block_literal(VALUE self, VALUE body, VALUE params_cnt, VALUE param_base)
+rb_alloc_node_block_literal(VALUE self, VALUE body, VALUE params_cnt, VALUE param_base, VALUE env_size)
 {
     return wrap_node(ALLOC_node_block_literal(unwrap_node(body),
                                               FIX2UINT(params_cnt),
-                                              FIX2UINT(param_base)));
+                                              FIX2UINT(param_base),
+                                              FIX2UINT(env_size)));
+}
+
+static VALUE
+rb_alloc_node_block_param(VALUE self, VALUE lvar_index)
+{
+    return wrap_node(ALLOC_node_block_param(FIX2UINT(lvar_index)));
 }
 
 static VALUE
@@ -1376,6 +1496,24 @@ rb_alloc_node_super_with_block(VALUE self, VALUE params_cnt, VALUE arg_index, VA
 {
     return wrap_node(ALLOC_node_super_with_block(FIX2UINT(params_cnt), FIX2UINT(arg_index),
                                                  unwrap_node(block_literal)));
+}
+
+static VALUE
+rb_alloc_node_method_call_with_block_arg(VALUE self, VALUE recv, VALUE name, VALUE params_cnt, VALUE arg_index, VALUE block_arg_expr)
+{
+    ID cname = rb_intern_str(name);
+    return wrap_node(ALLOC_node_method_call_with_block_arg(unwrap_node(recv), cname,
+                                                           FIX2UINT(params_cnt), FIX2UINT(arg_index),
+                                                           unwrap_node(block_arg_expr)));
+}
+
+static VALUE
+rb_alloc_node_func_call_with_block_arg(VALUE self, VALUE name, VALUE params_cnt, VALUE arg_index, VALUE block_arg_expr)
+{
+    ID cname = rb_intern_str(name);
+    return wrap_node(ALLOC_node_func_call_with_block_arg(cname,
+                                                         FIX2UINT(params_cnt), FIX2UINT(arg_index),
+                                                         unwrap_node(block_arg_expr)));
 }
 
 
@@ -1902,7 +2040,10 @@ Init_abruby(void)
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_func_call_apply", rb_alloc_node_func_call_apply, 3);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_method_call_apply", rb_alloc_node_method_call_apply, 4);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_super", rb_alloc_node_super, 2);
-    rb_define_singleton_method(rb_cAbRuby, "alloc_node_block_literal", rb_alloc_node_block_literal, 3);
+    rb_define_singleton_method(rb_cAbRuby, "alloc_node_block_literal", rb_alloc_node_block_literal, 4);
+    rb_define_singleton_method(rb_cAbRuby, "alloc_node_block_param", rb_alloc_node_block_param, 1);
+    rb_define_singleton_method(rb_cAbRuby, "alloc_node_method_call_with_block_arg", rb_alloc_node_method_call_with_block_arg, 5);
+    rb_define_singleton_method(rb_cAbRuby, "alloc_node_func_call_with_block_arg", rb_alloc_node_func_call_with_block_arg, 4);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_yield", rb_alloc_node_yield, 2);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_next", rb_alloc_node_next, 1);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_method_call_with_block", rb_alloc_node_method_call_with_block, 5);

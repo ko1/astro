@@ -259,4 +259,8 @@ Init_abruby_kernel(void)
     abruby_class_add_cfunc(ab_tmpl_kernel_module, rb_intern("__dir__"),          ab_kernel_dir,              0);
     abruby_class_add_cfunc(ab_tmpl_kernel_module, rb_intern("Integer"),          ab_kernel_Integer,          1);
     abruby_class_add_cfunc(ab_tmpl_kernel_module, rb_intern("Float"),            ab_kernel_Float,            1);
+    extern RESULT ab_kernel_proc(CTX *, VALUE, unsigned int, VALUE *);
+    extern RESULT ab_kernel_lambda(CTX *, VALUE, unsigned int, VALUE *);
+    abruby_class_add_cfunc(ab_tmpl_kernel_module, rb_intern("proc"),             ab_kernel_proc,             0);
+    abruby_class_add_cfunc(ab_tmpl_kernel_module, rb_intern("lambda"),           ab_kernel_lambda,           0);
 }

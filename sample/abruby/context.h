@@ -154,6 +154,7 @@ enum abruby_obj_type {
     ABRUBY_OBJ_MODULE,
     ABRUBY_OBJ_EXCEPTION,
     ABRUBY_OBJ_BOUND_METHOD,
+    ABRUBY_OBJ_PROC,
 };
 
 // Common layout: ALL abruby T_DATA objects have klass at offset 0
@@ -237,6 +238,32 @@ struct abruby_range {
 struct abruby_regexp {
     struct abruby_class *klass;  // offset 0
     VALUE rb_regexp;             // inner CRuby Regexp
+};
+
+// Proc — heap-allocated escaped block.  Created by Proc.new, lambda,
+// proc, &-conversion, Fiber.new (block argument), etc.  Holds a
+// snapshot of the enclosing method's local environment so the body can
+// still access closure locals after the method returns.
+//
+// `env` is a heap array of size `env_size`.  When the Proc was created
+// from a stack-bound abruby_block, the slots [0..env_size) were copied
+// from the original captured_fp.
+//
+// `defining_method_serial` records the method_serial value at creation
+// time.  Real Ruby uses this kind of marker to detect "method already
+// returned" for Proc#return — abruby's blocks currently don't have a
+// generic non-local-return-from-escaped-Proc, so it's mostly metadata
+// for debugging.
+struct abruby_proc {
+    struct abruby_class *klass;        // offset 0
+    struct Node *body;
+    VALUE *env;                        // ruby_xcalloc(env_size, sizeof(VALUE))
+    uint32_t env_size;
+    uint32_t params_cnt;
+    uint32_t param_base;
+    bool is_lambda;
+    VALUE captured_self;
+    const struct abruby_cref *cref;
 };
 
 // Method object — produced by Object#method(:name).  Wraps a (receiver,
@@ -342,8 +369,11 @@ struct abruby_block {
     VALUE *captured_fp;                 // caller's fp at call time (closure env)
     VALUE captured_self;                // caller's self
     struct abruby_frame *defining_frame; // enclosing method frame at capture time
+    const struct abruby_cref *cref;     // lexical const scope at capture time
     uint32_t params_cnt;                // number of required params (|x, y|) — MVP has no opt/rest
     uint32_t param_base;                // block params live at captured_fp[param_base..+params_cnt]
+    uint32_t env_size;                  // # of usable slots starting at captured_fp;
+                                        // used when escaping to a heap Proc
 };
 
 // call frame for backtrace support
@@ -505,6 +535,7 @@ struct abruby_machine {
     struct abruby_class *class_class;
     struct abruby_class *runtime_error_class;
     struct abruby_class *method_class;       // for Object#method results
+    struct abruby_class *proc_class;         // for Proc.new / lambda / & conversion
 };
 
 // exception object
