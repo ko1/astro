@@ -580,6 +580,7 @@ vm_mark(void *ptr)
     rb_gc_mark(vm->rb_self);
     rb_gc_mark(vm->current_file);
     rb_gc_mark(vm->loaded_files);
+    rb_gc_mark(vm->loaded_asts);
     // Mark main_class method bodies and constants
     // (main_class is embedded in VM, not wrapped as T_DATA)
     const struct abruby_class *mc = &vm->main_class_body;
@@ -821,6 +822,87 @@ init_instance_classes(struct abruby_machine *vm)
     abruby_class_set_const(obj, rb_intern("LoadError"),        abruby_wrap_class(vm->runtime_error_class));
     abruby_class_set_const(obj, rb_intern("StopIteration"),    abruby_wrap_class(vm->runtime_error_class));
 
+    // File: a class object whose own methods table holds the file
+    // utilities (`File.join`, `File.binread`, etc.).  We use the same
+    // self-referential klass trick as for Struct so that lookups via
+    // AB_CLASS_OF(File) hit the methods we install here.
+    {
+        struct abruby_class *file_klass = (struct abruby_class *)ruby_xcalloc(1, sizeof(struct abruby_class));
+        file_klass->klass = file_klass;  // self-reference: methods on self
+        file_klass->obj_type = ABRUBY_OBJ_CLASS;
+        file_klass->name = rb_intern("File");
+        file_klass->super = vm->object_class;
+        extern RESULT ab_file_join(CTX *, VALUE, unsigned int, VALUE *);
+        extern RESULT ab_file_binread(CTX *, VALUE, unsigned int, VALUE *);
+        extern RESULT ab_file_dirname(CTX *, VALUE, unsigned int, VALUE *);
+        extern RESULT ab_file_basename(CTX *, VALUE, unsigned int, VALUE *);
+        extern RESULT ab_file_extname(CTX *, VALUE, unsigned int, VALUE *);
+        extern RESULT ab_file_expand_path(CTX *, VALUE, unsigned int, VALUE *);
+        extern RESULT ab_file_exist_p(CTX *, VALUE, unsigned int, VALUE *);
+        extern RESULT ab_file_readable_p(CTX *, VALUE, unsigned int, VALUE *);
+        extern RESULT ab_file_read(CTX *, VALUE, unsigned int, VALUE *);
+        struct {
+            const char *name;
+            abruby_cfunc_t fn;
+        } entries[] = {
+            {"join",        ab_file_join},
+            {"binread",     ab_file_binread},
+            {"dirname",     ab_file_dirname},
+            {"basename",    ab_file_basename},
+            {"extname",     ab_file_extname},
+            {"expand_path", ab_file_expand_path},
+            {"exist?",      ab_file_exist_p},
+            {"readable?",   ab_file_readable_p},
+            {"read",        ab_file_read},
+        };
+        for (size_t i = 0; i < sizeof(entries)/sizeof(entries[0]); i++) {
+            struct abruby_method *m = ruby_xcalloc(1, sizeof(struct abruby_method));
+            m->name = rb_intern(entries[i].name);
+            m->type = ABRUBY_METHOD_CFUNC;
+            m->defining_class = file_klass;
+            m->u.cfunc.func = entries[i].fn;
+            ab_id_table_insert(&file_klass->methods, m->name, (VALUE)m);
+        }
+        abruby_class_set_const(obj, rb_intern("File"), abruby_wrap_class(file_klass));
+    }
+
+    // ARGV: empty abruby Array stub.  abruby doesn't propagate the
+    // process argv to scripts; tests/benches that need args inject them
+    // explicitly.  An empty array is enough for `ARGV.dup` etc.
+    abruby_class_set_const(obj, rb_intern("ARGV"),
+        abruby_ary_new(&vm->current_fiber->ctx, rb_ary_new()));
+
+    // ENV: empty abruby Hash stub.  abruby has no environment access; the
+    // bench only does `ENV["OPTCARROT_DUMMY_RACTOR"]` to optionally enable
+    // a Ractor stub, which we don't support either.  Returning nil from
+    // `ENV[...]` is sufficient.
+    abruby_class_set_const(obj, rb_intern("ENV"),
+        abruby_hash_new_wrap(&vm->current_fiber->ctx, rb_hash_new()));
+
+    // Struct: a class with a `new` cfunc that returns a freshly minted
+    // user class with the requested ivar accessors.  See ab_struct_new
+    // in builtin/class.c.
+    {
+        struct abruby_class *struct_klass = (struct abruby_class *)ruby_xcalloc(1, sizeof(struct abruby_class));
+        // self-referential klass so `new` looked up on Struct goes through
+        // struct_klass->methods (where ab_struct_new is registered) rather
+        // than the inherited Class#new.
+        struct_klass->klass = struct_klass;
+        struct_klass->obj_type = ABRUBY_OBJ_CLASS;
+        struct_klass->name = rb_intern("Struct");
+        struct_klass->super = vm->object_class;
+        // Override `new` so `Struct.new(...)` builds a new class.
+        extern RESULT ab_struct_new(CTX *c, VALUE self, unsigned int argc, VALUE *argv);
+        struct abruby_method *m = ruby_xcalloc(1, sizeof(struct abruby_method));
+        m->name = rb_intern("new");
+        m->type = ABRUBY_METHOD_CFUNC;
+        m->defining_class = struct_klass;
+        m->u.cfunc.func = ab_struct_new;
+        m->u.cfunc.params_cnt = 0;
+        ab_id_table_insert(&struct_klass->methods, m->name, (VALUE)m);
+        abruby_class_set_const(obj, rb_intern("Struct"), abruby_wrap_class(struct_klass));
+    }
+
     // Float constants. abruby_float_new_wrap passes Flonum through and only
     // wraps heap T_FLOAT in T_DATA, so it works for both representations.
     abruby_class_set_const(vm->float_class, rb_intern("INFINITY"),
@@ -850,6 +932,7 @@ create_vm(void)
     vm->current_fiber->ctx.fp = vm->current_fiber->ctx.stack;
     vm->current_fiber->ctx.self = abruby_new_object(&vm->main_class_body);
     vm->current_fiber->ctx.current_class = NULL;
+    vm->current_fiber->ctx.cref = NULL;
     vm->id_cache.op_plus = rb_intern("+");
     vm->id_cache.op_minus = rb_intern("-");
     vm->id_cache.op_mul = rb_intern("*");
@@ -867,6 +950,7 @@ create_vm(void)
     vm->rb_self = Qnil;
     vm->current_file = Qnil;
     vm->loaded_files = rb_ary_new();
+    vm->loaded_asts  = rb_ary_new();
 
     for (int i = 0; i < ABRUBY_STACK_SIZE; i++) {
         vm->current_fiber->ctx.stack[i] = Qnil;
@@ -1405,8 +1489,11 @@ abruby_require_file(CTX *c, VALUE rb_path)
     VALUE parser = rb_funcall(rb_const_get(rb_cAbRuby, rb_intern("Parser")), rb_intern("new"), 0);
     VALUE ast_obj = rb_funcall(parser, rb_intern("parse"), 2, code, abs_str);
 
-    // Mark as loaded
+    // Mark as loaded, and retain the AST for the lifetime of the VM so
+    // method bodies (raw NODE pointers stored on abruby_method) stay
+    // live across GC cycles.
     rb_ary_push(vm->loaded_files, abs_str);
+    rb_ary_push(vm->loaded_asts, ast_obj);
 
     // Save/restore current_file
     VALUE save_file = vm->current_file;
@@ -1416,13 +1503,16 @@ abruby_require_file(CTX *c, VALUE rb_path)
     NODE *ast = unwrap_node(ast_obj);
     VALUE *save_fp = c->fp;
     struct abruby_frame *save_frame = c->current_frame;
+    const struct abruby_cref *save_cref = c->cref;
     c->fp = c->stack;
     c->current_class = NULL;
+    c->cref = NULL;
     struct abruby_frame req_frame = {save_frame, NULL, {.source_file = RSTRING_PTR(abs_str)}, NULL};
     c->current_frame = &req_frame;
     RESULT r = EVAL(c, ast);
     c->fp = save_fp;
     c->current_frame = save_frame;
+    c->cref = save_cref;
 
     vm->current_file = save_file;
 
@@ -1437,6 +1527,9 @@ abruby_eval_string(CTX *c, VALUE rb_code)
     // Parse via AbRuby::Parser
     VALUE parser = rb_funcall(rb_const_get(rb_cAbRuby, rb_intern("Parser")), rb_intern("new"), 0);
     VALUE ast_obj = rb_funcall(parser, rb_intern("parse"), 1, rb_code);
+
+    // Retain the AST for the lifetime of the VM (see abruby_require_file).
+    rb_ary_push(c->abm->loaded_asts, ast_obj);
 
     // Eval AST in current context
     NODE *ast = unwrap_node(ast_obj);
@@ -1496,6 +1589,11 @@ rb_abruby_eval_ast(VALUE self, VALUE ast_obj)
     if (ast == NULL) {
         rb_raise(rb_eRuntimeError, "cannot eval NULL AST");
     }
+
+    // Retain the AST for the lifetime of the VM so method bodies defined
+    // inside it stay live even after this eval returns.  (Otherwise GC
+    // collects the NODE T_DATA and abruby_method bodies become dangling.)
+    rb_ary_push(vm->loaded_asts, ast_obj);
 
     // reset stack for each eval (classes/methods/self persist)
     vm->current_fiber->ctx.fp = vm->current_fiber->ctx.stack;

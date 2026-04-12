@@ -69,6 +69,28 @@ static RESULT ab_range_each(CTX *c, VALUE self, unsigned int argc, VALUE *argv) 
     return RESULT_OK(self);
 }
 
+// Range#map { |i| ... } -> Array
+static RESULT ab_range_map(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    const struct abruby_range *r = RRANGE(self);
+    if (!FIXNUM_P(r->begin) || !FIXNUM_P(r->end)) {
+        VALUE exc = abruby_exception_new(c, c->current_frame,
+            abruby_str_new_cstr(c, "can't iterate non-integer Range"));
+        return (RESULT){exc, RESULT_RAISE};
+    }
+    long b = FIX2LONG(r->begin);
+    long e = FIX2LONG(r->end);
+    if (r->exclude_end) e--;
+    long len = (e >= b) ? (e - b + 1) : 0;
+    VALUE result = rb_ary_new_capa(len);
+    for (long i = b; i <= e; i++) {
+        VALUE iv = LONG2FIX(i);
+        RESULT rr = abruby_yield(c, 1, &iv);
+        if (UNLIKELY(rr.state != RESULT_NORMAL)) return rr;
+        rb_ary_push(result, rr.value);
+    }
+    return RESULT_OK(abruby_ary_new(c, result));
+}
+
 static RESULT ab_range_to_a(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     const struct abruby_range *r = RRANGE(self);
     if (FIXNUM_P(r->begin) && FIXNUM_P(r->end)) {
@@ -137,4 +159,6 @@ Init_abruby_range(void)
     abruby_class_add_cfunc(ab_tmpl_range_class, rb_intern("inspect"),      ab_range_inspect,       0);
     abruby_class_add_cfunc(ab_tmpl_range_class, rb_intern("to_s"),         ab_range_to_s,          0);
     abruby_class_add_cfunc(ab_tmpl_range_class, rb_intern("each"),         ab_range_each,          0);
+    abruby_class_add_cfunc(ab_tmpl_range_class, rb_intern("map"),          ab_range_map,           0);
+    abruby_class_add_cfunc(ab_tmpl_range_class, rb_intern("collect"),      ab_range_map,           0);
 }

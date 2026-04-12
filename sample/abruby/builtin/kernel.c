@@ -73,6 +73,17 @@ static RESULT ab_kernel_require(CTX *c, VALUE self, unsigned int argc, VALUE *ar
     return abruby_require_file(c, path);
 }
 
+// __dir__ — directory of the current source file (the closest enclosing
+// AST method's source file, or the VM's current_file if at top level).
+// Used by optcarrot-bench to find Lan_Master.nes next to the script.
+static RESULT ab_kernel_dir(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)self; (void)argc; (void)argv;
+    VALUE path = abruby_current_file(c);
+    if (NIL_P(path)) return RESULT_OK(Qnil);
+    VALUE dir = rb_funcall(rb_cFile, rb_intern("dirname"), 1, path);
+    return RESULT_OK(abruby_str_new(c, dir));
+}
+
 // require_relative(path) — load a file relative to the current file
 static RESULT ab_kernel_require_relative(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     VALUE path = RSTR(argv[0]);
@@ -117,4 +128,5 @@ Init_abruby_kernel(void)
     abruby_class_add_cfunc(ab_tmpl_kernel_module, rb_intern("require_relative"), ab_kernel_require_relative, 1);
     abruby_class_add_cfunc(ab_tmpl_kernel_module, rb_intern("eval"),             ab_kernel_eval,             1);
     abruby_class_add_cfunc(ab_tmpl_kernel_module, rb_intern("block_given?"),     ab_kernel_block_given_p,    0);
+    abruby_class_add_cfunc(ab_tmpl_kernel_module, rb_intern("__dir__"),          ab_kernel_dir,              0);
 }

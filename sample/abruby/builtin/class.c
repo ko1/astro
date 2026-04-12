@@ -22,11 +22,17 @@ static RESULT ab_class_new(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
           case ABRUBY_METHOD_AST: {
             VALUE *save_fp = c->fp;
             VALUE save_self = c->self;
+            const struct abruby_cref *save_cref = c->cref;
             c->fp = argv;
             c->self = obj;
+            // Install the cref captured at def time so bare-constant
+            // lookups inside `initialize` see the lexically enclosing
+            // module/class.
+            c->cref = init->u.ast.cref;
             r = EVAL(c, init->u.ast.body);
             c->fp = save_fp;
             c->self = save_self;
+            c->cref = save_cref;
             break;
           }
           case ABRUBY_METHOD_IVAR_SETTER:
@@ -106,6 +112,181 @@ static RESULT ab_module_const_set(CTX *c, VALUE self, unsigned int argc, VALUE *
     return RESULT_OK(argv[1]);
 }
 
+// Struct.new(:a, :b, ...) — create a new class with attr_accessors for
+// each field and a `new(*args)` constructor that assigns its arguments
+// to the corresponding ivars.  abruby's Struct support is minimal: the
+// returned class has no Struct-specific methods (==, members, etc.),
+// just enough to satisfy `MethodDef = Struct.new(:params, :body)` style
+// load-time const initializers in optcarrot.  Instances do work for
+// basic assignment / read but not for the full Struct API.
+RESULT ab_struct_new(CTX *c, VALUE self, unsigned int argc, VALUE *argv);
+RESULT ab_struct_new(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)self;
+    // Create a fresh class inheriting from Object.
+    struct abruby_class *klass = (struct abruby_class *)ruby_xcalloc(1, sizeof(struct abruby_class));
+    klass->klass = c->abm->class_class;
+    klass->obj_type = ABRUBY_OBJ_GENERIC;
+    klass->name = rb_intern("Struct");
+    klass->super = c->abm->object_class;
+    // Register an ivar accessor for each field.  abruby internally
+    // recognises the simple body shapes used by `def x; @x; end` /
+    // `def x=(v); @x = v; end`, but we don't have AST nodes here at
+    // builtin init time, so just call abruby_class_add_method.  The
+    // ivar shape will be created lazily on first instance access.
+    for (unsigned int i = 0; i < argc; i++) {
+        ID field = (SYMBOL_P(argv[i])) ? SYM2ID(argv[i]) : rb_intern_str(RSTR(argv[i]));
+        // Build a synthetic getter cfunc via attr-accessor body would
+        // require AST nodes; instead, register a tiny IVAR_GETTER
+        // entry directly.
+        struct abruby_method *getter = ruby_xcalloc(1, sizeof(struct abruby_method));
+        getter->name = field;
+        getter->type = ABRUBY_METHOD_IVAR_GETTER;
+        getter->defining_class = klass;
+        getter->u.ivar_accessor.ivar_name = field;
+        ab_id_table_insert(&klass->methods, field, (VALUE)getter);
+
+        // Setter: name with `=` suffix.
+        const char *fname = rb_id2name(field);
+        char *setname = (char *)alloca(strlen(fname) + 2);
+        strcpy(setname, fname);
+        strcat(setname, "=");
+        ID setter_id = rb_intern(setname);
+        struct abruby_method *setter = ruby_xcalloc(1, sizeof(struct abruby_method));
+        setter->name = setter_id;
+        setter->type = ABRUBY_METHOD_IVAR_SETTER;
+        setter->defining_class = klass;
+        setter->u.ivar_accessor.ivar_name = field;
+        ab_id_table_insert(&klass->methods, setter_id, (VALUE)setter);
+    }
+    c->abm->method_serial++;
+    return RESULT_OK(abruby_wrap_class(klass));
+}
+
+// File.* — minimal facade over CRuby's rb_cFile.  Just enough for
+// optcarrot-bench: join, binread, dirname, basename, extname, expand_path,
+// exist?, readable?.  Receiver is the abruby File class object.
+
+static VALUE arg_to_rstr(VALUE v) {
+    if (ab_obj_type_p(v, ABRUBY_OBJ_STRING)) return RSTR(v);
+    return v;  // already a CRuby string maybe
+}
+
+RESULT ab_file_join(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)self;
+    VALUE args = rb_ary_new_capa(argc);
+    for (unsigned int i = 0; i < argc; i++) rb_ary_push(args, arg_to_rstr(argv[i]));
+    VALUE r = rb_funcallv(rb_cFile, rb_intern("join"), 1, &args);
+    return RESULT_OK(abruby_str_new(c, r));
+}
+RESULT ab_file_binread(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)self; (void)argc;
+    VALUE r = rb_funcall(rb_cFile, rb_intern("binread"), 1, arg_to_rstr(argv[0]));
+    return RESULT_OK(abruby_str_new(c, r));
+}
+RESULT ab_file_dirname(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)self; (void)argc;
+    return RESULT_OK(abruby_str_new(c, rb_funcall(rb_cFile, rb_intern("dirname"), 1, arg_to_rstr(argv[0]))));
+}
+RESULT ab_file_basename(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)self; (void)argc;
+    return RESULT_OK(abruby_str_new(c, rb_funcall(rb_cFile, rb_intern("basename"), 1, arg_to_rstr(argv[0]))));
+}
+RESULT ab_file_extname(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)self; (void)argc;
+    return RESULT_OK(abruby_str_new(c, rb_funcall(rb_cFile, rb_intern("extname"), 1, arg_to_rstr(argv[0]))));
+}
+RESULT ab_file_expand_path(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)self;
+    VALUE r;
+    if (argc >= 2) {
+        r = rb_funcall(rb_cFile, rb_intern("expand_path"), 2,
+                       arg_to_rstr(argv[0]), arg_to_rstr(argv[1]));
+    } else {
+        r = rb_funcall(rb_cFile, rb_intern("expand_path"), 1, arg_to_rstr(argv[0]));
+    }
+    return RESULT_OK(abruby_str_new(c, r));
+}
+RESULT ab_file_exist_p(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)c; (void)self; (void)argc;
+    VALUE r = rb_funcall(rb_cFile, rb_intern("exist?"), 1, arg_to_rstr(argv[0]));
+    return RESULT_OK(r);
+}
+RESULT ab_file_readable_p(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)c; (void)self; (void)argc;
+    VALUE r = rb_funcall(rb_cFile, rb_intern("readable?"), 1, arg_to_rstr(argv[0]));
+    return RESULT_OK(r);
+}
+RESULT ab_file_read(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)self; (void)argc;
+    VALUE r = rb_funcall(rb_cFile, rb_intern("read"), 1, arg_to_rstr(argv[0]));
+    return RESULT_OK(abruby_str_new(c, r));
+}
+
+// Module#attr_reader(:a, :b, ...) — register IVAR_GETTER methods on self.
+// Used for the dynamic form `attr_reader id` where id is a runtime
+// variable; the parser falls through to here when args aren't all
+// symbol literals.
+static struct abruby_method *
+make_ivar_getter_method(struct abruby_class *klass, ID name, ID ivar_name)
+{
+    struct abruby_method *m = (struct abruby_method *)ruby_xcalloc(1, sizeof(struct abruby_method));
+    m->name = name;
+    m->type = ABRUBY_METHOD_IVAR_GETTER;
+    m->defining_class = klass;
+    m->u.ivar_accessor.ivar_name = ivar_name;
+    return m;
+}
+
+static struct abruby_method *
+make_ivar_setter_method(struct abruby_class *klass, ID name, ID ivar_name)
+{
+    struct abruby_method *m = (struct abruby_method *)ruby_xcalloc(1, sizeof(struct abruby_method));
+    m->name = name;
+    m->type = ABRUBY_METHOD_IVAR_SETTER;
+    m->defining_class = klass;
+    m->u.ivar_accessor.ivar_name = ivar_name;
+    return m;
+}
+
+static ID arg_to_id(VALUE arg) {
+    if (SYMBOL_P(arg)) return SYM2ID(arg);
+    if (ab_obj_type_p(arg, ABRUBY_OBJ_STRING)) return rb_intern_str(RSTR(arg));
+    return 0;
+}
+
+static RESULT ab_module_attr_reader(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    struct abruby_class *klass = abruby_unwrap_class(self);
+    for (unsigned int i = 0; i < argc; i++) {
+        ID name = arg_to_id(argv[i]);
+        if (!name) continue;
+        ID ivar = rb_intern_str(rb_str_cat_cstr(rb_str_new_cstr("@"), rb_id2name(name)));
+        ab_id_table_insert(&klass->methods, name,
+                           (VALUE)make_ivar_getter_method(klass, name, ivar));
+    }
+    c->abm->method_serial++;
+    return RESULT_OK(Qnil);
+}
+
+static RESULT ab_module_attr_writer(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    struct abruby_class *klass = abruby_unwrap_class(self);
+    for (unsigned int i = 0; i < argc; i++) {
+        ID name = arg_to_id(argv[i]);
+        if (!name) continue;
+        ID ivar = rb_intern_str(rb_str_cat_cstr(rb_str_new_cstr("@"), rb_id2name(name)));
+        ID setter = rb_intern_str(rb_str_cat_cstr(rb_str_new_cstr(rb_id2name(name)), "="));
+        ab_id_table_insert(&klass->methods, setter,
+                           (VALUE)make_ivar_setter_method(klass, setter, ivar));
+    }
+    c->abm->method_serial++;
+    return RESULT_OK(Qnil);
+}
+
+static RESULT ab_module_attr_accessor(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    RESULT r = ab_module_attr_reader(c, self, argc, argv);
+    if (r.state != RESULT_NORMAL) return r;
+    return ab_module_attr_writer(c, self, argc, argv);
+}
+
 // Module#private / #public / #protected — no-op visibility controls.
 // abruby does not enforce method visibility, so these are placeholders
 // that accept arbitrary arguments and return self (matching Ruby's
@@ -140,6 +321,9 @@ Init_abruby_class(void)
     abruby_class_add_cfunc(ab_tmpl_module_class, rb_intern("public"),    ab_module_visibility_noop, 0);
     abruby_class_add_cfunc(ab_tmpl_module_class, rb_intern("protected"), ab_module_visibility_noop, 0);
     abruby_class_add_cfunc(ab_tmpl_module_class, rb_intern("module_function"), ab_module_visibility_noop, 0);
+    abruby_class_add_cfunc(ab_tmpl_module_class, rb_intern("attr_reader"),   ab_module_attr_reader,   0);
+    abruby_class_add_cfunc(ab_tmpl_module_class, rb_intern("attr_writer"),   ab_module_attr_writer,   0);
+    abruby_class_add_cfunc(ab_tmpl_module_class, rb_intern("attr_accessor"), ab_module_attr_accessor, 0);
 
     // Class (inherits Module, adds new)
     abruby_class_add_cfunc(ab_tmpl_class_class, rb_intern("new"), ab_class_new, -1);

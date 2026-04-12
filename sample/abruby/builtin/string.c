@@ -9,6 +9,59 @@ static RESULT ab_string_inspect(CTX *c, VALUE self, unsigned int argc, VALUE *ar
 }
 static RESULT ab_string_to_s(CTX *c, VALUE self, unsigned int argc, VALUE *argv) { return RESULT_OK(self); }
 static RESULT ab_string_to_i(CTX *c, VALUE self, unsigned int argc, VALUE *argv) { return RESULT_OK(LONG2FIX(strtol(RSTRING_PTR(RSTR(self)), NULL, 10))); }
+static RESULT ab_string_start_with_p(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)c;
+    VALUE rs = RSTR(self);
+    long rs_len = RSTRING_LEN(rs);
+    const char *rs_ptr = RSTRING_PTR(rs);
+    for (unsigned int i = 0; i < argc; i++) {
+        if (!ab_obj_type_p(argv[i], ABRUBY_OBJ_STRING)) continue;
+        VALUE pat = RSTR(argv[i]);
+        long pl = RSTRING_LEN(pat);
+        if (pl <= rs_len && memcmp(rs_ptr, RSTRING_PTR(pat), pl) == 0) {
+            return RESULT_OK(Qtrue);
+        }
+    }
+    return RESULT_OK(Qfalse);
+}
+static RESULT ab_string_end_with_p(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)c;
+    VALUE rs = RSTR(self);
+    long rs_len = RSTRING_LEN(rs);
+    const char *rs_ptr = RSTRING_PTR(rs);
+    for (unsigned int i = 0; i < argc; i++) {
+        if (!ab_obj_type_p(argv[i], ABRUBY_OBJ_STRING)) continue;
+        VALUE pat = RSTR(argv[i]);
+        long pl = RSTRING_LEN(pat);
+        if (pl <= rs_len && memcmp(rs_ptr + rs_len - pl, RSTRING_PTR(pat), pl) == 0) {
+            return RESULT_OK(Qtrue);
+        }
+    }
+    return RESULT_OK(Qfalse);
+}
+static RESULT ab_string_chomp(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)argc; (void)argv;
+    VALUE rs = RSTR(self);
+    long len = RSTRING_LEN(rs);
+    const char *p = RSTRING_PTR(rs);
+    while (len > 0 && (p[len-1] == '\n' || p[len-1] == '\r')) len--;
+    return RESULT_OK(abruby_str_new(c, rb_str_new(p, len)));
+}
+static RESULT ab_string_strip(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)argc; (void)argv;
+    VALUE rs = RSTR(self);
+    long len = RSTRING_LEN(rs);
+    const char *p = RSTRING_PTR(rs);
+    long start = 0, end = len;
+    while (start < end && (p[start] == ' ' || p[start] == '\t' || p[start] == '\n' || p[start] == '\r')) start++;
+    while (end > start && (p[end-1] == ' ' || p[end-1] == '\t' || p[end-1] == '\n' || p[end-1] == '\r')) end--;
+    return RESULT_OK(abruby_str_new(c, rb_str_new(p + start, end - start)));
+}
+static RESULT ab_string_to_sym(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)c; (void)argc; (void)argv;
+    // Symbols are CRuby immediates; intern the underlying rb_str.
+    return RESULT_OK(rb_str_intern(RSTR(self)));
+}
 static RESULT ab_string_add(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     // Pre-size the result buffer so rb_str_cat doesn't need to realloc.
     VALUE rs = RSTR(self), ra = RSTR(argv[0]);
@@ -94,4 +147,10 @@ Init_abruby_string(void)
     abruby_class_add_cfunc(ab_tmpl_string_class, rb_intern("downcase"), ab_string_downcase,  0);
     abruby_class_add_cfunc(ab_tmpl_string_class, rb_intern("reverse"),  ab_string_reverse,   0);
     abruby_class_add_cfunc(ab_tmpl_string_class, rb_intern("include?"), ab_string_include_p, 1);
+    abruby_class_add_cfunc(ab_tmpl_string_class, rb_intern("to_sym"),   ab_string_to_sym,    0);
+    abruby_class_add_cfunc(ab_tmpl_string_class, rb_intern("intern"),   ab_string_to_sym,    0);
+    abruby_class_add_cfunc(ab_tmpl_string_class, rb_intern("start_with?"), ab_string_start_with_p, 1);
+    abruby_class_add_cfunc(ab_tmpl_string_class, rb_intern("end_with?"),   ab_string_end_with_p,   1);
+    abruby_class_add_cfunc(ab_tmpl_string_class, rb_intern("chomp"),    ab_string_chomp,     0);
+    abruby_class_add_cfunc(ab_tmpl_string_class, rb_intern("strip"),    ab_string_strip,     0);
 }

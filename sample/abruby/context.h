@@ -110,6 +110,7 @@ struct abruby_method {
             unsigned int params_cnt;
             unsigned int locals_cnt;
             const char *source_file; // file where method was defined
+            const struct abruby_cref *cref; // lexical const scope captured at def time
         } ast;
         struct {
             abruby_cfunc_t func;
@@ -257,7 +258,9 @@ static inline void
 ab_verify(VALUE obj)
 {
     if (ABRUBY_DEBUG) {
-        // immediate values are always valid
+        // immediate values are always valid.  SYMBOL_P covers both
+        // static (immediate) and dynamic (heap T_SYMBOL) symbols, both
+        // of which we treat as valid abruby values via the symbol_class.
         if (FIXNUM_P(obj) || SYMBOL_P(obj) || RB_FLONUM_P(obj) ||
             obj == Qtrue || obj == Qfalse || obj == Qnil) {
             return;
@@ -290,7 +293,11 @@ ab_obj_type_p(VALUE obj, enum abruby_obj_type type)
 {
     if (FIXNUM_P(obj))           return type == ABRUBY_OBJ_BIGNUM;  // integer_class.obj_type
     if (RB_FLONUM_P(obj))        return type == ABRUBY_OBJ_FLOAT;
-    if (RB_SPECIAL_CONST_P(obj)) return type == ABRUBY_OBJ_GENERIC; // symbol/true/false/nil
+    // SYMBOL_P catches both static (immediate) and dynamic (heap T_SYMBOL)
+    // symbols.  Must be checked before the RTYPEDDATA path so dynamic
+    // symbols don't get dereferenced as T_DATA.
+    if (SYMBOL_P(obj))           return type == ABRUBY_OBJ_GENERIC; // symbol_class.obj_type
+    if (RB_SPECIAL_CONST_P(obj)) return type == ABRUBY_OBJ_GENERIC; // true/false/nil
     const struct abruby_header *h = (const struct abruby_header *)RTYPEDDATA_GET_DATA(obj);
     return h->klass && h->klass->obj_type == type;
 }
@@ -394,12 +401,23 @@ abruby_in_block(const struct CTX_struct *c);
 static inline const struct abruby_frame *
 abruby_context_frame(const struct CTX_struct *c);
 
+// Lexical scope frame for constant lookup.  Allocated on the heap
+// by class/module definition so AST methods defined inside that body
+// can capture it (pointer is stored on the method's abruby_method
+// struct and is re-installed on c->cref at invocation time).
+// Lifetime: never freed — classes are never freed either.
+struct abruby_cref {
+    struct abruby_class *klass;
+    const struct abruby_cref *outer;
+};
+
 struct CTX_struct {
     struct abruby_machine *abm;          // per-instance machine (owner)
     VALUE stack[ABRUBY_STACK_SIZE];      // VALUE stack (locals + args)
     VALUE *fp;                           // frame pointer into stack
     VALUE self;
     struct abruby_class *current_class;  // set during class body eval
+    const struct abruby_cref *cref;      // lexical constant scope chain
     struct abruby_frame *current_frame;  // head of call frame linked list
     const struct abruby_id_cache *ids;   // cached rb_intern results
     // Block-execution context.  `yield` / `abruby_yield` sets both fields
@@ -440,6 +458,17 @@ struct abruby_machine {
     VALUE rb_self;                       // Ruby-level AbRuby instance
     VALUE current_file;                  // current file path
     VALUE loaded_files;                  // loaded file paths
+    VALUE loaded_asts;                   // AST objects kept alive for the
+                                         // lifetime of the VM. Required
+                                         // because methods defined by
+                                         // `require` / `eval` reference
+                                         // NODE pointers embedded in these
+                                         // ASTs; without a retention root
+                                         // the GC sweeps the NODE T_DATA
+                                         // and abruby_method bodies become
+                                         // dangling (optimization-dependent
+                                         // crashes when loading large
+                                         // files like optcarrot).
     // Per-instance class pointers (each instance has its own class hierarchy)
     struct abruby_class *object_class;
     struct abruby_class *integer_class;
@@ -518,6 +547,15 @@ AB_CLASS_OF(const CTX *c, VALUE obj)
 {
     ab_verify(obj);
 
+    // CRuby has two symbol representations: static (immediate) and
+    // dynamic (heap T_SYMBOL).  SYMBOL_P returns true for both, but
+    // RB_SPECIAL_CONST_P only catches the static form.  Dispatch on
+    // SYMBOL_P first so dynamic symbols (e.g. from `"long".to_sym`,
+    // `:"@#{x}"`, or `rb_str_intern`) resolve to the symbol class
+    // instead of being dereferenced as T_DATA.
+    if (SYMBOL_P(obj)) {
+        return c->abm->symbol_class;
+    }
     if (RB_LIKELY(!RB_SPECIAL_CONST_P(obj))) {
         return ((struct abruby_header *)RTYPEDDATA_GET_DATA(obj))->klass;
     }

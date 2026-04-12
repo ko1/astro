@@ -79,6 +79,7 @@ abruby_class_add_method(CTX *c, struct abruby_class *klass, ID name,
                         struct Node *body, unsigned int params_cnt, unsigned int locals_cnt,
                         const char *source_file)
 {
+    const struct abruby_cref *def_cref = c->cref;
     VALUE existing;
     if (ab_id_table_lookup(&klass->methods, name, &existing)) {
         struct abruby_method *m = (struct abruby_method *)existing;
@@ -88,6 +89,7 @@ abruby_class_add_method(CTX *c, struct abruby_class *klass, ID name,
             m->u.ast.params_cnt = params_cnt;
             m->u.ast.locals_cnt = locals_cnt;
             m->u.ast.source_file = source_file;
+            m->u.ast.cref = def_cref;
         }
         c->abm->method_serial++;
         return;
@@ -101,6 +103,7 @@ abruby_class_add_method(CTX *c, struct abruby_class *klass, ID name,
         m->u.ast.params_cnt = params_cnt;
         m->u.ast.locals_cnt = locals_cnt;
         m->u.ast.source_file = source_file;
+        m->u.ast.cref = def_cref;
     }
     ab_id_table_insert(&klass->methods, name, (VALUE)m);
     c->abm->method_serial++;
@@ -269,8 +272,11 @@ abruby_const_get(CTX *c, NODE *n, const struct abruby_class *klass, ID name)
         return RESULT_OK(v);
     VALUE exc;
     PUSH_FRAME(n);
-    exc = abruby_exception_new(c, c->current_frame,
-        abruby_str_new_cstr(c,"uninitialized constant"));
+    {
+        VALUE m = rb_str_new_cstr("uninitialized constant ");
+        rb_str_cat_cstr(m, rb_id2name(name));
+        exc = abruby_exception_new(c, c->current_frame, m);
+    }
     POP_FRAME();
     return (RESULT){exc, RESULT_RAISE};
 }
@@ -278,16 +284,41 @@ abruby_const_get(CTX *c, NODE *n, const struct abruby_class *klass, ID name)
 NODE_DEF
 node_const_path_get(CTX * restrict c, NODE * restrict n, ID parent_name, ID name)
 {
-    const struct abruby_class *klass = find_class(c, parent_name);
-    if (!klass) {
+    // Resolve `parent_name` via the same lexical/super chain we use for
+    // bare constants — this is needed for `Outer::Inner` references where
+    // `Outer` is a constant defined in an enclosing module.
+    VALUE parent_v = Qundef;
+    for (const struct abruby_cref *cr = c->cref; cr; cr = cr->outer) {
+        for (const struct abruby_class *k = cr->klass; k; k = k->super) {
+            if (ab_id_table_lookup(&k->constants, parent_name, &parent_v)) goto found;
+        }
+    }
+    for (const struct abruby_class *k = c->current_class; k; k = k->super) {
+        if (ab_id_table_lookup(&k->constants, parent_name, &parent_v)) goto found;
+    }
+    if (ab_id_table_lookup(&CTX_MAIN_CLASS(c)->constants, parent_name, &parent_v)) goto found;
+    if (CTX_MAIN_CLASS(c) != c->abm->object_class &&
+        ab_id_table_lookup(&c->abm->object_class->constants, parent_name, &parent_v)) goto found;
+found:
+    if (parent_v == Qundef || !RB_TYPE_P(parent_v, T_DATA)) {
         VALUE exc;
         PUSH_FRAME(n);
-        exc = abruby_exception_new(c, c->current_frame,
-            abruby_str_new_cstr(c,"uninitialized constant"));
+        VALUE m = rb_str_new_cstr("uninitialized constant ");
+        rb_str_cat_cstr(m, rb_id2name(parent_name));
+        exc = abruby_exception_new(c, c->current_frame, m);
         POP_FRAME();
         return (RESULT){exc, RESULT_RAISE};
     }
-    return abruby_const_get(c, n, klass, name);
+    struct abruby_header *h = (struct abruby_header *)RTYPEDDATA_GET_DATA(parent_v);
+    if (h->klass != c->abm->class_class && h->klass != c->abm->module_class) {
+        VALUE exc;
+        PUSH_FRAME(n);
+        exc = abruby_exception_new(c, c->current_frame,
+            abruby_str_new_cstr(c, "constant path parent is not a class or module"));
+        POP_FRAME();
+        return (RESULT){exc, RESULT_RAISE};
+    }
+    return abruby_const_get(c, n, (struct abruby_class *)h, name);
 }
 
 NODE_DEF
@@ -303,18 +334,27 @@ NODE_DEF
 node_const_get(CTX * restrict c, NODE * restrict n, ID name)
 {
     VALUE v;
-    // 1) Walk the current class / module and its super chain for
-    //    inherited constants.  This is needed when a class body reads a
-    //    constant defined in the same class (e.g., `class ROM;
-    //    MAPPER_DB = {}; end; class MMC1 < ROM; MAPPER_DB[...] end`).
+    // 1) Walk the lexical cref chain: for each enclosing class/module,
+    //    check its own constants *and* its super chain.  This matches
+    //    Ruby's bare-constant lookup semantics (lexical first, then
+    //    inheritance).
+    for (const struct abruby_cref *cr = c->cref; cr; cr = cr->outer) {
+        for (const struct abruby_class *k = cr->klass; k; k = k->super) {
+            if (ab_id_table_lookup(&k->constants, name, &v))
+                return RESULT_OK(v);
+        }
+    }
+    // 2) When no cref is active (top-level code, cfuncs), fall back to
+    //    the current class's super chain so inherited class-body reads
+    //    still work (e.g., `class B < A; MAPPER = A::MAPPER; end`).
     for (const struct abruby_class *k = c->current_class; k; k = k->super) {
         if (ab_id_table_lookup(&k->constants, name, &v))
             return RESULT_OK(v);
     }
-    // 2) Top-level / main class constants.
+    // 3) Top-level / main class constants.
     if (ab_id_table_lookup(&CTX_MAIN_CLASS(c)->constants, name, &v))
         return RESULT_OK(v);
-    // 3) Object class constants (built-ins like Float::INFINITY source).
+    // 4) Object class constants (built-ins like Float::INFINITY source).
     if (CTX_MAIN_CLASS(c) != c->abm->object_class) {
         return abruby_const_get(c, n, c->abm->object_class, name);
     }
@@ -727,22 +767,45 @@ node_def(CTX * restrict c, NODE * restrict n, ID name, NODE *body, uint32_t para
 NODE_DEF @noinline
 node_module_def(CTX * restrict c, NODE * restrict n, ID name, NODE *body)
 {
-    struct abruby_class *mod = find_class(c, name);
+    // Look for an existing module with this name in the enclosing scope.
+    struct abruby_class *outer = c->current_class ? c->current_class : CTX_MAIN_CLASS(c);
+    VALUE existing_v;
+    struct abruby_class *mod = NULL;
+    if (ab_id_table_lookup(&outer->constants, name, &existing_v) && RB_TYPE_P(existing_v, T_DATA)) {
+        struct abruby_header *h = (struct abruby_header *)RTYPEDDATA_GET_DATA(existing_v);
+        if (h->klass == c->abm->module_class || h->klass == c->abm->class_class) {
+            mod = (struct abruby_class *)h;
+        }
+    }
     if (!mod) {
         mod = (struct abruby_class *)ruby_xcalloc(1, sizeof(struct abruby_class));
         mod->klass = c->abm->module_class;
         mod->obj_type = ABRUBY_OBJ_MODULE;
         mod->name = name;
         mod->super = NULL;
-        abruby_class_set_const(CTX_MAIN_CLASS(c), name, abruby_wrap_class(mod));
+        // Register on the enclosing class/module so `Outer::Inner` resolves.
+        abruby_class_set_const(outer, name, abruby_wrap_class(mod));
+        // Also expose at the top level when at file scope so `Inner` works
+        // bare from main code paths that don't carry a cref.
+        if (outer == CTX_MAIN_CLASS(c)) {
+            // already on main; no-op
+        }
     }
 
     struct abruby_class *save_class = c->current_class;
     VALUE save_self = c->self;
+    const struct abruby_cref *save_cref = c->cref;
+    // Heap-allocated cref — AST method bodies defined inside this module
+    // capture it (via abruby_class_add_method) and reuse it at invocation.
+    struct abruby_cref *mod_cref = (struct abruby_cref *)ruby_xcalloc(1, sizeof(struct abruby_cref));
+    mod_cref->klass = mod;
+    mod_cref->outer = save_cref;
     c->current_class = mod;
+    c->cref = mod_cref;
     c->self = abruby_wrap_class(mod);
     RESULT _rb = EVAL_ARG(c, body);
     c->current_class = save_class;
+    c->cref = save_cref;
     c->self = save_self;
     if (UNLIKELY(_rb.state != RESULT_NORMAL)) return _rb;
     return RESULT_OK(abruby_wrap_class(mod));
@@ -751,7 +814,16 @@ node_module_def(CTX * restrict c, NODE * restrict n, ID name, NODE *body)
 NODE_DEF @noinline
 node_class_def(CTX * restrict c, NODE * restrict n, ID name, NODE *super_expr, NODE *body)
 {
-    struct abruby_class *klass = find_class(c, name);
+    // Look for an existing class with this name in the enclosing scope.
+    struct abruby_class *outer = c->current_class ? c->current_class : CTX_MAIN_CLASS(c);
+    VALUE existing_v;
+    struct abruby_class *klass = NULL;
+    if (ab_id_table_lookup(&outer->constants, name, &existing_v) && RB_TYPE_P(existing_v, T_DATA)) {
+        struct abruby_header *h = (struct abruby_header *)RTYPEDDATA_GET_DATA(existing_v);
+        if (h->klass == c->abm->class_class || h->klass == c->abm->module_class) {
+            klass = (struct abruby_class *)h;
+        }
+    }
     if (!klass) {
         struct abruby_class *super = c->abm->object_class;
         VALUE sv = UNWRAP(EVAL_ARG(c, super_expr));
@@ -771,15 +843,25 @@ node_class_def(CTX * restrict c, NODE * restrict n, ID name, NODE *super_expr, N
         klass->obj_type = ABRUBY_OBJ_GENERIC;  // instances are user objects
         klass->name = name;
         klass->super = super;
-        abruby_class_set_const(CTX_MAIN_CLASS(c), name, abruby_wrap_class(klass));
+        // Register on the enclosing scope (current_class or main).  When
+        // nested in a module/class, the constant lives there and is
+        // reached via `Outer::Name` or via cref-based lookup from inside
+        // the enclosing body.
+        abruby_class_set_const(outer, name, abruby_wrap_class(klass));
     }
 
     struct abruby_class *save_class = c->current_class;
     VALUE save_self = c->self;
+    const struct abruby_cref *save_cref = c->cref;
+    struct abruby_cref *cls_cref = (struct abruby_cref *)ruby_xcalloc(1, sizeof(struct abruby_cref));
+    cls_cref->klass = klass;
+    cls_cref->outer = save_cref;
     c->current_class = klass;
+    c->cref = cls_cref;
     c->self = abruby_wrap_class(klass);
     RESULT _rb = EVAL_ARG(c, body);
     c->current_class = save_class;
+    c->cref = save_cref;
     c->self = save_self;
     if (UNLIKELY(_rb.state != RESULT_NORMAL)) return _rb;
     return RESULT_OK(abruby_wrap_class(klass));
@@ -889,9 +971,14 @@ dispatch_method_frame(CTX * restrict c, NODE * restrict call_site,
     RESULT r;
     if (LIKELY(mc->body != NULL)) {
         VALUE *save_fp = c->fp;
+        const struct abruby_cref *save_cref = c->cref;
         c->fp = save_fp + arg_index;
+        // Install the lexical const scope captured at def time so bare
+        // constant lookups inside the method body see the right modules.
+        c->cref = mc->method->u.ast.cref;
         r = mc->dispatcher(c, mc->body);
         c->fp = save_fp;
+        c->cref = save_cref;
     } else {
         r = mc->method->u.cfunc.func(c, c->self, argc, c->fp + arg_index);
     }
@@ -959,9 +1046,12 @@ dispatch_method_frame_with_block(CTX * restrict c, NODE * restrict call_site,
     RESULT r;
     if (LIKELY(mc->body != NULL)) {
         VALUE *save_fp = c->fp;
+        const struct abruby_cref *save_cref = c->cref;
         c->fp = save_fp + arg_index;
+        c->cref = mc->method->u.ast.cref;
         r = mc->dispatcher(c, mc->body);
         c->fp = save_fp;
+        c->cref = save_cref;
     } else {
         r = mc->method->u.cfunc.func(c, c->self, argc, c->fp + arg_index);
     }
@@ -1029,6 +1119,27 @@ method_missing_dispatch(CTX * restrict c, NODE * restrict n, const struct abruby
     return dispatch_method_with_klass(c, n, recv_val, klass, mm, params_cnt + 1, arg_index);
 }
 
+// If recv_val is itself a class/module object, return its own methods
+// table for "singleton" lookup; otherwise return NULL.  This is the
+// minimal hack we use to make `def self.foo` (stored on the class's
+// own methods table by node_def) callable as `ClassName.foo` and from
+// inside the class body itself, without implementing real metaclasses.
+//
+// We detect "recv is a class/module value" by checking whether its
+// metaclass (the `klass` field at offset 0 of the data) is the
+// per-instance class_class or module_class — that's how class/module
+// values are tagged in abruby.
+static inline struct abruby_class *
+abruby_singleton_table_class(CTX *c, VALUE recv_val)
+{
+    if (RB_SPECIAL_CONST_P(recv_val)) return NULL;
+    struct abruby_header *h = (struct abruby_header *)RTYPEDDATA_GET_DATA(recv_val);
+    if (h->klass != c->abm->class_class && h->klass != c->abm->module_class) {
+        return NULL;
+    }
+    return (struct abruby_class *)h;
+}
+
 // Not marked `cold`: polymorphic dispatch sites (e.g. bm_dispatch) hit this
 // path every other iteration, and sending it to the cold section wrecks icache.
 static __attribute__((noinline)) RESULT
@@ -1039,6 +1150,16 @@ node_method_call_slow(CTX * restrict c, NODE * restrict n,
 {
     const struct abruby_method *method = abruby_class_find_method(klass, name);
     if (UNLIKELY(method == NULL)) {
+        // Class/module objects: also check their own method table for
+        // "class methods" defined via `def self.foo`.  Cached only weakly
+        // (no IC) — class-method dispatch is rare on the hot path.
+        struct abruby_class *singleton = abruby_singleton_table_class(c, recv_val);
+        if (singleton) {
+            method = abruby_class_find_method(singleton, name);
+            if (method) {
+                return dispatch_method_with_klass(c, n, recv_val, klass, method, params_cnt, arg_index);
+            }
+        }
         return method_missing_dispatch(c, n, klass, name, recv_val, params_cnt, arg_index);
     }
     method_cache_fill(c, mc, klass, method);
@@ -1352,8 +1473,10 @@ node_arith_fallback(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, ID 
         if (!method) {
             VALUE exc;
             PUSH_FRAME(n);
-            exc = abruby_exception_new(c, c->current_frame,
-                abruby_str_new_cstr(c,"undefined method"));
+            VALUE mstr2 = rb_str_new_cstr("undefined method `");
+            rb_str_cat_cstr(mstr2, rb_id2name(op));
+            rb_str_cat_cstr(mstr2, "'");
+            exc = abruby_exception_new(c, c->current_frame, mstr2);
             POP_FRAME();
             return (RESULT){exc, RESULT_RAISE};
         }

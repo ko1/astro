@@ -135,6 +135,43 @@ class AbRuby
       when Prism::StringNode
         AbRuby.alloc_node_str_new(node.unescaped)
 
+      when Prism::InterpolatedSymbolNode
+        # `:"@#{x}"` — build the interpolated string then call .to_sym.
+        str_node = node.dup
+        # Rebuild the same parts as an InterpolatedStringNode-equivalent
+        # walk, then wrap with a to_sym call.
+        str_ast =
+          begin
+            fake = Struct.new(:parts).new(node.parts)
+            # Inline the interpolated-string lowering logic here.
+            base_idx = arg_index
+            result_slots = fake.parts.map { inc_arg_index }
+            work_idx = arg_index
+
+            seq_nodes = fake.parts.each_with_index.map do |part, i|
+              slot = result_slots[i]
+              case part
+              when Prism::StringNode
+                AbRuby.alloc_node_lvar_set(slot, AbRuby.alloc_node_str_new(part.unescaped))
+              when Prism::EmbeddedStatementsNode
+                inner = part.statements ? transduce(part.statements) : AbRuby.alloc_node_str_new("")
+                store = AbRuby.alloc_node_lvar_set(slot, inner)
+                recv_ref = AbRuby.alloc_node_lvar_get(slot)
+                to_s_call = set_line(AbRuby.alloc_node_method_call(recv_ref, "to_s", 0, work_idx), node)
+                AbRuby.alloc_node_seq(store, AbRuby.alloc_node_lvar_set(slot, to_s_call))
+              else
+                raise "unsupported interpolation part: #{part.class}"
+              end
+            end
+
+            rewind_arg_index(base_idx)
+            concat_node = AbRuby.alloc_node_str_concat(fake.parts.size, base_idx)
+            build_seq(seq_nodes + [concat_node])
+          end
+
+        # Now call `.to_sym` on the concatenated string.
+        AbRuby.alloc_node_method_call(str_ast, "to_sym", 0, arg_index)
+
       when Prism::InterpolatedStringNode
         # "hello #{expr} world" → str_concat(["hello", expr.to_s, " world"])
         # Evaluate all parts, then collect into contiguous slots for str_concat
@@ -282,6 +319,88 @@ class AbRuby
         end
         AbRuby.alloc_node_lvar_set(lvar_index(node.name), call_node)
 
+      # === X ||= v / X &&= v lowering ===
+      #
+      # For each left-hand target, `X ||= v` lowers to
+      #   tmp = read(X); if tmp then tmp else write(X, v) end
+      # and `X &&= v` lowers to
+      #   tmp = read(X); if tmp then write(X, v) else tmp end
+      #
+      # Local / ivar / gvar / constant targets can re-evaluate the read
+      # and write expressions directly (no side effects at the location
+      # itself).  Index / call targets cache receiver (and arguments)
+      # into temp slots so they are evaluated exactly once.
+
+      when Prism::LocalVariableOrWriteNode
+        li = lvar_index(node.name)
+        build_or_write(
+          AbRuby.alloc_node_lvar_get(li),
+          transduce(node.value),
+          ->(v){ AbRuby.alloc_node_lvar_set(li, v) })
+
+      when Prism::LocalVariableAndWriteNode
+        li = lvar_index(node.name)
+        build_and_write(
+          AbRuby.alloc_node_lvar_get(li),
+          transduce(node.value),
+          ->(v){ AbRuby.alloc_node_lvar_set(li, v) })
+
+      when Prism::InstanceVariableOrWriteNode
+        nm = node.name.to_s
+        build_or_write(
+          AbRuby.alloc_node_ivar_get(nm),
+          transduce(node.value),
+          ->(v){ AbRuby.alloc_node_ivar_set(nm, v) })
+
+      when Prism::InstanceVariableAndWriteNode
+        nm = node.name.to_s
+        build_and_write(
+          AbRuby.alloc_node_ivar_get(nm),
+          transduce(node.value),
+          ->(v){ AbRuby.alloc_node_ivar_set(nm, v) })
+
+      when Prism::GlobalVariableOrWriteNode
+        nm = node.name.to_s
+        build_or_write(
+          AbRuby.alloc_node_gvar_get(nm),
+          transduce(node.value),
+          ->(v){ AbRuby.alloc_node_gvar_set(nm, v) })
+
+      when Prism::GlobalVariableAndWriteNode
+        nm = node.name.to_s
+        build_and_write(
+          AbRuby.alloc_node_gvar_get(nm),
+          transduce(node.value),
+          ->(v){ AbRuby.alloc_node_gvar_set(nm, v) })
+
+      when Prism::ConstantOrWriteNode
+        nm = node.name.to_s
+        build_or_write(
+          AbRuby.alloc_node_const_get(nm),
+          transduce(node.value),
+          ->(v){ AbRuby.alloc_node_const_set(nm, v) })
+
+      when Prism::ConstantAndWriteNode
+        nm = node.name.to_s
+        build_and_write(
+          AbRuby.alloc_node_const_get(nm),
+          transduce(node.value),
+          ->(v){ AbRuby.alloc_node_const_set(nm, v) })
+
+      when Prism::IndexOrWriteNode
+        transduce_index_op_write(node, :or)
+      when Prism::IndexAndWriteNode
+        transduce_index_op_write(node, :and)
+      when Prism::IndexOperatorWriteNode
+        transduce_index_op_write(node, node.binary_operator.to_s)
+
+      when Prism::CallOrWriteNode
+        transduce_call_op_write(node, :or)
+      when Prism::CallAndWriteNode
+        transduce_call_op_write(node, :and)
+      when Prism::CallOperatorWriteNode
+        transduce_call_op_write(node, node.binary_operator.to_s)
+
       when Prism::IfNode
         cond = transduce(node.predicate)
         then_n = node.statements ? transduce(node.statements) : AbRuby.alloc_node_nil
@@ -400,14 +519,20 @@ class AbRuby
 
       when Prism::ArrayNode
         elements = node.elements
-        base_idx = arg_index
-        seq_nodes = elements.map do |elem|
-          idx = inc_arg_index
-          AbRuby.alloc_node_lvar_set(idx, transduce(elem))
+        if elements.any? { |e| e.is_a?(Prism::SplatNode) }
+          # `[a, *b, c]` → `[a] + b + [c]`.  Same folding trick as
+          # splat call args.  Preserves evaluation order.
+          build_splat_args_array(elements)
+        else
+          base_idx = arg_index
+          seq_nodes = elements.map do |elem|
+            idx = inc_arg_index
+            AbRuby.alloc_node_lvar_set(idx, transduce(elem))
+          end
+          rewind_arg_index(base_idx)
+          ary_node = AbRuby.alloc_node_ary_new(elements.size, base_idx)
+          seq_nodes.empty? ? ary_node : build_seq(seq_nodes + [ary_node])
         end
-        rewind_arg_index(base_idx)
-        ary_node = AbRuby.alloc_node_ary_new(elements.size, base_idx)
-        seq_nodes.empty? ? ary_node : build_seq(seq_nodes + [ary_node])
 
       when Prism::HashNode, Prism::KeywordHashNode
         # KeywordHashNode appears when a call is written as `foo(a: 1, b: 2)`;
@@ -439,6 +564,32 @@ class AbRuby
         flags = extract_regexp_flags(node)
         AbRuby.alloc_node_regexp_new(node.unescaped, flags)
 
+      when Prism::InterpolatedRegularExpressionNode
+        # `/a#{x}b/` — only used in optcarrot's codegen path (opt.rb)
+        # which the -b bench never executes.  Emit a nil stub so parsing
+        # succeeds; any code that actually reaches this will raise.
+        AbRuby.alloc_node_nil
+
+      when Prism::NumberedReferenceReadNode, Prism::BackReferenceReadNode,
+           Prism::MatchLastLineNode
+        # $1 / $~ / $& / ... — abruby doesn't track regex globals, so we
+        # emit nil.  Only safe because optcarrot-bench never runs the
+        # codegen paths that would observe these (the -o pipeline does).
+        AbRuby.alloc_node_nil
+
+      when Prism::SourceFileNode
+        # __FILE__ — return the file path known to the parser at parse time.
+        AbRuby.alloc_node_str_new((node.filepath && !node.filepath.empty?) ?
+                                  node.filepath : (@source_file || "(abruby)"))
+
+      when Prism::SourceEncodingNode
+        # __ENCODING__ — abruby doesn't track encodings; emit nil.
+        AbRuby.alloc_node_nil
+
+      when Prism::SourceLineNode
+        # __LINE__ — bake in the line number at parse time.
+        AbRuby.alloc_node_num(node.location.start_line)
+
       when Prism::SelfNode
         AbRuby.alloc_node_self
 
@@ -449,10 +600,26 @@ class AbRuby
         AbRuby.alloc_node_const_get(node.name.to_s)
 
       when Prism::ConstantPathNode
-        if node.parent.is_a?(Prism::ConstantReadNode)
+        if node.parent.nil?
+          # Top-level ::FOO
+          AbRuby.alloc_node_const_get(node.name.to_s)
+        elsif node.parent.is_a?(Prism::ConstantReadNode)
           AbRuby.alloc_node_const_path_get(node.parent.name.to_s, node.name.to_s)
         else
-          raise "unsupported constant path: #{node.inspect}"
+          # Runtime lookup: evaluate parent (any expression), call
+          # `const_get(:NAME)` on it.  Matches Module#const_get semantics
+          # well enough for abruby's flat constant tables.
+          parent_ast = transduce(node.parent)
+          recv_idx = inc_arg_index
+          recv_store = AbRuby.alloc_node_lvar_set(recv_idx, parent_ast)
+          call_arg_idx = arg_index
+          sym_slot = inc_arg_index
+          sym_store = AbRuby.alloc_node_lvar_set(sym_slot,
+            AbRuby.alloc_node_sym(node.name.to_s))
+          rewind_arg_index(recv_idx)
+          recv_ref = AbRuby.alloc_node_lvar_get(recv_idx)
+          call = AbRuby.alloc_node_method_call(recv_ref, "const_get", 1, call_arg_idx)
+          build_seq([recv_store, sym_store, call])
         end
 
       when Prism::ModuleNode
@@ -534,6 +701,8 @@ class AbRuby
             recv_ref = AbRuby.alloc_node_lvar_get(recv_idx)
             call = AbRuby.alloc_node_method_call(recv_ref, "[]=", idx_nodes.size + 1, call_arg_idx)
             assigns << build_seq([recv_store] + arg_seq + [call])
+          when Prism::ConstantTargetNode
+            assigns << AbRuby.alloc_node_const_set(target.name.to_s, rhs)
           when Prism::CallTargetNode
             # Lower `recv.attr = rhs` to `recv.attr=(rhs)`.
             recv_ast = transduce(target.receiver)
@@ -583,7 +752,11 @@ class AbRuby
         transduce_case(node)
 
       when Prism::CallNode
-        if !node.receiver && %w[attr_reader attr_writer attr_accessor].include?(node.name.to_s)
+        if !node.receiver && %w[attr_reader attr_writer attr_accessor].include?(node.name.to_s) &&
+           node.arguments&.arguments&.all? { |a| a.is_a?(Prism::SymbolNode) }
+          # All-symbol-literal call: parse-time inline expansion.  Mixed
+          # / dynamic args fall through to a regular method dispatch and
+          # are handled by the runtime cfuncs in builtin/class.c.
           transduce_attr(node)
         elsif node.receiver &&
            %w[+ - * /].include?(node.name.to_s) &&
@@ -802,6 +975,148 @@ class AbRuby
       # count_block_slots so max is respected.
 
       set_line(AbRuby.alloc_node_block_literal(body, param_names.size, param_base), block_node)
+    end
+
+    # Build `read ||= value` — tmp = read; if(tmp, tmp, write(value)).
+    # Caller provides already-transduced read/value ASTs and a
+    # write-constructor lambda that consumes the new rhs AST.
+    def build_or_write(read_ast, value_ast, write_ctor)
+      idx = inc_arg_index
+      store = AbRuby.alloc_node_lvar_set(idx, read_ast)
+      ref1 = AbRuby.alloc_node_lvar_get(idx)
+      ref2 = AbRuby.alloc_node_lvar_get(idx)
+      rewind_arg_index(idx)
+      AbRuby.alloc_node_seq(store,
+        AbRuby.alloc_node_if(ref1, ref2, write_ctor.(value_ast)))
+    end
+
+    # Build `read &&= value` — tmp = read; if(tmp, write(value), tmp).
+    def build_and_write(read_ast, value_ast, write_ctor)
+      idx = inc_arg_index
+      store = AbRuby.alloc_node_lvar_set(idx, read_ast)
+      ref1 = AbRuby.alloc_node_lvar_get(idx)
+      ref2 = AbRuby.alloc_node_lvar_get(idx)
+      rewind_arg_index(idx)
+      AbRuby.alloc_node_seq(store,
+        AbRuby.alloc_node_if(ref1, write_ctor.(value_ast), ref2))
+    end
+
+    # Emit a binary-op call: lhs op rhs.  Used for `X op= v` patterns.
+    def build_binop_call(op, lhs, rhs)
+      if BINOP_MAP.key?(op)
+        fb = inc_arg_index
+        rewind_arg_index(fb)
+        AbRuby.send("alloc_node_#{BINOP_MAP[op]}", lhs, rhs, fb)
+      else
+        call_arg_idx = arg_index
+        idx = inc_arg_index
+        store_rhs = AbRuby.alloc_node_lvar_set(idx, rhs)
+        rewind_arg_index(call_arg_idx)
+        AbRuby.alloc_node_seq(store_rhs,
+          AbRuby.alloc_node_method_call(lhs, op, 1, call_arg_idx))
+      end
+    end
+
+    # Lower `recv[idx...] op= value` / `||= ` / `&&= `.
+    # `op` is :or, :and, or a string binary operator name ("+", etc.).
+    #
+    # We cache receiver and each index argument into temp slots so the
+    # evaluation-order semantics of Ruby are preserved: receiver and
+    # indices are evaluated exactly once.
+    def transduce_index_op_write(node, op)
+      recv_ast = transduce(node.receiver)
+      idx_nodes = node.arguments ? node.arguments.arguments : []
+
+      recv_idx = inc_arg_index
+      recv_store = AbRuby.alloc_node_lvar_set(recv_idx, recv_ast)
+
+      idx_slots = idx_nodes.map { inc_arg_index }
+      idx_stores = idx_nodes.each_with_index.map do |n, i|
+        AbRuby.alloc_node_lvar_set(idx_slots[i], transduce(n))
+      end
+
+      # Build a []-call that reads current value using the cached recv/idx.
+      build_get = lambda do
+        # Put indices into a call arg area.
+        call_arg_idx = arg_index
+        arg_seq = idx_slots.each_with_index.map do |slot, i|
+          put = inc_arg_index
+          AbRuby.alloc_node_lvar_set(put, AbRuby.alloc_node_lvar_get(slot))
+        end
+        rewind_arg_index(call_arg_idx)
+        recv_ref = AbRuby.alloc_node_lvar_get(recv_idx)
+        call = AbRuby.alloc_node_method_call(recv_ref, "[]", idx_slots.size, call_arg_idx)
+        arg_seq.empty? ? call : build_seq(arg_seq + [call])
+      end
+
+      # Build a []=-call that writes the rhs using the cached recv/idx.
+      build_set = lambda do |rhs_ast|
+        call_arg_idx = arg_index
+        arg_seq = idx_slots.each_with_index.map do |slot, i|
+          put = inc_arg_index
+          AbRuby.alloc_node_lvar_set(put, AbRuby.alloc_node_lvar_get(slot))
+        end
+        rhs_slot = inc_arg_index
+        arg_seq << AbRuby.alloc_node_lvar_set(rhs_slot, rhs_ast)
+        rewind_arg_index(call_arg_idx)
+        recv_ref = AbRuby.alloc_node_lvar_get(recv_idx)
+        call = AbRuby.alloc_node_method_call(recv_ref, "[]=", idx_slots.size + 1, call_arg_idx)
+        build_seq(arg_seq + [call])
+      end
+
+      body =
+        case op
+        when :or
+          build_or_write(build_get.(), transduce(node.value), build_set)
+        when :and
+          build_and_write(build_get.(), transduce(node.value), build_set)
+        else
+          new_val = build_binop_call(op, build_get.(), transduce(node.value))
+          build_set.(new_val)
+        end
+
+      rewind_arg_index(recv_idx)
+      build_seq([recv_store] + idx_stores + [body])
+    end
+
+    # Lower `recv.attr op= value` / `||=` / `&&=`.
+    # Caches recv in a temp to avoid double side-effects.
+    def transduce_call_op_write(node, op)
+      recv_ast = transduce(node.receiver)
+      attr_name = node.read_name.to_s        # "x"
+      write_name = node.write_name.to_s      # "x="
+
+      recv_idx = inc_arg_index
+      recv_store = AbRuby.alloc_node_lvar_set(recv_idx, recv_ast)
+
+      build_get = lambda do
+        recv_ref = AbRuby.alloc_node_lvar_get(recv_idx)
+        AbRuby.alloc_node_method_call(recv_ref, attr_name, 0, arg_index)
+      end
+
+      build_set = lambda do |rhs_ast|
+        call_arg_idx = arg_index
+        rhs_slot = inc_arg_index
+        store = AbRuby.alloc_node_lvar_set(rhs_slot, rhs_ast)
+        rewind_arg_index(call_arg_idx)
+        recv_ref = AbRuby.alloc_node_lvar_get(recv_idx)
+        call = AbRuby.alloc_node_method_call(recv_ref, write_name, 1, call_arg_idx)
+        AbRuby.alloc_node_seq(store, call)
+      end
+
+      body =
+        case op
+        when :or
+          build_or_write(build_get.(), transduce(node.value), build_set)
+        when :and
+          build_and_write(build_get.(), transduce(node.value), build_set)
+        else
+          new_val = build_binop_call(op, build_get.(), transduce(node.value))
+          build_set.(new_val)
+        end
+
+      rewind_arg_index(recv_idx)
+      AbRuby.alloc_node_seq(recv_store, body)
     end
 
     # Maximum dynamic args for a splat call; must match

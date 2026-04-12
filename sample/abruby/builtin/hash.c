@@ -65,6 +65,60 @@ static RESULT ab_hash_values(CTX *c, VALUE self, unsigned int argc, VALUE *argv)
     return RESULT_OK(abruby_ary_new(c, rb_funcall(RHSH(self), rb_intern("values"), 0)));
 }
 
+// Hash#each_key / Hash#each_value
+static RESULT ab_hash_each_key(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)argc; (void)argv;
+    VALUE hash = RHSH(self);
+    VALUE raw_keys = rb_funcall(hash, rb_intern("keys"), 0);
+    long len = RARRAY_LEN(raw_keys);
+    for (long i = 0; i < len; i++) {
+        VALUE raw_k = RARRAY_AREF(raw_keys, i);
+        VALUE k = RB_TYPE_P(raw_k, T_STRING) ? abruby_str_new(c, raw_k) : raw_k;
+        RESULT r = abruby_yield(c, 1, &k);
+        if (r.state != RESULT_NORMAL) return r;
+    }
+    return RESULT_OK(self);
+}
+static RESULT ab_hash_each_value(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)argc; (void)argv;
+    VALUE hash = RHSH(self);
+    VALUE raw_keys = rb_funcall(hash, rb_intern("keys"), 0);
+    long len = RARRAY_LEN(raw_keys);
+    for (long i = 0; i < len; i++) {
+        VALUE raw_k = RARRAY_AREF(raw_keys, i);
+        VALUE v = rb_hash_aref(hash, raw_k);
+        RESULT r = abruby_yield(c, 1, &v);
+        if (r.state != RESULT_NORMAL) return r;
+    }
+    return RESULT_OK(self);
+}
+
+// Hash#merge(other) — return a new hash combining self with other.
+static RESULT ab_hash_merge(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    VALUE result = rb_hash_dup(RHSH(self));
+    for (unsigned int i = 0; i < argc; i++) {
+        if (!ab_obj_type_p(argv[i], ABRUBY_OBJ_HASH)) continue;
+        rb_hash_update_by(result, RHSH(argv[i]), NULL);
+    }
+    return RESULT_OK(abruby_hash_new_wrap(c, result));
+}
+
+// Hash#delete(key)
+static RESULT ab_hash_delete(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)c; (void)argc;
+    return RESULT_OK(rb_hash_delete(RHSH(self), ab_to_hash_key(argv[0])));
+}
+
+// Hash#fetch(key) / fetch(key, default)
+static RESULT ab_hash_fetch(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    VALUE v = rb_hash_lookup2(RHSH(self), ab_to_hash_key(argv[0]), Qundef);
+    if (v != Qundef) return RESULT_OK(v);
+    if (argc >= 2) return RESULT_OK(argv[1]);
+    VALUE exc = abruby_exception_new(c, c->current_frame,
+        abruby_str_new_cstr(c, "key not found"));
+    return (RESULT){exc, RESULT_RAISE};
+}
+
 // Hash#each { |k, v| ... } — yields key/value pairs and returns self.
 // Hash keys stored as raw CRuby strings are re-wrapped as abruby strings
 // before yielding, matching the abruby VALUE invariant.
@@ -99,4 +153,9 @@ Init_abruby_hash(void)
     abruby_class_add_cfunc(ab_tmpl_hash_class, rb_intern("values"),   ab_hash_values,   0);
     abruby_class_add_cfunc(ab_tmpl_hash_class, rb_intern("each"),     ab_hash_each,     0);
     abruby_class_add_cfunc(ab_tmpl_hash_class, rb_intern("each_pair"),ab_hash_each,     0);
+    abruby_class_add_cfunc(ab_tmpl_hash_class, rb_intern("each_key"), ab_hash_each_key, 0);
+    abruby_class_add_cfunc(ab_tmpl_hash_class, rb_intern("each_value"),ab_hash_each_value, 0);
+    abruby_class_add_cfunc(ab_tmpl_hash_class, rb_intern("merge"),    ab_hash_merge,    1);
+    abruby_class_add_cfunc(ab_tmpl_hash_class, rb_intern("delete"),   ab_hash_delete,   1);
+    abruby_class_add_cfunc(ab_tmpl_hash_class, rb_intern("fetch"),    ab_hash_fetch,    1);
 }
