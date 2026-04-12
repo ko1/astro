@@ -220,7 +220,31 @@ node_str_concat(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg
     VALUE result = rb_str_new(NULL, 0);
     for (uint32_t i = 0; i < argc; i++) {
         VALUE part = c->fp[arg_index + i];
-        VALUE rs = abruby_str_rstr(part);
+        VALUE rs;
+        if (ab_obj_type_p(part, ABRUBY_OBJ_STRING)) {
+            rs = abruby_str_rstr(part);
+        } else if (RB_TYPE_P(part, T_STRING)) {
+            // Tolerate raw CRuby strings landing here from cfuncs that
+            // forgot to wrap their return value.  Treat as the string.
+            rs = part;
+        } else {
+            // Fall back to dispatching to_s on the part.
+            const struct abruby_method *to_s_m =
+                abruby_find_method(AB_CLASS_OF(c, part), rb_intern("to_s"));
+            if (to_s_m) {
+                RESULT r = abruby_call_method(c, part, to_s_m, 0, NULL);
+                if (UNLIKELY(r.state != RESULT_NORMAL)) return r;
+                if (ab_obj_type_p(r.value, ABRUBY_OBJ_STRING)) {
+                    rs = abruby_str_rstr(r.value);
+                } else if (RB_TYPE_P(r.value, T_STRING)) {
+                    rs = r.value;
+                } else {
+                    rs = rb_str_new_cstr("");
+                }
+            } else {
+                rs = rb_str_new_cstr("");
+            }
+        }
         rb_str_cat(result, RSTRING_PTR(rs), RSTRING_LEN(rs));
     }
     return RESULT_OK(abruby_str_new(c, result));

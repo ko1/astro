@@ -1,5 +1,11 @@
 #include "builtin.h"
 
+static VALUE arg_to_rstr_for_str(VALUE v) {
+    if (ab_obj_type_p(v, ABRUBY_OBJ_STRING)) return RSTR(v);
+    if (RB_TYPE_P(v, T_STRING)) return v;
+    return rb_str_new_cstr("");
+}
+
 static RESULT ab_string_inspect(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     VALUE rs = RSTR(self);
     VALUE result = rb_str_new_cstr("\"");
@@ -57,6 +63,71 @@ static RESULT ab_string_strip(CTX *c, VALUE self, unsigned int argc, VALUE *argv
     while (end > start && (p[end-1] == ' ' || p[end-1] == '\t' || p[end-1] == '\n' || p[end-1] == '\r')) end--;
     return RESULT_OK(abruby_str_new(c, rb_str_new(p + start, end - start)));
 }
+// String#tr(from, to) — translate.  Delegates to CRuby.
+static RESULT ab_string_tr(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)argc;
+    VALUE r = rb_funcall(RSTR(self), rb_intern("tr"), 2,
+                         arg_to_rstr_for_str(argv[0]), arg_to_rstr_for_str(argv[1]));
+    return RESULT_OK(abruby_str_new(c, r));
+}
+
+// String#=~(regexp) — return the match position or nil.  Delegates to
+// CRuby's String#=~ which handles abruby-wrapped regexp via the inner
+// rb_regexp pointer.
+static RESULT ab_string_match_op(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)c; (void)argc;
+    VALUE re = argv[0];
+    VALUE inner;
+    if (ab_obj_type_p(re, ABRUBY_OBJ_REGEXP)) {
+        inner = ((const struct abruby_regexp *)RTYPEDDATA_GET_DATA(re))->rb_regexp;
+    } else if (RB_TYPE_P(re, T_REGEXP)) {
+        inner = re;
+    } else {
+        return RESULT_OK(Qnil);
+    }
+    VALUE r = rb_funcall(RSTR(self), rb_intern("=~"), 1, inner);
+    return RESULT_OK(r);
+}
+
+// String#split(sep=" ") -> Array of substrings.  abruby's split only
+// handles literal-string separators (no regex, no max-splits).  That's
+// enough for optcarrot's `arg.split("=")` and similar.
+static RESULT ab_string_split(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    VALUE rs = RSTR(self);
+    long len = RSTRING_LEN(rs);
+    const char *p = RSTRING_PTR(rs);
+    const char *sep_p;
+    long sep_len;
+    if (argc >= 1 && ab_obj_type_p(argv[0], ABRUBY_OBJ_STRING)) {
+        VALUE sep = RSTR(argv[0]);
+        sep_p = RSTRING_PTR(sep);
+        sep_len = RSTRING_LEN(sep);
+    } else {
+        sep_p = " ";
+        sep_len = 1;
+    }
+    VALUE result = rb_ary_new();
+    if (sep_len == 0) {
+        // Split into individual chars.
+        for (long i = 0; i < len; i++) {
+            rb_ary_push(result, abruby_str_new(c, rb_str_new(p + i, 1)));
+        }
+        return RESULT_OK(abruby_ary_new(c, result));
+    }
+    long start = 0;
+    for (long i = 0; i + sep_len <= len; ) {
+        if (memcmp(p + i, sep_p, sep_len) == 0) {
+            rb_ary_push(result, abruby_str_new(c, rb_str_new(p + start, i - start)));
+            i += sep_len;
+            start = i;
+        } else {
+            i++;
+        }
+    }
+    rb_ary_push(result, abruby_str_new(c, rb_str_new(p + start, len - start)));
+    return RESULT_OK(abruby_ary_new(c, result));
+}
+
 static RESULT ab_string_to_sym(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     (void)c; (void)argc; (void)argv;
     // Symbols are CRuby immediates; intern the underlying rb_str.
@@ -153,4 +224,7 @@ Init_abruby_string(void)
     abruby_class_add_cfunc(ab_tmpl_string_class, rb_intern("end_with?"),   ab_string_end_with_p,   1);
     abruby_class_add_cfunc(ab_tmpl_string_class, rb_intern("chomp"),    ab_string_chomp,     0);
     abruby_class_add_cfunc(ab_tmpl_string_class, rb_intern("strip"),    ab_string_strip,     0);
+    abruby_class_add_cfunc(ab_tmpl_string_class, rb_intern("split"),    ab_string_split,     0);
+    abruby_class_add_cfunc(ab_tmpl_string_class, rb_intern("=~"),       ab_string_match_op,  1);
+    abruby_class_add_cfunc(ab_tmpl_string_class, rb_intern("tr"),       ab_string_tr,        2);
 }

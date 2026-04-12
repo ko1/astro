@@ -291,13 +291,17 @@ ab_verify(VALUE obj)
 static inline bool
 ab_obj_type_p(VALUE obj, enum abruby_obj_type type)
 {
+    if (obj == 0)                return false;                      // NULL/uninitialized
     if (FIXNUM_P(obj))           return type == ABRUBY_OBJ_BIGNUM;  // integer_class.obj_type
     if (RB_FLONUM_P(obj))        return type == ABRUBY_OBJ_FLOAT;
-    // SYMBOL_P catches both static (immediate) and dynamic (heap T_SYMBOL)
-    // symbols.  Must be checked before the RTYPEDDATA path so dynamic
-    // symbols don't get dereferenced as T_DATA.
-    if (SYMBOL_P(obj))           return type == ABRUBY_OBJ_GENERIC; // symbol_class.obj_type
+    // STATIC_SYM_P is the immediate-symbol bit check; RB_SPECIAL_CONST_P
+    // only catches static symbols.  Dynamic (heap) symbols need to be
+    // detected via the T_SYMBOL builtin type AFTER we know it's safe to
+    // dereference (i.e., past the immediate guards).
+    if (RB_STATIC_SYM_P(obj))    return type == ABRUBY_OBJ_GENERIC;
     if (RB_SPECIAL_CONST_P(obj)) return type == ABRUBY_OBJ_GENERIC; // true/false/nil
+    if (RB_BUILTIN_TYPE(obj) == T_SYMBOL) return type == ABRUBY_OBJ_GENERIC; // dynamic symbol
+    if (RB_BUILTIN_TYPE(obj) != T_DATA) return false;
     const struct abruby_header *h = (const struct abruby_header *)RTYPEDDATA_GET_DATA(obj);
     return h->klass && h->klass->obj_type == type;
 }
@@ -547,16 +551,13 @@ AB_CLASS_OF(const CTX *c, VALUE obj)
 {
     ab_verify(obj);
 
-    // CRuby has two symbol representations: static (immediate) and
-    // dynamic (heap T_SYMBOL).  SYMBOL_P returns true for both, but
-    // RB_SPECIAL_CONST_P only catches the static form.  Dispatch on
-    // SYMBOL_P first so dynamic symbols (e.g. from `"long".to_sym`,
-    // `:"@#{x}"`, or `rb_str_intern`) resolve to the symbol class
-    // instead of being dereferenced as T_DATA.
-    if (SYMBOL_P(obj)) {
-        return c->abm->symbol_class;
-    }
+    // Static symbols and dynamic (heap T_SYMBOL) symbols both map to
+    // the per-instance symbol class.  Static syms are caught via the
+    // immediate path; dynamic syms must be detected with the heap-side
+    // T_SYMBOL builtin-type check below to avoid dereferencing as
+    // T_DATA.
     if (RB_LIKELY(!RB_SPECIAL_CONST_P(obj))) {
+        if (RB_BUILTIN_TYPE(obj) == T_SYMBOL) return c->abm->symbol_class;
         return ((struct abruby_header *)RTYPEDDATA_GET_DATA(obj))->klass;
     }
     else {

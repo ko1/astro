@@ -28,6 +28,40 @@ static RESULT ab_object_nil_p(CTX *c, VALUE self, unsigned int argc, VALUE *argv
     return RESULT_OK(Qfalse);
 }
 
+// Object#respond_to?(name, include_private=false)
+static RESULT ab_object_respond_to_p(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)argc;
+    VALUE n = argv[0];
+    ID id;
+    if (SYMBOL_P(n)) id = SYM2ID(n);
+    else if (ab_obj_type_p(n, ABRUBY_OBJ_STRING)) id = rb_intern_str(RSTR(n));
+    else return RESULT_OK(Qfalse);
+    const struct abruby_method *m = abruby_find_method(AB_CLASS_OF(c, self), id);
+    return RESULT_OK(m ? Qtrue : Qfalse);
+}
+
+// Object#instance_variable_get(name) — name is symbol or string
+static RESULT ab_object_ivar_get(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)c; (void)argc;
+    VALUE n = argv[0];
+    ID id;
+    if (SYMBOL_P(n)) id = SYM2ID(n);
+    else if (ab_obj_type_p(n, ABRUBY_OBJ_STRING)) id = rb_intern_str(RSTR(n));
+    else return RESULT_OK(Qnil);
+    return RESULT_OK(abruby_ivar_get(self, id));
+}
+// Object#instance_variable_set(name, value)
+static RESULT ab_object_ivar_set(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)c; (void)argc;
+    VALUE n = argv[0];
+    ID id;
+    if (SYMBOL_P(n)) id = SYM2ID(n);
+    else if (ab_obj_type_p(n, ABRUBY_OBJ_STRING)) id = rb_intern_str(RSTR(n));
+    else return RESULT_OK(Qnil);
+    abruby_ivar_set(self, id, argv[1]);
+    return RESULT_OK(argv[1]);
+}
+
 static RESULT ab_object_class_name(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     return RESULT_OK(abruby_str_new_cstr(c, rb_id2name(AB_CLASS_OF(c, self)->name)));
 }
@@ -67,6 +101,9 @@ Init_abruby_object(void)
     abruby_class_add_cfunc(ab_tmpl_object_class, rb_intern("!="),       ab_object_neq,        1);
     abruby_class_add_cfunc(ab_tmpl_object_class, rb_intern("nil?"),     ab_object_nil_p,      0);
     abruby_class_add_cfunc(ab_tmpl_object_class, rb_intern("class"),    ab_object_class_name, 0);
+    abruby_class_add_cfunc(ab_tmpl_object_class, rb_intern("instance_variable_get"), ab_object_ivar_get, 1);
+    abruby_class_add_cfunc(ab_tmpl_object_class, rb_intern("instance_variable_set"), ab_object_ivar_set, 2);
+    abruby_class_add_cfunc(ab_tmpl_object_class, rb_intern("respond_to?"),           ab_object_respond_to_p, 1);
     abruby_class_add_cfunc(ab_tmpl_object_class, rb_intern("!"),        ab_object_not,        0);
     abruby_class_add_cfunc(ab_tmpl_object_class, rb_intern("==="),       ab_object_case_eq,    1);
     abruby_class_add_cfunc(ab_tmpl_object_class, rb_intern("is_a?"),     ab_object_is_a,       1);

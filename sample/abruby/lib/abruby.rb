@@ -43,11 +43,12 @@ class AbRuby
       })
     end
 
-    # Walk a subtree and sum the block local slot requirement.  Stops at
-    # DefNode / ClassNode / ModuleNode boundaries (those introduce their
-    # own frames).  A BlockNode contributes (params + block-new-locals)
-    # slots and then recurses into its body (nested blocks share the
-    # same outer frame).
+    # Walk a subtree and sum the block local slot requirement.  Stops
+    # at DefNode (which introduces its own frame).  A BlockNode
+    # contributes (params + block-new-locals) slots and recurses into
+    # its body.  ClassNode/ModuleNode bodies share the outer fp at
+    # runtime — they contribute their own `locals` (declared in the
+    # class body) plus any nested-block slots their body needs.
     def count_block_slots(node)
       return 0 if node.nil?
       case node
@@ -58,8 +59,10 @@ class AbRuby
         other_locals = node.locals.map(&:to_s) - param_names
         slots = param_names.size + other_locals.size
         slots + (node.body ? count_block_slots(node.body) : 0)
-      when Prism::DefNode, Prism::ClassNode, Prism::ModuleNode
+      when Prism::DefNode
         0
+      when Prism::ClassNode, Prism::ModuleNode
+        node.locals.size + (node.body ? count_block_slots(node.body) : 0)
       else
         if node.respond_to?(:child_nodes)
           node.child_nodes.compact.sum { |c| count_block_slots(c) }
@@ -577,6 +580,14 @@ class AbRuby
         # codegen paths that would observe these (the -o pipeline does).
         AbRuby.alloc_node_nil
 
+      when Prism::RescueModifierNode
+        # `expr rescue fallback` — equivalent to `begin; expr; rescue;
+        # fallback; end`.  Lower to a node_rescue with no exception
+        # binding and no ensure.
+        body = transduce(node.expression)
+        rescue_body = transduce(node.rescue_expression)
+        AbRuby.alloc_node_rescue(body, rescue_body, AbRuby.alloc_node_nil, 0xFFFFFFFF)
+
       when Prism::SourceFileNode
         # __FILE__ — return the file path known to the parser at parse time.
         AbRuby.alloc_node_str_new((node.filepath && !node.filepath.empty?) ?
@@ -624,14 +635,14 @@ class AbRuby
 
       when Prism::ModuleNode
         name = node.constant_path.name.to_s
-        body = node.body ? transduce(node.body) : AbRuby.alloc_node_nil
+        body = with_class_body_scope(node) { transduce_class_body(node.body) }
         @entries << ["module:#{name}", body]
         AbRuby.alloc_node_module_def(name, body)
 
       when Prism::ClassNode
         name = node.constant_path.name.to_s
         super_expr = node.superclass ? transduce(node.superclass) : AbRuby.alloc_node_nil
-        body = node.body ? transduce(node.body) : AbRuby.alloc_node_nil
+        body = with_class_body_scope(node) { transduce_class_body(node.body) }
         @entries << ["class:#{name}", body]
         @entries << ["class:#{name}:super", super_expr]
         AbRuby.alloc_node_class_def(name, super_expr, body)
@@ -651,16 +662,21 @@ class AbRuby
           values = values.elements[0].expression
         end
 
-        # RHS is a single expression yielding an array: decompose via [0], [1], ...
+        # RHS is a single expression yielding an array: evaluate it ONCE
+        # into a temp slot, then read each LHS via [0], [1], ... on the
+        # cached result.  The pre-store goes into rhs_pre_store and is
+        # prepended to the final assigns sequence; rhs_nodes only carry
+        # the per-element [] calls.
+        rhs_pre_store = nil
         unless rhs_nodes
-          # RHS is a single expression (e.g., method call returning array)
-          # Evaluate into temp, then access via [0], [1], ...
           ary_idx = inc_arg_index
-          ary_store = AbRuby.alloc_node_lvar_set(ary_idx, transduce(values))
+          rhs_pre_store = AbRuby.alloc_node_lvar_set(ary_idx, transduce(values))
           rhs_nodes = lefts.each_index.map do |i|
             ary_ref = AbRuby.alloc_node_lvar_get(ary_idx)
             idx_node = AbRuby.alloc_node_num(i)
-            # ary_ref[i] via method call
+            # ary_ref[i] via method call.  recv/arg slots are reused
+            # across iterations because the call is fully consumed
+            # within the lvar_set that follows.
             recv_idx = inc_arg_index
             recv_store = AbRuby.alloc_node_lvar_set(recv_idx, ary_ref)
             arg_idx = inc_arg_index
@@ -668,7 +684,7 @@ class AbRuby
             rewind_arg_index(recv_idx)
             recv_ref = AbRuby.alloc_node_lvar_get(recv_idx)
             call_node = AbRuby.alloc_node_method_call(recv_ref, "[]", 1, arg_idx)
-            build_seq([ary_store, recv_store, arg_store, call_node])
+            build_seq([recv_store, arg_store, call_node])
           end
           rewind_arg_index(ary_idx)
         end
@@ -721,7 +737,7 @@ class AbRuby
           end
         end
 
-        build_seq(assigns)
+        build_seq(rhs_pre_store ? [rhs_pre_store] + assigns : assigns)
 
       when Prism::BeginNode
         body = node.statements ? transduce(node.statements) : AbRuby.alloc_node_nil
@@ -975,6 +991,37 @@ class AbRuby
       # count_block_slots so max is respected.
 
       set_line(AbRuby.alloc_node_block_literal(body, param_names.size, param_base), block_node)
+    end
+
+    # Push a scope for class/module body locals.  Allocates outer-frame
+    # slots for the body's lexical locals (Prism gives us the list via
+    # `node.locals`) so code in the body can read/write them.  At runtime
+    # the class body shares the outer fp, so these slots live in the
+    # current_frame's slot range — same trick as block-local slots.
+    def with_class_body_scope(node)
+      locals = node.locals.map(&:to_s)
+      if locals.empty?
+        return yield
+      end
+      frame = current_frame
+      scope = {}
+      locals.each do |name|
+        # Avoid double-allocation if the name is also a method-frame
+        # local (rare, but happens for top-level class bodies).
+        next if frame[:locals].include?(name)
+        slot = frame[:block_slot_next]
+        scope[name] = slot
+        frame[:block_slot_next] += 1
+        frame[:max] = frame[:block_slot_next] if frame[:block_slot_next] > frame[:max]
+      end
+      frame[:block_scope_stack].push(scope)
+      result = yield
+      frame[:block_scope_stack].pop
+      result
+    end
+
+    def transduce_class_body(body)
+      body ? transduce(body) : AbRuby.alloc_node_nil
     end
 
     # Build `read ||= value` — tmp = read; if(tmp, tmp, write(value)).

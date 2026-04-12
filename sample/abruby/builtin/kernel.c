@@ -8,6 +8,74 @@ static RESULT ab_kernel_p(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     return RESULT_OK(argv[0]);
 }
 
+// Kernel#puts — prints each arg with a trailing newline.  Strings go
+// straight to stdout; non-strings are coerced via to_s dispatch.
+static RESULT ab_kernel_puts(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)self;
+    if (argc == 0) {
+        fputc('\n', stdout);
+        fflush(stdout);
+        return RESULT_OK(Qnil);
+    }
+    for (unsigned int i = 0; i < argc; i++) {
+        VALUE v = argv[i];
+        VALUE rs;
+        if (ab_obj_type_p(v, ABRUBY_OBJ_STRING)) {
+            rs = RSTR(v);
+        } else {
+            const struct abruby_method *m = abruby_find_method(AB_CLASS_OF(c, v), rb_intern("to_s"));
+            if (m) {
+                RESULT r = abruby_call_method(c, v, m, 0, NULL);
+                if (r.state != RESULT_NORMAL) return r;
+                rs = ab_obj_type_p(r.value, ABRUBY_OBJ_STRING) ? RSTR(r.value) :
+                     RB_TYPE_P(r.value, T_STRING) ? r.value : rb_str_new_cstr("");
+            } else {
+                rs = rb_str_new_cstr("");
+            }
+        }
+        fwrite(RSTRING_PTR(rs), 1, RSTRING_LEN(rs), stdout);
+        if (RSTRING_LEN(rs) == 0 || RSTRING_PTR(rs)[RSTRING_LEN(rs) - 1] != '\n') {
+            fputc('\n', stdout);
+        }
+    }
+    fflush(stdout);
+    return RESULT_OK(Qnil);
+}
+
+// Kernel#print — like puts but no newline.
+static RESULT ab_kernel_print(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)self;
+    for (unsigned int i = 0; i < argc; i++) {
+        VALUE v = argv[i];
+        VALUE rs;
+        if (ab_obj_type_p(v, ABRUBY_OBJ_STRING)) {
+            rs = RSTR(v);
+        } else {
+            const struct abruby_method *m = abruby_find_method(AB_CLASS_OF(c, v), rb_intern("to_s"));
+            if (m) {
+                RESULT r = abruby_call_method(c, v, m, 0, NULL);
+                if (r.state != RESULT_NORMAL) return r;
+                rs = ab_obj_type_p(r.value, ABRUBY_OBJ_STRING) ? RSTR(r.value) :
+                     RB_TYPE_P(r.value, T_STRING) ? r.value : rb_str_new_cstr("");
+            } else {
+                rs = rb_str_new_cstr("");
+            }
+        }
+        fwrite(RSTRING_PTR(rs), 1, RSTRING_LEN(rs), stdout);
+    }
+    fflush(stdout);
+    return RESULT_OK(Qnil);
+}
+
+// Kernel#exit — abort execution.  Single integer arg is the status.
+static RESULT ab_kernel_exit(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)c; (void)self;
+    int code = (argc >= 1 && FIXNUM_P(argv[0])) ? (int)FIX2LONG(argv[0]) : 0;
+    fflush(stdout);
+    fflush(stderr);
+    exit(code);
+}
+
 static RESULT ab_kernel_raise(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     // Accepted forms:
     //   raise                      — re-raise or empty RuntimeError
@@ -40,6 +108,63 @@ static RESULT ab_kernel_raise(CTX *c, VALUE self, unsigned int argc, VALUE *argv
         msg = argv[1];
     }
     VALUE exc = abruby_exception_new(c, c->current_frame, msg);
+    return (RESULT){exc, RESULT_RAISE};
+}
+
+// Integer(value) — convert to integer.  Raises if the value can't be
+// represented (matches Ruby's strictness vs. String#to_i).
+static RESULT ab_kernel_Integer(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)self; (void)argc;
+    VALUE v = argv[0];
+    if (FIXNUM_P(v)) return RESULT_OK(v);
+    if (ab_obj_type_p(v, ABRUBY_OBJ_STRING)) {
+        VALUE rs = RSTR(v);
+        const char *p = RSTRING_PTR(rs);
+        long len = RSTRING_LEN(rs);
+        // Trim leading whitespace
+        long i = 0;
+        while (i < len && (p[i] == ' ' || p[i] == '\t')) i++;
+        long sign = 1;
+        if (i < len && (p[i] == '-' || p[i] == '+')) {
+            if (p[i] == '-') sign = -1;
+            i++;
+        }
+        if (i >= len || p[i] < '0' || p[i] > '9') {
+            VALUE exc = abruby_exception_new(c, c->current_frame,
+                abruby_str_new_cstr(c, "invalid value for Integer()"));
+            return (RESULT){exc, RESULT_RAISE};
+        }
+        long n = 0;
+        while (i < len && p[i] >= '0' && p[i] <= '9') {
+            n = n * 10 + (p[i] - '0');
+            i++;
+        }
+        // Allow trailing whitespace only
+        while (i < len && (p[i] == ' ' || p[i] == '\t')) i++;
+        if (i != len) {
+            VALUE exc = abruby_exception_new(c, c->current_frame,
+                abruby_str_new_cstr(c, "invalid value for Integer()"));
+            return (RESULT){exc, RESULT_RAISE};
+        }
+        return RESULT_OK(LONG2FIX(n * sign));
+    }
+    VALUE exc = abruby_exception_new(c, c->current_frame,
+        abruby_str_new_cstr(c, "can't convert to Integer"));
+    return (RESULT){exc, RESULT_RAISE};
+}
+
+// Float(value) — convert to float.
+static RESULT ab_kernel_Float(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)self; (void)argc;
+    VALUE v = argv[0];
+    if (FIXNUM_P(v)) return RESULT_OK(abruby_float_new_wrap(c, rb_float_new((double)FIX2LONG(v))));
+    if (RB_FLONUM_P(v)) return RESULT_OK(v);
+    if (ab_obj_type_p(v, ABRUBY_OBJ_STRING)) {
+        VALUE r = rb_funcall(rb_cFloat, rb_intern("("), 1, RSTR(v));
+        return RESULT_OK(abruby_float_new_wrap(c, r));
+    }
+    VALUE exc = abruby_exception_new(c, c->current_frame,
+        abruby_str_new_cstr(c, "can't convert to Float"));
     return (RESULT){exc, RESULT_RAISE};
 }
 
@@ -121,6 +246,9 @@ void
 Init_abruby_kernel(void)
 {
     abruby_class_add_cfunc(ab_tmpl_kernel_module, rb_intern("p"),        ab_kernel_p,        1);
+    abruby_class_add_cfunc(ab_tmpl_kernel_module, rb_intern("puts"),     ab_kernel_puts,     0);
+    abruby_class_add_cfunc(ab_tmpl_kernel_module, rb_intern("print"),    ab_kernel_print,    0);
+    abruby_class_add_cfunc(ab_tmpl_kernel_module, rb_intern("exit"),     ab_kernel_exit,     0);
     abruby_class_add_cfunc(ab_tmpl_kernel_module, rb_intern("raise"),    ab_kernel_raise,    1);
     abruby_class_add_cfunc(ab_tmpl_kernel_module, rb_intern("Rational"), ab_kernel_Rational, 2);
     abruby_class_add_cfunc(ab_tmpl_kernel_module, rb_intern("Complex"),          ab_kernel_Complex,          2);
@@ -129,4 +257,6 @@ Init_abruby_kernel(void)
     abruby_class_add_cfunc(ab_tmpl_kernel_module, rb_intern("eval"),             ab_kernel_eval,             1);
     abruby_class_add_cfunc(ab_tmpl_kernel_module, rb_intern("block_given?"),     ab_kernel_block_given_p,    0);
     abruby_class_add_cfunc(ab_tmpl_kernel_module, rb_intern("__dir__"),          ab_kernel_dir,              0);
+    abruby_class_add_cfunc(ab_tmpl_kernel_module, rb_intern("Integer"),          ab_kernel_Integer,          1);
+    abruby_class_add_cfunc(ab_tmpl_kernel_module, rb_intern("Float"),            ab_kernel_Float,            1);
 }

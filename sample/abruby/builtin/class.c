@@ -11,6 +11,7 @@ static RESULT ab_class_new(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
         struct abruby_frame frame;
         frame.prev = c->current_frame;
         frame.method = init;
+        frame.caller_node = c->current_frame ? c->current_frame->caller_node : NULL;
         frame.block = NULL;
         c->current_frame = &frame;
 

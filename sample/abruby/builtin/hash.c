@@ -65,6 +65,12 @@ static RESULT ab_hash_values(CTX *c, VALUE self, unsigned int argc, VALUE *argv)
     return RESULT_OK(abruby_ary_new(c, rb_funcall(RHSH(self), rb_intern("values"), 0)));
 }
 
+// Hash#dup — shallow copy.
+static RESULT ab_hash_dup(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)argc; (void)argv;
+    return RESULT_OK(abruby_hash_new_wrap(c, rb_hash_dup(RHSH(self))));
+}
+
 // Hash#each_key / Hash#each_value
 static RESULT ab_hash_each_key(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     (void)argc; (void)argv;
@@ -158,4 +164,5 @@ Init_abruby_hash(void)
     abruby_class_add_cfunc(ab_tmpl_hash_class, rb_intern("merge"),    ab_hash_merge,    1);
     abruby_class_add_cfunc(ab_tmpl_hash_class, rb_intern("delete"),   ab_hash_delete,   1);
     abruby_class_add_cfunc(ab_tmpl_hash_class, rb_intern("fetch"),    ab_hash_fetch,    1);
+    abruby_class_add_cfunc(ab_tmpl_hash_class, rb_intern("dup"),      ab_hash_dup,      0);
 }

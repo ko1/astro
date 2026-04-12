@@ -22,8 +22,21 @@ static RESULT ab_array_empty_p(CTX *c, VALUE self, unsigned int argc, VALUE *arg
 static RESULT ab_array_first(CTX *c, VALUE self, unsigned int argc, VALUE *argv) { VALUE ary = RARY(self); return RESULT_OK(RARRAY_LEN(ary) > 0 ? RARRAY_AREF(ary, 0) : Qnil); }
 static RESULT ab_array_last(CTX *c, VALUE self, unsigned int argc, VALUE *argv) { VALUE ary = RARY(self); long len = RARRAY_LEN(ary); return RESULT_OK(len > 0 ? RARRAY_AREF(ary, len - 1) : Qnil); }
 static RESULT ab_array_add(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)argc;
     VALUE result = rb_ary_dup(RARY(self));
-    rb_ary_concat(result, RARY(argv[0]));
+    if (ab_obj_type_p(argv[0], ABRUBY_OBJ_ARRAY)) {
+        rb_ary_concat(result, RARY(argv[0]));
+    } else if (argv[0] == Qnil) {
+        // Ruby splat semantics for `[*nil]`: treat as empty.  abruby's
+        // splat lowering emits `[a] + expr + [b]`, and `expr` may
+        // evaluate to nil — fold it as a no-op rather than raising.
+    } else {
+        // Splat semantics for non-array values: treat as 1-element array.
+        // This deliberately makes Array#+ more permissive than Ruby's
+        // strict behavior so the parser-side splat lowering survives
+        // dynamic-typed splat targets.
+        rb_ary_push(result, argv[0]);
+    }
     return RESULT_OK(abruby_ary_new(c, result));
 }
 static RESULT ab_array_include_p(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
@@ -225,11 +238,86 @@ static RESULT ab_array_shift(CTX *c, VALUE self, unsigned int argc, VALUE *argv)
     return RESULT_OK(rb_ary_shift(RARY(self)));
 }
 
-// Array#unshift(elem) — insert at the front.
+// Array#unshift(elem, ...) — insert one or more elements at the front,
+// preserving order.
 static RESULT ab_array_unshift(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     (void)c;
-    rb_ary_unshift(RARY(self), argv[0]);
+    for (long i = (long)argc - 1; i >= 0; i--) {
+        rb_ary_unshift(RARY(self), argv[i]);
+    }
     return RESULT_OK(self);
+}
+
+// Array#* — repeat (with Integer) or join (with String).
+static RESULT ab_array_mul(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)argc;
+    if (FIXNUM_P(argv[0])) {
+        long n = FIX2LONG(argv[0]);
+        if (n < 0) {
+            VALUE exc = abruby_exception_new(c, c->current_frame,
+                abruby_str_new_cstr(c, "negative argument"));
+            return (RESULT){exc, RESULT_RAISE};
+        }
+        VALUE ary = RARY(self);
+        long len = RARRAY_LEN(ary);
+        VALUE result = rb_ary_new_capa(len * n);
+        for (long k = 0; k < n; k++) {
+            for (long i = 0; i < len; i++) rb_ary_push(result, RARRAY_AREF(ary, i));
+        }
+        return RESULT_OK(abruby_ary_new(c, result));
+    }
+    if (ab_obj_type_p(argv[0], ABRUBY_OBJ_STRING)) {
+        // delegate to join
+        return ab_array_join(c, self, 1, argv);
+    }
+    VALUE exc = abruby_exception_new(c, c->current_frame,
+        abruby_str_new_cstr(c, "Array#* expects Integer or String"));
+    return (RESULT){exc, RESULT_RAISE};
+}
+
+// Array#flat_map / collect_concat — like map but flattens one level.
+static RESULT ab_array_flat_map(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)argc; (void)argv;
+    VALUE ary = RARY(self);
+    long len = RARRAY_LEN(ary);
+    VALUE result = rb_ary_new();
+    for (long i = 0; i < len; i++) {
+        VALUE elem = RARRAY_AREF(ary, i);
+        RESULT r = abruby_yield(c, 1, &elem);
+        if (r.state != RESULT_NORMAL) return r;
+        if (ab_obj_type_p(r.value, ABRUBY_OBJ_ARRAY)) {
+            VALUE sub = RARY(r.value);
+            long sl = RARRAY_LEN(sub);
+            for (long j = 0; j < sl; j++) rb_ary_push(result, RARRAY_AREF(sub, j));
+        } else {
+            rb_ary_push(result, r.value);
+        }
+    }
+    return RESULT_OK(abruby_ary_new(c, result));
+}
+
+// Array#inject(initial = nil) { |acc, e| ... } / reduce.  No symbol form.
+static RESULT ab_array_inject(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    VALUE ary = RARY(self);
+    long len = RARRAY_LEN(ary);
+    VALUE acc;
+    long start;
+    if (argc >= 1) {
+        acc = argv[0];
+        start = 0;
+    } else if (len == 0) {
+        return RESULT_OK(Qnil);
+    } else {
+        acc = RARRAY_AREF(ary, 0);
+        start = 1;
+    }
+    for (long i = start; i < len; i++) {
+        VALUE pair[2] = { acc, RARRAY_AREF(ary, i) };
+        RESULT r = abruby_yield(c, 2, pair);
+        if (r.state != RESULT_NORMAL) return r;
+        acc = r.value;
+    }
+    return RESULT_OK(acc);
 }
 
 // Array#transpose — returns a new array of arrays where rows become cols.
@@ -349,4 +437,9 @@ Init_abruby_array(void)
     abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("each_with_index"), ab_array_each_with_index, 0);
     abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("transpose"), ab_array_transpose, 0);
     abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("zip"),       ab_array_zip,       1);
+    abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("flat_map"),  ab_array_flat_map,  0);
+    abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("collect_concat"), ab_array_flat_map, 0);
+    abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("inject"),    ab_array_inject,    0);
+    abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("reduce"),    ab_array_inject,    0);
+    abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("*"),         ab_array_mul,       1);
 }
