@@ -665,10 +665,23 @@ class AbRuby
         lefts = node.lefts
         values = node.value
 
-        # Evaluate right-hand values into temp slots
+        # Evaluate right-hand values into temp slots.
+        #
+        # Ruby semantics for `a, b = b, a + b` require *all* RHS
+        # expressions to be evaluated to values BEFORE any LHS
+        # assignment runs.  We do that by storing each evaluated RHS
+        # into its own temp slot, then having the assigns loop read
+        # back from those slots.  Without this hoist, `a, b = b, a+b`
+        # would update `a` before `a + b` is computed and produce
+        # wrong values (the famous Fibonacci bug).
+        rhs_pre_seq = nil
         if values.is_a?(Prism::ArrayNode) &&
            values.elements.none? { |e| e.is_a?(Prism::SplatNode) }
-          rhs_nodes = values.elements.map { |e| transduce(e) }
+          temp_slots = values.elements.map { inc_arg_index }
+          rhs_pre_seq = values.elements.each_with_index.map do |e, i|
+            AbRuby.alloc_node_lvar_set(temp_slots[i], transduce(e))
+          end
+          rhs_nodes = temp_slots.map { |s| AbRuby.alloc_node_lvar_get(s) }
         elsif values.is_a?(Prism::ArrayNode) &&
               values.elements.size == 1 && values.elements[0].is_a?(Prism::SplatNode)
           # a, b = *expr → treat expr as the array to decompose
@@ -763,7 +776,10 @@ class AbRuby
         end
 
         rewind_arg_index(ary_idx) if ary_idx
-        build_seq(rhs_pre_store ? [rhs_pre_store] + assigns : assigns)
+        prelude = []
+        prelude.concat(rhs_pre_seq) if rhs_pre_seq
+        prelude << rhs_pre_store if rhs_pre_store
+        build_seq(prelude.empty? ? assigns : prelude + assigns)
 
       when Prism::BeginNode
         body = node.statements ? transduce(node.statements) : AbRuby.alloc_node_nil

@@ -110,6 +110,24 @@ static void abruby_data_mark(void *ptr) {
         if (!RB_SPECIAL_CONST_P(bm->recv)) rb_gc_mark(bm->recv);
         break;
     }
+    case ABRUBY_OBJ_FIBER: {
+        if (ptr == (const void *)h->klass) {
+            const struct abruby_class *cls = (const struct abruby_class *)ptr;
+            ab_id_table_foreach(&cls->methods, _mk, _mv, {
+                const struct abruby_method *m = (const struct abruby_method *)_mv;
+                if (m->type == ABRUBY_METHOD_AST && m->u.ast.body && m->u.ast.body->head.rb_wrapper) {
+                    rb_gc_mark(m->u.ast.body->head.rb_wrapper);
+                }
+            });
+            ab_id_table_foreach(&cls->constants, _ck, _cv, {
+                rb_gc_mark(_cv);
+            });
+        } else {
+            extern void abruby_fiber_mark(struct abruby_fiber *f);
+            abruby_fiber_mark((struct abruby_fiber *)ptr);
+        }
+        break;
+    }
     case ABRUBY_OBJ_PROC: {
         // See abruby_data_free's PROC case for the self-ref vs instance
         // distinction.  When ptr is the metaclass itself, mark it as a
@@ -195,6 +213,17 @@ abruby_data_free(void *ptr)
         case ABRUBY_OBJ_GENERIC: {
             struct abruby_object *obj = (struct abruby_object *)ptr;
             if (obj->extra_ivars) ruby_xfree(obj->extra_ivars);
+            break;
+        }
+        case ABRUBY_OBJ_FIBER: {
+            if (ptr == (void *)h->klass) {
+                struct abruby_class *cls = (struct abruby_class *)ptr;
+                ab_id_table_free(&cls->methods);
+                ab_id_table_free(&cls->constants);
+            } else {
+                extern void abruby_fiber_free(struct abruby_fiber *f);
+                abruby_fiber_free((struct abruby_fiber *)ptr);
+            }
             break;
         }
         case ABRUBY_OBJ_PROC: {
@@ -326,6 +355,20 @@ abruby_block_to_proc(CTX *c, const struct abruby_block *blk, bool is_lambda)
             }
         }
     }
+    return wrapper;
+}
+
+// Wrap an abruby_fiber struct in a T_DATA so it survives GC and can
+// be passed around as a Ruby VALUE.  The fiber struct's `klass` (via
+// the abruby_header at offset 0) gets fiber_class so the dispatch /
+// mark / free paths know what to do.
+VALUE
+abruby_fiber_wrap(struct abruby_machine *vm, struct abruby_fiber *f)
+{
+    if (f->rb_wrapper != Qnil && f->rb_wrapper != 0) return f->rb_wrapper;
+    f->klass = vm->fiber_class;
+    VALUE wrapper = TypedData_Wrap_Struct(rb_cAbRubyNode, &abruby_data_type, f);
+    f->rb_wrapper = wrapper;
     return wrapper;
 }
 
@@ -953,6 +996,40 @@ init_instance_classes(struct abruby_machine *vm)
         abruby_class_set_const(obj, rb_intern("File"), abruby_wrap_class(file_klass));
     }
 
+    // Fiber: per-VM class with `new` / `resume` / `yield` (class
+    // method) / `alive?` cfuncs.  Self-referential klass for the same
+    // reason as Proc / Struct / File.
+    {
+        struct abruby_class *fb_klass = (struct abruby_class *)ruby_xcalloc(1, sizeof(struct abruby_class));
+        fb_klass->klass = fb_klass;
+        fb_klass->obj_type = ABRUBY_OBJ_FIBER;
+        fb_klass->name = rb_intern("Fiber");
+        fb_klass->super = vm->object_class;
+        extern RESULT ab_fiber_new(CTX *, VALUE, unsigned int, VALUE *);
+        extern RESULT ab_fiber_resume(CTX *, VALUE, unsigned int, VALUE *);
+        extern RESULT ab_fiber_yield(CTX *, VALUE, unsigned int, VALUE *);
+        extern RESULT ab_fiber_alive_p(CTX *, VALUE, unsigned int, VALUE *);
+        struct {
+            const char *name;
+            abruby_cfunc_t fn;
+        } entries[] = {
+            {"new",      ab_fiber_new},
+            {"resume",   ab_fiber_resume},
+            {"yield",    ab_fiber_yield},
+            {"alive?",   ab_fiber_alive_p},
+        };
+        for (size_t i = 0; i < sizeof(entries)/sizeof(entries[0]); i++) {
+            struct abruby_method *mm = ruby_xcalloc(1, sizeof(struct abruby_method));
+            mm->name = rb_intern(entries[i].name);
+            mm->type = ABRUBY_METHOD_CFUNC;
+            mm->defining_class = fb_klass;
+            mm->u.cfunc.func = entries[i].fn;
+            ab_id_table_insert(&fb_klass->methods, mm->name, (VALUE)mm);
+        }
+        vm->fiber_class = fb_klass;
+        abruby_class_set_const(obj, rb_intern("Fiber"), abruby_wrap_class(fb_klass));
+    }
+
     // Proc: a class object whose own methods table holds the
     // Proc#call / Proc#[] cfuncs.  Instances are abruby_proc T_DATAs.
     {
@@ -1077,12 +1154,20 @@ create_vm(void)
     struct abruby_machine *vm = ruby_xcalloc(1, sizeof(struct abruby_machine));
     vm->method_serial = 1;
     vm->current_fiber = ruby_xcalloc(1, sizeof(struct abruby_fiber));
+    vm->current_fiber->is_main = true;
+    vm->current_fiber->state = ABRUBY_FIBER_RUNNING;
+    vm->current_fiber->abm = vm;
     // Wire ctx.abm early so init_instance_classes can use abruby_float_new_wrap
     // (which reads c->abm->float_class) when creating Float constants.
     vm->current_fiber->ctx.abm = vm;
 
     // Create per-instance built-in classes (must be before main_class_body setup)
     init_instance_classes(vm);
+
+    // Now that fiber_class exists, tag the main fiber so abruby_header
+    // dispatches via OBJ_FIBER on it (rare; only if it's ever wrapped).
+    vm->current_fiber->klass = vm->fiber_class;
+    vm->root_fiber = vm->current_fiber;
 
     // Per-instance main class (inherits from Object)
     vm->main_class_body.klass = vm->class_class;

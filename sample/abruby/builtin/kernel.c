@@ -198,6 +198,22 @@ static RESULT ab_kernel_require(CTX *c, VALUE self, unsigned int argc, VALUE *ar
     return abruby_require_file(c, path);
 }
 
+// Kernel#loop { ... } — yield to the block forever (until break or
+// StopIteration).  Used by optcarrot's CPU dispatch loop.
+RESULT ab_kernel_loop(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    (void)self; (void)argc; (void)argv;
+    for (;;) {
+        RESULT r = abruby_yield(c, 0, NULL);
+        if (r.state != RESULT_NORMAL) {
+            // Plain `break` from the block exits the loop with the
+            // payload value; the dispatch_method_frame_with_block path
+            // already demoted RESULT_BREAK on its way out, so we just
+            // forward whatever's in r.
+            return r;
+        }
+    }
+}
+
 // __dir__ — directory of the current source file (the closest enclosing
 // AST method's source file, or the VM's current_file if at top level).
 // Used by optcarrot-bench to find Lan_Master.nes next to the script.
@@ -263,4 +279,6 @@ Init_abruby_kernel(void)
     extern RESULT ab_kernel_lambda(CTX *, VALUE, unsigned int, VALUE *);
     abruby_class_add_cfunc(ab_tmpl_kernel_module, rb_intern("proc"),             ab_kernel_proc,             0);
     abruby_class_add_cfunc(ab_tmpl_kernel_module, rb_intern("lambda"),           ab_kernel_lambda,           0);
+    extern RESULT ab_kernel_loop(CTX *, VALUE, unsigned int, VALUE *);
+    abruby_class_add_cfunc(ab_tmpl_kernel_module, rb_intern("loop"),             ab_kernel_loop,             0);
 }

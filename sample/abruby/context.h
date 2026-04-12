@@ -155,6 +155,7 @@ enum abruby_obj_type {
     ABRUBY_OBJ_EXCEPTION,
     ABRUBY_OBJ_BOUND_METHOD,
     ABRUBY_OBJ_PROC,
+    ABRUBY_OBJ_FIBER,
 };
 
 // Common layout: ALL abruby T_DATA objects have klass at offset 0
@@ -489,10 +490,62 @@ abruby_context_frame(const struct CTX_struct *c)
     return abruby_in_block(c) ? c->current_block->defining_frame : c->current_frame;
 }
 
-// Fiber: owns a CTX (execution context with its own stack).
-// Currently only main fiber exists; future: multiple fibers with switching.
+// Fiber: owns a CTX (execution context with its own VALUE stack) and,
+// for non-main fibers, a separate C call stack + ucontext for resume /
+// yield switching.
+//
+// State machine:
+//   NEW       -- created via Fiber.new, not yet resumed
+//   RUNNING   -- this is the currently executing fiber
+//   SUSPENDED -- yielded, waiting for the next resume
+//   DONE      -- the body returned (or raised) — further resumes raise
+//
+// transfer_value carries the value across a swap in either direction:
+//   resume(arg)  -- caller writes arg into current fiber's transfer_value
+//                   then swapcontext() to the resumed fiber, which reads
+//                   it as Fiber.yield's return value
+//   yield(arg)   -- the suspending fiber writes arg, swapcontext()s back
+//                   to resumer which reads it as resume's return value
+//
+// resumer is the fiber that called .resume on us; we yield/return back
+// to it.  For the main fiber it stays NULL.
+struct abruby_fiber;
+
+enum abruby_fiber_state {
+    ABRUBY_FIBER_NEW,
+    ABRUBY_FIBER_RUNNING,
+    ABRUBY_FIBER_SUSPENDED,
+    ABRUBY_FIBER_DONE,
+};
+
 struct abruby_fiber {
-    CTX ctx;                             // execution context (stack included)
+    struct abruby_class *klass;               // offset 0: per-instance fiber_class
+    CTX ctx;                                  // execution context (own VALUE stack)
+    enum abruby_fiber_state state;
+    bool is_main;                             // true for the bootstrap fiber
+
+    // Block to run.  Set by Fiber.new; consumed on first resume.  Owned
+    // VALUE (T_DATA Proc) so the GC keeps it alive.
+    VALUE proc_value;
+
+    // Carries the value across swapcontext in both directions.
+    VALUE transfer_value;
+    // RESULT state of the body when DONE (RAISE / NORMAL).
+    unsigned int done_state;
+
+    // ucontext + heap C stack.  main fiber leaves these zero/null.
+    struct abruby_fiber_uctx *uctx;           // opaque (defined in fiber.c)
+    void *cstack;
+    size_t cstack_size;
+
+    // The fiber that called .resume on us.  We swap back here on yield
+    // or completion.
+    struct abruby_fiber *resumer;
+
+    // Backref to the VM (so the entry function can find it).
+    struct abruby_machine *abm;
+    // Self pointer for GC marking via the wrapper VALUE.
+    VALUE rb_wrapper;
 };
 
 struct abruby_machine {
@@ -536,6 +589,8 @@ struct abruby_machine {
     struct abruby_class *runtime_error_class;
     struct abruby_class *method_class;       // for Object#method results
     struct abruby_class *proc_class;         // for Proc.new / lambda / & conversion
+    struct abruby_class *fiber_class;        // for Fiber.new / resume / yield
+    struct abruby_fiber *root_fiber;         // the bootstrap (main) fiber
 };
 
 // exception object
