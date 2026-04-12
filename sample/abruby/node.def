@@ -782,7 +782,7 @@ node_rescue(CTX * restrict c, NODE * restrict n, NODE *body, NODE *rescue_body, 
 {
     RESULT r = EVAL_ARG(c, body);
 
-    if (r.state == RESULT_RAISE) {
+    if (r.state == RESULT_RAISE && exception_lvar_index != 0xFFFFFFFEu) {
         if (exception_lvar_index != UINT32_MAX) {
             c->fp[exception_lvar_index] = r.value;
         }

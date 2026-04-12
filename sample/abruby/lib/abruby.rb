@@ -827,7 +827,7 @@ class AbRuby
           end
         else
           rescue_body = AbRuby.alloc_node_nil
-          exception_lvar_index = 0xFFFFFFFF
+          exception_lvar_index = 0xFFFFFFFE
         end
 
         ensure_body = if node.ensure_clause&.statements

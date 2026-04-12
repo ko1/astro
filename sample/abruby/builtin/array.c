@@ -48,7 +48,18 @@ static RESULT ab_array_get(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     }
     return RESULT_OK(Qnil);
 }
-static RESULT ab_array_set(CTX *c, VALUE self, unsigned int argc, VALUE *argv) { rb_ary_store(RARY(self), FIX2LONG(argv[0]), argv[1]); return RESULT_OK(argv[1]); }
+static RESULT ab_array_set(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+    if (argc == 2) {
+        rb_ary_store(RARY(self), FIX2LONG(argv[0]), argv[1]);
+        return RESULT_OK(argv[1]);
+    }
+    long idx = FIX2LONG(argv[0]);
+    long len = FIX2LONG(argv[1]);
+    VALUE src = argv[2];
+    VALUE rb_src = ab_obj_type_p(src, ABRUBY_OBJ_ARRAY) ? RARY(src) : src;
+    rb_funcall(RARY(self), rb_intern("[]="), 3, LONG2FIX(idx), LONG2FIX(len), rb_src);
+    return RESULT_OK(src);
+}
 static RESULT ab_array_push(CTX *c, VALUE self, unsigned int argc, VALUE *argv) { rb_ary_push(RARY(self), argv[0]); return RESULT_OK(self); }
 static RESULT ab_array_pop(CTX *c, VALUE self, unsigned int argc, VALUE *argv) { return RESULT_OK(rb_ary_pop(RARY(self))); }
 static RESULT ab_array_length(CTX *c, VALUE self, unsigned int argc, VALUE *argv) { return RESULT_OK(LONG2FIX(RARRAY_LEN(RARY(self)))); }
@@ -553,7 +564,7 @@ Init_abruby_array(void)
     abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("inspect"),  ab_array_inspect,   0);
     abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("to_s"),     ab_array_to_s,      0);
     abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("[]"),       ab_array_get,       2);
-    abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("[]="),      ab_array_set,       2);
+    abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("[]="),      ab_array_set,       -1);
     abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("push"),     ab_array_push,      1);
     abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("<<"),       ab_array_push,      1);
     abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("pop"),      ab_array_pop,       0);
