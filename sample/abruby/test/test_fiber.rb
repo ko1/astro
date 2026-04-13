@@ -194,6 +194,31 @@ class TestFiber < AbRubyTest
     r
   RUBY
 
+  # GC stress: fiber yields from inside a block passed to a method.
+  def test_fiber_gc_yield_in_block = assert_eval(<<~RUBY, [1, 2, 3, 4, 5])
+    def each_upto(n)
+      i = 0
+      while i < n
+        yield i + 1
+        i += 1
+      end
+    end
+    f = Fiber.new do
+      each_upto(5) do |v|
+        i = 0
+        while i < 200
+          x = "blk_" + i.to_s
+          i += 1
+        end
+        Fiber.yield v
+      end
+      999
+    end
+    out = []
+    5.times { out << f.resume }
+    out
+  RUBY
+
   # GC stress: deep method calls inside fiber body with heavy allocation.
   def test_fiber_gc_deep_calls = assert_eval(<<~RUBY, 110)
     def fib(n)

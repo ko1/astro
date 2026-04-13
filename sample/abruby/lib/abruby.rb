@@ -9,6 +9,7 @@ class AbRuby
       @frames = []
       @source_file = nil
       @entries = []
+      @method_frame_max = {}  # name -> frame[:max] for known abruby method definitions
     end
 
     def parse(code, source_file = nil)
@@ -106,6 +107,21 @@ class AbRuby
 
     def rewind_arg_index(idx)
       current_frame[:arg_index] = idx
+    end
+
+    # When a block literal is transduced inside a call to a known abruby method,
+    # the block body's expression temps must not overlap with the callee's frame.
+    # The callee's frame starts at call_arg_idx and spans callee_max slots.
+    # Advance arg_index past the callee's frame so block temps land above it.
+    def advance_past_callee_frame(call_arg_idx, callee_name)
+      callee_max = @method_frame_max[callee_name.to_s]
+      return unless callee_max
+      min_safe = call_arg_idx + callee_max
+      frame = current_frame
+      if frame[:arg_index] < min_safe
+        frame[:arg_index] = min_safe
+        frame[:max] = min_safe if min_safe > frame[:max]
+      end
     end
 
     def transduce(node)
@@ -553,6 +569,7 @@ class AbRuby
         end
 
         frame = pop_frame
+        @method_frame_max[name] = frame[:max]  # record for call-site block safety
         @entries << [name, body]
         AbRuby.alloc_node_def(name, body, params_cnt, frame[:max])
 
@@ -1409,15 +1426,18 @@ class AbRuby
               idx = inc_arg_index
               AbRuby.alloc_node_lvar_set(idx, transduce(arg))
             end
-            rewind_arg_index(call_arg_idx)
             if node.respond_to?(:block) && node.block
+              advance_past_callee_frame(call_arg_idx, name)
               call_node = set_line(alloc_call_with_block(node.block, nil, name.to_s, args.size, call_arg_idx), node)
+              rewind_arg_index(call_arg_idx)
             else
+              rewind_arg_index(call_arg_idx)
               call_node = set_line(AbRuby.alloc_node_func_call(name.to_s, args.size, call_arg_idx), node)
             end
             return build_seq(seq_nodes + [call_node])
           else
             if node.respond_to?(:block) && node.block
+              advance_past_callee_frame(call_arg_idx, name)
               return set_line(alloc_call_with_block(node.block, nil, name.to_s, 0, call_arg_idx), node)
             else
               return set_line(AbRuby.alloc_node_func_call(name.to_s, 0, call_arg_idx), node)
@@ -1436,21 +1456,24 @@ class AbRuby
             idx = inc_arg_index
             AbRuby.alloc_node_lvar_set(idx, transduce(arg))
           end
-          rewind_arg_index(recv_idx)
-
           recv_ref = AbRuby.alloc_node_lvar_get(recv_idx)
           if node.respond_to?(:block) && node.block
+            advance_past_callee_frame(call_arg_idx, name)
             call_node = set_line(alloc_call_with_block(node.block, recv_ref, name.to_s, args.size, call_arg_idx), node)
+            rewind_arg_index(recv_idx)
           else
+            rewind_arg_index(recv_idx)
             call_node = set_line(AbRuby.alloc_node_method_call(recv_ref, name.to_s, args.size, call_arg_idx), node)
           end
           return build_seq([recv_store] + seq_nodes + [call_node])
         else
-          rewind_arg_index(recv_idx)
           recv_ref = AbRuby.alloc_node_lvar_get(recv_idx)
           if node.respond_to?(:block) && node.block
+            advance_past_callee_frame(call_arg_idx, name)
             call_node = set_line(alloc_call_with_block(node.block, recv_ref, name.to_s, 0, call_arg_idx), node)
+            rewind_arg_index(recv_idx)
           else
+            rewind_arg_index(recv_idx)
             call_node = set_line(AbRuby.alloc_node_method_call(recv_ref, name.to_s, 0, call_arg_idx), node)
           end
           return AbRuby.alloc_node_seq(recv_store, call_node)
@@ -1465,16 +1488,18 @@ class AbRuby
           idx = inc_arg_index
           AbRuby.alloc_node_lvar_set(idx, transduce(arg))
         end
-        rewind_arg_index(call_arg_idx)
-
         if node.respond_to?(:block) && node.block
+          advance_past_callee_frame(call_arg_idx, name)
           call_node = set_line(alloc_call_with_block(node.block, nil, name.to_s, args.size, call_arg_idx), node)
+          rewind_arg_index(call_arg_idx)
         else
+          rewind_arg_index(call_arg_idx)
           call_node = set_line(AbRuby.alloc_node_func_call(name.to_s, args.size, call_arg_idx), node)
         end
         build_seq(seq_nodes + [call_node])
       else
         if node.respond_to?(:block) && node.block
+          advance_past_callee_frame(call_arg_idx, name)
           set_line(alloc_call_with_block(node.block, nil, name.to_s, 0, call_arg_idx), node)
         else
           set_line(AbRuby.alloc_node_func_call(name.to_s, 0, call_arg_idx), node)

@@ -515,13 +515,13 @@ abruby_yield(CTX *c, unsigned int argc, VALUE *argv)
     const struct abruby_block *save_current_block = c->current_block;
     const struct abruby_frame *save_current_block_frame = c->current_block_frame;
 
+    // Copy captured closure env to a fresh area past the callee's frame
+    // so block-body temporaries don't collide with callee locals.
     c->fp = blk->captured_fp;
     c->self = blk->captured_self;
     c->current_block = blk;
     c->current_block_frame = c->current_frame;
 
-    // Advance sp to cover the block's locals + args area so GC
-    // marks all slots the block body may write to.
     ctx_update_sp(c, c->fp + blk->env_size);
 
     RESULT r = EVAL(c, blk->body);

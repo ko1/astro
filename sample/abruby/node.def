@@ -770,8 +770,6 @@ node_yield(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_inde
     c->current_block = blk;
     c->current_block_frame = c->current_frame;
 
-    // Advance sp to cover the block's locals + args area so GC
-    // marks all slots the block body may write to.
     ctx_update_sp(c, c->fp + blk->env_size);
 
     RESULT r = EVAL(c, blk->body);
