@@ -146,6 +146,7 @@ benchmark/optcarrot/bin/optcarrot-bench を動かすために必要な機能。
 
 ### メモリ・GC
 
+- [ ] abruby_object の ivar inline slots をクラスごとに可変化 — 現在は全オブジェクト固定 4 slots (`ABRUBY_OBJECT_INLINE_IVARS`)。`klass->ivar_shape.cnt` を見て alloc 時にちょうどいいサイズを確保し、`extra_ivars` を不要にする。flexible array member で `ivars[]` をクラスの shape に合わせれば、ivar 0 個のクラス (binary_trees) は 0 bytes、ivar 7 個のクラス (nbody Body) は 56 bytes inline で heap alloc なし。クラス再オープンで shape が伸びた場合のみ realloc
 - [ ] ノードのアリーナアロケータ — 個別 malloc → バンプポインタ。同一スコープのノードが隣接しキャッシュ局所性向上
 - [ ] VALUE スタック遅延 GC マーク — 現在 10,000 スロット全体をマーク。`fp + frame_size` までに限定
 
