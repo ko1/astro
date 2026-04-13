@@ -564,9 +564,8 @@ struct abruby_fiber {
     // Main fiber leaves this as Qnil (no CRuby fiber needed).
     VALUE crb_fiber;
 
-    // Back-pointer to the CRuby fiber callback struct.  Cleared on
-    // free so crb_fiber_callback_mark doesn't follow a dangling ptr.
-    void *crb_callback;
+    // (crb_callback removed: callback now stores rb_wrapper VALUE
+    // instead of raw pointer, eliminating sweep-order UAF)
 
     // The fiber that called .resume on us.  We swap back here on yield
     // or completion.

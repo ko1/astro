@@ -12,9 +12,12 @@
 extern VALUE abruby_block_to_proc(CTX *c, const struct abruby_block *blk, bool is_lambda);
 
 // Callback struct passed as the TypedData argument to rb_fiber_new.
-// We store the abruby_fiber pointer so crb_fiber_body can recover it.
+// We store the abruby fiber's rb_wrapper VALUE (not a raw pointer to
+// the fiber struct) so that GC sweep order does not matter: the mark
+// function marks the VALUE, and crb_fiber_body recovers the fiber
+// via RTYPEDDATA_GET_DATA on the wrapper.
 struct crb_fiber_callback {
-    struct abruby_fiber *f;
+    VALUE rb_wrapper;   // T_DATA VALUE wrapping the abruby_fiber struct
 };
 
 static void crb_fiber_callback_mark(void *ptr) {
@@ -24,14 +27,13 @@ static void crb_fiber_callback_mark(void *ptr) {
     // abruby VALUES there; if the fiber struct were freed, those
     // VALUES would be stale and crash rb_gc_mark_locations.
     //
-    // This creates a reference cycle (CRuby fiber → callback →
-    // rb_wrapper → abruby_fiber_mark → crb_fiber → CRuby fiber) but
+    // This creates a reference cycle (CRuby fiber -> callback ->
+    // rb_wrapper -> abruby_fiber_mark -> crb_fiber -> CRuby fiber) but
     // mark-sweep GC handles cycles correctly: once nothing roots the
     // CRuby fiber, the entire cluster is collected together.
     const struct crb_fiber_callback *cb = (const struct crb_fiber_callback *)ptr;
-    if (cb->f) {
-        VALUE w = cb->f->rb_wrapper;
-        if (w && !RB_SPECIAL_CONST_P(w)) rb_gc_mark(w);
+    if (cb->rb_wrapper && !RB_SPECIAL_CONST_P(cb->rb_wrapper)) {
+        rb_gc_mark(cb->rb_wrapper);
     }
 }
 static void crb_fiber_callback_free(void *ptr) {
@@ -54,7 +56,8 @@ crb_fiber_body(VALUE yielded_arg, VALUE callback_obj, int argc, const VALUE *arg
     (void)yielded_arg; (void)argc; (void)argv; (void)blockarg;
     struct crb_fiber_callback *cb =
         (struct crb_fiber_callback *)RTYPEDDATA_GET_DATA(callback_obj);
-    struct abruby_fiber *f = cb->f;
+    struct abruby_fiber *f =
+        (struct abruby_fiber *)RTYPEDDATA_GET_DATA(cb->rb_wrapper);
 
     // The first resume delivers nargs/argv packed by fiber_switch_to into
     // transfer_value as a Ruby Array [nargs, arg0, arg1, ...].
@@ -166,10 +169,12 @@ fiber_switch_to(CTX *c, struct abruby_fiber *target, unsigned int argc, VALUE *a
 
         // Create the CRuby fiber.  Pass a typed-data wrapper of a small
         // callback struct so crb_fiber_body can find the abruby_fiber.
+        // The callback stores the fiber's rb_wrapper VALUE (not a raw
+        // pointer) so GC sweep order between the fiber wrapper and the
+        // CRuby fiber does not cause use-after-free.
         struct crb_fiber_callback *cb =
             (struct crb_fiber_callback *)ruby_xcalloc(1, sizeof(struct crb_fiber_callback));
-        cb->f = target;
-        target->crb_callback = cb;
+        cb->rb_wrapper = target->rb_wrapper;
         VALUE cb_val = TypedData_Wrap_Struct(rb_cObject, &crb_fiber_callback_type, cb);
         target->crb_fiber = rb_fiber_new(crb_fiber_body, cb_val);
 
@@ -290,11 +295,9 @@ void abruby_fiber_mark(struct abruby_fiber *f) {
 }
 
 void abruby_fiber_free(struct abruby_fiber *f) {
-    // Sever the back-pointer from the CRuby fiber callback so
-    // crb_fiber_callback_mark won't follow a dangling pointer.
-    if (f->crb_callback) {
-        ((struct crb_fiber_callback *)f->crb_callback)->f = NULL;
-        f->crb_callback = NULL;
-    }
-    // The struct itself is freed by abruby_data_free's ruby_xfree.
+    // The callback struct stores rb_wrapper (a VALUE), not a raw pointer
+    // to this fiber, so there is no dangling-pointer issue regardless of
+    // GC sweep order.  Nothing to do here; the struct itself is freed by
+    // abruby_data_free's ruby_xfree.
+    (void)f;
 }
