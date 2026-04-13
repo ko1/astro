@@ -185,7 +185,10 @@ abruby_data_free(void *ptr)
         struct abruby_class *cls = (struct abruby_class *)ptr;
         ab_id_table_free(&cls->methods);
         ab_id_table_free(&cls->constants);
-        break;
+        // Do NOT free class structs — other objects reference them via
+        // klass pointers, and GC sweep order is arbitrary.  The leak
+        // is bounded (one set of ~20 classes per VM instance).
+        return;
     }
     case ABRUBY_OBJ_GENERIC: {
         struct abruby_object *obj = (struct abruby_object *)ptr;
