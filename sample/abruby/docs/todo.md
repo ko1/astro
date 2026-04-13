@@ -9,7 +9,9 @@ benchmark/optcarrot/bin/optcarrot-bench を動かすために必要な機能。
 
 ### 致命的（これがないと何も動かない）
 
-- [x] ブロック / yield（block 基盤、`{ ... }` / `do...end`, `yield`, `block_given?`, `next`, `break`, 非ローカル `return`, closure, super block forwarding）— Proc/lambda/&blk は Phase 2
+- [x] ブロック / yield（block 基盤、`{ ... }` / `do...end`, `yield`, `block_given?`, `next`, `break`, 非ローカル `return`, closure, super block forwarding）
+- [x] Proc / lambda / `&block` パラメータ（`Proc.new`, `proc`, `lambda`, `Proc#call`, `Proc#[]`, `Proc#arity`, `Proc#lambda?`, `def f(&blk)`, `f(&proc)` — `->` 記法と `&:symbol` は未対応）
+- [x] Fiber（`Fiber.new`, `Fiber#resume`, `Fiber.yield`, `Fiber#alive?` — CRuby Fiber API でスタック管理）
 - [x] `case / when`（if/elsif チェーンに desugar、=== メソッド対応）
 - [x] `attr_reader` / `attr_writer` / `attr_accessor`
 - [ ] デフォルト引数 (`def f(a, b = 1)`)
@@ -18,19 +20,19 @@ benchmark/optcarrot/bin/optcarrot-bench を動かすために必要な機能。
 
 - [x] `Integer#times`
 - [x] `Integer#[]`（ビットインデックス `num[bit]`）
-- [x] Array: `each`, `map` (collect), `select` (filter), `reject` — `fill`, `flatten`, `clear`, `replace`, `concat` は未
-- [x] Hash: `each` (each_pair) — `fetch`, `merge`, `delete`, `compare_by_identity` は未
-- [ ] String: `gsub`, `split`, `strip`, `chomp`, `bytes`, `pack`, `unpack`, `bytesize`, `[]`
+- [x] Array: `each`, `each_with_index`, `map`/`collect`, `select`/`filter`, `reject`, `flat_map`/`collect_concat`, `fill`, `flatten`, `clear`, `replace`, `concat`, `join`, `min`, `max`, `sort`, `inject`/`reduce`, `uniq`, `compact`, `transpose`, `zip`, `pack`, `all?`, `any?`, `none?`
+- [x] Hash: `each`/`each_pair`, `each_key`, `each_value`, `fetch`, `merge`, `delete`, `dup`, `compare_by_identity`
+- [x] String: `split`, `strip`, `chomp`, `bytes`, `unpack`, `bytesize`, `start_with?`, `end_with?`, `tr`, `=~`, `%`, `sum`, `to_sym`/`intern`
+- [ ] String: `gsub`, `sub`, `match`, `scan`, `[]`, `[]=`
 - [x] `super`（bare super で引数転送、super(args) で明示的引数、super() で引数なし）
-- [ ] `private` / `public` / `protected`
-- [ ] `module_function`
+- [x] `private` / `public` / `protected` / `module_function`（定義のみ、アクセス制御は no-op）
 - [x] `until` ループ（基本形は実装済み。`begin...end until` は未対応）
 
 ### 中程度（特定機能で必要）
 
 - [x] `eval`（ローカル変数は外部スコープ不可）
-- [ ] `Struct.new`
-- [ ] `method(:name)`（メソッドオブジェクト）
+- [x] `Struct.new`（最小限、attr_accessor 付きクラス生成）
+- [x] `method(:name)`（Method オブジェクト、`call`/`[]` で呼び出し可能）
 - [x] `const_get` / `const_set`（動的定数参照）
 - [x] `is_a?` / `kind_of?` / `instance_of?`
 - [ ] `defined?`
@@ -40,8 +42,8 @@ benchmark/optcarrot/bin/optcarrot-bench を動かすために必要な機能。
 
 ### 標準ライブラリ
 
+- [x] File I/O（join, binread, dirname, basename, extname, expand_path, exist?, readable?, read — CRuby File への facade）
 - [ ] Zlib（ROM 解凍）
-- [ ] File I/O（ROM 読み込み）
 - [ ] Marshal（シリアライゼーション）
 
 ## その他の未実装機能
@@ -51,8 +53,9 @@ benchmark/optcarrot/bin/optcarrot-bench を動かすために必要な機能。
 - [x] `next`（block body から、値付き/値なし両対応）
 
 ### ブロック・Proc・lambda
-- [ ] `Proc.new` / `proc` / `lambda` / `->` — 現状は block を heap に escape させない前提（C スタック上の `struct abruby_block` のみ）
-- [ ] `&block` 引数 / `&proc_var` 転送
+- [x] `Proc.new` / `proc` / `lambda` — block の heap escape、closure 環境保持
+- [x] `&block` 引数 / `&proc_var` 転送
+- [ ] `->` lambda リテラル構文
 - [ ] `&:symbol` sugar
 - [ ] block 内 default / *args / **kwargs パラメータ
 - [ ] `_1`, `_2` 番号付きパラメータ
@@ -62,7 +65,7 @@ benchmark/optcarrot/bin/optcarrot-bench を動かすために必要な機能。
 - [ ] キーワード引数 (`def f(a:, b: 1)`)
 - [ ] クラスメソッド (`def self.foo`)
 - [ ] `alias` / `alias_method`
-- [ ] `respond_to?`
+- [x] `respond_to?`
 
 ### クラス・モジュール
 - [ ] `prepend`
@@ -77,9 +80,8 @@ benchmark/optcarrot/bin/optcarrot-bench を動かすために必要な機能。
 ### ビルトインメソッドの差分
 
 #### Integer
-- [ ] `upto`, `downto`（Phase 2）
-- [ ] `step`（Phase 2）
-- [ ] `even?`, `odd?`
+- [x] `even?`, `odd?`, `step`
+- [ ] `upto`, `downto`
 - [ ] `bit_length`, `between?`
 
 #### Float
@@ -87,25 +89,27 @@ benchmark/optcarrot/bin/optcarrot-bench を動かすために必要な機能。
 - [ ] `truncate`
 
 #### String
+- [x] `start_with?`, `end_with?`, `tr`, `%`
 - [ ] `[]=`（部分文字列代入）
-- [ ] `sub`, `match`（正規表現）
-- [ ] `start_with?`, `end_with?`
-- [ ] `tr`, `scan`
-- [ ] `%` フォーマット
+- [ ] `sub`, `gsub`, `match`, `scan`
 
 #### Array
-- [ ] `sort`, `compact`, `uniq`
-- [ ] `shift`, `unshift`, `join`
+- [x] `sort`, `compact`, `uniq`, `uniq!`, `shift`, `unshift`, `join`, `inject`/`reduce`
+- [x] `transpose`, `zip`, `rotate!`, `flat_map`/`collect_concat`, `pack`
+- [x] `min`, `max`, `fill`, `clear`, `replace`, `concat`, `slice`, `slice!`
+- [x] `all?`, `any?`, `none?`, `each_with_index`
 - [ ] `delete`, `delete_at`, `count`
-- [ ] `each_slice`, `transpose`, `rotate`, `zip`
-- [ ] `inject` / `reduce`
+- [ ] `each_slice`
 
 #### Hash
+- [x] `each_key`, `each_value`, `merge`, `delete`, `fetch`, `dup`, `compare_by_identity`
 - [ ] `to_a`, `default`
-- [ ] `each_key`, `each_value`
 
 ### 未実装クラス
-- [ ] IO/File
+- [x] File（最小限 facade: join, binread, dirname, basename, extname, expand_path, exist?, readable?, read）
+- [x] GC（thin facade: disable, enable, start）
+- [x] Process（clock_gettime）
+- [ ] IO（File の基底）
 - [ ] Comparable, Enumerable
 - [ ] Numeric (Integer/Float の共通親)
 
@@ -161,5 +165,5 @@ benchmark/optcarrot/bin/optcarrot-bench を動かすために必要な機能。
 ## ランタイム・内部実装
 
 - [x] ~~abruby オブジェクトの free（現在リーク前提）~~ → `RUBY_DEFAULT_FREE` で GC sweep 時に解放
-- [ ] メソッド/ivar/定数テーブルの動的拡張
+- [x] メソッド/ivar/定数テーブルの動的拡張 → `ab_id_table` (hybrid hash table) に移行済み
 - [ ] スタックオーバーフロー検出

@@ -42,7 +42,7 @@ a *= 2
 @x       #=> 1
 @x += 1  #=> 2
 ```
-未初期化のインスタンス変数は `nil` を返す。最大 32 個。
+未初期化のインスタンス変数は `nil` を返す。4 slots inline + heap overflow で制限なし。
 
 ### グローバル変数
 ```ruby
@@ -50,7 +50,7 @@ $x = 1
 $x       #=> 1
 $x += 1  #=> 2
 ```
-VM インスタンスごとに独立。未初期化は `nil`。最大 64 個。
+VM インスタンスごとに独立。未初期化は `nil`。`ab_id_table` で動的管理（制限なし）。
 
 ### 多重代入
 ```ruby
@@ -167,12 +167,76 @@ each_pair { |a, b| sum += a + b }   # => 10
 - 同名のブロックパラメータは外側のローカル変数をシャドーする（outer の値は変更されない）
 - `super`（暗黙）は現メソッドが受け取ったブロックを親メソッドに転送。`super() { ... }` で明示的に別ブロックを渡せる
 
-#### ブロック関連の制約（Phase 1）
+#### ブロック関連の制約
 
-- `Proc.new` / `proc` / `lambda` / `->` / `Proc#call` は未対応
-- `def f(&blk)` の block パラメータ受け取り、`&proc_var` 転送、`&:symbol` sugar は未対応
-- block 内 `return` 対応の副作用として、**ブロックは C スタック上にのみ存在**し、heap に escape しない（現在の MVP では Proc 化できないので問題ない）
-- block 本体内で例外が発生した場合、backtrace は yielding メソッドの yield 位置を示す（block の行ではない）
+- `->` lambda リテラル構文は未対応（`lambda { ... }` は可）
+- `&:symbol` sugar は未対応
+- block パラメータはデフォルト値/可変長/キーワード未対応（required パラメータのみ）
+- `_1`, `_2` 番号付きパラメータは未対応
+- `redo` は未対応
+
+### Proc / lambda
+
+```ruby
+pr = Proc.new { |x| x + 1 }
+pr.call(10)      #=> 11
+pr[10]            #=> 11 (alias)
+
+la = lambda { |x| x * 2 }
+la.call(5)        #=> 10
+la.lambda?        #=> true
+la.arity          #=> 1
+
+def f(&blk)
+  blk.call(42)
+end
+f { |x| x + 1 }  #=> 43
+
+g = proc { |x| x }
+h(&g)             # Proc をブロックとして渡す
+```
+
+- `Proc.new { ... }` / `proc { ... }` — ブロックを Proc オブジェクトに変換
+- `lambda { ... }` — lambda 生成（return で lambda 自身からのみ脱出）
+- `Proc#call` / `Proc#[]` / `Proc#yield` — Proc の実行
+- `Proc#arity` — パラメータ数
+- `Proc#lambda?` — lambda かどうか
+- `Proc#to_proc` — 自身を返す
+- `def f(&blk)` — ブロックを Proc として受け取る
+- `f(&my_proc)` — Proc をブロックとして渡す
+- closure: 定義スコープのローカル変数を読み書き可能
+
+#### Proc / lambda の制約
+
+- `->` lambda リテラル構文は未対応
+- `&:symbol` sugar は未対応
+- block パラメータはデフォルト値/可変長/キーワード未対応
+
+### Fiber
+
+```ruby
+fib = Fiber.new { |x|
+  Fiber.yield(x + 1)
+  Fiber.yield(x + 2)
+  x + 3
+}
+fib.resume(10)    #=> 11
+fib.resume        #=> 12
+fib.resume        #=> 13
+fib.alive?        #=> false
+```
+
+- `Fiber.new { ... }` — ファイバー生成
+- `Fiber#resume(args)` — ファイバー開始/再開
+- `Fiber.yield(value)` — ファイバー中断、resumer に値を返す
+- `Fiber#alive?` — ファイバーが生存中かどうか
+- 状態遷移: NEW → RUNNING → SUSPENDED → DONE
+- CRuby Fiber API でスタック管理、GC 連携済み
+
+#### Fiber の制約
+
+- `Fiber#transfer` は未対応
+- Enumerator は未対応
 
 ### 例外処理
 ```ruby
@@ -348,7 +412,22 @@ Proxy.new.foo(42)  # "foo" と 42 を出力
 | メソッド | 引数 | 説明 |
 |---|---|---|
 | `p` | 1 | `inspect` を出力し、引数を返す |
+| `puts` | 0+ | 各引数を `to_s` して改行付き出力 |
+| `print` | 0+ | 各引数を `to_s` して出力（改行なし） |
 | `raise` | 0-1 | 例外を発生。引数が例外値になる |
+| `exit` | 0-1 | プロセス終了 |
+| `eval` | 1 | 文字列を評価（外部スコープ不可） |
+| `block_given?` | 0 | ブロック付き呼び出しか判定 |
+| `loop` | 0 + block | 無限ループ（break で脱出） |
+| `require` | 1 | ファイル読み込み |
+| `require_relative` | 1 | 相対パスでファイル読み込み |
+| `Integer` | 1 | 整数変換 |
+| `Float` | 1 | 浮動小数点変換 |
+| `Rational` | 1-2 | Rational 生成 |
+| `Complex` | 1-2 | Complex 生成 |
+| `proc` | 0 + block | Proc 生成 |
+| `lambda` | 0 + block | lambda 生成 |
+| `__dir__` | 0 | 現在のファイルのディレクトリ |
 
 ### Object (全クラスの基底, Kernel を include)
 
@@ -358,17 +437,42 @@ Proxy.new.foo(42)  # "foo" と 42 を出力
 | `to_s` | 0 | `inspect` を呼ぶ |
 | `==` | 1 | オブジェクト同一性 (VALUE の一致) |
 | `!=` | 1 | `==` の否定 |
+| `===` | 1 | `==` と同じ（case/when で使用） |
+| `equal?` | 1 | オブジェクト同一性（VALUE 一致） |
 | `!` | 0 | `false` を返す (偽オブジェクトでオーバーライド) |
 | `nil?` | 0 | `false` |
 | `class` | 0 | クラス名を文字列で返す |
+| `is_a?` / `kind_of?` | 1 | クラス/モジュール判定 |
+| `instance_of?` | 1 | 厳密クラス判定 |
+| `respond_to?` | 1 | メソッドの存在チェック |
+| `method` | 1 | Method オブジェクト取得 |
+| `send` / `__send__` / `public_send` | 1+ | メソッド動的呼び出し |
+| `instance_variable_get` | 1 | ivar 取得 |
+| `instance_variable_set` | 2 | ivar 設定 |
+| `freeze` | 0 | オブジェクト凍結 |
+| `frozen?` | 0 | 凍結状態チェック |
+| `dup` | 0 | 浅いコピー |
+| `tap` | 0 + block | 自身を返す（ブロックに自身を渡す） |
+| `object_id` | 0 | オブジェクト ID |
+| `hash` | 0 | ハッシュ値 |
 
-### Class / Module
+### Module
 
 | メソッド | 引数 | 説明 |
 |---|---|---|
-| `new` | 可変 | インスタンス生成 + `initialize` 呼び出し (Class のみ) |
-| `inspect` | 0 | クラス名を返す |
-| `include` | 1 | モジュールを mixin (Module) |
+| `===` | 1 | `is_a?` 判定 |
+| `inspect` | 0 | モジュール名を返す |
+| `include` | 1 | モジュールを mixin |
+| `const_get` | 1 | 定数取得 |
+| `const_set` | 2 | 定数設定 |
+| `attr_reader` / `attr_writer` / `attr_accessor` | 可変 | アクセサ定義 |
+| `private` / `public` / `protected` / `module_function` | 0 | no-op（定義のみ） |
+
+### Class (Module を継承)
+
+| メソッド | 引数 | 説明 |
+|---|---|---|
+| `new` | 可変 | インスタンス生成 + `initialize` 呼び出し |
 
 ### Integer
 
@@ -385,7 +489,10 @@ Proxy.new.foo(42)  # "foo" と 42 を出力
 | `to_f` | 0 | Float に変換 |
 | `zero?` | 0 | 0 かどうか |
 | `abs` | 0 | 絶対値 |
-| `times` | 0 + block | `|i|` で 0..self-1 をループ、self を返す |
+| `even?` | 0 | 偶数かどうか |
+| `odd?` | 0 | 奇数かどうか |
+| `times` | 0 + block | `\|i\|` で 0..self-1 をループ、self を返す |
+| `step` | 2 + block | `\|i\|` でステップ付きループ |
 
 Fixnum 範囲を超えると自動的に Bignum になる。Fixnum/Bignum/Float の混在演算に対応。
 除算は Ruby floor division（C の切り捨てではなく負の無限大方向に丸める）。
@@ -426,6 +533,19 @@ Fixnum 範囲を超えると自動的に Bignum になる。Fixnum/Bignum/Float 
 | `downcase` | 0 | 小文字化 (ASCII のみ) |
 | `reverse` | 0 | 反転 |
 | `include?` | 1 | 部分文字列の存在チェック |
+| `start_with?` | 1 | 先頭一致チェック |
+| `end_with?` | 1 | 末尾一致チェック |
+| `chomp` | 0 | 末尾改行除去 |
+| `strip` | 0 | 前後空白除去 |
+| `split` | 0-2 | 分割 |
+| `tr` | 2 | 文字置換 |
+| `=~` | 1 | 正規表現マッチ（位置を返す） |
+| `bytes` | 0 | バイト配列 |
+| `bytesize` | 0 | バイトサイズ |
+| `%` | 1 | フォーマット |
+| `sum` | 0-1 | チェックサム |
+| `unpack` | 1 | バイナリ展開 |
+| `to_sym` / `intern` | 0 | Symbol に変換 |
 
 ### Symbol
 
@@ -458,10 +578,34 @@ Hash キーとして使用可能 (`{a: 1}` は `{:a => 1}` と同等)。
 | `last` | 0 | 末尾要素 (空なら nil) |
 | `+` | 1 | 配列結合 (新しい配列を返す) |
 | `include?` | 1 | 要素の存在チェック |
+| `==`, `!=` | 1 | 要素ごとの比較 |
 | `each` | 0 + block | 各要素を yield、self を返す |
+| `each_with_index` | 0 + block | `\|elem, idx\|` で yield |
 | `map` / `collect` | 0 + block | 各要素の yield 結果を新配列に |
 | `select` / `filter` | 0 + block | ブロックが真を返す要素を新配列に |
 | `reject` | 0 + block | ブロックが偽を返す要素を新配列に |
+| `flat_map` / `collect_concat` | 0 + block | map + flatten |
+| `inject` / `reduce` | 0-1 + block | 累積演算 |
+| `all?` / `any?` / `none?` | 0 + block | 全要素/任意要素/ゼロ要素判定 |
+| `reverse` | 0 | 逆順配列 |
+| `dup` | 0 | 浅いコピー |
+| `flatten` | 0 | 平坦化 |
+| `concat` | 1 | 破壊的結合 |
+| `join` | 0-1 | 文字列結合 |
+| `min` / `max` | 0 | 最小/最大要素 |
+| `sort` | 0 | ソート |
+| `fill` | 1 | 全要素を値で埋める |
+| `clear` | 0 | 全要素削除 |
+| `replace` | 1 | 内容を置換 |
+| `compact` | 0 | nil を除去 |
+| `uniq` / `uniq!` | 0 | 重複除去 |
+| `transpose` | 0 | 転置 |
+| `zip` | 1+ | 対応要素をペアに |
+| `pack` | 1 | バイナリパック |
+| `slice` / `slice!` | 1-2 | 部分配列取得/除去 |
+| `rotate!` | 0-1 | 回転 |
+| `shift` | 0 | 先頭要素を削除して返す |
+| `unshift` | 1 | 先頭に追加 |
 
 ### Hash
 
@@ -478,7 +622,14 @@ Hash キーとして使用可能 (`{a: 1}` は `{:a => 1}` と同等)。
 | `has_key?`, `key?` | 1 | キーの存在チェック |
 | `keys` | 0 | キーの配列を返す |
 | `values` | 0 | 値の配列を返す |
-| `each` / `each_pair` | 0 + block | `|k, v|` で各ペアを yield、self を返す |
+| `each` / `each_pair` | 0 + block | `\|k, v\|` で各ペアを yield、self を返す |
+| `each_key` | 0 + block | 各キーを yield |
+| `each_value` | 0 + block | 各値を yield |
+| `merge` | 1 | 結合（新しいハッシュを返す） |
+| `delete` | 1 | キー削除 |
+| `fetch` | 1-2 | キーアクセス（見つからなければ例外 or デフォルト） |
+| `dup` | 0 | 浅いコピー |
+| `compare_by_identity` | 0 | identity 比較モード |
 
 ### Range
 
@@ -494,7 +645,10 @@ Hash キーとして使用可能 (`{a: 1}` は `{:a => 1}` と同等)。
 | `include?` | 1 | 含まれるか (Integer のみ) |
 | `to_a` | 0 | 配列に変換 (Integer のみ) |
 | `==` | 1 | 等値比較 |
-| `each` | 0 + block | `|i|` で範囲を走査 (Integer のみ)、self を返す |
+| `each` | 0 + block | `\|i\|` で範囲を走査 (Integer のみ)、self を返す |
+| `map` / `collect` | 0 + block | 各要素の yield 結果を新配列に |
+| `all?` / `any?` | 0 + block | 全要素/任意要素判定 |
+| `inject` / `reduce` | 0-1 + block | 累積演算 |
 
 ### Regexp
 
@@ -506,6 +660,7 @@ Hash キーとして使用可能 (`{a: 1}` は `{:a => 1}` と同等)。
 | `to_s` | 0 | `"(?-mix:pattern)"` |
 | `source` | 0 | パターン文字列 |
 | `match?` | 1 | マッチするか (true/false) |
+| `===` | 1 | `match?` と同じ（case/when で使用） |
 | `match` | 1 | マッチするか (true/nil) |
 | `=~` | 1 | マッチ位置 (Integer/nil) |
 | `==` | 1 | 等値比較 |
@@ -564,16 +719,21 @@ Hash キーとして使用可能 (`{a: 1}` は `{:a => 1}` と同等)。
 | `inspect` | 0 | `"nil"` |
 | `to_s` | 0 | `""` (空文字列) |
 | `nil?` | 0 | `true` |
+| `[]` | 1 | 常に `nil` を返す |
 
 ## 制約
 
 Ruby との相違点の詳細は [todo.md](todo.md) を参照。
 
 主な未サポート機能:
-- Proc / lambda / `->` / `&blk` パラメータ / `&:sym` sugar
+- `->` lambda リテラル構文 / `&:sym` sugar
 - for .. in
-- require / load（一部対応、`require_relative` あり）
-- アクセス制御 (public/private/protected)
-- デフォルト引数・キーワード引数・可変長引数
+- デフォルト引数・キーワード引数・可変長引数受け取り (`*args`, `**kwargs`)
 - クラス変数 (`@@var`)
 - block 内 numbered parameters (`_1`, `_2`) / `redo`
+- `alias` / `alias_method`
+- ネストしたクラス/モジュール (`class A::B`)
+- シングルトンメソッド / 特異クラス
+- `prepend` / `extend`
+- `Fiber#transfer`
+- Enumerator / lazy evaluation

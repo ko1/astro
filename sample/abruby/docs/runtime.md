@@ -7,22 +7,27 @@ abruby_machine (AbRuby インスタンスごと)
   method_serial          ← メソッド定義時にインクリメント
   current_fiber ───────→ abruby_fiber (実行ファイバー)
     ctx                  ← CTX (実行コンテキスト、stack 含む)
+  root_fiber             ← ブートストラップ (main) ファイバー
   main_class_body        ← インスタンスごとの Object サブクラス
-  gvars                  ← グローバル変数テーブル
+  gvars                  ← グローバル変数テーブル (ab_id_table)
   id_cache               ← rb_intern 結果のキャッシュ
   rb_self                ← Ruby 側の AbRuby インスタンス
   current_file           ← 実行中のファイルパス
   loaded_files           ← require 済みファイル一覧
+  loaded_asts            ← AST 保持 (require/eval で定義したメソッドの NODE が GC されないように)
 
 CTX (実行コンテキスト、ノード評価関数の第1引数)
   abm ────────────────→ abruby_machine (所属する machine)
   stack[10000]           ← VALUE スタック (ローカル変数 + 引数)
-  env ────────────────→ stack[0]
   fp  ────────────────→ stack[N]  (現在のフレームポインタ)
+  sp  ────────────────→ stack[M]  (GC 用 high-water mark)
   self                   ← 現在のレシーバ
   current_class          ← クラス定義中のクラス (通常 NULL)
+  cref ───────────────→ abruby_cref linked list (定数スコープ)
   current_frame ───────→ abruby_frame linked list
   ids ─────────────────→ id_cache
+  current_block ───────→ abruby_block (yield 実行中のブロック)
+  current_block_frame ──→ abruby_frame (ブロック定義元フレーム)
 ```
 
 CTX から machine のフィールドへはマクロでアクセス:
@@ -35,11 +40,23 @@ CTX_GVARS(c)       // → &c->abm->gvars
 
 ### abruby_fiber (ファイバー)
 
-CTX（実行コンテキスト）を所有する。将来的に複数 Fiber の切り替えに対応。
+CTX（実行コンテキスト）を所有し、CRuby Fiber API でスタック切り替えを行う。
 
 ```c
 struct abruby_fiber {
-    CTX ctx;                             // 実行コンテキスト (stack 含む)
+    struct abruby_class *klass;               // per-instance fiber_class
+    enum abruby_obj_type obj_type;
+    CTX ctx;                                  // 実行コンテキスト (own VALUE stack)
+    enum abruby_fiber_state state;            // NEW / RUNNING / SUSPENDED / DONE
+    bool is_main;                             // true for the bootstrap fiber
+    VALUE proc_value;                         // Fiber.new で渡された Proc
+    VALUE transfer_value;                     // resume/yield 間の値受け渡し
+    unsigned int done_state;                  // body 完了時の RESULT state
+    VALUE crb_fiber;                          // CRuby fiber (machine stack scan 用)
+    void *crb_callback;                       // CRuby fiber callback struct
+    struct abruby_fiber *resumer;             // resume を呼んだファイバー
+    struct abruby_machine *abm;               // VM への back-pointer
+    VALUE rb_wrapper;                         // GC 用 T_DATA ラッパー
 };
 ```
 
@@ -52,22 +69,27 @@ struct abruby_machine {
     uint32_t method_serial;              // メソッドバージョン (キャッシュ無効化用)
     struct abruby_fiber *current_fiber;  // 現在実行中のファイバー
     struct abruby_class main_class_body; // インスタンスごとの Object サブクラス
-    struct ab_id_table gvars;            // グローバル変数
-    struct abruby_id_cache id_cache;     // ID キャッシュ (+, -, <, method_missing 等)
+    struct ab_id_table gvars;            // グローバル変数 (動的テーブル)
+    struct abruby_id_cache id_cache;     // cached rb_intern results
     VALUE rb_self;                       // Ruby 側の AbRuby インスタンス
     VALUE current_file;                  // 実行中ファイルパス
     VALUE loaded_files;                  // require 済みファイル一覧
+    VALUE loaded_asts;                   // AST 保持 (NODE が GC されないように)
     // Per-instance built-in classes (cloned from templates at create_vm)
     struct abruby_class *object_class, *integer_class, *float_class,
                         *string_class, *symbol_class, *array_class, *hash_class,
                         *range_class, *regexp_class, *rational_class, *complex_class,
                         *true_class, *false_class, *nil_class,
                         *kernel_module, *module_class, *class_class,
-                        *runtime_error_class;
+                        *runtime_error_class,
+                        *method_class,       // Object#method 結果用
+                        *proc_class,         // Proc.new / lambda / & 変換用
+                        *fiber_class;        // Fiber.new / resume / yield 用
+    struct abruby_fiber *root_fiber;         // ブートストラップ (main) ファイバー
 };
 ```
 
-**Per-instance 組み込みクラス**: 18 個の組み込みクラス（Integer, String, Float, Class, Module 等）は `abruby_machine` インスタンスごとに独立する。`Init_abruby()` 時に静的なテンプレートクラス (`_body` 変数) にメソッドを登録し、`create_vm()` の `init_instance_classes()` でテンプレートからメソッドテーブルを clone して per-instance にコピーする。これにより、あるインスタンスでの `class Integer; def foo; end; end` が他のインスタンスに影響しない。
+**Per-instance 組み込みクラス**: 21 個の組み込みクラス（Integer, String, Float, Class, Module, Proc, Fiber 等）は `abruby_machine` インスタンスごとに独立する。`Init_abruby()` 時に静的なテンプレートクラス (`_body` 変数) にメソッドを登録し、`create_vm()` の `init_instance_classes()` でテンプレートからメソッドテーブルを clone して per-instance にコピーする。これにより、あるインスタンスでの `class Integer; def foo; end; end` が他のインスタンスに影響しない。
 
 ランタイムコードはすべて `c->abm->xxx_class` 経由で per-instance クラスにアクセスする (`AB_CLASS_OF_IMM` も CTX を受け取って即値を per-instance クラスに解決する)。
 
@@ -77,18 +99,34 @@ struct abruby_machine {
 
 ```c
 struct CTX_struct {
-    struct abruby_machine *abm;      // 所属する machine
-    VALUE stack[ABRUBY_STACK_SIZE];  // VALUE スタック (ローカル変数 + 引数)
-    VALUE *env;                      // スタックのベース (= stack)
-    VALUE *fp;                       // フレームポインタ (ローカル変数の先頭)
-    VALUE self;                      // 現在のレシーバ
-    struct abruby_class *current_class;  // クラス定義の評価中のみ非 NULL
-    struct abruby_frame *current_frame;  // フレーム linked list の先頭
-    const struct abruby_id_cache *ids;   // ID キャッシュへのポインタ
+    struct abruby_machine *abm;              // 所属する machine
+    VALUE stack[ABRUBY_STACK_SIZE];          // VALUE スタック (ローカル変数 + 引数)
+    VALUE *fp;                               // フレームポインタ
+    VALUE *sp;                               // GC 用 high-water mark
+    VALUE self;                              // 現在のレシーバ
+    struct abruby_class *current_class;      // クラス定義中のみ非 NULL
+    const struct abruby_cref *cref;          // lexical 定数スコープチェーン
+    struct abruby_frame *current_frame;      // フレーム linked list の先頭
+    const struct abruby_id_cache *ids;       // ID キャッシュへのポインタ
+    const struct abruby_block *current_block;       // yield 実行中のブロック
+    const struct abruby_frame *current_block_frame; // ブロック定義元フレーム
 };
 ```
 
 gvars と main_class は machine 側に持ち、CTX からは `c->abm->` 経由でアクセスする。
+
+**ブロック実行コンテキスト**: `yield` / `abruby_yield` は `current_block` と `current_block_frame` をセットする（旧値は C ローカルに退避）。`dispatch_method_frame` はこれらを一切触らない — `current_block_frame == current_frame` の条件は、メソッド呼び出しで新しいフレームが push されると自動的に false になるため、ブロックコンテキスト状態はフレームスコープで管理され、per-call の save/restore コストがゼロ。
+
+### abruby_cref (定数スコープ)
+
+lexical な定数解決チェーン。クラス定義やメソッド定義時にキャプチャされる。
+
+```c
+struct abruby_cref {
+    struct abruby_class *klass;
+    const struct abruby_cref *outer;
+};
+```
 
 ### RESULT (実行結果)
 
@@ -113,9 +151,9 @@ typedef struct {
 ```c
 struct abruby_frame {
     struct abruby_frame *prev;            // 前のフレーム
-    struct abruby_method *method;         // 実行中のメソッド (NULL = <main>)
+    const struct abruby_method *method;   // 実行中のメソッド (NULL = <main>)
     union {
-        struct Node *caller_node;         // メソッドフレーム: 呼び出し元ノード
+        const struct Node *caller_node;   // メソッドフレーム: 呼び出し元ノード
         const char *source_file;          // <main>: ファイルパス
     };
     const struct abruby_block *block;     // このメソッドが受け取った block (NULL = なし)
@@ -129,20 +167,22 @@ backtrace 構築時は `f->caller_node->line`（行番号）と `f->prev->method
 
 ### abruby_block (ブロックリテラル)
 
-call サイトで C スタック上に組み立て、frame.block にポイントさせる。heap には乗らないため Proc には昇格できない（Phase 2 で対応予定）。
+call サイトで C スタック上に組み立て、frame.block にポイントさせる。`&block` パラメータや `Proc.new` で heap の `abruby_proc` に昇格可能。
 
 ```c
 struct abruby_block {
-    struct Node *body;                  // block body AST
-    VALUE *captured_fp;                 // caller の fp（closure 環境）
-    VALUE captured_self;                // caller の self
-    struct abruby_frame *defining_frame;// block を定義した enclosing メソッドフレーム
-    uint32_t params_cnt;                // 必須パラメータ数
-    uint32_t param_base;                // captured_fp[param_base..] にブロック引数を書く
+    struct Node *body;                   // block body AST
+    VALUE *captured_fp;                  // caller の fp（closure 環境）
+    VALUE captured_self;                 // caller の self
+    struct abruby_frame *defining_frame; // block を定義した enclosing メソッドフレーム
+    const struct abruby_cref *cref;      // lexical 定数スコープ
+    uint32_t params_cnt;                 // 必須パラメータ数
+    uint32_t param_base;                 // captured_fp[param_base..] にブロック引数を書く
+    uint32_t env_size;                   // heap Proc に escape する際の環境スロット数
 };
 ```
 
-**defining_frame**: block 実行中は `c->current_frame` を defining_frame にスワップする。これにより block body 内の `yield` が現在実行中のメソッド（= block を受け取ったメソッド）ではなく、block を定義したメソッドの block を参照する Ruby 仕様を実現する。`super` も同様に defining method の class から検索する。
+**defining_frame**: block 実行中は `abruby_context_frame(c)` ヘルパーが `abruby_in_block(c)` なら `c->current_block->defining_frame` を返し、そうでなければ `c->current_frame` を返す。これにより block body 内の `yield`/`super` が lexical enclosing frame を参照する Ruby 仕様を実現する。
 
 **非ローカル return（RESULT skip-count 方式）**: `RESULT.state` の上位ビット（`RESULT_SKIP_SHIFT = 16` 以降）に「RETURN を何回 method boundary で skip するか」を埋め込む。
 
@@ -158,8 +198,6 @@ struct abruby_block {
 
 この方式は frame push 時に一切の追加仕事をせず、`frame_id_counter` / `frame.frame_id` / `return_target_frame_id` のフィールドを一切持たない。通常の `return` のコストは「`r.state` ゼロチェック 1 回」のみ。block 内 `return` という例外的な経路でだけ frame chain walk を払う。
 
-**block 中の yield / super / block capture**: `c->current_frame` を block の defining_frame にスワップする代わりに、`abruby_context_frame(c)` ヘルパー（`abruby_in_block(c)` が真なら `c->current_block->defining_frame`、そうでなければ `c->current_frame`）が lexical enclosing frame を返す。`node_yield` / `node_super` / `node_method_call_with_block` 等がこれを経由する。この分離により `c->current_frame` は常に物理コールスタックを表すので、backtrace や skip-count walk が正しい。
-
 **PUSH_FRAME / POP_FRAME マクロ**: インライン例外（0除算など dispatch_method_frame を経由しない箇所）で、例外発生位置を backtrace に含めるための軽量フレーム push/pop。
 
 ```c
@@ -168,63 +206,117 @@ PUSH_FRAME(node);     // caller_node = node のフレームを push
 POP_FRAME();          // フレームを pop
 ```
 
+### abruby_proc (Proc / lambda)
+
+`Proc.new` / `proc` / `lambda` / `&block` パラメータで生成。ブロックの closure 環境を heap にコピーして保持する。
+
+```c
+struct abruby_proc {
+    struct abruby_class *klass;        // per-instance proc_class
+    enum abruby_obj_type obj_type;     // ABRUBY_OBJ_PROC
+    struct Node *body;                 // block body AST
+    VALUE *env;                        // heap-allocated closure 環境
+    uint32_t env_size;                 // 環境スロット数
+    uint32_t params_cnt;               // 必須パラメータ数
+    uint32_t param_base;               // env[param_base..] にパラメータを配置
+    bool is_lambda;                    // true なら lambda（return で自身だけ脱出）
+    VALUE captured_self;               // closure self
+    const struct abruby_cref *cref;    // lexical 定数スコープ
+};
+```
+
+`abruby_block_to_proc()` がスタック上の `abruby_block` を heap の `abruby_proc` に変換する。
+
 ### method_cache (インラインキャッシュ)
 
 各 node_method_call / node_func_call に `@ref` で埋め込まれる。
 
 ```c
 struct method_cache {
-    struct abruby_class *klass;      // キャッシュしたクラス
-    struct abruby_method *method;    // キャッシュしたメソッド
-    uint32_t serial;                 // キャッシュ時の method_serial
-    struct Node *body;               // method->u.ast.body (NULL = CFUNC)
-    RESULT (*dispatcher)(...);       // body->head.dispatcher
+    const struct abruby_class *klass;    // キャッシュしたクラス
+    const struct abruby_method *method;  // キャッシュしたメソッド
+    uint32_t serial;                     // キャッシュ時の method_serial
+    uint32_t ivar_slot;                  // IVAR_GETTER/SETTER: キャッシュした ivar スロット番号
+    struct Node *body;                   // method->u.ast.body (NULL = CFUNC)
+    RESULT (*dispatcher)(CTX *, NODE *); // body->head.dispatcher
 };
 ```
 
-`body` と `dispatcher` をキャッシュすることで、cache hit 時に method 構造体を経由する間接参照 2段を省略する。
+`body` と `dispatcher` をキャッシュすることで、cache hit 時に method 構造体を経由する間接参照 2段を省略する。`ivar_slot` は `attr_reader`/`attr_writer` の dispatch インライン化用。
+
+### ivar_cache (ivar インラインキャッシュ)
+
+各 node_ivar_get / node_ivar_set に `@ref` で埋め込まれる。
+
+```c
+struct ivar_cache {
+    const struct abruby_class *klass;  // NULL なら未充填
+    unsigned int slot;                 // obj->ivars への直接インデックス
+};
+```
 
 ### abruby_class (クラス)
 
 ```c
 struct abruby_class {
-    struct abruby_class *klass;     // メタクラス (= ab_class_class)
+    struct abruby_class *klass;             // メタクラス (= per-instance class_class)
+    enum abruby_obj_type obj_type;          // CLASS or MODULE
+    enum abruby_obj_type instance_obj_type; // このクラスのインスタンスの型
     ID name;
-    struct abruby_class *super;     // 親クラス
-    struct abruby_method methods[64];
-    unsigned int method_cnt;
-    VALUE rb_wrapper;               // GC 用 T_DATA ラッパー
-    struct { ID name; VALUE value; } constants[64];
-    unsigned int const_cnt;
+    struct abruby_class *super;             // 親クラス
+    struct ab_id_table methods;             // key=ID, val=(VALUE)(struct abruby_method*)
+    VALUE rb_wrapper;                       // GC 用 T_DATA ラッパー
+    struct ab_id_table constants;           // key=ID, val=VALUE
+    struct ab_id_table ivar_shape;          // ivar name → slot index (shape-based)
 };
 ```
 
-メソッド検索は `abruby_class_find_method` で methods を線形探索し、見つからなければ super チェーンを辿る。
+メソッド・定数・ivar shape は全て `ab_id_table`（動的ハッシュテーブル）で管理。メソッド検索は `abruby_class_find_method` で methods テーブルを検索し、見つからなければ super チェーンを辿る。
+
+### ab_id_table (動的ハッシュテーブル)
+
+小テーブル（capa ≤ 4）は packed linear、大テーブルは open-addressing Fibonacci ハッシュ。inline storage により小テーブルは別途 alloc 不要。
+
+```c
+#define AB_ID_TABLE_SMALL_CAPA 4
+
+struct ab_id_table {
+    unsigned int cnt;
+    unsigned int capa;
+    struct ab_id_table_entry *entries;
+    struct ab_id_table_entry inline_storage[AB_ID_TABLE_SMALL_CAPA];
+};
+```
 
 ### abruby_method (メソッド)
 
 ```c
 struct abruby_method {
     ID name;
-    enum abruby_method_type type;   // AST or CFUNC
+    enum abruby_method_type type;            // AST / CFUNC / IVAR_GETTER / IVAR_SETTER
+    const struct abruby_class *defining_class; // super chain 解決用
     union {
         struct {
-            NODE *body;
+            struct Node *body;
             unsigned int params_cnt;
             unsigned int locals_cnt;
             const char *source_file;
+            const struct abruby_cref *cref;  // lexical 定数スコープ
         } ast;
         struct {
-            abruby_cfunc_t func;    // RESULT (*)(CTX*, VALUE, uint, VALUE*)
+            abruby_cfunc_t func;             // RESULT (*)(CTX*, VALUE, uint, VALUE*)
             unsigned int params_cnt;
         } cfunc;
+        struct {
+            ID ivar_name;                    // attr_reader/writer 用 ivar 名
+        } ivar_accessor;
     } u;
 };
 ```
 
 ### オブジェクト表現
 
-全ヒープオブジェクトは CRuby の T_DATA で、先頭に `abruby_header` (klass ポインタ) を持つ。
+全ヒープオブジェクトは CRuby の T_DATA で、先頭に `klass` + `obj_type` を持つ。
 
 ```
 即値 (Fixnum, Symbol, true, false, nil)
@@ -232,20 +324,24 @@ struct abruby_method {
   → AB_CLASS_OF → AB_CLASS_OF_IMM で対応クラスに解決
 
 T_DATA ヒープオブジェクト
-  → 先頭に abruby_header { klass } を持つ
+  → 先頭に klass + obj_type を持つ
   → AB_CLASS_OF は RTYPEDDATA_GET_DATA → klass で解決
 
-  abruby_object   { klass, ivar_cnt, ivars[32] }      ユーザ定義オブジェクト
-  abruby_string   { klass, rb_str }                    CRuby String ラッパー
-  abruby_array    { klass, rb_ary }                    CRuby Array ラッパー
-  abruby_hash     { klass, rb_hash }                   CRuby Hash ラッパー
-  abruby_bignum   { klass, rb_bignum }                 CRuby Bignum ラッパー
-  abruby_float    { klass, rb_float }                  CRuby Float ラッパー
-  abruby_range    { klass, begin, end, exclude_end }   独自構造
-  abruby_regexp   { klass, rb_regexp }                 CRuby Regexp ラッパー
-  abruby_rational { klass, rb_rational }               CRuby Rational ラッパー
-  abruby_complex  { klass, rb_complex }                CRuby Complex ラッパー
-  abruby_exception{ klass, message, backtrace }        例外
+  abruby_object   { klass, obj_type, ivar_cnt, *extra_ivars, ivars[4] }
+                   4 slots inline + heap overflow (制限なし)
+  abruby_string   { klass, obj_type, rb_str }              CRuby String ラッパー
+  abruby_array    { klass, obj_type, rb_ary }              CRuby Array ラッパー
+  abruby_hash     { klass, obj_type, rb_hash }             CRuby Hash ラッパー
+  abruby_bignum   { klass, obj_type, rb_bignum }           CRuby Bignum ラッパー
+  abruby_float    { klass, obj_type, rb_float }            CRuby Float ラッパー
+  abruby_range    { klass, obj_type, begin, end, exclude_end }  独自構造
+  abruby_regexp   { klass, obj_type, rb_regexp }           CRuby Regexp ラッパー
+  abruby_rational { klass, obj_type, rb_rational }         CRuby Rational ラッパー
+  abruby_complex  { klass, obj_type, rb_complex }          CRuby Complex ラッパー
+  abruby_exception{ klass, obj_type, message, backtrace }  例外
+  abruby_bound_method { klass, obj_type, recv, method_name } Method オブジェクト
+  abruby_proc     { klass, obj_type, body, *env, ... }     Proc / lambda
+  abruby_fiber    { klass, obj_type, ctx, state, ... }     Fiber
 ```
 
 ### NodeHead (AST ノードヘッダ)
@@ -307,7 +403,7 @@ cache hit パスで使用。self の save/restore はしない（呼び出し側
 
 ```
 1. フレーム push
-   frame = { prev=current_frame, method=mc->method, klass, caller_node=call_site }
+   frame = { prev=current_frame, method=mc->method, caller_node=call_site }
    c->current_frame = &frame
 
 2. 呼び出し
@@ -316,6 +412,9 @@ cache hit パスで使用。self の save/restore はしない（呼び出し側
    │       mc->dispatcher(c, mc->body)    ← 間接呼び出し
    │       c->fp = save_fp
    └─ NO:  mc->method->u.cfunc.func(c, c->self, argc, c->fp + arg_index)
+
+   IVAR_GETTER / IVAR_SETTER の場合:
+     → frame 構築をスキップし、直接 obj->ivars[slot] を読み書き
 
 3. フレーム pop
    c->current_frame = frame.prev

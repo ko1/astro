@@ -19,9 +19,10 @@
 ## 変数
 - ローカル変数: `a = 1; a`
 - 複合代入: `+=`, `-=`, `*=` 等
-- 多重代入: `a, b = 1, 2`（ローカル変数、ivar、gvar 対応）
-- インスタンス変数: `@x = 1; @x`（複合代入対応）
-- グローバル変数: `$x = 1; $x`（複合代入対応）
+- 多重代入: `a, b = 1, 2`（ローカル変数、ivar、gvar、配列インデックス、属性 対応）
+- インスタンス変数: `@x = 1; @x`（複合代入対応、shape-based slot、4 slots inline + heap overflow）
+- グローバル変数: `$x = 1; $x`（複合代入対応、ab_id_table で動的管理）
+- `||=` / `&&=` 演算子（ローカル変数、ivar、gvar、配列インデックス、属性ターゲット対応）
 - `self`（トップレベルは main オブジェクト）
 
 ## 制御構造
@@ -47,18 +48,18 @@
   パース時に `[a] + b + [c]` 形式の Array 式に lower し、新ノード
   `node_func_call_apply` / `node_method_call_apply` が実行時に Array を
   c->fp に unpack してディスパッチ。最大 `ABRUBY_APPLY_MAX_ARGS=32` 要素。
-  メソッド定義側の `*rest` 受け取りは未対応（Phase 2）
+  メソッド定義側の `*rest` 受け取りは未対応
 - `attr_reader`, `attr_writer`, `attr_accessor`
 - `super`（bare / 引数付き / 引数なし）
 - 再帰呼び出し
 - `node_method_call`（明示的レシーバ）/ `node_func_call`（暗黙 self-call、recv 操作なし）
 - `method_missing(name, ...)`
-- インラインキャッシュ（`method_cache`: klass + method + serial + body + dispatcher）
+- インラインキャッシュ（`method_cache`: klass + method + serial + ivar_slot + body + dispatcher）
 
 ## ブロック
 - ブロックリテラル: `obj.m { |x| ... }` / `obj.m do |x, y| ... end`
 - `yield` / `yield args`（`def f; yield; end` 形式）
-- `block_given?`（Kernel メソッド、current_frame->prev->block を参照）
+- `block_given?`（Kernel メソッド）
 - `next` / `next value`（block body から脱出、yield の返り値に）
 - `break` / `break value`（block から脱出 → yielding メソッドの call から戻る）
 - **非ローカル `return`**（block 内 `return` は block を *定義した* メソッドから脱出）
@@ -66,10 +67,32 @@
 - `super` が現メソッドの block を暗黙に転送、`super() { ... }` で明示的置き換え
 - `node_method_call_with_block` / `node_func_call_with_block` / `node_super_with_block` — block 無し hot path を汚さないための分離ノード
 - Block 情報は call サイトの `node_block_literal`（body, params_cnt, param_base）から C スタックの `struct abruby_block` に組み立て、`struct abruby_frame` の block ポインタに格納
-- Block 内の `yield` / `super` は block の defining_frame を参照（呼び出し元メソッドの block に到達）
+- Block 内の `yield` / `super` は `abruby_context_frame(c)` ヘルパー経由で lexical enclosing frame を参照
 - `abruby_yield` C helper で builtin iterator (`Integer#times`, `Array#each/map/select/reject`, `Hash#each`, `Range#each`) を実装
 - RESULT state 拡張: `NORMAL=0, RETURN=1, RAISE=2, BREAK=4, NEXT=8`（bit flag）
 - RESULT skip-count 方式の非ローカル return: `RESULT.state` の上位ビット（`RESULT_SKIP_SHIFT` 以降）に「何回 method boundary を skip するか」を埋め、method 境界で skip==0 なら catch、そうでなければ decrement して propagate。frame push 時にカウンタを増やす必要がなく、非ブロック経路の `return` は追加コスト 0
+
+## Proc / lambda
+- `Proc.new { ... }` / `proc { ... }` — ブロックを Proc オブジェクトに変換
+- `lambda { ... }` — lambda を生成（return が lambda 自身からの脱出に）
+- `Proc#call` / `Proc#[]` / `Proc#yield` — Proc の実行
+- `Proc#arity` — パラメータ数
+- `Proc#lambda?` — lambda かどうか
+- `Proc#to_proc` — 自身を返す
+- `def f(&blk)` — ブロックを Proc として受け取る（`&block` パラメータ）
+- `f(&my_proc)` — Proc をブロックとして渡す
+- closure: 定義スコープのローカル変数を読み書き可能
+- ブロックの heap escape: `abruby_block_to_proc()` がスタック上の `abruby_block` を heap の `abruby_proc` に変換
+
+## Fiber
+- `Fiber.new { |arg| ... }` — ファイバー生成（CRuby Fiber API でスタック管理）
+- `Fiber#resume(args)` — ファイバー開始/再開
+- `Fiber.yield(value)` — ファイバー中断、resumer に値を返す
+- `Fiber#alive?` — ファイバーが生存中かどうか
+- 状態管理: NEW → RUNNING → SUSPENDED → DONE
+- closure: 定義スコープのローカル変数アクセス可能
+- ファイバー内でのメソッド呼び出し、例外処理
+- GC 連携: CRuby Fiber 経由の machine stack scan、GC stress テスト済み
 
 ## クラス・モジュール
 - `class Name; end`
@@ -82,6 +105,7 @@
 - 定数代入: `FOO = 42`
 - 定数参照: `Float::INFINITY` 等 (`::` 構文)
 - Class < Module の継承関係
+- `private` / `public` / `protected` / `module_function`（定義のみ、アクセス制御は no-op）
 
 ## 演算子（全てメソッドディスパッチ）
 - 算術: `+`, `-`, `*`, `/`, `%`, `**`, `-@`
@@ -91,22 +115,28 @@
 - 追加: `<<` (Array#push, String 破壊的追加)
 
 ## ビルトインクラス
-- **Kernel** (module, Object に include): p, raise, eval, Rational(), Complex(), require, require_relative
+- **Kernel** (module, Object に include): p, puts, print, raise, exit, eval, block_given?, loop, require, require_relative, Integer(), Float(), Rational(), Complex(), proc, lambda, __dir__
 - **RuntimeError**: message, backtrace, to_s, inspect（例外オブジェクト）
-- **Object**: inspect, to_s, ==, !=, ===, !, nil?, class, is_a?, kind_of?, instance_of?
-- **Module**: inspect, include, const_get, const_set
-- **Class**: new, inspect (Module を継承)
-- **Integer**: 算術, 比較, **, <=>, <<, >>, &, |, ^, ~, [], to_s, to_f, zero?, abs, **times**
-- **Float**: 算術, 比較, **, to_s, to_i, to_f, abs, zero?, floor, ceil, round
-- **String**: +, *, 比較, length/size, empty?, upcase, downcase, reverse, include?, to_s, to_i, inspect
-- **Array**: [], []=, push, pop, length/size, empty?, first, last, +, include?, inspect, **each**, **map** (alias collect), **select** (alias filter), **reject**
-- **Hash**: [], []=, length/size, empty?, has_key?/key?, keys, values, inspect, **each** (alias each_pair)
+- **Object**: inspect, to_s, ==, !=, ===, !, nil?, class, is_a?, kind_of?, instance_of?, respond_to?, instance_variable_get, instance_variable_set, method, freeze, frozen?, tap, object_id, equal?, dup, hash, send, __send__, public_send
+- **Module**: ===, inspect, include, const_get, const_set, private, public, protected, module_function, attr_reader, attr_writer, attr_accessor
+- **Class**: new (Module を継承)
+- **Integer**: 算術(+,-,*,/,%,**,-@), 比較(<,<=,>,>=,==,!=,<=>), ビット(<<,>>,&,|,^,~,[]), to_s, inspect, to_f, zero?, abs, even?, odd?, times, step
+- **Float**: 算術(+,-,*,/,%,**,-@), 比較(<,<=,>,>=,==,!=), to_s, inspect, to_i, to_f, abs, zero?, floor, ceil, round
+- **String**: +, <<, *, 比較(==,!=,<,<=,>,>=), length/size, empty?, upcase, downcase, reverse, include?, start_with?, end_with?, chomp, strip, split, tr, =~, bytes, %, sum, bytesize, unpack, to_s, inspect, to_i, to_sym/intern
 - **Symbol**: ==, !=, to_s, to_sym, inspect（CRuby 即値を直接利用）
-- **Range**: first, last, begin, end, exclude_end?, size/length, include?, to_a, ==, inspect, to_s, **each**
-- **Regexp**: match?, match, =~, ==, source, inspect, to_s（CRuby Regexp を内部利用）
-- **Rational**: 算術, 比較, numerator, denominator, to_f, to_i, inspect, to_s
-- **Complex**: 算術, ==, real, imaginary, abs, conjugate, rectangular, inspect, to_s
-- **TrueClass / FalseClass / NilClass**: inspect, to_s, nil?
+- **Array**: [], []=, push, <<, pop, shift, unshift, length/size, empty?, first, last, +, *, include?, inspect/to_s, each, each_with_index, map/collect, select/filter, reject, flat_map/collect_concat, reverse, dup, flatten, concat, join, min, max, sort, fill, clear, replace, transpose, zip, pack, inject/reduce, uniq, uniq!, compact, slice, slice!, ==, !=, all?, any?, none?, rotate!
+- **Hash**: [], []=, length/size, empty?, has_key?/key?, keys, values, inspect/to_s, each/each_pair, each_key, each_value, merge, delete, fetch, dup, compare_by_identity
+- **Range**: first/begin, last/end, exclude_end?, size/length, include?, ===, to_a, ==, inspect, to_s, each, map/collect, all?, any?, inject/reduce
+- **Regexp**: match?, ===, match, ==, =~, source, inspect, to_s（CRuby Regexp を内部利用）
+- **Rational**: 算術(+,-,*,/,**,-@), 比較(<,<=,>,>=,==,<=>), numerator, denominator, to_f, to_i, to_r, inspect, to_s
+- **Complex**: 算術(+,-,*,/,**,-@), ==, real, imaginary, abs, conjugate, rectangular, to_f, to_c, inspect, to_s
+- **TrueClass / FalseClass / NilClass**: inspect, to_s, nil? (NilClass のみ `[]` も対応)
+- **Proc**: call, lambda?, arity, to_proc
+- **Fiber**: resume, yield (class method), alive?
+- **GC**: disable, enable, start（CRuby GC への thin facade）
+- **Struct**: Struct.new（最小限、attr_accessor 付きクラス生成）
+- **File**: join, binread, dirname, basename, extname, expand_path, exist?, readable?, read（CRuby File への facade）
+- **Process**: clock_gettime（CLOCK_MONOTONIC 固定）
 
 ## 定数
 - ビルトインクラスは Object の定数
@@ -117,7 +147,7 @@
 - AbRuby インスタンスごとに独立した VM 状態
 - `abruby_machine` に `method_serial`（インラインキャッシュ無効化用、インスタンスごと）
 - `AbRuby.new` で新しい環境、`AbRuby.eval` は一時インスタンス
-- T_DATA 統一構造（全ヒープオブジェクトの先頭に klass）
+- T_DATA 統一構造（全ヒープオブジェクトの先頭に klass + obj_type）
 - `AB_CLASS_OF` は static inline（即値は `AB_CLASS_OF_IMM` に分離）
 - `ab_verify()` によるデバッグアサーション（`--enable-debug`）
 - AST pretty print（`--dump`）
@@ -125,6 +155,7 @@
 - `caller_node` フレーム方式（各フレームが呼び出し元を記録、backtrace 生成に使用）
 - `PUSH_FRAME` / `POP_FRAME` マクロ（インライン例外で backtrace 位置を記録）
 - `no_stack_protector` 属性（DISPATCH / コードストア SD_ 関数）
+- `abruby_cref` による lexical 定数スコープチェーン
 
 ## 高速化
 - **Float 算術 fast path**: `node_flonum_plus/minus/mul/div` と `node_flonum_lt/le/gt/ge` を追加。
