@@ -280,6 +280,72 @@ PG specialize では prologue の関数ポインタが定数になるので、gc
 
 Step 1-3 は非機能変更 (prologue を書いて設定するだけ、まだ呼ばれない)。Step 4 が本番切り替え。
 
+### 発展: handler 方式 (cache check も callee 側)
+
+prologue リファクタリングの先にある、さらに踏み込んだ設計。call site のコードを間接呼び出し1個に削減する。
+
+#### call site を究極まで小さくする
+
+現状の call site は cache check (klass + serial 比較) + hit/miss 分岐がある。これを handler に全部任せる:
+
+```c
+// call site のコード (これだけ)
+mc->handler(c, n, mc, recv, argc, arg_index)
+```
+
+handler は初期状態で `generic_handler`（method lookup → cache fill → dispatch）。初回呼び出し後、handler 自体を prologue_iseq 等に書き換える。prologue 側が cache check も担う:
+
+```c
+prologue_iseq(c, call_site, mc, recv, argc, arg_index) {
+    klass = AB_CLASS_OF(recv);
+    if (mc->klass != klass || mc->serial != abm->method_serial)
+        return generic_handler(...);  // cache miss → 再 lookup
+    // cache hit: frame push → body → frame pop
+}
+```
+
+#### 算術演算ノードの統一
+
+この方式の最大の利点は、**算術/比較ノードのバリエーション爆発を解消できる**こと。
+
+現在 `+` 演算のために `node_plus` / `node_fixnum_plus` / `node_fixnum_plus_slow` / `node_fixnum_plus_overflow` / `node_integer_plus` / `node_flonum_plus` / `node_flonum_plus_slow` の 7 ノードが存在し、実行時に `swap_dispatcher` で AST を書き換えて切り替えている。`-`, `*`, `/`, `%`, `<`, `<=`, `>`, `>=`, `==`, `!=` も同様で、node.def の大部分がバリエーションで埋まっている。
+
+handler 方式なら `node_plus` 1つで済む:
+
+```c
+NODE_DEF
+node_plus(CTX *c, NODE *n, NODE *left, NODE *right, uint32_t arg_index,
+          struct method_cache *mc@ref)
+{
+    VALUE lv = EVAL_ARG(c, left);
+    VALUE rv = EVAL_ARG(c, right);
+    return mc->handler(c, n, mc, lv, rv, arg_index);
+}
+```
+
+handler が型ガードと method redefinition チェックを自由に組み合わせる:
+
+```
+handler_fixnum_plus:
+  if (FIXNUM_P(lv) && FIXNUM_P(rv) && serial == cached)
+    → tagged add (overflow check 付き)
+  else
+    → generic_plus_handler (method lookup → dispatch_method_with_klass)
+
+handler_flonum_plus:
+  if (FLONUM_P(lv) && FLONUM_P(rv) && serial == cached)
+    → flonum add
+  else
+    → generic_plus_handler
+```
+
+利点:
+- **node.def が劇的にシンプルになる** — 算術/比較/等値で ~50 ノード削減、`node_plus` 1つ + handler 群に統一
+- **swap_dispatcher による AST 書き換えが不要** — handler の差し替えだけで型特化が完結
+- **型ガードの自由度が高い** — `(Fixnum, Float)` 等の混在ケースも handler で表現可能
+- **PG specialize で handler が定数化** → gcc が fixnum fast path をインライン展開、型ガードが定数畳み込みで消える
+- **メソッド再定義への対応が自然** — serial 不一致で generic に fallback、再 fill で適切な handler に戻る
+
 ## ランタイム・内部実装
 
 - [x] ~~abruby オブジェクトの free（現在リーク前提）~~ → `RUBY_DEFAULT_FREE` で GC sweep 時に解放
