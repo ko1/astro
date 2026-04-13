@@ -1,4 +1,5 @@
 #include <ruby.h>
+#include <string.h>
 #include "node.h"
 #include "context.h"
 #include "builtin/builtin.h"
@@ -17,25 +18,28 @@ static VALUE rb_cAbRubyNode;
 
 // Built-in abruby classes (klass field = ab_tmpl_class_class, set in init)
 
-static struct abruby_class ab_tmpl_kernel_module_body = { .obj_type = ABRUBY_OBJ_MODULE };
+// Template class structs.
+// obj_type = struct's own type (CLASS or MODULE) — used by GC mark/free dispatch.
+// instance_obj_type = type of heap objects this class creates — used by abruby_new_object.
+static struct abruby_class ab_tmpl_kernel_module_body = { .obj_type = ABRUBY_OBJ_MODULE,  .instance_obj_type = ABRUBY_OBJ_GENERIC };
 static struct abruby_class ab_tmpl_object_class_body;
-static struct abruby_class ab_tmpl_module_class_body  = { .obj_type = ABRUBY_OBJ_CLASS, .super = &ab_tmpl_object_class_body };
-static struct abruby_class ab_tmpl_class_class_body   = { .obj_type = ABRUBY_OBJ_CLASS, .super = &ab_tmpl_module_class_body };
-static struct abruby_class ab_tmpl_object_class_body  = { .obj_type = ABRUBY_OBJ_GENERIC };
-static struct abruby_class ab_tmpl_float_class_body   = { .obj_type = ABRUBY_OBJ_FLOAT,     .super = &ab_tmpl_object_class_body };
-static struct abruby_class ab_tmpl_array_class_body   = { .obj_type = ABRUBY_OBJ_ARRAY,     .super = &ab_tmpl_object_class_body };
-static struct abruby_class ab_tmpl_hash_class_body    = { .obj_type = ABRUBY_OBJ_HASH,      .super = &ab_tmpl_object_class_body };
-static struct abruby_class ab_tmpl_integer_class_body = { .obj_type = ABRUBY_OBJ_BIGNUM,    .super = &ab_tmpl_object_class_body };
-static struct abruby_class ab_tmpl_string_class_body  = { .obj_type = ABRUBY_OBJ_STRING,    .super = &ab_tmpl_object_class_body };
-static struct abruby_class ab_tmpl_symbol_class_body  = { .obj_type = ABRUBY_OBJ_GENERIC,   .super = &ab_tmpl_object_class_body };
-static struct abruby_class ab_tmpl_range_class_body   = { .obj_type = ABRUBY_OBJ_RANGE,     .super = &ab_tmpl_object_class_body };
-static struct abruby_class ab_tmpl_regexp_class_body  = { .obj_type = ABRUBY_OBJ_REGEXP,    .super = &ab_tmpl_object_class_body };
-static struct abruby_class ab_tmpl_rational_class_body = { .obj_type = ABRUBY_OBJ_RATIONAL, .super = &ab_tmpl_object_class_body };
-static struct abruby_class ab_tmpl_complex_class_body  = { .obj_type = ABRUBY_OBJ_COMPLEX,  .super = &ab_tmpl_object_class_body };
-static struct abruby_class ab_tmpl_true_class_body    = { .obj_type = ABRUBY_OBJ_GENERIC,   .super = &ab_tmpl_object_class_body };
-static struct abruby_class ab_tmpl_false_class_body   = { .obj_type = ABRUBY_OBJ_GENERIC,   .super = &ab_tmpl_object_class_body };
-static struct abruby_class ab_tmpl_nil_class_body     = { .obj_type = ABRUBY_OBJ_GENERIC,   .super = &ab_tmpl_object_class_body };
-static struct abruby_class ab_tmpl_runtime_error_class_body = { .obj_type = ABRUBY_OBJ_EXCEPTION, .super = &ab_tmpl_object_class_body };
+static struct abruby_class ab_tmpl_module_class_body  = { .obj_type = ABRUBY_OBJ_CLASS,   .instance_obj_type = ABRUBY_OBJ_CLASS,         .super = &ab_tmpl_object_class_body };
+static struct abruby_class ab_tmpl_class_class_body   = { .obj_type = ABRUBY_OBJ_CLASS,   .instance_obj_type = ABRUBY_OBJ_CLASS,         .super = &ab_tmpl_module_class_body };
+static struct abruby_class ab_tmpl_object_class_body  = { .obj_type = ABRUBY_OBJ_CLASS,   .instance_obj_type = ABRUBY_OBJ_GENERIC };
+static struct abruby_class ab_tmpl_float_class_body   = { .obj_type = ABRUBY_OBJ_CLASS,   .instance_obj_type = ABRUBY_OBJ_FLOAT,         .super = &ab_tmpl_object_class_body };
+static struct abruby_class ab_tmpl_array_class_body   = { .obj_type = ABRUBY_OBJ_CLASS,   .instance_obj_type = ABRUBY_OBJ_ARRAY,         .super = &ab_tmpl_object_class_body };
+static struct abruby_class ab_tmpl_hash_class_body    = { .obj_type = ABRUBY_OBJ_CLASS,   .instance_obj_type = ABRUBY_OBJ_HASH,          .super = &ab_tmpl_object_class_body };
+static struct abruby_class ab_tmpl_integer_class_body = { .obj_type = ABRUBY_OBJ_CLASS,   .instance_obj_type = ABRUBY_OBJ_BIGNUM,        .super = &ab_tmpl_object_class_body };
+static struct abruby_class ab_tmpl_string_class_body  = { .obj_type = ABRUBY_OBJ_CLASS,   .instance_obj_type = ABRUBY_OBJ_STRING,        .super = &ab_tmpl_object_class_body };
+static struct abruby_class ab_tmpl_symbol_class_body  = { .obj_type = ABRUBY_OBJ_CLASS,   .instance_obj_type = ABRUBY_OBJ_GENERIC,       .super = &ab_tmpl_object_class_body };
+static struct abruby_class ab_tmpl_range_class_body   = { .obj_type = ABRUBY_OBJ_CLASS,   .instance_obj_type = ABRUBY_OBJ_RANGE,         .super = &ab_tmpl_object_class_body };
+static struct abruby_class ab_tmpl_regexp_class_body  = { .obj_type = ABRUBY_OBJ_CLASS,   .instance_obj_type = ABRUBY_OBJ_REGEXP,        .super = &ab_tmpl_object_class_body };
+static struct abruby_class ab_tmpl_rational_class_body = { .obj_type = ABRUBY_OBJ_CLASS,  .instance_obj_type = ABRUBY_OBJ_RATIONAL,      .super = &ab_tmpl_object_class_body };
+static struct abruby_class ab_tmpl_complex_class_body  = { .obj_type = ABRUBY_OBJ_CLASS,  .instance_obj_type = ABRUBY_OBJ_COMPLEX,       .super = &ab_tmpl_object_class_body };
+static struct abruby_class ab_tmpl_true_class_body    = { .obj_type = ABRUBY_OBJ_CLASS,   .instance_obj_type = ABRUBY_OBJ_GENERIC,       .super = &ab_tmpl_object_class_body };
+static struct abruby_class ab_tmpl_false_class_body   = { .obj_type = ABRUBY_OBJ_CLASS,   .instance_obj_type = ABRUBY_OBJ_GENERIC,       .super = &ab_tmpl_object_class_body };
+static struct abruby_class ab_tmpl_nil_class_body     = { .obj_type = ABRUBY_OBJ_CLASS,   .instance_obj_type = ABRUBY_OBJ_GENERIC,       .super = &ab_tmpl_object_class_body };
+static struct abruby_class ab_tmpl_runtime_error_class_body = { .obj_type = ABRUBY_OBJ_CLASS, .instance_obj_type = ABRUBY_OBJ_EXCEPTION, .super = &ab_tmpl_object_class_body };
 
 // Template class pointers.
 //
@@ -68,7 +72,8 @@ static void abruby_data_mark(void *ptr) {
     const struct abruby_header *h = (const struct abruby_header *)ptr;
     if (!h->klass) return;
 
-    switch (h->klass->obj_type) {
+    switch (h->obj_type) {
+
     case ABRUBY_OBJ_BIGNUM:
         rb_gc_mark(((const struct abruby_bignum *)ptr)->rb_bignum);
         break;
@@ -111,46 +116,19 @@ static void abruby_data_mark(void *ptr) {
         break;
     }
     case ABRUBY_OBJ_FIBER: {
-        if (ptr == (const void *)h->klass) {
-            const struct abruby_class *cls = (const struct abruby_class *)ptr;
-            ab_id_table_foreach(&cls->methods, _mk, _mv, {
-                const struct abruby_method *m = (const struct abruby_method *)_mv;
-                if (m->type == ABRUBY_METHOD_AST && m->u.ast.body && m->u.ast.body->head.rb_wrapper) {
-                    rb_gc_mark(m->u.ast.body->head.rb_wrapper);
-                }
-            });
-            ab_id_table_foreach(&cls->constants, _ck, _cv, {
-                rb_gc_mark(_cv);
-            });
-        } else {
-            extern void abruby_fiber_mark(struct abruby_fiber *f);
-            abruby_fiber_mark((struct abruby_fiber *)ptr);
-        }
+        // Class structs now use obj_type=CLASS, so FIBER here means a fiber instance.
+        extern void abruby_fiber_mark(struct abruby_fiber *f);
+        abruby_fiber_mark((struct abruby_fiber *)ptr);
         break;
     }
     case ABRUBY_OBJ_PROC: {
-        // See abruby_data_free's PROC case for the self-ref vs instance
-        // distinction.  When ptr is the metaclass itself, mark it as a
-        // class (constants + methods).
-        if (ptr == (const void *)h->klass) {
-            const struct abruby_class *cls = (const struct abruby_class *)ptr;
-            ab_id_table_foreach(&cls->methods, _mk, _mv, {
-                const struct abruby_method *m = (const struct abruby_method *)_mv;
-                if (m->type == ABRUBY_METHOD_AST && m->u.ast.body && m->u.ast.body->head.rb_wrapper) {
-                    rb_gc_mark(m->u.ast.body->head.rb_wrapper);
-                }
-            });
-            ab_id_table_foreach(&cls->constants, _ck, _cv, {
-                rb_gc_mark(_cv);
-            });
-        } else {
-            const struct abruby_proc *p = (const struct abruby_proc *)ptr;
-            if (!RB_SPECIAL_CONST_P(p->captured_self)) rb_gc_mark(p->captured_self);
-            if (p->env) {
-                for (uint32_t i = 0; i < p->env_size; i++) {
-                    VALUE v = p->env[i];
-                    if (!RB_SPECIAL_CONST_P(v)) rb_gc_mark(v);
-                }
+        // Class structs now use obj_type=CLASS, so PROC here means a proc instance.
+        const struct abruby_proc *p = (const struct abruby_proc *)ptr;
+        if (!RB_SPECIAL_CONST_P(p->captured_self)) rb_gc_mark(p->captured_self);
+        if (p->env) {
+            for (uint32_t i = 0; i < p->env_size; i++) {
+                VALUE v = p->env[i];
+                if (!RB_SPECIAL_CONST_P(v)) rb_gc_mark(v);
             }
         }
         break;
@@ -201,48 +179,33 @@ abruby_data_free(void *ptr)
 {
     if (!ptr) return;
     const struct abruby_header *h = (const struct abruby_header *)ptr;
-    if (h->klass) {
-        switch (h->klass->obj_type) {
-        case ABRUBY_OBJ_CLASS:
-        case ABRUBY_OBJ_MODULE: {
-            struct abruby_class *cls = (struct abruby_class *)ptr;
-            ab_id_table_free(&cls->methods);
-            ab_id_table_free(&cls->constants);
-            break;
-        }
-        case ABRUBY_OBJ_GENERIC: {
-            struct abruby_object *obj = (struct abruby_object *)ptr;
-            if (obj->extra_ivars) ruby_xfree(obj->extra_ivars);
-            break;
-        }
-        case ABRUBY_OBJ_FIBER: {
-            if (ptr == (void *)h->klass) {
-                struct abruby_class *cls = (struct abruby_class *)ptr;
-                ab_id_table_free(&cls->methods);
-                ab_id_table_free(&cls->constants);
-            } else {
-                extern void abruby_fiber_free(struct abruby_fiber *f);
-                abruby_fiber_free((struct abruby_fiber *)ptr);
-            }
-            break;
-        }
-        case ABRUBY_OBJ_PROC: {
-            // Distinguish "the proc metaclass" (self-referential klass)
-            // from "an actual abruby_proc instance".  Self-ref means
-            // ptr IS the metaclass struct, so free it as a class.
-            if (ptr == (void *)h->klass) {
-                struct abruby_class *cls = (struct abruby_class *)ptr;
-                ab_id_table_free(&cls->methods);
-                ab_id_table_free(&cls->constants);
-            } else {
-                struct abruby_proc *p = (struct abruby_proc *)ptr;
-                if (p->env) ruby_xfree(p->env);
-            }
-            break;
-        }
-        default:
-            break;
-        }
+    switch (h->obj_type) {
+    case ABRUBY_OBJ_CLASS:
+    case ABRUBY_OBJ_MODULE: {
+        struct abruby_class *cls = (struct abruby_class *)ptr;
+        ab_id_table_free(&cls->methods);
+        ab_id_table_free(&cls->constants);
+        break;
+    }
+    case ABRUBY_OBJ_GENERIC: {
+        struct abruby_object *obj = (struct abruby_object *)ptr;
+        if (obj->extra_ivars) ruby_xfree(obj->extra_ivars);
+        break;
+    }
+    case ABRUBY_OBJ_FIBER: {
+        // Class structs now use obj_type=CLASS, so FIBER here is always a fiber instance.
+        extern void abruby_fiber_free(struct abruby_fiber *f);
+        abruby_fiber_free((struct abruby_fiber *)ptr);
+        break;
+    }
+    case ABRUBY_OBJ_PROC: {
+        // Class structs now use obj_type=CLASS, so PROC here is always a proc instance.
+        struct abruby_proc *p = (struct abruby_proc *)ptr;
+        if (p->env) ruby_xfree(p->env);
+        break;
+    }
+    default:
+        break;
     }
     ruby_xfree(ptr);
 }
@@ -267,6 +230,7 @@ abruby_new_object(struct abruby_class *klass)
     struct abruby_object *obj;
     VALUE wrapper = TypedData_Make_Struct(rb_cAbRubyNode, struct abruby_object, &abruby_data_type, obj);
     obj->klass = klass;
+    obj->obj_type = klass->instance_obj_type;
     unsigned int n = klass->ivar_shape.cnt;
     obj->ivar_cnt = n;
     // Initialize inline slots (mark reads them).
@@ -286,6 +250,7 @@ abruby_bignum_new(CTX *c, VALUE rb_bignum)
     struct abruby_bignum *b;
     VALUE wrapper = TypedData_Make_Struct(rb_cAbRubyNode, struct abruby_bignum, &abruby_data_type, b);
     b->klass = c->abm->integer_class;
+    b->obj_type = c->abm->integer_class->instance_obj_type;
     b->rb_bignum = rb_bignum;
     return wrapper;
 }
@@ -300,6 +265,7 @@ abruby_float_new_wrap(CTX *c, VALUE rb_float)
     struct abruby_float *f;
     VALUE wrapper = TypedData_Make_Struct(rb_cAbRubyNode, struct abruby_float, &abruby_data_type, f);
     f->klass = c->abm->float_class;
+    f->obj_type = c->abm->float_class->instance_obj_type;
     f->rb_float = rb_float;
     return wrapper;
 }
@@ -312,6 +278,7 @@ abruby_str_new(CTX *c, VALUE rb_str)
     struct abruby_string *s;
     VALUE wrapper = TypedData_Make_Struct(rb_cAbRubyNode, struct abruby_string, &abruby_data_type, s);
     s->klass = c->abm->string_class;
+    s->obj_type = c->abm->string_class->instance_obj_type;
     s->rb_str = rb_str;
     return wrapper;
 }
@@ -340,6 +307,7 @@ abruby_block_to_proc(CTX *c, const struct abruby_block *blk, bool is_lambda)
     VALUE wrapper = TypedData_Make_Struct(rb_cAbRubyNode, struct abruby_proc,
                                           &abruby_data_type, p);
     p->klass        = c->abm->proc_class;
+    p->obj_type     = c->abm->proc_class->instance_obj_type;
     p->body         = blk->body;
     p->env_size     = blk->env_size;
     p->params_cnt   = blk->params_cnt;
@@ -367,6 +335,7 @@ abruby_fiber_wrap(struct abruby_machine *vm, struct abruby_fiber *f)
 {
     if (f->rb_wrapper != Qnil && f->rb_wrapper != 0) return f->rb_wrapper;
     f->klass = vm->fiber_class;
+    f->obj_type = vm->fiber_class->instance_obj_type;
     VALUE wrapper = TypedData_Wrap_Struct(rb_cAbRubyNode, &abruby_data_type, f);
     f->rb_wrapper = wrapper;
     return wrapper;
@@ -379,6 +348,7 @@ abruby_bound_method_new(CTX *c, VALUE recv, ID name)
     VALUE wrapper = TypedData_Make_Struct(rb_cAbRubyNode, struct abruby_bound_method,
                                           &abruby_data_type, bm);
     bm->klass = c->abm->method_class;
+    bm->obj_type = c->abm->method_class->instance_obj_type;
     bm->recv = recv;
     bm->method_name = name;
     return wrapper;
@@ -395,6 +365,7 @@ abruby_ary_new(CTX *c, VALUE rb_ary)
     struct abruby_array *a;
     VALUE wrapper = TypedData_Make_Struct(rb_cAbRubyNode, struct abruby_array, &abruby_data_type, a);
     a->klass = c->abm->array_class;
+    a->obj_type = c->abm->array_class->instance_obj_type;
     a->rb_ary = rb_ary;
     return wrapper;
 }
@@ -405,6 +376,7 @@ abruby_hash_new_wrap(CTX *c, VALUE rb_hash)
     struct abruby_hash *h;
     VALUE wrapper = TypedData_Make_Struct(rb_cAbRubyNode, struct abruby_hash, &abruby_data_type, h);
     h->klass = c->abm->hash_class;
+    h->obj_type = c->abm->hash_class->instance_obj_type;
     h->rb_hash = rb_hash;
     return wrapper;
 }
@@ -415,6 +387,7 @@ abruby_range_new(CTX *c, VALUE begin, VALUE end, bool exclude_end)
     struct abruby_range *r;
     VALUE wrapper = TypedData_Make_Struct(rb_cAbRubyNode, struct abruby_range, &abruby_data_type, r);
     r->klass = c->abm->range_class;
+    r->obj_type = c->abm->range_class->instance_obj_type;
     r->begin = begin;
     r->end = end;
     r->exclude_end = exclude_end;
@@ -427,6 +400,7 @@ abruby_regexp_new(CTX *c, VALUE rb_regexp)
     struct abruby_regexp *r;
     VALUE wrapper = TypedData_Make_Struct(rb_cAbRubyNode, struct abruby_regexp, &abruby_data_type, r);
     r->klass = c->abm->regexp_class;
+    r->obj_type = c->abm->regexp_class->instance_obj_type;
     r->rb_regexp = rb_regexp;
     return wrapper;
 }
@@ -437,6 +411,7 @@ abruby_rational_new(CTX *c, VALUE rb_rational)
     struct abruby_rational *r;
     VALUE wrapper = TypedData_Make_Struct(rb_cAbRubyNode, struct abruby_rational, &abruby_data_type, r);
     r->klass = c->abm->rational_class;
+    r->obj_type = c->abm->rational_class->instance_obj_type;
     r->rb_rational = rb_rational;
     return wrapper;
 }
@@ -447,6 +422,7 @@ abruby_complex_new(CTX *c, VALUE rb_complex)
     struct abruby_complex *cx;
     VALUE wrapper = TypedData_Make_Struct(rb_cAbRubyNode, struct abruby_complex, &abruby_data_type, cx);
     cx->klass = c->abm->complex_class;
+    cx->obj_type = c->abm->complex_class->instance_obj_type;
     cx->rb_complex = rb_complex;
     return wrapper;
 }
@@ -543,6 +519,10 @@ abruby_yield(CTX *c, unsigned int argc, VALUE *argv)
     c->self = blk->captured_self;
     c->current_block = blk;
     c->current_block_frame = c->current_frame;
+
+    // Advance sp to cover the block's locals + args area so GC
+    // marks all slots the block body may write to.
+    ctx_update_sp(c, c->fp + blk->env_size);
 
     RESULT r = EVAL(c, blk->body);
 
@@ -730,10 +710,29 @@ abruby_ivar_set(VALUE self, ID name, VALUE val)
 static void
 vm_mark(void *ptr)
 {
+    if (!ptr) return;
     const struct abruby_machine *vm = (const struct abruby_machine *)ptr;
     if (vm->current_fiber) {
         rb_gc_mark(vm->current_fiber->ctx.self);
-        rb_gc_mark_locations(vm->current_fiber->ctx.stack, vm->current_fiber->ctx.stack + ABRUBY_STACK_SIZE);
+        // Use sp (high-water mark) instead of full stack to avoid marking
+        // stale slots from previous eval calls.
+        VALUE *base = vm->current_fiber->ctx.stack;
+        VALUE *top = vm->current_fiber->ctx.sp;
+        ABRUBY_ASSERT(top >= base && top <= base + ABRUBY_STACK_SIZE);
+        ABRUBY_ASSERT(vm->current_fiber->ctx.fp >= base &&
+                       vm->current_fiber->ctx.fp <= top);
+        if (top > base) rb_gc_mark_locations(base, top);
+        // Mark rb_wrapper if present
+        if (!RB_SPECIAL_CONST_P(vm->current_fiber->rb_wrapper))
+            rb_gc_mark(vm->current_fiber->rb_wrapper);
+        // Walk the resumer chain marking each suspended fiber's stack and wrapper.
+        for (struct abruby_fiber *f = vm->current_fiber->resumer; f != NULL; f = f->resumer) {
+            if (!RB_SPECIAL_CONST_P(f->rb_wrapper)) rb_gc_mark(f->rb_wrapper);
+            VALUE *fbase = f->ctx.stack;
+            VALUE *ftop = f->ctx.sp;
+            ABRUBY_ASSERT(ftop >= fbase && ftop <= fbase + ABRUBY_STACK_SIZE);
+            if (ftop > fbase) rb_gc_mark_locations(fbase, ftop);
+        }
     }
     // Suspended non-main fibers are kept alive via their VALUE
     // wrapper; abruby_fiber_mark walks their per-fiber state.
@@ -783,6 +782,7 @@ vm_mark(void *ptr)
 static void
 vm_free(void *ptr)
 {
+    if (!ptr) return;
     struct abruby_machine *vm = (struct abruby_machine *)ptr;
     // Free embedded main_class_body's id_tables (main_class_body itself is
     // embedded in vm struct, not separately allocated).
@@ -791,7 +791,16 @@ vm_free(void *ptr)
     ab_id_table_free(&vm->gvars);
     // Per-instance built-in classes are T_DATA-wrapped; their structs and
     // inner tables are freed by abruby_data_free when their wrapper is GC'd.
-    if (vm->current_fiber) ruby_xfree(vm->current_fiber);
+    if (vm->current_fiber) {
+        // Clear the VALUE stack before freeing so no stale abruby
+        // VALUE pointers survive in the freed memory.  CRuby's
+        // conservative machine-stack scan might otherwise find them
+        // if the allocator reuses this memory in a position that
+        // overlaps a later C-stack frame.
+        memset(vm->current_fiber->ctx.stack, 0,
+               sizeof(vm->current_fiber->ctx.stack));
+        ruby_xfree(vm->current_fiber);
+    }
     ruby_xfree(vm);
 }
 
@@ -838,17 +847,19 @@ abruby_exception_new(CTX *c, const struct abruby_frame *start_frame, VALUE messa
     VALUE wrapper = TypedData_Make_Struct(rb_cAbRubyNode, struct abruby_exception,
                                           &abruby_data_type, exc);
     exc->klass = c->abm->runtime_error_class;
+    exc->obj_type = c->abm->runtime_error_class->instance_obj_type;
     exc->message = message;
     exc->backtrace = bt_ary;
     return wrapper;
 }
 
-// Clone a template class: copy obj_type, name, methods (not constants).
+// Clone a template class: copy obj_type, instance_obj_type, name, methods (not constants).
 static struct abruby_class *
 clone_class(const struct abruby_class *tmpl)
 {
     struct abruby_class *c = ruby_xcalloc(1, sizeof(struct abruby_class));
-    c->obj_type = tmpl->obj_type;
+    c->obj_type = tmpl->obj_type;               // own struct type (CLASS or MODULE)
+    c->instance_obj_type = tmpl->instance_obj_type; // type of instances this class creates
     c->name = tmpl->name;
     ab_id_table_clone(&c->methods, &tmpl->methods);
     // constants are NOT cloned (they reference template wrappers)
@@ -1033,7 +1044,8 @@ init_instance_classes(struct abruby_machine *vm)
     {
         struct abruby_class *fb_klass = (struct abruby_class *)ruby_xcalloc(1, sizeof(struct abruby_class));
         fb_klass->klass = fb_klass;
-        fb_klass->obj_type = ABRUBY_OBJ_FIBER;
+        fb_klass->obj_type = ABRUBY_OBJ_CLASS;          // this is a class struct
+        fb_klass->instance_obj_type = ABRUBY_OBJ_FIBER; // instances are abruby_fiber structs
         fb_klass->name = rb_intern("Fiber");
         fb_klass->super = vm->object_class;
         extern RESULT ab_fiber_new(CTX *, VALUE, unsigned int, VALUE *);
@@ -1066,11 +1078,8 @@ init_instance_classes(struct abruby_machine *vm)
     {
         struct abruby_class *p_klass = (struct abruby_class *)ruby_xcalloc(1, sizeof(struct abruby_class));
         p_klass->klass = p_klass;        // self-referential so `Proc.new` finds our `new`
-        // obj_type = PROC tags Proc *instances* (the abruby_proc heap
-        // structs whose `klass` field points at p_klass) so the GC
-        // mark / free dispatch on `h->klass->obj_type` finds the proc
-        // case rather than the class case.
-        p_klass->obj_type = ABRUBY_OBJ_PROC;
+        p_klass->obj_type = ABRUBY_OBJ_CLASS;           // this is a class struct
+        p_klass->instance_obj_type = ABRUBY_OBJ_PROC;  // instances are abruby_proc structs
         p_klass->name = rb_intern("Proc");
         p_klass->super = vm->object_class;
         extern RESULT ab_proc_new(CTX *, VALUE, unsigned int, VALUE *);
@@ -1110,7 +1119,8 @@ init_instance_classes(struct abruby_machine *vm)
     {
         struct abruby_class *m_klass = (struct abruby_class *)ruby_xcalloc(1, sizeof(struct abruby_class));
         m_klass->klass = vm->class_class;
-        m_klass->obj_type = ABRUBY_OBJ_BOUND_METHOD;
+        m_klass->obj_type = ABRUBY_OBJ_CLASS;                    // this is a class struct
+        m_klass->instance_obj_type = ABRUBY_OBJ_BOUND_METHOD;   // instances are abruby_bound_method structs
         m_klass->name = rb_intern("Method");
         m_klass->super = vm->object_class;
         extern RESULT ab_method_call(CTX *, VALUE, unsigned int, VALUE *);
@@ -1238,18 +1248,21 @@ init_instance_classes(struct abruby_machine *vm)
         abruby_float_new_wrap(&vm->current_fiber->ctx, rb_float_new(nan(""))));
 }
 
-static struct abruby_machine *
-create_vm(void)
+static void
+init_vm(struct abruby_machine *vm)
 {
-    struct abruby_machine *vm = ruby_xcalloc(1, sizeof(struct abruby_machine));
     vm->method_serial = 1;
     vm->current_fiber = ruby_xcalloc(1, sizeof(struct abruby_fiber));
     vm->current_fiber->is_main = true;
     vm->current_fiber->state = ABRUBY_FIBER_RUNNING;
     vm->current_fiber->abm = vm;
+    vm->current_fiber->crb_fiber = Qnil;
+    vm->current_fiber->rb_wrapper = Qnil;
     // Wire ctx.abm early so init_instance_classes can use abruby_float_new_wrap
     // (which reads c->abm->float_class) when creating Float constants.
     vm->current_fiber->ctx.abm = vm;
+    vm->current_fiber->ctx.fp = vm->current_fiber->ctx.stack;
+    vm->current_fiber->ctx.sp = vm->current_fiber->ctx.stack;
 
     // Create per-instance built-in classes (must be before main_class_body setup)
     init_instance_classes(vm);
@@ -1257,14 +1270,18 @@ create_vm(void)
     // Now that fiber_class exists, tag the main fiber so abruby_header
     // dispatches via OBJ_FIBER on it (rare; only if it's ever wrapped).
     vm->current_fiber->klass = vm->fiber_class;
+    vm->current_fiber->obj_type = vm->fiber_class->instance_obj_type;
     vm->root_fiber = vm->current_fiber;
 
     // Per-instance main class (inherits from Object)
     vm->main_class_body.klass = vm->class_class;
+    vm->main_class_body.obj_type = ABRUBY_OBJ_CLASS;
+    vm->main_class_body.instance_obj_type = ABRUBY_OBJ_GENERIC;
     vm->main_class_body.name = rb_intern("main");
     vm->main_class_body.super = vm->object_class;
 
     vm->current_fiber->ctx.fp = vm->current_fiber->ctx.stack;
+    vm->current_fiber->ctx.sp = vm->current_fiber->ctx.stack;
     vm->current_fiber->ctx.self = abruby_new_object(&vm->main_class_body);
 
     vm->current_fiber->ctx.current_class = NULL;
@@ -1291,8 +1308,6 @@ create_vm(void)
     for (int i = 0; i < ABRUBY_STACK_SIZE; i++) {
         vm->current_fiber->ctx.stack[i] = Qnil;
     }
-
-    return vm;
 }
 
 // init_builtin_consts removed: constants are now registered per-instance in init_instance_classes()
@@ -1782,7 +1797,7 @@ abruby_to_ruby(VALUE v)
         RTYPEDDATA_TYPE(v) == &abruby_data_type) {
         const struct abruby_header *h = (const struct abruby_header *)RTYPEDDATA_GET_DATA(v);
         if (!h->klass) return v;
-        switch (h->klass->obj_type) {
+        switch (h->obj_type) {
         case ABRUBY_OBJ_BIGNUM:
             return ((const struct abruby_bignum *)h)->rb_bignum;
         case ABRUBY_OBJ_FLOAT:
@@ -1919,8 +1934,12 @@ abruby_current_file(const CTX *c)
 static VALUE
 rb_abruby_initialize(VALUE self)
 {
-    struct abruby_machine *vm = create_vm();
+    // Allocate and assign DATA_PTR BEFORE calling init_vm (which may trigger
+    // GC via rb_ary_new / TypedData_Make_Struct inside init_instance_classes).
+    // With DATA_PTR set early, vm_mark receives a valid pointer instead of NULL.
+    struct abruby_machine *vm = ruby_xcalloc(1, sizeof(struct abruby_machine));
     DATA_PTR(self) = vm;
+    init_vm(vm);
     vm->rb_self = self;
     return self;
 }
@@ -1967,7 +1986,15 @@ rb_abruby_eval_ast(VALUE self, VALUE ast_obj)
     rb_ary_push(vm->loaded_asts, ast_obj);
 
     // reset stack for each eval (classes/methods/self persist)
+    // Clear stale VALUEs in the previously-used range so GC doesn't
+    // mark dead objects from earlier eval calls.
+    {
+        VALUE *old_sp = vm->current_fiber->ctx.sp;
+        VALUE *base = vm->current_fiber->ctx.stack;
+        if (old_sp > base) memset(base, 0, (size_t)(old_sp - base) * sizeof(VALUE));
+    }
     vm->current_fiber->ctx.fp = vm->current_fiber->ctx.stack;
+    vm->current_fiber->ctx.sp = vm->current_fiber->ctx.stack;
     vm->current_fiber->ctx.current_class = NULL;
 
     // Push <main> frame so backtrace always has a bottom frame
@@ -1983,7 +2010,7 @@ rb_abruby_eval_ast(VALUE self, VALUE ast_obj)
         if (RB_TYPE_P(exc_val, T_DATA) && RTYPEDDATA_P(exc_val) &&
             RTYPEDDATA_TYPE(exc_val) == &abruby_data_type) {
             const struct abruby_header *h = (const struct abruby_header *)RTYPEDDATA_GET_DATA(exc_val);
-            if (h->klass && h->klass->obj_type == ABRUBY_OBJ_EXCEPTION) {
+            if (h->klass && h->obj_type == ABRUBY_OBJ_EXCEPTION) {
                 const struct abruby_exception *exc = (const struct abruby_exception *)h;
                 VALUE msg = abruby_to_ruby(exc->message);
                 VALUE msg_str = RB_TYPE_P(msg, T_STRING) ? msg : rb_funcall(msg, rb_intern("to_s"), 0);

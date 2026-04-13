@@ -106,8 +106,10 @@ RESULT ab_proc_call(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     // calls any method (callee fp = p->env + arg_index would land in
     // memory past p->env's allocation, corrupting adjacent heap).
     VALUE *new_fp = argv + argc;
+    ABRUBY_ASSERT(new_fp + p->env_size <= c->stack + ABRUBY_STACK_SIZE);
     for (uint32_t i = 0; i < p->env_size; i++) new_fp[i] = p->env[i];
     c->fp = new_fp;
+    ctx_update_sp(c, new_fp + p->env_size);
     c->self = p->captured_self;
     c->cref = p->cref;
     c->current_block = NULL;

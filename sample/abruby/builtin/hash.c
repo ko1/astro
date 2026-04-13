@@ -5,8 +5,8 @@ static VALUE ab_to_hash_key(VALUE v) {
     if (SYMBOL_P(v)) return v;
     if (RB_TYPE_P(v, T_DATA)) {
         const struct abruby_header *h = (const struct abruby_header *)RTYPEDDATA_GET_DATA(v);
-        if (h->klass->obj_type == ABRUBY_OBJ_STRING) return ((const struct abruby_string *)h)->rb_str;
-        if (h->klass->obj_type == ABRUBY_OBJ_ARRAY)  return ((const struct abruby_array *)h)->rb_ary;
+        if (h->obj_type == ABRUBY_OBJ_STRING) return ((const struct abruby_string *)h)->rb_str;
+        if (h->obj_type == ABRUBY_OBJ_ARRAY)  return ((const struct abruby_array *)h)->rb_ary;
     }
     return v;
 }

@@ -127,7 +127,7 @@ find_class_in(const struct abruby_class *scope, ID name)
     VALUE v;
     if (ab_id_table_lookup(&scope->constants, name, &v) && RB_TYPE_P(v, T_DATA)) {
         const struct abruby_header *h = (const struct abruby_header *)RTYPEDDATA_GET_DATA(v);
-        if (h->klass->obj_type == ABRUBY_OBJ_CLASS || h->klass->obj_type == ABRUBY_OBJ_MODULE) {
+        if (h->obj_type == ABRUBY_OBJ_CLASS || h->obj_type == ABRUBY_OBJ_MODULE) {
             return (struct abruby_class *)h;
         }
     }
@@ -417,8 +417,8 @@ ab_to_hash_key(VALUE v)
     if (FIXNUM_P(v) || SYMBOL_P(v) || RB_FLONUM_P(v) ||
         v == Qtrue || v == Qfalse || v == Qnil) return v;
     const struct abruby_header *h = (const struct abruby_header *)RTYPEDDATA_GET_DATA(v);
-    if (h->klass->obj_type == ABRUBY_OBJ_STRING) return ((const struct abruby_string *)h)->rb_str;
-    if (h->klass->obj_type == ABRUBY_OBJ_ARRAY)  return ((const struct abruby_array *)h)->rb_ary;
+    if (h->obj_type == ABRUBY_OBJ_STRING) return ((const struct abruby_string *)h)->rb_str;
+    if (h->obj_type == ABRUBY_OBJ_ARRAY)  return ((const struct abruby_array *)h)->rb_ary;
     return v;
 }
 
@@ -563,6 +563,11 @@ NODE_DEF
 node_scope(CTX * restrict c, NODE * restrict n, uint32_t envsize, NODE *body)
 {
     c->fp += envsize;
+    // The body uses fp[0..envsize-1] for locals and call args.
+    // Zero-fill those slots and advance sp so GC covers them.
+    ABRUBY_ASSERT(c->fp + envsize <= c->stack + ABRUBY_STACK_SIZE);
+    for (uint32_t i = 0; i < envsize; i++) c->fp[i] = Qnil;
+    ctx_update_sp(c, c->fp + envsize);
     RESULT r = EVAL_ARG(c, body);
     c->fp -= envsize;
     return r;
@@ -765,6 +770,10 @@ node_yield(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_inde
     c->current_block = blk;
     c->current_block_frame = c->current_frame;
 
+    // Advance sp to cover the block's locals + args area so GC
+    // marks all slots the block body may write to.
+    ctx_update_sp(c, c->fp + blk->env_size);
+
     RESULT r = EVAL(c, blk->body);
 
     c->fp = save_fp;
@@ -834,6 +843,7 @@ node_module_def(CTX * restrict c, NODE * restrict n, ID name, NODE *body)
         mod = (struct abruby_class *)ruby_xcalloc(1, sizeof(struct abruby_class));
         mod->klass = c->abm->module_class;
         mod->obj_type = ABRUBY_OBJ_MODULE;
+        mod->instance_obj_type = ABRUBY_OBJ_GENERIC; // modules have no direct instances
         mod->name = name;
         mod->super = NULL;
         // Register on the enclosing class/module so `Outer::Inner` resolves.
@@ -893,7 +903,8 @@ node_class_def(CTX * restrict c, NODE * restrict n, ID name, NODE *super_expr, N
         }
         klass = (struct abruby_class *)ruby_xcalloc(1, sizeof(struct abruby_class));
         klass->klass = c->abm->class_class;
-        klass->obj_type = ABRUBY_OBJ_GENERIC;  // instances are user objects
+        klass->obj_type = ABRUBY_OBJ_CLASS;              // this is a class struct
+        klass->instance_obj_type = ABRUBY_OBJ_GENERIC;  // instances are user objects
         klass->name = name;
         klass->super = super;
         // Register on the enclosing scope (current_class or main).  When
@@ -1028,11 +1039,14 @@ dispatch_method_frame(CTX * restrict c, NODE * restrict call_site,
         c->fp = save_fp + arg_index;
         unsigned int mparams = mc->method->u.ast.params_cnt;
         for (unsigned int i = argc; i < mparams; i++) c->fp[i] = Qnil;
+        unsigned int n = (mparams > argc) ? mparams : argc;
+        ctx_update_sp(c, c->fp + n);
         c->cref = mc->method->u.ast.cref;
         r = mc->dispatcher(c, mc->body);
         c->fp = save_fp;
         c->cref = save_cref;
     } else {
+        ctx_update_sp(c, c->fp + arg_index + argc);
         r = mc->method->u.cfunc.func(c, c->self, argc, c->fp + arg_index);
     }
 
@@ -1103,11 +1117,14 @@ dispatch_method_frame_with_block(CTX * restrict c, NODE * restrict call_site,
         c->fp = save_fp + arg_index;
         unsigned int mparams = mc->method->u.ast.params_cnt;
         for (unsigned int i = argc; i < mparams; i++) c->fp[i] = Qnil;
+        unsigned int n = (mparams > argc) ? mparams : argc;
+        ctx_update_sp(c, c->fp + n);
         c->cref = mc->method->u.ast.cref;
         r = mc->dispatcher(c, mc->body);
         c->fp = save_fp;
         c->cref = save_cref;
     } else {
+        ctx_update_sp(c, c->fp + arg_index + argc);
         r = mc->method->u.cfunc.func(c, c->self, argc, c->fp + arg_index);
     }
 
@@ -1330,6 +1347,7 @@ node_method_call_apply(CTX * restrict c, NODE * restrict n, NODE *recv, ID name,
     // Keep recv alive across args evaluation by pinning at arg_index; we
     // will overwrite the slot with the args array before dispatch.
     c->fp[arg_index] = recv_val;
+    ctx_update_sp(c, c->fp + arg_index + 1);
     VALUE args_val = UNWRAP(EVAL_ARG(c, args));
     recv_val = c->fp[arg_index]; // reload (GC moved? nothing, but be safe)
     uint32_t argc;

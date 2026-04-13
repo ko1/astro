@@ -126,7 +126,8 @@ RESULT ab_struct_new(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     // Create a fresh class inheriting from Object.
     struct abruby_class *klass = (struct abruby_class *)ruby_xcalloc(1, sizeof(struct abruby_class));
     klass->klass = c->abm->class_class;
-    klass->obj_type = ABRUBY_OBJ_GENERIC;
+    klass->obj_type = ABRUBY_OBJ_CLASS;             // this is a class struct
+    klass->instance_obj_type = ABRUBY_OBJ_GENERIC; // instances are user objects
     klass->name = rb_intern("Struct");
     klass->super = c->abm->object_class;
     // Register an ivar accessor for each field.  abruby internally

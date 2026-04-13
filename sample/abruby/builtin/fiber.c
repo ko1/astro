@@ -1,35 +1,101 @@
-// Fiber implementation for abruby.
+// Fiber implementation for abruby — CRuby fiber API based.
 //
-// Each non-main fiber owns:
-//   - a heap C call stack (mmap-allocated, with a guard page so a
-//     stack overflow is a clean SIGSEGV instead of corrupting the
-//     adjacent fiber)
-//   - a `ucontext_t` for save / restore of the C-level execution state
-//   - its own abruby CTX (VALUE stack + frame chain) — when this fiber
-//     is current, `vm->current_fiber->ctx` is the CTX the dispatcher
-//     reads
+// Each non-main fiber is backed by a CRuby Fiber (rb_fiber_new).  Using
+// CRuby's own fiber scheduler ensures:
+//   - GC's machine-stack scan automatically covers the right C-stack range
+//   - No manual mmap / ucontext / swapcontext is needed
 //
-// Resume / yield switch the fiber pointer (vm->current_fiber) and the
-// C call stack (swapcontext) atomically with respect to the rest of
-// the interpreter.
+// Resume / yield delegate to rb_fiber_resume / rb_fiber_yield.
 
 #include "builtin.h"
-#include <ucontext.h>
-#include <sys/mman.h>
-#include <unistd.h>
-#include <string.h>
-
-// Default per-fiber C stack size.  Optcarrot's main_loop is deep
-// (large state machine + cached locals) so 2 MB is the safe default.
-#define ABRUBY_FIBER_CSTACK_SIZE (2 * 1024 * 1024)
-
-// Hold the ucontext separately so context.h doesn't need to include
-// <ucontext.h>.
-struct abruby_fiber_uctx {
-    ucontext_t uctx;
-};
 
 extern VALUE abruby_block_to_proc(CTX *c, const struct abruby_block *blk, bool is_lambda);
+
+// Callback struct passed as the TypedData argument to rb_fiber_new.
+// We store the abruby_fiber pointer so crb_fiber_body can recover it.
+struct crb_fiber_callback {
+    struct abruby_fiber *f;
+};
+
+static void crb_fiber_callback_mark(void *ptr) {
+    // Mark the abruby fiber's rb_wrapper to keep it (and the fiber
+    // struct it wraps) alive while the CRuby fiber is alive.  CRuby's
+    // cont_mark scans the fiber's saved machine stack and may find
+    // abruby VALUES there; if the fiber struct were freed, those
+    // VALUES would be stale and crash rb_gc_mark_locations.
+    //
+    // This creates a reference cycle (CRuby fiber → callback →
+    // rb_wrapper → abruby_fiber_mark → crb_fiber → CRuby fiber) but
+    // mark-sweep GC handles cycles correctly: once nothing roots the
+    // CRuby fiber, the entire cluster is collected together.
+    const struct crb_fiber_callback *cb = (const struct crb_fiber_callback *)ptr;
+    if (cb->f) {
+        VALUE w = cb->f->rb_wrapper;
+        if (w && !RB_SPECIAL_CONST_P(w)) rb_gc_mark(w);
+    }
+}
+static void crb_fiber_callback_free(void *ptr) {
+    // The callback struct is a small heap allocation owned by the CRuby
+    // fiber; free it when the CRuby fiber is collected.
+    ruby_xfree(ptr);
+}
+static const rb_data_type_t crb_fiber_callback_type = {
+    "AbRuby::FiberCallback",
+    { crb_fiber_callback_mark, crb_fiber_callback_free, NULL },
+    0, 0, 0
+};
+
+// Trampoline that runs inside the CRuby fiber.
+// rb_block_call_func_t signature: yielded_arg is the first resume arg,
+// callback_obj is the value passed as the 2nd argument to rb_fiber_new.
+static VALUE
+crb_fiber_body(VALUE yielded_arg, VALUE callback_obj, int argc, const VALUE *argv, VALUE blockarg)
+{
+    (void)yielded_arg; (void)argc; (void)argv; (void)blockarg;
+    struct crb_fiber_callback *cb =
+        (struct crb_fiber_callback *)RTYPEDDATA_GET_DATA(callback_obj);
+    struct abruby_fiber *f = cb->f;
+
+    // The first resume delivers nargs/argv packed by fiber_switch_to into
+    // transfer_value as a Ruby Array [nargs, arg0, arg1, ...].
+    VALUE packed = f->transfer_value;
+    f->transfer_value = Qnil;
+
+    unsigned int nargs = 0;
+    VALUE local_argv[16];
+    if (RB_TYPE_P(packed, T_ARRAY)) {
+        long n = RARRAY_LEN(packed);
+        if (n > 0) {
+            // first element is nargs as Fixnum
+            nargs = (unsigned int)FIX2ULONG(RARRAY_AREF(packed, 0));
+            if (nargs > 15) nargs = 15;
+            for (unsigned int i = 0; i < nargs; i++) {
+                local_argv[i] = RARRAY_AREF(packed, (long)(i + 1));
+            }
+        }
+    }
+
+    CTX *c = &f->ctx;
+    // Place argv on the fiber's VALUE stack (not C stack) so
+    // ab_proc_call's `new_fp = argv + argc` stays inside the CTX
+    // stack — otherwise fp would point into the CRuby fiber's
+    // machine stack, causing vm_mark to scan an invalid range.
+    for (unsigned int i = 0; i < nargs; i++) c->fp[i] = local_argv[i];
+    ctx_update_sp(c, c->fp + nargs);
+
+    extern RESULT ab_proc_call(CTX *, VALUE, unsigned int, VALUE *);
+    RESULT r = ab_proc_call(c, f->proc_value, nargs, c->fp);
+
+    // Body finished.
+    f->done_state = r.state;
+    f->state = ABRUBY_FIBER_DONE;
+
+    VALUE final = (r.state == RESULT_NORMAL || (r.state & RESULT_RAISE))
+                  ? r.value : Qnil;
+
+    // Return the final value to the resumer (rb_fiber_resume returns it).
+    return final;
+}
 
 // Heap-alloc + initialise an abruby_fiber.  proc_value is the Proc
 // returned by Fiber.new's block argument.  The created fiber is in NEW
@@ -40,16 +106,19 @@ fiber_alloc(struct abruby_machine *vm, VALUE proc_value)
     struct abruby_fiber *f = (struct abruby_fiber *)ruby_xcalloc(1, sizeof(struct abruby_fiber));
     f->state = ABRUBY_FIBER_NEW;
     f->is_main = false;
+    f->obj_type = ABRUBY_OBJ_FIBER;
     f->proc_value = proc_value;
     f->transfer_value = Qnil;
     f->done_state = 0;
     f->resumer = NULL;
     f->abm = vm;
     f->rb_wrapper = Qnil;
+    f->crb_fiber = Qnil;
     // Bootstrap the fiber's CTX from the current fiber so cross-fiber
     // reads of e.g. ids work straight away.
     f->ctx.abm = vm;
     f->ctx.fp = f->ctx.stack;
+    f->ctx.sp = f->ctx.stack;
     f->ctx.self = vm->current_fiber->ctx.self;
     f->ctx.current_class = NULL;
     f->ctx.cref = NULL;
@@ -58,101 +127,6 @@ fiber_alloc(struct abruby_machine *vm, VALUE proc_value)
     f->ctx.current_block = NULL;
     f->ctx.current_block_frame = NULL;
     return f;
-}
-
-static void
-fiber_alloc_cstack(struct abruby_fiber *f)
-{
-    f->cstack_size = ABRUBY_FIBER_CSTACK_SIZE;
-    // mmap with a guard page below so a stack overflow gets a real
-    // SIGSEGV instead of trampling the next allocation.
-    long pagesize = sysconf(_SC_PAGESIZE);
-    if (pagesize <= 0) pagesize = 4096;
-    size_t total = f->cstack_size + (size_t)pagesize;
-    void *p = mmap(NULL, total, PROT_READ | PROT_WRITE,
-                   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (p == MAP_FAILED) {
-        rb_raise(rb_eNoMemError, "fiber: mmap failed for stack");
-    }
-    // Mark the bottom page as a guard.
-    mprotect(p, (size_t)pagesize, PROT_NONE);
-    f->cstack = (char *)p + pagesize;
-    // ucontext lives heap-side too so context.h can stay clean.
-    f->uctx = (struct abruby_fiber_uctx *)ruby_xcalloc(1, sizeof(struct abruby_fiber_uctx));
-}
-
-static void
-fiber_free_cstack(struct abruby_fiber *f)
-{
-    if (f->cstack) {
-        long pagesize = sysconf(_SC_PAGESIZE);
-        if (pagesize <= 0) pagesize = 4096;
-        void *base = (char *)f->cstack - pagesize;
-        munmap(base, f->cstack_size + (size_t)pagesize);
-        f->cstack = NULL;
-    }
-    if (f->uctx) {
-        ruby_xfree(f->uctx);
-        f->uctx = NULL;
-    }
-}
-
-// Trampoline that runs on the new fiber's C stack.  ucontext entry
-// points must take int args, so we stash the actual fiber pointer in
-// a static-locked spot before swapcontext.  See fiber_first_resume.
-static struct abruby_fiber *fiber_starting_self;
-
-// First-resume args, also stashed before swapcontext.
-static unsigned int fiber_starting_argc;
-static VALUE *fiber_starting_argv;
-
-static void
-fiber_entry(void)
-{
-    struct abruby_fiber *f = fiber_starting_self;
-    fiber_starting_self = NULL;
-    unsigned int argc = fiber_starting_argc;
-    // Copy argv into a local buffer on the fiber's own C stack — the
-    // caller's argv lives on its stack which we just swapped away from.
-    VALUE local_argv[16];
-    if (argc > 16) argc = 16;
-    for (unsigned int i = 0; i < argc; i++) local_argv[i] = fiber_starting_argv[i];
-    fiber_starting_argv = NULL;
-    fiber_starting_argc = 0;
-
-    CTX *c = &f->ctx;
-    extern RESULT ab_proc_call(CTX *, VALUE, unsigned int, VALUE *);
-    RESULT r = ab_proc_call(c, f->proc_value, argc, local_argv);
-
-    // Body finished.  Stash the result on the *resumer*'s transfer
-    // slot so when its swap-from returns, it reads the right value.
-    f->done_state = r.state;
-    f->state = ABRUBY_FIBER_DONE;
-
-    struct abruby_fiber *resumer = f->resumer;
-    f->resumer = NULL;
-    VALUE final = (r.state == RESULT_NORMAL || (r.state & RESULT_RAISE))
-                  ? r.value : Qnil;
-    resumer->transfer_value = final;
-    f->abm->current_fiber = resumer;
-    swapcontext(&f->uctx->uctx, &resumer->uctx->uctx);
-    // Should never return here — once DONE, we are never resumed
-    // again.  But just in case the kernel does, loop forever.
-    for (;;) { /* unreachable */ }
-}
-
-// Set up the ucontext for a brand-new fiber so its first swapcontext
-// lands at fiber_entry on the heap stack.
-static void
-fiber_first_resume_setup(struct abruby_fiber *f)
-{
-    fiber_alloc_cstack(f);
-    getcontext(&f->uctx->uctx);
-    f->uctx->uctx.uc_stack.ss_sp   = f->cstack;
-    f->uctx->uctx.uc_stack.ss_size = f->cstack_size;
-    f->uctx->uctx.uc_link          = NULL;
-    fiber_starting_self = f;
-    makecontext(&f->uctx->uctx, fiber_entry, 0);
 }
 
 // Switch from the current fiber to `target`, transferring `argc/argv`
@@ -178,50 +152,47 @@ fiber_switch_to(CTX *c, struct abruby_fiber *target, unsigned int argc, VALUE *a
         cur->state = ABRUBY_FIBER_SUSPENDED;
     }
 
-    bool first = (target->uctx == NULL);
-    if (first) {
-        // First resume — pass the full argv to fiber_entry via the
-        // static handoff slots; allocate the target's stack and prime
-        // its ucontext.
-        fiber_starting_argc = argc;
-        fiber_starting_argv = argv;
-        fiber_first_resume_setup(target);
-    } else {
-        // Subsequent resume / yield — only one value is meaningful;
-        // it'll come back from the swap as Fiber.yield's return.
-        target->transfer_value = (argc >= 1) ? argv[0] : Qnil;
-    }
-
-    // The actual swap.  We need a ucontext_t to save current state
-    // into.  For the root fiber the first time it switches *out*, we
-    // also need to lazily allocate its uctx.
-    if (cur->uctx == NULL) {
-        cur->uctx = (struct abruby_fiber_uctx *)ruby_xcalloc(1, sizeof(struct abruby_fiber_uctx));
-    }
-
     vm->current_fiber = target;
-    if (swapcontext(&cur->uctx->uctx, &target->uctx->uctx) != 0) {
-        // swapcontext failed — restore current_fiber and raise
-        vm->current_fiber = cur;
-        cur->state = ABRUBY_FIBER_RUNNING;
-        VALUE exc = abruby_exception_new(c, c->current_frame,
-            abruby_str_new_cstr(c, "fiber: swapcontext failed"));
-        return (RESULT){exc, RESULT_RAISE};
+
+    VALUE ret_val;
+    bool first = (target->crb_fiber == Qnil);
+    if (first) {
+        // First resume: pack argc/argv into transfer_value for crb_fiber_body
+        // to unpack after the CRuby fiber starts.
+        VALUE packed = rb_ary_new_capa((long)(argc + 1));
+        rb_ary_push(packed, ULONG2NUM(argc));
+        for (unsigned int i = 0; i < argc; i++) rb_ary_push(packed, argv[i]);
+        target->transfer_value = packed;
+
+        // Create the CRuby fiber.  Pass a typed-data wrapper of a small
+        // callback struct so crb_fiber_body can find the abruby_fiber.
+        struct crb_fiber_callback *cb =
+            (struct crb_fiber_callback *)ruby_xcalloc(1, sizeof(struct crb_fiber_callback));
+        cb->f = target;
+        target->crb_callback = cb;
+        VALUE cb_val = TypedData_Wrap_Struct(rb_cObject, &crb_fiber_callback_type, cb);
+        target->crb_fiber = rb_fiber_new(crb_fiber_body, cb_val);
+
+        // Start the fiber.  The return value is whatever crb_fiber_body returns
+        // (the body's final value) or whatever rb_fiber_yield delivers on
+        // subsequent yields.
+        ret_val = rb_fiber_resume(target->crb_fiber, 0, NULL);
+    } else {
+        // Subsequent resume: pass the single value as-is.
+        VALUE resume_arg = (argc >= 1) ? argv[0] : Qnil;
+        ret_val = rb_fiber_resume(target->crb_fiber, 1, &resume_arg);
     }
-    // Returned from the swap — we're running again.  cur is still
-    // valid (it's on our C stack).  vm->current_fiber may have been
-    // restored to us by the swap-back path.
+
+    // Returned from the resume (either the fiber yielded or completed).
     vm->current_fiber = cur;
     cur->state = ABRUBY_FIBER_RUNNING;
 
-    VALUE got = cur->transfer_value;
-    cur->transfer_value = Qnil;
-
     // If the target finished by raising, surface that on the caller.
     if (target->state == ABRUBY_FIBER_DONE && (target->done_state & RESULT_RAISE)) {
-        return (RESULT){got, RESULT_RAISE};
+        // ret_val is the exception VALUE
+        return (RESULT){ret_val, RESULT_RAISE};
     }
-    return RESULT_OK(got);
+    return RESULT_OK(ret_val);
 }
 
 // Fiber.new { ... } — create a Fiber object backed by the given block.
@@ -272,7 +243,26 @@ RESULT ab_fiber_yield(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
             abruby_str_new_cstr(c, "can't yield from root fiber"));
         return (RESULT){exc, RESULT_RAISE};
     }
-    return fiber_switch_to(c, cur->resumer, argc, argv);
+
+    // Mark fiber as suspended and update vm->current_fiber to the resumer.
+    struct abruby_machine *vm = c->abm;
+    struct abruby_fiber *resumer = cur->resumer;
+    cur->resumer = NULL;
+    cur->state = ABRUBY_FIBER_SUSPENDED;
+    vm->current_fiber = resumer;
+    resumer->state = ABRUBY_FIBER_RUNNING;
+
+    // Yield back to the resumer.  The value passed here becomes the
+    // return value of rb_fiber_resume on the resumer's side.
+    VALUE yield_val = (argc >= 1) ? argv[0] : Qnil;
+    VALUE resumed_val = rb_fiber_yield(1, &yield_val);
+
+    // We've been resumed again.  Restore current_fiber.
+    vm->current_fiber = cur;
+    cur->state = ABRUBY_FIBER_RUNNING;
+    cur->resumer = resumer;
+
+    return RESULT_OK(resumed_val);
 }
 
 // Fiber#alive? — returns true unless the fiber finished.
@@ -282,26 +272,29 @@ RESULT ab_fiber_alive_p(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     return RESULT_OK(f->state == ABRUBY_FIBER_DONE ? Qfalse : Qtrue);
 }
 
-// Mark / free for fibers — called from abruby.c via the obj_type
-// dispatch.
+// Mark / free for fibers — called from abruby.c via the obj_type dispatch.
 void abruby_fiber_mark(struct abruby_fiber *f) {
     if (!RB_SPECIAL_CONST_P(f->proc_value))    rb_gc_mark(f->proc_value);
     if (!RB_SPECIAL_CONST_P(f->transfer_value)) rb_gc_mark(f->transfer_value);
     if (!RB_SPECIAL_CONST_P(f->ctx.self))       rb_gc_mark(f->ctx.self);
+    // Mark the CRuby fiber backing this abruby fiber (keeps it alive).
+    if (!RB_SPECIAL_CONST_P(f->crb_fiber))      rb_gc_mark(f->crb_fiber);
     // Mark the suspended VALUE stack so locals captured at yield-time
-    // stay alive across the switch.
+    // stay alive across the switch.  Use sp (high-water mark) for accuracy.
     VALUE *base = f->ctx.stack;
-    VALUE *top = f->ctx.fp;
-    VALUE *limit = f->ctx.stack + ABRUBY_STACK_SIZE;
-    if (top > limit) top = limit;
-    if (top && top >= base) {
-        for (VALUE *p = base; p < top; p++) {
-            VALUE v = *p;
-            if (!RB_SPECIAL_CONST_P(v) && v != 0) rb_gc_mark_maybe(v);
-        }
+    VALUE *top = f->ctx.sp;
+    ABRUBY_ASSERT(top >= base && top <= base + ABRUBY_STACK_SIZE);
+    if (top > base) {
+        rb_gc_mark_locations(base, top);
     }
 }
 
 void abruby_fiber_free(struct abruby_fiber *f) {
-    fiber_free_cstack(f);
+    // Sever the back-pointer from the CRuby fiber callback so
+    // crb_fiber_callback_mark won't follow a dangling pointer.
+    if (f->crb_callback) {
+        ((struct crb_fiber_callback *)f->crb_callback)->f = NULL;
+        f->crb_callback = NULL;
+    }
+    // The struct itself is freed by abruby_data_free's ruby_xfree.
 }

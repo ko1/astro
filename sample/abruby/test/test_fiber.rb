@@ -139,4 +139,58 @@ class TestFiber < AbRubyTest
   def test_fiber_block_param = assert_eval(<<~RUBY, 100)
     Fiber.new { |a, b, c| a + b + c }.resume(50, 30, 20) rescue Fiber.new { |a| a }.resume(100)
   RUBY
+
+  # GC: heap strings on root fiber survive GC triggered by allocations
+  # inside a child fiber.
+  def test_fiber_gc_root_stack = assert_eval(<<~RUBY, "root_ok")
+    s = "root" + "_ok"
+    f = Fiber.new do
+      i = 0
+      while i < 500
+        x = "alloc_" + i.to_s
+        i += 1
+      end
+      Fiber.yield 42
+      99
+    end
+    f.resume
+    s
+  RUBY
+
+  # GC: fiber wrapper stays alive across multiple resumes with GC
+  # pressure (allocations) in between.
+  def test_fiber_gc_wrapper_alive = assert_eval(<<~RUBY, [1, 2, 3])
+    f = Fiber.new do
+      Fiber.yield 1
+      Fiber.yield 2
+      3
+    end
+    out = []
+    3.times do
+      i = 0
+      while i < 500
+        x = "pressure_" + i.to_s
+        i += 1
+      end
+      out << f.resume
+    end
+    out
+  RUBY
+
+  # GC: multiple suspended fibers survive GC pressure.
+  def test_fiber_gc_multiple = assert_eval(<<~RUBY, [10, 100, 20, 200])
+    a = Fiber.new { Fiber.yield 10; 20 }
+    b = Fiber.new { Fiber.yield 100; 200 }
+    r = []
+    r << a.resume
+    r << b.resume
+    i = 0
+    while i < 500
+      x = "gc_" + i.to_s
+      i += 1
+    end
+    r << a.resume
+    r << b.resume
+    r
+  RUBY
 end

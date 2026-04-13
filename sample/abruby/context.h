@@ -158,14 +158,19 @@ enum abruby_obj_type {
     ABRUBY_OBJ_FIBER,
 };
 
-// Common layout: ALL abruby T_DATA objects have klass at offset 0
+// Common layout: ALL abruby T_DATA objects have klass at offset 0,
+// followed by obj_type at offset sizeof(void*).  The obj_type tag
+// lets abruby_data_free/mark dispatch without dereferencing klass
+// (which may already be freed during GC sweep).
 struct abruby_header {
     struct abruby_class *klass;
+    enum abruby_obj_type obj_type;
 };
 
 struct abruby_class {
-    struct abruby_class *klass;  // offset 0: metaclass (per-instance class_class or module_class)
-    enum abruby_obj_type obj_type; // what kind of instances this class creates
+    struct abruby_class *klass;           // offset 0: metaclass (per-instance class_class or module_class)
+    enum abruby_obj_type obj_type;        // offset 8: this struct's own type (CLASS or MODULE) — used by GC dispatch
+    enum abruby_obj_type instance_obj_type; // offset 12: type of instances this class creates — replaces 4-byte padding
     ID name;
     struct abruby_class *super;
     struct ab_id_table methods;    // key=method_name, val=(VALUE)(struct abruby_method*)
@@ -188,6 +193,7 @@ struct abruby_class {
 
 struct abruby_object {
     struct abruby_class *klass;                // offset 0
+    enum abruby_obj_type obj_type;
     uint32_t ivar_cnt;                         // number of live slots (total across inline + extra)
     VALUE *extra_ivars;                        // NULL if cnt <= INLINE; else slots [INLINE .. cnt)
     VALUE ivars[ABRUBY_OBJECT_INLINE_IVARS];
@@ -206,31 +212,37 @@ abruby_object_ivar_read(const struct abruby_object *obj, unsigned int slot)
 
 struct abruby_bignum {
     struct abruby_class *klass;  // offset 0: per-instance integer_class
+    enum abruby_obj_type obj_type;
     VALUE rb_bignum;             // inner CRuby Bignum (T_BIGNUM)
 };
 
 struct abruby_float {
     struct abruby_class *klass;  // offset 0: per-instance float_class
+    enum abruby_obj_type obj_type;
     VALUE rb_float;              // inner CRuby Float (Flonum or T_FLOAT)
 };
 
 struct abruby_string {
     struct abruby_class *klass;  // offset 0: per-instance string_class
+    enum abruby_obj_type obj_type;
     VALUE rb_str;                // inner CRuby String
 };
 
 struct abruby_array {
     struct abruby_class *klass;  // offset 0
+    enum abruby_obj_type obj_type;
     VALUE rb_ary;
 };
 
 struct abruby_hash {
     struct abruby_class *klass;  // offset 0
+    enum abruby_obj_type obj_type;
     VALUE rb_hash;
 };
 
 struct abruby_range {
     struct abruby_class *klass;  // offset 0
+    enum abruby_obj_type obj_type;
     VALUE begin;
     VALUE end;
     bool exclude_end;            // true for ..., false for ..
@@ -238,6 +250,7 @@ struct abruby_range {
 
 struct abruby_regexp {
     struct abruby_class *klass;  // offset 0
+    enum abruby_obj_type obj_type;
     VALUE rb_regexp;             // inner CRuby Regexp
 };
 
@@ -257,6 +270,7 @@ struct abruby_regexp {
 // for debugging.
 struct abruby_proc {
     struct abruby_class *klass;        // offset 0
+    enum abruby_obj_type obj_type;
     struct Node *body;
     VALUE *env;                        // ruby_xcalloc(env_size, sizeof(VALUE))
     uint32_t env_size;
@@ -274,17 +288,20 @@ struct abruby_proc {
 // custom data layout.
 struct abruby_bound_method {
     struct abruby_class *klass;  // offset 0
+    enum abruby_obj_type obj_type;
     VALUE recv;
     ID method_name;
 };
 
 struct abruby_rational {
     struct abruby_class *klass;  // offset 0: per-instance rational_class
+    enum abruby_obj_type obj_type;
     VALUE rb_rational;           // inner CRuby Rational
 };
 
 struct abruby_complex {
     struct abruby_class *klass;  // offset 0: per-instance complex_class
+    enum abruby_obj_type obj_type;
     VALUE rb_complex;            // inner CRuby Complex
 };
 
@@ -343,7 +360,7 @@ ab_obj_type_p(VALUE obj, enum abruby_obj_type type)
     if (RB_BUILTIN_TYPE(obj) == T_SYMBOL) return type == ABRUBY_OBJ_GENERIC; // dynamic symbol
     if (RB_BUILTIN_TYPE(obj) != T_DATA) return false;
     const struct abruby_header *h = (const struct abruby_header *)RTYPEDDATA_GET_DATA(obj);
-    return h->klass && h->klass->obj_type == type;
+    return h->klass && h->obj_type == type;
 }
 
 // AB_CLASS_OF / AB_CLASS_OF_IMM are defined below after struct CTX_struct / abruby_machine.
@@ -462,6 +479,7 @@ struct CTX_struct {
     struct abruby_machine *abm;          // per-instance machine (owner)
     VALUE stack[ABRUBY_STACK_SIZE];      // VALUE stack (locals + args)
     VALUE *fp;                           // frame pointer into stack
+    VALUE *sp;                           // stack high-water mark for GC
     VALUE self;
     struct abruby_class *current_class;  // set during class body eval
     const struct abruby_cref *cref;      // lexical constant scope chain
@@ -476,6 +494,13 @@ struct CTX_struct {
     const struct abruby_block *current_block;
     const struct abruby_frame *current_block_frame;
 };
+
+// Update sp (stack high-water mark) so GC marks all live slots.
+static inline void
+ctx_update_sp(struct CTX_struct *c, VALUE *new_top)
+{
+    if (new_top > c->sp) c->sp = new_top;
+}
 
 // Definitions of the helpers (forward-declared earlier).
 static inline bool
@@ -520,6 +545,7 @@ enum abruby_fiber_state {
 
 struct abruby_fiber {
     struct abruby_class *klass;               // offset 0: per-instance fiber_class
+    enum abruby_obj_type obj_type;
     CTX ctx;                                  // execution context (own VALUE stack)
     enum abruby_fiber_state state;
     bool is_main;                             // true for the bootstrap fiber
@@ -533,10 +559,14 @@ struct abruby_fiber {
     // RESULT state of the body when DONE (RAISE / NORMAL).
     unsigned int done_state;
 
-    // ucontext + heap C stack.  main fiber leaves these zero/null.
-    struct abruby_fiber_uctx *uctx;           // opaque (defined in fiber.c)
-    void *cstack;
-    size_t cstack_size;
+    // CRuby fiber VALUE backing this abruby fiber.  Using CRuby's
+    // fiber API ensures GC's machine-stack scan covers the right range.
+    // Main fiber leaves this as Qnil (no CRuby fiber needed).
+    VALUE crb_fiber;
+
+    // Back-pointer to the CRuby fiber callback struct.  Cleared on
+    // free so crb_fiber_callback_mark doesn't follow a dangling ptr.
+    void *crb_callback;
 
     // The fiber that called .resume on us.  We swap back here on yield
     // or completion.
@@ -596,6 +626,7 @@ struct abruby_machine {
 // exception object
 struct abruby_exception {
     struct abruby_class *klass;  // offset 0: per-instance runtime_error_class
+    enum abruby_obj_type obj_type;
     VALUE message;               // abruby VALUE (usually abruby string)
     VALUE backtrace;             // Ruby Array of Strings, or Qnil
 };
