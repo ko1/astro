@@ -129,6 +129,7 @@ benchmark/optcarrot/bin/optcarrot-bench を動かすために必要な機能。
 - [x] メソッド名インターン化 — 全メソッド名をパース時に intern し、ID ポインタ比較に置換。実装済み
 - [x] インラインキャッシュ — `node_method_call` に `struct method_cache` を `@ref` で埋め込み、ヒット時に `abruby_class_find_method` を完全スキップ。グローバルシリアルでメソッド定義・include 時に無効化
 - [x] メソッドテーブルのハッシュ化 — `ab_id_table` を hybrid 実装に変更（小テーブルは packed linear、大テーブルは open-addressing Fibonacci hash）。IC ミス時のメソッド探索・builtin クラスのメソッド参照を高速化
+- [ ] **prologue 関数ポインタによるメソッドディスパッチ再設計** — 後述「prologue リファクタリング」を参照
 
 ### AOT / JIT（ASTro 部分評価）
 
@@ -166,6 +167,118 @@ benchmark/optcarrot/bin/optcarrot-bench を動かすために必要な機能。
 ### 機能追加（最適化の前提条件）
 
 - [ ] ブロック / yield + インライン化 — optcarrot 必須。specialize でブロック呼び出しを展開できればイテレータのオーバーヘッド除去。**method inlining の基盤が先に必要**。20260412 に iterator ごとに融合ノードを手書きする方式を試したが、N イテレータで N ノードが必要になり scale せず、かつフレーム共有が `binding` 等で破綻するため差し戻し (詳細: `docs/report/20260412_phase1_block_speedup.md`)。正しい方向は PE + inlining で (1) cfunc iterator または (2) AST で書き直した iterator を inline 展開
+
+## prologue リファクタリング
+
+### 背景と動機
+
+現在の `dispatch_method_frame` は全メソッドタイプ (AST / CFUNC / IVAR_GETTER / IVAR_SETTER) を1つの巨大な関数で処理している。問題:
+
+1. **引数チェックがない** — argc が多すぎても少なすぎてもエラーにならず、多い場合はスタック上の他フレームの領域を踏み潰す危険がある
+2. **specialize 時のコード膨張** — `dispatch_method_frame` は `static inline` なので、specialize すると全 call site に全タイプの分岐コードが展開される。ivar アクセスの call site にも CFUNC 分岐のコードが出る
+3. **caller/callee の責務が不明確** — frame push/pop、self save/restore、argc の Qnil 埋めが caller と callee に散在
+
+### 設計方針: CRuby 式の prologue 関数ポインタ
+
+CRuby では `vm_call_iseq_setup` / `vm_call_cfunc` / `vm_call_ivar` 等のメソッドタイプ別呼び出し関数を `struct rb_callcache` に記録し、cache hit 時に直接呼び出す (参照: `vm_insnhelper.c`)。同じ方式を abruby に導入する。
+
+```
+現状:
+  call site → dispatch_method_frame → mtype 分岐 → frame push → body or cfunc → frame pop
+
+提案:
+  call site → mc->prologue(c, call_site, mc, argc, arg_index)
+              ↑ メソッドタイプごとの専用関数ポインタ
+```
+
+### prologue 関数のシグネチャ
+
+```c
+// 非 block 版
+typedef RESULT (*method_prologue_t)(
+    CTX *c, NODE *call_site,
+    const struct method_cache *mc,
+    unsigned int argc, uint32_t arg_index);
+
+// block 版
+typedef RESULT (*method_prologue_blk_t)(
+    CTX *c, NODE *call_site,
+    const struct method_cache *mc,
+    unsigned int argc, uint32_t arg_index,
+    const struct abruby_block *blk);
+```
+
+EVAL の `(CTX*, NODE*)` 固定シグネチャでは argc 等を渡せないため、prologue は EVAL とは別の関数ポインタにする。`method_cache` に `prologue` と `prologue_blk` の2フィールドを追加し、`method_cache_fill` でメソッドタイプに応じて設定する。
+
+### 6つの prologue 関数
+
+| 関数 | mtype | frame push | block | argc チェック |
+|---|---|---|---|---|
+| `prologue_iseq` | AST | する | なし | argc != params_cnt → ArgumentError |
+| `prologue_cfunc` | CFUNC | する | なし | argc != params_cnt → ArgumentError |
+| `prologue_ivar_getter` | IVAR_GETTER | しない | - | argc != 0 → ArgumentError |
+| `prologue_ivar_setter` | IVAR_SETTER | しない | - | argc != 1 → ArgumentError |
+| `prologue_iseq_with_block` | AST | する | BREAK demote | 同上 |
+| `prologue_cfunc_with_block` | CFUNC | する | BREAK demote | 同上 |
+
+各 prologue は、現在の `dispatch_method_frame` / `dispatch_method_frame_with_block` から該当メソッドタイプの処理を抽出したもの。
+
+- **frame push/pop**: iseq/cfunc の prologue 内で行う。ivar はフレームなし (現状と同じ)
+- **fp/cref の save/restore**: iseq prologue 内で行う
+- **RESULT_RETURN skip-count**: iseq/cfunc prologue 内で処理
+- **RESULT_BREAK demote**: _with_block 版のみ
+- **self の save/restore**: prologue には含めない。call site 側の責務 (現状と同じ)
+
+### call site の変更
+
+```c
+// node_method_call (cache hit):
+VALUE save_self = c->self;
+c->self = recv_val;
+RESULT r = mc->prologue(c, n, mc, params_cnt, arg_index);
+c->self = save_self;
+
+// node_func_call (cache hit):
+RESULT r = mc->prologue(c, n, mc, params_cnt, arg_index);
+
+// block 付き (cache hit):
+RESULT r = mc->prologue_blk(c, n, mc, params_cnt, arg_index, &blk);
+```
+
+`dispatch_method_frame` は `mc->prologue(...)` への1行 wrapper になるか、最終的に削除。
+
+### block 付き ivar の扱い
+
+`prologue_blk` は ivar 系で NULL。block 付き ivar 呼び出し (`obj.x { ... }`) は非 block 版の `mc->prologue` にフォールバック。ivar accessor は yield しないので BREAK は起きず安全。
+
+### apply/splat の扱い
+
+`node_func_call_apply` / `node_method_call_apply` は argc が実行時に変わるため、prologue の argc チェックが毎回走る。将来の PG specialize で call site の argc が定数化されれば、prologue ごとインライン展開されてチェックが消える。
+
+### dispatch_method_with_klass (miss パス / super / method_missing)
+
+一時的な `method_cache` を構築して `mc->prologue(...)` を呼ぶ。現状と同じ構造で、`dispatch_method_frame` の代わりに `mc->prologue` を呼ぶだけ。
+
+### PG specialize との連携 (将来)
+
+PG specialize では prologue の関数ポインタが定数になるので、gcc がその prologue 関数をインライン展開する。例:
+- `prologue_ivar_getter` がインライン化 → `obj->ivars[slot]` への直接アクセスのみのコードが出る
+- `prologue_iseq` がインライン化 → frame push + body dispatcher 呼び出しのコードが出る (mtype 分岐なし)
+- method inlining と組み合わせれば body の中身まで展開される
+
+### 実装手順
+
+各ステップで `make test && make debug-test` が通ること。
+
+1. `context.h` に prologue typedef を追加、`method_cache` にフィールド追加 (NULL 初期化)
+2. 6つの prologue 関数を `node.def` に書く (現在の dispatch_method_frame から抽出、まだ未使用)
+3. `method_cache_fill` で method type に応じて prologue/prologue_blk を設定
+4. `dispatch_method_frame` の中身を `return mc->prologue(...)` に置換 ← **ビッグバン**
+5. `dispatch_method_frame_with_block` も同様に置換
+6. 各 prologue に argc チェックを追加 (ArgumentError)
+7. (任意) hot path で `mc->prologue(...)` を直接呼び出し、wrapper 関数を削除
+
+Step 1-3 は非機能変更 (prologue を書いて設定するだけ、まだ呼ばれない)。Step 4 が本番切り替え。
 
 ## ランタイム・内部実装
 
