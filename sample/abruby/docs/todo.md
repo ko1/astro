@@ -346,6 +346,32 @@ handler_flonum_plus:
 - **PG specialize で handler が定数化** → gcc が fixnum fast path をインライン展開、型ガードが定数畳み込みで消える
 - **メソッド再定義への対応が自然** — serial 不一致で generic に fallback、再 fill で適切な handler に戻る
 
+#### 検討: handler 統一の限界と現実的な落とし所
+
+算術演算の handler 統一には **レジスタ vs fp のトレードオフ** がある。
+
+現在の `node_fixnum_plus` は子ノードの EVAL_ARG 結果を C レジスタ上で直接演算する (fp を経由しない):
+```c
+VALUE lv = EVAL_ARG(c, left);   // レジスタ
+VALUE rv = EVAL_ARG(c, right);  // レジスタ
+return lv + rv - 1;             // fp 触らない
+```
+
+一方 handler 方式では、handler のシグネチャが統一されているため、引数を fp 経由で渡す必要がある:
+```c
+c->fp[arg_index] = EVAL_ARG(c, arg0);  // fp に store
+mc->handler(c, n, mc, 1, arg_index);    // handler が fp から load
+```
+
+handler シグネチャに値を直接渡す (`handler(c, n, mc, recv, arg0)`) ことで回避できるが、引数の数ごとに handler 型が変わり（0/1/2/それ以上 × block 有無 = 8 種類以上）、prologue との組み合わせで複雑さが爆発する。
+
+**現実的な方針**:
+
+1. **メソッド呼び出し** (`obj.foo(x)`, `super`, `yield`) → handler 方式を適用。fp 経由は元々やっているのでオーバーヘッドなし
+2. **算術/比較の fast path** (`a + b` の fixnum/flonum) → 現行の専用ノード方式を維持。レジスタで完結する利点が大きい
+3. **算術ノードのバリエーション整理** → handler 統一ではなく、現行の 7 段階 (plus / fixnum_plus / fixnum_plus_slow / fixnum_plus_overflow / integer_plus / flonum_plus / flonum_plus_slow) を 2〜3 段に整理する方向で
+4. **将来**: method inlining が入り call 自体が消せるようになれば、算術の handler 統一も再検討可能。inlining で handler がインライン展開されれば、fp 経由のコストも C コンパイラの最適化で消える可能性がある
+
 ## ランタイム・内部実装
 
 - [x] ~~abruby オブジェクトの free（現在リーク前提）~~ → `RUBY_DEFAULT_FREE` で GC sweep 時に解放
