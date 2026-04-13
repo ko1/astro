@@ -792,13 +792,6 @@ vm_free(void *ptr)
     // Per-instance built-in classes are T_DATA-wrapped; their structs and
     // inner tables are freed by abruby_data_free when their wrapper is GC'd.
     if (vm->current_fiber) {
-        // Clear the VALUE stack before freeing so no stale abruby
-        // VALUE pointers survive in the freed memory.  CRuby's
-        // conservative machine-stack scan might otherwise find them
-        // if the allocator reuses this memory in a position that
-        // overlaps a later C-stack frame.
-        memset(vm->current_fiber->ctx.stack, 0,
-               sizeof(vm->current_fiber->ctx.stack));
         ruby_xfree(vm->current_fiber);
     }
     ruby_xfree(vm);

@@ -193,4 +193,86 @@ class TestFiber < AbRubyTest
     r << b.resume
     r
   RUBY
+
+  # GC stress: deep method calls inside fiber body with heavy allocation.
+  def test_fiber_gc_deep_calls = assert_eval(<<~RUBY, 110)
+    def fib(n)
+      if n < 2
+        n
+      else
+        fib(n - 1) + fib(n - 2)
+      end
+    end
+    f = Fiber.new do
+      Fiber.yield fib(10)
+      fib(10)
+    end
+    r1 = f.resume
+    i = 0
+    while i < 500
+      x = "stress_" + i.to_s
+      i += 1
+    end
+    r2 = f.resume
+    r1 + r2
+  RUBY
+
+  # GC stress: many short-lived fibers created and abandoned in a loop.
+  def test_fiber_gc_many_abandoned = assert_eval(<<~RUBY, 50)
+    count = 0
+    50.times do |n|
+      f = Fiber.new do
+        s = "fiber_" + n.to_s
+        Fiber.yield s.length
+        999
+      end
+      count += 1 if f.resume > 0
+      # f is abandoned (SUSPENDED) here — GC must handle it
+      i = 0
+      while i < 100
+        x = "abandon_" + i.to_s
+        i += 1
+      end
+    end
+    count
+  RUBY
+
+  # GC stress: fiber creates heap objects that outlive the fiber.
+  def test_fiber_gc_escaped_objects = assert_eval(<<~RUBY, 10)
+    results = []
+    10.times do |n|
+      f = Fiber.new do
+        obj = "obj_" + n.to_s
+        Fiber.yield obj
+      end
+      results << f.resume
+      i = 0
+      while i < 200
+        x = "esc_" + i.to_s
+        i += 1
+      end
+    end
+    results.length
+  RUBY
+
+  # GC stress: Proc captured inside fiber, called with allocation pressure.
+  def test_fiber_gc_proc_in_fiber = assert_eval(<<~RUBY, [2, 4, 6])
+    f = Fiber.new do
+      mul = 2
+      pr = Proc.new { |x| x * mul }
+      Fiber.yield pr.call(1)
+      Fiber.yield pr.call(2)
+      pr.call(3)
+    end
+    out = []
+    3.times do
+      i = 0
+      while i < 300
+        x = "proc_" + i.to_s
+        i += 1
+      end
+      out << f.resume
+    end
+    out
+  RUBY
 end
