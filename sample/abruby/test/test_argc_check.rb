@@ -71,6 +71,29 @@ class TestArgcCheck < AbRubyTest
     assert_eval('def f(a, b = 2, c = 3); a + b + c; end; f(1)', 6)
   end
 
+  def test_req_opt2_too_few
+    err = assert_raises(RuntimeError) { AbRuby.eval('def f(a, b=2, c=3); a; end; f') }
+    assert_match(/given 0, expected 1/, err.message)
+  end
+  def test_req_opt2_too_many
+    err = assert_raises(RuntimeError) { AbRuby.eval('def f(a, b=2, c=3); a; end; f(1,2,3,4)') }
+    assert_match(/given 4, expected 1..3/, err.message)
+  end
+
+  def test_opt2_only_none
+    assert_eval('def f(a=1, b=2); a+b; end; f', 3)
+  end
+  def test_opt2_only_one
+    assert_eval('def f(a=1, b=2); a+b; end; f(10)', 12)
+  end
+  def test_opt2_only_both
+    assert_eval('def f(a=1, b=2); a+b; end; f(10, 20)', 30)
+  end
+  def test_opt2_only_too_many
+    err = assert_raises(RuntimeError) { AbRuby.eval('def f(a=1, b=2); a; end; f(1,2,3)') }
+    assert_match(/given 3, expected 0..2/, err.message)
+  end
+
   def test_opt_default_expr
     assert_eval('def f(a, b = a * 2); b; end; f(5)', 10)
   end
