@@ -90,6 +90,14 @@ typedef struct {
 typedef struct CTX_struct CTX;
 typedef RESULT (*abruby_cfunc_t)(CTX *c, VALUE self, unsigned int argc, VALUE *argv);
 
+// Execution entry point — the boundary at which a body is kicked off.
+// Shared by method, class/module body, top-level, proc, etc.
+// frame->entry points here so cref is always derivable without per-frame state.
+struct abruby_entry {
+    const struct abruby_cref *cref;  // lexical constant scope
+    const char *source_file;         // where this entry was defined
+};
+
 enum abruby_method_type {
     ABRUBY_METHOD_AST,
     ABRUBY_METHOD_CFUNC,
@@ -109,8 +117,7 @@ struct abruby_method {
             struct Node *body;
             unsigned int params_cnt;
             unsigned int locals_cnt;
-            const char *source_file; // file where method was defined
-            const struct abruby_cref *cref; // lexical const scope captured at def time
+            struct abruby_entry entry;  // cref + source_file
         } ast;
         struct {
             abruby_cfunc_t func;
@@ -432,10 +439,10 @@ struct abruby_frame {
     };
     const struct abruby_block *block;    // block received by this call, or NULL
     // Per-frame execution state (moved from CTX).
-    // Pop automatically restores the caller's state via prev->self/fp/cref.
+    // Pop automatically restores the caller's state via prev->self/fp.
     VALUE self;
     VALUE *fp;
-    const struct abruby_cref *cref;
+    const struct abruby_entry *entry;  // cref is derived from entry->cref
 };
 
 // Cached interned IDs for operator methods and common names
@@ -518,6 +525,14 @@ static inline void
 ctx_update_sp(struct CTX_struct *c, VALUE *new_top)
 {
     if (new_top > c->sp) c->sp = new_top;
+}
+
+// Derive cref from the current frame's entry.
+static inline const struct abruby_cref *
+ctx_cref(const struct CTX_struct *c)
+{
+    const struct abruby_entry *e = c->current_frame->entry;
+    return e ? e->cref : NULL;
 }
 
 // Definitions of the helpers (forward-declared earlier).

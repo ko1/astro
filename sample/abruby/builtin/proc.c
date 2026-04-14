@@ -95,6 +95,7 @@ RESULT ab_proc_call(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     ctx_update_sp(c, new_fp + p->env_size);
 
     // Push a synthetic method-style frame with the proc's captured state.
+    struct abruby_entry proc_entry = {p->cref, "(proc)"};
     struct abruby_frame proc_frame;
     proc_frame.prev = save_frame;
     proc_frame.method = NULL;
@@ -102,7 +103,7 @@ RESULT ab_proc_call(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     proc_frame.block = NULL;
     proc_frame.self = p->captured_self;
     proc_frame.fp = new_fp;
-    proc_frame.cref = p->cref;
+    proc_frame.entry = &proc_entry;
     c->current_block = NULL;
     c->current_block_frame = NULL;
     c->current_frame = &proc_frame;

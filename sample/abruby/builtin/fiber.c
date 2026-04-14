@@ -126,7 +126,7 @@ fiber_alloc(struct abruby_machine *vm, VALUE proc_value)
     memset(&f->root_frame, 0, sizeof(struct abruby_frame));
     f->root_frame.fp = f->ctx.stack;
     f->root_frame.self = vm->current_fiber->ctx.current_frame->self;
-    f->root_frame.cref = NULL;
+    f->root_frame.entry = NULL;
     f->ctx.current_frame = &f->root_frame;
     f->ctx.ids = vm->current_fiber->ctx.ids;
     f->ctx.current_block = NULL;

@@ -28,7 +28,7 @@ static RESULT ab_class_new(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
             init_frame.block = NULL;
             init_frame.self = obj;
             init_frame.fp = argv;
-            init_frame.cref = init->u.ast.cref;
+            init_frame.entry = &init->u.ast.entry;
             c->current_frame = &init_frame;
             r = EVAL(c, init->u.ast.body);
             c->current_frame = init_frame.prev;

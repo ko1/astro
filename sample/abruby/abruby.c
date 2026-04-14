@@ -562,30 +562,23 @@ abruby_call_method(CTX *c, VALUE recv, const struct abruby_method *method,
         c->current_frame->self = save_self;
         return RESULT_OK(v);
     } else {
-        VALUE *save_fp = c->current_frame->fp;
-        VALUE save_self = c->current_frame->self;
-        const struct abruby_cref *save_cref = c->current_frame->cref;
         unsigned int gap = method->u.ast.locals_cnt;
         if (gap < 16) gap = 16;
-        c->current_frame->fp = save_fp + gap;
+        VALUE *new_fp = c->current_frame->fp + gap;
         for (unsigned int i = 0; i < argc; i++) {
-            c->current_frame->fp[i] = argv[i];
+            new_fp[i] = argv[i];
         }
-        c->current_frame->self = recv;
-        c->current_frame->cref = method->u.ast.cref;
-        struct abruby_frame *save_frame = c->current_frame;
-        struct abruby_frame frame = {
-            .prev = save_frame,
-            .method = method,
-            .source_file = "(method_call)",
-            .block = NULL,
-        };
+        struct abruby_frame frame;
+        frame.prev = c->current_frame;
+        frame.method = method;
+        frame.source_file = "(method_call)";
+        frame.block = NULL;
+        frame.self = recv;
+        frame.fp = new_fp;
+        frame.entry = &method->u.ast.entry;
         c->current_frame = &frame;
         RESULT r = EVAL(c, method->u.ast.body);
-        c->current_frame = save_frame;
-        c->current_frame->fp = save_fp;
-        c->current_frame->self = save_self;
-        c->current_frame->cref = save_cref;
+        c->current_frame = frame.prev;
         // Catch RETURN at this C-boundary method call.  This frame now
         // supports super lookup.  The historic wildcard-catch for non-local
         // matching; treat it as an implicit wildcard catch (the historic
@@ -831,8 +824,8 @@ abruby_exception_new(CTX *c, const struct abruby_frame *start_frame, VALUE messa
 
         if (parent->method) {
             name = rb_id2name(parent->method->name);
-            file = (parent->method->type == ABRUBY_METHOD_AST && parent->method->u.ast.source_file)
-                ? parent->method->u.ast.source_file : "(abruby)";
+            file = (parent->method->type == ABRUBY_METHOD_AST && parent->method->u.ast.entry.source_file)
+                ? parent->method->u.ast.entry.source_file : "(abruby)";
         } else {
             name = parent->prev ? "<top (required)>" : "<main>";
             file = parent->source_file ? parent->source_file : "(abruby)";
@@ -1287,7 +1280,7 @@ init_vm(struct abruby_machine *vm)
     vm->current_fiber->root_frame.self = abruby_new_object(&vm->main_class_body);
 
     vm->current_fiber->ctx.current_class = NULL;
-    vm->current_fiber->root_frame.cref = NULL;
+    vm->current_fiber->root_frame.entry = NULL;
     vm->id_cache.op_plus = rb_intern("+");
     vm->id_cache.op_minus = rb_intern("-");
     vm->id_cache.op_mul = rb_intern("*");
@@ -1893,7 +1886,7 @@ abruby_require_file(CTX *c, VALUE rb_path)
     req_frame.block = NULL;
     req_frame.self = abruby_new_object(&vm->main_class_body);
     req_frame.fp = c->stack;
-    req_frame.cref = NULL;
+    req_frame.entry = NULL;
     c->current_frame = &req_frame;
     c->current_class = NULL;
     RESULT r = EVAL(c, ast);
@@ -2009,7 +2002,7 @@ rb_abruby_eval_ast(VALUE self, VALUE ast_obj)
     main_frame.block = NULL;
     main_frame.self = rf->self;
     main_frame.fp = rf->fp;
-    main_frame.cref = rf->cref;
+    main_frame.entry = rf->entry;
     vm->current_fiber->ctx.current_frame = &main_frame;
 
     RESULT r = EVAL(&vm->current_fiber->ctx, ast);
