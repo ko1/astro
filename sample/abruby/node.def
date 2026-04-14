@@ -80,8 +80,8 @@ abruby_method_try_set_ivar_accessor(struct abruby_method *m, struct Node *body,
 static void
 abruby_class_add_method(CTX *c, struct abruby_class *klass, ID name,
                         struct Node *body, unsigned int required_params_cnt,
-                        unsigned int params_cnt, int rest_index,
-                        struct Node **opt_pc,
+                        unsigned int params_cnt, unsigned int post_params_cnt,
+                        int rest_index, struct Node **opt_pc,
                         unsigned int locals_cnt, const char *source_file)
 {
     const struct abruby_cref *def_cref = ctx_cref(c);
@@ -93,6 +93,7 @@ abruby_class_add_method(CTX *c, struct abruby_class *klass, ID name,
             m->u.ast.body = body;
             m->u.ast.required_params_cnt = required_params_cnt;
             m->u.ast.params_cnt = params_cnt;
+            m->u.ast.post_params_cnt = post_params_cnt;
             m->u.ast.rest_index = rest_index;
             m->u.ast.opt_pc = opt_pc;
             m->u.ast.locals_cnt = locals_cnt;
@@ -110,6 +111,7 @@ abruby_class_add_method(CTX *c, struct abruby_class *klass, ID name,
         m->u.ast.body = body;
         m->u.ast.required_params_cnt = required_params_cnt;
         m->u.ast.params_cnt = params_cnt;
+        m->u.ast.post_params_cnt = post_params_cnt;
         m->u.ast.rest_index = rest_index;
         m->u.ast.opt_pc = opt_pc;
         m->u.ast.locals_cnt = locals_cnt;
@@ -818,7 +820,7 @@ node_rescue(CTX * restrict c, NODE * restrict n, NODE *body, NODE *rescue_body, 
 // === Method definition & call ===
 
 NODE_DEF @noinline
-node_def(CTX * restrict c, NODE * restrict n, ID name, NODE *body, uint32_t required_params_cnt, uint32_t params_cnt, int32_t rest_index, uint32_t locals_cnt)
+node_def(CTX * restrict c, NODE * restrict n, ID name, NODE *body, uint32_t required_params_cnt, uint32_t params_cnt, uint32_t post_params_cnt, int32_t rest_index, uint32_t locals_cnt)
 {
     struct abruby_class *klass = c->current_class ? c->current_class : CTX_MAIN_CLASS(c);
     const char *file = NULL;
@@ -827,8 +829,6 @@ node_def(CTX * restrict c, NODE * restrict n, ID name, NODE *body, uint32_t requ
             file = c->current_frame->entry->source_file;
     }
     // Build opt_pc table by walking the default-assignment seq chain.
-    // Parser generates: body = seq(lvar_set(default_0), seq(lvar_set(default_1), real_body))
-    // opt_pc[0] = body, opt_pc[1] = tail of first seq, ..., opt_pc[n] = real_body
     unsigned int n_opt = params_cnt - required_params_cnt;
     struct Node **opt_pc = NULL;
     if (n_opt > 0) {
@@ -836,14 +836,13 @@ node_def(CTX * restrict c, NODE * restrict n, ID name, NODE *body, uint32_t requ
         struct Node *cur = body;
         for (unsigned int i = 0; i < n_opt; i++) {
             opt_pc[i] = cur;
-            // Walk into the tail of the seq node
             cur = cur->u.node_seq.tail;
         }
-        opt_pc[n_opt] = cur;  // real body (no more defaults)
-        body = cur;           // method->body = real body only
+        opt_pc[n_opt] = cur;
+        body = cur;
     }
     abruby_class_add_method(c, klass, name, body, required_params_cnt, params_cnt,
-                            (int)rest_index, opt_pc, locals_cnt, file);
+                            post_params_cnt, (int)rest_index, opt_pc, locals_cnt, file);
     return RESULT_OK(Qnil);
 }
 
@@ -1258,6 +1257,82 @@ raise_argc_error(CTX *c, NODE *call_site,
     return (RESULT){exc, RESULT_RAISE};
 }
 
+// Max post params supported (for stack-allocated save buffer).
+// Real Ruby code rarely exceeds 2-3 post params; 16 is a safe upper bound.
+#define ABRUBY_MAX_POST_PARAMS 16
+
+// Set up fp for AST method invocation: handle rest array building and
+// post parameter placement.  Returns 0 on success, or stores exception
+// in *err_r and returns -1 on argc error.
+//
+// Layout after setup:
+//   fp[0..pre_num-1]            : pre required params (caller-placed)
+//   fp[pre_num..pre_num+opt_num-1] : optional slots (some from caller, rest from opt_pc)
+//   fp[rest_index]              : rest array (if has_rest)
+//   fp[post_start..]            : post required params (relocated from end of argv)
+//
+// Returns the opt_idx (how many optionals were filled from argv).
+static inline int
+dispatch_setup_args(CTX * restrict c, NODE * restrict call_site,
+                    const struct method_cache *mc,
+                    unsigned int argc, uint32_t arg_index,
+                    RESULT *err_r)
+{
+    unsigned int pre_num = mc->method->u.ast.required_params_cnt;
+    unsigned int max_opt = mc->method->u.ast.params_cnt;  // pre + opt
+    unsigned int opt_num = max_opt - pre_num;
+    unsigned int post_num = mc->method->u.ast.post_params_cnt;
+    int rest_idx = mc->method->u.ast.rest_index;
+    bool has_rest = (rest_idx >= 0);
+
+    unsigned int min_args = pre_num + post_num;
+    unsigned int max_args = pre_num + opt_num + post_num;
+
+    if (UNLIKELY(argc < min_args || (!has_rest && argc > max_args))) {
+        *err_r = raise_argc_error(c, call_site, argc, min_args, max_args, has_rest);
+        return -1;
+    }
+
+    c->current_frame->fp = c->current_frame->prev->fp + arg_index;
+
+    // Save post params from the end of argv (before we overwrite them).
+    VALUE post_vals[ABRUBY_MAX_POST_PARAMS];
+    if (UNLIKELY(post_num > ABRUBY_MAX_POST_PARAMS)) {
+        // Extremely unlikely; fail safely.
+        *err_r = raise_argc_error(c, call_site, argc, min_args, max_args, has_rest);
+        return -1;
+    }
+    for (unsigned int i = 0; i < post_num; i++)
+        post_vals[i] = c->current_frame->fp[argc - post_num + i];
+
+    // How many optionals are filled from argv.
+    unsigned int non_post_argc = argc - post_num;
+    unsigned int opt_filled = (non_post_argc > pre_num) ? (non_post_argc - pre_num) : 0;
+    if (opt_filled > opt_num) opt_filled = opt_num;
+
+    // Build rest array if has_rest.
+    unsigned int rest_count = non_post_argc - pre_num - opt_filled;
+    if (has_rest) {
+        VALUE rb_rest = rb_ary_new_capa((long)rest_count);
+        for (unsigned int i = 0; i < rest_count; i++)
+            rb_ary_push(rb_rest, c->current_frame->fp[pre_num + opt_filled + i]);
+        c->current_frame->fp[rest_idx] = abruby_ary_new(c, rb_rest);
+    }
+
+    // Write post params to their slots.
+    unsigned int post_start = has_rest ? (unsigned int)(rest_idx + 1)
+                                       : pre_num + opt_num;
+    for (unsigned int i = 0; i < post_num; i++)
+        c->current_frame->fp[post_start + i] = post_vals[i];
+
+    // Update sp to cover all written slots.
+    unsigned int frame_top = post_start + post_num;
+    if (max_opt > frame_top) frame_top = max_opt;  // opt slots may exceed post
+    ctx_update_sp(c, c->current_frame->fp + frame_top);
+
+    return (int)opt_filled;
+}
+
 // Inner dispatch using cached method_cache.
 // Does NOT save/restore c->current_frame->self — caller is responsible.
 // Cache hit paths call this directly; non-cache paths go through dispatch_method_with_klass.
@@ -1338,32 +1413,19 @@ dispatch_method_frame(CTX * restrict c, NODE * restrict call_site,
 
     RESULT r;
     if (LIKELY(mc->body != NULL)) {
-        unsigned int req = mc->method->u.ast.required_params_cnt;
-        unsigned int max = mc->method->u.ast.params_cnt;
-        int rest_idx = mc->method->u.ast.rest_index;
-        bool has_rest = (rest_idx >= 0);
-        if (UNLIKELY(argc < req || (!has_rest && argc > max))) {
+        RESULT err_r;
+        int opt_idx = dispatch_setup_args(c, call_site, mc, argc, arg_index, &err_r);
+        if (UNLIKELY(opt_idx < 0)) {
             c->current_frame = frame.prev;
-            return raise_argc_error(c, call_site, argc, req, max, has_rest);
+            return err_r;
         }
-        c->current_frame->fp = frame.prev->fp + arg_index;
-        // Build rest array if *rest parameter declared
-        if (has_rest) {
-            unsigned int rest_count = (argc > max) ? argc - max : 0;
-            VALUE rb_rest = rb_ary_new_capa((long)rest_count);
-            for (unsigned int i = 0; i < rest_count; i++)
-                rb_ary_push(rb_rest, c->current_frame->fp[max + i]);
-            c->current_frame->fp[rest_idx] = abruby_ary_new(c, rb_rest);
-        }
-        unsigned int frame_top = (argc > max) ? argc : max;
-        if (has_rest && (unsigned int)(rest_idx + 1) > frame_top) frame_top = rest_idx + 1;
-        ctx_update_sp(c, c->current_frame->fp + frame_top);
-        // Pick entry point: all args → body (compiled fast path),
-        // missing optionals → opt_pc entry with default assignments.
-        if (LIKELY(argc >= max || !mc->method->u.ast.opt_pc)) {
+        // Pick entry point: all optionals filled → body (compiled fast path),
+        // some missing → opt_pc entry with default assignments.
+        unsigned int opt_num = mc->method->u.ast.params_cnt - mc->method->u.ast.required_params_cnt;
+        if (LIKELY((unsigned int)opt_idx >= opt_num || !mc->method->u.ast.opt_pc)) {
             r = mc->dispatcher(c, mc->body);
         } else {
-            NODE *entry = mc->method->u.ast.opt_pc[argc - req];
+            NODE *entry = mc->method->u.ast.opt_pc[opt_idx];
             r = EVAL(c, entry);
         }
     } else {
@@ -1430,32 +1492,19 @@ dispatch_method_frame_with_block(CTX * restrict c, NODE * restrict call_site,
 
     RESULT r;
     if (LIKELY(mc->body != NULL)) {
-        unsigned int req = mc->method->u.ast.required_params_cnt;
-        unsigned int max = mc->method->u.ast.params_cnt;
-        int rest_idx = mc->method->u.ast.rest_index;
-        bool has_rest = (rest_idx >= 0);
-        if (UNLIKELY(argc < req || (!has_rest && argc > max))) {
+        RESULT err_r;
+        int opt_idx = dispatch_setup_args(c, call_site, mc, argc, arg_index, &err_r);
+        if (UNLIKELY(opt_idx < 0)) {
             c->current_frame = frame.prev;
-            return raise_argc_error(c, call_site, argc, req, max, has_rest);
+            return err_r;
         }
-        c->current_frame->fp = frame.prev->fp + arg_index;
-        // Build rest array if *rest parameter declared
-        if (has_rest) {
-            unsigned int rest_count = (argc > max) ? argc - max : 0;
-            VALUE rb_rest = rb_ary_new_capa((long)rest_count);
-            for (unsigned int i = 0; i < rest_count; i++)
-                rb_ary_push(rb_rest, c->current_frame->fp[max + i]);
-            c->current_frame->fp[rest_idx] = abruby_ary_new(c, rb_rest);
-        }
-        unsigned int frame_top = (argc > max) ? argc : max;
-        if (has_rest && (unsigned int)(rest_idx + 1) > frame_top) frame_top = rest_idx + 1;
-        ctx_update_sp(c, c->current_frame->fp + frame_top);
-        // Pick entry point: all args → body (compiled fast path),
-        // missing optionals → opt_pc entry with default assignments.
-        if (LIKELY(argc >= max || !mc->method->u.ast.opt_pc)) {
+        // Pick entry point: all optionals filled → body (compiled fast path),
+        // some missing → opt_pc entry with default assignments.
+        unsigned int opt_num = mc->method->u.ast.params_cnt - mc->method->u.ast.required_params_cnt;
+        if (LIKELY((unsigned int)opt_idx >= opt_num || !mc->method->u.ast.opt_pc)) {
             r = mc->dispatcher(c, mc->body);
         } else {
-            NODE *entry = mc->method->u.ast.opt_pc[argc - req];
+            NODE *entry = mc->method->u.ast.opt_pc[opt_idx];
             r = EVAL(c, entry);
         }
     } else {

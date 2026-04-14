@@ -1506,11 +1506,14 @@ rb_alloc_node_rescue(VALUE self, VALUE body, VALUE rescue_body, VALUE ensure_bod
 }
 
 static VALUE
-rb_alloc_node_def(VALUE self, VALUE name, VALUE body, VALUE required_params_cnt, VALUE params_cnt, VALUE rest_index, VALUE locals_cnt)
+rb_alloc_node_def(VALUE self, VALUE name, VALUE body,
+                  VALUE required_params_cnt, VALUE params_cnt, VALUE post_params_cnt,
+                  VALUE rest_index, VALUE locals_cnt)
 {
     ID cname = rb_intern_str(name);
     return wrap_node(ALLOC_node_def(cname, unwrap_node(body),
                      FIX2UINT(required_params_cnt), FIX2UINT(params_cnt),
+                     FIX2UINT(post_params_cnt),
                      FIX2INT(rest_index), FIX2UINT(locals_cnt)));
 }
 
@@ -2231,7 +2234,7 @@ Init_abruby(void)
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_return", rb_alloc_node_return, 1);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_break", rb_alloc_node_break, 1);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_rescue", rb_alloc_node_rescue, 4);
-    rb_define_singleton_method(rb_cAbRuby, "alloc_node_def", rb_alloc_node_def, 6);
+    rb_define_singleton_method(rb_cAbRuby, "alloc_node_def", rb_alloc_node_def, 7);
 
 
     // ivar

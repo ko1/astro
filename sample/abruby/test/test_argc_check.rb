@@ -175,6 +175,95 @@ class TestArgcCheck < AbRubyTest
   end
 
   # ================================================================
+  # Post parameters (def f(a, *rest, b))
+  # ================================================================
+
+  def test_post_pre_rest_post_minimal
+    assert_eval('def f(a, *r, b); [a, r, b]; end; f(1, 2)', [1, [], 2])
+  end
+  def test_post_pre_rest_post_one_in_rest
+    assert_eval('def f(a, *r, b); [a, r, b]; end; f(1, 2, 3)', [1, [2], 3])
+  end
+  def test_post_pre_rest_post_many
+    assert_eval('def f(a, *r, b); [a, r, b]; end; f(1, 2, 3, 4, 5)', [1, [2, 3, 4], 5])
+  end
+  def test_post_pre_rest_post_too_few
+    err = assert_raises(RuntimeError) { AbRuby.eval('def f(a, *r, b); a; end; f(1)') }
+    assert_match(/given 1, expected 2\+/, err.message)
+  end
+
+  def test_post_rest_only_post
+    # def f(*rest, b) — no pre, just rest + post
+    assert_eval('def f(*r, b); [r, b]; end; f(1)', [[], 1])
+  end
+  def test_post_rest_only_post_multi
+    assert_eval('def f(*r, b); [r, b]; end; f(1, 2, 3)', [[1, 2], 3])
+  end
+  def test_post_rest_only_post_too_few
+    err = assert_raises(RuntimeError) { AbRuby.eval('def f(*r, b); b; end; f') }
+    assert_match(/given 0, expected 1\+/, err.message)
+  end
+
+  def test_post_multi_pre_multi_post
+    # def f(a, b, *rest, c, d)
+    assert_eval('def f(a, b, *r, c, d); [a, b, r, c, d]; end; f(1, 2, 3, 4)', [1, 2, [], 3, 4])
+  end
+  def test_post_multi_pre_multi_post_with_rest
+    assert_eval('def f(a, b, *r, c, d); [a, b, r, c, d]; end; f(1, 2, 3, 4, 5, 6)',
+                [1, 2, [3, 4], 5, 6])
+  end
+  def test_post_multi_too_few
+    err = assert_raises(RuntimeError) { AbRuby.eval('def f(a, b, *r, c, d); a; end; f(1, 2, 3)') }
+    assert_match(/given 3, expected 4\+/, err.message)
+  end
+
+  # ================================================================
+  # Post + Optional combinations (def f(a, b = 10, *rest, c))
+  # ================================================================
+
+  def test_opt_post_minimal
+    # f(1, 2) → a=1, b=default, rest=[], c=2
+    assert_eval('def f(a, b = 10, *r, c); [a, b, r, c]; end; f(1, 2)', [1, 10, [], 2])
+  end
+  def test_opt_post_opt_filled
+    # f(1, 2, 3) → a=1, b=2, rest=[], c=3
+    assert_eval('def f(a, b = 10, *r, c); [a, b, r, c]; end; f(1, 2, 3)', [1, 2, [], 3])
+  end
+  def test_opt_post_with_rest
+    # f(1, 2, 3, 4) → a=1, b=2, rest=[3], c=4
+    assert_eval('def f(a, b = 10, *r, c); [a, b, r, c]; end; f(1, 2, 3, 4)', [1, 2, [3], 4])
+  end
+  def test_opt_post_too_few
+    err = assert_raises(RuntimeError) { AbRuby.eval('def f(a, b = 10, *r, c); a; end; f(1)') }
+    assert_match(/given 1, expected 2\+/, err.message)
+  end
+
+  def test_opt_post_no_rest
+    # def f(a, b = 10, c) — post without rest
+    assert_eval('def f(a, b = 10, c); [a, b, c]; end; f(1, 2)', [1, 10, 2])
+  end
+  def test_opt_post_no_rest_full
+    assert_eval('def f(a, b = 10, c); [a, b, c]; end; f(1, 2, 3)', [1, 2, 3])
+  end
+  def test_opt_post_no_rest_too_few
+    err = assert_raises(RuntimeError) { AbRuby.eval('def f(a, b = 10, c); a; end; f(1)') }
+    assert_match(/given 1, expected 2..3/, err.message)
+  end
+  def test_opt_post_no_rest_too_many
+    err = assert_raises(RuntimeError) { AbRuby.eval('def f(a, b = 10, c); a; end; f(1, 2, 3, 4)') }
+    assert_match(/given 4, expected 2..3/, err.message)
+  end
+
+  def test_post_nil_preserved
+    # f(1, nil) with post: nil goes to c, not default
+    assert_eval('def f(a, b = 10, c); [a, b, c]; end; f(1, nil)', [1, 10, nil])
+  end
+  def test_post_nil_with_rest
+    # f(1, 2, 3, nil) with post: nil goes to post
+    assert_eval('def f(a, *r, b); [a, r, b]; end; f(1, 2, 3, nil)', [1, [2, 3], nil])
+  end
+
+  # ================================================================
   # Method call with receiver
   # ================================================================
 

@@ -530,11 +530,13 @@ class AbRuby
         required_cnt = params ? params.requireds.size : 0
         optionals = params ? (params.optionals || []) : []
         rest_param = params ? params.rest : nil
+        posts = params ? (params.posts || []) : []
+        post_cnt = posts.size
         params_cnt = required_cnt + optionals.size
         block_param_name = (params && params.block) ? params.block.name&.to_s : nil
 
-        # If rest parameter exists, count it as a local but not a positional param
-        total_positional = params_cnt + (rest_param ? 1 : 0)
+        # Total positional slots: pre + opt + rest(1 if any) + post
+        total_positional = params_cnt + (rest_param ? 1 : 0) + post_cnt
         push_frame(node.locals, params_cnt: total_positional, method_body: node.body)
 
         # Rest parameter slot index (-1 if none)
@@ -576,7 +578,7 @@ class AbRuby
         frame = pop_frame
         @method_frame_max[name] = frame[:max]
         @entries << [name, body]
-        AbRuby.alloc_node_def(name, body, required_cnt, params_cnt, rest_index, frame[:max])
+        AbRuby.alloc_node_def(name, body, required_cnt, params_cnt, post_cnt, rest_index, frame[:max])
 
       when Prism::ArrayNode
         elements = node.elements
@@ -993,7 +995,7 @@ class AbRuby
         if kind == "attr_reader" || kind == "attr_accessor"
           # def attr; @attr; end
           body = AbRuby.alloc_node_ivar_get(ivar)
-          defs << AbRuby.alloc_node_def(attr, body, 0, 0, -1, 0)
+          defs << AbRuby.alloc_node_def(attr, body, 0, 0, 0, -1, 0)
         end
         if kind == "attr_writer" || kind == "attr_accessor"
           # def attr=(value); @attr = value; end
@@ -1001,7 +1003,7 @@ class AbRuby
           param_ref = AbRuby.alloc_node_lvar_get(0)
           body = AbRuby.alloc_node_ivar_set(ivar, param_ref)
           pop_frame
-          defs << AbRuby.alloc_node_def("#{attr}=", body, 1, 1, -1, 1)
+          defs << AbRuby.alloc_node_def("#{attr}=", body, 1, 1, 0, -1, 1)
         end
       end
 
