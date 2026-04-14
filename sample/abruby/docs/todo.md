@@ -129,7 +129,7 @@ benchmark/optcarrot/bin/optcarrot-bench を動かすために必要な機能。
 - [x] メソッド名インターン化 — 全メソッド名をパース時に intern し、ID ポインタ比較に置換。実装済み
 - [x] インラインキャッシュ — `node_method_call` に `struct method_cache` を `@ref` で埋め込み、ヒット時に `abruby_class_find_method` を完全スキップ。グローバルシリアルでメソッド定義・include 時に無効化
 - [x] メソッドテーブルのハッシュ化 — `ab_id_table` を hybrid 実装に変更（小テーブルは packed linear、大テーブルは open-addressing Fibonacci hash）。IC ミス時のメソッド探索・builtin クラスのメソッド参照を高速化
-- [ ] **prologue 関数ポインタによるメソッドディスパッチ再設計** — 後述「prologue リファクタリング」を参照
+- [~] **prologue 関数ポインタによるメソッドディスパッチ再設計** — prologue 関数 6 種を実装し method_cache_fill で設定済み。ただし dispatch_method_frame からの直接呼び出しは間接関数呼び出しペナルティにより 20-27% 遅化するため保留。PG specialize で prologue が定数化されるまでは旧インライン switch を維持。後述「prologue リファクタリング」を参照
 
 ### AOT / JIT（ASTro 部分評価）
 
