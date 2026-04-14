@@ -79,8 +79,9 @@ abruby_method_try_set_ivar_accessor(struct abruby_method *m, struct Node *body,
 
 static void
 abruby_class_add_method(CTX *c, struct abruby_class *klass, ID name,
-                        struct Node *body, unsigned int params_cnt, unsigned int locals_cnt,
-                        const char *source_file)
+                        struct Node *body, unsigned int required_params_cnt,
+                        unsigned int params_cnt, int rest_index,
+                        unsigned int locals_cnt, const char *source_file)
 {
     const struct abruby_cref *def_cref = ctx_cref(c);
     VALUE existing;
@@ -89,7 +90,9 @@ abruby_class_add_method(CTX *c, struct abruby_class *klass, ID name,
         if (!abruby_method_try_set_ivar_accessor(m, body, params_cnt)) {
             m->type = ABRUBY_METHOD_AST;
             m->u.ast.body = body;
+            m->u.ast.required_params_cnt = required_params_cnt;
             m->u.ast.params_cnt = params_cnt;
+            m->u.ast.rest_index = rest_index;
             m->u.ast.locals_cnt = locals_cnt;
             m->u.ast.entry.source_file = source_file;
             m->u.ast.entry.cref = def_cref;
@@ -103,7 +106,9 @@ abruby_class_add_method(CTX *c, struct abruby_class *klass, ID name,
     if (!abruby_method_try_set_ivar_accessor(m, body, params_cnt)) {
         m->type = ABRUBY_METHOD_AST;
         m->u.ast.body = body;
+        m->u.ast.required_params_cnt = required_params_cnt;
         m->u.ast.params_cnt = params_cnt;
+        m->u.ast.rest_index = rest_index;
         m->u.ast.locals_cnt = locals_cnt;
         m->u.ast.entry.source_file = source_file;
         m->u.ast.entry.cref = def_cref;
@@ -810,7 +815,7 @@ node_rescue(CTX * restrict c, NODE * restrict n, NODE *body, NODE *rescue_body, 
 // === Method definition & call ===
 
 NODE_DEF @noinline
-node_def(CTX * restrict c, NODE * restrict n, ID name, NODE *body, uint32_t params_cnt, uint32_t locals_cnt)
+node_def(CTX * restrict c, NODE * restrict n, ID name, NODE *body, uint32_t required_params_cnt, uint32_t params_cnt, int32_t rest_index, uint32_t locals_cnt)
 {
     struct abruby_class *klass = c->current_class ? c->current_class : CTX_MAIN_CLASS(c);
     // Derive source file from current frame
@@ -819,7 +824,8 @@ node_def(CTX * restrict c, NODE * restrict n, ID name, NODE *body, uint32_t para
         if (c->current_frame->entry)
             file = c->current_frame->entry->source_file;
     }
-    abruby_class_add_method(c, klass, name, body, params_cnt, locals_cnt, file);
+    abruby_class_add_method(c, klass, name, body, required_params_cnt, params_cnt,
+                            (int)rest_index, locals_cnt, file);
     return RESULT_OK(Qnil);
 }
 
@@ -1209,12 +1215,23 @@ method_cache_fill(CTX *c, struct method_cache *mc, const struct abruby_class *kl
 // ArgumentError for wrong number of arguments (cold path).
 static __attribute__((noinline, cold)) RESULT
 raise_argc_error(CTX *c, NODE *call_site,
-                 unsigned int given, unsigned int expected)
+                 unsigned int given, unsigned int required,
+                 unsigned int max_params, bool has_rest)
 {
     char buf[128];
-    snprintf(buf, sizeof(buf),
-             "wrong number of arguments (given %u, expected %u)",
-             given, expected);
+    if (has_rest) {
+        snprintf(buf, sizeof(buf),
+                 "wrong number of arguments (given %u, expected %u+)",
+                 given, required);
+    } else if (required == max_params) {
+        snprintf(buf, sizeof(buf),
+                 "wrong number of arguments (given %u, expected %u)",
+                 given, required);
+    } else {
+        snprintf(buf, sizeof(buf),
+                 "wrong number of arguments (given %u, expected %u..%u)",
+                 given, required, max_params);
+    }
     VALUE exc;
     PUSH_FRAME(call_site);
     exc = abruby_exception_new(c, c->current_frame,
@@ -1242,7 +1259,7 @@ dispatch_method_frame(CTX * restrict c, NODE * restrict call_site,
     enum abruby_method_type mtype = mc->method->type;
     if (mtype == ABRUBY_METHOD_IVAR_GETTER) {
         if (UNLIKELY(argc != 0))
-            return raise_argc_error(c, call_site, argc, 0);
+            return raise_argc_error(c, call_site, argc, 0, 0, false);
         const struct abruby_object *obj =
             (const struct abruby_object *)RTYPEDDATA_GET_DATA(c->current_frame->self);
         unsigned int slot;
@@ -1263,7 +1280,7 @@ dispatch_method_frame(CTX * restrict c, NODE * restrict call_site,
     }
     if (mtype == ABRUBY_METHOD_IVAR_SETTER) {
         if (UNLIKELY(argc != 1))
-            return raise_argc_error(c, call_site, argc, 1);
+            return raise_argc_error(c, call_site, argc, 1, 1, false);
         struct abruby_object *obj =
             (struct abruby_object *)RTYPEDDATA_GET_DATA(c->current_frame->self);
         VALUE v = c->current_frame->fp[arg_index];
@@ -1303,13 +1320,28 @@ dispatch_method_frame(CTX * restrict c, NODE * restrict call_site,
 
     RESULT r;
     if (LIKELY(mc->body != NULL)) {
-        unsigned int mparams = mc->method->u.ast.params_cnt;
-        if (UNLIKELY(argc != mparams)) {
+        unsigned int req = mc->method->u.ast.required_params_cnt;
+        unsigned int max = mc->method->u.ast.params_cnt;
+        int rest_idx = mc->method->u.ast.rest_index;
+        bool has_rest = (rest_idx >= 0);
+        if (UNLIKELY(argc < req || (!has_rest && argc > max))) {
             c->current_frame = frame.prev;
-            return raise_argc_error(c, call_site, argc, mparams);
+            return raise_argc_error(c, call_site, argc, req, max, has_rest);
         }
         c->current_frame->fp = frame.prev->fp + arg_index;
-        ctx_update_sp(c, c->current_frame->fp + mparams);
+        // Fill missing optional params with Qnil
+        for (unsigned int i = argc; i < max; i++) c->current_frame->fp[i] = Qnil;
+        // Build rest array if *rest parameter declared
+        if (has_rest) {
+            unsigned int rest_count = (argc > max) ? argc - max : 0;
+            VALUE rb_rest = rb_ary_new_capa((long)rest_count);
+            for (unsigned int i = 0; i < rest_count; i++)
+                rb_ary_push(rb_rest, c->current_frame->fp[max + i]);
+            c->current_frame->fp[rest_idx] = abruby_ary_new(c, rb_rest);
+        }
+        unsigned int frame_top = (argc > max) ? argc : max;
+        if (has_rest && (unsigned int)(rest_idx + 1) > frame_top) frame_top = rest_idx + 1;
+        ctx_update_sp(c, c->current_frame->fp + frame_top);
         r = mc->dispatcher(c, mc->body);
     } else {
         // CFUNCs handle argc internally; no argument count check here.
@@ -1375,13 +1407,28 @@ dispatch_method_frame_with_block(CTX * restrict c, NODE * restrict call_site,
 
     RESULT r;
     if (LIKELY(mc->body != NULL)) {
-        unsigned int mparams = mc->method->u.ast.params_cnt;
-        if (UNLIKELY(argc != mparams)) {
+        unsigned int req = mc->method->u.ast.required_params_cnt;
+        unsigned int max = mc->method->u.ast.params_cnt;
+        int rest_idx = mc->method->u.ast.rest_index;
+        bool has_rest = (rest_idx >= 0);
+        if (UNLIKELY(argc < req || (!has_rest && argc > max))) {
             c->current_frame = frame.prev;
-            return raise_argc_error(c, call_site, argc, mparams);
+            return raise_argc_error(c, call_site, argc, req, max, has_rest);
         }
         c->current_frame->fp = frame.prev->fp + arg_index;
-        ctx_update_sp(c, c->current_frame->fp + mparams);
+        // Fill missing optional params with Qnil
+        for (unsigned int i = argc; i < max; i++) c->current_frame->fp[i] = Qnil;
+        // Build rest array if *rest parameter declared
+        if (has_rest) {
+            unsigned int rest_count = (argc > max) ? argc - max : 0;
+            VALUE rb_rest = rb_ary_new_capa((long)rest_count);
+            for (unsigned int i = 0; i < rest_count; i++)
+                rb_ary_push(rb_rest, c->current_frame->fp[max + i]);
+            c->current_frame->fp[rest_idx] = abruby_ary_new(c, rb_rest);
+        }
+        unsigned int frame_top = (argc > max) ? argc : max;
+        if (has_rest && (unsigned int)(rest_idx + 1) > frame_top) frame_top = rest_idx + 1;
+        ctx_update_sp(c, c->current_frame->fp + frame_top);
         r = mc->dispatcher(c, mc->body);
     } else {
         // CFUNCs handle argc internally; no argument count check here.

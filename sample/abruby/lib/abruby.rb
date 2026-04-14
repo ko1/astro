@@ -529,10 +529,26 @@ class AbRuby
         params = node.parameters
         required_cnt = params ? params.requireds.size : 0
         optionals = params ? (params.optionals || []) : []
+        rest_param = params ? params.rest : nil
         params_cnt = required_cnt + optionals.size
         block_param_name = (params && params.block) ? params.block.name&.to_s : nil
 
-        push_frame(node.locals, params_cnt: params_cnt, method_body: node.body)
+        # If rest parameter exists, count it as a local but not a positional param
+        total_positional = params_cnt + (rest_param ? 1 : 0)
+        push_frame(node.locals, params_cnt: total_positional, method_body: node.body)
+
+        # Rest parameter slot index (-1 if none)
+        rest_index = -1
+        if rest_param
+          rest_name = rest_param.name&.to_s
+          if rest_name
+            rest_index = current_frame[:locals].index(rest_name)
+          else
+            # Anonymous *rest — Prism gives it a slot but no name.
+            # Find the slot after required + optional params.
+            rest_index = params_cnt
+          end
+        end
 
         # Generate default-init prelude for optional params.
         # The dispatcher fills unpassed slots with Qnil; the prelude
@@ -557,10 +573,6 @@ class AbRuby
         body = build_seq(opt_prelude + [body]) unless opt_prelude.empty?
 
         if block_param_name
-          # `def f(&blk)`: prepend a node_block_param that converts the
-          # method's implicit block (current_frame->block) to a Proc and
-          # stores it in `blk`'s local slot.  When the method was called
-          # without a block, the slot is set to nil.
           slot = current_frame[:locals].index(block_param_name)
           if slot
             block_param_node = AbRuby.alloc_node_block_param(slot)
@@ -569,9 +581,9 @@ class AbRuby
         end
 
         frame = pop_frame
-        @method_frame_max[name] = frame[:max]  # record for call-site block safety
+        @method_frame_max[name] = frame[:max]
         @entries << [name, body]
-        AbRuby.alloc_node_def(name, body, params_cnt, frame[:max])
+        AbRuby.alloc_node_def(name, body, required_cnt, params_cnt, rest_index, frame[:max])
 
       when Prism::ArrayNode
         elements = node.elements
@@ -988,7 +1000,7 @@ class AbRuby
         if kind == "attr_reader" || kind == "attr_accessor"
           # def attr; @attr; end
           body = AbRuby.alloc_node_ivar_get(ivar)
-          defs << AbRuby.alloc_node_def(attr, body, 0, 0)
+          defs << AbRuby.alloc_node_def(attr, body, 0, 0, -1, 0)
         end
         if kind == "attr_writer" || kind == "attr_accessor"
           # def attr=(value); @attr = value; end
@@ -996,7 +1008,7 @@ class AbRuby
           param_ref = AbRuby.alloc_node_lvar_get(0)
           body = AbRuby.alloc_node_ivar_set(ivar, param_ref)
           pop_frame
-          defs << AbRuby.alloc_node_def("#{attr}=", body, 1, 1)
+          defs << AbRuby.alloc_node_def("#{attr}=", body, 1, 1, -1, 1)
         end
       end
 

@@ -14,7 +14,7 @@ benchmark/optcarrot/bin/optcarrot-bench を動かすために必要な機能。
 - [x] Fiber（`Fiber.new`, `Fiber#resume`, `Fiber.yield`, `Fiber#alive?` — CRuby Fiber API でスタック管理）
 - [x] `case / when`（if/elsif チェーンに desugar、=== メソッド対応）
 - [x] `attr_reader` / `attr_writer` / `attr_accessor`
-- [ ] デフォルト引数 (`def f(a, b = 1)`)
+- [x] デフォルト引数 (`def f(a, b = 1)`)
 
 ### 重要（主要な処理パスで使用）
 
@@ -37,7 +37,7 @@ benchmark/optcarrot/bin/optcarrot-bench を動かすために必要な機能。
 - [x] `is_a?` / `kind_of?` / `instance_of?`
 - [ ] `defined?`
 - [ ] クラス変数 (`@@var`)
-- [ ] 可変長引数 受け取り (`def f(*args)`, `def f(**kwargs)`) — 呼び出し側 splat は実装済
+- [x] 可変長引数 受け取り (`def f(*args)`) — `**kwargs` は未対応。呼び出し側 splat も実装済
 - [ ] `&:symbol`（ブロック引数のシンボル記法）
 
 ### 標準ライブラリ

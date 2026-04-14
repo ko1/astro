@@ -115,7 +115,9 @@ struct abruby_method {
     union {
         struct {
             struct Node *body;
-            unsigned int params_cnt;
+            unsigned int required_params_cnt;  // # of required params (min argc)
+            unsigned int params_cnt;           // # of required + optional params (max argc without rest)
+            int rest_index;                    // slot index for *rest parameter, -1 if none
             unsigned int locals_cnt;
             struct abruby_entry entry;  // cref + source_file
         } ast;
