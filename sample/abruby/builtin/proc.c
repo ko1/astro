@@ -99,7 +99,7 @@ RESULT ab_proc_call(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     struct abruby_frame proc_frame;
     proc_frame.prev = save_frame;
     proc_frame.method = NULL;
-    proc_frame.source_file = "(proc)";
+    proc_frame.caller_node = NULL;
     proc_frame.block = NULL;
     proc_frame.self = p->captured_self;
     proc_frame.fp = new_fp;

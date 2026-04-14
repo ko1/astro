@@ -433,10 +433,7 @@ typedef RESULT (*method_prologue_blk_t)(
 struct abruby_frame {
     struct abruby_frame *prev;
     const struct abruby_method *method;  // super walks from method->defining_class->super
-    union {
-        const struct Node *caller_node;  // method frame: call site in the caller (set at push time)
-        const char *source_file;         // <main>/<top>: set at push time
-    };
+    const struct Node *caller_node;  // call site in the caller (set at push time, NULL for <main>)
     const struct abruby_block *block;    // block received by this call, or NULL
     // Per-frame execution state (moved from CTX).
     // Pop automatically restores the caller's state via prev->self/fp.

@@ -816,10 +816,8 @@ node_def(CTX * restrict c, NODE * restrict n, ID name, NODE *body, uint32_t para
     // Derive source file from current frame
     const char *file = NULL;
     if (c->current_frame) {
-        if (c->current_frame->method && c->current_frame->method->type == ABRUBY_METHOD_AST)
-            file = c->current_frame->method->u.ast.entry.source_file;
-        else
-            file = c->current_frame->source_file;  // <main>/<top>
+        if (c->current_frame->entry)
+            file = c->current_frame->entry->source_file;
     }
     abruby_class_add_method(c, klass, name, body, params_cnt, locals_cnt, file);
     return RESULT_OK(Qnil);

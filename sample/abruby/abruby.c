@@ -571,7 +571,7 @@ abruby_call_method(CTX *c, VALUE recv, const struct abruby_method *method,
         struct abruby_frame frame;
         frame.prev = c->current_frame;
         frame.method = method;
-        frame.source_file = "(method_call)";
+        frame.caller_node = NULL;
         frame.block = NULL;
         frame.self = recv;
         frame.fp = new_fp;
@@ -824,12 +824,11 @@ abruby_exception_new(CTX *c, const struct abruby_frame *start_frame, VALUE messa
 
         if (parent->method) {
             name = rb_id2name(parent->method->name);
-            file = (parent->method->type == ABRUBY_METHOD_AST && parent->method->u.ast.entry.source_file)
-                ? parent->method->u.ast.entry.source_file : "(abruby)";
         } else {
             name = parent->prev ? "<top (required)>" : "<main>";
-            file = parent->source_file ? parent->source_file : "(abruby)";
         }
+        file = (parent->entry && parent->entry->source_file)
+            ? parent->entry->source_file : "(abruby)";
 
         rb_ary_push(bt_ary, rb_sprintf("%s:%d:in `%s'", file, line, name));
     }
@@ -1879,14 +1878,15 @@ abruby_require_file(CTX *c, VALUE rb_path)
     NODE *ast = unwrap_node(ast_obj);
     struct abruby_frame *save_frame = c->current_frame;
     struct abruby_class *save_class = c->current_class;
+    struct abruby_entry req_entry = {NULL, RSTRING_PTR(abs_str)};
     struct abruby_frame req_frame;
     req_frame.prev = save_frame;
     req_frame.method = NULL;
-    req_frame.source_file = RSTRING_PTR(abs_str);
+    req_frame.caller_node = NULL;
     req_frame.block = NULL;
     req_frame.self = abruby_new_object(&vm->main_class_body);
     req_frame.fp = c->stack;
-    req_frame.entry = NULL;
+    req_frame.entry = &req_entry;
     c->current_frame = &req_frame;
     c->current_class = NULL;
     RESULT r = EVAL(c, ast);
@@ -1992,17 +1992,18 @@ rb_abruby_eval_ast(VALUE self, VALUE ast_obj)
     vm->current_fiber->ctx.current_class = NULL;
 
     // Push <main> frame so backtrace always has a bottom frame.
-    // Inherit self/fp/cref from root frame.
+    // Inherit self/fp from root frame.
     const char *eval_file = NIL_P(vm->current_file) ? "(abruby)" : RSTRING_PTR(vm->current_file);
     struct abruby_frame *rf = &vm->current_fiber->root_frame;
+    struct abruby_entry main_entry = {NULL, eval_file};
     struct abruby_frame main_frame;
     main_frame.prev = NULL;
     main_frame.method = NULL;
-    main_frame.source_file = eval_file;
+    main_frame.caller_node = NULL;
     main_frame.block = NULL;
     main_frame.self = rf->self;
     main_frame.fp = rf->fp;
-    main_frame.entry = rf->entry;
+    main_frame.entry = &main_entry;
     vm->current_fiber->ctx.current_frame = &main_frame;
 
     RESULT r = EVAL(&vm->current_fiber->ctx, ast);
