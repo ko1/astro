@@ -118,6 +118,10 @@ struct abruby_method {
             unsigned int required_params_cnt;  // # of required params (min argc)
             unsigned int params_cnt;           // # of required + optional params (max argc without rest)
             int rest_index;                    // slot index for *rest parameter, -1 if none
+            struct Node **opt_pc;              // entry points for optional params (NULL if none)
+                                               // opt_pc[i] = entry for argc == required + i
+                                               // opt_pc[n_opt] = body (all args provided)
+                                               // array size = params_cnt - required_params_cnt + 1
             unsigned int locals_cnt;
             struct abruby_entry entry;  // cref + source_file
         } ast;

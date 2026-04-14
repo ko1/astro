@@ -81,6 +81,7 @@ static void
 abruby_class_add_method(CTX *c, struct abruby_class *klass, ID name,
                         struct Node *body, unsigned int required_params_cnt,
                         unsigned int params_cnt, int rest_index,
+                        struct Node **opt_pc,
                         unsigned int locals_cnt, const char *source_file)
 {
     const struct abruby_cref *def_cref = ctx_cref(c);
@@ -93,6 +94,7 @@ abruby_class_add_method(CTX *c, struct abruby_class *klass, ID name,
             m->u.ast.required_params_cnt = required_params_cnt;
             m->u.ast.params_cnt = params_cnt;
             m->u.ast.rest_index = rest_index;
+            m->u.ast.opt_pc = opt_pc;
             m->u.ast.locals_cnt = locals_cnt;
             m->u.ast.entry.source_file = source_file;
             m->u.ast.entry.cref = def_cref;
@@ -109,6 +111,7 @@ abruby_class_add_method(CTX *c, struct abruby_class *klass, ID name,
         m->u.ast.required_params_cnt = required_params_cnt;
         m->u.ast.params_cnt = params_cnt;
         m->u.ast.rest_index = rest_index;
+        m->u.ast.opt_pc = opt_pc;
         m->u.ast.locals_cnt = locals_cnt;
         m->u.ast.entry.source_file = source_file;
         m->u.ast.entry.cref = def_cref;
@@ -818,14 +821,29 @@ NODE_DEF @noinline
 node_def(CTX * restrict c, NODE * restrict n, ID name, NODE *body, uint32_t required_params_cnt, uint32_t params_cnt, int32_t rest_index, uint32_t locals_cnt)
 {
     struct abruby_class *klass = c->current_class ? c->current_class : CTX_MAIN_CLASS(c);
-    // Derive source file from current frame
     const char *file = NULL;
     if (c->current_frame) {
         if (c->current_frame->entry)
             file = c->current_frame->entry->source_file;
     }
+    // Build opt_pc table by walking the default-assignment seq chain.
+    // Parser generates: body = seq(lvar_set(default_0), seq(lvar_set(default_1), real_body))
+    // opt_pc[0] = body, opt_pc[1] = tail of first seq, ..., opt_pc[n] = real_body
+    unsigned int n_opt = params_cnt - required_params_cnt;
+    struct Node **opt_pc = NULL;
+    if (n_opt > 0) {
+        opt_pc = ruby_xmalloc(sizeof(struct Node *) * (n_opt + 1));
+        struct Node *cur = body;
+        for (unsigned int i = 0; i < n_opt; i++) {
+            opt_pc[i] = cur;
+            // Walk into the tail of the seq node
+            cur = cur->u.node_seq.tail;
+        }
+        opt_pc[n_opt] = cur;  // real body (no more defaults)
+        body = cur;           // method->body = real body only
+    }
     abruby_class_add_method(c, klass, name, body, required_params_cnt, params_cnt,
-                            (int)rest_index, locals_cnt, file);
+                            (int)rest_index, opt_pc, locals_cnt, file);
     return RESULT_OK(Qnil);
 }
 
@@ -1329,8 +1347,6 @@ dispatch_method_frame(CTX * restrict c, NODE * restrict call_site,
             return raise_argc_error(c, call_site, argc, req, max, has_rest);
         }
         c->current_frame->fp = frame.prev->fp + arg_index;
-        // Fill missing optional params with Qnil
-        for (unsigned int i = argc; i < max; i++) c->current_frame->fp[i] = Qnil;
         // Build rest array if *rest parameter declared
         if (has_rest) {
             unsigned int rest_count = (argc > max) ? argc - max : 0;
@@ -1342,7 +1358,14 @@ dispatch_method_frame(CTX * restrict c, NODE * restrict call_site,
         unsigned int frame_top = (argc > max) ? argc : max;
         if (has_rest && (unsigned int)(rest_idx + 1) > frame_top) frame_top = rest_idx + 1;
         ctx_update_sp(c, c->current_frame->fp + frame_top);
-        r = mc->dispatcher(c, mc->body);
+        // Pick entry point: all args → body (compiled fast path),
+        // missing optionals → opt_pc entry with default assignments.
+        if (LIKELY(argc >= max || !mc->method->u.ast.opt_pc)) {
+            r = mc->dispatcher(c, mc->body);
+        } else {
+            NODE *entry = mc->method->u.ast.opt_pc[argc - req];
+            r = EVAL(c, entry);
+        }
     } else {
         // CFUNCs handle argc internally; no argument count check here.
         ctx_update_sp(c, c->current_frame->fp + arg_index + argc);
@@ -1416,8 +1439,6 @@ dispatch_method_frame_with_block(CTX * restrict c, NODE * restrict call_site,
             return raise_argc_error(c, call_site, argc, req, max, has_rest);
         }
         c->current_frame->fp = frame.prev->fp + arg_index;
-        // Fill missing optional params with Qnil
-        for (unsigned int i = argc; i < max; i++) c->current_frame->fp[i] = Qnil;
         // Build rest array if *rest parameter declared
         if (has_rest) {
             unsigned int rest_count = (argc > max) ? argc - max : 0;
@@ -1429,7 +1450,14 @@ dispatch_method_frame_with_block(CTX * restrict c, NODE * restrict call_site,
         unsigned int frame_top = (argc > max) ? argc : max;
         if (has_rest && (unsigned int)(rest_idx + 1) > frame_top) frame_top = rest_idx + 1;
         ctx_update_sp(c, c->current_frame->fp + frame_top);
-        r = mc->dispatcher(c, mc->body);
+        // Pick entry point: all args → body (compiled fast path),
+        // missing optionals → opt_pc entry with default assignments.
+        if (LIKELY(argc >= max || !mc->method->u.ast.opt_pc)) {
+            r = mc->dispatcher(c, mc->body);
+        } else {
+            NODE *entry = mc->method->u.ast.opt_pc[argc - req];
+            r = EVAL(c, entry);
+        }
     } else {
         // CFUNCs handle argc internally; no argument count check here.
         ctx_update_sp(c, c->current_frame->fp + arg_index + argc);

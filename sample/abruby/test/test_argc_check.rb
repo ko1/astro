@@ -98,12 +98,23 @@ class TestArgcCheck < AbRubyTest
     assert_eval('def f(a, b = a * 2); b; end; f(5)', 10)
   end
 
+  def test_opt_nil_not_default
+    # explicit nil must NOT trigger the default
+    assert_eval('def f(a = 99); a; end; f(nil)', nil)
+  end
   def test_opt_false_not_default
-    # false should not trigger the default (nil? check, not falsy check)
     assert_eval('def f(a = 99); a; end; f(false)', false)
   end
   def test_opt_zero_not_default
     assert_eval('def f(a = 99); a; end; f(0)', 0)
+  end
+  def test_opt2_nil_partial
+    # f(nil) → a=nil (explicit), b=2 (default)
+    assert_eval('def f(a=1, b=2); [a, b]; end; f(nil)', [nil, 2])
+  end
+  def test_opt_nil_second
+    # f(1, nil) → a=1, b=nil (explicit)
+    assert_eval('def f(a, b=99); [a, b]; end; f(1, nil)', [1, nil])
   end
 
   # ================================================================

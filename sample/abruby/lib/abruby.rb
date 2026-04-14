@@ -550,27 +550,20 @@ class AbRuby
           end
         end
 
-        # Generate default-init prelude for optional params.
-        # The dispatcher fills unpassed slots with Qnil; the prelude
-        # overwrites each nil-valued optional with its declared default.
-        opt_prelude = optionals.map do |opt_node|
+        # Build default-assignment chain for optional params.
+        # Each optional becomes a lvar_set node chained via seq before the body.
+        # node_def walks this chain to build the opt_pc table, so dispatch can
+        # pick the right entry point based on argc.
+        #   body = seq(lvar_set(slot0, default0), seq(lvar_set(slot1, default1), real_body))
+        opt_defaults = optionals.map do |opt_node|
           slot = current_frame[:locals].index(opt_node.name.to_s)
           next nil unless slot
           default_ast = transduce(opt_node.value)
-          # `slot = default if slot.nil?` — use nil? method call so
-          # callers that pass false/0 don't trigger the default.
-          get = AbRuby.alloc_node_lvar_get(slot)
-          assign = AbRuby.alloc_node_lvar_set(slot, default_ast)
-          nil_check = AbRuby.alloc_node_method_call(get, "nil?", 0, inc_arg_index)
-          AbRuby.alloc_node_if(
-            nil_check,
-            assign,               # then (nil): use default
-            AbRuby.alloc_node_nil # else: keep value
-          )
+          AbRuby.alloc_node_lvar_set(slot, default_ast)
         end.compact
 
         body = node.body ? transduce(node.body) : AbRuby.alloc_node_nil
-        body = build_seq(opt_prelude + [body]) unless opt_prelude.empty?
+        body = build_seq(opt_defaults + [body]) unless opt_defaults.empty?
 
         if block_param_name
           slot = current_frame[:locals].index(block_param_name)
