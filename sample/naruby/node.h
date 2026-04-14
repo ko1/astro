@@ -20,6 +20,11 @@ NODE *code_repo_find(node_hash_t h);
 NODE *code_repo_find_by_name(const char *name);
 void code_repo_add(const char *name, NODE *body, bool force_add);
 
+// Enable optional NodeHead fields used by naruby
+#define ASTRO_NODEHEAD_PARENT
+#define ASTRO_NODEHEAD_JIT_STATUS
+#define ASTRO_NODEHEAD_DISPATCH_CNT
+
 struct NodeHead {
     struct NodeFlags {
         bool has_hash_value;

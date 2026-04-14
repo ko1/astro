@@ -147,7 +147,7 @@ benchmark/optcarrot/bin/optcarrot-bench を動かすために必要な機能。
 ### インタプリタ改善
 
 - [ ] スーパーインストラクション — 頻出パターン（`while(lvar < const)`, `lvar = lvar + num` 等）を融合ノードに。AOT 無効時のインタプリタ高速化
-- [ ] NodeHead スリム化 — `parent`(8), `hash_value`(8), `dispatcher_name`(8), `jit_status`(4), `dispatch_cnt`(4) はホットパスで不要。32B 削減すれば union データが dispatcher と同一キャッシュラインに収まる。コアジェネレータ変更が必要
+- [x] NodeHead スリム化 — `parent`(8), `jit_status`(4), `dispatch_cnt`(4) を除去、フィールドを cold/warm/hot ゾーンに再配置。72B→56B (NODE: 144B→128B)。dispatcher と union データが常に同一キャッシュラインに収まる。ASTroGen に `ASTRO_NODEHEAD_PARENT` 等の条件付きガードを追加
 - [ ] 末尾呼び出し最適化 — `return method_call(...)` パターンを検出しフレーム再利用。再帰のスタック消費削減
 
 ### メモリ・GC

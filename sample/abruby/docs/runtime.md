@@ -350,17 +350,20 @@ T_DATA ヒープオブジェクト
 
 ```c
 struct NodeHead {
-    struct NodeFlags flags;            // specialized, no_inline 等
-    const struct NodeKind *kind;       // ノード種別 (関数ポインタ群)
-    struct Node *parent;               // 親ノード
+    // cold zone (SPECIALIZE / HASH / GC only)
     node_hash_t hash_value;            // コードストア用ハッシュ
     const char *dispatcher_name;       // デバッグ用
-    node_dispatcher_func_t dispatcher; // EVAL 時に呼ばれる関数
     VALUE rb_wrapper;                  // GC 用 T_DATA ラッパー
-    enum jit_status jit_status;
-    unsigned int dispatch_cnt;
+
+    // warm zone
+    struct NodeFlags flags;            // specialized, no_inline 等
+    const struct NodeKind *kind;       // ノード種別 (関数ポインタ群)
     int32_t line;                      // ソース行番号 (backtrace 用)
+
+    // hot zone (adjacent to union for cache locality)
+    node_dispatcher_func_t dispatcher; // EVAL 時に呼ばれる関数
 };
+// sizeof(NodeHead) = 56  (parent/jit_status/dispatch_cnt は除去済み)
 ```
 
 `EVAL(c, n)` は `(*n->head.dispatcher)(c, n)` を呼ぶ。

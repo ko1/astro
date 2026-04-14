@@ -263,16 +263,24 @@ module ASTroGen
             _n->head.dispatcher = #{alloc_dispatcher_expr};
             _n->head.dispatcher_name = "DISPATCH_#{@name}";
             _n->head.kind = &kind_#{@name};
+        #ifdef ASTRO_NODEHEAD_PARENT
             _n->head.parent = NULL;
+        #endif
+        #ifdef ASTRO_NODEHEAD_JIT_STATUS
             _n->head.jit_status = JIT_STATUS_Unknown;
+        #endif
+        #ifdef ASTRO_NODEHEAD_DISPATCH_CNT
             _n->head.dispatch_cnt = 0;
+        #endif
             _n->head.flags.has_hash_value = false;
             _n->head.flags.is_specialized = false;
             _n->head.flags.is_specializing = false;
             _n->head.flags.is_dumping = false;
             _n->head.flags.no_inline = #{no_inline? ? true : false};
         #{alloc_ops.map{"    _n->u.#{name}.#{it.name} = #{it.name};"}.join("\n")}
+        #ifdef ASTRO_NODEHEAD_PARENT
         #{alloc_ops.map{"    if (_n->u.#{name}.#{it.name}) {_n->u.#{name}.#{it.name}->head.parent = _n;}" if it.node?}.join("\n")}
+        #endif
         #{ref_ops.map{"    memset(&_n->u.#{name}.#{it.name}, 0, sizeof(_n->u.#{name}.#{it.name}));"}.join("\n")}
             OPTIMIZE(_n);
             if (OPTION.record_all) code_repo_add(NULL, _n, false);

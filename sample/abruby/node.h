@@ -47,7 +47,18 @@ VALUE abruby_exception_new(CTX *c, const struct abruby_frame *frame, VALUE messa
 // a RESULT_RAISE with a LocalJumpError-style abruby exception.
 RESULT abruby_yield(CTX *c, unsigned int argc, VALUE *argv);
 
+// Disable parent/jit_status/dispatch_cnt fields (unused in abruby)
+// #define ASTRO_NODEHEAD_PARENT
+// #define ASTRO_NODEHEAD_JIT_STATUS
+// #define ASTRO_NODEHEAD_DISPATCH_CNT
+
 struct NodeHead {
+    // --- cold zone (used only during SPECIALIZE / HASH / GC) ---
+    node_hash_t hash_value;
+    const char *dispatcher_name;
+    VALUE rb_wrapper;  // for GC (T_DATA wrapper)
+
+    // --- warm zone ---
     struct NodeFlags {
         bool has_hash_value;
         bool is_specialized;
@@ -55,25 +66,11 @@ struct NodeHead {
         bool is_dumping;
         bool no_inline;
     } flags;
-
     const struct NodeKind *kind;
-    struct Node *parent;
+    int32_t line;  // source location (for backtrace)
 
-    node_hash_t hash_value;
-    const char *dispatcher_name;
+    // --- hot zone (accessed on every EVAL, adjacent to union data) ---
     node_dispatcher_func_t dispatcher;
-
-    // for GC (T_DATA wrapper)
-    VALUE rb_wrapper;
-
-    // kept for astrogen compatibility
-    enum jit_status {
-        JIT_STATUS_Unknown,
-    } jit_status;
-    unsigned int dispatch_cnt;
-
-    // source location (for backtrace)
-    int32_t line;
 };
 
 #define DISPATCHER_NAME(n) (n->head.flags.no_inline) ? (#n "->head.dispatcher") : (n->head.dispatcher_name)
