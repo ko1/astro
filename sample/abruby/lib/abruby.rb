@@ -565,8 +565,12 @@ class AbRuby
         end.compact
 
         body = node.body ? transduce(node.body) : AbRuby.alloc_node_nil
-        body = build_seq(opt_defaults + [body]) unless opt_defaults.empty?
 
+        # Block parameter (&blk) must run at the start of the real body —
+        # INSIDE the opt_defaults chain, so every opt_pc entry point reaches it.
+        # If block_param were prepended outside the chain, node_def's opt_pc
+        # walker would treat it as part of the prefix and argc==params_cnt path
+        # (mc->body) would skip it entirely.
         if block_param_name
           slot = current_frame[:locals].index(block_param_name)
           if slot
@@ -574,6 +578,8 @@ class AbRuby
             body = build_seq([block_param_node, body])
           end
         end
+
+        body = build_seq(opt_defaults + [body]) unless opt_defaults.empty?
 
         frame = pop_frame
         @method_frame_max[name] = frame[:max]

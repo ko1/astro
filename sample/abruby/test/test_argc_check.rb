@@ -264,6 +264,68 @@ class TestArgcCheck < AbRubyTest
   end
 
   # ================================================================
+  # Block parameter (&blk) combined with other parameters
+  # ================================================================
+
+  def test_block_param_alone
+    assert_eval('def f(&b); b.call(5); end; f { |x| x * 2 }', 10)
+  end
+  def test_block_param_alone_no_block
+    assert_eval('def f(&b); b.nil?; end; f', true)
+  end
+
+  def test_block_with_pre
+    assert_eval('def f(a, &b); b.call(a); end; f(7) { |x| x + 1 }', 8)
+  end
+  def test_block_with_pre_no_block
+    assert_eval('def f(a, &b); [a, b.nil?]; end; f(7)', [7, true])
+  end
+
+  def test_block_with_opt_default
+    # argc=0 → a=default, block runs
+    assert_eval('def f(a = 10, &b); [a, b ? b.call : :nil]; end; f { 99 }', [10, 99])
+  end
+  def test_block_with_opt_passed
+    # argc=1 → a=passed, block must still run (was broken before fix)
+    assert_eval('def f(a = 10, &b); [a, b ? b.call : :nil]; end; f(5) { 99 }', [5, 99])
+  end
+
+  def test_block_with_rest
+    assert_eval('def f(*r, &b); b.call(r.length); end; f(1, 2, 3) { |n| n }', 3)
+  end
+
+  def test_block_with_post
+    # def f(a, *rest, p, &b)
+    assert_eval(
+      'def f(a, *r, p, &b); b.call([a, r, p]); end; f(1, 2, 3, 4) { |x| x }',
+      [1, [2, 3], 4])
+  end
+  def test_block_with_post_no_rest_items
+    assert_eval(
+      'def f(a, *r, p, &b); b.call([a, r, p]); end; f(1, 2) { |x| x }',
+      [1, [], 2])
+  end
+
+  def test_block_with_opt_rest_post
+    # def f(a, b = 10, *rest, c, &blk) — all parameter kinds + block
+    assert_eval(
+      'def f(a, b = 10, *r, c, &blk); blk.call([a, b, r, c]); end; f(1, 2) { |x| x }',
+      [1, 10, [], 2])
+  end
+  def test_block_with_opt_rest_post_full
+    assert_eval(
+      'def f(a, b = 10, *r, c, &blk); blk.call([a, b, r, c]); end; f(1, 2, 3, 4) { |x| x }',
+      [1, 2, [3], 4])
+  end
+
+  def test_block_conversion_to_proc
+    # &blk should convert the block to a Proc
+    assert_eval(
+      'def f(&b); b.class.to_s; end; f { }',
+      "Proc")
+  end
+
+  # ================================================================
   # Method call with receiver
   # ================================================================
 
