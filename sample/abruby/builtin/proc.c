@@ -69,7 +69,7 @@ RESULT ab_proc_new(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
 // Proc#call(*args) — execute the proc body with args bound to params.
 //
 // Implementation notes:
-//   - We swap c->fp to the proc's heap env (so lvar reads/writes inside
+//   - We swap c->current_frame->fp to the proc's heap env (so lvar reads/writes inside
 //     the body see the closure environment)
 //   - Push a frame so backtraces and `return` from the body have a
 //     boundary to land at
@@ -83,35 +83,26 @@ RESULT ab_proc_call(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
 
     proc_bind_args(c, p, argc, argv);
 
-    VALUE *save_fp = c->fp;
-    VALUE save_self = c->self;
-    const struct abruby_cref *save_cref = c->cref;
     const struct abruby_block *save_current_block = c->current_block;
     const struct abruby_frame *save_current_block_frame = c->current_block_frame;
     struct abruby_frame *save_frame = c->current_frame;
 
-    // Push a synthetic method-style frame so the proc body has a real
-    // boundary for return / backtrace.  method=NULL marks it as a non-
-    // method frame (like <main>).
-    struct abruby_frame proc_frame = {
-        .prev = save_frame,
-        .method = NULL,
-        .source_file = "(proc)",
-        .block = NULL,
-    };
-
     // Copy captured env onto the CTX's VALUE stack so method calls
-    // inside the body have headroom to grow fp upward.  Using p->env
-    // as fp directly overflows the heap env buffer as soon as the body
-    // calls any method (callee fp = p->env + arg_index would land in
-    // memory past p->env's allocation, corrupting adjacent heap).
+    // inside the body have headroom to grow fp upward.
     VALUE *new_fp = argv + argc;
     ABRUBY_ASSERT(new_fp + p->env_size <= c->stack + ABRUBY_STACK_SIZE);
     for (uint32_t i = 0; i < p->env_size; i++) new_fp[i] = p->env[i];
-    c->fp = new_fp;
     ctx_update_sp(c, new_fp + p->env_size);
-    c->self = p->captured_self;
-    c->cref = p->cref;
+
+    // Push a synthetic method-style frame with the proc's captured state.
+    struct abruby_frame proc_frame;
+    proc_frame.prev = save_frame;
+    proc_frame.method = NULL;
+    proc_frame.source_file = "(proc)";
+    proc_frame.block = NULL;
+    proc_frame.self = p->captured_self;
+    proc_frame.fp = new_fp;
+    proc_frame.cref = p->cref;
     c->current_block = NULL;
     c->current_block_frame = NULL;
     c->current_frame = &proc_frame;
@@ -121,9 +112,6 @@ RESULT ab_proc_call(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     // Propagate closure-local writes back to the heap env so other
     // escapes of the same closure observe them.
     for (uint32_t i = 0; i < p->env_size; i++) p->env[i] = new_fp[i];
-    c->fp = save_fp;
-    c->self = save_self;
-    c->cref = save_cref;
     c->current_block = save_current_block;
     c->current_block_frame = save_current_block_frame;
     c->current_frame = save_frame;

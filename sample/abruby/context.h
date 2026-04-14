@@ -431,6 +431,11 @@ struct abruby_frame {
         const char *source_file;         // <main>/<top>: set at push time
     };
     const struct abruby_block *block;    // block received by this call, or NULL
+    // Per-frame execution state (moved from CTX).
+    // Pop automatically restores the caller's state via prev->self/fp/cref.
+    VALUE self;
+    VALUE *fp;
+    const struct abruby_cref *cref;
 };
 
 // Cached interned IDs for operator methods and common names
@@ -494,11 +499,8 @@ struct abruby_cref {
 struct CTX_struct {
     struct abruby_machine *abm;          // per-instance machine (owner)
     VALUE stack[ABRUBY_STACK_SIZE];      // VALUE stack (locals + args)
-    VALUE *fp;                           // frame pointer into stack
     VALUE *sp;                           // stack high-water mark for GC
-    VALUE self;
     struct abruby_class *current_class;  // set during class body eval
-    const struct abruby_cref *cref;      // lexical constant scope chain
     struct abruby_frame *current_frame;  // head of call frame linked list
     const struct abruby_id_cache *ids;   // cached rb_intern results
     // Block-execution context.  `yield` / `abruby_yield` sets both fields
@@ -563,6 +565,7 @@ struct abruby_fiber {
     struct abruby_class *klass;               // offset 0: per-instance fiber_class
     enum abruby_obj_type obj_type;
     CTX ctx;                                  // execution context (own VALUE stack)
+    struct abruby_frame root_frame;           // bottom frame (self/fp/cref live here initially)
     enum abruby_fiber_state state;
     bool is_main;                             // true for the bootstrap fiber
 

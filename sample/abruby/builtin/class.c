@@ -21,19 +21,17 @@ static RESULT ab_class_new(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
             r = init->u.cfunc.func(c, obj, argc, argv);
             break;
           case ABRUBY_METHOD_AST: {
-            VALUE *save_fp = c->fp;
-            VALUE save_self = c->self;
-            const struct abruby_cref *save_cref = c->cref;
-            c->fp = argv;
-            c->self = obj;
-            // Install the cref captured at def time so bare-constant
-            // lookups inside `initialize` see the lexically enclosing
-            // module/class.
-            c->cref = init->u.ast.cref;
+            struct abruby_frame init_frame;
+            init_frame.prev = c->current_frame;
+            init_frame.method = init;
+            init_frame.caller_node = NULL;
+            init_frame.block = NULL;
+            init_frame.self = obj;
+            init_frame.fp = argv;
+            init_frame.cref = init->u.ast.cref;
+            c->current_frame = &init_frame;
             r = EVAL(c, init->u.ast.body);
-            c->fp = save_fp;
-            c->self = save_self;
-            c->cref = save_cref;
+            c->current_frame = init_frame.prev;
             break;
           }
           case ABRUBY_METHOD_IVAR_SETTER:

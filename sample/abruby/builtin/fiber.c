@@ -83,11 +83,11 @@ crb_fiber_body(VALUE yielded_arg, VALUE callback_obj, int argc, const VALUE *arg
     // ab_proc_call's `new_fp = argv + argc` stays inside the CTX
     // stack — otherwise fp would point into the CRuby fiber's
     // machine stack, causing vm_mark to scan an invalid range.
-    for (unsigned int i = 0; i < nargs; i++) c->fp[i] = local_argv[i];
-    ctx_update_sp(c, c->fp + nargs);
+    for (unsigned int i = 0; i < nargs; i++) c->current_frame->fp[i] = local_argv[i];
+    ctx_update_sp(c, c->current_frame->fp + nargs);
 
     extern RESULT ab_proc_call(CTX *, VALUE, unsigned int, VALUE *);
-    RESULT r = ab_proc_call(c, f->proc_value, nargs, c->fp);
+    RESULT r = ab_proc_call(c, f->proc_value, nargs, c->current_frame->fp);
 
     // Body finished.
     f->done_state = r.state;
@@ -120,12 +120,14 @@ fiber_alloc(struct abruby_machine *vm, VALUE proc_value)
     // Bootstrap the fiber's CTX from the current fiber so cross-fiber
     // reads of e.g. ids work straight away.
     f->ctx.abm = vm;
-    f->ctx.fp = f->ctx.stack;
     f->ctx.sp = f->ctx.stack;
-    f->ctx.self = vm->current_fiber->ctx.self;
     f->ctx.current_class = NULL;
-    f->ctx.cref = NULL;
-    f->ctx.current_frame = NULL;
+    // Set up root frame for this fiber
+    memset(&f->root_frame, 0, sizeof(struct abruby_frame));
+    f->root_frame.fp = f->ctx.stack;
+    f->root_frame.self = vm->current_fiber->ctx.current_frame->self;
+    f->root_frame.cref = NULL;
+    f->ctx.current_frame = &f->root_frame;
     f->ctx.ids = vm->current_fiber->ctx.ids;
     f->ctx.current_block = NULL;
     f->ctx.current_block_frame = NULL;
@@ -281,7 +283,8 @@ RESULT ab_fiber_alive_p(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
 void abruby_fiber_mark(struct abruby_fiber *f) {
     if (!RB_SPECIAL_CONST_P(f->proc_value))    rb_gc_mark(f->proc_value);
     if (!RB_SPECIAL_CONST_P(f->transfer_value)) rb_gc_mark(f->transfer_value);
-    if (!RB_SPECIAL_CONST_P(f->ctx.self))       rb_gc_mark(f->ctx.self);
+    if (f->ctx.current_frame && !RB_SPECIAL_CONST_P(f->ctx.current_frame->self))
+        rb_gc_mark(f->ctx.current_frame->self);
     // Mark the CRuby fiber backing this abruby fiber (keeps it alive).
     if (!RB_SPECIAL_CONST_P(f->crb_fiber))      rb_gc_mark(f->crb_fiber);
     // Mark the suspended VALUE stack so locals captured at yield-time

@@ -513,24 +513,24 @@ abruby_yield(CTX *c, unsigned int argc, VALUE *argv)
         }
     }
 
-    VALUE *save_fp = c->fp;
-    VALUE save_self = c->self;
+    VALUE *save_fp = c->current_frame->fp;
+    VALUE save_self = c->current_frame->self;
     const struct abruby_block *save_current_block = c->current_block;
     const struct abruby_frame *save_current_block_frame = c->current_block_frame;
 
     // Copy captured closure env to a fresh area past the callee's frame
     // so block-body temporaries don't collide with callee locals.
-    c->fp = blk->captured_fp;
-    c->self = blk->captured_self;
+    c->current_frame->fp = blk->captured_fp;
+    c->current_frame->self = blk->captured_self;
     c->current_block = blk;
     c->current_block_frame = c->current_frame;
 
-    ctx_update_sp(c, c->fp + blk->env_size);
+    ctx_update_sp(c, c->current_frame->fp + blk->env_size);
 
     RESULT r = EVAL(c, blk->body);
 
-    c->fp = save_fp;
-    c->self = save_self;
+    c->current_frame->fp = save_fp;
+    c->current_frame->self = save_self;
     c->current_block = save_current_block;
     c->current_block_frame = save_current_block_frame;
 
@@ -547,32 +547,32 @@ abruby_call_method(CTX *c, VALUE recv, const struct abruby_method *method,
     if (method->type == ABRUBY_METHOD_CFUNC) {
         return method->u.cfunc.func(c, recv, argc, argv);
     } else if (method->type == ABRUBY_METHOD_IVAR_GETTER) {
-        VALUE save_self = c->self;
-        c->self = recv;
+        VALUE save_self = c->current_frame->self;
+        c->current_frame->self = recv;
         ID ivar_name = method->u.ivar_accessor.ivar_name;
         VALUE v = abruby_ivar_get(recv, ivar_name);
-        c->self = save_self;
+        c->current_frame->self = save_self;
         return RESULT_OK(v);
     } else if (method->type == ABRUBY_METHOD_IVAR_SETTER) {
-        VALUE save_self = c->self;
-        c->self = recv;
+        VALUE save_self = c->current_frame->self;
+        c->current_frame->self = recv;
         ID ivar_name = method->u.ivar_accessor.ivar_name;
         VALUE v = (argc >= 1) ? argv[0] : Qnil;
         abruby_ivar_set(recv, ivar_name, v);
-        c->self = save_self;
+        c->current_frame->self = save_self;
         return RESULT_OK(v);
     } else {
-        VALUE *save_fp = c->fp;
-        VALUE save_self = c->self;
-        const struct abruby_cref *save_cref = c->cref;
+        VALUE *save_fp = c->current_frame->fp;
+        VALUE save_self = c->current_frame->self;
+        const struct abruby_cref *save_cref = c->current_frame->cref;
         unsigned int gap = method->u.ast.locals_cnt;
         if (gap < 16) gap = 16;
-        c->fp = save_fp + gap;
+        c->current_frame->fp = save_fp + gap;
         for (unsigned int i = 0; i < argc; i++) {
-            c->fp[i] = argv[i];
+            c->current_frame->fp[i] = argv[i];
         }
-        c->self = recv;
-        c->cref = method->u.ast.cref;
+        c->current_frame->self = recv;
+        c->current_frame->cref = method->u.ast.cref;
         struct abruby_frame *save_frame = c->current_frame;
         struct abruby_frame frame = {
             .prev = save_frame,
@@ -583,9 +583,9 @@ abruby_call_method(CTX *c, VALUE recv, const struct abruby_method *method,
         c->current_frame = &frame;
         RESULT r = EVAL(c, method->u.ast.body);
         c->current_frame = save_frame;
-        c->fp = save_fp;
-        c->self = save_self;
-        c->cref = save_cref;
+        c->current_frame->fp = save_fp;
+        c->current_frame->self = save_self;
+        c->current_frame->cref = save_cref;
         // Catch RETURN at this C-boundary method call.  This frame now
         // supports super lookup.  The historic wildcard-catch for non-local
         // matching; treat it as an implicit wildcard catch (the historic
@@ -716,14 +716,17 @@ vm_mark(void *ptr)
     if (!ptr) return;
     const struct abruby_machine *vm = (const struct abruby_machine *)ptr;
     if (vm->current_fiber) {
-        rb_gc_mark(vm->current_fiber->ctx.self);
+        if (vm->current_fiber->ctx.current_frame)
+            rb_gc_mark(vm->current_fiber->ctx.current_frame->self);
         // Use sp (high-water mark) instead of full stack to avoid marking
         // stale slots from previous eval calls.
         VALUE *base = vm->current_fiber->ctx.stack;
         VALUE *top = vm->current_fiber->ctx.sp;
         ABRUBY_ASSERT(top >= base && top <= base + ABRUBY_STACK_SIZE);
-        ABRUBY_ASSERT(vm->current_fiber->ctx.fp >= base &&
-                       vm->current_fiber->ctx.fp <= top);
+        if (vm->current_fiber->ctx.current_frame) {
+            ABRUBY_ASSERT(vm->current_fiber->ctx.current_frame->fp >= base &&
+                           vm->current_fiber->ctx.current_frame->fp <= top);
+        }
         if (top > base) rb_gc_mark_locations(base, top);
         // Mark rb_wrapper if present
         if (!RB_SPECIAL_CONST_P(vm->current_fiber->rb_wrapper))
@@ -1257,8 +1260,11 @@ init_vm(struct abruby_machine *vm)
     // Wire ctx.abm early so init_instance_classes can use abruby_float_new_wrap
     // (which reads c->abm->float_class) when creating Float constants.
     vm->current_fiber->ctx.abm = vm;
-    vm->current_fiber->ctx.fp = vm->current_fiber->ctx.stack;
     vm->current_fiber->ctx.sp = vm->current_fiber->ctx.stack;
+    // Set up root frame for this fiber
+    memset(&vm->current_fiber->root_frame, 0, sizeof(struct abruby_frame));
+    vm->current_fiber->root_frame.fp = vm->current_fiber->ctx.stack;
+    vm->current_fiber->ctx.current_frame = &vm->current_fiber->root_frame;
 
     // Create per-instance built-in classes (must be before main_class_body setup)
     init_instance_classes(vm);
@@ -1276,12 +1282,12 @@ init_vm(struct abruby_machine *vm)
     vm->main_class_body.name = rb_intern("main");
     vm->main_class_body.super = vm->object_class;
 
-    vm->current_fiber->ctx.fp = vm->current_fiber->ctx.stack;
+    vm->current_fiber->root_frame.fp = vm->current_fiber->ctx.stack;
     vm->current_fiber->ctx.sp = vm->current_fiber->ctx.stack;
-    vm->current_fiber->ctx.self = abruby_new_object(&vm->main_class_body);
+    vm->current_fiber->root_frame.self = abruby_new_object(&vm->main_class_body);
 
     vm->current_fiber->ctx.current_class = NULL;
-    vm->current_fiber->ctx.cref = NULL;
+    vm->current_fiber->root_frame.cref = NULL;
     vm->id_cache.op_plus = rb_intern("+");
     vm->id_cache.op_minus = rb_intern("-");
     vm->id_cache.op_mul = rb_intern("*");
@@ -1878,23 +1884,21 @@ abruby_require_file(CTX *c, VALUE rb_path)
 
     // Eval AST
     NODE *ast = unwrap_node(ast_obj);
-    VALUE *save_fp = c->fp;
     struct abruby_frame *save_frame = c->current_frame;
-    const struct abruby_cref *save_cref = c->cref;
     struct abruby_class *save_class = c->current_class;
-    VALUE save_self = c->self;
-    c->fp = c->stack;
-    c->current_class = NULL;
-    c->cref = NULL;
-    c->self = abruby_new_object(&vm->main_class_body);
-    struct abruby_frame req_frame = {save_frame, NULL, {.source_file = RSTRING_PTR(abs_str)}, NULL};
+    struct abruby_frame req_frame;
+    req_frame.prev = save_frame;
+    req_frame.method = NULL;
+    req_frame.source_file = RSTRING_PTR(abs_str);
+    req_frame.block = NULL;
+    req_frame.self = abruby_new_object(&vm->main_class_body);
+    req_frame.fp = c->stack;
+    req_frame.cref = NULL;
     c->current_frame = &req_frame;
+    c->current_class = NULL;
     RESULT r = EVAL(c, ast);
-    c->fp = save_fp;
     c->current_frame = save_frame;
-    c->cref = save_cref;
     c->current_class = save_class;
-    c->self = save_self;
 
     vm->current_file = save_file;
 
@@ -1989,17 +1993,27 @@ rb_abruby_eval_ast(VALUE self, VALUE ast_obj)
         VALUE *base = vm->current_fiber->ctx.stack;
         if (old_sp > base) memset(base, 0, (size_t)(old_sp - base) * sizeof(VALUE));
     }
-    vm->current_fiber->ctx.fp = vm->current_fiber->ctx.stack;
+    vm->current_fiber->root_frame.fp = vm->current_fiber->ctx.stack;
+    vm->current_fiber->ctx.current_frame = &vm->current_fiber->root_frame;
     vm->current_fiber->ctx.sp = vm->current_fiber->ctx.stack;
     vm->current_fiber->ctx.current_class = NULL;
 
-    // Push <main> frame so backtrace always has a bottom frame
+    // Push <main> frame so backtrace always has a bottom frame.
+    // Inherit self/fp/cref from root frame.
     const char *eval_file = NIL_P(vm->current_file) ? "(abruby)" : RSTRING_PTR(vm->current_file);
-    struct abruby_frame main_frame = {NULL, NULL, {.source_file = eval_file}, NULL};
+    struct abruby_frame *rf = &vm->current_fiber->root_frame;
+    struct abruby_frame main_frame;
+    main_frame.prev = NULL;
+    main_frame.method = NULL;
+    main_frame.source_file = eval_file;
+    main_frame.block = NULL;
+    main_frame.self = rf->self;
+    main_frame.fp = rf->fp;
+    main_frame.cref = rf->cref;
     vm->current_fiber->ctx.current_frame = &main_frame;
 
     RESULT r = EVAL(&vm->current_fiber->ctx, ast);
-    vm->current_fiber->ctx.current_frame = NULL;
+    vm->current_fiber->ctx.current_frame = &vm->current_fiber->root_frame;
     if (r.state == RESULT_RAISE) {
         VALUE exc_val = r.value;
         // Extract message and backtrace from exception object
