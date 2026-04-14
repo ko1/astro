@@ -1357,7 +1357,7 @@ dispatch_setup_args(CTX * restrict c, NODE * restrict call_site,
 // call sites can switch to mc->prologue(c, n, mc, argc, arg_index) directly.
 static inline RESULT
 dispatch_method_frame(CTX * restrict c, NODE * restrict call_site,
-                      const struct method_cache *mc,
+                      const struct method_cache *mc, VALUE recv_self,
                       unsigned int argc, uint32_t arg_index)
 {
     // Fast path: attr_reader / attr_writer. Skip the frame dance entirely.
@@ -1366,7 +1366,7 @@ dispatch_method_frame(CTX * restrict c, NODE * restrict call_site,
         if (UNLIKELY(argc != 0))
             return raise_argc_error(c, call_site, argc, 0, 0, false);
         const struct abruby_object *obj =
-            (const struct abruby_object *)RTYPEDDATA_GET_DATA(c->current_frame->self);
+            (const struct abruby_object *)RTYPEDDATA_GET_DATA(recv_self);
         unsigned int slot;
         if (LIKELY(mc->klass == obj->klass)) {
             slot = mc->ivar_slot;
@@ -1387,7 +1387,7 @@ dispatch_method_frame(CTX * restrict c, NODE * restrict call_site,
         if (UNLIKELY(argc != 1))
             return raise_argc_error(c, call_site, argc, 1, 1, false);
         struct abruby_object *obj =
-            (struct abruby_object *)RTYPEDDATA_GET_DATA(c->current_frame->self);
+            (struct abruby_object *)RTYPEDDATA_GET_DATA(recv_self);
         VALUE v = c->current_frame->fp[arg_index];
         unsigned int slot;
         if (LIKELY(mc->klass == obj->klass)) {
@@ -1417,8 +1417,8 @@ dispatch_method_frame(CTX * restrict c, NODE * restrict call_site,
     frame.method = mc->method;
     frame.caller_node = call_site;
     frame.block = NULL;
-    // Inherit caller's state; callee will modify self/fp/cref below.
-    frame.self = c->current_frame->self;
+    // frame.self = recv_self — pop auto-restores caller's self (no save/restore needed).
+    frame.self = recv_self;
     frame.fp = c->current_frame->fp;
     frame.entry = mc->body ? &mc->method->u.ast.entry : NULL;
     c->current_frame = &frame;
@@ -1443,7 +1443,7 @@ dispatch_method_frame(CTX * restrict c, NODE * restrict call_site,
     } else {
         // CFUNCs handle argc internally; no argument count check here.
         ctx_update_sp(c, c->current_frame->fp + arg_index + argc);
-        r = mc->method->u.cfunc.func(c, c->current_frame->self, argc, c->current_frame->fp + arg_index);
+        r = mc->method->u.cfunc.func(c, recv_self, argc, c->current_frame->fp + arg_index);
     }
 
     if (UNLIKELY(r.state)) {
@@ -1470,11 +1470,7 @@ dispatch_method_with_klass(CTX * restrict c, NODE * restrict call_site,
 {
     struct method_cache mc;
     method_cache_fill(c, &mc, klass, method);
-    VALUE save_self = c->current_frame->self;
-    c->current_frame->self = recv;
-    RESULT r = dispatch_method_frame(c, call_site, &mc, argc, arg_index);
-    c->current_frame->self = save_self;
-    return r;
+    return dispatch_method_frame(c, call_site, &mc, recv, argc, arg_index);
 }
 
 // Block-carrying variant of dispatch_method_frame.
@@ -1488,7 +1484,7 @@ dispatch_method_with_klass(CTX * restrict c, NODE * restrict call_site,
 // See dispatch_method_frame comment for rationale.
 static inline RESULT
 dispatch_method_frame_with_block(CTX * restrict c, NODE * restrict call_site,
-                                 const struct method_cache *mc,
+                                 const struct method_cache *mc, VALUE recv_self,
                                  unsigned int argc, uint32_t arg_index,
                                  const struct abruby_block *blk)
 {
@@ -1497,7 +1493,7 @@ dispatch_method_frame_with_block(CTX * restrict c, NODE * restrict call_site,
     frame.method = mc->method;
     frame.caller_node = call_site;
     frame.block = blk;
-    frame.self = c->current_frame->self;
+    frame.self = recv_self;
     frame.fp = c->current_frame->fp;
     frame.entry = mc->body ? &mc->method->u.ast.entry : NULL;
     c->current_frame = &frame;
@@ -1522,7 +1518,7 @@ dispatch_method_frame_with_block(CTX * restrict c, NODE * restrict call_site,
     } else {
         // CFUNCs handle argc internally; no argument count check here.
         ctx_update_sp(c, c->current_frame->fp + arg_index + argc);
-        r = mc->method->u.cfunc.func(c, c->current_frame->self, argc, c->current_frame->fp + arg_index);
+        r = mc->method->u.cfunc.func(c, recv_self, argc, c->current_frame->fp + arg_index);
     }
 
     if (UNLIKELY(r.state)) {
@@ -1541,8 +1537,7 @@ dispatch_method_frame_with_block(CTX * restrict c, NODE * restrict call_site,
 }
 
 // Slow-path wrapper that fills a method_cache and delegates to the
-// block-carrying dispatcher.  Saves/restores self like
-// dispatch_method_with_klass does.
+// block-carrying dispatcher.
 static inline RESULT
 dispatch_method_with_klass_with_block(CTX * restrict c, NODE * restrict call_site,
                                       VALUE recv, const struct abruby_class *klass,
@@ -1552,11 +1547,7 @@ dispatch_method_with_klass_with_block(CTX * restrict c, NODE * restrict call_sit
 {
     struct method_cache mc;
     method_cache_fill(c, &mc, klass, method);
-    VALUE save_self = c->current_frame->self;
-    c->current_frame->self = recv;
-    RESULT r = dispatch_method_frame_with_block(c, call_site, &mc, argc, arg_index, blk);
-    c->current_frame->self = save_self;
-    return r;
+    return dispatch_method_frame_with_block(c, call_site, &mc, recv, argc, arg_index, blk);
 }
 
 static __attribute__((noinline)) RESULT
@@ -1637,11 +1628,7 @@ node_method_call(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, uint3
     const struct abruby_class *klass = AB_CLASS_OF(c, recv_val);
 
     if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
-        VALUE save_self = c->current_frame->self;
-        c->current_frame->self = recv_val;
-        RESULT r = dispatch_method_frame(c, n, mc, params_cnt, arg_index);
-        c->current_frame->self = save_self;
-        return r;
+        return dispatch_method_frame(c, n, mc, recv_val, params_cnt, arg_index);
     }
     else {
         return node_method_call_slow(c, n, recv_val, klass, name, params_cnt, arg_index, mc);
@@ -1657,7 +1644,7 @@ node_func_call(CTX * restrict c, NODE * restrict n, ID name, uint32_t params_cnt
     const struct abruby_class *klass = AB_CLASS_OF(c, c->current_frame->self);
 
     if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
-        return dispatch_method_frame(c, n, mc,
+        return dispatch_method_frame(c, n, mc, c->current_frame->self,
                                      params_cnt, arg_index);
     }
     else {
@@ -1727,7 +1714,7 @@ node_func_call_apply(CTX * restrict c, NODE * restrict n, ID name, NODE *args, u
 
     const struct abruby_class *klass = AB_CLASS_OF(c, c->current_frame->self);
     if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
-        return dispatch_method_frame(c, n, mc, argc, arg_index + 1);
+        return dispatch_method_frame(c, n, mc, c->current_frame->self, argc, arg_index + 1);
     }
     return node_method_call_slow(c, n, c->current_frame->self, klass, name, argc, arg_index + 1, mc);
 }
@@ -1748,11 +1735,7 @@ node_method_call_apply(CTX * restrict c, NODE * restrict n, NODE *recv, ID name,
 
     const struct abruby_class *klass = AB_CLASS_OF(c, recv_val);
     if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
-        VALUE save_self = c->current_frame->self;
-        c->current_frame->self = recv_val;
-        RESULT r = dispatch_method_frame(c, n, mc, argc, arg_index + 1);
-        c->current_frame->self = save_self;
-        return r;
+        return dispatch_method_frame(c, n, mc, recv_val, argc, arg_index + 1);
     }
     return node_method_call_slow(c, n, recv_val, klass, name, argc, arg_index + 1, mc);
 }
@@ -1820,12 +1803,12 @@ materialize_block(CTX *c, NODE *call_site, NODE *blk_node,
     return (br.value == Qnil) ? 0 : 1;
 }
 
-// Common dispatch path for all 5 new call nodes.
-// Caller has already evaluated recv (recv_val) and placed args in fp.
-static inline RESULT
-dispatch_call(CTX * restrict c, NODE * restrict call_site, VALUE recv_val,
-              ID name, unsigned int argc, uint32_t arg_index,
-              NODE *blk_node, struct method_cache *mc)
+// Slow path for dispatch_call: block present or cache miss. Out-of-line.
+static __attribute__((noinline)) RESULT
+dispatch_call_slow(CTX * restrict c, NODE * restrict call_site, VALUE recv_val,
+                   ID name, unsigned int argc, uint32_t arg_index,
+                   NODE *blk_node, const struct abruby_class *klass,
+                   struct method_cache *mc, bool cache_hit)
 {
     struct abruby_block blk_storage;
     RESULT blk_err;
@@ -1833,23 +1816,37 @@ dispatch_call(CTX * restrict c, NODE * restrict call_site, VALUE recv_val,
     if (UNLIKELY(blk_kind < 0)) return blk_err;
     const struct abruby_block *blk_ptr = (blk_kind > 0) ? &blk_storage : NULL;
 
+    if (cache_hit) {
+        return blk_ptr ? dispatch_method_frame_with_block(c, call_site, mc, recv_val, argc, arg_index, blk_ptr)
+                       : dispatch_method_frame(c, call_site, mc, recv_val, argc, arg_index);
+    }
+    return blk_ptr ? node_method_call_with_block_slow(c, call_site, recv_val, klass, name,
+                                                      argc, arg_index, mc, blk_ptr)
+                   : node_method_call_slow(c, call_site, recv_val, klass, name,
+                                           argc, arg_index, mc);
+}
+
+// Common dispatch path for all 5 new call nodes.
+// Caller has already evaluated recv (recv_val) and placed args in fp.
+// Fast path (no block, cache hit) is inlined; everything else goes out-of-line.
+// No self save/restore needed — dispatch_method_frame sets new frame's self
+// to recv_val directly, and frame pop (c->current_frame = frame.prev) restores
+// the caller's frame (whose self was never modified).
+static inline RESULT
+dispatch_call(CTX * restrict c, NODE * restrict call_site, VALUE recv_val,
+              ID name, unsigned int argc, uint32_t arg_index,
+              NODE *blk_node, struct method_cache *mc)
+{
     const struct abruby_class *klass = AB_CLASS_OF(c, recv_val);
     bool cache_hit = (mc->klass == klass && mc->serial == c->abm->method_serial);
 
-    VALUE save_self = c->current_frame->self;
-    c->current_frame->self = recv_val;
-    RESULT r;
-    if (cache_hit) {
-        r = blk_ptr ? dispatch_method_frame_with_block(c, call_site, mc, argc, arg_index, blk_ptr)
-                    : dispatch_method_frame(c, call_site, mc, argc, arg_index);
-    } else {
-        r = blk_ptr ? node_method_call_with_block_slow(c, call_site, recv_val, klass, name,
-                                                       argc, arg_index, mc, blk_ptr)
-                    : node_method_call_slow(c, call_site, recv_val, klass, name,
-                                            argc, arg_index, mc);
+    // Fast path: no block + cache hit → inline dispatch_method_frame directly.
+    if (LIKELY(blk_node->head.kind == &kind_node_nil && cache_hit)) {
+        return dispatch_method_frame(c, call_site, mc, recv_val, argc, arg_index);
     }
-    c->current_frame->self = save_self;
-    return r;
+    // Slow path: block materialization or cache miss.
+    return dispatch_call_slow(c, call_site, recv_val, name, argc, arg_index,
+                              blk_node, klass, mc, cache_hit);
 }
 
 // --- Simple variants: 0/1/2 args, args evaluated inline ---
@@ -1931,7 +1928,7 @@ node_func_call_apply_with_block(CTX * restrict c, NODE * restrict n, ID name, NO
 
     const struct abruby_class *klass = AB_CLASS_OF(c, c->current_frame->self);
     if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
-        return dispatch_method_frame_with_block(c, n, mc, argc, arg_index + 1, &blk);
+        return dispatch_method_frame_with_block(c, n, mc, c->current_frame->self, argc, arg_index + 1, &blk);
     }
     return node_method_call_with_block_slow(c, n, c->current_frame->self, klass, name,
                                             argc, arg_index + 1, mc, &blk);
@@ -1961,11 +1958,7 @@ node_method_call_apply_with_block(CTX * restrict c, NODE * restrict n, NODE *rec
 
     const struct abruby_class *klass = AB_CLASS_OF(c, recv_val);
     if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
-        VALUE save_self = c->current_frame->self;
-        c->current_frame->self = recv_val;
-        RESULT r = dispatch_method_frame_with_block(c, n, mc, argc, arg_index + 1, &blk);
-        c->current_frame->self = save_self;
-        return r;
+        return dispatch_method_frame_with_block(c, n, mc, recv_val, argc, arg_index + 1, &blk);
     }
     return node_method_call_with_block_slow(c, n, recv_val, klass, name,
                                             argc, arg_index + 1, mc, &blk);
@@ -1988,12 +1981,12 @@ node_func_call_apply_with_block_arg(CTX * restrict c, NODE * restrict n, ID name
     if (br.value == Qnil) {
         // No block (e.g., `f(*args, &nil)`) — plain apply dispatch.
         if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
-            return dispatch_method_frame(c, n, mc, argc, arg_index + 1);
+            return dispatch_method_frame(c, n, mc, c->current_frame->self, argc, arg_index + 1);
         }
         return node_method_call_slow(c, n, c->current_frame->self, klass, name, argc, arg_index + 1, mc);
     }
     if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
-        return dispatch_method_frame_with_block(c, n, mc, argc, arg_index + 1, &blk);
+        return dispatch_method_frame_with_block(c, n, mc, c->current_frame->self, argc, arg_index + 1, &blk);
     }
     return node_method_call_with_block_slow(c, n, c->current_frame->self, klass, name,
                                             argc, arg_index + 1, mc, &blk);
@@ -2019,20 +2012,12 @@ node_method_call_apply_with_block_arg(CTX * restrict c, NODE * restrict n, NODE 
     const struct abruby_class *klass = AB_CLASS_OF(c, recv_val);
     if (br.value == Qnil) {
         if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
-            VALUE save_self = c->current_frame->self;
-            c->current_frame->self = recv_val;
-            RESULT r = dispatch_method_frame(c, n, mc, argc, arg_index + 1);
-            c->current_frame->self = save_self;
-            return r;
+            return dispatch_method_frame(c, n, mc, recv_val, argc, arg_index + 1);
         }
         return node_method_call_slow(c, n, recv_val, klass, name, argc, arg_index + 1, mc);
     }
     if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
-        VALUE save_self = c->current_frame->self;
-        c->current_frame->self = recv_val;
-        RESULT r = dispatch_method_frame_with_block(c, n, mc, argc, arg_index + 1, &blk);
-        c->current_frame->self = save_self;
-        return r;
+        return dispatch_method_frame_with_block(c, n, mc, recv_val, argc, arg_index + 1, &blk);
     }
     return node_method_call_with_block_slow(c, n, recv_val, klass, name,
                                             argc, arg_index + 1, mc, &blk);
@@ -2093,11 +2078,7 @@ node_method_call_with_block(CTX * restrict c, NODE * restrict n, NODE *recv, ID 
     blk.env_size          = block_literal->u.node_block_literal.env_size;
 
     if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
-        VALUE save_self = c->current_frame->self;
-        c->current_frame->self = recv_val;
-        RESULT r = dispatch_method_frame_with_block(c, n, mc, params_cnt, arg_index, &blk);
-        c->current_frame->self = save_self;
-        return r;
+        return dispatch_method_frame_with_block(c, n, mc, recv_val, params_cnt, arg_index, &blk);
     }
     else {
         return node_method_call_with_block_slow(c, n, recv_val, klass, name,
@@ -2121,7 +2102,7 @@ node_func_call_with_block(CTX * restrict c, NODE * restrict n, ID name, uint32_t
     blk.env_size          = block_literal->u.node_block_literal.env_size;
 
     if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
-        return dispatch_method_frame_with_block(c, n, mc, params_cnt, arg_index, &blk);
+        return dispatch_method_frame_with_block(c, n, mc, c->current_frame->self, params_cnt, arg_index, &blk);
     }
     else {
         return node_method_call_with_block_slow(c, n, c->current_frame->self, klass, name,
@@ -2173,20 +2154,12 @@ node_method_call_with_block_arg(CTX * restrict c, NODE * restrict n, NODE *recv,
     const struct abruby_class *klass = AB_CLASS_OF(c, recv_val);
     if (br.value == Qnil) {
         // No block — fall back to plain dispatch.
-        VALUE save_self = c->current_frame->self;
-        c->current_frame->self = recv_val;
-        RESULT r = (mc->klass == klass && mc->serial == c->abm->method_serial)
-            ? dispatch_method_frame(c, n, mc, params_cnt, arg_index)
+        return (mc->klass == klass && mc->serial == c->abm->method_serial)
+            ? dispatch_method_frame(c, n, mc, recv_val, params_cnt, arg_index)
             : node_method_call_slow(c, n, recv_val, klass, name, params_cnt, arg_index, mc);
-        c->current_frame->self = save_self;
-        return r;
     }
     if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
-        VALUE save_self = c->current_frame->self;
-        c->current_frame->self = recv_val;
-        RESULT r = dispatch_method_frame_with_block(c, n, mc, params_cnt, arg_index, &blk);
-        c->current_frame->self = save_self;
-        return r;
+        return dispatch_method_frame_with_block(c, n, mc, recv_val, params_cnt, arg_index, &blk);
     }
     return node_method_call_with_block_slow(c, n, recv_val, klass, name, params_cnt, arg_index, mc, &blk);
 }
@@ -2201,11 +2174,11 @@ node_func_call_with_block_arg(CTX * restrict c, NODE * restrict n, ID name, uint
     const struct abruby_class *klass = AB_CLASS_OF(c, c->current_frame->self);
     if (br.value == Qnil) {
         return (mc->klass == klass && mc->serial == c->abm->method_serial)
-            ? dispatch_method_frame(c, n, mc, params_cnt, arg_index)
+            ? dispatch_method_frame(c, n, mc, c->current_frame->self, params_cnt, arg_index)
             : node_method_call_slow(c, n, c->current_frame->self, klass, name, params_cnt, arg_index, mc);
     }
     if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
-        return dispatch_method_frame_with_block(c, n, mc, params_cnt, arg_index, &blk);
+        return dispatch_method_frame_with_block(c, n, mc, c->current_frame->self, params_cnt, arg_index, &blk);
     }
     return node_method_call_with_block_slow(c, n, c->current_frame->self, klass, name, params_cnt, arg_index, mc, &blk);
 }
