@@ -1206,6 +1206,23 @@ method_cache_fill(CTX *c, struct method_cache *mc, const struct abruby_class *kl
     }
 }
 
+// ArgumentError for wrong number of arguments (cold path).
+static __attribute__((noinline, cold)) RESULT
+raise_argc_error(CTX *c, NODE *call_site,
+                 unsigned int given, unsigned int expected)
+{
+    char buf[128];
+    snprintf(buf, sizeof(buf),
+             "wrong number of arguments (given %u, expected %u)",
+             given, expected);
+    VALUE exc;
+    PUSH_FRAME(call_site);
+    exc = abruby_exception_new(c, c->current_frame,
+        abruby_str_new_cstr(c, buf));
+    POP_FRAME();
+    return (RESULT){exc, RESULT_RAISE};
+}
+
 // Inner dispatch using cached method_cache.
 // Does NOT save/restore c->current_frame->self — caller is responsible.
 // Cache hit paths call this directly; non-cache paths go through dispatch_method_with_klass.
@@ -1224,6 +1241,8 @@ dispatch_method_frame(CTX * restrict c, NODE * restrict call_site,
     // Fast path: attr_reader / attr_writer. Skip the frame dance entirely.
     enum abruby_method_type mtype = mc->method->type;
     if (mtype == ABRUBY_METHOD_IVAR_GETTER) {
+        if (UNLIKELY(argc != 0))
+            return raise_argc_error(c, call_site, argc, 0);
         const struct abruby_object *obj =
             (const struct abruby_object *)RTYPEDDATA_GET_DATA(c->current_frame->self);
         unsigned int slot;
@@ -1243,6 +1262,8 @@ dispatch_method_frame(CTX * restrict c, NODE * restrict call_site,
         return RESULT_OK(Qnil);
     }
     if (mtype == ABRUBY_METHOD_IVAR_SETTER) {
+        if (UNLIKELY(argc != 1))
+            return raise_argc_error(c, call_site, argc, 1);
         struct abruby_object *obj =
             (struct abruby_object *)RTYPEDDATA_GET_DATA(c->current_frame->self);
         VALUE v = c->current_frame->fp[arg_index];
@@ -1282,13 +1303,16 @@ dispatch_method_frame(CTX * restrict c, NODE * restrict call_site,
 
     RESULT r;
     if (LIKELY(mc->body != NULL)) {
-        c->current_frame->fp = frame.prev->fp + arg_index;
         unsigned int mparams = mc->method->u.ast.params_cnt;
-        for (unsigned int i = argc; i < mparams; i++) c->current_frame->fp[i] = Qnil;
-        unsigned int n = (mparams > argc) ? mparams : argc;
-        ctx_update_sp(c, c->current_frame->fp + n);
+        if (UNLIKELY(argc != mparams)) {
+            c->current_frame = frame.prev;
+            return raise_argc_error(c, call_site, argc, mparams);
+        }
+        c->current_frame->fp = frame.prev->fp + arg_index;
+        ctx_update_sp(c, c->current_frame->fp + mparams);
         r = mc->dispatcher(c, mc->body);
     } else {
+        // CFUNCs handle argc internally; no argument count check here.
         ctx_update_sp(c, c->current_frame->fp + arg_index + argc);
         r = mc->method->u.cfunc.func(c, c->current_frame->self, argc, c->current_frame->fp + arg_index);
     }
@@ -1351,13 +1375,16 @@ dispatch_method_frame_with_block(CTX * restrict c, NODE * restrict call_site,
 
     RESULT r;
     if (LIKELY(mc->body != NULL)) {
-        c->current_frame->fp = frame.prev->fp + arg_index;
         unsigned int mparams = mc->method->u.ast.params_cnt;
-        for (unsigned int i = argc; i < mparams; i++) c->current_frame->fp[i] = Qnil;
-        unsigned int n = (mparams > argc) ? mparams : argc;
-        ctx_update_sp(c, c->current_frame->fp + n);
+        if (UNLIKELY(argc != mparams)) {
+            c->current_frame = frame.prev;
+            return raise_argc_error(c, call_site, argc, mparams);
+        }
+        c->current_frame->fp = frame.prev->fp + arg_index;
+        ctx_update_sp(c, c->current_frame->fp + mparams);
         r = mc->dispatcher(c, mc->body);
     } else {
+        // CFUNCs handle argc internally; no argument count check here.
         ctx_update_sp(c, c->current_frame->fp + arg_index + argc);
         r = mc->method->u.cfunc.func(c, c->current_frame->self, argc, c->current_frame->fp + arg_index);
     }

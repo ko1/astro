@@ -578,7 +578,7 @@ Init_abruby_array(void)
 {
     abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("inspect"),  ab_array_inspect,   0);
     abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("to_s"),     ab_array_to_s,      0);
-    abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("[]"),       ab_array_get,       2);
+    abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("[]"),       ab_array_get,       -1);
     abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("rotate!"),  ab_array_rotate_bang, -1);
     abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("[]="),      ab_array_set,       -1);
     abruby_class_add_cfunc(ab_tmpl_array_class, rb_intern("push"),     ab_array_push,      1);

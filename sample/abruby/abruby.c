@@ -1098,6 +1098,7 @@ init_instance_classes(struct abruby_machine *vm)
             mm->type = ABRUBY_METHOD_CFUNC;
             mm->defining_class = p_klass;
             mm->u.cfunc.func = entries[i].fn;
+            mm->u.cfunc.params_cnt = (unsigned int)-1;  // variadic
             ab_id_table_insert(&p_klass->methods, mm->name, (VALUE)mm);
         }
         vm->proc_class = p_klass;
