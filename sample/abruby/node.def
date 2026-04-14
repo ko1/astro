@@ -1745,6 +1745,151 @@ node_method_call_apply(CTX * restrict c, NODE * restrict n, NODE *recv, ID name,
     return node_method_call_slow(c, n, recv_val, klass, name, argc, arg_index + 1, mc);
 }
 
+// Forward declarations (defined later, after block-carrying call nodes).
+static __attribute__((noinline)) RESULT
+node_method_call_with_block_slow(CTX *c, NODE *n,
+                                 VALUE recv_val, const struct abruby_class *klass, ID name,
+                                 uint32_t params_cnt, uint32_t arg_index,
+                                 struct method_cache *mc,
+                                 const struct abruby_block *blk);
+
+static inline RESULT
+build_block_from_proc_value(CTX *c, NODE *call_site, VALUE proc_val, struct abruby_block *out_blk);
+
+// === Splat call + block combinations ===
+//
+// f(*args) { ... }         → node_func_call_apply_with_block
+// f(*args, &blk)           → node_func_call_apply_with_block_arg
+// obj.m(*args) { ... }     → node_method_call_apply_with_block
+// obj.m(*args, &blk)       → node_method_call_apply_with_block_arg
+
+NODE_DEF
+node_func_call_apply_with_block(CTX * restrict c, NODE * restrict n, ID name, NODE *args, uint32_t arg_index, struct method_cache *mc@ref, NODE *block_literal)
+{
+    VALUE args_val = UNWRAP(EVAL_ARG(c, args));
+    uint32_t argc;
+    RESULT rr = apply_unpack(c, n, args_val, arg_index, &argc);
+    if (UNLIKELY(rr.state != RESULT_NORMAL)) return rr;
+
+    struct abruby_block blk;
+    blk.body              = block_literal->u.node_block_literal.body;
+    blk.captured_fp       = c->current_frame->fp;
+    blk.captured_self     = c->current_frame->self;
+    blk.defining_frame    = (struct abruby_frame *)abruby_context_frame(c);
+    blk.cref              = ctx_cref(c);
+    blk.params_cnt        = block_literal->u.node_block_literal.params_cnt;
+    blk.param_base        = block_literal->u.node_block_literal.param_base;
+    blk.env_size          = block_literal->u.node_block_literal.env_size;
+
+    const struct abruby_class *klass = AB_CLASS_OF(c, c->current_frame->self);
+    if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
+        return dispatch_method_frame_with_block(c, n, mc, argc, arg_index + 1, &blk);
+    }
+    return node_method_call_with_block_slow(c, n, c->current_frame->self, klass, name,
+                                            argc, arg_index + 1, mc, &blk);
+}
+
+NODE_DEF
+node_method_call_apply_with_block(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, NODE *args, uint32_t arg_index, struct method_cache *mc@ref, NODE *block_literal)
+{
+    VALUE recv_val = UNWRAP(EVAL_ARG(c, recv));
+    c->current_frame->fp[arg_index] = recv_val;
+    ctx_update_sp(c, c->current_frame->fp + arg_index + 1);
+    VALUE args_val = UNWRAP(EVAL_ARG(c, args));
+    recv_val = c->current_frame->fp[arg_index];
+    uint32_t argc;
+    RESULT rr = apply_unpack(c, n, args_val, arg_index, &argc);
+    if (UNLIKELY(rr.state != RESULT_NORMAL)) return rr;
+
+    struct abruby_block blk;
+    blk.body              = block_literal->u.node_block_literal.body;
+    blk.captured_fp       = c->current_frame->fp;
+    blk.captured_self     = c->current_frame->self;
+    blk.defining_frame    = (struct abruby_frame *)abruby_context_frame(c);
+    blk.cref              = ctx_cref(c);
+    blk.params_cnt        = block_literal->u.node_block_literal.params_cnt;
+    blk.param_base        = block_literal->u.node_block_literal.param_base;
+    blk.env_size          = block_literal->u.node_block_literal.env_size;
+
+    const struct abruby_class *klass = AB_CLASS_OF(c, recv_val);
+    if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
+        VALUE save_self = c->current_frame->self;
+        c->current_frame->self = recv_val;
+        RESULT r = dispatch_method_frame_with_block(c, n, mc, argc, arg_index + 1, &blk);
+        c->current_frame->self = save_self;
+        return r;
+    }
+    return node_method_call_with_block_slow(c, n, recv_val, klass, name,
+                                            argc, arg_index + 1, mc, &blk);
+}
+
+NODE_DEF
+node_func_call_apply_with_block_arg(CTX * restrict c, NODE * restrict n, ID name, NODE *args, uint32_t arg_index, struct method_cache *mc@ref, NODE *block_arg_expr)
+{
+    VALUE args_val = UNWRAP(EVAL_ARG(c, args));
+    VALUE proc_val = UNWRAP(EVAL_ARG(c, block_arg_expr));
+    struct abruby_block blk;
+    RESULT br = build_block_from_proc_value(c, n, proc_val, &blk);
+    if (br.state != RESULT_NORMAL) return br;
+
+    uint32_t argc;
+    RESULT rr = apply_unpack(c, n, args_val, arg_index, &argc);
+    if (UNLIKELY(rr.state != RESULT_NORMAL)) return rr;
+
+    const struct abruby_class *klass = AB_CLASS_OF(c, c->current_frame->self);
+    if (br.value == Qnil) {
+        // No block (e.g., `f(*args, &nil)`) — plain apply dispatch.
+        if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
+            return dispatch_method_frame(c, n, mc, argc, arg_index + 1);
+        }
+        return node_method_call_slow(c, n, c->current_frame->self, klass, name, argc, arg_index + 1, mc);
+    }
+    if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
+        return dispatch_method_frame_with_block(c, n, mc, argc, arg_index + 1, &blk);
+    }
+    return node_method_call_with_block_slow(c, n, c->current_frame->self, klass, name,
+                                            argc, arg_index + 1, mc, &blk);
+}
+
+NODE_DEF
+node_method_call_apply_with_block_arg(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, NODE *args, uint32_t arg_index, struct method_cache *mc@ref, NODE *block_arg_expr)
+{
+    VALUE recv_val = UNWRAP(EVAL_ARG(c, recv));
+    c->current_frame->fp[arg_index] = recv_val;
+    ctx_update_sp(c, c->current_frame->fp + arg_index + 1);
+    VALUE args_val = UNWRAP(EVAL_ARG(c, args));
+    VALUE proc_val = UNWRAP(EVAL_ARG(c, block_arg_expr));
+    recv_val = c->current_frame->fp[arg_index];
+    struct abruby_block blk;
+    RESULT br = build_block_from_proc_value(c, n, proc_val, &blk);
+    if (br.state != RESULT_NORMAL) return br;
+
+    uint32_t argc;
+    RESULT rr = apply_unpack(c, n, args_val, arg_index, &argc);
+    if (UNLIKELY(rr.state != RESULT_NORMAL)) return rr;
+
+    const struct abruby_class *klass = AB_CLASS_OF(c, recv_val);
+    if (br.value == Qnil) {
+        if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
+            VALUE save_self = c->current_frame->self;
+            c->current_frame->self = recv_val;
+            RESULT r = dispatch_method_frame(c, n, mc, argc, arg_index + 1);
+            c->current_frame->self = save_self;
+            return r;
+        }
+        return node_method_call_slow(c, n, recv_val, klass, name, argc, arg_index + 1, mc);
+    }
+    if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
+        VALUE save_self = c->current_frame->self;
+        c->current_frame->self = recv_val;
+        RESULT r = dispatch_method_frame_with_block(c, n, mc, argc, arg_index + 1, &blk);
+        c->current_frame->self = save_self;
+        return r;
+    }
+    return node_method_call_with_block_slow(c, n, recv_val, klass, name,
+                                            argc, arg_index + 1, mc, &blk);
+}
+
 // === Block-carrying call nodes ===
 //
 // Parser routes every call that has a block literal (`{ ... }` / `do..end`)

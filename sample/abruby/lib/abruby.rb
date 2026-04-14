@@ -1378,7 +1378,7 @@ class AbRuby
 
     # Emit an apply-call node when a call has splat arguments.
     # recv_node is nil for implicit-self calls (func_call_apply).
-    def transduce_splat_call(node, recv_node, name, args)
+    def transduce_splat_call(node, recv_node, name, args, block_node: nil)
       # Reserve 1 + APPLY_MAX_ARGS slots at call_arg_idx.  The runtime pins
       # the args array at fp[call_arg_idx] and unpacks into
       # fp[call_arg_idx+1 .. call_arg_idx+1+argc].  Any intermediate
@@ -1391,12 +1391,31 @@ class AbRuby
       recv_ast = recv_node ? transduce(recv_node) : nil
       args_expr = build_splat_args_array(args)
 
-      rewind_arg_index(call_arg_idx)
-
-      if recv_ast
-        set_line(AbRuby.alloc_node_method_call_apply(recv_ast, name.to_s, args_expr, call_arg_idx), node)
+      # Handle block (literal { } / do..end, or &expr)
+      case block_node
+      when Prism::BlockNode
+        block_literal = transduce_block_literal(block_node)
+        rewind_arg_index(call_arg_idx)
+        if recv_ast
+          set_line(AbRuby.alloc_node_method_call_apply_with_block(recv_ast, name.to_s, args_expr, call_arg_idx, block_literal), node)
+        else
+          set_line(AbRuby.alloc_node_func_call_apply_with_block(name.to_s, args_expr, call_arg_idx, block_literal), node)
+        end
+      when Prism::BlockArgumentNode
+        blk_arg_ast = block_node.expression ? transduce(block_node.expression) : AbRuby.alloc_node_nil
+        rewind_arg_index(call_arg_idx)
+        if recv_ast
+          set_line(AbRuby.alloc_node_method_call_apply_with_block_arg(recv_ast, name.to_s, args_expr, call_arg_idx, blk_arg_ast), node)
+        else
+          set_line(AbRuby.alloc_node_func_call_apply_with_block_arg(name.to_s, args_expr, call_arg_idx, blk_arg_ast), node)
+        end
       else
-        set_line(AbRuby.alloc_node_func_call_apply(name.to_s, args_expr, call_arg_idx), node)
+        rewind_arg_index(call_arg_idx)
+        if recv_ast
+          set_line(AbRuby.alloc_node_method_call_apply(recv_ast, name.to_s, args_expr, call_arg_idx), node)
+        else
+          set_line(AbRuby.alloc_node_func_call_apply(name.to_s, args_expr, call_arg_idx), node)
+        end
       end
     end
 
@@ -1407,16 +1426,14 @@ class AbRuby
 
       # Splat in call arguments → apply-call form.
       if args_have_splat?(args)
-        if node.respond_to?(:block) && node.block
-          raise "splat call with block is not supported yet"
-        end
+        block_node = (node.respond_to?(:block) ? node.block : nil)
         recv = node.receiver
         if recv.is_a?(Prism::SelfNode)
-          return transduce_splat_call(node, nil, name, args)
+          return transduce_splat_call(node, nil, name, args, block_node: block_node)
         elsif recv
-          return transduce_splat_call(node, recv, name, args)
+          return transduce_splat_call(node, recv, name, args, block_node: block_node)
         else
-          return transduce_splat_call(node, nil, name, args)
+          return transduce_splat_call(node, nil, name, args, block_node: block_node)
         end
       end
 
