@@ -135,6 +135,7 @@ benchmark/optcarrot/bin/optcarrot-bench を動かすために必要な機能。
 
 - [ ] AOT ベンチマーク測定 — `make bench` で plain vs compiled の性能差を把握。compiled テストは通っているので基盤は動作済み
 - [ ] ループ選択的 JIT — `dispatch_cnt` 閾値超えノードをバックグラウンドで gcc コンパイル → dlopen → swap_dispatcher
+- [ ] specialize でのノードフィールドのロード時解決 — 後述「ノードフィールドのロード時解決」を参照
 - [ ] specialize でのメソッドインライン化 — 現在 `node_def` は `@noinline` で specialize をブロック。型フィードバックと組み合わせてメソッドボディを展開できれば、method lookup + frame push/pop が消える
 - [ ] specialize でのローカル変数レジスタ化 — gcc LICM はポインタエイリアスで `c->fp[i]` をホイストできない。specialize レベルで C ローカル変数にマッピングすれば回避可能
 - [ ] ガード削除 — ループ内の型安定変数に対し、ループ入口で1回だけ型チェックし、ボディ内の FIXNUM_P チェックを除去（Truffle/Graal の speculation + deopt パターン）
@@ -167,6 +168,144 @@ benchmark/optcarrot/bin/optcarrot-bench を動かすために必要な機能。
 ### 機能追加（最適化の前提条件）
 
 - [ ] ブロック / yield + インライン化 — optcarrot 必須。specialize でブロック呼び出しを展開できればイテレータのオーバーヘッド除去。**method inlining の基盤が先に必要**。20260412 に iterator ごとに融合ノードを手書きする方式を試したが、N イテレータで N ノードが必要になり scale せず、かつフレーム共有が `binding` 等で破綻するため差し戻し (詳細: `docs/report/20260412_phase1_block_speedup.md`)。正しい方向は PE + inlining で (1) cfunc iterator または (2) AST で書き直した iterator を inline 展開
+
+## ノードフィールドのロード時解決
+
+### 背景
+
+現在の SPECIALIZE（ASTro 部分評価による C コード生成）は、ノードフィールドの型によって扱いが異なる:
+
+- `uint32_t`（`params_cnt`, `arg_index` 等）→ **即値として埋め込み済み**（`fprintf(fp, "%u", n->u.node_xxx.field)`）
+- `ID`（`name` 等）→ **ノードから毎回読む**（`fprintf(fp, "n->u.node_xxx.name")`）
+- `NODE *`（子ノード）→ dispatcher 関数を直接呼ぶ（解決済み）
+- `@ref`（`method_cache`, `ivar_cache` 等）→ ノードから毎回読む
+
+ID がノードから読まれている理由: CRuby の `ID` は `rb_intern` でプロセスごとに動的に割り当てられる値であり、AOT コンパイル時には値が確定しない。コードに即値として埋め込むと、別プロセスでの .so 再利用ができなくなる。
+
+### 目的
+
+specialize された関数（SD_xxx）から、`EVAL_node_xxx` に渡す引数のうちノードフィールド経由のものをすべて解決し、**EVAL 関数が `NODE *n` を受け取る必要をなくす**。
+
+これにより:
+- レジスタが1本空く（`n` 引数が不要）
+- ノードへのポインタチェイスがなくなる
+- EVAL 関数がコンパクトになり、インライン化されやすくなる
+
+### 設計: static 変数 + per-SD init 関数
+
+各 SD_xxx に対応する `SD_init_xxx` を生成し、dlopen 後にホスト側が呼ぶ。
+
+**生成コード側** (SPECIALIZE が出力):
+```c
+// SD_xxx ごとに必要な ID・@ref を static 変数として宣言
+static ID __sd_xxx_name;
+static struct method_cache __sd_xxx_mc;
+
+// init: 文字列名を受け取り、ホストの rb_intern で解決
+void SD_init_xxx(struct abruby_machine *abm, ID (*intern)(const char *)) {
+    __sd_xxx_name = intern("foo");
+    // method_cache は初期状態のまま (実行時に fill される)
+}
+
+// specialize された dispatcher
+RESULT SD_xxx(CTX *c, NODE *n) {
+    // n は受け取るが、EVAL には渡さない
+    return EVAL_node_func_call(c,
+        __sd_xxx_name,    // static 変数 (ロード時に解決済み)
+        2,                // uint32_t 即値 (コンパイル時に解決済み)
+        5,                // uint32_t 即値
+        &__sd_xxx_mc);    // static 変数 (@ref)
+}
+```
+
+**ホスト側** (dlopen 後):
+```c
+// SD_xxx を dlsym するタイミングで、init も一緒に呼ぶ
+dispatcher = dlsym(handle, "SD_xxx");
+init = dlsym(handle, "SD_init_xxx");
+if (init) init(abm, rb_intern);
+```
+
+ポイント:
+- .so 側が必要な ID の文字列名を自分で持つ（ELF の動的リンカと同じ発想）
+- ホスト側は `abm` と `rb_intern` を渡すだけで、個々の SD が何を必要としているか知らなくてよい
+- 複数の SD が all.so に蓄積される構成でも、SD 単位で独立に init できる
+
+### 解決対象のフィールド型
+
+| フィールド型 | 現状 | ロード時解決後 |
+|---|---|---|
+| `uint32_t` | 即値埋め込み済み | 変更なし |
+| `NODE *` (子ノード) | dispatcher 直接呼び出し済み | 変更なし |
+| `ID` | `n->u.xxx.name` (毎回ロード) | static 変数 (init で解決) |
+| `@ref` (method_cache 等) | `&n->u.xxx.mc` (毎回ロード) | static 変数 |
+| `line` (デバッグ用) | `n->line` | 即値埋め込み可 |
+
+全フィールドが解決されれば、EVAL 関数のシグネチャから `NODE *n` を除去できる。
+
+### 発展: copy & patch 方式による即値パッチ
+
+static 変数方式では ID は依然としてメモリロード1回が必要。これを真の即値（`mov rdi, 0x12345`）にするには、copy & patch（Xu & Kjolstad, OOPSLA 2021）の **patch 部分**を応用する。
+
+copy & patch は本来「事前コンパイル済み stencil を並べてプログラムを組み立て（copy）、穴を埋める（patch）」コンパイル手法。abruby は SPECIALIZE でカスタム C コードを生成するので copy 部分は不要だが、patch の仕組み — ELF relocation を活用して .o 中のプレースホルダを実行時の値で書き換える — はそのまま使える。
+
+手順:
+1. SPECIALIZE で生成した C コードにプレースホルダ定数を埋め込む
+2. gcc で .o にコンパイル（.so ではなく）
+3. .o からマシンコードと ELF relocation エントリを抽出
+4. ロード時: コードを実行可能バッファにコピーし、relocation に従い ID・クラスポインタ等の実行時の値でパッチ
+5. mprotect で PROT_READ|PROT_EXEC に変更
+
+利点:
+- ELF relocation を使うので、自前のリロケーションテーブルを発明する必要がない
+- ID が真の即値になり、メモリロードが完全に消える
+- CPython JIT（PEP 744, Brandt Bucher）が同じ手法で実績あり
+
+static 変数方式で `n` の持ち回りを消した後、プロファイルでメモリロードがボトルネックと判明した場合に検討する。
+
+### 自前ローダーの設計検討
+
+即値パッチ方式を採用する場合、dlopen/dlsym は使わず .o を自前でロードする。dlopen の枠に縛られない分、abruby に最適化した設計が可能だが、以下の設計判断が必要。
+
+#### dlopen/dlsym vs 自前ローダーのトレードオフ
+
+| | dlopen/dlsym | 自前ローダー |
+|---|---|---|
+| シンボル解決 | `.gnu.hash` で O(1)、数十万シンボルでも高速 | 自前でハッシュテーブル等を実装する必要あり |
+| 定数のパッチ | 不可（リンカが relocation を解決済み） | ELF relocation をそのまま使える → 真の即値 |
+| デバッグ | gdb/perf がそのまま使える | perf map ファイル等の対応が必要 |
+| 実装コスト | ほぼゼロ（OS 提供） | ELF パース + メモリ管理を自前で書く |
+
+**重要**: .o の relocation オフセットは .o 内の位置を指す。リンカが .so を作る過程でコード配置が変わるため、.o の relocation 情報を dlopen 済みの .so に適用することはできない。つまり「dlopen で楽にシンボル解決 + 自前で即値パッチ」のいいとこ取りは不可。即値パッチをやるなら、ローダー全体を自前にする必要がある。
+
+#### 設計の決定事項
+
+**1. コンパイル単位**
+- (a) メソッドごとに個別の .o → ロードが独立、差分更新が容易
+- (b) 全メソッドを1つの .o にまとめる → ビルドが単純、関数間の最適化が効く可能性
+- (c) 現在の all.so と同様に蓄積 → 既存の仕組みとの互換性
+
+**2. シンボル解決**
+- (a) .o の `.symtab` + `.strtab` をパースし、自前ハッシュテーブルを構築
+- (b) シンボル名に規則を設けてインデックスで直接算出（例: `SD_{node_hash}` → 配列のインデックスに変換）
+- (c) SPECIALIZE 時にシンボルのオフセットをメタデータとして記録しておく
+
+**3. メモリ管理**
+- (a) .o 全体を1回 mmap して、関数のオフセットで参照
+- (b) 関数ごとに個別の実行可能バッファにコピー（断片化するが、関数単位の入れ替えが可能）
+
+**4. relocation の処理**
+- ELF の `.rela.text` セクションを読み、relocation type に応じてパッチ
+- x86-64 で主に必要な relocation type:
+  - `R_X86_64_64`: 64bit 絶対値（ID, ポインタ → `movabs` の即値）
+  - `R_X86_64_32`: 32bit 絶対値
+  - `R_X86_64_PC32`: 32bit PC-relative（関数間呼び出し）
+- `libelf` を使うか、ELF ヘッダを直接読むか（構造は単純）
+
+**5. 参考実装**
+- **CPython JIT (PEP 744)**: `Tools/jit/` に stencil 抽出 + パッチのコードあり。Python スクリプトで .o をパースし、C ヘッダとしてシリアライズ
+- **OpenJ9 Shared Classes Cache**: AOT コードの validation + relocation の 2 フェーズロード
+- **Linux kernel module loader**: `.ko` (relocatable .o) をカーネル空間にロードし、シンボル解決 + relocation パッチ
 
 ## prologue リファクタリング
 
