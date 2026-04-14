@@ -142,7 +142,7 @@ benchmark/optcarrot/bin/optcarrot-bench を動かすために必要な機能。
 
 ### CTX フィールドの frame 移行
 
-- [ ] `c->self`, `c->fp` 等を `abruby_frame` に移動し、CTX から廃止する。frame push/pop で自動的に save/restore されるため、`node_method_call` の手動 save/restore が不要になりコードが簡潔になる。`c->current_frame->self` / `c->current_frame->fp` と間接参照が1段増えるが、gcc が基本ブロック内でレジスタに保持できれば実質コストは小さい。specialize でのローカル変数レジスタ化と組み合わせれば LICM 問題も回避可能
+- [ ] `c->self`, `c->fp` 等を `abruby_frame` に移動し、CTX から廃止する。frame push/pop で自動的に save/restore されるため、`node_method_call` の手動 save/restore が不要になりコードが簡潔になる。`c->current_frame->self` / `c->current_frame->fp` と間接参照が1段増えるが、gcc が基本ブロック内でレジスタに保持できれば実質コストは小さい。specialize でのローカル変数レジスタ化と組み合わせれば LICM 問題も回避可能。**検証 (2026-04-14)**: `abruby_frame` に `saved_self`/`saved_fp`/`saved_cref` を追加し dispatch_method_frame に `recv_self` パラメータを渡す方式を試行。frame struct の 24B 増大により fib +23%, method_call +17%, tak +12% のリグレッション。frame サイズがキャッシュに収まらないケースでコストが顕在化。specialize でのレジスタ化なしでは見送り
 
 ### インタプリタ改善
 
