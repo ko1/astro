@@ -1426,8 +1426,9 @@ class AbRuby
       set_line(AbRuby.alloc_node_apply_call(recv_ast, name.to_s, args_expr, call_arg_idx, blk_ast), node)
     end
 
-    # Simple call (0/1/2 args, no &expr block): use node_call0/1/2.
-    # Args are evaluated inline by the dispatch — no pre-eval seq needed.
+    # Simple call (0/1/2 args, no block or literal block): use node_call0/1/2 or _b.
+    # No-block variants don't have a blk operand — zero overhead for block check.
+    # With-block variants accept only node_block_literal (parser guarantee).
     def transduce_simple_call(node, name, args, block_node)
       argc = args.size  # 0, 1, or 2
       recv_ast = build_recv_node(node.receiver)
@@ -1436,24 +1437,34 @@ class AbRuby
       call_arg_idx = arg_index
       argc.times { inc_arg_index }
 
-      # If block literal present, advance arg_index past callee's frame so block locals
-      # don't get clobbered. (Block locals are allocated above this point by transduce_block_literal.)
-      if block_node.is_a?(Prism::BlockNode)
+      has_block = block_node.is_a?(Prism::BlockNode)
+      if has_block
         advance_past_callee_frame(call_arg_idx, name)
       end
-      blk_ast = build_blk_node(block_node)
+      blk_ast = has_block ? transduce_block_literal(block_node) : nil
 
       arg_asts = args.map { |a| transduce(a) }
 
       rewind_arg_index(call_arg_idx)
 
-      case argc
-      when 0
-        set_line(AbRuby.alloc_node_call0(recv_ast, name.to_s, call_arg_idx, blk_ast), node)
-      when 1
-        set_line(AbRuby.alloc_node_call1(recv_ast, name.to_s, arg_asts[0], call_arg_idx, blk_ast), node)
-      when 2
-        set_line(AbRuby.alloc_node_call2(recv_ast, name.to_s, arg_asts[0], arg_asts[1], call_arg_idx, blk_ast), node)
+      if has_block
+        case argc
+        when 0
+          set_line(AbRuby.alloc_node_call0_b(recv_ast, name.to_s, call_arg_idx, blk_ast), node)
+        when 1
+          set_line(AbRuby.alloc_node_call1_b(recv_ast, name.to_s, arg_asts[0], call_arg_idx, blk_ast), node)
+        when 2
+          set_line(AbRuby.alloc_node_call2_b(recv_ast, name.to_s, arg_asts[0], arg_asts[1], call_arg_idx, blk_ast), node)
+        end
+      else
+        case argc
+        when 0
+          set_line(AbRuby.alloc_node_call0(recv_ast, name.to_s, call_arg_idx), node)
+        when 1
+          set_line(AbRuby.alloc_node_call1(recv_ast, name.to_s, arg_asts[0], call_arg_idx), node)
+        when 2
+          set_line(AbRuby.alloc_node_call2(recv_ast, name.to_s, arg_asts[0], arg_asts[1], call_arg_idx), node)
+        end
       end
     end
 

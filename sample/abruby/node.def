@@ -1849,30 +1849,93 @@ dispatch_call(CTX * restrict c, NODE * restrict call_site, VALUE recv_val,
                               blk_node, klass, mc, cache_hit);
 }
 
-// --- Simple variants: 0/1/2 args, args evaluated inline ---
+// --- Simple no-block variants: 0/1/2 args, args evaluated inline ---
+// Hot path: no block operand at all (block-less calls dominate in Ruby code).
 
-NODE_DEF
-node_call0(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, uint32_t arg_index, NODE *blk, struct method_cache *mc@ref)
+static inline RESULT
+dispatch_simple_noblock(CTX * restrict c, NODE * restrict call_site, VALUE recv_val,
+                        ID name, unsigned int argc, uint32_t arg_index,
+                        struct method_cache *mc)
 {
-    VALUE recv_val = UNWRAP(EVAL_ARG(c, recv));
-    return dispatch_call(c, n, recv_val, name, 0, arg_index, blk, mc);
+    const struct abruby_class *klass = AB_CLASS_OF(c, recv_val);
+    if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
+        return dispatch_method_frame(c, call_site, mc, recv_val, argc, arg_index);
+    }
+    return node_method_call_slow(c, call_site, recv_val, klass, name, argc, arg_index, mc);
 }
 
 NODE_DEF
-node_call1(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, NODE *arg0, uint32_t arg_index, NODE *blk, struct method_cache *mc@ref)
+node_call0(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, uint32_t arg_index, struct method_cache *mc@ref)
+{
+    VALUE recv_val = UNWRAP(EVAL_ARG(c, recv));
+    return dispatch_simple_noblock(c, n, recv_val, name, 0, arg_index, mc);
+}
+
+NODE_DEF
+node_call1(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, NODE *arg0, uint32_t arg_index, struct method_cache *mc@ref)
 {
     VALUE recv_val = UNWRAP(EVAL_ARG(c, recv));
     c->current_frame->fp[arg_index] = UNWRAP(EVAL_ARG(c, arg0));
-    return dispatch_call(c, n, recv_val, name, 1, arg_index, blk, mc);
+    return dispatch_simple_noblock(c, n, recv_val, name, 1, arg_index, mc);
 }
 
 NODE_DEF
-node_call2(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, NODE *arg0, NODE *arg1, uint32_t arg_index, NODE *blk, struct method_cache *mc@ref)
+node_call2(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, NODE *arg0, NODE *arg1, uint32_t arg_index, struct method_cache *mc@ref)
 {
     VALUE recv_val = UNWRAP(EVAL_ARG(c, recv));
     c->current_frame->fp[arg_index]     = UNWRAP(EVAL_ARG(c, arg0));
     c->current_frame->fp[arg_index + 1] = UNWRAP(EVAL_ARG(c, arg1));
-    return dispatch_call(c, n, recv_val, name, 2, arg_index, blk, mc);
+    return dispatch_simple_noblock(c, n, recv_val, name, 2, arg_index, mc);
+}
+
+// --- Simple with-block variants: 0/1/2 args + literal block ---
+// blk is ALWAYS a node_block_literal (parser guarantee). No kind check.
+
+static inline RESULT
+dispatch_simple_block(CTX * restrict c, NODE * restrict call_site, VALUE recv_val,
+                      ID name, unsigned int argc, uint32_t arg_index,
+                      NODE *blk_literal, struct method_cache *mc)
+{
+    // Inline-materialize block from the literal (no kind dispatch).
+    struct abruby_block blk;
+    blk.body          = blk_literal->u.node_block_literal.body;
+    blk.captured_fp   = c->current_frame->fp;
+    blk.captured_self = c->current_frame->self;
+    blk.defining_frame = (struct abruby_frame *)abruby_context_frame(c);
+    blk.cref          = ctx_cref(c);
+    blk.params_cnt    = blk_literal->u.node_block_literal.params_cnt;
+    blk.param_base    = blk_literal->u.node_block_literal.param_base;
+    blk.env_size      = blk_literal->u.node_block_literal.env_size;
+
+    const struct abruby_class *klass = AB_CLASS_OF(c, recv_val);
+    if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
+        return dispatch_method_frame_with_block(c, call_site, mc, recv_val, argc, arg_index, &blk);
+    }
+    return node_method_call_with_block_slow(c, call_site, recv_val, klass, name, argc, arg_index, mc, &blk);
+}
+
+NODE_DEF
+node_call0_b(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, uint32_t arg_index, NODE *blk, struct method_cache *mc@ref)
+{
+    VALUE recv_val = UNWRAP(EVAL_ARG(c, recv));
+    return dispatch_simple_block(c, n, recv_val, name, 0, arg_index, blk, mc);
+}
+
+NODE_DEF
+node_call1_b(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, NODE *arg0, uint32_t arg_index, NODE *blk, struct method_cache *mc@ref)
+{
+    VALUE recv_val = UNWRAP(EVAL_ARG(c, recv));
+    c->current_frame->fp[arg_index] = UNWRAP(EVAL_ARG(c, arg0));
+    return dispatch_simple_block(c, n, recv_val, name, 1, arg_index, blk, mc);
+}
+
+NODE_DEF
+node_call2_b(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, NODE *arg0, NODE *arg1, uint32_t arg_index, NODE *blk, struct method_cache *mc@ref)
+{
+    VALUE recv_val = UNWRAP(EVAL_ARG(c, recv));
+    c->current_frame->fp[arg_index]     = UNWRAP(EVAL_ARG(c, arg0));
+    c->current_frame->fp[arg_index + 1] = UNWRAP(EVAL_ARG(c, arg1));
+    return dispatch_simple_block(c, n, recv_val, name, 2, arg_index, blk, mc);
 }
 
 // --- General: 3+ static args, pre-placed in fp by caller seq ---
