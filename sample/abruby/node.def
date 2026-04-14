@@ -699,6 +699,18 @@ node_block_literal(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t par
     return RESULT_OK(Qnil);
 }
 
+// Block argument data node: wraps the `&expr` form. The call dispatch reads
+// `expr` and evaluates it to a Proc, then converts via build_block_from_proc_value.
+// Like node_block_literal, this is a data node — never EVAL'd directly.
+NODE_DEF @noinline
+node_block_arg(CTX * restrict c, NODE * restrict n, NODE *expr)
+{
+    (void)c; (void)expr;
+    ABRUBY_ASSERT(!"node_block_arg must not be EVAL'd directly");
+    (void)n;
+    return RESULT_OK(Qnil);
+}
+
 // `yield args` from within an AST method body.
 // Looks up the block attached to the current frame, transfers argc values
 // into the block's captured frame at param_base, swaps the execution context
@@ -1755,6 +1767,142 @@ node_method_call_with_block_slow(CTX *c, NODE *n,
 
 static inline RESULT
 build_block_from_proc_value(CTX *c, NODE *call_site, VALUE proc_val, struct abruby_block *out_blk);
+
+// =================================================================
+// === New consolidated call nodes (replacing the 12 old variants) ==
+// =================================================================
+//
+// Design:
+//   - recv unified as a NODE* operand (implicit self uses node_self)
+//   - blk unified as a NODE* operand (no block uses node_nil)
+//     blk kind dispatched at runtime: nil / block_literal / block_arg
+//   - simple variants (call0/1/2): args evaluated inline as NODE operands
+//   - call (general): static argc, args pre-placed in fp by caller seq
+//   - apply_call: splat call, runtime argc via args_node Array
+
+extern const struct NodeKind kind_node_nil;
+extern const struct NodeKind kind_node_block_literal;
+extern const struct NodeKind kind_node_block_arg;
+
+// Materialize abruby_block from a blk operand.
+// Returns: 0 = no block, 1 = block ready in *out_blk, -1 = error in *err
+static inline int
+materialize_block(CTX *c, NODE *call_site, NODE *blk_node,
+                  struct abruby_block *out_blk, RESULT *err)
+{
+    if (blk_node == NULL || blk_node->head.kind == &kind_node_nil) {
+        return 0;
+    }
+    if (blk_node->head.kind == &kind_node_block_literal) {
+        out_blk->body          = blk_node->u.node_block_literal.body;
+        out_blk->captured_fp   = c->current_frame->fp;
+        out_blk->captured_self = c->current_frame->self;
+        out_blk->defining_frame = (struct abruby_frame *)abruby_context_frame(c);
+        out_blk->cref          = ctx_cref(c);
+        out_blk->params_cnt    = blk_node->u.node_block_literal.params_cnt;
+        out_blk->param_base    = blk_node->u.node_block_literal.param_base;
+        out_blk->env_size      = blk_node->u.node_block_literal.env_size;
+        return 1;
+    }
+    // node_block_arg: evaluate the &expr to a Proc
+    NODE *expr = blk_node->u.node_block_arg.expr;
+    RESULT r = (*expr->head.dispatcher)(c, expr);
+    if (UNLIKELY(r.state != RESULT_NORMAL)) {
+        *err = r;
+        return -1;
+    }
+    if (r.value == Qnil) return 0;  // &nil → no block
+    RESULT br = build_block_from_proc_value(c, call_site, r.value, out_blk);
+    if (UNLIKELY(br.state != RESULT_NORMAL)) {
+        *err = br;
+        return -1;
+    }
+    return (br.value == Qnil) ? 0 : 1;
+}
+
+// Common dispatch path for all 5 new call nodes.
+// Caller has already evaluated recv (recv_val) and placed args in fp.
+static inline RESULT
+dispatch_call(CTX * restrict c, NODE * restrict call_site, VALUE recv_val,
+              ID name, unsigned int argc, uint32_t arg_index,
+              NODE *blk_node, struct method_cache *mc)
+{
+    struct abruby_block blk_storage;
+    RESULT blk_err;
+    int blk_kind = materialize_block(c, call_site, blk_node, &blk_storage, &blk_err);
+    if (UNLIKELY(blk_kind < 0)) return blk_err;
+    const struct abruby_block *blk_ptr = (blk_kind > 0) ? &blk_storage : NULL;
+
+    const struct abruby_class *klass = AB_CLASS_OF(c, recv_val);
+    bool cache_hit = (mc->klass == klass && mc->serial == c->abm->method_serial);
+
+    VALUE save_self = c->current_frame->self;
+    c->current_frame->self = recv_val;
+    RESULT r;
+    if (cache_hit) {
+        r = blk_ptr ? dispatch_method_frame_with_block(c, call_site, mc, argc, arg_index, blk_ptr)
+                    : dispatch_method_frame(c, call_site, mc, argc, arg_index);
+    } else {
+        r = blk_ptr ? node_method_call_with_block_slow(c, call_site, recv_val, klass, name,
+                                                       argc, arg_index, mc, blk_ptr)
+                    : node_method_call_slow(c, call_site, recv_val, klass, name,
+                                            argc, arg_index, mc);
+    }
+    c->current_frame->self = save_self;
+    return r;
+}
+
+// --- Simple variants: 0/1/2 args, args evaluated inline ---
+
+NODE_DEF
+node_call0(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, uint32_t arg_index, NODE *blk, struct method_cache *mc@ref)
+{
+    VALUE recv_val = UNWRAP(EVAL_ARG(c, recv));
+    return dispatch_call(c, n, recv_val, name, 0, arg_index, blk, mc);
+}
+
+NODE_DEF
+node_call1(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, NODE *arg0, uint32_t arg_index, NODE *blk, struct method_cache *mc@ref)
+{
+    VALUE recv_val = UNWRAP(EVAL_ARG(c, recv));
+    c->current_frame->fp[arg_index] = UNWRAP(EVAL_ARG(c, arg0));
+    return dispatch_call(c, n, recv_val, name, 1, arg_index, blk, mc);
+}
+
+NODE_DEF
+node_call2(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, NODE *arg0, NODE *arg1, uint32_t arg_index, NODE *blk, struct method_cache *mc@ref)
+{
+    VALUE recv_val = UNWRAP(EVAL_ARG(c, recv));
+    c->current_frame->fp[arg_index]     = UNWRAP(EVAL_ARG(c, arg0));
+    c->current_frame->fp[arg_index + 1] = UNWRAP(EVAL_ARG(c, arg1));
+    return dispatch_call(c, n, recv_val, name, 2, arg_index, blk, mc);
+}
+
+// --- General: 3+ static args, pre-placed in fp by caller seq ---
+
+NODE_DEF
+node_call(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, uint32_t argc, uint32_t arg_index, NODE *blk, struct method_cache *mc@ref)
+{
+    VALUE recv_val = UNWRAP(EVAL_ARG(c, recv));
+    return dispatch_call(c, n, recv_val, name, argc, arg_index, blk, mc);
+}
+
+// --- Apply (splat) call: runtime argc via args_node Array ---
+
+NODE_DEF
+node_apply_call(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, NODE *args_node, uint32_t arg_index, NODE *blk, struct method_cache *mc@ref)
+{
+    VALUE recv_val = UNWRAP(EVAL_ARG(c, recv));
+    // Pin recv to keep alive across args evaluation (apply_unpack overwrites the slot).
+    c->current_frame->fp[arg_index] = recv_val;
+    ctx_update_sp(c, c->current_frame->fp + arg_index + 1);
+    VALUE args_val = UNWRAP(EVAL_ARG(c, args_node));
+    recv_val = c->current_frame->fp[arg_index];
+    uint32_t argc;
+    RESULT rr = apply_unpack(c, n, args_val, arg_index, &argc);
+    if (UNLIKELY(rr.state != RESULT_NORMAL)) return rr;
+    return dispatch_call(c, n, recv_val, name, argc, arg_index + 1, blk, mc);
+}
 
 // === Splat call + block combinations ===
 //

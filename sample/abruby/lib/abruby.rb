@@ -1378,163 +1378,153 @@ class AbRuby
 
     # Emit an apply-call node when a call has splat arguments.
     # recv_node is nil for implicit-self calls (func_call_apply).
-    def transduce_splat_call(node, recv_node, name, args, block_node: nil)
-      # Reserve 1 + APPLY_MAX_ARGS slots at call_arg_idx.  The runtime pins
-      # the args array at fp[call_arg_idx] and unpacks into
-      # fp[call_arg_idx+1 .. call_arg_idx+1+argc].  Any intermediate
-      # compile-time temps used by recv/args subexpressions must sit PAST
-      # the reservation, so we leave arg_index advanced and only rewind at
-      # the end.
+    # Build the recv NODE for new call nodes.
+    # Implicit self / explicit self → node_self (cheap).
+    # Explicit recv → transduce; if has side effects, caller must store to temp first.
+    def build_recv_node(recv_prism)
+      if recv_prism.nil? || recv_prism.is_a?(Prism::SelfNode)
+        AbRuby.alloc_node_self
+      else
+        transduce(recv_prism)
+      end
+    end
+
+    # Build the blk operand NODE for new call nodes.
+    # nil block → node_nil (specialize collapses no-block path).
+    # literal { } / do..end → node_block_literal.
+    # &expr → node_block_arg(expr).
+    def build_blk_node(block_prism)
+      case block_prism
+      when nil
+        AbRuby.alloc_node_nil
+      when Prism::BlockNode
+        transduce_block_literal(block_prism)
+      when Prism::BlockArgumentNode
+        expr = block_prism.expression ? transduce(block_prism.expression) : AbRuby.alloc_node_nil
+        AbRuby.alloc_node_block_arg(expr)
+      else
+        raise "unknown block kind: #{block_prism.class}"
+      end
+    end
+
+    # Splat (apply) call: f(*args) / obj.m(*args, b, &p) etc.
+    def transduce_apply_call(node, name, args, block_node)
+      # Reserve 1 + APPLY_MAX_ARGS slots: fp[call_arg_idx] holds the args array,
+      # fp[call_arg_idx+1..] receives the unpacked args.
       call_arg_idx = arg_index
       (1 + APPLY_MAX_ARGS).times { inc_arg_index }
 
-      recv_ast = recv_node ? transduce(recv_node) : nil
+      recv_ast = build_recv_node(node.receiver)
       args_expr = build_splat_args_array(args)
 
-      # Handle block (literal { } / do..end, or &expr)
-      case block_node
-      when Prism::BlockNode
-        block_literal = transduce_block_literal(block_node)
-        rewind_arg_index(call_arg_idx)
-        if recv_ast
-          set_line(AbRuby.alloc_node_method_call_apply_with_block(recv_ast, name.to_s, args_expr, call_arg_idx, block_literal), node)
-        else
-          set_line(AbRuby.alloc_node_func_call_apply_with_block(name.to_s, args_expr, call_arg_idx, block_literal), node)
-        end
-      when Prism::BlockArgumentNode
-        blk_arg_ast = block_node.expression ? transduce(block_node.expression) : AbRuby.alloc_node_nil
-        rewind_arg_index(call_arg_idx)
-        if recv_ast
-          set_line(AbRuby.alloc_node_method_call_apply_with_block_arg(recv_ast, name.to_s, args_expr, call_arg_idx, blk_arg_ast), node)
-        else
-          set_line(AbRuby.alloc_node_func_call_apply_with_block_arg(name.to_s, args_expr, call_arg_idx, blk_arg_ast), node)
-        end
-      else
-        rewind_arg_index(call_arg_idx)
-        if recv_ast
-          set_line(AbRuby.alloc_node_method_call_apply(recv_ast, name.to_s, args_expr, call_arg_idx), node)
-        else
-          set_line(AbRuby.alloc_node_func_call_apply(name.to_s, args_expr, call_arg_idx), node)
-        end
+      if block_node.is_a?(Prism::BlockNode)
+        advance_past_callee_frame(call_arg_idx, name)
       end
+      blk_ast = build_blk_node(block_node)
+
+      rewind_arg_index(call_arg_idx)
+      set_line(AbRuby.alloc_node_apply_call(recv_ast, name.to_s, args_expr, call_arg_idx, blk_ast), node)
+    end
+
+    # Simple call (0/1/2 args, no &expr block): use node_call0/1/2.
+    # Args are evaluated inline by the dispatch — no pre-eval seq needed.
+    def transduce_simple_call(node, name, args, block_node)
+      argc = args.size  # 0, 1, or 2
+      recv_ast = build_recv_node(node.receiver)
+
+      # Reserve arg slots so sub-expression temps don't collide with arg dispatch slots.
+      call_arg_idx = arg_index
+      argc.times { inc_arg_index }
+
+      # If block literal present, advance arg_index past callee's frame so block locals
+      # don't get clobbered. (Block locals are allocated above this point by transduce_block_literal.)
+      if block_node.is_a?(Prism::BlockNode)
+        advance_past_callee_frame(call_arg_idx, name)
+      end
+      blk_ast = build_blk_node(block_node)
+
+      arg_asts = args.map { |a| transduce(a) }
+
+      rewind_arg_index(call_arg_idx)
+
+      case argc
+      when 0
+        set_line(AbRuby.alloc_node_call0(recv_ast, name.to_s, call_arg_idx, blk_ast), node)
+      when 1
+        set_line(AbRuby.alloc_node_call1(recv_ast, name.to_s, arg_asts[0], call_arg_idx, blk_ast), node)
+      when 2
+        set_line(AbRuby.alloc_node_call2(recv_ast, name.to_s, arg_asts[0], arg_asts[1], call_arg_idx, blk_ast), node)
+      end
+    end
+
+    # General call (3+ args, or 0/1/2 with &expr block): use node_call.
+    # Args are pre-evaluated into fp slots via a seq chain (current pattern).
+    # If recv has side effects, store it to a temp slot before args (Ruby semantics:
+    # recv evaluated before args).
+    def transduce_general_call(node, name, args, block_node)
+      argc = args.size
+      recv_prism = node.receiver
+
+      need_recv_store = recv_prism && !recv_prism.is_a?(Prism::SelfNode)
+      if need_recv_store
+        recv_idx = inc_arg_index
+        recv_store = AbRuby.alloc_node_lvar_set(recv_idx, transduce(recv_prism))
+        recv_ast = AbRuby.alloc_node_lvar_get(recv_idx)
+      else
+        recv_store = nil
+        recv_ast = AbRuby.alloc_node_self
+      end
+
+      call_arg_idx = arg_index
+      seq_nodes = args.map do |arg|
+        idx = inc_arg_index
+        AbRuby.alloc_node_lvar_set(idx, transduce(arg))
+      end
+
+      if block_node.is_a?(Prism::BlockNode)
+        advance_past_callee_frame(call_arg_idx, name)
+      end
+      blk_ast = build_blk_node(block_node)
+
+      rewind_arg_index(need_recv_store ? recv_idx : call_arg_idx)
+
+      call_node = set_line(
+        AbRuby.alloc_node_call(recv_ast, name.to_s, argc, call_arg_idx, blk_ast), node)
+
+      pieces = []
+      pieces << recv_store if recv_store
+      pieces.concat(seq_nodes)
+      pieces << call_node
+      pieces.size == 1 ? pieces.first : build_seq(pieces)
     end
 
     def transduce_call(node)
       name = node.name
       args = node.arguments&.arguments || []
-      line = node.location.start_line
+      block_node = (node.respond_to?(:block) ? node.block : nil)
 
-      # Splat in call arguments → apply-call form.
-      if args_have_splat?(args)
-        block_node = (node.respond_to?(:block) ? node.block : nil)
-        recv = node.receiver
-        if recv.is_a?(Prism::SelfNode)
-          return transduce_splat_call(node, nil, name, args, block_node: block_node)
-        elsif recv
-          return transduce_splat_call(node, recv, name, args, block_node: block_node)
-        else
-          return transduce_splat_call(node, nil, name, args, block_node: block_node)
-        end
-      end
-
-      # method call with receiver: obj.method(args)
-      if node.receiver
-        # Binary operators → specialized nodes
+      # Binary operators → specialized fast-path nodes (existing).
+      if node.receiver && !args_have_splat?(args)
         op = name.to_s
         if BINOP_MAP.key?(op) && args.size == 1
-          if node.respond_to?(:block) && node.block
+          if block_node
             raise "binary operator with block is not supported"
           end
           return transduce_binop(node)
         end
-
-        # Explicit self.method() → node_func_call (skip recv slot)
-        if node.receiver.is_a?(Prism::SelfNode)
-          call_arg_idx = arg_index
-          if args.any?
-            seq_nodes = args.map do |arg|
-              idx = inc_arg_index
-              AbRuby.alloc_node_lvar_set(idx, transduce(arg))
-            end
-            if node.respond_to?(:block) && node.block
-              advance_past_callee_frame(call_arg_idx, name)
-              call_node = set_line(alloc_call_with_block(node.block, nil, name.to_s, args.size, call_arg_idx), node)
-              rewind_arg_index(call_arg_idx)
-            else
-              rewind_arg_index(call_arg_idx)
-              call_node = set_line(AbRuby.alloc_node_func_call(name.to_s, args.size, call_arg_idx), node)
-            end
-            return build_seq(seq_nodes + [call_node])
-          else
-            if node.respond_to?(:block) && node.block
-              advance_past_callee_frame(call_arg_idx, name)
-              return set_line(alloc_call_with_block(node.block, nil, name.to_s, 0, call_arg_idx), node)
-            else
-              return set_line(AbRuby.alloc_node_func_call(name.to_s, 0, call_arg_idx), node)
-            end
-          end
-        end
-
-        # Reserve a slot for the receiver result to avoid slot collision
-        # with args that may contain nested calls
-        recv_idx = inc_arg_index
-        recv_store = AbRuby.alloc_node_lvar_set(recv_idx, transduce(node.receiver))
-
-        call_arg_idx = arg_index
-        if args.any?
-          seq_nodes = args.map do |arg|
-            idx = inc_arg_index
-            AbRuby.alloc_node_lvar_set(idx, transduce(arg))
-          end
-          recv_ref = AbRuby.alloc_node_lvar_get(recv_idx)
-          if node.respond_to?(:block) && node.block
-            advance_past_callee_frame(call_arg_idx, name)
-            call_node = set_line(alloc_call_with_block(node.block, recv_ref, name.to_s, args.size, call_arg_idx), node)
-            rewind_arg_index(recv_idx)
-          else
-            rewind_arg_index(recv_idx)
-            call_node = set_line(AbRuby.alloc_node_method_call(recv_ref, name.to_s, args.size, call_arg_idx), node)
-          end
-          return build_seq([recv_store] + seq_nodes + [call_node])
-        else
-          recv_ref = AbRuby.alloc_node_lvar_get(recv_idx)
-          if node.respond_to?(:block) && node.block
-            advance_past_callee_frame(call_arg_idx, name)
-            call_node = set_line(alloc_call_with_block(node.block, recv_ref, name.to_s, 0, call_arg_idx), node)
-            rewind_arg_index(recv_idx)
-          else
-            rewind_arg_index(recv_idx)
-            call_node = set_line(AbRuby.alloc_node_method_call(recv_ref, name.to_s, 0, call_arg_idx), node)
-          end
-          return AbRuby.alloc_node_seq(recv_store, call_node)
-        end
       end
 
-      # function call (no receiver) → node_func_call (optimized self-call)
-      call_arg_idx = arg_index
+      # Splat call → node_apply_call
+      return transduce_apply_call(node, name, args, block_node) if args_have_splat?(args)
 
-      if args.any?
-        seq_nodes = args.map do |arg|
-          idx = inc_arg_index
-          AbRuby.alloc_node_lvar_set(idx, transduce(arg))
-        end
-        if node.respond_to?(:block) && node.block
-          advance_past_callee_frame(call_arg_idx, name)
-          call_node = set_line(alloc_call_with_block(node.block, nil, name.to_s, args.size, call_arg_idx), node)
-          rewind_arg_index(call_arg_idx)
-        else
-          rewind_arg_index(call_arg_idx)
-          call_node = set_line(AbRuby.alloc_node_func_call(name.to_s, args.size, call_arg_idx), node)
-        end
-        build_seq(seq_nodes + [call_node])
-      else
-        if node.respond_to?(:block) && node.block
-          advance_past_callee_frame(call_arg_idx, name)
-          set_line(alloc_call_with_block(node.block, nil, name.to_s, 0, call_arg_idx), node)
-        else
-          set_line(AbRuby.alloc_node_func_call(name.to_s, 0, call_arg_idx), node)
-        end
+      # Simple variants only support nil/literal block (not &expr).
+      is_block_arg = block_node.is_a?(Prism::BlockArgumentNode)
+      if args.size <= 2 && !is_block_arg
+        return transduce_simple_call(node, name, args, block_node)
       end
+
+      # General path
+      transduce_general_call(node, name, args, block_node)
     end
 
     def extract_regexp_flags(node)
