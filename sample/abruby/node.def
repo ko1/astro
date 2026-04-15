@@ -1885,6 +1885,78 @@ node_call2_cfunc(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, NODE 
     return specialized_call_miss(c, n, recv_val, klass, name, 2, arg_index, mc, &kind_node_call2);
 }
 
+// ===================================================================
+// Op-specialized cfunc call kinds (Array #[] / #[]= / #<< / #push).
+//
+// Mirrors CRuby's vm_opt_aref / vm_opt_aset / vm_opt_ltlt:  when the
+// callee is known at cache-fill time to be a stock Array builtin, skip
+// the generic prologue_cfunc path and inline the fast case directly.
+//
+// The cache guard (mc->klass == klass && mc->serial == abm_serial) is
+// still enforced — any monkey-patch / subclass override bumps the
+// method_serial, causing the next call to miss the cache and demote
+// back to the generic kind via specialized_call_miss.
+//
+// The fast-path check is on the *argument* type (Fixnum for aref/aset).
+// On argument-type mismatch we don't demote — we just fall through to
+// prologue_cfunc which handles Range / 2-arg / etc. fallbacks.
+// ===================================================================
+
+NODE_DEF
+node_call1_array_aref(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, NODE *arg0, uint32_t arg_index, struct method_cache *mc@ref)
+{
+    VALUE recv_val = UNWRAP(EVAL_ARG(c, recv));
+    const struct abruby_class *klass = AB_CLASS_OF(c, recv_val);
+    if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
+        VALUE idx = UNWRAP(EVAL_ARG(c, arg0));
+        // Fast: Array#[] with Fixnum index — inline rb_ary_entry (no PLT).
+        if (LIKELY(FIXNUM_P(idx))) {
+            return RESULT_OK(ab_ary_entry(RARY(recv_val), FIX2LONG(idx)));
+        }
+        // Non-Fixnum arg (Range etc.): defer to the cfunc handler.
+        c->current_frame->fp[arg_index] = idx;
+        return prologue_cfunc(c, n, mc, recv_val, 1, arg_index);
+    }
+    c->current_frame->fp[arg_index] = UNWRAP(EVAL_ARG(c, arg0));
+    return specialized_call_miss(c, n, recv_val, klass, name, 1, arg_index, mc, &kind_node_call1);
+}
+
+NODE_DEF
+node_call1_array_ltlt(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, NODE *arg0, uint32_t arg_index, struct method_cache *mc@ref)
+{
+    VALUE recv_val = UNWRAP(EVAL_ARG(c, recv));
+    const struct abruby_class *klass = AB_CLASS_OF(c, recv_val);
+    if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
+        VALUE v = UNWRAP(EVAL_ARG(c, arg0));
+        rb_ary_push(RARY(recv_val), v);
+        return RESULT_OK(recv_val);
+    }
+    c->current_frame->fp[arg_index] = UNWRAP(EVAL_ARG(c, arg0));
+    return specialized_call_miss(c, n, recv_val, klass, name, 1, arg_index, mc, &kind_node_call1);
+}
+
+NODE_DEF
+node_call2_array_aset(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, NODE *arg0, NODE *arg1, uint32_t arg_index, struct method_cache *mc@ref)
+{
+    VALUE recv_val = UNWRAP(EVAL_ARG(c, recv));
+    const struct abruby_class *klass = AB_CLASS_OF(c, recv_val);
+    if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
+        VALUE idx = UNWRAP(EVAL_ARG(c, arg0));
+        VALUE val = UNWRAP(EVAL_ARG(c, arg1));
+        // Fast: arr[Fixnum] = val — straight rb_ary_store.
+        if (LIKELY(FIXNUM_P(idx))) {
+            rb_ary_store(RARY(recv_val), FIX2LONG(idx), val);
+            return RESULT_OK(val);
+        }
+        c->current_frame->fp[arg_index]     = idx;
+        c->current_frame->fp[arg_index + 1] = val;
+        return prologue_cfunc(c, n, mc, recv_val, 2, arg_index);
+    }
+    c->current_frame->fp[arg_index]     = UNWRAP(EVAL_ARG(c, arg0));
+    c->current_frame->fp[arg_index + 1] = UNWRAP(EVAL_ARG(c, arg1));
+    return specialized_call_miss(c, n, recv_val, klass, name, 2, arg_index, mc, &kind_node_call2);
+}
+
 // After method_cache_fill, rewrite the call node to a specialized kind
 // matching the selected prologue.  Called from node_method_call_slow.
 // Only handles node_call0/1/2 (the generic simple-noblock variants);
@@ -1896,8 +1968,28 @@ extern const struct NodeKind kind_node_call0_ivar_get;
 extern const struct NodeKind kind_node_call1_ast;
 extern const struct NodeKind kind_node_call1_cfunc;
 extern const struct NodeKind kind_node_call1_ivar_set;
+extern const struct NodeKind kind_node_call1_array_aref;
+extern const struct NodeKind kind_node_call1_array_ltlt;
 extern const struct NodeKind kind_node_call2_ast;
 extern const struct NodeKind kind_node_call2_cfunc;
+extern const struct NodeKind kind_node_call2_array_aset;
+
+// Pick a cfunc-specialised call1 kind based on the resolved cfunc pointer.
+// Used to recognise stock Array builtins at cache-fill time.
+static inline const struct NodeKind *
+cfunc_specialize_call1_kind(abruby_cfunc_t fn)
+{
+    if (fn == ab_array_get)  return &kind_node_call1_array_aref;
+    if (fn == ab_array_push) return &kind_node_call1_array_ltlt;
+    return &kind_node_call1_cfunc;
+}
+
+static inline const struct NodeKind *
+cfunc_specialize_call2_kind(abruby_cfunc_t fn)
+{
+    if (fn == ab_array_set)  return &kind_node_call2_array_aset;
+    return &kind_node_call2_cfunc;
+}
 
 static inline void
 maybe_specialize_call_kind(NODE *n, const struct method_cache *mc)
@@ -1911,11 +2003,11 @@ maybe_specialize_call_kind(NODE *n, const struct method_cache *mc)
         else if (mc->prologue == prologue_ivar_getter)  swap_dispatcher(n, &kind_node_call0_ivar_get);
     } else if (k == &kind_node_call1) {
         if      (mc->prologue == prologue_ast_simple_1) swap_dispatcher(n, &kind_node_call1_ast);
-        else if (mc->prologue == prologue_cfunc)        swap_dispatcher(n, &kind_node_call1_cfunc);
+        else if (mc->prologue == prologue_cfunc)        swap_dispatcher(n, cfunc_specialize_call1_kind(mc->method->u.cfunc.func));
         else if (mc->prologue == prologue_ivar_setter)  swap_dispatcher(n, &kind_node_call1_ivar_set);
     } else if (k == &kind_node_call2) {
         if      (mc->prologue == prologue_ast_simple_2) swap_dispatcher(n, &kind_node_call2_ast);
-        else if (mc->prologue == prologue_cfunc)        swap_dispatcher(n, &kind_node_call2_cfunc);
+        else if (mc->prologue == prologue_cfunc)        swap_dispatcher(n, cfunc_specialize_call2_kind(mc->method->u.cfunc.func));
     }
 }
 

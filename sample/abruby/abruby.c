@@ -1296,6 +1296,9 @@ init_abm(struct abruby_machine *abm)
     abm->id_cache.op_ge = rb_intern(">=");
     abm->id_cache.op_eq = rb_intern("==");
     abm->id_cache.op_mod = rb_intern("%");
+    abm->id_cache.op_aref = rb_intern("[]");
+    abm->id_cache.op_aset = rb_intern("[]=");
+    abm->id_cache.op_ltlt = rb_intern("<<");
     abm->id_cache.method_missing = rb_intern("method_missing");
     abm->id_cache.initialize = rb_intern("initialize");
     abm->current_fiber->ctx.ids = &abm->id_cache;

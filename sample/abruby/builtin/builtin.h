@@ -9,6 +9,24 @@
 #define RARY(v) (((struct abruby_array *)RTYPEDDATA_GET_DATA(v))->rb_ary)
 #define RHSH(v) (((struct abruby_hash *)RTYPEDDATA_GET_DATA(v))->rb_hash)
 
+// Inline equivalent of rb_ary_entry — avoids the PLT jump into libruby
+// on hot Array#[] paths.  Mirrors CRuby's internal rb_ary_entry_internal.
+static inline __attribute__((always_inline)) VALUE
+ab_ary_entry(VALUE ary, long offset)
+{
+    long len = RARRAY_LEN(ary);
+    const VALUE *ptr = RARRAY_CONST_PTR(ary);
+    if (len == 0) return Qnil;
+    if (offset < 0) {
+        offset += len;
+        if (offset < 0) return Qnil;
+    }
+    else if (len <= offset) {
+        return Qnil;
+    }
+    return ptr[offset];
+}
+
 // shared helpers (defined in abruby.c)
 RESULT abruby_call_method(CTX *c, VALUE recv, const struct abruby_method *method,
                           unsigned int argc, VALUE *argv);
@@ -166,5 +184,12 @@ void Init_abruby_true(void);
 void Init_abruby_false(void);
 void Init_abruby_nil(void);
 void Init_abruby_exception(void);
+
+// Exposed Array builtin cfuncs — referenced by node_eval.c
+// (maybe_specialize_call_kind) to recognise stock Array#[] / Array#[]= /
+// Array#<< / Array#push call sites for type-specialisation.
+RESULT ab_array_get(CTX *c, VALUE self, unsigned int argc, VALUE *argv);
+RESULT ab_array_set(CTX *c, VALUE self, unsigned int argc, VALUE *argv);
+RESULT ab_array_push(CTX *c, VALUE self, unsigned int argc, VALUE *argv);
 
 #endif
