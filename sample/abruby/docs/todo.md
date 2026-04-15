@@ -86,12 +86,39 @@
 
 ## 高速化
 
-### 実測状況（2026-04-11 時点, `abruby+compiled` vs `ruby`）
+### 実測状況（2026-04-15 時点, `benchmark/report/20260415-85dd366.txt`）
 
-- **勝っているベンチ**: while 0.08×, collatz 0.10×, method_call 0.18×, fib 0.21×, gcd 0.21×, nested_loop 0.19×, dispatch 0.30×, ack 0.30×, tak 0.26×, ivar 0.23×, sieve 0.47×, hash 0.70×, object 0.84×
-- **同等**: nbody 1.11×
-- **負けているベンチ**: mandelbrot 1.93× (Float 特化済だが method dispatch 含む残存コスト),
-  binary_trees 1.97× (T_DATA 大量確保が主因), factorial 1.18× (Bignum 乗算), string 2.79× (`s += "x"` による allocation churn)
+倍率は ruby 比 (低いほど速い)。`abruby+compiled` 列を基準に、yjit との差を併記。
+
+#### `abruby+compiled` が `ruby+jit` に勝っている
+- collatz: 0.10× (yjit 0.16×)
+- nested_loop: 0.14× (yjit 0.13×) — ほぼ拮抗
+- while: 0.15× (yjit 0.18×)
+- gcd: 0.27× (yjit 0.37×)
+- inject: 0.27× (yjit 0.21×) — yjit にやや劣るが ruby 比は良好
+- map: 0.93× (yjit 0.63×)
+- object: 0.88× (yjit 0.40×)
+- mandelbrot: 1.06× (yjit 0.68×) — ruby と拮抗
+
+#### `abruby+compiled` が ruby より速いが yjit に大差
+- ack: 0.34× (yjit 0.14×)
+- tak: 0.35× (yjit 0.15×)
+- fib: 0.29× (yjit 0.14×)
+- method_call: 0.25× (yjit 0.16×)
+- dispatch: 0.36× (yjit 0.13×)
+- ivar: 0.28× (yjit 0.15×)
+- each / times / array / array_access / array_push / hash / sieve / fannkuch: ruby 比 0.23× 〜 0.74× の範囲、yjit より遅い
+
+#### `abruby+compiled` が ruby より遅い
+- string: 2.11× (yjit 0.82×) — `s += "x"` の allocation churn
+- binary_trees: 1.67× (yjit 0.55×) — T_DATA 大量確保が主因
+- factorial: 1.32× (yjit 0.64×) — Bignum 乗算
+
+#### plain と compiled の差が小さい / 逆転しているもの
+- mandelbrot: plain 1.34× / cf 1.47× / compiled 1.06× — compiled だけ効く
+- map: plain 0.99× / cf 1.24× / compiled 0.93× — cf がむしろ遅い
+- binary_trees: plain 1.78× / cf 1.78× / compiled 1.67× — 特化の効果が薄い (allocation 律速)
+- string: plain 2.16× / cf 2.24× / compiled 2.11× — 同上
 
 ### AOT / JIT（ASTro 部分評価）
 
@@ -102,14 +129,11 @@
 - [ ] specialize でのローカル変数レジスタ化 — gcc LICM はポインタエイリアスで `c->fp[i]` をホイストできない。specialize レベルで C ローカル変数にマッピングすれば回避可能
 - [ ] ガード削除 — ループ内の型安定変数に対し、ループ入口で1回だけ型チェックし、ボディ内の FIXNUM_P チェックを除去（Truffle/Graal の speculation + deopt パターン）
 
-### CTX フィールドの frame 移行
-
-- [ ] `c->self`, `c->fp` 等を `abruby_frame` に移動し、CTX から廃止する。frame push/pop で自動的に save/restore されるため、`node_method_call` の手動 save/restore が不要になりコードが簡潔になる。`c->current_frame->self` / `c->current_frame->fp` と間接参照が1段増えるが、gcc が基本ブロック内でレジスタに保持できれば実質コストは小さい。specialize でのローカル変数レジスタ化と組み合わせれば LICM 問題も回避可能。**検証 (2026-04-14)**: `abruby_frame` に `saved_self`/`saved_fp`/`saved_cref` を追加し dispatch_method_frame に `recv_self` パラメータを渡す方式を試行。frame struct の 24B 増大により fib +23%, method_call +17%, tak +12% のリグレッション。frame サイズがキャッシュに収まらないケースでコストが顕在化。specialize でのレジスタ化なしでは見送り
-
 ### インタプリタ改善
 
 - [ ] スーパーインストラクション — 頻出パターン（`while(lvar < const)`, `lvar = lvar + num` 等）を融合ノードに。AOT 無効時のインタプリタ高速化
 - [ ] 末尾呼び出し最適化 — `return method_call(...)` パターンを検出しフレーム再利用。再帰のスタック消費削減
+- [ ] per-class `method_serial` — 現在 `c->abm->method_serial` はグローバルで、任意のメソッド定義 / `include` で全 IC が無効化される。`abruby_class` 側に serial を持ち、add_method で自クラスとサブクラスに伝播させれば false invalidation を抑制。**優先度低**: マイクロベンチには効かない（定義フェーズと実行フェーズが分かれている）。長期走行 / dynamic reopen の多いコードで初めて効く。PG / AOT 結合の precondition 設計で guard 単位を決める際に再検討
 
 ### メモリ・GC
 

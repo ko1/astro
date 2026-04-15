@@ -212,6 +212,11 @@
   をパラメータとして受け取る形になるので ASTroGen の specialize 機構から子ノード (recv の node_self 等)
   の SD_ 関数ポインタを代入して inline できる。plain function にすると
   `recv->head.dispatcher(c, recv)` が runtime 読み取りとなり specialize 不可になる)。
+- **CTX フィールドの frame 移行**: `c->self`, `c->fp` を `abruby_frame` に移動し CTX から廃止。
+  frame push/pop で自動的に save/restore されるため、`node_method_call` の手動 save/restore が不要に。
+  以前 (2026-04-14) は `saved_self`/`saved_fp`/`saved_cref` 追加方式で frame +24B のリグレッションが
+  出ていたが、最終的には frame サイズを抑えた形 (`{prev, method, caller_node, block, self, fp, entry}`)
+  で導入し性能維持。`cref` は `entry` 経由で参照するため frame には保持しない
   cache miss 時は `specialized_call_miss` が `mc->demote_cnt` を bump し、generic dispatcher を
   直接呼ぶ (recv/args の double EVAL を回避)。`demote_cnt >= ABRUBY_CALL_POLY_THRESHOLD` (=2) で
   megamorphic 判定、以後 specialize しない (bm_dispatch のような 3-class 循環で swap 往復を防止)。
