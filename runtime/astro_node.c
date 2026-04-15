@@ -68,6 +68,32 @@ hash_double(double d)
     return hash_uint32((uint32_t)(conv.u ^ (conv.u >> 32)));
 }
 
+// Write s to fp quoted as a C string literal, escaping special characters so
+// dumpers can safely embed arbitrary strings inside source-code comments or
+// C literal contexts.  Used by generated DUMP_node_* functions.
+static void
+astro_fprintf_cstr(FILE *fp, const char *s)
+{
+    if (s == NULL) { fputs("\"\"", fp); return; }
+    fputc('"', fp);
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        switch (*p) {
+        case '\\': fputs("\\\\", fp); break;
+        case '"':  fputs("\\\"", fp); break;
+        case '\n': fputs("\\n", fp); break;
+        case '\r': fputs("\\r", fp); break;
+        case '\t': fputs("\\t", fp); break;
+        default:
+            if (*p < 0x20 || *p == 0x7f) {
+                fprintf(fp, "\\x%02x", *p);
+            } else {
+                fputc(*p, fp);
+            }
+        }
+    }
+    fputc('"', fp);
+}
+
 static node_hash_t
 hash_node(NODE *n)
 {

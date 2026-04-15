@@ -184,22 +184,45 @@ when :compile_first
   cs_init.()
   AbRuby.compiled_only = true if compiled_only
 
+  # Install a parse hook that compiles and loads every file the script
+  # pulls in at runtime (require / require_relative / eval).  Without
+  # this, only the top-level script is in the code store and
+  # --compiled-only crashes on any node from a required file.
+  #
+  # cs_reload replaces the loaded .so, invalidating dispatcher pointers
+  # installed on previously-compiled nodes by earlier cs_load calls.
+  # Re-cs_load every accumulated AST after each reload so their
+  # dispatchers point at symbols in the new .so.
+  compiled_entries = []  # [(label, node)], kept across reloads
+  AbRuby::Parser.on_parse = ->(parsed_ast, entries, src_file) {
+    label = src_file || '-e'
+    cs_compile.(parsed_ast, label)
+    compiled_entries << [label, parsed_ast]
+    entries.each do |name, body|
+      cs_compile.(body, "#{label}:#{name}")
+      compiled_entries << ["#{label}:#{name}", body]
+    end
+    $stderr.puts "cs_build" if verbose
+    AbRuby.cs_build(RUBY_CFLAGS)
+    AbRuby.cs_reload
+    # cs_reload replaces all.so with a freshly-built image.  Previous
+    # dispatcher pointers are still valid (we keep old mappings), but we
+    # need to rebind *every* accumulated entry so nodes whose earlier
+    # dlsym lookup hit the old (smaller) image now see the full SD_ set.
+    compiled_entries.each { |_, node| AbRuby.cs_load(node) }
+  }
+
   abm = AbRuby.new
   abm.current_file = run_script if run_script
 
-  # Compile
+  # Parse the top-level script.  The on_parse hook above takes care of
+  # cs_compile / cs_build / cs_reload / cs_load for it and every file
+  # subsequently loaded via require_relative etc.
+  $stderr.puts "run: #{run_script || '-e'}" if verbose
   ast = abm.parse(src)
-  entries = [[run_script || '-e', ast]]
-  abm.last_entries.each { |name, body| entries << [name, body] }
-  entries.each { |label, node| cs_compile.(node, label) }
-
-  $stderr.puts "cs_build" if verbose
-  AbRuby.cs_build(RUBY_CFLAGS)
-  AbRuby.cs_reload
-  entries.each { |_, node| AbRuby.cs_load(node) }
 
   if dump_mode == :disasm
-    entries.each do |label, node|
+    compiled_entries.each do |label, node|
       $stdout.flush
       puts "--- #{label} ---"
       $stdout.flush
@@ -209,8 +232,6 @@ when :compile_first
     end
   end
 
-  # Run
-  $stderr.puts "run: #{run_script || '-e'}" if verbose
   abm.eval_ast(ast)
 
 when :run

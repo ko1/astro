@@ -121,7 +121,10 @@ module ASTroGen
           when 'uint64_t'
             "        fprintf(fp, \"%lluULL\", (unsigned long long)n->u.#{name}.#{self.name});"
           when 'const char *'
-            "        fprintf(fp, \"\\\"%s\\\"\", n->u.#{name}.#{self.name});"
+            # Escape the string so embedded '"', newlines, backslashes, etc.
+            # don't break either the generated // comment header or the C
+            # literal contexts that reproduce the AST as source text.
+            "        astro_fprintf_cstr(fp, n->u.#{name}.#{self.name});"
           when 'double'
             "        fprintf(fp, \"%.17g\", n->u.#{name}.#{self.name});"
           else

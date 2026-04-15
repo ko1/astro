@@ -5,6 +5,13 @@ class AbRuby
   class Parser
     attr_reader :entries  # [(name, body_node)] for @noinline nodes (def, class, module)
 
+    # Hook invoked after each successful parse.  Receives (ast, entries, source_file).
+    # Used by -c mode so that files loaded at runtime via require / require_relative /
+    # eval also land in the code store.
+    class << self
+      attr_accessor :on_parse
+    end
+
     def initialize
       @frames = []
       @source_file = nil
@@ -19,7 +26,9 @@ class AbRuby
       unless result.success?
         raise SyntaxError, "parse error: #{result.errors.map(&:message).join(', ')}"
       end
-      transduce(result.value)
+      ast = transduce(result.value)
+      Parser.on_parse&.call(ast, @entries, @source_file)
+      ast
     end
 
     private

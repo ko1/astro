@@ -94,7 +94,11 @@ astro_cs_path(char *buf, size_t bufsz, const char *dir, const char *file)
 static struct astro_cs_state {
     char store_dir[ASTRO_CS_DIR_MAX];
     char src_dir[ASTRO_CS_DIR_MAX];   // where node.h, node_eval.c live
-    void *all_handle;                 // dlopen handle for all.so
+    void *all_handle;                 // dlopen handle for current all.so
+    unsigned int reload_gen;          // bumped on each successful reload; used
+                                      // to produce a fresh filename so dlopen
+                                      // doesn't reuse a cached handle that was
+                                      // opened against a now-replaced inode.
 } astro_cs;
 
 // ---------------------------------------------------------------------------
@@ -321,10 +325,33 @@ void
 astro_cs_reload(void)
 {
     // Don't dlclose the old handle — previously specialized nodes may still
-    // hold function pointers into it.  Just open the new all.so alongside.
-    char path[ASTRO_CS_PATH_MAX];
-    astro_cs_path(path, sizeof(path), astro_cs.store_dir, "all.so");
-    void *new_handle = dlopen(path, RTLD_LAZY);
+    // hold function pointers into it.  Open the freshly built all.so under a
+    // generation-unique filename so dlopen really loads the new image.
+    //
+    // If we re-opened "all.so" repeatedly, the dynamic loader would hand back
+    // the original handle (keyed by pathname) even after make rewrote the
+    // file, so newly generated SD_ symbols would be invisible via dlsym.
+    char all_path[ASTRO_CS_PATH_MAX];
+    astro_cs_path(all_path, sizeof(all_path), astro_cs.store_dir, "all.so");
+
+    char gen_path[ASTRO_CS_PATH_MAX];
+    unsigned int gen = ++astro_cs.reload_gen;
+    char gen_file[64];
+    snprintf(gen_file, sizeof(gen_file), "all.%u.so", gen);
+    astro_cs_path(gen_path, sizeof(gen_path), astro_cs.store_dir, gen_file);
+
+    // Hardlink (fall back to rename+copy via `cp -f` if hardlink fails) so
+    // the canonical all.so stays available for the next cs_init and our
+    // dlopen target has a unique pathname.
+    (void)unlink(gen_path);
+    if (link(all_path, gen_path) != 0) {
+        // Different filesystems / EXDEV fallback: copy.
+        char cmd[ASTRO_CS_PATH_MAX * 2 + 16];
+        snprintf(cmd, sizeof(cmd), "cp -f %s %s", all_path, gen_path);
+        if (system(cmd) != 0) return;
+    }
+
+    void *new_handle = dlopen(gen_path, RTLD_LAZY);
     if (new_handle) {
         astro_cs.all_handle = new_handle;
     }
