@@ -412,8 +412,13 @@ struct abruby_block {
 // the method-type switch in dispatch_method_frame.
 struct method_cache;  // forward declaration
 
-// (method_prologue_t types removed: unused after dispatch_method_frame
-// inlining; dispatch now dispatches via mtype branch + noinline complex helper)
+// Method-type-specialized prologue function type.
+// Stored in method_cache; dispatch_method_frame dispatches via this pointer,
+// avoiding runtime method-type branching at each call site.
+typedef RESULT (*method_prologue_t)(
+    CTX *c, struct Node *call_site,
+    const struct method_cache *mc, VALUE recv_self,
+    unsigned int argc, uint32_t arg_index);
 
 // call frame for backtrace support
 // method != NULL: normal method frame
@@ -667,7 +672,7 @@ struct method_cache {
     uint32_t ivar_slot;                 // for IVAR_GETTER/SETTER: cached slot in receiver's shape
     struct Node *body;                  // cached method->u.ast.body (NULL for CFUNC)
     RESULT (*dispatcher)(struct CTX_struct *, struct Node *); // cached body->head.dispatcher
-    // prologue/prologue_blk fields removed — unused after dispatch refactor
+    method_prologue_t prologue;          // method-type-specialized dispatch fn
 };
 
 // inline ivar cache per node_ivar_get / node_ivar_set site.

@@ -980,10 +980,37 @@ node_class_def(CTX * restrict c, NODE * restrict n, ID name, NODE *super_expr, N
 }
 
 
+// Forward declarations of prologue functions (defined below).
+static RESULT prologue_ast_simple(CTX *c, NODE *call_site,
+    const struct method_cache *mc, VALUE recv_self,
+    unsigned int argc, uint32_t arg_index);
+static RESULT prologue_ast_complex(CTX *c, NODE *call_site,
+    const struct method_cache *mc, VALUE recv_self,
+    unsigned int argc, uint32_t arg_index);
+static RESULT prologue_cfunc(CTX *c, NODE *call_site,
+    const struct method_cache *mc, VALUE recv_self,
+    unsigned int argc, uint32_t arg_index);
+static RESULT prologue_ivar_getter(CTX *c, NODE *call_site,
+    const struct method_cache *mc, VALUE recv_self,
+    unsigned int argc, uint32_t arg_index);
+static RESULT prologue_ivar_setter(CTX *c, NODE *call_site,
+    const struct method_cache *mc, VALUE recv_self,
+    unsigned int argc, uint32_t arg_index);
+
 // Populate cached fields in method_cache.
+//
+// argc: the caller's argument count at the point of cache fill.  Used to
+//       pick between the "simple" (no-check) prologue and the "complex"
+//       (checks via dispatch_setup_args) prologue for AST methods.
+// static_argc: true when the caller's argc is statically determined by the
+//       call-site's node kind (node_call0/1/2, node_call with fixed argc).
+//       For splat-based sites (node_apply_call) argc varies across calls
+//       with the same cache, so we can't rely on the one-shot fill-time
+//       check — always install the checking prologue (complex path).
 static inline void
 method_cache_fill(CTX *c, struct method_cache *mc, const struct abruby_class *klass,
-                  const struct abruby_method *method)
+                  const struct abruby_method *method,
+                  unsigned int argc, bool static_argc)
 {
     mc->klass = klass;
     mc->method = method;
@@ -992,9 +1019,25 @@ method_cache_fill(CTX *c, struct method_cache *mc, const struct abruby_class *kl
     if (method->type == ABRUBY_METHOD_AST) {
         mc->body = method->u.ast.body;
         mc->dispatcher = method->u.ast.body->head.dispatcher;
+        // Select simple vs. complex prologue.  "simple" assumes argc is
+        // already validated and skips the runtime argc check, so only pick
+        // it when (a) param shape is mandatory-only and (b) caller's argc
+        // is static and matches required_params_cnt.  Anything else routes
+        // to complex, which performs full argc validation via
+        // dispatch_setup_args on every call.
+        if (method->u.ast.params_cnt == method->u.ast.required_params_cnt &&
+            method->u.ast.rest_index < 0 &&
+            method->u.ast.post_params_cnt == 0 &&
+            static_argc &&
+            argc == method->u.ast.required_params_cnt) {
+            mc->prologue = prologue_ast_simple;
+        } else {
+            mc->prologue = prologue_ast_complex;
+        }
     } else if (method->type == ABRUBY_METHOD_IVAR_GETTER) {
         mc->body = NULL;
         mc->dispatcher = NULL;
+        mc->prologue = prologue_ivar_getter;
         // Resolve (or register) the ivar's slot in the receiver's class shape.
         struct abruby_class *klass_mut = (struct abruby_class *)klass;
         ID ivar_name = method->u.ivar_accessor.ivar_name;
@@ -1009,6 +1052,7 @@ method_cache_fill(CTX *c, struct method_cache *mc, const struct abruby_class *kl
     } else if (method->type == ABRUBY_METHOD_IVAR_SETTER) {
         mc->body = NULL;
         mc->dispatcher = NULL;
+        mc->prologue = prologue_ivar_setter;
         // Resolve (or register) the ivar's slot in the receiver's class shape.
         struct abruby_class *klass_mut = (struct abruby_class *)klass;
         ID ivar_name = method->u.ivar_accessor.ivar_name;
@@ -1024,6 +1068,7 @@ method_cache_fill(CTX *c, struct method_cache *mc, const struct abruby_class *kl
         // CFUNC
         mc->body = NULL;
         mc->dispatcher = NULL;
+        mc->prologue = prologue_cfunc;
     }
 }
 
@@ -1141,12 +1186,136 @@ dispatch_setup_args(CTX * restrict c, NODE * restrict call_site,
 // defeat gcc's inlining of the method-type-specific code at each call site.
 // When PG specialize makes the prologue pointer a compile-time constant,
 // call sites can switch to mc->prologue(c, n, mc, argc, arg_index) directly.
-// Cold path helpers for ivar getter/setter methods (attr_reader/attr_writer).
-// Extracted out-of-line so that dispatch_method_frame stays small enough to inline.
-static __attribute__((noinline)) RESULT
-dispatch_ivar_getter(CTX * restrict c, NODE * restrict call_site,
-                     const struct method_cache *mc, VALUE recv_self, unsigned int argc)
+// ===================================================================
+// Method-type-specialized prologue functions.
+// method_cache_fill selects one and stores in mc->prologue.
+// dispatch_method_frame just calls mc->prologue — no runtime type checks.
+// ===================================================================
+
+// --- prologue_ast_simple: AST method with only mandatory params ---
+// Hot path: most user-defined methods fall here.
+// PRECONDITION: argc is already validated against required_params_cnt at
+// method_cache_fill time.  This prologue is only installed when the caller's
+// argc matches the method's required count, so no runtime check is needed.
+static RESULT
+prologue_ast_simple(CTX * restrict c, NODE * restrict call_site,
+                    const struct method_cache *mc, VALUE recv_self,
+                    unsigned int argc, uint32_t arg_index)
 {
+    (void)argc;  // Precondition: argc == mc->method->u.ast.required_params_cnt.
+    unsigned int req = mc->method->u.ast.required_params_cnt;
+
+    struct abruby_frame frame;
+    frame.prev = c->current_frame;
+    frame.method = mc->method;
+    frame.caller_node = call_site;
+    frame.block = NULL;
+    frame.self = recv_self;
+    frame.fp = c->current_frame->fp + arg_index;
+    frame.entry = &mc->method->u.ast.entry;
+    c->current_frame = &frame;
+    ctx_update_sp(c, frame.fp + req);
+
+    RESULT r = mc->dispatcher(c, mc->body);
+
+    if (UNLIKELY(r.state)) {
+        if (r.state & RESULT_RETURN) {
+            if ((r.state & RESULT_SKIP_MASK) == 0) {
+                r.state &= ~(unsigned)RESULT_RETURN_CATCH_MASK;
+            } else {
+                r.state -= RESULT_SKIP_UNIT;
+            }
+        }
+    }
+    c->current_frame = frame.prev;
+    return r;
+}
+
+// --- prologue_ast_complex: AST method with opt/rest/post ---
+static RESULT
+prologue_ast_complex(CTX * restrict c, NODE * restrict call_site,
+                     const struct method_cache *mc, VALUE recv_self,
+                     unsigned int argc, uint32_t arg_index)
+{
+    struct abruby_frame frame;
+    frame.prev = c->current_frame;
+    frame.method = mc->method;
+    frame.caller_node = call_site;
+    frame.block = NULL;
+    frame.self = recv_self;
+    frame.fp = c->current_frame->fp;
+    frame.entry = &mc->method->u.ast.entry;
+    c->current_frame = &frame;
+
+    RESULT err_r;
+    int opt_idx = dispatch_setup_args(c, call_site, mc, argc, arg_index, &err_r);
+    if (UNLIKELY(opt_idx < 0)) {
+        c->current_frame = frame.prev;
+        return err_r;
+    }
+    unsigned int req = mc->method->u.ast.required_params_cnt;
+    unsigned int opt_num = mc->method->u.ast.params_cnt - req;
+    RESULT r;
+    if (LIKELY((unsigned int)opt_idx >= opt_num || !mc->method->u.ast.opt_pc)) {
+        r = mc->dispatcher(c, mc->body);
+    } else {
+        NODE *entry = mc->method->u.ast.opt_pc[opt_idx];
+        r = EVAL(c, entry);
+    }
+
+    if (UNLIKELY(r.state)) {
+        if (r.state & RESULT_RETURN) {
+            if ((r.state & RESULT_SKIP_MASK) == 0) {
+                r.state &= ~(unsigned)RESULT_RETURN_CATCH_MASK;
+            } else {
+                r.state -= RESULT_SKIP_UNIT;
+            }
+        }
+    }
+    c->current_frame = frame.prev;
+    return r;
+}
+
+// --- prologue_cfunc: C function method ---
+static RESULT
+prologue_cfunc(CTX * restrict c, NODE * restrict call_site,
+               const struct method_cache *mc, VALUE recv_self,
+               unsigned int argc, uint32_t arg_index)
+{
+    struct abruby_frame frame;
+    frame.prev = c->current_frame;
+    frame.method = mc->method;
+    frame.caller_node = call_site;
+    frame.block = NULL;
+    frame.self = recv_self;
+    frame.fp = c->current_frame->fp;
+    frame.entry = NULL;
+    c->current_frame = &frame;
+
+    ctx_update_sp(c, frame.fp + arg_index + argc);
+    RESULT r = mc->method->u.cfunc.func(c, recv_self, argc, frame.fp + arg_index);
+
+    if (UNLIKELY(r.state)) {
+        if (r.state & RESULT_RETURN) {
+            if ((r.state & RESULT_SKIP_MASK) == 0) {
+                r.state &= ~(unsigned)RESULT_RETURN_CATCH_MASK;
+            } else {
+                r.state -= RESULT_SKIP_UNIT;
+            }
+        }
+    }
+    c->current_frame = frame.prev;
+    return r;
+}
+
+// --- prologue_ivar_getter / prologue_ivar_setter: attr_reader/writer ---
+// No frame push — ivar access is a pure load/store with the caller's frame.
+static RESULT
+prologue_ivar_getter(CTX * restrict c, NODE * restrict call_site,
+                     const struct method_cache *mc, VALUE recv_self,
+                     unsigned int argc, uint32_t arg_index)
+{
+    (void)arg_index;
     if (UNLIKELY(argc != 0))
         return raise_argc_error(c, call_site, argc, 0, 0, false);
     const struct abruby_object *obj =
@@ -1168,8 +1337,8 @@ dispatch_ivar_getter(CTX * restrict c, NODE * restrict call_site,
     return RESULT_OK(Qnil);
 }
 
-static __attribute__((noinline)) RESULT
-dispatch_ivar_setter(CTX * restrict c, NODE * restrict call_site,
+static RESULT
+prologue_ivar_setter(CTX * restrict c, NODE * restrict call_site,
                      const struct method_cache *mc, VALUE recv_self,
                      unsigned int argc, uint32_t arg_index)
 {
@@ -1201,107 +1370,14 @@ dispatch_ivar_setter(CTX * restrict c, NODE * restrict call_site,
     return RESULT_OK(v);
 }
 
-// Complex dispatch path: ivar/cfunc, or AST with opt/rest/post.
-// Out-of-line so that dispatch_method_frame stays tiny & inlinable.
-static __attribute__((noinline)) RESULT
-dispatch_method_frame_complex(CTX * restrict c, NODE * restrict call_site,
-                              const struct method_cache *mc, VALUE recv_self,
-                              unsigned int argc, uint32_t arg_index)
-{
-    enum abruby_method_type mtype = mc->method->type;
-    if (mtype == ABRUBY_METHOD_IVAR_GETTER)
-        return dispatch_ivar_getter(c, call_site, mc, recv_self, argc);
-    if (mtype == ABRUBY_METHOD_IVAR_SETTER)
-        return dispatch_ivar_setter(c, call_site, mc, recv_self, argc, arg_index);
-
-    struct abruby_frame frame;
-    frame.prev = c->current_frame;
-    frame.method = mc->method;
-    frame.caller_node = call_site;
-    frame.block = NULL;
-    frame.self = recv_self;
-    frame.fp = c->current_frame->fp;
-    frame.entry = mc->body ? &mc->method->u.ast.entry : NULL;
-    c->current_frame = &frame;
-
-    RESULT r;
-    if (mc->body != NULL) {
-        RESULT err_r;
-        int opt_idx = dispatch_setup_args(c, call_site, mc, argc, arg_index, &err_r);
-        if (UNLIKELY(opt_idx < 0)) {
-            c->current_frame = frame.prev;
-            return err_r;
-        }
-        unsigned int opt_num = mc->method->u.ast.params_cnt - mc->method->u.ast.required_params_cnt;
-        if (LIKELY((unsigned int)opt_idx >= opt_num || !mc->method->u.ast.opt_pc)) {
-            r = mc->dispatcher(c, mc->body);
-        } else {
-            NODE *entry = mc->method->u.ast.opt_pc[opt_idx];
-            r = EVAL(c, entry);
-        }
-    } else {
-        // CFUNC
-        ctx_update_sp(c, c->current_frame->fp + arg_index + argc);
-        r = mc->method->u.cfunc.func(c, recv_self, argc, c->current_frame->fp + arg_index);
-    }
-
-    if (UNLIKELY(r.state)) {
-        if (r.state & RESULT_RETURN) {
-            if ((r.state & RESULT_SKIP_MASK) == 0) {
-                r.state &= ~(unsigned)RESULT_RETURN_CATCH_MASK;
-            } else {
-                r.state -= RESULT_SKIP_UNIT;
-            }
-        }
-    }
-    c->current_frame = frame.prev;
-    return r;
-}
-
-// dispatch_method_frame: hot path — simple AST method only (most common).
-// Anything else (ivar, cfunc, opt/rest/post) defers to _complex (out-of-line).
-static inline __attribute__((always_inline)) RESULT
+// dispatch_method_frame: single indirect call to the pre-selected prologue.
+// No runtime method-type branching — all decided at method_cache_fill time.
+static inline RESULT
 dispatch_method_frame(CTX * restrict c, NODE * restrict call_site,
                       const struct method_cache *mc, VALUE recv_self,
                       unsigned int argc, uint32_t arg_index)
 {
-    // Only handle AST methods with mandatory params only.
-    if (UNLIKELY(mc->method->type != ABRUBY_METHOD_AST))
-        return dispatch_method_frame_complex(c, call_site, mc, recv_self, argc, arg_index);
-
-    unsigned int req = mc->method->u.ast.required_params_cnt;
-    if (UNLIKELY(mc->method->u.ast.params_cnt != req ||
-                 mc->method->u.ast.rest_index >= 0 ||
-                 mc->method->u.ast.post_params_cnt != 0))
-        return dispatch_method_frame_complex(c, call_site, mc, recv_self, argc, arg_index);
-
-    if (UNLIKELY(argc != req))
-        return raise_argc_error(c, call_site, argc, req, req, false);
-
-    struct abruby_frame frame;
-    frame.prev = c->current_frame;
-    frame.method = mc->method;
-    frame.caller_node = call_site;
-    frame.block = NULL;
-    frame.self = recv_self;
-    frame.fp = c->current_frame->fp + arg_index;  // new fp directly
-    frame.entry = &mc->method->u.ast.entry;
-    c->current_frame = &frame;
-    ctx_update_sp(c, frame.fp + req);
-
-    RESULT r = mc->dispatcher(c, mc->body);
-
-    if (UNLIKELY(r.state)) {
-        if (r.state & RESULT_RETURN) {
-            if ((r.state & RESULT_SKIP_MASK) == 0) {
-                r.state &= ~(unsigned)RESULT_RETURN_CATCH_MASK;
-            } else {
-                r.state -= RESULT_SKIP_UNIT;
-            }
-        }
-    }
-    c->current_frame = frame.prev;
-    return r;
+    return mc->prologue(c, call_site, mc, recv_self, argc, arg_index);
 }
 
 // Outer dispatch for non-cache paths: build temp mc, save/restore self.
@@ -1313,7 +1389,9 @@ dispatch_method_with_klass(CTX * restrict c, NODE * restrict call_site,
                            unsigned int argc, uint32_t arg_index)
 {
     struct method_cache mc;
-    method_cache_fill(c, &mc, klass, method);
+    // Temporary mc used exactly once for this dispatch — current argc is
+    // authoritative, so static_argc=true yields the correct prologue choice.
+    method_cache_fill(c, &mc, klass, method, argc, true);
     return dispatch_method_frame(c, call_site, &mc, recv, argc, arg_index);
 }
 
@@ -1390,7 +1468,8 @@ dispatch_method_with_klass_with_block(CTX * restrict c, NODE * restrict call_sit
                                       const struct abruby_block *blk)
 {
     struct method_cache mc;
-    method_cache_fill(c, &mc, klass, method);
+    // Temp mc: current argc is authoritative (one-shot).
+    method_cache_fill(c, &mc, klass, method, argc, true);
     return dispatch_method_frame_with_block(c, call_site, &mc, recv, argc, arg_index, blk);
 }
 
@@ -1445,7 +1524,7 @@ static __attribute__((noinline)) RESULT
 node_method_call_slow(CTX * restrict c, NODE * restrict n,
                       VALUE recv_val, const struct abruby_class *klass, ID name,
                       uint32_t params_cnt, uint32_t arg_index,
-                      struct method_cache *mc)
+                      struct method_cache *mc, bool static_argc)
 {
     const struct abruby_method *method = abruby_class_find_method(klass, name);
     if (UNLIKELY(method == NULL)) {
@@ -1461,7 +1540,7 @@ node_method_call_slow(CTX * restrict c, NODE * restrict n,
         }
         return method_missing_dispatch(c, n, klass, name, recv_val, params_cnt, arg_index);
     }
-    method_cache_fill(c, mc, klass, method);
+    method_cache_fill(c, mc, klass, method, params_cnt, static_argc);
     return dispatch_method_with_klass(c, n, recv_val, klass, method, params_cnt, arg_index);
 }
 
@@ -1475,7 +1554,7 @@ node_method_call(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, uint3
         return dispatch_method_frame(c, n, mc, recv_val, params_cnt, arg_index);
     }
     else {
-        return node_method_call_slow(c, n, recv_val, klass, name, params_cnt, arg_index, mc);
+        return node_method_call_slow(c, n, recv_val, klass, name, params_cnt, arg_index, mc, true);
     }
 }
 
@@ -1493,7 +1572,7 @@ node_func_call(CTX * restrict c, NODE * restrict n, ID name, uint32_t params_cnt
     }
     else {
         return node_method_call_slow(c, n, c->current_frame->self, klass, name,
-                                     params_cnt, arg_index, mc);
+                                     params_cnt, arg_index, mc, true);
     }
 }
 
@@ -1560,7 +1639,7 @@ node_func_call_apply(CTX * restrict c, NODE * restrict n, ID name, NODE *args, u
     if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
         return dispatch_method_frame(c, n, mc, c->current_frame->self, argc, arg_index + 1);
     }
-    return node_method_call_slow(c, n, c->current_frame->self, klass, name, argc, arg_index + 1, mc);
+    return node_method_call_slow(c, n, c->current_frame->self, klass, name, argc, arg_index + 1, mc, false);
 }
 
 NODE_DEF
@@ -1581,7 +1660,7 @@ node_method_call_apply(CTX * restrict c, NODE * restrict n, NODE *recv, ID name,
     if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
         return dispatch_method_frame(c, n, mc, recv_val, argc, arg_index + 1);
     }
-    return node_method_call_slow(c, n, recv_val, klass, name, argc, arg_index + 1, mc);
+    return node_method_call_slow(c, n, recv_val, klass, name, argc, arg_index + 1, mc, false);
 }
 
 // Forward declarations (defined later, after block-carrying call nodes).
@@ -1590,7 +1669,7 @@ node_method_call_with_block_slow(CTX *c, NODE *n,
                                  VALUE recv_val, const struct abruby_class *klass, ID name,
                                  uint32_t params_cnt, uint32_t arg_index,
                                  struct method_cache *mc,
-                                 const struct abruby_block *blk);
+                                 const struct abruby_block *blk, bool static_argc);
 
 static inline RESULT
 build_block_from_proc_value(CTX *c, NODE *call_site, VALUE proc_val, struct abruby_block *out_blk);
@@ -1652,7 +1731,7 @@ static __attribute__((noinline)) RESULT
 dispatch_call_slow(CTX * restrict c, NODE * restrict call_site, VALUE recv_val,
                    ID name, unsigned int argc, uint32_t arg_index,
                    NODE *blk_node, const struct abruby_class *klass,
-                   struct method_cache *mc, bool cache_hit)
+                   struct method_cache *mc, bool cache_hit, bool static_argc)
 {
     struct abruby_block blk_storage;
     RESULT blk_err;
@@ -1665,9 +1744,9 @@ dispatch_call_slow(CTX * restrict c, NODE * restrict call_site, VALUE recv_val,
                        : dispatch_method_frame(c, call_site, mc, recv_val, argc, arg_index);
     }
     return blk_ptr ? node_method_call_with_block_slow(c, call_site, recv_val, klass, name,
-                                                      argc, arg_index, mc, blk_ptr)
+                                                      argc, arg_index, mc, blk_ptr, static_argc)
                    : node_method_call_slow(c, call_site, recv_val, klass, name,
-                                           argc, arg_index, mc);
+                                           argc, arg_index, mc, static_argc);
 }
 
 // Common dispatch path for all 5 new call nodes.
@@ -1679,7 +1758,7 @@ dispatch_call_slow(CTX * restrict c, NODE * restrict call_site, VALUE recv_val,
 static inline RESULT
 dispatch_call(CTX * restrict c, NODE * restrict call_site, VALUE recv_val,
               ID name, unsigned int argc, uint32_t arg_index,
-              NODE *blk_node, struct method_cache *mc)
+              NODE *blk_node, struct method_cache *mc, bool static_argc)
 {
     const struct abruby_class *klass = AB_CLASS_OF(c, recv_val);
     bool cache_hit = (mc->klass == klass && mc->serial == c->abm->method_serial);
@@ -1690,7 +1769,7 @@ dispatch_call(CTX * restrict c, NODE * restrict call_site, VALUE recv_val,
     }
     // Slow path: block materialization or cache miss.
     return dispatch_call_slow(c, call_site, recv_val, name, argc, arg_index,
-                              blk_node, klass, mc, cache_hit);
+                              blk_node, klass, mc, cache_hit, static_argc);
 }
 
 // --- Simple no-block variants: 0/1/2 args, args evaluated inline ---
@@ -1705,7 +1784,7 @@ dispatch_simple_noblock(CTX * restrict c, NODE * restrict call_site, VALUE recv_
     if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
         return dispatch_method_frame(c, call_site, mc, recv_val, argc, arg_index);
     }
-    return node_method_call_slow(c, call_site, recv_val, klass, name, argc, arg_index, mc);
+    return node_method_call_slow(c, call_site, recv_val, klass, name, argc, arg_index, mc, true);
 }
 
 NODE_DEF
@@ -1755,7 +1834,7 @@ dispatch_simple_block(CTX * restrict c, NODE * restrict call_site, VALUE recv_va
     if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
         return dispatch_method_frame_with_block(c, call_site, mc, recv_val, argc, arg_index, &blk);
     }
-    return node_method_call_with_block_slow(c, call_site, recv_val, klass, name, argc, arg_index, mc, &blk);
+    return node_method_call_with_block_slow(c, call_site, recv_val, klass, name, argc, arg_index, mc, &blk, true);
 }
 
 NODE_DEF
@@ -1788,7 +1867,7 @@ NODE_DEF
 node_call(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, uint32_t argc, uint32_t arg_index, NODE *blk, struct method_cache *mc@ref)
 {
     VALUE recv_val = UNWRAP(EVAL_ARG(c, recv));
-    return dispatch_call(c, n, recv_val, name, argc, arg_index, blk, mc);
+    return dispatch_call(c, n, recv_val, name, argc, arg_index, blk, mc, true);
 }
 
 // --- Apply (splat) call: runtime argc via args_node Array ---
@@ -1805,7 +1884,10 @@ node_apply_call(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, NODE *
     uint32_t argc;
     RESULT rr = apply_unpack(c, n, args_val, arg_index, &argc);
     if (UNLIKELY(rr.state != RESULT_NORMAL)) return rr;
-    return dispatch_call(c, n, recv_val, name, argc, arg_index + 1, blk, mc);
+    // static_argc=false: argc comes from splat expansion and can vary across
+    // calls at this @ref cache, so we must install the checking (complex)
+    // prologue to guarantee validation on every cache hit.
+    return dispatch_call(c, n, recv_val, name, argc, arg_index + 1, blk, mc, false);
 }
 
 // === Splat call + block combinations ===
@@ -1838,7 +1920,7 @@ node_func_call_apply_with_block(CTX * restrict c, NODE * restrict n, ID name, NO
         return dispatch_method_frame_with_block(c, n, mc, c->current_frame->self, argc, arg_index + 1, &blk);
     }
     return node_method_call_with_block_slow(c, n, c->current_frame->self, klass, name,
-                                            argc, arg_index + 1, mc, &blk);
+                                            argc, arg_index + 1, mc, &blk, false);
 }
 
 NODE_DEF
@@ -1868,7 +1950,7 @@ node_method_call_apply_with_block(CTX * restrict c, NODE * restrict n, NODE *rec
         return dispatch_method_frame_with_block(c, n, mc, recv_val, argc, arg_index + 1, &blk);
     }
     return node_method_call_with_block_slow(c, n, recv_val, klass, name,
-                                            argc, arg_index + 1, mc, &blk);
+                                            argc, arg_index + 1, mc, &blk, false);
 }
 
 NODE_DEF
@@ -1890,13 +1972,13 @@ node_func_call_apply_with_block_arg(CTX * restrict c, NODE * restrict n, ID name
         if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
             return dispatch_method_frame(c, n, mc, c->current_frame->self, argc, arg_index + 1);
         }
-        return node_method_call_slow(c, n, c->current_frame->self, klass, name, argc, arg_index + 1, mc);
+        return node_method_call_slow(c, n, c->current_frame->self, klass, name, argc, arg_index + 1, mc, false);
     }
     if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
         return dispatch_method_frame_with_block(c, n, mc, c->current_frame->self, argc, arg_index + 1, &blk);
     }
     return node_method_call_with_block_slow(c, n, c->current_frame->self, klass, name,
-                                            argc, arg_index + 1, mc, &blk);
+                                            argc, arg_index + 1, mc, &blk, false);
 }
 
 NODE_DEF
@@ -1921,13 +2003,13 @@ node_method_call_apply_with_block_arg(CTX * restrict c, NODE * restrict n, NODE 
         if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
             return dispatch_method_frame(c, n, mc, recv_val, argc, arg_index + 1);
         }
-        return node_method_call_slow(c, n, recv_val, klass, name, argc, arg_index + 1, mc);
+        return node_method_call_slow(c, n, recv_val, klass, name, argc, arg_index + 1, mc, false);
     }
     if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
         return dispatch_method_frame_with_block(c, n, mc, recv_val, argc, arg_index + 1, &blk);
     }
     return node_method_call_with_block_slow(c, n, recv_val, klass, name,
-                                            argc, arg_index + 1, mc, &blk);
+                                            argc, arg_index + 1, mc, &blk, false);
 }
 
 // === Block-carrying call nodes ===
@@ -1950,7 +2032,7 @@ node_method_call_with_block_slow(CTX * restrict c, NODE * restrict n,
                                  VALUE recv_val, const struct abruby_class *klass, ID name,
                                  uint32_t params_cnt, uint32_t arg_index,
                                  struct method_cache *mc,
-                                 const struct abruby_block *blk)
+                                 const struct abruby_block *blk, bool static_argc)
 {
     const struct abruby_method *method = abruby_class_find_method(klass, name);
     if (UNLIKELY(method == NULL)) {
@@ -1959,7 +2041,7 @@ node_method_call_with_block_slow(CTX * restrict c, NODE * restrict n,
         // do not need for Phase 1 iterators.
         return method_missing_dispatch(c, n, klass, name, recv_val, params_cnt, arg_index);
     }
-    method_cache_fill(c, mc, klass, method);
+    method_cache_fill(c, mc, klass, method, params_cnt, static_argc);
     return dispatch_method_with_klass_with_block(c, n, recv_val, klass, method,
                                                  params_cnt, arg_index, blk);
 }
@@ -1989,7 +2071,7 @@ node_method_call_with_block(CTX * restrict c, NODE * restrict n, NODE *recv, ID 
     }
     else {
         return node_method_call_with_block_slow(c, n, recv_val, klass, name,
-                                                params_cnt, arg_index, mc, &blk);
+                                                params_cnt, arg_index, mc, &blk, true);
     }
 }
 
@@ -2013,7 +2095,7 @@ node_func_call_with_block(CTX * restrict c, NODE * restrict n, ID name, uint32_t
     }
     else {
         return node_method_call_with_block_slow(c, n, c->current_frame->self, klass, name,
-                                                params_cnt, arg_index, mc, &blk);
+                                                params_cnt, arg_index, mc, &blk, true);
     }
 }
 
@@ -2063,12 +2145,12 @@ node_method_call_with_block_arg(CTX * restrict c, NODE * restrict n, NODE *recv,
         // No block — fall back to plain dispatch.
         return (mc->klass == klass && mc->serial == c->abm->method_serial)
             ? dispatch_method_frame(c, n, mc, recv_val, params_cnt, arg_index)
-            : node_method_call_slow(c, n, recv_val, klass, name, params_cnt, arg_index, mc);
+            : node_method_call_slow(c, n, recv_val, klass, name, params_cnt, arg_index, mc, true);
     }
     if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
         return dispatch_method_frame_with_block(c, n, mc, recv_val, params_cnt, arg_index, &blk);
     }
-    return node_method_call_with_block_slow(c, n, recv_val, klass, name, params_cnt, arg_index, mc, &blk);
+    return node_method_call_with_block_slow(c, n, recv_val, klass, name, params_cnt, arg_index, mc, &blk, true);
 }
 
 NODE_DEF
@@ -2082,12 +2164,12 @@ node_func_call_with_block_arg(CTX * restrict c, NODE * restrict n, ID name, uint
     if (br.value == Qnil) {
         return (mc->klass == klass && mc->serial == c->abm->method_serial)
             ? dispatch_method_frame(c, n, mc, c->current_frame->self, params_cnt, arg_index)
-            : node_method_call_slow(c, n, c->current_frame->self, klass, name, params_cnt, arg_index, mc);
+            : node_method_call_slow(c, n, c->current_frame->self, klass, name, params_cnt, arg_index, mc, true);
     }
     if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
         return dispatch_method_frame_with_block(c, n, mc, c->current_frame->self, params_cnt, arg_index, &blk);
     }
-    return node_method_call_with_block_slow(c, n, c->current_frame->self, klass, name, params_cnt, arg_index, mc, &blk);
+    return node_method_call_with_block_slow(c, n, c->current_frame->self, klass, name, params_cnt, arg_index, mc, &blk, true);
 }
 
 // === super ===
