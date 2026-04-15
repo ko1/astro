@@ -1,15 +1,8 @@
 #include "builtin.h"
 
-static VALUE ab_to_hash_key(VALUE v) {
-    if (FIXNUM_P(v) || RB_FLONUM_P(v) || v == Qtrue || v == Qfalse || v == Qnil) return v;
-    if (SYMBOL_P(v)) return v;
-    if (RB_TYPE_P(v, T_DATA)) {
-        const struct abruby_header *h = (const struct abruby_header *)RTYPEDDATA_GET_DATA(v);
-        if (h->obj_type == ABRUBY_OBJ_STRING) return ((const struct abruby_string *)h)->rb_str;
-        if (h->obj_type == ABRUBY_OBJ_ARRAY)  return ((const struct abruby_array *)h)->rb_ary;
-    }
-    return v;
-}
+// ab_hash_key: moved to builtin/builtin.h so node_eval.c fast paths can
+// share the same normalisation logic.
+#define ab_to_hash_key(v) ab_hash_key(v)
 
 static RESULT ab_hash_inspect(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     VALUE hash = RHSH(self);

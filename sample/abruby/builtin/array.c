@@ -13,7 +13,7 @@ static RESULT ab_array_inspect(CTX *c, VALUE self, unsigned int argc, VALUE *arg
     return RESULT_OK(abruby_str_new(c, result));
 }
 static RESULT ab_array_to_s(CTX *c, VALUE self, unsigned int argc, VALUE *argv) { return RESULT_OK(ab_array_inspect(c, self, 0, NULL).value); }
-RESULT ab_array_get(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+static RESULT ab_array_get(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     if (argc == 1 && FIXNUM_P(argv[0])) {
         return RESULT_OK(ab_ary_entry(RARY(self), FIX2LONG(argv[0])));
     }
@@ -48,7 +48,7 @@ RESULT ab_array_get(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     }
     return RESULT_OK(Qnil);
 }
-RESULT ab_array_set(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
+static RESULT ab_array_set(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     if (argc == 2) {
         rb_ary_store(RARY(self), FIX2LONG(argv[0]), argv[1]);
         return RESULT_OK(argv[1]);
@@ -60,7 +60,7 @@ RESULT ab_array_set(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     rb_funcall(RARY(self), rb_intern("[]="), 3, LONG2FIX(idx), LONG2FIX(len), rb_src);
     return RESULT_OK(src);
 }
-RESULT ab_array_push(CTX *c, VALUE self, unsigned int argc, VALUE *argv) { rb_ary_push(RARY(self), argv[0]); return RESULT_OK(self); }
+static RESULT ab_array_push(CTX *c, VALUE self, unsigned int argc, VALUE *argv) { rb_ary_push(RARY(self), argv[0]); return RESULT_OK(self); }
 static RESULT ab_array_pop(CTX *c, VALUE self, unsigned int argc, VALUE *argv) { return RESULT_OK(rb_ary_pop(RARY(self))); }
 static RESULT ab_array_length(CTX *c, VALUE self, unsigned int argc, VALUE *argv) { return RESULT_OK(LONG2FIX(RARRAY_LEN(RARY(self)))); }
 static RESULT ab_array_empty_p(CTX *c, VALUE self, unsigned int argc, VALUE *argv) { return RESULT_OK(RARRAY_LEN(RARY(self)) == 0 ? Qtrue : Qfalse); }

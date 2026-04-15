@@ -1419,13 +1419,22 @@ class AbRuby
           set_line(AbRuby.alloc_node_call2_b(recv_ast, name.to_s, arg_asts[0], arg_asts[1], call_arg_idx, blk_ast), node)
         end
       else
-        case argc
-        when 0
-          set_line(AbRuby.alloc_node_call0(recv_ast, name.to_s, call_arg_idx), node)
-        when 1
-          set_line(AbRuby.alloc_node_call1(recv_ast, name.to_s, arg_asts[0], call_arg_idx), node)
-        when 2
-          set_line(AbRuby.alloc_node_call2(recv_ast, name.to_s, arg_asts[0], arg_asts[1], call_arg_idx), node)
+        op = name.to_s
+        case
+        when argc == 1 && op == "[]"
+          # Polymorphic aref — runtime classifies and swap_dispatcher()s
+          # to a monomorphic variant (node_array_aref etc.).
+          set_line(AbRuby.alloc_node_aref(recv_ast, arg_asts[0], call_arg_idx), node)
+        when argc == 1 && op == "<<"
+          set_line(AbRuby.alloc_node_ltlt(recv_ast, arg_asts[0], call_arg_idx), node)
+        when argc == 2 && op == "[]="
+          set_line(AbRuby.alloc_node_aset(recv_ast, arg_asts[0], arg_asts[1], call_arg_idx), node)
+        when argc == 0
+          set_line(AbRuby.alloc_node_call0(recv_ast, op, call_arg_idx), node)
+        when argc == 1
+          set_line(AbRuby.alloc_node_call1(recv_ast, op, arg_asts[0], call_arg_idx), node)
+        when argc == 2
+          set_line(AbRuby.alloc_node_call2(recv_ast, op, arg_asts[0], arg_asts[1], call_arg_idx), node)
         end
       end
     end

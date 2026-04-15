@@ -9,6 +9,21 @@
 #define RARY(v) (((struct abruby_array *)RTYPEDDATA_GET_DATA(v))->rb_ary)
 #define RHSH(v) (((struct abruby_hash *)RTYPEDDATA_GET_DATA(v))->rb_hash)
 
+// Hash key normalisation: unwrap abruby String / Array wrappers to
+// their inner CRuby objects so rb_hash_* lookups hit the stored keys.
+// Immediates (Fixnum/Symbol/etc.) pass through unchanged.
+static inline VALUE
+ab_hash_key(VALUE v)
+{
+    if (RB_SPECIAL_CONST_P(v)) return v;
+    if (RB_TYPE_P(v, T_DATA)) {
+        const struct abruby_header *h = (const struct abruby_header *)RTYPEDDATA_GET_DATA(v);
+        if (h->obj_type == ABRUBY_OBJ_STRING) return ((const struct abruby_string *)h)->rb_str;
+        if (h->obj_type == ABRUBY_OBJ_ARRAY)  return ((const struct abruby_array *)h)->rb_ary;
+    }
+    return v;
+}
+
 // Inline equivalent of rb_ary_entry — avoids the PLT jump into libruby
 // on hot Array#[] paths.  Mirrors CRuby's internal rb_ary_entry_internal.
 static inline __attribute__((always_inline)) VALUE
@@ -184,12 +199,5 @@ void Init_abruby_true(void);
 void Init_abruby_false(void);
 void Init_abruby_nil(void);
 void Init_abruby_exception(void);
-
-// Exposed Array builtin cfuncs — referenced by node_eval.c
-// (maybe_specialize_call_kind) to recognise stock Array#[] / Array#[]= /
-// Array#<< / Array#push call sites for type-specialisation.
-RESULT ab_array_get(CTX *c, VALUE self, unsigned int argc, VALUE *argv);
-RESULT ab_array_set(CTX *c, VALUE self, unsigned int argc, VALUE *argv);
-RESULT ab_array_push(CTX *c, VALUE self, unsigned int argc, VALUE *argv);
 
 #endif

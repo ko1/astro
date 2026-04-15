@@ -1749,7 +1749,9 @@ rb_set_node_line(VALUE self, VALUE node_obj, VALUE line)
     X(fixnum_plus) X(fixnum_minus) X(fixnum_mul) X(fixnum_div) \
     X(lt)          X(le)          X(gt)          X(ge)          \
     X(fixnum_lt)   X(fixnum_le)   X(fixnum_gt)   X(fixnum_ge)   \
-    X(fixnum_eq)   X(fixnum_neq)  X(fixnum_mod)
+    X(fixnum_eq)   X(fixnum_neq)  X(fixnum_mod)                 \
+    X(aref)        X(array_aref)  X(hash_aref)   X(fixnum_aref) \
+    X(ltlt)        X(array_ltlt)
 
 #define ABRUBY_DEFINE_BINOP_WRAPPER(name) \
     static VALUE rb_alloc_node_##name(VALUE self, VALUE left, VALUE right, VALUE arg_index) { \
@@ -1757,6 +1759,28 @@ rb_set_node_line(VALUE self, VALUE node_obj, VALUE line)
     }
 ABRUBY_BINOP_NODES(ABRUBY_DEFINE_BINOP_WRAPPER)
 #undef ABRUBY_DEFINE_BINOP_WRAPPER
+
+// 3-operand + arg_index (recv, idx, value, arg_index) — node_aset variants.
+static VALUE
+rb_alloc_node_aset(VALUE self, VALUE recv, VALUE idx, VALUE value, VALUE arg_index)
+{
+    return wrap_node(ALLOC_node_aset(unwrap_node(recv), unwrap_node(idx),
+                                     unwrap_node(value), FIX2UINT(arg_index)));
+}
+
+static VALUE
+rb_alloc_node_array_aset(VALUE self, VALUE recv, VALUE idx, VALUE value, VALUE arg_index)
+{
+    return wrap_node(ALLOC_node_array_aset(unwrap_node(recv), unwrap_node(idx),
+                                           unwrap_node(value), FIX2UINT(arg_index)));
+}
+
+static VALUE
+rb_alloc_node_hash_aset(VALUE self, VALUE recv, VALUE idx, VALUE value, VALUE arg_index)
+{
+    return wrap_node(ALLOC_node_hash_aset(unwrap_node(recv), unwrap_node(idx),
+                                          unwrap_node(value), FIX2UINT(arg_index)));
+}
 
 // Convert abruby value to Ruby value for returning to CRuby world
 static VALUE
@@ -2249,6 +2273,9 @@ Init_abruby(void)
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_" #name, rb_alloc_node_##name, 3);
     ABRUBY_BINOP_NODES(ABRUBY_REGISTER_BINOP_WRAPPER)
 #undef ABRUBY_REGISTER_BINOP_WRAPPER
+    rb_define_singleton_method(rb_cAbRuby, "alloc_node_aset",       rb_alloc_node_aset,       4);
+    rb_define_singleton_method(rb_cAbRuby, "alloc_node_array_aset", rb_alloc_node_array_aset, 4);
+    rb_define_singleton_method(rb_cAbRuby, "alloc_node_hash_aset",  rb_alloc_node_hash_aset,  4);
     rb_define_singleton_method(rb_cAbRuby, "set_node_line", rb_set_node_line, 2);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_self", rb_alloc_node_self, 0);
 
