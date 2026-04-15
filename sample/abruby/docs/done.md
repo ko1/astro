@@ -1,5 +1,13 @@
 # abruby 実装済み機能
 
+未実装機能 / 既知のバグは [todo.md](todo.md) を参照。
+
+## 目次
+
+- 言語機能: [リテラル](#リテラル) / [変数](#変数) / [制御構造](#制御構造) / [メソッド](#メソッド) / [ブロック](#ブロック) / [Proc / lambda](#proc--lambda) / [Fiber](#fiber) / [クラス・モジュール](#クラスモジュール) / [演算子](#演算子全てメソッドディスパッチ) / [定数](#定数)
+- ライブラリ: [ビルトインクラス](#ビルトインクラス)
+- 実行系: [ランタイム](#ランタイム) / [高速化](#高速化)
+
 ## リテラル
 - 整数 (Fixnum + Bignum): `42`, `-3`, `100000000000000000000`
 - 浮動小数点 (Flonum + heap Float): `1.5`, `3.14`, `1.0e100`
@@ -44,17 +52,24 @@
 ## メソッド
 - `def name(args); end`
 - endless method: `def name(args) = expr`
-- splat 引数 (`foo(*args)`, `foo(a, *b, c)`, `obj.m(*x, y)`) — 呼び出し側の展開。
-  パース時に `[a] + b + [c]` 形式の Array 式に lower し、新ノード
-  `node_func_call_apply` / `node_method_call_apply` が実行時に Array を
-  c->fp に unpack してディスパッチ。最大 `ABRUBY_APPLY_MAX_ARGS=32` 要素。
-  メソッド定義側の `*rest` 受け取りは未対応
+- デフォルト引数 (`def f(a, b = 1)`)
+- splat 引数 — 呼び出し側 (`foo(*args)`, `foo(a, *b, c)`, `obj.m(*x, y)`) と
+  受け取り側 (`def f(*args)`) の両方。呼び出し側はパース時に
+  `[a] + b + [c]` 形式の Array 式に lower し、`node_func_call_apply` /
+  `node_method_call_apply` が実行時に Array を c->fp に unpack してディスパッチ。
+  最大 `ABRUBY_APPLY_MAX_ARGS=32` 要素。`**kwargs` は未対応
+- クラスメソッド `def self.foo`（`singleton_table_class()` 経由でクラス自身の
+  methods テーブルに登録）
 - `attr_reader`, `attr_writer`, `attr_accessor`
 - `super`（bare / 引数付き / 引数なし）
 - 再帰呼び出し
 - `node_method_call`（明示的レシーバ）/ `node_func_call`（暗黙 self-call、recv 操作なし）
 - `method_missing(name, ...)`
-- インラインキャッシュ（`method_cache`: klass + method + serial + ivar_slot + body + dispatcher）
+- `method(:name)` — Method オブジェクト (`call` / `[]` で呼び出し可能)
+- `respond_to?`
+- `eval`（ローカル変数は外部スコープ不可）
+- インラインキャッシュ（`method_cache`: klass + method + serial + ivar_slot + body + dispatcher、グローバル `method_serial` でメソッド定義 / include 時に無効化）
+- メソッド名インターン化（全メソッド名をパース時に intern、ID ポインタ比較）
 
 ## ブロック
 - ブロックリテラル: `obj.m { |x| ... }` / `obj.m do |x, y| ... end`
@@ -127,7 +142,7 @@
 - **Array**: [], []=, push, <<, pop, shift, unshift, length/size, empty?, first, last, +, *, include?, inspect/to_s, each, each_with_index, map/collect, select/filter, reject, flat_map/collect_concat, reverse, dup, flatten, concat, join, min, max, sort, fill, clear, replace, transpose, zip, pack, inject/reduce, uniq, uniq!, compact, slice, slice!, ==, !=, all?, any?, none?, rotate!
 - **Hash**: [], []=, length/size, empty?, has_key?/key?, keys, values, inspect/to_s, each/each_pair, each_key, each_value, merge, delete, fetch, dup, compare_by_identity
 - **Range**: first/begin, last/end, exclude_end?, size/length, include?, ===, to_a, ==, inspect, to_s, each, map/collect, all?, any?, inject/reduce
-- **Regexp**: match?, ===, match, ==, =~, source, inspect, to_s（CRuby Regexp を内部利用）
+- **Regexp**: match?, ===, match (※ bool 返却、MatchData 未実装), ==, =~, source, inspect, to_s（CRuby Regexp を内部利用）
 - **Rational**: 算術(+,-,*,/,**,-@), 比較(<,<=,>,>=,==,<=>), numerator, denominator, to_f, to_i, to_r, inspect, to_s
 - **Complex**: 算術(+,-,*,/,**,-@), ==, real, imaginary, abs, conjugate, rectangular, to_f, to_c, inspect, to_s
 - **TrueClass / FalseClass / NilClass**: inspect, to_s, nil? (NilClass のみ `[]` も対応)
@@ -179,6 +194,12 @@
   frame 構築コストを 1 store 分減らす
 - **EVAL_* を `static inline`**: 生成された evaluator 関数に `inline` キーワードを付け、specializer が
   出力する SD_ ラッパーとの組み合わせで gcc が木全体を cross-node 最適化しやすくする
+- **NodeHead スリム化**: `parent`(8), `jit_status`(4), `dispatch_cnt`(4) を除去し、フィールドを cold/warm/hot ゾーンに再配置。72B→56B (NODE: 144B→128B)。dispatcher と union データが常に同一キャッシュラインに収まる。ASTroGen に `ASTRO_NODEHEAD_PARENT` 等の条件付きガードを追加
+- **メソッドテーブルのハッシュ化**: `ab_id_table` を hybrid 実装に変更（小テーブルは packed linear、
+  大テーブルは open-addressing Fibonacci hash）。テーブル構造体内に `inline_storage[4]` を埋め込み、
+  小テーブルは別途 alloc 不要。IC ミス時のメソッド探索・builtin クラスのメソッド参照を高速化
+- **prologue 関数ポインタ**: argc 特化 4 種 (`prologue_ast_simple_0/1/2/n`) +
+  `prologue_ast_complex` + `prologue_cfunc` + `prologue_ivar_getter/setter`。すべて `always_inline`
 - **GC mark の最適化**: `abruby_data_mark` が immediate value (nil, Fixnum, Symbol, Flonum, true/false)
   を `rb_gc_mark` に渡さずスキップ。binary_trees の leaf node mark コスト削減
 - **Object#== の identity 短絡**: `node_eq` / `node_neq` で `lv == rv` なら method dispatch せず直接返す。

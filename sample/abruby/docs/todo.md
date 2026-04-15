@@ -1,86 +1,54 @@
-# abruby TODO: 未実装の Ruby 機能
+# abruby TODO
 
 実装済み機能は [done.md](done.md) を参照。
 
-## optcarrot 対応
+## 目次
 
-benchmark/optcarrot/bin/optcarrot-bench を動かすために必要な機能。
-優先度順にリストアップ。
+- [未実装の Ruby 機能](#未実装の-ruby-機能) — 構文 / メソッド定義 / 変数 / クラス / ビルトイン / 標準ライブラリ
+- [既知のバグ](#既知のバグ) — 実行時に確認したバグ
+- [高速化](#高速化) — ベンチ結果 / AOT・JIT / インタプリタ改善 / メモリ / オブジェクトシステム
+- [ノードフィールドのロード時解決](#ノードフィールドのロード時解決) — 設計ドキュメント
+- [prologue リファクタリング](#prologue-リファクタリング) — 設計ドキュメント
+- [call 特化 Phase 2 (callee body 特化)](#call-特化-phase-2-callee-body-特化) — 設計ドキュメント
+- [PG / AOT 結合とコードストア鍵設計](#pg--aot-結合とコードストア鍵設計) — 設計ドキュメント
+- [ランタイム・内部実装](#ランタイム内部実装)
 
-### 致命的（これがないと何も動かない）
+## 未実装の Ruby 機能
 
-- [x] ブロック / yield（block 基盤、`{ ... }` / `do...end`, `yield`, `block_given?`, `next`, `break`, 非ローカル `return`, closure, super block forwarding）
-- [x] Proc / lambda / `&block` パラメータ（`Proc.new`, `proc`, `lambda`, `Proc#call`, `Proc#[]`, `Proc#arity`, `Proc#lambda?`, `def f(&blk)`, `f(&proc)` — `->` 記法と `&:symbol` は未対応）
-- [x] Fiber（`Fiber.new`, `Fiber#resume`, `Fiber.yield`, `Fiber#alive?` — CRuby Fiber API でスタック管理）
-- [x] `case / when`（if/elsif チェーンに desugar、=== メソッド対応）
-- [x] `attr_reader` / `attr_writer` / `attr_accessor`
-- [x] デフォルト引数 (`def f(a, b = 1)`)
+### 構文
 
-### 重要（主要な処理パスで使用）
-
-- [x] `Integer#times`
-- [x] `Integer#[]`（ビットインデックス `num[bit]`）
-- [x] Array: `each`, `each_with_index`, `map`/`collect`, `select`/`filter`, `reject`, `flat_map`/`collect_concat`, `fill`, `flatten`, `clear`, `replace`, `concat`, `join`, `min`, `max`, `sort`, `inject`/`reduce`, `uniq`, `compact`, `transpose`, `zip`, `pack`, `all?`, `any?`, `none?`
-- [x] Hash: `each`/`each_pair`, `each_key`, `each_value`, `fetch`, `merge`, `delete`, `dup`, `compare_by_identity`
-- [x] String: `split`, `strip`, `chomp`, `bytes`, `unpack`, `bytesize`, `start_with?`, `end_with?`, `tr`, `=~`, `%`, `sum`, `to_sym`/`intern`
-- [ ] String: `gsub`, `sub`, `match`, `scan`, `[]`, `[]=`
-- [x] `super`（bare super で引数転送、super(args) で明示的引数、super() で引数なし）
-- [x] `private` / `public` / `protected` / `module_function`（定義のみ、アクセス制御は no-op）
-- [x] `until` ループ（基本形は実装済み。`begin...end until` は未対応）
-
-### 中程度（特定機能で必要）
-
-- [x] `eval`（ローカル変数は外部スコープ不可）
-- [x] `Struct.new`（最小限、attr_accessor 付きクラス生成）
-- [x] `method(:name)`（Method オブジェクト、`call`/`[]` で呼び出し可能）
-- [x] `const_get` / `const_set`（動的定数参照）
-- [x] `is_a?` / `kind_of?` / `instance_of?`
-- [ ] `defined?`
-- [ ] クラス変数 (`@@var`)
-- [x] 可変長引数 受け取り (`def f(*args)`) — `**kwargs` は未対応。呼び出し側 splat も実装済
-- [ ] `&:symbol`（ブロック引数のシンボル記法）
-
-### 標準ライブラリ
-
-- [x] File I/O（join, binread, dirname, basename, extname, expand_path, exist?, readable?, read — CRuby File への facade）
-- [ ] Zlib（ROM 解凍）
-- [ ] Marshal（シリアライゼーション）
-
-## その他の未実装機能
-
-### 制御構造
+- [ ] `defined?` 演算子
 - [ ] `for .. in`
-- [x] `next`（block body から、値付き/値なし両対応）
-
-### ブロック・Proc・lambda
-- [x] `Proc.new` / `proc` / `lambda` — block の heap escape、closure 環境保持
-- [x] `&block` 引数 / `&proc_var` 転送
-- [ ] `->` lambda リテラル構文
-- [ ] `&:symbol` sugar
-- [ ] block 内 default / *args / **kwargs パラメータ
-- [ ] `_1`, `_2` 番号付きパラメータ
+- [ ] `->` lambda リテラル（`lambda { }` は実装済）
+- [ ] `&:symbol`（Symbol to Proc sugar）
+- [ ] `_1`, `_2` 番号付きブロック引数
 - [ ] `redo`
-
-### メソッド
-- [ ] キーワード引数 (`def f(a:, b: 1)`)
-- [ ] クラスメソッド (`def self.foo`)
 - [ ] `alias` / `alias_method`
-- [x] `respond_to?`
+- [ ] ネストしたクラス定義 (`class A::B`)
 
-### クラス・モジュール
-- [ ] `prepend`
-- [ ] `extend`
-- [ ] ネストしたクラス/モジュール (`class A::B`)
-- [ ] シングルトンメソッド / 特異クラス
-- [ ] `ancestors`
+### メソッド定義
+
+- [ ] キーワード引数 (`def f(a:, b: 1)`) / `**kwargs`
+- [ ] block 内の default / `*args` / `**kwargs` / キーワード パラメータ（現在 required のみ）
 
 ### 変数・定数
+
 - [ ] クラス変数 (`@@var`)
+
+### クラス・モジュール
+
+- [ ] `prepend`
+- [ ] `extend`
+- [ ] シングルトンメソッド / 特異クラス (`class << obj`)
+- [ ] `Module#ancestors`
 
 ### ビルトインメソッドの差分
 
+#### String
+- [ ] `sub`, `gsub`, `match`, `scan`
+- [ ] `[]`, `[]=`（部分文字列アクセス / 代入）
+
 #### Integer
-- [x] `even?`, `odd?`, `step`
 - [ ] `upto`, `downto`
 - [ ] `bit_length`, `between?`
 
@@ -88,30 +56,33 @@ benchmark/optcarrot/bin/optcarrot-bench を動かすために必要な機能。
 - [ ] `nan?`, `infinite?`, `finite?`
 - [ ] `truncate`
 
-#### String
-- [x] `start_with?`, `end_with?`, `tr`, `%`
-- [ ] `[]=`（部分文字列代入）
-- [ ] `sub`, `gsub`, `match`, `scan`
-
 #### Array
-- [x] `sort`, `compact`, `uniq`, `uniq!`, `shift`, `unshift`, `join`, `inject`/`reduce`
-- [x] `transpose`, `zip`, `rotate!`, `flat_map`/`collect_concat`, `pack`
-- [x] `min`, `max`, `fill`, `clear`, `replace`, `concat`, `slice`, `slice!`
-- [x] `all?`, `any?`, `none?`, `each_with_index`
 - [ ] `delete`, `delete_at`, `count`
 - [ ] `each_slice`
 
 #### Hash
-- [x] `each_key`, `each_value`, `merge`, `delete`, `fetch`, `dup`, `compare_by_identity`
 - [ ] `to_a`, `default`
 
-### 未実装クラス
-- [x] File（最小限 facade: join, binread, dirname, basename, extname, expand_path, exist?, readable?, read）
-- [x] GC（thin facade: disable, enable, start）
-- [x] Process（clock_gettime）
-- [ ] IO（File の基底）
-- [ ] Comparable, Enumerable
-- [ ] Numeric (Integer/Float の共通親)
+### 未実装クラス / モジュール
+
+- [ ] `IO`（File の基底）
+- [ ] `Comparable`, `Enumerable`
+- [ ] `Numeric`（Integer / Float の共通親）
+
+### 標準ライブラリ
+
+- [ ] `Zlib`（optcarrot の ROM 解凍用）
+- [ ] `Marshal`
+
+## 既知のバグ
+
+実機確認で見つかったバグ。未実装機能とは別カテゴリ。
+
+- [ ] `Hash.new`（引数なし）が SEGV — `builtin/hash.c` 側で initialize 未対応
+- [ ] `Hash#inspect` の Symbol キーが `?=>v` と表示される（`builtin/hash.c` 内で Symbol ケースが抜けている。Fixnum / String のみ分岐あり）
+- [ ] `Regexp#match` が MatchData ではなく `true` / `nil` を返す。現状は `match?` と実質同一。MatchData / `$1` 等の実装が必要
+- [ ] `String#match` 未実装（Regexp#match は上記の通り）
+- [ ] Enumerator 未実装 — `[1,2,3].each`（ブロック無し）等が `no block given (yield)` で失敗。`each_slice`, `each_with_index` 等も block 必須
 
 ## 高速化
 
@@ -121,17 +92,6 @@ benchmark/optcarrot/bin/optcarrot-bench を動かすために必要な機能。
 - **同等**: nbody 1.11×
 - **負けているベンチ**: mandelbrot 1.93× (Float 特化済だが method dispatch 含む残存コスト),
   binary_trees 1.97× (T_DATA 大量確保が主因), factorial 1.18× (Bignum 乗算), string 2.79× (`s += "x"` による allocation churn)
-
-### 残る課題
-
-### メソッドディスパッチ
-
-- [x] メソッド名インターン化 — 全メソッド名をパース時に intern し、ID ポインタ比較に置換。実装済み
-- [x] インラインキャッシュ — `node_method_call` に `struct method_cache` を `@ref` で埋め込み、ヒット時に `abruby_class_find_method` を完全スキップ。グローバルシリアルでメソッド定義・include 時に無効化
-- [x] メソッドテーブルのハッシュ化 — `ab_id_table` を hybrid 実装に変更（小テーブルは packed linear、大テーブルは open-addressing Fibonacci hash）。IC ミス時のメソッド探索・builtin クラスのメソッド参照を高速化
-- [x] **prologue 関数ポインタ** — argc 特化 4 種 (`prologue_ast_simple_0/1/2/n`) + `prologue_ast_complex` + `prologue_cfunc` + `prologue_ivar_getter/setter`。すべて `always_inline`
-- [x] **call node の mtype 特化** (Phase 1) — 初回 cache fill で mc->prologue を確定後、`node_call0/1/2` を `_ast` / `_cfunc` / `_ivar_get/set` へ `swap_dispatcher` (8 特化 kind)。特化版の EVAL では `mc->prologue` 間接呼び出しが消え、prologue 本体がインライン化される。plain モード fib -14%, method_call -15%, ack -11%。compiled モードは SD_ が `EVAL_node_call1` を直接呼ぶため効かない (Phase 2 の課題)
-- [x] **polymorphic backoff** — `mc->demote_cnt` (uint8_t) で特化 demote 回数を追跡。閾値 `ABRUBY_CALL_POLY_THRESHOLD` (=2) 超えたら以後 specialize しない。bm_dispatch のような 3-class 循環で swap 往復を防止
 
 ### AOT / JIT（ASTro 部分評価）
 
@@ -149,22 +109,17 @@ benchmark/optcarrot/bin/optcarrot-bench を動かすために必要な機能。
 ### インタプリタ改善
 
 - [ ] スーパーインストラクション — 頻出パターン（`while(lvar < const)`, `lvar = lvar + num` 等）を融合ノードに。AOT 無効時のインタプリタ高速化
-- [x] NodeHead スリム化 — `parent`(8), `jit_status`(4), `dispatch_cnt`(4) を除去、フィールドを cold/warm/hot ゾーンに再配置。72B→56B (NODE: 144B→128B)。dispatcher と union データが常に同一キャッシュラインに収まる。ASTroGen に `ASTRO_NODEHEAD_PARENT` 等の条件付きガードを追加
 - [ ] 末尾呼び出し最適化 — `return method_call(...)` パターンを検出しフレーム再利用。再帰のスタック消費削減
 
 ### メモリ・GC
 
-- [ ] abruby_object の ivar inline slots をクラスごとに可変化 — 現在は全オブジェクト固定 4 slots (`ABRUBY_OBJECT_INLINE_IVARS`)。`klass->ivar_shape.cnt` を見て alloc 時にちょうどいいサイズを確保し、`extra_ivars` を不要にする。flexible array member で `ivars[]` をクラスの shape に合わせれば、ivar 0 個のクラス (binary_trees) は 0 bytes、ivar 7 個のクラス (nbody Body) は 56 bytes inline で heap alloc なし。クラス再オープンで shape が伸びた場合のみ realloc
+- [ ] `abruby_object` の ivar inline slots をクラスごとに可変化 — 現在は全オブジェクト固定 4 slots (`ABRUBY_OBJECT_INLINE_IVARS`)。`klass->ivar_shape.cnt` を見て alloc 時にちょうどいいサイズを確保し、`extra_ivars` を不要にする。flexible array member で `ivars[]` をクラスの shape に合わせれば、ivar 0 個のクラス (binary_trees) は 0 bytes、ivar 7 個のクラス (nbody Body) は 56 bytes inline で heap alloc なし。クラス再オープンで shape が伸びた場合のみ realloc
 - [ ] ノードのアリーナアロケータ — 個別 malloc → バンプポインタ。同一スコープのノードが隣接しキャッシュ局所性向上
 - [ ] VALUE スタック遅延 GC マーク — 現在 10,000 スロット全体をマーク。`fp + frame_size` までに限定
 
 ### オブジェクトシステム
 
-- [x] ivar インラインキャッシュ — `node_ivar_get/set` に `struct ivar_cache *@ref` を埋め込み、
-  `(klass, slot)` ガードで `obj->ivars.entries[slot]` を直接参照。ivar/nbody で大幅に効く
-- [ ] シェイプベース ivar アクセス — ivar の名前線形探索を固定オフセットに。CRuby のオブジェクトシェイプと同様の手法。
-  現在の ivar IC はキャッシュエントリが object 毎の entry slot を示すが、
-  shape なら class 単位で共有できる。binary_trees 等の大量オブジェクト生成で更なる高速化余地
+- [ ] シェイプベース ivar アクセス — ivar の名前線形探索を固定オフセットに。CRuby のオブジェクトシェイプと同様の手法。現在の ivar IC はキャッシュエントリが object 毎の entry slot を示すが、shape なら class 単位で共有できる。binary_trees 等の大量オブジェクト生成で更なる高速化余地
 - [ ] case/when ジャンプテーブル — 現在 if/elsif チェーンに desugar。整数リテラル when はジャンプテーブル化
 
 ### 機能追加（最適化の前提条件）
@@ -559,8 +514,97 @@ Phase 1 未対応の残りノード (優先度低):
   body 特化が必要
 - [ ] `node_apply_call` (splat) の cfunc 特化
 
+## PG / AOT 結合とコードストア鍵設計
+
+### 背景
+
+ASTro は AOT と PG (Profile-Guided) の 2 種類の特化コードを生成できる:
+
+- **NCaot**: AOT 時に生成。プロファイル情報なしの generic コード
+- **NCpg**: 実行後にノードに蓄積したプロファイル情報で生成した特化コード
+
+両者はコードストア (H→C の KV) に保存され、プロセス間で再利用されることが大前提
+(memory: "AOT reuse policy")。問題は「起動時に NCaot で動いているプログラムを、
+過去に PG した NCpg に差し替える」タイミングと鍵設計。
+
+### 現状の問題点
+
+1. **H がプロファイル情報を含んでいる**
+   - プロファイル更新のたびに H がクリアされる
+   - PG compile 時には既に Hpg しか手元になく、元の Haot を失っている
+   - → AOT と PG の結び付けが原理的に不可能
+
+2. **PG 時に「コードの場所」情報がない**
+   - 現在の実装ではノードからプログラム全体 / 位置の識別子を取れない
+
+3. **インライン化を入れると callee が鍵に入るが、caller の Hstruct からは callee が見えない**
+
+### 設計方針 (2026-04-15 議論)
+
+#### (1) ハッシュを 2 種類に分離
+
+- `Hstruct` (構造ハッシュ): プロファイル情報を含まない、ロード時に確定して **不変**
+- `Hprof` (プロファイル込み): 現状と同じく profile 更新で変化してよい
+
+コードストアのキーは `Hstruct` に統一する。プロファイルは AST ノードに載る
+付随情報とみなし、ハッシュ計算からは除外。`Hprof` は precondition マッチング
+("前回 PG したときのプロファイル状態と同じか"を安く判定) 用途で残す価値あり。
+
+実装: AST ノードに `Hstruct` と `Hprof` の 2 スロットを持たせる。既存の
+"H が変わる" ロジックは `Hprof` 側にそのまま残せる。
+
+#### (2) コードストアの値側を候補リストに拡張
+
+```
+Hstruct → [NCaot, NCpg(pre=P1), NCpg(pre=P2), ...]
+```
+
+ロード時は precondition が合う NCpg を選び、無ければ NCaot にフォールバック。
+**索引 DB (Haot_loc → Hpg のようなもの) は不要**。NCpg 側に precondition を
+guard として埋めておき、失敗で NCaot に deopt。
+
+#### (3) メソッドインライン化の鍵
+
+インライン化した NCpg は **合成ハッシュ** `(Hstruct_caller, Hstruct_callee)` を
+キーにする (callsite_id は別途持たず、多態 callsite は候補リストの複数エントリ
+として表現)。
+
+- NCpg 側の precondition に「この callsite の束縛が `Hstruct_callee` のメソッド
+  であること」を埋める
+- 別プロセス・別起動でも、同じ callsite で同じ callee が観測されれば precondition
+  ヒット → あっため不要で即再利用
+- JIT と原理的にあっためが要るのは同じだが、**あっため結果を key で永続化できる**
+  のが ASTro の強み。初回コストだけで済む
+
+### TODO
+
+- [ ] AST ノードに `Hstruct` / `Hprof` の 2 スロットを持たせる (現状の H の分離)
+- [ ] プロファイル更新時に `Hstruct` を不変に保つよう計算ロジックを修正
+- [ ] コードストアの値側を単値 → 候補リスト (precondition 付き) に拡張
+- [ ] NCpg 生成時に precondition (プロファイル前提条件) を guard としてコード埋め込み
+- [ ] ロード時: precondition で候補選別 → 合えば NCpg、無ければ NCaot
+- [ ] guard 失敗時の NCaot への deopt パス
+- [ ] (インライン化着手時) 合成ハッシュ `(Hstruct_caller, Hstruct_callee)` の実装
+- [ ] (インライン化着手時) callee 束縛の precondition 埋め込み
+- [ ] 候補リストの数が増えたときの運用 (世代管理 / LRU 等) — 当面は追記のみでよい
+
+### 索引 DB について (不採用)
+
+議論中、別途「Haot_loc → Hpg の索引 DB」を append-only 自前ファイル or SQLite/LMDB
+で持つ案を検討したが、ハッシュを `Hstruct` / `Hprof` に分離すれば **コードストア
+本体 (H→C) の値を候補リストにするだけ**で同等のことが実現でき、索引は不要になる。
+この方針で進める。
+
+### 未解決の論点
+
+- プロファイルが「構造に作用する」(ノード書き換え) ケースの扱い。現状 abruby の
+  `swap_dispatcher` によるノード種別切り替えは構造を変えるので、これが `Hstruct`
+  に影響するかどうか要検討。ノード種別は切り替わっても AST の "形" としては
+  同一とみなせるなら `Hstruct` 計算時にノード種別を normalize すればよい
+- precondition の表現形式 (ノード種別列 / type profile / 出現頻度など何を記録するか)
+- 候補リストが増え続けたときの容量管理
+
 ## ランタイム・内部実装
 
-- [x] ~~abruby オブジェクトの free（現在リーク前提）~~ → `RUBY_DEFAULT_FREE` で GC sweep 時に解放
-- [x] メソッド/ivar/定数テーブルの動的拡張 → `ab_id_table` (hybrid hash table) に移行済み
+現在特に未解決項目なし（過去の課題はすべて done.md に移行済み）。
 - [ ] スタックオーバーフロー検出
