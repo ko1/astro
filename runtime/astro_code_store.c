@@ -321,9 +321,15 @@ astro_cs_build(const char *extra_cflags)
 
     fclose(fp);
 
+    // Cap parallelism at 2 * nproc — unbounded `-j` spawned hundreds of
+    // cc processes on many-core boxes and thrashed the machine.
+    long ncpu = sysconf(_SC_NPROCESSORS_ONLN);
+    if (ncpu < 1) ncpu = 1;
+    long jobs = ncpu * 2;
+
     char cmd[ASTRO_CS_PATH_MAX * 2];
-    snprintf(cmd, sizeof(cmd), "make -C %s -j --no-print-directory -s all.so 2>&1 >/dev/null",
-             astro_cs.store_dir);
+    snprintf(cmd, sizeof(cmd), "make -C %s -j%ld --no-print-directory -s all.so 2>&1 >/dev/null",
+             astro_cs.store_dir, jobs);
 
     int ret = system(cmd);
     if (ret != 0) {
