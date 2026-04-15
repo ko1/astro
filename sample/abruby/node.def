@@ -1793,159 +1793,130 @@ extern const struct NodeKind kind_node_call2;
 // polymorphic.  Higher = more swap overhead; lower = faster give-up.
 #define ABRUBY_CALL_POLY_THRESHOLD 2
 
-// ===================================================================
-// Specialized call dispatchers — dispatcher-pointer swap only.
-//
-// These are plain static functions (NOT NODE_DEF), so no new NodeKind
-// is created.  n->head.kind stays at kind_node_call0/1/2 (operand
-// schema unchanged); only n->head.dispatcher is swapped to one of
-// the specialized routines below.  This avoids the icache cost of
-// auto-generating 6 support functions (DISPATCH/MARKER/HASH/DUMP/
-// REPLACER/SPECIALIZE) per added kind.
-//
-// On cache miss the dispatcher restores itself to the kind's default
-// (the original DISPATCH_node_call0/1/2) and forwards to the slow
-// path with already-evaluated recv/args.
-// ===================================================================
-
-// Bump demote counter and restore default dispatcher (polymorphic
-// backoff: after N demotes maybe_specialize_call_kind stops trying).
+// Common miss handler for specialized call0/1/2 variants.  Assumes recv
+// and all args are already evaluated (recv_val passed, args already in
+// fp).  Bumps demote_cnt, demotes the kind to generic, and fills the
+// cache via the slow path without re-evaluating anything.
 static inline RESULT
 specialized_call_miss(CTX * restrict c, NODE * restrict n,
                       VALUE recv_val, const struct abruby_class *klass,
                       ID name, unsigned int argc, uint32_t arg_index,
-                      struct method_cache *mc)
+                      struct method_cache *mc,
+                      const struct NodeKind *generic_kind)
 {
     if (mc->demote_cnt < 0xff) mc->demote_cnt++;
-    n->head.dispatcher = n->head.kind->default_dispatcher;
+    swap_dispatcher(n, generic_kind);
     return node_method_call_slow(c, n, recv_val, klass, name, argc, arg_index, mc, true);
 }
 
-static RESULT
-dispatch_call0_ast(CTX * restrict c, NODE * restrict n)
+NODE_DEF
+node_call0_ast(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, uint32_t arg_index, struct method_cache *mc@ref)
 {
-    NODE *recv = n->u.node_call0.recv;
-    uint32_t arg_index = n->u.node_call0.arg_index;
-    struct method_cache *mc = &n->u.node_call0.mc;
-    VALUE recv_val = UNWRAP(recv->head.dispatcher(c, recv));
+    VALUE recv_val = UNWRAP(EVAL_ARG(c, recv));
     const struct abruby_class *klass = AB_CLASS_OF(c, recv_val);
     if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
         return prologue_ast_simple_0(c, n, mc, recv_val, 0, arg_index);
     }
-    return specialized_call_miss(c, n, recv_val, klass, n->u.node_call0.name, 0, arg_index, mc);
+    return specialized_call_miss(c, n, recv_val, klass, name, 0, arg_index, mc, &kind_node_call0);
 }
 
-static RESULT
-dispatch_call0_cfunc(CTX * restrict c, NODE * restrict n)
+NODE_DEF
+node_call0_cfunc(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, uint32_t arg_index, struct method_cache *mc@ref)
 {
-    NODE *recv = n->u.node_call0.recv;
-    uint32_t arg_index = n->u.node_call0.arg_index;
-    struct method_cache *mc = &n->u.node_call0.mc;
-    VALUE recv_val = UNWRAP(recv->head.dispatcher(c, recv));
+    VALUE recv_val = UNWRAP(EVAL_ARG(c, recv));
     const struct abruby_class *klass = AB_CLASS_OF(c, recv_val);
     if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
         return prologue_cfunc(c, n, mc, recv_val, 0, arg_index);
     }
-    return specialized_call_miss(c, n, recv_val, klass, n->u.node_call0.name, 0, arg_index, mc);
+    return specialized_call_miss(c, n, recv_val, klass, name, 0, arg_index, mc, &kind_node_call0);
 }
 
-static RESULT
-dispatch_call0_ivar_get(CTX * restrict c, NODE * restrict n)
+NODE_DEF
+node_call0_ivar_get(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, uint32_t arg_index, struct method_cache *mc@ref)
 {
-    NODE *recv = n->u.node_call0.recv;
-    uint32_t arg_index = n->u.node_call0.arg_index;
-    struct method_cache *mc = &n->u.node_call0.mc;
-    VALUE recv_val = UNWRAP(recv->head.dispatcher(c, recv));
+    VALUE recv_val = UNWRAP(EVAL_ARG(c, recv));
     const struct abruby_class *klass = AB_CLASS_OF(c, recv_val);
     if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
         return prologue_ivar_getter(c, n, mc, recv_val, 0, arg_index);
     }
-    return specialized_call_miss(c, n, recv_val, klass, n->u.node_call0.name, 0, arg_index, mc);
+    return specialized_call_miss(c, n, recv_val, klass, name, 0, arg_index, mc, &kind_node_call0);
 }
 
-static RESULT
-dispatch_call1_ast(CTX * restrict c, NODE * restrict n)
+NODE_DEF
+node_call1_ast(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, NODE *arg0, uint32_t arg_index, struct method_cache *mc@ref)
 {
-    NODE *recv = n->u.node_call1.recv;
-    NODE *arg0 = n->u.node_call1.arg0;
-    uint32_t arg_index = n->u.node_call1.arg_index;
-    struct method_cache *mc = &n->u.node_call1.mc;
-    VALUE recv_val = UNWRAP(recv->head.dispatcher(c, recv));
-    c->current_frame->fp[arg_index] = UNWRAP(arg0->head.dispatcher(c, arg0));
+    VALUE recv_val = UNWRAP(EVAL_ARG(c, recv));
+    c->current_frame->fp[arg_index] = UNWRAP(EVAL_ARG(c, arg0));
     const struct abruby_class *klass = AB_CLASS_OF(c, recv_val);
     if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
         return prologue_ast_simple_1(c, n, mc, recv_val, 1, arg_index);
     }
-    return specialized_call_miss(c, n, recv_val, klass, n->u.node_call1.name, 1, arg_index, mc);
+    return specialized_call_miss(c, n, recv_val, klass, name, 1, arg_index, mc, &kind_node_call1);
 }
 
-static RESULT
-dispatch_call1_cfunc(CTX * restrict c, NODE * restrict n)
+NODE_DEF
+node_call1_cfunc(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, NODE *arg0, uint32_t arg_index, struct method_cache *mc@ref)
 {
-    NODE *recv = n->u.node_call1.recv;
-    NODE *arg0 = n->u.node_call1.arg0;
-    uint32_t arg_index = n->u.node_call1.arg_index;
-    struct method_cache *mc = &n->u.node_call1.mc;
-    VALUE recv_val = UNWRAP(recv->head.dispatcher(c, recv));
-    c->current_frame->fp[arg_index] = UNWRAP(arg0->head.dispatcher(c, arg0));
+    VALUE recv_val = UNWRAP(EVAL_ARG(c, recv));
+    c->current_frame->fp[arg_index] = UNWRAP(EVAL_ARG(c, arg0));
     const struct abruby_class *klass = AB_CLASS_OF(c, recv_val);
     if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
         return prologue_cfunc(c, n, mc, recv_val, 1, arg_index);
     }
-    return specialized_call_miss(c, n, recv_val, klass, n->u.node_call1.name, 1, arg_index, mc);
+    return specialized_call_miss(c, n, recv_val, klass, name, 1, arg_index, mc, &kind_node_call1);
 }
 
-static RESULT
-dispatch_call1_ivar_set(CTX * restrict c, NODE * restrict n)
+NODE_DEF
+node_call1_ivar_set(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, NODE *arg0, uint32_t arg_index, struct method_cache *mc@ref)
 {
-    NODE *recv = n->u.node_call1.recv;
-    NODE *arg0 = n->u.node_call1.arg0;
-    uint32_t arg_index = n->u.node_call1.arg_index;
-    struct method_cache *mc = &n->u.node_call1.mc;
-    VALUE recv_val = UNWRAP(recv->head.dispatcher(c, recv));
-    c->current_frame->fp[arg_index] = UNWRAP(arg0->head.dispatcher(c, arg0));
+    VALUE recv_val = UNWRAP(EVAL_ARG(c, recv));
+    c->current_frame->fp[arg_index] = UNWRAP(EVAL_ARG(c, arg0));
     const struct abruby_class *klass = AB_CLASS_OF(c, recv_val);
     if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
         return prologue_ivar_setter(c, n, mc, recv_val, 1, arg_index);
     }
-    return specialized_call_miss(c, n, recv_val, klass, n->u.node_call1.name, 1, arg_index, mc);
+    return specialized_call_miss(c, n, recv_val, klass, name, 1, arg_index, mc, &kind_node_call1);
 }
 
-static RESULT
-dispatch_call2_ast(CTX * restrict c, NODE * restrict n)
+NODE_DEF
+node_call2_ast(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, NODE *arg0, NODE *arg1, uint32_t arg_index, struct method_cache *mc@ref)
 {
-    NODE *recv = n->u.node_call2.recv;
-    NODE *arg0 = n->u.node_call2.arg0;
-    NODE *arg1 = n->u.node_call2.arg1;
-    uint32_t arg_index = n->u.node_call2.arg_index;
-    struct method_cache *mc = &n->u.node_call2.mc;
-    VALUE recv_val = UNWRAP(recv->head.dispatcher(c, recv));
-    c->current_frame->fp[arg_index]     = UNWRAP(arg0->head.dispatcher(c, arg0));
-    c->current_frame->fp[arg_index + 1] = UNWRAP(arg1->head.dispatcher(c, arg1));
+    VALUE recv_val = UNWRAP(EVAL_ARG(c, recv));
+    c->current_frame->fp[arg_index]     = UNWRAP(EVAL_ARG(c, arg0));
+    c->current_frame->fp[arg_index + 1] = UNWRAP(EVAL_ARG(c, arg1));
     const struct abruby_class *klass = AB_CLASS_OF(c, recv_val);
     if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
         return prologue_ast_simple_2(c, n, mc, recv_val, 2, arg_index);
     }
-    return specialized_call_miss(c, n, recv_val, klass, n->u.node_call2.name, 2, arg_index, mc);
+    return specialized_call_miss(c, n, recv_val, klass, name, 2, arg_index, mc, &kind_node_call2);
 }
 
-static RESULT
-dispatch_call2_cfunc(CTX * restrict c, NODE * restrict n)
+NODE_DEF
+node_call2_cfunc(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, NODE *arg0, NODE *arg1, uint32_t arg_index, struct method_cache *mc@ref)
 {
-    NODE *recv = n->u.node_call2.recv;
-    NODE *arg0 = n->u.node_call2.arg0;
-    NODE *arg1 = n->u.node_call2.arg1;
-    uint32_t arg_index = n->u.node_call2.arg_index;
-    struct method_cache *mc = &n->u.node_call2.mc;
-    VALUE recv_val = UNWRAP(recv->head.dispatcher(c, recv));
-    c->current_frame->fp[arg_index]     = UNWRAP(arg0->head.dispatcher(c, arg0));
-    c->current_frame->fp[arg_index + 1] = UNWRAP(arg1->head.dispatcher(c, arg1));
+    VALUE recv_val = UNWRAP(EVAL_ARG(c, recv));
+    c->current_frame->fp[arg_index]     = UNWRAP(EVAL_ARG(c, arg0));
+    c->current_frame->fp[arg_index + 1] = UNWRAP(EVAL_ARG(c, arg1));
     const struct abruby_class *klass = AB_CLASS_OF(c, recv_val);
     if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
         return prologue_cfunc(c, n, mc, recv_val, 2, arg_index);
     }
-    return specialized_call_miss(c, n, recv_val, klass, n->u.node_call2.name, 2, arg_index, mc);
+    return specialized_call_miss(c, n, recv_val, klass, name, 2, arg_index, mc, &kind_node_call2);
 }
+
+// After method_cache_fill, rewrite the call node to a specialized kind
+// matching the selected prologue.  Called from node_method_call_slow.
+// Only handles node_call0/1/2 (the generic simple-noblock variants);
+// block-carrying variants (call*_b) and general node_call are left as-is
+// for Phase 1.
+extern const struct NodeKind kind_node_call0_ast;
+extern const struct NodeKind kind_node_call0_cfunc;
+extern const struct NodeKind kind_node_call0_ivar_get;
+extern const struct NodeKind kind_node_call1_ast;
+extern const struct NodeKind kind_node_call1_cfunc;
+extern const struct NodeKind kind_node_call1_ivar_set;
+extern const struct NodeKind kind_node_call2_ast;
+extern const struct NodeKind kind_node_call2_cfunc;
 
 static inline void
 maybe_specialize_call_kind(NODE *n, const struct method_cache *mc)
@@ -1954,16 +1925,16 @@ maybe_specialize_call_kind(NODE *n, const struct method_cache *mc)
     if (mc->demote_cnt >= ABRUBY_CALL_POLY_THRESHOLD) return;
     const struct NodeKind *k = n->head.kind;
     if (k == &kind_node_call0) {
-        if      (mc->prologue == prologue_ast_simple_0) n->head.dispatcher = dispatch_call0_ast;
-        else if (mc->prologue == prologue_cfunc)        n->head.dispatcher = dispatch_call0_cfunc;
-        else if (mc->prologue == prologue_ivar_getter)  n->head.dispatcher = dispatch_call0_ivar_get;
+        if      (mc->prologue == prologue_ast_simple_0) swap_dispatcher(n, &kind_node_call0_ast);
+        else if (mc->prologue == prologue_cfunc)        swap_dispatcher(n, &kind_node_call0_cfunc);
+        else if (mc->prologue == prologue_ivar_getter)  swap_dispatcher(n, &kind_node_call0_ivar_get);
     } else if (k == &kind_node_call1) {
-        if      (mc->prologue == prologue_ast_simple_1) n->head.dispatcher = dispatch_call1_ast;
-        else if (mc->prologue == prologue_cfunc)        n->head.dispatcher = dispatch_call1_cfunc;
-        else if (mc->prologue == prologue_ivar_setter)  n->head.dispatcher = dispatch_call1_ivar_set;
+        if      (mc->prologue == prologue_ast_simple_1) swap_dispatcher(n, &kind_node_call1_ast);
+        else if (mc->prologue == prologue_cfunc)        swap_dispatcher(n, &kind_node_call1_cfunc);
+        else if (mc->prologue == prologue_ivar_setter)  swap_dispatcher(n, &kind_node_call1_ivar_set);
     } else if (k == &kind_node_call2) {
-        if      (mc->prologue == prologue_ast_simple_2) n->head.dispatcher = dispatch_call2_ast;
-        else if (mc->prologue == prologue_cfunc)        n->head.dispatcher = dispatch_call2_cfunc;
+        if      (mc->prologue == prologue_ast_simple_2) swap_dispatcher(n, &kind_node_call2_ast);
+        else if (mc->prologue == prologue_cfunc)        swap_dispatcher(n, &kind_node_call2_cfunc);
     }
 }
 
