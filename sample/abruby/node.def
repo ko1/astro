@@ -979,212 +979,6 @@ node_class_def(CTX * restrict c, NODE * restrict n, ID name, NODE *super_expr, N
     return RESULT_OK(abruby_wrap_class(klass));
 }
 
-// === Prologue functions ===
-// Method-type-specific dispatch functions.  Each handles frame setup,
-// body evaluation, and method-boundary RESULT processing for one method type.
-// Stored in method_cache.prologue / prologue_blk and called directly from
-// call sites, eliminating the mtype switch in the old dispatch_method_frame.
-
-// --- Non-block prologues ---
-
-static inline RESULT
-prologue_iseq(CTX *c, struct Node *call_site,
-              const struct method_cache *mc,
-              unsigned int argc, uint32_t arg_index)
-{
-    struct abruby_frame frame;
-    frame.prev = c->current_frame;
-    frame.method = mc->method;
-    frame.caller_node = call_site;
-    frame.block = NULL;
-    frame.self = c->current_frame->self;
-    frame.fp = c->current_frame->fp;
-    frame.entry = &mc->method->u.ast.entry;
-    c->current_frame = &frame;
-
-    VALUE *save_fp = c->current_frame->fp;
-    c->current_frame->fp = save_fp + arg_index;
-    unsigned int mparams = mc->method->u.ast.params_cnt;
-    for (unsigned int i = argc; i < mparams; i++) c->current_frame->fp[i] = Qnil;
-    unsigned int n = (mparams > argc) ? mparams : argc;
-    ctx_update_sp(c, c->current_frame->fp + n);
-    RESULT r = mc->dispatcher(c, mc->body);
-    c->current_frame->fp = save_fp;
-
-    if (UNLIKELY(r.state)) {
-        if (r.state & RESULT_RETURN) {
-            if ((r.state & RESULT_SKIP_MASK) == 0) {
-                r.state &= ~(unsigned)RESULT_RETURN_CATCH_MASK;
-            } else {
-                r.state -= RESULT_SKIP_UNIT;
-            }
-        }
-    }
-    c->current_frame = frame.prev;
-    return r;
-}
-
-static inline RESULT
-prologue_cfunc(CTX *c, struct Node *call_site,
-               const struct method_cache *mc,
-               unsigned int argc, uint32_t arg_index)
-{
-    struct abruby_frame frame;
-    frame.prev = c->current_frame;
-    frame.method = mc->method;
-    frame.caller_node = call_site;
-    frame.block = NULL;
-    frame.self = c->current_frame->self;
-    frame.fp = c->current_frame->fp;
-    frame.entry = NULL;  // cfunc has no cref
-    c->current_frame = &frame;
-
-    ctx_update_sp(c, c->current_frame->fp + arg_index + argc);
-    RESULT r = mc->method->u.cfunc.func(c, c->current_frame->self, argc, c->current_frame->fp + arg_index);
-
-    if (UNLIKELY(r.state)) {
-        if (r.state & RESULT_RETURN) {
-            if ((r.state & RESULT_SKIP_MASK) == 0) {
-                r.state &= ~(unsigned)RESULT_RETURN_CATCH_MASK;
-            } else {
-                r.state -= RESULT_SKIP_UNIT;
-            }
-        }
-    }
-    c->current_frame = frame.prev;
-    return r;
-}
-
-static inline RESULT
-prologue_ivar_getter(CTX *c, struct Node *call_site,
-                     const struct method_cache *mc,
-                     unsigned int argc, uint32_t arg_index)
-{
-    (void)call_site; (void)argc; (void)arg_index;
-    const struct abruby_object *obj =
-        (const struct abruby_object *)RTYPEDDATA_GET_DATA(c->current_frame->self);
-    unsigned int slot;
-    if (LIKELY(mc->klass == obj->klass)) {
-        slot = mc->ivar_slot;
-    } else {
-        VALUE slot_fix;
-        if (!ab_id_table_lookup(&obj->klass->ivar_shape,
-                                mc->method->u.ivar_accessor.ivar_name, &slot_fix)) {
-            return RESULT_OK(Qnil);
-        }
-        slot = (unsigned int)FIX2ULONG(slot_fix);
-    }
-    if (LIKELY(slot < obj->ivar_cnt)) {
-        return RESULT_OK(abruby_object_ivar_read(obj, slot));
-    }
-    return RESULT_OK(Qnil);
-}
-
-static inline RESULT
-prologue_ivar_setter(CTX *c, struct Node *call_site,
-                     const struct method_cache *mc,
-                     unsigned int argc, uint32_t arg_index)
-{
-    (void)call_site; (void)argc;
-    struct abruby_object *obj =
-        (struct abruby_object *)RTYPEDDATA_GET_DATA(c->current_frame->self);
-    VALUE v = c->current_frame->fp[arg_index];
-    unsigned int slot;
-    if (LIKELY(mc->klass == obj->klass)) {
-        slot = mc->ivar_slot;
-    } else {
-        struct abruby_class *obj_klass = obj->klass;
-        ID ivar_name = mc->method->u.ivar_accessor.ivar_name;
-        VALUE slot_fix;
-        if (ab_id_table_lookup(&obj_klass->ivar_shape, ivar_name, &slot_fix)) {
-            slot = (unsigned int)FIX2ULONG(slot_fix);
-        } else {
-            slot = obj_klass->ivar_shape.cnt;
-            ab_id_table_insert(&obj_klass->ivar_shape, ivar_name, LONG2FIX((long)slot));
-        }
-    }
-    if (slot >= obj->ivar_cnt) abruby_object_grow_ivars(obj, slot + 1);
-    if (LIKELY(slot < ABRUBY_OBJECT_INLINE_IVARS)) {
-        obj->ivars[slot] = v;
-    } else {
-        obj->extra_ivars[slot - ABRUBY_OBJECT_INLINE_IVARS] = v;
-    }
-    return RESULT_OK(v);
-}
-
-// --- Block-carrying prologues ---
-
-static inline RESULT
-prologue_iseq_with_block(CTX *c, struct Node *call_site,
-                         const struct method_cache *mc,
-                         unsigned int argc, uint32_t arg_index,
-                         const struct abruby_block *blk)
-{
-    struct abruby_frame frame;
-    frame.prev = c->current_frame;
-    frame.method = mc->method;
-    frame.caller_node = call_site;
-    frame.block = blk;
-    frame.self = c->current_frame->self;
-    frame.fp = c->current_frame->fp;
-    frame.entry = &mc->method->u.ast.entry;
-    c->current_frame = &frame;
-
-    VALUE *save_fp = c->current_frame->fp;
-    c->current_frame->fp = save_fp + arg_index;
-    unsigned int mparams = mc->method->u.ast.params_cnt;
-    for (unsigned int i = argc; i < mparams; i++) c->current_frame->fp[i] = Qnil;
-    unsigned int n = (mparams > argc) ? mparams : argc;
-    ctx_update_sp(c, c->current_frame->fp + n);
-    RESULT r = mc->dispatcher(c, mc->body);
-    c->current_frame->fp = save_fp;
-
-    if (UNLIKELY(r.state)) {
-        r.state &= ~(unsigned)RESULT_BREAK;
-        if (r.state & RESULT_RETURN) {
-            if ((r.state & RESULT_SKIP_MASK) == 0) {
-                r.state &= ~(unsigned)RESULT_RETURN_CATCH_MASK;
-            } else {
-                r.state -= RESULT_SKIP_UNIT;
-            }
-        }
-    }
-    c->current_frame = frame.prev;
-    return r;
-}
-
-static inline RESULT
-prologue_cfunc_with_block(CTX *c, struct Node *call_site,
-                          const struct method_cache *mc,
-                          unsigned int argc, uint32_t arg_index,
-                          const struct abruby_block *blk)
-{
-    struct abruby_frame frame;
-    frame.prev = c->current_frame;
-    frame.method = mc->method;
-    frame.caller_node = call_site;
-    frame.block = blk;
-    frame.self = c->current_frame->self;
-    frame.fp = c->current_frame->fp;
-    frame.entry = NULL;  // cfunc has no cref
-    c->current_frame = &frame;
-
-    ctx_update_sp(c, c->current_frame->fp + arg_index + argc);
-    RESULT r = mc->method->u.cfunc.func(c, c->current_frame->self, argc, c->current_frame->fp + arg_index);
-
-    if (UNLIKELY(r.state)) {
-        r.state &= ~(unsigned)RESULT_BREAK;
-        if (r.state & RESULT_RETURN) {
-            if ((r.state & RESULT_SKIP_MASK) == 0) {
-                r.state &= ~(unsigned)RESULT_RETURN_CATCH_MASK;
-            } else {
-                r.state -= RESULT_SKIP_UNIT;
-            }
-        }
-    }
-    c->current_frame = frame.prev;
-    return r;
-}
 
 // Populate cached fields in method_cache.
 static inline void
@@ -1198,13 +992,9 @@ method_cache_fill(CTX *c, struct method_cache *mc, const struct abruby_class *kl
     if (method->type == ABRUBY_METHOD_AST) {
         mc->body = method->u.ast.body;
         mc->dispatcher = method->u.ast.body->head.dispatcher;
-        mc->prologue = prologue_iseq;
-        mc->prologue_blk = prologue_iseq_with_block;
     } else if (method->type == ABRUBY_METHOD_IVAR_GETTER) {
         mc->body = NULL;
         mc->dispatcher = NULL;
-        mc->prologue = prologue_ivar_getter;
-        mc->prologue_blk = NULL;  // ivar accessors ignore blocks
         // Resolve (or register) the ivar's slot in the receiver's class shape.
         struct abruby_class *klass_mut = (struct abruby_class *)klass;
         ID ivar_name = method->u.ivar_accessor.ivar_name;
@@ -1219,8 +1009,6 @@ method_cache_fill(CTX *c, struct method_cache *mc, const struct abruby_class *kl
     } else if (method->type == ABRUBY_METHOD_IVAR_SETTER) {
         mc->body = NULL;
         mc->dispatcher = NULL;
-        mc->prologue = prologue_ivar_setter;
-        mc->prologue_blk = NULL;  // ivar accessors ignore blocks
         // Resolve (or register) the ivar's slot in the receiver's class shape.
         struct abruby_class *klass_mut = (struct abruby_class *)klass;
         ID ivar_name = method->u.ivar_accessor.ivar_name;
@@ -1236,8 +1024,6 @@ method_cache_fill(CTX *c, struct method_cache *mc, const struct abruby_class *kl
         // CFUNC
         mc->body = NULL;
         mc->dispatcher = NULL;
-        mc->prologue = prologue_cfunc;
-        mc->prologue_blk = prologue_cfunc_with_block;
     }
 }
 
@@ -1415,17 +1201,17 @@ dispatch_ivar_setter(CTX * restrict c, NODE * restrict call_site,
     return RESULT_OK(v);
 }
 
-static inline RESULT
-dispatch_method_frame(CTX * restrict c, NODE * restrict call_site,
-                      const struct method_cache *mc, VALUE recv_self,
-                      unsigned int argc, uint32_t arg_index)
+// Complex dispatch path: ivar/cfunc, or AST with opt/rest/post.
+// Out-of-line so that dispatch_method_frame stays tiny & inlinable.
+static __attribute__((noinline)) RESULT
+dispatch_method_frame_complex(CTX * restrict c, NODE * restrict call_site,
+                              const struct method_cache *mc, VALUE recv_self,
+                              unsigned int argc, uint32_t arg_index)
 {
-    // IVAR accessor cold paths — branched to a separate function so the hot
-    // AST/cfunc path stays small enough for gcc to inline.
     enum abruby_method_type mtype = mc->method->type;
-    if (UNLIKELY(mtype == ABRUBY_METHOD_IVAR_GETTER))
+    if (mtype == ABRUBY_METHOD_IVAR_GETTER)
         return dispatch_ivar_getter(c, call_site, mc, recv_self, argc);
-    if (UNLIKELY(mtype == ABRUBY_METHOD_IVAR_SETTER))
+    if (mtype == ABRUBY_METHOD_IVAR_SETTER)
         return dispatch_ivar_setter(c, call_site, mc, recv_self, argc, arg_index);
 
     struct abruby_frame frame;
@@ -1433,22 +1219,19 @@ dispatch_method_frame(CTX * restrict c, NODE * restrict call_site,
     frame.method = mc->method;
     frame.caller_node = call_site;
     frame.block = NULL;
-    // frame.self = recv_self — pop auto-restores caller's self (no save/restore needed).
     frame.self = recv_self;
     frame.fp = c->current_frame->fp;
     frame.entry = mc->body ? &mc->method->u.ast.entry : NULL;
     c->current_frame = &frame;
 
     RESULT r;
-    if (LIKELY(mc->body != NULL)) {
+    if (mc->body != NULL) {
         RESULT err_r;
         int opt_idx = dispatch_setup_args(c, call_site, mc, argc, arg_index, &err_r);
         if (UNLIKELY(opt_idx < 0)) {
             c->current_frame = frame.prev;
             return err_r;
         }
-        // Pick entry point: all optionals filled → body (compiled fast path),
-        // some missing → opt_pc entry with default assignments.
         unsigned int opt_num = mc->method->u.ast.params_cnt - mc->method->u.ast.required_params_cnt;
         if (LIKELY((unsigned int)opt_idx >= opt_num || !mc->method->u.ast.opt_pc)) {
             r = mc->dispatcher(c, mc->body);
@@ -1457,7 +1240,7 @@ dispatch_method_frame(CTX * restrict c, NODE * restrict call_site,
             r = EVAL(c, entry);
         }
     } else {
-        // CFUNCs handle argc internally; no argument count check here.
+        // CFUNC
         ctx_update_sp(c, c->current_frame->fp + arg_index + argc);
         r = mc->method->u.cfunc.func(c, recv_self, argc, c->current_frame->fp + arg_index);
     }
@@ -1471,7 +1254,52 @@ dispatch_method_frame(CTX * restrict c, NODE * restrict call_site,
             }
         }
     }
+    c->current_frame = frame.prev;
+    return r;
+}
 
+// dispatch_method_frame: hot path — simple AST method only (most common).
+// Anything else (ivar, cfunc, opt/rest/post) defers to _complex (out-of-line).
+static inline __attribute__((always_inline)) RESULT
+dispatch_method_frame(CTX * restrict c, NODE * restrict call_site,
+                      const struct method_cache *mc, VALUE recv_self,
+                      unsigned int argc, uint32_t arg_index)
+{
+    // Only handle AST methods with mandatory params only.
+    if (UNLIKELY(mc->method->type != ABRUBY_METHOD_AST))
+        return dispatch_method_frame_complex(c, call_site, mc, recv_self, argc, arg_index);
+
+    unsigned int req = mc->method->u.ast.required_params_cnt;
+    if (UNLIKELY(mc->method->u.ast.params_cnt != req ||
+                 mc->method->u.ast.rest_index >= 0 ||
+                 mc->method->u.ast.post_params_cnt != 0))
+        return dispatch_method_frame_complex(c, call_site, mc, recv_self, argc, arg_index);
+
+    if (UNLIKELY(argc != req))
+        return raise_argc_error(c, call_site, argc, req, req, false);
+
+    struct abruby_frame frame;
+    frame.prev = c->current_frame;
+    frame.method = mc->method;
+    frame.caller_node = call_site;
+    frame.block = NULL;
+    frame.self = recv_self;
+    frame.fp = c->current_frame->fp + arg_index;  // new fp directly
+    frame.entry = &mc->method->u.ast.entry;
+    c->current_frame = &frame;
+    ctx_update_sp(c, frame.fp + req);
+
+    RESULT r = mc->dispatcher(c, mc->body);
+
+    if (UNLIKELY(r.state)) {
+        if (r.state & RESULT_RETURN) {
+            if ((r.state & RESULT_SKIP_MASK) == 0) {
+                r.state &= ~(unsigned)RESULT_RETURN_CATCH_MASK;
+            } else {
+                r.state -= RESULT_SKIP_UNIT;
+            }
+        }
+    }
     c->current_frame = frame.prev;
     return r;
 }
