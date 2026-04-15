@@ -54,7 +54,9 @@ if run_idx
   run_args = run_argv
   mode = :compile unless mode == :pg
 else
-  opt.parse!(ARGV)
+  # Use order! so that options after the script path are forwarded to the
+  # script via ARGV (mirroring `ruby script.rb -b ...` behaviour).
+  opt.order!(ARGV)
 end
 
 # Read source file
