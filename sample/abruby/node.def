@@ -134,32 +134,6 @@ abruby_class_find_method(const struct abruby_class *klass, ID name)
     return NULL;
 }
 
-static struct abruby_class *
-find_class_in(const struct abruby_class *scope, ID name)
-{
-    VALUE v;
-    if (ab_id_table_lookup(&scope->constants, name, &v) && RB_TYPE_P(v, T_DATA)) {
-        const struct abruby_header *h = (const struct abruby_header *)RTYPEDDATA_GET_DATA(v);
-        if (h->obj_type == ABRUBY_OBJ_CLASS || h->obj_type == ABRUBY_OBJ_MODULE) {
-            return (struct abruby_class *)h;
-        }
-    }
-    return NULL;
-}
-
-static struct abruby_class *
-find_class(const CTX *c, ID name)
-{
-    // Check per-instance main_class first, then per-instance Object
-    struct abruby_class *klass = find_class_in(CTX_MAIN_CLASS(c), name);
-    if (klass) return klass;
-    if (CTX_MAIN_CLASS(c) != c->abm->object_class) {
-        return find_class_in(c->abm->object_class, name);
-    }
-    return NULL;
-}
-
-
 extern VALUE abruby_new_object(struct abruby_class *klass);
 extern void abruby_object_grow_ivars(struct abruby_object *obj, unsigned int new_cnt);
 
