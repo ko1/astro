@@ -463,7 +463,14 @@ module ASTroGen
       eval_body = @output.join("\n")
       <<~C
       // This file is auto-generated from #{@file}.
-      #define EVAL_ARG(c, n) (*n##_dispatcher)(c, n)
+
+      // EVAL_ARG_CHECK is a per-call hook the embedder can override.  Default
+      // is a no-op; define it before including this file (e.g. in node.c for
+      // ABRUBY_DEBUG builds) to run diagnostics on every child dispatch.
+      #ifndef EVAL_ARG_CHECK
+      #define EVAL_ARG_CHECK(n) ((void)0)
+      #endif
+      #define EVAL_ARG(c, n) (EVAL_ARG_CHECK(n), (*n##_dispatcher)(c, n))
 
       #{eval_body}
       C

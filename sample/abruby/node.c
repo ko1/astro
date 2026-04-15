@@ -95,6 +95,45 @@ code_repo_add(const char *name, NODE *body, bool force_add)
 
 // --- Generated code ---
 
+// Install a per-child dispatch NULL-check for debug builds, driven by the
+// EVAL_ARG_CHECK hook that node_eval.c exposes (no-op by default).  The hook
+// must expand to an expression because node_eval.c wires it into a
+// comma-expression (EVAL_ARG_CHECK(n), (*disp)(c, n)); a do/while block
+// wouldn't compile there.
+#if ABRUBY_DEBUG
+static void abruby_debug_null_dispatch(NODE *n, const char *caller);
+#define EVAL_ARG_CHECK(n) \
+    (UNLIKELY((n)->head.dispatcher == NULL) \
+        ? (abruby_debug_null_dispatch((n), __func__), (void)0) \
+        : (void)0)
+
+static void
+abruby_debug_null_dispatch(NODE *n, const char *caller)
+{
+    const char *kname = (n->head.kind && n->head.kind->default_dispatcher_name)
+        ? n->head.kind->default_dispatcher_name : "<unknown>";
+    fprintf(stderr, "\nABRUBY_BUG: NULL child dispatcher via EVAL_ARG in %s\n", caller);
+    fprintf(stderr, "  node=%p kind=%s line=%d hash=%lx is_specialized=%d\n",
+            (void*)n, kname, n->head.line,
+            (unsigned long)(n->head.flags.has_hash_value ? n->head.hash_value : HASH(n)),
+            n->head.flags.is_specialized);
+    fprintf(stderr, "  ---- failing node ----\n  ");
+    DUMP(stderr, n, true);
+    fprintf(stderr, "\n");
+    NODE *root = abruby_debug_enclosing_entry(n);
+    if (root && root != n) {
+        const char *rname = (root->head.kind && root->head.kind->default_dispatcher_name)
+            ? root->head.kind->default_dispatcher_name : "<unknown>";
+        fprintf(stderr, "  ---- enclosing entry (%s, line=%d) ----\n  ",
+                rname, root->head.line);
+        DUMP(stderr, root, true);
+        fprintf(stderr, "\n");
+    }
+    fflush(stderr);
+    rb_bug("ABRUBY: NULL child dispatcher (kind=%s, via %s)", kname, caller);
+}
+#endif
+
 #include "node_eval.c"
 #include "node_dispatch.c"
 #include "node_dump.c"
