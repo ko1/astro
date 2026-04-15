@@ -1000,6 +1000,8 @@ class AbRuby
       ">" => "fixnum_gt", ">=" => "fixnum_ge",
       "==" => "fixnum_eq", "!=" => "fixnum_neq",
       "%" => "fixnum_mod",
+      "&" => "fixnum_and", "|" => "fixnum_or",
+      "^" => "fixnum_xor", ">>" => "fixnum_gtgt",
     }.freeze
 
     def transduce_binop(node)
@@ -1485,7 +1487,9 @@ class AbRuby
       args = node.arguments&.arguments || []
       block_node = (node.respond_to?(:block) ? node.block : nil)
 
-      # Binary operators → specialized fast-path nodes (existing).
+      # Binary operators → specialized fast-path nodes.
+      # `<<` stays out of BINOP_MAP because it's polymorphic (Array / String /
+      # Fixnum) and handled through the node_ltlt classification path below.
       if node.receiver && !args_have_splat?(args)
         op = name.to_s
         if BINOP_MAP.key?(op) && args.size == 1

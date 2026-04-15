@@ -3058,6 +3058,177 @@ node_fixnum_mod(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, ui
     return node_fixnum_mod_slow(c, n, lv, rv, arg_index);
 }
 
+// ===================================================================
+// Bitwise operators (&, |, ^, >>): Fixnum fast path + method fallback.
+// Same structure as node_plus / node_fixnum_plus.  optcarrot's CPU/PPU
+// emulation runs these at > 600 calls per parsed file; the Fixnum case
+// is a single machine instruction but previously went all the way
+// through node_call1 → prologue_cfunc → ab_integer_band → rb_funcall.
+// ===================================================================
+
+static RESULT DISPATCH_node_and(CTX *c, NODE *n);
+static RESULT DISPATCH_node_fixnum_and(CTX *c, NODE *n);
+static RESULT DISPATCH_node_or(CTX *c, NODE *n);
+static RESULT DISPATCH_node_fixnum_or(CTX *c, NODE *n);
+static RESULT DISPATCH_node_xor(CTX *c, NODE *n);
+static RESULT DISPATCH_node_fixnum_xor(CTX *c, NODE *n);
+static RESULT DISPATCH_node_gtgt(CTX *c, NODE *n);
+static RESULT DISPATCH_node_fixnum_gtgt(CTX *c, NODE *n);
+static RESULT DISPATCH_node_fixnum_ltlt(CTX *c, NODE *n);
+
+extern const struct NodeKind kind_node_and;
+extern const struct NodeKind kind_node_fixnum_and;
+extern const struct NodeKind kind_node_or;
+extern const struct NodeKind kind_node_fixnum_or;
+extern const struct NodeKind kind_node_xor;
+extern const struct NodeKind kind_node_fixnum_xor;
+extern const struct NodeKind kind_node_gtgt;
+extern const struct NodeKind kind_node_fixnum_gtgt;
+extern const struct NodeKind kind_node_fixnum_ltlt;
+
+// --- node_and / node_fixnum_and ---
+NODE_DEF
+node_and(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
+{
+    VALUE lv = UNWRAP(EVAL_ARG(c, left));
+    VALUE rv = UNWRAP(EVAL_ARG(c, right));
+    return node_arith_fallback(c, n, lv, rv, c->ids->op_and, arg_index);
+}
+
+static __attribute__((noinline, cold)) RESULT
+node_fixnum_and_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
+{
+    swap_dispatcher(n, &kind_node_and);
+    return node_arith_fallback(c, n, lv, rv, c->ids->op_and, arg_index);
+}
+
+NODE_DEF
+node_fixnum_and(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
+{
+    VALUE lv = UNWRAP(EVAL_ARG(c, left));
+    VALUE rv = UNWRAP(EVAL_ARG(c, right));
+    if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
+        // Both Fixnum VALUEs carry the low tag bit (= 1); ANDing them
+        // preserves the tag, so the result is a valid Fixnum VALUE.
+        return RESULT_OK(lv & rv);
+    }
+    return node_fixnum_and_slow(c, n, lv, rv, arg_index);
+}
+
+// --- node_or / node_fixnum_or ---
+NODE_DEF
+node_or(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
+{
+    VALUE lv = UNWRAP(EVAL_ARG(c, left));
+    VALUE rv = UNWRAP(EVAL_ARG(c, right));
+    return node_arith_fallback(c, n, lv, rv, c->ids->op_or, arg_index);
+}
+
+static __attribute__((noinline, cold)) RESULT
+node_fixnum_or_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
+{
+    swap_dispatcher(n, &kind_node_or);
+    return node_arith_fallback(c, n, lv, rv, c->ids->op_or, arg_index);
+}
+
+NODE_DEF
+node_fixnum_or(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
+{
+    VALUE lv = UNWRAP(EVAL_ARG(c, left));
+    VALUE rv = UNWRAP(EVAL_ARG(c, right));
+    if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
+        // OR of two tagged Fixnum values preserves the tag.
+        return RESULT_OK(lv | rv);
+    }
+    return node_fixnum_or_slow(c, n, lv, rv, arg_index);
+}
+
+// --- node_xor / node_fixnum_xor ---
+NODE_DEF
+node_xor(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
+{
+    VALUE lv = UNWRAP(EVAL_ARG(c, left));
+    VALUE rv = UNWRAP(EVAL_ARG(c, right));
+    return node_arith_fallback(c, n, lv, rv, c->ids->op_xor, arg_index);
+}
+
+static __attribute__((noinline, cold)) RESULT
+node_fixnum_xor_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
+{
+    swap_dispatcher(n, &kind_node_xor);
+    return node_arith_fallback(c, n, lv, rv, c->ids->op_xor, arg_index);
+}
+
+NODE_DEF
+node_fixnum_xor(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
+{
+    VALUE lv = UNWRAP(EVAL_ARG(c, left));
+    VALUE rv = UNWRAP(EVAL_ARG(c, right));
+    if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
+        // XOR of two tagged Fixnums clears the tag; re-set it.
+        return RESULT_OK((lv ^ rv) | (VALUE)RUBY_FIXNUM_FLAG);
+    }
+    return node_fixnum_xor_slow(c, n, lv, rv, arg_index);
+}
+
+// --- node_gtgt / node_fixnum_gtgt ---
+NODE_DEF
+node_gtgt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
+{
+    VALUE lv = UNWRAP(EVAL_ARG(c, left));
+    VALUE rv = UNWRAP(EVAL_ARG(c, right));
+    return node_arith_fallback(c, n, lv, rv, c->ids->op_gtgt, arg_index);
+}
+
+static __attribute__((noinline, cold)) RESULT
+node_fixnum_gtgt_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
+{
+    swap_dispatcher(n, &kind_node_gtgt);
+    return node_arith_fallback(c, n, lv, rv, c->ids->op_gtgt, arg_index);
+}
+
+NODE_DEF
+node_fixnum_gtgt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
+{
+    VALUE lv = UNWRAP(EVAL_ARG(c, left));
+    VALUE rv = UNWRAP(EVAL_ARG(c, right));
+    if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
+        long a = FIX2LONG(lv);
+        long sh = FIX2LONG(rv);
+        if (LIKELY(sh >= 0)) {
+            // Shift >= 63 collapses to 0 (or -1 for negatives) per Ruby.
+            if (UNLIKELY(sh >= (long)(sizeof(long) * 8 - 1))) {
+                return RESULT_OK(LONG2FIX(a < 0 ? -1 : 0));
+            }
+            return RESULT_OK(LONG2FIX(a >> sh));
+        }
+        // Negative rhs → method dispatch fallback (becomes a left shift,
+        // potentially Bignum).
+    }
+    return node_fixnum_gtgt_slow(c, n, lv, rv, arg_index);
+}
+
+// --- node_fixnum_ltlt: Fixnum-specialised monomorphic variant of node_ltlt ---
+//
+// node_ltlt stays polymorphic (Array / Fixnum / fallback) at parse time.
+// First-execution classification swap_dispatcher()s to this kind when
+// the receiver is a Fixnum — typical for bit-shift idioms like
+// `value << 8` in NES CPU decoding.  Left-shift overflow falls through
+// to the method dispatch path.
+// do_fixnum_ltlt is defined below (polymorphic node_ltlt uses it too).
+static inline RESULT do_fixnum_ltlt(CTX *c, NODE *n, VALUE lv, VALUE rv, uint32_t arg_index);
+
+NODE_DEF
+node_fixnum_ltlt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
+{
+    VALUE lv = UNWRAP(EVAL_ARG(c, left));
+    VALUE rv = UNWRAP(EVAL_ARG(c, right));
+    if (LIKELY(FIXNUM_P(lv))) {
+        return do_fixnum_ltlt(c, n, lv, rv, arg_index);
+    }
+    return node_arith_fallback(c, n, lv, rv, c->ids->op_ltlt, arg_index);
+}
+
 
 // ===================================================================
 // Indexing operators (a[b], a[b] = c, a << b)
@@ -3238,7 +3409,23 @@ node_fixnum_aref(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *idx, uin
     return node_arith_fallback(c, n, rv, iv, c->ids->op_aref, arg_index);
 }
 
-// --- node_ltlt: polymorphic (Array inline, else method) ---
+// --- node_ltlt: polymorphic (Array / Fixnum inline, else method) ---
+
+static inline RESULT
+do_fixnum_ltlt(CTX *c, NODE *n, VALUE lv, VALUE rv, uint32_t arg_index)
+{
+    if (LIKELY(FIXNUM_P(rv))) {
+        long a = FIX2LONG(lv);
+        long sh = FIX2LONG(rv);
+        if (LIKELY(sh >= 0 && sh < (long)(sizeof(long) * 8 - 1))) {
+            long result = a << sh;
+            if (LIKELY((result >> sh) == a && FIXABLE(result))) {
+                return RESULT_OK(LONG2FIX(result));
+            }
+        }
+    }
+    return node_arith_fallback(c, n, lv, rv, c->ids->op_ltlt, arg_index);
+}
 
 NODE_DEF
 node_ltlt(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *right, uint32_t arg_index)
@@ -3248,6 +3435,10 @@ node_ltlt(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *right, uint32_t
     if (AB_CLASS_OF(c, rv) == c->abm->array_class) {
         swap_dispatcher(n, &kind_node_array_ltlt);
         return do_array_ltlt(rv, xv);
+    }
+    if (FIXNUM_P(rv)) {
+        swap_dispatcher(n, &kind_node_fixnum_ltlt);
+        return do_fixnum_ltlt(c, n, rv, xv, arg_index);
     }
     return node_arith_fallback(c, n, rv, xv, c->ids->op_ltlt, arg_index);
 }

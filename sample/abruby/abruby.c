@@ -1299,6 +1299,10 @@ init_abm(struct abruby_machine *abm)
     abm->id_cache.op_aref = rb_intern("[]");
     abm->id_cache.op_aset = rb_intern("[]=");
     abm->id_cache.op_ltlt = rb_intern("<<");
+    abm->id_cache.op_and = rb_intern("&");
+    abm->id_cache.op_or = rb_intern("|");
+    abm->id_cache.op_xor = rb_intern("^");
+    abm->id_cache.op_gtgt = rb_intern(">>");
     abm->id_cache.method_missing = rb_intern("method_missing");
     abm->id_cache.initialize = rb_intern("initialize");
     abm->current_fiber->ctx.ids = &abm->id_cache;
@@ -1751,7 +1755,9 @@ rb_set_node_line(VALUE self, VALUE node_obj, VALUE line)
     X(fixnum_lt)   X(fixnum_le)   X(fixnum_gt)   X(fixnum_ge)   \
     X(fixnum_eq)   X(fixnum_neq)  X(fixnum_mod)                 \
     X(aref)        X(array_aref)  X(hash_aref)   X(fixnum_aref) \
-    X(ltlt)        X(array_ltlt)
+    X(ltlt)        X(array_ltlt)  X(fixnum_ltlt)                \
+    X(and)         X(fixnum_and)  X(or)          X(fixnum_or)   \
+    X(xor)         X(fixnum_xor)  X(gtgt)        X(fixnum_gtgt)
 
 #define ABRUBY_DEFINE_BINOP_WRAPPER(name) \
     static VALUE rb_alloc_node_##name(VALUE self, VALUE left, VALUE right, VALUE arg_index) { \

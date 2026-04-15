@@ -447,6 +447,7 @@ struct abruby_id_cache {
     ID op_lt, op_le, op_gt, op_ge;
     ID op_eq, op_mod;
     ID op_aref, op_aset, op_ltlt;
+    ID op_and, op_or, op_xor, op_gtgt;
     ID method_missing;
     ID initialize;
 };
