@@ -187,4 +187,13 @@
   確定させた後、`node_call0/1/2` を `node_call0/1/2_{ast,cfunc,ivar_{get,set}}` に `swap_dispatcher`。
   特化版 dispatcher は `prologue_ast_simple_N` / `prologue_cfunc` / `prologue_ivar_{getter,setter}` を
   名前で直接呼び出し、prologue は `always_inline` で展開されるため `mc->prologue` 間接呼び出しが消える。
-  cache miss (klass 不一致 / method_serial bump) は generic kind に demote して再入 → 再特化
+  **設計判断**: 特化は `NODE_DEF` による別 kind として定義 (kind が増えるが、各 EVAL 関数が子 dispatcher
+  をパラメータとして受け取る形になるので ASTroGen の specialize 機構から子ノード (recv の node_self 等)
+  の SD_ 関数ポインタを代入して inline できる。plain function にすると
+  `recv->head.dispatcher(c, recv)` が runtime 読み取りとなり specialize 不可になる)。
+  cache miss 時は `specialized_call_miss` が `mc->demote_cnt` を bump し、generic dispatcher を
+  直接呼ぶ (recv/args の double EVAL を回避)。`demote_cnt >= ABRUBY_CALL_POLY_THRESHOLD` (=2) で
+  megamorphic 判定、以後 specialize しない (bm_dispatch のような 3-class 循環で swap 往復を防止)。
+  plain モードで fib -14%, method_call -15%, ack -11%。compiled モードでは SD_ が generic の
+  `EVAL_node_call1` をハードコードで呼ぶため runtime swap は効かない — Phase 2 (JIT による SD_ 再生成)
+  の課題

@@ -229,7 +229,8 @@ struct abruby_proc {
 
 ### method_cache (インラインキャッシュ)
 
-各 node_method_call / node_func_call に `@ref` で埋め込まれる。
+各 call node (`node_call0/1/2`, `node_call0_b/1_b/2_b`, `node_call`, `node_apply_call`, `node_super`
+等) に `@ref` で埋め込まれる。
 
 ```c
 struct method_cache {
@@ -239,10 +240,22 @@ struct method_cache {
     uint32_t ivar_slot;                  // IVAR_GETTER/SETTER: キャッシュした ivar スロット番号
     struct Node *body;                   // method->u.ast.body (NULL = CFUNC)
     RESULT (*dispatcher)(CTX *, NODE *); // body->head.dispatcher
+    method_prologue_t prologue;          // mtype 特化済 prologue 関数
+    uint8_t demote_cnt;                  // 特化 kind からの demote 回数 (polymorphic backoff)
 };
 ```
 
-`body` と `dispatcher` をキャッシュすることで、cache hit 時に method 構造体を経由する間接参照 2段を省略する。`ivar_slot` は `attr_reader`/`attr_writer` の dispatch インライン化用。
+`body` と `dispatcher` をキャッシュすることで、cache hit 時に method 構造体を経由する間接参照 2段を省略する。`ivar_slot` は `attr_reader`/`attr_writer` の dispatch インライン化用。`prologue` は mtype (AST simple の argc 別 / AST complex / cfunc / ivar getter / ivar setter) に応じて `method_cache_fill` 時に選択される inline 可能な関数 (`always_inline`)。
+
+### 特化 call kind と prologue
+
+call の mtype 特化は 2 階層で実現:
+
+1. **prologue (`prologue_ast_simple_0/1/2/n`, `prologue_ast_complex`, `prologue_cfunc`, `prologue_ivar_{getter,setter}`)** — `static inline __attribute__((always_inline))` でマークされ、呼び出し側に展開可能。argc 特化 prologue は argc を compile-time 定数として持つので `ctx_update_sp(frame.fp + REQ)` 等が畳まれる。
+
+2. **特化 call kind (`node_call{0,1,2}_{ast,cfunc,ivar_get,ivar_set}`)** — 初回 cache fill 時に `maybe_specialize_call_kind` が `n->head.kind` を generic から特化版へ `swap_dispatcher`。特化版の EVAL は `mc->prologue` 間接呼び出しをせず、対応する prologue を名前で直接呼ぶ。`NODE_DEF` による定義のため子 dispatcher (recv, arg0 等) をパラメータとして受け取り、ASTroGen の specialize 機構で SD_* 関数ポインタが代入される (compiled 経路で子 (e.g., node_self) がインライン展開される素地)。
+
+cache miss 時 (klass 不一致 / method_serial bump) は `specialized_call_miss` が `demote_cnt` を bump し、generic dispatcher を直接呼ぶ (recv/args の double-EVAL を回避)。`demote_cnt >= ABRUBY_CALL_POLY_THRESHOLD` (=2) で megamorphic 判定、以後 specialize しない (bm_dispatch のような 3-class 循環での swap 往復を防止)。
 
 ### ivar_cache (ivar インラインキャッシュ)
 
