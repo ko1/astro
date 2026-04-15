@@ -1943,72 +1943,103 @@ build_block_from_proc_value(CTX *c, NODE *call_site, VALUE proc_val, struct abru
 
 // === super ===
 
-// Find the super method: walk from method->defining_class->super looking for the same name.
-static struct abruby_method *
-find_super_method(const struct abruby_frame *frame)
+// Find super target class and method name for the current lexical frame.
+// `super` resolves against the enclosing *lexical* method's defining class:
+// from inside a block, that's the block's defining frame's method.
+static inline bool
+find_super_target(const struct abruby_frame *lex,
+                  const struct abruby_class **out_klass,
+                  ID *out_name)
 {
-    if (!frame || !frame->method || !frame->method->defining_class) return NULL;
-    ID name = frame->method->name;
-    const struct abruby_class *klass = frame->method->defining_class->super;
-    return abruby_class_find_method(klass, name);
+    if (!lex || !lex->method || !lex->method->defining_class) return false;
+    *out_klass = lex->method->defining_class->super;
+    *out_name  = lex->method->name;
+    return *out_klass != NULL;
 }
 
-// super(args) — call parent method with explicit arguments.
+static __attribute__((noinline, cold)) RESULT
+raise_super_no_method(CTX *c, NODE *n)
+{
+    VALUE exc;
+    PUSH_FRAME(n);
+    exc = abruby_exception_new(c, c->current_frame,
+        abruby_str_new_cstr(c,"super: no superclass method"));
+    POP_FRAME();
+    return (RESULT){exc, RESULT_RAISE};
+}
+
+// Slow path: resolve method, fill cache, dispatch.  Out-of-line so the
+// hot cache-hit path in node_super stays small and inline.
+static __attribute__((noinline)) RESULT
+node_super_slow(CTX * restrict c, NODE * restrict n,
+                const struct abruby_class *klass, ID name,
+                uint32_t params_cnt, uint32_t arg_index,
+                const struct abruby_block *blk,
+                struct method_cache *mc, bool static_argc)
+{
+    const struct abruby_method *method = abruby_class_find_method(klass, name);
+    if (UNLIKELY(method == NULL)) return raise_super_no_method(c, n);
+    method_cache_fill(c, mc, klass, method, params_cnt, static_argc);
+    VALUE recv_self = c->current_frame->self;
+    if (blk != NULL) {
+        return dispatch_method_frame_with_block(c, n, mc, recv_self, params_cnt, arg_index, blk);
+    }
+    return dispatch_method_frame(c, n, mc, recv_self, params_cnt, arg_index);
+}
+
+// `super(args)` — call parent method with explicit arguments.
 // Any block the current method received is implicitly forwarded to the
 // parent (matching Ruby), unless the parser emitted node_super_with_block
 // for an explicit `super(...) { ... }` form.
+//
+// Cache semantics: the lookup is `lex->method->defining_class->super#name`.
+// For a given AST site, lex->method is fixed (determined by the AST's
+// lexical position), so target klass + name are stable across hits.
+// method_serial invalidates the cache on any method redefinition.
 NODE_DEF
-node_super(CTX * restrict c, NODE * restrict n, uint32_t params_cnt, uint32_t arg_index)
+node_super(CTX * restrict c, NODE * restrict n, uint32_t params_cnt, uint32_t arg_index, struct method_cache *mc@ref)
 {
-    // `super` walks from the lexical enclosing method's defining class,
-    // not necessarily the physical caller.  Inside a block body, lookup
-    // and inherited-block forwarding use the block's defining frame.
     const struct abruby_frame *lex = abruby_context_frame(c);
-    const struct abruby_method *method = find_super_method(lex);
-    if (!method) {
-        VALUE exc;
-        PUSH_FRAME(n);
-        exc = abruby_exception_new(c, c->current_frame,
-            abruby_str_new_cstr(c,"super: no superclass method"));
-        POP_FRAME();
-        return (RESULT){exc, RESULT_RAISE};
-    }
-    // dispatch via the defining class (receiver stays the same).
-    const struct abruby_class *klass = method->defining_class;
+    const struct abruby_class *target;
+    ID name;
+    if (UNLIKELY(!find_super_target(lex, &target, &name))) return raise_super_no_method(c, n);
+
     const struct abruby_block *inherited = lex->block;
-    if (inherited != NULL) {
-        return dispatch_method_with_klass_with_block(c, n, c->current_frame->self, klass, method,
-                                                     params_cnt, arg_index, inherited);
+    if (LIKELY(mc->klass == target && mc->serial == c->abm->method_serial)) {
+        VALUE recv_self = c->current_frame->self;
+        if (inherited != NULL) {
+            return dispatch_method_frame_with_block(c, n, mc, recv_self, params_cnt, arg_index, inherited);
+        }
+        return dispatch_method_frame(c, n, mc, recv_self, params_cnt, arg_index);
     }
-    return dispatch_method_with_klass(c, n, c->current_frame->self, klass, method, params_cnt, arg_index);
+    return node_super_slow(c, n, target, name, params_cnt, arg_index, inherited, mc, true);
 }
 
-// Explicit `super(args) { |x| ... }` — parser routes here when an
-// explicit block literal is supplied at the super call site.  The
-// caller-provided block always wins over the implicitly inherited one.
+// Explicit `super(args) { |x| ... }` — parser routes here when a block
+// literal is supplied at the super call site.  Caller-provided block
+// always wins over the inherited one.
 NODE_DEF
-node_super_with_block(CTX * restrict c, NODE * restrict n, uint32_t params_cnt, uint32_t arg_index, NODE *block_literal)
+node_super_with_block(CTX * restrict c, NODE * restrict n, uint32_t params_cnt, uint32_t arg_index, NODE *block_literal, struct method_cache *mc@ref)
 {
     const struct abruby_frame *lex = abruby_context_frame(c);
-    const struct abruby_method *method = find_super_method(lex);
-    if (!method) {
-        VALUE exc;
-        PUSH_FRAME(n);
-        exc = abruby_exception_new(c, c->current_frame,
-            abruby_str_new_cstr(c,"super: no superclass method"));
-        POP_FRAME();
-        return (RESULT){exc, RESULT_RAISE};
-    }
+    const struct abruby_class *target;
+    ID name;
+    if (UNLIKELY(!find_super_target(lex, &target, &name))) return raise_super_no_method(c, n);
+
     struct abruby_block blk;
     blk.body              = block_literal->u.node_block_literal.body;
     blk.captured_fp       = c->current_frame->fp;
     blk.captured_self     = c->current_frame->self;
     blk.defining_frame    = (struct abruby_frame *)lex;
+    blk.cref              = ctx_cref(c);
     blk.params_cnt        = block_literal->u.node_block_literal.params_cnt;
     blk.param_base        = block_literal->u.node_block_literal.param_base;
-    const struct abruby_class *klass = method->defining_class;
-    return dispatch_method_with_klass_with_block(c, n, c->current_frame->self, klass, method,
-                                                 params_cnt, arg_index, &blk);
+    blk.env_size          = block_literal->u.node_block_literal.env_size;
+
+    if (LIKELY(mc->klass == target && mc->serial == c->abm->method_serial)) {
+        return dispatch_method_frame_with_block(c, n, mc, c->current_frame->self, params_cnt, arg_index, &blk);
+    }
+    return node_super_slow(c, n, target, name, params_cnt, arg_index, &blk, mc, true);
 }
 
 // === Arithmetic rewrite (type-specific nodes) ===
