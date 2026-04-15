@@ -1042,6 +1042,7 @@ class AbRuby
       frame[:block_scope_stack].push(scope)
 
       body = block_node.body ? transduce(block_node.body) : AbRuby.alloc_node_nil
+      @entries << ["block:#{block_node.location.start_line}", body]
 
       frame[:block_scope_stack].pop
       # block_slot_next stays advanced — sibling/later blocks in the
