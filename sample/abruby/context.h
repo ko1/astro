@@ -31,7 +31,6 @@ struct abruby_option {
     bool no_compiled_code;
     bool compiled_only;  // set dispatcher to NULL in ALLOC (crash if uncompiled node is called)
     bool record_all;
-    bool quiet;
     bool verbose;
 };
 
@@ -134,8 +133,6 @@ struct abruby_method {
         } ivar_accessor;
     } u;
 };
-
-// (ABRUBY_METHOD_CAPA removed: methods are now in ab_id_table)
 
 /*
  * abruby VALUE invariant:
@@ -377,7 +374,6 @@ ab_obj_type_p(VALUE obj, enum abruby_obj_type type)
 }
 
 // AB_CLASS_OF / AB_CLASS_OF_IMM are defined below after struct CTX_struct / abruby_machine.
-// AB_CLASS_P removed: use ab_obj_type_p() or AB_CLASS_OF(c, obj) == c->abm->xxx_class
 
 // Global variables are stored in an ab_id_table in abruby_machine.
 // (struct abruby_gvar_table removed)
@@ -597,9 +593,6 @@ struct abruby_fiber {
     // fiber API ensures GC's machine-stack scan covers the right range.
     // Main fiber leaves this as Qnil (no CRuby fiber needed).
     VALUE crb_fiber;
-
-    // (crb_callback removed: callback now stores rb_wrapper VALUE
-    // instead of raw pointer, eliminating sweep-order UAF)
 
     // The fiber that called .resume on us.  We swap back here on yield
     // or completion.

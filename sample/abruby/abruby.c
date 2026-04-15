@@ -5,12 +5,9 @@
 #include "builtin/builtin.h"
 #include "astro_code_store.h"
 
-// (abruby_vm_global removed: method_serial moved to abruby_machine)
-
 struct abruby_option OPTION = {
     .no_compiled_code = true,
     .record_all = false,
-    .quiet = false,
 };
 
 static VALUE rb_cAbRuby;
@@ -1304,8 +1301,6 @@ init_vm(struct abruby_machine *vm)
         vm->current_fiber->ctx.stack[i] = Qnil;
     }
 }
-
-// init_builtin_consts removed: constants are now registered per-instance in init_instance_classes()
 
 // NODE wrapper (T_DATA)
 
