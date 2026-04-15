@@ -172,7 +172,10 @@ when :pg
   $stderr.puts "pg: done" if verbose
 
 when :compile_first
-  src = code || (ARGV[0] && read_file.(ARGV[0]))
+  # Consume the script path so the remaining ARGV is forwarded to the
+  # script (matches :run / ruby invocation semantics).
+  run_script = code ? nil : ARGV.shift
+  src = code || (run_script && read_file.(run_script))
   unless src
     opt.parse!(['--help'])
     exit
@@ -182,11 +185,11 @@ when :compile_first
   AbRuby.compiled_only = true if compiled_only
 
   abm = AbRuby.new
-  abm.current_file = ARGV[0] if ARGV[0]
+  abm.current_file = run_script if run_script
 
   # Compile
   ast = abm.parse(src)
-  entries = [[ARGV[0] || '-e', ast]]
+  entries = [[run_script || '-e', ast]]
   abm.last_entries.each { |name, body| entries << [name, body] }
   entries.each { |label, node| cs_compile.(node, label) }
 
@@ -207,7 +210,7 @@ when :compile_first
   end
 
   # Run
-  $stderr.puts "run: #{ARGV[0] || '-e'}" if verbose
+  $stderr.puts "run: #{run_script || '-e'}" if verbose
   abm.eval_ast(ast)
 
 when :run

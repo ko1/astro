@@ -8,11 +8,17 @@ static RESULT ab_class_new(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     if (init) {
         // Push frame for initialize (needed for super to find the class).
         // super walks method->defining_class->super, not frame.klass.
+        // All fields must be initialized — abruby_exception_new walks the
+        // frame chain and reads self/fp/entry, so stale stack data here
+        // surfaces as a segfault during backtrace formatting.
         struct abruby_frame frame;
         frame.prev = c->current_frame;
         frame.method = init;
         frame.caller_node = c->current_frame ? c->current_frame->caller_node : NULL;
         frame.block = NULL;
+        frame.self = c->current_frame ? c->current_frame->self : Qnil;
+        frame.fp = c->current_frame ? c->current_frame->fp : c->stack;
+        frame.entry = c->current_frame ? c->current_frame->entry : NULL;
         c->current_frame = &frame;
 
         RESULT r = RESULT_OK(Qnil);
