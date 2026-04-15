@@ -420,15 +420,6 @@ typedef RESULT (*method_prologue_t)(
     const struct method_cache *mc, VALUE recv_self,
     unsigned int argc, uint32_t arg_index);
 
-// Same as method_prologue_t but carries a block pointer on the pushed frame.
-// Populated by method_cache_fill; dispatch_method_frame_with_block dispatches
-// through this to avoid inline mtype branching at the call site.
-typedef RESULT (*method_prologue_blk_t)(
-    CTX *c, struct Node *call_site,
-    const struct method_cache *mc, VALUE recv_self,
-    unsigned int argc, uint32_t arg_index,
-    const struct abruby_block *blk);
-
 // call frame for backtrace support
 // method != NULL: normal method frame
 // method == NULL: <main>/<top (required)>
@@ -682,7 +673,6 @@ struct method_cache {
     struct Node *body;                  // cached method->u.ast.body (NULL for CFUNC)
     RESULT (*dispatcher)(struct CTX_struct *, struct Node *); // cached body->head.dispatcher
     method_prologue_t prologue;          // method-type-specialized dispatch fn
-    method_prologue_blk_t prologue_blk;  // block-carrying variant
 };
 
 // inline ivar cache per node_ivar_get / node_ivar_set site.

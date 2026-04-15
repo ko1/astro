@@ -981,7 +981,6 @@ node_class_def(CTX * restrict c, NODE * restrict n, ID name, NODE *super_expr, N
 
 
 // Forward declarations of prologue functions (defined below).
-// Non-block variants (method_prologue_t):
 #define DECL_PROLOGUE(name) \
     static RESULT name(CTX *c, NODE *call_site, \
         const struct method_cache *mc, VALUE recv_self, \
@@ -996,21 +995,6 @@ DECL_PROLOGUE(prologue_cfunc);
 DECL_PROLOGUE(prologue_ivar_getter);
 DECL_PROLOGUE(prologue_ivar_setter);
 #undef DECL_PROLOGUE
-
-// Block-carrying variants (method_prologue_blk_t):
-#define DECL_PROLOGUE_BLK(name) \
-    static RESULT name(CTX *c, NODE *call_site, \
-        const struct method_cache *mc, VALUE recv_self, \
-        unsigned int argc, uint32_t arg_index, \
-        const struct abruby_block *blk)
-
-DECL_PROLOGUE_BLK(prologue_ast_simple_0_blk);
-DECL_PROLOGUE_BLK(prologue_ast_simple_1_blk);
-DECL_PROLOGUE_BLK(prologue_ast_simple_2_blk);
-DECL_PROLOGUE_BLK(prologue_ast_simple_n_blk);
-DECL_PROLOGUE_BLK(prologue_ast_complex_blk);
-DECL_PROLOGUE_BLK(prologue_cfunc_blk);
-#undef DECL_PROLOGUE_BLK
 
 // Populate cached fields in method_cache.
 //
@@ -1043,40 +1027,19 @@ method_cache_fill(CTX *c, struct method_cache *mc, const struct abruby_class *kl
             // Simple shape: argc-specialized variants for req=0/1/2, generic for >=3.
             // The check moved to cache fill time — prologues skip it.
             switch (req) {
-              case 0:
-                mc->prologue     = prologue_ast_simple_0;
-                mc->prologue_blk = prologue_ast_simple_0_blk;
-                break;
-              case 1:
-                mc->prologue     = prologue_ast_simple_1;
-                mc->prologue_blk = prologue_ast_simple_1_blk;
-                break;
-              case 2:
-                mc->prologue     = prologue_ast_simple_2;
-                mc->prologue_blk = prologue_ast_simple_2_blk;
-                break;
-              default:
-                mc->prologue     = prologue_ast_simple_n;
-                mc->prologue_blk = prologue_ast_simple_n_blk;
-                break;
+              case 0:  mc->prologue = prologue_ast_simple_0; break;
+              case 1:  mc->prologue = prologue_ast_simple_1; break;
+              case 2:  mc->prologue = prologue_ast_simple_2; break;
+              default: mc->prologue = prologue_ast_simple_n; break;
             }
         } else {
             // opt/rest/post or dynamic argc (splat) — full validation path.
-            mc->prologue     = prologue_ast_complex;
-            mc->prologue_blk = prologue_ast_complex_blk;
+            mc->prologue = prologue_ast_complex;
         }
     } else if (method->type == ABRUBY_METHOD_IVAR_GETTER) {
         mc->body = NULL;
         mc->dispatcher = NULL;
         mc->prologue = prologue_ivar_getter;
-        // Block-carrying calls to ivar accessors: go through a full frame so
-        // `yield` inside would see the block (ivar getter never yields, but
-        // the frame shape must be valid anyway).  Reuse cfunc_blk — it runs
-        // the method's cfunc pointer which for ivar is NULL, so we need a
-        // dedicated path.  Simplest: treat as ast_complex_blk fallback by
-        // NULL'ing the blk slot so callers fall back to old path if needed.
-        // In practice: attr_reader/writer are rarely called with a block.
-        mc->prologue_blk = NULL;
         // Resolve (or register) the ivar's slot in the receiver's class shape.
         struct abruby_class *klass_mut = (struct abruby_class *)klass;
         ID ivar_name = method->u.ivar_accessor.ivar_name;
@@ -1092,7 +1055,6 @@ method_cache_fill(CTX *c, struct method_cache *mc, const struct abruby_class *kl
         mc->body = NULL;
         mc->dispatcher = NULL;
         mc->prologue = prologue_ivar_setter;
-        mc->prologue_blk = NULL;  // same rationale as IVAR_GETTER above
         // Resolve (or register) the ivar's slot in the receiver's class shape.
         struct abruby_class *klass_mut = (struct abruby_class *)klass;
         ID ivar_name = method->u.ivar_accessor.ivar_name;
@@ -1108,8 +1070,7 @@ method_cache_fill(CTX *c, struct method_cache *mc, const struct abruby_class *kl
         // CFUNC
         mc->body = NULL;
         mc->dispatcher = NULL;
-        mc->prologue     = prologue_cfunc;
-        mc->prologue_blk = prologue_cfunc_blk;
+        mc->prologue = prologue_cfunc;
     }
 }
 
@@ -1233,14 +1194,12 @@ dispatch_setup_args(CTX * restrict c, NODE * restrict call_site,
 // dispatch_method_frame just calls mc->prologue — no runtime type checks.
 // ===================================================================
 
-// --- RESULT_RETURN demotion helper (method boundary) ---
-// Method boundary absorbs RESULT_RETURN when skip count is 0; decrements
-// otherwise.  For block-carrying calls, also demotes RESULT_BREAK.
+// --- Return-value demotion at method boundary ---
+// Method boundary absorbs RESULT_RETURN at skip=0; decrements otherwise.
 static inline void
-demote_result_at_method_boundary(RESULT *r, bool has_block)
+demote_return_at_method_boundary(RESULT *r)
 {
     if (LIKELY(r->state == 0)) return;
-    if (has_block) r->state &= ~(unsigned)RESULT_BREAK;
     if (r->state & RESULT_RETURN) {
         if ((r->state & RESULT_SKIP_MASK) == 0) {
             r->state &= ~(unsigned)RESULT_RETURN_CATCH_MASK;
@@ -1258,68 +1217,49 @@ demote_result_at_method_boundary(RESULT *r, bool has_block)
 // REQ is a compile-time constant for _0/_1/_2 (0, 1, 2) enabling the
 // compiler to fold (fp + REQ) and remove the req load from mc->method.
 // _n handles req >= 3 by reading mc->method.
-//
-// HAS_BLK: true → frame.block = blk, RESULT_BREAK demoted.
-//          false → frame.block = NULL.
 
-#define DEFINE_AST_SIMPLE_PROLOGUE(name, req_const_or_load, has_blk) \
+#define DEFINE_AST_SIMPLE_PROLOGUE(name, req_expr) \
 static RESULT \
 name(CTX * restrict c, NODE * restrict call_site, \
      const struct method_cache *mc, VALUE recv_self, \
-     unsigned int argc, uint32_t arg_index \
-     HAS_BLK_PARAM(has_blk)) \
+     unsigned int argc, uint32_t arg_index) \
 { \
     (void)argc;  /* argc precondition enforced at cache fill */ \
-    unsigned int req = (req_const_or_load); \
+    unsigned int req = (req_expr); \
     struct abruby_frame frame; \
     frame.prev = c->current_frame; \
     frame.method = mc->method; \
     frame.caller_node = call_site; \
-    frame.block = BLK_OR_NULL(has_blk); \
+    frame.block = NULL; \
     frame.self = recv_self; \
     frame.fp = c->current_frame->fp + arg_index; \
     frame.entry = &mc->method->u.ast.entry; \
     c->current_frame = &frame; \
     ctx_update_sp(c, frame.fp + req); \
     RESULT r = mc->dispatcher(c, mc->body); \
-    demote_result_at_method_boundary(&r, (has_blk)); \
+    demote_return_at_method_boundary(&r); \
     c->current_frame = frame.prev; \
     return r; \
 }
 
-#define HAS_BLK_PARAM_1  , const struct abruby_block *blk
-#define HAS_BLK_PARAM_0
-#define HAS_BLK_PARAM(has_blk) HAS_BLK_PARAM_##has_blk
-
-#define BLK_OR_NULL_1 blk
-#define BLK_OR_NULL_0 NULL
-#define BLK_OR_NULL(has_blk) BLK_OR_NULL_##has_blk
-
-DEFINE_AST_SIMPLE_PROLOGUE(prologue_ast_simple_0, 0, 0)
-DEFINE_AST_SIMPLE_PROLOGUE(prologue_ast_simple_1, 1, 0)
-DEFINE_AST_SIMPLE_PROLOGUE(prologue_ast_simple_2, 2, 0)
+DEFINE_AST_SIMPLE_PROLOGUE(prologue_ast_simple_0, 0)
+DEFINE_AST_SIMPLE_PROLOGUE(prologue_ast_simple_1, 1)
+DEFINE_AST_SIMPLE_PROLOGUE(prologue_ast_simple_2, 2)
 DEFINE_AST_SIMPLE_PROLOGUE(prologue_ast_simple_n,
-    mc->method->u.ast.required_params_cnt, 0)
+    mc->method->u.ast.required_params_cnt)
 
-DEFINE_AST_SIMPLE_PROLOGUE(prologue_ast_simple_0_blk, 0, 1)
-DEFINE_AST_SIMPLE_PROLOGUE(prologue_ast_simple_1_blk, 1, 1)
-DEFINE_AST_SIMPLE_PROLOGUE(prologue_ast_simple_2_blk, 2, 1)
-DEFINE_AST_SIMPLE_PROLOGUE(prologue_ast_simple_n_blk,
-    mc->method->u.ast.required_params_cnt, 1)
-
-// --- AST complex prologues (opt/rest/post or dynamic argc) ---
+// --- AST complex prologue (opt/rest/post or dynamic argc) ---
 // argc validation is handled by dispatch_setup_args.
 static RESULT
-prologue_ast_complex_impl(CTX * restrict c, NODE * restrict call_site,
-                          const struct method_cache *mc, VALUE recv_self,
-                          unsigned int argc, uint32_t arg_index,
-                          const struct abruby_block *blk, bool has_blk)
+prologue_ast_complex(CTX * restrict c, NODE * restrict call_site,
+                     const struct method_cache *mc, VALUE recv_self,
+                     unsigned int argc, uint32_t arg_index)
 {
     struct abruby_frame frame;
     frame.prev = c->current_frame;
     frame.method = mc->method;
     frame.caller_node = call_site;
-    frame.block = has_blk ? blk : NULL;
+    frame.block = NULL;
     frame.self = recv_self;
     frame.fp = c->current_frame->fp;
     frame.entry = &mc->method->u.ast.entry;
@@ -1340,40 +1280,22 @@ prologue_ast_complex_impl(CTX * restrict c, NODE * restrict call_site,
         NODE *entry = mc->method->u.ast.opt_pc[opt_idx];
         r = EVAL(c, entry);
     }
-    demote_result_at_method_boundary(&r, has_blk);
+    demote_return_at_method_boundary(&r);
     c->current_frame = frame.prev;
     return r;
 }
 
+// --- CFUNC prologue ---
 static RESULT
-prologue_ast_complex(CTX * restrict c, NODE * restrict call_site,
-                     const struct method_cache *mc, VALUE recv_self,
-                     unsigned int argc, uint32_t arg_index)
-{
-    return prologue_ast_complex_impl(c, call_site, mc, recv_self, argc, arg_index, NULL, false);
-}
-
-static RESULT
-prologue_ast_complex_blk(CTX * restrict c, NODE * restrict call_site,
-                         const struct method_cache *mc, VALUE recv_self,
-                         unsigned int argc, uint32_t arg_index,
-                         const struct abruby_block *blk)
-{
-    return prologue_ast_complex_impl(c, call_site, mc, recv_self, argc, arg_index, blk, true);
-}
-
-// --- CFUNC prologues ---
-static inline RESULT
-prologue_cfunc_impl(CTX * restrict c, NODE * restrict call_site,
-                    const struct method_cache *mc, VALUE recv_self,
-                    unsigned int argc, uint32_t arg_index,
-                    const struct abruby_block *blk, bool has_blk)
+prologue_cfunc(CTX * restrict c, NODE * restrict call_site,
+               const struct method_cache *mc, VALUE recv_self,
+               unsigned int argc, uint32_t arg_index)
 {
     struct abruby_frame frame;
     frame.prev = c->current_frame;
     frame.method = mc->method;
     frame.caller_node = call_site;
-    frame.block = has_blk ? blk : NULL;
+    frame.block = NULL;
     frame.self = recv_self;
     frame.fp = c->current_frame->fp;
     frame.entry = NULL;
@@ -1381,26 +1303,9 @@ prologue_cfunc_impl(CTX * restrict c, NODE * restrict call_site,
 
     ctx_update_sp(c, frame.fp + arg_index + argc);
     RESULT r = mc->method->u.cfunc.func(c, recv_self, argc, frame.fp + arg_index);
-    demote_result_at_method_boundary(&r, has_blk);
+    demote_return_at_method_boundary(&r);
     c->current_frame = frame.prev;
     return r;
-}
-
-static RESULT
-prologue_cfunc(CTX * restrict c, NODE * restrict call_site,
-               const struct method_cache *mc, VALUE recv_self,
-               unsigned int argc, uint32_t arg_index)
-{
-    return prologue_cfunc_impl(c, call_site, mc, recv_self, argc, arg_index, NULL, false);
-}
-
-static RESULT
-prologue_cfunc_blk(CTX * restrict c, NODE * restrict call_site,
-                   const struct method_cache *mc, VALUE recv_self,
-                   unsigned int argc, uint32_t arg_index,
-                   const struct abruby_block *blk)
-{
-    return prologue_cfunc_impl(c, call_site, mc, recv_self, argc, arg_index, blk, true);
 }
 
 // --- prologue_ivar_getter / prologue_ivar_setter: attr_reader/writer ---
@@ -1491,23 +1396,69 @@ dispatch_method_with_klass(CTX * restrict c, NODE * restrict call_site,
 }
 
 // Block-carrying variant of dispatch_method_frame.
-// Same structure as dispatch_method_frame: one indirect call to a
-// pre-selected prologue_blk.  mc->prologue_blk is NULL for IVAR accessors
-// (block-carrying calls to attr_reader/writer are rare and we fall back to
-// ast_complex_blk via a wrapper — but since method_cache_fill sets NULL for
-// ivar, we need a safe handling path here).
+// Inline mtype switch (AST vs CFUNC) — cheaper than an indirect call
+// because block-carrying sites are monomorphic in practice and the body
+// branch is perfectly predicted.  IVAR getter/setter block calls fall
+// through to the AST path (body == NULL → cfunc branch) but since ivar
+// accessors don't have mc->body or mc->method->u.cfunc.func, we route
+// them to prologue directly for safety.
 static inline RESULT
 dispatch_method_frame_with_block(CTX * restrict c, NODE * restrict call_site,
                                  const struct method_cache *mc, VALUE recv_self,
                                  unsigned int argc, uint32_t arg_index,
                                  const struct abruby_block *blk)
 {
-    // Ivar getter/setter don't have prologue_blk — block is silently
-    // dropped (matches historical behavior for attr_reader with block).
-    if (UNLIKELY(mc->prologue_blk == NULL)) {
+    // IVAR accessors — block is silently dropped (attr_reader/writer
+    // rarely take a block; matches historical behavior).
+    if (UNLIKELY(mc->method->type == ABRUBY_METHOD_IVAR_GETTER ||
+                 mc->method->type == ABRUBY_METHOD_IVAR_SETTER)) {
         return mc->prologue(c, call_site, mc, recv_self, argc, arg_index);
     }
-    return mc->prologue_blk(c, call_site, mc, recv_self, argc, arg_index, blk);
+
+    struct abruby_frame frame;
+    frame.prev = c->current_frame;
+    frame.method = mc->method;
+    frame.caller_node = call_site;
+    frame.block = blk;
+    frame.self = recv_self;
+    frame.fp = c->current_frame->fp;
+    frame.entry = mc->body ? &mc->method->u.ast.entry : NULL;
+    c->current_frame = &frame;
+
+    RESULT r;
+    if (LIKELY(mc->body != NULL)) {
+        RESULT err_r;
+        int opt_idx = dispatch_setup_args(c, call_site, mc, argc, arg_index, &err_r);
+        if (UNLIKELY(opt_idx < 0)) {
+            c->current_frame = frame.prev;
+            return err_r;
+        }
+        unsigned int opt_num = mc->method->u.ast.params_cnt - mc->method->u.ast.required_params_cnt;
+        if (LIKELY((unsigned int)opt_idx >= opt_num || !mc->method->u.ast.opt_pc)) {
+            r = mc->dispatcher(c, mc->body);
+        } else {
+            NODE *entry = mc->method->u.ast.opt_pc[opt_idx];
+            r = EVAL(c, entry);
+        }
+    } else {
+        // CFUNC
+        ctx_update_sp(c, c->current_frame->fp + arg_index + argc);
+        r = mc->method->u.cfunc.func(c, recv_self, argc, c->current_frame->fp + arg_index);
+    }
+
+    if (UNLIKELY(r.state)) {
+        r.state &= ~(unsigned)RESULT_BREAK;
+        if (r.state & RESULT_RETURN) {
+            if ((r.state & RESULT_SKIP_MASK) == 0) {
+                r.state &= ~(unsigned)RESULT_RETURN_CATCH_MASK;
+            } else {
+                r.state -= RESULT_SKIP_UNIT;
+            }
+        }
+    }
+
+    c->current_frame = frame.prev;
+    return r;
 }
 
 // Slow-path wrapper that fills a method_cache and delegates to the
