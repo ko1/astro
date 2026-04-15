@@ -92,12 +92,12 @@ when :plain
     opt.parse!(['--help'])
     exit
   end
-  vm = AbRuby.new
+  abm = AbRuby.new
   if dump_mode == :ast
-    puts vm.dump(src)
+    puts abm.dump(src)
   else
-    vm.current_file = script_file if script_file
-    vm.eval(src)
+    abm.current_file = script_file if script_file
+    abm.eval(src)
   end
 
 when :compile
@@ -109,15 +109,15 @@ when :compile
 
   cs_init.()
 
-  vm = AbRuby.new
+  abm = AbRuby.new
   all_entries = []
   files.each do |f|
     src = read_file.(f)
     $stderr.puts "compile: #{f}" if verbose
-    ast = vm.parse(src, f)
+    ast = abm.parse(src, f)
     cs_compile.(ast, f)
     all_entries << [f, ast]
-    vm.last_entries.each do |name, body|
+    abm.last_entries.each do |name, body|
       cs_compile.(body, "#{f}:#{name}")
       all_entries << ["#{f}:#{name}", body]
     end
@@ -132,7 +132,7 @@ when :compile
       $stdout.flush
       puts "--- #{label} ---"
       $stdout.flush
-      puts vm.dump_ast(node)
+      puts abm.dump_ast(node)
       $stdout.flush
       AbRuby.cs_disasm(node)
     end
@@ -141,8 +141,8 @@ when :compile
   if run_file
     src = read_file.(run_file)
     $stderr.puts "run: #{run_file}" if verbose
-    vm.current_file = run_file
-    vm.eval(src)
+    abm.current_file = run_file
+    abm.eval(src)
   end
 
 when :pg
@@ -155,15 +155,15 @@ when :pg
   cs_init.()
 
 
-  vm = AbRuby.new
-  vm.current_file = ARGV[0] if ARGV[0]
+  abm = AbRuby.new
+  abm.current_file = ARGV[0] if ARGV[0]
   $stderr.puts "pg: running #{ARGV[0] || '-e'}" if verbose
-  ast = vm.parse(src)
-  vm.eval_ast(ast)
+  ast = abm.parse(src)
+  abm.eval_ast(ast)
 
   $stderr.puts "pg: compiling" if verbose
   cs_compile.(ast, ARGV[0] || '-e')
-  vm.last_entries.each do |name, body|
+  abm.last_entries.each do |name, body|
     cs_compile.(body, name)
   end
   AbRuby.cs_build(RUBY_CFLAGS)
@@ -179,13 +179,13 @@ when :compile_first
   cs_init.()
   AbRuby.compiled_only = true if compiled_only
 
-  vm = AbRuby.new
-  vm.current_file = ARGV[0] if ARGV[0]
+  abm = AbRuby.new
+  abm.current_file = ARGV[0] if ARGV[0]
 
   # Compile
-  ast = vm.parse(src)
+  ast = abm.parse(src)
   entries = [[ARGV[0] || '-e', ast]]
-  vm.last_entries.each { |name, body| entries << [name, body] }
+  abm.last_entries.each { |name, body| entries << [name, body] }
   entries.each { |label, node| cs_compile.(node, label) }
 
   $stderr.puts "cs_build" if verbose
@@ -198,7 +198,7 @@ when :compile_first
       $stdout.flush
       puts "--- #{label} ---"
       $stdout.flush
-      puts vm.dump_ast(node)
+      puts abm.dump_ast(node)
       $stdout.flush
       AbRuby.cs_disasm(node)
     end
@@ -206,7 +206,7 @@ when :compile_first
 
   # Run
   $stderr.puts "run: #{ARGV[0] || '-e'}" if verbose
-  vm.eval_ast(ast)
+  abm.eval_ast(ast)
 
 when :run
   run_script = code ? nil : ARGV.shift
@@ -217,16 +217,16 @@ when :run
   end
 
   if dump_mode == :ast
-    vm = AbRuby.new
-    puts vm.dump(src)
+    abm = AbRuby.new
+    puts abm.dump(src)
   else
     cs_init.()
     AbRuby.compiled_only = true if compiled_only
 
-    vm = AbRuby.new
-    vm.current_file = run_script if run_script
+    abm = AbRuby.new
+    abm.current_file = run_script if run_script
     $stderr.puts "run: #{ARGV[0] || '-e'}" if verbose
-    vm.eval(src)
+    abm.eval(src)
 
     if dump_mode == :disasm
       # TODO: iterate specialized nodes and show disasm

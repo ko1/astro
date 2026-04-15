@@ -15,25 +15,25 @@ cflags = "-I#{RbConfig::CONFIG['rubyhdrdir']} -I#{RbConfig::CONFIG['rubyarchhdrd
 dir = File.dirname(__FILE__)
 files = Dir.glob(File.join(dir, "test_*.rb")).sort
 
-vm = AbRuby.new
+abm = AbRuby.new
 
 files.each do |f|
   src = File.read(f)
   # Extract eval strings from assert_eval calls
   src.scan(/assert_eval\s*\(\s*(['"])(.*?)\1/m) do |_q, code|
     begin
-      ast = vm.parse(code)
+      ast = abm.parse(code)
       AbRuby.cs_compile(ast)
-      vm.last_entries.each { |_name, body| AbRuby.cs_compile(body) }
+      abm.last_entries.each { |_name, body| AbRuby.cs_compile(body) }
     rescue Exception
     end
   end
   # Also try multi-line heredoc-style strings
   src.scan(/assert_eval\s*\(\s*<<~?['"]?(\w+)['"]?\s*\n(.*?)\n\s*\1/m) do |_tag, code|
     begin
-      ast = vm.parse(code)
+      ast = abm.parse(code)
       AbRuby.cs_compile(ast)
-      vm.last_entries.each { |_name, body| AbRuby.cs_compile(body) }
+      abm.last_entries.each { |_name, body| AbRuby.cs_compile(body) }
     rescue Exception
     end
   end

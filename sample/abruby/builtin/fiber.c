@@ -104,7 +104,7 @@ crb_fiber_body(VALUE yielded_arg, VALUE callback_obj, int argc, const VALUE *arg
 // returned by Fiber.new's block argument.  The created fiber is in NEW
 // state until first resume.
 static struct abruby_fiber *
-fiber_alloc(struct abruby_machine *vm, VALUE proc_value)
+fiber_alloc(struct abruby_machine *abm, VALUE proc_value)
 {
     struct abruby_fiber *f = (struct abruby_fiber *)ruby_xcalloc(1, sizeof(struct abruby_fiber));
     f->state = ABRUBY_FIBER_NEW;
@@ -114,21 +114,21 @@ fiber_alloc(struct abruby_machine *vm, VALUE proc_value)
     f->transfer_value = Qnil;
     f->done_state = 0;
     f->resumer = NULL;
-    f->abm = vm;
+    f->abm = abm;
     f->rb_wrapper = Qnil;
     f->crb_fiber = Qnil;
     // Bootstrap the fiber's CTX from the current fiber so cross-fiber
     // reads of e.g. ids work straight away.
-    f->ctx.abm = vm;
+    f->ctx.abm = abm;
     f->ctx.sp = f->ctx.stack;
     f->ctx.current_class = NULL;
     // Set up root frame for this fiber
     memset(&f->root_frame, 0, sizeof(struct abruby_frame));
     f->root_frame.fp = f->ctx.stack;
-    f->root_frame.self = vm->current_fiber->ctx.current_frame->self;
+    f->root_frame.self = abm->current_fiber->ctx.current_frame->self;
     f->root_frame.entry = NULL;
     f->ctx.current_frame = &f->root_frame;
-    f->ctx.ids = vm->current_fiber->ctx.ids;
+    f->ctx.ids = abm->current_fiber->ctx.ids;
     f->ctx.current_block = NULL;
     f->ctx.current_block_frame = NULL;
     return f;
@@ -142,8 +142,8 @@ fiber_alloc(struct abruby_machine *vm, VALUE proc_value)
 static RESULT
 fiber_switch_to(CTX *c, struct abruby_fiber *target, unsigned int argc, VALUE *argv)
 {
-    struct abruby_machine *vm = c->abm;
-    struct abruby_fiber *cur = vm->current_fiber;
+    struct abruby_machine *abm = c->abm;
+    struct abruby_fiber *cur = abm->current_fiber;
 
     if (target->state == ABRUBY_FIBER_DONE) {
         VALUE exc = abruby_exception_new(c, c->current_frame,
@@ -157,7 +157,7 @@ fiber_switch_to(CTX *c, struct abruby_fiber *target, unsigned int argc, VALUE *a
         cur->state = ABRUBY_FIBER_SUSPENDED;
     }
 
-    vm->current_fiber = target;
+    abm->current_fiber = target;
 
     VALUE ret_val;
     bool first = (target->crb_fiber == Qnil);
@@ -191,7 +191,7 @@ fiber_switch_to(CTX *c, struct abruby_fiber *target, unsigned int argc, VALUE *a
     }
 
     // Returned from the resume (either the fiber yielded or completed).
-    vm->current_fiber = cur;
+    abm->current_fiber = cur;
     cur->state = ABRUBY_FIBER_RUNNING;
 
     // If the target finished by raising, surface that on the caller.
@@ -223,7 +223,7 @@ RESULT ab_fiber_new(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     }
     VALUE proc_val = abruby_block_to_proc(c, blk, /*is_lambda=*/false);
 
-    extern VALUE abruby_fiber_wrap(struct abruby_machine *vm, struct abruby_fiber *f);
+    extern VALUE abruby_fiber_wrap(struct abruby_machine *abm, struct abruby_fiber *f);
     struct abruby_fiber *f = fiber_alloc(c->abm, proc_val);
     return RESULT_OK(abruby_fiber_wrap(c->abm, f));
 }
@@ -251,12 +251,12 @@ RESULT ab_fiber_yield(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
         return (RESULT){exc, RESULT_RAISE};
     }
 
-    // Mark fiber as suspended and update vm->current_fiber to the resumer.
-    struct abruby_machine *vm = c->abm;
+    // Mark fiber as suspended and update abm->current_fiber to the resumer.
+    struct abruby_machine *abm = c->abm;
     struct abruby_fiber *resumer = cur->resumer;
     cur->resumer = NULL;
     cur->state = ABRUBY_FIBER_SUSPENDED;
-    vm->current_fiber = resumer;
+    abm->current_fiber = resumer;
     resumer->state = ABRUBY_FIBER_RUNNING;
 
     // Yield back to the resumer.  The value passed here becomes the
@@ -265,7 +265,7 @@ RESULT ab_fiber_yield(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     VALUE resumed_val = rb_fiber_yield(1, &yield_val);
 
     // We've been resumed again.  Restore current_fiber.
-    vm->current_fiber = cur;
+    abm->current_fiber = cur;
     cur->state = ABRUBY_FIBER_RUNNING;
     cur->resumer = resumer;
 

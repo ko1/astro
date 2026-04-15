@@ -331,11 +331,11 @@ abruby_block_to_proc(CTX *c, const struct abruby_block *blk, bool is_lambda)
 // the abruby_header at offset 0) gets fiber_class so the dispatch /
 // mark / free paths know what to do.
 VALUE
-abruby_fiber_wrap(struct abruby_machine *vm, struct abruby_fiber *f)
+abruby_fiber_wrap(struct abruby_machine *abm, struct abruby_fiber *f)
 {
     if (f->rb_wrapper != Qnil && f->rb_wrapper != 0) return f->rb_wrapper;
-    f->klass = vm->fiber_class;
-    f->obj_type = vm->fiber_class->instance_obj_type;
+    f->klass = abm->fiber_class;
+    f->obj_type = abm->fiber_class->instance_obj_type;
     VALUE wrapper = TypedData_Wrap_Struct(rb_cAbRubyNode, &abruby_data_type, f);
     f->rb_wrapper = wrapper;
     return wrapper;
@@ -704,25 +704,25 @@ static void
 vm_mark(void *ptr)
 {
     if (!ptr) return;
-    const struct abruby_machine *vm = (const struct abruby_machine *)ptr;
-    if (vm->current_fiber) {
-        if (vm->current_fiber->ctx.current_frame)
-            rb_gc_mark(vm->current_fiber->ctx.current_frame->self);
+    const struct abruby_machine *abm = (const struct abruby_machine *)ptr;
+    if (abm->current_fiber) {
+        if (abm->current_fiber->ctx.current_frame)
+            rb_gc_mark(abm->current_fiber->ctx.current_frame->self);
         // Use sp (high-water mark) instead of full stack to avoid marking
         // stale slots from previous eval calls.
-        VALUE *base = vm->current_fiber->ctx.stack;
-        VALUE *top = vm->current_fiber->ctx.sp;
+        VALUE *base = abm->current_fiber->ctx.stack;
+        VALUE *top = abm->current_fiber->ctx.sp;
         ABRUBY_ASSERT(top >= base && top <= base + ABRUBY_STACK_SIZE);
-        if (vm->current_fiber->ctx.current_frame) {
-            ABRUBY_ASSERT(vm->current_fiber->ctx.current_frame->fp >= base &&
-                           vm->current_fiber->ctx.current_frame->fp <= top);
+        if (abm->current_fiber->ctx.current_frame) {
+            ABRUBY_ASSERT(abm->current_fiber->ctx.current_frame->fp >= base &&
+                           abm->current_fiber->ctx.current_frame->fp <= top);
         }
         if (top > base) rb_gc_mark_locations(base, top);
         // Mark rb_wrapper if present
-        if (!RB_SPECIAL_CONST_P(vm->current_fiber->rb_wrapper))
-            rb_gc_mark(vm->current_fiber->rb_wrapper);
+        if (!RB_SPECIAL_CONST_P(abm->current_fiber->rb_wrapper))
+            rb_gc_mark(abm->current_fiber->rb_wrapper);
         // Walk the resumer chain marking each suspended fiber's stack and wrapper.
-        for (struct abruby_fiber *f = vm->current_fiber->resumer; f != NULL; f = f->resumer) {
+        for (struct abruby_fiber *f = abm->current_fiber->resumer; f != NULL; f = f->resumer) {
             if (!RB_SPECIAL_CONST_P(f->rb_wrapper)) rb_gc_mark(f->rb_wrapper);
             VALUE *fbase = f->ctx.stack;
             VALUE *ftop = f->ctx.sp;
@@ -733,13 +733,13 @@ vm_mark(void *ptr)
     // Suspended non-main fibers are kept alive via their VALUE
     // wrapper; abruby_fiber_mark walks their per-fiber state.
     // We additionally need to mark the *root* fiber's wrapper if any.
-    rb_gc_mark(vm->rb_self);
-    rb_gc_mark(vm->current_file);
-    rb_gc_mark(vm->loaded_files);
-    rb_gc_mark(vm->loaded_asts);
+    rb_gc_mark(abm->rb_self);
+    rb_gc_mark(abm->current_file);
+    rb_gc_mark(abm->loaded_files);
+    rb_gc_mark(abm->loaded_asts);
     // Mark main_class method bodies and constants
     // (main_class is embedded in VM, not wrapped as T_DATA)
-    const struct abruby_class *mc = &vm->main_class_body;
+    const struct abruby_class *mc = &abm->main_class_body;
     ab_id_table_foreach(&mc->methods, _k, _v, {
         const struct abruby_method *m = (const struct abruby_method *)_v;
         if (m->type == ABRUBY_METHOD_AST && m->u.ast.body && m->u.ast.body->head.rb_wrapper) {
@@ -750,47 +750,47 @@ vm_mark(void *ptr)
         rb_gc_mark(_v2);
     });
     // Mark gvars
-    ab_id_table_foreach(&vm->gvars, _k3, _v3, {
+    ab_id_table_foreach(&abm->gvars, _k3, _v3, {
         rb_gc_mark(_v3);
     });
-    // Mark per-instance built-in class wrappers. When the vm is collected,
+    // Mark per-instance built-in class wrappers. When the abm is collected,
     // these wrappers become unreachable and get freed via abruby_data_free.
-    if (vm->kernel_module       && vm->kernel_module->rb_wrapper)        rb_gc_mark(vm->kernel_module->rb_wrapper);
-    if (vm->module_class        && vm->module_class->rb_wrapper)         rb_gc_mark(vm->module_class->rb_wrapper);
-    if (vm->class_class         && vm->class_class->rb_wrapper)          rb_gc_mark(vm->class_class->rb_wrapper);
-    if (vm->object_class        && vm->object_class->rb_wrapper)         rb_gc_mark(vm->object_class->rb_wrapper);
-    if (vm->integer_class       && vm->integer_class->rb_wrapper)        rb_gc_mark(vm->integer_class->rb_wrapper);
-    if (vm->float_class         && vm->float_class->rb_wrapper)          rb_gc_mark(vm->float_class->rb_wrapper);
-    if (vm->string_class        && vm->string_class->rb_wrapper)         rb_gc_mark(vm->string_class->rb_wrapper);
-    if (vm->symbol_class        && vm->symbol_class->rb_wrapper)         rb_gc_mark(vm->symbol_class->rb_wrapper);
-    if (vm->array_class         && vm->array_class->rb_wrapper)          rb_gc_mark(vm->array_class->rb_wrapper);
-    if (vm->hash_class          && vm->hash_class->rb_wrapper)           rb_gc_mark(vm->hash_class->rb_wrapper);
-    if (vm->range_class         && vm->range_class->rb_wrapper)          rb_gc_mark(vm->range_class->rb_wrapper);
-    if (vm->regexp_class        && vm->regexp_class->rb_wrapper)         rb_gc_mark(vm->regexp_class->rb_wrapper);
-    if (vm->rational_class      && vm->rational_class->rb_wrapper)       rb_gc_mark(vm->rational_class->rb_wrapper);
-    if (vm->complex_class       && vm->complex_class->rb_wrapper)        rb_gc_mark(vm->complex_class->rb_wrapper);
-    if (vm->true_class          && vm->true_class->rb_wrapper)           rb_gc_mark(vm->true_class->rb_wrapper);
-    if (vm->false_class         && vm->false_class->rb_wrapper)          rb_gc_mark(vm->false_class->rb_wrapper);
-    if (vm->nil_class           && vm->nil_class->rb_wrapper)            rb_gc_mark(vm->nil_class->rb_wrapper);
-    if (vm->runtime_error_class && vm->runtime_error_class->rb_wrapper)  rb_gc_mark(vm->runtime_error_class->rb_wrapper);
+    if (abm->kernel_module       && abm->kernel_module->rb_wrapper)        rb_gc_mark(abm->kernel_module->rb_wrapper);
+    if (abm->module_class        && abm->module_class->rb_wrapper)         rb_gc_mark(abm->module_class->rb_wrapper);
+    if (abm->class_class         && abm->class_class->rb_wrapper)          rb_gc_mark(abm->class_class->rb_wrapper);
+    if (abm->object_class        && abm->object_class->rb_wrapper)         rb_gc_mark(abm->object_class->rb_wrapper);
+    if (abm->integer_class       && abm->integer_class->rb_wrapper)        rb_gc_mark(abm->integer_class->rb_wrapper);
+    if (abm->float_class         && abm->float_class->rb_wrapper)          rb_gc_mark(abm->float_class->rb_wrapper);
+    if (abm->string_class        && abm->string_class->rb_wrapper)         rb_gc_mark(abm->string_class->rb_wrapper);
+    if (abm->symbol_class        && abm->symbol_class->rb_wrapper)         rb_gc_mark(abm->symbol_class->rb_wrapper);
+    if (abm->array_class         && abm->array_class->rb_wrapper)          rb_gc_mark(abm->array_class->rb_wrapper);
+    if (abm->hash_class          && abm->hash_class->rb_wrapper)           rb_gc_mark(abm->hash_class->rb_wrapper);
+    if (abm->range_class         && abm->range_class->rb_wrapper)          rb_gc_mark(abm->range_class->rb_wrapper);
+    if (abm->regexp_class        && abm->regexp_class->rb_wrapper)         rb_gc_mark(abm->regexp_class->rb_wrapper);
+    if (abm->rational_class      && abm->rational_class->rb_wrapper)       rb_gc_mark(abm->rational_class->rb_wrapper);
+    if (abm->complex_class       && abm->complex_class->rb_wrapper)        rb_gc_mark(abm->complex_class->rb_wrapper);
+    if (abm->true_class          && abm->true_class->rb_wrapper)           rb_gc_mark(abm->true_class->rb_wrapper);
+    if (abm->false_class         && abm->false_class->rb_wrapper)          rb_gc_mark(abm->false_class->rb_wrapper);
+    if (abm->nil_class           && abm->nil_class->rb_wrapper)            rb_gc_mark(abm->nil_class->rb_wrapper);
+    if (abm->runtime_error_class && abm->runtime_error_class->rb_wrapper)  rb_gc_mark(abm->runtime_error_class->rb_wrapper);
 }
 
 static void
 vm_free(void *ptr)
 {
     if (!ptr) return;
-    struct abruby_machine *vm = (struct abruby_machine *)ptr;
+    struct abruby_machine *abm = (struct abruby_machine *)ptr;
     // Free embedded main_class_body's id_tables (main_class_body itself is
-    // embedded in vm struct, not separately allocated).
-    ab_id_table_free(&vm->main_class_body.methods);
-    ab_id_table_free(&vm->main_class_body.constants);
-    ab_id_table_free(&vm->gvars);
+    // embedded in abm struct, not separately allocated).
+    ab_id_table_free(&abm->main_class_body.methods);
+    ab_id_table_free(&abm->main_class_body.constants);
+    ab_id_table_free(&abm->gvars);
     // Per-instance built-in classes are T_DATA-wrapped; their structs and
     // inner tables are freed by abruby_data_free when their wrapper is GC'd.
-    if (vm->current_fiber) {
-        ruby_xfree(vm->current_fiber);
+    if (abm->current_fiber) {
+        ruby_xfree(abm->current_fiber);
     }
-    ruby_xfree(vm);
+    ruby_xfree(abm);
 }
 
 static size_t
@@ -856,131 +856,131 @@ clone_class(const struct abruby_class *tmpl)
 
 // Create per-instance copies of all built-in classes from templates.
 static void
-init_instance_classes(struct abruby_machine *vm)
+init_instance_classes(struct abruby_machine *abm)
 {
     // Clone all 18 template classes
-    vm->kernel_module      = clone_class(ab_tmpl_kernel_module);
-    vm->module_class       = clone_class(ab_tmpl_module_class);
-    vm->class_class        = clone_class(ab_tmpl_class_class);
-    vm->object_class       = clone_class(ab_tmpl_object_class);
-    vm->integer_class      = clone_class(ab_tmpl_integer_class);
-    vm->float_class        = clone_class(ab_tmpl_float_class);
-    vm->string_class       = clone_class(ab_tmpl_string_class);
-    vm->symbol_class       = clone_class(ab_tmpl_symbol_class);
-    vm->array_class        = clone_class(ab_tmpl_array_class);
-    vm->hash_class         = clone_class(ab_tmpl_hash_class);
-    vm->range_class        = clone_class(ab_tmpl_range_class);
-    vm->regexp_class       = clone_class(ab_tmpl_regexp_class);
-    vm->rational_class     = clone_class(ab_tmpl_rational_class);
-    vm->complex_class      = clone_class(ab_tmpl_complex_class);
-    vm->true_class         = clone_class(ab_tmpl_true_class);
-    vm->false_class        = clone_class(ab_tmpl_false_class);
-    vm->nil_class          = clone_class(ab_tmpl_nil_class);
-    vm->runtime_error_class = clone_class(ab_tmpl_runtime_error_class);
+    abm->kernel_module      = clone_class(ab_tmpl_kernel_module);
+    abm->module_class       = clone_class(ab_tmpl_module_class);
+    abm->class_class        = clone_class(ab_tmpl_class_class);
+    abm->object_class       = clone_class(ab_tmpl_object_class);
+    abm->integer_class      = clone_class(ab_tmpl_integer_class);
+    abm->float_class        = clone_class(ab_tmpl_float_class);
+    abm->string_class       = clone_class(ab_tmpl_string_class);
+    abm->symbol_class       = clone_class(ab_tmpl_symbol_class);
+    abm->array_class        = clone_class(ab_tmpl_array_class);
+    abm->hash_class         = clone_class(ab_tmpl_hash_class);
+    abm->range_class        = clone_class(ab_tmpl_range_class);
+    abm->regexp_class       = clone_class(ab_tmpl_regexp_class);
+    abm->rational_class     = clone_class(ab_tmpl_rational_class);
+    abm->complex_class      = clone_class(ab_tmpl_complex_class);
+    abm->true_class         = clone_class(ab_tmpl_true_class);
+    abm->false_class        = clone_class(ab_tmpl_false_class);
+    abm->nil_class          = clone_class(ab_tmpl_nil_class);
+    abm->runtime_error_class = clone_class(ab_tmpl_runtime_error_class);
 
     // Fix up klass pointers (metaclass)
-    vm->kernel_module->klass       = vm->module_class;
-    vm->module_class->klass        = vm->class_class;
-    vm->class_class->klass         = vm->class_class;
-    vm->object_class->klass        = vm->class_class;
-    vm->integer_class->klass       = vm->class_class;
-    vm->float_class->klass         = vm->class_class;
-    vm->string_class->klass        = vm->class_class;
-    vm->symbol_class->klass        = vm->class_class;
-    vm->array_class->klass         = vm->class_class;
-    vm->hash_class->klass          = vm->class_class;
-    vm->range_class->klass         = vm->class_class;
-    vm->regexp_class->klass        = vm->class_class;
-    vm->rational_class->klass      = vm->class_class;
-    vm->complex_class->klass       = vm->class_class;
-    vm->true_class->klass          = vm->class_class;
-    vm->false_class->klass         = vm->class_class;
-    vm->nil_class->klass           = vm->class_class;
-    vm->runtime_error_class->klass = vm->class_class;
+    abm->kernel_module->klass       = abm->module_class;
+    abm->module_class->klass        = abm->class_class;
+    abm->class_class->klass         = abm->class_class;
+    abm->object_class->klass        = abm->class_class;
+    abm->integer_class->klass       = abm->class_class;
+    abm->float_class->klass         = abm->class_class;
+    abm->string_class->klass        = abm->class_class;
+    abm->symbol_class->klass        = abm->class_class;
+    abm->array_class->klass         = abm->class_class;
+    abm->hash_class->klass          = abm->class_class;
+    abm->range_class->klass         = abm->class_class;
+    abm->regexp_class->klass        = abm->class_class;
+    abm->rational_class->klass      = abm->class_class;
+    abm->complex_class->klass       = abm->class_class;
+    abm->true_class->klass          = abm->class_class;
+    abm->false_class->klass         = abm->class_class;
+    abm->nil_class->klass           = abm->class_class;
+    abm->runtime_error_class->klass = abm->class_class;
 
     // Fix up super pointers (inheritance chain)
-    vm->class_class->super         = vm->module_class;
-    vm->object_class->super        = vm->kernel_module;  // Object includes Kernel
-    vm->integer_class->super       = vm->object_class;
-    vm->float_class->super         = vm->object_class;
-    vm->string_class->super        = vm->object_class;
-    vm->symbol_class->super        = vm->object_class;
-    vm->array_class->super         = vm->object_class;
-    vm->hash_class->super          = vm->object_class;
-    vm->range_class->super         = vm->object_class;
-    vm->regexp_class->super        = vm->object_class;
-    vm->rational_class->super      = vm->object_class;
-    vm->complex_class->super       = vm->object_class;
-    vm->true_class->super          = vm->object_class;
-    vm->false_class->super         = vm->object_class;
-    vm->nil_class->super           = vm->object_class;
-    vm->runtime_error_class->super = vm->object_class;
-    vm->kernel_module->super       = NULL;
+    abm->class_class->super         = abm->module_class;
+    abm->object_class->super        = abm->kernel_module;  // Object includes Kernel
+    abm->integer_class->super       = abm->object_class;
+    abm->float_class->super         = abm->object_class;
+    abm->string_class->super        = abm->object_class;
+    abm->symbol_class->super        = abm->object_class;
+    abm->array_class->super         = abm->object_class;
+    abm->hash_class->super          = abm->object_class;
+    abm->range_class->super         = abm->object_class;
+    abm->regexp_class->super        = abm->object_class;
+    abm->rational_class->super      = abm->object_class;
+    abm->complex_class->super       = abm->object_class;
+    abm->true_class->super          = abm->object_class;
+    abm->false_class->super         = abm->object_class;
+    abm->nil_class->super           = abm->object_class;
+    abm->runtime_error_class->super = abm->object_class;
+    abm->kernel_module->super       = NULL;
     // Module inherits from Object so Class (and class-body self) can see
     // Kernel methods (`p`, `require_relative`, etc.) via the super chain:
     //   Class -> Module -> Object -> Kernel -> nil
-    vm->module_class->super        = vm->object_class;
+    abm->module_class->super        = abm->object_class;
 
     // Wrap each per-instance class as a VALUE (for constant table, Ruby-level access)
-    abruby_wrap_class(vm->kernel_module);
-    abruby_wrap_class(vm->module_class);
-    abruby_wrap_class(vm->class_class);
-    abruby_wrap_class(vm->object_class);
-    abruby_wrap_class(vm->integer_class);
-    abruby_wrap_class(vm->float_class);
-    abruby_wrap_class(vm->string_class);
-    abruby_wrap_class(vm->symbol_class);
-    abruby_wrap_class(vm->array_class);
-    abruby_wrap_class(vm->hash_class);
-    abruby_wrap_class(vm->range_class);
-    abruby_wrap_class(vm->regexp_class);
-    abruby_wrap_class(vm->rational_class);
-    abruby_wrap_class(vm->complex_class);
-    abruby_wrap_class(vm->true_class);
-    abruby_wrap_class(vm->false_class);
-    abruby_wrap_class(vm->nil_class);
-    abruby_wrap_class(vm->runtime_error_class);
+    abruby_wrap_class(abm->kernel_module);
+    abruby_wrap_class(abm->module_class);
+    abruby_wrap_class(abm->class_class);
+    abruby_wrap_class(abm->object_class);
+    abruby_wrap_class(abm->integer_class);
+    abruby_wrap_class(abm->float_class);
+    abruby_wrap_class(abm->string_class);
+    abruby_wrap_class(abm->symbol_class);
+    abruby_wrap_class(abm->array_class);
+    abruby_wrap_class(abm->hash_class);
+    abruby_wrap_class(abm->range_class);
+    abruby_wrap_class(abm->regexp_class);
+    abruby_wrap_class(abm->rational_class);
+    abruby_wrap_class(abm->complex_class);
+    abruby_wrap_class(abm->true_class);
+    abruby_wrap_class(abm->false_class);
+    abruby_wrap_class(abm->nil_class);
+    abruby_wrap_class(abm->runtime_error_class);
 
     // Register class name constants on per-instance Object
-    struct abruby_class *obj = vm->object_class;
-    abruby_class_set_const(obj, rb_intern("Object"),       abruby_wrap_class(vm->object_class));
-    abruby_class_set_const(obj, rb_intern("Class"),        abruby_wrap_class(vm->class_class));
-    abruby_class_set_const(obj, rb_intern("Module"),       abruby_wrap_class(vm->module_class));
-    abruby_class_set_const(obj, rb_intern("Kernel"),       abruby_wrap_class(vm->kernel_module));
-    abruby_class_set_const(obj, rb_intern("Integer"),      abruby_wrap_class(vm->integer_class));
-    abruby_class_set_const(obj, rb_intern("Float"),        abruby_wrap_class(vm->float_class));
-    abruby_class_set_const(obj, rb_intern("String"),       abruby_wrap_class(vm->string_class));
-    abruby_class_set_const(obj, rb_intern("Symbol"),       abruby_wrap_class(vm->symbol_class));
-    abruby_class_set_const(obj, rb_intern("Array"),        abruby_wrap_class(vm->array_class));
-    abruby_class_set_const(obj, rb_intern("Hash"),         abruby_wrap_class(vm->hash_class));
-    abruby_class_set_const(obj, rb_intern("Range"),        abruby_wrap_class(vm->range_class));
-    abruby_class_set_const(obj, rb_intern("Regexp"),       abruby_wrap_class(vm->regexp_class));
-    abruby_class_set_const(obj, rb_intern("Rational"),     abruby_wrap_class(vm->rational_class));
-    abruby_class_set_const(obj, rb_intern("Complex"),      abruby_wrap_class(vm->complex_class));
-    abruby_class_set_const(obj, rb_intern("TrueClass"),    abruby_wrap_class(vm->true_class));
-    abruby_class_set_const(obj, rb_intern("FalseClass"),   abruby_wrap_class(vm->false_class));
-    abruby_class_set_const(obj, rb_intern("NilClass"),     abruby_wrap_class(vm->nil_class));
-    abruby_class_set_const(obj, rb_intern("RuntimeError"), abruby_wrap_class(vm->runtime_error_class));
+    struct abruby_class *obj = abm->object_class;
+    abruby_class_set_const(obj, rb_intern("Object"),       abruby_wrap_class(abm->object_class));
+    abruby_class_set_const(obj, rb_intern("Class"),        abruby_wrap_class(abm->class_class));
+    abruby_class_set_const(obj, rb_intern("Module"),       abruby_wrap_class(abm->module_class));
+    abruby_class_set_const(obj, rb_intern("Kernel"),       abruby_wrap_class(abm->kernel_module));
+    abruby_class_set_const(obj, rb_intern("Integer"),      abruby_wrap_class(abm->integer_class));
+    abruby_class_set_const(obj, rb_intern("Float"),        abruby_wrap_class(abm->float_class));
+    abruby_class_set_const(obj, rb_intern("String"),       abruby_wrap_class(abm->string_class));
+    abruby_class_set_const(obj, rb_intern("Symbol"),       abruby_wrap_class(abm->symbol_class));
+    abruby_class_set_const(obj, rb_intern("Array"),        abruby_wrap_class(abm->array_class));
+    abruby_class_set_const(obj, rb_intern("Hash"),         abruby_wrap_class(abm->hash_class));
+    abruby_class_set_const(obj, rb_intern("Range"),        abruby_wrap_class(abm->range_class));
+    abruby_class_set_const(obj, rb_intern("Regexp"),       abruby_wrap_class(abm->regexp_class));
+    abruby_class_set_const(obj, rb_intern("Rational"),     abruby_wrap_class(abm->rational_class));
+    abruby_class_set_const(obj, rb_intern("Complex"),      abruby_wrap_class(abm->complex_class));
+    abruby_class_set_const(obj, rb_intern("TrueClass"),    abruby_wrap_class(abm->true_class));
+    abruby_class_set_const(obj, rb_intern("FalseClass"),   abruby_wrap_class(abm->false_class));
+    abruby_class_set_const(obj, rb_intern("NilClass"),     abruby_wrap_class(abm->nil_class));
+    abruby_class_set_const(obj, rb_intern("RuntimeError"), abruby_wrap_class(abm->runtime_error_class));
     // No exception class hierarchy in abruby — alias common parent /
     // sibling classes to the single RuntimeError so user code like
     // `class X < StandardError` or `raise NotImplementedError, "msg"` parses
     // and runs.  They all share the same cfunc-level behavior (a simple
     // exception object with a message).
-    abruby_class_set_const(obj, rb_intern("Exception"),        abruby_wrap_class(vm->runtime_error_class));
-    abruby_class_set_const(obj, rb_intern("StandardError"),    abruby_wrap_class(vm->runtime_error_class));
-    abruby_class_set_const(obj, rb_intern("NotImplementedError"), abruby_wrap_class(vm->runtime_error_class));
-    abruby_class_set_const(obj, rb_intern("ArgumentError"),    abruby_wrap_class(vm->runtime_error_class));
-    abruby_class_set_const(obj, rb_intern("TypeError"),        abruby_wrap_class(vm->runtime_error_class));
-    abruby_class_set_const(obj, rb_intern("NameError"),        abruby_wrap_class(vm->runtime_error_class));
-    abruby_class_set_const(obj, rb_intern("NoMethodError"),    abruby_wrap_class(vm->runtime_error_class));
-    abruby_class_set_const(obj, rb_intern("IndexError"),       abruby_wrap_class(vm->runtime_error_class));
-    abruby_class_set_const(obj, rb_intern("KeyError"),         abruby_wrap_class(vm->runtime_error_class));
-    abruby_class_set_const(obj, rb_intern("RangeError"),       abruby_wrap_class(vm->runtime_error_class));
-    abruby_class_set_const(obj, rb_intern("ZeroDivisionError"),abruby_wrap_class(vm->runtime_error_class));
-    abruby_class_set_const(obj, rb_intern("FloatDomainError"), abruby_wrap_class(vm->runtime_error_class));
-    abruby_class_set_const(obj, rb_intern("IOError"),          abruby_wrap_class(vm->runtime_error_class));
-    abruby_class_set_const(obj, rb_intern("LoadError"),        abruby_wrap_class(vm->runtime_error_class));
-    abruby_class_set_const(obj, rb_intern("StopIteration"),    abruby_wrap_class(vm->runtime_error_class));
+    abruby_class_set_const(obj, rb_intern("Exception"),        abruby_wrap_class(abm->runtime_error_class));
+    abruby_class_set_const(obj, rb_intern("StandardError"),    abruby_wrap_class(abm->runtime_error_class));
+    abruby_class_set_const(obj, rb_intern("NotImplementedError"), abruby_wrap_class(abm->runtime_error_class));
+    abruby_class_set_const(obj, rb_intern("ArgumentError"),    abruby_wrap_class(abm->runtime_error_class));
+    abruby_class_set_const(obj, rb_intern("TypeError"),        abruby_wrap_class(abm->runtime_error_class));
+    abruby_class_set_const(obj, rb_intern("NameError"),        abruby_wrap_class(abm->runtime_error_class));
+    abruby_class_set_const(obj, rb_intern("NoMethodError"),    abruby_wrap_class(abm->runtime_error_class));
+    abruby_class_set_const(obj, rb_intern("IndexError"),       abruby_wrap_class(abm->runtime_error_class));
+    abruby_class_set_const(obj, rb_intern("KeyError"),         abruby_wrap_class(abm->runtime_error_class));
+    abruby_class_set_const(obj, rb_intern("RangeError"),       abruby_wrap_class(abm->runtime_error_class));
+    abruby_class_set_const(obj, rb_intern("ZeroDivisionError"),abruby_wrap_class(abm->runtime_error_class));
+    abruby_class_set_const(obj, rb_intern("FloatDomainError"), abruby_wrap_class(abm->runtime_error_class));
+    abruby_class_set_const(obj, rb_intern("IOError"),          abruby_wrap_class(abm->runtime_error_class));
+    abruby_class_set_const(obj, rb_intern("LoadError"),        abruby_wrap_class(abm->runtime_error_class));
+    abruby_class_set_const(obj, rb_intern("StopIteration"),    abruby_wrap_class(abm->runtime_error_class));
 
     // File: a class object whose own methods table holds the file
     // utilities (`File.join`, `File.binread`, etc.).  We use the same
@@ -991,7 +991,7 @@ init_instance_classes(struct abruby_machine *vm)
         file_klass->klass = file_klass;  // self-reference: methods on self
         file_klass->obj_type = ABRUBY_OBJ_CLASS;
         file_klass->name = rb_intern("File");
-        file_klass->super = vm->object_class;
+        file_klass->super = abm->object_class;
         extern RESULT ab_file_join(CTX *, VALUE, unsigned int, VALUE *);
         extern RESULT ab_file_binread(CTX *, VALUE, unsigned int, VALUE *);
         extern RESULT ab_file_dirname(CTX *, VALUE, unsigned int, VALUE *);
@@ -1035,7 +1035,7 @@ init_instance_classes(struct abruby_machine *vm)
         fb_klass->obj_type = ABRUBY_OBJ_CLASS;          // this is a class struct
         fb_klass->instance_obj_type = ABRUBY_OBJ_FIBER; // instances are abruby_fiber structs
         fb_klass->name = rb_intern("Fiber");
-        fb_klass->super = vm->object_class;
+        fb_klass->super = abm->object_class;
         extern RESULT ab_fiber_new(CTX *, VALUE, unsigned int, VALUE *);
         extern RESULT ab_fiber_resume(CTX *, VALUE, unsigned int, VALUE *);
         extern RESULT ab_fiber_yield(CTX *, VALUE, unsigned int, VALUE *);
@@ -1057,7 +1057,7 @@ init_instance_classes(struct abruby_machine *vm)
             mm->u.cfunc.func = entries[i].fn;
             ab_id_table_insert(&fb_klass->methods, mm->name, (VALUE)mm);
         }
-        vm->fiber_class = fb_klass;
+        abm->fiber_class = fb_klass;
         abruby_class_set_const(obj, rb_intern("Fiber"), abruby_wrap_class(fb_klass));
     }
 
@@ -1069,7 +1069,7 @@ init_instance_classes(struct abruby_machine *vm)
         p_klass->obj_type = ABRUBY_OBJ_CLASS;           // this is a class struct
         p_klass->instance_obj_type = ABRUBY_OBJ_PROC;  // instances are abruby_proc structs
         p_klass->name = rb_intern("Proc");
-        p_klass->super = vm->object_class;
+        p_klass->super = abm->object_class;
         extern RESULT ab_proc_new(CTX *, VALUE, unsigned int, VALUE *);
         extern RESULT ab_proc_call(CTX *, VALUE, unsigned int, VALUE *);
         extern RESULT ab_proc_lambda_p(CTX *, VALUE, unsigned int, VALUE *);
@@ -1098,7 +1098,7 @@ init_instance_classes(struct abruby_machine *vm)
             mm->u.cfunc.params_cnt = (unsigned int)-1;  // variadic
             ab_id_table_insert(&p_klass->methods, mm->name, (VALUE)mm);
         }
-        vm->proc_class = p_klass;
+        abm->proc_class = p_klass;
         abruby_class_set_const(obj, rb_intern("Proc"), abruby_wrap_class(p_klass));
     }
 
@@ -1107,11 +1107,11 @@ init_instance_classes(struct abruby_machine *vm)
     // abruby_bound_method T_DATAs (recv, method_name).
     {
         struct abruby_class *m_klass = (struct abruby_class *)ruby_xcalloc(1, sizeof(struct abruby_class));
-        m_klass->klass = vm->class_class;
+        m_klass->klass = abm->class_class;
         m_klass->obj_type = ABRUBY_OBJ_CLASS;                    // this is a class struct
         m_klass->instance_obj_type = ABRUBY_OBJ_BOUND_METHOD;   // instances are abruby_bound_method structs
         m_klass->name = rb_intern("Method");
-        m_klass->super = vm->object_class;
+        m_klass->super = abm->object_class;
         extern RESULT ab_method_call(CTX *, VALUE, unsigned int, VALUE *);
         struct {
             const char *name;
@@ -1129,7 +1129,7 @@ init_instance_classes(struct abruby_machine *vm)
             mm->u.cfunc.func = entries[i].fn;
             ab_id_table_insert(&m_klass->methods, mm->name, (VALUE)mm);
         }
-        vm->method_class = m_klass;
+        abm->method_class = m_klass;
         abruby_class_set_const(obj, rb_intern("Method"), abruby_wrap_class(m_klass));
     }
 
@@ -1140,7 +1140,7 @@ init_instance_classes(struct abruby_machine *vm)
         gc_klass->klass = gc_klass;
         gc_klass->obj_type = ABRUBY_OBJ_CLASS;
         gc_klass->name = rb_intern("GC");
-        gc_klass->super = vm->object_class;
+        gc_klass->super = abm->object_class;
         extern RESULT ab_gc_disable(CTX *, VALUE, unsigned int, VALUE *);
         extern RESULT ab_gc_enable(CTX *, VALUE, unsigned int, VALUE *);
         extern RESULT ab_gc_start(CTX *, VALUE, unsigned int, VALUE *);
@@ -1170,7 +1170,7 @@ init_instance_classes(struct abruby_machine *vm)
         proc_klass->klass = proc_klass;
         proc_klass->obj_type = ABRUBY_OBJ_CLASS;
         proc_klass->name = rb_intern("Process");
-        proc_klass->super = vm->object_class;
+        proc_klass->super = abm->object_class;
         extern RESULT ab_process_clock_gettime(CTX *, VALUE, unsigned int, VALUE *);
         struct abruby_method *m_clock = ruby_xcalloc(1, sizeof(struct abruby_method));
         m_clock->name = rb_intern("clock_gettime");
@@ -1190,7 +1190,7 @@ init_instance_classes(struct abruby_machine *vm)
         VALUE cruby_argv = rb_const_get(rb_cObject, rb_intern("ARGV"));
         long len = RARRAY_LEN(cruby_argv);
         VALUE ab_ary = rb_ary_new_capa(len);
-        CTX *c0 = &vm->current_fiber->ctx;
+        CTX *c0 = &abm->current_fiber->ctx;
         for (long i = 0; i < len; i++) {
             VALUE s = RARRAY_AREF(cruby_argv, i);
             rb_ary_push(ab_ary, RB_TYPE_P(s, T_STRING) ? abruby_str_new(c0, s) : s);
@@ -1203,7 +1203,7 @@ init_instance_classes(struct abruby_machine *vm)
     // a Ractor stub, which we don't support either.  Returning nil from
     // `ENV[...]` is sufficient.
     abruby_class_set_const(obj, rb_intern("ENV"),
-        abruby_hash_new_wrap(&vm->current_fiber->ctx, rb_hash_new()));
+        abruby_hash_new_wrap(&abm->current_fiber->ctx, rb_hash_new()));
 
     // Struct: a class with a `new` cfunc that returns a freshly minted
     // user class with the requested ivar accessors.  See ab_struct_new
@@ -1216,7 +1216,7 @@ init_instance_classes(struct abruby_machine *vm)
         struct_klass->klass = struct_klass;
         struct_klass->obj_type = ABRUBY_OBJ_CLASS;
         struct_klass->name = rb_intern("Struct");
-        struct_klass->super = vm->object_class;
+        struct_klass->super = abm->object_class;
         // Override `new` so `Struct.new(...)` builds a new class.
         extern RESULT ab_struct_new(CTX *c, VALUE self, unsigned int argc, VALUE *argv);
         struct abruby_method *m = ruby_xcalloc(1, sizeof(struct abruby_method));
@@ -1231,74 +1231,74 @@ init_instance_classes(struct abruby_machine *vm)
 
     // Float constants. abruby_float_new_wrap passes Flonum through and only
     // wraps heap T_FLOAT in T_DATA, so it works for both representations.
-    abruby_class_set_const(vm->float_class, rb_intern("INFINITY"),
-        abruby_float_new_wrap(&vm->current_fiber->ctx, rb_float_new(HUGE_VAL)));
-    abruby_class_set_const(vm->float_class, rb_intern("NAN"),
-        abruby_float_new_wrap(&vm->current_fiber->ctx, rb_float_new(nan(""))));
+    abruby_class_set_const(abm->float_class, rb_intern("INFINITY"),
+        abruby_float_new_wrap(&abm->current_fiber->ctx, rb_float_new(HUGE_VAL)));
+    abruby_class_set_const(abm->float_class, rb_intern("NAN"),
+        abruby_float_new_wrap(&abm->current_fiber->ctx, rb_float_new(nan(""))));
 }
 
 static void
-init_vm(struct abruby_machine *vm)
+init_abm(struct abruby_machine *abm)
 {
-    vm->method_serial = 1;
-    vm->current_fiber = ruby_xcalloc(1, sizeof(struct abruby_fiber));
-    vm->current_fiber->is_main = true;
-    vm->current_fiber->state = ABRUBY_FIBER_RUNNING;
-    vm->current_fiber->abm = vm;
-    vm->current_fiber->crb_fiber = Qnil;
-    vm->current_fiber->rb_wrapper = Qnil;
+    abm->method_serial = 1;
+    abm->current_fiber = ruby_xcalloc(1, sizeof(struct abruby_fiber));
+    abm->current_fiber->is_main = true;
+    abm->current_fiber->state = ABRUBY_FIBER_RUNNING;
+    abm->current_fiber->abm = abm;
+    abm->current_fiber->crb_fiber = Qnil;
+    abm->current_fiber->rb_wrapper = Qnil;
     // Wire ctx.abm early so init_instance_classes can use abruby_float_new_wrap
     // (which reads c->abm->float_class) when creating Float constants.
-    vm->current_fiber->ctx.abm = vm;
-    vm->current_fiber->ctx.sp = vm->current_fiber->ctx.stack;
+    abm->current_fiber->ctx.abm = abm;
+    abm->current_fiber->ctx.sp = abm->current_fiber->ctx.stack;
     // Set up root frame for this fiber
-    memset(&vm->current_fiber->root_frame, 0, sizeof(struct abruby_frame));
-    vm->current_fiber->root_frame.fp = vm->current_fiber->ctx.stack;
-    vm->current_fiber->ctx.current_frame = &vm->current_fiber->root_frame;
+    memset(&abm->current_fiber->root_frame, 0, sizeof(struct abruby_frame));
+    abm->current_fiber->root_frame.fp = abm->current_fiber->ctx.stack;
+    abm->current_fiber->ctx.current_frame = &abm->current_fiber->root_frame;
 
     // Create per-instance built-in classes (must be before main_class_body setup)
-    init_instance_classes(vm);
+    init_instance_classes(abm);
 
     // Now that fiber_class exists, tag the main fiber so abruby_header
     // dispatches via OBJ_FIBER on it (rare; only if it's ever wrapped).
-    vm->current_fiber->klass = vm->fiber_class;
-    vm->current_fiber->obj_type = vm->fiber_class->instance_obj_type;
-    vm->root_fiber = vm->current_fiber;
+    abm->current_fiber->klass = abm->fiber_class;
+    abm->current_fiber->obj_type = abm->fiber_class->instance_obj_type;
+    abm->root_fiber = abm->current_fiber;
 
     // Per-instance main class (inherits from Object)
-    vm->main_class_body.klass = vm->class_class;
-    vm->main_class_body.obj_type = ABRUBY_OBJ_CLASS;
-    vm->main_class_body.instance_obj_type = ABRUBY_OBJ_GENERIC;
-    vm->main_class_body.name = rb_intern("main");
-    vm->main_class_body.super = vm->object_class;
+    abm->main_class_body.klass = abm->class_class;
+    abm->main_class_body.obj_type = ABRUBY_OBJ_CLASS;
+    abm->main_class_body.instance_obj_type = ABRUBY_OBJ_GENERIC;
+    abm->main_class_body.name = rb_intern("main");
+    abm->main_class_body.super = abm->object_class;
 
-    vm->current_fiber->root_frame.fp = vm->current_fiber->ctx.stack;
-    vm->current_fiber->ctx.sp = vm->current_fiber->ctx.stack;
-    vm->current_fiber->root_frame.self = abruby_new_object(&vm->main_class_body);
+    abm->current_fiber->root_frame.fp = abm->current_fiber->ctx.stack;
+    abm->current_fiber->ctx.sp = abm->current_fiber->ctx.stack;
+    abm->current_fiber->root_frame.self = abruby_new_object(&abm->main_class_body);
 
-    vm->current_fiber->ctx.current_class = NULL;
-    vm->current_fiber->root_frame.entry = NULL;
-    vm->id_cache.op_plus = rb_intern("+");
-    vm->id_cache.op_minus = rb_intern("-");
-    vm->id_cache.op_mul = rb_intern("*");
-    vm->id_cache.op_div = rb_intern("/");
-    vm->id_cache.op_lt = rb_intern("<");
-    vm->id_cache.op_le = rb_intern("<=");
-    vm->id_cache.op_gt = rb_intern(">");
-    vm->id_cache.op_ge = rb_intern(">=");
-    vm->id_cache.op_eq = rb_intern("==");
-    vm->id_cache.op_mod = rb_intern("%");
-    vm->id_cache.method_missing = rb_intern("method_missing");
-    vm->id_cache.initialize = rb_intern("initialize");
-    vm->current_fiber->ctx.ids = &vm->id_cache;
-    vm->current_fiber->ctx.abm = vm;
-    vm->rb_self = Qnil;
-    vm->current_file = Qnil;
-    vm->loaded_files = rb_ary_new();
-    vm->loaded_asts  = rb_ary_new();
+    abm->current_fiber->ctx.current_class = NULL;
+    abm->current_fiber->root_frame.entry = NULL;
+    abm->id_cache.op_plus = rb_intern("+");
+    abm->id_cache.op_minus = rb_intern("-");
+    abm->id_cache.op_mul = rb_intern("*");
+    abm->id_cache.op_div = rb_intern("/");
+    abm->id_cache.op_lt = rb_intern("<");
+    abm->id_cache.op_le = rb_intern("<=");
+    abm->id_cache.op_gt = rb_intern(">");
+    abm->id_cache.op_ge = rb_intern(">=");
+    abm->id_cache.op_eq = rb_intern("==");
+    abm->id_cache.op_mod = rb_intern("%");
+    abm->id_cache.method_missing = rb_intern("method_missing");
+    abm->id_cache.initialize = rb_intern("initialize");
+    abm->current_fiber->ctx.ids = &abm->id_cache;
+    abm->current_fiber->ctx.abm = abm;
+    abm->rb_self = Qnil;
+    abm->current_file = Qnil;
+    abm->loaded_files = rb_ary_new();
+    abm->loaded_asts  = rb_ary_new();
 
     for (int i = 0; i < ABRUBY_STACK_SIZE; i++) {
-        vm->current_fiber->ctx.stack[i] = Qnil;
+        abm->current_fiber->ctx.stack[i] = Qnil;
     }
 }
 
@@ -1797,14 +1797,14 @@ abruby_to_ruby(VALUE v)
 RESULT
 abruby_require_file(CTX *c, VALUE rb_path)
 {
-    struct abruby_machine *vm = c->abm;
+    struct abruby_machine *abm = c->abm;
 
     // Resolve to absolute path
     VALUE abs_path = rb_file_expand_path(rb_path, Qnil);
     VALUE abs_str = rb_funcall(abs_path, rb_intern("to_s"), 0);
 
     // Check if already loaded
-    if (RTEST(rb_funcall(vm->loaded_files, rb_intern("include?"), 1, abs_str))) {
+    if (RTEST(rb_funcall(abm->loaded_files, rb_intern("include?"), 1, abs_str))) {
         return RESULT_OK(Qfalse);
     }
 
@@ -1823,12 +1823,12 @@ abruby_require_file(CTX *c, VALUE rb_path)
     // Mark as loaded, and retain the AST for the lifetime of the VM so
     // method bodies (raw NODE pointers stored on abruby_method) stay
     // live across GC cycles.
-    rb_ary_push(vm->loaded_files, abs_str);
-    rb_ary_push(vm->loaded_asts, ast_obj);
+    rb_ary_push(abm->loaded_files, abs_str);
+    rb_ary_push(abm->loaded_asts, ast_obj);
 
     // Save/restore current_file
-    VALUE save_file = vm->current_file;
-    vm->current_file = abs_str;
+    VALUE save_file = abm->current_file;
+    abm->current_file = abs_str;
 
     // Eval AST
     NODE *ast = unwrap_node(ast_obj);
@@ -1840,7 +1840,7 @@ abruby_require_file(CTX *c, VALUE rb_path)
     req_frame.method = NULL;
     req_frame.caller_node = NULL;
     req_frame.block = NULL;
-    req_frame.self = abruby_new_object(&vm->main_class_body);
+    req_frame.self = abruby_new_object(&abm->main_class_body);
     req_frame.fp = c->stack;
     req_frame.entry = &req_entry;
     c->current_frame = &req_frame;
@@ -1849,7 +1849,7 @@ abruby_require_file(CTX *c, VALUE rb_path)
     c->current_frame = save_frame;
     c->current_class = save_class;
 
-    vm->current_file = save_file;
+    abm->current_file = save_file;
 
     if (r.state == RESULT_RAISE) return r;
     return RESULT_OK(Qtrue);
@@ -1883,30 +1883,30 @@ abruby_current_file(const CTX *c)
 static VALUE
 rb_abruby_initialize(VALUE self)
 {
-    // Allocate and assign DATA_PTR BEFORE calling init_vm (which may trigger
+    // Allocate and assign DATA_PTR BEFORE calling init_abm (which may trigger
     // GC via rb_ary_new / TypedData_Make_Struct inside init_instance_classes).
     // With DATA_PTR set early, vm_mark receives a valid pointer instead of NULL.
-    struct abruby_machine *vm = ruby_xcalloc(1, sizeof(struct abruby_machine));
-    DATA_PTR(self) = vm;
-    init_vm(vm);
-    vm->rb_self = self;
+    struct abruby_machine *abm = ruby_xcalloc(1, sizeof(struct abruby_machine));
+    DATA_PTR(self) = abm;
+    init_abm(abm);
+    abm->rb_self = self;
     return self;
 }
 
 static VALUE
 rb_abruby_get_current_file(VALUE self)
 {
-    struct abruby_machine *vm;
-    TypedData_Get_Struct(self, struct abruby_machine, &abruby_machine_type, vm);
-    return vm->current_file;
+    struct abruby_machine *abm;
+    TypedData_Get_Struct(self, struct abruby_machine, &abruby_machine_type, abm);
+    return abm->current_file;
 }
 
 static VALUE
 rb_abruby_set_current_file(VALUE self, VALUE path)
 {
-    struct abruby_machine *vm;
-    TypedData_Get_Struct(self, struct abruby_machine, &abruby_machine_type, vm);
-    vm->current_file = NIL_P(path) ? Qnil : rb_file_expand_path(path, Qnil);
+    struct abruby_machine *abm;
+    TypedData_Get_Struct(self, struct abruby_machine, &abruby_machine_type, abm);
+    abm->current_file = NIL_P(path) ? Qnil : rb_file_expand_path(path, Qnil);
     return path;
 }
 
@@ -1921,8 +1921,8 @@ rb_abruby_alloc(VALUE klass)
 static VALUE
 rb_abruby_eval_ast(VALUE self, VALUE ast_obj)
 {
-    struct abruby_machine *vm;
-    TypedData_Get_Struct(self, struct abruby_machine, &abruby_machine_type, vm);
+    struct abruby_machine *abm;
+    TypedData_Get_Struct(self, struct abruby_machine, &abruby_machine_type, abm);
 
     NODE *ast = unwrap_node(ast_obj);
     if (ast == NULL) {
@@ -1932,25 +1932,25 @@ rb_abruby_eval_ast(VALUE self, VALUE ast_obj)
     // Retain the AST for the lifetime of the VM so method bodies defined
     // inside it stay live even after this eval returns.  (Otherwise GC
     // collects the NODE T_DATA and abruby_method bodies become dangling.)
-    rb_ary_push(vm->loaded_asts, ast_obj);
+    rb_ary_push(abm->loaded_asts, ast_obj);
 
     // reset stack for each eval (classes/methods/self persist)
     // Clear stale VALUEs in the previously-used range so GC doesn't
     // mark dead objects from earlier eval calls.
     {
-        VALUE *old_sp = vm->current_fiber->ctx.sp;
-        VALUE *base = vm->current_fiber->ctx.stack;
+        VALUE *old_sp = abm->current_fiber->ctx.sp;
+        VALUE *base = abm->current_fiber->ctx.stack;
         if (old_sp > base) memset(base, 0, (size_t)(old_sp - base) * sizeof(VALUE));
     }
-    vm->current_fiber->root_frame.fp = vm->current_fiber->ctx.stack;
-    vm->current_fiber->ctx.current_frame = &vm->current_fiber->root_frame;
-    vm->current_fiber->ctx.sp = vm->current_fiber->ctx.stack;
-    vm->current_fiber->ctx.current_class = NULL;
+    abm->current_fiber->root_frame.fp = abm->current_fiber->ctx.stack;
+    abm->current_fiber->ctx.current_frame = &abm->current_fiber->root_frame;
+    abm->current_fiber->ctx.sp = abm->current_fiber->ctx.stack;
+    abm->current_fiber->ctx.current_class = NULL;
 
     // Push <main> frame so backtrace always has a bottom frame.
     // Inherit self/fp from root frame.
-    const char *eval_file = NIL_P(vm->current_file) ? "(abruby)" : RSTRING_PTR(vm->current_file);
-    struct abruby_frame *rf = &vm->current_fiber->root_frame;
+    const char *eval_file = NIL_P(abm->current_file) ? "(abruby)" : RSTRING_PTR(abm->current_file);
+    struct abruby_frame *rf = &abm->current_fiber->root_frame;
     struct abruby_entry main_entry = {NULL, eval_file};
     struct abruby_frame main_frame;
     main_frame.prev = NULL;
@@ -1960,10 +1960,10 @@ rb_abruby_eval_ast(VALUE self, VALUE ast_obj)
     main_frame.self = rf->self;
     main_frame.fp = rf->fp;
     main_frame.entry = &main_entry;
-    vm->current_fiber->ctx.current_frame = &main_frame;
+    abm->current_fiber->ctx.current_frame = &main_frame;
 
-    RESULT r = EVAL(&vm->current_fiber->ctx, ast);
-    vm->current_fiber->ctx.current_frame = &vm->current_fiber->root_frame;
+    RESULT r = EVAL(&abm->current_fiber->ctx, ast);
+    abm->current_fiber->ctx.current_frame = &abm->current_fiber->root_frame;
     if (r.state == RESULT_RAISE) {
         VALUE exc_val = r.value;
         // Extract message and backtrace from exception object

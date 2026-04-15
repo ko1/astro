@@ -13,17 +13,17 @@ so_mtime = File.mtime(File.join(src_dir, 'abruby.so')).to_i rescue 0
 AbRuby.cs_init(store_dir, src_dir, so_mtime)
 
 files = Dir.glob(File.join(__dir__, 'bm_*.ab.rb')).sort
-vm = AbRuby.new
+abm = AbRuby.new
 
 files.each do |f|
   name = File.basename(f)
   begin
-    ast = vm.parse(File.read(f), f)
+    ast = abm.parse(File.read(f), f)
     AbRuby.cs_compile(ast)
-    vm.last_entries.each do |entry_name, body|
+    abm.last_entries.each do |entry_name, body|
       AbRuby.cs_compile(body)
     end
-    puts "  compiled: #{name} (#{vm.last_entries.size + 1} entries)"
+    puts "  compiled: #{name} (#{abm.last_entries.size + 1} entries)"
   rescue Exception => e
     puts "  skipped:  #{name} (#{e.message})"
   end

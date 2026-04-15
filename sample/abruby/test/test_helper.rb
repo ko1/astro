@@ -6,7 +6,7 @@ ABRUBY_MODE = ENV['ABRUBY_MODE'] || 'plain'
 
 class AbRubyTest < Minitest::Test
   def setup
-    @vm = AbRuby.new
+    @abm = AbRuby.new
     if ABRUBY_MODE == 'compiled'
       src_dir = File.expand_path('..', __dir__)
       store_dir = File.join(src_dir, 'code_store')

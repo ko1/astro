@@ -33,11 +33,11 @@ if compile
   AbRuby.cs_init(File.join(abruby_dir, 'code_store'), abruby_dir, so_mtime)
 end
 
-vm = AbRuby.new
+abm = AbRuby.new
 
 eval_line = ->(line) {
-  ast = vm.parse(line)
-  entries = [[nil, ast]] + vm.last_entries
+  ast = abm.parse(line)
+  entries = [[nil, ast]] + abm.last_entries
 
   if compile
     entries.each { |_, node| AbRuby.cs_compile(node) }
@@ -46,7 +46,7 @@ eval_line = ->(line) {
     entries.each { |_, node| AbRuby.cs_load(node) }
   end
 
-  result = vm.eval_ast(ast)
+  result = abm.eval_ast(ast)
 
   if disasm
     entries.each do |name, node|
@@ -55,7 +55,7 @@ eval_line = ->(line) {
         puts "--- #{name || '<toplevel>'} ---"
         $stdout.flush
       end
-      puts vm.dump_ast(node)
+      puts abm.dump_ast(node)
       $stdout.flush
       AbRuby.cs_disasm(node)
     end
