@@ -184,7 +184,7 @@ abruby_data_free(void *ptr)
         ab_id_table_free(&cls->constants);
         // Do NOT free class structs — other objects reference them via
         // klass pointers, and GC sweep order is arbitrary.  The leak
-        // is bounded (one set of ~20 classes per VM instance).
+        // is bounded (one set of ~20 classes per abm instance).
         return;
     }
     case ABRUBY_OBJ_GENERIC: {
@@ -429,9 +429,9 @@ abruby_complex_new(CTX *c, VALUE rb_complex)
 
 // Class wrapper.
 //
-// Per-instance built-in classes are kept alive via vm_mark (which marks their
+// Per-instance built-in classes are kept alive via abm_mark (which marks their
 // rb_wrapper). User-defined classes are kept alive via their parent class's
-// constants table (marked by vm_mark or by abruby_data_mark of the parent).
+// constants table (marked by abm_mark or by abruby_data_mark of the parent).
 // Templates (ab_tmpl_*) are never wrapped — they are not exposed to Ruby.
 VALUE
 abruby_wrap_class(struct abruby_class *klass)
@@ -698,10 +698,10 @@ abruby_ivar_set(VALUE self, ID name, VALUE val)
     *abruby_object_ivar_slot(obj, slot) = val;
 }
 
-// Per-instance VM state (struct abruby_machine defined in context.h)
+// Per-instance abruby_machine state (struct defined in context.h)
 
 static void
-vm_mark(void *ptr)
+abm_mark(void *ptr)
 {
     if (!ptr) return;
     const struct abruby_machine *abm = (const struct abruby_machine *)ptr;
@@ -738,7 +738,7 @@ vm_mark(void *ptr)
     rb_gc_mark(abm->loaded_files);
     rb_gc_mark(abm->loaded_asts);
     // Mark main_class method bodies and constants
-    // (main_class is embedded in VM, not wrapped as T_DATA)
+    // (main_class is embedded in abm, not wrapped as T_DATA)
     const struct abruby_class *mc = &abm->main_class_body;
     ab_id_table_foreach(&mc->methods, _k, _v, {
         const struct abruby_method *m = (const struct abruby_method *)_v;
@@ -776,7 +776,7 @@ vm_mark(void *ptr)
 }
 
 static void
-vm_free(void *ptr)
+abm_free(void *ptr)
 {
     if (!ptr) return;
     struct abruby_machine *abm = (struct abruby_machine *)ptr;
@@ -794,14 +794,14 @@ vm_free(void *ptr)
 }
 
 static size_t
-vm_memsize(const void *ptr)
+abm_memsize(const void *ptr)
 {
     return sizeof(struct abruby_machine) + sizeof(struct abruby_fiber);
 }
 
 static const rb_data_type_t abruby_machine_type = {
     "AbRuby",
-    { vm_mark, vm_free, vm_memsize },
+    { abm_mark, abm_free, abm_memsize },
     0, 0, RUBY_TYPED_FREE_IMMEDIATELY
 };
 
@@ -1026,7 +1026,7 @@ init_instance_classes(struct abruby_machine *abm)
         abruby_class_set_const(obj, rb_intern("File"), abruby_wrap_class(file_klass));
     }
 
-    // Fiber: per-VM class with `new` / `resume` / `yield` (class
+    // Fiber: per-instance class with `new` / `resume` / `yield` (class
     // method) / `alive?` cfuncs.  Self-referential klass for the same
     // reason as Proc / Struct / File.
     {
@@ -1792,7 +1792,7 @@ abruby_to_ruby(VALUE v)
     return v;
 }
 
-// require helper: load and eval a file in the VM's context
+// require helper: load and eval a file in the abm context
 // Returns Qtrue if loaded, Qfalse if already loaded.
 RESULT
 abruby_require_file(CTX *c, VALUE rb_path)
@@ -1820,7 +1820,7 @@ abruby_require_file(CTX *c, VALUE rb_path)
     VALUE parser = rb_funcall(rb_const_get(rb_cAbRuby, rb_intern("Parser")), rb_intern("new"), 0);
     VALUE ast_obj = rb_funcall(parser, rb_intern("parse"), 2, code, abs_str);
 
-    // Mark as loaded, and retain the AST for the lifetime of the VM so
+    // Mark as loaded, and retain the AST for the lifetime of the abm so
     // method bodies (raw NODE pointers stored on abruby_method) stay
     // live across GC cycles.
     rb_ary_push(abm->loaded_files, abs_str);
@@ -1863,7 +1863,7 @@ abruby_eval_string(CTX *c, VALUE rb_code)
     VALUE parser = rb_funcall(rb_const_get(rb_cAbRuby, rb_intern("Parser")), rb_intern("new"), 0);
     VALUE ast_obj = rb_funcall(parser, rb_intern("parse"), 1, rb_code);
 
-    // Retain the AST for the lifetime of the VM (see abruby_require_file).
+    // Retain the AST for the lifetime of the abm (see abruby_require_file).
     rb_ary_push(c->abm->loaded_asts, ast_obj);
 
     // Eval AST in current context
@@ -1872,7 +1872,7 @@ abruby_eval_string(CTX *c, VALUE rb_code)
     return r;
 }
 
-// Get current file path from VM
+// Get current file path from abm
 VALUE
 abruby_current_file(const CTX *c)
 {
@@ -1885,7 +1885,7 @@ rb_abruby_initialize(VALUE self)
 {
     // Allocate and assign DATA_PTR BEFORE calling init_abm (which may trigger
     // GC via rb_ary_new / TypedData_Make_Struct inside init_instance_classes).
-    // With DATA_PTR set early, vm_mark receives a valid pointer instead of NULL.
+    // With DATA_PTR set early, abm_mark receives a valid pointer instead of NULL.
     struct abruby_machine *abm = ruby_xcalloc(1, sizeof(struct abruby_machine));
     DATA_PTR(self) = abm;
     init_abm(abm);
@@ -1929,7 +1929,7 @@ rb_abruby_eval_ast(VALUE self, VALUE ast_obj)
         rb_raise(rb_eRuntimeError, "cannot eval NULL AST");
     }
 
-    // Retain the AST for the lifetime of the VM so method bodies defined
+    // Retain the AST for the lifetime of the abm so method bodies defined
     // inside it stay live even after this eval returns.  (Otherwise GC
     // collects the NODE T_DATA and abruby_method bodies become dangling.)
     rb_ary_push(abm->loaded_asts, ast_obj);

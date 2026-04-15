@@ -82,7 +82,7 @@ crb_fiber_body(VALUE yielded_arg, VALUE callback_obj, int argc, const VALUE *arg
     // Place argv on the fiber's VALUE stack (not C stack) so
     // ab_proc_call's `new_fp = argv + argc` stays inside the CTX
     // stack — otherwise fp would point into the CRuby fiber's
-    // machine stack, causing vm_mark to scan an invalid range.
+    // machine stack, causing abm_mark to scan an invalid range.
     for (unsigned int i = 0; i < nargs; i++) c->current_frame->fp[i] = local_argv[i];
     ctx_update_sp(c, c->current_frame->fp + nargs);
 
