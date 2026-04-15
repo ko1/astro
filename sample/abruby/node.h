@@ -82,6 +82,20 @@ struct NodeHead {
 static inline RESULT
 EVAL(CTX *c, NODE *n)
 {
+#if ABRUBY_DEBUG
+    if (n->head.dispatcher == NULL) {
+        const char *kind_name = (n->head.kind && n->head.kind->default_dispatcher_name)
+            ? n->head.kind->default_dispatcher_name : "<unknown>";
+        fprintf(stderr, "\nABRUBY_BUG: NULL dispatcher on node %p\n", (void*)n);
+        fprintf(stderr, "  kind=%s line=%d\n", kind_name, n->head.line);
+        fprintf(stderr, "  ---- AST ----\n  ");
+        DUMP(stderr, n, true);
+        fprintf(stderr, "\n  -------------\n");
+        fflush(stderr);
+        rb_bug("ABRUBY: NULL dispatcher at EVAL (kind=%s, line=%d); likely an uncompiled node reached under --compiled-only",
+               kind_name, n->head.line);
+    }
+#endif
     return (*n->head.dispatcher)(c, n);
 }
 
