@@ -1476,6 +1476,17 @@ rb_alloc_node_seq(VALUE self, VALUE head, VALUE tail)
     return wrap_node(ALLOC_node_seq(unwrap_node(head), unwrap_node(tail)));
 }
 
+// Return the tail field of a node_seq (for parser-side opt_pc chain walking).
+// Returns nil if the node is not a node_seq.
+extern const struct NodeKind kind_node_seq;
+static VALUE
+rb_node_seq_tail(VALUE self, VALUE node_val)
+{
+    NODE *n = unwrap_node(node_val);
+    if (!n || n->head.kind != &kind_node_seq) return Qnil;
+    return wrap_node(n->u.node_seq.tail);
+}
+
 static VALUE
 rb_alloc_node_if(VALUE self, VALUE cond, VALUE then_node, VALUE else_node)
 {
@@ -2140,6 +2151,10 @@ Init_abruby(void)
     rb_cAbRubyNode = rb_define_class_under(rb_cAbRuby, "Node", rb_cObject);
     rb_undef_alloc_func(rb_cAbRubyNode);
 
+    // Expose the build-time ABRUBY_DEBUG flag so Ruby callers (exe/abruby's
+    // cs_build helper) can compile SD_*.c with a matching NodeHead layout.
+    rb_define_const(rb_cAbRuby, "DEBUG", ABRUBY_DEBUG ? Qtrue : Qfalse);
+
     // Set klass field on all built-in classes (common header)
     ab_tmpl_float_class->klass   = ab_tmpl_class_class;
     ab_tmpl_array_class->klass   = ab_tmpl_class_class;
@@ -2187,6 +2202,7 @@ Init_abruby(void)
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_lvar_set", rb_alloc_node_lvar_set, 2);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_scope", rb_alloc_node_scope, 2);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_seq", rb_alloc_node_seq, 2);
+    rb_define_singleton_method(rb_cAbRuby, "node_seq_tail", rb_node_seq_tail, 1);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_if", rb_alloc_node_if, 3);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_while", rb_alloc_node_while, 2);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_return", rb_alloc_node_return, 1);

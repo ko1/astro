@@ -571,6 +571,20 @@ class AbRuby
         frame = pop_frame
         @method_frame_max[name] = frame[:max]
         @entries << [name, body]
+        # node_def's dispatch walks the opt_pc chain when argc > required,
+        # jumping directly to an inner sub-seq that skips already-filled
+        # defaults.  Register each of those entry points as its own compile
+        # target so --compiled-only mode finds a public SD_ when prologue
+        # takes that shortcut.  (Without opt defaults, there is only one
+        # entry — already added above.)
+        unless opt_defaults.empty?
+          inner = body
+          opt_defaults.size.times do
+            inner = AbRuby.node_seq_tail(inner)
+            break unless inner
+            @entries << ["#{name}:opt#{@entries.size}", inner]
+          end
+        end
         AbRuby.alloc_node_def(name, body, required_cnt, params_cnt, post_cnt, rest_index, frame[:max])
 
       when Prism::ArrayNode

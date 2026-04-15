@@ -2343,10 +2343,16 @@ flonum_div_calc(CTX *c, VALUE lv, VALUE rv)
 static inline void
 swap_dispatcher(NODE *n, const struct NodeKind *target_kind)
 {
-    if (n->head.kind != target_kind) {
-        n->head.dispatcher = target_kind->default_dispatcher;
-        n->head.kind = target_kind;
-    }
+    if (n->head.kind == target_kind) return;
+    // If the node already holds a specialized (SD_) dispatcher, keep it:
+    // the SD_ was generated for the *current* kind, and overwriting with
+    // the target kind's default dispatcher would discard optimizations and
+    // (under --compiled-only) leave the node pointing at code that reads
+    // child dispatchers via the generic runtime path — which are NULL for
+    // inlined-as-static children.
+    if (n->head.flags.is_specialized) return;
+    n->head.dispatcher = target_kind->default_dispatcher;
+    n->head.kind = target_kind;
 }
 
 // node_plus: generic fallback (method dispatch via "+")

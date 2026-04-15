@@ -47,8 +47,12 @@ VALUE abruby_exception_new(CTX *c, const struct abruby_frame *frame, VALUE messa
 // a RESULT_RAISE with a LocalJumpError-style abruby exception.
 RESULT abruby_yield(CTX *c, unsigned int argc, VALUE *argv);
 
-// Disable parent/jit_status/dispatch_cnt fields (unused in abruby)
-// #define ASTRO_NODEHEAD_PARENT
+// Disable parent/jit_status/dispatch_cnt fields for release builds.
+// Under ABRUBY_DEBUG we re-enable parent so failure diagnostics can walk
+// up to the containing root AST (see EVAL's NULL-dispatcher check below).
+#if ABRUBY_DEBUG
+#define ASTRO_NODEHEAD_PARENT
+#endif
 // #define ASTRO_NODEHEAD_JIT_STATUS
 // #define ASTRO_NODEHEAD_DISPATCH_CNT
 
@@ -69,6 +73,10 @@ struct NodeHead {
     const struct NodeKind *kind;
     int32_t line;  // source location (for backtrace)
 
+#ifdef ASTRO_NODEHEAD_PARENT
+    struct Node *parent;
+#endif
+
     // --- hot zone (accessed on every EVAL, adjacent to union data) ---
     node_dispatcher_func_t dispatcher;
 };
@@ -79,6 +87,29 @@ struct NodeHead {
 // Node struct definitions follow NodeHead.
 #include "node_head.h"
 
+// Code store: declared here so swap_dispatcher can re-query it after kind
+// mutation without each SD_*.c having to reach into runtime/ separately.
+bool astro_cs_load(NODE *n);
+
+#if ABRUBY_DEBUG
+// Walk up via head.parent to the nearest @noinline boundary (def / class /
+// module / block_literal) — the smallest enclosing compilation entry.  If
+// no such ancestor exists, returns the outermost reachable node.  Returns
+// n itself on NULL / empty input.
+static inline struct Node *
+abruby_debug_enclosing_entry(struct Node *n)
+{
+    if (!n) return NULL;
+    struct Node *cur = n;
+    while (cur->head.parent) {
+        cur = cur->head.parent;
+        if (cur->head.flags.no_inline) break;
+    }
+    return cur;
+}
+
+#endif
+
 static inline RESULT
 EVAL(CTX *c, NODE *n)
 {
@@ -86,14 +117,26 @@ EVAL(CTX *c, NODE *n)
     if (n->head.dispatcher == NULL) {
         const char *kind_name = (n->head.kind && n->head.kind->default_dispatcher_name)
             ? n->head.kind->default_dispatcher_name : "<unknown>";
+        unsigned long h = n->head.flags.has_hash_value ? n->head.hash_value : HASH(n);
         fprintf(stderr, "\nABRUBY_BUG: NULL dispatcher on node %p\n", (void*)n);
-        fprintf(stderr, "  kind=%s line=%d\n", kind_name, n->head.line);
-        fprintf(stderr, "  ---- AST ----\n  ");
+        fprintf(stderr, "  kind=%s line=%d hash=%lx is_spec=%d\n",
+                kind_name, n->head.line, h, n->head.flags.is_specialized);
+        fprintf(stderr, "  ---- failing node ----\n  ");
         DUMP(stderr, n, true);
-        fprintf(stderr, "\n  -------------\n");
+        fprintf(stderr, "\n");
+        struct Node *root = abruby_debug_enclosing_entry(n);
+        if (root && root != n) {
+            const char *rname = (root->head.kind && root->head.kind->default_dispatcher_name)
+                ? root->head.kind->default_dispatcher_name : "<unknown>";
+            fprintf(stderr, "  ---- enclosing entry (%s, line=%d) ----\n  ",
+                    rname, root->head.line);
+            DUMP(stderr, root, true);
+            fprintf(stderr, "\n");
+        }
+        fprintf(stderr, "  ----------------------\n");
         fflush(stderr);
-        rb_bug("ABRUBY: NULL dispatcher at EVAL (kind=%s, line=%d); likely an uncompiled node reached under --compiled-only",
-               kind_name, n->head.line);
+        rb_bug("ABRUBY: NULL dispatcher at EVAL (kind=%s, line=%d, hash=%lx)",
+               kind_name, n->head.line, h);
     }
 #endif
     return (*n->head.dispatcher)(c, n);

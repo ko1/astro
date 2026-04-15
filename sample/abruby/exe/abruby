@@ -5,8 +5,12 @@ require 'rbconfig'
 require_relative '../lib/abruby'
 require_relative '../lib/abruby/version'
 
-# CFLAGS needed to compile specialized code (needs ruby.h)
-RUBY_CFLAGS = "-I#{RbConfig::CONFIG['rubyhdrdir']} -I#{RbConfig::CONFIG['rubyarchhdrdir']}"
+# CFLAGS needed to compile specialized code (needs ruby.h).  Propagate
+# ABRUBY_DEBUG so the SD_*.c files see the same NodeHead layout as abruby.so
+# — the debug build adds head.parent and mismatched offsets between the two
+# images produce SEGVs that are extremely painful to trace.
+abruby_debug_flag = (AbRuby::DEBUG rescue false) ? 1 : 0
+RUBY_CFLAGS = "-I#{RbConfig::CONFIG['rubyhdrdir']} -I#{RbConfig::CONFIG['rubyarchhdrdir']} -DABRUBY_DEBUG=#{abruby_debug_flag}"
 
 code = nil
 mode = :run          # :run, :plain, :compile, :compile_first, :pg
