@@ -194,21 +194,38 @@ when :compile_first
   # Re-cs_load every accumulated AST after each reload so their
   # dispatchers point at symbols in the new .so.
   compiled_entries = []  # [(label, node)], kept across reloads
+  # Is this node already specialized (cs_load succeeded during ALLOC from an
+  # earlier run's store)?  If so, we skip cs_compile — its SD_*.c already
+  # sits in code_store/c/ and rebuilding would just touch mtimes and force
+  # make to relink for nothing.
+  already_compiled = ->(node) { AbRuby.verify_compiled(node).nil? }
+
   AbRuby::Parser.on_parse = ->(parsed_ast, entries, src_file) {
     label = src_file || '-e'
-    cs_compile.(parsed_ast, label)
-    compiled_entries << [label, parsed_ast]
-    entries.each do |name, body|
-      cs_compile.(body, "#{label}:#{name}")
-      compiled_entries << ["#{label}:#{name}", body]
+    new_nodes = []
+    unless already_compiled.(parsed_ast)
+      cs_compile.(parsed_ast, label)
+      new_nodes << [label, parsed_ast]
     end
+    entries.each do |name, body|
+      next if already_compiled.(body)
+      cs_compile.(body, "#{label}:#{name}")
+      new_nodes << ["#{label}:#{name}", body]
+    end
+
+    if new_nodes.empty?
+      compiled_entries.concat(new_nodes)  # empty, no-op
+      next
+    end
+    compiled_entries.concat(new_nodes)
+
     $stderr.puts "cs_build" if verbose
     AbRuby.cs_build(RUBY_CFLAGS)
     AbRuby.cs_reload
-    # cs_reload replaces all.so with a freshly-built image.  Previous
-    # dispatcher pointers are still valid (we keep old mappings), but we
-    # need to rebind *every* accumulated entry so nodes whose earlier
-    # dlsym lookup hit the old (smaller) image now see the full SD_ set.
+    # cs_reload replaces all.so with a freshly-built image.  Dispatcher
+    # pointers from the earlier image still work (we keep old mappings),
+    # but nodes whose dlsym lookup missed on that older (smaller) image
+    # need to be rebound now that their SD_ symbol exists.
     compiled_entries.each { |_, node| AbRuby.cs_load(node) }
   }
 
