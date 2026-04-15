@@ -512,13 +512,20 @@ abruby_yield(CTX *c, unsigned int argc, VALUE *argv)
 
     VALUE *save_fp = c->current_frame->fp;
     VALUE save_self = c->current_frame->self;
+    const struct abruby_entry *save_entry = c->current_frame->entry;
     const struct abruby_block *save_current_block = c->current_block;
     const struct abruby_frame *save_current_block_frame = c->current_block_frame;
 
     // Copy captured closure env to a fresh area past the callee's frame
     // so block-body temporaries don't collide with callee locals.
+    // Install a synthetic entry whose cref is the block's captured cref
+    // so const lookups inside the block body walk the lexical scope chain
+    // that was active when the block literal was created (not the cfunc's
+    // own NULL entry).
+    struct abruby_entry blk_entry = {blk->cref, NULL};
     c->current_frame->fp = blk->captured_fp;
     c->current_frame->self = blk->captured_self;
+    c->current_frame->entry = &blk_entry;
     c->current_block = blk;
     c->current_block_frame = c->current_frame;
 
@@ -528,6 +535,7 @@ abruby_yield(CTX *c, unsigned int argc, VALUE *argv)
 
     c->current_frame->fp = save_fp;
     c->current_frame->self = save_self;
+    c->current_frame->entry = save_entry;
     c->current_block = save_current_block;
     c->current_block_frame = save_current_block_frame;
 

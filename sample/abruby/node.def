@@ -761,11 +761,17 @@ node_yield(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_inde
     // physical frame — giving that callee its own non-block context.
     VALUE *save_fp = c->current_frame->fp;
     VALUE save_self = c->current_frame->self;
+    const struct abruby_entry *save_entry = c->current_frame->entry;
     const struct abruby_block *save_current_block = c->current_block;
     const struct abruby_frame *save_current_block_frame = c->current_block_frame;
 
+    // Install a synthetic entry carrying the block's captured cref so
+    // constant lookups inside the block body walk the lexical scope chain
+    // active at block-literal creation, not the yielding method's chain.
+    struct abruby_entry blk_entry = {blk->cref, NULL};
     c->current_frame->fp = blk->captured_fp;
     c->current_frame->self = blk->captured_self;
+    c->current_frame->entry = &blk_entry;
     c->current_block = blk;
     c->current_block_frame = c->current_frame;
 
@@ -775,6 +781,7 @@ node_yield(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_inde
 
     c->current_frame->fp = save_fp;
     c->current_frame->self = save_self;
+    c->current_frame->entry = save_entry;
     c->current_block = save_current_block;
     c->current_block_frame = save_current_block_frame;
 
