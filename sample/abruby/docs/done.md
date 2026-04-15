@@ -183,3 +183,8 @@
   を `rb_gc_mark` に渡さずスキップ。binary_trees の leaf node mark コスト削減
 - **Object#== の identity 短絡**: `node_eq` / `node_neq` で `lv == rv` なら method dispatch せず直接返す。
   `node_arith_fallback` は method が `ab_object_eq` に解決された場合も identity でショートカット
+- **call node の mtype 特化 (Phase 1)**: `method_cache_fill` が mtype (AST simple / cfunc / ivar) を
+  確定させた後、`node_call0/1/2` を `node_call0/1/2_{ast,cfunc,ivar_{get,set}}` に `swap_dispatcher`。
+  特化版 dispatcher は `prologue_ast_simple_N` / `prologue_cfunc` / `prologue_ivar_{getter,setter}` を
+  名前で直接呼び出し、prologue は `always_inline` で展開されるため `mc->prologue` 間接呼び出しが消える。
+  cache miss (klass 不一致 / method_serial bump) は generic kind に demote して再入 → 再特化
