@@ -546,8 +546,11 @@ static RESULT ab_array_each_with_index(CTX *c, VALUE self, unsigned int argc, VA
 
 static RESULT ab_array_rotate_bang(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     long n = (argc >= 1 && FIXNUM_P(argv[0])) ? FIX2LONG(argv[0]) : 1;
-    VALUE ary = RARY(self);
-    rb_funcall(ary, rb_intern("rotate!"), 1, LONG2FIX(n));
+    // rb_ary_rotate is a public CRuby API (declared in
+    // ruby/internal/intern/array.h); use it directly to avoid the full
+    // rb_funcall("rotate!", ...) method-lookup + vm_call0 path that
+    // optcarrot's @bg_pixels.rotate! spins through 240×/scanline.
+    rb_ary_rotate(RARY(self), n);
     return RESULT_OK(self);
 }
 
