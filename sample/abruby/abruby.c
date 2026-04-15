@@ -1723,75 +1723,23 @@ rb_set_node_line(VALUE self, VALUE node_obj, VALUE line)
     return node_obj;
 }
 
-// Arithmetic node alloc wrappers
-static VALUE rb_alloc_node_plus(VALUE self, VALUE left, VALUE right, VALUE arg_index) {
-    NODE *l = unwrap_node(left), *r = unwrap_node(right);
-    NODE *result = ALLOC_node_plus(l, r, FIX2UINT(arg_index));
-    if (r && r->head.kind == NULL) {
-        fprintf(stderr, "[alloc_node_plus: right kind=NULL! right=%p]\n", (void*)r);
+// Binary-op node alloc wrappers (arith / compare / mod).
+// All share signature (left, right, arg_index) and only differ in the
+// ALLOC_node_* macro they invoke. X-macro keeps declarations and method
+// registrations in lock-step.
+#define ABRUBY_BINOP_NODES(X) \
+    X(plus)        X(minus)       X(mul)         X(div)         \
+    X(fixnum_plus) X(fixnum_minus) X(fixnum_mul) X(fixnum_div) \
+    X(lt)          X(le)          X(gt)          X(ge)          \
+    X(fixnum_lt)   X(fixnum_le)   X(fixnum_gt)   X(fixnum_ge)   \
+    X(fixnum_eq)   X(fixnum_neq)  X(fixnum_mod)
+
+#define ABRUBY_DEFINE_BINOP_WRAPPER(name) \
+    static VALUE rb_alloc_node_##name(VALUE self, VALUE left, VALUE right, VALUE arg_index) { \
+        return wrap_node(ALLOC_node_##name(unwrap_node(left), unwrap_node(right), FIX2UINT(arg_index))); \
     }
-    return wrap_node(result);
-}
-static VALUE rb_alloc_node_minus(VALUE self, VALUE left, VALUE right, VALUE arg_index) {
-    return wrap_node(ALLOC_node_minus(unwrap_node(left), unwrap_node(right), FIX2UINT(arg_index)));
-}
-static VALUE rb_alloc_node_fixnum_plus(VALUE self, VALUE left, VALUE right, VALUE arg_index) {
-    return wrap_node(ALLOC_node_fixnum_plus(unwrap_node(left), unwrap_node(right), FIX2UINT(arg_index)));
-}
-static VALUE rb_alloc_node_fixnum_minus(VALUE self, VALUE left, VALUE right, VALUE arg_index) {
-    return wrap_node(ALLOC_node_fixnum_minus(unwrap_node(left), unwrap_node(right), FIX2UINT(arg_index)));
-}
-static VALUE rb_alloc_node_fixnum_mul(VALUE self, VALUE left, VALUE right, VALUE arg_index) {
-    return wrap_node(ALLOC_node_fixnum_mul(unwrap_node(left), unwrap_node(right), FIX2UINT(arg_index)));
-}
-static VALUE rb_alloc_node_fixnum_div(VALUE self, VALUE left, VALUE right, VALUE arg_index) {
-    return wrap_node(ALLOC_node_fixnum_div(unwrap_node(left), unwrap_node(right), FIX2UINT(arg_index)));
-}
-static VALUE rb_alloc_node_mul(VALUE self, VALUE left, VALUE right, VALUE arg_index) {
-    return wrap_node(ALLOC_node_mul(unwrap_node(left), unwrap_node(right), FIX2UINT(arg_index)));
-}
-static VALUE rb_alloc_node_div(VALUE self, VALUE left, VALUE right, VALUE arg_index) {
-    return wrap_node(ALLOC_node_div(unwrap_node(left), unwrap_node(right), FIX2UINT(arg_index)));
-}
-
-// Comparison node alloc wrappers
-static VALUE rb_alloc_node_fixnum_lt(VALUE self, VALUE left, VALUE right, VALUE arg_index) {
-    return wrap_node(ALLOC_node_fixnum_lt(unwrap_node(left), unwrap_node(right), FIX2UINT(arg_index)));
-}
-static VALUE rb_alloc_node_fixnum_le(VALUE self, VALUE left, VALUE right, VALUE arg_index) {
-    return wrap_node(ALLOC_node_fixnum_le(unwrap_node(left), unwrap_node(right), FIX2UINT(arg_index)));
-}
-static VALUE rb_alloc_node_fixnum_gt(VALUE self, VALUE left, VALUE right, VALUE arg_index) {
-    return wrap_node(ALLOC_node_fixnum_gt(unwrap_node(left), unwrap_node(right), FIX2UINT(arg_index)));
-}
-static VALUE rb_alloc_node_fixnum_ge(VALUE self, VALUE left, VALUE right, VALUE arg_index) {
-    return wrap_node(ALLOC_node_fixnum_ge(unwrap_node(left), unwrap_node(right), FIX2UINT(arg_index)));
-}
-static VALUE rb_alloc_node_fixnum_eq(VALUE self, VALUE left, VALUE right, VALUE arg_index) {
-    return wrap_node(ALLOC_node_fixnum_eq(unwrap_node(left), unwrap_node(right), FIX2UINT(arg_index)));
-}
-static VALUE rb_alloc_node_fixnum_neq(VALUE self, VALUE left, VALUE right, VALUE arg_index) {
-    return wrap_node(ALLOC_node_fixnum_neq(unwrap_node(left), unwrap_node(right), FIX2UINT(arg_index)));
-}
-static VALUE rb_alloc_node_fixnum_mod(VALUE self, VALUE left, VALUE right, VALUE arg_index) {
-    return wrap_node(ALLOC_node_fixnum_mod(unwrap_node(left), unwrap_node(right), FIX2UINT(arg_index)));
-}
-static VALUE rb_alloc_node_lt(VALUE self, VALUE left, VALUE right, VALUE arg_index) {
-    return wrap_node(ALLOC_node_lt(unwrap_node(left), unwrap_node(right), FIX2UINT(arg_index)));
-}
-static VALUE rb_alloc_node_le(VALUE self, VALUE left, VALUE right, VALUE arg_index) {
-    return wrap_node(ALLOC_node_le(unwrap_node(left), unwrap_node(right), FIX2UINT(arg_index)));
-}
-static VALUE rb_alloc_node_gt(VALUE self, VALUE left, VALUE right, VALUE arg_index) {
-    return wrap_node(ALLOC_node_gt(unwrap_node(left), unwrap_node(right), FIX2UINT(arg_index)));
-}
-static VALUE rb_alloc_node_ge(VALUE self, VALUE left, VALUE right, VALUE arg_index) {
-    return wrap_node(ALLOC_node_ge(unwrap_node(left), unwrap_node(right), FIX2UINT(arg_index)));
-}
-
-// dump
-
-// eval
+ABRUBY_BINOP_NODES(ABRUBY_DEFINE_BINOP_WRAPPER)
+#undef ABRUBY_DEFINE_BINOP_WRAPPER
 
 // Convert abruby value to Ruby value for returning to CRuby world
 static VALUE
@@ -2275,25 +2223,10 @@ Init_abruby(void)
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_yield", rb_alloc_node_yield, 2);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_next", rb_alloc_node_next, 1);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_super_with_block", rb_alloc_node_super_with_block, 3);
-    rb_define_singleton_method(rb_cAbRuby, "alloc_node_plus", rb_alloc_node_plus, 3);
-    rb_define_singleton_method(rb_cAbRuby, "alloc_node_minus", rb_alloc_node_minus, 3);
-    rb_define_singleton_method(rb_cAbRuby, "alloc_node_mul", rb_alloc_node_mul, 3);
-    rb_define_singleton_method(rb_cAbRuby, "alloc_node_div", rb_alloc_node_div, 3);
-    rb_define_singleton_method(rb_cAbRuby, "alloc_node_fixnum_plus", rb_alloc_node_fixnum_plus, 3);
-    rb_define_singleton_method(rb_cAbRuby, "alloc_node_fixnum_minus", rb_alloc_node_fixnum_minus, 3);
-    rb_define_singleton_method(rb_cAbRuby, "alloc_node_fixnum_mul", rb_alloc_node_fixnum_mul, 3);
-    rb_define_singleton_method(rb_cAbRuby, "alloc_node_fixnum_div", rb_alloc_node_fixnum_div, 3);
-    rb_define_singleton_method(rb_cAbRuby, "alloc_node_lt", rb_alloc_node_lt, 3);
-    rb_define_singleton_method(rb_cAbRuby, "alloc_node_le", rb_alloc_node_le, 3);
-    rb_define_singleton_method(rb_cAbRuby, "alloc_node_gt", rb_alloc_node_gt, 3);
-    rb_define_singleton_method(rb_cAbRuby, "alloc_node_ge", rb_alloc_node_ge, 3);
-    rb_define_singleton_method(rb_cAbRuby, "alloc_node_fixnum_eq", rb_alloc_node_fixnum_eq, 3);
-    rb_define_singleton_method(rb_cAbRuby, "alloc_node_fixnum_neq", rb_alloc_node_fixnum_neq, 3);
-    rb_define_singleton_method(rb_cAbRuby, "alloc_node_fixnum_mod", rb_alloc_node_fixnum_mod, 3);
-    rb_define_singleton_method(rb_cAbRuby, "alloc_node_fixnum_lt", rb_alloc_node_fixnum_lt, 3);
-    rb_define_singleton_method(rb_cAbRuby, "alloc_node_fixnum_le", rb_alloc_node_fixnum_le, 3);
-    rb_define_singleton_method(rb_cAbRuby, "alloc_node_fixnum_gt", rb_alloc_node_fixnum_gt, 3);
-    rb_define_singleton_method(rb_cAbRuby, "alloc_node_fixnum_ge", rb_alloc_node_fixnum_ge, 3);
+#define ABRUBY_REGISTER_BINOP_WRAPPER(name) \
+    rb_define_singleton_method(rb_cAbRuby, "alloc_node_" #name, rb_alloc_node_##name, 3);
+    ABRUBY_BINOP_NODES(ABRUBY_REGISTER_BINOP_WRAPPER)
+#undef ABRUBY_REGISTER_BINOP_WRAPPER
     rb_define_singleton_method(rb_cAbRuby, "set_node_line", rb_set_node_line, 2);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_self", rb_alloc_node_self, 0);
 

@@ -28,24 +28,19 @@ static RESULT ab_float_neg(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     return RESULT_OK(abruby_float_new_wrap(c, rb_float_new(-RFLOAT_VALUE(SELF_F))));
 }
 
-static RESULT ab_float_lt(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
-    return RESULT_OK(RTEST(rb_funcall(SELF_F, rb_intern("<"), 1, ARG_F)) ? Qtrue : Qfalse);
-}
-static RESULT ab_float_le(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
-    return RESULT_OK(RTEST(rb_funcall(SELF_F, rb_intern("<="), 1, ARG_F)) ? Qtrue : Qfalse);
-}
-static RESULT ab_float_gt(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
-    return RESULT_OK(RTEST(rb_funcall(SELF_F, rb_intern(">"), 1, ARG_F)) ? Qtrue : Qfalse);
-}
-static RESULT ab_float_ge(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
-    return RESULT_OK(RTEST(rb_funcall(SELF_F, rb_intern(">="), 1, ARG_F)) ? Qtrue : Qfalse);
-}
-static RESULT ab_float_eq(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
-    return RESULT_OK(RTEST(rb_funcall(SELF_F, rb_intern("=="), 1, ARG_F)) ? Qtrue : Qfalse);
-}
-static RESULT ab_float_neq(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
-    return RESULT_OK(RTEST(rb_funcall(SELF_F, rb_intern("=="), 1, ARG_F)) ? Qfalse : Qtrue);
-}
+// Compare helpers: all delegate to CRuby's Float#op via rb_funcall.
+// neq is just eq inverted (truth==Qfalse ? Qtrue : Qfalse).
+#define AB_FLOAT_CMP(name, op_sym, truth)                                      \
+    static RESULT ab_float_##name(CTX *c, VALUE self, unsigned int argc, VALUE *argv) { \
+        return RESULT_OK(RTEST(rb_funcall(SELF_F, rb_intern(op_sym), 1, ARG_F)) ? (truth) : ((truth) == Qtrue ? Qfalse : Qtrue)); \
+    }
+AB_FLOAT_CMP(lt,  "<",  Qtrue)
+AB_FLOAT_CMP(le,  "<=", Qtrue)
+AB_FLOAT_CMP(gt,  ">",  Qtrue)
+AB_FLOAT_CMP(ge,  ">=", Qtrue)
+AB_FLOAT_CMP(eq,  "==", Qtrue)
+AB_FLOAT_CMP(neq, "==", Qfalse)
+#undef AB_FLOAT_CMP
 
 static RESULT ab_float_inspect(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     return RESULT_OK(abruby_str_new(c, rb_funcall(SELF_F, rb_intern("to_s"), 0)));

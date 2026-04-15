@@ -67,54 +67,41 @@ static RESULT ab_integer_neg(CTX *c, VALUE self, unsigned int argc, VALUE *argv)
     return RESULT_OK(AB_NUM_WRAP(c, rb_funcall(rs, rb_intern("-@"), 0)));
 }
 
-static RESULT ab_integer_lt(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
-    if (LIKELY(FIXNUM_P(self) && FIXNUM_P(argv[0])))
-        return RESULT_OK(FIX2LONG(self) < FIX2LONG(argv[0]) ? Qtrue : Qfalse);
-    VALUE rs = AB_INT_UNWRAP(self), ra = AB_NUM_UNWRAP(argv[0]);
-    if (RB_TYPE_P(rs, T_BIGNUM))
-        return RESULT_OK(FIX2LONG(rb_big_cmp(rs, ra)) < 0 ? Qtrue : Qfalse);
-    return RESULT_OK(RTEST(rb_funcall(rs, rb_intern("<"), 1, ra)) ? Qtrue : Qfalse);
-}
-static RESULT ab_integer_le(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
-    if (LIKELY(FIXNUM_P(self) && FIXNUM_P(argv[0])))
-        return RESULT_OK(FIX2LONG(self) <= FIX2LONG(argv[0]) ? Qtrue : Qfalse);
-    VALUE rs = AB_INT_UNWRAP(self), ra = AB_NUM_UNWRAP(argv[0]);
-    if (RB_TYPE_P(rs, T_BIGNUM))
-        return RESULT_OK(FIX2LONG(rb_big_cmp(rs, ra)) <= 0 ? Qtrue : Qfalse);
-    return RESULT_OK(RTEST(rb_funcall(rs, rb_intern("<="), 1, ra)) ? Qtrue : Qfalse);
-}
-static RESULT ab_integer_gt(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
-    if (LIKELY(FIXNUM_P(self) && FIXNUM_P(argv[0])))
-        return RESULT_OK(FIX2LONG(self) > FIX2LONG(argv[0]) ? Qtrue : Qfalse);
-    VALUE rs = AB_INT_UNWRAP(self), ra = AB_NUM_UNWRAP(argv[0]);
-    if (RB_TYPE_P(rs, T_BIGNUM))
-        return RESULT_OK(FIX2LONG(rb_big_cmp(rs, ra)) > 0 ? Qtrue : Qfalse);
-    return RESULT_OK(RTEST(rb_funcall(rs, rb_intern(">"), 1, ra)) ? Qtrue : Qfalse);
-}
-static RESULT ab_integer_ge(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
-    if (LIKELY(FIXNUM_P(self) && FIXNUM_P(argv[0])))
-        return RESULT_OK(FIX2LONG(self) >= FIX2LONG(argv[0]) ? Qtrue : Qfalse);
-    VALUE rs = AB_INT_UNWRAP(self), ra = AB_NUM_UNWRAP(argv[0]);
-    if (RB_TYPE_P(rs, T_BIGNUM))
-        return RESULT_OK(FIX2LONG(rb_big_cmp(rs, ra)) >= 0 ? Qtrue : Qfalse);
-    return RESULT_OK(RTEST(rb_funcall(rs, rb_intern(">="), 1, ra)) ? Qtrue : Qfalse);
-}
-static RESULT ab_integer_eq(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
-    if (LIKELY(FIXNUM_P(self) && FIXNUM_P(argv[0])))
-        return RESULT_OK(self == argv[0] ? Qtrue : Qfalse);
-    VALUE rs = AB_INT_UNWRAP(self), ra = AB_NUM_UNWRAP(argv[0]);
-    if (RB_TYPE_P(rs, T_BIGNUM))
-        return RESULT_OK(rb_big_eq(rs, ra));
-    return RESULT_OK(RTEST(rb_funcall(rs, rb_intern("=="), 1, ra)) ? Qtrue : Qfalse);
-}
-static RESULT ab_integer_neq(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
-    if (LIKELY(FIXNUM_P(self) && FIXNUM_P(argv[0])))
-        return RESULT_OK(self != argv[0] ? Qtrue : Qfalse);
-    VALUE rs = AB_INT_UNWRAP(self), ra = AB_NUM_UNWRAP(argv[0]);
-    if (RB_TYPE_P(rs, T_BIGNUM))
-        return RESULT_OK(RTEST(rb_big_eq(rs, ra)) ? Qfalse : Qtrue);
-    return RESULT_OK(RTEST(rb_funcall(rs, rb_intern("=="), 1, ra)) ? Qfalse : Qtrue);
-}
+// Ordered compare (lt/le/gt/ge): fixnum fast path, then bignum via rb_big_cmp.
+#define AB_INT_CMP(name, op, op_sym)                                          \
+    static RESULT ab_integer_##name(CTX *c, VALUE self, unsigned int argc, VALUE *argv) { \
+        if (LIKELY(FIXNUM_P(self) && FIXNUM_P(argv[0])))                       \
+            return RESULT_OK(FIX2LONG(self) op FIX2LONG(argv[0]) ? Qtrue : Qfalse); \
+        VALUE rs = AB_INT_UNWRAP(self), ra = AB_NUM_UNWRAP(argv[0]);           \
+        if (RB_TYPE_P(rs, T_BIGNUM))                                           \
+            return RESULT_OK(FIX2LONG(rb_big_cmp(rs, ra)) op 0 ? Qtrue : Qfalse); \
+        return RESULT_OK(RTEST(rb_funcall(rs, rb_intern(op_sym), 1, ra)) ? Qtrue : Qfalse); \
+    }
+AB_INT_CMP(lt, <,  "<")
+AB_INT_CMP(le, <=, "<=")
+AB_INT_CMP(gt, >,  ">")
+AB_INT_CMP(ge, >=, ">=")
+#undef AB_INT_CMP
+
+// Equality: fixnum identity (tagged pointers are canonical); bignum via rb_big_eq.
+// invert=0 → eq, invert=1 → neq. Branch on invert is compile-time constant.
+#define AB_INT_EQ(name, invert)                                                \
+    static RESULT ab_integer_##name(CTX *c, VALUE self, unsigned int argc, VALUE *argv) { \
+        VALUE eq;                                                              \
+        if (LIKELY(FIXNUM_P(self) && FIXNUM_P(argv[0]))) {                     \
+            eq = self == argv[0] ? Qtrue : Qfalse;                             \
+        } else {                                                               \
+            VALUE rs = AB_INT_UNWRAP(self), ra = AB_NUM_UNWRAP(argv[0]);       \
+            if (RB_TYPE_P(rs, T_BIGNUM))                                       \
+                eq = rb_big_eq(rs, ra);                                        \
+            else                                                               \
+                eq = RTEST(rb_funcall(rs, rb_intern("=="), 1, ra)) ? Qtrue : Qfalse; \
+        }                                                                      \
+        return RESULT_OK((invert) ? (eq == Qtrue ? Qfalse : Qtrue) : eq);      \
+    }
+AB_INT_EQ(eq,  0)
+AB_INT_EQ(neq, 1)
+#undef AB_INT_EQ
 
 static RESULT ab_integer_inspect(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     if (LIKELY(FIXNUM_P(self))) {
