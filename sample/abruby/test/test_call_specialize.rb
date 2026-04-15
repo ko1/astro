@@ -97,4 +97,25 @@ class TestCallSpecialize < AbRubyTest
       r
     RUBY
   end
+
+  # Megamorphic site: same call hits 3 classes cyclically.  The first
+  # few misses specialize+demote; after ABRUBY_CALL_POLY_THRESHOLD the
+  # node stays generic and doesn't thrash via swap_dispatcher.  This
+  # is the bm_dispatch pattern.  For i in 0..2499, i%3 gives 834 zeros,
+  # 833 ones, 833 twos → 834*1 + 833*2 + 833*3 = 4999.
+  def test_megamorphic_3class_cycle
+    assert_eval <<~RUBY, 4999
+      class A; def v; 1; end; end
+      class B; def v; 2; end; end
+      class C; def v; 3; end; end
+      objs = [A.new, B.new, C.new]
+      sum = 0
+      i = 0
+      while i < 2500
+        sum += objs[i % 3].v
+        i += 1
+      end
+      sum
+    RUBY
+  end
 end

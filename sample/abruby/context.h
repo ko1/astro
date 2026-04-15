@@ -673,6 +673,12 @@ struct method_cache {
     struct Node *body;                  // cached method->u.ast.body (NULL for CFUNC)
     RESULT (*dispatcher)(struct CTX_struct *, struct Node *); // cached body->head.dispatcher
     method_prologue_t prologue;          // method-type-specialized dispatch fn
+    // Polymorphism tracking: incremented each time a specialized call
+    // dispatcher demotes back to the generic kind because of a klass
+    // mismatch.  Once this exceeds a small threshold, the call node is
+    // considered polymorphic and no longer re-specialized — we save the
+    // swap_dispatcher + re-fill overhead per call in that case.
+    uint8_t demote_cnt;
 };
 
 // inline ivar cache per node_ivar_get / node_ivar_set site.
