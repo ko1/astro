@@ -17,7 +17,8 @@ static RESULT ab_class_new(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
         frame.block = NULL;
         frame.self = c->current_frame ? c->current_frame->self : Qnil;
         frame.fp = c->current_frame ? c->current_frame->fp : c->stack;
-        frame.entry = c->current_frame ? c->current_frame->entry : NULL;
+        { extern struct abruby_entry abruby_empty_entry;
+          frame.entry = c->current_frame ? c->current_frame->entry : &abruby_empty_entry; }
         c->current_frame = &frame;
 
         RESULT r = RESULT_OK(Qnil);

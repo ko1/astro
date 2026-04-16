@@ -84,7 +84,6 @@ crb_fiber_body(VALUE yielded_arg, VALUE callback_obj, int argc, const VALUE *arg
     // stack — otherwise fp would point into the CRuby fiber's
     // machine stack, causing abm_mark to scan an invalid range.
     for (unsigned int i = 0; i < nargs; i++) c->current_frame->fp[i] = local_argv[i];
-    ctx_update_sp(c, c->current_frame->fp + nargs);
 
     extern RESULT ab_proc_call(CTX *, VALUE, unsigned int, VALUE *);
     RESULT r = ab_proc_call(c, f->proc_value, nargs, c->current_frame->fp);
@@ -120,13 +119,13 @@ fiber_alloc(struct abruby_machine *abm, VALUE proc_value)
     // Bootstrap the fiber's CTX from the current fiber so cross-fiber
     // reads of e.g. ids work straight away.
     f->ctx.abm = abm;
-    f->ctx.sp = f->ctx.stack;
+    // sp removed — GC uses frame-walk + entry->stack_limit
     f->ctx.current_class = NULL;
     // Set up root frame for this fiber
     memset(&f->root_frame, 0, sizeof(struct abruby_frame));
     f->root_frame.fp = f->ctx.stack;
     f->root_frame.self = abm->current_fiber->ctx.current_frame->self;
-    f->root_frame.entry = NULL;
+    extern struct abruby_entry abruby_empty_entry; f->root_frame.entry = &abruby_empty_entry;
     f->ctx.current_frame = &f->root_frame;
     f->ctx.ids = abm->current_fiber->ctx.ids;
     f->ctx.current_block = NULL;
@@ -287,14 +286,9 @@ void abruby_fiber_mark(struct abruby_fiber *f) {
         rb_gc_mark(f->ctx.current_frame->self);
     // Mark the CRuby fiber backing this abruby fiber (keeps it alive).
     if (!RB_SPECIAL_CONST_P(f->crb_fiber))      rb_gc_mark(f->crb_fiber);
-    // Mark the suspended VALUE stack so locals captured at yield-time
-    // stay alive across the switch.  Use sp (high-water mark) for accuracy.
-    VALUE *base = f->ctx.stack;
-    VALUE *top = f->ctx.sp;
-    ABRUBY_ASSERT(top >= base && top <= base + ABRUBY_STACK_SIZE);
-    if (top > base) {
-        rb_gc_mark_locations(base, top);
-    }
+    // Mark the suspended VALUE stack via frame-walk + entry->stack_limit.
+    extern void abm_mark_fiber_stack(const CTX *ctx);
+    abm_mark_fiber_stack(&f->ctx);
 }
 
 void abruby_fiber_free(struct abruby_fiber *f) {

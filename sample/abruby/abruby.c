@@ -5,6 +5,10 @@
 #include "builtin/builtin.h"
 #include "astro_code_store.h"
 
+// Sentinel entry for root frames — avoids NULL checks on frame->entry.
+// stack_limit = 0 so GC marks nothing for this frame.
+struct abruby_entry abruby_empty_entry = {NULL, NULL, NULL, 0};
+
 struct abruby_option OPTION = {
     .no_compiled_code = true,
     .record_all = false,
@@ -171,7 +175,7 @@ static void abruby_data_mark(void *ptr) {
 // Other types (bignum, float, string, ...) just free the struct.
 // Templates (ab_tmpl_*_class_body) are static memory and never wrapped as
 // T_DATA, so they are never passed to this function.
-static void
+void
 abruby_data_free(void *ptr)
 {
     if (!ptr) return;
@@ -527,14 +531,13 @@ abruby_yield(CTX *c, unsigned int argc, VALUE *argv)
     // so const lookups inside the block body walk the lexical scope chain
     // that was active when the block literal was created (not the cfunc's
     // own NULL entry).
-    struct abruby_entry blk_entry = {blk->cref, NULL, NULL};
+    struct abruby_entry blk_entry = {blk->cref, NULL, NULL, blk->env_size};
     c->current_frame->fp = blk->captured_fp;
     c->current_frame->self = blk->captured_self;
     c->current_frame->entry = &blk_entry;
     c->current_block = blk;
     c->current_block_frame = c->current_frame;
 
-    ctx_update_sp(c, c->current_frame->fp + blk->env_size);
 
     RESULT r = EVAL(c, blk->body);
 
@@ -622,7 +625,7 @@ abruby_class_add_cfunc(struct abruby_class *klass, ID name,
     // caches start at serial=0, machine starts at serial=1, so first access misses)
 }
 
-static void
+void
 init_builtin_methods(void)
 {
     Init_abruby_kernel();
@@ -713,34 +716,37 @@ abruby_ivar_set(VALUE self, ID name, VALUE val)
 
 // Per-instance abruby_machine state (struct defined in context.h)
 
-static void
+// Walk the frame chain and mark each frame's VALUE slots.
+// Each frame's entry->stack_limit tells GC how many slots from fp to scan.
+// Slots are zero-filled at scope/prologue entry so stale reads are safe.
+void
+abm_mark_fiber_stack(const CTX *ctx)
+{
+    const VALUE *stack_lo = ctx->stack;
+    const VALUE *stack_hi = ctx->stack + ABRUBY_STACK_SIZE;
+    for (const struct abruby_frame *f = ctx->current_frame; f; f = f->prev) {
+        if (!RB_SPECIAL_CONST_P(f->self)) rb_gc_mark(f->self);
+        if (f->entry->stack_limit == 0 || !f->fp) continue;
+        VALUE *base = f->fp;
+        VALUE *top = f->fp + f->entry->stack_limit;
+        if (base < stack_lo || base >= stack_hi) continue;
+        if (top > stack_hi) top = (VALUE *)stack_hi;
+        if (top > base) rb_gc_mark_locations(base, top);
+    }
+}
+
+void
 abm_mark(void *ptr)
 {
     if (!ptr) return;
     const struct abruby_machine *abm = (const struct abruby_machine *)ptr;
     if (abm->current_fiber) {
-        if (abm->current_fiber->ctx.current_frame)
-            rb_gc_mark(abm->current_fiber->ctx.current_frame->self);
-        // Use sp (high-water mark) instead of full stack to avoid marking
-        // stale slots from previous eval calls.
-        VALUE *base = abm->current_fiber->ctx.stack;
-        VALUE *top = abm->current_fiber->ctx.sp;
-        ABRUBY_ASSERT(top >= base && top <= base + ABRUBY_STACK_SIZE);
-        if (abm->current_fiber->ctx.current_frame) {
-            ABRUBY_ASSERT(abm->current_fiber->ctx.current_frame->fp >= base &&
-                           abm->current_fiber->ctx.current_frame->fp <= top);
-        }
-        if (top > base) rb_gc_mark_locations(base, top);
-        // Mark rb_wrapper if present
+        abm_mark_fiber_stack(&abm->current_fiber->ctx);
         if (!RB_SPECIAL_CONST_P(abm->current_fiber->rb_wrapper))
             rb_gc_mark(abm->current_fiber->rb_wrapper);
-        // Walk the resumer chain marking each suspended fiber's stack and wrapper.
         for (struct abruby_fiber *f = abm->current_fiber->resumer; f != NULL; f = f->resumer) {
             if (!RB_SPECIAL_CONST_P(f->rb_wrapper)) rb_gc_mark(f->rb_wrapper);
-            VALUE *fbase = f->ctx.stack;
-            VALUE *ftop = f->ctx.sp;
-            ABRUBY_ASSERT(ftop >= fbase && ftop <= fbase + ABRUBY_STACK_SIZE);
-            if (ftop > fbase) rb_gc_mark_locations(fbase, ftop);
+            abm_mark_fiber_stack(&f->ctx);
         }
     }
     // Suspended non-main fibers are kept alive via their VALUE
@@ -788,7 +794,7 @@ abm_mark(void *ptr)
     if (abm->runtime_error_class && abm->runtime_error_class->rb_wrapper)  rb_gc_mark(abm->runtime_error_class->rb_wrapper);
 }
 
-static void
+void
 abm_free(void *ptr)
 {
     if (!ptr) return;
@@ -869,7 +875,7 @@ clone_class(const struct abruby_class *tmpl)
 }
 
 // Create per-instance copies of all built-in classes from templates.
-static void
+void
 init_instance_classes(struct abruby_machine *abm)
 {
     // Clone all 18 template classes
@@ -1251,7 +1257,7 @@ init_instance_classes(struct abruby_machine *abm)
         abruby_float_new_wrap(&abm->current_fiber->ctx, rb_float_new(nan(""))));
 }
 
-static void
+void
 init_abm(struct abruby_machine *abm)
 {
     abm->method_serial = 1;
@@ -1264,10 +1270,11 @@ init_abm(struct abruby_machine *abm)
     // Wire ctx.abm early so init_instance_classes can use abruby_float_new_wrap
     // (which reads c->abm->float_class) when creating Float constants.
     abm->current_fiber->ctx.abm = abm;
-    abm->current_fiber->ctx.sp = abm->current_fiber->ctx.stack;
+    /* sp removed */
     // Set up root frame for this fiber
     memset(&abm->current_fiber->root_frame, 0, sizeof(struct abruby_frame));
     abm->current_fiber->root_frame.fp = abm->current_fiber->ctx.stack;
+    abm->current_fiber->root_frame.entry = &abruby_empty_entry;
     abm->current_fiber->ctx.current_frame = &abm->current_fiber->root_frame;
 
     // Create per-instance built-in classes (must be before main_class_body setup)
@@ -1287,11 +1294,11 @@ init_abm(struct abruby_machine *abm)
     abm->main_class_body.super = abm->object_class;
 
     abm->current_fiber->root_frame.fp = abm->current_fiber->ctx.stack;
-    abm->current_fiber->ctx.sp = abm->current_fiber->ctx.stack;
+    /* sp removed */
     abm->current_fiber->root_frame.self = abruby_new_object(&abm->main_class_body);
 
     abm->current_fiber->ctx.current_class = NULL;
-    abm->current_fiber->root_frame.entry = NULL;
+    abm->current_fiber->root_frame.entry = &abruby_empty_entry;
     abm->id_cache.op_plus = rb_intern("+");
     abm->id_cache.op_minus = rb_intern("-");
     abm->id_cache.op_mul = rb_intern("*");
@@ -1877,7 +1884,7 @@ abruby_require_file(CTX *c, VALUE rb_path)
     NODE *ast = unwrap_node(ast_obj);
     struct abruby_frame *save_frame = c->current_frame;
     struct abruby_class *save_class = c->current_class;
-    struct abruby_entry req_entry = {NULL, RSTRING_PTR(abs_str), NULL};
+    struct abruby_entry req_entry = {NULL, RSTRING_PTR(abs_str), NULL, 0};
     struct abruby_frame req_frame;
     req_frame.prev = save_frame;
     req_frame.caller_node = NULL;
@@ -1976,24 +1983,19 @@ rb_abruby_eval_ast(VALUE self, VALUE ast_obj)
     // collects the NODE T_DATA and abruby_method bodies become dangling.)
     rb_ary_push(abm->loaded_asts, ast_obj);
 
-    // reset stack for each eval (classes/methods/self persist)
-    // Clear stale VALUEs in the previously-used range so GC doesn't
-    // mark dead objects from earlier eval calls.
-    {
-        VALUE *old_sp = abm->current_fiber->ctx.sp;
-        VALUE *base = abm->current_fiber->ctx.stack;
-        if (old_sp > base) memset(base, 0, (size_t)(old_sp - base) * sizeof(VALUE));
-    }
+    // Reset stack for each eval.  Clear the full stack so GC frame-walk
+    // never sees freed T_DATA pointers from a previous eval.
+    memset(abm->current_fiber->ctx.stack, 0,
+           ABRUBY_STACK_SIZE * sizeof(VALUE));
     abm->current_fiber->root_frame.fp = abm->current_fiber->ctx.stack;
     abm->current_fiber->ctx.current_frame = &abm->current_fiber->root_frame;
-    abm->current_fiber->ctx.sp = abm->current_fiber->ctx.stack;
     abm->current_fiber->ctx.current_class = NULL;
 
     // Push <main> frame so backtrace always has a bottom frame.
     // Inherit self/fp from root frame.
     const char *eval_file = NIL_P(abm->current_file) ? "(abruby)" : RSTRING_PTR(abm->current_file);
     struct abruby_frame *rf = &abm->current_fiber->root_frame;
-    struct abruby_entry main_entry = {NULL, eval_file, NULL};
+    struct abruby_entry main_entry = {NULL, eval_file, NULL, 0};
     struct abruby_frame main_frame;
     main_frame.prev = NULL;
     main_frame.caller_node = NULL;

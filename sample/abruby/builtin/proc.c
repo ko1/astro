@@ -92,10 +92,9 @@ RESULT ab_proc_call(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     VALUE *new_fp = argv + argc;
     ABRUBY_ASSERT(new_fp + p->env_size <= c->stack + ABRUBY_STACK_SIZE);
     for (uint32_t i = 0; i < p->env_size; i++) new_fp[i] = p->env[i];
-    ctx_update_sp(c, new_fp + p->env_size);
 
     // Push a synthetic method-style frame with the proc's captured state.
-    struct abruby_entry proc_entry = {p->cref, "(proc)"};
+    struct abruby_entry proc_entry = {p->cref, "(proc)", NULL, p->env_size};
     struct abruby_frame proc_frame;
     proc_frame.prev = save_frame;
     proc_frame.caller_node = NULL;

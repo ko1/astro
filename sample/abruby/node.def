@@ -99,6 +99,7 @@ abruby_class_add_method(CTX *c, struct abruby_class *klass, ID name,
             m->entry.source_file = source_file;
             m->entry.cref = def_cref;
             m->entry.method = m;
+            m->entry.stack_limit = locals_cnt;
         }
         c->abm->method_serial++;
         return;
@@ -107,6 +108,7 @@ abruby_class_add_method(CTX *c, struct abruby_class *klass, ID name,
     m->name = name;
     m->defining_class = klass;
     m->entry.method = m;  // self-reference (frame->entry->method → this method)
+    m->entry.stack_limit = locals_cnt;
     if (!abruby_method_try_set_ivar_accessor(m, body, params_cnt)) {
         m->type = ABRUBY_METHOD_AST;
         m->u.ast.body = body;
@@ -551,11 +553,11 @@ NODE_DEF
 node_scope(CTX * restrict c, NODE * restrict n, uint32_t envsize, NODE *body)
 {
     c->current_frame->fp += envsize;
-    // The body uses fp[0..envsize-1] for locals and call args.
-    // Zero-fill those slots and advance sp so GC covers them.
     ABRUBY_ASSERT(c->current_frame->fp + envsize <= c->stack + ABRUBY_STACK_SIZE);
+    // Zero-fill all slots so GC sees valid VALUEs within stack_limit.
     for (uint32_t i = 0; i < envsize; i++) c->current_frame->fp[i] = Qnil;
-    ctx_update_sp(c, c->current_frame->fp + envsize);
+    // Set stack_limit on the entry for GC frame-walk.
+    ((struct abruby_entry *)c->current_frame->entry)->stack_limit = envsize;
     RESULT r = EVAL_ARG(c, body);
     c->current_frame->fp -= envsize;
     return r;
@@ -769,14 +771,13 @@ node_yield(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_inde
     // Install a synthetic entry carrying the block's captured cref so
     // constant lookups inside the block body walk the lexical scope chain
     // active at block-literal creation, not the yielding method's chain.
-    struct abruby_entry blk_entry = {blk->cref, NULL, NULL};
+    struct abruby_entry blk_entry = {blk->cref, NULL, NULL, blk->env_size};
     c->current_frame->fp = blk->captured_fp;
     c->current_frame->self = blk->captured_self;
     c->current_frame->entry = &blk_entry;
     c->current_block = blk;
     c->current_block_frame = c->current_frame;
 
-    ctx_update_sp(c, c->current_frame->fp + blk->env_size);
 
     RESULT r = EVAL(c, blk->body);
 
@@ -877,7 +878,7 @@ node_module_def(CTX * restrict c, NODE * restrict n, ID name, NODE *body)
     mod_cref->klass = mod;
     mod_cref->outer = ctx_cref(c);
 
-    struct abruby_entry mod_entry = {mod_cref, NULL, NULL};
+    struct abruby_entry mod_entry = {mod_cref, NULL, NULL, 0};
     struct abruby_class *save_class = c->current_class;
     struct abruby_frame mod_frame;
     mod_frame.prev = c->current_frame;
@@ -940,7 +941,7 @@ node_class_def(CTX * restrict c, NODE * restrict n, ID name, NODE *super_expr, N
     cls_cref->klass = klass;
     cls_cref->outer = ctx_cref(c);
 
-    struct abruby_entry cls_entry = {cls_cref, NULL, NULL};
+    struct abruby_entry cls_entry = {cls_cref, NULL, NULL, 0};
     struct abruby_class *save_class = c->current_class;
     struct abruby_frame cls_frame;
     cls_frame.prev = c->current_frame;
@@ -1163,7 +1164,6 @@ dispatch_setup_args(CTX * restrict c, NODE * restrict call_site,
     // Update sp to cover all written slots.
     unsigned int frame_top = post_start + post_num;
     if (max_opt > frame_top) frame_top = max_opt;  // opt slots may exceed post
-    ctx_update_sp(c, c->current_frame->fp + frame_top);
 
     return (int)opt_filled;
 }
@@ -1224,7 +1224,7 @@ name(CTX * restrict c, NODE * restrict call_site, \
     frame.fp = c->current_frame->fp + arg_index; \
     frame.entry = &mc->method->entry; \
     c->current_frame = &frame; \
-    ctx_update_sp(c, frame.fp + req); \
+    /* Zero-fill locals+temps beyond params so GC sees valid VALUEs. */ \
     RESULT r = mc->dispatcher(c, mc->body); \
     demote_return_at_method_boundary(&r); \
     c->current_frame = frame.prev; \
@@ -1285,12 +1285,11 @@ prologue_cfunc(CTX * restrict c, NODE * restrict call_site,
     frame.block = NULL;
     frame.self = recv_self;
     frame.fp = c->current_frame->fp;
-    // cfunc method's entry carries the method pointer for backtrace;
-    // cref/source_file are both NULL (cfuncs don't have Ruby-level scope).
-    frame.entry = NULL;  // cfunc has no Ruby-level cref
+    // cfunc method's entry carries the method pointer for backtrace.
+    // stack_limit = 0 (set by xcalloc) so GC marks nothing for this frame.
+    frame.entry = &mc->method->entry;
     c->current_frame = &frame;
 
-    ctx_update_sp(c, frame.fp + arg_index + argc);
     RESULT r = mc->method->u.cfunc.func(c, recv_self, argc, frame.fp + arg_index);
     demote_return_at_method_boundary(&r);
     c->current_frame = frame.prev;
@@ -1432,7 +1431,6 @@ dispatch_method_frame_with_block(CTX * restrict c, NODE * restrict call_site,
         }
     } else {
         // CFUNC
-        ctx_update_sp(c, c->current_frame->fp + arg_index + argc);
         r = mc->method->u.cfunc.func(c, recv_self, argc, c->current_frame->fp + arg_index);
     }
 
@@ -1985,7 +1983,6 @@ node_apply_call(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, NODE *
     VALUE recv_val = UNWRAP(EVAL_ARG(c, recv));
     // Pin recv to keep alive across args evaluation (apply_unpack overwrites the slot).
     c->current_frame->fp[arg_index] = recv_val;
-    ctx_update_sp(c, c->current_frame->fp + arg_index + 1);
     VALUE args_val = UNWRAP(EVAL_ARG(c, args_node));
     recv_val = c->current_frame->fp[arg_index];
     uint32_t argc;

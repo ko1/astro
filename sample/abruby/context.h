@@ -115,6 +115,7 @@ struct abruby_entry {
     const struct abruby_cref *cref;       // lexical constant scope
     const char *source_file;              // where this entry was defined
     const struct abruby_method *method;   // NULL for non-method frames
+    uint32_t stack_limit;                 // max VALUE slots from fp for GC scan
 };
 
 enum abruby_method_type {
@@ -528,7 +529,7 @@ struct abruby_cref {
 struct CTX_struct {
     struct abruby_machine *abm;          // per-instance machine (owner)
     VALUE stack[ABRUBY_STACK_SIZE];      // VALUE stack (locals + args)
-    VALUE *sp;                           // stack high-water mark for GC
+    // sp removed: GC now walks the frame chain using entry->stack_limit.
     struct abruby_class *current_class;  // set during class body eval
     struct abruby_frame *current_frame;  // head of call frame linked list
     const struct abruby_id_cache *ids;   // cached rb_intern results
@@ -542,12 +543,9 @@ struct CTX_struct {
     const struct abruby_frame *current_block_frame;
 };
 
-// Update sp (stack high-water mark) so GC marks all live slots.
-static inline void
-ctx_update_sp(struct CTX_struct *c, VALUE *new_top)
-{
-    if (new_top > c->sp) c->sp = new_top;
-}
+// ctx_update_sp removed: GC uses per-frame entry->stack_limit.
+// Slots within stack_limit are zero-filled at scope/prologue entry
+// so GC always sees valid VALUEs.
 
 // Derive cref from the current frame's entry.
 static inline const struct abruby_cref *
