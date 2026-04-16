@@ -488,7 +488,12 @@ abruby_yield(CTX *c, unsigned int argc, VALUE *argv)
     // See node.def node_yield for the full spec discussion.
     unsigned int n_params = blk->params_cnt;
     VALUE * restrict dst = blk->captured_fp + blk->param_base;
-    if (n_params >= 2 && argc == 1 &&
+    // Fast path: single-param block with single arg (most common in
+    // each/map/select).  No auto-splat needed; direct store.
+    if (LIKELY(n_params == 1 && argc == 1)) {
+        dst[0] = argv[0];
+    }
+    else if (n_params >= 2 && argc == 1 &&
             AB_CLASS_OF(c, argv[0]) == c->abm->array_class) {
         VALUE rb_ary = RARY(argv[0]);
         long len = RARRAY_LEN(rb_ary);

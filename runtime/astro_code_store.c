@@ -288,7 +288,7 @@ astro_cs_build(const char *extra_cflags)
     }
 
     fprintf(fp, "CC ?= gcc\n");
-    fprintf(fp, "CFLAGS ?= -O3 -fPIC");
+    fprintf(fp, "CFLAGS ?= -O3 -fPIC -fno-plt -march=native");
     if (extra_cflags && extra_cflags[0]) {
         fprintf(fp, " %s", extra_cflags);
     }
