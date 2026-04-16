@@ -632,6 +632,7 @@ struct abruby_fiber {
 
 struct abruby_machine {
     uint32_t method_serial;              // method version (for inline cache invalidation)
+    uint8_t basic_op_redefined;          // nonzero → fixnum/array/hash specializations must fallback
     struct abruby_fiber *current_fiber;  // currently running fiber
     struct abruby_class main_class_body; // per-instance Object subclass (temporary)
     struct ab_id_table gvars;            // global variables

@@ -81,6 +81,12 @@ static RESULT ab_module_include(CTX *c, VALUE self, unsigned int argc, VALUE *ar
     });
 
     klass->super = proxy;
+    // If including into a class with type-specialized operators,
+    // the module may shadow built-in operators.
+    if (klass == c->abm->integer_class || klass == c->abm->float_class ||
+        klass == c->abm->array_class   || klass == c->abm->hash_class) {
+        c->abm->basic_op_redefined = 1;
+    }
     c->abm->method_serial++;
     return RESULT_OK(Qnil);
 }

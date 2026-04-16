@@ -76,6 +76,53 @@ abruby_method_try_set_ivar_accessor(struct abruby_method *m, struct Node *body,
     return false;
 }
 
+// Check if a method definition on `klass` with `name` shadows a built-in
+// operator that has a type-specialized node (fixnum_plus, array_aref, etc.).
+// If so, set basic_op_redefined to disable all specializations.
+static void
+abruby_check_basic_op_redefined(struct abruby_machine *abm,
+                                const struct abruby_class *klass, ID name)
+{
+    if (abm->basic_op_redefined) return;  // already set
+    const struct abruby_id_cache *ids = &abm->id_cache;
+    // Integer operators
+    if (klass == abm->integer_class) {
+        if (name == ids->op_plus || name == ids->op_minus ||
+            name == ids->op_mul  || name == ids->op_div   ||
+            name == ids->op_mod  || name == ids->op_lt    ||
+            name == ids->op_le   || name == ids->op_gt    ||
+            name == ids->op_ge   || name == ids->op_eq    ||
+            name == ids->op_and  || name == ids->op_or    ||
+            name == ids->op_xor  || name == ids->op_gtgt  ||
+            name == ids->op_aref || name == ids->op_ltlt) {
+            abm->basic_op_redefined = 1;
+            return;
+        }
+    }
+    // Float operators
+    if (klass == abm->float_class) {
+        if (name == ids->op_plus || name == ids->op_minus ||
+            name == ids->op_mul  || name == ids->op_div) {
+            abm->basic_op_redefined = 1;
+            return;
+        }
+    }
+    // Array operators
+    if (klass == abm->array_class) {
+        if (name == ids->op_aref || name == ids->op_aset || name == ids->op_ltlt) {
+            abm->basic_op_redefined = 1;
+            return;
+        }
+    }
+    // Hash operators
+    if (klass == abm->hash_class) {
+        if (name == ids->op_aref || name == ids->op_aset) {
+            abm->basic_op_redefined = 1;
+            return;
+        }
+    }
+}
+
 static void
 abruby_class_add_method(CTX *c, struct abruby_class *klass, ID name,
                         struct Node *body, unsigned int required_params_cnt,
@@ -101,6 +148,7 @@ abruby_class_add_method(CTX *c, struct abruby_class *klass, ID name,
             m->entry.method = m;
             m->entry.stack_limit = locals_cnt;
         }
+        abruby_check_basic_op_redefined(c->abm, klass, name);
         c->abm->method_serial++;
         return;
     }
@@ -2405,7 +2453,7 @@ node_flonum_plus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, u
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    if (LIKELY(ab_is_float(lv) && ab_is_float(rv))) {
+    if (LIKELY(ab_is_float(lv) && ab_is_float(rv) && !c->abm->basic_op_redefined)) {
         return flonum_plus_calc(c, lv, rv);
     }
     return node_flonum_plus_slow(c, n, lv, rv, arg_index);
@@ -2422,7 +2470,7 @@ node_fixnum_plus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, u
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
+    if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv) && !c->abm->basic_op_redefined)) {
         long result;
         if (LIKELY(!__builtin_add_overflow((long)lv, (long)(rv - 1), &result)))
             return RESULT_OK((VALUE)result);
@@ -2439,7 +2487,7 @@ node_integer_plus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, 
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
+    if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv) && !c->abm->basic_op_redefined)) {
         long result = FIX2LONG(lv) + FIX2LONG(rv);
         if (LIKELY(FIXABLE(result))) return RESULT_OK(LONG2FIX(result));
     }
@@ -2484,7 +2532,7 @@ node_flonum_minus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, 
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    if (LIKELY(ab_is_float(lv) && ab_is_float(rv))) {
+    if (LIKELY(ab_is_float(lv) && ab_is_float(rv) && !c->abm->basic_op_redefined)) {
         return flonum_minus_calc(c, lv, rv);
     }
     return node_flonum_minus_slow(c, n, lv, rv, arg_index);
@@ -2501,7 +2549,7 @@ node_fixnum_minus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, 
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
+    if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv) && !c->abm->basic_op_redefined)) {
         long result;
         if (LIKELY(!__builtin_sub_overflow((long)lv, (long)(rv - 1), &result)))
             return RESULT_OK((VALUE)result);
@@ -2518,7 +2566,7 @@ node_integer_minus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right,
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
+    if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv) && !c->abm->basic_op_redefined)) {
         long result = FIX2LONG(lv) - FIX2LONG(rv);
         if (LIKELY(FIXABLE(result))) return RESULT_OK(LONG2FIX(result));
     }
@@ -2563,7 +2611,7 @@ node_flonum_mul(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, ui
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    if (LIKELY(ab_is_float(lv) && ab_is_float(rv))) {
+    if (LIKELY(ab_is_float(lv) && ab_is_float(rv) && !c->abm->basic_op_redefined)) {
         return flonum_mul_calc(c, lv, rv);
     }
     return node_flonum_mul_slow(c, n, lv, rv, arg_index);
@@ -2580,7 +2628,7 @@ node_fixnum_mul(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, ui
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
+    if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv) && !c->abm->basic_op_redefined)) {
         long a = FIX2LONG(lv), b = FIX2LONG(rv);
         long result;
         if (LIKELY(!__builtin_mul_overflow(a, b, &result) && FIXABLE(result)))
@@ -2601,7 +2649,7 @@ node_integer_mul(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, u
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
+    if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv) && !c->abm->basic_op_redefined)) {
         long a = FIX2LONG(lv), b = FIX2LONG(rv);
         long result;
         if (LIKELY(!__builtin_mul_overflow(a, b, &result) && FIXABLE(result)))
@@ -2648,7 +2696,7 @@ node_flonum_div(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, ui
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    if (LIKELY(ab_is_float(lv) && ab_is_float(rv))) {
+    if (LIKELY(ab_is_float(lv) && ab_is_float(rv) && !c->abm->basic_op_redefined)) {
         return flonum_div_calc(c, lv, rv);
     }
     return node_flonum_div_slow(c, n, lv, rv, arg_index);
@@ -2659,7 +2707,7 @@ node_fixnum_div(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, ui
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
+    if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv) && !c->abm->basic_op_redefined)) {
         long b = FIX2LONG(rv);
         if (UNLIKELY(b == 0)) {
             VALUE exc;
@@ -2685,7 +2733,7 @@ node_integer_div(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, u
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
+    if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv) && !c->abm->basic_op_redefined)) {
         long b = FIX2LONG(rv);
         if (UNLIKELY(b == 0)) {
             VALUE exc;
@@ -2760,7 +2808,7 @@ node_fixnum_lt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uin
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
+    if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv) && !c->abm->basic_op_redefined)) {
         return RESULT_OK((long)lv < (long)rv ? Qtrue : Qfalse);
     }
     if (RB_FLONUM_P(lv) && RB_FLONUM_P(rv)) {
@@ -2781,7 +2829,7 @@ node_flonum_lt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uin
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    if (LIKELY(ab_is_float(lv) && ab_is_float(rv))) {
+    if (LIKELY(ab_is_float(lv) && ab_is_float(rv) && !c->abm->basic_op_redefined)) {
         double lf = RFLOAT_VALUE(AB_FLOAT_UNWRAP(lv));
         double rf = RFLOAT_VALUE(AB_FLOAT_UNWRAP(rv));
         return RESULT_OK(lf < rf ? Qtrue : Qfalse);
@@ -2815,7 +2863,7 @@ node_fixnum_le(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uin
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
+    if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv) && !c->abm->basic_op_redefined)) {
         return RESULT_OK((long)lv <= (long)rv ? Qtrue : Qfalse);
     }
     if (RB_FLONUM_P(lv) && RB_FLONUM_P(rv)) {
@@ -2836,7 +2884,7 @@ node_flonum_le(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uin
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    if (LIKELY(ab_is_float(lv) && ab_is_float(rv))) {
+    if (LIKELY(ab_is_float(lv) && ab_is_float(rv) && !c->abm->basic_op_redefined)) {
         double lf = RFLOAT_VALUE(AB_FLOAT_UNWRAP(lv));
         double rf = RFLOAT_VALUE(AB_FLOAT_UNWRAP(rv));
         return RESULT_OK(lf <= rf ? Qtrue : Qfalse);
@@ -2870,7 +2918,7 @@ node_fixnum_gt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uin
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
+    if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv) && !c->abm->basic_op_redefined)) {
         return RESULT_OK((long)lv > (long)rv ? Qtrue : Qfalse);
     }
     if (RB_FLONUM_P(lv) && RB_FLONUM_P(rv)) {
@@ -2891,7 +2939,7 @@ node_flonum_gt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uin
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    if (LIKELY(ab_is_float(lv) && ab_is_float(rv))) {
+    if (LIKELY(ab_is_float(lv) && ab_is_float(rv) && !c->abm->basic_op_redefined)) {
         double lf = RFLOAT_VALUE(AB_FLOAT_UNWRAP(lv));
         double rf = RFLOAT_VALUE(AB_FLOAT_UNWRAP(rv));
         return RESULT_OK(lf > rf ? Qtrue : Qfalse);
@@ -2925,7 +2973,7 @@ node_fixnum_ge(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uin
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
+    if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv) && !c->abm->basic_op_redefined)) {
         return RESULT_OK((long)lv >= (long)rv ? Qtrue : Qfalse);
     }
     if (RB_FLONUM_P(lv) && RB_FLONUM_P(rv)) {
@@ -2946,7 +2994,7 @@ node_flonum_ge(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uin
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    if (LIKELY(ab_is_float(lv) && ab_is_float(rv))) {
+    if (LIKELY(ab_is_float(lv) && ab_is_float(rv) && !c->abm->basic_op_redefined)) {
         double lf = RFLOAT_VALUE(AB_FLOAT_UNWRAP(lv));
         double rf = RFLOAT_VALUE(AB_FLOAT_UNWRAP(rv));
         return RESULT_OK(lf >= rf ? Qtrue : Qfalse);
@@ -2994,7 +3042,7 @@ node_fixnum_eq(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uin
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
+    if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv) && !c->abm->basic_op_redefined)) {
         return RESULT_OK(lv == rv ? Qtrue : Qfalse);
     }
     return node_fixnum_eq_slow(c, n, lv, rv, arg_index);
@@ -3028,7 +3076,7 @@ node_fixnum_neq(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, ui
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
+    if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv) && !c->abm->basic_op_redefined)) {
         return RESULT_OK(lv != rv ? Qtrue : Qfalse);
     }
     return node_fixnum_neq_slow(c, n, lv, rv, arg_index);
@@ -3054,7 +3102,7 @@ node_fixnum_mod(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, ui
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
+    if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv) && !c->abm->basic_op_redefined)) {
         long b = FIX2LONG(rv);
         if (UNLIKELY(b == 0)) {
             VALUE exc;
@@ -3121,7 +3169,7 @@ node_fixnum_and(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, ui
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
+    if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv) && !c->abm->basic_op_redefined)) {
         // Both Fixnum VALUEs carry the low tag bit (= 1); ANDing them
         // preserves the tag, so the result is a valid Fixnum VALUE.
         return RESULT_OK(lv & rv);
@@ -3150,7 +3198,7 @@ node_fixnum_or(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uin
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
+    if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv) && !c->abm->basic_op_redefined)) {
         // OR of two tagged Fixnum values preserves the tag.
         return RESULT_OK(lv | rv);
     }
@@ -3178,7 +3226,7 @@ node_fixnum_xor(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, ui
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
+    if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv) && !c->abm->basic_op_redefined)) {
         // XOR of two tagged Fixnums clears the tag; re-set it.
         return RESULT_OK((lv ^ rv) | (VALUE)RUBY_FIXNUM_FLAG);
     }
@@ -3206,7 +3254,7 @@ node_fixnum_gtgt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, u
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv))) {
+    if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv) && !c->abm->basic_op_redefined)) {
         long a = FIX2LONG(lv);
         long sh = FIX2LONG(rv);
         if (LIKELY(sh >= 0)) {
@@ -3361,7 +3409,7 @@ node_array_aref(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *idx, uint
 {
     VALUE rv = UNWRAP(EVAL_ARG(c, recv));
     VALUE iv = UNWRAP(EVAL_ARG(c, idx));
-    if (LIKELY(AB_CLASS_OF(c, rv) == c->abm->array_class && FIXNUM_P(iv))) {
+    if (LIKELY(AB_CLASS_OF(c, rv) == c->abm->array_class && FIXNUM_P(iv) && !c->abm->basic_op_redefined)) {
         return RESULT_OK(ab_ary_entry(RARY(rv), FIX2LONG(iv)));
     }
     return node_aref_fallback(c, n, rv, iv, arg_index);
@@ -3372,7 +3420,7 @@ node_hash_aref(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *idx, uint3
 {
     VALUE rv = UNWRAP(EVAL_ARG(c, recv));
     VALUE iv = UNWRAP(EVAL_ARG(c, idx));
-    if (LIKELY(AB_CLASS_OF(c, rv) == c->abm->hash_class)) {
+    if (LIKELY(AB_CLASS_OF(c, rv) == c->abm->hash_class && !c->abm->basic_op_redefined)) {
         return do_hash_aref(rv, iv);
     }
     return node_aref_fallback(c, n, rv, iv, arg_index);
@@ -3418,7 +3466,7 @@ node_array_ltlt(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *right, ui
 {
     VALUE rv = UNWRAP(EVAL_ARG(c, recv));
     VALUE xv = UNWRAP(EVAL_ARG(c, right));
-    if (LIKELY(AB_CLASS_OF(c, rv) == c->abm->array_class)) {
+    if (LIKELY(AB_CLASS_OF(c, rv) == c->abm->array_class && !c->abm->basic_op_redefined)) {
         rb_ary_push(RARY(rv), xv);
         return RESULT_OK(rv);
     }
@@ -3430,7 +3478,7 @@ node_fixnum_ltlt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, u
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    if (LIKELY(FIXNUM_P(lv))) {
+    if (LIKELY(FIXNUM_P(lv) && !c->abm->basic_op_redefined)) {
         RESULT r = do_fixnum_ltlt(lv, rv);
         if (LIKELY(r.value != Qundef)) return r;
     }
@@ -3464,7 +3512,7 @@ node_array_aset(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *idx, NODE
     VALUE rv = UNWRAP(EVAL_ARG(c, recv));
     VALUE iv = UNWRAP(EVAL_ARG(c, idx));
     VALUE vv = UNWRAP(EVAL_ARG(c, value));
-    if (LIKELY(AB_CLASS_OF(c, rv) == c->abm->array_class && FIXNUM_P(iv))) {
+    if (LIKELY(AB_CLASS_OF(c, rv) == c->abm->array_class && FIXNUM_P(iv) && !c->abm->basic_op_redefined)) {
         rb_ary_store(RARY(rv), FIX2LONG(iv), vv);
         return RESULT_OK(vv);
     }
@@ -3477,7 +3525,7 @@ node_hash_aset(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *idx, NODE 
     VALUE rv = UNWRAP(EVAL_ARG(c, recv));
     VALUE iv = UNWRAP(EVAL_ARG(c, idx));
     VALUE vv = UNWRAP(EVAL_ARG(c, value));
-    if (LIKELY(AB_CLASS_OF(c, rv) == c->abm->hash_class)) {
+    if (LIKELY(AB_CLASS_OF(c, rv) == c->abm->hash_class && !c->abm->basic_op_redefined)) {
         return do_hash_aset(rv, iv, vv);
     }
     return node_aset_fallback(c, n, rv, iv, vv, arg_index);
