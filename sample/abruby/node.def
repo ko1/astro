@@ -1715,6 +1715,9 @@ dispatch_simple_noblock(CTX * restrict c, NODE * restrict call_site, VALUE recv_
                         ID name, unsigned int argc, uint32_t arg_index,
                         struct method_cache *mc)
 {
+#if ABRUBY_PROFILE
+    { extern void abruby_dispatch_count_inc(ID); abruby_dispatch_count_inc(name); }
+#endif
     const struct abruby_class *klass = AB_CLASS_OF(c, recv_val);
     if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
         return dispatch_method_frame(c, call_site, mc, recv_val, argc, arg_index);

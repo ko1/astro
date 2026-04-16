@@ -814,6 +814,40 @@ abm_mark(void *ptr)
     if (abm->runtime_error_class && abm->runtime_error_class->rb_wrapper)  rb_gc_mark(abm->runtime_error_class->rb_wrapper);
 }
 
+#if ABRUBY_PROFILE
+struct dc_entry { ID id; char name[64]; unsigned long count; };
+static struct dc_entry dc_table[4096];
+static unsigned int dc_n = 0;
+
+void abruby_dispatch_count_inc(ID name) {
+    for (unsigned int i = 0; i < dc_n; i++) {
+        if (dc_table[i].id == name) { dc_table[i].count++; return; }
+    }
+    if (dc_n < 4096) {
+        dc_table[dc_n].id = name;
+        const char *s = rb_id2name(name);
+        if (s) { strncpy(dc_table[dc_n].name, s, 63); dc_table[dc_n].name[63] = '\0'; }
+        else { dc_table[dc_n].name[0] = '\0'; }
+        dc_table[dc_n].count = 1;
+        dc_n++;
+    }
+}
+
+static int dc_cmp(const void *a, const void *b) {
+    long diff = (long)((const struct dc_entry *)b)->count - (long)((const struct dc_entry *)a)->count;
+    return diff > 0 ? 1 : diff < 0 ? -1 : 0;
+}
+
+void abruby_dispatch_count_dump(void) {
+    if (dc_n == 0) return;
+    qsort(dc_table, dc_n, sizeof(dc_table[0]), dc_cmp);
+    fprintf(stderr, "\n=== dispatch counts (top 30) ===\n");
+    for (unsigned int i = 0; i < dc_n && i < 30; i++) {
+        fprintf(stderr, "%12lu  %s\n", dc_table[i].count, dc_table[i].name);
+    }
+}
+#endif
+
 void
 abm_free(void *ptr)
 {
@@ -2318,4 +2352,11 @@ Init_abruby(void)
     rb_define_singleton_method(rb_cAbRuby, "cs_build", rb_astro_cs_build, -1);
     rb_define_singleton_method(rb_cAbRuby, "cs_reload", rb_astro_cs_reload, 0);
     rb_define_singleton_method(rb_cAbRuby, "cs_disasm", rb_astro_cs_disasm, 1);
+
+#if ABRUBY_PROFILE
+    {
+        extern void abruby_dispatch_count_dump(void);
+        atexit(abruby_dispatch_count_dump);
+    }
+#endif
 }
