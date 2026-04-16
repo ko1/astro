@@ -40,6 +40,9 @@ bench: all
 bench-optcarrot: all
 	exe/abruby benchmark/optcarrot/bin/optcarrot-bench
 
+bench-optcarrot-all: all
+	ruby benchmark/optcarrot_bench.rb
+
 debug-test:
 	$(MAKE) clean
 	$(MAKE) cflags="$(cflags) -DABRUBY_DEBUG=1"
