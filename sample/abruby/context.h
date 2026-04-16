@@ -729,13 +729,12 @@ AB_CLASS_OF(const CTX *c, VALUE obj)
 {
     ab_verify(obj);
 
-    // Static symbols and dynamic (heap T_SYMBOL) symbols both map to
-    // the per-instance symbol class.  Static syms are caught via the
-    // immediate path; dynamic syms must be detected with the heap-side
-    // T_SYMBOL builtin-type check below to avoid dereferencing as
-    // T_DATA.
+    // The abruby VALUE invariant guarantees that non-immediate obj is
+    // always T_DATA with abruby_header at offset 0.  No heap T_SYMBOL
+    // or other raw CRuby types can appear.  Static symbols are caught
+    // by the immediate path below (RB_SPECIAL_CONST_P).
     if (RB_LIKELY(!RB_SPECIAL_CONST_P(obj))) {
-        if (RB_BUILTIN_TYPE(obj) == T_SYMBOL) return c->abm->symbol_class;
+        ABRUBY_ASSERT(RB_TYPE_P(obj, T_DATA));
         return ((struct abruby_header *)RTYPEDDATA_GET_DATA(obj))->klass;
     }
     else {
