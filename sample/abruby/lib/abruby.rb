@@ -1424,13 +1424,13 @@ class AbRuby
         op = name.to_s
         case
         when argc == 1 && op == "[]"
-          # Polymorphic aref — runtime classifies and swap_dispatcher()s
-          # to a monomorphic variant (node_array_aref etc.).
-          set_line(AbRuby.alloc_node_aref(recv_ast, arg_asts[0], call_arg_idx), node)
+          # Speculative Array fast path; cold fallback inside
+          # node_array_aref handles Hash / Fixnum / method dispatch.
+          set_line(AbRuby.alloc_node_array_aref(recv_ast, arg_asts[0], call_arg_idx), node)
         when argc == 1 && op == "<<"
-          set_line(AbRuby.alloc_node_ltlt(recv_ast, arg_asts[0], call_arg_idx), node)
+          set_line(AbRuby.alloc_node_array_ltlt(recv_ast, arg_asts[0], call_arg_idx), node)
         when argc == 2 && op == "[]="
-          set_line(AbRuby.alloc_node_aset(recv_ast, arg_asts[0], arg_asts[1], call_arg_idx), node)
+          set_line(AbRuby.alloc_node_array_aset(recv_ast, arg_asts[0], arg_asts[1], call_arg_idx), node)
         when argc == 0
           set_line(AbRuby.alloc_node_call0(recv_ast, op, call_arg_idx), node)
         when argc == 1

@@ -3208,68 +3208,41 @@ node_fixnum_gtgt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, u
     return node_fixnum_gtgt_slow(c, n, lv, rv, arg_index);
 }
 
-// --- node_fixnum_ltlt: Fixnum-specialised monomorphic variant of node_ltlt ---
-//
-// node_ltlt stays polymorphic (Array / Fixnum / fallback) at parse time.
-// First-execution classification swap_dispatcher()s to this kind when
-// the receiver is a Fixnum — typical for bit-shift idioms like
-// `value << 8` in NES CPU decoding.  Left-shift overflow falls through
-// to the method dispatch path.
-// do_fixnum_ltlt is defined below (polymorphic node_ltlt uses it too).
-static inline RESULT do_fixnum_ltlt(CTX *c, NODE *n, VALUE lv, VALUE rv, uint32_t arg_index);
-
-NODE_DEF
-node_fixnum_ltlt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
-{
-    VALUE lv = UNWRAP(EVAL_ARG(c, left));
-    VALUE rv = UNWRAP(EVAL_ARG(c, right));
-    if (LIKELY(FIXNUM_P(lv))) {
-        return do_fixnum_ltlt(c, n, lv, rv, arg_index);
-    }
-    return node_arith_fallback(c, n, lv, rv, c->ids->op_ltlt, arg_index);
-}
-
-
 // ===================================================================
 // Indexing operators (a[b], a[b] = c, a << b)
 //
-// Parser emits the polymorphic kind (node_aref / node_aset / node_ltlt)
-// which mirrors CRuby's vm_opt_aref / vm_opt_aset / vm_opt_ltlt: an
-// inline cascade of type checks handles the common receiver types
-// (Array / Hash / Fixnum / ...), with a method-dispatch fallback for
-// everything else.
+// Parser emits the speculative Array kind (node_array_aref /
+// node_array_aset / node_array_ltlt) for every `[]` / `[]=` / `<<`
+// call site — Array is the dominant receiver, and committing at parse
+// time keeps the SD hot body compact.
 //
-// On first execution the polymorphic kind classifies the receiver and
-// swap_dispatcher()s the node to a monomorphic variant (node_array_aref,
-// node_hash_aref, ...).  Monomorphic variants run the same fast path
-// without re-classifying; on a receiver-type miss they fall through to
-// the method-dispatch fallback but do NOT swap back — PE-driven
-// specialisation can handle genuinely polymorphic sites later.
+// Fast path (inlined into the SD): Array receiver (+ Fixnum index for
+// aref/aset).  Out-of-line fallback: classifies the receiver; on Hash
+// / Fixnum it swap_dispatcher()s the node to the matching monomorphic
+// kind (node_hash_aref / node_fixnum_aref / node_hash_aset /
+// node_fixnum_ltlt) so later calls skip the classification.  Receivers
+// outside the catalogue fall through to method dispatch.
 // ===================================================================
 
-static RESULT DISPATCH_node_aref(CTX *c, NODE *n);
 static RESULT DISPATCH_node_array_aref(CTX *c, NODE *n);
 static RESULT DISPATCH_node_hash_aref(CTX *c, NODE *n);
 static RESULT DISPATCH_node_fixnum_aref(CTX *c, NODE *n);
-static RESULT DISPATCH_node_ltlt(CTX *c, NODE *n);
-static RESULT DISPATCH_node_array_ltlt(CTX *c, NODE *n);
-static RESULT DISPATCH_node_aset(CTX *c, NODE *n);
 static RESULT DISPATCH_node_array_aset(CTX *c, NODE *n);
 static RESULT DISPATCH_node_hash_aset(CTX *c, NODE *n);
+static RESULT DISPATCH_node_array_ltlt(CTX *c, NODE *n);
+static RESULT DISPATCH_node_fixnum_ltlt(CTX *c, NODE *n);
 
-extern const struct NodeKind kind_node_aref;
 extern const struct NodeKind kind_node_array_aref;
 extern const struct NodeKind kind_node_hash_aref;
 extern const struct NodeKind kind_node_fixnum_aref;
-extern const struct NodeKind kind_node_ltlt;
-extern const struct NodeKind kind_node_array_ltlt;
-extern const struct NodeKind kind_node_aset;
 extern const struct NodeKind kind_node_array_aset;
 extern const struct NodeKind kind_node_hash_aset;
+extern const struct NodeKind kind_node_array_ltlt;
+extern const struct NodeKind kind_node_fixnum_ltlt;
 
-// 2-arg method dispatch fallback (recv.op(idx, val)) — used by
-// node_aset / node_array_aset / node_hash_aset for the []= method.
-// Parallels node_arith_fallback but with two call-args.
+// 2-arg method dispatch fallback (recv.op(idx, val)) — used by the
+// aset fallbacks for the []= method.  Parallels node_arith_fallback
+// but with two call-args.
 static __attribute__((noinline, cold)) RESULT
 node_indexset_fallback(CTX * restrict c, NODE * restrict n, VALUE recv, VALUE idx, VALUE val, ID op, uint32_t arg_index)
 {
@@ -3297,17 +3270,7 @@ node_indexset_fallback(CTX * restrict c, NODE * restrict n, VALUE recv, VALUE id
     return dispatch_method_with_klass(c, n, recv, klass, method, 2, arg_index);
 }
 
-// --- Inline helpers shared by polymorphic and monomorphic variants ---
-
-static inline RESULT
-do_array_aref(CTX *c, NODE *n, VALUE rv, VALUE iv, uint32_t arg_index)
-{
-    if (LIKELY(FIXNUM_P(iv))) {
-        return RESULT_OK(ab_ary_entry(RARY(rv), FIX2LONG(iv)));
-    }
-    // Range / 2-arg / etc. — punt to full method dispatch.
-    return node_arith_fallback(c, n, rv, iv, c->ids->op_aref, arg_index);
-}
+// --- Inline helpers shared by the monomorphic kinds and the fallbacks ---
 
 static inline RESULT
 do_hash_aref(VALUE rv, VALUE iv)
@@ -3316,34 +3279,14 @@ do_hash_aref(VALUE rv, VALUE iv)
 }
 
 static inline RESULT
-do_fixnum_aref(CTX *c, NODE *n, VALUE rv, VALUE iv, uint32_t arg_index)
+do_fixnum_aref(VALUE rv, VALUE iv)
 {
-    if (LIKELY(FIXNUM_P(iv))) {
-        long val = FIX2LONG(rv);
-        long i = FIX2LONG(iv);
-        if (i < 0) return RESULT_OK(INT2FIX(0));
-        if (i >= (long)(sizeof(long) * 8)) return RESULT_OK(INT2FIX(val < 0 ? 1 : 0));
-        return RESULT_OK(INT2FIX((val >> i) & 1));
-    }
-    // Bignum index etc. — method dispatch.
-    return node_arith_fallback(c, n, rv, iv, c->ids->op_aref, arg_index);
-}
-
-static inline RESULT
-do_array_ltlt(VALUE rv, VALUE xv)
-{
-    rb_ary_push(RARY(rv), xv);
-    return RESULT_OK(rv);
-}
-
-static inline RESULT
-do_array_aset(CTX *c, NODE *n, VALUE rv, VALUE iv, VALUE vv, uint32_t arg_index)
-{
-    if (LIKELY(FIXNUM_P(iv))) {
-        rb_ary_store(RARY(rv), FIX2LONG(iv), vv);
-        return RESULT_OK(vv);
-    }
-    return node_indexset_fallback(c, n, rv, iv, vv, c->ids->op_aset, arg_index);
+    // Caller has already checked FIXNUM_P(rv) && FIXNUM_P(iv).
+    long val = FIX2LONG(rv);
+    long i = FIX2LONG(iv);
+    if (i < 0) return RESULT_OK(INT2FIX(0));
+    if (i >= (long)(sizeof(long) * 8)) return RESULT_OK(INT2FIX(val < 0 ? 1 : 0));
+    return RESULT_OK(INT2FIX((val >> i) & 1));
 }
 
 static inline RESULT
@@ -3353,66 +3296,10 @@ do_hash_aset(VALUE rv, VALUE iv, VALUE vv)
     return RESULT_OK(vv);
 }
 
-// --- node_aref: polymorphic (Array / Hash / Fixnum inline, else method) ---
-
-NODE_DEF
-node_aref(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *idx, uint32_t arg_index)
-{
-    VALUE rv = UNWRAP(EVAL_ARG(c, recv));
-    VALUE iv = UNWRAP(EVAL_ARG(c, idx));
-    const struct abruby_class *klass = AB_CLASS_OF(c, rv);
-    if (klass == c->abm->array_class) {
-        swap_dispatcher(n, &kind_node_array_aref);
-        return do_array_aref(c, n, rv, iv, arg_index);
-    }
-    if (klass == c->abm->hash_class) {
-        swap_dispatcher(n, &kind_node_hash_aref);
-        return do_hash_aref(rv, iv);
-    }
-    if (FIXNUM_P(rv)) {
-        swap_dispatcher(n, &kind_node_fixnum_aref);
-        return do_fixnum_aref(c, n, rv, iv, arg_index);
-    }
-    return node_arith_fallback(c, n, rv, iv, c->ids->op_aref, arg_index);
-}
-
-NODE_DEF
-node_array_aref(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *idx, uint32_t arg_index)
-{
-    VALUE rv = UNWRAP(EVAL_ARG(c, recv));
-    VALUE iv = UNWRAP(EVAL_ARG(c, idx));
-    if (LIKELY(AB_CLASS_OF(c, rv) == c->abm->array_class)) {
-        return do_array_aref(c, n, rv, iv, arg_index);
-    }
-    return node_arith_fallback(c, n, rv, iv, c->ids->op_aref, arg_index);
-}
-
-NODE_DEF
-node_hash_aref(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *idx, uint32_t arg_index)
-{
-    VALUE rv = UNWRAP(EVAL_ARG(c, recv));
-    VALUE iv = UNWRAP(EVAL_ARG(c, idx));
-    if (LIKELY(AB_CLASS_OF(c, rv) == c->abm->hash_class)) {
-        return do_hash_aref(rv, iv);
-    }
-    return node_arith_fallback(c, n, rv, iv, c->ids->op_aref, arg_index);
-}
-
-NODE_DEF
-node_fixnum_aref(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *idx, uint32_t arg_index)
-{
-    VALUE rv = UNWRAP(EVAL_ARG(c, recv));
-    VALUE iv = UNWRAP(EVAL_ARG(c, idx));
-    if (LIKELY(FIXNUM_P(rv))) {
-        return do_fixnum_aref(c, n, rv, iv, arg_index);
-    }
-    return node_arith_fallback(c, n, rv, iv, c->ids->op_aref, arg_index);
-}
-
-// --- node_ltlt: polymorphic (Array / Fixnum inline, else method) ---
-
+// do_fixnum_ltlt returns (Qundef, NORMAL) to signal overflow / non-Fixnum
+// rhs; callers then fall through to method dispatch.
 static inline RESULT
-do_fixnum_ltlt(CTX *c, NODE *n, VALUE lv, VALUE rv, uint32_t arg_index)
+do_fixnum_ltlt(VALUE lv, VALUE rv)
 {
     if (LIKELY(FIXNUM_P(rv))) {
         long a = FIX2LONG(lv);
@@ -3424,22 +3311,91 @@ do_fixnum_ltlt(CTX *c, NODE *n, VALUE lv, VALUE rv, uint32_t arg_index)
             }
         }
     }
-    return node_arith_fallback(c, n, lv, rv, c->ids->op_ltlt, arg_index);
+    return RESULT_OK(Qundef);
+}
+
+// === Shared aref fallback ===
+//
+// Called from every aref kind (array_aref, hash_aref, fixnum_aref)
+// when their specific fast path misses.  Classifies the receiver,
+// swap_dispatcher()s to the matching monomorphic kind, and runs the
+// operation.  Unknown receiver → method dispatch.
+static __attribute__((noinline)) RESULT
+node_aref_fallback(CTX * restrict c, NODE * restrict n, VALUE rv, VALUE iv, uint32_t arg_index)
+{
+    const struct abruby_class *klass = AB_CLASS_OF(c, rv);
+    if (klass == c->abm->array_class) {
+        if (LIKELY(FIXNUM_P(iv))) {
+            swap_dispatcher(n, &kind_node_array_aref);
+            return RESULT_OK(ab_ary_entry(RARY(rv), FIX2LONG(iv)));
+        }
+    }
+    else if (klass == c->abm->hash_class) {
+        swap_dispatcher(n, &kind_node_hash_aref);
+        return do_hash_aref(rv, iv);
+    }
+    else if (FIXNUM_P(rv) && FIXNUM_P(iv)) {
+        swap_dispatcher(n, &kind_node_fixnum_aref);
+        return do_fixnum_aref(rv, iv);
+    }
+
+    return node_arith_fallback(c, n, rv, iv, c->ids->op_aref, arg_index);
 }
 
 NODE_DEF
-node_ltlt(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *right, uint32_t arg_index)
+node_array_aref(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *idx, uint32_t arg_index)
 {
     VALUE rv = UNWRAP(EVAL_ARG(c, recv));
-    VALUE xv = UNWRAP(EVAL_ARG(c, right));
+    VALUE iv = UNWRAP(EVAL_ARG(c, idx));
+    if (LIKELY(AB_CLASS_OF(c, rv) == c->abm->array_class && FIXNUM_P(iv))) {
+        return RESULT_OK(ab_ary_entry(RARY(rv), FIX2LONG(iv)));
+    }
+    return node_aref_fallback(c, n, rv, iv, arg_index);
+}
+
+NODE_DEF
+node_hash_aref(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *idx, uint32_t arg_index)
+{
+    VALUE rv = UNWRAP(EVAL_ARG(c, recv));
+    VALUE iv = UNWRAP(EVAL_ARG(c, idx));
+    if (LIKELY(AB_CLASS_OF(c, rv) == c->abm->hash_class)) {
+        return do_hash_aref(rv, iv);
+    }
+    return node_aref_fallback(c, n, rv, iv, arg_index);
+}
+
+NODE_DEF
+node_fixnum_aref(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *idx, uint32_t arg_index)
+{
+    VALUE rv = UNWRAP(EVAL_ARG(c, recv));
+    VALUE iv = UNWRAP(EVAL_ARG(c, idx));
+    if (LIKELY(FIXNUM_P(rv) && FIXNUM_P(iv))) {
+        return do_fixnum_aref(rv, iv);
+    }
+    return node_aref_fallback(c, n, rv, iv, arg_index);
+}
+
+// === Shared ltlt fallback ===
+//
+// Called from node_array_ltlt and node_fixnum_ltlt on a type miss.
+// Only swaps when the target kind's fast path will actually apply.
+static __attribute__((noinline)) RESULT
+node_ltlt_fallback(CTX * restrict c, NODE * restrict n, VALUE rv, VALUE xv, uint32_t arg_index)
+{
     if (AB_CLASS_OF(c, rv) == c->abm->array_class) {
         swap_dispatcher(n, &kind_node_array_ltlt);
-        return do_array_ltlt(rv, xv);
+        rb_ary_push(RARY(rv), xv);
+        return RESULT_OK(rv);
     }
-    if (FIXNUM_P(rv)) {
-        swap_dispatcher(n, &kind_node_fixnum_ltlt);
-        return do_fixnum_ltlt(c, n, rv, xv, arg_index);
+    else if (FIXNUM_P(rv)) {
+        RESULT r = do_fixnum_ltlt(rv, xv);
+        if (r.value != Qundef) {
+            swap_dispatcher(n, &kind_node_fixnum_ltlt);
+            return r;
+        }
+        // overflow — fall through to method dispatch without swapping
     }
+
     return node_arith_fallback(c, n, rv, xv, c->ids->op_ltlt, arg_index);
 }
 
@@ -3449,28 +3405,42 @@ node_array_ltlt(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *right, ui
     VALUE rv = UNWRAP(EVAL_ARG(c, recv));
     VALUE xv = UNWRAP(EVAL_ARG(c, right));
     if (LIKELY(AB_CLASS_OF(c, rv) == c->abm->array_class)) {
-        return do_array_ltlt(rv, xv);
+        rb_ary_push(RARY(rv), xv);
+        return RESULT_OK(rv);
     }
-    return node_arith_fallback(c, n, rv, xv, c->ids->op_ltlt, arg_index);
+    return node_ltlt_fallback(c, n, rv, xv, arg_index);
 }
 
-// --- node_aset: polymorphic (Array / Hash inline, else method) ---
-
 NODE_DEF
-node_aset(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *idx, NODE *value, uint32_t arg_index)
+node_fixnum_ltlt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
-    VALUE rv = UNWRAP(EVAL_ARG(c, recv));
-    VALUE iv = UNWRAP(EVAL_ARG(c, idx));
-    VALUE vv = UNWRAP(EVAL_ARG(c, value));
+    VALUE lv = UNWRAP(EVAL_ARG(c, left));
+    VALUE rv = UNWRAP(EVAL_ARG(c, right));
+    if (LIKELY(FIXNUM_P(lv))) {
+        RESULT r = do_fixnum_ltlt(lv, rv);
+        if (LIKELY(r.value != Qundef)) return r;
+    }
+    return node_ltlt_fallback(c, n, lv, rv, arg_index);
+}
+
+// === Shared aset fallback ===
+// Only swaps when the target kind's fast path will actually apply.
+static __attribute__((noinline)) RESULT
+node_aset_fallback(CTX * restrict c, NODE * restrict n, VALUE rv, VALUE iv, VALUE vv, uint32_t arg_index)
+{
     const struct abruby_class *klass = AB_CLASS_OF(c, rv);
     if (klass == c->abm->array_class) {
-        swap_dispatcher(n, &kind_node_array_aset);
-        return do_array_aset(c, n, rv, iv, vv, arg_index);
+        if (LIKELY(FIXNUM_P(iv))) {
+            swap_dispatcher(n, &kind_node_array_aset);
+            rb_ary_store(RARY(rv), FIX2LONG(iv), vv);
+            return RESULT_OK(vv);
+        }
     }
-    if (klass == c->abm->hash_class) {
+    else if (klass == c->abm->hash_class) {
         swap_dispatcher(n, &kind_node_hash_aset);
         return do_hash_aset(rv, iv, vv);
     }
+
     return node_indexset_fallback(c, n, rv, iv, vv, c->ids->op_aset, arg_index);
 }
 
@@ -3480,10 +3450,11 @@ node_array_aset(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *idx, NODE
     VALUE rv = UNWRAP(EVAL_ARG(c, recv));
     VALUE iv = UNWRAP(EVAL_ARG(c, idx));
     VALUE vv = UNWRAP(EVAL_ARG(c, value));
-    if (LIKELY(AB_CLASS_OF(c, rv) == c->abm->array_class)) {
-        return do_array_aset(c, n, rv, iv, vv, arg_index);
+    if (LIKELY(AB_CLASS_OF(c, rv) == c->abm->array_class && FIXNUM_P(iv))) {
+        rb_ary_store(RARY(rv), FIX2LONG(iv), vv);
+        return RESULT_OK(vv);
     }
-    return node_indexset_fallback(c, n, rv, iv, vv, c->ids->op_aset, arg_index);
+    return node_aset_fallback(c, n, rv, iv, vv, arg_index);
 }
 
 NODE_DEF
@@ -3495,5 +3466,5 @@ node_hash_aset(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *idx, NODE 
     if (LIKELY(AB_CLASS_OF(c, rv) == c->abm->hash_class)) {
         return do_hash_aset(rv, iv, vv);
     }
-    return node_indexset_fallback(c, n, rv, iv, vv, c->ids->op_aset, arg_index);
+    return node_aset_fallback(c, n, rv, iv, vv, arg_index);
 }
