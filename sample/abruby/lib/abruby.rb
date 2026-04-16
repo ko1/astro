@@ -755,8 +755,7 @@ class AbRuby
           rhs_nodes = lefts.each_index.map do |i|
             ary_ref = AbRuby.alloc_node_lvar_get(ary_idx)
             idx_node = AbRuby.alloc_node_num(i)
-            # ary_ref[i] via call1 (evaluates recv then idx into fp)
-            AbRuby.alloc_node_call1(ary_ref, "[]", idx_node, arg_index)
+            AbRuby.alloc_node_array_aref(ary_ref, idx_node, arg_index)
           end
           # Do NOT rewind to ary_idx here — the per-LHS assigns below
           # may also need scratch slots, and they must not stomp on the
