@@ -89,12 +89,21 @@ typedef struct {
 typedef struct CTX_struct CTX;
 typedef RESULT (*abruby_cfunc_t)(CTX *c, VALUE self, unsigned int argc, VALUE *argv);
 
+struct abruby_method;  // forward decl (abruby_entry refers to it)
+
 // Execution entry point — the boundary at which a body is kicked off.
 // Shared by method, class/module body, top-level, proc, etc.
 // frame->entry points here so cref is always derivable without per-frame state.
+//
+// entry->method carries the owning method pointer for method frames (AST
+// and cfunc).  For synthetic entries (class/module body, proc, top-level,
+// require) method is NULL — the frame is not running inside any named
+// method.  This lets us keep a single source of truth for "which method
+// owns this frame" and drop the redundant frame.method field.
 struct abruby_entry {
-    const struct abruby_cref *cref;  // lexical constant scope
-    const char *source_file;         // where this entry was defined
+    const struct abruby_cref *cref;       // lexical constant scope
+    const char *source_file;              // where this entry was defined
+    const struct abruby_method *method;   // NULL for non-method frames
 };
 
 enum abruby_method_type {
@@ -111,6 +120,10 @@ struct abruby_method {
     // Set by abruby_class_add_method. Preserved across per-instance clones so
     // that super dispatch works correctly without storing klass in every frame.
     const struct abruby_class *defining_class;
+    // Shared by every method type.  method->entry.method == method (self-
+    // referential).  Frames point at this entry directly, so reading
+    // frame->entry->method yields this method.
+    struct abruby_entry entry;
     union {
         struct {
             struct Node *body;
@@ -122,7 +135,6 @@ struct abruby_method {
                                                // opt_pc[i] = entry when `i` optionals are filled from argv
                                                // size = (params_cnt - required_params_cnt) + 1
             unsigned int locals_cnt;
-            struct abruby_entry entry;  // cref + source_file
         } ast;
         struct {
             abruby_cfunc_t func;
@@ -431,14 +443,15 @@ typedef RESULT (*method_prologue_t)(
 // so this path imposes zero per-frame cost outside block return.
 struct abruby_frame {
     struct abruby_frame *prev;
-    const struct abruby_method *method;  // super walks from method->defining_class->super
     const struct Node *caller_node;  // call site in the caller (set at push time, NULL for <main>)
     const struct abruby_block *block;    // block received by this call, or NULL
     // Per-frame execution state (moved from CTX).
     // Pop automatically restores the caller's state via prev->self/fp.
     VALUE self;
     VALUE *fp;
-    const struct abruby_entry *entry;  // cref is derived from entry->cref
+    // entry->cref is the lexical constant scope; entry->method (may be NULL)
+    // identifies the method that owns this frame for backtrace / super walk.
+    const struct abruby_entry *entry;
 };
 
 // Cached interned IDs for operator methods and common names

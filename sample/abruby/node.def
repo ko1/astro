@@ -25,7 +25,6 @@
 #define PUSH_FRAME(node) do { \
     struct abruby_frame _push_frame; \
     _push_frame.prev = c->current_frame; \
-    _push_frame.method = NULL; \
     _push_frame.caller_node = (node); \
     _push_frame.block = NULL; \
     _push_frame.self = c->current_frame->self; \
@@ -97,8 +96,9 @@ abruby_class_add_method(CTX *c, struct abruby_class *klass, ID name,
             m->u.ast.rest_index = rest_index;
             m->u.ast.opt_pc = opt_pc;
             m->u.ast.locals_cnt = locals_cnt;
-            m->u.ast.entry.source_file = source_file;
-            m->u.ast.entry.cref = def_cref;
+            m->entry.source_file = source_file;
+            m->entry.cref = def_cref;
+            m->entry.method = m;
         }
         c->abm->method_serial++;
         return;
@@ -106,6 +106,7 @@ abruby_class_add_method(CTX *c, struct abruby_class *klass, ID name,
     struct abruby_method *m = ruby_xcalloc(1, sizeof(struct abruby_method));
     m->name = name;
     m->defining_class = klass;
+    m->entry.method = m;  // self-reference (frame->entry->method → this method)
     if (!abruby_method_try_set_ivar_accessor(m, body, params_cnt)) {
         m->type = ABRUBY_METHOD_AST;
         m->u.ast.body = body;
@@ -115,8 +116,8 @@ abruby_class_add_method(CTX *c, struct abruby_class *klass, ID name,
         m->u.ast.rest_index = rest_index;
         m->u.ast.opt_pc = opt_pc;
         m->u.ast.locals_cnt = locals_cnt;
-        m->u.ast.entry.source_file = source_file;
-        m->u.ast.entry.cref = def_cref;
+        m->entry.source_file = source_file;
+        m->entry.cref = def_cref;
     }
     ab_id_table_insert(&klass->methods, name, (VALUE)m);
     c->abm->method_serial++;
@@ -768,7 +769,7 @@ node_yield(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_inde
     // Install a synthetic entry carrying the block's captured cref so
     // constant lookups inside the block body walk the lexical scope chain
     // active at block-literal creation, not the yielding method's chain.
-    struct abruby_entry blk_entry = {blk->cref, NULL};
+    struct abruby_entry blk_entry = {blk->cref, NULL, NULL};
     c->current_frame->fp = blk->captured_fp;
     c->current_frame->self = blk->captured_self;
     c->current_frame->entry = &blk_entry;
@@ -876,11 +877,10 @@ node_module_def(CTX * restrict c, NODE * restrict n, ID name, NODE *body)
     mod_cref->klass = mod;
     mod_cref->outer = ctx_cref(c);
 
-    struct abruby_entry mod_entry = {mod_cref, NULL};
+    struct abruby_entry mod_entry = {mod_cref, NULL, NULL};
     struct abruby_class *save_class = c->current_class;
     struct abruby_frame mod_frame;
     mod_frame.prev = c->current_frame;
-    mod_frame.method = NULL;
     mod_frame.caller_node = n;
     mod_frame.block = NULL;
     mod_frame.self = abruby_wrap_class(mod);
@@ -940,11 +940,10 @@ node_class_def(CTX * restrict c, NODE * restrict n, ID name, NODE *super_expr, N
     cls_cref->klass = klass;
     cls_cref->outer = ctx_cref(c);
 
-    struct abruby_entry cls_entry = {cls_cref, NULL};
+    struct abruby_entry cls_entry = {cls_cref, NULL, NULL};
     struct abruby_class *save_class = c->current_class;
     struct abruby_frame cls_frame;
     cls_frame.prev = c->current_frame;
-    cls_frame.method = NULL;
     cls_frame.caller_node = n;
     cls_frame.block = NULL;
     cls_frame.self = abruby_wrap_class(klass);
@@ -1219,12 +1218,11 @@ name(CTX * restrict c, NODE * restrict call_site, \
     unsigned int req = (req_expr); \
     struct abruby_frame frame; \
     frame.prev = c->current_frame; \
-    frame.method = mc->method; \
     frame.caller_node = call_site; \
     frame.block = NULL; \
     frame.self = recv_self; \
     frame.fp = c->current_frame->fp + arg_index; \
-    frame.entry = &mc->method->u.ast.entry; \
+    frame.entry = &mc->method->entry; \
     c->current_frame = &frame; \
     ctx_update_sp(c, frame.fp + req); \
     RESULT r = mc->dispatcher(c, mc->body); \
@@ -1248,12 +1246,11 @@ prologue_ast_complex(CTX * restrict c, NODE * restrict call_site,
 {
     struct abruby_frame frame;
     frame.prev = c->current_frame;
-    frame.method = mc->method;
     frame.caller_node = call_site;
     frame.block = NULL;
     frame.self = recv_self;
     frame.fp = c->current_frame->fp;
-    frame.entry = &mc->method->u.ast.entry;
+    frame.entry = &mc->method->entry;
     c->current_frame = &frame;
 
     RESULT err_r;
@@ -1284,12 +1281,13 @@ prologue_cfunc(CTX * restrict c, NODE * restrict call_site,
 {
     struct abruby_frame frame;
     frame.prev = c->current_frame;
-    frame.method = mc->method;
     frame.caller_node = call_site;
     frame.block = NULL;
     frame.self = recv_self;
     frame.fp = c->current_frame->fp;
-    frame.entry = NULL;
+    // cfunc method's entry carries the method pointer for backtrace;
+    // cref/source_file are both NULL (cfuncs don't have Ruby-level scope).
+    frame.entry = &mc->method->entry;
     c->current_frame = &frame;
 
     ctx_update_sp(c, frame.fp + arg_index + argc);
@@ -1408,12 +1406,13 @@ dispatch_method_frame_with_block(CTX * restrict c, NODE * restrict call_site,
 
     struct abruby_frame frame;
     frame.prev = c->current_frame;
-    frame.method = mc->method;
     frame.caller_node = call_site;
     frame.block = blk;
     frame.self = recv_self;
     frame.fp = c->current_frame->fp;
-    frame.entry = mc->body ? &mc->method->u.ast.entry : NULL;
+    // entry carries the method pointer for backtrace / super walk; cref is
+    // meaningful only for AST methods (cfunc has NULL cref).
+    frame.entry = &mc->method->entry;
     c->current_frame = &frame;
 
     RESULT r;
@@ -2075,9 +2074,11 @@ find_super_target(const struct abruby_frame *lex,
                   const struct abruby_class **out_klass,
                   ID *out_name)
 {
-    if (!lex || !lex->method || !lex->method->defining_class) return false;
-    *out_klass = lex->method->defining_class->super;
-    *out_name  = lex->method->name;
+    if (!lex || !lex->entry) return false;
+    const struct abruby_method *m = lex->entry->method;
+    if (!m || !m->defining_class) return false;
+    *out_klass = m->defining_class->super;
+    *out_name  = m->name;
     return *out_klass != NULL;
 }
 

@@ -522,7 +522,7 @@ abruby_yield(CTX *c, unsigned int argc, VALUE *argv)
     // so const lookups inside the block body walk the lexical scope chain
     // that was active when the block literal was created (not the cfunc's
     // own NULL entry).
-    struct abruby_entry blk_entry = {blk->cref, NULL};
+    struct abruby_entry blk_entry = {blk->cref, NULL, NULL};
     c->current_frame->fp = blk->captured_fp;
     c->current_frame->self = blk->captured_self;
     c->current_frame->entry = &blk_entry;
@@ -575,12 +575,11 @@ abruby_call_method(CTX *c, VALUE recv, const struct abruby_method *method,
         }
         struct abruby_frame frame;
         frame.prev = c->current_frame;
-        frame.method = method;
         frame.caller_node = NULL;
         frame.block = NULL;
         frame.self = recv;
         frame.fp = new_fp;
-        frame.entry = &method->u.ast.entry;
+        frame.entry = &method->entry;
         c->current_frame = &frame;
         RESULT r = EVAL(c, method->u.ast.body);
         c->current_frame = frame.prev;
@@ -610,6 +609,7 @@ abruby_class_add_cfunc(struct abruby_class *klass, ID name,
     m->name = name;
     m->type = ABRUBY_METHOD_CFUNC;
     m->defining_class = klass;
+    m->entry.method = m;  // self-reference so frame->entry->method works
     m->u.cfunc.func = func;
     m->u.cfunc.params_cnt = params_cnt;
     ab_id_table_insert(&klass->methods, name, (VALUE)m);
@@ -827,8 +827,9 @@ abruby_exception_new(CTX *c, const struct abruby_frame *start_frame, VALUE messa
         const char *file;
         int32_t line = f->caller_node ? f->caller_node->head.line : 0;
 
-        if (parent->method) {
-            name = rb_id2name(parent->method->name);
+        const struct abruby_method *pm = parent->entry ? parent->entry->method : NULL;
+        if (pm) {
+            name = rb_id2name(pm->name);
         } else {
             name = parent->prev ? "<top (required)>" : "<main>";
         }
@@ -1871,10 +1872,9 @@ abruby_require_file(CTX *c, VALUE rb_path)
     NODE *ast = unwrap_node(ast_obj);
     struct abruby_frame *save_frame = c->current_frame;
     struct abruby_class *save_class = c->current_class;
-    struct abruby_entry req_entry = {NULL, RSTRING_PTR(abs_str)};
+    struct abruby_entry req_entry = {NULL, RSTRING_PTR(abs_str), NULL};
     struct abruby_frame req_frame;
     req_frame.prev = save_frame;
-    req_frame.method = NULL;
     req_frame.caller_node = NULL;
     req_frame.block = NULL;
     req_frame.self = abruby_new_object(&abm->main_class_body);
@@ -1988,10 +1988,9 @@ rb_abruby_eval_ast(VALUE self, VALUE ast_obj)
     // Inherit self/fp from root frame.
     const char *eval_file = NIL_P(abm->current_file) ? "(abruby)" : RSTRING_PTR(abm->current_file);
     struct abruby_frame *rf = &abm->current_fiber->root_frame;
-    struct abruby_entry main_entry = {NULL, eval_file};
+    struct abruby_entry main_entry = {NULL, eval_file, NULL};
     struct abruby_frame main_frame;
     main_frame.prev = NULL;
-    main_frame.method = NULL;
     main_frame.caller_node = NULL;
     main_frame.block = NULL;
     main_frame.self = rf->self;

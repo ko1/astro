@@ -13,7 +13,6 @@ static RESULT ab_class_new(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
         // surfaces as a segfault during backtrace formatting.
         struct abruby_frame frame;
         frame.prev = c->current_frame;
-        frame.method = init;
         frame.caller_node = c->current_frame ? c->current_frame->caller_node : NULL;
         frame.block = NULL;
         frame.self = c->current_frame ? c->current_frame->self : Qnil;
@@ -29,12 +28,11 @@ static RESULT ab_class_new(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
           case ABRUBY_METHOD_AST: {
             struct abruby_frame init_frame;
             init_frame.prev = c->current_frame;
-            init_frame.method = init;
             init_frame.caller_node = NULL;
             init_frame.block = NULL;
             init_frame.self = obj;
             init_frame.fp = argv;
-            init_frame.entry = &init->u.ast.entry;
+            init_frame.entry = &init->entry;
             c->current_frame = &init_frame;
             r = EVAL(c, init->u.ast.body);
             c->current_frame = init_frame.prev;
