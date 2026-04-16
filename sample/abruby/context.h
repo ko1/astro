@@ -527,20 +527,18 @@ struct abruby_cref {
 };
 
 struct CTX_struct {
-    struct abruby_machine *abm;          // per-instance machine (owner)
-    VALUE stack[ABRUBY_STACK_SIZE];      // VALUE stack (locals + args)
-    // sp removed: GC now walks the frame chain using entry->stack_limit.
-    struct abruby_class *current_class;  // set during class body eval
-    struct abruby_frame *current_frame;  // head of call frame linked list
-    const struct abruby_id_cache *ids;   // cached rb_intern results
-    // Block-execution context.  `yield` / `abruby_yield` sets both fields
-    // on entry (saving the previous values to C stack locals) and restores
-    // on exit.  dispatch_method_frame does NOT touch these — the condition
-    // `current_block_frame == current_frame` naturally goes false when a
-    // method call pushes a new physical frame, so block-context state is
-    // frame-scoped without any per-call save/restore cost.
-    const struct abruby_block *current_block;
-    const struct abruby_frame *current_block_frame;
+    // Hot fields first — all fit in one 64-byte L1 cache line.
+    // Every SD entry's first instruction loads current_frame; keeping it
+    // at a small offset from the CTX base eliminates an 80KB displacement
+    // and guarantees the cache line is already warm from the CTX pointer.
+    struct abruby_machine *abm;          // +0  per-instance machine (owner)
+    struct abruby_frame *current_frame;  // +8  head of call frame linked list
+    struct abruby_class *current_class;  // +16 set during class body eval
+    const struct abruby_id_cache *ids;   // +24 cached rb_intern results
+    const struct abruby_block *current_block;       // +32
+    const struct abruby_frame *current_block_frame; // +40
+    // --- end of first cache line (48 bytes used of 64) ---
+    VALUE stack[ABRUBY_STACK_SIZE];      // +48  VALUE stack (locals + args)
 };
 
 // ctx_update_sp removed: GC uses per-frame entry->stack_limit.
