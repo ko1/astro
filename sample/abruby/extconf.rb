@@ -11,6 +11,7 @@ end
 $VPATH << "$(srcdir)/builtin"
 $INCFLAGS << " -I$(srcdir)"
 $INCFLAGS << " -I$(srcdir)/../../runtime"
+$CFLAGS << " -fno-plt"
 $LDFLAGS << " -ldl"
 
 create_makefile('abruby')
