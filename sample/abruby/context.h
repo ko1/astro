@@ -82,7 +82,18 @@ typedef struct {
     unsigned int state;
 } RESULT;
 
+#if ABRUBY_DEBUG
+static inline RESULT _result_ok_checked(VALUE v, const char *file, int line) {
+    if (v != 0 && !RB_SPECIAL_CONST_P(v) &&
+        !RB_TYPE_P(v, T_DATA) && !RB_TYPE_P(v, T_SYMBOL)) {
+        rb_bug("RESULT_OK: non-VALUE %p at %s:%d", (void*)v, file, line);
+    }
+    return (RESULT){v, RESULT_NORMAL};
+}
+#define RESULT_OK(v) _result_ok_checked((v), __FILE__, __LINE__)
+#else
 #define RESULT_OK(v) ((RESULT){(v), RESULT_NORMAL})
+#endif
 
 // abruby class system
 
@@ -729,12 +740,11 @@ AB_CLASS_OF(const CTX *c, VALUE obj)
 {
     ab_verify(obj);
 
-    // The abruby VALUE invariant guarantees that non-immediate obj is
-    // always T_DATA with abruby_header at offset 0.  No heap T_SYMBOL
-    // or other raw CRuby types can appear.  Static symbols are caught
-    // by the immediate path below (RB_SPECIAL_CONST_P).
+    // Most non-immediate values are T_DATA with abruby_header, but
+    // dynamic (heap-allocated) symbols can appear when rb_intern creates
+    // an ID past the static symbol range.  Check T_SYMBOL first.
     if (RB_LIKELY(!RB_SPECIAL_CONST_P(obj))) {
-        ABRUBY_ASSERT(RB_TYPE_P(obj, T_DATA));
+        if (RB_UNLIKELY(RB_BUILTIN_TYPE(obj) == T_SYMBOL)) return c->abm->symbol_class;
         return ((struct abruby_header *)RTYPEDDATA_GET_DATA(obj))->klass;
     }
     else {

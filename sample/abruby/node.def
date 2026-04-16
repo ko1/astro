@@ -1287,7 +1287,7 @@ prologue_cfunc(CTX * restrict c, NODE * restrict call_site,
     frame.fp = c->current_frame->fp;
     // cfunc method's entry carries the method pointer for backtrace;
     // cref/source_file are both NULL (cfuncs don't have Ruby-level scope).
-    frame.entry = &mc->method->entry;
+    frame.entry = NULL;  // cfunc has no Ruby-level cref
     c->current_frame = &frame;
 
     ctx_update_sp(c, frame.fp + arg_index + argc);

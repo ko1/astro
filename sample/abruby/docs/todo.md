@@ -139,7 +139,42 @@
 
 - [ ] `abruby_object` の ivar inline slots をクラスごとに可変化 — 現在は全オブジェクト固定 4 slots (`ABRUBY_OBJECT_INLINE_IVARS`)。`klass->ivar_shape.cnt` を見て alloc 時にちょうどいいサイズを確保し、`extra_ivars` を不要にする。flexible array member で `ivars[]` をクラスの shape に合わせれば、ivar 0 個のクラス (binary_trees) は 0 bytes、ivar 7 個のクラス (nbody Body) は 56 bytes inline で heap alloc なし。クラス再オープンで shape が伸びた場合のみ realloc
 - [ ] ノードのアリーナアロケータ — 個別 malloc → バンプポインタ。同一スコープのノードが隣接しキャッシュ局所性向上
-- [ ] VALUE スタック遅延 GC マーク — 現在 10,000 スロット全体をマーク。`fp + frame_size` までに限定
+- [ ] ctx_update_sp 廃止 → entry->stack_limit ベースの GC マーク — 後述
+
+#### ctx_update_sp 廃止 (設計メモ, 2026-04-16)
+
+現在の `ctx_update_sp` は prologue / node_scope / yield / Proc#call の全箇所で
+毎回 `if (new_top > c->sp) c->sp = new_top` を実行し、GC の VALUE stack マーク
+範囲を sp (high-water mark) で制限している。prologue だけで 4 insn / call の
+オーバーヘッド。optcarrot の perf で prologue 系が ~9% を占める主因の一つ。
+
+**代替設計**:
+- `abruby_entry` に `uint32_t stack_limit` を追加。メソッド定義時に
+  パーサの `max_arg_index` (locals + params + call-arg temps の最大使用量) を
+  設定する。top-level scope は envsize をそのまま使う。
+- GC mark は frame chain を walk し、各 frame の
+  `[fp, fp + entry->stack_limit)` を `rb_gc_mark_locations` する。
+  グローバル `c->sp` は不要になる。
+- prologue / scope で stack_limit 範囲を Qnil に zero-fill する
+  (stale VALUE が mark されても安全にするため)。
+- `additional_sp` は不要: splat は `ABRUBY_APPLY_MAX_ARGS` (32) の
+  静的予約でパーサが inc_arg_index 済み → stack_limit に含まれる。
+  将来 splat を Array のまま渡す設計にすれば制限自体が消える。
+- cfunc frame は caller の stack を共有するため stack_limit = 0。
+  caller の frame が args 領域をカバーする。
+- synthetic entry (class body, module, proc, yield block, require,
+  main) は stack_limit を 0 で初期化し、node_scope 実行時に envsize
+  を書き込む。
+
+**検証済み事項**:
+- stale slot は zero-fill により全て Qnil → GC safe (保守的 mark)
+- 1045 テスト + GC stress テスト + debug-test 通過
+- splat は静的予約で stack_limit 内に収まる
+
+**未解決**:
+- optcarrot (cpu.rb ロード) で SEGV — efa8e43 (entry 構造体変更) の
+  リグレッションが原因。ctx_update_sp 廃止自体の問題ではない。
+  efa8e43 を先に修正してから再開すること。
 
 ### オブジェクトシステム
 
