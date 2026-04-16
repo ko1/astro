@@ -572,6 +572,12 @@ node_seq(CTX * restrict c, NODE * restrict n, NODE *head, NODE *tail)
 }
 
 NODE_DEF
+node_not(CTX * restrict c, NODE * restrict n, NODE *expr)
+{
+    return RESULT_OK(RTEST(UNWRAP(EVAL_ARG(c, expr))) ? Qfalse : Qtrue);
+}
+
+NODE_DEF
 node_if(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *then_node, NODE *else_node)
 {
     if (RTEST(UNWRAP(EVAL_ARG(c, cond)))) {
@@ -1713,9 +1719,13 @@ dispatch_simple_noblock(CTX * restrict c, NODE * restrict call_site, VALUE recv_
     if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
         return dispatch_method_frame(c, call_site, mc, recv_val, argc, arg_index);
     }
-    else {
-        return node_method_call_slow(c, call_site, recv_val, klass, name, argc, arg_index, mc, true);
+    if (ABRUBY_PROFILE && mc->serial == c->abm->method_serial) {
+        fprintf(stderr, "slow path (klass miss) name:%s klass:%s cached:%s\n",
+                rb_id2name(name),
+                klass->name ? rb_id2name(klass->name) : "(nil)",
+                mc->klass && mc->klass->name ? rb_id2name(mc->klass->name) : "(empty)");
     }
+    return node_method_call_slow(c, call_site, recv_val, klass, name, argc, arg_index, mc, true);
 }
 
 NODE_DEF

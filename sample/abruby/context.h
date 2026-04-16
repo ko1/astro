@@ -16,6 +16,10 @@
 #define ABRUBY_DEBUG 0
 #endif
 
+#ifndef ABRUBY_PROFILE
+#define ABRUBY_PROFILE 0
+#endif
+
 #if ABRUBY_DEBUG
 #define ABRUBY_ASSERT(expr) do { \
     if (!(expr)) { \

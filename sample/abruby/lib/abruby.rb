@@ -855,7 +855,11 @@ class AbRuby
         transduce_case(node)
 
       when Prism::CallNode
-        if !node.receiver && %w[attr_reader attr_writer attr_accessor].include?(node.name.to_s) &&
+        if node.receiver && node.name.to_s == "!" &&
+           (node.arguments.nil? || node.arguments.arguments.empty?)
+          # `!expr` — inline boolean negation, no method dispatch.
+          set_line(AbRuby.alloc_node_not(transduce(node.receiver)), node)
+        elsif !node.receiver && %w[attr_reader attr_writer attr_accessor].include?(node.name.to_s) &&
            node.arguments&.arguments&.all? { |a| a.is_a?(Prism::SymbolNode) }
           # All-symbol-literal call: parse-time inline expansion.  Mixed
           # / dynamic args fall through to a regular method dispatch and

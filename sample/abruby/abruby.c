@@ -1528,6 +1528,12 @@ rb_node_seq_tail(VALUE self, VALUE node_val)
 }
 
 static VALUE
+rb_alloc_node_not(VALUE self, VALUE expr)
+{
+    return wrap_node(ALLOC_node_not(unwrap_node(expr)));
+}
+
+static VALUE
 rb_alloc_node_if(VALUE self, VALUE cond, VALUE then_node, VALUE else_node)
 {
     return wrap_node(ALLOC_node_if(unwrap_node(cond), unwrap_node(then_node), unwrap_node(else_node)));
@@ -2246,6 +2252,7 @@ Init_abruby(void)
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_scope", rb_alloc_node_scope, 2);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_seq", rb_alloc_node_seq, 2);
     rb_define_singleton_method(rb_cAbRuby, "node_seq_tail", rb_node_seq_tail, 1);
+    rb_define_singleton_method(rb_cAbRuby, "alloc_node_not", rb_alloc_node_not, 1);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_if", rb_alloc_node_if, 3);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_while", rb_alloc_node_while, 2);
     rb_define_singleton_method(rb_cAbRuby, "alloc_node_return", rb_alloc_node_return, 1);
