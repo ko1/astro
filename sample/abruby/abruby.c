@@ -32,7 +32,7 @@ static struct abruby_class ab_tmpl_array_class_body   = { .obj_type = ABRUBY_OBJ
 static struct abruby_class ab_tmpl_hash_class_body    = { .obj_type = ABRUBY_OBJ_CLASS,   .instance_obj_type = ABRUBY_OBJ_HASH,          .super = &ab_tmpl_object_class_body };
 static struct abruby_class ab_tmpl_integer_class_body = { .obj_type = ABRUBY_OBJ_CLASS,   .instance_obj_type = ABRUBY_OBJ_BIGNUM,        .super = &ab_tmpl_object_class_body };
 static struct abruby_class ab_tmpl_string_class_body  = { .obj_type = ABRUBY_OBJ_CLASS,   .instance_obj_type = ABRUBY_OBJ_STRING,        .super = &ab_tmpl_object_class_body };
-static struct abruby_class ab_tmpl_symbol_class_body  = { .obj_type = ABRUBY_OBJ_CLASS,   .instance_obj_type = ABRUBY_OBJ_GENERIC,       .super = &ab_tmpl_object_class_body };
+static struct abruby_class ab_tmpl_symbol_class_body  = { .obj_type = ABRUBY_OBJ_CLASS,   .instance_obj_type = ABRUBY_OBJ_SYMBOL,        .super = &ab_tmpl_object_class_body };
 static struct abruby_class ab_tmpl_range_class_body   = { .obj_type = ABRUBY_OBJ_CLASS,   .instance_obj_type = ABRUBY_OBJ_RANGE,         .super = &ab_tmpl_object_class_body };
 static struct abruby_class ab_tmpl_regexp_class_body  = { .obj_type = ABRUBY_OBJ_CLASS,   .instance_obj_type = ABRUBY_OBJ_REGEXP,        .super = &ab_tmpl_object_class_body };
 static struct abruby_class ab_tmpl_rational_class_body = { .obj_type = ABRUBY_OBJ_CLASS,  .instance_obj_type = ABRUBY_OBJ_RATIONAL,      .super = &ab_tmpl_object_class_body };
@@ -104,6 +104,9 @@ static void abruby_data_mark(void *ptr) {
         break;
     case ABRUBY_OBJ_COMPLEX:
         rb_gc_mark(((const struct abruby_complex *)ptr)->rb_complex);
+        break;
+    case ABRUBY_OBJ_SYMBOL:
+        rb_gc_mark(((const struct abruby_symbol *)ptr)->rb_sym);
         break;
     case ABRUBY_OBJ_EXCEPTION: {
         const struct abruby_exception *exc = (const struct abruby_exception *)ptr;
@@ -217,7 +220,7 @@ abruby_data_free(void *ptr)
 const rb_data_type_t abruby_data_type = {
     "AbRuby::Data",
     { abruby_data_mark, abruby_data_free, NULL },
-    0, 0, RUBY_TYPED_FREE_IMMEDIATELY
+    0, 0, RUBY_TYPED_FREE_IMMEDIATELY | RUBY_TYPED_WB_PROTECTED
 };
 
 // Object creation
@@ -300,6 +303,21 @@ abruby_str_rstr(VALUE ab_str)
     return ((struct abruby_string *)RTYPEDDATA_GET_DATA(ab_str))->rb_str;
 }
 
+// Symbol wrapper — wraps a CRuby Symbol in T_DATA.  Static (immediate)
+// symbols pass through as-is, like Fixnum.  Only heap (dynamic) symbols
+// need wrapping so that AB_CLASS_OF can skip the T_SYMBOL check.
+VALUE
+abruby_sym_new(CTX *c, VALUE rb_sym)
+{
+    if (RB_STATIC_SYM_P(rb_sym)) return rb_sym;
+    struct abruby_symbol *s;
+    VALUE wrapper = TypedData_Make_Struct(rb_cAbRubyNode, struct abruby_symbol, &abruby_data_type, s);
+    s->klass = c->abm->symbol_class;
+    s->obj_type = ABRUBY_OBJ_SYMBOL;
+    s->rb_sym = rb_sym;
+    return wrapper;
+}
+
 // Convert a stack-allocated abruby_block (or one passed via the
 // current frame) into a heap Proc.  The captured locals are *copied*
 // out of the original captured_fp into a fresh heap env so the Proc
@@ -362,6 +380,7 @@ abruby_bound_method_new(CTX *c, VALUE recv, ID name)
 #define RSTR(v) abruby_str_rstr(v)
 #define RARY(v) (((struct abruby_array *)RTYPEDDATA_GET_DATA(v))->rb_ary)
 #define RHSH(v) (((struct abruby_hash *)RTYPEDDATA_GET_DATA(v))->rb_hash)
+#define RSYM(v) (((struct abruby_symbol *)RTYPEDDATA_GET_DATA(v))->rb_sym)
 
 VALUE
 abruby_ary_new(CTX *c, VALUE rb_ary)
@@ -459,6 +478,7 @@ void
 abruby_class_set_const(struct abruby_class *klass, ID name, VALUE val)
 {
     ab_id_table_insert(&klass->constants, name, val);
+    if (klass->rb_wrapper) RB_OBJ_WRITTEN(klass->rb_wrapper, Qundef, val);
 }
 
 // Invoke the block attached to the lexically-enclosing method from a cfunc
@@ -711,7 +731,7 @@ abruby_ivar_set(VALUE self, ID name, VALUE val)
         ab_id_table_insert(&klass->ivar_shape, name, LONG2FIX((long)slot));
     }
     abruby_object_grow_ivars(obj, slot + 1);
-    *abruby_object_ivar_slot(obj, slot) = val;
+    RB_OBJ_WRITE(self, abruby_object_ivar_slot(obj, slot), val);
 }
 
 // Per-instance abruby_machine state (struct defined in context.h)
@@ -1790,9 +1810,6 @@ rb_alloc_node_array_aset(VALUE self, VALUE recv, VALUE idx, VALUE value, VALUE a
 static VALUE
 abruby_to_ruby(VALUE v)
 {
-    // Symbols are CRuby immediates, pass through
-    if (SYMBOL_P(v)) return v;
-
     if (RB_TYPE_P(v, T_DATA) && RTYPEDDATA_P(v) &&
         RTYPEDDATA_TYPE(v) == &abruby_data_type) {
         const struct abruby_header *h = (const struct abruby_header *)RTYPEDDATA_GET_DATA(v);
@@ -1835,6 +1852,8 @@ abruby_to_ruby(VALUE v)
             return ((const struct abruby_rational *)h)->rb_rational;
         case ABRUBY_OBJ_COMPLEX:
             return ((const struct abruby_complex *)h)->rb_complex;
+        case ABRUBY_OBJ_SYMBOL:
+            return ((const struct abruby_symbol *)h)->rb_sym;
         default:
             break;
         }

@@ -159,9 +159,9 @@ static RESULT ab_string_split(CTX *c, VALUE self, unsigned int argc, VALUE *argv
 }
 
 static RESULT ab_string_to_sym(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
-    (void)c; (void)argc; (void)argv;
-    // Symbols are CRuby immediates; intern the underlying rb_str.
-    return RESULT_OK(rb_str_intern(RSTR(self)));
+    (void)argc; (void)argv;
+    extern VALUE abruby_sym_new(CTX *c, VALUE rb_sym);
+    return RESULT_OK(abruby_sym_new(c, rb_str_intern(RSTR(self))));
 }
 static RESULT ab_string_add(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     (void)argc;

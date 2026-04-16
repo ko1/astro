@@ -94,7 +94,17 @@ static RESULT ab_array_add(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
 }
 static RESULT ab_array_include_p(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     VALUE ary = RARY(self); long len = RARRAY_LEN(ary);
-    for (long i = 0; i < len; i++) { if (rb_equal(RARRAY_AREF(ary, i), argv[0])) return RESULT_OK(Qtrue); }
+    VALUE target = argv[0];
+    for (long i = 0; i < len; i++) {
+        VALUE elem = RARRAY_AREF(ary, i);
+        if (elem == target) return RESULT_OK(Qtrue);
+        const struct abruby_method *eq_m = abruby_find_method(AB_CLASS_OF(c, elem), c->ids->op_eq);
+        if (eq_m) {
+            RESULT r = abruby_call_method(c, elem, eq_m, 1, &target);
+            if (r.state != RESULT_NORMAL) return r;
+            if (r.value == Qtrue) return RESULT_OK(Qtrue);
+        }
+    }
     return RESULT_OK(Qfalse);
 }
 

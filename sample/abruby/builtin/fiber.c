@@ -166,7 +166,7 @@ fiber_switch_to(CTX *c, struct abruby_fiber *target, unsigned int argc, VALUE *a
         VALUE packed = rb_ary_new_capa((long)(argc + 1));
         rb_ary_push(packed, ULONG2NUM(argc));
         for (unsigned int i = 0; i < argc; i++) rb_ary_push(packed, argv[i]);
-        target->transfer_value = packed;
+        RB_OBJ_WRITE(target->rb_wrapper, &target->transfer_value, packed);
 
         // Create the CRuby fiber.  Pass a typed-data wrapper of a small
         // callback struct so crb_fiber_body can find the abruby_fiber.
@@ -177,7 +177,7 @@ fiber_switch_to(CTX *c, struct abruby_fiber *target, unsigned int argc, VALUE *a
             (struct crb_fiber_callback *)ruby_xcalloc(1, sizeof(struct crb_fiber_callback));
         cb->rb_wrapper = target->rb_wrapper;
         VALUE cb_val = TypedData_Wrap_Struct(rb_cObject, &crb_fiber_callback_type, cb);
-        target->crb_fiber = rb_fiber_new(crb_fiber_body, cb_val);
+        RB_OBJ_WRITE(target->rb_wrapper, &target->crb_fiber, rb_fiber_new(crb_fiber_body, cb_val));
 
         // Start the fiber.  The return value is whatever crb_fiber_body returns
         // (the body's final value) or whatever rb_fiber_yield delivers on

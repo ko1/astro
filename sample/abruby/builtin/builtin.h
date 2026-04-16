@@ -8,6 +8,16 @@
 #define RSTR(v) abruby_str_rstr(v)
 #define RARY(v) (((struct abruby_array *)RTYPEDDATA_GET_DATA(v))->rb_ary)
 #define RHSH(v) (((struct abruby_hash *)RTYPEDDATA_GET_DATA(v))->rb_hash)
+#define RSYM(v) (((struct abruby_symbol *)RTYPEDDATA_GET_DATA(v))->rb_sym)
+
+// Unwrap abruby symbol to inner CRuby symbol.
+// Handles both static (immediate) symbols and wrapped (dynamic) symbols.
+static inline VALUE
+ab_sym_unwrap(VALUE v)
+{
+    if (RB_STATIC_SYM_P(v)) return v;
+    return RSYM(v);
+}
 
 // Hash key normalisation: unwrap abruby String / Array wrappers to
 // their inner CRuby objects so rb_hash_* lookups hit the stored keys.
@@ -20,6 +30,7 @@ ab_hash_key(VALUE v)
         const struct abruby_header *h = (const struct abruby_header *)RTYPEDDATA_GET_DATA(v);
         if (h->obj_type == ABRUBY_OBJ_STRING) return ((const struct abruby_string *)h)->rb_str;
         if (h->obj_type == ABRUBY_OBJ_ARRAY)  return ((const struct abruby_array *)h)->rb_ary;
+        if (h->obj_type == ABRUBY_OBJ_SYMBOL) return ((const struct abruby_symbol *)h)->rb_sym;
     }
     return v;
 }

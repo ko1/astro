@@ -77,7 +77,7 @@ static RESULT ab_object_send(CTX *c, VALUE self, unsigned int argc, VALUE *argv)
     }
     VALUE n = argv[0];
     ID name;
-    if (SYMBOL_P(n)) name = SYM2ID(n);
+    if (ab_obj_type_p(n, ABRUBY_OBJ_SYMBOL)) name = SYM2ID(ab_sym_unwrap(n));
     else if (ab_obj_type_p(n, ABRUBY_OBJ_STRING)) name = rb_intern_str(RSTR(n));
     else {
         VALUE exc = abruby_exception_new(c, c->current_frame,
@@ -136,7 +136,7 @@ static RESULT ab_object_method(CTX *c, VALUE self, unsigned int argc, VALUE *arg
     (void)argc;
     VALUE n = argv[0];
     ID name;
-    if (SYMBOL_P(n)) name = SYM2ID(n);
+    if (ab_obj_type_p(n, ABRUBY_OBJ_SYMBOL)) name = SYM2ID(ab_sym_unwrap(n));
     else if (ab_obj_type_p(n, ABRUBY_OBJ_STRING)) name = rb_intern_str(RSTR(n));
     else {
         VALUE exc = abruby_exception_new(c, c->current_frame,
@@ -151,7 +151,7 @@ static RESULT ab_object_respond_to_p(CTX *c, VALUE self, unsigned int argc, VALU
     (void)argc;
     VALUE n = argv[0];
     ID id;
-    if (SYMBOL_P(n)) id = SYM2ID(n);
+    if (ab_obj_type_p(n, ABRUBY_OBJ_SYMBOL)) id = SYM2ID(ab_sym_unwrap(n));
     else if (ab_obj_type_p(n, ABRUBY_OBJ_STRING)) id = rb_intern_str(RSTR(n));
     else return RESULT_OK(Qfalse);
     const struct abruby_method *m = abruby_find_method(AB_CLASS_OF(c, self), id);
@@ -173,7 +173,7 @@ static RESULT ab_object_ivar_get(CTX *c, VALUE self, unsigned int argc, VALUE *a
     (void)c; (void)argc;
     VALUE n = argv[0];
     ID id;
-    if (SYMBOL_P(n)) id = SYM2ID(n);
+    if (ab_obj_type_p(n, ABRUBY_OBJ_SYMBOL)) id = SYM2ID(ab_sym_unwrap(n));
     else if (ab_obj_type_p(n, ABRUBY_OBJ_STRING)) id = rb_intern_str(RSTR(n));
     else return RESULT_OK(Qnil);
     return RESULT_OK(abruby_ivar_get(self, id));
@@ -183,7 +183,7 @@ static RESULT ab_object_ivar_set(CTX *c, VALUE self, unsigned int argc, VALUE *a
     (void)c; (void)argc;
     VALUE n = argv[0];
     ID id;
-    if (SYMBOL_P(n)) id = SYM2ID(n);
+    if (ab_obj_type_p(n, ABRUBY_OBJ_SYMBOL)) id = SYM2ID(ab_sym_unwrap(n));
     else if (ab_obj_type_p(n, ABRUBY_OBJ_STRING)) id = rb_intern_str(RSTR(n));
     else return RESULT_OK(Qnil);
     abruby_ivar_set(self, id, argv[1]);

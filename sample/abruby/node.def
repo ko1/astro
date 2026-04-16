@@ -243,7 +243,8 @@ node_str_concat(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg
 NODE_DEF
 node_sym(CTX * restrict c, NODE * restrict n, const char *str)
 {
-    return RESULT_OK(ID2SYM(rb_intern(str)));
+    extern VALUE abruby_sym_new(CTX *c, VALUE rb_sym);
+    return RESULT_OK(abruby_sym_new(c, ID2SYM(rb_intern(str))));
 }
 
 extern VALUE abruby_range_new(CTX *c, VALUE begin, VALUE end, bool exclude_end);
@@ -404,11 +405,11 @@ node_ary_new(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_in
 static VALUE
 ab_to_hash_key(VALUE v)
 {
-    if (FIXNUM_P(v) || SYMBOL_P(v) || RB_FLONUM_P(v) ||
-        v == Qtrue || v == Qfalse || v == Qnil) return v;
+    if (RB_SPECIAL_CONST_P(v)) return v;
     const struct abruby_header *h = (const struct abruby_header *)RTYPEDDATA_GET_DATA(v);
     if (h->obj_type == ABRUBY_OBJ_STRING) return ((const struct abruby_string *)h)->rb_str;
     if (h->obj_type == ABRUBY_OBJ_ARRAY)  return ((const struct abruby_array *)h)->rb_ary;
+    if (h->obj_type == ABRUBY_OBJ_SYMBOL) return ((const struct abruby_symbol *)h)->rb_sym;
     return v;
 }
 
@@ -1215,7 +1216,7 @@ name(CTX * restrict c, NODE * restrict call_site, \
      unsigned int argc, uint32_t arg_index) \
 { \
     (void)argc;  /* argc precondition enforced at cache fill */ \
-    unsigned int req = (req_expr); \
+    (void)(req_expr); \
     struct abruby_frame frame; \
     frame.prev = c->current_frame; \
     frame.caller_node = call_site; \
@@ -1712,7 +1713,9 @@ dispatch_simple_noblock(CTX * restrict c, NODE * restrict call_site, VALUE recv_
     if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
         return dispatch_method_frame(c, call_site, mc, recv_val, argc, arg_index);
     }
-    return node_method_call_slow(c, call_site, recv_val, klass, name, argc, arg_index, mc, true);
+    else {
+        return node_method_call_slow(c, call_site, recv_val, klass, name, argc, arg_index, mc, true);
+    }
 }
 
 NODE_DEF

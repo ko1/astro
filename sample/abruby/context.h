@@ -84,8 +84,7 @@ typedef struct {
 
 #if ABRUBY_DEBUG
 static inline RESULT _result_ok_checked(VALUE v, const char *file, int line) {
-    if (v != 0 && !RB_SPECIAL_CONST_P(v) &&
-        !RB_TYPE_P(v, T_DATA) && !RB_TYPE_P(v, T_SYMBOL)) {
+    if (v != 0 && !RB_SPECIAL_CONST_P(v) && !RB_TYPE_P(v, T_DATA)) {
         rb_bug("RESULT_OK: non-VALUE %p at %s:%d", (void*)v, file, line);
     }
     return (RESULT){v, RESULT_NORMAL};
@@ -190,6 +189,7 @@ enum abruby_obj_type {
     ABRUBY_OBJ_BOUND_METHOD,
     ABRUBY_OBJ_PROC,
     ABRUBY_OBJ_FIBER,
+    ABRUBY_OBJ_SYMBOL,
 };
 
 // Common layout: ALL abruby T_DATA objects have klass at offset 0,
@@ -260,6 +260,12 @@ struct abruby_string {
     struct abruby_class *klass;  // offset 0: per-instance string_class
     enum abruby_obj_type obj_type;
     VALUE rb_str;                // inner CRuby String
+};
+
+struct abruby_symbol {
+    struct abruby_class *klass;  // offset 0: per-instance symbol_class
+    enum abruby_obj_type obj_type;
+    VALUE rb_sym;                // inner CRuby Symbol (ID2SYM)
 };
 
 struct abruby_array {
@@ -349,10 +355,9 @@ static inline void
 ab_verify(VALUE obj)
 {
     if (ABRUBY_DEBUG) {
-        // immediate values are always valid.  SYMBOL_P covers both
-        // static (immediate) and dynamic (heap T_SYMBOL) symbols, both
-        // of which we treat as valid abruby values via the symbol_class.
-        if (FIXNUM_P(obj) || SYMBOL_P(obj) || RB_FLONUM_P(obj) ||
+        // immediate values are always valid.  Static symbols (immediate)
+        // pass through; dynamic symbols are wrapped in T_DATA (abruby_symbol).
+        if (FIXNUM_P(obj) || RB_STATIC_SYM_P(obj) || RB_FLONUM_P(obj) ||
             obj == Qtrue || obj == Qfalse || obj == Qnil) {
             return;
         }
@@ -385,13 +390,8 @@ ab_obj_type_p(VALUE obj, enum abruby_obj_type type)
     if (obj == 0)                return false;                      // NULL/uninitialized
     if (FIXNUM_P(obj))           return type == ABRUBY_OBJ_BIGNUM;  // integer_class.obj_type
     if (RB_FLONUM_P(obj))        return type == ABRUBY_OBJ_FLOAT;
-    // STATIC_SYM_P is the immediate-symbol bit check; RB_SPECIAL_CONST_P
-    // only catches static symbols.  Dynamic (heap) symbols need to be
-    // detected via the T_SYMBOL builtin type AFTER we know it's safe to
-    // dereference (i.e., past the immediate guards).
-    if (RB_STATIC_SYM_P(obj))    return type == ABRUBY_OBJ_GENERIC;
+    if (RB_STATIC_SYM_P(obj))    return type == ABRUBY_OBJ_SYMBOL;
     if (RB_SPECIAL_CONST_P(obj)) return type == ABRUBY_OBJ_GENERIC; // true/false/nil
-    if (RB_BUILTIN_TYPE(obj) == T_SYMBOL) return type == ABRUBY_OBJ_GENERIC; // dynamic symbol
     if (RB_BUILTIN_TYPE(obj) != T_DATA) return false;
     const struct abruby_header *h = (const struct abruby_header *)RTYPEDDATA_GET_DATA(obj);
     return h->klass && h->obj_type == type;
@@ -716,7 +716,7 @@ AB_CLASS_OF_IMM(const CTX *c, VALUE obj)
 {
     if (FIXNUM_P(obj))       return c->abm->integer_class;
     else if (RB_FLONUM_P(obj)) return c->abm->float_class;
-    else if (SYMBOL_P(obj))  return c->abm->symbol_class;
+    else if (RB_STATIC_SYM_P(obj)) return c->abm->symbol_class;
     else if (obj == Qtrue)   return c->abm->true_class;
     else if (obj == Qfalse)  return c->abm->false_class;
     else                     return c->abm->nil_class;
@@ -736,11 +736,10 @@ AB_CLASS_OF(const CTX *c, VALUE obj)
 {
     ab_verify(obj);
 
-    // Most non-immediate values are T_DATA with abruby_header, but
-    // dynamic (heap-allocated) symbols can appear when rb_intern creates
-    // an ID past the static symbol range.  Check T_SYMBOL first.
+    // All non-immediate abruby values are T_DATA with abruby_header.
+    // Dynamic symbols are wrapped in abruby_symbol (T_DATA), so no
+    // T_SYMBOL check is needed here.
     if (RB_LIKELY(!RB_SPECIAL_CONST_P(obj))) {
-        if (RB_UNLIKELY(RB_BUILTIN_TYPE(obj) == T_SYMBOL)) return c->abm->symbol_class;
         return ((struct abruby_header *)RTYPEDDATA_GET_DATA(obj))->klass;
     }
     else {

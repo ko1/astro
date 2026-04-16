@@ -4,6 +4,21 @@
 // share the same normalisation logic.
 #define ab_to_hash_key(v) ab_hash_key(v)
 
+// Re-wrap a raw CRuby hash key back to an abruby value.
+// Keys are stored unwrapped (raw CRuby String/Symbol/Array) via ab_hash_key.
+// When yielding keys back to abruby code, we must re-wrap them.
+static inline VALUE
+ab_hash_key_wrap(CTX *c, VALUE raw_k)
+{
+    if (RB_SPECIAL_CONST_P(raw_k)) return raw_k;  // Fixnum, static Symbol, true/false/nil
+    if (RB_TYPE_P(raw_k, T_STRING)) return abruby_str_new(c, raw_k);
+    if (RB_TYPE_P(raw_k, T_SYMBOL)) {
+        extern VALUE abruby_sym_new(CTX *c, VALUE rb_sym);
+        return abruby_sym_new(c, raw_k);
+    }
+    return raw_k;
+}
+
 static RESULT ab_hash_inspect(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     VALUE hash = RHSH(self);
     VALUE keys = rb_funcall(hash, rb_intern("keys"), 0);
@@ -20,6 +35,9 @@ static RESULT ab_hash_inspect(CTX *c, VALUE self, unsigned int argc, VALUE *argv
         } else if (FIXNUM_P(raw_k)) {
             char buf[32]; snprintf(buf, sizeof(buf), "%ld", FIX2LONG(raw_k));
             rb_str_cat_cstr(result, buf);
+        } else if (SYMBOL_P(raw_k)) {
+            rb_str_cat_cstr(result, ":");
+            rb_str_cat_cstr(result, rb_id2name(SYM2ID(raw_k)));
         } else {
             rb_str_cat_cstr(result, "?");
         }
@@ -50,8 +68,7 @@ static RESULT ab_hash_keys(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     long len = RARRAY_LEN(raw_keys);
     VALUE result = rb_ary_new_capa(len);
     for (long i = 0; i < len; i++) {
-        VALUE k = RARRAY_AREF(raw_keys, i);
-        if (RB_TYPE_P(k, T_STRING)) k = abruby_str_new(c, k);
+        VALUE k = ab_hash_key_wrap(c, RARRAY_AREF(raw_keys, i));
         rb_ary_push(result, k);
     }
     return RESULT_OK(abruby_ary_new(c, result));
@@ -83,7 +100,7 @@ static RESULT ab_hash_each_key(CTX *c, VALUE self, unsigned int argc, VALUE *arg
     long len = RARRAY_LEN(raw_keys);
     for (long i = 0; i < len; i++) {
         VALUE raw_k = RARRAY_AREF(raw_keys, i);
-        VALUE k = RB_TYPE_P(raw_k, T_STRING) ? abruby_str_new(c, raw_k) : raw_k;
+        VALUE k = ab_hash_key_wrap(c, raw_k);
         RESULT r = abruby_yield(c, 1, &k);
         if (r.state != RESULT_NORMAL) return r;
     }
@@ -139,7 +156,7 @@ static RESULT ab_hash_each(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     for (long i = 0; i < len; i++) {
         VALUE raw_k = RARRAY_AREF(raw_keys, i);
         VALUE raw_v = rb_hash_aref(hash, raw_k);
-        VALUE k = RB_TYPE_P(raw_k, T_STRING) ? abruby_str_new(c, raw_k) : raw_k;
+        VALUE k = ab_hash_key_wrap(c, raw_k);
         VALUE pair[2] = { k, raw_v };
         RESULT r = abruby_yield(c, 2, pair);
         if (UNLIKELY(r.state != RESULT_NORMAL)) return r;

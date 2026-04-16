@@ -89,8 +89,8 @@ static RESULT ab_module_include(CTX *c, VALUE self, unsigned int argc, VALUE *ar
 static RESULT ab_module_const_get(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     const struct abruby_class *klass = abruby_unwrap_class(self);
     ID name_id;
-    if (SYMBOL_P(argv[0])) {
-        name_id = SYM2ID(argv[0]);
+    if (ab_obj_type_p(argv[0], ABRUBY_OBJ_SYMBOL)) {
+        name_id = SYM2ID(ab_sym_unwrap(argv[0]));
     } else {
         name_id = rb_intern_str(RSTR(argv[0]));
     }
@@ -107,8 +107,8 @@ static RESULT ab_module_const_get(CTX *c, VALUE self, unsigned int argc, VALUE *
 static RESULT ab_module_const_set(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     struct abruby_class *klass = abruby_unwrap_class(self);
     ID name_id;
-    if (SYMBOL_P(argv[0])) {
-        name_id = SYM2ID(argv[0]);
+    if (ab_obj_type_p(argv[0], ABRUBY_OBJ_SYMBOL)) {
+        name_id = SYM2ID(ab_sym_unwrap(argv[0]));
     } else {
         name_id = rb_intern_str(RSTR(argv[0]));
     }
@@ -139,7 +139,7 @@ RESULT ab_struct_new(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     // builtin init time, so just call abruby_class_add_method.  The
     // ivar shape will be created lazily on first instance access.
     for (unsigned int i = 0; i < argc; i++) {
-        ID field = (SYMBOL_P(argv[i])) ? SYM2ID(argv[i]) : rb_intern_str(RSTR(argv[i]));
+        ID field = ab_obj_type_p(argv[i], ABRUBY_OBJ_SYMBOL) ? SYM2ID(ab_sym_unwrap(argv[i])) : rb_intern_str(RSTR(argv[i]));
         // Build a synthetic getter cfunc via attr-accessor body would
         // require AST nodes; instead, register a tiny IVAR_GETTER
         // entry directly.
@@ -254,7 +254,7 @@ make_ivar_setter_method(struct abruby_class *klass, ID name, ID ivar_name)
 }
 
 static ID arg_to_id(VALUE arg) {
-    if (SYMBOL_P(arg)) return SYM2ID(arg);
+    if (ab_obj_type_p(arg, ABRUBY_OBJ_SYMBOL)) return SYM2ID(ab_sym_unwrap(arg));
     if (ab_obj_type_p(arg, ABRUBY_OBJ_STRING)) return rb_intern_str(RSTR(arg));
     return 0;
 }
