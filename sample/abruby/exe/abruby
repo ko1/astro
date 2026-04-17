@@ -256,22 +256,26 @@ when :compile_first
 
   AbRuby::Parser.on_parse = ->(parsed_ast, entries, src_file) {
     label = src_file || '-e'
-    new_nodes = []
+    # Track every parsed entry (for --dump=disasm), but only rebuild the
+    # store when something was actually compiled this round.
+    new_nodes    = []  # entries that needed cs_compile
+    parsed_nodes = []  # all entries from this parse (new or already cached)
     unless already_compiled.(parsed_ast)
       cs_compile.(parsed_ast, label: label)  # AOT
       new_nodes << [label, parsed_ast, src_file]
     end
+    parsed_nodes << [label, parsed_ast, src_file]
     entries.each do |name, body|
-      next if already_compiled.(body)
-      cs_compile.(body, label: "#{label}:#{name}")  # AOT
-      new_nodes << ["#{label}:#{name}", body, src_file]
+      l = "#{label}:#{name}"
+      unless already_compiled.(body)
+        cs_compile.(body, label: l)  # AOT
+        new_nodes << [l, body, src_file]
+      end
+      parsed_nodes << [l, body, src_file]
     end
 
-    if new_nodes.empty?
-      compiled_entries.concat(new_nodes)  # empty, no-op
-      next
-    end
-    compiled_entries.concat(new_nodes)
+    compiled_entries.concat(parsed_nodes)
+    next if new_nodes.empty?
 
     $stderr.puts "cs_build" if verbose
     AbRuby.cs_build(RUBY_CFLAGS)
