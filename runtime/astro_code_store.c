@@ -397,6 +397,16 @@ astro_cs_compile(NODE *entry, const char *file)
     char path[ASTRO_CS_PATH_MAX];
     astro_cs_path(path, sizeof(path), astro_cs.store_dir, filename);
 
+    // SD_<hash>.c already exists?  Same hash ⇒ same generated content,
+    // so rewriting would only bump mtime and force a no-op recompile.
+    // Skip the write and the index append — any prior run that produced
+    // this file also registered it in hopt_index.txt.
+    struct stat st;
+    if (stat(path, &st) == 0) {
+        astro_cs_use_hopt_name = 0;
+        return;
+    }
+
     FILE *fp = fopen(path, "w");
     if (!fp) {
         fprintf(stderr, "astro_cs_compile: cannot open %s\n", path);
