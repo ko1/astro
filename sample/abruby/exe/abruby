@@ -20,6 +20,7 @@ run_args = []        # args for --run
 dump_mode = nil      # nil, :ast, :disasm
 verbose = false
 compiled_only = false
+aot_only = false
 
 opt = OptionParser.new
 opt.banner = "Usage: abruby [options] [file] [args...]"
@@ -41,6 +42,7 @@ opt.on('-c', '--compile-first', 'compile then run') { mode = :compile_first }
 opt.on('--pgc', 'profile-guided compilation: run, then recompile with profile data') { mode = :pgc }
 opt.on('--verbose', 'show code store operations') { verbose = true }
 opt.on('--compiled-only', 'abort if default dispatcher is used') { compiled_only = true }
+opt.on('--aot-only', 'load only AOT (SD_<Horg>); skip PGC index lookup — for benchmarking') { aot_only = true }
 opt.on('-v', '--version', 'show version') do
   puts "abruby #{AbRuby::VERSION}"
   exit
@@ -321,9 +323,10 @@ when :run
     # For each parsed entry (top-level AST + method/class/module/block
     # bodies), run cs_load with the source file so the PGC (Hopt) index
     # lookup fires.  Inner nodes already go through OPTIMIZE → cs_load
-    # (file=nil, AOT-only) during ALLOC.
+    # (file=nil, AOT-only) during ALLOC.  --aot-only forces file=nil to
+    # skip PGC lookup (benchmarking AOT in isolation).
     AbRuby::Parser.on_parse = ->(parsed_ast, entries, src_file) {
-      pgc_file = src_file || '-e'
+      pgc_file = aot_only ? nil : (src_file || '-e')
       AbRuby.cs_load(parsed_ast, pgc_file)
       entries.each { |_name, body| AbRuby.cs_load(body, pgc_file) }
     }
