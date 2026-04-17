@@ -36,10 +36,16 @@ opt.on('--dump[=MODE]', 'dump AST (default) or disasm') do |v|
     exit 1
   end
 end
-opt.on('--plain', 'run without code store') { mode = :plain }
-opt.on('--compile', 'compile files (AOT)') { mode = :compile }
-opt.on('-c', '--compile-first', 'compile then run') { mode = :compile_first }
-opt.on('--pgc', 'profile-guided compilation: run, then recompile with profile data') { mode = :pgc }
+set_mode = ->(m) {
+  if mode != :run && mode != m
+    $stderr.puts "warning: mode #{mode.inspect} overridden by #{m.inspect} (can't combine mode flags)"
+  end
+  mode = m
+}
+opt.on('--plain',                      'run without code store')                { set_mode.(:plain) }
+opt.on('--compile',                    'compile files (AOT)')                   { set_mode.(:compile) }
+opt.on('-c', '--compile-first',        'compile then run')                      { set_mode.(:compile_first) }
+opt.on('--pgc',                        'profile-guided compilation: run, then bake SD_<Hopt>') { set_mode.(:pgc) }
 opt.on('--verbose', 'show code store operations') { verbose = true }
 opt.on('--compiled-only', 'abort if default dispatcher is used') { compiled_only = true }
 opt.on('--aot-only', 'load only AOT (SD_<Horg>); skip PGC index lookup — for benchmarking') { aot_only = true }
@@ -222,8 +228,26 @@ when :pgc
   end
   pgc_ents.each { |label, node, file| cs_compile.(node, label: label, file: file) }
   aot_ents.each { |label, node, _file| cs_compile.(node, label: label) }
-  AbRuby.cs_build(RUBY_CFLAGS) if baked_entries.any?
+  if baked_entries.any?
+    AbRuby.cs_build(RUBY_CFLAGS)
+    AbRuby.cs_reload
+    # Reload: rebind every baked entry to its freshly built SD_/PGSD_
+    # symbol, so --dump=disasm below inspects the newly-baked image
+    # (not the stale pre-bake pointers set during on_parse).
+    baked_entries.each { |_, node, file| AbRuby.cs_load(node, file) }
+  end
   $stderr.puts "pgc: done" if verbose
+
+  if dump_mode == :disasm
+    baked_entries.each do |label, node, _file|
+      $stdout.flush
+      puts "--- #{label} ---"
+      $stdout.flush
+      puts abm.dump_ast(node)
+      $stdout.flush
+      AbRuby.cs_disasm(node)
+    end
+  end
 
 when :compile_first
   # Consume the script path so the remaining ARGV is forwarded to the
