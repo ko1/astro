@@ -299,6 +299,16 @@ abruby_new_object(CTX *c, struct abruby_class *klass)
     return wrapper;
 }
 
+// Stamp an initial (class, ivar_cnt=0) shape_id on a freshly-allocated
+// abruby heap object.  Every abruby heap value carries shape_id >= 1 so
+// the ivar_cache fast path can compare against 0 (uninitialised ic) and
+// know it is a cold miss without an extra != 0 check.
+static inline void
+abruby_heap_init_shape(CTX *c, VALUE wrapper, struct abruby_class *klass)
+{
+    abruby_shape_id_write(wrapper, abruby_shape_for(c->abm, klass, 0));
+}
+
 VALUE
 abruby_bignum_new(CTX *c, VALUE rb_bignum)
 {
@@ -307,6 +317,7 @@ abruby_bignum_new(CTX *c, VALUE rb_bignum)
     b->klass = c->abm->integer_class;
     b->obj_type = c->abm->integer_class->instance_obj_type;
     b->rb_bignum = rb_bignum;
+    abruby_heap_init_shape(c, wrapper, b->klass);
     return wrapper;
 }
 
@@ -322,6 +333,7 @@ abruby_float_new_wrap(CTX *c, VALUE rb_float)
     f->klass = c->abm->float_class;
     f->obj_type = c->abm->float_class->instance_obj_type;
     f->rb_float = rb_float;
+    abruby_heap_init_shape(c, wrapper, f->klass);
     return wrapper;
 }
 
@@ -335,6 +347,7 @@ abruby_str_new(CTX *c, VALUE rb_str)
     s->klass = c->abm->string_class;
     s->obj_type = c->abm->string_class->instance_obj_type;
     s->rb_str = rb_str;
+    abruby_heap_init_shape(c, wrapper, s->klass);
     return wrapper;
 }
 
@@ -363,6 +376,7 @@ abruby_sym_new(CTX *c, VALUE rb_sym)
     s->klass = c->abm->symbol_class;
     s->obj_type = ABRUBY_OBJ_SYMBOL;
     s->rb_sym = rb_sym;
+    abruby_heap_init_shape(c, wrapper, s->klass);
     return wrapper;
 }
 
@@ -393,6 +407,7 @@ abruby_block_to_proc(CTX *c, const struct abruby_block *blk, bool is_lambda)
             }
         }
     }
+    abruby_heap_init_shape(c, wrapper, p->klass);
     return wrapper;
 }
 
@@ -408,6 +423,7 @@ abruby_fiber_wrap(struct abruby_machine *abm, struct abruby_fiber *f)
     f->obj_type = abm->fiber_class->instance_obj_type;
     VALUE wrapper = TypedData_Wrap_Struct(rb_cAbRubyNode, &abruby_data_type, f);
     f->rb_wrapper = wrapper;
+    abruby_shape_id_write(wrapper, abruby_shape_for(abm, f->klass, 0));
     return wrapper;
 }
 
@@ -421,6 +437,7 @@ abruby_bound_method_new(CTX *c, VALUE recv, ID name)
     bm->obj_type = c->abm->method_class->instance_obj_type;
     bm->recv = recv;
     bm->method_name = name;
+    abruby_heap_init_shape(c, wrapper, bm->klass);
     return wrapper;
 }
 
@@ -438,6 +455,7 @@ abruby_ary_new(CTX *c, VALUE rb_ary)
     a->klass = c->abm->array_class;
     a->obj_type = c->abm->array_class->instance_obj_type;
     a->rb_ary = rb_ary;
+    abruby_heap_init_shape(c, wrapper, a->klass);
     return wrapper;
 }
 
@@ -449,6 +467,7 @@ abruby_hash_new_wrap(CTX *c, VALUE rb_hash)
     h->klass = c->abm->hash_class;
     h->obj_type = c->abm->hash_class->instance_obj_type;
     h->rb_hash = rb_hash;
+    abruby_heap_init_shape(c, wrapper, h->klass);
     return wrapper;
 }
 
@@ -462,6 +481,7 @@ abruby_range_new(CTX *c, VALUE begin, VALUE end, bool exclude_end)
     r->begin = begin;
     r->end = end;
     r->exclude_end = exclude_end;
+    abruby_heap_init_shape(c, wrapper, r->klass);
     return wrapper;
 }
 
@@ -473,6 +493,7 @@ abruby_regexp_new(CTX *c, VALUE rb_regexp)
     r->klass = c->abm->regexp_class;
     r->obj_type = c->abm->regexp_class->instance_obj_type;
     r->rb_regexp = rb_regexp;
+    abruby_heap_init_shape(c, wrapper, r->klass);
     return wrapper;
 }
 
@@ -484,6 +505,7 @@ abruby_rational_new(CTX *c, VALUE rb_rational)
     r->klass = c->abm->rational_class;
     r->obj_type = c->abm->rational_class->instance_obj_type;
     r->rb_rational = rb_rational;
+    abruby_heap_init_shape(c, wrapper, r->klass);
     return wrapper;
 }
 
@@ -495,6 +517,7 @@ abruby_complex_new(CTX *c, VALUE rb_complex)
     cx->klass = c->abm->complex_class;
     cx->obj_type = c->abm->complex_class->instance_obj_type;
     cx->rb_complex = rb_complex;
+    abruby_heap_init_shape(c, wrapper, cx->klass);
     return wrapper;
 }
 
@@ -968,6 +991,7 @@ abruby_exception_new(CTX *c, const struct abruby_frame *start_frame, VALUE messa
     exc->obj_type = c->abm->runtime_error_class->instance_obj_type;
     exc->message = message;
     exc->backtrace = bt_ary;
+    abruby_heap_init_shape(c, wrapper, exc->klass);
     return wrapper;
 }
 

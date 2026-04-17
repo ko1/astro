@@ -502,10 +502,11 @@ node_ivar_get(CTX * restrict c, NODE * restrict n, ID name, struct ivar_cache *i
 {
     ab_verify(c->current_frame->self);
     VALUE self = c->current_frame->self;
-    // Guard extra-strict against shape_id == 0: a cold cache (ic cleared
-    // by alloc) matches self's 0 shape_id on non-abruby_object receivers,
-    // misreading obj->ivars at arbitrary flag-bit positions.
-    if (LIKELY(ic->shape_id != 0 && ic->shape_id == abruby_shape_id_read(self))) {
+    // shape_id 0 is reserved for "unassigned": every abruby heap object
+    // is stamped with shape_id >= 1 at allocation (abruby_heap_init_shape),
+    // so a cold ic (shape_id == 0) automatically mismatches any real self
+    // without an explicit != 0 test.
+    if (LIKELY(ic->shape_id == abruby_shape_id_read(self))) {
         // shape match ⇒ slot is valid (ivar_cnt ≥ slot+1 by construction).
         const struct abruby_object *obj =
             (const struct abruby_object *)RTYPEDDATA_GET_DATA(self);
@@ -571,7 +572,7 @@ node_ivar_set(CTX * restrict c, NODE * restrict n, ID name, NODE *value, struct 
     //       and the shape_id.
     // An overflow grow (pre != post, slot >= INLINE) must go through the
     // slow path because extra_ivars may need to be allocated.
-    if (LIKELY(ic->shape_id != 0 && ic->shape_id == abruby_shape_id_read(self))) {
+    if (LIKELY(ic->shape_id == abruby_shape_id_read(self))) {
         bool transition = (ic->shape_id != ic->post_shape_id);
         if (LIKELY(!(transition && ic->slot >= ABRUBY_OBJECT_INLINE_IVARS))) {
             struct abruby_object *obj =
