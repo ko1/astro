@@ -8,24 +8,52 @@ OPTCARROT = "benchmark/optcarrot/bin/optcarrot-bench"
 EXTRA_ARGS = "--print-video-checksum"
 EXPECTED_CHECKSUM = 59662
 
+# Each runner: { label, setup (run before timing, optional), cmd (timed) }.
+# For "(bake)" rows the compile cost intentionally lands in `cmd` so the
+# user sees the one-shot cost.  For "(cached)" rows `cmd` reuses the
+# store populated by the row above, measuring steady-state execution.
 RUNNERS = [
-  ["ruby",                "ruby #{OPTCARROT} #{EXTRA_ARGS}"],
-  ["ruby --jit",          "ruby --jit #{OPTCARROT} #{EXTRA_ARGS}"],
-  ["abruby --plain",      "exe/abruby --plain #{OPTCARROT} #{EXTRA_ARGS}"],
-  ["abruby -c",           -> { system("rm -rf code_store") # not counted in timing
-                               "CCACHE_DISABLE=1 exe/abruby -c #{OPTCARROT} #{EXTRA_ARGS}" }],
-  ["abruby --compiled-only", "exe/abruby --compiled-only #{OPTCARROT} #{EXTRA_ARGS}"],
+  { label: "ruby",
+    cmd:   "ruby #{OPTCARROT} #{EXTRA_ARGS}" },
+  { label: "ruby --jit",
+    cmd:   "ruby --jit #{OPTCARROT} #{EXTRA_ARGS}" },
+  { label: "abruby --plain",
+    cmd:   "exe/abruby --plain #{OPTCARROT} #{EXTRA_ARGS}" },
+
+  # AOT: -c compiles + runs.  time includes every SD_<Horg>.c / all.so
+  # build cost (intentional — this is the "from scratch" cost).
+  { label: "abruby -c (AOT bake)",
+    setup: "rm -rf code_store",
+    cmd:   "CCACHE_DISABLE=1 exe/abruby -c #{OPTCARROT} #{EXTRA_ARGS}" },
+  { label: "abruby AOT (cached)",
+    cmd:   "exe/abruby --compiled-only --aot-only #{OPTCARROT} #{EXTRA_ARGS}" },
+
+  # PGC first-run: --pgc runs the interpreter (profile collection), then
+  # at eval end bakes SD_<Hopt>.c + hopt_index.txt + all.so.  time reports
+  # "interpreter execution + bake overhead".
+  { label: "abruby --pgc (bake)",
+    setup: "rm -rf code_store",
+    cmd:   "CCACHE_DISABLE=1 exe/abruby --pgc #{OPTCARROT} #{EXTRA_ARGS}" },
+  # PGC steady-state: --compiled-only prefers SD_<Hopt>, falling back to
+  # SD_<Horg> for entries whose profile didn't diverge.
+  { label: "abruby PGC (cached)",
+    cmd:   "exe/abruby --compiled-only #{OPTCARROT} #{EXTRA_ARGS}" },
 ]
 
 results = []
 
-RUNNERS.each do |label, cmd|
-  if cmd.is_a?(Proc)
-    cmd = cmd.call
-  end
+RUNNERS.each do |runner|
+  label = runner[:label]
+  cmd   = runner[:cmd]
 
   $stderr.print "  #{label}... "
   $stderr.flush
+
+  # Setup (rm code_store etc.) is NOT part of the measurement.
+  if runner[:setup]
+    system(runner[:setup], out: File::NULL, err: File::NULL) \
+      or abort("setup failed: #{runner[:setup]}")
+  end
 
   start = Process.clock_gettime(Process::CLOCK_MONOTONIC)
   output = `#{cmd} 2>&1`

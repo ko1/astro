@@ -28,6 +28,21 @@ BENCHMARK_DIR = __dir__
 #
 # Add new runners here as needed (e.g. ruby --yjit, abruby --opt, etc.)
 
+STORE = "#{ABRUBY_DIR}/code_store"
+
+# Each runner:
+#   name:  column label
+#   cmd:   timed command; "%s" is the benchmark path
+#   setup: optional, runs ONCE before any iteration (e.g. populate the
+#          store for steady-state runners)
+#   prep:  optional, runs before EVERY iteration (e.g. rm -rf store for
+#          cold-start runners so best-of-N truly measures cold runs)
+#   env:   optional environment variables hash
+#
+# Steady-state rows (abruby+aot / abruby+pgc) prepare the code store in
+# `setup` (not counted) and measure pure execution in `cmd`.  This is
+# apples-to-apples with ruby --jit (which is also measured steady-state).
+# Cold-start rows (abruby+cf) use `prep` to reset between iterations.
 RUNNERS = [
   {
     name: 'ruby',
@@ -42,12 +57,29 @@ RUNNERS = [
     cmd:  "ruby -I #{ABRUBY_DIR}/lib #{ABRUBY_DIR}/exe/abruby --plain %s",
   },
   {
-    name: 'abruby+cf', # compile first
-    cmd:  "ruby -I #{ABRUBY_DIR}/lib #{ABRUBY_DIR}/exe/abruby -c %s",
+    # AOT cold-start: compile + run in one process.  Shows the one-shot
+    # "from scratch" cost (time includes all SD_<Horg>.c + all.so build).
+    # `prep` clears the store before *every* iteration so best-of-N
+    # actually measures cold runs — if rm were in setup only, 2nd/3rd
+    # iterations would skip compilation and best would collapse to
+    # steady-state.  prep is not timed.
+    name:  'abruby+cf',
+    prep:  "rm -rf #{STORE}",
+    cmd:   "ruby -I #{ABRUBY_DIR}/lib #{ABRUBY_DIR}/exe/abruby -c %s",
   },
   {
-    name: 'abruby+compiled',
-    cmd:  "ruby -I #{ABRUBY_DIR}/lib #{ABRUBY_DIR}/exe/abruby --compiled-only %s",
+    # AOT steady-state: prime the store in setup, time a clean
+    # --compiled-only --aot-only run.
+    name:  'abruby+aot',
+    setup: "rm -rf #{STORE} && ruby -I #{ABRUBY_DIR}/lib #{ABRUBY_DIR}/exe/abruby --compile %s",
+    cmd:   "ruby -I #{ABRUBY_DIR}/lib #{ABRUBY_DIR}/exe/abruby --compiled-only --aot-only %s",
+  },
+  {
+    # PGC steady-state: prime the store with --pgc (profile + bake) in
+    # setup, time a clean --compiled-only run (SD_<Hopt> preferred).
+    name:  'abruby+pgc',
+    setup: "rm -rf #{STORE} && ruby -I #{ABRUBY_DIR}/lib #{ABRUBY_DIR}/exe/abruby --pgc %s",
+    cmd:   "ruby -I #{ABRUBY_DIR}/lib #{ABRUBY_DIR}/exe/abruby --compiled-only %s",
   },
 ]
 
@@ -61,8 +93,13 @@ def discover_benchmarks
 end
 
 def run_once(runner, path)
-  cmd = runner[:cmd] % path
   env = runner[:env] || {}
+  # Per-iteration prep (e.g. rm -rf code_store for cold-start cf runs).
+  # Runs before the clock starts so it doesn't land in the timing.
+  if runner[:prep]
+    system(env, runner[:prep] % path, out: File::NULL, err: File::NULL)
+  end
+  cmd = runner[:cmd] % path
   t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
   out, err, status = Open3.capture3(env, cmd)
   t1 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
@@ -74,7 +111,22 @@ def run_once(runner, path)
   }
 end
 
+def run_setup(runner, path)
+  return true unless runner[:setup]
+  cmd = runner[:setup] % path
+  out, err, status = Open3.capture3(runner[:env] || {}, cmd)
+  unless status.success?
+    $stderr.puts "setup failed for #{runner[:name]}: #{cmd}"
+    $stderr.puts err unless err.empty?
+    return false
+  end
+  true
+end
+
 def run_benchmark(runner, path, repeat)
+  # Setup runs once per (runner, benchmark) — not counted in timing.
+  return { ok: false, time: nil, output: "", error: "setup failed", all_times: [] } \
+    unless run_setup(runner, path)
   results = repeat.times.map { run_once(runner, path) }
   best = results.select { |r| r[:ok] }.min_by { |r| r[:time] }
   best ||= results.last  # return last failure for error reporting
