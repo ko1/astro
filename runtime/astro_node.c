@@ -169,12 +169,34 @@ astro_fprint_cstr(FILE *fp, const char *s)
 // Dispatcher name allocation (used by generated node_specialize.c)
 // ---------------------------------------------------------------------------
 
+// Emission mode for SD_<hash> names during SPECIALIZE:
+//   0 = Horg (structural)   — default, used by AOT (--compile)
+//   1 = Hopt (profile-aware) — set transiently by astro_cs_compile during
+//                              PGC bake so generated SD_* names match the
+//                              file name SD_<Hopt>.c.
+// Hosts that don't provide HOPT() leave this as 0 forever; HOPT() is never
+// called in that case.
+static int astro_cs_use_hopt_name = 0;
+
+static node_hash_t alloc_dispatcher_name_hash(NODE *n);
+
 static const char *
 alloc_dispatcher_name(NODE *n)
 {
     char buff[128];
-    snprintf(buff, sizeof(buff), "SD_%lx", (unsigned long)hash_node(n));
+    snprintf(buff, sizeof(buff), "SD_%lx",
+             (unsigned long)alloc_dispatcher_name_hash(n));
     char *name = malloc(strlen(buff) + 1);
     strcpy(name, buff);
     return name;
+}
+
+// Pick Horg or Hopt for SD_* name emission.  The Hopt path is defined by
+// the host in node.c; we call it only when the host has flipped the
+// mode flag (it wouldn't have flipped it without a working HOPT()).
+static node_hash_t
+alloc_dispatcher_name_hash(NODE *n)
+{
+    if (astro_cs_use_hopt_name) return HOPT(n);
+    return hash_node(n);
 }

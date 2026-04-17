@@ -104,7 +104,12 @@ module ASTroGen
           end
         end
 
-        def hash_call val
+        # `kind` selects HORG (structural) vs HOPT (structural+profile).
+        # HORG is the default; HOPT is opt-in for embedders that split the
+        # two (e.g. abruby's two-hash PGC design).  The only structural
+        # difference is how child NODE* operands are recursed: HORG uses
+        # hash_node (cached Horg), HOPT uses hash_node_opt (cached Hopt).
+        def hash_call val, kind: :horg
           case @type
           when 'uint32_t'
             "hash_uint32(#{val})"
@@ -113,7 +118,7 @@ module ASTroGen
           when 'uint64_t'
             "hash_uint64(#{val})"
           when 'NODE *'
-            "hash_node(#{val})"
+            kind == :hopt ? "hash_node_opt(#{val})" : "hash_node(#{val})"
           when 'const char *'
             "hash_cstr(#{val})"
           when 'double'
@@ -175,6 +180,14 @@ module ASTroGen
         @name = name
         parse_operands(fields_str)
         @option = option&.split(/\s+/) || []
+      end
+
+      # Canonical family name used in structural hashes.  Specialized variants
+      # (e.g. node_fixnum_plus → node_plus, node_call1_ast → node_call1) opt
+      # in via `NODE_DEF @canonical=BASE` in node.def.  Defaults to @name.
+      def canonical_name
+        opt = @option.find { |o| o.start_with?('@canonical=') }
+        opt ? opt.sub(/^@canonical=/, '') : @name
       end
 
       def parse_operands str
@@ -240,15 +253,18 @@ module ASTroGen
       end
 
       def build_hash_func
+        # Structural hash (Horg):
+        #   - Use canonical_name so swap_dispatcher family members share a hash
+        #   - Skip storageless operands (profile-derived, not part of structure)
         <<~C
         static node_hash_t
         HASH_#{name}(NODE *n)
         {
-            node_hash_t h = hash_cstr(#{@name.dump});
+            node_hash_t h = hash_cstr(#{canonical_name.dump});
         #{
-          @operands.map{
-            val = it.storageless? ? "n" : "n->u.#{@name}.#{it.name}"
-            hash_call = it.hash_call(val)
+          @operands.reject(&:storageless?).map{
+            val = "n->u.#{@name}.#{it.name}"
+            hash_call = it.hash_call(val, kind: :horg)
             "    h = hash_merge(h, #{hash_call})"
           }.join(";\n")};
             return h;
@@ -256,6 +272,31 @@ module ASTroGen
         C
       rescue UnsupportedOperand
         "#define HASH_#{name} NULL"
+      end
+
+      def build_hopt_func
+        # Profile-aware hash (Hopt):
+        #   - Use the *actual* node name (specialized variants differ)
+        #   - Include storageless operands so profile-derived fields (e.g.
+        #     baked prologue identifier) contribute to the key
+        #   - Recurse into children via hash_node_opt (HOPT) so profile info
+        #     propagates bottom-up
+        <<~C
+        static node_hash_t
+        HOPT_#{name}(NODE *n)
+        {
+            node_hash_t h = hash_cstr(#{@name.dump});
+        #{
+          @operands.map{
+            val = it.storageless? ? "n" : "n->u.#{@name}.#{it.name}"
+            hash_call = it.hash_call(val, kind: :hopt)
+            "    h = hash_merge(h, #{hash_call})"
+          }.join(";\n")};
+            return h;
+        }
+        C
+      rescue UnsupportedOperand
+        "#define HOPT_#{name} NULL"
       end
 
       def build_allocator_decl

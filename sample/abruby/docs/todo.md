@@ -575,93 +575,67 @@ Phase 1 未対応の残りノード (優先度低):
 
 ## PG / AOT 結合とコードストア鍵設計
 
-### 背景
+### Horg / Hopt 2 段ハッシュ (実装済 2026-04-17)
 
-ASTro は AOT と PG (Profile-Guided) の 2 種類の特化コードを生成できる:
+ASTro は AOT と PGC (Profile-Guided Compilation) の 2 種類の特化コードを生成する:
 
-- **NCaot**: AOT 時に生成。プロファイル情報なしの generic コード
-- **NCpg**: 実行後にノードに蓄積したプロファイル情報で生成した特化コード
+- **AOT (`SD_<Horg>.c`)**: プロファイル情報なしの generic コード
+- **PGC (`SD_<Hopt>.c`)**: 実行後にノードに蓄積したプロファイル情報で生成した特化コード
 
-両者はコードストア (H→C の KV) に保存され、プロセス間で再利用されることが大前提
-(memory: "AOT reuse policy")。問題は「起動時に NCaot で動いているプログラムを、
-過去に PG した NCpg に差し替える」タイミングと鍵設計。
+両者は同一コードストアで共存し、プロセス間で再利用される。
 
-### 現状の問題点
+#### ハッシュ設計
 
-1. **H がプロファイル情報を含んでいる**
-   - プロファイル更新のたびに H がクリアされる
-   - PG compile 時には既に Hpg しか手元になく、元の Haot を失っている
-   - → AOT と PG の結び付けが原理的に不可能
+| | 計算 | 特性 | 用途 |
+|---|---|---|---|
+| **Horg** (origin) | kind canonical 名 + 非 storageless operand の構造 | swap_dispatcher でも不変 | AOT の SD_ 鍵、PGC 索引キーの一部 |
+| **Hopt** (optimized) | 実 kind 名 + storageless operand (baked prologue 等) 含む全 operand | profile 状態を反映 | PGC の SD_ 鍵、Hopt != Horg が bake 対象の印 |
 
-2. **PG 時に「コードの場所」情報がない**
-   - 現在の実装ではノードからプログラム全体 / 位置の識別子を取れない
+- `NODE_DEF @canonical=node_plus` で specialized variant を canonical family に所属させる
+  (例: `node_fixnum_plus`, `node_flonum_plus` → canonical `node_plus` → Horg 同値)
+- `NodeHead` に `hash_org` / `hash_opt` の 2 スロット + キャッシュフラグ
+- PGC 時のみ `abruby_pgo_prologue_name_for(n)` 等が Hopt に寄与
 
-3. **インライン化を入れると callee が鍵に入るが、caller の Hstruct からは callee が見えない**
-
-### 設計方針 (2026-04-15 議論)
-
-#### (1) ハッシュを 2 種類に分離
-
-- `Hstruct` (構造ハッシュ): プロファイル情報を含まない、ロード時に確定して **不変**
-- `Hprof` (プロファイル込み): 現状と同じく profile 更新で変化してよい
-
-コードストアのキーは `Hstruct` に統一する。プロファイルは AST ノードに載る
-付随情報とみなし、ハッシュ計算からは除外。`Hprof` は precondition マッチング
-("前回 PG したときのプロファイル状態と同じか"を安く判定) 用途で残す価値あり。
-
-実装: AST ノードに `Hstruct` と `Hprof` の 2 スロットを持たせる。既存の
-"H が変わる" ロジックは `Hprof` 側にそのまま残せる。
-
-#### (2) コードストアの値側を候補リストに拡張
+#### コードストアのキー空間と lookup
 
 ```
-Hstruct → [NCaot, NCpg(pre=P1), NCpg(pre=P2), ...]
+code_store/
+  c/SD_<Horg>.c          ← AOT (--compile モードで生成)
+  c/SD_<Hopt>.c          ← PGC (--pgc モードで at_exit 時に生成)
+  hopt_index.txt         ← (Horg, file, line) hash → Hopt の多対一マッピング
+  all.so
 ```
 
-ロード時は precondition が合う NCpg を選び、無ければ NCaot にフォールバック。
-**索引 DB (Haot_loc → Hpg のようなもの) は不要**。NCpg 側に precondition を
-guard として埋めておき、失敗で NCaot に deopt。
+`astro_cs_load(n, file)`:
+1. `file != NULL` なら索引キー `hash_merge(Horg(n), hash(file, line))` で Hopt 引き → `SD_<Hopt>` dlsym
+2. 見つからなければ `SD_<Horg>` dlsym (AOT フォールバック)
+3. どちらもなければ default dispatcher (インタプリタ)
 
-#### (3) メソッドインライン化の鍵
+索引キーに `(file, line)` を混ぜる理由: 同一 Horg でも別 entry (違う method body が偶然同構造)
+を別キーにするため。polymorphic な同一 entry (同じ body が Integer / Float caller で別最適化)
+は将来 inline + 合成ハッシュで対応する。
 
-インライン化した NCpg は **合成ハッシュ** `(Hstruct_caller, Hstruct_callee)` を
-キーにする (callsite_id は別途持たず、多態 callsite は候補リストの複数エントリ
-として表現)。
+#### PGC bake タイミング
 
-- NCpg 側の precondition に「この callsite の束縛が `Hstruct_callee` のメソッド
-  であること」を埋める
-- 別プロセス・別起動でも、同じ callsite で同じ callee が観測されれば precondition
-  ヒット → あっため不要で即再利用
-- JIT と原理的にあっためが要るのは同じだが、**あっため結果を key で永続化できる**
-  のが ASTro の強み。初回コストだけで済む
+`--pgc` モードは 1 パス + プロセス終了 bake:
+1. 通常実行。前回 `--pgc` 生成済みの `SD_<Hopt>` があれば on_parse → cs_load(entry, file) で即採用
+2. swap_dispatcher と method_cache_fill が profile として積まれる
+3. `at_exit`: entry ごとに `HOPT != HORG` をチェックし、差があるものだけ cs_compile → SD_<Hopt>.c 生成 + hopt_index.txt 追記
+4. cs_build で all.so 再構築。次プロセスで pick up
 
-### TODO
+現在は「Hopt != Horg」(profile が実際に乗ったもの) を bake 条件にしている。
+将来 exec 回数を持たせたら閾値フィルタに置換。
 
-- [ ] AST ノードに `Hstruct` / `Hprof` の 2 スロットを持たせる (現状の H の分離)
-- [ ] プロファイル更新時に `Hstruct` を不変に保つよう計算ロジックを修正
-- [ ] コードストアの値側を単値 → 候補リスト (precondition 付き) に拡張
-- [ ] NCpg 生成時に precondition (プロファイル前提条件) を guard としてコード埋め込み
-- [ ] ロード時: precondition で候補選別 → 合えば NCpg、無ければ NCaot
-- [ ] guard 失敗時の NCaot への deopt パス
-- [ ] (インライン化着手時) 合成ハッシュ `(Hstruct_caller, Hstruct_callee)` の実装
-- [ ] (インライン化着手時) callee 束縛の precondition 埋め込み
-- [ ] 候補リストの数が増えたときの運用 (世代管理 / LRU 等) — 当面は追記のみでよい
+### 残作業
 
-### 索引 DB について (不採用)
-
-議論中、別途「Haot_loc → Hpg の索引 DB」を append-only 自前ファイル or SQLite/LMDB
-で持つ案を検討したが、ハッシュを `Hstruct` / `Hprof` に分離すれば **コードストア
-本体 (H→C) の値を候補リストにするだけ**で同等のことが実現でき、索引は不要になる。
-この方針で進める。
-
-### 未解決の論点
-
-- プロファイルが「構造に作用する」(ノード書き換え) ケースの扱い。現状 abruby の
-  `swap_dispatcher` によるノード種別切り替えは構造を変えるので、これが `Hstruct`
-  に影響するかどうか要検討。ノード種別は切り替わっても AST の "形" としては
-  同一とみなせるなら `Hstruct` 計算時にノード種別を normalize すればよい
-- precondition の表現形式 (ノード種別列 / type profile / 出現頻度など何を記録するか)
-- 候補リストが増え続けたときの容量管理
+- [ ] 候補リスト運用 (同じ entry 位置に複数 Hopt を共存): 現在は 1 索引キー → 1 Hopt
+  の単値マップ。polymorphic な method body (Integer / Float caller で違う特化) を
+  共存させるには、`hopt_index.txt` を `(key → [Hopt1, Hopt2, ...])` に拡張し、
+  NCpg 側に precondition を guard として埋めて失敗時に次候補 / AOT に deopt する機構が必要
+- [ ] インライン化と合成ハッシュ `(Horg_caller, Horg_callee)` による鍵設計
+- [ ] 実行回数ベースの bake フィルタ (閾値超過の entry のみ PGC)
+- [ ] 候補リストが増え続けたときの容量管理 (世代管理 / LRU)
+- [ ] プロファイル不一致時の deopt パス — guard 失敗で default dispatcher に戻す
 
 ## ランタイム・内部実装
 

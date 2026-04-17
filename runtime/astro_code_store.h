@@ -20,11 +20,15 @@ void astro_cs_init(const char *store_dir, const char *src_dir, uint64_t version)
 
 // Look up specialized code for node's hash in code store.
 // If found, replaces the node's dispatcher and returns true.
-bool astro_cs_load(NODE *n);
+// `file` (nullable) is the source filename of the entry — needed for
+// PGC (Hopt) lookup.  Pass NULL to force AOT-only (SD_<Horg>) lookup.
+bool astro_cs_load(NODE *n, const char *file);
 
 // Generate specialized C source for entry node.
-// Writes <store_dir>/SD_<hash>.c
-void astro_cs_compile(NODE *entry);
+//   file == NULL: AOT — writes <store_dir>/c/SD_<Horg>.c
+//   file != NULL: PGC — writes <store_dir>/c/SD_<Hopt>.c and appends
+//                 (Horg, file, line) → Hopt to hopt_index.txt
+void astro_cs_compile(NODE *entry, const char *file);
 
 // Build all SD_*.c in store_dir into all.so (make -j).
 // extra_cflags: additional compiler flags (e.g., Ruby include paths). Can be NULL.

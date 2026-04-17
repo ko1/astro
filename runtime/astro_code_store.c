@@ -1,6 +1,12 @@
 // ASTro Code Store implementation
 //
 // #include this file from your node.c, AFTER #including astro_node.c.
+//
+// Two code variants coexist on disk:
+//   - AOT: SD_<Horg>.c / SD_<Horg> symbols.  Profile-free compile.
+//   - PGC: SD_<Hopt>.c / SD_<Hopt> symbols.  Profile-baked compile.
+// They share `all.so`.  Load order: PGC (via hopt_index.txt key lookup)
+// first, AOT fallback.
 
 #include <dlfcn.h>
 #include <sys/stat.h>
@@ -56,7 +62,11 @@ void
 SPECIALIZE(FILE *fp, NODE *n)
 {
     if (n && n->head.kind->specializer) {
-        node_hash_t h = HASH(n);
+        // Dedup key matches the SD_ name the specializer will emit: Hopt
+        // under PGC mode, Horg otherwise.  Mixing would let two nodes with
+        // identical Horg but different Hopt collapse into one emission —
+        // wrong, since their generated bodies differ (baked prologue etc.).
+        node_hash_t h = astro_cs_use_hopt_name ? HOPT(n) : HASH(n);
 
         if (astro_spec_dedup_has(h)) {
             // already generated in this compile session
@@ -98,6 +108,93 @@ static struct astro_cs_state {
     unsigned int reload_gen;          // pathname generation counter — see
                                       // astro_cs_reload for the rationale.
 } astro_cs;
+
+// ---------------------------------------------------------------------------
+// Hopt index: (Horg, file, line) → Hopt
+// Populated by astro_cs_compile(entry, file) in PGC mode; persisted to
+// hopt_index.txt.  Read at init so the next process can find a baked SD_
+// for an entry it has just parsed.
+// ---------------------------------------------------------------------------
+
+struct hopt_entry {
+    node_hash_t key;   // hash_merge(Horg, hash(file, line))
+    node_hash_t hopt;
+};
+
+static struct {
+    struct hopt_entry *entries;
+    uint32_t size;
+    uint32_t capa;
+} astro_cs_hopt_index;
+
+static node_hash_t
+hopt_index_key(node_hash_t horg, const char *file, int32_t line)
+{
+    node_hash_t fl = hash_merge(hash_cstr(file ? file : ""),
+                                hash_uint32((uint32_t)line));
+    return hash_merge(horg, fl);
+}
+
+static bool
+hopt_index_lookup(node_hash_t key, node_hash_t *hopt_out)
+{
+    // Linear scan, last-match wins so an append-only file naturally
+    // overrides stale entries.
+    bool found = false;
+    for (uint32_t i = 0; i < astro_cs_hopt_index.size; i++) {
+        if (astro_cs_hopt_index.entries[i].key == key) {
+            *hopt_out = astro_cs_hopt_index.entries[i].hopt;
+            found = true;
+        }
+    }
+    return found;
+}
+
+static void
+hopt_index_add_mem(node_hash_t key, node_hash_t hopt)
+{
+    if (astro_cs_hopt_index.size >= astro_cs_hopt_index.capa) {
+        uint32_t capa = astro_cs_hopt_index.capa == 0 ? 16
+                                                      : astro_cs_hopt_index.capa * 2;
+        astro_cs_hopt_index.entries = realloc(astro_cs_hopt_index.entries,
+                                              sizeof(struct hopt_entry) * capa);
+        if (!astro_cs_hopt_index.entries) {
+            fprintf(stderr, "hopt_index: out of memory\n");
+            exit(1);
+        }
+        astro_cs_hopt_index.capa = capa;
+    }
+    astro_cs_hopt_index.entries[astro_cs_hopt_index.size].key = key;
+    astro_cs_hopt_index.entries[astro_cs_hopt_index.size].hopt = hopt;
+    astro_cs_hopt_index.size++;
+}
+
+static void
+hopt_index_load_file(void)
+{
+    if (astro_cs.store_dir[0] == '\0') return;
+    char path[ASTRO_CS_PATH_MAX];
+    astro_cs_path(path, sizeof(path), astro_cs.store_dir, "hopt_index.txt");
+    FILE *fp = fopen(path, "r");
+    if (!fp) return;
+    unsigned long key, hopt;
+    while (fscanf(fp, "%lx %lx", &key, &hopt) == 2) {
+        hopt_index_add_mem((node_hash_t)key, (node_hash_t)hopt);
+    }
+    fclose(fp);
+}
+
+static void
+hopt_index_append_file(node_hash_t key, node_hash_t hopt)
+{
+    if (astro_cs.store_dir[0] == '\0') return;
+    char path[ASTRO_CS_PATH_MAX];
+    astro_cs_path(path, sizeof(path), astro_cs.store_dir, "hopt_index.txt");
+    FILE *fp = fopen(path, "a");
+    if (!fp) return;
+    fprintf(fp, "%lx %lx\n", (unsigned long)key, (unsigned long)hopt);
+    fclose(fp);
+}
 
 // ---------------------------------------------------------------------------
 // astro_cs_init: load all.so from store_dir
@@ -196,45 +293,98 @@ astro_cs_init(const char *store_dir, const char *src_dir, uint64_t version)
         astro_cs_path(path, sizeof(path), astro_cs.store_dir, "all.so");
         astro_cs.all_handle = dlopen(path, RTLD_LAZY);
         // NULL is fine: no all.so yet
+
+        // Read hopt_index.txt (PGC lookup table).  Missing file is fine.
+        hopt_index_load_file();
     }
 }
 
 // ---------------------------------------------------------------------------
 // astro_cs_load: look up SD_<hash> in all.so and apply to node
 // ---------------------------------------------------------------------------
+//
+// `file` is the source filename of the entry being loaded (used to build
+// the (Horg, file, line) index key for PGC lookup).  Pass NULL for non-
+// entry nodes or when PGC matching isn't desired — load falls back to AOT
+// (SD_<Horg>) in that case.
 
 bool
-astro_cs_load(NODE *n)
+astro_cs_load(NODE *n, const char *file)
 {
     if (!astro_cs.all_handle) return false;
 
+    // Try PGC first: find a Hopt from the index, dlsym SD_<Hopt>.
+    if (file) {
+        node_hash_t horg = HORG(n);
+        node_hash_t key = hopt_index_key(horg, file, n->head.line);
+        node_hash_t hopt;
+        bool tr = getenv("ASTRO_CS_TRACE") != NULL;
+        if (tr) {
+            fprintf(stderr, "cs_load pgc: horg=%lx file=%s line=%d key=%lx index.size=%u\n",
+                    (unsigned long)horg, file, n->head.line, (unsigned long)key,
+                    astro_cs_hopt_index.size);
+        }
+        if (hopt_index_lookup(key, &hopt)) {
+            if (tr) fprintf(stderr, "  → hopt=%lx\n", (unsigned long)hopt);
+            char sym_name[128];
+            snprintf(sym_name, sizeof(sym_name), "SD_%lx",
+                     (unsigned long)hopt);
+            node_dispatcher_func_t func =
+                (node_dispatcher_func_t)dlsym(astro_cs.all_handle, sym_name);
+            if (func) {
+                // Name + hash_opt reflect the Hopt that actually loaded.
+                char *name = malloc(strlen(sym_name) + 1);
+                strcpy(name, sym_name);
+                n->head.dispatcher_name = name;
+                n->head.hash_opt = hopt;
+                n->head.flags.has_hash_opt = true;
+                n->head.dispatcher = func;
+                n->head.flags.is_specialized = true;
+                return true;
+            }
+        }
+    }
+
+    // AOT fallback: SD_<Horg>.
     node_hash_t h = hash_node(n);
     char sym_name[128];
     snprintf(sym_name, sizeof(sym_name), "SD_%lx", (unsigned long)h);
-
     node_dispatcher_func_t func =
         (node_dispatcher_func_t)dlsym(astro_cs.all_handle, sym_name);
-
     if (func) {
         n->head.dispatcher_name = alloc_dispatcher_name(n);
         n->head.dispatcher = func;
         n->head.flags.is_specialized = true;
         return true;
     }
-
     return false;
 }
 
 // ---------------------------------------------------------------------------
 // astro_cs_compile: generate SD_<hash>.c
 // ---------------------------------------------------------------------------
+//
+// Two modes selected by `file`:
+//   - file == NULL: AOT.  Filename and internal SD_* names use Horg.
+//   - file != NULL: PGC.  Filename and internal SD_* names use Hopt; the
+//     (Horg, file, line) → Hopt mapping is appended to hopt_index.txt so
+//     the next process can find the baked variant.
 
 void
-astro_cs_compile(NODE *entry)
+astro_cs_compile(NODE *entry, const char *file)
 {
     if (!entry || !entry->head.kind->specializer) return;
 
-    node_hash_t h = HASH(entry);
+    node_hash_t horg = HORG(entry);
+    node_hash_t h;
+
+    if (file) {
+        astro_cs_use_hopt_name = 1;  // alloc_dispatcher_name → SD_<Hopt>
+        h = HOPT(entry);
+    } else {
+        astro_cs_use_hopt_name = 0;
+        h = horg;
+    }
 
     // Create store_dir/c/ if it doesn't exist
     mkdir(astro_cs.store_dir, 0755);
@@ -250,6 +400,7 @@ astro_cs_compile(NODE *entry)
     FILE *fp = fopen(path, "w");
     if (!fp) {
         fprintf(stderr, "astro_cs_compile: cannot open %s\n", path);
+        astro_cs_use_hopt_name = 0;
         return;
     }
 
@@ -268,6 +419,20 @@ astro_cs_compile(NODE *entry)
     (*entry->head.kind->specializer)(fp, entry, true);
 
     fclose(fp);
+
+    if (file) {
+        // Index this entry so the next process can find SD_<Hopt>.
+        node_hash_t key = hopt_index_key(horg, file, entry->head.line);
+        hopt_index_add_mem(key, h);
+        hopt_index_append_file(key, h);
+        if (getenv("ASTRO_CS_TRACE")) {
+            fprintf(stderr, "cs_compile pgc: horg=%lx file=%s line=%d key=%lx hopt=%lx\n",
+                    (unsigned long)horg, file, entry->head.line,
+                    (unsigned long)key, (unsigned long)h);
+        }
+    }
+
+    astro_cs_use_hopt_name = 0;
 }
 
 // ---------------------------------------------------------------------------

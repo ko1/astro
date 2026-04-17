@@ -8,7 +8,10 @@ typedef RESULT (*node_dispatcher_func_t)(CTX *c, NODE *n);
 typedef uint64_t node_hash_t;
 
 void INIT(void);
-node_hash_t HASH(NODE *n);
+node_hash_t HASH(NODE *n);         // alias: structural hash (Horg)
+node_hash_t HORG(NODE *n);         // structural-only hash
+node_hash_t HOPT(NODE *n);         // structural + profile hash
+node_hash_t hash_node_opt(NODE *n); // cached HOPT for NODE* operands
 void DUMP(FILE *fp, NODE *n, bool oneline);
 NODE *OPTIMIZE(NODE *n);
 void SPECIALIZE(FILE *fp, NODE *n);
@@ -58,13 +61,15 @@ RESULT abruby_yield(CTX *c, unsigned int argc, VALUE *argv);
 
 struct NodeHead {
     // --- cold zone (used only during SPECIALIZE / HASH / GC) ---
-    node_hash_t hash_value;
+    node_hash_t hash_value;   // Horg cache (structural, never changes after parse)
+    node_hash_t hash_opt;     // Hopt cache (structural + profile; set at bake time)
     const char *dispatcher_name;
     VALUE rb_wrapper;  // for GC (T_DATA wrapper)
 
     // --- warm zone ---
     struct NodeFlags {
-        bool has_hash_value;
+        bool has_hash_value;  // Horg cached
+        bool has_hash_opt;    // Hopt cached / pre-populated from index
         bool is_specialized;
         bool is_specializing;
         bool is_dumping;
@@ -89,7 +94,7 @@ struct NodeHead {
 
 // Code store: declared here so swap_dispatcher can re-query it after kind
 // mutation without each SD_*.c having to reach into runtime/ separately.
-bool astro_cs_load(NODE *n);
+bool astro_cs_load(NODE *n, const char *file);
 
 #if ABRUBY_DEBUG
 // Walk up via head.parent to the nearest @noinline boundary (def / class /

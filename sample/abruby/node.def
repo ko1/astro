@@ -1978,7 +1978,7 @@ specialized_call_miss(CTX * restrict c, NODE * restrict n,
     return node_method_call_slow(c, n, recv_val, klass, name, argc, arg_index, mc, true);
 }
 
-NODE_DEF
+NODE_DEF @canonical=node_call0
 node_call0_ast(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, uint32_t arg_index, struct method_cache *mc@ref)
 {
     VALUE recv_val = UNWRAP(EVAL_ARG(c, recv));
@@ -1989,7 +1989,7 @@ node_call0_ast(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, uint32_
     return specialized_call_miss(c, n, recv_val, klass, name, 0, arg_index, mc, &kind_node_call0);
 }
 
-NODE_DEF
+NODE_DEF @canonical=node_call0
 node_call0_cfunc(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, uint32_t arg_index, struct method_cache *mc@ref)
 {
     VALUE recv_val = UNWRAP(EVAL_ARG(c, recv));
@@ -2000,7 +2000,7 @@ node_call0_cfunc(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, uint3
     return specialized_call_miss(c, n, recv_val, klass, name, 0, arg_index, mc, &kind_node_call0);
 }
 
-NODE_DEF
+NODE_DEF @canonical=node_call0
 node_call0_ivar_get(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, uint32_t arg_index, struct method_cache *mc@ref)
 {
     VALUE recv_val = UNWRAP(EVAL_ARG(c, recv));
@@ -2011,7 +2011,7 @@ node_call0_ivar_get(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, ui
     return specialized_call_miss(c, n, recv_val, klass, name, 0, arg_index, mc, &kind_node_call0);
 }
 
-NODE_DEF
+NODE_DEF @canonical=node_call1
 node_call1_ast(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, NODE *arg0, uint32_t arg_index, struct method_cache *mc@ref)
 {
     VALUE recv_val = UNWRAP(EVAL_ARG(c, recv));
@@ -2023,7 +2023,7 @@ node_call1_ast(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, NODE *a
     return specialized_call_miss(c, n, recv_val, klass, name, 1, arg_index, mc, &kind_node_call1);
 }
 
-NODE_DEF
+NODE_DEF @canonical=node_call1
 node_call1_cfunc(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, NODE *arg0, uint32_t arg_index, struct method_cache *mc@ref)
 {
     VALUE recv_val = UNWRAP(EVAL_ARG(c, recv));
@@ -2035,7 +2035,7 @@ node_call1_cfunc(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, NODE 
     return specialized_call_miss(c, n, recv_val, klass, name, 1, arg_index, mc, &kind_node_call1);
 }
 
-NODE_DEF
+NODE_DEF @canonical=node_call1
 node_call1_ivar_set(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, NODE *arg0, uint32_t arg_index, struct method_cache *mc@ref)
 {
     VALUE recv_val = UNWRAP(EVAL_ARG(c, recv));
@@ -2047,7 +2047,7 @@ node_call1_ivar_set(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, NO
     return specialized_call_miss(c, n, recv_val, klass, name, 1, arg_index, mc, &kind_node_call1);
 }
 
-NODE_DEF
+NODE_DEF @canonical=node_call2
 node_call2_ast(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, NODE *arg0, NODE *arg1, uint32_t arg_index, struct method_cache *mc@ref)
 {
     VALUE recv_val = UNWRAP(EVAL_ARG(c, recv));
@@ -2060,7 +2060,7 @@ node_call2_ast(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, NODE *a
     return specialized_call_miss(c, n, recv_val, klass, name, 2, arg_index, mc, &kind_node_call2);
 }
 
-NODE_DEF
+NODE_DEF @canonical=node_call2
 node_call2_cfunc(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, NODE *arg0, NODE *arg1, uint32_t arg_index, struct method_cache *mc@ref)
 {
     VALUE recv_val = UNWRAP(EVAL_ARG(c, recv));
@@ -2577,7 +2577,7 @@ node_flonum_plus_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, u
     return node_arith_fallback(c, n, lv, rv, c->ids->op_plus, arg_index);
 }
 
-NODE_DEF
+NODE_DEF @canonical=node_plus
 node_flonum_plus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
@@ -2594,7 +2594,7 @@ node_fixnum_plus_overflow(CTX *c, VALUE lv, VALUE rv)
     return RESULT_OK(abruby_bignum_new(c, LONG2NUM(FIX2LONG(lv) + FIX2LONG(rv))));
 }
 
-NODE_DEF
+NODE_DEF @canonical=node_plus
 node_fixnum_plus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
@@ -2611,7 +2611,7 @@ node_fixnum_plus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, u
     return node_fixnum_plus_slow(c, n, lv, rv, arg_index);
 }
 
-NODE_DEF
+NODE_DEF @canonical=node_plus
 node_integer_plus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
@@ -2658,7 +2658,7 @@ node_flonum_minus_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, 
     return node_arith_fallback(c, n, lv, rv, c->ids->op_minus, arg_index);
 }
 
-NODE_DEF
+NODE_DEF @canonical=node_minus
 node_flonum_minus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
@@ -2675,7 +2675,7 @@ node_fixnum_minus_overflow(CTX *c, VALUE lv, VALUE rv)
     return RESULT_OK(abruby_bignum_new(c, LONG2NUM(FIX2LONG(lv) - FIX2LONG(rv))));
 }
 
-NODE_DEF
+NODE_DEF @canonical=node_minus
 node_fixnum_minus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
@@ -2692,7 +2692,7 @@ node_fixnum_minus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, 
     return node_fixnum_minus_slow(c, n, lv, rv, arg_index);
 }
 
-NODE_DEF
+NODE_DEF @canonical=node_minus
 node_integer_minus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
@@ -2739,7 +2739,7 @@ node_flonum_mul_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, ui
     return node_arith_fallback(c, n, lv, rv, c->ids->op_mul, arg_index);
 }
 
-NODE_DEF
+NODE_DEF @canonical=node_mul
 node_flonum_mul(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
@@ -2756,7 +2756,7 @@ node_fixnum_mul_overflow(CTX *c, long a, long b)
     return integer_mul_calc(c, LONG2FIX(a), LONG2FIX(b));
 }
 
-NODE_DEF
+NODE_DEF @canonical=node_mul
 node_fixnum_mul(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
@@ -2777,7 +2777,7 @@ node_fixnum_mul(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, ui
     return node_fixnum_mul_slow(c, n, lv, rv, arg_index);
 }
 
-NODE_DEF
+NODE_DEF @canonical=node_mul
 node_integer_mul(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
@@ -2826,7 +2826,7 @@ node_flonum_div_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, ui
     return node_arith_fallback(c, n, lv, rv, c->ids->op_div, arg_index);
 }
 
-NODE_DEF
+NODE_DEF @canonical=node_div
 node_flonum_div(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
@@ -2837,7 +2837,7 @@ node_flonum_div(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, ui
     return node_flonum_div_slow(c, n, lv, rv, arg_index);
 }
 
-NODE_DEF
+NODE_DEF @canonical=node_div
 node_fixnum_div(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
@@ -2863,7 +2863,7 @@ node_fixnum_div(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, ui
     return node_fixnum_div_slow(c, n, lv, rv, arg_index);
 }
 
-NODE_DEF
+NODE_DEF @canonical=node_div
 node_integer_div(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
@@ -2941,7 +2941,7 @@ node_fixnum_lt_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uin
     return node_arith_fallback(c, n, lv, rv, c->ids->op_lt, arg_index);
 }
 
-NODE_DEF
+NODE_DEF @canonical=node_lt
 node_fixnum_lt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
@@ -2962,7 +2962,7 @@ node_flonum_lt_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uin
     return node_arith_fallback(c, n, lv, rv, c->ids->op_lt, arg_index);
 }
 
-NODE_DEF
+NODE_DEF @canonical=node_lt
 node_flonum_lt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
@@ -2999,7 +2999,7 @@ node_fixnum_le_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uin
     return node_arith_fallback(c, n, lv, rv, c->ids->op_le, arg_index);
 }
 
-NODE_DEF
+NODE_DEF @canonical=node_le
 node_fixnum_le(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
@@ -3020,7 +3020,7 @@ node_flonum_le_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uin
     return node_arith_fallback(c, n, lv, rv, c->ids->op_le, arg_index);
 }
 
-NODE_DEF
+NODE_DEF @canonical=node_le
 node_flonum_le(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
@@ -3057,7 +3057,7 @@ node_fixnum_gt_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uin
     return node_arith_fallback(c, n, lv, rv, c->ids->op_gt, arg_index);
 }
 
-NODE_DEF
+NODE_DEF @canonical=node_gt
 node_fixnum_gt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
@@ -3078,7 +3078,7 @@ node_flonum_gt_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uin
     return node_arith_fallback(c, n, lv, rv, c->ids->op_gt, arg_index);
 }
 
-NODE_DEF
+NODE_DEF @canonical=node_gt
 node_flonum_gt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
@@ -3115,7 +3115,7 @@ node_fixnum_ge_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uin
     return node_arith_fallback(c, n, lv, rv, c->ids->op_ge, arg_index);
 }
 
-NODE_DEF
+NODE_DEF @canonical=node_ge
 node_fixnum_ge(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
@@ -3136,7 +3136,7 @@ node_flonum_ge_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uin
     return node_arith_fallback(c, n, lv, rv, c->ids->op_ge, arg_index);
 }
 
-NODE_DEF
+NODE_DEF @canonical=node_ge
 node_flonum_ge(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
@@ -3184,7 +3184,7 @@ node_fixnum_eq_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uin
     return node_arith_fallback(c, n, lv, rv, c->ids->op_eq, arg_index);
 }
 
-NODE_DEF
+NODE_DEF @canonical=node_eq
 node_fixnum_eq(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
@@ -3218,7 +3218,7 @@ node_fixnum_neq_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, ui
     return RESULT_OK(RTEST(eq.value) ? Qfalse : Qtrue);
 }
 
-NODE_DEF
+NODE_DEF @canonical=node_neq
 node_fixnum_neq(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
@@ -3244,7 +3244,7 @@ node_fixnum_mod_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, ui
     return node_arith_fallback(c, n, lv, rv, c->ids->op_mod, arg_index);
 }
 
-NODE_DEF
+NODE_DEF @canonical=node_mod
 node_fixnum_mod(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
@@ -3311,7 +3311,7 @@ node_fixnum_and_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, ui
     return node_arith_fallback(c, n, lv, rv, c->ids->op_and, arg_index);
 }
 
-NODE_DEF
+NODE_DEF @canonical=node_and
 node_fixnum_and(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
@@ -3340,7 +3340,7 @@ node_fixnum_or_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uin
     return node_arith_fallback(c, n, lv, rv, c->ids->op_or, arg_index);
 }
 
-NODE_DEF
+NODE_DEF @canonical=node_or
 node_fixnum_or(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
@@ -3368,7 +3368,7 @@ node_fixnum_xor_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, ui
     return node_arith_fallback(c, n, lv, rv, c->ids->op_xor, arg_index);
 }
 
-NODE_DEF
+NODE_DEF @canonical=node_xor
 node_fixnum_xor(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
@@ -3396,7 +3396,7 @@ node_fixnum_gtgt_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, u
     return node_arith_fallback(c, n, lv, rv, c->ids->op_gtgt, arg_index);
 }
 
-NODE_DEF
+NODE_DEF @canonical=node_gtgt
 node_fixnum_gtgt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
@@ -3551,7 +3551,7 @@ node_aref_fallback(CTX * restrict c, NODE * restrict n, VALUE rv, VALUE iv, uint
     return node_arith_fallback(c, n, rv, iv, c->ids->op_aref, arg_index);
 }
 
-NODE_DEF
+NODE_DEF @canonical=node_aref
 node_array_aref(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *idx, uint32_t arg_index)
 {
     VALUE rv = UNWRAP(EVAL_ARG(c, recv));
@@ -3562,7 +3562,7 @@ node_array_aref(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *idx, uint
     return node_aref_fallback(c, n, rv, iv, arg_index);
 }
 
-NODE_DEF
+NODE_DEF @canonical=node_aref
 node_hash_aref(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *idx, uint32_t arg_index)
 {
     VALUE rv = UNWRAP(EVAL_ARG(c, recv));
@@ -3573,7 +3573,7 @@ node_hash_aref(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *idx, uint3
     return node_aref_fallback(c, n, rv, iv, arg_index);
 }
 
-NODE_DEF
+NODE_DEF @canonical=node_aref
 node_fixnum_aref(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *idx, uint32_t arg_index)
 {
     VALUE rv = UNWRAP(EVAL_ARG(c, recv));
@@ -3608,7 +3608,7 @@ node_ltlt_fallback(CTX * restrict c, NODE * restrict n, VALUE rv, VALUE xv, uint
     return node_arith_fallback(c, n, rv, xv, c->ids->op_ltlt, arg_index);
 }
 
-NODE_DEF
+NODE_DEF @canonical=node_ltlt
 node_array_ltlt(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *right, uint32_t arg_index)
 {
     VALUE rv = UNWRAP(EVAL_ARG(c, recv));
@@ -3620,7 +3620,7 @@ node_array_ltlt(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *right, ui
     return node_ltlt_fallback(c, n, rv, xv, arg_index);
 }
 
-NODE_DEF
+NODE_DEF @canonical=node_ltlt
 node_fixnum_ltlt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
 {
     VALUE lv = UNWRAP(EVAL_ARG(c, left));
@@ -3653,7 +3653,7 @@ node_aset_fallback(CTX * restrict c, NODE * restrict n, VALUE rv, VALUE iv, VALU
     return node_indexset_fallback(c, n, rv, iv, vv, c->ids->op_aset, arg_index);
 }
 
-NODE_DEF
+NODE_DEF @canonical=node_aset
 node_array_aset(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *idx, NODE *value, uint32_t arg_index)
 {
     VALUE rv = UNWRAP(EVAL_ARG(c, recv));
@@ -3666,7 +3666,7 @@ node_array_aset(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *idx, NODE
     return node_aset_fallback(c, n, rv, iv, vv, arg_index);
 }
 
-NODE_DEF
+NODE_DEF @canonical=node_aset
 node_hash_aset(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *idx, NODE *value, uint32_t arg_index)
 {
     VALUE rv = UNWRAP(EVAL_ARG(c, recv));

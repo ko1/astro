@@ -223,3 +223,20 @@
   plain モードで fib -14%, method_call -15%, ack -11%。compiled モードでは SD_ が generic の
   `EVAL_node_call1` をハードコードで呼ぶため runtime swap は効かない — Phase 2 (JIT による SD_ 再生成)
   の課題
+- **PGC: Horg / Hopt 2 段ハッシュ** (2026-04-17): コードストアの鍵を 2 系統に分離。
+  - Horg (structural): parse 時確定・不変。kind を canonical family へ正規化 (`node_fixnum_plus` 等は
+    `NODE_DEF @canonical=node_plus` で `node_plus` と同値)。storageless operand (baked prologue 等) を
+    ハッシュから除外。AOT の SD_ ファイル名 / PGC 索引キーの一部に使用
+  - Hopt (profile-aware): 実 kind 名 + 全 operand (storageless 含む)。swap_dispatcher / mc fill 後に
+    再計算され profile を反映。PGC の SD_ ファイル名に使用
+  - NodeHead に `hash_org` / `hash_opt` の 2 スロット + キャッシュフラグを追加
+  - コードストアは `SD_<Horg>.c` (AOT) と `SD_<Hopt>.c` (PGC) が共存。`hopt_index.txt` に
+    `(Horg, file, line) hash → Hopt` を append-only で記録
+  - `astro_cs_load(n, file)`: file あれば index 経由で PGC 試行 → 見つからなければ AOT フォールバック
+- **`--pgc` を 1 パス + 終了時 bake に簡素化** (2026-04-17): 従来の 2 パス (stub → profile →
+  recompile) を廃止し、`abm.eval` 完了直後に entry を bake する方式に。`Hopt != Horg` (profile が
+  乗ったもの) は PGC `SD_<Hopt>.c` + `hopt_index.txt`、`Hopt == Horg` は AOT `SD_<Horg>.c`
+  としてコンパイル。eval 中の例外で bake がスキップされる (crashed run の profile を永続化しない)。
+  次プロセスは on_parse で cs_load(entry, file) を呼び、索引経由で PGC を即採用。
+  fib は AOT (0.40s) → PGC (0.34s) で約 14% 改善、optcarrot は plain 45.6 fps → AOT 72.0 fps
+  → PGC 86.5 fps (PGC は AOT より +20%)

@@ -84,10 +84,12 @@ cs_init = ->() {
   AbRuby.cs_init(store_dir, ABRUBY_DIR, ABRUBY_SO_MTIME)
 }
 
-# Compile an AST entry node
-cs_compile = ->(ast, label = nil) {
-  $stderr.puts "cs_compile: #{label}" if verbose
-  AbRuby.cs_compile(ast)
+# Compile an AST entry node.  `file` toggles AOT vs PGC:
+#   nil — AOT: emits SD_<Horg>.c, no profile info
+#   str — PGC: emits SD_<Hopt>.c, records (Horg, file, line) → Hopt in index
+cs_compile = ->(ast, label: nil, file: nil) {
+  $stderr.puts "cs_compile: #{label}#{' [pgc]' if file}" if verbose
+  AbRuby.cs_compile(ast, file)
 }
 
 case mode
@@ -121,10 +123,10 @@ when :compile
     src = read_file.(f)
     $stderr.puts "compile: #{f}" if verbose
     ast = abm.parse(src, f)
-    cs_compile.(ast, f)
+    cs_compile.(ast, label: f)  # AOT
     all_entries << [f, ast]
     abm.last_entries.each do |name, body|
-      cs_compile.(body, "#{f}:#{name}")
+      cs_compile.(body, label: "#{f}:#{name}")  # AOT
       all_entries << ["#{f}:#{name}", body]
     end
   end
@@ -152,18 +154,22 @@ when :compile
   end
 
 when :pgc
-  # Profile-guided compilation (run-once then leave baked code store for next run):
-  #   pass 1: compile stubs, cs_build, cs_reload, cs_load all entries.
-  #     Caches each node's HASH based on its parse-time kind (important:
-  #     later cs_compile calls return the cached hash even after swap).
-  #   run: exercise the program.  swap_dispatcher updates inner node kinds
-  #     (e.g. node_call1 → node_call1_ast) and method_cache_fill populates
-  #     mc->prologue / mc->prologue_kind.  These become the profile.
-  #   pass 2: recompile entries.  SPECIALIZE sees post-swap kinds and
-  #     emits EVAL_<specialized>(...) calls; storageless PGO operands
-  #     (method_prologue_t baked_prologue) get filled from mc.  Same
-  #     SD_ filename (cached hash) — content is overwritten with the baked
-  #     version.  Exit — next process picks up the baked code store.
+  # Profile-guided compilation — a single-pass, bake-at-exit design:
+  #
+  #   1. The program runs normally.  If a previous --pgc run already
+  #      populated code_store, on_parse cs_loads those baked SD_<Hopt>
+  #      entries so they take effect from the very first evaluation.
+  #   2. swap_dispatcher updates inner node kinds and method_cache_fill
+  #      populates mc->prologue / prologue_kind as usual — that is the
+  #      profile.
+  #   3. At process exit we iterate every parsed entry; those whose HOPT
+  #      diverges from HORG (i.e. profile information has actually been
+  #      recorded) are re-emitted as SD_<Hopt>.c and recorded in
+  #      hopt_index.txt.  Entries untouched by the run are skipped.
+  #      When execution counts land, replace the filter with a count
+  #      threshold.
+  #   4. cs_build rebuilds all.so.  Next invocation picks up the new
+  #      baked dispatchers via astro_cs_load's PGC lookup.
   run_script = code ? nil : ARGV.shift
   src = code || (run_script && read_file.(run_script))
   unless src
@@ -172,41 +178,49 @@ when :pgc
   end
 
   cs_init.()
-  AbRuby.compiled_only = true if compiled_only
+  # --compiled-only is nonsensical in --pgc (first run has nothing baked)
+  # so we ignore it; the user's intent is "prepare the store for later
+  # --compiled-only runs".
+  AbRuby.compiled_only = false
 
-  # Collect every AST entry the parser produces so we can re-compile them
-  # after profiling.
-  compiled_entries = []
+  baked_entries = []  # [(label, node, pgc_file)]
   AbRuby::Parser.on_parse = ->(parsed_ast, entries, src_file) {
     label = src_file || '-e'
-    cs_compile.(parsed_ast, label)
-    compiled_entries << [label, parsed_ast]
+    # Stable placeholder for inline runs so repeated --pgc invocations
+    # reuse the same index keys.
+    pgc_file = src_file || '-e'
+    new_nodes = [[label, parsed_ast, pgc_file]]
     entries.each do |name, body|
-      cs_compile.(body, "#{label}:#{name}")
-      compiled_entries << ["#{label}:#{name}", body]
+      new_nodes << ["#{label}:#{name}", body, pgc_file]
     end
-    $stderr.puts "pgc pass1: cs_build" if verbose
-    AbRuby.cs_build(RUBY_CFLAGS)
-    AbRuby.cs_reload
-    compiled_entries.each { |_, node| AbRuby.cs_load(node) }
+    baked_entries.concat(new_nodes)
+    # If a previous --pgc run already baked these entries, swap them in
+    # now so the profiling run benefits from prior PGC.  Only the new
+    # nodes from this parse — older entries are already bound.
+    new_nodes.each { |_, node, file| AbRuby.cs_load(node, file) }
   }
 
   abm = AbRuby.new
   abm.current_file = run_script if run_script
-  $stderr.puts "pgc: parsing + compile stubs" if verbose
-  ast = abm.parse(src)
+  $stderr.puts "pgc: run #{run_script || '-e'}" if verbose
+  abm.eval(src)
 
-  # Profiling run: populate mc->prologue, let inner nodes swap.  swap_dispatcher
-  # updates inner (non-entry) nodes because only entries are is_specialized.
-  $stderr.puts "pgc: profiling run" if verbose
-  abm.eval_ast(ast)
-
-  # Recompile entries with profile data baked in, rebuild.  The next
-  # process invocation (e.g. abruby file.rb) loads the baked SD_s via
-  # cs_init and benefits from the PGO.
-  $stderr.puts "pgc pass2: recompile with profile data" if verbose
-  compiled_entries.each { |label, node| cs_compile.(node, label) }
-  AbRuby.cs_build(RUBY_CFLAGS)
+  # Bake right after the script finishes (skipped if eval raised — we
+  # don't want to persist profile from a crashed run).  Once execution
+  # counts land, gate the PGC side by count threshold; for now:
+  #   - Hopt != Horg  → PGC  (SD_<Hopt>.c, baked prologue etc.)
+  #   - Hopt == Horg  → AOT  (SD_<Horg>.c, profile-free fallback so a
+  #                           subsequent --compiled-only invocation
+  #                           doesn't hit an interpreter-only node).
+  pgc_ents, aot_ents = baked_entries.partition { |_, node, _|
+    AbRuby.horg(node) != AbRuby.hopt(node)
+  }
+  if verbose
+    $stderr.puts "pgc bake: pgc=#{pgc_ents.size} aot=#{aot_ents.size} of #{baked_entries.size}"
+  end
+  pgc_ents.each { |label, node, file| cs_compile.(node, label: label, file: file) }
+  aot_ents.each { |label, node, _file| cs_compile.(node, label: label) }
+  AbRuby.cs_build(RUBY_CFLAGS) if baked_entries.any?
   $stderr.puts "pgc: done" if verbose
 
 when :compile_first
@@ -242,13 +256,13 @@ when :compile_first
     label = src_file || '-e'
     new_nodes = []
     unless already_compiled.(parsed_ast)
-      cs_compile.(parsed_ast, label)
-      new_nodes << [label, parsed_ast]
+      cs_compile.(parsed_ast, label: label)  # AOT
+      new_nodes << [label, parsed_ast, src_file]
     end
     entries.each do |name, body|
       next if already_compiled.(body)
-      cs_compile.(body, "#{label}:#{name}")
-      new_nodes << ["#{label}:#{name}", body]
+      cs_compile.(body, label: "#{label}:#{name}")  # AOT
+      new_nodes << ["#{label}:#{name}", body, src_file]
     end
 
     if new_nodes.empty?
@@ -264,7 +278,7 @@ when :compile_first
     # pointers from the earlier image still work (we keep old mappings),
     # but nodes whose dlsym lookup missed on that older (smaller) image
     # need to be rebound now that their SD_ symbol exists.
-    compiled_entries.each { |_, node| AbRuby.cs_load(node) }
+    compiled_entries.each { |_, node, file| AbRuby.cs_load(node, file) }
   }
 
   abm = AbRuby.new
@@ -277,7 +291,7 @@ when :compile_first
   ast = abm.parse(src)
 
   if dump_mode == :disasm
-    compiled_entries.each do |label, node|
+    compiled_entries.each do |label, node, _file|
       $stdout.flush
       puts "--- #{label} ---"
       $stdout.flush
@@ -303,6 +317,16 @@ when :run
   else
     cs_init.()
     AbRuby.compiled_only = true if compiled_only
+
+    # For each parsed entry (top-level AST + method/class/module/block
+    # bodies), run cs_load with the source file so the PGC (Hopt) index
+    # lookup fires.  Inner nodes already go through OPTIMIZE → cs_load
+    # (file=nil, AOT-only) during ALLOC.
+    AbRuby::Parser.on_parse = ->(parsed_ast, entries, src_file) {
+      pgc_file = src_file || '-e'
+      AbRuby.cs_load(parsed_ast, pgc_file)
+      entries.each { |_name, body| AbRuby.cs_load(body, pgc_file) }
+    }
 
     abm = AbRuby.new
     abm.current_file = run_script if run_script

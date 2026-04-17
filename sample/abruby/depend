@@ -1,6 +1,6 @@
 # ASTroGen rules
 ASTROGEN = ruby -I ../../lib -r ./abruby_gen -e 'ASTroGen.start([], node_def_class: AbRubyNodeDef)'
-GENERATED = node_eval.c node_dispatch.c node_hash.c node_dump.c node_alloc.c node_specialize.c node_head.h node_mark.c node_replace.c
+GENERATED = node_eval.c node_dispatch.c node_hash.c node_hopt.c node_dump.c node_alloc.c node_specialize.c node_head.h node_mark.c node_replace.c
 
 node_eval.c: node.def ../../lib/astrogen.rb abruby_gen.rb
 	$(ASTROGEN)

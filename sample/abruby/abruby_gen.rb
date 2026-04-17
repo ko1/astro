@@ -6,14 +6,23 @@ class AbRubyNodeDef < ASTroGen::NodeDef
     func_prefix: "MARKER_",
     kind_field: "node_marker_func_t marker"
 
+  # Hopt (profile-aware hash) — generates node_hopt.c with HOPT_<name>
+  # functions and wires .hopt_func on each NodeKind.  Sits alongside the
+  # base framework's :hash task (Horg, file node_hash.c, .hash_func field).
+  register_gen_task :hopt,
+    func_typedef: "typedef node_hash_t (*node_hash_func_t)(struct Node *n);",
+    func_prefix: "HOPT_",
+    kind_field: "node_hash_func_t hopt_func"
+
   class Node < ASTroGen::NodeDef::Node
     class Operand < ASTroGen::NodeDef::Node::Operand
       # method_prologue_t operand is storageless: no NODE struct field, no
       # alloc parameter.  DISPATCH passes NULL (interpreter path).  SPECIALIZE
       # queries the runtime resolver (abruby_pgo_prologue_name) for a baked
       # literal name — NULL if the resolver refuses to bake (POLY, unfilled,
-      # etc.).  HASH contributes based on the baked literal so that PGO-baked
-      # and unbaked specialized sites get distinct SD_ hashes.
+      # etc.).  HOPT contributes based on the baked literal so that PGO-baked
+      # and unbaked specialized sites get distinct keys (HORG skips
+      # storageless operands entirely).
       def storageless?
         @type == 'method_prologue_t' || super
       end
@@ -23,7 +32,7 @@ class AbRubyNodeDef < ASTroGen::NodeDef
         super
       end
 
-      def hash_call(val)
+      def hash_call(val, kind: :horg)
         return "0" if ref?
         case @type
         when 'ID'
@@ -31,7 +40,8 @@ class AbRubyNodeDef < ASTroGen::NodeDef
         when 'method_prologue_t'
           # `val` is the NODE* (the storageless hash path passes n).  The
           # resolver returns a stable C-string identifier for the baked
-          # prologue or "none" if we're not baking here.
+          # prologue or "none" if we're not baking here.  Only contributes
+          # to HOPT — HORG rejects storageless operands before reaching here.
           "hash_cstr(abruby_pgo_prologue_name_for(#{val}))"
         else
           super
@@ -107,5 +117,14 @@ class AbRubyNodeDef < ASTroGen::NodeDef
 
     #{@nodes.map{|name, n| n.build_marker}.join("\n")}
     C
+  end
+
+  def build_hopt
+    <<~C__
+    // This file is auto-generated from #{@file}.
+    // Hopt (structural + profile) hash functions
+
+    #{@nodes.map{|name, n| n.build_hopt_func}.join("\n")}
+    C__
   end
 end

@@ -2156,20 +2156,28 @@ rb_astro_cs_init(VALUE self, VALUE store_dir, VALUE src_dir, VALUE version)
     return Qnil;
 }
 
-// AbRuby.cs_load(node) → true/false
+// AbRuby.cs_load(node, file = nil) → true/false
+// file is used for PGC (Hopt) index lookup; pass nil for AOT-only.
 static VALUE
-rb_astro_cs_load(VALUE self, VALUE node_val)
+rb_astro_cs_load(int argc, VALUE *argv, VALUE self)
 {
+    VALUE node_val, file_val;
+    rb_scan_args(argc, argv, "11", &node_val, &file_val);
     NODE *n = DATA_PTR(node_val);
-    return astro_cs_load(n) ? Qtrue : Qfalse;
+    const char *file = NIL_P(file_val) ? NULL : StringValueCStr(file_val);
+    return astro_cs_load(n, file) ? Qtrue : Qfalse;
 }
 
-// AbRuby.cs_compile(node)
+// AbRuby.cs_compile(node, file = nil)
+// file != nil switches to PGC mode (SD_<Hopt>.c + index entry).
 static VALUE
-rb_astro_cs_compile(VALUE self, VALUE node_val)
+rb_astro_cs_compile(int argc, VALUE *argv, VALUE self)
 {
+    VALUE node_val, file_val;
+    rb_scan_args(argc, argv, "11", &node_val, &file_val);
     NODE *n = DATA_PTR(node_val);
-    astro_cs_compile(n);
+    const char *file = NIL_P(file_val) ? NULL : StringValueCStr(file_val);
+    astro_cs_compile(n, file);
     return Qnil;
 }
 
@@ -2199,6 +2207,22 @@ rb_astro_cs_disasm(VALUE self, VALUE node_val)
     NODE *n = DATA_PTR(node_val);
     astro_cs_disasm(n);
     return Qnil;
+}
+
+// AbRuby.horg(node) → Integer — structural (Horg) hash of node
+static VALUE
+rb_astro_horg(VALUE self, VALUE node_val)
+{
+    NODE *n = DATA_PTR(node_val);
+    return ULL2NUM((unsigned long long)HORG(n));
+}
+
+// AbRuby.hopt(node) → Integer — profile-aware (Hopt) hash of node
+static VALUE
+rb_astro_hopt(VALUE self, VALUE node_val)
+{
+    NODE *n = DATA_PTR(node_val);
+    return ULL2NUM((unsigned long long)HOPT(n));
 }
 
 void
@@ -2347,10 +2371,12 @@ Init_abruby(void)
 
     // code store
     rb_define_singleton_method(rb_cAbRuby, "cs_init", rb_astro_cs_init, 3);
-    rb_define_singleton_method(rb_cAbRuby, "cs_load", rb_astro_cs_load, 1);
-    rb_define_singleton_method(rb_cAbRuby, "cs_compile", rb_astro_cs_compile, 1);
+    rb_define_singleton_method(rb_cAbRuby, "cs_load", rb_astro_cs_load, -1);
+    rb_define_singleton_method(rb_cAbRuby, "cs_compile", rb_astro_cs_compile, -1);
     rb_define_singleton_method(rb_cAbRuby, "cs_build", rb_astro_cs_build, -1);
     rb_define_singleton_method(rb_cAbRuby, "cs_reload", rb_astro_cs_reload, 0);
+    rb_define_singleton_method(rb_cAbRuby, "horg", rb_astro_horg, 1);
+    rb_define_singleton_method(rb_cAbRuby, "hopt", rb_astro_hopt, 1);
     rb_define_singleton_method(rb_cAbRuby, "cs_disasm", rb_astro_cs_disasm, 1);
 
 #if ABRUBY_PROFILE

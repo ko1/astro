@@ -37,6 +37,41 @@ dispatch_info(CTX *c, NODE *n, bool end)
 
 #include "astro_node.c"
 
+// --- Hopt (profile-aware) hash ---
+//
+// HORG / HOPT split: HORG is the structural hash provided by astro_node.c
+// (the classic HASH() function, keyed by kind canonical name + structural
+// operands).  HOPT additionally folds profile state (actual kind, baked
+// prologue identifier) — computed only when baking PGC code.  Two caches
+// on NodeHead keep these independent so a swap_dispatcher that flips the
+// kind does not invalidate Horg.
+
+node_hash_t
+HORG(NODE *n)
+{
+    return HASH(n);  // HASH() already emits the structural form
+}
+
+node_hash_t
+HOPT(NODE *n)
+{
+    if (n == NULL) return 0;
+    if (n->head.flags.has_hash_opt) return n->head.hash_opt;
+    if (n->head.kind->hopt_func) {
+        n->head.flags.has_hash_opt = true;
+        return n->head.hash_opt = (*n->head.kind->hopt_func)(n);
+    }
+    return 0;
+}
+
+node_hash_t
+hash_node_opt(NODE *n)
+{
+    if (!n) return 0;
+    if (n->head.flags.has_hash_opt) return n->head.hash_opt;
+    return HOPT(n);
+}
+
 // --- Code store (SPECIALIZE, astro_cs_*) ---
 
 #include "astro_code_store.c"
@@ -52,7 +87,11 @@ OPTIMIZE(NODE *n)
         return n;
     }
 
-    if (astro_cs_load(n)) {
+    // OPTIMIZE runs during ALLOC for every node; the source file is not
+    // readily available here and entry nodes are cs_load'd explicitly from
+    // Ruby with file context.  Passing NULL confines this path to the AOT
+    // (SD_<Horg>) lookup.
+    if (astro_cs_load(n, NULL)) {
         if (OPTION.verbose) {
             fprintf(stderr, "hit!: h:%16lx %s ",
                     (unsigned long)hash_node(n),
@@ -138,6 +177,7 @@ abruby_debug_null_dispatch(NODE *n, const char *caller)
 #include "node_dispatch.c"
 #include "node_dump.c"
 #include "node_hash.c"
+#include "node_hopt.c"
 #include "node_specialize.c"
 
 // GC mark helpers (used by generated node_mark.c)
