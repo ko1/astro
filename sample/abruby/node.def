@@ -187,7 +187,7 @@ abruby_class_find_method(const struct abruby_class *klass, ID name)
     return NULL;
 }
 
-extern VALUE abruby_new_object(struct abruby_class *klass);
+extern VALUE abruby_new_object(CTX *c, struct abruby_class *klass);
 extern void abruby_object_grow_ivars(struct abruby_object *obj, unsigned int new_cnt);
 
 // === Literals ===
@@ -475,16 +475,22 @@ node_hash_new(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_i
 
 // === Instance Variables ===
 
-// Slow path for ivar get cache miss: consult the class shape, update the IC.
+// Slow path for ivar get cache miss.  self is the wrapper VALUE so we can
+// read its shape_id from T_DATA flags.
 static __attribute__((noinline)) VALUE
-node_ivar_get_slow(const struct abruby_object *obj, ID name, struct ivar_cache *ic)
+node_ivar_get_slow(VALUE self, ID name, struct ivar_cache *ic)
 {
+    const struct abruby_object *obj =
+        (const struct abruby_object *)RTYPEDDATA_GET_DATA(self);
     VALUE slot_fix;
     if (ab_id_table_lookup(&obj->klass->ivar_shape, name, &slot_fix)) {
         unsigned int slot = (unsigned int)FIX2ULONG(slot_fix);
-        ic->klass = obj->klass;
-        ic->slot = slot;
         if (slot < obj->ivar_cnt) {
+            // Reads don't transition → post == pre.
+            uint32_t shape = abruby_shape_id_read(self);
+            ic->shape_id = shape;
+            ic->post_shape_id = shape;
+            ic->slot = slot;
             return abruby_object_ivar_read(obj, slot);
         }
     }
@@ -495,23 +501,29 @@ NODE_DEF
 node_ivar_get(CTX * restrict c, NODE * restrict n, ID name, struct ivar_cache *ic@ref)
 {
     ab_verify(c->current_frame->self);
-    const struct abruby_object *obj =
-        (const struct abruby_object *)RTYPEDDATA_GET_DATA(c->current_frame->self);
-    if (LIKELY(ic->klass == obj->klass && ic->slot < obj->ivar_cnt)) {
-        // Branch-free inline slot fast path: most ivars fit inline.
+    VALUE self = c->current_frame->self;
+    // Guard extra-strict against shape_id == 0: a cold cache (ic cleared
+    // by alloc) matches self's 0 shape_id on non-abruby_object receivers,
+    // misreading obj->ivars at arbitrary flag-bit positions.
+    if (LIKELY(ic->shape_id != 0 && ic->shape_id == abruby_shape_id_read(self))) {
+        // shape match ⇒ slot is valid (ivar_cnt ≥ slot+1 by construction).
+        const struct abruby_object *obj =
+            (const struct abruby_object *)RTYPEDDATA_GET_DATA(self);
         if (LIKELY(ic->slot < ABRUBY_OBJECT_INLINE_IVARS)) {
             return RESULT_OK(obj->ivars[ic->slot]);
         }
         return RESULT_OK(obj->extra_ivars[ic->slot - ABRUBY_OBJECT_INLINE_IVARS]);
     }
-    return RESULT_OK(node_ivar_get_slow(obj, name, ic));
+    return RESULT_OK(node_ivar_get_slow(self, name, ic));
 }
 
 static __attribute__((noinline)) void
-node_ivar_set_slow(struct abruby_object *obj, ID name, VALUE v, struct ivar_cache *ic)
+node_ivar_set_slow(CTX * restrict c, VALUE self, ID name, VALUE v, struct ivar_cache *ic)
 {
-    // Look up the slot in the class shape; add it if new.
+    struct abruby_object *obj =
+        (struct abruby_object *)RTYPEDDATA_GET_DATA(self);
     struct abruby_class *klass = (struct abruby_class *)obj->klass;
+    // Look up the slot in the class shape; add it if new.
     VALUE slot_fix;
     unsigned int slot;
     if (ab_id_table_lookup(&klass->ivar_shape, name, &slot_fix)) {
@@ -520,13 +532,21 @@ node_ivar_set_slow(struct abruby_object *obj, ID name, VALUE v, struct ivar_cach
         slot = klass->ivar_shape.cnt;
         ab_id_table_insert(&klass->ivar_shape, name, LONG2FIX((long)slot));
     }
+    // Remember the shape BEFORE the grow, so subsequent sets on fresh
+    // objects arriving at the same pre-shape hit the fast path.
+    uint32_t pre_shape = abruby_shape_id_read(self);
     abruby_object_grow_ivars(obj, slot + 1);
     if (slot < ABRUBY_OBJECT_INLINE_IVARS) {
         obj->ivars[slot] = v;
     } else {
         obj->extra_ivars[slot - ABRUBY_OBJECT_INLINE_IVARS] = v;
     }
-    ic->klass = obj->klass;
+    uint32_t post_shape = abruby_shape_for(c->abm, klass, obj->ivar_cnt);
+    if (post_shape != pre_shape) {
+        abruby_shape_id_write(self, post_shape);
+    }
+    ic->shape_id = pre_shape;
+    ic->post_shape_id = post_shape;
     ic->slot = slot;
 }
 
@@ -535,20 +555,40 @@ node_ivar_set(CTX * restrict c, NODE * restrict n, ID name, NODE *value, struct 
 {
     VALUE v = UNWRAP(EVAL_ARG(c, value));
     ab_verify(c->current_frame->self);
-    if (UNLIKELY(!RB_TYPE_P(c->current_frame->self, T_DATA))) {
+    VALUE self = c->current_frame->self;
+    if (UNLIKELY(!RB_TYPE_P(self, T_DATA))) {
         rb_raise(rb_eRuntimeError, "can't set instance variable on non-object");
     }
-    struct abruby_object *obj =
-        (struct abruby_object *)RTYPEDDATA_GET_DATA(c->current_frame->self);
-    if (LIKELY(ic->klass == obj->klass && ic->slot < obj->ivar_cnt)) {
-        if (LIKELY(ic->slot < ABRUBY_OBJECT_INLINE_IVARS)) {
-            obj->ivars[ic->slot] = v;
-        } else {
-            obj->extra_ivars[ic->slot - ABRUBY_OBJECT_INLINE_IVARS] = v;
+    // Guard extra-strict against shape_id == 0: a cold cache (ic cleared
+    // by alloc) matches self's 0 shape_id on non-abruby_object receivers,
+    // misreading obj->ivars at arbitrary flag-bit positions.
+    // Fast path covers two cases:
+    //   (a) overwrite of an existing slot — pre_shape == post_shape, no
+    //       transition; slot is already within obj->ivar_cnt so both the
+    //       inline and overflow store positions are valid.
+    //   (b) inline grow — pre != post, but slot < INLINE_IVARS, so the
+    //       inline `ivars` array was already there; just update ivar_cnt
+    //       and the shape_id.
+    // An overflow grow (pre != post, slot >= INLINE) must go through the
+    // slow path because extra_ivars may need to be allocated.
+    if (LIKELY(ic->shape_id != 0 && ic->shape_id == abruby_shape_id_read(self))) {
+        bool transition = (ic->shape_id != ic->post_shape_id);
+        if (LIKELY(!(transition && ic->slot >= ABRUBY_OBJECT_INLINE_IVARS))) {
+            struct abruby_object *obj =
+                (struct abruby_object *)RTYPEDDATA_GET_DATA(self);
+            if (LIKELY(ic->slot < ABRUBY_OBJECT_INLINE_IVARS)) {
+                obj->ivars[ic->slot] = v;
+            } else {
+                obj->extra_ivars[ic->slot - ABRUBY_OBJECT_INLINE_IVARS] = v;
+            }
+            if (UNLIKELY(transition)) {
+                if (obj->ivar_cnt < ic->slot + 1) obj->ivar_cnt = ic->slot + 1;
+                abruby_shape_id_write(self, ic->post_shape_id);
+            }
+            return RESULT_OK(v);
         }
-        return RESULT_OK(v);
     }
-    node_ivar_set_slow(obj, name, v, ic);
+    node_ivar_set_slow(c, self, name, v, ic);
     return RESULT_OK(v);
 }
 
@@ -1446,7 +1486,12 @@ prologue_ivar_setter(CTX * restrict c, NODE * restrict call_site,
             ab_id_table_insert(&obj_klass->ivar_shape, ivar_name, LONG2FIX((long)slot));
         }
     }
-    if (slot >= obj->ivar_cnt) abruby_object_grow_ivars(obj, slot + 1);
+    if (slot >= obj->ivar_cnt) {
+        abruby_object_grow_ivars(obj, slot + 1);
+        // shape transitions on ivar_cnt growth.
+        abruby_shape_id_write(recv_self,
+            abruby_shape_for(c->abm, obj->klass, obj->ivar_cnt));
+    }
     if (LIKELY(slot < ABRUBY_OBJECT_INLINE_IVARS)) {
         obj->ivars[slot] = v;
     } else {

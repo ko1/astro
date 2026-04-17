@@ -18,13 +18,13 @@ void SPECIALIZE(FILE *fp, NODE *n);
 char *SPECIALIZED_SRC(NODE *n);
 
 VALUE abruby_ivar_get(VALUE self, ID name);
-void abruby_ivar_set(VALUE self, ID name, VALUE val);
+void abruby_ivar_set(CTX *c, VALUE self, ID name, VALUE val);
 struct abruby_method *abruby_find_method(const struct abruby_class *klass, ID name);
 
 VALUE abruby_wrap_class(struct abruby_class *klass);
 void abruby_class_set_const(struct abruby_class *klass, ID name, VALUE val);
 struct abruby_class *abruby_unwrap_class(VALUE obj);
-VALUE abruby_new_object(struct abruby_class *klass);
+VALUE abruby_new_object(CTX *c, struct abruby_class *klass);
 
 // String helpers
 VALUE abruby_str_new(CTX *c, VALUE rb_str);

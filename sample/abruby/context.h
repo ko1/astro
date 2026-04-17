@@ -218,6 +218,11 @@ struct abruby_class {
     // First seen names are assigned sequential slots. The IC caches (klass, slot)
     // and reads/writes obj->ivars[slot] directly with no per-object table lookup.
     struct ab_id_table ivar_shape;
+    // shape_id cache: shape_ids_by_cnt[k] is the shape_id for
+    // (this class, k ivars set).  0 means unassigned — first observation
+    // allocates a new id via abruby_shape_for.
+    uint32_t *shape_ids_by_cnt;
+    uint32_t  shape_ids_by_cnt_capa;
 };
 
 // Direct-indexed instance variables.
@@ -674,6 +679,22 @@ struct abruby_machine {
     struct abruby_class *proc_class;         // for Proc.new / lambda / & conversion
     struct abruby_class *fiber_class;        // for Fiber.new / resume / yield
     struct abruby_fiber *root_fiber;         // the bootstrap (main) fiber
+
+    // Shape table.  A shape_id identifies a (class, ivar_cnt) pair.  It
+    // lives in an object's T_DATA flags field and is the key that
+    // struct ivar_cache guards on, replacing a raw class pointer so the
+    // specializer can bake it as a literal.
+    //
+    // shape_id 0 is reserved for "no shape" / pre-init.  Valid ids are
+    // 1..ABRUBY_SHAPE_MAX.
+    struct abruby_shape *shapes;   // indexed by shape_id
+    uint32_t shape_count;          // 1-based valid count (entry 0 unused)
+    uint32_t shape_capa;
+};
+
+struct abruby_shape {
+    struct abruby_class *klass;
+    uint32_t ivar_cnt;
 };
 
 // exception object
@@ -727,12 +748,45 @@ struct method_cache {
 };
 
 // inline ivar cache per node_ivar_get / node_ivar_set site.
-// Guard: klass matches obj's klass. If so, slot is authoritative (the class
-// shape guarantees every instance of klass has this ivar at this slot).
+//
+// Guard: shape_id matches obj's shape_id on arrival (pre-op).  slot is
+// the direct index into obj->ivars.  For ivar_set, the pre-op shape may
+// differ from the post-op shape when the write grows ivar_cnt — in that
+// case post_shape_id carries the shape to write back onto obj after the
+// store.  For ivar_get, post_shape_id is unused (and ends up equal to
+// shape_id in the common no-transition fill).
+//
+// shape_id == 0 means not filled.
 struct ivar_cache {
-    const struct abruby_class *klass;  // NULL means not yet filled
-    unsigned int slot;                 // direct index into obj->ivars
+    uint32_t shape_id;
+    uint32_t post_shape_id;
+    unsigned int slot;
 };
+
+// Shape_id lives in the HIGH 32 bits of the T_DATA flags field, so the
+// hot-path read is a plain 32-bit load from flags+4 (no shift / mask).
+// 32 bits gives 4G shapes — far more than any realistic program will
+// ever produce.  0 is reserved for "no shape assigned".
+static inline uint32_t
+abruby_shape_id_read(VALUE obj)
+{
+    // Read upper 32 bits of flags directly — compiles to a single
+    // 32-bit mov on little-endian x86/arm.
+    return *((const uint32_t *)(((const char *)RBASIC(obj)) + 4));
+}
+
+static inline void
+abruby_shape_id_write(VALUE obj, uint32_t shape_id)
+{
+    *((uint32_t *)(((char *)RBASIC(obj)) + 4)) = shape_id;
+}
+
+#define ABRUBY_SHAPE_MAX UINT32_MAX
+
+// Look up (or allocate) the shape_id for (klass, ivar_cnt).  Returns 0
+// only if the shape table is exhausted (extremely unlikely — 1M slots).
+uint32_t abruby_shape_for(struct abruby_machine *abm,
+                          struct abruby_class *klass, uint32_t ivar_cnt);
 
 
 #define LIKELY(expr) __builtin_expect((expr), 1)

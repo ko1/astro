@@ -189,6 +189,7 @@ abruby_data_free(void *ptr)
         struct abruby_class *cls = (struct abruby_class *)ptr;
         ab_id_table_free(&cls->methods);
         ab_id_table_free(&cls->constants);
+        if (cls->shape_ids_by_cnt) ruby_xfree(cls->shape_ids_by_cnt);
         // Do NOT free class structs — other objects reference them via
         // klass pointers, and GC sweep order is arbitrary.  The leak
         // is bounded (one set of ~20 classes per abm instance).
@@ -231,8 +232,54 @@ const rb_data_type_t abruby_data_type = {
 // two calls, inner CRuby VALUEs stored in the calloc'd struct are
 // invisible to the GC and can be collected if GC triggers.
 
+// Shape table: shape_id identifies a (class, ivar_cnt) pair.  Lives on abm
+// and caches back-refs in each class's shape_ids_by_cnt.
+uint32_t
+abruby_shape_for(struct abruby_machine *abm,
+                 struct abruby_class *klass, uint32_t ivar_cnt)
+{
+    // Fast path: class-local cache hit.
+    if (ivar_cnt < klass->shape_ids_by_cnt_capa) {
+        uint32_t id = klass->shape_ids_by_cnt[ivar_cnt];
+        if (id != 0) return id;
+    } else {
+        // Grow class-local cache.
+        uint32_t new_capa = klass->shape_ids_by_cnt_capa == 0 ? 4
+                                                              : klass->shape_ids_by_cnt_capa * 2;
+        while (new_capa <= ivar_cnt) new_capa *= 2;
+        klass->shape_ids_by_cnt =
+            (uint32_t *)ruby_xrealloc(klass->shape_ids_by_cnt,
+                                      new_capa * sizeof(uint32_t));
+        for (uint32_t i = klass->shape_ids_by_cnt_capa; i < new_capa; i++) {
+            klass->shape_ids_by_cnt[i] = 0;
+        }
+        klass->shape_ids_by_cnt_capa = new_capa;
+    }
+
+    // Allocate a fresh shape id.  shape_count starts at 1 (0 reserved).
+    if (abm->shape_count == 0) abm->shape_count = 1;
+    uint32_t id = abm->shape_count;
+    if (id > ABRUBY_SHAPE_MAX) {
+        // Impossibly large program — fall back to "no shape" and let
+        // everything go through the slow path.
+        return 0;
+    }
+    if (id >= abm->shape_capa) {
+        uint32_t new_capa = abm->shape_capa == 0 ? 64 : abm->shape_capa * 2;
+        while (new_capa <= id) new_capa *= 2;
+        abm->shapes = (struct abruby_shape *)ruby_xrealloc(
+            abm->shapes, new_capa * sizeof(struct abruby_shape));
+        abm->shape_capa = new_capa;
+    }
+    abm->shapes[id].klass = klass;
+    abm->shapes[id].ivar_cnt = ivar_cnt;
+    klass->shape_ids_by_cnt[ivar_cnt] = id;
+    abm->shape_count = id + 1;
+    return id;
+}
+
 VALUE
-abruby_new_object(struct abruby_class *klass)
+abruby_new_object(CTX *c, struct abruby_class *klass)
 {
     struct abruby_object *obj;
     VALUE wrapper = TypedData_Make_Struct(rb_cAbRubyNode, struct abruby_object, &abruby_data_type, obj);
@@ -248,6 +295,7 @@ abruby_new_object(struct abruby_class *klass)
         obj->extra_ivars = (VALUE *)ruby_xmalloc2(extra, sizeof(VALUE));
         for (unsigned int i = 0; i < extra; i++) obj->extra_ivars[i] = Qnil;
     }
+    abruby_shape_id_write(wrapper, abruby_shape_for(c->abm, klass, n));
     return wrapper;
 }
 
@@ -591,7 +639,7 @@ abruby_call_method(CTX *c, VALUE recv, const struct abruby_method *method,
         c->current_frame->self = recv;
         ID ivar_name = method->u.ivar_accessor.ivar_name;
         VALUE v = (argc >= 1) ? argv[0] : Qnil;
-        abruby_ivar_set(recv, ivar_name, v);
+        abruby_ivar_set(c, recv, ivar_name, v);
         c->current_frame->self = save_self;
         return RESULT_OK(v);
     } else {
@@ -713,7 +761,7 @@ abruby_ivar_get(VALUE self, ID name)
 }
 
 void
-abruby_ivar_set(VALUE self, ID name, VALUE val)
+abruby_ivar_set(CTX *c, VALUE self, ID name, VALUE val)
 {
     ab_verify(self);
     if (!RB_TYPE_P(self, T_DATA)) {
@@ -730,8 +778,12 @@ abruby_ivar_set(VALUE self, ID name, VALUE val)
         slot = klass->ivar_shape.cnt;
         ab_id_table_insert(&klass->ivar_shape, name, LONG2FIX((long)slot));
     }
+    uint32_t old_cnt = obj->ivar_cnt;
     abruby_object_grow_ivars(obj, slot + 1);
     RB_OBJ_WRITE(self, abruby_object_ivar_slot(obj, slot), val);
+    if (obj->ivar_cnt != old_cnt) {
+        abruby_shape_id_write(self, abruby_shape_for(c->abm, klass, obj->ivar_cnt));
+    }
 }
 
 // Per-instance abruby_machine state (struct defined in context.h)
@@ -857,7 +909,11 @@ abm_free(void *ptr)
     // embedded in abm struct, not separately allocated).
     ab_id_table_free(&abm->main_class_body.methods);
     ab_id_table_free(&abm->main_class_body.constants);
+    if (abm->main_class_body.shape_ids_by_cnt) {
+        ruby_xfree(abm->main_class_body.shape_ids_by_cnt);
+    }
     ab_id_table_free(&abm->gvars);
+    if (abm->shapes) ruby_xfree(abm->shapes);
     // Per-instance built-in classes are T_DATA-wrapped; their structs and
     // inner tables are freed by abruby_data_free when their wrapper is GC'd.
     if (abm->current_fiber) {
@@ -1349,7 +1405,7 @@ init_abm(struct abruby_machine *abm)
 
     abm->current_fiber->root_frame.fp = abm->current_fiber->ctx.stack;
     /* sp removed */
-    abm->current_fiber->root_frame.self = abruby_new_object(&abm->main_class_body);
+    abm->current_fiber->root_frame.self = abruby_new_object(&abm->current_fiber->ctx, &abm->main_class_body);
 
     abm->current_fiber->ctx.current_class = NULL;
     abm->current_fiber->root_frame.entry = &abruby_empty_entry;
@@ -1948,7 +2004,7 @@ abruby_require_file(CTX *c, VALUE rb_path)
     req_frame.prev = save_frame;
     req_frame.caller_node = NULL;
     req_frame.block = NULL;
-    req_frame.self = abruby_new_object(&abm->main_class_body);
+    req_frame.self = abruby_new_object(c, &abm->main_class_body);
     req_frame.fp = c->stack;
     req_frame.entry = &req_entry;
     c->current_frame = &req_frame;

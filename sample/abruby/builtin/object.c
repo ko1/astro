@@ -186,7 +186,7 @@ static RESULT ab_object_ivar_set(CTX *c, VALUE self, unsigned int argc, VALUE *a
     if (ab_obj_type_p(n, ABRUBY_OBJ_SYMBOL)) id = SYM2ID(ab_sym_unwrap(n));
     else if (ab_obj_type_p(n, ABRUBY_OBJ_STRING)) id = rb_intern_str(RSTR(n));
     else return RESULT_OK(Qnil);
-    abruby_ivar_set(self, id, argv[1]);
+    abruby_ivar_set(c, self, id, argv[1]);
     return RESULT_OK(argv[1]);
 }
 

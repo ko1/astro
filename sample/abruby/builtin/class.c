@@ -3,7 +3,7 @@
 // Class#new (only on Class, not Module)
 static RESULT ab_class_new(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     struct abruby_class *klass = abruby_unwrap_class(self);
-    VALUE obj = abruby_new_object(klass);
+    VALUE obj = abruby_new_object(c, klass);
     const struct abruby_method *init = abruby_find_method(klass, c->ids->initialize);
     if (init) {
         // Push frame for initialize (needed for super to find the class).
@@ -42,7 +42,7 @@ static RESULT ab_class_new(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
           case ABRUBY_METHOD_IVAR_SETTER:
             // def initialize(v); @name = v; end — collapsed to ivar setter.
             // Write argv[0] into the named slot on the new obj (via its own shape).
-            abruby_ivar_set(obj, init->u.ivar_accessor.ivar_name, argv[0]);
+            abruby_ivar_set(c, obj, init->u.ivar_accessor.ivar_name, argv[0]);
             break;
           case ABRUBY_METHOD_IVAR_GETTER:
             // def initialize; @name; end — no side-effect for a constructor.
