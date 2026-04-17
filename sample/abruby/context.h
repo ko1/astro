@@ -763,25 +763,31 @@ struct ivar_cache {
     unsigned int slot;
 };
 
-// Shape_id lives in the HIGH 32 bits of the T_DATA flags field, so the
-// hot-path read is a plain 32-bit load from flags+4 (no shift / mask).
-// 32 bits gives 4G shapes — far more than any realistic program will
-// ever produce.  0 is reserved for "no shape assigned".
+// Shape_id lives in the T_DATA flags field, bits 12-31 (CRuby's
+// FL_USER0..FL_USER19 range — guaranteed unused by core for T_DATA).
+// Upper 32 bits of flags are off-limits: recent CRuby GC uses them for
+// IMEMO type tags and other per-type bookkeeping, and writing into
+// them corrupts the mark phase.  20 bits ⇒ 1M shape_ids, plenty for
+// any abruby program.  0 is reserved for "no shape assigned".
+#define ABRUBY_SHAPE_BITS   20u
+#define ABRUBY_SHAPE_SHIFT  12u
+#define ABRUBY_SHAPE_MAX    (((uint32_t)1 << ABRUBY_SHAPE_BITS) - 1u)
+#define ABRUBY_SHAPE_FLAG_MASK \
+    (((uint64_t)ABRUBY_SHAPE_MAX) << ABRUBY_SHAPE_SHIFT)
+
 static inline uint32_t
 abruby_shape_id_read(VALUE obj)
 {
-    // Read upper 32 bits of flags directly — compiles to a single
-    // 32-bit mov on little-endian x86/arm.
-    return *((const uint32_t *)(((const char *)RBASIC(obj)) + 4));
+    return (uint32_t)((RBASIC(obj)->flags >> ABRUBY_SHAPE_SHIFT) & ABRUBY_SHAPE_MAX);
 }
 
 static inline void
 abruby_shape_id_write(VALUE obj, uint32_t shape_id)
 {
-    *((uint32_t *)(((char *)RBASIC(obj)) + 4)) = shape_id;
+    RBASIC(obj)->flags =
+        (RBASIC(obj)->flags & ~ABRUBY_SHAPE_FLAG_MASK) |
+        ((uint64_t)(shape_id & ABRUBY_SHAPE_MAX) << ABRUBY_SHAPE_SHIFT);
 }
-
-#define ABRUBY_SHAPE_MAX UINT32_MAX
 
 // Look up (or allocate) the shape_id for (klass, ivar_cnt).  Returns 0
 // only if the shape table is exhausted (extremely unlikely — 1M slots).
