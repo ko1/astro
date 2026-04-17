@@ -68,6 +68,19 @@ module ASTroGen
           !ref? && /NODE\s\*/ =~ @type
         end
 
+        # "Storageless" operands are not stored in the NODE struct (no field,
+        # no allocator parameter, no dump, no replace).  They appear only in
+        # the EVAL/DISPATCH signature as a parameter, with DISPATCH providing
+        # a default value and SPECIALIZE providing a baked (possibly PGO-
+        # derived) value.  Subclasses override based on operand type.
+        def storageless? = false
+
+        # For storageless operands: C expression emitted by DISPATCH as the
+        # argument value.  Subclasses override.
+        def dispatch_default_expr
+          raise "dispatch_default_expr not implemented for #{@type}"
+        end
+
         def eval_param
           if ref?
             "#{@type} #{@name}"
@@ -111,6 +124,7 @@ module ASTroGen
         end
 
         def build_dumper name
+          return nil if storageless?
           case @type
           when 'NODE *'
             "        DUMP(fp, n->u.#{name}.#{self.name}, oneline);"
@@ -216,7 +230,7 @@ module ASTroGen
       end
 
       def build_head_struct
-        fields = @operands.map{ "    #{it.struct_field_join};\n"}.join
+        fields = @operands.reject(&:storageless?).map{ "    #{it.struct_field_join};\n"}.join
 
         fields = "    char _dummy;\n" if fields.empty?
         <<~C
@@ -233,7 +247,8 @@ module ASTroGen
             node_hash_t h = hash_cstr(#{@name.dump});
         #{
           @operands.map{
-            hash_call = it.hash_call("n->u.#{@name}.#{it.name}")
+            val = it.storageless? ? "n" : "n->u.#{@name}.#{it.name}"
+            hash_call = it.hash_call(val)
             "    h = hash_merge(h, #{hash_call})"
           }.join(";\n")};
             return h;
@@ -244,7 +259,7 @@ module ASTroGen
       end
 
       def build_allocator_decl
-        alloc_ops = @operands.reject(&:ref?)
+        alloc_ops = @operands.reject{|o| o.ref? || o.storageless?}
         params = alloc_ops.map{it.join}.join(', ')
         params = 'void' if params.empty?
         "NODE *ALLOC_#{name}(#{params});"
@@ -256,7 +271,7 @@ module ASTroGen
 
 
       def build_allocator
-        alloc_ops = @operands.reject(&:ref?)
+        alloc_ops = @operands.reject{|o| o.ref? || o.storageless?}
         ref_ops = @operands.select(&:ref?)
         sname = "#{@name}_struct"
         <<~C
@@ -300,7 +315,9 @@ module ASTroGen
             dispatch_info(c, n, 0);
             #{result_type} v = EVAL_#{name}(c, n#{
               comma_operands(@operands.map{
-                if it.ref?
+                if it.storageless?
+                  it.dispatch_default_expr
+                elsif it.ref?
                   "&n->u.#{name}.#{it.name}"
                 else
                   arg = +"n->u.#{name}.#{it.name}"

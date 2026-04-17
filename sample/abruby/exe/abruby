@@ -38,7 +38,7 @@ end
 opt.on('--plain', 'run without code store') { mode = :plain }
 opt.on('--compile', 'compile files (AOT)') { mode = :compile }
 opt.on('-c', '--compile-first', 'compile then run') { mode = :compile_first }
-opt.on('--pg', 'run then compile (profile-guided)') { mode = :pg }
+opt.on('--pgc', 'profile-guided compilation: run, then recompile with profile data') { mode = :pgc }
 opt.on('--verbose', 'show code store operations') { verbose = true }
 opt.on('--compiled-only', 'abort if default dispatcher is used') { compiled_only = true }
 opt.on('-v', '--version', 'show version') do
@@ -151,29 +151,63 @@ when :compile
     abm.eval(src)
   end
 
-when :pg
-  src = code || (ARGV[0] && read_file.(ARGV[0]))
+when :pgc
+  # Profile-guided compilation (run-once then leave baked code store for next run):
+  #   pass 1: compile stubs, cs_build, cs_reload, cs_load all entries.
+  #     Caches each node's HASH based on its parse-time kind (important:
+  #     later cs_compile calls return the cached hash even after swap).
+  #   run: exercise the program.  swap_dispatcher updates inner node kinds
+  #     (e.g. node_call1 → node_call1_ast) and method_cache_fill populates
+  #     mc->prologue / mc->prologue_kind.  These become the profile.
+  #   pass 2: recompile entries.  SPECIALIZE sees post-swap kinds and
+  #     emits EVAL_<specialized>(...) calls; storageless PGO operands
+  #     (method_prologue_t baked_prologue) get filled from mc.  Same
+  #     SD_ filename (cached hash) — content is overwritten with the baked
+  #     version.  Exit — next process picks up the baked code store.
+  run_script = code ? nil : ARGV.shift
+  src = code || (run_script && read_file.(run_script))
   unless src
     opt.parse!(['--help'])
     exit
   end
 
   cs_init.()
+  AbRuby.compiled_only = true if compiled_only
 
+  # Collect every AST entry the parser produces so we can re-compile them
+  # after profiling.
+  compiled_entries = []
+  AbRuby::Parser.on_parse = ->(parsed_ast, entries, src_file) {
+    label = src_file || '-e'
+    cs_compile.(parsed_ast, label)
+    compiled_entries << [label, parsed_ast]
+    entries.each do |name, body|
+      cs_compile.(body, "#{label}:#{name}")
+      compiled_entries << ["#{label}:#{name}", body]
+    end
+    $stderr.puts "pgc pass1: cs_build" if verbose
+    AbRuby.cs_build(RUBY_CFLAGS)
+    AbRuby.cs_reload
+    compiled_entries.each { |_, node| AbRuby.cs_load(node) }
+  }
 
   abm = AbRuby.new
-  abm.current_file = ARGV[0] if ARGV[0]
-  $stderr.puts "pg: running #{ARGV[0] || '-e'}" if verbose
+  abm.current_file = run_script if run_script
+  $stderr.puts "pgc: parsing + compile stubs" if verbose
   ast = abm.parse(src)
+
+  # Profiling run: populate mc->prologue, let inner nodes swap.  swap_dispatcher
+  # updates inner (non-entry) nodes because only entries are is_specialized.
+  $stderr.puts "pgc: profiling run" if verbose
   abm.eval_ast(ast)
 
-  $stderr.puts "pg: compiling" if verbose
-  cs_compile.(ast, ARGV[0] || '-e')
-  abm.last_entries.each do |name, body|
-    cs_compile.(body, name)
-  end
+  # Recompile entries with profile data baked in, rebuild.  The next
+  # process invocation (e.g. abruby file.rb) loads the baked SD_s via
+  # cs_init and benefits from the PGO.
+  $stderr.puts "pgc pass2: recompile with profile data" if verbose
+  compiled_entries.each { |label, node| cs_compile.(node, label) }
   AbRuby.cs_build(RUBY_CFLAGS)
-  $stderr.puts "pg: done" if verbose
+  $stderr.puts "pgc: done" if verbose
 
 when :compile_first
   # Consume the script path so the remaining ARGV is forwarded to the

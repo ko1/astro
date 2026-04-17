@@ -684,6 +684,29 @@ struct abruby_exception {
     VALUE backtrace;             // Ruby Array of Strings, or Qnil
 };
 
+// flags field bits for struct method_cache
+enum {
+    MC_PROLOGUE_POLY = 1u << 0,  // mc->prologue has changed at least once;
+                                 // PGO specializer refuses to bake at this site
+};
+
+// Stable, per-build tag for each prologue function.  Stored in method_cache
+// so the PGO resolver and SD_ guards can identify which prologue is active
+// without comparing function pointers (each `static inline` prologue has a
+// distinct address in abruby.so vs each loaded SD_ .so image — pointer
+// equality fails across the dlopen boundary).
+enum abruby_prologue_kind {
+    PROLOGUE_KIND_NONE = 0,
+    PROLOGUE_KIND_AST_SIMPLE_0,
+    PROLOGUE_KIND_AST_SIMPLE_1,
+    PROLOGUE_KIND_AST_SIMPLE_2,
+    PROLOGUE_KIND_AST_SIMPLE_N,
+    PROLOGUE_KIND_AST_COMPLEX,
+    PROLOGUE_KIND_CFUNC,
+    PROLOGUE_KIND_IVAR_GETTER,
+    PROLOGUE_KIND_IVAR_SETTER,
+};
+
 // inline method cache per call site
 struct method_cache {
     const struct abruby_class *klass;    // read-only after fill
@@ -699,6 +722,8 @@ struct method_cache {
     // considered polymorphic and no longer re-specialized — we save the
     // swap_dispatcher + re-fill overhead per call in that case.
     uint8_t demote_cnt;
+    uint8_t flags;                       // MC_PROLOGUE_POLY etc.
+    uint8_t prologue_kind;               // enum abruby_prologue_kind (stable across SO images)
 };
 
 // inline ivar cache per node_ivar_get / node_ivar_set site.

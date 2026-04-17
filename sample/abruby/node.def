@@ -1081,6 +1081,12 @@ method_cache_fill(CTX *c, struct method_cache *mc, const struct abruby_class *kl
                   const struct abruby_method *method,
                   unsigned int argc, bool static_argc)
 {
+    // Remember previous prologue kind so we can detect POLY (prologue
+    // transition) after writing the new one.  PROLOGUE_KIND_NONE (zero,
+    // from xcalloc or memset) means "never filled" — not a POLY transition.
+    uint8_t prev_kind = mc->prologue_kind;
+    uint8_t new_kind;
+
     mc->klass = klass;
     mc->method = method;
     mc->serial = c->abm->method_serial;
@@ -1097,19 +1103,21 @@ method_cache_fill(CTX *c, struct method_cache *mc, const struct abruby_class *kl
             // Simple shape: argc-specialized variants for req=0/1/2, generic for >=3.
             // The check moved to cache fill time — prologues skip it.
             switch (req) {
-              case 0:  mc->prologue = prologue_ast_simple_0; break;
-              case 1:  mc->prologue = prologue_ast_simple_1; break;
-              case 2:  mc->prologue = prologue_ast_simple_2; break;
-              default: mc->prologue = prologue_ast_simple_n; break;
+              case 0:  mc->prologue = prologue_ast_simple_0; new_kind = PROLOGUE_KIND_AST_SIMPLE_0; break;
+              case 1:  mc->prologue = prologue_ast_simple_1; new_kind = PROLOGUE_KIND_AST_SIMPLE_1; break;
+              case 2:  mc->prologue = prologue_ast_simple_2; new_kind = PROLOGUE_KIND_AST_SIMPLE_2; break;
+              default: mc->prologue = prologue_ast_simple_n; new_kind = PROLOGUE_KIND_AST_SIMPLE_N; break;
             }
         } else {
             // opt/rest/post or dynamic argc (splat) — full validation path.
             mc->prologue = prologue_ast_complex;
+            new_kind = PROLOGUE_KIND_AST_COMPLEX;
         }
     } else if (method->type == ABRUBY_METHOD_IVAR_GETTER) {
         mc->body = NULL;
         mc->dispatcher = NULL;
         mc->prologue = prologue_ivar_getter;
+        new_kind = PROLOGUE_KIND_IVAR_GETTER;
         // Resolve (or register) the ivar's slot in the receiver's class shape.
         struct abruby_class *klass_mut = (struct abruby_class *)klass;
         ID ivar_name = method->u.ivar_accessor.ivar_name;
@@ -1125,6 +1133,7 @@ method_cache_fill(CTX *c, struct method_cache *mc, const struct abruby_class *kl
         mc->body = NULL;
         mc->dispatcher = NULL;
         mc->prologue = prologue_ivar_setter;
+        new_kind = PROLOGUE_KIND_IVAR_SETTER;
         // Resolve (or register) the ivar's slot in the receiver's class shape.
         struct abruby_class *klass_mut = (struct abruby_class *)klass;
         ID ivar_name = method->u.ivar_accessor.ivar_name;
@@ -1141,6 +1150,15 @@ method_cache_fill(CTX *c, struct method_cache *mc, const struct abruby_class *kl
         mc->body = NULL;
         mc->dispatcher = NULL;
         mc->prologue = prologue_cfunc;
+        new_kind = PROLOGUE_KIND_CFUNC;
+    }
+    mc->prologue_kind = new_kind;
+
+    // Track prologue POLY: if we just overwrote a previously-set kind with
+    // a different one, this site is polymorphic-in-prologue and the PGO
+    // specializer must not bake the prologue here.  Sticky bit.
+    if (prev_kind != PROLOGUE_KIND_NONE && prev_kind != new_kind) {
+        mc->flags |= MC_PROLOGUE_POLY;
     }
 }
 
@@ -1447,6 +1465,53 @@ dispatch_method_frame(CTX * restrict c, NODE * restrict call_site,
     return mc->prologue(c, call_site, mc, recv_self, argc, arg_index);
 }
 
+// ---------------------------------------------------------------------------
+// PGO prologue baking (forward decls; definitions at end of file after all
+// call-node kinds and prologue functions are declared)
+// ---------------------------------------------------------------------------
+//
+// Dispatch sites with a `method_prologue_t baked_prologue` storageless
+// operand use this helper on the hot path.  If `baked` is non-NULL it is a
+// literal function pointer that was frozen at SPECIALIZE time from the
+// observed mc->prologue value — call it directly (always_inline).  If `baked`
+// is NULL, interpreter mode: forward through mc->prologue as usual.
+//
+// Helper inlined from node.def: map a function pointer to its stable kind
+// tag at compile time.  Used to express T3 guards without relying on
+// cross-SO function-pointer equality (each SD_.so has its own static inline
+// prologue copies with distinct addresses).
+#define PROLOGUE_KIND_OF(fn) \
+    ((fn) == prologue_ast_simple_0 ? PROLOGUE_KIND_AST_SIMPLE_0 : \
+     (fn) == prologue_ast_simple_1 ? PROLOGUE_KIND_AST_SIMPLE_1 : \
+     (fn) == prologue_ast_simple_2 ? PROLOGUE_KIND_AST_SIMPLE_2 : \
+     (fn) == prologue_ast_simple_n ? PROLOGUE_KIND_AST_SIMPLE_N : \
+     (fn) == prologue_cfunc        ? PROLOGUE_KIND_CFUNC        : \
+     (fn) == prologue_ivar_getter  ? PROLOGUE_KIND_IVAR_GETTER  : \
+     (fn) == prologue_ivar_setter  ? PROLOGUE_KIND_IVAR_SETTER  : \
+     PROLOGUE_KIND_NONE)
+
+// T3 guard: compare by stable tag instead of function-pointer identity so
+// the baked path stays selected even when baked's address differs from
+// mc->prologue's address (cross-image call; they point to the same kind
+// but different static inline copies).
+static inline __attribute__((always_inline)) RESULT
+dispatch_method_frame_pgo(CTX * restrict c, NODE * restrict call_site,
+                          const struct method_cache *mc, VALUE recv_self,
+                          unsigned int argc, uint32_t arg_index,
+                          method_prologue_t baked)
+{
+    if (baked) {
+        /* baked is a compile-time literal in the PGO path → gcc constant-
+           folds the comparison into a simple cmp against an immediate */
+        if (LIKELY(mc->prologue_kind == PROLOGUE_KIND_OF(baked))) {
+            return baked(c, call_site, mc, recv_self, argc, arg_index);
+        }
+    }
+    return mc->prologue(c, call_site, mc, recv_self, argc, arg_index);
+}
+
+static const char *abruby_pgo_prologue_name_for(const NODE *n);
+
 // Outer dispatch for non-cache paths: build temp mc, save/restore self.
 // Used by method_missing_dispatch, node_super, node_arith_fallback.
 static inline RESULT
@@ -1455,7 +1520,7 @@ dispatch_method_with_klass(CTX * restrict c, NODE * restrict call_site,
                            const struct abruby_method *method,
                            unsigned int argc, uint32_t arg_index)
 {
-    struct method_cache mc;
+    struct method_cache mc = {0};
     // Temporary mc used exactly once for this dispatch — current argc is
     // authoritative, so static_argc=true yields the correct prologue choice.
     method_cache_fill(c, &mc, klass, method, argc, true);
@@ -1537,7 +1602,7 @@ dispatch_method_with_klass_with_block(CTX * restrict c, NODE * restrict call_sit
                                       unsigned int argc, uint32_t arg_index,
                                       const struct abruby_block *blk)
 {
-    struct method_cache mc;
+    struct method_cache mc = {0};
     // Temp mc: current argc is authoritative (one-shot).
     method_cache_fill(c, &mc, klass, method, argc, true);
     return dispatch_method_frame_with_block(c, call_site, &mc, recv, argc, arg_index, blk);
@@ -1779,8 +1844,46 @@ dispatch_call(CTX * restrict c, NODE * restrict call_site, VALUE recv_val,
                               blk_node, klass, mc, cache_hit, static_argc);
 }
 
+// PGO-aware variant of dispatch_call for the cache-hit no-block fast path.
+// Routes through dispatch_method_frame_pgo so a PGO-baked prologue can be
+// called directly (devirtualizing mc->prologue).
+static inline __attribute__((always_inline)) RESULT
+dispatch_call_pgo(CTX * restrict c, NODE * restrict call_site, VALUE recv_val,
+                  ID name, unsigned int argc, uint32_t arg_index,
+                  NODE *blk_node, struct method_cache *mc, bool static_argc,
+                  method_prologue_t baked)
+{
+    const struct abruby_class *klass = AB_CLASS_OF(c, recv_val);
+    bool cache_hit = (mc->klass == klass && mc->serial == c->abm->method_serial);
+
+    if (LIKELY(blk_node->head.kind == &kind_node_nil && cache_hit)) {
+        return dispatch_method_frame_pgo(c, call_site, mc, recv_val, argc, arg_index, baked);
+    }
+    return dispatch_call_slow(c, call_site, recv_val, name, argc, arg_index,
+                              blk_node, klass, mc, cache_hit, static_argc);
+}
+
 // --- Simple no-block variants: 0/1/2 args, args evaluated inline ---
 // Hot path: no block operand at all (block-less calls dominate in Ruby code).
+
+// Baked-prologue variant of the hot path: used by node_call0/1/2 when the
+// SPECIALIZE step supplied a literal prologue (PGO).  Interpreter passes
+// NULL and we fall through to the normal indirect call.
+static inline __attribute__((always_inline)) RESULT
+dispatch_simple_noblock_pgo(CTX * restrict c, NODE * restrict call_site, VALUE recv_val,
+                            ID name, unsigned int argc, uint32_t arg_index,
+                            struct method_cache *mc,
+                            method_prologue_t baked)
+{
+#if ABRUBY_PROFILE
+    { extern void abruby_dispatch_count_inc(ID); abruby_dispatch_count_inc(name); }
+#endif
+    const struct abruby_class *klass = AB_CLASS_OF(c, recv_val);
+    if (LIKELY(mc->klass == klass && mc->serial == c->abm->method_serial)) {
+        return dispatch_method_frame_pgo(c, call_site, mc, recv_val, argc, arg_index, baked);
+    }
+    return node_method_call_slow(c, call_site, recv_val, klass, name, argc, arg_index, mc, true);
+}
 
 static inline RESULT
 dispatch_simple_noblock(CTX * restrict c, NODE * restrict call_site, VALUE recv_val,
@@ -1804,27 +1907,27 @@ dispatch_simple_noblock(CTX * restrict c, NODE * restrict call_site, VALUE recv_
 }
 
 NODE_DEF
-node_call0(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, uint32_t arg_index, struct method_cache *mc@ref)
+node_call0(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, uint32_t arg_index, struct method_cache *mc@ref, method_prologue_t baked_prologue)
 {
     VALUE recv_val = UNWRAP(EVAL_ARG(c, recv));
-    return dispatch_simple_noblock(c, n, recv_val, name, 0, arg_index, mc);
+    return dispatch_simple_noblock_pgo(c, n, recv_val, name, 0, arg_index, mc, baked_prologue);
 }
 
 NODE_DEF
-node_call1(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, NODE *arg0, uint32_t arg_index, struct method_cache *mc@ref)
+node_call1(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, NODE *arg0, uint32_t arg_index, struct method_cache *mc@ref, method_prologue_t baked_prologue)
 {
     VALUE recv_val = UNWRAP(EVAL_ARG(c, recv));
     c->current_frame->fp[arg_index] = UNWRAP(EVAL_ARG(c, arg0));
-    return dispatch_simple_noblock(c, n, recv_val, name, 1, arg_index, mc);
+    return dispatch_simple_noblock_pgo(c, n, recv_val, name, 1, arg_index, mc, baked_prologue);
 }
 
 NODE_DEF
-node_call2(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, NODE *arg0, NODE *arg1, uint32_t arg_index, struct method_cache *mc@ref)
+node_call2(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, NODE *arg0, NODE *arg1, uint32_t arg_index, struct method_cache *mc@ref, method_prologue_t baked_prologue)
 {
     VALUE recv_val = UNWRAP(EVAL_ARG(c, recv));
     c->current_frame->fp[arg_index]     = UNWRAP(EVAL_ARG(c, arg0));
     c->current_frame->fp[arg_index + 1] = UNWRAP(EVAL_ARG(c, arg1));
-    return dispatch_simple_noblock(c, n, recv_val, name, 2, arg_index, mc);
+    return dispatch_simple_noblock_pgo(c, n, recv_val, name, 2, arg_index, mc, baked_prologue);
 }
 
 // ===================================================================
@@ -2057,16 +2160,16 @@ node_call2_b(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, NODE *arg
 // --- General: 3+ static args, pre-placed in fp by caller seq ---
 
 NODE_DEF
-node_call(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, uint32_t argc, uint32_t arg_index, NODE *blk, struct method_cache *mc@ref)
+node_call(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, uint32_t argc, uint32_t arg_index, NODE *blk, struct method_cache *mc@ref, method_prologue_t baked_prologue)
 {
     VALUE recv_val = UNWRAP(EVAL_ARG(c, recv));
-    return dispatch_call(c, n, recv_val, name, argc, arg_index, blk, mc, true);
+    return dispatch_call_pgo(c, n, recv_val, name, argc, arg_index, blk, mc, true, baked_prologue);
 }
 
 // --- Apply (splat) call: runtime argc via args_node Array ---
 
 NODE_DEF
-node_apply_call(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, NODE *args_node, uint32_t arg_index, NODE *blk, struct method_cache *mc@ref)
+node_apply_call(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, NODE *args_node, uint32_t arg_index, NODE *blk, struct method_cache *mc@ref, method_prologue_t baked_prologue)
 {
     VALUE recv_val = UNWRAP(EVAL_ARG(c, recv));
     // Pin recv to keep alive across args evaluation (apply_unpack overwrites the slot).
@@ -2079,7 +2182,7 @@ node_apply_call(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, NODE *
     // static_argc=false: argc comes from splat expansion and can vary across
     // calls at this @ref cache, so we must install the checking (complex)
     // prologue to guarantee validation on every cache hit.
-    return dispatch_call(c, n, recv_val, name, argc, arg_index + 1, blk, mc, false);
+    return dispatch_call_pgo(c, n, recv_val, name, argc, arg_index + 1, blk, mc, false, baked_prologue);
 }
 
 // === Block-carrying call nodes ===
@@ -2207,7 +2310,7 @@ node_super_slow(CTX * restrict c, NODE * restrict n,
 // lexical position), so target klass + name are stable across hits.
 // method_serial invalidates the cache on any method redefinition.
 NODE_DEF
-node_super(CTX * restrict c, NODE * restrict n, uint32_t params_cnt, uint32_t arg_index, struct method_cache *mc@ref)
+node_super(CTX * restrict c, NODE * restrict n, uint32_t params_cnt, uint32_t arg_index, struct method_cache *mc@ref, method_prologue_t baked_prologue)
 {
     const struct abruby_frame *lex = abruby_context_frame(c);
     const struct abruby_class *target;
@@ -2220,7 +2323,7 @@ node_super(CTX * restrict c, NODE * restrict n, uint32_t params_cnt, uint32_t ar
         if (inherited != NULL) {
             return dispatch_method_frame_with_block(c, n, mc, recv_self, params_cnt, arg_index, inherited);
         }
-        return dispatch_method_frame(c, n, mc, recv_self, params_cnt, arg_index);
+        return dispatch_method_frame_pgo(c, n, mc, recv_self, params_cnt, arg_index, baked_prologue);
     }
     return node_super_slow(c, n, target, name, params_cnt, arg_index, inherited, mc, true);
 }
@@ -3573,4 +3676,59 @@ node_hash_aset(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *idx, NODE 
         return do_hash_aset(rv, iv, vv);
     }
     return node_aset_fallback(c, n, rv, iv, vv, arg_index);
+}
+
+// ---------------------------------------------------------------------------
+// PGO resolver: map a call-site NODE to the C identifier of its baked
+// prologue ("prologue_ast_simple_1" etc.), or "none" if we shouldn't bake
+// here.  Called from the generated HASH_* and SPECIALIZE_* functions (which
+// live in node_hash.c / node_specialize.c, included after node_eval.c in
+// node.c — so they see this symbol).
+//
+// "Shouldn't bake" covers: unknown node kind, mc never filled, POLY bit set,
+// prologue pointer is one we don't have a stable name for.
+// ---------------------------------------------------------------------------
+
+extern const struct NodeKind kind_node_call;
+extern const struct NodeKind kind_node_apply_call;
+extern const struct NodeKind kind_node_super;
+
+static inline const struct method_cache *
+abruby_pgo_mc_for(const NODE *n)
+{
+    const struct NodeKind *k = n->head.kind;
+    if (k == &kind_node_call0)           return &n->u.node_call0.mc;
+    if (k == &kind_node_call1)           return &n->u.node_call1.mc;
+    if (k == &kind_node_call2)           return &n->u.node_call2.mc;
+    if (k == &kind_node_call0_ast)       return &n->u.node_call0_ast.mc;
+    if (k == &kind_node_call0_cfunc)     return &n->u.node_call0_cfunc.mc;
+    if (k == &kind_node_call0_ivar_get)  return &n->u.node_call0_ivar_get.mc;
+    if (k == &kind_node_call1_ast)       return &n->u.node_call1_ast.mc;
+    if (k == &kind_node_call1_cfunc)     return &n->u.node_call1_cfunc.mc;
+    if (k == &kind_node_call1_ivar_set)  return &n->u.node_call1_ivar_set.mc;
+    if (k == &kind_node_call2_ast)       return &n->u.node_call2_ast.mc;
+    if (k == &kind_node_call2_cfunc)     return &n->u.node_call2_cfunc.mc;
+    if (k == &kind_node_call)            return &n->u.node_call.mc;
+    if (k == &kind_node_apply_call)      return &n->u.node_apply_call.mc;
+    if (k == &kind_node_super)           return &n->u.node_super.mc;
+    return NULL;
+}
+
+static const char *
+abruby_pgo_prologue_name_for(const NODE *n)
+{
+    const struct method_cache *mc = abruby_pgo_mc_for(n);
+    if (!mc) return "none";
+    if (mc->flags & MC_PROLOGUE_POLY) return "none";
+
+    switch (mc->prologue_kind) {
+      case PROLOGUE_KIND_AST_SIMPLE_0: return "prologue_ast_simple_0";
+      case PROLOGUE_KIND_AST_SIMPLE_1: return "prologue_ast_simple_1";
+      case PROLOGUE_KIND_AST_SIMPLE_2: return "prologue_ast_simple_2";
+      case PROLOGUE_KIND_AST_SIMPLE_N: return "prologue_ast_simple_n";
+      case PROLOGUE_KIND_CFUNC:        return "prologue_cfunc";
+      case PROLOGUE_KIND_IVAR_GETTER:  return "prologue_ivar_getter";
+      case PROLOGUE_KIND_IVAR_SETTER:  return "prologue_ivar_setter";
+      default:                         return "none";  // NONE or AST_COMPLEX — don't bake
+    }
 }
