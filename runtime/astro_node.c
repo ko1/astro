@@ -170,10 +170,11 @@ astro_fprint_cstr(FILE *fp, const char *s)
 // ---------------------------------------------------------------------------
 
 // Emission mode for SD_<hash> names during SPECIALIZE:
-//   0 = Horg (structural)   — default, used by AOT (--compile)
+//   0 = Horg (structural)   — default, used by AOT (--compile).  Prefix SD_.
 //   1 = Hopt (profile-aware) — set transiently by astro_cs_compile during
-//                              PGC bake so generated SD_* names match the
-//                              file name SD_<Hopt>.c.
+//                              PGC bake.  Prefix PGSD_ so a glance at the
+//                              code store / symbol table distinguishes AOT
+//                              and PGC outputs.
 // Hosts that don't provide HOPT() leave this as 0 forever; HOPT() is never
 // called in that case.
 static int astro_cs_use_hopt_name = 0;
@@ -183,8 +184,9 @@ static node_hash_t alloc_dispatcher_name_hash(NODE *n);
 static const char *
 alloc_dispatcher_name(NODE *n)
 {
+    const char *prefix = astro_cs_use_hopt_name ? "PGSD_" : "SD_";
     char buff[128];
-    snprintf(buff, sizeof(buff), "SD_%lx",
+    snprintf(buff, sizeof(buff), "%s%lx", prefix,
              (unsigned long)alloc_dispatcher_name_hash(n));
     char *name = malloc(strlen(buff) + 1);
     strcpy(name, buff);

@@ -313,7 +313,7 @@ astro_cs_load(NODE *n, const char *file)
 {
     if (!astro_cs.all_handle) return false;
 
-    // Try PGC first: find a Hopt from the index, dlsym SD_<Hopt>.
+    // Try PGC first: find a Hopt from the index, dlsym PGSD_<Hopt>.
     if (file) {
         node_hash_t horg = HORG(n);
         node_hash_t key = hopt_index_key(horg, file, n->head.line);
@@ -327,7 +327,7 @@ astro_cs_load(NODE *n, const char *file)
         if (hopt_index_lookup(key, &hopt)) {
             if (tr) fprintf(stderr, "  → hopt=%lx\n", (unsigned long)hopt);
             char sym_name[128];
-            snprintf(sym_name, sizeof(sym_name), "SD_%lx",
+            snprintf(sym_name, sizeof(sym_name), "PGSD_%lx",
                      (unsigned long)hopt);
             node_dispatcher_func_t func =
                 (node_dispatcher_func_t)dlsym(astro_cs.all_handle, sym_name);
@@ -392,8 +392,9 @@ astro_cs_compile(NODE *entry, const char *file)
     astro_cs_path(c_dir, sizeof(c_dir), astro_cs.store_dir, "c");
     mkdir(c_dir, 0755);
 
+    const char *prefix = file ? "PGSD" : "SD";  // PGC vs AOT
     char filename[128];
-    snprintf(filename, sizeof(filename), "c/SD_%lx.c", (unsigned long)h);
+    snprintf(filename, sizeof(filename), "c/%s_%lx.c", prefix, (unsigned long)h);
     char path[ASTRO_CS_PATH_MAX];
     astro_cs_path(path, sizeof(path), astro_cs.store_dir, filename);
 
@@ -469,7 +470,7 @@ astro_cs_build(const char *extra_cflags)
     }
     fprintf(fp, "\n");
     fprintf(fp, "\n");
-    fprintf(fp, "SRCS = $(wildcard c/SD_*.c)\n");
+    fprintf(fp, "SRCS = $(wildcard c/SD_*.c) $(wildcard c/PGSD_*.c)\n");
     fprintf(fp, "OBJS = $(patsubst c/%%.c,o/%%.o,$(SRCS))\n");
     fprintf(fp, "\n");
     fprintf(fp, "all: all.so\n");
@@ -558,9 +559,16 @@ astro_cs_disasm(NODE *n)
 {
     if (!n) return;
 
+    // If PGC-loaded, point at PGSD_<Hopt>; otherwise the AOT SD_<Horg>
+    // that hash_node(n) identifies.
     char sym_name[128];
-    snprintf(sym_name, sizeof(sym_name), "SD_%lx",
-             (unsigned long)hash_node(n));
+    if (n->head.flags.has_hash_opt) {
+        snprintf(sym_name, sizeof(sym_name), "PGSD_%lx",
+                 (unsigned long)n->head.hash_opt);
+    } else {
+        snprintf(sym_name, sizeof(sym_name), "SD_%lx",
+                 (unsigned long)hash_node(n));
+    }
 
     char so_path[ASTRO_CS_PATH_MAX];
     astro_cs_path(so_path, sizeof(so_path), astro_cs.store_dir, "all.so");
