@@ -13,7 +13,15 @@ abruby_debug_flag = (AbRuby::DEBUG rescue false) ? 1 : 0
 RUBY_CFLAGS = "-I#{RbConfig::CONFIG['rubyhdrdir']} -I#{RbConfig::CONFIG['rubyarchhdrdir']} -DABRUBY_DEBUG=#{abruby_debug_flag}"
 
 code = nil
-mode = :run          # :run, :plain, :compile, :compile_first, :pg
+# Mode — one of the top-level execution flows:
+#   :run     — execute the script (default).  Optionally augmented with
+#              `compile_first` (pre-run AOT bake) and/or `pgc_at_exit`
+#              (post-run PGC bake), which are orthogonal flags below.
+#   :plain   — execute without the code store at all (interpreter only).
+#   :compile — compile files, don't run (used with --compile [files] --run).
+mode = :run
+compile_first  = false  # -c: ensure AOT bake before entering eval
+pgc_at_exit    = false  # --pgc: bake PGC after eval returns
 compile_files = nil  # files to compile (--compile)
 run_file = nil       # file to run after --compile (--run)
 run_args = []        # args for --run
@@ -42,13 +50,13 @@ set_mode = ->(m) {
   end
   mode = m
 }
-opt.on('--plain',                      'run without code store')                { set_mode.(:plain) }
-opt.on('--compile',                    'compile files (AOT)')                   { set_mode.(:compile) }
-opt.on('-c', '--compile-first',        'compile then run')                      { set_mode.(:compile_first) }
-opt.on('--pgc',                        'profile-guided compilation: run, then bake SD_<Hopt>') { set_mode.(:pgc) }
-opt.on('--verbose', 'show code store operations') { verbose = true }
+opt.on('--plain',               'run without code store') { set_mode.(:plain) }
+opt.on('--compile',             'compile files (AOT only, no run)') { set_mode.(:compile) }
+opt.on('-c', '--compile-first', 'bake AOT before run (composes with --pgc)') { compile_first = true }
+opt.on('--pgc',                 'bake PGC after run (composes with -c)') { pgc_at_exit = true }
+opt.on('--verbose',       'show code store operations') { verbose = true }
 opt.on('--compiled-only', 'abort if default dispatcher is used') { compiled_only = true }
-opt.on('--aot-only', 'load only AOT (SD_<Horg>); skip PGC index lookup — for benchmarking') { aot_only = true }
+opt.on('--aot-only',      'load only AOT (SD_<Horg>); skip PGC index lookup — for benchmarking') { aot_only = true }
 opt.on('-v', '--version', 'show version') do
   puts "abruby #{AbRuby::VERSION}"
   exit
@@ -64,7 +72,7 @@ if run_idx
   compile_files = compile_argv
   run_file = run_argv.shift
   run_args = run_argv
-  mode = :compile unless mode == :pg
+  set_mode.(:compile)
 else
   # Use order! so that options after the script path are forwarded to the
   # script via ARGV (mirroring `ruby script.rb -b ...` behaviour).
@@ -161,23 +169,23 @@ when :compile
     abm.eval(src)
   end
 
-when :pgc
-  # Profile-guided compilation — a single-pass, bake-at-exit design:
+when :run
+  # Unified execution branch.  `compile_first` and `pgc_at_exit` are
+  # orthogonal flags that layer onto the base "parse + run" flow:
   #
-  #   1. The program runs normally.  If a previous --pgc run already
-  #      populated code_store, on_parse cs_loads those baked SD_<Hopt>
-  #      entries so they take effect from the very first evaluation.
-  #   2. swap_dispatcher updates inner node kinds and method_cache_fill
-  #      populates mc->prologue / prologue_kind as usual — that is the
-  #      profile.
-  #   3. At process exit we iterate every parsed entry; those whose HOPT
-  #      diverges from HORG (i.e. profile information has actually been
-  #      recorded) are re-emitted as SD_<Hopt>.c and recorded in
-  #      hopt_index.txt.  Entries untouched by the run are skipped.
-  #      When execution counts land, replace the filter with a count
-  #      threshold.
-  #   4. cs_build rebuilds all.so.  Next invocation picks up the new
-  #      baked dispatchers via astro_cs_load's PGC lookup.
+  #   compile_first (-c):
+  #     on each parse, AOT-compile any entry not already baked in the
+  #     store (via verify_compiled), cs_build, cs_reload, and cs_load
+  #     every accumulated entry so freshly-built SD_<Horg> take effect.
+  #     Guarantees every entry has a compiled dispatcher before
+  #     eval_ast runs — required for --compiled-only on multi-file
+  #     programs (required files parsed on the fly).
+  #
+  #   pgc_at_exit (--pgc):
+  #     after eval_ast returns cleanly, walk every parsed entry and
+  #     bake:  Hopt != Horg → PGSD_<Hopt>.c + hopt_index.txt,  Hopt ==
+  #     Horg → SD_<Horg>.c (AOT fallback so the next --compiled-only
+  #     run covers entries profile didn't touch).
   run_script = code ? nil : ARGV.shift
   src = code || (run_script && read_file.(run_script))
   unless src
@@ -185,143 +193,68 @@ when :pgc
     exit
   end
 
-  cs_init.()
-  # --compiled-only is nonsensical in --pgc (first run has nothing baked)
-  # so we ignore it; the user's intent is "prepare the store for later
-  # --compiled-only runs".
-  AbRuby.compiled_only = false
-
-  baked_entries = []  # [(label, node, pgc_file)]
-  AbRuby::Parser.on_parse = ->(parsed_ast, entries, src_file) {
-    label = src_file || '-e'
-    # Stable placeholder for inline runs so repeated --pgc invocations
-    # reuse the same index keys.
-    pgc_file = src_file || '-e'
-    new_nodes = [[label, parsed_ast, pgc_file]]
-    entries.each do |name, body|
-      new_nodes << ["#{label}:#{name}", body, pgc_file]
-    end
-    baked_entries.concat(new_nodes)
-    # If a previous --pgc run already baked these entries, swap them in
-    # now so the profiling run benefits from prior PGC.  Only the new
-    # nodes from this parse — older entries are already bound.
-    new_nodes.each { |_, node, file| AbRuby.cs_load(node, file) }
-  }
-
-  abm = AbRuby.new
-  abm.current_file = run_script if run_script
-  $stderr.puts "pgc: run #{run_script || '-e'}" if verbose
-  abm.eval(src)
-
-  # Bake right after the script finishes (skipped if eval raised — we
-  # don't want to persist profile from a crashed run).  Once execution
-  # counts land, gate the PGC side by count threshold; for now:
-  #   - Hopt != Horg  → PGC  (SD_<Hopt>.c, baked prologue etc.)
-  #   - Hopt == Horg  → AOT  (SD_<Horg>.c, profile-free fallback so a
-  #                           subsequent --compiled-only invocation
-  #                           doesn't hit an interpreter-only node).
-  pgc_ents, aot_ents = baked_entries.partition { |_, node, _|
-    AbRuby.horg(node) != AbRuby.hopt(node)
-  }
-  if verbose
-    $stderr.puts "pgc bake: pgc=#{pgc_ents.size} aot=#{aot_ents.size} of #{baked_entries.size}"
-  end
-  pgc_ents.each { |label, node, file| cs_compile.(node, label: label, file: file) }
-  aot_ents.each { |label, node, _file| cs_compile.(node, label: label) }
-  if baked_entries.any?
-    AbRuby.cs_build(RUBY_CFLAGS)
-    AbRuby.cs_reload
-    # Reload: rebind every baked entry to its freshly built SD_/PGSD_
-    # symbol, so --dump=disasm below inspects the newly-baked image
-    # (not the stale pre-bake pointers set during on_parse).
-    baked_entries.each { |_, node, file| AbRuby.cs_load(node, file) }
-  end
-  $stderr.puts "pgc: done" if verbose
-
-  if dump_mode == :disasm
-    baked_entries.each do |label, node, _file|
-      $stdout.flush
-      puts "--- #{label} ---"
-      $stdout.flush
-      puts abm.dump_ast(node)
-      $stdout.flush
-      AbRuby.cs_disasm(node)
-    end
-  end
-
-when :compile_first
-  # Consume the script path so the remaining ARGV is forwarded to the
-  # script (matches :run / ruby invocation semantics).
-  run_script = code ? nil : ARGV.shift
-  src = code || (run_script && read_file.(run_script))
-  unless src
-    opt.parse!(['--help'])
+  if dump_mode == :ast
+    abm = AbRuby.new
+    puts abm.dump(src)
     exit
   end
 
   cs_init.()
   AbRuby.compiled_only = true if compiled_only
 
-  # Install a parse hook that compiles and loads every file the script
-  # pulls in at runtime (require / require_relative / eval).  Without
-  # this, only the top-level script is in the code store and
-  # --compiled-only crashes on any node from a required file.
-  #
-  # cs_reload replaces the loaded .so, invalidating dispatcher pointers
-  # installed on previously-compiled nodes by earlier cs_load calls.
-  # Re-cs_load every accumulated AST after each reload so their
-  # dispatchers point at symbols in the new .so.
-  compiled_entries = []  # [(label, node)], kept across reloads
-  # Is this node already specialized (cs_load succeeded during ALLOC from an
-  # earlier run's store)?  If so, we skip cs_compile — its SD_*.c already
-  # sits in code_store/c/ and rebuilding would just touch mtimes and force
-  # make to relink for nothing.
+  # Cumulative tracker of every entry parsed this process — drives
+  # --dump=disasm and PGC bake.  (label, node, src_file) triples.
+  parsed_entries = []
   already_compiled = ->(node) { AbRuby.verify_compiled(node).nil? }
 
   AbRuby::Parser.on_parse = ->(parsed_ast, entries, src_file) {
     label = src_file || '-e'
-    # Track every parsed entry (for --dump=disasm), but only rebuild the
-    # store when something was actually compiled this round.
-    new_nodes    = []  # entries that needed cs_compile
-    parsed_nodes = []  # all entries from this parse (new or already cached)
-    unless already_compiled.(parsed_ast)
-      cs_compile.(parsed_ast, label: label)  # AOT
-      new_nodes << [label, parsed_ast, src_file]
-    end
-    parsed_nodes << [label, parsed_ast, src_file]
-    entries.each do |name, body|
-      l = "#{label}:#{name}"
-      unless already_compiled.(body)
-        cs_compile.(body, label: l)  # AOT
-        new_nodes << [l, body, src_file]
+    # pgc_file: stable index key for inline runs so repeated invocations
+    # reuse keys.  --aot-only forces nil to bypass the PGC lookup.
+    pgc_file = aot_only ? nil : (src_file || '-e')
+
+    this_parse = [[label, parsed_ast, src_file]]
+    entries.each { |name, body| this_parse << ["#{label}:#{name}", body, src_file] }
+    parsed_entries.concat(this_parse)
+
+    new_compiles = []
+    if compile_first
+      this_parse.each do |l, node, _|
+        next if already_compiled.(node)
+        cs_compile.(node, label: l)  # AOT (SD_<Horg>)
+        new_compiles << [l, node]
       end
-      parsed_nodes << [l, body, src_file]
     end
 
-    compiled_entries.concat(parsed_nodes)
-    next if new_nodes.empty?
-
-    $stderr.puts "cs_build" if verbose
-    AbRuby.cs_build(RUBY_CFLAGS)
-    AbRuby.cs_reload
-    # cs_reload replaces all.so with a freshly-built image.  Dispatcher
-    # pointers from the earlier image still work (we keep old mappings),
-    # but nodes whose dlsym lookup missed on that older (smaller) image
-    # need to be rebound now that their SD_ symbol exists.
-    compiled_entries.each { |_, node, file| AbRuby.cs_load(node, file) }
+    if !new_compiles.empty?
+      $stderr.puts "cs_build" if verbose
+      AbRuby.cs_build(RUBY_CFLAGS)
+      AbRuby.cs_reload
+      # cs_reload replaces all.so; rebind every accumulated entry so
+      # their dispatchers point at the new image's SD_ / PGSD_.
+      parsed_entries.each do |_, node, file|
+        pf = aot_only ? nil : (file || '-e')
+        AbRuby.cs_load(node, pf)
+      end
+    else
+      # Even without a rebuild this round, this_parse entries may have
+      # cached dispatchers available from an earlier invocation — try
+      # cs_load now so the evaluator runs with them.
+      this_parse.each { |_, node, _| AbRuby.cs_load(node, pgc_file) }
+    end
   }
 
   abm = AbRuby.new
   abm.current_file = run_script if run_script
-
-  # Parse the top-level script.  The on_parse hook above takes care of
-  # cs_compile / cs_build / cs_reload / cs_load for it and every file
-  # subsequently loaded via require_relative etc.
   $stderr.puts "run: #{run_script || '-e'}" if verbose
   ast = abm.parse(src)
 
+  # --dump=disasm: show the dispatcher each entry is about to execute
+  # with.  For --pgc that's the pre-profile state (pre-baked PGSD_ from
+  # an earlier --pgc if any; otherwise the SD_<Horg> from -c, or the
+  # default dispatcher if nothing is compiled for this entry).
   if dump_mode == :disasm
-    compiled_entries.each do |label, node, _file|
+    parsed_entries.each do |label, node, _file|
       $stdout.flush
       puts "--- #{label} ---"
       $stdout.flush
@@ -333,39 +266,18 @@ when :compile_first
 
   abm.eval_ast(ast)
 
-when :run
-  run_script = code ? nil : ARGV.shift
-  src = code || (run_script && read_file.(run_script))
-  unless src
-    opt.parse!(['--help'])
-    exit
-  end
-
-  if dump_mode == :ast
-    abm = AbRuby.new
-    puts abm.dump(src)
-  else
-    cs_init.()
-    AbRuby.compiled_only = true if compiled_only
-
-    # For each parsed entry (top-level AST + method/class/module/block
-    # bodies), run cs_load with the source file so the PGC (Hopt) index
-    # lookup fires.  Inner nodes already go through OPTIMIZE → cs_load
-    # (file=nil, AOT-only) during ALLOC.  --aot-only forces file=nil to
-    # skip PGC lookup (benchmarking AOT in isolation).
-    AbRuby::Parser.on_parse = ->(parsed_ast, entries, src_file) {
-      pgc_file = aot_only ? nil : (src_file || '-e')
-      AbRuby.cs_load(parsed_ast, pgc_file)
-      entries.each { |_name, body| AbRuby.cs_load(body, pgc_file) }
+  # --pgc: bake after a clean run.  Skipped if eval_ast raised (we
+  # don't want to persist profile from a crashed run).
+  if pgc_at_exit
+    pgc_ents, aot_ents = parsed_entries.partition { |_, node, _|
+      AbRuby.horg(node) != AbRuby.hopt(node)
     }
-
-    abm = AbRuby.new
-    abm.current_file = run_script if run_script
-    $stderr.puts "run: #{ARGV[0] || '-e'}" if verbose
-    abm.eval(src)
-
-    if dump_mode == :disasm
-      # TODO: iterate specialized nodes and show disasm
+    if verbose
+      $stderr.puts "pgc bake: pgc=#{pgc_ents.size} aot=#{aot_ents.size} of #{parsed_entries.size}"
     end
+    pgc_ents.each { |label, node, file| cs_compile.(node, label: label, file: file || '-e') }
+    aot_ents.each { |label, node, _file| cs_compile.(node, label: label) }
+    AbRuby.cs_build(RUBY_CFLAGS) if parsed_entries.any?
+    $stderr.puts "pgc: done" if verbose
   end
 end
