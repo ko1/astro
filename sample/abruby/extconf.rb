@@ -1,6 +1,6 @@
 require 'mkmf'
 
-$srcs = ['abruby.c', 'node.c', 'node_helper.c']
+$srcs = ['abruby.c', 'node.c']
 
 # Add builtin sources
 builtin_dir = File.join($srcdir || '.', 'builtin')

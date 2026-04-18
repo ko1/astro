@@ -460,7 +460,29 @@ node_hash_new(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_i
 
 // === Instance Variables ===
 
-// node_ivar_get_slow moved to node_helper.c.
+// Slow path for ivar get cache miss.  self is the wrapper VALUE so we can
+// read its shape_id from T_DATA flags.
+#ifndef NODE_SKIP_COLD
+__attribute__((noinline)) VALUE
+node_ivar_get_slow(VALUE self, ID name, struct ivar_cache *ic)
+{
+    const struct abruby_object *obj =
+        (const struct abruby_object *)ABRUBY_DATA_PTR(self);
+    VALUE slot_fix;
+    if (ab_id_table_lookup(&obj->klass->ivar_shape, name, &slot_fix)) {
+        unsigned int slot = (unsigned int)FIX2ULONG(slot_fix);
+        if (slot < obj->ivar_cnt) {
+            // Reads don't transition → post == pre.
+            uint32_t shape = abruby_shape_id_read(self);
+            ic->shape_id = shape;
+            ic->post_shape_id = shape;
+            ic->slot = slot;
+            return abruby_object_ivar_read(obj, slot);
+        }
+    }
+    return Qnil;
+}
+#endif
 
 NODE_DEF
 node_ivar_get(CTX * restrict c, NODE * restrict n, ID name, struct ivar_cache *ic@ref)
@@ -483,7 +505,40 @@ node_ivar_get(CTX * restrict c, NODE * restrict n, ID name, struct ivar_cache *i
     return RESULT_OK(node_ivar_get_slow(self, name, ic));
 }
 
-// node_ivar_set_slow moved to node_helper.c.
+#ifndef NODE_SKIP_COLD
+__attribute__((noinline)) void
+node_ivar_set_slow(CTX * restrict c, VALUE self, ID name, VALUE v, struct ivar_cache *ic)
+{
+    struct abruby_object *obj =
+        (struct abruby_object *)ABRUBY_DATA_PTR(self);
+    struct abruby_class *klass = (struct abruby_class *)obj->klass;
+    // Look up the slot in the class shape; add it if new.
+    VALUE slot_fix;
+    unsigned int slot;
+    if (ab_id_table_lookup(&klass->ivar_shape, name, &slot_fix)) {
+        slot = (unsigned int)FIX2ULONG(slot_fix);
+    } else {
+        slot = klass->ivar_shape.cnt;
+        ab_id_table_insert(&klass->ivar_shape, name, LONG2FIX((long)slot));
+    }
+    // Remember the shape BEFORE the grow, so subsequent sets on fresh
+    // objects arriving at the same pre-shape hit the fast path.
+    uint32_t pre_shape = abruby_shape_id_read(self);
+    abruby_object_grow_ivars(obj, slot + 1);
+    if (slot < ABRUBY_OBJECT_INLINE_IVARS) {
+        obj->ivars[slot] = v;
+    } else {
+        obj->extra_ivars[slot - ABRUBY_OBJECT_INLINE_IVARS] = v;
+    }
+    uint32_t post_shape = abruby_shape_for(c->abm, klass, obj->ivar_cnt);
+    if (post_shape != pre_shape) {
+        abruby_shape_id_write(self, post_shape);
+    }
+    ic->shape_id = pre_shape;
+    ic->post_shape_id = post_shape;
+    ic->slot = slot;
+}
+#endif
 
 NODE_DEF
 node_ivar_set(CTX * restrict c, NODE * restrict n, ID name, NODE *value, struct ivar_cache *ic@ref)
@@ -1137,7 +1192,35 @@ method_cache_fill(CTX *c, struct method_cache *mc, const struct abruby_class *kl
     }
 }
 
-// raise_argc_error moved to node_helper.c (see node.h prototype).
+// ArgumentError for wrong number of arguments (cold path).
+#ifndef NODE_SKIP_COLD
+__attribute__((noinline, cold)) RESULT
+raise_argc_error(CTX *c, NODE *call_site,
+                 unsigned int given, unsigned int required,
+                 unsigned int max_params, bool has_rest)
+{
+    char buf[128];
+    if (has_rest) {
+        snprintf(buf, sizeof(buf),
+                 "wrong number of arguments (given %u, expected %u+)",
+                 given, required);
+    } else if (required == max_params) {
+        snprintf(buf, sizeof(buf),
+                 "wrong number of arguments (given %u, expected %u)",
+                 given, required);
+    } else {
+        snprintf(buf, sizeof(buf),
+                 "wrong number of arguments (given %u, expected %u..%u)",
+                 given, required, max_params);
+    }
+    VALUE exc;
+    PUSH_FRAME(call_site);
+    exc = abruby_exception_new(c, c->current_frame,
+        abruby_str_new_cstr(c, buf));
+    POP_FRAME();
+    return (RESULT){exc, RESULT_RAISE};
+}
+#endif
 
 // Max post params supported (for stack-allocated save buffer).
 // Real Ruby code rarely exceeds 2-3 post params; 16 is a safe upper bound.
@@ -2495,7 +2578,25 @@ flonum_div_calc(CTX *c, VALUE lv, VALUE rv)
     return flonum_result(c, AB_FLOAT_TO_DOUBLE(lv) / AB_FLOAT_TO_DOUBLE(rv));
 }
 
-// swap_dispatcher moved to node_helper.c.
+// Dispatcher swap: change the dispatcher without creating a new node.
+// kind is also updated for consistency (DUMP, HASH).
+#ifndef NODE_SKIP_COLD
+void
+swap_dispatcher(NODE *n, const struct NodeKind *target_kind)
+{
+    if (n->head.kind == target_kind) return;
+    // If the node already holds a specialized (SD_) dispatcher, keep it:
+    // the SD_ was generated for the *current* kind, and overwriting with
+    // the target kind's default dispatcher would discard optimizations and
+    // (under --compiled-only) leave the node pointing at code that reads
+    // child dispatchers via the generic runtime path — which are NULL for
+    // inlined-as-static children.
+    if (n->head.flags.is_specialized) return;
+    n->head.dispatcher = target_kind->default_dispatcher;
+    n->head.kind = target_kind;
+    n->head.flags.kind_swapped = true;  // signal runtime profile contribution
+}
+#endif
 
 // node_plus: generic fallback (method dispatch via "+")
 NODE_DEF
@@ -2545,7 +2646,13 @@ node_flonum_plus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, u
     return node_flonum_plus_slow(c, n, lv, rv, arg_index);
 }
 
-// node_fixnum_plus_overflow moved to node_helper.c (see node.h prototype).
+#ifndef NODE_SKIP_COLD
+__attribute__((noinline, cold)) RESULT
+node_fixnum_plus_overflow(CTX *c, VALUE lv, VALUE rv)
+{
+    return RESULT_OK(abruby_bignum_new(c, LONG2NUM(FIX2LONG(lv) + FIX2LONG(rv))));
+}
+#endif
 
 NODE_DEF @canonical=node_plus
 node_fixnum_plus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
@@ -2623,7 +2730,13 @@ node_flonum_minus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, 
     return node_flonum_minus_slow(c, n, lv, rv, arg_index);
 }
 
-// node_fixnum_minus_overflow moved to node_helper.c.
+#ifndef NODE_SKIP_COLD
+__attribute__((noinline, cold)) RESULT
+node_fixnum_minus_overflow(CTX *c, VALUE lv, VALUE rv)
+{
+    return RESULT_OK(abruby_bignum_new(c, LONG2NUM(FIX2LONG(lv) - FIX2LONG(rv))));
+}
+#endif
 
 NODE_DEF @canonical=node_minus
 node_fixnum_minus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
@@ -2701,7 +2814,13 @@ node_flonum_mul(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, ui
     return node_flonum_mul_slow(c, n, lv, rv, arg_index);
 }
 
-// node_fixnum_mul_overflow moved to node_helper.c.
+#ifndef NODE_SKIP_COLD
+__attribute__((noinline, cold)) RESULT
+node_fixnum_mul_overflow(CTX *c, long a, long b)
+{
+    return integer_mul_calc(c, LONG2FIX(a), LONG2FIX(b));
+}
+#endif
 
 NODE_DEF @canonical=node_mul
 node_fixnum_mul(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
