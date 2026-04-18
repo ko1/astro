@@ -99,20 +99,22 @@ class AbRubyNodeDef < ASTroGen::NodeDef
 
     def result_type = "RESULT"
 
-    # Wrap SD_/PGSD_ bodies with a frame-invariance assertion so clang's
-    # __builtin_assume can help CSE c->current_frame reloads across opaque
-    # cfunc calls inside the evaluated tree.  @noinline nodes (def / class /
-    # module / block_literal) are whole method/class-body entries — they
-    # themselves push or replace c->current_frame, so the assume would lie.
-    # Skip them.
-    def specializer_prologue
-      return nil if no_inline?
-      "struct abruby_frame *_sd_cached_frame = c->current_frame;"
-    end
+    if ENV['ABRUBY_TRY_ASSUME']
+      # Wrap SD_/PGSD_ bodies with a frame-invariance assertion so clang's
+      # __builtin_assume can help CSE c->current_frame reloads across opaque
+      # cfunc calls inside the evaluated tree.  @noinline nodes (def / class /
+      # module / block_literal) are whole method/class-body entries — they
+      # themselves push or replace c->current_frame, so the assume would lie.
+      # Skip them.
+      def specializer_prologue
+        return nil if no_inline?
+        "struct abruby_frame *_sd_cached_frame = c->current_frame;"
+      end
 
-    def specializer_epilogue
-      return nil if no_inline?
-      "ABRUBY_ASSUME(c->current_frame == _sd_cached_frame);"
+      def specializer_epilogue
+        return nil if no_inline?
+        "ABRUBY_ASSUME(c->current_frame == _sd_cached_frame);"
+      end
     end
 
     def alloc_dispatcher_expr
