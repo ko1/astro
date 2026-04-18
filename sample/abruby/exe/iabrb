@@ -28,6 +28,14 @@ opt.on('-d', '--disasm', 'show disassembly after compile (implies --compile-firs
 opt.on('-v', '--version', 'show version') { puts "iabrb #{AbRuby::VERSION}"; exit }
 opt.parse!(ARGV)
 
+# -c and --pgc don't compose cleanly: AOT pre-bake makes the baked body
+# is_specialized=true, which short-circuits swap_dispatcher — the very
+# mechanism PGC relies on to notice new type observations.  Pick one.
+if compile && pgc
+  $stderr.puts "iabrb: --compile-first and --pgc are mutually exclusive (pick one)"
+  exit 1
+end
+
 # -d alone keeps the historical "compile then disasm" behaviour (AOT); pair
 # it with --pgc to disasm the post-profile bake instead.
 compile = true if disasm && !pgc
