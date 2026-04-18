@@ -1562,7 +1562,8 @@ dispatch_method_with_klass_with_block(CTX * restrict c, NODE * restrict call_sit
     return dispatch_method_frame_with_block(c, call_site, &mc, recv, argc, arg_index, blk);
 }
 
-static __attribute__((noinline)) RESULT
+#ifndef NODE_SKIP_COLD
+__attribute__((noinline)) RESULT
 method_missing_dispatch(CTX * restrict c, NODE * restrict n, const struct abruby_class *klass,
                         ID name, VALUE recv_val,
                         uint32_t params_cnt, uint32_t arg_index)
@@ -1585,6 +1586,7 @@ method_missing_dispatch(CTX * restrict c, NODE * restrict n, const struct abruby
     c->current_frame->fp[arg_index] = abruby_str_new_cstr(c,rb_id2name(name));
     return dispatch_method_with_klass(c, n, recv_val, klass, mm, params_cnt + 1, arg_index);
 }
+#endif
 
 // If recv_val is itself a class/module object, return its own methods
 // table for "singleton" lookup; otherwise return NULL.  This is the
@@ -1613,7 +1615,8 @@ static inline void maybe_specialize_call_kind(NODE *n, const struct method_cache
 
 // Not marked `cold`: polymorphic dispatch sites (e.g. bm_dispatch) hit this
 // path every other iteration, and sending it to the cold section wrecks icache.
-static __attribute__((noinline)) RESULT
+#ifndef NODE_SKIP_COLD
+__attribute__((noinline)) RESULT
 node_method_call_slow(CTX * restrict c, NODE * restrict n,
                       VALUE recv_val, const struct abruby_class *klass, ID name,
                       uint32_t params_cnt, uint32_t arg_index,
@@ -1637,6 +1640,7 @@ node_method_call_slow(CTX * restrict c, NODE * restrict n,
     maybe_specialize_call_kind(n, mc);
     return dispatch_method_with_klass(c, n, recv_val, klass, method, params_cnt, arg_index);
 }
+#endif
 
 // === Apply (splat) call nodes ===
 //
@@ -1690,7 +1694,7 @@ apply_unpack(CTX * restrict c, NODE * restrict n,
 }
 
 // Forward declarations (defined later, after block-carrying call nodes).
-static __attribute__((noinline)) RESULT
+__attribute__((noinline)) RESULT
 node_method_call_with_block_slow(CTX *c, NODE *n,
                                  VALUE recv_val, const struct abruby_class *klass, ID name,
                                  uint32_t params_cnt, uint32_t arg_index,
@@ -1753,7 +1757,8 @@ materialize_block(CTX *c, NODE *call_site, NODE *blk_node,
 }
 
 // Slow path for dispatch_call: block present or cache miss. Out-of-line.
-static __attribute__((noinline)) RESULT
+#ifndef NODE_SKIP_COLD
+__attribute__((noinline)) RESULT
 dispatch_call_slow(CTX * restrict c, NODE * restrict call_site, VALUE recv_val,
                    ID name, unsigned int argc, uint32_t arg_index,
                    NODE *blk_node, const struct abruby_class *klass,
@@ -1774,6 +1779,7 @@ dispatch_call_slow(CTX * restrict c, NODE * restrict call_site, VALUE recv_val,
                    : node_method_call_slow(c, call_site, recv_val, klass, name,
                                            argc, arg_index, mc, static_argc);
 }
+#endif
 
 // Common dispatch path for all 5 new call nodes.
 // Caller has already evaluated recv (recv_val) and placed args in fp.
@@ -2154,7 +2160,8 @@ node_apply_call(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, NODE *
 //   - Dispatch goes through dispatch_method_frame_with_block, which sets
 //     frame.block = blk and demotes RESULT_BREAK on method boundary.
 
-static __attribute__((noinline)) RESULT
+#ifndef NODE_SKIP_COLD
+__attribute__((noinline)) RESULT
 node_method_call_with_block_slow(CTX * restrict c, NODE * restrict n,
                                  VALUE recv_val, const struct abruby_class *klass, ID name,
                                  uint32_t params_cnt, uint32_t arg_index,
@@ -2172,6 +2179,7 @@ node_method_call_with_block_slow(CTX * restrict c, NODE * restrict n,
     return dispatch_method_with_klass_with_block(c, n, recv_val, klass, method,
                                                  params_cnt, arg_index, blk);
 }
+#endif
 
 // === Runtime-block call nodes ===
 //
@@ -2224,7 +2232,8 @@ find_super_target(const struct abruby_frame *lex,
     return *out_klass != NULL;
 }
 
-static __attribute__((noinline, cold)) RESULT
+#ifndef NODE_SKIP_COLD
+__attribute__((noinline, cold)) RESULT
 raise_super_no_method(CTX *c, NODE *n)
 {
     VALUE exc;
@@ -2234,10 +2243,12 @@ raise_super_no_method(CTX *c, NODE *n)
     POP_FRAME();
     return (RESULT){exc, RESULT_RAISE};
 }
+#endif
 
 // Slow path: resolve method, fill cache, dispatch.  Out-of-line so the
 // hot cache-hit path in node_super stays small and inline.
-static __attribute__((noinline)) RESULT
+#ifndef NODE_SKIP_COLD
+__attribute__((noinline)) RESULT
 node_super_slow(CTX * restrict c, NODE * restrict n,
                 const struct abruby_class *klass, ID name,
                 uint32_t params_cnt, uint32_t arg_index,
@@ -2253,6 +2264,7 @@ node_super_slow(CTX * restrict c, NODE * restrict n,
     }
     return dispatch_method_frame(c, n, mc, recv_self, params_cnt, arg_index);
 }
+#endif
 
 // `super(args)` — call parent method with explicit arguments.
 // Any block the current method received is implicitly forwarded to the
@@ -2316,7 +2328,8 @@ node_super_with_block(CTX * restrict c, NODE * restrict n, uint32_t params_cnt, 
 extern RESULT ab_object_eq(CTX *c, VALUE self, unsigned int argc, VALUE *argv);
 
 // Fallback: general method call for arithmetic operators (recv=lv, arg=rv)
-static __attribute__((noinline, cold)) RESULT
+#ifndef NODE_SKIP_COLD
+__attribute__((noinline, cold)) RESULT
 node_arith_fallback(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, ID op, uint32_t arg_index)
 {
     const struct abruby_class *klass = AB_CLASS_OF(c, lv);
@@ -2347,6 +2360,7 @@ node_arith_fallback(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, ID 
     c->current_frame->fp[arg_index] = rv;
     return dispatch_method_with_klass(c, n, lv, klass, method, 1, arg_index);
 }
+#endif
 
 // Integer arithmetic helper (works for both fixnum and bignum)
 static inline bool
@@ -2492,7 +2506,8 @@ node_plus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t
     return node_arith_fallback(c, n, lv, rv, c->ids->op_plus, arg_index);
 }
 
-static __attribute__((noinline, cold)) RESULT
+#ifndef NODE_SKIP_COLD
+__attribute__((noinline, cold)) RESULT
 node_fixnum_plus_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
 {
     if (!c->abm->basic_op_redefined) {
@@ -2508,13 +2523,16 @@ node_fixnum_plus_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, u
     swap_dispatcher(n, &kind_node_plus);
     return node_arith_fallback(c, n, lv, rv, c->ids->op_plus, arg_index);
 }
+#endif
 
-static __attribute__((noinline, cold)) RESULT
+#ifndef NODE_SKIP_COLD
+__attribute__((noinline, cold)) RESULT
 node_flonum_plus_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
 {
     swap_dispatcher(n, &kind_node_plus);
     return node_arith_fallback(c, n, lv, rv, c->ids->op_plus, arg_index);
 }
+#endif
 
 NODE_DEF @canonical=node_plus
 node_flonum_plus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
@@ -2566,7 +2584,8 @@ node_minus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_
     return node_arith_fallback(c, n, lv, rv, c->ids->op_minus, arg_index);
 }
 
-static __attribute__((noinline, cold)) RESULT
+#ifndef NODE_SKIP_COLD
+__attribute__((noinline, cold)) RESULT
 node_fixnum_minus_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
 {
     if (!c->abm->basic_op_redefined) {
@@ -2582,13 +2601,16 @@ node_fixnum_minus_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, 
     swap_dispatcher(n, &kind_node_minus);
     return node_arith_fallback(c, n, lv, rv, c->ids->op_minus, arg_index);
 }
+#endif
 
-static __attribute__((noinline, cold)) RESULT
+#ifndef NODE_SKIP_COLD
+__attribute__((noinline, cold)) RESULT
 node_flonum_minus_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
 {
     swap_dispatcher(n, &kind_node_minus);
     return node_arith_fallback(c, n, lv, rv, c->ids->op_minus, arg_index);
 }
+#endif
 
 NODE_DEF @canonical=node_minus
 node_flonum_minus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
@@ -2640,7 +2662,8 @@ node_mul(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t 
     return node_arith_fallback(c, n, lv, rv, c->ids->op_mul, arg_index);
 }
 
-static __attribute__((noinline, cold)) RESULT
+#ifndef NODE_SKIP_COLD
+__attribute__((noinline, cold)) RESULT
 node_fixnum_mul_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
 {
     if (!c->abm->basic_op_redefined) {
@@ -2656,13 +2679,16 @@ node_fixnum_mul_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, ui
     swap_dispatcher(n, &kind_node_mul);
     return node_arith_fallback(c, n, lv, rv, c->ids->op_mul, arg_index);
 }
+#endif
 
-static __attribute__((noinline, cold)) RESULT
+#ifndef NODE_SKIP_COLD
+__attribute__((noinline, cold)) RESULT
 node_flonum_mul_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
 {
     swap_dispatcher(n, &kind_node_mul);
     return node_arith_fallback(c, n, lv, rv, c->ids->op_mul, arg_index);
 }
+#endif
 
 NODE_DEF @canonical=node_mul
 node_flonum_mul(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
@@ -2717,7 +2743,8 @@ node_div(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t 
     return node_arith_fallback(c, n, lv, rv, c->ids->op_div, arg_index);
 }
 
-static __attribute__((noinline, cold)) RESULT
+#ifndef NODE_SKIP_COLD
+__attribute__((noinline, cold)) RESULT
 node_fixnum_div_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
 {
     if (!c->abm->basic_op_redefined) {
@@ -2733,13 +2760,16 @@ node_fixnum_div_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, ui
     swap_dispatcher(n, &kind_node_div);
     return node_arith_fallback(c, n, lv, rv, c->ids->op_div, arg_index);
 }
+#endif
 
-static __attribute__((noinline, cold)) RESULT
+#ifndef NODE_SKIP_COLD
+__attribute__((noinline, cold)) RESULT
 node_flonum_div_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
 {
     swap_dispatcher(n, &kind_node_div);
     return node_arith_fallback(c, n, lv, rv, c->ids->op_div, arg_index);
 }
+#endif
 
 NODE_DEF @canonical=node_div
 node_flonum_div(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
@@ -2837,7 +2867,8 @@ node_lt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t a
     return node_arith_fallback(c, n, lv, rv, c->ids->op_lt, arg_index);
 }
 
-static __attribute__((noinline, cold)) RESULT
+#ifndef NODE_SKIP_COLD
+__attribute__((noinline, cold)) RESULT
 node_fixnum_lt_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
 {
     if (!c->abm->basic_op_redefined) {
@@ -2852,6 +2883,7 @@ node_fixnum_lt_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uin
     swap_dispatcher(n, &kind_node_lt);
     return node_arith_fallback(c, n, lv, rv, c->ids->op_lt, arg_index);
 }
+#endif
 
 NODE_DEF @canonical=node_lt
 node_fixnum_lt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
@@ -2864,12 +2896,14 @@ node_fixnum_lt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uin
     return node_fixnum_lt_slow(c, n, lv, rv, arg_index);
 }
 
-static __attribute__((noinline, cold)) RESULT
+#ifndef NODE_SKIP_COLD
+__attribute__((noinline, cold)) RESULT
 node_flonum_lt_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
 {
     swap_dispatcher(n, &kind_node_lt);
     return node_arith_fallback(c, n, lv, rv, c->ids->op_lt, arg_index);
 }
+#endif
 
 NODE_DEF @canonical=node_lt
 node_flonum_lt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
@@ -2892,7 +2926,8 @@ node_le(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t a
     return node_arith_fallback(c, n, lv, rv, c->ids->op_le, arg_index);
 }
 
-static __attribute__((noinline, cold)) RESULT
+#ifndef NODE_SKIP_COLD
+__attribute__((noinline, cold)) RESULT
 node_fixnum_le_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
 {
     if (!c->abm->basic_op_redefined) {
@@ -2907,6 +2942,7 @@ node_fixnum_le_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uin
     swap_dispatcher(n, &kind_node_le);
     return node_arith_fallback(c, n, lv, rv, c->ids->op_le, arg_index);
 }
+#endif
 
 NODE_DEF @canonical=node_le
 node_fixnum_le(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
@@ -2919,12 +2955,14 @@ node_fixnum_le(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uin
     return node_fixnum_le_slow(c, n, lv, rv, arg_index);
 }
 
-static __attribute__((noinline, cold)) RESULT
+#ifndef NODE_SKIP_COLD
+__attribute__((noinline, cold)) RESULT
 node_flonum_le_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
 {
     swap_dispatcher(n, &kind_node_le);
     return node_arith_fallback(c, n, lv, rv, c->ids->op_le, arg_index);
 }
+#endif
 
 NODE_DEF @canonical=node_le
 node_flonum_le(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
@@ -2947,7 +2985,8 @@ node_gt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t a
     return node_arith_fallback(c, n, lv, rv, c->ids->op_gt, arg_index);
 }
 
-static __attribute__((noinline, cold)) RESULT
+#ifndef NODE_SKIP_COLD
+__attribute__((noinline, cold)) RESULT
 node_fixnum_gt_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
 {
     if (!c->abm->basic_op_redefined) {
@@ -2962,6 +3001,7 @@ node_fixnum_gt_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uin
     swap_dispatcher(n, &kind_node_gt);
     return node_arith_fallback(c, n, lv, rv, c->ids->op_gt, arg_index);
 }
+#endif
 
 NODE_DEF @canonical=node_gt
 node_fixnum_gt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
@@ -2974,12 +3014,14 @@ node_fixnum_gt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uin
     return node_fixnum_gt_slow(c, n, lv, rv, arg_index);
 }
 
-static __attribute__((noinline, cold)) RESULT
+#ifndef NODE_SKIP_COLD
+__attribute__((noinline, cold)) RESULT
 node_flonum_gt_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
 {
     swap_dispatcher(n, &kind_node_gt);
     return node_arith_fallback(c, n, lv, rv, c->ids->op_gt, arg_index);
 }
+#endif
 
 NODE_DEF @canonical=node_gt
 node_flonum_gt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
@@ -3002,7 +3044,8 @@ node_ge(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t a
     return node_arith_fallback(c, n, lv, rv, c->ids->op_ge, arg_index);
 }
 
-static __attribute__((noinline, cold)) RESULT
+#ifndef NODE_SKIP_COLD
+__attribute__((noinline, cold)) RESULT
 node_fixnum_ge_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
 {
     if (!c->abm->basic_op_redefined) {
@@ -3017,6 +3060,7 @@ node_fixnum_ge_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uin
     swap_dispatcher(n, &kind_node_ge);
     return node_arith_fallback(c, n, lv, rv, c->ids->op_ge, arg_index);
 }
+#endif
 
 NODE_DEF @canonical=node_ge
 node_fixnum_ge(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
@@ -3029,12 +3073,14 @@ node_fixnum_ge(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uin
     return node_fixnum_ge_slow(c, n, lv, rv, arg_index);
 }
 
-static __attribute__((noinline, cold)) RESULT
+#ifndef NODE_SKIP_COLD
+__attribute__((noinline, cold)) RESULT
 node_flonum_ge_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
 {
     swap_dispatcher(n, &kind_node_ge);
     return node_arith_fallback(c, n, lv, rv, c->ids->op_ge, arg_index);
 }
+#endif
 
 NODE_DEF @canonical=node_ge
 node_flonum_ge(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
@@ -3077,12 +3123,14 @@ node_eq(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t a
     return node_arith_fallback(c, n, lv, rv, c->ids->op_eq, arg_index);
 }
 
-static __attribute__((noinline, cold)) RESULT
+#ifndef NODE_SKIP_COLD
+__attribute__((noinline, cold)) RESULT
 node_fixnum_eq_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
 {
     swap_dispatcher(n, &kind_node_eq);
     return node_arith_fallback(c, n, lv, rv, c->ids->op_eq, arg_index);
 }
+#endif
 
 NODE_DEF @canonical=node_eq
 node_fixnum_eq(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
@@ -3108,7 +3156,8 @@ node_neq(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t 
     return RESULT_OK(RTEST(eq.value) ? Qfalse : Qtrue);
 }
 
-static __attribute__((noinline, cold)) RESULT
+#ifndef NODE_SKIP_COLD
+__attribute__((noinline, cold)) RESULT
 node_fixnum_neq_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
 {
     swap_dispatcher(n, &kind_node_neq);
@@ -3117,6 +3166,7 @@ node_fixnum_neq_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, ui
     if (eq.state != RESULT_NORMAL) return eq;
     return RESULT_OK(RTEST(eq.value) ? Qfalse : Qtrue);
 }
+#endif
 
 NODE_DEF @canonical=node_neq
 node_fixnum_neq(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
@@ -3137,12 +3187,14 @@ node_mod(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t 
     return node_arith_fallback(c, n, lv, rv, c->ids->op_mod, arg_index);
 }
 
-static __attribute__((noinline, cold)) RESULT
+#ifndef NODE_SKIP_COLD
+__attribute__((noinline, cold)) RESULT
 node_fixnum_mod_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
 {
     swap_dispatcher(n, &kind_node_mod);
     return node_arith_fallback(c, n, lv, rv, c->ids->op_mod, arg_index);
 }
+#endif
 
 NODE_DEF @canonical=node_mod
 node_fixnum_mod(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
@@ -3204,12 +3256,14 @@ node_and(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t 
     return node_arith_fallback(c, n, lv, rv, c->ids->op_and, arg_index);
 }
 
-static __attribute__((noinline, cold)) RESULT
+#ifndef NODE_SKIP_COLD
+__attribute__((noinline, cold)) RESULT
 node_fixnum_and_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
 {
     swap_dispatcher(n, &kind_node_and);
     return node_arith_fallback(c, n, lv, rv, c->ids->op_and, arg_index);
 }
+#endif
 
 NODE_DEF @canonical=node_and
 node_fixnum_and(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
@@ -3233,12 +3287,14 @@ node_or(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t a
     return node_arith_fallback(c, n, lv, rv, c->ids->op_or, arg_index);
 }
 
-static __attribute__((noinline, cold)) RESULT
+#ifndef NODE_SKIP_COLD
+__attribute__((noinline, cold)) RESULT
 node_fixnum_or_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
 {
     swap_dispatcher(n, &kind_node_or);
     return node_arith_fallback(c, n, lv, rv, c->ids->op_or, arg_index);
 }
+#endif
 
 NODE_DEF @canonical=node_or
 node_fixnum_or(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
@@ -3261,12 +3317,14 @@ node_xor(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t 
     return node_arith_fallback(c, n, lv, rv, c->ids->op_xor, arg_index);
 }
 
-static __attribute__((noinline, cold)) RESULT
+#ifndef NODE_SKIP_COLD
+__attribute__((noinline, cold)) RESULT
 node_fixnum_xor_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
 {
     swap_dispatcher(n, &kind_node_xor);
     return node_arith_fallback(c, n, lv, rv, c->ids->op_xor, arg_index);
 }
+#endif
 
 NODE_DEF @canonical=node_xor
 node_fixnum_xor(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
@@ -3289,12 +3347,14 @@ node_gtgt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t
     return node_arith_fallback(c, n, lv, rv, c->ids->op_gtgt, arg_index);
 }
 
-static __attribute__((noinline, cold)) RESULT
+#ifndef NODE_SKIP_COLD
+__attribute__((noinline, cold)) RESULT
 node_fixnum_gtgt_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index)
 {
     swap_dispatcher(n, &kind_node_gtgt);
     return node_arith_fallback(c, n, lv, rv, c->ids->op_gtgt, arg_index);
 }
+#endif
 
 NODE_DEF @canonical=node_gtgt
 node_fixnum_gtgt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
@@ -3352,7 +3412,8 @@ extern const struct NodeKind kind_node_fixnum_ltlt;
 // 2-arg method dispatch fallback (recv.op(idx, val)) — used by the
 // aset fallbacks for the []= method.  Parallels node_arith_fallback
 // but with two call-args.
-static __attribute__((noinline, cold)) RESULT
+#ifndef NODE_SKIP_COLD
+__attribute__((noinline, cold)) RESULT
 node_indexset_fallback(CTX * restrict c, NODE * restrict n, VALUE recv, VALUE idx, VALUE val, ID op, uint32_t arg_index)
 {
     const struct abruby_class *klass = AB_CLASS_OF(c, recv);
@@ -3378,6 +3439,7 @@ node_indexset_fallback(CTX * restrict c, NODE * restrict n, VALUE recv, VALUE id
     c->current_frame->fp[arg_index + 1] = val;
     return dispatch_method_with_klass(c, n, recv, klass, method, 2, arg_index);
 }
+#endif
 
 // --- Inline helpers shared by the monomorphic kinds and the fallbacks ---
 
@@ -3429,7 +3491,8 @@ do_fixnum_ltlt(VALUE lv, VALUE rv)
 // when their specific fast path misses.  Classifies the receiver,
 // swap_dispatcher()s to the matching monomorphic kind, and runs the
 // operation.  Unknown receiver → method dispatch.
-static __attribute__((noinline)) RESULT
+#ifndef NODE_SKIP_COLD
+__attribute__((noinline)) RESULT
 node_aref_fallback(CTX * restrict c, NODE * restrict n, VALUE rv, VALUE iv, uint32_t arg_index)
 {
     const struct abruby_class *klass = AB_CLASS_OF(c, rv);
@@ -3450,6 +3513,7 @@ node_aref_fallback(CTX * restrict c, NODE * restrict n, VALUE rv, VALUE iv, uint
 
     return node_arith_fallback(c, n, rv, iv, c->ids->op_aref, arg_index);
 }
+#endif
 
 NODE_DEF @canonical=node_aref
 node_array_aref(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *idx, uint32_t arg_index)
@@ -3488,7 +3552,8 @@ node_fixnum_aref(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *idx, uin
 //
 // Called from node_array_ltlt and node_fixnum_ltlt on a type miss.
 // Only swaps when the target kind's fast path will actually apply.
-static __attribute__((noinline)) RESULT
+#ifndef NODE_SKIP_COLD
+__attribute__((noinline)) RESULT
 node_ltlt_fallback(CTX * restrict c, NODE * restrict n, VALUE rv, VALUE xv, uint32_t arg_index)
 {
     if (AB_CLASS_OF(c, rv) == c->abm->array_class) {
@@ -3507,6 +3572,7 @@ node_ltlt_fallback(CTX * restrict c, NODE * restrict n, VALUE rv, VALUE xv, uint
 
     return node_arith_fallback(c, n, rv, xv, c->ids->op_ltlt, arg_index);
 }
+#endif
 
 NODE_DEF @canonical=node_ltlt
 node_array_ltlt(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *right, uint32_t arg_index)
@@ -3534,7 +3600,8 @@ node_fixnum_ltlt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, u
 
 // === Shared aset fallback ===
 // Only swaps when the target kind's fast path will actually apply.
-static __attribute__((noinline)) RESULT
+#ifndef NODE_SKIP_COLD
+__attribute__((noinline)) RESULT
 node_aset_fallback(CTX * restrict c, NODE * restrict n, VALUE rv, VALUE iv, VALUE vv, uint32_t arg_index)
 {
     const struct abruby_class *klass = AB_CLASS_OF(c, rv);
@@ -3552,6 +3619,7 @@ node_aset_fallback(CTX * restrict c, NODE * restrict n, VALUE rv, VALUE iv, VALU
 
     return node_indexset_fallback(c, n, rv, iv, vv, c->ids->op_aset, arg_index);
 }
+#endif
 
 NODE_DEF @canonical=node_aset
 node_array_aset(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *idx, NODE *value, uint32_t arg_index)

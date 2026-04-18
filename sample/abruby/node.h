@@ -83,6 +83,47 @@ void  swap_dispatcher(NODE *n, const struct NodeKind *target_kind);
 // From abruby.c — prototype needed by node_helper.c's node_ivar_set_slow.
 void  abruby_object_grow_ivars(struct abruby_object *obj, unsigned int new_cnt);
 
+// Cold helper prototypes.  Bodies live in node.def guarded by
+// `#ifndef NODE_SKIP_COLD`; compiled into abruby.so (via node.c) once, and
+// skipped when node_eval.c is re-included by each SD_*.c.  SD_*.o / PGSD_*.o
+// see only these declarations and resolve at dlopen time.
+struct method_cache;
+struct abruby_block;
+RESULT method_missing_dispatch(CTX * restrict c, NODE * restrict n, const struct abruby_class *klass, ID name, VALUE recv_val, uint32_t params_cnt, uint32_t arg_index);
+RESULT node_method_call_slow(CTX * restrict c, NODE * restrict n, VALUE recv_val, const struct abruby_class *klass, ID name, uint32_t params_cnt, uint32_t arg_index, struct method_cache *mc, bool static_argc);
+RESULT dispatch_call_slow(CTX * restrict c, NODE * restrict call_site, VALUE recv_val, ID name, unsigned int argc, uint32_t arg_index, NODE *blk_node, const struct abruby_class *klass, struct method_cache *mc, bool cache_hit, bool static_argc);
+RESULT node_method_call_with_block_slow(CTX * restrict c, NODE * restrict n, VALUE recv_val, const struct abruby_class *klass, ID name, uint32_t params_cnt, uint32_t arg_index, struct method_cache *mc, const struct abruby_block *blk, bool static_argc);
+RESULT raise_super_no_method(CTX *c, NODE *n);
+RESULT node_super_slow(CTX * restrict c, NODE * restrict n, const struct abruby_class *klass, ID name, uint32_t params_cnt, uint32_t arg_index, const struct abruby_block *blk, struct method_cache *mc, bool static_argc);
+RESULT node_arith_fallback(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, ID op, uint32_t arg_index);
+RESULT node_fixnum_plus_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index);
+RESULT node_flonum_plus_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index);
+RESULT node_fixnum_minus_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index);
+RESULT node_flonum_minus_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index);
+RESULT node_fixnum_mul_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index);
+RESULT node_flonum_mul_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index);
+RESULT node_fixnum_div_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index);
+RESULT node_flonum_div_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index);
+RESULT node_fixnum_lt_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index);
+RESULT node_flonum_lt_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index);
+RESULT node_fixnum_le_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index);
+RESULT node_flonum_le_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index);
+RESULT node_fixnum_gt_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index);
+RESULT node_flonum_gt_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index);
+RESULT node_fixnum_ge_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index);
+RESULT node_flonum_ge_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index);
+RESULT node_fixnum_eq_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index);
+RESULT node_fixnum_neq_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index);
+RESULT node_fixnum_mod_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index);
+RESULT node_fixnum_and_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index);
+RESULT node_fixnum_or_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index);
+RESULT node_fixnum_xor_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index);
+RESULT node_fixnum_gtgt_slow(CTX * restrict c, NODE * restrict n, VALUE lv, VALUE rv, uint32_t arg_index);
+RESULT node_indexset_fallback(CTX * restrict c, NODE * restrict n, VALUE recv, VALUE idx, VALUE val, ID op, uint32_t arg_index);
+RESULT node_aref_fallback(CTX * restrict c, NODE * restrict n, VALUE rv, VALUE iv, uint32_t arg_index);
+RESULT node_ltlt_fallback(CTX * restrict c, NODE * restrict n, VALUE rv, VALUE xv, uint32_t arg_index);
+RESULT node_aset_fallback(CTX * restrict c, NODE * restrict n, VALUE rv, VALUE iv, VALUE vv, uint32_t arg_index);
+
 // Invoke the block attached to the current frame from a cfunc body.
 // Returns the block's result.  Propagates RAISE / RETURN / BREAK upward
 // (the cfunc should return these unchanged so the surrounding
