@@ -444,10 +444,7 @@ node_const_get(CTX * restrict c, NODE * restrict n, ID name)
 NODE_DEF
 node_ary_new(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_index)
 {
-    VALUE ary = rb_ary_new_capa(argc);
-    for (uint32_t i = 0; i < argc; i++) {
-        rb_ary_push(ary, c->current_frame->fp[arg_index + i]);
-    }
+    VALUE ary = rb_ary_new_from_values(argc, &c->current_frame->fp[arg_index]);
     return RESULT_OK(abruby_ary_new(c, ary));
 }
 
