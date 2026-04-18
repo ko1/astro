@@ -1,6 +1,6 @@
 #include "builtin.h"
 
-#define RRANGE(v) ((const struct abruby_range *)RTYPEDDATA_GET_DATA(v))
+#define RRANGE(v) ((const struct abruby_range *)ABRUBY_DATA_PTR(v))
 
 static RESULT ab_range_first(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     return RESULT_OK(RRANGE(self)->begin);

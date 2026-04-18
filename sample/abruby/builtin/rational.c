@@ -1,6 +1,6 @@
 #include "builtin.h"
 
-#define RRAT(v) (((struct abruby_rational *)RTYPEDDATA_GET_DATA(v))->rb_rational)
+#define RRAT(v) (((struct abruby_rational *)ABRUBY_DATA_PTR(v))->rb_rational)
 
 static RESULT ab_rational_inspect(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     return RESULT_OK(abruby_str_new(c, rb_funcall(RRAT(self), rb_intern("inspect"), 0)));

@@ -361,7 +361,7 @@ VALUE
 abruby_str_rstr(VALUE ab_str)
 {
     ab_verify(ab_str);
-    return ((struct abruby_string *)RTYPEDDATA_GET_DATA(ab_str))->rb_str;
+    return ((struct abruby_string *)ABRUBY_DATA_PTR(ab_str))->rb_str;
 }
 
 // Symbol wrapper — wraps a CRuby Symbol in T_DATA.  Static (immediate)
@@ -443,9 +443,9 @@ abruby_bound_method_new(CTX *c, VALUE recv, ID name)
 
 // shorthand macros
 #define RSTR(v) abruby_str_rstr(v)
-#define RARY(v) (((struct abruby_array *)RTYPEDDATA_GET_DATA(v))->rb_ary)
-#define RHSH(v) (((struct abruby_hash *)RTYPEDDATA_GET_DATA(v))->rb_hash)
-#define RSYM(v) (((struct abruby_symbol *)RTYPEDDATA_GET_DATA(v))->rb_sym)
+#define RARY(v) (((struct abruby_array *)ABRUBY_DATA_PTR(v))->rb_ary)
+#define RHSH(v) (((struct abruby_hash *)ABRUBY_DATA_PTR(v))->rb_hash)
+#define RSYM(v) (((struct abruby_symbol *)ABRUBY_DATA_PTR(v))->rb_sym)
 
 VALUE
 abruby_ary_new(CTX *c, VALUE rb_ary)
@@ -540,7 +540,7 @@ struct abruby_class *
 abruby_unwrap_class(VALUE obj)
 {
     ab_verify(obj);
-    return (struct abruby_class *)RTYPEDDATA_GET_DATA(obj);
+    return (struct abruby_class *)ABRUBY_DATA_PTR(obj);
 }
 
 // === Shared helpers and builtin infrastructure ===
@@ -774,7 +774,7 @@ abruby_ivar_get(VALUE self, ID name)
 {
     ab_verify(self);
     const struct abruby_object *obj =
-        (const struct abruby_object *)RTYPEDDATA_GET_DATA(self);
+        (const struct abruby_object *)ABRUBY_DATA_PTR(self);
     VALUE slot_fix;
     if (ab_id_table_lookup(&obj->klass->ivar_shape, name, &slot_fix)) {
         unsigned int slot = (unsigned int)FIX2ULONG(slot_fix);
@@ -1932,7 +1932,7 @@ abruby_to_ruby(VALUE v)
 {
     if (RB_TYPE_P(v, T_DATA) && RTYPEDDATA_P(v) &&
         RTYPEDDATA_TYPE(v) == &abruby_data_type) {
-        const struct abruby_header *h = (const struct abruby_header *)RTYPEDDATA_GET_DATA(v);
+        const struct abruby_header *h = (const struct abruby_header *)ABRUBY_DATA_PTR(v);
         if (!h->klass) return v;
         switch (h->obj_type) {
         case ABRUBY_OBJ_BIGNUM:
@@ -2151,7 +2151,7 @@ rb_abruby_eval_ast(VALUE self, VALUE ast_obj)
         // Extract message and backtrace from exception object
         if (RB_TYPE_P(exc_val, T_DATA) && RTYPEDDATA_P(exc_val) &&
             RTYPEDDATA_TYPE(exc_val) == &abruby_data_type) {
-            const struct abruby_header *h = (const struct abruby_header *)RTYPEDDATA_GET_DATA(exc_val);
+            const struct abruby_header *h = (const struct abruby_header *)ABRUBY_DATA_PTR(exc_val);
             if (h->klass && h->obj_type == ABRUBY_OBJ_EXCEPTION) {
                 const struct abruby_exception *exc = (const struct abruby_exception *)h;
                 VALUE msg = abruby_to_ruby(exc->message);

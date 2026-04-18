@@ -360,6 +360,17 @@ struct abruby_complex {
 extern const rb_data_type_t abruby_data_type;
 extern const rb_data_type_t abruby_node_type;
 
+// Fast data-pointer accessor for abruby heap objects.  CRuby's
+// RTYPEDDATA_GET_DATA checks RTYPEDDATA_EMBEDDED_P (a byte load + branch on
+// RTypedData.type bit 0), but abruby_data_type never sets
+// RUBY_TYPED_EMBEDDABLE — our objects are always heap-allocated out-of-line.
+// The embedded check is invariant-false, yet the compiler can't prove it
+// across calls, so it re-emits the test at every RTYPEDDATA_GET_DATA site.
+// Skipping straight to RTYPEDDATA(obj)->data drops one branch and one load
+// per ivar access — visible in the `@a + @b` disasm where the testb $0x1,
+// 0x18(%rdi) appears twice, once per ivar_get.
+#define ABRUBY_DATA_PTR(obj) (RTYPEDDATA(obj)->data)
+
 static inline void
 ab_verify(VALUE obj)
 {
@@ -383,7 +394,7 @@ ab_verify(VALUE obj)
                    RTYPEDDATA_TYPE(obj)->wrap_struct_name, __FILE__, __LINE__);
         }
         const struct abruby_class *klass =
-            ((const struct abruby_header *)RTYPEDDATA_GET_DATA(obj))->klass;
+            ((const struct abruby_header *)ABRUBY_DATA_PTR(obj))->klass;
         if (klass == NULL) {
             rb_bug("ab_verify: klass is NULL (%s:%d)", __FILE__, __LINE__);
         }
@@ -402,7 +413,7 @@ ab_obj_type_p(VALUE obj, enum abruby_obj_type type)
     if (RB_STATIC_SYM_P(obj))    return type == ABRUBY_OBJ_SYMBOL;
     if (RB_SPECIAL_CONST_P(obj)) return type == ABRUBY_OBJ_GENERIC; // true/false/nil
     if (RB_BUILTIN_TYPE(obj) != T_DATA) return false;
-    const struct abruby_header *h = (const struct abruby_header *)RTYPEDDATA_GET_DATA(obj);
+    const struct abruby_header *h = (const struct abruby_header *)ABRUBY_DATA_PTR(obj);
     return h->klass && h->obj_type == type;
 }
 
@@ -830,7 +841,7 @@ AB_CLASS_OF(const CTX *c, VALUE obj)
     // Dynamic symbols are wrapped in abruby_symbol (T_DATA), so no
     // T_SYMBOL check is needed here.
     if (RB_LIKELY(!RB_SPECIAL_CONST_P(obj))) {
-        return ((struct abruby_header *)RTYPEDDATA_GET_DATA(obj))->klass;
+        return ((struct abruby_header *)ABRUBY_DATA_PTR(obj))->klass;
     }
     else {
         return AB_CLASS_OF_IMM(c, obj);

@@ -15,7 +15,7 @@ extern VALUE abruby_block_to_proc(CTX *c, const struct abruby_block *blk, bool i
 // We store the abruby fiber's rb_wrapper VALUE (not a raw pointer to
 // the fiber struct) so that GC sweep order does not matter: the mark
 // function marks the VALUE, and crb_fiber_body recovers the fiber
-// via RTYPEDDATA_GET_DATA on the wrapper.
+// via ABRUBY_DATA_PTR on the wrapper.
 struct crb_fiber_callback {
     VALUE rb_wrapper;   // T_DATA VALUE wrapping the abruby_fiber struct
 };
@@ -55,9 +55,9 @@ crb_fiber_body(VALUE yielded_arg, VALUE callback_obj, int argc, const VALUE *arg
 {
     (void)yielded_arg; (void)argc; (void)argv; (void)blockarg;
     struct crb_fiber_callback *cb =
-        (struct crb_fiber_callback *)RTYPEDDATA_GET_DATA(callback_obj);
+        (struct crb_fiber_callback *)ABRUBY_DATA_PTR(callback_obj);
     struct abruby_fiber *f =
-        (struct abruby_fiber *)RTYPEDDATA_GET_DATA(cb->rb_wrapper);
+        (struct abruby_fiber *)ABRUBY_DATA_PTR(cb->rb_wrapper);
 
     // The first resume delivers nargs/argv packed by fiber_switch_to into
     // transfer_value as a Ruby Array [nargs, arg0, arg1, ...].
@@ -230,7 +230,7 @@ RESULT ab_fiber_new(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
 // Fiber#resume(*args) — first call starts the fiber's body, subsequent
 // calls return from the most recent Fiber.yield with the args.
 RESULT ab_fiber_resume(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
-    struct abruby_fiber *f = (struct abruby_fiber *)RTYPEDDATA_GET_DATA(self);
+    struct abruby_fiber *f = (struct abruby_fiber *)ABRUBY_DATA_PTR(self);
     if (f->state == ABRUBY_FIBER_DONE) {
         VALUE exc = abruby_exception_new(c, c->current_frame,
             abruby_str_new_cstr(c, "dead fiber called"));
@@ -274,7 +274,7 @@ RESULT ab_fiber_yield(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
 // Fiber#alive? — returns true unless the fiber finished.
 RESULT ab_fiber_alive_p(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     (void)c; (void)argc; (void)argv;
-    const struct abruby_fiber *f = (const struct abruby_fiber *)RTYPEDDATA_GET_DATA(self);
+    const struct abruby_fiber *f = (const struct abruby_fiber *)ABRUBY_DATA_PTR(self);
     return RESULT_OK(f->state == ABRUBY_FIBER_DONE ? Qfalse : Qtrue);
 }
 

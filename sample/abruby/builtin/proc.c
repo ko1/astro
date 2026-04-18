@@ -79,7 +79,7 @@ RESULT ab_proc_new(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
 //     doesn't take a block, so we set current_block to NULL while
 //     executing the body
 RESULT ab_proc_call(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
-    struct abruby_proc *p = (struct abruby_proc *)RTYPEDDATA_GET_DATA(self);
+    struct abruby_proc *p = (struct abruby_proc *)ABRUBY_DATA_PTR(self);
 
     proc_bind_args(c, p, argc, argv);
 
@@ -136,13 +136,13 @@ RESULT ab_proc_call(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
 
 RESULT ab_proc_lambda_p(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     (void)c; (void)argc; (void)argv;
-    const struct abruby_proc *p = (const struct abruby_proc *)RTYPEDDATA_GET_DATA(self);
+    const struct abruby_proc *p = (const struct abruby_proc *)ABRUBY_DATA_PTR(self);
     return RESULT_OK(p->is_lambda ? Qtrue : Qfalse);
 }
 
 RESULT ab_proc_arity(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     (void)c; (void)argc; (void)argv;
-    const struct abruby_proc *p = (const struct abruby_proc *)RTYPEDDATA_GET_DATA(self);
+    const struct abruby_proc *p = (const struct abruby_proc *)ABRUBY_DATA_PTR(self);
     // Lambdas report exact arity; ordinary Procs report -required-1
     // for any non-zero count of optional/rest, but we only support
     // required params, so it's just `params_cnt` either way.

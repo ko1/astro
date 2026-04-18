@@ -1,6 +1,6 @@
 #include "builtin.h"
 
-#define RCMPLX(v) (((struct abruby_complex *)RTYPEDDATA_GET_DATA(v))->rb_complex)
+#define RCMPLX(v) (((struct abruby_complex *)ABRUBY_DATA_PTR(v))->rb_complex)
 
 static RESULT ab_complex_inspect(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     return RESULT_OK(abruby_str_new(c, rb_funcall(RCMPLX(self), rb_intern("inspect"), 0)));

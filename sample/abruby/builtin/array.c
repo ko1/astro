@@ -32,7 +32,7 @@ static RESULT ab_array_get(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     if (argc == 1 && ab_obj_type_p(argv[0], ABRUBY_OBJ_RANGE)) {
         VALUE ary = RARY(self);
         long len = RARRAY_LEN(ary);
-        const struct abruby_range *r = (const struct abruby_range *)RTYPEDDATA_GET_DATA(argv[0]);
+        const struct abruby_range *r = (const struct abruby_range *)ABRUBY_DATA_PTR(argv[0]);
         if (FIXNUM_P(r->begin) && FIXNUM_P(r->end)) {
             long b = FIX2LONG(r->begin);
             long e = FIX2LONG(r->end);
@@ -75,7 +75,7 @@ static RESULT ab_array_add(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
         // Ruby splat semantics for `[*nil]`: treat as empty.
     } else if (ab_obj_type_p(argv[0], ABRUBY_OBJ_RANGE)) {
         // `[*range]` semantics — splat a Range by calling to_a.
-        const struct abruby_range *r = (const struct abruby_range *)RTYPEDDATA_GET_DATA(argv[0]);
+        const struct abruby_range *r = (const struct abruby_range *)ABRUBY_DATA_PTR(argv[0]);
         if (FIXNUM_P(r->begin) && FIXNUM_P(r->end)) {
             long b = FIX2LONG(r->begin);
             long e = FIX2LONG(r->end);

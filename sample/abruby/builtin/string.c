@@ -109,7 +109,7 @@ static RESULT ab_string_match_op(CTX *c, VALUE self, unsigned int argc, VALUE *a
     VALUE re = argv[0];
     VALUE inner;
     if (ab_obj_type_p(re, ABRUBY_OBJ_REGEXP)) {
-        inner = ((const struct abruby_regexp *)RTYPEDDATA_GET_DATA(re))->rb_regexp;
+        inner = ((const struct abruby_regexp *)ABRUBY_DATA_PTR(re))->rb_regexp;
     } else if (RB_TYPE_P(re, T_REGEXP)) {
         inner = re;
     } else {
@@ -241,7 +241,7 @@ static RESULT ab_string_format(CTX *c, VALUE self, unsigned int argc, VALUE *arg
     } else {
         rb_arg = rb_ary_new3(1, RB_SPECIAL_CONST_P(arg) ? arg :
                  (ab_obj_type_p(arg, ABRUBY_OBJ_FLOAT) ?
-                  ((const struct abruby_float *)RTYPEDDATA_GET_DATA(arg))->rb_float : arg));
+                  ((const struct abruby_float *)ABRUBY_DATA_PTR(arg))->rb_float : arg));
     }
     VALUE result = rb_str_format(RARRAY_LEN(rb_arg), RARRAY_CONST_PTR(rb_arg), fmt);
     return RESULT_OK(abruby_str_new(c, result));

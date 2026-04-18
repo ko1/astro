@@ -1,6 +1,6 @@
 #include "builtin.h"
 
-#define RREGEXP_VAL(v) (((struct abruby_regexp *)RTYPEDDATA_GET_DATA(v))->rb_regexp)
+#define RREGEXP_VAL(v) (((struct abruby_regexp *)ABRUBY_DATA_PTR(v))->rb_regexp)
 
 static RESULT ab_regexp_inspect(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     VALUE re = RREGEXP_VAL(self);

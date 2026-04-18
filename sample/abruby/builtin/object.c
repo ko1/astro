@@ -33,7 +33,7 @@ static RESULT ab_object_nil_p(CTX *c, VALUE self, unsigned int argc, VALUE *argv
 // `obj.method(:foo)` and is called via `entry[arg1, arg2]`.
 RESULT ab_method_call(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     const struct abruby_bound_method *bm =
-        (const struct abruby_bound_method *)RTYPEDDATA_GET_DATA(self);
+        (const struct abruby_bound_method *)ABRUBY_DATA_PTR(self);
     VALUE recv = bm->recv;
     ID name = bm->method_name;
     const struct abruby_class *recv_klass = AB_CLASS_OF(c, recv);
@@ -88,7 +88,7 @@ static RESULT ab_object_send(CTX *c, VALUE self, unsigned int argc, VALUE *argv)
     if (!m) {
         // Singleton-table fallback for class/module receivers.
         if (!RB_SPECIAL_CONST_P(self)) {
-            struct abruby_header *h = (struct abruby_header *)RTYPEDDATA_GET_DATA(self);
+            struct abruby_header *h = (struct abruby_header *)ABRUBY_DATA_PTR(self);
             if (h->klass == c->abm->class_class || h->klass == c->abm->module_class) {
                 m = abruby_find_method((struct abruby_class *)h, name);
             }
@@ -159,7 +159,7 @@ static RESULT ab_object_respond_to_p(CTX *c, VALUE self, unsigned int argc, VALU
     // Also check the receiver's own methods table if it's a class /
     // module — that's where `def self.foo` lives in abruby.
     if (!RB_SPECIAL_CONST_P(self)) {
-        struct abruby_header *h = (struct abruby_header *)RTYPEDDATA_GET_DATA(self);
+        struct abruby_header *h = (struct abruby_header *)ABRUBY_DATA_PTR(self);
         if (h->klass == c->abm->class_class || h->klass == c->abm->module_class) {
             const struct abruby_class *k = (struct abruby_class *)h;
             if (abruby_find_method(k, id)) return RESULT_OK(Qtrue);

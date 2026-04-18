@@ -374,7 +374,7 @@ found:
         POP_FRAME();
         return (RESULT){exc, RESULT_RAISE};
     }
-    struct abruby_header *h = (struct abruby_header *)RTYPEDDATA_GET_DATA(parent_v);
+    struct abruby_header *h = (struct abruby_header *)ABRUBY_DATA_PTR(parent_v);
     // Accept anything that's a class/module value: per-instance
     // metaclasses (h->klass == class_class/module_class) AND the
     // self-referential singleton classes we use for File / Struct /
@@ -456,7 +456,7 @@ static VALUE
 ab_to_hash_key(VALUE v)
 {
     if (RB_SPECIAL_CONST_P(v)) return v;
-    const struct abruby_header *h = (const struct abruby_header *)RTYPEDDATA_GET_DATA(v);
+    const struct abruby_header *h = (const struct abruby_header *)ABRUBY_DATA_PTR(v);
     if (h->obj_type == ABRUBY_OBJ_STRING) return ((const struct abruby_string *)h)->rb_str;
     if (h->obj_type == ABRUBY_OBJ_ARRAY)  return ((const struct abruby_array *)h)->rb_ary;
     if (h->obj_type == ABRUBY_OBJ_SYMBOL) return ((const struct abruby_symbol *)h)->rb_sym;
@@ -481,7 +481,7 @@ static __attribute__((noinline)) VALUE
 node_ivar_get_slow(VALUE self, ID name, struct ivar_cache *ic)
 {
     const struct abruby_object *obj =
-        (const struct abruby_object *)RTYPEDDATA_GET_DATA(self);
+        (const struct abruby_object *)ABRUBY_DATA_PTR(self);
     VALUE slot_fix;
     if (ab_id_table_lookup(&obj->klass->ivar_shape, name, &slot_fix)) {
         unsigned int slot = (unsigned int)FIX2ULONG(slot_fix);
@@ -509,7 +509,7 @@ node_ivar_get(CTX * restrict c, NODE * restrict n, ID name, struct ivar_cache *i
     if (LIKELY(ic->shape_id == abruby_shape_id_read(self))) {
         // shape match ⇒ slot is valid (ivar_cnt ≥ slot+1 by construction).
         const struct abruby_object *obj =
-            (const struct abruby_object *)RTYPEDDATA_GET_DATA(self);
+            (const struct abruby_object *)ABRUBY_DATA_PTR(self);
         if (LIKELY(ic->slot < ABRUBY_OBJECT_INLINE_IVARS)) {
             return RESULT_OK(obj->ivars[ic->slot]);
         }
@@ -522,7 +522,7 @@ static __attribute__((noinline)) void
 node_ivar_set_slow(CTX * restrict c, VALUE self, ID name, VALUE v, struct ivar_cache *ic)
 {
     struct abruby_object *obj =
-        (struct abruby_object *)RTYPEDDATA_GET_DATA(self);
+        (struct abruby_object *)ABRUBY_DATA_PTR(self);
     struct abruby_class *klass = (struct abruby_class *)obj->klass;
     // Look up the slot in the class shape; add it if new.
     VALUE slot_fix;
@@ -576,7 +576,7 @@ node_ivar_set(CTX * restrict c, NODE * restrict n, ID name, NODE *value, struct 
         bool transition = (ic->shape_id != ic->post_shape_id);
         if (LIKELY(!(transition && ic->slot >= ABRUBY_OBJECT_INLINE_IVARS))) {
             struct abruby_object *obj =
-                (struct abruby_object *)RTYPEDDATA_GET_DATA(self);
+                (struct abruby_object *)ABRUBY_DATA_PTR(self);
             if (LIKELY(ic->slot < ABRUBY_OBJECT_INLINE_IVARS)) {
                 obj->ivars[ic->slot] = v;
             } else {
@@ -950,7 +950,7 @@ node_module_def(CTX * restrict c, NODE * restrict n, ID name, NODE *body)
     struct abruby_class *mod = NULL;
     for (const struct abruby_class *scope = outer; scope; scope = scope->super) {
         if (ab_id_table_lookup(&scope->constants, name, &existing_v) && RB_TYPE_P(existing_v, T_DATA)) {
-            struct abruby_header *h = (struct abruby_header *)RTYPEDDATA_GET_DATA(existing_v);
+            struct abruby_header *h = (struct abruby_header *)ABRUBY_DATA_PTR(existing_v);
             if (h->klass == c->abm->module_class || h->klass == c->abm->class_class) {
                 mod = (struct abruby_class *)h;
                 break;
@@ -958,7 +958,7 @@ node_module_def(CTX * restrict c, NODE * restrict n, ID name, NODE *body)
         }
     }
     if (!mod && ab_id_table_lookup(&c->abm->object_class->constants, name, &existing_v) && RB_TYPE_P(existing_v, T_DATA)) {
-        struct abruby_header *h = (struct abruby_header *)RTYPEDDATA_GET_DATA(existing_v);
+        struct abruby_header *h = (struct abruby_header *)ABRUBY_DATA_PTR(existing_v);
         if (h->klass == c->abm->module_class || h->klass == c->abm->class_class) {
             mod = (struct abruby_class *)h;
         }
@@ -1016,7 +1016,7 @@ node_class_def(CTX * restrict c, NODE * restrict n, ID name, NODE *super_expr, N
     struct abruby_class *klass = NULL;
     for (const struct abruby_class *scope = outer; scope; scope = scope->super) {
         if (ab_id_table_lookup(&scope->constants, name, &existing_v) && RB_TYPE_P(existing_v, T_DATA)) {
-            struct abruby_header *h = (struct abruby_header *)RTYPEDDATA_GET_DATA(existing_v);
+            struct abruby_header *h = (struct abruby_header *)ABRUBY_DATA_PTR(existing_v);
             if (h->klass == c->abm->class_class || h->klass == c->abm->module_class) {
                 klass = (struct abruby_class *)h;
                 break;
@@ -1025,7 +1025,7 @@ node_class_def(CTX * restrict c, NODE * restrict n, ID name, NODE *super_expr, N
     }
     // Also check object_class directly (built-in classes are registered there).
     if (!klass && ab_id_table_lookup(&c->abm->object_class->constants, name, &existing_v) && RB_TYPE_P(existing_v, T_DATA)) {
-        struct abruby_header *h = (struct abruby_header *)RTYPEDDATA_GET_DATA(existing_v);
+        struct abruby_header *h = (struct abruby_header *)ABRUBY_DATA_PTR(existing_v);
         if (h->klass == c->abm->class_class || h->klass == c->abm->module_class) {
             klass = (struct abruby_class *)h;
         }
@@ -1445,7 +1445,7 @@ prologue_ivar_getter(CTX * restrict c, NODE * restrict call_site,
     if (UNLIKELY(argc != 0))
         return raise_argc_error(c, call_site, argc, 0, 0, false);
     const struct abruby_object *obj =
-        (const struct abruby_object *)RTYPEDDATA_GET_DATA(recv_self);
+        (const struct abruby_object *)ABRUBY_DATA_PTR(recv_self);
     unsigned int slot;
     if (LIKELY(mc->klass == obj->klass)) {
         slot = mc->ivar_slot;
@@ -1471,7 +1471,7 @@ prologue_ivar_setter(CTX * restrict c, NODE * restrict call_site,
     if (UNLIKELY(argc != 1))
         return raise_argc_error(c, call_site, argc, 1, 1, false);
     struct abruby_object *obj =
-        (struct abruby_object *)RTYPEDDATA_GET_DATA(recv_self);
+        (struct abruby_object *)ABRUBY_DATA_PTR(recv_self);
     VALUE v = c->current_frame->fp[arg_index];
     unsigned int slot;
     if (LIKELY(mc->klass == obj->klass)) {
@@ -1692,7 +1692,7 @@ static inline struct abruby_class *
 abruby_singleton_table_class(CTX *c, VALUE recv_val)
 {
     if (RB_SPECIAL_CONST_P(recv_val)) return NULL;
-    struct abruby_header *h = (struct abruby_header *)RTYPEDDATA_GET_DATA(recv_val);
+    struct abruby_header *h = (struct abruby_header *)ABRUBY_DATA_PTR(recv_val);
     if (h->klass != c->abm->class_class && h->klass != c->abm->module_class) {
         return NULL;
     }
@@ -2286,7 +2286,7 @@ build_block_from_proc_value(CTX *c, NODE *call_site, VALUE proc_val, struct abru
         POP_FRAME();
         return (RESULT){exc, RESULT_RAISE};
     }
-    const struct abruby_proc *p = (const struct abruby_proc *)RTYPEDDATA_GET_DATA(proc_val);
+    const struct abruby_proc *p = (const struct abruby_proc *)ABRUBY_DATA_PTR(proc_val);
     out_blk->body          = p->body;
     out_blk->captured_fp   = p->env;
     out_blk->captured_self = p->captured_self;
