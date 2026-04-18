@@ -54,13 +54,18 @@ abm = AbRuby.new
 # any def bodies it introduced.  Accumulating lets --pgc re-bake previously
 # defined methods after their body is exercised by the current line (so
 # `f 0.5` re-PGCs `f` with the just-observed profile).
+# Each entry is [line_no, name, node] so headers can distinguish multiple
+# <toplevel> entries defined on different REPL lines.
 session_entries = []
+line_no = 0
 
 dump_and_disasm = ->(entries) {
-  entries.each do |name, node|
+  entries.each do |ln, name, node|
     if entries.size > 1
       $stdout.flush
-      puts "--- #{name || '<toplevel>'} ---"
+      label = name || '<toplevel>'
+      label = "#{label} (line #{ln})" if ln
+      puts "--- #{label} ---"
       $stdout.flush
     end
     puts abm.dump_ast(node)
@@ -71,7 +76,8 @@ dump_and_disasm = ->(entries) {
 
 eval_line = ->(line) {
   ast = abm.parse(line)
-  new_entries = [[nil, ast]] + abm.last_entries
+  line_no += 1
+  new_entries = [[line_no, nil, ast]] + abm.last_entries.map { |n, node| [line_no, n, node] }
   session_entries.concat(new_entries)
 
   # Each phase that compiles also disasms its own output (when -d is on),
@@ -84,11 +90,10 @@ eval_line = ->(line) {
 
   # ---------- Pre-eval: AOT bake ----------------------------------------
   if compile
-    new_entries.each { |_, node| AbRuby.cs_compile(node) }
+    new_entries.each { |_, _, node| AbRuby.cs_compile(node) }
     AbRuby.cs_build(cflags)
     AbRuby.cs_reload
-    new_entries.each { |_, node| AbRuby.cs_load(node) }
-    puts "# AOT" if disasm && pgc  # separator in combined mode
+    new_entries.each { |_, _, node| AbRuby.cs_load(node) }
     dump_and_disasm.(new_entries) if disasm
   end
 
@@ -103,18 +108,15 @@ eval_line = ->(line) {
   # node_flonum_* next line before we bake it here.  Already-compiled
   # entries whose hash didn't change are skipped by astro_cs_compile.
   if pgc
-    pgc_ents = session_entries.select { |_, node| AbRuby.has_profile?(node) }
+    pgc_ents = session_entries.select { |_, _, node| AbRuby.has_profile?(node) }
     pgc_file = '-e'
-    pgc_ents.each { |_, node| AbRuby.cs_compile(node, pgc_file) }
+    pgc_ents.each { |_, _, node| AbRuby.cs_compile(node, pgc_file) }
     if pgc_ents.any?
       AbRuby.cs_build(cflags)
       AbRuby.cs_reload
-      pgc_ents.each { |_, node| AbRuby.cs_load(node, pgc_file) }
+      pgc_ents.each { |_, _, node| AbRuby.cs_load(node, pgc_file) }
     end
-    if disasm && pgc_ents.any?
-      puts "# PGC" if compile  # separator in combined mode
-      dump_and_disasm.(pgc_ents)
-    end
+    dump_and_disasm.(pgc_ents) if disasm && pgc_ents.any?
   end
 }
 
