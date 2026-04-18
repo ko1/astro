@@ -14,6 +14,16 @@ class AbRubyNodeDef < ASTroGen::NodeDef
     func_prefix: "HOPT_",
     kind_field: "node_hash_func_t hopt_func"
 
+  # Profile presence check — generates PROFILE_<name>(NODE *n) → bool.
+  # Returns true if this node or any descendant carries real runtime profile
+  # (method_cache with a non-zero serial).  iabrb uses it to split entries
+  # into "has profile → PGSD_" and "no profile → SD_" groups, distinguishing
+  # real PGC observations from mere parse-time specialisation.
+  register_gen_task :profile,
+    func_typedef: "typedef bool (*node_profile_func_t)(struct Node *n);",
+    func_prefix: "PROFILE_",
+    kind_field: "node_profile_func_t profile_func"
+
   class Node < ASTroGen::NodeDef::Node
     class Operand < ASTroGen::NodeDef::Node::Operand
       # method_prologue_t operand is storageless: no NODE struct field, no
@@ -124,6 +134,30 @@ class AbRubyNodeDef < ASTroGen::NodeDef
       }
       C
     end
+
+    def build_profile
+      node_ops = @operands.reject(&:ref?).select(&:node?)
+      child_checks = node_ops.map do |op|
+        field = "n->u.#{@name}.#{op.name}"
+        # Child might be NULL for optional branches (else_node, etc.) and
+        # for operand slots that some AST shapes leave unset.
+        "    if (#{field} && #{field}->head.kind->profile_func(#{field})) return true;"
+      end
+      <<~C
+      static bool
+      PROFILE_#{@name}(NODE *n)
+      {
+          // runtime profile signals:
+          //   - swap_dispatcher fired on this node (type-specialisation observed)
+          //   - method_cache filled with a non-zero serial (call site seen)
+          if (n->head.flags.kind_swapped) return true;
+          const struct method_cache *_mc = abruby_pgo_mc_for(n);
+          if (_mc && _mc->serial != 0) return true;
+      #{child_checks.join("\n")}
+          return false;
+      }
+      C
+    end
   end
 
   def build_mark
@@ -133,6 +167,15 @@ class AbRubyNodeDef < ASTroGen::NodeDef
 
     #{@nodes.map{|name, n| n.build_marker}.join("\n")}
     C
+  end
+
+  def build_profile
+    <<~C__
+    // This file is auto-generated from #{@file}.
+    // Profile presence check (true iff any descendant has runtime profile)
+
+    #{@nodes.map{|name, n| n.build_profile}.join("\n")}
+    C__
   end
 
   def build_hopt

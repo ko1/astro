@@ -2305,6 +2305,17 @@ rb_astro_hopt(VALUE self, VALUE node_val)
     return ULL2NUM((unsigned long long)HOPT(n));
 }
 
+// AbRuby.has_profile?(node) → true iff any descendant has a filled
+// method_cache (distinguishes real runtime profile from parse-time node
+// specialisation).  Used by iabrb --pgc to pick PGSD_ vs SD_.
+static VALUE
+rb_astro_has_profile_p(VALUE self, VALUE node_val)
+{
+    NODE *n = DATA_PTR(node_val);
+    if (!n || !n->head.kind || !n->head.kind->profile_func) return Qfalse;
+    return n->head.kind->profile_func(n) ? Qtrue : Qfalse;
+}
+
 void
 Init_abruby(void)
 {
@@ -2457,6 +2468,7 @@ Init_abruby(void)
     rb_define_singleton_method(rb_cAbRuby, "cs_reload", rb_astro_cs_reload, 0);
     rb_define_singleton_method(rb_cAbRuby, "horg", rb_astro_horg, 1);
     rb_define_singleton_method(rb_cAbRuby, "hopt", rb_astro_hopt, 1);
+    rb_define_singleton_method(rb_cAbRuby, "has_profile?", rb_astro_has_profile_p, 1);
     rb_define_singleton_method(rb_cAbRuby, "cs_disasm", rb_astro_cs_disasm, 1);
 
 #if ABRUBY_PROFILE

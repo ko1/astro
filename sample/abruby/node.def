@@ -2588,6 +2588,7 @@ swap_dispatcher(NODE *n, const struct NodeKind *target_kind)
     if (n->head.flags.is_specialized) return;
     n->head.dispatcher = target_kind->default_dispatcher;
     n->head.kind = target_kind;
+    n->head.flags.kind_swapped = true;  // signal runtime profile contribution
 }
 
 // node_plus: generic fallback (method dispatch via "+")

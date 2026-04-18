@@ -74,6 +74,7 @@ struct NodeHead {
         bool is_specializing;
         bool is_dumping;
         bool no_inline;
+        bool kind_swapped;    // swap_dispatcher changed kind since alloc
     } flags;
     const struct NodeKind *kind;
     int32_t line;  // source location (for backtrace)

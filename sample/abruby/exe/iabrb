@@ -42,6 +42,12 @@ end
 
 abm = AbRuby.new
 
+# Entries seen across the whole REPL session — each line's top-level AST +
+# any def bodies it introduced.  Accumulating lets --pgc re-bake previously
+# defined methods after their body is exercised by the current line (so
+# `f 0.5` re-PGCs `f` with the just-observed profile).
+session_entries = []
+
 dump_and_disasm = ->(entries) {
   entries.each do |name, node|
     if entries.size > 1
@@ -57,38 +63,43 @@ dump_and_disasm = ->(entries) {
 
 eval_line = ->(line) {
   ast = abm.parse(line)
-  entries = [[nil, ast]] + abm.last_entries
+  new_entries = [[nil, ast]] + abm.last_entries
+  session_entries.concat(new_entries)
 
   # Pre-run AOT compile (-c / -d without --pgc): bake before first execution.
   if compile
-    entries.each { |_, node| AbRuby.cs_compile(node) }
+    new_entries.each { |_, node| AbRuby.cs_compile(node) }
     AbRuby.cs_build(cflags)
     AbRuby.cs_reload
-    entries.each { |_, node| AbRuby.cs_load(node) }
+    new_entries.each { |_, node| AbRuby.cs_load(node) }
   end
 
   result = abm.eval_ast(ast)
 
-  # Post-run PGC: re-compile with profile-aware Hopt keys.  Only entries
-  # where profile actually contributed (Hopt != Horg) get PGC specialisation;
-  # the rest fall back to AOT so they still have a compiled SD.
+  # Post-run PGC: only bake entries with real runtime profile.  Leaving the
+  # no-profile ones as interpreter lets swap_dispatcher continue to retune
+  # their kind on next exec — e.g. a method body defined this line may be
+  # exercised with Float args next line and transition to node_flonum_*
+  # before we bake it here.  Already-compiled entries whose hash didn't
+  # change are skipped by astro_cs_compile (existing file check).
   if pgc
-    pgc_ents, aot_ents = entries.partition { |_, node|
-      AbRuby.horg(node) != AbRuby.hopt(node)
-    }
+    pgc_ents = session_entries.select { |_, node| AbRuby.has_profile?(node) }
     pgc_file = '-e'  # stable index key for inline REPL input
     pgc_ents.each { |_, node| AbRuby.cs_compile(node, pgc_file) }
-    aot_ents.each { |_, node| AbRuby.cs_compile(node) }
-    if entries.any?
+    if pgc_ents.any?
       AbRuby.cs_build(cflags)
       AbRuby.cs_reload
-      entries.each { |_, node| AbRuby.cs_load(node, pgc_file) }
+      pgc_ents.each { |_, node| AbRuby.cs_load(node, pgc_file) }
     end
   end
 
   # -d alone disasms the AOT bake done before eval.
-  # -d with --pgc disasms the PGC bake done after eval.
-  dump_and_disasm.(entries) if disasm
+  # -d with --pgc disasms the PGC bake done after eval — and we show the
+  # whole session view so methods defined earlier are visible with their
+  # updated post-profile code.
+  if disasm
+    dump_and_disasm.(pgc ? session_entries : new_entries)
+  end
 
   puts "=> #{result.inspect}"
 }

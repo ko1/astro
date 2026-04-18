@@ -192,6 +192,7 @@ mark_child(NODE *child)
 
 #include "node_replace.c"
 #include "node_mark.c"
+#include "node_profile.c"
 #include "node_alloc.c"
 
 void
