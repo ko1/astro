@@ -1006,25 +1006,29 @@ clone_class(const struct abruby_class *tmpl)
 void
 init_instance_classes(struct abruby_machine *abm)
 {
-    // Clone all 18 template classes
-    abm->kernel_module      = clone_class(ab_tmpl_kernel_module);
-    abm->module_class       = clone_class(ab_tmpl_module_class);
-    abm->class_class        = clone_class(ab_tmpl_class_class);
-    abm->object_class       = clone_class(ab_tmpl_object_class);
-    abm->integer_class      = clone_class(ab_tmpl_integer_class);
-    abm->float_class        = clone_class(ab_tmpl_float_class);
-    abm->string_class       = clone_class(ab_tmpl_string_class);
-    abm->symbol_class       = clone_class(ab_tmpl_symbol_class);
-    abm->array_class        = clone_class(ab_tmpl_array_class);
-    abm->hash_class         = clone_class(ab_tmpl_hash_class);
-    abm->range_class        = clone_class(ab_tmpl_range_class);
-    abm->regexp_class       = clone_class(ab_tmpl_regexp_class);
-    abm->rational_class     = clone_class(ab_tmpl_rational_class);
-    abm->complex_class      = clone_class(ab_tmpl_complex_class);
-    abm->true_class         = clone_class(ab_tmpl_true_class);
-    abm->false_class        = clone_class(ab_tmpl_false_class);
-    abm->nil_class          = clone_class(ab_tmpl_nil_class);
-    abm->runtime_error_class = clone_class(ab_tmpl_runtime_error_class);
+    // Clone all 18 template classes.  Fields are `const` in abruby_machine —
+    // these are init-only writes, so cast away const at the assignment site.
+    #define INIT_CLASS(field, tmpl) \
+        (*(struct abruby_class **)&abm->field = clone_class(tmpl))
+    INIT_CLASS(kernel_module,       ab_tmpl_kernel_module);
+    INIT_CLASS(module_class,        ab_tmpl_module_class);
+    INIT_CLASS(class_class,         ab_tmpl_class_class);
+    INIT_CLASS(object_class,        ab_tmpl_object_class);
+    INIT_CLASS(integer_class,       ab_tmpl_integer_class);
+    INIT_CLASS(float_class,         ab_tmpl_float_class);
+    INIT_CLASS(string_class,        ab_tmpl_string_class);
+    INIT_CLASS(symbol_class,        ab_tmpl_symbol_class);
+    INIT_CLASS(array_class,         ab_tmpl_array_class);
+    INIT_CLASS(hash_class,          ab_tmpl_hash_class);
+    INIT_CLASS(range_class,         ab_tmpl_range_class);
+    INIT_CLASS(regexp_class,        ab_tmpl_regexp_class);
+    INIT_CLASS(rational_class,      ab_tmpl_rational_class);
+    INIT_CLASS(complex_class,       ab_tmpl_complex_class);
+    INIT_CLASS(true_class,          ab_tmpl_true_class);
+    INIT_CLASS(false_class,         ab_tmpl_false_class);
+    INIT_CLASS(nil_class,           ab_tmpl_nil_class);
+    INIT_CLASS(runtime_error_class, ab_tmpl_runtime_error_class);
+    #undef INIT_CLASS
 
     // Fix up klass pointers (metaclass)
     abm->kernel_module->klass       = abm->module_class;
@@ -1205,7 +1209,7 @@ init_instance_classes(struct abruby_machine *abm)
             mm->u.cfunc.func = entries[i].fn;
             ab_id_table_insert(&fb_klass->methods, mm->name, (VALUE)mm);
         }
-        abm->fiber_class = fb_klass;
+        *(struct abruby_class **)&abm->fiber_class = fb_klass;
         abruby_class_set_const(obj, rb_intern("Fiber"), abruby_wrap_class(fb_klass));
     }
 
@@ -1246,7 +1250,7 @@ init_instance_classes(struct abruby_machine *abm)
             mm->u.cfunc.params_cnt = (unsigned int)-1;  // variadic
             ab_id_table_insert(&p_klass->methods, mm->name, (VALUE)mm);
         }
-        abm->proc_class = p_klass;
+        *(struct abruby_class **)&abm->proc_class = p_klass;
         abruby_class_set_const(obj, rb_intern("Proc"), abruby_wrap_class(p_klass));
     }
 
@@ -1277,7 +1281,7 @@ init_instance_classes(struct abruby_machine *abm)
             mm->u.cfunc.func = entries[i].fn;
             ab_id_table_insert(&m_klass->methods, mm->name, (VALUE)mm);
         }
-        abm->method_class = m_klass;
+        *(struct abruby_class **)&abm->method_class = m_klass;
         abruby_class_set_const(obj, rb_intern("Method"), abruby_wrap_class(m_klass));
     }
 
@@ -1397,7 +1401,8 @@ init_abm(struct abruby_machine *abm)
     abm->current_fiber->rb_wrapper = Qnil;
     // Wire ctx.abm early so init_instance_classes can use abruby_float_new_wrap
     // (which reads c->abm->float_class) when creating Float constants.
-    abm->current_fiber->ctx.abm = abm;
+    // ctx.abm is `const` — cast for init-only assignment.
+    *(struct abruby_machine **)&abm->current_fiber->ctx.abm = abm;
     /* sp removed */
     // Set up root frame for this fiber
     memset(&abm->current_fiber->root_frame, 0, sizeof(struct abruby_frame));
@@ -1412,7 +1417,7 @@ init_abm(struct abruby_machine *abm)
     // dispatches via OBJ_FIBER on it (rare; only if it's ever wrapped).
     abm->current_fiber->klass = abm->fiber_class;
     abm->current_fiber->obj_type = abm->fiber_class->instance_obj_type;
-    abm->root_fiber = abm->current_fiber;
+    *(struct abruby_fiber **)&abm->root_fiber = abm->current_fiber;
 
     // Per-instance main class (inherits from Object)
     abm->main_class_body.klass = abm->class_class;
@@ -1446,8 +1451,9 @@ init_abm(struct abruby_machine *abm)
     abm->id_cache.op_gtgt = rb_intern(">>");
     abm->id_cache.method_missing = rb_intern("method_missing");
     abm->id_cache.initialize = rb_intern("initialize");
-    abm->current_fiber->ctx.ids = &abm->id_cache;
-    abm->current_fiber->ctx.abm = abm;
+    // ctx.ids and ctx.abm are `const` — cast for init-only assignment.
+    *(const struct abruby_id_cache **)&abm->current_fiber->ctx.ids = &abm->id_cache;
+    *(struct abruby_machine **)&abm->current_fiber->ctx.abm = abm;
     abm->rb_self = Qnil;
     abm->current_file = Qnil;
     abm->loaded_files = rb_ary_new();

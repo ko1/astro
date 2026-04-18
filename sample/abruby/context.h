@@ -542,8 +542,8 @@ abruby_context_frame(const struct CTX_struct *c);
 // struct and is re-installed on c->cref at invocation time).
 // Lifetime: never freed — classes are never freed either.
 struct abruby_cref {
-    struct abruby_class *klass;
-    const struct abruby_cref *outer;
+    struct abruby_class * const klass;      // init-only
+    const struct abruby_cref * const outer; // init-only
 };
 
 struct CTX_struct {
@@ -551,10 +551,10 @@ struct CTX_struct {
     // Every SD entry's first instruction loads current_frame; keeping it
     // at a small offset from the CTX base eliminates an 80KB displacement
     // and guarantees the cache line is already warm from the CTX pointer.
-    struct abruby_machine *abm;          // +0  per-instance machine (owner)
+    struct abruby_machine * const abm;   // +0  per-instance machine (owner) — init-only
     struct abruby_frame *current_frame;  // +8  head of call frame linked list
     struct abruby_class *current_class;  // +16 set during class body eval
-    const struct abruby_id_cache *ids;   // +24 cached rb_intern results
+    const struct abruby_id_cache * const ids; // +24 cached rb_intern results (init-only)
     const struct abruby_block *current_block;       // +32
     const struct abruby_frame *current_block_frame; // +40
     // --- end of first cache line (48 bytes used of 64) ---
@@ -667,29 +667,30 @@ struct abruby_machine {
                                          // dangling (optimization-dependent
                                          // crashes when loading large
                                          // files like optcarrot).
-    // Per-instance class pointers (each instance has its own class hierarchy)
-    struct abruby_class *object_class;
-    struct abruby_class *integer_class;
-    struct abruby_class *float_class;
-    struct abruby_class *string_class;
-    struct abruby_class *symbol_class;
-    struct abruby_class *array_class;
-    struct abruby_class *hash_class;
-    struct abruby_class *range_class;
-    struct abruby_class *regexp_class;
-    struct abruby_class *rational_class;
-    struct abruby_class *complex_class;
-    struct abruby_class *true_class;
-    struct abruby_class *false_class;
-    struct abruby_class *nil_class;
-    struct abruby_class *kernel_module;
-    struct abruby_class *module_class;
-    struct abruby_class *class_class;
-    struct abruby_class *runtime_error_class;
-    struct abruby_class *method_class;       // for Object#method results
-    struct abruby_class *proc_class;         // for Proc.new / lambda / & conversion
-    struct abruby_class *fiber_class;        // for Fiber.new / resume / yield
-    struct abruby_fiber *root_fiber;         // the bootstrap (main) fiber
+    // Per-instance class pointers (each instance has its own class hierarchy).
+    // All set once during init_instance_classes and never re-assigned.
+    struct abruby_class * const object_class;
+    struct abruby_class * const integer_class;
+    struct abruby_class * const float_class;
+    struct abruby_class * const string_class;
+    struct abruby_class * const symbol_class;
+    struct abruby_class * const array_class;
+    struct abruby_class * const hash_class;
+    struct abruby_class * const range_class;
+    struct abruby_class * const regexp_class;
+    struct abruby_class * const rational_class;
+    struct abruby_class * const complex_class;
+    struct abruby_class * const true_class;
+    struct abruby_class * const false_class;
+    struct abruby_class * const nil_class;
+    struct abruby_class * const kernel_module;
+    struct abruby_class * const module_class;
+    struct abruby_class * const class_class;
+    struct abruby_class * const runtime_error_class;
+    struct abruby_class * const method_class;       // for Object#method results
+    struct abruby_class * const proc_class;         // for Proc.new / lambda / & conversion
+    struct abruby_class * const fiber_class;        // for Fiber.new / resume / yield
+    struct abruby_fiber * const root_fiber;         // the bootstrap (main) fiber — init-only
 
     // Shape table.  A shape_id identifies a (class, ivar_cnt) pair.  It
     // lives in an object's T_DATA flags field and is the key that

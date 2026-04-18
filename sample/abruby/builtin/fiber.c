@@ -117,8 +117,9 @@ fiber_alloc(struct abruby_machine *abm, VALUE proc_value)
     f->rb_wrapper = Qnil;
     f->crb_fiber = Qnil;
     // Bootstrap the fiber's CTX from the current fiber so cross-fiber
-    // reads of e.g. ids work straight away.
-    f->ctx.abm = abm;
+    // reads of e.g. ids work straight away.  ctx.abm / ctx.ids are const;
+    // cast for init-only assignment.
+    *(struct abruby_machine **)&f->ctx.abm = abm;
     // sp removed — GC uses frame-walk + entry->stack_limit
     f->ctx.current_class = NULL;
     // Set up root frame for this fiber
@@ -127,7 +128,7 @@ fiber_alloc(struct abruby_machine *abm, VALUE proc_value)
     f->root_frame.self = abm->current_fiber->ctx.current_frame->self;
     extern struct abruby_entry abruby_empty_entry; f->root_frame.entry = &abruby_empty_entry;
     f->ctx.current_frame = &f->root_frame;
-    f->ctx.ids = abm->current_fiber->ctx.ids;
+    *(const struct abruby_id_cache **)&f->ctx.ids = abm->current_fiber->ctx.ids;
     f->ctx.current_block = NULL;
     f->ctx.current_block_frame = NULL;
     return f;
