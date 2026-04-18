@@ -2651,9 +2651,6 @@ node_fixnum_plus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, u
             return RESULT_OK((VALUE)result);
         return node_fixnum_plus_overflow(c, lv, rv);
     }
-    if (RB_FLONUM_P(lv) && RB_FLONUM_P(rv)) {
-        return flonum_result(c, ab_flonum_value(lv) + ab_flonum_value(rv));
-    }
     return node_fixnum_plus_slow(c, n, lv, rv, arg_index);
 }
 
@@ -2731,9 +2728,6 @@ node_fixnum_minus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, 
         if (LIKELY(!__builtin_sub_overflow((long)lv, (long)(rv - 1), &result)))
             return RESULT_OK((VALUE)result);
         return node_fixnum_minus_overflow(c, lv, rv);
-    }
-    if (RB_FLONUM_P(lv) && RB_FLONUM_P(rv)) {
-        return flonum_result(c, ab_flonum_value(lv) - ab_flonum_value(rv));
     }
     return node_fixnum_minus_slow(c, n, lv, rv, arg_index);
 }
@@ -2813,12 +2807,6 @@ node_fixnum_mul(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, ui
         if (LIKELY(!__builtin_mul_overflow(a, b, &result) && FIXABLE(result)))
             return RESULT_OK(LONG2FIX(result));
         return node_fixnum_mul_overflow(c, a, b);
-    }
-    // Inline flonum fast path: swap_dispatcher is a no-op in compiled
-    // mode, so hot float loops (mandelbrot) would otherwise pay a cold
-    // function call on every multiply.
-    if (RB_FLONUM_P(lv) && RB_FLONUM_P(rv)) {
-        return flonum_result(c, ab_flonum_value(lv) * ab_flonum_value(rv));
     }
     return node_fixnum_mul_slow(c, n, lv, rv, arg_index);
 }
@@ -2902,9 +2890,6 @@ node_fixnum_div(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, ui
         long d = a / b;
         if ((a ^ b) < 0 && d * b != a) d--;
         return RESULT_OK(LONG2FIX(d));
-    }
-    if (RB_FLONUM_P(lv) && RB_FLONUM_P(rv)) {
-        return flonum_result(c, ab_flonum_value(lv) / ab_flonum_value(rv));
     }
     return node_fixnum_div_slow(c, n, lv, rv, arg_index);
 }
@@ -2995,9 +2980,6 @@ node_fixnum_lt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uin
     if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv) && !c->abm->basic_op_redefined)) {
         return RESULT_OK((long)lv < (long)rv ? Qtrue : Qfalse);
     }
-    if (RB_FLONUM_P(lv) && RB_FLONUM_P(rv)) {
-        return RESULT_OK(ab_flonum_value(lv) < ab_flonum_value(rv) ? Qtrue : Qfalse);
-    }
     return node_fixnum_lt_slow(c, n, lv, rv, arg_index);
 }
 
@@ -3052,9 +3034,6 @@ node_fixnum_le(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uin
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
     if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv) && !c->abm->basic_op_redefined)) {
         return RESULT_OK((long)lv <= (long)rv ? Qtrue : Qfalse);
-    }
-    if (RB_FLONUM_P(lv) && RB_FLONUM_P(rv)) {
-        return RESULT_OK(ab_flonum_value(lv) <= ab_flonum_value(rv) ? Qtrue : Qfalse);
     }
     return node_fixnum_le_slow(c, n, lv, rv, arg_index);
 }
@@ -3111,9 +3090,6 @@ node_fixnum_gt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uin
     if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv) && !c->abm->basic_op_redefined)) {
         return RESULT_OK((long)lv > (long)rv ? Qtrue : Qfalse);
     }
-    if (RB_FLONUM_P(lv) && RB_FLONUM_P(rv)) {
-        return RESULT_OK(ab_flonum_value(lv) > ab_flonum_value(rv) ? Qtrue : Qfalse);
-    }
     return node_fixnum_gt_slow(c, n, lv, rv, arg_index);
 }
 
@@ -3168,9 +3144,6 @@ node_fixnum_ge(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uin
     VALUE rv = UNWRAP(EVAL_ARG(c, right));
     if (LIKELY(FIXNUM_P(lv) && FIXNUM_P(rv) && !c->abm->basic_op_redefined)) {
         return RESULT_OK((long)lv >= (long)rv ? Qtrue : Qfalse);
-    }
-    if (RB_FLONUM_P(lv) && RB_FLONUM_P(rv)) {
-        return RESULT_OK(ab_flonum_value(lv) >= ab_flonum_value(rv) ? Qtrue : Qfalse);
     }
     return node_fixnum_ge_slow(c, n, lv, rv, arg_index);
 }
