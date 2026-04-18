@@ -22,19 +22,7 @@
 // PUSH_FRAME opens a do { block; POP_FRAME closes it with } while (0).
 // This scoping prevents accidental nesting of _push_frame variable names.
 // Variables needed after POP_FRAME must be declared BEFORE PUSH_FRAME.
-#define PUSH_FRAME(node) do { \
-    struct abruby_frame _push_frame; \
-    _push_frame.prev = c->current_frame; \
-    _push_frame.caller_node = (node); \
-    _push_frame.block = NULL; \
-    _push_frame.self = c->current_frame->self; \
-    _push_frame.fp = c->current_frame->fp; \
-    _push_frame.entry = c->current_frame->entry; \
-    c->current_frame = &_push_frame
-
-#define POP_FRAME() \
-    c->current_frame = _push_frame.prev; \
-    } while (0)
+// PUSH_FRAME / POP_FRAME moved to node.h (needed by node_helper.c too).
 
 // helper functions (included before generated eval code)
 
@@ -1200,33 +1188,7 @@ method_cache_fill(CTX *c, struct method_cache *mc, const struct abruby_class *kl
     }
 }
 
-// ArgumentError for wrong number of arguments (cold path).
-static __attribute__((noinline, cold)) RESULT
-raise_argc_error(CTX *c, NODE *call_site,
-                 unsigned int given, unsigned int required,
-                 unsigned int max_params, bool has_rest)
-{
-    char buf[128];
-    if (has_rest) {
-        snprintf(buf, sizeof(buf),
-                 "wrong number of arguments (given %u, expected %u+)",
-                 given, required);
-    } else if (required == max_params) {
-        snprintf(buf, sizeof(buf),
-                 "wrong number of arguments (given %u, expected %u)",
-                 given, required);
-    } else {
-        snprintf(buf, sizeof(buf),
-                 "wrong number of arguments (given %u, expected %u..%u)",
-                 given, required, max_params);
-    }
-    VALUE exc;
-    PUSH_FRAME(call_site);
-    exc = abruby_exception_new(c, c->current_frame,
-        abruby_str_new_cstr(c, buf));
-    POP_FRAME();
-    return (RESULT){exc, RESULT_RAISE};
-}
+// raise_argc_error moved to node_helper.c (see node.h prototype).
 
 // Max post params supported (for stack-allocated save buffer).
 // Real Ruby code rarely exceeds 2-3 post params; 16 is a safe upper bound.
@@ -2632,11 +2594,7 @@ node_flonum_plus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, u
     return node_flonum_plus_slow(c, n, lv, rv, arg_index);
 }
 
-static __attribute__((noinline, cold)) RESULT
-node_fixnum_plus_overflow(CTX *c, VALUE lv, VALUE rv)
-{
-    return RESULT_OK(abruby_bignum_new(c, LONG2NUM(FIX2LONG(lv) + FIX2LONG(rv))));
-}
+// node_fixnum_plus_overflow moved to node_helper.c (see node.h prototype).
 
 NODE_DEF @canonical=node_plus
 node_fixnum_plus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
@@ -2710,11 +2668,7 @@ node_flonum_minus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, 
     return node_flonum_minus_slow(c, n, lv, rv, arg_index);
 }
 
-static __attribute__((noinline, cold)) RESULT
-node_fixnum_minus_overflow(CTX *c, VALUE lv, VALUE rv)
-{
-    return RESULT_OK(abruby_bignum_new(c, LONG2NUM(FIX2LONG(lv) - FIX2LONG(rv))));
-}
+// node_fixnum_minus_overflow moved to node_helper.c.
 
 NODE_DEF @canonical=node_minus
 node_fixnum_minus(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)
@@ -2788,11 +2742,7 @@ node_flonum_mul(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, ui
     return node_flonum_mul_slow(c, n, lv, rv, arg_index);
 }
 
-static __attribute__((noinline, cold)) RESULT
-node_fixnum_mul_overflow(CTX *c, long a, long b)
-{
-    return integer_mul_calc(c, LONG2FIX(a), LONG2FIX(b));
-}
+// node_fixnum_mul_overflow moved to node_helper.c.
 
 NODE_DEF @canonical=node_mul
 node_fixnum_mul(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t arg_index)

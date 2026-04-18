@@ -42,6 +42,35 @@ VALUE abruby_wrap_node(NODE *n);
 // exception support
 VALUE abruby_exception_new(CTX *c, const struct abruby_frame *frame, VALUE message);
 
+// Cold helpers moved out of node.def / node_eval.c so that each SD_*.o
+// doesn't carry its own copy.  Defined once in node_helper.c (→ abruby.so);
+// referenced as externs from node_eval.c, SD_*.o, PGSD_*.o.
+
+// PUSH_FRAME / POP_FRAME: pair of block-scoped macros that push a synthetic
+// frame onto c->current_frame for the duration of a { ... } region, then
+// restore.  Used by cold helpers that need to raise abruby exceptions at a
+// specific caller_node line (the exception's backtrace walks current_frame).
+#define PUSH_FRAME(node) do { \
+    struct abruby_frame _push_frame; \
+    _push_frame.prev = c->current_frame; \
+    _push_frame.caller_node = (node); \
+    _push_frame.block = NULL; \
+    _push_frame.self = c->current_frame->self; \
+    _push_frame.fp = c->current_frame->fp; \
+    _push_frame.entry = c->current_frame->entry; \
+    c->current_frame = &_push_frame
+
+#define POP_FRAME() \
+    c->current_frame = _push_frame.prev; \
+    } while (0)
+
+RESULT node_fixnum_plus_overflow(CTX *c, VALUE lv, VALUE rv);
+RESULT node_fixnum_minus_overflow(CTX *c, VALUE lv, VALUE rv);
+RESULT node_fixnum_mul_overflow(CTX *c, long a, long b);
+RESULT raise_argc_error(CTX *c, NODE *call_site, unsigned int given,
+                        unsigned int required, unsigned int max_params,
+                        bool has_rest);
+
 // Invoke the block attached to the current frame from a cfunc body.
 // Returns the block's result.  Propagates RAISE / RETURN / BREAK upward
 // (the cfunc should return these unchanged so the surrounding
