@@ -66,25 +66,33 @@ eval_line = ->(line) {
   new_entries = [[nil, ast]] + abm.last_entries
   session_entries.concat(new_entries)
 
-  # Pre-run AOT compile (-c / -d without --pgc): bake before first execution.
+  # ---------- Pre-eval phase: AOT compile -------------------------------
+  # -c / -d without --pgc: bake before first execution.  Disasm here so the
+  # reader sees the compiled code, then the eval result — timeline order.
   if compile
     new_entries.each { |_, node| AbRuby.cs_compile(node) }
     AbRuby.cs_build(cflags)
     AbRuby.cs_reload
     new_entries.each { |_, node| AbRuby.cs_load(node) }
   end
+  if disasm && !pgc
+    dump_and_disasm.(new_entries)
+  end
 
+  # ---------- Eval -------------------------------------------------------
   result = abm.eval_ast(ast)
+  puts "=> #{result.inspect}"
 
-  # Post-run PGC: only bake entries with real runtime profile.  Leaving the
-  # no-profile ones as interpreter lets swap_dispatcher continue to retune
-  # their kind on next exec — e.g. a method body defined this line may be
-  # exercised with Float args next line and transition to node_flonum_*
-  # before we bake it here.  Already-compiled entries whose hash didn't
-  # change are skipped by astro_cs_compile (existing file check).
+  # ---------- Post-eval phase: PGC compile ------------------------------
+  # Only bake entries with real runtime profile.  Leaving the no-profile
+  # ones as interpreter lets swap_dispatcher continue to retune their kind
+  # on next exec — e.g. a method body defined this line may be exercised
+  # with Float args next line and transition to node_flonum_* before we
+  # bake it here.  Already-compiled entries whose hash didn't change are
+  # skipped by astro_cs_compile (existing file check).
   if pgc
     pgc_ents = session_entries.select { |_, node| AbRuby.has_profile?(node) }
-    pgc_file = '-e'  # stable index key for inline REPL input
+    pgc_file = '-e'
     pgc_ents.each { |_, node| AbRuby.cs_compile(node, pgc_file) }
     if pgc_ents.any?
       AbRuby.cs_build(cflags)
@@ -92,18 +100,10 @@ eval_line = ->(line) {
       pgc_ents.each { |_, node| AbRuby.cs_load(node, pgc_file) }
     end
   end
-
-  # Print the eval result first, then the disasm.  With --pgc the disasm
-  # reflects the post-eval profile — seeing `=> 1.5` then scrolling through
-  # the PGC-baked code reads in the order things happened.
-  puts "=> #{result.inspect}"
-
-  # -d alone disasms the AOT bake done before eval.
-  # -d with --pgc disasms the PGC bake done after eval — and we show the
-  # whole session view so methods defined earlier are visible with their
-  # updated post-profile code.
-  if disasm
-    dump_and_disasm.(pgc ? session_entries : new_entries)
+  if disasm && pgc
+    # Show whole session so methods defined earlier appear with their
+    # post-profile code (e.g. f swapped to node_flonum_mul after exec).
+    dump_and_disasm.(session_entries)
   end
 }
 
