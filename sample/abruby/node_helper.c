@@ -29,6 +29,61 @@ node_fixnum_minus_overflow(CTX *c, VALUE lv, VALUE rv)
     return RESULT_OK(abruby_bignum_new(c, LONG2NUM(FIX2LONG(lv) - FIX2LONG(rv))));
 }
 
+// === Instance variable cache-miss slow paths ==============================
+
+VALUE
+node_ivar_get_slow(VALUE self, ID name, struct ivar_cache *ic)
+{
+    const struct abruby_object *obj =
+        (const struct abruby_object *)ABRUBY_DATA_PTR(self);
+    VALUE slot_fix;
+    if (ab_id_table_lookup(&obj->klass->ivar_shape, name, &slot_fix)) {
+        unsigned int slot = (unsigned int)FIX2ULONG(slot_fix);
+        if (slot < obj->ivar_cnt) {
+            // Reads don't transition → post == pre.
+            uint32_t shape = abruby_shape_id_read(self);
+            ic->shape_id = shape;
+            ic->post_shape_id = shape;
+            ic->slot = slot;
+            return abruby_object_ivar_read(obj, slot);
+        }
+    }
+    return Qnil;
+}
+
+void
+node_ivar_set_slow(CTX * restrict c, VALUE self, ID name, VALUE v, struct ivar_cache *ic)
+{
+    struct abruby_object *obj =
+        (struct abruby_object *)ABRUBY_DATA_PTR(self);
+    struct abruby_class *klass = (struct abruby_class *)obj->klass;
+    // Look up the slot in the class shape; add it if new.
+    VALUE slot_fix;
+    unsigned int slot;
+    if (ab_id_table_lookup(&klass->ivar_shape, name, &slot_fix)) {
+        slot = (unsigned int)FIX2ULONG(slot_fix);
+    } else {
+        slot = klass->ivar_shape.cnt;
+        ab_id_table_insert(&klass->ivar_shape, name, LONG2FIX((long)slot));
+    }
+    // Remember the shape BEFORE the grow, so subsequent sets on fresh
+    // objects arriving at the same pre-shape hit the fast path.
+    uint32_t pre_shape = abruby_shape_id_read(self);
+    abruby_object_grow_ivars(obj, slot + 1);
+    if (slot < ABRUBY_OBJECT_INLINE_IVARS) {
+        obj->ivars[slot] = v;
+    } else {
+        obj->extra_ivars[slot - ABRUBY_OBJECT_INLINE_IVARS] = v;
+    }
+    uint32_t post_shape = abruby_shape_for(c->abm, klass, obj->ivar_cnt);
+    if (post_shape != pre_shape) {
+        abruby_shape_id_write(self, post_shape);
+    }
+    ic->shape_id = pre_shape;
+    ic->post_shape_id = post_shape;
+    ic->slot = slot;
+}
+
 // === ArgumentError for wrong-argc call sites =============================
 
 RESULT

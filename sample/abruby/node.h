@@ -70,6 +70,12 @@ RESULT node_fixnum_mul_overflow(CTX *c, long a, long b);
 RESULT raise_argc_error(CTX *c, NODE *call_site, unsigned int given,
                         unsigned int required, unsigned int max_params,
                         bool has_rest);
+struct ivar_cache;
+VALUE node_ivar_get_slow(VALUE self, ID name, struct ivar_cache *ic);
+void  node_ivar_set_slow(CTX * restrict c, VALUE self, ID name, VALUE v,
+                         struct ivar_cache *ic);
+// From abruby.c — prototype needed by node_helper.c's node_ivar_set_slow.
+void  abruby_object_grow_ivars(struct abruby_object *obj, unsigned int new_cnt);
 
 // Invoke the block attached to the current frame from a cfunc body.
 // Returns the block's result.  Propagates RAISE / RETURN / BREAK upward
