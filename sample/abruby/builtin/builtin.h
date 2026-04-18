@@ -6,9 +6,9 @@
 
 // shorthand macros for inner CRuby values
 #define RSTR(v) abruby_str_rstr(v)
-#define RARY(v) (((struct abruby_array *)RTYPEDDATA_GET_DATA(v))->rb_ary)
-#define RHSH(v) (((struct abruby_hash *)RTYPEDDATA_GET_DATA(v))->rb_hash)
-#define RSYM(v) (((struct abruby_symbol *)RTYPEDDATA_GET_DATA(v))->rb_sym)
+#define RARY(v) (((struct abruby_array *)ABRUBY_DATA_PTR(v))->rb_ary)
+#define RHSH(v) (((struct abruby_hash *)ABRUBY_DATA_PTR(v))->rb_hash)
+#define RSYM(v) (((struct abruby_symbol *)ABRUBY_DATA_PTR(v))->rb_sym)
 
 // Unwrap abruby symbol to inner CRuby symbol.
 // Handles both static (immediate) symbols and wrapped (dynamic) symbols.

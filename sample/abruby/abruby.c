@@ -441,12 +441,6 @@ abruby_bound_method_new(CTX *c, VALUE recv, ID name)
     return wrapper;
 }
 
-// shorthand macros
-#define RSTR(v) abruby_str_rstr(v)
-#define RARY(v) (((struct abruby_array *)ABRUBY_DATA_PTR(v))->rb_ary)
-#define RHSH(v) (((struct abruby_hash *)ABRUBY_DATA_PTR(v))->rb_hash)
-#define RSYM(v) (((struct abruby_symbol *)ABRUBY_DATA_PTR(v))->rb_sym)
-
 VALUE
 abruby_ary_new(CTX *c, VALUE rb_ary)
 {
