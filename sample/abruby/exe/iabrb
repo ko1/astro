@@ -93,6 +93,11 @@ eval_line = ->(line) {
     end
   end
 
+  # Print the eval result first, then the disasm.  With --pgc the disasm
+  # reflects the post-eval profile — seeing `=> 1.5` then scrolling through
+  # the PGC-baked code reads in the order things happened.
+  puts "=> #{result.inspect}"
+
   # -d alone disasms the AOT bake done before eval.
   # -d with --pgc disasms the PGC bake done after eval — and we show the
   # whole session view so methods defined earlier are visible with their
@@ -100,8 +105,6 @@ eval_line = ->(line) {
   if disasm
     dump_and_disasm.(pgc ? session_entries : new_entries)
   end
-
-  puts "=> #{result.inspect}"
 }
 
 # Execute initial expressions
