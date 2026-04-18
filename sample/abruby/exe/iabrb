@@ -26,7 +26,7 @@ opt.on('-e CODE', 'evaluate CODE before entering REPL') { |v| initial_exprs << v
 opt.on('-c', '--compile-first', 'AOT-compile each input before execution') { compile = true }
 opt.on('--pgc', 'after execution, PGC-compile based on the profile collected') { pgc = true }
 opt.on('-d', '--disasm', 'show disassembly after compile (implies --compile-first unless --pgc)') { disasm = true }
-opt.on('--clear-code-store', 'wipe code_store/ before starting (force fresh compiles, pick up new CC/CFLAGS)') { clear_store = true }
+opt.on('--clear-code-store', '--ccs', 'wipe code_store/ before starting (force fresh compiles, pick up new CC/CFLAGS)') { clear_store = true }
 opt.on('-v', '--version', 'show version') { puts "iabrb #{AbRuby::VERSION}"; exit }
 opt.parse!(ARGV)
 

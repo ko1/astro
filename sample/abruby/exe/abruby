@@ -29,6 +29,7 @@ dump_mode = nil      # nil, :ast, :disasm
 verbose = false
 compiled_only = false
 aot_only = false
+clear_store = false
 
 opt = OptionParser.new
 opt.banner = "Usage: abruby [options] [file] [args...]"
@@ -57,6 +58,7 @@ opt.on('--pgc',                 'bake PGC after run (composes with -c)') { pgc_a
 opt.on('--verbose',       'show code store operations') { verbose = true }
 opt.on('--compiled-only', 'abort if default dispatcher is used') { compiled_only = true }
 opt.on('--aot-only',      'load only AOT (SD_<Horg>); skip PGC index lookup — for benchmarking') { aot_only = true }
+opt.on('--clear-code-store', '--ccs', 'wipe code_store/ before starting (force fresh compiles, pick up new CC/CFLAGS)') { clear_store = true }
 opt.on('-v', '--version', 'show version') do
   puts "abruby #{AbRuby::VERSION}"
   exit
@@ -96,6 +98,11 @@ ABRUBY_SO_MTIME = File.mtime(File.join(ABRUBY_DIR, 'abruby.so')).to_i rescue 0
 
 cs_init = ->() {
   store_dir = File.join(ABRUBY_DIR, 'code_store')
+  if clear_store
+    require 'fileutils'
+    $stderr.puts "cs_init: clearing #{store_dir}" if verbose
+    FileUtils.rm_rf(store_dir)
+  end
   $stderr.puts "cs_init: #{store_dir} (src: #{ABRUBY_DIR}, ver: #{ABRUBY_SO_MTIME})" if verbose
   AbRuby.cs_init(store_dir, ABRUBY_DIR, ABRUBY_SO_MTIME)
 }
