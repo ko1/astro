@@ -573,11 +573,23 @@ astro_cs_disasm(NODE *n)
     char so_path[ASTRO_CS_PATH_MAX];
     astro_cs_path(so_path, sizeof(so_path), astro_cs.store_dir, "all.so");
 
-    char cmd[ASTRO_CS_PATH_MAX + 256];
+    // Prepend a "# compiled with <producer>" banner pulled from the .o's
+    // .comment section so the reader can tell which compiler produced the
+    // code (handy when toggling CC=clang vs gcc between runs).
+    char obj_path[ASTRO_CS_PATH_MAX];
+    snprintf(obj_path, sizeof(obj_path), "%s/o/%s.o",
+             astro_cs.store_dir, sym_name);
+
+    char cmd[ASTRO_CS_PATH_MAX * 2 + 512];
     snprintf(cmd, sizeof(cmd),
-             "objdump -Cd --no-show-raw-insn %s "
-             "| sed -n '/<%s>:/,/^$/p'",
-             so_path, sym_name);
+             "{ if [ -f %s ]; then "
+             "    producer=$(readelf -p .comment %s 2>/dev/null "
+             "               | awk '/\\[/{sub(/^ *\\[[^]]*\\] */,\"\"); print; exit}'); "
+             "    [ -n \"$producer\" ] && echo \"# compiled with $producer\"; "
+             "  fi; "
+             "  objdump -Cd --no-show-raw-insn %s "
+             "  | sed -n '/<%s>:/,/^$/p'; }",
+             obj_path, obj_path, so_path, sym_name);
 
     (void)!system(cmd);
 }

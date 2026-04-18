@@ -17,6 +17,7 @@ require_relative '../lib/abruby/version'
 compile = false
 pgc      = false
 disasm   = false
+clear_store = false
 initial_exprs = []
 
 opt = OptionParser.new
@@ -25,6 +26,7 @@ opt.on('-e CODE', 'evaluate CODE before entering REPL') { |v| initial_exprs << v
 opt.on('-c', '--compile-first', 'AOT-compile each input before execution') { compile = true }
 opt.on('--pgc', 'after execution, PGC-compile based on the profile collected') { pgc = true }
 opt.on('-d', '--disasm', 'show disassembly after compile (implies --compile-first unless --pgc)') { disasm = true }
+opt.on('--clear-code-store', 'wipe code_store/ before starting (force fresh compiles, pick up new CC/CFLAGS)') { clear_store = true }
 opt.on('-v', '--version', 'show version') { puts "iabrb #{AbRuby::VERSION}"; exit }
 opt.parse!(ARGV)
 
@@ -44,8 +46,14 @@ any_cs = compile || pgc || disasm
 if any_cs
   abruby_dir = File.expand_path('..', __dir__)
   cflags = "-I#{RbConfig::CONFIG['rubyhdrdir']} -I#{RbConfig::CONFIG['rubyarchhdrdir']}"
+  code_store = File.join(abruby_dir, 'code_store')
+  # --clear-code-store: wipe any pre-existing baked code before cs_init so
+  # the new run picks up whatever CC / CFLAGS the environment now sets
+  # (otherwise cached SD_*.o compiled by a previous CC would be reused).
+  require 'fileutils'
+  FileUtils.rm_rf(code_store) if clear_store
   so_mtime = File.mtime(File.join(abruby_dir, 'abruby.so')).to_i rescue 0
-  AbRuby.cs_init(File.join(abruby_dir, 'code_store'), abruby_dir, so_mtime)
+  AbRuby.cs_init(code_store, abruby_dir, so_mtime)
 end
 
 abm = AbRuby.new
