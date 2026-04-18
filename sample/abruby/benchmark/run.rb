@@ -65,7 +65,7 @@ RUNNERS = [
     # steady-state.  prep is not timed.
     name:  'abruby+cf',
     prep:  "rm -rf #{STORE}",
-    cmd:   "ruby -I #{ABRUBY_DIR}/lib #{ABRUBY_DIR}/exe/abruby -c %s",
+    cmd:   "CCACHE_DISABLE=1 ruby -I #{ABRUBY_DIR}/lib #{ABRUBY_DIR}/exe/abruby -c %s",
   },
   {
     # AOT steady-state: prime the store in setup, time a clean
