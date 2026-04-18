@@ -58,6 +58,10 @@ abm = AbRuby.new
 # <toplevel> entries defined on different REPL lines.
 session_entries = []
 line_no = 0
+# Hopt hashes already baked / shown this session — skip re-compile + re-
+# disasm of entries whose profile didn't actually change this round (e.g.
+# the same bare `f` typed three times in a row).
+hopt_shown = {}
 
 dump_and_disasm = ->(entries) {
   entries.each do |ln, name, node|
@@ -102,21 +106,30 @@ eval_line = ->(line) {
   puts "=> #{result.inspect}"
 
   # ---------- Post-eval: PGC bake ---------------------------------------
-  # Only bake entries with real runtime profile.  Leaving no-profile ones
-  # as interpreter lets swap_dispatcher continue to retune their kind on
-  # next exec — a method body defined this line can transition to
-  # node_flonum_* next line before we bake it here.  Already-compiled
-  # entries whose hash didn't change are skipped by astro_cs_compile.
+  # Only bake entries with real runtime profile AND whose Hopt hash moved
+  # this round — repeated invocations with the same types produce the same
+  # Hopt, so nothing new to compile or disasm.  hopt_shown dedupes.
+  # Leaving no-profile entries as interpreter lets swap_dispatcher continue
+  # to retune their kind on next exec (a method defined now may transition
+  # to node_flonum_* next line before bake).
   if pgc
     pgc_ents = session_entries.select { |_, _, node| AbRuby.has_profile?(node) }
     pgc_file = '-e'
-    pgc_ents.each { |_, _, node| AbRuby.cs_compile(node, pgc_file) }
-    if pgc_ents.any?
+    newly_baked = pgc_ents.select do |_, _, node|
+      hopt = AbRuby.hopt(node)
+      next false if hopt_shown[hopt]
+      hopt_shown[hopt] = true
+      true
+    end
+    newly_baked.each { |_, _, node| AbRuby.cs_compile(node, pgc_file) }
+    if newly_baked.any?
       AbRuby.cs_build(cflags)
       AbRuby.cs_reload
+      # Re-load ALL pgc_ents — cs_reload swaps the .so and invalidates
+      # every dispatcher, including unchanged entries baked earlier.
       pgc_ents.each { |_, _, node| AbRuby.cs_load(node, pgc_file) }
     end
-    dump_and_disasm.(pgc_ents) if disasm && pgc_ents.any?
+    dump_and_disasm.(newly_baked) if disasm && newly_baked.any?
   end
 }
 
