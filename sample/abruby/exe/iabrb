@@ -66,30 +66,34 @@ eval_line = ->(line) {
   new_entries = [[nil, ast]] + abm.last_entries
   session_entries.concat(new_entries)
 
-  # ---------- Pre-eval phase: AOT compile -------------------------------
-  # -c / -d without --pgc: bake before first execution.  Disasm here so the
-  # reader sees the compiled code, then the eval result — timeline order.
+  # Each phase that compiles also disasms its own output (when -d is on),
+  # so the transcript reads in time order:
+  #    -cd           : AOT → disasm → eval → result
+  #    --pgc -d      :                eval → result → PGC → disasm
+  #    -cd --pgc -d  : AOT → disasm → eval → result → PGC → disasm
+  # The PGC disasm shows only the entries actually re-baked (those with
+  # real profile), so it adds new info rather than repeating AOT output.
+
+  # ---------- Pre-eval: AOT bake ----------------------------------------
   if compile
     new_entries.each { |_, node| AbRuby.cs_compile(node) }
     AbRuby.cs_build(cflags)
     AbRuby.cs_reload
     new_entries.each { |_, node| AbRuby.cs_load(node) }
-  end
-  if disasm && !pgc
-    dump_and_disasm.(new_entries)
+    puts "# AOT" if disasm && pgc  # separator in combined mode
+    dump_and_disasm.(new_entries) if disasm
   end
 
-  # ---------- Eval -------------------------------------------------------
+  # ---------- Eval ------------------------------------------------------
   result = abm.eval_ast(ast)
   puts "=> #{result.inspect}"
 
-  # ---------- Post-eval phase: PGC compile ------------------------------
-  # Only bake entries with real runtime profile.  Leaving the no-profile
-  # ones as interpreter lets swap_dispatcher continue to retune their kind
-  # on next exec — e.g. a method body defined this line may be exercised
-  # with Float args next line and transition to node_flonum_* before we
-  # bake it here.  Already-compiled entries whose hash didn't change are
-  # skipped by astro_cs_compile (existing file check).
+  # ---------- Post-eval: PGC bake ---------------------------------------
+  # Only bake entries with real runtime profile.  Leaving no-profile ones
+  # as interpreter lets swap_dispatcher continue to retune their kind on
+  # next exec — a method body defined this line can transition to
+  # node_flonum_* next line before we bake it here.  Already-compiled
+  # entries whose hash didn't change are skipped by astro_cs_compile.
   if pgc
     pgc_ents = session_entries.select { |_, node| AbRuby.has_profile?(node) }
     pgc_file = '-e'
@@ -99,11 +103,10 @@ eval_line = ->(line) {
       AbRuby.cs_reload
       pgc_ents.each { |_, node| AbRuby.cs_load(node, pgc_file) }
     end
-  end
-  if disasm && pgc
-    # Show whole session so methods defined earlier appear with their
-    # post-profile code (e.g. f swapped to node_flonum_mul after exec).
-    dump_and_disasm.(session_entries)
+    if disasm && pgc_ents.any?
+      puts "# PGC" if compile  # separator in combined mode
+      dump_and_disasm.(pgc_ents)
+    end
   end
 }
 
