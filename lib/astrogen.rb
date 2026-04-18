@@ -182,6 +182,16 @@ module ASTroGen
         @option = option&.split(/\s+/) || []
       end
 
+      # Embedder hooks to wrap each SPECIALIZE-generated SD_/PGSD_ body with
+      # prologue (right after `{`, before dispatch_info) and epilogue (right
+      # before `return v;`, after dispatch_info).  Return literal C source
+      # (as a String, or nil for nothing).  Default empty.  Embedders use
+      # this to cache stable fields at entry and assert invariance at exit —
+      # e.g. abruby caches c->current_frame so clang's __builtin_assume can
+      # help the compiler CSE reloads inside the evaluated tree.
+      def specializer_prologue = nil
+      def specializer_epilogue = nil
+
       # Canonical family name used in structural hashes.  Specialized variants
       # (e.g. node_fixnum_plus → node_plus, node_call1_ast → node_call1) opt
       # in via `NODE_DEF @canonical=BASE` in node.def.  Defaults to @name.
@@ -418,6 +428,7 @@ module ASTroGen
             fprintf(fp, "__attribute__((no_stack_protector)) #{result_type}\\n");
             fprintf(fp, "%s(#{@prefix_args.join(', ')})\\n", dispatcher_name);
             fprintf(fp, "{\\n");
+#{ specializer_prologue ? "            fprintf(fp, \"    #{specializer_prologue}\\n\");" : "" }
             fprintf(fp, "    dispatch_info(c, n, false);\\n");
 #{  if args.empty?
       '            fprintf(fp, "    ' + result_type + ' v = EVAL_' + name + '(c, n);\\n");'
@@ -431,6 +442,7 @@ module ASTroGen
     end
 }
             fprintf(fp, "    dispatch_info(c, n, true);\\n");
+#{ specializer_epilogue ? "            fprintf(fp, \"    #{specializer_epilogue}\\n\");" : "" }
             fprintf(fp, "    return v;\\n");
             fprintf(fp, "}\\n\\n");
         }

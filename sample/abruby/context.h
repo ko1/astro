@@ -800,6 +800,18 @@ abruby_shape_id_write(VALUE obj, uint32_t shape_id)
         ((uint64_t)(shape_id & ABRUBY_SHAPE_MAX) << ABRUBY_SHAPE_SHIFT);
 }
 
+// Portable ASSUME(expr): tell the compiler expr is true so it can CSE loads
+// across opaque calls.  clang's __builtin_assume participates in SSA value
+// propagation; gcc falls back to the unreachable idiom.  Use to bracket
+// external calls (rb_ary_push etc.) that we know don't touch CTX state,
+// letting the compiler keep c->current_frame (and derived frame fields) in
+// a register instead of reloading after every call.
+#if defined(__clang__)
+#  define ABRUBY_ASSUME(expr) __builtin_assume(expr)
+#else
+#  define ABRUBY_ASSUME(expr) do { if (!(expr)) __builtin_unreachable(); } while (0)
+#endif
+
 // Look up (or allocate) the shape_id for (klass, ivar_cnt).  Returns 0
 // only if the shape table is exhausted (extremely unlikely — 1M slots).
 uint32_t abruby_shape_for(struct abruby_machine *abm,
