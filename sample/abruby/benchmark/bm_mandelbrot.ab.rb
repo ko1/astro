@@ -14,7 +14,7 @@ def mandelbrot(cr, ci, max_iter)
 end
 
 def bench
-  size = 5
+  size = 20
   max_iter = 50
   sum = 0
   y = 0
