@@ -422,6 +422,11 @@ astro_cs_compile(NODE *entry, const char *file)
     fprintf(fp, "static void dispatch_info(CTX *c, NODE *n, bool end) {\n");
     fprintf(fp, "    (void)c; (void)n; (void)end;\n");
     fprintf(fp, "}\n\n");
+    // NODE_SKIP_COLD: suppress the cold helper definitions that node.def
+    // guards behind #ifndef NODE_SKIP_COLD.  The bodies live in abruby.so
+    // (via node_helper.c / node.o) and are resolved at dlopen time, so
+    // every SD_*.o would otherwise carry a redundant private copy.
+    fprintf(fp, "#define NODE_SKIP_COLD 1\n");
     fprintf(fp, "#include \"%s/node_eval.c\"\n", astro_cs.src_dir);
     fprintf(fp, "#include \"%s/node_dispatch.c\"\n\n", astro_cs.src_dir);
 

@@ -1609,7 +1609,7 @@ abruby_singleton_table_class(CTX *c, VALUE recv_val)
 
 // Forward decls (defined after specialized call kinds).
 static inline void maybe_specialize_call_kind(NODE *n, const struct method_cache *mc);
-static inline void swap_dispatcher(NODE *n, const struct NodeKind *target_kind);
+// swap_dispatcher forward decl provided via node.h (non-static, in node_helper.c).
 
 // Not marked `cold`: polymorphic dispatch sites (e.g. bm_dispatch) hit this
 // path every other iteration, and sending it to the cold section wrecks icache.
@@ -2481,23 +2481,7 @@ flonum_div_calc(CTX *c, VALUE lv, VALUE rv)
     return flonum_result(c, AB_FLOAT_TO_DOUBLE(lv) / AB_FLOAT_TO_DOUBLE(rv));
 }
 
-// Dispatcher swap: change the dispatcher without creating a new node.
-// kind is also updated for consistency (DUMP, HASH).
-static inline void
-swap_dispatcher(NODE *n, const struct NodeKind *target_kind)
-{
-    if (n->head.kind == target_kind) return;
-    // If the node already holds a specialized (SD_) dispatcher, keep it:
-    // the SD_ was generated for the *current* kind, and overwriting with
-    // the target kind's default dispatcher would discard optimizations and
-    // (under --compiled-only) leave the node pointing at code that reads
-    // child dispatchers via the generic runtime path — which are NULL for
-    // inlined-as-static children.
-    if (n->head.flags.is_specialized) return;
-    n->head.dispatcher = target_kind->default_dispatcher;
-    n->head.kind = target_kind;
-    n->head.flags.kind_swapped = true;  // signal runtime profile contribution
-}
+// swap_dispatcher moved to node_helper.c.
 
 // node_plus: generic fallback (method dispatch via "+")
 NODE_DEF

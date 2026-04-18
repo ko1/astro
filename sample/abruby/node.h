@@ -74,6 +74,12 @@ struct ivar_cache;
 VALUE node_ivar_get_slow(VALUE self, ID name, struct ivar_cache *ic);
 void  node_ivar_set_slow(CTX * restrict c, VALUE self, ID name, VALUE v,
                          struct ivar_cache *ic);
+// Dispatcher retuning on observed runtime type.  Called from arithmetic /
+// comparison slow paths when the operand types move to a different kind
+// (e.g. fixnum_plus → integer_plus after a Bignum operand is seen).  The
+// guard inside early-returns for already-specialized (SD_*) nodes.
+struct NodeKind;  // opaque here; full def comes via node_head.h below.
+void  swap_dispatcher(NODE *n, const struct NodeKind *target_kind);
 // From abruby.c — prototype needed by node_helper.c's node_ivar_set_slow.
 void  abruby_object_grow_ivars(struct abruby_object *obj, unsigned int new_cnt);
 

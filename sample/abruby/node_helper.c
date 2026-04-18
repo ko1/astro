@@ -13,6 +13,24 @@
 
 #include "node.h"
 
+// === Dispatcher swap (runtime kind retuning) =============================
+
+void
+swap_dispatcher(NODE *n, const struct NodeKind *target_kind)
+{
+    if (n->head.kind == target_kind) return;
+    // If the node already holds a specialized (SD_) dispatcher, keep it:
+    // the SD_ was generated for the *current* kind, and overwriting with
+    // the target kind's default dispatcher would discard optimizations and
+    // (under --compiled-only) leave the node pointing at code that reads
+    // child dispatchers via the generic runtime path — which are NULL for
+    // inlined-as-static children.
+    if (n->head.flags.is_specialized) return;
+    n->head.dispatcher = target_kind->default_dispatcher;
+    n->head.kind = target_kind;
+    n->head.flags.kind_swapped = true;  // signal runtime profile contribution
+}
+
 // === Fixnum arithmetic overflow helpers ===================================
 // Used when fixnum-tagged add/sub/mul would overflow a 63-bit signed range —
 // promote to Bignum and retry via CRuby's rb_big_*.
