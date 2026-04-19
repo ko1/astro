@@ -1,5 +1,9 @@
 # abruby — "a bit Ruby"
 
+<p align="center">
+  <img src="docs/logo.svg" alt="abruby logo" width="180">
+</p>
+
 A Ruby-subset interpreter built as a CRuby C extension on top of the
 [ASTro](../../README.md) framework. It reuses CRuby's `VALUE`
 representation and parser (Prism), so numbers, strings, arrays, hashes,
