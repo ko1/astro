@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" style="stroke-linecap:square;stroke-linejoin:miter">
+  <rect width="100" height="100" fill="#fff"/>
+  <path d="M10 30 L26 38 L18 48 L34 56 L26 66" stroke="#eab308" stroke-width="0.4" fill="none"/>
+  <g fill="#eab308" stroke="#eab308" stroke-width="0.7" stroke-linejoin="round">
+    <path transform="translate(10 30)" d="M 0,-1.9 L 0.43,-0.59 L 1.81,-0.59 L 0.69,0.22 L 1.12,1.54 L 0,0.72 L -1.12,1.54 L -0.69,0.22 L -1.81,-0.59 L -0.43,-0.59 Z"/>
+    <path transform="translate(26 38)" d="M 0,-1.9 L 0.43,-0.59 L 1.81,-0.59 L 0.69,0.22 L 1.12,1.54 L 0,0.72 L -1.12,1.54 L -0.69,0.22 L -1.81,-0.59 L -0.43,-0.59 Z"/>
+    <path transform="translate(18 48)" d="M 0,-1.9 L 0.43,-0.59 L 1.81,-0.59 L 0.69,0.22 L 1.12,1.54 L 0,0.72 L -1.12,1.54 L -0.69,0.22 L -1.81,-0.59 L -0.43,-0.59 Z"/>
+    <path transform="translate(34 56)" d="M 0,-1.9 L 0.43,-0.59 L 1.81,-0.59 L 0.69,0.22 L 1.12,1.54 L 0,0.72 L -1.12,1.54 L -0.69,0.22 L -1.81,-0.59 L -0.43,-0.59 Z"/>
+  </g>
+  <circle cx="26" cy="66" r="6" fill="none" stroke="#ca8a04" stroke-width="0.9"/>
+  <circle cx="26" cy="66" r="3.5" fill="none" stroke="#ca8a04" stroke-width="0.9"/>
+  <circle cx="26" cy="66" r="1.4" fill="#ca8a04"/>
+  <text x="92" y="40" text-anchor="end" font-family="Helvetica, Arial, sans-serif" font-weight="900" font-size="14" fill="#000">AST<tspan fill="#ca8a04">ro</tspan></text>
+  <rect x="42" y="44" width="50" height="0.5" fill="#ca8a04"/>
+  <g fill="#000" font-family="Helvetica, Arial, sans-serif" font-size="3.8" letter-spacing="0.5" text-anchor="end">
+    <text x="92" y="54">AST-based</text>
+    <text x="92" y="62">Reusable Optimization</text>
+    <text x="92" y="70">Framework</text>
+  </g>
+</svg>

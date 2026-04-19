@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/logo-dark.svg">
+    <img alt="ASTro: AST-based Reusable Optimization Framework" src="docs/logo-light.svg" width="360">
+  </picture>
+</p>
+
 # ASTro: AST-based Reusable Optimizer
 
 > Note: This project is still experimental, and the API is subject to significant changes.
