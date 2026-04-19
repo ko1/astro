@@ -5,7 +5,7 @@
   </picture>
 </p>
 
-# ASTro: AST-based Reusable Optimizer
+# ASTro: AST-based Reusable Optimization Framework
 
 > Note: This project is still experimental, and the API is subject to significant changes.
 
