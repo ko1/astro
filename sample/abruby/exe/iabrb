@@ -28,6 +28,13 @@ opt.on('-p', '--pg', '--pg-compile',
        'after execution, PG-compile based on the profile collected') { pgc = true }
 opt.on('-d', '--disasm',
        'show disassembly after compile (implies --aot-compile-first unless --pg-compile)') { disasm = true }
+# Custom code-store directory.  Default: <abruby-install>/code_store/.
+# Override via --code-store=DIR or env ABRUBY_CODE_STORE (CLI wins).
+code_store_dir = ENV['ABRUBY_CODE_STORE']
+opt.on('--code-store=DIR',
+       'code-store directory (default: <install>/code_store, env ABRUBY_CODE_STORE)') {
+  |v| code_store_dir = v
+}
 opt.on('--clear-code-store', '--ccs', 'wipe code_store/ before starting (force fresh compiles, pick up new CC/CFLAGS)') { clear_store = true }
 opt.on('-v', '--version', 'show version') { puts "iabrb #{AbRuby::VERSION}"; exit }
 opt.parse!(ARGV)
@@ -48,7 +55,7 @@ any_cs = compile || pgc || disasm
 if any_cs
   abruby_dir = File.expand_path('..', __dir__)
   cflags = "-I#{RbConfig::CONFIG['rubyhdrdir']} -I#{RbConfig::CONFIG['rubyarchhdrdir']}"
-  code_store = File.join(abruby_dir, 'code_store')
+  code_store = code_store_dir || File.join(abruby_dir, 'code_store')
   # --clear-code-store: wipe any pre-existing baked code before cs_init so
   # the new run picks up whatever CC / CFLAGS the environment now sets
   # (otherwise cached SD_*.o compiled by a previous CC would be reused).

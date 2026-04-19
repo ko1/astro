@@ -69,6 +69,15 @@ opt.on('--pg-threshold=N', Integer,
 opt.on('--verbose',       'show code store operations') { verbose = true }
 opt.on('--compiled-only', 'abort if default dispatcher is used') { compiled_only = true }
 opt.on('--aot-only',      'load only AOT (SD_<Horg>); skip PGC index lookup — for benchmarking') { aot_only = true }
+# Custom code-store directory.  Default: <abruby-install>/code_store/.
+# Override via --code-store=DIR or env ABRUBY_CODE_STORE (CLI wins).
+# src_dir (node.h, node_eval.c etc.) stays tied to the abruby install —
+# only the store location is user-pickable.
+code_store_dir = ENV['ABRUBY_CODE_STORE']
+opt.on('--code-store=DIR',
+       'code-store directory (default: <install>/code_store, env ABRUBY_CODE_STORE)') {
+  |v| code_store_dir = v
+}
 opt.on('--clear-code-store', '--ccs', 'wipe code_store/ before starting (force fresh compiles, pick up new CC/CFLAGS)') { clear_store = true }
 opt.on('-v', '--version', 'show version') do
   puts "abruby #{AbRuby::VERSION}"
@@ -108,7 +117,7 @@ AbRuby.verbose = verbose
 ABRUBY_SO_MTIME = File.mtime(File.join(ABRUBY_DIR, 'abruby.so')).to_i rescue 0
 
 cs_init = ->() {
-  store_dir = File.join(ABRUBY_DIR, 'code_store')
+  store_dir = code_store_dir || File.join(ABRUBY_DIR, 'code_store')
   if clear_store
     require 'fileutils'
     $stderr.puts "cs_init: clearing #{store_dir}" if verbose
