@@ -93,15 +93,34 @@ RESULT ab_proc_call(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
     ABRUBY_ASSERT(new_fp + p->env_size <= c->stack + ABRUBY_STACK_SIZE);
     for (uint32_t i = 0; i < p->env_size; i++) new_fp[i] = p->env[i];
 
-    // Push a synthetic method-style frame with the proc's captured state.
-    struct abruby_entry proc_entry = {p->cref, "(proc)", NULL, p->env_size};
+    // Push a frame pointing at the proc's stable entry (inherited from
+    // the block literal it was captured from).  Bump dispatch_count so
+    // proc invocations count toward PG profile the same way yields do.
+    // Fallback: if the proc somehow has no entry (shouldn't happen),
+    // build a synthetic one so EVAL still works.
+    struct abruby_entry fallback_entry;
+    struct abruby_entry *proc_entry = p->entry;
+    if (proc_entry == NULL) {
+        fallback_entry.kind = ABRUBY_ENTRY_BLOCK;
+        fallback_entry.body = p->body;
+        fallback_entry.cref = p->cref;
+        fallback_entry.source_file = "(proc)";
+        fallback_entry.stack_limit = p->env_size;
+        fallback_entry.dispatch_count = 0;
+        fallback_entry.u.block.params_cnt = p->params_cnt;
+        fallback_entry.u.block.param_base = p->param_base;
+        fallback_entry.u.block.env_size   = p->env_size;
+        proc_entry = &fallback_entry;
+    }
+    proc_entry->cref = p->cref;
+    proc_entry->dispatch_count++;
     struct abruby_frame proc_frame;
     proc_frame.prev = save_frame;
     proc_frame.caller_node = NULL;
     proc_frame.block = NULL;
     proc_frame.self = p->captured_self;
     proc_frame.fp = new_fp;
-    proc_frame.entry = &proc_entry;
+    proc_frame.entry = proc_entry;
     c->current_block = NULL;
     c->current_block_frame = NULL;
     c->current_frame = &proc_frame;

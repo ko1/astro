@@ -35,6 +35,7 @@ static RESULT ab_class_new(CTX *c, VALUE self, unsigned int argc, VALUE *argv) {
             init_frame.fp = argv;
             init_frame.entry = &init->entry;
             c->current_frame = &init_frame;
+            ((struct abruby_entry *)&init->entry)->dispatch_count++;
             r = EVAL(c, init->u.ast.body);
             c->current_frame = init_frame.prev;
             break;

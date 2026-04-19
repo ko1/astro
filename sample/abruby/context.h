@@ -114,11 +114,39 @@ struct abruby_method;  // forward decl (abruby_entry refers to it)
 // require) method is NULL — the frame is not running inside any named
 // method.  This lets us keep a single source of truth for "which method
 // owns this frame" and drop the redundant frame.method field.
+// Entries — the things EVAL() ultimately dispatches.  Methods and blocks
+// both start from an entry; each entry carries a body AST, a cref, a
+// source_file, and a dispatch_count (for PG profile-directed bake).
+// Non-entry EVALs (e.g. walking an `if` subtree) stay under the enclosing
+// entry's context.
+enum abruby_entry_kind {
+    ABRUBY_ENTRY_METHOD = 0,
+    ABRUBY_ENTRY_BLOCK  = 1,
+};
+
 struct abruby_entry {
+    enum abruby_entry_kind kind;
+    struct Node *body;                    // the AST body EVAL'd on dispatch
     const struct abruby_cref *cref;       // lexical constant scope
-    const char *source_file;              // where this entry was defined
-    const struct abruby_method *method;   // NULL for non-method frames
+    const char *source_file;
     uint32_t stack_limit;                 // max VALUE slots from fp for GC scan
+    // Bumped on every dispatch (prologue_ast_simple_N for methods,
+    // abruby_yield/node_yield/proc-call for blocks).  Read at PG bake
+    // time to filter compile targets; cold entries skip bake entirely.
+    uint64_t dispatch_count;
+    union {
+        struct {
+            const struct abruby_method *method;   // back-pointer
+        } method;
+        struct {
+            // Block params — captured once at block-literal eval time so
+            // yield sites don't re-read them from the node_block_literal
+            // operand fields.
+            uint32_t params_cnt;
+            uint32_t param_base;
+            uint32_t env_size;
+        } block;
+    } u;
 };
 
 enum abruby_method_type {
@@ -321,6 +349,12 @@ struct abruby_proc {
     struct abruby_class *klass;        // offset 0
     enum abruby_obj_type obj_type;
     struct Node *body;
+    // Back-pointer to the originating block literal's stable entry (when
+    // the proc was captured from a block) — lets proc invocations bump
+    // the same dispatch_count as yield-to-the-block.  NULL if the proc
+    // has no stable backing entry (shouldn't happen in practice but
+    // guards proc calls against NULL deref).
+    struct abruby_entry *entry;
     VALUE *env;                        // ruby_xcalloc(env_size, sizeof(VALUE))
     uint32_t env_size;
     uint32_t params_cnt;
@@ -436,6 +470,11 @@ ab_obj_type_p(VALUE obj, enum abruby_obj_type type)
 // a block also walks from the defining method's class, which matches
 // Ruby's non-local semantics.
 struct abruby_block {
+    // Stable entry — shared across every yield of this block literal.
+    // Points into the node_block_literal's @ref entry slot; survives for
+    // the lifetime of the AST.  Dispatch bumps entry->dispatch_count,
+    // read at PG bake time to decide whether this block is worth baking.
+    struct abruby_entry *entry;
     struct Node *body;                  // block body AST (also pinned via the AST)
     VALUE *captured_fp;                 // caller's fp at call time (closure env)
     VALUE captured_self;                // caller's self
@@ -564,6 +603,13 @@ struct CTX_struct {
 // ctx_update_sp removed: GC uses per-frame entry->stack_limit.
 // Slots within stack_limit are zero-filled at scope/prologue entry
 // so GC always sees valid VALUEs.
+
+// Current frame's entry, or NULL for main frame / not-yet-pushed cases.
+static inline const struct abruby_entry *
+ctx_entry(const struct CTX_struct *c)
+{
+    return c->current_frame ? c->current_frame->entry : NULL;
+}
 
 // Derive cref from the current frame's entry.
 static inline const struct abruby_cref *
@@ -702,6 +748,15 @@ struct abruby_machine {
     struct abruby_shape *shapes;   // indexed by shape_id
     uint32_t shape_count;          // 1-based valid count (entry 0 unused)
     uint32_t shape_capa;
+
+    // Registry of every stable abruby_entry (methods + block literals) —
+    // populated by abruby_register_ast_entry at def time (methods) and
+    // first-yield time (blocks).  Used at PG bake time for body-NODE →
+    // entry reverse lookup (AbRuby.dispatch_count).  Append-only, grows
+    // with program; O(n) scan at lookup (bake-time only, not hot).
+    struct abruby_entry **ast_entries;
+    uint32_t ast_entries_size;
+    uint32_t ast_entries_capa;
 };
 
 struct abruby_shape {

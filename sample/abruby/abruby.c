@@ -7,7 +7,7 @@
 
 // Sentinel entry for root frames — avoids NULL checks on frame->entry.
 // stack_limit = 0 so GC marks nothing for this frame.
-struct abruby_entry abruby_empty_entry = {NULL, NULL, NULL, 0};
+struct abruby_entry abruby_empty_entry = { .kind = ABRUBY_ENTRY_METHOD };
 
 struct abruby_option OPTION = {
     .no_compiled_code = true,
@@ -393,6 +393,7 @@ abruby_block_to_proc(CTX *c, const struct abruby_block *blk, bool is_lambda)
     p->klass        = c->abm->proc_class;
     p->obj_type     = c->abm->proc_class->instance_obj_type;
     p->body         = blk->body;
+    p->entry        = blk->entry;   // inherit the block literal's stable entry
     p->env_size     = blk->env_size;
     p->params_cnt   = blk->params_cnt;
     p->param_base   = blk->param_base;
@@ -610,16 +611,16 @@ abruby_yield(CTX *c, unsigned int argc, VALUE *argv)
     const struct abruby_block *save_current_block = c->current_block;
     const struct abruby_frame *save_current_block_frame = c->current_block_frame;
 
-    // Copy captured closure env to a fresh area past the callee's frame
-    // so block-body temporaries don't collide with callee locals.
-    // Install a synthetic entry whose cref is the block's captured cref
-    // so const lookups inside the block body walk the lexical scope chain
-    // that was active when the block literal was created (not the cfunc's
-    // own NULL entry).
-    struct abruby_entry blk_entry = {blk->cref, NULL, NULL, blk->env_size};
+    // Use the block literal's stable entry — persistent across yields,
+    // carries dispatch_count for PG profile.  The captured cref is
+    // promoted onto the entry here so const lookups inside the block
+    // body see the block-definition lexical scope (not the cfunc's
+    // NULL entry).
+    blk->entry->cref = blk->cref;
+    blk->entry->dispatch_count++;
     c->current_frame->fp = blk->captured_fp;
     c->current_frame->self = blk->captured_self;
-    c->current_frame->entry = &blk_entry;
+    c->current_frame->entry = blk->entry;
     c->current_block = blk;
     c->current_block_frame = c->current_frame;
 
@@ -674,6 +675,7 @@ abruby_call_method(CTX *c, VALUE recv, const struct abruby_method *method,
         frame.fp = new_fp;
         frame.entry = &method->entry;
         c->current_frame = &frame;
+        ((struct abruby_entry *)&method->entry)->dispatch_count++;
         RESULT r = EVAL(c, method->u.ast.body);
         c->current_frame = frame.prev;
         // Catch RETURN at this C-boundary method call.  This frame now
@@ -702,7 +704,8 @@ abruby_class_add_cfunc(struct abruby_class *klass, ID name,
     m->name = name;
     m->type = ABRUBY_METHOD_CFUNC;
     m->defining_class = klass;
-    m->entry.method = m;  // self-reference so frame->entry->method works
+    m->entry.kind = ABRUBY_ENTRY_METHOD;
+    m->entry.u.method.method = m;
     m->u.cfunc.func = func;
     m->u.cfunc.params_cnt = params_cnt;
     ab_id_table_insert(&klass->methods, name, (VALUE)m);
@@ -931,6 +934,7 @@ abm_free(void *ptr)
     }
     ab_id_table_free(&abm->gvars);
     if (abm->shapes) ruby_xfree(abm->shapes);
+    if (abm->ast_entries) ruby_xfree(abm->ast_entries);
     // Per-instance built-in classes are T_DATA-wrapped; their structs and
     // inner tables are freed by abruby_data_free when their wrapper is GC'd.
     if (abm->current_fiber) {
@@ -965,7 +969,9 @@ abruby_exception_new(CTX *c, const struct abruby_frame *start_frame, VALUE messa
         const char *file;
         int32_t line = f->caller_node ? f->caller_node->head.line : 0;
 
-        const struct abruby_method *pm = parent->entry ? parent->entry->method : NULL;
+        const struct abruby_method *pm =
+            (parent->entry && parent->entry->kind == ABRUBY_ENTRY_METHOD)
+                ? parent->entry->u.method.method : NULL;
         if (pm) {
             name = rb_id2name(pm->name);
         } else {
@@ -2023,7 +2029,10 @@ abruby_require_file(CTX *c, VALUE rb_path)
     NODE *ast = unwrap_node(ast_obj);
     struct abruby_frame *save_frame = c->current_frame;
     struct abruby_class *save_class = c->current_class;
-    struct abruby_entry req_entry = {NULL, RSTRING_PTR(abs_str), NULL, 0};
+    struct abruby_entry req_entry = {
+        .kind = ABRUBY_ENTRY_METHOD,
+        .source_file = RSTRING_PTR(abs_str),
+    };
     struct abruby_frame req_frame;
     req_frame.prev = save_frame;
     req_frame.caller_node = NULL;
@@ -2134,7 +2143,10 @@ rb_abruby_eval_ast(VALUE self, VALUE ast_obj)
     // Inherit self/fp from root frame.
     const char *eval_file = NIL_P(abm->current_file) ? "(abruby)" : RSTRING_PTR(abm->current_file);
     struct abruby_frame *rf = &abm->current_fiber->root_frame;
-    struct abruby_entry main_entry = {NULL, eval_file, NULL, 0};
+    struct abruby_entry main_entry = {
+        .kind = ABRUBY_ENTRY_METHOD,
+        .source_file = eval_file,
+    };
     struct abruby_frame main_frame;
     main_frame.prev = NULL;
     main_frame.caller_node = NULL;
@@ -2305,6 +2317,45 @@ rb_astro_hopt(VALUE self, VALUE node_val)
     return ULL2NUM((unsigned long long)HOPT(n));
 }
 
+// AbRuby#dispatch_count(body_node) → Integer
+// Look up how many times the entry owning `body_node` has been
+// dispatched.  Searches the machine's ast_entries registry (populated
+// by abruby_register_ast_entry at def time for methods, first-yield
+// time for block literals); O(n_entries), bake-time only.  Returns 0
+// if no entry owns this body (e.g., main scope is still un-tracked).
+static VALUE
+rb_astro_dispatch_count(VALUE self, VALUE node_val)
+{
+    struct abruby_machine *abm;
+    TypedData_Get_Struct(self, struct abruby_machine, &abruby_machine_type, abm);
+    NODE *body = DATA_PTR(node_val);
+    // First: direct entry match (method body or block body).
+    for (uint32_t i = 0; i < abm->ast_entries_size; i++) {
+        const struct abruby_entry *e = abm->ast_entries[i];
+        if (e->body == body) {
+            return ULL2NUM((unsigned long long)e->dispatch_count);
+        }
+    }
+    // Second: opt_pc[i] — methods with optional params have sub-entries
+    // that are separate NODEs (children of the main body).  They dispatch
+    // via prologue_ast_complex which counts against the owning method's
+    // entry.dispatch_count; expose that same count here so the Ruby-side
+    // PG filter treats them as hot whenever the parent method is hot.
+    for (uint32_t i = 0; i < abm->ast_entries_size; i++) {
+        const struct abruby_entry *e = abm->ast_entries[i];
+        if (e->kind != ABRUBY_ENTRY_METHOD) continue;
+        const struct abruby_method *m = e->u.method.method;
+        if (!m || m->type != ABRUBY_METHOD_AST || !m->u.ast.opt_pc) continue;
+        unsigned int opt_num = m->u.ast.params_cnt - m->u.ast.required_params_cnt;
+        for (unsigned int k = 0; k <= opt_num; k++) {
+            if (m->u.ast.opt_pc[k] == body) {
+                return ULL2NUM((unsigned long long)e->dispatch_count);
+            }
+        }
+    }
+    return ULL2NUM(0);
+}
+
 // AbRuby.has_profile?(node) → true iff any descendant has a filled
 // method_cache (distinguishes real runtime profile from parse-time node
 // specialisation).  Used by iabrb --pgc to pick PGSD_ vs SD_.
@@ -2469,6 +2520,8 @@ Init_abruby(void)
     rb_define_singleton_method(rb_cAbRuby, "horg", rb_astro_horg, 1);
     rb_define_singleton_method(rb_cAbRuby, "hopt", rb_astro_hopt, 1);
     rb_define_singleton_method(rb_cAbRuby, "has_profile?", rb_astro_has_profile_p, 1);
+    // Per-VM (instance method) — walks this machine's method registry.
+    rb_define_method(rb_cAbRuby, "dispatch_count", rb_astro_dispatch_count, 1);
     rb_define_singleton_method(rb_cAbRuby, "cs_disasm", rb_astro_cs_disasm, 1);
 
 #if ABRUBY_PROFILE

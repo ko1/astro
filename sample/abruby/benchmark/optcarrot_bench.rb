@@ -34,16 +34,28 @@ RUNNERS = [
   { label: "abruby AOT (cached)",
     cmd:   "exe/abruby --compiled-only --aot-only #{OPTCARROT} #{EXTRA_ARGS}" },
 
-  # PGC first-run: --pgc runs the interpreter (profile collection), then
-  # at eval end bakes SD_<Hopt>.c + hopt_index.txt + all.so.  time reports
-  # "interpreter execution + bake overhead".  Slow, 1-shot.
-  { label:  "abruby --pgc (bake)",
+  # PGC first-run (full bake): --pg-threshold=0 forces every parsed
+  # entry to be baked — historical "max PGC" — so the bake cost shown
+  # here covers all code paths.  Slow, 1-shot.
+  { label:  "abruby --pg-compile --pg-threshold=0 (full bake)",
     setup:  "rm -rf code_store",
-    cmd:    "CCACHE_DISABLE=1 exe/abruby --pgc #{OPTCARROT} #{EXTRA_ARGS}",
+    cmd:    "CCACHE_DISABLE=1 exe/abruby --pg-compile --pg-threshold=0 #{OPTCARROT} #{EXTRA_ARGS}",
     repeat: 1 },
-  # PGC steady-state: --compiled-only prefers SD_<Hopt>, falling back to
-  # SD_<Horg> for entries whose profile didn't diverge.
-  { label: "abruby PGC (cached)",
+  # Full-bake PG steady-state: compiled_only picks PGSD/SD for every
+  # entry, no interpreter fallback.
+  { label: "abruby PG all (cached)",
+    cmd:   "exe/abruby --compiled-only #{OPTCARROT} #{EXTRA_ARGS}" },
+
+  # Threshold-gated PG first-run: default threshold (100) — hot entries
+  # bake, cold entries skip.  Much cheaper bake (~1/3 of full), but cold
+  # paths run via the interpreter at runtime.
+  { label:  "abruby --pg-compile (threshold bake)",
+    setup:  "rm -rf code_store",
+    cmd:    "CCACHE_DISABLE=1 exe/abruby --pg-compile #{OPTCARROT} #{EXTRA_ARGS}",
+    repeat: 1 },
+  # Threshold-gated steady-state: hot entries use PGSD/SD, cold fall
+  # back to the default (interpreter) dispatcher via cs_load miss.
+  { label: "abruby PGC hot-only (cached)",
     cmd:   "exe/abruby --compiled-only #{OPTCARROT} #{EXTRA_ARGS}" },
 ]
 

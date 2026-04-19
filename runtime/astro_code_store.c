@@ -357,6 +357,15 @@ astro_cs_load(NODE *n, const char *file)
         n->head.flags.is_specialized = true;
         return true;
     }
+    // Nothing in the code store for this node.  If compiled_only mode had
+    // nulled out the dispatcher at ALLOC time (so missing entries would
+    // SEGV loudly), restore the default interpreter dispatcher here so
+    // cold entries skipped by the PG threshold filter keep running as
+    // plain interpreter paths.  This is what lets a single process mix
+    // plain-dispatched cold entries with PGSD/SD-dispatched hot ones.
+    if (n->head.dispatcher == NULL && n->head.kind->default_dispatcher) {
+        n->head.dispatcher = n->head.kind->default_dispatcher;
+    }
     return false;
 }
 

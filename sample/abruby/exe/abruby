@@ -16,14 +16,15 @@ code = nil
 # Mode — one of the top-level execution flows:
 #   :run     — execute the script (default).  Optionally augmented with
 #              `compile_first` (pre-run AOT bake) and/or `pgc_at_exit`
-#              (post-run PGC bake), which are orthogonal flags below.
+#              (post-run PG bake), which are orthogonal flags below.
 #   :plain   — execute without the code store at all (interpreter only).
-#   :compile — compile files, don't run (used with --compile [files] --run).
+#   :compile — compile files, don't run (used with --aot-compile [files]
+#              --run).
 mode = :run
 compile_first  = false  # -c: ensure AOT bake before entering eval
-pgc_at_exit    = false  # --pgc: bake PGC after eval returns
-compile_files = nil  # files to compile (--compile)
-run_file = nil       # file to run after --compile (--run)
+pgc_at_exit    = false  # --pg-compile: bake PG-compiled after eval returns
+compile_files = nil  # files to compile (--aot-compile)
+run_file = nil       # file to run after --aot-compile (--run)
 run_args = []        # args for --run
 dump_mode = nil      # nil, :ast, :disasm
 verbose = false
@@ -51,10 +52,20 @@ set_mode = ->(m) {
   end
   mode = m
 }
-opt.on('--plain',               'run without code store') { set_mode.(:plain) }
-opt.on('--compile',             'compile files (AOT only, no run)') { set_mode.(:compile) }
-opt.on('-c', '--compile-first', 'bake AOT before run (composes with --pgc)') { compile_first = true }
-opt.on('--pgc',                 'bake PGC after run (composes with -c)') { pgc_at_exit = true }
+opt.on('--plain',                   'run without code store') { set_mode.(:plain) }
+opt.on('--aot-compile',             'AOT-compile files (no run)') { set_mode.(:compile) }
+opt.on('-c', '--aot-compile-first', 'AOT-compile before run (composes with --pg-compile)') { compile_first = true }
+opt.on('-p', '--pg', '--pg-compile',
+       'PG-compile after run (composes with -c)') { pgc_at_exit = true }
+# PG bake filter: only bake entries dispatched >= threshold times.  Cold
+# entries skip bake entirely and fall back to the interpreter dispatcher
+# at runtime via cs_load miss.  Default 100; override with env var
+# ABRUBY_PG_THRESHOLD or --pg-threshold=N.
+pg_threshold = (ENV['ABRUBY_PG_THRESHOLD'] || 100).to_i
+opt.on('--pg-threshold=N', Integer,
+       'only PG-bake entries dispatched >= N times (default 100, env ABRUBY_PG_THRESHOLD)') {
+  |v| pg_threshold = v
+}
 opt.on('--verbose',       'show code store operations') { verbose = true }
 opt.on('--compiled-only', 'abort if default dispatcher is used') { compiled_only = true }
 opt.on('--aot-only',      'load only AOT (SD_<Horg>); skip PGC index lookup — for benchmarking') { aot_only = true }
@@ -64,7 +75,7 @@ opt.on('-v', '--version', 'show version') do
   exit
 end
 
-# Handle --run (appears after --compile file list)
+# Handle --run (appears after --aot-compile file list)
 argv = ARGV.dup
 run_idx = argv.index('--run')
 if run_idx
@@ -134,7 +145,7 @@ when :plain
 when :compile
   files = compile_files || ARGV.dup
   if files.empty?
-    $stderr.puts "abruby: --compile requires at least one file"
+    $stderr.puts "abruby: --aot-compile requires at least one file"
     exit 1
   end
 
@@ -188,11 +199,12 @@ when :run
   #     eval_ast runs — required for --compiled-only on multi-file
   #     programs (required files parsed on the fly).
   #
-  #   pgc_at_exit (--pgc):
+  #   pgc_at_exit (--pg-compile):
   #     after eval_ast returns cleanly, walk every parsed entry and
-  #     bake:  Hopt != Horg → PGSD_<Hopt>.c + hopt_index.txt,  Hopt ==
-  #     Horg → SD_<Horg>.c (AOT fallback so the next --compiled-only
-  #     run covers entries profile didn't touch).
+  #     bake hot ones (dispatch_count >= --pg-threshold):  Hopt != Horg
+  #     → PGSD_<Hopt>.c + hopt_index.txt,  Hopt == Horg → SD_<Horg>.c.
+  #     Cold entries are left unbaked; they'll run via the interpreter
+  #     dispatcher next time.
   run_script = code ? nil : ARGV.shift
   src = code || (run_script && read_file.(run_script))
   unless src
@@ -220,8 +232,11 @@ when :run
     # reuse keys.  --aot-only forces nil to bypass the PGC lookup.
     pgc_file = aot_only ? nil : (src_file || '-e')
 
-    this_parse = [[label, parsed_ast, src_file]]
-    entries.each { |name, body| this_parse << ["#{label}:#{name}", body, src_file] }
+    # 4th field = is_main: the top-level AST of each parse.  Main scopes
+    # aren't dispatched through prologue_ast_simple_N (no dispatch_count),
+    # so the PG threshold would skip them; force-bake them below.
+    this_parse = [[label, parsed_ast, src_file, true]]
+    entries.each { |name, body| this_parse << ["#{label}:#{name}", body, src_file, false] }
     parsed_entries.concat(this_parse)
 
     new_compiles = []
@@ -257,9 +272,10 @@ when :run
   ast = abm.parse(src)
 
   # --dump=disasm: show the dispatcher each entry is about to execute
-  # with.  For --pgc that's the pre-profile state (pre-baked PGSD_ from
-  # an earlier --pgc if any; otherwise the SD_<Horg> from -c, or the
-  # default dispatcher if nothing is compiled for this entry).
+  # with.  For --pg-compile that's the pre-profile state (pre-baked
+  # PGSD_ from an earlier --pg-compile if any; otherwise the SD_<Horg>
+  # from -c, or the default dispatcher if nothing is compiled for this
+  # entry).
   if dump_mode == :disasm
     parsed_entries.each do |label, node, _file|
       $stdout.flush
@@ -273,18 +289,42 @@ when :run
 
   abm.eval_ast(ast)
 
-  # --pgc: bake after a clean run.  Skipped if eval_ast raised (we
-  # don't want to persist profile from a crashed run).
+  # --pg-compile: bake after a clean run.  Skipped if eval_ast raised
+  # (we don't want to persist profile from a crashed run).
   if pgc_at_exit
-    pgc_ents, aot_ents = parsed_entries.partition { |_, node, _|
+    # Selection is threshold-based: dispatch_count itself is the profile
+    # signal — hot entries get baked, cold entries don't (they fall back
+    # to the interpreter dispatcher at run time).  For hot entries, the
+    # filename prefix follows whether profile info differentiates the
+    # entry:
+    #   HOPT != HORG → PGSD_<Hopt>.c (profile changed the structure)
+    #   HOPT == HORG → SD_<Horg>.c   (plain structural, profile adds
+    #                                 nothing — avoid a redundant copy)
+    # Main-scope / top-level ASTs don't have a dispatch_count (they're
+    # not method or block entries).  Always bake them — they're the
+    # outer loop, leaving them interpreted wipes out gains from hot
+    # callees baked within (bm_gcd-style tight loops).  The 4th field
+    # set above flags these.
+    hot_ents, cold_ents = parsed_entries.partition { |_, node, _, is_main|
+      is_main || abm.dispatch_count(node) >= pg_threshold
+    }
+    pgc_ents, aot_ents = hot_ents.partition { |_, node, _|
       AbRuby.horg(node) != AbRuby.hopt(node)
     }
     if verbose
-      $stderr.puts "pgc bake: pgc=#{pgc_ents.size} aot=#{aot_ents.size} of #{parsed_entries.size}"
+      $stderr.puts "pgc bake: pgc=#{pgc_ents.size} aot=#{aot_ents.size} cold(skipped)=#{cold_ents.size} of #{parsed_entries.size} (threshold=#{pg_threshold})"
+      if ENV['ABRUBY_PROFILE_DUMP']
+        parsed_entries.sort_by { |_, node, _| -abm.dispatch_count(node) }
+                      .each { |label, node, _|
+          c = abm.dispatch_count(node)
+          next if c == 0
+          $stderr.puts "  dispatch=#{c} #{label}"
+        }
+      end
     end
     pgc_ents.each { |label, node, file| cs_compile.(node, label: label, file: file || '-e') }
-    aot_ents.each { |label, node, _file| cs_compile.(node, label: label) }
-    AbRuby.cs_build(RUBY_CFLAGS) if parsed_entries.any?
+    aot_ents.each { |label, node, _file| cs_compile.(node, label: label) }  # SD_<Horg>
+    AbRuby.cs_build(RUBY_CFLAGS) if hot_ents.any?
     $stderr.puts "pgc: done" if verbose
   end
 end

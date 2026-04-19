@@ -23,23 +23,25 @@ initial_exprs = []
 opt = OptionParser.new
 opt.banner = "Usage: iabrb [options]"
 opt.on('-e CODE', 'evaluate CODE before entering REPL') { |v| initial_exprs << v }
-opt.on('-c', '--compile-first', 'AOT-compile each input before execution') { compile = true }
-opt.on('--pgc', 'after execution, PGC-compile based on the profile collected') { pgc = true }
-opt.on('-d', '--disasm', 'show disassembly after compile (implies --compile-first unless --pgc)') { disasm = true }
+opt.on('-c', '--aot-compile-first', 'AOT-compile each input before execution') { compile = true }
+opt.on('-p', '--pg', '--pg-compile',
+       'after execution, PG-compile based on the profile collected') { pgc = true }
+opt.on('-d', '--disasm',
+       'show disassembly after compile (implies --aot-compile-first unless --pg-compile)') { disasm = true }
 opt.on('--clear-code-store', '--ccs', 'wipe code_store/ before starting (force fresh compiles, pick up new CC/CFLAGS)') { clear_store = true }
 opt.on('-v', '--version', 'show version') { puts "iabrb #{AbRuby::VERSION}"; exit }
 opt.parse!(ARGV)
 
-# -c and --pgc don't compose cleanly: AOT pre-bake makes the baked body
-# is_specialized=true, which short-circuits swap_dispatcher — the very
-# mechanism PGC relies on to notice new type observations.  Pick one.
+# -c and --pg-compile don't compose cleanly: AOT pre-bake makes the baked
+# body is_specialized=true, which short-circuits swap_dispatcher — the very
+# mechanism PG-compile relies on to notice new type observations.  Pick one.
 if compile && pgc
-  $stderr.puts "iabrb: --compile-first and --pgc are mutually exclusive (pick one)"
+  $stderr.puts "iabrb: --aot-compile-first and --pg-compile are mutually exclusive (pick one)"
   exit 1
 end
 
 # -d alone keeps the historical "compile then disasm" behaviour (AOT); pair
-# it with --pgc to disasm the post-profile bake instead.
+# it with --pg-compile to disasm the post-profile bake instead.
 compile = true if disasm && !pgc
 
 any_cs = compile || pgc || disasm
@@ -59,9 +61,9 @@ end
 abm = AbRuby.new
 
 # Entries seen across the whole REPL session — each line's top-level AST +
-# any def bodies it introduced.  Accumulating lets --pgc re-bake previously
-# defined methods after their body is exercised by the current line (so
-# `f 0.5` re-PGCs `f` with the just-observed profile).
+# any def bodies it introduced.  Accumulating lets --pg-compile re-bake
+# previously defined methods after their body is exercised by the current
+# line (so `f 0.5` re-PGCs `f` with the just-observed profile).
 # Each entry is [line_no, name, node] so headers can distinguish multiple
 # <toplevel> entries defined on different REPL lines.
 session_entries = []
@@ -95,9 +97,9 @@ eval_line = ->(line) {
   # Each phase that compiles also disasms its own output (when -d is on),
   # so the transcript reads in time order:
   #    -cd           : AOT → disasm → eval → result
-  #    --pgc -d      :                eval → result → PGC → disasm
-  #    -cd --pgc -d  : AOT → disasm → eval → result → PGC → disasm
-  # The PGC disasm shows only the entries actually re-baked (those with
+  #    -pd           :                eval → result → PG → disasm
+  #    -cd -pd       : AOT → disasm → eval → result → PG → disasm
+  # The PG disasm shows only the entries actually re-baked (those with
   # real profile), so it adds new info rather than repeating AOT output.
 
   # ---------- Pre-eval: AOT bake ----------------------------------------

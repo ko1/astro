@@ -64,6 +64,26 @@ abruby_method_try_set_ivar_accessor(struct abruby_method *m, struct Node *body,
     return false;
 }
 
+// Append a stable abruby_entry to the machine's registry if not already
+// present.  Used for both method entries (at def time) and block-literal
+// entries (at first materialize).  O(n) duplicate scan; called rarely
+// (once per entry per machine).  Registry is consulted at PG bake time by
+// AbRuby#dispatch_count for body-NODE → dispatch_count lookup.
+static void
+abruby_register_ast_entry(struct abruby_machine *abm, struct abruby_entry *entry)
+{
+    for (uint32_t i = 0; i < abm->ast_entries_size; i++) {
+        if (abm->ast_entries[i] == entry) return;
+    }
+    if (abm->ast_entries_size >= abm->ast_entries_capa) {
+        uint32_t cap = abm->ast_entries_capa ? abm->ast_entries_capa * 2 : 64;
+        abm->ast_entries = ruby_xrealloc(abm->ast_entries,
+                                         cap * sizeof(struct abruby_entry *));
+        abm->ast_entries_capa = cap;
+    }
+    abm->ast_entries[abm->ast_entries_size++] = entry;
+}
+
 // Check if a method definition on `klass` with `name` shadows a built-in
 // operator that has a type-specialized node (fixnum_plus, array_aref, etc.).
 // If so, set basic_op_redefined to disable all specializations.
@@ -132,9 +152,11 @@ abruby_class_add_method(CTX *c, struct abruby_class *klass, ID name,
             m->u.ast.rest_index = rest_index;
             m->u.ast.opt_pc = opt_pc;
             m->u.ast.locals_cnt = locals_cnt;
+            m->entry.kind = ABRUBY_ENTRY_METHOD;
             m->entry.source_file = source_file;
             m->entry.cref = def_cref;
-            m->entry.method = m;
+            m->entry.body = body;
+            m->entry.u.method.method = m;
             m->entry.stack_limit = locals_cnt;
         }
         abruby_check_basic_op_redefined(c->abm, klass, name);
@@ -144,7 +166,8 @@ abruby_class_add_method(CTX *c, struct abruby_class *klass, ID name,
     struct abruby_method *m = ruby_xcalloc(1, sizeof(struct abruby_method));
     m->name = name;
     m->defining_class = klass;
-    m->entry.method = m;  // self-reference (frame->entry->method → this method)
+    m->entry.kind = ABRUBY_ENTRY_METHOD;
+    m->entry.u.method.method = m;  // self-reference (frame->entry->u.method.method → this)
     m->entry.stack_limit = locals_cnt;
     if (!abruby_method_try_set_ivar_accessor(m, body, params_cnt)) {
         m->type = ABRUBY_METHOD_AST;
@@ -157,6 +180,11 @@ abruby_class_add_method(CTX *c, struct abruby_class *klass, ID name,
         m->u.ast.locals_cnt = locals_cnt;
         m->entry.source_file = source_file;
         m->entry.cref = def_cref;
+        m->entry.body = body;
+        // Register in the machine's entry list so PG bake can look up
+        // dispatch_count by body NODE.  Only AST methods get registered;
+        // ivar accessors and cfuncs have no body dispatch_count to expose.
+        abruby_register_ast_entry(c->abm, &m->entry);
     }
     ab_id_table_insert(&klass->methods, name, (VALUE)m);
     abruby_check_basic_op_redefined(c->abm, klass, name);
@@ -755,9 +783,9 @@ node_block_param(CTX * restrict c, NODE * restrict n, uint32_t lvar_index)
 // the @noinline annotation keeps it out of specialization, and the body is
 // a safety net that returns nil (asserting in debug builds).
 NODE_DEF @noinline
-node_block_literal(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t params_cnt, uint32_t param_base, uint32_t env_size)
+node_block_literal(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t params_cnt, uint32_t param_base, uint32_t env_size, struct abruby_entry *entry@ref)
 {
-    (void)c; (void)body; (void)params_cnt; (void)param_base; (void)env_size;
+    (void)c; (void)body; (void)params_cnt; (void)param_base; (void)env_size; (void)entry;
     ABRUBY_ASSERT(!"node_block_literal must not be EVAL'd directly");
     (void)n;
     return RESULT_OK(Qnil);
@@ -855,13 +883,15 @@ node_yield(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_inde
     const struct abruby_block *save_current_block = c->current_block;
     const struct abruby_frame *save_current_block_frame = c->current_block_frame;
 
-    // Install a synthetic entry carrying the block's captured cref so
-    // constant lookups inside the block body walk the lexical scope chain
-    // active at block-literal creation, not the yielding method's chain.
-    struct abruby_entry blk_entry = {blk->cref, NULL, NULL, blk->env_size};
+    // Use the block literal's stable entry (PG-profile signal).
+    // Note: its .cref is set to the captured cref so constant lookups
+    // walk the block-definition scope chain.  env_size and body are
+    // baked in at materialize_block time.
+    blk->entry->cref = blk->cref;
+    blk->entry->dispatch_count++;
     c->current_frame->fp = blk->captured_fp;
     c->current_frame->self = blk->captured_self;
-    c->current_frame->entry = &blk_entry;
+    c->current_frame->entry = blk->entry;
     c->current_block = blk;
     c->current_block_frame = c->current_frame;
 
@@ -974,7 +1004,10 @@ node_module_def(CTX * restrict c, NODE * restrict n, ID name, NODE *body)
     *(struct abruby_class **)&mod_cref->klass = mod;
     *(const struct abruby_cref **)&mod_cref->outer = ctx_cref(c);
 
-    struct abruby_entry mod_entry = {mod_cref, NULL, NULL, 0};
+    struct abruby_entry mod_entry = {
+        .kind = ABRUBY_ENTRY_METHOD,
+        .cref = mod_cref,
+    };
     struct abruby_class *save_class = c->current_class;
     struct abruby_frame mod_frame;
     mod_frame.prev = c->current_frame;
@@ -1050,7 +1083,10 @@ node_class_def(CTX * restrict c, NODE * restrict n, ID name, NODE *super_expr, N
     *(struct abruby_class **)&cls_cref->klass = klass;
     *(const struct abruby_cref **)&cls_cref->outer = ctx_cref(c);
 
-    struct abruby_entry cls_entry = {cls_cref, NULL, NULL, 0};
+    struct abruby_entry cls_entry = {
+        .kind = ABRUBY_ENTRY_METHOD,
+        .cref = cls_cref,
+    };
     struct abruby_class *save_class = c->current_class;
     struct abruby_frame cls_frame;
     cls_frame.prev = c->current_frame;
@@ -1345,6 +1381,9 @@ name(CTX * restrict c, NODE * restrict call_site, \
 { \
     (void)argc;  /* argc precondition enforced at cache fill */ \
     (void)(req_expr); \
+    /* PG profile signal: bump entry's dispatch_count.  mc->method is */ \
+    /* cached const, but count is a mutable profile side-channel.     */ \
+    ((struct abruby_entry *)&mc->method->entry)->dispatch_count++; \
     struct abruby_frame frame; \
     frame.prev = c->current_frame; \
     frame.caller_node = call_site; \
@@ -1373,6 +1412,11 @@ prologue_ast_complex(CTX * restrict c, NODE * restrict call_site,
                      const struct method_cache *mc, VALUE recv_self,
                      unsigned int argc, uint32_t arg_index)
 {
+    // PG profile signal — same as prologue_ast_simple_N.  Previously missed,
+    // which left methods with opt/rest/post params (bm_each's `times`-like
+    // helpers, most optcarrot entries) invisible to the threshold filter
+    // and dropped them to the interpreter.
+    ((struct abruby_entry *)&mc->method->entry)->dispatch_count++;
     struct abruby_frame frame;
     frame.prev = c->current_frame;
     frame.caller_node = call_site;
@@ -1813,6 +1857,24 @@ materialize_block(CTX *c, NODE *call_site, NODE *blk_node,
         return 0;
     }
     if (blk_node->head.kind == &kind_node_block_literal) {
+        struct abruby_entry *bent = &blk_node->u.node_block_literal.entry;
+        // Lazy-init the stable entry on first materialization.  kind lives
+        // on the union tag; we set it plus the static fields (body, params,
+        // env_size).  cref is dynamic (depends on the yielding method's
+        // cref), so it stays on the transient abruby_block.  dispatch_count
+        // was zero'd at ALLOC.  Once populated, subsequent materializations
+        // just reuse this entry.
+        if (bent->kind != ABRUBY_ENTRY_BLOCK || bent->body == NULL) {
+            bent->kind = ABRUBY_ENTRY_BLOCK;
+            bent->body = blk_node->u.node_block_literal.body;
+            bent->source_file = ctx_entry(c) ? ctx_entry(c)->source_file : NULL;
+            bent->stack_limit = blk_node->u.node_block_literal.env_size;
+            bent->u.block.params_cnt = blk_node->u.node_block_literal.params_cnt;
+            bent->u.block.param_base = blk_node->u.node_block_literal.param_base;
+            bent->u.block.env_size   = blk_node->u.node_block_literal.env_size;
+            abruby_register_ast_entry(c->abm, bent);
+        }
+        out_blk->entry         = bent;
         out_blk->body          = blk_node->u.node_block_literal.body;
         out_blk->captured_fp   = c->current_frame->fp;
         out_blk->captured_self = c->current_frame->self;
@@ -2159,7 +2221,19 @@ dispatch_simple_block(CTX * restrict c, NODE * restrict call_site, VALUE recv_va
                       NODE *blk_literal, struct method_cache *mc)
 {
     // Inline-materialize block from the literal (no kind dispatch).
+    struct abruby_entry *bent = &blk_literal->u.node_block_literal.entry;
+    if (bent->kind != ABRUBY_ENTRY_BLOCK || bent->body == NULL) {
+        bent->kind = ABRUBY_ENTRY_BLOCK;
+        bent->body = blk_literal->u.node_block_literal.body;
+        bent->source_file = ctx_entry(c) ? ctx_entry(c)->source_file : NULL;
+        bent->stack_limit = blk_literal->u.node_block_literal.env_size;
+        bent->u.block.params_cnt = blk_literal->u.node_block_literal.params_cnt;
+        bent->u.block.param_base = blk_literal->u.node_block_literal.param_base;
+        bent->u.block.env_size   = blk_literal->u.node_block_literal.env_size;
+        abruby_register_ast_entry(c->abm, bent);
+    }
     struct abruby_block blk;
+    blk.entry         = bent;
     blk.body          = blk_literal->u.node_block_literal.body;
     blk.captured_fp   = c->current_frame->fp;
     blk.captured_self = c->current_frame->self;
@@ -2286,6 +2360,7 @@ build_block_from_proc_value(CTX *c, NODE *call_site, VALUE proc_val, struct abru
         return (RESULT){exc, RESULT_RAISE};
     }
     const struct abruby_proc *p = (const struct abruby_proc *)ABRUBY_DATA_PTR(proc_val);
+    out_blk->entry         = p->entry;
     out_blk->body          = p->body;
     out_blk->captured_fp   = p->env;
     out_blk->captured_self = p->captured_self;
@@ -2308,7 +2383,9 @@ find_super_target(const struct abruby_frame *lex,
                   ID *out_name)
 {
     if (!lex || !lex->entry) return false;
-    const struct abruby_method *m = lex->entry->method;
+    // super walks the lexical *method* — only method entries qualify.
+    if (lex->entry->kind != ABRUBY_ENTRY_METHOD) return false;
+    const struct abruby_method *m = lex->entry->u.method.method;
     if (!m || !m->defining_class) return false;
     *out_klass = m->defining_class->super;
     *out_name  = m->name;
@@ -2388,7 +2465,19 @@ node_super_with_block(CTX * restrict c, NODE * restrict n, uint32_t params_cnt, 
     ID name;
     if (UNLIKELY(!find_super_target(lex, &target, &name))) return raise_super_no_method(c, n);
 
+    struct abruby_entry *bent = &block_literal->u.node_block_literal.entry;
+    if (bent->kind != ABRUBY_ENTRY_BLOCK || bent->body == NULL) {
+        bent->kind = ABRUBY_ENTRY_BLOCK;
+        bent->body = block_literal->u.node_block_literal.body;
+        bent->source_file = ctx_entry(c) ? ctx_entry(c)->source_file : NULL;
+        bent->stack_limit = block_literal->u.node_block_literal.env_size;
+        bent->u.block.params_cnt = block_literal->u.node_block_literal.params_cnt;
+        bent->u.block.param_base = block_literal->u.node_block_literal.param_base;
+        bent->u.block.env_size   = block_literal->u.node_block_literal.env_size;
+        abruby_register_ast_entry(c->abm, bent);
+    }
     struct abruby_block blk;
+    blk.entry             = bent;
     blk.body              = block_literal->u.node_block_literal.body;
     blk.captured_fp       = c->current_frame->fp;
     blk.captured_self     = c->current_frame->self;

@@ -65,20 +65,32 @@ RUNNERS = [
     # steady-state.  prep is not timed.
     name:  'abruby+cf',
     prep:  "rm -rf #{STORE}",
-    cmd:   "CCACHE_DISABLE=1 ruby -I #{ABRUBY_DIR}/lib #{ABRUBY_DIR}/exe/abruby -c %s",
+    cmd:   "CCACHE_DISABLE=1 ruby -I #{ABRUBY_DIR}/lib #{ABRUBY_DIR}/exe/abruby -c %s",  # -c = --aot-compile-first
   },
   {
     # AOT steady-state: prime the store in setup, time a clean
     # --compiled-only --aot-only run.
     name:  'abruby+aot',
-    setup: "rm -rf #{STORE} && ruby -I #{ABRUBY_DIR}/lib #{ABRUBY_DIR}/exe/abruby --compile %s",
+    setup: "rm -rf #{STORE} && CCACHE_DISABLE=1 ruby -I #{ABRUBY_DIR}/lib #{ABRUBY_DIR}/exe/abruby --aot-compile %s",
     cmd:   "ruby -I #{ABRUBY_DIR}/lib #{ABRUBY_DIR}/exe/abruby --compiled-only --aot-only %s",
   },
   {
-    # PGC steady-state: prime the store with --pgc (profile + bake) in
-    # setup, time a clean --compiled-only run (SD_<Hopt> preferred).
+    # Full PGC bake: threshold=0 so every parsed entry gets baked (PGSD_
+    # if profile differentiates it, SD_<Horg> otherwise).  Steady-state
+    # run follows — no interpreter fallback.  This is the historical
+    # "max PGC" baseline; use for apples-to-apples comparisons against
+    # pre-threshold runs.
+    name:  'abruby+pgc-all',
+    setup: "rm -rf #{STORE} && CCACHE_DISABLE=1 ruby -I #{ABRUBY_DIR}/lib #{ABRUBY_DIR}/exe/abruby --pg-compile --pg-threshold=0 %s",
+    cmd:   "ruby -I #{ABRUBY_DIR}/lib #{ABRUBY_DIR}/exe/abruby --compiled-only %s",
+  },
+  {
+    # Threshold-gated PG-compile: dispatch_count >= 100 → PGSD/SD baked,
+    # the rest (cold) runs as plain interpreter.  Faster bake, smaller
+    # all.so; steady-state cost of cold entries is what the runtime
+    # number captures.  Realistic default for iterative development.
     name:  'abruby+pgc',
-    setup: "rm -rf #{STORE} && ruby -I #{ABRUBY_DIR}/lib #{ABRUBY_DIR}/exe/abruby --pgc %s",
+    setup: "rm -rf #{STORE} && CCACHE_DISABLE=1 ruby -I #{ABRUBY_DIR}/lib #{ABRUBY_DIR}/exe/abruby --pg-compile %s",
     cmd:   "ruby -I #{ABRUBY_DIR}/lib #{ABRUBY_DIR}/exe/abruby --compiled-only %s",
   },
 ]
