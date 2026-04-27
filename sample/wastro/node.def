@@ -1,0 +1,1698 @@
+// wastro v0.5 — WebAssembly subset on ASTro.
+//
+// Numeric scope:
+//   * Types: i32, i64, f32, f64.  All carried in `VALUE` (== uint64_t)
+//     using AS_*/FROM_* reinterpret helpers from context.h.
+//   * Literals: i32.const, i64.const, f32.const, f64.const.
+//   * Arithmetic: add, sub, mul (per type).
+//   * Comparison: eq, lt_s/lt (per type).  Result is i32 (0 or 1).
+//
+// Generic / type-erased:
+//   * local.get, local.set — VALUE is uint64_t for any type, the
+//     parser ensures the operator at the use site reinterprets correctly.
+//   * if/else, seq, call_N — pass values through without inspecting
+//     their wasm type (statically validated by the parser).
+//
+// Notes:
+//   * ASTroGen accepts int32_t, uint32_t, uint64_t, double, const char *
+//     and NODE *.  For i64/f32 we route through uint64_t (i64 raw) and
+//     uint32_t (f32 bit pattern).
+//   * Per-call arguments are declared as NODE * children so the
+//     specializer inlines them via EVAL_ARG.
+
+// =====================================================================
+// Locals (type-erased — VALUE carries any wasm numeric type)
+// =====================================================================
+
+NODE_DEF
+node_local_get(CTX *c, NODE *n, uint32_t index)
+{
+    return c->fp[index];
+}
+
+NODE_DEF
+node_local_set(CTX *c, NODE *n, uint32_t index, NODE *expr)
+{
+    c->fp[index] = EVAL_ARG(c, expr);
+    return 0;
+}
+
+// =====================================================================
+// i32 — signed 32-bit integer
+// =====================================================================
+
+NODE_DEF
+node_i32_const(CTX *c, NODE *n, int32_t value)
+{
+    return FROM_I32(value);
+}
+
+NODE_DEF
+node_i32_add(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    int32_t lv = AS_I32(EVAL_ARG(c, l));
+    int32_t rv = AS_I32(EVAL_ARG(c, r));
+    return FROM_I32(lv + rv);
+}
+
+NODE_DEF
+node_i32_sub(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    int32_t lv = AS_I32(EVAL_ARG(c, l));
+    int32_t rv = AS_I32(EVAL_ARG(c, r));
+    return FROM_I32(lv - rv);
+}
+
+NODE_DEF
+node_i32_mul(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    int32_t lv = AS_I32(EVAL_ARG(c, l));
+    int32_t rv = AS_I32(EVAL_ARG(c, r));
+    return FROM_I32(lv * rv);
+}
+
+NODE_DEF
+node_i32_eq(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    int32_t lv = AS_I32(EVAL_ARG(c, l));
+    int32_t rv = AS_I32(EVAL_ARG(c, r));
+    return FROM_BOOL(lv == rv);
+}
+
+NODE_DEF
+node_i32_lt_s(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    int32_t lv = AS_I32(EVAL_ARG(c, l));
+    int32_t rv = AS_I32(EVAL_ARG(c, r));
+    return FROM_BOOL(lv < rv);
+}
+
+// --- i32 division / remainder (trap on divide by zero or i32_min/-1 for div_s) ---
+
+NODE_DEF
+node_i32_div_s(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    int32_t lv = AS_I32(EVAL_ARG(c, l));
+    int32_t rv = AS_I32(EVAL_ARG(c, r));
+    if (rv == 0) wastro_trap("integer divide by zero");
+    if (lv == INT32_MIN && rv == -1) wastro_trap("integer overflow");
+    return FROM_I32(lv / rv);
+}
+
+NODE_DEF
+node_i32_div_u(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    uint32_t lv = AS_U32(EVAL_ARG(c, l));
+    uint32_t rv = AS_U32(EVAL_ARG(c, r));
+    if (rv == 0) wastro_trap("integer divide by zero");
+    return FROM_U32(lv / rv);
+}
+
+NODE_DEF
+node_i32_rem_s(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    int32_t lv = AS_I32(EVAL_ARG(c, l));
+    int32_t rv = AS_I32(EVAL_ARG(c, r));
+    if (rv == 0) wastro_trap("integer divide by zero");
+    if (lv == INT32_MIN && rv == -1) return FROM_I32(0);  // wasm spec: returns 0
+    return FROM_I32(lv % rv);
+}
+
+NODE_DEF
+node_i32_rem_u(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    uint32_t lv = AS_U32(EVAL_ARG(c, l));
+    uint32_t rv = AS_U32(EVAL_ARG(c, r));
+    if (rv == 0) wastro_trap("integer divide by zero");
+    return FROM_U32(lv % rv);
+}
+
+// --- i32 bitwise ---
+
+NODE_DEF
+node_i32_and(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    return FROM_U32(AS_U32(EVAL_ARG(c, l)) & AS_U32(EVAL_ARG(c, r)));
+}
+
+NODE_DEF
+node_i32_or(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    return FROM_U32(AS_U32(EVAL_ARG(c, l)) | AS_U32(EVAL_ARG(c, r)));
+}
+
+NODE_DEF
+node_i32_xor(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    return FROM_U32(AS_U32(EVAL_ARG(c, l)) ^ AS_U32(EVAL_ARG(c, r)));
+}
+
+NODE_DEF
+node_i32_shl(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    uint32_t lv = AS_U32(EVAL_ARG(c, l));
+    uint32_t rv = AS_U32(EVAL_ARG(c, r)) & 31;  // wasm spec: shift amount mod 32
+    return FROM_U32(lv << rv);
+}
+
+NODE_DEF
+node_i32_shr_s(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    int32_t lv = AS_I32(EVAL_ARG(c, l));
+    uint32_t rv = AS_U32(EVAL_ARG(c, r)) & 31;
+    return FROM_I32(lv >> rv);
+}
+
+NODE_DEF
+node_i32_shr_u(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    uint32_t lv = AS_U32(EVAL_ARG(c, l));
+    uint32_t rv = AS_U32(EVAL_ARG(c, r)) & 31;
+    return FROM_U32(lv >> rv);
+}
+
+NODE_DEF
+node_i32_rotl(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    uint32_t lv = AS_U32(EVAL_ARG(c, l));
+    uint32_t rv = AS_U32(EVAL_ARG(c, r)) & 31;
+    return FROM_U32((lv << rv) | (lv >> ((32 - rv) & 31)));
+}
+
+NODE_DEF
+node_i32_rotr(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    uint32_t lv = AS_U32(EVAL_ARG(c, l));
+    uint32_t rv = AS_U32(EVAL_ARG(c, r)) & 31;
+    return FROM_U32((lv >> rv) | (lv << ((32 - rv) & 31)));
+}
+
+// --- i32 remaining comparisons ---
+
+NODE_DEF
+node_i32_ne(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    return FROM_BOOL(AS_I32(EVAL_ARG(c, l)) != AS_I32(EVAL_ARG(c, r)));
+}
+
+NODE_DEF
+node_i32_lt_u(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    return FROM_BOOL(AS_U32(EVAL_ARG(c, l)) < AS_U32(EVAL_ARG(c, r)));
+}
+
+NODE_DEF
+node_i32_le_s(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    return FROM_BOOL(AS_I32(EVAL_ARG(c, l)) <= AS_I32(EVAL_ARG(c, r)));
+}
+
+NODE_DEF
+node_i32_le_u(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    return FROM_BOOL(AS_U32(EVAL_ARG(c, l)) <= AS_U32(EVAL_ARG(c, r)));
+}
+
+NODE_DEF
+node_i32_gt_s(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    return FROM_BOOL(AS_I32(EVAL_ARG(c, l)) > AS_I32(EVAL_ARG(c, r)));
+}
+
+NODE_DEF
+node_i32_gt_u(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    return FROM_BOOL(AS_U32(EVAL_ARG(c, l)) > AS_U32(EVAL_ARG(c, r)));
+}
+
+NODE_DEF
+node_i32_ge_s(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    return FROM_BOOL(AS_I32(EVAL_ARG(c, l)) >= AS_I32(EVAL_ARG(c, r)));
+}
+
+NODE_DEF
+node_i32_ge_u(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    return FROM_BOOL(AS_U32(EVAL_ARG(c, l)) >= AS_U32(EVAL_ARG(c, r)));
+}
+
+// --- i32 unary ---
+
+NODE_DEF
+node_i32_eqz(CTX *c, NODE *n, NODE *e)
+{
+    return FROM_BOOL(AS_I32(EVAL_ARG(c, e)) == 0);
+}
+
+NODE_DEF
+node_i32_clz(CTX *c, NODE *n, NODE *e)
+{
+    uint32_t v = AS_U32(EVAL_ARG(c, e));
+    return FROM_I32(v ? __builtin_clz(v) : 32);
+}
+
+NODE_DEF
+node_i32_ctz(CTX *c, NODE *n, NODE *e)
+{
+    uint32_t v = AS_U32(EVAL_ARG(c, e));
+    return FROM_I32(v ? __builtin_ctz(v) : 32);
+}
+
+NODE_DEF
+node_i32_popcnt(CTX *c, NODE *n, NODE *e)
+{
+    return FROM_I32(__builtin_popcount(AS_U32(EVAL_ARG(c, e))));
+}
+
+// =====================================================================
+// i64 — signed 64-bit integer (operand `value` carries the raw bits)
+// =====================================================================
+
+NODE_DEF
+node_i64_const(CTX *c, NODE *n, uint64_t value)
+{
+    return value;
+}
+
+NODE_DEF
+node_i64_add(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    int64_t lv = AS_I64(EVAL_ARG(c, l));
+    int64_t rv = AS_I64(EVAL_ARG(c, r));
+    return FROM_I64(lv + rv);
+}
+
+NODE_DEF
+node_i64_sub(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    int64_t lv = AS_I64(EVAL_ARG(c, l));
+    int64_t rv = AS_I64(EVAL_ARG(c, r));
+    return FROM_I64(lv - rv);
+}
+
+NODE_DEF
+node_i64_mul(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    int64_t lv = AS_I64(EVAL_ARG(c, l));
+    int64_t rv = AS_I64(EVAL_ARG(c, r));
+    return FROM_I64(lv * rv);
+}
+
+NODE_DEF
+node_i64_eq(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    int64_t lv = AS_I64(EVAL_ARG(c, l));
+    int64_t rv = AS_I64(EVAL_ARG(c, r));
+    return FROM_BOOL(lv == rv);
+}
+
+NODE_DEF
+node_i64_lt_s(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    int64_t lv = AS_I64(EVAL_ARG(c, l));
+    int64_t rv = AS_I64(EVAL_ARG(c, r));
+    return FROM_BOOL(lv < rv);
+}
+
+// --- i64 division / remainder ---
+
+NODE_DEF
+node_i64_div_s(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    int64_t lv = AS_I64(EVAL_ARG(c, l));
+    int64_t rv = AS_I64(EVAL_ARG(c, r));
+    if (rv == 0) wastro_trap("integer divide by zero");
+    if (lv == INT64_MIN && rv == -1) wastro_trap("integer overflow");
+    return FROM_I64(lv / rv);
+}
+
+NODE_DEF
+node_i64_div_u(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    uint64_t lv = AS_U64(EVAL_ARG(c, l));
+    uint64_t rv = AS_U64(EVAL_ARG(c, r));
+    if (rv == 0) wastro_trap("integer divide by zero");
+    return FROM_U64(lv / rv);
+}
+
+NODE_DEF
+node_i64_rem_s(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    int64_t lv = AS_I64(EVAL_ARG(c, l));
+    int64_t rv = AS_I64(EVAL_ARG(c, r));
+    if (rv == 0) wastro_trap("integer divide by zero");
+    if (lv == INT64_MIN && rv == -1) return FROM_I64(0);
+    return FROM_I64(lv % rv);
+}
+
+NODE_DEF
+node_i64_rem_u(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    uint64_t lv = AS_U64(EVAL_ARG(c, l));
+    uint64_t rv = AS_U64(EVAL_ARG(c, r));
+    if (rv == 0) wastro_trap("integer divide by zero");
+    return FROM_U64(lv % rv);
+}
+
+// --- i64 bitwise ---
+
+NODE_DEF
+node_i64_and(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    return FROM_U64(AS_U64(EVAL_ARG(c, l)) & AS_U64(EVAL_ARG(c, r)));
+}
+
+NODE_DEF
+node_i64_or(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    return FROM_U64(AS_U64(EVAL_ARG(c, l)) | AS_U64(EVAL_ARG(c, r)));
+}
+
+NODE_DEF
+node_i64_xor(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    return FROM_U64(AS_U64(EVAL_ARG(c, l)) ^ AS_U64(EVAL_ARG(c, r)));
+}
+
+NODE_DEF
+node_i64_shl(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    uint64_t lv = AS_U64(EVAL_ARG(c, l));
+    uint64_t rv = AS_U64(EVAL_ARG(c, r)) & 63;
+    return FROM_U64(lv << rv);
+}
+
+NODE_DEF
+node_i64_shr_s(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    int64_t lv = AS_I64(EVAL_ARG(c, l));
+    uint64_t rv = AS_U64(EVAL_ARG(c, r)) & 63;
+    return FROM_I64(lv >> rv);
+}
+
+NODE_DEF
+node_i64_shr_u(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    uint64_t lv = AS_U64(EVAL_ARG(c, l));
+    uint64_t rv = AS_U64(EVAL_ARG(c, r)) & 63;
+    return FROM_U64(lv >> rv);
+}
+
+NODE_DEF
+node_i64_rotl(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    uint64_t lv = AS_U64(EVAL_ARG(c, l));
+    uint64_t rv = AS_U64(EVAL_ARG(c, r)) & 63;
+    return FROM_U64((lv << rv) | (lv >> ((64 - rv) & 63)));
+}
+
+NODE_DEF
+node_i64_rotr(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    uint64_t lv = AS_U64(EVAL_ARG(c, l));
+    uint64_t rv = AS_U64(EVAL_ARG(c, r)) & 63;
+    return FROM_U64((lv >> rv) | (lv << ((64 - rv) & 63)));
+}
+
+// --- i64 remaining comparisons (result is i32) ---
+
+NODE_DEF
+node_i64_ne(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    return FROM_BOOL(AS_I64(EVAL_ARG(c, l)) != AS_I64(EVAL_ARG(c, r)));
+}
+
+NODE_DEF
+node_i64_lt_u(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    return FROM_BOOL(AS_U64(EVAL_ARG(c, l)) < AS_U64(EVAL_ARG(c, r)));
+}
+
+NODE_DEF
+node_i64_le_s(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    return FROM_BOOL(AS_I64(EVAL_ARG(c, l)) <= AS_I64(EVAL_ARG(c, r)));
+}
+
+NODE_DEF
+node_i64_le_u(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    return FROM_BOOL(AS_U64(EVAL_ARG(c, l)) <= AS_U64(EVAL_ARG(c, r)));
+}
+
+NODE_DEF
+node_i64_gt_s(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    return FROM_BOOL(AS_I64(EVAL_ARG(c, l)) > AS_I64(EVAL_ARG(c, r)));
+}
+
+NODE_DEF
+node_i64_gt_u(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    return FROM_BOOL(AS_U64(EVAL_ARG(c, l)) > AS_U64(EVAL_ARG(c, r)));
+}
+
+NODE_DEF
+node_i64_ge_s(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    return FROM_BOOL(AS_I64(EVAL_ARG(c, l)) >= AS_I64(EVAL_ARG(c, r)));
+}
+
+NODE_DEF
+node_i64_ge_u(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    return FROM_BOOL(AS_U64(EVAL_ARG(c, l)) >= AS_U64(EVAL_ARG(c, r)));
+}
+
+// --- i64 unary ---
+
+NODE_DEF
+node_i64_eqz(CTX *c, NODE *n, NODE *e)
+{
+    return FROM_BOOL(AS_I64(EVAL_ARG(c, e)) == 0);
+}
+
+NODE_DEF
+node_i64_clz(CTX *c, NODE *n, NODE *e)
+{
+    uint64_t v = AS_U64(EVAL_ARG(c, e));
+    return FROM_I64(v ? __builtin_clzll(v) : 64);
+}
+
+NODE_DEF
+node_i64_ctz(CTX *c, NODE *n, NODE *e)
+{
+    uint64_t v = AS_U64(EVAL_ARG(c, e));
+    return FROM_I64(v ? __builtin_ctzll(v) : 64);
+}
+
+NODE_DEF
+node_i64_popcnt(CTX *c, NODE *n, NODE *e)
+{
+    return FROM_I64(__builtin_popcountll(AS_U64(EVAL_ARG(c, e))));
+}
+
+// =====================================================================
+// f32 — IEEE 754 single (operand `bits` carries the raw bit pattern,
+// since ASTroGen does not natively accept `float`)
+// =====================================================================
+
+NODE_DEF
+node_f32_const(CTX *c, NODE *n, uint32_t bits)
+{
+    return FROM_U32(bits);
+}
+
+NODE_DEF
+node_f32_add(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    float lv = AS_F32(EVAL_ARG(c, l));
+    float rv = AS_F32(EVAL_ARG(c, r));
+    return FROM_F32(lv + rv);
+}
+
+NODE_DEF
+node_f32_sub(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    float lv = AS_F32(EVAL_ARG(c, l));
+    float rv = AS_F32(EVAL_ARG(c, r));
+    return FROM_F32(lv - rv);
+}
+
+NODE_DEF
+node_f32_mul(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    float lv = AS_F32(EVAL_ARG(c, l));
+    float rv = AS_F32(EVAL_ARG(c, r));
+    return FROM_F32(lv * rv);
+}
+
+NODE_DEF
+node_f32_eq(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    float lv = AS_F32(EVAL_ARG(c, l));
+    float rv = AS_F32(EVAL_ARG(c, r));
+    return FROM_BOOL(lv == rv);
+}
+
+NODE_DEF
+node_f32_lt(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    float lv = AS_F32(EVAL_ARG(c, l));
+    float rv = AS_F32(EVAL_ARG(c, r));
+    return FROM_BOOL(lv < rv);
+}
+
+// --- f32 division / min / max / copysign ---
+
+NODE_DEF
+node_f32_div(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    return FROM_F32(AS_F32(EVAL_ARG(c, l)) / AS_F32(EVAL_ARG(c, r)));
+}
+
+NODE_DEF
+node_f32_min(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    float lv = AS_F32(EVAL_ARG(c, l));
+    float rv = AS_F32(EVAL_ARG(c, r));
+    if (lv != lv || rv != rv) return FROM_F32(lv != lv ? lv : rv);  // NaN propagation
+    return FROM_F32(lv < rv ? lv : rv);
+}
+
+NODE_DEF
+node_f32_max(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    float lv = AS_F32(EVAL_ARG(c, l));
+    float rv = AS_F32(EVAL_ARG(c, r));
+    if (lv != lv || rv != rv) return FROM_F32(lv != lv ? lv : rv);
+    return FROM_F32(lv > rv ? lv : rv);
+}
+
+NODE_DEF
+node_f32_copysign(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    return FROM_F32(copysignf(AS_F32(EVAL_ARG(c, l)), AS_F32(EVAL_ARG(c, r))));
+}
+
+// --- f32 remaining comparisons (result is i32) ---
+
+NODE_DEF
+node_f32_ne(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    return FROM_BOOL(AS_F32(EVAL_ARG(c, l)) != AS_F32(EVAL_ARG(c, r)));
+}
+
+NODE_DEF
+node_f32_le(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    return FROM_BOOL(AS_F32(EVAL_ARG(c, l)) <= AS_F32(EVAL_ARG(c, r)));
+}
+
+NODE_DEF
+node_f32_gt(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    return FROM_BOOL(AS_F32(EVAL_ARG(c, l)) > AS_F32(EVAL_ARG(c, r)));
+}
+
+NODE_DEF
+node_f32_ge(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    return FROM_BOOL(AS_F32(EVAL_ARG(c, l)) >= AS_F32(EVAL_ARG(c, r)));
+}
+
+// --- f32 unary ---
+
+NODE_DEF
+node_f32_abs(CTX *c, NODE *n, NODE *e)
+{
+    return FROM_F32(fabsf(AS_F32(EVAL_ARG(c, e))));
+}
+
+NODE_DEF
+node_f32_neg(CTX *c, NODE *n, NODE *e)
+{
+    return FROM_F32(-AS_F32(EVAL_ARG(c, e)));
+}
+
+NODE_DEF
+node_f32_sqrt(CTX *c, NODE *n, NODE *e)
+{
+    return FROM_F32(sqrtf(AS_F32(EVAL_ARG(c, e))));
+}
+
+NODE_DEF
+node_f32_ceil(CTX *c, NODE *n, NODE *e)
+{
+    return FROM_F32(ceilf(AS_F32(EVAL_ARG(c, e))));
+}
+
+NODE_DEF
+node_f32_floor(CTX *c, NODE *n, NODE *e)
+{
+    return FROM_F32(floorf(AS_F32(EVAL_ARG(c, e))));
+}
+
+NODE_DEF
+node_f32_trunc(CTX *c, NODE *n, NODE *e)
+{
+    return FROM_F32(truncf(AS_F32(EVAL_ARG(c, e))));
+}
+
+// nearest = round-to-even (wasm spec).  C's `nearbyintf` uses current
+// rounding mode (default round-to-even) — matches.
+NODE_DEF
+node_f32_nearest(CTX *c, NODE *n, NODE *e)
+{
+    return FROM_F32(nearbyintf(AS_F32(EVAL_ARG(c, e))));
+}
+
+// =====================================================================
+// f64 — IEEE 754 double
+// =====================================================================
+
+NODE_DEF
+node_f64_const(CTX *c, NODE *n, double value)
+{
+    return FROM_F64(value);
+}
+
+NODE_DEF
+node_f64_add(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    double lv = AS_F64(EVAL_ARG(c, l));
+    double rv = AS_F64(EVAL_ARG(c, r));
+    return FROM_F64(lv + rv);
+}
+
+NODE_DEF
+node_f64_sub(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    double lv = AS_F64(EVAL_ARG(c, l));
+    double rv = AS_F64(EVAL_ARG(c, r));
+    return FROM_F64(lv - rv);
+}
+
+NODE_DEF
+node_f64_mul(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    double lv = AS_F64(EVAL_ARG(c, l));
+    double rv = AS_F64(EVAL_ARG(c, r));
+    return FROM_F64(lv * rv);
+}
+
+NODE_DEF
+node_f64_eq(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    double lv = AS_F64(EVAL_ARG(c, l));
+    double rv = AS_F64(EVAL_ARG(c, r));
+    return FROM_BOOL(lv == rv);
+}
+
+NODE_DEF
+node_f64_lt(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    double lv = AS_F64(EVAL_ARG(c, l));
+    double rv = AS_F64(EVAL_ARG(c, r));
+    return FROM_BOOL(lv < rv);
+}
+
+// --- f64 division / min / max / copysign ---
+
+NODE_DEF
+node_f64_div(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    return FROM_F64(AS_F64(EVAL_ARG(c, l)) / AS_F64(EVAL_ARG(c, r)));
+}
+
+NODE_DEF
+node_f64_min(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    double lv = AS_F64(EVAL_ARG(c, l));
+    double rv = AS_F64(EVAL_ARG(c, r));
+    if (lv != lv || rv != rv) return FROM_F64(lv != lv ? lv : rv);
+    return FROM_F64(lv < rv ? lv : rv);
+}
+
+NODE_DEF
+node_f64_max(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    double lv = AS_F64(EVAL_ARG(c, l));
+    double rv = AS_F64(EVAL_ARG(c, r));
+    if (lv != lv || rv != rv) return FROM_F64(lv != lv ? lv : rv);
+    return FROM_F64(lv > rv ? lv : rv);
+}
+
+NODE_DEF
+node_f64_copysign(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    return FROM_F64(copysign(AS_F64(EVAL_ARG(c, l)), AS_F64(EVAL_ARG(c, r))));
+}
+
+// --- f64 remaining comparisons ---
+
+NODE_DEF
+node_f64_ne(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    return FROM_BOOL(AS_F64(EVAL_ARG(c, l)) != AS_F64(EVAL_ARG(c, r)));
+}
+
+NODE_DEF
+node_f64_le(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    return FROM_BOOL(AS_F64(EVAL_ARG(c, l)) <= AS_F64(EVAL_ARG(c, r)));
+}
+
+NODE_DEF
+node_f64_gt(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    return FROM_BOOL(AS_F64(EVAL_ARG(c, l)) > AS_F64(EVAL_ARG(c, r)));
+}
+
+NODE_DEF
+node_f64_ge(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    return FROM_BOOL(AS_F64(EVAL_ARG(c, l)) >= AS_F64(EVAL_ARG(c, r)));
+}
+
+// --- f64 unary ---
+
+NODE_DEF
+node_f64_abs(CTX *c, NODE *n, NODE *e)
+{
+    return FROM_F64(fabs(AS_F64(EVAL_ARG(c, e))));
+}
+
+NODE_DEF
+node_f64_neg(CTX *c, NODE *n, NODE *e)
+{
+    return FROM_F64(-AS_F64(EVAL_ARG(c, e)));
+}
+
+NODE_DEF
+node_f64_sqrt(CTX *c, NODE *n, NODE *e)
+{
+    return FROM_F64(sqrt(AS_F64(EVAL_ARG(c, e))));
+}
+
+NODE_DEF
+node_f64_ceil(CTX *c, NODE *n, NODE *e)
+{
+    return FROM_F64(ceil(AS_F64(EVAL_ARG(c, e))));
+}
+
+NODE_DEF
+node_f64_floor(CTX *c, NODE *n, NODE *e)
+{
+    return FROM_F64(floor(AS_F64(EVAL_ARG(c, e))));
+}
+
+NODE_DEF
+node_f64_trunc(CTX *c, NODE *n, NODE *e)
+{
+    return FROM_F64(trunc(AS_F64(EVAL_ARG(c, e))));
+}
+
+NODE_DEF
+node_f64_nearest(CTX *c, NODE *n, NODE *e)
+{
+    return FROM_F64(nearbyint(AS_F64(EVAL_ARG(c, e))));
+}
+
+// =====================================================================
+// Conversions (wrap / extend / trunc / convert / demote / promote / reinterpret)
+// =====================================================================
+// Reinterprets are bit-pattern moves only; they're free at runtime
+// after gcc -O2 because VALUE is already uint64_t.
+
+NODE_DEF
+node_i32_wrap_i64(CTX *c, NODE *n, NODE *e)
+{
+    return FROM_I32((int32_t)AS_I64(EVAL_ARG(c, e)));
+}
+
+NODE_DEF
+node_i64_extend_i32_s(CTX *c, NODE *n, NODE *e)
+{
+    return FROM_I64((int64_t)AS_I32(EVAL_ARG(c, e)));
+}
+
+NODE_DEF
+node_i64_extend_i32_u(CTX *c, NODE *n, NODE *e)
+{
+    return FROM_U64((uint64_t)AS_U32(EVAL_ARG(c, e)));
+}
+
+NODE_DEF
+node_i32_extend8_s(CTX *c, NODE *n, NODE *e)
+{
+    return FROM_I32((int32_t)(int8_t)AS_I32(EVAL_ARG(c, e)));
+}
+
+NODE_DEF
+node_i32_extend16_s(CTX *c, NODE *n, NODE *e)
+{
+    return FROM_I32((int32_t)(int16_t)AS_I32(EVAL_ARG(c, e)));
+}
+
+NODE_DEF
+node_i64_extend8_s(CTX *c, NODE *n, NODE *e)
+{
+    return FROM_I64((int64_t)(int8_t)AS_I64(EVAL_ARG(c, e)));
+}
+
+NODE_DEF
+node_i64_extend16_s(CTX *c, NODE *n, NODE *e)
+{
+    return FROM_I64((int64_t)(int16_t)AS_I64(EVAL_ARG(c, e)));
+}
+
+NODE_DEF
+node_i64_extend32_s(CTX *c, NODE *n, NODE *e)
+{
+    return FROM_I64((int64_t)(int32_t)AS_I64(EVAL_ARG(c, e)));
+}
+
+// Float → integer truncation (trapping variant).  trunc_sat_* (saturating)
+// is wasm 2.0; we currently provide only the trapping form per wasm 1.0.
+
+NODE_DEF
+node_i32_trunc_f32_s(CTX *c, NODE *n, NODE *e)
+{
+    float v = AS_F32(EVAL_ARG(c, e));
+    if (v != v) wastro_trap("invalid conversion to integer");
+    if (v < (float)INT32_MIN || v >= 2147483648.0f) wastro_trap("integer overflow");
+    return FROM_I32((int32_t)v);
+}
+
+NODE_DEF
+node_i32_trunc_f32_u(CTX *c, NODE *n, NODE *e)
+{
+    float v = AS_F32(EVAL_ARG(c, e));
+    if (v != v) wastro_trap("invalid conversion to integer");
+    if (v <= -1.0f || v >= 4294967296.0f) wastro_trap("integer overflow");
+    return FROM_U32((uint32_t)v);
+}
+
+NODE_DEF
+node_i32_trunc_f64_s(CTX *c, NODE *n, NODE *e)
+{
+    double v = AS_F64(EVAL_ARG(c, e));
+    if (v != v) wastro_trap("invalid conversion to integer");
+    if (v < (double)INT32_MIN || v >= 2147483648.0) wastro_trap("integer overflow");
+    return FROM_I32((int32_t)v);
+}
+
+NODE_DEF
+node_i32_trunc_f64_u(CTX *c, NODE *n, NODE *e)
+{
+    double v = AS_F64(EVAL_ARG(c, e));
+    if (v != v) wastro_trap("invalid conversion to integer");
+    if (v <= -1.0 || v >= 4294967296.0) wastro_trap("integer overflow");
+    return FROM_U32((uint32_t)v);
+}
+
+NODE_DEF
+node_i64_trunc_f32_s(CTX *c, NODE *n, NODE *e)
+{
+    float v = AS_F32(EVAL_ARG(c, e));
+    if (v != v) wastro_trap("invalid conversion to integer");
+    if (v < (float)INT64_MIN || v >= 9223372036854775808.0f) wastro_trap("integer overflow");
+    return FROM_I64((int64_t)v);
+}
+
+NODE_DEF
+node_i64_trunc_f32_u(CTX *c, NODE *n, NODE *e)
+{
+    float v = AS_F32(EVAL_ARG(c, e));
+    if (v != v) wastro_trap("invalid conversion to integer");
+    if (v <= -1.0f || v >= 18446744073709551616.0f) wastro_trap("integer overflow");
+    return FROM_U64((uint64_t)v);
+}
+
+NODE_DEF
+node_i64_trunc_f64_s(CTX *c, NODE *n, NODE *e)
+{
+    double v = AS_F64(EVAL_ARG(c, e));
+    if (v != v) wastro_trap("invalid conversion to integer");
+    if (v < (double)INT64_MIN || v >= 9223372036854775808.0) wastro_trap("integer overflow");
+    return FROM_I64((int64_t)v);
+}
+
+NODE_DEF
+node_i64_trunc_f64_u(CTX *c, NODE *n, NODE *e)
+{
+    double v = AS_F64(EVAL_ARG(c, e));
+    if (v != v) wastro_trap("invalid conversion to integer");
+    if (v <= -1.0 || v >= 18446744073709551616.0) wastro_trap("integer overflow");
+    return FROM_U64((uint64_t)v);
+}
+
+// Saturating truncation (wasm 2.0): NaN → 0, < min → min, > max → max,
+// otherwise truncated.  Used by LLVM-emitted wasm by default.
+
+NODE_DEF
+node_i32_trunc_sat_f32_s(CTX *c, NODE *n, NODE *e)
+{
+    float v = AS_F32(EVAL_ARG(c, e));
+    if (v != v) return FROM_I32(0);
+    if (v < (float)INT32_MIN) return FROM_I32(INT32_MIN);
+    if (v >= 2147483648.0f) return FROM_I32(INT32_MAX);
+    return FROM_I32((int32_t)v);
+}
+
+NODE_DEF
+node_i32_trunc_sat_f32_u(CTX *c, NODE *n, NODE *e)
+{
+    float v = AS_F32(EVAL_ARG(c, e));
+    if (v != v) return FROM_U32(0);
+    if (v <= 0.0f) return FROM_U32(0);
+    if (v >= 4294967296.0f) return FROM_U32(UINT32_MAX);
+    return FROM_U32((uint32_t)v);
+}
+
+NODE_DEF
+node_i32_trunc_sat_f64_s(CTX *c, NODE *n, NODE *e)
+{
+    double v = AS_F64(EVAL_ARG(c, e));
+    if (v != v) return FROM_I32(0);
+    if (v < (double)INT32_MIN) return FROM_I32(INT32_MIN);
+    if (v >= 2147483648.0) return FROM_I32(INT32_MAX);
+    return FROM_I32((int32_t)v);
+}
+
+NODE_DEF
+node_i32_trunc_sat_f64_u(CTX *c, NODE *n, NODE *e)
+{
+    double v = AS_F64(EVAL_ARG(c, e));
+    if (v != v) return FROM_U32(0);
+    if (v <= 0.0) return FROM_U32(0);
+    if (v >= 4294967296.0) return FROM_U32(UINT32_MAX);
+    return FROM_U32((uint32_t)v);
+}
+
+NODE_DEF
+node_i64_trunc_sat_f32_s(CTX *c, NODE *n, NODE *e)
+{
+    float v = AS_F32(EVAL_ARG(c, e));
+    if (v != v) return FROM_I64(0);
+    if (v < (float)INT64_MIN) return FROM_I64(INT64_MIN);
+    if (v >= 9223372036854775808.0f) return FROM_I64(INT64_MAX);
+    return FROM_I64((int64_t)v);
+}
+
+NODE_DEF
+node_i64_trunc_sat_f32_u(CTX *c, NODE *n, NODE *e)
+{
+    float v = AS_F32(EVAL_ARG(c, e));
+    if (v != v) return FROM_U64(0);
+    if (v <= 0.0f) return FROM_U64(0);
+    if (v >= 18446744073709551616.0f) return FROM_U64(UINT64_MAX);
+    return FROM_U64((uint64_t)v);
+}
+
+NODE_DEF
+node_i64_trunc_sat_f64_s(CTX *c, NODE *n, NODE *e)
+{
+    double v = AS_F64(EVAL_ARG(c, e));
+    if (v != v) return FROM_I64(0);
+    if (v < (double)INT64_MIN) return FROM_I64(INT64_MIN);
+    if (v >= 9223372036854775808.0) return FROM_I64(INT64_MAX);
+    return FROM_I64((int64_t)v);
+}
+
+NODE_DEF
+node_i64_trunc_sat_f64_u(CTX *c, NODE *n, NODE *e)
+{
+    double v = AS_F64(EVAL_ARG(c, e));
+    if (v != v) return FROM_U64(0);
+    if (v <= 0.0) return FROM_U64(0);
+    if (v >= 18446744073709551616.0) return FROM_U64(UINT64_MAX);
+    return FROM_U64((uint64_t)v);
+}
+
+// Integer → float
+
+NODE_DEF
+node_f32_convert_i32_s(CTX *c, NODE *n, NODE *e)
+{
+    return FROM_F32((float)AS_I32(EVAL_ARG(c, e)));
+}
+
+NODE_DEF
+node_f32_convert_i32_u(CTX *c, NODE *n, NODE *e)
+{
+    return FROM_F32((float)AS_U32(EVAL_ARG(c, e)));
+}
+
+NODE_DEF
+node_f32_convert_i64_s(CTX *c, NODE *n, NODE *e)
+{
+    return FROM_F32((float)AS_I64(EVAL_ARG(c, e)));
+}
+
+NODE_DEF
+node_f32_convert_i64_u(CTX *c, NODE *n, NODE *e)
+{
+    return FROM_F32((float)AS_U64(EVAL_ARG(c, e)));
+}
+
+NODE_DEF
+node_f64_convert_i32_s(CTX *c, NODE *n, NODE *e)
+{
+    return FROM_F64((double)AS_I32(EVAL_ARG(c, e)));
+}
+
+NODE_DEF
+node_f64_convert_i32_u(CTX *c, NODE *n, NODE *e)
+{
+    return FROM_F64((double)AS_U32(EVAL_ARG(c, e)));
+}
+
+NODE_DEF
+node_f64_convert_i64_s(CTX *c, NODE *n, NODE *e)
+{
+    return FROM_F64((double)AS_I64(EVAL_ARG(c, e)));
+}
+
+NODE_DEF
+node_f64_convert_i64_u(CTX *c, NODE *n, NODE *e)
+{
+    return FROM_F64((double)AS_U64(EVAL_ARG(c, e)));
+}
+
+// Float ↔ float
+
+NODE_DEF
+node_f32_demote_f64(CTX *c, NODE *n, NODE *e)
+{
+    return FROM_F32((float)AS_F64(EVAL_ARG(c, e)));
+}
+
+NODE_DEF
+node_f64_promote_f32(CTX *c, NODE *n, NODE *e)
+{
+    return FROM_F64((double)AS_F32(EVAL_ARG(c, e)));
+}
+
+// Reinterpret (bitcast, no value change).
+
+NODE_DEF
+node_i32_reinterpret_f32(CTX *c, NODE *n, NODE *e)
+{
+    return FROM_U32(AS_U32(EVAL_ARG(c, e)));
+}
+
+NODE_DEF
+node_i64_reinterpret_f64(CTX *c, NODE *n, NODE *e)
+{
+    return EVAL_ARG(c, e);
+}
+
+NODE_DEF
+node_f32_reinterpret_i32(CTX *c, NODE *n, NODE *e)
+{
+    return FROM_U32(AS_U32(EVAL_ARG(c, e)));
+}
+
+NODE_DEF
+node_f64_reinterpret_i64(CTX *c, NODE *n, NODE *e)
+{
+    return EVAL_ARG(c, e);
+}
+
+// =====================================================================
+// Control flow & sequencing
+// =====================================================================
+//
+// Structured control flow uses CTX-side branch state (c->br_depth /
+// c->br_value) instead of setjmp.  Semantics:
+//
+//   * `br N` sets br_depth = N + 1 and stashes the carried value
+//     (if any) in br_value.  The return value of the br node itself
+//     is irrelevant — every parent that runs after a branch checks
+//     br_depth and either consumes (block / loop / call boundary)
+//     or propagates (seq / if / arithmetic, by short-circuiting).
+//   * `block` decrements br_depth on the way out and consumes when
+//     the count reaches 0.  Its result is the carried value.
+//   * `loop` decrements similarly but loops back when consumed.
+//   * `return` uses the special sentinel WASTRO_BR_RETURN so that
+//     enclosing blocks/loops always propagate, and only the function
+//     boundary (node_call_N) consumes it.
+
+NODE_DEF
+node_nop(CTX *c, NODE *n)
+{
+    return 0;
+}
+
+NODE_DEF
+node_if(CTX *c, NODE *n, NODE *cond, NODE *then_branch, NODE *else_branch)
+{
+    if (AS_I32(EVAL_ARG(c, cond))) {
+        return EVAL_ARG(c, then_branch);
+    }
+    else {
+        return EVAL_ARG(c, else_branch);
+    }
+}
+
+NODE_DEF
+node_seq(CTX *c, NODE *n, NODE *head, NODE *tail)
+{
+    EVAL_ARG(c, head);
+    if (c->br_depth) return 0;   // mid-sequence branch, skip tail
+    return EVAL_ARG(c, tail);
+}
+
+// Labelled scope.  Body's value is the block's result if it falls
+// through normally, otherwise br_value when a `br` targets us.
+NODE_DEF
+node_block(CTX *c, NODE *n, NODE *body)
+{
+    VALUE v = EVAL_ARG(c, body);
+    if (c->br_depth == 0) return v;
+    if (c->br_depth == WASTRO_BR_RETURN) return v;  // function-level return: propagate
+    if (--c->br_depth == 0) return c->br_value;     // we are the target
+    return v;                                        // deeper br: propagate
+}
+
+// Like block, but a br targeting it loops back to the start.
+NODE_DEF
+node_loop(CTX *c, NODE *n, NODE *body)
+{
+    for (;;) {
+        VALUE v = EVAL_ARG(c, body);
+        if (c->br_depth == 0) return v;
+        if (c->br_depth == WASTRO_BR_RETURN) return v;
+        if (--c->br_depth == 0) {
+            // br to the loop's own label re-enters the loop.
+            continue;
+        }
+        return v;                                    // deeper br: propagate
+    }
+}
+
+// Unconditional branch with no value.
+NODE_DEF
+node_br(CTX *c, NODE *n, uint32_t depth)
+{
+    c->br_depth = depth + 1;
+    return 0;
+}
+
+// Unconditional branch carrying a value (typed block / loop result).
+NODE_DEF
+node_br_v(CTX *c, NODE *n, uint32_t depth, NODE *value)
+{
+    c->br_value = EVAL_ARG(c, value);
+    c->br_depth = depth + 1;
+    return c->br_value;
+}
+
+// Conditional branch: takes if cond is non-zero (i32 truthy).
+NODE_DEF
+node_br_if(CTX *c, NODE *n, uint32_t depth, NODE *cond)
+{
+    if (AS_I32(EVAL_ARG(c, cond))) {
+        c->br_depth = depth + 1;
+    }
+    return 0;
+}
+
+NODE_DEF
+node_br_if_v(CTX *c, NODE *n, uint32_t depth, NODE *cond, NODE *value)
+{
+    if (AS_I32(EVAL_ARG(c, cond))) {
+        // Spec: value is consumed regardless, but only forwarded on taken
+        // branch.  v0.6 evaluates only on the taken branch — fine for
+        // value-pure expressions.  Side-effecting carry values would need
+        // unconditional eval; revisit when we have side-effecting ops.
+        c->br_value = EVAL_ARG(c, value);
+        c->br_depth = depth + 1;
+    }
+    return 0;
+}
+
+NODE_DEF
+node_return(CTX *c, NODE *n)
+{
+    c->br_depth = WASTRO_BR_RETURN;
+    return 0;
+}
+
+NODE_DEF
+node_return_v(CTX *c, NODE *n, NODE *value)
+{
+    c->br_value = EVAL_ARG(c, value);
+    c->br_depth = WASTRO_BR_RETURN;
+    return c->br_value;
+}
+
+// Trap: prints "unreachable" and exits.  Models wasm's `unreachable`.
+NODE_DEF
+node_unreachable(CTX *c, NODE *n)
+{
+    wastro_trap("unreachable");
+    return 0;  // unreachable
+}
+
+// br_table — computed branch into a table of targets.
+//
+// Targets (uint32_t depths) are stored in an external parser-managed
+// array `WASTRO_BR_TABLE[]`; the node carries the offset, count, and
+// default depth.  Spec semantics: `br_table L0 ... LN_default <idx>`
+// branches to `L[idx]` if `idx < N`, otherwise to `L_default`.
+NODE_DEF
+node_br_table(CTX *c, NODE *n, uint32_t target_index, uint32_t target_cnt, uint32_t default_depth, NODE *idx)
+{
+    extern uint32_t *WASTRO_BR_TABLE;
+    uint32_t i = AS_U32(EVAL_ARG(c, idx));
+    uint32_t depth = (i < target_cnt) ? WASTRO_BR_TABLE[target_index + i] : default_depth;
+    c->br_depth = depth + 1;
+    return 0;
+}
+
+// br_table with carried value — same as br_table but value is forwarded.
+NODE_DEF
+node_br_table_v(CTX *c, NODE *n, uint32_t target_index, uint32_t target_cnt, uint32_t default_depth, NODE *idx, NODE *value)
+{
+    extern uint32_t *WASTRO_BR_TABLE;
+    c->br_value = EVAL_ARG(c, value);
+    uint32_t i = AS_U32(EVAL_ARG(c, idx));
+    uint32_t depth = (i < target_cnt) ? WASTRO_BR_TABLE[target_index + i] : default_depth;
+    c->br_depth = depth + 1;
+    return c->br_value;
+}
+
+// =====================================================================
+// Linear memory — load / store / size / grow
+// =====================================================================
+//
+// Wasm load/store carry an immediate `offset` and `align` hint; we
+// store only `offset` (alignment is informational).  Effective address
+// = addr + offset.  Bounds check trap on OOB.
+//
+// Load width / sign:
+//   *.load     — full type width
+//   *.load8_s/u, *.load16_s/u, *.load32_s/u  — narrow load + sign / zero
+//   extension to the result type's width.
+// Stores write the low N bits of the source value.
+
+NODE_DEF
+node_i32_load(CTX *c, NODE *n, uint32_t offset, NODE *addr)
+{
+    uint32_t a = AS_U32(EVAL_ARG(c, addr)) + offset;
+    if ((uint64_t)a + 4 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
+    uint32_t v; memcpy(&v, c->memory + a, 4);
+    return FROM_U32(v);
+}
+
+NODE_DEF
+node_i32_load8_s(CTX *c, NODE *n, uint32_t offset, NODE *addr)
+{
+    uint32_t a = AS_U32(EVAL_ARG(c, addr)) + offset;
+    if ((uint64_t)a + 1 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
+    return FROM_I32((int32_t)(int8_t)c->memory[a]);
+}
+
+NODE_DEF
+node_i32_load8_u(CTX *c, NODE *n, uint32_t offset, NODE *addr)
+{
+    uint32_t a = AS_U32(EVAL_ARG(c, addr)) + offset;
+    if ((uint64_t)a + 1 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
+    return FROM_U32((uint32_t)c->memory[a]);
+}
+
+NODE_DEF
+node_i32_load16_s(CTX *c, NODE *n, uint32_t offset, NODE *addr)
+{
+    uint32_t a = AS_U32(EVAL_ARG(c, addr)) + offset;
+    if ((uint64_t)a + 2 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
+    int16_t v; memcpy(&v, c->memory + a, 2);
+    return FROM_I32((int32_t)v);
+}
+
+NODE_DEF
+node_i32_load16_u(CTX *c, NODE *n, uint32_t offset, NODE *addr)
+{
+    uint32_t a = AS_U32(EVAL_ARG(c, addr)) + offset;
+    if ((uint64_t)a + 2 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
+    uint16_t v; memcpy(&v, c->memory + a, 2);
+    return FROM_U32((uint32_t)v);
+}
+
+NODE_DEF
+node_i64_load(CTX *c, NODE *n, uint32_t offset, NODE *addr)
+{
+    uint32_t a = AS_U32(EVAL_ARG(c, addr)) + offset;
+    if ((uint64_t)a + 8 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
+    uint64_t v; memcpy(&v, c->memory + a, 8);
+    return FROM_U64(v);
+}
+
+NODE_DEF
+node_i64_load8_s(CTX *c, NODE *n, uint32_t offset, NODE *addr)
+{
+    uint32_t a = AS_U32(EVAL_ARG(c, addr)) + offset;
+    if ((uint64_t)a + 1 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
+    return FROM_I64((int64_t)(int8_t)c->memory[a]);
+}
+
+NODE_DEF
+node_i64_load8_u(CTX *c, NODE *n, uint32_t offset, NODE *addr)
+{
+    uint32_t a = AS_U32(EVAL_ARG(c, addr)) + offset;
+    if ((uint64_t)a + 1 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
+    return FROM_U64((uint64_t)c->memory[a]);
+}
+
+NODE_DEF
+node_i64_load16_s(CTX *c, NODE *n, uint32_t offset, NODE *addr)
+{
+    uint32_t a = AS_U32(EVAL_ARG(c, addr)) + offset;
+    if ((uint64_t)a + 2 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
+    int16_t v; memcpy(&v, c->memory + a, 2);
+    return FROM_I64((int64_t)v);
+}
+
+NODE_DEF
+node_i64_load16_u(CTX *c, NODE *n, uint32_t offset, NODE *addr)
+{
+    uint32_t a = AS_U32(EVAL_ARG(c, addr)) + offset;
+    if ((uint64_t)a + 2 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
+    uint16_t v; memcpy(&v, c->memory + a, 2);
+    return FROM_U64((uint64_t)v);
+}
+
+NODE_DEF
+node_i64_load32_s(CTX *c, NODE *n, uint32_t offset, NODE *addr)
+{
+    uint32_t a = AS_U32(EVAL_ARG(c, addr)) + offset;
+    if ((uint64_t)a + 4 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
+    int32_t v; memcpy(&v, c->memory + a, 4);
+    return FROM_I64((int64_t)v);
+}
+
+NODE_DEF
+node_i64_load32_u(CTX *c, NODE *n, uint32_t offset, NODE *addr)
+{
+    uint32_t a = AS_U32(EVAL_ARG(c, addr)) + offset;
+    if ((uint64_t)a + 4 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
+    uint32_t v; memcpy(&v, c->memory + a, 4);
+    return FROM_U64((uint64_t)v);
+}
+
+NODE_DEF
+node_f32_load(CTX *c, NODE *n, uint32_t offset, NODE *addr)
+{
+    uint32_t a = AS_U32(EVAL_ARG(c, addr)) + offset;
+    if ((uint64_t)a + 4 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
+    uint32_t bits; memcpy(&bits, c->memory + a, 4);
+    return FROM_U32(bits);
+}
+
+NODE_DEF
+node_f64_load(CTX *c, NODE *n, uint32_t offset, NODE *addr)
+{
+    uint32_t a = AS_U32(EVAL_ARG(c, addr)) + offset;
+    if ((uint64_t)a + 8 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
+    uint64_t bits; memcpy(&bits, c->memory + a, 8);
+    return FROM_U64(bits);
+}
+
+// Stores
+
+NODE_DEF
+node_i32_store(CTX *c, NODE *n, uint32_t offset, NODE *addr, NODE *value)
+{
+    uint32_t a = AS_U32(EVAL_ARG(c, addr)) + offset;
+    uint32_t v = AS_U32(EVAL_ARG(c, value));
+    if ((uint64_t)a + 4 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
+    memcpy(c->memory + a, &v, 4);
+    return 0;
+}
+
+NODE_DEF
+node_i32_store8(CTX *c, NODE *n, uint32_t offset, NODE *addr, NODE *value)
+{
+    uint32_t a = AS_U32(EVAL_ARG(c, addr)) + offset;
+    uint8_t v = (uint8_t)AS_U32(EVAL_ARG(c, value));
+    if ((uint64_t)a + 1 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
+    c->memory[a] = v;
+    return 0;
+}
+
+NODE_DEF
+node_i32_store16(CTX *c, NODE *n, uint32_t offset, NODE *addr, NODE *value)
+{
+    uint32_t a = AS_U32(EVAL_ARG(c, addr)) + offset;
+    uint16_t v = (uint16_t)AS_U32(EVAL_ARG(c, value));
+    if ((uint64_t)a + 2 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
+    memcpy(c->memory + a, &v, 2);
+    return 0;
+}
+
+NODE_DEF
+node_i64_store(CTX *c, NODE *n, uint32_t offset, NODE *addr, NODE *value)
+{
+    uint32_t a = AS_U32(EVAL_ARG(c, addr)) + offset;
+    uint64_t v = AS_U64(EVAL_ARG(c, value));
+    if ((uint64_t)a + 8 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
+    memcpy(c->memory + a, &v, 8);
+    return 0;
+}
+
+NODE_DEF
+node_i64_store8(CTX *c, NODE *n, uint32_t offset, NODE *addr, NODE *value)
+{
+    uint32_t a = AS_U32(EVAL_ARG(c, addr)) + offset;
+    uint8_t v = (uint8_t)AS_U64(EVAL_ARG(c, value));
+    if ((uint64_t)a + 1 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
+    c->memory[a] = v;
+    return 0;
+}
+
+NODE_DEF
+node_i64_store16(CTX *c, NODE *n, uint32_t offset, NODE *addr, NODE *value)
+{
+    uint32_t a = AS_U32(EVAL_ARG(c, addr)) + offset;
+    uint16_t v = (uint16_t)AS_U64(EVAL_ARG(c, value));
+    if ((uint64_t)a + 2 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
+    memcpy(c->memory + a, &v, 2);
+    return 0;
+}
+
+NODE_DEF
+node_i64_store32(CTX *c, NODE *n, uint32_t offset, NODE *addr, NODE *value)
+{
+    uint32_t a = AS_U32(EVAL_ARG(c, addr)) + offset;
+    uint32_t v = (uint32_t)AS_U64(EVAL_ARG(c, value));
+    if ((uint64_t)a + 4 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
+    memcpy(c->memory + a, &v, 4);
+    return 0;
+}
+
+NODE_DEF
+node_f32_store(CTX *c, NODE *n, uint32_t offset, NODE *addr, NODE *value)
+{
+    uint32_t a = AS_U32(EVAL_ARG(c, addr)) + offset;
+    uint32_t bits = AS_U32(EVAL_ARG(c, value));
+    if ((uint64_t)a + 4 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
+    memcpy(c->memory + a, &bits, 4);
+    return 0;
+}
+
+NODE_DEF
+node_f64_store(CTX *c, NODE *n, uint32_t offset, NODE *addr, NODE *value)
+{
+    uint32_t a = AS_U32(EVAL_ARG(c, addr)) + offset;
+    uint64_t bits = AS_U64(EVAL_ARG(c, value));
+    if ((uint64_t)a + 8 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
+    memcpy(c->memory + a, &bits, 8);
+    return 0;
+}
+
+// memory.size — current pages (i32)
+NODE_DEF
+node_memory_size(CTX *c, NODE *n)
+{
+    return FROM_I32((int32_t)c->memory_pages);
+}
+
+// memory.grow — grow by `delta` pages, return previous page count, or -1 on failure.
+NODE_DEF
+node_memory_grow(CTX *c, NODE *n, NODE *delta)
+{
+    uint32_t d = AS_U32(EVAL_ARG(c, delta));
+    uint64_t new_pages = (uint64_t)c->memory_pages + d;
+    if (new_pages > c->memory_max_pages) return FROM_I32(-1);
+    if (new_pages > 65536) return FROM_I32(-1);  // wasm 32-bit limit
+    uint8_t *new_mem = realloc(c->memory, (size_t)(new_pages * WASTRO_PAGE_SIZE));
+    if (!new_mem) return FROM_I32(-1);
+    memset(new_mem + c->memory_pages * WASTRO_PAGE_SIZE, 0, d * WASTRO_PAGE_SIZE);
+    c->memory = new_mem;
+    uint32_t prev = c->memory_pages;
+    c->memory_pages = (uint32_t)new_pages;
+    return FROM_I32((int32_t)prev);
+}
+
+// =====================================================================
+// Globals — global.get / global.set
+// =====================================================================
+//
+// Globals live in a flat parser-managed array `WASTRO_GLOBALS[]` (raw
+// VALUE bits, like locals).  Per-global type and mutability are
+// validated at parse time, not at run time.
+
+NODE_DEF
+node_global_get(CTX *c, NODE *n, uint32_t index)
+{
+    extern VALUE *WASTRO_GLOBALS;
+    return WASTRO_GLOBALS[index];
+}
+
+NODE_DEF
+node_global_set(CTX *c, NODE *n, uint32_t index, NODE *value)
+{
+    extern VALUE *WASTRO_GLOBALS;
+    WASTRO_GLOBALS[index] = EVAL_ARG(c, value);
+    return 0;
+}
+
+// =====================================================================
+// Direct function call — fixed-arity variants (Phase 1)
+// =====================================================================
+
+NODE_DEF
+node_call_0(CTX *c, NODE *n, uint32_t func_index, uint32_t local_cnt)
+{
+    extern struct wastro_function WASTRO_FUNCS[];
+    VALUE *new_fp = c->sp;
+    for (uint32_t i = 0; i < local_cnt; i++) new_fp[i] = 0;
+    VALUE *save_fp = c->fp; VALUE *save_sp = c->sp;
+    c->fp = new_fp; c->sp = new_fp + local_cnt;
+    // Wasm validation guarantees br_depth == 0 at a call site, so we
+    // don't need to save it.  Body may set WASTRO_BR_RETURN; consume
+    // it here and zero out before returning.
+    VALUE result = EVAL(c, WASTRO_FUNCS[func_index].body);
+    if (c->br_depth) {
+        result = c->br_value;     // WASTRO_BR_RETURN landed here
+        c->br_depth = 0;
+    }
+    c->fp = save_fp; c->sp = save_sp;
+    return result;
+}
+
+NODE_DEF
+node_call_1(CTX *c, NODE *n, uint32_t func_index, uint32_t local_cnt, NODE *a0)
+{
+    extern struct wastro_function WASTRO_FUNCS[];
+    VALUE *new_fp = c->sp;
+    new_fp[0] = EVAL_ARG(c, a0);
+    for (uint32_t i = 1; i < local_cnt; i++) new_fp[i] = 0;
+    VALUE *save_fp = c->fp; VALUE *save_sp = c->sp;
+    c->fp = new_fp; c->sp = new_fp + local_cnt;
+    // Wasm validation guarantees br_depth == 0 at a call site, so we
+    // don't need to save it.  Body may set WASTRO_BR_RETURN; consume
+    // it here and zero out before returning.
+    VALUE result = EVAL(c, WASTRO_FUNCS[func_index].body);
+    if (c->br_depth) {
+        result = c->br_value;     // WASTRO_BR_RETURN landed here
+        c->br_depth = 0;
+    }
+    c->fp = save_fp; c->sp = save_sp;
+    return result;
+}
+
+NODE_DEF
+node_call_2(CTX *c, NODE *n, uint32_t func_index, uint32_t local_cnt, NODE *a0, NODE *a1)
+{
+    extern struct wastro_function WASTRO_FUNCS[];
+    VALUE *new_fp = c->sp;
+    new_fp[0] = EVAL_ARG(c, a0);
+    new_fp[1] = EVAL_ARG(c, a1);
+    for (uint32_t i = 2; i < local_cnt; i++) new_fp[i] = 0;
+    VALUE *save_fp = c->fp; VALUE *save_sp = c->sp;
+    c->fp = new_fp; c->sp = new_fp + local_cnt;
+    // Wasm validation guarantees br_depth == 0 at a call site, so we
+    // don't need to save it.  Body may set WASTRO_BR_RETURN; consume
+    // it here and zero out before returning.
+    VALUE result = EVAL(c, WASTRO_FUNCS[func_index].body);
+    if (c->br_depth) {
+        result = c->br_value;     // WASTRO_BR_RETURN landed here
+        c->br_depth = 0;
+    }
+    c->fp = save_fp; c->sp = save_sp;
+    return result;
+}
+
+NODE_DEF
+node_call_3(CTX *c, NODE *n, uint32_t func_index, uint32_t local_cnt, NODE *a0, NODE *a1, NODE *a2)
+{
+    extern struct wastro_function WASTRO_FUNCS[];
+    VALUE *new_fp = c->sp;
+    new_fp[0] = EVAL_ARG(c, a0);
+    new_fp[1] = EVAL_ARG(c, a1);
+    new_fp[2] = EVAL_ARG(c, a2);
+    for (uint32_t i = 3; i < local_cnt; i++) new_fp[i] = 0;
+    VALUE *save_fp = c->fp; VALUE *save_sp = c->sp;
+    c->fp = new_fp; c->sp = new_fp + local_cnt;
+    // Wasm validation guarantees br_depth == 0 at a call site, so we
+    // don't need to save it.  Body may set WASTRO_BR_RETURN; consume
+    // it here and zero out before returning.
+    VALUE result = EVAL(c, WASTRO_FUNCS[func_index].body);
+    if (c->br_depth) {
+        result = c->br_value;     // WASTRO_BR_RETURN landed here
+        c->br_depth = 0;
+    }
+    c->fp = save_fp; c->sp = save_sp;
+    return result;
+}
+
+// Host call (imported function) — fixed-arity variants.  The host
+// function pointer is fetched from WASTRO_FUNCS[func_index].host_fn
+// and invoked directly with the evaluated args; no frame is set up
+// since host functions don't see CTX->fp.
+
+NODE_DEF
+node_host_call_0(CTX *c, NODE *n, uint32_t func_index)
+{
+    extern struct wastro_function WASTRO_FUNCS[];
+    return WASTRO_FUNCS[func_index].host_fn(c, NULL, 0);
+}
+
+NODE_DEF
+node_host_call_1(CTX *c, NODE *n, uint32_t func_index, NODE *a0)
+{
+    extern struct wastro_function WASTRO_FUNCS[];
+    VALUE args[1];
+    args[0] = EVAL_ARG(c, a0);
+    return WASTRO_FUNCS[func_index].host_fn(c, args, 1);
+}
+
+NODE_DEF
+node_host_call_2(CTX *c, NODE *n, uint32_t func_index, NODE *a0, NODE *a1)
+{
+    extern struct wastro_function WASTRO_FUNCS[];
+    VALUE args[2];
+    args[0] = EVAL_ARG(c, a0);
+    args[1] = EVAL_ARG(c, a1);
+    return WASTRO_FUNCS[func_index].host_fn(c, args, 2);
+}
+
+NODE_DEF
+node_host_call_3(CTX *c, NODE *n, uint32_t func_index, NODE *a0, NODE *a1, NODE *a2)
+{
+    extern struct wastro_function WASTRO_FUNCS[];
+    VALUE args[3];
+    args[0] = EVAL_ARG(c, a0);
+    args[1] = EVAL_ARG(c, a1);
+    args[2] = EVAL_ARG(c, a2);
+    return WASTRO_FUNCS[func_index].host_fn(c, args, 3);
+}
+
+NODE_DEF
+node_call_4(CTX *c, NODE *n, uint32_t func_index, uint32_t local_cnt, NODE *a0, NODE *a1, NODE *a2, NODE *a3)
+{
+    extern struct wastro_function WASTRO_FUNCS[];
+    VALUE *new_fp = c->sp;
+    new_fp[0] = EVAL_ARG(c, a0);
+    new_fp[1] = EVAL_ARG(c, a1);
+    new_fp[2] = EVAL_ARG(c, a2);
+    new_fp[3] = EVAL_ARG(c, a3);
+    for (uint32_t i = 4; i < local_cnt; i++) new_fp[i] = 0;
+    VALUE *save_fp = c->fp; VALUE *save_sp = c->sp;
+    c->fp = new_fp; c->sp = new_fp + local_cnt;
+    // Wasm validation guarantees br_depth == 0 at a call site, so we
+    // don't need to save it.  Body may set WASTRO_BR_RETURN; consume
+    // it here and zero out before returning.
+    VALUE result = EVAL(c, WASTRO_FUNCS[func_index].body);
+    if (c->br_depth) {
+        result = c->br_value;     // WASTRO_BR_RETURN landed here
+        c->br_depth = 0;
+    }
+    c->fp = save_fp; c->sp = save_sp;
+    return result;
+}
