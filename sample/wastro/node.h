@@ -4,7 +4,7 @@
 #include "context.h"
 
 typedef struct Node NODE;
-typedef RESULT (*node_dispatcher_func_t)(CTX *c, NODE *n, union wastro_slot *frame);
+typedef RESULT (*node_dispatcher_func_t)(CTX *c, NODE *n, union wastro_slot * restrict frame);
 typedef uint64_t node_hash_t;
 
 void INIT(void);
@@ -72,7 +72,7 @@ int wastro_find_export(const char *name);
 // don't pay a PLT call back into the host binary on every node
 // dispatch — the dispatcher pointer is read and called directly.
 static inline RESULT
-EVAL(CTX *c, NODE *n, union wastro_slot *frame)
+EVAL(CTX *c, NODE *n, union wastro_slot * restrict frame)
 {
     return (*n->head.dispatcher)(c, n, frame);
 }
