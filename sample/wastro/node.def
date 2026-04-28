@@ -1397,7 +1397,7 @@ NODE_DEF
 node_i32_load(CTX *c, NODE *n, union wastro_slot *frame, uint32_t offset, NODE *addr)
 {
     uint64_t a = (uint64_t)AS_U32(UNWRAP(EVAL_ARG(c, addr))) + (uint64_t)offset;
-    if ((uint64_t)a + 4 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
+    if ((uint64_t)a + 4 > c->memory_size_bytes) wastro_trap("out of bounds memory access");
     uint32_t v; memcpy(&v, c->memory + a, 4);
     return RESULT_OK(FROM_U32(v));
 }
@@ -1406,7 +1406,7 @@ NODE_DEF
 node_i32_load8_s(CTX *c, NODE *n, union wastro_slot *frame, uint32_t offset, NODE *addr)
 {
     uint64_t a = (uint64_t)AS_U32(UNWRAP(EVAL_ARG(c, addr))) + (uint64_t)offset;
-    if ((uint64_t)a + 1 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
+    if ((uint64_t)a + 1 > c->memory_size_bytes) wastro_trap("out of bounds memory access");
     return RESULT_OK(FROM_I32((int32_t)(int8_t)c->memory[a]));
 }
 
@@ -1414,7 +1414,7 @@ NODE_DEF
 node_i32_load8_u(CTX *c, NODE *n, union wastro_slot *frame, uint32_t offset, NODE *addr)
 {
     uint64_t a = (uint64_t)AS_U32(UNWRAP(EVAL_ARG(c, addr))) + (uint64_t)offset;
-    if ((uint64_t)a + 1 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
+    if ((uint64_t)a + 1 > c->memory_size_bytes) wastro_trap("out of bounds memory access");
     return RESULT_OK(FROM_U32((uint32_t)c->memory[a]));
 }
 
@@ -1422,7 +1422,7 @@ NODE_DEF
 node_i32_load16_s(CTX *c, NODE *n, union wastro_slot *frame, uint32_t offset, NODE *addr)
 {
     uint64_t a = (uint64_t)AS_U32(UNWRAP(EVAL_ARG(c, addr))) + (uint64_t)offset;
-    if ((uint64_t)a + 2 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
+    if ((uint64_t)a + 2 > c->memory_size_bytes) wastro_trap("out of bounds memory access");
     int16_t v; memcpy(&v, c->memory + a, 2);
     return RESULT_OK(FROM_I32((int32_t)v));
 }
@@ -1431,7 +1431,7 @@ NODE_DEF
 node_i32_load16_u(CTX *c, NODE *n, union wastro_slot *frame, uint32_t offset, NODE *addr)
 {
     uint64_t a = (uint64_t)AS_U32(UNWRAP(EVAL_ARG(c, addr))) + (uint64_t)offset;
-    if ((uint64_t)a + 2 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
+    if ((uint64_t)a + 2 > c->memory_size_bytes) wastro_trap("out of bounds memory access");
     uint16_t v; memcpy(&v, c->memory + a, 2);
     return RESULT_OK(FROM_U32((uint32_t)v));
 }
@@ -1440,7 +1440,7 @@ NODE_DEF
 node_i64_load(CTX *c, NODE *n, union wastro_slot *frame, uint32_t offset, NODE *addr)
 {
     uint64_t a = (uint64_t)AS_U32(UNWRAP(EVAL_ARG(c, addr))) + (uint64_t)offset;
-    if ((uint64_t)a + 8 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
+    if ((uint64_t)a + 8 > c->memory_size_bytes) wastro_trap("out of bounds memory access");
     uint64_t v; memcpy(&v, c->memory + a, 8);
     return RESULT_OK(FROM_U64(v));
 }
@@ -1449,7 +1449,7 @@ NODE_DEF
 node_i64_load8_s(CTX *c, NODE *n, union wastro_slot *frame, uint32_t offset, NODE *addr)
 {
     uint64_t a = (uint64_t)AS_U32(UNWRAP(EVAL_ARG(c, addr))) + (uint64_t)offset;
-    if ((uint64_t)a + 1 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
+    if ((uint64_t)a + 1 > c->memory_size_bytes) wastro_trap("out of bounds memory access");
     return RESULT_OK(FROM_I64((int64_t)(int8_t)c->memory[a]));
 }
 
@@ -1457,7 +1457,7 @@ NODE_DEF
 node_i64_load8_u(CTX *c, NODE *n, union wastro_slot *frame, uint32_t offset, NODE *addr)
 {
     uint64_t a = (uint64_t)AS_U32(UNWRAP(EVAL_ARG(c, addr))) + (uint64_t)offset;
-    if ((uint64_t)a + 1 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
+    if ((uint64_t)a + 1 > c->memory_size_bytes) wastro_trap("out of bounds memory access");
     return RESULT_OK(FROM_U64((uint64_t)c->memory[a]));
 }
 
@@ -1465,7 +1465,7 @@ NODE_DEF
 node_i64_load16_s(CTX *c, NODE *n, union wastro_slot *frame, uint32_t offset, NODE *addr)
 {
     uint64_t a = (uint64_t)AS_U32(UNWRAP(EVAL_ARG(c, addr))) + (uint64_t)offset;
-    if ((uint64_t)a + 2 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
+    if ((uint64_t)a + 2 > c->memory_size_bytes) wastro_trap("out of bounds memory access");
     int16_t v; memcpy(&v, c->memory + a, 2);
     return RESULT_OK(FROM_I64((int64_t)v));
 }
@@ -1474,7 +1474,7 @@ NODE_DEF
 node_i64_load16_u(CTX *c, NODE *n, union wastro_slot *frame, uint32_t offset, NODE *addr)
 {
     uint64_t a = (uint64_t)AS_U32(UNWRAP(EVAL_ARG(c, addr))) + (uint64_t)offset;
-    if ((uint64_t)a + 2 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
+    if ((uint64_t)a + 2 > c->memory_size_bytes) wastro_trap("out of bounds memory access");
     uint16_t v; memcpy(&v, c->memory + a, 2);
     return RESULT_OK(FROM_U64((uint64_t)v));
 }
@@ -1483,7 +1483,7 @@ NODE_DEF
 node_i64_load32_s(CTX *c, NODE *n, union wastro_slot *frame, uint32_t offset, NODE *addr)
 {
     uint64_t a = (uint64_t)AS_U32(UNWRAP(EVAL_ARG(c, addr))) + (uint64_t)offset;
-    if ((uint64_t)a + 4 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
+    if ((uint64_t)a + 4 > c->memory_size_bytes) wastro_trap("out of bounds memory access");
     int32_t v; memcpy(&v, c->memory + a, 4);
     return RESULT_OK(FROM_I64((int64_t)v));
 }
@@ -1492,7 +1492,7 @@ NODE_DEF
 node_i64_load32_u(CTX *c, NODE *n, union wastro_slot *frame, uint32_t offset, NODE *addr)
 {
     uint64_t a = (uint64_t)AS_U32(UNWRAP(EVAL_ARG(c, addr))) + (uint64_t)offset;
-    if ((uint64_t)a + 4 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
+    if ((uint64_t)a + 4 > c->memory_size_bytes) wastro_trap("out of bounds memory access");
     uint32_t v; memcpy(&v, c->memory + a, 4);
     return RESULT_OK(FROM_U64((uint64_t)v));
 }
@@ -1501,7 +1501,7 @@ NODE_DEF
 node_f32_load(CTX *c, NODE *n, union wastro_slot *frame, uint32_t offset, NODE *addr)
 {
     uint64_t a = (uint64_t)AS_U32(UNWRAP(EVAL_ARG(c, addr))) + (uint64_t)offset;
-    if ((uint64_t)a + 4 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
+    if ((uint64_t)a + 4 > c->memory_size_bytes) wastro_trap("out of bounds memory access");
     uint32_t bits; memcpy(&bits, c->memory + a, 4);
     return RESULT_OK(FROM_U32(bits));
 }
@@ -1510,7 +1510,7 @@ NODE_DEF
 node_f64_load(CTX *c, NODE *n, union wastro_slot *frame, uint32_t offset, NODE *addr)
 {
     uint64_t a = (uint64_t)AS_U32(UNWRAP(EVAL_ARG(c, addr))) + (uint64_t)offset;
-    if ((uint64_t)a + 8 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
+    if ((uint64_t)a + 8 > c->memory_size_bytes) wastro_trap("out of bounds memory access");
     uint64_t bits; memcpy(&bits, c->memory + a, 8);
     return RESULT_OK(FROM_U64(bits));
 }
@@ -1522,7 +1522,7 @@ node_i32_store(CTX *c, NODE *n, union wastro_slot *frame, uint32_t offset, NODE 
 {
     uint64_t a = (uint64_t)AS_U32(UNWRAP(EVAL_ARG(c, addr))) + (uint64_t)offset;
     uint32_t v = AS_U32(UNWRAP(EVAL_ARG(c, value)));
-    if ((uint64_t)a + 4 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
+    if ((uint64_t)a + 4 > c->memory_size_bytes) wastro_trap("out of bounds memory access");
     memcpy(c->memory + a, &v, 4);
     return RESULT_OK(0);
 }
@@ -1532,7 +1532,7 @@ node_i32_store8(CTX *c, NODE *n, union wastro_slot *frame, uint32_t offset, NODE
 {
     uint64_t a = (uint64_t)AS_U32(UNWRAP(EVAL_ARG(c, addr))) + (uint64_t)offset;
     uint8_t v = (uint8_t)AS_U32(UNWRAP(EVAL_ARG(c, value)));
-    if ((uint64_t)a + 1 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
+    if ((uint64_t)a + 1 > c->memory_size_bytes) wastro_trap("out of bounds memory access");
     c->memory[a] = v;
     return RESULT_OK(0);
 }
@@ -1542,7 +1542,7 @@ node_i32_store16(CTX *c, NODE *n, union wastro_slot *frame, uint32_t offset, NOD
 {
     uint64_t a = (uint64_t)AS_U32(UNWRAP(EVAL_ARG(c, addr))) + (uint64_t)offset;
     uint16_t v = (uint16_t)AS_U32(UNWRAP(EVAL_ARG(c, value)));
-    if ((uint64_t)a + 2 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
+    if ((uint64_t)a + 2 > c->memory_size_bytes) wastro_trap("out of bounds memory access");
     memcpy(c->memory + a, &v, 2);
     return RESULT_OK(0);
 }
@@ -1552,7 +1552,7 @@ node_i64_store(CTX *c, NODE *n, union wastro_slot *frame, uint32_t offset, NODE 
 {
     uint64_t a = (uint64_t)AS_U32(UNWRAP(EVAL_ARG(c, addr))) + (uint64_t)offset;
     uint64_t v = AS_U64(UNWRAP(EVAL_ARG(c, value)));
-    if ((uint64_t)a + 8 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
+    if ((uint64_t)a + 8 > c->memory_size_bytes) wastro_trap("out of bounds memory access");
     memcpy(c->memory + a, &v, 8);
     return RESULT_OK(0);
 }
@@ -1562,7 +1562,7 @@ node_i64_store8(CTX *c, NODE *n, union wastro_slot *frame, uint32_t offset, NODE
 {
     uint64_t a = (uint64_t)AS_U32(UNWRAP(EVAL_ARG(c, addr))) + (uint64_t)offset;
     uint8_t v = (uint8_t)AS_U64(UNWRAP(EVAL_ARG(c, value)));
-    if ((uint64_t)a + 1 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
+    if ((uint64_t)a + 1 > c->memory_size_bytes) wastro_trap("out of bounds memory access");
     c->memory[a] = v;
     return RESULT_OK(0);
 }
@@ -1572,7 +1572,7 @@ node_i64_store16(CTX *c, NODE *n, union wastro_slot *frame, uint32_t offset, NOD
 {
     uint64_t a = (uint64_t)AS_U32(UNWRAP(EVAL_ARG(c, addr))) + (uint64_t)offset;
     uint16_t v = (uint16_t)AS_U64(UNWRAP(EVAL_ARG(c, value)));
-    if ((uint64_t)a + 2 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
+    if ((uint64_t)a + 2 > c->memory_size_bytes) wastro_trap("out of bounds memory access");
     memcpy(c->memory + a, &v, 2);
     return RESULT_OK(0);
 }
@@ -1582,7 +1582,7 @@ node_i64_store32(CTX *c, NODE *n, union wastro_slot *frame, uint32_t offset, NOD
 {
     uint64_t a = (uint64_t)AS_U32(UNWRAP(EVAL_ARG(c, addr))) + (uint64_t)offset;
     uint32_t v = (uint32_t)AS_U64(UNWRAP(EVAL_ARG(c, value)));
-    if ((uint64_t)a + 4 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
+    if ((uint64_t)a + 4 > c->memory_size_bytes) wastro_trap("out of bounds memory access");
     memcpy(c->memory + a, &v, 4);
     return RESULT_OK(0);
 }
@@ -1592,7 +1592,7 @@ node_f32_store(CTX *c, NODE *n, union wastro_slot *frame, uint32_t offset, NODE 
 {
     uint64_t a = (uint64_t)AS_U32(UNWRAP(EVAL_ARG(c, addr))) + (uint64_t)offset;
     uint32_t bits = AS_U32(UNWRAP(EVAL_ARG(c, value)));
-    if ((uint64_t)a + 4 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
+    if ((uint64_t)a + 4 > c->memory_size_bytes) wastro_trap("out of bounds memory access");
     memcpy(c->memory + a, &bits, 4);
     return RESULT_OK(0);
 }
@@ -1602,7 +1602,7 @@ node_f64_store(CTX *c, NODE *n, union wastro_slot *frame, uint32_t offset, NODE 
 {
     uint64_t a = (uint64_t)AS_U32(UNWRAP(EVAL_ARG(c, addr))) + (uint64_t)offset;
     uint64_t bits = AS_U64(UNWRAP(EVAL_ARG(c, value)));
-    if ((uint64_t)a + 8 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
+    if ((uint64_t)a + 8 > c->memory_size_bytes) wastro_trap("out of bounds memory access");
     memcpy(c->memory + a, &bits, 8);
     return RESULT_OK(0);
 }
@@ -1628,6 +1628,7 @@ node_memory_grow(CTX *c, NODE *n, union wastro_slot *frame, NODE *delta)
     c->memory = new_mem;
     uint32_t prev = c->memory_pages;
     c->memory_pages = (uint32_t)new_pages;
+    c->memory_size_bytes = (uint64_t)new_pages * WASTRO_PAGE_SIZE;
     return RESULT_OK(FROM_I32((int32_t)prev));
 }
 

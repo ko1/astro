@@ -99,6 +99,10 @@ typedef struct CTX_struct {
     uint8_t *memory;
     uint32_t memory_pages;     // current size in 64KB pages
     uint32_t memory_max_pages; // max growth limit (0xFFFFFFFF if unspecified)
+    uint64_t memory_size_bytes;// cached `memory_pages * WASTRO_PAGE_SIZE`,
+                               // used by every load/store bounds check —
+                               // re-derived only on memory.grow so the hot
+                               // path is one compare instead of a load+shift.
 } CTX;
 
 // Wasm value types — only the four numeric types in v0.5.

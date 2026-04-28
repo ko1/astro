@@ -5168,10 +5168,12 @@ wastro_instantiate(uint32_t initial_local_slots)
         c->memory = bytes ? calloc(1, bytes) : NULL;
         c->memory_pages = MOD_MEM_INITIAL_PAGES;
         c->memory_max_pages = MOD_MEM_MAX_PAGES;
+        c->memory_size_bytes = (uint64_t)MOD_MEM_INITIAL_PAGES * WASTRO_PAGE_SIZE;
     } else {
         c->memory = NULL;
         c->memory_pages = 0;
         c->memory_max_pages = 0;
+        c->memory_size_bytes = 0;
     }
     for (uint32_t di = 0; di < MOD_DATA_SEG_CNT; di++) {
         struct wastro_data_seg *d = &MOD_DATA_SEGS[di];
