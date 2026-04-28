@@ -260,16 +260,16 @@ module ASTroGen
       def build_eval_body
         operands = @operands.map{it.eval_param}
 
-        # `static inline` lets gcc inline EVAL into the SD wrapper, which
-        # is the standard case.  Nodes marked `@always_inline` in node.def
-        # additionally force the inline regardless of gcc's size heuristic
-        # — useful for control-flow ops whose body looks "too complex"
-        # to gcc (e.g. node_loop's `for(;;) { ... 4 branches ... }`),
-        # so without always_inline gcc emits an `EVAL_node_loop.isra.0`
-        # out-of-line copy and breaks SROA at the loop boundary.
-        attr = @option.include?('@always_inline') ? "__attribute__((always_inline)) " : ""
+        # EVAL_<name> is always force-inlined into its single caller (the
+        # DISPATCH or SD wrapper).  Without this, gcc occasionally gives
+        # up on bigger EVAL bodies — node_loop's `for(;;) { ... 4 branches
+        # ... }` is the canonical example — and emits `EVAL_xxx.isra.0`
+        # out-of-line, breaking SROA at the boundary.  EVAL has exactly
+        # one call site per SD so forcing inline never cascades.
+        # The `@always_inline` option in node.def controls the SD wrapper
+        # separately; see build_specializer.
         <<~C.chomp
-        static inline #{attr}#{result_type}
+        static inline __attribute__((always_inline)) #{result_type}
         EVAL_#{@name}(#{@prefix_args.join(', ')}#{comma_operands(operands)})
         {
         #{@body}}
