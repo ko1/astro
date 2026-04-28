@@ -139,7 +139,12 @@ wastro/
 ├── node.h            NodeHead struct + extern decls + HOPT/HORG macros
 ├── node.c            INIT, OPTIMIZE; includes generated *.c
 ├── context.h         CTX, wastro_function, wtype_t, AS_*/FROM_* helpers
-├── main.c            tokenizer + WAT parser + binary decoder + .wast harness + driver
+├── main.c            preamble, traps, linear memory, module-state, driver
+├── wat_tokenizer.c   lexer + parse-error helpers + token-to-bits converters
+├── host_imports.c    env.* / spectest.* host registry
+├── wat_parser.c      folded + stack-style WAT parser; (func ...) driver
+├── wasm_decoder.c    binary .wasm decoder
+├── wast_runner.c     spec-test harness
 ├── bench.rb          benchmark harness — wastro tiers vs. wasmtime
 ├── docs/
 │   ├── done.md       inventory of implemented features
@@ -147,6 +152,10 @@ wastro/
 │   └── runtime.md    software architecture and instruction execution
 └── examples/         sample .wat / .wasm / .wast programs
 ```
+
+`main.c` `#include`'s the five front-end TUs above so the gcc invocation
+stays a one-liner; the resulting binary is the same single-TU build as
+before.
 
 ### Example mix
 

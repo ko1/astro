@@ -584,19 +584,29 @@ That's how wastro reaches its measured fib performance.
 
 ## 12. Where to look in the source
 
-| Concern                          | File / line                            |
+| Concern                          | File                                   |
 |----------------------------------|----------------------------------------|
 | Per-node `EVAL_node_xxx` bodies (semantics) | `node.def`                  |
 | Generated `DISPATCH_node_xxx` wrappers      | `node_dispatch.c` (built)   |
 | AST struct + `EVAL` trampoline + `UNWRAP`   | `node.h`                    |
-| Module-global tables, traps      | `context.h` + `main.c`                 |
-| WAT tokenizer / parser           | `main.c` (top half)                    |
-| Binary `.wasm` decoder           | `main.c` (`wastro_load_module_buf`)    |
-| Spec-test harness                | `main.c` (`wastro_run_wast`)           |
+| Driver, traps, linear memory, module-state arrays | `main.c`             |
+| WAT lexer + token-to-bits / decode-string helpers | `wat_tokenizer.c`    |
+| WAT folded + stack-style parser, `(func ...)` driver | `wat_parser.c`    |
+| Inline `(export ...)` / `(import ...)` helpers | `wat_parser.c`             |
+| `env.*` / `spectest.*` host import table   | `host_imports.c`             |
+| Binary `.wasm` decoder           | `wasm_decoder.c`                       |
+| Spec-test (`.wast`) harness      | `wast_runner.c`                        |
 | Code store (specialize/build/load) | `runtime/astro_code_store.{c,h}`     |
 | Hash + DUMP                       | `runtime/astro_node.c`                 |
 | Code-generation logic             | `lib/astrogen.rb`                      |
 | Wastro's per-language ASTroGen ext| `wastro_gen.rb`                        |
+
+The five front-end TUs (`wat_tokenizer.c`, `host_imports.c`,
+`wat_parser.c`, `wasm_decoder.c`, `wast_runner.c`) are `#include`'d
+from `main.c` rather than compiled separately — same single-TU
+pattern that node.c uses for the ASTroGen-generated dispatchers.
+This keeps the build command a one-liner and lets every front-end
+file see all module-state arrays without forward declarations.
 
 The `Makefile` invokes ASTroGen via `wastro_gen.rb` to produce the
 `node_*.c` / `node_head.h` files (dispatchers, hashers, dumpers,

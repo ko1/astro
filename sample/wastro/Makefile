@@ -12,7 +12,13 @@ RUNTIME=../../runtime
 
 optflags=-O3
 
-wastro: main.c node.c Makefile $(NODE_GENFILES) context.h node.h
+FRONTEND_PARTS = wat_tokenizer.c \
+                 host_imports.c \
+                 wat_parser.c \
+                 wasm_decoder.c \
+                 wast_runner.c
+
+wastro: main.c node.c Makefile $(NODE_GENFILES) $(FRONTEND_PARTS) context.h node.h
 	gcc -I. -I$(RUNTIME) $(optflags) -ggdb3 -Wall \
 	    -rdynamic \
 	    -o wastro main.c node.c -ldl -lm
