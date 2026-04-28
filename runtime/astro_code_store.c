@@ -498,6 +498,12 @@ astro_cs_build(const char *extra_cflags)
     if (extra_cflags && extra_cflags[0]) {
         fprintf(fp, " %s", extra_cflags);
     }
+    // Extra flags for experimentation, settable from outside without
+    // recompiling wastro.  Set ASTRO_EXTRA_CFLAGS in the environment.
+    const char *env_extra = getenv("ASTRO_EXTRA_CFLAGS");
+    if (env_extra && env_extra[0]) {
+        fprintf(fp, " %s", env_extra);
+    }
     fprintf(fp, "\n");
     fprintf(fp, "\n");
     fprintf(fp, "SRCS = $(wildcard c/SD_*.c) $(wildcard c/PGSD_*.c)\n");

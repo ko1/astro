@@ -6,7 +6,23 @@
       "Bash(make test)",
       "Bash(make test-one *)",
       "Bash(ruby bench.rb)",
-      "Bash(./wastro --test *)"
+      "Bash(./wastro *)",
+      "Bash(./fannkuch_native *)",
+      "Bash(./fannkuch_native)",
+      "Bash(make wastro)",
+      "Bash(make wastro *)",
+      "Bash(touch *)",
+      "Bash(rm -rf code_store)",
+      "Bash(rm -f node_*.c)",
+      "Bash(rm -f node_*.c node_head.h)",
+      "Bash(rm -rf code_store; *)",
+      "Bash(perf stat *)",
+      "Bash(perf record *)",
+      "Bash(perf report *)",
+      "Bash(perf annotate *)",
+      "Bash(objdump *)",
+      "Bash(gcc *)",
+      "Bash(ruby -e *)"
     ]
   }
 }
