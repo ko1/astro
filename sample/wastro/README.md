@@ -10,6 +10,8 @@ For an exhaustive coverage map see:
 
 - **[`docs/done.md`](docs/done.md)** — what's implemented today
 - **[`docs/todo.md`](docs/todo.md)** — what's missing for full wasm 1.0+
+- **[`docs/runtime.md`](docs/runtime.md)** — software architecture and
+  instruction-execution model (AST, dispatch, frames, code store)
 
 ## v1.0 scope
 
@@ -138,13 +140,40 @@ wastro/
 ├── node.c            INIT, OPTIMIZE; includes generated *.c
 ├── context.h         CTX, wastro_function, wtype_t, AS_*/FROM_* helpers
 ├── main.c            tokenizer + WAT parser + binary decoder + .wast harness + driver
+├── bench.rb          benchmark harness — wastro tiers vs. wasmtime
 ├── docs/
 │   ├── done.md       inventory of implemented features
-│   └── todo.md       remaining gaps
+│   ├── todo.md       remaining gaps
+│   └── runtime.md    software architecture and instruction execution
 └── examples/         sample .wat / .wasm / .wast programs
 ```
 
+### Example mix
+
+Most examples are small focused snippets that exercise one feature at
+a time (`fib.wat`, `sum.wat`, `indirect.wat`, ...).  A handful are
+longer "non-microbenchmark" workloads useful for measuring the
+specializer end-to-end:
+
+| File                  | Workload                                                         |
+|-----------------------|------------------------------------------------------------------|
+| `sha256.wat`          | SHA-256 digest over an N-block message                            |
+| `heapsort.wat`        | LCG-seeded heapsort with checksum                                 |
+| `nbody.wat`           | n-body simulation (f64 heavy)                                     |
+| `mandelbrot.wat`      | Mandelbrot escape-time over an N×N grid                           |
+| `brainfuck.wat`       | BF interpreter executing an embedded program N times              |
+| `life.wat`            | Conway's Game of Life on a 128×128 toroidal grid, N generations   |
+| `bytecode_vm.wat`     | Register-machine bytecode VM running embedded fib bytecode        |
+
+The last three are tracked by `bench.rb` alongside the classic micro
+benches.
+
 ## Design notes
+
+The notes below cover individual design choices.  For the
+architectural overview — pipeline, AST representation, dispatch
+model, frames, code store, instantiation — see
+[`docs/runtime.md`](docs/runtime.md).
 
 ### Fixed-arity `node_call_N` / `node_call_indirect_N` / `node_host_call_N`
 

@@ -49,6 +49,9 @@ BENCHES = [
   ["spectral(150)",   "examples/spectral.wat",   "spectral",     %w[150]],
   ["matmul(128)",     "examples/matmul.wat",     "matmul",       %w[128]],
   ["sha256(2000)",    "examples/sha256.wat",     "sha256_bench", %w[2000]],
+  ["brainfuck(100k)", "examples/brainfuck.wat",  "bf_run",       %w[100000]],
+  ["life(200)",       "examples/life.wat",       "life",         %w[200]],
+  ["vm_bench(1M)",    "examples/bytecode_vm.wat","vm_bench",     %w[1000000]],
 ].freeze
 
 def time_ms(*cmd)

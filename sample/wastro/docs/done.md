@@ -230,3 +230,24 @@ it, then exits.
 | `add.wasm`, `fib.wasm` | minimal hand-encoded `.wasm` binaries |
 | `smoke.wast`          | spec-test harness sanity check |
 | `control.wast`        | larger spec-test exercise (memory, table, control flow) |
+
+### Larger / non-microbenchmark workloads
+
+These are bigger programs intended to exercise the specializer
+end-to-end on something more realistic than a single-feature snippet.
+All are tracked by `bench.rb`.
+
+| File                  | Workload                                                         |
+|-----------------------|------------------------------------------------------------------|
+| `sha256.wat`          | SHA-256 digest over an N-block message — `i32` rotr/xor/and/shr  |
+| `heapsort.wat`        | LCG-seeded heapsort with checksum — branchy memory access        |
+| `nqueens.wat`         | Backtracking N-queens                                            |
+| `fannkuch.wat`        | Fannkuch-redux benchmark                                         |
+| `nbody.wat`           | n-body simulation (`f64`-heavy, vector math)                     |
+| `mandelbrot.wat`      | Mandelbrot escape-time over an N×N grid (`f64`)                  |
+| `spectral.wat`        | Spectral-norm benchmark (`f64`)                                  |
+| `matmul.wat`          | Square matrix multiplication (`f64`)                             |
+| `pi.wat`              | Leibniz π series                                                 |
+| `brainfuck.wat`       | BF interpreter — executes an embedded BF program N times, folds output bytes into a multiplicative `i32` hash.  Dispatch-heavy meta-interpreter pattern with precomputed `[`/`]` jump table |
+| `life.wat`            | Conway's Game of Life on a 128×128 toroidal grid, N generations.  Memory-bandwidth-heavy with 8 neighbour loads per cell and `& 127` wraparound |
+| `bytecode_vm.wat`     | Register-machine bytecode VM running an embedded fib program — meta-interpretation (ASTro × wastro × inner VM); 12-opcode dispatch chain over reg-file load/store |
