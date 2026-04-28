@@ -424,7 +424,7 @@ module ASTroGen
 
         #{ decls.join("\n") }
 
-            if (!is_public) fprintf(fp, "static inline __attribute__((always_inline)) ");
+            if (!is_public) fprintf(fp, "static inline ");
             fprintf(fp, "__attribute__((no_stack_protector)) #{result_type}\\n");
             fprintf(fp, "%s(#{@prefix_args.join(', ')})\\n", dispatcher_name);
             fprintf(fp, "{\\n");

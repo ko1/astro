@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(make bench)",
+      "Bash(make bench *)",
+      "Bash(make test)",
+      "Bash(make test-one *)",
+      "Bash(ruby bench.rb)",
+      "Bash(./wastro --test *)"
+    ]
+  }
+}

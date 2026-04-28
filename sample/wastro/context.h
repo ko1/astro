@@ -37,33 +37,42 @@ static inline VALUE FROM_F64(double   x) { uint64_t b; memcpy(&b, &x, 8); return
 static inline VALUE FROM_BOOL(int     x) { return x ? 1 : 0; }
 
 #define WASTRO_STACK_SIZE   (64 * 1024)
-#define WASTRO_MAX_FUNCS    256
+#define WASTRO_MAX_FUNCS    1024
 #define WASTRO_PAGE_SIZE    (64 * 1024)   // wasm linear memory page
-#define WASTRO_MAX_GLOBALS  256
+#define WASTRO_MAX_GLOBALS  1024
 
-// Print msg and exit (1).  Used for traps (div-by-zero, OOB memory, etc.).
+// Trap.  Default handler prints msg and exits.  The spec-test harness
+// installs a longjmp handler instead so that asserts can recover.
 __attribute__((noreturn))
-static inline void
-wastro_trap(const char *msg)
-{
-    fprintf(stderr, "wastro: trap: %s\n", msg);
-    exit(1);
-}
+extern void wastro_trap(const char *msg);
 
-// Branch / return state.
-// `br_depth == 0` means "no branch in flight" — EVAL falls through normally.
-// `br_depth > 0` means "branching out N labels" — block/loop decrement on
-// the way out and consume when the count reaches 0.  WASTRO_BR_RETURN is a
-// special sentinel that means "return from function" — it is consumed by
-// node_call_N, never by block/loop.
+// Branch state convention.
+// `br_depth == 0` means "normal flow" — RESULT.value carries the operator's
+// produced value.
+// `br_depth >  0` means "branching out N labels" — block/loop decrement on
+// the way out and consume when the count reaches 0.  RESULT.value carries
+// the value carried by `(br N value)` (or 0 for `(br N)`).
+// `br_depth == WASTRO_BR_RETURN` is a sentinel for `return` / `unreachable`
+// trap propagation — consumed only at the function boundary.
 #define WASTRO_BR_RETURN   ((uint32_t)0xFFFFFFFFu)
+
+// RESULT — every node dispatcher returns one of these.  At 12 bytes
+// (8-byte VALUE + 4-byte br_depth, padded to 16 by alignment) it fits
+// in the rax+rdx pair under SysV x86_64, so branch state never hits
+// memory in interpreter / specialized code.  Idiomatic abruby pattern.
+typedef struct {
+    VALUE    value;
+    uint32_t br_depth;
+} RESULT;
+
+#define RESULT_OK(v)             ((RESULT){(v), 0})
+#define RESULT_BR(v, depth)      ((RESULT){(v), (depth) + 1})
+#define RESULT_RETURN_RES(v)     ((RESULT){(v), WASTRO_BR_RETURN})
 
 typedef struct CTX_struct {
     VALUE stack[WASTRO_STACK_SIZE];
     VALUE *fp;             // base of the current function's locals
     VALUE *sp;             // first free slot — next frame's `fp`
-    uint32_t br_depth;     // 0 = none; UINT_MAX = return; otherwise br count
-    VALUE br_value;        // value carried by a typed br / return
 
     // Linear memory.  NULL if the module has no (memory ...) declaration.
     // Single linear memory only (wasm 1.0 limitation).
@@ -73,18 +82,30 @@ typedef struct CTX_struct {
 } CTX;
 
 // Wasm value types — only the four numeric types in v0.5.
+// WT_POLY is the polymorphic-stack type emitted by always-branching
+// instructions (br, br_table, return, unreachable).  It satisfies any
+// expected type at parse-time.
 typedef enum {
     WT_VOID = 0,
     WT_I32,
     WT_I64,
     WT_F32,
     WT_F64,
+    WT_POLY,
 } wtype_t;
 
 #define WASTRO_MAX_PARAMS 8
 
 struct CTX_struct;
 typedef VALUE (*wastro_host_fn_t)(struct CTX_struct *c, VALUE *args, uint32_t argc);
+
+// A wasm function type signature (used by (type ...) declarations and
+// by call_indirect for runtime structural type checks).
+struct wastro_type_sig {
+    uint32_t param_cnt;
+    wtype_t  param_types[WASTRO_MAX_PARAMS];
+    wtype_t  result_type;
+};
 
 struct wastro_function {
     const char *name;     // optional symbolic name ("$fib"), NULL if unnamed

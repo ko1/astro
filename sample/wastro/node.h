@@ -4,7 +4,7 @@
 #include "context.h"
 
 typedef struct Node NODE;
-typedef VALUE (*node_dispatcher_func_t)(CTX *c, NODE *n);
+typedef RESULT (*node_dispatcher_func_t)(CTX *c, NODE *n);
 typedef uint64_t node_hash_t;
 
 void INIT(void);
@@ -54,6 +54,16 @@ struct NodeHead {
 extern struct wastro_function WASTRO_FUNCS[];
 extern uint32_t WASTRO_FUNC_CNT;
 
+// Function table for call_indirect.  -1 means uninitialized.
+// Single funcref table only (wasm 1.0 limit).
+extern int32_t *WASTRO_TABLE;
+extern uint32_t WASTRO_TABLE_SIZE;
+
+// Type signatures (from `(type $sig ...)`), used by call_indirect for
+// runtime structural type checks.
+extern struct wastro_type_sig WASTRO_TYPES[];
+extern uint32_t WASTRO_TYPE_CNT;
+
 // Parser-side helpers.
 NODE *wastro_load_module(const char *path);
 int wastro_find_export(const char *name);
@@ -61,10 +71,19 @@ int wastro_find_export(const char *name);
 // EVAL is inline so that specialized dispatchers (in code_store/all.so)
 // don't pay a PLT call back into the host binary on every node
 // dispatch — the dispatcher pointer is read and called directly.
-static inline VALUE
+static inline RESULT
 EVAL(CTX *c, NODE *n)
 {
     return (*n->head.dispatcher)(c, n);
 }
+
+// UNWRAP unwraps a RESULT: returns its `value` for normal flow, or
+// early-returns the whole RESULT (propagating `br_depth`) when a
+// branch is in flight.  Used inside every multi-operand NODE_DEF.
+#define UNWRAP(r) ({ \
+    RESULT _r = (r); \
+    if (__builtin_expect(_r.br_depth != 0, 0)) return _r; \
+    _r.value; \
+})
 
 #endif

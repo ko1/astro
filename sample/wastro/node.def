@@ -27,14 +27,24 @@
 NODE_DEF
 node_local_get(CTX *c, NODE *n, uint32_t index)
 {
-    return c->fp[index];
+    return RESULT_OK(c->fp[index]);
 }
 
 NODE_DEF
 node_local_set(CTX *c, NODE *n, uint32_t index, NODE *expr)
 {
-    c->fp[index] = EVAL_ARG(c, expr);
-    return 0;
+    c->fp[index] = UNWRAP(EVAL_ARG(c, expr));
+    return RESULT_OK(0);
+}
+
+// local.tee — like local.set but ALSO leaves the value on the stack.
+// Equivalent to `local.set $x; local.get $x` but as one op.
+NODE_DEF
+node_local_tee(CTX *c, NODE *n, uint32_t index, NODE *expr)
+{
+    VALUE v = UNWRAP(EVAL_ARG(c, expr));
+    c->fp[index] = v;
+    return RESULT_OK(v);
 }
 
 // =====================================================================
@@ -44,47 +54,47 @@ node_local_set(CTX *c, NODE *n, uint32_t index, NODE *expr)
 NODE_DEF
 node_i32_const(CTX *c, NODE *n, int32_t value)
 {
-    return FROM_I32(value);
+    return RESULT_OK(FROM_I32(value));
 }
 
 NODE_DEF
 node_i32_add(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    int32_t lv = AS_I32(EVAL_ARG(c, l));
-    int32_t rv = AS_I32(EVAL_ARG(c, r));
-    return FROM_I32(lv + rv);
+    int32_t lv = AS_I32(UNWRAP(EVAL_ARG(c, l)));
+    int32_t rv = AS_I32(UNWRAP(EVAL_ARG(c, r)));
+    return RESULT_OK(FROM_I32(lv + rv));
 }
 
 NODE_DEF
 node_i32_sub(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    int32_t lv = AS_I32(EVAL_ARG(c, l));
-    int32_t rv = AS_I32(EVAL_ARG(c, r));
-    return FROM_I32(lv - rv);
+    int32_t lv = AS_I32(UNWRAP(EVAL_ARG(c, l)));
+    int32_t rv = AS_I32(UNWRAP(EVAL_ARG(c, r)));
+    return RESULT_OK(FROM_I32(lv - rv));
 }
 
 NODE_DEF
 node_i32_mul(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    int32_t lv = AS_I32(EVAL_ARG(c, l));
-    int32_t rv = AS_I32(EVAL_ARG(c, r));
-    return FROM_I32(lv * rv);
+    int32_t lv = AS_I32(UNWRAP(EVAL_ARG(c, l)));
+    int32_t rv = AS_I32(UNWRAP(EVAL_ARG(c, r)));
+    return RESULT_OK(FROM_I32(lv * rv));
 }
 
 NODE_DEF
 node_i32_eq(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    int32_t lv = AS_I32(EVAL_ARG(c, l));
-    int32_t rv = AS_I32(EVAL_ARG(c, r));
-    return FROM_BOOL(lv == rv);
+    int32_t lv = AS_I32(UNWRAP(EVAL_ARG(c, l)));
+    int32_t rv = AS_I32(UNWRAP(EVAL_ARG(c, r)));
+    return RESULT_OK(FROM_BOOL(lv == rv));
 }
 
 NODE_DEF
 node_i32_lt_s(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    int32_t lv = AS_I32(EVAL_ARG(c, l));
-    int32_t rv = AS_I32(EVAL_ARG(c, r));
-    return FROM_BOOL(lv < rv);
+    int32_t lv = AS_I32(UNWRAP(EVAL_ARG(c, l)));
+    int32_t rv = AS_I32(UNWRAP(EVAL_ARG(c, r)));
+    return RESULT_OK(FROM_BOOL(lv < rv));
 }
 
 // --- i32 division / remainder (trap on divide by zero or i32_min/-1 for div_s) ---
@@ -92,39 +102,39 @@ node_i32_lt_s(CTX *c, NODE *n, NODE *l, NODE *r)
 NODE_DEF
 node_i32_div_s(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    int32_t lv = AS_I32(EVAL_ARG(c, l));
-    int32_t rv = AS_I32(EVAL_ARG(c, r));
+    int32_t lv = AS_I32(UNWRAP(EVAL_ARG(c, l)));
+    int32_t rv = AS_I32(UNWRAP(EVAL_ARG(c, r)));
     if (rv == 0) wastro_trap("integer divide by zero");
     if (lv == INT32_MIN && rv == -1) wastro_trap("integer overflow");
-    return FROM_I32(lv / rv);
+    return RESULT_OK(FROM_I32(lv / rv));
 }
 
 NODE_DEF
 node_i32_div_u(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    uint32_t lv = AS_U32(EVAL_ARG(c, l));
-    uint32_t rv = AS_U32(EVAL_ARG(c, r));
+    uint32_t lv = AS_U32(UNWRAP(EVAL_ARG(c, l)));
+    uint32_t rv = AS_U32(UNWRAP(EVAL_ARG(c, r)));
     if (rv == 0) wastro_trap("integer divide by zero");
-    return FROM_U32(lv / rv);
+    return RESULT_OK(FROM_U32(lv / rv));
 }
 
 NODE_DEF
 node_i32_rem_s(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    int32_t lv = AS_I32(EVAL_ARG(c, l));
-    int32_t rv = AS_I32(EVAL_ARG(c, r));
+    int32_t lv = AS_I32(UNWRAP(EVAL_ARG(c, l)));
+    int32_t rv = AS_I32(UNWRAP(EVAL_ARG(c, r)));
     if (rv == 0) wastro_trap("integer divide by zero");
-    if (lv == INT32_MIN && rv == -1) return FROM_I32(0);  // wasm spec: returns 0
-    return FROM_I32(lv % rv);
+    if (lv == INT32_MIN && rv == -1) return RESULT_OK(FROM_I32(0));  // wasm spec: returns 0
+    return RESULT_OK(FROM_I32(lv % rv));
 }
 
 NODE_DEF
 node_i32_rem_u(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    uint32_t lv = AS_U32(EVAL_ARG(c, l));
-    uint32_t rv = AS_U32(EVAL_ARG(c, r));
+    uint32_t lv = AS_U32(UNWRAP(EVAL_ARG(c, l)));
+    uint32_t rv = AS_U32(UNWRAP(EVAL_ARG(c, r)));
     if (rv == 0) wastro_trap("integer divide by zero");
-    return FROM_U32(lv % rv);
+    return RESULT_OK(FROM_U32(lv % rv));
 }
 
 // --- i32 bitwise ---
@@ -132,59 +142,59 @@ node_i32_rem_u(CTX *c, NODE *n, NODE *l, NODE *r)
 NODE_DEF
 node_i32_and(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    return FROM_U32(AS_U32(EVAL_ARG(c, l)) & AS_U32(EVAL_ARG(c, r)));
+    return RESULT_OK(FROM_U32(AS_U32(UNWRAP(EVAL_ARG(c, l))) & AS_U32(UNWRAP(EVAL_ARG(c, r)))));
 }
 
 NODE_DEF
 node_i32_or(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    return FROM_U32(AS_U32(EVAL_ARG(c, l)) | AS_U32(EVAL_ARG(c, r)));
+    return RESULT_OK(FROM_U32(AS_U32(UNWRAP(EVAL_ARG(c, l))) | AS_U32(UNWRAP(EVAL_ARG(c, r)))));
 }
 
 NODE_DEF
 node_i32_xor(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    return FROM_U32(AS_U32(EVAL_ARG(c, l)) ^ AS_U32(EVAL_ARG(c, r)));
+    return RESULT_OK(FROM_U32(AS_U32(UNWRAP(EVAL_ARG(c, l))) ^ AS_U32(UNWRAP(EVAL_ARG(c, r)))));
 }
 
 NODE_DEF
 node_i32_shl(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    uint32_t lv = AS_U32(EVAL_ARG(c, l));
-    uint32_t rv = AS_U32(EVAL_ARG(c, r)) & 31;  // wasm spec: shift amount mod 32
-    return FROM_U32(lv << rv);
+    uint32_t lv = AS_U32(UNWRAP(EVAL_ARG(c, l)));
+    uint32_t rv = AS_U32(UNWRAP(EVAL_ARG(c, r))) & 31;  // wasm spec: shift amount mod 32
+    return RESULT_OK(FROM_U32(lv << rv));
 }
 
 NODE_DEF
 node_i32_shr_s(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    int32_t lv = AS_I32(EVAL_ARG(c, l));
-    uint32_t rv = AS_U32(EVAL_ARG(c, r)) & 31;
-    return FROM_I32(lv >> rv);
+    int32_t lv = AS_I32(UNWRAP(EVAL_ARG(c, l)));
+    uint32_t rv = AS_U32(UNWRAP(EVAL_ARG(c, r))) & 31;
+    return RESULT_OK(FROM_I32(lv >> rv));
 }
 
 NODE_DEF
 node_i32_shr_u(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    uint32_t lv = AS_U32(EVAL_ARG(c, l));
-    uint32_t rv = AS_U32(EVAL_ARG(c, r)) & 31;
-    return FROM_U32(lv >> rv);
+    uint32_t lv = AS_U32(UNWRAP(EVAL_ARG(c, l)));
+    uint32_t rv = AS_U32(UNWRAP(EVAL_ARG(c, r))) & 31;
+    return RESULT_OK(FROM_U32(lv >> rv));
 }
 
 NODE_DEF
 node_i32_rotl(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    uint32_t lv = AS_U32(EVAL_ARG(c, l));
-    uint32_t rv = AS_U32(EVAL_ARG(c, r)) & 31;
-    return FROM_U32((lv << rv) | (lv >> ((32 - rv) & 31)));
+    uint32_t lv = AS_U32(UNWRAP(EVAL_ARG(c, l)));
+    uint32_t rv = AS_U32(UNWRAP(EVAL_ARG(c, r))) & 31;
+    return RESULT_OK(FROM_U32((lv << rv) | (lv >> ((32 - rv) & 31))));
 }
 
 NODE_DEF
 node_i32_rotr(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    uint32_t lv = AS_U32(EVAL_ARG(c, l));
-    uint32_t rv = AS_U32(EVAL_ARG(c, r)) & 31;
-    return FROM_U32((lv >> rv) | (lv << ((32 - rv) & 31)));
+    uint32_t lv = AS_U32(UNWRAP(EVAL_ARG(c, l)));
+    uint32_t rv = AS_U32(UNWRAP(EVAL_ARG(c, r))) & 31;
+    return RESULT_OK(FROM_U32((lv >> rv) | (lv << ((32 - rv) & 31))));
 }
 
 // --- i32 remaining comparisons ---
@@ -192,49 +202,49 @@ node_i32_rotr(CTX *c, NODE *n, NODE *l, NODE *r)
 NODE_DEF
 node_i32_ne(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    return FROM_BOOL(AS_I32(EVAL_ARG(c, l)) != AS_I32(EVAL_ARG(c, r)));
+    return RESULT_OK(FROM_BOOL(AS_I32(UNWRAP(EVAL_ARG(c, l))) != AS_I32(UNWRAP(EVAL_ARG(c, r)))));
 }
 
 NODE_DEF
 node_i32_lt_u(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    return FROM_BOOL(AS_U32(EVAL_ARG(c, l)) < AS_U32(EVAL_ARG(c, r)));
+    return RESULT_OK(FROM_BOOL(AS_U32(UNWRAP(EVAL_ARG(c, l))) < AS_U32(UNWRAP(EVAL_ARG(c, r)))));
 }
 
 NODE_DEF
 node_i32_le_s(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    return FROM_BOOL(AS_I32(EVAL_ARG(c, l)) <= AS_I32(EVAL_ARG(c, r)));
+    return RESULT_OK(FROM_BOOL(AS_I32(UNWRAP(EVAL_ARG(c, l))) <= AS_I32(UNWRAP(EVAL_ARG(c, r)))));
 }
 
 NODE_DEF
 node_i32_le_u(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    return FROM_BOOL(AS_U32(EVAL_ARG(c, l)) <= AS_U32(EVAL_ARG(c, r)));
+    return RESULT_OK(FROM_BOOL(AS_U32(UNWRAP(EVAL_ARG(c, l))) <= AS_U32(UNWRAP(EVAL_ARG(c, r)))));
 }
 
 NODE_DEF
 node_i32_gt_s(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    return FROM_BOOL(AS_I32(EVAL_ARG(c, l)) > AS_I32(EVAL_ARG(c, r)));
+    return RESULT_OK(FROM_BOOL(AS_I32(UNWRAP(EVAL_ARG(c, l))) > AS_I32(UNWRAP(EVAL_ARG(c, r)))));
 }
 
 NODE_DEF
 node_i32_gt_u(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    return FROM_BOOL(AS_U32(EVAL_ARG(c, l)) > AS_U32(EVAL_ARG(c, r)));
+    return RESULT_OK(FROM_BOOL(AS_U32(UNWRAP(EVAL_ARG(c, l))) > AS_U32(UNWRAP(EVAL_ARG(c, r)))));
 }
 
 NODE_DEF
 node_i32_ge_s(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    return FROM_BOOL(AS_I32(EVAL_ARG(c, l)) >= AS_I32(EVAL_ARG(c, r)));
+    return RESULT_OK(FROM_BOOL(AS_I32(UNWRAP(EVAL_ARG(c, l))) >= AS_I32(UNWRAP(EVAL_ARG(c, r)))));
 }
 
 NODE_DEF
 node_i32_ge_u(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    return FROM_BOOL(AS_U32(EVAL_ARG(c, l)) >= AS_U32(EVAL_ARG(c, r)));
+    return RESULT_OK(FROM_BOOL(AS_U32(UNWRAP(EVAL_ARG(c, l))) >= AS_U32(UNWRAP(EVAL_ARG(c, r)))));
 }
 
 // --- i32 unary ---
@@ -242,27 +252,27 @@ node_i32_ge_u(CTX *c, NODE *n, NODE *l, NODE *r)
 NODE_DEF
 node_i32_eqz(CTX *c, NODE *n, NODE *e)
 {
-    return FROM_BOOL(AS_I32(EVAL_ARG(c, e)) == 0);
+    return RESULT_OK(FROM_BOOL(AS_I32(UNWRAP(EVAL_ARG(c, e))) == 0));
 }
 
 NODE_DEF
 node_i32_clz(CTX *c, NODE *n, NODE *e)
 {
-    uint32_t v = AS_U32(EVAL_ARG(c, e));
-    return FROM_I32(v ? __builtin_clz(v) : 32);
+    uint32_t v = AS_U32(UNWRAP(EVAL_ARG(c, e)));
+    return RESULT_OK(FROM_I32(v ? __builtin_clz(v) : 32));
 }
 
 NODE_DEF
 node_i32_ctz(CTX *c, NODE *n, NODE *e)
 {
-    uint32_t v = AS_U32(EVAL_ARG(c, e));
-    return FROM_I32(v ? __builtin_ctz(v) : 32);
+    uint32_t v = AS_U32(UNWRAP(EVAL_ARG(c, e)));
+    return RESULT_OK(FROM_I32(v ? __builtin_ctz(v) : 32));
 }
 
 NODE_DEF
 node_i32_popcnt(CTX *c, NODE *n, NODE *e)
 {
-    return FROM_I32(__builtin_popcount(AS_U32(EVAL_ARG(c, e))));
+    return RESULT_OK(FROM_I32(__builtin_popcount(AS_U32(UNWRAP(EVAL_ARG(c, e))))));
 }
 
 // =====================================================================
@@ -272,47 +282,47 @@ node_i32_popcnt(CTX *c, NODE *n, NODE *e)
 NODE_DEF
 node_i64_const(CTX *c, NODE *n, uint64_t value)
 {
-    return value;
+    return RESULT_OK(value);
 }
 
 NODE_DEF
 node_i64_add(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    int64_t lv = AS_I64(EVAL_ARG(c, l));
-    int64_t rv = AS_I64(EVAL_ARG(c, r));
-    return FROM_I64(lv + rv);
+    int64_t lv = AS_I64(UNWRAP(EVAL_ARG(c, l)));
+    int64_t rv = AS_I64(UNWRAP(EVAL_ARG(c, r)));
+    return RESULT_OK(FROM_I64(lv + rv));
 }
 
 NODE_DEF
 node_i64_sub(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    int64_t lv = AS_I64(EVAL_ARG(c, l));
-    int64_t rv = AS_I64(EVAL_ARG(c, r));
-    return FROM_I64(lv - rv);
+    int64_t lv = AS_I64(UNWRAP(EVAL_ARG(c, l)));
+    int64_t rv = AS_I64(UNWRAP(EVAL_ARG(c, r)));
+    return RESULT_OK(FROM_I64(lv - rv));
 }
 
 NODE_DEF
 node_i64_mul(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    int64_t lv = AS_I64(EVAL_ARG(c, l));
-    int64_t rv = AS_I64(EVAL_ARG(c, r));
-    return FROM_I64(lv * rv);
+    int64_t lv = AS_I64(UNWRAP(EVAL_ARG(c, l)));
+    int64_t rv = AS_I64(UNWRAP(EVAL_ARG(c, r)));
+    return RESULT_OK(FROM_I64(lv * rv));
 }
 
 NODE_DEF
 node_i64_eq(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    int64_t lv = AS_I64(EVAL_ARG(c, l));
-    int64_t rv = AS_I64(EVAL_ARG(c, r));
-    return FROM_BOOL(lv == rv);
+    int64_t lv = AS_I64(UNWRAP(EVAL_ARG(c, l)));
+    int64_t rv = AS_I64(UNWRAP(EVAL_ARG(c, r)));
+    return RESULT_OK(FROM_BOOL(lv == rv));
 }
 
 NODE_DEF
 node_i64_lt_s(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    int64_t lv = AS_I64(EVAL_ARG(c, l));
-    int64_t rv = AS_I64(EVAL_ARG(c, r));
-    return FROM_BOOL(lv < rv);
+    int64_t lv = AS_I64(UNWRAP(EVAL_ARG(c, l)));
+    int64_t rv = AS_I64(UNWRAP(EVAL_ARG(c, r)));
+    return RESULT_OK(FROM_BOOL(lv < rv));
 }
 
 // --- i64 division / remainder ---
@@ -320,39 +330,39 @@ node_i64_lt_s(CTX *c, NODE *n, NODE *l, NODE *r)
 NODE_DEF
 node_i64_div_s(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    int64_t lv = AS_I64(EVAL_ARG(c, l));
-    int64_t rv = AS_I64(EVAL_ARG(c, r));
+    int64_t lv = AS_I64(UNWRAP(EVAL_ARG(c, l)));
+    int64_t rv = AS_I64(UNWRAP(EVAL_ARG(c, r)));
     if (rv == 0) wastro_trap("integer divide by zero");
     if (lv == INT64_MIN && rv == -1) wastro_trap("integer overflow");
-    return FROM_I64(lv / rv);
+    return RESULT_OK(FROM_I64(lv / rv));
 }
 
 NODE_DEF
 node_i64_div_u(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    uint64_t lv = AS_U64(EVAL_ARG(c, l));
-    uint64_t rv = AS_U64(EVAL_ARG(c, r));
+    uint64_t lv = AS_U64(UNWRAP(EVAL_ARG(c, l)));
+    uint64_t rv = AS_U64(UNWRAP(EVAL_ARG(c, r)));
     if (rv == 0) wastro_trap("integer divide by zero");
-    return FROM_U64(lv / rv);
+    return RESULT_OK(FROM_U64(lv / rv));
 }
 
 NODE_DEF
 node_i64_rem_s(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    int64_t lv = AS_I64(EVAL_ARG(c, l));
-    int64_t rv = AS_I64(EVAL_ARG(c, r));
+    int64_t lv = AS_I64(UNWRAP(EVAL_ARG(c, l)));
+    int64_t rv = AS_I64(UNWRAP(EVAL_ARG(c, r)));
     if (rv == 0) wastro_trap("integer divide by zero");
-    if (lv == INT64_MIN && rv == -1) return FROM_I64(0);
-    return FROM_I64(lv % rv);
+    if (lv == INT64_MIN && rv == -1) return RESULT_OK(FROM_I64(0));
+    return RESULT_OK(FROM_I64(lv % rv));
 }
 
 NODE_DEF
 node_i64_rem_u(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    uint64_t lv = AS_U64(EVAL_ARG(c, l));
-    uint64_t rv = AS_U64(EVAL_ARG(c, r));
+    uint64_t lv = AS_U64(UNWRAP(EVAL_ARG(c, l)));
+    uint64_t rv = AS_U64(UNWRAP(EVAL_ARG(c, r)));
     if (rv == 0) wastro_trap("integer divide by zero");
-    return FROM_U64(lv % rv);
+    return RESULT_OK(FROM_U64(lv % rv));
 }
 
 // --- i64 bitwise ---
@@ -360,59 +370,59 @@ node_i64_rem_u(CTX *c, NODE *n, NODE *l, NODE *r)
 NODE_DEF
 node_i64_and(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    return FROM_U64(AS_U64(EVAL_ARG(c, l)) & AS_U64(EVAL_ARG(c, r)));
+    return RESULT_OK(FROM_U64(AS_U64(UNWRAP(EVAL_ARG(c, l))) & AS_U64(UNWRAP(EVAL_ARG(c, r)))));
 }
 
 NODE_DEF
 node_i64_or(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    return FROM_U64(AS_U64(EVAL_ARG(c, l)) | AS_U64(EVAL_ARG(c, r)));
+    return RESULT_OK(FROM_U64(AS_U64(UNWRAP(EVAL_ARG(c, l))) | AS_U64(UNWRAP(EVAL_ARG(c, r)))));
 }
 
 NODE_DEF
 node_i64_xor(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    return FROM_U64(AS_U64(EVAL_ARG(c, l)) ^ AS_U64(EVAL_ARG(c, r)));
+    return RESULT_OK(FROM_U64(AS_U64(UNWRAP(EVAL_ARG(c, l))) ^ AS_U64(UNWRAP(EVAL_ARG(c, r)))));
 }
 
 NODE_DEF
 node_i64_shl(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    uint64_t lv = AS_U64(EVAL_ARG(c, l));
-    uint64_t rv = AS_U64(EVAL_ARG(c, r)) & 63;
-    return FROM_U64(lv << rv);
+    uint64_t lv = AS_U64(UNWRAP(EVAL_ARG(c, l)));
+    uint64_t rv = AS_U64(UNWRAP(EVAL_ARG(c, r))) & 63;
+    return RESULT_OK(FROM_U64(lv << rv));
 }
 
 NODE_DEF
 node_i64_shr_s(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    int64_t lv = AS_I64(EVAL_ARG(c, l));
-    uint64_t rv = AS_U64(EVAL_ARG(c, r)) & 63;
-    return FROM_I64(lv >> rv);
+    int64_t lv = AS_I64(UNWRAP(EVAL_ARG(c, l)));
+    uint64_t rv = AS_U64(UNWRAP(EVAL_ARG(c, r))) & 63;
+    return RESULT_OK(FROM_I64(lv >> rv));
 }
 
 NODE_DEF
 node_i64_shr_u(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    uint64_t lv = AS_U64(EVAL_ARG(c, l));
-    uint64_t rv = AS_U64(EVAL_ARG(c, r)) & 63;
-    return FROM_U64(lv >> rv);
+    uint64_t lv = AS_U64(UNWRAP(EVAL_ARG(c, l)));
+    uint64_t rv = AS_U64(UNWRAP(EVAL_ARG(c, r))) & 63;
+    return RESULT_OK(FROM_U64(lv >> rv));
 }
 
 NODE_DEF
 node_i64_rotl(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    uint64_t lv = AS_U64(EVAL_ARG(c, l));
-    uint64_t rv = AS_U64(EVAL_ARG(c, r)) & 63;
-    return FROM_U64((lv << rv) | (lv >> ((64 - rv) & 63)));
+    uint64_t lv = AS_U64(UNWRAP(EVAL_ARG(c, l)));
+    uint64_t rv = AS_U64(UNWRAP(EVAL_ARG(c, r))) & 63;
+    return RESULT_OK(FROM_U64((lv << rv) | (lv >> ((64 - rv) & 63))));
 }
 
 NODE_DEF
 node_i64_rotr(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    uint64_t lv = AS_U64(EVAL_ARG(c, l));
-    uint64_t rv = AS_U64(EVAL_ARG(c, r)) & 63;
-    return FROM_U64((lv >> rv) | (lv << ((64 - rv) & 63)));
+    uint64_t lv = AS_U64(UNWRAP(EVAL_ARG(c, l)));
+    uint64_t rv = AS_U64(UNWRAP(EVAL_ARG(c, r))) & 63;
+    return RESULT_OK(FROM_U64((lv >> rv) | (lv << ((64 - rv) & 63))));
 }
 
 // --- i64 remaining comparisons (result is i32) ---
@@ -420,49 +430,49 @@ node_i64_rotr(CTX *c, NODE *n, NODE *l, NODE *r)
 NODE_DEF
 node_i64_ne(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    return FROM_BOOL(AS_I64(EVAL_ARG(c, l)) != AS_I64(EVAL_ARG(c, r)));
+    return RESULT_OK(FROM_BOOL(AS_I64(UNWRAP(EVAL_ARG(c, l))) != AS_I64(UNWRAP(EVAL_ARG(c, r)))));
 }
 
 NODE_DEF
 node_i64_lt_u(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    return FROM_BOOL(AS_U64(EVAL_ARG(c, l)) < AS_U64(EVAL_ARG(c, r)));
+    return RESULT_OK(FROM_BOOL(AS_U64(UNWRAP(EVAL_ARG(c, l))) < AS_U64(UNWRAP(EVAL_ARG(c, r)))));
 }
 
 NODE_DEF
 node_i64_le_s(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    return FROM_BOOL(AS_I64(EVAL_ARG(c, l)) <= AS_I64(EVAL_ARG(c, r)));
+    return RESULT_OK(FROM_BOOL(AS_I64(UNWRAP(EVAL_ARG(c, l))) <= AS_I64(UNWRAP(EVAL_ARG(c, r)))));
 }
 
 NODE_DEF
 node_i64_le_u(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    return FROM_BOOL(AS_U64(EVAL_ARG(c, l)) <= AS_U64(EVAL_ARG(c, r)));
+    return RESULT_OK(FROM_BOOL(AS_U64(UNWRAP(EVAL_ARG(c, l))) <= AS_U64(UNWRAP(EVAL_ARG(c, r)))));
 }
 
 NODE_DEF
 node_i64_gt_s(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    return FROM_BOOL(AS_I64(EVAL_ARG(c, l)) > AS_I64(EVAL_ARG(c, r)));
+    return RESULT_OK(FROM_BOOL(AS_I64(UNWRAP(EVAL_ARG(c, l))) > AS_I64(UNWRAP(EVAL_ARG(c, r)))));
 }
 
 NODE_DEF
 node_i64_gt_u(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    return FROM_BOOL(AS_U64(EVAL_ARG(c, l)) > AS_U64(EVAL_ARG(c, r)));
+    return RESULT_OK(FROM_BOOL(AS_U64(UNWRAP(EVAL_ARG(c, l))) > AS_U64(UNWRAP(EVAL_ARG(c, r)))));
 }
 
 NODE_DEF
 node_i64_ge_s(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    return FROM_BOOL(AS_I64(EVAL_ARG(c, l)) >= AS_I64(EVAL_ARG(c, r)));
+    return RESULT_OK(FROM_BOOL(AS_I64(UNWRAP(EVAL_ARG(c, l))) >= AS_I64(UNWRAP(EVAL_ARG(c, r)))));
 }
 
 NODE_DEF
 node_i64_ge_u(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    return FROM_BOOL(AS_U64(EVAL_ARG(c, l)) >= AS_U64(EVAL_ARG(c, r)));
+    return RESULT_OK(FROM_BOOL(AS_U64(UNWRAP(EVAL_ARG(c, l))) >= AS_U64(UNWRAP(EVAL_ARG(c, r)))));
 }
 
 // --- i64 unary ---
@@ -470,27 +480,27 @@ node_i64_ge_u(CTX *c, NODE *n, NODE *l, NODE *r)
 NODE_DEF
 node_i64_eqz(CTX *c, NODE *n, NODE *e)
 {
-    return FROM_BOOL(AS_I64(EVAL_ARG(c, e)) == 0);
+    return RESULT_OK(FROM_BOOL(AS_I64(UNWRAP(EVAL_ARG(c, e))) == 0));
 }
 
 NODE_DEF
 node_i64_clz(CTX *c, NODE *n, NODE *e)
 {
-    uint64_t v = AS_U64(EVAL_ARG(c, e));
-    return FROM_I64(v ? __builtin_clzll(v) : 64);
+    uint64_t v = AS_U64(UNWRAP(EVAL_ARG(c, e)));
+    return RESULT_OK(FROM_I64(v ? __builtin_clzll(v) : 64));
 }
 
 NODE_DEF
 node_i64_ctz(CTX *c, NODE *n, NODE *e)
 {
-    uint64_t v = AS_U64(EVAL_ARG(c, e));
-    return FROM_I64(v ? __builtin_ctzll(v) : 64);
+    uint64_t v = AS_U64(UNWRAP(EVAL_ARG(c, e)));
+    return RESULT_OK(FROM_I64(v ? __builtin_ctzll(v) : 64));
 }
 
 NODE_DEF
 node_i64_popcnt(CTX *c, NODE *n, NODE *e)
 {
-    return FROM_I64(__builtin_popcountll(AS_U64(EVAL_ARG(c, e))));
+    return RESULT_OK(FROM_I64(__builtin_popcountll(AS_U64(UNWRAP(EVAL_ARG(c, e))))));
 }
 
 // =====================================================================
@@ -501,47 +511,47 @@ node_i64_popcnt(CTX *c, NODE *n, NODE *e)
 NODE_DEF
 node_f32_const(CTX *c, NODE *n, uint32_t bits)
 {
-    return FROM_U32(bits);
+    return RESULT_OK(FROM_U32(bits));
 }
 
 NODE_DEF
 node_f32_add(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    float lv = AS_F32(EVAL_ARG(c, l));
-    float rv = AS_F32(EVAL_ARG(c, r));
-    return FROM_F32(lv + rv);
+    float lv = AS_F32(UNWRAP(EVAL_ARG(c, l)));
+    float rv = AS_F32(UNWRAP(EVAL_ARG(c, r)));
+    return RESULT_OK(FROM_F32(lv + rv));
 }
 
 NODE_DEF
 node_f32_sub(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    float lv = AS_F32(EVAL_ARG(c, l));
-    float rv = AS_F32(EVAL_ARG(c, r));
-    return FROM_F32(lv - rv);
+    float lv = AS_F32(UNWRAP(EVAL_ARG(c, l)));
+    float rv = AS_F32(UNWRAP(EVAL_ARG(c, r)));
+    return RESULT_OK(FROM_F32(lv - rv));
 }
 
 NODE_DEF
 node_f32_mul(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    float lv = AS_F32(EVAL_ARG(c, l));
-    float rv = AS_F32(EVAL_ARG(c, r));
-    return FROM_F32(lv * rv);
+    float lv = AS_F32(UNWRAP(EVAL_ARG(c, l)));
+    float rv = AS_F32(UNWRAP(EVAL_ARG(c, r)));
+    return RESULT_OK(FROM_F32(lv * rv));
 }
 
 NODE_DEF
 node_f32_eq(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    float lv = AS_F32(EVAL_ARG(c, l));
-    float rv = AS_F32(EVAL_ARG(c, r));
-    return FROM_BOOL(lv == rv);
+    float lv = AS_F32(UNWRAP(EVAL_ARG(c, l)));
+    float rv = AS_F32(UNWRAP(EVAL_ARG(c, r)));
+    return RESULT_OK(FROM_BOOL(lv == rv));
 }
 
 NODE_DEF
 node_f32_lt(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    float lv = AS_F32(EVAL_ARG(c, l));
-    float rv = AS_F32(EVAL_ARG(c, r));
-    return FROM_BOOL(lv < rv);
+    float lv = AS_F32(UNWRAP(EVAL_ARG(c, l)));
+    float rv = AS_F32(UNWRAP(EVAL_ARG(c, r)));
+    return RESULT_OK(FROM_BOOL(lv < rv));
 }
 
 // --- f32 division / min / max / copysign ---
@@ -549,31 +559,35 @@ node_f32_lt(CTX *c, NODE *n, NODE *l, NODE *r)
 NODE_DEF
 node_f32_div(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    return FROM_F32(AS_F32(EVAL_ARG(c, l)) / AS_F32(EVAL_ARG(c, r)));
+    return RESULT_OK(FROM_F32(AS_F32(UNWRAP(EVAL_ARG(c, l))) / AS_F32(UNWRAP(EVAL_ARG(c, r)))));
 }
 
 NODE_DEF
 node_f32_min(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    float lv = AS_F32(EVAL_ARG(c, l));
-    float rv = AS_F32(EVAL_ARG(c, r));
-    if (lv != lv || rv != rv) return FROM_F32(lv != lv ? lv : rv);  // NaN propagation
-    return FROM_F32(lv < rv ? lv : rv);
+    float lv = AS_F32(UNWRAP(EVAL_ARG(c, l)));
+    float rv = AS_F32(UNWRAP(EVAL_ARG(c, r)));
+    if (lv != lv || rv != rv) return RESULT_OK(FROM_F32(lv != lv ? lv : rv));  // NaN propagation
+    // ±0 disambiguation: spec returns -0 if either operand is -0.
+    if (lv == 0.0f && rv == 0.0f) return RESULT_OK(FROM_F32(signbit(lv) ? lv : rv));
+    return RESULT_OK(FROM_F32(lv < rv ? lv : rv));
 }
 
 NODE_DEF
 node_f32_max(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    float lv = AS_F32(EVAL_ARG(c, l));
-    float rv = AS_F32(EVAL_ARG(c, r));
-    if (lv != lv || rv != rv) return FROM_F32(lv != lv ? lv : rv);
-    return FROM_F32(lv > rv ? lv : rv);
+    float lv = AS_F32(UNWRAP(EVAL_ARG(c, l)));
+    float rv = AS_F32(UNWRAP(EVAL_ARG(c, r)));
+    if (lv != lv || rv != rv) return RESULT_OK(FROM_F32(lv != lv ? lv : rv));
+    // ±0 disambiguation: spec returns +0 if either operand is +0.
+    if (lv == 0.0f && rv == 0.0f) return RESULT_OK(FROM_F32(signbit(lv) ? rv : lv));
+    return RESULT_OK(FROM_F32(lv > rv ? lv : rv));
 }
 
 NODE_DEF
 node_f32_copysign(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    return FROM_F32(copysignf(AS_F32(EVAL_ARG(c, l)), AS_F32(EVAL_ARG(c, r))));
+    return RESULT_OK(FROM_F32(copysignf(AS_F32(UNWRAP(EVAL_ARG(c, l))), AS_F32(UNWRAP(EVAL_ARG(c, r))))));
 }
 
 // --- f32 remaining comparisons (result is i32) ---
@@ -581,25 +595,25 @@ node_f32_copysign(CTX *c, NODE *n, NODE *l, NODE *r)
 NODE_DEF
 node_f32_ne(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    return FROM_BOOL(AS_F32(EVAL_ARG(c, l)) != AS_F32(EVAL_ARG(c, r)));
+    return RESULT_OK(FROM_BOOL(AS_F32(UNWRAP(EVAL_ARG(c, l))) != AS_F32(UNWRAP(EVAL_ARG(c, r)))));
 }
 
 NODE_DEF
 node_f32_le(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    return FROM_BOOL(AS_F32(EVAL_ARG(c, l)) <= AS_F32(EVAL_ARG(c, r)));
+    return RESULT_OK(FROM_BOOL(AS_F32(UNWRAP(EVAL_ARG(c, l))) <= AS_F32(UNWRAP(EVAL_ARG(c, r)))));
 }
 
 NODE_DEF
 node_f32_gt(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    return FROM_BOOL(AS_F32(EVAL_ARG(c, l)) > AS_F32(EVAL_ARG(c, r)));
+    return RESULT_OK(FROM_BOOL(AS_F32(UNWRAP(EVAL_ARG(c, l))) > AS_F32(UNWRAP(EVAL_ARG(c, r)))));
 }
 
 NODE_DEF
 node_f32_ge(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    return FROM_BOOL(AS_F32(EVAL_ARG(c, l)) >= AS_F32(EVAL_ARG(c, r)));
+    return RESULT_OK(FROM_BOOL(AS_F32(UNWRAP(EVAL_ARG(c, l))) >= AS_F32(UNWRAP(EVAL_ARG(c, r)))));
 }
 
 // --- f32 unary ---
@@ -607,37 +621,37 @@ node_f32_ge(CTX *c, NODE *n, NODE *l, NODE *r)
 NODE_DEF
 node_f32_abs(CTX *c, NODE *n, NODE *e)
 {
-    return FROM_F32(fabsf(AS_F32(EVAL_ARG(c, e))));
+    return RESULT_OK(FROM_F32(fabsf(AS_F32(UNWRAP(EVAL_ARG(c, e))))));
 }
 
 NODE_DEF
 node_f32_neg(CTX *c, NODE *n, NODE *e)
 {
-    return FROM_F32(-AS_F32(EVAL_ARG(c, e)));
+    return RESULT_OK(FROM_F32(-AS_F32(UNWRAP(EVAL_ARG(c, e)))));
 }
 
 NODE_DEF
 node_f32_sqrt(CTX *c, NODE *n, NODE *e)
 {
-    return FROM_F32(sqrtf(AS_F32(EVAL_ARG(c, e))));
+    return RESULT_OK(FROM_F32(sqrtf(AS_F32(UNWRAP(EVAL_ARG(c, e))))));
 }
 
 NODE_DEF
 node_f32_ceil(CTX *c, NODE *n, NODE *e)
 {
-    return FROM_F32(ceilf(AS_F32(EVAL_ARG(c, e))));
+    return RESULT_OK(FROM_F32(ceilf(AS_F32(UNWRAP(EVAL_ARG(c, e))))));
 }
 
 NODE_DEF
 node_f32_floor(CTX *c, NODE *n, NODE *e)
 {
-    return FROM_F32(floorf(AS_F32(EVAL_ARG(c, e))));
+    return RESULT_OK(FROM_F32(floorf(AS_F32(UNWRAP(EVAL_ARG(c, e))))));
 }
 
 NODE_DEF
 node_f32_trunc(CTX *c, NODE *n, NODE *e)
 {
-    return FROM_F32(truncf(AS_F32(EVAL_ARG(c, e))));
+    return RESULT_OK(FROM_F32(truncf(AS_F32(UNWRAP(EVAL_ARG(c, e))))));
 }
 
 // nearest = round-to-even (wasm spec).  C's `nearbyintf` uses current
@@ -645,7 +659,7 @@ node_f32_trunc(CTX *c, NODE *n, NODE *e)
 NODE_DEF
 node_f32_nearest(CTX *c, NODE *n, NODE *e)
 {
-    return FROM_F32(nearbyintf(AS_F32(EVAL_ARG(c, e))));
+    return RESULT_OK(FROM_F32(nearbyintf(AS_F32(UNWRAP(EVAL_ARG(c, e))))));
 }
 
 // =====================================================================
@@ -655,47 +669,47 @@ node_f32_nearest(CTX *c, NODE *n, NODE *e)
 NODE_DEF
 node_f64_const(CTX *c, NODE *n, double value)
 {
-    return FROM_F64(value);
+    return RESULT_OK(FROM_F64(value));
 }
 
 NODE_DEF
 node_f64_add(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    double lv = AS_F64(EVAL_ARG(c, l));
-    double rv = AS_F64(EVAL_ARG(c, r));
-    return FROM_F64(lv + rv);
+    double lv = AS_F64(UNWRAP(EVAL_ARG(c, l)));
+    double rv = AS_F64(UNWRAP(EVAL_ARG(c, r)));
+    return RESULT_OK(FROM_F64(lv + rv));
 }
 
 NODE_DEF
 node_f64_sub(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    double lv = AS_F64(EVAL_ARG(c, l));
-    double rv = AS_F64(EVAL_ARG(c, r));
-    return FROM_F64(lv - rv);
+    double lv = AS_F64(UNWRAP(EVAL_ARG(c, l)));
+    double rv = AS_F64(UNWRAP(EVAL_ARG(c, r)));
+    return RESULT_OK(FROM_F64(lv - rv));
 }
 
 NODE_DEF
 node_f64_mul(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    double lv = AS_F64(EVAL_ARG(c, l));
-    double rv = AS_F64(EVAL_ARG(c, r));
-    return FROM_F64(lv * rv);
+    double lv = AS_F64(UNWRAP(EVAL_ARG(c, l)));
+    double rv = AS_F64(UNWRAP(EVAL_ARG(c, r)));
+    return RESULT_OK(FROM_F64(lv * rv));
 }
 
 NODE_DEF
 node_f64_eq(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    double lv = AS_F64(EVAL_ARG(c, l));
-    double rv = AS_F64(EVAL_ARG(c, r));
-    return FROM_BOOL(lv == rv);
+    double lv = AS_F64(UNWRAP(EVAL_ARG(c, l)));
+    double rv = AS_F64(UNWRAP(EVAL_ARG(c, r)));
+    return RESULT_OK(FROM_BOOL(lv == rv));
 }
 
 NODE_DEF
 node_f64_lt(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    double lv = AS_F64(EVAL_ARG(c, l));
-    double rv = AS_F64(EVAL_ARG(c, r));
-    return FROM_BOOL(lv < rv);
+    double lv = AS_F64(UNWRAP(EVAL_ARG(c, l)));
+    double rv = AS_F64(UNWRAP(EVAL_ARG(c, r)));
+    return RESULT_OK(FROM_BOOL(lv < rv));
 }
 
 // --- f64 division / min / max / copysign ---
@@ -703,31 +717,33 @@ node_f64_lt(CTX *c, NODE *n, NODE *l, NODE *r)
 NODE_DEF
 node_f64_div(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    return FROM_F64(AS_F64(EVAL_ARG(c, l)) / AS_F64(EVAL_ARG(c, r)));
+    return RESULT_OK(FROM_F64(AS_F64(UNWRAP(EVAL_ARG(c, l))) / AS_F64(UNWRAP(EVAL_ARG(c, r)))));
 }
 
 NODE_DEF
 node_f64_min(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    double lv = AS_F64(EVAL_ARG(c, l));
-    double rv = AS_F64(EVAL_ARG(c, r));
-    if (lv != lv || rv != rv) return FROM_F64(lv != lv ? lv : rv);
-    return FROM_F64(lv < rv ? lv : rv);
+    double lv = AS_F64(UNWRAP(EVAL_ARG(c, l)));
+    double rv = AS_F64(UNWRAP(EVAL_ARG(c, r)));
+    if (lv != lv || rv != rv) return RESULT_OK(FROM_F64(lv != lv ? lv : rv));
+    if (lv == 0.0 && rv == 0.0) return RESULT_OK(FROM_F64(signbit(lv) ? lv : rv));
+    return RESULT_OK(FROM_F64(lv < rv ? lv : rv));
 }
 
 NODE_DEF
 node_f64_max(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    double lv = AS_F64(EVAL_ARG(c, l));
-    double rv = AS_F64(EVAL_ARG(c, r));
-    if (lv != lv || rv != rv) return FROM_F64(lv != lv ? lv : rv);
-    return FROM_F64(lv > rv ? lv : rv);
+    double lv = AS_F64(UNWRAP(EVAL_ARG(c, l)));
+    double rv = AS_F64(UNWRAP(EVAL_ARG(c, r)));
+    if (lv != lv || rv != rv) return RESULT_OK(FROM_F64(lv != lv ? lv : rv));
+    if (lv == 0.0 && rv == 0.0) return RESULT_OK(FROM_F64(signbit(lv) ? rv : lv));
+    return RESULT_OK(FROM_F64(lv > rv ? lv : rv));
 }
 
 NODE_DEF
 node_f64_copysign(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    return FROM_F64(copysign(AS_F64(EVAL_ARG(c, l)), AS_F64(EVAL_ARG(c, r))));
+    return RESULT_OK(FROM_F64(copysign(AS_F64(UNWRAP(EVAL_ARG(c, l))), AS_F64(UNWRAP(EVAL_ARG(c, r))))));
 }
 
 // --- f64 remaining comparisons ---
@@ -735,25 +751,25 @@ node_f64_copysign(CTX *c, NODE *n, NODE *l, NODE *r)
 NODE_DEF
 node_f64_ne(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    return FROM_BOOL(AS_F64(EVAL_ARG(c, l)) != AS_F64(EVAL_ARG(c, r)));
+    return RESULT_OK(FROM_BOOL(AS_F64(UNWRAP(EVAL_ARG(c, l))) != AS_F64(UNWRAP(EVAL_ARG(c, r)))));
 }
 
 NODE_DEF
 node_f64_le(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    return FROM_BOOL(AS_F64(EVAL_ARG(c, l)) <= AS_F64(EVAL_ARG(c, r)));
+    return RESULT_OK(FROM_BOOL(AS_F64(UNWRAP(EVAL_ARG(c, l))) <= AS_F64(UNWRAP(EVAL_ARG(c, r)))));
 }
 
 NODE_DEF
 node_f64_gt(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    return FROM_BOOL(AS_F64(EVAL_ARG(c, l)) > AS_F64(EVAL_ARG(c, r)));
+    return RESULT_OK(FROM_BOOL(AS_F64(UNWRAP(EVAL_ARG(c, l))) > AS_F64(UNWRAP(EVAL_ARG(c, r)))));
 }
 
 NODE_DEF
 node_f64_ge(CTX *c, NODE *n, NODE *l, NODE *r)
 {
-    return FROM_BOOL(AS_F64(EVAL_ARG(c, l)) >= AS_F64(EVAL_ARG(c, r)));
+    return RESULT_OK(FROM_BOOL(AS_F64(UNWRAP(EVAL_ARG(c, l))) >= AS_F64(UNWRAP(EVAL_ARG(c, r)))));
 }
 
 // --- f64 unary ---
@@ -761,43 +777,43 @@ node_f64_ge(CTX *c, NODE *n, NODE *l, NODE *r)
 NODE_DEF
 node_f64_abs(CTX *c, NODE *n, NODE *e)
 {
-    return FROM_F64(fabs(AS_F64(EVAL_ARG(c, e))));
+    return RESULT_OK(FROM_F64(fabs(AS_F64(UNWRAP(EVAL_ARG(c, e))))));
 }
 
 NODE_DEF
 node_f64_neg(CTX *c, NODE *n, NODE *e)
 {
-    return FROM_F64(-AS_F64(EVAL_ARG(c, e)));
+    return RESULT_OK(FROM_F64(-AS_F64(UNWRAP(EVAL_ARG(c, e)))));
 }
 
 NODE_DEF
 node_f64_sqrt(CTX *c, NODE *n, NODE *e)
 {
-    return FROM_F64(sqrt(AS_F64(EVAL_ARG(c, e))));
+    return RESULT_OK(FROM_F64(sqrt(AS_F64(UNWRAP(EVAL_ARG(c, e))))));
 }
 
 NODE_DEF
 node_f64_ceil(CTX *c, NODE *n, NODE *e)
 {
-    return FROM_F64(ceil(AS_F64(EVAL_ARG(c, e))));
+    return RESULT_OK(FROM_F64(ceil(AS_F64(UNWRAP(EVAL_ARG(c, e))))));
 }
 
 NODE_DEF
 node_f64_floor(CTX *c, NODE *n, NODE *e)
 {
-    return FROM_F64(floor(AS_F64(EVAL_ARG(c, e))));
+    return RESULT_OK(FROM_F64(floor(AS_F64(UNWRAP(EVAL_ARG(c, e))))));
 }
 
 NODE_DEF
 node_f64_trunc(CTX *c, NODE *n, NODE *e)
 {
-    return FROM_F64(trunc(AS_F64(EVAL_ARG(c, e))));
+    return RESULT_OK(FROM_F64(trunc(AS_F64(UNWRAP(EVAL_ARG(c, e))))));
 }
 
 NODE_DEF
 node_f64_nearest(CTX *c, NODE *n, NODE *e)
 {
-    return FROM_F64(nearbyint(AS_F64(EVAL_ARG(c, e))));
+    return RESULT_OK(FROM_F64(nearbyint(AS_F64(UNWRAP(EVAL_ARG(c, e))))));
 }
 
 // =====================================================================
@@ -809,49 +825,49 @@ node_f64_nearest(CTX *c, NODE *n, NODE *e)
 NODE_DEF
 node_i32_wrap_i64(CTX *c, NODE *n, NODE *e)
 {
-    return FROM_I32((int32_t)AS_I64(EVAL_ARG(c, e)));
+    return RESULT_OK(FROM_I32((int32_t)AS_I64(UNWRAP(EVAL_ARG(c, e)))));
 }
 
 NODE_DEF
 node_i64_extend_i32_s(CTX *c, NODE *n, NODE *e)
 {
-    return FROM_I64((int64_t)AS_I32(EVAL_ARG(c, e)));
+    return RESULT_OK(FROM_I64((int64_t)AS_I32(UNWRAP(EVAL_ARG(c, e)))));
 }
 
 NODE_DEF
 node_i64_extend_i32_u(CTX *c, NODE *n, NODE *e)
 {
-    return FROM_U64((uint64_t)AS_U32(EVAL_ARG(c, e)));
+    return RESULT_OK(FROM_U64((uint64_t)AS_U32(UNWRAP(EVAL_ARG(c, e)))));
 }
 
 NODE_DEF
 node_i32_extend8_s(CTX *c, NODE *n, NODE *e)
 {
-    return FROM_I32((int32_t)(int8_t)AS_I32(EVAL_ARG(c, e)));
+    return RESULT_OK(FROM_I32((int32_t)(int8_t)AS_I32(UNWRAP(EVAL_ARG(c, e)))));
 }
 
 NODE_DEF
 node_i32_extend16_s(CTX *c, NODE *n, NODE *e)
 {
-    return FROM_I32((int32_t)(int16_t)AS_I32(EVAL_ARG(c, e)));
+    return RESULT_OK(FROM_I32((int32_t)(int16_t)AS_I32(UNWRAP(EVAL_ARG(c, e)))));
 }
 
 NODE_DEF
 node_i64_extend8_s(CTX *c, NODE *n, NODE *e)
 {
-    return FROM_I64((int64_t)(int8_t)AS_I64(EVAL_ARG(c, e)));
+    return RESULT_OK(FROM_I64((int64_t)(int8_t)AS_I64(UNWRAP(EVAL_ARG(c, e)))));
 }
 
 NODE_DEF
 node_i64_extend16_s(CTX *c, NODE *n, NODE *e)
 {
-    return FROM_I64((int64_t)(int16_t)AS_I64(EVAL_ARG(c, e)));
+    return RESULT_OK(FROM_I64((int64_t)(int16_t)AS_I64(UNWRAP(EVAL_ARG(c, e)))));
 }
 
 NODE_DEF
 node_i64_extend32_s(CTX *c, NODE *n, NODE *e)
 {
-    return FROM_I64((int64_t)(int32_t)AS_I64(EVAL_ARG(c, e)));
+    return RESULT_OK(FROM_I64((int64_t)(int32_t)AS_I64(UNWRAP(EVAL_ARG(c, e)))));
 }
 
 // Float → integer truncation (trapping variant).  trunc_sat_* (saturating)
@@ -860,73 +876,78 @@ node_i64_extend32_s(CTX *c, NODE *n, NODE *e)
 NODE_DEF
 node_i32_trunc_f32_s(CTX *c, NODE *n, NODE *e)
 {
-    float v = AS_F32(EVAL_ARG(c, e));
+    float v = AS_F32(UNWRAP(EVAL_ARG(c, e)));
     if (v != v) wastro_trap("invalid conversion to integer");
-    if (v < (float)INT32_MIN || v >= 2147483648.0f) wastro_trap("integer overflow");
-    return FROM_I32((int32_t)v);
+    double t = (double)v;
+    if (t > 2147483647.0 || t < -2147483648.0) wastro_trap("integer overflow");
+    return RESULT_OK(FROM_I32((int32_t)t));
 }
 
 NODE_DEF
 node_i32_trunc_f32_u(CTX *c, NODE *n, NODE *e)
 {
-    float v = AS_F32(EVAL_ARG(c, e));
+    float v = AS_F32(UNWRAP(EVAL_ARG(c, e)));
     if (v != v) wastro_trap("invalid conversion to integer");
-    if (v <= -1.0f || v >= 4294967296.0f) wastro_trap("integer overflow");
-    return FROM_U32((uint32_t)v);
+    double t = (double)v;
+    if (t >= 4294967296.0 || t <= -1.0) wastro_trap("integer overflow");
+    return RESULT_OK(FROM_U32((uint32_t)t));
 }
 
 NODE_DEF
 node_i32_trunc_f64_s(CTX *c, NODE *n, NODE *e)
 {
-    double v = AS_F64(EVAL_ARG(c, e));
+    double v = AS_F64(UNWRAP(EVAL_ARG(c, e)));
     if (v != v) wastro_trap("invalid conversion to integer");
-    if (v < (double)INT32_MIN || v >= 2147483648.0) wastro_trap("integer overflow");
-    return FROM_I32((int32_t)v);
+    if (v >= 2147483648.0 || v <= -2147483649.0) wastro_trap("integer overflow");
+    return RESULT_OK(FROM_I32((int32_t)v));
 }
 
 NODE_DEF
 node_i32_trunc_f64_u(CTX *c, NODE *n, NODE *e)
 {
-    double v = AS_F64(EVAL_ARG(c, e));
+    double v = AS_F64(UNWRAP(EVAL_ARG(c, e)));
     if (v != v) wastro_trap("invalid conversion to integer");
-    if (v <= -1.0 || v >= 4294967296.0) wastro_trap("integer overflow");
-    return FROM_U32((uint32_t)v);
+    if (v >= 4294967296.0 || v <= -1.0) wastro_trap("integer overflow");
+    return RESULT_OK(FROM_U32((uint32_t)v));
 }
 
 NODE_DEF
 node_i64_trunc_f32_s(CTX *c, NODE *n, NODE *e)
 {
-    float v = AS_F32(EVAL_ARG(c, e));
+    float v = AS_F32(UNWRAP(EVAL_ARG(c, e)));
     if (v != v) wastro_trap("invalid conversion to integer");
-    if (v < (float)INT64_MIN || v >= 9223372036854775808.0f) wastro_trap("integer overflow");
-    return FROM_I64((int64_t)v);
+    // i64 range: [-2^63, 2^63-1].  Boundaries in f32: -9223372036854775808.0f
+    // is exactly representable; +2^63 is the trap point.
+    if (v >= 9223372036854775808.0f || v < -9223372036854775808.0f) wastro_trap("integer overflow");
+    return RESULT_OK(FROM_I64((int64_t)v));
 }
 
 NODE_DEF
 node_i64_trunc_f32_u(CTX *c, NODE *n, NODE *e)
 {
-    float v = AS_F32(EVAL_ARG(c, e));
+    float v = AS_F32(UNWRAP(EVAL_ARG(c, e)));
     if (v != v) wastro_trap("invalid conversion to integer");
-    if (v <= -1.0f || v >= 18446744073709551616.0f) wastro_trap("integer overflow");
-    return FROM_U64((uint64_t)v);
+    if (v >= 18446744073709551616.0f || v <= -1.0f) wastro_trap("integer overflow");
+    return RESULT_OK(FROM_U64((uint64_t)v));
 }
 
 NODE_DEF
 node_i64_trunc_f64_s(CTX *c, NODE *n, NODE *e)
 {
-    double v = AS_F64(EVAL_ARG(c, e));
+    double v = AS_F64(UNWRAP(EVAL_ARG(c, e)));
     if (v != v) wastro_trap("invalid conversion to integer");
-    if (v < (double)INT64_MIN || v >= 9223372036854775808.0) wastro_trap("integer overflow");
-    return FROM_I64((int64_t)v);
+    // -9223372036854775808.0 is exact in f64 (it equals INT64_MIN).
+    if (v >= 9223372036854775808.0 || v < -9223372036854775808.0) wastro_trap("integer overflow");
+    return RESULT_OK(FROM_I64((int64_t)v));
 }
 
 NODE_DEF
 node_i64_trunc_f64_u(CTX *c, NODE *n, NODE *e)
 {
-    double v = AS_F64(EVAL_ARG(c, e));
+    double v = AS_F64(UNWRAP(EVAL_ARG(c, e)));
     if (v != v) wastro_trap("invalid conversion to integer");
     if (v <= -1.0 || v >= 18446744073709551616.0) wastro_trap("integer overflow");
-    return FROM_U64((uint64_t)v);
+    return RESULT_OK(FROM_U64((uint64_t)v));
 }
 
 // Saturating truncation (wasm 2.0): NaN → 0, < min → min, > max → max,
@@ -935,81 +956,81 @@ node_i64_trunc_f64_u(CTX *c, NODE *n, NODE *e)
 NODE_DEF
 node_i32_trunc_sat_f32_s(CTX *c, NODE *n, NODE *e)
 {
-    float v = AS_F32(EVAL_ARG(c, e));
-    if (v != v) return FROM_I32(0);
-    if (v < (float)INT32_MIN) return FROM_I32(INT32_MIN);
-    if (v >= 2147483648.0f) return FROM_I32(INT32_MAX);
-    return FROM_I32((int32_t)v);
+    float v = AS_F32(UNWRAP(EVAL_ARG(c, e)));
+    if (v != v) return RESULT_OK(FROM_I32(0));
+    if (v < (float)INT32_MIN) return RESULT_OK(FROM_I32(INT32_MIN));
+    if (v >= 2147483648.0f) return RESULT_OK(FROM_I32(INT32_MAX));
+    return RESULT_OK(FROM_I32((int32_t)v));
 }
 
 NODE_DEF
 node_i32_trunc_sat_f32_u(CTX *c, NODE *n, NODE *e)
 {
-    float v = AS_F32(EVAL_ARG(c, e));
-    if (v != v) return FROM_U32(0);
-    if (v <= 0.0f) return FROM_U32(0);
-    if (v >= 4294967296.0f) return FROM_U32(UINT32_MAX);
-    return FROM_U32((uint32_t)v);
+    float v = AS_F32(UNWRAP(EVAL_ARG(c, e)));
+    if (v != v) return RESULT_OK(FROM_U32(0));
+    if (v <= 0.0f) return RESULT_OK(FROM_U32(0));
+    if (v >= 4294967296.0f) return RESULT_OK(FROM_U32(UINT32_MAX));
+    return RESULT_OK(FROM_U32((uint32_t)v));
 }
 
 NODE_DEF
 node_i32_trunc_sat_f64_s(CTX *c, NODE *n, NODE *e)
 {
-    double v = AS_F64(EVAL_ARG(c, e));
-    if (v != v) return FROM_I32(0);
-    if (v < (double)INT32_MIN) return FROM_I32(INT32_MIN);
-    if (v >= 2147483648.0) return FROM_I32(INT32_MAX);
-    return FROM_I32((int32_t)v);
+    double v = AS_F64(UNWRAP(EVAL_ARG(c, e)));
+    if (v != v) return RESULT_OK(FROM_I32(0));
+    if (v < (double)INT32_MIN) return RESULT_OK(FROM_I32(INT32_MIN));
+    if (v >= 2147483648.0) return RESULT_OK(FROM_I32(INT32_MAX));
+    return RESULT_OK(FROM_I32((int32_t)v));
 }
 
 NODE_DEF
 node_i32_trunc_sat_f64_u(CTX *c, NODE *n, NODE *e)
 {
-    double v = AS_F64(EVAL_ARG(c, e));
-    if (v != v) return FROM_U32(0);
-    if (v <= 0.0) return FROM_U32(0);
-    if (v >= 4294967296.0) return FROM_U32(UINT32_MAX);
-    return FROM_U32((uint32_t)v);
+    double v = AS_F64(UNWRAP(EVAL_ARG(c, e)));
+    if (v != v) return RESULT_OK(FROM_U32(0));
+    if (v <= 0.0) return RESULT_OK(FROM_U32(0));
+    if (v >= 4294967296.0) return RESULT_OK(FROM_U32(UINT32_MAX));
+    return RESULT_OK(FROM_U32((uint32_t)v));
 }
 
 NODE_DEF
 node_i64_trunc_sat_f32_s(CTX *c, NODE *n, NODE *e)
 {
-    float v = AS_F32(EVAL_ARG(c, e));
-    if (v != v) return FROM_I64(0);
-    if (v < (float)INT64_MIN) return FROM_I64(INT64_MIN);
-    if (v >= 9223372036854775808.0f) return FROM_I64(INT64_MAX);
-    return FROM_I64((int64_t)v);
+    float v = AS_F32(UNWRAP(EVAL_ARG(c, e)));
+    if (v != v) return RESULT_OK(FROM_I64(0));
+    if (v < (float)INT64_MIN) return RESULT_OK(FROM_I64(INT64_MIN));
+    if (v >= 9223372036854775808.0f) return RESULT_OK(FROM_I64(INT64_MAX));
+    return RESULT_OK(FROM_I64((int64_t)v));
 }
 
 NODE_DEF
 node_i64_trunc_sat_f32_u(CTX *c, NODE *n, NODE *e)
 {
-    float v = AS_F32(EVAL_ARG(c, e));
-    if (v != v) return FROM_U64(0);
-    if (v <= 0.0f) return FROM_U64(0);
-    if (v >= 18446744073709551616.0f) return FROM_U64(UINT64_MAX);
-    return FROM_U64((uint64_t)v);
+    float v = AS_F32(UNWRAP(EVAL_ARG(c, e)));
+    if (v != v) return RESULT_OK(FROM_U64(0));
+    if (v <= 0.0f) return RESULT_OK(FROM_U64(0));
+    if (v >= 18446744073709551616.0f) return RESULT_OK(FROM_U64(UINT64_MAX));
+    return RESULT_OK(FROM_U64((uint64_t)v));
 }
 
 NODE_DEF
 node_i64_trunc_sat_f64_s(CTX *c, NODE *n, NODE *e)
 {
-    double v = AS_F64(EVAL_ARG(c, e));
-    if (v != v) return FROM_I64(0);
-    if (v < (double)INT64_MIN) return FROM_I64(INT64_MIN);
-    if (v >= 9223372036854775808.0) return FROM_I64(INT64_MAX);
-    return FROM_I64((int64_t)v);
+    double v = AS_F64(UNWRAP(EVAL_ARG(c, e)));
+    if (v != v) return RESULT_OK(FROM_I64(0));
+    if (v < (double)INT64_MIN) return RESULT_OK(FROM_I64(INT64_MIN));
+    if (v >= 9223372036854775808.0) return RESULT_OK(FROM_I64(INT64_MAX));
+    return RESULT_OK(FROM_I64((int64_t)v));
 }
 
 NODE_DEF
 node_i64_trunc_sat_f64_u(CTX *c, NODE *n, NODE *e)
 {
-    double v = AS_F64(EVAL_ARG(c, e));
-    if (v != v) return FROM_U64(0);
-    if (v <= 0.0) return FROM_U64(0);
-    if (v >= 18446744073709551616.0) return FROM_U64(UINT64_MAX);
-    return FROM_U64((uint64_t)v);
+    double v = AS_F64(UNWRAP(EVAL_ARG(c, e)));
+    if (v != v) return RESULT_OK(FROM_U64(0));
+    if (v <= 0.0) return RESULT_OK(FROM_U64(0));
+    if (v >= 18446744073709551616.0) return RESULT_OK(FROM_U64(UINT64_MAX));
+    return RESULT_OK(FROM_U64((uint64_t)v));
 }
 
 // Integer → float
@@ -1017,49 +1038,49 @@ node_i64_trunc_sat_f64_u(CTX *c, NODE *n, NODE *e)
 NODE_DEF
 node_f32_convert_i32_s(CTX *c, NODE *n, NODE *e)
 {
-    return FROM_F32((float)AS_I32(EVAL_ARG(c, e)));
+    return RESULT_OK(FROM_F32((float)AS_I32(UNWRAP(EVAL_ARG(c, e)))));
 }
 
 NODE_DEF
 node_f32_convert_i32_u(CTX *c, NODE *n, NODE *e)
 {
-    return FROM_F32((float)AS_U32(EVAL_ARG(c, e)));
+    return RESULT_OK(FROM_F32((float)AS_U32(UNWRAP(EVAL_ARG(c, e)))));
 }
 
 NODE_DEF
 node_f32_convert_i64_s(CTX *c, NODE *n, NODE *e)
 {
-    return FROM_F32((float)AS_I64(EVAL_ARG(c, e)));
+    return RESULT_OK(FROM_F32((float)AS_I64(UNWRAP(EVAL_ARG(c, e)))));
 }
 
 NODE_DEF
 node_f32_convert_i64_u(CTX *c, NODE *n, NODE *e)
 {
-    return FROM_F32((float)AS_U64(EVAL_ARG(c, e)));
+    return RESULT_OK(FROM_F32((float)AS_U64(UNWRAP(EVAL_ARG(c, e)))));
 }
 
 NODE_DEF
 node_f64_convert_i32_s(CTX *c, NODE *n, NODE *e)
 {
-    return FROM_F64((double)AS_I32(EVAL_ARG(c, e)));
+    return RESULT_OK(FROM_F64((double)AS_I32(UNWRAP(EVAL_ARG(c, e)))));
 }
 
 NODE_DEF
 node_f64_convert_i32_u(CTX *c, NODE *n, NODE *e)
 {
-    return FROM_F64((double)AS_U32(EVAL_ARG(c, e)));
+    return RESULT_OK(FROM_F64((double)AS_U32(UNWRAP(EVAL_ARG(c, e)))));
 }
 
 NODE_DEF
 node_f64_convert_i64_s(CTX *c, NODE *n, NODE *e)
 {
-    return FROM_F64((double)AS_I64(EVAL_ARG(c, e)));
+    return RESULT_OK(FROM_F64((double)AS_I64(UNWRAP(EVAL_ARG(c, e)))));
 }
 
 NODE_DEF
 node_f64_convert_i64_u(CTX *c, NODE *n, NODE *e)
 {
-    return FROM_F64((double)AS_U64(EVAL_ARG(c, e)));
+    return RESULT_OK(FROM_F64((double)AS_U64(UNWRAP(EVAL_ARG(c, e)))));
 }
 
 // Float ↔ float
@@ -1067,13 +1088,13 @@ node_f64_convert_i64_u(CTX *c, NODE *n, NODE *e)
 NODE_DEF
 node_f32_demote_f64(CTX *c, NODE *n, NODE *e)
 {
-    return FROM_F32((float)AS_F64(EVAL_ARG(c, e)));
+    return RESULT_OK(FROM_F32((float)AS_F64(UNWRAP(EVAL_ARG(c, e)))));
 }
 
 NODE_DEF
 node_f64_promote_f32(CTX *c, NODE *n, NODE *e)
 {
-    return FROM_F64((double)AS_F32(EVAL_ARG(c, e)));
+    return RESULT_OK(FROM_F64((double)AS_F32(UNWRAP(EVAL_ARG(c, e)))));
 }
 
 // Reinterpret (bitcast, no value change).
@@ -1081,7 +1102,7 @@ node_f64_promote_f32(CTX *c, NODE *n, NODE *e)
 NODE_DEF
 node_i32_reinterpret_f32(CTX *c, NODE *n, NODE *e)
 {
-    return FROM_U32(AS_U32(EVAL_ARG(c, e)));
+    return RESULT_OK(FROM_U32(AS_U32(UNWRAP(EVAL_ARG(c, e)))));
 }
 
 NODE_DEF
@@ -1093,7 +1114,7 @@ node_i64_reinterpret_f64(CTX *c, NODE *n, NODE *e)
 NODE_DEF
 node_f32_reinterpret_i32(CTX *c, NODE *n, NODE *e)
 {
-    return FROM_U32(AS_U32(EVAL_ARG(c, e)));
+    return RESULT_OK(FROM_U32(AS_U32(UNWRAP(EVAL_ARG(c, e)))));
 }
 
 NODE_DEF
@@ -1106,56 +1127,79 @@ node_f64_reinterpret_i64(CTX *c, NODE *n, NODE *e)
 // Control flow & sequencing
 // =====================================================================
 //
-// Structured control flow uses CTX-side branch state (c->br_depth /
-// c->br_value) instead of setjmp.  Semantics:
+// Branch state lives in the RESULT struct returned by every dispatcher:
 //
-//   * `br N` sets br_depth = N + 1 and stashes the carried value
-//     (if any) in br_value.  The return value of the br node itself
-//     is irrelevant — every parent that runs after a branch checks
-//     br_depth and either consumes (block / loop / call boundary)
-//     or propagates (seq / if / arithmetic, by short-circuiting).
-//   * `block` decrements br_depth on the way out and consumes when
-//     the count reaches 0.  Its result is the carried value.
-//   * `loop` decrements similarly but loops back when consumed.
-//   * `return` uses the special sentinel WASTRO_BR_RETURN so that
-//     enclosing blocks/loops always propagate, and only the function
-//     boundary (node_call_N) consumes it.
+//   * `br N` returns RESULT { value=0,        br_depth = N+1 }
+//   * `br N v` returns       { value=v,        br_depth = N+1 }
+//   * `return` returns       { value=0,        br_depth = WASTRO_BR_RETURN }
+//   * `return v` returns     { value=v,        br_depth = WASTRO_BR_RETURN }
+//   * `block` decrements the body's br_depth on exit; consumes (resets
+//     to 0) when it reaches 0, returning RESULT.value as its own value.
+//   * `loop` decrements similarly and re-enters on consumption.
+//   * `if` introduces a label too (decrement on exit), per wasm spec.
+//   * `node_call_N` consumes WASTRO_BR_RETURN at the function boundary.
+//
+// UNWRAP propagates non-normal RESULT immediately, so multi-operand
+// nodes don't need explicit short-circuit checks — the macro returns
+// from the enclosing function the moment a branch is in flight.
 
 NODE_DEF
 node_nop(CTX *c, NODE *n)
 {
-    return 0;
+    return RESULT_OK(0);
+}
+
+// drop — evaluate the operand for its side effects, discard the value.
+NODE_DEF
+node_drop(CTX *c, NODE *n, NODE *e)
+{
+    UNWRAP(EVAL_ARG(c, e));
+    return RESULT_OK(0);
+}
+
+// select — pops cond, v2, v1; pushes (cond ? v1 : v2).  Both v1 and
+// v2 are evaluated unconditionally per wasm spec (they're already on
+// the stack when select runs).
+NODE_DEF
+node_select(CTX *c, NODE *n, NODE *v1, NODE *v2, NODE *cond)
+{
+    VALUE a = UNWRAP(EVAL_ARG(c, v1));
+    VALUE b = UNWRAP(EVAL_ARG(c, v2));
+    int32_t k = AS_I32(UNWRAP(EVAL_ARG(c, cond)));
+    return RESULT_OK(k ? a : b);
 }
 
 NODE_DEF
 node_if(CTX *c, NODE *n, NODE *cond, NODE *then_branch, NODE *else_branch)
 {
-    if (AS_I32(EVAL_ARG(c, cond))) {
-        return EVAL_ARG(c, then_branch);
-    }
-    else {
-        return EVAL_ARG(c, else_branch);
-    }
+    int32_t cv = AS_I32(UNWRAP(EVAL_ARG(c, cond)));
+    RESULT r = cv ? EVAL_ARG(c, then_branch) : EVAL_ARG(c, else_branch);
+    // `if` introduces a label that `br N` from inside the body can
+    // target.  Decrement br_depth on exit just like block/loop.
+    if (r.br_depth == 0) return r;
+    if (r.br_depth == WASTRO_BR_RETURN) return r;
+    if (--r.br_depth == 0) return RESULT_OK(r.value);
+    return r;
 }
 
 NODE_DEF
 node_seq(CTX *c, NODE *n, NODE *head, NODE *tail)
 {
-    EVAL_ARG(c, head);
-    if (c->br_depth) return 0;   // mid-sequence branch, skip tail
+    UNWRAP(EVAL_ARG(c, head));
     return EVAL_ARG(c, tail);
 }
 
 // Labelled scope.  Body's value is the block's result if it falls
-// through normally, otherwise br_value when a `br` targets us.
+// through normally, otherwise the carried RESULT.value when a `br`
+// targets us.
 NODE_DEF
 node_block(CTX *c, NODE *n, NODE *body)
 {
-    VALUE v = EVAL_ARG(c, body);
-    if (c->br_depth == 0) return v;
-    if (c->br_depth == WASTRO_BR_RETURN) return v;  // function-level return: propagate
-    if (--c->br_depth == 0) return c->br_value;     // we are the target
-    return v;                                        // deeper br: propagate
+    RESULT r = EVAL_ARG(c, body);
+    if (r.br_depth == 0) return r;
+    if (r.br_depth == WASTRO_BR_RETURN) return r;   // function-level return: propagate
+    if (--r.br_depth == 0) return RESULT_OK(r.value);  // we are the target
+    return r;                                        // deeper br: propagate
 }
 
 // Like block, but a br targeting it loops back to the start.
@@ -1163,14 +1207,14 @@ NODE_DEF
 node_loop(CTX *c, NODE *n, NODE *body)
 {
     for (;;) {
-        VALUE v = EVAL_ARG(c, body);
-        if (c->br_depth == 0) return v;
-        if (c->br_depth == WASTRO_BR_RETURN) return v;
-        if (--c->br_depth == 0) {
+        RESULT r = EVAL_ARG(c, body);
+        if (r.br_depth == 0) return r;
+        if (r.br_depth == WASTRO_BR_RETURN) return r;
+        if (--r.br_depth == 0) {
             // br to the loop's own label re-enters the loop.
             continue;
         }
-        return v;                                    // deeper br: propagate
+        return r;                                   // deeper br: propagate
     }
 }
 
@@ -1178,56 +1222,48 @@ node_loop(CTX *c, NODE *n, NODE *body)
 NODE_DEF
 node_br(CTX *c, NODE *n, uint32_t depth)
 {
-    c->br_depth = depth + 1;
-    return 0;
+    return (RESULT){0, depth + 1};
 }
 
 // Unconditional branch carrying a value (typed block / loop result).
 NODE_DEF
 node_br_v(CTX *c, NODE *n, uint32_t depth, NODE *value)
 {
-    c->br_value = EVAL_ARG(c, value);
-    c->br_depth = depth + 1;
-    return c->br_value;
+    VALUE v = UNWRAP(EVAL_ARG(c, value));
+    return (RESULT){v, depth + 1};
 }
 
 // Conditional branch: takes if cond is non-zero (i32 truthy).
 NODE_DEF
 node_br_if(CTX *c, NODE *n, uint32_t depth, NODE *cond)
 {
-    if (AS_I32(EVAL_ARG(c, cond))) {
-        c->br_depth = depth + 1;
-    }
-    return 0;
+    int32_t cv = AS_I32(UNWRAP(EVAL_ARG(c, cond)));
+    if (cv) return (RESULT){0, depth + 1};
+    return RESULT_OK(0);
 }
 
 NODE_DEF
 node_br_if_v(CTX *c, NODE *n, uint32_t depth, NODE *cond, NODE *value)
 {
-    if (AS_I32(EVAL_ARG(c, cond))) {
-        // Spec: value is consumed regardless, but only forwarded on taken
-        // branch.  v0.6 evaluates only on the taken branch — fine for
-        // value-pure expressions.  Side-effecting carry values would need
-        // unconditional eval; revisit when we have side-effecting ops.
-        c->br_value = EVAL_ARG(c, value);
-        c->br_depth = depth + 1;
-    }
-    return 0;
+    // Wasm stack order is value-then-cond — evaluate value first.
+    // UNWRAP propagates a branch from either operand.
+    VALUE val = UNWRAP(EVAL_ARG(c, value));
+    int32_t cv = AS_I32(UNWRAP(EVAL_ARG(c, cond)));
+    if (cv) return (RESULT){val, depth + 1};
+    return RESULT_OK(0);
 }
 
 NODE_DEF
 node_return(CTX *c, NODE *n)
 {
-    c->br_depth = WASTRO_BR_RETURN;
-    return 0;
+    return (RESULT){0, WASTRO_BR_RETURN};
 }
 
 NODE_DEF
 node_return_v(CTX *c, NODE *n, NODE *value)
 {
-    c->br_value = EVAL_ARG(c, value);
-    c->br_depth = WASTRO_BR_RETURN;
-    return c->br_value;
+    VALUE v = UNWRAP(EVAL_ARG(c, value));
+    return (RESULT){v, WASTRO_BR_RETURN};
 }
 
 // Trap: prints "unreachable" and exits.  Models wasm's `unreachable`.
@@ -1235,7 +1271,7 @@ NODE_DEF
 node_unreachable(CTX *c, NODE *n)
 {
     wastro_trap("unreachable");
-    return 0;  // unreachable
+    __builtin_unreachable();
 }
 
 // br_table — computed branch into a table of targets.
@@ -1248,10 +1284,9 @@ NODE_DEF
 node_br_table(CTX *c, NODE *n, uint32_t target_index, uint32_t target_cnt, uint32_t default_depth, NODE *idx)
 {
     extern uint32_t *WASTRO_BR_TABLE;
-    uint32_t i = AS_U32(EVAL_ARG(c, idx));
+    uint32_t i = AS_U32(UNWRAP(EVAL_ARG(c, idx)));
     uint32_t depth = (i < target_cnt) ? WASTRO_BR_TABLE[target_index + i] : default_depth;
-    c->br_depth = depth + 1;
-    return 0;
+    return (RESULT){0, depth + 1};
 }
 
 // br_table with carried value — same as br_table but value is forwarded.
@@ -1259,11 +1294,11 @@ NODE_DEF
 node_br_table_v(CTX *c, NODE *n, uint32_t target_index, uint32_t target_cnt, uint32_t default_depth, NODE *idx, NODE *value)
 {
     extern uint32_t *WASTRO_BR_TABLE;
-    c->br_value = EVAL_ARG(c, value);
-    uint32_t i = AS_U32(EVAL_ARG(c, idx));
+    // Stack order: value first, then idx on top.
+    VALUE val = UNWRAP(EVAL_ARG(c, value));
+    uint32_t i = AS_U32(UNWRAP(EVAL_ARG(c, idx)));
     uint32_t depth = (i < target_cnt) ? WASTRO_BR_TABLE[target_index + i] : default_depth;
-    c->br_depth = depth + 1;
-    return c->br_value;
+    return (RESULT){val, depth + 1};
 }
 
 // =====================================================================
@@ -1283,123 +1318,123 @@ node_br_table_v(CTX *c, NODE *n, uint32_t target_index, uint32_t target_cnt, uin
 NODE_DEF
 node_i32_load(CTX *c, NODE *n, uint32_t offset, NODE *addr)
 {
-    uint32_t a = AS_U32(EVAL_ARG(c, addr)) + offset;
+    uint64_t a = (uint64_t)AS_U32(UNWRAP(EVAL_ARG(c, addr))) + (uint64_t)offset;
     if ((uint64_t)a + 4 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
     uint32_t v; memcpy(&v, c->memory + a, 4);
-    return FROM_U32(v);
+    return RESULT_OK(FROM_U32(v));
 }
 
 NODE_DEF
 node_i32_load8_s(CTX *c, NODE *n, uint32_t offset, NODE *addr)
 {
-    uint32_t a = AS_U32(EVAL_ARG(c, addr)) + offset;
+    uint64_t a = (uint64_t)AS_U32(UNWRAP(EVAL_ARG(c, addr))) + (uint64_t)offset;
     if ((uint64_t)a + 1 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
-    return FROM_I32((int32_t)(int8_t)c->memory[a]);
+    return RESULT_OK(FROM_I32((int32_t)(int8_t)c->memory[a]));
 }
 
 NODE_DEF
 node_i32_load8_u(CTX *c, NODE *n, uint32_t offset, NODE *addr)
 {
-    uint32_t a = AS_U32(EVAL_ARG(c, addr)) + offset;
+    uint64_t a = (uint64_t)AS_U32(UNWRAP(EVAL_ARG(c, addr))) + (uint64_t)offset;
     if ((uint64_t)a + 1 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
-    return FROM_U32((uint32_t)c->memory[a]);
+    return RESULT_OK(FROM_U32((uint32_t)c->memory[a]));
 }
 
 NODE_DEF
 node_i32_load16_s(CTX *c, NODE *n, uint32_t offset, NODE *addr)
 {
-    uint32_t a = AS_U32(EVAL_ARG(c, addr)) + offset;
+    uint64_t a = (uint64_t)AS_U32(UNWRAP(EVAL_ARG(c, addr))) + (uint64_t)offset;
     if ((uint64_t)a + 2 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
     int16_t v; memcpy(&v, c->memory + a, 2);
-    return FROM_I32((int32_t)v);
+    return RESULT_OK(FROM_I32((int32_t)v));
 }
 
 NODE_DEF
 node_i32_load16_u(CTX *c, NODE *n, uint32_t offset, NODE *addr)
 {
-    uint32_t a = AS_U32(EVAL_ARG(c, addr)) + offset;
+    uint64_t a = (uint64_t)AS_U32(UNWRAP(EVAL_ARG(c, addr))) + (uint64_t)offset;
     if ((uint64_t)a + 2 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
     uint16_t v; memcpy(&v, c->memory + a, 2);
-    return FROM_U32((uint32_t)v);
+    return RESULT_OK(FROM_U32((uint32_t)v));
 }
 
 NODE_DEF
 node_i64_load(CTX *c, NODE *n, uint32_t offset, NODE *addr)
 {
-    uint32_t a = AS_U32(EVAL_ARG(c, addr)) + offset;
+    uint64_t a = (uint64_t)AS_U32(UNWRAP(EVAL_ARG(c, addr))) + (uint64_t)offset;
     if ((uint64_t)a + 8 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
     uint64_t v; memcpy(&v, c->memory + a, 8);
-    return FROM_U64(v);
+    return RESULT_OK(FROM_U64(v));
 }
 
 NODE_DEF
 node_i64_load8_s(CTX *c, NODE *n, uint32_t offset, NODE *addr)
 {
-    uint32_t a = AS_U32(EVAL_ARG(c, addr)) + offset;
+    uint64_t a = (uint64_t)AS_U32(UNWRAP(EVAL_ARG(c, addr))) + (uint64_t)offset;
     if ((uint64_t)a + 1 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
-    return FROM_I64((int64_t)(int8_t)c->memory[a]);
+    return RESULT_OK(FROM_I64((int64_t)(int8_t)c->memory[a]));
 }
 
 NODE_DEF
 node_i64_load8_u(CTX *c, NODE *n, uint32_t offset, NODE *addr)
 {
-    uint32_t a = AS_U32(EVAL_ARG(c, addr)) + offset;
+    uint64_t a = (uint64_t)AS_U32(UNWRAP(EVAL_ARG(c, addr))) + (uint64_t)offset;
     if ((uint64_t)a + 1 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
-    return FROM_U64((uint64_t)c->memory[a]);
+    return RESULT_OK(FROM_U64((uint64_t)c->memory[a]));
 }
 
 NODE_DEF
 node_i64_load16_s(CTX *c, NODE *n, uint32_t offset, NODE *addr)
 {
-    uint32_t a = AS_U32(EVAL_ARG(c, addr)) + offset;
+    uint64_t a = (uint64_t)AS_U32(UNWRAP(EVAL_ARG(c, addr))) + (uint64_t)offset;
     if ((uint64_t)a + 2 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
     int16_t v; memcpy(&v, c->memory + a, 2);
-    return FROM_I64((int64_t)v);
+    return RESULT_OK(FROM_I64((int64_t)v));
 }
 
 NODE_DEF
 node_i64_load16_u(CTX *c, NODE *n, uint32_t offset, NODE *addr)
 {
-    uint32_t a = AS_U32(EVAL_ARG(c, addr)) + offset;
+    uint64_t a = (uint64_t)AS_U32(UNWRAP(EVAL_ARG(c, addr))) + (uint64_t)offset;
     if ((uint64_t)a + 2 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
     uint16_t v; memcpy(&v, c->memory + a, 2);
-    return FROM_U64((uint64_t)v);
+    return RESULT_OK(FROM_U64((uint64_t)v));
 }
 
 NODE_DEF
 node_i64_load32_s(CTX *c, NODE *n, uint32_t offset, NODE *addr)
 {
-    uint32_t a = AS_U32(EVAL_ARG(c, addr)) + offset;
+    uint64_t a = (uint64_t)AS_U32(UNWRAP(EVAL_ARG(c, addr))) + (uint64_t)offset;
     if ((uint64_t)a + 4 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
     int32_t v; memcpy(&v, c->memory + a, 4);
-    return FROM_I64((int64_t)v);
+    return RESULT_OK(FROM_I64((int64_t)v));
 }
 
 NODE_DEF
 node_i64_load32_u(CTX *c, NODE *n, uint32_t offset, NODE *addr)
 {
-    uint32_t a = AS_U32(EVAL_ARG(c, addr)) + offset;
+    uint64_t a = (uint64_t)AS_U32(UNWRAP(EVAL_ARG(c, addr))) + (uint64_t)offset;
     if ((uint64_t)a + 4 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
     uint32_t v; memcpy(&v, c->memory + a, 4);
-    return FROM_U64((uint64_t)v);
+    return RESULT_OK(FROM_U64((uint64_t)v));
 }
 
 NODE_DEF
 node_f32_load(CTX *c, NODE *n, uint32_t offset, NODE *addr)
 {
-    uint32_t a = AS_U32(EVAL_ARG(c, addr)) + offset;
+    uint64_t a = (uint64_t)AS_U32(UNWRAP(EVAL_ARG(c, addr))) + (uint64_t)offset;
     if ((uint64_t)a + 4 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
     uint32_t bits; memcpy(&bits, c->memory + a, 4);
-    return FROM_U32(bits);
+    return RESULT_OK(FROM_U32(bits));
 }
 
 NODE_DEF
 node_f64_load(CTX *c, NODE *n, uint32_t offset, NODE *addr)
 {
-    uint32_t a = AS_U32(EVAL_ARG(c, addr)) + offset;
+    uint64_t a = (uint64_t)AS_U32(UNWRAP(EVAL_ARG(c, addr))) + (uint64_t)offset;
     if ((uint64_t)a + 8 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
     uint64_t bits; memcpy(&bits, c->memory + a, 8);
-    return FROM_U64(bits);
+    return RESULT_OK(FROM_U64(bits));
 }
 
 // Stores
@@ -1407,115 +1442,115 @@ node_f64_load(CTX *c, NODE *n, uint32_t offset, NODE *addr)
 NODE_DEF
 node_i32_store(CTX *c, NODE *n, uint32_t offset, NODE *addr, NODE *value)
 {
-    uint32_t a = AS_U32(EVAL_ARG(c, addr)) + offset;
-    uint32_t v = AS_U32(EVAL_ARG(c, value));
+    uint64_t a = (uint64_t)AS_U32(UNWRAP(EVAL_ARG(c, addr))) + (uint64_t)offset;
+    uint32_t v = AS_U32(UNWRAP(EVAL_ARG(c, value)));
     if ((uint64_t)a + 4 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
     memcpy(c->memory + a, &v, 4);
-    return 0;
+    return RESULT_OK(0);
 }
 
 NODE_DEF
 node_i32_store8(CTX *c, NODE *n, uint32_t offset, NODE *addr, NODE *value)
 {
-    uint32_t a = AS_U32(EVAL_ARG(c, addr)) + offset;
-    uint8_t v = (uint8_t)AS_U32(EVAL_ARG(c, value));
+    uint64_t a = (uint64_t)AS_U32(UNWRAP(EVAL_ARG(c, addr))) + (uint64_t)offset;
+    uint8_t v = (uint8_t)AS_U32(UNWRAP(EVAL_ARG(c, value)));
     if ((uint64_t)a + 1 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
     c->memory[a] = v;
-    return 0;
+    return RESULT_OK(0);
 }
 
 NODE_DEF
 node_i32_store16(CTX *c, NODE *n, uint32_t offset, NODE *addr, NODE *value)
 {
-    uint32_t a = AS_U32(EVAL_ARG(c, addr)) + offset;
-    uint16_t v = (uint16_t)AS_U32(EVAL_ARG(c, value));
+    uint64_t a = (uint64_t)AS_U32(UNWRAP(EVAL_ARG(c, addr))) + (uint64_t)offset;
+    uint16_t v = (uint16_t)AS_U32(UNWRAP(EVAL_ARG(c, value)));
     if ((uint64_t)a + 2 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
     memcpy(c->memory + a, &v, 2);
-    return 0;
+    return RESULT_OK(0);
 }
 
 NODE_DEF
 node_i64_store(CTX *c, NODE *n, uint32_t offset, NODE *addr, NODE *value)
 {
-    uint32_t a = AS_U32(EVAL_ARG(c, addr)) + offset;
-    uint64_t v = AS_U64(EVAL_ARG(c, value));
+    uint64_t a = (uint64_t)AS_U32(UNWRAP(EVAL_ARG(c, addr))) + (uint64_t)offset;
+    uint64_t v = AS_U64(UNWRAP(EVAL_ARG(c, value)));
     if ((uint64_t)a + 8 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
     memcpy(c->memory + a, &v, 8);
-    return 0;
+    return RESULT_OK(0);
 }
 
 NODE_DEF
 node_i64_store8(CTX *c, NODE *n, uint32_t offset, NODE *addr, NODE *value)
 {
-    uint32_t a = AS_U32(EVAL_ARG(c, addr)) + offset;
-    uint8_t v = (uint8_t)AS_U64(EVAL_ARG(c, value));
+    uint64_t a = (uint64_t)AS_U32(UNWRAP(EVAL_ARG(c, addr))) + (uint64_t)offset;
+    uint8_t v = (uint8_t)AS_U64(UNWRAP(EVAL_ARG(c, value)));
     if ((uint64_t)a + 1 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
     c->memory[a] = v;
-    return 0;
+    return RESULT_OK(0);
 }
 
 NODE_DEF
 node_i64_store16(CTX *c, NODE *n, uint32_t offset, NODE *addr, NODE *value)
 {
-    uint32_t a = AS_U32(EVAL_ARG(c, addr)) + offset;
-    uint16_t v = (uint16_t)AS_U64(EVAL_ARG(c, value));
+    uint64_t a = (uint64_t)AS_U32(UNWRAP(EVAL_ARG(c, addr))) + (uint64_t)offset;
+    uint16_t v = (uint16_t)AS_U64(UNWRAP(EVAL_ARG(c, value)));
     if ((uint64_t)a + 2 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
     memcpy(c->memory + a, &v, 2);
-    return 0;
+    return RESULT_OK(0);
 }
 
 NODE_DEF
 node_i64_store32(CTX *c, NODE *n, uint32_t offset, NODE *addr, NODE *value)
 {
-    uint32_t a = AS_U32(EVAL_ARG(c, addr)) + offset;
-    uint32_t v = (uint32_t)AS_U64(EVAL_ARG(c, value));
+    uint64_t a = (uint64_t)AS_U32(UNWRAP(EVAL_ARG(c, addr))) + (uint64_t)offset;
+    uint32_t v = (uint32_t)AS_U64(UNWRAP(EVAL_ARG(c, value)));
     if ((uint64_t)a + 4 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
     memcpy(c->memory + a, &v, 4);
-    return 0;
+    return RESULT_OK(0);
 }
 
 NODE_DEF
 node_f32_store(CTX *c, NODE *n, uint32_t offset, NODE *addr, NODE *value)
 {
-    uint32_t a = AS_U32(EVAL_ARG(c, addr)) + offset;
-    uint32_t bits = AS_U32(EVAL_ARG(c, value));
+    uint64_t a = (uint64_t)AS_U32(UNWRAP(EVAL_ARG(c, addr))) + (uint64_t)offset;
+    uint32_t bits = AS_U32(UNWRAP(EVAL_ARG(c, value)));
     if ((uint64_t)a + 4 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
     memcpy(c->memory + a, &bits, 4);
-    return 0;
+    return RESULT_OK(0);
 }
 
 NODE_DEF
 node_f64_store(CTX *c, NODE *n, uint32_t offset, NODE *addr, NODE *value)
 {
-    uint32_t a = AS_U32(EVAL_ARG(c, addr)) + offset;
-    uint64_t bits = AS_U64(EVAL_ARG(c, value));
+    uint64_t a = (uint64_t)AS_U32(UNWRAP(EVAL_ARG(c, addr))) + (uint64_t)offset;
+    uint64_t bits = AS_U64(UNWRAP(EVAL_ARG(c, value)));
     if ((uint64_t)a + 8 > (uint64_t)c->memory_pages * WASTRO_PAGE_SIZE) wastro_trap("out of bounds memory access");
     memcpy(c->memory + a, &bits, 8);
-    return 0;
+    return RESULT_OK(0);
 }
 
 // memory.size — current pages (i32)
 NODE_DEF
 node_memory_size(CTX *c, NODE *n)
 {
-    return FROM_I32((int32_t)c->memory_pages);
+    return RESULT_OK(FROM_I32((int32_t)c->memory_pages));
 }
 
 // memory.grow — grow by `delta` pages, return previous page count, or -1 on failure.
 NODE_DEF
 node_memory_grow(CTX *c, NODE *n, NODE *delta)
 {
-    uint32_t d = AS_U32(EVAL_ARG(c, delta));
+    uint32_t d = AS_U32(UNWRAP(EVAL_ARG(c, delta)));
     uint64_t new_pages = (uint64_t)c->memory_pages + d;
-    if (new_pages > c->memory_max_pages) return FROM_I32(-1);
-    if (new_pages > 65536) return FROM_I32(-1);  // wasm 32-bit limit
+    if (new_pages > c->memory_max_pages) return RESULT_OK(FROM_I32(-1));
+    if (new_pages > 65536) return RESULT_OK(FROM_I32(-1));  // wasm 32-bit limit
     uint8_t *new_mem = realloc(c->memory, (size_t)(new_pages * WASTRO_PAGE_SIZE));
-    if (!new_mem) return FROM_I32(-1);
+    if (!new_mem) return RESULT_OK(FROM_I32(-1));
     memset(new_mem + c->memory_pages * WASTRO_PAGE_SIZE, 0, d * WASTRO_PAGE_SIZE);
     c->memory = new_mem;
     uint32_t prev = c->memory_pages;
     c->memory_pages = (uint32_t)new_pages;
-    return FROM_I32((int32_t)prev);
+    return RESULT_OK(FROM_I32((int32_t)prev));
 }
 
 // =====================================================================
@@ -1530,117 +1565,93 @@ NODE_DEF
 node_global_get(CTX *c, NODE *n, uint32_t index)
 {
     extern VALUE *WASTRO_GLOBALS;
-    return WASTRO_GLOBALS[index];
+    return RESULT_OK(WASTRO_GLOBALS[index]);
 }
 
 NODE_DEF
 node_global_set(CTX *c, NODE *n, uint32_t index, NODE *value)
 {
     extern VALUE *WASTRO_GLOBALS;
-    WASTRO_GLOBALS[index] = EVAL_ARG(c, value);
-    return 0;
+    WASTRO_GLOBALS[index] = UNWRAP(EVAL_ARG(c, value));
+    return RESULT_OK(0);
 }
 
 // =====================================================================
 // Direct function call — fixed-arity variants (Phase 1)
 // =====================================================================
 
+// Direct call: evaluate args into the caller's stack-top region,
+// switch fp/sp, EVAL the callee's body, then restore.
+//
+// `body` is the callee's body NODE — declared as a child slot so that
+// the framework specializer recurses into it when generating SD_ for
+// the call site, naturally inlining small leaf callees (rotr, idx, ...)
+// into their parents.  Cycles (self / mutual recursion) are broken by
+// the framework's `is_specializing` flag in astro_code_store.c —
+// recursive specialization stops at the cycle, leaving the closing
+// edge as a direct call to the already-emitted SD_<body_hash>.
 NODE_DEF
-node_call_0(CTX *c, NODE *n, uint32_t func_index, uint32_t local_cnt)
+node_call_0(CTX *c, NODE *n, uint32_t func_index, uint32_t local_cnt, NODE *body)
 {
-    extern struct wastro_function WASTRO_FUNCS[];
     VALUE *new_fp = c->sp;
     for (uint32_t i = 0; i < local_cnt; i++) new_fp[i] = 0;
     VALUE *save_fp = c->fp; VALUE *save_sp = c->sp;
     c->fp = new_fp; c->sp = new_fp + local_cnt;
-    // Wasm validation guarantees br_depth == 0 at a call site, so we
-    // don't need to save it.  Body may set WASTRO_BR_RETURN; consume
-    // it here and zero out before returning.
-    VALUE result = EVAL(c, WASTRO_FUNCS[func_index].body);
-    if (c->br_depth) {
-        result = c->br_value;     // WASTRO_BR_RETURN landed here
-        c->br_depth = 0;
-    }
+    RESULT r = EVAL_ARG(c, body);
     c->fp = save_fp; c->sp = save_sp;
-    return result;
+    return RESULT_OK(r.value);
 }
 
 NODE_DEF
-node_call_1(CTX *c, NODE *n, uint32_t func_index, uint32_t local_cnt, NODE *a0)
+node_call_1(CTX *c, NODE *n, uint32_t func_index, uint32_t local_cnt, NODE *a0, NODE *body)
 {
-    extern struct wastro_function WASTRO_FUNCS[];
     VALUE *new_fp = c->sp;
-    new_fp[0] = EVAL_ARG(c, a0);
+    new_fp[0] = UNWRAP(EVAL_ARG(c, a0));
     for (uint32_t i = 1; i < local_cnt; i++) new_fp[i] = 0;
     VALUE *save_fp = c->fp; VALUE *save_sp = c->sp;
     c->fp = new_fp; c->sp = new_fp + local_cnt;
-    // Wasm validation guarantees br_depth == 0 at a call site, so we
-    // don't need to save it.  Body may set WASTRO_BR_RETURN; consume
-    // it here and zero out before returning.
-    VALUE result = EVAL(c, WASTRO_FUNCS[func_index].body);
-    if (c->br_depth) {
-        result = c->br_value;     // WASTRO_BR_RETURN landed here
-        c->br_depth = 0;
-    }
+    RESULT r = EVAL_ARG(c, body);
     c->fp = save_fp; c->sp = save_sp;
-    return result;
+    return RESULT_OK(r.value);
 }
 
 NODE_DEF
-node_call_2(CTX *c, NODE *n, uint32_t func_index, uint32_t local_cnt, NODE *a0, NODE *a1)
+node_call_2(CTX *c, NODE *n, uint32_t func_index, uint32_t local_cnt, NODE *a0, NODE *a1, NODE *body)
 {
-    extern struct wastro_function WASTRO_FUNCS[];
     VALUE *new_fp = c->sp;
-    new_fp[0] = EVAL_ARG(c, a0);
-    new_fp[1] = EVAL_ARG(c, a1);
+    new_fp[0] = UNWRAP(EVAL_ARG(c, a0));
+    new_fp[1] = UNWRAP(EVAL_ARG(c, a1));
     for (uint32_t i = 2; i < local_cnt; i++) new_fp[i] = 0;
     VALUE *save_fp = c->fp; VALUE *save_sp = c->sp;
     c->fp = new_fp; c->sp = new_fp + local_cnt;
-    // Wasm validation guarantees br_depth == 0 at a call site, so we
-    // don't need to save it.  Body may set WASTRO_BR_RETURN; consume
-    // it here and zero out before returning.
-    VALUE result = EVAL(c, WASTRO_FUNCS[func_index].body);
-    if (c->br_depth) {
-        result = c->br_value;     // WASTRO_BR_RETURN landed here
-        c->br_depth = 0;
-    }
+    RESULT r = EVAL_ARG(c, body);
     c->fp = save_fp; c->sp = save_sp;
-    return result;
+    return RESULT_OK(r.value);
 }
 
 NODE_DEF
-node_call_3(CTX *c, NODE *n, uint32_t func_index, uint32_t local_cnt, NODE *a0, NODE *a1, NODE *a2)
+node_call_3(CTX *c, NODE *n, uint32_t func_index, uint32_t local_cnt, NODE *a0, NODE *a1, NODE *a2, NODE *body)
 {
-    extern struct wastro_function WASTRO_FUNCS[];
     VALUE *new_fp = c->sp;
-    new_fp[0] = EVAL_ARG(c, a0);
-    new_fp[1] = EVAL_ARG(c, a1);
-    new_fp[2] = EVAL_ARG(c, a2);
+    new_fp[0] = UNWRAP(EVAL_ARG(c, a0));
+    new_fp[1] = UNWRAP(EVAL_ARG(c, a1));
+    new_fp[2] = UNWRAP(EVAL_ARG(c, a2));
     for (uint32_t i = 3; i < local_cnt; i++) new_fp[i] = 0;
     VALUE *save_fp = c->fp; VALUE *save_sp = c->sp;
     c->fp = new_fp; c->sp = new_fp + local_cnt;
-    // Wasm validation guarantees br_depth == 0 at a call site, so we
-    // don't need to save it.  Body may set WASTRO_BR_RETURN; consume
-    // it here and zero out before returning.
-    VALUE result = EVAL(c, WASTRO_FUNCS[func_index].body);
-    if (c->br_depth) {
-        result = c->br_value;     // WASTRO_BR_RETURN landed here
-        c->br_depth = 0;
-    }
+    RESULT r = EVAL_ARG(c, body);
     c->fp = save_fp; c->sp = save_sp;
-    return result;
+    return RESULT_OK(r.value);
 }
 
-// Host call (imported function) — fixed-arity variants.  The host
-// function pointer is fetched from WASTRO_FUNCS[func_index].host_fn
-// and invoked directly with the evaluated args; no frame is set up
-// since host functions don't see CTX->fp.
+// Host call (imported function): host_fn returns a plain VALUE which
+// we wrap in RESULT_OK.  Host functions can't issue wasm branches.
 
 NODE_DEF
 node_host_call_0(CTX *c, NODE *n, uint32_t func_index)
 {
     extern struct wastro_function WASTRO_FUNCS[];
-    return WASTRO_FUNCS[func_index].host_fn(c, NULL, 0);
+    return RESULT_OK(WASTRO_FUNCS[func_index].host_fn(c, NULL, 0));
 }
 
 NODE_DEF
@@ -1648,8 +1659,8 @@ node_host_call_1(CTX *c, NODE *n, uint32_t func_index, NODE *a0)
 {
     extern struct wastro_function WASTRO_FUNCS[];
     VALUE args[1];
-    args[0] = EVAL_ARG(c, a0);
-    return WASTRO_FUNCS[func_index].host_fn(c, args, 1);
+    args[0] = UNWRAP(EVAL_ARG(c, a0));
+    return RESULT_OK(WASTRO_FUNCS[func_index].host_fn(c, args, 1));
 }
 
 NODE_DEF
@@ -1657,9 +1668,9 @@ node_host_call_2(CTX *c, NODE *n, uint32_t func_index, NODE *a0, NODE *a1)
 {
     extern struct wastro_function WASTRO_FUNCS[];
     VALUE args[2];
-    args[0] = EVAL_ARG(c, a0);
-    args[1] = EVAL_ARG(c, a1);
-    return WASTRO_FUNCS[func_index].host_fn(c, args, 2);
+    args[0] = UNWRAP(EVAL_ARG(c, a0));
+    args[1] = UNWRAP(EVAL_ARG(c, a1));
+    return RESULT_OK(WASTRO_FUNCS[func_index].host_fn(c, args, 2));
 }
 
 NODE_DEF
@@ -1667,32 +1678,209 @@ node_host_call_3(CTX *c, NODE *n, uint32_t func_index, NODE *a0, NODE *a1, NODE 
 {
     extern struct wastro_function WASTRO_FUNCS[];
     VALUE args[3];
-    args[0] = EVAL_ARG(c, a0);
-    args[1] = EVAL_ARG(c, a1);
-    args[2] = EVAL_ARG(c, a2);
-    return WASTRO_FUNCS[func_index].host_fn(c, args, 3);
+    args[0] = UNWRAP(EVAL_ARG(c, a0));
+    args[1] = UNWRAP(EVAL_ARG(c, a1));
+    args[2] = UNWRAP(EVAL_ARG(c, a2));
+    return RESULT_OK(WASTRO_FUNCS[func_index].host_fn(c, args, 3));
 }
 
 NODE_DEF
-node_call_4(CTX *c, NODE *n, uint32_t func_index, uint32_t local_cnt, NODE *a0, NODE *a1, NODE *a2, NODE *a3)
+node_call_4(CTX *c, NODE *n, uint32_t func_index, uint32_t local_cnt, NODE *a0, NODE *a1, NODE *a2, NODE *a3, NODE *body)
 {
-    extern struct wastro_function WASTRO_FUNCS[];
     VALUE *new_fp = c->sp;
-    new_fp[0] = EVAL_ARG(c, a0);
-    new_fp[1] = EVAL_ARG(c, a1);
-    new_fp[2] = EVAL_ARG(c, a2);
-    new_fp[3] = EVAL_ARG(c, a3);
+    new_fp[0] = UNWRAP(EVAL_ARG(c, a0));
+    new_fp[1] = UNWRAP(EVAL_ARG(c, a1));
+    new_fp[2] = UNWRAP(EVAL_ARG(c, a2));
+    new_fp[3] = UNWRAP(EVAL_ARG(c, a3));
     for (uint32_t i = 4; i < local_cnt; i++) new_fp[i] = 0;
     VALUE *save_fp = c->fp; VALUE *save_sp = c->sp;
     c->fp = new_fp; c->sp = new_fp + local_cnt;
-    // Wasm validation guarantees br_depth == 0 at a call site, so we
-    // don't need to save it.  Body may set WASTRO_BR_RETURN; consume
-    // it here and zero out before returning.
-    VALUE result = EVAL(c, WASTRO_FUNCS[func_index].body);
-    if (c->br_depth) {
-        result = c->br_value;     // WASTRO_BR_RETURN landed here
-        c->br_depth = 0;
-    }
+    RESULT r = EVAL_ARG(c, body);
     c->fp = save_fp; c->sp = save_sp;
-    return result;
+    return RESULT_OK(r.value);
+}
+
+// =====================================================================
+// Indirect function call (call_indirect via single funcref table)
+// =====================================================================
+//
+// `call_indirect (type $sig) <args>... <idx>` looks up
+// WASTRO_TABLE[idx], structurally checks the resolved function's
+// signature against WASTRO_TYPES[type_index], then dispatches.
+// Mirrors node_call_N but the callee is determined at runtime.
+//
+// Wasm spec evaluation order: args first, idx last (idx is on top of
+// the stack at the trap point).  Indirect calls can target either
+// defined funcs (frame setup + EVAL body) or imported funcs (no frame,
+// direct host_fn call), distinguished by `fn->is_import`.
+
+NODE_DEF
+node_call_indirect_0(CTX *c, NODE *n, uint32_t type_index, NODE *idx)
+{
+    extern struct wastro_function WASTRO_FUNCS[];
+    extern int32_t *WASTRO_TABLE;
+    extern uint32_t WASTRO_TABLE_SIZE;
+    extern struct wastro_type_sig WASTRO_TYPES[];
+
+    uint32_t i = AS_U32(UNWRAP(EVAL_ARG(c, idx)));
+    if (i >= WASTRO_TABLE_SIZE) wastro_trap("undefined element");
+    int32_t func_idx = WASTRO_TABLE[i];
+    if (func_idx < 0) wastro_trap("uninitialized element");
+
+    struct wastro_function *fn = &WASTRO_FUNCS[func_idx];
+    struct wastro_type_sig *sig = &WASTRO_TYPES[type_index];
+    if (fn->param_cnt != sig->param_cnt || fn->result_type != sig->result_type)
+        wastro_trap("indirect call type mismatch");
+
+    if (fn->is_import) return RESULT_OK(fn->host_fn(c, NULL, 0));
+
+    VALUE *new_fp = c->sp;
+    uint32_t local_cnt = fn->local_cnt;
+    for (uint32_t k = 0; k < local_cnt; k++) new_fp[k] = 0;
+    VALUE *save_fp = c->fp; VALUE *save_sp = c->sp;
+    c->fp = new_fp; c->sp = new_fp + local_cnt;
+    RESULT r = EVAL(c, fn->body);
+    c->fp = save_fp; c->sp = save_sp;
+    return RESULT_OK(r.value);
+}
+
+NODE_DEF
+node_call_indirect_1(CTX *c, NODE *n, uint32_t type_index, NODE *idx, NODE *a0)
+{
+    extern struct wastro_function WASTRO_FUNCS[];
+    extern int32_t *WASTRO_TABLE;
+    extern uint32_t WASTRO_TABLE_SIZE;
+    extern struct wastro_type_sig WASTRO_TYPES[];
+
+    VALUE *new_fp = c->sp;
+    new_fp[0] = UNWRAP(EVAL_ARG(c, a0));
+    uint32_t i = AS_U32(UNWRAP(EVAL_ARG(c, idx)));
+    if (i >= WASTRO_TABLE_SIZE) wastro_trap("undefined element");
+    int32_t func_idx = WASTRO_TABLE[i];
+    if (func_idx < 0) wastro_trap("uninitialized element");
+
+    struct wastro_function *fn = &WASTRO_FUNCS[func_idx];
+    struct wastro_type_sig *sig = &WASTRO_TYPES[type_index];
+    if (fn->param_cnt != sig->param_cnt || fn->result_type != sig->result_type)
+        wastro_trap("indirect call type mismatch");
+    if (fn->param_types[0] != sig->param_types[0])
+        wastro_trap("indirect call type mismatch");
+
+    if (fn->is_import) return RESULT_OK(fn->host_fn(c, new_fp, 1));
+
+    uint32_t local_cnt = fn->local_cnt;
+    for (uint32_t k = 1; k < local_cnt; k++) new_fp[k] = 0;
+    VALUE *save_fp = c->fp; VALUE *save_sp = c->sp;
+    c->fp = new_fp; c->sp = new_fp + local_cnt;
+    RESULT r = EVAL(c, fn->body);
+    c->fp = save_fp; c->sp = save_sp;
+    return RESULT_OK(r.value);
+}
+
+NODE_DEF
+node_call_indirect_2(CTX *c, NODE *n, uint32_t type_index, NODE *idx, NODE *a0, NODE *a1)
+{
+    extern struct wastro_function WASTRO_FUNCS[];
+    extern int32_t *WASTRO_TABLE;
+    extern uint32_t WASTRO_TABLE_SIZE;
+    extern struct wastro_type_sig WASTRO_TYPES[];
+
+    VALUE *new_fp = c->sp;
+    new_fp[0] = UNWRAP(EVAL_ARG(c, a0));
+    new_fp[1] = UNWRAP(EVAL_ARG(c, a1));
+    uint32_t i = AS_U32(UNWRAP(EVAL_ARG(c, idx)));
+    if (i >= WASTRO_TABLE_SIZE) wastro_trap("undefined element");
+    int32_t func_idx = WASTRO_TABLE[i];
+    if (func_idx < 0) wastro_trap("uninitialized element");
+
+    struct wastro_function *fn = &WASTRO_FUNCS[func_idx];
+    struct wastro_type_sig *sig = &WASTRO_TYPES[type_index];
+    if (fn->param_cnt != sig->param_cnt || fn->result_type != sig->result_type)
+        wastro_trap("indirect call type mismatch");
+    if (fn->param_types[0] != sig->param_types[0] ||
+        fn->param_types[1] != sig->param_types[1])
+        wastro_trap("indirect call type mismatch");
+
+    if (fn->is_import) return RESULT_OK(fn->host_fn(c, new_fp, 2));
+
+    uint32_t local_cnt = fn->local_cnt;
+    for (uint32_t k = 2; k < local_cnt; k++) new_fp[k] = 0;
+    VALUE *save_fp = c->fp; VALUE *save_sp = c->sp;
+    c->fp = new_fp; c->sp = new_fp + local_cnt;
+    RESULT r = EVAL(c, fn->body);
+    c->fp = save_fp; c->sp = save_sp;
+    return RESULT_OK(r.value);
+}
+
+NODE_DEF
+node_call_indirect_3(CTX *c, NODE *n, uint32_t type_index, NODE *idx, NODE *a0, NODE *a1, NODE *a2)
+{
+    extern struct wastro_function WASTRO_FUNCS[];
+    extern int32_t *WASTRO_TABLE;
+    extern uint32_t WASTRO_TABLE_SIZE;
+    extern struct wastro_type_sig WASTRO_TYPES[];
+
+    VALUE *new_fp = c->sp;
+    new_fp[0] = UNWRAP(EVAL_ARG(c, a0));
+    new_fp[1] = UNWRAP(EVAL_ARG(c, a1));
+    new_fp[2] = UNWRAP(EVAL_ARG(c, a2));
+    uint32_t i = AS_U32(UNWRAP(EVAL_ARG(c, idx)));
+    if (i >= WASTRO_TABLE_SIZE) wastro_trap("undefined element");
+    int32_t func_idx = WASTRO_TABLE[i];
+    if (func_idx < 0) wastro_trap("uninitialized element");
+
+    struct wastro_function *fn = &WASTRO_FUNCS[func_idx];
+    struct wastro_type_sig *sig = &WASTRO_TYPES[type_index];
+    if (fn->param_cnt != sig->param_cnt || fn->result_type != sig->result_type)
+        wastro_trap("indirect call type mismatch");
+    for (uint32_t k = 0; k < 3; k++)
+        if (fn->param_types[k] != sig->param_types[k])
+            wastro_trap("indirect call type mismatch");
+
+    if (fn->is_import) return RESULT_OK(fn->host_fn(c, new_fp, 3));
+
+    uint32_t local_cnt = fn->local_cnt;
+    for (uint32_t k = 3; k < local_cnt; k++) new_fp[k] = 0;
+    VALUE *save_fp = c->fp; VALUE *save_sp = c->sp;
+    c->fp = new_fp; c->sp = new_fp + local_cnt;
+    RESULT r = EVAL(c, fn->body);
+    c->fp = save_fp; c->sp = save_sp;
+    return RESULT_OK(r.value);
+}
+
+NODE_DEF
+node_call_indirect_4(CTX *c, NODE *n, uint32_t type_index, NODE *idx, NODE *a0, NODE *a1, NODE *a2, NODE *a3)
+{
+    extern struct wastro_function WASTRO_FUNCS[];
+    extern int32_t *WASTRO_TABLE;
+    extern uint32_t WASTRO_TABLE_SIZE;
+    extern struct wastro_type_sig WASTRO_TYPES[];
+
+    VALUE *new_fp = c->sp;
+    new_fp[0] = UNWRAP(EVAL_ARG(c, a0));
+    new_fp[1] = UNWRAP(EVAL_ARG(c, a1));
+    new_fp[2] = UNWRAP(EVAL_ARG(c, a2));
+    new_fp[3] = UNWRAP(EVAL_ARG(c, a3));
+    uint32_t i = AS_U32(UNWRAP(EVAL_ARG(c, idx)));
+    if (i >= WASTRO_TABLE_SIZE) wastro_trap("undefined element");
+    int32_t func_idx = WASTRO_TABLE[i];
+    if (func_idx < 0) wastro_trap("uninitialized element");
+
+    struct wastro_function *fn = &WASTRO_FUNCS[func_idx];
+    struct wastro_type_sig *sig = &WASTRO_TYPES[type_index];
+    if (fn->param_cnt != sig->param_cnt || fn->result_type != sig->result_type)
+        wastro_trap("indirect call type mismatch");
+    for (uint32_t k = 0; k < 4; k++)
+        if (fn->param_types[k] != sig->param_types[k])
+            wastro_trap("indirect call type mismatch");
+
+    if (fn->is_import) return RESULT_OK(fn->host_fn(c, new_fp, 4));
+
+    uint32_t local_cnt = fn->local_cnt;
+    for (uint32_t k = 4; k < local_cnt; k++) new_fp[k] = 0;
+    VALUE *save_fp = c->fp; VALUE *save_sp = c->sp;
+    c->fp = new_fp; c->sp = new_fp + local_cnt;
+    RESULT r = EVAL(c, fn->body);
+    c->fp = save_fp; c->sp = save_sp;
+    return RESULT_OK(r.value);
 }

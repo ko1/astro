@@ -74,7 +74,14 @@ SPECIALIZE(FILE *fp, NODE *n)
             n->head.dispatcher_name = alloc_dispatcher_name(n);
         }
         else if (n->head.flags.is_specializing) {
-            // recursive specializing - skip
+            // Cycle break: this node's specializer is already on the
+            // stack via a parent (mutual or self recursion).  We can't
+            // emit an inline reference because the SD_ name isn't
+            // known yet, so flip no_inline=true and let DISPATCHER_NAME
+            // emit a runtime `n->head.dispatcher` indirection.  The
+            // pointer will be patched in by astro_cs_load when the
+            // outer specialization eventually loads its SD_.
+            n->head.flags.no_inline = true;
         }
         else {
             n->head.flags.is_specializing = true;
@@ -440,9 +447,17 @@ astro_cs_compile(NODE *entry, const char *file)
     fprintf(fp, "#include \"%s/node_eval.c\"\n", astro_cs.src_dir);
     fprintf(fp, "#include \"%s/node_dispatch.c\"\n\n", astro_cs.src_dir);
 
-    // Generate specialized code (entry is public, children are static)
+    // Generate specialized code (entry is public, children are static).
+    // Set the entry's is_specializing flag so that recursive references
+    // back to this node from inside its own subtree (mutual or self
+    // recursion via call_N body slots) are caught as a cycle by
+    // SPECIALIZE() below and emit a runtime dispatcher read instead
+    // of a duplicate compile-time SD_ definition.
     astro_spec_dedup_clear();
+    entry->head.flags.is_specializing = true;
     (*entry->head.kind->specializer)(fp, entry, true);
+    entry->head.flags.is_specializing = false;
+    astro_spec_dedup_add(h);
 
     fclose(fp);
 

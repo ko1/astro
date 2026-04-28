@@ -1,48 +1,51 @@
-# wastro — WebAssembly subset on ASTro
+# wastro — WebAssembly on ASTro
 
-ASTro framework's typed sample: a tiny WebAssembly text-format
-(WAT) interpreter that runs as an AST-walking interpreter generated
-from `node.def`.
+ASTro framework's typed sample: a WebAssembly 1.0 interpreter that
+runs as an AST-walking interpreter generated from `node.def`.  Reads
+both `.wat` (text) and `.wasm` (binary) modules, runs the wasm
+spec-test `.wast` format, and feeds its tree-walked dispatch through
+ASTro's per-node specialization.
 
 For an exhaustive coverage map see:
 
 - **[`docs/done.md`](docs/done.md)** — what's implemented today
-- **[`docs/todo.md`](docs/todo.md)** — what's missing for full wasm 1.0
+- **[`docs/todo.md`](docs/todo.md)** — what's missing for full wasm 1.0+
 
-## v0.8 scope at a glance
+## v1.0 scope
 
-Most of MVP wasm 1.0 plus saturating truncation (wasm 2.0):
+Full WebAssembly 1.0 (MVP) plus saturating truncation (wasm 2.0):
 
 - **Types**: `i32`, `i64`, `f32`, `f64`. `VALUE` is `uint64_t` raw
-  bits, reinterpreted at use sites via `AS_*`/`FROM_*` helpers in
-  `context.h`. No SIMD, no GC types.
+  bits, reinterpreted at use sites via `AS_*`/`FROM_*` helpers.
 - **Numeric ops**: full set of arithmetic, bitwise, shifts, rotations,
-  comparisons, and unary ops (`eqz`, `clz`, `ctz`, `popcnt`, `abs`,
-  `neg`, `sqrt`, `floor`, `ceil`, `trunc`, `nearest`, etc.) per type.
+  comparisons, and unary ops per type.
 - **Conversions**: `wrap`, `extend` (signed/unsigned, 8/16/32-bit),
   trapping and saturating `trunc`, `convert`, `demote`/`promote`,
   `reinterpret`.
-- **Locals & globals**: typed `(param ...)`, `(local ...)`,
-  `(global $g (mut)? T (T.const N))`. `local.get/set`, `global.get/set`
-  with mutability validation.
-- **Control flow**: `if/then/else` (typed), `block`, `loop`, `br`,
-  `br_if`, `br_table`, `return`, `unreachable`, `nop`. All via
-  CTX-side branch state (no `setjmp`).
-- **Functions**: direct `(call ...)` with fixed-arity nodes (0..4
-  args). No `call_indirect` / tables yet.
-- **Linear memory**: `(memory N M?)`, `(data ...)` static init,
-  full `*.load*` / `*.store*` (all width / sign variants),
-  `memory.size`, `memory.grow`, bounds-check trap.
-- **Imports**: `(import "module" "field" (func ...))` with a built-in
-  `env.*` host registry — `log_i32/i64/f32/f64`, `putchar`,
-  `print_bytes`. Unknown imports raise a parse error.
-- **Front-end**: folded S-expression WAT only. Stack-style WAT must
-  be folded with `wabt`'s `wat-desugar -f` before being fed to wastro.
-
-For the full feature inventory see [`docs/done.md`](docs/done.md);
-remaining gaps (tables/`call_indirect`, bulk memory ops, multi-result
-blocks, binary `.wasm` decoder, ...) are listed in
-[`docs/todo.md`](docs/todo.md).
+- **Locals & globals**: `local.get/set/tee`, `global.get/set` with
+  mutability validation.
+- **Control flow**: `if/then/else`, `block`, `loop`, `br`, `br_if`,
+  `br_table`, `return`, `unreachable`, `nop`, `drop`, `select`. All
+  via CTX-side branch state (no `setjmp` in hot paths).
+- **Functions**: direct `(call ...)` (arity 0..4), and indirect
+  `call_indirect (type $sig)` via a single funcref `(table ...)` and
+  `(elem ...)`. Runtime structural type check; traps on mismatch.
+- **Linear memory**: `(memory N M?)`, `(data ...)` static init, full
+  `*.load*` / `*.store*` (all width / sign variants), `memory.size`,
+  `memory.grow`, bounds-check trap.
+- **Imports**: `(import "module" "field" (func | memory | global | table) ...)`
+  with a built-in `env.*` host registry — `log_i32/i64/f32/f64`,
+  `putchar`, `print_bytes`. Unbound imports install a stub that traps
+  if invoked.
+- **Module form**: `(type ...)`, `(import ...)`, `(func ...)`,
+  `(table ...)`, `(memory ...)`, `(global ...)`, `(export ...)`,
+  `(start ...)`, `(elem ...)`, `(data ...)` — accepted in any order.
+- **Front-ends**:
+  - **WAT** — folded *and* stack-style, freely mixed.
+  - **Binary `.wasm`** — full opcode coverage of wasm 1.0.
+- **Spec test harness** — `--test foo.wast` runs the standard
+  spec-testsuite assertion forms (`assert_return`, `assert_trap`,
+  `invoke`, `register`, ...).
 
 ## Build
 
@@ -57,7 +60,8 @@ then compiles `main.c` + `node.c` with `-O3`.
 ## Usage
 
 ```sh
-./wastro [options] <module.wat> [<export-name> [arg ...]]
+./wastro [options] <module.wat | module.wasm> [<export-name> [arg ...]]
+./wastro --test <foo.wast>
 
   -q, --quiet         suppress code-store miss/hit messages
   -v, --verbose       trace cs_compile/build/load steps
@@ -65,27 +69,39 @@ then compiles `main.c` + `node.c` with `-O3`.
   -c                  AOT-compile all functions before running
   --aot               AOT-compile only, then exit (no <export> needed)
   --clear-cs          delete code_store/ before starting
+  --test <foo.wast>   run a wasm spec-test file
 ```
+
+If only `<module>` is given and the module has a `(start ...)`
+function, wastro instantiates the module and runs `(start)`, then
+exits.  Otherwise an `<export-name>` is required.
 
 Examples:
 
 ```sh
-# plain interpreter, no code store
+# WAT, plain interpreter
 ./wastro --no-compile -q examples/fib.wat fib 30
 # 832040
 
-# AOT-compile only — produces code_store/all.so
-./wastro --aot -v examples/fib.wat
-# cs_compile: $fib
-# cs_build
+# Stack-style WAT (non-folded)
+./wastro -q examples/stack_style.wat fact 6
+# 720
 
-# AOT-compile and run in one shot
+# Binary .wasm
+./wastro -q examples/fib.wasm fib 20
+# 6765
+
+# AOT-compile and run
 ./wastro -c -q examples/fib.wat fib 30
 # 832040
 
-# Second run picks up the cached all.so automatically
-./wastro -q examples/fib.wat fib 30
-# 832040
+# Spec test harness
+./wastro --test examples/control.wast
+# examples/control.wast: 16 passed, 0 failed, 0 skipped
+
+# Module with (start) + top-level (export)
+./wastro -q examples/start.wat get_counter
+# 100
 ```
 
 Without `--no-compile`, ASTro's code store is consulted on each
@@ -93,12 +109,6 @@ sub-AST during allocation (`OPTIMIZE` is called from
 `ALLOC_node_xxx`).  Each node's Merkle hash (`Horg`) becomes the
 `SD_<hash>` symbol name in `code_store/all.so`; loading swaps the
 node's dispatcher to the specialized version.
-
-For fib's body, the entire `if`/`else` tree (the function's body
-node) becomes a single `SD_<hash>` function in `all.so`.  Recursive
-`call $fib` goes through the default `node_call` dispatcher (which
-is `@noinline`), then re-EVALs the body — and that body's
-dispatcher is the specialized one.
 
 ## Performance
 
@@ -123,52 +133,78 @@ ASTroGen-side extensions.
 wastro/
 ├── README.md         this file
 ├── Makefile          build rules + ASTroGen invocation
-├── node.def          ASTro node definitions (~190 nodes)
+├── node.def          ASTro node definitions (~210 nodes)
 ├── node.h            NodeHead struct + extern decls + HOPT/HORG macros
 ├── node.c            INIT, OPTIMIZE; includes generated *.c
 ├── context.h         CTX, wastro_function, wtype_t, AS_*/FROM_* helpers
-├── main.c            WAT tokenizer + parser + driver + host registry
+├── main.c            tokenizer + WAT parser + binary decoder + .wast harness + driver
 ├── docs/
-│   ├── done.md       full inventory of implemented features
-│   └── todo.md       remaining gaps vs. wasm 1.0
-└── examples/         14 .wat sample programs
+│   ├── done.md       inventory of implemented features
+│   └── todo.md       remaining gaps
+└── examples/         sample .wat / .wasm / .wast programs
 ```
 
 ## Design notes
 
-### Fixed-arity `node_call_N` / `node_host_call_N`
+### Fixed-arity `node_call_N` / `node_call_indirect_N` / `node_host_call_N`
 
 Wasm `call` takes a variable number of operands.  ASTro's
-`NODE_DEF` produces a fixed-shape struct per node, so variable-arity
-args cannot live as `NODE *` fields directly.  We provide
-`node_call_0` .. `node_call_4` (and `node_host_call_0` .. `_3` for
-imports), and the parser dispatches to the right arity by argc.
-Args become declared `NODE *` children, which lets ASTro's
-specializer inline them via `EVAL_ARG`.
+`NODE_DEF` produces a fixed-shape struct per node, so we provide
+arity-specific variants (0..4 for direct/indirect, 0..3 for host
+imports), and the parser dispatches by argc.  Args become declared
+`NODE *` children, which lets ASTro's specializer inline them via
+`EVAL_ARG`.
 
 ### Frames / locals
 
 `CTX` holds a fixed `VALUE stack[]`.  `c->fp` is the current
-frame's locals base, `c->sp` is the top of stack (= next frame's
-`fp`).  `node_call_N` allocates a new frame at `c->sp`, evaluates
-args into it (so args become locals 0..N-1), zeros out body-only
-locals, then `EVAL`s the callee's body.  After the callee returns,
-`c->fp` and `c->sp` are restored.
+frame's locals base, `c->sp` is the top of stack.  `node_call_N`
+allocates a new frame at `c->sp`, evaluates args into it, zeros out
+body-only locals, then `EVAL`s the callee's body.  After the callee
+returns, `c->fp` and `c->sp` are restored.
 
 ### Branch state
 
-Structured control flow uses `c->br_depth` / `c->br_value`
-(`br_depth = 0` = no branch, `br_depth > 0` = branching out N
-labels, `WASTRO_BR_RETURN` = function return).  `block` / `loop`
-decrement on the way out; `seq` short-circuits.  No `setjmp`.
+Structured control flow uses `c->br_depth` / `c->br_value`.
+`block` / `loop` decrement on the way out; `seq` short-circuits.
+The function boundary consumes `WASTRO_BR_RETURN`.  No `setjmp` in
+hot paths.
 
-### Imports
+### Tables and indirect calls
 
-`(import "module" "field" (func ...))` resolves against a built-in
-host registry hard-coded in `main.c` (`env.log_*`, `env.putchar`,
-`env.print_bytes`).  Imported funcs occupy the same `WASTRO_FUNCS`
-table as defined funcs but are dispatched via separate
-`node_host_call_N` nodes that call `host_fn` directly.
+Single funcref table per wasm 1.0.  `WASTRO_TABLE[]` stores function
+indices (or -1 for uninitialized).  `node_call_indirect_N` fetches
+the slot, structurally compares the resolved function's signature
+against the declared `(type $sig)`, and dispatches.  Imported
+functions are dispatched via the host_fn pointer; defined functions
+go through the standard frame setup.
+
+### Stack-style WAT
+
+The body parser tracks an operand stack of `TypedExpr`.  Folded
+`(...)` sub-expressions push their result onto the same stack, so
+folded and stack-style instructions can be freely mixed.  Void
+instructions go into a "pending statements" list that's wrapped
+around the final stack value as a right-leaning `node_seq` tree.
+
+### Binary `.wasm` decoder
+
+Section-driven decoder using LEB128 / fixed-width readers.  Each
+section directly populates the same global state used by the WAT
+parser (`WASTRO_TYPES`, `WASTRO_FUNCS`, `WASTRO_GLOBALS`,
+`MOD_DATA_SEGS`, `WASTRO_TABLE`).  The Code section parses opcodes
+into AST via the same `OpStack` / `StmtList` machinery the WAT
+parser uses.  Magic detection in `wastro_load_module` dispatches
+WAT vs. binary automatically.
+
+### Spec test harness
+
+`--test foo.wast` parses each top-level form, resets module state
+on each `(module ...)`, and runs assertion forms in sequence.
+`assert_trap` uses `setjmp` / `longjmp` to recover from `wastro_trap`
+calls — which become recoverable when `wastro_trap_active` is set.
+Pure-interpreter mode is forced for tests (no AOT specialization
+overhead per assertion).
 
 ### Specializer-friendly `EVAL`
 
@@ -176,24 +212,18 @@ table as defined funcs but are dispatched via separate
 functions in `code_store/all.so` do not pay a PLT call back into
 the host binary on each dispatch.  The host binary is linked with
 `-rdynamic` so that globals (`WASTRO_FUNCS`, `WASTRO_GLOBALS`,
-`WASTRO_BR_TABLE`) resolve when `all.so` is `dlopen`'d.
+`WASTRO_BR_TABLE`, `WASTRO_TABLE`, `WASTRO_TYPES`) resolve when
+`all.so` is `dlopen`'d.
 
 ## What's next
 
 The full coverage gap against wasm 1.0 is in [`docs/todo.md`](docs/todo.md).
-By rough impact:
+The biggest known item is stack-style let-floating (rare in
+real-world wasm) and `nan:canonical` / `nan:arithmetic` matchers in
+the spec-test harness.
 
-1. **Tables + `call_indirect`** — the biggest remaining feature.
-   Required by anything emitted from a real source-language compiler
-   (Rust, C with vtables, etc.).  ~1 day of work.
-2. **Bulk memory ops** — `memory.fill`, `memory.copy`, `memory.init`,
-   `data.drop`.  Half a day.
-3. **Spec test harness** — run `testsuite/*.wast` against wastro
-   for spec compliance.  ~1 day.
-4. **Stack-style WAT** — currently only folded form is parsed; the
-   spec-test corpus is mostly stack-style.  ~1 day.
-5. **Binary `.wasm` decoder** — read `.wasm` directly without going
-   through `wasm2wat`.  Larger.
+Post-1.0 proposals (bulk memory, reference types, multi-value, GC,
+SIMD, threads, exceptions, tail calls) are out of scope.
 
 ASTro framework-level extensions that would substantially improve
 performance (tracked separately in `todo.md`):
