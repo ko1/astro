@@ -1949,3 +1949,84 @@ node_call_indirect_4(CTX *c, NODE *n, union wastro_slot * restrict frame, uint32
     RESULT r = EVAL(c, fn->body, F);
     return RESULT_OK(r.value);
 }
+
+// =====================================================================
+// Variable-arity call nodes (>4 args for direct/indirect, >3 for host).
+//
+// Operand AST sub-trees live in the module-global flat array
+// `WASTRO_CALL_ARGS` (managed by main.c::wastro_register_call_args).
+// Each call site stores an `(args_index, args_cnt)` pair into that
+// array; the dispatcher walks the slice and evaluates each child via
+// its own head.dispatcher.  This loses the sibling-dispatcher
+// specialization the fixed-arity 0..4 nodes get (because the args
+// here are not declared as NODE * operands of this node), but is
+// what lets us serve up to WASTRO_MAX_PARAMS (1024) args without
+// generating a thousand specialized node kinds.
+// =====================================================================
+
+NODE_DEF
+node_call_var(CTX *c, NODE *n, union wastro_slot * restrict frame, uint32_t func_index, uint32_t local_cnt, uint32_t args_index, uint32_t args_cnt, NODE *body)
+{
+    (void)func_index;
+    extern NODE **WASTRO_CALL_ARGS;
+    union wastro_slot F[local_cnt];
+    for (uint32_t i = 0; i < args_cnt; i++) {
+        NODE *arg = WASTRO_CALL_ARGS[args_index + i];
+        F[i].raw = UNWRAP((*arg->head.dispatcher)(c, arg, frame));
+    }
+    for (uint32_t i = args_cnt; i < local_cnt; i++) F[i].raw = 0;
+    RESULT r = body_dispatcher(c, body, F);
+    return RESULT_OK(r.value);
+}
+
+NODE_DEF
+node_host_call_var(CTX *c, NODE *n, union wastro_slot * restrict frame, uint32_t func_index, uint32_t args_index, uint32_t args_cnt)
+{
+    extern struct wastro_function WASTRO_FUNCS[];
+    extern NODE **WASTRO_CALL_ARGS;
+    VALUE args[args_cnt ? args_cnt : 1];
+    for (uint32_t i = 0; i < args_cnt; i++) {
+        NODE *arg = WASTRO_CALL_ARGS[args_index + i];
+        args[i] = UNWRAP((*arg->head.dispatcher)(c, arg, frame));
+    }
+    return RESULT_OK(WASTRO_FUNCS[func_index].host_fn(c, args, args_cnt));
+}
+
+NODE_DEF
+node_call_indirect_var(CTX *c, NODE *n, union wastro_slot * restrict frame, uint32_t type_index, uint32_t args_index, uint32_t args_cnt, NODE *idx)
+{
+    extern struct wastro_function WASTRO_FUNCS[];
+    extern int32_t *WASTRO_TABLE;
+    extern uint32_t WASTRO_TABLE_SIZE;
+    extern struct wastro_type_sig WASTRO_TYPES[];
+    extern NODE **WASTRO_CALL_ARGS;
+
+    VALUE call_args[args_cnt ? args_cnt : 1];
+    for (uint32_t k = 0; k < args_cnt; k++) {
+        NODE *arg = WASTRO_CALL_ARGS[args_index + k];
+        call_args[k] = UNWRAP((*arg->head.dispatcher)(c, arg, frame));
+    }
+    uint32_t i = AS_U32(UNWRAP(EVAL_ARG(c, idx)));
+    if (i >= WASTRO_TABLE_SIZE) wastro_trap("undefined element");
+    int32_t func_idx = WASTRO_TABLE[i];
+    if (func_idx < 0) wastro_trap("uninitialized element");
+
+    struct wastro_function *fn = &WASTRO_FUNCS[func_idx];
+    struct wastro_type_sig *sig = &WASTRO_TYPES[type_index];
+    if (fn->param_cnt != sig->param_cnt || fn->result_type != sig->result_type)
+        wastro_trap("indirect call type mismatch");
+    for (uint32_t k = 0; k < args_cnt; k++)
+        if (fn->param_types[k] != sig->param_types[k])
+            wastro_trap("indirect call type mismatch");
+
+    if (fn->is_import) {
+        return RESULT_OK(fn->host_fn(c, call_args, args_cnt));
+    }
+
+    uint32_t local_cnt = fn->local_cnt;
+    union wastro_slot F[local_cnt];
+    for (uint32_t k = 0; k < args_cnt; k++) F[k].raw = call_args[k];
+    for (uint32_t k = args_cnt; k < local_cnt; k++) F[k].raw = 0;
+    RESULT r = EVAL(c, fn->body, F);
+    return RESULT_OK(r.value);
+}

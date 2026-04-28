@@ -17,11 +17,48 @@
 // Expression parser (folded S-expr form, type-aware)
 // =====================================================================
 
+// Dynamically-grown environment of params + locals for the function
+// currently being parsed.  Capacity doubles on overflow; freed via
+// `lenv_free` after the body has been moved into the wastro_function.
 typedef struct {
-    char *names[64];
-    wtype_t types[64];
-    uint32_t cnt;
+    char    **names;
+    wtype_t  *types;
+    uint32_t  cnt;
+    uint32_t  capa;
 } LocalEnv;
+
+static void
+lenv_reserve(LocalEnv *e, uint32_t need)
+{
+    if (need <= e->capa) return;
+    uint32_t capa = e->capa ? e->capa : 8;
+    while (capa < need) capa *= 2;
+    e->names = (char **)realloc(e->names, capa * sizeof(char *));
+    e->types = (wtype_t *)realloc(e->types, capa * sizeof(wtype_t));
+    if (!e->names || !e->types) wastro_die("out of memory growing LocalEnv");
+    for (uint32_t i = e->capa; i < capa; i++) {
+        e->names[i] = NULL;
+        e->types[i] = WT_VOID;
+    }
+    e->capa = capa;
+}
+
+static void
+lenv_push(LocalEnv *e, char *name, wtype_t t)
+{
+    lenv_reserve(e, e->cnt + 1);
+    e->names[e->cnt] = name;
+    e->types[e->cnt] = t;
+    e->cnt++;
+}
+
+static void
+lenv_free(LocalEnv *e)
+{
+    free(e->names); e->names = NULL;
+    free(e->types); e->types = NULL;
+    e->cnt = e->capa = 0;
+}
 
 // Label environment for structured control flow.  Each entry corresponds
 // to an enclosing block / loop.  names[0] is outermost, names[cnt-1]
@@ -907,21 +944,30 @@ parse_op(LocalEnv *env, LabelEnv *labels)
                 break;
             }
         }
-        // Args + index.  Args first (count = sig->param_cnt), then idx.
-        NODE *args[8]; uint32_t argc = 0;
-        // We need to parse exactly sig->param_cnt args, then 1 idx.
-        // Rather than counting args eagerly, we parse all expressions
-        // until ')' and treat the LAST as the index.
-        TypedExpr exprs[16];
-        uint32_t en = 0;
+        // Args + index.  Parse all expressions until ')' into a growing
+        // buffer; the last operand is the index, the others are args.
+        NODE **args = NULL;
+        uint32_t args_capa = 0, argc = 0;
+        TypedExpr *exprs = NULL;
+        uint32_t exprs_capa = 0, en = 0;
         while (cur_tok.kind != T_RPAREN) {
-            if (en >= 16) parse_error("call_indirect: too many operands");
+            if (en >= WASTRO_MAX_PARAMS + 1) parse_error("call_indirect: too many operands");
+            if (en >= exprs_capa) {
+                exprs_capa = exprs_capa ? exprs_capa * 2 : 8;
+                exprs = realloc(exprs, exprs_capa * sizeof(TypedExpr));
+                if (!exprs) wastro_die("OOM");
+            }
             exprs[en++] = parse_expr(env, labels);
         }
         if (en < 1) parse_error("call_indirect requires an index operand");
         // If under-supplied (probably due to a polymorphic-stack
         // operand consuming the rest), pad with poly placeholders.
-        while (en < sig->param_cnt + 1 && en < 16) {
+        while (en < sig->param_cnt + 1) {
+            if (en >= exprs_capa) {
+                exprs_capa = exprs_capa ? exprs_capa * 2 : 8;
+                exprs = realloc(exprs, exprs_capa * sizeof(TypedExpr));
+                if (!exprs) wastro_die("OOM");
+            }
             exprs[en++] = (TypedExpr){ALLOC_node_unreachable(), WT_POLY};
         }
         if (en - 1 != sig->param_cnt) {
@@ -938,11 +984,13 @@ parse_op(LocalEnv *env, LabelEnv *labels)
         for (uint32_t i = 0; i < sig->param_cnt; i++) {
             if (exprs[i].type != WT_POLY)
                 expect_type(exprs[i].type, sig->param_types[i], "call_indirect arg");
+            node_args_grow(&args, &args_capa, argc + 1);
             args[argc++] = exprs[i].node;
         }
         if (exprs[en - 1].type != WT_POLY)
             expect_type(exprs[en - 1].type, WT_I32, "call_indirect index");
         NODE *idx = exprs[en - 1].node;
+        free(exprs);
         expect_rparen();
         NODE *call_node;
         switch (argc) {
@@ -951,10 +999,13 @@ parse_op(LocalEnv *env, LabelEnv *labels)
         case 2: call_node = ALLOC_node_call_indirect_2((uint32_t)type_idx, idx, args[0], args[1]); break;
         case 3: call_node = ALLOC_node_call_indirect_3((uint32_t)type_idx, idx, args[0], args[1], args[2]); break;
         case 4: call_node = ALLOC_node_call_indirect_4((uint32_t)type_idx, idx, args[0], args[1], args[2], args[3]); break;
-        default:
-            parse_error("call_indirect arity > 4 not supported yet");
-            return (TypedExpr){NULL, WT_VOID};
+        default: {
+            uint32_t ai = wastro_register_call_args(args, argc);
+            call_node = ALLOC_node_call_indirect_var((uint32_t)type_idx, ai, argc, idx);
+            break;
         }
+        }
+        free(args);
         return (TypedExpr){call_node, sig->result_type};
     }
 
@@ -964,10 +1015,11 @@ parse_op(LocalEnv *env, LabelEnv *labels)
         int func_idx = resolve_func(&cur_tok);
         struct wastro_function *callee = &WASTRO_FUNCS[func_idx];
         next_token();
-        NODE *args[8]; uint32_t argc = 0;
+        NODE **args = NULL;
+        uint32_t args_capa = 0, argc = 0;
         int saw_poly = 0;
         while (cur_tok.kind != T_RPAREN) {
-            if (argc >= 8) parse_error("call arity > 8 not supported");
+            if (argc >= WASTRO_MAX_PARAMS) parse_error("call arity > 1024");
             TypedExpr a = parse_expr(env, labels);
             if (a.type == WT_POLY) saw_poly = 1;
             if (argc >= callee->param_cnt) {
@@ -978,6 +1030,7 @@ parse_op(LocalEnv *env, LabelEnv *labels)
             }
             if (a.type != WT_POLY)
                 expect_type(a.type, callee->param_types[argc], "call argument");
+            node_args_grow(&args, &args_capa, argc + 1);
             args[argc++] = a.node;
         }
         // Pad missing args with unreachable placeholders if we crossed
@@ -997,6 +1050,7 @@ parse_op(LocalEnv *env, LabelEnv *labels)
                 exit(1);
             }
             while (argc < callee->param_cnt) {
+                node_args_grow(&args, &args_capa, argc + 1);
                 args[argc++] = ALLOC_node_unreachable();
             }
         }
@@ -1008,9 +1062,11 @@ parse_op(LocalEnv *env, LabelEnv *labels)
             case 1: call_node = ALLOC_node_host_call_1((uint32_t)func_idx, args[0]); break;
             case 2: call_node = ALLOC_node_host_call_2((uint32_t)func_idx, args[0], args[1]); break;
             case 3: call_node = ALLOC_node_host_call_3((uint32_t)func_idx, args[0], args[1], args[2]); break;
-            default:
-                parse_error("host call arity > 3 not supported");
-                return (TypedExpr){NULL, WT_VOID};
+            default: {
+                uint32_t ai = wastro_register_call_args(args, argc);
+                call_node = ALLOC_node_host_call_var((uint32_t)func_idx, ai, argc);
+                break;
+            }
             }
         }
         else {
@@ -1022,12 +1078,16 @@ parse_op(LocalEnv *env, LabelEnv *labels)
             case 2: call_node = ALLOC_node_call_2((uint32_t)func_idx, local_cnt, args[0], args[1], body); break;
             case 3: call_node = ALLOC_node_call_3((uint32_t)func_idx, local_cnt, args[0], args[1], args[2], body); break;
             case 4: call_node = ALLOC_node_call_4((uint32_t)func_idx, local_cnt, args[0], args[1], args[2], args[3], body); break;
-            default:
-                parse_error("call arity 5..8 needs node_call_5..8");
-                return (TypedExpr){NULL, WT_VOID};
+            default: {
+                uint32_t ai = wastro_register_call_args(args, argc);
+                call_node = ALLOC_node_call_var((uint32_t)func_idx, local_cnt, ai, argc, body);
+                break;
             }
-            register_call_body_fixup(call_node, (uint32_t)func_idx, (uint8_t)argc);
+            }
+            register_call_body_fixup(call_node, (uint32_t)func_idx,
+                                     argc <= 4 ? (uint8_t)argc : PENDING_ARITY_VAR);
         }
+        free(args);
         return (TypedExpr){call_node, callee->result_type};
     }
 
@@ -1133,18 +1193,41 @@ try_inline_import(char *out_mod, char *out_fld)
 // are unaffected.  For pathological inputs we trust the wasm
 // validator's typing pre-conditions.
 
+// Dynamically-grown operand stack used by the stack-style WAT parser
+// and the binary-decoder.  Capacity doubles on overflow; freed via
+// `op_free` after the body's value sub-tree has been built.
 typedef struct {
-    TypedExpr items[256];
-    uint32_t cnt;
+    TypedExpr *items;
+    uint32_t   cnt;
+    uint32_t   capa;
 } OpStack;
+
+static void
+op_reserve(OpStack *s, uint32_t need)
+{
+    if (need <= s->capa) return;
+    uint32_t capa = s->capa ? s->capa : 16;
+    while (capa < need) capa *= 2;
+    s->items = (TypedExpr *)realloc(s->items, capa * sizeof(TypedExpr));
+    if (!s->items) wastro_die("out of memory growing OpStack");
+    s->capa = capa;
+}
 
 static void
 op_push(OpStack *s, NODE *n, wtype_t t)
 {
-    if (s->cnt >= 256) parse_error("operand stack overflow");
+    op_reserve(s, s->cnt + 1);
     s->items[s->cnt].node = n;
     s->items[s->cnt].type = t;
     s->cnt++;
+}
+
+static void
+op_free(OpStack *s)
+{
+    free(s->items);
+    s->items = NULL;
+    s->cnt = s->capa = 0;
 }
 
 static TypedExpr
@@ -1176,16 +1259,33 @@ op_pop(OpStack *s, wtype_t want, const char *site)
     return e;
 }
 
+// Dynamically-grown statement list (void-typed instructions emitted
+// while parsing a body).  Capacity doubles on overflow; freed via
+// `stmts_free` after the body NODE tree has been built.
 typedef struct {
-    NODE *items[1024];
+    NODE   **items;
     uint32_t cnt;
+    uint32_t capa;
 } StmtList;
 
 static void
 stmts_append(StmtList *l, NODE *n)
 {
-    if (l->cnt >= 1024) parse_error("too many statements in body");
+    if (l->cnt >= l->capa) {
+        uint32_t capa = l->capa ? l->capa * 2 : 32;
+        l->items = (NODE **)realloc(l->items, capa * sizeof(NODE *));
+        if (!l->items) wastro_die("out of memory growing StmtList");
+        l->capa = capa;
+    }
     l->items[l->cnt++] = n;
+}
+
+static void
+stmts_free(StmtList *l)
+{
+    free(l->items);
+    l->items = NULL;
+    l->cnt = l->capa = 0;
 }
 
 // Build a body NODE from accumulated statements + optional final
@@ -1764,8 +1864,10 @@ parse_bare_instr(LocalEnv *env, LabelEnv *labels, OpStack *S, StmtList *L)
         struct wastro_function *callee = &WASTRO_FUNCS[func_idx];
         next_token();
         uint32_t argc = callee->param_cnt;
-        if (argc > 8) parse_error("call arity > 8 not supported");
-        NODE *args[8];
+        if (argc > WASTRO_MAX_PARAMS) parse_error("call arity > 1024");
+        NODE **args = NULL;
+        uint32_t args_capa = 0;
+        if (argc) node_args_grow(&args, &args_capa, argc);
         // Pop args in reverse (last pushed = last positional arg).
         for (int i = (int)argc - 1; i >= 0; i--) {
             TypedExpr a = op_pop(S, callee->param_types[i], "call argument");
@@ -1778,7 +1880,11 @@ parse_bare_instr(LocalEnv *env, LabelEnv *labels, OpStack *S, StmtList *L)
             case 1: call_node = ALLOC_node_host_call_1((uint32_t)func_idx, args[0]); break;
             case 2: call_node = ALLOC_node_host_call_2((uint32_t)func_idx, args[0], args[1]); break;
             case 3: call_node = ALLOC_node_host_call_3((uint32_t)func_idx, args[0], args[1], args[2]); break;
-            default: parse_error("host call arity > 3 not supported"); return;
+            default: {
+                uint32_t ai = wastro_register_call_args(args, argc);
+                call_node = ALLOC_node_host_call_var((uint32_t)func_idx, ai, argc);
+                break;
+            }
             }
         }
         else {
@@ -1790,10 +1896,16 @@ parse_bare_instr(LocalEnv *env, LabelEnv *labels, OpStack *S, StmtList *L)
             case 2: call_node = ALLOC_node_call_2((uint32_t)func_idx, local_cnt, args[0], args[1], body); break;
             case 3: call_node = ALLOC_node_call_3((uint32_t)func_idx, local_cnt, args[0], args[1], args[2], body); break;
             case 4: call_node = ALLOC_node_call_4((uint32_t)func_idx, local_cnt, args[0], args[1], args[2], args[3], body); break;
-            default: parse_error("call arity 5..8 not supported yet"); return;
+            default: {
+                uint32_t ai = wastro_register_call_args(args, argc);
+                call_node = ALLOC_node_call_var((uint32_t)func_idx, local_cnt, ai, argc, body);
+                break;
             }
-            register_call_body_fixup(call_node, (uint32_t)func_idx, (uint8_t)argc);
+            }
+            register_call_body_fixup(call_node, (uint32_t)func_idx,
+                                     argc <= 4 ? (uint8_t)argc : PENDING_ARITY_VAR);
         }
+        free(args);
         if (callee->result_type == WT_VOID) stmts_append(L, call_node);
         else op_push(S, call_node, callee->result_type);
         return;
@@ -1834,9 +1946,11 @@ parse_bare_instr(LocalEnv *env, LabelEnv *labels, OpStack *S, StmtList *L)
             else { src_pos = save_pos; cur_tok = save_tok; break; }
         }
         struct wastro_type_sig *sig = &WASTRO_TYPES[type_idx];
-        if (sig->param_cnt > 4) parse_error("call_indirect arity > 4 not supported yet");
+        if (sig->param_cnt > WASTRO_MAX_PARAMS) parse_error("call_indirect arity > 1024");
         TypedExpr idx = op_pop(S, WT_I32, "call_indirect index");
-        NODE *args[4];
+        NODE **args = NULL;
+        uint32_t args_capa = 0;
+        if (sig->param_cnt) node_args_grow(&args, &args_capa, sig->param_cnt);
         for (int i = (int)sig->param_cnt - 1; i >= 0; i--) {
             TypedExpr a = op_pop(S, sig->param_types[i], "call_indirect arg");
             args[i] = a.node;
@@ -1848,8 +1962,13 @@ parse_bare_instr(LocalEnv *env, LabelEnv *labels, OpStack *S, StmtList *L)
         case 2: call_node = ALLOC_node_call_indirect_2((uint32_t)type_idx, idx.node, args[0], args[1]); break;
         case 3: call_node = ALLOC_node_call_indirect_3((uint32_t)type_idx, idx.node, args[0], args[1], args[2]); break;
         case 4: call_node = ALLOC_node_call_indirect_4((uint32_t)type_idx, idx.node, args[0], args[1], args[2], args[3]); break;
-        default: parse_error("call_indirect arity > 4 not supported yet"); return;
+        default: {
+            uint32_t ai = wastro_register_call_args(args, sig->param_cnt);
+            call_node = ALLOC_node_call_indirect_var((uint32_t)type_idx, ai, sig->param_cnt, idx.node);
+            break;
         }
+        }
+        free(args);
         if (sig->result_type == WT_VOID) stmts_append(L, call_node);
         else op_push(S, call_node, sig->result_type);
         return;
@@ -1973,8 +2092,13 @@ parse_func_header(int idx)
         }
     }
     // Now read (param ...)* and (result ...)? to capture signature.
+    // Params accumulate in a growing temp buffer that becomes the
+    // function's `param_types` at the end (no over-allocation).
     WASTRO_FUNCS[idx].result_type = WT_VOID;
+    wtype_t *p_tmp = NULL;
+    uint32_t p_capa = 0;
     uint32_t pcnt = 0;
+    int from_type_form = 0;
     while (cur_tok.kind == T_LPAREN) {
         const char *save_pos = src_pos;
         Token save_tok = cur_tok;
@@ -1986,10 +2110,9 @@ parse_func_header(int idx)
                    (tok_is_keyword("i32") || tok_is_keyword("i64") ||
                     tok_is_keyword("f32") || tok_is_keyword("f64"))) {
                 wtype_t t = parse_wtype();
-                if (pcnt < WASTRO_MAX_PARAMS) {
-                    WASTRO_FUNCS[idx].param_types[pcnt] = t;
-                }
-                pcnt++;
+                if (pcnt >= WASTRO_MAX_PARAMS) parse_error("too many params (>1024)");
+                wtype_grow(&p_tmp, &p_capa, pcnt + 1);
+                p_tmp[pcnt++] = t;
             }
             expect_rparen();
         }
@@ -2015,10 +2138,15 @@ parse_func_header(int idx)
             expect_rparen();
             if (ti >= 0 && (uint32_t)ti < WASTRO_TYPE_CNT) {
                 struct wastro_type_sig *sig = &WASTRO_TYPES[ti];
+                free(p_tmp); p_tmp = NULL; p_capa = 0; pcnt = 0;
+                func_set_params(&WASTRO_FUNCS[idx], sig->param_cnt);
+                if (sig->param_cnt) {
+                    memcpy(WASTRO_FUNCS[idx].param_types, sig->param_types,
+                           sig->param_cnt * sizeof(wtype_t));
+                }
                 pcnt = sig->param_cnt;
-                for (uint32_t k = 0; k < sig->param_cnt; k++)
-                    WASTRO_FUNCS[idx].param_types[k] = sig->param_types[k];
                 WASTRO_FUNCS[idx].result_type = sig->result_type;
+                from_type_form = 1;
             }
         }
         else {
@@ -2027,8 +2155,14 @@ parse_func_header(int idx)
             break;
         }
     }
-    WASTRO_FUNCS[idx].param_cnt = pcnt;
-    WASTRO_FUNCS[idx].local_cnt = pcnt;   // body adds (local) entries
+    if (!from_type_form) {
+        // Hand the temp buffer off to wastro_function as its param_types.
+        free(WASTRO_FUNCS[idx].param_types);
+        WASTRO_FUNCS[idx].param_cnt = pcnt;
+        WASTRO_FUNCS[idx].param_types = p_tmp;
+    }
+    // local_cnt watermark for imports / for the next pass to overwrite.
+    func_set_locals(&WASTRO_FUNCS[idx], pcnt);
 }
 
 // Expects cur_tok to be the '(' of the func.  Consumes the entire form.
@@ -2060,8 +2194,7 @@ parse_func_pass2(int idx)
 {
     expect_lparen();
     expect_keyword("func");
-    LocalEnv env;
-    env.cnt = 0;
+    LocalEnv env = {0};
 
     // skip optional $name
     if (cur_tok.kind == T_IDENT) next_token();
@@ -2097,12 +2230,8 @@ parse_func_pass2(int idx)
             // `(param T T ...)` (anonymous, multiple) OR `(param $name T)`.
             do {
                 wtype_t pt = parse_wtype();
-                if (env.cnt >= 64) parse_error("too many params");
-                if (env.cnt >= WASTRO_MAX_PARAMS) parse_error("too many params (>8)");
-                env.names[env.cnt] = pname;
-                env.types[env.cnt] = pt;
-                WASTRO_FUNCS[idx].param_types[env.cnt] = pt;
-                env.cnt++;
+                if (env.cnt >= WASTRO_MAX_PARAMS) parse_error("too many params (>1024)");
+                lenv_push(&env, pname, pt);
                 pname = NULL;
             } while (cur_tok.kind == T_KEYWORD);
             expect_rparen();
@@ -2136,10 +2265,7 @@ parse_func_pass2(int idx)
             }
             do {
                 wtype_t lt = parse_wtype();
-                if (env.cnt >= 64) parse_error("too many locals");
-                env.names[env.cnt] = lname;
-                env.types[env.cnt] = lt;
-                env.cnt++;
+                lenv_push(&env, lname, lt);
                 lname = NULL;
             } while (cur_tok.kind == T_KEYWORD);
             expect_rparen();
@@ -2150,12 +2276,18 @@ parse_func_pass2(int idx)
             break;
         }
     }
-    WASTRO_FUNCS[idx].local_cnt = env.cnt;
+    // Sync params: pass 2 may have re-declared them (independent of pass 1).
+    func_set_params(&WASTRO_FUNCS[idx], WASTRO_FUNCS[idx].param_cnt);
+    for (uint32_t i = 0; i < WASTRO_FUNCS[idx].param_cnt; i++) {
+        WASTRO_FUNCS[idx].param_types[i] = env.types[i];
+    }
+    func_set_locals(&WASTRO_FUNCS[idx], env.cnt);
     for (uint32_t i = 0; i < env.cnt; i++) {
         WASTRO_FUNCS[idx].local_types[i] = env.types[i];
     }
 
     parse_func_body(idx, &env);
+    lenv_free(&env);
     expect_rparen();
 }
 
@@ -2255,8 +2387,15 @@ scan_module(const char *text, size_t len, const char **func_offsets, int *func_c
                 }
                 // Determine signature: from `(type $sig)` ref if given,
                 // else from inline (param ...) / (result ...) forms,
-                // else from the host registry.
+                // else from the host registry.  When inline params are
+                // collected, sig.param_types is grown in place via
+                // wtype_grow / sig_capa; the (type ...) branch instead
+                // shallow-copies an existing signature, in which case
+                // we never realloc (sig_capa stays 0 and sig.param_types
+                // remains aliased to the shared type-table buffer).
                 struct wastro_type_sig sig = {0};
+                uint32_t sig_capa = 0;
+                int sig_aliased = 0;
                 int sig_set = 0;
                 while (cur_tok.kind == T_LPAREN) {
                     const char *save_pos = src_pos;
@@ -2278,13 +2417,15 @@ scan_module(const char *text, size_t len, const char **func_offsets, int *func_c
                         next_token();
                         expect_rparen();
                         sig = WASTRO_TYPES[ti];
+                        sig_aliased = 1;
                         sig_set = 1;
                     }
                     else if (tok_is_keyword("param")) {
                         next_token();
                         if (cur_tok.kind == T_IDENT) next_token();
                         do {
-                            if (sig.param_cnt >= WASTRO_MAX_PARAMS) parse_error("import too many params");
+                            if (sig.param_cnt >= WASTRO_MAX_PARAMS) parse_error("import too many params (>1024)");
+                            wtype_grow(&sig.param_types, &sig_capa, sig.param_cnt + 1);
                             sig.param_types[sig.param_cnt++] = parse_wtype();
                         } while (cur_tok.kind == T_KEYWORD);
                         expect_rparen();
@@ -2311,7 +2452,7 @@ scan_module(const char *text, size_t len, const char **func_offsets, int *func_c
                 if (he) {
                     // Host-registry signature wins (authoritative).
                     WASTRO_FUNCS[fi].host_fn = he->fn;
-                    WASTRO_FUNCS[fi].param_cnt = he->param_cnt;
+                    func_set_params(&WASTRO_FUNCS[fi], he->param_cnt);
                     for (uint32_t i = 0; i < he->param_cnt; i++)
                         WASTRO_FUNCS[fi].param_types[i] = he->param_types[i];
                     WASTRO_FUNCS[fi].result_type = he->result_type;
@@ -2322,7 +2463,7 @@ scan_module(const char *text, size_t len, const char **func_offsets, int *func_c
                     // tolerates spec tests that import unbound names.
                     extern VALUE host_unbound_trap(struct CTX_struct *c, VALUE *args, uint32_t argc);
                     WASTRO_FUNCS[fi].host_fn = host_unbound_trap;
-                    WASTRO_FUNCS[fi].param_cnt = sig.param_cnt;
+                    func_set_params(&WASTRO_FUNCS[fi], sig.param_cnt);
                     for (uint32_t i = 0; i < sig.param_cnt; i++)
                         WASTRO_FUNCS[fi].param_types[i] = sig.param_types[i];
                     WASTRO_FUNCS[fi].result_type = sig.result_type;
@@ -2336,6 +2477,12 @@ scan_module(const char *text, size_t len, const char **func_offsets, int *func_c
                     WASTRO_FUNCS[fi].host_fn = host_unbound_trap;
                     WASTRO_FUNCS[fi].param_cnt = 0;
                     WASTRO_FUNCS[fi].result_type = WT_VOID;
+                }
+                // If sig owned a fresh param_types buffer, free it now
+                // (the per-function copy above already happened).
+                // Aliased copies of WASTRO_TYPES[ti] must NOT be freed.
+                if (!sig_aliased && sig_capa) {
+                    free(sig.param_types);
                 }
                 WASTRO_FUNC_CNT++;
                 n++;
@@ -2678,6 +2825,8 @@ scan_module(const char *text, size_t len, const char **func_offsets, int *func_c
             expect_keyword("func");
             struct wastro_type_sig sig = {0};
             sig.result_type = WT_VOID;
+            wtype_t *p_tmp = NULL;
+            uint32_t p_capa = 0;
             while (cur_tok.kind == T_LPAREN) {
                 const char *save_pos = src_pos;
                 Token save_tok = cur_tok;
@@ -2687,8 +2836,9 @@ scan_module(const char *text, size_t len, const char **func_offsets, int *func_c
                     if (cur_tok.kind == T_IDENT) next_token();   // discard $name
                     do {
                         if (sig.param_cnt >= WASTRO_MAX_PARAMS)
-                            parse_error("(type) too many params");
-                        sig.param_types[sig.param_cnt++] = parse_wtype();
+                            parse_error("(type) too many params (>1024)");
+                        wtype_grow(&p_tmp, &p_capa, sig.param_cnt + 1);
+                        p_tmp[sig.param_cnt++] = parse_wtype();
                     } while (cur_tok.kind == T_KEYWORD);
                     expect_rparen();
                 }
@@ -2706,6 +2856,9 @@ scan_module(const char *text, size_t len, const char **func_offsets, int *func_c
             expect_rparen();   // close (func ...)
             expect_rparen();   // close (type ...)
             if (WASTRO_TYPE_CNT >= WASTRO_MAX_TYPES) parse_error("too many (type ...)");
+            // Hand the temp buffer off as the sig's param_types — sized
+            // exactly to param_cnt (capacity may exceed it; that's OK).
+            sig.param_types = p_tmp;
             WASTRO_TYPES[WASTRO_TYPE_CNT] = sig;
             WASTRO_TYPE_NAMES[WASTRO_TYPE_CNT] = tname;
             WASTRO_TYPE_CNT++;

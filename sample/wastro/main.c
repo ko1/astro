@@ -196,6 +196,10 @@ alloc_local_tee(wtype_t t, uint32_t index, NODE *expr)
 // every call site is appended here and patched in one post-parse
 // sweep so that the specializer can recurse from caller into callee
 // via the body slot.
+// `arity` encodes which node_call_* kind owns this fixup: 0..4 for the
+// fixed-arity variants, PENDING_ARITY_VAR for `node_call_var`.
+#define PENDING_ARITY_VAR 0xFF
+
 struct pending_call_body {
     NODE *call_node;
     uint32_t func_index;
@@ -229,6 +233,7 @@ wastro_fixup_call_bodies(void)
         case 2: p->call_node->u.node_call_2.body = body; break;
         case 3: p->call_node->u.node_call_3.body = body; break;
         case 4: p->call_node->u.node_call_4.body = body; break;
+        case PENDING_ARITY_VAR: p->call_node->u.node_call_var.body = body; break;
         }
     }
     PENDING_CALL_BODY_CNT = 0;
@@ -334,6 +339,118 @@ resolve_func(const Token *t)
     }
     fprintf(stderr, "wastro: unknown function '%.*s'\n", (int)t->len, t->start);
     exit(1);
+}
+
+// Per-function / per-signature param/local storage helpers.  The
+// arrays in `wastro_function` and `wastro_type_sig` are heap pointers
+// (NULL when empty); these helpers grow / replace them on demand.
+//
+// Usage idioms:
+//   - bulk write from a known-size source:
+//        func_set_params(fn, sig->param_cnt);
+//        memcpy(fn->param_types, sig->param_types, ...);
+//   - incremental write inside a parse loop:
+//        func_ensure_params(fn, k + 1);
+//        fn->param_types[k] = t;
+//        ...; fn->param_cnt = k_total;
+
+static wtype_t *
+wtype_alloc(uint32_t cnt)
+{
+    return cnt ? (wtype_t *)calloc(cnt, sizeof(wtype_t)) : NULL;
+}
+
+static void
+func_set_params(struct wastro_function *fn, uint32_t cnt)
+{
+    free(fn->param_types);
+    fn->param_cnt = cnt;
+    fn->param_types = wtype_alloc(cnt);
+}
+
+static void
+func_set_locals(struct wastro_function *fn, uint32_t cnt)
+{
+    free(fn->local_types);
+    fn->local_cnt = cnt;
+    fn->local_types = wtype_alloc(cnt);
+}
+
+static void
+sig_set_params(struct wastro_type_sig *sig, uint32_t cnt)
+{
+    free(sig->param_types);
+    sig->param_cnt = cnt;
+    sig->param_types = wtype_alloc(cnt);
+}
+
+// Grow an array (allocated by wtype_alloc) to at least `need` entries.
+// Used when params/locals are appended one at a time inside a loop.
+// `*cap` tracks the high-water mark distinct from the public count.
+static void
+wtype_grow(wtype_t **arr, uint32_t *cap, uint32_t need)
+{
+    if (need <= *cap) return;
+    uint32_t capa = *cap ? *cap : 8;
+    while (capa < need) capa *= 2;
+    *arr = (wtype_t *)realloc(*arr, capa * sizeof(wtype_t));
+    if (!*arr) {
+        fprintf(stderr, "wastro: out of memory growing wtype array\n");
+        exit(1);
+    }
+    *cap = capa;
+}
+
+// Same growing pattern but for arrays of NODE* (call argument
+// sub-trees collected during parsing).  Capacity doubles on overflow.
+static void
+node_args_grow(NODE ***arr, uint32_t *cap, uint32_t need)
+{
+    if (need <= *cap) return;
+    uint32_t capa = *cap ? *cap : 8;
+    while (capa < need) capa *= 2;
+    *arr = (NODE **)realloc(*arr, capa * sizeof(NODE *));
+    if (!*arr) {
+        fprintf(stderr, "wastro: out of memory growing NODE* array\n");
+        exit(1);
+    }
+    *cap = capa;
+}
+
+// Module-global storage for the operand AST sub-trees of variable-
+// arity call nodes (`node_call_var` / `node_call_indirect_var` /
+// `node_host_call_var`).  Mirrors the WASTRO_BR_TABLE pattern: each
+// var-call node carries `(args_index, args_cnt)` into this flat
+// array, which is grown as the parser registers call sites.  Freed
+// on module reset.
+NODE   **WASTRO_CALL_ARGS = NULL;
+uint32_t WASTRO_CALL_ARGS_CNT = 0;
+static uint32_t WASTRO_CALL_ARGS_CAP = 0;
+
+static uint32_t
+wastro_register_call_args(NODE **args, uint32_t cnt)
+{
+    if (WASTRO_CALL_ARGS_CNT + cnt > WASTRO_CALL_ARGS_CAP) {
+        uint32_t need = WASTRO_CALL_ARGS_CNT + cnt;
+        uint32_t capa = WASTRO_CALL_ARGS_CAP ? WASTRO_CALL_ARGS_CAP : 64;
+        while (capa < need) capa *= 2;
+        WASTRO_CALL_ARGS = (NODE **)realloc(WASTRO_CALL_ARGS, capa * sizeof(NODE *));
+        if (!WASTRO_CALL_ARGS) wastro_die("out of memory growing WASTRO_CALL_ARGS");
+        WASTRO_CALL_ARGS_CAP = capa;
+    }
+    uint32_t base = WASTRO_CALL_ARGS_CNT;
+    for (uint32_t i = 0; i < cnt; i++) WASTRO_CALL_ARGS[base + i] = args[i];
+    WASTRO_CALL_ARGS_CNT += cnt;
+    return base;
+}
+
+static void
+wastro_reset_call_args(void)
+{
+    free(WASTRO_CALL_ARGS);
+    WASTRO_CALL_ARGS = NULL;
+    WASTRO_CALL_ARGS_CNT = 0;
+    WASTRO_CALL_ARGS_CAP = 0;
 }
 
 #include "host_imports.c"

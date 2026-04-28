@@ -119,28 +119,38 @@ typedef enum {
     WT_POLY,
 } wtype_t;
 
-#define WASTRO_MAX_PARAMS 8
+// Sanity cap on per-function param/local counts.  Storage is dynamic
+// (param_types / local_types are heap-allocated and sized to actual
+// count); this constant is only used to reject pathological inputs.
+#define WASTRO_MAX_PARAMS 1024
 
 struct CTX_struct;
 typedef VALUE (*wastro_host_fn_t)(struct CTX_struct *c, VALUE *args, uint32_t argc);
 
 // A wasm function type signature (used by (type ...) declarations and
 // by call_indirect for runtime structural type checks).
+//
+// `param_types` is a heap allocation of exactly `param_cnt` entries
+// (NULL when param_cnt == 0); freed when the module is reset.
 struct wastro_type_sig {
     uint32_t param_cnt;
-    wtype_t  param_types[WASTRO_MAX_PARAMS];
+    wtype_t *param_types;
     wtype_t  result_type;
 };
 
+// `param_types` and `local_types` are heap allocations sized to
+// `param_cnt` / `local_cnt` respectively (NULL when count == 0),
+// freed when the module is reset.  The parser allocates them via
+// `wastro_function_set_params` / `wastro_function_set_locals`.
 struct wastro_function {
     const char *name;     // optional symbolic name ("$fib"), NULL if unnamed
     int exported;         // 1 if exported, else 0
     const char *export_name; // export name, or NULL
     uint32_t param_cnt;
-    wtype_t  param_types[WASTRO_MAX_PARAMS];
+    wtype_t *param_types;
     wtype_t  result_type; // WT_VOID if no result
     uint32_t local_cnt;   // total = params + extra body locals
-    wtype_t  local_types[64];
+    wtype_t *local_types;
     struct Node *body;
 
     // Imports

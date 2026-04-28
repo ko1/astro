@@ -229,8 +229,10 @@ parse_bin_code_seq(BinReader *r, LocalEnv *env, LabelEnv *labels, int allow_else
         case 0x10: {  // call
             uint32_t fi = bin_leb_u32(r);
             struct wastro_function *callee = &WASTRO_FUNCS[fi];
-            if (callee->param_cnt > 8) parse_error("call arity > 8 not supported");
-            NODE *args[8];
+            if (callee->param_cnt > WASTRO_MAX_PARAMS) parse_error("binary: call arity > 1024");
+            NODE **args = NULL;
+            uint32_t args_capa = 0;
+            if (callee->param_cnt) node_args_grow(&args, &args_capa, callee->param_cnt);
             for (int i = (int)callee->param_cnt - 1; i >= 0; i--) {
                 TypedExpr a = op_pop(&S, callee->param_types[i], "call arg");
                 args[i] = a.node;
@@ -242,7 +244,11 @@ parse_bin_code_seq(BinReader *r, LocalEnv *env, LabelEnv *labels, int allow_else
                 case 1: cn = ALLOC_node_host_call_1(fi, args[0]); break;
                 case 2: cn = ALLOC_node_host_call_2(fi, args[0], args[1]); break;
                 case 3: cn = ALLOC_node_host_call_3(fi, args[0], args[1], args[2]); break;
-                default: parse_error("host call arity > 3 not supported"); cn = NULL;
+                default: {
+                    uint32_t ai = wastro_register_call_args(args, callee->param_cnt);
+                    cn = ALLOC_node_host_call_var(fi, ai, callee->param_cnt);
+                    break;
+                }
                 }
             } else {
                 uint32_t lc = callee->local_cnt;
@@ -253,10 +259,17 @@ parse_bin_code_seq(BinReader *r, LocalEnv *env, LabelEnv *labels, int allow_else
                 case 2: cn = ALLOC_node_call_2(fi, lc, args[0], args[1], body); break;
                 case 3: cn = ALLOC_node_call_3(fi, lc, args[0], args[1], args[2], body); break;
                 case 4: cn = ALLOC_node_call_4(fi, lc, args[0], args[1], args[2], args[3], body); break;
-                default: parse_error("call arity 5..8 not supported"); cn = NULL;
+                default: {
+                    uint32_t ai = wastro_register_call_args(args, callee->param_cnt);
+                    cn = ALLOC_node_call_var(fi, lc, ai, callee->param_cnt, body);
+                    break;
                 }
-                register_call_body_fixup(cn, fi, (uint8_t)callee->param_cnt);
+                }
+                register_call_body_fixup(cn, fi,
+                                         callee->param_cnt <= 4 ? (uint8_t)callee->param_cnt
+                                                                : PENDING_ARITY_VAR);
             }
+            free(args);
             if (callee->result_type == WT_VOID) stmts_append(&L, cn);
             else op_push(&S, cn, callee->result_type);
         } break;
@@ -265,9 +278,11 @@ parse_bin_code_seq(BinReader *r, LocalEnv *env, LabelEnv *labels, int allow_else
             uint8_t table = bin_u8(r);
             (void)table;
             struct wastro_type_sig *sig = &WASTRO_TYPES[ti];
-            if (sig->param_cnt > 4) parse_error("call_indirect arity > 4 not supported");
+            if (sig->param_cnt > WASTRO_MAX_PARAMS) parse_error("binary: call_indirect arity > 1024");
             TypedExpr idx = op_pop(&S, WT_I32, "call_indirect idx");
-            NODE *args[4];
+            NODE **args = NULL;
+            uint32_t args_capa = 0;
+            if (sig->param_cnt) node_args_grow(&args, &args_capa, sig->param_cnt);
             for (int i = (int)sig->param_cnt - 1; i >= 0; i--) {
                 TypedExpr a = op_pop(&S, sig->param_types[i], "ci arg");
                 args[i] = a.node;
@@ -279,8 +294,13 @@ parse_bin_code_seq(BinReader *r, LocalEnv *env, LabelEnv *labels, int allow_else
             case 2: cn = ALLOC_node_call_indirect_2(ti, idx.node, args[0], args[1]); break;
             case 3: cn = ALLOC_node_call_indirect_3(ti, idx.node, args[0], args[1], args[2]); break;
             case 4: cn = ALLOC_node_call_indirect_4(ti, idx.node, args[0], args[1], args[2], args[3]); break;
-            default: parse_error("ci arity > 4 not supported"); cn = NULL;
+            default: {
+                uint32_t ai = wastro_register_call_args(args, sig->param_cnt);
+                cn = ALLOC_node_call_indirect_var(ti, ai, sig->param_cnt, idx.node);
+                break;
             }
+            }
+            free(args);
             if (sig->result_type == WT_VOID) stmts_append(&L, cn);
             else op_push(&S, cn, sig->result_type);
         } break;
@@ -583,9 +603,11 @@ load_module_binary(const uint8_t *buf, size_t sz)
             for (uint32_t i = 0; i < n; i++) {
                 if (bin_u8(&S2) != 0x60) parse_error("binary: bad type form");
                 struct wastro_type_sig sig = {0};
-                sig.param_cnt = bin_leb_u32(&S2);
-                if (sig.param_cnt > WASTRO_MAX_PARAMS) parse_error("binary: too many params");
-                for (uint32_t k = 0; k < sig.param_cnt; k++)
+                uint32_t pc = bin_leb_u32(&S2);
+                if (pc > WASTRO_MAX_PARAMS) parse_error("binary: too many params (>1024)");
+                sig.param_cnt = pc;
+                sig.param_types = wtype_alloc(pc);
+                for (uint32_t k = 0; k < pc; k++)
                     sig.param_types[k] = bin_valtype(bin_u8(&S2));
                 uint32_t rc = bin_leb_u32(&S2);
                 if (rc > 1) parse_error("binary: multi-result not supported");
@@ -615,13 +637,13 @@ load_module_binary(const uint8_t *buf, size_t sz)
                     struct wastro_type_sig *sig = &WASTRO_TYPES[ti];
                     if (he) {
                         WASTRO_FUNCS[fi].host_fn = he->fn;
-                        WASTRO_FUNCS[fi].param_cnt = he->param_cnt;
+                        func_set_params(&WASTRO_FUNCS[fi], he->param_cnt);
                         for (uint32_t k = 0; k < he->param_cnt; k++)
                             WASTRO_FUNCS[fi].param_types[k] = he->param_types[k];
                         WASTRO_FUNCS[fi].result_type = he->result_type;
                     } else {
                         WASTRO_FUNCS[fi].host_fn = host_unbound_trap;
-                        WASTRO_FUNCS[fi].param_cnt = sig->param_cnt;
+                        func_set_params(&WASTRO_FUNCS[fi], sig->param_cnt);
                         for (uint32_t k = 0; k < sig->param_cnt; k++)
                             WASTRO_FUNCS[fi].param_types[k] = sig->param_types[k];
                         WASTRO_FUNCS[fi].result_type = sig->result_type;
@@ -665,11 +687,11 @@ load_module_binary(const uint8_t *buf, size_t sz)
                 struct wastro_type_sig *sig = &WASTRO_TYPES[ti];
                 WASTRO_FUNCS[fi].name = NULL;
                 WASTRO_FUNCS[fi].is_import = 0;
-                WASTRO_FUNCS[fi].param_cnt = sig->param_cnt;
+                func_set_params(&WASTRO_FUNCS[fi], sig->param_cnt);
                 for (uint32_t k = 0; k < sig->param_cnt; k++)
                     WASTRO_FUNCS[fi].param_types[k] = sig->param_types[k];
                 WASTRO_FUNCS[fi].result_type = sig->result_type;
-                WASTRO_FUNCS[fi].local_cnt = sig->param_cnt;   // body sets total
+                func_set_locals(&WASTRO_FUNCS[fi], sig->param_cnt);   // body sets total
                 for (uint32_t k = 0; k < sig->param_cnt; k++)
                     WASTRO_FUNCS[fi].local_types[k] = sig->param_types[k];
                 WASTRO_FUNC_CNT++;
@@ -763,10 +785,8 @@ load_module_binary(const uint8_t *buf, size_t sz)
                 int fi = (int)imported_funcs + (int)i;
                 struct wastro_function *fn = &WASTRO_FUNCS[fi];
                 LocalEnv env = {0};
-                env.cnt = fn->param_cnt;
-                for (uint32_t k = 0; k < env.cnt; k++) {
-                    env.names[k] = NULL;
-                    env.types[k] = fn->param_types[k];
+                for (uint32_t k = 0; k < fn->param_cnt; k++) {
+                    lenv_push(&env, NULL, fn->param_types[k]);
                 }
                 // locals: vec of (count, valtype)
                 BinReader BR = { S2.p, body_end };
@@ -775,19 +795,17 @@ load_module_binary(const uint8_t *buf, size_t sz)
                     uint32_t cnt = bin_leb_u32(&BR);
                     wtype_t lt = bin_valtype(bin_u8(&BR));
                     for (uint32_t k = 0; k < cnt; k++) {
-                        if (env.cnt >= 64) parse_error("binary: too many locals");
-                        env.names[env.cnt] = NULL;
-                        env.types[env.cnt] = lt;
-                        env.cnt++;
+                        lenv_push(&env, NULL, lt);
                     }
                 }
-                fn->local_cnt = env.cnt;
+                func_set_locals(fn, env.cnt);
                 for (uint32_t k = 0; k < env.cnt; k++) fn->local_types[k] = env.types[k];
                 LabelEnv labels = {0};
                 int save_idx = CUR_FUNC_IDX;
                 CUR_FUNC_IDX = fi;
                 TypedExpr body = parse_bin_code_seq(&BR, &env, &labels, 0, NULL);
                 CUR_FUNC_IDX = save_idx;
+                lenv_free(&env);
                 if (BR.p != body_end) {
                     wastro_die("binary: code body length mismatch");
                 }

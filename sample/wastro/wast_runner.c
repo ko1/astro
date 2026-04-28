@@ -30,6 +30,8 @@ wastro_reset_module(void)
     for (uint32_t i = 0; i < WASTRO_FUNC_CNT; i++) {
         if (WASTRO_FUNCS[i].name) free((void *)WASTRO_FUNCS[i].name);
         if (WASTRO_FUNCS[i].export_name) free((void *)WASTRO_FUNCS[i].export_name);
+        free(WASTRO_FUNCS[i].param_types);
+        free(WASTRO_FUNCS[i].local_types);
     }
     memset(WASTRO_FUNCS, 0, sizeof(WASTRO_FUNCS));
     WASTRO_FUNC_CNT = 0;
@@ -52,9 +54,12 @@ wastro_reset_module(void)
 
     for (uint32_t i = 0; i < WASTRO_TYPE_CNT; i++) {
         if (WASTRO_TYPE_NAMES[i]) { free(WASTRO_TYPE_NAMES[i]); WASTRO_TYPE_NAMES[i] = NULL; }
+        free(WASTRO_TYPES[i].param_types);
     }
     memset(WASTRO_TYPES, 0, sizeof(WASTRO_TYPES));
     WASTRO_TYPE_CNT = 0;
+
+    wastro_reset_call_args();
 
     if (WASTRO_TABLE) { free(WASTRO_TABLE); WASTRO_TABLE = NULL; }
     WASTRO_TABLE_SIZE = 0;
