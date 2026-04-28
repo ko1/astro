@@ -100,17 +100,34 @@ no-op and every node stays on its default dispatcher.
 
 ## 3. Dispatch model
 
-A *dispatcher* is a C function:
+ASTroGen splits each node-kind's runtime behaviour across three
+distinct C functions, all named after the node kind.  Mixing them up
+is easy, so this section spells the split out before §4.
+
+| Symbol                | Where written                  | Signature (`local.get $i` example)                                              | Role |
+|-----------------------|--------------------------------|----------------------------------------------------------------------------------|------|
+| `EVAL_node_xxx`       | `node.def` (user)              | `RESULT EVAL_node_local_get_i32(CTX *c, NODE *n, slot *frame, uint32_t index)`  | The *evaluator* — the actual wasm semantics.  Operands are normal C parameters.  `static inline __attribute__((always_inline))` so it folds into whatever calls it. |
+| `DISPATCH_node_xxx`   | generated (`node_dispatch.c`)  | `RESULT DISPATCH_node_local_get_i32(CTX *c, NODE *n, slot *frame)`              | Thin wrapper.  Unpacks operands from the node body and forwards to `EVAL_node_xxx`.  This is the function whose pointer initially lives in `n->head.dispatcher`. |
+| `SD_<hash>`           | generated, AOT-compiled        | `RESULT SD_<hash>(CTX *c, NODE *n, slot *frame)`                                 | Specialized dispatcher.  Replaces `DISPATCH_node_xxx` after `astro_cs_load`; inlines the operand unpacking *and* the entire sub-tree of child evaluators. |
+
+So the indirection through `n->head.dispatcher` always points at one
+of `DISPATCH_node_xxx` or `SD_<hash>`, both of which have the
+*three-arg* signature.  Operand reading happens inside.  See
+`runtime/astro_node.c` and the `build_eval_dispatch` block of
+`lib/astrogen.rb` for the codegen.
+
+The function-pointer type is:
 
 ```c
 typedef RESULT (*node_dispatcher_func_t)(CTX *c, NODE *n,
                                          union wastro_slot *frame);
 ```
 
-`EVAL` is the single trampoline that calls a dispatcher.  Defined as
-`static inline` in `node.h:74` so that specialized SD\_ functions
-(loaded from `all.so`) can call it directly without a PLT bounce
-back into the host binary.
+`EVAL` (the macro/function name in `node.h:74`, distinct from
+`EVAL_node_xxx`) is the single trampoline that calls through that
+pointer.  Defined as `static inline` so specialized SD\_ functions
+loaded from `all.so` can call it directly without a PLT bounce back
+into the host binary:
 
 ```c
 static inline RESULT
@@ -119,6 +136,43 @@ EVAL(CTX *c, NODE *n, union wastro_slot *frame)
     return (*n->head.dispatcher)(c, n, frame);
 }
 ```
+
+The naming convention is deliberate but unforgiving:
+
+- `EVAL(...)` — the trampoline (3 args, calls through head.dispatcher)
+- `EVAL_node_xxx(...)` — the user-written evaluator (3 args + operands)
+- `DISPATCH_node_xxx(...)` — the generated wrapper (3 args, reads
+  operands from `n->u.node_xxx.<field>` and calls `EVAL_node_xxx`)
+
+Concretely, for `local.get $i`:
+
+```c
+// User-written, in node.def:
+static inline __attribute__((always_inline)) RESULT
+EVAL_node_local_get_i32(CTX *c, NODE *n, slot *frame, uint32_t index)
+{
+    return RESULT_OK(FROM_I32(frame[index].i32));
+}
+
+// Generated, in node_dispatch.c:
+static __attribute__((no_stack_protector)) RESULT
+DISPATCH_node_local_get_i32(CTX *c, NODE *n, slot *frame)
+{
+    dispatch_info(c, n, 0);
+    RESULT v = EVAL_node_local_get_i32(c, n, frame,
+                                       n->u.node_local_get_i32.index);
+    dispatch_info(c, n, 1);
+    return v;
+}
+```
+
+Under default (un-specialized) execution, every node hop costs one
+indirect call (`EVAL` trampoline → `DISPATCH_node_xxx`) plus an
+inline-then-folded `EVAL_node_xxx` call inside.  Under specialization,
+the SD\_ function for an enclosing node inlines its children's
+evaluators (via the same `EVAL_node_xxx` symbols, which are
+always-inline), eliminating both the wrapper and most of the indirect
+calls along the way.
 
 ### `RESULT` — branch-aware return value
 
@@ -175,16 +229,10 @@ union wastro_slot {
 };
 ```
 
-The dispatcher signature carries `frame` (the third positional arg)
-through every node, all the way to the leaves:
-
-```c
-RESULT
-DISPATCH_node_local_get_i32(CTX *c, NODE *n, union wastro_slot *frame)
-{
-    return RESULT_OK(FROM_I32(frame[index].i32));
-}
-```
+`frame` (the third positional arg) is threaded through every
+dispatcher and evaluator, all the way to the leaves — the
+`local.get_<T>` / `local.set_<T>` evaluators in §3 take it directly
+and access `frame[index].<T>`.
 
 Why `union` rather than a typed struct?
 
@@ -211,14 +259,26 @@ node_call_2(CTX *c, NODE *n, …, NODE *a0, NODE *a1, NODE *body)
 }
 ```
 
-`body_dispatcher` is a *static* dispatcher pointer materialized by
-ASTroGen for the `body` operand slot — that is, the parameter is a
-genuine direct-call symbol, not `body->head.dispatcher`.  When the
-specialized chain is available, this lets gcc inline transitively
-through the call boundary; the callee's locals and the caller's
-locals end up live in the same SD\_ function and SROA collapses both
-sets of slots into registers.  The call/return shape disappears
-under specialization.
+`body_dispatcher` looks magic but follows a general ASTroGen
+convention: for every `NODE *foo` operand declared on a `NODE_DEF`,
+the generator quietly adds a sibling `node_dispatcher_func_t
+foo_dispatcher` parameter to the `EVAL_node_xxx` signature, and
+`DISPATCH_node_xxx` passes `n->u.node_xxx.foo->head.dispatcher` for
+it.  The `EVAL_ARG(c, foo)` macro inside `node.def` expands to
+`(*foo_dispatcher)(c, foo, frame)` — a direct call through the
+sibling parameter, not through `foo->head.dispatcher`.  Most
+operators (e.g. `node_i32_add`'s `l` / `r`) use `EVAL_ARG`;
+`node_call_N` uses the raw `body_dispatcher` instead because it has
+to pass a *new* frame to the callee instead of the current one.
+
+Why this rather than just dispatching through `foo->head.dispatcher`?
+Because when the parent's `SD_<hash>` is specialized, the operand's
+sibling dispatcher parameter is materialized at the call site as a
+known, named symbol (`SD_<child_hash>`).  gcc sees a direct call and
+can inline transitively across nodes — the wrapper hop and most of
+the indirect calls collapse into one SD\_ function.  At default
+(unspecialized) execution the same parameter just carries
+`DISPATCH_node_xxx`, an indirect call.
 
 `CTX::stack` is reserved (64K `VALUE` slots) for the spec-test
 harness path and as a safety net, but in the hot interpreter path it
@@ -526,8 +586,9 @@ That's how wastro reaches its measured fib performance.
 
 | Concern                          | File / line                            |
 |----------------------------------|----------------------------------------|
-| Per-node dispatcher bodies       | `node.def`                             |
-| AST struct + EVAL trampoline     | `node.h`                               |
+| Per-node `EVAL_node_xxx` bodies (semantics) | `node.def`                  |
+| Generated `DISPATCH_node_xxx` wrappers      | `node_dispatch.c` (built)   |
+| AST struct + `EVAL` trampoline + `UNWRAP`   | `node.h`                    |
 | Module-global tables, traps      | `context.h` + `main.c`                 |
 | WAT tokenizer / parser           | `main.c` (top half)                    |
 | Binary `.wasm` decoder           | `main.c` (`wastro_load_module_buf`)    |
