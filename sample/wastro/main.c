@@ -326,6 +326,14 @@ expect_keyword(const char *kw) { if (!tok_is_keyword(kw)) parse_error(kw); next_
 struct wastro_function WASTRO_FUNCS[WASTRO_MAX_FUNCS];
 uint32_t WASTRO_FUNC_CNT = 0;
 
+// Currently-being-parsed function's WASTRO_FUNCS index.  Set on entry
+// to parse_func_body / binary code-section parsing and read by the
+// local-op allocators so they stamp `frame_id` into each node — the
+// AOT specializer later uses frame_id to look up local types and emit
+// the right `((struct wastro_frame_<id> *)frame)->Lx` cast.  Threaded
+// via a module-level static instead of through every parser function.
+static int CUR_FUNC_IDX = -1;
+
 // Pending body-slot fix-up for node_call_N nodes.  At allocation
 // time the callee's body may not be parsed yet (forward reference);
 // every call site is appended here and patched in one post-parse
@@ -1206,7 +1214,7 @@ parse_op(LocalEnv *env, LabelEnv *labels)
         int idx = local_env_lookup(env, &cur_tok);
         next_token();
         expect_rparen();
-        return (TypedExpr){ALLOC_node_local_get((uint32_t)idx), env->types[idx]};
+        return (TypedExpr){ALLOC_node_local_get((uint32_t)CUR_FUNC_IDX, (uint32_t)idx), env->types[idx]};
     }
     if (tok_is_keyword("local.set")) {
         next_token();
@@ -1215,7 +1223,7 @@ parse_op(LocalEnv *env, LabelEnv *labels)
         TypedExpr e = parse_expr(env, labels);
         expect_type(e.type, env->types[idx], "local.set value");
         expect_rparen();
-        return (TypedExpr){ALLOC_node_local_set((uint32_t)idx, e.node), WT_VOID};
+        return (TypedExpr){ALLOC_node_local_set((uint32_t)CUR_FUNC_IDX, (uint32_t)idx, e.node), WT_VOID};
     }
     if (tok_is_keyword("local.tee")) {
         next_token();
@@ -1224,7 +1232,7 @@ parse_op(LocalEnv *env, LabelEnv *labels)
         TypedExpr e = parse_expr(env, labels);
         expect_type(e.type, env->types[idx], "local.tee value");
         expect_rparen();
-        return (TypedExpr){ALLOC_node_local_tee((uint32_t)idx, e.node), env->types[idx]};
+        return (TypedExpr){ALLOC_node_local_tee((uint32_t)CUR_FUNC_IDX, (uint32_t)idx, e.node), env->types[idx]};
     }
 
     // ------- memory load/store -------
@@ -2149,7 +2157,7 @@ parse_bare_instr(LocalEnv *env, LabelEnv *labels, OpStack *S, StmtList *L)
         next_token();
         int idx = local_env_lookup(env, &cur_tok);
         next_token();
-        op_push(S, ALLOC_node_local_get((uint32_t)idx), env->types[idx]);
+        op_push(S, ALLOC_node_local_get((uint32_t)CUR_FUNC_IDX, (uint32_t)idx), env->types[idx]);
         return;
     }
     if (tok_is_keyword("local.set")) {
@@ -2157,7 +2165,7 @@ parse_bare_instr(LocalEnv *env, LabelEnv *labels, OpStack *S, StmtList *L)
         int idx = local_env_lookup(env, &cur_tok);
         next_token();
         TypedExpr e = op_pop(S, env->types[idx], "local.set value");
-        stmts_append(L, ALLOC_node_local_set((uint32_t)idx, e.node));
+        stmts_append(L, ALLOC_node_local_set((uint32_t)CUR_FUNC_IDX, (uint32_t)idx, e.node));
         return;
     }
     if (tok_is_keyword("local.tee")) {
@@ -2165,7 +2173,7 @@ parse_bare_instr(LocalEnv *env, LabelEnv *labels, OpStack *S, StmtList *L)
         int idx = local_env_lookup(env, &cur_tok);
         next_token();
         TypedExpr e = op_pop(S, env->types[idx], "local.tee value");
-        op_push(S, ALLOC_node_local_tee((uint32_t)idx, e.node), env->types[idx]);
+        op_push(S, ALLOC_node_local_tee((uint32_t)CUR_FUNC_IDX, (uint32_t)idx, e.node), env->types[idx]);
         return;
     }
     if (tok_is_keyword("global.get")) {
@@ -2774,7 +2782,10 @@ parse_func_body(int idx, LocalEnv *env)
     labels.result_types[labels.cnt] = WASTRO_FUNCS[idx].result_type;
     labels.is_loop[labels.cnt] = 0;
     labels.cnt++;
+    int save_idx = CUR_FUNC_IDX;
+    CUR_FUNC_IDX = idx;
     TypedExpr body = parse_body_seq(env, &labels, 0, NULL);
+    CUR_FUNC_IDX = save_idx;
     (void)body.type;
     WASTRO_FUNCS[idx].body = body.node;
 }
@@ -3917,17 +3928,17 @@ parse_bin_code_seq(BinReader *r, LocalEnv *env, LabelEnv *labels, int allow_else
 
         case 0x20: {  // local.get
             uint32_t li = bin_leb_u32(r);
-            op_push(&S, ALLOC_node_local_get(li), env->types[li]);
+            op_push(&S, ALLOC_node_local_get((uint32_t)CUR_FUNC_IDX, li), env->types[li]);
         } break;
         case 0x21: {  // local.set
             uint32_t li = bin_leb_u32(r);
             TypedExpr e = op_pop(&S, env->types[li], "local.set");
-            stmts_append(&L, ALLOC_node_local_set(li, e.node));
+            stmts_append(&L, ALLOC_node_local_set((uint32_t)CUR_FUNC_IDX, li, e.node));
         } break;
         case 0x22: {  // local.tee
             uint32_t li = bin_leb_u32(r);
             TypedExpr e = op_pop(&S, env->types[li], "local.tee");
-            op_push(&S, ALLOC_node_local_tee(li, e.node), env->types[li]);
+            op_push(&S, ALLOC_node_local_tee((uint32_t)CUR_FUNC_IDX, li, e.node), env->types[li]);
         } break;
         case 0x23: {  // global.get
             uint32_t gi = bin_leb_u32(r);
@@ -4402,7 +4413,10 @@ load_module_binary(const uint8_t *buf, size_t sz)
                 fn->local_cnt = env.cnt;
                 for (uint32_t k = 0; k < env.cnt; k++) fn->local_types[k] = env.types[k];
                 LabelEnv labels = {0};
+                int save_idx = CUR_FUNC_IDX;
+                CUR_FUNC_IDX = fi;
                 TypedExpr body = parse_bin_code_seq(&BR, &env, &labels, 0, NULL);
+                CUR_FUNC_IDX = save_idx;
                 if (BR.p != body_end) {
                     wastro_die("binary: code body length mismatch");
                 }

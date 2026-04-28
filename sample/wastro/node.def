@@ -32,14 +32,21 @@
 // per local, type-erased — AS_F64/AS_I32 reinterpret per use).
 // =====================================================================
 
+// `frame_id` is the index into WASTRO_FUNCS of the enclosing function;
+// it's parser-time-constant per local op (a wasm local always belongs
+// to exactly one function).  The plain interp body doesn't need it —
+// `frame` is just a VALUE* slot array — but the AOT specializer reads
+// frame_id to look up the function's local_types[] and emit a typed
+// cast `((struct wastro_frame_<id> *)frame)->Lx` so gcc can SROA each
+// slot at its real C type (i32 / i64 / f32 / f64).
 NODE_DEF
-node_local_get(CTX *c, NODE *n, uint32_t index)
+node_local_get(CTX *c, NODE *n, uint32_t frame_id, uint32_t index)
 {
     return RESULT_OK(((VALUE *)frame)[index]);
 }
 
 NODE_DEF
-node_local_set(CTX *c, NODE *n, uint32_t index, NODE *expr)
+node_local_set(CTX *c, NODE *n, uint32_t frame_id, uint32_t index, NODE *expr)
 {
     ((VALUE *)frame)[index] = UNWRAP(EVAL_ARG(c, expr));
     return RESULT_OK(0);
@@ -48,7 +55,7 @@ node_local_set(CTX *c, NODE *n, uint32_t index, NODE *expr)
 // local.tee — like local.set but ALSO leaves the value on the stack.
 // Equivalent to `local.set $x; local.get $x` but as one op.
 NODE_DEF
-node_local_tee(CTX *c, NODE *n, uint32_t index, NODE *expr)
+node_local_tee(CTX *c, NODE *n, uint32_t frame_id, uint32_t index, NODE *expr)
 {
     VALUE v = UNWRAP(EVAL_ARG(c, expr));
     ((VALUE *)frame)[index] = v;
