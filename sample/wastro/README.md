@@ -29,9 +29,11 @@ Full WebAssembly 1.0 (MVP) plus saturating truncation (wasm 2.0):
 - **Control flow**: `if/then/else`, `block`, `loop`, `br`, `br_if`,
   `br_table`, `return`, `unreachable`, `nop`, `drop`, `select`. All
   via CTX-side branch state (no `setjmp` in hot paths).
-- **Functions**: direct `(call ...)` (arity 0..4), and indirect
-  `call_indirect (type $sig)` via a single funcref `(table ...)` and
-  `(elem ...)`. Runtime structural type check; traps on mismatch.
+- **Functions**: direct `(call ...)` and `call_indirect (type $sig)`
+  via a single funcref `(table ...)` and `(elem ...)`.  Specialized
+  fixed-arity nodes for 0..4 args + a generic var-arity fallback for
+  up to 1024 params.  Runtime structural type check on indirect
+  calls; traps on mismatch.
 - **Linear memory**: `(memory N M?)`, `(data ...)` static init, full
   `*.load*` / `*.store*` (all width / sign variants), `memory.size`,
   `memory.grow`, bounds-check trap.
@@ -189,9 +191,17 @@ model, frames, code store, instantiation — see
 Wasm `call` takes a variable number of operands.  ASTro's
 `NODE_DEF` produces a fixed-shape struct per node, so we provide
 arity-specific variants (0..4 for direct/indirect, 0..3 for host
-imports), and the parser dispatches by argc.  Args become declared
-`NODE *` children, which lets ASTro's specializer inline them via
-`EVAL_ARG`.
+imports) for the fast path: args become declared `NODE *` children,
+which lets ASTro's specializer inline them via `EVAL_ARG`.  For
+arities beyond those buckets we fall through to `node_call_var` /
+`node_call_indirect_var` / `node_host_call_var`, which carry an
+`(args_index, args_cnt)` slice into a module-global `NODE **`
+flat array (`WASTRO_CALL_ARGS`) — same pattern `WASTRO_BR_TABLE`
+uses for `br_table` targets.  The cap is `WASTRO_MAX_PARAMS` (1024).
+The var path loses sibling-dispatcher inlining (operands are
+addressed at runtime, not as static `NODE *` operands of the call
+node), but the fixed-arity bucket covers virtually every real
+module so the hot path stays fully specializable.
 
 ### Frames / locals
 

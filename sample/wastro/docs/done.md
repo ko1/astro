@@ -84,7 +84,13 @@ to recover from traps).
   `(elem ...)` initialization.  Runtime structural type check; traps
   on type mismatch or OOB index.
 - Fixed-arity call nodes `node_call_0..4`, `node_call_indirect_0..4`,
-  `node_host_call_0..3` for specializer-friendly inlining.
+  `node_host_call_0..3` for specializer-friendly inlining; plus
+  `node_call_var` / `node_call_indirect_var` / `node_host_call_var`
+  for higher arities up to `WASTRO_MAX_PARAMS` (= 1024).  The var
+  variants store operand sub-trees in a module-global flat
+  `WASTRO_CALL_ARGS[]` array (same pattern as `WASTRO_BR_TABLE`)
+  and lose sibling-dispatcher specialization, but accept arbitrary
+  arity — see `docs/runtime.md` §5 for details.
 
 ## Tables
 

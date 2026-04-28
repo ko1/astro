@@ -16,7 +16,6 @@ or small cleanups.
 | Stack-style let-floating | When a void instr is encountered while pure-and-impure values coexist on the operand stack, side-effect ordering across the void is preserved only if the carried values have no side effects.  Real-world compiler output (rustc / emcc / clang) follows "consume what you push" so this hasn't surfaced.  A future pass could spill stack values to fresh temp locals to make this fully spec-conformant. |
 | `nan:canonical` / `nan:arithmetic` matchers | The spec testsuite uses `(assert_return ... (f32.const nan:canonical))` for non-deterministic NaN bit patterns.  We currently treat any NaN==NaN as a match, which over-accepts.  Tighten when running f32/f64.wast. |
 | Multi-result `(result T1 T2)` blocks | Wasm multi-value extension (post-1.0).  Block / function single-result only. |
-| Higher call arities (>4) | `node_call_N` and `node_call_indirect_N` cover N=0..4 (and host_call N=0..3).  Most testsuite functions stay within this range; bump if needed. |
 
 ## Post-1.0 features (out of scope)
 
@@ -62,7 +61,6 @@ these.
 
 | Item | Notes |
 |---|---|
-| Higher-arity `node_call_N` / `node_host_call_N` / `node_call_indirect_N` | Add `_5` through `_8` if any module needs them (parser already errors out cleanly). |
 | Stricter typing on `if` without explicit result | Today a result-less `if` defaults to void unless both branches happen to produce the same non-void type.  Tighten when this matters. |
 | Custom hash for `node_call_N` and `node_call_indirect_N` | Today the node hash combines indices and arg children, which suffices for distinct call sites; verify there are no hash collisions across modules with the same shape. |
 
