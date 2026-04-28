@@ -1240,7 +1240,14 @@ node_select(CTX *c, NODE *n, union wastro_slot *frame, NODE *v1, NODE *v2, NODE 
     return RESULT_OK(k ? a : b);
 }
 
-NODE_DEF
+// Control-flow nodes (if / seq / block / loop / br / br_if) get
+// `@always_inline` so the loop body, branches, and sequencing collapse
+// into the enclosing function's SD — that's what lets gcc see the full
+// frame's live range and SROA each `union wastro_slot` slot at its real
+// type.  Without this, gcc's heuristic gives up around node_loop and
+// emits an `EVAL_node_loop.isra.0` out-of-line copy, breaking SROA at
+// the loop boundary (see mandelbrot's nested-loop perf gap).
+NODE_DEF @always_inline
 node_if(CTX *c, NODE *n, union wastro_slot *frame, NODE *cond, NODE *then_branch, NODE *else_branch)
 {
     int32_t cv = AS_I32(UNWRAP(EVAL_ARG(c, cond)));
@@ -1263,7 +1270,7 @@ node_seq(CTX *c, NODE *n, union wastro_slot *frame, NODE *head, NODE *tail)
 // Labelled scope.  Body's value is the block's result if it falls
 // through normally, otherwise the carried RESULT.value when a `br`
 // targets us.
-NODE_DEF
+NODE_DEF @always_inline
 node_block(CTX *c, NODE *n, union wastro_slot *frame, NODE *body)
 {
     RESULT r = EVAL_ARG(c, body);
@@ -1274,7 +1281,7 @@ node_block(CTX *c, NODE *n, union wastro_slot *frame, NODE *body)
 }
 
 // Like block, but a br targeting it loops back to the start.
-NODE_DEF
+NODE_DEF @always_inline
 node_loop(CTX *c, NODE *n, union wastro_slot *frame, NODE *body)
 {
     for (;;) {
@@ -1290,14 +1297,14 @@ node_loop(CTX *c, NODE *n, union wastro_slot *frame, NODE *body)
 }
 
 // Unconditional branch with no value.
-NODE_DEF
+NODE_DEF @always_inline
 node_br(CTX *c, NODE *n, union wastro_slot *frame, uint32_t depth)
 {
     return (RESULT){0, depth + 1};
 }
 
 // Unconditional branch carrying a value (typed block / loop result).
-NODE_DEF
+NODE_DEF @always_inline
 node_br_v(CTX *c, NODE *n, union wastro_slot *frame, uint32_t depth, NODE *value)
 {
     VALUE v = UNWRAP(EVAL_ARG(c, value));
@@ -1305,7 +1312,7 @@ node_br_v(CTX *c, NODE *n, union wastro_slot *frame, uint32_t depth, NODE *value
 }
 
 // Conditional branch: takes if cond is non-zero (i32 truthy).
-NODE_DEF
+NODE_DEF @always_inline
 node_br_if(CTX *c, NODE *n, union wastro_slot *frame, uint32_t depth, NODE *cond)
 {
     int32_t cv = AS_I32(UNWRAP(EVAL_ARG(c, cond)));
@@ -1313,7 +1320,7 @@ node_br_if(CTX *c, NODE *n, union wastro_slot *frame, uint32_t depth, NODE *cond
     return RESULT_OK(0);
 }
 
-NODE_DEF
+NODE_DEF @always_inline
 node_br_if_v(CTX *c, NODE *n, union wastro_slot *frame, uint32_t depth, NODE *cond, NODE *value)
 {
     // Wasm stack order is value-then-cond — evaluate value first.
