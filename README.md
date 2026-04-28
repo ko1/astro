@@ -40,6 +40,7 @@ runtime/                Reusable C runtime (Code Store)
 sample/calc/            Minimal calculator (3 nodes)
 sample/naruby/          "Not a Ruby" — Ruby subset, JIT enabled
 sample/abruby/          "a bit Ruby" — larger Ruby subset, CRuby C extension
+sample/wastro/          WebAssembly 1.0 interpreter (.wat + .wasm + .wast)
 docs/                   Design notes and papers
 ```
 
@@ -48,6 +49,7 @@ docs/                   Design notes and papers
 - [`sample/calc/`](./sample/calc/) — A toy "Calc" language with three node types (`num`, `add`, `mul`, ...). The smallest end-to-end example for understanding ASTroGen.
 - [`sample/naruby/`](./sample/naruby/) — "Not a Ruby": a minimal Ruby subset (~21 nodes, integer-only) used for evaluating all four execution modes including JIT.
 - [`sample/abruby/`](./sample/abruby/) — "a bit Ruby": a larger Ruby subset implemented as a CRuby C extension. Supports classes, blocks, exceptions, strings/arrays/hashes, and Bignum/Float/Rational/Complex via the CRuby numerics. See [`sample/abruby/docs/abruby_spec.md`](./sample/abruby/docs/abruby_spec.md) for the language spec.
+- [`sample/wastro/`](./sample/wastro/) — WebAssembly on ASTro: a wasm 1.0 (MVP) interpreter (~210 nodes, four numeric types, full memory / table / call_indirect / spec-test harness). Reads both `.wat` and `.wasm`. AOT-cached runs are competitive with Cranelift JIT (`wasmtime`) across the bundled benchmark suite (`bench.rb`). See [`sample/wastro/docs/runtime.md`](./sample/wastro/docs/runtime.md) for the runtime architecture.
 
 ## References
 
