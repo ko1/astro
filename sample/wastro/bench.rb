@@ -3,10 +3,11 @@
 # programs.  Used by `make bench`.
 #
 # Tiers:
-#   plain      — pure interpreter, no code-store
-#   AOT 1st    — clear cache, gcc-compile all funcs, run (compile cost included)
-#   AOT cached — code_store/all.so already on disk, just dlopen + run
-#   wasmtime   — Cranelift JIT, --invoke
+#   plain         — pure interpreter, no code-store
+#   AOT 1st       — clear cache, gcc-compile all funcs, run (compile cost included)
+#   AOT cached    — code_store/all.so already on disk, just dlopen + run
+#   wasmtime JIT  — Cranelift JIT, --invoke (compile + run)
+#   wasmtime AOT  — `wasmtime compile` precompiled .cwasm, `--allow-precompiled`
 #
 # Each measurement is the median of N runs (default 5).
 
@@ -78,10 +79,19 @@ def bench_one(wat, fn, args)
   aot_cached = measure("AOT cached", runs: RUNS) {
     time_ms(WASTRO, "-q", wat, fn, *args)
   }
-  wasmtime = measure("wasmtime", runs: RUNS) {
+  wasmtime_jit = measure("wasmtime JIT", runs: RUNS) {
     time_ms(WASMTIME, "run", "--invoke", fn, wat, *args)
   }
-  [plain, aot_first, aot_cached, wasmtime]
+  # Precompile once, then time precompiled runs.  Cwasm is per-machine
+  # / per-wasmtime-version so we regenerate each run; the compile is
+  # outside the timed loop.
+  cwasm = "_bench.cwasm"
+  Open3.capture3(WASMTIME, "compile", wat, "-o", cwasm)
+  wasmtime_aot = measure("wasmtime AOT", runs: RUNS) {
+    time_ms(WASMTIME, "run", "--allow-precompiled", "--invoke", fn, cwasm, *args)
+  }
+  File.delete(cwasm) if File.exist?(cwasm)
+  [plain, aot_first, aot_cached, wasmtime_jit, wasmtime_aot]
 end
 
 # ---- streaming output with fixed column widths
@@ -98,21 +108,24 @@ fmt = ->(name, *cells) {
   parts.join("  ")
 }
 
-puts fmt.call("benchmark", "plain", "AOT-1st", "AOT-cached", "wasmtime", "vs.JIT")
-puts "-" * (name_w + (num_w + 2) * 4 + ratio_w + 2)
+puts fmt.call("benchmark", "plain", "AOT-1st", "AOT-cached", "wt JIT", "wt AOT", "vs.AOT")
+puts "-" * (name_w + (num_w + 2) * 5 + ratio_w + 2)
 
 results = []
 BENCHES.each do |name, wat, fn, args|
-  plain, aot1, aotc, wt = bench_one(wat, fn, args)
-  ratio  = wt.zero? ? "-" : ("%.2fx" % (aotc.to_f / wt))
-  marker = aotc < wt ? " win" : ""
+  plain, aot1, aotc, wt_jit, wt_aot = bench_one(wat, fn, args)
+  # vs.AOT compares wastro AOT cached vs wasmtime AOT (the fairest pair —
+  # both have compile cost amortized).
+  ratio  = wt_aot.zero? ? "-" : ("%.2fx" % (aotc.to_f / wt_aot))
+  marker = aotc < wt_aot ? " win" : ""
   puts fmt.call(name,
-                "#{plain} ms", "#{aot1} ms", "#{aotc} ms", "#{wt} ms",
+                "#{plain} ms", "#{aot1} ms", "#{aotc} ms",
+                "#{wt_jit} ms", "#{wt_aot} ms",
                 "#{ratio}#{marker}")
   $stdout.flush
-  results << [name, plain, aot1, aotc, wt]
+  results << [name, plain, aot1, aotc, wt_jit, wt_aot]
 end
 
-wins = results.count { |_, _, _, c, w| c < w }
+wins = results.count { |r| r[3] < r[5] }   # AOT cached < wasmtime AOT
 puts
-puts "wastro AOT cached beats wasmtime in #{wins} / #{results.size} benchmarks"
+puts "wastro AOT cached beats wasmtime AOT in #{wins} / #{results.size} benchmarks"
