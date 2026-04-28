@@ -16,6 +16,11 @@ WASTRO   = File.expand_path("./wastro", __dir__)
 WASMTIME = ENV["WASMTIME"] || File.expand_path("~/.wasmtime/bin/wasmtime")
 RUNS     = (ENV["BENCH_RUNS"] || 5).to_i
 
+# Disable ccache so the "AOT 1st" column reflects a true cold gcc
+# compile.  Without this, ccache silently turns repeated SD compiles
+# into ~10 ms hash lookups and makes the column meaningless.
+ENV["CCACHE_DISABLE"] = "1"
+
 unless File.executable?(WASTRO)
   abort "#{WASTRO} not built — run 'make' first."
 end
