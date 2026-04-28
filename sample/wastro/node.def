@@ -21,6 +21,29 @@
 //     specializer inlines them via EVAL_ARG.
 
 // =====================================================================
+// Function frame entry adapter — used only by wastro_invoke.
+//
+// `node_call_N`'s AOT specializer allocates a typed `struct
+// wastro_frame_<callee_id>` directly on its caller's SD stack and
+// dispatches the bare callee body, so node_call_N's path doesn't
+// need this adapter.  But wastro_invoke is generic C — it can't
+// dynamically allocate a per-callee typed struct — so it passes
+// the args as a uint64_t array and dispatches `WASTRO_FUNCS[i].entry`
+// which is this node.  The AOT specializer for node_function_frame
+// allocates the typed struct, copies the untyped args into the
+// typed fields once, and dispatches the body.
+//
+// Plain interp just forwards to body using the same frame pointer
+// (which is already the VALUE[] from wastro_invoke's stack); the
+// lifted local ops are happy reading via `((VALUE *)frame)[idx]`
+// without a typed struct.
+NODE_DEF
+node_function_frame(CTX *c, NODE *n, uint32_t func_idx, NODE *body)
+{
+    return EVAL_ARG(c, body);
+}
+
+// =====================================================================
 // Locals (type-erased — VALUE carries any wasm numeric type)
 //
 // Each function call gets a caller-allocated `VALUE F[local_cnt]`

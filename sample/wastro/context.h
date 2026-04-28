@@ -116,7 +116,15 @@ struct wastro_function {
     wtype_t  result_type; // WT_VOID if no result
     uint32_t local_cnt;   // total = params + extra body locals
     wtype_t  local_types[64];
-    struct Node *body;
+    struct Node *body;        // bare AST root — used by node_call_N (the
+                              // caller-side SD allocates a typed frame
+                              // directly and dispatches body without
+                              // going through the entry wrapper)
+    struct Node *entry;       // node_function_frame wrapping body — used
+                              // by wastro_invoke (entry path) so the
+                              // adapter SD can copy untyped VALUE[] args
+                              // into the typed `struct wastro_frame_<i>`
+                              // before dispatching body
 
     // Imports
     int is_import;

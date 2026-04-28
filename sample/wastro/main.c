@@ -334,6 +334,68 @@ uint32_t WASTRO_FUNC_CNT = 0;
 // via a module-level static instead of through every parser function.
 static int CUR_FUNC_IDX = -1;
 
+// ----- Phase 3: per-function typed-frame struct emission helpers -----
+//
+// Called from generated SPECIALIZE_* code (wastro_gen.rb) when emitting
+// SD code that needs to reference `struct wastro_frame_<fid>`.
+//
+// The struct has one typed field per wasm local at its natural C type
+// (int32_t / int64_t / float / double).  This is what lets gcc SROA
+// the slots into registers in the inner loop — see docs/todo.md for
+// why a uint64_t array couldn't.
+
+const char *
+wastro_local_ctype(uint32_t fid, uint32_t idx)
+{
+    switch (WASTRO_FUNCS[fid].local_types[idx]) {
+    case WT_I32: return "int32_t";
+    case WT_I64: return "int64_t";
+    case WT_F32: return "float";
+    case WT_F64: return "double";
+    default:     return "uint64_t";
+    }
+}
+
+const char *
+wastro_local_as_macro(uint32_t fid, uint32_t idx)
+{
+    switch (WASTRO_FUNCS[fid].local_types[idx]) {
+    case WT_I32: return "AS_I32";
+    case WT_I64: return "AS_I64";
+    case WT_F32: return "AS_F32";
+    case WT_F64: return "AS_F64";
+    default:     return "";  // identity (uint64_t)
+    }
+}
+
+const char *
+wastro_local_from_macro(uint32_t fid, uint32_t idx)
+{
+    switch (WASTRO_FUNCS[fid].local_types[idx]) {
+    case WT_I32: return "FROM_I32";
+    case WT_I64: return "FROM_I64";
+    case WT_F32: return "FROM_F32";
+    case WT_F64: return "FROM_F64";
+    default:     return "";
+    }
+}
+
+// Emit `struct wastro_frame_<fid> { ... };` to fp, guarded with #ifndef
+// so multiple SDs in the same .c file share one definition.
+void
+wastro_emit_frame_struct(FILE *fp, uint32_t fid)
+{
+    fprintf(fp, "#ifndef WASTRO_FRAME_%u_DEFINED\n", fid);
+    fprintf(fp, "#define WASTRO_FRAME_%u_DEFINED 1\n", fid);
+    fprintf(fp, "struct wastro_frame_%u {\n", fid);
+    struct wastro_function *fn = &WASTRO_FUNCS[fid];
+    for (uint32_t i = 0; i < fn->local_cnt; i++) {
+        fprintf(fp, "    %s L%u;\n", wastro_local_ctype(fid, i), i);
+    }
+    fprintf(fp, "};\n");
+    fprintf(fp, "#endif\n\n");
+}
+
 // Pending body-slot fix-up for node_call_N nodes.  At allocation
 // time the callee's body may not be parsed yet (forward reference);
 // every call site is appended here and patched in one post-parse
@@ -2788,6 +2850,7 @@ parse_func_body(int idx, LocalEnv *env)
     CUR_FUNC_IDX = save_idx;
     (void)body.type;
     WASTRO_FUNCS[idx].body = body.node;
+    WASTRO_FUNCS[idx].entry = ALLOC_node_function_frame((uint32_t)idx, body.node);
 }
 
 static const char *MODULE_TEXT_START;
@@ -4421,6 +4484,7 @@ load_module_binary(const uint8_t *buf, size_t sz)
                     wastro_die("binary: code body length mismatch");
                 }
                 fn->body = body.node;
+                fn->entry = ALLOC_node_function_frame((uint32_t)fi, body.node);
                 S2.p = body_end;
             }
         } break;
@@ -5092,7 +5156,10 @@ compile_all_funcs(int verbose)
             fprintf(stderr, "cs_compile: $%s\n",
                     WASTRO_FUNCS[i].name ? WASTRO_FUNCS[i].name + 1 : "anon");
         }
-        astro_cs_compile(WASTRO_FUNCS[i].body, NULL);  // AOT: file=NULL
+        // AOT compile both the bare body (for inner call_N callers) and
+        // the entry adapter (for wastro_invoke).  Both reachable as SDs.
+        astro_cs_compile(WASTRO_FUNCS[i].body, NULL);
+        astro_cs_compile(WASTRO_FUNCS[i].entry, NULL);
     }
     if (verbose) fprintf(stderr, "cs_build\n");
     astro_cs_build(NULL);
@@ -5104,6 +5171,7 @@ load_all_funcs(int verbose)
 {
     for (uint32_t i = 0; i < WASTRO_FUNC_CNT; i++) {
         bool ok = astro_cs_load(WASTRO_FUNCS[i].body, NULL);
+        astro_cs_load(WASTRO_FUNCS[i].entry, NULL);
         if (verbose) {
             fprintf(stderr, "cs_load: $%s -> %s\n",
                     WASTRO_FUNCS[i].name ? WASTRO_FUNCS[i].name + 1 : "anon",
@@ -5163,7 +5231,10 @@ wastro_invoke(CTX *c, int func_idx, VALUE *args, uint32_t argc)
     VALUE F[local_cnt];
     for (uint32_t i = 0; i < argc; i++) F[i] = args[i];
     for (uint32_t i = argc; i < local_cnt; i++) F[i] = 0;
-    RESULT r = EVAL(c, fn->body, F);
+    // Dispatch via fn->entry — a node_function_frame wrapper whose AOT
+    // specializer (wastro_gen.rb) emits the typed-struct adapter.  Plain
+    // interp just forwards through to fn->body using F as VALUE[] frame.
+    RESULT r = EVAL(c, fn->entry, F);
     return r.value;
 }
 
