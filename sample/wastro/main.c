@@ -334,66 +334,45 @@ uint32_t WASTRO_FUNC_CNT = 0;
 // via a module-level static instead of through every parser function.
 static int CUR_FUNC_IDX = -1;
 
-// ----- Phase 3: per-function typed-frame struct emission helpers -----
-//
-// Called from generated SPECIALIZE_* code (wastro_gen.rb) when emitting
-// SD code that needs to reference `struct wastro_frame_<fid>`.
-//
-// The struct has one typed field per wasm local at its natural C type
-// (int32_t / int64_t / float / double).  This is what lets gcc SROA
-// the slots into registers in the inner loop — see docs/todo.md for
-// why a uint64_t array couldn't.
-
-const char *
-wastro_local_ctype(uint32_t fid, uint32_t idx)
+// Pick the right typed `local.get` / `local.set` / `local.tee` node
+// kind for a wasm local based on its declared type.  Used everywhere
+// the parser emits a local op so the AOT codegen sees a typed slot
+// access at every call site (frame[idx].i32 / .f64 / etc.) and gcc
+// can SROA the slot at its real C type.
+static NODE *
+alloc_local_get(wtype_t t, uint32_t index)
 {
-    switch (WASTRO_FUNCS[fid].local_types[idx]) {
-    case WT_I32: return "int32_t";
-    case WT_I64: return "int64_t";
-    case WT_F32: return "float";
-    case WT_F64: return "double";
-    default:     return "uint64_t";
+    switch (t) {
+    case WT_I32: return ALLOC_node_local_get_i32(index);
+    case WT_I64: return ALLOC_node_local_get_i64(index);
+    case WT_F32: return ALLOC_node_local_get_f32(index);
+    case WT_F64: return ALLOC_node_local_get_f64(index);
+    default:     return ALLOC_node_local_get_i32(index);  // shouldn't happen
     }
 }
 
-const char *
-wastro_local_as_macro(uint32_t fid, uint32_t idx)
+static NODE *
+alloc_local_set(wtype_t t, uint32_t index, NODE *expr)
 {
-    switch (WASTRO_FUNCS[fid].local_types[idx]) {
-    case WT_I32: return "AS_I32";
-    case WT_I64: return "AS_I64";
-    case WT_F32: return "AS_F32";
-    case WT_F64: return "AS_F64";
-    default:     return "";  // identity (uint64_t)
+    switch (t) {
+    case WT_I32: return ALLOC_node_local_set_i32(index, expr);
+    case WT_I64: return ALLOC_node_local_set_i64(index, expr);
+    case WT_F32: return ALLOC_node_local_set_f32(index, expr);
+    case WT_F64: return ALLOC_node_local_set_f64(index, expr);
+    default:     return ALLOC_node_local_set_i32(index, expr);
     }
 }
 
-const char *
-wastro_local_from_macro(uint32_t fid, uint32_t idx)
+static NODE *
+alloc_local_tee(wtype_t t, uint32_t index, NODE *expr)
 {
-    switch (WASTRO_FUNCS[fid].local_types[idx]) {
-    case WT_I32: return "FROM_I32";
-    case WT_I64: return "FROM_I64";
-    case WT_F32: return "FROM_F32";
-    case WT_F64: return "FROM_F64";
-    default:     return "";
+    switch (t) {
+    case WT_I32: return ALLOC_node_local_tee_i32(index, expr);
+    case WT_I64: return ALLOC_node_local_tee_i64(index, expr);
+    case WT_F32: return ALLOC_node_local_tee_f32(index, expr);
+    case WT_F64: return ALLOC_node_local_tee_f64(index, expr);
+    default:     return ALLOC_node_local_tee_i32(index, expr);
     }
-}
-
-// Emit `struct wastro_frame_<fid> { ... };` to fp, guarded with #ifndef
-// so multiple SDs in the same .c file share one definition.
-void
-wastro_emit_frame_struct(FILE *fp, uint32_t fid)
-{
-    fprintf(fp, "#ifndef WASTRO_FRAME_%u_DEFINED\n", fid);
-    fprintf(fp, "#define WASTRO_FRAME_%u_DEFINED 1\n", fid);
-    fprintf(fp, "struct wastro_frame_%u {\n", fid);
-    struct wastro_function *fn = &WASTRO_FUNCS[fid];
-    for (uint32_t i = 0; i < fn->local_cnt; i++) {
-        fprintf(fp, "    %s L%u;\n", wastro_local_ctype(fid, i), i);
-    }
-    fprintf(fp, "};\n");
-    fprintf(fp, "#endif\n\n");
 }
 
 // Pending body-slot fix-up for node_call_N nodes.  At allocation
@@ -1276,7 +1255,7 @@ parse_op(LocalEnv *env, LabelEnv *labels)
         int idx = local_env_lookup(env, &cur_tok);
         next_token();
         expect_rparen();
-        return (TypedExpr){ALLOC_node_local_get((uint32_t)CUR_FUNC_IDX, (uint32_t)idx), env->types[idx]};
+        return (TypedExpr){alloc_local_get(env->types[idx], (uint32_t)idx), env->types[idx]};
     }
     if (tok_is_keyword("local.set")) {
         next_token();
@@ -1285,7 +1264,7 @@ parse_op(LocalEnv *env, LabelEnv *labels)
         TypedExpr e = parse_expr(env, labels);
         expect_type(e.type, env->types[idx], "local.set value");
         expect_rparen();
-        return (TypedExpr){ALLOC_node_local_set((uint32_t)CUR_FUNC_IDX, (uint32_t)idx, e.node), WT_VOID};
+        return (TypedExpr){alloc_local_set(env->types[idx], (uint32_t)idx, e.node), WT_VOID};
     }
     if (tok_is_keyword("local.tee")) {
         next_token();
@@ -1294,7 +1273,7 @@ parse_op(LocalEnv *env, LabelEnv *labels)
         TypedExpr e = parse_expr(env, labels);
         expect_type(e.type, env->types[idx], "local.tee value");
         expect_rparen();
-        return (TypedExpr){ALLOC_node_local_tee((uint32_t)CUR_FUNC_IDX, (uint32_t)idx, e.node), env->types[idx]};
+        return (TypedExpr){alloc_local_tee(env->types[idx], (uint32_t)idx, e.node), env->types[idx]};
     }
 
     // ------- memory load/store -------
@@ -2219,7 +2198,7 @@ parse_bare_instr(LocalEnv *env, LabelEnv *labels, OpStack *S, StmtList *L)
         next_token();
         int idx = local_env_lookup(env, &cur_tok);
         next_token();
-        op_push(S, ALLOC_node_local_get((uint32_t)CUR_FUNC_IDX, (uint32_t)idx), env->types[idx]);
+        op_push(S, alloc_local_get(env->types[idx], (uint32_t)idx), env->types[idx]);
         return;
     }
     if (tok_is_keyword("local.set")) {
@@ -2227,7 +2206,7 @@ parse_bare_instr(LocalEnv *env, LabelEnv *labels, OpStack *S, StmtList *L)
         int idx = local_env_lookup(env, &cur_tok);
         next_token();
         TypedExpr e = op_pop(S, env->types[idx], "local.set value");
-        stmts_append(L, ALLOC_node_local_set((uint32_t)CUR_FUNC_IDX, (uint32_t)idx, e.node));
+        stmts_append(L, alloc_local_set(env->types[idx], (uint32_t)idx, e.node));
         return;
     }
     if (tok_is_keyword("local.tee")) {
@@ -2235,7 +2214,7 @@ parse_bare_instr(LocalEnv *env, LabelEnv *labels, OpStack *S, StmtList *L)
         int idx = local_env_lookup(env, &cur_tok);
         next_token();
         TypedExpr e = op_pop(S, env->types[idx], "local.tee value");
-        op_push(S, ALLOC_node_local_tee((uint32_t)CUR_FUNC_IDX, (uint32_t)idx, e.node), env->types[idx]);
+        op_push(S, alloc_local_tee(env->types[idx], (uint32_t)idx, e.node), env->types[idx]);
         return;
     }
     if (tok_is_keyword("global.get")) {
@@ -2850,7 +2829,6 @@ parse_func_body(int idx, LocalEnv *env)
     CUR_FUNC_IDX = save_idx;
     (void)body.type;
     WASTRO_FUNCS[idx].body = body.node;
-    WASTRO_FUNCS[idx].entry = ALLOC_node_function_frame((uint32_t)idx, body.node);
 }
 
 static const char *MODULE_TEXT_START;
@@ -3991,17 +3969,17 @@ parse_bin_code_seq(BinReader *r, LocalEnv *env, LabelEnv *labels, int allow_else
 
         case 0x20: {  // local.get
             uint32_t li = bin_leb_u32(r);
-            op_push(&S, ALLOC_node_local_get((uint32_t)CUR_FUNC_IDX, li), env->types[li]);
+            op_push(&S, alloc_local_get(env->types[li], li), env->types[li]);
         } break;
         case 0x21: {  // local.set
             uint32_t li = bin_leb_u32(r);
             TypedExpr e = op_pop(&S, env->types[li], "local.set");
-            stmts_append(&L, ALLOC_node_local_set((uint32_t)CUR_FUNC_IDX, li, e.node));
+            stmts_append(&L, alloc_local_set(env->types[li], li, e.node));
         } break;
         case 0x22: {  // local.tee
             uint32_t li = bin_leb_u32(r);
             TypedExpr e = op_pop(&S, env->types[li], "local.tee");
-            op_push(&S, ALLOC_node_local_tee((uint32_t)CUR_FUNC_IDX, li, e.node), env->types[li]);
+            op_push(&S, alloc_local_tee(env->types[li], li, e.node), env->types[li]);
         } break;
         case 0x23: {  // global.get
             uint32_t gi = bin_leb_u32(r);
@@ -4484,7 +4462,6 @@ load_module_binary(const uint8_t *buf, size_t sz)
                     wastro_die("binary: code body length mismatch");
                 }
                 fn->body = body.node;
-                fn->entry = ALLOC_node_function_frame((uint32_t)fi, body.node);
                 S2.p = body_end;
             }
         } break;
@@ -5156,10 +5133,7 @@ compile_all_funcs(int verbose)
             fprintf(stderr, "cs_compile: $%s\n",
                     WASTRO_FUNCS[i].name ? WASTRO_FUNCS[i].name + 1 : "anon");
         }
-        // AOT compile both the bare body (for inner call_N callers) and
-        // the entry adapter (for wastro_invoke).  Both reachable as SDs.
         astro_cs_compile(WASTRO_FUNCS[i].body, NULL);
-        astro_cs_compile(WASTRO_FUNCS[i].entry, NULL);
     }
     if (verbose) fprintf(stderr, "cs_build\n");
     astro_cs_build(NULL);
@@ -5171,7 +5145,6 @@ load_all_funcs(int verbose)
 {
     for (uint32_t i = 0; i < WASTRO_FUNC_CNT; i++) {
         bool ok = astro_cs_load(WASTRO_FUNCS[i].body, NULL);
-        astro_cs_load(WASTRO_FUNCS[i].entry, NULL);
         if (verbose) {
             fprintf(stderr, "cs_load: $%s -> %s\n",
                     WASTRO_FUNCS[i].name ? WASTRO_FUNCS[i].name + 1 : "anon",
@@ -5228,13 +5201,10 @@ wastro_invoke(CTX *c, int func_idx, VALUE *args, uint32_t argc)
     }
     if (fn->is_import) return fn->host_fn(c, args, argc);
     uint32_t local_cnt = fn->local_cnt;
-    VALUE F[local_cnt];
-    for (uint32_t i = 0; i < argc; i++) F[i] = args[i];
-    for (uint32_t i = argc; i < local_cnt; i++) F[i] = 0;
-    // Dispatch via fn->entry — a node_function_frame wrapper whose AOT
-    // specializer (wastro_gen.rb) emits the typed-struct adapter.  Plain
-    // interp just forwards through to fn->body using F as VALUE[] frame.
-    RESULT r = EVAL(c, fn->entry, F);
+    union wastro_slot F[local_cnt];
+    for (uint32_t i = 0; i < argc; i++) F[i].raw = args[i];
+    for (uint32_t i = argc; i < local_cnt; i++) F[i].raw = 0;
+    RESULT r = EVAL(c, fn->body, F);
     return r.value;
 }
 

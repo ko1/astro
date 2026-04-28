@@ -36,6 +36,26 @@ static inline VALUE FROM_F32(float    x) { uint32_t b; memcpy(&b, &x, 4); return
 static inline VALUE FROM_F64(double   x) { uint64_t b; memcpy(&b, &x, 8); return b; }
 static inline VALUE FROM_BOOL(int     x) { return x ? 1 : 0; }
 
+// A wasm local slot.  All four numeric types share an 8-byte
+// (uint64_t-aligned) cell so that an array of slots is a uniform
+// memory layout regardless of which types the function declares; the
+// per-local wasm type chooses which union member is read/written.
+//
+// The frame pointer (third dispatcher parameter, `union wastro_slot
+// *frame`) points at the start of such an array allocated by the
+// caller's call_N (or by wastro_invoke at the entry boundary).  Each
+// `local.get_<type>` / `local.set_<type>` op accesses `frame[i].<type>`
+// directly — gcc sees a typed access and can SROA each slot at its
+// real C type when the SD chain inlines.
+union wastro_slot {
+    int32_t  i32;
+    int64_t  i64;
+    float    f32;
+    double   f64;
+    uint64_t raw;   // type-erased view, used by call_N to write args
+                    // before the callee specializes the read.
+};
+
 #define WASTRO_STACK_SIZE   (64 * 1024)
 #define WASTRO_MAX_FUNCS    1024
 #define WASTRO_PAGE_SIZE    (64 * 1024)   // wasm linear memory page
@@ -116,15 +136,7 @@ struct wastro_function {
     wtype_t  result_type; // WT_VOID if no result
     uint32_t local_cnt;   // total = params + extra body locals
     wtype_t  local_types[64];
-    struct Node *body;        // bare AST root — used by node_call_N (the
-                              // caller-side SD allocates a typed frame
-                              // directly and dispatches body without
-                              // going through the entry wrapper)
-    struct Node *entry;       // node_function_frame wrapping body — used
-                              // by wastro_invoke (entry path) so the
-                              // adapter SD can copy untyped VALUE[] args
-                              // into the typed `struct wastro_frame_<i>`
-                              // before dispatching body
+    struct Node *body;
 
     // Imports
     int is_import;

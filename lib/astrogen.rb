@@ -200,22 +200,20 @@ module ASTroGen
         opt ? opt.sub(/^@canonical=/, '') : @name
       end
 
-      # Per-language opt-in: prepend additional hidden parameters to the
-      # generated EVAL_/DISPATCH_/SD_ signatures (after `CTX *c, NODE *n`).
-      # Author's NODE_DEF body still writes `(CTX *c, NODE *n, ...operands)`
-      # and the extra params show up implicitly in scope inside the body.
-      # Subclasses override; default empty (no extra args, dispatcher stays
-      # `(CTX*, NODE*)`).  wastro opts in to `["void *frame"]` to enable
-      # caller-allocated frame lift; calc / naruby / abruby keep the
-      # legacy 2-arg signature unchanged.
-      def extra_prefix_args
-        []
+      # How many leading parameters in NODE_DEF are "common" (shared by
+      # every node, threaded through the dispatcher protocol unchanged)
+      # vs operands (per-node payload).  Default 2 covers `(CTX *c,
+      # NODE *n)`.  Embedders can override to extend the dispatcher
+      # signature with their own context — e.g. wastro returns 3 to
+      # carry an explicit `union wastro_slot *frame` as the third
+      # parameter, so every NODE_DEF in node.def writes it visibly.
+      def common_param_count
+        2
       end
 
       def parse_operands str
         @operands = str.split(',').tap do
-          @prefix_args = it.shift(2)
-          @prefix_args.concat(extra_prefix_args)
+          @prefix_args = it.shift(common_param_count)
         end.map do
           case it.strip
           when /(.+)\s+([a-zA-Z_][a-zA-Z0-9_]*(?:@ref)?)$/
@@ -554,12 +552,13 @@ module ASTroGen
     def build_eval
       eval_body = @output.join("\n")
 
-      # When a language opts in to extra prefix args (e.g. wastro adds
-      # `void *frame`), each generated EVAL_xxx receives those identifiers
-      # as parameters; the EVAL_ARG macro propagates them by name to the
-      # child's dispatcher.  When extra_prefix_args is empty (calc/naruby/
-      # abruby), the macro stays at the legacy 2-arg form.  We pull the
-      # extra-arg names from any node (all nodes share the same prefix).
+      # When a language sets `common_param_count > 2`, each generated
+      # EVAL_xxx receives extra named parameters in scope (e.g. wastro's
+      # `union wastro_slot *frame`).  The EVAL_ARG macro takes only `c`
+      # and `n` as its two literal args; everything past index 2 in the
+      # prefix list is forwarded by name from the enclosing function's
+      # scope.  When common_param_count == 2 (default), no extras and the
+      # macro stays at the legacy 2-arg form.
       sample = @nodes.values.first
       extra_call_args = sample ? sample.prefix_call_args.drop(2) : []
       extra_args_str = extra_call_args.empty? ? "" : ", " + extra_call_args.join(", ")
