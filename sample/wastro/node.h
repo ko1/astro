@@ -4,7 +4,7 @@
 #include "context.h"
 
 typedef struct Node NODE;
-typedef RESULT (*node_dispatcher_func_t)(CTX *c, NODE *n);
+typedef RESULT (*node_dispatcher_func_t)(CTX *c, NODE *n, void *frame);
 typedef uint64_t node_hash_t;
 
 void INIT(void);
@@ -72,9 +72,9 @@ int wastro_find_export(const char *name);
 // don't pay a PLT call back into the host binary on every node
 // dispatch — the dispatcher pointer is read and called directly.
 static inline RESULT
-EVAL(CTX *c, NODE *n)
+EVAL(CTX *c, NODE *n, void *frame)
 {
-    return (*n->head.dispatcher)(c, n);
+    return (*n->head.dispatcher)(c, n, frame);
 }
 
 // UNWRAP unwraps a RESULT: returns its `value` for normal flow, or

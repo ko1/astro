@@ -4,7 +4,7 @@
 #include "context.h"
 
 typedef struct Node NODE;
-typedef VALUE (*node_dispatcher_func_t)(CTX *c, NODE *n);
+typedef VALUE (*node_dispatcher_func_t)(CTX *c, NODE *n, void *frame);
 typedef uint64_t node_hash_t;
 
 void INIT(void);
@@ -61,9 +61,9 @@ struct NodeHead {
 #include "bf.h"
 
 static inline VALUE
-EVAL(CTX *c, NODE *n)
+EVAL(CTX *c, NODE *n, void *frame)
 {
-    return (*n->head.dispatcher)(c, n);
+    return (*n->head.dispatcher)(c, n, frame);
 }
 
 #endif // NODE_H

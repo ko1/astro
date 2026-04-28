@@ -26,10 +26,16 @@ end
 BENCHES = [
   ["fib(35)",         "examples/fib.wat",        "fib",          %w[35]],
   ["tak(22,14,6)",    "examples/tak.wat",        "tak",          %w[22 14 6]],
+  ["ack(3,11)",       "examples/ack.wat",        "ack",          %w[3 11]],
+  ["nqueens(11)",     "examples/nqueens.wat",    "queens",       %w[11]],
+  ["fannkuch(10)",    "examples/fannkuch.wat",   "fannkuch",     %w[10]],
   ["sum_loop(1e7)",   "examples/sum_loop.wat",   "sum",          %w[10000000]],
   ["sieve(1e6)",      "examples/sieve.wat",      "count_primes", %w[1000000]],
+  ["heapsort(50k)",   "examples/heapsort.wat",   "heapsort",     %w[50000]],
+  ["pi(1e7)",         "examples/pi.wat",         "pi",           %w[10000000]],
   ["mandelbrot(300)", "examples/mandelbrot.wat", "mandel",       %w[300]],
   ["nbody(1e6)",      "examples/nbody.wat",      "nbody",        %w[1000000]],
+  ["spectral(150)",   "examples/spectral.wat",   "spectral",     %w[150]],
   ["matmul(128)",     "examples/matmul.wat",     "matmul",       %w[128]],
   ["sha256(2000)",    "examples/sha256.wat",     "sha256_bench", %w[2000]],
 ].freeze

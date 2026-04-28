@@ -200,9 +200,22 @@ module ASTroGen
         opt ? opt.sub(/^@canonical=/, '') : @name
       end
 
+      # Per-language opt-in: prepend additional hidden parameters to the
+      # generated EVAL_/DISPATCH_/SD_ signatures (after `CTX *c, NODE *n`).
+      # Author's NODE_DEF body still writes `(CTX *c, NODE *n, ...operands)`
+      # and the extra params show up implicitly in scope inside the body.
+      # Subclasses override; default empty (no extra args, dispatcher stays
+      # `(CTX*, NODE*)`).  wastro opts in to `["void *frame"]` to enable
+      # caller-allocated frame lift; calc / naruby / abruby keep the
+      # legacy 2-arg signature unchanged.
+      def extra_prefix_args
+        []
+      end
+
       def parse_operands str
         @operands = str.split(',').tap do
           @prefix_args = it.shift(2)
+          @prefix_args.concat(extra_prefix_args)
         end.map do
           case it.strip
           when /(.+)\s+([a-zA-Z_][a-zA-Z0-9_]*(?:@ref)?)$/
@@ -235,6 +248,15 @@ module ASTroGen
 
       def comma_operands(ops)
         ops.empty? ? "" : ", #{ops.join(", ")}"
+      end
+
+      # Convert prefix-arg declarations ("CTX *c", "NODE *n", "void *frame")
+      # to call-site names ("c", "n", "frame").  Used when emitting calls
+      # from generated DISPATCH_/SD_ wrappers to the corresponding
+      # EVAL_ function so that the extra hidden args propagate without
+      # the codegen knowing their identifiers up front.
+      def prefix_call_args
+        @prefix_args.map{|s| s.strip.split(/\s+/).last.sub(/^\*+/, '') }
       end
 
       def build_eval_body
@@ -364,7 +386,7 @@ module ASTroGen
         DISPATCH_#{@name}(#{@prefix_args.join(', ')})
         {
             dispatch_info(c, n, 0);
-            #{result_type} v = EVAL_#{name}(c, n#{
+            #{result_type} v = EVAL_#{name}(#{prefix_call_args.join(', ')}#{
               comma_operands(@operands.map{
                 if it.storageless?
                   it.dispatch_default_expr
@@ -396,7 +418,7 @@ module ASTroGen
 
         decls = @operands.find_all{it.node?}.map do
           field_name = "n->u.#{@name}.#{it.name}"
-          "    if (#{field_name}) { fprintf(fp, \"static inline #{result_type} %s(CTX *c, NODE *n);\\n\", #{field_name}->head.dispatcher_name); }"
+          "    if (#{field_name}) { fprintf(fp, \"static inline #{result_type} %s(#{@prefix_args.join(', ')});\\n\", #{field_name}->head.dispatcher_name); }"
         end
 
         if @option.include? '@noinline'
@@ -431,10 +453,10 @@ module ASTroGen
 #{ specializer_prologue ? "            fprintf(fp, \"    #{specializer_prologue}\\n\");" : "" }
             fprintf(fp, "    dispatch_info(c, n, false);\\n");
 #{  if args.empty?
-      '            fprintf(fp, "    ' + result_type + ' v = EVAL_' + name + '(c, n);\\n");'
+      '            fprintf(fp, "    ' + result_type + ' v = EVAL_' + name + '(' + prefix_call_args.join(', ') + ');\\n");'
     else
       <<~INNER.chomp
-                  fprintf(fp, "    #{result_type} v = EVAL_#{name}(c, n, \\n");
+                  fprintf(fp, "    #{result_type} v = EVAL_#{name}(#{prefix_call_args.join(', ')}, \\n");
               #{ args.join("\n    fprintf(fp, \",\\n\");\n")
               }
                   fprintf(fp, "\\n    );\\n");
@@ -531,6 +553,17 @@ module ASTroGen
 
     def build_eval
       eval_body = @output.join("\n")
+
+      # When a language opts in to extra prefix args (e.g. wastro adds
+      # `void *frame`), each generated EVAL_xxx receives those identifiers
+      # as parameters; the EVAL_ARG macro propagates them by name to the
+      # child's dispatcher.  When extra_prefix_args is empty (calc/naruby/
+      # abruby), the macro stays at the legacy 2-arg form.  We pull the
+      # extra-arg names from any node (all nodes share the same prefix).
+      sample = @nodes.values.first
+      extra_call_args = sample ? sample.prefix_call_args.drop(2) : []
+      extra_args_str = extra_call_args.empty? ? "" : ", " + extra_call_args.join(", ")
+
       <<~C
       // This file is auto-generated from #{@file}.
 
@@ -540,7 +573,7 @@ module ASTroGen
       #ifndef EVAL_ARG_CHECK
       #define EVAL_ARG_CHECK(n) ((void)0)
       #endif
-      #define EVAL_ARG(c, n) (EVAL_ARG_CHECK(n), (*n##_dispatcher)(c, n))
+      #define EVAL_ARG(c, n) (EVAL_ARG_CHECK(n), (*n##_dispatcher)(c, n#{extra_args_str}))
 
       #{eval_body}
       C

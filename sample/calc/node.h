@@ -4,12 +4,12 @@
 #include "context.h"
 
 typedef struct Node NODE;
-typedef VALUE (*node_dispatcher_func_t)(CTX *c, NODE *n);
+typedef VALUE (*node_dispatcher_func_t)(CTX *c, NODE *n, void *frame);
 typedef uint64_t node_hash_t;
 
 void INIT(void);
 node_hash_t HASH(NODE *n);
-VALUE EVAL(CTX *c, NODE *n);
+VALUE EVAL(CTX *c, NODE *n, void *frame);
 void DUMP(FILE *fp, NODE *n, bool oneline);
 NODE *OPTIMIZE(NODE *n);
 void SPECIALIZE(FILE *fp, NODE *n);

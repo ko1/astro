@@ -22,18 +22,26 @@
 
 // =====================================================================
 // Locals (type-erased — VALUE carries any wasm numeric type)
+//
+// Each function call gets a caller-allocated `VALUE F[local_cnt]`
+// stack array; the dispatcher's hidden `frame` parameter points at it.
+// gcc can SROA F when the call chain is fully `static inline` and `&F`
+// doesn't escape — so the locals end up in registers, matching what a
+// JIT (wasmtime) would do.  See node_call_N below for the allocator
+// side; here we just dereference `frame` as a raw VALUE * (8-byte slot
+// per local, type-erased — AS_F64/AS_I32 reinterpret per use).
 // =====================================================================
 
 NODE_DEF
 node_local_get(CTX *c, NODE *n, uint32_t index)
 {
-    return RESULT_OK(c->fp[index]);
+    return RESULT_OK(((VALUE *)frame)[index]);
 }
 
 NODE_DEF
 node_local_set(CTX *c, NODE *n, uint32_t index, NODE *expr)
 {
-    c->fp[index] = UNWRAP(EVAL_ARG(c, expr));
+    ((VALUE *)frame)[index] = UNWRAP(EVAL_ARG(c, expr));
     return RESULT_OK(0);
 }
 
@@ -43,7 +51,7 @@ NODE_DEF
 node_local_tee(CTX *c, NODE *n, uint32_t index, NODE *expr)
 {
     VALUE v = UNWRAP(EVAL_ARG(c, expr));
-    c->fp[index] = v;
+    ((VALUE *)frame)[index] = v;
     return RESULT_OK(v);
 }
 
@@ -1590,57 +1598,59 @@ node_global_set(CTX *c, NODE *n, uint32_t index, NODE *value)
 // the framework's `is_specializing` flag in astro_code_store.c —
 // recursive specialization stops at the cycle, leaving the closing
 // edge as a direct call to the already-emitted SD_<body_hash>.
+// node_call_N: caller-allocates the callee's frame on the C stack and
+// passes its address as the new `frame` to the body's dispatcher.
+// Locals (params + zero-initialized declared locals) live in the
+// stack-allocated F[]; the callee's lifted local ops dereference it via
+// the frame parameter.  When the call chain is fully `static inline`
+// (typical for AOT chains), &F doesn't escape and gcc SROA's its slots
+// into registers — the structural reason mandelbrot's inner loop now
+// keeps zx/zy/zx2/zy2/iter in xmm/gpr instead of paying memory traffic.
+//
+// VLA size is bounded by `local_cnt` from the parser; gcc treats it as
+// a normal stack frame.  The `body_dispatcher` parameter is the static
+// dispatcher pointer materialized by ASTroGen for the `body` child slot
+// — calling it directly (instead of going through `body->head.dispatcher`)
+// is what lets gcc inline transitively.
 NODE_DEF
 node_call_0(CTX *c, NODE *n, uint32_t func_index, uint32_t local_cnt, NODE *body)
 {
-    VALUE *new_fp = c->sp;
-    for (uint32_t i = 0; i < local_cnt; i++) new_fp[i] = 0;
-    VALUE *save_fp = c->fp; VALUE *save_sp = c->sp;
-    c->fp = new_fp; c->sp = new_fp + local_cnt;
-    RESULT r = EVAL_ARG(c, body);
-    c->fp = save_fp; c->sp = save_sp;
+    VALUE F[local_cnt];
+    for (uint32_t i = 0; i < local_cnt; i++) F[i] = 0;
+    RESULT r = body_dispatcher(c, body, F);
     return RESULT_OK(r.value);
 }
 
 NODE_DEF
 node_call_1(CTX *c, NODE *n, uint32_t func_index, uint32_t local_cnt, NODE *a0, NODE *body)
 {
-    VALUE *new_fp = c->sp;
-    new_fp[0] = UNWRAP(EVAL_ARG(c, a0));
-    for (uint32_t i = 1; i < local_cnt; i++) new_fp[i] = 0;
-    VALUE *save_fp = c->fp; VALUE *save_sp = c->sp;
-    c->fp = new_fp; c->sp = new_fp + local_cnt;
-    RESULT r = EVAL_ARG(c, body);
-    c->fp = save_fp; c->sp = save_sp;
+    VALUE F[local_cnt];
+    F[0] = UNWRAP(EVAL_ARG(c, a0));
+    for (uint32_t i = 1; i < local_cnt; i++) F[i] = 0;
+    RESULT r = body_dispatcher(c, body, F);
     return RESULT_OK(r.value);
 }
 
 NODE_DEF
 node_call_2(CTX *c, NODE *n, uint32_t func_index, uint32_t local_cnt, NODE *a0, NODE *a1, NODE *body)
 {
-    VALUE *new_fp = c->sp;
-    new_fp[0] = UNWRAP(EVAL_ARG(c, a0));
-    new_fp[1] = UNWRAP(EVAL_ARG(c, a1));
-    for (uint32_t i = 2; i < local_cnt; i++) new_fp[i] = 0;
-    VALUE *save_fp = c->fp; VALUE *save_sp = c->sp;
-    c->fp = new_fp; c->sp = new_fp + local_cnt;
-    RESULT r = EVAL_ARG(c, body);
-    c->fp = save_fp; c->sp = save_sp;
+    VALUE F[local_cnt];
+    F[0] = UNWRAP(EVAL_ARG(c, a0));
+    F[1] = UNWRAP(EVAL_ARG(c, a1));
+    for (uint32_t i = 2; i < local_cnt; i++) F[i] = 0;
+    RESULT r = body_dispatcher(c, body, F);
     return RESULT_OK(r.value);
 }
 
 NODE_DEF
 node_call_3(CTX *c, NODE *n, uint32_t func_index, uint32_t local_cnt, NODE *a0, NODE *a1, NODE *a2, NODE *body)
 {
-    VALUE *new_fp = c->sp;
-    new_fp[0] = UNWRAP(EVAL_ARG(c, a0));
-    new_fp[1] = UNWRAP(EVAL_ARG(c, a1));
-    new_fp[2] = UNWRAP(EVAL_ARG(c, a2));
-    for (uint32_t i = 3; i < local_cnt; i++) new_fp[i] = 0;
-    VALUE *save_fp = c->fp; VALUE *save_sp = c->sp;
-    c->fp = new_fp; c->sp = new_fp + local_cnt;
-    RESULT r = EVAL_ARG(c, body);
-    c->fp = save_fp; c->sp = save_sp;
+    VALUE F[local_cnt];
+    F[0] = UNWRAP(EVAL_ARG(c, a0));
+    F[1] = UNWRAP(EVAL_ARG(c, a1));
+    F[2] = UNWRAP(EVAL_ARG(c, a2));
+    for (uint32_t i = 3; i < local_cnt; i++) F[i] = 0;
+    RESULT r = body_dispatcher(c, body, F);
     return RESULT_OK(r.value);
 }
 
@@ -1687,16 +1697,13 @@ node_host_call_3(CTX *c, NODE *n, uint32_t func_index, NODE *a0, NODE *a1, NODE 
 NODE_DEF
 node_call_4(CTX *c, NODE *n, uint32_t func_index, uint32_t local_cnt, NODE *a0, NODE *a1, NODE *a2, NODE *a3, NODE *body)
 {
-    VALUE *new_fp = c->sp;
-    new_fp[0] = UNWRAP(EVAL_ARG(c, a0));
-    new_fp[1] = UNWRAP(EVAL_ARG(c, a1));
-    new_fp[2] = UNWRAP(EVAL_ARG(c, a2));
-    new_fp[3] = UNWRAP(EVAL_ARG(c, a3));
-    for (uint32_t i = 4; i < local_cnt; i++) new_fp[i] = 0;
-    VALUE *save_fp = c->fp; VALUE *save_sp = c->sp;
-    c->fp = new_fp; c->sp = new_fp + local_cnt;
-    RESULT r = EVAL_ARG(c, body);
-    c->fp = save_fp; c->sp = save_sp;
+    VALUE F[local_cnt];
+    F[0] = UNWRAP(EVAL_ARG(c, a0));
+    F[1] = UNWRAP(EVAL_ARG(c, a1));
+    F[2] = UNWRAP(EVAL_ARG(c, a2));
+    F[3] = UNWRAP(EVAL_ARG(c, a3));
+    for (uint32_t i = 4; i < local_cnt; i++) F[i] = 0;
+    RESULT r = body_dispatcher(c, body, F);
     return RESULT_OK(r.value);
 }
 
@@ -1734,13 +1741,10 @@ node_call_indirect_0(CTX *c, NODE *n, uint32_t type_index, NODE *idx)
 
     if (fn->is_import) return RESULT_OK(fn->host_fn(c, NULL, 0));
 
-    VALUE *new_fp = c->sp;
     uint32_t local_cnt = fn->local_cnt;
-    for (uint32_t k = 0; k < local_cnt; k++) new_fp[k] = 0;
-    VALUE *save_fp = c->fp; VALUE *save_sp = c->sp;
-    c->fp = new_fp; c->sp = new_fp + local_cnt;
-    RESULT r = EVAL(c, fn->body);
-    c->fp = save_fp; c->sp = save_sp;
+    VALUE F[local_cnt];
+    for (uint32_t k = 0; k < local_cnt; k++) F[k] = 0;
+    RESULT r = EVAL(c, fn->body, F);
     return RESULT_OK(r.value);
 }
 
@@ -1752,8 +1756,7 @@ node_call_indirect_1(CTX *c, NODE *n, uint32_t type_index, NODE *idx, NODE *a0)
     extern uint32_t WASTRO_TABLE_SIZE;
     extern struct wastro_type_sig WASTRO_TYPES[];
 
-    VALUE *new_fp = c->sp;
-    new_fp[0] = UNWRAP(EVAL_ARG(c, a0));
+    VALUE arg0 = UNWRAP(EVAL_ARG(c, a0));
     uint32_t i = AS_U32(UNWRAP(EVAL_ARG(c, idx)));
     if (i >= WASTRO_TABLE_SIZE) wastro_trap("undefined element");
     int32_t func_idx = WASTRO_TABLE[i];
@@ -1766,14 +1769,16 @@ node_call_indirect_1(CTX *c, NODE *n, uint32_t type_index, NODE *idx, NODE *a0)
     if (fn->param_types[0] != sig->param_types[0])
         wastro_trap("indirect call type mismatch");
 
-    if (fn->is_import) return RESULT_OK(fn->host_fn(c, new_fp, 1));
+    if (fn->is_import) {
+        VALUE host_args[1] = { arg0 };
+        return RESULT_OK(fn->host_fn(c, host_args, 1));
+    }
 
     uint32_t local_cnt = fn->local_cnt;
-    for (uint32_t k = 1; k < local_cnt; k++) new_fp[k] = 0;
-    VALUE *save_fp = c->fp; VALUE *save_sp = c->sp;
-    c->fp = new_fp; c->sp = new_fp + local_cnt;
-    RESULT r = EVAL(c, fn->body);
-    c->fp = save_fp; c->sp = save_sp;
+    VALUE F[local_cnt];
+    F[0] = arg0;
+    for (uint32_t k = 1; k < local_cnt; k++) F[k] = 0;
+    RESULT r = EVAL(c, fn->body, F);
     return RESULT_OK(r.value);
 }
 
@@ -1785,9 +1790,8 @@ node_call_indirect_2(CTX *c, NODE *n, uint32_t type_index, NODE *idx, NODE *a0, 
     extern uint32_t WASTRO_TABLE_SIZE;
     extern struct wastro_type_sig WASTRO_TYPES[];
 
-    VALUE *new_fp = c->sp;
-    new_fp[0] = UNWRAP(EVAL_ARG(c, a0));
-    new_fp[1] = UNWRAP(EVAL_ARG(c, a1));
+    VALUE arg0 = UNWRAP(EVAL_ARG(c, a0));
+    VALUE arg1 = UNWRAP(EVAL_ARG(c, a1));
     uint32_t i = AS_U32(UNWRAP(EVAL_ARG(c, idx)));
     if (i >= WASTRO_TABLE_SIZE) wastro_trap("undefined element");
     int32_t func_idx = WASTRO_TABLE[i];
@@ -1801,14 +1805,16 @@ node_call_indirect_2(CTX *c, NODE *n, uint32_t type_index, NODE *idx, NODE *a0, 
         fn->param_types[1] != sig->param_types[1])
         wastro_trap("indirect call type mismatch");
 
-    if (fn->is_import) return RESULT_OK(fn->host_fn(c, new_fp, 2));
+    if (fn->is_import) {
+        VALUE host_args[2] = { arg0, arg1 };
+        return RESULT_OK(fn->host_fn(c, host_args, 2));
+    }
 
     uint32_t local_cnt = fn->local_cnt;
-    for (uint32_t k = 2; k < local_cnt; k++) new_fp[k] = 0;
-    VALUE *save_fp = c->fp; VALUE *save_sp = c->sp;
-    c->fp = new_fp; c->sp = new_fp + local_cnt;
-    RESULT r = EVAL(c, fn->body);
-    c->fp = save_fp; c->sp = save_sp;
+    VALUE F[local_cnt];
+    F[0] = arg0; F[1] = arg1;
+    for (uint32_t k = 2; k < local_cnt; k++) F[k] = 0;
+    RESULT r = EVAL(c, fn->body, F);
     return RESULT_OK(r.value);
 }
 
@@ -1820,10 +1826,9 @@ node_call_indirect_3(CTX *c, NODE *n, uint32_t type_index, NODE *idx, NODE *a0, 
     extern uint32_t WASTRO_TABLE_SIZE;
     extern struct wastro_type_sig WASTRO_TYPES[];
 
-    VALUE *new_fp = c->sp;
-    new_fp[0] = UNWRAP(EVAL_ARG(c, a0));
-    new_fp[1] = UNWRAP(EVAL_ARG(c, a1));
-    new_fp[2] = UNWRAP(EVAL_ARG(c, a2));
+    VALUE arg0 = UNWRAP(EVAL_ARG(c, a0));
+    VALUE arg1 = UNWRAP(EVAL_ARG(c, a1));
+    VALUE arg2 = UNWRAP(EVAL_ARG(c, a2));
     uint32_t i = AS_U32(UNWRAP(EVAL_ARG(c, idx)));
     if (i >= WASTRO_TABLE_SIZE) wastro_trap("undefined element");
     int32_t func_idx = WASTRO_TABLE[i];
@@ -1837,14 +1842,16 @@ node_call_indirect_3(CTX *c, NODE *n, uint32_t type_index, NODE *idx, NODE *a0, 
         if (fn->param_types[k] != sig->param_types[k])
             wastro_trap("indirect call type mismatch");
 
-    if (fn->is_import) return RESULT_OK(fn->host_fn(c, new_fp, 3));
+    if (fn->is_import) {
+        VALUE host_args[3] = { arg0, arg1, arg2 };
+        return RESULT_OK(fn->host_fn(c, host_args, 3));
+    }
 
     uint32_t local_cnt = fn->local_cnt;
-    for (uint32_t k = 3; k < local_cnt; k++) new_fp[k] = 0;
-    VALUE *save_fp = c->fp; VALUE *save_sp = c->sp;
-    c->fp = new_fp; c->sp = new_fp + local_cnt;
-    RESULT r = EVAL(c, fn->body);
-    c->fp = save_fp; c->sp = save_sp;
+    VALUE F[local_cnt];
+    F[0] = arg0; F[1] = arg1; F[2] = arg2;
+    for (uint32_t k = 3; k < local_cnt; k++) F[k] = 0;
+    RESULT r = EVAL(c, fn->body, F);
     return RESULT_OK(r.value);
 }
 
@@ -1856,11 +1863,10 @@ node_call_indirect_4(CTX *c, NODE *n, uint32_t type_index, NODE *idx, NODE *a0, 
     extern uint32_t WASTRO_TABLE_SIZE;
     extern struct wastro_type_sig WASTRO_TYPES[];
 
-    VALUE *new_fp = c->sp;
-    new_fp[0] = UNWRAP(EVAL_ARG(c, a0));
-    new_fp[1] = UNWRAP(EVAL_ARG(c, a1));
-    new_fp[2] = UNWRAP(EVAL_ARG(c, a2));
-    new_fp[3] = UNWRAP(EVAL_ARG(c, a3));
+    VALUE arg0 = UNWRAP(EVAL_ARG(c, a0));
+    VALUE arg1 = UNWRAP(EVAL_ARG(c, a1));
+    VALUE arg2 = UNWRAP(EVAL_ARG(c, a2));
+    VALUE arg3 = UNWRAP(EVAL_ARG(c, a3));
     uint32_t i = AS_U32(UNWRAP(EVAL_ARG(c, idx)));
     if (i >= WASTRO_TABLE_SIZE) wastro_trap("undefined element");
     int32_t func_idx = WASTRO_TABLE[i];
@@ -1874,13 +1880,15 @@ node_call_indirect_4(CTX *c, NODE *n, uint32_t type_index, NODE *idx, NODE *a0, 
         if (fn->param_types[k] != sig->param_types[k])
             wastro_trap("indirect call type mismatch");
 
-    if (fn->is_import) return RESULT_OK(fn->host_fn(c, new_fp, 4));
+    if (fn->is_import) {
+        VALUE host_args[4] = { arg0, arg1, arg2, arg3 };
+        return RESULT_OK(fn->host_fn(c, host_args, 4));
+    }
 
     uint32_t local_cnt = fn->local_cnt;
-    for (uint32_t k = 4; k < local_cnt; k++) new_fp[k] = 0;
-    VALUE *save_fp = c->fp; VALUE *save_sp = c->sp;
-    c->fp = new_fp; c->sp = new_fp + local_cnt;
-    RESULT r = EVAL(c, fn->body);
-    c->fp = save_fp; c->sp = save_sp;
+    VALUE F[local_cnt];
+    F[0] = arg0; F[1] = arg1; F[2] = arg2; F[3] = arg3;
+    for (uint32_t k = 4; k < local_cnt; k++) F[k] = 0;
+    RESULT r = EVAL(c, fn->body, F);
     return RESULT_OK(r.value);
 }

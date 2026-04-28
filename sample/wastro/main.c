@@ -5145,13 +5145,11 @@ wastro_invoke(CTX *c, int func_idx, VALUE *args, uint32_t argc)
         fprintf(stderr, "wastro_invoke: arity mismatch\n"); exit(1);
     }
     if (fn->is_import) return fn->host_fn(c, args, argc);
-    VALUE *new_fp = c->sp;
-    for (uint32_t i = 0; i < argc; i++) new_fp[i] = args[i];
-    for (uint32_t i = argc; i < fn->local_cnt; i++) new_fp[i] = 0;
-    VALUE *save_fp = c->fp; VALUE *save_sp = c->sp;
-    c->fp = new_fp; c->sp = new_fp + fn->local_cnt;
-    RESULT r = EVAL(c, fn->body);
-    c->fp = save_fp; c->sp = save_sp;
+    uint32_t local_cnt = fn->local_cnt;
+    VALUE F[local_cnt];
+    for (uint32_t i = 0; i < argc; i++) F[i] = args[i];
+    for (uint32_t i = argc; i < local_cnt; i++) F[i] = 0;
+    RESULT r = EVAL(c, fn->body, F);
     return r.value;
 }
 
