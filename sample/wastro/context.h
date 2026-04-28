@@ -6,6 +6,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
+#include <sys/mman.h>     // mprotect / PROT_* — used by node_memory_grow
 
 // VALUE is the result type returned by every node dispatcher.
 // We carry the raw 64-bit value of any wasm numeric type (i32, i64,

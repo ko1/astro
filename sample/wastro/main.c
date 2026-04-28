@@ -24,6 +24,8 @@
 #include <errno.h>
 #include <setjmp.h>
 #include <stdarg.h>
+#include <sys/mman.h>
+#include <signal.h>
 #include "context.h"
 #include "node.h"
 #include "astro_code_store.h"
@@ -74,6 +76,62 @@ wastro_trap(const char *msg)
     }
     fprintf(stderr, "wastro: trap: %s\n", msg);
     exit(1);
+}
+
+// =====================================================================
+// Linear memory: virtual reservation + guard-page bounds checking
+// =====================================================================
+//
+// Wasm 1.0 addresses are u32 plus a u32 offset, so the worst-case
+// effective address fits in 33 bits.  We mmap an 8 GB region per CTX
+// at PROT_NONE up front; the pages actually exposed to wasm are flipped
+// to PROT_READ|PROT_WRITE via mprotect (initial pages at module load,
+// extras via memory.grow).  Anything past the live region is
+// PROT_NONE, so an OOB load/store from generated code triggers
+// SIGSEGV — a signal handler converts that into wastro_trap.
+//
+// Net effect: every wasm load/store skips the explicit bounds compare
+// the interpreter used to do.  Spec compliance is preserved (OOB still
+// traps) and the hot path matches wasmtime — which uses the same trick.
+
+#define WASTRO_VM_RESERVE_BYTES (8ULL * 1024 * 1024 * 1024)  // 8 GB
+
+// Single-CTX assumption: wastro runs one module at a time on one
+// thread, so a global is fine.  Set right after CTX construction.
+static CTX *wastro_segv_ctx = NULL;
+
+static void
+wastro_segv_handler(int sig, siginfo_t *info, void *ucontext)
+{
+    (void)sig; (void)ucontext;
+    if (wastro_segv_ctx && wastro_segv_ctx->memory) {
+        uintptr_t base = (uintptr_t)wastro_segv_ctx->memory;
+        uintptr_t fault = (uintptr_t)info->si_addr;
+        if (fault >= base && fault < base + WASTRO_VM_RESERVE_BYTES) {
+            wastro_trap("out of bounds memory access");  // longjmps if active
+            // If no jmp set, wastro_trap exits — never returns.
+        }
+    }
+    // Not from our wasm memory — restore default handler and re-raise so
+    // the original SIGSEGV (real bug) surfaces with its core dump.
+    struct sigaction dfl;
+    dfl.sa_handler = SIG_DFL;
+    sigemptyset(&dfl.sa_mask);
+    dfl.sa_flags = 0;
+    sigaction(SIGSEGV, &dfl, NULL);
+}
+
+static void
+wastro_install_segv_handler(void)
+{
+    static int installed = 0;
+    if (installed) return;
+    struct sigaction sa;
+    sa.sa_flags = SA_SIGINFO | SA_NODEFER;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_sigaction = wastro_segv_handler;
+    sigaction(SIGSEGV, &sa, NULL);
+    installed = 1;
 }
 
 // =====================================================================
@@ -4962,9 +5020,11 @@ wastro_run_wast(const char *path)
             Token o_tok = cur_tok;
             // Free the previous module's instance (memory etc.).
             if (active_ctx) {
-                if (active_ctx->memory) free(active_ctx->memory);
+                if (active_ctx->memory)
+                    munmap(active_ctx->memory, WASTRO_VM_RESERVE_BYTES);
                 free(active_ctx);
                 active_ctx = NULL;
+                wastro_segv_ctx = NULL;
             }
             wastro_reset_module();
             load_failed = 0;
@@ -5112,8 +5172,10 @@ wastro_run_wast(const char *path)
     }
 
     if (active_ctx) {
-        if (active_ctx->memory) free(active_ctx->memory);
+        if (active_ctx->memory)
+            munmap(active_ctx->memory, WASTRO_VM_RESERVE_BYTES);
         free(active_ctx);
+        wastro_segv_ctx = NULL;
     }
     fprintf(stderr, "\n%s: %d passed, %d failed, %d skipped\n",
             path, passed, failed, skipped);
@@ -5164,8 +5226,22 @@ wastro_instantiate(uint32_t initial_local_slots)
     c->fp = c->stack;
     c->sp = c->stack + initial_local_slots;
     if (MOD_HAS_MEMORY) {
+        // Reserve 8 GB virtual at PROT_NONE; mprotect the initial pages
+        // R/W, leaving the rest as a guard region that catches OOB via
+        // SIGSEGV.  Pages stay zero-filled lazily by the kernel on first
+        // access, so we don't need calloc/memset here.
+        c->memory = mmap(NULL, WASTRO_VM_RESERVE_BYTES, PROT_NONE,
+                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (c->memory == MAP_FAILED) {
+            fprintf(stderr, "wastro: mmap %llu bytes failed: %s\n",
+                    (unsigned long long)WASTRO_VM_RESERVE_BYTES, strerror(errno));
+            exit(1);
+        }
         size_t bytes = (size_t)MOD_MEM_INITIAL_PAGES * WASTRO_PAGE_SIZE;
-        c->memory = bytes ? calloc(1, bytes) : NULL;
+        if (bytes && mprotect(c->memory, bytes, PROT_READ | PROT_WRITE) != 0) {
+            fprintf(stderr, "wastro: mprotect failed: %s\n", strerror(errno));
+            exit(1);
+        }
         c->memory_pages = MOD_MEM_INITIAL_PAGES;
         c->memory_max_pages = MOD_MEM_MAX_PAGES;
         c->memory_size_bytes = (uint64_t)MOD_MEM_INITIAL_PAGES * WASTRO_PAGE_SIZE;
@@ -5175,6 +5251,8 @@ wastro_instantiate(uint32_t initial_local_slots)
         c->memory_max_pages = 0;
         c->memory_size_bytes = 0;
     }
+    wastro_segv_ctx = c;
+    wastro_install_segv_handler();
     for (uint32_t di = 0; di < MOD_DATA_SEG_CNT; di++) {
         struct wastro_data_seg *d = &MOD_DATA_SEGS[di];
         if (!MOD_HAS_MEMORY) wastro_die("(data ...) without (memory ...)");
