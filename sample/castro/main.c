@@ -93,6 +93,17 @@ int64_t castro_strncmp(const VALUE *a, const VALUE *b, int64_t n) {
     return (int64_t)((unsigned char)a->i) - (int64_t)((unsigned char)b->i);
 }
 
+int64_t castro_memcmp(const VALUE *a, const VALUE *b, int64_t n) {
+    // memcmp distinguishes {0,0,...} from a shorter buffer; unlike
+    // strncmp it doesn't stop at NUL.  Compare exactly `n` slots.
+    for (int64_t i = 0; i < n; i++) {
+        unsigned char av = (unsigned char)a[i].i;
+        unsigned char bv = (unsigned char)b[i].i;
+        if (av != bv) return (int64_t)av - (int64_t)bv;
+    }
+    return 0;
+}
+
 VALUE *castro_strcpy(VALUE *dst, const VALUE *src) {
     VALUE *d = dst;
     while ((d->i = src->i) != 0) { d++; src++; }
@@ -730,6 +741,7 @@ build_op(sx_lexer *l, tok_t op)
         {"call_strncpy",  ALLOC_node_call_strncpy},
         {"call_memset",   ALLOC_node_call_memset},
         {"call_memcpy",   ALLOC_node_call_memcpy},
+        {"call_memcmp",   ALLOC_node_call_memcmp},
         {NULL, NULL}
     };
     for (int i = 0; u3[i].name; i++) {

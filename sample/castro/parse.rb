@@ -672,6 +672,53 @@ def builtin_call(fname, args_compiled, fn)
   when 'abs', 'labs', 'llabs'
     a, _ = args_compiled[0]
     [[:call_abs, a], CType::INT]
+  when 'memcmp'
+    a, _ = args_compiled[0]; b, _ = args_compiled[1]; c, _ = args_compiled[2]
+    [[:call_memcmp, a, b, c], CType::INT]
+  when '__builtin_bswap16', '__builtin_bswap32', '__builtin_bswap64'
+    # Lower to inline shift+mask expressions so the framework's
+    # const-folder can collapse them at compile time when the operand
+    # is a literal.  Width is implicit in the wrapping arithmetic on
+    # int / int64 slots.
+    a, _ = args_compiled[0]
+    case fname
+    when '__builtin_bswap16'
+      # ((x >> 8) & 0xFF) | ((x & 0xFF) << 8)
+      sx = [:bor,
+            [:band, [:shr, a, [:lit_i, 8]], [:lit_i, 0xFF]],
+            [:shl, [:band, a, [:lit_i, 0xFF]], [:lit_i, 8]]]
+      [sx, CType::INT]
+    when '__builtin_bswap32'
+      # 4-byte byte reversal: ((x>>24)&0xff) | ((x>>8)&0xff00) | ((x&0xff00)<<8) | ((x&0xff)<<24)
+      sx = [:bor,
+            [:bor,
+             [:band, [:shr, a, [:lit_i, 24]], [:lit_i, 0xFF]],
+             [:band, [:shr, a, [:lit_i, 8]], [:lit_i, 0xFF00]]],
+            [:bor,
+             [:shl, [:band, a, [:lit_i, 0xFF00]], [:lit_i, 8]],
+             [:shl, [:band, a, [:lit_i, 0xFF]], [:lit_i, 24]]]]
+      [sx, CType::INT]
+    when '__builtin_bswap64'
+      # 8-byte reversal — same idea, eight terms.  parse.rb produces
+      # 64-bit shifts/masks since `a` is treated as int64 in the .i
+      # slot.  Constants > 2**31 are emitted via lit_i64.
+      mk_bswap64 = lambda do
+        terms = []
+        # high half
+        terms << [:band, [:shr, a, [:lit_i, 56]], [:lit_i, 0xFF]]
+        terms << [:band, [:shr, a, [:lit_i, 40]], [:lit_i, 0xFF00]]
+        terms << [:band, [:shr, a, [:lit_i, 24]], [:lit_i, 0xFF0000]]
+        terms << [:band, [:shr, a, [:lit_i, 8]],  [:lit_i, 0xFF000000]]
+        # low half
+        terms << [:band, [:shl, a, [:lit_i, 8]],  [:lit_i64, 0xFF00000000]]
+        terms << [:band, [:shl, a, [:lit_i, 24]], [:lit_i64, 0xFF0000000000]]
+        terms << [:band, [:shl, a, [:lit_i, 40]], [:lit_i64, 0xFF000000000000]]
+        terms << [:shl, [:band, a, [:lit_i, 0xFF]], [:lit_i, 56]]
+        # Reduce with bor.
+        terms.reduce { |acc, t| [:bor, acc, t] }
+      end
+      [mk_bswap64.call, CType::LONG]
+    end
   else
     nil
   end
@@ -1689,17 +1736,25 @@ def lower_goto(body, fn)
   # and each label as a successive case.
 
   # Replace markers with [:nop] and split the body into segments.
-  # Easiest: linearize seq into a flat list, then split on markers.
-  flat = flatten_seq(body)
+  # Walk the tree depth-first, flattening seq AND `_label_marker`
+  # along the way: a marker contributes its idx + the recursively-
+  # flattened tail.  Naive flatten_seq only handled markers at the
+  # top of a seq tree, which dropped nested markers
+  # (`a: b: stmt;`) into a sub-tree the outer split couldn't see.
   segments = [{ idx: 0, stmts: [] }]
-  flat.each do |s|
-    if s.is_a?(Array) && s[0] == :_label_marker
+  visit = lambda do |s|
+    if s.is_a?(Array) && s[0] == :seq
+      visit.call(s[1])
+      visit.call(s[2])
+    elsif s.is_a?(Array) && s[0] == :_label_marker
       idx, body_after = s[1], s[2]
-      segments << { idx: idx, stmts: [body_after] }
+      segments << { idx: idx, stmts: [] }
+      visit.call(body_after)
     else
       segments.last[:stmts] << s
     end
   end
+  visit.call(body)
 
   # Build:
   #   while (1) {
@@ -1853,6 +1908,7 @@ def process_top_decl(node, src)
     when 'init_declarator'
       d = c.child_by_field_name('declarator')
       v = c.child_by_field_name('value')
+      next if function_declarator?(d)  # function w/ initializer makes no sense
       name, ty = parse_declarator(d, base_ty, src)
       next if name.nil? || (ty.void?)
       ty = infer_array_size(ty, v, src)
@@ -1861,12 +1917,36 @@ def process_top_decl(node, src)
       GLOBALS[name] = [idx, ty]
       add_global_init(idx, ty, v, src)
     when 'identifier', 'pointer_declarator', 'array_declarator'
+      # Skip extern function declarations — `extern T *f(...)` arrives
+      # here as a pointer_declarator wrapping a function_declarator,
+      # and parse_declarator's recursion strips the function-ness, so
+      # naively allocating a global slot would shadow the function name
+      # in GLOBALS and route subsequent calls through call_indirect.
+      # Signatures for these are already in GLOBAL_FUNCS via
+      # gather_signatures.
+      next if function_declarator?(c)
       name, ty = parse_declarator(c, base_ty, src)
       next if name.nil?
       alloc_global_slot(name, ty)
     when 'function_declarator'
       # extern decl, signatures already gathered
     end
+  end
+end
+
+# Walks a declarator chain to detect whether the eventual entity is a
+# function (rather than a plain variable / pointer-to-data).
+def function_declarator?(decl)
+  return false if decl.nil?
+  case decl.type.to_s
+  when 'function_declarator', 'abstract_function_declarator' then true
+  when 'pointer_declarator', 'abstract_pointer_declarator',
+       'array_declarator',   'abstract_array_declarator',
+       'parenthesized_declarator',
+       'init_declarator'
+    function_declarator?(decl.child_by_field_name('declarator'))
+  else
+    false
   end
 end
 

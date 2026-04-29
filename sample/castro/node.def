@@ -208,10 +208,19 @@ node_call_calloc(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE 
     int64_t k = UNWRAP(EVAL_ARG(c, count)).i;
     int64_t b = UNWRAP(EVAL_ARG(c, size)).i;
     if (k <= 0 || b <= 0) return RESULT_OK((VALUE){.p = NULL});
-    size_t total_bytes = (size_t)k * (size_t)b;
-    size_t slots = (total_bytes + sizeof(VALUE) - 1) / sizeof(VALUE);
-    if (slots == 0) slots = 1;
-    return RESULT_OK((VALUE){.p = calloc(slots, sizeof(VALUE))});
+    // Castro stores one C scalar per VALUE slot regardless of its byte
+    // width: an `int` and a `double` both occupy 1 slot.  C programs
+    // typically write `calloc(N, sizeof(T))` to mean "N elements"; the
+    // multiplied byte-count vs slot-count rounds wrong (e.g.
+    // `calloc(64, 4)` = 256 bytes = 32 slots, but the program expects
+    // 64 ints).  So compute slots-per-element from the byte size and
+    // multiply by element count.  Sub-slot element sizes (char, short,
+    // int) round up to 1 slot each; struct sizes that exceed 8 bytes
+    // get the right multi-slot allocation.
+    size_t elem_slots = ((size_t)b + sizeof(VALUE) - 1) / sizeof(VALUE);
+    if (elem_slots == 0) elem_slots = 1;
+    size_t total_slots = (size_t)k * elem_slots;
+    return RESULT_OK((VALUE){.p = calloc(total_slots, sizeof(VALUE))});
 }
 
 NODE_DEF
@@ -229,6 +238,7 @@ extern VALUE *castro_strncpy(VALUE *dst, const VALUE *src, int64_t n);
 extern VALUE *castro_strcat(VALUE *dst, const VALUE *src);
 extern void *castro_memset(VALUE *dst, int64_t v, int64_t n);
 extern void *castro_memcpy(VALUE *dst, const VALUE *src, int64_t n);
+extern int64_t castro_memcmp(const VALUE *a, const VALUE *b, int64_t n);
 extern int64_t castro_atoi(const VALUE *s);
 extern void castro_exit(int code);
 
@@ -288,6 +298,14 @@ node_call_memcpy(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE 
     return RESULT_OK((VALUE){.p = castro_memcpy((VALUE *)UNWRAP(EVAL_ARG(c, dst)).p,
                                        (const VALUE *)UNWRAP(EVAL_ARG(c, src)).p,
                                        UNWRAP(EVAL_ARG(c, k)).i)});
+}
+
+NODE_DEF
+node_call_memcmp(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *a, NODE *b, NODE *k)
+{
+    return RESULT_OK((VALUE){.i = castro_memcmp((const VALUE *)UNWRAP(EVAL_ARG(c, a)).p,
+                                        (const VALUE *)UNWRAP(EVAL_ARG(c, b)).p,
+                                        UNWRAP(EVAL_ARG(c, k)).i)});
 }
 
 NODE_DEF
