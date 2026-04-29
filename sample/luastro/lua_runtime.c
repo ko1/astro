@@ -887,20 +887,20 @@ struct LuaString *LUASTRO_S_STRING     = NULL;
 void
 luastro_init_interned_strings(void)
 {
-    LUASTRO_S___INDEX    = LUASTRO_S___INDEX;
-    LUASTRO_S___NEWINDEX = LUASTRO_S___NEWINDEX;
-    LUASTRO_S___CALL     = LUASTRO_S___CALL;
-    LUASTRO_S___ADD      = LUASTRO_S___ADD;
-    LUASTRO_S___SUB      = LUASTRO_S___SUB;
-    LUASTRO_S___MUL      = LUASTRO_S___MUL;
-    LUASTRO_S___DIV      = LUASTRO_S___DIV;
-    LUASTRO_S___EQ       = LUASTRO_S___EQ;
-    LUASTRO_S___LT       = LUASTRO_S___LT;
-    LUASTRO_S___LE       = LUASTRO_S___LE;
-    LUASTRO_S___UNM      = LUASTRO_S___UNM;
-    LUASTRO_S___CONCAT   = LUASTRO_S___CONCAT;
-    LUASTRO_S___LEN      = LUASTRO_S___LEN;
-    LUASTRO_S___GC       = LUASTRO_S___GC;
+    LUASTRO_S___INDEX    = lua_str_intern("__index");
+    LUASTRO_S___NEWINDEX = lua_str_intern("__newindex");
+    LUASTRO_S___CALL     = lua_str_intern("__call");
+    LUASTRO_S___ADD      = lua_str_intern("__add");
+    LUASTRO_S___SUB      = lua_str_intern("__sub");
+    LUASTRO_S___MUL      = lua_str_intern("__mul");
+    LUASTRO_S___DIV      = lua_str_intern("__div");
+    LUASTRO_S___EQ       = lua_str_intern("__eq");
+    LUASTRO_S___LT       = lua_str_intern("__lt");
+    LUASTRO_S___LE       = lua_str_intern("__le");
+    LUASTRO_S___UNM      = lua_str_intern("__unm");
+    LUASTRO_S___CONCAT   = lua_str_intern("__concat");
+    LUASTRO_S___LEN      = lua_str_intern("__len");
+    LUASTRO_S___GC       = lua_str_intern("__gc");
     LUASTRO_S_STRING     = lua_str_intern("string");
 }
 
