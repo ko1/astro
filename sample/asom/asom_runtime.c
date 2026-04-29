@@ -479,20 +479,55 @@ asom_inline_pool_frame_pop(CTX *c, struct asom_frame *frame)
     frame_free(frame);
 }
 
+// Bump arena for the combined (asom_method + asom_block) records that
+// asom_make_block produces every time a block literal evaluates. Each
+// pair is fixed-size so we allocate them adjacent; only the slab head
+// pointer leaks (until GC). For benchmarks like Sieve where each
+// iteration of the outer to:do: body re-creates the same if-true
+// block, this turns 2 callocs/iter into 2 pointer increments.
+#define ASOM_BLOCK_SLAB_COUNT 1024
+
+struct asom_block_record {
+    struct asom_method method;
+    struct asom_block  block;
+};
+
+struct asom_block_arena {
+    struct asom_block_record *next;
+    struct asom_block_record *end;
+};
+
+static __thread struct asom_block_arena g_block_arena;
+
+static __attribute__((noinline)) struct asom_block_record *
+asom_block_arena_grow(void)
+{
+    struct asom_block_record *slab = calloc(ASOM_BLOCK_SLAB_COUNT, sizeof(*slab));
+    if (!slab) { fprintf(stderr, "asom: block slab OOM\n"); exit(1); }
+    g_block_arena.next = slab;
+    g_block_arena.end = slab + ASOM_BLOCK_SLAB_COUNT;
+    return slab;
+}
+
 VALUE
 asom_make_block(CTX *c, struct Node *body, uint32_t num_params, uint32_t num_locals)
 {
-    // Allocate one method object per block-creation site. Multiple invocations
-    // of the same block reuse this method via b->method->body, so the
-    // allocation cost is amortised over the block's lifetime.
-    struct asom_method *m = calloc(1, sizeof(*m));
+    struct asom_block_record *r = g_block_arena.next;
+    if (UNLIKELY(r >= g_block_arena.end)) {
+        r = asom_block_arena_grow();
+    }
+    g_block_arena.next = r + 1;
+    // Slab is calloc'd once per slab; a fresh record from the bump
+    // pointer is therefore zero-initialised — overwrite only the fields
+    // that vary per call, the rest stays zero.
+    struct asom_method *m = &r->method;
     m->body = body;
     m->num_params = num_params;
     m->num_locals = num_locals;
     m->holder = c->frame->method ? c->frame->method->holder : NULL;
     m->selector = "<block>";
 
-    struct asom_block *b = calloc(1, sizeof(*b));
+    struct asom_block *b = &r->block;
     // SOM has a separate Block1/Block2/Block3 class per arity (the block
     // includes the receiver in its argument count terminology, so 0/1/2
     // user-args map to Block1/Block2/Block3 respectively). Falls back to

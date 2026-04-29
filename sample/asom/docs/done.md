@@ -190,6 +190,16 @@ ifTrue:/ifFalse: 系は受信値が `val_true / val_false` でない場合の
 なる。パース時の `subtree_creates_block()` がこれを検出し、当該パターン
 は inline せず正規の send1/send2 で処理する。
 
+### Block / method bump arena
+
+`asom_make_block` も calloc 2 回（`struct asom_method` + `struct asom_block`）
+してたので、隣接させた `struct asom_block_record { method; block }` を
+slab で束ねて bump-allocation。Sieve outer to:do: の if-true ブロックの
+ように毎回 fresh な block を作るパターンで、per-iter 2 calloc が消えて
+2 回のポインタ進行になる。
+
+double arena 同様、未回収（GC が必要）。1 回のベンチでは bounded。
+
 ### Double bump arena
 
 `asom_double_new` は `calloc` だったが、bump-allocation slab に置き換え。
@@ -224,18 +234,20 @@ inline 化可能になる（pool 版を使う）。
 
 | benchmark | baseline | + spec+pool | + 制御flow inline | + to:do: inline | 累積倍率 |
 |-----------|----------|-------------|-------------------|------------------|---------|
-| Sieve     | 0.032s   | 0.019s      | 0.012s            | 0.009s           | **3.6×** |
-| Permute   | 0.044s   | 0.034s      | 0.033s            | 0.031s           | 1.42×    |
-| Towers    | 0.125s   | 0.094s      | 0.075s            | 0.073s           | 1.71×    |
-| Bounce    | 0.037s   | 0.040s      | 0.008s            | 0.007s           | **5.3×** |
-| BubbleSort| 0.023s   | 0.020s      | 0.007s            | 0.007s           | **3.3×** |
-| Mandelbrot| 1.015s   | 1.016s      | 0.797s            | 0.556s †         | **1.83×**|
-| Queens    | 0.039s   | 0.031s      | 0.028s            | 0.020s           | **1.95×**|
-| List      | 0.071s   | (n/a)       | (n/a)             | 0.035s           | 2.0×     |
-| QuickSort | 0.031s   | (n/a)       | (n/a)             | 0.013s           | 2.4×     |
-| TreeSort  | 0.080s   | (n/a)       | (n/a)             | 0.046s           | 1.74×    |
+| Sieve     | 0.032s   | 0.012s        | 0.009s          | 0.007s        | **4.6×** |
+| Permute   | 0.044s   | 0.033s        | 0.031s          | 0.029s        | 1.52×    |
+| Towers    | 0.125s   | 0.075s        | 0.073s          | 0.064s        | 1.95×    |
+| Bounce    | 0.037s   | 0.008s        | 0.007s          | 0.007s        | **5.3×** |
+| BubbleSort| 0.023s   | 0.007s        | 0.007s          | 0.007s        | **3.3×** |
+| Mandelbrot| 1.015s   | 0.797s        | 0.556s †        | 0.493s        | **2.06×**|
+| Queens    | 0.039s   | 0.028s        | 0.020s          | 0.017s        | **2.3×** |
+| List      | 0.071s   | (n/a)         | 0.035s          | 0.031s        | 2.3×     |
+| QuickSort | 0.031s   | (n/a)         | 0.013s          | 0.011s        | 2.8×     |
+| TreeSort  | 0.080s   | (n/a)         | 0.046s          | 0.033s        | 2.4×     |
 
-† Mandelbrot は double arena 後の値。to:do: 段階では 0.794s。
+列: baseline / + 制御flow inline / + to:do: + double arena / + block arena
+
+† Mandelbrot の値は double arena 後。to:do: 段階単独では 0.794s。
 
 ### フレーム pool
 
