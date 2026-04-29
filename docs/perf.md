@@ -175,6 +175,26 @@ EVAL body には触らないが AST 形は整えてよい。**新しいノード
 - Ruby 等の `eval` は同スコープが見えるので不可。**意味論を変えない範囲**
   という線は厳守。
 
+### 5.1 ローカル定数畳み込みの sieve 退化（要追跡）
+
+luastro で実装した定数畳み込み (`pf_fold_constants`) は ack/fib/tak で
+確実な勝ち（-7〜-15%）だが、**sieve だけ -O3 で +10〜25% 退化**する。
+
+調査結果（`/tmp/claude/min-{fold,nofold}.so` の disasm 比較）：
+
+- 内側ループ asm はほぼ同一（`addq $2; cmp imm; je` vs `inc; cmp reg; jl` の 3 命令）。
+- 退化は `-O3` 限定。`-O0/-O1/-Os` だと fold が同等または速い。
+- `-fno-tree-loop-distribute-patterns` で gap が縮む（fold .20→.17、nofold は .16 で一定）— ただしフルベンチ全体では他ベンチを悪化させるので、グローバル無効化は採用しない方がいい。
+- `-fno-ipa-cp` / `-fno-ipa-cp-clone` でも一部回復。`SD_xxx_INL.isra.0` クローンの constant-prop 経路で発生している模様。
+- 推定根本原因：fold で `local N = 10000000` がチェイン伝播 → IPA-CP が numfor SD のクローンを作る → クローン内のコード生成が微妙に劣化（複数 pass の相互作用）。
+- 環境変数 `LUASTRO_NO_FOLD=1` で fold 全体を切るゲート付き（commit b8e58ec）。
+
+次の打ち手候補：
+- gcc tree-dump (`-fdump-tree-all-details`) でどの pass が分岐させているか特定。
+- `__attribute__((noclone))` を numfor の SD wrapper に付けて isra.0 化を抑止。
+- PG 駆動で sieve のような特定 SD だけ fold を抑制。
+- gcc 上流に bug report（再現コード `/tmp/claude/min-fold.c` 残置）。
+
 ## 6. ビルド・リンカ・ランタイムインフラ
 
 | 設定 | 効果 / 理由 |
