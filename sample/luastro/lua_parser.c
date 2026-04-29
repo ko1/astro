@@ -402,20 +402,23 @@ pf_fold_constants(ParseFunc *pf)
         if (parent && parent->head.kind->replacer) {
             (*parent->head.kind->replacer)(parent, n, konst);
             konst->head.parent = parent;
+        } else {
+            // No parent linkage — the local_get sits in LUASTRO_NODE_ARR
+            // (variadic-operand storage: call args, multi-rhs decls,
+            // table constructor entries, etc.).  Find by pointer
+            // equality and replace.  We can't walk the side array
+            // blindly looking for `local_get(slot)`: the array spans
+            // every function in the chunk, and slot indices collide
+            // across functions (chunk's slot 2 vs a nested function's
+            // slot 2 are unrelated).  Pointer identity is the only
+            // safe key.
+            for (uint32_t j = 0; j < LUASTRO_NODE_ARR_CNT; j++) {
+                if (LUASTRO_NODE_ARR[j] == n) {
+                    LUASTRO_NODE_ARR[j] = konst;
+                    break;
+                }
+            }
         }
-    }
-    // Side-array sweep: any local_get reachable through LUASTRO_NODE_ARR
-    // (call args, table constructors, multi-rhs decls) didn't have its
-    // parent recorded, so head.parent is NULL.  Replace those entries
-    // by walking the global array.
-    for (uint32_t i = 0; i < LUASTRO_NODE_ARR_CNT; i++) {
-        NODE *e = LUASTRO_NODE_ARR[i];
-        if (!e || e->head.kind != &kind_node_local_get) continue;
-        uint32_t slot = e->u.node_local_get.idx;
-        if (slot >= pf->nlocals || !foldable[slot]) continue;
-        NODE *konst = clone_const_node(pf->const_init[slot]);
-        if (!konst) continue;
-        LUASTRO_NODE_ARR[i] = konst;
     }
 }
 
