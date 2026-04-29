@@ -417,9 +417,12 @@ make bench ITERS=30
 - **asom interp / aot / pg** — 自身の `Bench.som`
 - **SOM++** — C++ bytecode VM、`USE_TAGGING + COPYING + -O3 -flto`
 - **TruffleSOM** — Java + GraalVM CE 25 + libgraal JIT
-- **PySOM AST / BC** — plain CPython 3.12 (RPython 翻訳なし)
 
-CSOM は外した。教育用 reference 実装で性能比較の対象ではない上、
-sustained scale だと per-bench 4 分以上かかって時間が見合わない。
+CSOM と plain-CPython PySOM は外した。CSOM は教育用 reference 実装で
+性能比較の対象ではない上、sustained scale だと per-bench 4 分以上かかる。
+PySOM は plain CPython 走行だと桁違いに遅く、本来は RPython で translate
+した JIT バイナリ (`make som-ast-jit`) を使うべき — pypy ソース (~1.5 GB)
+と pypy2 / python2 ランタイムが必要なので、translate された binary を
+用意したら column を追加する。
 
 `make bench-aot BENCH=Sieve ITERS=500` / `make bench-pg ...` で個別計測。
