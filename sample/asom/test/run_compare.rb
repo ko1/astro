@@ -68,7 +68,7 @@ INNER = {
   'QuickSort'  => 800,
   'TreeSort'   => 300,
   'Fannkuch'   => 9,
-  'Mandelbrot' => 500,
+  'Mandelbrot' => 350,
 }
 # One outer iteration per trial; the inner already fills ~1 s of work.
 # best-of-3 is taken across three trials in best_of_3, not via outer.
