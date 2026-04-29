@@ -9,8 +9,6 @@
 
 struct castro_option OPTION;
 
-struct function_entry *castro_find_func(CTX *c, const char *name);
-
 // =====================================================================
 // VALUE-slot string handling
 // =====================================================================
@@ -388,19 +386,6 @@ castro_loop_for(CTX *c, NODE *init, node_dispatcher_func_t id,
 // indirect call (function pointers)
 // =====================================================================
 
-VALUE
-castro_func_addr_resolve(CTX *c, struct func_addr_cache *cc, const char *name)
-{
-    struct function_entry *fe = castro_find_func(c, name);
-    if (UNLIKELY(fe == NULL)) {
-        fprintf(stderr, "castro: unknown function: %s\n", name);
-        exit(1);
-    }
-    cc->serial = c->serial;
-    cc->fe = fe;
-    return (VALUE){.p = fe};
-}
-
 __attribute__((noinline))
 VALUE
 castro_indirect_invoke(CTX *c, struct function_entry *fe, uint32_t arg_index)
@@ -444,60 +429,31 @@ castro_goto_dispatch(CTX *c, NODE *body, node_dispatcher_func_t bd)
     return v;
 }
 
-// callcache miss: walk the function table, fill cc with body/dispatcher/flag.
-__attribute__((noinline))
-void
-castro_call_cache_fill(CTX *c, struct callcache *cc, const char *name)
-{
-    struct function_entry *fe = castro_find_func(c, name);
-    if (UNLIKELY(fe == NULL)) {
-        fprintf(stderr, "castro: unknown function: %s\n", name);
-        exit(1);
-    }
-    cc->serial = c->serial;
-    cc->body = fe->body;
-    cc->dispatcher = (void (*)(void))fe->body->head.dispatcher;
-    cc->needs_setjmp = fe->needs_setjmp;
-}
-
 // =====================================================================
 // function table
 // =====================================================================
+//
+// `c->func_set[]` is sized exactly once (to NFUNCS read from the SX
+// header) and never realloc'd, so each entry's address is stable.
+// parse.rb assigns each function definition an index 0..NFUNCS-1; the
+// runtime indexes by that integer for both direct calls (`node_call`)
+// and address-of (`node_func_addr`).  No name lookup, no inline cache.
 
-void
-castro_register_func(CTX *c, const char *name, NODE *body, uint32_t params_cnt, uint32_t locals_cnt, bool needs_setjmp)
+static struct function_entry *
+castro_register_stub(CTX *c, const char *name, uint32_t params_cnt, uint32_t locals_cnt, bool needs_setjmp)
 {
-    // search by name (override)
-    for (unsigned int i = 0; i < c->func_set_cnt; i++) {
-        if (strcmp(c->func_set[i].name, name) == 0) {
-            c->func_set[i].body = body;
-            c->func_set[i].params_cnt = params_cnt;
-            c->func_set[i].locals_cnt = locals_cnt;
-            c->func_set[i].needs_setjmp = needs_setjmp;
-            return;
-        }
-    }
-    if (c->func_set_cnt == c->func_set_capa) {
-        c->func_set_capa = c->func_set_capa ? c->func_set_capa * 2 : 16;
-        c->func_set = realloc(c->func_set, c->func_set_capa * sizeof(struct function_entry));
+    if (c->func_set_cnt >= c->func_set_capa) {
+        fprintf(stderr, "castro: func_set capacity exceeded (capa=%u, cnt=%u)\n",
+                c->func_set_capa, c->func_set_cnt);
+        exit(1);
     }
     struct function_entry *fe = &c->func_set[c->func_set_cnt++];
     fe->name = strdup(name);
-    fe->body = body;
+    fe->body = NULL;
     fe->params_cnt = params_cnt;
     fe->locals_cnt = locals_cnt;
     fe->needs_setjmp = needs_setjmp;
-}
-
-struct function_entry *
-castro_find_func(CTX *c, const char *name)
-{
-    for (unsigned int i = 0; i < c->func_set_cnt; i++) {
-        if (strcmp(c->func_set[i].name, name) == 0) {
-            return &c->func_set[i];
-        }
-    }
-    return NULL;
+    return fe;
 }
 
 // =====================================================================
@@ -921,10 +877,10 @@ build_op(sx_lexer *l, tok_t op)
     }
 
     if (IS("func_addr")) {
-        // (func_addr NAME)
-        char *name = read_string_or_ident(l);
+        // (func_addr FUNC_IDX) — index into c->func_set[].
+        int64_t func_idx = read_int(l);
         sx_expect(l, TK_RPAREN);
-        return ALLOC_node_func_addr(name);
+        return ALLOC_node_func_addr((uint32_t)func_idx);
     }
     if (IS("call_indirect")) {
         // (call_indirect FN_EXPR nargs arg_index)
@@ -956,12 +912,12 @@ build_op(sx_lexer *l, tok_t op)
     }
 
     if (IS("call")) {
-        // (call NAME nargs arg_index) — callcache is @ref'd inline.
-        char *name = read_string_or_ident(l);
+        // (call FUNC_IDX nargs arg_index) — index into c->func_set[].
+        int64_t func_idx = read_int(l);
         int64_t nargs = read_int(l);
         int64_t arg_index = read_int(l);
         sx_expect(l, TK_RPAREN);
-        return ALLOC_node_call(name, (uint32_t)nargs, (uint32_t)arg_index);
+        return ALLOC_node_call((uint32_t)func_idx, (uint32_t)nargs, (uint32_t)arg_index);
     }
     if (IS("call_printf")) {
         // (call_printf nargs arg_index) — args[0] is format string.
@@ -1004,36 +960,52 @@ load_program(CTX *c, sx_lexer *l)
     if (!sx_ident_eq(&l->cur, "program")) sx_err(l, "expected `program`");
     sx_next(l);
 
-    // (program GLOBALS_SIZE INIT_EXPR (func ...) ...)
+    // (program GLOBALS_SIZE NFUNCS INIT_EXPR
+    //   (sig NAME P L T HR) ... NFUNCS times
+    //   BODY_EXPR ...        NFUNCS times in matching order)
+    //
+    // We pre-allocate `c->func_set` to NFUNCS up front and register
+    // every function as a stub before parsing any body — this lets a
+    // body refer to other functions (including itself) by index even
+    // when the called function is defined later in the SX stream.
     int64_t globals_size = read_int(l);
+    int64_t nfuncs = read_int(l);
     if (globals_size > 0) {
         c->globals = calloc((size_t)globals_size, sizeof(VALUE));
         c->globals_size = (size_t)globals_size;
     }
+    if (nfuncs > 0) {
+        c->func_set_capa = (unsigned)nfuncs;
+        c->func_set = calloc(c->func_set_capa, sizeof(struct function_entry));
+    }
+    c->func_set_cnt = 0;
+
     G_INIT_EXPR = build_expr(l);
     G_INIT_EXPR = OPTIMIZE(G_INIT_EXPR);
 
-    while (l->cur.kind == TK_LPAREN) {
-        // expect (func NAME PARAMS LOCALS RET HAS_RETURNS BODY)
-        sx_next(l);  // consume '('
-        if (!sx_ident_eq(&l->cur, "func")) sx_err(l, "expected `func`");
+    // Phase 1: signatures.  These come right after INIT_EXPR.
+    for (int64_t i = 0; i < nfuncs; i++) {
+        sx_expect(l, TK_LPAREN);
+        if (!sx_ident_eq(&l->cur, "sig")) sx_err(l, "expected `sig`");
         sx_next(l);
-
         char *name = read_string_or_ident(l);
         int64_t params = read_int(l);
         int64_t locals = read_int(l);
-        // ret type ident: i / d / v / p
         if (l->cur.kind != TK_IDENT) sx_err(l, "expected ret type ident");
         sx_next(l);
         int64_t has_returns = read_int(l);
-
-        NODE *body = build_expr(l);
         sx_expect(l, TK_RPAREN);
-
-        body = OPTIMIZE(body);
-        castro_register_func(c, name, body, (uint32_t)params, (uint32_t)locals, has_returns != 0);
+        castro_register_stub(c, name, (uint32_t)params, (uint32_t)locals, has_returns != 0);
         free(name);
     }
+
+    // Phase 2: bodies, one per registered function, in matching order.
+    for (int64_t i = 0; i < nfuncs; i++) {
+        NODE *body = build_expr(l);
+        body = OPTIMIZE(body);
+        c->func_set[i].body = body;
+    }
+
     sx_expect(l, TK_RPAREN);
 }
 
@@ -1192,7 +1164,15 @@ main(int argc, char *argv[])
         EVAL(c, G_INIT_EXPR);
     }
 
-    struct function_entry *fe = castro_find_func(c, "main");
+    // Find main by name (only used here for the program entry point).
+    // All other call sites resolve their target by index at parse time.
+    struct function_entry *fe = NULL;
+    for (unsigned int i = 0; i < c->func_set_cnt; i++) {
+        if (strcmp(c->func_set[i].name, "main") == 0) {
+            fe = &c->func_set[i];
+            break;
+        }
+    }
     if (!fe) {
         fprintf(stderr, "no main\n");
         return 1;

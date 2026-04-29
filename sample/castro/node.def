@@ -696,31 +696,29 @@ node_cast_di(CTX * restrict c, NODE * restrict n, NODE *e)
 
 // --- function call -------------------------------------------------
 //
+// Calls in C are resolved at parse time: parse.rb assigns each
+// function_definition a stable index into `c->func_set[]`, and the IR
+// just carries that index.  No name lookup, no inline cache.
+//
 // Hot path: if the callee has no remaining `return` (parse.rb lifted
-// all tail returns), we can dispatch the body directly with no setjmp
-// at all — node_call is a tiny inline wrapper around `(*dispatcher)(c, body)`.
+// all tail returns), we dispatch the body directly with no setjmp.
 // Cold path: castro_invoke_jmp wraps setjmp/longjmp.
 
-struct function_entry *castro_find_func(CTX *c, const char *name);
 VALUE castro_invoke_jmp(CTX *c, struct Node *body, node_dispatcher_func_t disp, uint32_t arg_index);
-void castro_call_cache_fill(CTX *c, struct callcache *cc, const char *name);
 
 NODE_DEF
-node_call(CTX * restrict c, NODE * restrict n, const char *name, uint32_t params_cnt, uint32_t arg_index, struct callcache *cc@ref)
+node_call(CTX * restrict c, NODE * restrict n, uint32_t func_idx, uint32_t arg_count, uint32_t arg_index)
 {
-    if (UNLIKELY(c->serial != cc->serial)) {
-        castro_call_cache_fill(c, cc, name);
+    (void)arg_count;
+    struct function_entry *fe = &c->func_set[func_idx];
+    NODE *body = fe->body;
+    if (UNLIKELY(fe->needs_setjmp)) {
+        return castro_invoke_jmp(c, body, body->head.dispatcher, arg_index);
     }
-    (void)params_cnt;
-    node_dispatcher_func_t disp = (node_dispatcher_func_t)cc->dispatcher;
-    if (LIKELY(!cc->needs_setjmp)) {
-        // Fast path: body has no early returns.  No setjmp dance.
-        c->fp += arg_index;
-        VALUE v = (*disp)(c, cc->body);
-        c->fp -= arg_index;
-        return v;
-    }
-    return castro_invoke_jmp(c, cc->body, disp, arg_index);
+    c->fp += arg_index;
+    VALUE v = (*body->head.dispatcher)(c, body);
+    c->fp -= arg_index;
+    return v;
 }
 
 // --- builtin: printf / putchar / puts -----------------------------
@@ -757,20 +755,14 @@ node_puts(CTX * restrict c, NODE * restrict n, NODE *e)
 
 // --- function pointer ----------------------------------------------
 //
-// Taking a function's address looks the function up by name (with a
-// once-per-callsite cache) and returns its `function_entry *` in the
-// .p slot of VALUE.  An indirect call reads the entry, sets up frame
-// pointer, and dispatches.
-
-VALUE castro_func_addr_resolve(CTX *c, struct func_addr_cache *cc, const char *name);
+// Taking a function's address: parse.rb gives us the index, runtime
+// returns the matching `function_entry *` in the .p slot of VALUE.
+// An indirect call reads the entry, sets up frame pointer, and dispatches.
 
 NODE_DEF
-node_func_addr(CTX * restrict c, NODE * restrict n, const char *name, struct func_addr_cache *cc@ref)
+node_func_addr(CTX * restrict c, NODE * restrict n, uint32_t func_idx)
 {
-    if (UNLIKELY(c->serial != cc->serial)) {
-        return castro_func_addr_resolve(c, cc, name);
-    }
-    return (VALUE){.p = cc->fe};
+    return (VALUE){.p = &c->func_set[func_idx]};
 }
 
 VALUE castro_indirect_invoke(CTX *c, struct function_entry *fe, uint32_t arg_index);
@@ -812,14 +804,7 @@ node_goto_target(CTX * restrict c, NODE * restrict n)
     return (VALUE){.i = c->goto_target};
 }
 
-// --- function definition (statement-level) -------------------------
-
-void castro_register_func(CTX *c, const char *name, struct Node *body, uint32_t params_cnt, uint32_t locals_cnt, bool needs_setjmp);
-
-NODE_DEF @noinline
-node_def(CTX * restrict c, NODE * restrict n, const char *name, NODE *body, uint32_t params_cnt, uint32_t locals_cnt, uint32_t needs_setjmp)
-{
-    castro_register_func(c, name, body, params_cnt, locals_cnt, needs_setjmp != 0);
-    c->serial++;
-    return (VALUE){.i = 0};
-}
+// (No statement-level node_def: function definitions are registered
+// by load_program in main.c at SX-load time, not as evaluatable AST
+// nodes.  The previous `node_def` was a runtime-defining hook left
+// over from the dynamic-language samples.)

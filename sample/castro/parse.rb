@@ -156,7 +156,10 @@ def set_global_next(n) ; Object.send(:remove_const, :GLOBAL_NEXT); Object.const_
 # =====================================================================
 # Function table (signatures only, gathered up-front)
 # =====================================================================
-GLOBAL_FUNCS = {}   # name -> [ret_ty (CType), [param_tys (CType)]]
+GLOBAL_FUNCS = {}   # name -> [idx_or_nil, ret_ty (CType), [param_tys (CType)]]
+                    # idx is the function's position in the order of
+                    # function_definitions encountered; nil for extern
+                    # declarations that have no body in this TU.
 STRUCTS = {}        # tag -> { fields: [[name, CType]], offsets: { name => slot_idx }, size_slots: N }
 TYPEDEFS = {}       # name -> CType
 
@@ -789,9 +792,9 @@ def compile_expr(node, fn, src)
       [lvar_load(idx, ty, :global), ty.decay]
     elsif ENUMS.key?(name)
       [[:lit_i, ENUMS[name]], CType::INT]
-    elsif GLOBAL_FUNCS.key?(name)
+    elsif GLOBAL_FUNCS.key?(name) && GLOBAL_FUNCS[name][0]
       # Function-name in expression context decays to a function pointer.
-      [[:func_addr, name], CType.ptr(CType::INT)]
+      [[:func_addr, GLOBAL_FUNCS[name][0]], CType.ptr(CType::INT)]
     else
       raise CompileError, "undefined identifier: #{name}"
     end
@@ -997,8 +1000,8 @@ def compile_address_of(arg, fn, src)
     elsif GLOBALS.key?(name)
       idx, ty = GLOBALS[name]
       return [[:addr_global, idx], CType.ptr(ty)]
-    elsif GLOBAL_FUNCS.key?(name)
-      return [[:func_addr, name], CType.ptr(CType::INT)]
+    elsif GLOBAL_FUNCS.key?(name) && GLOBAL_FUNCS[name][0]
+      return [[:func_addr, GLOBAL_FUNCS[name][0]], CType.ptr(CType::INT)]
     else
       raise CompileError, "address of undefined: #{name}"
     end
@@ -1379,9 +1382,12 @@ def compile_call(node, fn, src)
     bi = builtin_call(fname, args_compiled, fn)
     return bi if bi
 
-    # User-defined function (must be in GLOBAL_FUNCS).
+    # User-defined function (must be in GLOBAL_FUNCS with a real idx).
     if GLOBAL_FUNCS.key?(fname)
-      ret_ty, param_tys = GLOBAL_FUNCS[fname]
+      func_idx, ret_ty, param_tys = GLOBAL_FUNCS[fname]
+      if func_idx.nil?
+        raise CompileError, "call to extern-only function (no definition in TU): #{fname}"
+      end
       raise CompileError, "arity mismatch: #{fname}" if args.length != param_tys.length
       arg_index = fn.next_local
       fn.next_local += args.length
@@ -1391,7 +1397,7 @@ def compile_call(node, fn, src)
         seq_ops << [:lset, arg_index + i, cast(asx, ats, param_tys[i])]
       end
       fn.next_local -= args.length
-      chain = [:call, fname, args.length, arg_index]
+      chain = [:call, func_idx, args.length, arg_index]
       seq_ops.reverse_each { |s| chain = [:seq, s, chain] }
       return [chain, ret_ty]
     end
@@ -1818,6 +1824,7 @@ end
 # top-level: signatures, globals, functions
 # =====================================================================
 def gather_signatures(root, src)
+  next_idx = 0
   root.each_named do |fdef|
     case fdef.type.to_s
     when 'function_definition'
@@ -1838,13 +1845,17 @@ def gather_signatures(root, src)
           param_tys << pty.decay
         end
       end
-      GLOBAL_FUNCS[name] = [ret_ty, param_tys]
+      # Function definitions get a stable index; the runtime calls them
+      # via `c->func_set[idx]` directly with no name lookup.
+      GLOBAL_FUNCS[name] = [next_idx, ret_ty, param_tys]
+      next_idx += 1
     when 'declaration'
-      # extern function prototypes
+      # extern function prototypes — signature only, no idx assigned.
+      # Calling such a function with no real definition in this TU is
+      # rejected by compile_call.
       base = parse_type_spec(fdef.child_by_field_name('type'), src)
       fdef.each_named do |c|
         next unless %w[function_declarator pointer_declarator].include?(c.type.to_s)
-        # Walk through pointer_declarators to find function_declarator
         cur = c
         ret = base
         while cur && cur.type.to_s == 'pointer_declarator'
@@ -1865,7 +1876,11 @@ def gather_signatures(root, src)
           pty ||= pbase
           param_tys << pty
         end
-        GLOBAL_FUNCS[name] = [ret, param_tys]
+        # Don't clobber an entry already given an idx by a real
+        # function_definition; only register if first-seen as extern.
+        unless GLOBAL_FUNCS.key?(name) && GLOBAL_FUNCS[name][0]
+          GLOBAL_FUNCS[name] = [nil, ret, param_tys]
+        end
       end
     end
   end
@@ -2131,8 +2146,18 @@ def main
     end
   end
 
+  # Output layout (signatures first, then bodies in matching order):
+  #
+  #   (program GSIZE NFUNCS
+  #     INIT_EXPR
+  #     (sig NAME P L T HR) ... (NFUNCS times)
+  #     BODY_EXPR ...        (NFUNCS times in same order))
+  #
+  # The C side reads sigs first to register stub function_entry's, then
+  # parses bodies — that way calls inside a body can resolve any other
+  # function by index even when it's defined later in the SX stream.
   out = +''
-  out << "(program #{GLOBAL_NEXT}\n  "
+  out << "(program #{GLOBAL_NEXT} #{funcs.length}\n  "
   init_expr = if GLOBAL_INITS.empty?
     [:nop]
   else
@@ -2141,9 +2166,12 @@ def main
   emit_sx(init_expr, out)
   out << "\n"
   funcs.each do |name, fn, body_sx, ret_ty, has_returns|
-    out << "  (func #{name} #{fn.params.length} #{fn.next_local} #{ret_ty.slot_kind} #{has_returns}\n    "
+    out << "  (sig #{name} #{fn.params.length} #{fn.next_local} #{ret_ty.slot_kind} #{has_returns})\n"
+  end
+  funcs.each do |name, fn, body_sx, ret_ty, has_returns|
+    out << "  "
     emit_sx(body_sx, out)
-    out << ")\n"
+    out << "\n"
   end
   out << ")\n"
   $stdout.write(out)

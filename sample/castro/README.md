@@ -107,16 +107,20 @@ mkdir -p testsuite tmp && cd tmp \
 
 | bench              | interp | AOT first | AOT cached | gcc-O0 | gcc-O3 |
 |--------------------|-------:|----------:|-----------:|-------:|-------:|
-| fib_big (fib 35)   |    531 |       138 |    **112** |     51 |     17 |
-| fib_d              |     18 |        29 |      **6** |      3 |      1 |
-| tak (18,12,6)      |      4 |        23 |      **2** |      0 |      0 |
-| ackermann (3,8)    |    114 |        45 |     **25** |      9 |      1 |
-| loop_sum           |    289 |        28 |    **5** 🟢| 🔴 10  |      0 |
-| mandelbrot_count   |     30 |        27 |      **4** |      3 |      1 |
+| fib_big (fib 35)   |    492 |        83 |     **64** |     46 |     16 |
+| fib_d              |     17 |        23 |      **4** |      3 |      1 |
+| tak (18,12,6)      |      3 |        21 |      **2** |      0 |      0 |
+| ackermann (3,8)    |    120 |        31 |     **11** |      8 |      1 |
+| loop_sum           |    252 |        23 |    **4** 🟢| 🔴  9  |      0 |
+| mandelbrot_count   |     26 |        22 |      **3** |      2 |      1 |
 
-- AOT cached が gcc -O0 を上回るのは loop_sum (5ms vs 10ms、約 2 倍速)
-- 残り 5 ベンチも gcc -O0 の 1.3〜2.5× 圏内
-- 主な高速化: tail-return リフト / `@ref` callcache / dispatcher snapshot / `-rdynamic` ビルド (これがないと SD が黙って interp に fallback する)
+- AOT cached が gcc -O0 を上回るのは loop_sum (4ms vs 9ms、2.25× 速)
+- 残り 5 ベンチも gcc -O0 の 1.3〜1.5× 圏内 (fib_big 1.39×、ackermann 1.38×)
+- 主な高速化:
+  - **コンパイル時に呼び先決定**: `(call NAME ...)` を `(call FUNC_IDX ...)` に変更し、parse 時に解決した index で `c->func_set[idx]` を直接引く。`@ref` callcache + serial 検証 + dispatcher snapshot を全部削除
+  - tail-return リフト (parse.rb)
+  - break/continue 振り分け (parse.rb)
+  - `-rdynamic` ビルド (これがないと SD が黙って interp に fallback する)
 
 ## テスト結果
 

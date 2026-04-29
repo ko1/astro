@@ -116,15 +116,18 @@ end
 ### 関数呼び出し
 | node | 引数 | 説明 |
 |---|---|---|
-| `node_call` | `name, params_cnt, arg_index, struct callcache *cc@ref` | 直接呼び出し |
+| `node_call` | `func_idx, arg_count, arg_index` | 直接呼び出し (idx は parse 時解決) |
 | `node_call_indirect` | `NODE *fn_expr, arg_count, arg_index` | 関数ポインタ経由 |
-| `node_func_addr` | `name, struct func_addr_cache *cc@ref` | 関数アドレス取得 |
-| `node_def` `@noinline` | `name, body, params_cnt, locals_cnt, needs_setjmp` | 関数定義 |
+| `node_func_addr` | `func_idx` | `&c->func_set[idx]` を返す |
 | `node_printf` `@noinline` / `node_putchar` / `node_puts` | | 標準出力 |
 | `node_call_malloc / calloc / free` | | ヒープ |
 | `node_call_strlen / strcmp / strncmp / strcpy / strncpy / strcat` | | 文字列 (slot 配列) |
 | `node_call_memset / memcpy` | | メモリ |
 | `node_call_atoi / abs / exit` | | その他 libc |
+
+(以前は `node_def` を使って実行時に関数を登録 / `struct callcache` /
+`struct func_addr_cache` の inline cache でルックアップを償却していたが、
+C は parse 時に呼び先がわかるので全部削除した。)
 
 ### goto
 | node | 説明 |
@@ -199,32 +202,46 @@ while (1) {
 `node_goto label` は `goto_target = label; longjmp` で while ループの先頭に
 戻る。`break` で `node_while_brk_only` を脱出して関数を抜ける。
 
-## 関数呼び出しキャッシュ
+## 関数呼び出し: parse 時に index 解決
 
-`struct callcache` は呼び出しサイト毎に持つインラインキャッシュ。
-`@ref` でノード構造体に inline 配置されているので、ポインタ追跡 1 回少ない。
+C は呼び先が静的にわかる言語なので、IR レベルで **関数 index を直接持つ**:
 
-```c
-struct callcache {
-    state_serial_t serial;             // c->serial 一致で hit
-    struct Node   *body;               // 関数本体 NODE
-    void (*dispatcher)(void);          // body->head.dispatcher のスナップショット
-    bool needs_setjmp;                 // 呼び先が return-lift できなかった?
-};
+```
+(call FUNC_IDX nargs arg_index)
+(func_addr FUNC_IDX)
 ```
 
-ホットパス (cache hit、no-setjmp):
+parse.rb の `gather_signatures` が各 `function_definition` に
+0..NFUNCS-1 の index を割り当て、runtime は
 
 ```c
-if (c->serial == cc->serial && !cc->needs_setjmp) {
-    c->fp += arg_index;
-    v = (*disp)(c, cc->body);   // ← 直接 (* dispatcher)、setjmp なし
-    c->fp -= arg_index;
-}
+struct function_entry *fe = &c->func_set[func_idx];
+NODE *body = fe->body;
+if (UNLIKELY(fe->needs_setjmp)) return castro_invoke_jmp(c, body, body->head.dispatcher, arg_index);
+c->fp += arg_index;
+VALUE v = (*body->head.dispatcher)(c, body);
+c->fp -= arg_index;
 ```
 
-cache miss は `castro_call_cache_fill` (noinline) で関数テーブルを線形探索。
-関数定義の度に `c->serial++` で全キャッシュを invalidate。
+で呼ぶ。strcmp も線形探索も inline cache の hit/miss も登場しない。
+
+`c->func_set[]` は SX header (`(program GSIZE NFUNCS ...)`) で読んだ
+NFUNCS の固定容量で 1 度だけ確保し、realloc しない。だから
+`&c->func_set[idx]` は load_program 中ずっと安定。
+
+### 2-pass load
+
+呼び先が定義より前に呼び出される (前方参照、再帰など) のを許すため、
+load_program は SX を 2 段階で読む:
+
+1. **Phase 1 — signatures**: `(sig NAME P L T HR)` を NFUNCS 個読み、
+   `castro_register_stub` が body=NULL の状態で `func_set[i]` を埋める。
+2. **Phase 2 — bodies**: bodies を順番に読み (Phase 1 と同じ順序)、
+   `func_set[i].body` をパース結果で埋める。
+
+Phase 2 中に `(call IDX ...)` が出てきても、Phase 1 で stub が登録済み
+なので body が NULL のうちは ALLOC 時には参照されない (ALLOC は idx を
+そのまま保存するだけ)。実行は Phase 2 完了後に始まるので body は揃っている。
 
 ## ASTro Code Store 連携
 

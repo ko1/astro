@@ -41,23 +41,14 @@ struct function_entry {
     bool needs_setjmp;            // body still contains `return` after lifting
 };
 
-struct callcache {
-    state_serial_t serial;
-    struct Node *body;
-    // body->head.dispatcher snapshot; typed as a generic function pointer
-    // here so this header doesn't need the dispatcher typedef (which lives
-    // in node.h, included after).  callers cast as needed.
-    void (*dispatcher)(void);
-    bool needs_setjmp;
-};
-
-// Indirect call target — the function_entry pointer plus the dispatcher
-// snapshot, cached at the &func site so node_call_indirect doesn't have
-// to chase pointers when the value is reused.
-struct func_addr_cache {
-    state_serial_t serial;
-    struct function_entry *fe;
-};
+// Note: the previous design here had a `struct callcache` (per-call-site
+// inline cache holding `serial / body / dispatcher / needs_setjmp`) and
+// a matching `struct func_addr_cache`.  Both were inherited from the
+// dynamic-dispatch sample languages (abruby etc.) where lookups happen
+// at run time.  In castro the call target is statically known at parse
+// time, so the IR now carries a stable `function_entry *` index instead
+// (parse.rb assigns each function definition a slot in `c->func_set[]`)
+// and these caches are gone.
 
 typedef struct CTX_struct {
     VALUE *env;
