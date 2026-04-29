@@ -160,6 +160,11 @@ GLOBAL_FUNCS = {}   # name -> [idx_or_nil, ret_ty (CType), [param_tys (CType)]]
                     # idx is the function's position in the order of
                     # function_definitions encountered; nil for extern
                     # declarations that have no body in this TU.
+
+# Filled in by compile_function: FUNC_NEEDS_SETJMP[idx] = true if the
+# function's body still has un-lifted `return` (so callers must use
+# the setjmp-variant call node).
+FUNC_NEEDS_SETJMP = []
 STRUCTS = {}        # tag -> { fields: [[name, CType]], offsets: { name => slot_idx }, size_slots: N }
 TYPEDEFS = {}       # name -> CType
 
@@ -760,7 +765,15 @@ def compile_expr(node, fn, src)
   case k
   when 'number_literal'
     t = text(node, src)
-    if t.include?('.') || t.downcase.include?('e') || t.match?(/[fF]$/)
+    is_hex = t.downcase.start_with?('0x')
+    # Hex literals can contain `f`/`F` as digits; only treat trailing
+    # `f` / `F` as a float suffix when it's *not* a hex literal.  And
+    # `e` is only an exponent when it's surrounded by digits (in hex
+    # `0xE` is just the digit 14).
+    is_float = !is_hex && (t.include?('.') ||
+                           t.downcase.include?('e') ||
+                           t.match?(/[fF]$/))
+    if is_float
       [[:lit_d, t.gsub(/[fFlL]$/, '').to_f], CType::DBL]
     else
       v = parse_int_literal(t)
@@ -1397,6 +1410,12 @@ def compile_call(node, fn, src)
         seq_ops << [:lset, arg_index + i, cast(asx, ats, param_tys[i])]
       end
       fn.next_local -= args.length
+      # Always emit a plain `:call` here; a post-pass after every
+      # function body is fully compiled rewrites the call into
+      # `:call_jmp` if the callee turned out to need a setjmp wrapper.
+      # This makes the choice work even for self-recursion / mutual
+      # recursion where the callee's `needs_setjmp` isn't yet known
+      # at the time we emit the caller's body.
       chain = [:call, func_idx, args.length, arg_index]
       seq_ops.reverse_each { |s| chain = [:seq, s, chain] }
       return [chain, ret_ty]
@@ -2085,6 +2104,10 @@ def compile_function(fdef, src)
   body_sx = lift_tail(body_sx)
   body_sx = lower_goto(body_sx, fn) if fn.uses_goto
   has_returns = has_return?(body_sx) ? 1 : 0
+  # Record whether this function needs setjmp wrapping at call sites
+  # — used by compile_call to pick `call` vs `call_jmp`.
+  func_idx = GLOBAL_FUNCS.key?(name) ? GLOBAL_FUNCS[name][0] : nil
+  FUNC_NEEDS_SETJMP[func_idx] = has_returns == 1 if func_idx
   [name, fn, body_sx, ret_ty, has_returns]
 end
 
@@ -2145,6 +2168,20 @@ def main
       exit 2
     end
   end
+
+  # Post-pass: now that every function's `has_returns` is known, swap
+  # any `:call` whose callee needs setjmp to `:call_jmp`.  Without this,
+  # self-recursion silently picked the no-jmp variant during the inner
+  # `compile_function` (FUNC_NEEDS_SETJMP[idx] hadn't been written yet).
+  patch_call_jmp = lambda do |node|
+    next unless node.is_a?(Array)
+    if node[0] == :call
+      callee = node[1]
+      node[0] = :call_jmp if FUNC_NEEDS_SETJMP[callee]
+    end
+    node.each { |c| patch_call_jmp.call(c) }
+  end
+  funcs.each { |_, _, body_sx, _, _| patch_call_jmp.call(body_sx) }
 
   # Output layout (signatures first, then bodies in matching order):
   #

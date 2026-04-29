@@ -4,7 +4,10 @@
 #include "context.h"
 
 typedef struct Node NODE;
-typedef VALUE (*node_dispatcher_func_t)(CTX *c, NODE *n);
+// 3-arg dispatcher: castro threads `VALUE *fp` (the active frame
+// pointer) through every node EVAL as a register-passed argument so
+// node_call doesn't need to round-trip through `c->fp` on each call.
+typedef VALUE (*node_dispatcher_func_t)(CTX *c, NODE *n, VALUE *fp);
 typedef uint64_t node_hash_t;
 
 void INIT(void);
@@ -48,11 +51,13 @@ struct NodeHead {
 #include "node_head.h"
 
 // Inline EVAL so specialized dispatchers in code_store don't pay PLT
-// indirection back into the host.
+// indirection back into the host.  Caller supplies the `fp` to use
+// for the evaluated tree (typically `c->env` for the program entry,
+// or the caller's local frame for nested evaluation).
 static inline VALUE
-EVAL(CTX *c, NODE *n)
+EVAL(CTX *c, NODE *n, VALUE *fp)
 {
-    return (*n->head.dispatcher)(c, n);
+    return (*n->head.dispatcher)(c, n, fp);
 }
 
 #endif

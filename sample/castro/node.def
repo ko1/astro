@@ -7,27 +7,27 @@
 // --- literals -------------------------------------------------------
 
 NODE_DEF
-node_lit_i(CTX * restrict c, NODE * restrict n, int32_t v)
+node_lit_i(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, int32_t v)
 {
     return (VALUE){.i = v};
 }
 
 // 64-bit literal (for big constants).  astrogen has uint64_t support.
 NODE_DEF
-node_lit_i64(CTX * restrict c, NODE * restrict n, uint64_t v)
+node_lit_i64(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint64_t v)
 {
     return (VALUE){.i = (int64_t)v};
 }
 
 NODE_DEF
-node_lit_d(CTX * restrict c, NODE * restrict n, double v)
+node_lit_d(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, double v)
 {
     return (VALUE){.d = v};
 }
 
 // String literal — stored in the .p slot of the VALUE union.
 NODE_DEF
-node_lit_str(CTX * restrict c, NODE * restrict n, const char *v)
+node_lit_str(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, const char *v)
 {
     return (VALUE){.p = (void *)v};
 }
@@ -35,16 +35,16 @@ node_lit_str(CTX * restrict c, NODE * restrict n, const char *v)
 // --- locals ---------------------------------------------------------
 
 NODE_DEF
-node_lget(CTX * restrict c, NODE * restrict n, uint32_t idx)
+node_lget(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t idx)
 {
-    return c->fp[idx];
+    return fp[idx];
 }
 
 NODE_DEF
-node_lset(CTX * restrict c, NODE * restrict n, uint32_t idx, NODE *rhs)
+node_lset(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t idx, NODE *rhs)
 {
     VALUE v = EVAL_ARG(c, rhs);
-    c->fp[idx] = v;
+    fp[idx] = v;
     return v;
 }
 
@@ -55,13 +55,13 @@ node_lset(CTX * restrict c, NODE * restrict n, uint32_t idx, NODE *rhs)
 // slots starting at their head index.
 
 NODE_DEF
-node_gget(CTX * restrict c, NODE * restrict n, uint32_t idx)
+node_gget(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t idx)
 {
     return c->globals[idx];
 }
 
 NODE_DEF
-node_gset(CTX * restrict c, NODE * restrict n, uint32_t idx, NODE *rhs)
+node_gset(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t idx, NODE *rhs)
 {
     VALUE v = EVAL_ARG(c, rhs);
     c->globals[idx] = v;
@@ -71,13 +71,13 @@ node_gset(CTX * restrict c, NODE * restrict n, uint32_t idx, NODE *rhs)
 // --- address-of -----------------------------------------------------
 
 NODE_DEF
-node_addr_local(CTX * restrict c, NODE * restrict n, uint32_t idx)
+node_addr_local(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t idx)
 {
-    return (VALUE){.p = &c->fp[idx]};
+    return (VALUE){.p = &fp[idx]};
 }
 
 NODE_DEF
-node_addr_global(CTX * restrict c, NODE * restrict n, uint32_t idx)
+node_addr_global(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t idx)
 {
     return (VALUE){.p = &c->globals[idx]};
 }
@@ -90,28 +90,28 @@ node_addr_global(CTX * restrict c, NODE * restrict n, uint32_t idx)
 // parse.rb picks the variant matching the pointer's pointee type.
 
 NODE_DEF
-node_load_i(CTX * restrict c, NODE * restrict n, NODE *p)
+node_load_i(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *p)
 {
     VALUE *vp = (VALUE *)EVAL_ARG(c, p).p;
     return (VALUE){.i = vp->i};
 }
 
 NODE_DEF
-node_load_d(CTX * restrict c, NODE * restrict n, NODE *p)
+node_load_d(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *p)
 {
     VALUE *vp = (VALUE *)EVAL_ARG(c, p).p;
     return (VALUE){.d = vp->d};
 }
 
 NODE_DEF
-node_load_p(CTX * restrict c, NODE * restrict n, NODE *p)
+node_load_p(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *p)
 {
     VALUE *vp = (VALUE *)EVAL_ARG(c, p).p;
     return (VALUE){.p = vp->p};
 }
 
 NODE_DEF
-node_store_i(CTX * restrict c, NODE * restrict n, NODE *p, NODE *v)
+node_store_i(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *p, NODE *v)
 {
     void *pv = EVAL_ARG(c, p).p;
     int64_t vv = EVAL_ARG(c, v).i;
@@ -120,7 +120,7 @@ node_store_i(CTX * restrict c, NODE * restrict n, NODE *p, NODE *v)
 }
 
 NODE_DEF
-node_store_d(CTX * restrict c, NODE * restrict n, NODE *p, NODE *v)
+node_store_d(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *p, NODE *v)
 {
     void *pv = EVAL_ARG(c, p).p;
     double vv = EVAL_ARG(c, v).d;
@@ -129,7 +129,7 @@ node_store_d(CTX * restrict c, NODE * restrict n, NODE *p, NODE *v)
 }
 
 NODE_DEF
-node_store_p(CTX * restrict c, NODE * restrict n, NODE *p, NODE *v)
+node_store_p(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *p, NODE *v)
 {
     void *pv = EVAL_ARG(c, p).p;
     void *vv = EVAL_ARG(c, v).p;
@@ -140,7 +140,7 @@ node_store_p(CTX * restrict c, NODE * restrict n, NODE *p, NODE *v)
 // p + i  /  p - i  /  p1 - p2 — all in slot units (see header note).
 
 NODE_DEF
-node_ptr_add(CTX * restrict c, NODE * restrict n, NODE *p, NODE *off)
+node_ptr_add(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *p, NODE *off)
 {
     VALUE *pv = (VALUE *)EVAL_ARG(c, p).p;
     int64_t o = EVAL_ARG(c, off).i;
@@ -148,7 +148,7 @@ node_ptr_add(CTX * restrict c, NODE * restrict n, NODE *p, NODE *off)
 }
 
 NODE_DEF
-node_ptr_sub_i(CTX * restrict c, NODE * restrict n, NODE *p, NODE *off)
+node_ptr_sub_i(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *p, NODE *off)
 {
     VALUE *pv = (VALUE *)EVAL_ARG(c, p).p;
     int64_t o = EVAL_ARG(c, off).i;
@@ -156,7 +156,7 @@ node_ptr_sub_i(CTX * restrict c, NODE * restrict n, NODE *p, NODE *off)
 }
 
 NODE_DEF
-node_ptr_diff(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+node_ptr_diff(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *a, NODE *b)
 {
     VALUE *av = (VALUE *)EVAL_ARG(c, a).p;
     VALUE *bv = (VALUE *)EVAL_ARG(c, b).p;
@@ -170,7 +170,7 @@ node_ptr_diff(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
 extern VALUE *castro_intern_string(const char *s);
 
 NODE_DEF
-node_lit_str_array(CTX * restrict c, NODE * restrict n, const char *v)
+node_lit_str_array(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, const char *v)
 {
     return (VALUE){.p = castro_intern_string(v)};
 }
@@ -178,7 +178,7 @@ node_lit_str_array(CTX * restrict c, NODE * restrict n, const char *v)
 // --- common libc-ish builtins (operate on VALUE-slot buffers) -------
 
 NODE_DEF
-node_call_malloc(CTX * restrict c, NODE * restrict n, NODE *bytes)
+node_call_malloc(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *bytes)
 {
     int64_t b = EVAL_ARG(c, bytes).i;
     if (b <= 0) return (VALUE){.p = NULL};
@@ -190,7 +190,7 @@ node_call_malloc(CTX * restrict c, NODE * restrict n, NODE *bytes)
 }
 
 NODE_DEF
-node_call_calloc(CTX * restrict c, NODE * restrict n, NODE *count, NODE *size)
+node_call_calloc(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *count, NODE *size)
 {
     int64_t k = EVAL_ARG(c, count).i;
     int64_t b = EVAL_ARG(c, size).i;
@@ -202,7 +202,7 @@ node_call_calloc(CTX * restrict c, NODE * restrict n, NODE *count, NODE *size)
 }
 
 NODE_DEF
-node_call_free(CTX * restrict c, NODE * restrict n, NODE *p)
+node_call_free(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *p)
 {
     free(EVAL_ARG(c, p).p);
     return (VALUE){.i = 0};
@@ -220,20 +220,20 @@ extern int64_t castro_atoi(const VALUE *s);
 extern void castro_exit(int code);
 
 NODE_DEF
-node_call_strlen(CTX * restrict c, NODE * restrict n, NODE *s)
+node_call_strlen(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *s)
 {
     return (VALUE){.i = castro_strlen((const VALUE *)EVAL_ARG(c, s).p)};
 }
 
 NODE_DEF
-node_call_strcmp(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+node_call_strcmp(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *a, NODE *b)
 {
     return (VALUE){.i = castro_strcmp((const VALUE *)EVAL_ARG(c, a).p,
                                        (const VALUE *)EVAL_ARG(c, b).p)};
 }
 
 NODE_DEF
-node_call_strncmp(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, NODE *k)
+node_call_strncmp(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *a, NODE *b, NODE *k)
 {
     return (VALUE){.i = castro_strncmp((const VALUE *)EVAL_ARG(c, a).p,
                                         (const VALUE *)EVAL_ARG(c, b).p,
@@ -241,14 +241,14 @@ node_call_strncmp(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, NODE *k
 }
 
 NODE_DEF
-node_call_strcpy(CTX * restrict c, NODE * restrict n, NODE *dst, NODE *src)
+node_call_strcpy(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *dst, NODE *src)
 {
     return (VALUE){.p = castro_strcpy((VALUE *)EVAL_ARG(c, dst).p,
                                        (const VALUE *)EVAL_ARG(c, src).p)};
 }
 
 NODE_DEF
-node_call_strncpy(CTX * restrict c, NODE * restrict n, NODE *dst, NODE *src, NODE *k)
+node_call_strncpy(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *dst, NODE *src, NODE *k)
 {
     return (VALUE){.p = castro_strncpy((VALUE *)EVAL_ARG(c, dst).p,
                                         (const VALUE *)EVAL_ARG(c, src).p,
@@ -256,21 +256,21 @@ node_call_strncpy(CTX * restrict c, NODE * restrict n, NODE *dst, NODE *src, NOD
 }
 
 NODE_DEF
-node_call_strcat(CTX * restrict c, NODE * restrict n, NODE *dst, NODE *src)
+node_call_strcat(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *dst, NODE *src)
 {
     return (VALUE){.p = castro_strcat((VALUE *)EVAL_ARG(c, dst).p,
                                        (const VALUE *)EVAL_ARG(c, src).p)};
 }
 
 NODE_DEF
-node_call_memset(CTX * restrict c, NODE * restrict n, NODE *dst, NODE *v, NODE *k)
+node_call_memset(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *dst, NODE *v, NODE *k)
 {
     return (VALUE){.p = castro_memset((VALUE *)EVAL_ARG(c, dst).p,
                                        EVAL_ARG(c, v).i, EVAL_ARG(c, k).i)};
 }
 
 NODE_DEF
-node_call_memcpy(CTX * restrict c, NODE * restrict n, NODE *dst, NODE *src, NODE *k)
+node_call_memcpy(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *dst, NODE *src, NODE *k)
 {
     return (VALUE){.p = castro_memcpy((VALUE *)EVAL_ARG(c, dst).p,
                                        (const VALUE *)EVAL_ARG(c, src).p,
@@ -278,20 +278,20 @@ node_call_memcpy(CTX * restrict c, NODE * restrict n, NODE *dst, NODE *src, NODE
 }
 
 NODE_DEF
-node_call_atoi(CTX * restrict c, NODE * restrict n, NODE *s)
+node_call_atoi(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *s)
 {
     return (VALUE){.i = castro_atoi((const VALUE *)EVAL_ARG(c, s).p)};
 }
 
 NODE_DEF @noinline
-node_call_exit(CTX * restrict c, NODE * restrict n, NODE *code)
+node_call_exit(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *code)
 {
     castro_exit((int)EVAL_ARG(c, code).i);
     __builtin_unreachable();
 }
 
 NODE_DEF
-node_call_abs(CTX * restrict c, NODE * restrict n, NODE *x)
+node_call_abs(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *x)
 {
     int64_t v = EVAL_ARG(c, x).i;
     return (VALUE){.i = v < 0 ? -v : v};
@@ -300,20 +300,20 @@ node_call_abs(CTX * restrict c, NODE * restrict n, NODE *x)
 // --- sequencing -----------------------------------------------------
 
 NODE_DEF
-node_seq(CTX * restrict c, NODE * restrict n, NODE *head, NODE *tail)
+node_seq(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *head, NODE *tail)
 {
     EVAL_ARG(c, head);
     return EVAL_ARG(c, tail);
 }
 
 NODE_DEF
-node_nop(CTX * restrict c, NODE * restrict n)
+node_nop(CTX * restrict c, NODE * restrict n, VALUE * restrict fp)
 {
     return (VALUE){.i = 0};
 }
 
 NODE_DEF
-node_drop(CTX * restrict c, NODE * restrict n, NODE *e)
+node_drop(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *e)
 {
     EVAL_ARG(c, e);
     return (VALUE){.i = 0};
@@ -322,7 +322,7 @@ node_drop(CTX * restrict c, NODE * restrict n, NODE *e)
 // --- control flow ---------------------------------------------------
 
 NODE_DEF
-node_if(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *then_node, NODE *else_node)
+node_if(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *cond, NODE *then_node, NODE *else_node)
 {
     if (EVAL_ARG(c, cond).i) {
         return EVAL_ARG(c, then_node);
@@ -333,7 +333,7 @@ node_if(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *then_node, NODE *
 }
 
 NODE_DEF
-node_while(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *body)
+node_while(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *cond, NODE *body)
 {
     while (EVAL_ARG(c, cond).i) {
         EVAL_ARG(c, body);
@@ -342,7 +342,7 @@ node_while(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *body)
 }
 
 NODE_DEF
-node_do_while(CTX * restrict c, NODE * restrict n, NODE *body, NODE *cond)
+node_do_while(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *body, NODE *cond)
 {
     do {
         EVAL_ARG(c, body);
@@ -351,7 +351,7 @@ node_do_while(CTX * restrict c, NODE * restrict n, NODE *body, NODE *cond)
 }
 
 NODE_DEF
-node_for(CTX * restrict c, NODE * restrict n, NODE *init, NODE *cond, NODE *step, NODE *body)
+node_for(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *init, NODE *cond, NODE *step, NODE *body)
 {
     EVAL_ARG(c, init);
     while (EVAL_ARG(c, cond).i) {
@@ -362,7 +362,7 @@ node_for(CTX * restrict c, NODE * restrict n, NODE *init, NODE *cond, NODE *step
 }
 
 NODE_DEF @noinline
-node_return(CTX * restrict c, NODE * restrict n, NODE *expr)
+node_return(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *expr)
 {
     c->return_value = EVAL_ARG(c, expr);
     longjmp(*c->return_buf, 1);
@@ -371,7 +371,7 @@ node_return(CTX * restrict c, NODE * restrict n, NODE *expr)
 }
 
 NODE_DEF @noinline
-node_return_void(CTX * restrict c, NODE * restrict n)
+node_return_void(CTX * restrict c, NODE * restrict n, VALUE * restrict fp)
 {
     c->return_value = (VALUE){.i = 0};
     longjmp(*c->return_buf, 1);
@@ -387,63 +387,63 @@ node_return_void(CTX * restrict c, NODE * restrict n)
 // continue in body) keep the fast pointer-call path.
 
 NODE_DEF @noinline
-node_break(CTX * restrict c, NODE * restrict n)
+node_break(CTX * restrict c, NODE * restrict n, VALUE * restrict fp)
 {
     longjmp(*c->break_buf, 1);
     __builtin_unreachable();
 }
 
 NODE_DEF @noinline
-node_continue(CTX * restrict c, NODE * restrict n)
+node_continue(CTX * restrict c, NODE * restrict n, VALUE * restrict fp)
 {
     longjmp(*c->continue_buf, 1);
     __builtin_unreachable();
 }
 
-VALUE castro_loop_while(CTX *c, NODE *cond, node_dispatcher_func_t cd,
+VALUE castro_loop_while(CTX *c, VALUE *fp, NODE *cond, node_dispatcher_func_t cd,
                         NODE *body, node_dispatcher_func_t bd, bool has_continue);
-VALUE castro_loop_do_while(CTX *c, NODE *body, node_dispatcher_func_t bd,
+VALUE castro_loop_do_while(CTX *c, VALUE *fp, NODE *body, node_dispatcher_func_t bd,
                            NODE *cond, node_dispatcher_func_t cd, bool has_continue);
-VALUE castro_loop_for(CTX *c, NODE *init, node_dispatcher_func_t id,
+VALUE castro_loop_for(CTX *c, VALUE *fp, NODE *init, node_dispatcher_func_t id,
                       NODE *cond, node_dispatcher_func_t cd,
                       NODE *step, node_dispatcher_func_t sd,
                       NODE *body, node_dispatcher_func_t bd, bool has_continue);
 
 NODE_DEF
-node_while_brk(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *body)
+node_while_brk(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *cond, NODE *body)
 {
-    return castro_loop_while(c, cond, cond_dispatcher, body, body_dispatcher, true);
+    return castro_loop_while(c, fp, cond, cond_dispatcher, body, body_dispatcher, true);
 }
 
 NODE_DEF
-node_while_brk_only(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *body)
+node_while_brk_only(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *cond, NODE *body)
 {
-    return castro_loop_while(c, cond, cond_dispatcher, body, body_dispatcher, false);
+    return castro_loop_while(c, fp, cond, cond_dispatcher, body, body_dispatcher, false);
 }
 
 NODE_DEF
-node_do_while_brk(CTX * restrict c, NODE * restrict n, NODE *body, NODE *cond)
+node_do_while_brk(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *body, NODE *cond)
 {
-    return castro_loop_do_while(c, body, body_dispatcher, cond, cond_dispatcher, true);
+    return castro_loop_do_while(c, fp, body, body_dispatcher, cond, cond_dispatcher, true);
 }
 
 NODE_DEF
-node_do_while_brk_only(CTX * restrict c, NODE * restrict n, NODE *body, NODE *cond)
+node_do_while_brk_only(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *body, NODE *cond)
 {
-    return castro_loop_do_while(c, body, body_dispatcher, cond, cond_dispatcher, false);
+    return castro_loop_do_while(c, fp, body, body_dispatcher, cond, cond_dispatcher, false);
 }
 
 NODE_DEF
-node_for_brk(CTX * restrict c, NODE * restrict n, NODE *init, NODE *cond, NODE *step, NODE *body)
+node_for_brk(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *init, NODE *cond, NODE *step, NODE *body)
 {
-    return castro_loop_for(c, init, init_dispatcher, cond, cond_dispatcher,
+    return castro_loop_for(c, fp, init, init_dispatcher, cond, cond_dispatcher,
                            step, step_dispatcher, body, body_dispatcher, true);
 }
 
 NODE_DEF
-node_for_brk_only(CTX * restrict c, NODE * restrict n, NODE *init, NODE *cond, NODE *step, NODE *body)
+node_for_brk_only(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *init, NODE *cond, NODE *step, NODE *body)
 {
-    return castro_loop_for(c, init, init_dispatcher, cond, cond_dispatcher,
+    return castro_loop_for(c, fp, init, init_dispatcher, cond, cond_dispatcher,
                            step, step_dispatcher, body, body_dispatcher, false);
 }
 
@@ -451,7 +451,7 @@ node_for_brk_only(CTX * restrict c, NODE * restrict n, NODE *init, NODE *cond, N
 // (Same as node_if but kept separate for readability of dumps.)
 
 NODE_DEF
-node_ternary(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *t, NODE *e)
+node_ternary(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *cond, NODE *t, NODE *e)
 {
     return (EVAL_ARG(c, cond).i) ? EVAL_ARG(c, t) : EVAL_ARG(c, e);
 }
@@ -459,21 +459,21 @@ node_ternary(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *t, NODE *e)
 // --- short-circuit logical ------------------------------------------
 
 NODE_DEF
-node_land(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_land(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *l, NODE *r)
 {
     if (!EVAL_ARG(c, l).i) return (VALUE){.i = 0};
     return (VALUE){.i = EVAL_ARG(c, r).i ? 1 : 0};
 }
 
 NODE_DEF
-node_lor(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_lor(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *l, NODE *r)
 {
     if (EVAL_ARG(c, l).i)  return (VALUE){.i = 1};
     return (VALUE){.i = EVAL_ARG(c, r).i ? 1 : 0};
 }
 
 NODE_DEF
-node_lnot(CTX * restrict c, NODE * restrict n, NODE *e)
+node_lnot(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *e)
 {
     return (VALUE){.i = !EVAL_ARG(c, e).i};
 }
@@ -481,7 +481,7 @@ node_lnot(CTX * restrict c, NODE * restrict n, NODE *e)
 // --- int arithmetic -------------------------------------------------
 
 NODE_DEF
-node_add_i(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_add_i(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *l, NODE *r)
 {
     int64_t lv = EVAL_ARG(c, l).i;
     int64_t rv = EVAL_ARG(c, r).i;
@@ -489,7 +489,7 @@ node_add_i(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
 }
 
 NODE_DEF
-node_sub_i(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_sub_i(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *l, NODE *r)
 {
     int64_t lv = EVAL_ARG(c, l).i;
     int64_t rv = EVAL_ARG(c, r).i;
@@ -497,7 +497,7 @@ node_sub_i(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
 }
 
 NODE_DEF
-node_mul_i(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_mul_i(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *l, NODE *r)
 {
     int64_t lv = EVAL_ARG(c, l).i;
     int64_t rv = EVAL_ARG(c, r).i;
@@ -505,7 +505,7 @@ node_mul_i(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
 }
 
 NODE_DEF
-node_div_i(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_div_i(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *l, NODE *r)
 {
     int64_t lv = EVAL_ARG(c, l).i;
     int64_t rv = EVAL_ARG(c, r).i;
@@ -513,7 +513,7 @@ node_div_i(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
 }
 
 NODE_DEF
-node_mod_i(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_mod_i(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *l, NODE *r)
 {
     int64_t lv = EVAL_ARG(c, l).i;
     int64_t rv = EVAL_ARG(c, r).i;
@@ -521,7 +521,7 @@ node_mod_i(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
 }
 
 NODE_DEF
-node_neg_i(CTX * restrict c, NODE * restrict n, NODE *e)
+node_neg_i(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *e)
 {
     return (VALUE){.i = -EVAL_ARG(c, e).i};
 }
@@ -529,37 +529,37 @@ node_neg_i(CTX * restrict c, NODE * restrict n, NODE *e)
 // --- int bitwise ----------------------------------------------------
 
 NODE_DEF
-node_band(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_band(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *l, NODE *r)
 {
     return (VALUE){.i = EVAL_ARG(c, l).i & EVAL_ARG(c, r).i};
 }
 
 NODE_DEF
-node_bor(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_bor(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *l, NODE *r)
 {
     return (VALUE){.i = EVAL_ARG(c, l).i | EVAL_ARG(c, r).i};
 }
 
 NODE_DEF
-node_bxor(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_bxor(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *l, NODE *r)
 {
     return (VALUE){.i = EVAL_ARG(c, l).i ^ EVAL_ARG(c, r).i};
 }
 
 NODE_DEF
-node_bnot(CTX * restrict c, NODE * restrict n, NODE *e)
+node_bnot(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *e)
 {
     return (VALUE){.i = ~EVAL_ARG(c, e).i};
 }
 
 NODE_DEF
-node_shl(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_shl(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *l, NODE *r)
 {
     return (VALUE){.i = EVAL_ARG(c, l).i << EVAL_ARG(c, r).i};
 }
 
 NODE_DEF
-node_shr(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_shr(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *l, NODE *r)
 {
     return (VALUE){.i = EVAL_ARG(c, l).i >> EVAL_ARG(c, r).i};
 }
@@ -567,37 +567,37 @@ node_shr(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
 // --- int comparison (returns int) ----------------------------------
 
 NODE_DEF
-node_lt_i(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_lt_i(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *l, NODE *r)
 {
     return (VALUE){.i = EVAL_ARG(c, l).i < EVAL_ARG(c, r).i};
 }
 
 NODE_DEF
-node_le_i(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_le_i(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *l, NODE *r)
 {
     return (VALUE){.i = EVAL_ARG(c, l).i <= EVAL_ARG(c, r).i};
 }
 
 NODE_DEF
-node_gt_i(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_gt_i(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *l, NODE *r)
 {
     return (VALUE){.i = EVAL_ARG(c, l).i > EVAL_ARG(c, r).i};
 }
 
 NODE_DEF
-node_ge_i(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_ge_i(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *l, NODE *r)
 {
     return (VALUE){.i = EVAL_ARG(c, l).i >= EVAL_ARG(c, r).i};
 }
 
 NODE_DEF
-node_eq_i(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_eq_i(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *l, NODE *r)
 {
     return (VALUE){.i = EVAL_ARG(c, l).i == EVAL_ARG(c, r).i};
 }
 
 NODE_DEF
-node_neq_i(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_neq_i(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *l, NODE *r)
 {
     return (VALUE){.i = EVAL_ARG(c, l).i != EVAL_ARG(c, r).i};
 }
@@ -605,7 +605,7 @@ node_neq_i(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
 // --- double arithmetic ---------------------------------------------
 
 NODE_DEF
-node_add_d(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_add_d(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *l, NODE *r)
 {
     double lv = EVAL_ARG(c, l).d;
     double rv = EVAL_ARG(c, r).d;
@@ -613,7 +613,7 @@ node_add_d(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
 }
 
 NODE_DEF
-node_sub_d(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_sub_d(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *l, NODE *r)
 {
     double lv = EVAL_ARG(c, l).d;
     double rv = EVAL_ARG(c, r).d;
@@ -621,7 +621,7 @@ node_sub_d(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
 }
 
 NODE_DEF
-node_mul_d(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_mul_d(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *l, NODE *r)
 {
     double lv = EVAL_ARG(c, l).d;
     double rv = EVAL_ARG(c, r).d;
@@ -629,7 +629,7 @@ node_mul_d(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
 }
 
 NODE_DEF
-node_div_d(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_div_d(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *l, NODE *r)
 {
     double lv = EVAL_ARG(c, l).d;
     double rv = EVAL_ARG(c, r).d;
@@ -637,7 +637,7 @@ node_div_d(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
 }
 
 NODE_DEF
-node_neg_d(CTX * restrict c, NODE * restrict n, NODE *e)
+node_neg_d(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *e)
 {
     return (VALUE){.d = -EVAL_ARG(c, e).d};
 }
@@ -645,37 +645,37 @@ node_neg_d(CTX * restrict c, NODE * restrict n, NODE *e)
 // --- double comparison (returns int) -------------------------------
 
 NODE_DEF
-node_lt_d(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_lt_d(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *l, NODE *r)
 {
     return (VALUE){.i = EVAL_ARG(c, l).d < EVAL_ARG(c, r).d};
 }
 
 NODE_DEF
-node_le_d(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_le_d(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *l, NODE *r)
 {
     return (VALUE){.i = EVAL_ARG(c, l).d <= EVAL_ARG(c, r).d};
 }
 
 NODE_DEF
-node_gt_d(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_gt_d(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *l, NODE *r)
 {
     return (VALUE){.i = EVAL_ARG(c, l).d > EVAL_ARG(c, r).d};
 }
 
 NODE_DEF
-node_ge_d(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_ge_d(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *l, NODE *r)
 {
     return (VALUE){.i = EVAL_ARG(c, l).d >= EVAL_ARG(c, r).d};
 }
 
 NODE_DEF
-node_eq_d(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_eq_d(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *l, NODE *r)
 {
     return (VALUE){.i = EVAL_ARG(c, l).d == EVAL_ARG(c, r).d};
 }
 
 NODE_DEF
-node_neq_d(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_neq_d(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *l, NODE *r)
 {
     return (VALUE){.i = EVAL_ARG(c, l).d != EVAL_ARG(c, r).d};
 }
@@ -683,13 +683,13 @@ node_neq_d(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
 // --- casts ---------------------------------------------------------
 
 NODE_DEF
-node_cast_id(CTX * restrict c, NODE * restrict n, NODE *e)
+node_cast_id(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *e)
 {
     return (VALUE){.d = (double)EVAL_ARG(c, e).i};
 }
 
 NODE_DEF
-node_cast_di(CTX * restrict c, NODE * restrict n, NODE *e)
+node_cast_di(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *e)
 {
     return (VALUE){.i = (int64_t)EVAL_ARG(c, e).d};
 }
@@ -704,21 +704,32 @@ node_cast_di(CTX * restrict c, NODE * restrict n, NODE *e)
 // all tail returns), we dispatch the body directly with no setjmp.
 // Cold path: castro_invoke_jmp wraps setjmp/longjmp.
 
-VALUE castro_invoke_jmp(CTX *c, struct Node *body, node_dispatcher_func_t disp, uint32_t arg_index);
+VALUE castro_invoke_jmp(CTX *c, struct Node *body, node_dispatcher_func_t disp, VALUE *callee_fp);
+
+// Two call variants picked by parse.rb at parse time:
+//   - `node_call`     — callee has no early `return` (parse-time
+//                       lifted), so we never need a setjmp boundary.
+//                       The hot path is just an indirect call to the
+//                       callee SD with the callee frame in a register.
+//   - `node_call_jmp` — callee has at least one un-lifted `return`,
+//                       so we wrap the dispatch in setjmp/longjmp.
 
 NODE_DEF
-node_call(CTX * restrict c, NODE * restrict n, uint32_t func_idx, uint32_t arg_count, uint32_t arg_index)
+node_call(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t func_idx, uint32_t arg_count, uint32_t arg_index)
 {
     (void)arg_count;
     struct function_entry *fe = &c->func_set[func_idx];
     NODE *body = fe->body;
-    if (UNLIKELY(fe->needs_setjmp)) {
-        return castro_invoke_jmp(c, body, body->head.dispatcher, arg_index);
-    }
-    c->fp += arg_index;
-    VALUE v = (*body->head.dispatcher)(c, body);
-    c->fp -= arg_index;
-    return v;
+    // Compute the callee frame in a register; no CTX writes.
+    return (*body->head.dispatcher)(c, body, fp + arg_index);
+}
+
+NODE_DEF
+node_call_jmp(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t func_idx, uint32_t arg_count, uint32_t arg_index)
+{
+    (void)arg_count;
+    struct function_entry *fe = &c->func_set[func_idx];
+    return castro_invoke_jmp(c, fe->body, fe->body->head.dispatcher, fp + arg_index);
 }
 
 // --- builtin: printf / putchar / puts -----------------------------
@@ -731,15 +742,15 @@ node_call(CTX * restrict c, NODE * restrict n, uint32_t func_idx, uint32_t arg_c
 extern int castro_run_printf(const char *fmt, VALUE *args, uint32_t arg_count);
 
 NODE_DEF @noinline
-node_printf(CTX * restrict c, NODE * restrict n, uint32_t arg_count, uint32_t arg_index)
+node_printf(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t arg_count, uint32_t arg_index)
 {
-    const char *fmt = (const char *)c->fp[arg_index].p;
-    int r = castro_run_printf(fmt, &c->fp[arg_index + 1], arg_count - 1);
+    const char *fmt = (const char *)fp[arg_index].p;
+    int r = castro_run_printf(fmt, &fp[arg_index + 1], arg_count - 1);
     return (VALUE){.i = r};
 }
 
 NODE_DEF
-node_putchar(CTX * restrict c, NODE * restrict n, NODE *e)
+node_putchar(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *e)
 {
     int ch = (int)EVAL_ARG(c, e).i;
     return (VALUE){.i = putchar(ch)};
@@ -748,7 +759,7 @@ node_putchar(CTX * restrict c, NODE * restrict n, NODE *e)
 extern int castro_puts(const VALUE *slot_str);
 
 NODE_DEF
-node_puts(CTX * restrict c, NODE * restrict n, NODE *e)
+node_puts(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *e)
 {
     return (VALUE){.i = castro_puts((const VALUE *)EVAL_ARG(c, e).p)};
 }
@@ -760,19 +771,19 @@ node_puts(CTX * restrict c, NODE * restrict n, NODE *e)
 // An indirect call reads the entry, sets up frame pointer, and dispatches.
 
 NODE_DEF
-node_func_addr(CTX * restrict c, NODE * restrict n, uint32_t func_idx)
+node_func_addr(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t func_idx)
 {
     return (VALUE){.p = &c->func_set[func_idx]};
 }
 
-VALUE castro_indirect_invoke(CTX *c, struct function_entry *fe, uint32_t arg_index);
+VALUE castro_indirect_invoke(CTX *c, struct function_entry *fe, VALUE *callee_fp);
 
 NODE_DEF
-node_call_indirect(CTX * restrict c, NODE * restrict n, NODE *fn_expr, uint32_t arg_count, uint32_t arg_index)
+node_call_indirect(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *fn_expr, uint32_t arg_count, uint32_t arg_index)
 {
     struct function_entry *fe = (struct function_entry *)EVAL_ARG(c, fn_expr).p;
     (void)arg_count;
-    return castro_indirect_invoke(c, fe, arg_index);
+    return castro_indirect_invoke(c, fe, fp + arg_index);
 }
 
 // --- goto / labels --------------------------------------------------
@@ -783,23 +794,23 @@ node_call_indirect(CTX * restrict c, NODE * restrict n, NODE *fn_expr, uint32_t 
 // of that lowering.  See parse.rb for details.
 
 NODE_DEF @noinline
-node_goto(CTX * restrict c, NODE * restrict n, int32_t label)
+node_goto(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, int32_t label)
 {
     c->goto_target = label;
     longjmp(*c->goto_buf, 1);
     __builtin_unreachable();
 }
 
-VALUE castro_goto_dispatch(CTX *c, NODE *body, node_dispatcher_func_t bd);
+VALUE castro_goto_dispatch(CTX *c, NODE *body, node_dispatcher_func_t bd, VALUE *fp);
 
 NODE_DEF
-node_goto_dispatch(CTX * restrict c, NODE * restrict n, NODE *body)
+node_goto_dispatch(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *body)
 {
-    return castro_goto_dispatch(c, body, body_dispatcher);
+    return castro_goto_dispatch(c, body, body_dispatcher, fp);
 }
 
 NODE_DEF
-node_goto_target(CTX * restrict c, NODE * restrict n)
+node_goto_target(CTX * restrict c, NODE * restrict n, VALUE * restrict fp)
 {
     return (VALUE){.i = c->goto_target};
 }

@@ -505,6 +505,16 @@ astro_cs_build(const char *extra_cflags)
         fprintf(fp, " %s", env_extra);
     }
     fprintf(fp, "\n");
+    // Linker flags.  Default empty; embedders that emit cross-SD
+    // direct calls (e.g. castro's SPECIALIZE_node_call) will set
+    // -Wl,-Bsymbolic via ASTRO_EXTRA_LDFLAGS so intra-.so symbol
+    // references bind locally without a GOT round-trip.
+    fprintf(fp, "LDFLAGS ?= ");
+    const char *env_ld = getenv("ASTRO_EXTRA_LDFLAGS");
+    if (env_ld && env_ld[0]) {
+        fprintf(fp, "%s", env_ld);
+    }
+    fprintf(fp, "\n");
     fprintf(fp, "\n");
     fprintf(fp, "SRCS = $(wildcard c/SD_*.c) $(wildcard c/PGSD_*.c)\n");
     fprintf(fp, "OBJS = $(patsubst c/%%.c,o/%%.o,$(SRCS))\n");
@@ -519,7 +529,7 @@ astro_cs_build(const char *extra_cflags)
     //   2. No observer ever sees a half-linked / missing all.so — the path
     //      always resolves to a complete .so, old or new.
     fprintf(fp, "all.so: $(OBJS)\n");
-    fprintf(fp, "\t$(CC) -shared -o all.tmp.so $^\n");
+    fprintf(fp, "\t$(CC) -shared $(LDFLAGS) -o all.tmp.so $^\n");
     fprintf(fp, "\tmv all.tmp.so $@\n");
     fprintf(fp, "\n");
     fprintf(fp, "o/%%.o: c/%%.c | o\n");
@@ -540,7 +550,13 @@ astro_cs_build(const char *extra_cflags)
     long jobs = ncpu * 2;
 
     char cmd[ASTRO_CS_PATH_MAX * 2];
-    snprintf(cmd, sizeof(cmd), "make -C %s -j%ld --no-print-directory -s all.so 2>&1 >/dev/null",
+    // Redirect both stdout AND stderr to /dev/null.  The previous
+    // form `2>&1 >/dev/null` is a classic shell-redirect bug: it
+    // sends stderr to whatever stdout is *currently*, then redirects
+    // stdout to null — leaving stderr still attached to the parent
+    // (so compile warnings leaked into the host process's stdout
+    // capture, breaking output-comparison test runners).
+    snprintf(cmd, sizeof(cmd), "make -C %s -j%ld --no-print-directory -s all.so >/dev/null 2>&1",
              astro_cs.store_dir, jobs);
 
     int ret = system(cmd);

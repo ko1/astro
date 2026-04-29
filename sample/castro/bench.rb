@@ -31,12 +31,17 @@ abort "castro not built — run 'make' first." unless File.executable?(CASTRO)
 # Inputs are small enough that interp finishes in <30s.  Pick sizes so
 # even -O3 takes >50ms (so timing noise doesn't dominate).
 BENCHES = [
-  'fib_big.c',          # int recursion
+  'fib_big.c',          # int recursion (single self-recursive function)
   'fib_d.c',            # double recursion
-  'tak.c',              # nested calls
+  'tak.c',              # 3-arg mutual / self recursion
   'ackermann.c',        # deep recursion
-  'loop_sum.c',         # tight integer loop
-  'mandelbrot_count.c', # double loop, no I/O
+  'loop_sum.c',         # tight integer loop, called from outer loop
+  'mandelbrot_count.c', # double inner loop, no I/O
+  'sieve.c',            # prime sieve — int array, tight inner mark loop
+  'nqueens.c',          # recursion + array + nested control
+  'quicksort.c',        # recursion + array swap + partition
+  'crc32.c',            # bitwise inner loop, no memory traffic
+  'matmul.c',           # triple-nested loop + array stride access
 ].freeze
 
 def time_ms(*cmd, env: {})
