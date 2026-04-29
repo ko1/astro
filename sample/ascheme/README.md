@@ -94,9 +94,9 @@ fetch + build (`./.chibi/`) する。
 ack                            0.13 s       0.74    2.49     5.7× / 19×
 fib                            0.25 s       1.40    4.70     5.6× / 19×
 list                           0.18 s       0.87    1.30     4.8× / 7×
-loop                           0.21 s       0.92    3.31     4.4× / 16×
-sieve                          0.45 s       1.48    5.14     3.3× / 11×
-sum                            0.54 s       1.27    5.05     2.4× / 9×
+loop                           0.20 s       0.92    3.31     4.6× / 17×
+sieve                          0.44 s       1.48    5.14     3.4× / 12×
+sum                            0.20 s       1.27    5.05     6.4× / 27×
 tak                            0.24 s       1.59    6.39     6.6× / 27×
 ```
 
@@ -117,7 +117,7 @@ pg-cached / chibi / guile)。
 ascheme aot-cached は **全 7 ベンチで chibi を 2.4-6.6× 上回り**、guile JIT
 には 7-27× 速い。
 
-これは [`docs/perf.md`](./docs/perf.md) の §1-§14 として記録された段階的な
+これは [`docs/perf.md`](./docs/perf.md) の §1-§15 として記録された段階的な
 最適化の積み重ね:
 
 1. gref インラインキャッシュ
@@ -132,6 +132,11 @@ ascheme aot-cached は **全 7 ベンチで chibi を 2.4-6.6× 上回り**、gu
 10. グローバルキャッシュを `(serial, value)` ペアに (ack 1.3×)
 11. 非末尾位置の leaf-closure 呼出も inline + `__attribute__((always_inline))`
     (fib / tak 1.5-1.7×)
+12. **§15: `try_specialize_arith` の早期 args コンパイル削除**
+    (`perf` で発見した AOT 失効バグ。`(display X)` のような特化対象外 1/2/3 引数
+    呼出のとき、捨てられる側のコンパイルが AOT エントリを先に登録してしまい、
+    実行時 NODE の dispatcher が SD に置換されないまま遅い `DISPATCH_node_*`
+    に残っていた。sum 2.7×, sumloop 2.4×)
 
 詳細とトピック別 before/after は [`docs/perf.md`](./docs/perf.md) を参照。
 

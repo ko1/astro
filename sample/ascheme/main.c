@@ -1040,17 +1040,38 @@ try_specialize_arith(CTX *c, VALUE fn_form, VALUE args, struct lex_scope *scope)
     uint32_t depth, idx;
     if (lex_lookup(scope, name, &depth, &idx)) return NULL;
 
-    // 1-arg specializations: predicates and accessors.
+    // Match the name BEFORE compiling args.  Earlier we compiled the args
+    // unconditionally and then picked a node based on the name — but for
+    // calls like `(display X)` whose name doesn't match, we'd return NULL
+    // and compile_call would re-compile the args.  The first (discarded)
+    // compile registered AOT entries whose dispatchers got patched by
+    // astro_cs_load, while the second (live) compile produced fresh NODE
+    // pointers whose dispatchers stayed on the slow DISPATCH_node_*
+    // host fallbacks — defeating AOT for any program that calls a global
+    // 1/2/3-arg function whose name isn't in the specialized set.
     if (argc == 1) {
-        NODE *a = compile(c, car(args), scope, false);
-        if (strcmp(name, "null?") == 0) return ALLOC_node_pred_null(a);
-        if (strcmp(name, "pair?") == 0) return ALLOC_node_pred_pair(a);
-        if (strcmp(name, "car")   == 0) return ALLOC_node_pred_car(a);
-        if (strcmp(name, "cdr")   == 0) return ALLOC_node_pred_cdr(a);
-        if (strcmp(name, "not")   == 0) return ALLOC_node_pred_not(a);
+        if (strcmp(name, "null?") == 0)
+            return ALLOC_node_pred_null(compile(c, car(args), scope, false));
+        if (strcmp(name, "pair?") == 0)
+            return ALLOC_node_pred_pair(compile(c, car(args), scope, false));
+        if (strcmp(name, "car") == 0)
+            return ALLOC_node_pred_car(compile(c, car(args), scope, false));
+        if (strcmp(name, "cdr") == 0)
+            return ALLOC_node_pred_cdr(compile(c, car(args), scope, false));
+        if (strcmp(name, "not") == 0)
+            return ALLOC_node_pred_not(compile(c, car(args), scope, false));
         return NULL;
     }
     if (argc == 2) {
+        bool match = (strcmp(name, "+")  == 0 || strcmp(name, "-")  == 0 ||
+                      strcmp(name, "*")  == 0 || strcmp(name, "<")  == 0 ||
+                      strcmp(name, "<=") == 0 || strcmp(name, ">")  == 0 ||
+                      strcmp(name, ">=") == 0 || strcmp(name, "=")  == 0 ||
+                      strcmp(name, "vector-ref") == 0 ||
+                      strcmp(name, "cons") == 0 ||
+                      strcmp(name, "eq?")  == 0 ||
+                      strcmp(name, "eqv?") == 0);
+        if (!match) return NULL;
         NODE *a = compile(c, car(args),  scope, false);
         NODE *b = compile(c, cadr(args), scope, false);
         if (strcmp(name, "+")  == 0) return ALLOC_node_arith_add(a, b);
@@ -1068,11 +1089,11 @@ try_specialize_arith(CTX *c, VALUE fn_form, VALUE args, struct lex_scope *scope)
         return NULL;
     }
     if (argc == 3) {
+        if (strcmp(name, "vector-set!") != 0) return NULL;
         NODE *a = compile(c, car(args),  scope, false);
         NODE *b = compile(c, cadr(args), scope, false);
         NODE *d = compile(c, caddr(args), scope, false);
-        if (strcmp(name, "vector-set!") == 0) return ALLOC_node_vec_set(a, b, d);
-        return NULL;
+        return ALLOC_node_vec_set(a, b, d);
     }
     return NULL;
 }
@@ -3614,23 +3635,25 @@ aot_compile_and_load(bool verbose)
     astro_cs_build(NULL);
     astro_cs_reload();
     OPTION.no_compiled_code = false;        // OPTIMIZE will load via cs_load
-    size_t loaded = 0, dedup = 0;
-    // Dedup entries that hash-collide so we don't double-count.  Two entries
-    // with the same hash share the same SD_<hash> function in all.so; one
-    // load patches both dispatchers if we cared, but we just track unique
-    // hashes for the verbose report.
+    size_t loaded = 0, unique = 0;
+    // Patch every entry's dispatcher.  Two entries can share a hash (the
+    // compiler sometimes builds the same shape via different paths), and
+    // each NODE instance has its own head.dispatcher slot to fix up — the
+    // SD_<hash> function in all.so is shared, but the patch must hit each
+    // pointer or the un-patched ones keep dispatching through the slow
+    // host DISPATCH_node_* fallback.  Track unique hashes for the verbose
+    // report only.
     node_hash_t *seen = (node_hash_t *)GC_malloc(sizeof(node_hash_t) * AOT_ENTRIES_LEN);
     size_t seen_n = 0;
     for (size_t i = 0; i < AOT_ENTRIES_LEN; i++) {
         node_hash_t h = HASH(AOT_ENTRIES[i]);
         bool already = false;
         for (size_t j = 0; j < seen_n; j++) if (seen[j] == h) { already = true; break; }
-        if (already) { dedup++; continue; }
-        seen[seen_n++] = h;
+        if (!already) { seen[seen_n++] = h; unique++; }
         if (astro_cs_load(AOT_ENTRIES[i], NULL)) loaded++;
     }
-    if (verbose) fprintf(stderr, "ascheme: loaded %zu / %zu specialized dispatchers (%zu duplicate hashes)\n",
-                         loaded, seen_n, dedup);
+    if (verbose) fprintf(stderr, "ascheme: loaded %zu / %zu entries (%zu unique SDs)\n",
+                         loaded, AOT_ENTRIES_LEN, unique);
     return loaded;
 }
 

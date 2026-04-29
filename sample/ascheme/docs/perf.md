@@ -440,16 +440,104 @@ path was already inline.  fib / tak / ack / list, which all do
 non-tail closure recursion or repeated cons calls, see 1.1-1.7×
 speedups.
 
-## Cumulative score vs chibi-scheme 0.12  (after §1–§14)
+## 15 — `try_specialize_arith` no longer compiles args eagerly  (this commit)
+
+Found via `perf record + perf report` on `bench/small/sum.scm`: 95 %
+of cycles were attributed to host `DISPATCH_node_arith_add` /
+`DISPATCH_node_call_2` / `DISPATCH_node_lref` from `ascheme`, and
+**0 %** to `SD_*` from `all.so`.  But `nm code_store/all.so` showed
+the SDs were exported, and `aot_compile_and_load` reported "loaded
+4 / 4".  AOT was wired up, but the runtime wasn't using it.
+
+Root cause: `try_specialize_arith` (the parser hook that lowers
+`(+ a b)` etc. to specialized arith nodes) compiled its argument
+forms **before** matching the function name:
+
+```c
+if (argc == 1) {
+    NODE *a = compile(c, car(args), scope, false);   // compile FIRST
+    if (strcmp(name, "null?") == 0) return ALLOC_node_pred_null(a);
+    ...
+    return NULL;        // name didn't match — `a` is now wasted
+}
+```
+
+For a call like `(display X)`:
+
+1. `try_specialize_arith(display, (X))` compiled `X` once (allocating
+   AOT entries for any lambdas inside), then found "display" wasn't
+   one of `null?` / `pair?` / `car` / `cdr` / `not`, returned NULL.
+2. `compile_call` then compiled `X` **a second time**, allocating
+   *fresh* NODE instances for every sub-form (lambdas, lrefs, ...).
+
+Both the discarded and live trees registered themselves via
+`aot_add_entry` on every embedded lambda body.  After the AOT step:
+
+* The first (discarded) entry's `head.dispatcher` got patched to
+  `SD_<hash>` by `astro_cs_load`.
+* The second (live, runtime) entry's `head.dispatcher` was a freshly
+  allocated NODE — **never touched by `astro_cs_load`** because of
+  the dedup loop in `aot_compile_and_load`, which skipped any entry
+  whose hash had already been seen.  It kept the slow host
+  `DISPATCH_node_*` default that `ALLOC_*` installs.
+
+So every SD compilation succeeded, every SD function was loaded into
+`all.so`, and **none of them was ever called** by the running program.
+`bench/small/sum.scm` was effectively running plain-interpreter code
+even with `--clear-cs -c`.
+
+The fix is two-part:
+
+1. In `try_specialize_arith`, match the name **before** compiling the
+   args.  Now non-matching names return NULL without side effects, so
+   `compile_call` is the only place that allocates NODEs for them.
+2. In `aot_compile_and_load`, drop the "skip duplicate hash" guard on
+   the load loop.  The SD function in `all.so` is shared across same-
+   hash entries, but each NODE has its own `head.dispatcher` slot
+   that has to be patched individually.  (Without this, any future
+   path that legitimately produces two same-hash entries — e.g. two
+   structurally-identical lambdas in different files — would silently
+   leave the second one running on the slow path.)
+
+After the fix, `perf report` on the same workload shows 45 % of
+cycles in `SD_5746ee42f49624cf` (the loop body's compiled SD) and
+10 % in `scm_apply` (the trampoline) — the hot SD is finally getting
+exercised.  Workloads where the body of a global call wraps
+significant computation see the biggest jumps:
+
+```
+                 before    after    speedup
+sum (small)      0.54 s    0.20 s    2.7×
+sumloop (big)    2.15 s    0.88 s    2.4×
+mandel           0.15 s    0.13 s    1.15×
+nbody            0.59 s    0.51 s    1.16×
+fib35            0.27 s    0.24 s    1.13×
+others           ±5 %      ±5 %      ~ neutral
+```
+
+Sum and sumloop benefit most because their entire computation is the
+argument of `(display ...)` — a 1-arg global call that didn't match
+any specialized name and therefore double-compiled.  Microbenchmarks
+that already routed through specialized 2-arg arith (`<`, `+`, etc.)
+matched on the first try and were unaffected.  Wins on
+mandel / nbody / fib35 come from secondary global-call sites in
+their bodies (e.g. `(make-vector …)` arguments) that were similarly
+double-compiled.
+
+The lesson: when the parser performs a try-and-fallback on an
+expensive operation, do the cheap match check first.  Otherwise the
+fallback path silently doubles every recursive child too.
+
+## Cumulative score vs chibi-scheme 0.12  (after §1–§15)
 
 ```
                 aot-cached       chibi     ratio
 ack             0.13 s           0.74 s    5.7×
 fib             0.25 s           1.40 s    5.6×
 list            0.18 s           0.87 s    4.8×
-loop            0.21 s           0.91 s    4.3×
-sieve           0.45 s           1.48 s    3.3×
-sum             0.54 s           1.27 s    2.4×
+loop            0.20 s           0.91 s    4.6×
+sieve           0.44 s           1.48 s    3.4×
+sum             0.20 s           1.27 s    6.4×    ← was 2.4× before §15
 tak             0.24 s           1.59 s    6.6×
 ```
 
@@ -460,9 +548,9 @@ vs guile 3.0 (JIT):
 ack             0.13 s           2.49 s    19×
 fib             0.25 s           4.70 s    19×
 list            0.18 s           1.30 s    7×
-loop            0.21 s           3.31 s    16×
-sieve           0.45 s           5.14 s    11×
-sum             0.54 s           5.39 s    10×
+loop            0.20 s           3.31 s    17×
+sieve           0.44 s           5.14 s    12×
+sum             0.20 s           5.39 s    27×    ← was 10× before §15
 tak             0.24 s           6.39 s    27×
 ```
 
@@ -480,17 +568,17 @@ nested `vector-ref` chains that we don't yet match):
 
 ```
                  ascheme       chibi      guile     vs chibi   vs guile
-cps_loop          0.45 s        2.91       10.13       6.5×        22×
-deriv             1.17 s        1.71        1.87       1.5×       1.6×
-fannkuch          1.47 s        4.08        6.85       2.8×       4.7×
-fib35             0.27 s        1.21        4.89       4.5×        18×
-mandel            0.15 s        0.97        1.00       6.5×       6.7×
-matmul           12.59 s       22.63        9.50       1.8×    0.75× (loss)
-nbody             0.59 s        2.62        2.49       4.4×       4.2×
-nqueens           1.20 s        4.27       14.71       3.6×        12×
-sieve_big         0.93 s        2.34        9.62       2.5×        10×
-sumloop           2.15 s        3.52       17.74       1.6×       8.2×
-tak_big          16.05 s       76.02      348.62       4.7×        22×
+cps_loop          0.43 s        2.91       10.13       6.8×        24×
+deriv             1.16 s        1.71        1.87       1.5×       1.6×
+fannkuch          1.37 s        4.08        6.85       3.0×       5.0×
+fib35             0.24 s        1.21        4.89       5.0×        20×
+mandel            0.13 s        0.97        1.00       7.5×       7.7×
+matmul           11.45 s       22.63        9.50       2.0×    0.83× (loss)
+nbody             0.51 s        2.62        2.49       5.1×       4.9×
+nqueens           1.16 s        4.27       14.71       3.7×        13×
+sieve_big         0.90 s        2.34        9.62       2.6×        11×
+sumloop           0.88 s        3.52       17.74       4.0×        20×    ← §15: was 1.6× / 8.2×
+tak_big          14.90 s       76.02      348.62       5.1×        23×
 ```
 
 mandel (6.5×) and nbody (4.4×) are won by §3's inline flonum
