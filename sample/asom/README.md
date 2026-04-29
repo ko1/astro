@@ -86,27 +86,33 @@ sub-100 ms となり per-call overhead が支配する。エンジン間の **st
 以下は `inner` を **両方が ~1 秒程度走る** よう調整した値（`iterations=1`、best of 3）:
 
 ```
-benchmark    | inner |    asom |   SOM++ | 比
--------------+-------+---------+---------+------
-Sieve        |  2000 |  1.32 s |  5.30 s | asom 4.0× faster
-Queens       |   700 |  1.04 s |  4.69 s | asom 4.5× faster
-Bounce       |  1250 |  1.01 s |  3.08 s | asom 3.0× faster
-Fannkuch     |     9 |  0.68 s |  1.73 s | asom 2.5× faster
-BubbleSort   |  1500 |  1.07 s |  2.17 s | asom 2.0× faster
-Permute      |   400 |  1.01 s |  1.89 s | asom 1.9× faster
-List         |   400 |  1.10 s |  2.04 s | asom 1.9× faster
-QuickSort    |   900 |  1.02 s |  1.79 s | asom 1.75× faster
-Storage      |   500 |  1.05 s |  1.71 s | asom 1.6× faster
-Towers       |   200 |  1.12 s |  1.51 s | asom 1.3× faster
-TreeSort     |   300 |  1.19 s |  1.30 s | tied
-Mandelbrot   |   200 |  0.55 s |  0.51 s | tied
+benchmark    |  interp |     aot |   SOM++ | aot vs SOM++
+-------------+---------+---------+---------+----------------
+Sieve        |  1.36 s |  0.80 s |  5.57 s | asom 6.95× faster
+Queens       |  1.08 s |  1.09 s |  4.83 s | asom 4.45× faster
+Fannkuch     |  0.75 s |  0.40 s |  1.70 s | asom 4.22× faster
+BubbleSort   |  1.03 s |  0.62 s |  2.17 s | asom 3.50× faster
+Bounce       |  1.02 s |  1.00 s |  3.20 s | asom 3.20× faster
+QuickSort    |  1.07 s |  0.71 s |  1.80 s | asom 2.53× faster
+Permute      |  1.03 s |  0.91 s |  1.86 s | asom 2.04× faster
+List         |  1.22 s |  1.14 s |  2.25 s | asom 1.98× faster
+Storage      |  1.18 s |  1.13 s |  1.87 s | asom 1.66× faster
+Towers       |  1.20 s |  1.05 s |  1.59 s | asom 1.51× faster
+Mandelbrot   |  0.55 s |  0.45 s |  0.51 s | asom 1.13× faster
+TreeSort     |  1.14 s |  1.19 s |  1.27 s | asom 1.07× faster
 ```
 
 #### take-aways（sustained）
 
-**asom は SOM++ (`USE_TAGGING` + COPYING GC, g++ -O3 -flto) を**
-**ほぼ全てのベンチで上回る** — 整数中心（Sieve/Queens/Bounce で 3-4.5×）から
-double 計算（Fannkuch 2.5×、Mandelbrot 並走）まで。原因の積算:
+**asom-aot は 12 ベンチすべてで SOM++ (`USE_TAGGING` + COPYING GC,
+g++ -O3 -flto) より速い** — Sieve で **6.95×**、Fannkuch / Queens で 4×
+台、BubbleSort / Bounce で 3× 台。AST-PE の SD-bake が **method / block
+boundary の indirect call を消して** GCC に LICM / scalar replacement の
+機会を作るのが効いていて、interp 比で sustained Sieve が 1.36s → 0.80s
+(1.7×) になり、SOM++ の bytecode dispatch loop を抜く。
+
+interp 単独でも SOM++ に勝つベンチが多い（Sieve/Queens で 4× 以上）。
+原因の積算:
 
 - **型特化 send** で `+ - * < > <= >= = at: at:put:` の 1-2 引数送信が
   IC + primitive 関数ポインタ呼出しを一切経由せず inline 算術に縮む。
@@ -117,6 +123,11 @@ double 計算（Fannkuch 2.5×、Mandelbrot 並走）まで。原因の積算:
   か bump alloc に。
 - **`m->no_nlr` setjmp スキップ** で、本体に nested block を含まない
   メソッドは `setjmp` 自体を実行しない（再帰系ベンチ Towers/Queens に効く）。
+- **AOT/PG が cached load でも効くようになった** — 制御フロー inline ノード
+  の operand に body subtree を直接出すよう修正、block body も
+  cs_compile entry に登録するよう修正、`node_string_val / node_array_lit`
+  をハッシュ決定論的に。これで SD shard が cs_load で正しくマッチして
+  SD-bake が interp に対して実速度差を生むようになった。
 
 短い (~ms) 計測では SOM++ の per-call setup（class load、IC prime、
 COPYING space init）が表に出てしまって SOM++ が速く見えるが、sustained
