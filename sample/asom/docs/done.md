@@ -190,6 +190,18 @@ ifTrue:/ifFalse: 系は受信値が `val_true / val_false` でない場合の
 なる。パース時の `subtree_creates_block()` がこれを検出し、当該パターン
 は inline せず正規の send1/send2 で処理する。
 
+### Double bump arena
+
+`asom_double_new` は `calloc` だったが、bump-allocation slab に置き換え。
+スラブ 1 個 = 4096 個の `asom_double` (約 96 KB)。スラブ枯渇時にだけ
+`malloc` が走り、それ以外は `g_double_arena.next++` で 1 ns。
+
+GC が無いので回収はしない（フレーム同様）。1 回のベンチ内では総量に
+上限があるので問題なし。本格的に GC を入れるとき roots に追加。
+
+性能効果: **Mandelbrot 0.794s → 0.556s (1.43× 高速化)**。NBody も
+同様の数値計算系で寄与する見込み（手元では未計測）。
+
 ### `to:do:` インライン化
 
 `from to: end do: [ :var | body ]` でブロックが **1 引数・0 ローカル**な
@@ -217,11 +229,13 @@ inline 化可能になる（pool 版を使う）。
 | Towers    | 0.125s   | 0.094s      | 0.075s            | 0.073s           | 1.71×    |
 | Bounce    | 0.037s   | 0.040s      | 0.008s            | 0.007s           | **5.3×** |
 | BubbleSort| 0.023s   | 0.020s      | 0.007s            | 0.007s           | **3.3×** |
-| Mandelbrot| 1.015s   | 1.016s      | 0.797s            | 0.794s           | 1.28×    |
+| Mandelbrot| 1.015s   | 1.016s      | 0.797s            | 0.556s †         | **1.83×**|
 | Queens    | 0.039s   | 0.031s      | 0.028s            | 0.020s           | **1.95×**|
-| List      | 0.071s   | (n/a)       | (n/a)             | 0.036s           | 1.97×    |
-| QuickSort | 0.031s   | (n/a)       | (n/a)             | 0.012s           | 2.6×     |
-| TreeSort  | 0.080s   | (n/a)       | (n/a)             | 0.045s           | 1.78×    |
+| List      | 0.071s   | (n/a)       | (n/a)             | 0.035s           | 2.0×     |
+| QuickSort | 0.031s   | (n/a)       | (n/a)             | 0.013s           | 2.4×     |
+| TreeSort  | 0.080s   | (n/a)       | (n/a)             | 0.046s           | 1.74×    |
+
+† Mandelbrot は double arena 後の値。to:do: 段階では 0.794s。
 
 ### フレーム pool
 

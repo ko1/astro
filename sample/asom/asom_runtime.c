@@ -226,10 +226,38 @@ asom_array_new(CTX *c, uint32_t len)
     return ASOM_OBJ2VAL(a);
 }
 
+// Double bump arena. Tight numeric loops (Mandelbrot, NBody) create one
+// asom_double per op; calloc dominates the cost. Bump-allocation from a
+// growing chain of slabs reduces per-op cost to ~1 ns. Slabs are never
+// freed — until we have a GC, doubles leak just like frames did before
+// the pool, but the rate is bounded per benchmark run.
+#define ASOM_DOUBLE_SLAB_COUNT 4096
+
+struct asom_double_arena {
+    struct asom_double *next;
+    struct asom_double *end;
+};
+
+static __thread struct asom_double_arena g_double_arena;
+
+static __attribute__((noinline)) struct asom_double *
+asom_double_arena_grow(void)
+{
+    struct asom_double *slab = malloc(ASOM_DOUBLE_SLAB_COUNT * sizeof(*slab));
+    if (!slab) { fprintf(stderr, "asom: double slab OOM\n"); exit(1); }
+    g_double_arena.next = slab;
+    g_double_arena.end = slab + ASOM_DOUBLE_SLAB_COUNT;
+    return slab;
+}
+
 VALUE
 asom_double_new(CTX *c, double v)
 {
-    struct asom_double *d = calloc(1, sizeof(*d));
+    struct asom_double *d = g_double_arena.next;
+    if (UNLIKELY(d >= g_double_arena.end)) {
+        d = asom_double_arena_grow();
+    }
+    g_double_arena.next = d + 1;
     d->hdr.klass = c->cls_double;
     d->value = v;
     return ASOM_OBJ2VAL(d);
