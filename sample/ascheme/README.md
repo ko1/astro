@@ -90,16 +90,18 @@ fetch + build (`./.chibi/`) する。
 例 (Linux x86_64, gcc 13 -O3):
 
 ```
-=== bench/small/ ===
-benchmark        interp  aot-first aot-cached pg-compile  pg-cached      chibi      guile
-ack               0.43s      0.33s      0.20s      0.52s      0.20s      0.67s      2.07s
-fib               0.77s      0.58s      0.47s      0.93s      0.51s      1.43s      4.46s
-list              0.27s      0.33s      0.21s      0.37s      0.21s      0.84s      1.24s
-loop              0.47s      0.36s      0.28s      0.53s      0.27s      0.92s      3.38s
-sieve             0.85s      0.72s      0.53s      1.04s      0.54s      1.61s      5.10s
-sum               0.53s      0.66s      0.54s      0.66s      0.57s      1.19s      5.05s
-tak               0.80s      0.55s      0.42s      0.92s      0.42s      1.53s      6.25s
+=== bench/small/ ===  ascheme aot-cached    chibi   guile (JIT)
+ack                            0.13 s       0.74    2.49     5.7× / 19×
+fib                            0.25 s       1.40    4.70     5.6× / 19×
+list                           0.18 s       0.87    1.30     4.8× / 7×
+loop                           0.21 s       0.92    3.31     4.4× / 16×
+sieve                          0.45 s       1.48    5.14     3.3× / 11×
+sum                            0.54 s       1.27    5.05     2.4× / 9×
+tak                            0.24 s       1.59    6.39     6.6× / 27×
 ```
+
+`make bench` でフル比較 (interp / aot-first / aot-cached / pg-compile /
+pg-cached / chibi / guile)。
 
 列の意味:
 
@@ -112,23 +114,11 @@ tak               0.80s      0.55s      0.42s      0.92s      0.42s      1.53s  
 | **pg-cached** | `-c` 後続起動: `profile.txt` を自動読み込み、コールドエントリは default dispatcher のまま |
 | **chibi / guile** | 比較対象 (chibi 0.12, guile 3.0 with JIT) |
 
-ascheme の最速モード (`aot-cached`) を他処理系と比較:
+ascheme aot-cached は **全 7 ベンチで chibi を 2.4-6.6× 上回り**、guile JIT
+には 7-27× 速い。
 
-| bench | ascheme 最速 | chibi | guile | vs chibi |
-|---|---:|---:|---:|---|
-| ack | **0.20s** | 0.67 | 2.07 | 3.4× 速い |
-| fib | **0.47s** | 1.43 | 4.46 | 3.0× |
-| list | **0.21s** | 0.84 | 1.24 | 4.0× |
-| loop | **0.28s** | 0.92 | 3.38 | 3.3× |
-| sieve | **0.53s** | 1.61 | 5.10 | 3.0× |
-| sum | **0.54s** | 1.19 | 5.05 | 2.2× |
-| tak | **0.42s** | 1.53 | 6.25 | 3.6× |
-
-ascheme aot-cached は **全 7 ベンチで chibi を 2.2-4× 上回り**、guile JIT
-には 6-15× 速い。**プレーンインタプリタ (`interp`) すら多くのベンチで
-chibi より速い** (ack 0.43 vs 0.67、sum 0.53 vs 1.19、tak 0.80 vs 1.53)。
-
-これは段階的な最適化の積み重ねで実現:
+これは [`docs/perf.md`](./docs/perf.md) の §1-§14 として記録された段階的な
+最適化の積み重ね:
 
 1. gref インラインキャッシュ
 2. 特化 arith / pred / vec / cons / eq? ノード (R5RS 再定義検出付き)
@@ -139,6 +129,9 @@ chibi より速い** (ack 0.43 vs 0.67、sum 0.53 vs 1.19、tak 0.80 vs 1.53)。
 7. cons 専用サイズ alloc (list 1.5×)
 8. host build を `-O3` に
 9. `scm_apply_tail` hot path を header に inline
+10. グローバルキャッシュを `(serial, value)` ペアに (ack 1.3×)
+11. 非末尾位置の leaf-closure 呼出も inline + `__attribute__((always_inline))`
+    (fib / tak 1.5-1.7×)
 
 詳細とトピック別 before/after は [`docs/perf.md`](./docs/perf.md) を参照。
 
