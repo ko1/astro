@@ -76,6 +76,21 @@ struct asom_double {
     double value;
 };
 
+// Tag identifying which built-in primitive a method is, so call sites can
+// rewrite their AST node to a type-specialized variant on first cache fill.
+// Generic primitives (and all AST methods) carry ASOM_PRIM_GENERIC.
+enum asom_prim_kind {
+    ASOM_PRIM_GENERIC = 0,
+    ASOM_PRIM_INT_PLUS,
+    ASOM_PRIM_INT_MINUS,
+    ASOM_PRIM_INT_TIMES,
+    ASOM_PRIM_INT_LT,
+    ASOM_PRIM_INT_GT,
+    ASOM_PRIM_INT_LE,
+    ASOM_PRIM_INT_GE,
+    ASOM_PRIM_INT_EQ,
+};
+
 struct asom_method {
     const char *selector;
     uint32_t num_params;          // not counting receiver
@@ -83,6 +98,7 @@ struct asom_method {
     struct Node *body;            // method body AST (NULL = primitive)
     void *primitive;              // C function pointer if primitive
     struct asom_class *holder;
+    enum asom_prim_kind prim_kind; // tag for type-feedback specialization
 };
 
 // Open-hash table for fast lookup by interned selector pointer, plus a
@@ -135,6 +151,12 @@ struct asom_frame {
     struct asom_frame *home;        // home method frame (NLR target)
     struct asom_frame *lexical_parent; // outer frame in lexical chain (var lookup)
     int returned;
+    // Frame pooling. `captured` is set when a closure created during this
+    // frame's body stores us as its lexical_parent — that pins the frame
+    // to the heap (the closure may outlive this call). `pool_slots` records
+    // the size class so block_invoke knows which free list to push to.
+    bool captured;
+    uint16_t pool_slots;            // 0 = not poolable (heap-allocated, leak)
 };
 
 struct asom_option {

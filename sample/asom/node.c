@@ -79,6 +79,23 @@ void asom_print_optimize_stats(void)
 node_hash_t HORG(NODE *n) { return HASH(n); }
 node_hash_t HOPT(NODE *n) { return HASH(n); }
 
+// Dispatcher swap (type-feedback). Specialized variants opt into the
+// canonical hash via @canonical=node_send1 in node.def, so swapping
+// preserves Horg and the AOT cache stays valid.
+static unsigned int g_swap_dispatcher_count;
+void
+swap_dispatcher(NODE *n, const struct NodeKind *target_kind)
+{
+    if (n->head.kind == target_kind) return;
+    if (n->head.flags.is_specialized) return;
+    n->head.dispatcher = target_kind->default_dispatcher;
+    n->head.dispatcher_name = target_kind->default_dispatcher_name;
+    n->head.kind = target_kind;
+    g_swap_dispatcher_count++;
+}
+
+unsigned int asom_swap_dispatcher_count(void) { return g_swap_dispatcher_count; }
+
 // ---------------------------------------------------------------------------
 // code_repo — the asom front-end maintains its own (class, method) registry
 // in asom_runtime.c, so this just satisfies the linker for now.

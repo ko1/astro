@@ -77,6 +77,19 @@ def_prim(struct asom_class *cls, const char *sel, void *fn, uint32_t nargs)
     asom_class_define_method(cls, m);
 }
 
+static void
+def_prim_kind(struct asom_class *cls, const char *sel, void *fn, uint32_t nargs,
+              enum asom_prim_kind kind)
+{
+    struct asom_method *m = calloc(1, sizeof(*m));
+    m->selector = asom_intern_cstr(sel);
+    m->primitive = fn;
+    m->num_params = nargs;
+    m->holder = cls;
+    m->prim_kind = kind;
+    asom_class_define_method(cls, m);
+}
+
 // ---------------------------------------------------------------------------
 // Object
 // ---------------------------------------------------------------------------
@@ -1384,18 +1397,18 @@ asom_install_primitives(CTX *c)
     def_prim(c->cls_false, "asString",       false_asString,       0);
 
     // Integer
-    def_prim(c->cls_integer, "+",            int_plus,             1);
-    def_prim(c->cls_integer, "-",            int_minus,            1);
-    def_prim(c->cls_integer, "*",            int_times,            1);
+    def_prim_kind(c->cls_integer, "+",       int_plus,             1, ASOM_PRIM_INT_PLUS);
+    def_prim_kind(c->cls_integer, "-",       int_minus,            1, ASOM_PRIM_INT_MINUS);
+    def_prim_kind(c->cls_integer, "*",       int_times,            1, ASOM_PRIM_INT_TIMES);
     def_prim(c->cls_integer, "/",            int_div,              1);
     def_prim(c->cls_integer, "//",           int_div_div,          1);
     def_prim(c->cls_integer, "%",            int_mod,              1);
     def_prim(c->cls_integer, "rem:",         int_rem_,             1);
-    def_prim(c->cls_integer, "<",            int_lt,               1);
-    def_prim(c->cls_integer, ">",            int_gt,               1);
-    def_prim(c->cls_integer, "<=",           int_le,               1);
-    def_prim(c->cls_integer, ">=",           int_ge,               1);
-    def_prim(c->cls_integer, "=",            int_eq_,              1);
+    def_prim_kind(c->cls_integer, "<",       int_lt,               1, ASOM_PRIM_INT_LT);
+    def_prim_kind(c->cls_integer, ">",       int_gt,               1, ASOM_PRIM_INT_GT);
+    def_prim_kind(c->cls_integer, "<=",      int_le,               1, ASOM_PRIM_INT_LE);
+    def_prim_kind(c->cls_integer, ">=",      int_ge,               1, ASOM_PRIM_INT_GE);
+    def_prim_kind(c->cls_integer, "=",       int_eq_,              1, ASOM_PRIM_INT_EQ);
     def_prim(c->cls_integer, "<>",           int_neq,              1);
     def_prim(c->cls_integer, "negated",      int_negated,          0);
     def_prim(c->cls_integer, "abs",          int_abs,              0);

@@ -419,6 +419,38 @@ make_var_set(Parser *P, const char *name, NODE *rhs)
     return NULL;
 }
 
+// Emit type-specialized send1 nodes for the common integer-arithmetic
+// selectors. These optimistically assume both operands are SmallInteger;
+// on guard miss they swap_dispatcher back to node_send1 at runtime, so
+// programs that pass non-int operands stay correct (just one cold swap).
+// Parse-time emission means the int-fast path is taken from the very
+// first dispatch — no warmup runs needed for the AOT bake to capture it.
+static NODE *
+make_specialized_send1(NODE *recv, NODE *arg, const char *interned_sel, struct asom_callcache *cc)
+{
+    static const char *sel_plus, *sel_minus, *sel_times,
+                      *sel_lt, *sel_gt, *sel_le, *sel_ge, *sel_eq;
+    if (UNLIKELY(sel_plus == NULL)) {
+        sel_plus  = asom_intern_cstr("+");
+        sel_minus = asom_intern_cstr("-");
+        sel_times = asom_intern_cstr("*");
+        sel_lt    = asom_intern_cstr("<");
+        sel_gt    = asom_intern_cstr(">");
+        sel_le    = asom_intern_cstr("<=");
+        sel_ge    = asom_intern_cstr(">=");
+        sel_eq    = asom_intern_cstr("=");
+    }
+    if (interned_sel == sel_plus)  return ALLOC_node_send1_intplus(recv, arg, interned_sel, cc);
+    if (interned_sel == sel_minus) return ALLOC_node_send1_intminus(recv, arg, interned_sel, cc);
+    if (interned_sel == sel_times) return ALLOC_node_send1_inttimes(recv, arg, interned_sel, cc);
+    if (interned_sel == sel_lt)    return ALLOC_node_send1_intlt(recv, arg, interned_sel, cc);
+    if (interned_sel == sel_gt)    return ALLOC_node_send1_intgt(recv, arg, interned_sel, cc);
+    if (interned_sel == sel_le)    return ALLOC_node_send1_intle(recv, arg, interned_sel, cc);
+    if (interned_sel == sel_ge)    return ALLOC_node_send1_intge(recv, arg, interned_sel, cc);
+    if (interned_sel == sel_eq)    return ALLOC_node_send1_inteq(recv, arg, interned_sel, cc);
+    return NULL;
+}
+
 static NODE *
 make_send(Parser *P, NODE *recv, const char *sel, NODE **args, uint32_t nargs)
 {
@@ -426,7 +458,10 @@ make_send(Parser *P, NODE *recv, const char *sel, NODE **args, uint32_t nargs)
     sel = asom_intern_cstr(sel);
     switch (nargs) {
     case 0: return ALLOC_node_send0(recv, sel, new_cc());
-    case 1: return ALLOC_node_send1(recv, args[0], sel, new_cc());
+    case 1: {
+        NODE *spec = make_specialized_send1(recv, args[0], sel, new_cc());
+        return spec ? spec : ALLOC_node_send1(recv, args[0], sel, new_cc());
+    }
     case 2: return ALLOC_node_send2(recv, args[0], args[1], sel, new_cc());
     case 3: return ALLOC_node_send3(recv, args[0], args[1], args[2], sel, new_cc());
     case 4: return ALLOC_node_send4(recv, args[0], args[1], args[2], args[3], sel, new_cc());

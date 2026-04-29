@@ -228,6 +228,11 @@ main(int argc, char **argv)
         }
     }
     extern void asom_print_optimize_stats(void);
-    if (OPTION.verbose) asom_print_optimize_stats();
+    extern unsigned int asom_swap_dispatcher_count(void);
+    if (OPTION.verbose) {
+        asom_print_optimize_stats();
+        fprintf(stderr, "asom: swap_dispatcher fired %u times\n",
+                asom_swap_dispatcher_count());
+    }
     return 0;
 }

@@ -145,6 +145,48 @@ asom --preload=A,B,C ...                     # eager-load classes for AOT bake
 - selector の bare-literal vs interned 不整合を `asom_class_lookup` の strcmp fallback で吸収
 - `-rdynamic` リンクで SD shared object が `asom_send_slow`, `asom_invoke_ast` 等を resolve
 
+### 型特化ノード（Integer 演算）
+
+整数算術／比較セレクタの 1-arg 送信は専用ノードに発行する:
+
+```
+node_send1_intplus / intminus / inttimes
+node_send1_intlt / intgt / intle / intge / inteq
+```
+
+ファスト・パスはタグ・ビット 2 個の AND + 算術 + 再タグ付け。型 guard が
+外れたときは `swap_dispatcher(n, &kind_node_send1)` で汎用 send1 に戻して
+`asom_send` で再ディスパッチ（IC ヒット）。
+
+- パース時発行 (`make_specialized_send1`): `+ - * < > <= >= =` のセレクタを
+  最初から特化版で発行。warmup なしで AOT bake が特化版を捕捉する。
+- ランタイム発行: `asom_method->prim_kind` を `def_prim_kind` で立てておけば、
+  parse-time に取りこぼした送信もスローパスでタイプ・フィードバックして
+  `swap_dispatcher` で書き換える経路が残してある（保険）。
+- すべての特化版は `@canonical=node_send1` で構造ハッシュを共通化、SD コード
+  シャードはスワップ前後どちらでも使える（is_specialized が立った後の
+  `swap_dispatcher` は no-op）。
+
+### フレーム pool
+
+`asom_invoke` / `asom_block_invoke` のフレーム+locals は **slot 数バケット
+別 free-list pool** (`g_frame_pool[16]`) で再利用する:
+
+- `frame_alloc(slots)`: pool に空きがあれば pop（O(1)）、無ければ
+  `frame + locals[]` をひとつの `calloc` で確保（旧コードは calloc 2 回）。
+- `frame_free(frame)`: `captured == false` ならバケットに push。
+  `captured == true` なら nested closure に lexical_parent として捕捉
+  されているので、pool に戻すと alias する → そのままヒープに leak（旧
+  コードと同じ振る舞い）。
+
+`asom_make_block` は `c->frame->captured` と全 lexical 上位フレームの
+`captured` を `true` に立てる。これで、closure escape の有無を実行時に
+（保守的に）判定して frame 再利用と両立する。
+
+性能効果: AreWeFastYet で Sieve 1.7×、Permute / Towers 1.3×、Queens 1.25×
+の高速化。プロファイル上の `_int_malloc` / `__libc_calloc` 使用比率が
+大幅減少。
+
 ## テスト
 
 ### SOM-st/SOM TestSuite — **216 / 221 (97.7%) アサーション pass、23 / 24 ファイル clean**

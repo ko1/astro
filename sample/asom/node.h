@@ -51,6 +51,15 @@ struct NodeHead {
 node_hash_t HORG(NODE *n);
 node_hash_t HOPT(NODE *n);
 
+// Swap a node's dispatcher to a sibling kind (e.g., node_send1 →
+// node_send1_intplus on type-feedback). Skips the swap if the node has
+// already been baked into SD code (is_specialized): the SD dispatcher
+// was generated for the *current* kind, and overwriting it would discard
+// the optimization. The kind is also updated for HASH/DUMP consistency.
+// Specialized variants share the canonical kind name in HASH so this
+// rewrite doesn't invalidate the structural hash used by the code store.
+void swap_dispatcher(NODE *n, const struct NodeKind *target_kind);
+
 // asom runtime helpers must be visible inside specialised SD_*.c files
 // (which `#include "node.h"`) so generated dispatchers can call e.g.
 // asom_send / asom_super_send without an implicit-declaration warning.

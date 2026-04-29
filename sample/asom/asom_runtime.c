@@ -411,7 +411,85 @@ asom_make_block(CTX *c, struct Node *body, uint32_t num_params, uint32_t num_loc
     b->home = c->frame->home;       // ^ inside the block targets the same method
     b->lexical_parent = c->frame;   // outer scope for var lookup
     b->captured_self = c->frame->self;
+    // Pin our caller's frame to the heap: this closure may outlive the
+    // call (returned, stored in an ivar, etc.), and reusing the frame in
+    // a subsequent block_invoke would alias the closure's lexical_parent.
+    // Conservative — even non-escaping closures pin their parent frame,
+    // but that's a small price (frame stays heap-resident, no UAF).
+    if (c->frame) c->frame->captured = true;
+    // Also pin every enclosing lexical frame: a block stored in this
+    // frame can be invoked later, which sets up *its* nested closures
+    // pointing back through the chain.
+    for (struct asom_frame *f = c->frame ? c->frame->lexical_parent : NULL; f; f = f->lexical_parent) {
+        f->captured = true;
+    }
     return ASOM_OBJ2VAL(b);
+}
+
+// -----------------------------------------------------------------------------
+// Frame pool. Pools blocks of frame+locals storage by slot-count bucket so
+// the common case (small block, no closure escape) avoids two callocs per
+// invocation. `captured` frames are never returned to the pool; they leak
+// onto the heap, which is the existing behaviour and keeps closures sound.
+// -----------------------------------------------------------------------------
+
+#define ASOM_FRAME_POOL_BUCKETS 16  // slots 0..ASOM_FRAME_POOL_BUCKETS-1
+
+struct asom_frame_pool_node {
+    struct asom_frame frame;
+    struct asom_frame_pool_node *next;
+    // locals[] follows inline (variable length per bucket)
+};
+
+static __thread struct asom_frame_pool_node *g_frame_pool[ASOM_FRAME_POOL_BUCKETS];
+
+// Returns (frame, locals) where locals points just past `frame` in the
+// same allocation. `out_pool_slots` is set to the bucket size used (0 if
+// not pooled — slot count exceeded the pool, so a separate calloc was
+// needed and the entry should not be returned to the pool on exit).
+static inline struct asom_frame *
+frame_alloc(uint32_t slots, VALUE **out_locals, uint16_t *out_pool_slots)
+{
+    if (slots < ASOM_FRAME_POOL_BUCKETS) {
+        struct asom_frame_pool_node *e = g_frame_pool[slots];
+        if (e) {
+            g_frame_pool[slots] = e->next;
+            // Zero out frame + locals area before re-use.
+            VALUE *locals = (VALUE *)(e + 1);
+            memset(&e->frame, 0, sizeof(struct asom_frame));
+            for (uint32_t i = 0; i < slots; i++) locals[i] = 0;
+            *out_locals = slots ? locals : NULL;
+            *out_pool_slots = (uint16_t)(slots + 1); // +1 so 0 means "not pooled"
+            return &e->frame;
+        }
+        // Cold: bucket empty — allocate a fresh combined node.
+        size_t total = sizeof(struct asom_frame_pool_node) + slots * sizeof(VALUE);
+        e = calloc(1, total);
+        VALUE *locals = (VALUE *)(e + 1);
+        *out_locals = slots ? locals : NULL;
+        *out_pool_slots = (uint16_t)(slots + 1);
+        return &e->frame;
+    }
+    // Slot count exceeds pool buckets — fall back to two callocs (rare,
+    // method bodies with > ASOM_FRAME_POOL_BUCKETS-1 locals).
+    struct asom_frame *frame = calloc(1, sizeof(*frame));
+    *out_locals = slots ? calloc(slots, sizeof(VALUE)) : NULL;
+    *out_pool_slots = 0;
+    return frame;
+}
+
+static inline void
+frame_free(struct asom_frame *frame)
+{
+    if (frame->captured || frame->pool_slots == 0) {
+        // Captured — closure may still reference this frame's locals.
+        // Or non-pooled (oversized). Leave it on the heap (existing leak).
+        return;
+    }
+    uint32_t slots = (uint32_t)frame->pool_slots - 1;
+    struct asom_frame_pool_node *e = (struct asom_frame_pool_node *)frame;
+    e->next = g_frame_pool[slots];
+    g_frame_pool[slots] = e;
 }
 
 // Invoke a block with `nargs` already-evaluated args. Used by Block primitives
@@ -427,11 +505,9 @@ asom_block_invoke(CTX *c, struct asom_block *b, VALUE *args, uint32_t nargs)
     }
 
     uint32_t slots = m->num_params + m->num_locals;
-    // Same lifetime story as asom_invoke: the block body may itself
-    // capture us as lexical_parent of a nested block, so we need a stable
-    // heap address.
-    struct asom_frame *frame = calloc(1, sizeof(*frame));
-    VALUE *locals = slots ? calloc(slots, sizeof(VALUE)) : NULL;
+    VALUE *locals;
+    uint16_t pool_slots;
+    struct asom_frame *frame = frame_alloc(slots, &locals, &pool_slots);
     for (uint32_t i = 0; i < nargs; i++) locals[i] = args[i];
     for (uint32_t i = nargs; i < slots; i++) locals[i] = c->val_nil;
 
@@ -441,6 +517,7 @@ asom_block_invoke(CTX *c, struct asom_block *b, VALUE *args, uint32_t nargs)
     frame->parent = c->frame;
     frame->home = b->home;                  // ^ targets the home method
     frame->lexical_parent = b->lexical_parent;
+    frame->pool_slots = pool_slots;
     c->frame = frame;
 
     struct asom_unwind unwind = {
@@ -456,11 +533,15 @@ asom_block_invoke(CTX *c, struct asom_block *b, VALUE *args, uint32_t nargs)
         result = EVAL(c, m->body);
         g_unwind_top = unwind.parent;
         c->frame = frame->parent;
+        frame_free(frame);
         return result;
     }
 
     // Reached via escape NLR: home method already returned. Restore caller
     // frame and dispatch `escapedBlock:` to the original sender of `value`.
+    // We don't return the frame to the pool: an escape happens because a
+    // closure called `^` from inside a method whose home frame is gone,
+    // so the frame state may still be inspected.
     g_unwind_top = unwind.parent;
     c->frame = frame->parent;
     VALUE sender_self = c->frame ? c->frame->self : c->val_nil;
@@ -501,14 +582,9 @@ asom_invoke(CTX *c, struct asom_method *m, VALUE receiver, VALUE *args, uint32_t
     m->body->head.dispatch_cnt++;
 
     uint32_t slots = m->num_params + m->num_locals;
-    // Heap-allocate the frame struct itself, not just `locals`. Blocks
-    // created during this method body may capture &frame as their
-    // lexical_parent, and they can outlive the method call (closure
-    // escape). Stack-allocating the frame would dangle that pointer the
-    // moment the method returns. We currently leak; once we add a GC,
-    // both `locals` and `frame` become roots.
-    struct asom_frame *frame = calloc(1, sizeof(*frame));
-    VALUE *locals = slots ? calloc(slots, sizeof(VALUE)) : NULL;
+    VALUE *locals;
+    uint16_t pool_slots;
+    struct asom_frame *frame = frame_alloc(slots, &locals, &pool_slots);
     for (uint32_t i = 0; i < nargs && i < m->num_params; i++) locals[i] = args[i];
     for (uint32_t i = nargs; i < slots; i++) locals[i] = c->val_nil;
 
@@ -519,6 +595,7 @@ asom_invoke(CTX *c, struct asom_method *m, VALUE receiver, VALUE *args, uint32_t
     frame->home = frame;
     frame->lexical_parent = NULL;
     frame->returned = 0;
+    frame->pool_slots = pool_slots;
     c->frame = frame;
 
     struct asom_unwind unwind = { .home = frame, .parent = g_unwind_top };
@@ -533,7 +610,9 @@ asom_invoke(CTX *c, struct asom_method *m, VALUE receiver, VALUE *args, uint32_t
 
     g_unwind_top = unwind.parent;
     c->frame = frame->parent;
-    // Intentionally leak `frame` and `locals` — see comment above.
+    // Pool the frame storage if no closure captured us. `captured` is set
+    // by asom_make_block when a nested block grabs us as lexical_parent.
+    frame_free(frame);
     return result;
 }
 
