@@ -438,6 +438,7 @@ extern const struct NodeKind
     kind_node_iftrue_iffalse, kind_node_iffalse_iftrue,
     kind_node_iftrue_pool, kind_node_iffalse_pool,
     kind_node_iftrue_iffalse_pool, kind_node_iffalse_iftrue_pool,
+    kind_node_and, kind_node_or,
     kind_node_whiletrue, kind_node_whilefalse,
     kind_node_to_do, kind_node_to_do_pool,
     kind_node_to_by_do, kind_node_to_by_do_pool,
@@ -502,6 +503,14 @@ subtree_creates_block(NODE *n)
     if (k == &kind_node_iffalse_pool) {
         return subtree_creates_block(n->u.node_iffalse_pool.cond)
             || subtree_creates_block(n->u.node_iffalse_pool.body_block);
+    }
+    if (k == &kind_node_and) {
+        return subtree_creates_block(n->u.node_and.cond)
+            || subtree_creates_block(n->u.node_and.body_block);
+    }
+    if (k == &kind_node_or) {
+        return subtree_creates_block(n->u.node_or.cond)
+            || subtree_creates_block(n->u.node_or.body_block);
     }
     if (k == &kind_node_iftrue_iffalse_pool) {
         return subtree_creates_block(n->u.node_iftrue_iffalse_pool.cond)
@@ -717,6 +726,14 @@ subtree_has_nlr(NODE *n)
     if (k == &kind_node_iffalse_pool) {
         return subtree_has_nlr(n->u.node_iffalse_pool.cond)
             || subtree_has_nlr(n->u.node_iffalse_pool.stmts);
+    }
+    if (k == &kind_node_and) {
+        return subtree_has_nlr(n->u.node_and.cond)
+            || subtree_has_nlr(n->u.node_and.stmts);
+    }
+    if (k == &kind_node_or) {
+        return subtree_has_nlr(n->u.node_or.cond)
+            || subtree_has_nlr(n->u.node_or.stmts);
     }
     if (k == &kind_node_iftrue_iffalse_pool) {
         return subtree_has_nlr(n->u.node_iftrue_iffalse_pool.cond)
@@ -1021,7 +1038,7 @@ make_send(Parser *P, NODE *recv, const char *sel, NODE **args, uint32_t nargs)
     // Comparing pointers (selectors are interned) is one cmp per check.
     static const char *sel_ifTrue, *sel_ifFalse, *sel_whileTrue, *sel_whileFalse,
                       *sel_ifTrueIfFalse, *sel_ifFalseIfTrue, *sel_toDo,
-                      *sel_timesRepeat, *sel_toByDo;
+                      *sel_timesRepeat, *sel_toByDo, *sel_and, *sel_or;
     if (UNLIKELY(sel_ifTrue == NULL)) {
         sel_ifTrue          = asom_intern_cstr("ifTrue:");
         sel_ifFalse         = asom_intern_cstr("ifFalse:");
@@ -1032,6 +1049,8 @@ make_send(Parser *P, NODE *recv, const char *sel, NODE **args, uint32_t nargs)
         sel_toDo            = asom_intern_cstr("to:do:");
         sel_timesRepeat     = asom_intern_cstr("timesRepeat:");
         sel_toByDo          = asom_intern_cstr("to:by:do:");
+        sel_and             = asom_intern_cstr("and:");
+        sel_or              = asom_intern_cstr("or:");
     }
     switch (nargs) {
     case 0: return ALLOC_node_send0(recv, sel, new_cc());
@@ -1064,6 +1083,10 @@ make_send(Parser *P, NODE *recv, const char *sel, NODE **args, uint32_t nargs)
                     : ALLOC_node_times_repeat(recv, stmts, args[0]);
             }
         }
+        if (sel == sel_and && block_is_inlinable(args[0]))
+            return ALLOC_node_and(recv, block_stmts(args[0]), args[0]);
+        if (sel == sel_or && block_is_inlinable(args[0]))
+            return ALLOC_node_or(recv, block_stmts(args[0]), args[0]);
         NODE *aspec = make_specialized_send_array(recv, args[0], NULL, 1, sel, new_cc());
         if (aspec) return aspec;
         NODE *spec = make_specialized_send1(recv, args[0], sel, new_cc());

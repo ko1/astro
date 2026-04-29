@@ -515,6 +515,45 @@ node_iffalse(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *stmts, NODE 
     return asom_send(c, v, asom_intern_cstr("ifFalse:"), 1, &blk, NULL);
 }
 
+// Boolean>>and: / Boolean>>or: with a block-literal arg. Standard SOM
+// definition is `^ self ifTrue: aBlock ifFalse: false` (and `or:` mirrors
+// with ifFalse:). Inlining matters most for short-circuit conditions like
+// `[notDone and: [z < 50]] whileTrue: [...]` (Mandelbrot inner loop): the
+// outer compare otherwise creates a fresh asom_block for `[z < 50]` on
+// every iteration, captures the enclosing frame, and leaks it from the
+// pool because `frame->captured = true`.
+NODE_DEF
+node_and(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *stmts, NODE *body_block)
+{
+    VALUE v = EVAL_ARG(c, cond);
+    if (LIKELY(v == c->val_true)) {
+        struct asom_frame frame;
+        asom_inline_frame_push(c, &frame);
+        VALUE result = EVAL_ARG(c, stmts);
+        asom_inline_frame_pop(c, &frame);
+        return result;
+    }
+    if (LIKELY(v == c->val_false)) return c->val_false;
+    VALUE blk = EVAL_ARG(c, body_block);
+    return asom_send(c, v, asom_intern_cstr("and:"), 1, &blk, NULL);
+}
+
+NODE_DEF
+node_or(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *stmts, NODE *body_block)
+{
+    VALUE v = EVAL_ARG(c, cond);
+    if (LIKELY(v == c->val_false)) {
+        struct asom_frame frame;
+        asom_inline_frame_push(c, &frame);
+        VALUE result = EVAL_ARG(c, stmts);
+        asom_inline_frame_pop(c, &frame);
+        return result;
+    }
+    if (LIKELY(v == c->val_true)) return c->val_true;
+    VALUE blk = EVAL_ARG(c, body_block);
+    return asom_send(c, v, asom_intern_cstr("or:"), 1, &blk, NULL);
+}
+
 NODE_DEF
 node_iftrue_iffalse(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *t_stmts, NODE *f_stmts, NODE *t_block, NODE *f_block)
 {
