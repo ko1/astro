@@ -256,6 +256,26 @@ luastro_export_all_sds(void)
     closedir(d);
 }
 
+// Variadic-operand children live in `LUASTRO_NODE_ARR` (the parser's
+// side array), referenced from `@noinline` nodes (`node_local_decl`,
+// multi-arg calls, table constructors).  ASTroGen's specializer walks
+// only typed `NODE *` operands so those side-array children never get
+// their own SD baked, leaving their `head.dispatcher` stuck at
+// `&DISPATCH_<name>` and forcing a host-binary bounce on every touch.
+//
+// Compile each side-array entry directly so every node in the
+// program ends up addressable by `dlsym(SD_<hash>)`.
+extern NODE     **LUASTRO_NODE_ARR;
+extern uint32_t   LUASTRO_NODE_ARR_CNT;
+
+static void
+luastro_specialize_side_array(const char *file)
+{
+    for (uint32_t i = 0; i < LUASTRO_NODE_ARR_CNT; i++) {
+        if (LUASTRO_NODE_ARR[i]) astro_cs_compile(LUASTRO_NODE_ARR[i], file);
+    }
+}
+
 void
 luastro_specialize_all(NODE *root, const char *file)
 {
@@ -263,6 +283,10 @@ luastro_specialize_all(NODE *root, const char *file)
     for (uint32_t i = 0; i < CR.cnt; i++) {
         astro_cs_compile(CR.entries[i].body, file);
     }
+    // Side-array walk: also bake SDs for variadic-operand children
+    // that ASTroGen's typed-operand specializer skips.  This raises the
+    // cs-hit rate from ~80% to ~95% on mandelbrot etc.
+    luastro_specialize_side_array(file);
     luastro_export_all_sds();   // post-process before the gcc build runs
     astro_cs_build(NULL);
     astro_cs_reload();
