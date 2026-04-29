@@ -24,7 +24,9 @@ extern const struct NodeKind
     kind_node_call,       kind_node_method_call,
     kind_node_call_arg0,  kind_node_call_arg1, kind_node_call_arg2, kind_node_call_arg3,
     kind_node_local_set,  kind_node_box_get,   kind_node_box_set,
-    kind_node_int_add, kind_node_int_sub, kind_node_int_mul;
+    kind_node_int_add, kind_node_int_sub, kind_node_int_mul,
+    kind_node_nil, kind_node_true, kind_node_false,
+    kind_node_int, kind_node_float, kind_node_string;
 
 // --- Side-array storage --------------------------------------------
 
@@ -112,6 +114,15 @@ typedef struct ParseFunc {
 
     LocalRef   local_refs[LP_MAX_LOCAL_REFS];
     uint32_t   nlocal_refs;
+
+    // Constant-init tracking for local-folding pass.  `const_init[i]`
+    // holds the constant NODE * used to initialize slot `i` (via
+    // `local x = <const>`); NULL if not foldable (multi-RHS decl,
+    // computed init, or no decl at all).  After full parse,
+    // `pf_fold_constants` checks for reassignment / capture and
+    // rewrites every `local_get` of a still-foldable slot to the
+    // constant.
+    NODE      *const_init[LP_MAX_LOCALS];
 } ParseFunc;
 
 static ParseFunc *PF_CURRENT = NULL;
@@ -292,6 +303,104 @@ pf_finalize_local_refs(ParseFunc *pf)
     }
 }
 
+// --- Local constant folding ----------------------------------------
+//
+// For locals declared via `local x = <constant>` where `<constant>` is
+// a literal (nil/true/false/int/float/string) AND the local is never
+// reassigned AND not captured by an inner closure, replace every
+// `local_get` of that slot with a fresh copy of the literal at parse
+// time.
+//
+// Lua semantics:
+//   - `load("...")` runs in a separate environment and cannot see the
+//     outer scope's locals → folding is observably equivalent.
+//   - Globals are NOT folded: `_G.foo = ...` and `load("foo = ...")`
+//     can mutate them.
+//
+// We currently fold only direct constants.  Computed-from-constants
+// (e.g. `local SOLAR_MASS = 4 * PI * PI`) would require a fix-point
+// pass; not implemented yet.
+
+static bool
+is_const_node(NODE *n)
+{
+    if (!n) return false;
+    const struct NodeKind *k = n->head.kind;
+    return k == &kind_node_nil   || k == &kind_node_true || k == &kind_node_false
+        || k == &kind_node_int   || k == &kind_node_float
+        || k == &kind_node_string;
+}
+
+// Allocate a fresh constant node identical in semantics to `src`.  We
+// don't share nodes across parents because each ALLOC_node_xxx call
+// emits its own structural-hash entry / SD entry, and parent linkage
+// is one-to-one.
+static NODE *
+clone_const_node(NODE *src)
+{
+    const struct NodeKind *k = src->head.kind;
+    if (k == &kind_node_nil)    return ALLOC_node_nil();
+    if (k == &kind_node_true)   return ALLOC_node_true();
+    if (k == &kind_node_false)  return ALLOC_node_false();
+    if (k == &kind_node_int)    return ALLOC_node_int(src->u.node_int.v);
+    if (k == &kind_node_float)  return ALLOC_node_float(src->u.node_float.v);
+    if (k == &kind_node_string) return ALLOC_node_string(src->u.node_string.s);
+    return NULL;  // unreachable given is_const_node check
+}
+
+static void
+pf_fold_constants(ParseFunc *pf)
+{
+    if (getenv("LUASTRO_NO_FOLD")) return;  // experimental: A/B test gate
+    // 1. Determine which slots are foldable.  Start with the slots
+    //    flagged by parse_local_stat, then disqualify on capture
+    //    or any subsequent local_set / box_set.
+    bool foldable[LP_MAX_LOCALS] = {0};
+    for (uint32_t i = 0; i < pf->nlocals; i++) {
+        foldable[i] = (pf->const_init[i] != NULL) && !pf->locals[i].is_captured;
+    }
+    for (uint32_t i = 0; i < pf->nlocal_refs; i++) {
+        LocalRef *r = &pf->local_refs[i];
+        const struct NodeKind *k = r->node->head.kind;
+        if (k == &kind_node_local_set || k == &kind_node_box_set) {
+            foldable[r->slot_idx] = false;
+        }
+    }
+
+    // 2. Replace every local_get of a foldable slot.  Two paths:
+    //    (a) typed-NODE* operand: parent->head.parent is set; use
+    //        the kind's REPLACER to swap the child pointer.
+    //    (b) variadic operand (LUASTRO_NODE_ARR entry): walk the
+    //        side array and replace in place.  REPLACER never
+    //        touches side arrays.
+    for (uint32_t i = 0; i < pf->nlocal_refs; i++) {
+        LocalRef *r = &pf->local_refs[i];
+        if (!foldable[r->slot_idx]) continue;
+        NODE *n = r->node;
+        if (n->head.kind != &kind_node_local_get) continue;  // already mutated (e.g. box_get)
+        NODE *konst = clone_const_node(pf->const_init[r->slot_idx]);
+        if (!konst) continue;
+        NODE *parent = n->head.parent;
+        if (parent && parent->head.kind->replacer) {
+            (*parent->head.kind->replacer)(parent, n, konst);
+            konst->head.parent = parent;
+        }
+    }
+    // Side-array sweep: any local_get reachable through LUASTRO_NODE_ARR
+    // (call args, table constructors, multi-rhs decls) didn't have its
+    // parent recorded, so head.parent is NULL.  Replace those entries
+    // by walking the global array.
+    for (uint32_t i = 0; i < LUASTRO_NODE_ARR_CNT; i++) {
+        NODE *e = LUASTRO_NODE_ARR[i];
+        if (!e || e->head.kind != &kind_node_local_get) continue;
+        uint32_t slot = e->u.node_local_get.idx;
+        if (slot >= pf->nlocals || !foldable[slot]) continue;
+        NODE *konst = clone_const_node(pf->const_init[slot]);
+        if (!konst) continue;
+        LUASTRO_NODE_ARR[i] = konst;
+    }
+}
+
 // --- Top-level entry ------------------------------------------------
 
 // struct ParsedChunk { ... };  // declared in main.c
@@ -313,6 +422,7 @@ PARSE_lua(const char *src, const char *filename, struct ParsedChunk *out)
     scope_leave();
 
     pf_finalize_local_refs(&top);
+    pf_fold_constants(&top);
 
     if (cur()->kind != LT_EOF) lua_tok_error("expected end of input");
 
@@ -403,7 +513,23 @@ parse_local_stat(void)
     // SD that inlines the rhs's evaluation directly (no @noinline
     // trampoline through the side array).
     if (nnames == 1 && nexps == 1) {
+        // Record candidate for constant folding: single decl, single rhs,
+        // rhs is a direct literal.  pf_fold_constants will later confirm
+        // no reassignment / capture before applying.
+        if (is_const_node(exps[0])) {
+            PF_CURRENT->const_init[indices[0]] = exps[0];
+        }
         return ALLOC_node_local_decl_one(indices[0], exps[0]);
+    }
+    // Multi-decl with matched LHS/RHS counts: each pair is independent
+    // (no spread, no nil-fill), so fold each `(slot_i, exps_i)` where
+    // exps_i is a direct literal.  Covers `local W, H = 200, 200`.
+    if (nnames == nexps) {
+        for (uint32_t i = 0; i < nnames; i++) {
+            if (is_const_node(exps[i])) {
+                PF_CURRENT->const_init[indices[i]] = exps[i];
+            }
+        }
     }
     uint32_t lhs_idx = reg_u32_arr(indices, nnames);
     uint32_t rhs_idx = nexps ? reg_node_arr(exps, nexps) : 0;
@@ -953,6 +1079,7 @@ parse_function_body(bool is_method, struct LuaString *name)
     expect(LT_END, "'end'");
 
     pf_finalize_local_refs(&child);
+    pf_fold_constants(&child);
 
     scope_leave();
     PF_CURRENT = parent;
