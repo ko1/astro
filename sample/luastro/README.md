@@ -106,7 +106,7 @@ See [`docs/runtime.md`](docs/runtime.md) for full detail.
 Wall time, single run on a stable machine, `gcc -O3` build,
 Lua 5.4.6 and LuaJIT 2.1, `N=3` (best of 3).
 
-| benchmark   | luastro | AOT-1st | AOT-c   | lua5.4  | luajit  | vs lua5.4   |
+| benchmark   | luastro | AOT-1st | AOT-cached   | lua5.4  | luajit  | vs lua5.4   |
 |-------------|--------:|--------:|--------:|--------:|--------:|------------:|
 | ack         | 0.142s  | 0.350s  | 0.062s  | 0.053s  | 0.009s  | 1.17× behind |
 | factorial   | 0.042s  | 0.246s  | 0.011s  | 0.028s  | 0.004s  | **2.5× faster** |
@@ -122,13 +122,13 @@ Columns:
 - **luastro** — pure interpreter (no `code_store/`).
 - **luastro-AOT-1st** — `-c`: bake + run in one process; `code_store/`
   cleared per iteration so timing **includes** gcc compile time.
-- **luastro-AOT-c** — bake once in `setup` (not timed), then time
+- **luastro-AOT-cached** — bake once in `setup` (not timed), then time
   pure execution against the warmed `all.so`.
 
 ### What the numbers say
 
 **Integer-dominant** workloads (`loop`, `factorial`, `fib`,
-`tak`, `ack`): with AOT-c, luastro is **at parity or faster than
+`tak`, `ack`): with AOT-cached, luastro is **at parity or faster than
 lua5.4**.
 
 - `loop`: 3 ms vs 39 ms — **13× faster** than lua5.4.  This benchmark
@@ -140,9 +140,9 @@ lua5.4**.
 
 **Float-dominant** workloads (`mandelbrot`, `nbody`): a sequence of
 five changes landed against the always-heap-box baseline.  Cumulative
-effect on `mandelbrot` AOT-c:
+effect on `mandelbrot` AOT-cached:
 
-| Step                                              | mandelbrot AOT-c |
+| Step                                              | mandelbrot AOT-cached |
 |---------------------------------------------------|-----------------:|
 | Baseline (16-byte LuaValue, every double on heap) |           737 ms |
 | 8-byte LuaValue with heap-boxed doubles           |           126 ms |
@@ -159,8 +159,8 @@ effect on `mandelbrot` AOT-c:
 | **+ stop re-interning string operands every dispatch** | (mandelbrot unaffected; **nbody 33→22 ms, -33%**) |
 | **+ shape-token inline cache on `node_field_get`** | (mandelbrot unaffected; **nbody 22→17 ms, -23%**) |
 
-mandelbrot AOT-c: 52 ms vs lua5.4 51 ms — **tied** (was 15.7× behind).
-nbody AOT-c: 17 ms vs lua5.4 12 ms — **1.42× behind** (was 9.3×).
+mandelbrot AOT-cached: 52 ms vs lua5.4 51 ms — **tied** (was 15.7× behind).
+nbody AOT-cached: 17 ms vs lua5.4 12 ms — **1.42× behind** (was 9.3×).
 
 The remaining gap is mostly per-node `DISPATCH_*` indirect calls in
 the AOT-cached SD's outermost handler (children that didn't get baked

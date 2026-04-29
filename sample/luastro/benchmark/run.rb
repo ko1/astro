@@ -50,8 +50,8 @@ ENGINES = [
   },
   {
     # AOT steady-state: bake once, then time pure execution against the
-    # warmed code_store/all.so.
-    name:  "luastro-AOT-c",
+    # warmed code_store/all.so.  Mirrors wastro's "AOT-cached" column.
+    name:  "luastro-AOT-cached",
     setup: "rm -rf #{PARENT}/code_store && CCACHE_DISABLE=1 #{EXE} --aot-compile %s",
     cmd:   "#{EXE} %s",
   },
