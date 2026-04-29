@@ -367,17 +367,39 @@ an error rather than returning a callable proxy.  Use
 
 ## 11. AOT / code store
 
-The AOT path mirrors naruby's:
+The AOT path mirrors naruby's, with two luastro-specific post-passes
+between the source emission and the gcc compile step:
 
 ```
 ./luastro -c foo.lua
    │
-   ├──▶ astro_cs_compile(chunk_root)        — emit code_store/c/SD_<h>.c
+   ├──▶ astro_cs_compile(chunk_root)         — emit code_store/c/SD_<h>.c
    ├──▶ for each LuaClosure body (registered at construction time):
    │       astro_cs_compile(body)
-   ├──▶ astro_cs_build()                    — gcc -shared → all.so
-   ├──▶ astro_cs_reload()                   — dlopen(all.so)
-   ├──▶ astro_cs_load(chunk_root)           — re-resolve dispatchers
+   │
+   ├──▶ luastro_specialize_side_array()      — bake SDs for the
+   │                                            variadic-operand children
+   │                                            that ASTroGen's typed-
+   │                                            operand walker skips
+   │                                            (LUASTRO_NODE_ARR entries)
+   │
+   ├──▶ luastro_export_all_sds()             — for every SD_<h>.c file,
+   │                                            rename SD_<hash> → SD_<hash>_INL
+   │                                            inside the file (so the
+   │                                            in-source function-pointer
+   │                                            chain still inlines through
+   │                                            `static inline`) and append
+   │                                            an extern weak wrapper
+   │                                            `RESULT SD_<hash>(...) {
+   │                                                return SD_<hash>_INL(...);
+   │                                            }` so dlsym can find every
+   │                                            SD, not just the chunk root
+   │
+   ├──▶ astro_cs_build()                     — gcc -shared → all.so
+   ├──▶ astro_cs_reload()                    — dlopen(all.so)
+   ├──▶ astro_cs_load(chunk_root)            — patch each AST node's
+   │                                            head.dispatcher to its
+   │                                            SD wrapper (via dlsym)
    └──▶ run as usual; every specialized node now jumps to its SD_<h>.
 ```
 
@@ -389,10 +411,40 @@ produce the same hash and share the SD.  This means:
 - It's also reusable across *different* programs that happen to share
   AST shapes — the global cache builds up over time.
 
+The wrapper post-pass is what turns "all SDs are `static inline`"
+(invisible to dlsym, so only the chunk root's dispatcher gets
+patched) into "every SD is callable by name at runtime" while
+keeping the in-source chain inlinable.  Without it, mandelbrot
+AOT-cached spent ~50% of cycles bouncing through the host binary's
+`DISPATCH_<name>` for every per-node touch.
+
+The side-array pass is what bakes children that hide inside
+`@noinline` parents — `node_local_decl`'s rhs side array,
+`node_call_argN`'s argument side array, `node_table_new`'s
+key/value side arrays.  Without it, those children stay on the
+default `DISPATCH_<name>` even after AOT.
+
 `--no-compile` skips the load entirely (every node stays on its
 default `DISPATCH_<name>`).  `-p / --pg-compile` runs first (so
 profile-conditional `swap_dispatcher` choices get baked) and then
 emits SDs.
+
+### Process-local references in SD bodies
+
+The SD source goes to disk and is reused across runs, so it can't
+bake process-local pointer values directly.  Two strategies in
+play:
+
+- **`LuaString *` operands** (interned per-process): the parser
+  populates `n->u.<kind>.<field>` at parse time, and the SD body
+  reads it back via `n->u.X.field` — fresh per run because the
+  parser rebuilds the AST.  No re-intern cost on the hot path.
+
+- **Inline caches** (e.g. `LuaFieldIC` on `node_field_get`): the
+  cache state lives in an `@ref` operand inline-stored on the AST
+  node, hashed as `0` so the structural hash is stable across
+  cache mutation.  Hot path: shape-token compare + slot key
+  compare; miss path: full lookup + cache refresh.
 
 ## 12. Threading model
 

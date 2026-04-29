@@ -137,9 +137,10 @@ swaps in, yield swaps back, errors inside a coroutine propagate as
 | `node_lt` / `node_le` | int+int / float+float direct + mixed numeric promotion; metamethod fallback only for non-numeric operands |
 | `node_call_arg{0,1,2,3}` | Fixed-arity Lua-to-Lua calls without metamethod / cfunc dispatch |
 | `node_call_argN` | Variable arity (≥4 args, or method calls) |
-| `node_numfor_int_sum` | Whole-loop fused node for `for i=...do sum = sum + i end` (12.7× faster than lua5.4) |
-| `node_local_decl` | Generic N-LHS/N-RHS body with multi-return spread, plus a 1-LHS/1-RHS fast path that skips the staging array entirely |
-| `node_field_get` | `@always_inline`-tagged so the SD body fuses the table lookup; uses pre-interned `__index` / `string` (no per-touch `lua_str_intern`) |
+| `node_numfor_int_sum` | Whole-loop fused node for `for i=...do sum = sum + i end` (13.3× faster than lua5.4) |
+| `node_local_decl_one` | Parser-emitted 1-LHS/1-RHS specialization for `local x = expr` (typed `NODE *rhs`, `@always_inline`) — bypasses the `@noinline` general `node_local_decl`'s side-array path |
+| `node_local_decl` | Generic N-LHS/N-RHS body with multi-return spread (rare path, `@noinline`); the common single-decl form goes through `node_local_decl_one` |
+| `node_field_get` | `@always_inline`; carries a `LuaFieldIC` `@ref` slot (shape-token IC: cached `hash_cap` + slot offset), pre-interned `__index` / `string` for the metamethod fallback |
 
 ## Hot-path runtime helpers
 
@@ -148,7 +149,10 @@ swaps in, yield swaps back, errors inside a coroutine propagate as
 | `luav_from_double` / `luav_to_double` | `static inline __attribute__((always_inline))` in `context.h` so SDs SROA the LuaValue carrier away |
 | `luav_box_double(0.0)` | Returns a single shared `LuaHeapDouble` (not GC-registered, never freed) — most common heap-boxed double in real workloads |
 | `LUASTRO_S_*` (e.g. `LUASTRO_S___INDEX`) | Pre-interned metamethod / library names used by `node_field_get`, `lua_lt`, `lua_arith`, `lua_call`, … to avoid re-interning the same C string per access |
+| `struct LuaFieldIC` | Inline cache for `node_field_get` (shape token = `hash_cap`, plus slot offset).  Stored as an `@ref` operand on the AST node, skipped from the structural hash. |
 | `lua_table_seti` | Routes integer keys ≤ `2 × arr_cap + 4` to the dense array part even if not strictly contiguous (so `for i=2,N do t[i]=... end` doesn't drop into the hash) |
+| `luastro_export_sd_wrappers` (in `luastro_specialize_all`) | Post-process pass that renames every `SD_<hash>` reference inside each generated `code_store/c/SD_<hash>.c` to `SD_<hash>_INL` and appends a `__attribute__((weak)) RESULT SD_<hash>(...) { return SD_<hash>_INL(...); }` extern wrapper.  Lets `dlsym` find every baked SD so `astro_cs_load` patches every node, not just the chunk root. |
+| `luastro_specialize_side_array` | Walks `LUASTRO_NODE_ARR[0..CNT)` and calls `astro_cs_compile` on each entry, baking SDs for variadic-operand children (`@noinline` parents like `node_call_argN` / `node_table_new` whose children ASTroGen's typed-operand walker skips). |
 
 ## Build / driver
 

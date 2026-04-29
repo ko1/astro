@@ -72,9 +72,10 @@ sample/luastro/
 
 - **8-byte tagged LuaValue** (`uint64_t`).  Low 3 bits encode the tag:
   `000` = pointer to a heap object, `001` = 63-bit fixnum, `010` =
-  inline flonum (reserved, see `todo.md`).  Whole-word singletons:
-  `0x00` = nil, `0x14` = false, `0x24` = true.  Heap-object subtype
-  read from `GCHead.type` (offset 0 of the object).
+  inline flonum (shift-encoded, lossless for magnitudes in
+  ≈ 2^-255..2^256 both signs; see `docs/runtime.md` §3).  Whole-word
+  singletons: `0x00` = nil, `0x14` = false, `0x24` = true.  Heap-object
+  subtype read from `GCHead.type` (offset 0 of the object).
 - **Captured locals** become heap `LuaBox` cells lazily on first
   access; `frame[]` slots hold a tagged pointer to the box.  Inner
   closures share the same `&box->value` so writes are visible across
@@ -83,19 +84,24 @@ sample/luastro/
   `lua_runtime.c`) bypasses `lua_call`'s metamethod / cfunc dispatch
   on the hot path of recursive Lua-to-Lua calls.
 - **AOT via code store**: `-c` emits per-node `code_store/c/SD_<hash>.c`,
-  links them into `all.so`, and re-resolves each AST node's dispatcher
+  post-processes each file (rename `SD_<hash>` → `SD_<hash>_INL`
+  in-source + append a weak extern wrapper so `dlsym` finds every SD,
+  and walk `LUASTRO_NODE_ARR` so variadic-operand children get baked
+  too), links into `all.so`, and re-resolves each AST node's dispatcher
   to its specialized SD entry.  The hash is structural, so the cache
   is reusable across runs and across programs that share AST shapes.
+- **Inline cache on `node_field_get`** — shape-token IC stored as
+  `@ref` inline state on the AST node (`hash_cap` + slot offset).
+  Hot path: shape match + slot-key match → return value with no
+  hash / probe.  Generalises to any "stable shape" workload.
 - **Branch state via globals**: control flow (`break`, `return`,
   `goto`, `continue`) propagates through the `LUASTRO_BR` /
   `LUASTRO_BR_VAL` globals, set by the corresponding `RESULT_*`
   macros.  An earlier draft folded `br` into the return value
   (`rax+rdx`); see `todo.md`.
-- **Inline flonum** for the common magnitude range (b62 ∈ {3, 4},
-  ≈ 2^-255..2^256, both signs).  Out-of-range doubles (zero,
-  denormals, ±Inf, NaN, very tiny / very large) heap-box as
-  `LuaHeapDouble`.  See [`docs/runtime.md`](docs/runtime.md) §3 for
-  the encoding details.
+- **Out-of-range doubles** (zero, denormals, ±Inf, NaN, magnitudes
+  outside `b62 ∈ {3, 4}`) heap-box as `LuaHeapDouble`.  `+0.0` is
+  served by a single pinned cell to avoid per-zero allocation.
 - **4 GB worker stack** for the chunk pthread, so deeply recursive
   programs don't trip the kernel guard page (SD frames are ~1 KB).
 
