@@ -161,10 +161,9 @@ GLOBAL_FUNCS = {}   # name -> [idx_or_nil, ret_ty (CType), [param_tys (CType)]]
                     # function_definitions encountered; nil for extern
                     # declarations that have no body in this TU.
 
-# Filled in by compile_function: FUNC_NEEDS_SETJMP[idx] = true if the
-# function's body still has un-lifted `return` (so callers must use
-# the setjmp-variant call node).
-FUNC_NEEDS_SETJMP = []
+# (Function returns now propagate through RESULT.state and are caught
+# at the call-site boundary regardless of where they appear in the
+# body, so there is no per-function "needs setjmp" flag anymore.)
 STRUCTS = {}        # tag -> { fields: [[name, CType]], offsets: { name => slot_idx }, size_slots: N }
 TYPEDEFS = {}       # name -> CType
 
@@ -547,94 +546,14 @@ def emit_sx(node, out)
 end
 
 # =====================================================================
-# Loop helpers (break/continue routing)
 # =====================================================================
-ALWAYS_RETURN_OPS = %i[return return_void].freeze
-
-def loop_escape_kind(expr)
-  return :neither unless expr.is_a?(Array)
-  has_brk = false
-  has_cnt = false
-  walk = lambda do |e|
-    return unless e.is_a?(Array)
-    case e[0]
-    when :break    then has_brk = true
-    when :continue then has_cnt = true
-    when :while, :do_while, :for,
-         :while_brk, :do_while_brk, :for_brk,
-         :while_brk_only, :do_while_brk_only, :for_brk_only
-      return
-    else
-      e.each { |c| walk.call(c) }
-    end
-  end
-  walk.call(expr)
-  if has_brk && has_cnt then :both
-  elsif has_brk then :has_break
-  elsif has_cnt then :has_continue
-  else :neither
-  end
-end
-
-def pick_loop(base, normal_form, body)
-  kind = loop_escape_kind(body)
-  return normal_form if kind == :neither
-  brk = (base.to_s + '_brk').to_sym
-  brk_only = (base.to_s + '_brk_only').to_sym
-  tag = (kind == :has_break ? brk_only : brk)
-  [tag, *normal_form[1..]]
-end
-
+# Loops, returns, gotos: all unified through RESULT-state propagation
+# at runtime now, so parse.rb's job is much simpler — no tail-return
+# lifting (the runtime UNWRAP propagates RESULT_RETURN through every
+# seq/if/etc.), no `_brk` / `_brk_only` loop variants (every loop
+# catches RESULT_BREAK / RESULT_CONTINUE uniformly), no goto dispatch
+# wrap-up (RESULT_GOTO carries the label up to node_goto_dispatch).
 # =====================================================================
-# Tail-return lifting
-# =====================================================================
-def always_returns?(expr)
-  return false unless expr.is_a?(Array)
-  case expr[0]
-  when :return, :return_void then true
-  when :seq                  then always_returns?(expr[2])
-  when :if, :ternary         then always_returns?(expr[2]) && always_returns?(expr[3])
-  else false
-  end
-end
-
-def has_return?(expr)
-  return false unless expr.is_a?(Array)
-  return true if ALWAYS_RETURN_OPS.include?(expr[0])
-  expr.any? { |e| has_return?(e) }
-end
-
-def lift_tail(expr)
-  return expr unless expr.is_a?(Array)
-  case expr[0]
-  when :return then expr[1]
-  when :return_void then [:lit_i, 0]
-  when :seq
-    a, b = expr[1], expr[2]
-    if always_returns?(a)
-      lift_tail(a)
-    elsif a.is_a?(Array) && a[0] == :if
-      _, c, t, e = a
-      if always_returns?(t) && always_returns?(e)
-        lift_tail(a)
-      elsif always_returns?(t)
-        lift_tail([:if, c, t, [:seq, e, b]])
-      elsif always_returns?(e)
-        lift_tail([:if, c, [:seq, t, b], e])
-      else
-        [:seq, a, lift_tail(b)]
-      end
-    else
-      [:seq, a, lift_tail(b)]
-    end
-  when :if
-    [:if, expr[1], lift_tail(expr[2]), lift_tail(expr[3])]
-  when :ternary
-    [:ternary, expr[1], lift_tail(expr[2]), lift_tail(expr[3])]
-  else
-    expr
-  end
-end
 
 # =====================================================================
 # sizeof(type_or_expr)
@@ -1410,12 +1329,9 @@ def compile_call(node, fn, src)
         seq_ops << [:lset, arg_index + i, cast(asx, ats, param_tys[i])]
       end
       fn.next_local -= args.length
-      # Always emit a plain `:call` here; a post-pass after every
-      # function body is fully compiled rewrites the call into
-      # `:call_jmp` if the callee turned out to need a setjmp wrapper.
-      # This makes the choice work even for self-recursion / mutual
-      # recursion where the callee's `needs_setjmp` isn't yet known
-      # at the time we emit the caller's body.
+      # Single `:call` form.  Per-function setjmp variant routing is
+      # gone — the runtime catches RESULT_RETURN at every call-site
+      # boundary (see node_call in node.def).
       chain = [:call, func_idx, args.length, arg_index]
       seq_ops.reverse_each { |s| chain = [:seq, s, chain] }
       return [chain, ret_ty]
@@ -1504,12 +1420,12 @@ def compile_stmt(node, fn, src)
   when 'while_statement'
     cs, ct = compile_expr(node.child_by_field_name('condition'), fn, src)
     body = compile_stmt(node.child_by_field_name('body'), fn, src)
-    pick_loop(:while, [:while, to_bool(cs, ct), body], body)
+    [:while, to_bool(cs, ct), body]
 
   when 'do_statement'
     body = compile_stmt(node.child_by_field_name('body'), fn, src)
     cs, ct = compile_expr(node.child_by_field_name('condition'), fn, src)
-    pick_loop(:do_while, [:do_while, body, to_bool(cs, ct)], body)
+    [:do_while, body, to_bool(cs, ct)]
 
   when 'for_statement'
     init = node.child_by_field_name('initializer')
@@ -1536,7 +1452,7 @@ def compile_stmt(node, fn, src)
         [:drop, es]
       end
     body_sx = compile_stmt(body, fn, src)
-    pick_loop(:for, [:for, init_sx, cs, upd_sx, body_sx], body_sx)
+    [:for, init_sx, cs, upd_sx, body_sx]
 
   when 'break_statement'    then [:break]
   when 'continue_statement' then [:continue]
@@ -1727,15 +1643,7 @@ def compile_switch(node, fn, src)
   body_seq = body_stmts.last
   body_stmts[0...-1].reverse_each { |s| body_seq = [:seq, s, body_seq] }
 
-  loop_kind = loop_escape_kind([:_dummy, body_seq])
-  case loop_kind
-  when :neither
-    [:seq, body_seq, [:nop]]
-  when :has_break
-    [:do_while_brk_only, body_seq, [:lit_i, 0]]
-  else
-    [:do_while_brk, body_seq, [:lit_i, 0]]
-  end
+  [:do_while, body_seq, [:lit_i, 0]]
 end
 
 # =====================================================================
@@ -1809,9 +1717,11 @@ def lower_goto(body, fn)
   end
 
   body_sx = combine_seq(cases_sx)
-  # Wrap in a while(true)_brk so `[:break]` exits.
+  # Wrap in `while(1)`; the trailing `[:break]` in the last segment
+  # exits the dispatch loop, and `[:goto idx]` is caught by
+  # `node_goto_dispatch` which updates goto_target and re-enters.
   [:goto_dispatch,
-   [:while_brk_only, [:lit_i, 1], body_sx]]
+   [:while, [:lit_i, 1], body_sx]]
 end
 
 def collect_label_markers(node)
@@ -2101,14 +2011,8 @@ def compile_function(fdef, src)
   body = fdef.child_by_field_name('body')
   body_sx = compile_stmt(body, fn, src)
   body_sx = [:seq, body_sx, [:return_void]]
-  body_sx = lift_tail(body_sx)
   body_sx = lower_goto(body_sx, fn) if fn.uses_goto
-  has_returns = has_return?(body_sx) ? 1 : 0
-  # Record whether this function needs setjmp wrapping at call sites
-  # — used by compile_call to pick `call` vs `call_jmp`.
-  func_idx = GLOBAL_FUNCS.key?(name) ? GLOBAL_FUNCS[name][0] : nil
-  FUNC_NEEDS_SETJMP[func_idx] = has_returns == 1 if func_idx
-  [name, fn, body_sx, ret_ty, has_returns]
+  [name, fn, body_sx, ret_ty]
 end
 
 # =====================================================================
@@ -2169,30 +2073,16 @@ def main
     end
   end
 
-  # Post-pass: now that every function's `has_returns` is known, swap
-  # any `:call` whose callee needs setjmp to `:call_jmp`.  Without this,
-  # self-recursion silently picked the no-jmp variant during the inner
-  # `compile_function` (FUNC_NEEDS_SETJMP[idx] hadn't been written yet).
-  patch_call_jmp = lambda do |node|
-    next unless node.is_a?(Array)
-    if node[0] == :call
-      callee = node[1]
-      node[0] = :call_jmp if FUNC_NEEDS_SETJMP[callee]
-    end
-    node.each { |c| patch_call_jmp.call(c) }
-  end
-  funcs.each { |_, _, body_sx, _, _| patch_call_jmp.call(body_sx) }
-
   # Output layout (signatures first, then bodies in matching order):
   #
   #   (program GSIZE NFUNCS
   #     INIT_EXPR
-  #     (sig NAME P L T HR) ... (NFUNCS times)
-  #     BODY_EXPR ...        (NFUNCS times in same order))
+  #     (sig NAME) ...    (NFUNCS times)
+  #     BODY_EXPR ...     (NFUNCS times in same order))
   #
-  # The C side reads sigs first to register stub function_entry's, then
-  # parses bodies — that way calls inside a body can resolve any other
-  # function by index even when it's defined later in the SX stream.
+  # The C side reads names first to allocate the func table, then parses
+  # bodies — that way calls inside a body can resolve any other function
+  # by index even when it's defined later in the stream.
   out = +''
   out << "(program #{GLOBAL_NEXT} #{funcs.length}\n  "
   init_expr = if GLOBAL_INITS.empty?
@@ -2202,10 +2092,10 @@ def main
   end
   emit_sx(init_expr, out)
   out << "\n"
-  funcs.each do |name, fn, body_sx, ret_ty, has_returns|
-    out << "  (sig #{name} #{fn.params.length} #{fn.next_local} #{ret_ty.slot_kind} #{has_returns})\n"
+  funcs.each do |name, _fn, _body_sx, _ret_ty|
+    out << "  (sig #{name})\n"
   end
-  funcs.each do |name, fn, body_sx, ret_ty, has_returns|
+  funcs.each do |_name, _fn, body_sx, _ret_ty|
     out << "  "
     emit_sx(body_sx, out)
     out << "\n"

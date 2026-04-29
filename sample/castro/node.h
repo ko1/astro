@@ -4,10 +4,11 @@
 #include "context.h"
 
 typedef struct Node NODE;
-// 3-arg dispatcher: castro threads `VALUE *fp` (the active frame
-// pointer) through every node EVAL as a register-passed argument so
-// node_call doesn't need to round-trip through `c->fp` on each call.
-typedef VALUE (*node_dispatcher_func_t)(CTX *c, NODE *n, VALUE *fp);
+// 3-arg dispatcher returning RESULT (= rax:rdx).  fp is threaded as a
+// register-passed common parameter so node_call doesn't round-trip
+// through `c->fp`; the RESULT envelope carries the state bit so non-
+// local exit (return/break/continue/goto) propagates without setjmp.
+typedef RESULT (*node_dispatcher_func_t)(CTX *c, NODE *n, VALUE *fp);
 typedef uint64_t node_hash_t;
 
 void INIT(void);
@@ -54,7 +55,7 @@ struct NodeHead {
 // indirection back into the host.  Caller supplies the `fp` to use
 // for the evaluated tree (typically `c->env` for the program entry,
 // or the caller's local frame for nested evaluation).
-static inline VALUE
+static inline RESULT
 EVAL(CTX *c, NODE *n, VALUE *fp)
 {
     return (*n->head.dispatcher)(c, n, fp);

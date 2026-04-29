@@ -16,13 +16,15 @@ asom 実行モデル
     frame ─────────────────────→ struct asom_frame (現在のフレーム)
     serial                                       ← 動的 IC 失効用       
                                                                        
-  asom_frame (heap-allocated, leak)                                    
+  asom_frame (per-bucket free-list pool；captured 時のみ heap leak)     
     self                       ← 現在のレシーバ                          
-    locals[args + locals]      ← VALUE *（heap 上）                      
+    locals[args + locals]      ← VALUE * (frame と同じスラブ内)           
     method ──────────→ struct asom_method                               
     parent ──────────→ asom_frame (caller)                              
     home   ──────────→ asom_frame (^ NLR target)                        
     lexical_parent ──→ asom_frame (block の outer scope)                
+    captured                   ← 入れ子 closure に lexical_parent として捕捉されたか
+    pool_slots                 ← 0=未 pool / N=サイズ N-1 のバケット      
                                                                        
   parsed AST tree                                                       
     NODE.head.dispatcher → DISPATCH_node_xxx (interp)                   
@@ -153,6 +155,67 @@ asom_invoke_method(CTX *c, struct asom_method *m, VALUE recv,
 }
 ```
 
+### 型特化送信ノード（IC バイパス）
+
+整数算術／比較／配列 at: の送信は parse 時から専用ノードに発行され、
+`asom_send` を経由しない:
+
+```
+node_send1_intplus / intminus / inttimes              ← Integer +,-,*
+node_send1_intlt / intgt / intle / intge / inteq      ← Integer <,>,<=,>=,=
+node_send1_arrayat / node_send2_arrayatput           ← Array at:, at:put:
+```
+
+ファスト・パスはタグビット 1〜2 個のチェック + インライン算術 + 再タグ付け
+のみ。型 guard が外れると `swap_dispatcher(n, &kind_node_send1)` で汎用
+send1 に書き戻し、`asom_send` で再ディスパッチする（IC ヒットして以降は
+普通の経路）。すべての特化版は `@canonical=node_send1` で構造ハッシュを
+共通化しているので、SD コードはスワップ前後どちらでも同じシャードを
+使える。SD-bake 後は `is_specialized=true` がセットされ、swap は no-op。
+
+`asom_method.prim_kind` を `def_prim_kind` で立てておけば、parse-time に
+取りこぼした送信もスローパスでタイプ・フィードバックして
+`swap_dispatcher` で書き換える経路が残してある（保険）。
+
+### 制御フロー・インライン化（block の calloc/setjmp スキップ）
+
+`ifTrue: / ifFalse: / ifTrue:ifFalse: / ifFalse:ifTrue: / whileTrue: /
+whileFalse: / to:do: / to:by:do: / timesRepeat:` は、ブロック引数が一定の
+条件を満たすとパース時に専用ノードに書き換える:
+
+| 専用ノード | 元のブロック条件 | フレーム種類 |
+|----------|------------------|------------|
+| `node_iftrue` etc.   | 0 引数 / 0 ローカル / nested block 無し | C スタック |
+| `node_whiletrue` etc. | 0 引数 / 0 ローカル / nested block 無し | C スタック (1 frame をループ全体で再利用) |
+| `node_to_do`         | 1 引数 / 0 ローカル / nested block 無し | C スタック (locals = &slot) |
+| `node_to_do_pool`    | 1 引数 / 0 ローカル / nested block あり | pool (heap, escape 安全) |
+| `node_to_by_do[_pool]` | 同上の 3-arg 版                       | 同上                                       |
+| `node_times_repeat[_pool]` | 0 引数 / 0 ローカル                | 同上                                       |
+
+C スタック版は `asom_inline_frame_push` で最小フレーム
+（`lexical_parent = c->frame`、`locals = NULL` または `&slot`）を積み、
+`asom_block_invoke` の calloc + setjmp を一切払わない。pool 版は
+`asom_inline_pool_frame_push` で per-bucket free list (`g_frame_pool[16]`)
+から 1 枠 pop。`whileTrue:` 系は **ループ全体で 1 個のフレームを再利用**
+するので、効果は反復回数で線形にスケールする。
+
+ifTrue:/ifFalse: 系は受信値が `val_true / val_false` でない場合に備え、
+元の `node_block` を operand に保持しておき、`asom_send` 経由で正規
+ディスパッチに fallback する（DNU 互換、benchmarks では発火しない）。
+
+エスケープ防止: 本体に nested block 生成があると、その closure が
+スタック・フレームを `lexical_parent` に取り込み、関数戻り後に UAF と
+なる。パース時の `subtree_creates_block()` がこれを検出し、stack 版／
+pool 版／非 inline (普通の send) を選び分ける。
+
+### `m->no_nlr` で setjmp スキップ
+
+メソッド本体に `node_block` がひとつも無ければ、文法的に NLR (`^expr`
+from a nested block) は発生しえない。パース時に `subtree_creates_block`
+の結果を `pm->no_nlr` にセットし、`asom_invoke` がフラグを見て setjmp 設置
+を丸ごとスキップする（`asom_unwind` も作らない）。再帰系ベンチ
+(Towers / Queens / List) で per-call ~50 ns の節約が積もる。
+
 ### Selector intern と SD 互換
 
 selector 文字列は parse 時に `asom_intern_cstr` でインターン (FNV-64 ハッシュ
@@ -210,6 +273,24 @@ method M:
 スタックから探し、見つかれば longjmp。見つからない (home が return 済み)
 ときは escape として `asom_block_invoke` 側のユニバーサル catch にジャンプし、
 `escapedBlock:` を発動。
+
+## アロケータ — frame pool / double arena / block arena
+
+GC が無いので「常設プール / bump arena」で per-call calloc を潰している:
+
+| 対象 | 構造 | 戻し方 |
+|------|------|--------|
+| `asom_frame` + `locals[]` | per-slot-count free list (16 buckets) | `frame_free`: `captured` でなければ pool に push、否なら heap leak |
+| `asom_double` | bump arena (slab = 4096 個) | 戻さない（GC 待ち） |
+| `asom_method` + `asom_block` | bump arena (slab = 1024 個、隣接) | 戻さない（GC 待ち） |
+
+closure escape の安全性: `asom_make_block` は `c->frame->captured = true`
+（およびその全 lexical 上位）をセット。pool は captured フラグを尊重して
+recycle しないので、escape 後のフレームは heap に残ったまま — 旧来の
+リーク挙動と等価で UAF にならない。
+
+数値ベンチでは bump arena が大きく効く: Mandelbrot で **double arena が
+1.43× 高速化**、block arena との合計で initial baseline 比 **2× 以上**。
 
 ## 標準ライブラリ統合
 
@@ -269,8 +350,10 @@ asom は現在 `HOPT == HORG` (profile-aware ハッシュ未実装) なので、
 SD コードは selector を bare 文字列リテラルで埋め込む。intern プールを
 通らないので、`asom_class_lookup` のポインタハッシュ probe が失敗する。
 fallback の linear strcmp が拾うため動作は正しいが、cache miss 時の cost が
-通常より重い。型特化ノード (`node_fixnum_plus` 等) を入れれば selector lookup
-自体を消せる — TODO 参照。
+通常より重い。**ホットな整数算術 / 配列 at: は型特化ノードに書き換え済み
+で `asom_send` 自体を経由しない**ので、ここで効くのは型特化されてない
+selector のみ — それでも残コスト。`asom_intern_cstr` 経由で SD に埋め込む
+よう ASTroGen specializer を拡張するのが本筋（TODO）。
 
 ## ファイル構成
 
@@ -281,22 +364,25 @@ sample/asom/
     runtime.md             — このファイル
     done.md                — 実装済み機能
     todo.md                — 未実装 / 既知の課題
-  Makefile                 — 生成タスク + test/bench/compare ターゲット
+  Makefile                 — 生成タスク + test/bench ターゲット
   asom_gen.rb              — ASTroGen subclass (custom operand types)
 
   context.h                — VALUE / CTX / class struct
   node.h                   — NodeHead / EVAL / OPTIMIZE / HORG / HOPT
-  node.c                   — astro infra include + INIT
-  node.def                 — 全 AST ノード定義 (25 種)
+  node.c                   — astro infra include + swap_dispatcher + INIT
+  node.def                 — 全 AST ノード定義 (63 種：基本 25 + 型特化送信 10
+                                + 制御フロー inline 14 + 雑多)
 
-  asom_runtime.{h,c}       — オブジェクトモデル、IC / invoke fast path
+  asom_runtime.{h,c}       — オブジェクトモデル、IC / invoke fast path、
+                             frame pool / double & block arena、inline frame
   asom_loader.c            — .som file loader + stdlib overlay merge
   asom_parse.{h,c}         — lexer + recursive-descent parser
+                             (block_is_inlinable / make_specialized_send1 等)
   asom_primitives.c        — ~200 個の C primitive
 
   main.c                   — CLI (フラグパース、AOT/PG ドライバ)
 
-  test/                    — Bench.som / Suite.som / run_compare.sh / ...
+  test/                    — Bench.som / Suite.som / run_compare.rb / ...
   SOM/                     — submodule (SOM-st/SOM)
 ```
 
@@ -309,8 +395,8 @@ sample/asom/
 | `struct asom_class` | `context.h` | クラス本体 (instance + class-side fields, methods) |
 | `struct asom_method_table` | `context.h` | open hash + ordered insertion list |
 | `struct asom_callcache` | `asom_runtime.h` | per-callsite IC (`@ref` で hash 対象外) |
-| `struct asom_frame` | `context.h` | 実行フレーム。heap allocated, リーク |
-| `struct asom_block` | `context.h` | block closure (home + lexical_parent capture) |
+| `struct asom_frame` | `context.h` | 実行フレーム。pool で再利用、`captured`=true なら heap leak |
+| `struct asom_block` | `context.h` | block closure (home + lexical_parent capture)。block arena から bump alloc |
 | `struct NodeHead` | `node.h` | 全ノード共通ヘッダ。dispatcher fn ptr + flags |
 
 ## ASTro 連携

@@ -145,27 +145,36 @@ asom --preload=A,B,C ...                     # eager-load classes for AOT bake
 - selector の bare-literal vs interned 不整合を `asom_class_lookup` の strcmp fallback で吸収
 - `-rdynamic` リンクで SD shared object が `asom_send_slow`, `asom_invoke_ast` 等を resolve
 
-### 型特化ノード（Integer 演算）
+### 型特化ノード（Integer 演算 / Array アクセス）
 
-整数算術／比較セレクタの 1-arg 送信は専用ノードに発行する:
+ホットなセレクタは parse 時に専用ノードに発行され、`asom_send` を経由
+しない。すべて `@canonical=node_send1` または `=node_send2` で構造ハッシュ
+共通化、SD コードシャードはスワップ前後どちらでも使える（`is_specialized`
+が立った後の `swap_dispatcher` は no-op）。
 
 ```
+# 1-arg send: Integer 演算
 node_send1_intplus / intminus / inttimes
 node_send1_intlt / intgt / intle / intge / inteq
+
+# 1-arg send: Array
+node_send1_arrayat                       ← Array at:
+
+# 2-arg send: Array
+node_send2_arrayatput                    ← Array at:put:
 ```
 
-ファスト・パスはタグ・ビット 2 個の AND + 算術 + 再タグ付け。型 guard が
-外れたときは `swap_dispatcher(n, &kind_node_send1)` で汎用 send1 に戻して
+ファスト・パスはタグ・ビット 1〜2 個のチェック + インライン算術 / 配列
+アクセス + 再タグ付け。型 guard が外れたときは
+`swap_dispatcher(n, &kind_node_send1)` で汎用 send1/send2 に戻して
 `asom_send` で再ディスパッチ（IC ヒット）。
 
-- パース時発行 (`make_specialized_send1`): `+ - * < > <= >= =` のセレクタを
-  最初から特化版で発行。warmup なしで AOT bake が特化版を捕捉する。
-- ランタイム発行: `asom_method->prim_kind` を `def_prim_kind` で立てておけば、
-  parse-time に取りこぼした送信もスローパスでタイプ・フィードバックして
-  `swap_dispatcher` で書き換える経路が残してある（保険）。
-- すべての特化版は `@canonical=node_send1` で構造ハッシュを共通化、SD コード
-  シャードはスワップ前後どちらでも使える（is_specialized が立った後の
-  `swap_dispatcher` は no-op）。
+- パース時発行 (`make_specialized_send1`, `make_specialized_send_array`):
+  `+ - * < > <= >= =` および `at: / at:put:` のセレクタを最初から特化版で
+  発行。warmup なしで AOT bake が特化版を捕捉する。
+- ランタイム発行: `asom_method->prim_kind` を `def_prim_kind` で立てて
+  おけば、parse-time に取りこぼした送信もスローパスでタイプ・フィードバック
+  して `swap_dispatcher` で書き換える経路が残してある（保険）。
 
 ### 制御フロー・インライン化
 
@@ -223,23 +232,29 @@ GC が無いので回収はしない（フレーム同様）。1 回のベンチ
 性能効果: **Mandelbrot 0.794s → 0.556s (1.43× 高速化)**。NBody も
 同様の数値計算系で寄与する見込み（手元では未計測）。
 
-### `to:do:` インライン化
+### `to:do:` / `to:by:do:` / `timesRepeat:` インライン化
 
-`from to: end do: [ :var | body ]` でブロックが **1 引数・0 ローカル**な
-ものはパース時に専用 NODE に書き換える。受信側 `from` と `end` が
-SmallInteger なら C-level の `for` ループで反復し、`asom_block_invoke`
-の per-iter calloc + setjmp が消える（per-call 1 度のフレーム取得のみ）。
+`from to: end do: [ :var | body ]` のような Integer 受信の繰り返し系も
+パース時に専用 NODE に書き換える。受信側／引数が SmallInteger なら
+C-level の `for` ループで反復し、`asom_block_invoke` の per-iter
+calloc + setjmp が消える（per-call 1 度のフレーム取得のみ）。
+
+| パターン | 書き換え先 |
+|--------|----------|
+| `n to: m do: [:i \| ...]`           | `node_to_do` / `node_to_do_pool` |
+| `n to: m by: s do: [:i \| ...]`     | `node_to_by_do` / `node_to_by_do_pool` |
+| `n timesRepeat: [...]`              | `node_times_repeat` / `node_times_repeat_pool` |
 
 エスケープ可能性で 2 種類に分岐:
 
-- `node_to_do` — 本体に nested block 生成なし → C スタック上のフレーム＋
-  `slot` 1 個。最速。
-- `node_to_do_pool` — 本体に nested block 生成あり → pool（heap）から
-  1 引数フレームを 1 個 pop。escape した closure は `captured` フラグ
-  経由で pool 外に固定するため、`asom_block_invoke` 同等の安全性。
+- `_pool` 無し版 — 本体に nested block 生成なし → C スタック上のフレーム
+  + 必要なら `slot` 1 個 (`locals = &slot`)。最速。
+- `_pool` 版 — 本体に nested block 生成あり → pool（heap）から
+  フレームを 1 個 pop。escape した closure は `captured` フラグで
+  pool 外に固定し、`asom_block_invoke` 同等の安全性。
 
 これにより Sieve のような outer to:do: が ifTrue: ネストを含んでいても
-inline 化可能になる（pool 版を使う）。
+inline 化可能（pool 版を使う）。
 
 ### 性能効果（累積、interp / best-of-3）
 

@@ -56,7 +56,7 @@ make testsuite                     # SOM-st/SOM TestSuite (24 ファイル)
 | **AreWeFastYet** | 16 ベンチマーク全部 verifyResult 込みで OK（Sieve, Permute, Towers, Queens, List, Storage, Bounce, BubbleSort, QuickSort, TreeSort, Mandelbrot, Fannkuch, Richards, DeltaBlue, Json, NBody, GraphSearch） |
 | **AST ノード** | 25 種（int/double/string/symbol/array literal、send 0–8、super send 0–8、block、return-local/NLR、class field 等） |
 | **プリミティブ** | ~200 個（Object/Class/Method/Boolean/Integer/Double/String/Symbol/Array/Block × 4/Nil/System/Random） |
-| **AOT/PG** | 配線完了。`-c` で `code_store/all.so` を全 method body 分生成、`-p` で post-run hot-only bake。実効速度は ~3% 程度（律速は `asom_send` 経由の primitive 関数ポインタ間接呼出し、[todo.md](docs/todo.md#型特化ノード--aot-を効かせる主要施策) 参照） |
+| **AOT/PG** | 配線完了。`-c` で `code_store/all.so` を全 method body 分生成、`-p` で post-run hot-only bake。SD-bake は static inline で child node を全部展開しているが、modern x86 の BTB が interp の `(*head.dispatcher)(c, n)` indirect call を学習してしまうため、bench スループットでは interp と差が出ない（命令数も同じ）。差は cold start と icache 局所性で出る程度。 |
 
 ## 性能
 
@@ -72,7 +72,6 @@ asom (interp / aot / pg) を、同じ `SOM-st/SOM/Examples/Benchmarks/<Name>.som
 | **Truffle** | TruffleSOM (Java + GraalVM libgraal JIT) | Graal JDK 25 |
 | **PySOM-AST** | SOM-st/PySOM AST interpreter, plain CPython (no RPython) | CPython 3.12 |
 | **PySOM-BC** | SOM-st/PySOM bytecode interpreter, plain CPython | 同上 |
-| **CSOM** | SOM-st/CSOM, plain C bytecode VM, mark/sweep GC (参考値) | gcc -O3 |
 
 ### Inner-work — sustained run (~1 秒)
 
@@ -125,78 +124,74 @@ COPYING space init）が表に出てしまって SOM++ が速く見えるが、s
 
 #### vs その他エンジン（参考、canonical 小規模）
 
-upstream rebench の小さな inner で `make compare ITERS=10` を走らせた
-出力。`iterations=1, inner_iterations=1` 程度なので各エンジンの
-per-call setup を含む。warmup-blind な「処理系一式・冷たい状態の単発」を
-見るには有用だが、絶対値は信用しすぎないこと:
+`make bench ITERS=5`（rebench.conf 由来の小さな inner、各エンジンの
+per-call setup を含む）。warmup-blind な「処理系一式・冷たい状態の単発」
+を見るには有用だが、interp 系は sub-100ms 領域で setup-bound になり
+易いので絶対値は信用しすぎないこと:
 
 ```
-benchmark    |   interp |    SOM++ |    Truffle |  PySOM-AST |   PySOM-BC |     CSOM
--------------+----------+----------+------------+------------+------------+---------
-Sieve        |    0.006 |    0.002 |      0.000 |      0.090 |      0.243 |    0.099
-Permute      |    0.024 |    0.004 |      0.000 |      0.505 |      0.740 |    0.085
-Towers       |    0.051 |    0.007 |      0.000 |      0.302 |      0.679 |    0.128
-Queens       |    0.014 |    0.006 |      0.000 |      0.249 |      0.909 |    0.099
-List         |    0.025 |    0.004 |      0.000 |      0.119 |      0.345 |    0.129
-Storage      |    0.020 |    0.004 |      0.000 |      0.128 |      0.266 |    0.488
-Bounce       |    0.007 |    0.002 |      0.000 |      0.137 |      0.282 |    0.171
-BubbleSort   |    0.006 |    0.001 |      0.000 |      0.080 |      0.212 |    0.121
-QuickSort    |    0.010 |    0.002 |      0.000 |      0.153 |      0.309 |    0.191
-TreeSort     |    0.034 |    0.004 |      0.000 |      0.166 |      0.290 |    0.486
-Fannkuch     |    0.033 |    0.014 |          ? |      0.980 |      2.303 |    0.916
-Mandelbrot   |    0.482 |    0.452 |      0.001 |     20.233 |     58.944 |   11.558
+benchmark    |    interp |       aot |        pg |     SOM++ |    Truffle |  PySOM-AST |   PySOM-BC
+-------------+-----------+-----------+-----------+-----------+------------+------------+-----------
+Sieve        |     0.004 |     0.004 |     0.004 |     0.003 |      0.000 |      0.107 |      0.295
+Permute      |     0.016 |     0.014 |     0.015 |     0.006 |      0.000 |      0.678 |      1.005
+Towers       |     0.034 |     0.034 |     0.032 |     0.009 |      0.000 |      0.412 |      0.911
+Queens       |     0.010 |     0.011 |     0.010 |     0.009 |      0.000 |      0.336 |      1.248
+List         |     0.019 |     0.016 |     0.016 |     0.006 |      0.000 |      0.151 |      0.450
+Storage      |     0.013 |     0.013 |     0.013 |     0.006 |      0.000 |      0.183 |      0.332
+Bounce       |     0.005 |     0.005 |     0.003 |     0.003 |      0.000 |      0.173 |      0.373
+BubbleSort   |     0.005 |     0.004 |     0.004 |     0.002 |      0.000 |      0.106 |      0.265
+QuickSort    |     0.007 |     0.006 |     0.007 |     0.002 |      0.000 |      0.190 |      0.367
+TreeSort     |     0.022 |     0.022 |     0.022 |     0.005 |      0.001 |      0.210 |      0.362
+Fannkuch     |     0.040 |     0.040 |     0.040 |     0.020 |          ? |      1.319 |      2.776
+Mandelbrot   |     0.595 |     0.571 |     0.598 |     0.584 |      0.001 |     24.714 |     68.032
 ```
 
 - **TruffleSOM (Graal JIT)** は ~μs scale。warm peak は asom より
   100-1000× 速いが、JVM bootstrap + AST parse + libgraal compile に
-  毎回 1.7-2.0 秒の固定費を払う（次節）。
-- **vs PySOM-AST**: 全ベンチで asom が **5-60× 速い**。
-- **vs CSOM**: 全ベンチで asom が **3-25× 速い**。CSOM は教育用なので
-  公平比較ではないが、参考までに。
+  毎回 2.2–3.0 秒の固定費を払う（次節）。
+- **vs PySOM-AST**: 全ベンチで asom が **5-50× 速い**。
+- **vs PySOM-BC**: 全ベンチで asom が **10-100× 速い**。
 - **interp / aot / pg は同水準**。AOT/PG の SD-bake は static inline で
   child node を全部展開しているが、modern x86 の BTB が interp の
   `(*head.dispatcher)(c, n)` indirect call を学習して実質ゼロコストに
   なるため、bench スループットでは差が出ない（命令数も同じ:
   interp 624M / aot 629M for Sieve 100 iter）。
 
-### Wall-clock — `make compare-wall ITERS=30` (参考)
+### Wall-clock 表（`make bench` の 2 つ目の表、参考）
 
 プロセス起動 + クラス・パース + JIT compile + ベンチループ全部を含む
 `/usr/bin/time -f '%e'` 計測。**ユーザ体感の "コマンドが返ってくるまで" 時間**。
 実装ごとの起動コストの差で大きくスキューするため、フェアな比較ではない。
+（ITERS=5、canonical inner、上の表とまったく同じ trial から取得した値）
 
 ```
-benchmark    |   interp |      aot |       pg |    SOM++ |   Truffle  |  PySOM-AST |   PySOM-BC |     CSOM
--------------+----------+----------+----------+----------+------------+------------+------------+---------
-Sieve        |     0.10 |     0.10 |     0.10 |     0.08 |       1.89 |       2.81 |       7.28 |     3.32
-Permute      |     0.15 |     0.15 |     0.15 |     0.15 |       1.90 |      20.66 |      24.79 |     2.94
-Towers       |     0.43 |     0.43 |     0.43 |     0.24 |       1.99 |      10.46 |      22.22 |     4.76
-Queens       |     0.14 |     0.14 |     0.14 |     0.22 |       2.03 |       9.75 |      31.97 |     3.56
-List         |     0.32 |     0.32 |     0.31 |     0.18 |       2.04 |       4.03 |      11.09 |     4.22
-Storage      |     0.10 |     0.10 |     0.10 |     0.11 |       1.79 |       4.19 |       8.85 |    16.47
-Bounce       |     0.12 |     0.12 |     0.12 |     0.07 |       1.85 |       3.85 |       9.17 |     5.80
-BubbleSort   |     0.07 |     0.08 |     0.07 |     0.05 |       1.85 |       2.57 |       6.42 |     3.95
-QuickSort    |     0.13 |     0.12 |     0.13 |     0.06 |       1.84 |       4.72 |       9.34 |     6.78
-TreeSort     |     0.31 |     0.32 |     0.30 |     0.13 |       2.07 |       7.65 |       9.18 |    14.99
-Fannkuch     |     0.11 |     0.11 |     0.11 |     0.08 |       1.82 |       5.22 |      11.88 |     4.96
-Mandelbrot   |     1.17 |     1.09 |     1.08 |     0.47 |       1.69 |      21.07 |      61.09 |    11.82
+benchmark    |   interp |      aot |       pg |    SOM++ |    Truffle |  PySOM-AST |   PySOM-BC
+-------------+----------+----------+----------+----------+------------+------------+-----------
+Sieve        |    0.000 |    0.010 |    0.010 |    0.020 |      2.300 |      0.640 |      1.570
+Permute      |    0.020 |    0.020 |    0.020 |    0.030 |      2.310 |      4.140 |      4.990
+Towers       |    0.040 |    0.040 |    0.030 |    0.050 |      2.440 |      2.290 |      4.790
+Queens       |    0.010 |    0.010 |    0.010 |    0.050 |      2.950 |      2.080 |      6.610
+List         |    0.020 |    0.020 |    0.020 |    0.030 |      2.350 |      0.950 |      2.320
+Storage      |    0.010 |    0.010 |    0.010 |    0.030 |      2.340 |      0.950 |      1.760
+Bounce       |    0.000 |    0.010 |    0.000 |    0.020 |      2.260 |      0.930 |      2.120
+BubbleSort   |    0.010 |    0.010 |    0.010 |    0.010 |      2.400 |      0.640 |      1.500
+QuickSort    |    0.010 |    0.010 |    0.010 |    0.010 |      2.270 |      1.060 |      2.090
+TreeSort     |    0.020 |    0.020 |    0.020 |    0.030 |      2.260 |      1.560 |      1.930
+Fannkuch     |    0.040 |    0.040 |    0.040 |    0.100 |      2.210 |      6.650 |     13.890
+Mandelbrot   |    0.640 |    0.610 |    0.640 |    0.590 |      2.200 |     24.830 |     68.130
 ```
 
 #### take-aways (wall-clock)
 
-- **TruffleSOM** は wall-time でほぼ常に 1.7–2.0 秒の **JVM bootstrap +
-  AST parse + libgraal JIT compile** 固定費を払う。短いベンチでは不利だが、
-  N iterations を増やすほど amortise される。
-- **PySOM** も CPython 起動 + .som パースで 1–2 秒の固定費。
-- **CSOM** の wall-time が大きいのは、ほとんどが mark/sweep の class
-  load + parse のコスト。inner-loop は asom と同水準（上の表）なので、
-  「asom が CSOM の 14–170× 速い」というのは **wall-time のミスリード**。
+- **TruffleSOM** は wall-time でほぼ常に **2.2–3.0 秒の JVM bootstrap +
+  AST parse + libgraal JIT compile** 固定費を払う（Sieve でも Mandelbrot でも一定）。
+  短いベンチでは不利だが、N iterations を増やすほど amortise される。
+- **PySOM** も CPython 起動 + .som パースで 0.5–2 秒の固定費。
 - **asom / SOM++** は C ネイティブで bare 起動が速いため、wall-time が
-  inner-work と近い値になる。比較的 honest。
-
-要するに「**起動が速いと wall-time で得をする**」という当たり前の事実が
-表に出ているだけで、Engine 同士の inner-loop 性能 を見るには上の inner-work
-テーブルを参照するべき。
+  inner-work とほぼ同じ。比較的 honest。
+- 「**起動が速いと wall-time で得をする**」という当たり前の事実が
+  出ているだけで、Engine 同士の inner-loop 性能を見るには上の inner-work
+  テーブルを参照するべき。
 
 ## 設計上の特徴
 

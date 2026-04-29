@@ -29,25 +29,46 @@ typedef union VALUE {
     void    *p;
 } VALUE;
 
+// RESULT: 2-register return type for non-local exit support — abruby's
+// approach.  Fits in rax:rdx (16 byte = VALUE 8 + state 4 + pad 4) and
+// avoids the CTX-field round-trip a setjmp-free fallback would impose.
+//
+// state bits (low 16): NORMAL=0 lets `if (r.state)` be a plain zero-test.
+// Higher states are bit flags so a boundary catch (function-return at
+// node_call, break/continue at the loop body) can mask the bit out with
+// a single AND, propagating any other states unchanged.
+//
+// Within an inlined SD chain `state` is a compile-time-constant 0
+// almost everywhere, so gcc DCE's the propagation tests.  Only at
+// non-inlined boundaries (recursive call, cross-SD call) does the
+// branch survive — and there it's a single register cmp+jne that the
+// branch predictor handles for free.
+#define RESULT_NORMAL   0u
+#define RESULT_RETURN   1u  /* node_return — caught at function boundary */
+#define RESULT_BREAK    2u  /* node_break  — caught at the enclosing loop  */
+#define RESULT_CONTINUE 4u  /* node_continue — caught at the enclosing loop */
+#define RESULT_GOTO     8u  /* node_goto — caught at the enclosing function (carries label idx in .value.i) */
+
+typedef struct {
+    VALUE        value;
+    unsigned int state;
+} RESULT;
+
+#define RESULT_OK(v)        ((RESULT){(v),               RESULT_NORMAL})
+#define RESULT_OK_I(n)      ((RESULT){(VALUE){.i = (n)}, RESULT_NORMAL})
+#define RESULT_OK_D(x)      ((RESULT){(VALUE){.d = (x)}, RESULT_NORMAL})
+#define RESULT_OK_P(p)      ((RESULT){(VALUE){.p = (p)}, RESULT_NORMAL})
+
 struct Node;
 
-struct function_entry {
-    const char *name;
-    struct Node *body;
-    unsigned int params_cnt;
-    unsigned int locals_cnt;
-    bool needs_setjmp;            // body still contains `return` after lifting
-};
-
-// Note: the previous design here had a `struct callcache` (per-call-site
-// inline cache holding `serial / body / dispatcher / needs_setjmp`) and
-// a matching `struct func_addr_cache`.  Both were inherited from the
-// dynamic-dispatch sample languages (abruby etc.) where lookups happen
-// at run time.  In castro the call target is statically known at parse
-// time, so the IR now carries a stable `function_entry *` index instead
-// (parse.rb assigns each function definition a slot in `c->func_set[]`)
-// and these caches are gone.
-
+// Function table: parse.rb gives every function_definition a stable
+// 0..N-1 index, and the IR carries that index directly.  At runtime
+// the body NODE* lives in `c->func_bodies[idx]`; nothing else is
+// needed for evaluation.  Names are kept only for `--dump` output and
+// for locating `main` at startup.  (Earlier revisions threaded a
+// `function_entry` struct with params_cnt / locals_cnt / needs_setjmp,
+// but every one of those fields was either dead after the
+// RESULT-state migration or never read in the first place.)
 typedef struct CTX_struct {
     VALUE *env;
     VALUE *fp;
@@ -61,27 +82,16 @@ typedef struct CTX_struct {
     VALUE *globals;
     size_t globals_size;
 
-    unsigned int func_set_cnt;
-    unsigned int func_set_capa;
-    struct function_entry *func_set;
+    unsigned int func_count;
+    struct Node **func_bodies;
+    char        **func_names;
 
-    // return: setjmp/longjmp at each function-call boundary
-    jmp_buf *return_buf;
-    VALUE return_value;
-
-    // loop control: setjmp/longjmp at the enclosing loop boundary, but
-    // only paid by loops whose body contains the corresponding statement
-    // (parse.rb routes such loops to node_while_brk / node_for_brk /
-    // node_do_while_brk; loops without break/continue stay on the cheap
-    // pointer-load path).
-    jmp_buf *break_buf;
-    jmp_buf *continue_buf;
-
-    // goto support: when a function uses goto, parse.rb lowers the
-    // entire body to a label-dispatch loop.  `goto_target` carries the
-    // next label index; node_goto sets it then longjmps back to the
-    // dispatch loop via `goto_buf`.
-    jmp_buf *goto_buf;
+    // goto support: parse.rb lowers a function with goto into a
+    // label-dispatch loop where each segment ends with `node_goto N`.
+    // node_goto returns RESULT_GOTO carrying the target label;
+    // node_goto_dispatch catches GOTO, stores the new target here,
+    // and re-evaluates the body.  The body's switch reads goto_target
+    // to pick the right segment.
     int32_t  goto_target;
 } CTX;
 

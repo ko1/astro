@@ -270,188 +270,21 @@ verbatim:
     return total;
 }
 
-// Cold path: with-setjmp invoke.  Out-of-line because gcc forbids setjmp
-// inside always_inline functions, and we want EVAL_node_call inlinable.
-// Caller passes the already-computed callee frame pointer in `callee_fp`
-// (= caller_fp + arg_index); we don't touch c->fp.
-__attribute__((noinline))
-VALUE
-castro_invoke_jmp(CTX *c, NODE *body, node_dispatcher_func_t disp, VALUE *callee_fp)
-{
-    jmp_buf rbuf;
-    jmp_buf *prev = c->return_buf;
-    c->return_buf = &rbuf;
-
-    VALUE v;
-    if (setjmp(rbuf) == 0) {
-        v = (*disp)(c, body, callee_fp);
-    }
-    else {
-        v = c->return_value;
-    }
-
-    c->return_buf = prev;
-    return v;
-}
-
-// =====================================================================
-// loop helpers (break / continue)
-// =====================================================================
-//
-// Each loop variant pushes a fresh jmp_buf onto c->break_buf (and, when
-// the body contains `continue`, a per-iteration buf on c->continue_buf)
-// so that `node_break` / `node_continue` can longjmp back here.  Plain
-// loops without break/continue do not pay this cost.
-
-__attribute__((noinline))
-VALUE
-castro_loop_while(CTX *c, VALUE *fp, NODE *cond, node_dispatcher_func_t cd,
-                  NODE *body, node_dispatcher_func_t bd, bool has_continue)
-{
-    jmp_buf brk;
-    jmp_buf *prev_brk = c->break_buf;
-    c->break_buf = &brk;
-    if (setjmp(brk) == 0) {
-        while ((*cd)(c, cond, fp).i) {
-            if (has_continue) {
-                jmp_buf cnt;
-                jmp_buf *prev_cnt = c->continue_buf;
-                c->continue_buf = &cnt;
-                if (setjmp(cnt) == 0) (*bd)(c, body, fp);
-                c->continue_buf = prev_cnt;
-            } else {
-                (*bd)(c, body, fp);
-            }
-        }
-    }
-    c->break_buf = prev_brk;
-    return (VALUE){.i = 0};
-}
-
-__attribute__((noinline))
-VALUE
-castro_loop_do_while(CTX *c, VALUE *fp, NODE *body, node_dispatcher_func_t bd,
-                     NODE *cond, node_dispatcher_func_t cd, bool has_continue)
-{
-    jmp_buf brk;
-    jmp_buf *prev_brk = c->break_buf;
-    c->break_buf = &brk;
-    if (setjmp(brk) == 0) {
-        do {
-            if (has_continue) {
-                jmp_buf cnt;
-                jmp_buf *prev_cnt = c->continue_buf;
-                c->continue_buf = &cnt;
-                if (setjmp(cnt) == 0) (*bd)(c, body, fp);
-                c->continue_buf = prev_cnt;
-            } else {
-                (*bd)(c, body, fp);
-            }
-        } while ((*cd)(c, cond, fp).i);
-    }
-    c->break_buf = prev_brk;
-    return (VALUE){.i = 0};
-}
-
-__attribute__((noinline))
-VALUE
-castro_loop_for(CTX *c, VALUE *fp, NODE *init, node_dispatcher_func_t id,
-                NODE *cond, node_dispatcher_func_t cd,
-                NODE *step, node_dispatcher_func_t sd,
-                NODE *body, node_dispatcher_func_t bd, bool has_continue)
-{
-    jmp_buf brk;
-    jmp_buf *prev_brk = c->break_buf;
-    c->break_buf = &brk;
-    (*id)(c, init, fp);
-    if (setjmp(brk) == 0) {
-        while ((*cd)(c, cond, fp).i) {
-            if (has_continue) {
-                jmp_buf cnt;
-                jmp_buf *prev_cnt = c->continue_buf;
-                c->continue_buf = &cnt;
-                if (setjmp(cnt) == 0) (*bd)(c, body, fp);
-                c->continue_buf = prev_cnt;
-            } else {
-                (*bd)(c, body, fp);
-            }
-            (*sd)(c, step, fp);
-        }
-    }
-    c->break_buf = prev_brk;
-    return (VALUE){.i = 0};
-}
-
-// =====================================================================
-// indirect call (function pointers)
-// =====================================================================
-
-__attribute__((noinline))
-VALUE
-castro_indirect_invoke(CTX *c, struct function_entry *fe, VALUE *callee_fp)
-{
-    if (UNLIKELY(fe == NULL)) {
-        fprintf(stderr, "castro: NULL function pointer\n");
-        exit(1);
-    }
-    node_dispatcher_func_t disp = fe->body->head.dispatcher;
-    if (fe->needs_setjmp) {
-        return castro_invoke_jmp(c, fe->body, disp, callee_fp);
-    }
-    return (*disp)(c, fe->body, callee_fp);
-}
-
-// =====================================================================
-// goto runtime: dispatch loop
-// =====================================================================
-//
-// parse.rb wraps a function with `goto` into a label-dispatch loop
-// (a `while(1) { switch(label) { case 0: ... } }`).  This helper
-// installs a setjmp barrier so node_goto can longjmp back here with
-// a new label, after which the body re-runs to find that case.
-
-__attribute__((noinline))
-VALUE
-castro_goto_dispatch(CTX *c, NODE *body, node_dispatcher_func_t bd, VALUE *fp)
-{
-    jmp_buf gbuf;
-    jmp_buf *prev = c->goto_buf;
-    c->goto_buf = &gbuf;
-
-    c->goto_target = 0;
-    (void)setjmp(gbuf);
-    VALUE v = (*bd)(c, body, fp);
-
-    c->goto_buf = prev;
-    return v;
-}
+// (No setjmp/longjmp helpers any more — return / break / continue /
+// goto are propagated as RESULT.state up the call chain and caught at
+// the appropriate boundary.  Loop helpers, castro_invoke_jmp,
+// castro_indirect_invoke, castro_goto_dispatch are all gone.  See
+// node.def's node_call / node_while / node_goto_dispatch / etc.)
 
 // =====================================================================
 // function table
 // =====================================================================
 //
-// `c->func_set[]` is sized exactly once (to NFUNCS read from the SX
-// header) and never realloc'd, so each entry's address is stable.
-// parse.rb assigns each function definition an index 0..NFUNCS-1; the
-// runtime indexes by that integer for both direct calls (`node_call`)
-// and address-of (`node_func_addr`).  No name lookup, no inline cache.
-
-static struct function_entry *
-castro_register_stub(CTX *c, const char *name, uint32_t params_cnt, uint32_t locals_cnt, bool needs_setjmp)
-{
-    if (c->func_set_cnt >= c->func_set_capa) {
-        fprintf(stderr, "castro: func_set capacity exceeded (capa=%u, cnt=%u)\n",
-                c->func_set_capa, c->func_set_cnt);
-        exit(1);
-    }
-    struct function_entry *fe = &c->func_set[c->func_set_cnt++];
-    fe->name = strdup(name);
-    fe->body = NULL;
-    fe->params_cnt = params_cnt;
-    fe->locals_cnt = locals_cnt;
-    fe->needs_setjmp = needs_setjmp;
-    return fe;
-}
+// parse.rb assigns each function definition an index 0..N-1; the
+// runtime stores their bodies in `c->func_bodies[idx]` and their
+// names in `c->func_names[idx]` (the latter only for `--dump` and
+// locating `main` at startup).  No struct, no inline cache, no name
+// lookup at call time.
 
 // =====================================================================
 // S-expression tokenizer
@@ -821,11 +654,7 @@ build_op(sx_lexer *l, tok_t op)
         {"land",    ALLOC_node_land},
         {"lor",     ALLOC_node_lor},
         {"do_while",        ALLOC_node_do_while},
-        {"do_while_brk",    ALLOC_node_do_while_brk},
-        {"do_while_brk_only", ALLOC_node_do_while_brk_only},
         {"while",           ALLOC_node_while},
-        {"while_brk",       ALLOC_node_while_brk},
-        {"while_brk_only",  ALLOC_node_while_brk_only},
         {"store_i",         ALLOC_node_store_i},
         {"store_d",         ALLOC_node_store_d},
         {"store_p",         ALLOC_node_store_p},
@@ -895,28 +724,22 @@ build_op(sx_lexer *l, tok_t op)
         return ALLOC_node_lit_str_array(s);
     }
 
-    if (IS("for") || IS("for_brk") || IS("for_brk_only")) {
-        bool is_brk = IS("for_brk");
-        bool is_brk_only = IS("for_brk_only");
+    if (IS("for")) {
         NODE *a = build_expr(l);
         NODE *b = build_expr(l);
         NODE *c = build_expr(l);
         NODE *d = build_expr(l);
         sx_expect(l, TK_RPAREN);
-        if (is_brk)      return ALLOC_node_for_brk(a, b, c, d);
-        if (is_brk_only) return ALLOC_node_for_brk_only(a, b, c, d);
         return ALLOC_node_for(a, b, c, d);
     }
 
-    if (IS("call") || IS("call_jmp")) {
-        // (call FUNC_IDX nargs arg_index)      — no-setjmp variant
-        // (call_jmp FUNC_IDX nargs arg_index)  — setjmp wrapper
-        bool jmp = IS("call_jmp");
+    if (IS("call")) {
+        // (call FUNC_IDX nargs arg_index) — RESULT-state migration
+        // dropped the `call_jmp` variant.
         int64_t func_idx = read_int(l);
         int64_t nargs = read_int(l);
         int64_t arg_index = read_int(l);
         sx_expect(l, TK_RPAREN);
-        if (jmp) return ALLOC_node_call_jmp((uint32_t)func_idx, (uint32_t)nargs, (uint32_t)arg_index);
         return ALLOC_node_call((uint32_t)func_idx, (uint32_t)nargs, (uint32_t)arg_index);
     }
     if (IS("call_printf")) {
@@ -961,49 +784,42 @@ load_program(CTX *c, sx_lexer *l)
     sx_next(l);
 
     // (program GLOBALS_SIZE NFUNCS INIT_EXPR
-    //   (sig NAME P L T HR) ... NFUNCS times
-    //   BODY_EXPR ...        NFUNCS times in matching order)
+    //   (sig NAME) ...    NFUNCS times
+    //   BODY_EXPR ...     NFUNCS times in matching order)
     //
-    // We pre-allocate `c->func_set` to NFUNCS up front and register
-    // every function as a stub before parsing any body — this lets a
-    // body refer to other functions (including itself) by index even
-    // when the called function is defined later in the SX stream.
+    // We pre-allocate `c->func_bodies` / `c->func_names` to NFUNCS up
+    // front and register every function before parsing any body — this
+    // lets a body refer to other functions (including itself) by index
+    // even when the called function is defined later in the stream.
     int64_t globals_size = read_int(l);
     int64_t nfuncs = read_int(l);
     if (globals_size > 0) {
         c->globals = calloc((size_t)globals_size, sizeof(VALUE));
         c->globals_size = (size_t)globals_size;
     }
+    c->func_count = (unsigned)nfuncs;
     if (nfuncs > 0) {
-        c->func_set_capa = (unsigned)nfuncs;
-        c->func_set = calloc(c->func_set_capa, sizeof(struct function_entry));
+        c->func_bodies = calloc((size_t)nfuncs, sizeof(NODE *));
+        c->func_names  = calloc((size_t)nfuncs, sizeof(char *));
     }
-    c->func_set_cnt = 0;
 
     G_INIT_EXPR = build_expr(l);
     G_INIT_EXPR = OPTIMIZE(G_INIT_EXPR);
 
-    // Phase 1: signatures.  These come right after INIT_EXPR.
+    // Phase 1: names.  These come right after INIT_EXPR.
     for (int64_t i = 0; i < nfuncs; i++) {
         sx_expect(l, TK_LPAREN);
         if (!sx_ident_eq(&l->cur, "sig")) sx_err(l, "expected `sig`");
         sx_next(l);
-        char *name = read_string_or_ident(l);
-        int64_t params = read_int(l);
-        int64_t locals = read_int(l);
-        if (l->cur.kind != TK_IDENT) sx_err(l, "expected ret type ident");
-        sx_next(l);
-        int64_t has_returns = read_int(l);
+        c->func_names[i] = read_string_or_ident(l);
         sx_expect(l, TK_RPAREN);
-        castro_register_stub(c, name, (uint32_t)params, (uint32_t)locals, has_returns != 0);
-        free(name);
     }
 
     // Phase 2: bodies, one per registered function, in matching order.
     for (int64_t i = 0; i < nfuncs; i++) {
         NODE *body = build_expr(l);
         body = OPTIMIZE(body);
-        c->func_set[i].body = body;
+        c->func_bodies[i] = body;
     }
 
     sx_expect(l, TK_RPAREN);
@@ -1022,10 +838,9 @@ create_context(void)
     c->env = malloc(sizeof(VALUE) * CASTRO_ENV_SLOTS);
     c->env_end = c->env + CASTRO_ENV_SLOTS;
     c->fp = c->env;
-    c->func_set = NULL;
-    c->func_set_cnt = 0;
-    c->func_set_capa = 0;
-    c->return_buf = NULL;
+    c->func_bodies = NULL;
+    c->func_names  = NULL;
+    c->func_count  = 0;
     return c;
 }
 
@@ -1048,12 +863,12 @@ slurp(const char *path)
     return buf;
 }
 
-// Snapshot of c->func_set for SPECIALIZE_node_call to consult.  The
+// Snapshot of c->func_bodies for SPECIALIZE_node_call to consult.  The
 // custom specializer (see castro_gen.rb) reads this to find the
 // callee's body NODE * and its hash, so the SD source can emit a
 // direct `extern SD_<callee_hash>` call instead of an indirect
 // `(*body->head.dispatcher)`.  Set just before astro_cs_compile runs.
-struct function_entry *castro_specialize_func_set = NULL;
+NODE **castro_specialize_func_bodies = NULL;
 
 static void
 compile_all_funcs(CTX *c)
@@ -1061,10 +876,10 @@ compile_all_funcs(CTX *c)
     // Pre-compute every body's hash up front so the specializer for
     // any call site can name the callee SD without re-entering
     // SPECIALIZE.  HASH caches the result on the NODE.
-    for (unsigned int i = 0; i < c->func_set_cnt; i++) {
-        HASH(c->func_set[i].body);
+    for (unsigned int i = 0; i < c->func_count; i++) {
+        HASH(c->func_bodies[i]);
     }
-    castro_specialize_func_set = c->func_set;
+    castro_specialize_func_bodies = c->func_bodies;
 
     // Tell the framework's link step to bind cross-SD symbol
     // references locally (`-Wl,-Bsymbolic`).  Without this, the
@@ -1073,8 +888,8 @@ compile_all_funcs(CTX *c)
     // because each SD is a public symbol exposed to dlsym.
     setenv("ASTRO_EXTRA_LDFLAGS", "-Wl,-Bsymbolic", 1);
 
-    for (unsigned int i = 0; i < c->func_set_cnt; i++) {
-        astro_cs_compile(c->func_set[i].body, NULL);
+    for (unsigned int i = 0; i < c->func_count; i++) {
+        astro_cs_compile(c->func_bodies[i], NULL);
     }
     astro_cs_build(NULL);
     astro_cs_reload();
@@ -1083,11 +898,11 @@ compile_all_funcs(CTX *c)
 static void
 load_all_funcs(CTX *c)
 {
-    for (unsigned int i = 0; i < c->func_set_cnt; i++) {
-        bool ok = astro_cs_load(c->func_set[i].body, NULL);
+    for (unsigned int i = 0; i < c->func_count; i++) {
+        bool ok = astro_cs_load(c->func_bodies[i], NULL);
         if (!OPTION.quiet) {
             fprintf(stderr, "cs_load: %s -> %s\n",
-                    c->func_set[i].name, ok ? "specialized" : "default");
+                    c->func_names[i], ok ? "specialized" : "default");
         }
     }
 }
@@ -1162,9 +977,9 @@ main(int argc, char *argv[])
     load_program(c, &l);
 
     if (OPTION.dump) {
-        for (unsigned int i = 0; i < c->func_set_cnt; i++) {
-            fprintf(stderr, "func %s:\n  ", c->func_set[i].name);
-            DUMP(stderr, c->func_set[i].body, true);
+        for (unsigned int i = 0; i < c->func_count; i++) {
+            fprintf(stderr, "func %s:\n  ", c->func_names[i]);
+            DUMP(stderr, c->func_bodies[i], true);
             fprintf(stderr, "\n");
         }
     }
@@ -1185,39 +1000,28 @@ main(int argc, char *argv[])
 
     // Find main by name (only used here for the program entry point).
     // All other call sites resolve their target by index at parse time.
-    struct function_entry *fe = NULL;
-    for (unsigned int i = 0; i < c->func_set_cnt; i++) {
-        if (strcmp(c->func_set[i].name, "main") == 0) {
-            fe = &c->func_set[i];
+    NODE *main_body = NULL;
+    for (unsigned int i = 0; i < c->func_count; i++) {
+        if (strcmp(c->func_names[i], "main") == 0) {
+            main_body = c->func_bodies[i];
             break;
         }
     }
-    if (!fe) {
+    if (!main_body) {
         fprintf(stderr, "no main\n");
         return 1;
     }
 
-    // Call main with no args.  Initial fp = c->env.
-    VALUE result;
-    if (fe->needs_setjmp) {
-        jmp_buf rbuf;
-        c->return_buf = &rbuf;
-        if (setjmp(rbuf) == 0) {
-            result = EVAL(c, fe->body, c->env);
-        }
-        else {
-            result = c->return_value;
-        }
-        c->return_buf = NULL;
-    }
-    else {
-        result = EVAL(c, fe->body, c->env);
-    }
+    // Call main with no args, fp = c->env.  RETURN is the callee's
+    // normal exit; BREAK / CONTINUE / GOTO can't escape a function
+    // boundary in valid C, so the program exit value is just the .value
+    // slot — no state propagation needed.
+    RESULT result = EVAL(c, main_body, c->env);
 
     if (!OPTION.quiet) {
-        printf("=> %lld\n", (long long)result.i);
+        printf("=> %lld\n", (long long)result.value.i);
     }
-    return (int)result.i;
+    return (int)result.value.i;
 }
 
 // =====================================================================
