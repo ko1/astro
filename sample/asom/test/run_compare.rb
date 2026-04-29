@@ -25,11 +25,11 @@
 #   asom/pg     : -p --preload=<bench>  (post-run hot bake; second run uses)
 #   SOM++       : SOM-st/SOMpp, USE_TAGGING + COPYING + g++ -O3 -flto
 #   Truffle     : SOM-st/TruffleSOM on GraalVM CE 25 with libgraal
-#   PySOM-AST   : SOM-st/PySOM AST interpreter, plain CPython
-#   PySOM-BC    : SOM-st/PySOM bytecode interpreter, plain CPython
 #
-# CSOM is omitted on purpose — pedagogical implementation, not a perf
-# reference.
+# CSOM and plain-CPython PySOM are omitted on purpose — pedagogical /
+# untranslated implementations, not a perf reference. To compare against
+# PySOM properly, translate it via RPython (`make som-ast-jit`) and add
+# a column for the resulting JIT binary.
 #
 # Usage:
 #   ruby run_compare.rb [ITERS]    # default 50
@@ -41,7 +41,6 @@ ITERS = (ARGV[0] || '50').to_i
 
 ASOM_DIR        = File.expand_path('..', __dir__)
 SOMPP_DIR       = ENV.fetch('SOMPP_DIR',      '/tmp/sompp-ref')
-PYSOM_DIR       = ENV.fetch('PYSOM_DIR',      '/tmp/pysom-ref')
 TRUFFLESOM_DIR  = ENV.fetch('TRUFFLESOM_DIR', '/tmp/trufflesom')
 MX_DIR          = ENV.fetch('MX_DIR',         '/tmp/mx')
 
@@ -67,10 +66,6 @@ COLUMNS = [
     cmd: ->(b, it, inn) { %(cd '#{SOMPP_DIR}' && ./SOM++ -cp 'Smalltalk:Examples/Benchmarks' Examples/Benchmarks/BenchmarkHarness.som '#{b}' #{it} #{inn}) } },
   { key: :truf,   label: 'Truffle',
     cmd: ->(b, it, inn) { %(cd '#{TRUFFLESOM_DIR}' && JVMCI_VERSION_CHECK=ignore PATH='#{MX_DIR}':$PATH ./som -cp 'Smalltalk:Examples/Benchmarks' Examples/Benchmarks/BenchmarkHarness.som '#{b}' #{it} 0 #{inn}) } },
-  { key: :pyA,    label: 'PySOM-AST',
-    cmd: ->(b, it, inn) { %(cd '#{PYSOM_DIR}' && SOM_INTERP=AST PYTHONPATH=src python3 src/main.py -cp 'core-lib/Smalltalk:core-lib/Examples/Benchmarks' core-lib/Examples/Benchmarks/BenchmarkHarness.som '#{b}' #{it} #{inn}) } },
-  { key: :pyB,    label: 'PySOM-BC',
-    cmd: ->(b, it, inn) { %(cd '#{PYSOM_DIR}' && SOM_INTERP=BC  PYTHONPATH=src python3 src/main.py -cp 'core-lib/Smalltalk:core-lib/Examples/Benchmarks' core-lib/Examples/Benchmarks/BenchmarkHarness.som '#{b}' #{it} #{inn}) } },
 ]
 
 # Parse the engine's self-reported `system ticks` runtime out of stdout.
