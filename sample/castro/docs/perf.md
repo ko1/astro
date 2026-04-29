@@ -198,6 +198,48 @@ setjmp 0 個のループは fp register と完全に register 化されて、
 gcc -O3 並みの inner loop コードが出る (sieve / loop_sum / crc32 が
 これに該当)。
 
+### 11. leaf-helper インライン化 (`node_call_static`)
+
+非自己再帰の呼び出しを framework のナチュラル specializer 経由で
+インライン化する道を castro 側で開通させた。
+
+**仕掛け**: 呼び先 body NODE * を子オペランドとして持つ
+`node_call_static(NODE *callee, ...)` を新設。framework は NODE *
+operand を「子」と見て SPECIALIZE が再帰的に walk → callee body の
+SD chain を caller と同じ TU に `static inline` で展開 → gcc -O3 が
+inline する (gcc -O1 で `-finline-small-functions` が host source 上で
+やってる事の AST 評価器版)。
+
+**parse 時の振り分け**:
+- 自己 / 相互再帰の SCC に属する callee → 旧 `:call` (uint32_t func_idx
+  + extern direct call SD)。`:call_static` を recursive callee に当てる
+  と body 内の `:call` が emit する `extern SD_<self>` 宣言と framework
+  が同 TU に出す `static inline SD_<self>` def が衝突する。
+- それ以外 (= leaf 群) → `:call_static`。
+
+実装:
+- 全 call を optimistic に `:call_static` で emit
+- compile 完了後に Tarjan SCC を call graph に走らせ、recursive function
+  集合を計算
+- recursive 集合に含まれる callee への `:call_static` を `:call` に
+  ダウングレード
+
+**body NODE * の patch**: parse 時には callee body はまだ build されて
+いないこと多々 (前方参照)。`node_call_static.callee` は phase-2 SX
+load で NULL のまま ALLOC、main.c の `call_patch_record` で
+(NODE, func_idx) を side-table、phase-3 で
+`callee = c->func_bodies[idx]` を書き戻し。
+
+**効果**:
+- bench は baseline とほぼ同等。fib_d AOT cached が 9 → 4ms (2×) に
+  下がった以外は誤差レベル (±1ms)。
+- 期待していた nqueens の `safe()` インライン化は **bench 上で見えず**。
+  実装上は `solve` の TU 内に safe の SD chain が `static inline` で
+  展開され、disasm でも inline 済みなことは確認できる。が hot path 全体
+  の中で safe の call overhead 比率が想定より低かった模様。
+- 「機構を入れた」コミット。leaf 大量の benchmark 追加時に効く可能性は
+  残してある。
+
 ### 9. framework のリダイレクト bug fix
 
 `runtime/astro_code_store.c` の SD ビルドコマンドが

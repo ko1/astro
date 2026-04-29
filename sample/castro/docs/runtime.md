@@ -204,44 +204,75 @@ while (1) {
 
 ## 関数呼び出し: parse 時に index 解決
 
-C は呼び先が静的にわかる言語なので、IR レベルで **関数 index を直接持つ**:
+C は呼び先が静的にわかる言語なので、IR レベルで **関数 index または body
+NODE * を直接持つ** 2 つの形がある:
 
 ```
-(call FUNC_IDX nargs arg_index)
+(call FUNC_IDX nargs arg_index)         ; 自己/相互再帰用
+(call_static FUNC_IDX nargs arg_index)  ; 非再帰用 (parse 後 body を patch)
 (func_addr FUNC_IDX)
 ```
 
 parse.rb の `gather_signatures` が各 `function_definition` に
-0..NFUNCS-1 の index を割り当て、runtime は
+0..NFUNCS-1 の index を割り当てる。compile_call は optimistic に全
+call を `:call_static` で emit、後段で call graph を Tarjan SCC で
+解析、再帰 SCC に属する callee への `:call_static` を `:call` に
+ダウングレードする。
+
+### `:call` (再帰用) の runtime
 
 ```c
-struct function_entry *fe = &c->func_set[func_idx];
-NODE *body = fe->body;
-if (UNLIKELY(fe->needs_setjmp)) return castro_invoke_jmp(c, body, body->head.dispatcher, arg_index);
-c->fp += arg_index;
-VALUE v = (*body->head.dispatcher)(c, body);
-c->fp -= arg_index;
+NODE *body = c->func_bodies[func_idx];
+RESULT r = (*body->head.dispatcher)(c, body, fp + arg_index);
+return RESULT_OK(r.value);  // RETURN は callee 内で完結、捨てる
 ```
 
-で呼ぶ。strcmp も線形探索も inline cache の hit/miss も登場しない。
+SPECIALIZE は `extern RESULT SD_<callee_hash>(...)` 宣言と直接呼びを
+emit、`-Wl,-Bsymbolic` で intra-`.so` 解決 → `addr32 call SD_<self>`
+(BTB-perfect)。
 
-`c->func_set[]` は SX header (`(program GSIZE NFUNCS ...)`) で読んだ
+### `:call_static` (非再帰用) の runtime
+
+callee body を `NODE *callee` 子オペランドとして AST に持つ。framework
+の natural specializer が子オペランドとして walk → callee body の SD
+chain を caller の同 TU に `static inline` で展開 → gcc -O3 が inline。
+
+`callee` は phase-2 SX load 時には NULL (forward reference 対応)、
+phase-3 で `c->func_bodies[idx]` の値を書き戻す。
+
+```c
+node_call_static(CTX *c, NODE *n, VALUE *fp, NODE *callee, ...) {
+    fp = fp + arg_index;
+    RESULT r = EVAL_ARG(c, callee);   // framework が callee_disp を baked
+    return RESULT_OK(r.value);
+}
+```
+
+`c->func_bodies[]` は SX header (`(program GSIZE NFUNCS ...)`) で読んだ
 NFUNCS の固定容量で 1 度だけ確保し、realloc しない。だから
-`&c->func_set[idx]` は load_program 中ずっと安定。
+`c->func_bodies[idx]` も `:call_static` の patched callee も load_program
+中ずっと安定。
 
-### 2-pass load
+### 3-pass load
 
 呼び先が定義より前に呼び出される (前方参照、再帰など) のを許すため、
-load_program は SX を 2 段階で読む:
+`load_program` は SX を 3 段階で読む:
 
-1. **Phase 1 — signatures**: `(sig NAME P L T HR)` を NFUNCS 個読み、
-   `castro_register_stub` が body=NULL の状態で `func_set[i]` を埋める。
-2. **Phase 2 — bodies**: bodies を順番に読み (Phase 1 と同じ順序)、
-   `func_set[i].body` をパース結果で埋める。
+1. **Phase 1 — names**: `(sig NAME)` を NFUNCS 個読み、`c->func_names[i]`
+   を埋める (dump 用と main 検索用)。`c->func_bodies[i]` はこの時点で
+   NULL。
+2. **Phase 2 — bodies**: bodies を順番に読み、`c->func_bodies[i]` を
+   パース結果で埋める。`(call IDX ...)` は idx をそのまま保存するだけ
+   なので、callee body が未 build でも問題なし。`(call_static IDX ...)`
+   も callee=NULL の placeholder で ALLOC、`(NODE, idx)` を call_patch
+   テーブルに記録。
+3. **Phase 3 — call_patch**: 全 body が揃った状態で call_patch テーブル
+   を walk し、各 `node_call_static.callee` に `c->func_bodies[idx]` を
+   書き戻す。これで AST が tree から DAG に (recursive 関数を含む場合
+   は循環参照がある DAG)。HASH / SPECIALIZE は両方 cycle break 経路を
+   持つので循環があっても well-defined。
 
-Phase 2 中に `(call IDX ...)` が出てきても、Phase 1 で stub が登録済み
-なので body が NULL のうちは ALLOC 時には参照されない (ALLOC は idx を
-そのまま保存するだけ)。実行は Phase 2 完了後に始まるので body は揃っている。
+実行は Phase 3 完了後に始まるので body / callee 共に揃っている。
 
 ## ASTro Code Store 連携
 
