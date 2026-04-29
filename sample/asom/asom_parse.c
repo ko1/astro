@@ -819,9 +819,10 @@ make_send(Parser *P, NODE *recv, const char *sel, NODE **args, uint32_t nargs)
         if (sel == sel_toDo) {
             bool has_nested;
             if (block_is_inlinable_1arg(args[1], &has_nested)) {
+                NODE *stmts = block_stmts(args[1]);
                 return has_nested
-                    ? ALLOC_node_to_do_pool(recv, args[0], args[1])
-                    : ALLOC_node_to_do(recv, args[0], args[1]);
+                    ? ALLOC_node_to_do_pool(recv, args[0], stmts, args[1])
+                    : ALLOC_node_to_do(recv, args[0], stmts, args[1]);
             }
         }
         NODE *aspec2 = make_specialized_send_array(recv, args[0], args[1], 2, sel, new_cc());

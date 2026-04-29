@@ -681,22 +681,20 @@ node_to_by_do_pool(CTX * restrict c, NODE * restrict n, NODE *from, NODE *end, N
 //                   `captured`. Slightly higher per-call overhead,
 //                   correctness-equivalent to asom_block_invoke.
 NODE_DEF
-node_to_do(CTX * restrict c, NODE * restrict n, NODE *from, NODE *end, NODE *body_block)
+node_to_do(CTX * restrict c, NODE * restrict n, NODE *from, NODE *end, NODE *stmts, NODE *body_block)
 {
     VALUE from_v = EVAL_ARG(c, from);
     VALUE end_v  = EVAL_ARG(c, end);
     if (LIKELY(ASOM_IS_INT(from_v) && ASOM_IS_INT(end_v))) {
         intptr_t lo = ASOM_VAL2INT(from_v);
         intptr_t hi = ASOM_VAL2INT(end_v);
-        NODE *block_body = body_block->u.node_block.body;
-        NODE *stmts = block_body->u.node_block_body.body;
         VALUE slot = 0;
         struct asom_frame frame;
         asom_inline_frame_push(c, &frame);
         c->frame->locals = &slot;
         for (intptr_t i = lo; i <= hi; i++) {
             slot = ASOM_INT2VAL(i);
-            EVAL(c, stmts);
+            EVAL_ARG(c, stmts);
         }
         asom_inline_frame_pop(c, &frame);
         return from_v;
@@ -707,20 +705,18 @@ node_to_do(CTX * restrict c, NODE * restrict n, NODE *from, NODE *end, NODE *bod
 }
 
 NODE_DEF
-node_to_do_pool(CTX * restrict c, NODE * restrict n, NODE *from, NODE *end, NODE *body_block)
+node_to_do_pool(CTX * restrict c, NODE * restrict n, NODE *from, NODE *end, NODE *stmts, NODE *body_block)
 {
     VALUE from_v = EVAL_ARG(c, from);
     VALUE end_v  = EVAL_ARG(c, end);
     if (LIKELY(ASOM_IS_INT(from_v) && ASOM_IS_INT(end_v))) {
         intptr_t lo = ASOM_VAL2INT(from_v);
         intptr_t hi = ASOM_VAL2INT(end_v);
-        NODE *block_body = body_block->u.node_block.body;
-        NODE *stmts = block_body->u.node_block_body.body;
         VALUE *locals;
         struct asom_frame *frame = asom_inline_pool_frame_push(c, 1, &locals);
         for (intptr_t i = lo; i <= hi; i++) {
             locals[0] = ASOM_INT2VAL(i);
-            EVAL(c, stmts);
+            EVAL_ARG(c, stmts);
         }
         asom_inline_pool_frame_pop(c, frame);
         return from_v;
