@@ -102,42 +102,48 @@ node_addr_global(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint3
 // reads or writes the corresponding union slot through the pointer.
 // parse.rb picks the variant matching the pointer's pointee type.
 
+// Loads/stores go through typed `int64_t *` / `double *` rather than
+// through the `VALUE` union so gcc's TBAA can prove they don't alias
+// `VALUE *fp`.  Without this gcc treats every store_i as potentially
+// aliasing the frame and reloads loop locals (i, j, n) from `fp[]`
+// every iteration of e.g. sieve's mark loop.
+
 NODE_DEF
 node_load_i(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *p)
 {
-    VALUE *vp = (VALUE *)UNWRAP(EVAL_ARG(c, p)).p;
-    return RESULT_OK((VALUE){.i = vp->i});
+    int64_t *ip = (int64_t *)UNWRAP(EVAL_ARG(c, p)).p;
+    return RESULT_OK((VALUE){.i = *ip});
 }
 
 NODE_DEF
 node_load_d(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *p)
 {
-    VALUE *vp = (VALUE *)UNWRAP(EVAL_ARG(c, p)).p;
-    return RESULT_OK((VALUE){.d = vp->d});
+    double *dp = (double *)UNWRAP(EVAL_ARG(c, p)).p;
+    return RESULT_OK((VALUE){.d = *dp});
 }
 
 NODE_DEF
 node_load_p(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *p)
 {
-    VALUE *vp = (VALUE *)UNWRAP(EVAL_ARG(c, p)).p;
-    return RESULT_OK((VALUE){.p = vp->p});
+    void **pp = (void **)UNWRAP(EVAL_ARG(c, p)).p;
+    return RESULT_OK((VALUE){.p = *pp});
 }
 
 NODE_DEF
 node_store_i(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *p, NODE *v)
 {
-    void *pv = UNWRAP(EVAL_ARG(c, p)).p;
+    int64_t *ip = (int64_t *)UNWRAP(EVAL_ARG(c, p)).p;
     int64_t vv = UNWRAP(EVAL_ARG(c, v)).i;
-    ((VALUE *)pv)->i = vv;
+    *ip = vv;
     return RESULT_OK((VALUE){.i = vv});
 }
 
 NODE_DEF
 node_store_d(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *p, NODE *v)
 {
-    void *pv = UNWRAP(EVAL_ARG(c, p)).p;
+    double *dp = (double *)UNWRAP(EVAL_ARG(c, p)).p;
     double vv = UNWRAP(EVAL_ARG(c, v)).d;
-    ((VALUE *)pv)->d = vv;
+    *dp = vv;
     return RESULT_OK((VALUE){.d = vv});
 }
 
