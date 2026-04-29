@@ -440,6 +440,7 @@ extern const struct NodeKind
     kind_node_iftrue_iffalse_pool, kind_node_iffalse_iftrue_pool,
     kind_node_and, kind_node_or,
     kind_node_whiletrue, kind_node_whilefalse,
+    kind_node_whiletrue_pool, kind_node_whilefalse_pool,
     kind_node_to_do, kind_node_to_do_pool,
     kind_node_to_by_do, kind_node_to_by_do_pool,
     kind_node_times_repeat, kind_node_times_repeat_pool;
@@ -529,6 +530,14 @@ subtree_creates_block(NODE *n)
     if (k == &kind_node_whilefalse) {
         return subtree_creates_block(n->u.node_whilefalse.cond_stmts)
             || subtree_creates_block(n->u.node_whilefalse.body_stmts);
+    }
+    if (k == &kind_node_whiletrue_pool) {
+        return subtree_creates_block(n->u.node_whiletrue_pool.cond_stmts)
+            || subtree_creates_block(n->u.node_whiletrue_pool.body_stmts);
+    }
+    if (k == &kind_node_whilefalse_pool) {
+        return subtree_creates_block(n->u.node_whilefalse_pool.cond_stmts)
+            || subtree_creates_block(n->u.node_whilefalse_pool.body_stmts);
     }
     if (k == &kind_node_to_do) {
         return subtree_creates_block(n->u.node_to_do.from)
@@ -752,6 +761,14 @@ subtree_has_nlr(NODE *n)
     if (k == &kind_node_whilefalse) {
         return subtree_has_nlr(n->u.node_whilefalse.cond_stmts)
             || subtree_has_nlr(n->u.node_whilefalse.body_stmts);
+    }
+    if (k == &kind_node_whiletrue_pool) {
+        return subtree_has_nlr(n->u.node_whiletrue_pool.cond_stmts)
+            || subtree_has_nlr(n->u.node_whiletrue_pool.body_stmts);
+    }
+    if (k == &kind_node_whilefalse_pool) {
+        return subtree_has_nlr(n->u.node_whilefalse_pool.cond_stmts)
+            || subtree_has_nlr(n->u.node_whilefalse_pool.body_stmts);
     }
     if (k == &kind_node_to_do) {
         return subtree_has_nlr(n->u.node_to_do.from)
@@ -1070,10 +1087,24 @@ make_send(Parser *P, NODE *recv, const char *sel, NODE **args, uint32_t nargs)
             if (block_is_inlinable_pool_0arg(args[0], &nl))
                 return ALLOC_node_iffalse_pool(recv, nl, block_stmts(args[0]), args[0]);
         }
-        if (sel == sel_whileTrue && block_is_inlinable(recv) && block_is_inlinable(args[0]))
-            return ALLOC_node_whiletrue(block_stmts(recv), block_stmts(args[0]));
-        if (sel == sel_whileFalse && block_is_inlinable(recv) && block_is_inlinable(args[0]))
-            return ALLOC_node_whilefalse(block_stmts(recv), block_stmts(args[0]));
+        if (sel == sel_whileTrue) {
+            if (block_is_inlinable(recv) && block_is_inlinable(args[0]))
+                return ALLOC_node_whiletrue(block_stmts(recv), block_stmts(args[0]));
+            uint32_t cnl, bnl;
+            if (block_is_inlinable_pool_0arg(recv, &cnl)
+                && block_is_inlinable_pool_0arg(args[0], &bnl)
+                && cnl == 0 && bnl == 0)
+                return ALLOC_node_whiletrue_pool(block_stmts(recv), block_stmts(args[0]));
+        }
+        if (sel == sel_whileFalse) {
+            if (block_is_inlinable(recv) && block_is_inlinable(args[0]))
+                return ALLOC_node_whilefalse(block_stmts(recv), block_stmts(args[0]));
+            uint32_t cnl, bnl;
+            if (block_is_inlinable_pool_0arg(recv, &cnl)
+                && block_is_inlinable_pool_0arg(args[0], &bnl)
+                && cnl == 0 && bnl == 0)
+                return ALLOC_node_whilefalse_pool(block_stmts(recv), block_stmts(args[0]));
+        }
         if (sel == sel_timesRepeat) {
             bool has_nested;
             if (block_is_inlinable_0arg(args[0], &has_nested)) {

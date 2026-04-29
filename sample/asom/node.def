@@ -891,6 +891,43 @@ node_whilefalse(CTX * restrict c, NODE * restrict n, NODE *cond_stmts, NODE *bod
     return c->val_nil;
 }
 
+// _pool variants: cond/body subtrees may contain inlined CF nodes with a
+// `body_block` fallback (or other paths that call asom_make_block on the
+// rare-recv branch). If we used a stack frame, the closure's
+// lexical_parent would dangle when the loop returns. The pool frame is
+// heap-resident; `captured` pins it out of pool recycling on closure
+// escape. One pool fetch + return per whileTrue: call (vs one pool fetch
+// per iteration in the un-inlined `Block>>whileTrue:` path).
+NODE_DEF
+node_whiletrue_pool(CTX * restrict c, NODE * restrict n, NODE *cond_stmts, NODE *body_stmts)
+{
+    VALUE *unused;
+    struct asom_frame *frame = asom_inline_pool_frame_push(c, 0, &unused);
+    (void)unused;
+    for (;;) {
+        VALUE r = EVAL_ARG(c, cond_stmts);
+        if (r != c->val_true) break;
+        EVAL_ARG(c, body_stmts);
+    }
+    asom_inline_pool_frame_pop(c, frame);
+    return c->val_nil;
+}
+
+NODE_DEF
+node_whilefalse_pool(CTX * restrict c, NODE * restrict n, NODE *cond_stmts, NODE *body_stmts)
+{
+    VALUE *unused;
+    struct asom_frame *frame = asom_inline_pool_frame_push(c, 0, &unused);
+    (void)unused;
+    for (;;) {
+        VALUE r = EVAL_ARG(c, cond_stmts);
+        if (r != c->val_false) break;
+        EVAL_ARG(c, body_stmts);
+    }
+    asom_inline_pool_frame_pop(c, frame);
+    return c->val_nil;
+}
+
 // -----------------------------------------------------------------------------
 //  Type-specialized send1 variants. These share the canonical Horg with
 //  node_send1 (via @canonical=node_send1) so swap_dispatcher rewriting
