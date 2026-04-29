@@ -26,7 +26,8 @@ extern const struct NodeKind
     kind_node_local_set,  kind_node_box_get,   kind_node_box_set,
     kind_node_int_add, kind_node_int_sub, kind_node_int_mul,
     kind_node_nil, kind_node_true, kind_node_false,
-    kind_node_int, kind_node_float, kind_node_string;
+    kind_node_int, kind_node_float, kind_node_string,
+    kind_node_numfor;
 
 // --- Side-array storage --------------------------------------------
 
@@ -373,14 +374,31 @@ pf_fold_constants(ParseFunc *pf)
     //    (b) variadic operand (LUASTRO_NODE_ARR entry): walk the
     //        side array and replace in place.  REPLACER never
     //        touches side arrays.
+    //
+    // Carve-out: skip folding when the parent is `node_numfor` and
+    // we're at the `limit` operand position.  At -O3, gcc's loop-IV
+    // selection notices the constant bound and keeps the counter in
+    // tagged form (i*2 in a register, immediate compare against the
+    // constant 2*N).  The body's per-iteration `LUAV_INT(i)` then
+    // becomes `mov + or` instead of the `lea 1(%r,%r)` it gets when
+    // the counter is in raw form.  +2 µops × N iterations dominates
+    // for tight loops like `for i = 2, N do primes[i] = true end`
+    // (sieve regression, see docs/perf.md §5.1).  Keeping the limit
+    // as `node_local_get` runs an extra frame load at numfor entry
+    // (one-shot, irrelevant) but lets gcc keep the counter in raw
+    // form and use lea-tagging in the inner loop.
     for (uint32_t i = 0; i < pf->nlocal_refs; i++) {
         LocalRef *r = &pf->local_refs[i];
         if (!foldable[r->slot_idx]) continue;
         NODE *n = r->node;
         if (n->head.kind != &kind_node_local_get) continue;  // already mutated (e.g. box_get)
+        NODE *parent = n->head.parent;
+        if (parent && parent->head.kind == &kind_node_numfor &&
+            parent->u.node_numfor.limit == n) {
+            continue;  // numfor.limit carve-out (see comment above)
+        }
         NODE *konst = clone_const_node(pf->const_init[r->slot_idx]);
         if (!konst) continue;
-        NODE *parent = n->head.parent;
         if (parent && parent->head.kind->replacer) {
             (*parent->head.kind->replacer)(parent, n, konst);
             konst->head.parent = parent;
