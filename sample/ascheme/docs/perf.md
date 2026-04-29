@@ -471,6 +471,32 @@ overhead, partly the interpreted-mode it falls into when the JIT
 counter hasn't tripped yet.  Either way, ascheme's specialized AST
 + AOT-folded SD chain runs ~10× faster on these workloads.
 
+## Cumulative score on bench/big  (multi-second workloads)
+
+For longer benchmarks the same patterns hold — ascheme aot-cached
+beats chibi-scheme on every test, and beats guile-3.0 on every test
+except matmul (where guile's JIT produces tight inner-loop code for
+nested `vector-ref` chains that we don't yet match):
+
+```
+                 ascheme       chibi      guile     vs chibi   vs guile
+cps_loop          0.45 s        2.91       10.13       6.5×        22×
+deriv             1.17 s        1.71        1.87       1.5×       1.6×
+fannkuch          1.47 s        4.08        6.85       2.8×       4.7×
+fib35             0.27 s        1.21        4.89       4.5×        18×
+mandel            0.15 s        0.97        1.00       6.5×       6.7×
+matmul           12.59 s       22.63        9.50       1.8×    0.75× (loss)
+nbody             0.59 s        2.62        2.49       4.4×       4.2×
+nqueens           1.20 s        4.27       14.71       3.6×        12×
+sieve_big         0.93 s        2.34        9.62       2.5×        10×
+sumloop           2.15 s        3.52       17.74       1.6×       8.2×
+tak_big          16.05 s       76.02      348.62       4.7×        22×
+```
+
+mandel (6.5×) and nbody (4.4×) are won by §3's inline flonum
+encoding; matmul's nested `vector-ref` access pattern in a tight
+inner loop is the one place guile's JIT pulls clearly ahead.
+
 ## What didn't move the needle (yet)
 
 - **Specializing `node_lref0` / `node_lset0`** — the depth=0 case is
