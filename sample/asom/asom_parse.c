@@ -1022,10 +1022,15 @@ parse_primary(Parser *P)
     }
     case T_STRING: {
         // Build the runtime asom_string at parse time so embedded NUL bytes
-        // and the explicit byte length round-trip correctly.
-        VALUE v = asom_string_new(P->ctx, t->strval, t->len);
+        // and the explicit byte length round-trip correctly. The VALUE is
+        // cached inline in the node; structural hash uses bytes + len (not
+        // the VALUE bits) so a second-process parse hashes the same way and
+        // cs_load can find the baked SD.
+        const char *bytes = t->strval;
+        uint32_t len = (uint32_t)t->len;
+        VALUE v = asom_string_new(P->ctx, bytes, len);
         lex_advance(P->L);
-        return ALLOC_node_string_val((uint64_t)(uintptr_t)v);
+        return ALLOC_node_string_val(bytes, len, v);
     }
     case T_POUND: {
         // #symbol | #'string' | #binarySelector | #keyword:keyword: | #(literalArray)
@@ -1034,7 +1039,8 @@ parse_primary(Parser *P)
         if (peek(P)->kind == T_LPAREN) {
             lex_advance(P->L);
             VALUE arr = parse_literal_array_value(P);
-            return ALLOC_node_array_lit((uint64_t)(uintptr_t)arr);
+            uint32_t arr_len = ((struct asom_array *)ASOM_VAL2OBJ(arr))->len;
+            return ALLOC_node_array_lit(arr_len, arr);
         }
         if (peek(P)->kind == T_STRING) {
             const char *s = peek(P)->strval;

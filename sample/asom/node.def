@@ -329,22 +329,29 @@ node_send8(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *a0, NODE *a1, 
     return asom_send(c, r, selector, 8, args, cc);
 }
 
-// Array / string literal — VALUE pointer is captured at parse time. We
-// treat it as an opaque uint64_t for hashing/dumping; specialization will
-// reproduce the exact pointer literal in generated C, which is fine because
-// the .so is always rebuilt against a fresh process state.
+// Array / string literal. The runtime VALUE is built once at parse
+// time and stored inline via @ref. Hash uses the content surrogate
+// (bytes / len) — NOT the VALUE pointer — so the same source produces
+// the same hash across processes and the cached SD loads correctly on
+// a second run. Without this, every parse builds a fresh asom_string
+// with a different heap address; the bake-time hash and the
+// load-time hash diverge and cs_load misses for any node that has a
+// string/array literal in its subtree.
+//
+// Limitation: hash_cstr stops at NUL. Embedded-NUL strings would only
+// hash their prefix; in practice asom benchmark code never uses those.
 NODE_DEF
-node_array_lit(CTX * restrict c, NODE * restrict n, uint64_t value)
+node_array_lit(CTX * restrict c, NODE * restrict n, uint32_t len, VALUE cached)
 {
-    (void)c;
-    return (VALUE)(intptr_t)value;
+    (void)c; (void)len;
+    return cached;
 }
 
 NODE_DEF
-node_string_val(CTX * restrict c, NODE * restrict n, uint64_t value)
+node_string_val(CTX * restrict c, NODE * restrict n, const char *bytes, uint32_t len, VALUE cached)
 {
-    (void)c;
-    return (VALUE)(intptr_t)value;
+    (void)c; (void)bytes; (void)len;
+    return cached;
 }
 
 // Super send: like node_sendN, but lookup starts in superclass of method holder.
