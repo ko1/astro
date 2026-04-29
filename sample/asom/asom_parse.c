@@ -437,7 +437,9 @@ extern const struct NodeKind
     kind_node_iftrue, kind_node_iffalse,
     kind_node_iftrue_iffalse, kind_node_iffalse_iftrue,
     kind_node_whiletrue, kind_node_whilefalse,
-    kind_node_to_do, kind_node_to_do_pool;
+    kind_node_to_do, kind_node_to_do_pool,
+    kind_node_to_by_do, kind_node_to_by_do_pool,
+    kind_node_times_repeat, kind_node_times_repeat_pool;
 
 // -----------------------------------------------------------------------------
 //  Control-flow inlining
@@ -508,6 +510,26 @@ subtree_creates_block(NODE *n)
         return subtree_creates_block(n->u.node_to_do_pool.from)
             || subtree_creates_block(n->u.node_to_do_pool.end)
             || subtree_creates_block(n->u.node_to_do_pool.body_block);
+    }
+    if (k == &kind_node_to_by_do) {
+        return subtree_creates_block(n->u.node_to_by_do.from)
+            || subtree_creates_block(n->u.node_to_by_do.end)
+            || subtree_creates_block(n->u.node_to_by_do.step)
+            || subtree_creates_block(n->u.node_to_by_do.body_block);
+    }
+    if (k == &kind_node_to_by_do_pool) {
+        return subtree_creates_block(n->u.node_to_by_do_pool.from)
+            || subtree_creates_block(n->u.node_to_by_do_pool.end)
+            || subtree_creates_block(n->u.node_to_by_do_pool.step)
+            || subtree_creates_block(n->u.node_to_by_do_pool.body_block);
+    }
+    if (k == &kind_node_times_repeat) {
+        return subtree_creates_block(n->u.node_times_repeat.count)
+            || subtree_creates_block(n->u.node_times_repeat.body_block);
+    }
+    if (k == &kind_node_times_repeat_pool) {
+        return subtree_creates_block(n->u.node_times_repeat_pool.count)
+            || subtree_creates_block(n->u.node_times_repeat_pool.body_block);
     }
 
     // Structural / control nodes — recurse into NODE * children.
@@ -644,6 +666,23 @@ block_is_inlinable(NODE *block_node)
     return !subtree_creates_block(bb->u.node_block_body.body);
 }
 
+// Like block_is_inlinable but also reports whether the body would create
+// nested closures at runtime. The caller picks stack-frame (no nested,
+// fastest) or pool-frame (nested possible, safe). Used by timesRepeat:
+// where both variants exist.
+static bool
+block_is_inlinable_0arg(NODE *block_node, bool *out_has_nested_block)
+{
+    *out_has_nested_block = false;
+    if (!block_node || block_node->head.kind != &kind_node_block) return false;
+    if (block_node->u.node_block.num_params != 0) return false;
+    if (block_node->u.node_block.num_locals != 0) return false;
+    NODE *bb = block_node->u.node_block.body;
+    if (!bb || bb->head.kind != &kind_node_block_body) return false;
+    *out_has_nested_block = subtree_creates_block(bb->u.node_block_body.body);
+    return true;
+}
+
 // `node_block(1 param, 0 locals)` — used by both to:do: inline paths.
 // The single param holds the loop index. `out_has_nested_block` reports
 // whether the body creates any nested closures, so the parser can pick
@@ -710,7 +749,8 @@ make_send(Parser *P, NODE *recv, const char *sel, NODE **args, uint32_t nargs)
     // Cache interned selector pointers for the control-flow specializers.
     // Comparing pointers (selectors are interned) is one cmp per check.
     static const char *sel_ifTrue, *sel_ifFalse, *sel_whileTrue, *sel_whileFalse,
-                      *sel_ifTrueIfFalse, *sel_ifFalseIfTrue, *sel_toDo;
+                      *sel_ifTrueIfFalse, *sel_ifFalseIfTrue, *sel_toDo,
+                      *sel_timesRepeat, *sel_toByDo;
     if (UNLIKELY(sel_ifTrue == NULL)) {
         sel_ifTrue          = asom_intern_cstr("ifTrue:");
         sel_ifFalse         = asom_intern_cstr("ifFalse:");
@@ -719,6 +759,8 @@ make_send(Parser *P, NODE *recv, const char *sel, NODE **args, uint32_t nargs)
         sel_ifTrueIfFalse   = asom_intern_cstr("ifTrue:ifFalse:");
         sel_ifFalseIfTrue   = asom_intern_cstr("ifFalse:ifTrue:");
         sel_toDo            = asom_intern_cstr("to:do:");
+        sel_timesRepeat     = asom_intern_cstr("timesRepeat:");
+        sel_toByDo          = asom_intern_cstr("to:by:do:");
     }
     switch (nargs) {
     case 0: return ALLOC_node_send0(recv, sel, new_cc());
@@ -732,6 +774,14 @@ make_send(Parser *P, NODE *recv, const char *sel, NODE **args, uint32_t nargs)
             return ALLOC_node_whiletrue(block_stmts(recv), block_stmts(args[0]));
         if (sel == sel_whileFalse && block_is_inlinable(recv) && block_is_inlinable(args[0]))
             return ALLOC_node_whilefalse(block_stmts(recv), block_stmts(args[0]));
+        if (sel == sel_timesRepeat) {
+            bool has_nested;
+            if (block_is_inlinable_0arg(args[0], &has_nested)) {
+                return has_nested
+                    ? ALLOC_node_times_repeat_pool(recv, args[0])
+                    : ALLOC_node_times_repeat(recv, args[0]);
+            }
+        }
         NODE *spec = make_specialized_send1(recv, args[0], sel, new_cc());
         return spec ? spec : ALLOC_node_send1(recv, args[0], sel, new_cc());
     }
@@ -752,7 +802,17 @@ make_send(Parser *P, NODE *recv, const char *sel, NODE **args, uint32_t nargs)
         }
         return ALLOC_node_send2(recv, args[0], args[1], sel, new_cc());
     }
-    case 3: return ALLOC_node_send3(recv, args[0], args[1], args[2], sel, new_cc());
+    case 3: {
+        if (sel == sel_toByDo) {
+            bool has_nested;
+            if (block_is_inlinable_1arg(args[2], &has_nested)) {
+                return has_nested
+                    ? ALLOC_node_to_by_do_pool(recv, args[0], args[1], args[2])
+                    : ALLOC_node_to_by_do(recv, args[0], args[1], args[2]);
+            }
+        }
+        return ALLOC_node_send3(recv, args[0], args[1], args[2], sel, new_cc());
+    }
     case 4: return ALLOC_node_send4(recv, args[0], args[1], args[2], args[3], sel, new_cc());
     case 5: return ALLOC_node_send5(recv, args[0], args[1], args[2], args[3], args[4], sel, new_cc());
     case 6: return ALLOC_node_send6(recv, args[0], args[1], args[2], args[3], args[4], args[5], sel, new_cc());

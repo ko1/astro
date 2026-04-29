@@ -546,6 +546,123 @@ node_iffalse_iftrue(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *f_blo
     return asom_send(c, v, asom_intern_cstr("ifFalse:ifTrue:"), 2, args, NULL);
 }
 
+// `n timesRepeat: [body]` — inlined when n is SmallInteger and body is
+// a 0-param 0-local block. Same stack/pool split as to:do:: stack
+// frame is fast but only safe if the body never creates a nested
+// closure; pool path is correct in all cases.
+NODE_DEF
+node_times_repeat(CTX * restrict c, NODE * restrict n, NODE *count, NODE *body_block)
+{
+    VALUE count_v = EVAL_ARG(c, count);
+    if (LIKELY(ASOM_IS_INT(count_v))) {
+        intptr_t reps = ASOM_VAL2INT(count_v);
+        NODE *block_body = body_block->u.node_block.body;
+        NODE *stmts = block_body->u.node_block_body.body;
+        struct asom_frame frame;
+        asom_inline_frame_push(c, &frame);
+        for (intptr_t i = 0; i < reps; i++) {
+            EVAL(c, stmts);
+        }
+        asom_inline_frame_pop(c, &frame);
+        return count_v;
+    }
+    VALUE blk = EVAL_ARG(c, body_block);
+    return asom_send(c, count_v, asom_intern_cstr("timesRepeat:"), 1, &blk, NULL);
+}
+
+NODE_DEF
+node_times_repeat_pool(CTX * restrict c, NODE * restrict n, NODE *count, NODE *body_block)
+{
+    VALUE count_v = EVAL_ARG(c, count);
+    if (LIKELY(ASOM_IS_INT(count_v))) {
+        intptr_t reps = ASOM_VAL2INT(count_v);
+        NODE *block_body = body_block->u.node_block.body;
+        NODE *stmts = block_body->u.node_block_body.body;
+        VALUE *unused;
+        struct asom_frame *frame = asom_inline_pool_frame_push(c, 0, &unused);
+        (void)unused;
+        for (intptr_t i = 0; i < reps; i++) {
+            EVAL(c, stmts);
+        }
+        asom_inline_pool_frame_pop(c, frame);
+        return count_v;
+    }
+    VALUE blk = EVAL_ARG(c, body_block);
+    return asom_send(c, count_v, asom_intern_cstr("timesRepeat:"), 1, &blk, NULL);
+}
+
+// `from to: end by: step do: [ :var | body ]` — 3-arg variant of
+// to:do:. Only inlined when from/end/step are all SmallInteger and the
+// block has 1 param + 0 locals. Step may be negative for descending
+// loops; we handle both with a single guard at the top.
+NODE_DEF
+node_to_by_do(CTX * restrict c, NODE * restrict n, NODE *from, NODE *end, NODE *step, NODE *body_block)
+{
+    VALUE from_v = EVAL_ARG(c, from);
+    VALUE end_v  = EVAL_ARG(c, end);
+    VALUE step_v = EVAL_ARG(c, step);
+    if (LIKELY(ASOM_IS_INT(from_v) && ASOM_IS_INT(end_v) && ASOM_IS_INT(step_v))) {
+        intptr_t lo = ASOM_VAL2INT(from_v);
+        intptr_t hi = ASOM_VAL2INT(end_v);
+        intptr_t st = ASOM_VAL2INT(step_v);
+        NODE *block_body = body_block->u.node_block.body;
+        NODE *stmts = block_body->u.node_block_body.body;
+        VALUE slot = 0;
+        struct asom_frame frame;
+        asom_inline_frame_push(c, &frame);
+        c->frame->locals = &slot;
+        if (st > 0) {
+            for (intptr_t i = lo; i <= hi; i += st) {
+                slot = ASOM_INT2VAL(i);
+                EVAL(c, stmts);
+            }
+        } else if (st < 0) {
+            for (intptr_t i = lo; i >= hi; i += st) {
+                slot = ASOM_INT2VAL(i);
+                EVAL(c, stmts);
+            }
+        }
+        asom_inline_frame_pop(c, &frame);
+        return from_v;
+    }
+    VALUE blk = EVAL_ARG(c, body_block);
+    VALUE args[3] = { end_v, step_v, blk };
+    return asom_send(c, from_v, asom_intern_cstr("to:by:do:"), 3, args, NULL);
+}
+
+NODE_DEF
+node_to_by_do_pool(CTX * restrict c, NODE * restrict n, NODE *from, NODE *end, NODE *step, NODE *body_block)
+{
+    VALUE from_v = EVAL_ARG(c, from);
+    VALUE end_v  = EVAL_ARG(c, end);
+    VALUE step_v = EVAL_ARG(c, step);
+    if (LIKELY(ASOM_IS_INT(from_v) && ASOM_IS_INT(end_v) && ASOM_IS_INT(step_v))) {
+        intptr_t lo = ASOM_VAL2INT(from_v);
+        intptr_t hi = ASOM_VAL2INT(end_v);
+        intptr_t st = ASOM_VAL2INT(step_v);
+        NODE *block_body = body_block->u.node_block.body;
+        NODE *stmts = block_body->u.node_block_body.body;
+        VALUE *locals;
+        struct asom_frame *frame = asom_inline_pool_frame_push(c, 1, &locals);
+        if (st > 0) {
+            for (intptr_t i = lo; i <= hi; i += st) {
+                locals[0] = ASOM_INT2VAL(i);
+                EVAL(c, stmts);
+            }
+        } else if (st < 0) {
+            for (intptr_t i = lo; i >= hi; i += st) {
+                locals[0] = ASOM_INT2VAL(i);
+                EVAL(c, stmts);
+            }
+        }
+        asom_inline_pool_frame_pop(c, frame);
+        return from_v;
+    }
+    VALUE blk = EVAL_ARG(c, body_block);
+    VALUE args[3] = { end_v, step_v, blk };
+    return asom_send(c, from_v, asom_intern_cstr("to:by:do:"), 3, args, NULL);
+}
+
 // `from to: end do: [ :var | body ]` — inlined when receiver/end are
 // SmallInteger and the block has 1 param.
 //
