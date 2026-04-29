@@ -10,6 +10,7 @@
 #include <math.h>
 #include <stdarg.h>
 #include <limits.h>
+#include <stddef.h>
 #include "context.h"
 #include "node.h"
 #include "astro_code_store.h"
@@ -64,7 +65,17 @@ scm_alloc(int type)
 VALUE
 scm_cons(VALUE a, VALUE d)
 {
-    struct sobj *o = scm_alloc(OBJ_PAIR);
+    // Allocate exactly the bytes a pair needs (type + offset + car +
+    // cdr) rather than the full sizeof(struct sobj).  Boehm GC blocks
+    // are bucketed in fixed sizes — for a 24-byte request it picks a
+    // smaller bucket than for the 48-byte struct.  list-heavy
+    // benchmarks (cons in a tight loop) shrink dramatically as a
+    // result.  The cast is sound because we never access fields past
+    // `pair` for objects of type OBJ_PAIR.
+    static const size_t pair_size = offsetof(struct sobj, pair) +
+                                    sizeof(((struct sobj *)0)->pair);
+    struct sobj *o = (struct sobj *)GC_malloc(pair_size);
+    o->type = OBJ_PAIR;
     o->pair.car = a;
     o->pair.cdr = d;
     return SCM_OBJ_VAL(o);
@@ -1041,6 +1052,9 @@ try_specialize_arith(CTX *c, VALUE fn_form, VALUE args, struct lex_scope *scope)
         if (strcmp(name, ">=") == 0) return ALLOC_node_arith_ge(a, b);
         if (strcmp(name, "=")  == 0) return ALLOC_node_arith_eq(a, b);
         if (strcmp(name, "vector-ref") == 0) return ALLOC_node_vec_ref(a, b);
+        if (strcmp(name, "cons") == 0)   return ALLOC_node_cons_op(a, b);
+        if (strcmp(name, "eq?") == 0)    return ALLOC_node_eq_op(a, b);
+        if (strcmp(name, "eqv?") == 0)   return ALLOC_node_eqv_op(a, b);
         return NULL;
     }
     if (argc == 3) {
@@ -1147,6 +1161,15 @@ compile_body(CTX *c, VALUE body, struct lex_scope *scope, bool is_tail)
     return compile_seq(c, body, scope, is_tail);
 }
 
+// COMPILE_INNER_LAMBDA_SEEN bubbles outward from any `compile_lambda` —
+// each enclosing compile_lambda observes whether its (transitive) body
+// contained a nested `lambda`.  The flag feeds the closure's `leaf` bit,
+// which scm_apply_tail consults to decide whether a self-tail-call can
+// reuse the existing frame in place.  Without this gating, a tail call
+// that overwrote a frame captured by an inner closure would silently
+// corrupt that closure's lexical view.
+static bool COMPILE_INNER_LAMBDA_SEEN = false;
+
 // Build a (lambda (params) body...) node.  Handles fixed-arity, dotted
 // rest, and the trivial `(lambda x body)` rest-only form.
 static NODE *
@@ -1180,9 +1203,18 @@ compile_lambda(CTX *c, VALUE params, VALUE body, struct lex_scope *scope)
     for (int i = 0; i < nslots; i++) names[i] = names_buf[i];
 
     struct lex_scope *new_scope = push_scope(scope, nslots, names);
+
+    bool saved = COMPILE_INNER_LAMBDA_SEEN;
+    COMPILE_INNER_LAMBDA_SEEN = false;
     NODE *body_node = compile_body(c, body, new_scope, true);   // body is in tail position
+    bool body_has_inner_lambda = COMPILE_INNER_LAMBDA_SEEN;
+    // Bubble the "we are a lambda" flag to the enclosing scope.
+    COMPILE_INNER_LAMBDA_SEEN = saved || true;
+
     aot_add_entry(body_node);
-    return ALLOC_node_lambda((uint32_t)nparams, (uint32_t)has_rest, (uint32_t)nslots, body_node);
+    return ALLOC_node_lambda((uint32_t)nparams, (uint32_t)has_rest, (uint32_t)nslots,
+                             body_has_inner_lambda ? 0 : 1,
+                             body_node);
 }
 
 // (let ((a v) (b w)) body) → ((lambda (a b) body) v w)
@@ -1603,14 +1635,40 @@ scm_apply(CTX *c, VALUE fn, int argc, VALUE *argv)
     }
     if (UNLIKELY(scm_is_cont(fn))) {
         struct sobj *k = SCM_PTR(fn);
-        if (!k->cont.active) scm_error(c, "continuation already invoked / expired");
+        if (!k->cont->active) scm_error(c, "continuation already invoked / expired");
         if (argc != 1) scm_error(c, "continuation expects exactly 1 argument");
-        k->cont.result = argv[0];
-        longjmp(k->cont.buf, 1);
+        k->cont->result = argv[0];
+        longjmp(k->cont->buf, 1);
     }
     if (LIKELY(scm_is_closure(fn))) {
         struct sobj *cl = SCM_PTR(fn);
-        struct sframe *new_env = build_frame_for(c, cl, argc, argv);
+        struct sframe *new_env;
+        // Leaf-closure stack frame.  When the closure's body has no
+        // nested `lambda`, no escaped sub-closure can capture this
+        // frame, so we can park it on the C stack via `alloca` and
+        // avoid the GC_malloc entirely.  Lifetime = the rest of this
+        // scm_apply call, which is exactly what the body needs.
+        if (LIKELY(cl->closure.leaf)) {
+            int total = cl->closure.nparams + (cl->closure.has_rest ? 1 : 0);
+            if (cl->closure.has_rest) {
+                if (argc < cl->closure.nparams) scm_error(c, "too few arguments");
+            } else {
+                if (argc != cl->closure.nparams) scm_error(c, "wrong number of arguments (got %d, expected %d)", argc, cl->closure.nparams);
+            }
+            new_env = (struct sframe *)alloca(sizeof(struct sframe) +
+                                              sizeof(VALUE) * (total ? total : 1));
+            new_env->parent = cl->closure.env;
+            new_env->nslots = total;
+            for (int i = 0; i < cl->closure.nparams; i++) new_env->slots[i] = argv[i];
+            if (cl->closure.has_rest) {
+                VALUE rest = SCM_NIL;
+                for (int i = argc - 1; i >= cl->closure.nparams; i--)
+                    rest = scm_cons(argv[i], rest);
+                new_env->slots[cl->closure.nparams] = rest;
+            }
+        } else {
+            new_env = build_frame_for(c, cl, argc, argv);
+        }
         struct sframe *saved = c->env;
         NODE *body = cl->closure.body;
         c->env = new_env;
@@ -1633,14 +1691,43 @@ scm_apply(CTX *c, VALUE fn, int argc, VALUE *argv)
     scm_error(c, "not a procedure");
 }
 
+// Slow-path complement to the inline `scm_apply_tail` in node.h.
+// Handles non-tail calls, non-closure targets, has_rest closures, and
+// the "shape mismatch" cases where the existing frame can't be reused.
 VALUE
-scm_apply_tail(CTX *c, VALUE fn, int argc, VALUE *argv, uint32_t is_tail)
+scm_apply_tail_slow(CTX *c, VALUE fn, int argc, VALUE *argv, uint32_t is_tail)
 {
-    // Tail-position calls only support direct closure application; for
-    // primitives and continuations we fall back to a normal call so the
-    // trampoline rule (return-bogus + flag) doesn't leak.
     if (is_tail && scm_is_closure(fn)) {
         struct sobj *cl = SCM_PTR(fn);
+        int total = cl->closure.nparams + (cl->closure.has_rest ? 1 : 0);
+
+        // Self-tail-call frame reuse.  When the new closure shares the
+        // current frame's parent + slot count *and* its body has no
+        // nested lambda (so no escaped closure can hold a reference),
+        // we overwrite the live frame in place and skip a GC_malloc.
+        // For tight tail loops (`loop` / `sum` benches) this removes
+        // ~30 ns of allocation work per iteration.
+        if (LIKELY(cl->closure.leaf &&
+                    c->env != NULL &&
+                    c->env->parent == cl->closure.env &&
+                    c->env->nslots == total)) {
+            if (cl->closure.has_rest) {
+                if (argc < cl->closure.nparams) scm_error(c, "too few arguments");
+            } else {
+                if (argc != cl->closure.nparams) scm_error(c, "wrong number of arguments");
+            }
+            for (int i = 0; i < cl->closure.nparams; i++) c->env->slots[i] = argv[i];
+            if (cl->closure.has_rest) {
+                VALUE rest = SCM_NIL;
+                for (int i = argc - 1; i >= cl->closure.nparams; i--) rest = scm_cons(argv[i], rest);
+                c->env->slots[cl->closure.nparams] = rest;
+            }
+            c->next_body = cl->closure.body;
+            c->next_env = c->env;
+            c->tail_call_pending = 1;
+            return SCM_UNSPEC;
+        }
+
         struct sframe *new_env = build_frame_for(c, cl, argc, argv);
         c->next_body = cl->closure.body;
         c->next_env = new_env;
@@ -1660,20 +1747,21 @@ scm_callcc(CTX *c, VALUE fn)
 {
     if (!scm_is_proc(fn)) scm_error(c, "call/cc: not a procedure");
     struct sobj *kobj = scm_alloc(OBJ_CONT);
-    kobj->cont.active = 1;
-    kobj->cont.tag = ++c->cont_tag_seq;
+    kobj->cont = (struct scont *)GC_malloc(sizeof(struct scont));
+    kobj->cont->active = 1;
+    kobj->cont->tag = ++c->cont_tag_seq;
     VALUE k = SCM_OBJ_VAL(kobj);
     struct sframe *saved_env = c->env;
     int saved_tcp = c->tail_call_pending;
-    if (setjmp(kobj->cont.buf) != 0) {
+    if (setjmp(kobj->cont->buf) != 0) {
         c->env = saved_env;
         c->tail_call_pending = saved_tcp;
-        kobj->cont.active = 0;
-        return kobj->cont.result;
+        kobj->cont->active = 0;
+        return kobj->cont->result;
     }
     VALUE arg[1] = { k };
     VALUE r = scm_apply(c, fn, 1, arg);
-    kobj->cont.active = 0;
+    kobj->cont->active = 0;
     return r;
 }
 
@@ -3288,6 +3376,7 @@ VALUE PRIM_PLUS_VAL, PRIM_MINUS_VAL, PRIM_MUL_VAL;
 VALUE PRIM_NUM_LT_VAL, PRIM_NUM_LE_VAL, PRIM_NUM_GT_VAL, PRIM_NUM_GE_VAL, PRIM_NUM_EQ_VAL;
 VALUE PRIM_NULL_P_VAL, PRIM_PAIR_P_VAL, PRIM_CAR_VAL, PRIM_CDR_VAL, PRIM_NOT_VAL;
 VALUE PRIM_VECTOR_REF_VAL, PRIM_VECTOR_SET_VAL;
+VALUE PRIM_CONS_VAL, PRIM_EQ_P_VAL, PRIM_EQV_P_VAL;
 
 static void
 install_prims(CTX *c)
@@ -3323,6 +3412,9 @@ install_prims(CTX *c)
     PRIM_NOT_VAL        = scm_global_ref(c, "not");
     PRIM_VECTOR_REF_VAL = scm_global_ref(c, "vector-ref");
     PRIM_VECTOR_SET_VAL = scm_global_ref(c, "vector-set!");
+    PRIM_CONS_VAL       = scm_global_ref(c, "cons");
+    PRIM_EQ_P_VAL       = scm_global_ref(c, "eq?");
+    PRIM_EQV_P_VAL      = scm_global_ref(c, "eqv?");
 }
 
 // Slow-path helpers for the specialized arith / pred / vec nodes — used

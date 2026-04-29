@@ -57,8 +57,37 @@ EVAL(CTX *c, NODE *n)
 }
 
 // Application primitives provided by main.c.
-VALUE scm_apply_tail(CTX *c, VALUE fn, int argc, VALUE *argv, uint32_t is_tail);
+VALUE scm_apply(CTX *c, VALUE fn, int argc, VALUE *argv);
 VALUE scm_callcc(CTX *c, VALUE fn);
+// Slow path for `scm_apply_tail` — when the inline fast path below
+// can't apply.
+VALUE scm_apply_tail_slow(CTX *c, VALUE fn, int argc, VALUE *argv, uint32_t is_tail);
+
+// `scm_apply_tail` hot path inlined into every caller (interp dispatcher
+// and AOT SD_<hash>.so equally).  The compiler folds away the `is_tail`
+// constant when the call site stamped it at parse time, and SROAs the
+// argv slot writes into register moves directly into the frame.
+static inline VALUE
+scm_apply_tail(CTX *c, VALUE fn, int argc, VALUE *argv, uint32_t is_tail)
+{
+    if (is_tail && scm_is_closure(fn)) {
+        struct sobj *cl = SCM_PTR(fn);
+        int total = cl->closure.nparams + (cl->closure.has_rest ? 1 : 0);
+        if (LIKELY(!cl->closure.has_rest &&
+                    cl->closure.leaf &&
+                    c->env != NULL &&
+                    c->env->parent == cl->closure.env &&
+                    c->env->nslots == total &&
+                    argc == cl->closure.nparams)) {
+            for (int i = 0; i < cl->closure.nparams; i++) c->env->slots[i] = argv[i];
+            c->next_body = cl->closure.body;
+            c->next_env = c->env;
+            c->tail_call_pending = 1;
+            return 0;     // SCM_UNSPEC; bogus, trampoline ignores
+        }
+    }
+    return scm_apply_tail_slow(c, fn, argc, argv, is_tail);
+}
 
 // Numeric tower binary ops, called from the specialized arith nodes when
 // the fixnum fast-path misses.  Defined in main.c.

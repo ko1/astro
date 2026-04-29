@@ -118,6 +118,17 @@ struct Node;
 
 typedef VALUE (*scm_prim_fn)(struct CTX_struct *c, int argc, VALUE *argv);
 
+// Continuation state lives behind a pointer rather than inside `sobj`'s
+// union — its `jmp_buf` is ~200 B on Linux x86_64 and would otherwise
+// inflate every cons cell, vector, and closure to that size.  After this
+// split, sizeof(struct sobj) is ~40 B (dominated by the GMP `mpq_t`).
+struct scont {
+    jmp_buf buf;
+    VALUE   result;
+    int     active;
+    int     tag;
+};
+
 struct sobj {
     int type;
     union {
@@ -132,6 +143,7 @@ struct sobj {
             struct sframe *env;
             int nparams;
             int has_rest;
+            bool leaf;        // body has no inner `lambda` — safe to reuse frame on self-tail-call
             const char *name;
         } closure;
         struct {
@@ -146,12 +158,7 @@ struct sobj {
         struct { VALUE *items; size_t len; } mv;
         struct { VALUE thunk; VALUE value; bool forced; } promise;
         struct { FILE *fp; bool input; bool closed; bool owned; } port;
-        struct {
-            jmp_buf buf;
-            VALUE result;
-            int active;     // 0 = consumed; calling triggers error
-            int tag;        // unique tag for nested call/cc disambiguation
-        } cont;
+        struct scont *cont;
     };
 };
 
@@ -206,6 +213,7 @@ extern VALUE PRIM_PLUS_VAL, PRIM_MINUS_VAL, PRIM_MUL_VAL;
 extern VALUE PRIM_NUM_LT_VAL, PRIM_NUM_LE_VAL, PRIM_NUM_GT_VAL, PRIM_NUM_GE_VAL, PRIM_NUM_EQ_VAL;
 extern VALUE PRIM_NULL_P_VAL, PRIM_PAIR_P_VAL, PRIM_CAR_VAL, PRIM_CDR_VAL, PRIM_NOT_VAL;
 extern VALUE PRIM_VECTOR_REF_VAL, PRIM_VECTOR_SET_VAL;
+extern VALUE PRIM_CONS_VAL, PRIM_EQ_P_VAL, PRIM_EQV_P_VAL;
 
 typedef struct CTX_struct {
     // Current lexical environment chain (closures + call frames).

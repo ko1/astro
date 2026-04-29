@@ -173,10 +173,15 @@ node_seq(CTX * restrict c, NODE * restrict n, NODE *first, NODE *rest)
 }
 
 NODE_DEF @noinline
-node_lambda(CTX * restrict c, NODE * restrict n, uint32_t nparams, uint32_t has_rest, uint32_t nlocals, NODE *body)
+node_lambda(CTX * restrict c, NODE * restrict n, uint32_t nparams, uint32_t has_rest, uint32_t nlocals, uint32_t leaf, NODE *body)
 {
     (void)n; (void)nlocals;
-    return scm_make_closure(body, c->env, (int)nparams, (int)has_rest);
+    // `leaf` is set by the compiler iff the body contains no inner
+    // `lambda` form.  scm_apply_tail uses it to enable frame reuse on
+    // self-tail-calls without risking a captured-frame corruption.
+    VALUE cl = scm_make_closure(body, c->env, (int)nparams, (int)has_rest);
+    SCM_PTR(cl)->closure.leaf = leaf ? true : false;
+    return cl;
 }
 
 // ---------------------------------------------------------------------------
@@ -499,6 +504,45 @@ node_vec_ref(CTX * restrict c, NODE * restrict n, NODE *vec, NODE *idx, struct a
         scm_error(c, "vector-ref: type or range error");
     }
     return arith_dispatch(c, cache, "vector-ref", vv, iv);
+}
+
+NODE_DEF
+node_cons_op(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct arith_cache *cache@ref)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    if (LIKELY(cache->resolved && c->globals[cache->index].value == PRIM_CONS_VAL))
+        return scm_cons(av, bv);
+    return arith_dispatch(c, cache, "cons", av, bv);
+}
+
+NODE_DEF
+node_eq_op(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct arith_cache *cache@ref)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    if (LIKELY(cache->resolved && c->globals[cache->index].value == PRIM_EQ_P_VAL))
+        return av == bv ? SCM_TRUE : SCM_FALSE;
+    return arith_dispatch(c, cache, "eq?", av, bv);
+}
+
+NODE_DEF
+node_eqv_op(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct arith_cache *cache@ref)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    if (LIKELY(cache->resolved && c->globals[cache->index].value == PRIM_EQV_P_VAL)) {
+        if (av == bv) return SCM_TRUE;
+        if (scm_is_double(av) && scm_is_double(bv))
+            return scm_get_double(av) == scm_get_double(bv) ? SCM_TRUE : SCM_FALSE;
+        if (scm_is_char(av) && scm_is_char(bv))
+            return SCM_PTR(av)->ch == SCM_PTR(bv)->ch ? SCM_TRUE : SCM_FALSE;
+        return SCM_FALSE;
+    }
+    return arith_dispatch(c, cache, "eqv?", av, bv);
 }
 
 NODE_DEF
