@@ -127,22 +127,40 @@ structs).
 
 ### Specialization safety under R5RS rebinding
 
-R5RS allows `(set! + my+)`.  Each specialized node carries a
-`struct arith_cache @ref` (just `{ int32_t resolved; uint32_t index; }`):
+R5RS allows arithmetic operators to be rebound — globally
+(`(set! + my+)` / `(define + my+)`) or lexically
+(`(let ((+ -)) …)` / `(lambda (+) …)`).  ascheme handles each at the
+right phase:
 
-```
-hot path:  cache->resolved && c->globals[cache->index].value == PRIM_<op>_VAL
-            ↓
-            inline fixnum / flonum fast-path
-            ↓
-            else fall through to add2 / cmp2 / scm_apply via arith_dispatch{1,3}
+**Lexical shadowing — caught at parse time.**  `try_specialize_arith`
+runs `lex_lookup` on the head symbol before emitting a specialized
+node; if the name is bound in any enclosing scope it returns `NULL`
+and the parser falls back to a generic `node_call_K` with an `lref`
+in function position.  Examples that *don't* specialize:
+
+```scheme
+(let ((+ -)) (+ 5 3))                  ; emits node_call_2(lref +, …) → 2
+((lambda (+) (+ 1 2)) *)               ; same idea — `+` is a parameter → 2
+(let ((car cdr)) (car (cons 1 2)))     ; `car` is local → 2
 ```
 
-`PRIM_PLUS_VAL` etc. are snapshotted at `install_prims` time; if the
-user later rebinds `+`, the global slot's value changes, the equality
-check fails, and we go through the slow path (`scm_apply` against
-whatever `+` is now bound to).  See [`test/13_redefine_arith.scm`](../test/13_redefine_arith.scm)
-for the regression cases.
+**Global rebinding — caught at runtime.**  When the head symbol
+isn't lex-bound the specialized node is emitted with an
+`@ref`-stored cache:
+
+```c
+struct arith_cache { int32_t resolved; uint32_t index; };
+```
+
+The hot path checks
+`c->globals[cache->index].value == PRIM_<op>_VAL` (the snapshot
+captured at `install_prims` time) before running the inline fixnum
+/ flonum fast path.  Any subsequent
+`(set! + my+)` / `(define + new+)` mutates the global slot's value,
+the equality fails, and we route through `arith_dispatch{1,3}` —
+a regular `scm_apply` against whatever `+` is now bound to.  See
+[`test/13_redefine_arith.scm`](../test/13_redefine_arith.scm) for
+the runtime cases.
 
 ### Tail-call trampoline + frame reuse
 
