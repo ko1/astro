@@ -219,7 +219,7 @@ struct LuaClosure {
 LuaValue luav_box_double(double d);
 double   luav_unbox_double(LuaValue v);
 
-static inline LuaValue
+static inline __attribute__((always_inline)) LuaValue
 luav_from_double(double d)
 {
     union { double d; uint64_t u; } t;
@@ -234,7 +234,7 @@ luav_from_double(double d)
     return luav_box_double(d);
 }
 
-static inline double
+static inline __attribute__((always_inline)) double
 luav_to_double(LuaValue v)
 {
     if (__builtin_expect(((v) & 3) == 2, 1)) {       // LV_IS_FLONUM inline

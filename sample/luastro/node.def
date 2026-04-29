@@ -206,6 +206,18 @@ NODE_DEF @noinline
 node_local_decl(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, uint32_t lhs_idx, uint32_t nlhs, uint32_t rhs_idx, uint32_t nrhs)
 {
     (void)n;
+    // Hot path: single LHS, single RHS — by far the most common form
+    // in inner loops (`local xn = x*x - y*y + x0`).  Skip the staging
+    // array and the ret_info plumbing entirely.
+    if (__builtin_expect(nlhs == 1 && nrhs == 1, 1)) {
+        NODE *e = LUASTRO_NODE_ARR[rhs_idx];
+        LuaValue v = EVAL(c, e, frame);
+        c->ret_info.result_cnt = 0;
+        LuaValue *slot = &frame[LUASTRO_U32_ARR[lhs_idx]];
+        if (LV_IS_BOX(*slot)) ((struct LuaBox *)(uintptr_t)*slot)->value = v;
+        else *slot = v;
+        return RESULT_OK(LUAV_NIL);
+    }
     // Lua semantics: if the LAST rhs returns multiple values, they
     // spread to fill any unmatched lhs slots.  We evaluate the rhs
     // expressions in order; for the last one we read c->ret_info to

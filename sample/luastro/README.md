@@ -108,14 +108,14 @@ Lua 5.4.6 and LuaJIT 2.1, `N=3` (best of 3).
 
 | benchmark   | luastro | AOT-1st | AOT-c   | lua5.4  | luajit  |
 |-------------|--------:|--------:|--------:|--------:|--------:|
-| ack         | 0.130s  | 0.186s  | 0.061s  | 0.051s  | 0.008s  |
-| factorial   | 0.035s  | 0.151s  | 0.012s  | 0.028s  | 0.004s  |
-| fib         | 0.068s  | 0.156s  | 0.029s  | 0.051s  | 0.011s  |
-| loop        | 0.007s  | 0.099s  | 0.004s  | 0.041s  | 0.011s  |
-| mandelbrot  | 0.153s  | 0.427s  | 0.088s  | 0.051s  | 0.006s  |
-| nbody       | 0.038s  | 0.741s  | 0.041s  | 0.013s  | 0.003s  |
-| sieve       | 0.017s  | 0.306s  | 0.016s  | 0.007s  | 0.003s  |
-| tak         | 0.005s  | 0.139s  | 0.004s  | 0.003s  | 0.002s  |
+| ack         | 0.124s  | 0.175s  | 0.055s  | 0.046s  | 0.008s  |
+| factorial   | 0.034s  | 0.129s  | 0.009s  | 0.024s  | 0.004s  |
+| fib         | 0.065s  | 0.144s  | 0.026s  | 0.046s  | 0.008s  |
+| loop        | 0.006s  | 0.088s  | 0.003s  | 0.039s  | 0.009s  |
+| mandelbrot  | 0.114s  | 0.406s  | 0.073s  | 0.048s  | 0.005s  |
+| nbody       | 0.028s  | 0.710s  | 0.031s  | 0.013s  | 0.003s  |
+| sieve       | 0.015s  | 0.297s  | 0.012s  | 0.006s  | 0.003s  |
+| tak         | 0.004s  | 0.124s  | 0.004s  | 0.003s  | 0.002s  |
 
 Columns:
 
@@ -133,27 +133,27 @@ lua5.4**.
 
 - `loop`: 3 ms vs 39 ms — **13× faster** than lua5.4.  This benchmark
   hits the `node_numfor_int_sum` whole-loop fused node.
-- `fib`: 28 ms vs 45 ms — **1.6×** via SD inlining of the
-  closure-call hot path.
-- `factorial`: 11 ms vs 25 ms — **2.3×**.
+- `factorial`: 9 ms vs 24 ms — **2.7× faster**.
+- `fib`: 26 ms vs 46 ms — **1.8× faster** via SD inlining.
+- `ack`: 55 ms vs 46 ms — 1.2× behind (within noise).
+- `tak`: 4 ms vs 3 ms — matched.
 
-**Float-dominant** workloads (`mandelbrot`, `nbody`): three changes
-landed in succession that together took mandelbrot from 737 ms (the
-always-heap-box baseline) down to 88 ms:
+**Float-dominant** workloads (`mandelbrot`, `nbody`): a sequence of
+five changes landed against the always-heap-box baseline.  Cumulative
+effect on `mandelbrot` AOT-c:
 
-1. **Inline flonum** (see [`docs/runtime.md`](docs/runtime.md) §3) —
-   doubles in the common magnitude range (`b62 ∈ {3, 4}`, ≈ 2^-255..2^256
-   both signs) encode inline in the LuaValue, lossless.
-2. **Mixed int+float arith** in `node_int_add/_sub/_mul` and
-   `node_lt/_le` — handles `2 * x` / `x*x + y*y < 4` without falling
-   through to `lua_arith` (the slow generic path).
-3. **Pinned +0.0 cell** — `0.0` is the single most common
-   heap-boxed double (loop initialisers, hitting-zero accumulators)
-   and now reuses one shared `LuaHeapDouble` instead of `calloc`-ing
-   every time.
+| Step                                              | mandelbrot AOT-c |
+|---------------------------------------------------|-----------------:|
+| Baseline (16-byte LuaValue, every double on heap) |           737 ms |
+| 8-byte LuaValue with heap-boxed doubles           |           126 ms |
+| **+ inline flonum** (b62 ∈ {3, 4} doubles inline) |           108 ms |
+| **+ mixed int+float in arith / compare**          |           108 ms |
+| **+ pinned +0.0 cell**                            |            88 ms |
+| **+ `node_local_decl` 1-LHS/1-RHS fast path**     |            81 ms |
+| **+ `always_inline` on `luav_to_double` / `_from_double`** | **73 ms** |
 
-mandelbrot AOT-c: 88 ms vs lua5.4 51 ms — **1.7× behind** (was 15.7×).
-nbody  AOT-c: 41 ms vs lua5.4 13 ms — **3.2× behind**.
+mandelbrot AOT-c: 73 ms vs lua5.4 48 ms — **1.5× behind** (was 15.7×).
+nbody AOT-c: 31 ms vs lua5.4 13 ms — **2.4× behind** (was 9.3×).
 
 The remaining gap is mostly per-node `DISPATCH_*` indirect calls in
 the AOT-cached SD's outermost handler (children that didn't get baked
