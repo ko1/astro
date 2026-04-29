@@ -75,5 +75,5 @@ end
 
 offset_momentum(bodies)
 print(string.format("%.9f", energy(bodies)))
-for _ = 1, 5000 do advance(bodies, 0.01) end
+for _ = 1, 200000 do advance(bodies, 0.01) end
 print(string.format("%.9f", energy(bodies)))

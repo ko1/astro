@@ -1,5 +1,5 @@
 -- Mandelbrot set count (a smaller version of the classic kernel).
-local W, H = 200, 200
+local W, H = 1000, 1000
 local count = 0
 for py = 0, H - 1 do
   for px = 0, W - 1 do

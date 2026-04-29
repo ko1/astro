@@ -5,4 +5,6 @@ local function tak(x, y, z)
     return z
   end
 end
-print(tak(18, 12, 6))
+local r
+for _ = 1, 100 do r = tak(22, 16, 8) end
+print(r)

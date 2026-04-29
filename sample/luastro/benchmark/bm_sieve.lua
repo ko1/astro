@@ -1,5 +1,5 @@
 -- Sieve of Eratosthenes
-local N = 100000
+local N = 10000000
 local primes = {}
 for i = 2, N do primes[i] = true end
 for i = 2, N do
