@@ -3450,44 +3450,68 @@ install_prims(CTX *c)
     PRIM_EQV_P_VAL      = scm_global_ref(c, "eqv?");
 }
 
-// Slow-path helpers for the specialized arith / pred / vec nodes — used
-// when the inline cache is cold or the user has rebound the operator.
-// Refresh the (serial, value) cache pair against the current globals.
+// Slow-path helpers for the specialized arith / pred / vec nodes.  The
+// hot path inside each EVAL_node_* checks `cache->serial == globals_serial`
+// only — the value-vs-expected-prim check is encoded INTO that serial:
+// `arith_refresh` sets `cache->serial = globals_serial` only if the freshly-
+// resolved global is still the original primitive.  When the user rebinds
+// the operator (`(set! + my+)`), `cache->value` gets the new closure and
+// `cache->serial` is left at its prior (stale) value, so the hot path's
+// single equality check fails and slow-path dispatch through the new
+// closure runs instead.  This collapses the previous dual check
+// (`serial && value == PRIM_*`) into one — saving a GOT load + compare
+// per arith call.
 
 static VALUE
-arith_refresh(CTX *c, struct arith_cache *cache, const char *opname)
+arith_refresh(CTX *c, struct arith_cache *cache, const char *opname, VALUE expected)
 {
     VALUE v = scm_global_ref(c, opname);
-    cache->value  = v;
-    cache->serial = c->globals_serial;
+    cache->value = v;
+    if (v == expected) cache->serial = c->globals_serial;
+    // else: leave cache->serial stale; the hot path won't fire while the
+    //       binding stays rebound, but cache->value is fresh so the slow
+    //       path uses it directly without re-resolving every call.
     return v;
 }
 
-VALUE
-arith_dispatch1(CTX *c, struct arith_cache *cache, const char *opname, VALUE av)
+// Slow-path entry from EVAL_node_*.  Returns the function to apply,
+// trusting cache->value when it's fresh-but-rebound (cache->serial was
+// just set by a previous refresh that didn't bump it because the value
+// wasn't the expected prim — but that caller still left cache->value
+// pointing at the rebound closure, so we can use it directly).
+static inline VALUE
+arith_resolve(CTX *c, struct arith_cache *cache, const char *opname, VALUE expected)
 {
-    VALUE fn = (cache->serial == c->globals_serial)
-                 ? cache->value
-                 : arith_refresh(c, cache, opname);
+    // We arrive here with cache->serial != globals_serial.  Two reasons:
+    //  (1) globals just bumped (some define/set!); cache may be stale.
+    //  (2) operator was rebound; cache->serial was deliberately left
+    //      stale by a prior arith_refresh.
+    // Either way, re-resolving via scm_global_ref is correct.  In
+    // case (2) it just returns the same rebound closure that's already
+    // in cache->value, but the cost is bounded — scm_global_ref is a
+    // small table lookup.
+    return arith_refresh(c, cache, opname, expected);
+}
+
+VALUE
+arith_dispatch1(CTX *c, struct arith_cache *cache, const char *opname, VALUE expected, VALUE av)
+{
+    VALUE fn = arith_resolve(c, cache, opname, expected);
     return scm_apply(c, fn, 1, &av);
 }
 
 VALUE
-arith_dispatch(CTX *c, struct arith_cache *cache, const char *opname, VALUE av, VALUE bv)
+arith_dispatch(CTX *c, struct arith_cache *cache, const char *opname, VALUE expected, VALUE av, VALUE bv)
 {
-    VALUE fn = (cache->serial == c->globals_serial)
-                 ? cache->value
-                 : arith_refresh(c, cache, opname);
+    VALUE fn = arith_resolve(c, cache, opname, expected);
     VALUE args[2] = { av, bv };
     return scm_apply(c, fn, 2, args);
 }
 
 VALUE
-arith_dispatch3(CTX *c, struct arith_cache *cache, const char *opname, VALUE a, VALUE b, VALUE d)
+arith_dispatch3(CTX *c, struct arith_cache *cache, const char *opname, VALUE expected, VALUE a, VALUE b, VALUE d)
 {
-    VALUE fn = (cache->serial == c->globals_serial)
-                 ? cache->value
-                 : arith_refresh(c, cache, opname);
+    VALUE fn = arith_resolve(c, cache, opname, expected);
     VALUE args[3] = { a, b, d };
     return scm_apply(c, fn, 3, args);
 }

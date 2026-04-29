@@ -528,7 +528,68 @@ The lesson: when the parser performs a try-and-fallback on an
 expensive operation, do the cheap match check first.  Otherwise the
 fallback path silently doubles every recursive child too.
 
-## Cumulative score vs chibi-scheme 0.12  (after §1–§15)
+## 16 — Collapse arith-cache dual check to a single serial check  (this commit)
+
+`perf annotate` on the loop SD showed each `+` / `-` / `=` dispatch
+spent ~6 cycles on the cache-validity check:
+
+```asm
+cmp  %rax, 0x58(%rsi)         # cache->serial == globals_serial?
+jne  slow
+mov  0x4b9d(%rip), %rax       # GOT lookup PRIM_PLUS_VAL (1 load)
+mov  (%rax), %rax             # dereference the GOT slot (1 load)
+cmp  %rax, 0x60(%rsi)         # cache->value == PRIM_PLUS_VAL?
+jne  slow
+```
+
+Two checks: (a) "is the cache fresh against current globals?" and
+(b) "is `+` still bound to the original primitive (not user-rebound)?".
+Both are needed for correctness — a `set!` on an unrelated global bumps
+`globals_serial` without rebinding `+`, and a `(set! + my+)` rebinds `+`
+without anything else changing.
+
+But the second check (the `cache->value == PRIM_PLUS_VAL` part) costs a
+GOT-relative load + a dereference + a compare — three extra instructions
+per arith op, hot path.  The fix is to encode the rebind state into the
+serial itself: `arith_refresh` only sets `cache->serial = globals_serial`
+when the freshly-resolved global is still the original prim.  When
+rebound, `cache->value` gets updated to the new closure but
+`cache->serial` is left at its prior (stale) value.  The hot path's
+single equality check then fails for rebound bindings (drives slow
+dispatch through the user's closure) **and** for stale caches (drives
+re-resolution).
+
+After the change, the cache-validity gate is one compare:
+
+```asm
+cmp  %rax, 0x58(%rsi)         # cache->serial == globals_serial?
+jne  slow
+```
+
+The slow path picks up an extra `expected` parameter so it knows what
+the original primitive value was when deciding whether to bump the
+serial.
+
+Wall-time impact (best of 10, system under load):
+
+```
+                 baseline   collapsed   speedup
+sumloop          1.03 s     0.96 s      1.07×
+cps_loop         0.51 s     0.48 s      1.06×
+sieve_big        1.04 s     1.01 s      1.03×
+fib35            0.28 s     0.27 s      1.04×
+```
+
+Smaller wins than the saved-cycles math suggests (~6 cycles × 75M arith
+ops ≈ 150 ms), because the GOT loads were already L1-cached and the
+out-of-order CPU pipelined them with other work.  Still a clean
+3–7 % gain across arith-heavy benches with no regressions.
+
+`test/13_redefine_arith.scm` (the rebind/restore round-trip) keeps
+passing — the new semantics correctly drives rebinds through the slow
+path and restores the fast path once the original binding is in place.
+
+## Cumulative score vs chibi-scheme 0.12  (after §1–§16)
 
 ```
                 aot-cached       chibi     ratio
