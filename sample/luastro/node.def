@@ -183,11 +183,36 @@ node_upval_set(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, u
     return RESULT_OK(v);
 }
 
-NODE_DEF
-node_global_get(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, LuaString *name)
+// Shape IC keyed on c->globals' hash_cap — globals table reshapes only on
+// rare grow events, so the (hash_cap, slot offset) pair lets the hot path
+// skip lua_table_get_str's hash + probe entirely.  Same idea as
+// node_field_get; we reuse LuaFieldIC.
+NODE_DEF @always_inline
+node_global_get(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, LuaString *name, struct LuaFieldIC *ic@ref)
 {
     (void)n; (void)frame;
-    return RESULT_OK(lua_table_get_str(c->globals, name));
+    struct LuaTable *g = c->globals;
+    if (__builtin_expect(g->hash_cap == ic->shape && ic->shape != 0, 1)) {
+        struct LuaTabEntry *e = &g->hash[ic->pos];
+        if (__builtin_expect(e->key == LUAV_STR(name), 1)) {
+            return RESULT_OK(e->val);
+        }
+    }
+    // Slow path: full lookup, refresh cache.
+    if (g->hash_cap) {
+        uint32_t pos = (uint32_t)lua_str_hash(name) & (g->hash_cap - 1);
+        for (;;) {
+            struct LuaTabEntry *e = &g->hash[pos];
+            if (LV_IS_NIL(e->key)) break;
+            if (e->key == LUAV_STR(name)) {
+                ic->shape = g->hash_cap;
+                ic->pos = pos;
+                return RESULT_OK(e->val);
+            }
+            pos = (pos + 1) & (g->hash_cap - 1);
+        }
+    }
+    return RESULT_OK(LUAV_NIL);
 }
 
 NODE_DEF
@@ -941,6 +966,51 @@ luastro_spreaded_call(CTX *c, LuaValue fn, uint32_t fixed_args, LuaValue *fixed_
     return luastro_inline_call(c, fn, fixed_args, fixed_av);
 }
 
+// IC fast path: inlines luastro_inline_call's body so the SD avoids the
+// host-binary PLT call.  Caller has verified LV_IS_FN(fn), cl is the
+// cached closure, and that no multi-return spread is in flight.
+static inline RESULT
+luastro_call_ic_invoke(CTX *c, struct LuaCallIC *ic, struct LuaClosure *cl,
+                       uint32_t nargs, const LuaValue *argv)
+{
+    uint32_t nlocals = ic->cached_nlocals;
+    LuaValue *nf = c->sp;
+    if (__builtin_expect(nf + nlocals + 8 < c->stack_end, 1)) {
+        c->sp = nf + nlocals;
+        for (uint32_t i = 0; i < nargs; i++)        nf[i] = argv[i];
+        for (uint32_t i = nargs; i < nlocals; i++)  nf[i] = LUAV_NIL;
+        LuaValue **pu = LUASTRO_CUR_UPVALS;
+        LUASTRO_CUR_UPVALS = cl->upvals;
+        RESULT r = (*cl->body->head.dispatcher)(c, cl->body, nf);
+        LUASTRO_CUR_UPVALS = pu;
+        c->sp = nf;
+        if (LUASTRO_BR == LUA_BR_RETURN)      LUASTRO_BR = LUA_BR_NORMAL;
+        else if (LUASTRO_BR != LUA_BR_NORMAL) r = RESULT_OK(LUAV_NIL);
+        return r;
+    }
+    return luastro_inline_call(c, LUAV_FUNC(cl), nargs, argv);
+}
+
+// Refresh IC after a miss when the closure shape matches the call site.
+static inline void
+luastro_call_ic_refresh(struct LuaCallIC *ic, struct LuaClosure *cl, uint32_t nargs)
+{
+    if (cl->nparams == nargs && !cl->is_vararg) {
+        ic->cached_cl      = cl;
+        ic->cached_body    = cl->body;
+        ic->cached_nlocals = cl->nlocals;
+    }
+}
+
+// IC path is safe to take when no spread is in flight.  Spread requires
+// extras > 1 AND last_arg being a call node — if either is false, the
+// extras (if any) are stale leftovers and we can ignore them.
+static inline bool
+luastro_call_ic_can_skip_spread(CTX *c, NODE *last_arg)
+{
+    return c->ret_info.result_cnt <= 1 || !luastro_node_is_call(last_arg);
+}
+
 NODE_DEF
 node_call_arg0(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *callee)
 {
@@ -949,28 +1019,46 @@ node_call_arg0(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, N
     return luastro_inline_call(c, fn, 0, NULL);
 }
 
-NODE_DEF
-node_call_arg1(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *callee, NODE *a0)
+NODE_DEF @always_inline
+node_call_arg1(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *callee, NODE *a0, struct LuaCallIC *ic@ref)
 {
     (void)n; (void)frame;
     LuaValue fn   = EVAL_ARG(c, callee);
     LuaValue av[1] = { EVAL_ARG(c, a0) };
+    if (__builtin_expect(LV_IS_FN(fn), 1)) {
+        struct LuaClosure *cl = LV_AS_FN(fn);
+        if (__builtin_expect(cl == ic->cached_cl && cl->body == ic->cached_body
+                             && luastro_call_ic_can_skip_spread(c, a0), 1)) {
+            c->ret_info.result_cnt = 0;
+            return luastro_call_ic_invoke(c, ic, cl, 1, av);
+        }
+        luastro_call_ic_refresh(ic, cl, 1);
+    }
     return luastro_spreaded_call(c, fn, 1, av, a0);
 }
 
-NODE_DEF
-node_call_arg2(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *callee, NODE *a0, NODE *a1)
+NODE_DEF @always_inline
+node_call_arg2(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *callee, NODE *a0, NODE *a1, struct LuaCallIC *ic@ref)
 {
     (void)n; (void)frame;
     LuaValue fn = EVAL_ARG(c, callee);
     LuaValue av[2];
     av[0] = EVAL_ARG(c, a0);
     av[1] = EVAL_ARG(c, a1);
+    if (__builtin_expect(LV_IS_FN(fn), 1)) {
+        struct LuaClosure *cl = LV_AS_FN(fn);
+        if (__builtin_expect(cl == ic->cached_cl && cl->body == ic->cached_body
+                             && luastro_call_ic_can_skip_spread(c, a1), 1)) {
+            c->ret_info.result_cnt = 0;
+            return luastro_call_ic_invoke(c, ic, cl, 2, av);
+        }
+        luastro_call_ic_refresh(ic, cl, 2);
+    }
     return luastro_spreaded_call(c, fn, 2, av, a1);
 }
 
-NODE_DEF
-node_call_arg3(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *callee, NODE *a0, NODE *a1, NODE *a2)
+NODE_DEF @always_inline
+node_call_arg3(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *callee, NODE *a0, NODE *a1, NODE *a2, struct LuaCallIC *ic@ref)
 {
     (void)n; (void)frame;
     LuaValue fn = EVAL_ARG(c, callee);
@@ -978,6 +1066,15 @@ node_call_arg3(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, N
     av[0] = EVAL_ARG(c, a0);
     av[1] = EVAL_ARG(c, a1);
     av[2] = EVAL_ARG(c, a2);
+    if (__builtin_expect(LV_IS_FN(fn), 1)) {
+        struct LuaClosure *cl = LV_AS_FN(fn);
+        if (__builtin_expect(cl == ic->cached_cl && cl->body == ic->cached_body
+                             && luastro_call_ic_can_skip_spread(c, a2), 1)) {
+            c->ret_info.result_cnt = 0;
+            return luastro_call_ic_invoke(c, ic, cl, 3, av);
+        }
+        luastro_call_ic_refresh(ic, cl, 3);
+    }
     return luastro_spreaded_call(c, fn, 3, av, a2);
 }
 
@@ -994,16 +1091,27 @@ node_call(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *
 }
 
 NODE_DEF @noinline
-node_method_call(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *recv, LuaString *method, uint32_t args_idx, uint32_t nargs)
+node_method_call(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *recv, LuaString *method, uint32_t args_idx, uint32_t nargs, struct LuaMethodIC *ic@ref)
 {
     (void)n;
     LuaValue r = EVAL_ARG(c, recv);
     LuaValue fn = LUAV_NIL;
     if (LV_IS_TBL(r)) {
-        fn = lua_table_get_str(LV_AS_TBL(r), method);
-        if (LV_IS_NIL(fn) && LV_AS_TBL(r)->metatable) {
-            LuaValue idx = lua_table_get_str(LV_AS_TBL(r)->metatable, LUASTRO_S___INDEX);
-            if (LV_IS_TBL(idx)) fn = lua_table_get_str(LV_AS_TBL(idx), method);
+        struct LuaTable *t = LV_AS_TBL(r);
+        // IC fast path: same metatable as last successful resolve →
+        // method lookup result is stable.
+        if (__builtin_expect(t->metatable && t->metatable == ic->cached_metatable, 1)) {
+            fn = ic->cached_fn;
+        } else {
+            fn = lua_table_get_str(t, method);
+            if (LV_IS_NIL(fn) && t->metatable) {
+                LuaValue idx = lua_table_get_str(t->metatable, LUASTRO_S___INDEX);
+                if (LV_IS_TBL(idx)) fn = lua_table_get_str(LV_AS_TBL(idx), method);
+            }
+            if (t->metatable && (LV_IS_FN(fn) || LV_IS_CF(fn))) {
+                ic->cached_metatable = t->metatable;
+                ic->cached_fn        = fn;
+            }
         }
     } else if (LV_IS_STR(r)) {
         LuaValue strlib = lua_table_get_str(c->globals, LUASTRO_S_STRING);

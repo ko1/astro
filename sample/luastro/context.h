@@ -175,6 +175,35 @@ struct LuaFieldIC {
     uint32_t pos;       // hash slot offset for the field key
 };
 
+// Inline cache for `node_call_arg{1,2,3}` — caches the last-seen closure
+// shape so the hot path (recursive `fib(n-1)` / `print(x)` / etc.) can
+// inline `luastro_inline_call`'s body directly inside the SD instead of
+// crossing the host-binary PLT every recursion.
+//
+// GC caveat: cached_cl is a heap pointer.  Currently safe because GC
+// only runs on explicit `collectgarbage("collect")`; if automatic GC
+// lands, invalidate ICs at GC time or add a per-closure version count.
+// The cl->body == cached_body check in the hot path means a freed-and-
+// reallocated address with a different body falls through automatically.
+struct LuaCallIC {
+    struct LuaClosure *cached_cl;
+    struct Node       *cached_body;
+    uint32_t           cached_nlocals;
+};
+
+// Method-call IC: caches (recv's metatable pointer, resolved method).
+// Pattern: `obj:foo(...)` where obj's metatable is stable across calls
+// and the method resolves to the same fn each time.  Single-pointer
+// equality on the metatable is enough — the recv table itself can vary.
+//
+// Same GC caveat as LuaCallIC: cached_metatable is a heap pointer,
+// safe today (manual collectgarbage only); invalidate at GC if/when
+// automatic collection lands.
+struct LuaMethodIC {
+    struct LuaTable *cached_metatable;
+    LuaValue         cached_fn;
+};
+
 // LuaString — interned, hashed string.
 struct LuaString {
     struct GCHead gc;
