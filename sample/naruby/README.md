@@ -1,4 +1,13 @@
-# naruby: Not a Ruby
+# naruby — *Not a Ruby*
+
+ASTro 論文 (VMIL 2025 / PPL 2026) で評価対象に使った Ruby サブセット。
+AST ノードは ~21 種、値は符号付き整数のみ、ローカル変数 + 関数 + 制御構造
+(`if` / `while`) + 比較・算術と `p` が動く。**4 つの実行モード — Plain
+Interpreter / AOT / Profile-Guided / JIT — をすべて評価できる**唯一の
+サンプル。
+
+ASTro フレームワーク全体は [`../../docs/idea.md`](../../docs/idea.md)。
+naruby が論文で果たした役割は §6 と §5 (JIT 階層 L0/L1/L2) を参照。
 
 ## Build
 
