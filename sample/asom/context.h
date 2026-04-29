@@ -99,6 +99,9 @@ struct asom_method {
     void *primitive;              // C function pointer if primitive
     struct asom_class *holder;
     enum asom_prim_kind prim_kind; // tag for type-feedback specialization
+    bool no_nlr;                  // true if body has no node_block descendants;
+                                  // asom_invoke skips setjmp on the home frame
+                                  // because no NLR can target this method.
 };
 
 // Open-hash table for fast lookup by interned selector pointer, plus a

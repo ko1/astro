@@ -29,6 +29,7 @@ make_ast_method(struct asom_class *holder, ASOM_PARSED_METHOD *pm)
     m->body = pm->body;
     m->primitive = NULL;
     m->holder = holder;
+    m->no_nlr = pm->no_nlr;
     return m;
 }
 
@@ -80,6 +81,7 @@ asom_merge_into(struct asom_class *cls, ASOM_PARSED_CLASS *pc)
         m->num_locals = pm->num_locals;
         m->body       = pm->body;
         m->holder     = cls;
+        m->no_nlr     = pm->no_nlr;
         asom_class_define_method(cls, m);
         if (m->body) {
             snprintf(label_buf, sizeof(label_buf), "%s>>%s", cls->name, m->selector);
@@ -98,6 +100,7 @@ asom_merge_into(struct asom_class *cls, ASOM_PARSED_CLASS *pc)
             m->num_locals = pm->num_locals;
             m->body       = pm->body;
             m->holder     = cls->metaclass;
+            m->no_nlr     = pm->no_nlr;
             asom_class_define_method(cls->metaclass, m);
             if (m->body) {
                 snprintf(label_buf, sizeof(label_buf), "%s class>>%s", cls->name, m->selector);

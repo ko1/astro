@@ -10,6 +10,7 @@ typedef struct ParsedMethod_struct {
     uint32_t num_locals;
     NODE *body;
     bool is_primitive;
+    bool no_nlr;            // body has no nested block (no NLR target)
 } ASOM_PARSED_METHOD;
 
 typedef struct ParsedClass_struct {

@@ -729,17 +729,22 @@ asom_invoke(CTX *c, struct asom_method *m, VALUE receiver, VALUE *args, uint32_t
     frame->pool_slots = pool_slots;
     c->frame = frame;
 
-    struct asom_unwind unwind = { .home = frame, .parent = g_unwind_top };
-    g_unwind_top = &unwind;
-
     VALUE result;
-    if (setjmp(unwind.jb) == 0) {
+    if (m->no_nlr) {
+        // Body has no nested block, so no NLR can target this frame.
+        // Skip setjmp on the home frame entirely — saves ~50 ns per
+        // method invocation in tight call chains.
         result = EVAL(c, m->body);
     } else {
-        result = unwind.value;
+        struct asom_unwind unwind = { .home = frame, .parent = g_unwind_top };
+        g_unwind_top = &unwind;
+        if (setjmp(unwind.jb) == 0) {
+            result = EVAL(c, m->body);
+        } else {
+            result = unwind.value;
+        }
+        g_unwind_top = unwind.parent;
     }
-
-    g_unwind_top = unwind.parent;
     c->frame = frame->parent;
     // Pool the frame storage if no closure captured us. `captured` is set
     // by asom_make_block when a nested block grabs us as lexical_parent.

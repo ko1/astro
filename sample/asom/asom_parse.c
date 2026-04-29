@@ -1366,6 +1366,9 @@ parse_method(Parser *P, ParsedMethod *out)
     // start with the actual statements.
     out->body = body;
     out->is_primitive = false;
+    // If the method body has no nested block, no NLR can target this
+    // method — let asom_invoke skip its setjmp installation.
+    out->no_nlr = !subtree_creates_block(body);
     pop_scope(P);
 }
 

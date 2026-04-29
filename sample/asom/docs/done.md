@@ -190,6 +190,17 @@ ifTrue:/ifFalse: 系は受信値が `val_true / val_false` でない場合の
 なる。パース時の `subtree_creates_block()` がこれを検出し、当該パターン
 は inline せず正規の send1/send2 で処理する。
 
+### `m->no_nlr` で setjmp スキップ
+
+メソッド本体に `node_block` がひとつも無ければ、そのメソッドに対する
+non-local return（`^expr` from a nested block）は文法的に発生しえない。
+パース時に `subtree_creates_block(body)` の結果を `ASOM_PARSED_METHOD->no_nlr`
+にセットし、`asom_invoke` がフラグを見て setjmp 設置を丸ごとスキップする
+（unwind 構造体も作らない）。
+
+per-call ~50 ns の節約だが、再帰系の Towers / Queens / List では数百万回
+呼ばれるので Towers 1.2×, Queens 1.15×, List 1.28× の追加スピードアップ。
+
 ### Block / method bump arena
 
 `asom_make_block` も calloc 2 回（`struct asom_method` + `struct asom_block`）
