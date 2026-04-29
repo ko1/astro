@@ -687,6 +687,15 @@ node_cast_di(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *e)
 // `RESULT_NORMAL` so the caller proceeds.  Other states (BREAK /
 // CONTINUE / GOTO escaping a function) shouldn't happen in valid C
 // but are propagated as-is if they do.
+//
+// (We tried lifting the callee resolution into a `NODE *callee` child
+// operand patched in by load_program.  Conceptually cleaner, but in
+// practice slower: `n->u.node_call.callee` requires the SD to chase
+// through the inlined AST tree at runtime, while
+// `c->func_bodies[FUNC_IDX]` keeps `func_idx` baked as a uint32_t
+// immediate at SPECIALIZE time → single indexed load against `c`,
+// which is a register parameter.  Determinism across runs also
+// favours an integer index over a heap pointer.)
 
 NODE_DEF
 node_call(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t func_idx, uint32_t arg_count, uint32_t arg_index)
@@ -698,8 +707,41 @@ node_call(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t fun
     // before reaching this point, and RETURN is the callee's normal
     // exit — discard the state entirely so the surrounding SD's
     // EVAL_ARG/UNWRAP sees a compile-time-constant NORMAL and DCEs the
-    // state-propagation branch.  This is the inlining win the
-    // RESULT-state migration was supposed to buy us.
+    // state-propagation branch.
+    return RESULT_OK(r.value);
+}
+
+// Non-recursive call.  Carries the callee body NODE* as a child
+// operand, populated by load_program's 3rd pass (callee starts NULL
+// during phase 2 since the body might not be built yet).  The
+// framework's natural SPECIALIZE walks into the callee subtree and
+// emits its SD chain as `static inline` in the caller's TU — gcc -O3
+// then inlines through, the way `gcc -O1 -finline-small-functions`
+// would on the host C source.  This is the win for leaf-helper-style
+// callees (e.g. nqueens's `safe()` invoked from inside the recursive
+// `solve()`).
+//
+// parse.rb only emits this for non-self-recursive call sites.
+// Self-recursion stays on the OLD `node_call` form so it gets the
+// custom `extern SD_<self>` direct call — leaving recursive sites to
+// the framework cycle break would downgrade them to runtime indirect
+// dispatch.
+
+NODE_DEF
+node_call_static(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *callee, uint32_t arg_count, uint32_t arg_index)
+{
+    (void)arg_count;
+    // Shadow `fp` before EVAL_ARG so the framework's macro expansion
+    // (`EVAL_ARG(c, callee) → (*callee_dispatcher)(c, callee, fp)`)
+    // dispatches the callee at the new frame.  Critically, going
+    // through EVAL_ARG (vs. an explicit `(*callee->head.dispatcher)`)
+    // is what lets the framework's parent-SPECIALIZE pass `SD_<callee_hash>`
+    // as the dispatcher arg — making the call direct and inline-able
+    // by gcc -O3.  Open-coding `(*callee->head.dispatcher)` would
+    // force a runtime indirection through the NodeHead field every
+    // call.
+    fp = fp + arg_index;
+    RESULT r = EVAL_ARG(c, callee);
     return RESULT_OK(r.value);
 }
 

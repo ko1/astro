@@ -287,6 +287,46 @@ verbatim:
 // lookup at call time.
 
 // =====================================================================
+// `node_call_static` patch table
+// =====================================================================
+//
+// `node_call_static` carries the callee body NODE* directly so the
+// framework specializer can walk into it and inline.  At parse time
+// the callee body may not be built yet (forward references), so
+// build_op ALLOCs with callee=NULL and stashes the (NODE, func_idx)
+// pair here; load_program's 3rd pass writes the resolved pointer
+// once every body is in place.
+
+struct call_patch { NODE *call; uint32_t func_idx; };
+static struct call_patch *call_patches;
+static size_t call_patch_cnt;
+static size_t call_patch_capa;
+
+static void
+call_patch_record(NODE *call, uint32_t func_idx)
+{
+    if (call_patch_cnt == call_patch_capa) {
+        call_patch_capa = call_patch_capa ? call_patch_capa * 2 : 64;
+        call_patches = realloc(call_patches,
+                               call_patch_capa * sizeof(struct call_patch));
+    }
+    call_patches[call_patch_cnt++] = (struct call_patch){call, func_idx};
+}
+
+static void
+call_patch_apply(CTX *c)
+{
+    for (size_t i = 0; i < call_patch_cnt; i++) {
+        NODE *call = call_patches[i].call;
+        uint32_t idx = call_patches[i].func_idx;
+        call->u.node_call_static.callee = c->func_bodies[idx];
+    }
+    free(call_patches);
+    call_patches = NULL;
+    call_patch_cnt = call_patch_capa = 0;
+}
+
+// =====================================================================
 // S-expression tokenizer
 // =====================================================================
 
@@ -734,13 +774,28 @@ build_op(sx_lexer *l, tok_t op)
     }
 
     if (IS("call")) {
-        // (call FUNC_IDX nargs arg_index) — RESULT-state migration
-        // dropped the `call_jmp` variant.
+        // (call FUNC_IDX nargs arg_index) — self-recursive call (idx
+        // is dereferenced via `c->func_bodies[idx]` at runtime).
         int64_t func_idx = read_int(l);
         int64_t nargs = read_int(l);
         int64_t arg_index = read_int(l);
         sx_expect(l, TK_RPAREN);
         return ALLOC_node_call((uint32_t)func_idx, (uint32_t)nargs, (uint32_t)arg_index);
+    }
+    if (IS("call_static")) {
+        // (call_static FUNC_IDX nargs arg_index) — non-recursive call.
+        // The IR carries the callee body NODE * directly so the
+        // framework specializer can walk into it.  At this point the
+        // body may not be built yet (forward reference), so we ALLOC
+        // with callee=NULL and record the func_idx for load_program
+        // to patch in phase 3.
+        int64_t func_idx = read_int(l);
+        int64_t nargs = read_int(l);
+        int64_t arg_index = read_int(l);
+        sx_expect(l, TK_RPAREN);
+        NODE *call = ALLOC_node_call_static(NULL, (uint32_t)nargs, (uint32_t)arg_index);
+        call_patch_record(call, (uint32_t)func_idx);
+        return call;
     }
     if (IS("call_printf")) {
         // (call_printf nargs arg_index) — args[0] is format string.
@@ -821,6 +876,14 @@ load_program(CTX *c, sx_lexer *l)
         body = OPTIMIZE(body);
         c->func_bodies[i] = body;
     }
+
+    // Phase 3: patch every `node_call_static` allocated in phase 2 so
+    // its `callee` operand points at the resolved body NODE.  After
+    // this the AST is no longer a tree (DAG with shared callee
+    // subtrees); HASH/SPECIALIZE both have cycle-break paths so
+    // mutually-recursive references — should they slip past parse.rb's
+    // self-recursion check — are still well-defined.
+    call_patch_apply(c);
 
     sx_expect(l, TK_RPAREN);
 }

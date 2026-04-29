@@ -28,18 +28,19 @@ class CastroNodeDef < ASTroGen::NodeDef
       'RESULT'
     end
 
-    # Customised specializer for `node_call`.  Default framework
-    # behaviour bakes the call as
-    #   `(*body->head.dispatcher)(c, body, fp + arg_index)`
-    # which is an indirect call.  Castro knows the callee at
-    # SD-generation time (`func_idx -> func_bodies[idx] -> hash`), so
-    # we instead emit
-    #   `extern SD_<callee_hash>(CTX*, NODE*, VALUE*);`
-    #   `SD_<callee_hash>(c, body, fp + arg_index);`
-    # — a direct call resolved by the linker at dlopen.  Recursive
-    # calls become `call SD_<self>` (BTB perfect) and cross-function
-    # calls become straight extern calls (no `body->head.dispatcher`
-    # load and no `mov rdx; call *rdx` indirection).
+    # Custom specializer for `node_call`.  Default framework would
+    # emit an indirect call through `body->head.dispatcher`; we know
+    # the callee at SPECIALIZE time (`func_idx → func_bodies[idx] →
+    # hash`) so we emit
+    #   `extern RESULT SD_<callee_hash>(...)`
+    #   `RESULT v = SD_<callee_hash>(c, body, fp + arg);`
+    # which the linker resolves intra-`.so` via `-Wl,-Bsymbolic` —
+    # `addr32 call SD_<self>` for recursion (BTB-perfect), straight
+    # extern call for cross-function.  The `body` is fetched from
+    # `c->func_bodies[%u]` with the index baked as a uint32_t
+    # immediate, which keeps the SD source deterministic across runs
+    # (so ccache reuses the SOs) and keeps the runtime body load to a
+    # single indexed access against `c` (a register parameter).
     def build_specializer
       return super if @name != 'node_call'
       castro_build_call_specializer
@@ -76,13 +77,11 @@ class CastroNodeDef < ASTroGen::NodeDef
                   dispatcher_name);
           fprintf(fp, "    dispatch_info(c, n, false);\\n");
           fprintf(fp, "    NODE *body = c->func_bodies[%u];\\n", func_idx);
-          // Direct call returning RESULT.  In valid C, BREAK / CONTINUE
-          // / GOTO are caught inside the callee, and RETURN is its
-          // normal exit — so we discard the callee's state entirely and
-          // hand back NORMAL.  The caller's surrounding SD (which is
-          // typically a node_add_i / node_drop / etc. specialized to
-          // this call site) then sees a compile-time-constant
-          // `state==0` and DCEs the UNWRAP branch.
+          // In valid C, BREAK / CONTINUE / GOTO are caught inside the
+          // callee, RETURN is its normal exit — discard the callee's
+          // state entirely so the caller's surrounding SD sees a
+          // compile-time-constant `state==0` and DCEs the UNWRAP
+          // branch.
           fprintf(fp, "    RESULT v = SD_%lx(c, body, fp + %u);\\n",
                   (unsigned long)callee_hash, arg_index);
           fprintf(fp, "    dispatch_info(c, n, true);\\n");

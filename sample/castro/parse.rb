@@ -1329,10 +1329,25 @@ def compile_call(node, fn, src)
         seq_ops << [:lset, arg_index + i, cast(asx, ats, param_tys[i])]
       end
       fn.next_local -= args.length
-      # Single `:call` form.  Per-function setjmp variant routing is
-      # gone — the runtime catches RESULT_RETURN at every call-site
-      # boundary (see node_call in node.def).
-      chain = [:call, func_idx, args.length, arg_index]
+      # Direct self-recursion uses the OLD `:call` IR (idx → runtime
+      # `c->func_bodies[idx]` lookup, paired with castro_gen.rb's
+      # SPECIALIZE_node_call override that emits an extern direct
+      # `SD_<self_hash>` call — `addr32 call SD_<self>`, BTB-perfect).
+      # This avoids the framework cycle break (`is_specializing`)
+      # downgrading the recursive site to runtime indirect dispatch,
+      # which costs us ~2× on fib / nqueens / tak.
+      #
+      # Non-recursive callees use `:call_static` carrying the callee
+      # body NODE * directly.  The framework's natural specializer
+      # walks into the callee subtree as a child operand and emits its
+      # SD chain as `static inline` in the caller's TU; gcc -O3 then
+      # inlines through (the leaf-helper inlining gcc -O1 buys for
+      # free on the host source).
+      # Optimistically tag every call as `:call_static` to enable
+      # framework-level inlining of the callee body.  A post-compile
+      # pass (downgrade_call_static!) walks the call graph, finds any
+      # function in a cycle, and rewrites those calls back to `:call`.
+      chain = [:call_static, func_idx, args.length, arg_index]
       seq_ops.reverse_each { |s| chain = [:seq, s, chain] }
       return [chain, ret_ty]
     end
@@ -2016,6 +2031,91 @@ def compile_function(fdef, src)
 end
 
 # =====================================================================
+# Call graph analysis (post-compile)
+# =====================================================================
+#
+# Find every function that's reachable from itself in the call graph
+# (so its callers must avoid `:call_static`-style inlining).  A direct
+# self-loop (`f` calls `f`) is the obvious case; for mutual recursion
+# we run an SCC pass and mark every function in any non-trivial SCC.
+
+def collect_callees(body_sx)
+  out = []
+  walk = lambda do |n|
+    return unless n.is_a?(Array)
+    if (n[0] == :call || n[0] == :call_static) && n[1].is_a?(Integer)
+      out << n[1]
+    end
+    n.each { |c| walk.call(c) }
+  end
+  walk.call(body_sx)
+  out
+end
+
+# Tarjan SCC over the call graph.  Returns set of function indices
+# that are in a cycle (self-loop counts).
+def compute_recursive_funcs(funcs)
+  n = funcs.length
+  edges = Array.new(n) { [] }
+  funcs.each do |name, _fn, body_sx, _ret_ty|
+    idx = GLOBAL_FUNCS[name][0]
+    next if idx.nil?
+    callees = collect_callees(body_sx).uniq
+    callees.each { |c| edges[idx] << c if c < n }
+  end
+
+  index = 0
+  stack = []
+  on_stack = Array.new(n, false)
+  idx_of = Array.new(n, nil)
+  low = Array.new(n, nil)
+  result = []
+
+  strongconnect = lambda do |v|
+    idx_of[v] = index
+    low[v] = index
+    index += 1
+    stack.push(v); on_stack[v] = true
+    edges[v].each do |w|
+      if idx_of[w].nil?
+        strongconnect.call(w)
+        low[v] = [low[v], low[w]].min
+      elsif on_stack[w]
+        low[v] = [low[v], idx_of[w]].min
+      end
+    end
+    if low[v] == idx_of[v]
+      scc = []
+      loop do
+        w = stack.pop; on_stack[w] = false
+        scc << w
+        break if w == v
+      end
+      # SCC counts as recursive if size > 1, OR size 1 with self-loop.
+      if scc.length > 1 || edges[scc[0]].include?(scc[0])
+        scc.each { |x| result << x }
+      end
+    end
+  end
+
+  (0...n).each { |v| strongconnect.call(v) if idx_of[v].nil? }
+  result.to_set
+end
+
+require 'set'
+
+# Walk `body_sx` and rewrite any `[:call_static, idx, ...]` whose
+# callee is in `recursive_idxs` to `[:call, idx, ...]`.  Mutates in
+# place.
+def downgrade_call_static!(body_sx, recursive_idxs)
+  return unless body_sx.is_a?(Array)
+  if body_sx[0] == :call_static && recursive_idxs.include?(body_sx[1])
+    body_sx[0] = :call
+  end
+  body_sx.each { |c| downgrade_call_static!(c, recursive_idxs) }
+end
+
+# =====================================================================
 # preprocessor
 # =====================================================================
 def run_cpp(path)
@@ -2071,6 +2171,20 @@ def main
       warn "error in #{source_path}: #{e.message}"
       exit 2
     end
+  end
+
+  # Post-pass: downgrade `:call_static` → `:call` whenever the callee
+  # is recursive.  `compile_call` optimistically emits `:call_static`
+  # for any non-self call to enable framework-level inlining; here we
+  # walk the call graph and mark every function that is reachable
+  # from itself (self-recursion or mutual recursion) so its callers
+  # fall back to the runtime-indexed `:call` form.  Letting
+  # `:call_static` walk into a recursive callee would cause its
+  # static-inline SD body and our `:call` override's `extern SD_<self>`
+  # forward declaration to collide in the same TU.
+  recursive_idxs = compute_recursive_funcs(funcs)
+  funcs.each do |_name, _fn, body_sx, _ret_ty|
+    downgrade_call_static!(body_sx, recursive_idxs)
   end
 
   # Output layout (signatures first, then bodies in matching order):
