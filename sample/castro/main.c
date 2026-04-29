@@ -9,12 +9,274 @@
 
 struct castro_option OPTION;
 
-// Non-inline helper that wraps setjmp/longjmp for return.  Lives here
-// (not in node.def) because EVAL_node_call is always_inlined and gcc
-// rejects setjmp in always_inline functions.
+struct function_entry *castro_find_func(CTX *c, const char *name);
+
+// =====================================================================
+// VALUE-slot string handling
+// =====================================================================
+//
+// Castro stores 1 byte-of-source per VALUE slot — `"hello"` becomes
+// 6 slots {.i = 'h'}, ..., {.i = '\0'}.  This makes `s[i]` fall out of
+// the same slot-indexed pointer arithmetic the rest of the language
+// uses, at the cost of a 8x space hit and the printf("%s") shim below
+// that materialises a contiguous char buffer for the host libc call.
+//
+// Literals are interned in a small hash table so identical strings
+// share storage and can be cheaply compared by address.
+
+struct intern_entry { char *key; size_t klen; VALUE *val; };
+static struct {
+    struct intern_entry *items;
+    size_t cnt, capa;
+} intern_pool;
+
+static VALUE *
+castro_alloc_slot_string(const char *s, size_t len)
+{
+    VALUE *buf = (VALUE *)calloc(len + 1, sizeof(VALUE));
+    for (size_t i = 0; i < len; i++) buf[i].i = (unsigned char)s[i];
+    buf[len].i = 0;
+    return buf;
+}
+
+VALUE *
+castro_intern_string(const char *s)
+{
+    size_t len = strlen(s);
+    for (size_t i = 0; i < intern_pool.cnt; i++) {
+        if (intern_pool.items[i].klen == len &&
+            memcmp(intern_pool.items[i].key, s, len) == 0) {
+            return intern_pool.items[i].val;
+        }
+    }
+    if (intern_pool.cnt == intern_pool.capa) {
+        intern_pool.capa = intern_pool.capa ? intern_pool.capa * 2 : 32;
+        intern_pool.items = realloc(intern_pool.items,
+                                    intern_pool.capa * sizeof(struct intern_entry));
+    }
+    struct intern_entry *e = &intern_pool.items[intern_pool.cnt++];
+    e->key = malloc(len + 1);
+    memcpy(e->key, s, len);
+    e->key[len] = '\0';
+    e->klen = len;
+    e->val = castro_alloc_slot_string(s, len);
+    return e->val;
+}
+
+// Materialise a VALUE-slot string into a contiguous char buffer for
+// passing to host libc (printf %s, etc.).  Caller frees.
+static char *
+castro_slot_to_cstring(const VALUE *s)
+{
+    if (s == NULL) return NULL;
+    size_t len = 0;
+    while (s[len].i != 0) len++;
+    char *buf = malloc(len + 1);
+    for (size_t i = 0; i < len; i++) buf[i] = (char)s[i].i;
+    buf[len] = '\0';
+    return buf;
+}
+
+int64_t castro_strlen(const VALUE *s) {
+    int64_t l = 0;
+    if (!s) return 0;
+    while (s[l].i != 0) l++;
+    return l;
+}
+
+int64_t castro_strcmp(const VALUE *a, const VALUE *b) {
+    while (a->i && a->i == b->i) { a++; b++; }
+    return (int64_t)((unsigned char)a->i) - (int64_t)((unsigned char)b->i);
+}
+
+int64_t castro_strncmp(const VALUE *a, const VALUE *b, int64_t n) {
+    while (n > 0 && a->i && a->i == b->i) { a++; b++; n--; }
+    if (n == 0) return 0;
+    return (int64_t)((unsigned char)a->i) - (int64_t)((unsigned char)b->i);
+}
+
+VALUE *castro_strcpy(VALUE *dst, const VALUE *src) {
+    VALUE *d = dst;
+    while ((d->i = src->i) != 0) { d++; src++; }
+    return dst;
+}
+
+VALUE *castro_strncpy(VALUE *dst, const VALUE *src, int64_t n) {
+    VALUE *d = dst;
+    while (n > 0 && src->i) { d->i = src->i; d++; src++; n--; }
+    while (n > 0) { d->i = 0; d++; n--; }
+    return dst;
+}
+
+VALUE *castro_strcat(VALUE *dst, const VALUE *src) {
+    VALUE *d = dst;
+    while (d->i) d++;
+    while ((d->i = src->i) != 0) { d++; src++; }
+    return dst;
+}
+
+void *castro_memset(VALUE *dst, int64_t v, int64_t n) {
+    for (int64_t i = 0; i < n; i++) dst[i].i = (unsigned char)v;
+    return dst;
+}
+
+void *castro_memcpy(VALUE *dst, const VALUE *src, int64_t n) {
+    for (int64_t i = 0; i < n; i++) dst[i] = src[i];
+    return dst;
+}
+
+int64_t castro_atoi(const VALUE *s) {
+    if (!s) return 0;
+    while (s->i == ' ' || s->i == '\t') s++;
+    int sign = 1;
+    if (s->i == '-') { sign = -1; s++; }
+    else if (s->i == '+') s++;
+    int64_t v = 0;
+    while (s->i >= '0' && s->i <= '9') { v = v * 10 + (s->i - '0'); s++; }
+    return sign * v;
+}
+
+void castro_exit(int code) { exit(code); }
+
+int castro_puts(const VALUE *slot_str)
+{
+    if (!slot_str) return EOF;
+    int total = 0;
+    while (slot_str->i != 0) {
+        putchar((int)slot_str->i);
+        slot_str++;
+        total++;
+    }
+    putchar('\n');
+    return total + 1;
+}
+
+// =====================================================================
+// printf-family runtime
+// =====================================================================
+//
+// Walk the format string; for each %... specifier, pick the matching
+// VALUE field based on the conversion (d/i → .i as int, s → .p as
+// const char *, f → .d as double, etc.) and stream through host
+// printf with a normalized type.  Length modifiers (l, ll, z) get
+// preserved so width-correct integer formatting still works.
+
+int
+castro_run_printf(const char *fmt_in, VALUE *args, uint32_t arg_count)
+{
+    // The format string in castro is itself a VALUE-slot array (one
+    // byte per slot in .i), so first lower it to a contiguous C string
+    // we can walk char by char.
+    char *fmt_buf = castro_slot_to_cstring((const VALUE *)fmt_in);
+    const char *fmt = fmt_buf ? fmt_buf : "";
+    int total = 0;
+    uint32_t arg_idx = 0;
+    while (*fmt) {
+        if (*fmt != '%') {
+            putchar(*fmt++);
+            total++;
+            continue;
+        }
+        const char *p = fmt + 1;
+        if (*p == '%') {
+            putchar('%');
+            fmt = p + 1;
+            total++;
+            continue;
+        }
+        char buf[64];
+        char *bp = buf;
+        *bp++ = '%';
+        // flags
+        while (*p && strchr("-+ #0'", *p)) *bp++ = *p++;
+        // width (digits or *)
+        if (*p == '*') {
+            if (arg_idx >= arg_count) goto verbatim;
+            int w = (int)args[arg_idx++].i;
+            bp += snprintf(bp, buf + sizeof(buf) - bp, "%d", w);
+            p++;
+        } else {
+            while (*p >= '0' && *p <= '9') *bp++ = *p++;
+        }
+        // precision
+        if (*p == '.') {
+            *bp++ = *p++;
+            if (*p == '*') {
+                if (arg_idx >= arg_count) goto verbatim;
+                int pr = (int)args[arg_idx++].i;
+                bp += snprintf(bp, buf + sizeof(buf) - bp, "%d", pr);
+                p++;
+            } else {
+                while (*p >= '0' && *p <= '9') *bp++ = *p++;
+            }
+        }
+        // length modifier
+        const char *lstart = p;
+        while (*p && strchr("hljztL", *p)) p++;
+        size_t llen = p - lstart;
+        for (size_t i = 0; i < llen; i++) *bp++ = lstart[i];
+        char conv = *p;
+        if (!conv) {
+            *bp = '\0';
+            total += printf("%s", buf);
+            break;
+        }
+        *bp++ = conv;
+        *bp = '\0';
+
+        if (conv != '%' && arg_idx >= arg_count) goto verbatim;
+        VALUE v = (conv == '%') ? (VALUE){.i = 0} : args[arg_idx++];
+        int n = 0;
+        bool ll = (llen == 2 && lstart[0] == 'l' && lstart[1] == 'l');
+        bool l1 = (llen == 1 && lstart[0] == 'l');
+        bool z  = (llen == 1 && lstart[0] == 'z');
+        switch (conv) {
+          case 'd': case 'i':
+            if (ll)      n = printf(buf, (long long)v.i);
+            else if (l1) n = printf(buf, (long)v.i);
+            else if (z)  n = printf(buf, (size_t)v.i);
+            else         n = printf(buf, (int)v.i);
+            break;
+          case 'u': case 'o': case 'x': case 'X':
+            if (ll)      n = printf(buf, (unsigned long long)v.i);
+            else if (l1) n = printf(buf, (unsigned long)v.i);
+            else if (z)  n = printf(buf, (size_t)v.i);
+            else         n = printf(buf, (unsigned int)v.i);
+            break;
+          case 'c':
+            n = printf(buf, (int)v.i);
+            break;
+          case 's': {
+            // VALUE-slot strings need to be lowered into contiguous char
+            // bytes for host printf to read them as a C string.
+            char *cs = v.p ? castro_slot_to_cstring((const VALUE *)v.p) : NULL;
+            n = printf(buf, cs ? cs : "(null)");
+            free(cs);
+            break;
+          }
+          case 'p':
+            n = printf(buf, v.p);
+            break;
+          case 'f': case 'F': case 'g': case 'G': case 'e': case 'E': case 'a': case 'A':
+            n = printf(buf, v.d);
+            break;
+          default:
+verbatim:
+            n = printf("%s", buf);
+            break;
+        }
+        if (n > 0) total += n;
+        fmt = p + 1;
+    }
+    free(fmt_buf);
+    return total;
+}
+
+// Cold path: with-setjmp invoke.  Out-of-line because gcc forbids setjmp
+// inside always_inline functions, and we want EVAL_node_call inlinable.
 __attribute__((noinline))
 VALUE
-castro_invoke(CTX *c, NODE *body, uint32_t arg_index)
+castro_invoke_jmp(CTX *c, NODE *body, node_dispatcher_func_t disp, uint32_t arg_index)
 {
     c->fp += arg_index;
     jmp_buf rbuf;
@@ -23,7 +285,7 @@ castro_invoke(CTX *c, NODE *body, uint32_t arg_index)
 
     VALUE v;
     if (setjmp(rbuf) == 0) {
-        v = EVAL(c, body);
+        v = (*disp)(c, body);
     }
     else {
         v = c->return_value;
@@ -35,11 +297,175 @@ castro_invoke(CTX *c, NODE *body, uint32_t arg_index)
 }
 
 // =====================================================================
+// loop helpers (break / continue)
+// =====================================================================
+//
+// Each loop variant pushes a fresh jmp_buf onto c->break_buf (and, when
+// the body contains `continue`, a per-iteration buf on c->continue_buf)
+// so that `node_break` / `node_continue` can longjmp back here.  Plain
+// loops without break/continue do not pay this cost.
+
+__attribute__((noinline))
+VALUE
+castro_loop_while(CTX *c, NODE *cond, node_dispatcher_func_t cd,
+                  NODE *body, node_dispatcher_func_t bd, bool has_continue)
+{
+    jmp_buf brk;
+    jmp_buf *prev_brk = c->break_buf;
+    c->break_buf = &brk;
+    if (setjmp(brk) == 0) {
+        while ((*cd)(c, cond).i) {
+            if (has_continue) {
+                jmp_buf cnt;
+                jmp_buf *prev_cnt = c->continue_buf;
+                c->continue_buf = &cnt;
+                if (setjmp(cnt) == 0) (*bd)(c, body);
+                c->continue_buf = prev_cnt;
+            } else {
+                (*bd)(c, body);
+            }
+        }
+    }
+    c->break_buf = prev_brk;
+    return (VALUE){.i = 0};
+}
+
+__attribute__((noinline))
+VALUE
+castro_loop_do_while(CTX *c, NODE *body, node_dispatcher_func_t bd,
+                     NODE *cond, node_dispatcher_func_t cd, bool has_continue)
+{
+    jmp_buf brk;
+    jmp_buf *prev_brk = c->break_buf;
+    c->break_buf = &brk;
+    if (setjmp(brk) == 0) {
+        do {
+            if (has_continue) {
+                jmp_buf cnt;
+                jmp_buf *prev_cnt = c->continue_buf;
+                c->continue_buf = &cnt;
+                if (setjmp(cnt) == 0) (*bd)(c, body);
+                c->continue_buf = prev_cnt;
+            } else {
+                (*bd)(c, body);
+            }
+        } while ((*cd)(c, cond).i);
+    }
+    c->break_buf = prev_brk;
+    return (VALUE){.i = 0};
+}
+
+__attribute__((noinline))
+VALUE
+castro_loop_for(CTX *c, NODE *init, node_dispatcher_func_t id,
+                NODE *cond, node_dispatcher_func_t cd,
+                NODE *step, node_dispatcher_func_t sd,
+                NODE *body, node_dispatcher_func_t bd, bool has_continue)
+{
+    jmp_buf brk;
+    jmp_buf *prev_brk = c->break_buf;
+    c->break_buf = &brk;
+    (*id)(c, init);
+    if (setjmp(brk) == 0) {
+        while ((*cd)(c, cond).i) {
+            if (has_continue) {
+                jmp_buf cnt;
+                jmp_buf *prev_cnt = c->continue_buf;
+                c->continue_buf = &cnt;
+                if (setjmp(cnt) == 0) (*bd)(c, body);
+                c->continue_buf = prev_cnt;
+            } else {
+                (*bd)(c, body);
+            }
+            (*sd)(c, step);
+        }
+    }
+    c->break_buf = prev_brk;
+    return (VALUE){.i = 0};
+}
+
+// =====================================================================
+// indirect call (function pointers)
+// =====================================================================
+
+VALUE
+castro_func_addr_resolve(CTX *c, struct func_addr_cache *cc, const char *name)
+{
+    struct function_entry *fe = castro_find_func(c, name);
+    if (UNLIKELY(fe == NULL)) {
+        fprintf(stderr, "castro: unknown function: %s\n", name);
+        exit(1);
+    }
+    cc->serial = c->serial;
+    cc->fe = fe;
+    return (VALUE){.p = fe};
+}
+
+__attribute__((noinline))
+VALUE
+castro_indirect_invoke(CTX *c, struct function_entry *fe, uint32_t arg_index)
+{
+    if (UNLIKELY(fe == NULL)) {
+        fprintf(stderr, "castro: NULL function pointer\n");
+        exit(1);
+    }
+    node_dispatcher_func_t disp = fe->body->head.dispatcher;
+    if (fe->needs_setjmp) {
+        return castro_invoke_jmp(c, fe->body, disp, arg_index);
+    }
+    c->fp += arg_index;
+    VALUE v = (*disp)(c, fe->body);
+    c->fp -= arg_index;
+    return v;
+}
+
+// =====================================================================
+// goto runtime: dispatch loop
+// =====================================================================
+//
+// parse.rb wraps a function with `goto` into a label-dispatch loop
+// (a `while(1) { switch(label) { case 0: ... } }`).  This helper
+// installs a setjmp barrier so node_goto can longjmp back here with
+// a new label, after which the body re-runs to find that case.
+
+__attribute__((noinline))
+VALUE
+castro_goto_dispatch(CTX *c, NODE *body, node_dispatcher_func_t bd)
+{
+    jmp_buf gbuf;
+    jmp_buf *prev = c->goto_buf;
+    c->goto_buf = &gbuf;
+
+    c->goto_target = 0;
+    (void)setjmp(gbuf);
+    VALUE v = (*bd)(c, body);
+
+    c->goto_buf = prev;
+    return v;
+}
+
+// callcache miss: walk the function table, fill cc with body/dispatcher/flag.
+__attribute__((noinline))
+void
+castro_call_cache_fill(CTX *c, struct callcache *cc, const char *name)
+{
+    struct function_entry *fe = castro_find_func(c, name);
+    if (UNLIKELY(fe == NULL)) {
+        fprintf(stderr, "castro: unknown function: %s\n", name);
+        exit(1);
+    }
+    cc->serial = c->serial;
+    cc->body = fe->body;
+    cc->dispatcher = (void (*)(void))fe->body->head.dispatcher;
+    cc->needs_setjmp = fe->needs_setjmp;
+}
+
+// =====================================================================
 // function table
 // =====================================================================
 
 void
-castro_register_func(CTX *c, const char *name, NODE *body, uint32_t params_cnt, uint32_t locals_cnt)
+castro_register_func(CTX *c, const char *name, NODE *body, uint32_t params_cnt, uint32_t locals_cnt, bool needs_setjmp)
 {
     // search by name (override)
     for (unsigned int i = 0; i < c->func_set_cnt; i++) {
@@ -47,6 +473,7 @@ castro_register_func(CTX *c, const char *name, NODE *body, uint32_t params_cnt, 
             c->func_set[i].body = body;
             c->func_set[i].params_cnt = params_cnt;
             c->func_set[i].locals_cnt = locals_cnt;
+            c->func_set[i].needs_setjmp = needs_setjmp;
             return;
         }
     }
@@ -59,6 +486,7 @@ castro_register_func(CTX *c, const char *name, NODE *body, uint32_t params_cnt, 
     fe->body = body;
     fe->params_cnt = params_cnt;
     fe->locals_cnt = locals_cnt;
+    fe->needs_setjmp = needs_setjmp;
 }
 
 struct function_entry *
@@ -123,15 +551,42 @@ sx_read_string(sx_lexer *l)
         if (*l->pos == '\\') {
             l->pos++;
             switch (*l->pos) {
-              case 'n': ch = '\n'; break;
-              case 't': ch = '\t'; break;
-              case 'r': ch = '\r'; break;
-              case '\\': ch = '\\'; break;
-              case '"': ch = '"'; break;
-              case '0': ch = '\0'; break;
-              default:  ch = *l->pos; break;
+              case 'n': ch = '\n'; l->pos++; break;
+              case 't': ch = '\t'; l->pos++; break;
+              case 'r': ch = '\r'; l->pos++; break;
+              case '\\': ch = '\\'; l->pos++; break;
+              case '"': ch = '"'; l->pos++; break;
+              case 'a': ch = '\a'; l->pos++; break;
+              case 'b': ch = '\b'; l->pos++; break;
+              case 'f': ch = '\f'; l->pos++; break;
+              case 'v': ch = '\v'; l->pos++; break;
+              case '0': case '1': case '2': case '3':
+              case '4': case '5': case '6': case '7': {
+                int v = 0, k = 0;
+                while (k < 3 && *l->pos >= '0' && *l->pos <= '7') {
+                    v = v * 8 + (*l->pos - '0');
+                    l->pos++;
+                    k++;
+                }
+                ch = (char)v;
+                break;
+              }
+              case 'x': {
+                l->pos++;
+                int v = 0;
+                while (isxdigit((unsigned char)*l->pos)) {
+                    int d = *l->pos;
+                    if (d >= '0' && d <= '9') d -= '0';
+                    else if (d >= 'a' && d <= 'f') d = d - 'a' + 10;
+                    else d = d - 'A' + 10;
+                    v = v * 16 + d;
+                    l->pos++;
+                }
+                ch = (char)v;
+                break;
+              }
+              default:  ch = *l->pos++; break;
             }
-            l->pos++;
         }
         else {
             ch = *l->pos++;
@@ -295,6 +750,13 @@ build_op(sx_lexer *l, tok_t op)
         sx_expect(l, TK_RPAREN);
         return ALLOC_node_lit_d(v);
     }
+    if (IS("lit_str")) {
+        if (l->cur.kind != TK_STRING) sx_err(l, "expected string");
+        char *s = l->cur.sval;
+        sx_next(l);
+        sx_expect(l, TK_RPAREN);
+        return ALLOC_node_lit_str(s);
+    }
     if (IS("lget")) {
         int64_t idx = read_int(l);
         sx_expect(l, TK_RPAREN);
@@ -306,19 +768,64 @@ build_op(sx_lexer *l, tok_t op)
         sx_expect(l, TK_RPAREN);
         return ALLOC_node_lset((uint32_t)idx, rhs);
     }
+    if (IS("gget")) {
+        int64_t idx = read_int(l);
+        sx_expect(l, TK_RPAREN);
+        return ALLOC_node_gget((uint32_t)idx);
+    }
+    if (IS("gset")) {
+        int64_t idx = read_int(l);
+        NODE *rhs = build_expr(l);
+        sx_expect(l, TK_RPAREN);
+        return ALLOC_node_gset((uint32_t)idx, rhs);
+    }
+    if (IS("addr_local")) {
+        int64_t idx = read_int(l);
+        sx_expect(l, TK_RPAREN);
+        return ALLOC_node_addr_local((uint32_t)idx);
+    }
+    if (IS("addr_global")) {
+        int64_t idx = read_int(l);
+        sx_expect(l, TK_RPAREN);
+        return ALLOC_node_addr_global((uint32_t)idx);
+    }
+    if (IS("goto")) {
+        int64_t lbl = read_int(l);
+        sx_expect(l, TK_RPAREN);
+        return ALLOC_node_goto((int32_t)lbl);
+    }
+    if (IS("goto_dispatch")) {
+        NODE *b = build_expr(l);
+        sx_expect(l, TK_RPAREN);
+        return ALLOC_node_goto_dispatch(b);
+    }
     if (IS("nop"))         { sx_expect(l, TK_RPAREN); return ALLOC_node_nop(); }
     if (IS("return_void")) { sx_expect(l, TK_RPAREN); return ALLOC_node_return_void(); }
+    if (IS("break"))       { sx_expect(l, TK_RPAREN); return ALLOC_node_break(); }
+    if (IS("continue"))    { sx_expect(l, TK_RPAREN); return ALLOC_node_continue(); }
+    if (IS("goto_target")) { sx_expect(l, TK_RPAREN); return ALLOC_node_goto_target(); }
 
     // single-arg ops
     static const struct { const char *name; NODE *(*fn)(NODE *); } u1[] = {
-        {"drop",    ALLOC_node_drop},
-        {"return",  ALLOC_node_return},
-        {"neg_i",   ALLOC_node_neg_i},
-        {"neg_d",   ALLOC_node_neg_d},
-        {"bnot",    ALLOC_node_bnot},
-        {"lnot",    ALLOC_node_lnot},
-        {"cast_id", ALLOC_node_cast_id},
-        {"cast_di", ALLOC_node_cast_di},
+        {"drop",        ALLOC_node_drop},
+        {"return",      ALLOC_node_return},
+        {"neg_i",       ALLOC_node_neg_i},
+        {"neg_d",       ALLOC_node_neg_d},
+        {"bnot",        ALLOC_node_bnot},
+        {"lnot",        ALLOC_node_lnot},
+        {"cast_id",     ALLOC_node_cast_id},
+        {"cast_di",     ALLOC_node_cast_di},
+        {"load_i",      ALLOC_node_load_i},
+        {"load_d",      ALLOC_node_load_d},
+        {"load_p",      ALLOC_node_load_p},
+        {"call_putchar",ALLOC_node_putchar},
+        {"call_puts",   ALLOC_node_puts},
+        {"call_malloc", ALLOC_node_call_malloc},
+        {"call_free",   ALLOC_node_call_free},
+        {"call_strlen", ALLOC_node_call_strlen},
+        {"call_atoi",   ALLOC_node_call_atoi},
+        {"call_exit",   ALLOC_node_call_exit},
+        {"call_abs",    ALLOC_node_call_abs},
         {NULL, NULL}
     };
     for (int i = 0; u1[i].name; i++) {
@@ -360,8 +867,22 @@ build_op(sx_lexer *l, tok_t op)
         {"neq_d",   ALLOC_node_neq_d},
         {"land",    ALLOC_node_land},
         {"lor",     ALLOC_node_lor},
-        {"do_while", ALLOC_node_do_while},
-        {"while",   ALLOC_node_while},
+        {"do_while",        ALLOC_node_do_while},
+        {"do_while_brk",    ALLOC_node_do_while_brk},
+        {"do_while_brk_only", ALLOC_node_do_while_brk_only},
+        {"while",           ALLOC_node_while},
+        {"while_brk",       ALLOC_node_while_brk},
+        {"while_brk_only",  ALLOC_node_while_brk_only},
+        {"store_i",         ALLOC_node_store_i},
+        {"store_d",         ALLOC_node_store_d},
+        {"store_p",         ALLOC_node_store_p},
+        {"ptr_add",         ALLOC_node_ptr_add},
+        {"ptr_sub_i",       ALLOC_node_ptr_sub_i},
+        {"ptr_diff",        ALLOC_node_ptr_diff},
+        {"call_strcmp",     ALLOC_node_call_strcmp},
+        {"call_strcpy",     ALLOC_node_call_strcpy},
+        {"call_strcat",     ALLOC_node_call_strcat},
+        {"call_calloc",     ALLOC_node_call_calloc},
         {NULL, NULL}
     };
     for (int i = 0; u2[i].name; i++) {
@@ -381,24 +902,75 @@ build_op(sx_lexer *l, tok_t op)
         return IS("if") ? ALLOC_node_if(a, b, c) : ALLOC_node_ternary(a, b, c);
     }
 
-    if (IS("for")) {
+    // 3-arg ops
+    static const struct { const char *name; NODE *(*fn)(NODE *, NODE *, NODE *); } u3[] = {
+        {"call_strncmp",  ALLOC_node_call_strncmp},
+        {"call_strncpy",  ALLOC_node_call_strncpy},
+        {"call_memset",   ALLOC_node_call_memset},
+        {"call_memcpy",   ALLOC_node_call_memcpy},
+        {NULL, NULL}
+    };
+    for (int i = 0; u3[i].name; i++) {
+        if (IS(u3[i].name)) {
+            NODE *a = build_expr(l);
+            NODE *b = build_expr(l);
+            NODE *c = build_expr(l);
+            sx_expect(l, TK_RPAREN);
+            return u3[i].fn(a, b, c);
+        }
+    }
+
+    if (IS("func_addr")) {
+        // (func_addr NAME)
+        char *name = read_string_or_ident(l);
+        sx_expect(l, TK_RPAREN);
+        return ALLOC_node_func_addr(name);
+    }
+    if (IS("call_indirect")) {
+        // (call_indirect FN_EXPR nargs arg_index)
+        NODE *fn = build_expr(l);
+        int64_t nargs = read_int(l);
+        int64_t arg_index = read_int(l);
+        sx_expect(l, TK_RPAREN);
+        return ALLOC_node_call_indirect(fn, (uint32_t)nargs, (uint32_t)arg_index);
+    }
+    if (IS("lit_str_array")) {
+        if (l->cur.kind != TK_STRING) sx_err(l, "expected string");
+        char *s = l->cur.sval;
+        sx_next(l);
+        sx_expect(l, TK_RPAREN);
+        return ALLOC_node_lit_str_array(s);
+    }
+
+    if (IS("for") || IS("for_brk") || IS("for_brk_only")) {
+        bool is_brk = IS("for_brk");
+        bool is_brk_only = IS("for_brk_only");
         NODE *a = build_expr(l);
         NODE *b = build_expr(l);
         NODE *c = build_expr(l);
         NODE *d = build_expr(l);
         sx_expect(l, TK_RPAREN);
+        if (is_brk)      return ALLOC_node_for_brk(a, b, c, d);
+        if (is_brk_only) return ALLOC_node_for_brk_only(a, b, c, d);
         return ALLOC_node_for(a, b, c, d);
     }
 
     if (IS("call")) {
-        // (call NAME nargs arg_index)
+        // (call NAME nargs arg_index) — callcache is @ref'd inline.
         char *name = read_string_or_ident(l);
         int64_t nargs = read_int(l);
         int64_t arg_index = read_int(l);
         sx_expect(l, TK_RPAREN);
-        struct callcache *cc = calloc(1, sizeof(struct callcache));
-        return ALLOC_node_call(name, (uint32_t)nargs, (uint32_t)arg_index, cc);
+        return ALLOC_node_call(name, (uint32_t)nargs, (uint32_t)arg_index);
     }
+    if (IS("call_printf")) {
+        // (call_printf nargs arg_index) — args[0] is format string.
+        int64_t nargs = read_int(l);
+        int64_t arg_index = read_int(l);
+        sx_expect(l, TK_RPAREN);
+        return ALLOC_node_printf((uint32_t)nargs, (uint32_t)arg_index);
+    }
+    // call_putchar / call_puts handled via the u1 table
 
     fprintf(stderr, "unknown op: %.*s\n", (int)op.len, op.start);
     exit(1);
@@ -419,6 +991,12 @@ build_expr(sx_lexer *l)
 // program loading
 // =====================================================================
 
+// Forward decl: the init expression is built before load_program
+// finishes, but we want to run it once, after both globals are
+// allocated and all functions are registered (so global initializers
+// can call other functions).
+static NODE *G_INIT_EXPR = NULL;
+
 static void
 load_program(CTX *c, sx_lexer *l)
 {
@@ -426,8 +1004,17 @@ load_program(CTX *c, sx_lexer *l)
     if (!sx_ident_eq(&l->cur, "program")) sx_err(l, "expected `program`");
     sx_next(l);
 
+    // (program GLOBALS_SIZE INIT_EXPR (func ...) ...)
+    int64_t globals_size = read_int(l);
+    if (globals_size > 0) {
+        c->globals = calloc((size_t)globals_size, sizeof(VALUE));
+        c->globals_size = (size_t)globals_size;
+    }
+    G_INIT_EXPR = build_expr(l);
+    G_INIT_EXPR = OPTIMIZE(G_INIT_EXPR);
+
     while (l->cur.kind == TK_LPAREN) {
-        // expect (func NAME PARAMS LOCALS RET BODY)
+        // expect (func NAME PARAMS LOCALS RET HAS_RETURNS BODY)
         sx_next(l);  // consume '('
         if (!sx_ident_eq(&l->cur, "func")) sx_err(l, "expected `func`");
         sx_next(l);
@@ -435,15 +1022,16 @@ load_program(CTX *c, sx_lexer *l)
         char *name = read_string_or_ident(l);
         int64_t params = read_int(l);
         int64_t locals = read_int(l);
-        // ret type ident: i / d / v
+        // ret type ident: i / d / v / p
         if (l->cur.kind != TK_IDENT) sx_err(l, "expected ret type ident");
         sx_next(l);
+        int64_t has_returns = read_int(l);
 
         NODE *body = build_expr(l);
         sx_expect(l, TK_RPAREN);
 
         body = OPTIMIZE(body);
-        castro_register_func(c, name, body, (uint32_t)params, (uint32_t)locals);
+        castro_register_func(c, name, body, (uint32_t)params, (uint32_t)locals, has_returns != 0);
         free(name);
     }
     sx_expect(l, TK_RPAREN);
@@ -487,24 +1075,6 @@ slurp(const char *path)
     buf[sz] = '\0';
     fclose(f);
     return buf;
-}
-
-static int
-run_pipeline(const char *cfile, char **out_sx_path)
-{
-    // Run parse.py to produce the .sx file in the current dir.
-    char buf[4096];
-    const char *base = strrchr(cfile, '/');
-    base = base ? base + 1 : cfile;
-    char *sxpath = malloc(strlen(base) + 32);
-    snprintf(sxpath, strlen(base) + 32, "./tmp/castro_%d_%s.sx", (int)getpid(), base);
-
-    snprintf(buf, sizeof(buf),
-             "python3 %s/parse.py %s > %s",
-             "PARSE_DIR_PLACEHOLDER", cfile, sxpath);
-    (void)buf;
-    *out_sx_path = sxpath;
-    return 0;
 }
 
 static void
@@ -614,6 +1184,14 @@ main(int argc, char *argv[])
         load_all_funcs(c);
     }
 
+    // Run global initializers once, before main.
+    if (G_INIT_EXPR) {
+        // Treat init body the same as a function body so that any
+        // sub-expressions that take addresses (or call functions that
+        // do) work consistently.
+        EVAL(c, G_INIT_EXPR);
+    }
+
     struct function_entry *fe = castro_find_func(c, "main");
     if (!fe) {
         fprintf(stderr, "no main\n");
@@ -621,16 +1199,21 @@ main(int argc, char *argv[])
     }
 
     // call main with no args
-    jmp_buf rbuf;
-    c->return_buf = &rbuf;
     VALUE result;
-    if (setjmp(rbuf) == 0) {
-        result = EVAL(c, fe->body);
+    if (fe->needs_setjmp) {
+        jmp_buf rbuf;
+        c->return_buf = &rbuf;
+        if (setjmp(rbuf) == 0) {
+            result = EVAL(c, fe->body);
+        }
+        else {
+            result = c->return_value;
+        }
+        c->return_buf = NULL;
     }
     else {
-        result = c->return_value;
+        result = EVAL(c, fe->body);
     }
-    c->return_buf = NULL;
 
     if (!OPTION.quiet) {
         printf("=> %lld\n", (long long)result.i);

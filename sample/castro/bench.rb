@@ -92,14 +92,24 @@ BENCHES.each do |c_file|
   base = File.basename(c_file, '.c')
   c_path = File.join(HERE, 'examples', c_file)
 
+  # Pre-parse the C source to .sx so the timed runs don't include the
+  # ~110ms parse.rb startup (Ruby load + tree-sitter init).  This makes
+  # the comparison against gcc binaries — which are already-compiled
+  # native code — actually about runtime, not Ruby boot time.
+  sx_path = File.join(BIN, "#{base}.sx")
+  unless system('ruby', File.join(HERE, 'parse.rb'), c_path, out: sx_path)
+    warn "parse.rb failed for #{c_file}"
+    next
+  end
+
   # interp
-  interp_ms = measure(runs: RUNS) { time_ms(CASTRO, '-q', '--no-compile', c_path) }
+  interp_ms = measure(runs: RUNS) { time_ms(CASTRO, '-q', '--no-compile', '--sx', sx_path) }
 
   # castro: 1st (cold, compile + run)
-  c1_ms = measure(runs: RUNS, fresh: true) { time_ms(CASTRO, '-q', '--compile-all', c_path) }
+  c1_ms = measure(runs: RUNS, fresh: true) { time_ms(CASTRO, '-q', '--compile-all', '--sx', sx_path) }
 
   # castro: hot cache (cache prebuilt, just dlopen+run)
-  ch_ms = measure(runs: RUNS) { time_ms(CASTRO, '-q', c_path) }
+  ch_ms = measure(runs: RUNS) { time_ms(CASTRO, '-q', '--sx', sx_path) }
 
   # gcc -O0..-O3
   gcc_ms = LEVELS.map do |l|
