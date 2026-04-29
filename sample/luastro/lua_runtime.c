@@ -342,10 +342,18 @@ lua_table_hash_set(struct LuaTable *t, LuaValue k, LuaValue v)
 void
 lua_table_seti(struct LuaTable *t, int64_t i, LuaValue v)
 {
-    // Promote to array part if contiguous-ish.
-    if (i >= 1 && (uint64_t)i <= (uint64_t)t->arr_cnt + 1) {
-        lua_table_array_set(t, i, v);
-        return;
+    // Promote to array part if (a) strictly contiguous OR (b) modestly
+    // close to it (≤ 2× arr_cap + 4).  The (b) case lets benchmarks
+    // like sieve — which fill primes[2]..primes[N] without ever
+    // touching primes[1] — actually use the array part instead of
+    // dropping every entry into the open-addressing hash.
+    if (i >= 1) {
+        uint64_t cap = t->arr_cap;
+        if ((uint64_t)i <= (uint64_t)t->arr_cnt + 1 ||
+            (uint64_t)i <= cap * 2 + 4) {
+            lua_table_array_set(t, i, v);
+            return;
+        }
     }
     lua_table_hash_set(t, LUAV_INT(i), v);
 }

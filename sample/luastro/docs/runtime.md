@@ -294,7 +294,11 @@ struct LuaTable {
 Integer keys 1..arr_cnt go directly into the array part.  An integer
 key beyond `arr_cnt + 1` (or non-integer keys) goes to the hash part;
 hash lookups use `lua_value_hash` (FNV-mixed for strings, multiplied
-by a Knuth constant for ints / pointers).
+by a Knuth constant for ints / pointers).  As a relaxation, integer
+keys ≤ `2 × arr_cap + 4` also route to the array part even if they
+break strict contiguity, so the common `for i=2,N do t[i]=... end`
+pattern (sieve and similar) actually uses the dense array storage
+instead of falling into the open-addressing hash.
 
 `lua_table_seti` promotes a hash entry back to the array part if the
 new key is contiguous with the current array tail.  Shrinking happens
