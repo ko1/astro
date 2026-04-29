@@ -178,8 +178,10 @@ SROA the LuaValue away when it's a transient.  The heap-box fallback
 (`luav_box_double` / `luav_unbox_double`) is out-of-line in
 `lua_runtime.c` so the inline functions stay small.
 
-This was a ~4× speedup on `mandelbrot` and ~3× on `nbody` over the
-original always-heap-box scheme.
+Together with three follow-up tweaks (mixed int+float arith / compare
+direct-handled, pinned +0.0 cell, and `LV_IS_NUM`-aware compare) this
+took mandelbrot from 737 ms down to 88 ms — **8.4× faster** than the
+always-heap-box baseline.
 
 ## 4. Branch state — `LUASTRO_BR`
 

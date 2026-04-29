@@ -131,7 +131,7 @@ swaps in, yield swaps back, errors inside a coroutine propagate as
 
 | Node | Behaviour |
 |---|---|
-| `node_int_add/_sub/_mul` | int+int direct; float+float fall through; mixed → `lua_arith` |
+| `node_int_add/_sub/_mul` | int+int direct; promote int↔float on mixed (no fall-through); only string/metamethod cases reach `lua_arith` |
 | `node_flt_add/_sub/_mul/_div` | float+float direct; otherwise → `lua_arith` |
 | `node_arith` | Generic op-typed arith with full coercion / metatable fallback |
 | `node_call_arg{0,1,2,3}` | Fixed-arity Lua-to-Lua calls without metamethod / cfunc dispatch |

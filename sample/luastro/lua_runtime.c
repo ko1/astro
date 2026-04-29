@@ -21,10 +21,25 @@ extern struct luastro_option OPTION;
 // 2^256, both signs) — see context.h.  Anything outside that range
 // (zeros, denormals, ±Inf, NaN, very tiny / very large) goes through
 // these helpers and lives on the heap as a `LuaHeapDouble`.
+//
+// +0.0 is by far the most common heap-boxed double in real workloads
+// (mandelbrot's `x, y = 0.0, 0.0` initial state, `x*x + y*y` momentarily
+// hitting zero, etc.).  We pin a single shared `LuaHeapDouble` for
+// +0.0 at first encounter and reuse it forever — no realloc, no GC
+// churn.  -0.0 falls through to the per-call alloc path because
+// distinguishing it cheaply would require a sign check on every box.
+
+// Pinned +0.0 cell — allocated once and never freed.  We don't put it
+// on the GC's all-objects list at all (so sweep can't touch it) but it
+// still has GCHead.type = LUA_TFLOAT so the heap-type byte read works.
+static struct LuaHeapDouble G_LUA_ZERO_DOUBLE = { .gc = { .type = LUA_TFLOAT } };
 
 LuaValue
 luav_box_double(double d)
 {
+    if (d == 0.0 && !signbit(d)) {
+        return (LuaValue)(uintptr_t)&G_LUA_ZERO_DOUBLE;
+    }
     struct LuaHeapDouble *hd = (struct LuaHeapDouble *)calloc(1, sizeof(*hd));
     luastro_gc_register(hd, LUA_TFLOAT);
     hd->value = d;

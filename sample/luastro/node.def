@@ -554,14 +554,25 @@ node_arith(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, uint3
 // speculatively because either type case is common).  Mixed-type and
 // metatable cases fall through to lua_arith.
 
+// Speculative numeric add/sub/mul nodes.  Cover all 4 numeric
+// combinations (int+int, flt+flt, int+flt, flt+int) directly so the
+// hot path doesn't fall through to lua_arith for `2 * x` etc. — that
+// kind of mixed-type arith dominates mandelbrot/nbody inner loops.
+//
+// Lua semantics: int op int → int (overflow wraps, same as Lua 5.4
+// integer arithmetic).  Any float operand → float result (other side
+// promoted to double).
 NODE_DEF @always_inline
 node_int_add(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *l, NODE *r)
 {
     LuaValue a = EVAL_ARG(c, l);
     LuaValue b = EVAL_ARG(c, r);
-    if (__builtin_expect(((a & 1) == (b & 1)), 1)) {
-        if (LV_IS_INT(a))   return RESULT_OK(LUAV_INT(LV_AS_INT(a) + LV_AS_INT(b)));
-        if (LV_IS_FLOAT(a)) return RESULT_OK(LUAV_FLOAT(LV_AS_FLOAT(a) + LV_AS_FLOAT(b)));
+    if (__builtin_expect(LV_IS_INT(a) & LV_IS_INT(b), 1))
+        return RESULT_OK(LUAV_INT(LV_AS_INT(a) + LV_AS_INT(b)));
+    if (LV_IS_NUM(a) && LV_IS_NUM(b)) {
+        double af = LV_IS_INT(a) ? (double)LV_AS_INT(a) : LV_AS_FLOAT(a);
+        double bf = LV_IS_INT(b) ? (double)LV_AS_INT(b) : LV_AS_FLOAT(b);
+        return RESULT_OK(LUAV_FLOAT(af + bf));
     }
     return RESULT_OK(lua_arith(c, LUA_OP_ADD, a, b));
 }
@@ -571,9 +582,12 @@ node_int_sub(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NOD
 {
     LuaValue a = EVAL_ARG(c, l);
     LuaValue b = EVAL_ARG(c, r);
-    if (__builtin_expect(((a & 1) == (b & 1)), 1)) {
-        if (LV_IS_INT(a))   return RESULT_OK(LUAV_INT(LV_AS_INT(a) - LV_AS_INT(b)));
-        if (LV_IS_FLOAT(a)) return RESULT_OK(LUAV_FLOAT(LV_AS_FLOAT(a) - LV_AS_FLOAT(b)));
+    if (__builtin_expect(LV_IS_INT(a) & LV_IS_INT(b), 1))
+        return RESULT_OK(LUAV_INT(LV_AS_INT(a) - LV_AS_INT(b)));
+    if (LV_IS_NUM(a) && LV_IS_NUM(b)) {
+        double af = LV_IS_INT(a) ? (double)LV_AS_INT(a) : LV_AS_FLOAT(a);
+        double bf = LV_IS_INT(b) ? (double)LV_AS_INT(b) : LV_AS_FLOAT(b);
+        return RESULT_OK(LUAV_FLOAT(af - bf));
     }
     return RESULT_OK(lua_arith(c, LUA_OP_SUB, a, b));
 }
@@ -583,9 +597,12 @@ node_int_mul(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NOD
 {
     LuaValue a = EVAL_ARG(c, l);
     LuaValue b = EVAL_ARG(c, r);
-    if (__builtin_expect(((a & 1) == (b & 1)), 1)) {
-        if (LV_IS_INT(a))   return RESULT_OK(LUAV_INT(LV_AS_INT(a) * LV_AS_INT(b)));
-        if (LV_IS_FLOAT(a)) return RESULT_OK(LUAV_FLOAT(LV_AS_FLOAT(a) * LV_AS_FLOAT(b)));
+    if (__builtin_expect(LV_IS_INT(a) & LV_IS_INT(b), 1))
+        return RESULT_OK(LUAV_INT(LV_AS_INT(a) * LV_AS_INT(b)));
+    if (LV_IS_NUM(a) && LV_IS_NUM(b)) {
+        double af = LV_IS_INT(a) ? (double)LV_AS_INT(a) : LV_AS_FLOAT(a);
+        double bf = LV_IS_INT(b) ? (double)LV_AS_INT(b) : LV_AS_FLOAT(b);
+        return RESULT_OK(LUAV_FLOAT(af * bf));
     }
     return RESULT_OK(lua_arith(c, LUA_OP_MUL, a, b));
 }
@@ -665,7 +682,11 @@ node_lt(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *l,
     LuaValue a = EVAL_ARG(c, l);
     LuaValue b = EVAL_ARG(c, r);
     if (LV_IS_INT(a) && LV_IS_INT(b)) return RESULT_OK(LUAV_BOOL(LV_AS_INT(a) < LV_AS_INT(b)));
-    if (LV_IS_FLOAT(a) && LV_IS_FLOAT(b)) return RESULT_OK(LUAV_BOOL(LV_AS_FLOAT(a) < LV_AS_FLOAT(b)));
+    if (LV_IS_NUM(a) && LV_IS_NUM(b)) {
+        double af = LV_IS_INT(a) ? (double)LV_AS_INT(a) : LV_AS_FLOAT(a);
+        double bf = LV_IS_INT(b) ? (double)LV_AS_INT(b) : LV_AS_FLOAT(b);
+        return RESULT_OK(LUAV_BOOL(af < bf));
+    }
     return RESULT_OK(LUAV_BOOL(lua_lt(c, a, b)));
 }
 
@@ -676,7 +697,11 @@ node_le(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *l,
     LuaValue a = EVAL_ARG(c, l);
     LuaValue b = EVAL_ARG(c, r);
     if (LV_IS_INT(a) && LV_IS_INT(b)) return RESULT_OK(LUAV_BOOL(LV_AS_INT(a) <= LV_AS_INT(b)));
-    if (LV_IS_FLOAT(a) && LV_IS_FLOAT(b)) return RESULT_OK(LUAV_BOOL(LV_AS_FLOAT(a) <= LV_AS_FLOAT(b)));
+    if (LV_IS_NUM(a) && LV_IS_NUM(b)) {
+        double af = LV_IS_INT(a) ? (double)LV_AS_INT(a) : LV_AS_FLOAT(a);
+        double bf = LV_IS_INT(b) ? (double)LV_AS_INT(b) : LV_AS_FLOAT(b);
+        return RESULT_OK(LUAV_BOOL(af <= bf));
+    }
     return RESULT_OK(LUAV_BOOL(lua_le(c, a, b)));
 }
 

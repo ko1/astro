@@ -108,14 +108,14 @@ Lua 5.4.6 and LuaJIT 2.1, `N=3` (best of 3).
 
 | benchmark   | luastro | AOT-1st | AOT-c   | lua5.4  | luajit  |
 |-------------|--------:|--------:|--------:|--------:|--------:|
-| ack         | 0.152s  | 0.207s  | 0.064s  | 0.060s  | 0.010s  |
-| factorial   | 0.043s  | 0.146s  | 0.013s  | 0.031s  | 0.005s  |
-| fib         | 0.074s  | 0.158s  | 0.031s  | 0.055s  | 0.008s  |
-| loop        | 0.007s  | 0.106s  | 0.003s  | 0.045s  | 0.012s  |
-| mandelbrot  | 0.185s  | 0.456s  | 0.126s  | 0.053s  | 0.006s  |
-| nbody       | 0.033s  | 0.595s  | 0.041s  | 0.017s  | 0.003s  |
-| sieve       | 0.019s  | 0.332s  | 0.018s  | 0.008s  | 0.003s  |
-| tak         | 0.005s  | 0.131s  | 0.004s  | 0.003s  | 0.002s  |
+| ack         | 0.130s  | 0.186s  | 0.061s  | 0.051s  | 0.008s  |
+| factorial   | 0.035s  | 0.151s  | 0.012s  | 0.028s  | 0.004s  |
+| fib         | 0.068s  | 0.156s  | 0.029s  | 0.051s  | 0.011s  |
+| loop        | 0.007s  | 0.099s  | 0.004s  | 0.041s  | 0.011s  |
+| mandelbrot  | 0.153s  | 0.427s  | 0.088s  | 0.051s  | 0.006s  |
+| nbody       | 0.038s  | 0.741s  | 0.041s  | 0.013s  | 0.003s  |
+| sieve       | 0.017s  | 0.306s  | 0.016s  | 0.007s  | 0.003s  |
+| tak         | 0.005s  | 0.139s  | 0.004s  | 0.003s  | 0.002s  |
 
 Columns:
 
@@ -137,19 +137,28 @@ lua5.4**.
   closure-call hot path.
 - `factorial`: 11 ms vs 25 ms — **2.3×**.
 
-**Float-dominant** workloads (`mandelbrot`, `nbody`): inline flonum
-landed (see [`docs/runtime.md`](docs/runtime.md) §3).  Doubles in the
-common magnitude range (`b62 ∈ {3, 4}`, ≈ 2^-255..2^256) encode inline
-in the LuaValue, lossless.
+**Float-dominant** workloads (`mandelbrot`, `nbody`): three changes
+landed in succession that together took mandelbrot from 737 ms (the
+always-heap-box baseline) down to 88 ms:
 
-- `mandelbrot`: 737 ms → 126 ms — **5.85× faster** vs the previous
-  always-heap-box scheme.  Still 2.4× slower than lua5.4.
-- `nbody`: 112 ms → 41 ms — **2.7× faster**.  Still 2.4× slower than
-  lua5.4.
+1. **Inline flonum** (see [`docs/runtime.md`](docs/runtime.md) §3) —
+   doubles in the common magnitude range (`b62 ∈ {3, 4}`, ≈ 2^-255..2^256
+   both signs) encode inline in the LuaValue, lossless.
+2. **Mixed int+float arith** in `node_int_add/_sub/_mul` and
+   `node_lt/_le` — handles `2 * x` / `x*x + y*y < 4` without falling
+   through to `lua_arith` (the slow generic path).
+3. **Pinned +0.0 cell** — `0.0` is the single most common
+   heap-boxed double (loop initialisers, hitting-zero accumulators)
+   and now reuses one shared `LuaHeapDouble` instead of `calloc`-ing
+   every time.
 
-The remaining gap is the per-arith type guard that every speculative
-`node_int_*` / `node_flt_*` SD still carries — type-speculating SDs
-(profile-driven, drop the guard) are the next item; see
+mandelbrot AOT-c: 88 ms vs lua5.4 51 ms — **1.7× behind** (was 15.7×).
+nbody  AOT-c: 41 ms vs lua5.4 13 ms — **3.2× behind**.
+
+The remaining gap is mostly per-node `DISPATCH_*` indirect calls in
+the AOT-cached SD's outermost handler (children that didn't get baked
+SDs at compile time fall back to runtime dispatch).  Type-speculating
+SDs that drop the per-call guard are the next item; see
 [`docs/todo.md`](docs/todo.md).
 
 **vs LuaJIT**: not competitive on any benchmark (LuaJIT is a tracing
