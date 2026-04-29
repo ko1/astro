@@ -111,23 +111,14 @@ NODE_DEF
 node_gref(CTX * restrict c, NODE * restrict n, const char *name, struct gref_cache *cache@ref)
 {
     (void)n;
-    // Hot path: cached → direct array index.  globals are append-only, so
-    // a once-resolved index stays valid forever; set!/define on the same
-    // name updates c->globals[i].value in place (no invalidation needed).
-    if (LIKELY(cache->cached)) {
-        return c->globals[cache->index].value;
-    }
-    // Cold path: linear search by name, populate the cache.
-    for (size_t i = 0; i < c->globals_size; i++) {
-        if (strcmp(c->globals[i].name, name) == 0) {
-            if (UNLIKELY(!c->globals[i].defined))
-                scm_error(c, "unbound variable: %s", name);
-            cache->index = (uint32_t)i;
-            cache->cached = 1;
-            return c->globals[i].value;
-        }
-    }
-    scm_error(c, "unbound variable: %s", name);
+    // Hot path: serial matches → cached value is still current.  Two
+    // 8-byte loads + a compare; no array-indirection through globals.
+    if (LIKELY(cache->serial == c->globals_serial)) return cache->value;
+    // Cold path: refresh.  scm_global_ref does the linear scan and
+    // raises on undefined; we just snapshot the result.
+    cache->value = scm_global_ref(c, name);
+    cache->serial = c->globals_serial;
+    return cache->value;
 }
 
 NODE_DEF
@@ -299,7 +290,7 @@ node_arith_add(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct ari
     (void)n;
     VALUE av = EVAL_ARG(c, a);
     VALUE bv = EVAL_ARG(c, b);
-    if (LIKELY(cache->resolved && c->globals[cache->index].value == PRIM_PLUS_VAL)) {
+    if (LIKELY(cache->serial == c->globals_serial && cache->value == PRIM_PLUS_VAL)) {
         if (LIKELY(SCM_IS_FIXNUM(av) & SCM_IS_FIXNUM(bv))) {
             int64_t r;
             if (LIKELY(!__builtin_add_overflow((int64_t)SCM_FIXVAL(av),
@@ -318,7 +309,7 @@ node_arith_sub(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct ari
     (void)n;
     VALUE av = EVAL_ARG(c, a);
     VALUE bv = EVAL_ARG(c, b);
-    if (LIKELY(cache->resolved && c->globals[cache->index].value == PRIM_MINUS_VAL)) {
+    if (LIKELY(cache->serial == c->globals_serial && cache->value == PRIM_MINUS_VAL)) {
         if (LIKELY(SCM_IS_FIXNUM(av) & SCM_IS_FIXNUM(bv))) {
             int64_t r;
             if (LIKELY(!__builtin_sub_overflow((int64_t)SCM_FIXVAL(av),
@@ -337,7 +328,7 @@ node_arith_mul(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct ari
     (void)n;
     VALUE av = EVAL_ARG(c, a);
     VALUE bv = EVAL_ARG(c, b);
-    if (LIKELY(cache->resolved && c->globals[cache->index].value == PRIM_MUL_VAL)) {
+    if (LIKELY(cache->serial == c->globals_serial && cache->value == PRIM_MUL_VAL)) {
         if (LIKELY(SCM_IS_FIXNUM(av) & SCM_IS_FIXNUM(bv))) {
             int64_t r;
             if (LIKELY(!__builtin_mul_overflow((int64_t)SCM_FIXVAL(av),
@@ -359,7 +350,7 @@ node_arith_lt(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct arit
     (void)n;
     VALUE av = EVAL_ARG(c, a);
     VALUE bv = EVAL_ARG(c, b);
-    if (LIKELY(cache->resolved && c->globals[cache->index].value == PRIM_NUM_LT_VAL)) {
+    if (LIKELY(cache->serial == c->globals_serial && cache->value == PRIM_NUM_LT_VAL)) {
         if (LIKELY(SCM_IS_FIXNUM(av) & SCM_IS_FIXNUM(bv)))
             return ((int64_t)SCM_FIXVAL(av) < (int64_t)SCM_FIXVAL(bv)) ? SCM_TRUE : SCM_FALSE;
         return cmp2(c, av, bv) < 0 ? SCM_TRUE : SCM_FALSE;
@@ -373,7 +364,7 @@ node_arith_le(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct arit
     (void)n;
     VALUE av = EVAL_ARG(c, a);
     VALUE bv = EVAL_ARG(c, b);
-    if (LIKELY(cache->resolved && c->globals[cache->index].value == PRIM_NUM_LE_VAL)) {
+    if (LIKELY(cache->serial == c->globals_serial && cache->value == PRIM_NUM_LE_VAL)) {
         if (LIKELY(SCM_IS_FIXNUM(av) & SCM_IS_FIXNUM(bv)))
             return ((int64_t)SCM_FIXVAL(av) <= (int64_t)SCM_FIXVAL(bv)) ? SCM_TRUE : SCM_FALSE;
         return cmp2(c, av, bv) <= 0 ? SCM_TRUE : SCM_FALSE;
@@ -387,7 +378,7 @@ node_arith_gt(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct arit
     (void)n;
     VALUE av = EVAL_ARG(c, a);
     VALUE bv = EVAL_ARG(c, b);
-    if (LIKELY(cache->resolved && c->globals[cache->index].value == PRIM_NUM_GT_VAL)) {
+    if (LIKELY(cache->serial == c->globals_serial && cache->value == PRIM_NUM_GT_VAL)) {
         if (LIKELY(SCM_IS_FIXNUM(av) & SCM_IS_FIXNUM(bv)))
             return ((int64_t)SCM_FIXVAL(av) > (int64_t)SCM_FIXVAL(bv)) ? SCM_TRUE : SCM_FALSE;
         return cmp2(c, av, bv) > 0 ? SCM_TRUE : SCM_FALSE;
@@ -401,7 +392,7 @@ node_arith_ge(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct arit
     (void)n;
     VALUE av = EVAL_ARG(c, a);
     VALUE bv = EVAL_ARG(c, b);
-    if (LIKELY(cache->resolved && c->globals[cache->index].value == PRIM_NUM_GE_VAL)) {
+    if (LIKELY(cache->serial == c->globals_serial && cache->value == PRIM_NUM_GE_VAL)) {
         if (LIKELY(SCM_IS_FIXNUM(av) & SCM_IS_FIXNUM(bv)))
             return ((int64_t)SCM_FIXVAL(av) >= (int64_t)SCM_FIXVAL(bv)) ? SCM_TRUE : SCM_FALSE;
         return cmp2(c, av, bv) >= 0 ? SCM_TRUE : SCM_FALSE;
@@ -415,7 +406,7 @@ node_arith_eq(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct arit
     (void)n;
     VALUE av = EVAL_ARG(c, a);
     VALUE bv = EVAL_ARG(c, b);
-    if (LIKELY(cache->resolved && c->globals[cache->index].value == PRIM_NUM_EQ_VAL)) {
+    if (LIKELY(cache->serial == c->globals_serial && cache->value == PRIM_NUM_EQ_VAL)) {
         if (LIKELY(SCM_IS_FIXNUM(av) & SCM_IS_FIXNUM(bv)))
             return ((int64_t)SCM_FIXVAL(av) == (int64_t)SCM_FIXVAL(bv)) ? SCM_TRUE : SCM_FALSE;
         return cmp2(c, av, bv) == 0 ? SCM_TRUE : SCM_FALSE;
@@ -436,7 +427,7 @@ node_pred_null(CTX * restrict c, NODE * restrict n, NODE *a, struct arith_cache 
 {
     (void)n;
     VALUE av = EVAL_ARG(c, a);
-    if (LIKELY(cache->resolved && c->globals[cache->index].value == PRIM_NULL_P_VAL))
+    if (LIKELY(cache->serial == c->globals_serial && cache->value == PRIM_NULL_P_VAL))
         return av == SCM_NIL ? SCM_TRUE : SCM_FALSE;
     return arith_dispatch1(c, cache, "null?", av);
 }
@@ -446,7 +437,7 @@ node_pred_pair(CTX * restrict c, NODE * restrict n, NODE *a, struct arith_cache 
 {
     (void)n;
     VALUE av = EVAL_ARG(c, a);
-    if (LIKELY(cache->resolved && c->globals[cache->index].value == PRIM_PAIR_P_VAL))
+    if (LIKELY(cache->serial == c->globals_serial && cache->value == PRIM_PAIR_P_VAL))
         return scm_is_pair(av) ? SCM_TRUE : SCM_FALSE;
     return arith_dispatch1(c, cache, "pair?", av);
 }
@@ -456,7 +447,7 @@ node_pred_car(CTX * restrict c, NODE * restrict n, NODE *a, struct arith_cache *
 {
     (void)n;
     VALUE av = EVAL_ARG(c, a);
-    if (LIKELY(cache->resolved && c->globals[cache->index].value == PRIM_CAR_VAL)) {
+    if (LIKELY(cache->serial == c->globals_serial && cache->value == PRIM_CAR_VAL)) {
         if (LIKELY(scm_is_pair(av))) return SCM_PTR(av)->pair.car;
         scm_error(c, "car: not a pair");
     }
@@ -468,7 +459,7 @@ node_pred_cdr(CTX * restrict c, NODE * restrict n, NODE *a, struct arith_cache *
 {
     (void)n;
     VALUE av = EVAL_ARG(c, a);
-    if (LIKELY(cache->resolved && c->globals[cache->index].value == PRIM_CDR_VAL)) {
+    if (LIKELY(cache->serial == c->globals_serial && cache->value == PRIM_CDR_VAL)) {
         if (LIKELY(scm_is_pair(av))) return SCM_PTR(av)->pair.cdr;
         scm_error(c, "cdr: not a pair");
     }
@@ -480,7 +471,7 @@ node_pred_not(CTX * restrict c, NODE * restrict n, NODE *a, struct arith_cache *
 {
     (void)n;
     VALUE av = EVAL_ARG(c, a);
-    if (LIKELY(cache->resolved && c->globals[cache->index].value == PRIM_NOT_VAL))
+    if (LIKELY(cache->serial == c->globals_serial && cache->value == PRIM_NOT_VAL))
         return av == SCM_FALSE ? SCM_TRUE : SCM_FALSE;
     return arith_dispatch1(c, cache, "not", av);
 }
@@ -495,7 +486,7 @@ node_vec_ref(CTX * restrict c, NODE * restrict n, NODE *vec, NODE *idx, struct a
     (void)n;
     VALUE vv = EVAL_ARG(c, vec);
     VALUE iv = EVAL_ARG(c, idx);
-    if (LIKELY(cache->resolved && c->globals[cache->index].value == PRIM_VECTOR_REF_VAL)) {
+    if (LIKELY(cache->serial == c->globals_serial && cache->value == PRIM_VECTOR_REF_VAL)) {
         if (LIKELY(scm_is_vector(vv) && SCM_IS_FIXNUM(iv))) {
             size_t i = (size_t)SCM_FIXVAL(iv);
             if (LIKELY(i < SCM_PTR(vv)->vec.len))
@@ -512,7 +503,7 @@ node_cons_op(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct arith
     (void)n;
     VALUE av = EVAL_ARG(c, a);
     VALUE bv = EVAL_ARG(c, b);
-    if (LIKELY(cache->resolved && c->globals[cache->index].value == PRIM_CONS_VAL))
+    if (LIKELY(cache->serial == c->globals_serial && cache->value == PRIM_CONS_VAL))
         return scm_cons(av, bv);
     return arith_dispatch(c, cache, "cons", av, bv);
 }
@@ -523,7 +514,7 @@ node_eq_op(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct arith_c
     (void)n;
     VALUE av = EVAL_ARG(c, a);
     VALUE bv = EVAL_ARG(c, b);
-    if (LIKELY(cache->resolved && c->globals[cache->index].value == PRIM_EQ_P_VAL))
+    if (LIKELY(cache->serial == c->globals_serial && cache->value == PRIM_EQ_P_VAL))
         return av == bv ? SCM_TRUE : SCM_FALSE;
     return arith_dispatch(c, cache, "eq?", av, bv);
 }
@@ -534,7 +525,7 @@ node_eqv_op(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct arith_
     (void)n;
     VALUE av = EVAL_ARG(c, a);
     VALUE bv = EVAL_ARG(c, b);
-    if (LIKELY(cache->resolved && c->globals[cache->index].value == PRIM_EQV_P_VAL)) {
+    if (LIKELY(cache->serial == c->globals_serial && cache->value == PRIM_EQV_P_VAL)) {
         if (av == bv) return SCM_TRUE;
         if (scm_is_double(av) && scm_is_double(bv))
             return scm_get_double(av) == scm_get_double(bv) ? SCM_TRUE : SCM_FALSE;
@@ -552,7 +543,7 @@ node_vec_set(CTX * restrict c, NODE * restrict n, NODE *vec, NODE *idx, NODE *va
     VALUE vv = EVAL_ARG(c, vec);
     VALUE iv = EVAL_ARG(c, idx);
     VALUE xv = EVAL_ARG(c, val);
-    if (LIKELY(cache->resolved && c->globals[cache->index].value == PRIM_VECTOR_SET_VAL)) {
+    if (LIKELY(cache->serial == c->globals_serial && cache->value == PRIM_VECTOR_SET_VAL)) {
         if (LIKELY(scm_is_vector(vv) && SCM_IS_FIXNUM(iv))) {
             size_t i = (size_t)SCM_FIXVAL(iv);
             if (LIKELY(i < SCM_PTR(vv)->vec.len)) {

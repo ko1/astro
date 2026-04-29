@@ -189,9 +189,14 @@ struct gentry {
 // goes from 0 → 1 once we've resolved the name; the index is stable
 // across the lifetime of `c->globals` (we never remove globals, and
 // realloc keeps numeric positions intact even when the buffer moves).
+// Global rebinding generation counter — bumped by `scm_global_define` /
+// `scm_global_set` on any name.  Inline caches that snapshot the value
+// only need to refresh when their stored serial is out of date, which
+// in benchmark code is approximately never (most set!s happen at init,
+// then the loop runs).
 struct gref_cache {
-    int32_t cached;
-    uint32_t index;
+    uint64_t serial;
+    VALUE    value;
 };
 
 // Inline cache for the specialized arithmetic / comparison nodes.  Each
@@ -201,9 +206,12 @@ struct gref_cache {
 // `(set! + my-add)` the global value at this index changes, the check
 // fails, and we fall back to a regular `scm_apply` against whatever the
 // global now points to — preserving R5RS semantics.
+// Arith-cache: store the resolved global VALUE directly, gated on the
+// same `globals_serial`.  The fast path is just two 8-byte loads + a
+// pointer compare — no array indirection through `c->globals`.
 struct arith_cache {
-    int32_t resolved;
-    uint32_t index;
+    uint64_t serial;
+    VALUE    value;
 };
 
 // The original primitive sobj for each specialized operator.  Set by
@@ -223,6 +231,10 @@ typedef struct CTX_struct {
     struct gentry *globals;
     size_t globals_size;
     size_t globals_capa;
+    // Bumped by every define/set! so inline caches keyed off `globals`
+    // know when to re-validate.  Starts at 1 so a memset-zero cache is
+    // unambiguously "uninitialised".
+    uint64_t globals_serial;
 
     // Tail-call trampoline state (set by tail-position call nodes).
     struct Node *next_body;

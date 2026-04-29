@@ -326,6 +326,7 @@ scm_intern(const char *name)
 void
 scm_global_define(CTX *c, const char *name, VALUE v)
 {
+    c->globals_serial++;
     for (size_t i = 0; i < c->globals_size; i++) {
         if (strcmp(c->globals[i].name, name) == 0) {
             c->globals[i].value = v;
@@ -367,6 +368,7 @@ scm_global_set(CTX *c, const char *name, VALUE v)
         if (strcmp(c->globals[i].name, name) == 0) {
             c->globals[i].value = v;
             c->globals[i].defined = true;
+            c->globals_serial++;
             return;
         }
     }
@@ -3419,37 +3421,32 @@ install_prims(CTX *c)
 
 // Slow-path helpers for the specialized arith / pred / vec nodes — used
 // when the inline cache is cold or the user has rebound the operator.
-// Each variant looks up the operator's current global value (caching the
-// index on first call), then applies it generically via scm_apply.
+// Refresh the (serial, value) cache pair against the current globals.
 
-static void
-arith_resolve(CTX *c, struct arith_cache *cache, const char *opname)
+static VALUE
+arith_refresh(CTX *c, struct arith_cache *cache, const char *opname)
 {
-    if (cache->resolved) return;
-    for (size_t i = 0; i < c->globals_size; i++) {
-        if (strcmp(c->globals[i].name, opname) == 0) {
-            cache->index = (uint32_t)i;
-            cache->resolved = 1;
-            return;
-        }
-    }
+    VALUE v = scm_global_ref(c, opname);
+    cache->value  = v;
+    cache->serial = c->globals_serial;
+    return v;
 }
 
 VALUE
 arith_dispatch1(CTX *c, struct arith_cache *cache, const char *opname, VALUE av)
 {
-    arith_resolve(c, cache, opname);
-    VALUE fn = cache->resolved ? c->globals[cache->index].value
-                               : scm_global_ref(c, opname);
+    VALUE fn = (cache->serial == c->globals_serial)
+                 ? cache->value
+                 : arith_refresh(c, cache, opname);
     return scm_apply(c, fn, 1, &av);
 }
 
 VALUE
 arith_dispatch(CTX *c, struct arith_cache *cache, const char *opname, VALUE av, VALUE bv)
 {
-    arith_resolve(c, cache, opname);
-    VALUE fn = cache->resolved ? c->globals[cache->index].value
-                               : scm_global_ref(c, opname);
+    VALUE fn = (cache->serial == c->globals_serial)
+                 ? cache->value
+                 : arith_refresh(c, cache, opname);
     VALUE args[2] = { av, bv };
     return scm_apply(c, fn, 2, args);
 }
@@ -3457,9 +3454,9 @@ arith_dispatch(CTX *c, struct arith_cache *cache, const char *opname, VALUE av, 
 VALUE
 arith_dispatch3(CTX *c, struct arith_cache *cache, const char *opname, VALUE a, VALUE b, VALUE d)
 {
-    arith_resolve(c, cache, opname);
-    VALUE fn = cache->resolved ? c->globals[cache->index].value
-                               : scm_global_ref(c, opname);
+    VALUE fn = (cache->serial == c->globals_serial)
+                 ? cache->value
+                 : arith_refresh(c, cache, opname);
     VALUE args[3] = { a, b, d };
     return scm_apply(c, fn, 3, args);
 }
@@ -3474,6 +3471,7 @@ create_context(void)
     CTX *c = (CTX *)GC_malloc(sizeof(CTX));
     memset(c, 0, sizeof(CTX));
     c->env = NULL;
+    c->globals_serial = 1;   // any cache with serial==0 is uninitialised
     install_prims(c);
     return c;
 }

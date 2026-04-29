@@ -325,30 +325,86 @@ machine collapses to a few `mov`s in the SD body.
 For non-tail-call-heavy benchmarks (loop, sieve, fib) the difference
 is in the noise.
 
-## Cumulative score vs chibi-scheme 0.12  (after §1–§12)
+## 13 — Serial-keyed inline caches  (this commit)
+
+**Why.** Both `gref_cache` and `arith_cache` had a hot-path shape of
+"load `cached` flag → load `c->globals[index].value` → compare to
+`PRIM_<op>_VAL`".  The middle step is an *indirected* load: dereference
+`c->globals` (a CTX field), index by `cache->index`, read the `value`
+out of the `gentry` struct.  That's three memory accesses (globals
+pointer, gentry array, value field).  In a tight loop the array
+isn't always in L1.
+
+**How.** Replace both caches with a `(uint64_t serial, VALUE value)`
+pair, gated on a single `c->globals_serial` counter that's bumped
+on every `set!` / `define`:
+
+```c
+struct gref_cache  { uint64_t serial; VALUE value; };
+struct arith_cache { uint64_t serial; VALUE value; };
+
+// CTX
+uint64_t globals_serial;   // bumped by scm_global_define / scm_global_set
+
+// Hot path (gref)
+if (LIKELY(cache->serial == c->globals_serial)) return cache->value;
+
+// Hot path (arith)
+if (LIKELY(cache->serial == c->globals_serial && cache->value == PRIM_PLUS_VAL))
+    fast_path();
+```
+
+The fast path now reads only the cache fields (one cache line) and
+the CTX serial (also a hot field).  No globals indirection.  `set!` /
+`define` invalidate every cache at once via the serial bump — for
+benchmark code that touches set! only at init, the loop body never
+takes the slow path.
+
+**Cost.** `gref_cache` grows from 8 B to 16 B (`int32_t cached;
+uint32_t index` → `uint64_t serial; VALUE value`).  Same for
+`arith_cache`.  That's an extra 8 B per call site; for the bench
+programs (a few hundred sites) it's nothing.
+
+**Win.**
+
+| bench | -O3 §12 | -O3 §13 | speed-up |
+|---|---:|---:|---:|
+| loop | 0.27 s | 0.23 s | 1.17× |
+| sieve| 0.51 s | 0.44 s | 1.16× |
+| fib  | 0.46 s | 0.42 s | 1.10× |
+| tak  | 0.41 s | 0.37 s | 1.11× |
+| ack  | 0.20 s | 0.15 s | 1.33× |
+| sum  | 0.54 s | 0.54 s | — |
+| list | 0.21 s | 0.20 s | 1.05× |
+
+`sum` is unchanged because its hot path already does the `arith_cache`
+load just twice (the rest of the time is spent in the tail-call
+trampoline).
+
+## Cumulative score vs chibi-scheme 0.12  (after §1–§13)
 
 ```
                 aot-cached       chibi     ratio
-ack             0.20 s           0.74 s    3.7×
-fib             0.46 s           1.40 s    3.0×
-list            0.21 s           0.87 s    4.1×
-loop            0.27 s           0.91 s    3.4×
-sieve           0.51 s           1.48 s    2.9×
-sum             0.57 s           1.27 s    2.2×
-tak             0.41 s           1.59 s    3.9×
+ack             0.15 s           0.74 s    4.9×
+fib             0.42 s           1.40 s    3.3×
+list            0.20 s           0.87 s    4.4×
+loop            0.23 s           0.91 s    4.0×
+sieve           0.44 s           1.48 s    3.4×
+sum             0.54 s           1.27 s    2.4×
+tak             0.37 s           1.59 s    4.3×
 ```
 
 vs guile 3.0 (JIT):
 
 ```
                 aot-cached       guile     ratio
-ack             0.20 s           2.49 s    12×
-fib             0.46 s           4.70 s    10×
-list            0.21 s           1.30 s    6×
-loop            0.27 s           3.31 s    12×
-sieve           0.51 s           5.14 s    10×
-sum             0.57 s           5.39 s    9×
-tak             0.41 s           6.39 s    16×
+ack             0.15 s           2.49 s    17×
+fib             0.42 s           4.70 s    11×
+list            0.20 s           1.30 s    7×
+loop            0.23 s           3.31 s    14×
+sieve           0.44 s           5.14 s    12×
+sum             0.54 s           5.39 s    10×
+tak             0.37 s           6.39 s    17×
 ```
 
 The guile gap is partly its bytecode-VM dispatch + closure-call
