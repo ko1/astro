@@ -13,7 +13,7 @@ fail=0
 for c in "$HERE"/test_*.c; do
     base=$(basename "$c" .c)
     ref="$TMP/$base.gcc"
-    gcc -O0 -o "$ref" "$c"
+    gcc -w -O0 -o "$ref" "$c" 2>/dev/null
 
     expected_out=$("$ref" 2>/dev/null)
     expected_rc=$?
