@@ -1,0 +1,5 @@
+StrEsc = ( run = (
+    | s |
+    s := '\t'.
+    system print: 'len = '. system println: s length.
+) )

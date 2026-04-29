@@ -1,0 +1,20 @@
+MoreRun = (
+    run = (
+        | runBlock |
+        runBlock := [ :name :cls :inner |
+            | b ok |
+            b := cls new.
+            b oneTimeSetup.
+            ok := b innerBenchmarkLoop: inner.
+            system print: name. system print: ' '. system print: inner.
+            system print: ': '.
+            ok ifTrue: [ system println: 'OK' ] ifFalse: [ system println: 'FAIL' ]
+        ].
+
+        runBlock value: 'Richards' with: Richards with: 1.
+        runBlock value: 'DeltaBlue' with: DeltaBlue with: 50.
+        runBlock value: 'Json'      with: Json with: 1.
+        runBlock value: 'NBody'     with: NBody with: 1.
+        runBlock value: 'GraphSearch' with: GraphSearch with: 1.
+    )
+)

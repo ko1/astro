@@ -1,0 +1,7 @@
+RichardsRun = (
+    run = (
+        | r |
+        r := Richards new benchmark.
+        system print: 'Richards = '. system println: r.
+    )
+)

@@ -1,0 +1,9 @@
+NBodyRun = (
+    run = (
+        | b ok |
+        b := NBody new.
+        ok := b innerBenchmarkLoop: 1.
+        system print: 'NBody 1 inner: '.
+        ok ifTrue: [ system println: 'OK' ] ifFalse: [ system println: 'FAIL' ].
+    )
+)

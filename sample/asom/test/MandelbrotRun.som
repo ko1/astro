@@ -1,0 +1,9 @@
+MandelbrotRun = (
+    run = (
+        | r |
+        r := Mandelbrot new mandelbrot: 750.
+        system print: 'Mandelbrot 750 = '.
+        system println: r.
+        (r = 50) ifTrue: [ ' [OK]' println ] ifFalse: [ ' [FAIL]' println ].
+    )
+)

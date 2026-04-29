@@ -1,0 +1,5 @@
+Mod = ( run = (
+    system print: '10 % 3 = '. system println: 10 % 3.
+    system print: '10 % -3 = '. system println: 10 % -3.
+    system print: '-10 % 3 = '. system println: -10 % 3.
+) )

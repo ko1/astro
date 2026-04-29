@@ -1,0 +1,8 @@
+FannkuchRun = (
+    run = (
+        | r ok |
+        ok := Fannkuch new innerBenchmarkLoop: 7.
+        system print: 'Fannkuch 7 inner: '.
+        ok ifTrue: [ system println: 'OK' ] ifFalse: [ system println: 'FAIL' ].
+    )
+)

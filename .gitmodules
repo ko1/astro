@@ -4,3 +4,6 @@
 [submodule "sample/wastro/testsuite"]
 	path = sample/wastro/testsuite
 	url = https://github.com/WebAssembly/testsuite.git
+[submodule "sample/asom/SOM"]
+	path = sample/asom/SOM
+	url = https://github.com/SOM-st/SOM.git

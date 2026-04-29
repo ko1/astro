@@ -1,0 +1,10 @@
+DblCheck = (
+    run = (
+        | x |
+        x := 0.5.
+        ('x = ' + x asString) println.
+        ('x class = ' + x class name asString) println.
+        ('x round = ' + x round asString) println.
+        x println.
+    )
+)

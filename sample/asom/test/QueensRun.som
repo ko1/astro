@@ -1,0 +1,3 @@
+QueensRun = (
+    run = ( system println: Queens new benchmark )
+)

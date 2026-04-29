@@ -1,0 +1,385 @@
+// =============================================================================
+//  ASTro SOM (asom) — AST node definitions
+//
+//  Phase 1: a small but realistic node set that covers the SOM grammar.
+//  Sends are split by arity (0/1/2/3) so node arity is fixed for ASTroGen.
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+//  Literals
+// -----------------------------------------------------------------------------
+
+NODE_DEF
+node_int_lit(CTX * restrict c, NODE * restrict n, int32_t value)
+{
+    (void)c;
+    return ASOM_INT2VAL((intptr_t)value);
+}
+
+NODE_DEF
+node_string_lit(CTX * restrict c, NODE * restrict n, const char *bytes)
+{
+    return asom_intern_string(c, bytes);
+}
+
+NODE_DEF
+node_double_lit(CTX * restrict c, NODE * restrict n, double value)
+{
+    return asom_double_new(c, value);
+}
+
+NODE_DEF
+node_symbol_lit(CTX * restrict c, NODE * restrict n, const char *bytes)
+{
+    return asom_intern_symbol(c, bytes);
+}
+
+// -----------------------------------------------------------------------------
+//  Self / Nil
+// -----------------------------------------------------------------------------
+
+NODE_DEF
+node_self(CTX * restrict c, NODE * restrict n)
+{
+    return c->frame->self;
+}
+
+NODE_DEF
+node_nil(CTX * restrict c, NODE * restrict n)
+{
+    return c->val_nil;
+}
+
+NODE_DEF
+node_true(CTX * restrict c, NODE * restrict n)
+{
+    return c->val_true;
+}
+
+NODE_DEF
+node_false(CTX * restrict c, NODE * restrict n)
+{
+    return c->val_false;
+}
+
+// -----------------------------------------------------------------------------
+//  Variables.
+//   - locals (including method args): scope=0,index = method-local slot
+//   - block-captured outer locals: scope>0 walks up `home` chain
+//   - instance fields: distinct nodes
+// -----------------------------------------------------------------------------
+
+NODE_DEF
+node_local_get(CTX * restrict c, NODE * restrict n, uint32_t scope, uint32_t index)
+{
+    struct asom_frame *f = c->frame;
+    for (uint32_t i = 0; i < scope; i++) f = f->lexical_parent;
+    return f->locals[index];
+}
+
+NODE_DEF
+node_local_set(CTX * restrict c, NODE * restrict n, uint32_t scope, uint32_t index, NODE *rhs)
+{
+    VALUE v = EVAL_ARG(c, rhs);
+    struct asom_frame *f = c->frame;
+    for (uint32_t i = 0; i < scope; i++) f = f->lexical_parent;
+    f->locals[index] = v;
+    return v;
+}
+
+NODE_DEF
+node_field_get(CTX * restrict c, NODE * restrict n, uint32_t index)
+{
+    struct asom_object *self = ASOM_VAL2OBJ(c->frame->self);
+    VALUE *fields = (VALUE *)(self + 1);
+    return fields[index];
+}
+
+NODE_DEF
+node_field_set(CTX * restrict c, NODE * restrict n, uint32_t index, NODE *rhs)
+{
+    VALUE v = EVAL_ARG(c, rhs);
+    struct asom_object *self = ASOM_VAL2OBJ(c->frame->self);
+    VALUE *fields = (VALUE *)(self + 1);
+    fields[index] = v;
+    return v;
+}
+
+NODE_DEF
+node_class_field_get(CTX * restrict c, NODE * restrict n, uint32_t index)
+{
+    struct asom_class *cls = (struct asom_class *)ASOM_VAL2OBJ(c->frame->self);
+    return cls->class_side_fields[index];
+}
+
+NODE_DEF
+node_class_field_set(CTX * restrict c, NODE * restrict n, uint32_t index, NODE *rhs)
+{
+    VALUE v = EVAL_ARG(c, rhs);
+    struct asom_class *cls = (struct asom_class *)ASOM_VAL2OBJ(c->frame->self);
+    cls->class_side_fields[index] = v;
+    return v;
+}
+
+NODE_DEF
+node_global_get(CTX * restrict c, NODE * restrict n, const char *name)
+{
+    VALUE v = asom_global_get(c, name);
+    if (v != c->val_nil) return v;
+    // Smalltalk convention: ask the current receiver to handle the unknown
+    // global by name. If `unknownGlobal:` is not defined we keep returning
+    // nil so existing programs aren't broken.
+    extern struct asom_method *asom_class_lookup(struct asom_class *cls, const char *selector);
+    struct asom_class *cls = asom_class_of(c, c->frame->self);
+    const char *sel = asom_intern_cstr("unknownGlobal:");
+    if (cls && asom_class_lookup(cls, sel)) {
+        VALUE args[1] = { asom_intern_symbol(c, name) };
+        return asom_send(c, c->frame->self, sel, 1, args, NULL);
+    }
+    return c->val_nil;
+}
+
+// -----------------------------------------------------------------------------
+//  Control flow / structure
+// -----------------------------------------------------------------------------
+
+NODE_DEF
+node_seq(CTX * restrict c, NODE * restrict n, NODE *head, NODE *tail)
+{
+    EVAL_ARG(c, head);
+    return EVAL_ARG(c, tail);
+}
+
+NODE_DEF
+node_return_local(CTX * restrict c, NODE * restrict n, NODE *expr)
+{
+    return EVAL_ARG(c, expr);
+}
+
+NODE_DEF
+node_return_nlr(CTX * restrict c, NODE * restrict n, NODE *expr)
+{
+    VALUE v = EVAL_ARG(c, expr);
+    asom_nonlocal_return(c, v);
+    return v; // unreachable
+}
+
+NODE_DEF @noinline
+node_method_body(CTX * restrict c, NODE * restrict n, NODE *body)
+{
+    return EVAL_ARG(c, body);
+}
+
+NODE_DEF @noinline
+node_block_body(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t num_params, uint32_t num_locals)
+{
+    return EVAL_ARG(c, body);
+}
+
+// Block literal: produce a Block object capturing the current frame.
+NODE_DEF
+node_block(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t num_params, uint32_t num_locals)
+{
+    return asom_make_block(c, body, num_params, num_locals);
+}
+
+// -----------------------------------------------------------------------------
+//  Message sends, by arity. Each carries an inline cache (`cc@ref`) so the
+//  cache is mutable side-data not embedded in the node hash.
+// -----------------------------------------------------------------------------
+
+NODE_DEF
+node_send0(CTX * restrict c, NODE * restrict n, NODE *recv, const char *selector, struct asom_callcache *cc)
+{
+    VALUE r = EVAL_ARG(c, recv);
+    return asom_send(c, r, selector, 0, NULL, cc);
+}
+
+NODE_DEF
+node_send1(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *arg0, const char *selector, struct asom_callcache *cc)
+{
+    VALUE r = EVAL_ARG(c, recv);
+    VALUE args[1];
+    args[0] = EVAL_ARG(c, arg0);
+    return asom_send(c, r, selector, 1, args, cc);
+}
+
+NODE_DEF
+node_send2(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *arg0, NODE *arg1, const char *selector, struct asom_callcache *cc)
+{
+    VALUE r = EVAL_ARG(c, recv);
+    VALUE args[2];
+    args[0] = EVAL_ARG(c, arg0);
+    args[1] = EVAL_ARG(c, arg1);
+    return asom_send(c, r, selector, 2, args, cc);
+}
+
+NODE_DEF
+node_send3(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *arg0, NODE *arg1, NODE *arg2, const char *selector, struct asom_callcache *cc)
+{
+    VALUE r = EVAL_ARG(c, recv);
+    VALUE args[3];
+    args[0] = EVAL_ARG(c, arg0);
+    args[1] = EVAL_ARG(c, arg1);
+    args[2] = EVAL_ARG(c, arg2);
+    return asom_send(c, r, selector, 3, args, cc);
+}
+
+NODE_DEF
+node_send4(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *a0, NODE *a1, NODE *a2, NODE *a3, const char *selector, struct asom_callcache *cc)
+{
+    VALUE r = EVAL_ARG(c, recv);
+    VALUE args[4];
+    args[0] = EVAL_ARG(c, a0); args[1] = EVAL_ARG(c, a1);
+    args[2] = EVAL_ARG(c, a2); args[3] = EVAL_ARG(c, a3);
+    return asom_send(c, r, selector, 4, args, cc);
+}
+
+NODE_DEF
+node_send5(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *a0, NODE *a1, NODE *a2, NODE *a3, NODE *a4, const char *selector, struct asom_callcache *cc)
+{
+    VALUE r = EVAL_ARG(c, recv);
+    VALUE args[5];
+    args[0] = EVAL_ARG(c, a0); args[1] = EVAL_ARG(c, a1);
+    args[2] = EVAL_ARG(c, a2); args[3] = EVAL_ARG(c, a3);
+    args[4] = EVAL_ARG(c, a4);
+    return asom_send(c, r, selector, 5, args, cc);
+}
+
+NODE_DEF
+node_send6(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *a0, NODE *a1, NODE *a2, NODE *a3, NODE *a4, NODE *a5, const char *selector, struct asom_callcache *cc)
+{
+    VALUE r = EVAL_ARG(c, recv);
+    VALUE args[6];
+    args[0] = EVAL_ARG(c, a0); args[1] = EVAL_ARG(c, a1);
+    args[2] = EVAL_ARG(c, a2); args[3] = EVAL_ARG(c, a3);
+    args[4] = EVAL_ARG(c, a4); args[5] = EVAL_ARG(c, a5);
+    return asom_send(c, r, selector, 6, args, cc);
+}
+
+NODE_DEF
+node_send7(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *a0, NODE *a1, NODE *a2, NODE *a3, NODE *a4, NODE *a5, NODE *a6, const char *selector, struct asom_callcache *cc)
+{
+    VALUE r = EVAL_ARG(c, recv);
+    VALUE args[7];
+    args[0] = EVAL_ARG(c, a0); args[1] = EVAL_ARG(c, a1);
+    args[2] = EVAL_ARG(c, a2); args[3] = EVAL_ARG(c, a3);
+    args[4] = EVAL_ARG(c, a4); args[5] = EVAL_ARG(c, a5);
+    args[6] = EVAL_ARG(c, a6);
+    return asom_send(c, r, selector, 7, args, cc);
+}
+
+NODE_DEF
+node_send8(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *a0, NODE *a1, NODE *a2, NODE *a3, NODE *a4, NODE *a5, NODE *a6, NODE *a7, const char *selector, struct asom_callcache *cc)
+{
+    VALUE r = EVAL_ARG(c, recv);
+    VALUE args[8];
+    args[0] = EVAL_ARG(c, a0); args[1] = EVAL_ARG(c, a1);
+    args[2] = EVAL_ARG(c, a2); args[3] = EVAL_ARG(c, a3);
+    args[4] = EVAL_ARG(c, a4); args[5] = EVAL_ARG(c, a5);
+    args[6] = EVAL_ARG(c, a6); args[7] = EVAL_ARG(c, a7);
+    return asom_send(c, r, selector, 8, args, cc);
+}
+
+// Array / string literal — VALUE pointer is captured at parse time. We
+// treat it as an opaque uint64_t for hashing/dumping; specialization will
+// reproduce the exact pointer literal in generated C, which is fine because
+// the .so is always rebuilt against a fresh process state.
+NODE_DEF
+node_array_lit(CTX * restrict c, NODE * restrict n, uint64_t value)
+{
+    (void)c;
+    return (VALUE)(intptr_t)value;
+}
+
+NODE_DEF
+node_string_val(CTX * restrict c, NODE * restrict n, uint64_t value)
+{
+    (void)c;
+    return (VALUE)(intptr_t)value;
+}
+
+// Super send: like node_sendN, but lookup starts in superclass of method holder.
+NODE_DEF
+node_super_send0(CTX * restrict c, NODE * restrict n, const char *selector, struct asom_callcache *cc)
+{
+    return asom_super_send(c, c->frame->self, selector, 0, NULL, cc);
+}
+
+NODE_DEF
+node_super_send1(CTX * restrict c, NODE * restrict n, NODE *arg0, const char *selector, struct asom_callcache *cc)
+{
+    VALUE args[1];
+    args[0] = EVAL_ARG(c, arg0);
+    return asom_super_send(c, c->frame->self, selector, 1, args, cc);
+}
+
+NODE_DEF
+node_super_send2(CTX * restrict c, NODE * restrict n, NODE *arg0, NODE *arg1, const char *selector, struct asom_callcache *cc)
+{
+    VALUE args[2];
+    args[0] = EVAL_ARG(c, arg0);
+    args[1] = EVAL_ARG(c, arg1);
+    return asom_super_send(c, c->frame->self, selector, 2, args, cc);
+}
+
+NODE_DEF
+node_super_send3(CTX * restrict c, NODE * restrict n, NODE *arg0, NODE *arg1, NODE *arg2, const char *selector, struct asom_callcache *cc)
+{
+    VALUE args[3];
+    args[0] = EVAL_ARG(c, arg0);
+    args[1] = EVAL_ARG(c, arg1);
+    args[2] = EVAL_ARG(c, arg2);
+    return asom_super_send(c, c->frame->self, selector, 3, args, cc);
+}
+
+NODE_DEF
+node_super_send4(CTX * restrict c, NODE * restrict n, NODE *a0, NODE *a1, NODE *a2, NODE *a3, const char *selector, struct asom_callcache *cc)
+{
+    VALUE args[4];
+    args[0] = EVAL_ARG(c, a0); args[1] = EVAL_ARG(c, a1);
+    args[2] = EVAL_ARG(c, a2); args[3] = EVAL_ARG(c, a3);
+    return asom_super_send(c, c->frame->self, selector, 4, args, cc);
+}
+
+NODE_DEF
+node_super_send5(CTX * restrict c, NODE * restrict n, NODE *a0, NODE *a1, NODE *a2, NODE *a3, NODE *a4, const char *selector, struct asom_callcache *cc)
+{
+    VALUE args[5];
+    args[0] = EVAL_ARG(c, a0); args[1] = EVAL_ARG(c, a1);
+    args[2] = EVAL_ARG(c, a2); args[3] = EVAL_ARG(c, a3);
+    args[4] = EVAL_ARG(c, a4);
+    return asom_super_send(c, c->frame->self, selector, 5, args, cc);
+}
+
+NODE_DEF
+node_super_send6(CTX * restrict c, NODE * restrict n, NODE *a0, NODE *a1, NODE *a2, NODE *a3, NODE *a4, NODE *a5, const char *selector, struct asom_callcache *cc)
+{
+    VALUE args[6];
+    args[0] = EVAL_ARG(c, a0); args[1] = EVAL_ARG(c, a1);
+    args[2] = EVAL_ARG(c, a2); args[3] = EVAL_ARG(c, a3);
+    args[4] = EVAL_ARG(c, a4); args[5] = EVAL_ARG(c, a5);
+    return asom_super_send(c, c->frame->self, selector, 6, args, cc);
+}
+
+NODE_DEF
+node_super_send7(CTX * restrict c, NODE * restrict n, NODE *a0, NODE *a1, NODE *a2, NODE *a3, NODE *a4, NODE *a5, NODE *a6, const char *selector, struct asom_callcache *cc)
+{
+    VALUE args[7];
+    args[0] = EVAL_ARG(c, a0); args[1] = EVAL_ARG(c, a1);
+    args[2] = EVAL_ARG(c, a2); args[3] = EVAL_ARG(c, a3);
+    args[4] = EVAL_ARG(c, a4); args[5] = EVAL_ARG(c, a5);
+    args[6] = EVAL_ARG(c, a6);
+    return asom_super_send(c, c->frame->self, selector, 7, args, cc);
+}
+
+NODE_DEF
+node_super_send8(CTX * restrict c, NODE * restrict n, NODE *a0, NODE *a1, NODE *a2, NODE *a3, NODE *a4, NODE *a5, NODE *a6, NODE *a7, const char *selector, struct asom_callcache *cc)
+{
+    VALUE args[8];
+    args[0] = EVAL_ARG(c, a0); args[1] = EVAL_ARG(c, a1);
+    args[2] = EVAL_ARG(c, a2); args[3] = EVAL_ARG(c, a3);
+    args[4] = EVAL_ARG(c, a4); args[5] = EVAL_ARG(c, a5);
+    args[6] = EVAL_ARG(c, a6); args[7] = EVAL_ARG(c, a7);
+    return asom_super_send(c, c->frame->self, selector, 8, args, cc);
+}

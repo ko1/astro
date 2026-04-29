@@ -1,0 +1,8 @@
+Tight2 = (
+    run = (
+        | i sum |
+        i := 0. sum := 0.
+        [ i < 1000000 ] whileTrue: [ sum := sum + i. i := i + 1 ].
+        system println: sum.
+    )
+)

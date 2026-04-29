@@ -1,0 +1,7 @@
+SieveRun = (
+    run = (
+        | result |
+        result := Sieve new benchmark.
+        system println: result.
+    )
+)

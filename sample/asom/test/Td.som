@@ -1,0 +1,7 @@
+Td = (
+    run = (
+        | x |
+        x := TowersDisk new: 5.
+        system println: x size.
+    )
+)

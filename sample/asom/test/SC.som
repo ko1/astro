@@ -1,0 +1,8 @@
+SC = ( run = (
+    | x |
+    x := #a + #b.
+    ('x class = ' + x class name asString) println.
+    ('x = ' + x asString) println.
+    ('x == #ab: ' + (x == #ab) asString) println.
+    ('x = #ab: ' + (x = #ab) asString) println.
+) )

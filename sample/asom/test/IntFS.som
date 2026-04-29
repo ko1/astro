@@ -1,0 +1,12 @@
+IntFS = ( run = (
+    | a |
+    a := Integer fromString: '1'.
+    ('a class: ' + a class name + ' val: ' + a asString) println.
+    ('a = 1: ' + (a = 1) asString) println.
+    a := Integer fromString: '100'.
+    system println: a.
+    a := Integer fromString: '-2147483648'.
+    system println: a.
+    a := Integer fromString: '9223372036854775807'.
+    system println: a.
+) )

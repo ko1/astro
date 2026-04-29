@@ -1,0 +1,3 @@
+PermuteRun = (
+    run = ( system println: Permute new benchmark )
+)

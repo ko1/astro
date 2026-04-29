@@ -1,0 +1,10 @@
+DBRun = (
+    run = (
+        | b ok |
+        b := DeltaBlue new.
+        b oneTimeSetup.
+        ok := b innerBenchmarkLoop: 50.
+        system print: 'DeltaBlue 50: '.
+        ok ifTrue: [ system println: 'OK' ] ifFalse: [ system println: 'FAIL' ].
+    )
+)

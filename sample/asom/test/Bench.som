@@ -1,0 +1,40 @@
+"Mini benchmark harness — args layout matches SOM-st BenchmarkHarness:
+ args[1] = harness class name (Bench), args[2] = bench class, args[3] = iters,
+ args[4] = inner. We follow the same protocol so the comparison script can
+ invoke asom and CSOM/SOM++/PySOM with the same argv shape modulo the
+ CSOM-extra warmup field."
+
+Bench = (
+    | name iters innerIters cls |
+
+    run: args = (
+        args length >= 2 ifTrue: [ name := args at: 2 ] ifFalse: [ name := 'Sieve' ].
+        args length >= 3 ifTrue: [ iters := (args at: 3) asInteger ] ifFalse: [ iters := 10 ].
+        args length >= 4
+            ifTrue:  [ innerIters := (args at: 4) asInteger ]
+            ifFalse: [ innerIters := 0 ].
+        cls := system global: name.
+        cls isNil ifTrue: [ system print: 'unknown class: '. system println: name. system exit: 1 ].
+        ^ self runBench
+    )
+
+    runBench = (
+        | start end b result total |
+        b := cls new.
+        start := system ticks.
+        innerIters > 0
+            ifTrue:  [ iters timesRepeat: [ result := b innerBenchmarkLoop: innerIters ] ]
+            ifFalse: [ iters timesRepeat: [ result := b benchmark. b verifyResult: result ] ].
+        end := system ticks.
+        total := end - start.
+        system print: name. system print: ': iterations='. system print: iters.
+        system print: ' runtime: '. system print: total. system println: 'us'.
+    )
+
+    "Default entry point: Sieve x 10."
+    run = (
+        name := 'Sieve'. iters := 10. innerIters := 0.
+        cls := system global: name.
+        ^ self runBench
+    )
+)

@@ -1,0 +1,10 @@
+SymCheck = (
+    run = (
+        | a b |
+        a := #ab. b := 'ab' asSymbol.
+        ('a class: ' + a class name asString) println.
+        ('b class: ' + b class name asString) println.
+        ('a = b: ' + (a = b) asString) println.
+        ('a == b: ' + (a == b) asString) println.
+    )
+)

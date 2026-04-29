@@ -1,0 +1,7 @@
+SieveDebug = ( run = (
+    | s r ok |
+    s := Sieve new.
+    r := s benchmark.
+    ok := s verifyResult: r.
+    system print: 'result='. system print: r. system print: ' verify='. system println: ok.
+) )

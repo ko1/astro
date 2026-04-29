@@ -1,0 +1,7 @@
+IFS = ( run = (
+    | x |
+    x := Integer fromString: '1'.
+    ('class: ' + x class name + ' val: ' + x asString) println.
+    ('= 1: ' + (x = 1) asString) println.
+    ('asInt of x: ' + x asInteger asString) println.
+) )

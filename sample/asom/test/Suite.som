@@ -1,0 +1,15 @@
+Suite = (
+    run = (
+        Run new runOne: 'Sieve'      class: Sieve.
+        Run new runOne: 'Permute'    class: Permute.
+        Run new runOne: 'Towers'     class: Towers.
+        Run new runOne: 'Queens'     class: Queens.
+        Run new runOne: 'List'       class: List.
+        Run new runOne: 'Storage'    class: Storage.
+        Run new runOne: 'Bounce'     class: Bounce.
+        Run new runOne: 'BubbleSort' class: BubbleSort.
+        Run new runOne: 'QuickSort'  class: QuickSort.
+        Run new runOne: 'TreeSort'   class: TreeSort.
+        Run new runOne2: 'Mandelbrot' class: Mandelbrot iterations: 750.
+    )
+)

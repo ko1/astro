@@ -1,0 +1,15 @@
+"Smoke test for asom."
+
+Smoke = (
+
+    | counter |
+
+    run = (
+        counter := 0.
+        counter := counter + 1.
+        counter := counter * 21.
+        'A' println.
+        system println: counter.
+        system println: 'asom alive'.
+    )
+)

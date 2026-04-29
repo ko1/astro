@@ -1,0 +1,27 @@
+Run = (
+    runOne: name class: cls = (
+        | b result ok |
+        b := cls new.
+        result := b benchmark.
+        ok := b verifyResult: result.
+        system print: name.
+        system print: ' = '.
+        system print: result.
+        ok ifTrue: [ system println: ' [OK]' ]
+            ifFalse: [ system println: ' [FAIL]' ].
+        ^ ok
+    )
+
+    "Variant for benchmarks that override innerBenchmarkLoop: (Mandelbrot)."
+    runOne2: name class: cls iterations: n = (
+        | b ok |
+        b := cls new.
+        ok := b innerBenchmarkLoop: n.
+        system print: name.
+        system print: ' '.
+        system print: n.
+        ok ifTrue: [ system println: ' [OK]' ]
+            ifFalse: [ system println: ' [FAIL]' ].
+        ^ ok
+    )
+)

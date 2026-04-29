@@ -1,0 +1,3 @@
+TowersRun = (
+    run = ( system println: Towers new benchmark )
+)

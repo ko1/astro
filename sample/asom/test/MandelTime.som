@@ -1,0 +1,12 @@
+MandelTime = (
+    run: args = (
+        | size start end r |
+        size := args length >= 1 ifTrue: [ (args at: 1) asInteger ] ifFalse: [ 200 ].
+        start := system ticks.
+        r := Mandelbrot new mandelbrot: size.
+        end := system ticks.
+        system print: 'Mandelbrot '. system print: size.
+        system print: ' = '. system print: r.
+        system print: '   ('. system print: end - start. system println: 'us)'.
+    )
+)

@@ -1,0 +1,32 @@
+Blocks = (
+    run = (
+        | i sum arr |
+        "Block + ifTrue:/ifFalse:"
+        (1 < 2) ifTrue: [ 'lt works' println ].
+        (1 > 2) ifFalse: [ 'gt-false works' println ].
+
+        "Integer to:do:"
+        sum := 0.
+        1 to: 10 do: [ :each | sum := sum + each ].
+        system println: sum.        "55"
+
+        "whileTrue:"
+        i := 0.
+        [ i < 5 ] whileTrue: [ i := i + 1 ].
+        system println: i.           "5"
+
+        "Block value: with arg"
+        system println: ([ :x :y | x * y ] value: 6 with: 7).  "42"
+
+        "timesRepeat:"
+        3 timesRepeat: [ 'tick' println ].
+
+        "Array new: + at:put: + do:"
+        arr := Array new: 3.
+        arr at: 1 put: 10.
+        arr at: 2 put: 20.
+        arr at: 3 put: 30.
+        arr do: [ :v | system println: v ].
+        system println: arr length.
+    )
+)

@@ -1,0 +1,10 @@
+JsonRun = (
+    run = (
+        | b ok |
+        b := Json new.
+        b oneTimeSetup.
+        ok := b innerBenchmarkLoop: 1.
+        system print: 'Json 1: '.
+        ok ifTrue: [ system println: 'OK' ] ifFalse: [ system println: 'FAIL' ].
+    )
+)
