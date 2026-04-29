@@ -167,6 +167,41 @@ node_send1_intlt / intgt / intle / intge / inteq
   シャードはスワップ前後どちらでも使える（is_specialized が立った後の
   `swap_dispatcher` は no-op）。
 
+### 制御フロー・インライン化
+
+`ifTrue: / ifFalse: / ifTrue:ifFalse: / ifFalse:ifTrue: / whileTrue: /
+whileFalse:` のうち、ブロック引数（while 系では受信側ブロックも）が
+**0 引数・0 ローカル・本体に nested block 生成を含まない**ものは、パース時
+に専用 NODE に書き換える（`node_iftrue / iffalse / iftrue_iffalse /
+iffalse_iftrue / whiletrue / whilefalse`）。
+
+ランタイムは `asom_inline_frame_push` で C スタック上に空フレームを
+1 個積み（`lexical_parent = c->frame`、locals=NULL）、ブロック本体を
+直接 EVAL する。`asom_make_block` も `setjmp` も無し。`whileTrue:` は
+ループ全体で 1 つのフレームを使い回すため、反復回数で線形に効果が
+スケールする。
+
+ifTrue:/ifFalse: 系は受信値が `val_true / val_false` でない場合の
+フォールバックとして元の `node_block` を operand に保持し、`asom_send`
+で正規の `ifTrue:` 等を送る（DNU 互換のため、benchmark では発火しない）。
+
+エスケープ防止: 本体に nested block 生成があると、その closure が
+スタック・フレームを `lexical_parent` に取り込み、関数戻り後に UAF と
+なる。パース時の `subtree_creates_block()` がこれを検出し、当該パターン
+は inline せず正規の send1/send2 で処理する。
+
+性能効果（前項のフレーム pool 追加分とあわせた累積、interp / best-of-3）:
+
+| benchmark | baseline | + spec + pool | + inline | 累積倍率 |
+|-----------|----------|---------------|----------|---------|
+| Sieve     | 0.032s   | 0.019s        | 0.012s   | **2.7×** |
+| Permute   | 0.044s   | 0.034s        | 0.033s   | 1.33×    |
+| Towers    | 0.125s   | 0.094s        | 0.075s   | 1.67×    |
+| Bounce    | 0.037s   | 0.040s        | 0.008s   | **4.6×** |
+| BubbleSort| 0.023s   | 0.020s        | 0.007s   | **3.3×** |
+| Mandelbrot| 1.015s   | 1.016s        | 0.797s   | 1.27×    |
+| Queens    | 0.039s   | 0.031s        | 0.028s   | 1.39×    |
+
 ### フレーム pool
 
 `asom_invoke` / `asom_block_invoke` のフレーム+locals は **slot 数バケット

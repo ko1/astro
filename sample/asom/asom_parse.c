@@ -419,6 +419,220 @@ make_var_set(Parser *P, const char *name, NODE *rhs)
     return NULL;
 }
 
+// Kind symbols are defined in node_alloc.c; declare the ones we test
+// against in subtree_creates_block / block_is_inlinable.
+extern const struct NodeKind
+    kind_node_block, kind_node_block_body,
+    kind_node_seq, kind_node_local_set, kind_node_field_set,
+    kind_node_class_field_set, kind_node_return_local, kind_node_return_nlr,
+    kind_node_method_body,
+    kind_node_send0, kind_node_send1, kind_node_send2, kind_node_send3,
+    kind_node_send4, kind_node_send5, kind_node_send6, kind_node_send7, kind_node_send8,
+    kind_node_send1_intplus, kind_node_send1_intminus, kind_node_send1_inttimes,
+    kind_node_send1_intlt, kind_node_send1_intgt, kind_node_send1_intle,
+    kind_node_send1_intge, kind_node_send1_inteq,
+    kind_node_super_send1, kind_node_super_send2, kind_node_super_send3,
+    kind_node_super_send4, kind_node_super_send5, kind_node_super_send6,
+    kind_node_super_send7, kind_node_super_send8,
+    kind_node_iftrue, kind_node_iffalse,
+    kind_node_iftrue_iffalse, kind_node_iffalse_iftrue,
+    kind_node_whiletrue, kind_node_whilefalse;
+
+// -----------------------------------------------------------------------------
+//  Control-flow inlining
+//
+//  When the receiver / argument(s) of ifTrue: / ifFalse: / ifTrue:ifFalse: /
+//  whileTrue: / whileFalse: are block literals that could be inlined safely,
+//  emit specialized control-flow nodes that bypass asom_make_block +
+//  asom_block_invoke entirely.
+//
+//  Eligibility:
+//    1. block is a `node_block` literal at parse time
+//    2. block has 0 params and 0 locals — no slots in its frame
+//    3. block body creates no nested block at runtime (no `node_block`
+//       descendant) — ensures no closure can escape past our stack frame
+//
+//  When eligible, the body subtree is extracted from `node_block.body
+//  ->u.node_block_body.body`; the outer scope numbering is preserved
+//  because at runtime we push a stack-allocated fake frame whose
+//  lexical_parent is the current frame (mirroring asom_block_invoke's
+//  setup minus the calloc + setjmp).
+// -----------------------------------------------------------------------------
+
+static bool
+subtree_creates_block(NODE *n)
+{
+    if (!n) return false;
+    const struct NodeKind *k = n->head.kind;
+
+    // The literal that calls asom_make_block at runtime.
+    if (k == &kind_node_block) return true;
+
+    // node_iftrue & friends keep a node_block child for the non-Boolean
+    // fallback path; the fast path never reaches it. Conservatively treat
+    // them as block-creating since the fallback DOES go through asom_send
+    // with a freshly-built block.
+    if (k == &kind_node_iftrue) {
+        return subtree_creates_block(n->u.node_iftrue.cond)
+            || subtree_creates_block(n->u.node_iftrue.body_block);
+    }
+    if (k == &kind_node_iffalse) {
+        return subtree_creates_block(n->u.node_iffalse.cond)
+            || subtree_creates_block(n->u.node_iffalse.body_block);
+    }
+    if (k == &kind_node_iftrue_iffalse) {
+        return subtree_creates_block(n->u.node_iftrue_iffalse.cond)
+            || subtree_creates_block(n->u.node_iftrue_iffalse.t_block)
+            || subtree_creates_block(n->u.node_iftrue_iffalse.f_block);
+    }
+    if (k == &kind_node_iffalse_iftrue) {
+        return subtree_creates_block(n->u.node_iffalse_iftrue.cond)
+            || subtree_creates_block(n->u.node_iffalse_iftrue.f_block)
+            || subtree_creates_block(n->u.node_iffalse_iftrue.t_block);
+    }
+    if (k == &kind_node_whiletrue) {
+        return subtree_creates_block(n->u.node_whiletrue.cond_stmts)
+            || subtree_creates_block(n->u.node_whiletrue.body_stmts);
+    }
+    if (k == &kind_node_whilefalse) {
+        return subtree_creates_block(n->u.node_whilefalse.cond_stmts)
+            || subtree_creates_block(n->u.node_whilefalse.body_stmts);
+    }
+
+    // Structural / control nodes — recurse into NODE * children.
+    if (k == &kind_node_seq)
+        return subtree_creates_block(n->u.node_seq.head)
+            || subtree_creates_block(n->u.node_seq.tail);
+    if (k == &kind_node_local_set)        return subtree_creates_block(n->u.node_local_set.rhs);
+    if (k == &kind_node_field_set)        return subtree_creates_block(n->u.node_field_set.rhs);
+    if (k == &kind_node_class_field_set)  return subtree_creates_block(n->u.node_class_field_set.rhs);
+    if (k == &kind_node_return_local)     return subtree_creates_block(n->u.node_return_local.expr);
+    if (k == &kind_node_return_nlr)       return subtree_creates_block(n->u.node_return_nlr.expr);
+    if (k == &kind_node_method_body)      return subtree_creates_block(n->u.node_method_body.body);
+    if (k == &kind_node_block_body)       return subtree_creates_block(n->u.node_block_body.body);
+
+    // Sends. Specialized send1 variants share the node_send1 layout.
+    if (k == &kind_node_send0) return subtree_creates_block(n->u.node_send0.recv);
+    if (k == &kind_node_send1 ||
+        k == &kind_node_send1_intplus  || k == &kind_node_send1_intminus ||
+        k == &kind_node_send1_inttimes || k == &kind_node_send1_intlt    ||
+        k == &kind_node_send1_intgt    || k == &kind_node_send1_intle    ||
+        k == &kind_node_send1_intge    || k == &kind_node_send1_inteq)
+        return subtree_creates_block(n->u.node_send1.recv)
+            || subtree_creates_block(n->u.node_send1.arg0);
+    if (k == &kind_node_send2)
+        return subtree_creates_block(n->u.node_send2.recv)
+            || subtree_creates_block(n->u.node_send2.arg0)
+            || subtree_creates_block(n->u.node_send2.arg1);
+    if (k == &kind_node_send3)
+        return subtree_creates_block(n->u.node_send3.recv)
+            || subtree_creates_block(n->u.node_send3.arg0)
+            || subtree_creates_block(n->u.node_send3.arg1)
+            || subtree_creates_block(n->u.node_send3.arg2);
+    if (k == &kind_node_send4)
+        return subtree_creates_block(n->u.node_send4.recv)
+            || subtree_creates_block(n->u.node_send4.a0)
+            || subtree_creates_block(n->u.node_send4.a1)
+            || subtree_creates_block(n->u.node_send4.a2)
+            || subtree_creates_block(n->u.node_send4.a3);
+    if (k == &kind_node_send5)
+        return subtree_creates_block(n->u.node_send5.recv)
+            || subtree_creates_block(n->u.node_send5.a0)
+            || subtree_creates_block(n->u.node_send5.a1)
+            || subtree_creates_block(n->u.node_send5.a2)
+            || subtree_creates_block(n->u.node_send5.a3)
+            || subtree_creates_block(n->u.node_send5.a4);
+    if (k == &kind_node_send6)
+        return subtree_creates_block(n->u.node_send6.recv)
+            || subtree_creates_block(n->u.node_send6.a0)
+            || subtree_creates_block(n->u.node_send6.a1)
+            || subtree_creates_block(n->u.node_send6.a2)
+            || subtree_creates_block(n->u.node_send6.a3)
+            || subtree_creates_block(n->u.node_send6.a4)
+            || subtree_creates_block(n->u.node_send6.a5);
+    if (k == &kind_node_send7)
+        return subtree_creates_block(n->u.node_send7.recv)
+            || subtree_creates_block(n->u.node_send7.a0)
+            || subtree_creates_block(n->u.node_send7.a1)
+            || subtree_creates_block(n->u.node_send7.a2)
+            || subtree_creates_block(n->u.node_send7.a3)
+            || subtree_creates_block(n->u.node_send7.a4)
+            || subtree_creates_block(n->u.node_send7.a5)
+            || subtree_creates_block(n->u.node_send7.a6);
+    if (k == &kind_node_send8)
+        return subtree_creates_block(n->u.node_send8.recv)
+            || subtree_creates_block(n->u.node_send8.a0)
+            || subtree_creates_block(n->u.node_send8.a1)
+            || subtree_creates_block(n->u.node_send8.a2)
+            || subtree_creates_block(n->u.node_send8.a3)
+            || subtree_creates_block(n->u.node_send8.a4)
+            || subtree_creates_block(n->u.node_send8.a5)
+            || subtree_creates_block(n->u.node_send8.a6)
+            || subtree_creates_block(n->u.node_send8.a7);
+    // super_sendN: skip recv (no NODE * recv), recurse into args.
+    if (k == &kind_node_super_send1) return subtree_creates_block(n->u.node_super_send1.arg0);
+    if (k == &kind_node_super_send2)
+        return subtree_creates_block(n->u.node_super_send2.arg0)
+            || subtree_creates_block(n->u.node_super_send2.arg1);
+    if (k == &kind_node_super_send3)
+        return subtree_creates_block(n->u.node_super_send3.arg0)
+            || subtree_creates_block(n->u.node_super_send3.arg1)
+            || subtree_creates_block(n->u.node_super_send3.arg2);
+    if (k == &kind_node_super_send4)
+        return subtree_creates_block(n->u.node_super_send4.a0)
+            || subtree_creates_block(n->u.node_super_send4.a1)
+            || subtree_creates_block(n->u.node_super_send4.a2)
+            || subtree_creates_block(n->u.node_super_send4.a3);
+    if (k == &kind_node_super_send5)
+        return subtree_creates_block(n->u.node_super_send5.a0)
+            || subtree_creates_block(n->u.node_super_send5.a1)
+            || subtree_creates_block(n->u.node_super_send5.a2)
+            || subtree_creates_block(n->u.node_super_send5.a3)
+            || subtree_creates_block(n->u.node_super_send5.a4);
+    if (k == &kind_node_super_send6)
+        return subtree_creates_block(n->u.node_super_send6.a0)
+            || subtree_creates_block(n->u.node_super_send6.a1)
+            || subtree_creates_block(n->u.node_super_send6.a2)
+            || subtree_creates_block(n->u.node_super_send6.a3)
+            || subtree_creates_block(n->u.node_super_send6.a4)
+            || subtree_creates_block(n->u.node_super_send6.a5);
+    if (k == &kind_node_super_send7)
+        return subtree_creates_block(n->u.node_super_send7.a0)
+            || subtree_creates_block(n->u.node_super_send7.a1)
+            || subtree_creates_block(n->u.node_super_send7.a2)
+            || subtree_creates_block(n->u.node_super_send7.a3)
+            || subtree_creates_block(n->u.node_super_send7.a4)
+            || subtree_creates_block(n->u.node_super_send7.a5)
+            || subtree_creates_block(n->u.node_super_send7.a6);
+    if (k == &kind_node_super_send8)
+        return subtree_creates_block(n->u.node_super_send8.a0)
+            || subtree_creates_block(n->u.node_super_send8.a1)
+            || subtree_creates_block(n->u.node_super_send8.a2)
+            || subtree_creates_block(n->u.node_super_send8.a3)
+            || subtree_creates_block(n->u.node_super_send8.a4)
+            || subtree_creates_block(n->u.node_super_send8.a5)
+            || subtree_creates_block(n->u.node_super_send8.a6)
+            || subtree_creates_block(n->u.node_super_send8.a7);
+
+    // Leaf-only kinds (literals, var-gets, super_send0, etc.) — no children.
+    return false;
+}
+
+// True iff `block_node` is a node_block(0 params, 0 locals) whose body is
+// itself free of block creation. The first two checks make scope=0 refs
+// impossible in the body; the third keeps closures from escaping our
+// stack-allocated inline frame.
+static bool
+block_is_inlinable(NODE *block_node)
+{
+    if (!block_node || block_node->head.kind != &kind_node_block) return false;
+    if (block_node->u.node_block.num_params != 0) return false;
+    if (block_node->u.node_block.num_locals != 0) return false;
+    NODE *bb = block_node->u.node_block.body;
+    if (!bb || bb->head.kind != &kind_node_block_body) return false;
+    return !subtree_creates_block(bb->u.node_block_body.body);
+}
+
 // Emit type-specialized send1 nodes for the common integer-arithmetic
 // selectors. These optimistically assume both operands are SmallInteger;
 // on guard miss they swap_dispatcher back to node_send1 at runtime, so
@@ -451,18 +665,55 @@ make_specialized_send1(NODE *recv, NODE *arg, const char *interned_sel, struct a
     return NULL;
 }
 
+// Helper: extract the statement subtree from a node_block(0,0) AST.
+//   node_block.body -> node_block_body.body -> stmts
+static NODE *
+block_stmts(NODE *block_node)
+{
+    return block_node->u.node_block.body->u.node_block_body.body;
+}
+
 static NODE *
 make_send(Parser *P, NODE *recv, const char *sel, NODE **args, uint32_t nargs)
 {
     (void)P;
     sel = asom_intern_cstr(sel);
+    // Cache interned selector pointers for the control-flow specializers.
+    // Comparing pointers (selectors are interned) is one cmp per check.
+    static const char *sel_ifTrue, *sel_ifFalse, *sel_whileTrue, *sel_whileFalse,
+                      *sel_ifTrueIfFalse, *sel_ifFalseIfTrue;
+    if (UNLIKELY(sel_ifTrue == NULL)) {
+        sel_ifTrue          = asom_intern_cstr("ifTrue:");
+        sel_ifFalse         = asom_intern_cstr("ifFalse:");
+        sel_whileTrue       = asom_intern_cstr("whileTrue:");
+        sel_whileFalse      = asom_intern_cstr("whileFalse:");
+        sel_ifTrueIfFalse   = asom_intern_cstr("ifTrue:ifFalse:");
+        sel_ifFalseIfTrue   = asom_intern_cstr("ifFalse:ifTrue:");
+    }
     switch (nargs) {
     case 0: return ALLOC_node_send0(recv, sel, new_cc());
     case 1: {
+        // Control-flow inlining for 1-arg sends.
+        if (sel == sel_ifTrue && block_is_inlinable(args[0]))
+            return ALLOC_node_iftrue(recv, args[0]);
+        if (sel == sel_ifFalse && block_is_inlinable(args[0]))
+            return ALLOC_node_iffalse(recv, args[0]);
+        if (sel == sel_whileTrue && block_is_inlinable(recv) && block_is_inlinable(args[0]))
+            return ALLOC_node_whiletrue(block_stmts(recv), block_stmts(args[0]));
+        if (sel == sel_whileFalse && block_is_inlinable(recv) && block_is_inlinable(args[0]))
+            return ALLOC_node_whilefalse(block_stmts(recv), block_stmts(args[0]));
         NODE *spec = make_specialized_send1(recv, args[0], sel, new_cc());
         return spec ? spec : ALLOC_node_send1(recv, args[0], sel, new_cc());
     }
-    case 2: return ALLOC_node_send2(recv, args[0], args[1], sel, new_cc());
+    case 2: {
+        if (sel == sel_ifTrueIfFalse
+            && block_is_inlinable(args[0]) && block_is_inlinable(args[1]))
+            return ALLOC_node_iftrue_iffalse(recv, args[0], args[1]);
+        if (sel == sel_ifFalseIfTrue
+            && block_is_inlinable(args[0]) && block_is_inlinable(args[1]))
+            return ALLOC_node_iffalse_iftrue(recv, args[0], args[1]);
+        return ALLOC_node_send2(recv, args[0], args[1], sel, new_cc());
+    }
     case 3: return ALLOC_node_send3(recv, args[0], args[1], args[2], sel, new_cc());
     case 4: return ALLOC_node_send4(recv, args[0], args[1], args[2], args[3], sel, new_cc());
     case 5: return ALLOC_node_send5(recv, args[0], args[1], args[2], args[3], args[4], sel, new_cc());

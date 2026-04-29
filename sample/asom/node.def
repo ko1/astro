@@ -433,6 +433,142 @@ node_super_send8(CTX * restrict c, NODE * restrict n, NODE *a0, NODE *a1, NODE *
 }
 
 // -----------------------------------------------------------------------------
+//  Control-flow inlining. The parser emits these in place of `expr ifTrue:
+//  [block]`, `[cond] whileTrue: [body]`, etc., when the block argument(s)
+//  meet the inline criteria (0 params, 0 locals, no nested block literal —
+//  the latter rules out closure escape during the inlined call).
+//
+//  The body subtree carries scope numbering relative to the original
+//  block frame, so we still push a stack-allocated frame whose
+//  lexical_parent is the current frame; the body's `lvar_get(scope=N)`
+//  refs walk up the same chain as if the block had been heap-allocated,
+//  so no AST rewrite is needed. The savings vs the regular send +
+//  asom_block_invoke path are: no calloc, no setjmp, and for whileTrue:
+//  one fake frame is reused for all iterations.
+//
+//  ifTrue:/ifFalse:/ifTrue:ifFalse: keep the original node_block AST as
+//  a fallback operand so a non-Boolean receiver can still receive the
+//  message via asom_send (rare in benchmarks; matches SOM standard).
+// -----------------------------------------------------------------------------
+
+// Stack-frame helpers for inlined blocks (defined in asom_runtime.c).
+extern void asom_inline_frame_push(CTX *c, struct asom_frame *frame);
+extern void asom_inline_frame_pop(CTX *c, struct asom_frame *frame);
+
+NODE_DEF
+node_iftrue(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *body_block)
+{
+    VALUE v = EVAL_ARG(c, cond);
+    if (LIKELY(v == c->val_true)) {
+        // body_block is node_block(node_block_body(stmts, 0, 0), 0, 0).
+        // Skip both wrappers to reach the statement subtree.
+        NODE *block_body = body_block->u.node_block.body;
+        NODE *stmts = block_body->u.node_block_body.body;
+        struct asom_frame frame;
+        asom_inline_frame_push(c, &frame);
+        VALUE result = EVAL(c, stmts);
+        asom_inline_frame_pop(c, &frame);
+        return result;
+    }
+    if (LIKELY(v == c->val_false)) return c->val_nil;
+    VALUE blk = EVAL_ARG(c, body_block);
+    return asom_send(c, v, asom_intern_cstr("ifTrue:"), 1, &blk, NULL);
+}
+
+NODE_DEF
+node_iffalse(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *body_block)
+{
+    VALUE v = EVAL_ARG(c, cond);
+    if (LIKELY(v == c->val_false)) {
+        NODE *block_body = body_block->u.node_block.body;
+        NODE *stmts = block_body->u.node_block_body.body;
+        struct asom_frame frame;
+        asom_inline_frame_push(c, &frame);
+        VALUE result = EVAL(c, stmts);
+        asom_inline_frame_pop(c, &frame);
+        return result;
+    }
+    if (LIKELY(v == c->val_true)) return c->val_nil;
+    VALUE blk = EVAL_ARG(c, body_block);
+    return asom_send(c, v, asom_intern_cstr("ifFalse:"), 1, &blk, NULL);
+}
+
+NODE_DEF
+node_iftrue_iffalse(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *t_block, NODE *f_block)
+{
+    VALUE v = EVAL_ARG(c, cond);
+    NODE *take = NULL;
+    if (LIKELY(v == c->val_true))       take = t_block;
+    else if (LIKELY(v == c->val_false)) take = f_block;
+    if (take) {
+        NODE *block_body = take->u.node_block.body;
+        NODE *stmts = block_body->u.node_block_body.body;
+        struct asom_frame frame;
+        asom_inline_frame_push(c, &frame);
+        VALUE result = EVAL(c, stmts);
+        asom_inline_frame_pop(c, &frame);
+        return result;
+    }
+    VALUE tblk = EVAL_ARG(c, t_block);
+    VALUE fblk = EVAL_ARG(c, f_block);
+    VALUE args[2] = { tblk, fblk };
+    return asom_send(c, v, asom_intern_cstr("ifTrue:ifFalse:"), 2, args, NULL);
+}
+
+NODE_DEF
+node_iffalse_iftrue(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *f_block, NODE *t_block)
+{
+    VALUE v = EVAL_ARG(c, cond);
+    NODE *take = NULL;
+    if (LIKELY(v == c->val_true))       take = t_block;
+    else if (LIKELY(v == c->val_false)) take = f_block;
+    if (take) {
+        NODE *block_body = take->u.node_block.body;
+        NODE *stmts = block_body->u.node_block_body.body;
+        struct asom_frame frame;
+        asom_inline_frame_push(c, &frame);
+        VALUE result = EVAL(c, stmts);
+        asom_inline_frame_pop(c, &frame);
+        return result;
+    }
+    VALUE fblk = EVAL_ARG(c, f_block);
+    VALUE tblk = EVAL_ARG(c, t_block);
+    VALUE args[2] = { fblk, tblk };
+    return asom_send(c, v, asom_intern_cstr("ifFalse:ifTrue:"), 2, args, NULL);
+}
+
+// whileTrue:/whileFalse: receivers are always block literals at parse
+// time so there's no fallback path. Both bodies share one stack frame
+// across all iterations — the win scales with the iteration count.
+NODE_DEF
+node_whiletrue(CTX * restrict c, NODE * restrict n, NODE *cond_stmts, NODE *body_stmts)
+{
+    struct asom_frame frame;
+    asom_inline_frame_push(c, &frame);
+    for (;;) {
+        VALUE r = EVAL(c, cond_stmts);
+        if (r != c->val_true) break;
+        EVAL(c, body_stmts);
+    }
+    asom_inline_frame_pop(c, &frame);
+    return c->val_nil;
+}
+
+NODE_DEF
+node_whilefalse(CTX * restrict c, NODE * restrict n, NODE *cond_stmts, NODE *body_stmts)
+{
+    struct asom_frame frame;
+    asom_inline_frame_push(c, &frame);
+    for (;;) {
+        VALUE r = EVAL(c, cond_stmts);
+        if (r != c->val_false) break;
+        EVAL(c, body_stmts);
+    }
+    asom_inline_frame_pop(c, &frame);
+    return c->val_nil;
+}
+
+// -----------------------------------------------------------------------------
 //  Type-specialized send1 variants. These share the canonical Horg with
 //  node_send1 (via @canonical=node_send1) so swap_dispatcher rewriting
 //  them in place doesn't invalidate the AOT code-store hash. On guard

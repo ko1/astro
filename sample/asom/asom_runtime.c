@@ -383,6 +383,37 @@ asom_nonlocal_return(CTX *c, VALUE v)
 // Block construction + invocation.
 // ---------------------------------------------------------------------------
 
+// -----------------------------------------------------------------------------
+//  Inline-frame push/pop for control-flow inlining (node_iftrue, etc.).
+//  The block has been verified at parse time to have 0 params, 0 locals,
+//  and no nested block literals — so a stack-allocated frame is safe:
+//  no locals to allocate, and no closure created during the body could
+//  outlive this call to capture us. The body's `lvar_get(scope=N)` refs
+//  walk the lexical chain unchanged because lexical_parent points to
+//  what asom_block_invoke would have set (the current frame).
+// -----------------------------------------------------------------------------
+
+void
+asom_inline_frame_push(CTX *c, struct asom_frame *frame)
+{
+    frame->self = c->frame->self;
+    frame->locals = NULL;
+    frame->method = c->frame->method;   // home method, for traceback
+    frame->parent = c->frame;
+    frame->home = c->frame->home;       // `^` still targets the enclosing method
+    frame->lexical_parent = c->frame;
+    frame->returned = 0;
+    frame->captured = false;
+    frame->pool_slots = 0;              // never returned to the pool
+    c->frame = frame;
+}
+
+void
+asom_inline_frame_pop(CTX *c, struct asom_frame *frame)
+{
+    c->frame = frame->parent;
+}
+
 VALUE
 asom_make_block(CTX *c, struct Node *body, uint32_t num_params, uint32_t num_locals)
 {

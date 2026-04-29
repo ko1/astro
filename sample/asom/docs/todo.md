@@ -81,8 +81,13 @@ node_send1_intlt / intgt / intle / intge / inteq
 - [ ] `node_double_plus / ...` Double 版（unboxed double が前提なので Flonum 化と同時）
 - [ ] `node_string_concat`（`+` of String）— 利用頻度低め
 - [ ] `node_array_at / at_put` — Sieve 系で有意
-- [ ] `node_send2_int_to_do_` 等の 2 引数特化（SOM control flow）
+- [x] **制御フロー・インライン化** — `ifTrue: / whileTrue: /` 等の専用ノード
+      実装済み（パース時、0p/0l/no-nested-block で発火）。詳細は
+      [done.md#制御フローインライン化](done.md#制御フローインライン化)
+- [ ] `to:do:` の inline 化（1 引数ブロック対応＋フレーム reuse）
 - [ ] Polymorphic Inline Cache（`asom_callcache` を 1-element → 2..4 element）
+- [ ] Block の 0p/0l 制限の緩和: 0-param N-local も alloca で OK にできる
+- [ ] nested block を含む本体の inline 化（escape 解析が要る）
 
 ### Inline Method Cache の 1-element → polymorphic
 
