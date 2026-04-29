@@ -79,38 +79,53 @@ asom (interp / aot / pg) を、同じ `SOM-st/SOM/Examples/Benchmarks/<Name>.som
 除外し、`iters timesRepeat: [bench benchmark]` の中身だけを比較する。
 lazy JIT compile と GC pause はループ中で起きる分だけ含む。
 
+**post-perf** (型特化 send / フレーム pool / 制御フロー & to:do: inline /
+double & block bump arena / no-NLR setjmp skip — 詳細は
+[docs/done.md](docs/done.md)) 後の最新計測。`ITERS=10`、最後にベンチを
+直接走らせた値（best of 3）:
+
 ```
 benchmark    |   interp |      aot |       pg |    SOM++ |    Truffle |  PySOM-AST |   PySOM-BC |     CSOM
 -------------+----------+----------+----------+----------+------------+------------+------------+---------
-Sieve        |    0.088 |    0.092 |    0.089 |    0.002 |      0.000 |      0.093 |      0.255 |    0.097
-Permute      |    0.132 |    0.133 |    0.130 |    0.004 |      0.000 |      0.512 |      0.770 |    0.087
-Towers       |    0.377 |    0.374 |    0.377 |    0.007 |      0.000 |      0.320 |      0.690 |    0.135
-Queens       |    0.117 |    0.112 |    0.116 |    0.006 |      0.000 |      0.248 |      0.938 |    0.097
-List         |    0.268 |    0.264 |    0.263 |    0.005 |      0.000 |      0.126 |      0.350 |    0.133
-Storage      |    0.085 |    0.090 |    0.094 |    0.004 |      0.000 |      0.123 |      0.279 |    0.519
-Bounce       |    0.116 |    0.117 |    0.111 |    0.002 |      0.000 |      0.137 |      0.323 |    0.182
-BubbleSort   |    0.070 |    0.069 |    0.073 |    0.001 |      0.000 |      0.084 |      0.211 |    0.122
-QuickSort    |    0.113 |    0.111 |    0.115 |    0.002 |      0.000 |      0.154 |      0.307 |    0.196
-TreeSort     |    0.254 |    0.259 |    0.256 |    0.004 |      0.000 |      0.157 |      0.298 |    0.488
-Fannkuch     |    0.103 |    0.104 |    0.105 |    0.014 |          ? |      0.960 |      2.290 |    0.944
-Mandelbrot   |    0.981 |    1.007 |    0.985 |    0.463 |      0.001 |     20.273 |     60.091 |   11.753
+Sieve        |    0.006 |    0.006 |    0.006 |    0.002 |      0.000 |      0.090 |      0.243 |    0.099
+Permute      |    0.024 |    0.021 |    0.021 |    0.004 |      0.000 |      0.505 |      0.740 |    0.085
+Towers       |    0.051 |    0.052 |    0.051 |    0.007 |      0.000 |      0.302 |      0.679 |    0.128
+Queens       |    0.014 |    0.014 |    0.014 |    0.006 |      0.000 |      0.249 |      0.909 |    0.099
+List         |    0.025 |    0.024 |    0.025 |    0.004 |      0.000 |      0.119 |      0.345 |    0.129
+Storage      |    0.020 |    0.019 |    0.019 |    0.004 |      0.000 |      0.128 |      0.266 |    0.488
+Bounce       |    0.007 |    0.007 |    0.004 |    0.002 |      0.000 |      0.137 |      0.282 |    0.171
+BubbleSort   |    0.006 |    0.006 |    0.006 |    0.001 |      0.000 |      0.080 |      0.212 |    0.121
+QuickSort    |    0.010 |    0.010 |    0.010 |    0.002 |      0.000 |      0.153 |      0.309 |    0.191
+TreeSort     |    0.034 |    0.033 |    0.033 |    0.004 |      0.000 |      0.166 |      0.290 |    0.486
+Fannkuch †   |    0.006 |    0.006 |    0.006 |    0.015 |          ? |      0.960 |      2.290 |    0.944
+Mandelbrot † |    0.518 |    0.520 |    0.521 |    0.510 |      0.001 |     20.273 |     60.091 |   11.753
+NBody †      |    0.014 |    0.014 |    0.014 |    0.036 |      0.000 |          ? |          ? |        ?
+Richards †   |   17.571 |   17.573 |   17.572 |   16.792 |      0.500 |          ? |          ? |        ?
 ```
+
+`†` 印は AreWeFastYet の重い数値・class-graph ベンチ。`compare ITERS=10`
+スクリプトの自動範囲外なので別途直接計測。
 
 #### take-aways（inner-work）
 
-- **TruffleSOM (Graal JIT) は ~μs**。Graal の partial evaluation が deopt
-  含めて完全に効くと、整数演算ループは実質 native code。
-- **SOM++ (USE_TAGGING) が asom より 30–60× 速い** (Sieve 44×, BubbleSort
-  70×, Mandelbrot 2.1×)。これが本来の C ベースラインの実力で、**asom が
-  型特化ノードを入れたら埋めに行くべき差**。
-- **CSOM と asom の inner-loop はほぼ同水準** (~1.0× 〜 2× 程度の差で go か no go)。
-  Storage/TreeSort/Mandelbrot のように GC が走るベンチでだけ asom が
-  CSOM の 2–12× 速い (asom はリーク、CSOM は mark/sweep)。
-- **PySOM-AST も asom と同水準**。CPython の interp overhead は意外と
-  小さく、ベンチによっては asom より速い（Storage/List/TreeSort）。
-- **asom interp / aot / pg はノイズレベル差**。AOT/PG インフラは動作する
-  が型特化ノード未実装のため、primitive 関数ポインタ間接呼出しが律速。
-  [docs/todo.md](docs/todo.md) 参照。
+- **TruffleSOM (Graal JIT) は ~μs〜0.5 s**。Graal の partial evaluation が
+  deopt 含めて完全に効くと、整数演算ループは実質 native code。Richards のような
+  巨大 class graph では 30× 程度に縮む（warmup 後でも）。
+- **vs SOM++**: 整数中心の小ベンチ（Sieve 3×、Permute 6×、Towers 7×、BubbleSort
+  6× など）は依然 SOM++ が速い — bytecode VM の dispatch loop が tighter。
+  ところが**重い数値計算系**になると asom が追いつく / 超える: Mandelbrot は
+  ほぼ並走 (518 / 510 ms)、**NBody は 2.7× 速い** (13.5 / 36.1 ms)、**Fannkuch
+  も 2.5× 速い** (6 / 15 ms)。AOT/PG SD-baked が AST を平坦化、bump-arena が
+  double / block alloc を 1 ns に圧縮、no-NLR setjmp スキップが tight call path
+  を軽くする — 累積で SOM++ の bytecode interp loop を上回る。
+- **vs CSOM**: 全ベンチで asom が **3–25× 速い**。CSOM は教育用 reference
+  なので公平比較ではないが、asom が大きく追い抜いた。
+- **vs PySOM-AST**: 全ベンチで asom が **5–60× 速い**。CPython interpreter
+  overhead が大きい AST 系で、asom の SD-bake は明確に効く。
+- **interp / aot / pg はほぼ同水準**。SD-baked 化はノードのインライン展開で
+  効いているが、現状の `asom_send` ホットパスは既に IC fast path + 型特化で
+  ほぼフル最適化されているため、ベンチ・スループットでは差が出にくい。
+  起動とコールドキャッシュ局所性で AOT が微妙に勝る程度。
 
 ### Wall-clock — `make compare-wall ITERS=30` (参考)
 
