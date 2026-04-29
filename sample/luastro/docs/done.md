@@ -134,9 +134,21 @@ swaps in, yield swaps back, errors inside a coroutine propagate as
 | `node_int_add/_sub/_mul` | int+int direct; promote int↔float on mixed (no fall-through); only string/metamethod cases reach `lua_arith` |
 | `node_flt_add/_sub/_mul/_div` | float+float direct; otherwise → `lua_arith` |
 | `node_arith` | Generic op-typed arith with full coercion / metatable fallback |
+| `node_lt` / `node_le` | int+int / float+float direct + mixed numeric promotion; metamethod fallback only for non-numeric operands |
 | `node_call_arg{0,1,2,3}` | Fixed-arity Lua-to-Lua calls without metamethod / cfunc dispatch |
 | `node_call_argN` | Variable arity (≥4 args, or method calls) |
-| `node_numfor_int_sum` | Whole-loop fused node for `for i=...do sum = sum + i end` (15× faster than lua5.4) |
+| `node_numfor_int_sum` | Whole-loop fused node for `for i=...do sum = sum + i end` (12.7× faster than lua5.4) |
+| `node_local_decl` | Generic N-LHS/N-RHS body with multi-return spread, plus a 1-LHS/1-RHS fast path that skips the staging array entirely |
+| `node_field_get` | `@always_inline`-tagged so the SD body fuses the table lookup; uses pre-interned `__index` / `string` (no per-touch `lua_str_intern`) |
+
+## Hot-path runtime helpers
+
+| Helper | Note |
+|---|---|
+| `luav_from_double` / `luav_to_double` | `static inline __attribute__((always_inline))` in `context.h` so SDs SROA the LuaValue carrier away |
+| `luav_box_double(0.0)` | Returns a single shared `LuaHeapDouble` (not GC-registered, never freed) — most common heap-boxed double in real workloads |
+| `LUASTRO_S_*` (e.g. `LUASTRO_S___INDEX`) | Pre-interned metamethod / library names used by `node_field_get`, `lua_lt`, `lua_arith`, `lua_call`, … to avoid re-interning the same C string per access |
+| `lua_table_seti` | Routes integer keys ≤ `2 × arr_cap + 4` to the dense array part even if not strictly contiguous (so `for i=2,N do t[i]=... end` doesn't drop into the hash) |
 
 ## Build / driver
 
