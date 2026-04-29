@@ -37,7 +37,7 @@
 require 'fileutils'
 require 'tempfile'
 
-ITERS = (ARGV[0] || '50').to_i
+ITERS = (ARGV[0] || '1').to_i
 
 ASOM_DIR        = File.expand_path('..', __dir__)
 SOMPP_DIR       = ENV.fetch('SOMPP_DIR',      '/tmp/sompp-ref')
@@ -48,10 +48,31 @@ BENCHES = %w[Sieve Permute Towers Queens List Storage
              Bounce BubbleSort QuickSort TreeSort
              Fannkuch Mandelbrot]
 
-# Per-bench inner-iteration override. Pulled from upstream rebench.conf
-# (the AreWeFastYet canonical values), tuned for warmed-up TruffleSOM.
-INNER           = Hash.new(1).merge('Mandelbrot' => 200, 'Fannkuch' => 7)
-OUTER_OVERRIDE  = { 'Mandelbrot' => 1, 'Fannkuch' => 5 }
+# Per-bench inner-iteration count. Sized so asom-interp runs ~1 s per
+# bench (so AOT/PG/SOM++ land around 0.2-0.7 s and Truffle is sub-ms,
+# all comfortably out of setup-bound territory). Short runs (ms scale)
+# are setup-bound — IC prime, GC space init, swap_dispatcher cold path
+# — and don't reflect steady-state throughput. Values were calibrated
+# from the per-iteration cost in an earlier `make bench` run on this
+# machine; tune up/down by ~2x if the harness runs on a faster/slower
+# host.
+INNER = {
+  'Sieve'      => 1200,
+  'Permute'    => 300,
+  'Towers'     => 120,
+  'Queens'     => 500,
+  'List'       => 320,
+  'Storage'    => 400,
+  'Bounce'     => 700,
+  'BubbleSort' => 1000,
+  'QuickSort'  => 800,
+  'TreeSort'   => 300,
+  'Fannkuch'   => 9,
+  'Mandelbrot' => 500,
+}
+# One outer iteration per trial; the inner already fills ~1 s of work.
+# best-of-3 is taken across three trials in best_of_3, not via outer.
+OUTER_OVERRIDE  = Hash.new(1)
 
 # Engine columns in display order. The :cmd lambda receives (bench,
 # iters_b, inner) and returns the shell command string for one trial.
