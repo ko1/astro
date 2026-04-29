@@ -733,6 +733,28 @@ make_specialized_send1(NODE *recv, NODE *arg, const char *interned_sel, struct a
     return NULL;
 }
 
+// Emit Array-specialized variants for `at:` / `at:put:`. Optimistic —
+// programs that send `at:` to non-Array receivers (e.g. `String>>at:`
+// returning a 1-char substring) take a one-time guard miss and
+// swap_dispatcher back to the generic send. Net win for SOM
+// benchmarks where Array `at:` / `at:put:` dominate (Sieve, sort
+// routines, etc.).
+static NODE *
+make_specialized_send_array(NODE *recv, NODE *arg0, NODE *arg1, uint32_t nargs,
+                            const char *interned_sel, struct asom_callcache *cc)
+{
+    static const char *sel_at, *sel_at_put;
+    if (UNLIKELY(sel_at == NULL)) {
+        sel_at     = asom_intern_cstr("at:");
+        sel_at_put = asom_intern_cstr("at:put:");
+    }
+    if (nargs == 1 && interned_sel == sel_at)
+        return ALLOC_node_send1_arrayat(recv, arg0, interned_sel, cc);
+    if (nargs == 2 && interned_sel == sel_at_put)
+        return ALLOC_node_send2_arrayatput(recv, arg0, arg1, interned_sel, cc);
+    return NULL;
+}
+
 // Helper: extract the statement subtree from a node_block(0,0) AST.
 //   node_block.body -> node_block_body.body -> stmts
 static NODE *
@@ -782,6 +804,8 @@ make_send(Parser *P, NODE *recv, const char *sel, NODE **args, uint32_t nargs)
                     : ALLOC_node_times_repeat(recv, args[0]);
             }
         }
+        NODE *aspec = make_specialized_send_array(recv, args[0], NULL, 1, sel, new_cc());
+        if (aspec) return aspec;
         NODE *spec = make_specialized_send1(recv, args[0], sel, new_cc());
         return spec ? spec : ALLOC_node_send1(recv, args[0], sel, new_cc());
     }
@@ -800,6 +824,8 @@ make_send(Parser *P, NODE *recv, const char *sel, NODE **args, uint32_t nargs)
                     : ALLOC_node_to_do(recv, args[0], args[1]);
             }
         }
+        NODE *aspec2 = make_specialized_send_array(recv, args[0], args[1], 2, sel, new_cc());
+        if (aspec2) return aspec2;
         return ALLOC_node_send2(recv, args[0], args[1], sel, new_cc());
     }
     case 3: {

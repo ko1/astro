@@ -864,3 +864,52 @@ node_send1_inteq(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *arg0, co
     VALUE args[1] = { a };
     return asom_send(c, r, selector, 1, args, cc);
 }
+
+// `array at: i` — Array indexing. Bypasses asom_send + the arr_at_
+// primitive on the common case (Array receiver, Integer index, in
+// bounds). On any guard miss we revert to node_send1 and re-dispatch.
+NODE_DEF @canonical=node_send1
+node_send1_arrayat(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *arg0, const char *selector, struct asom_callcache *cc)
+{
+    VALUE r = EVAL_ARG(c, recv);
+    VALUE a = EVAL_ARG(c, arg0);
+    if (__builtin_expect(ASOM_IS_OBJ(r) && ASOM_IS_INT(a), 1)) {
+        struct asom_object *o = ASOM_VAL2OBJ(r);
+        if (__builtin_expect(o->klass == c->cls_array, 1)) {
+            struct asom_array *arr = (struct asom_array *)o;
+            uintptr_t idx = (uintptr_t)(ASOM_VAL2INT(a) - 1);
+            if (__builtin_expect(idx < arr->len, 1)) {
+                return arr->data[idx];
+            }
+        }
+    }
+    swap_dispatcher(n, &kind_node_send1);
+    VALUE args[1] = { a };
+    return asom_send(c, r, selector, 1, args, cc);
+}
+
+// `array at: i put: v` — Array element assignment. Same shape as
+// node_send1_arrayat (recv = Array, arg0 = Integer index) but stores
+// into arr->data[idx]. Returns the stored value (SOM convention).
+extern const struct NodeKind kind_node_send2;
+NODE_DEF @canonical=node_send2
+node_send2_arrayatput(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *arg0, NODE *arg1, const char *selector, struct asom_callcache *cc)
+{
+    VALUE r = EVAL_ARG(c, recv);
+    VALUE i = EVAL_ARG(c, arg0);
+    VALUE v = EVAL_ARG(c, arg1);
+    if (__builtin_expect(ASOM_IS_OBJ(r) && ASOM_IS_INT(i), 1)) {
+        struct asom_object *o = ASOM_VAL2OBJ(r);
+        if (__builtin_expect(o->klass == c->cls_array, 1)) {
+            struct asom_array *arr = (struct asom_array *)o;
+            uintptr_t idx = (uintptr_t)(ASOM_VAL2INT(i) - 1);
+            if (__builtin_expect(idx < arr->len, 1)) {
+                arr->data[idx] = v;
+                return v;
+            }
+        }
+    }
+    swap_dispatcher(n, &kind_node_send2);
+    VALUE args[2] = { i, v };
+    return asom_send(c, r, selector, 2, args, cc);
+}
