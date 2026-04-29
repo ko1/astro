@@ -157,6 +157,24 @@ struct LuaHeapDouble {
     double        value;
 };
 
+// Inline cache for `node_field_get` / `node_index_get`.
+//
+// The hot pattern in real programs is "table[key] where the table has
+// the same shape every time we hit this AST node" (e.g. nbody's
+// `b[i].x` sees five body tables, all built from the same `body(...)`
+// factory and therefore all sharing the same field layout).
+//
+// Cache stores a `shape token` (the table's `hash_cap` — for a fixed
+// set of interned-string fields added in the same order, two tables
+// with matching `hash_cap` have those fields at identical hash slot
+// positions) and the `pos` we last resolved.  Hot path verifies the
+// shape token + slot key, skipping the hash computation and probe
+// loop entirely.
+struct LuaFieldIC {
+    uint32_t shape;     // table's hash_cap at last successful resolve
+    uint32_t pos;       // hash slot offset for the field key
+};
+
 // LuaString — interned, hashed string.
 struct LuaString {
     struct GCHead gc;

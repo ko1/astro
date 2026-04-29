@@ -19,6 +19,11 @@ class LuaNodeDef < ASTroGen::NodeDef
       case @type
       when 'LuaString *'
         "hash_cstr(lua_str_data(#{val}))"
+      when 'struct LuaFieldIC *'
+        # Inline-cache @ref slot — runtime mutable state, not part of
+        # the structural hash.  Two AST nodes with identical shape but
+        # different cache values must hash equal.
+        '0'
       else
         super
       end
@@ -28,12 +33,22 @@ class LuaNodeDef < ASTroGen::NodeDef
       case @type
       when 'LuaString *'
         "        astro_fprintf_cstr(fp, lua_str_data(n->u.#{name}.#{self.name}));"
+      when 'struct LuaFieldIC *'
+        "        fprintf(fp, \"<ic>\");"
       else
         super
       end
     end
 
     def build_specializer(name)
+      if @type == 'struct LuaFieldIC *'
+        # @ref operand: emit a reference to the IC slot embedded in
+        # the AST node so the SD body can read/update it directly.
+        # The struct field is inline (the @ref strips the pointer in
+        # `struct_field_join`), so we take its address.
+        arg = "    fprintf(fp, \"        &n->u.#{name}.#{self.name}\");"
+        return nil, arg
+      end
       arg = case @type
             when 'LuaString *'
               # The parser already interned this string and stored the
