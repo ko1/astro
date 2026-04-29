@@ -352,16 +352,8 @@ asom_class_lookup(struct asom_class *cls, const char *selector)
 }
 
 // ---------------------------------------------------------------------------
-// Class-of for VALUEs.
-// ---------------------------------------------------------------------------
-
-struct asom_class *
-asom_class_of(CTX *c, VALUE v)
-{
-    if (ASOM_IS_INT(v)) return c->cls_integer;
-    struct asom_object *o = ASOM_VAL2OBJ(v);
-    return o->klass;
-}
+// (asom_class_of moved to asom_runtime.h as static inline so SD shards
+// can fold the receiver-class load into the IC fast path.)
 
 // ---------------------------------------------------------------------------
 // Frame chain + non-local return.

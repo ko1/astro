@@ -67,8 +67,17 @@ VALUE asom_super_send(CTX *c, VALUE receiver, const char *selector,
 // Non-local return out of a block; unwinds via longjmp through the home frame.
 void asom_nonlocal_return(CTX *c, VALUE v);
 
-// Class machinery.
-struct asom_class *asom_class_of(CTX *c, VALUE v);
+// Class machinery. Inlined here so SD shards (compiled in their own TU
+// against the bare `node.h` → `asom_runtime.h`) don't pay a GOT indirect
+// call per send to fetch the receiver's class. The body is tiny (one
+// tag check + a struct field load) so always-inlining is unambiguous.
+static inline struct asom_class *
+asom_class_of(CTX *c, VALUE v)
+{
+    if (ASOM_IS_INT(v)) return c->cls_integer;
+    struct asom_object *o = ASOM_VAL2OBJ(v);
+    return o->klass;
+}
 
 // IC fast path. Inlined into every node_send / SD_*.c call site so a cache
 // hit costs only the inline integer compares + an asom_invoke call. The
