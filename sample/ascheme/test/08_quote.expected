@@ -1,0 +1,15 @@
+hello
+()
+(1 2 3)
+(a (b c) d)
+(quote quoted)
+#t
+#f
+#t
+#t
+#t
+#t
+#t
+#t
+#t
+#f

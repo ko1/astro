@@ -41,6 +41,8 @@ sample/calc/            Minimal calculator (3 nodes)
 sample/naruby/          "Not a Ruby" — Ruby subset, JIT enabled
 sample/abruby/          "a bit Ruby" — larger Ruby subset, CRuby C extension
 sample/wastro/          WebAssembly 1.0 interpreter (.wat + .wasm + .wast)
+sample/asom/            ASTro SOM — Smalltalk dialect; SOM-st/SOM as submodule
+sample/ascheme/         R5RS Scheme — full numeric tower (GMP), Boehm GC, PGO
 docs/                   Design notes and papers
 ```
 
@@ -50,6 +52,8 @@ docs/                   Design notes and papers
 - [`sample/naruby/`](./sample/naruby/) — "Not a Ruby": a minimal Ruby subset (~21 nodes, integer-only) used for evaluating all four execution modes including JIT.
 - [`sample/abruby/`](./sample/abruby/) — "a bit Ruby": a larger Ruby subset implemented as a CRuby C extension. Supports classes, blocks, exceptions, strings/arrays/hashes, and Bignum/Float/Rational/Complex via the CRuby numerics. See [`sample/abruby/docs/abruby_spec.md`](./sample/abruby/docs/abruby_spec.md) for the language spec.
 - [`sample/wastro/`](./sample/wastro/) — WebAssembly on ASTro: a wasm 1.0 (MVP) interpreter (~210 nodes, four numeric types, full memory / table / call_indirect / spec-test harness). Reads both `.wat` and `.wasm`. AOT-cached runs are competitive with Cranelift JIT (`wasmtime`) across the bundled benchmark suite (`bench.rb`). See [`sample/wastro/docs/runtime.md`](./sample/wastro/docs/runtime.md) for the runtime architecture.
+- [`sample/asom/`](./sample/asom/) — ASTro SOM: a port of the [Simple Object Machine](https://som-st.github.io/) Smalltalk dialect. Bundles the upstream SOM-st/SOM repository as a submodule for the standard library, TestSuite, and AreWeFastYet benchmark suite. Hand-written lexer/parser, tagged-int object model, per-class metaclasses, lexical block scope with `escapedBlock:` recovery, `doesNotUnderstand:`, ~190 C-level primitives, sends up to 8 args, class-side fields, `#(...)` literal arrays. Passes **211/221 (95.5%) assertions** of the SOM-st/SOM TestSuite (19/24 files clean). On the AreWeFastYet benchmark suite it is roughly on par with **SOM++** (the optimised C++ reference), 14–250× faster than **CSOM**, and 30–250× faster than **PySOM** (plain CPython).
+- [`sample/ascheme/`](./sample/ascheme/) — **R5RS Scheme on ASTro**.  40 node kinds covering tail-call trampoline, escape `call/cc`, `delay`/`force`, multiple values, file ports, the full R5RS numeric tower (fixnum / bignum / rational / flonum / complex via GMP), and Ruby-style inline flonum encoding.  Specialized nodes for the common arith / predicate / vector ops with R5RS-faithful runtime rebinding detection (`arith_cache @ref` snapshot of `PRIM_<op>_VAL` at install_prims time).  Three execution modes — interpreter, AOT, and abruby-style `--pg-compile` PGO — wired into a `make compare` table that pits ascheme against chibi-scheme 0.12 and guile 3.0 (JIT).  AOT/PGO-cached beats chibi on 5/7 micro-benchmarks and beats guile-JIT on 7/7.  Passes 16 self-tests + 179/179 of chibi's `tests/r5rs-tests.scm` (machine-converted).  See [`sample/ascheme/docs/runtime.md`](./sample/ascheme/docs/runtime.md) for the runtime architecture.
 
 ## References
 

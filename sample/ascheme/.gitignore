@@ -1,0 +1,17 @@
+# ASTroGen-generated sources
+node_alloc.c
+node_dispatch.c
+node_dump.c
+node_eval.c
+node_hash.c
+node_head.h
+node_replace.c
+node_specialize.c
+node_specialized.c
+
+# Build artifacts
+ascheme
+code_store/
+
+# chibi-scheme cache for `make compare`
+.chibi/

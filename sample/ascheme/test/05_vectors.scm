@@ -1,0 +1,12 @@
+;; vectors
+(display (vector 1 2 3 4)) (newline)
+(display (make-vector 5 'x)) (newline)
+(define v (vector 'a 'b 'c 'd))
+(display (vector-length v)) (newline)
+(display (vector-ref v 2)) (newline)
+(vector-set! v 0 'Z)
+(display v) (newline)
+(display (vector->list (vector 1 2 3))) (newline)
+(display (list->vector '(x y z))) (newline)
+(display (vector? v)) (newline)
+(display (vector? '(1 2 3))) (newline)

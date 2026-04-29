@@ -1,0 +1,22 @@
+;; control flow
+(display (if #t 'yes 'no)) (newline)
+(display (if #f 'yes 'no)) (newline)
+(display (if 0 'yes 'no)) (newline)        ; 0 is truthy in scheme
+(display (if '() 'yes 'no)) (newline)      ; () is truthy too
+(display (cond ((= 1 2) 'a) ((= 1 1) 'b) (else 'c))) (newline)
+(display (cond ((= 1 2) 'a) ((= 1 3) 'b) (else 'c))) (newline)
+(display (case 2 ((1) 'one) ((2 3) 'two-or-three) (else 'other))) (newline)
+(display (case 5 ((1) 'one) ((2 3) 'two-or-three) (else 'other))) (newline)
+(display (and 1 2 3)) (newline)
+(display (and 1 #f 3)) (newline)
+(display (and)) (newline)
+(display (or #f #f 5)) (newline)
+(display (or #f #f #f)) (newline)
+(display (or)) (newline)
+(display (when (> 5 3) 'yes)) (newline)
+(display (unless (> 3 5) 'yes)) (newline)
+(display (begin 1 2 3)) (newline)
+(display (do ((i 0 (+ i 1)) (s 0 (+ s i))) ((= i 5) s))) (newline)
+(display (not #f)) (newline)
+(display (not #t)) (newline)
+(display (not 0)) (newline)

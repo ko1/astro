@@ -1,0 +1,524 @@
+// ascheme — R5RS Scheme on ASTro.
+//
+// Tree-walking interpreter; lexical envs are heap-allocated `sframe`
+// chains, closures hold (body, env), tail calls re-enter via the CTX
+// trampoline (`tail_call_pending` + `next_body` + `next_env`).  Most
+// helpers live in main.c so the EVAL bodies stay short.
+
+// ---------------------------------------------------------------------------
+// Constants.
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+node_const_int(CTX * restrict c, NODE * restrict n, int32_t v)
+{
+    (void)c; (void)n;
+    return SCM_FIX(v);
+}
+
+NODE_DEF
+node_const_int64(CTX * restrict c, NODE * restrict n, uint64_t v)
+{
+    (void)c; (void)n;
+    return (VALUE)v;
+}
+
+NODE_DEF
+node_const_double(CTX * restrict c, NODE * restrict n, double v)
+{
+    (void)n;
+    return scm_make_double(v);
+}
+
+NODE_DEF
+node_const_str(CTX * restrict c, NODE * restrict n, const char *s)
+{
+    (void)n;
+    return scm_make_string(s, strlen(s));
+}
+
+NODE_DEF
+node_const_sym(CTX * restrict c, NODE * restrict n, const char *s)
+{
+    (void)c; (void)n;
+    return scm_intern(s);
+}
+
+NODE_DEF
+node_const_char(CTX * restrict c, NODE * restrict n, uint32_t cp)
+{
+    (void)c; (void)n;
+    return scm_make_char(cp);
+}
+
+NODE_DEF
+node_const_bool(CTX * restrict c, NODE * restrict n, uint32_t v)
+{
+    (void)c; (void)n;
+    return v ? SCM_TRUE : SCM_FALSE;
+}
+
+NODE_DEF
+node_const_nil(CTX * restrict c, NODE * restrict n)
+{
+    (void)c; (void)n;
+    return SCM_NIL;
+}
+
+NODE_DEF
+node_const_unspec(CTX * restrict c, NODE * restrict n)
+{
+    (void)c; (void)n;
+    return SCM_UNSPEC;
+}
+
+// Pre-built data structure (list/vector/string built at parse time).
+// Stored inline as the bit-pattern of a heap pointer (uint64_t).  The
+// hash factors in the address bits, so cross-run hashing isn't stable —
+// fine for the plain interpreter.
+NODE_DEF
+node_quote(CTX * restrict c, NODE * restrict n, uint64_t v)
+{
+    (void)c; (void)n;
+    return (VALUE)v;
+}
+
+// ---------------------------------------------------------------------------
+// Lexical / global variable access.
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+node_lref(CTX * restrict c, NODE * restrict n, uint32_t depth, uint32_t idx)
+{
+    (void)n;
+    struct sframe *e = c->env;
+    for (uint32_t i = 0; i < depth; i++) e = e->parent;
+    return e->slots[idx];
+}
+
+NODE_DEF
+node_lset(CTX * restrict c, NODE * restrict n, uint32_t depth, uint32_t idx, NODE *val)
+{
+    (void)n;
+    VALUE v = EVAL_ARG(c, val);
+    struct sframe *e = c->env;
+    for (uint32_t i = 0; i < depth; i++) e = e->parent;
+    e->slots[idx] = v;
+    return SCM_UNSPEC;
+}
+
+NODE_DEF
+node_gref(CTX * restrict c, NODE * restrict n, const char *name, struct gref_cache *cache@ref)
+{
+    (void)n;
+    // Hot path: cached → direct array index.  globals are append-only, so
+    // a once-resolved index stays valid forever; set!/define on the same
+    // name updates c->globals[i].value in place (no invalidation needed).
+    if (LIKELY(cache->cached)) {
+        return c->globals[cache->index].value;
+    }
+    // Cold path: linear search by name, populate the cache.
+    for (size_t i = 0; i < c->globals_size; i++) {
+        if (strcmp(c->globals[i].name, name) == 0) {
+            if (UNLIKELY(!c->globals[i].defined))
+                scm_error(c, "unbound variable: %s", name);
+            cache->index = (uint32_t)i;
+            cache->cached = 1;
+            return c->globals[i].value;
+        }
+    }
+    scm_error(c, "unbound variable: %s", name);
+}
+
+NODE_DEF
+node_gset(CTX * restrict c, NODE * restrict n, const char *name, NODE *val)
+{
+    (void)n;
+    VALUE v = EVAL_ARG(c, val);
+    scm_global_set(c, name, v);
+    return SCM_UNSPEC;
+}
+
+NODE_DEF
+node_gdef(CTX * restrict c, NODE * restrict n, const char *name, NODE *val)
+{
+    (void)n;
+    VALUE v = EVAL_ARG(c, val);
+    scm_global_define(c, name, v);
+    return SCM_UNSPEC;
+}
+
+// ---------------------------------------------------------------------------
+// Control flow.
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+node_if(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *thn, NODE *els)
+{
+    (void)n;
+    VALUE cv = EVAL_ARG(c, cond);
+    if (scm_is_true(cv)) {
+        return EVAL_ARG(c, thn);
+    } else {
+        return EVAL_ARG(c, els);
+    }
+}
+
+NODE_DEF
+node_seq(CTX * restrict c, NODE * restrict n, NODE *first, NODE *rest)
+{
+    (void)n;
+    EVAL_ARG(c, first);
+    return EVAL_ARG(c, rest);
+}
+
+NODE_DEF @noinline
+node_lambda(CTX * restrict c, NODE * restrict n, uint32_t nparams, uint32_t has_rest, uint32_t nlocals, NODE *body)
+{
+    (void)n; (void)nlocals;
+    return scm_make_closure(body, c->env, (int)nparams, (int)has_rest);
+}
+
+// ---------------------------------------------------------------------------
+// Calls.  Each fixed-arity kind has tail / non-tail behaviour selected by
+// the `is_tail` field stamped at parse time.  `call_lambda_body` is the
+// trampoline for non-tail invocations.
+// ---------------------------------------------------------------------------
+
+// Inlinable: SPECIALIZE bakes the children's dispatchers into direct calls,
+// so the C compiler can fold every EVAL_ARG into the SD body.
+NODE_DEF
+node_call_0(CTX * restrict c, NODE * restrict n, uint32_t is_tail, NODE *fn)
+{
+    (void)n;
+    VALUE f = EVAL_ARG(c, fn);
+    return scm_apply_tail(c, f, 0, NULL, is_tail);
+}
+
+NODE_DEF
+node_call_1(CTX * restrict c, NODE * restrict n, uint32_t is_tail, NODE *fn, NODE *a0)
+{
+    (void)n;
+    VALUE f = EVAL_ARG(c, fn);
+    VALUE av[1];
+    av[0] = EVAL_ARG(c, a0);
+    return scm_apply_tail(c, f, 1, av, is_tail);
+}
+
+NODE_DEF
+node_call_2(CTX * restrict c, NODE * restrict n, uint32_t is_tail, NODE *fn, NODE *a0, NODE *a1)
+{
+    (void)n;
+    VALUE f = EVAL_ARG(c, fn);
+    VALUE av[2];
+    av[0] = EVAL_ARG(c, a0);
+    av[1] = EVAL_ARG(c, a1);
+    return scm_apply_tail(c, f, 2, av, is_tail);
+}
+
+NODE_DEF
+node_call_3(CTX * restrict c, NODE * restrict n, uint32_t is_tail, NODE *fn, NODE *a0, NODE *a1, NODE *a2)
+{
+    (void)n;
+    VALUE f = EVAL_ARG(c, fn);
+    VALUE av[3];
+    av[0] = EVAL_ARG(c, a0);
+    av[1] = EVAL_ARG(c, a1);
+    av[2] = EVAL_ARG(c, a2);
+    return scm_apply_tail(c, f, 3, av, is_tail);
+}
+
+NODE_DEF
+node_call_4(CTX * restrict c, NODE * restrict n, uint32_t is_tail, NODE *fn, NODE *a0, NODE *a1, NODE *a2, NODE *a3)
+{
+    (void)n;
+    VALUE f = EVAL_ARG(c, fn);
+    VALUE av[4];
+    av[0] = EVAL_ARG(c, a0);
+    av[1] = EVAL_ARG(c, a1);
+    av[2] = EVAL_ARG(c, a2);
+    av[3] = EVAL_ARG(c, a3);
+    return scm_apply_tail(c, f, 4, av, is_tail);
+}
+
+// Variable arity: arg sub-trees live in a global table (ASCHEME_CALL_ARGS),
+// indexed by (args_idx .. args_idx + argc).  Stays @noinline because the
+// arg dispatch goes through `arg->head.dispatcher` (a runtime read of the
+// child node), which the specializer can't bake to a static SD call.
+NODE_DEF @noinline
+node_call_n(CTX * restrict c, NODE * restrict n, uint32_t is_tail, NODE *fn, uint32_t args_idx, uint32_t argc)
+{
+    (void)n;
+    extern NODE **ASCHEME_CALL_ARGS;
+    VALUE f = EVAL_ARG(c, fn);
+    VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc ? argc : 1));
+    for (uint32_t i = 0; i < argc; i++) {
+        NODE *arg = ASCHEME_CALL_ARGS[args_idx + i];
+        av[i] = (*arg->head.dispatcher)(c, arg);
+    }
+    return scm_apply_tail(c, f, (int)argc, av, is_tail);
+}
+
+// call/cc — captures an escape continuation (one-shot, downward only).
+NODE_DEF @noinline
+node_callcc(CTX * restrict c, NODE * restrict n, NODE *fn)
+{
+    (void)n;
+    VALUE f = EVAL_ARG(c, fn);
+    return scm_callcc(c, f);
+}
+
+// ---------------------------------------------------------------------------
+// Specialized arithmetic + comparison.  Compiled when the parser sees
+// `(<op> a b)` with op ∈ {+,-,*,<,=,<=,>,>=} and the op symbol is not
+// shadowed by a lexical binding.
+//
+// R5RS allows redefining arithmetic operators (`(set! + my+)`).  We
+// preserve that semantics: each node carries an `arith_cache @ref` whose
+// `index` points at the operator's slot in `c->globals`, and the EVAL
+// body checks `c->globals[index].value == PRIM_<op>_VAL` (the snapshot
+// install_prims took) before the fast path runs.  When the user rebinds
+// the operator, that check fails and we fall through `arith_dispatch`
+// (a regular `scm_apply` against the new binding).
+//
+// Hot path: 2-fixnum check + overflow check, ~5 instructions after AOT
+// specialization folds the children's dispatchers in.  Off the hot path,
+// non-fixnum operands flow through the numeric tower (add2/sub2/...);
+// rebound operators flow through the general dispatch.
+
+extern VALUE arith_dispatch(CTX *c, struct arith_cache *cache, const char *opname, VALUE av, VALUE bv);
+
+NODE_DEF
+node_arith_add(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct arith_cache *cache@ref)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    if (LIKELY(cache->resolved && c->globals[cache->index].value == PRIM_PLUS_VAL)) {
+        if (LIKELY(SCM_IS_FIXNUM(av) & SCM_IS_FIXNUM(bv))) {
+            int64_t r;
+            if (LIKELY(!__builtin_add_overflow((int64_t)SCM_FIXVAL(av),
+                                               (int64_t)SCM_FIXVAL(bv), &r) &&
+                        r >= SCM_FIXNUM_MIN && r <= SCM_FIXNUM_MAX))
+                return SCM_FIX(r);
+        }
+        return add2(c, av, bv);
+    }
+    return arith_dispatch(c, cache, "+", av, bv);
+}
+
+NODE_DEF
+node_arith_sub(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct arith_cache *cache@ref)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    if (LIKELY(cache->resolved && c->globals[cache->index].value == PRIM_MINUS_VAL)) {
+        if (LIKELY(SCM_IS_FIXNUM(av) & SCM_IS_FIXNUM(bv))) {
+            int64_t r;
+            if (LIKELY(!__builtin_sub_overflow((int64_t)SCM_FIXVAL(av),
+                                               (int64_t)SCM_FIXVAL(bv), &r) &&
+                        r >= SCM_FIXNUM_MIN && r <= SCM_FIXNUM_MAX))
+                return SCM_FIX(r);
+        }
+        return sub2(c, av, bv);
+    }
+    return arith_dispatch(c, cache, "-", av, bv);
+}
+
+NODE_DEF
+node_arith_mul(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct arith_cache *cache@ref)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    if (LIKELY(cache->resolved && c->globals[cache->index].value == PRIM_MUL_VAL)) {
+        if (LIKELY(SCM_IS_FIXNUM(av) & SCM_IS_FIXNUM(bv))) {
+            int64_t r;
+            if (LIKELY(!__builtin_mul_overflow((int64_t)SCM_FIXVAL(av),
+                                               (int64_t)SCM_FIXVAL(bv), &r) &&
+                        r >= SCM_FIXNUM_MIN && r <= SCM_FIXNUM_MAX))
+                return SCM_FIX(r);
+        }
+        return mul2(c, av, bv);
+    }
+    return arith_dispatch(c, cache, "*", av, bv);
+}
+
+// astrogen scans `NODE_DEF` lines literally — preprocessor macros aren't
+// expanded — so we write the five comparators out longhand.
+
+NODE_DEF
+node_arith_lt(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct arith_cache *cache@ref)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    if (LIKELY(cache->resolved && c->globals[cache->index].value == PRIM_NUM_LT_VAL)) {
+        if (LIKELY(SCM_IS_FIXNUM(av) & SCM_IS_FIXNUM(bv)))
+            return ((int64_t)SCM_FIXVAL(av) < (int64_t)SCM_FIXVAL(bv)) ? SCM_TRUE : SCM_FALSE;
+        return cmp2(c, av, bv) < 0 ? SCM_TRUE : SCM_FALSE;
+    }
+    return arith_dispatch(c, cache, "<", av, bv);
+}
+
+NODE_DEF
+node_arith_le(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct arith_cache *cache@ref)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    if (LIKELY(cache->resolved && c->globals[cache->index].value == PRIM_NUM_LE_VAL)) {
+        if (LIKELY(SCM_IS_FIXNUM(av) & SCM_IS_FIXNUM(bv)))
+            return ((int64_t)SCM_FIXVAL(av) <= (int64_t)SCM_FIXVAL(bv)) ? SCM_TRUE : SCM_FALSE;
+        return cmp2(c, av, bv) <= 0 ? SCM_TRUE : SCM_FALSE;
+    }
+    return arith_dispatch(c, cache, "<=", av, bv);
+}
+
+NODE_DEF
+node_arith_gt(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct arith_cache *cache@ref)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    if (LIKELY(cache->resolved && c->globals[cache->index].value == PRIM_NUM_GT_VAL)) {
+        if (LIKELY(SCM_IS_FIXNUM(av) & SCM_IS_FIXNUM(bv)))
+            return ((int64_t)SCM_FIXVAL(av) > (int64_t)SCM_FIXVAL(bv)) ? SCM_TRUE : SCM_FALSE;
+        return cmp2(c, av, bv) > 0 ? SCM_TRUE : SCM_FALSE;
+    }
+    return arith_dispatch(c, cache, ">", av, bv);
+}
+
+NODE_DEF
+node_arith_ge(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct arith_cache *cache@ref)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    if (LIKELY(cache->resolved && c->globals[cache->index].value == PRIM_NUM_GE_VAL)) {
+        if (LIKELY(SCM_IS_FIXNUM(av) & SCM_IS_FIXNUM(bv)))
+            return ((int64_t)SCM_FIXVAL(av) >= (int64_t)SCM_FIXVAL(bv)) ? SCM_TRUE : SCM_FALSE;
+        return cmp2(c, av, bv) >= 0 ? SCM_TRUE : SCM_FALSE;
+    }
+    return arith_dispatch(c, cache, ">=", av, bv);
+}
+
+NODE_DEF
+node_arith_eq(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct arith_cache *cache@ref)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    if (LIKELY(cache->resolved && c->globals[cache->index].value == PRIM_NUM_EQ_VAL)) {
+        if (LIKELY(SCM_IS_FIXNUM(av) & SCM_IS_FIXNUM(bv)))
+            return ((int64_t)SCM_FIXVAL(av) == (int64_t)SCM_FIXVAL(bv)) ? SCM_TRUE : SCM_FALSE;
+        return cmp2(c, av, bv) == 0 ? SCM_TRUE : SCM_FALSE;
+    }
+    return arith_dispatch(c, cache, "=", av, bv);
+}
+
+// ---------------------------------------------------------------------------
+// Specialized 1-arg predicates: null? / pair? / car / cdr / not.  Hot path
+// dispatches inline; off the hot path (or after a redefine) we go through
+// `arith_dispatch` reusing the same cache layout — its 1-arg form only
+// touches `argv[0]`.
+
+extern VALUE arith_dispatch1(CTX *c, struct arith_cache *cache, const char *opname, VALUE av);
+
+NODE_DEF
+node_pred_null(CTX * restrict c, NODE * restrict n, NODE *a, struct arith_cache *cache@ref)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    if (LIKELY(cache->resolved && c->globals[cache->index].value == PRIM_NULL_P_VAL))
+        return av == SCM_NIL ? SCM_TRUE : SCM_FALSE;
+    return arith_dispatch1(c, cache, "null?", av);
+}
+
+NODE_DEF
+node_pred_pair(CTX * restrict c, NODE * restrict n, NODE *a, struct arith_cache *cache@ref)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    if (LIKELY(cache->resolved && c->globals[cache->index].value == PRIM_PAIR_P_VAL))
+        return scm_is_pair(av) ? SCM_TRUE : SCM_FALSE;
+    return arith_dispatch1(c, cache, "pair?", av);
+}
+
+NODE_DEF
+node_pred_car(CTX * restrict c, NODE * restrict n, NODE *a, struct arith_cache *cache@ref)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    if (LIKELY(cache->resolved && c->globals[cache->index].value == PRIM_CAR_VAL)) {
+        if (LIKELY(scm_is_pair(av))) return SCM_PTR(av)->pair.car;
+        scm_error(c, "car: not a pair");
+    }
+    return arith_dispatch1(c, cache, "car", av);
+}
+
+NODE_DEF
+node_pred_cdr(CTX * restrict c, NODE * restrict n, NODE *a, struct arith_cache *cache@ref)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    if (LIKELY(cache->resolved && c->globals[cache->index].value == PRIM_CDR_VAL)) {
+        if (LIKELY(scm_is_pair(av))) return SCM_PTR(av)->pair.cdr;
+        scm_error(c, "cdr: not a pair");
+    }
+    return arith_dispatch1(c, cache, "cdr", av);
+}
+
+NODE_DEF
+node_pred_not(CTX * restrict c, NODE * restrict n, NODE *a, struct arith_cache *cache@ref)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    if (LIKELY(cache->resolved && c->globals[cache->index].value == PRIM_NOT_VAL))
+        return av == SCM_FALSE ? SCM_TRUE : SCM_FALSE;
+    return arith_dispatch1(c, cache, "not", av);
+}
+
+// ---------------------------------------------------------------------------
+// Specialized vector ops: vector-ref / vector-set!.  Skip the prim entry
+// + dispatch to do the bounds check inline.
+
+NODE_DEF
+node_vec_ref(CTX * restrict c, NODE * restrict n, NODE *vec, NODE *idx, struct arith_cache *cache@ref)
+{
+    (void)n;
+    VALUE vv = EVAL_ARG(c, vec);
+    VALUE iv = EVAL_ARG(c, idx);
+    if (LIKELY(cache->resolved && c->globals[cache->index].value == PRIM_VECTOR_REF_VAL)) {
+        if (LIKELY(scm_is_vector(vv) && SCM_IS_FIXNUM(iv))) {
+            size_t i = (size_t)SCM_FIXVAL(iv);
+            if (LIKELY(i < SCM_PTR(vv)->vec.len))
+                return SCM_PTR(vv)->vec.items[i];
+        }
+        scm_error(c, "vector-ref: type or range error");
+    }
+    return arith_dispatch(c, cache, "vector-ref", vv, iv);
+}
+
+NODE_DEF
+node_vec_set(CTX * restrict c, NODE * restrict n, NODE *vec, NODE *idx, NODE *val, struct arith_cache *cache@ref)
+{
+    (void)n;
+    VALUE vv = EVAL_ARG(c, vec);
+    VALUE iv = EVAL_ARG(c, idx);
+    VALUE xv = EVAL_ARG(c, val);
+    if (LIKELY(cache->resolved && c->globals[cache->index].value == PRIM_VECTOR_SET_VAL)) {
+        if (LIKELY(scm_is_vector(vv) && SCM_IS_FIXNUM(iv))) {
+            size_t i = (size_t)SCM_FIXVAL(iv);
+            if (LIKELY(i < SCM_PTR(vv)->vec.len)) {
+                SCM_PTR(vv)->vec.items[i] = xv;
+                return SCM_UNSPEC;
+            }
+        }
+        scm_error(c, "vector-set!: type or range error");
+    }
+    // 3-arg slow path: build a generic apply
+    extern VALUE arith_dispatch3(CTX *c, struct arith_cache *cache, const char *opname, VALUE a, VALUE b, VALUE d);
+    return arith_dispatch3(c, cache, "vector-set!", vv, iv, xv);
+}
