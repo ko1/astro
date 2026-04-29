@@ -632,7 +632,11 @@ astro_cs_disasm(NODE *n)
     snprintf(obj_path, sizeof(obj_path), "%s/o/%s.o",
              astro_cs.store_dir, sym_name);
 
-    char cmd[ASTRO_CS_PATH_MAX * 2 + 512];
+    // Format string has three path expansions (obj_path × 2, so_path × 1)
+    // plus sym_name; each path can grow up to ASTRO_CS_PATH_MAX, so size
+    // the buffer for 3 × PATH_MAX + slack to keep gcc -Wformat-truncation
+    // happy.
+    char cmd[ASTRO_CS_PATH_MAX * 4 + 512];
     snprintf(cmd, sizeof(cmd),
              "{ if [ -f %s ]; then "
              "    producer=$(readelf -p .comment %s 2>/dev/null "
