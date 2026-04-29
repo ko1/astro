@@ -38,20 +38,20 @@ files = files.select { |f| args.any? { |a| File.basename(f).include?(a) } } unle
 #   cmd:   command template — '%s' is replaced with the .lua filename
 ENGINES = [
   {
-    name: "luastro-plain",
+    name: "plain",
     cmd:  "#{EXE} %s",
   },
   {
     # AOT cold-start: compile + run in one process every iteration.
     # CCACHE_DISABLE=1 forces gcc to compile from scratch (no ccache).
-    name: "luastro-AOT-1st",
+    name: "AOT-1st",
     prep: "rm -rf #{PARENT}/code_store",
     cmd:  "CCACHE_DISABLE=1 #{EXE} -c %s",
   },
   {
     # AOT steady-state: bake once, then time pure execution against the
     # warmed code_store/all.so.  Mirrors wastro's "AOT-cached" column.
-    name:  "luastro-AOT-cached",
+    name:  "AOT-cached",
     setup: "rm -rf #{PARENT}/code_store && CCACHE_DISABLE=1 #{EXE} --aot-compile %s",
     cmd:   "#{EXE} %s",
   },

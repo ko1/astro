@@ -433,18 +433,19 @@ EVAL body 不可侵原則を守った範囲：
 
 ## ベンチマークの読み方
 
-各サンプルの `make bench` は典型的に以下を比較する：
+各サンプルの `make bench` は典型的に以下を比較する（言語ディレクトリ配下で
+走らせるので `<lang>-` プレフィックスは付けない）：
 
 | 列 | 内容 |
 |---|---|
-| `<lang>-plain` | 純インタプリタ（`code_store/` を参照しない） |
-| `<lang>-AOT-1st` | `-c`：bake + run を 1 プロセスで実行。**gcc コンパイル時間込み** の cold-start 測定。`code_store/` を毎反復削除 + `CCACHE_DISABLE=1` |
-| `<lang>-AOT-cached` | bench setup で 1 度 bake（時間外）→ 計測時は plain run で warmed `all.so` を消費 |
-| `lua5.4` / `luajit` / `gcc -O3` | 比較対象 |
+| `plain` | 純インタプリタ（`code_store/` を参照しない） |
+| `AOT-1st` | `-c`：bake + run を 1 プロセスで実行。**gcc コンパイル時間込み** の cold-start 測定。`code_store/` を毎反復削除 + `CCACHE_DISABLE=1` |
+| `AOT-cached` | bench setup で 1 度 bake（時間外）→ 計測時は plain run で warmed `all.so` を消費 |
+| `lua5.4` / `luajit` / `gcc -O3` 等 | 比較対象（リファレンス実装） |
 
 「AOT-1st が遅い」のは正しい。性能を稼ぎたいなら AOT-cached を見る。
 
-「`<lang>-plain` が速い」のは fused loop 等が parser-pass で効いているケース
+「`plain` が速い」のは fused loop 等が parser-pass で効いているケース
 （luastro の `node_numfor_int_sum` で loop ベンチが lua5.4 より 13× 速い等）。
 
 ---
