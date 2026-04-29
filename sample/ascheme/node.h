@@ -62,6 +62,10 @@ VALUE scm_callcc(CTX *c, VALUE fn);
 // Slow path for `scm_apply_tail` — when the inline fast path below
 // can't apply.
 VALUE scm_apply_tail_slow(CTX *c, VALUE fn, int argc, VALUE *argv, uint32_t is_tail);
+// `--pg-compile` flag — when set, the inline trampoline + scm_apply
+// closure paths bump `body->head.dispatch_cnt`.  Off by default so
+// the read-modify-write doesn't dominate tight tail loops.
+extern bool ASCHEME_PROFILING;
 
 // Both the tail and non-tail closure-leaf paths are inlined here —
 // SD `.so` files see the same body as the host interpreter, and gcc
@@ -71,6 +75,14 @@ VALUE scm_apply_tail_slow(CTX *c, VALUE fn, int argc, VALUE *argv, uint32_t is_t
 static inline __attribute__((always_inline)) VALUE
 scm_apply_tail(CTX *c, VALUE fn, int argc, VALUE *argv, uint32_t is_tail)
 {
+    // Profile mode: route every closure call through the out-of-line
+    // path so `scm_apply` / `scm_apply_tail_slow` increment the
+    // body->head.dispatch_cnt counter that --pg-compile reads.  The
+    // inline fast paths below skip the increment to keep tight loops
+    // tight in non-profile runs; this branch is taken only under
+    // --pg-compile.
+    if (UNLIKELY(ASCHEME_PROFILING))
+        return scm_apply_tail_slow(c, fn, argc, argv, is_tail);
     // Tail-call fast path — frame reuse on self-tail-call to a leaf.
     if (is_tail && LIKELY(scm_is_closure(fn))) {
         struct sobj *cl = SCM_PTR(fn);
@@ -105,12 +117,14 @@ scm_apply_tail(CTX *c, VALUE fn, int argc, VALUE *argv, uint32_t is_tail)
             struct sframe *saved = c->env;
             NODE *body = cl->closure.body;
             c->env = new_env;
+            if (UNLIKELY(ASCHEME_PROFILING)) body->head.dispatch_cnt++;
             for (;;) {
                 VALUE v = EVAL(c, body);
                 if (!c->tail_call_pending) { c->env = saved; return v; }
                 c->tail_call_pending = 0;
                 body  = c->next_body;
                 c->env = c->next_env;
+                if (UNLIKELY(ASCHEME_PROFILING)) body->head.dispatch_cnt++;
             }
         }
     }

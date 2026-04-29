@@ -882,8 +882,9 @@ static size_t AOT_ENTRIES_CAP = 0;
 // loop can skip its `body->head.dispatch_cnt++` write when it isn't
 // going to be read.  Removing the counter increment shaves ~5 % off
 // tight tail-call loops because the read-modify-write across millions
-// of iterations is non-trivial.
-static bool ASCHEME_PROFILING = false;
+// of iterations is non-trivial.  Also referenced from the inline
+// scm_apply_tail in node.h.
+bool ASCHEME_PROFILING = false;
 
 static void
 aot_add_entry(NODE *n)
