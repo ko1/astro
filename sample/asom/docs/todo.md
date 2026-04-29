@@ -84,7 +84,9 @@ node_send1_intlt / intgt / intle / intge / inteq
 - [x] **制御フロー・インライン化** — `ifTrue: / whileTrue: /` 等の専用ノード
       実装済み（パース時、0p/0l/no-nested-block で発火）。詳細は
       [done.md#制御フローインライン化](done.md#制御フローインライン化)
-- [ ] `to:do:` の inline 化（1 引数ブロック対応＋フレーム reuse）
+- [x] **`to:do:` の inline 化** — 1 引数ブロック対応、stack/heap 2 種で
+      エスケープ可能性に応じて自動選択。詳細は
+      [done.md#todo-インライン化](done.md#todo-インライン化)
 - [ ] Polymorphic Inline Cache（`asom_callcache` を 1-element → 2..4 element）
 - [ ] Block の 0p/0l 制限の緩和: 0-param N-local も alloca で OK にできる
 - [ ] nested block を含む本体の inline 化（escape 解析が要る）

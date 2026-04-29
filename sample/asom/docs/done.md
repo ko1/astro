@@ -190,17 +190,38 @@ ifTrue:/ifFalse: 系は受信値が `val_true / val_false` でない場合の
 なる。パース時の `subtree_creates_block()` がこれを検出し、当該パターン
 は inline せず正規の send1/send2 で処理する。
 
-性能効果（前項のフレーム pool 追加分とあわせた累積、interp / best-of-3）:
+### `to:do:` インライン化
 
-| benchmark | baseline | + spec + pool | + inline | 累積倍率 |
-|-----------|----------|---------------|----------|---------|
-| Sieve     | 0.032s   | 0.019s        | 0.012s   | **2.7×** |
-| Permute   | 0.044s   | 0.034s        | 0.033s   | 1.33×    |
-| Towers    | 0.125s   | 0.094s        | 0.075s   | 1.67×    |
-| Bounce    | 0.037s   | 0.040s        | 0.008s   | **4.6×** |
-| BubbleSort| 0.023s   | 0.020s        | 0.007s   | **3.3×** |
-| Mandelbrot| 1.015s   | 1.016s        | 0.797s   | 1.27×    |
-| Queens    | 0.039s   | 0.031s        | 0.028s   | 1.39×    |
+`from to: end do: [ :var | body ]` でブロックが **1 引数・0 ローカル**な
+ものはパース時に専用 NODE に書き換える。受信側 `from` と `end` が
+SmallInteger なら C-level の `for` ループで反復し、`asom_block_invoke`
+の per-iter calloc + setjmp が消える（per-call 1 度のフレーム取得のみ）。
+
+エスケープ可能性で 2 種類に分岐:
+
+- `node_to_do` — 本体に nested block 生成なし → C スタック上のフレーム＋
+  `slot` 1 個。最速。
+- `node_to_do_pool` — 本体に nested block 生成あり → pool（heap）から
+  1 引数フレームを 1 個 pop。escape した closure は `captured` フラグ
+  経由で pool 外に固定するため、`asom_block_invoke` 同等の安全性。
+
+これにより Sieve のような outer to:do: が ifTrue: ネストを含んでいても
+inline 化可能になる（pool 版を使う）。
+
+### 性能効果（累積、interp / best-of-3）
+
+| benchmark | baseline | + spec+pool | + 制御flow inline | + to:do: inline | 累積倍率 |
+|-----------|----------|-------------|-------------------|------------------|---------|
+| Sieve     | 0.032s   | 0.019s      | 0.012s            | 0.009s           | **3.6×** |
+| Permute   | 0.044s   | 0.034s      | 0.033s            | 0.031s           | 1.42×    |
+| Towers    | 0.125s   | 0.094s      | 0.075s            | 0.073s           | 1.71×    |
+| Bounce    | 0.037s   | 0.040s      | 0.008s            | 0.007s           | **5.3×** |
+| BubbleSort| 0.023s   | 0.020s      | 0.007s            | 0.007s           | **3.3×** |
+| Mandelbrot| 1.015s   | 1.016s      | 0.797s            | 0.794s           | 1.28×    |
+| Queens    | 0.039s   | 0.031s      | 0.028s            | 0.020s           | **1.95×**|
+| List      | 0.071s   | (n/a)       | (n/a)             | 0.036s           | 1.97×    |
+| QuickSort | 0.031s   | (n/a)       | (n/a)             | 0.012s           | 2.6×     |
+| TreeSort  | 0.080s   | (n/a)       | (n/a)             | 0.045s           | 1.78×    |
 
 ### フレーム pool
 

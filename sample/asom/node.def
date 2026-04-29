@@ -451,9 +451,18 @@ node_super_send8(CTX * restrict c, NODE * restrict n, NODE *a0, NODE *a1, NODE *
 //  message via asom_send (rare in benchmarks; matches SOM standard).
 // -----------------------------------------------------------------------------
 
-// Stack-frame helpers for inlined blocks (defined in asom_runtime.c).
+// Stack-frame helpers for inlined 0-local control-flow blocks
+// (defined in asom_runtime.c). Required: body has no nested block
+// creation (escape risk vs the stack-allocated frame).
 extern void asom_inline_frame_push(CTX *c, struct asom_frame *frame);
 extern void asom_inline_frame_pop(CTX *c, struct asom_frame *frame);
+
+// Pool-allocated inline frame for N-local inlined blocks (e.g. to:do:'s
+// 1-param block — locals[0] holds the index). The heap-resident frame
+// pins via `captured` if a nested closure escapes, so this version is
+// safe regardless of what the body does.
+extern struct asom_frame *asom_inline_pool_frame_push(CTX *c, uint32_t num_locals, VALUE **out_locals);
+extern void asom_inline_pool_frame_pop(CTX *c, struct asom_frame *frame);
 
 NODE_DEF
 node_iftrue(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *body_block)
@@ -535,6 +544,66 @@ node_iffalse_iftrue(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *f_blo
     VALUE tblk = EVAL_ARG(c, t_block);
     VALUE args[2] = { fblk, tblk };
     return asom_send(c, v, asom_intern_cstr("ifFalse:ifTrue:"), 2, args, NULL);
+}
+
+// `from to: end do: [ :var | body ]` — inlined when receiver/end are
+// SmallInteger and the block has 1 param.
+//
+// Two flavours, chosen at parse time:
+//   - node_to_do  : body has no nested block creation. Frame lives on
+//                   the C stack with locals = &slot. Cheapest.
+//   - node_to_do_pool: body may create nested closures. Frame is
+//                   pool-allocated so escaped closures pin it via
+//                   `captured`. Slightly higher per-call overhead,
+//                   correctness-equivalent to asom_block_invoke.
+NODE_DEF
+node_to_do(CTX * restrict c, NODE * restrict n, NODE *from, NODE *end, NODE *body_block)
+{
+    VALUE from_v = EVAL_ARG(c, from);
+    VALUE end_v  = EVAL_ARG(c, end);
+    if (LIKELY(ASOM_IS_INT(from_v) && ASOM_IS_INT(end_v))) {
+        intptr_t lo = ASOM_VAL2INT(from_v);
+        intptr_t hi = ASOM_VAL2INT(end_v);
+        NODE *block_body = body_block->u.node_block.body;
+        NODE *stmts = block_body->u.node_block_body.body;
+        VALUE slot = 0;
+        struct asom_frame frame;
+        asom_inline_frame_push(c, &frame);
+        c->frame->locals = &slot;
+        for (intptr_t i = lo; i <= hi; i++) {
+            slot = ASOM_INT2VAL(i);
+            EVAL(c, stmts);
+        }
+        asom_inline_frame_pop(c, &frame);
+        return from_v;
+    }
+    VALUE blk = EVAL_ARG(c, body_block);
+    VALUE args[2] = { end_v, blk };
+    return asom_send(c, from_v, asom_intern_cstr("to:do:"), 2, args, NULL);
+}
+
+NODE_DEF
+node_to_do_pool(CTX * restrict c, NODE * restrict n, NODE *from, NODE *end, NODE *body_block)
+{
+    VALUE from_v = EVAL_ARG(c, from);
+    VALUE end_v  = EVAL_ARG(c, end);
+    if (LIKELY(ASOM_IS_INT(from_v) && ASOM_IS_INT(end_v))) {
+        intptr_t lo = ASOM_VAL2INT(from_v);
+        intptr_t hi = ASOM_VAL2INT(end_v);
+        NODE *block_body = body_block->u.node_block.body;
+        NODE *stmts = block_body->u.node_block_body.body;
+        VALUE *locals;
+        struct asom_frame *frame = asom_inline_pool_frame_push(c, 1, &locals);
+        for (intptr_t i = lo; i <= hi; i++) {
+            locals[0] = ASOM_INT2VAL(i);
+            EVAL(c, stmts);
+        }
+        asom_inline_pool_frame_pop(c, frame);
+        return from_v;
+    }
+    VALUE blk = EVAL_ARG(c, body_block);
+    VALUE args[2] = { end_v, blk };
+    return asom_send(c, from_v, asom_intern_cstr("to:do:"), 2, args, NULL);
 }
 
 // whileTrue:/whileFalse: receivers are always block literals at parse

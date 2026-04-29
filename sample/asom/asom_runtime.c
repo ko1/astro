@@ -393,6 +393,10 @@ asom_nonlocal_return(CTX *c, VALUE v)
 //  what asom_block_invoke would have set (the current frame).
 // -----------------------------------------------------------------------------
 
+// Forward decls for the per-bucket frame pool (defined later in this file).
+static struct asom_frame *frame_alloc(uint32_t slots, VALUE **out_locals, uint16_t *out_pool_slots);
+static void frame_free(struct asom_frame *frame);
+
 void
 asom_inline_frame_push(CTX *c, struct asom_frame *frame)
 {
@@ -412,6 +416,39 @@ void
 asom_inline_frame_pop(CTX *c, struct asom_frame *frame)
 {
     c->frame = frame->parent;
+}
+
+// Pool-allocated inline frame with N locals. Used by node_to_do (and
+// future N-local inline patterns) where the body may create nested
+// closures: the heap-resident frame can be pinned via `captured` if a
+// closure escapes, exactly like asom_block_invoke. One pool pop per
+// outer call, vs the un-inlined path's per-iteration block_invoke.
+struct asom_frame *
+asom_inline_pool_frame_push(CTX *c, uint32_t num_locals, VALUE **out_locals)
+{
+    VALUE *locals;
+    uint16_t pool_slots;
+    struct asom_frame *frame = frame_alloc(num_locals, &locals, &pool_slots);
+    frame->self = c->frame->self;
+    frame->locals = locals;
+    frame->method = c->frame->method;
+    frame->parent = c->frame;
+    frame->home = c->frame->home;
+    frame->lexical_parent = c->frame;
+    frame->returned = 0;
+    frame->captured = false;
+    frame->pool_slots = pool_slots;
+    for (uint32_t i = 0; i < num_locals; i++) locals[i] = c->val_nil;
+    c->frame = frame;
+    *out_locals = locals;
+    return frame;
+}
+
+void
+asom_inline_pool_frame_pop(CTX *c, struct asom_frame *frame)
+{
+    c->frame = frame->parent;
+    frame_free(frame);
 }
 
 VALUE

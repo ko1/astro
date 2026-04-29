@@ -436,7 +436,8 @@ extern const struct NodeKind
     kind_node_super_send7, kind_node_super_send8,
     kind_node_iftrue, kind_node_iffalse,
     kind_node_iftrue_iffalse, kind_node_iffalse_iftrue,
-    kind_node_whiletrue, kind_node_whilefalse;
+    kind_node_whiletrue, kind_node_whilefalse,
+    kind_node_to_do, kind_node_to_do_pool;
 
 // -----------------------------------------------------------------------------
 //  Control-flow inlining
@@ -497,6 +498,16 @@ subtree_creates_block(NODE *n)
     if (k == &kind_node_whilefalse) {
         return subtree_creates_block(n->u.node_whilefalse.cond_stmts)
             || subtree_creates_block(n->u.node_whilefalse.body_stmts);
+    }
+    if (k == &kind_node_to_do) {
+        return subtree_creates_block(n->u.node_to_do.from)
+            || subtree_creates_block(n->u.node_to_do.end)
+            || subtree_creates_block(n->u.node_to_do.body_block);
+    }
+    if (k == &kind_node_to_do_pool) {
+        return subtree_creates_block(n->u.node_to_do_pool.from)
+            || subtree_creates_block(n->u.node_to_do_pool.end)
+            || subtree_creates_block(n->u.node_to_do_pool.body_block);
     }
 
     // Structural / control nodes — recurse into NODE * children.
@@ -633,6 +644,24 @@ block_is_inlinable(NODE *block_node)
     return !subtree_creates_block(bb->u.node_block_body.body);
 }
 
+// `node_block(1 param, 0 locals)` — used by both to:do: inline paths.
+// The single param holds the loop index. `out_has_nested_block` reports
+// whether the body creates any nested closures, so the parser can pick
+// node_to_do (stack frame, fast) vs node_to_do_pool (heap, safe with
+// escaping closures).
+static bool
+block_is_inlinable_1arg(NODE *block_node, bool *out_has_nested_block)
+{
+    *out_has_nested_block = false;
+    if (!block_node || block_node->head.kind != &kind_node_block) return false;
+    if (block_node->u.node_block.num_params != 1) return false;
+    if (block_node->u.node_block.num_locals != 0) return false;
+    NODE *bb = block_node->u.node_block.body;
+    if (!bb || bb->head.kind != &kind_node_block_body) return false;
+    *out_has_nested_block = subtree_creates_block(bb->u.node_block_body.body);
+    return true;
+}
+
 // Emit type-specialized send1 nodes for the common integer-arithmetic
 // selectors. These optimistically assume both operands are SmallInteger;
 // on guard miss they swap_dispatcher back to node_send1 at runtime, so
@@ -681,7 +710,7 @@ make_send(Parser *P, NODE *recv, const char *sel, NODE **args, uint32_t nargs)
     // Cache interned selector pointers for the control-flow specializers.
     // Comparing pointers (selectors are interned) is one cmp per check.
     static const char *sel_ifTrue, *sel_ifFalse, *sel_whileTrue, *sel_whileFalse,
-                      *sel_ifTrueIfFalse, *sel_ifFalseIfTrue;
+                      *sel_ifTrueIfFalse, *sel_ifFalseIfTrue, *sel_toDo;
     if (UNLIKELY(sel_ifTrue == NULL)) {
         sel_ifTrue          = asom_intern_cstr("ifTrue:");
         sel_ifFalse         = asom_intern_cstr("ifFalse:");
@@ -689,6 +718,7 @@ make_send(Parser *P, NODE *recv, const char *sel, NODE **args, uint32_t nargs)
         sel_whileFalse      = asom_intern_cstr("whileFalse:");
         sel_ifTrueIfFalse   = asom_intern_cstr("ifTrue:ifFalse:");
         sel_ifFalseIfTrue   = asom_intern_cstr("ifFalse:ifTrue:");
+        sel_toDo            = asom_intern_cstr("to:do:");
     }
     switch (nargs) {
     case 0: return ALLOC_node_send0(recv, sel, new_cc());
@@ -712,6 +742,14 @@ make_send(Parser *P, NODE *recv, const char *sel, NODE **args, uint32_t nargs)
         if (sel == sel_ifFalseIfTrue
             && block_is_inlinable(args[0]) && block_is_inlinable(args[1]))
             return ALLOC_node_iffalse_iftrue(recv, args[0], args[1]);
+        if (sel == sel_toDo) {
+            bool has_nested;
+            if (block_is_inlinable_1arg(args[1], &has_nested)) {
+                return has_nested
+                    ? ALLOC_node_to_do_pool(recv, args[0], args[1])
+                    : ALLOC_node_to_do(recv, args[0], args[1]);
+            }
+        }
         return ALLOC_node_send2(recv, args[0], args[1], sel, new_cc());
     }
     case 3: return ALLOC_node_send3(recv, args[0], args[1], args[2], sel, new_cc());
