@@ -137,12 +137,15 @@ Columns:
 `tak`, `ack`): with AOT-cached, luastro is **at parity or faster than
 lua5.4**.
 
-- `loop`: 3 ms vs 39 ms — **13× faster** than lua5.4.  This benchmark
-  hits the `node_numfor_int_sum` whole-loop fused node.
 - `factorial`: 9 ms vs 24 ms — **2.7× faster**.
 - `fib`: 26 ms vs 46 ms — **1.8× faster** via SD inlining.
 - `ack`: 55 ms vs 46 ms — 1.2× behind (within noise).
 - `tak`: 4 ms vs 3 ms — matched.
+
+(`loop` is excluded — gcc's scalar-evolution pass recognises the
+arithmetic-series sum and replaces the entire loop with a closed-form
+constant, so the AOT-cached number measures gcc's optimiser rather
+than the interpreter.)
 
 **Float-dominant** workloads (`mandelbrot`, `nbody`): a sequence of
 five changes landed against the always-heap-box baseline.  Cumulative
@@ -191,7 +194,7 @@ similar tracing JIT layer; out of scope.
 | Errors           | `error` / `pcall` / `xpcall` (handler ignored), assert                          |
 | GC               | Stop-the-world mark-sweep, weak tables (`__mode = "k"/"v"/"kv"`), `__gc` finalizer |
 | Standard library | base, `math.*`, `string.*` (full pattern matcher), `table.*`, `io.write`, `os.*`, `coroutine.*` |
-| Specialization   | `node_int_*` / `node_flt_*` / `node_call_argN` / `node_numfor_int_sum`          |
+| Specialization   | `node_int_*` / `node_flt_*` / `node_call_argN`                                  |
 | AOT              | `astro_cs_compile` + `astro_cs_build`; `make compiled_luastro`, `make pg_luastro` |
 | Tests            | 8/8 passing (compared byte-for-byte against `lua5.4`)                           |
 

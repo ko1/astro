@@ -137,7 +137,6 @@ swaps in, yield swaps back, errors inside a coroutine propagate as
 | `node_lt` / `node_le` | int+int / float+float direct + mixed numeric promotion; metamethod fallback only for non-numeric operands |
 | `node_call_arg{0,1,2,3}` | Fixed-arity Lua-to-Lua calls without metamethod / cfunc dispatch |
 | `node_call_argN` | Variable arity (≥4 args, or method calls) |
-| `node_numfor_int_sum` | Whole-loop fused node for `for i=...do sum = sum + i end` (13.3× faster than lua5.4) |
 | `node_local_decl_one` | Parser-emitted 1-LHS/1-RHS specialization for `local x = expr` (typed `NODE *rhs`, `@always_inline`) — bypasses the `@noinline` general `node_local_decl`'s side-array path |
 | `node_local_decl` | Generic N-LHS/N-RHS body with multi-return spread (rare path, `@noinline`); the common single-decl form goes through `node_local_decl_one` |
 | `node_field_get` | `@always_inline`; carries a `LuaFieldIC` `@ref` slot (shape-token IC: cached `hash_cap` + slot offset), pre-interned `__index` / `string` for the metamethod fallback |

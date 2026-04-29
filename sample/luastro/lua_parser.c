@@ -620,31 +620,6 @@ parse_for_stat(void)
         scope_leave();
         expect(LT_END, "'end'");
         if (!step) step = ALLOC_node_int(1);
-        // Pattern match the body: detect the classic accumulator
-        //   for i = ...,...,... do sum = sum + i end
-        // and emit a specialized node that keeps both `sum` and `i`
-        // in scalar registers across the loop.
-        if (body->head.kind == &kind_node_local_set) {
-            uint32_t target = body->u.node_local_set.idx;
-            NODE *rhs = body->u.node_local_set.rhs;
-            if (rhs->head.kind == &kind_node_int_add) {
-                NODE *l = rhs->u.node_int_add.l;
-                NODE *r = rhs->u.node_int_add.r;
-                if (l->head.kind == &kind_node_local_get &&
-                    r->head.kind == &kind_node_local_get &&
-                    l->u.node_local_get.idx == target &&
-                    r->u.node_local_get.idx == var_idx) {
-                    return ALLOC_node_numfor_int_sum(var_idx, target, start, limit, step);
-                }
-                // also accept `sum = i + sum` (commuted)
-                if (r->head.kind == &kind_node_local_get &&
-                    l->head.kind == &kind_node_local_get &&
-                    r->u.node_local_get.idx == target &&
-                    l->u.node_local_get.idx == var_idx) {
-                    return ALLOC_node_numfor_int_sum(var_idx, target, start, limit, step);
-                }
-            }
-        }
         return ALLOC_node_numfor(var_idx, start, limit, step, body);
     } else {
         struct LuaString *names[LP_MAX_LOCALS];

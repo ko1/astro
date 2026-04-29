@@ -390,57 +390,6 @@ node_label(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, LuaSt
     return RESULT_OK(LUAV_NIL);
 }
 
-// Specialized numeric-for body that the parser recognizes at parse
-// time when the body has the shape:
-//
-//     local_set(sum_idx, int_add(local_get(sum_idx), local_get(var_idx)))
-//
-// — i.e. `for i=...,...,... do sum = sum + i end`.  This is the
-// classic accumulator loop and parsing it as a single node lets us
-// keep both `sum` and `i` in scalar registers across the loop, without
-// going through LuaValue construction / tag check / 16-byte stack
-// roundtrips that dominate the generic numfor body.
-NODE_DEF @always_inline
-node_numfor_int_sum(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, uint32_t var_idx, uint32_t sum_idx, NODE *start, NODE *limit, NODE *step)
-{
-    (void)n;
-    LuaValue sv = EVAL_ARG(c, start);
-    LuaValue lv = EVAL_ARG(c, limit);
-    LuaValue stv = EVAL_ARG(c, step);
-    if (__builtin_expect(LV_IS_INT(sv) && LV_IS_INT(lv) && LV_IS_INT(stv)
-                         && LV_IS_INT(frame[sum_idx]), 1)) {
-        int64_t i   = LV_AS_INT(sv);
-        int64_t lim = LV_AS_INT(lv);
-        int64_t stp = LV_AS_INT(stv);
-        int64_t sum = LV_AS_INT(frame[sum_idx]);
-        if (__builtin_expect(stp == 1, 1)) {
-            for (; i <= lim; i++) sum += i;
-        } else if (stp > 0) {
-            for (; i <= lim; i += stp) sum += i;
-        } else if (stp < 0) {
-            for (; i >= lim; i += stp) sum += i;
-        } else {
-            lua_raisef(c, "'for' step is zero");
-        }
-        frame[var_idx] = LUAV_INT(i);
-        frame[sum_idx] = LUAV_INT(sum);
-        return RESULT_OK(LUAV_NIL);
-    }
-    // Slow path: any non-int operand or accumulator falls back through
-    // lua_arith so semantics stay correct even if the parser's type
-    // guess was wrong.
-    int64_t i, lim, stp;
-    if (!lua_to_int(sv, &i) || !lua_to_int(lv, &lim) || !lua_to_int(stv, &stp))
-        lua_raisef(c, "'for' must use numeric values");
-    if (stp == 0) lua_raisef(c, "'for' step is zero");
-    LuaValue sum_v = frame[sum_idx];
-    if (stp > 0) for (; i <= lim; i += stp) sum_v = lua_arith(c, LUA_OP_ADD, sum_v, LUAV_INT(i));
-    else         for (; i >= lim; i += stp) sum_v = lua_arith(c, LUA_OP_ADD, sum_v, LUAV_INT(i));
-    frame[var_idx] = LUAV_INT(i);
-    frame[sum_idx] = sum_v;
-    return RESULT_OK(LUAV_NIL);
-}
-
 // Numeric for: var = start, limit, step.  The whole loop body is inside
 // this node so we get tight scalar dispatch on the integer hot path.
 NODE_DEF @always_inline

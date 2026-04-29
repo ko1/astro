@@ -284,7 +284,7 @@ EVAL body には触らないが AST 形は整えてよい。**新しいノード
 |---|---|---|
 | 捕捉ローカル昇格（`local_get → box_get`）| luastro | 非捕捉 slot は frame 直 access、捕捉のみ box |
 | 全捕捉解析（function 末で is_captured を確定）| luastro `lua_parser.c::pf_finalize_local_refs` | 上記の前提 |
-| ループ融合（`for i=1,N do sum=sum+i end → node_numfor_int_sum`）| luastro | luastro: loop 39ms → 3ms (13×) |
+| **アンチパターン**：単一構文に張った融合ノード（例：`for i=N,M do sum=sum+i end` 専用 kind）| luastro が以前持っていた `node_numfor_int_sum`（撤去済み）| 一見ベンチ上は劇的に効いて見えるが、gcc が SCEV で閉形式化して loop が消えるため **インタプリタの品質を測れなくなる**。汎用性も無く ASTro の理念にも反するので使わない |
 | N 引数 call 特化（fixed-arity call 専用ノード）| luastro `node_call_arg{0,1,2,3}` | metamethod / cfunc 経路を hot path から外す |
 | **Fixed-arity 0..N bucket + var-arity flat-array fallback**（可変要素を持つノードは固定 bucket と side array の二段。hot path は sibling-inline、tail は `(index, count)` で flat 配列を indirect）| wastro `node_call_0..4` + `node_call_var` (`WASTRO_CALL_ARGS`)、wasm `WASTRO_BR_TABLE`、luastro `LUASTRO_NODE_ARR` | wastro: 0..4 引数で実モジュールの 99%+ をカバー、SD 鎖が collapse する。1024 引数まで kind 爆発なしに対応 | call / br_table / switch / format args など可変要素を持つ全ノード |
 | **forward-ref body slot fixup の二段化**（ALLOC 時は body=NULL、parser 後処理で実 body をセット → そのあと OPTIMIZE）| wastro `main.c:194-240`（`PENDING_CALL_BODY` + `wastro_fixup_call_bodies`）| caller→callee body slot 経由の sibling-inline が前方参照込みで成立 | 前方参照を許す言語全般（wasm / Ruby `def` / JS hoist / C 関数宣言）|
@@ -722,8 +722,12 @@ abruby の経験が示す **embedded interpreter モデル特有の教訓**:
 
 「AOT-1st が遅い」のは正しい。性能を稼ぎたいなら AOT-cached を見る。
 
-「`plain` が速い」のは fused loop 等が parser-pass で効いているケース
-（luastro の `node_numfor_int_sum` で loop ベンチが lua5.4 より 13× 速い等）。
+「`plain` が比較対象より速い」のは parser-pass の単純化が効いているケース
+（例: 比較対象が bytecode VM で loop opaque、luastro 側は AST が直 C ループに
+落ちて gcc の SCEV が走る）。**この種の「ベンチ上の劇的差」は怪しんでよい**：
+インタプリタの品質ではなく、ホスト C コンパイラが何をできたかを測っている
+ことが多い。撤去された `node_numfor_int_sum` の loop ベンチ 13× がその典型例
+（§5 「アンチパターン」行を参照）。
 
 ---
 

@@ -79,9 +79,6 @@ The kind set lives in `node.def`.  Highlights:
 - **Calls**: `node_call_arg{0,1,2,3}` (fixed-arity fast paths) and
   `node_call_argN` (variable arity).  All ultimately go through
   `luastro_inline_call` / `lua_call`.
-- **Specialized fused nodes**: `node_numfor_int_sum` recognises the
-  classic `for i=1,N do sum = sum + i end` pattern at parse time and
-  emits a tight scalar-only loop body.
 
 ### Node creation
 
@@ -477,7 +474,6 @@ falls back to running on the main stack.
 | `coroutine.wrap`                    | Raises; use `coroutine.resume` directly                  |
 | Local-scope shrink on `do…end` exit | Not implemented; conservative w.r.t. GC                  |
 | Type-speculating SDs                | All SDs include the type guard from the source EVAL      |
-| Float-only specialized loops        | Only `node_numfor_int_sum` exists; `_flt_sum` would help |
 | Residual `DISPATCH_*` indirect calls | ~25 / ~106 mandelbrot nodes still miss the AOT load (cycle-break / dedup short-circuit in the specializer) and run on the host binary's `DISPATCH_*`.  Framework-level fix. |
 
 The highest-leverage remaining item is **type-speculating
