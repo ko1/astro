@@ -1108,14 +1108,23 @@ try_specialize_arith(CTX *c, VALUE fn_form, VALUE args, struct lex_scope *scope)
 struct self_call_ctx {
     const char         *name;          // loop name being self-called
     uint32_t            nparams;       // expected arity
-    struct lex_scope   *target_scope;  // the scope that owns NAME's slot
+    struct lex_scope   *target_scope;  // NULL = global mode (top-level
+                                       // define).  Else lex mode: the
+                                       // scope that owns NAME's slot
                                        // (used to detect inner shadowing
                                        //  — `(let ((NAME ...)) ...)`
                                        //  inside the body changes the
-                                       //  meaning of NAME)
+                                       //  meaning of NAME).
     bool                used;          // any patch happened?
 };
 static struct self_call_ctx *CURRENT_SELF_CALL = NULL;
+// Set by compile_define just before invoking compile() on the lambda
+// form: gives compile_lambda the ctx to install for the IMMEDIATE
+// lambda's body (and consumed there, so nested lambdas inside the
+// body still get the usual save+clear).  NULL outside that brief
+// window.  compile_let_named uses a different path (manual AST
+// construction) and doesn't need this.
+static struct self_call_ctx *SELF_CALL_FOR_NEXT_LAMBDA = NULL;
 
 // lex_lookup variant that also reports the scope that owns the slot,
 // so compile_call can compare it against CURRENT_SELF_CALL->target_scope.
@@ -1140,35 +1149,59 @@ lex_lookup_full(struct lex_scope *s, const char *name,
 static NODE *
 compile_call(CTX *c, VALUE fn_form, VALUE args, struct lex_scope *scope, bool is_tail)
 {
-    // Self-tail-call recognition.  Fires when (a) we're inside a named-let
-    // / single-binding letrec that registered its name in CURRENT_SELF_CALL,
-    // (b) this call is in tail position, (c) fn is a symbol matching the
-    // loop name, (d) it resolves to the slot we registered (no inner
-    // shadowing), and (e) arity matches.  When all hold, we rewrite the
-    // call as node_self_tail_call_K instead of going through
-    // scm_apply_tail's trampoline.
+    // Self-tail-call recognition.  Two modes selected by
+    // CURRENT_SELF_CALL->target_scope:
+    //   non-NULL → lex mode (named-let / single-binding letrec).  Match
+    //              when fn name is a lex var resolving to that exact
+    //              scope (so inner `(let ((NAME …)) …)` shadow doesn't
+    //              hijack the fast path) and arity matches.  Emits
+    //              node_self_tail_call_K.
+    //   NULL     → global mode (top-level `(define (f …) …)`).  Match
+    //              when fn name is a non-shadowed global symbol equal
+    //              to the function being defined.  Emits
+    //              node_self_tail_call_global_K — gref_cache gates the
+    //              fast path on globals_serial, so a later
+    //              `(set! f g)` (which bumps the serial) drops to slow
+    //              path and dispatches via scm_apply_tail.
     if (is_tail && CURRENT_SELF_CALL && scm_is_symbol(fn_form)) {
         const char *fn_name = SCM_PTR(fn_form)->sym.name;
         if (strcmp(fn_name, CURRENT_SELF_CALL->name) == 0) {
-            struct lex_scope *resolved_scope;
-            uint32_t depth, idx;
             int argc = list_length(args);
-            if (lex_lookup_full(scope, fn_name, &resolved_scope, &depth, &idx) &&
-                resolved_scope == CURRENT_SELF_CALL->target_scope &&
-                argc == (int)CURRENT_SELF_CALL->nparams &&
-                argc <= 4) {
+            bool match = false;
+            if (CURRENT_SELF_CALL->target_scope) {
+                // Lex mode: must resolve to the registered scope.
+                struct lex_scope *resolved_scope;
+                uint32_t depth, idx;
+                match = lex_lookup_full(scope, fn_name, &resolved_scope, &depth, &idx) &&
+                        resolved_scope == CURRENT_SELF_CALL->target_scope;
+            } else {
+                // Global mode: name must NOT be a lex var (no shadowing).
+                uint32_t depth, idx;
+                match = !lex_lookup(scope, fn_name, &depth, &idx);
+            }
+            if (match && argc == (int)CURRENT_SELF_CALL->nparams && argc <= 4) {
                 NODE *aN[ASCHEME_LOOP_MAX_PARAMS];
                 int i = 0;
                 for (VALUE p = args; scm_is_pair(p); p = cdr(p), i++) {
                     aN[i] = compile(c, car(p), scope, false);
                 }
                 CURRENT_SELF_CALL->used = true;
-                switch (argc) {
-                case 0: return ALLOC_node_self_tail_call_0();
-                case 1: return ALLOC_node_self_tail_call_1(aN[0]);
-                case 2: return ALLOC_node_self_tail_call_2(aN[0], aN[1]);
-                case 3: return ALLOC_node_self_tail_call_3(aN[0], aN[1], aN[2]);
-                case 4: return ALLOC_node_self_tail_call_4(aN[0], aN[1], aN[2], aN[3]);
+                if (CURRENT_SELF_CALL->target_scope) {
+                    switch (argc) {
+                    case 0: return ALLOC_node_self_tail_call_0();
+                    case 1: return ALLOC_node_self_tail_call_1(aN[0]);
+                    case 2: return ALLOC_node_self_tail_call_2(aN[0], aN[1]);
+                    case 3: return ALLOC_node_self_tail_call_3(aN[0], aN[1], aN[2]);
+                    case 4: return ALLOC_node_self_tail_call_4(aN[0], aN[1], aN[2], aN[3]);
+                    }
+                } else {
+                    switch (argc) {
+                    case 0: return ALLOC_node_self_tail_call_global_0(fn_name);
+                    case 1: return ALLOC_node_self_tail_call_global_1(fn_name, aN[0]);
+                    case 2: return ALLOC_node_self_tail_call_global_2(fn_name, aN[0], aN[1]);
+                    case 3: return ALLOC_node_self_tail_call_global_3(fn_name, aN[0], aN[1], aN[2]);
+                    case 4: return ALLOC_node_self_tail_call_global_4(fn_name, aN[0], aN[1], aN[2], aN[3]);
+                    }
                 }
             }
         }
@@ -1311,10 +1344,19 @@ compile_lambda(CTX *c, VALUE params, VALUE body, struct lex_scope *scope)
     COMPILE_INNER_LAMBDA_SEEN = false;
     // Nested lambdas don't share the enclosing named-let's self-call
     // identity — even if they syntactically reference NAME, the call
-    // happens in a different env when the closure escapes.  Save and
-    // clear so compile_call doesn't accidentally lower those calls.
+    // happens in a different env when the closure escapes.  But
+    // compile_define for `(define (f params) body)` arms
+    // SELF_CALL_FOR_NEXT_LAMBDA so that the IMMEDIATE compile_lambda
+    // for f's lambda gets a global-mode ctx for body compilation.
+    // Consume the token here (so nested compile_lambda calls inside
+    // body still get the standard save+clear).
     struct self_call_ctx *saved_self_call = CURRENT_SELF_CALL;
-    CURRENT_SELF_CALL = NULL;
+    if (SELF_CALL_FOR_NEXT_LAMBDA) {
+        CURRENT_SELF_CALL = SELF_CALL_FOR_NEXT_LAMBDA;
+        SELF_CALL_FOR_NEXT_LAMBDA = NULL;
+    } else {
+        CURRENT_SELF_CALL = NULL;
+    }
     NODE *body_node = compile_body(c, body, new_scope, true);   // body is in tail position
     bool body_has_inner_lambda = COMPILE_INNER_LAMBDA_SEEN;
     // Bubble the "we are a lambda" flag to the enclosing scope.
@@ -1708,9 +1750,66 @@ compile_define(CTX *c, VALUE form, struct lex_scope *scope)
         VALUE name = car(second);
         VALUE params = cdr(second);
         VALUE body = cdr(cdr(form));
+        const char *name_str = SCM_PTR(name)->sym.name;
+
+        // For top-level `(define (f params) body)` at the outermost
+        // scope, push a global-mode self-call context so compile_call
+        // can rewrite `(f X)` tail calls inside body to
+        // node_self_tail_call_global_K — converting global recursion
+        // (loop / ack / tak / tail-recursive helpers) into a tight
+        // C for(;;) inside the lambda's SD, just like §18 does for
+        // named-let.  An inner `(define (f …) …)` (nested under
+        // another lambda) is handled by hoist_internal_defines lifting
+        // it to a letrec; that path goes through compile_letrec /
+        // compile_let which doesn't push global mode (correct, since
+        // those defines are lex bindings, not globals).
+        bool top_level = (scope == NULL);
+        if (top_level && scm_is_symbol(params) == false) {
+            // Count fixed-arity params (skip rest-bearing forms).
+            int nparams = 0;
+            bool has_rest = false;
+            for (VALUE p = params; scm_is_pair(p); p = cdr(p)) {
+                nparams++;
+            }
+            if (params != SCM_NIL && !scm_is_pair(params)) {
+                // bare symbol ⇒ rest only, already false above
+            }
+            // Detect dotted-tail (rest after fixed): the chain ended
+            // on a non-pair, non-nil cell, meaning the symbol there
+            // is a rest param.
+            VALUE p = params;
+            while (scm_is_pair(p)) p = cdr(p);
+            if (scm_is_symbol(p)) has_rest = true;
+
+            if (!has_rest && nparams <= ASCHEME_LOOP_MAX_PARAMS && nparams <= 4) {
+                VALUE lambda = scm_cons(scm_intern("lambda"), scm_cons(params, body));
+                struct self_call_ctx ctx = { name_str, (uint32_t)nparams, NULL, false };
+                // compile_lambda picks this up for the IMMEDIATE next
+                // lambda compile (this one); nested lambdas in body
+                // still see CURRENT_SELF_CALL = NULL (correct: their
+                // bodies have different env identity).
+                SELF_CALL_FOR_NEXT_LAMBDA = &ctx;
+                NODE *val = compile(c, lambda, scope, false);
+                SELF_CALL_FOR_NEXT_LAMBDA = NULL;   // safety: clear if compile_lambda didn't consume
+                if (ctx.used) {
+                    // val is a node_lambda; wrap its body in node_loop.
+                    // ALLOC_node_lambda allocated it with body field;
+                    // overwrite that field's body operand directly.
+                    // Find the lambda's body via the union; reach into
+                    // it through the pointer arithmetic the framework
+                    // provides via `struct node_lambda_struct`.
+                    NODE *lambda_body = val->u.node_lambda.body;
+                    NODE *wrapped = ALLOC_node_loop(lambda_body, (uint32_t)nparams);
+                    aot_add_entry(wrapped);
+                    val->u.node_lambda.body = wrapped;
+                }
+                return ALLOC_node_gdef(name_str, val);
+            }
+        }
+
         VALUE lambda = scm_cons(scm_intern("lambda"), scm_cons(params, body));
         NODE *val = compile(c, lambda, scope, false);
-        return ALLOC_node_gdef(SCM_PTR(name)->sym.name, val);
+        return ALLOC_node_gdef(name_str, val);
     }
     VALUE name = second;
     VALUE val_form = caddr(form);

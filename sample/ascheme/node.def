@@ -383,6 +383,107 @@ node_self_tail_call_4(CTX * restrict c, NODE * restrict n, NODE *a0, NODE *a1, N
 }
 
 // ---------------------------------------------------------------------------
+// Global self-tail-call.  Parser-emitted for top-level
+// `(define (f params) body)` forms whose body contains tail-position
+// calls back to f via the global name (a gref).  The lambda body is
+// wrapped in node_loop, and each `(call_K (gref f) args)` in tail
+// position becomes a node_self_tail_call_global_K — same loop_args /
+// loop_continue protocol as the named-let case (§18), but with a
+// gref_cache so a subsequent `(set! f g)` (which bumps globals_serial)
+// invalidates the loop and falls through to `scm_apply_tail` against
+// the rebound closure.  Until any rebinding happens, the recursion
+// stays inside the lambda body's SD with no scm_apply re-entry.
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+node_self_tail_call_global_0(CTX * restrict c, NODE * restrict n, const char *name, struct gref_cache *cache@ref)
+{
+    (void)n;
+    if (LIKELY(cache->serial == c->globals_serial)) {
+        c->loop_continue = 1;
+        return SCM_UNSPEC;
+    }
+    cache->value = scm_global_ref(c, name);
+    cache->serial = c->globals_serial;
+    return scm_apply_tail(c, cache->value, 0, NULL, 1);
+}
+
+NODE_DEF
+node_self_tail_call_global_1(CTX * restrict c, NODE * restrict n, const char *name, NODE *a0, struct gref_cache *cache@ref)
+{
+    (void)n;
+    VALUE v0 = EVAL_ARG(c, a0);
+    if (LIKELY(cache->serial == c->globals_serial)) {
+        c->loop_args[0] = v0;
+        c->loop_continue = 1;
+        return SCM_UNSPEC;
+    }
+    cache->value = scm_global_ref(c, name);
+    cache->serial = c->globals_serial;
+    return scm_apply_tail(c, cache->value, 1, &v0, 1);
+}
+
+NODE_DEF
+node_self_tail_call_global_2(CTX * restrict c, NODE * restrict n, const char *name, NODE *a0, NODE *a1, struct gref_cache *cache@ref)
+{
+    (void)n;
+    VALUE v0 = EVAL_ARG(c, a0);
+    VALUE v1 = EVAL_ARG(c, a1);
+    if (LIKELY(cache->serial == c->globals_serial)) {
+        c->loop_args[0] = v0;
+        c->loop_args[1] = v1;
+        c->loop_continue = 1;
+        return SCM_UNSPEC;
+    }
+    cache->value = scm_global_ref(c, name);
+    cache->serial = c->globals_serial;
+    VALUE av[2] = { v0, v1 };
+    return scm_apply_tail(c, cache->value, 2, av, 1);
+}
+
+NODE_DEF
+node_self_tail_call_global_3(CTX * restrict c, NODE * restrict n, const char *name, NODE *a0, NODE *a1, NODE *a2, struct gref_cache *cache@ref)
+{
+    (void)n;
+    VALUE v0 = EVAL_ARG(c, a0);
+    VALUE v1 = EVAL_ARG(c, a1);
+    VALUE v2 = EVAL_ARG(c, a2);
+    if (LIKELY(cache->serial == c->globals_serial)) {
+        c->loop_args[0] = v0;
+        c->loop_args[1] = v1;
+        c->loop_args[2] = v2;
+        c->loop_continue = 1;
+        return SCM_UNSPEC;
+    }
+    cache->value = scm_global_ref(c, name);
+    cache->serial = c->globals_serial;
+    VALUE av[3] = { v0, v1, v2 };
+    return scm_apply_tail(c, cache->value, 3, av, 1);
+}
+
+NODE_DEF
+node_self_tail_call_global_4(CTX * restrict c, NODE * restrict n, const char *name, NODE *a0, NODE *a1, NODE *a2, NODE *a3, struct gref_cache *cache@ref)
+{
+    (void)n;
+    VALUE v0 = EVAL_ARG(c, a0);
+    VALUE v1 = EVAL_ARG(c, a1);
+    VALUE v2 = EVAL_ARG(c, a2);
+    VALUE v3 = EVAL_ARG(c, a3);
+    if (LIKELY(cache->serial == c->globals_serial)) {
+        c->loop_args[0] = v0;
+        c->loop_args[1] = v1;
+        c->loop_args[2] = v2;
+        c->loop_args[3] = v3;
+        c->loop_continue = 1;
+        return SCM_UNSPEC;
+    }
+    cache->value = scm_global_ref(c, name);
+    cache->serial = c->globals_serial;
+    VALUE av[4] = { v0, v1, v2, v3 };
+    return scm_apply_tail(c, cache->value, 4, av, 1);
+}
+
+// ---------------------------------------------------------------------------
 // Specialized arithmetic + comparison.  Compiled when the parser sees
 // `(<op> a b)` with op ∈ {+,-,*,<,=,<=,>,>=} and the op symbol is not
 // shadowed by a lexical binding.

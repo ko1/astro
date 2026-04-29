@@ -758,7 +758,71 @@ No framework (`lib/astrogen.rb`) changes — the new nodes are declared
 in `node.def` and the parser change is local to `compile_let` /
 `compile_call` / `compile_lambda`.
 
-## Cumulative score vs chibi-scheme 0.12  (after §1–§18)
+## 19 — `node_self_tail_call_global_K` for `(define (f …) … (f …))`  (this commit)
+
+§18 collapsed the trampoline for *named-let* self-tail-calls.  Most
+real Scheme code, though, defines recursive helpers as top-level
+`(define (f params) body)` and recurses via global gref — and that
+path was untouched.  loop / ack / tak / nqueens iterate through the
+same trampoline as before.
+
+Same trick, scoped to global mode.  Two changes:
+
+1.  Five new nodes `node_self_tail_call_global_K` (K=0..4).  Same
+    shape as §18's local `node_self_tail_call_K`, plus a `gref_cache`:
+    the hot path checks `cache->serial == globals_serial` before
+    setting `c->loop_args[]` / `c->loop_continue=1`.  If the global
+    has been rebound (`(set! f g)`), `globals_serial` has bumped, the
+    cache check fails, and the node falls through to
+    `scm_apply_tail(c, current_fn, …, is_tail=1)` with the freshly-
+    resolved closure.  This preserves R5RS dynamic-dispatch semantics
+    even though the body looks like it's hard-wired to call itself.
+
+2.  `compile_define` for top-level `(define (f params) body)` arms
+    `SELF_CALL_FOR_NEXT_LAMBDA` with a global-mode ctx (target_scope
+    = NULL); `compile_lambda` consumes that token on entry to the
+    immediate next compile (so nested lambdas inside body still get
+    the standard save+clear).  `compile_call` in global mode matches
+    `(call_K (gref f-name) args)` patterns where the symbol is a
+    non-shadowed global and the name matches.
+
+Wraps body in `node_loop` if any patches fired.  Mutual recursion
+(`(define f (lambda … (g …)))` calling `(g …)` calling `(f …)`)
+isn't optimized — only direct self-tail.
+
+Best-of-7 wall time, opt-off (just §1–§18) vs opt-on (§1–§19), same
+build:
+
+```
+                 baseline  +§19      speedup
+loop             0.20 s    0.05 s    4.00×
+ack              0.13 s    0.10 s    1.30×
+nbody            0.72 s    0.54 s    1.33×
+nqueens          0.99 s    0.87 s    1.14×
+tak (small)      0.22 s    0.21 s    1.05×
+tak_big          12.73 s   11.73 s   1.09×
+fib / fib35      ~wash (no tail-self-call; recursion is via `(+ (fib …) (fib …))`,
+                       both calls non-tail)
+sum / sumloop    already at the §18 floor (named-let path)
+matmul / deriv   ±3 % (noise; bodies don't have tail-self-recursion to themselves —
+                       inner named-lets handled by §18)
+```
+
+The fib non-improvement deserves a note: fib's body is `(+ (fib …)
+(fib …))`, where each `(fib …)` is in *non-tail* position (it's an
+argument to `+`).  Only the outer `+` is in tail position, and that's
+not a recursive call.  §19 fires only on tail-position recursion, so
+fib stays on the (already-inlined) `scm_apply_tail` non-tail leaf
+path.  Truly speeding up fib would require either inlining the body
+into the call site or memoization — both significantly more invasive.
+
+The mechanism is the third (and probably last) major win on top of
+§18: named-let, top-level define, and we'd need user-defined macros
+or PGO-driven devirtualization for further structural wins.
+
+No `lib/astrogen.rb` change — only node.def + main.c + context.h.
+
+## Cumulative score vs chibi-scheme 0.12  (after §1–§19)
 
 ```
                 aot-cached       chibi     ratio
