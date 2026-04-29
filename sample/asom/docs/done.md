@@ -319,22 +319,23 @@ BubbleSort, QuickSort, TreeSort, Mandelbrot, Fannkuch,
 Richards, DeltaBlue, Json, NBody, GraphSearch
 ```
 
-### 比較スクリプト `make compare` / `make compare-wall`
+### 比較スクリプト `make bench`
 
-二モードの 8 軸比較:
+`test/run_compare.rb` がエンジン横並び比較を回す。`/usr/bin/time -f '%e'`
+で各 trial をラップし、**1 回の実行から inner-work と wall-clock の両方
+を取得**する（best of 3、メトリクスごとに独立に最小を採る）。最後に
+2 つのテーブルを並べて出力:
 
 ```sh
-make compare ITERS=30        # inner-work (system ticks 自己計測)
-make compare-wall ITERS=30   # wall-clock (process 起動から exit まで)
+make bench ITERS=30
 ```
 
-- **inner-work モード (デフォルト)** — 各エンジンの `BenchmarkHarness`
-  (asom 自前 `Bench.som` または SOM-st 標準) が `system ticks` で計測した
-  ベンチループ部分だけを抽出。プロセス起動・stdlib parse・JVM bootstrap・
-  eager JIT compile を除外できるので、起動コストが大きく違う engine 同士
-  (CSOM ~700ms class-load, TruffleSOM ~1.7s JVM+JIT) でも公平に比較できる。
-- **wall-clock モード** — `/usr/bin/time -f '%e'` 計測。ユーザ体感に近いが、
-  起動コストが支配的でフェアな比較にならない。参考値。
+- **Inner-work** — 各エンジンの `BenchmarkHarness`（asom 自前 `Bench.som`
+  または SOM-st 標準）が `system ticks` で計測したベンチループ部分。
+  プロセス起動・stdlib parse・JVM bootstrap・eager JIT compile を
+  除外できるので、起動コストが大きく違う engine 同士でも公平に比較できる。
+- **Wall-clock** — `/usr/bin/time -f '%e'` 計測。ユーザ体感に近いが
+  起動コストが支配的になりがち。参考値。
 
 軸:
 
@@ -342,6 +343,8 @@ make compare-wall ITERS=30   # wall-clock (process 起動から exit まで)
 - **SOM++** — C++ bytecode VM、`USE_TAGGING + COPYING + -O3 -flto`
 - **TruffleSOM** — Java + GraalVM CE 25 + libgraal JIT
 - **PySOM AST / BC** — plain CPython 3.12 (RPython 翻訳なし)
-- **CSOM** — plain C bytecode VM、参考値（教育用 naive 実装で peak target ではない）
+
+CSOM は外した。教育用 reference 実装で性能比較の対象ではない上、
+sustained scale だと per-bench 4 分以上かかって時間が見合わない。
 
 `make bench-aot BENCH=Sieve ITERS=500` / `make bench-pg ...` で個別計測。

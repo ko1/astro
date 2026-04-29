@@ -56,15 +56,26 @@ testsuite: asom
 		./asom -cp $(TESTSUITE_CP) TestHarness $$t 2>&1 | tail -5; \
 	done
 
-# Run a suite of AreWeFastYet benchmarks (Sieve, Permute, Towers, Queens,
-# List, Storage, Bounce, BubbleSort, QuickSort, TreeSort, Mandelbrot).
+ITERS ?= 50
+BENCH ?= Sieve
+
+# Cross-engine AreWeFastYet comparison: asom (interp/aot/pg) vs SOM++,
+# TruffleSOM, PySOM-AST, PySOM-BC. Prints two tables — inner-work
+# (engine `system ticks`, excludes startup) and wall-clock (full
+# process). Each cell is best-of-3 over the same three trials.
+# Override engine paths via SOMPP_DIR / TRUFFLESOM_DIR / PYSOM_DIR /
+# MX_DIR (defaults assume /tmp/<name>-ref).
 bench: asom
+	ruby ./test/run_compare.rb $(ITERS)
+
+# Local smoke run of the asom-only Suite.som (exercises a subset of
+# AreWeFastYet bench classes for verifyResult coverage, no engine
+# comparison, no timing). Useful as a quick "does it still run" check.
+bench-suite: asom
 	./asom -cp $(CLASSPATH) Suite
 
 # AOT-compile a single benchmark and time the cached run.
 #   make bench-aot BENCH=Sieve ITERS=200
-BENCH ?= Sieve
-ITERS ?= 50
 bench-aot: asom
 	rm -rf code_store
 	CCACHE_DISABLE=1 ./asom -c --preload=$(BENCH) -cp $(CLASSPATH) Bench $(BENCH) 1 1 >/dev/null
@@ -74,17 +85,6 @@ bench-pg: asom
 	rm -rf code_store
 	CCACHE_DISABLE=1 ./asom -p --pg-threshold=1 --preload=$(BENCH) -cp $(CLASSPATH) Bench $(BENCH) 5 1 >/dev/null
 	./asom -cp $(CLASSPATH) Bench $(BENCH) $(ITERS) 1
-
-# Side-by-side comparison vs CSOM. Requires CSOM built at $(CSOM_DIR).
-# By default, CSOM_DIR=/tmp/csom-ref — set CSOM_DIR=... if you have it
-# elsewhere. ITERS defaults to 50 (drop to 5 for a quick smoke check).
-ITERS  ?= 50
-CSOM_DIR ?= /tmp/csom-ref
-compare: asom
-	CSOM_DIR=$(CSOM_DIR) ./test/run_compare.sh $(ITERS)
-
-compare-wall: asom
-	CSOM_DIR=$(CSOM_DIR) ./test/run_compare.sh --wall $(ITERS)
 
 clean:
 	rm -fv asom $(NODE_GENFILES) node_specialized.c

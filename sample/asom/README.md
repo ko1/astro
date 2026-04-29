@@ -36,11 +36,13 @@ make
 ./asom --plain MyClass             # bypass code store entirely
 
 make test                          # ローカルスモークテスト
-make bench                         # 11 AreWeFastYet ベンチマーク (interp)
+make bench ITERS=30                # cross-engine bench
+                                   #   asom × SOM++ × TruffleSOM × PySOM (×AST/×BC)
+                                   #   inner-work + wall-clock の 2 表
+make bench-suite                   # asom 単独で Suite.som（verifyResult のみ）
 make bench-aot BENCH=Sieve         # 個別 AOT bake & 計測
 make bench-pg  BENCH=Sieve         # 個別 PG bake & 計測
 make testsuite                     # SOM-st/SOM TestSuite (24 ファイル)
-make compare ITERS=30              # asom × SOM++ × TruffleSOM × PySOM × CSOM
 ```
 
 `-c` / `-p` のフラグは abruby の語彙を踏襲。詳しい使い方は
