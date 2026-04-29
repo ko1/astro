@@ -91,7 +91,7 @@ typedef uint64_t LuaValue;
 #define LUAV_NIL          LV_NIL_BITS
 #define LUAV_BOOL(x)      ((x) ? LV_TRUE_BITS : LV_FALSE_BITS)
 #define LUAV_INT(x)       ((LuaValue)(((uint64_t)(int64_t)(x) << 1) | 1))
-LuaValue luav_from_double(double d);   // CRuby flonum encode (impl in lua_runtime.c)
+static inline LuaValue luav_from_double(double d);
 #define LUAV_FLOAT(x)     luav_from_double((double)(x))
 #define LUAV_STR(x)       ((LuaValue)(uintptr_t)(x))
 #define LUAV_TABLE(x)     ((LuaValue)(uintptr_t)(x))
@@ -102,7 +102,7 @@ LuaValue luav_from_double(double d);   // CRuby flonum encode (impl in lua_runti
 // Accessors.
 #define LV_AS_INT(v)      ((int64_t)(v) >> 1)               // arithmetic shift sign-extends
 #define LV_AS_BOOL(v)     ((v) == LV_TRUE_BITS)
-double  luav_to_double(LuaValue v);                          // CRuby flonum decode
+static inline double luav_to_double(LuaValue v);
 #define LV_AS_FLOAT(v)    luav_to_double(v)
 #define LV_AS_STR(v)      ((struct LuaString    *)(uintptr_t)(v))
 #define LV_AS_TBL(v)      ((struct LuaTable     *)(uintptr_t)(v))
@@ -185,6 +185,69 @@ struct LuaClosure {
     const char *name;
     LuaValue **upvals;
 };
+
+// =====================================================================
+// Inline-flonum encode / decode.
+// =====================================================================
+//
+// CRuby-inspired but uses a shift-based scheme rather than rotation, so
+// the round-trip is provable by inspection.
+//
+// IEEE 754 double bit layout (63..0):
+//   [63] sign  [62..52] biased exponent  [51..0] mantissa
+//
+// We accept doubles whose top 3 exponent bits (bits 60..62 of the
+// double) are 011 ("b62=3", magnitudes ≈ 2^-255..1) or 100 ("b62=4",
+// magnitudes ≈ 2..2^256).  Together this covers the common
+// computational range.  Out-of-range doubles (denormals, ±0, ±Inf,
+// NaN, magnitudes > 2^256) heap-box as `LuaHeapDouble`.
+//
+// Encoded layout (64 bits):
+//   bit  0      : 0  ─┐ tag = 10  (LV_IS_FLONUM == ((v & 3) == 2))
+//   bit  1      : 1  ─┘
+//   bit  2      : sign  (orig bit 63)
+//   bit  3      : disc  (1 = b62=3, 0 = b62=4)
+//   bits 4..63  : low60 of orig (orig bits 0..59)
+//
+// `disc` together with the gate gives us the missing 4 high bits of
+// orig (bits 60..63): {disc, b62-fixed-bits}.  No mantissa precision
+// loss — every bit of the original double is preserved exactly.
+//
+// `luav_box_double` / `luav_unbox_double` handle the heap fallback
+// (out of line in lua_runtime.c).
+
+LuaValue luav_box_double(double d);
+double   luav_unbox_double(LuaValue v);
+
+static inline LuaValue
+luav_from_double(double d)
+{
+    union { double d; uint64_t u; } t;
+    t.d = d;
+    int b62 = (int)((t.u >> 60) & 7);
+    if (__builtin_expect(b62 == 3 || b62 == 4, 1)) {
+        uint64_t sign  = (t.u >> 63) & 1;
+        uint64_t disc  = (uint64_t)(b62 == 3);
+        uint64_t low60 = t.u & ((1ULL << 60) - 1);
+        return (LuaValue)((low60 << 4) | (disc << 3) | (sign << 2) | 2);
+    }
+    return luav_box_double(d);
+}
+
+static inline double
+luav_to_double(LuaValue v)
+{
+    if (__builtin_expect(((v) & 3) == 2, 1)) {       // LV_IS_FLONUM inline
+        uint64_t low60 = (uint64_t)v >> 4;
+        uint64_t disc  = ((uint64_t)v >> 3) & 1;
+        uint64_t sign  = ((uint64_t)v >> 2) & 1;
+        uint64_t high4 = disc ? 0x3 : 0x4;
+        union { double d; uint64_t u; } t;
+        t.u = (sign << 63) | (high4 << 60) | low60;
+        return t.d;
+    }
+    return luav_unbox_double(v);
+}
 
 // GC API — declared after CTX typedef below.
 

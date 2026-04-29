@@ -8,7 +8,7 @@ This is what's NOT done.  The implemented surface is in
 
 | Item | Current state | Why it matters |
 |---|---|---|
-| **Inline flonum** | Reserved `010` tag; `LUAV_FLOAT(d)` always heap-boxes via `LuaHeapDouble` | `mandelbrot`, `nbody` run ~10–15× slower than `lua5.4`.  CRuby-style rotate-by-3 encoding for the common-magnitude range (with `LuaHeapDouble` fallback for denormals) is the obvious fix. |
+| ~~**Inline flonum**~~ | **Done.**  Shift-based scheme (`bits 4..63 = orig bits 0..59`, `bit 3 = b62=3 vs 4 disc`, `bit 2 = sign`, `bits 0..1 = 10` tag) covers `b62 ∈ {3, 4}` (magnitudes 2^-255..2^256, both signs) inline, lossless.  Out-of-range doubles still heap-box.  `mandelbrot` 5.85× faster, `nbody` 2.7× faster. |
 | **2-value RESULT (`rax+rdx`)** | `RESULT` is a typedef for `LuaValue`; control flow goes through `LUASTRO_BR` / `LUASTRO_BR_VAL` globals | Theoretical perf win in tight loops — the global memory load/store on every iteration becomes a register check.  Earlier draft was abandoned mid-port; a full re-port is needed. |
 | **Type-speculating SDs** | Every SD inherits the `if(LV_IS_INT(a) && LV_IS_INT(b))` guard from the source EVAL | At AOT bake time we have profile info on which type a node sees; emitting a guard-free SD with a deopt path would let `int_add` SDs become a single `add` instruction.  Closes much of the gap to LuaJIT's interpreter mode. |
 | **Float-only fused loops** | Only `node_numfor_int_sum` exists | A `node_numfor_flt_sum` (and more generally, a way to detect type-stable accumulator loops at parse time and emit scalar bodies) would help float-heavy benchmarks even before inline flonum lands. |

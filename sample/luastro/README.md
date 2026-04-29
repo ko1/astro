@@ -91,9 +91,11 @@ sample/luastro/
   `LUASTRO_BR_VAL` globals, set by the corresponding `RESULT_*`
   macros.  An earlier draft folded `br` into the return value
   (`rax+rdx`); see `todo.md`.
-- **Doubles always heap-boxed** (v1).  The dominant performance
-  bottleneck for float-heavy code.  Inline flonum is `todo.md`'s top
-  entry.
+- **Inline flonum** for the common magnitude range (b62 ∈ {3, 4},
+  ≈ 2^-255..2^256, both signs).  Out-of-range doubles (zero,
+  denormals, ±Inf, NaN, very tiny / very large) heap-box as
+  `LuaHeapDouble`.  See [`docs/runtime.md`](docs/runtime.md) §3 for
+  the encoding details.
 - **4 GB worker stack** for the chunk pthread, so deeply recursive
   programs don't trip the kernel guard page (SD frames are ~1 KB).
 
@@ -106,14 +108,14 @@ Lua 5.4.6 and LuaJIT 2.1, `N=3` (best of 3).
 
 | benchmark   | luastro | AOT-1st | AOT-c   | lua5.4  | luajit  |
 |-------------|--------:|--------:|--------:|--------:|--------:|
-| ack         | 0.128s  | 0.163s  | 0.059s  | 0.050s  | 0.008s  |
-| factorial   | 0.036s  | 0.110s  | 0.011s  | 0.025s  | 0.004s  |
-| fib         | 0.063s  | 0.120s  | 0.028s  | 0.045s  | 0.009s  |
-| loop        | 0.006s  | 0.086s  | 0.003s  | 0.039s  | 0.010s  |
-| mandelbrot  | 0.773s  | 0.943s  | 0.737s  | 0.047s  | 0.005s  |
-| nbody       | 0.105s  | 0.479s  | 0.112s  | 0.012s  | 0.003s  |
-| sieve       | 0.018s  | 0.242s  | 0.014s  | 0.007s  | 0.003s  |
-| tak         | 0.004s  | 0.099s  | 0.004s  | 0.003s  | 0.002s  |
+| ack         | 0.152s  | 0.207s  | 0.064s  | 0.060s  | 0.010s  |
+| factorial   | 0.043s  | 0.146s  | 0.013s  | 0.031s  | 0.005s  |
+| fib         | 0.074s  | 0.158s  | 0.031s  | 0.055s  | 0.008s  |
+| loop        | 0.007s  | 0.106s  | 0.003s  | 0.045s  | 0.012s  |
+| mandelbrot  | 0.185s  | 0.456s  | 0.126s  | 0.053s  | 0.006s  |
+| nbody       | 0.033s  | 0.595s  | 0.041s  | 0.017s  | 0.003s  |
+| sieve       | 0.019s  | 0.332s  | 0.018s  | 0.008s  | 0.003s  |
+| tak         | 0.005s  | 0.131s  | 0.004s  | 0.003s  | 0.002s  |
 
 Columns:
 
@@ -135,13 +137,20 @@ lua5.4**.
   closure-call hot path.
 - `factorial`: 11 ms vs 25 ms — **2.3×**.
 
-**Float-dominant** workloads (`mandelbrot`, `nbody`, `sieve`):
-luastro loses badly, ~10–15× slower than lua5.4.  This is **not** an
-AST-walker overhead issue — it's the heap-boxing of every double in
-the current value representation.  AOT-c barely helps mandelbrot
-(`737 ms` vs interpreter's `773 ms`) because the SD hot path still
-calls `luav_from_double` → `calloc` per arithmetic op.  Inline flonum
-will fix this; see [`docs/todo.md`](docs/todo.md).
+**Float-dominant** workloads (`mandelbrot`, `nbody`): inline flonum
+landed (see [`docs/runtime.md`](docs/runtime.md) §3).  Doubles in the
+common magnitude range (`b62 ∈ {3, 4}`, ≈ 2^-255..2^256) encode inline
+in the LuaValue, lossless.
+
+- `mandelbrot`: 737 ms → 126 ms — **5.85× faster** vs the previous
+  always-heap-box scheme.  Still 2.4× slower than lua5.4.
+- `nbody`: 112 ms → 41 ms — **2.7× faster**.  Still 2.4× slower than
+  lua5.4.
+
+The remaining gap is the per-arith type guard that every speculative
+`node_int_*` / `node_flt_*` SD still carries — type-speculating SDs
+(profile-driven, drop the guard) are the next item; see
+[`docs/todo.md`](docs/todo.md).
 
 **vs LuaJIT**: not competitive on any benchmark (LuaJIT is a tracing
 JIT to native code).  Beating LuaJIT in pure speed would require a

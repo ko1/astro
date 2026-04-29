@@ -14,17 +14,16 @@
 extern struct luastro_option OPTION;
 
 // =====================================================================
-// Double encoding — v1: always heap-box.
+// Out-of-line double-box fallback (see context.h for the inline path).
 // =====================================================================
 //
-// Future work: implement CRuby-style inline flonum (rotate-by-3 encode)
-// for the common range of doubles, with a heap-LuaHeapDouble fallback
-// for denormals / very large exponents.  For now we always box, which
-// is a correctness-first baseline; arithmetic-heavy programs pay an
-// allocation per intermediate, but the GC sweeps them quickly.
+// Inline flonum covers `b62 ∈ {3,4}` doubles (magnitudes ≈ 2^-255 to
+// 2^256, both signs) — see context.h.  Anything outside that range
+// (zeros, denormals, ±Inf, NaN, very tiny / very large) goes through
+// these helpers and lives on the heap as a `LuaHeapDouble`.
 
 LuaValue
-luav_from_double(double d)
+luav_box_double(double d)
 {
     struct LuaHeapDouble *hd = (struct LuaHeapDouble *)calloc(1, sizeof(*hd));
     luastro_gc_register(hd, LUA_TFLOAT);
@@ -33,7 +32,7 @@ luav_from_double(double d)
 }
 
 double
-luav_to_double(LuaValue v)
+luav_unbox_double(LuaValue v)
 {
     if (LV_IS_HEAP_OF(v, LUA_TFLOAT)) {
         return ((struct LuaHeapDouble *)(uintptr_t)v)->value;
@@ -158,15 +157,16 @@ lua_str_concat(struct LuaString *a, struct LuaString *b)
 static uint64_t
 lua_value_hash(LuaValue v)
 {
-    if (LV_IS_INT(v))    return (uint64_t)LV_AS_INT(v) * 0x9E3779B97F4A7C15ULL;
-    if (LV_IS_FLONUM(v)) return (uint64_t)v * 0x9E3779B97F4A7C15ULL;
-    if (LV_IS_STR(v))    return lua_str_hash(LV_AS_STR(v));
-    if (LV_IS_BOOL(v))   return LV_AS_BOOL(v) ? 0x1234 : 0x5678;
-    if (LV_IS_NIL(v))    return 0;
-    if (LV_IS_HEAP_OF(v, LUA_TFLOAT)) {
+    if (LV_IS_INT(v))   return (uint64_t)LV_AS_INT(v) * 0x9E3779B97F4A7C15ULL;
+    if (LV_IS_FLOAT(v)) {
+        // Hash by the actual double bit pattern so inline and heap-boxed
+        // representations of the same value hash to the same slot.
         double f = LV_AS_FLOAT(v); uint64_t b; memcpy(&b, &f, 8);
         return b * 0x9E3779B97F4A7C15ULL;
     }
+    if (LV_IS_STR(v))   return lua_str_hash(LV_AS_STR(v));
+    if (LV_IS_BOOL(v))  return LV_AS_BOOL(v) ? 0x1234 : 0x5678;
+    if (LV_IS_NIL(v))   return 0;
     return (uint64_t)v * 0x9E3779B97F4A7C15ULL;
 }
 

@@ -149,18 +149,37 @@ LV_IS_CALL(v)     pointer to LUA_TFUNC or LUA_TCFUNC
   signed integer ops on the encoded form (then re-tag); sign extension
   via arithmetic right shift gives the original int back.
 
-### Doubles — currently always heap-boxed
+### Doubles — inline flonum + heap-box fallback
 
-For v1 every double goes through a `struct LuaHeapDouble { GCHead;
-double }` allocation.  `LUAV_FLOAT(d)` calls `luav_from_double` (out of
-line in `lua_runtime.c`), which `calloc`s the cell, registers it with
-the GC as `LUA_TFLOAT`, and returns the pointer-as-LuaValue.
+Doubles whose top 3 exponent bits (bits 60..62 of the IEEE 754
+representation) are `011` (b62=3, magnitudes ≈ 2^-255..1) or `100`
+(b62=4, magnitudes ≈ 2..2^256) encode **inline** in the LuaValue;
+out-of-range doubles (zero, denormals, ±Inf, NaN, very tiny / very
+large) heap-box via `struct LuaHeapDouble { GCHead; double }`.
 
-This is **the dominant performance bottleneck** for float-heavy code
-(mandelbrot / nbody).  The intended replacement is CRuby-style inline
-flonum: doubles whose exponent bits sit in a moderate range encode
-inline with a 0x02 tag, with `LuaHeapDouble` as fallback for denormals
-/ extreme magnitudes.  Listed under §10 future work.
+Encoded layout (when `LV_IS_FLONUM(v) == ((v & 3) == 2)`):
+
+```
+  bit  0      : 0  ─┐ tag
+  bit  1      : 1  ─┘
+  bit  2      : sign  (orig bit 63)
+  bit  3      : disc  (1 = b62=3, 0 = b62=4)
+  bits 4..63  : low60 of orig (orig bits 0..59)
+```
+
+`disc` together with the gate gives us back orig bits 60..62 (`011` or
+`100`); `sign` gives back orig bit 63; `low60` carries orig bits 0..59
+verbatim.  Round-trip is provably lossless — no mantissa precision
+loss for inline-encoded values.
+
+`luav_from_double` and `luav_to_double` are `static inline` in
+`context.h`, so SDs see the encoding/decoding straight-line and can
+SROA the LuaValue away when it's a transient.  The heap-box fallback
+(`luav_box_double` / `luav_unbox_double`) is out-of-line in
+`lua_runtime.c` so the inline functions stay small.
+
+This was a ~4× speedup on `mandelbrot` and ~3× on `nbody` over the
+original always-heap-box scheme.
 
 ## 4. Branch state — `LUASTRO_BR`
 
@@ -384,7 +403,7 @@ falls back to running on the main stack.
 
 | Item                                | Status                                                   |
 |-------------------------------------|----------------------------------------------------------|
-| Inline flonum                       | Reserved tag (`010`); always heap-boxes today            |
+| Inline flonum                       | **Done.** `b62 ∈ {3, 4}` doubles inline; rest heap-box   |
 | 2-value RESULT (`rax+rdx`)          | Globals used instead; refactor pending                   |
 | `goto` / labels                     | Parsed; `BR_GOTO` propagates up; no label scanner        |
 | `xpcall` message handler            | Caught but handler ignored                               |

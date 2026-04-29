@@ -42,7 +42,7 @@ Recursive-descent for statements, Pratt for expressions.
 | `nil` | `LuaValue == 0` | calloc-zeroed memory is naturally nil |
 | `boolean` | `0x14` (false), `0x24` (true) | |
 | `integer` | `(i << 1) | 1` (63-bit signed) | sign-extending right shift recovers value |
-| `float` | heap `LuaHeapDouble { GCHead; double }` | inline flonum bit pattern reserved (`0x02` tag), not yet emitted |
+| `float` | inline (`(v & 3) == 2`, low60 + sign + disc layout) for `b62 ∈ {3,4}` magnitudes; else heap `LuaHeapDouble { GCHead; double }` | inline encoding is lossless |
 | `string` | heap `LuaString { GCHead; hash; len; bytes[] }`, interned | pointer equality = value equality |
 | `table` | heap `LuaTable { GCHead; array; hash; metatable }` | hybrid array+hash |
 | `function` | heap `LuaClosure { GCHead; body; nparams; nlocals; nupvals; upvals; }` | upvals point into frames or boxes |
