@@ -87,29 +87,30 @@ sub-100 ms となり per-call overhead が支配する。エンジン間の **st
 
 ```
 benchmark    |  interp |     aot |   SOM++ | aot vs SOM++
--------------+---------+---------+---------+----------------
-Sieve        |  1.36 s |  0.80 s |  5.57 s | asom 6.95× faster
-Queens       |  1.08 s |  1.09 s |  4.83 s | asom 4.45× faster
-Fannkuch     |  0.75 s |  0.40 s |  1.70 s | asom 4.22× faster
-BubbleSort   |  1.03 s |  0.62 s |  2.17 s | asom 3.50× faster
-Bounce       |  1.02 s |  1.00 s |  3.20 s | asom 3.20× faster
-QuickSort    |  1.07 s |  0.71 s |  1.80 s | asom 2.53× faster
-Permute      |  1.03 s |  0.91 s |  1.86 s | asom 2.04× faster
-List         |  1.22 s |  1.14 s |  2.25 s | asom 1.98× faster
-Storage      |  1.18 s |  1.13 s |  1.87 s | asom 1.66× faster
-Towers       |  1.20 s |  1.05 s |  1.59 s | asom 1.51× faster
-Mandelbrot   |  0.55 s |  0.45 s |  0.51 s | asom 1.13× faster
-TreeSort     |  1.14 s |  1.19 s |  1.27 s | asom 1.07× faster
+-------------+---------+---------+---------+-----------------
+Sieve        |  0.78 s |  0.27 s |  4.96 s | asom 18.18× faster
+Queens       |  0.62 s |  0.52 s |  4.30 s | asom  8.27× faster
+QuickSort    |  0.69 s |  0.39 s |  1.57 s | asom  4.03× faster
+Fannkuch     |  0.66 s |  0.37 s |  1.52 s | asom  4.09× faster
+BubbleSort   |  0.89 s |  0.54 s |  1.96 s | asom  3.62× faster
+Permute      |  0.68 s |  0.51 s |  1.67 s | asom  3.24× faster
+Bounce       |  0.93 s |  0.86 s |  2.72 s | asom  3.16× faster
+Storage      |  0.60 s |  0.54 s |  1.63 s | asom  3.05× faster
+TreeSort     |  0.43 s |  0.43 s |  1.05 s | asom  2.45× faster
+Towers       |  0.76 s |  0.60 s |  1.37 s | asom  2.27× faster
+List         |  1.01 s |  0.95 s |  1.84 s | asom  1.95× faster
+Mandelbrot   |  0.45 s |  0.40 s |  0.44 s | asom  1.12× faster
 ```
 
 #### take-aways（sustained）
 
 **asom-aot は 12 ベンチすべてで SOM++ (`USE_TAGGING` + COPYING GC,
-g++ -O3 -flto) より速い** — Sieve で **6.95×**、Fannkuch / Queens で 4×
-台、BubbleSort / Bounce で 3× 台。AST-PE の SD-bake が **method / block
-boundary の indirect call を消して** GCC に LICM / scalar replacement の
-機会を作るのが効いていて、interp 比で sustained Sieve が 1.36s → 0.80s
-(1.7×) になり、SOM++ の bytecode dispatch loop を抜く。
+g++ -O3 -flto) より速い** — Sieve で **18.2×**、Queens で **8×** 台、
+QuickSort / Fannkuch で 4× 台、BubbleSort / Permute / Bounce / Storage
+で 3× 台。AST-PE の SD-bake が **method / block boundary の indirect
+call を消して** GCC に LICM / scalar replacement の機会を作るのが効いて
+いて、interp 比で sustained Sieve が 0.78s → 0.27s (2.9×) になり、
+SOM++ の bytecode dispatch loop を抜く。
 
 interp 単独でも SOM++ に勝つベンチが多い（Sieve/Queens で 4× 以上）。
 原因の積算:
