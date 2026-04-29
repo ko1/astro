@@ -38,8 +38,12 @@ files = files.select { |f| args.any? { |a| File.basename(f).include?(a) } } unle
 #   cmd:   command template — '%s' is replaced with the .lua filename
 ENGINES = [
   {
+    # Pure interpreter: --no-compile keeps `./luastro` from auto-loading any
+    # pre-existing `code_store/all.so` left over from a previous engine
+    # (otherwise we get a symbol-lookup mismatch when the .so was baked
+    # against a different bench's AST).
     name: "plain",
-    cmd:  "#{EXE} %s",
+    cmd:  "#{EXE} --no-compile %s",
   },
   {
     # AOT cold-start: compile + run in one process every iteration.
