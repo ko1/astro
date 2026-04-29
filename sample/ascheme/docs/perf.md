@@ -674,7 +674,91 @@ ack / tak        ±0% (lref depth ≤ 1, direct path)
 5–12 % across lref-depth-heavy benches; the wash on ack / tak is
 expected (those bodies barely touch parent-frames).
 
-## Cumulative score vs chibi-scheme 0.12  (after §1–§17)
+## 18 — `node_loop` / `node_self_tail_call_K` for named-let  (this commit)
+
+`(let loop ((i 0) (s 0)) (if cond then (loop ...)))` traditionally went
+through the trampoline on every iteration: SD → `scm_apply_tail`'s
+frame-reuse path → `tail_call_pending = 1` → return → `scm_apply`'s
+trampoline → SD again.  ~10 % of `sum`'s wall time was the trampoline
+itself (indirect call + `tail_call_pending` R/W per iter).
+
+The framework principle is "ASTroGen / specializer don't look at
+specific eval bodies" — so we can't have the SD generator emit a
+goto-back-to-top.  But we CAN have the *parser* emit nodes that do
+the loop, and ASTroGen specializes them like any other node.
+
+Two new nodes:
+
+* `node_loop(body, nparams)` — wraps a lambda body that contains
+  patched self-tail-calls.  Runs `body` in a `for(;;)`; when the body
+  sets `c->loop_continue = 1`, copies `c->loop_args[0..nparams]` back
+  into the current frame's slots and re-iterates.  Otherwise returns.
+
+* `node_self_tail_call_K(args[K])` — evaluates new args into
+  `c->loop_args[]`, sets `c->loop_continue = 1`, returns.  Replaces
+  `(call_K (lref D 0) args)` for tail-position self-recursive calls.
+
+Parser detection (in `compile_let_named`): instead of desugaring to
+`letrec → let → lambda call`, build the AST directly.  Push a
+`CURRENT_SELF_CALL` context with the loop name + arity + the scope
+that owns the slot, then compile the inner-lambda body.  `compile_call`
+recognizes calls matching the context — same name, tail position,
+matching arity, and `lex_lookup` resolves to *that exact scope* (so an
+inner `(let ((loop …)) …)` shadow doesn't accidentally take the
+fast path) — and emits a `node_self_tail_call_K`.  When at least one
+patch happened, the inner body gets wrapped in `node_loop`.
+
+`compile_lambda` saves/clears `CURRENT_SELF_CALL` on entry, so a
+nested closure inside the body doesn't pick up the optimization
+context — its escaping closure has a different env identity, and a
+self-tail-call from inside it would be writing to the wrong frame.
+That nested case falls back to the generic `scm_apply_tail` path.
+
+Result: the named-let body's hot path becomes a tight C `for(;;)` —
+one indirect dispatch on entry, then it stays inside the SD.  No
+trampoline, no per-iteration `scm_apply` re-entry.
+
+Best-of-10 wall time, opt-off vs opt-on, same build:
+
+```
+                 baseline  loop-opt   speedup
+sum              0.19 s    0.07 s     2.71×
+sumloop          0.71 s    0.27 s     2.63×
+cps_loop         0.39 s    0.18 s     2.17×
+sieve (small)    0.44 s    0.22 s     2.00×
+sieve_big        0.92 s    0.46 s     2.00×
+list             0.19 s    0.14 s     1.36×
+fannkuch         1.41 s    1.36 s     1.04×
+nqueens          1.04 s    0.99 s     1.05×
+ack/fib/tak      ~wash (defined as global procedures, not named-let)
+```
+
+Benches that recurse via `(define (f …) …)` — fib, tak, ack — don't
+benefit because they go through global call dispatch, not a named-let.
+That's the next target (§19, planned: `node_call_known_global_K` with
+a closure-pointer cache that bypasses scm_apply for hot global calls).
+
+Two parser-side correctness landmines hit during implementation:
+
+* **Init expressions are syntactically outer-scope but evaluated in
+  the wrapper-lambda frame.**  `(let loop ((i v) …) …)` evaluates
+  `v` after the wrapper lambda has been entered, so `lref` depths
+  must be measured from `outer_scope` (the wrapper) — not from the
+  caller `scope`.  Compiling inits in the wrong scope produces
+  one-level-shallow loads at runtime (caught by the chibi tests).
+
+* **Inner shadowing.**  `(let loop (…) (let ((loop …)) (loop …)))`
+  rebinds `loop` inside the body.  The `(loop …)` call in the inner
+  let now refers to the *inner* binding, not our named-let's.  Hence
+  the `target_scope` check in `compile_call`: `lex_lookup_full`
+  resolves the call's fn name and we only patch when the resolved
+  scope matches the one we registered.
+
+No framework (`lib/astrogen.rb`) changes — the new nodes are declared
+in `node.def` and the parser change is local to `compile_let` /
+`compile_call` / `compile_lambda`.
+
+## Cumulative score vs chibi-scheme 0.12  (after §1–§18)
 
 ```
                 aot-cached       chibi     ratio

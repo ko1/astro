@@ -237,6 +237,11 @@ extern VALUE PRIM_CONS_VAL, PRIM_EQ_P_VAL, PRIM_EQV_P_VAL;
 // hot tail-call loops it's meant to accelerate.
 #define ASCHEME_LREF_CACHE_SIZE 8
 
+// Max arity for parser-recognized self-tail-call to a named-let / single-
+// binding letrec.  Higher arities fall back to the generic call_K +
+// scm_apply_tail trampoline.
+#define ASCHEME_LOOP_MAX_PARAMS 8
+
 typedef struct CTX_struct {
     // Current lexical environment chain (closures + call frames).
     struct sframe *env;
@@ -261,6 +266,17 @@ typedef struct CTX_struct {
     uint64_t       env_cache_serial;            // env_serial when cache was built
     struct sframe *env_chain[ASCHEME_LREF_CACHE_SIZE];
     uint32_t       env_chain_filled;            // highest index already valid
+
+    // Self-tail-call loop signaling.  node_self_tail_call_K (parser-
+    // emitted for named-let / single-binding letrec self-recursive tail
+    // calls) evaluates its new args into loop_args[] and sets
+    // loop_continue=1; the enclosing node_loop catches the flag, copies
+    // the args back into the current frame's slots, and re-enters its
+    // body — turning the trampoline tail loop into a tight C for(;;)
+    // with no scm_apply re-entry.  loop_continue stays 0 outside this
+    // protocol.
+    uint32_t loop_continue;
+    VALUE    loop_args[ASCHEME_LOOP_MAX_PARAMS];
 
     // call/cc tag generator + active continuations stack.
     int cont_tag_seq;
