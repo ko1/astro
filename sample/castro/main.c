@@ -1025,7 +1025,6 @@ create_context(void)
     c->func_set = NULL;
     c->func_set_cnt = 0;
     c->func_set_capa = 0;
-    c->serial = 1;
     c->return_buf = NULL;
     return c;
 }

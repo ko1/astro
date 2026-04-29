@@ -29,8 +29,6 @@ typedef union VALUE {
     void    *p;
 } VALUE;
 
-typedef uint64_t state_serial_t;
-
 struct Node;
 
 struct function_entry {
@@ -66,7 +64,6 @@ typedef struct CTX_struct {
     unsigned int func_set_cnt;
     unsigned int func_set_capa;
     struct function_entry *func_set;
-    state_serial_t serial;
 
     // return: setjmp/longjmp at each function-call boundary
     jmp_buf *return_buf;

@@ -29,8 +29,8 @@ CTX                          (castro_invoke / EVAL の第 1 引数)
                               (CASTRO_ENV_SLOTS = 1<<20 = 8 MiB)
   fp   ───►                   現在のフレームポインタ
   globals[globals_size]       グローバル変数 (parse.rb で slot 番号を割当)
-  func_set[]                  関数テーブル ({name, body, ...})
-  serial                      関数定義シリアル (callcache 無効化)
+  func_set[NFUNCS]            関数テーブル ({name, body, params, locals, needs_setjmp})
+                              parse.rb が振った index で直接引く (固定容量、realloc しない)
   return_buf                  関数 return 用 jmp_buf (early return ありの関数のみ)
   break_buf / continue_buf    ループ脱出 / 継続用 jmp_buf
   goto_buf  / goto_target     goto 用 jmp_buf + ラベル番号
@@ -255,23 +255,23 @@ ASTro framework 共通の `runtime/astro_code_store.{c,h}` を使う:
 | `astro_cs_load(node)` | `dlsym(SD_<hash(node)>)` で見つかれば node->dispatcher を入れ替える |
 
 **重要**: castro 本体は `-rdynamic` でビルドされている。これを忘れると
-SD 側の `castro_call_cache_fill` などの参照が dlopen で解決できず、
+SD 側の `castro_invoke_jmp` などの参照が dlopen で解決できず、
 `astro_cs_reload` が黙って NULL を返してずっと interp モードで動く。
 
 ## ノード hash と castro 拡張
 
-`@ref` のインラインキャッシュフィールド (`callcache` / `func_addr_cache`) は
-構造的同値性の一部ではないので、Merkle hash には寄与させない:
+castro 側の唯一の特殊化: `uint64_t` リテラル。framework 既定の
+`(VALUE)NN` 表現が castro の union 型ではコンパイル不可なので、
+`castro_gen.rb` でオーバーライドして素のリテラル (`NNULL`) を出している。
 
 ```ruby
-# castro_gen.rb
-when 'struct callcache *', 'struct func_addr_cache *'
-  '0'   # hash に対する寄与
+when 'uint64_t'
+  arg = "    fprintf(fp, \"        %lluULL\", ...);"
 ```
 
-`uint64_t` リテラルは framework 既定の `(VALUE)NN` 表現が castro の union 型
-ではコンパイル不可なので、castro 側でオーバーライドして `NNULL` の素のリテラル
-を出している。
+(以前は `struct callcache *` / `struct func_addr_cache *` の inline cache
+operand 用に hash/dump/specialize 全部を上書きしていたが、IR が parse 時
+解決の index 方式になったので不要になった。)
 
 ## CASTRO_ENV_SLOTS とスタックサイズ
 
@@ -286,7 +286,7 @@ sample/castro/
 ├── README.md             プロジェクト概要 + ベンチ結果
 ├── CLAUDE.md             (なし)
 ├── Makefile              ASTroGen 呼び出し + gcc -rdynamic
-├── castro_gen.rb         CastroNodeDef (callcache @ref / uint64 specialize)
+├── castro_gen.rb         CastroNodeDef (uint64_t literal specializer 上書きのみ)
 ├── parse.rb              tree-sitter-c → S 式 IR (CType / 型推論 / lift)
 ├── main.c                CTX 生成 / SX パーサ / 関数テーブル / printf 実装
 ├── node.c                generated includes + INIT/OPTIMIZE
