@@ -281,6 +281,26 @@ typedef LuaValue RESULT;
 extern uint32_t LUASTRO_BR;
 extern LuaValue LUASTRO_BR_VAL;
 
+// Pre-interned strings used in EVAL hot paths.  Initialised once at
+// luastro_init_globals and reused (so the hot path doesn't re-intern
+// "__index" / "string" / etc. on every metatable touch).  Defined in
+// lua_runtime.c.
+extern struct LuaString *LUASTRO_S___INDEX;
+extern struct LuaString *LUASTRO_S___NEWINDEX;
+extern struct LuaString *LUASTRO_S___CALL;
+extern struct LuaString *LUASTRO_S___ADD;
+extern struct LuaString *LUASTRO_S___SUB;
+extern struct LuaString *LUASTRO_S___MUL;
+extern struct LuaString *LUASTRO_S___DIV;
+extern struct LuaString *LUASTRO_S___EQ;
+extern struct LuaString *LUASTRO_S___LT;
+extern struct LuaString *LUASTRO_S___LE;
+extern struct LuaString *LUASTRO_S___UNM;
+extern struct LuaString *LUASTRO_S___CONCAT;
+extern struct LuaString *LUASTRO_S___LEN;
+extern struct LuaString *LUASTRO_S___GC;
+extern struct LuaString *LUASTRO_S_STRING;
+
 #define RESULT_OK(v)        ((RESULT)(v))
 #define RESULT_BREAK_()     (LUASTRO_BR = LUA_BR_BREAK,    LUASTRO_BR_VAL = LUAV_NIL, (RESULT)LUAV_NIL)
 #define RESULT_RETURN_(v)   (LUASTRO_BR = LUA_BR_RETURN,   LUASTRO_BR_VAL = (v),       (RESULT)(v))

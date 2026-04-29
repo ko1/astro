@@ -673,7 +673,7 @@ lua_eq(CTX *c, LuaValue a, LuaValue b)
 {
     if (lua_eq_raw(a, b)) return true;
     if (LV_IS_TBL(a) && LV_IS_TBL(b) && LV_AS_TBL(a)->metatable) {
-        struct LuaString *mk = lua_str_intern("__eq");
+        struct LuaString *mk = LUASTRO_S___EQ;
         LuaValue mm = lua_table_get_str(LV_AS_TBL(a)->metatable, mk);
         if (LV_IS_CALL(mm)) {
             LuaValue argv[2] = {a, b};
@@ -698,7 +698,7 @@ lua_lt(CTX *c, LuaValue a, LuaValue b)
         return strcmp(LV_AS_STR(a)->data, LV_AS_STR(b)->data) < 0;
     // __lt metamethod
     if (LV_IS_TBL(a) && LV_AS_TBL(a)->metatable) {
-        LuaValue mm = lua_table_get_str(LV_AS_TBL(a)->metatable, lua_str_intern("__lt"));
+        LuaValue mm = lua_table_get_str(LV_AS_TBL(a)->metatable, LUASTRO_S___LT);
         if (LV_IS_CALL(mm)) {
             LuaValue argv[2] = {a, b};
             RESULT r = lua_call(c, mm, argv, 2);
@@ -798,7 +798,7 @@ lua_unm(CTX *c, LuaValue a)
     int64_t i; if (lua_to_int(a, &i))   return LUAV_INT(-i);
     double  f; if (lua_to_float(a, &f)) return LUAV_FLOAT(-f);
     if (LV_IS_TBL(a) && LV_AS_TBL(a)->metatable) {
-        LuaValue mm = lua_table_get_str(LV_AS_TBL(a)->metatable, lua_str_intern("__unm"));
+        LuaValue mm = lua_table_get_str(LV_AS_TBL(a)->metatable, LUASTRO_S___UNM);
         if (LV_IS_CALL(mm)) {
             LuaValue argv[2] = {a, a};
             return lua_call(c, mm, argv, 2);
@@ -816,14 +816,14 @@ lua_concat(CTX *c, LuaValue a, LuaValue b)
         return LUAV_STR(lua_str_concat(LV_AS_STR(sa), LV_AS_STR(sb)));
     }
     if (LV_IS_TBL(a) && LV_AS_TBL(a)->metatable) {
-        LuaValue mm = lua_table_get_str(LV_AS_TBL(a)->metatable, lua_str_intern("__concat"));
+        LuaValue mm = lua_table_get_str(LV_AS_TBL(a)->metatable, LUASTRO_S___CONCAT);
         if (LV_IS_CALL(mm)) {
             LuaValue argv[2] = {a, b};
             return lua_call(c, mm, argv, 2);
         }
     }
     if (LV_IS_TBL(b) && LV_AS_TBL(b)->metatable) {
-        LuaValue mm = lua_table_get_str(LV_AS_TBL(b)->metatable, lua_str_intern("__concat"));
+        LuaValue mm = lua_table_get_str(LV_AS_TBL(b)->metatable, LUASTRO_S___CONCAT);
         if (LV_IS_CALL(mm)) {
             LuaValue argv[2] = {a, b};
             return lua_call(c, mm, argv, 2);
@@ -839,7 +839,7 @@ lua_len(CTX *c, LuaValue v)
     if (LV_IS_STR(v)) return (int64_t)LV_AS_STR(v)->len;
     if (LV_IS_TBL(v)) {
         if (LV_AS_TBL(v)->metatable) {
-            LuaValue mm = lua_table_get_str(LV_AS_TBL(v)->metatable, lua_str_intern("__len"));
+            LuaValue mm = lua_table_get_str(LV_AS_TBL(v)->metatable, LUASTRO_S___LEN);
             if (LV_IS_CALL(mm)) {
                 LuaValue argv[1] = {v};
                 LuaValue r = lua_call(c, mm, argv, 1);
@@ -872,6 +872,44 @@ LuaValue **LUASTRO_CUR_UPVALS = NULL;
 // and gcc's xmm→stack→movzbl extraction was the dominant hotspot.
 uint32_t LUASTRO_BR     = LUA_BR_NORMAL;
 LuaValue LUASTRO_BR_VAL = LUAV_NIL;
+
+// Pre-interned strings — see context.h.  Hot-path metamethod lookups
+// reuse these instead of re-interning the same C literal.
+struct LuaString *LUASTRO_S___INDEX    = NULL;
+struct LuaString *LUASTRO_S___NEWINDEX = NULL;
+struct LuaString *LUASTRO_S___CALL     = NULL;
+struct LuaString *LUASTRO_S___ADD      = NULL;
+struct LuaString *LUASTRO_S___SUB      = NULL;
+struct LuaString *LUASTRO_S___MUL      = NULL;
+struct LuaString *LUASTRO_S___DIV      = NULL;
+struct LuaString *LUASTRO_S___EQ       = NULL;
+struct LuaString *LUASTRO_S___LT       = NULL;
+struct LuaString *LUASTRO_S___LE       = NULL;
+struct LuaString *LUASTRO_S___UNM      = NULL;
+struct LuaString *LUASTRO_S___CONCAT   = NULL;
+struct LuaString *LUASTRO_S___LEN      = NULL;
+struct LuaString *LUASTRO_S___GC       = NULL;
+struct LuaString *LUASTRO_S_STRING     = NULL;
+
+void
+luastro_init_interned_strings(void)
+{
+    LUASTRO_S___INDEX    = LUASTRO_S___INDEX;
+    LUASTRO_S___NEWINDEX = LUASTRO_S___NEWINDEX;
+    LUASTRO_S___CALL     = LUASTRO_S___CALL;
+    LUASTRO_S___ADD      = LUASTRO_S___ADD;
+    LUASTRO_S___SUB      = LUASTRO_S___SUB;
+    LUASTRO_S___MUL      = LUASTRO_S___MUL;
+    LUASTRO_S___DIV      = LUASTRO_S___DIV;
+    LUASTRO_S___EQ       = LUASTRO_S___EQ;
+    LUASTRO_S___LT       = LUASTRO_S___LT;
+    LUASTRO_S___LE       = LUASTRO_S___LE;
+    LUASTRO_S___UNM      = LUASTRO_S___UNM;
+    LUASTRO_S___CONCAT   = LUASTRO_S___CONCAT;
+    LUASTRO_S___LEN      = LUASTRO_S___LEN;
+    LUASTRO_S___GC       = LUASTRO_S___GC;
+    LUASTRO_S_STRING     = lua_str_intern("string");
+}
 
 // Fast-path closure invocation used by node_call_arg{0,1,2,3} EVAL
 // bodies.  Defined here (out of line) so all TUs — host binary and
@@ -910,7 +948,7 @@ lua_call(CTX *c, LuaValue fn, LuaValue *args, uint32_t argc)
     // Follow __call metamethod chain on tables.
     while (LV_IS_TBL(fn)) {
         if (!LV_AS_TBL(fn)->metatable) lua_raisef(c, "attempt to call a table value");
-        LuaValue mm = lua_table_get_str(LV_AS_TBL(fn)->metatable, lua_str_intern("__call"));
+        LuaValue mm = lua_table_get_str(LV_AS_TBL(fn)->metatable, LUASTRO_S___CALL);
         if (LV_IS_NIL(mm)) lua_raisef(c, "attempt to call a table value");
         // Prepend the table as first arg.
         LuaValue *argv2 = (LuaValue *)alloca(sizeof(LuaValue) * (argc + 1));

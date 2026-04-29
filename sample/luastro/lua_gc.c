@@ -162,7 +162,7 @@ static void
 finalize_table(CTX *c, struct LuaTable *t)
 {
     if (!t->metatable) return;
-    LuaValue gcfn = lua_table_get_str(t->metatable, lua_str_intern("__gc"));
+    LuaValue gcfn = lua_table_get_str(t->metatable, LUASTRO_S___GC);
     if (LV_IS_CALL(gcfn)) {
         LuaValue argv[1] = { LUAV_TABLE(t) };
         (void)lua_call(c, gcfn, argv, 1);

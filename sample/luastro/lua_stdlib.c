@@ -1061,9 +1061,12 @@ set_lib_fn(struct LuaTable *t, const char *name, lua_cfunc_ptr_t fn)
                       LUAV_CFUNC(lua_cfunc_new(name, fn)));
 }
 
+extern void luastro_init_interned_strings(void);
+
 void
 luastro_init_globals(CTX *c)
 {
+    luastro_init_interned_strings();
     set_g(c, "print",         b_print);
     set_g(c, "tostring",      b_tostring);
     set_g(c, "tonumber",      b_tonumber);

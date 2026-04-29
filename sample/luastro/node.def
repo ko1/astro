@@ -759,16 +759,16 @@ node_table_new(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, u
     return RESULT_OK(LUAV_TABLE(t));
 }
 
-NODE_DEF
+NODE_DEF @always_inline
 node_field_get(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *recv, LuaString *field)
 {
     (void)n;
     LuaValue r = EVAL_ARG(c, recv);
-    if (LV_IS_TBL(r)) {
+    if (__builtin_expect(LV_IS_TBL(r), 1)) {
         LuaValue v = lua_table_get_str(LV_AS_TBL(r), field);
-        if (!LV_IS_NIL(v)) return RESULT_OK(v);
+        if (__builtin_expect(!LV_IS_NIL(v), 1)) return RESULT_OK(v);
         if (LV_AS_TBL(r)->metatable) {
-            LuaValue idx = lua_table_get_str(LV_AS_TBL(r)->metatable, lua_str_intern("__index"));
+            LuaValue idx = lua_table_get_str(LV_AS_TBL(r)->metatable, LUASTRO_S___INDEX);
             if (LV_IS_TBL(idx)) return RESULT_OK(lua_table_get_str(LV_AS_TBL(idx), field));
             if (LV_IS_CALL(idx)) {
                 LuaValue argv[2] = {r, LUAV_STR(field)};
@@ -778,7 +778,7 @@ node_field_get(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, N
         return RESULT_OK(LUAV_NIL);
     }
     if (LV_IS_STR(r)) {
-        LuaValue strlib = lua_table_get_str(c->globals, lua_str_intern("string"));
+        LuaValue strlib = lua_table_get_str(c->globals, LUASTRO_S_STRING);
         if (LV_IS_TBL(strlib)) return RESULT_OK(lua_table_get_str(LV_AS_TBL(strlib), field));
     }
     lua_raisef(c, "attempt to index a %s value", lua_type_name(r));
@@ -806,7 +806,7 @@ node_index_get(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, N
         LuaValue v = lua_table_get(LV_AS_TBL(r), k);
         if (!LV_IS_NIL(v)) return RESULT_OK(v);
         if (LV_AS_TBL(r)->metatable) {
-            LuaValue idx = lua_table_get_str(LV_AS_TBL(r)->metatable, lua_str_intern("__index"));
+            LuaValue idx = lua_table_get_str(LV_AS_TBL(r)->metatable, LUASTRO_S___INDEX);
             if (LV_IS_TBL(idx)) return RESULT_OK(lua_table_get(LV_AS_TBL(idx), k));
             if (LV_IS_CALL(idx)) {
                 LuaValue argv[2] = {r, k};
@@ -956,11 +956,11 @@ node_method_call(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame,
     if (LV_IS_TBL(r)) {
         fn = lua_table_get_str(LV_AS_TBL(r), method);
         if (LV_IS_NIL(fn) && LV_AS_TBL(r)->metatable) {
-            LuaValue idx = lua_table_get_str(LV_AS_TBL(r)->metatable, lua_str_intern("__index"));
+            LuaValue idx = lua_table_get_str(LV_AS_TBL(r)->metatable, LUASTRO_S___INDEX);
             if (LV_IS_TBL(idx)) fn = lua_table_get_str(LV_AS_TBL(idx), method);
         }
     } else if (LV_IS_STR(r)) {
-        LuaValue strlib = lua_table_get_str(c->globals, lua_str_intern("string"));
+        LuaValue strlib = lua_table_get_str(c->globals, LUASTRO_S_STRING);
         if (LV_IS_TBL(strlib)) fn = lua_table_get_str(LV_AS_TBL(strlib), method);
     } else {
         lua_raisef(c, "attempt to index a %s value", lua_type_name(r));
