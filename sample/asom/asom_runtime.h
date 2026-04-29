@@ -24,7 +24,7 @@ VALUE asom_global_get(CTX *c, const char *name);
 void  asom_global_set(CTX *c, const char *name, VALUE v);
 
 // Block / closure construction.
-VALUE asom_make_block(CTX *c, struct Node *body, uint32_t num_params, uint32_t num_locals);
+VALUE asom_make_block(CTX *c, struct Node *body, uint32_t num_params, uint32_t num_locals, uint32_t no_nlr);
 VALUE asom_block_invoke(CTX *c, struct asom_block *b, VALUE *args, uint32_t nargs);
 
 // Send — slow path (cache miss + DNU). The IC fast path is the

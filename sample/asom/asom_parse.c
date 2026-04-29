@@ -671,6 +671,218 @@ subtree_creates_block(NODE *n)
     return false;
 }
 
+// True iff some path through the subtree, when evaluated *in the current
+// frame* (no nested asom_block_invoke), can hit a `^` (node_return_nlr).
+// Used to decide whether a block_invoke needs to install an escape-catcher
+// setjmp: when no path can produce an NLR, the catcher is dead weight.
+//
+// Stops at `node_block` boundaries: a nested block creation is just a
+// VALUE; its `^` only fires when the block is later invoked, which has
+// its own setjmp catcher inside that block_invoke. The inlined
+// control-flow nodes (node_iftrue, etc.) keep `body_block` for the
+// non-Boolean fallback path that goes through asom_send + asom_invoke,
+// where any NLR is caught at *that* invoke's home setjmp — so we only
+// need to recurse into the inline `stmts` operand that runs in our frame.
+static bool
+subtree_has_nlr(NODE *n)
+{
+    if (!n) return false;
+    const struct NodeKind *k = n->head.kind;
+
+    if (k == &kind_node_return_nlr) return true;
+    if (k == &kind_node_block) return false;
+
+    if (k == &kind_node_iftrue) {
+        return subtree_has_nlr(n->u.node_iftrue.cond)
+            || subtree_has_nlr(n->u.node_iftrue.stmts);
+    }
+    if (k == &kind_node_iffalse) {
+        return subtree_has_nlr(n->u.node_iffalse.cond)
+            || subtree_has_nlr(n->u.node_iffalse.stmts);
+    }
+    if (k == &kind_node_iftrue_iffalse) {
+        return subtree_has_nlr(n->u.node_iftrue_iffalse.cond)
+            || subtree_has_nlr(n->u.node_iftrue_iffalse.t_stmts)
+            || subtree_has_nlr(n->u.node_iftrue_iffalse.f_stmts);
+    }
+    if (k == &kind_node_iffalse_iftrue) {
+        return subtree_has_nlr(n->u.node_iffalse_iftrue.cond)
+            || subtree_has_nlr(n->u.node_iffalse_iftrue.f_stmts)
+            || subtree_has_nlr(n->u.node_iffalse_iftrue.t_stmts);
+    }
+    if (k == &kind_node_iftrue_pool) {
+        return subtree_has_nlr(n->u.node_iftrue_pool.cond)
+            || subtree_has_nlr(n->u.node_iftrue_pool.stmts);
+    }
+    if (k == &kind_node_iffalse_pool) {
+        return subtree_has_nlr(n->u.node_iffalse_pool.cond)
+            || subtree_has_nlr(n->u.node_iffalse_pool.stmts);
+    }
+    if (k == &kind_node_iftrue_iffalse_pool) {
+        return subtree_has_nlr(n->u.node_iftrue_iffalse_pool.cond)
+            || subtree_has_nlr(n->u.node_iftrue_iffalse_pool.t_stmts)
+            || subtree_has_nlr(n->u.node_iftrue_iffalse_pool.f_stmts);
+    }
+    if (k == &kind_node_iffalse_iftrue_pool) {
+        return subtree_has_nlr(n->u.node_iffalse_iftrue_pool.cond)
+            || subtree_has_nlr(n->u.node_iffalse_iftrue_pool.f_stmts)
+            || subtree_has_nlr(n->u.node_iffalse_iftrue_pool.t_stmts);
+    }
+    if (k == &kind_node_whiletrue) {
+        return subtree_has_nlr(n->u.node_whiletrue.cond_stmts)
+            || subtree_has_nlr(n->u.node_whiletrue.body_stmts);
+    }
+    if (k == &kind_node_whilefalse) {
+        return subtree_has_nlr(n->u.node_whilefalse.cond_stmts)
+            || subtree_has_nlr(n->u.node_whilefalse.body_stmts);
+    }
+    if (k == &kind_node_to_do) {
+        return subtree_has_nlr(n->u.node_to_do.from)
+            || subtree_has_nlr(n->u.node_to_do.end)
+            || subtree_has_nlr(n->u.node_to_do.stmts);
+    }
+    if (k == &kind_node_to_do_pool) {
+        return subtree_has_nlr(n->u.node_to_do_pool.from)
+            || subtree_has_nlr(n->u.node_to_do_pool.end)
+            || subtree_has_nlr(n->u.node_to_do_pool.stmts);
+    }
+    if (k == &kind_node_to_by_do) {
+        return subtree_has_nlr(n->u.node_to_by_do.from)
+            || subtree_has_nlr(n->u.node_to_by_do.end)
+            || subtree_has_nlr(n->u.node_to_by_do.step)
+            || subtree_has_nlr(n->u.node_to_by_do.stmts);
+    }
+    if (k == &kind_node_to_by_do_pool) {
+        return subtree_has_nlr(n->u.node_to_by_do_pool.from)
+            || subtree_has_nlr(n->u.node_to_by_do_pool.end)
+            || subtree_has_nlr(n->u.node_to_by_do_pool.step)
+            || subtree_has_nlr(n->u.node_to_by_do_pool.stmts);
+    }
+    if (k == &kind_node_times_repeat) {
+        return subtree_has_nlr(n->u.node_times_repeat.count)
+            || subtree_has_nlr(n->u.node_times_repeat.stmts);
+    }
+    if (k == &kind_node_times_repeat_pool) {
+        return subtree_has_nlr(n->u.node_times_repeat_pool.count)
+            || subtree_has_nlr(n->u.node_times_repeat_pool.stmts);
+    }
+
+    // Structural / control nodes.
+    if (k == &kind_node_seq)
+        return subtree_has_nlr(n->u.node_seq.head)
+            || subtree_has_nlr(n->u.node_seq.tail);
+    if (k == &kind_node_local_set)        return subtree_has_nlr(n->u.node_local_set.rhs);
+    if (k == &kind_node_field_set)        return subtree_has_nlr(n->u.node_field_set.rhs);
+    if (k == &kind_node_class_field_set)  return subtree_has_nlr(n->u.node_class_field_set.rhs);
+    if (k == &kind_node_return_local)     return subtree_has_nlr(n->u.node_return_local.expr);
+    if (k == &kind_node_method_body)      return subtree_has_nlr(n->u.node_method_body.body);
+    if (k == &kind_node_block_body)       return subtree_has_nlr(n->u.node_block_body.body);
+
+    // Sends. Specialized send1 variants share the node_send1 layout.
+    if (k == &kind_node_send0) return subtree_has_nlr(n->u.node_send0.recv);
+    if (k == &kind_node_send1 ||
+        k == &kind_node_send1_intplus  || k == &kind_node_send1_intminus ||
+        k == &kind_node_send1_inttimes || k == &kind_node_send1_intlt    ||
+        k == &kind_node_send1_intgt    || k == &kind_node_send1_intle    ||
+        k == &kind_node_send1_intge    || k == &kind_node_send1_inteq)
+        return subtree_has_nlr(n->u.node_send1.recv)
+            || subtree_has_nlr(n->u.node_send1.arg0);
+    if (k == &kind_node_send2)
+        return subtree_has_nlr(n->u.node_send2.recv)
+            || subtree_has_nlr(n->u.node_send2.arg0)
+            || subtree_has_nlr(n->u.node_send2.arg1);
+    if (k == &kind_node_send3)
+        return subtree_has_nlr(n->u.node_send3.recv)
+            || subtree_has_nlr(n->u.node_send3.arg0)
+            || subtree_has_nlr(n->u.node_send3.arg1)
+            || subtree_has_nlr(n->u.node_send3.arg2);
+    if (k == &kind_node_send4)
+        return subtree_has_nlr(n->u.node_send4.recv)
+            || subtree_has_nlr(n->u.node_send4.a0)
+            || subtree_has_nlr(n->u.node_send4.a1)
+            || subtree_has_nlr(n->u.node_send4.a2)
+            || subtree_has_nlr(n->u.node_send4.a3);
+    if (k == &kind_node_send5)
+        return subtree_has_nlr(n->u.node_send5.recv)
+            || subtree_has_nlr(n->u.node_send5.a0)
+            || subtree_has_nlr(n->u.node_send5.a1)
+            || subtree_has_nlr(n->u.node_send5.a2)
+            || subtree_has_nlr(n->u.node_send5.a3)
+            || subtree_has_nlr(n->u.node_send5.a4);
+    if (k == &kind_node_send6)
+        return subtree_has_nlr(n->u.node_send6.recv)
+            || subtree_has_nlr(n->u.node_send6.a0)
+            || subtree_has_nlr(n->u.node_send6.a1)
+            || subtree_has_nlr(n->u.node_send6.a2)
+            || subtree_has_nlr(n->u.node_send6.a3)
+            || subtree_has_nlr(n->u.node_send6.a4)
+            || subtree_has_nlr(n->u.node_send6.a5);
+    if (k == &kind_node_send7)
+        return subtree_has_nlr(n->u.node_send7.recv)
+            || subtree_has_nlr(n->u.node_send7.a0)
+            || subtree_has_nlr(n->u.node_send7.a1)
+            || subtree_has_nlr(n->u.node_send7.a2)
+            || subtree_has_nlr(n->u.node_send7.a3)
+            || subtree_has_nlr(n->u.node_send7.a4)
+            || subtree_has_nlr(n->u.node_send7.a5)
+            || subtree_has_nlr(n->u.node_send7.a6);
+    if (k == &kind_node_send8)
+        return subtree_has_nlr(n->u.node_send8.recv)
+            || subtree_has_nlr(n->u.node_send8.a0)
+            || subtree_has_nlr(n->u.node_send8.a1)
+            || subtree_has_nlr(n->u.node_send8.a2)
+            || subtree_has_nlr(n->u.node_send8.a3)
+            || subtree_has_nlr(n->u.node_send8.a4)
+            || subtree_has_nlr(n->u.node_send8.a5)
+            || subtree_has_nlr(n->u.node_send8.a6)
+            || subtree_has_nlr(n->u.node_send8.a7);
+    if (k == &kind_node_super_send1) return subtree_has_nlr(n->u.node_super_send1.arg0);
+    if (k == &kind_node_super_send2)
+        return subtree_has_nlr(n->u.node_super_send2.arg0)
+            || subtree_has_nlr(n->u.node_super_send2.arg1);
+    if (k == &kind_node_super_send3)
+        return subtree_has_nlr(n->u.node_super_send3.arg0)
+            || subtree_has_nlr(n->u.node_super_send3.arg1)
+            || subtree_has_nlr(n->u.node_super_send3.arg2);
+    if (k == &kind_node_super_send4)
+        return subtree_has_nlr(n->u.node_super_send4.a0)
+            || subtree_has_nlr(n->u.node_super_send4.a1)
+            || subtree_has_nlr(n->u.node_super_send4.a2)
+            || subtree_has_nlr(n->u.node_super_send4.a3);
+    if (k == &kind_node_super_send5)
+        return subtree_has_nlr(n->u.node_super_send5.a0)
+            || subtree_has_nlr(n->u.node_super_send5.a1)
+            || subtree_has_nlr(n->u.node_super_send5.a2)
+            || subtree_has_nlr(n->u.node_super_send5.a3)
+            || subtree_has_nlr(n->u.node_super_send5.a4);
+    if (k == &kind_node_super_send6)
+        return subtree_has_nlr(n->u.node_super_send6.a0)
+            || subtree_has_nlr(n->u.node_super_send6.a1)
+            || subtree_has_nlr(n->u.node_super_send6.a2)
+            || subtree_has_nlr(n->u.node_super_send6.a3)
+            || subtree_has_nlr(n->u.node_super_send6.a4)
+            || subtree_has_nlr(n->u.node_super_send6.a5);
+    if (k == &kind_node_super_send7)
+        return subtree_has_nlr(n->u.node_super_send7.a0)
+            || subtree_has_nlr(n->u.node_super_send7.a1)
+            || subtree_has_nlr(n->u.node_super_send7.a2)
+            || subtree_has_nlr(n->u.node_super_send7.a3)
+            || subtree_has_nlr(n->u.node_super_send7.a4)
+            || subtree_has_nlr(n->u.node_super_send7.a5)
+            || subtree_has_nlr(n->u.node_super_send7.a6);
+    if (k == &kind_node_super_send8)
+        return subtree_has_nlr(n->u.node_super_send8.a0)
+            || subtree_has_nlr(n->u.node_super_send8.a1)
+            || subtree_has_nlr(n->u.node_super_send8.a2)
+            || subtree_has_nlr(n->u.node_super_send8.a3)
+            || subtree_has_nlr(n->u.node_super_send8.a4)
+            || subtree_has_nlr(n->u.node_super_send8.a5)
+            || subtree_has_nlr(n->u.node_super_send8.a6)
+            || subtree_has_nlr(n->u.node_super_send8.a7);
+
+    return false;
+}
+
 // True iff `block_node` is a node_block(0 params, 0 locals) whose body is
 // itself free of block creation. The first two checks make scope=0 refs
 // impossible in the body; the third keeps closures from escaping our
@@ -1195,7 +1407,11 @@ parse_primary(Parser *P)
                             P->class_name);
         NODE *block_body = ALLOC_node_block_body(body, num_params, num_locals);
         pop_scope(P);
-        return ALLOC_node_block(block_body, num_params, num_locals);
+        // Body subtree is shared by ALLOC_node_block_body above (which wraps
+        // it for EVAL purposes); we walk the original `body` directly so
+        // the kind_node_block_body wrapper doesn't get in the way.
+        uint32_t no_nlr = subtree_has_nlr(body) ? 0 : 1;
+        return ALLOC_node_block(block_body, num_params, num_locals, no_nlr);
     }
     case T_OPSEQ: {
         // Unary minus on a numeric literal — `-1`, `-3.14` — appears as

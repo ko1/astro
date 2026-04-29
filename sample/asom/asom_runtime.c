@@ -502,7 +502,7 @@ asom_block_arena_grow(void)
 }
 
 VALUE
-asom_make_block(CTX *c, struct Node *body, uint32_t num_params, uint32_t num_locals)
+asom_make_block(CTX *c, struct Node *body, uint32_t num_params, uint32_t num_locals, uint32_t no_nlr)
 {
     struct asom_block_record *r = g_block_arena.next;
     if (UNLIKELY(r >= g_block_arena.end)) {
@@ -518,6 +518,7 @@ asom_make_block(CTX *c, struct Node *body, uint32_t num_params, uint32_t num_loc
     m->num_locals = num_locals;
     m->holder = c->frame->method ? c->frame->method->holder : NULL;
     m->selector = "<block>";
+    m->no_nlr = no_nlr ? true : false;
 
     struct asom_block *b = &r->block;
     // SOM has a separate Block1/Block2/Block3 class per arity (the block
@@ -642,6 +643,17 @@ asom_block_invoke(CTX *c, struct asom_block *b, VALUE *args, uint32_t nargs)
     frame->lexical_parent = b->lexical_parent;
     frame->pool_slots = pool_slots;
     c->frame = frame;
+
+    if (m->no_nlr) {
+        // Block body has no `^` reachable in this frame, so no escape can
+        // originate here. A dead-home NLR from some inner code path is
+        // caught at the next outer block_invoke (or the home asom_invoke);
+        // we don't need our own catcher in the chain.
+        VALUE result = EVAL(c, m->body);
+        c->frame = frame->parent;
+        frame_free(frame);
+        return result;
+    }
 
     struct asom_unwind unwind = {
         .home = NULL,

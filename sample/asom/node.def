@@ -177,10 +177,13 @@ node_block_body(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t num_pa
 }
 
 // Block literal: produce a Block object capturing the current frame.
+// `no_nlr` is parse-time analysis: 1 iff the block body has no `^` on any
+// path that would execute in this block's frame, so asom_block_invoke can
+// skip its escape-catcher setjmp.
 NODE_DEF
-node_block(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t num_params, uint32_t num_locals)
+node_block(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t num_params, uint32_t num_locals, uint32_t no_nlr)
 {
-    return asom_make_block(c, body, num_params, num_locals);
+    return asom_make_block(c, body, num_params, num_locals, no_nlr);
 }
 
 // -----------------------------------------------------------------------------
