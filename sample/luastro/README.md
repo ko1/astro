@@ -106,16 +106,16 @@ See [`docs/runtime.md`](docs/runtime.md) for full detail.
 Wall time, single run on a stable machine, `gcc -O3` build,
 Lua 5.4.6 and LuaJIT 2.1, `N=3` (best of 3).
 
-| benchmark   | luastro | AOT-1st | AOT-c   | lua5.4  | luajit  |
-|-------------|--------:|--------:|--------:|--------:|--------:|
-| ack         | 0.130s  | 0.182s  | 0.056s  | 0.046s  | 0.008s  |
-| factorial   | 0.029s  | 0.132s  | 0.010s  | 0.024s  | 0.004s  |
-| fib         | 0.058s  | 0.140s  | 0.026s  | 0.047s  | 0.011s  |
-| loop        | 0.006s  | 0.087s  | 0.003s  | 0.038s  | 0.009s  |
-| mandelbrot  | 0.114s  | 0.402s  | 0.070s  | 0.046s  | 0.005s  |
-| nbody       | 0.028s  | 0.704s  | 0.032s  | 0.012s  | 0.003s  |
-| sieve       | 0.008s  | 0.293s  | 0.006s  | 0.006s  | 0.003s  |
-| tak         | 0.004s  | 0.125s  | 0.003s  | 0.003s  | 0.002s  |
+| benchmark   | luastro | AOT-1st | AOT-c   | lua5.4  | luajit  | vs lua5.4   |
+|-------------|--------:|--------:|--------:|--------:|--------:|------------:|
+| ack         | 0.138s  | 0.182s  | 0.057s  | 0.050s  | 0.008s  | 1.14× behind |
+| factorial   | 0.032s  | 0.140s  | 0.010s  | 0.026s  | 0.004s  | **2.6× faster** |
+| fib         | 0.065s  | 0.148s  | 0.027s  | 0.051s  | 0.010s  | **1.9× faster** |
+| loop        | 0.006s  | 0.091s  | 0.003s  | 0.038s  | 0.009s  | **12.7× faster** |
+| mandelbrot  | 0.125s  | 0.440s  | 0.076s  | 0.049s  | 0.005s  | 1.55× behind |
+| nbody       | 0.030s  | 0.743s  | 0.033s  | 0.012s  | 0.003s  | 2.75× behind |
+| sieve       | 0.008s  | 0.304s  | 0.006s  | 0.007s  | 0.003s  | **tied** |
+| tak         | 0.004s  | 0.133s  | 0.004s  | 0.003s  | 0.002s  | tied |
 
 Columns:
 
@@ -150,10 +150,11 @@ effect on `mandelbrot` AOT-c:
 | **+ mixed int+float in arith / compare**          |           108 ms |
 | **+ pinned +0.0 cell**                            |            88 ms |
 | **+ `node_local_decl` 1-LHS/1-RHS fast path**     |            81 ms |
-| **+ `always_inline` on `luav_to_double` / `_from_double`** | **73 ms** |
+| **+ `always_inline` on `luav_to_double` / `_from_double`** |   73 ms |
+| **+ pre-interned metamethod names**               |            76 ms |
 
-mandelbrot AOT-c: 73 ms vs lua5.4 48 ms — **1.5× behind** (was 15.7×).
-nbody AOT-c: 31 ms vs lua5.4 13 ms — **2.4× behind** (was 9.3×).
+mandelbrot AOT-c: 76 ms vs lua5.4 49 ms — **1.55× behind** (was 15.7×).
+nbody AOT-c: 33 ms vs lua5.4 12 ms — **2.75× behind** (was 9.3×).
 
 The remaining gap is mostly per-node `DISPATCH_*` indirect calls in
 the AOT-cached SD's outermost handler (children that didn't get baked
