@@ -415,6 +415,7 @@ falls back to running on the main stack.
 | Sparse-start array promotion        | **Done.** `t[2..N]` reaches the array part (sieve fix)   |
 | `node_local_decl` 1-LHS/1-RHS path  | **Done.** Inner-loop `local x = expr` skips staging      |
 | Pre-interned metamethod names       | **Done.** `__index` / `__call` / `__add` / ... cached    |
+| Inner SDs externally visible        | **Done.** `_INL` rename + extern weak wrapper post-pass  |
 | 2-value RESULT (`rax+rdx`)          | Globals used instead; refactor pending                   |
 | `goto` / labels                     | Parsed; `BR_GOTO` propagates up; no label scanner        |
 | `xpcall` message handler            | Caught but handler ignored                               |
@@ -422,12 +423,10 @@ falls back to running on the main stack.
 | Local-scope shrink on `do…end` exit | Not implemented; conservative w.r.t. GC                  |
 | Type-speculating SDs                | All SDs include the type guard from the source EVAL      |
 | Float-only specialized loops        | Only `node_numfor_int_sum` exists; `_flt_sum` would help |
-| Recursive depth-first SD baking     | Top-level SDs fall back to `n->head.dispatcher` for unbaked sub-trees; ~50% of mandelbrot AOT-c cycles go through `DISPATCH_*` indirect calls as a result |
+| Residual `DISPATCH_*` indirect calls | ~25 / ~106 mandelbrot nodes still miss the AOT load (cycle-break / dedup short-circuit in the specializer) and run on the host binary's `DISPATCH_*`.  Framework-level fix. |
 
 The highest-leverage remaining item is **type-speculating
 specialization at SD bake time** — observe at runtime that some
 arith site sees only int operands, then emit a guard-free SD with
 deopt-on-miss.  Would close most of the remaining gap on
-`mandelbrot` / `nbody`.  Recursive SD baking (so children share the
-SD module their parent does, allowing gcc to inline through) is the
-other big one — both are framework-level changes.
+`mandelbrot` / `nbody`.

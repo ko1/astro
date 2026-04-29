@@ -108,14 +108,14 @@ Lua 5.4.6 and LuaJIT 2.1, `N=3` (best of 3).
 
 | benchmark   | luastro | AOT-1st | AOT-c   | lua5.4  | luajit  | vs lua5.4   |
 |-------------|--------:|--------:|--------:|--------:|--------:|------------:|
-| ack         | 0.138s  | 0.182s  | 0.057s  | 0.050s  | 0.008s  | 1.14× behind |
-| factorial   | 0.032s  | 0.140s  | 0.010s  | 0.026s  | 0.004s  | **2.6× faster** |
-| fib         | 0.065s  | 0.148s  | 0.027s  | 0.051s  | 0.010s  | **1.9× faster** |
-| loop        | 0.006s  | 0.091s  | 0.003s  | 0.038s  | 0.009s  | **12.7× faster** |
-| mandelbrot  | 0.125s  | 0.440s  | 0.076s  | 0.049s  | 0.005s  | 1.55× behind |
-| nbody       | 0.030s  | 0.743s  | 0.033s  | 0.012s  | 0.003s  | 2.75× behind |
-| sieve       | 0.008s  | 0.304s  | 0.006s  | 0.007s  | 0.003s  | **tied** |
-| tak         | 0.004s  | 0.133s  | 0.004s  | 0.003s  | 0.002s  | tied |
+| ack         | 0.132s  | 0.301s  | 0.053s  | 0.049s  | 0.008s  | 1.08× behind |
+| factorial   | 0.035s  | 0.224s  | 0.010s  | 0.026s  | 0.004s  | **2.6× faster** |
+| fib         | 0.071s  | 0.260s  | 0.028s  | 0.048s  | 0.007s  | **1.7× faster** |
+| loop        | 0.007s  | 0.124s  | 0.004s  | 0.042s  | 0.011s  | **10.5× faster** |
+| mandelbrot  | 0.131s  | 1.056s  | 0.065s  | 0.049s  | 0.005s  | 1.33× behind |
+| nbody       | 0.029s  | 1.955s  | 0.032s  | 0.013s  | 0.003s  | 2.46× behind |
+| sieve       | 0.009s  | 0.612s  | 0.006s  | 0.006s  | 0.003s  | **tied** |
+| tak         | 0.005s  | 0.233s  | 0.003s  | 0.003s  | 0.002s  | tied |
 
 Columns:
 
@@ -152,9 +152,10 @@ effect on `mandelbrot` AOT-c:
 | **+ `node_local_decl` 1-LHS/1-RHS fast path**     |            81 ms |
 | **+ `always_inline` on `luav_to_double` / `_from_double`** |   73 ms |
 | **+ pre-interned metamethod names**               |            76 ms |
+| **+ extern wrappers for inner SDs (dlsym-visible)** |          65 ms |
 
-mandelbrot AOT-c: 76 ms vs lua5.4 49 ms — **1.55× behind** (was 15.7×).
-nbody AOT-c: 33 ms vs lua5.4 12 ms — **2.75× behind** (was 9.3×).
+mandelbrot AOT-c: 65 ms vs lua5.4 49 ms — **1.33× behind** (was 15.7×).
+nbody AOT-c: 32 ms vs lua5.4 13 ms — **2.46× behind** (was 9.3×).
 
 The remaining gap is mostly per-node `DISPATCH_*` indirect calls in
 the AOT-cached SD's outermost handler (children that didn't get baked

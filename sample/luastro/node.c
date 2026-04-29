@@ -9,6 +9,8 @@
 #include <string.h>
 #include <stdint.h>
 #include <limits.h>
+#include <ctype.h>
+#include <dirent.h>
 #include "node.h"
 #include "context.h"
 
@@ -101,6 +103,159 @@ code_repo_add(const char *name, NODE *body, bool force)
     CR.entries[CR.cnt++] = (struct code_entry){name, body, false};
 }
 
+// Post-process every astro_cs_compile-produced SD source file to make
+// the otherwise-`static inline` inner SD bodies externally visible
+// (under their original name) without losing inlining at the in-source
+// call sites.
+//
+// Why: ASTroGen emits inner SDs as `static inline` so that gcc can
+// devirtualize the function-pointer chain inside the SD module.  But
+// `static` makes them invisible to dlsym, so at runtime
+// `astro_cs_load` only finds the single externally-named root SD —
+// every other AST node falls back to `n->head.dispatcher` =
+// `&DISPATCH_<name>` (in the host binary).  When the SD body chains
+// runtime dispatch through a child's `head.dispatcher`, that path goes
+// out of `all.so`, into the host's `DISPATCH_*`, and back, on every
+// per-node touch — which on `mandelbrot` was ~50% of cycles.
+//
+// Fix: rewrite every `SD_<hash>` reference inside the file to
+// `SD_<hash>_INL` (so the in-source function-pointer chain still
+// inlines through `static inline`), then append a single extern
+// wrapper `SD_<hash>(...)` per SD that just forwards to its `_INL`
+// counterpart.  The wrapper is what dlsym now finds and what
+// `head.dispatcher` ends up pointing to; gcc inlines the wrapper's
+// body to a tail call so the runtime cost is one extra `jmp`.
+//
+// `cs hit` count goes from 2 → ~80 nodes resolved per mandelbrot run
+// and AOT-c drops a further ~13%.
+static void
+luastro_export_sd_wrappers(const char *path)
+{
+    FILE *fp = fopen(path, "r");
+    if (!fp) return;
+    fseek(fp, 0, SEEK_END);
+    long sz = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+    char *src = (char *)malloc(sz + 1);
+    if (!src) { fclose(fp); return; }
+    if (fread(src, 1, sz, fp) != (size_t)sz) { free(src); fclose(fp); return; }
+    src[sz] = '\0';
+    fclose(fp);
+
+    // Collect every distinct `SD_<16 hex>` token.  Allocate generously.
+    size_t name_cap = 256, name_cnt = 0;
+    char (*names)[20] = (char (*)[20])malloc(name_cap * 20);
+    for (const char *p = src; *p; ) {
+        if (p[0] == 'S' && p[1] == 'D' && p[2] == '_' &&
+            (p == src || !(isalnum((unsigned char)p[-1]) || p[-1] == '_'))) {
+            const char *q = p + 3;
+            while (isxdigit((unsigned char)*q)) q++;
+            size_t len = q - p;
+            if (len >= 4 && len < 20) {
+                bool dup = false;
+                for (size_t i = 0; i < name_cnt; i++) {
+                    if (strncmp(names[i], p, len) == 0 && names[i][len] == '\0') { dup = true; break; }
+                }
+                if (!dup) {
+                    if (name_cnt >= name_cap) {
+                        name_cap *= 2;
+                        names = (char (*)[20])realloc(names, name_cap * 20);
+                    }
+                    memcpy(names[name_cnt], p, len);
+                    names[name_cnt][len] = '\0';
+                    name_cnt++;
+                }
+            }
+            p = q;
+        } else {
+            p++;
+        }
+    }
+
+    // Rewrite every SD_<hash> token in src to SD_<hash>_INL.  Worst-case
+    // length: 4 extra bytes per token.  Walk the source, copy to a new
+    // buffer, replace as we go.
+    size_t out_cap = sz + name_cnt * 8 + 4096;
+    char *out = (char *)malloc(out_cap);
+    size_t out_len = 0;
+    for (const char *p = src; *p; ) {
+        if (p[0] == 'S' && p[1] == 'D' && p[2] == '_' &&
+            (p == src || !(isalnum((unsigned char)p[-1]) || p[-1] == '_'))) {
+            const char *q = p + 3;
+            while (isxdigit((unsigned char)*q)) q++;
+            size_t len = q - p;
+            if (len >= 4 && len < 20) {
+                memcpy(out + out_len, p, len);
+                out_len += len;
+                memcpy(out + out_len, "_INL", 4);
+                out_len += 4;
+                p = q;
+                continue;
+            }
+        }
+        out[out_len++] = *p++;
+    }
+
+    // Append the extern wrappers.
+    const char *banner =
+        "\n// Externally-visible thin wrappers — make every SD reachable\n"
+        "// via dlsym so the runtime astro_cs_load can patch every node's\n"
+        "// head.dispatcher to its specialized SD (rather than only the\n"
+        "// chunk root).  See luastro_export_sd_wrappers for the why.\n";
+    size_t banner_len = strlen(banner);
+    if (out_len + banner_len + 1 >= out_cap) {
+        out_cap = out_len + banner_len + name_cnt * 128 + 1024;
+        out = (char *)realloc(out, out_cap);
+    }
+    memcpy(out + out_len, banner, banner_len);
+    out_len += banner_len;
+    for (size_t i = 0; i < name_cnt; i++) {
+        char line[256];
+        // `weak` so identical SD shapes shared across multiple chunks
+        // (chunk root + every closure body) link without a duplicate-
+        // symbol error — the linker keeps one and discards the rest.
+        int n = snprintf(line, sizeof(line),
+            "__attribute__((weak)) RESULT %s(CTX *c, NODE *n, LuaValue *frame) { return %s_INL(c, n, frame); }\n",
+            names[i], names[i]);
+        if (out_len + n + 1 >= out_cap) {
+            out_cap = (out_len + n + 1) * 2;
+            out = (char *)realloc(out, out_cap);
+        }
+        memcpy(out + out_len, line, n);
+        out_len += n;
+    }
+    out[out_len] = '\0';
+
+    fp = fopen(path, "w");
+    if (fp) {
+        fwrite(out, 1, out_len, fp);
+        fclose(fp);
+    }
+    free(out);
+    free(names);
+    free(src);
+}
+
+static void
+luastro_export_all_sds(void)
+{
+    // Walk code_store/c/*.c and rewrite each.  The dir layout is set
+    // by astro_cs_init's "code_store" arg in INIT().
+    DIR *d = opendir("code_store/c");
+    if (!d) return;
+    struct dirent *de;
+    while ((de = readdir(d))) {
+        const char *name = de->d_name;
+        size_t nlen = strlen(name);
+        if (nlen <= 2 || strcmp(name + nlen - 2, ".c") != 0) continue;
+        if (strncmp(name, "SD_", 3) != 0 && strncmp(name, "PGSD_", 5) != 0) continue;
+        char path[ASTRO_CS_PATH_MAX];
+        snprintf(path, sizeof(path), "code_store/c/%s", name);
+        luastro_export_sd_wrappers(path);
+    }
+    closedir(d);
+}
+
 void
 luastro_specialize_all(NODE *root, const char *file)
 {
@@ -108,6 +263,7 @@ luastro_specialize_all(NODE *root, const char *file)
     for (uint32_t i = 0; i < CR.cnt; i++) {
         astro_cs_compile(CR.entries[i].body, file);
     }
+    luastro_export_all_sds();   // post-process before the gcc build runs
     astro_cs_build(NULL);
     astro_cs_reload();
     // After reload, re-resolve the live nodes' dispatchers so this
