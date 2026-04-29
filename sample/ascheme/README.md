@@ -87,18 +87,18 @@ pg-compile / pg-cached) と他処理系 2 つ (chibi-scheme 0.12, guile-3.0)
 を一括計測。`bench/compare.sh` が初回実行で chibi-scheme をローカルに
 fetch + build (`./.chibi/`) する。
 
-例 (Linux x86_64, gcc -O2; small ベンチは interp で ~1 秒帯に揃えてある):
+例 (Linux x86_64, gcc 13 -O3):
 
 ```
 === bench/small/ ===
 benchmark        interp  aot-first aot-cached pg-compile  pg-cached      chibi      guile
-ack               0.76s      0.64s      0.53s      0.89s      0.59s      0.74s      2.49s
-fib               1.51s      1.10s      1.27s      1.73s      0.97s      1.40s      4.70s
-list              1.38s      1.32s      1.15s      1.35s      1.16s      0.87s      1.30s
-loop              1.07s      1.00s      0.92s      1.24s      0.92s      0.91s      3.31s
-sieve             1.36s      1.13s      0.97s      1.48s      0.96s      1.48s      5.14s
-sum               1.31s      1.43s      1.29s      1.35s      1.30s      1.27s      5.39s
-tak               1.47s      1.11s      1.01s      1.57s      1.03s      1.59s      6.39s
+ack               0.43s      0.33s      0.20s      0.52s      0.20s      0.67s      2.07s
+fib               0.77s      0.58s      0.47s      0.93s      0.51s      1.43s      4.46s
+list              0.27s      0.33s      0.21s      0.37s      0.21s      0.84s      1.24s
+loop              0.47s      0.36s      0.28s      0.53s      0.27s      0.92s      3.38s
+sieve             0.85s      0.72s      0.53s      1.04s      0.54s      1.61s      5.10s
+sum               0.53s      0.66s      0.54s      0.66s      0.57s      1.19s      5.05s
+tak               0.80s      0.55s      0.42s      0.92s      0.42s      1.53s      6.25s
 ```
 
 列の意味:
@@ -112,20 +112,35 @@ tak               1.47s      1.11s      1.01s      1.57s      1.03s      1.59s  
 | **pg-cached** | `-c` 後続起動: `profile.txt` を自動読み込み、コールドエントリは default dispatcher のまま |
 | **chibi / guile** | 比較対象 (chibi 0.12, guile 3.0 with JIT) |
 
-ascheme の最速モード (`aot-cached` または `pg-cached`) を他処理系と比較:
+ascheme の最速モード (`aot-cached`) を他処理系と比較:
 
 | bench | ascheme 最速 | chibi | guile | vs chibi |
 |---|---:|---:|---:|---|
-| ack | **0.53s** | 0.74 | 2.49 | 1.4× 速い |
-| fib | **0.97s** | 1.40 | 4.70 | 1.4× 速い |
-| list | 1.15s | **0.87** | 1.30 | 0.76× (chibi 勝ち — cons-heavy) |
-| loop | 0.92s | **0.91** | 3.31 | 同等 |
-| sieve | **0.96s** | 1.48 | 5.14 | 1.5× 速い |
-| sum | 1.29s | **1.27** | 5.39 | 同等 |
-| tak | **1.01s** | 1.59 | 6.39 | 1.6× 速い |
+| ack | **0.20s** | 0.67 | 2.07 | 3.4× 速い |
+| fib | **0.47s** | 1.43 | 4.46 | 3.0× |
+| list | **0.21s** | 0.84 | 1.24 | 4.0× |
+| loop | **0.28s** | 0.92 | 3.38 | 3.3× |
+| sieve | **0.53s** | 1.61 | 5.10 | 3.0× |
+| sum | **0.54s** | 1.19 | 5.05 | 2.2× |
+| tak | **0.42s** | 1.53 | 6.25 | 3.6× |
 
-guile JIT には全戦勝。bench-big の更に大きい計算 (mandel / nbody /
-fannkuch / nqueens / matmul / sieve_big …) でも傾向は同様。
+ascheme aot-cached は **全 7 ベンチで chibi を 2.2-4× 上回り**、guile JIT
+には 6-15× 速い。**プレーンインタプリタ (`interp`) すら多くのベンチで
+chibi より速い** (ack 0.43 vs 0.67、sum 0.53 vs 1.19、tak 0.80 vs 1.53)。
+
+これは段階的な最適化の積み重ねで実現:
+
+1. gref インラインキャッシュ
+2. 特化 arith / pred / vec / cons / eq? ノード (R5RS 再定義検出付き)
+3. Ruby 流 inline flonum (mandel 6× / nbody 1.7×)
+4. 末尾自己呼び出しの frame 再利用 (loop 3.2×, sum 1.9×)
+5. leaf closure の `alloca` frame (fib 2.8×, tak 2.3×)
+6. `jmp_buf` を `sobj` から外出し (sobj 208B → 48B、list 2.4×)
+7. cons 専用サイズ alloc (list 1.5×)
+8. host build を `-O3` に
+9. `scm_apply_tail` hot path を header に inline
+
+詳細とトピック別 before/after は [`docs/perf.md`](./docs/perf.md) を参照。
 
 ## 制限・非対応
 

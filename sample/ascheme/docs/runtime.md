@@ -75,7 +75,7 @@ OBJ_SYMBOL     { char *name }                  (interned)
 OBJ_STRING     { char *chars; size_t len }
 OBJ_CHAR       { uint32_t cp }
 OBJ_VECTOR     { VALUE *items; size_t len }
-OBJ_CLOSURE    { Node *body; sframe *env; int nparams, has_rest }
+OBJ_CLOSURE    { Node *body; sframe *env; int nparams, has_rest; bool leaf; ... }
 OBJ_PRIM       { scm_prim_fn fn; const char *name; int min/max_argc }
 OBJ_DOUBLE     { double dbl }                  (heap path; flonum-encoding miss)
 OBJ_BIGNUM     { mpz_t mpz }                   (GMP)
@@ -83,14 +83,27 @@ OBJ_RATIONAL   { mpq_t mpq }                   (GMP)
 OBJ_COMPLEX    { double re, im }
 OBJ_PROMISE    { VALUE thunk, value; bool forced }
 OBJ_PORT       { FILE *fp; bool input, closed, owned }
-OBJ_CONT       { jmp_buf buf; VALUE result; int active, tag }
+OBJ_CONT       struct scont *cont               (out-of-line — see below)
 OBJ_MVALUES    { VALUE *items; size_t len }    (return value of `(values …)`)
 OBJ_BOOL,OBJ_NIL,OBJ_UNSPEC,OBJ_EOF — singleton sobj's
 ```
 
+`sizeof(struct sobj) == 48` bytes.  Continuation state — a `jmp_buf`
+plus three small fields — lives behind a pointer in `struct scont`,
+not inline.  Without that split, the union would pad every cons cell
+and vector header to ~208 bytes (the size of `jmp_buf`); see
+[`docs/perf.md`](perf.md) §9.  `scm_cons` further allocates only
+`offsetof(sobj, pair) + sizeof(pair)` = 24 bytes, fitting the
+smallest Boehm bucket (§10).
+
 GMP allocations are routed through `GC_malloc` via
 `mp_set_memory_functions`, so bignums and rationals are reclaimed by
 the conservative GC like everything else.
+
+The closure variant carries a `bool leaf` set at parse time iff the
+lambda's body contains no inner `lambda` form.  `leaf` enables two
+hot-path optimizations in §4 below: stack frames via `alloca` for
+non-tail-recursive calls, and in-place frame reuse for self-tail-calls.
 
 ## 3. AST nodes
 
@@ -105,10 +118,12 @@ structs).
 |---|---|---|
 | **Literals** | `node_const_int`, `node_const_int64`, `node_const_double`, `node_const_str`, `node_const_sym`, `node_const_char`, `node_const_bool`, `node_const_nil`, `node_const_unspec`, `node_quote` | self-evaluating constants and quoted scheme values |
 | **Variables** | `node_lref`, `node_lset`, `node_gref`, `node_gset`, `node_gdef` | `(set! x v)` etc. — `lref/lset` walk the lexical frame chain by `(depth, idx)`; `gref` looks up by name with an `@ref` inline cache |
-| **Control** | `node_if`, `node_seq`, `node_lambda` | branches, sequencing, closure construction |
-| **Calls** | `node_call_0`…`node_call_4`, `node_call_n`, `node_callcc` | fixed-arity / variadic / `call/cc` (escape only) |
+| **Control** | `node_if`, `node_seq`, `node_lambda` | branches, sequencing, closure construction.  `node_lambda` carries a `leaf` operand stamped at parse time. |
+| **Calls** | `node_call_0`…`node_call_4`, `node_call_n`, `node_callcc` | fixed-arity / variadic / `call/cc` (escape only).  Tail position bakes an `is_tail` flag at parse time. |
 | **Specialized arith** | `node_arith_add/sub/mul/lt/le/gt/ge/eq` | folded at parse time when the head symbol matches `+ − * < <= > >= =` and isn't lex-shadowed |
-| **Specialized preds + vec** | `node_pred_null/pair/car/cdr/not`, `node_vec_ref`, `node_vec_set` | folded at parse time for `null? / pair? / car / cdr / not / vector-ref / vector-set!` |
+| **Specialized preds** | `node_pred_null/pair/car/cdr/not` | folded for `null? / pair? / car / cdr / not` |
+| **Specialized vec** | `node_vec_ref`, `node_vec_set` | folded for `vector-ref / vector-set!` |
+| **Specialized list / eq** | `node_cons_op`, `node_eq_op`, `node_eqv_op` | folded for `cons / eq? / eqv?` |
 
 ### Specialization safety under R5RS rebinding
 
@@ -129,11 +144,39 @@ check fails, and we go through the slow path (`scm_apply` against
 whatever `+` is now bound to).  See [`test/13_redefine_arith.scm`](../test/13_redefine_arith.scm)
 for the regression cases.
 
-### Tail-call trampoline
+### Tail-call trampoline + frame reuse
 
 `node_call_K` carries an `is_tail` field stamped during compilation
-(propagated through `if` / `begin` / `let` / etc.).  The eval body
-calls `scm_apply_tail` which:
+(propagated through `if` / `begin` / `let` / etc.).  `scm_apply_tail`
+is split between an inline header version (hot path) and an out-of-
+line slow-path (`scm_apply_tail_slow` in main.c).  See
+[`docs/perf.md`](perf.md) §6, §7, §12 for the speed wins.
+
+Hot path (inlined into every dispatcher and SD function via
+`node.h`'s `static inline`):
+
+- **Tail position + leaf closure + same shape** — overwrite the
+  current frame's slots in place and re-enter without allocating.
+  The "same shape" check (`c->env->parent == cl->closure.env &&
+  c->env->nslots == total`) means a tight tail loop reuses one
+  `sframe` for its entire run.
+- **Otherwise** — call `scm_apply_tail_slow`, which falls back to
+  `build_frame_for` and the heap.  For non-leaf closures the slow
+  path also runs (the `leaf` gate prevents reuse when an inner
+  lambda might have escaped a captured frame).
+
+The trampoline lives in `scm_apply` (closure path):
+
+- For *leaf* closures it `alloca`'s the frame on the C stack,
+  skipping `GC_malloc`.  Lifetime equals the duration of this
+  `scm_apply` call — non-tail recursion stacks alloca frames
+  naturally.
+- The `for(;;)` loop catches `tail_call_pending` and re-runs the
+  body with the new (body, env), which may either be the reused
+  alloca/heap frame or a fresh heap frame produced by the slow
+  path for a different-shape target.
+
+So the trampoline:
 
 - **Tail position + closure target** — sets
   `c->next_body / c->next_env / c->tail_call_pending` and returns
