@@ -560,6 +560,99 @@ node_iffalse_iftrue(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *f_stm
     return asom_send(c, v, asom_intern_cstr("ifFalse:ifTrue:"), 2, args, NULL);
 }
 
+// _pool variants: inline ifTrue:/ifFalse: bodies that have N>0 locals
+// or nested block creation. Frame is heap-allocated via the per-bucket
+// pool (`asom_inline_pool_frame_push`) so escaped closures are safe;
+// the `captured` flag pins them out of pool recycling. Same dual-path
+// design as node_to_do_pool. The parser picks `_pool` over the
+// stack-frame variant when num_locals > 0 or the body has nested
+// node_block descendants.
+NODE_DEF
+node_iftrue_pool(CTX * restrict c, NODE * restrict n, NODE *cond, uint32_t num_locals, NODE *stmts, NODE *body_block)
+{
+    VALUE v = EVAL_ARG(c, cond);
+    if (LIKELY(v == c->val_true)) {
+        VALUE *unused;
+        struct asom_frame *frame = asom_inline_pool_frame_push(c, num_locals, &unused);
+        (void)unused;
+        VALUE result = EVAL_ARG(c, stmts);
+        asom_inline_pool_frame_pop(c, frame);
+        return result;
+    }
+    if (LIKELY(v == c->val_false)) return c->val_nil;
+    VALUE blk = EVAL_ARG(c, body_block);
+    return asom_send(c, v, asom_intern_cstr("ifTrue:"), 1, &blk, NULL);
+}
+
+NODE_DEF
+node_iffalse_pool(CTX * restrict c, NODE * restrict n, NODE *cond, uint32_t num_locals, NODE *stmts, NODE *body_block)
+{
+    VALUE v = EVAL_ARG(c, cond);
+    if (LIKELY(v == c->val_false)) {
+        VALUE *unused;
+        struct asom_frame *frame = asom_inline_pool_frame_push(c, num_locals, &unused);
+        (void)unused;
+        VALUE result = EVAL_ARG(c, stmts);
+        asom_inline_pool_frame_pop(c, frame);
+        return result;
+    }
+    if (LIKELY(v == c->val_true)) return c->val_nil;
+    VALUE blk = EVAL_ARG(c, body_block);
+    return asom_send(c, v, asom_intern_cstr("ifFalse:"), 1, &blk, NULL);
+}
+
+NODE_DEF
+node_iftrue_iffalse_pool(CTX * restrict c, NODE * restrict n, NODE *cond, uint32_t t_num_locals, uint32_t f_num_locals, NODE *t_stmts, NODE *f_stmts, NODE *t_block, NODE *f_block)
+{
+    VALUE v = EVAL_ARG(c, cond);
+    if (LIKELY(v == c->val_true)) {
+        VALUE *unused;
+        struct asom_frame *frame = asom_inline_pool_frame_push(c, t_num_locals, &unused);
+        (void)unused;
+        VALUE result = EVAL_ARG(c, t_stmts);
+        asom_inline_pool_frame_pop(c, frame);
+        return result;
+    }
+    if (LIKELY(v == c->val_false)) {
+        VALUE *unused;
+        struct asom_frame *frame = asom_inline_pool_frame_push(c, f_num_locals, &unused);
+        (void)unused;
+        VALUE result = EVAL_ARG(c, f_stmts);
+        asom_inline_pool_frame_pop(c, frame);
+        return result;
+    }
+    VALUE tblk = EVAL_ARG(c, t_block);
+    VALUE fblk = EVAL_ARG(c, f_block);
+    VALUE args[2] = { tblk, fblk };
+    return asom_send(c, v, asom_intern_cstr("ifTrue:ifFalse:"), 2, args, NULL);
+}
+
+NODE_DEF
+node_iffalse_iftrue_pool(CTX * restrict c, NODE * restrict n, NODE *cond, uint32_t f_num_locals, uint32_t t_num_locals, NODE *f_stmts, NODE *t_stmts, NODE *f_block, NODE *t_block)
+{
+    VALUE v = EVAL_ARG(c, cond);
+    if (LIKELY(v == c->val_true)) {
+        VALUE *unused;
+        struct asom_frame *frame = asom_inline_pool_frame_push(c, t_num_locals, &unused);
+        (void)unused;
+        VALUE result = EVAL_ARG(c, t_stmts);
+        asom_inline_pool_frame_pop(c, frame);
+        return result;
+    }
+    if (LIKELY(v == c->val_false)) {
+        VALUE *unused;
+        struct asom_frame *frame = asom_inline_pool_frame_push(c, f_num_locals, &unused);
+        (void)unused;
+        VALUE result = EVAL_ARG(c, f_stmts);
+        asom_inline_pool_frame_pop(c, frame);
+        return result;
+    }
+    VALUE fblk = EVAL_ARG(c, f_block);
+    VALUE tblk = EVAL_ARG(c, t_block);
+    VALUE args[2] = { fblk, tblk };
+    return asom_send(c, v, asom_intern_cstr("ifFalse:ifTrue:"), 2, args, NULL);
+}
+
 // `n timesRepeat: [body]` — inlined when n is SmallInteger and body is
 // a 0-param 0-local block. Same stack/pool split as to:do:: stack
 // frame is fast but only safe if the body never creates a nested

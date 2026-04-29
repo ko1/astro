@@ -436,6 +436,8 @@ extern const struct NodeKind
     kind_node_super_send7, kind_node_super_send8,
     kind_node_iftrue, kind_node_iffalse,
     kind_node_iftrue_iffalse, kind_node_iffalse_iftrue,
+    kind_node_iftrue_pool, kind_node_iffalse_pool,
+    kind_node_iftrue_iffalse_pool, kind_node_iffalse_iftrue_pool,
     kind_node_whiletrue, kind_node_whilefalse,
     kind_node_to_do, kind_node_to_do_pool,
     kind_node_to_by_do, kind_node_to_by_do_pool,
@@ -492,6 +494,24 @@ subtree_creates_block(NODE *n)
         return subtree_creates_block(n->u.node_iffalse_iftrue.cond)
             || subtree_creates_block(n->u.node_iffalse_iftrue.f_block)
             || subtree_creates_block(n->u.node_iffalse_iftrue.t_block);
+    }
+    if (k == &kind_node_iftrue_pool) {
+        return subtree_creates_block(n->u.node_iftrue_pool.cond)
+            || subtree_creates_block(n->u.node_iftrue_pool.body_block);
+    }
+    if (k == &kind_node_iffalse_pool) {
+        return subtree_creates_block(n->u.node_iffalse_pool.cond)
+            || subtree_creates_block(n->u.node_iffalse_pool.body_block);
+    }
+    if (k == &kind_node_iftrue_iffalse_pool) {
+        return subtree_creates_block(n->u.node_iftrue_iffalse_pool.cond)
+            || subtree_creates_block(n->u.node_iftrue_iffalse_pool.t_block)
+            || subtree_creates_block(n->u.node_iftrue_iffalse_pool.f_block);
+    }
+    if (k == &kind_node_iffalse_iftrue_pool) {
+        return subtree_creates_block(n->u.node_iffalse_iftrue_pool.cond)
+            || subtree_creates_block(n->u.node_iffalse_iftrue_pool.f_block)
+            || subtree_creates_block(n->u.node_iffalse_iftrue_pool.t_block);
     }
     if (k == &kind_node_whiletrue) {
         return subtree_creates_block(n->u.node_whiletrue.cond_stmts)
@@ -701,6 +721,23 @@ block_is_inlinable_1arg(NODE *block_node, bool *out_has_nested_block)
     return true;
 }
 
+// `node_block(0 params, N locals)` — used by the if-pool inline paths
+// (ifTrue: / ifFalse: with non-trivial bodies). The pool frame is
+// heap-allocated so nested closures may freely capture us — `captured`
+// pins out of pool recycling. Returns the local count via out param so
+// the parser can hand it to ALLOC_node_iftrue_pool etc.
+static bool
+block_is_inlinable_pool_0arg(NODE *block_node, uint32_t *out_num_locals)
+{
+    *out_num_locals = 0;
+    if (!block_node || block_node->head.kind != &kind_node_block) return false;
+    if (block_node->u.node_block.num_params != 0) return false;
+    NODE *bb = block_node->u.node_block.body;
+    if (!bb || bb->head.kind != &kind_node_block_body) return false;
+    *out_num_locals = block_node->u.node_block.num_locals;
+    return true;
+}
+
 // Emit type-specialized send1 nodes for the common integer-arithmetic
 // selectors. These optimistically assume both operands are SmallInteger;
 // on guard miss they swap_dispatcher back to node_send1 at runtime, so
@@ -788,10 +825,20 @@ make_send(Parser *P, NODE *recv, const char *sel, NODE **args, uint32_t nargs)
     case 0: return ALLOC_node_send0(recv, sel, new_cc());
     case 1: {
         // Control-flow inlining for 1-arg sends.
-        if (sel == sel_ifTrue && block_is_inlinable(args[0]))
-            return ALLOC_node_iftrue(recv, block_stmts(args[0]), args[0]);
-        if (sel == sel_ifFalse && block_is_inlinable(args[0]))
-            return ALLOC_node_iffalse(recv, block_stmts(args[0]), args[0]);
+        if (sel == sel_ifTrue) {
+            if (block_is_inlinable(args[0]))
+                return ALLOC_node_iftrue(recv, block_stmts(args[0]), args[0]);
+            uint32_t nl;
+            if (block_is_inlinable_pool_0arg(args[0], &nl))
+                return ALLOC_node_iftrue_pool(recv, nl, block_stmts(args[0]), args[0]);
+        }
+        if (sel == sel_ifFalse) {
+            if (block_is_inlinable(args[0]))
+                return ALLOC_node_iffalse(recv, block_stmts(args[0]), args[0]);
+            uint32_t nl;
+            if (block_is_inlinable_pool_0arg(args[0], &nl))
+                return ALLOC_node_iffalse_pool(recv, nl, block_stmts(args[0]), args[0]);
+        }
         if (sel == sel_whileTrue && block_is_inlinable(recv) && block_is_inlinable(args[0]))
             return ALLOC_node_whiletrue(block_stmts(recv), block_stmts(args[0]));
         if (sel == sel_whileFalse && block_is_inlinable(recv) && block_is_inlinable(args[0]))
@@ -811,16 +858,30 @@ make_send(Parser *P, NODE *recv, const char *sel, NODE **args, uint32_t nargs)
         return spec ? spec : ALLOC_node_send1(recv, args[0], sel, new_cc());
     }
     case 2: {
-        if (sel == sel_ifTrueIfFalse
-            && block_is_inlinable(args[0]) && block_is_inlinable(args[1]))
-            return ALLOC_node_iftrue_iffalse(recv,
-                block_stmts(args[0]), block_stmts(args[1]),
-                args[0], args[1]);
-        if (sel == sel_ifFalseIfTrue
-            && block_is_inlinable(args[0]) && block_is_inlinable(args[1]))
-            return ALLOC_node_iffalse_iftrue(recv,
-                block_stmts(args[0]), block_stmts(args[1]),
-                args[0], args[1]);
+        if (sel == sel_ifTrueIfFalse) {
+            if (block_is_inlinable(args[0]) && block_is_inlinable(args[1]))
+                return ALLOC_node_iftrue_iffalse(recv,
+                    block_stmts(args[0]), block_stmts(args[1]),
+                    args[0], args[1]);
+            uint32_t tnl, fnl;
+            if (block_is_inlinable_pool_0arg(args[0], &tnl)
+                && block_is_inlinable_pool_0arg(args[1], &fnl))
+                return ALLOC_node_iftrue_iffalse_pool(recv, tnl, fnl,
+                    block_stmts(args[0]), block_stmts(args[1]),
+                    args[0], args[1]);
+        }
+        if (sel == sel_ifFalseIfTrue) {
+            if (block_is_inlinable(args[0]) && block_is_inlinable(args[1]))
+                return ALLOC_node_iffalse_iftrue(recv,
+                    block_stmts(args[0]), block_stmts(args[1]),
+                    args[0], args[1]);
+            uint32_t fnl, tnl;
+            if (block_is_inlinable_pool_0arg(args[0], &fnl)
+                && block_is_inlinable_pool_0arg(args[1], &tnl))
+                return ALLOC_node_iffalse_iftrue_pool(recv, fnl, tnl,
+                    block_stmts(args[0]), block_stmts(args[1]),
+                    args[0], args[1]);
+        }
         if (sel == sel_toDo) {
             bool has_nested;
             if (block_is_inlinable_1arg(args[1], &has_nested)) {
