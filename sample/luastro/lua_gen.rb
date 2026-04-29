@@ -36,11 +36,17 @@ class LuaNodeDef < ASTroGen::NodeDef
     def build_specializer(name)
       arg = case @type
             when 'LuaString *'
-              # Re-intern by C string at SD load time so the SD_ source can
-              # be cached on disk and reloaded across runs.
-              "    fprintf(fp, \"        lua_str_intern(\");\n" +
-              "    astro_fprint_cstr(fp, lua_str_data(n->u.#{name}.#{self.name}));\n" +
-              "    fprintf(fp, \")\");"
+              # The parser already interned this string and stored the
+              # `LuaString *` on the AST node, so the SD just reads it
+              # back via `n->u.<kind>.<field>`.  Earlier we emitted a
+              # literal `lua_str_intern("x")` here so the SD source
+              # would be portable across runs (a different process's
+              # intern pool produces different pointers); but that
+              # meant every dispatch re-interned the same C string,
+              # which on `nbody` ate 21.5% of cycles.  The AST is
+              # always rebuilt by the parser before the SD runs, so
+              # the field is fresh and process-local.
+              "    fprintf(fp, \"        n->u.#{name}.#{self.name}\");"
             when 'uint64_t'
               # Default emits "(VALUE)%lluULL" which assumes VALUE is a
               # scalar; for luastro VALUE is a struct so we need a plain
