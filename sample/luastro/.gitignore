@@ -1,0 +1,24 @@
+# ASTroGen-generated sources
+node_alloc.c
+node_dispatch.c
+node_dump.c
+node_eval.c
+node_hash.c
+node_head.h
+node_replace.c
+node_specialize.c
+node_specialized.c
+
+# Build artifacts
+luastro
+compiled_luastro
+pg_luastro
+compiled_node_specialized.c
+pg_node_specialized.c
+code_store/
+luac.out
+
+# Local scratch / perf
+tmp/
+perf*.data
+perf*.data.old

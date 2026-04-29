@@ -1,0 +1,12 @@
+-- Comparison operators
+print(1 < 2, 2 < 1, 1 < 1)
+print(1 <= 1, 2 <= 1)
+print(2 > 1, 1 > 2, 1 > 1)
+print(2 >= 2, 1 >= 2)
+print(1 == 1, 1 == 2)
+print(1 ~= 2, 1 ~= 1)
+print(1.0 == 1, 1 == 1.0)
+print("abc" == "abc", "abc" == "ab")
+print("a" < "b", "b" < "a")
+print(nil == nil, nil == false)
+print(true == true, true == false)

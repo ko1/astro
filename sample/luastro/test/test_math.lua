@@ -1,0 +1,10 @@
+-- math.* basics
+print(math.abs(-5), math.abs(3.5))
+print(math.floor(3.7), math.ceil(3.2))
+print(math.sqrt(16))
+print(math.max(1, 5, 3, 2))
+print(math.min(1, 5, 3, 2))
+print(math.fmod(7, 3))
+print(math.tointeger(5.0), math.tointeger(5.5))
+print(math.type(1), math.type(1.0), math.type("x"))
+print(math.pi > 3 and math.pi < 4)

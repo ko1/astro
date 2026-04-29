@@ -1,0 +1,992 @@
+// luastro node definitions.
+//
+// Each NODE_DEF emits an EVAL_<name>() body that the dispatcher chain
+// inlines.  The signature is:
+//
+//   RESULT EVAL_<name>(CTX * restrict c, NODE * restrict n,
+//                      LuaValue * restrict frame, /* operands... */)
+//
+// Operand types we use:
+//   uint32_t / int32_t / uint64_t / double / NODE * / LuaString *
+//
+// Variable-arity operands (call args, table elements, etc.) are stored
+// in module-level side arrays indexed by `(idx, cnt)` operand pairs.
+// The hash treats idx as an opaque uint32_t which means each occurrence
+// gets a unique SD_; that's acceptable since these nodes are rarely the
+// hottest leaf on the path.
+
+#include <math.h>
+
+extern NODE     **LUASTRO_NODE_ARR;     // generic NODE * side-array
+extern uint32_t  *LUASTRO_U32_ARR;      // uint32_t side-array (local indices)
+
+// kind_* are emitted by ASTroGen at the top of node_alloc.c with
+// external linkage.  Forward-declare the ones we cross-reference from
+// EVAL bodies (swap_dispatcher targets, etc.) so EVAL compiles before
+// alloc.
+extern const struct NodeKind kind_node_arith;
+
+// Call current closure's upvalue table — set by lua_call before
+// dispatching the body and restored on return.  See lua_runtime.c.
+extern LuaValue **LUASTRO_CUR_UPVALS;
+
+// Promote a frame slot to a heap-cell so a nested closure can capture
+// it.  Idempotent: subsequent calls with the same slot return the same
+// cell.  See lua_runtime.c.
+LuaValue *luastro_ensure_box(LuaValue *frame_slot);
+
+// Apply an assignment described by a "target" node directly to a value,
+// used by node_multi_assign to avoid re-evaluating the lhs subtrees.
+void luastro_apply_assign(CTX *c, NODE *target, LuaValue v, LuaValue *frame);
+
+// =====================================================================
+// Literals
+// =====================================================================
+
+NODE_DEF
+node_nil(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame)
+{
+    (void)c; (void)n; (void)frame;
+    return RESULT_OK(LUAV_NIL);
+}
+
+NODE_DEF
+node_true(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame)
+{
+    (void)c; (void)n; (void)frame;
+    return RESULT_OK(LUAV_BOOL(1));
+}
+
+NODE_DEF
+node_false(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame)
+{
+    (void)c; (void)n; (void)frame;
+    return RESULT_OK(LUAV_BOOL(0));
+}
+
+NODE_DEF @always_inline
+node_int(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, uint64_t v)
+{
+    (void)c; (void)n; (void)frame;
+    return RESULT_OK(LUAV_INT((int64_t)v));
+}
+
+NODE_DEF @always_inline
+node_float(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, double v)
+{
+    (void)c; (void)n; (void)frame;
+    return RESULT_OK(LUAV_FLOAT(v));
+}
+
+NODE_DEF @always_inline
+node_string(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, LuaString *s)
+{
+    (void)c; (void)n; (void)frame;
+    return RESULT_OK(LUAV_STR(s));
+}
+
+NODE_DEF
+node_vararg(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame)
+{
+    (void)n; (void)frame;
+    if (c->varargs_cnt == 0) {
+        c->ret_info.result_cnt = 0;
+        return RESULT_OK(LUAV_NIL);
+    }
+    for (uint32_t i = 0; i < c->varargs_cnt && i < LUASTRO_MAX_RETS; i++)
+        c->ret_info.results[i] = c->varargs[i];
+    c->ret_info.result_cnt = c->varargs_cnt < LUASTRO_MAX_RETS ? c->varargs_cnt : LUASTRO_MAX_RETS;
+    return RESULT_OK(c->varargs[0]);
+}
+
+NODE_DEF
+node_nop(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame)
+{
+    (void)c; (void)n; (void)frame;
+    return RESULT_OK(LUAV_NIL);
+}
+
+// =====================================================================
+// Variables
+// =====================================================================
+
+// Local variable: read through the slot.  If the slot has been boxed
+// (the parser-marked-captured local was promoted by a make_closure),
+// the slot's tag is LUA_TBOXED and u.p points to the heap cell.
+//
+// The compile-time-direct fast path (slot not boxed) is the common
+// case; gcc keeps both arms in the body and the branch predictor
+// stays well-trained.
+// Two flavors per local access: direct (parser knows the slot is never
+// captured by a nested closure) and box (the slot has been promoted to
+// a heap cell on demand).  The parser emits the right kind based on
+// the function's captured-local set computed at parse time, eliminating
+// the runtime tag check from the inner loop body.
+
+NODE_DEF @always_inline
+node_local_get(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, uint32_t idx)
+{
+    (void)c; (void)n;
+    return RESULT_OK(frame[idx]);
+}
+
+NODE_DEF @always_inline
+node_local_set(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, uint32_t idx, NODE *rhs)
+{
+    LuaValue v = EVAL_ARG(c, rhs);
+    frame[idx] = v;
+    return RESULT_OK(v);
+}
+
+// box_get / box_set work on slots that the parser identified as captured
+// by an inner closure.  Boxing happens lazily on first access — the
+// captured-marker is the parser-time choice of node kind, not the
+// runtime tag — so that reads of the slot before the inner closure was
+// constructed (e.g. an upvalue read by a constructor that runs before
+// `local function f() ... uses x ... end` is parsed) still see the
+// slot's value, not a garbage pointer.
+
+NODE_DEF @always_inline
+node_box_get(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, uint32_t idx)
+{
+    (void)c; (void)n;
+    LuaValue *slot = &frame[idx];
+    LuaValue *cell = LV_IS_BOX(*slot) ? &((struct LuaBox *)(uintptr_t)*slot)->value
+                                      : luastro_ensure_box(slot);
+    return RESULT_OK(*cell);
+}
+
+NODE_DEF @always_inline
+node_box_set(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, uint32_t idx, NODE *rhs)
+{
+    LuaValue v = EVAL_ARG(c, rhs);
+    LuaValue *slot = &frame[idx];
+    LuaValue *cell = LV_IS_BOX(*slot) ? &((struct LuaBox *)(uintptr_t)*slot)->value
+                                      : luastro_ensure_box(slot);
+    *cell = v;
+    return RESULT_OK(v);
+}
+
+NODE_DEF
+node_upval_get(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, uint32_t idx)
+{
+    (void)c; (void)n; (void)frame;
+    return RESULT_OK(*LUASTRO_CUR_UPVALS[idx]);
+}
+
+NODE_DEF
+node_upval_set(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, uint32_t idx, NODE *rhs)
+{
+    (void)frame;
+    LuaValue v = EVAL_ARG(c, rhs);
+    *LUASTRO_CUR_UPVALS[idx] = v;
+    return RESULT_OK(v);
+}
+
+NODE_DEF
+node_global_get(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, LuaString *name)
+{
+    (void)n; (void)frame;
+    return RESULT_OK(lua_table_get_str(c->globals, name));
+}
+
+NODE_DEF
+node_global_set(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, LuaString *name, NODE *rhs)
+{
+    (void)frame;
+    LuaValue v = EVAL_ARG(c, rhs);
+    lua_table_set_str(c->globals, name, v);
+    return RESULT_OK(v);
+}
+
+// Local declaration with N RHS values.
+//   - lhs_idx points at LUASTRO_U32_ARR[lhs_idx..lhs_idx+nlhs] for slot indices
+//   - rhs_idx points at LUASTRO_NODE_ARR[rhs_idx..rhs_idx+nrhs] for value exprs
+NODE_DEF @noinline
+node_local_decl(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, uint32_t lhs_idx, uint32_t nlhs, uint32_t rhs_idx, uint32_t nrhs)
+{
+    (void)n;
+    // Lua semantics: if the LAST rhs returns multiple values, they
+    // spread to fill any unmatched lhs slots.  We evaluate the rhs
+    // expressions in order; for the last one we read c->ret_info to
+    // pick up extra values.
+    LuaValue staged[64];
+    uint32_t produced = 0;
+    for (uint32_t i = 0; i < nrhs; i++) {
+        NODE *e = LUASTRO_NODE_ARR[rhs_idx + i];
+        LuaValue v = EVAL(c, e, frame);
+        if (i + 1 == nrhs && nlhs > nrhs) {
+            // Last rhs — also pick up extra returns.
+            staged[produced++] = v;
+            uint32_t extras = c->ret_info.result_cnt;
+            for (uint32_t k = 1; k < extras && produced < 64; k++) {
+                staged[produced++] = c->ret_info.results[k];
+            }
+        } else {
+            staged[produced++] = v;
+            c->ret_info.result_cnt = 0;
+        }
+    }
+    for (uint32_t i = 0; i < nlhs; i++) {
+        LuaValue v = i < produced ? staged[i] : LUAV_NIL;
+        // Honour the captured-local boxing tag.
+        LuaValue *slot = &frame[LUASTRO_U32_ARR[lhs_idx + i]];
+        if (LV_IS_BOX(*slot)) ((struct LuaBox *)(uintptr_t)*slot)->value = v;
+        else *slot = v;
+    }
+    return RESULT_OK(LUAV_NIL);
+}
+
+// =====================================================================
+// Sequence and control flow
+// =====================================================================
+
+NODE_DEF
+node_seq(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *first, NODE *second)
+{
+    (void)n;
+    RESULT r = EVAL_ARG(c, first);
+    if (LUASTRO_BR != LUA_BR_NORMAL) return r;
+    return EVAL_ARG(c, second);
+}
+
+NODE_DEF @always_inline
+node_if(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *cond, NODE *then_n, NODE *else_n)
+{
+    LuaValue cv = EVAL_ARG(c, cond);
+    if (LV_TRUTHY(cv)) {
+        return EVAL_ARG(c, then_n);
+    } else if (else_n) {
+        return EVAL_ARG(c, else_n);
+    }
+    return RESULT_OK(LUAV_NIL);
+}
+
+NODE_DEF @always_inline
+node_while(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *cond, NODE *body)
+{
+    (void)n;
+    for (;;) {
+        LuaValue cv = EVAL_ARG(c, cond);
+        if (!LV_TRUTHY(cv)) break;
+        EVAL_ARG(c, body);
+        if (__builtin_expect(LUASTRO_BR != LUA_BR_NORMAL, 0)) {
+            if (LUASTRO_BR == LUA_BR_BREAK) { LUASTRO_BR = LUA_BR_NORMAL; break; }
+            return LUASTRO_BR_VAL;
+        }
+    }
+    return RESULT_OK(LUAV_NIL);
+}
+
+NODE_DEF @always_inline
+node_repeat(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *body, NODE *cond)
+{
+    (void)n;
+    for (;;) {
+        EVAL_ARG(c, body);
+        if (__builtin_expect(LUASTRO_BR != LUA_BR_NORMAL, 0)) {
+            if (LUASTRO_BR == LUA_BR_BREAK) { LUASTRO_BR = LUA_BR_NORMAL; break; }
+            return LUASTRO_BR_VAL;
+        }
+        LuaValue cv = EVAL_ARG(c, cond);
+        if (LV_TRUTHY(cv)) break;
+    }
+    return RESULT_OK(LUAV_NIL);
+}
+
+NODE_DEF
+node_break(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame)
+{
+    (void)c; (void)n; (void)frame;
+    return RESULT_BREAK_();
+}
+
+NODE_DEF
+node_return(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *expr, uint32_t nret)
+{
+    (void)n; (void)nret;
+    if (!expr) {
+        c->ret_info.result_cnt = 0;
+        LUASTRO_BR_VAL = LUAV_NIL;
+        return RESULT_RETURN_(LUAV_NIL);
+    }
+    LuaValue v = EVAL_ARG(c, expr);
+    LUASTRO_BR_VAL = v;       // stash for hot loops that discard the RESULT and read on cold path
+    return RESULT_RETURN_(v);
+}
+
+NODE_DEF
+node_goto(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, LuaString *target)
+{
+    (void)frame; (void)n;
+    c->goto_target = target;
+    RESULT r;
+    r = LUAV_NIL;
+    LUASTRO_BR = LUA_BR_GOTO;
+    return r;
+}
+
+NODE_DEF
+node_label(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, LuaString *name)
+{
+    (void)c; (void)n; (void)frame; (void)name;
+    return RESULT_OK(LUAV_NIL);
+}
+
+// Specialized numeric-for body that the parser recognizes at parse
+// time when the body has the shape:
+//
+//     local_set(sum_idx, int_add(local_get(sum_idx), local_get(var_idx)))
+//
+// — i.e. `for i=...,...,... do sum = sum + i end`.  This is the
+// classic accumulator loop and parsing it as a single node lets us
+// keep both `sum` and `i` in scalar registers across the loop, without
+// going through LuaValue construction / tag check / 16-byte stack
+// roundtrips that dominate the generic numfor body.
+NODE_DEF @always_inline
+node_numfor_int_sum(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, uint32_t var_idx, uint32_t sum_idx, NODE *start, NODE *limit, NODE *step)
+{
+    (void)n;
+    LuaValue sv = EVAL_ARG(c, start);
+    LuaValue lv = EVAL_ARG(c, limit);
+    LuaValue stv = EVAL_ARG(c, step);
+    if (__builtin_expect(LV_IS_INT(sv) && LV_IS_INT(lv) && LV_IS_INT(stv)
+                         && LV_IS_INT(frame[sum_idx]), 1)) {
+        int64_t i   = LV_AS_INT(sv);
+        int64_t lim = LV_AS_INT(lv);
+        int64_t stp = LV_AS_INT(stv);
+        int64_t sum = LV_AS_INT(frame[sum_idx]);
+        if (__builtin_expect(stp == 1, 1)) {
+            for (; i <= lim; i++) sum += i;
+        } else if (stp > 0) {
+            for (; i <= lim; i += stp) sum += i;
+        } else if (stp < 0) {
+            for (; i >= lim; i += stp) sum += i;
+        } else {
+            lua_raisef(c, "'for' step is zero");
+        }
+        frame[var_idx] = LUAV_INT(i);
+        frame[sum_idx] = LUAV_INT(sum);
+        return RESULT_OK(LUAV_NIL);
+    }
+    // Slow path: any non-int operand or accumulator falls back through
+    // lua_arith so semantics stay correct even if the parser's type
+    // guess was wrong.
+    int64_t i, lim, stp;
+    if (!lua_to_int(sv, &i) || !lua_to_int(lv, &lim) || !lua_to_int(stv, &stp))
+        lua_raisef(c, "'for' must use numeric values");
+    if (stp == 0) lua_raisef(c, "'for' step is zero");
+    LuaValue sum_v = frame[sum_idx];
+    if (stp > 0) for (; i <= lim; i += stp) sum_v = lua_arith(c, LUA_OP_ADD, sum_v, LUAV_INT(i));
+    else         for (; i >= lim; i += stp) sum_v = lua_arith(c, LUA_OP_ADD, sum_v, LUAV_INT(i));
+    frame[var_idx] = LUAV_INT(i);
+    frame[sum_idx] = sum_v;
+    return RESULT_OK(LUAV_NIL);
+}
+
+// Numeric for: var = start, limit, step.  The whole loop body is inside
+// this node so we get tight scalar dispatch on the integer hot path.
+NODE_DEF @always_inline
+node_numfor(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, uint32_t var_idx, NODE *start, NODE *limit, NODE *step, NODE *body)
+{
+    (void)n;
+    LuaValue sv  = EVAL_ARG(c, start);
+    LuaValue lv  = EVAL_ARG(c, limit);
+    LuaValue stv = EVAL_ARG(c, step);
+    if (LV_IS_INT(sv) && LV_IS_INT(lv) && LV_IS_INT(stv)) {
+        int64_t i = LV_AS_INT(sv), lim = LV_AS_INT(lv), stp = LV_AS_INT(stv);
+        if (stp == 0) lua_raisef(c, "'for' step is zero");
+        if (stp > 0) {
+            for (; i <= lim; i += stp) {
+                frame[var_idx] = LUAV_INT(i);
+                EVAL_ARG(c, body);
+                if (__builtin_expect(LUASTRO_BR != LUA_BR_NORMAL, 0)) {
+                    if (LUASTRO_BR == LUA_BR_BREAK) { LUASTRO_BR = LUA_BR_NORMAL; return RESULT_OK(LUAV_NIL); }
+                    return LUASTRO_BR_VAL;
+                }
+            }
+        } else {
+            for (; i >= lim; i += stp) {
+                frame[var_idx] = LUAV_INT(i);
+                EVAL_ARG(c, body);
+                if (__builtin_expect(LUASTRO_BR != LUA_BR_NORMAL, 0)) {
+                    if (LUASTRO_BR == LUA_BR_BREAK) { LUASTRO_BR = LUA_BR_NORMAL; return RESULT_OK(LUAV_NIL); }
+                    return LUASTRO_BR_VAL;
+                }
+            }
+        }
+        return RESULT_OK(LUAV_NIL);
+    }
+    double f, l, s;
+    if (!lua_to_float(sv, &f) || !lua_to_float(lv, &l) || !lua_to_float(stv, &s))
+        lua_raisef(c, "'for' initial / limit / step must be a number");
+    if (s == 0.0) lua_raisef(c, "'for' step is zero");
+    if (s > 0) {
+        for (; f <= l; f += s) {
+            frame[var_idx] = LUAV_FLOAT(f);
+            EVAL_ARG(c, body);
+            if (__builtin_expect(LUASTRO_BR != LUA_BR_NORMAL, 0)) {
+                if (LUASTRO_BR == LUA_BR_BREAK) { LUASTRO_BR = LUA_BR_NORMAL; return RESULT_OK(LUAV_NIL); }
+                return LUASTRO_BR_VAL;
+            }
+        }
+    } else {
+        for (; f >= l; f += s) {
+            frame[var_idx] = LUAV_FLOAT(f);
+            EVAL_ARG(c, body);
+            if (__builtin_expect(LUASTRO_BR != LUA_BR_NORMAL, 0)) {
+                if (LUASTRO_BR == LUA_BR_BREAK) { LUASTRO_BR = LUA_BR_NORMAL; return RESULT_OK(LUAV_NIL); }
+                return LUASTRO_BR_VAL;
+            }
+        }
+    }
+    return RESULT_OK(LUAV_NIL);
+}
+
+// Generic for: lhs_idx points at the loop-vars' slot indices in
+// LUASTRO_U32_ARR; iter_expr is f, s, var.  The three operand slots
+// fn_e/s_e/v_e cover the explist; if the parser only saw one
+// expression we still pass three (with nil placeholders) — but if the
+// first expression is a call, we use its multi-return values for the
+// missing s/v slots.
+NODE_DEF @noinline
+node_genfor(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, uint32_t lhs_idx, uint32_t nvars, NODE *fn_e, NODE *s_e, NODE *v_e, NODE *body)
+{
+    (void)n;
+    LuaValue fn_v = EVAL_ARG(c, fn_e);
+    // Snapshot ret_info from fn_e in case s_e/v_e are placeholder nils.
+    LuaValue fn_extra[3]; uint32_t fn_extra_cnt = c->ret_info.result_cnt;
+    if (fn_extra_cnt > 3) fn_extra_cnt = 3;
+    for (uint32_t i = 0; i < fn_extra_cnt; i++) fn_extra[i] = c->ret_info.results[i];
+    LuaValue s_v  = EVAL_ARG(c, s_e);
+    LuaValue v_v  = EVAL_ARG(c, v_e);
+    if (LV_IS_NIL(s_v) && fn_extra_cnt > 1) s_v = fn_extra[1];
+    if (LV_IS_NIL(v_v) && fn_extra_cnt > 2) v_v = fn_extra[2];
+    LuaValue argv[2];
+    for (;;) {
+        argv[0] = s_v;
+        argv[1] = v_v;
+        RESULT r = lua_call(c, fn_v, argv, 2);
+        if (LV_IS_NIL(r)) break;
+        v_v = r;
+        frame[LUASTRO_U32_ARR[lhs_idx]] = r;
+        for (uint32_t i = 1; i < nvars; i++) {
+            frame[LUASTRO_U32_ARR[lhs_idx + i]] =
+                i < c->ret_info.result_cnt ? c->ret_info.results[i] : LUAV_NIL;
+        }
+        RESULT br = EVAL_ARG(c, body);
+        if (LUASTRO_BR == LUA_BR_BREAK) { LUASTRO_BR = LUA_BR_NORMAL; return RESULT_OK(LUAV_NIL); }
+        if (LUASTRO_BR == LUA_BR_RETURN || LUASTRO_BR == LUA_BR_GOTO) return br;
+    }
+    return RESULT_OK(LUAV_NIL);
+}
+
+// =====================================================================
+// Logical operators (short-circuit)
+// =====================================================================
+
+NODE_DEF @always_inline
+node_and(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *l, NODE *r)
+{
+    (void)n;
+    LuaValue a = EVAL_ARG(c, l);
+    if (!LV_TRUTHY(a)) return RESULT_OK(a);
+    return EVAL_ARG(c, r);
+}
+
+NODE_DEF @always_inline
+node_or(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *l, NODE *r)
+{
+    (void)n;
+    LuaValue a = EVAL_ARG(c, l);
+    if (LV_TRUTHY(a)) return RESULT_OK(a);
+    return EVAL_ARG(c, r);
+}
+
+NODE_DEF @always_inline
+node_not(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *x)
+{
+    (void)n;
+    LuaValue a = EVAL_ARG(c, x);
+    return RESULT_OK(LUAV_BOOL(!LV_TRUTHY(a)));
+}
+
+// =====================================================================
+// Arithmetic, comparison, concat, len
+// =====================================================================
+//
+// Specialization strategy mirrors abruby:
+//   - parser speculatively emits node_int_<op> for arithmetic operators
+//   - on first run if the actual operands are floats / strings,
+//     swap_dispatcher promotes the node to node_arith (the generic
+//     fallback) and the next dispatch goes through full coercion.
+
+NODE_DEF @always_inline
+node_arith(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, uint32_t op, NODE *l, NODE *r)
+{
+    (void)n;
+    LuaValue a = EVAL_ARG(c, l);
+    LuaValue b = EVAL_ARG(c, r);
+    // Fast paths for matched-type primitive arithmetic — keeps tight
+    // numerical loops out of lua_arith's external-call.
+    if (__builtin_expect(((a & 1) == (b & 1)), 1)) {
+        if (LV_IS_FLOAT(a)) {
+            switch (op) {
+            case LUA_OP_ADD: return RESULT_OK(LUAV_FLOAT(LV_AS_FLOAT(a) + LV_AS_FLOAT(b)));
+            case LUA_OP_SUB: return RESULT_OK(LUAV_FLOAT(LV_AS_FLOAT(a) - LV_AS_FLOAT(b)));
+            case LUA_OP_MUL: return RESULT_OK(LUAV_FLOAT(LV_AS_FLOAT(a) * LV_AS_FLOAT(b)));
+            case LUA_OP_DIV: return RESULT_OK(LUAV_FLOAT(LV_AS_FLOAT(a) / LV_AS_FLOAT(b)));
+            }
+        } else if (LV_IS_INT(a)) {
+            switch (op) {
+            case LUA_OP_ADD: return RESULT_OK(LUAV_INT(LV_AS_INT(a) + LV_AS_INT(b)));
+            case LUA_OP_SUB: return RESULT_OK(LUAV_INT(LV_AS_INT(a) - LV_AS_INT(b)));
+            case LUA_OP_MUL: return RESULT_OK(LUAV_INT(LV_AS_INT(a) * LV_AS_INT(b)));
+            case LUA_OP_DIV: return RESULT_OK(LUAV_FLOAT((double)LV_AS_INT(a) / (double)LV_AS_INT(b)));
+            }
+        }
+    }
+    return RESULT_OK(lua_arith(c, (int)op, a, b));
+}
+
+// node_int_add etc. handle both int+int and float+float in fast paths
+// (despite the historical name — the parser still emits node_int_add
+// speculatively because either type case is common).  Mixed-type and
+// metatable cases fall through to lua_arith.
+
+NODE_DEF @always_inline
+node_int_add(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *l, NODE *r)
+{
+    LuaValue a = EVAL_ARG(c, l);
+    LuaValue b = EVAL_ARG(c, r);
+    if (__builtin_expect(((a & 1) == (b & 1)), 1)) {
+        if (LV_IS_INT(a))   return RESULT_OK(LUAV_INT(LV_AS_INT(a) + LV_AS_INT(b)));
+        if (LV_IS_FLOAT(a)) return RESULT_OK(LUAV_FLOAT(LV_AS_FLOAT(a) + LV_AS_FLOAT(b)));
+    }
+    return RESULT_OK(lua_arith(c, LUA_OP_ADD, a, b));
+}
+
+NODE_DEF @always_inline
+node_int_sub(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *l, NODE *r)
+{
+    LuaValue a = EVAL_ARG(c, l);
+    LuaValue b = EVAL_ARG(c, r);
+    if (__builtin_expect(((a & 1) == (b & 1)), 1)) {
+        if (LV_IS_INT(a))   return RESULT_OK(LUAV_INT(LV_AS_INT(a) - LV_AS_INT(b)));
+        if (LV_IS_FLOAT(a)) return RESULT_OK(LUAV_FLOAT(LV_AS_FLOAT(a) - LV_AS_FLOAT(b)));
+    }
+    return RESULT_OK(lua_arith(c, LUA_OP_SUB, a, b));
+}
+
+NODE_DEF @always_inline
+node_int_mul(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *l, NODE *r)
+{
+    LuaValue a = EVAL_ARG(c, l);
+    LuaValue b = EVAL_ARG(c, r);
+    if (__builtin_expect(((a & 1) == (b & 1)), 1)) {
+        if (LV_IS_INT(a))   return RESULT_OK(LUAV_INT(LV_AS_INT(a) * LV_AS_INT(b)));
+        if (LV_IS_FLOAT(a)) return RESULT_OK(LUAV_FLOAT(LV_AS_FLOAT(a) * LV_AS_FLOAT(b)));
+    }
+    return RESULT_OK(lua_arith(c, LUA_OP_MUL, a, b));
+}
+
+NODE_DEF @always_inline
+node_flt_add(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *l, NODE *r)
+{
+    LuaValue a = EVAL_ARG(c, l);
+    LuaValue b = EVAL_ARG(c, r);
+    if (__builtin_expect(LV_IS_FLOAT(a) && LV_IS_FLOAT(b), 1))
+        return RESULT_OK(LUAV_FLOAT(LV_AS_FLOAT(a) + LV_AS_FLOAT(b)));
+    return RESULT_OK(lua_arith(c, LUA_OP_ADD, a, b));
+}
+
+NODE_DEF @always_inline
+node_flt_sub(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *l, NODE *r)
+{
+    LuaValue a = EVAL_ARG(c, l);
+    LuaValue b = EVAL_ARG(c, r);
+    if (__builtin_expect(LV_IS_FLOAT(a) && LV_IS_FLOAT(b), 1))
+        return RESULT_OK(LUAV_FLOAT(LV_AS_FLOAT(a) - LV_AS_FLOAT(b)));
+    return RESULT_OK(lua_arith(c, LUA_OP_SUB, a, b));
+}
+
+NODE_DEF @always_inline
+node_flt_mul(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *l, NODE *r)
+{
+    LuaValue a = EVAL_ARG(c, l);
+    LuaValue b = EVAL_ARG(c, r);
+    if (__builtin_expect(LV_IS_FLOAT(a) && LV_IS_FLOAT(b), 1))
+        return RESULT_OK(LUAV_FLOAT(LV_AS_FLOAT(a) * LV_AS_FLOAT(b)));
+    return RESULT_OK(lua_arith(c, LUA_OP_MUL, a, b));
+}
+
+NODE_DEF @always_inline
+node_unm(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *x)
+{
+    (void)n;
+    LuaValue a = EVAL_ARG(c, x);
+    if (LV_IS_INT(a))   return RESULT_OK(LUAV_INT(-LV_AS_INT(a)));
+    if (LV_IS_FLOAT(a)) return RESULT_OK(LUAV_FLOAT(-LV_AS_FLOAT(a)));
+    return RESULT_OK(lua_unm(c, a));
+}
+
+NODE_DEF
+node_bnot(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *x)
+{
+    (void)n;
+    LuaValue a = EVAL_ARG(c, x);
+    int64_t i;
+    if (lua_to_int(a, &i)) return RESULT_OK(LUAV_INT(~i));
+    lua_raisef(c, "attempt to perform bitwise operation on a %s value", lua_type_name(a));
+    return RESULT_OK(LUAV_NIL);
+}
+
+NODE_DEF
+node_len(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *x)
+{
+    (void)n;
+    LuaValue a = EVAL_ARG(c, x);
+    return RESULT_OK(LUAV_INT(lua_len(c, a)));
+}
+
+NODE_DEF
+node_concat(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *l, NODE *r)
+{
+    (void)n;
+    LuaValue a = EVAL_ARG(c, l);
+    LuaValue b = EVAL_ARG(c, r);
+    return RESULT_OK(lua_concat(c, a, b));
+}
+
+NODE_DEF @always_inline
+node_lt(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *l, NODE *r)
+{
+    (void)n;
+    LuaValue a = EVAL_ARG(c, l);
+    LuaValue b = EVAL_ARG(c, r);
+    if (LV_IS_INT(a) && LV_IS_INT(b)) return RESULT_OK(LUAV_BOOL(LV_AS_INT(a) < LV_AS_INT(b)));
+    if (LV_IS_FLOAT(a) && LV_IS_FLOAT(b)) return RESULT_OK(LUAV_BOOL(LV_AS_FLOAT(a) < LV_AS_FLOAT(b)));
+    return RESULT_OK(LUAV_BOOL(lua_lt(c, a, b)));
+}
+
+NODE_DEF @always_inline
+node_le(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *l, NODE *r)
+{
+    (void)n;
+    LuaValue a = EVAL_ARG(c, l);
+    LuaValue b = EVAL_ARG(c, r);
+    if (LV_IS_INT(a) && LV_IS_INT(b)) return RESULT_OK(LUAV_BOOL(LV_AS_INT(a) <= LV_AS_INT(b)));
+    if (LV_IS_FLOAT(a) && LV_IS_FLOAT(b)) return RESULT_OK(LUAV_BOOL(LV_AS_FLOAT(a) <= LV_AS_FLOAT(b)));
+    return RESULT_OK(LUAV_BOOL(lua_le(c, a, b)));
+}
+
+NODE_DEF @always_inline
+node_eq(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *l, NODE *r)
+{
+    (void)n;
+    LuaValue a = EVAL_ARG(c, l);
+    LuaValue b = EVAL_ARG(c, r);
+    return RESULT_OK(LUAV_BOOL(lua_eq(c, a, b)));
+}
+
+NODE_DEF @always_inline
+node_neq(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *l, NODE *r)
+{
+    (void)n;
+    LuaValue a = EVAL_ARG(c, l);
+    LuaValue b = EVAL_ARG(c, r);
+    return RESULT_OK(LUAV_BOOL(!lua_eq(c, a, b)));
+}
+
+// =====================================================================
+// Table construction and access
+// =====================================================================
+//
+// Sequence values: LUASTRO_NODE_ARR[seq_idx..seq_idx+nseq-1]
+// Key/value pairs: LUASTRO_NODE_ARR[kv_idx..kv_idx+2*nkv-1] interleaved as k0,v0,k1,v1...
+
+NODE_DEF @noinline
+node_table_new(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, uint32_t seq_idx, uint32_t nseq, uint32_t kv_idx,  uint32_t nkv)
+{
+    (void)n;
+    struct LuaTable *t = lua_table_new(nseq, nkv);
+    for (uint32_t i = 0; i < nseq; i++) {
+        LuaValue v = EVAL(c, LUASTRO_NODE_ARR[seq_idx + i], frame);
+        lua_table_seti(t, (int64_t)i + 1, v);
+    }
+    for (uint32_t i = 0; i < nkv; i++) {
+        LuaValue k = EVAL(c, LUASTRO_NODE_ARR[kv_idx + 2*i],     frame);
+        LuaValue v = EVAL(c, LUASTRO_NODE_ARR[kv_idx + 2*i + 1], frame);
+        lua_table_set(t, k, v);
+    }
+    return RESULT_OK(LUAV_TABLE(t));
+}
+
+NODE_DEF
+node_field_get(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *recv, LuaString *field)
+{
+    (void)n;
+    LuaValue r = EVAL_ARG(c, recv);
+    if (LV_IS_TBL(r)) {
+        LuaValue v = lua_table_get_str(LV_AS_TBL(r), field);
+        if (!LV_IS_NIL(v)) return RESULT_OK(v);
+        if (LV_AS_TBL(r)->metatable) {
+            LuaValue idx = lua_table_get_str(LV_AS_TBL(r)->metatable, lua_str_intern("__index"));
+            if (LV_IS_TBL(idx)) return RESULT_OK(lua_table_get_str(LV_AS_TBL(idx), field));
+            if (LV_IS_CALL(idx)) {
+                LuaValue argv[2] = {r, LUAV_STR(field)};
+                return RESULT_OK(lua_call(c, idx, argv, 2));
+            }
+        }
+        return RESULT_OK(LUAV_NIL);
+    }
+    if (LV_IS_STR(r)) {
+        LuaValue strlib = lua_table_get_str(c->globals, lua_str_intern("string"));
+        if (LV_IS_TBL(strlib)) return RESULT_OK(lua_table_get_str(LV_AS_TBL(strlib), field));
+    }
+    lua_raisef(c, "attempt to index a %s value", lua_type_name(r));
+    return RESULT_OK(LUAV_NIL);
+}
+
+NODE_DEF
+node_field_set(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *recv, LuaString *field, NODE *rhs)
+{
+    (void)n;
+    LuaValue r = EVAL_ARG(c, recv);
+    LuaValue v = EVAL_ARG(c, rhs);
+    if (!LV_IS_TBL(r)) lua_raisef(c, "attempt to index a %s value", lua_type_name(r));
+    lua_table_set_str(LV_AS_TBL(r), field, v);
+    return RESULT_OK(v);
+}
+
+NODE_DEF
+node_index_get(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *recv, NODE *key)
+{
+    (void)n;
+    LuaValue r = EVAL_ARG(c, recv);
+    LuaValue k = EVAL_ARG(c, key);
+    if (LV_IS_TBL(r)) {
+        LuaValue v = lua_table_get(LV_AS_TBL(r), k);
+        if (!LV_IS_NIL(v)) return RESULT_OK(v);
+        if (LV_AS_TBL(r)->metatable) {
+            LuaValue idx = lua_table_get_str(LV_AS_TBL(r)->metatable, lua_str_intern("__index"));
+            if (LV_IS_TBL(idx)) return RESULT_OK(lua_table_get(LV_AS_TBL(idx), k));
+            if (LV_IS_CALL(idx)) {
+                LuaValue argv[2] = {r, k};
+                return RESULT_OK(lua_call(c, idx, argv, 2));
+            }
+        }
+        return RESULT_OK(LUAV_NIL);
+    }
+    if (LV_IS_STR(r) && LV_IS_INT(k)) {
+        int64_t i = LV_AS_INT(k);
+        size_t len = lua_str_len(LV_AS_STR(r));
+        if (i >= 1 && (size_t)i <= len) {
+            char ch = lua_str_data(LV_AS_STR(r))[i - 1];
+            return RESULT_OK(LUAV_STR(lua_str_intern_n(&ch, 1)));
+        }
+        return RESULT_OK(LUAV_NIL);
+    }
+    lua_raisef(c, "attempt to index a %s value", lua_type_name(r));
+    return RESULT_OK(LUAV_NIL);
+}
+
+NODE_DEF
+node_index_set(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *recv, NODE *key, NODE *rhs)
+{
+    (void)n;
+    LuaValue r = EVAL_ARG(c, recv);
+    LuaValue k = EVAL_ARG(c, key);
+    LuaValue v = EVAL_ARG(c, rhs);
+    if (!LV_IS_TBL(r)) lua_raisef(c, "attempt to index a %s value", lua_type_name(r));
+    lua_table_set(LV_AS_TBL(r), k, v);
+    return RESULT_OK(v);
+}
+
+// =====================================================================
+// Function calls — fixed-arity fast paths and a general var-arity node.
+// =====================================================================
+
+// Fast-path closure invocation.  Done as a static inline function (not
+// a macro) so that the lifetime of `nf`, the early return on overflow,
+// and the c->sp restoration are all unambiguously scoped — the macro
+// version of this used to leak sp because gcc was hoisting/duplicating
+// stores in ways the macro hand-wrote.
+// Inline closure call helper.  Defined as a non-static function so that
+// SD .so files share the same definition as the host binary instead of
+// each compilation unit carrying its own copy with independent inlining
+// — the latter caused a leak of c->sp between SD and host frames in
+// deeply recursive code (Ackermann), where gcc's per-TU inlining
+// produced subtly different bookkeeping.
+RESULT luastro_inline_call(CTX *c, LuaValue fn, uint32_t nargs, const LuaValue *argv);
+
+// Helper: when the last argument of a call expression is itself a
+// function call, Lua semantics spread its multi-return into the
+// outer call's argument list.  Only the last-arg node being a call
+// triggers spread — any non-call expression resets ret_info.result_cnt
+// to 0 so we don't accidentally spread leftover values.
+
+static inline bool
+luastro_node_is_call(NODE *n)
+{
+    extern const struct NodeKind kind_node_call, kind_node_method_call,
+        kind_node_call_arg0, kind_node_call_arg1, kind_node_call_arg2, kind_node_call_arg3;
+    return n->head.kind == &kind_node_call ||
+           n->head.kind == &kind_node_method_call ||
+           n->head.kind == &kind_node_call_arg0 ||
+           n->head.kind == &kind_node_call_arg1 ||
+           n->head.kind == &kind_node_call_arg2 ||
+           n->head.kind == &kind_node_call_arg3;
+}
+
+static inline RESULT
+luastro_spreaded_call(CTX *c, LuaValue fn, uint32_t fixed_args, LuaValue *fixed_av,
+                      NODE *last_arg_node)
+{
+    uint32_t extras = c->ret_info.result_cnt;
+    if (extras > 1 && last_arg_node && luastro_node_is_call(last_arg_node)) {
+        uint32_t total = fixed_args - 1 + extras;
+        if (total > 64) total = 64;
+        LuaValue av[64];
+        for (uint32_t i = 0; i + 1 < fixed_args; i++) av[i] = fixed_av[i];
+        for (uint32_t i = 0; i < extras && fixed_args - 1 + i < 64; i++)
+            av[fixed_args - 1 + i] = c->ret_info.results[i];
+        c->ret_info.result_cnt = 0;
+        return luastro_inline_call(c, fn, total, av);
+    }
+    c->ret_info.result_cnt = 0;
+    return luastro_inline_call(c, fn, fixed_args, fixed_av);
+}
+
+NODE_DEF
+node_call_arg0(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *callee)
+{
+    (void)n; (void)frame;
+    LuaValue fn = EVAL_ARG(c, callee);
+    return luastro_inline_call(c, fn, 0, NULL);
+}
+
+NODE_DEF
+node_call_arg1(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *callee, NODE *a0)
+{
+    (void)n; (void)frame;
+    LuaValue fn   = EVAL_ARG(c, callee);
+    LuaValue av[1] = { EVAL_ARG(c, a0) };
+    return luastro_spreaded_call(c, fn, 1, av, a0);
+}
+
+NODE_DEF
+node_call_arg2(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *callee, NODE *a0, NODE *a1)
+{
+    (void)n; (void)frame;
+    LuaValue fn = EVAL_ARG(c, callee);
+    LuaValue av[2];
+    av[0] = EVAL_ARG(c, a0);
+    av[1] = EVAL_ARG(c, a1);
+    return luastro_spreaded_call(c, fn, 2, av, a1);
+}
+
+NODE_DEF
+node_call_arg3(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *callee, NODE *a0, NODE *a1, NODE *a2)
+{
+    (void)n; (void)frame;
+    LuaValue fn = EVAL_ARG(c, callee);
+    LuaValue av[3];
+    av[0] = EVAL_ARG(c, a0);
+    av[1] = EVAL_ARG(c, a1);
+    av[2] = EVAL_ARG(c, a2);
+    return luastro_spreaded_call(c, fn, 3, av, a2);
+}
+
+// var-arity: args at LUASTRO_NODE_ARR[args_idx..args_idx+nargs-1]
+NODE_DEF @noinline
+node_call(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *callee, uint32_t args_idx, uint32_t nargs)
+{
+    (void)n;
+    LuaValue fn = EVAL_ARG(c, callee);
+    LuaValue *av = (LuaValue *)alloca(sizeof(LuaValue) * (nargs ? nargs : 1));
+    for (uint32_t i = 0; i < nargs; i++)
+        av[i] = EVAL(c, LUASTRO_NODE_ARR[args_idx + i], frame);
+    return lua_call(c, fn, av, nargs);
+}
+
+NODE_DEF @noinline
+node_method_call(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *recv, LuaString *method, uint32_t args_idx, uint32_t nargs)
+{
+    (void)n;
+    LuaValue r = EVAL_ARG(c, recv);
+    LuaValue fn = LUAV_NIL;
+    if (LV_IS_TBL(r)) {
+        fn = lua_table_get_str(LV_AS_TBL(r), method);
+        if (LV_IS_NIL(fn) && LV_AS_TBL(r)->metatable) {
+            LuaValue idx = lua_table_get_str(LV_AS_TBL(r)->metatable, lua_str_intern("__index"));
+            if (LV_IS_TBL(idx)) fn = lua_table_get_str(LV_AS_TBL(idx), method);
+        }
+    } else if (LV_IS_STR(r)) {
+        LuaValue strlib = lua_table_get_str(c->globals, lua_str_intern("string"));
+        if (LV_IS_TBL(strlib)) fn = lua_table_get_str(LV_AS_TBL(strlib), method);
+    } else {
+        lua_raisef(c, "attempt to index a %s value", lua_type_name(r));
+    }
+    LuaValue *av = (LuaValue *)alloca(sizeof(LuaValue) * (nargs + 1));
+    av[0] = r;
+    for (uint32_t i = 0; i < nargs; i++)
+        av[i + 1] = EVAL(c, LUASTRO_NODE_ARR[args_idx + i], frame);
+    return lua_call(c, fn, av, nargs + 1);
+}
+
+// =====================================================================
+// Closure construction
+// =====================================================================
+//
+// upval_kinds: LUASTRO_U32_ARR[up_idx + 2*i]     == 0 (local) or 1 (upval)
+// upval_idxs:  LUASTRO_U32_ARR[up_idx + 2*i + 1] == source index in parent
+// cap_indices: LUASTRO_U32_ARR[cap_idx..cap_idx+ncap-1] are the caller's
+//              local slot indices that the closure will capture.
+
+NODE_DEF @noinline
+node_make_closure(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *body, uint32_t nparams, uint32_t nlocals, uint32_t nupvals, uint32_t is_vararg, uint32_t cap_idx, uint32_t ncap, uint32_t up_idx)
+{
+    (void)c; (void)n; (void)cap_idx; (void)ncap;
+    struct LuaClosure *cl = lua_closure_new(body, nparams, nlocals, nupvals,
+                                            is_vararg ? true : false, NULL);
+    for (uint32_t i = 0; i < nupvals; i++) {
+        uint32_t kind = LUASTRO_U32_ARR[up_idx + 2*i];
+        uint32_t src  = LUASTRO_U32_ARR[up_idx + 2*i + 1];
+        if (kind == 0) {
+            cl->upvals[i] = luastro_ensure_box(&frame[src]);
+        } else {
+            cl->upvals[i] = LUASTRO_CUR_UPVALS[src];
+        }
+    }
+    return RESULT_OK(LUAV_FUNC(cl));
+}
+
+// =====================================================================
+// Multi-assignment: lhs targets (NODE*) at LUASTRO_NODE_ARR[lhs_idx..],
+// rhs expressions at LUASTRO_NODE_ARR[rhs_idx..].
+// =====================================================================
+
+NODE_DEF @noinline
+node_multi_assign(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, uint32_t lhs_idx, uint32_t nlhs, uint32_t rhs_idx, uint32_t nrhs)
+{
+    (void)n;
+    LuaValue rhs_vals[64];
+    for (uint32_t i = 0; i < nrhs && i < 64; i++)
+        rhs_vals[i] = EVAL(c, LUASTRO_NODE_ARR[rhs_idx + i], frame);
+    for (uint32_t i = 0; i < nlhs; i++) {
+        LuaValue v = i < nrhs ? rhs_vals[i] : LUAV_NIL;
+        luastro_apply_assign(c, LUASTRO_NODE_ARR[lhs_idx + i], v, frame);
+    }
+    return RESULT_OK(LUAV_NIL);
+}
+
+NODE_DEF @noinline
+node_value_list(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, uint32_t list_idx, uint32_t nvals)
+{
+    (void)n;
+    for (uint32_t i = 0; i < nvals && i < LUASTRO_MAX_RETS; i++)
+        c->ret_info.results[i] = EVAL(c, LUASTRO_NODE_ARR[list_idx + i], frame);
+    c->ret_info.result_cnt = nvals < LUASTRO_MAX_RETS ? nvals : LUASTRO_MAX_RETS;
+    return RESULT_OK(c->ret_info.results[0]);
+}

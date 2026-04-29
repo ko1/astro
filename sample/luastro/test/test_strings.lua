@@ -1,0 +1,18 @@
+-- String basics
+print("hello, world")
+print('single quotes')
+print([[long
+string]])
+print(#"hello")
+print("a" .. "b" .. "c")
+print("count: " .. 42)
+print(string.len("luastro"))
+print(string.upper("abc"))
+print(string.lower("XYZ"))
+print(string.sub("hello", 2, 4))
+print(string.sub("hello", -3))
+print(string.rep("ab", 3))
+print(string.reverse("abcde"))
+print(string.byte("A"))
+print(string.char(65, 66, 67))
+print(string.format("x=%d, y=%.2f, s=%s", 42, 3.14, "ok"))
