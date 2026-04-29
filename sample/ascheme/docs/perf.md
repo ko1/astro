@@ -822,7 +822,65 @@ or PGO-driven devirtualization for further structural wins.
 
 No `lib/astrogen.rb` change — only node.def + main.c + context.h.
 
-## Cumulative score vs chibi-scheme 0.12  (after §1–§19)
+## 20 — GC tuning: pre-grow heap + lower free-space divisor  (this commit)
+
+Looking at `perf stat` on `bench/small/list.scm` (3 M cons / iteration):
+
+```
+0.098 s user    0.054 s sys    26 k page-faults    562 M cycles
+```
+
+35 % of wall time was in the kernel — Boehm GC was acquiring memory
+in small chunks via `mmap`, taking a page-fault per page touched.
+Cumulatively ~100 MB of fresh memory came in over the run.
+
+Two `libgc` knobs in `scm_gc_init`:
+
+```c
+GC_set_free_space_divisor(1);      // default 3 → less aggressive GC
+GC_expand_hp(64u * 1024 * 1024);   // pre-grow heap to 64 MB
+```
+
+`free_space_divisor` controls when the collector runs; `1` means
+"only collect when free space < live size" (very lazy).
+Cons-heavy benches that allocate then keep the result rarely benefit
+from intermediate collections, so deferring them avoids walking the
+heap during the build phase.
+
+`GC_expand_hp` requests a single big chunk up-front rather than
+growing in 4 KB pages.  `mmap` is called once for the 64 MB block
+instead of thousands of small mmaps.
+
+No correctness change — Boehm still collects when needed, just less
+frequently and with one big arena instead of many small ones.
+
+Best-of-10, baseline vs tuned, same load (LA ~5):
+
+```
+                 baseline  tuned     speedup
+list (small)     0.14 s    0.12 s    1.14×
+fannkuch         1.22 s    1.06 s    1.13×
+nbody            0.49 s    0.44 s    1.10×
+sieve_big        0.46 s    0.42 s    1.10×
+fib35            0.24 s    0.21 s    1.14×
+deriv            1.13 s    1.04 s    1.08×
+sumloop          0.27 s    0.25 s    1.07×
+ack / tak / loop ~wash (don't allocate)
+mandel           ~wash (heap too small to trigger growth)
+```
+
+Allocation-heavy benches uniformly gain 8–14 %.  No regressions on
+allocation-light ones.
+
+Earlier failed attempt (kept here for the record): I tried a
+`no_tail_call` flag — when compile-time analysis proves a body never
+sets `tail_call_pending` (e.g., fib whose tail is `(+ X Y)`), skip
+the trampoline `for(;;)` and EVAL once.  In practice the savings
+don't show up: gcc already generates a single-iteration version
+when the body returns immediately (the branch predictor catches it),
+and adding the conditional check up front cancels any win.  Reverted.
+
+## Cumulative score vs chibi-scheme 0.12  (after §1–§20)
 
 ```
                 aot-cached       chibi     ratio
