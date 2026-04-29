@@ -175,25 +175,78 @@ EVAL body には触らないが AST 形は整えてよい。**新しいノード
 - Ruby 等の `eval` は同スコープが見えるので不可。**意味論を変えない範囲**
   という線は厳守。
 
-### 5.1 ローカル定数畳み込みの sieve 退化（要追跡）
+### 5.1 ローカル定数畳み込みの sieve 退化（解決済み）
 
 luastro で実装した定数畳み込み (`pf_fold_constants`) は ack/fib/tak で
-確実な勝ち（-7〜-15%）だが、**sieve だけ -O3 で +10〜25% 退化**する。
+確実な勝ち（-7〜-15%）だが、**sieve だけ -O3 で +40% 退化**するという
+一見不可解な現象に遭遇した。stand-alone `.so` 入れ替え試験で安定再現。
 
-調査結果（`/tmp/claude/min-{fold,nofold}.so` の disasm 比較）：
+#### 原因
 
-- 内側ループ asm はほぼ同一（`addq $2; cmp imm; je` vs `inc; cmp reg; jl` の 3 命令）。
-- 退化は `-O3` 限定。`-O0/-O1/-Os` だと fold が同等または速い。
-- `-fno-tree-loop-distribute-patterns` で gap が縮む（fold .20→.17、nofold は .16 で一定）— ただしフルベンチ全体では他ベンチを悪化させるので、グローバル無効化は採用しない方がいい。
-- `-fno-ipa-cp` / `-fno-ipa-cp-clone` でも一部回復。`SD_xxx_INL.isra.0` クローンの constant-prop 経路で発生している模様。
-- 推定根本原因：fold で `local N = 10000000` がチェイン伝播 → IPA-CP が numfor SD のクローンを作る → クローン内のコード生成が微妙に劣化（複数 pass の相互作用）。
-- 環境変数 `LUASTRO_NO_FOLD=1` で fold 全体を切るゲート付き（commit b8e58ec）。
+gcc -O3 の **ループ誘導変数選択** の差。
+`local N = 10000000; for i=2,N do ...end` を fold すると `for i=2, 10000000 do ...end`
+となり、gcc は limit が定数だと知って **タグ付き形式でカウンタを保持** する：
 
-次の打ち手候補：
-- gcc tree-dump (`-fdump-tree-all-details`) でどの pass が分岐させているか特定。
-- `__attribute__((noclone))` を numfor の SD wrapper に付けて isra.0 化を抑止。
-- PG 駆動で sieve のような特定 SD だけ fold を抑制。
-- gcc 上流に bug report（再現コード `/tmp/claude/min-fold.c` 残置）。
+```asm
+.L153:
+    addq    $2, %rbx                ; i_tagged += 2
+    cmpq    $20000002, %rbx         ; immediate cmp
+    je      .L150
+.L156:
+    movq    %rbx, %rsi
+    orq     $1, %rsi                ; LUAV_INT = (i*2) | 1 — 2 µops
+    movq    %rsi, 16(%rbp)          ; frame[var]
+    ...
+```
+
+無 fold だと limit は runtime 値なので **raw 形式でカウンタを保持**：
+
+```asm
+.L209:
+    incq    %r12                    ; i++
+    cmpq    %r12, %r13              ; reg cmp
+    jl      .L206
+.L205:
+    leaq    1(%r12,%r12), %rsi      ; LUAV_INT = (i << 1) + 1 — 1 µop (LEA!)
+    movq    %rsi, 16(%rbx)
+    ...
+```
+
+per-iteration で +1 µop（mov+or vs lea）。N=10M で ~70ms、N=50M で ~70ms
+の差になる。`-O0/-O1/-Os` だと両者ほぼ同等で、退化は -O3 限定。
+試した他の打ち手は本質を外していた：
+- `-fno-tree-loop-distribute-patterns`：gap は縮むが他ベンチを悪化（局所無効化必要）
+- `-fno-ipa-cp` / `-fno-ipa-cp-clone`：`.isra.0` クローン抑止、~10% 回復
+- `__attribute__((noclone))`：上記と同程度
+
+#### 解決
+
+`pf_fold_constants` で **`node_numfor` の `limit` 演算子位置にある local_get は
+fold しない** という carve-out を入れた（commit `33d0f78`）。`numfor` 入口で
+余分な frame load が 1 回走るが one-shot なので無視できる（fold 対象は数十回〜
+程度のループ前提なら気にならない）。
+
+同 epoch A/B：
+
+| bench | fold OFF | fold w/ carve | fold w/o carve |
+|---|---|---|---|
+| ack    | 0.546s | 0.522s | 0.583s |
+| fib    | 0.296s | 0.293s | 0.293s |
+| nbody  | 0.498s | 0.470s | 0.492s |
+| **sieve** | **0.346s** | **0.350s** | **0.503s** |
+| tak    | 0.607s | 0.596s | 0.608s |
+
+carve-out 入れて全 bench で fold-off 同等以上、sieve の退化は完全解消。
+
+#### 教訓
+
+- gcc -O3 のループ最適化は「定数だと知ると逆に遅い asm を吐く」局所最適化が
+  ありえる。タグ付き値表現を持つ言語だとなおさら踏みやすい。
+- fold は意味論で安全でも **全 use-site に等しく適用していいわけではない**。
+  use-site の context（特に hot loop の bound 位置）によっては抑制すべき。
+- 「ASTro の理念は EVAL body を触らない」一方、parser pass で AST 形を整える
+  ときも、特化 SD で gcc がどう codegen するかまで見て影響を測らないと、
+  パフォーマンスの足を撃つことがある。今回はその好例。
 
 ## 6. ビルド・リンカ・ランタイムインフラ
 
