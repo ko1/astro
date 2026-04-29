@@ -488,6 +488,18 @@ end
 # Type-aware helpers
 # =====================================================================
 
+# Scale an array/pointer index by the element's slot_count so the
+# runtime ptr_add (which advances in slots, not bytes) lands on the
+# right slot.  Plain ints, pointers, char etc. all have slot_count == 1
+# so the multiplication folds away; structs and nested arrays need it.
+# Returns the original expr when the multiplier is 1 to keep the SX
+# tree small.
+def scale_index(idx_sx, elem_ty)
+  s = elem_ty.slot_count
+  return idx_sx if s == 1
+  [:mul_i, idx_sx, [:lit_i, s]]
+end
+
 def cast(expr, frm, to)
   return expr if frm == to
   return [:cast_id, expr] if frm.int? && to.float?
@@ -809,7 +821,7 @@ def compile_expr(node, fn, src)
     idx_sx, idx_ty = compile_expr(idx_node, fn, src)
     raise CompileError, "subscript needs pointer" unless arr_ty.ptr_like?
     elem_ty = arr_ty.array? ? arr_ty.inner : arr_ty.inner
-    addr = [:ptr_add, arr_sx, cast(idx_sx, idx_ty, CType::LONG)]
+    addr = [:ptr_add, arr_sx, scale_index(cast(idx_sx, idx_ty, CType::LONG), elem_ty)]
     [load_through(addr, elem_ty), elem_ty.decay]
 
   when 'field_expression'
@@ -889,10 +901,10 @@ def compile_binary(node, fn, src)
     pe, pt = lt.ptr_like? ? [ls, lt] : [rs, rt]
     ie, it = lt.ptr_like? ? [rs, rt] : [ls, lt]
     raise CompileError, 'ptr + non-int' unless it.int?
-    return [[:ptr_add, pe, cast(ie, it, CType::LONG)], pt]
+    return [[:ptr_add, pe, scale_index(cast(ie, it, CType::LONG), pt.inner)], pt]
   end
   if op == '-' && lt.ptr_like? && rt.int?
-    return [[:ptr_sub_i, ls, cast(rs, rt, CType::LONG)], lt]
+    return [[:ptr_sub_i, ls, scale_index(cast(rs, rt, CType::LONG), lt.inner)], lt]
   end
   if op == '-' && lt.ptr_like? && rt.ptr_like?
     return [[:ptr_diff, ls, rs], CType.prim('ptrdiff_t')]
@@ -995,7 +1007,7 @@ def compile_address_of(arg, fn, src)
     idx_sx, idx_ty = compile_expr(idx_node, fn, src)
     raise CompileError, "addr-of subscript needs pointer" unless arr_ty.ptr_like?
     elem = arr_ty.array? ? arr_ty.inner : arr_ty.inner
-    return [[:ptr_add, arr_sx, cast(idx_sx, idx_ty, CType::LONG)], CType.ptr(elem)]
+    return [[:ptr_add, arr_sx, scale_index(cast(idx_sx, idx_ty, CType::LONG), elem)], CType.ptr(elem)]
   when 'field_expression'
     addr_sx, ftype = field_address(arg, fn, src)
     return [addr_sx, CType.ptr(ftype)]
@@ -1061,7 +1073,7 @@ def compile_assignment(node, fn, src)
     idx_sx, idx_ty = compile_expr(l_node.child_by_field_name('index'), fn, src)
     raise CompileError, "subscript-assign needs pointer" unless arr_ty.ptr_like?
     elem = arr_ty.array? ? arr_ty.inner : arr_ty.inner
-    addr = [:ptr_add, arr_sx, cast(idx_sx, idx_ty, CType::LONG)]
+    addr = [:ptr_add, arr_sx, scale_index(cast(idx_sx, idx_ty, CType::LONG), elem)]
     return assign_through(addr, elem, op, rs, rt)
   end
 
@@ -1083,8 +1095,9 @@ def assign_to_var(idx, lt, op, rs, rt, scope)
   base = comp[op] or raise CompileError, "unsupported assign op #{op}"
   current = lvar_load(idx, lt, scope)
   if %w[+ -].include?(base) && lt.ptr_like? && rt.int?
-    new_val = base == '+' ? [:ptr_add, current, cast(rs, rt, CType::LONG)]
-                          : [:ptr_sub_i, current, cast(rs, rt, CType::LONG)]
+    scaled = scale_index(cast(rs, rt, CType::LONG), lt.inner)
+    new_val = base == '+' ? [:ptr_add, current, scaled]
+                          : [:ptr_sub_i, current, scaled]
     return [lvar_store(idx, lt, new_val, scope), lt]
   end
   if %w[+ - * /].include?(base)
@@ -1113,8 +1126,9 @@ def assign_through(addr_sx, elem, op, rs, rt)
   base = comp[op] or raise CompileError, "unsupported deref-assign op #{op}"
   loaded = load_through(addr_sx, elem)
   if %w[+ -].include?(base) && elem.ptr_like? && rt.int?
-    new_val = base == '+' ? [:ptr_add, loaded, cast(rs, rt, CType::LONG)]
-                          : [:ptr_sub_i, loaded, cast(rs, rt, CType::LONG)]
+    scaled = scale_index(cast(rs, rt, CType::LONG), elem.inner)
+    new_val = base == '+' ? [:ptr_add, loaded, scaled]
+                          : [:ptr_sub_i, loaded, scaled]
     return [store_through(addr_sx, new_val, elem), elem]
   end
   if %w[+ - * /].include?(base)
@@ -1184,7 +1198,7 @@ def compile_update(node, fn, src)
     arr_sx, arr_ty = compile_expr(arg_node.child_by_field_name('argument'), fn, src)
     idx_sx, idx_ty = compile_expr(arg_node.child_by_field_name('index'), fn, src)
     elem = arr_ty.inner
-    addr = [:ptr_add, arr_sx, cast(idx_sx, idx_ty, CType::LONG)]
+    addr = [:ptr_add, arr_sx, scale_index(cast(idx_sx, idx_ty, CType::LONG), elem)]
     cur = load_through(addr, elem)
     newv = update_op(cur, elem, delta)
     sett = store_through(addr, newv, elem)
@@ -1292,7 +1306,8 @@ def address_of_struct_value(obj_node, fn, src)
   when 'subscript_expression'
     arr_sx, arr_ty = compile_expr(obj_node.child_by_field_name('argument'), fn, src)
     idx_sx, idx_ty = compile_expr(obj_node.child_by_field_name('index'), fn, src)
-    [:ptr_add, arr_sx, cast(idx_sx, idx_ty, CType::LONG)]
+    elem = arr_ty.array? ? arr_ty.inner : arr_ty.inner
+    [:ptr_add, arr_sx, scale_index(cast(idx_sx, idx_ty, CType::LONG), elem)]
   else
     raise CompileError, "address of struct: #{k}"
   end
@@ -1960,8 +1975,24 @@ def infer_array_size(ty, v_node, src)
     n = parse_string_literal(v_node, src).length + 1
     CType.array(ty.inner, n)
   when 'initializer_list'
-    cnt = 0; v_node.each_named { cnt += 1 }
-    CType.array(ty.inner, cnt)
+    # Designators reset the position: `{5, [2] = 2, 3}` is positions
+    # 0,2,3 → size 4, not 3.  Walk elements and track the implicit
+    # cursor.
+    pos = 0; max_pos = -1
+    v_node.each_named do |c|
+      if c.type.to_s == 'initializer_pair'
+        sub = nil
+        c.each_named { |x| sub = x if x.type.to_s == 'subscript_designator' }
+        if sub
+          inner = nil; sub.each_named { |x| inner = x; break }
+          n = eval_const_int(inner, src)
+          pos = n if n
+        end
+      end
+      max_pos = pos if pos > max_pos
+      pos += 1
+    end
+    CType.array(ty.inner, max_pos + 1)
   else ty
   end
 end
@@ -2002,27 +2033,69 @@ end
 
 def add_global_init(idx, ty, v_node, src)
   return if v_node.nil?
+  init_aggregate_at(idx, ty, v_node, src)
+end
+
+# Recursive aggregate initializer: emits a sequence of `[:gset, slot, ...]`
+# entries into GLOBAL_INITS for `v_node` interpreted as an initializer for
+# a value of type `ty` at base slot `base_idx`.  Handles scalar values,
+# string literals into char arrays, brace-enclosed initializer_list for
+# arrays/structs, and `[N] = val` / `.field = val` designators.  Nested
+# aggregates flow back through this same helper, so `S a[1] = {{1,{2,3}}}`
+# works as a depth-2 walk.
+def init_aggregate_at(base_idx, ty, v_node, src)
   init_fn = Func.new('__init__', CType::VOID)
+
+  # Strip an outer { ... } around a scalar initializer (`int x = {5};`).
+  if !ty.array? && !ty.struct? &&
+     v_node.type.to_s == 'initializer_list'
+    inner = nil; v_node.each_named { |c| inner = c; break }
+    return init_aggregate_at(base_idx, ty, inner, src) if inner
+  end
+
   if ty.array?
-    if v_node.type.to_s == 'initializer_list'
-      elems = []; v_node.each_named { |c| elems << c }
-      elems.each_with_index do |e, i|
-        next if i >= (ty.size || elems.length)
-        es, et = compile_expr(e, init_fn, src)
-        GLOBAL_INITS << [:gset, idx + i, cast(es, et, ty.inner)]
-      end
-      return
-    end
     if v_node.type.to_s == 'string_literal'
       s = parse_string_literal(v_node, src)
       n = ty.size || (s.length + 1)
       (0...n).each do |i|
         b = i < s.length ? s.bytes[i] : 0
-        GLOBAL_INITS << [:gset, idx + i, [:lit_i, b]]
+        GLOBAL_INITS << [:gset, base_idx + i, [:lit_i, b]]
+      end
+      return
+    end
+    if v_node.type.to_s == 'initializer_list'
+      stride = ty.inner.slot_count
+      pos = 0
+      elems = []; v_node.each_named { |c| elems << c }
+      elems.each do |e|
+        if e.type.to_s == 'initializer_pair'
+          # `[N] = val` — designator picks an index
+          designator = nil; val_node = nil
+          e.each_named do |c|
+            t = c.type.to_s
+            if t == 'subscript_designator' || t == 'field_designator'
+              designator = c
+            else
+              val_node = c
+            end
+          end
+          val_node = e.child_by_field_name('value') || val_node
+          if designator && designator.type.to_s == 'subscript_designator'
+            inner = nil; designator.each_named { |c| inner = c; break }
+            pos = eval_const_int(inner, src) || pos
+          end
+          init_aggregate_at(base_idx + pos * stride, ty.inner, val_node, src)
+          pos += 1
+        else
+          next if ty.size && pos >= ty.size
+          init_aggregate_at(base_idx + pos * stride, ty.inner, e, src)
+          pos += 1
+        end
       end
       return
     end
   end
+
   if ty.struct? && v_node.type.to_s == 'initializer_list'
     info = STRUCTS[ty.name]
     raise CompileError, "unknown struct #{ty.name}" unless info
@@ -2030,39 +2103,40 @@ def add_global_init(idx, ty, v_node, src)
     pos = 0
     elems.each do |e|
       if e.type.to_s == 'initializer_pair'
-        # `.field = value` form — use the designator
-        designator = nil
-        e.each_named { |c|
-          if c.type.to_s == 'field_designator' || c.type.to_s == 'subscript_designator'
+        designator = nil; tail_val = nil
+        e.each_named do |c|
+          t = c.type.to_s
+          if t == 'field_designator' || t == 'subscript_designator'
             designator = c
+          else
+            tail_val = c
           end
-        }
-        val_node = e.child_by_field_name('value') || begin
-          last = nil; e.each_named { |c| last = c if c.type.to_s != 'field_designator' && c.type.to_s != 'subscript_designator' }; last
         end
+        val_node = e.child_by_field_name('value') || tail_val
         if designator && designator.type.to_s == 'field_designator'
           fname_node = nil
           designator.each_named { |c| fname_node = c; break }
           fname = text(fname_node, src)
-          slot = idx + info[:offsets][fname]
           ftype = info[:fields].find { |n, _| n == fname }[1]
-          es, et = compile_expr(val_node, init_fn, src)
-          GLOBAL_INITS << [:gset, slot, cast(es, et, ftype)]
+          init_aggregate_at(base_idx + info[:offsets][fname], ftype, val_node, src)
+          # Advance pos to the named field's position so subsequent
+          # positional elements continue from there.
+          named_pos = info[:fields].index { |n, _| n == fname }
+          pos = named_pos + 1 if named_pos
         end
       else
-        # Positional element
         fname, fty = info[:fields][pos]
         next if fname.nil?
-        slot = idx + info[:offsets][fname]
-        es, et = compile_expr(e, init_fn, src)
-        GLOBAL_INITS << [:gset, slot, cast(es, et, fty)]
+        init_aggregate_at(base_idx + info[:offsets][fname], fty, e, src)
         pos += 1
       end
     end
     return
   end
+
+  # Scalar fall-through.
   es, et = compile_expr(v_node, init_fn, src)
-  GLOBAL_INITS << [:gset, idx, cast(es, et, ty)]
+  GLOBAL_INITS << [:gset, base_idx, cast(es, et, ty)]
 end
 
 # Walk all enumerator constants up-front so they're visible everywhere.
