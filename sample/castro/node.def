@@ -1,0 +1,411 @@
+
+// =====================================================================
+// castro: a C subset on ASTro.  VALUE is a union (.i / .d / .p);
+// each typed node knows which slot to read / write.
+// =====================================================================
+
+// --- literals -------------------------------------------------------
+
+NODE_DEF
+node_lit_i(CTX * restrict c, NODE * restrict n, int32_t v)
+{
+    return (VALUE){.i = v};
+}
+
+// 64-bit literal (for big constants).  astrogen has uint64_t support.
+NODE_DEF
+node_lit_i64(CTX * restrict c, NODE * restrict n, uint64_t v)
+{
+    return (VALUE){.i = (int64_t)v};
+}
+
+NODE_DEF
+node_lit_d(CTX * restrict c, NODE * restrict n, double v)
+{
+    return (VALUE){.d = v};
+}
+
+// --- locals ---------------------------------------------------------
+
+NODE_DEF
+node_lget(CTX * restrict c, NODE * restrict n, uint32_t idx)
+{
+    return c->fp[idx];
+}
+
+NODE_DEF
+node_lset(CTX * restrict c, NODE * restrict n, uint32_t idx, NODE *rhs)
+{
+    VALUE v = EVAL_ARG(c, rhs);
+    c->fp[idx] = v;
+    return v;
+}
+
+// --- sequencing -----------------------------------------------------
+
+NODE_DEF
+node_seq(CTX * restrict c, NODE * restrict n, NODE *head, NODE *tail)
+{
+    EVAL_ARG(c, head);
+    return EVAL_ARG(c, tail);
+}
+
+NODE_DEF
+node_nop(CTX * restrict c, NODE * restrict n)
+{
+    return (VALUE){.i = 0};
+}
+
+NODE_DEF
+node_drop(CTX * restrict c, NODE * restrict n, NODE *e)
+{
+    EVAL_ARG(c, e);
+    return (VALUE){.i = 0};
+}
+
+// --- control flow ---------------------------------------------------
+
+NODE_DEF
+node_if(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *then_node, NODE *else_node)
+{
+    if (EVAL_ARG(c, cond).i) {
+        return EVAL_ARG(c, then_node);
+    }
+    else {
+        return EVAL_ARG(c, else_node);
+    }
+}
+
+NODE_DEF
+node_while(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *body)
+{
+    while (EVAL_ARG(c, cond).i) {
+        EVAL_ARG(c, body);
+    }
+    return (VALUE){.i = 0};
+}
+
+NODE_DEF
+node_do_while(CTX * restrict c, NODE * restrict n, NODE *body, NODE *cond)
+{
+    do {
+        EVAL_ARG(c, body);
+    } while (EVAL_ARG(c, cond).i);
+    return (VALUE){.i = 0};
+}
+
+NODE_DEF
+node_for(CTX * restrict c, NODE * restrict n, NODE *init, NODE *cond, NODE *step, NODE *body)
+{
+    EVAL_ARG(c, init);
+    while (EVAL_ARG(c, cond).i) {
+        EVAL_ARG(c, body);
+        EVAL_ARG(c, step);
+    }
+    return (VALUE){.i = 0};
+}
+
+NODE_DEF @noinline
+node_return(CTX * restrict c, NODE * restrict n, NODE *expr)
+{
+    c->return_value = EVAL_ARG(c, expr);
+    longjmp(*c->return_buf, 1);
+    // unreachable
+    __builtin_unreachable();
+}
+
+NODE_DEF @noinline
+node_return_void(CTX * restrict c, NODE * restrict n)
+{
+    c->return_value = (VALUE){.i = 0};
+    longjmp(*c->return_buf, 1);
+    __builtin_unreachable();
+}
+
+// --- ternary --------------------------------------------------------
+// (Same as node_if but kept separate for readability of dumps.)
+
+NODE_DEF
+node_ternary(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *t, NODE *e)
+{
+    return (EVAL_ARG(c, cond).i) ? EVAL_ARG(c, t) : EVAL_ARG(c, e);
+}
+
+// --- short-circuit logical ------------------------------------------
+
+NODE_DEF
+node_land(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    if (!EVAL_ARG(c, l).i) return (VALUE){.i = 0};
+    return (VALUE){.i = EVAL_ARG(c, r).i ? 1 : 0};
+}
+
+NODE_DEF
+node_lor(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    if (EVAL_ARG(c, l).i)  return (VALUE){.i = 1};
+    return (VALUE){.i = EVAL_ARG(c, r).i ? 1 : 0};
+}
+
+NODE_DEF
+node_lnot(CTX * restrict c, NODE * restrict n, NODE *e)
+{
+    return (VALUE){.i = !EVAL_ARG(c, e).i};
+}
+
+// --- int arithmetic -------------------------------------------------
+
+NODE_DEF
+node_add_i(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    int64_t lv = EVAL_ARG(c, l).i;
+    int64_t rv = EVAL_ARG(c, r).i;
+    return (VALUE){.i = lv + rv};
+}
+
+NODE_DEF
+node_sub_i(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    int64_t lv = EVAL_ARG(c, l).i;
+    int64_t rv = EVAL_ARG(c, r).i;
+    return (VALUE){.i = lv - rv};
+}
+
+NODE_DEF
+node_mul_i(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    int64_t lv = EVAL_ARG(c, l).i;
+    int64_t rv = EVAL_ARG(c, r).i;
+    return (VALUE){.i = lv * rv};
+}
+
+NODE_DEF
+node_div_i(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    int64_t lv = EVAL_ARG(c, l).i;
+    int64_t rv = EVAL_ARG(c, r).i;
+    return (VALUE){.i = lv / rv};
+}
+
+NODE_DEF
+node_mod_i(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    int64_t lv = EVAL_ARG(c, l).i;
+    int64_t rv = EVAL_ARG(c, r).i;
+    return (VALUE){.i = lv % rv};
+}
+
+NODE_DEF
+node_neg_i(CTX * restrict c, NODE * restrict n, NODE *e)
+{
+    return (VALUE){.i = -EVAL_ARG(c, e).i};
+}
+
+// --- int bitwise ----------------------------------------------------
+
+NODE_DEF
+node_band(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    return (VALUE){.i = EVAL_ARG(c, l).i & EVAL_ARG(c, r).i};
+}
+
+NODE_DEF
+node_bor(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    return (VALUE){.i = EVAL_ARG(c, l).i | EVAL_ARG(c, r).i};
+}
+
+NODE_DEF
+node_bxor(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    return (VALUE){.i = EVAL_ARG(c, l).i ^ EVAL_ARG(c, r).i};
+}
+
+NODE_DEF
+node_bnot(CTX * restrict c, NODE * restrict n, NODE *e)
+{
+    return (VALUE){.i = ~EVAL_ARG(c, e).i};
+}
+
+NODE_DEF
+node_shl(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    return (VALUE){.i = EVAL_ARG(c, l).i << EVAL_ARG(c, r).i};
+}
+
+NODE_DEF
+node_shr(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    return (VALUE){.i = EVAL_ARG(c, l).i >> EVAL_ARG(c, r).i};
+}
+
+// --- int comparison (returns int) ----------------------------------
+
+NODE_DEF
+node_lt_i(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    return (VALUE){.i = EVAL_ARG(c, l).i < EVAL_ARG(c, r).i};
+}
+
+NODE_DEF
+node_le_i(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    return (VALUE){.i = EVAL_ARG(c, l).i <= EVAL_ARG(c, r).i};
+}
+
+NODE_DEF
+node_gt_i(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    return (VALUE){.i = EVAL_ARG(c, l).i > EVAL_ARG(c, r).i};
+}
+
+NODE_DEF
+node_ge_i(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    return (VALUE){.i = EVAL_ARG(c, l).i >= EVAL_ARG(c, r).i};
+}
+
+NODE_DEF
+node_eq_i(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    return (VALUE){.i = EVAL_ARG(c, l).i == EVAL_ARG(c, r).i};
+}
+
+NODE_DEF
+node_neq_i(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    return (VALUE){.i = EVAL_ARG(c, l).i != EVAL_ARG(c, r).i};
+}
+
+// --- double arithmetic ---------------------------------------------
+
+NODE_DEF
+node_add_d(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    double lv = EVAL_ARG(c, l).d;
+    double rv = EVAL_ARG(c, r).d;
+    return (VALUE){.d = lv + rv};
+}
+
+NODE_DEF
+node_sub_d(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    double lv = EVAL_ARG(c, l).d;
+    double rv = EVAL_ARG(c, r).d;
+    return (VALUE){.d = lv - rv};
+}
+
+NODE_DEF
+node_mul_d(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    double lv = EVAL_ARG(c, l).d;
+    double rv = EVAL_ARG(c, r).d;
+    return (VALUE){.d = lv * rv};
+}
+
+NODE_DEF
+node_div_d(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    double lv = EVAL_ARG(c, l).d;
+    double rv = EVAL_ARG(c, r).d;
+    return (VALUE){.d = lv / rv};
+}
+
+NODE_DEF
+node_neg_d(CTX * restrict c, NODE * restrict n, NODE *e)
+{
+    return (VALUE){.d = -EVAL_ARG(c, e).d};
+}
+
+// --- double comparison (returns int) -------------------------------
+
+NODE_DEF
+node_lt_d(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    return (VALUE){.i = EVAL_ARG(c, l).d < EVAL_ARG(c, r).d};
+}
+
+NODE_DEF
+node_le_d(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    return (VALUE){.i = EVAL_ARG(c, l).d <= EVAL_ARG(c, r).d};
+}
+
+NODE_DEF
+node_gt_d(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    return (VALUE){.i = EVAL_ARG(c, l).d > EVAL_ARG(c, r).d};
+}
+
+NODE_DEF
+node_ge_d(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    return (VALUE){.i = EVAL_ARG(c, l).d >= EVAL_ARG(c, r).d};
+}
+
+NODE_DEF
+node_eq_d(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    return (VALUE){.i = EVAL_ARG(c, l).d == EVAL_ARG(c, r).d};
+}
+
+NODE_DEF
+node_neq_d(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    return (VALUE){.i = EVAL_ARG(c, l).d != EVAL_ARG(c, r).d};
+}
+
+// --- casts ---------------------------------------------------------
+
+NODE_DEF
+node_cast_id(CTX * restrict c, NODE * restrict n, NODE *e)
+{
+    return (VALUE){.d = (double)EVAL_ARG(c, e).i};
+}
+
+NODE_DEF
+node_cast_di(CTX * restrict c, NODE * restrict n, NODE *e)
+{
+    return (VALUE){.i = (int64_t)EVAL_ARG(c, e).d};
+}
+
+// --- function call -------------------------------------------------
+//
+// node_call uses a non-inline helper for setjmp so EVAL_node_call can
+// still be always_inlined (gcc forbids inlining functions that use
+// setjmp directly).
+
+struct function_entry *castro_find_func(CTX *c, const char *name);
+VALUE castro_invoke(CTX *c, struct Node *body, uint32_t arg_index);
+
+NODE_DEF
+node_call(CTX * restrict c, NODE * restrict n, const char *name, uint32_t params_cnt, uint32_t arg_index, struct callcache *cc)
+{
+    struct Node *body;
+    if (LIKELY(c->serial == cc->serial)) {
+        body = cc->body;
+    }
+    else {
+        struct function_entry *fe = castro_find_func(c, name);
+        if (UNLIKELY(fe == NULL)) {
+            fprintf(stderr, "castro: unknown function: %s\n", name);
+            exit(1);
+        }
+        cc->serial = c->serial;
+        cc->body = body = fe->body;
+    }
+    (void)params_cnt;
+    return castro_invoke(c, body, arg_index);
+}
+
+// --- function definition (statement-level) -------------------------
+
+void castro_register_func(CTX *c, const char *name, struct Node *body, uint32_t params_cnt, uint32_t locals_cnt);
+
+NODE_DEF @noinline
+node_def(CTX * restrict c, NODE * restrict n, const char *name, NODE *body, uint32_t params_cnt, uint32_t locals_cnt)
+{
+    castro_register_func(c, name, body, params_cnt, locals_cnt);
+    c->serial++;
+    return (VALUE){.i = 0};
+}

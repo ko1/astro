@@ -1,0 +1,24 @@
+# Build artifacts
+castro
+*.o
+node_alloc.c
+node_dispatch.c
+node_dump.c
+node_eval.c
+node_hash.c
+node_head.h
+node_replace.c
+node_specialize.c
+node_specialized.c
+
+# ASTro code store (rebuilt on demand)
+code_store/
+
+# Working dir
+tmp/
+
+# Vendored grammar (built from ./tmp/ts-c via Makefile)
+parsers/c.so
+
+# Vendored test corpus (downloaded by run_tests.sh)
+testsuite/c-testsuite/
