@@ -38,7 +38,7 @@ files = files.select { |f| args.any? { |a| File.basename(f).include?(a) } } unle
 #   cmd:   command template — '%s' is replaced with the .lua filename
 ENGINES = [
   {
-    name: "luastro",
+    name: "luastro-plain",
     cmd:  "#{EXE} %s",
   },
   {

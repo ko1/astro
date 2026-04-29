@@ -112,7 +112,7 @@ See [`docs/runtime.md`](docs/runtime.md) for full detail.
 Wall time, single run on a stable machine, `gcc -O3` build,
 Lua 5.4.6 and LuaJIT 2.1, `N=3` (best of 3).
 
-| benchmark   | luastro | AOT-1st | AOT-cached   | lua5.4  | luajit  | vs lua5.4   |
+| benchmark   | luastro-plain | AOT-1st | AOT-cached | lua5.4  | luajit  | vs lua5.4   |
 |-------------|--------:|--------:|--------:|--------:|--------:|------------:|
 | ack         | 0.142s  | 0.350s  | 0.062s  | 0.053s  | 0.009s  | 1.17× behind |
 | factorial   | 0.042s  | 0.246s  | 0.011s  | 0.028s  | 0.004s  | **2.5× faster** |
@@ -125,7 +125,7 @@ Lua 5.4.6 and LuaJIT 2.1, `N=3` (best of 3).
 
 Columns:
 
-- **luastro** — pure interpreter (no `code_store/`).
+- **luastro-plain** — pure interpreter (no `code_store/`).
 - **luastro-AOT-1st** — `-c`: bake + run in one process; `code_store/`
   cleared per iteration so timing **includes** gcc compile time.
 - **luastro-AOT-cached** — bake once in `setup` (not timed), then time
