@@ -1702,7 +1702,7 @@ scm_apply(CTX *c, VALUE fn, int argc, VALUE *argv)
         }
         struct sframe *saved = c->env;
         NODE *body = cl->closure.body;
-        c->env = new_env;
+        CTX_SET_ENV(c, new_env);
         // Trampoline: re-enter while tail_call_pending is set.  Bumps
         // the body's dispatch counter — used by `--pg-compile` to decide
         // which entries are worth AOT-compiling on the next run.  The
@@ -1712,12 +1712,16 @@ scm_apply(CTX *c, VALUE fn, int argc, VALUE *argv)
         for (;;) {
             VALUE v = EVAL(c, body);
             if (!c->tail_call_pending) {
-                c->env = saved;
+                CTX_SET_ENV(c, saved);
                 return v;
             }
             c->tail_call_pending = 0;
             body = c->next_body;
-            c->env = c->next_env;
+            // Frame-reuse path leaves next_env == current env; skip the
+            // CTX_SET_ENV bump in that case so the lref level cache stays
+            // warm across tight tail-call loops.  Real env switches go
+            // through the bump.
+            if (c->next_env != c->env) CTX_SET_ENV(c, c->next_env);
             if (UNLIKELY(ASCHEME_PROFILING)) body->head.dispatch_cnt++;
         }
     }
@@ -1787,7 +1791,7 @@ scm_callcc(CTX *c, VALUE fn)
     struct sframe *saved_env = c->env;
     int saved_tcp = c->tail_call_pending;
     if (setjmp(kobj->cont->buf) != 0) {
-        c->env = saved_env;
+        CTX_SET_ENV(c, saved_env);
         c->tail_call_pending = saved_tcp;
         kobj->cont->active = 0;
         return kobj->cont->result;

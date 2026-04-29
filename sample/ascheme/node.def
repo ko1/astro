@@ -87,13 +87,43 @@ node_quote(CTX * restrict c, NODE * restrict n, uint64_t v)
 // Lexical / global variable access.
 // ---------------------------------------------------------------------------
 
+// Resolve the frame at `depth` levels up the parent chain.  Inlined helper
+// shared by node_lref and node_lset.  ASTroGen specializes `depth` as a
+// literal, so gcc selects a single branch per call site:
+//   depth=0   → c->env                     (1 reg load)
+//   depth=1   → c->env->parent             (2 chained loads)
+//   2..LREF_CACHE_SIZE-1 → lazy cache keyed on env_serial (~5 loads warm,
+//             vs `depth+1` chained loads with a plain walk — cache wins
+//             starting at depth 2)
+//   depth>=LREF_CACHE_SIZE → plain walk (out of cache range; rare)
+static inline struct sframe *
+ascheme_env_at(CTX *c, uint32_t depth)
+{
+    if (depth == 0) return c->env;
+    if (depth == 1) return c->env->parent;
+    if (depth < ASCHEME_LREF_CACHE_SIZE) {
+        if (UNLIKELY(c->env_cache_serial != c->env_serial)) {
+            c->env_cache_serial = c->env_serial;
+            c->env_chain[0] = c->env;
+            c->env_chain_filled = 0;
+        }
+        while (c->env_chain_filled < depth) {
+            c->env_chain[c->env_chain_filled + 1] =
+                c->env_chain[c->env_chain_filled]->parent;
+            c->env_chain_filled++;
+        }
+        return c->env_chain[depth];
+    }
+    struct sframe *e = c->env;
+    for (uint32_t i = 0; i < depth; i++) e = e->parent;
+    return e;
+}
+
 NODE_DEF
 node_lref(CTX * restrict c, NODE * restrict n, uint32_t depth, uint32_t idx)
 {
     (void)n;
-    struct sframe *e = c->env;
-    for (uint32_t i = 0; i < depth; i++) e = e->parent;
-    return e->slots[idx];
+    return ascheme_env_at(c, depth)->slots[idx];
 }
 
 NODE_DEF
@@ -101,9 +131,7 @@ node_lset(CTX * restrict c, NODE * restrict n, uint32_t depth, uint32_t idx, NOD
 {
     (void)n;
     VALUE v = EVAL_ARG(c, val);
-    struct sframe *e = c->env;
-    for (uint32_t i = 0; i < depth; i++) e = e->parent;
-    e->slots[idx] = v;
+    ascheme_env_at(c, depth)->slots[idx] = v;
     return SCM_UNSPEC;
 }
 

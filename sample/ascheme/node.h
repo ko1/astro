@@ -116,14 +116,17 @@ scm_apply_tail(CTX *c, VALUE fn, int argc, VALUE *argv, uint32_t is_tail)
             for (int i = 0; i < total; i++) new_env->slots[i] = argv[i];
             struct sframe *saved = c->env;
             NODE *body = cl->closure.body;
-            c->env = new_env;
+            CTX_SET_ENV(c, new_env);
             if (UNLIKELY(ASCHEME_PROFILING)) body->head.dispatch_cnt++;
             for (;;) {
                 VALUE v = EVAL(c, body);
-                if (!c->tail_call_pending) { c->env = saved; return v; }
+                if (!c->tail_call_pending) { CTX_SET_ENV(c, saved); return v; }
                 c->tail_call_pending = 0;
-                body  = c->next_body;
-                c->env = c->next_env;
+                body = c->next_body;
+                // Frame-reuse leaves next_env == current env; skip the
+                // bump so the lref level cache stays warm across tight
+                // tail-call loops.
+                if (c->next_env != c->env) CTX_SET_ENV(c, c->next_env);
                 if (UNLIKELY(ASCHEME_PROFILING)) body->head.dispatch_cnt++;
             }
         }

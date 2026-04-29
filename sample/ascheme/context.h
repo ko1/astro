@@ -223,6 +223,20 @@ extern VALUE PRIM_NULL_P_VAL, PRIM_PAIR_P_VAL, PRIM_CAR_VAL, PRIM_CDR_VAL, PRIM_
 extern VALUE PRIM_VECTOR_REF_VAL, PRIM_VECTOR_SET_VAL;
 extern VALUE PRIM_CONS_VAL, PRIM_EQ_P_VAL, PRIM_EQV_P_VAL;
 
+// Lazy parent-chain cache used by node_lref / node_lset for depth >= 1.
+// `env_chain[0] = env, [1] = env->parent, ..., env_chain[env_chain_filled]`
+// is the highest already-resolved level.
+//
+// Cache key is `env_serial` — a counter bumped on every assignment to
+// `c->env`.  Pointer-equality on `c->env` would NOT be safe: alloca'd
+// frames (leaf-closure path) get their stack memory recycled when the
+// containing C call returns, so the same address can host a different
+// frame later, with a different parent chain.  The serial sidesteps that.
+// Self-tail-call frame-reuse (which keeps c->env the same and merely
+// overwrites slots) skips the bump, so the cache stays warm across the
+// hot tail-call loops it's meant to accelerate.
+#define ASCHEME_LREF_CACHE_SIZE 8
+
 typedef struct CTX_struct {
     // Current lexical environment chain (closures + call frames).
     struct sframe *env;
@@ -241,6 +255,13 @@ typedef struct CTX_struct {
     struct sframe *next_env;
     int tail_call_pending;
 
+    // Lazy parent-chain cache for lref/lset depth >= 1.  See block comment
+    // above the typedef.  env_serial bumps on every env switch.
+    uint64_t       env_serial;
+    uint64_t       env_cache_serial;            // env_serial when cache was built
+    struct sframe *env_chain[ASCHEME_LREF_CACHE_SIZE];
+    uint32_t       env_chain_filled;            // highest index already valid
+
     // call/cc tag generator + active continuations stack.
     int cont_tag_seq;
 
@@ -248,6 +269,15 @@ typedef struct CTX_struct {
     jmp_buf err_jmp;
     int err_jmp_active;
 } CTX;
+
+// Always switch env through this macro so env_serial gets bumped (which
+// invalidates the lref level cache).  The frame-reuse path in
+// scm_apply_tail intentionally bypasses this — it overwrites slots in
+// place, c->env doesn't change, and the cache stays valid.
+#define CTX_SET_ENV(c, new_env) do { \
+    (c)->env = (new_env); \
+    (c)->env_serial++; \
+} while (0)
 
 // Singleton scheme values, initialized at INIT().
 extern struct sobj S_NIL_OBJ, S_TRUE_OBJ, S_FALSE_OBJ, S_UNSPEC_OBJ, S_EOF_OBJ;

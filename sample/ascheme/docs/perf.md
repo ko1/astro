@@ -589,7 +589,92 @@ out-of-order CPU pipelined them with other work.  Still a clean
 passing — the new semantics correctly drives rebinds through the slow
 path and restores the fast path once the original binding is in place.
 
-## Cumulative score vs chibi-scheme 0.12  (after §1–§16)
+## 17 — Lazy lref level cache for depth >= 2  (this commit)
+
+`node_lref` (and `node_lset`) used a plain parent-chain walk:
+
+```c
+struct sframe *e = c->env;
+for (uint32_t i = 0; i < depth; i++) e = e->parent;
+return e->slots[idx];
+```
+
+Each `e = e->parent` is a chained dependent load.  ASTroGen specializes
+`depth` as a literal so gcc unrolls the loop, but the loads are still
+serial — for `depth=5` (sieve / fannkuch / nested let), that's ~5
+chained loads = ~20 cycles latency on a typical OOO core.  A loop-body
+that lref's the same outer slot 4–6 times per iteration pays the chain
+walk every time.
+
+Add a per-CTX lazy parent cache, keyed on a new `env_serial` counter
+that bumps on every `c->env =` switch.  Hot path:
+
+```c
+if (depth == 0) return c->env;
+if (depth == 1) return c->env->parent;
+if (depth < ASCHEME_LREF_CACHE_SIZE) {       // 8
+    if (UNLIKELY(c->env_cache_serial != c->env_serial)) {
+        c->env_cache_serial = c->env_serial;
+        c->env_chain[0] = c->env;
+        c->env_chain_filled = 0;
+    }
+    while (c->env_chain_filled < depth) {
+        c->env_chain[c->env_chain_filled+1] =
+            c->env_chain[c->env_chain_filled]->parent;
+        c->env_chain_filled++;
+    }
+    return c->env_chain[depth];
+}
+// fallback for depth >= 8: plain walk
+```
+
+`depth=0` and `depth=1` get the direct path because the cache check
++ array index is more work than 1 chained load — the cache is only a
+win starting at `depth=2`.
+
+Three subtleties matter:
+
+1. **Pointer equality is not enough.**  alloca'd leaf-closure frames
+   reuse stack memory: when the call returns, the `sframe` address
+   becomes available again, and a later call may alloca an identical
+   pointer holding a *different* parent chain.  A cache keyed on
+   `c->env` pointer would silently return wrong data.  Hence the
+   `env_serial` counter, bumped via `CTX_SET_ENV(c, e)` on every env
+   switch.
+
+2. **Self-tail-call frame reuse must NOT bump.**  The hot tail-loop
+   `(loop (+ i 1) (+ s i))` in `sum.scm` rewrites slots in place but
+   keeps `c->env` the same — the cache stays warm across iterations.
+   The trampoline checks `if (c->next_env != c->env) CTX_SET_ENV(...)`
+   so the bump only fires when env actually changes.
+
+3. **Lazy fill, not eager.**  We don't precompute the whole chain on
+   env switch; we extend `env_chain[]` only as deep as the program
+   actually needs.  A workload using `lref(3, *)` doesn't pay for
+   levels 4–7.
+
+Best-of-10 wall time:
+
+```
+                 baseline   cached     speedup
+sieve (small)    0.45 s     0.41 s     1.10×
+fib              0.24 s     0.22 s     1.09×
+list             0.19 s     0.17 s     1.12×
+loop             0.21 s     0.19 s     1.10×
+sumloop (big)    0.72 s     0.70 s     1.03×
+sieve_big        0.90 s     0.83 s     1.08×
+nqueens          1.09 s     1.04 s     1.05×
+fannkuch         1.37 s     1.31 s     1.05×
+fib35            0.24 s     0.23 s     1.04×
+deriv            1.18 s     1.16 s     1.02×
+mandel/cps_loop  ±0% (no deep lrefs in hot path)
+ack / tak        ±0% (lref depth ≤ 1, direct path)
+```
+
+5–12 % across lref-depth-heavy benches; the wash on ack / tak is
+expected (those bodies barely touch parent-frames).
+
+## Cumulative score vs chibi-scheme 0.12  (after §1–§17)
 
 ```
                 aot-cached       chibi     ratio
