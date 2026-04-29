@@ -471,18 +471,23 @@ extern void asom_inline_frame_pop(CTX *c, struct asom_frame *frame);
 extern struct asom_frame *asom_inline_pool_frame_push(CTX *c, uint32_t num_locals, VALUE **out_locals);
 extern void asom_inline_pool_frame_pop(CTX *c, struct asom_frame *frame);
 
+// Each control-flow inline node carries the body subtree as a *direct*
+// NODE * operand (`stmts` / `t_stmts` / `f_stmts`) so EVAL_ARG inside
+// the fast path uses the SD-passed child dispatcher (constant in the
+// SD-baked TU, devirtualizable + inlinable). Without this, EVAL(c,
+// stmts) goes through the runtime head.dispatcher pointer of an
+// un-swapped descendant and bypasses the SD chain entirely.
+//
+// `body_block` (or t_block/f_block) is also kept as an operand for the
+// non-Boolean-receiver fallback path, where we need a real Block.
 NODE_DEF
-node_iftrue(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *body_block)
+node_iftrue(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *stmts, NODE *body_block)
 {
     VALUE v = EVAL_ARG(c, cond);
     if (LIKELY(v == c->val_true)) {
-        // body_block is node_block(node_block_body(stmts, 0, 0), 0, 0).
-        // Skip both wrappers to reach the statement subtree.
-        NODE *block_body = body_block->u.node_block.body;
-        NODE *stmts = block_body->u.node_block_body.body;
         struct asom_frame frame;
         asom_inline_frame_push(c, &frame);
-        VALUE result = EVAL(c, stmts);
+        VALUE result = EVAL_ARG(c, stmts);
         asom_inline_frame_pop(c, &frame);
         return result;
     }
@@ -492,15 +497,13 @@ node_iftrue(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *body_block)
 }
 
 NODE_DEF
-node_iffalse(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *body_block)
+node_iffalse(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *stmts, NODE *body_block)
 {
     VALUE v = EVAL_ARG(c, cond);
     if (LIKELY(v == c->val_false)) {
-        NODE *block_body = body_block->u.node_block.body;
-        NODE *stmts = block_body->u.node_block_body.body;
         struct asom_frame frame;
         asom_inline_frame_push(c, &frame);
-        VALUE result = EVAL(c, stmts);
+        VALUE result = EVAL_ARG(c, stmts);
         asom_inline_frame_pop(c, &frame);
         return result;
     }
@@ -510,18 +513,20 @@ node_iffalse(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *body_block)
 }
 
 NODE_DEF
-node_iftrue_iffalse(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *t_block, NODE *f_block)
+node_iftrue_iffalse(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *t_stmts, NODE *f_stmts, NODE *t_block, NODE *f_block)
 {
     VALUE v = EVAL_ARG(c, cond);
-    NODE *take = NULL;
-    if (LIKELY(v == c->val_true))       take = t_block;
-    else if (LIKELY(v == c->val_false)) take = f_block;
-    if (take) {
-        NODE *block_body = take->u.node_block.body;
-        NODE *stmts = block_body->u.node_block_body.body;
+    if (LIKELY(v == c->val_true)) {
         struct asom_frame frame;
         asom_inline_frame_push(c, &frame);
-        VALUE result = EVAL(c, stmts);
+        VALUE result = EVAL_ARG(c, t_stmts);
+        asom_inline_frame_pop(c, &frame);
+        return result;
+    }
+    if (LIKELY(v == c->val_false)) {
+        struct asom_frame frame;
+        asom_inline_frame_push(c, &frame);
+        VALUE result = EVAL_ARG(c, f_stmts);
         asom_inline_frame_pop(c, &frame);
         return result;
     }
@@ -532,18 +537,20 @@ node_iftrue_iffalse(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *t_blo
 }
 
 NODE_DEF
-node_iffalse_iftrue(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *f_block, NODE *t_block)
+node_iffalse_iftrue(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *f_stmts, NODE *t_stmts, NODE *f_block, NODE *t_block)
 {
     VALUE v = EVAL_ARG(c, cond);
-    NODE *take = NULL;
-    if (LIKELY(v == c->val_true))       take = t_block;
-    else if (LIKELY(v == c->val_false)) take = f_block;
-    if (take) {
-        NODE *block_body = take->u.node_block.body;
-        NODE *stmts = block_body->u.node_block_body.body;
+    if (LIKELY(v == c->val_true)) {
         struct asom_frame frame;
         asom_inline_frame_push(c, &frame);
-        VALUE result = EVAL(c, stmts);
+        VALUE result = EVAL_ARG(c, t_stmts);
+        asom_inline_frame_pop(c, &frame);
+        return result;
+    }
+    if (LIKELY(v == c->val_false)) {
+        struct asom_frame frame;
+        asom_inline_frame_push(c, &frame);
+        VALUE result = EVAL_ARG(c, f_stmts);
         asom_inline_frame_pop(c, &frame);
         return result;
     }
@@ -558,17 +565,15 @@ node_iffalse_iftrue(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *f_blo
 // frame is fast but only safe if the body never creates a nested
 // closure; pool path is correct in all cases.
 NODE_DEF
-node_times_repeat(CTX * restrict c, NODE * restrict n, NODE *count, NODE *body_block)
+node_times_repeat(CTX * restrict c, NODE * restrict n, NODE *count, NODE *stmts, NODE *body_block)
 {
     VALUE count_v = EVAL_ARG(c, count);
     if (LIKELY(ASOM_IS_INT(count_v))) {
         intptr_t reps = ASOM_VAL2INT(count_v);
-        NODE *block_body = body_block->u.node_block.body;
-        NODE *stmts = block_body->u.node_block_body.body;
         struct asom_frame frame;
         asom_inline_frame_push(c, &frame);
         for (intptr_t i = 0; i < reps; i++) {
-            EVAL(c, stmts);
+            EVAL_ARG(c, stmts);
         }
         asom_inline_frame_pop(c, &frame);
         return count_v;
@@ -578,18 +583,16 @@ node_times_repeat(CTX * restrict c, NODE * restrict n, NODE *count, NODE *body_b
 }
 
 NODE_DEF
-node_times_repeat_pool(CTX * restrict c, NODE * restrict n, NODE *count, NODE *body_block)
+node_times_repeat_pool(CTX * restrict c, NODE * restrict n, NODE *count, NODE *stmts, NODE *body_block)
 {
     VALUE count_v = EVAL_ARG(c, count);
     if (LIKELY(ASOM_IS_INT(count_v))) {
         intptr_t reps = ASOM_VAL2INT(count_v);
-        NODE *block_body = body_block->u.node_block.body;
-        NODE *stmts = block_body->u.node_block_body.body;
         VALUE *unused;
         struct asom_frame *frame = asom_inline_pool_frame_push(c, 0, &unused);
         (void)unused;
         for (intptr_t i = 0; i < reps; i++) {
-            EVAL(c, stmts);
+            EVAL_ARG(c, stmts);
         }
         asom_inline_pool_frame_pop(c, frame);
         return count_v;
@@ -603,7 +606,7 @@ node_times_repeat_pool(CTX * restrict c, NODE * restrict n, NODE *count, NODE *b
 // block has 1 param + 0 locals. Step may be negative for descending
 // loops; we handle both with a single guard at the top.
 NODE_DEF
-node_to_by_do(CTX * restrict c, NODE * restrict n, NODE *from, NODE *end, NODE *step, NODE *body_block)
+node_to_by_do(CTX * restrict c, NODE * restrict n, NODE *from, NODE *end, NODE *step, NODE *stmts, NODE *body_block)
 {
     VALUE from_v = EVAL_ARG(c, from);
     VALUE end_v  = EVAL_ARG(c, end);
@@ -612,8 +615,6 @@ node_to_by_do(CTX * restrict c, NODE * restrict n, NODE *from, NODE *end, NODE *
         intptr_t lo = ASOM_VAL2INT(from_v);
         intptr_t hi = ASOM_VAL2INT(end_v);
         intptr_t st = ASOM_VAL2INT(step_v);
-        NODE *block_body = body_block->u.node_block.body;
-        NODE *stmts = block_body->u.node_block_body.body;
         VALUE slot = 0;
         struct asom_frame frame;
         asom_inline_frame_push(c, &frame);
@@ -621,12 +622,12 @@ node_to_by_do(CTX * restrict c, NODE * restrict n, NODE *from, NODE *end, NODE *
         if (st > 0) {
             for (intptr_t i = lo; i <= hi; i += st) {
                 slot = ASOM_INT2VAL(i);
-                EVAL(c, stmts);
+                EVAL_ARG(c, stmts);
             }
         } else if (st < 0) {
             for (intptr_t i = lo; i >= hi; i += st) {
                 slot = ASOM_INT2VAL(i);
-                EVAL(c, stmts);
+                EVAL_ARG(c, stmts);
             }
         }
         asom_inline_frame_pop(c, &frame);
@@ -638,7 +639,7 @@ node_to_by_do(CTX * restrict c, NODE * restrict n, NODE *from, NODE *end, NODE *
 }
 
 NODE_DEF
-node_to_by_do_pool(CTX * restrict c, NODE * restrict n, NODE *from, NODE *end, NODE *step, NODE *body_block)
+node_to_by_do_pool(CTX * restrict c, NODE * restrict n, NODE *from, NODE *end, NODE *step, NODE *stmts, NODE *body_block)
 {
     VALUE from_v = EVAL_ARG(c, from);
     VALUE end_v  = EVAL_ARG(c, end);
@@ -647,19 +648,17 @@ node_to_by_do_pool(CTX * restrict c, NODE * restrict n, NODE *from, NODE *end, N
         intptr_t lo = ASOM_VAL2INT(from_v);
         intptr_t hi = ASOM_VAL2INT(end_v);
         intptr_t st = ASOM_VAL2INT(step_v);
-        NODE *block_body = body_block->u.node_block.body;
-        NODE *stmts = block_body->u.node_block_body.body;
         VALUE *locals;
         struct asom_frame *frame = asom_inline_pool_frame_push(c, 1, &locals);
         if (st > 0) {
             for (intptr_t i = lo; i <= hi; i += st) {
                 locals[0] = ASOM_INT2VAL(i);
-                EVAL(c, stmts);
+                EVAL_ARG(c, stmts);
             }
         } else if (st < 0) {
             for (intptr_t i = lo; i >= hi; i += st) {
                 locals[0] = ASOM_INT2VAL(i);
-                EVAL(c, stmts);
+                EVAL_ARG(c, stmts);
             }
         }
         asom_inline_pool_frame_pop(c, frame);
@@ -735,9 +734,9 @@ node_whiletrue(CTX * restrict c, NODE * restrict n, NODE *cond_stmts, NODE *body
     struct asom_frame frame;
     asom_inline_frame_push(c, &frame);
     for (;;) {
-        VALUE r = EVAL(c, cond_stmts);
+        VALUE r = EVAL_ARG(c, cond_stmts);
         if (r != c->val_true) break;
-        EVAL(c, body_stmts);
+        EVAL_ARG(c, body_stmts);
     }
     asom_inline_frame_pop(c, &frame);
     return c->val_nil;
@@ -749,9 +748,9 @@ node_whilefalse(CTX * restrict c, NODE * restrict n, NODE *cond_stmts, NODE *bod
     struct asom_frame frame;
     asom_inline_frame_push(c, &frame);
     for (;;) {
-        VALUE r = EVAL(c, cond_stmts);
+        VALUE r = EVAL_ARG(c, cond_stmts);
         if (r != c->val_false) break;
-        EVAL(c, body_stmts);
+        EVAL_ARG(c, body_stmts);
     }
     asom_inline_frame_pop(c, &frame);
     return c->val_nil;

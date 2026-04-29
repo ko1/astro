@@ -789,9 +789,9 @@ make_send(Parser *P, NODE *recv, const char *sel, NODE **args, uint32_t nargs)
     case 1: {
         // Control-flow inlining for 1-arg sends.
         if (sel == sel_ifTrue && block_is_inlinable(args[0]))
-            return ALLOC_node_iftrue(recv, args[0]);
+            return ALLOC_node_iftrue(recv, block_stmts(args[0]), args[0]);
         if (sel == sel_ifFalse && block_is_inlinable(args[0]))
-            return ALLOC_node_iffalse(recv, args[0]);
+            return ALLOC_node_iffalse(recv, block_stmts(args[0]), args[0]);
         if (sel == sel_whileTrue && block_is_inlinable(recv) && block_is_inlinable(args[0]))
             return ALLOC_node_whiletrue(block_stmts(recv), block_stmts(args[0]));
         if (sel == sel_whileFalse && block_is_inlinable(recv) && block_is_inlinable(args[0]))
@@ -799,9 +799,10 @@ make_send(Parser *P, NODE *recv, const char *sel, NODE **args, uint32_t nargs)
         if (sel == sel_timesRepeat) {
             bool has_nested;
             if (block_is_inlinable_0arg(args[0], &has_nested)) {
+                NODE *stmts = block_stmts(args[0]);
                 return has_nested
-                    ? ALLOC_node_times_repeat_pool(recv, args[0])
-                    : ALLOC_node_times_repeat(recv, args[0]);
+                    ? ALLOC_node_times_repeat_pool(recv, stmts, args[0])
+                    : ALLOC_node_times_repeat(recv, stmts, args[0]);
             }
         }
         NODE *aspec = make_specialized_send_array(recv, args[0], NULL, 1, sel, new_cc());
@@ -812,10 +813,14 @@ make_send(Parser *P, NODE *recv, const char *sel, NODE **args, uint32_t nargs)
     case 2: {
         if (sel == sel_ifTrueIfFalse
             && block_is_inlinable(args[0]) && block_is_inlinable(args[1]))
-            return ALLOC_node_iftrue_iffalse(recv, args[0], args[1]);
+            return ALLOC_node_iftrue_iffalse(recv,
+                block_stmts(args[0]), block_stmts(args[1]),
+                args[0], args[1]);
         if (sel == sel_ifFalseIfTrue
             && block_is_inlinable(args[0]) && block_is_inlinable(args[1]))
-            return ALLOC_node_iffalse_iftrue(recv, args[0], args[1]);
+            return ALLOC_node_iffalse_iftrue(recv,
+                block_stmts(args[0]), block_stmts(args[1]),
+                args[0], args[1]);
         if (sel == sel_toDo) {
             bool has_nested;
             if (block_is_inlinable_1arg(args[1], &has_nested)) {
@@ -833,9 +838,10 @@ make_send(Parser *P, NODE *recv, const char *sel, NODE **args, uint32_t nargs)
         if (sel == sel_toByDo) {
             bool has_nested;
             if (block_is_inlinable_1arg(args[2], &has_nested)) {
+                NODE *stmts = block_stmts(args[2]);
                 return has_nested
-                    ? ALLOC_node_to_by_do_pool(recv, args[0], args[1], args[2])
-                    : ALLOC_node_to_by_do(recv, args[0], args[1], args[2]);
+                    ? ALLOC_node_to_by_do_pool(recv, args[0], args[1], stmts, args[2])
+                    : ALLOC_node_to_by_do(recv, args[0], args[1], stmts, args[2]);
             }
         }
         return ALLOC_node_send3(recv, args[0], args[1], args[2], sel, new_cc());
