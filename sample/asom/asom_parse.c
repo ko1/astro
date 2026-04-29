@@ -1119,6 +1119,19 @@ parse_primary(Parser *P)
         expect(P, T_RBRACK);
         Scope *s = &P->scopes[P->scope_depth - 1];
         uint32_t num_locals = s->cnt - num_params;
+        // Register the block's inner statement subtree as a code-store
+        // entry so AOT/PG bakes a separate SD shard for it. Without
+        // this, asom_block_invoke's `EVAL(c, m->body)` falls through to
+        // DISPATCH_node_block_body's default dispatcher and the SD
+        // chain breaks at the block boundary — every method that has
+        // an inlined-control-flow body inside an un-inlinable block
+        // (Sieve's outer to:do: → ifTrue: with locals → whileTrue:)
+        // would lose its SD optimisation across the block call.
+        char block_label[256];
+        snprintf(block_label, sizeof(block_label), "%s>>[block@%d]",
+                 P->class_name ? P->class_name : "?", P->L->line);
+        asom_register_entry(body, asom_intern_cstr(block_label),
+                            P->class_name);
         NODE *block_body = ALLOC_node_block_body(body, num_params, num_locals);
         pop_scope(P);
         return ALLOC_node_block(block_body, num_params, num_locals);
