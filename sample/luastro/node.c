@@ -142,16 +142,24 @@ luastro_export_sd_wrappers(const char *path)
     src[sz] = '\0';
     fclose(fp);
 
-    // Collect every distinct `SD_<16 hex>` token.  Allocate generously.
+    // Collect every `SD_<hex>` token that appears as a function DEFINITION
+    // in this file — i.e. the name sits at the start of a line followed
+    // by `(`.  Forward-decls (one-liners ending with `;`) reference SDs
+    // whose body lives in another `.c`; emitting a wrapper here would
+    // create an undefined-symbol reference at dlopen time.
+    //
+    // Pattern matched (after the upcoming `_INL` rename, but the rename
+    // doesn't affect the start-of-line property): `\nSD_<hex>(`.
     size_t name_cap = 256, name_cnt = 0;
     char (*names)[20] = (char (*)[20])malloc(name_cap * 20);
     for (const char *p = src; *p; ) {
-        if (p[0] == 'S' && p[1] == 'D' && p[2] == '_' &&
-            (p == src || !(isalnum((unsigned char)p[-1]) || p[-1] == '_'))) {
+        bool at_line_start = (p == src) || (p[-1] == '\n');
+        if (at_line_start && p[0] == 'S' && p[1] == 'D' && p[2] == '_') {
             const char *q = p + 3;
             while (isxdigit((unsigned char)*q)) q++;
             size_t len = q - p;
-            if (len >= 4 && len < 20) {
+            // Definition: name immediately followed by `(`.
+            if (len >= 4 && len < 20 && *q == '(') {
                 bool dup = false;
                 for (size_t i = 0; i < name_cnt; i++) {
                     if (strncmp(names[i], p, len) == 0 && names[i][len] == '\0') { dup = true; break; }
