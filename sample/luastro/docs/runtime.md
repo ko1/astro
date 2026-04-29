@@ -416,6 +416,7 @@ falls back to running on the main stack.
 | `node_local_decl` 1-LHS/1-RHS path  | **Done.** Inner-loop `local x = expr` skips staging      |
 | Pre-interned metamethod names       | **Done.** `__index` / `__call` / `__add` / ... cached    |
 | Inner SDs externally visible        | **Done.** `_INL` rename + extern weak wrapper post-pass  |
+| `node_local_decl_one`               | **Done.** Parser-emitted 1-LHS/1-RHS specialized node    |
 | 2-value RESULT (`rax+rdx`)          | Globals used instead; refactor pending                   |
 | `goto` / labels                     | Parsed; `BR_GOTO` propagates up; no label scanner        |
 | `xpcall` message handler            | Caught but handler ignored                               |

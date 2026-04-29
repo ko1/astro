@@ -217,7 +217,6 @@ struct LuaClosure {
 // (out of line in lua_runtime.c).
 
 LuaValue luav_box_double(double d);
-double   luav_unbox_double(LuaValue v);
 
 static inline __attribute__((always_inline)) LuaValue
 luav_from_double(double d)
@@ -234,6 +233,9 @@ luav_from_double(double d)
     return luav_box_double(d);
 }
 
+// LuaHeapDouble layout (declared above): { GCHead gc; double value; }.
+// `value` lives at offset sizeof(struct GCHead) — but to keep this
+// header self-contained we just go through the typed pointer.
 static inline __attribute__((always_inline)) double
 luav_to_double(LuaValue v)
 {
@@ -246,7 +248,8 @@ luav_to_double(LuaValue v)
         t.u = (sign << 63) | (high4 << 60) | low60;
         return t.d;
     }
-    return luav_unbox_double(v);
+    // Heap-boxed: dereference the LuaHeapDouble pointer directly.
+    return ((struct LuaHeapDouble *)(uintptr_t)v)->value;
 }
 
 // GC API — declared after CTX typedef below.

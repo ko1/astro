@@ -46,14 +46,7 @@ luav_box_double(double d)
     return (LuaValue)(uintptr_t)hd;
 }
 
-double
-luav_unbox_double(LuaValue v)
-{
-    if (LV_IS_HEAP_OF(v, LUA_TFLOAT)) {
-        return ((struct LuaHeapDouble *)(uintptr_t)v)->value;
-    }
-    return 0.0;
-}
+// luav_unbox_double is now inlined in context.h.
 
 #include "lua_gc.c"
 

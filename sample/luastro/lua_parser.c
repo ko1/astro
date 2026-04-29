@@ -398,6 +398,13 @@ parse_local_stat(void)
     }
     uint32_t indices[LP_MAX_LOCALS];
     for (uint32_t i = 0; i < nnames; i++) indices[i] = pf_add_local(PF_CURRENT, names[i]);
+    // Hot path: `local x = expr` — single LHS, single RHS.  Emit the
+    // specialized node so ASTroGen can recurse into rhs and bake an
+    // SD that inlines the rhs's evaluation directly (no @noinline
+    // trampoline through the side array).
+    if (nnames == 1 && nexps == 1) {
+        return ALLOC_node_local_decl_one(indices[0], exps[0]);
+    }
     uint32_t lhs_idx = reg_u32_arr(indices, nnames);
     uint32_t rhs_idx = nexps ? reg_node_arr(exps, nexps) : 0;
     return ALLOC_node_local_decl(lhs_idx, nnames, rhs_idx, nexps);

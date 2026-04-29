@@ -199,6 +199,26 @@ node_global_set(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, 
     return RESULT_OK(v);
 }
 
+// Specialized local declaration for the common 1-LHS/1-RHS form
+// `local x = expr` — by far the most frequent local_decl in real
+// programs, and the one that appears inside hot inner loops
+// (mandelbrot's `local xn = x*x - y*y + x0`).  Having a dedicated
+// node lets ASTroGen specialize the rhs child via a typed `NODE *`
+// operand so the SD inlines cleanly through, instead of the
+// `@noinline` general path that reaches the rhs via the
+// `LUASTRO_NODE_ARR` side array.
+NODE_DEF @always_inline
+node_local_decl_one(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, uint32_t slot, NODE *rhs)
+{
+    (void)n;
+    LuaValue v = EVAL_ARG(c, rhs);
+    c->ret_info.result_cnt = 0;
+    LuaValue *p = &frame[slot];
+    if (LV_IS_BOX(*p)) ((struct LuaBox *)(uintptr_t)*p)->value = v;
+    else *p = v;
+    return RESULT_OK(LUAV_NIL);
+}
+
 // Local declaration with N RHS values.
 //   - lhs_idx points at LUASTRO_U32_ARR[lhs_idx..lhs_idx+nlhs] for slot indices
 //   - rhs_idx points at LUASTRO_NODE_ARR[rhs_idx..rhs_idx+nrhs] for value exprs
