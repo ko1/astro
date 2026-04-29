@@ -63,14 +63,16 @@ VALUE scm_callcc(CTX *c, VALUE fn);
 // can't apply.
 VALUE scm_apply_tail_slow(CTX *c, VALUE fn, int argc, VALUE *argv, uint32_t is_tail);
 
-// `scm_apply_tail` hot path inlined into every caller (interp dispatcher
-// and AOT SD_<hash>.so equally).  The compiler folds away the `is_tail`
-// constant when the call site stamped it at parse time, and SROAs the
-// argv slot writes into register moves directly into the frame.
-static inline VALUE
+// Both the tail and non-tail closure-leaf paths are inlined here —
+// SD `.so` files see the same body as the host interpreter, and gcc
+// folds away `is_tail` at the call site (it's a parse-time constant).
+// The PLT call to `scm_apply_tail_slow` only fires for non-leaf
+// closures, has_rest closures, primitives, and continuations.
+static inline __attribute__((always_inline)) VALUE
 scm_apply_tail(CTX *c, VALUE fn, int argc, VALUE *argv, uint32_t is_tail)
 {
-    if (is_tail && scm_is_closure(fn)) {
+    // Tail-call fast path — frame reuse on self-tail-call to a leaf.
+    if (is_tail && LIKELY(scm_is_closure(fn))) {
         struct sobj *cl = SCM_PTR(fn);
         int total = cl->closure.nparams + (cl->closure.has_rest ? 1 : 0);
         if (LIKELY(!cl->closure.has_rest &&
@@ -83,7 +85,33 @@ scm_apply_tail(CTX *c, VALUE fn, int argc, VALUE *argv, uint32_t is_tail)
             c->next_body = cl->closure.body;
             c->next_env = c->env;
             c->tail_call_pending = 1;
-            return 0;     // SCM_UNSPEC; bogus, trampoline ignores
+            return 0;     // bogus; trampoline ignores
+        }
+    }
+    // Non-tail leaf-closure call — alloca frame + run trampoline inline.
+    // Same shape as scm_apply's closure-leaf path but visible to gcc
+    // at the call site, so the SD chain folds through without a PLT hop.
+    if (!is_tail && LIKELY(scm_is_closure(fn))) {
+        struct sobj *cl = SCM_PTR(fn);
+        if (LIKELY(!cl->closure.has_rest &&
+                    cl->closure.leaf &&
+                    argc == cl->closure.nparams)) {
+            int total = cl->closure.nparams;
+            struct sframe *new_env = (struct sframe *)alloca(
+                sizeof(struct sframe) + sizeof(VALUE) * (total ? total : 1));
+            new_env->parent = cl->closure.env;
+            new_env->nslots = total;
+            for (int i = 0; i < total; i++) new_env->slots[i] = argv[i];
+            struct sframe *saved = c->env;
+            NODE *body = cl->closure.body;
+            c->env = new_env;
+            for (;;) {
+                VALUE v = EVAL(c, body);
+                if (!c->tail_call_pending) { c->env = saved; return v; }
+                c->tail_call_pending = 0;
+                body  = c->next_body;
+                c->env = c->next_env;
+            }
         }
     }
     return scm_apply_tail_slow(c, fn, argc, argv, is_tail);

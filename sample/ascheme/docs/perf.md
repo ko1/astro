@@ -381,30 +381,89 @@ programs (a few hundred sites) it's nothing.
 load just twice (the rest of the time is spent in the tail-call
 trampoline).
 
-## Cumulative score vs chibi-scheme 0.12  (after §1–§13)
+## 14 — Inline non-tail leaf-closure path  (this commit)
+
+**Why.** §12 pulled `scm_apply_tail`'s tail-call hot path into a
+`static inline` in node.h.  But the **non-tail** closure call still
+went through the slow path: `scm_apply_tail` → `scm_apply_tail_slow`
+(out of line) → `scm_apply` (out of line) → frame alloc + trampoline.
+For `fib` and `tak` — pure non-tail recursion — every single call
+paid the double-PLT hop.
+
+**How.** Inline the non-tail leaf-closure path next to the tail
+fast path inside the same `static inline scm_apply_tail`:
+
+```c
+// Tail position — frame reuse on self-tail-call to a leaf
+if (is_tail && scm_is_closure(fn)) { ... }
+// Non-tail leaf-closure call — alloca + trampoline inline
+if (!is_tail && scm_is_closure(fn)) {
+    struct sframe *new_env = alloca(...);   // stack frame
+    ...
+    for (;;) {
+        VALUE v = EVAL(c, body);
+        if (!c->tail_call_pending) { c->env = saved; return v; }
+        ...
+    }
+}
+return scm_apply_tail_slow(...);
+```
+
+`is_tail` is a parse-time constant, so each SD only emits one of the
+two branches; the dead branch's body is dropped by the compiler.
+
+The trampoline + alloca + frame-fill chunk inlined at every call
+site is hefty (~30 instructions), but for non-tail recursive code it
+removes two PLT calls per invocation.
+
+**Subtle bit — `__attribute__((always_inline))` matters.**  Without
+it gcc's heuristics decide the now-larger inline body isn't worth
+expanding at every site, and silently emits an out-of-line copy
+instead — losing the win.  Adding the attribute forced expansion
+and got us back the speed we expected.  Confirmed by re-measuring
+with vs without; sum was ~13 % slower without the attribute.
+
+**Win.**
+
+| bench | §13 | §14 | speed-up |
+|---|---:|---:|---:|
+| ack  | 0.15 s | **0.13 s** | 1.15× |
+| fib  | 0.42 s | **0.25 s** | 1.68× |
+| tak  | 0.37 s | **0.24 s** | 1.54× |
+| list | 0.20 s | **0.18 s** | 1.11× |
+| loop | 0.23 s | **0.21 s** | 1.10× |
+| sum  | 0.54 s | 0.54 s | — (no non-tail closure calls) |
+| sieve| 0.44 s | 0.45 s | — |
+
+The tail-only benchmarks (sum, sieve, loop) don't gain — their hot
+path was already inline.  fib / tak / ack / list, which all do
+non-tail closure recursion or repeated cons calls, see 1.1-1.7×
+speedups.
+
+## Cumulative score vs chibi-scheme 0.12  (after §1–§14)
 
 ```
                 aot-cached       chibi     ratio
-ack             0.15 s           0.74 s    4.9×
-fib             0.42 s           1.40 s    3.3×
-list            0.20 s           0.87 s    4.4×
-loop            0.23 s           0.91 s    4.0×
-sieve           0.44 s           1.48 s    3.4×
+ack             0.13 s           0.74 s    5.7×
+fib             0.25 s           1.40 s    5.6×
+list            0.18 s           0.87 s    4.8×
+loop            0.21 s           0.91 s    4.3×
+sieve           0.45 s           1.48 s    3.3×
 sum             0.54 s           1.27 s    2.4×
-tak             0.37 s           1.59 s    4.3×
+tak             0.24 s           1.59 s    6.6×
 ```
 
 vs guile 3.0 (JIT):
 
 ```
                 aot-cached       guile     ratio
-ack             0.15 s           2.49 s    17×
-fib             0.42 s           4.70 s    11×
-list            0.20 s           1.30 s    7×
-loop            0.23 s           3.31 s    14×
-sieve           0.44 s           5.14 s    12×
+ack             0.13 s           2.49 s    19×
+fib             0.25 s           4.70 s    19×
+list            0.18 s           1.30 s    7×
+loop            0.21 s           3.31 s    16×
+sieve           0.45 s           5.14 s    11×
 sum             0.54 s           5.39 s    10×
-tak             0.37 s           6.39 s    17×
+tak             0.24 s           6.39 s    27×
 ```
 
 The guile gap is partly its bytecode-VM dispatch + closure-call
