@@ -333,6 +333,47 @@ unbox** が要る（`done.md` の続き、保留）。
 `asom_primitives.c` の限定的な分岐追加だけ。AST / Node 層は無改造。
 SD shard の Merkle hash も変わらず、AOT cache は再 bake で互換。
 
+### `node_send1_dbl*` 型特化（abruby ミラー）
+
+abruby の `node_flonum_plus / minus / mul / div` を asom に持ち込んだ
+形で、`node_send1_dbl{plus, minus, times, lt, gt, le, ge, eq}` を 8 個
+追加。`node_send1_int*` の枠組みをそのまま流用し、`@canonical=node_send1`
+で SD ハッシュを共有、guard miss は generic `node_send1` への
+`swap_dispatcher`：
+
+```c
+NODE_DEF @canonical=node_send1
+node_send1_dblplus(...) {
+    VALUE r = EVAL_ARG(c, recv);
+    VALUE a = EVAL_ARG(c, arg0);
+    if (LIKELY(ASOM_IS_FLO(r) && ASOM_IS_FLO(a))) {
+        return asom_double_new(c, asom_val2flo(r) + asom_val2flo(a));
+    }
+    if (!n->head.flags.is_specialized) swap_dispatcher(n, &kind_node_send1);
+    ...
+}
+```
+
+配線:
+
+- `enum asom_prim_kind` に `ASOM_PRIM_DBL_PLUS` 〜 `ASOM_PRIM_DBL_EQ`
+- `asom_primitives.c`: `def_prim_kind(c->cls_double, "+", dbl_plus, 1, ASOM_PRIM_DBL_PLUS)` 等
+- `asom_send1_specialization`: `PRIM_DBL_*` → `kind_node_send1_dbl*`
+- `node_send1` slow path: 両 operand が flonum なら dbl_* に rewrite
+
+効果:
+
+| モード | Mandelbrot 前 | Mandelbrot 後 | 備考 |
+|---|---|---|---|
+| **interp (`--plain`)** | 52 ms | 46-49 ms | type-feedback で初回呼び出しから dbl_* に rewrite |
+| **PG (`-p`)** | warmup 中に rewrite → bake で dbl_* が SD として焼かれる | （別件で PG mode が遅く、要調査） |  |
+| **AOT (`-c`)** | 33 ms | 33 ms（変化なし） | parser-time int_* が baked、SD-baked node の runtime swap は構造的に効かない |
+
+AOT モードで dbl_* の効果を出すには parser-time の syntactic hint
+（double リテラルが片方にある等）か、AOT bake 前に warmup pass を
+入れる構造変更が要る。**PG mode が型特化 AOT の正規パス** で、Mandelbrot
+の AOT-fast を狙うなら PG の挙動を整える方が筋がいい（保留）。
+
 ### `to:do:` / `to:by:do:` / `timesRepeat:` インライン化
 
 `from to: end do: [ :var | body ]` のような Integer 受信の繰り返し系も
