@@ -35,15 +35,21 @@ naruby (整数のみ Ruby サブセット) と abruby (CRuby C extension) を踏
 
 ### 動かないもの
 
-- splat 引数 (`*args`)、kwargs (`**opts`)、ブロック引数 (`&blk`) のメソッド受け側
+- 真の正規表現 (Regexp は文字列スタブ; `=~`/`match`/`scan` は no-op)
+- splat 引数 (`*args`) のメソッド受け側 (一部対応; 全箇所未対応)、kwargs (`**opts`)、ブロック引数 (`&blk`) の受け側
+- ブロックでの destructure (`each {|k, v| ...}` で 2 要素配列を分解)
 - `Comparable`/`Enumerable` の真の mixin (現在は flatten copy)
-- `define_method`、特異クラス (singleton class)
 - `Object#method`、`Method`/`UnboundMethod` クラス
 - 真の Symbol#to_proc
 - 多重代入の splat / nested patterns
-- 真の正規表現 (Regexp は文字列スタブ)
 - `Fiber`、Thread
 - IO の本格実装、Encoding、Float の細かい挙動 (Infinity, NaN)
+
+### optcarrot 対応状況
+
+- **全 12 ファイルがパース＋ロード成功** (require_relative チェーン、module/class 定義、attr_reader、Struct.new、CodeOptimizationHelper の include まで全部通る)
+- `Optcarrot::NES.new(argv)` を呼ぶと **Config 内部の Parser が走り始める** ところまで到達
+- 停止位置: option parsing で正規表現マッチや splat 引数受けが必要 (詳細は [docs/todo.md](./docs/todo.md))
 
 詳細は [docs/done.md](./docs/done.md) と [docs/todo.md](./docs/todo.md) を参照。
 

@@ -138,6 +138,17 @@
 - `ARGV` (コマンドラインから自動セット)、`ENV` (空 Hash スタブ)
 - 例外クラス各種
 
+## optcarrot 対応の現状
+
+- **全 12 ファイルがパース＋ロード成功** (require_relative 連鎖、module/class 定義チェーン、attr_reader、Struct.new、CodeOptimizationHelper の include など)
+- `Optcarrot::NES.new(argv)` を呼ぶと **Config が走り始め、内部 Parser が `-b` 等を処理しようとする** ところまで到達
+- 停止理由 (本セッション末時点):
+  - 真の正規表現 (`String#=~`) 未実装 (config.rb の option matching で使用)
+  - `*splat` のメソッド引数受け側 未実装 (一部位置)
+  - `each { |key, value| ... }` の destructure 未実装
+  - `String#scan`/`split` の正規表現対応 未実装
+- 完走には [todo.md](./todo.md#optcarrot-完走に必要な追加機能) の追加実装が必要
+
 ## 実装済みの性能改善
 
 詳細は [perf.md](./perf.md) を参照。サマリのみ。

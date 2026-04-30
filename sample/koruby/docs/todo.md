@@ -134,13 +134,19 @@ ASTro の `astro_code_store` をまだ使っていない。一度コンパイル
 
 ## 短期 ToDo (optcarrot 実走に向けて)
 
+### optcarrot 完走に必要な追加機能
+
 優先度順:
 
-1. **`*args` / `&blk` の受け側** — config.rb の `each {|opt| opts[opt] = ...}` 系で必要
-2. **`Comparable` / `Enumerable` の mixin** — Range / Array の演算で多用
-3. **真の `include`** — モジュールのインスタンスメソッドを class instance method として継承
-4. **真の `&:method`** — Symbol#to_proc
-5. **`format` の `*` width / `%-10s` 系**
-6. **真の正規表現** — opt.rb の解析で使用
-7. **多重代入の splat** — `*args` 展開
-8. **エラー時の line 情報** — デバッグ効率化
+1. **真の正規表現 (Regexp)** — config.rb で `arg =~ /\A-(\w{2,})\z/` のような解析。POSIX regex (regex.h) を使えば実装可能。
+2. **メソッド引数受けの `*splat`** — `def each_value { |v| ... }` 系の各種 yield で使われる
+3. **ブロック引数の destructure** — `each {|k, v| ...}` で hash#each から 2 要素配列を渡されたものを k, v に分解
+4. **String#scan / String#match / `=~`** — config.rb の opt.rb 風コード生成解析、PARSE_METHOD_DEFINITIONS_RE
+5. **String#% の高度な書式** (`%-10s`、精度、`*` width) — config.rb の help 生成で使用
+6. **`Comparable` mixin の真の動作** — `<=>` で比較メソッド一式が同期
+7. **`Enumerable` mixin** — Range/Hash/各種コレクションで多用
+8. **`include` の真の mixin (ancestor 挿入)** — 現在は flatten copy
+9. **`&:method` (Symbol#to_proc)** — yield 内で多用
+10. **エラー時の line 情報** — デバッグ効率化のため
+
+これらを実装すれば、optcarrot の Config parsing → CPU/PPU/APU セットアップ → step ループへ進めると見込まれる。さらに性能ベンチとして競うには core ループの最適化が必要 (具体的には [perf.md](./perf.md) の「PG-baked call_static」「型 rewrite」等)。
