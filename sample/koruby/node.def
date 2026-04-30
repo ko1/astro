@@ -1,0 +1,755 @@
+// koruby AST nodes.
+// EVAL_ARG returns VALUE; if c->state != KO_NORMAL after a child eval the
+// current frame must propagate by returning Qnil immediately.
+
+#define EA(c, n) ({                                       \
+    VALUE _v = EVAL_ARG(c, n);                            \
+    if (UNLIKELY((c)->state != KO_NORMAL)) return Qnil;   \
+    _v;                                                   \
+})
+#define CHECK_STATE(c) do { if (UNLIKELY((c)->state != KO_NORMAL)) return Qnil; } while (0)
+
+// ---------------- literals ----------------
+
+NODE_DEF
+node_num(CTX * restrict c, NODE * restrict n, int32_t v)
+{
+    return INT2FIX(v);
+}
+
+NODE_DEF
+node_int_lit(CTX * restrict c, NODE * restrict n, intptr_t v)
+{
+    /* literal that fits in a fixnum */
+    return (VALUE)((uintptr_t)v << 1) | FIXNUM_FLAG;
+}
+
+NODE_DEF
+node_bignum_lit(CTX * restrict c, NODE * restrict n, const char *str)
+{
+    return ko_bignum_new_str(str, 10);
+}
+
+NODE_DEF
+node_float_lit(CTX * restrict c, NODE * restrict n, double v)
+{
+    return ko_float_new(v);
+}
+
+NODE_DEF
+node_str_lit(CTX * restrict c, NODE * restrict n, const char *str, uint32_t len)
+{
+    return ko_str_new(str, len);
+}
+
+NODE_DEF
+node_sym_lit(CTX * restrict c, NODE * restrict n, ID id)
+{
+    return ko_id2sym(id);
+}
+
+NODE_DEF
+node_true(CTX * restrict c, NODE * restrict n)
+{
+    return Qtrue;
+}
+
+NODE_DEF
+node_false(CTX * restrict c, NODE * restrict n)
+{
+    return Qfalse;
+}
+
+NODE_DEF
+node_nil(CTX * restrict c, NODE * restrict n)
+{
+    return Qnil;
+}
+
+NODE_DEF
+node_self(CTX * restrict c, NODE * restrict n)
+{
+    return c->self;
+}
+
+// ---------------- variables ----------------
+
+NODE_DEF
+node_lvar_get(CTX * restrict c, NODE * restrict n, uint32_t index)
+{
+    return c->fp[index];
+}
+
+NODE_DEF
+node_lvar_set(CTX * restrict c, NODE * restrict n, uint32_t index, NODE *rhs)
+{
+    VALUE v = EA(c, rhs);
+    c->fp[index] = v;
+    return v;
+}
+
+NODE_DEF
+node_ivar_get(CTX * restrict c, NODE * restrict n, ID name)
+{
+    return ko_ivar_get(c->self, name);
+}
+
+NODE_DEF
+node_ivar_set(CTX * restrict c, NODE * restrict n, ID name, NODE *rhs)
+{
+    VALUE v = EA(c, rhs);
+    ko_ivar_set(c->self, name, v);
+    return v;
+}
+
+NODE_DEF
+node_gvar_get(CTX * restrict c, NODE * restrict n, ID name)
+{
+    return ko_gvar_get(name);
+}
+
+NODE_DEF
+node_gvar_set(CTX * restrict c, NODE * restrict n, ID name, NODE *rhs)
+{
+    VALUE v = EA(c, rhs);
+    ko_gvar_set(name, v);
+    return v;
+}
+
+NODE_DEF
+node_const_get(CTX * restrict c, NODE * restrict n, ID name)
+{
+    return ko_const_lookup(c, name);
+}
+
+NODE_DEF
+node_const_set(CTX * restrict c, NODE * restrict n, ID name, NODE *rhs)
+{
+    VALUE v = EA(c, rhs);
+    ko_const_set(c->current_class, name, v);
+    return v;
+}
+
+NODE_DEF
+node_const_path_get(CTX * restrict c, NODE * restrict n, NODE *parent, ID name)
+{
+    VALUE p = EA(c, parent);
+    if (BUILTIN_TYPE(p) == T_CLASS || BUILTIN_TYPE(p) == T_MODULE) {
+        VALUE v = ko_const_get((struct ko_class *)p, name);
+        if (UNDEF_P(v)) {
+            ko_raise(c, NULL, "uninitialized constant %s::%s",
+                     ko_id_name(((struct ko_class *)p)->name), ko_id_name(name));
+            return Qnil;
+        }
+        return v;
+    }
+    ko_raise(c, NULL, "not a class/module");
+    return Qnil;
+}
+
+// ---------------- syntax / control ----------------
+
+NODE_DEF
+node_scope(CTX * restrict c, NODE * restrict n, uint32_t envsize, NODE *body)
+{
+    VALUE *prev_fp = c->fp;
+    c->fp += envsize;
+    if (UNLIKELY(c->fp + envsize >= c->stack_end)) {
+        c->fp = prev_fp;
+        ko_raise(c, NULL, "stack overflow");
+        return Qnil;
+    }
+    if (c->fp + envsize > c->sp) c->sp = c->fp + envsize;
+    /* zero working area so GC sees Qnil instead of garbage */
+    for (uint32_t i = 0; i < envsize; i++) c->fp[i] = Qnil;
+    VALUE v = EVAL_ARG(c, body);
+    c->fp = prev_fp;
+    return v;
+}
+
+NODE_DEF
+node_seq(CTX * restrict c, NODE * restrict n, NODE *head, NODE *tail)
+{
+    EA(c, head);
+    return EVAL_ARG(c, tail);
+}
+
+NODE_DEF
+node_if(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *then_node, NODE *else_node)
+{
+    VALUE v = EA(c, cond);
+    if (RTEST(v)) {
+        return EVAL_ARG(c, then_node);
+    }
+    else {
+        return EVAL_ARG(c, else_node);
+    }
+}
+
+NODE_DEF
+node_while(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *body)
+{
+    while (1) {
+        VALUE v = EVAL_ARG(c, cond);
+        if (UNLIKELY(c->state != KO_NORMAL)) return Qnil;
+        if (!RTEST(v)) break;
+        EVAL_ARG(c, body);
+        if (UNLIKELY(c->state != KO_NORMAL)) {
+            if (c->state == KO_BREAK) {
+                VALUE bv = c->state_value;
+                c->state = KO_NORMAL;
+                c->state_value = Qnil;
+                return bv;
+            }
+            else if (c->state == KO_NEXT) {
+                c->state = KO_NORMAL;
+                c->state_value = Qnil;
+                continue;
+            }
+            return Qnil;
+        }
+    }
+    return Qnil;
+}
+
+NODE_DEF
+node_until(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *body)
+{
+    while (1) {
+        VALUE v = EVAL_ARG(c, cond);
+        if (UNLIKELY(c->state != KO_NORMAL)) return Qnil;
+        if (RTEST(v)) break;
+        EVAL_ARG(c, body);
+        if (UNLIKELY(c->state != KO_NORMAL)) {
+            if (c->state == KO_BREAK) {
+                VALUE bv = c->state_value;
+                c->state = KO_NORMAL;
+                c->state_value = Qnil;
+                return bv;
+            }
+            else if (c->state == KO_NEXT) {
+                c->state = KO_NORMAL;
+                c->state_value = Qnil;
+                continue;
+            }
+            return Qnil;
+        }
+    }
+    return Qnil;
+}
+
+NODE_DEF
+node_return(CTX * restrict c, NODE * restrict n, NODE *value)
+{
+    VALUE v = EA(c, value);
+    c->state = KO_RETURN;
+    c->state_value = v;
+    return v;
+}
+
+NODE_DEF
+node_break(CTX * restrict c, NODE * restrict n, NODE *value)
+{
+    VALUE v = EA(c, value);
+    c->state = KO_BREAK;
+    c->state_value = v;
+    return v;
+}
+
+NODE_DEF
+node_next(CTX * restrict c, NODE * restrict n, NODE *value)
+{
+    VALUE v = EA(c, value);
+    c->state = KO_NEXT;
+    c->state_value = v;
+    return v;
+}
+
+NODE_DEF
+node_not(CTX * restrict c, NODE * restrict n, NODE *expr)
+{
+    VALUE v = EA(c, expr);
+    return RTEST(v) ? Qfalse : Qtrue;
+}
+
+NODE_DEF
+node_and(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs)
+{
+    VALUE l = EA(c, lhs);
+    if (!RTEST(l)) return l;
+    return EVAL_ARG(c, rhs);
+}
+
+NODE_DEF
+node_or(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs)
+{
+    VALUE l = EA(c, lhs);
+    if (RTEST(l)) return l;
+    return EVAL_ARG(c, rhs);
+}
+
+// ---------------- containers ----------------
+
+NODE_DEF
+node_ary_new(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_index)
+{
+    /* args are pre-evaluated and stored at fp[arg_index..arg_index+argc-1] */
+    VALUE ary = ko_ary_new_capa(argc);
+    for (uint32_t i = 0; i < argc; i++) {
+        ko_ary_push(ary, c->fp[arg_index + i]);
+    }
+    return ary;
+}
+
+NODE_DEF
+node_hash_new(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_index)
+{
+    /* argc is # of pairs * 2; flat key,value,key,value,... */
+    VALUE h = ko_hash_new();
+    for (uint32_t i = 0; i + 1 < argc; i += 2) {
+        ko_hash_aset(h, c->fp[arg_index + i], c->fp[arg_index + i + 1]);
+    }
+    return h;
+}
+
+NODE_DEF
+node_range_new(CTX * restrict c, NODE * restrict n, NODE *begin, NODE *end, uint32_t exclude_end)
+{
+    VALUE b = EA(c, begin);
+    VALUE e = EA(c, end);
+    return ko_range_new(b, e, exclude_end != 0);
+}
+
+NODE_DEF
+node_str_concat(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_index)
+{
+    VALUE r = ko_str_new("", 0);
+    for (uint32_t i = 0; i < argc; i++) {
+        VALUE part = c->fp[arg_index + i];
+        if (BUILTIN_TYPE(part) != T_STRING) {
+            part = ko_to_s(part);
+        }
+        r = ko_str_concat(r, part);
+    }
+    return r;
+}
+
+// ---------------- method definition / call ----------------
+
+NODE_DEF @noinline
+node_def(CTX * restrict c, NODE * restrict n, ID name, NODE *body, uint32_t params_cnt, uint32_t locals_cnt)
+{
+    ko_class_add_method_ast(c->current_class, name, body, params_cnt, locals_cnt);
+    return ko_id2sym(name);
+}
+
+NODE_DEF @noinline
+node_class_def(CTX * restrict c, NODE * restrict n, ID name, NODE *super_expr, NODE *body)
+{
+    struct ko_class *super = ko_vm->object_class;
+    if (super_expr) {
+        VALUE sv = EA(c, super_expr);
+        if (BUILTIN_TYPE(sv) != T_CLASS) {
+            ko_raise(c, NULL, "superclass must be a Class");
+            return Qnil;
+        }
+        super = (struct ko_class *)sv;
+    }
+    /* lookup or create */
+    struct ko_class *klass;
+    VALUE existing = ko_const_get(c->current_class, name);
+    if (!UNDEF_P(existing) && BUILTIN_TYPE(existing) == T_CLASS) {
+        klass = (struct ko_class *)existing;
+    }
+    else {
+        klass = ko_class_new(name, super, T_OBJECT);
+        ko_const_set(c->current_class, name, (VALUE)klass);
+    }
+    /* execute body in class context */
+    struct ko_class *prev_class = c->current_class;
+    VALUE prev_self = c->self;
+    c->current_class = klass;
+    c->self = (VALUE)klass;
+    VALUE r = body ? EVAL_ARG(c, body) : Qnil;
+    c->current_class = prev_class;
+    c->self = prev_self;
+    return r;
+}
+
+NODE_DEF @noinline
+node_module_def(CTX * restrict c, NODE * restrict n, ID name, NODE *body)
+{
+    struct ko_class *mod;
+    VALUE existing = ko_const_get(c->current_class, name);
+    if (!UNDEF_P(existing) && BUILTIN_TYPE(existing) == T_MODULE) {
+        mod = (struct ko_class *)existing;
+    }
+    else {
+        mod = ko_module_new(name);
+        ko_const_set(c->current_class, name, (VALUE)mod);
+    }
+    struct ko_class *prev_class = c->current_class;
+    VALUE prev_self = c->self;
+    c->current_class = mod;
+    c->self = (VALUE)mod;
+    VALUE r = body ? EVAL_ARG(c, body) : Qnil;
+    c->current_class = prev_class;
+    c->self = prev_self;
+    return r;
+}
+
+/* dispatch helpers (declared in node.h via include) */
+
+NODE_DEF
+node_func_call(CTX * restrict c, NODE * restrict n, ID name, uint32_t argc, uint32_t arg_index, struct method_cache *mc)
+{
+    /* implicit-self call */
+    return ko_dispatch_call(c, n, c->self, name, argc, arg_index, NULL, mc);
+}
+
+NODE_DEF
+node_method_call(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, uint32_t argc, uint32_t arg_index, struct method_cache *mc)
+{
+    VALUE r = EA(c, recv);
+    return ko_dispatch_call(c, n, r, name, argc, arg_index, NULL, mc);
+}
+
+NODE_DEF
+node_method_call_block(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, uint32_t argc, uint32_t arg_index, NODE *blk, struct method_cache *mc)
+{
+    VALUE r = EA(c, recv);
+    /* blk node is node_block_literal which when EVAL'd produces a Proc */
+    VALUE block = blk ? EA(c, blk) : Qnil;
+    return ko_dispatch_call(c, n, r, name, argc, arg_index, block == Qnil ? NULL : (struct ko_proc *)block, mc);
+}
+
+NODE_DEF
+node_func_call_block(CTX * restrict c, NODE * restrict n, ID name, uint32_t argc, uint32_t arg_index, NODE *blk, struct method_cache *mc)
+{
+    VALUE block = blk ? EA(c, blk) : Qnil;
+    return ko_dispatch_call(c, n, c->self, name, argc, arg_index, block == Qnil ? NULL : (struct ko_proc *)block, mc);
+}
+
+NODE_DEF @noinline
+node_block_literal(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t params_cnt, uint32_t param_base, uint32_t env_size)
+{
+    return ko_proc_new(body, c->fp, env_size, params_cnt, param_base, c->self, false);
+}
+
+NODE_DEF
+node_yield(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_index)
+{
+    return ko_yield(c, argc, &c->fp[arg_index]);
+}
+
+// ---------------- arithmetic (generic + fixnum fast path) ----------------
+
+NODE_DEF
+node_plus(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_index)
+{
+    VALUE l = EA(c, lhs);
+    VALUE r = EA(c, rhs);
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) {
+        long a = FIX2LONG(l), b = FIX2LONG(r), s;
+        if (LIKELY(!__builtin_add_overflow(a, b, &s) && FIXABLE(s))) return INT2FIX(s);
+        return ko_int_plus(l, r);
+    }
+    if (BUILTIN_TYPE(l) == T_STRING && BUILTIN_TYPE(r) == T_STRING) {
+        return ko_str_concat(l, r);
+    }
+    if (BUILTIN_TYPE(l) == T_ARRAY && BUILTIN_TYPE(r) == T_ARRAY) {
+        VALUE a = ko_ary_new_capa(ko_ary_len(l) + ko_ary_len(r));
+        for (long i = 0, n2 = ko_ary_len(l); i < n2; i++) ko_ary_push(a, ko_ary_aref(l, i));
+        for (long i = 0, n2 = ko_ary_len(r); i < n2; i++) ko_ary_push(a, ko_ary_aref(r, i));
+        return a;
+    }
+    c->fp[arg_index] = l;
+    c->fp[arg_index+1] = r;
+    return ko_dispatch_binop(c, l, id_op_plus, 1, &c->fp[arg_index+1]);
+}
+
+NODE_DEF
+node_minus(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_index)
+{
+    VALUE l = EA(c, lhs);
+    VALUE r = EA(c, rhs);
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) {
+        long a = FIX2LONG(l), b = FIX2LONG(r), s;
+        if (LIKELY(!__builtin_sub_overflow(a, b, &s) && FIXABLE(s))) return INT2FIX(s);
+        return ko_int_minus(l, r);
+    }
+    c->fp[arg_index+1] = r;
+    return ko_dispatch_binop(c, l, id_op_minus, 1, &c->fp[arg_index+1]);
+}
+
+NODE_DEF
+node_mul(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_index)
+{
+    VALUE l = EA(c, lhs);
+    VALUE r = EA(c, rhs);
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) {
+        long a = FIX2LONG(l), b = FIX2LONG(r), s;
+        if (LIKELY(!__builtin_mul_overflow(a, b, &s) && FIXABLE(s))) return INT2FIX(s);
+        return ko_int_mul(l, r);
+    }
+    c->fp[arg_index+1] = r;
+    return ko_dispatch_binop(c, l, id_op_mul, 1, &c->fp[arg_index+1]);
+}
+
+NODE_DEF
+node_div(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_index)
+{
+    VALUE l = EA(c, lhs);
+    VALUE r = EA(c, rhs);
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) {
+        long a = FIX2LONG(l), b = FIX2LONG(r);
+        if (UNLIKELY(b == 0)) { ko_raise(c, NULL, "divided by 0"); return Qnil; }
+        long q = a / b;
+        if ((a % b) != 0 && ((a ^ b) < 0)) q--;
+        if (FIXABLE(q)) return INT2FIX(q);
+        return ko_int_div(l, r);
+    }
+    c->fp[arg_index+1] = r;
+    return ko_dispatch_binop(c, l, id_op_div, 1, &c->fp[arg_index+1]);
+}
+
+NODE_DEF
+node_mod(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_index)
+{
+    VALUE l = EA(c, lhs);
+    VALUE r = EA(c, rhs);
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) {
+        long a = FIX2LONG(l), b = FIX2LONG(r);
+        if (UNLIKELY(b == 0)) { ko_raise(c, NULL, "divided by 0"); return Qnil; }
+        long m = a % b;
+        if (m != 0 && ((a ^ b) < 0)) m += b;
+        return INT2FIX(m);
+    }
+    c->fp[arg_index+1] = r;
+    return ko_dispatch_binop(c, l, id_op_mod, 1, &c->fp[arg_index+1]);
+}
+
+NODE_DEF
+node_uminus(CTX * restrict c, NODE * restrict n, NODE *operand, uint32_t arg_index)
+{
+    VALUE v = EA(c, operand);
+    if (FIXNUM_P(v)) {
+        long a = FIX2LONG(v), s;
+        if (!__builtin_sub_overflow(0L, a, &s) && FIXABLE(s)) return INT2FIX(s);
+    }
+    return ko_dispatch_binop(c, v, ko_intern("-@"), 0, NULL);
+}
+
+// ---------------- bit ops ----------------
+
+NODE_DEF
+node_bit_and(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_index)
+{
+    VALUE l = EA(c, lhs);
+    VALUE r = EA(c, rhs);
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) return l & r;
+    c->fp[arg_index+1] = r;
+    return ko_dispatch_binop(c, l, id_op_and, 1, &c->fp[arg_index+1]);
+}
+
+NODE_DEF
+node_bit_or(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_index)
+{
+    VALUE l = EA(c, lhs);
+    VALUE r = EA(c, rhs);
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) return l | r;
+    c->fp[arg_index+1] = r;
+    return ko_dispatch_binop(c, l, id_op_or, 1, &c->fp[arg_index+1]);
+}
+
+NODE_DEF
+node_bit_xor(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_index)
+{
+    VALUE l = EA(c, lhs);
+    VALUE r = EA(c, rhs);
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) return (l ^ r) | FIXNUM_FLAG;
+    c->fp[arg_index+1] = r;
+    return ko_dispatch_binop(c, l, id_op_xor, 1, &c->fp[arg_index+1]);
+}
+
+NODE_DEF
+node_lshift(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_index)
+{
+    VALUE l = EA(c, lhs);
+    VALUE r = EA(c, rhs);
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) {
+        long a = FIX2LONG(l), b = FIX2LONG(r);
+        if (b >= 0 && b < 62) {
+            long s = a << b;
+            if ((s >> b) == a && FIXABLE(s)) return INT2FIX(s);
+        }
+        return ko_int_lshift(l, r);
+    }
+    c->fp[arg_index+1] = r;
+    return ko_dispatch_binop(c, l, id_op_lshift, 1, &c->fp[arg_index+1]);
+}
+
+NODE_DEF
+node_rshift(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_index)
+{
+    VALUE l = EA(c, lhs);
+    VALUE r = EA(c, rhs);
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) {
+        long a = FIX2LONG(l), b = FIX2LONG(r);
+        if (b >= 0 && b < 62) return INT2FIX(a >> b);
+        return ko_int_rshift(l, r);
+    }
+    c->fp[arg_index+1] = r;
+    return ko_dispatch_binop(c, l, id_op_rshift, 1, &c->fp[arg_index+1]);
+}
+
+// ---------------- comparisons ----------------
+
+NODE_DEF
+node_lt(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_index)
+{
+    VALUE l = EA(c, lhs);
+    VALUE r = EA(c, rhs);
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) return KO_BOOL((intptr_t)l < (intptr_t)r);
+    c->fp[arg_index+1] = r;
+    return ko_dispatch_binop(c, l, id_op_lt, 1, &c->fp[arg_index+1]);
+}
+
+NODE_DEF
+node_le(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_index)
+{
+    VALUE l = EA(c, lhs);
+    VALUE r = EA(c, rhs);
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) return KO_BOOL((intptr_t)l <= (intptr_t)r);
+    c->fp[arg_index+1] = r;
+    return ko_dispatch_binop(c, l, id_op_le, 1, &c->fp[arg_index+1]);
+}
+
+NODE_DEF
+node_gt(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_index)
+{
+    VALUE l = EA(c, lhs);
+    VALUE r = EA(c, rhs);
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) return KO_BOOL((intptr_t)l > (intptr_t)r);
+    c->fp[arg_index+1] = r;
+    return ko_dispatch_binop(c, l, id_op_gt, 1, &c->fp[arg_index+1]);
+}
+
+NODE_DEF
+node_ge(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_index)
+{
+    VALUE l = EA(c, lhs);
+    VALUE r = EA(c, rhs);
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) return KO_BOOL((intptr_t)l >= (intptr_t)r);
+    c->fp[arg_index+1] = r;
+    return ko_dispatch_binop(c, l, id_op_ge, 1, &c->fp[arg_index+1]);
+}
+
+NODE_DEF
+node_eq(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_index)
+{
+    VALUE l = EA(c, lhs);
+    VALUE r = EA(c, rhs);
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) return KO_BOOL(l == r);
+    return KO_BOOL(ko_eq(l, r));
+}
+
+NODE_DEF
+node_neq(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_index)
+{
+    VALUE l = EA(c, lhs);
+    VALUE r = EA(c, rhs);
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) return KO_BOOL(l != r);
+    return KO_BOOL(!ko_eq(l, r));
+}
+
+// ---------------- subscript [] / []= ----------------
+
+NODE_DEF
+node_aref(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *idx, uint32_t arg_index)
+{
+    VALUE r = EA(c, recv);
+    VALUE i = EA(c, idx);
+    if (BUILTIN_TYPE(r) == T_ARRAY && FIXNUM_P(i)) {
+        return ko_ary_aref(r, FIX2LONG(i));
+    }
+    if (BUILTIN_TYPE(r) == T_HASH) {
+        return ko_hash_aref(r, i);
+    }
+    c->fp[arg_index+1] = i;
+    return ko_dispatch_binop(c, r, id_op_aref, 1, &c->fp[arg_index+1]);
+}
+
+NODE_DEF
+node_aset(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *idx, NODE *val, uint32_t arg_index)
+{
+    VALUE r = EA(c, recv);
+    VALUE i = EA(c, idx);
+    VALUE v = EA(c, val);
+    if (BUILTIN_TYPE(r) == T_ARRAY && FIXNUM_P(i)) {
+        ko_ary_aset(r, FIX2LONG(i), v);
+        return v;
+    }
+    if (BUILTIN_TYPE(r) == T_HASH) {
+        ko_hash_aset(r, i, v);
+        return v;
+    }
+    VALUE *args = &c->fp[arg_index+1];
+    args[0] = i; args[1] = v;
+    ko_dispatch_binop(c, r, id_op_aset, 2, args);
+    return v;
+}
+
+// ---------------- exception ----------------
+
+NODE_DEF @noinline
+node_rescue(CTX * restrict c, NODE * restrict n, NODE *body, NODE *rescue_body, uint32_t exception_lvar_index)
+{
+    VALUE v = EVAL_ARG(c, body);
+    if (c->state == KO_RAISE && rescue_body) {
+        VALUE exc = c->state_value;
+        c->state = KO_NORMAL;
+        c->state_value = Qnil;
+        c->fp[exception_lvar_index] = exc;
+        v = EVAL_ARG(c, rescue_body);
+    }
+    return v;
+}
+
+NODE_DEF
+node_raise(CTX * restrict c, NODE * restrict n, NODE *exc_expr)
+{
+    VALUE e;
+    if (exc_expr) {
+        e = EA(c, exc_expr);
+        if (BUILTIN_TYPE(e) == T_STRING) {
+            e = ko_exc_new(NULL, ko_str_cstr(e));
+        }
+    }
+    else {
+        e = ko_exc_new(NULL, "unhandled exception");
+    }
+    c->state = KO_RAISE;
+    c->state_value = e;
+    return Qnil;
+}
+
+// ---------------- multi-assign helpers ----------------
+
+NODE_DEF
+node_splat_to_ary(CTX * restrict c, NODE * restrict n, NODE *expr)
+{
+    VALUE v = EA(c, expr);
+    if (BUILTIN_TYPE(v) == T_ARRAY) return v;
+    VALUE a = ko_ary_new_capa(1);
+    ko_ary_push(a, v);
+    return a;
+}
+
+NODE_DEF
+node_ary_aget(CTX * restrict c, NODE * restrict n, NODE *ary_node, uint32_t idx)
+{
+    VALUE a = EA(c, ary_node);
+    if (BUILTIN_TYPE(a) != T_ARRAY) return Qnil;
+    return ko_ary_aref(a, idx);
+}

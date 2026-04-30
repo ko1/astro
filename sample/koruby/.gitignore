@@ -1,0 +1,13 @@
+koruby
+compiled_koruby
+node_eval.c
+node_dispatch.c
+node_alloc.c
+node_dump.c
+node_hash.c
+node_head.h
+node_replace.c
+node_specialize.c
+node_specialized.c
+*.o
+*.so
