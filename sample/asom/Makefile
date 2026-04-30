@@ -1,7 +1,7 @@
 
 all: asom
 
-.PHONY: all run gen clean test bench
+.PHONY: all run gen clean test bench bench-setup bench-setup-sompp bench-setup-truffle
 
 NODE_GENFILES=node_eval.c \
               node_dispatch.c \
@@ -65,10 +65,47 @@ BENCH ?= Sieve
 # best-of-3. INNER iterations per bench are tuned in run_compare.rb so
 # one outer fills ~1 s on asom-interp; ITERS multiplies that for longer
 # runs (default 1 ⇒ sustained ~1 s, ITERS=5 ⇒ ~5 s per cell).
-# Override engine paths via SOMPP_DIR / TRUFFLESOM_DIR / MX_DIR
-# (defaults assume /tmp/<name>-ref).
+# Reference engines live in this directory as submodules
+# (sample/asom/SOMpp, sample/asom/TruffleSOM, sample/asom/mx). Run
+# `make bench-setup` once to init + build them.
 bench: asom
 	ruby ./test/run_compare.rb $(ITERS)
+
+# -- Reference-engine setup ------------------------------------------------
+# `make bench-setup`         — SOMpp only (cheap, ~30s)
+# `make bench-setup-truffle` — TruffleSOM (heavy: needs GraalVM CE 21+
+#                              and downloads Maven deps via mx)
+
+bench-setup: bench-setup-sompp
+	@echo
+	@echo "SOMpp ready: ./SOMpp/build/SOM++"
+	@echo "For TruffleSOM (needs GraalVM CE 21+ on PATH):"
+	@echo "    make bench-setup-truffle"
+
+# SOMpp: cmake out-of-tree build with USE_TAGGING=true, COPYING GC default.
+# Bypass ccache (asom's sandbox can't write to ~/.cache/ccache).
+bench-setup-sompp:
+	git submodule update --init --recursive SOMpp
+	mkdir -p SOMpp/build
+	cd SOMpp/build && CCACHE_DISABLE=1 CC=$$(command -v gcc) CXX=$$(command -v g++) \
+		cmake .. -DUSE_TAGGING=true -DCMAKE_BUILD_TYPE=Release
+	$(MAKE) -C SOMpp/build CCACHE_DISABLE=1 -j
+
+# TruffleSOM: needs JAVA_HOME pointing at GraalVM CE 21+. mx (graalvm
+# build tool) is bundled as a submodule under sample/asom/mx. The first
+# run downloads several hundred MB of Maven deps and compiles the
+# Truffle-based interpreter; subsequent rebuilds are fast.
+bench-setup-truffle:
+	@if [ -z "$$JAVA_HOME" ]; then \
+		echo "ERROR: JAVA_HOME unset — point it at a GraalVM CE 21+ install"; \
+		echo "       (https://www.graalvm.org/downloads/)"; \
+		exit 1; \
+	fi
+	git submodule update --init --recursive TruffleSOM
+	git submodule update --init --recursive mx
+	cd TruffleSOM && PATH=$$PWD/../mx:$$PATH JVMCI_VERSION_CHECK=ignore mx build
+	@echo
+	@echo "TruffleSOM ready: ./TruffleSOM/som"
 
 # Local smoke run of the asom-only Suite.som (exercises a subset of
 # AreWeFastYet bench classes for verifyResult coverage, no engine

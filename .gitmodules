@@ -10,3 +10,9 @@
 [submodule "sample/asom/SOMpp"]
 	path = sample/asom/SOMpp
 	url = https://github.com/SOM-st/SOMpp.git
+[submodule "sample/asom/TruffleSOM"]
+	path = sample/asom/TruffleSOM
+	url = https://github.com/SOM-st/TruffleSOM.git
+[submodule "sample/asom/mx"]
+	path = sample/asom/mx
+	url = https://github.com/graalvm/mx.git
