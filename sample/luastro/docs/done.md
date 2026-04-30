@@ -152,6 +152,7 @@ swaps in, yield swaps back, errors inside a coroutine propagate as
 | `lua_table_seti` | Routes integer keys ≤ `2 × arr_cap + 4` to the dense array part even if not strictly contiguous (so `for i=2,N do t[i]=... end` doesn't drop into the hash) |
 | `luastro_export_sd_wrappers` (in `luastro_specialize_all`) | Post-process pass that renames every `SD_<hash>` reference inside each generated `code_store/c/SD_<hash>.c` to `SD_<hash>_INL` and appends a `__attribute__((weak)) RESULT SD_<hash>(...) { return SD_<hash>_INL(...); }` extern wrapper.  Lets `dlsym` find every baked SD so `astro_cs_load` patches every node, not just the chunk root. |
 | `luastro_specialize_side_array` | Walks `LUASTRO_NODE_ARR[0..CNT)` and calls `astro_cs_compile` on each entry, baking SDs for variadic-operand children (`@noinline` parents like `node_call_argN` / `node_table_new` whose children ASTroGen's typed-operand walker skips). |
+| `luastro_reoptimize_all` | Tracks every NODE through `node_allocate`; called once at the end of `PARSE_lua` (after `pf_finalize_local_refs` and `pf_fold_constants`) to invalidate cached hashes / patched dispatchers and re-run `OPTIMIZE`.  Required because on AOT-cached startup, `OPTIMIZE` runs during each `ALLOC_*` and patches dispatchers *before* the capture rewrite (`local_get → box_get`) flips the kind — without re-optimization, captured-slot reads keep dispatching through the `local_get`-shaped SD and return the raw `LuaBox*`. |
 
 ## Build / driver
 
