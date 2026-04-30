@@ -7,10 +7,10 @@ class KoRubyNodeDef < ASTroGen::NodeDef
         return "0" if ref?
         case @type
         when 'ID'
-          "hash_cstr(ko_id_name(#{val}))"
+          "hash_cstr(korb_id_name(#{val}))"
         when 'intptr_t'
           "hash_uint64((uint64_t)#{val})"
-        when 'struct method_cache *', 'struct call_cache *', 'struct ko_proc *', 'struct ko_class *'
+        when 'struct method_cache *', 'struct call_cache *', 'struct korb_proc *', 'struct korb_class *'
           "0"
         else
           super
@@ -22,7 +22,7 @@ class KoRubyNodeDef < ASTroGen::NodeDef
         return nil if storageless?
         case @type
         when 'ID'
-          "        fprintf(fp, \"%s\", ko_id_name(n->u.#{name}.#{self.name}));"
+          "        fprintf(fp, \"%s\", korb_id_name(n->u.#{name}.#{self.name}));"
         when 'intptr_t'
           "        fprintf(fp, \"%ld\", (long)n->u.#{name}.#{self.name});"
         when 'struct method_cache *', 'struct call_cache *'
@@ -44,7 +44,7 @@ class KoRubyNodeDef < ASTroGen::NodeDef
         when 'intptr_t'
           arg = "    fprintf(fp, \"        (intptr_t)%ld\", (long)n->u.#{name}.#{self.name});"
           return nil, arg
-        when 'struct method_cache *', 'struct call_cache *', 'struct ko_proc *', 'struct ko_class *'
+        when 'struct method_cache *', 'struct call_cache *', 'struct korb_proc *', 'struct korb_class *'
           arg = "    fprintf(fp, \"        n->u.#{name}.#{self.name}\");"
           return nil, arg
         else

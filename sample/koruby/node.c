@@ -72,14 +72,14 @@ void DUMP(FILE *fp, NODE *n, bool oneline) {
 }
 
 /* node allocation via Boehm GC */
-extern size_t ko_node_cnt;
-size_t ko_node_cnt = 0;
+extern size_t korb_node_cnt;
+size_t korb_node_cnt = 0;
 
 static __attribute__((noinline)) NODE *
 node_allocate(size_t size) {
-    NODE *n = (NODE *)ko_xmalloc(size);
+    NODE *n = (NODE *)korb_xmalloc(size);
     if (!n) { perror("node_allocate"); exit(1); }
-    ko_node_cnt++;
+    korb_node_cnt++;
     return n;
 }
 
@@ -106,7 +106,7 @@ void code_repo_add(const char *name, NODE *body, bool force) {
     if (!force && code_repo_find(HASH(body))) return;
     if (code_repo.size >= code_repo.capa) {
         code_repo.capa = code_repo.capa ? code_repo.capa * 2 : 8;
-        code_repo.entries = ko_xrealloc(code_repo.entries, code_repo.capa * sizeof(*code_repo.entries));
+        code_repo.entries = korb_xrealloc(code_repo.entries, code_repo.capa * sizeof(*code_repo.entries));
     }
     code_repo.entries[code_repo.size].name = name;
     code_repo.entries[code_repo.size].body = body;
@@ -135,7 +135,7 @@ static struct specialized_code *sc_repo_search(NODE *n, node_hash_t h) {
 static struct specialized_code *sc_repo_new_entry(void) {
     if (sc_repo.size < sc_repo.capa) return &sc_repo.entries[sc_repo.size++];
     sc_repo.capa = sc_repo.capa ? sc_repo.capa * 2 : 8;
-    sc_repo.entries = ko_xrealloc(sc_repo.entries, sc_repo.capa * sizeof(*sc_repo.entries));
+    sc_repo.entries = korb_xrealloc(sc_repo.entries, sc_repo.capa * sizeof(*sc_repo.entries));
     return sc_repo_new_entry();
 }
 
@@ -151,7 +151,7 @@ void sc_repo_clear(void) { sc_repo.size = 0; }
 static const char *alloc_dispatcher_name(NODE *n) {
     char buf[128];
     snprintf(buf, sizeof(buf), "SD_%lx", (unsigned long)hash_node(n));
-    char *s = ko_xmalloc_atomic(strlen(buf)+1);
+    char *s = korb_xmalloc_atomic(strlen(buf)+1);
     strcpy(s, buf);
     return s;
 }
@@ -219,7 +219,7 @@ void node_replace(NODE *parent, NODE *old, NODE *new_node) {
     if (new_node) new_node->head.parent = parent;
 }
 
-void ko_swap_dispatcher(NODE *n, const struct NodeKind *new_kind) {
+void korb_swap_dispatcher(NODE *n, const struct NodeKind *new_kind) {
     n->head.kind = new_kind;
     n->head.dispatcher = new_kind->default_dispatcher;
     n->head.dispatcher_name = new_kind->default_dispatcher_name;
@@ -252,6 +252,6 @@ static uint32_t sc_entries_count = 0;
 void INIT(void) {
     sc_repo.size = SC_ENTRIES_COUNT;
     sc_repo.capa = sc_repo.size == 0 ? 4 : sc_repo.size * 2;
-    sc_repo.entries = ko_xmalloc(sc_repo.capa * sizeof(struct specialized_code));
+    sc_repo.entries = korb_xmalloc(sc_repo.capa * sizeof(struct specialized_code));
     if (sc_repo.size > 0) memcpy(sc_repo.entries, sc_entries, sc_repo.size * sizeof(struct specialized_code));
 }

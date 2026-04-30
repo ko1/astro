@@ -58,6 +58,6 @@ EVAL(CTX *c, NODE *n)
 void node_replace(NODE *parent, NODE *old, NODE *new_node);
 
 /* swap an existing node's dispatcher to a different node type without realloc */
-void ko_swap_dispatcher(NODE *n, const struct NodeKind *new_kind);
+void korb_swap_dispatcher(NODE *n, const struct NodeKind *new_kind);
 
 #endif /* KORUBY_NODE_H */

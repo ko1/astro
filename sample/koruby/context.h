@@ -71,7 +71,7 @@ typedef uintptr_t ID;
 #define FIXABLE(i)    (POSFIXABLE(i) && NEGFIXABLE(i))
 
 /* heap object types */
-enum ko_type {
+enum korb_type {
     T_NONE = 0,
     T_OBJECT,
     T_CLASS,
@@ -96,19 +96,19 @@ struct RBasic {
     VALUE klass;
 };
 
-#define BUILTIN_TYPE(v) ((enum ko_type)((((struct RBasic *)(v))->flags) & T_MASK))
+#define BUILTIN_TYPE(v) ((enum korb_type)((((struct RBasic *)(v))->flags) & T_MASK))
 #define RBASIC(v)       ((struct RBasic *)(v))
 
 /* forward */
 struct Node;
-struct ko_class;
-struct ko_method;
-struct ko_array;
-struct ko_string;
-struct ko_hash;
-struct ko_bignum;
-struct ko_object;
-struct ko_proc;
+struct korb_class;
+struct korb_method;
+struct korb_array;
+struct korb_string;
+struct korb_hash;
+struct korb_bignum;
+struct korb_object;
+struct korb_proc;
 
 /* options */
 struct koruby_option {
@@ -130,13 +130,13 @@ typedef uint64_t state_serial_t;
  * pointer so the dispatch hot path can do a direct call without going through
  * method->ast.body->head.dispatcher (one indirect call instead of two). */
 struct CTX_struct;
-typedef VALUE (*ko_dispatcher_t)(struct CTX_struct *c, struct Node *n);
+typedef VALUE (*korb_dispatcher_t)(struct CTX_struct *c, struct Node *n);
 struct method_cache {
     state_serial_t serial;
-    struct ko_class *klass;
-    struct ko_method *method;
+    struct korb_class *klass;
+    struct korb_method *method;
     struct Node *body;             /* cached body NODE for AST methods */
-    ko_dispatcher_t dispatcher;    /* its dispatcher fn ptr */
+    korb_dispatcher_t dispatcher;    /* its dispatcher fn ptr */
     uint32_t locals_cnt;
     uint32_t required_params_cnt;
     uint8_t  type;                 /* 0=AST, 1=CFUNC */
@@ -151,6 +151,12 @@ struct call_cache {
     uint32_t params_cnt;
 };
 
+/* lexical constant scope: chain of currently-nested classes/modules */
+struct korb_cref {
+    struct korb_class *klass;
+    struct korb_cref *prev;
+};
+
 /* execution context */
 typedef struct CTX_struct {
     VALUE *stack_base;
@@ -158,39 +164,41 @@ typedef struct CTX_struct {
     VALUE *fp;            /* current frame: locals and arg slots */
     VALUE *sp;            /* high-water mark for GC scanning */
     VALUE self;
-    struct ko_class *current_class; /* def-target class (for top-level: Object) */
+    struct korb_class *current_class; /* def-target class (for top-level: Object) */
+    struct korb_cref *cref;           /* lexical const scope */
+    const char *current_file;       /* for backtrace + require_relative */
 
     state_serial_t method_serial;
 
-    /* unified exceptional control state.  When state != KO_NORMAL, all
+    /* unified exceptional control state.  When state != KORB_NORMAL, all
      * EVAL_ARG sites bail out and propagate.  state_value carries the
      * payload (exception object / return value / break value). */
     int   state;
     VALUE state_value;
 
     /* for call site & frame info */
-    struct ko_frame *current_frame;
+    struct korb_frame *current_frame;
 } CTX;
 
-#define KO_NORMAL 0
-#define KO_RAISE  1
-#define KO_RETURN 2
-#define KO_BREAK  3
-#define KO_NEXT   4
+#define KORB_NORMAL 0
+#define KORB_RAISE  1
+#define KORB_RETURN 2
+#define KORB_BREAK  3
+#define KORB_NEXT   4
 
 /* current_frame chain (for backtrace + GC root) */
-struct ko_frame {
-    struct ko_frame *prev;
+struct korb_frame {
+    struct korb_frame *prev;
     struct Node *caller_node;  /* for backtrace */
-    struct ko_method *method;
+    struct korb_method *method;
     VALUE self;
     VALUE *fp;
     uint32_t locals_cnt;
 };
 
 /* push/pop frame helpers via macro */
-#define KO_PUSH_FRAME(c, mtd, fp_, locals_, caller) \
-    struct ko_frame _frame_ = {                     \
+#define KORB_PUSH_FRAME(c, mtd, fp_, locals_, caller) \
+    struct korb_frame _frame_ = {                     \
         .prev = (c)->current_frame,                 \
         .caller_node = (caller),                    \
         .method = (mtd),                            \
@@ -201,7 +209,7 @@ struct ko_frame {
     (c)->current_frame = &_frame_;                  \
     do{}while(0)
 
-#define KO_POP_FRAME(c) \
+#define KORB_POP_FRAME(c) \
     do { (c)->current_frame = _frame_.prev; } while (0)
 
 #endif /* KORUBY_CONTEXT_H */

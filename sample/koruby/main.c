@@ -3,6 +3,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <stdbool.h>
+#include <limits.h>
 
 #include "context.h"
 #include "object.h"
@@ -16,10 +17,10 @@ extern void sc_repo_clear(void);
 
 static char *read_all(FILE *fp, size_t *out_len) {
     size_t cap = 4096, len = 0;
-    char *buf = ko_xmalloc_atomic(cap);
+    char *buf = korb_xmalloc_atomic(cap);
     int c;
     while ((c = fgetc(fp)) != EOF) {
-        if (len + 1 >= cap) { cap *= 2; buf = ko_xrealloc(buf, cap); }
+        if (len + 1 >= cap) { cap *= 2; buf = korb_xrealloc(buf, cap); }
         buf[len++] = (char)c;
     }
     buf[len] = 0;
@@ -70,10 +71,11 @@ generate_specialized_code(NODE *ast)
 int main(int argc, char *argv[])
 {
     INIT();
-    ko_runtime_init();
+    korb_runtime_init();
 
     const char *e_code = NULL;
     const char *file = NULL;
+    int script_arg_start = argc;  /* args beyond the script are passed to ARGV */
 
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -82,12 +84,27 @@ int main(int argc, char *argv[])
         else if (strcmp(a, "-c") == 0) { OPTION.compile_only = true; }
         else if (strcmp(a, "-q") == 0) { OPTION.quiet = true; }
         else if (strcmp(a, "-v") == 0) { OPTION.verbose = true; }
+        else if (a[0] == '-' && a[1] == '-' && file) { script_arg_start = i; break; }
         else if (a[0] == '-') {
             fprintf(stderr, "unknown option: %s\n", a);
             usage();
         }
-        else { file = a; }
+        else if (!file) {
+            file = a;
+            script_arg_start = i + 1;
+        }
+        else {
+            /* extra positional argument */
+            script_arg_start = i;
+            break;
+        }
     }
+    /* Build ARGV from args after the script path */
+    VALUE argv_array = korb_ary_new();
+    for (int i = script_arg_start; i < argc; i++) {
+        korb_ary_push(argv_array, korb_str_new_cstr(argv[i]));
+    }
+    korb_const_set(korb_vm->object_class, korb_intern("ARGV"), argv_array);
 
     char *src = NULL;
     size_t len = 0;
@@ -112,27 +129,41 @@ int main(int argc, char *argv[])
     }
 
     /* Set up a CTX. Stack is registered with GC by virtue of being a GC alloc. */
-    CTX *c = ko_xcalloc(1, sizeof(CTX));
+    CTX *c = korb_xcalloc(1, sizeof(CTX));
     /* The value stack is heap allocated so GC scans it.  Use 64K slots. */
     size_t stack_size = 1024 * 1024;
-    c->stack_base = ko_xmalloc(stack_size * sizeof(VALUE));
+    c->stack_base = korb_xmalloc(stack_size * sizeof(VALUE));
     for (size_t i = 0; i < stack_size; i++) c->stack_base[i] = Qnil;
     c->stack_end  = c->stack_base + stack_size;
     c->fp = c->stack_base;
     c->sp = c->fp;
-    c->self = ko_vm->main_obj;
-    c->current_class = ko_vm->object_class;
-    c->state = KO_NORMAL;
-    c->method_serial = ko_vm->method_serial;
+    c->self = korb_vm->main_obj;
+    c->current_class = korb_vm->object_class;
+    static struct korb_cref top_cref;
+    top_cref.klass = korb_vm->object_class;
+    top_cref.prev = NULL;
+    c->cref = &top_cref;
+    /* For -e mode, current_file = ./script.rb so require_relative resolves
+     * against cwd. */
+    static char ecwd[PATH_MAX] = {0};
+    if (!file) {
+        if (!getcwd(ecwd, sizeof(ecwd))) strcpy(ecwd, ".");
+        strcat(ecwd, "/-e");
+        c->current_file = ecwd;
+    } else {
+        c->current_file = file;
+    }
+    c->state = KORB_NORMAL;
+    c->method_serial = korb_vm->method_serial;
 
     OPTIMIZE(ast);
 
     if (!OPTION.compile_only) {
         VALUE r = EVAL(c, ast);
         (void)r;
-        if (c->state == KO_RAISE) {
-            VALUE s = ko_inspect(c->state_value);
-            fprintf(stderr, "unhandled exception: %s\n", ko_str_cstr(s));
+        if (c->state == KORB_RAISE) {
+            VALUE s = korb_inspect(c->state_value);
+            fprintf(stderr, "unhandled exception: %s\n", korb_str_cstr(s));
             return 1;
         }
     }

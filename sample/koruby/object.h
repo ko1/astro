@@ -5,68 +5,68 @@
 
 /* heap object structures (CRuby-inspired) */
 
-struct ko_object {
+struct korb_object {
     struct RBasic basic;
     uint32_t ivar_cnt;
     uint32_t ivar_capa;
     VALUE *ivars;
 };
 
-struct ko_string {
+struct korb_string {
     struct RBasic basic;
     char *ptr;
     long len;
     long capa;
 };
 
-struct ko_array {
+struct korb_array {
     struct RBasic basic;
     VALUE *ptr;
     long len;
     long capa;
 };
 
-struct ko_hash_entry {
+struct korb_hash_entry {
     VALUE key;
     VALUE value;
     uint64_t hash;
-    struct ko_hash_entry *next; /* insertion order chain */
+    struct korb_hash_entry *next; /* insertion order chain */
 };
 
-struct ko_hash {
+struct korb_hash {
     struct RBasic basic;
-    struct ko_hash_entry **buckets;
+    struct korb_hash_entry **buckets;
     uint32_t bucket_cnt;
     uint32_t size;
-    struct ko_hash_entry *first;  /* insertion order */
-    struct ko_hash_entry *last;
+    struct korb_hash_entry *first;  /* insertion order */
+    struct korb_hash_entry *last;
     VALUE default_value;
 };
 
-struct ko_range {
+struct korb_range {
     struct RBasic basic;
     VALUE begin;
     VALUE end;
     bool exclude_end;
 };
 
-struct ko_bignum {
+struct korb_bignum {
     struct RBasic basic;
     void *mpz; /* mpz_t actually (mpz_struct[1]) */
 };
 
-struct ko_float {
+struct korb_float {
     struct RBasic basic;
     double value;
 };
 
-struct ko_method {
+struct korb_method {
     enum {
-        KO_METHOD_AST,
-        KO_METHOD_CFUNC,
+        KORB_METHOD_AST,
+        KORB_METHOD_CFUNC,
     } type;
     ID name;
-    struct ko_class *defining_class;
+    struct korb_class *defining_class;
     union {
         struct {
             struct Node *body;
@@ -80,38 +80,38 @@ struct ko_method {
     } u;
 };
 
-struct ko_method_table_entry {
+struct korb_method_table_entry {
     ID name;
-    struct ko_method *method;
-    struct ko_method_table_entry *next;
+    struct korb_method *method;
+    struct korb_method_table_entry *next;
 };
 
-struct ko_method_table {
-    struct ko_method_table_entry **buckets;
+struct korb_method_table {
+    struct korb_method_table_entry **buckets;
     uint32_t bucket_cnt;
     uint32_t size;
 };
 
-struct ko_const_entry {
+struct korb_const_entry {
     ID name;
     VALUE value;
-    struct ko_const_entry *next;
+    struct korb_const_entry *next;
 };
 
-struct ko_class {
+struct korb_class {
     struct RBasic basic;       /* flags = T_CLASS or T_MODULE */
-    enum ko_type instance_type; /* type of instances of this class */
+    enum korb_type instance_type; /* type of instances of this class */
     ID name;
-    struct ko_class *super;
-    struct ko_method_table methods;
-    struct ko_const_entry *constants;
+    struct korb_class *super;
+    struct korb_method_table methods;
+    struct korb_const_entry *constants;
     /* ivar shape: name -> slot (linear table) */
     ID *ivar_names;
     uint32_t ivar_count;
     uint32_t ivar_capa;
 };
 
-struct ko_proc {
+struct korb_proc {
     struct RBasic basic;
     struct Node *body;
     VALUE *env;             /* shared/captured locals */
@@ -123,160 +123,171 @@ struct ko_proc {
 };
 
 /* global VM */
-struct ko_vm {
+struct korb_vm {
     state_serial_t method_serial;
 
     /* core classes */
-    struct ko_class *object_class;
-    struct ko_class *class_class;
-    struct ko_class *module_class;
-    struct ko_class *integer_class;
-    struct ko_class *float_class;
-    struct ko_class *string_class;
-    struct ko_class *array_class;
-    struct ko_class *hash_class;
-    struct ko_class *symbol_class;
-    struct ko_class *true_class;
-    struct ko_class *false_class;
-    struct ko_class *nil_class;
-    struct ko_class *proc_class;
-    struct ko_class *range_class;
-    struct ko_class *kernel_module;
-    struct ko_class *comparable_module;
-    struct ko_class *enumerable_module;
-    struct ko_class *numeric_class;
+    struct korb_class *object_class;
+    struct korb_class *class_class;
+    struct korb_class *module_class;
+    struct korb_class *integer_class;
+    struct korb_class *float_class;
+    struct korb_class *string_class;
+    struct korb_class *array_class;
+    struct korb_class *hash_class;
+    struct korb_class *symbol_class;
+    struct korb_class *true_class;
+    struct korb_class *false_class;
+    struct korb_class *nil_class;
+    struct korb_class *proc_class;
+    struct korb_class *range_class;
+    struct korb_class *kernel_module;
+    struct korb_class *comparable_module;
+    struct korb_class *enumerable_module;
+    struct korb_class *numeric_class;
 
     /* globals */
-    struct ko_method_table globals;
+    struct korb_method_table globals;
 
     /* topframe class (for top-level def, top-level constants) */
-    struct ko_class *main_obj_class; /* the singleton-of-main-obj */
+    struct korb_class *main_obj_class; /* the singleton-of-main-obj */
     VALUE main_obj;
 };
 
-extern struct ko_vm *ko_vm;
+extern struct korb_vm *korb_vm;
 
 /* ---------- API ---------- */
 
-void ko_runtime_init(void);
+void korb_runtime_init(void);
 
 /* memory */
-void *ko_xmalloc(size_t size);
-void *ko_xmalloc_atomic(size_t size); /* no-pointer mem (e.g., string char buffer) */
-void *ko_xcalloc(size_t n, size_t sz);
-void *ko_xrealloc(void *p, size_t newsize);
-void  ko_xfree(void *p);
+void *korb_xmalloc(size_t size);
+void *korb_xmalloc_atomic(size_t size); /* no-pointer mem (e.g., string char buffer) */
+void *korb_xcalloc(size_t n, size_t sz);
+void *korb_xrealloc(void *p, size_t newsize);
+void  korb_xfree(void *p);
 
 /* ID */
-ID ko_intern(const char *str);
-ID ko_intern_n(const char *str, long len);
-const char *ko_id_name(ID id);
+ID korb_intern(const char *str);
+ID korb_intern_n(const char *str, long len);
+const char *korb_id_name(ID id);
 
 /* class system */
-VALUE ko_class_of(VALUE v);
-struct ko_class *ko_class_of_class(VALUE v); /* returns C struct */
-struct ko_class *ko_class_new(ID name, struct ko_class *super, enum ko_type instance_type);
-struct ko_class *ko_module_new(ID name);
-void ko_class_add_method_ast(struct ko_class *klass, ID name, struct Node *body, uint32_t params_cnt, uint32_t locals_cnt);
-void ko_class_add_method_cfunc(struct ko_class *klass, ID name, VALUE (*func)(CTX *, VALUE, int, VALUE *), int argc);
-struct ko_method *ko_class_find_method(const struct ko_class *klass, ID name);
+VALUE korb_class_of(VALUE v);
+struct korb_class *korb_class_of_class(VALUE v); /* returns C struct */
+struct korb_class *korb_class_new(ID name, struct korb_class *super, enum korb_type instance_type);
+struct korb_class *korb_module_new(ID name);
+void korb_class_add_method_ast(struct korb_class *klass, ID name, struct Node *body, uint32_t params_cnt, uint32_t locals_cnt);
+void korb_class_add_method_cfunc(struct korb_class *klass, ID name, VALUE (*func)(CTX *, VALUE, int, VALUE *), int argc);
+struct korb_method *korb_class_find_method(const struct korb_class *klass, ID name);
+void korb_module_include(struct korb_class *klass, struct korb_class *mod);
 
 /* constants */
-void ko_const_set(struct ko_class *klass, ID name, VALUE value);
-VALUE ko_const_get(struct ko_class *klass, ID name);
-bool ko_const_has(struct ko_class *klass, ID name);
+void korb_const_set(struct korb_class *klass, ID name, VALUE value);
+VALUE korb_const_get(struct korb_class *klass, ID name);
+bool korb_const_has(struct korb_class *klass, ID name);
 
 /* objects */
-VALUE ko_object_new(struct ko_class *klass);
-VALUE ko_ivar_get(VALUE obj, ID name);
-void  ko_ivar_set(VALUE obj, ID name, VALUE value);
+VALUE korb_object_new(struct korb_class *klass);
+VALUE korb_ivar_get(VALUE obj, ID name);
+void  korb_ivar_set(VALUE obj, ID name, VALUE value);
 
 /* string */
-VALUE ko_str_new(const char *p, long len);
-VALUE ko_str_new_cstr(const char *cstr);
-VALUE ko_str_dup(VALUE s);
-VALUE ko_str_concat(VALUE a, VALUE b);
-VALUE ko_str_inspect(VALUE s);
-const char *ko_str_cstr(VALUE s); /* terminates */
-long  ko_str_len(VALUE s);
+VALUE korb_str_new(const char *p, long len);
+VALUE korb_str_new_cstr(const char *cstr);
+VALUE korb_str_dup(VALUE s);
+VALUE korb_str_concat(VALUE a, VALUE b);
+VALUE korb_str_inspect(VALUE s);
+const char *korb_str_cstr(VALUE s); /* terminates */
+long  korb_str_len(VALUE s);
 
 /* array */
-VALUE ko_ary_new_capa(long capa);
-VALUE ko_ary_new(void);
-VALUE ko_ary_new_from_values(long n, const VALUE *vals);
-void  ko_ary_push(VALUE ary, VALUE v);
-VALUE ko_ary_pop(VALUE ary);
-VALUE ko_ary_aref(VALUE ary, long i);
-void  ko_ary_aset(VALUE ary, long i, VALUE v);
-long  ko_ary_len(VALUE ary);
+VALUE korb_ary_new_capa(long capa);
+VALUE korb_ary_new(void);
+VALUE korb_ary_new_from_values(long n, const VALUE *vals);
+void  korb_ary_push(VALUE ary, VALUE v);
+VALUE korb_ary_pop(VALUE ary);
+VALUE korb_ary_aref(VALUE ary, long i);
+void  korb_ary_aset(VALUE ary, long i, VALUE v);
+long  korb_ary_len(VALUE ary);
 
 /* hash */
-VALUE ko_hash_new(void);
-VALUE ko_hash_aref(VALUE h, VALUE key);
-VALUE ko_hash_aset(VALUE h, VALUE key, VALUE val);
-long  ko_hash_size(VALUE h);
+VALUE korb_hash_new(void);
+VALUE korb_hash_aref(VALUE h, VALUE key);
+VALUE korb_hash_aset(VALUE h, VALUE key, VALUE val);
+long  korb_hash_size(VALUE h);
 
 /* symbol */
-VALUE ko_id2sym(ID id);
-ID    ko_sym2id(VALUE sym);
-VALUE ko_str_to_sym(VALUE str);
+VALUE korb_id2sym(ID id);
+ID    korb_sym2id(VALUE sym);
+VALUE korb_str_to_sym(VALUE str);
 
 /* float / bignum */
-VALUE ko_float_new(double d);
-double ko_num2dbl(VALUE v);
-VALUE ko_bignum_new_str(const char *str, int base);
-VALUE ko_bignum_new_long(long v);
-VALUE ko_int_plus(VALUE a, VALUE b);
-VALUE ko_int_minus(VALUE a, VALUE b);
-VALUE ko_int_mul(VALUE a, VALUE b);
-VALUE ko_int_div(VALUE a, VALUE b);
-VALUE ko_int_mod(VALUE a, VALUE b);
-VALUE ko_int_lshift(VALUE a, VALUE b);
-VALUE ko_int_rshift(VALUE a, VALUE b);
-VALUE ko_int_and(VALUE a, VALUE b);
-VALUE ko_int_or(VALUE a, VALUE b);
-VALUE ko_int_xor(VALUE a, VALUE b);
-int   ko_int_cmp(VALUE a, VALUE b);
-bool  ko_int_eq(VALUE a, VALUE b);
+VALUE korb_float_new(double d);
+double korb_num2dbl(VALUE v);
+VALUE korb_bignum_new_str(const char *str, int base);
+VALUE korb_bignum_new_long(long v);
+VALUE korb_int_plus(VALUE a, VALUE b);
+VALUE korb_int_minus(VALUE a, VALUE b);
+VALUE korb_int_mul(VALUE a, VALUE b);
+VALUE korb_int_div(VALUE a, VALUE b);
+VALUE korb_int_mod(VALUE a, VALUE b);
+VALUE korb_int_lshift(VALUE a, VALUE b);
+VALUE korb_int_rshift(VALUE a, VALUE b);
+VALUE korb_int_and(VALUE a, VALUE b);
+VALUE korb_int_or(VALUE a, VALUE b);
+VALUE korb_int_xor(VALUE a, VALUE b);
+int   korb_int_cmp(VALUE a, VALUE b);
+bool  korb_int_eq(VALUE a, VALUE b);
 
 /* equality / inspect */
-bool  ko_eq(VALUE a, VALUE b);
-bool  ko_eql(VALUE a, VALUE b);
-uint64_t ko_hash_value(VALUE v);
-VALUE ko_inspect(VALUE v);
-VALUE ko_to_s(VALUE v);
-void  ko_p(VALUE v); /* writes to stdout with newline */
+bool  korb_eq(VALUE a, VALUE b);
+bool  korb_eql(VALUE a, VALUE b);
+uint64_t korb_hash_value(VALUE v);
+VALUE korb_inspect(VALUE v);
+VALUE korb_to_s(VALUE v);
+void  korb_p(VALUE v); /* writes to stdout with newline */
 
 /* errors / exceptions */
-VALUE ko_exc_new(struct ko_class *klass, const char *msg);
-void  ko_raise(CTX *c, struct ko_class *klass, const char *fmt, ...);
+VALUE korb_exc_new(struct korb_class *klass, const char *msg);
+void  korb_raise(CTX *c, struct korb_class *klass, const char *fmt, ...);
 
 /* method dispatch helper */
-VALUE ko_funcall(CTX *c, VALUE recv, ID mid, int argc, VALUE *argv);
-VALUE ko_funcall_with_block(CTX *c, VALUE recv, ID mid, int argc, VALUE *argv, VALUE block);
-VALUE ko_dispatch_call(CTX *c, struct Node *callsite, VALUE recv, ID name, uint32_t argc, uint32_t arg_index, struct ko_proc *block, struct method_cache *mc);
-VALUE ko_dispatch_binop(CTX *c, VALUE recv, ID name, int argc, VALUE *argv);
-VALUE ko_yield(CTX *c, uint32_t argc, VALUE *argv);
+VALUE korb_funcall(CTX *c, VALUE recv, ID mid, int argc, VALUE *argv);
+VALUE korb_funcall_with_block(CTX *c, VALUE recv, ID mid, int argc, VALUE *argv, VALUE block);
+VALUE korb_dispatch_call(CTX *c, struct Node *callsite, VALUE recv, ID name, uint32_t argc, uint32_t arg_index, struct korb_proc *block, struct method_cache *mc);
+VALUE korb_dispatch_binop(CTX *c, VALUE recv, ID name, int argc, VALUE *argv);
+VALUE korb_yield(CTX *c, uint32_t argc, VALUE *argv);
 
 /* gvar */
-VALUE ko_gvar_get(ID name);
-void  ko_gvar_set(ID name, VALUE v);
+VALUE korb_gvar_get(ID name);
+void  korb_gvar_set(ID name, VALUE v);
 
 /* const lookup along current scope (uses CTX->current_class) */
-VALUE ko_const_lookup(CTX *c, ID name);
+VALUE korb_const_lookup(CTX *c, ID name);
 
 /* range */
-VALUE ko_range_new(VALUE begin, VALUE end, bool exclude_end);
+VALUE korb_range_new(VALUE begin, VALUE end, bool exclude_end);
 
 /* proc */
-VALUE ko_proc_new(struct Node *body, VALUE *fp, uint32_t env_size, uint32_t params_cnt, uint32_t param_base, VALUE self, bool is_lambda);
+VALUE korb_proc_new(struct Node *body, VALUE *fp, uint32_t env_size, uint32_t params_cnt, uint32_t param_base, VALUE self, bool is_lambda);
 
 /* Builtins init */
-void ko_init_builtins(void);
+void korb_init_builtins(void);
+
+/* file load (parse + eval) */
+VALUE korb_load_file(CTX *c, const char *path);
+VALUE korb_eval_string(CTX *c, const char *src, size_t len, const char *filename);
+
+/* path resolution for require_relative */
+char *korb_dirname(const char *path);
+char *korb_join_path(const char *dir, const char *name);
+bool korb_file_exists(const char *path);
+char *korb_resolve_relative(const char *current_file, const char *name);
 
 
 /* booleans */
-#define KO_BOOL(b) ((b) ? Qtrue : Qfalse)
+#define KORB_BOOL(b) ((b) ? Qtrue : Qfalse)
 
 /* object FLAGS access */
 #define FL_USER_SHIFT 12

@@ -36,7 +36,7 @@ static NODE *T(struct transduce_context *tc, pm_node_t *n);
 static const char *
 alloc_cstr(pm_parser_t *parser, pm_constant_id_t cid) {
     pm_constant_t *c = pm_constant_pool_id_to_constant(&parser->constant_pool, cid);
-    char *s = ko_xmalloc_atomic(c->length + 1);
+    char *s = korb_xmalloc_atomic(c->length + 1);
     memcpy(s, c->start, c->length);
     s[c->length] = 0;
     return s;
@@ -45,15 +45,15 @@ alloc_cstr(pm_parser_t *parser, pm_constant_id_t cid) {
 static ID
 intern_constant(pm_parser_t *parser, pm_constant_id_t cid) {
     pm_constant_t *c = pm_constant_pool_id_to_constant(&parser->constant_pool, cid);
-    return ko_intern_n((const char *)c->start, (long)c->length);
+    return korb_intern_n((const char *)c->start, (long)c->length);
 }
 
 static struct method_cache *alloc_method_cache(void) {
-    return ko_xcalloc(1, sizeof(struct method_cache));
+    return korb_xcalloc(1, sizeof(struct method_cache));
 }
 
 static void push_frame(struct transduce_context *tc, pm_constant_id_list_t *locals, bool is_block) {
-    struct frame_context *f = ko_xmalloc(sizeof(*f));
+    struct frame_context *f = korb_xmalloc(sizeof(*f));
     f->prev = tc->frame;
     f->locals = locals;
     f->is_block = is_block;
@@ -266,7 +266,7 @@ static char *integer_to_string(pm_integer_t *integer) {
     pm_buffer_t buf = { 0 };
     pm_buffer_init(&buf);
     pm_integer_string(&buf, integer);
-    char *s = ko_xmalloc_atomic(buf.length + 1);
+    char *s = korb_xmalloc_atomic(buf.length + 1);
     memcpy(s, buf.value, buf.length);
     s[buf.length] = 0;
     pm_buffer_free(&buf);
@@ -310,7 +310,7 @@ T(struct transduce_context *tc, pm_node_t *node)
           char *s = integer_to_string(&n->value);
           if (n->value.negative) {
               /* integer_to_string already includes sign? Actually pm_integer_string uses absolute val + negative flag */
-              char *t = ko_xmalloc_atomic(strlen(s) + 2);
+              char *t = korb_xmalloc_atomic(strlen(s) + 2);
               t[0] = '-'; strcpy(t+1, s);
               s = t;
           }
@@ -324,7 +324,7 @@ T(struct transduce_context *tc, pm_node_t *node)
           pm_string_node_t *n = (pm_string_node_t *)node;
           long len = (long)pm_string_length(&n->unescaped);
           const char *src = (const char *)pm_string_source(&n->unescaped);
-          char *buf = ko_xmalloc_atomic(len + 1);
+          char *buf = korb_xmalloc_atomic(len + 1);
           memcpy(buf, src, len); buf[len] = 0;
           return ALLOC_node_str_lit(buf, (uint32_t)len);
       }
@@ -332,7 +332,7 @@ T(struct transduce_context *tc, pm_node_t *node)
           pm_symbol_node_t *n = (pm_symbol_node_t *)node;
           long len = (long)pm_string_length(&n->unescaped);
           const char *src = (const char *)pm_string_source(&n->unescaped);
-          ID id = ko_intern_n(src, len);
+          ID id = korb_intern_n(src, len);
           return ALLOC_node_sym_lit(id);
       }
       case PM_INTERPOLATED_STRING_NODE: {
@@ -403,7 +403,7 @@ T(struct transduce_context *tc, pm_node_t *node)
       }
       case PM_CONSTANT_PATH_NODE: {
           pm_constant_path_node_t *n = (pm_constant_path_node_t *)node;
-          NODE *parent = n->parent ? T(tc, n->parent) : ALLOC_node_const_get(ko_intern("Object"));
+          NODE *parent = n->parent ? T(tc, n->parent) : ALLOC_node_const_get(korb_intern("Object"));
           return ALLOC_node_const_path_get(parent, intern_constant(tc->parser, n->name));
       }
 
@@ -495,14 +495,14 @@ T(struct transduce_context *tc, pm_node_t *node)
           pop_frame(tc);
           /* def body is invoked with caller's fp moved into our frame —
            * body uses fp[0..locals-1] directly, no extra scope advance. */
-          code_repo_add(ko_id_name(name), body, false);
+          code_repo_add(korb_id_name(name), body, false);
           return ALLOC_node_def(name, body, params_cnt, locals);
       }
 
       case PM_CLASS_NODE: {
           pm_class_node_t *n = (pm_class_node_t *)node;
           ID name = intern_constant(tc->parser, n->name);
-          NODE *super = n->superclass ? T(tc, n->superclass) : ALLOC_node_const_get(ko_intern("Object"));
+          NODE *super = n->superclass ? T(tc, n->superclass) : ALLOC_node_const_get(korb_intern("Object"));
           push_frame(tc, &n->locals, false);
           NODE *body = n->body ? T(tc, n->body) : ALLOC_node_nil();
           uint32_t mx = tc->frame->max_cnt;
@@ -616,7 +616,12 @@ T(struct transduce_context *tc, pm_node_t *node)
               pm_rescue_node_t *rc = (pm_rescue_node_t *)n->rescue_clause;
               NODE *rb = rc->statements ? transduce_statements(tc, rc->statements) : ALLOC_node_nil();
               uint32_t exc_idx = inc_arg_index(tc);
-              return ALLOC_node_rescue(body, rb, exc_idx);
+              body = ALLOC_node_rescue(body, rb, exc_idx);
+          }
+          if (n->ensure_clause) {
+              pm_ensure_node_t *en = (pm_ensure_node_t *)n->ensure_clause;
+              NODE *eb = en->statements ? transduce_statements(tc, en->statements) : ALLOC_node_nil();
+              body = ALLOC_node_ensure(body, eb);
           }
           return body;
       }
@@ -648,12 +653,326 @@ T(struct transduce_context *tc, pm_node_t *node)
               if (bp->parameters)
                   params_cnt = (uint32_t)((pm_parameters_node_t *)bp->parameters)->requireds.size;
           }
-          uint32_t param_base = arg_index(tc);
-          push_frame(tc, &n->locals, false);
+          push_frame(tc, &n->locals, true);
+          uint32_t param_base = tc->frame->slot_base;
           NODE *body = n->body ? T(tc, n->body) : ALLOC_node_nil();
           uint32_t env_size = tc->frame->max_cnt;
           pop_frame(tc);
           return ALLOC_node_block_literal(body, params_cnt, param_base, env_size);
+      }
+
+      case PM_CASE_NODE: {
+          /* case x; when a; X; when b, c; Y; else Z; end
+           * → tmp = x;
+           *   if (a === tmp) X
+           *   elsif (b === tmp || c === tmp) Y
+           *   else Z
+           * We store tmp at the next staging slot. */
+          pm_case_node_t *n = (pm_case_node_t *)node;
+          NODE *subject = n->predicate ? T(tc, n->predicate) : NULL;
+          uint32_t slot = inc_arg_index(tc);
+          NODE *prep = subject ? ALLOC_node_lvar_set(slot, subject) : NULL;
+          NODE *else_n = n->else_clause ? T(tc, (pm_node_t *)n->else_clause) : ALLOC_node_nil();
+          /* build chain right-to-left */
+          NODE *chain = else_n;
+          for (size_t i = n->conditions.size; i > 0; i--) {
+              pm_when_node_t *wn = (pm_when_node_t *)n->conditions.nodes[i-1];
+              NODE *body = wn->statements ? transduce_statements(tc, wn->statements) : ALLOC_node_nil();
+              /* condition: (cond1 === tmp) || (cond2 === tmp) || ... */
+              NODE *cond_chain = NULL;
+              for (size_t j = 0; j < wn->conditions.size; j++) {
+                  NODE *cv = T(tc, wn->conditions.nodes[j]);
+                  /* cv === tmp */
+                  uint32_t ai = arg_index(tc);
+                  inc_arg_index(tc); inc_arg_index(tc); rewind_arg_index(tc, ai);
+                  struct method_cache *mc = alloc_method_cache();
+                  NODE *eqq;
+                  if (subject) {
+                      NODE *staged_lhs = cv;
+                      NODE *staged_rhs = ALLOC_node_lvar_get(slot);
+                      NODE *seq_arg = ALLOC_node_lvar_set(ai+1, staged_rhs);
+                      eqq = ALLOC_node_seq(seq_arg, ALLOC_node_method_call(staged_lhs, korb_intern("==="), 1, ai, mc));
+                  } else {
+                      /* case without subject — when cond is a boolean */
+                      eqq = cv;
+                  }
+                  cond_chain = cond_chain ? ALLOC_node_or(cond_chain, eqq) : eqq;
+              }
+              chain = ALLOC_node_if(cond_chain ? cond_chain : ALLOC_node_true(), body, chain);
+          }
+          rewind_arg_index(tc, slot);
+          return prep ? ALLOC_node_seq(prep, chain) : chain;
+      }
+
+      case PM_WHEN_NODE: {
+          /* should be handled inside PM_CASE_NODE */
+          return ALLOC_node_nil();
+      }
+
+      case PM_SPLAT_NODE: {
+          pm_splat_node_t *n = (pm_splat_node_t *)node;
+          /* Used in arg lists. We just transduce the inner expression and let
+           * the caller treat it as a splat (parser tracks splats explicitly).
+           * Here just return the array expression. */
+          if (n->expression) return ALLOC_node_splat_to_ary(T(tc, n->expression));
+          return ALLOC_node_ary_new(0, 0);
+      }
+
+      case PM_MULTI_WRITE_NODE: {
+          pm_multi_write_node_t *n = (pm_multi_write_node_t *)node;
+          NODE *rhs = T(tc, n->value);
+          /* convert rhs to array if not already */
+          uint32_t tmp_slot = inc_arg_index(tc);
+          NODE *prep = ALLOC_node_lvar_set(tmp_slot, ALLOC_node_splat_to_ary(rhs));
+          NODE *chain = prep;
+          /* lefts: each gets ary[i] */
+          uint32_t i = 0;
+          for (i = 0; i < n->lefts.size; i++) {
+              pm_node_t *target = n->lefts.nodes[i];
+              NODE *get = ALLOC_node_ary_aget(ALLOC_node_lvar_get(tmp_slot), i);
+              NODE *assign = NULL;
+              if (PM_NODE_TYPE_P(target, PM_LOCAL_VARIABLE_TARGET_NODE)) {
+                  pm_local_variable_target_node_t *t = (pm_local_variable_target_node_t *)target;
+                  int slot = lvar_slot(tc, t->name, t->depth);
+                  if (slot < 0) slot = lvar_slot_any(tc, t->name);
+                  if (slot >= 0) assign = ALLOC_node_lvar_set(slot, get);
+              } else if (PM_NODE_TYPE_P(target, PM_INSTANCE_VARIABLE_TARGET_NODE)) {
+                  pm_instance_variable_target_node_t *t = (pm_instance_variable_target_node_t *)target;
+                  assign = ALLOC_node_ivar_set(intern_constant(tc->parser, t->name), get);
+              }
+              if (assign) chain = ALLOC_node_seq(chain, assign);
+          }
+          rewind_arg_index(tc, tmp_slot);
+          return chain;
+      }
+
+      case PM_INSTANCE_VARIABLE_OPERATOR_WRITE_NODE: {
+          pm_instance_variable_operator_write_node_t *n = (pm_instance_variable_operator_write_node_t *)node;
+          ID iv = intern_constant(tc->parser, n->name);
+          NODE *cur = ALLOC_node_ivar_get(iv);
+          NODE *rhs = T(tc, n->value);
+          NODE *combined = alloc_binop(tc, n->binary_operator, cur, rhs);
+          return ALLOC_node_ivar_set(iv, combined);
+      }
+      case PM_INSTANCE_VARIABLE_OR_WRITE_NODE: {
+          pm_instance_variable_or_write_node_t *n = (pm_instance_variable_or_write_node_t *)node;
+          ID iv = intern_constant(tc->parser, n->name);
+          NODE *cur = ALLOC_node_ivar_get(iv);
+          NODE *rhs = T(tc, n->value);
+          /* @x ||= rhs  ⇒  @x || (@x = rhs) */
+          return ALLOC_node_or(cur, ALLOC_node_ivar_set(iv, rhs));
+      }
+      case PM_INSTANCE_VARIABLE_AND_WRITE_NODE: {
+          pm_instance_variable_and_write_node_t *n = (pm_instance_variable_and_write_node_t *)node;
+          ID iv = intern_constant(tc->parser, n->name);
+          NODE *cur = ALLOC_node_ivar_get(iv);
+          NODE *rhs = T(tc, n->value);
+          return ALLOC_node_and(cur, ALLOC_node_ivar_set(iv, rhs));
+      }
+
+      case PM_LOCAL_VARIABLE_OR_WRITE_NODE: {
+          pm_local_variable_or_write_node_t *n = (pm_local_variable_or_write_node_t *)node;
+          int slot = lvar_slot(tc, n->name, n->depth);
+          if (slot < 0) slot = lvar_slot_any(tc, n->name);
+          NODE *cur = ALLOC_node_lvar_get(slot);
+          return ALLOC_node_or(cur, ALLOC_node_lvar_set(slot, T(tc, n->value)));
+      }
+      case PM_LOCAL_VARIABLE_AND_WRITE_NODE: {
+          pm_local_variable_and_write_node_t *n = (pm_local_variable_and_write_node_t *)node;
+          int slot = lvar_slot(tc, n->name, n->depth);
+          if (slot < 0) slot = lvar_slot_any(tc, n->name);
+          NODE *cur = ALLOC_node_lvar_get(slot);
+          return ALLOC_node_and(cur, ALLOC_node_lvar_set(slot, T(tc, n->value)));
+      }
+
+      case PM_GLOBAL_VARIABLE_OR_WRITE_NODE: {
+          pm_global_variable_or_write_node_t *n = (pm_global_variable_or_write_node_t *)node;
+          ID name = intern_constant(tc->parser, n->name);
+          return ALLOC_node_or(ALLOC_node_gvar_get(name),
+                               ALLOC_node_gvar_set(name, T(tc, n->value)));
+      }
+
+      case PM_CONSTANT_OR_WRITE_NODE: {
+          pm_constant_or_write_node_t *n = (pm_constant_or_write_node_t *)node;
+          ID name = intern_constant(tc->parser, n->name);
+          return ALLOC_node_or(ALLOC_node_const_get(name),
+                               ALLOC_node_const_set(name, T(tc, n->value)));
+      }
+
+      case PM_KEYWORD_HASH_NODE: {
+          pm_keyword_hash_node_t *n = (pm_keyword_hash_node_t *)node;
+          /* treat as a regular hash */
+          return build_container(tc, &n->elements, false, true, false);
+      }
+
+      case PM_DEFINED_NODE: {
+          pm_defined_node_t *n = (pm_defined_node_t *)node;
+          /* simplified: just check by trying to evaluate; for lvar/ivar/const we
+           * can be smarter, but this is a quick stub */
+          (void)n;
+          return ALLOC_node_str_lit("expression", 10);
+      }
+
+      case PM_SUPER_NODE: {
+          pm_super_node_t *n = (pm_super_node_t *)node;
+          uint32_t arg_idx = arg_index(tc);
+          uint32_t cnt = 0;
+          NODE *seq = NULL;
+          if (n->arguments) {
+              cnt = (uint32_t)n->arguments->arguments.size;
+              for (uint32_t i = 0; i < cnt; i++) {
+                  NODE *a = T(tc, n->arguments->arguments.nodes[i]);
+                  NODE *st = ALLOC_node_lvar_set(inc_arg_index(tc), a);
+                  seq = seq ? ALLOC_node_seq(seq, st) : st;
+              }
+          }
+          NODE *sup = ALLOC_node_super(cnt, arg_idx);
+          rewind_arg_index(tc, arg_idx);
+          return seq ? ALLOC_node_seq(seq, sup) : sup;
+      }
+      case PM_FORWARDING_SUPER_NODE: {
+          /* zero-arg super (no parens) — pass current method's args */
+          return ALLOC_node_super_forward();
+      }
+
+      case PM_NUMBERED_REFERENCE_READ_NODE:
+      case PM_BACK_REFERENCE_READ_NODE:
+        return ALLOC_node_nil();
+
+      case PM_X_STRING_NODE:
+      case PM_INTERPOLATED_X_STRING_NODE: {
+          /* shell exec — stub */
+          return ALLOC_node_str_lit("", 0);
+      }
+
+      case PM_REGULAR_EXPRESSION_NODE: {
+          /* stub: return string for now */
+          pm_regular_expression_node_t *n = (pm_regular_expression_node_t *)node;
+          long len = (long)pm_string_length(&n->unescaped);
+          const char *src = (const char *)pm_string_source(&n->unescaped);
+          char *buf = korb_xmalloc_atomic(len + 1);
+          memcpy(buf, src, len); buf[len] = 0;
+          return ALLOC_node_str_lit(buf, (uint32_t)len);
+      }
+
+      case PM_INTERPOLATED_SYMBOL_NODE: {
+          pm_interpolated_symbol_node_t *n = (pm_interpolated_symbol_node_t *)node;
+          NODE *str = build_container(tc, &n->parts, false, false, true);
+          return ALLOC_node_str_to_sym(str);
+      }
+
+      case PM_BLOCK_ARGUMENT_NODE: {
+          /* &expr — used at call site to convert to block; handled at callsite */
+          pm_block_argument_node_t *n = (pm_block_argument_node_t *)node;
+          if (n->expression) return T(tc, n->expression);
+          return ALLOC_node_nil();
+      }
+
+      case PM_RESCUE_MODIFIER_NODE: {
+          pm_rescue_modifier_node_t *n = (pm_rescue_modifier_node_t *)node;
+          /* expr rescue rescue_expr */
+          uint32_t exc_slot = inc_arg_index(tc);
+          NODE *body = T(tc, n->expression);
+          NODE *rescue_body = T(tc, n->rescue_expression);
+          rewind_arg_index(tc, exc_slot);
+          return ALLOC_node_rescue(body, rescue_body, exc_slot);
+      }
+
+      case PM_CALL_OPERATOR_WRITE_NODE: {
+          /* a.b op= v  ⇒  a.b=(a.b op v) */
+          pm_call_operator_write_node_t *n = (pm_call_operator_write_node_t *)node;
+          NODE *recv = T(tc, n->receiver);
+          NODE *recv2 = T(tc, n->receiver);
+          ID rname = intern_constant(tc->parser, n->read_name);
+          ID wname = intern_constant(tc->parser, n->write_name);
+          uint32_t ai = arg_index(tc);
+          inc_arg_index(tc); inc_arg_index(tc); rewind_arg_index(tc, ai);
+          struct method_cache *mc = alloc_method_cache();
+          NODE *cur = ALLOC_node_method_call(recv, rname, 0, ai, mc);
+          NODE *rhs = T(tc, n->value);
+          NODE *combined = alloc_binop(tc, n->binary_operator, cur, rhs);
+          /* call writer with combined */
+          NODE *st = ALLOC_node_lvar_set(ai, combined);
+          struct method_cache *mc2 = alloc_method_cache();
+          NODE *call = ALLOC_node_method_call(recv2, wname, 1, ai, mc2);
+          rewind_arg_index(tc, ai);
+          return ALLOC_node_seq(st, call);
+      }
+      case PM_CALL_OR_WRITE_NODE: {
+          pm_call_or_write_node_t *n = (pm_call_or_write_node_t *)node;
+          NODE *recv = T(tc, n->receiver);
+          NODE *recv2 = T(tc, n->receiver);
+          ID rname = intern_constant(tc->parser, n->read_name);
+          ID wname = intern_constant(tc->parser, n->write_name);
+          uint32_t ai = arg_index(tc);
+          inc_arg_index(tc); inc_arg_index(tc); rewind_arg_index(tc, ai);
+          struct method_cache *mc = alloc_method_cache();
+          NODE *cur = ALLOC_node_method_call(recv, rname, 0, ai, mc);
+          NODE *rhs = T(tc, n->value);
+          struct method_cache *mc2 = alloc_method_cache();
+          NODE *st = ALLOC_node_lvar_set(ai, rhs);
+          NODE *call = ALLOC_node_method_call(recv2, wname, 1, ai, mc2);
+          rewind_arg_index(tc, ai);
+          return ALLOC_node_or(cur, ALLOC_node_seq(st, call));
+      }
+      case PM_INDEX_OR_WRITE_NODE: {
+          pm_index_or_write_node_t *n = (pm_index_or_write_node_t *)node;
+          /* a[i] ||= v ⇒ a[i] || a[i] = v */
+          if (!n->arguments || n->arguments->arguments.size != 1) return ALLOC_node_nil();
+          uint32_t ai = arg_index(tc);
+          inc_arg_index(tc); inc_arg_index(tc); inc_arg_index(tc); rewind_arg_index(tc, ai);
+          NODE *recv = T(tc, n->receiver);
+          NODE *idx = T(tc, n->arguments->arguments.nodes[0]);
+          NODE *cur = ALLOC_node_aref(recv, idx, ai);
+          NODE *recv2 = T(tc, n->receiver);
+          NODE *idx2 = T(tc, n->arguments->arguments.nodes[0]);
+          NODE *rhs = T(tc, n->value);
+          NODE *set = ALLOC_node_aset(recv2, idx2, rhs, ai);
+          return ALLOC_node_or(cur, set);
+      }
+      case PM_INDEX_AND_WRITE_NODE: {
+          pm_index_and_write_node_t *n = (pm_index_and_write_node_t *)node;
+          if (!n->arguments || n->arguments->arguments.size != 1) return ALLOC_node_nil();
+          uint32_t ai = arg_index(tc);
+          inc_arg_index(tc); inc_arg_index(tc); inc_arg_index(tc); rewind_arg_index(tc, ai);
+          NODE *recv = T(tc, n->receiver);
+          NODE *idx = T(tc, n->arguments->arguments.nodes[0]);
+          NODE *cur = ALLOC_node_aref(recv, idx, ai);
+          NODE *recv2 = T(tc, n->receiver);
+          NODE *idx2 = T(tc, n->arguments->arguments.nodes[0]);
+          NODE *rhs = T(tc, n->value);
+          NODE *set = ALLOC_node_aset(recv2, idx2, rhs, ai);
+          return ALLOC_node_and(cur, set);
+      }
+      case PM_SOURCE_FILE_NODE: {
+          /* __FILE__ */
+          return ALLOC_node_str_lit(
+              tc->parser->filepath.source ? (const char *)tc->parser->filepath.source : "(unknown)",
+              (uint32_t)(tc->parser->filepath.length));
+      }
+      case PM_SOURCE_LINE_NODE: {
+          return ALLOC_node_num(0);
+      }
+      case PM_SOURCE_ENCODING_NODE: {
+          return ALLOC_node_str_lit("UTF-8", 5);
+      }
+      case PM_INTERPOLATED_REGULAR_EXPRESSION_NODE: {
+          /* stub — return string */
+          pm_interpolated_regular_expression_node_t *n = (pm_interpolated_regular_expression_node_t *)node;
+          return build_container(tc, &n->parts, false, false, true);
+      }
+      case PM_INDEX_TARGET_NODE: {
+          /* used in multi-assign: target shape, transduce as aset later */
+          return ALLOC_node_nil();
+      }
+
+      case PM_FOR_NODE: {
+          /* for x in coll; body; end ⇒ coll.each {|x| body} */
+          pm_for_node_t *n = (pm_for_node_t *)node;
+          /* Build a synthetic call with a block.  Simplified: only LocalTarget. */
+          (void)n;
+          fprintf(stderr, "[koruby] PM_FOR_NODE not yet supported\n");
+          return ALLOC_node_nil();
       }
 
       default:
