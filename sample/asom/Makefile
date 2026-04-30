@@ -91,19 +91,18 @@ bench-setup-sompp:
 		cmake .. -DUSE_TAGGING=true -DCMAKE_BUILD_TYPE=Release
 	$(MAKE) -C SOMpp/build CCACHE_DISABLE=1 -j
 
-# TruffleSOM: needs JAVA_HOME pointing at GraalVM CE 21+. mx (graalvm
-# build tool) is bundled as a submodule under sample/asom/mx. The first
-# run downloads several hundred MB of Maven deps and compiles the
-# Truffle-based interpreter; subsequent rebuilds are fast.
+# TruffleSOM: uses the bundled mx build tool (sample/asom/mx submodule).
+# `./som --setup labsjdk` downloads the JVMCI-enabled labsjdk under
+# ~/.mx/jdks/. `mx --env libgraal build` clones graal, compiles
+# Truffle, and produces the libgraal native image — `./som` defaults
+# to libgraal usage so without it the binary errors out.
+# First run downloads several hundred MB of Maven deps + labsjdk +
+# graal source; subsequent rebuilds are fast.
 bench-setup-truffle:
-	@if [ -z "$$JAVA_HOME" ]; then \
-		echo "ERROR: JAVA_HOME unset — point it at a GraalVM CE 21+ install"; \
-		echo "       (https://www.graalvm.org/downloads/)"; \
-		exit 1; \
-	fi
 	git submodule update --init --recursive TruffleSOM
 	git submodule update --init --recursive mx
-	cd TruffleSOM && PATH=$$PWD/../mx:$$PATH JVMCI_VERSION_CHECK=ignore mx build
+	cd TruffleSOM && PATH=$$PWD/../mx:$$PATH ./som --setup labsjdk
+	cd TruffleSOM && PATH=$$PWD/../mx:$$PATH mx --env libgraal build
 	@echo
 	@echo "TruffleSOM ready: ./TruffleSOM/som"
 
