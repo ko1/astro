@@ -45,6 +45,29 @@ GMP-backed LargeInteger](done.md#gmp-backed-largeintegerbignum) 参照）。
 
 ## 性能改善
 
+### Truffle warm peak とのギャップを埋める優先 4 項 (perf.md cost-model 参照)
+
+[perf.md の Sieve cost-model 解析](perf.md#truffle-warm-peak-との差を埋める道筋--sieve-cost-model)
+で示したとおり、現在 asom-aot は per-iter ~13 命令 / Truffle は ~3 命令。
+4 つの最適化で **interp 比 10×、Truffle 比 2×** まで詰まる見込み:
+
+- [ ] **(1) inline-frame locals の C local 化 (1.5-2× 想定)** — `whiletrue_pool`
+      / `to_do_pool` / `iftrue_pool` / `and_pool` の inline body について、
+      escape しない判定された branch では SD shard 関数の C ローカル変数として
+      宣言、`frame->locals[slot]` 経由を消す。castro の VLA frame と同じ知見。
+- [ ] **(2) PG-driven shape guard hoisting (1.3-1.4×)** — PG warmup で型安定
+      が観測された node について、SD shard を `entry shape guard + 内部
+      guard なし hot path + miss で generalized SD に切替` 構造で emit。
+      `hopt index` スタブ ([§PG profile-aware ハッシュ](#pg-profile-aware-ハッシュ-hopt))
+      に型安定性 metadata を載せて使う。
+- [ ] **(3) 範囲解析 → bounds check elimination (1.1×)** — AST PE 時に
+      range propagation pass を入れ、`whileTrue:` の cond と array index の
+      関係から bounds 消去。
+- [ ] **(4) 範囲解析 → overflow check elimination (1.05×)** — 上の延長で
+      `__builtin_*_overflow` を pure 演算に。
+
+(1)(2) が大半を稼ぐので先、(3)(4) は range analysis pass が要るので後。
+
 ### 型特化ノード — AOT を効かせる主要施策 ✓ (Integer + Array)
 
 **実装済み (2026-04-29)**:

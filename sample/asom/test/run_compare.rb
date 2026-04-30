@@ -32,12 +32,18 @@
 # a column for the resulting JIT binary.
 #
 # Usage:
-#   ruby run_compare.rb [ITERS]    # default 50
+#   ruby run_compare.rb [ITERS]    # default 5
+#
+# Each trial runs <ITERS> outer iterations within a single engine
+# process. parse_inner drops the first half of those and averages the
+# rest — so JIT-bearing engines (Truffle) reach warm peak before we
+# start sampling. ITERS=5 → drop 2, average 3 (covers Truffle's
+# typical 2-3 outer-iter warmup on AWFY).
 
 require 'fileutils'
 require 'tempfile'
 
-ITERS = (ARGV[0] || '1').to_i
+ITERS = (ARGV[0] || '5').to_i
 
 ASOM_DIR        = File.expand_path('..', __dir__)
 SOMPP_DIR       = ENV.fetch('SOMPP_DIR',      "#{ASOM_DIR}/SOMpp")
@@ -89,20 +95,27 @@ COLUMNS = [
     cmd: ->(b, it, inn) { %(cd '#{TRUFFLESOM_DIR}' && JVMCI_VERSION_CHECK=ignore PATH='#{MX_DIR}':$PATH ./som -cp 'Smalltalk:Examples/Benchmarks' Examples/Benchmarks/BenchmarkHarness.som '#{b}' #{it} #{inn}) } },
 ]
 
-# Parse the engine's self-reported `system ticks` runtime out of stdout.
-# Returns seconds (float) or nil if no recognisable line was found.
+# Parse the engine's per-iter timings out of stdout, drop the warmup
+# half, and return the mean of the remaining (warm) iterations in
+# seconds. Returns nil if no recognisable line was found.
 #
-# SOM-st BenchmarkHarness.som prints per-outer-iter:
-#   "<bench>: iterations=1 runtime: <Y>us"   (one line per outer iter)
+# Both asom Bench.som and SOM-st BenchmarkHarness.som print per-outer-
+# iter lines like:
+#   "<bench>: iterations=1 runtime: <Y>us"   (one per outer iter)
+# followed by a summary:
 #   "<bench>: iterations=<N> average: <X>us total: <Y>us"
-# asom Bench.som prints once at the end:
-#   "<bench>: iterations=<N> runtime: <Y>us" (Y = whole run total)
 #
-# Prefer the "total: Yus" form when present (SOM-st across all outer
-# iters); otherwise fall back to the asom-shape "runtime: Yus" line.
-# Order matters — without this, ITERS>1 would read SOM-st's first-iter
-# time against asom's full total and SOM-st would look ITERS× faster.
+# We collect the per-iter values, drop the first floor(N/2) (Truffle
+# typically needs 2-3 outer iters to reach warm peak; SOM++/asom are
+# warmup-irrelevant so dropping iters is harmless to them). With the
+# default ITERS=5 we drop 2 and average the last 3.
 def parse_inner(text)
+  per = text.scan(/iterations=1 runtime: (\d+)us/).map { |m| m[0].to_i }
+  if per.size >= 2
+    warm = per.drop(per.size / 2)
+    return (warm.sum.to_f / warm.size) / 1e6
+  end
+  # Single-iter run: fall back to the summary "total" line.
   if text =~ /average: \d+us total: (\d+)us/
     return $1.to_i / 1e6
   end

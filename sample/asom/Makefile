@@ -56,15 +56,19 @@ testsuite: asom
 		./asom -cp $(TESTSUITE_CP) TestHarness $$t 2>&1 | tail -5; \
 	done
 
-ITERS ?= 1
+ITERS ?= 5
 BENCH ?= Sieve
 
 # Cross-engine AreWeFastYet comparison: asom (interp/aot/pg) vs SOM++,
 # TruffleSOM. Prints two tables — inner-work (engine `system ticks`,
-# excludes startup) and wall-clock (full process). Each cell is
-# best-of-3. INNER iterations per bench are tuned in run_compare.rb so
-# one outer fills ~1 s on asom-interp; ITERS multiplies that for longer
-# runs (default 1 ⇒ sustained ~1 s, ITERS=5 ⇒ ~5 s per cell).
+# excludes startup; warmup half discarded so JIT-bearing engines reach
+# warm peak) and wall-clock (full process). Each cell is best-of-3
+# trials × ITERS outers per trial; parse_inner drops the first
+# floor(ITERS/2) iters and averages the rest — Truffle typically needs
+# 2-3 outer-iter warmup on AWFY. INNER iterations per bench are tuned
+# in run_compare.rb so one outer fills ~1 s on asom-interp; default
+# ITERS=5 ⇒ ~5 s per trial, ~75 s per bench, ~15 min for the full
+# matrix. ITERS=10 for tighter warm-peak measurement.
 # Reference engines live in this directory as submodules
 # (sample/asom/SOMpp, sample/asom/TruffleSOM, sample/asom/mx). Run
 # `make bench-setup` once to init + build them.

@@ -19,16 +19,28 @@ Bench = (
     )
 
     runBench = (
-        | start end b result total |
+        | b total iterStart iterEnd iterTotal |
+        "Per-iter print mirrors SOM-st BenchmarkHarness output. Each
+         outer iteration prints `iterations=1 runtime: Xus` so the
+         comparison harness can parse iter-by-iter and drop warmup."
         b := cls new.
-        start := system ticks.
-        innerIters > 0
-            ifTrue:  [ iters timesRepeat: [ result := b innerBenchmarkLoop: innerIters ] ]
-            ifFalse: [ iters timesRepeat: [ result := b benchmark. b verifyResult: result ] ].
-        end := system ticks.
-        total := end - start.
+        total := 0.
+        iters timesRepeat: [
+            iterStart := system ticks.
+            innerIters > 0
+                ifTrue:  [ b innerBenchmarkLoop: innerIters ]
+                ifFalse: [ b verifyResult: b benchmark ].
+            iterEnd := system ticks.
+            iterTotal := iterEnd - iterStart.
+            total := total + iterTotal.
+            system print: name. system print: ': iterations=1 runtime: '.
+            system print: iterTotal. system println: 'us'.
+        ].
+        "Summary line in SOM-st format so parse_inner can still pick
+         up `total: Yus` for engines that don't emit per-iter."
         system print: name. system print: ': iterations='. system print: iters.
-        system print: ' runtime: '. system print: total. system println: 'us'.
+        system print: ' average: '. system print: (total / iters).
+        system print: 'us total: '. system print: total. system println: 'us'.
     )
 
     "Default entry point: Sieve x 10."
