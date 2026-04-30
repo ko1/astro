@@ -366,13 +366,48 @@ node_send1_dblplus(...) {
 | モード | Mandelbrot 前 | Mandelbrot 後 | 備考 |
 |---|---|---|---|
 | **interp (`--plain`)** | 52 ms | 46-49 ms | type-feedback で初回呼び出しから dbl_* に rewrite |
-| **PG (`-p`)** | warmup 中に rewrite → bake で dbl_* が SD として焼かれる | （別件で PG mode が遅く、要調査） |  |
+| **PG (`-p`)** | 45 ms | 28 ms | warmup 中に rewrite → bake で dbl_* が SD として焼かれる（[次節](#pg-mode-で-cold-entry-も-aot-bake-する) で修正後の数字） |
 | **AOT (`-c`)** | 33 ms | 33 ms（変化なし） | parser-time int_* が baked、SD-baked node の runtime swap は構造的に効かない |
 
 AOT モードで dbl_* の効果を出すには parser-time の syntactic hint
 （double リテラルが片方にある等）か、AOT bake 前に warmup pass を
 入れる構造変更が要る。**PG mode が型特化 AOT の正規パス** で、Mandelbrot
-の AOT-fast を狙うなら PG の挙動を整える方が筋がいい（保留）。
+の AOT-fast を狙うなら PG の挙動を整えるのが筋がいい（次節で修正）。
+
+### PG mode で cold entry も AOT bake する
+
+PG bake (`-p`) は本来 hot entry のみ profile-aware (`PGSD_<Hopt>.c`) ま
+たは plain (`SD_<Horg>.c`) で焼くが、`--pg-threshold` 未満の cold entry
+は **bake せず interp dispatcher のまま** にしていた。Mandelbrot の
+`Bench Mandelbrot 5 350` warmup で hot 判定された entry は 5 個、残り 135
+は cold で interp。SD chain が cold 境界で途切れるたびに interp 経由に落ち、
+**PG が AOT より 1.6× 遅かった**（45ms vs 28ms）。
+
+修正: cold entry も `cs_compile_one(body, label, NULL)` で plain AOT SD と
+して焼く。これで全 entry が SD-dispatched になり、SD chain が連続。hot は
+従来通り `PGSD_<Hopt>.c` で profile-aware bake。
+
+効果（`make bench`、ITERS=1、best of 3）:
+
+| ベンチ | AOT (`-c`) | PG (`-p`) 修正前 | PG (`-p`) 修正後 |
+|---|---|---|---|
+| Mandelbrot | 0.028 | 0.045 | **0.029** |
+| Bounce | 0.430 | 0.281 | **0.238** |
+| TreeSort | 0.400 | 0.385 | **0.327** |
+| BubbleSort | 0.234 | 0.490 | **0.232** |
+
+特に **Bounce** で AOT 比 +45% 改善（0.430s → 0.238s）。理由は:
+
+1. Ball オブジェクトの field アクセスが多く、parser-time の `node_send1`
+   は Double operand を見て `node_send1_intplus` に decay
+   （AOT bake で int_* が SD として固定）
+2. PG warmup で `node_send1_dblplus` 等に swap → 2 回目 run で hot path が
+   flonum fast path、`asom_double_new` も alloc-free
+3. 全 cold entry も SD-baked なので chain 連続、hybrid dispatch が消える
+
+**asom-pg は 11/12 ベンチで TruffleSOM (warm peak) に勝つ**（Towers のみ
+1.16× 負け）。AOT で Truffle に負けていた Bounce / TreeSort / BubbleSort
+が PG mode で逆転。
 
 ### `to:do:` / `to:by:do:` / `timesRepeat:` インライン化
 

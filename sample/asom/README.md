@@ -84,39 +84,57 @@ asom (interp / aot / pg) を、同じ `SOM-st/SOM/Examples/Benchmarks/<Name>.som
 ```
 benchmark    |    interp |       aot |        pg |     SOM++ |   Truffle
 ------------------------------------------------------------------------
-Sieve        |     0.416 |     0.135 |     0.145 |     2.778 |     0.168
-Permute      |     0.470 |     0.355 |     0.381 |     1.163 |     0.394
-Towers       |     0.426 |     0.333 |     0.325 |     0.797 |     0.292
-Queens       |     0.448 |     0.360 |     0.358 |     3.090 |     0.447
-List         |     0.437 |     0.354 |     0.353 |     1.550 |     0.457
-Storage      |     0.490 |     0.431 |     0.431 |     1.383 |     0.469
-Bounce       |     0.478 |     0.445 |     0.281 |     1.624 |     0.297
-BubbleSort   |     0.506 |     0.261 |     0.490 |     1.386 |     0.241
-QuickSort    |     0.425 |     0.133 |     0.146 |     1.391 |     0.347
-TreeSort     |     0.453 |     0.874 |     0.385 |     1.254 |     0.350
-Fannkuch     |     0.535 |     0.219 |     0.212 |     1.731 |     0.267
-Mandelbrot   |     0.052 |     0.029 |     0.050 |     1.379 |     0.448
+Sieve        |     0.394 |     0.132 |     0.137 |     2.688 |     0.161
+Permute      |     0.458 |     0.343 |     0.342 |     1.168 |     0.364
+Towers       |     0.409 |     0.321 |     0.326 |     0.795 |     0.280
+Queens       |     0.410 |     0.359 |     0.349 |     2.894 |     0.433
+List         |     0.407 |     0.318 |     0.331 |     1.393 |     0.437
+Storage      |     0.441 |     0.384 |     0.377 |     1.230 |     0.467
+Bounce       |     0.461 |     0.430 |     0.238 |     1.435 |     0.286
+BubbleSort   |     0.463 |     0.234 |     0.232 |     1.249 |     0.229
+QuickSort    |     0.444 |     0.135 |     0.134 |     1.353 |     0.307
+TreeSort     |     0.413 |     0.400 |     0.327 |     1.032 |     0.308
+Fannkuch     |     0.464 |     0.191 |     0.181 |     1.369 |     0.237
+Mandelbrot   |     0.049 |     0.028 |     0.029 |     1.318 |     0.452
 ```
 
 #### take-aways
 
-**asom-aot は 12 ベンチすべてで SOM++ より速い**:
+**asom-aot / asom-pg は 12 ベンチすべてで SOM++ より速い**:
 
-- Mandelbrot **48×**（`flonum tagging` で中間 Double が VALUE 即値になり alloc 完全消去）
-- Sieve **20×**、QuickSort **10×**、Queens **9×**、Fannkuch / BubbleSort
-  / List 4-5×、Permute / Bounce / Storage 3×、Towers / TreeSort 1.5-2.5×
+- Mandelbrot **47×**（`flonum tagging` で中間 Double が VALUE 即値になり alloc 完全消去）
+- Sieve **20×**、QuickSort **10×**、Queens **8×**、Fannkuch / BubbleSort
+  / List 4-7×、Permute / Bounce / Storage 3×、Towers / TreeSort 2-3×
 
-**asom-aot は 8/12 で TruffleSOM (warm peak) にも勝つ**:
+**asom-pg は 11/12 で TruffleSOM (warm peak) にも勝つ**（Towers のみ Truffle）:
 
-- 勝ち: Sieve / Permute / Queens / List / Storage / QuickSort /
-  Fannkuch / Mandelbrot
-- 負け: Towers / Bounce / BubbleSort / TreeSort（Ball/Tree の
-  field-level Double box が残るので shape-based field unbox が次の手；
-  Towers は再帰メソッド inline / call-graph PE）
+| ベンチ | asom-pg | Truffle | 勝率 |
+|---|---|---|---|
+| Sieve | 0.137 | 0.161 | asom 1.18× |
+| Permute | 0.342 | 0.364 | asom 1.06× |
+| Towers | 0.326 | 0.280 | **Truffle 1.16×** |
+| Queens | 0.349 | 0.433 | asom 1.24× |
+| List | 0.331 | 0.437 | asom 1.32× |
+| Storage | 0.377 | 0.467 | asom 1.24× |
+| Bounce | **0.238** | 0.286 | asom 1.20× |
+| BubbleSort | 0.232 | 0.229 | tie |
+| QuickSort | 0.134 | 0.307 | asom 2.29× |
+| TreeSort | **0.327** | 0.308 | tie (Truffle 1.06×) |
+| Fannkuch | 0.181 | 0.237 | asom 1.31× |
+| Mandelbrot | 0.029 | 0.452 | **asom 15.6×** |
 
-特に **Mandelbrot** が劇的: 中間 Double が `asom_double_new` を呼ばずに
-レジスタを流れるため、`dbl_times / asom_double_new / dbl_plus / dbl_gt`
-合計 ~16% の profile が完全消去。Truffle 比 **15× 速い**。
+`make bench-aot` (`-c`) は parser-time で baked された SD chain で全エントリ
+が SD-dispatched、Mandelbrot のように flonum tagging で alloc が消えるパターン
+で圧倒的（48×）。
+
+`make bench-pg` (`-p`) は warmup で集めた型情報を AST に焼き直してから bake
+するので、**parser-time に決め打ちできない型特化**（特に Double 演算の
+`node_send1_dbl*` 系）が hot path に入る。 Bounce が AOT 比 +45%（0.430s →
+0.238s）、TreeSort も +18%（0.400s → 0.327s）と大きく改善し、Truffle の warm
+peak さえ抜く。
+
+特に **Mandelbrot** は flonum tagging 単独で `dbl_times / asom_double_new
+/ dbl_plus / dbl_gt` 合計 ~16% の profile を完全消去 → **Truffle 比 15.6×**。
 
 interp 単独でも SOM++ に勝つベンチが多い（Sieve/Queens で 4× 以上）。
 原因の積算:
@@ -145,18 +163,18 @@ interp 単独でも SOM++ に勝つベンチが多い（Sieve/Queens で 4× 以
 ```
 benchmark    |    interp |       aot |        pg |     SOM++ |   Truffle
 ------------------------------------------------------------------------
-Sieve        |     0.420 |     0.140 |     0.150 |     2.780 |     1.730
-Permute      |     0.490 |     0.380 |     0.400 |     1.160 |     2.010
-Towers       |     0.440 |     0.340 |     0.340 |     0.800 |     1.970
-Queens       |     0.450 |     0.360 |     0.360 |     3.090 |     2.160
-List         |     0.440 |     0.360 |     0.350 |     1.550 |     2.200
-Storage      |     0.520 |     0.460 |     0.450 |     1.380 |     2.220
-Bounce       |     0.480 |     0.450 |     0.280 |     1.620 |     2.050
-BubbleSort   |     0.510 |     0.260 |     0.490 |     1.390 |     1.870
-QuickSort    |     0.420 |     0.130 |     0.150 |     1.390 |     2.110
-TreeSort     |     0.460 |     0.890 |     0.390 |     1.260 |     2.210
-Fannkuch     |     0.540 |     0.220 |     0.220 |     1.740 |     1.970
-Mandelbrot   |     0.050 |     0.030 |     0.050 |     1.380 |     2.060
+Sieve        |     0.400 |     0.140 |     0.140 |     2.690 |     1.700
+Permute      |     0.470 |     0.360 |     0.360 |     1.170 |     1.900
+Towers       |     0.420 |     0.330 |     0.340 |     0.800 |     1.820
+Queens       |     0.410 |     0.360 |     0.350 |     2.890 |     1.990
+List         |     0.410 |     0.320 |     0.330 |     1.390 |     2.030
+Storage      |     0.460 |     0.410 |     0.400 |     1.230 |     2.070
+Bounce       |     0.460 |     0.430 |     0.240 |     1.440 |     1.860
+BubbleSort   |     0.460 |     0.240 |     0.230 |     1.250 |     1.800
+QuickSort    |     0.440 |     0.140 |     0.130 |     1.350 |     1.890
+TreeSort     |     0.420 |     0.410 |     0.330 |     1.030 |     1.930
+Fannkuch     |     0.470 |     0.200 |     0.190 |     1.370 |     1.850
+Mandelbrot   |     0.050 |     0.030 |     0.030 |     1.320 |     2.080
 ```
 
 - **TruffleSOM** は wall-clock でほぼ常に **1.5–2.2 秒の JVM bootstrap +
@@ -187,9 +205,12 @@ Mandelbrot   |     0.050 |     0.030 |     0.050 |     1.380 |     2.060
 - **GC 無し** (リーク)。bench は走り切るが long-running は危険
 - **Bignum 無し** (62-bit tagged で打ち止め — IntegerTest 5 失敗の要因)
 - **Shape-based field unbox 無し** (Ball/Tree の field レベル Double が
-  boxed のまま — Bounce で Truffle 比 1.5× 遅い主因)
-- **Call-graph PE 無し** (Towers / TreeSort の再帰メソッドが inline されない
-  — Truffle に負ける主因)
+  boxed のまま — `make bench-aot` 単独だと Bounce / TreeSort で Truffle
+  に負ける。`make bench-pg` で warmup 後の `node_send1_dbl*` 特化が
+  hot path に入って逆転するが、本来は parser-time / AOT bake 時にも
+  解決したい)
+- **Call-graph PE 無し** (Towers の再帰メソッドが inline されない —
+  PG mode でも Truffle に勝てない唯一のベンチ)
 - **`make compile`/JIT デモ未配線** (ASTro JIT は naruby のような L0/L1/L2 構成、asom は未連携)
 - **AreWeFastYet 残り**: Havlak / CD / Knapsack / PageRank
 
