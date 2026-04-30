@@ -40,9 +40,9 @@ require 'tempfile'
 ITERS = (ARGV[0] || '1').to_i
 
 ASOM_DIR        = File.expand_path('..', __dir__)
-SOMPP_DIR       = ENV.fetch('SOMPP_DIR',      '/tmp/sompp-ref')
-TRUFFLESOM_DIR  = ENV.fetch('TRUFFLESOM_DIR', '/tmp/trufflesom')
-MX_DIR          = ENV.fetch('MX_DIR',         '/tmp/mx')
+SOMPP_DIR       = ENV.fetch('SOMPP_DIR',      "#{ASOM_DIR}/SOMpp")
+TRUFFLESOM_DIR  = ENV.fetch('TRUFFLESOM_DIR', "#{ASOM_DIR}/TruffleSOM")
+MX_DIR          = ENV.fetch('MX_DIR',         "#{ASOM_DIR}/mx")
 
 BENCHES = %w[Sieve Permute Towers Queens List Storage
              Bounce BubbleSort QuickSort TreeSort
@@ -84,7 +84,7 @@ COLUMNS = [
   { key: :pg,     label: 'pg',
     cmd: ->(b, it, inn) { %(cd '#{ASOM_DIR}' && ./asom -cp 'SOM/Smalltalk:SOM/Examples/Benchmarks:test:.' Bench '#{b}' #{it} #{inn}) } },
   { key: :sompp,  label: 'SOM++',
-    cmd: ->(b, it, inn) { %(cd '#{SOMPP_DIR}' && ./SOM++ -cp 'Smalltalk:Examples/Benchmarks' Examples/Benchmarks/BenchmarkHarness.som '#{b}' #{it} #{inn}) } },
+    cmd: ->(b, it, inn) { %(cd '#{SOMPP_DIR}' && ./build/SOM++ -cp 'Smalltalk:Examples/Benchmarks' Examples/Benchmarks/BenchmarkHarness.som '#{b}' #{it} #{inn}) } },
   { key: :truf,   label: 'Truffle',
     cmd: ->(b, it, inn) { %(cd '#{TRUFFLESOM_DIR}' && JVMCI_VERSION_CHECK=ignore PATH='#{MX_DIR}':$PATH ./som -cp 'Smalltalk:Examples/Benchmarks' Examples/Benchmarks/BenchmarkHarness.som '#{b}' #{it} #{inn}) } },
 ]
