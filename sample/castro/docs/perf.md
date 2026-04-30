@@ -7,28 +7,42 @@ gcc -O0 を超え、tight inner loop では gcc -O3 を上回るところまで
 ベンチは `bench.rb`、`BENCH_RUNS=15` median、parse.rb 起動時間
 (~110ms) を除いた純粋な実行時間。
 
-## 最終ベンチ結果 (gcc -O0 と -O3 比較)
+## 最終ベンチ結果 (gcc -O0/-O1/-O3 比較)
 
-| bench | castro AOT cached | gcc -O0 | gcc -O3 | castro/-O3 |
-|---|---:|---:|---:|---:|
-| fib_big (fib 35)   |    **48** |   47 |   16 | 3.0× |
-| fib_d              |     **4** |    3 |    1 | 4.0× |
-| tak (18,12,6)      |     **2** |    0 |    0 | -- |
-| ackermann (3,8)    |    **12** |    8 |    1 | 12× |
-| loop_sum           | 🟢 **2** | 🔴 9 |    0 | 2× |
-| mandelbrot_count   |     **3** |    2 |    1 | 3× |
-| sieve              |     **8** |    8 |    2 | 4× |
-| nqueens            |    **69** |   31 |   14 | 4.9× |
-| quicksort          | 🟢**84** | 🔴 92|   23 | 3.6× |
-| crc32              | 🟢**14** |   46 |🔴 18 | **0.78×** |
-| matmul             |     **8** |    2 |    0 | -- |
+| bench | castro AOT cached | gcc -O0 | gcc -O1 | gcc -O3 | castro / -O1 |
+|---|---:|---:|---:|---:|---:|
+| fib_big (fib 35)   |    **47** |   46 |   42 |   15 | 1.12× |
+| fib_d              |     **4** |    3 |    2 |    1 | 2× |
+| tak (18,12,6)      |     **2** |    0 |    0 |    0 | -- |
+| ackermann (3,8)    |    **17** |    8 |    4 |    1 | 4× |
+| loop_sum           | 🟢 **6** | 🔴 8 |    0 |    0 | -- |
+| mandelbrot_count   |     **3** |    2 |    1 |    1 | 3× |
+| sieve              |    **11** |    7 |    3 |    2 | 3.7× |
+| nqueens            | 🟢**17** | 🔴 29|   15 |   12 | 1.13× |
+| quicksort          | 🟢**56** | 🔴 80|   20 |   20 | 2.8× |
+| crc32              | 🟢**20** |   46 |🟰 18 |   18 | **1.11×** |
+| matmul             |     **3** |    2 |    1 |    0 | 3× |
 
-🟢 / 🔴 は castro が勝っている / 負けている関係。
+🟢 / 🔴 は castro が gcc に勝っている / 負けている関係、🟰 はほぼタイ。
 
-**castro が gcc を上回るケース**:
-- `crc32` — castro 14ms vs gcc -O3 18ms (1.3× 速い)
-- `loop_sum` — castro 2ms vs gcc -O0 9ms (4.5× 速い)
-- `quicksort` — castro 84ms vs gcc -O0 92ms (1.1× 速い)
+**castro が gcc -O0 を超えるケース** (3件):
+- `loop_sum` — 6ms vs gcc -O0 8ms (1.3× 速い)
+- `nqueens` — 17ms vs gcc -O0 29ms (1.7× 速い)
+- `quicksort` — 56ms vs gcc -O0 80ms (1.4× 速い)
+
+**castro が gcc -O1 にほぼタイ**:
+- `crc32` — 20ms vs gcc -O1 18ms (1.11× だけ後ろ)
+
+**残ギャップが構造的なケース**:
+- `sieve` — 11 vs 3ms (3.7×)。inner mark loop は disasm 上 gcc -O1
+  と**完全同形** (3 命令 branchless、レジスタ保持) を達成済。残ギャップは
+  perf stat で見ると: cycles 4×、L1 loads **3×**、IPC 1.31 vs 3.94。
+  L1 miss rate は逆に低い (14% vs 26.6%) — 実物 sieve は 1.6MB
+  で最初から L1 越えてるので両者とも L2/L3 アクセスし、**castro が
+  3× 多くの memory operation を発行している**ことが本質。inner loop
+  自体は最適でも、outer mark loop の `i*i` 計算や count loop の
+  `prime[i]` read 等で SD chain 経由の load が散発的に gcc より多く出る。
+  詳細は §13。
 
 ## 採用した最適化 (時系列順、効果込み)
 
@@ -239,6 +253,162 @@ load で NULL のまま ALLOC、main.c の `call_patch_record` で
   の中で safe の call overhead 比率が想定より低かった模様。
 - 「機構を入れた」コミット。leaf 大量の benchmark 追加時に効く可能性は
   残してある。
+
+### 12. typed pointer による TBAA 改善
+
+`node_load_*` / `node_store_*` の実装を `VALUE *` 経由から
+typed pointer (`int64_t *` / `double *` / `void **`) 経由に切替。
+
+**前**:
+```c
+node_store_i(...) {
+    void *pv = UNWRAP(EVAL_ARG(c, p)).p;
+    int64_t vv = UNWRAP(EVAL_ARG(c, v)).i;
+    ((VALUE *)pv)->i = vv;
+}
+```
+
+**後**:
+```c
+node_store_i(...) {
+    int64_t *ip = (int64_t *)UNWRAP(EVAL_ARG(c, p)).p;
+    int64_t vv = UNWRAP(EVAL_ARG(c, v)).i;
+    *ip = vv;
+}
+```
+
+VALUE union 経由だと gcc の TBAA は他の VALUE * (= fp[]) と
+aliasing 可能性ありと判定してしまう。typed pointer 化すると
+strict-aliasing で「`int64_t *` への store は `VALUE *` の任意
+member とは alias しない」と判定でき、`prime[j] = 0` のような
+global store の後に `fp[2]` を再 load しなくて済むようになる
+ケースが増える。
+
+**効果**: quicksort 80 → 58ms (-27%)。sieve / loop_sum は変わらず
+(下記 §13 で別の理由で停滞)。
+
+### 13. caller-allocated stack VLA frame (wastro パターン採用)
+
+最大の構造変化。`node_call` / `node_call_static` が呼び出し時に
+**callee 用の frame を caller stack 上の VLA `VALUE F[local_cnt]`
+として確保**するよう変更。それまで callee の frame は呼び出し元の
+heap frame (`fp + arg_index`) を使い回していた。
+
+```c
+// 前: heap frame 流用
+node_call(... uint32_t func_idx, ...) {
+    NODE *body = c->func_bodies[func_idx];
+    RESULT r = (*body->head.dispatcher)(c, body, fp + arg_index);
+    return RESULT_OK(r.value);
+}
+
+// 後: 呼び出し時に stack VLA を確保
+node_call(... uint32_t func_idx, uint32_t local_cnt, ...) {
+    NODE *body = c->func_bodies[func_idx];
+    VALUE F[local_cnt];
+    for (i = 0; i < arg_count; i++) F[i] = fp[arg_index + i];
+    for (; i < local_cnt; i++) F[i].i = 0;
+    RESULT r = (*body->head.dispatcher)(c, body, F);
+    return RESULT_OK(r.value);
+}
+```
+
+これは wastro が前から使ってる pattern (wastro `node.def:1672`)。
+SD chain がフルで `static inline always_inline` になっている時、
+`&F` は escape しないので **gcc の SROA が F[i] を個別スカラに
+分解 → register に昇格** する。
+
+そのまま `VALUE F[local_cnt]` (VLA) だと gcc の SROA は VLA
+扱いを保守的にして部分的にしか走らないので、`SPECIALIZE_node_call` /
+`SPECIALIZE_node_call_static` の override で **`local_cnt` を baked
+literal として `VALUE F[6]` の形に展開**するようにした (override
+は castro_gen.rb)。固定サイズ配列だと SROA がフルで走り、loop
+induction variable まで register 化される。
+
+**実装**:
+- `local_cnt` を call ノードの operand に追加
+- parse.rb は post-pass で callee の `fn.max_local` を patch (compile
+  中は値が確定しないため)。`Func` クラスに `max_local` の高水位線
+  追跡を追加 (arg staging で `next_local` を一時的に bump するので、
+  bump 後の最大値が真のフレームサイズ)
+- main.c の SX loader が `(call FUNC_IDX nargs argidx local_cnt)` を
+  読む
+
+**効果** (sieve の inner mark loop disasm で確認):
+
+```
+# Before VLA:
+1290: movq $0, (%rcx,%rax,8)   ; prime[j] = 0
+1298: mov 0x10(%rdx),%rax       ; i = fp[2]      ← reload
+129c: add 0x18(%rdx),%rax       ; j_old = fp[3]  ← reload
+12a0: mov %rax, 0x18(%rdx)      ; fp[3] = j (new)
+12a4: cmp (%rdx),%rax            ; n = fp[0]      ← reload
+12a7: jl 1290
+
+# After VLA + literal-baked size (override):
+1170: movq $0, (%rsi,%rax,8)   ; prime[j] = 0
+1178: add %rcx, %rax              ; j += i  (i in %rcx register!)
+117b: cmp %rdi, %rax              ; j < n   (n in %rdi register!)
+117e: jl 1170
+```
+
+**5 命令 / 4 メモリ → 3 命令 / 0 メモリ**。`i` と `n` が完全に
+レジスタ化され、`j` も memory writeback が消えた (SROA + DSE)。
+これは gcc -O1 と完全に同形のコード。
+
+bench:
+- sieve: 13 → 11ms
+- quicksort: 73 → 55ms (-25%)
+- nqueens: 24 → 17ms (-29%)
+- crc32: 22 → 20ms (gcc -O1 とタイ)
+- loop_sum / nqueens / quicksort で gcc -O0 越え
+
+### 14. AVX-vectorized array fill helper
+
+parse.rb の peephole として
+```c
+for (int i = S; i < E; i++) array[i] = K;  // K は int 定数
+```
+を 1 つの `node_array_fill_i(base, S, E, K)` に畳み込み、`-O3 -O3
+__restrict__` で別途コンパイルされた `castro_fill_i` という外部
+ヘルパー関数を呼ぶ。gcc は単独関数の自動ベクトル化に強いので、
+AVX-256 の `movups` (2 int64 stores per inst) + 4× unroll に
+最適化される。
+
+inlined SD chain だと restrict 情報が保守化されてベクトル化が
+trigger しないが、外部関数化することで gcc の自動ベクトル化を
+発火させられる。
+
+sieve の `for (i = 0; i < n; i++) prime[i] = 1;` がターゲット。
+sieve は init phase が全体の ~25% なので体感は誤差レベル
+(11ms 維持) だが、機構自体は将来効くベンチマーク用に保存。
+
+### 15. 試したが効かなかった: count loop の branchless 化
+
+`if (prime[i]) count++;` の sieve count loop で gcc -O1 は
+`cmpl $1, ...; sbb $-1, %edx` の branchless 4 命令に
+最適化する。これを castro でも実現すべく parse.rb に
+`if (cond) lset N (add N K) else nop` → `lset N (add N
+(neq_i cond 0) * K)` の rewrite を peephole で入れた。
+
+結果: gcc が**完全に同じ sbb 形に最適化してくれる** (`cmpq $1,
+...; sbb $-1, %rcx` の 4 命令ループ)。期待どおりの命令列。
+
+**しかし bench は逆に遅くなった** (sieve 11 → 14ms、L1-fit case
+で 70 → 110ms)。
+
+**理由**: `cmpq mem` (L1/L2 load) → `sbb $-1, %rcx` の
+チェーンが毎 iter loop-carry で、`%rcx` が iter 間で読み書きされる。
+load latency が loop の臨界経路に乗る。
+
+branchy 版 (`if (...) inc count`) は sparse な prime 分布 (90%
+non-prime) で `count` 更新が稀 → loop carry が短い → OoO エンジンが
+iter N+1 の `cmpq` load を iter N 終了前に発行できる。
+
+教訓: **branchless は always 速いわけではない**。loop carry が
+重要なベンチでは sparse 分岐 + 良い branch predictor のほうが OoO
+を効かせやすい。disasm が gcc -O1 と完全同形でも、ベンチ実測でしか
+確認できないことがある。
 
 ### 9. framework のリダイレクト bug fix
 
