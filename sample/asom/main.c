@@ -198,15 +198,26 @@ main(int argc, char **argv)
     }
 
     // ----- PG-compile (-p): after a clean run, partition entries by
-    // dispatch_count and bake the hot ones. Cold entries stay
-    // interpreter-dispatched on the next run.
+    // dispatch_count. Hot entries get profile-aware (PGSD_<Hopt>) or
+    // plain AOT (SD_<Horg>) bakes; cold entries also get a plain AOT
+    // bake so the next run never falls back to the interp dispatcher
+    // path. Without the cold bake, mixed-temperature bodies (e.g. one
+    // hot inner loop + many cold helpers) ran the cold helpers via
+    // the interpreter and the SD chain broke at every cold boundary —
+    // the PG run came in slower than the equivalent --aot run.
     if (OPTION.pgc_at_exit && !OPTION.no_compiled_code) {
         uint32_t n;
         struct asom_entry *ents = asom_entries(&n);
         uint32_t hot = 0, cold = 0, pgc = 0, aot = 0;
         for (uint32_t k = 0; k < n; k++) {
             unsigned int dc = ents[k].body->head.dispatch_cnt;
-            if ((int)dc < OPTION.pg_threshold) { cold++; continue; }
+            if ((int)dc < OPTION.pg_threshold) {
+                // Cold: bake as plain AOT SD (no Hopt) so the next run
+                // sees an SD-chain over every entry.
+                cs_compile_one(ents[k].body, ents[k].label, NULL);
+                cold++;
+                continue;
+            }
             hot++;
             // Hopt vs Horg: when profile-aware hash equals structural hash
             // we just emit SD_<Horg>.c (no need for a separate PGSD_).
@@ -219,10 +230,10 @@ main(int argc, char **argv)
             }
         }
         if (OPTION.verbose) {
-            fprintf(stderr, "pgc bake: pgc=%u aot=%u cold(skipped)=%u of %u (threshold=%d)\n",
+            fprintf(stderr, "pgc bake: pgc=%u aot=%u cold(now-aot)=%u of %u (threshold=%d)\n",
                     pgc, aot, cold, n, OPTION.pg_threshold);
         }
-        if (hot > 0) {
+        if (hot > 0 || cold > 0) {
             if (OPTION.verbose) fprintf(stderr, "cs_build\n");
             astro_cs_build(NULL);
         }
