@@ -114,11 +114,16 @@ class CastroNodeDef < ASTroGen::NodeDef
           // accumulation.  matmul k-loop drops from 10 to 4
           // instructions; identical bit transfer for double / void*
           // args because of union storage.
+          // Zero-init of the trailing F slots was elided: parse.rb
+          // emits an explicit lset 0 for each declared local before
+          // its first read, so the slot is provably written before
+          // observation in valid C.  Skipping the init drops a
+          // vmovdqu zero-fill and vzeroupper from every recursive
+          // call site (ackermann SD: 508 -> 318 bytes text, no AVX
+          // setup per call).  Sole risk is non-conforming source
+          // that reads an uninit local — that's already UB upstream.
           for (uint32_t i = 0; i < arg_count; i++) {
               fprintf(fp, "    F[%u].i = fp[%u].i;\\n", i, arg_index + i);
-          }
-          for (uint32_t i = arg_count; i < local_cnt; i++) {
-              fprintf(fp, "    F[%u].i = 0;\\n", i);
           }
           // In valid C, BREAK / CONTINUE / GOTO are caught inside the
           // callee, RETURN is its normal exit — discard the callee's
@@ -181,14 +186,11 @@ class CastroNodeDef < ASTroGen::NodeDef
                   dispatcher_name);
           fprintf(fp, "    dispatch_info(c, n, false);\\n");
           fprintf(fp, "    VALUE F[%u];\\n", local_cnt);
-          // Same SRA-friendly scalar `.i` arg copy as in
-          // castro_build_call_specializer above — keeps F slots
-          // promotable so loop-invariant args reach SCEV / IVOPTS.
+          // Scalar `.i` arg copy + skipped zero-init for trailing
+          // slots, both for the same reasons as in
+          // castro_build_call_specializer above.
           for (uint32_t i = 0; i < arg_count; i++) {
               fprintf(fp, "    F[%u].i = fp[%u].i;\\n", i, arg_index + i);
-          }
-          for (uint32_t i = arg_count; i < local_cnt; i++) {
-              fprintf(fp, "    F[%u].i = 0;\\n", i);
           }
           fprintf(fp, "    RESULT v = %s(c, n->u.#{@name}.callee, F);\\n",
                   callee_disp);
