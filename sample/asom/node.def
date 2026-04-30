@@ -975,6 +975,22 @@ node_whilefalse_pool(CTX * restrict c, NODE * restrict n, NODE *cond_stmts, NODE
 #define ASOM_FITS_SMALLINT(out) \
     ((out) >= ASOM_INT_MIN && (out) <= ASOM_INT_MAX)
 
+// Cold path for node_send1_int* on guard miss (non-int operand or
+// overflow): swap_dispatcher to generic node_send1, then re-dispatch
+// via asom_send. Defined once in the main binary; SD shards see only
+// an extern declaration and emit a single call. NODE_SKIP_COLD elides
+// the body during SD compilation, keeping per-SD .text small.
+extern VALUE asom_send1_int_miss(CTX *c, NODE *n, VALUE r, VALUE a, const char *selector, struct asom_callcache *cc);
+#ifndef NODE_SKIP_COLD
+__attribute__((noinline,cold)) VALUE
+asom_send1_int_miss(CTX *c, NODE *n, VALUE r, VALUE a, const char *selector, struct asom_callcache *cc)
+{
+    if (!n->head.flags.is_specialized) swap_dispatcher(n, &kind_node_send1);
+    VALUE args[1] = { a };
+    return asom_send(c, r, selector, 1, args, cc);
+}
+#endif
+
 NODE_DEF @canonical=node_send1
 node_send1_intplus(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *arg0, const char *selector, struct asom_callcache *cc)
 {
@@ -987,9 +1003,7 @@ node_send1_intplus(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *arg0, 
             return ASOM_INT2VAL(out);
         }
     }
-    swap_dispatcher(n, &kind_node_send1);
-    VALUE args[1] = { a };
-    return asom_send(c, r, selector, 1, args, cc);
+    return asom_send1_int_miss(c, n, r, a, selector, cc);
 }
 
 NODE_DEF @canonical=node_send1
@@ -1004,9 +1018,7 @@ node_send1_intminus(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *arg0,
             return ASOM_INT2VAL(out);
         }
     }
-    swap_dispatcher(n, &kind_node_send1);
-    VALUE args[1] = { a };
-    return asom_send(c, r, selector, 1, args, cc);
+    return asom_send1_int_miss(c, n, r, a, selector, cc);
 }
 
 NODE_DEF @canonical=node_send1
@@ -1021,9 +1033,7 @@ node_send1_inttimes(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *arg0,
             return ASOM_INT2VAL(out);
         }
     }
-    swap_dispatcher(n, &kind_node_send1);
-    VALUE args[1] = { a };
-    return asom_send(c, r, selector, 1, args, cc);
+    return asom_send1_int_miss(c, n, r, a, selector, cc);
 }
 
 NODE_DEF @canonical=node_send1
@@ -1034,9 +1044,7 @@ node_send1_intlt(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *arg0, co
     if (__builtin_expect(ASOM_IS_INT(r) && ASOM_IS_INT(a), 1)) {
         return ASOM_VAL2INT(r) < ASOM_VAL2INT(a) ? c->val_true : c->val_false;
     }
-    swap_dispatcher(n, &kind_node_send1);
-    VALUE args[1] = { a };
-    return asom_send(c, r, selector, 1, args, cc);
+    return asom_send1_int_miss(c, n, r, a, selector, cc);
 }
 
 NODE_DEF @canonical=node_send1
@@ -1047,9 +1055,7 @@ node_send1_intgt(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *arg0, co
     if (__builtin_expect(ASOM_IS_INT(r) && ASOM_IS_INT(a), 1)) {
         return ASOM_VAL2INT(r) > ASOM_VAL2INT(a) ? c->val_true : c->val_false;
     }
-    swap_dispatcher(n, &kind_node_send1);
-    VALUE args[1] = { a };
-    return asom_send(c, r, selector, 1, args, cc);
+    return asom_send1_int_miss(c, n, r, a, selector, cc);
 }
 
 NODE_DEF @canonical=node_send1
@@ -1060,9 +1066,7 @@ node_send1_intle(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *arg0, co
     if (__builtin_expect(ASOM_IS_INT(r) && ASOM_IS_INT(a), 1)) {
         return ASOM_VAL2INT(r) <= ASOM_VAL2INT(a) ? c->val_true : c->val_false;
     }
-    swap_dispatcher(n, &kind_node_send1);
-    VALUE args[1] = { a };
-    return asom_send(c, r, selector, 1, args, cc);
+    return asom_send1_int_miss(c, n, r, a, selector, cc);
 }
 
 NODE_DEF @canonical=node_send1
@@ -1073,9 +1077,7 @@ node_send1_intge(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *arg0, co
     if (__builtin_expect(ASOM_IS_INT(r) && ASOM_IS_INT(a), 1)) {
         return ASOM_VAL2INT(r) >= ASOM_VAL2INT(a) ? c->val_true : c->val_false;
     }
-    swap_dispatcher(n, &kind_node_send1);
-    VALUE args[1] = { a };
-    return asom_send(c, r, selector, 1, args, cc);
+    return asom_send1_int_miss(c, n, r, a, selector, cc);
 }
 
 NODE_DEF @canonical=node_send1
@@ -1086,9 +1088,7 @@ node_send1_inteq(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *arg0, co
     if (__builtin_expect(ASOM_IS_INT(r) && ASOM_IS_INT(a), 1)) {
         return ASOM_VAL2INT(r) == ASOM_VAL2INT(a) ? c->val_true : c->val_false;
     }
-    swap_dispatcher(n, &kind_node_send1);
-    VALUE args[1] = { a };
-    return asom_send(c, r, selector, 1, args, cc);
+    return asom_send1_int_miss(c, n, r, a, selector, cc);
 }
 
 // -----------------------------------------------------------------------------
@@ -1204,6 +1204,28 @@ node_send1_dbleq(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *arg0, co
     return asom_send(c, r, selector, 1, args, cc);
 }
 
+// Cold paths for arrayat/arrayatput: same out-of-line refactor as
+// asom_send1_int_miss, kept out of SD shards via NODE_SKIP_COLD.
+extern VALUE asom_send1_arrayat_miss(CTX *c, NODE *n, VALUE r, VALUE a, const char *selector, struct asom_callcache *cc);
+extern const struct NodeKind kind_node_send2;
+extern VALUE asom_send2_arrayatput_miss(CTX *c, NODE *n, VALUE r, VALUE i, VALUE v, const char *selector, struct asom_callcache *cc);
+#ifndef NODE_SKIP_COLD
+__attribute__((noinline,cold)) VALUE
+asom_send1_arrayat_miss(CTX *c, NODE *n, VALUE r, VALUE a, const char *selector, struct asom_callcache *cc)
+{
+    swap_dispatcher(n, &kind_node_send1);
+    VALUE args[1] = { a };
+    return asom_send(c, r, selector, 1, args, cc);
+}
+__attribute__((noinline,cold)) VALUE
+asom_send2_arrayatput_miss(CTX *c, NODE *n, VALUE r, VALUE i, VALUE v, const char *selector, struct asom_callcache *cc)
+{
+    swap_dispatcher(n, &kind_node_send2);
+    VALUE args[2] = { i, v };
+    return asom_send(c, r, selector, 2, args, cc);
+}
+#endif
+
 // `array at: i` — Array indexing. Bypasses asom_send + the arr_at_
 // primitive on the common case (Array receiver, Integer index, in
 // bounds). On any guard miss we revert to node_send1 and re-dispatch.
@@ -1222,15 +1244,12 @@ node_send1_arrayat(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *arg0, 
             }
         }
     }
-    swap_dispatcher(n, &kind_node_send1);
-    VALUE args[1] = { a };
-    return asom_send(c, r, selector, 1, args, cc);
+    return asom_send1_arrayat_miss(c, n, r, a, selector, cc);
 }
 
 // `array at: i put: v` — Array element assignment. Same shape as
 // node_send1_arrayat (recv = Array, arg0 = Integer index) but stores
 // into arr->data[idx]. Returns the stored value (SOM convention).
-extern const struct NodeKind kind_node_send2;
 NODE_DEF @canonical=node_send2
 node_send2_arrayatput(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *arg0, NODE *arg1, const char *selector, struct asom_callcache *cc)
 {
@@ -1248,7 +1267,5 @@ node_send2_arrayatput(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *arg
             }
         }
     }
-    swap_dispatcher(n, &kind_node_send2);
-    VALUE args[2] = { i, v };
-    return asom_send(c, r, selector, 2, args, cc);
+    return asom_send2_arrayatput_miss(c, n, r, i, v, selector, cc);
 }
