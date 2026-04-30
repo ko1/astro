@@ -94,15 +94,19 @@ typedef intptr_t VALUE;
 static inline VALUE
 asom_flo2val_try(double d)
 {
-    // memcpy-based bit reinterpret. union type punning is technically
-    // UB under strict aliasing; using __builtin_memcpy is the
-    // strict-aliasing-safe equivalent.
+    // memcpy-based bit reinterpret keeps strict-aliasing happy.
     uint64_t bits;
     __builtin_memcpy(&bits, &d, sizeof(bits));
     if (bits == 0) return ((VALUE)1 << 1) | ASOM_TAG_FLO;
     int top = (int)((bits >> 60) & 0x7);
     if ((top - 3) & ~0x01) return 0;
-    if (bits & 0x1) return 0;  // mantissa LSB = 1: would collide with int tag
+    // Bit-exact encoding requires both low mantissa bits to be 0,
+    // since the encoded VALUE's low 2 bits hold the flonum tag (10)
+    // and the decoder clears both. Doubles whose low bits are not
+    // 00 fall back to heap-boxed asom_double — preserves precision
+    // for Mandelbrot's escape-count and DoubleTest's exact-value
+    // assertions.
+    if (bits & 0x3) return 0;
     return (VALUE)((bits - ASOM_FLONUM_BIAS) | ASOM_TAG_FLO);
 }
 
