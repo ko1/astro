@@ -86,7 +86,7 @@ COLUMNS = [
   { key: :sompp,  label: 'SOM++',
     cmd: ->(b, it, inn) { %(cd '#{SOMPP_DIR}' && ./SOM++ -cp 'Smalltalk:Examples/Benchmarks' Examples/Benchmarks/BenchmarkHarness.som '#{b}' #{it} #{inn}) } },
   { key: :truf,   label: 'Truffle',
-    cmd: ->(b, it, inn) { %(cd '#{TRUFFLESOM_DIR}' && JVMCI_VERSION_CHECK=ignore PATH='#{MX_DIR}':$PATH ./som -cp 'Smalltalk:Examples/Benchmarks' Examples/Benchmarks/BenchmarkHarness.som '#{b}' #{it} 0 #{inn}) } },
+    cmd: ->(b, it, inn) { %(cd '#{TRUFFLESOM_DIR}' && JVMCI_VERSION_CHECK=ignore PATH='#{MX_DIR}':$PATH ./som -cp 'Smalltalk:Examples/Benchmarks' Examples/Benchmarks/BenchmarkHarness.som '#{b}' #{it} #{inn}) } },
 ]
 
 # Parse the engine's self-reported `system ticks` runtime out of stdout.
