@@ -446,63 +446,12 @@ asom_nonlocal_return(CTX *c, VALUE v)
 //  what asom_block_invoke would have set (the current frame).
 // -----------------------------------------------------------------------------
 
-// Forward decls for the per-bucket frame pool (defined later in this file).
-static struct asom_frame *frame_alloc(uint32_t slots, VALUE **out_locals, uint16_t *out_pool_slots);
-static void frame_free(struct asom_frame *frame);
+// Frame pool helpers are now in asom_runtime.h as static inline; no
+// forward decl needed here.
 
-void
-asom_inline_frame_push(CTX *c, struct asom_frame *frame)
-{
-    frame->self = c->frame->self;
-    frame->locals = NULL;
-    frame->method = c->frame->method;   // home method, for traceback
-    frame->parent = c->frame;
-    frame->home = c->frame->home;       // `^` still targets the enclosing method
-    frame->lexical_parent = c->frame;
-    frame->returned = 0;
-    frame->captured = false;
-    frame->pool_slots = 0;              // never returned to the pool
-    c->frame = frame;
-}
-
-void
-asom_inline_frame_pop(CTX *c, struct asom_frame *frame)
-{
-    c->frame = frame->parent;
-}
-
-// Pool-allocated inline frame with N locals. Used by node_to_do (and
-// future N-local inline patterns) where the body may create nested
-// closures: the heap-resident frame can be pinned via `captured` if a
-// closure escapes, exactly like asom_block_invoke. One pool pop per
-// outer call, vs the un-inlined path's per-iteration block_invoke.
-struct asom_frame *
-asom_inline_pool_frame_push(CTX *c, uint32_t num_locals, VALUE **out_locals)
-{
-    VALUE *locals;
-    uint16_t pool_slots;
-    struct asom_frame *frame = frame_alloc(num_locals, &locals, &pool_slots);
-    frame->self = c->frame->self;
-    frame->locals = locals;
-    frame->method = c->frame->method;
-    frame->parent = c->frame;
-    frame->home = c->frame->home;
-    frame->lexical_parent = c->frame;
-    frame->returned = 0;
-    frame->captured = false;
-    frame->pool_slots = pool_slots;
-    for (uint32_t i = 0; i < num_locals; i++) locals[i] = c->val_nil;
-    c->frame = frame;
-    *out_locals = locals;
-    return frame;
-}
-
-void
-asom_inline_pool_frame_pop(CTX *c, struct asom_frame *frame)
-{
-    c->frame = frame->parent;
-    frame_free(frame);
-}
+// Inline frame helpers (push/pop, pool variants) moved to asom_runtime.h
+// as `static inline` so SD shards see the full body and gcc can fuse
+// stores with surrounding setup. Bodies removed from this TU.
 
 // Bump arena for the combined (asom_method + asom_block) records that
 // asom_make_block produces every time a block literal evaluates. Each
@@ -584,75 +533,11 @@ asom_make_block(CTX *c, struct Node *body, uint32_t num_params, uint32_t num_loc
 }
 
 // -----------------------------------------------------------------------------
-// Frame pool. Pools blocks of frame+locals storage by slot-count bucket so
-// the common case (small block, no closure escape) avoids two callocs per
-// invocation. `captured` frames are never returned to the pool; they leak
-// onto the heap, which is the existing behaviour and keeps closures sound.
-// -----------------------------------------------------------------------------
-
-#define ASOM_FRAME_POOL_BUCKETS 16  // slots 0..ASOM_FRAME_POOL_BUCKETS-1
-
-struct asom_frame_pool_node {
-    struct asom_frame frame;
-    struct asom_frame_pool_node *next;
-    // locals[] follows inline (variable length per bucket)
-};
-
-static struct asom_frame_pool_node *g_frame_pool[ASOM_FRAME_POOL_BUCKETS];
-
-// Returns (frame, locals) where locals points just past `frame` in the
-// same allocation. `out_pool_slots` is set to the bucket size used (0 if
-// not pooled — slot count exceeded the pool, so a separate calloc was
-// needed and the entry should not be returned to the pool on exit).
-//
-// Callers (asom_invoke / asom_block_invoke / asom_inline_pool_frame_push)
-// always overwrite every frame field and every locals entry before
-// reading them, so we no longer memset the frame or zero-fill locals on
-// reuse. Saves ~10-15 ns per invocation on small slot counts (Sieve
-// outer-iter, QuickSort recursion) — measurable since recursion-heavy
-// benches (QuickSort, Towers, TreeSort) call this thousands of times
-// per inner-iter. Cold calloc path stays as-is (one-time cost).
-static inline struct asom_frame *
-frame_alloc(uint32_t slots, VALUE **out_locals, uint16_t *out_pool_slots)
-{
-    if (slots < ASOM_FRAME_POOL_BUCKETS) {
-        struct asom_frame_pool_node *e = g_frame_pool[slots];
-        if (e) {
-            g_frame_pool[slots] = e->next;
-            VALUE *locals = (VALUE *)(e + 1);
-            *out_locals = slots ? locals : NULL;
-            *out_pool_slots = (uint16_t)(slots + 1); // +1 so 0 means "not pooled"
-            return &e->frame;
-        }
-        // Cold: bucket empty — allocate a fresh combined node.
-        size_t total = sizeof(struct asom_frame_pool_node) + slots * sizeof(VALUE);
-        e = calloc(1, total);
-        VALUE *locals = (VALUE *)(e + 1);
-        *out_locals = slots ? locals : NULL;
-        *out_pool_slots = (uint16_t)(slots + 1);
-        return &e->frame;
-    }
-    // Slot count exceeds pool buckets — fall back to two callocs (rare,
-    // method bodies with > ASOM_FRAME_POOL_BUCKETS-1 locals).
-    struct asom_frame *frame = calloc(1, sizeof(*frame));
-    *out_locals = slots ? calloc(slots, sizeof(VALUE)) : NULL;
-    *out_pool_slots = 0;
-    return frame;
-}
-
-static inline void
-frame_free(struct asom_frame *frame)
-{
-    if (frame->captured || frame->pool_slots == 0) {
-        // Captured — closure may still reference this frame's locals.
-        // Or non-pooled (oversized). Leave it on the heap (existing leak).
-        return;
-    }
-    uint32_t slots = (uint32_t)frame->pool_slots - 1;
-    struct asom_frame_pool_node *e = (struct asom_frame_pool_node *)frame;
-    e->next = g_frame_pool[slots];
-    g_frame_pool[slots] = e;
-}
+// Frame pool storage. Declarations + frame_alloc / frame_free are
+// in asom_runtime.h (static inline) so SDs see them. We only need
+// to define g_frame_pool here, plus a back-compat name `frame_alloc`
+// is no longer used (callers go through asom_frame_alloc).
+struct asom_frame_pool_node *g_frame_pool[ASOM_FRAME_POOL_BUCKETS];
 
 // Invoke a block with `nargs` already-evaluated args. Used by Block primitives
 // (value, value:, ...) and by Boolean/whileTrue:/etc. control-flow primitives.
@@ -669,7 +554,7 @@ asom_block_invoke(CTX *c, struct asom_block *b, VALUE *args, uint32_t nargs)
     uint32_t slots = m->num_params + m->num_locals;
     VALUE *locals;
     uint16_t pool_slots;
-    struct asom_frame *frame = frame_alloc(slots, &locals, &pool_slots);
+    struct asom_frame *frame = asom_frame_alloc(slots, &locals, &pool_slots);
     for (uint32_t i = 0; i < nargs; i++) locals[i] = args[i];
     for (uint32_t i = nargs; i < slots; i++) locals[i] = c->val_nil;
 
@@ -691,7 +576,7 @@ asom_block_invoke(CTX *c, struct asom_block *b, VALUE *args, uint32_t nargs)
         // we don't need our own catcher in the chain.
         VALUE result = EVAL(c, m->body);
         c->frame = frame->parent;
-        frame_free(frame);
+        asom_frame_free(frame);
         return result;
     }
 
@@ -708,7 +593,7 @@ asom_block_invoke(CTX *c, struct asom_block *b, VALUE *args, uint32_t nargs)
         result = EVAL(c, m->body);
         g_unwind_top = unwind.parent;
         c->frame = frame->parent;
-        frame_free(frame);
+        asom_frame_free(frame);
         return result;
     }
 
@@ -759,7 +644,7 @@ asom_invoke(CTX *c, struct asom_method *m, VALUE receiver, VALUE *args, uint32_t
     uint32_t slots = m->num_params + m->num_locals;
     VALUE *locals;
     uint16_t pool_slots;
-    struct asom_frame *frame = frame_alloc(slots, &locals, &pool_slots);
+    struct asom_frame *frame = asom_frame_alloc(slots, &locals, &pool_slots);
     for (uint32_t i = 0; i < nargs && i < m->num_params; i++) locals[i] = args[i];
     for (uint32_t i = nargs; i < slots; i++) locals[i] = c->val_nil;
 
@@ -793,7 +678,7 @@ asom_invoke(CTX *c, struct asom_method *m, VALUE receiver, VALUE *args, uint32_t
     c->frame = frame->parent;
     // Pool the frame storage if no closure captured us. `captured` is set
     // by asom_make_block when a nested block grabs us as lexical_parent.
-    frame_free(frame);
+    asom_frame_free(frame);
     return result;
 }
 

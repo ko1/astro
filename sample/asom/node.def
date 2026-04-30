@@ -495,18 +495,9 @@ node_super_send8(CTX * restrict c, NODE * restrict n, NODE *a0, NODE *a1, NODE *
 //  message via asom_send (rare in benchmarks; matches SOM standard).
 // -----------------------------------------------------------------------------
 
-// Stack-frame helpers for inlined 0-local control-flow blocks
-// (defined in asom_runtime.c). Required: body has no nested block
-// creation (escape risk vs the stack-allocated frame).
-extern void asom_inline_frame_push(CTX *c, struct asom_frame *frame);
-extern void asom_inline_frame_pop(CTX *c, struct asom_frame *frame);
-
-// Pool-allocated inline frame for N-local inlined blocks (e.g. to:do:'s
-// 1-param block — locals[0] holds the index). The heap-resident frame
-// pins via `captured` if a nested closure escapes, so this version is
-// safe regardless of what the body does.
-extern struct asom_frame *asom_inline_pool_frame_push(CTX *c, uint32_t num_locals, VALUE **out_locals);
-extern void asom_inline_pool_frame_pop(CTX *c, struct asom_frame *frame);
+// Inline-frame helpers are now `static inline` in asom_runtime.h so SDs
+// inline the field-store sequence directly. Header is included via
+// node.h transitively, no forward decl needed here.
 
 // Each control-flow inline node carries the body subtree as a *direct*
 // NODE * operand (`stmts` / `t_stmts` / `f_stmts`) so EVAL_ARG inside

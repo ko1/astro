@@ -106,6 +106,119 @@ asom_send(CTX *c, VALUE receiver, const char *selector,
 struct asom_method *asom_class_lookup(struct asom_class *cls, const char *selector);
 void asom_class_define_method(struct asom_class *cls, struct asom_method *m);
 
+// Inline-frame push/pop for control-flow inlining (node_iftrue / and / or
+// / whiletrue / to:do: / etc., the non-pool variants where the inline
+// frame has no own locals — only the home method's locals reachable via
+// lexical_parent). Static inline so SDs see the field-store sequence
+// directly and gcc can fuse it with surrounding setup. ~5% of QuickSort
+// time was previously a GOT-call to the non-inlined version.
+static inline void
+asom_inline_frame_push(CTX *c, struct asom_frame *frame)
+{
+    frame->self           = c->frame->self;
+    frame->locals         = NULL;
+    frame->method         = c->frame->method;
+    frame->parent         = c->frame;
+    frame->home           = c->frame->home;
+    frame->lexical_parent = c->frame;
+    frame->returned       = 0;
+    frame->captured       = false;
+    frame->pool_slots     = 0;
+    c->frame = frame;
+}
+
+static inline void
+asom_inline_frame_pop(CTX *c, struct asom_frame *frame)
+{
+    c->frame = frame->parent;
+}
+
+// Frame pool storage. Buckets indexed by slot count (0 .. BUCKETS-1).
+// `captured` frames bypass the pool (closures may outlive the call).
+// Defined in asom_runtime.c; declared here so the static-inline frame_-
+// alloc / frame_free / asom_inline_pool_frame_push / _pop below see the
+// pool from every TU (including SD shards).
+#define ASOM_FRAME_POOL_BUCKETS 16
+
+struct asom_frame_pool_node {
+    struct asom_frame frame;
+    struct asom_frame_pool_node *next;
+    // locals[] follows inline (variable length per bucket)
+};
+
+extern struct asom_frame_pool_node *g_frame_pool[ASOM_FRAME_POOL_BUCKETS];
+
+// frame_alloc / frame_free: pool-allocate one frame + adjacent locals[].
+// Hot path is a single linked-list pop and is `static inline` so SD
+// shards (and the inline-pool helpers below) inline the whole sequence
+// — gcc gets to fuse the field stores with the surrounding setup. Cold
+// `calloc` path stays as-is.
+static inline struct asom_frame *
+asom_frame_alloc(uint32_t slots, VALUE **out_locals, uint16_t *out_pool_slots)
+{
+    if (slots < ASOM_FRAME_POOL_BUCKETS) {
+        struct asom_frame_pool_node *e = g_frame_pool[slots];
+        if (e) {
+            g_frame_pool[slots] = e->next;
+            VALUE *locals = (VALUE *)(e + 1);
+            *out_locals = slots ? locals : NULL;
+            *out_pool_slots = (uint16_t)(slots + 1);
+            return &e->frame;
+        }
+        size_t total = sizeof(struct asom_frame_pool_node) + slots * sizeof(VALUE);
+        e = calloc(1, total);
+        *out_locals = slots ? (VALUE *)(e + 1) : NULL;
+        *out_pool_slots = (uint16_t)(slots + 1);
+        return &e->frame;
+    }
+    // Oversized: two callocs (rare).
+    struct asom_frame *frame = calloc(1, sizeof(*frame));
+    *out_locals = slots ? calloc(slots, sizeof(VALUE)) : NULL;
+    *out_pool_slots = 0;
+    return frame;
+}
+
+static inline void
+asom_frame_free(struct asom_frame *frame)
+{
+    if (frame->captured || frame->pool_slots == 0) return;
+    uint32_t slots = (uint32_t)frame->pool_slots - 1;
+    struct asom_frame_pool_node *e = (struct asom_frame_pool_node *)frame;
+    e->next = g_frame_pool[slots];
+    g_frame_pool[slots] = e;
+}
+
+// Pool-allocated inline frame with N locals. Inlined here so the
+// pool pop + field stores fuse with the surrounding SD code (was a
+// 6%+5% / 3%+3% hot spot in QuickSort / Sieve perf).
+static inline struct asom_frame *
+asom_inline_pool_frame_push(CTX *c, uint32_t num_locals, VALUE **out_locals)
+{
+    VALUE *locals;
+    uint16_t pool_slots;
+    struct asom_frame *frame = asom_frame_alloc(num_locals, &locals, &pool_slots);
+    frame->self           = c->frame->self;
+    frame->locals         = locals;
+    frame->method         = c->frame->method;
+    frame->parent         = c->frame;
+    frame->home           = c->frame->home;
+    frame->lexical_parent = c->frame;
+    frame->returned       = 0;
+    frame->captured       = false;
+    frame->pool_slots     = pool_slots;
+    for (uint32_t i = 0; i < num_locals; i++) locals[i] = c->val_nil;
+    c->frame = frame;
+    *out_locals = locals;
+    return frame;
+}
+
+static inline void
+asom_inline_pool_frame_pop(CTX *c, struct asom_frame *frame)
+{
+    c->frame = frame->parent;
+    asom_frame_free(frame);
+}
+
 // Object allocation.
 VALUE asom_object_new(CTX *c, struct asom_class *cls);
 VALUE asom_array_new (CTX *c, uint32_t len);
