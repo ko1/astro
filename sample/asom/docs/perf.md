@@ -1,48 +1,52 @@
 # asom 性能最適化メモ
 
 ASTro 上の SOM (Smalltalk dialect) インタプリタを、stock の AST tree
-walker から **`make bench-aot` で SOM++ 全 12 ベンチ勝ち**、
-**`make bench-pg` で TruffleSOM warm peak 11/12 勝ち** まで持っていった
+walker から **`make bench-aot` で SOM++ 全 12 ベンチ勝ち**まで持っていった
 経緯の記録。
 
 ベンチは `make bench` で `run_compare.rb` 経由、`run_compare.rb` の
 `INNER` テーブルは asom-interp で **~1 秒** 程度に揃えてある。
 `iterations=1`、best of 3。
 
-> 注意: bench の数字は **asom が GC を持たない**前提で取れている値。
-> Truffle / SOM++ は bench 区間でも nursery / COPYING を回しており、
-> その分の費用を払っているのに対し、asom は alloc が pointer-bump と
-> heap leak だけ。長期 run では asom は OOM するので、Truffle 並の
-> fairness で測るには asom 側にも GC を入れる必要がある（[Planned](../README.md#planned性能拡張の-todo)）。
+> 注意: 過去の version 数（特に Mandelbrot AOT 0.029s, SOM++比 47×、
+> Truffle 比 15×）は **flonum encoder のバグ**で計算が早期終了して
+> garbage 値で抜けていた幻の数字でした。flonum bias 定数の修正
+> ([§10](#10--flonum-encoder-bias-定数のバグと-bit-exact-tightening) 参照) の後、
+> 正しい数字は Mandelbrot AOT 0.473s / SOM++ 比 1.7× となります。
 
 ## 最終ベンチ結果
 
 ```
 benchmark    |    interp |       aot |        pg |     SOM++ |   Truffle
 ------------------------------------------------------------------------
-Sieve        |     0.394 |     0.132 |     0.137 |     2.688 |     0.161
-Permute      |     0.458 |     0.343 |     0.342 |     1.168 |     0.364
-Towers       |     0.409 |     0.321 |     0.326 |     0.795 |     0.280
-Queens       |     0.410 |     0.359 |     0.349 |     2.894 |     0.433
-List         |     0.407 |     0.318 |     0.331 |     1.393 |     0.437
-Storage      |     0.441 |     0.384 |     0.377 |     1.230 |     0.467
-Bounce       |     0.461 |     0.430 |     0.238 |     1.435 |     0.286
-BubbleSort   |     0.463 |     0.234 |     0.232 |     1.249 |     0.229
-QuickSort    |     0.444 |     0.135 |     0.134 |     1.353 |     0.307
-TreeSort     |     0.413 |     0.400 |     0.327 |     1.032 |     0.308
-Fannkuch     |     0.464 |     0.191 |     0.181 |     1.369 |     0.237
-Mandelbrot   |     0.049 |     0.028 |     0.029 |     1.318 |     0.452
+Sieve        |     0.458 |     0.140 |     0.135 |     1.451 |       TBD
+Permute      |     0.464 |     0.352 |     0.348 |     0.656 |       TBD
+Towers       |     0.426 |     0.336 |     0.330 |     0.370 |       TBD
+Queens       |     0.459 |     0.383 |     0.375 |     1.272 |       TBD
+List         |     0.410 |     0.351 |     0.355 |     0.421 |       TBD
+Storage      |     0.360 |     0.324 |     0.334 |     0.760 |       TBD
+Bounce       |     0.471 |     0.450 |     0.267 |     0.966 |       TBD
+BubbleSort   |     0.506 |     0.271 |     0.270 |     0.692 |       TBD
+QuickSort    |     0.460 |     0.150 |     0.154 |     0.814 |       TBD
+TreeSort     |     0.440 |     0.427 |     0.341 |     0.467 |       TBD
+Fannkuch     |     0.430 |     0.170 |     0.171 |     0.724 |       TBD
+Mandelbrot   |     0.706 |     0.473 |     0.453 |     0.826 |       TBD
 ```
 
-`asom-aot` が SOM++ に対して **Sieve 20×、Mandelbrot 47×、QuickSort 10×、
-Queens 8×、Fannkuch / BubbleSort / List 4-7×、Permute / Bounce / Storage
-3×、Towers / TreeSort 2-3×**。
+Truffle 列は TBD: TruffleSOM submodule（`sample/asom/TruffleSOM`）の
+ビルドが未完了（GraalVM + mx required）。SOM-st/SOMpp は
+`sample/asom/SOMpp` 配下に submodule で格納し、build/ 配下に out-of-tree
+build した binary を `make bench` が参照する。
+
+`asom-aot` が SOM++ に対して **Sieve 10.4×、QuickSort 5.4×、Fannkuch
+4.3×、Queens 3.3×、BubbleSort 2.6×、Storage 2.3×、Bounce 2.1×、Permute
+1.9×、Mandelbrot 1.7×、List 1.2×、Towers 1.1×、TreeSort 1.1×**。
+全 12 ベンチで勝ち。
 
 `asom-pg` は warmup-driven の型特化と全 entry SD-bake が効き、Bounce
-0.430s → 0.238s（+45%）、TreeSort 0.400s → 0.327s（+18%）と AOT を
-さらに上回る。Truffle warm peak と比べて **11/12 で勝ち**、唯一 Towers
-（0.326 vs Truffle 0.280）だけが負け（再帰メソッドの inline ＝ call-graph
-PE が未実装）。
+0.450s → 0.267s（1.69×）、TreeSort 0.427s → 0.341s（1.25×）と AOT を
+さらに上回る。Mandelbrot は flonum tagging で AOT 段階でほぼ底打ち
+なので PG の追加効果は小さい。
 
 ---
 
@@ -236,9 +240,102 @@ PG bake (`-p`) は本来 hot entry のみ profile-aware (`PGSD_<Hopt>.c`) ま
    flonum fast path、`asom_double_new` も alloc-free
 3. 全 cold entry も SD-baked なので chain 連続、hybrid dispatch が消える
 
-**asom-pg は 11/12 ベンチで TruffleSOM (warm peak) に勝つ**（Towers のみ
-1.16× 負け）。AOT で Truffle に負けていた Bounce / TreeSort / BubbleSort
-が PG mode で逆転。
+PG mode は AOT で Truffle に負けていた Bounce / TreeSort などで逆転を
+生む（field 経由 Double 演算が多く、warmup で `node_send1_dbl*` 特化が
+入る効果）。
+
+## 8 — Boehm GC（commit `ebc7201`）
+
+それまで `asom_object` 系は alloc 後 free しないリークモデル。bench は
+inner ~1 秒で alloc 量が bounded なので走り切るが、Truffle / SOM++ は
+同区間で nursery / COPYING を回しているのに対し asom は alloc が pure
+pointer-bump（GC コストゼロ）で、bench 倍率に GC 未払い分の下駄が乗って
+いた。Boehm-Demers-Weiser conservative GC を導入してフェアな比較に。
+
+実装は最小:
+
+- `context.h` の末尾で `malloc` / `calloc` / `realloc` / `strdup` /
+  `free` をマクロで `GC_MALLOC` / `GC_REALLOC` / `GC_STRDUP` /
+  `((void)(p))` に wrap。既存呼び出し点はソース無変更。
+- `main()` 冒頭に `GC_INIT()`。
+- `Makefile` に `-lgc`。
+- `__thread` 修飾子を `g_double_arena` / `g_block_arena` /
+  `g_frame_pool[]` / `g_unwind_top` から削除。Boehm のデフォルトは TLS
+  をスキャンしないので、TLS に置いた global pointer 経由で reachable な
+  オブジェクトが collect されてしまうため。asom は single-threaded なの
+  で `__thread` は元々不要だった。
+
+驚いた点: bench 数字は変わらないか、むしろ若干速くなった（`Sieve aot
+0.132 → 0.123`、`Storage aot 0.384 → 0.289`）。inner ~1 秒の bench window
+では major collection が走らないので、`GC_MALLOC` は TLAB-like の bump
+pointer + `free` 不要、で `calloc`+ 明示 free よりも軽いケースがある。
+
+これで「GC 未払い」caveat が消え、Truffle / SOM++ と同条件の比較に。
+long-running も leak しなくなった。
+
+## 9 — GMP-backed LargeInteger / Bignum（commit `1510df2` + `e3cd3de`）
+
+それまで Integer は 62-bit tagged immediate のみ、overflow 時に silent
+wrap。SOM 仕様は任意精度（SmallInteger / LargeInteger 透過 hierarchy）を
+要求し、IntegerTest が `9223372036854775807` や `2 raisedTo: 100` 等の
+大きな値で 9 件失敗していた。
+
+GMP を bignum バックエンドに採用:
+
+- `struct asom_bignum { hdr; mpz_t value }` を `cls_bignum` として
+  cls_integer の subclass に登録 (= "LargeInteger")
+- `asom_int_norm(c, mpz)` で 62-bit に収まれば `ASOM_INT2VAL`、超えれば
+  bignum 化（運用上の "constructor"）
+- `INT_BIN_PRIM` を `__builtin_*_overflow` 検出付きに改修。overflow パス
+  で mpz arithmetic + `asom_int_norm` 経由 → 透過 promotion
+- Comparator も bignum 対応（`mpz_cmp`）
+- big_* primitive 一式（`+`, `-`, `*`, `<`, `>`, `=`, `negated`, `abs`,
+  `asString`, `print`, `println`, `asDouble`, `asInteger`）
+- Parser: 大きな literal を `node_bignum_lit(bytes, cached)` で parse-time
+  に mpz 化、cached VALUE はハッシュから除外（既存 `node_string_val` の
+  パターンを再利用）
+- `Integer fromString:` も `mpz_set_str` 経由で任意精度に
+
+`raisedTo:` は SOM stdlib (`Integer.som`) の `output := output * self`
+ベース実装で、`int_*` primitive の overflow promotion で自然に bignum 化
+する。primitive 登録は撤去（stdlib 任せ）。
+
+結果: **IntegerTest 25/25 通過**（修正前 16/25）。`2 raisedTo: 100 =
+1267650600228229401496703205376` も正確に計算。
+
+## 10 — Flonum encoder bias 定数のバグと bit-exact tightening（commit `f669d70`）
+
+§5 で flonum tagging を入れた時、CRuby 流の bias 定数を `(uint64_t)0x3C
+<< 60` と書いていた。これは実は `0xC000000000000000`（60-bit 左シフトで
+0x3C の低 4bit `0xC` だけ残る）になっていて、`-2.0`（bit パターン
+`0xC000000000000000`）が `bits - 0xC000... = 0` → 0.0 special encoding
+（VALUE = 2）と衝突。`2.0`（`0x4000000000000000`）も `0x4 - 0xC = -8`
+→ `0x8000000000000000` という不正な値になっていた。
+
+Mandelbrot の inner loop で `(zrzr + zizi > 4.0)` の値が壊れるため、
+`escape := 1.` が誤って早期発火し loop が短く終わって**速く見えていた**
+だけだった（result も 50 ではなく 168）。
+
+修正:
+
+1. bias を **literal** `0x3C00000000000000ULL` に
+2. `union` type-punning を `__builtin_memcpy` に置き換え（strict-aliasing 対策）
+3. encoder のレンジチェックを bit-exact にするため **mantissa 低 2bit が
+   00** の double のみ flonum 化、それ以外は heap-boxed `asom_double` に
+   フォールバック。OR で書き込む tag bit が原 mantissa を上書きする問題を
+   完全回避（lossless round-trip）
+
+結果:
+
+- Mandelbrot result が正しく **50** を返す（inner=750 の場合）
+- IntegerTest 25/25
+- DoubleTest 27/27（修正前 24/27 — 同じバグだった）
+- bench 数字: Mandelbrot AOT は実値 0.473s（虚偽の 0.029s から退行に
+  見えるが、0.029s が異常値だったので「正しい数字は実は 1/2 程度」が
+  正しい解釈）
+
+§5 の Mandelbrot 倍率 (15× / 14×) は **revoked**。実値は 1.7× vs
+SOM++、Truffle 比は再 bench 待ち。
 
 ---
 
@@ -246,11 +343,10 @@ PG bake (`-p`) は本来 hot entry のみ profile-aware (`PGSD_<Hopt>.c`) ま
 
 - **Shape-based field unbox** — Bounce / TreeSort の Ball / Tree field
   レベル Double を flonum / inline-double として保持する。AOT mode で
-  Truffle に並走するには必要。
+  さらに伸ばすために必要。
 - **Call-graph PE** — Towers の再帰メソッドを inline 化。PG bake で
   `cached_method->body` を call site に展開し、leaf level で field
-  アクセスまで scalar replacement に落とす。Truffle 全勝には必須。
-- **GC 導入**（Boehm or 統一基盤）— 現状 alloc は leak、bench の数字は
-  GC 未払いの状態。Truffle / SOM++ と fair に比較するには必要。
-- **Bignum (GMP)** — 62-bit tagged int 範囲を超えた整数を `mpz_t` で
-  扱う。IntegerTest 5 件の失敗を埋める。
+  アクセスまで scalar replacement に落とす。
+- **TruffleSOM submodule の build** — `sample/asom/TruffleSOM` で参照
+  バイナリを揃えて Truffle 列の比較を復活させる（GraalVM + mx required）。
+- **AreWeFastYet 残り**（Havlak / CD / Knapsack / PageRank）の追加。
