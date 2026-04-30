@@ -25,14 +25,6 @@ node_allocate(size_t size)
     return n;
 }
 
-// --- User-provided: dispatch tracing ---
-
-static void
-dispatch_info(CTX *c, NODE *n, bool end)
-{
-    (void)c; (void)n; (void)end;
-}
-
 // --- ASTro node infrastructure (hash functions, HASH, DUMP) ---
 
 #include "astro_node.c"

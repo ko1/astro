@@ -387,8 +387,7 @@ module ASTroGen
         static __attribute__((no_stack_protector)) #{result_type}
         DISPATCH_#{@name}(#{@prefix_args.join(', ')})
         {
-            dispatch_info(c, n, 0);
-            #{result_type} v = EVAL_#{name}(#{prefix_call_args.join(', ')}#{
+            return EVAL_#{name}(#{prefix_call_args.join(', ')}#{
               comma_operands(@operands.map{
                 if it.storageless?
                   it.dispatch_default_expr
@@ -401,9 +400,6 @@ module ASTroGen
                 end
               })
             });
-            dispatch_info(c, n, 1);
-
-            return v;
         }
         C
       end
@@ -469,21 +465,23 @@ module ASTroGen
             fprintf(fp, "%s(#{@prefix_args.join(', ')})\\n", dispatcher_name);
             fprintf(fp, "{\\n");
 #{ specializer_prologue ? "            fprintf(fp, \"    #{specializer_prologue}\\n\");" : "" }
-            fprintf(fp, "    dispatch_info(c, n, false);\\n");
-#{  if args.empty?
-      '            fprintf(fp, "    ' + result_type + ' v = EVAL_' + name + '(' + prefix_call_args.join(', ') + ');\\n");'
+#{  # Direct `return EVAL_...(...)` — no named temp.  gcc fails to apply NRVO
+    # through the deep static-inline SD chain, and a named `RESULT v` leaves
+    # CLOBBER(eol) markers in inner loop bodies that block tree-ssa loop
+    # deletion even after SCEV folds the closed form.  Direct return
+    # collapses that — measured 30-77% AOT-cached speedups on castro's
+    # tight-loop benchmarks.
+    if args.empty?
+      '            fprintf(fp, "    return EVAL_' + name + '(' + prefix_call_args.join(', ') + ');\\n");'
     else
       <<~INNER.chomp
-                  fprintf(fp, "    #{result_type} v = EVAL_#{name}(#{prefix_call_args.join(', ')}, \\n");
-              #{ args.join("\n    fprintf(fp, \",\\n\");\n")
-              }
-                  fprintf(fp, "\\n    );\\n");
+                fprintf(fp, "    return EVAL_#{name}(#{prefix_call_args.join(', ')}, \\n");
+            #{ args.join("\n    fprintf(fp, \",\\n\");\n")
+            }
+                fprintf(fp, "\\n    );\\n");
       INNER
     end
 }
-            fprintf(fp, "    dispatch_info(c, n, true);\\n");
-#{ specializer_epilogue ? "            fprintf(fp, \"    #{specializer_epilogue}\\n\");" : "" }
-            fprintf(fp, "    return v;\\n");
             fprintf(fp, "}\\n\\n");
         }
         C

@@ -90,7 +90,6 @@ class CastroNodeDef < ASTroGen::NodeDef
           fprintf(fp, "__attribute__((no_stack_protector)) RESULT\\n");
           fprintf(fp, "%s(CTX *restrict c, NODE *restrict n, VALUE *restrict fp)\\n{\\n",
                   dispatcher_name);
-          fprintf(fp, "    dispatch_info(c, n, false);\\n");
           fprintf(fp, "    NODE *body = c->func_bodies[%u];\\n", func_idx);
           // Allocate the callee's frame as a stack array with a baked
           // literal size — gcc's SROA promotes its slots to registers
@@ -129,11 +128,12 @@ class CastroNodeDef < ASTroGen::NodeDef
           // callee, RETURN is its normal exit — discard the callee's
           // state entirely so the caller's surrounding SD sees a
           // compile-time-constant `state==0` and DCEs the UNWRAP
-          // branch.
-          fprintf(fp, "    RESULT v = SD_%lx(c, body, F);\\n",
+          // branch.  Inline the call expression into the return to
+          // avoid a named `RESULT v` temp, which leaves CLOBBER(eol)
+          // markers in the surrounding loop body and blocks gcc's
+          // tree-ssa loop deletion (see astrogen.rb's same fix).
+          fprintf(fp, "    return RESULT_OK(SD_%lx(c, body, F).value);\\n",
                   (unsigned long)callee_hash);
-          fprintf(fp, "    dispatch_info(c, n, true);\\n");
-          fprintf(fp, "    return RESULT_OK(v.value);\\n");
           fprintf(fp, "}\\n\\n");
       }
       C
@@ -184,7 +184,6 @@ class CastroNodeDef < ASTroGen::NodeDef
           fprintf(fp, "__attribute__((no_stack_protector)) RESULT\\n");
           fprintf(fp, "%s(CTX *restrict c, NODE *restrict n, VALUE *restrict fp)\\n{\\n",
                   dispatcher_name);
-          fprintf(fp, "    dispatch_info(c, n, false);\\n");
           fprintf(fp, "    VALUE F[%u];\\n", local_cnt);
           // Scalar `.i` arg copy + skipped zero-init for trailing
           // slots, both for the same reasons as in
@@ -192,10 +191,8 @@ class CastroNodeDef < ASTroGen::NodeDef
           for (uint32_t i = 0; i < arg_count; i++) {
               fprintf(fp, "    F[%u].i = fp[%u].i;\\n", i, arg_index + i);
           }
-          fprintf(fp, "    RESULT v = %s(c, n->u.#{@name}.callee, F);\\n",
+          fprintf(fp, "    return RESULT_OK(%s(c, n->u.#{@name}.callee, F).value);\\n",
                   callee_disp);
-          fprintf(fp, "    dispatch_info(c, n, true);\\n");
-          fprintf(fp, "    return RESULT_OK(v.value);\\n");
           fprintf(fp, "}\\n\\n");
       }
       C

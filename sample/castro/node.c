@@ -12,12 +12,6 @@ node_allocate(size_t size)
     return n;
 }
 
-static void
-dispatch_info(CTX *c, NODE *n, bool end)
-{
-    (void)c; (void)n; (void)end;
-}
-
 #include "astro_node.c"
 #include "astro_code_store.c"
 
