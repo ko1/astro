@@ -502,16 +502,70 @@ false_asString(CTX *c, VALUE self) { (void)self; return make_cstr_string(c, "fal
 // Integer
 // ---------------------------------------------------------------------------
 
-#define INT_BIN_PRIM(name, op) \
+// Helper: read any Integer (SmallInteger / LargeInteger) into an mpz.
+// `tmp` must be `mpz_init`'d by caller; on return it holds the value.
+static void
+int_to_mpz(VALUE v, mpz_t tmp)
+{
+    if (ASOM_IS_INT(v)) {
+        mpz_set_si(tmp, (long)ASOM_VAL2INT(v));
+    } else {
+        // Caller has class-checked `v` is a LargeInteger.
+        mpz_set(tmp, ((struct asom_bignum *)ASOM_VAL2OBJ(v))->value);
+    }
+}
+
+// 62-bit smallint range check. asom packs the low bit as tag, so the
+// usable signed range is half intptr_t — defensively use 2^61 here.
+#define ASOM_INT_MIN  (-(intptr_t)((intptr_t)1 << 61))
+#define ASOM_INT_MAX  ((intptr_t)((intptr_t)1 << 61) - 1)
+
+// Promote a smallint+smallint arithmetic op to bignum when the C-level
+// operation overflows.
+#define INT_PROMOTE_ON_OVERFLOW(name, mpz_op) \
+    static VALUE int_##name##_promote(CTX *c, intptr_t a, intptr_t b) { \
+        mpz_t la, lb, r; \
+        mpz_init_set_si(la, (long)a); mpz_init_set_si(lb, (long)b); mpz_init(r); \
+        mpz_op(r, la, lb); \
+        VALUE out = asom_int_norm(c, r); \
+        mpz_clear(la); mpz_clear(lb); mpz_clear(r); \
+        return out; \
+    }
+
+INT_PROMOTE_ON_OVERFLOW(plus,  mpz_add)
+INT_PROMOTE_ON_OVERFLOW(minus, mpz_sub)
+INT_PROMOTE_ON_OVERFLOW(times, mpz_mul)
+
+#define INT_BIN_PRIM(name, builtin_name, op, mpz_op) \
     static VALUE int_##name(CTX *c, VALUE self, VALUE other) { \
-        (void)c; \
-        if (ASOM_IS_INT(other)) return ASOM_INT2VAL(ASOM_VAL2INT(self) op ASOM_VAL2INT(other)); \
+        if (ASOM_IS_INT(other)) { \
+            intptr_t a = ASOM_VAL2INT(self), b = ASOM_VAL2INT(other), r; \
+            if (LIKELY(!__builtin_##builtin_name##_overflow(a, b, &r) \
+                       && r >= ASOM_INT_MIN && r <= ASOM_INT_MAX)) { \
+                return ASOM_INT2VAL(r); \
+            } \
+            return int_##name##_promote(c, a, b); \
+        } \
+        if (ASOM_IS_FLO(other)) { \
+            return asom_double_new(c, (double)ASOM_VAL2INT(self) op asom_val2flo(other)); \
+        } \
+        struct asom_object *o = ASOM_IS_OBJ(other) ? ASOM_VAL2OBJ(other) : NULL; \
+        if (o && o->klass == c->cls_double) { \
+            return asom_double_new(c, (double)ASOM_VAL2INT(self) op ((struct asom_double *)o)->value); \
+        } \
+        if (o && o->klass == c->cls_bignum) { \
+            mpz_t la, r; mpz_init_set_si(la, (long)ASOM_VAL2INT(self)); mpz_init(r); \
+            mpz_op(r, la, ((struct asom_bignum *)o)->value); \
+            VALUE out = asom_int_norm(c, r); \
+            mpz_clear(la); mpz_clear(r); \
+            return out; \
+        } \
         return asom_double_new(c, (double)ASOM_VAL2INT(self) op to_double_value(c, other)); \
     }
 
-INT_BIN_PRIM(plus, +)
-INT_BIN_PRIM(minus, -)
-INT_BIN_PRIM(times, *)
+INT_BIN_PRIM(plus,  add, +, mpz_add)
+INT_BIN_PRIM(minus, sub, -, mpz_sub)
+INT_BIN_PRIM(times, mul, *, mpz_mul)
 
 static VALUE
 int_div(CTX *c, VALUE self, VALUE other)
@@ -563,6 +617,15 @@ int_div_div(CTX *c, VALUE self, VALUE other)
     static VALUE int_##name(CTX *c, VALUE self, VALUE other) { \
         if (ASOM_IS_INT(other)) \
             return ASOM_VAL2INT(self) op ASOM_VAL2INT(other) ? c->val_true : c->val_false; \
+        if (ASOM_IS_FLO(other)) \
+            return ((double)ASOM_VAL2INT(self) op asom_val2flo(other)) ? c->val_true : c->val_false; \
+        struct asom_object *o = ASOM_IS_OBJ(other) ? ASOM_VAL2OBJ(other) : NULL; \
+        if (o && o->klass == c->cls_bignum) { \
+            mpz_t la; mpz_init_set_si(la, (long)ASOM_VAL2INT(self)); \
+            int cmp = mpz_cmp(la, ((struct asom_bignum *)o)->value); \
+            mpz_clear(la); \
+            return (cmp op 0) ? c->val_true : c->val_false; \
+        } \
         return ((double)ASOM_VAL2INT(self) op to_double_value(c, other)) ? c->val_true : c->val_false; \
     }
 
@@ -576,18 +639,38 @@ static VALUE
 int_neq(CTX *c, VALUE self, VALUE other)
 {
     if (ASOM_IS_INT(other)) return ASOM_VAL2INT(self) != ASOM_VAL2INT(other) ? c->val_true : c->val_false;
+    if (ASOM_IS_FLO(other)) return ((double)ASOM_VAL2INT(self) != asom_val2flo(other)) ? c->val_true : c->val_false;
+    struct asom_object *o = ASOM_IS_OBJ(other) ? ASOM_VAL2OBJ(other) : NULL;
+    if (o && o->klass == c->cls_bignum) {
+        mpz_t la; mpz_init_set_si(la, (long)ASOM_VAL2INT(self));
+        int cmp = mpz_cmp(la, ((struct asom_bignum *)o)->value);
+        mpz_clear(la);
+        return (cmp != 0) ? c->val_true : c->val_false;
+    }
     return ((double)ASOM_VAL2INT(self) != to_double_value(c, other)) ? c->val_true : c->val_false;
 }
 
 static VALUE
-int_negated(CTX *c, VALUE self) { (void)c; return ASOM_INT2VAL(-ASOM_VAL2INT(self)); }
+int_negated(CTX *c, VALUE self)
+{
+    intptr_t v = ASOM_VAL2INT(self);
+    intptr_t r;
+    if (LIKELY(!__builtin_sub_overflow((intptr_t)0, v, &r)
+               && r >= ASOM_INT_MIN && r <= ASOM_INT_MAX)) {
+        return ASOM_INT2VAL(r);
+    }
+    mpz_t mv, mr; mpz_init_set_si(mv, (long)v); mpz_init(mr); mpz_neg(mr, mv);
+    VALUE out = asom_int_norm(c, mr);
+    mpz_clear(mv); mpz_clear(mr);
+    return out;
+}
 
 static VALUE
 int_abs(CTX *c, VALUE self)
 {
-    (void)c;
     intptr_t v = ASOM_VAL2INT(self);
-    return ASOM_INT2VAL(v < 0 ? -v : v);
+    if (v >= 0) return self;
+    return int_negated(c, self);
 }
 
 static VALUE
@@ -707,6 +790,173 @@ static VALUE
 int_shl(CTX *c, VALUE self, VALUE other) { (void)c; return ASOM_INT2VAL(ASOM_VAL2INT(self) << ASOM_VAL2INT(other)); }
 static VALUE
 int_shr(CTX *c, VALUE self, VALUE other) { (void)c; return ASOM_INT2VAL(ASOM_VAL2INT(self) >> ASOM_VAL2INT(other)); }
+
+// `Integer >> raisedTo:` — exponentiation. Uses mpz_pow_ui when the
+// exponent fits in unsigned long (always the case for bench / test
+// inputs); negative exponents fall back to Double.
+static VALUE
+int_raisedto_(CTX *c, VALUE self, VALUE other)
+{
+    if (!ASOM_IS_INT(other)) {
+        // base ^ double -> double
+        return asom_double_new(c, pow((double)ASOM_VAL2INT(self), to_double_value(c, other)));
+    }
+    intptr_t e = ASOM_VAL2INT(other);
+    if (e < 0) {
+        return asom_double_new(c, pow((double)ASOM_VAL2INT(self), (double)e));
+    }
+    mpz_t base, r;
+    mpz_init_set_si(base, (long)ASOM_VAL2INT(self));
+    mpz_init(r);
+    mpz_pow_ui(r, base, (unsigned long)e);
+    VALUE out = asom_int_norm(c, r);
+    mpz_clear(base); mpz_clear(r);
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// LargeInteger (bignum)
+// ---------------------------------------------------------------------------
+
+// Read either smallint or bignum into an mpz_t. Caller must mpz_init.
+static void
+any_int_to_mpz(VALUE v, mpz_t out)
+{
+    if (ASOM_IS_INT(v)) mpz_set_si(out, (long)ASOM_VAL2INT(v));
+    else                mpz_set(out, ((struct asom_bignum *)ASOM_VAL2OBJ(v))->value);
+}
+
+#define BIG_BIN_PRIM(name, mpz_op) \
+    static VALUE big_##name(CTX *c, VALUE self, VALUE other) { \
+        if (ASOM_IS_FLO(other)) \
+            return asom_double_new(c, mpz_get_d(((struct asom_bignum *)ASOM_VAL2OBJ(self))->value) \
+                                       + 0 /*placeholder, set below*/); \
+        mpz_t r, b; mpz_init(r); mpz_init(b); \
+        any_int_to_mpz(other, b); \
+        mpz_op(r, ((struct asom_bignum *)ASOM_VAL2OBJ(self))->value, b); \
+        VALUE out = asom_int_norm(c, r); \
+        mpz_clear(r); mpz_clear(b); \
+        return out; \
+    }
+
+// Manual versions to handle the Double branch cleanly per op.
+static VALUE big_plus(CTX *c, VALUE self, VALUE other) {
+    struct asom_bignum *sb = (struct asom_bignum *)ASOM_VAL2OBJ(self);
+    if (ASOM_IS_FLO(other)) return asom_double_new(c, mpz_get_d(sb->value) + asom_val2flo(other));
+    struct asom_object *o = ASOM_IS_OBJ(other) ? ASOM_VAL2OBJ(other) : NULL;
+    if (o && o->klass == c->cls_double) return asom_double_new(c, mpz_get_d(sb->value) + ((struct asom_double *)o)->value);
+    mpz_t r, b; mpz_init(r); mpz_init(b);
+    any_int_to_mpz(other, b);
+    mpz_add(r, sb->value, b);
+    VALUE out = asom_int_norm(c, r);
+    mpz_clear(r); mpz_clear(b);
+    return out;
+}
+static VALUE big_minus(CTX *c, VALUE self, VALUE other) {
+    struct asom_bignum *sb = (struct asom_bignum *)ASOM_VAL2OBJ(self);
+    if (ASOM_IS_FLO(other)) return asom_double_new(c, mpz_get_d(sb->value) - asom_val2flo(other));
+    struct asom_object *o = ASOM_IS_OBJ(other) ? ASOM_VAL2OBJ(other) : NULL;
+    if (o && o->klass == c->cls_double) return asom_double_new(c, mpz_get_d(sb->value) - ((struct asom_double *)o)->value);
+    mpz_t r, b; mpz_init(r); mpz_init(b);
+    any_int_to_mpz(other, b);
+    mpz_sub(r, sb->value, b);
+    VALUE out = asom_int_norm(c, r);
+    mpz_clear(r); mpz_clear(b);
+    return out;
+}
+static VALUE big_times(CTX *c, VALUE self, VALUE other) {
+    struct asom_bignum *sb = (struct asom_bignum *)ASOM_VAL2OBJ(self);
+    if (ASOM_IS_FLO(other)) return asom_double_new(c, mpz_get_d(sb->value) * asom_val2flo(other));
+    struct asom_object *o = ASOM_IS_OBJ(other) ? ASOM_VAL2OBJ(other) : NULL;
+    if (o && o->klass == c->cls_double) return asom_double_new(c, mpz_get_d(sb->value) * ((struct asom_double *)o)->value);
+    mpz_t r, b; mpz_init(r); mpz_init(b);
+    any_int_to_mpz(other, b);
+    mpz_mul(r, sb->value, b);
+    VALUE out = asom_int_norm(c, r);
+    mpz_clear(r); mpz_clear(b);
+    return out;
+}
+
+static VALUE big_negated(CTX *c, VALUE self) {
+    struct asom_bignum *sb = (struct asom_bignum *)ASOM_VAL2OBJ(self);
+    mpz_t r; mpz_init(r); mpz_neg(r, sb->value);
+    VALUE out = asom_int_norm(c, r);
+    mpz_clear(r);
+    return out;
+}
+static VALUE big_abs(CTX *c, VALUE self) {
+    struct asom_bignum *sb = (struct asom_bignum *)ASOM_VAL2OBJ(self);
+    if (mpz_sgn(sb->value) >= 0) return self;
+    return big_negated(c, self);
+}
+
+#define BIG_CMP_PRIM(name, op) \
+    static VALUE big_##name(CTX *c, VALUE self, VALUE other) { \
+        struct asom_bignum *sb = (struct asom_bignum *)ASOM_VAL2OBJ(self); \
+        if (ASOM_IS_FLO(other)) \
+            return (mpz_get_d(sb->value) op asom_val2flo(other)) ? c->val_true : c->val_false; \
+        struct asom_object *o = ASOM_IS_OBJ(other) ? ASOM_VAL2OBJ(other) : NULL; \
+        if (o && o->klass == c->cls_double) \
+            return (mpz_get_d(sb->value) op ((struct asom_double *)o)->value) ? c->val_true : c->val_false; \
+        mpz_t b; mpz_init(b); any_int_to_mpz(other, b); \
+        int cmp = mpz_cmp(sb->value, b); mpz_clear(b); \
+        return (cmp op 0) ? c->val_true : c->val_false; \
+    }
+
+BIG_CMP_PRIM(lt, <)
+BIG_CMP_PRIM(gt, >)
+BIG_CMP_PRIM(le, <=)
+BIG_CMP_PRIM(ge, >=)
+BIG_CMP_PRIM(eq_, ==)
+
+static VALUE big_neq(CTX *c, VALUE self, VALUE other) {
+    VALUE eq = big_eq_(c, self, other);
+    return eq == c->val_true ? c->val_false : c->val_true;
+}
+
+static VALUE big_asString(CTX *c, VALUE self) {
+    struct asom_bignum *sb = (struct asom_bignum *)ASOM_VAL2OBJ(self);
+    char *str = mpz_get_str(NULL, 10, sb->value);
+    VALUE out = make_cstr_string(c, str);
+    // mpz_get_str(NULL, ...) malloc's via the GMP allocator — Boehm
+    // doesn't track it. We can't free it portably without knowing the
+    // allocator; live with the small leak (per asString call).
+    return out;
+}
+
+static VALUE big_print(CTX *c, VALUE self) {
+    struct asom_bignum *sb = (struct asom_bignum *)ASOM_VAL2OBJ(self);
+    mpz_out_str(stdout, 10, sb->value);
+    (void)c;
+    return self;
+}
+static VALUE big_println(CTX *c, VALUE self) {
+    big_print(c, self); printf("\n");
+    return self;
+}
+
+static VALUE big_asDouble(CTX *c, VALUE self) {
+    struct asom_bignum *sb = (struct asom_bignum *)ASOM_VAL2OBJ(self);
+    return asom_double_new(c, mpz_get_d(sb->value));
+}
+
+static VALUE big_asInteger(CTX *c, VALUE self) {
+    (void)c;
+    return self; // already integer
+}
+
+static VALUE big_raisedto_(CTX *c, VALUE self, VALUE other) {
+    if (!ASOM_IS_INT(other) || ASOM_VAL2INT(other) < 0) {
+        struct asom_bignum *sb = (struct asom_bignum *)ASOM_VAL2OBJ(self);
+        return asom_double_new(c, pow(mpz_get_d(sb->value), to_double_value(c, other)));
+    }
+    struct asom_bignum *sb = (struct asom_bignum *)ASOM_VAL2OBJ(self);
+    mpz_t r; mpz_init(r);
+    mpz_pow_ui(r, sb->value, (unsigned long)ASOM_VAL2INT(other));
+    VALUE out = asom_int_norm(c, r);
+    mpz_clear(r);
+    return out;
+}
 
 // ---------------------------------------------------------------------------
 // Double
@@ -1440,6 +1690,27 @@ asom_install_primitives(CTX *c)
     def_prim(c->cls_integer, "<<",           int_shl,              1);
     def_prim(c->cls_integer, ">>",           int_shr,              1);
     def_prim(c->cls_integer, ">>>",          int_shr,              1);
+    def_prim(c->cls_integer, "raisedTo:",    int_raisedto_,        1);
+
+    // LargeInteger (asom_bignum). Mirror the Integer surface so SOM
+    // code that lifts a SmallInteger past 62 bits keeps working.
+    def_prim(c->cls_bignum,  "+",            big_plus,             1);
+    def_prim(c->cls_bignum,  "-",            big_minus,            1);
+    def_prim(c->cls_bignum,  "*",            big_times,            1);
+    def_prim(c->cls_bignum,  "<",            big_lt,               1);
+    def_prim(c->cls_bignum,  ">",            big_gt,               1);
+    def_prim(c->cls_bignum,  "<=",           big_le,               1);
+    def_prim(c->cls_bignum,  ">=",           big_ge,               1);
+    def_prim(c->cls_bignum,  "=",            big_eq_,              1);
+    def_prim(c->cls_bignum,  "<>",           big_neq,              1);
+    def_prim(c->cls_bignum,  "negated",      big_negated,          0);
+    def_prim(c->cls_bignum,  "abs",          big_abs,              0);
+    def_prim(c->cls_bignum,  "asString",     big_asString,         0);
+    def_prim(c->cls_bignum,  "print",        big_print,            0);
+    def_prim(c->cls_bignum,  "println",      big_println,          0);
+    def_prim(c->cls_bignum,  "asDouble",     big_asDouble,         0);
+    def_prim(c->cls_bignum,  "asInteger",    big_asInteger,        0);
+    def_prim(c->cls_bignum,  "raisedTo:",    big_raisedto_,        1);
 
     // Double — arith / compare get prim_kind tags so node_send1 can rewrite
     // hot call sites to the flonum-fast send1_dbl* variants.

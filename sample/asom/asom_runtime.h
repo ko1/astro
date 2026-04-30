@@ -27,6 +27,13 @@ void  asom_global_set(CTX *c, const char *name, VALUE v);
 VALUE asom_make_block(CTX *c, struct Node *body, uint32_t num_params, uint32_t num_locals, uint32_t no_nlr);
 VALUE asom_block_invoke(CTX *c, struct asom_block *b, VALUE *args, uint32_t nargs);
 
+// Bignum construction. Caller passes an mpz_t; the helper copies it
+// into a heap-boxed asom_bignum and returns it as a VALUE. If the value
+// fits in 62-bit SmallInteger after the operation it falls back to
+// ASOM_INT2VAL so the result re-tightens (asom_int_norm).
+VALUE asom_bignum_new(CTX *c, const mpz_t v);
+VALUE asom_int_norm(CTX *c, const mpz_t v);   // bignum if overflow, smallint if fits
+
 // Send — slow path (cache miss + DNU). The IC fast path is the
 // `static inline asom_send` below.
 VALUE asom_send_slow(CTX *c, VALUE receiver, const char *selector,

@@ -268,6 +268,35 @@ asom_double_new(CTX *c, double v)
     return ASOM_OBJ2VAL(d);
 }
 
+// Bignum construction (heap-boxed mpz_t). Caller-owned mpz_t is copied.
+VALUE
+asom_bignum_new(CTX *c, const mpz_t v)
+{
+    struct asom_bignum *b = calloc(1, sizeof(*b));
+    b->hdr.klass = c->cls_bignum;
+    mpz_init_set(b->value, v);
+    return ASOM_OBJ2VAL(b);
+}
+
+// Normalising integer constructor: if `v` fits in 62-bit SmallInteger
+// range, return it as a tagged immediate (ASOM_INT2VAL); otherwise
+// box as asom_bignum. This is the canonical "constructor" for
+// arithmetic results that may have overflowed and may have come back.
+//
+// 62-bit signed range: [-2^61, 2^61 - 1].
+VALUE
+asom_int_norm(CTX *c, const mpz_t v)
+{
+    if (mpz_fits_slong_p(v)) {
+        long s = mpz_get_si(v);
+        // Keep one extra sign bit available for the tag shift.
+        if (s >= -(long)(1L << 61) && s < (long)(1L << 61)) {
+            return ASOM_INT2VAL((intptr_t)s);
+        }
+    }
+    return asom_bignum_new(c, v);
+}
+
 VALUE
 asom_string_new(CTX *c, const char *bytes, size_t len)
 {
@@ -915,6 +944,7 @@ asom_runtime_init(CTX *c)
     c->cls_true     = asom_bootstrap_class("True",        c->cls_boolean);
     c->cls_false    = asom_bootstrap_class("False",       c->cls_boolean);
     c->cls_integer  = asom_bootstrap_class("Integer",     c->cls_object);
+    c->cls_bignum   = asom_bootstrap_class("LargeInteger", c->cls_integer);
     c->cls_double   = asom_bootstrap_class("Double",      c->cls_object);
     c->cls_string   = asom_bootstrap_class("String",      c->cls_object);
     c->cls_symbol   = asom_bootstrap_class("Symbol",      c->cls_string);

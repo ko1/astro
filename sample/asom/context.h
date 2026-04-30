@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <gc.h>
+#include <gmp.h>
 
 // All allocations route through Boehm GC. The libc-shape macros
 // preserve the existing call sites verbatim, so asom_runtime.c /
@@ -126,6 +127,15 @@ struct asom_array {
 struct asom_double {
     struct asom_object hdr;
     double value;
+};
+
+// Bignum: SmallInteger overflow promotes to a heap-boxed mpz_t. The
+// 62-bit tagged Integer covers most arithmetic; this wrapper takes
+// over for anything outside, matching SOM's transparent
+// SmallInteger -> LargeInteger hierarchy.
+struct asom_bignum {
+    struct asom_object hdr;
+    mpz_t value;
 };
 
 // Tag identifying which built-in primitive a method is, so call sites can
@@ -252,6 +262,7 @@ typedef struct asom_ctx {
     struct asom_class *cls_false;
     struct asom_class *cls_integer;
     struct asom_class *cls_double;
+    struct asom_class *cls_bignum;
     struct asom_class *cls_string;
     struct asom_class *cls_symbol;
     struct asom_class *cls_array;
