@@ -292,6 +292,47 @@ GC が無いので回収はしない（フレーム同様）。1 回のベンチ
 性能効果: **Mandelbrot 0.794s → 0.556s (1.43× 高速化)**。NBody も
 同様の数値計算系で寄与する見込み（手元では未計測）。
 
+### Flonum tagging（Double を VALUE 即値化）
+
+VALUE エンコーディングを 1-bit int タグから 2-bit に拡張し、CRuby 流の
+biased-exponent 圧縮で **Double を VALUE word 内に即値で持つ**:
+
+```
+...x1   -> SmallInteger  (low bit 1, top 63 bits 値)
+...10   -> Flonum        (low 2 bits 10, biased double bits)
+...00   -> object pointer
+```
+
+代表値 (biased exponent ∈ [897, 1150]、abs ≈ 2^-126 〜 2^127) はロスレス
+で 62 bit に詰まる。範囲外（denormal、巨大 exponent）は従来通り
+`struct asom_double` を bump arena に boxed allocation。
+
+この変更で Mandelbrot のような **中間 Double が無数に作られて即捨て** の
+パターンで:
+
+- `asom_double_new` の bump 進行 + class field write が消える
+- heap-double の pointer-deref 経由のフィールド read が消える
+- L1 cache 圧が下がる
+- 結果値が register に乗ったまま次の演算に流れる
+
+性能効果（5 iters × inner=350、AOT-cached、best-of-3）:
+
+| ベンチ | flonum 前 | flonum 後 | 倍率 |
+|---|---|---|---|
+| Mandelbrot interp | 724 ms | **52 ms** | **14×** |
+| Mandelbrot AOT | 503 ms | **33 ms** | **15×** |
+
+Mandelbrot AOT は Truffle (425 ms) を **12.9× 引き離す** に変化。
+他のベンチ（Sieve / Bounce / Storage / TreeSort / Towers /
+QuickSort）は ±5% で同等 — 中間 Double を作らないので flonum
+の出番がない。Bounce が変わらなかったことで「Ball field の boxed
+double はそのまま」と判明、ここを潰すには **shape ベースの field
+unbox** が要る（`done.md` の続き、保留）。
+
+実装は `context.h` の VALUE マクロ群と `asom_runtime.{h,c}` /
+`asom_primitives.c` の限定的な分岐追加だけ。AST / Node 層は無改造。
+SD shard の Merkle hash も変わらず、AOT cache は再 bake で互換。
+
 ### `to:do:` / `to:by:do:` / `timesRepeat:` インライン化
 
 `from to: end do: [ :var | body ]` のような Integer 受信の繰り返し系も
