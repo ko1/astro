@@ -1,83 +1,109 @@
-# koruby — kind of Ruby
+# koruby — *kind of Ruby*
 
-ASTro framework を使った Ruby サブセット処理系。
-naruby / abruby を参考に **CRuby C extension ではない、スタンドアロン Ruby 処理系** として実装。
+ASTro framework を用いた **CRuby とは独立した** Ruby 処理系。
+naruby (整数のみ Ruby サブセット) と abruby (CRuby C extension) を踏まえ、**スタンドアロンで動く全機能 Ruby 処理系** を目指して実装中。
 
-## 設計方針
+## 概要
 
-- **VALUE 表現** — CRuby x86_64 互換 (FIXNUM/FLONUM/SYMBOL/Qnil/Qtrue/Qfalse の即値、ヒープオブジェクトは `RBasic`互換ヘッダで開始)。CRuby のコードを将来流用しやすいように。
-- **GC** — Boehm GC (libgc, conservative)。ノードや VALUE の手動 mark/sweep が不要で、書きやすい。
-- **Bignum** — GMP (mpz_t)。`Integer` クラスは Fixnum ↔ Bignum を透過に扱う。
-- **パーサ** — Prism (CRuby と同じ AST 生成器)。`prism/` は naruby のものへの symlink。
-- **AST ノード** — ASTro `node.def` で定義し、`koruby_gen.rb` が `ID`/`intptr_t`/`struct method_cache *` 等 koruby 固有型のハッシュ・特化サポートを追加。
-- **クロージャ** — `__shared-fp__` 方式。`yield` で呼ばれるブロックは親フレームと **同じ fp** を共有する（escape しない前提）。`param_base` でブロック自身のローカル開始位置を記録。
+- **VALUE 表現は CRuby x86_64 互換。** `Qfalse=0`, `Qnil=8`, `Qtrue=0x14`, FIXNUM=低位ビット 1, FLONUM=低位 2 ビット 0b10, SYMBOL=低位 8 ビット 0x0c, ヒープオブジェクトは `RBasic { flags, klass }` ヘッダで開始。これにより CRuby のソースコードを将来流用しやすくしている (例: `array.c` の Array 実装を持ってくれば `RARRAY_LEN`/`RARRAY_PTR` 系マクロが意味を持つ)。
+- **GC: Boehm GC (libgc).** Conservative GC のためルート登録不要。マーク関数を書く必要がない代わりに、long-running ワークロードで pause が naruby の `malloc`-and-leak より遅くなる場合あり。
+- **Bignum: GMP (libgmp).** Fixnum オーバフロー時に透過的に `mpz_t` 経由のヒープ Bignum へ昇格。
+- **パーサ: Prism.** CRuby と同じ `prism` を使用 (`prism/` は naruby の build へ symlink)。
+- **AST: ASTro.** `node.def` で各ノードの evaluator を C で書き、`koruby_gen.rb` (ASTroGen サブクラス) が `ID` / `intptr_t` / `struct method_cache *` などの koruby 固有型を扱うハッシュ・特化サポートを追加。
+- **クロージャ: 共有 fp 方式.** `yield` で呼ばれるブロックは親フレームと **同じ fp を共有** する (escape しない前提)。`param_base` でブロック自身のローカル開始位置を記録。escape 可能な Proc では env を heap 化する必要があるが、現状未対応。
+- **例外伝搬: state propagation.** `setjmp/longjmp` を使わず、`CTX::state` に `KORB_NORMAL/RAISE/RETURN/BREAK/NEXT` を持たせ、各 `EVAL_ARG` の後に分岐 (`UNLIKELY` 付き)。`node_rescue`/`node_ensure` で state をクリア。詳細は [docs/runtime.md](./docs/runtime.md)。
 
-## 実装済み機能
+## 現状 (Status)
 
-| カテゴリ | サポート |
+### 動くもの
+
+- 整数 (Fixnum/Bignum)、Float、文字列、Symbol、true/false/nil、Array、Hash、Range
+- ローカル変数 (closure depth 対応)、ivar、gvar、lexical 定数 (cref チェイン)
+- `if`/`unless`/`while`/`until`/`break`/`next`/`return`、`&&`/`||`/`!`
+- `case`/`when` (内部で if-chain に lower)
+- 多重代入 `a, b, c = expr`
+- 算術 `+ - * / %` ＋ 比較 ＋ ビット演算 (Fixnum 高速パス、オーバフロー時 Bignum)
+- `def`/`class`/`module`、メソッド継承、メソッド呼出 (インラインキャッシュ)
+- `yield`/Proc/`->`/`{|x|...}`、`Proc#call`
+- `begin`/`rescue`/`ensure`/`raise`、Exception クラス階層
+- `super`/`super(args)`/`super` (引数なし forward)
+- attr_reader/writer/accessor、include、private/public/protected (no-op)
+- `Struct.new`、`File.read`/`File.join`/`File.exist?`、`STDOUT`/`STDERR`/`$stdout`/`$stderr`
+- `require`/`require_relative`/`load` (循環防止)
+- 多数の組込メソッド (Kernel, Integer, Float, String, Array, Hash, Range, Symbol, Proc, Class, Module)
+- ARGV/ENV (top-level 定数)
+
+### 動かないもの
+
+- splat 引数 (`*args`)、kwargs (`**opts`)、ブロック引数 (`&blk`) のメソッド受け側
+- `Comparable`/`Enumerable` の真の mixin (現在は flatten copy)
+- `define_method`、特異クラス (singleton class)
+- `Object#method`、`Method`/`UnboundMethod` クラス
+- 真の Symbol#to_proc
+- 多重代入の splat / nested patterns
+- 真の正規表現 (Regexp は文字列スタブ)
+- `Fiber`、Thread
+- IO の本格実装、Encoding、Float の細かい挙動 (Infinity, NaN)
+
+詳細は [docs/done.md](./docs/done.md) と [docs/todo.md](./docs/todo.md) を参照。
+
+## ベンチマーク (fib(35), x86_64 Linux)
+
+| 構成 | 時間 |
 |---|---|
-| リテラル | 整数 (Fixnum/Bignum)、浮動小数、文字列、シンボル、true/false/nil、self、配列、ハッシュ、Range |
-| 変数 | ローカル変数 (depth対応)、インスタンス変数 (shape ベース)、グローバル変数、定数、`Foo::Bar` パス |
-| 制御 | if / unless / while / until / break / next / return |
-| 演算 | `+ - * / % == != < <= > >= << >> & \| ^`、Fixnum 高速パス + オーバーフロー時 GMP 昇格、Array/Hash の [] []= |
-| 論理 | `&& || !` (短絡評価) |
-| メソッド | `def`、明示レシーバ呼び出し、暗黙 self、ブロック付き、`yield`、インラインキャッシュ |
-| クラス | `class Foo < Bar`、`module M`、メソッド継承、`Class.new` |
-| ブロック/Proc | `{|x| ...}`、`->{}`、Proc#call、yield 経由のブロック呼び出し |
-| 例外 | `begin/rescue`、`raise`、`Kernel#raise` |
-| 組込 | Kernel: p / puts / print / class / inspect / to_s / nil? / is_a? / respond_to? <br> Integer: 算術・比較・ビット演算・to_s/i/f / times / succ <br> Array: size/[] / push / each / map / select / reduce / join / inspect / == <br> Hash: [] / []= / size / each <br> Range: each / first / last / to_a <br> String: + / << / size / == / to_sym <br> Class: new / name <br> Proc: call |
+| ruby (no JIT) | 0.90s |
+| **ruby --yjit** | **0.15s** |
+| koruby (interp, -O2) | 0.55s |
+| koruby (AOT 特化, -O3) | 0.24s |
 
-未対応の主な機能: case/when, 多重代入, 多くの ivar attr_*, ensure, super, lambda の return 文セマンティクス, 定数の lexical scope, モジュール include の mixin, 文字列 interpolation の細かい挙動など。
+- インタプリタ単体で CRuby (no JIT) の 1.6× 速い
+- AOT 特化で 3.6× 速い
+- YJIT には 1.6× 負け (ASTro の特化はノードグラフのインライン化までで、メソッド呼出ディスパッチ自体は完全には消せない。PG-baked call_static で詰めれば近づく見込み — 詳細は [docs/perf.md](./docs/perf.md))
 
 ## ビルド & 実行
 
 ```sh
-make                     # ビルド
-./koruby fib.ko.rb       # 実行
-./koruby -e 'p 1+2'      # 一行評価
-./koruby --dump -e '...' # AST ダンプ
-./koruby -c fib.ko.rb    # 特化Cコード生成 (node_specialized.c)
+make                                # 1回目ビルド
+./koruby fib.ko.rb                  # 実行
+./koruby -e 'p 1+2'                 # 一行評価
+./koruby --dump -e '...'            # AST ダンプ
+./koruby file.rb arg1 arg2 ...      # ARGV へ渡す
+
+# AOT 特化 (二段ビルド)
+make clean && make                  # 1回目: 普通の interpreter
+./koruby -c your_script.rb          # node_specialized.c を生成
+touch node.c && make optflags=-O3   # 2回目: 特化を埋め込んでビルド
+./koruby your_script.rb             # 高速版実行
 ```
 
-依存: `libgc-dev`、`libgmp-dev`、prism (build/static にある同梱版を利用)。
-
-### 二段ビルド (AOT 特化)
-
-```sh
-make clean
-make                                      # 1回目: 普通の interpreter
-./koruby -c fib40.ko.rb                   # node_specialized.c を生成
-touch node.c && make optflags="-O3"      # 2回目: 特化を埋め込んでビルド
-./koruby fib40.ko.rb                      # 高速版実行
-```
-
-## ベンチマーク (fib(40), x86_64)
-
-| 構成 | 時間 |
-|---|---|
-| ruby (no JIT) | 4.5s |
-| **ruby --yjit** | **1.2s** |
-| koruby (interp) | 7.9s |
-| koruby (AOT 特化, -O3) | 3.0s |
+依存: `libgc-dev`、`libgmp-dev`、prism (build/static 同梱版を symlink で利用)。
 
 ## アーキテクチャ
 
 ```
 koruby/
-├── context.h          # VALUE, CTX, method_cache などコア型
-├── object.h object.c  # クラス・オブジェクト・String/Array/Hash/Range/Bignum
-├── builtins.c         # 組込メソッドの cfunc 実装
-├── node.def           # ASTro AST ノード evaluator (node_*  EVAL 本体)
-├── node.h node.c      # ASTro ランタイム (HASH/EVAL/OPTIMIZE/SPECIALIZE) + 生成 .c の include
-├── koruby_gen.rb      # ASTroGen サブクラス (ID/intptr_t/method_cache 対応)
+├── context.h          # VALUE, CTX, method_cache, cref など中核型
+├── object.{h,c}       # クラス・オブジェクト・String/Array/Hash/Range/Bignum
+│                      #   Boehm GC ラッパ (korb_xmalloc 等)、ID intern、メソッド
+│                      #   ディスパッチ、require/load
+├── builtins.c         # 組込メソッド本体 (cfunc 実装)
+├── node.def           # ASTro AST evaluator (約 70 ノード)
+├── node.{h,c}         # ASTro ランタイム (HASH/EVAL/OPTIMIZE/SPECIALIZE)
+├── koruby_gen.rb      # ASTroGen サブクラス (ID/intptr_t/method_cache 拡張)
 ├── parse.c            # Prism AST → koruby AST (transduce + closure depth)
-├── main.c             # entry point
-├── prism/             # symlink → ../naruby/prism
+├── main.c             # entry point + ARGV/環境セットアップ
+├── prism/             # symlink → ../naruby/prism (build/libprism.{a,so})
+├── docs/              # 詳細ドキュメント
+│   ├── done.md        # 実装済み機能 / 性能改善
+│   ├── todo.md        # 未実装 / 今後の課題
+│   ├── runtime.md     # 実装の解説 (特にメソッド dispatch)
+│   └── perf.md        # 成功 / 失敗した最適化のまとめ
 └── Makefile
 ```
 
-## 既知の制限
+## 関連ドキュメント
 
-- Boehm GC は conservative なので、long-running プログラムでは naruby より GC pause が大きい場合あり。
-- Proc 連結ブロックは escape しない前提 (env が親 fp を直接指す)。
-- Bignum 演算は GMP に直接委譲、Fixnum/Bignum 混合の比較は ko_int_cmp で。
+- [docs/runtime.md](./docs/runtime.md) — 実装の仕組み (VALUE 表現、メソッド呼出、クロージャ、例外、cref)
+- [docs/perf.md](./docs/perf.md) — ベンチマーク結果と最適化の経緯 (成功 / 失敗どちらも)
+- [docs/done.md](./docs/done.md) — 機能ごとの実装ステータス
+- [docs/todo.md](./docs/todo.md) — 残課題 (言語仕様 / 性能の双方)
