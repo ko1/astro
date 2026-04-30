@@ -8,6 +8,24 @@
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
+#include <gc.h>
+
+// All allocations route through Boehm GC. The libc-shape macros
+// preserve the existing call sites verbatim, so asom_runtime.c /
+// asom_primitives.c / asom_parse.c / node.c continue to read as
+// `calloc(1, sizeof(*x))` etc. Boehm's GC_MALLOC always zero-clears,
+// so this is a behaviour-preserving redirect; free is a no-op
+// (the collector reclaims unreachable blocks).
+//
+// Define order: this block sits *after* the system headers above, so
+// libc / libgc internal callers above this point keep their direct
+// libc symbols. From this point on, every `malloc` / `calloc` /
+// `realloc` / `strdup` / `free` in asom code becomes a GC equivalent.
+#define malloc(n)     GC_MALLOC(n)
+#define calloc(n, s)  GC_MALLOC((size_t)(n) * (size_t)(s))
+#define realloc(p, n) GC_REALLOC((p), (n))
+#define strdup(s)     GC_STRDUP(s)
+#define free(p)       ((void)(p))
 
 #define ASOM_DEBUG 1
 #if ASOM_DEBUG

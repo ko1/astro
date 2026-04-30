@@ -24,7 +24,7 @@ CFLAGS  := -I. -I$(RUNTIME) $(optflags) -Wall -Wno-unused-parameter -Wno-unused-
 SRCS = main.c node.c asom_runtime.c asom_loader.c asom_parse.c asom_primitives.c
 
 asom: $(SRCS) Makefile $(NODE_GENFILES) context.h node.h asom_runtime.h asom_parse.h
-	$(CC) $(CFLAGS) -rdynamic -o asom $(SRCS) -ldl -lm
+	$(CC) $(CFLAGS) -rdynamic -o asom $(SRCS) -ldl -lm -lgc
 
 gen $(NODE_GENFILES): node.def asom_gen.rb ../../lib/astrogen.rb
 	$(ASTROGEN)

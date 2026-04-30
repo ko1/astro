@@ -238,7 +238,7 @@ struct asom_double_arena {
     struct asom_double *end;
 };
 
-static __thread struct asom_double_arena g_double_arena;
+static struct asom_double_arena g_double_arena;
 
 static __attribute__((noinline)) struct asom_double *
 asom_double_arena_grow(void)
@@ -378,7 +378,7 @@ struct asom_unwind {
     struct asom_unwind *parent;
 };
 
-static __thread struct asom_unwind *g_unwind_top;
+static struct asom_unwind *g_unwind_top;
 
 void
 asom_nonlocal_return(CTX *c, VALUE v)
@@ -494,7 +494,7 @@ struct asom_block_arena {
     struct asom_block_record *end;
 };
 
-static __thread struct asom_block_arena g_block_arena;
+static struct asom_block_arena g_block_arena;
 
 static __attribute__((noinline)) struct asom_block_record *
 asom_block_arena_grow(void)
@@ -570,7 +570,7 @@ struct asom_frame_pool_node {
     // locals[] follows inline (variable length per bucket)
 };
 
-static __thread struct asom_frame_pool_node *g_frame_pool[ASOM_FRAME_POOL_BUCKETS];
+static struct asom_frame_pool_node *g_frame_pool[ASOM_FRAME_POOL_BUCKETS];
 
 // Returns (frame, locals) where locals points just past `frame` in the
 // same allocation. `out_pool_slots` is set to the bucket size used (0 if

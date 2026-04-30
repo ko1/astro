@@ -78,6 +78,7 @@ parse_int_env(const char *name, int dflt)
 int
 main(int argc, char **argv)
 {
+    GC_INIT();
     OPTION.classpath = "./SOM/Smalltalk:./SOM/Examples:./SOM/TestSuite:.";
     OPTION.pg_threshold = parse_int_env("ASOM_PG_THRESHOLD", 100);
     OPTION.code_store_dir = getenv("ASOM_CODE_STORE");
