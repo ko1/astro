@@ -66,32 +66,54 @@ typedef intptr_t VALUE;
 #define ASOM_OBJ2VAL(p) ((VALUE)(p))
 #define ASOM_VAL2OBJ(v) ((struct asom_object *)(v))
 
+// 62-bit signed range usable for ASOM_INT2VAL — anything outside must
+// be heap-boxed as asom_bignum. Defined here so node.def (specialized
+// arith nodes) and asom_primitives.c (int_plus etc.) share one bound.
+#define ASOM_INT_MIN  (-(intptr_t)((intptr_t)1 << 61))
+#define ASOM_INT_MAX  ((intptr_t)((intptr_t)1 << 61) - 1)
+
 // Flonum encode/decode (CRuby-style biased-exponent shift).
 // `asom_flo2val_try` returns 0 on out-of-range (caller falls back to heap);
 // callers that hold a known-representable double can use the unconditional
 // macros. `0.0` uses a special encoding (only positive zero — negative zero
 // loses sign through this path, matching CRuby).
 //
-// Range check: ((bits>>60) & 7) ∈ {3, 4} — i.e. exponent biased to be near
-// 1.0 (abs around 2^0 to 2^±127). Outside falls back to boxed.
+// Two range checks:
+//   1. exponent in [897, 1150] — `((bits>>60) & 7) ∈ {3, 4}`
+//   2. mantissa low bit == 0   — otherwise the OR with the flonum tag
+//      (low 2 bits = 0b10) would collide with SmallInteger's low bit = 1.
+// Doubles that fail either check fall back to heap-boxed asom_double.
+// This is lossless: the decoder recovers the exact original bit pattern.
+// 0x3C in the top byte (= biased exponent contribution that recentres
+// the encoded payload around 0). The earlier draft wrote
+// `(uint64_t)0x3C << 60` which is in fact 0xC000000000000000 (only the
+// low 4 bits of 0x3C survive after a 60-bit shift), and that collided
+// the -2.0 encoding with the 0.0 special tag.
+#define ASOM_FLONUM_BIAS  ((uint64_t)0x3C00000000000000ULL)
+
 static inline VALUE
 asom_flo2val_try(double d)
 {
-    union { double d; uint64_t v; } t;
-    t.d = d;
-    if (t.v == 0) return ((VALUE)1 << 1) | ASOM_TAG_FLO;
-    int bits = (int)((t.v >> 60) & 0x7);
-    if ((bits - 3) & ~0x01) return 0;
-    return (VALUE)((t.v - ((uint64_t)0x3C << 60)) | ASOM_TAG_FLO);
+    // memcpy-based bit reinterpret. union type punning is technically
+    // UB under strict aliasing; using __builtin_memcpy is the
+    // strict-aliasing-safe equivalent.
+    uint64_t bits;
+    __builtin_memcpy(&bits, &d, sizeof(bits));
+    if (bits == 0) return ((VALUE)1 << 1) | ASOM_TAG_FLO;
+    int top = (int)((bits >> 60) & 0x7);
+    if ((top - 3) & ~0x01) return 0;
+    if (bits & 0x1) return 0;  // mantissa LSB = 1: would collide with int tag
+    return (VALUE)((bits - ASOM_FLONUM_BIAS) | ASOM_TAG_FLO);
 }
 
 static inline double
 asom_val2flo(VALUE v)
 {
     if (v == (((VALUE)1 << 1) | ASOM_TAG_FLO)) return 0.0;
-    union { double d; uint64_t v; } t;
-    t.v = ((uint64_t)v - ASOM_TAG_FLO) + ((uint64_t)0x3C << 60);
-    return t.d;
+    uint64_t bits = ((uint64_t)v & ~(uint64_t)0x3) + ASOM_FLONUM_BIAS;
+    double d;
+    __builtin_memcpy(&d, &bits, sizeof(d));
+    return d;
 }
 
 // Forward declarations.

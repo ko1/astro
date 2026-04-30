@@ -16,6 +16,21 @@ node_int_lit(CTX * restrict c, NODE * restrict n, int32_t value)
     return ASOM_INT2VAL((intptr_t)value);
 }
 
+// Integer literal that didn't fit a 32-bit `int_lit`. `bytes` is the
+// decimal source (used for Merkle hash so the SD chain stays
+// deterministic across processes). `cached` is the parse-time
+// asom_int_norm of the value: a tagged smallint when the literal
+// fits 62-bit, otherwise a heap-boxed asom_bignum. Either way the
+// runtime evaluation just reads it back — no mpz parse on the hot
+// path. The VALUE-typed `cached` is excluded from the structural
+// hash by asom_gen.rb (same pattern as node_string_val).
+NODE_DEF
+node_bignum_lit(CTX * restrict c, NODE * restrict n, const char *bytes, VALUE cached)
+{
+    (void)c; (void)bytes;
+    return cached;
+}
+
 NODE_DEF
 node_string_lit(CTX * restrict c, NODE * restrict n, const char *bytes)
 {
@@ -954,13 +969,23 @@ node_whilefalse_pool(CTX * restrict c, NODE * restrict n, NODE *cond_stmts, NODE
 //  failure they swap back to node_send1 and re-dispatch via asom_send.
 // -----------------------------------------------------------------------------
 
+// Helper: result fits 62-bit smallint? Used by the int_* specialized
+// fast paths to detect overflow → fall back to generic for bignum
+// promotion via int_plus / int_minus / int_times in asom_primitives.c.
+#define ASOM_FITS_SMALLINT(out) \
+    ((out) >= ASOM_INT_MIN && (out) <= ASOM_INT_MAX)
+
 NODE_DEF @canonical=node_send1
 node_send1_intplus(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *arg0, const char *selector, struct asom_callcache *cc)
 {
     VALUE r = EVAL_ARG(c, recv);
     VALUE a = EVAL_ARG(c, arg0);
     if (__builtin_expect(ASOM_IS_INT(r) && ASOM_IS_INT(a), 1)) {
-        return ASOM_INT2VAL(ASOM_VAL2INT(r) + ASOM_VAL2INT(a));
+        intptr_t out;
+        if (LIKELY(!__builtin_add_overflow(ASOM_VAL2INT(r), ASOM_VAL2INT(a), &out)
+                   && ASOM_FITS_SMALLINT(out))) {
+            return ASOM_INT2VAL(out);
+        }
     }
     swap_dispatcher(n, &kind_node_send1);
     VALUE args[1] = { a };
@@ -973,7 +998,11 @@ node_send1_intminus(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *arg0,
     VALUE r = EVAL_ARG(c, recv);
     VALUE a = EVAL_ARG(c, arg0);
     if (__builtin_expect(ASOM_IS_INT(r) && ASOM_IS_INT(a), 1)) {
-        return ASOM_INT2VAL(ASOM_VAL2INT(r) - ASOM_VAL2INT(a));
+        intptr_t out;
+        if (LIKELY(!__builtin_sub_overflow(ASOM_VAL2INT(r), ASOM_VAL2INT(a), &out)
+                   && ASOM_FITS_SMALLINT(out))) {
+            return ASOM_INT2VAL(out);
+        }
     }
     swap_dispatcher(n, &kind_node_send1);
     VALUE args[1] = { a };
@@ -986,7 +1015,11 @@ node_send1_inttimes(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *arg0,
     VALUE r = EVAL_ARG(c, recv);
     VALUE a = EVAL_ARG(c, arg0);
     if (__builtin_expect(ASOM_IS_INT(r) && ASOM_IS_INT(a), 1)) {
-        return ASOM_INT2VAL(ASOM_VAL2INT(r) * ASOM_VAL2INT(a));
+        intptr_t out;
+        if (LIKELY(!__builtin_mul_overflow(ASOM_VAL2INT(r), ASOM_VAL2INT(a), &out)
+                   && ASOM_FITS_SMALLINT(out))) {
+            return ASOM_INT2VAL(out);
+        }
     }
     swap_dispatcher(n, &kind_node_send1);
     VALUE args[1] = { a };

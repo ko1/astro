@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 #include <ctype.h>
 #include <stdarg.h>
 #include <stdbool.h>
@@ -58,7 +59,10 @@ typedef struct {
     intptr_t ival;       // T_INTEGER
     double  dval;        // T_DOUBLE
     char *strval;        // T_STRING / T_IDENT / T_KEYWORD / T_OPSEQ (interned for ident/keyword)
+                         // For T_INTEGER also holds the digit string (for bignum-literal fall-back).
     bool   ws_before;    // true if whitespace/comment preceded this token
+    bool   ival_overflow;// true iff strtoll set ERANGE — `ival` is meaningless,
+                         // parse must use `strval` (digits) via mpz_set_str.
 } Token;
 
 typedef struct {
@@ -176,8 +180,15 @@ lex_advance(Lexer *L)
             t->dval = strtod(L->cur, NULL);
             t->kind = T_DOUBLE;
         } else {
+            errno = 0;
             t->ival = strtoll(L->cur, NULL, 10);
             t->kind = T_INTEGER;
+            // Capture the digit string for bignum-literal fall-back.
+            // Parser inspects this when `ival` overflows int32 / 62-bit
+            // smallint and emits node_bignum_lit instead of node_int_lit.
+            size_t n = (size_t)(p - L->cur);
+            t->strval = lex_intern_range(L->cur, n);
+            t->ival_overflow = (errno == ERANGE);
         }
         t->len = (size_t)(p - L->cur);
         L->cur = p;
@@ -381,6 +392,26 @@ lookup_field(Parser *P, const char *name, uint32_t *out_idx)
         if (arr[i] == name) { *out_idx = i; return true; }
     }
     return false;
+}
+
+// Parse-time helper: produce a VALUE from a T_INTEGER token (optionally
+// negated). Routes anything past int32 through GMP + asom_int_norm so
+// 64-bit and bignum literals round-trip correctly. Used by the literal-
+// array cases that need an immediate VALUE rather than a node.
+static VALUE
+int_token_value(Parser *P, const Token *t, bool negate)
+{
+    intptr_t v = negate ? -t->ival : t->ival;
+    bool overflow = t->ival_overflow || t->ival > INT32_MAX || t->ival < INT32_MIN;
+    if (!overflow && v >= ASOM_INT_MIN && v <= ASOM_INT_MAX) {
+        return ASOM_INT2VAL(v);
+    }
+    mpz_t m; mpz_init(m);
+    mpz_set_str(m, t->strval ? t->strval : "0", 10);
+    if (negate) mpz_neg(m, m);
+    VALUE out = asom_int_norm(P->ctx, m);
+    mpz_clear(m);
+    return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -1222,7 +1253,7 @@ parse_literal_array_elem(Parser *P)
 {
     Token *t = peek(P);
     switch (t->kind) {
-    case T_INTEGER: { intptr_t v = t->ival; lex_advance(P->L); return ASOM_INT2VAL(v); }
+    case T_INTEGER: { VALUE v = int_token_value(P, t, false); lex_advance(P->L); return v; }
     case T_DOUBLE:  { double v = t->dval; lex_advance(P->L); return asom_double_new(P->ctx, v); }
     case T_STRING:  { VALUE v = asom_string_new(P->ctx, t->strval, t->len); lex_advance(P->L); return v; }
     case T_IDENT:   { const char *s = t->strval; lex_advance(P->L); return asom_intern_symbol(P->ctx, s); }
@@ -1260,7 +1291,7 @@ parse_literal_array_elem(Parser *P)
         // Negative numeric literals inside #(...)
         if (t->strval && t->strval[0] == '-' && t->strval[1] == '\0') {
             lex_advance(P->L);
-            if (peek(P)->kind == T_INTEGER) { intptr_t v = -peek(P)->ival; lex_advance(P->L); return ASOM_INT2VAL(v); }
+            if (peek(P)->kind == T_INTEGER) { VALUE v = int_token_value(P, peek(P), true); lex_advance(P->L); return v; }
             if (peek(P)->kind == T_DOUBLE)  { double v = -peek(P)->dval; lex_advance(P->L); return asom_double_new(P->ctx, v); }
         }
         parser_error(P, "unexpected operator in literal array");
@@ -1345,8 +1376,20 @@ parse_primary(Parser *P)
         return make_var_get(P, name);
     }
     case T_INTEGER: {
+        // 32-bit smallint -> node_int_lit; out-of-int32 -> node_bignum_lit
+        // (parses the digit string into asom_int_norm at parse time, then
+        // the node just returns the cached VALUE on every dispatch).
         intptr_t v = t->ival;
+        const char *digits = t->strval;
+        bool overflow = t->ival_overflow || v > INT32_MAX || v < INT32_MIN;
         lex_advance(P->L);
+        if (overflow) {
+            mpz_t m; mpz_init(m);
+            mpz_set_str(m, digits, 10);
+            VALUE cached = asom_int_norm(P->ctx, m);
+            mpz_clear(m);
+            return ALLOC_node_bignum_lit(digits, cached);
+        }
         return ALLOC_node_int_lit((int32_t)v);
     }
     case T_DOUBLE: {
@@ -1475,8 +1518,31 @@ parse_primary(Parser *P)
         if (t->strval && t->strval[0] == '-' && t->strval[1] == '\0') {
             lex_advance(P->L);
             if (peek(P)->kind == T_INTEGER) {
-                intptr_t v = -peek(P)->ival;
+                // Snapshot before lex_advance — peek's Token gets
+                // overwritten by the next token.
+                Token *it = peek(P);
+                intptr_t  it_ival     = it->ival;
+                const char *it_digits = it->strval;
+                bool      it_overflow = it->ival_overflow;
                 lex_advance(P->L);
+                bool overflow = it_overflow || it_ival > INT32_MAX || it_ival < INT32_MIN;
+                intptr_t v = -it_ival;
+                if (overflow || (v < INT32_MIN || v > INT32_MAX)) {
+                    // Bignum path: parse the digit string, negate, cache.
+                    // The hash key is "-<digits>" so the structural hash
+                    // differs from the unnegated literal.
+                    const char *src = it_digits ? it_digits : "0";
+                    mpz_t m; mpz_init(m);
+                    mpz_set_str(m, src, 10);
+                    mpz_neg(m, m);
+                    VALUE cached = asom_int_norm(P->ctx, m);
+                    mpz_clear(m);
+                    size_t dl = strlen(src);
+                    char *buf = GC_MALLOC_ATOMIC(dl + 2);
+                    buf[0] = '-';
+                    memcpy(buf + 1, src, dl + 1);
+                    return ALLOC_node_bignum_lit(buf, cached);
+                }
                 return ALLOC_node_int_lit((int32_t)v);
             }
             if (peek(P)->kind == T_DOUBLE) {

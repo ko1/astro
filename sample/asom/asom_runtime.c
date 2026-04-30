@@ -253,7 +253,6 @@ asom_double_arena_grow(void)
 VALUE
 asom_double_new(CTX *c, double v)
 {
-    // Flonum fast path: representable doubles fit into the VALUE word.
     VALUE flo = asom_flo2val_try(v);
     if (LIKELY(flo)) return flo;
 
