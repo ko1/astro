@@ -42,12 +42,25 @@ class CastroNodeDef < ASTroGen::NodeDef
     # (so ccache reuses the SOs) and keeps the runtime body load to a
     # single indexed access against `c` (a register parameter).
     def build_specializer
-      return super if @name != 'node_call'
-      castro_build_call_specializer
+      case @name
+      when 'node_call' then castro_build_call_specializer
+      when 'node_call_static' then castro_build_call_static_specializer
+      else super
+      end
     end
 
     private
 
+    # SPECIALIZE override for `node_call` (recursive call form).  See
+    # node.def for context; key reason for overriding the framework
+    # default is to emit a direct `extern SD_<callee_hash>` call (so
+    # the linker resolves intra-`.so` to a perfect `addr32 call` even
+    # for self-recursive sites that the framework's `is_specializing`
+    # cycle break would otherwise downgrade to runtime indirect).  The
+    # stack VLA `F[%u]` matches the wastro-style frame allocation in
+    # node.def's body — same intent, but with the `local_cnt` baked
+    # as a literal integer so gcc treats `F` as a fixed-size array
+    # (better SROA than a VLA whose size is propagated via parameter).
     def castro_build_call_specializer
       <<~C
       static void
@@ -79,7 +92,7 @@ class CastroNodeDef < ASTroGen::NodeDef
                   dispatcher_name);
           fprintf(fp, "    dispatch_info(c, n, false);\\n");
           fprintf(fp, "    NODE *body = c->func_bodies[%u];\\n", func_idx);
-          // Allocate the callee's frame as a stack VLA with a baked
+          // Allocate the callee's frame as a stack array with a baked
           // literal size — gcc's SROA promotes its slots to registers
           // when the inlined call chain doesn't escape `&F`, which is
           // the whole point of this transform (see node.def
@@ -98,6 +111,68 @@ class CastroNodeDef < ASTroGen::NodeDef
           // branch.
           fprintf(fp, "    RESULT v = SD_%lx(c, body, F);\\n",
                   (unsigned long)callee_hash);
+          fprintf(fp, "    dispatch_info(c, n, true);\\n");
+          fprintf(fp, "    return RESULT_OK(v.value);\\n");
+          fprintf(fp, "}\\n\\n");
+      }
+      C
+    end
+
+    # SPECIALIZE override for `node_call_static` (non-recursive call).
+    # Framework default would route through the auto-generated
+    # `EVAL_node_call_static` whose VLA is sized by the parameter
+    # `local_cnt` — even after inline propagation gcc keeps it as a
+    # VLA and that limits SROA.  Bake the size as a literal here so
+    # `F` becomes a fixed-size array: gcc fully partial-SROA's its
+    # slots, and loop induction variables that live in `F[i]` get
+    # promoted to registers across iterations rather than spilling on
+    # every step.  Mandelbrot / sieve-style inner loops benefit.
+    def castro_build_call_static_specializer
+      <<~C
+      static void
+      SPECIALIZE_#{@name}(FILE *fp, NODE *n, bool is_public)
+      {
+          uint32_t arg_count = n->u.#{@name}.arg_count;
+          uint32_t arg_index = n->u.#{@name}.arg_index;
+          uint32_t local_cnt = n->u.#{@name}.local_cnt;
+          NODE *callee = n->u.#{@name}.callee;
+          if (!callee) {
+              fprintf(stderr, "SPECIALIZE_#{@name}: callee not patched\\n");
+              exit(1);
+          }
+          // Specialize the callee body before naming this SD's
+          // dispatcher — that way the recursive walk has a chance to
+          // emit the callee's chain as static-inline siblings, and
+          // we can refer to its root SD by name.
+          SPECIALIZE(fp, callee);
+          const char *dispatcher_name = alloc_dispatcher_name(n);
+          n->head.dispatcher_name = dispatcher_name;
+          const char *callee_disp = DISPATCHER_NAME(callee);
+
+          fprintf(fp, "// (#{@name} arg=%u local=%u)\\n",
+                  arg_index, local_cnt);
+          if (callee->head.flags.no_inline) {
+              fprintf(fp, "extern RESULT %s(CTX *restrict c, NODE *restrict n, VALUE *restrict fp);\\n",
+                      callee_disp);
+          } else {
+              fprintf(fp, "static inline RESULT %s(CTX *restrict c, NODE *restrict n, VALUE *restrict fp);\\n",
+                      callee_disp);
+          }
+
+          if (!is_public) fprintf(fp, "static inline ");
+          fprintf(fp, "__attribute__((no_stack_protector)) RESULT\\n");
+          fprintf(fp, "%s(CTX *restrict c, NODE *restrict n, VALUE *restrict fp)\\n{\\n",
+                  dispatcher_name);
+          fprintf(fp, "    dispatch_info(c, n, false);\\n");
+          fprintf(fp, "    VALUE F[%u];\\n", local_cnt);
+          for (uint32_t i = 0; i < arg_count; i++) {
+              fprintf(fp, "    F[%u] = fp[%u];\\n", i, arg_index + i);
+          }
+          for (uint32_t i = arg_count; i < local_cnt; i++) {
+              fprintf(fp, "    F[%u].i = 0;\\n", i);
+          }
+          fprintf(fp, "    RESULT v = %s(c, n->u.#{@name}.callee, F);\\n",
+                  callee_disp);
           fprintf(fp, "    dispatch_info(c, n, true);\\n");
           fprintf(fp, "    return RESULT_OK(v.value);\\n");
           fprintf(fp, "}\\n\\n");
