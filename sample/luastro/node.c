@@ -215,24 +215,31 @@ luastro_export_sd_wrappers(const char *path)
     src[sz] = '\0';
     fclose(fp);
 
-    // Collect every `SD_<hex>` token that appears as a function DEFINITION
-    // in this file — i.e. the name sits at the start of a line followed
-    // by `(`.  Forward-decls (one-liners ending with `;`) reference SDs
-    // whose body lives in another `.c`; emitting a wrapper here would
-    // create an undefined-symbol reference at dlopen time.
+    // Collect every `SD_<hex>` / `PGSD_<hex>` token that appears as a
+    // function DEFINITION in this file — i.e. the name sits at the start
+    // of a line followed by `(`.  Forward-decls (one-liners ending with
+    // `;`) reference SDs whose body lives in another `.c`; emitting a
+    // wrapper here would create an undefined-symbol reference at dlopen.
     //
     // Pattern matched (after the upcoming `_INL` rename, but the rename
-    // doesn't affect the start-of-line property): `\nSD_<hex>(`.
+    // doesn't affect the start-of-line property): `\n(PG)?SD_<hex>(`.
+    // Inline helper: returns prefix length if `p` starts with SD_ /
+    // PGSD_, else 0.  PGSD bake (file-keyed) names baked SDs PGSD_;
+    // AOT (file == NULL) uses SD_.
+    #define SD_PREFIX_LEN(p) ((p)[0] == 'S' && (p)[1] == 'D' && (p)[2] == '_' ? 3 \
+                              : (p)[0] == 'P' && (p)[1] == 'G' && (p)[2] == 'S' \
+                                && (p)[3] == 'D' && (p)[4] == '_' ? 5 : 0)
     size_t name_cap = 256, name_cnt = 0;
-    char (*names)[20] = (char (*)[20])malloc(name_cap * 20);
+    char (*names)[24] = (char (*)[24])malloc(name_cap * 24);
     for (const char *p = src; *p; ) {
         bool at_line_start = (p == src) || (p[-1] == '\n');
-        if (at_line_start && p[0] == 'S' && p[1] == 'D' && p[2] == '_') {
-            const char *q = p + 3;
+        size_t plen = at_line_start ? SD_PREFIX_LEN(p) : 0;
+        if (plen) {
+            const char *q = p + plen;
             while (isxdigit((unsigned char)*q)) q++;
             size_t len = q - p;
             // Definition: name immediately followed by `(`.
-            if (len >= 4 && len < 20 && *q == '(') {
+            if (len > plen && len < 24 && *q == '(') {
                 bool dup = false;
                 for (size_t i = 0; i < name_cnt; i++) {
                     if (strncmp(names[i], p, len) == 0 && names[i][len] == '\0') { dup = true; break; }
@@ -240,7 +247,7 @@ luastro_export_sd_wrappers(const char *path)
                 if (!dup) {
                     if (name_cnt >= name_cap) {
                         name_cap *= 2;
-                        names = (char (*)[20])realloc(names, name_cap * 20);
+                        names = (char (*)[24])realloc(names, name_cap * 24);
                     }
                     memcpy(names[name_cnt], p, len);
                     names[name_cnt][len] = '\0';
@@ -253,19 +260,19 @@ luastro_export_sd_wrappers(const char *path)
         }
     }
 
-    // Rewrite every SD_<hash> token in src to SD_<hash>_INL.  Worst-case
-    // length: 4 extra bytes per token.  Walk the source, copy to a new
-    // buffer, replace as we go.
+    // Rewrite every SD_<hash> / PGSD_<hash> token in src to *_INL.
+    // Worst-case length: 4 extra bytes per token.  Walk the source, copy
+    // to a new buffer, replace as we go.
     size_t out_cap = sz + name_cnt * 8 + 4096;
     char *out = (char *)malloc(out_cap);
     size_t out_len = 0;
     for (const char *p = src; *p; ) {
-        if (p[0] == 'S' && p[1] == 'D' && p[2] == '_' &&
-            (p == src || !(isalnum((unsigned char)p[-1]) || p[-1] == '_'))) {
-            const char *q = p + 3;
+        size_t plen = SD_PREFIX_LEN(p);
+        if (plen && (p == src || !(isalnum((unsigned char)p[-1]) || p[-1] == '_'))) {
+            const char *q = p + plen;
             while (isxdigit((unsigned char)*q)) q++;
             size_t len = q - p;
-            if (len >= 4 && len < 20) {
+            if (len > plen && len < 24) {
                 memcpy(out + out_len, p, len);
                 out_len += len;
                 memcpy(out + out_len, "_INL", 4);
@@ -276,6 +283,7 @@ luastro_export_sd_wrappers(const char *path)
         }
         out[out_len++] = *p++;
     }
+    #undef SD_PREFIX_LEN
 
     // Append the extern wrappers.
     const char *banner =

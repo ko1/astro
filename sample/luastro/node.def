@@ -25,6 +25,11 @@ extern uint32_t  *LUASTRO_U32_ARR;      // uint32_t side-array (local indices)
 // EVAL bodies (swap_dispatcher targets, etc.) so EVAL compiles before
 // alloc.
 extern const struct NodeKind kind_node_arith;
+extern const struct NodeKind
+    kind_node_int_add_ii, kind_node_int_sub_ii, kind_node_int_mul_ii,
+    kind_node_flt_add_ff, kind_node_flt_sub_ff, kind_node_flt_mul_ff,
+    kind_node_lt_ii, kind_node_lt_ff,
+    kind_node_le_ii, kind_node_le_ff;
 
 // Call current closure's upvalue table — set by lua_call before
 // dispatching the body and restored on return.  See lua_runtime.c.
@@ -568,16 +573,31 @@ node_arith(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, uint3
 // Lua semantics: int op int → int (overflow wraps, same as Lua 5.4
 // integer arithmetic).  Any float operand → float result (other side
 // promoted to double).
+// Base arith bodies are bilingual: int+int and flt+flt both run inline.
+// On the first observed type combination we promote via swap_dispatcher
+// to a strict variant (`node_int_add_ii`, `node_flt_add_ff`, ...) whose
+// SD body assumes that combination and pushes the other type cases out
+// to a `cold + noinline` slow path.  The `#ifndef NODE_SKIP_COLD` guard
+// strips the swap_dispatcher block from baked SDs so the SD body has no
+// promotion logic — only the pre-swap interpreter body needs it, the
+// post-swap baked variant is already specialized.
 NODE_DEF @always_inline
 node_int_add(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *l, NODE *r)
 {
     LuaValue a = EVAL_ARG(c, l);
     LuaValue b = EVAL_ARG(c, r);
-    if (__builtin_expect(LV_IS_INT(a) & LV_IS_INT(b), 1))
+    if (__builtin_expect(LV_IS_INT(a) & LV_IS_INT(b), 1)) {
+#ifndef NODE_SKIP_COLD
+        swap_dispatcher(n, &kind_node_int_add_ii);
+#endif
         return RESULT_OK(LUAV_INT(LV_AS_INT(a) + LV_AS_INT(b)));
+    }
     if (LV_IS_NUM(a) && LV_IS_NUM(b)) {
         double af = LV_IS_INT(a) ? (double)LV_AS_INT(a) : LV_AS_FLOAT(a);
         double bf = LV_IS_INT(b) ? (double)LV_AS_INT(b) : LV_AS_FLOAT(b);
+#ifndef NODE_SKIP_COLD
+        if (LV_IS_FLOAT(a) && LV_IS_FLOAT(b)) swap_dispatcher(n, &kind_node_flt_add_ff);
+#endif
         return RESULT_OK(LUAV_FLOAT(af + bf));
     }
     return RESULT_OK(lua_arith(c, LUA_OP_ADD, a, b));
@@ -588,11 +608,18 @@ node_int_sub(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NOD
 {
     LuaValue a = EVAL_ARG(c, l);
     LuaValue b = EVAL_ARG(c, r);
-    if (__builtin_expect(LV_IS_INT(a) & LV_IS_INT(b), 1))
+    if (__builtin_expect(LV_IS_INT(a) & LV_IS_INT(b), 1)) {
+#ifndef NODE_SKIP_COLD
+        swap_dispatcher(n, &kind_node_int_sub_ii);
+#endif
         return RESULT_OK(LUAV_INT(LV_AS_INT(a) - LV_AS_INT(b)));
+    }
     if (LV_IS_NUM(a) && LV_IS_NUM(b)) {
         double af = LV_IS_INT(a) ? (double)LV_AS_INT(a) : LV_AS_FLOAT(a);
         double bf = LV_IS_INT(b) ? (double)LV_AS_INT(b) : LV_AS_FLOAT(b);
+#ifndef NODE_SKIP_COLD
+        if (LV_IS_FLOAT(a) && LV_IS_FLOAT(b)) swap_dispatcher(n, &kind_node_flt_sub_ff);
+#endif
         return RESULT_OK(LUAV_FLOAT(af - bf));
     }
     return RESULT_OK(lua_arith(c, LUA_OP_SUB, a, b));
@@ -603,11 +630,18 @@ node_int_mul(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NOD
 {
     LuaValue a = EVAL_ARG(c, l);
     LuaValue b = EVAL_ARG(c, r);
-    if (__builtin_expect(LV_IS_INT(a) & LV_IS_INT(b), 1))
+    if (__builtin_expect(LV_IS_INT(a) & LV_IS_INT(b), 1)) {
+#ifndef NODE_SKIP_COLD
+        swap_dispatcher(n, &kind_node_int_mul_ii);
+#endif
         return RESULT_OK(LUAV_INT(LV_AS_INT(a) * LV_AS_INT(b)));
+    }
     if (LV_IS_NUM(a) && LV_IS_NUM(b)) {
         double af = LV_IS_INT(a) ? (double)LV_AS_INT(a) : LV_AS_FLOAT(a);
         double bf = LV_IS_INT(b) ? (double)LV_AS_INT(b) : LV_AS_FLOAT(b);
+#ifndef NODE_SKIP_COLD
+        if (LV_IS_FLOAT(a) && LV_IS_FLOAT(b)) swap_dispatcher(n, &kind_node_flt_mul_ff);
+#endif
         return RESULT_OK(LUAV_FLOAT(af * bf));
     }
     return RESULT_OK(lua_arith(c, LUA_OP_MUL, a, b));
@@ -618,8 +652,12 @@ node_flt_add(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NOD
 {
     LuaValue a = EVAL_ARG(c, l);
     LuaValue b = EVAL_ARG(c, r);
-    if (__builtin_expect(LV_IS_FLOAT(a) && LV_IS_FLOAT(b), 1))
+    if (__builtin_expect(LV_IS_FLOAT(a) && LV_IS_FLOAT(b), 1)) {
+#ifndef NODE_SKIP_COLD
+        swap_dispatcher(n, &kind_node_flt_add_ff);
+#endif
         return RESULT_OK(LUAV_FLOAT(LV_AS_FLOAT(a) + LV_AS_FLOAT(b)));
+    }
     return RESULT_OK(lua_arith(c, LUA_OP_ADD, a, b));
 }
 
@@ -628,8 +666,12 @@ node_flt_sub(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NOD
 {
     LuaValue a = EVAL_ARG(c, l);
     LuaValue b = EVAL_ARG(c, r);
-    if (__builtin_expect(LV_IS_FLOAT(a) && LV_IS_FLOAT(b), 1))
+    if (__builtin_expect(LV_IS_FLOAT(a) && LV_IS_FLOAT(b), 1)) {
+#ifndef NODE_SKIP_COLD
+        swap_dispatcher(n, &kind_node_flt_sub_ff);
+#endif
         return RESULT_OK(LUAV_FLOAT(LV_AS_FLOAT(a) - LV_AS_FLOAT(b)));
+    }
     return RESULT_OK(lua_arith(c, LUA_OP_SUB, a, b));
 }
 
@@ -638,9 +680,119 @@ node_flt_mul(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NOD
 {
     LuaValue a = EVAL_ARG(c, l);
     LuaValue b = EVAL_ARG(c, r);
+    if (__builtin_expect(LV_IS_FLOAT(a) && LV_IS_FLOAT(b), 1)) {
+#ifndef NODE_SKIP_COLD
+        swap_dispatcher(n, &kind_node_flt_mul_ff);
+#endif
+        return RESULT_OK(LUAV_FLOAT(LV_AS_FLOAT(a) * LV_AS_FLOAT(b)));
+    }
+    return RESULT_OK(lua_arith(c, LUA_OP_MUL, a, b));
+}
+
+// Strict numeric variants: assume the speculated type combination on the
+// hot path; out-of-line slow path handles miss (other numeric promotion,
+// metamethod fallback).  PGC bake walks the post-swap tree so SDs encode
+// these strict bodies; the slow path is `cold + noinline` so SDs strip it
+// to a function call back into the host binary, keeping SD `.text` small.
+
+#ifndef NODE_SKIP_COLD
+__attribute__((noinline, cold)) RESULT
+node_int_arith_ii_miss(CTX *c, LuaValue a, LuaValue b, int op)
+{
+    if (LV_IS_NUM(a) && LV_IS_NUM(b)) {
+        double af = LV_IS_INT(a) ? (double)LV_AS_INT(a) : LV_AS_FLOAT(a);
+        double bf = LV_IS_INT(b) ? (double)LV_AS_INT(b) : LV_AS_FLOAT(b);
+        switch (op) {
+        case LUA_OP_ADD: return RESULT_OK(LUAV_FLOAT(af + bf));
+        case LUA_OP_SUB: return RESULT_OK(LUAV_FLOAT(af - bf));
+        case LUA_OP_MUL: return RESULT_OK(LUAV_FLOAT(af * bf));
+        }
+    }
+    return RESULT_OK(lua_arith(c, op, a, b));
+}
+__attribute__((noinline, cold)) RESULT
+node_flt_arith_ff_miss(CTX *c, LuaValue a, LuaValue b, int op)
+{
+    return RESULT_OK(lua_arith(c, op, a, b));
+}
+#else
+extern RESULT node_int_arith_ii_miss(CTX *c, LuaValue a, LuaValue b, int op);
+extern RESULT node_flt_arith_ff_miss(CTX *c, LuaValue a, LuaValue b, int op);
+#endif
+
+NODE_DEF @canonical=node_int_add @always_inline
+node_int_add_ii(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *l, NODE *r)
+{
+    (void)n;
+    LuaValue a = EVAL_ARG(c, l);
+    LuaValue b = EVAL_ARG(c, r);
+    if (__builtin_expect(LV_IS_INT(a) & LV_IS_INT(b), 1))
+        return RESULT_OK(LUAV_INT(LV_AS_INT(a) + LV_AS_INT(b)));
+    return node_int_arith_ii_miss(c, a, b, LUA_OP_ADD);
+}
+
+NODE_DEF @canonical=node_int_sub @always_inline
+node_int_sub_ii(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *l, NODE *r)
+{
+    (void)n;
+    LuaValue a = EVAL_ARG(c, l);
+    LuaValue b = EVAL_ARG(c, r);
+    if (__builtin_expect(LV_IS_INT(a) & LV_IS_INT(b), 1))
+        return RESULT_OK(LUAV_INT(LV_AS_INT(a) - LV_AS_INT(b)));
+    return node_int_arith_ii_miss(c, a, b, LUA_OP_SUB);
+}
+
+NODE_DEF @canonical=node_int_mul @always_inline
+node_int_mul_ii(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *l, NODE *r)
+{
+    (void)n;
+    LuaValue a = EVAL_ARG(c, l);
+    LuaValue b = EVAL_ARG(c, r);
+    if (__builtin_expect(LV_IS_INT(a) & LV_IS_INT(b), 1))
+        return RESULT_OK(LUAV_INT(LV_AS_INT(a) * LV_AS_INT(b)));
+    return node_int_arith_ii_miss(c, a, b, LUA_OP_MUL);
+}
+
+// `node_flt_*_ff` canonicalises to `node_int_*` (not `node_flt_*`)
+// because the parser always allocates the `int_*` base for `+/-/*`.
+// The dedicated `node_flt_add/sub/mul` kinds in this file are orphaned
+// — kept as a historical artifact but unreachable from the parser; the
+// HORG of an arith site at a given AST position must match between the
+// pre-profile parse-time allocation (kind=int_*) and the post-profile
+// bake (kind=flt_*_ff after swap_dispatcher).  Sharing the canonical
+// `node_int_*` preserves that match, so the (HORG, file, line) → HOPT
+// index lookup at cached load resolves to the baked PGSD.
+NODE_DEF @canonical=node_int_add @always_inline
+node_flt_add_ff(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *l, NODE *r)
+{
+    (void)n;
+    LuaValue a = EVAL_ARG(c, l);
+    LuaValue b = EVAL_ARG(c, r);
+    if (__builtin_expect(LV_IS_FLOAT(a) && LV_IS_FLOAT(b), 1))
+        return RESULT_OK(LUAV_FLOAT(LV_AS_FLOAT(a) + LV_AS_FLOAT(b)));
+    return node_flt_arith_ff_miss(c, a, b, LUA_OP_ADD);
+}
+
+NODE_DEF @canonical=node_int_sub @always_inline
+node_flt_sub_ff(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *l, NODE *r)
+{
+    (void)n;
+    LuaValue a = EVAL_ARG(c, l);
+    LuaValue b = EVAL_ARG(c, r);
+    if (__builtin_expect(LV_IS_FLOAT(a) && LV_IS_FLOAT(b), 1))
+        return RESULT_OK(LUAV_FLOAT(LV_AS_FLOAT(a) - LV_AS_FLOAT(b)));
+    return node_flt_arith_ff_miss(c, a, b, LUA_OP_SUB);
+}
+
+NODE_DEF @canonical=node_int_mul @always_inline
+node_flt_mul_ff(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *l, NODE *r)
+{
+    (void)n;
+    LuaValue a = EVAL_ARG(c, l);
+    LuaValue b = EVAL_ARG(c, r);
     if (__builtin_expect(LV_IS_FLOAT(a) && LV_IS_FLOAT(b), 1))
         return RESULT_OK(LUAV_FLOAT(LV_AS_FLOAT(a) * LV_AS_FLOAT(b)));
-    return RESULT_OK(lua_arith(c, LUA_OP_MUL, a, b));
+    return node_flt_arith_ff_miss(c, a, b, LUA_OP_MUL);
 }
 
 NODE_DEF @always_inline
@@ -684,13 +836,20 @@ node_concat(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE
 NODE_DEF @always_inline
 node_lt(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *l, NODE *r)
 {
-    (void)n;
     LuaValue a = EVAL_ARG(c, l);
     LuaValue b = EVAL_ARG(c, r);
-    if (LV_IS_INT(a) && LV_IS_INT(b)) return RESULT_OK(LUAV_BOOL(LV_AS_INT(a) < LV_AS_INT(b)));
+    if (LV_IS_INT(a) && LV_IS_INT(b)) {
+#ifndef NODE_SKIP_COLD
+        swap_dispatcher(n, &kind_node_lt_ii);
+#endif
+        return RESULT_OK(LUAV_BOOL(LV_AS_INT(a) < LV_AS_INT(b)));
+    }
     if (LV_IS_NUM(a) && LV_IS_NUM(b)) {
         double af = LV_IS_INT(a) ? (double)LV_AS_INT(a) : LV_AS_FLOAT(a);
         double bf = LV_IS_INT(b) ? (double)LV_AS_INT(b) : LV_AS_FLOAT(b);
+#ifndef NODE_SKIP_COLD
+        if (LV_IS_FLOAT(a) && LV_IS_FLOAT(b)) swap_dispatcher(n, &kind_node_lt_ff);
+#endif
         return RESULT_OK(LUAV_BOOL(af < bf));
     }
     return RESULT_OK(LUAV_BOOL(lua_lt(c, a, b)));
@@ -699,16 +858,91 @@ node_lt(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *l,
 NODE_DEF @always_inline
 node_le(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *l, NODE *r)
 {
-    (void)n;
     LuaValue a = EVAL_ARG(c, l);
     LuaValue b = EVAL_ARG(c, r);
-    if (LV_IS_INT(a) && LV_IS_INT(b)) return RESULT_OK(LUAV_BOOL(LV_AS_INT(a) <= LV_AS_INT(b)));
+    if (LV_IS_INT(a) && LV_IS_INT(b)) {
+#ifndef NODE_SKIP_COLD
+        swap_dispatcher(n, &kind_node_le_ii);
+#endif
+        return RESULT_OK(LUAV_BOOL(LV_AS_INT(a) <= LV_AS_INT(b)));
+    }
     if (LV_IS_NUM(a) && LV_IS_NUM(b)) {
         double af = LV_IS_INT(a) ? (double)LV_AS_INT(a) : LV_AS_FLOAT(a);
         double bf = LV_IS_INT(b) ? (double)LV_AS_INT(b) : LV_AS_FLOAT(b);
+#ifndef NODE_SKIP_COLD
+        if (LV_IS_FLOAT(a) && LV_IS_FLOAT(b)) swap_dispatcher(n, &kind_node_le_ff);
+#endif
         return RESULT_OK(LUAV_BOOL(af <= bf));
     }
     return RESULT_OK(LUAV_BOOL(lua_le(c, a, b)));
+}
+
+// Strict comparison variants — int+int / flt+flt assumed; cold slow
+// path handles other numeric and metamethod cases.
+
+#ifndef NODE_SKIP_COLD
+__attribute__((noinline, cold)) RESULT
+node_cmp_ii_miss(CTX *c, LuaValue a, LuaValue b, int op)  // op: 0=<, 1=<=
+{
+    if (LV_IS_NUM(a) && LV_IS_NUM(b)) {
+        double af = LV_IS_INT(a) ? (double)LV_AS_INT(a) : LV_AS_FLOAT(a);
+        double bf = LV_IS_INT(b) ? (double)LV_AS_INT(b) : LV_AS_FLOAT(b);
+        return RESULT_OK(LUAV_BOOL(op ? (af <= bf) : (af < bf)));
+    }
+    return RESULT_OK(LUAV_BOOL(op ? lua_le(c, a, b) : lua_lt(c, a, b)));
+}
+__attribute__((noinline, cold)) RESULT
+node_cmp_ff_miss(CTX *c, LuaValue a, LuaValue b, int op)
+{
+    return RESULT_OK(LUAV_BOOL(op ? lua_le(c, a, b) : lua_lt(c, a, b)));
+}
+#else
+extern RESULT node_cmp_ii_miss(CTX *c, LuaValue a, LuaValue b, int op);
+extern RESULT node_cmp_ff_miss(CTX *c, LuaValue a, LuaValue b, int op);
+#endif
+
+NODE_DEF @canonical=node_lt @always_inline
+node_lt_ii(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *l, NODE *r)
+{
+    (void)n;
+    LuaValue a = EVAL_ARG(c, l);
+    LuaValue b = EVAL_ARG(c, r);
+    if (__builtin_expect(LV_IS_INT(a) & LV_IS_INT(b), 1))
+        return RESULT_OK(LUAV_BOOL(LV_AS_INT(a) < LV_AS_INT(b)));
+    return node_cmp_ii_miss(c, a, b, 0);
+}
+
+NODE_DEF @canonical=node_lt @always_inline
+node_lt_ff(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *l, NODE *r)
+{
+    (void)n;
+    LuaValue a = EVAL_ARG(c, l);
+    LuaValue b = EVAL_ARG(c, r);
+    if (__builtin_expect(LV_IS_FLOAT(a) && LV_IS_FLOAT(b), 1))
+        return RESULT_OK(LUAV_BOOL(LV_AS_FLOAT(a) < LV_AS_FLOAT(b)));
+    return node_cmp_ff_miss(c, a, b, 0);
+}
+
+NODE_DEF @canonical=node_le @always_inline
+node_le_ii(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *l, NODE *r)
+{
+    (void)n;
+    LuaValue a = EVAL_ARG(c, l);
+    LuaValue b = EVAL_ARG(c, r);
+    if (__builtin_expect(LV_IS_INT(a) & LV_IS_INT(b), 1))
+        return RESULT_OK(LUAV_BOOL(LV_AS_INT(a) <= LV_AS_INT(b)));
+    return node_cmp_ii_miss(c, a, b, 1);
+}
+
+NODE_DEF @canonical=node_le @always_inline
+node_le_ff(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *l, NODE *r)
+{
+    (void)n;
+    LuaValue a = EVAL_ARG(c, l);
+    LuaValue b = EVAL_ARG(c, r);
+    if (__builtin_expect(LV_IS_FLOAT(a) && LV_IS_FLOAT(b), 1))
+        return RESULT_OK(LUAV_BOOL(LV_AS_FLOAT(a) <= LV_AS_FLOAT(b)));
+    return node_cmp_ff_miss(c, a, b, 1);
 }
 
 NODE_DEF @always_inline

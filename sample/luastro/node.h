@@ -58,12 +58,16 @@ node_hash_t HORG(NODE *n);
 #include "node_head.h"
 
 // Swap a node's dispatcher to a different kind (used for profile-driven
-// type specialization, e.g. node_arith_add → node_int_add).  Updates the
-// parent link via REPLACER_ when relevant; for now we just rewrite the
-// dispatcher slot in place.
+// type specialization, e.g. node_int_add → node_int_add_ii).  No-op once
+// the node has been patched with a baked SD (post-PGC bake, the SD body
+// already encodes the post-swap behaviour, so further runtime swaps
+// would be wasted work and could even drift the kind back to a state
+// the SD doesn't match).  Idempotence guard so the hot path doesn't pay
+// for re-entering swap on every dispatch after the first promotion.
 static inline void
 swap_dispatcher(NODE *n, const struct NodeKind *new_kind)
 {
+    if (n->head.flags.is_specialized || n->head.kind == new_kind) return;
     n->head.dispatcher       = new_kind->default_dispatcher;
     n->head.dispatcher_name  = new_kind->default_dispatcher_name;
     n->head.kind             = new_kind;

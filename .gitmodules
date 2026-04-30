@@ -7,3 +7,6 @@
 [submodule "sample/asom/SOM"]
 	path = sample/asom/SOM
 	url = https://github.com/SOM-st/SOM.git
+[submodule "sample/asom/SOMpp"]
+	path = sample/asom/SOMpp
+	url = https://github.com/SOM-st/SOMpp.git

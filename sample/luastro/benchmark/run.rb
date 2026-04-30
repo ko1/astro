@@ -60,6 +60,15 @@ ENGINES = [
     cmd:   "#{EXE} %s",
   },
   {
+    # PGC steady-state: profile-run once (writes hopt_index.txt + PGSDs),
+    # then time pure execution against the warmed code_store/all.so.
+    # `-p` runs the chunk twice (once profile, then once with PGSDs); the
+    # setup runs that whole pipeline so the cmd is just a cached run.
+    name:  "PGC-cached",
+    setup: "rm -rf #{PARENT}/code_store && CCACHE_DISABLE=1 #{EXE} -p %s",
+    cmd:   "#{EXE} %s",
+  },
+  {
     name: "lua5.4",
     cmd:  "lua5.4 %s",
   },
