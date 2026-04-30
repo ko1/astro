@@ -234,6 +234,29 @@ lua_table_array_grow(struct LuaTable *t, uint32_t need)
     t->array = (LuaValue *)realloc(t->array, cap * sizeof(LuaValue));
     for (uint32_t i = t->arr_cap; i < cap; i++) t->array[i] = LUAV_NIL;
     t->arr_cap = cap;
+
+    // Migrate any hash entries with integer keys k in [1, arr_cap] into
+    // the array.  These exist because earlier `seti(k)` calls happened
+    // when arr_cap was smaller and the lazy-promotion threshold pushed
+    // them into the hash.  Without migration, `geti` returns nil (sees
+    // an empty array slot) and `next` cycles between the few keys that
+    // happened to land in the array part — see havlak's `self.last`,
+    // where keys 9,8,7,6,10,5 went to hash before keys 4,3,11 were
+    // written and forced arr_cap up.  Logical-delete by setting val to
+    // nil so we don't break open-addressing probe chains.
+    if (t->hash_cap > 0) {
+        for (uint32_t s = 0; s < t->hash_cap; s++) {
+            struct LuaTabEntry *e = &t->hash[s];
+            if (LV_IS_NIL(e->key) || LV_IS_NIL(e->val)) continue;
+            if (!LV_IS_INT(e->key)) continue;
+            int64_t k = LV_AS_INT(e->key);
+            if (k < 1 || (uint64_t)k > t->arr_cap) continue;
+            t->array[k - 1] = e->val;
+            if ((uint32_t)k > t->arr_cnt) t->arr_cnt = (uint32_t)k;
+            e->val = LUAV_NIL;
+            t->hash_cnt--;
+        }
+    }
 }
 
 static void
