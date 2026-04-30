@@ -98,8 +98,24 @@ class CastroNodeDef < ASTroGen::NodeDef
           // the whole point of this transform (see node.def
           // node_call's commentary).
           fprintf(fp, "    VALUE F[%u];\\n", local_cnt);
+          // Argument copy uses scalar `.i` field assignment rather
+          // than aggregate `F[i] = fp[j]`.  Both move the same 8
+          // bytes (VALUE is a union of identically-sized members
+          // that share storage), but SRA promotes the slot to a
+          // scalar only when ALL writes are scalar-typed — an
+          // aggregate write keeps the slot in `MEM[union VALUE *]`
+          // form and SCEV later bails on `evolution of base is not
+          // affine` because it can't prove the loop-invariant slots
+          // (n / j in the matmul k-loop) stay constant across
+          // iterations.  With scalar `.i` writes here and scalar
+          // `.i` reads in EVAL_node_lget, F[0..arg_count-1] become
+          // SSA scalars, gcc hoists them out of the inner loop, and
+          // SR replaces `imul k,n` with pointer-stride
+          // accumulation.  matmul k-loop drops from 10 to 4
+          // instructions; identical bit transfer for double / void*
+          // args because of union storage.
           for (uint32_t i = 0; i < arg_count; i++) {
-              fprintf(fp, "    F[%u] = fp[%u];\\n", i, arg_index + i);
+              fprintf(fp, "    F[%u].i = fp[%u].i;\\n", i, arg_index + i);
           }
           for (uint32_t i = arg_count; i < local_cnt; i++) {
               fprintf(fp, "    F[%u].i = 0;\\n", i);
@@ -165,8 +181,11 @@ class CastroNodeDef < ASTroGen::NodeDef
                   dispatcher_name);
           fprintf(fp, "    dispatch_info(c, n, false);\\n");
           fprintf(fp, "    VALUE F[%u];\\n", local_cnt);
+          // Same SRA-friendly scalar `.i` arg copy as in
+          // castro_build_call_specializer above — keeps F slots
+          // promotable so loop-invariant args reach SCEV / IVOPTS.
           for (uint32_t i = 0; i < arg_count; i++) {
-              fprintf(fp, "    F[%u] = fp[%u];\\n", i, arg_index + i);
+              fprintf(fp, "    F[%u].i = fp[%u].i;\\n", i, arg_index + i);
           }
           for (uint32_t i = arg_count; i < local_cnt; i++) {
               fprintf(fp, "    F[%u].i = 0;\\n", i);
