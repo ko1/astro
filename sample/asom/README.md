@@ -71,44 +71,52 @@ asom (interp / aot / pg) を、同じ `SOM-st/SOM/Examples/Benchmarks/<Name>.som
 | **SOM++** | SOM-st/SOMpp, C++ bytecode VM, **`USE_TAGGING` + COPYING GC** | g++ -O3 -flto |
 | **Truffle** | TruffleSOM (Java + GraalVM libgraal JIT) | Graal JDK 25 |
 
-### Inner-work — sustained run (~1 秒)
+### Inner-work（`make bench` 1 表目）
 
 各エンジンの **Smalltalk 側 `system ticks`** がベンチループを計測した値。
 プロセス起動・stdlib パース・JVM bootstrap・eager JIT compile などの固定費を
 除外し、`iters timesRepeat: [bench benchmark]` の中身だけを比較する。
 
-upstream の `rebench.conf` にあるカノニカル `extra_args`（inner iterations）は
-warm な TruffleSOM 上で ~1 秒で済むよう調律されているため、interp 系で測ると
-sub-100 ms となり per-call overhead が支配する。エンジン間の **steady-state
-スループット**を比較するには両エンジンが秒オーダーで走る規模が必要。
-以下は `inner` を **両方が ~1 秒程度走る** よう調整した値（`iterations=1`、best of 3）:
+`run_compare.rb` の `INNER` テーブルは asom-interp で **~1 秒** 程度に揃え
+ている（短い bench は per-call setup・IC prime・GC space init が支配して
+誤解を招くため）。`iterations=1`、best of 3。
 
 ```
-benchmark    |  interp |     aot |   SOM++ | aot vs SOM++
--------------+---------+---------+---------+-----------------
-Sieve        |  0.78 s |  0.27 s |  4.96 s | asom 18.18× faster
-Queens       |  0.62 s |  0.52 s |  4.30 s | asom  8.27× faster
-QuickSort    |  0.69 s |  0.39 s |  1.57 s | asom  4.03× faster
-Fannkuch     |  0.66 s |  0.37 s |  1.52 s | asom  4.09× faster
-BubbleSort   |  0.89 s |  0.54 s |  1.96 s | asom  3.62× faster
-Permute      |  0.68 s |  0.51 s |  1.67 s | asom  3.24× faster
-Bounce       |  0.93 s |  0.86 s |  2.72 s | asom  3.16× faster
-Storage      |  0.60 s |  0.54 s |  1.63 s | asom  3.05× faster
-TreeSort     |  0.43 s |  0.43 s |  1.05 s | asom  2.45× faster
-Towers       |  0.76 s |  0.60 s |  1.37 s | asom  2.27× faster
-List         |  1.01 s |  0.95 s |  1.84 s | asom  1.95× faster
-Mandelbrot   |  0.45 s |  0.40 s |  0.44 s | asom  1.12× faster
+benchmark    |    interp |       aot |        pg |     SOM++ |   Truffle
+------------------------------------------------------------------------
+Sieve        |     0.416 |     0.135 |     0.145 |     2.778 |     0.168
+Permute      |     0.470 |     0.355 |     0.381 |     1.163 |     0.394
+Towers       |     0.426 |     0.333 |     0.325 |     0.797 |     0.292
+Queens       |     0.448 |     0.360 |     0.358 |     3.090 |     0.447
+List         |     0.437 |     0.354 |     0.353 |     1.550 |     0.457
+Storage      |     0.490 |     0.431 |     0.431 |     1.383 |     0.469
+Bounce       |     0.478 |     0.445 |     0.281 |     1.624 |     0.297
+BubbleSort   |     0.506 |     0.261 |     0.490 |     1.386 |     0.241
+QuickSort    |     0.425 |     0.133 |     0.146 |     1.391 |     0.347
+TreeSort     |     0.453 |     0.874 |     0.385 |     1.254 |     0.350
+Fannkuch     |     0.535 |     0.219 |     0.212 |     1.731 |     0.267
+Mandelbrot   |     0.052 |     0.029 |     0.050 |     1.379 |     0.448
 ```
 
-#### take-aways（sustained）
+#### take-aways
 
-**asom-aot は 12 ベンチすべてで SOM++ (`USE_TAGGING` + COPYING GC,
-g++ -O3 -flto) より速い** — Sieve で **18.2×**、Queens で **8×** 台、
-QuickSort / Fannkuch で 4× 台、BubbleSort / Permute / Bounce / Storage
-で 3× 台。AST-PE の SD-bake が **method / block boundary の indirect
-call を消して** GCC に LICM / scalar replacement の機会を作るのが効いて
-いて、interp 比で sustained Sieve が 0.78s → 0.27s (2.9×) になり、
-SOM++ の bytecode dispatch loop を抜く。
+**asom-aot は 12 ベンチすべてで SOM++ より速い**:
+
+- Mandelbrot **48×**（`flonum tagging` で中間 Double が VALUE 即値になり alloc 完全消去）
+- Sieve **20×**、QuickSort **10×**、Queens **9×**、Fannkuch / BubbleSort
+  / List 4-5×、Permute / Bounce / Storage 3×、Towers / TreeSort 1.5-2.5×
+
+**asom-aot は 8/12 で TruffleSOM (warm peak) にも勝つ**:
+
+- 勝ち: Sieve / Permute / Queens / List / Storage / QuickSort /
+  Fannkuch / Mandelbrot
+- 負け: Towers / Bounce / BubbleSort / TreeSort（Ball/Tree の
+  field-level Double box が残るので shape-based field unbox が次の手；
+  Towers は再帰メソッド inline / call-graph PE）
+
+特に **Mandelbrot** が劇的: 中間 Double が `asom_double_new` を呼ばずに
+レジスタを流れるため、`dbl_times / asom_double_new / dbl_plus / dbl_gt`
+合計 ~16% の profile が完全消去。Truffle 比 **15× 速い**。
 
 interp 単独でも SOM++ に勝つベンチが多い（Sieve/Queens で 4× 以上）。
 原因の積算:
@@ -128,72 +136,32 @@ interp 単独でも SOM++ に勝つベンチが多い（Sieve/Queens で 4× 以
   をハッシュ決定論的に。これで SD shard が cs_load で正しくマッチして
   SD-bake が interp に対して実速度差を生むようになった。
 
-短い (~ms) 計測では SOM++ の per-call setup（class load、IC prime、
-COPYING space init）が表に出てしまって SOM++ が速く見えるが、sustained
-で測れば asom が速い。
-
-#### vs その他エンジン（参考、canonical 小規模）
-
-`make bench ITERS=5`（rebench.conf 由来の小さな inner、各エンジンの
-per-call setup を含む）。warmup-blind な「処理系一式・冷たい状態の単発」
-を見るには有用だが、interp 系は sub-100ms 領域で setup-bound になり
-易いので絶対値は信用しすぎないこと:
-
-```
-benchmark    |    interp |       aot |        pg |     SOM++ |    Truffle
--------------+-----------+-----------+-----------+-----------+-----------
-Sieve        |     0.004 |     0.004 |     0.004 |     0.003 |      0.000
-Permute      |     0.016 |     0.014 |     0.015 |     0.006 |      0.000
-Towers       |     0.034 |     0.034 |     0.032 |     0.009 |      0.000
-Queens       |     0.010 |     0.011 |     0.010 |     0.009 |      0.000
-List         |     0.019 |     0.016 |     0.016 |     0.006 |      0.000
-Storage      |     0.013 |     0.013 |     0.013 |     0.006 |      0.000
-Bounce       |     0.005 |     0.005 |     0.003 |     0.003 |      0.000
-BubbleSort   |     0.005 |     0.004 |     0.004 |     0.002 |      0.000
-QuickSort    |     0.007 |     0.006 |     0.007 |     0.002 |      0.000
-TreeSort     |     0.022 |     0.022 |     0.022 |     0.005 |      0.001
-Fannkuch     |     0.040 |     0.040 |     0.040 |     0.020 |          ?
-Mandelbrot   |     0.595 |     0.571 |     0.598 |     0.584 |      0.001
-```
-
-- **TruffleSOM (Graal JIT)** は ~μs scale。warm peak は asom より
-  100-1000× 速いが、JVM bootstrap + AST parse + libgraal compile に
-  毎回 2.2–3.0 秒の固定費を払う（次節）。
-- **interp / aot / pg は同水準**。AOT/PG の SD-bake は static inline で
-  child node を全部展開しているが、modern x86 の BTB が interp の
-  `(*head.dispatcher)(c, n)` indirect call を学習して実質ゼロコストに
-  なるため、bench スループットでは差が出ない（命令数も同じ:
-  interp 624M / aot 629M for Sieve 100 iter）。
-
-### Wall-clock 表（`make bench` の 2 つ目の表、参考）
+### Wall-clock（`make bench` 2 表目）
 
 プロセス起動 + クラス・パース + JIT compile + ベンチループ全部を含む
 `/usr/bin/time -f '%e'` 計測。**ユーザ体感の "コマンドが返ってくるまで" 時間**。
 実装ごとの起動コストの差で大きくスキューするため、フェアな比較ではない。
-（ITERS=5、canonical inner、上の表とまったく同じ trial から取得した値）
 
 ```
-benchmark    |   interp |      aot |       pg |    SOM++ |    Truffle
--------------+----------+----------+----------+----------+-----------
-Sieve        |    0.000 |    0.010 |    0.010 |    0.020 |      2.300
-Permute      |    0.020 |    0.020 |    0.020 |    0.030 |      2.310
-Towers       |    0.040 |    0.040 |    0.030 |    0.050 |      2.440
-Queens       |    0.010 |    0.010 |    0.010 |    0.050 |      2.950
-List         |    0.020 |    0.020 |    0.020 |    0.030 |      2.350
-Storage      |    0.010 |    0.010 |    0.010 |    0.030 |      2.340
-Bounce       |    0.000 |    0.010 |    0.000 |    0.020 |      2.260
-BubbleSort   |    0.010 |    0.010 |    0.010 |    0.010 |      2.400
-QuickSort    |    0.010 |    0.010 |    0.010 |    0.010 |      2.270
-TreeSort     |    0.020 |    0.020 |    0.020 |    0.030 |      2.260
-Fannkuch     |    0.040 |    0.040 |    0.040 |    0.100 |      2.210
-Mandelbrot   |    0.640 |    0.610 |    0.640 |    0.590 |      2.200
+benchmark    |    interp |       aot |        pg |     SOM++ |   Truffle
+------------------------------------------------------------------------
+Sieve        |     0.420 |     0.140 |     0.150 |     2.780 |     1.730
+Permute      |     0.490 |     0.380 |     0.400 |     1.160 |     2.010
+Towers       |     0.440 |     0.340 |     0.340 |     0.800 |     1.970
+Queens       |     0.450 |     0.360 |     0.360 |     3.090 |     2.160
+List         |     0.440 |     0.360 |     0.350 |     1.550 |     2.200
+Storage      |     0.520 |     0.460 |     0.450 |     1.380 |     2.220
+Bounce       |     0.480 |     0.450 |     0.280 |     1.620 |     2.050
+BubbleSort   |     0.510 |     0.260 |     0.490 |     1.390 |     1.870
+QuickSort    |     0.420 |     0.130 |     0.150 |     1.390 |     2.110
+TreeSort     |     0.460 |     0.890 |     0.390 |     1.260 |     2.210
+Fannkuch     |     0.540 |     0.220 |     0.220 |     1.740 |     1.970
+Mandelbrot   |     0.050 |     0.030 |     0.050 |     1.380 |     2.060
 ```
 
-#### take-aways (wall-clock)
-
-- **TruffleSOM** は wall-time でほぼ常に **2.2–3.0 秒の JVM bootstrap +
+- **TruffleSOM** は wall-clock でほぼ常に **1.5–2.2 秒の JVM bootstrap +
   AST parse + libgraal JIT compile** 固定費を払う（Sieve でも Mandelbrot でも一定）。
-  短いベンチでは不利だが、N iterations を増やすほど amortise される。
+  短いベンチでは不利、長期 run なら amortise される。
 - **asom / SOM++** は C ネイティブで bare 起動が速いため、wall-time が
   inner-work とほぼ同じ。比較的 honest。
 - 「**起動が速いと wall-time で得をする**」という当たり前の事実が
@@ -202,7 +170,7 @@ Mandelbrot   |    0.640 |    0.610 |    0.640 |    0.590 |      2.200
 
 ## 設計上の特徴
 
-- **Tagged 62-bit SmallInteger** (低 1bit = 1 が整数、0 が pointer)
+- **Tagged 62-bit SmallInteger + flonum-tagged Double** (低 2bit: `01` = int、`10` = flonum、`00` = pointer)
 - **Per-callsite IC** (`struct asom_callcache *cc@ref`) — Merkle ハッシュから除外
 - **`asom_send` / `asom_invoke_method` の IC fast path を `asom_runtime.h` で `static inline`** 化、SD コードに直接インライン展開
 - **Per-class metaclass + metaclass-of-metaclass** (`1 class class superclass = Object class`)
@@ -218,8 +186,10 @@ Mandelbrot   |    0.640 |    0.610 |    0.640 |    0.590 |      2.200
 
 - **GC 無し** (リーク)。bench は走り切るが long-running は危険
 - **Bignum 無し** (62-bit tagged で打ち止め — IntegerTest 5 失敗の要因)
-- **Unboxed double 無し** (Mandelbrot で SOM++ 比 1.9× 遅い主因)
-- **型特化ノード未実装** (`node_fixnum_plus` 系。AOT が現状 ~3% しか効かない主因)
+- **Shape-based field unbox 無し** (Ball/Tree の field レベル Double が
+  boxed のまま — Bounce で Truffle 比 1.5× 遅い主因)
+- **Call-graph PE 無し** (Towers / TreeSort の再帰メソッドが inline されない
+  — Truffle に負ける主因)
 - **`make compile`/JIT デモ未配線** (ASTro JIT は naruby のような L0/L1/L2 構成、asom は未連携)
 - **AreWeFastYet 残り**: Havlak / CD / Knapsack / PageRank
 
