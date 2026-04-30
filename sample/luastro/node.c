@@ -152,6 +152,23 @@ void luastro_optimize_stats(void) {
     if (OPTION.verbose) fprintf(stderr, "luastro: cs hit=%d miss=%d\n", g_opt_hit, g_opt_miss);
 }
 
+// True if any tracked NODE has fired `swap_dispatcher` during the
+// profile run.  Lets `-p` fall back to AOT-bake (SD_<HORG>) when the
+// program never observed a hot type-mono arith / compare path — PGC
+// bake's only win there is keying SDs by HOPT, but with HOPT == HORG
+// at every site the lookup just adds a hopt_index probe per cs_load
+// without any speedup.  json / permute / richards / deltablue see this
+// regression today; backing off to AOT recovers the 2-11% delta.
+bool
+luastro_any_kind_swapped(void)
+{
+    for (uint32_t i = 0; i < g_all_nodes.cnt; i++) {
+        NODE *n = g_all_nodes.arr[i];
+        if (n && n->head.flags.kind_swapped) return true;
+    }
+    return false;
+}
+
 // --- code_repo: register named entries (function bodies) for code store
 
 struct code_entry {

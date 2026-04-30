@@ -230,7 +230,13 @@ main(int argc, char *argv[])
         luastro_run_on_big_stack(luastro_run_chunk_thunk, &ra);
     }
     if (OPTION.pg_mode) {
-        generate_specialized_code(body, src_name);
+        // Backoff: if no node observed a profile-driven swap_dispatcher,
+        // PGC bake degenerates to "SD with extra hopt_index probe per
+        // cs_load".  Use AOT bake (file=NULL) instead so cached load
+        // dlsym's SD_<HORG> directly without the index detour.
+        extern bool luastro_any_kind_swapped(void);
+        const char *bake_file = luastro_any_kind_swapped() ? src_name : NULL;
+        generate_specialized_code(body, bake_file);
     }
     free(src);
     return 0;
