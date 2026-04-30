@@ -56,15 +56,17 @@ testsuite: asom
 		./asom -cp $(TESTSUITE_CP) TestHarness $$t 2>&1 | tail -5; \
 	done
 
-ITERS ?= 50
+ITERS ?= 1
 BENCH ?= Sieve
 
 # Cross-engine AreWeFastYet comparison: asom (interp/aot/pg) vs SOM++,
-# TruffleSOM, PySOM-AST, PySOM-BC. Prints two tables — inner-work
-# (engine `system ticks`, excludes startup) and wall-clock (full
-# process). Each cell is best-of-3 over the same three trials.
-# Override engine paths via SOMPP_DIR / TRUFFLESOM_DIR / PYSOM_DIR /
-# MX_DIR (defaults assume /tmp/<name>-ref).
+# TruffleSOM. Prints two tables — inner-work (engine `system ticks`,
+# excludes startup) and wall-clock (full process). Each cell is
+# best-of-3. INNER iterations per bench are tuned in run_compare.rb so
+# one outer fills ~1 s on asom-interp; ITERS multiplies that for longer
+# runs (default 1 ⇒ sustained ~1 s, ITERS=5 ⇒ ~5 s per cell).
+# Override engine paths via SOMPP_DIR / TRUFFLESOM_DIR / MX_DIR
+# (defaults assume /tmp/<name>-ref).
 bench: asom
 	ruby ./test/run_compare.rb $(ITERS)
 
