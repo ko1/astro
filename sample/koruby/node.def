@@ -343,7 +343,7 @@ node_def(CTX * restrict c, NODE * restrict n, ID name, NODE *body, uint32_t para
     /* Method goes on the innermost lexical class/module — same as Ruby's
      * `def foo` semantics inside a class body. */
     struct korb_class *target = c->cref ? c->cref->klass : c->current_class;
-    korb_class_add_method_ast(target, name, body, params_cnt, locals_cnt);
+    korb_class_add_method_ast_full_cref(target, name, body, params_cnt, params_cnt, -1, locals_cnt, c->cref);
     return korb_id2sym(name);
 }
 
@@ -682,6 +682,11 @@ node_aref(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *idx, uint32_t a
 {
     VALUE r = EA(c, recv);
     VALUE i = EA(c, idx);
+    if (UNLIKELY(SPECIAL_CONST_P(r))) {
+        if (NIL_P(r)) return Qnil;
+        c->fp[arg_index+1] = i;
+        return korb_dispatch_binop(c, r, id_op_aref, 1, &c->fp[arg_index+1]);
+    }
     if (BUILTIN_TYPE(r) == T_ARRAY && FIXNUM_P(i)) {
         return korb_ary_aref(r, FIX2LONG(i));
     }
@@ -698,6 +703,13 @@ node_aset(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *idx, NODE *val,
     VALUE r = EA(c, recv);
     VALUE i = EA(c, idx);
     VALUE v = EA(c, val);
+    if (UNLIKELY(SPECIAL_CONST_P(r))) {
+        if (NIL_P(r)) return v;
+        VALUE *args = &c->fp[arg_index+1];
+        args[0] = i; args[1] = v;
+        korb_dispatch_binop(c, r, id_op_aset, 2, args);
+        return v;
+    }
     if (BUILTIN_TYPE(r) == T_ARRAY && FIXNUM_P(i)) {
         korb_ary_aset(r, FIX2LONG(i), v);
         return v;
@@ -853,4 +865,38 @@ node_ensure(CTX * restrict c, NODE * restrict n, NODE *body, NODE *ensure_body)
         c->state_value = saved_value;
     }
     return r;
+}
+
+NODE_DEF @noinline
+node_singleton_def(CTX * restrict c, NODE * restrict n, ID name, NODE *body, uint32_t params_cnt, uint32_t locals_cnt)
+{
+    /* def self.foo — install on c->self's singleton class. */
+    if (BUILTIN_TYPE(c->self) != T_CLASS && BUILTIN_TYPE(c->self) != T_MODULE) {
+        korb_raise(c, NULL, "def self.* outside of class/module");
+        return Qnil;
+    }
+    struct korb_class *target = korb_singleton_class_of((struct korb_class *)c->self);
+    korb_class_add_method_ast_full_cref(target, name, body, params_cnt, params_cnt, -1, locals_cnt, c->cref);
+    return korb_id2sym(name);
+}
+
+NODE_DEF
+node_default_init(CTX * restrict c, NODE * restrict n, uint32_t slot, NODE *default_expr)
+{
+    /* If c->fp[slot] is Qundef (= caller did not supply this optional arg),
+     * evaluate the default and store it. */
+    if (c->fp[slot] == Qundef) {
+        VALUE v = EVAL_ARG(c, default_expr);
+        if (UNLIKELY(c->state != KORB_NORMAL)) return Qnil;
+        c->fp[slot] = v;
+    }
+    return Qnil;
+}
+
+NODE_DEF @noinline
+node_def_full(CTX * restrict c, NODE * restrict n, ID name, NODE *body, uint32_t required_cnt, uint32_t total_cnt, int32_t rest_slot, uint32_t locals_cnt)
+{
+    struct korb_class *target = c->cref ? c->cref->klass : c->current_class;
+    korb_class_add_method_ast_full_cref(target, name, body, required_cnt, total_cnt, rest_slot, locals_cnt, c->cref);
+    return korb_id2sym(name);
 }

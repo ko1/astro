@@ -182,12 +182,15 @@ build_call_simple(struct transduce_context *tc, NODE *recv, ID name,
 {
     uint32_t arg_cnt = args ? (uint32_t)args->size : 0;
     uint32_t call_arg_idx = arg_index(tc);
-    /* place args into call_arg_idx..call_arg_idx+arg_cnt-1 */
+    /* Reserve all arg slots first so inner expressions don't allocate
+     * overlapping staging. */
+    uint32_t *slots = arg_cnt ? korb_xmalloc(sizeof(uint32_t) * arg_cnt) : NULL;
+    for (uint32_t i = 0; i < arg_cnt; i++) slots[i] = inc_arg_index(tc);
     NODE *seq = NULL;
     for (uint32_t i = 0; i < arg_cnt; i++) {
         NODE *arg = T(tc, args->nodes[i]);
         if (!arg) arg = ALLOC_node_nil();
-        NODE *set = ALLOC_node_lvar_set(inc_arg_index(tc), arg);
+        NODE *set = ALLOC_node_lvar_set(slots[i], arg);
         seq = seq ? ALLOC_node_seq(seq, set) : set;
     }
     NODE *call;
@@ -209,36 +212,49 @@ build_call_simple(struct transduce_context *tc, NODE *recv, ID name,
     return seq ? ALLOC_node_seq(seq, call) : call;
 }
 
-/* For container literals: pre-evaluate items into successive arg slots. */
+/* For container literals: pre-evaluate items into successive arg slots.
+ * IMPORTANT: reserve the slots BEFORE recursing into T() for the elements,
+ * otherwise a nested compound (hash/array literal, method call) will allocate
+ * its own staging from the same slot we're about to write — clobbering the
+ * pending element at runtime. */
 static NODE *
 build_container(struct transduce_context *tc, pm_node_list_t *items, bool is_array, bool is_hash, bool is_str_concat)
 {
     uint32_t n = (uint32_t)items->size;
-    if (is_hash) n = 0; /* see below: pairs */
+    if (is_hash) n = 0;
     uint32_t arg_idx = arg_index(tc);
     NODE *seq = NULL;
     if (is_hash) {
-        /* items are AssocNode with key+value */
+        /* First pass: reserve all key/value slot pairs.  This bumps the
+         * frame's arg_index high so subsequent T() calls allocate fresh
+         * slots that won't overlap with our pending writes. */
+        size_t valid = 0;
+        for (size_t i = 0; i < items->size; i++) {
+            if (PM_NODE_TYPE_P(items->nodes[i], PM_ASSOC_NODE)) valid++;
+        }
+        uint32_t *slots = korb_xmalloc(sizeof(uint32_t) * valid * 2);
+        for (size_t k = 0; k < valid * 2; k++) slots[k] = inc_arg_index(tc);
+        size_t si = 0;
         for (size_t i = 0; i < items->size; i++) {
             pm_node_t *node = items->nodes[i];
-            pm_node_t *key=NULL, *val=NULL;
-            if (PM_NODE_TYPE_P(node, PM_ASSOC_NODE)) {
-                pm_assoc_node_t *as = (pm_assoc_node_t *)node;
-                key = as->key; val = as->value;
-            } else continue;
-            NODE *kn = T(tc, key);
-            NODE *vn = T(tc, val);
-            NODE *ks = ALLOC_node_lvar_set(inc_arg_index(tc), kn);
-            NODE *vs = ALLOC_node_lvar_set(inc_arg_index(tc), vn);
+            if (!PM_NODE_TYPE_P(node, PM_ASSOC_NODE)) continue;
+            pm_assoc_node_t *as = (pm_assoc_node_t *)node;
+            NODE *kn = T(tc, as->key);
+            NODE *vn = T(tc, as->value);
+            NODE *ks = ALLOC_node_lvar_set(slots[si++], kn);
+            NODE *vs = ALLOC_node_lvar_set(slots[si++], vn);
             NODE *pair = ALLOC_node_seq(ks, vs);
             seq = seq ? ALLOC_node_seq(seq, pair) : pair;
             n += 2;
         }
     } else {
+        /* Reserve slots for all elements first */
+        uint32_t *slots = korb_xmalloc(sizeof(uint32_t) * n);
+        for (uint32_t i = 0; i < n; i++) slots[i] = inc_arg_index(tc);
         for (uint32_t i = 0; i < n; i++) {
             NODE *en = T(tc, items->nodes[i]);
             if (!en) en = ALLOC_node_nil();
-            NODE *st = ALLOC_node_lvar_set(inc_arg_index(tc), en);
+            NODE *st = ALLOC_node_lvar_set(slots[i], en);
             seq = seq ? ALLOC_node_seq(seq, st) : st;
         }
     }
@@ -484,19 +500,63 @@ T(struct transduce_context *tc, pm_node_t *node)
       case PM_DEF_NODE: {
           pm_def_node_t *n = (pm_def_node_t *)node;
           ID name = intern_constant(tc->parser, n->name);
-          uint32_t params_cnt = 0;
+          uint32_t required_cnt = 0;
+          uint32_t total_cnt = 0;
+          int rest_slot = -1;
+          push_frame(tc, &n->locals, false);
+
+          NODE *prologue = NULL;  /* default-value initialization */
           if (n->parameters) {
               pm_parameters_node_t *pn = (pm_parameters_node_t *)n->parameters;
-              params_cnt = (uint32_t)pn->requireds.size;
+              required_cnt = (uint32_t)pn->requireds.size;
+              total_cnt = required_cnt;
+              /* optionals: build "if Qundef then assign default" chain */
+              for (size_t i = 0; i < pn->optionals.size; i++) {
+                  pm_optional_parameter_node_t *op = (pm_optional_parameter_node_t *)pn->optionals.nodes[i];
+                  int slot = lvar_slot(tc, op->name, 0);
+                  if (slot < 0) continue;
+                  NODE *def_val = T(tc, op->value);
+                  /* if (lvar_get(slot) == Qundef) lvar_set(slot, def_val) */
+                  NODE *cur = ALLOC_node_lvar_get(slot);
+                  /* Use a special node that compares to Qundef: implement by
+                   * building "if cur.equal?(Qundef)..." but we don't have a
+                   * direct way to express Qundef in user space.  Use the
+                   * dedicated node_default_init. */
+                  NODE *init = ALLOC_node_default_init(slot, def_val);
+                  prologue = prologue ? ALLOC_node_seq(prologue, init) : init;
+                  total_cnt++;
+              }
+              /* rest */
+              if (pn->rest) {
+                  pm_node_t *rp = pn->rest;
+                  if (PM_NODE_TYPE_P(rp, PM_REST_PARAMETER_NODE)) {
+                      pm_rest_parameter_node_t *r = (pm_rest_parameter_node_t *)rp;
+                      if (r->name) {
+                          int slot = lvar_slot(tc, r->name, 0);
+                          if (slot >= 0) {
+                              rest_slot = slot;
+                              total_cnt++;
+                          }
+                      } else {
+                          /* anonymous *rest: locals don't have a name; use a sentinel slot */
+                      }
+                  }
+              }
+              /* keyword params: not supported, skip for now */
           }
-          push_frame(tc, &n->locals, false);
           NODE *body = n->body ? T(tc, n->body) : ALLOC_node_nil();
+          if (prologue) body = ALLOC_node_seq(prologue, body);
           uint32_t locals = tc->frame->max_cnt;
           pop_frame(tc);
-          /* def body is invoked with caller's fp moved into our frame —
-           * body uses fp[0..locals-1] directly, no extra scope advance. */
           code_repo_add(korb_id_name(name), body, false);
-          return ALLOC_node_def(name, body, params_cnt, locals);
+          if (n->receiver) {
+              if (PM_NODE_TYPE_P(n->receiver, PM_SELF_NODE)) {
+                  return ALLOC_node_singleton_def(name, body, required_cnt, locals);
+              }
+              fprintf(stderr, "[koruby] only def self.foo supported\n");
+              return ALLOC_node_singleton_def(name, body, required_cnt, locals);
+          }
+          return ALLOC_node_def_full(name, body, required_cnt, total_cnt, (int32_t)rest_slot, locals);
       }
 
       case PM_CLASS_NODE: {

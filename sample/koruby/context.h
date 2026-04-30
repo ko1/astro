@@ -96,7 +96,10 @@ struct RBasic {
     VALUE klass;
 };
 
-#define BUILTIN_TYPE(v) ((enum korb_type)((((struct RBasic *)(v))->flags) & T_MASK))
+/* BUILTIN_TYPE returns the heap-object type, or T_NONE for any immediate
+ * value.  This lets callers safely check `BUILTIN_TYPE(v) == T_FOO` without
+ * a separate SPECIAL_CONST_P guard. */
+#define BUILTIN_TYPE(v) (SPECIAL_CONST_P(v) ? T_NONE : (enum korb_type)((((struct RBasic *)(v))->flags) & T_MASK))
 #define RBASIC(v)       ((struct RBasic *)(v))
 
 /* forward */
@@ -139,8 +142,11 @@ struct method_cache {
     korb_dispatcher_t dispatcher;    /* its dispatcher fn ptr */
     uint32_t locals_cnt;
     uint32_t required_params_cnt;
+    uint32_t total_params_cnt;     /* required + optional + rest(0/1) */
+    int      rest_slot;            /* -1 if no *rest */
     uint8_t  type;                 /* 0=AST, 1=CFUNC */
     VALUE (*cfunc)(struct CTX_struct *, VALUE, int, VALUE *);
+    struct korb_cref *def_cref;    /* lexical cref captured at def-time */
 };
 
 /* call cache for func calls (similar) */

@@ -67,11 +67,14 @@ struct korb_method {
     } type;
     ID name;
     struct korb_class *defining_class;
+    struct korb_cref *def_cref;   /* lexical cref captured at def-time */
     union {
         struct {
             struct Node *body;
-            uint32_t required_params_cnt;
+            uint32_t required_params_cnt;  /* mandatory pre params */
+            uint32_t total_params_cnt;     /* required + optional + rest(0/1) */
             uint32_t locals_cnt;
+            int rest_slot;                 /* -1 if no *rest */
         } ast;
         struct {
             VALUE (*func)(CTX *c, VALUE self, int argc, VALUE *argv);
@@ -178,9 +181,18 @@ struct korb_class *korb_class_of_class(VALUE v); /* returns C struct */
 struct korb_class *korb_class_new(ID name, struct korb_class *super, enum korb_type instance_type);
 struct korb_class *korb_module_new(ID name);
 void korb_class_add_method_ast(struct korb_class *klass, ID name, struct Node *body, uint32_t params_cnt, uint32_t locals_cnt);
+void korb_class_add_method_ast_full(struct korb_class *klass, ID name, struct Node *body,
+                                    uint32_t required_params, uint32_t total_params,
+                                    int rest_slot, uint32_t locals_cnt);
+void korb_class_add_method_ast_full_cref(struct korb_class *klass, ID name, struct Node *body,
+                                          uint32_t required_params, uint32_t total_params,
+                                          int rest_slot, uint32_t locals_cnt,
+                                          struct korb_cref *def_cref);
+struct korb_cref *korb_cref_dup(struct korb_cref *src);
 void korb_class_add_method_cfunc(struct korb_class *klass, ID name, VALUE (*func)(CTX *, VALUE, int, VALUE *), int argc);
 struct korb_method *korb_class_find_method(const struct korb_class *klass, ID name);
 void korb_module_include(struct korb_class *klass, struct korb_class *mod);
+struct korb_class *korb_singleton_class_of(struct korb_class *klass);
 
 /* constants */
 void korb_const_set(struct korb_class *klass, ID name, VALUE value);

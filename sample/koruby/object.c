@@ -174,12 +174,43 @@ struct korb_class *korb_module_new(ID name) {
 }
 
 void korb_class_add_method_ast(struct korb_class *klass, ID name, struct Node *body, uint32_t params_cnt, uint32_t locals_cnt) {
+    korb_class_add_method_ast_full(klass, name, body, params_cnt, params_cnt, -1, locals_cnt);
+}
+
+void korb_class_add_method_ast_full(struct korb_class *klass, ID name, struct Node *body,
+                                    uint32_t required_params, uint32_t total_params,
+                                    int rest_slot, uint32_t locals_cnt) {
+    korb_class_add_method_ast_full_cref(klass, name, body, required_params,
+                                         total_params, rest_slot, locals_cnt, NULL);
+}
+
+struct korb_cref *korb_cref_dup(struct korb_cref *src) {
+    /* Deep-copy a cref chain into the heap so it survives stack unwind. */
+    if (!src) return NULL;
+    struct korb_cref *head = NULL, *tail = NULL;
+    for (; src; src = src->prev) {
+        struct korb_cref *e = korb_xmalloc(sizeof(*e));
+        e->klass = src->klass;
+        e->prev = NULL;
+        if (!head) head = tail = e;
+        else { tail->prev = e; tail = e; }
+    }
+    return head;
+}
+
+void korb_class_add_method_ast_full_cref(struct korb_class *klass, ID name, struct Node *body,
+                                          uint32_t required_params, uint32_t total_params,
+                                          int rest_slot, uint32_t locals_cnt,
+                                          struct korb_cref *def_cref) {
     struct korb_method *m = korb_xmalloc(sizeof(*m));
     m->type = KORB_METHOD_AST;
     m->name = name;
     m->defining_class = klass;
+    m->def_cref = korb_cref_dup(def_cref);
     m->u.ast.body = body;
-    m->u.ast.required_params_cnt = params_cnt;
+    m->u.ast.required_params_cnt = required_params;
+    m->u.ast.total_params_cnt = total_params;
+    m->u.ast.rest_slot = rest_slot;
     m->u.ast.locals_cnt = locals_cnt;
     method_table_set(&klass->methods, name, m);
     if (korb_vm) korb_vm->method_serial++;
@@ -195,6 +226,19 @@ void korb_class_add_method_cfunc(struct korb_class *klass, ID name,
     m->u.cfunc.argc = argc;
     method_table_set(&klass->methods, name, m);
     if (korb_vm) korb_vm->method_serial++;
+}
+
+struct korb_class *korb_singleton_class_of(struct korb_class *klass) {
+    /* If klass->basic.klass is the shared metaclass, create a per-instance
+     * singleton class so per-class methods can be installed. */
+    struct korb_class *current_meta = (struct korb_class *)klass->basic.klass;
+    if (current_meta == korb_vm->class_class || current_meta == korb_vm->module_class) {
+        struct korb_class *meta = korb_class_new(klass->name, current_meta, T_CLASS);
+        meta->basic.flags = T_CLASS;
+        klass->basic.klass = (VALUE)meta;
+        return meta;
+    }
+    return current_meta;
 }
 
 void korb_module_include(struct korb_class *klass, struct korb_class *mod) {
@@ -952,15 +996,21 @@ korb_method_cache_fill(struct method_cache *mc, struct korb_class *klass, struct
         mc->dispatcher = (korb_dispatcher_t)m->u.ast.body->head.dispatcher;
         mc->locals_cnt = m->u.ast.locals_cnt;
         mc->required_params_cnt = m->u.ast.required_params_cnt;
+        mc->total_params_cnt = m->u.ast.total_params_cnt;
+        mc->rest_slot = m->u.ast.rest_slot;
         mc->type = 0;
         mc->cfunc = NULL;
+        mc->def_cref = m->def_cref;
     } else {
         mc->body = NULL;
         mc->dispatcher = NULL;
         mc->locals_cnt = 0;
         mc->required_params_cnt = 0;
+        mc->total_params_cnt = 0;
+        mc->rest_slot = -1;
         mc->type = 1;
         mc->cfunc = m->u.cfunc.func;
+        mc->def_cref = NULL;
     }
 }
 
@@ -1006,14 +1056,22 @@ VALUE korb_dispatch_call(CTX *c, struct Node *callsite, VALUE recv, ID name,
     }
 
     /* AST hot path */
-    if (UNLIKELY(argc != mc->required_params_cnt)) {
+    /* Argument matching:
+     *   argc < required          → fill missing positions with Qnil (loose)
+     *   argc <= total            → optional slots beyond argc → Qnil
+     *   rest_slot >= 0           → leftover args go into rest_slot as Array
+     *   else                     → too many args, raise
+     */
+    if (UNLIKELY(mc->rest_slot < 0 && argc > mc->total_params_cnt)) {
         korb_raise(c, NULL, "wrong number of arguments (given %u, expected %u) for %s",
                  argc, mc->required_params_cnt, korb_id_name(name));
         return Qnil;
     }
+
     VALUE *prev_fp = c->fp;
     VALUE prev_self = c->self;
     struct korb_proc *prev_block = current_block;
+    struct korb_cref *prev_cref = c->cref;
     current_block = block;
 
     c->fp = prev_fp + arg_index;
@@ -1024,9 +1082,36 @@ VALUE korb_dispatch_call(CTX *c, struct Node *callsite, VALUE recv, ID name,
         return Qnil;
     }
     if (c->fp + mc->locals_cnt > c->sp) c->sp = c->fp + mc->locals_cnt;
+    /* Switch to the method's lexical cref so const lookup sees its
+     * enclosing classes.  Use the captured chain. */
+    if (mc->def_cref) c->cref = mc->def_cref;
 
-    /* zero locals beyond args */
-    for (uint32_t i = argc; i < mc->locals_cnt; i++) c->fp[i] = Qnil;
+    /* If there's a *rest slot, gather extras (or empty array). */
+    if (mc->rest_slot >= 0) {
+        long extra = (long)argc - (long)(mc->total_params_cnt - 1);
+        if (extra < 0) extra = 0;
+        VALUE rest = korb_ary_new_capa(extra);
+        for (long i = 0; i < extra; i++) {
+            korb_ary_push(rest, c->fp[mc->total_params_cnt - 1 + i]);
+        }
+        c->fp[mc->rest_slot] = rest;
+    }
+
+    /* Initialize slots between argc and total_params with Qundef so that
+     * node_default_init can tell "supplied" from "use default".  All other
+     * locals (above total_params, except rest_slot) get Qnil. */
+    uint32_t opt_start = argc;
+    if (opt_start < mc->required_params_cnt) opt_start = mc->required_params_cnt;
+    for (uint32_t i = opt_start; i < mc->total_params_cnt; i++) {
+        if ((int)i == mc->rest_slot) continue;
+        c->fp[i] = Qundef;
+    }
+    /* Locals beyond all params */
+    for (uint32_t i = mc->total_params_cnt; i < mc->locals_cnt; i++) {
+        if ((int)i == mc->rest_slot) continue;
+        c->fp[i] = Qnil;
+    }
+    /* Args between required and argc: leave as supplied (already in fp[i]) */
     c->self = recv;
     /* push frame for super() / backtrace */
     struct korb_frame frame = {
@@ -1043,6 +1128,7 @@ VALUE korb_dispatch_call(CTX *c, struct Node *callsite, VALUE recv, ID name,
     c->current_frame = frame.prev;
     c->fp = prev_fp;
     c->self = prev_self;
+    c->cref = prev_cref;
     current_block = prev_block;
 
     if (UNLIKELY(c->state == KORB_RETURN)) {
@@ -1069,8 +1155,8 @@ VALUE korb_dispatch_binop(CTX *c, VALUE recv, ID name, int argc, VALUE *argv) {
         return r;
     }
     /* AST: same as korb_dispatch_call but argv is ad-hoc */
-    if ((unsigned)argc != m->u.ast.required_params_cnt) {
-        korb_raise(c, NULL, "wrong arg count");
+    if (m->u.ast.rest_slot < 0 && (unsigned)argc > m->u.ast.total_params_cnt) {
+        korb_raise(c, NULL, "wrong arg count for %s", korb_id_name(name));
         return Qnil;
     }
     VALUE *prev_fp = c->fp;
@@ -1083,13 +1169,47 @@ VALUE korb_dispatch_binop(CTX *c, VALUE recv, ID name, int argc, VALUE *argv) {
         return Qnil;
     }
     for (int i = 0; i < argc; i++) new_fp[i] = argv[i];
-    for (uint32_t i = argc; i < m->u.ast.locals_cnt; i++) new_fp[i] = Qnil;
+    /* rest_slot collection */
+    if (m->u.ast.rest_slot >= 0) {
+        long extra = (long)argc - (long)(m->u.ast.total_params_cnt - 1);
+        if (extra < 0) extra = 0;
+        VALUE rest = korb_ary_new_capa(extra);
+        for (long i = 0; i < extra; i++) {
+            korb_ary_push(rest, new_fp[m->u.ast.total_params_cnt - 1 + i]);
+        }
+        new_fp[m->u.ast.rest_slot] = rest;
+    }
+    /* Qundef for missing optionals */
+    uint32_t opt_start = (unsigned)argc;
+    if (opt_start < m->u.ast.required_params_cnt) opt_start = m->u.ast.required_params_cnt;
+    for (uint32_t i = opt_start; i < m->u.ast.total_params_cnt; i++) {
+        if ((int)i == m->u.ast.rest_slot) continue;
+        new_fp[i] = Qundef;
+    }
+    for (uint32_t i = m->u.ast.total_params_cnt; i < m->u.ast.locals_cnt; i++) {
+        if ((int)i == m->u.ast.rest_slot) continue;
+        new_fp[i] = Qnil;
+    }
     c->fp = new_fp;
     if (c->fp + m->u.ast.locals_cnt > c->sp) c->sp = c->fp + m->u.ast.locals_cnt;
     c->self = recv;
+    struct korb_cref *prev_cref2 = c->cref;
+    if (m->def_cref) c->cref = m->def_cref;
+    /* push frame for super() / cref  */
+    struct korb_frame frame2 = {
+        .prev = c->current_frame,
+        .caller_node = NULL,
+        .method = m,
+        .self = recv,
+        .fp = c->fp,
+        .locals_cnt = m->u.ast.locals_cnt,
+    };
+    c->current_frame = &frame2;
     VALUE r = EVAL(c, m->u.ast.body);
+    c->current_frame = frame2.prev;
     c->fp = prev_fp;
     c->self = prev_self;
+    c->cref = prev_cref2;
     if (c->state == KORB_RETURN) {
         r = c->state_value;
         c->state = KORB_NORMAL;

@@ -1269,6 +1269,70 @@ static VALUE ary_shift(CTX *c, VALUE self, int argc, VALUE *argv) {
     return v;
 }
 
+static VALUE ary_transpose(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_array *a = (struct korb_array *)self;
+    if (a->len == 0) return korb_ary_new();
+    /* All inner arrays must be same length */
+    long n_outer = a->len;
+    long n_inner = (BUILTIN_TYPE(a->ptr[0]) == T_ARRAY) ? ((struct korb_array *)a->ptr[0])->len : 0;
+    VALUE r = korb_ary_new_capa(n_inner);
+    for (long i = 0; i < n_inner; i++) {
+        VALUE row = korb_ary_new_capa(n_outer);
+        for (long j = 0; j < n_outer; j++) {
+            VALUE inner = a->ptr[j];
+            if (BUILTIN_TYPE(inner) == T_ARRAY && i < ((struct korb_array *)inner)->len) {
+                korb_ary_push(row, ((struct korb_array *)inner)->ptr[i]);
+            } else korb_ary_push(row, Qnil);
+        }
+        korb_ary_push(r, row);
+    }
+    return r;
+}
+
+static VALUE ary_count(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_array *a = (struct korb_array *)self;
+    if (argc == 0) return INT2FIX(a->len);
+    long n = 0;
+    for (long i = 0; i < a->len; i++) if (korb_eq(a->ptr[i], argv[0])) n++;
+    return INT2FIX(n);
+}
+
+static VALUE ary_drop(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1 || !FIXNUM_P(argv[0])) return self;
+    long n = FIX2LONG(argv[0]);
+    struct korb_array *a = (struct korb_array *)self;
+    if (n < 0) n = 0;
+    if (n > a->len) n = a->len;
+    VALUE r = korb_ary_new_capa(a->len - n);
+    for (long i = n; i < a->len; i++) korb_ary_push(r, a->ptr[i]);
+    return r;
+}
+
+static VALUE ary_take(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1 || !FIXNUM_P(argv[0])) return self;
+    long n = FIX2LONG(argv[0]);
+    struct korb_array *a = (struct korb_array *)self;
+    if (n < 0) n = 0;
+    if (n > a->len) n = a->len;
+    VALUE r = korb_ary_new_capa(n);
+    for (long i = 0; i < n; i++) korb_ary_push(r, a->ptr[i]);
+    return r;
+}
+
+static VALUE ary_fill(CTX *c, VALUE self, int argc, VALUE *argv) {
+    /* Array#fill(val) — fill all slots with val */
+    if (argc < 1) return self;
+    struct korb_array *a = (struct korb_array *)self;
+    for (long i = 0; i < a->len; i++) a->ptr[i] = argv[0];
+    return self;
+}
+
+static VALUE ary_sample(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_array *a = (struct korb_array *)self;
+    if (a->len == 0) return Qnil;
+    return a->ptr[0]; /* deterministic stub */
+}
+
 static VALUE ary_each_with_object(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1) return Qnil;
     VALUE memo = argv[0];
@@ -1578,6 +1642,58 @@ static VALUE int_abs(CTX *c, VALUE self, int argc, VALUE *argv) {
     return self;
 }
 
+static VALUE int_aref(CTX *c, VALUE self, int argc, VALUE *argv) {
+    /* Integer#[i] — extract bit i */
+    if (argc < 1 || !FIXNUM_P(argv[0])) return INT2FIX(0);
+    if (!FIXNUM_P(self)) return INT2FIX(0);
+    long n = FIX2LONG(self);
+    long b = FIX2LONG(argv[0]);
+    if (b < 0 || b >= 63) return INT2FIX(0);
+    return INT2FIX((n >> b) & 1);
+}
+
+static VALUE int_bit_length(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (!FIXNUM_P(self)) return INT2FIX(0);
+    long v = FIX2LONG(self);
+    if (v < 0) v = ~v;
+    int n = 0;
+    while (v > 0) { n++; v >>= 1; }
+    return INT2FIX(n);
+}
+
+static VALUE int_divmod(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1 || !FIXNUM_P(self) || !FIXNUM_P(argv[0])) return korb_ary_new();
+    long a = FIX2LONG(self), b = FIX2LONG(argv[0]);
+    if (b == 0) { korb_raise(c, NULL, "divided by 0"); return Qnil; }
+    long q = a / b, m = a % b;
+    if ((a ^ b) < 0 && m != 0) { q--; m += b; }
+    VALUE r = korb_ary_new_capa(2);
+    korb_ary_push(r, INT2FIX(q));
+    korb_ary_push(r, INT2FIX(m));
+    return r;
+}
+
+static VALUE int_pow(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1 || !FIXNUM_P(self) || !FIXNUM_P(argv[0])) return self;
+    long b = FIX2LONG(self), e = FIX2LONG(argv[0]);
+    long r = 1;
+    while (e > 0) {
+        if (e & 1) {
+            long s;
+            if (__builtin_mul_overflow(r, b, &s)) {
+                /* fallback to bignum */
+                return korb_int_mul(self, INT2FIX(1));  /* TODO */
+            }
+            r = s;
+        }
+        long s;
+        if (__builtin_mul_overflow(b, b, &s)) break;
+        b = s;
+        e >>= 1;
+    }
+    return INT2FIX(r);
+}
+
 /* ---------- Float methods (extended) ---------- */
 static VALUE flt_floor(CTX *c, VALUE self, int argc, VALUE *argv) {
     double v = ((struct korb_float *)self)->value;
@@ -1869,6 +1985,10 @@ void korb_init_builtins(void) {
     DEF(cInt, "ceil",  int_floor, -1);
     DEF(cInt, "round", int_floor, -1);
     DEF(cInt, "abs",   int_abs, 0);
+    DEF(cInt, "[]",    int_aref, -1);
+    DEF(cInt, "bit_length", int_bit_length, 0);
+    DEF(cInt, "divmod", int_divmod, 1);
+    DEF(cInt, "**",    int_pow, 1);
 
     /* extra Float */
     DEF(cFlt, "floor", flt_floor, -1);
@@ -1933,6 +2053,12 @@ void korb_init_builtins(void) {
     DEF(cAry, "prepend",    ary_unshift,    -1);
     DEF(cAry, "shift",      ary_shift,      -1);
     DEF(cAry, "each_with_object", ary_each_with_object, 1);
+    DEF(cAry, "transpose", ary_transpose, 0);
+    DEF(cAry, "count",     ary_count, -1);
+    DEF(cAry, "drop",      ary_drop,   1);
+    DEF(cAry, "take",      ary_take,   1);
+    DEF(cAry, "fill",      ary_fill,  -1);
+    DEF(cAry, "sample",    ary_sample, -1);
 
     /* extra Hash */
     DEF(cHsh, "keys",       hash_keys,       0);
