@@ -772,30 +772,41 @@ node_field_get(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, N
                 return RESULT_OK(e->val);
             }
         }
-        // Slow path: full lookup, refresh cache.
-        LuaValue v = LUAV_NIL;
-        if (t->hash_cap) {
-            uint32_t pos = (uint32_t)lua_str_hash(field) & (t->hash_cap - 1);
-            for (;;) {
-                struct LuaTabEntry *e = &t->hash[pos];
-                if (LV_IS_NIL(e->key)) break;
-                if (e->key == LUAV_STR(field)) {
-                    ic->shape = t->hash_cap;
-                    ic->pos = pos;
-                    return RESULT_OK(e->val);
+        // Slow path: walk this table, then `__index` chain through any
+        // number of meta-target tables.  Multi-level OO inheritance via
+        // `setmetatable(Sub, {__index = Super})` is the standard idiom
+        // and requires recursion, not a single-level lookup.  IC refresh
+        // fires only on the first table we visit so the cache stays
+        // keyed on the recv's own shape.
+        struct LuaTable *cur = t;
+        bool first = true;
+        while (cur) {
+            if (cur->hash_cap) {
+                uint32_t pos = (uint32_t)lua_str_hash(field) & (cur->hash_cap - 1);
+                for (;;) {
+                    struct LuaTabEntry *e = &cur->hash[pos];
+                    if (LV_IS_NIL(e->key)) break;
+                    if (e->key == LUAV_STR(field)) {
+                        if (first) {
+                            ic->shape = cur->hash_cap;
+                            ic->pos = pos;
+                        }
+                        return RESULT_OK(e->val);
+                    }
+                    pos = (pos + 1) & (cur->hash_cap - 1);
                 }
-                pos = (pos + 1) & (t->hash_cap - 1);
             }
-        }
-        if (t->metatable) {
-            LuaValue idx = lua_table_get_str(t->metatable, LUASTRO_S___INDEX);
-            if (LV_IS_TBL(idx)) return RESULT_OK(lua_table_get_str(LV_AS_TBL(idx), field));
+            first = false;
+            if (!cur->metatable) break;
+            LuaValue idx = lua_table_get_str(cur->metatable, LUASTRO_S___INDEX);
+            if (LV_IS_TBL(idx)) { cur = LV_AS_TBL(idx); continue; }
             if (LV_IS_CALL(idx)) {
                 LuaValue argv[2] = {r, LUAV_STR(field)};
                 return RESULT_OK(lua_call(c, idx, argv, 2));
             }
+            break;
         }
-        return RESULT_OK(v);
+        return RESULT_OK(LUAV_NIL);
     }
     if (LV_IS_STR(r)) {
         LuaValue strlib = lua_table_get_str(c->globals, LUASTRO_S_STRING);
@@ -1052,10 +1063,17 @@ node_method_call(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame,
         if (__builtin_expect(t->metatable && t->metatable == ic->cached_metatable, 1)) {
             fn = ic->cached_fn;
         } else {
-            fn = lua_table_get_str(t, method);
-            if (LV_IS_NIL(fn) && t->metatable) {
-                LuaValue idx = lua_table_get_str(t->metatable, LUASTRO_S___INDEX);
-                if (LV_IS_TBL(idx)) fn = lua_table_get_str(LV_AS_TBL(idx), method);
+            // Walk t, then `__index` chain through any number of meta
+            // targets — multi-level OO inheritance via
+            // setmetatable(Sub, {__index = Super}) is standard.
+            struct LuaTable *cur = t;
+            while (cur) {
+                fn = lua_table_get_str(cur, method);
+                if (!LV_IS_NIL(fn)) break;
+                if (!cur->metatable) break;
+                LuaValue idx = lua_table_get_str(cur->metatable, LUASTRO_S___INDEX);
+                if (LV_IS_TBL(idx)) { cur = LV_AS_TBL(idx); continue; }
+                break;
             }
             if (t->metatable && (LV_IS_FN(fn) || LV_IS_CF(fn))) {
                 ic->cached_metatable = t->metatable;

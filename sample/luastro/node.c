@@ -16,12 +16,56 @@
 
 // --- User-provided allocator ------------------------------------
 
+// Track every allocated NODE so we can invalidate the (cached
+// `head.hash_value` + patched `head.dispatcher`) state after the parser
+// runs late kind-mutating passes (`pf_finalize_local_refs`,
+// `pf_fold_constants`).  On a run where `all.so` is already loaded,
+// `OPTIMIZE` (called from each `ALLOC_*`) caches the hash and patches
+// the dispatcher *before* mutation.  Without invalidation the captured
+// slot's `node_local_get→node_box_get` rewrite leaves the cached hash
+// stale and the dispatcher pointing at the local_get-shaped SD, so
+// captured-local reads return the raw `LuaBox*` instead of the unboxed
+// value, surfacing later as "attempt to index a unknown value".
+static struct {
+    NODE   **arr;
+    uint32_t cnt;
+    uint32_t cap;
+} g_all_nodes = {0};
+
 static __attribute__((noinline)) NODE *
 node_allocate(size_t size)
 {
     NODE *n = (NODE *)calloc(1, size);
     if (!n) { fprintf(stderr, "node_allocate: out of memory\n"); exit(1); }
+    if (g_all_nodes.cnt == g_all_nodes.cap) {
+        g_all_nodes.cap = g_all_nodes.cap ? g_all_nodes.cap * 2 : 256;
+        g_all_nodes.arr = (NODE **)realloc(g_all_nodes.arr,
+                                           g_all_nodes.cap * sizeof(NODE *));
+        if (!g_all_nodes.arr) { fprintf(stderr, "node_allocate: oom (track)\n"); exit(1); }
+    }
+    g_all_nodes.arr[g_all_nodes.cnt++] = n;
     return n;
+}
+
+// Reset every tracked node's cached hash and patched dispatcher, then
+// re-run OPTIMIZE so each one picks up the SD that matches its current
+// (post-mutation) kind.  Called once from `PARSE_lua` after the
+// kind-mutating passes finish.  See comment on `g_all_nodes` for why.
+void
+luastro_reoptimize_all(void)
+{
+    for (uint32_t i = 0; i < g_all_nodes.cnt; i++) {
+        NODE *n = g_all_nodes.arr[i];
+        if (!n || !n->head.kind) continue;
+        n->head.flags.has_hash_value = false;
+        n->head.flags.is_specialized = false;
+        n->head.dispatcher           = n->head.kind->default_dispatcher;
+        n->head.dispatcher_name      = n->head.kind->default_dispatcher_name;
+    }
+    for (uint32_t i = 0; i < g_all_nodes.cnt; i++) {
+        NODE *n = g_all_nodes.arr[i];
+        if (n) OPTIMIZE(n);
+    }
 }
 
 // --- Dispatcher tracing ---------------------------------------

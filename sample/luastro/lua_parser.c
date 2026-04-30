@@ -445,6 +445,15 @@ PARSE_lua(const char *src, const char *filename, struct ParsedChunk *out)
     pf_finalize_local_refs(&top);
     pf_fold_constants(&top);
 
+    // The two passes above mutate `head.kind` (capture rewrite) and
+    // swap children (constant folding).  When `all.so` was already
+    // loaded at startup, every `ALLOC_*` along the way cached a stale
+    // hash and patched a now-wrong dispatcher.  Re-run OPTIMIZE on
+    // every allocated node so each one ends up at the SD that matches
+    // its post-mutation kind.
+    extern void luastro_reoptimize_all(void);
+    luastro_reoptimize_all();
+
     if (cur()->kind != LT_EOF) lua_tok_error("expected end of input");
 
     if (out) {
