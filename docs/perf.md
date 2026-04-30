@@ -234,11 +234,59 @@ plain 45.6 fps → AOT 72.0 fps → PGC 86.5 fps（PGC は AOT より +20%）。
 で十分機能する。crashed run の profile は永続化しない条件分岐が要点
 （不安定な特化を後続に持ち越さない）。
 
-### 4.7 Profile-driven type-speculating SD（未実装、最大レバレッジ）
+### 4.7 Profile-driven type-speculating SD（luastro 実装済み）
 
 各算術ノードが観測した型・形状に応じ、ガード分岐（残るが）の slow path を
 **末尾 deopt 呼び** に置換した SD を吐く。SD のコードサイズが減り、親 SD
-への inline が効く。`luastro docs/todo.md` 筆頭、abruby に部分実装あり。
+への inline が効く。
+
+luastro 実装（commit `91f8544`）:
+- `node_int_add` / `_sub` / `_mul` / `node_lt` / `node_le` の base body に
+  `swap_dispatcher` を仕込み、最初に観測した型 mono パス（int+int / flt+flt）で
+  strict variant (`_ii` / `_ff`) に促進。`#ifndef NODE_SKIP_COLD` で SD-bake
+  時には swap call を strip。
+- strict variant は hot path のみ inline + cold は `noinline cold` 関数
+  (`node_int_arith_ii_miss` 等) に追い出す。SD `.text` が hot path のみに収まる。
+- `@canonical=node_int_<op>` で HORG が parser 確保時 (base) と post-swap
+  (specialised) で一致。`hopt_index.txt` の `(HORG, file, line) → HOPT`
+  経由で cached load 時に PGSD を resolve。
+
+bench: nbody PGC-cached 0.531 → 0.432s (-19%, lua5.4 0.402 とほぼ同等)、
+fannkuch -13%、mandelbrot -6%。
+
+### 4.7.1 落とし穴: per-thread `malloc` arena が PGC bench を歪める
+
+luastro `commit 299456f`。Lua プログラムの C スタックサイズを稼ぐため
+`pthread_create` で worker スレッドに作業を回している実装で発覚した
+glibc 由来の overhead。
+
+- glibc は **pthread ごとに malloc arena を新規確保**する（メイン
+  スレッドは `brk`、worker は mmap+mprotect）。
+- worker arena は遅延コミットで、ページ毎に
+  `mprotect(PROT_READ|PROT_WRITE)` を呼ぶ。
+- alloc-heavy ベンチ (storage / binarytrees) では **58k 回の
+  mprotect ≈ 220ms** がカーネル時間に乗る。
+
+**対処**: `mallopt(M_ARENA_MAX, 1)` を `main` 冒頭で呼ぶ。`MALLOC_ARENA_MAX=1`
+環境変数と等価。worker のアロケーションを単一 arena (`brk` 経由) に集約。
+storage 0.421s → 0.300s (-29%)、binarytrees 0.787s → 0.542s (-32%)。
+
+**教訓（言語非依存）**: pthread を使う言語実装で alloc-heavy ベンチが
+不審に遅い場合、`strace -c -f` で `mprotect` 回数を確認。glibc の
+per-thread arena が原因の可能性大。`mallopt(M_ARENA_MAX, 1)` で即座に
+解消する。
+
+### 4.7.2 PGC バックオフ — 観測無いプログラムを AOT で焼く
+
+PGC bake は HOPT 名前空間に SD を吐き、`hopt_index.txt` 経由で
+`cs_load` する。プログラム中に一度も `swap_dispatcher` が発火しなかった
+場合、`HOPT == HORG` のままで PGC bake は AOT bake と同じ内容を
+吐きつつ、cached load 時に余計な hopt_index_lookup を毎ノードに払う。
+
+luastro `commit d037fda`: profile run 終了時に `g_all_nodes` を走査し、
+`head.flags.kind_swapped` を見て発火が一つも無ければ `-p` でも `file=NULL`
+で AOT bake にフォールバック。実 bench では全 program が少なくとも一つの
+`swap_dispatcher` を踏むため発動しないが、defensive guard として有効。
 
 ### 4.7.1 mtype-specialized prologue + NODE_DEF ラッパ（abruby Phase 1）
 
