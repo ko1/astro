@@ -158,7 +158,18 @@ interp 単独でも SOM++ に勝つベンチが多い（Sieve/Queens で 4× 以
 
 プロセス起動 + クラス・パース + JIT compile + ベンチループ全部を含む
 `/usr/bin/time -f '%e'` 計測。**ユーザ体感の "コマンドが返ってくるまで" 時間**。
-実装ごとの起動コストの差で大きくスキューするため、フェアな比較ではない。
+
+各 engine の **起動 / 一度きりコスト** がそのまま乗るため、long-run と
+short-run で答えが変わる。例えば Sieve では asom-aot 0.140s vs Truffle
+1.700s で `wall − inner` を取ると asom ~5 ms / Truffle ~1539 ms — 後者は
+JVM bootstrap + Truffle runtime init + libgraal load + 最初の iter での
+Graal JIT compile が固定費。bench loop を長く走らせるほど固定費は希釈
+される。
+
+「inner-loop の純粋なスループット」を比較したいときは上の inner-work 表
+を、「コマンド一発打って結果が返ってくるまで」を比較したいときはこの
+wall-clock 表を見る。どちらの数字も engine が正直に出している、用途で
+読み分ける。
 
 ```
 benchmark    |    interp |       aot |        pg |     SOM++ |   Truffle
@@ -177,14 +188,14 @@ Fannkuch     |     0.470 |     0.200 |     0.190 |     1.370 |     1.850
 Mandelbrot   |     0.050 |     0.030 |     0.030 |     1.320 |     2.080
 ```
 
-- **TruffleSOM** は wall-clock でほぼ常に **1.5–2.2 秒の JVM bootstrap +
-  AST parse + libgraal JIT compile** 固定費を払う（Sieve でも Mandelbrot でも一定）。
-  短いベンチでは不利、長期 run なら amortise される。
-- **asom / SOM++** は C ネイティブで bare 起動が速いため、wall-time が
-  inner-work とほぼ同じ。比較的 honest。
-- 「**起動が速いと wall-time で得をする**」という当たり前の事実が
-  出ているだけで、Engine 同士の inner-loop 性能を見るには上の inner-work
-  テーブルを参照するべき。
+- **TruffleSOM** は wall-clock で常に **1.5–2.2 秒の JVM bootstrap +
+  AST parse + libgraal JIT compile** が固定費として乗る（Sieve でも
+  Mandelbrot でも一定）。short-run では割合が大きく、long-run で薄まる。
+- **asom / SOM++** は C ネイティブで bare 起動が速いため、wall-clock が
+  inner-work とほぼ同じ。
+- どの engine も計測自体は正直、bench をどれだけ長く走らせるかで wall
+  と inner の比が変わる、というだけ。ここでは inner=1秒級なので Truffle
+  には不利な側に振れている。
 
 ## 設計上の特徴
 
