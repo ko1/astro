@@ -210,6 +210,14 @@ extern const struct NodeKind kind_node_send1_intgt;
 extern const struct NodeKind kind_node_send1_intle;
 extern const struct NodeKind kind_node_send1_intge;
 extern const struct NodeKind kind_node_send1_inteq;
+extern const struct NodeKind kind_node_send1_dblplus;
+extern const struct NodeKind kind_node_send1_dblminus;
+extern const struct NodeKind kind_node_send1_dbltimes;
+extern const struct NodeKind kind_node_send1_dbllt;
+extern const struct NodeKind kind_node_send1_dblgt;
+extern const struct NodeKind kind_node_send1_dblle;
+extern const struct NodeKind kind_node_send1_dblge;
+extern const struct NodeKind kind_node_send1_dbleq;
 
 // Map a primitive's kind tag to the matching specialized NodeKind.
 // Returns NULL when there is no specialization for that primitive.
@@ -225,6 +233,14 @@ asom_send1_specialization(enum asom_prim_kind k)
         case ASOM_PRIM_INT_LE:    return &kind_node_send1_intle;
         case ASOM_PRIM_INT_GE:    return &kind_node_send1_intge;
         case ASOM_PRIM_INT_EQ:    return &kind_node_send1_inteq;
+        case ASOM_PRIM_DBL_PLUS:  return &kind_node_send1_dblplus;
+        case ASOM_PRIM_DBL_MINUS: return &kind_node_send1_dblminus;
+        case ASOM_PRIM_DBL_TIMES: return &kind_node_send1_dbltimes;
+        case ASOM_PRIM_DBL_LT:    return &kind_node_send1_dbllt;
+        case ASOM_PRIM_DBL_GT:    return &kind_node_send1_dblgt;
+        case ASOM_PRIM_DBL_LE:    return &kind_node_send1_dblle;
+        case ASOM_PRIM_DBL_GE:    return &kind_node_send1_dblge;
+        case ASOM_PRIM_DBL_EQ:    return &kind_node_send1_dbleq;
         default: return NULL;
     }
 }
@@ -243,14 +259,17 @@ node_send1(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *arg0, const ch
         return asom_invoke_method(c, cc->cached_method, r, args, 1);
     }
     VALUE result = asom_send_slow(c, r, selector, 1, args, cc);
-    // After the cache fill: if both args are SmallInteger and the cached
-    // method is one of the int_* primitives, rewrite this site to its
-    // specialized variant. Hits this path at most a handful of times per
-    // call site (re-runs only on serial bumps / class swaps).
-    if (cc && cc->cached_method && cc->cached_method->prim_kind != ASOM_PRIM_GENERIC
-        && ASOM_IS_INT(r) && ASOM_IS_INT(args[0])) {
-        const struct NodeKind *target = asom_send1_specialization(cc->cached_method->prim_kind);
-        if (target) swap_dispatcher(n, target);
+    // After the cache fill: if both args are the same numeric immediate
+    // (Int or Flonum) and the cached method is one of the *_* primitives,
+    // rewrite this site to its specialized variant. Hits this path at most
+    // a handful of times per call site (re-runs only on serial bumps).
+    if (cc && cc->cached_method && cc->cached_method->prim_kind != ASOM_PRIM_GENERIC) {
+        bool both_int = ASOM_IS_INT(r) && ASOM_IS_INT(args[0]);
+        bool both_flo = ASOM_IS_FLO(r) && ASOM_IS_FLO(args[0]);
+        if (both_int || both_flo) {
+            const struct NodeKind *target = asom_send1_specialization(cc->cached_method->prim_kind);
+            if (target) swap_dispatcher(n, target);
+        }
     }
     return result;
 }
@@ -1035,6 +1054,119 @@ node_send1_inteq(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *arg0, co
         return ASOM_VAL2INT(r) == ASOM_VAL2INT(a) ? c->val_true : c->val_false;
     }
     swap_dispatcher(n, &kind_node_send1);
+    VALUE args[1] = { a };
+    return asom_send(c, r, selector, 1, args, cc);
+}
+
+// -----------------------------------------------------------------------------
+//  Flonum-specialized send1 variants. Same shape as int_*: guard on both
+//  operands being flonum (immediate Double in the VALUE word), do the
+//  arithmetic / compare in C, fall back to generic node_send1 on miss.
+//  asom_double_new returns a flonum directly when the result is in
+//  representable range (almost always for Mandelbrot-style workloads),
+//  so the fast path is alloc-free.
+// -----------------------------------------------------------------------------
+
+NODE_DEF @canonical=node_send1
+node_send1_dblplus(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *arg0, const char *selector, struct asom_callcache *cc)
+{
+    VALUE r = EVAL_ARG(c, recv);
+    VALUE a = EVAL_ARG(c, arg0);
+    if (__builtin_expect(ASOM_IS_FLO(r) && ASOM_IS_FLO(a), 1)) {
+        return asom_double_new(c, asom_val2flo(r) + asom_val2flo(a));
+    }
+    if (!n->head.flags.is_specialized) swap_dispatcher(n, &kind_node_send1);
+    VALUE args[1] = { a };
+    return asom_send(c, r, selector, 1, args, cc);
+}
+
+NODE_DEF @canonical=node_send1
+node_send1_dblminus(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *arg0, const char *selector, struct asom_callcache *cc)
+{
+    VALUE r = EVAL_ARG(c, recv);
+    VALUE a = EVAL_ARG(c, arg0);
+    if (__builtin_expect(ASOM_IS_FLO(r) && ASOM_IS_FLO(a), 1)) {
+        return asom_double_new(c, asom_val2flo(r) - asom_val2flo(a));
+    }
+    if (!n->head.flags.is_specialized) swap_dispatcher(n, &kind_node_send1);
+    VALUE args[1] = { a };
+    return asom_send(c, r, selector, 1, args, cc);
+}
+
+NODE_DEF @canonical=node_send1
+node_send1_dbltimes(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *arg0, const char *selector, struct asom_callcache *cc)
+{
+    VALUE r = EVAL_ARG(c, recv);
+    VALUE a = EVAL_ARG(c, arg0);
+    if (__builtin_expect(ASOM_IS_FLO(r) && ASOM_IS_FLO(a), 1)) {
+        return asom_double_new(c, asom_val2flo(r) * asom_val2flo(a));
+    }
+    if (!n->head.flags.is_specialized) swap_dispatcher(n, &kind_node_send1);
+    VALUE args[1] = { a };
+    return asom_send(c, r, selector, 1, args, cc);
+}
+
+NODE_DEF @canonical=node_send1
+node_send1_dbllt(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *arg0, const char *selector, struct asom_callcache *cc)
+{
+    VALUE r = EVAL_ARG(c, recv);
+    VALUE a = EVAL_ARG(c, arg0);
+    if (__builtin_expect(ASOM_IS_FLO(r) && ASOM_IS_FLO(a), 1)) {
+        return asom_val2flo(r) < asom_val2flo(a) ? c->val_true : c->val_false;
+    }
+    if (!n->head.flags.is_specialized) swap_dispatcher(n, &kind_node_send1);
+    VALUE args[1] = { a };
+    return asom_send(c, r, selector, 1, args, cc);
+}
+
+NODE_DEF @canonical=node_send1
+node_send1_dblgt(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *arg0, const char *selector, struct asom_callcache *cc)
+{
+    VALUE r = EVAL_ARG(c, recv);
+    VALUE a = EVAL_ARG(c, arg0);
+    if (__builtin_expect(ASOM_IS_FLO(r) && ASOM_IS_FLO(a), 1)) {
+        return asom_val2flo(r) > asom_val2flo(a) ? c->val_true : c->val_false;
+    }
+    if (!n->head.flags.is_specialized) swap_dispatcher(n, &kind_node_send1);
+    VALUE args[1] = { a };
+    return asom_send(c, r, selector, 1, args, cc);
+}
+
+NODE_DEF @canonical=node_send1
+node_send1_dblle(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *arg0, const char *selector, struct asom_callcache *cc)
+{
+    VALUE r = EVAL_ARG(c, recv);
+    VALUE a = EVAL_ARG(c, arg0);
+    if (__builtin_expect(ASOM_IS_FLO(r) && ASOM_IS_FLO(a), 1)) {
+        return asom_val2flo(r) <= asom_val2flo(a) ? c->val_true : c->val_false;
+    }
+    if (!n->head.flags.is_specialized) swap_dispatcher(n, &kind_node_send1);
+    VALUE args[1] = { a };
+    return asom_send(c, r, selector, 1, args, cc);
+}
+
+NODE_DEF @canonical=node_send1
+node_send1_dblge(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *arg0, const char *selector, struct asom_callcache *cc)
+{
+    VALUE r = EVAL_ARG(c, recv);
+    VALUE a = EVAL_ARG(c, arg0);
+    if (__builtin_expect(ASOM_IS_FLO(r) && ASOM_IS_FLO(a), 1)) {
+        return asom_val2flo(r) >= asom_val2flo(a) ? c->val_true : c->val_false;
+    }
+    if (!n->head.flags.is_specialized) swap_dispatcher(n, &kind_node_send1);
+    VALUE args[1] = { a };
+    return asom_send(c, r, selector, 1, args, cc);
+}
+
+NODE_DEF @canonical=node_send1
+node_send1_dbleq(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *arg0, const char *selector, struct asom_callcache *cc)
+{
+    VALUE r = EVAL_ARG(c, recv);
+    VALUE a = EVAL_ARG(c, arg0);
+    if (__builtin_expect(ASOM_IS_FLO(r) && ASOM_IS_FLO(a), 1)) {
+        return asom_val2flo(r) == asom_val2flo(a) ? c->val_true : c->val_false;
+    }
+    if (!n->head.flags.is_specialized) swap_dispatcher(n, &kind_node_send1);
     VALUE args[1] = { a };
     return asom_send(c, r, selector, 1, args, cc);
 }

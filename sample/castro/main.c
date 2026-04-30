@@ -129,6 +129,19 @@ void *castro_memset(VALUE *dst, int64_t v, int64_t n) {
     return dst;
 }
 
+// Typed slot fill: fills `count` consecutive int slots starting at `base`
+// with `value`.  parse.rb emits a call to this for the
+// `for (i=s; i<e; i++) array[i] = const_int` idiom, which is sieve's
+// `prime[i] = 1` initialization.  As a standalone function compiled
+// with -O3, gcc readily vectorizes this with AVX-256 (4 int64 stores
+// per iteration) — much faster than the per-element scalar store an
+// inlined SD chain emits.
+__attribute__((noinline))
+void castro_fill_i(int64_t * __restrict__ base, int64_t value, int64_t count)
+{
+    for (int64_t i = 0; i < count; i++) base[i] = value;
+}
+
 void *castro_memcpy(VALUE *dst, const VALUE *src, int64_t n) {
     for (int64_t i = 0; i < n; i++) dst[i] = src[i];
     return dst;
@@ -783,6 +796,14 @@ build_op(sx_lexer *l, tok_t op)
         NODE *d = build_expr(l);
         sx_expect(l, TK_RPAREN);
         return ALLOC_node_for(a, b, c, d);
+    }
+    if (IS("array_fill_i")) {
+        NODE *a = build_expr(l);
+        NODE *b = build_expr(l);
+        NODE *c = build_expr(l);
+        NODE *d = build_expr(l);
+        sx_expect(l, TK_RPAREN);
+        return ALLOC_node_array_fill_i(a, b, c, d);
     }
 
     if (IS("call")) {

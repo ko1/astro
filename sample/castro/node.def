@@ -245,6 +245,7 @@ extern VALUE *castro_strcat(VALUE *dst, const VALUE *src);
 extern void *castro_memset(VALUE *dst, int64_t v, int64_t n);
 extern void *castro_memcpy(VALUE *dst, const VALUE *src, int64_t n);
 extern int64_t castro_memcmp(const VALUE *a, const VALUE *b, int64_t n);
+extern void castro_fill_i(int64_t *base, int64_t value, int64_t count);
 extern int64_t castro_atoi(const VALUE *s);
 extern void castro_exit(int code);
 
@@ -304,6 +305,23 @@ node_call_memcpy(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE 
     return RESULT_OK((VALUE){.p = castro_memcpy((VALUE *)UNWRAP(EVAL_ARG(c, dst)).p,
                                        (const VALUE *)UNWRAP(EVAL_ARG(c, src)).p,
                                        UNWRAP(EVAL_ARG(c, k)).i)});
+}
+
+// Specialized array-fill emitted by parse.rb's pattern detector for
+// `for (i = start; i < end; i++) array[i] = K;` where the array is
+// addressable as a contiguous int slot region (global int array or
+// pointer to int).  Calls the noinline `castro_fill_i` helper so gcc
+// can vectorize it with AVX-256 (4 int64 stores per iteration), which
+// the inlined per-element SD chain doesn't trigger.
+NODE_DEF
+node_array_fill_i(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *base, NODE *start, NODE *end, NODE *value)
+{
+    int64_t *p = (int64_t *)UNWRAP(EVAL_ARG(c, base)).p;
+    int64_t s = UNWRAP(EVAL_ARG(c, start)).i;
+    int64_t e = UNWRAP(EVAL_ARG(c, end)).i;
+    int64_t v = UNWRAP(EVAL_ARG(c, value)).i;
+    if (e > s) castro_fill_i(p + s, v, e - s);
+    return RESULT_OK_I(0);
 }
 
 NODE_DEF

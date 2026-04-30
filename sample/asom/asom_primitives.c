@@ -1441,16 +1441,17 @@ asom_install_primitives(CTX *c)
     def_prim(c->cls_integer, ">>",           int_shr,              1);
     def_prim(c->cls_integer, ">>>",          int_shr,              1);
 
-    // Double
-    def_prim(c->cls_double, "+",             dbl_plus,             1);
-    def_prim(c->cls_double, "-",             dbl_minus,            1);
-    def_prim(c->cls_double, "*",             dbl_times,            1);
-    def_prim(c->cls_double, "/",             dbl_div,              1);
-    def_prim(c->cls_double, "<",             dbl_lt,               1);
-    def_prim(c->cls_double, ">",             dbl_gt,               1);
-    def_prim(c->cls_double, "<=",            dbl_le,               1);
-    def_prim(c->cls_double, ">=",            dbl_ge,               1);
-    def_prim(c->cls_double, "=",             dbl_eq_,              1);
+    // Double — arith / compare get prim_kind tags so node_send1 can rewrite
+    // hot call sites to the flonum-fast send1_dbl* variants.
+    def_prim_kind(c->cls_double, "+",        dbl_plus,             1, ASOM_PRIM_DBL_PLUS);
+    def_prim_kind(c->cls_double, "-",        dbl_minus,            1, ASOM_PRIM_DBL_MINUS);
+    def_prim_kind(c->cls_double, "*",        dbl_times,            1, ASOM_PRIM_DBL_TIMES);
+    def_prim     (c->cls_double, "/",        dbl_div,              1);
+    def_prim_kind(c->cls_double, "<",        dbl_lt,               1, ASOM_PRIM_DBL_LT);
+    def_prim_kind(c->cls_double, ">",        dbl_gt,               1, ASOM_PRIM_DBL_GT);
+    def_prim_kind(c->cls_double, "<=",       dbl_le,               1, ASOM_PRIM_DBL_LE);
+    def_prim_kind(c->cls_double, ">=",       dbl_ge,               1, ASOM_PRIM_DBL_GE);
+    def_prim_kind(c->cls_double, "=",        dbl_eq_,              1, ASOM_PRIM_DBL_EQ);
     def_prim(c->cls_double, "//",            dbl_floor_div,        1);
     def_prim(c->cls_double, "round",         dbl_round,            0);
     def_prim(c->cls_double, "floor",         dbl_floor,            0);

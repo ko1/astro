@@ -514,6 +514,71 @@ def scale_index(idx_sx, elem_ty)
   [:mul_i, idx_sx, [:lit_i, s]]
 end
 
+# Pattern detection: rewrite
+#     for (i = S; i < E; i++) array[i] = K;
+# (where K is an int literal and array is a contiguous int slot region)
+# into a single `array_fill_i` op that calls a vectorized helper.  In
+# inlined SD form gcc emits a per-element scalar store loop; outsourced
+# to `castro_fill_i` (compiled separately as -O3 with `__restrict__`)
+# gcc autovectorizes to AVX-256 stores.
+#
+# Triggered for sieve's `for (i = 0; i < n; i++) prime[i] = 1;`
+# initialization.  Returns the rewritten SX or nil.
+def array_fill_for(init_sx, cond_sx, upd_sx, body_sx)
+  iv = match_for_init(init_sx)
+  return nil if iv.nil?
+  return nil unless match_for_cond(cond_sx, iv)
+  return nil unless match_for_step(upd_sx, iv)
+  base_value = match_for_body(body_sx, iv)
+  return nil if base_value.nil?
+  base, value = base_value
+  start = init_sx[1][2]
+  end_v = cond_sx[2]
+  [:seq, [:array_fill_i, base, start, end_v, value], [:nop]]
+end
+
+# Match `init = (drop (lset IV (...)))` and return IV.
+def match_for_init(init_sx)
+  return nil unless init_sx.is_a?(Array) && init_sx[0] == :drop
+  inner = init_sx[1]
+  return nil unless inner.is_a?(Array) && inner[0] == :lset
+  inner[1]
+end
+
+# Match `cond = (lt_i (lget IV) END)`.
+def match_for_cond(cond_sx, iv)
+  cond_sx.is_a?(Array) && cond_sx[0] == :lt_i &&
+    cond_sx[1].is_a?(Array) && cond_sx[1][0] == :lget && cond_sx[1][1] == iv
+end
+
+# Match `update = (drop (seq (lset IV (add IV 1)) ...))` post-increment.
+def match_for_step(upd_sx, iv)
+  return false unless upd_sx.is_a?(Array) && upd_sx[0] == :drop
+  inner = upd_sx[1]
+  inner = inner[1] if inner.is_a?(Array) && inner[0] == :seq
+  return false unless inner.is_a?(Array) && inner[0] == :lset && inner[1] == iv
+  rhs = inner[2]
+  return false unless rhs.is_a?(Array) && rhs[0] == :add_i
+  return false unless rhs[1].is_a?(Array) && rhs[1][0] == :lget && rhs[1][1] == iv
+  return false unless rhs[2] == [:lit_i, 1]
+  true
+end
+
+# Match `body = (drop (store_i (ptr_add BASE (lget IV)) VALUE))` where
+# VALUE is a literal int.  Returns [BASE_sx, VALUE_sx], else nil.
+def match_for_body(body_sx, iv)
+  return nil unless body_sx.is_a?(Array) && body_sx[0] == :drop
+  inner = body_sx[1]
+  return nil unless inner.is_a?(Array) && inner[0] == :store_i
+  ptr = inner[1]; val = inner[2]
+  return nil unless ptr.is_a?(Array) && ptr[0] == :ptr_add
+  base = ptr[1]
+  off = ptr[2]
+  return nil unless off.is_a?(Array) && off[0] == :lget && off[1] == iv
+  return nil unless val.is_a?(Array) && val[0] == :lit_i
+  [base, val]
+end
+
 def cast(expr, frm, to)
   return expr if frm == to
   return [:cast_id, expr] if frm.int? && to.float?
@@ -1549,7 +1614,8 @@ def compile_stmt(node, fn, src)
         [:drop, es]
       end
     body_sx = compile_stmt(body, fn, src)
-    [:for, init_sx, cs, upd_sx, body_sx]
+    array_fill_for(init_sx, cs, upd_sx, body_sx) ||
+      [:for, init_sx, cs, upd_sx, body_sx]
 
   when 'break_statement'    then [:break]
   when 'continue_statement' then [:continue]

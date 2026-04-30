@@ -123,6 +123,14 @@ enum asom_prim_kind {
     ASOM_PRIM_INT_LE,
     ASOM_PRIM_INT_GE,
     ASOM_PRIM_INT_EQ,
+    ASOM_PRIM_DBL_PLUS,
+    ASOM_PRIM_DBL_MINUS,
+    ASOM_PRIM_DBL_TIMES,
+    ASOM_PRIM_DBL_LT,
+    ASOM_PRIM_DBL_GT,
+    ASOM_PRIM_DBL_LE,
+    ASOM_PRIM_DBL_GE,
+    ASOM_PRIM_DBL_EQ,
 };
 
 struct asom_method {
