@@ -239,5 +239,8 @@ Mandelbrot   |     0.050 |     0.030 |     0.030 |     1.320 |     2.080
   でも Truffle に勝てない唯一のベンチ。
 - **`make compile` / JIT デモの配線** — ASTro JIT は naruby のような
   L0/L1/L2 構成、asom は未連携。
+- **AreWeFastYet 残り（Havlak / CD / Knapsack / PageRank）の検証 +
+  追加** — 動かしてみて、足りない言語機能があれば埋め、ベンチハーネス
+  に追加する。
 
 詳細は [docs/todo.md](docs/todo.md) 参照。
