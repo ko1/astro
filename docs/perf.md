@@ -393,11 +393,33 @@ luastro でも全 PGC-cached bench が一律 5-18% 改善（fannkuch -18%、
 binarytrees -16%、towers -15%、loop / list / mandelbrot / havlak /
 json -13~14%、その他 -5~9%）。
 
+**「インライン化で消えるんじゃない？」への答え**: 直感的にはそう。
+が、gcc は SSA を通しても **ソースレベルの named local という事実を
+IR 上の `CLOBBER(eol)` マーカーとして保持** する。これが:
+
+- **tree-ssa loop deletion**: SCEV がループを閉形式に畳んだ後、ループ
+  本体内に CLOBBER があると「観測可能な副作用」と見なし削除を諦める
+- **DSE (dead store elimination)**: `store-to-v → CLOBBER v` パターン
+  が分断されて消せないケース
+- **関数間 NRVO 形成** (`tree-nrv.cc`): 名前付き local が中継すると
+  「呼び出された側の返り値スロットを呼び出し側のスロットと alias」
+  という最適化を放棄する (`tree-nrv` は source-level NRVO ヒントを
+  使う)
+
+これらが**インライン化を経ても残る**。インライナは call を消すが、
+インライン先の named local とその CLOBBER はそのまま IR に残る。
+plain な scalar (`int v = ...; return v;`) なら問題にならない (CLOBBER
+が意味を持たない) が、**16 byte struct + 何重もの inline + ループ
+含む** という組み合わせで保守性が顕在化する。
+
+clang はこの種の CLOBBER 扱いがやや緩く、同様パターンでも影響は
+小さめ (測定では gcc が顕著)。
+
 **教訓**（C コンパイラ依存だが ASTro framework 全体に効く）: 16 byte
 返り値を扱う深い inline 連鎖では、named temp は避けて直接 return。
-gcc は SROA で名前付き struct の中身は分解できても、関数間 NRVO の
-形成は名前があると諦めがち。手で消費しないなら一時ローカルに名前を
-付けない。
+「どうせ SSA / インラインで消える」は **ソース上に名前を残した瞬間
+にコンパイラが保守的になる**ので過信しない。手で値を消費しない
+ならローカルに名前を付けない。
 
 ## 5. パーサレベル書き換え
 
