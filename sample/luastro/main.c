@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <malloc.h>
 #include <sys/resource.h>
 #include "context.h"
 #include "node.h"
@@ -150,6 +151,17 @@ usage(void)
 int
 main(int argc, char *argv[])
 {
+    // Force a single glibc malloc arena so the worker thread spawned
+    // by `luastro_run_on_big_stack` doesn't get its own per-thread
+    // arena.  Per-thread arenas are mmap'd lazily and committed in
+    // 4 KiB chunks via `mprotect(PROT_READ|PROT_WRITE)` — on bm_storage
+    // (which mallocs ~1 M tables) that came out as 58k mprotect calls
+    // worth ~170 ms of pure kernel overhead per process.  Single-arena
+    // routes the thread's allocations through `brk` like the main
+    // thread, dropping the mprotect count to zero.  See bench delta on
+    // storage: 0.42 s → 0.30 s after this single line.
+    mallopt(M_ARENA_MAX, 1);
+
     const char *file = NULL;
     const char *eval_str = NULL;
 
