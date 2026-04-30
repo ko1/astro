@@ -211,18 +211,33 @@ Mandelbrot   |     0.050 |     0.030 |     0.030 |     1.320 |     2.080
 - **ws-aware symbol literal** (`#between:and: withArguments:` の境界判定)
 - **`-rdynamic`** リンクで SD `.so` から `asom_send_slow` 等を resolve
 
-## Limitations / 未実装
+## Limitations（SOM 仕様未充足）
 
-- **GC 無し** (リーク)。bench は走り切るが long-running は危険
-- **Bignum 無し** (62-bit tagged で打ち止め — IntegerTest 5 失敗の要因)
-- **Shape-based field unbox 無し** (Ball/Tree の field レベル Double が
-  boxed のまま — `make bench-aot` 単独だと Bounce / TreeSort で Truffle
-  に負ける。`make bench-pg` で warmup 後の `node_send1_dbl*` 特化が
-  hot path に入って逆転するが、本来は parser-time / AOT bake 時にも
-  解決したい)
-- **Call-graph PE 無し** (Towers の再帰メソッドが inline されない —
-  PG mode でも Truffle に勝てない唯一のベンチ)
-- **`make compile`/JIT デモ未配線** (ASTro JIT は naruby のような L0/L1/L2 構成、asom は未連携)
-- **AreWeFastYet 残り**: Havlak / CD / Knapsack / PageRank
+実行する SOM プログラムが期待する振る舞いを満たせていない箇所。bench
+の数字に**未払いコストとして反映**されている点を明示する。
+
+- **GC 無し**（リーク）。`struct asom_object` 系は alloc 後 free しない、
+  bump arena slab も非回収。bench は inner=1秒級で alloc 量が bounded
+  なので走り切るが、Truffle / SOM++ は同じ区間で GC を走らせている分
+  asom より cost を払っており、このため bench 倍率には GC 未払い分が
+  下駄として乗っている（fair な比較とは言えない）。long-running は OOM。
+- **Bignum 無し** — Integer は 62-bit tagged で打ち止め、overflow は
+  silent wrap。SOM 仕様は任意精度 Integer を要求しており、IntegerTest
+  の 5 件失敗はこの要因。
+- **AreWeFastYet 残り**: Havlak / CD / Knapsack / PageRank — 言語機能
+  の不足で走らないか単に未追加かは未確認。
+
+## Planned（性能・拡張の TODO）
+
+仕様は満たすが、最適化や開発体験のためにやりたいこと。
+
+- **Shape-based field unbox** — Ball / Tree の field レベル Double が
+  boxed のまま。`make bench-aot` 単独だと Bounce / TreeSort で Truffle
+  に負ける。`make bench-pg` の warmup-driven `node_send1_dbl*` 特化で
+  逆転しているが、parser-time / AOT bake 時にも解決したい。
+- **Call-graph PE** — Towers の再帰メソッドが inline されない。PG mode
+  でも Truffle に勝てない唯一のベンチ。
+- **`make compile` / JIT デモの配線** — ASTro JIT は naruby のような
+  L0/L1/L2 構成、asom は未連携。
 
 詳細は [docs/todo.md](docs/todo.md) 参照。
