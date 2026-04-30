@@ -106,14 +106,17 @@ run_chunk(CTX *c, struct ParsedChunk *pc)
 }
 
 // --- Generate node_specialized.c (mirrors naruby's --pg-compile output) ---
+//
+// `file` selects bake mode:
+//   - NULL: AOT (SD_<HORG>).  Used by `-c` and `--aot-compile`.
+//   - non-NULL: PGC (PGSD_<HOPT>) keyed by (HORG, file, line) → HOPT in
+//     hopt_index.txt.  Used by `-p` after a profile run has fired
+//     swap_dispatcher across observed type-specialised nodes.
 
 static void
-generate_specialized_code(NODE *root)
+generate_specialized_code(NODE *root, const char *file)
 {
-    // Use the code-store API to AOT-compile the entry tree (and any
-    // nested function bodies registered via code_repo_add) into a fresh
-    // SD_ blob written under code_store/ — the standard path.
-    luastro_specialize_all(root, NULL);
+    luastro_specialize_all(root, file);
 
     // Snapshot to local file for the AOT/PG bake step (compiled_luastro
     // and pg_luastro) to embed.
@@ -184,6 +187,11 @@ main(int argc, char *argv[])
     if (eval_str) { src = strdup(eval_str); src_name = "=(command line)"; }
     else          { src = read_file(file);  src_name = file; }
 
+    // Make the source filename available to OPTIMIZE (called from each
+    // ALLOC_*) so PGC lookup can compute (HORG, file, line) → HOPT.
+    extern const char *luastro_current_src_file;
+    luastro_current_src_file = src_name;
+
     struct ParsedChunk pc;
     NODE *body = PARSE_lua(src, src_name, &pc);
 
@@ -191,11 +199,12 @@ main(int argc, char *argv[])
 
     // Modes:
     //   default              — interpret with whatever code-store SDs are loaded
-    //   -c / --aot-compile-first — bake SDs first, then run with them active
-    //   --aot-compile        — bake SDs and exit (used by benchmark setup)
-    //   -p / --pg-compile    — run first (collect profile), then bake
+    //   -c / --aot-compile-first — bake SDs first (AOT), then run
+    //   --aot-compile        — bake AOT and exit (used by benchmark setup)
+    //   -p / --pg-compile    — run first (collect profile via swap_dispatcher),
+    //                          then bake PGC SDs keyed off the post-swap kinds
     if (OPTION.compile_first || OPTION.aot_only) {
-        generate_specialized_code(body);
+        generate_specialized_code(body, NULL);
         if (OPTION.aot_only) { free(src); return 0; }
     }
     {
@@ -209,7 +218,7 @@ main(int argc, char *argv[])
         luastro_run_on_big_stack(luastro_run_chunk_thunk, &ra);
     }
     if (OPTION.pg_mode) {
-        generate_specialized_code(body);
+        generate_specialized_code(body, src_name);
     }
     free(src);
     return 0;

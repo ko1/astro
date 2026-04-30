@@ -85,12 +85,35 @@ dispatch_info(CTX *c, NODE *n, bool end)
 #endif
 }
 
-// HOPT() fallback — we don't run a separate profile-aware hash, so
-// alias it to the structural hash.  alloc_dispatcher_name_hash only
-// calls this when astro_cs_use_hopt_name is set, which we never do in
-// luastro.
-static node_hash_t HOPT(NODE *n) { return n ? HASH(n) : 0; }
+// HORG / HOPT split.  HORG is the structural hash (canonical name —
+// swapped variants share); HOPT is the profile-aware hash (actual name
+// — swapped variants differ).  PGC bake names baked SDs by HOPT; the
+// (HORG, file, line) → HOPT index lets the next process compute HORG
+// at parse time and look up the corresponding HOPT to dlsym.
 node_hash_t HORG(NODE *n) { return HASH(n); }
+
+node_hash_t
+HOPT(NODE *n)
+{
+    if (n == NULL) return 0;
+    if (n->head.flags.has_hash_opt) return n->head.hash_opt;
+    if (n->head.kind->hopt_func) {
+        n->head.flags.has_hash_opt = true;
+        return n->head.hash_opt = (*n->head.kind->hopt_func)(n);
+    }
+    return 0;
+}
+
+// hash_node_opt: HOPT counterpart of hash_node (the recursion entry point
+// in generated HOPT_<name> bodies).  Caches per-NODE so deep trees don't
+// recompute.  Mirrors astro_node.c's `hash_node`.
+node_hash_t
+hash_node_opt(NODE *n)
+{
+    if (!n) return 0;
+    if (n->head.flags.has_hash_opt) return n->head.hash_opt;
+    return HOPT(n);
+}
 
 // --- ASTro common infrastructure ------------------------------
 
@@ -111,11 +134,17 @@ EVAL(CTX *c, NODE *n, LuaValue *frame)
 static int g_opt_hit = 0;
 static int g_opt_miss = 0;
 
+// Source filename for the current parse / run, set by main.c just
+// before parsing.  Threaded into astro_cs_load so PGC lookup can
+// compute (HORG, file, line) → HOPT.  NULL falls back to AOT-only
+// load (SD_<HORG>, no PGC index lookup).
+const char *luastro_current_src_file = NULL;
+
 NODE *
 OPTIMIZE(NODE *n)
 {
     if (OPTION.no_compiled_code) return n;
-    if (astro_cs_load(n, NULL)) g_opt_hit++; else g_opt_miss++;
+    if (astro_cs_load(n, luastro_current_src_file)) g_opt_hit++; else g_opt_miss++;
     return n;
 }
 
@@ -345,9 +374,9 @@ luastro_specialize_all(NODE *root, const char *file)
     // After reload, re-resolve the live nodes' dispatchers so this
     // very run picks up the freshly-baked SDs (otherwise only the
     // *next* invocation benefits).
-    if (root) astro_cs_load(root, NULL);
+    if (root) astro_cs_load(root, file);
     for (uint32_t i = 0; i < CR.cnt; i++) {
-        astro_cs_load(CR.entries[i].body, NULL);
+        astro_cs_load(CR.entries[i].body, file);
     }
 }
 
@@ -357,6 +386,7 @@ luastro_specialize_all(NODE *root, const char *file)
 #include "node_dispatch.c"
 #include "node_dump.c"
 #include "node_hash.c"
+#include "node_hopt.c"
 #include "node_specialize.c"
 #include "node_replace.c"
 #include "node_alloc.c"

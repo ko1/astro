@@ -11,6 +11,18 @@ require 'astrogen'
 #      The third parameter is the per-call frame slot array (locals + work).
 #   3. We add an `ID` operand type for Lua identifier names (interned strings).
 class LuaNodeDef < ASTroGen::NodeDef
+  # Hopt (profile-aware hash) — generates node_hopt.c with HOPT_<name>
+  # functions and wires .hopt_func on each NodeKind.  Sits alongside the
+  # base framework's :hash task (Horg, file node_hash.c, .hash_func field).
+  # Used by `-p` PGC flow: HORG (structural) is canonicalised so swapped
+  # nodes still map to the same SD lookup key, while HOPT (profile-aware)
+  # uses the *actual* kind name so the baked SD encodes the post-swap
+  # specialised body.  hopt_index.txt maps (HORG, file, line) → HOPT.
+  register_gen_task :hopt,
+    func_typedef: "typedef node_hash_t (*node_hash_func_t)(struct Node *n);",
+    func_prefix: "HOPT_",
+    kind_field: "node_hash_func_t hopt_func"
+
   class Operand < ASTroGen::NodeDef::Node::Operand
     # Hash a Lua identifier (interned LuaString *) by its underlying bytes
     # so that identical names produce identical hashes regardless of intern
@@ -96,5 +108,16 @@ class LuaNodeDef < ASTroGen::NodeDef
         end
       end
     end
+  end
+
+  # Wires the :hopt task's per-NODE template into a single node_hopt.c file.
+  # Mirrors the framework's existing :hash → build_hash plumbing.
+  def build_hopt
+    <<~C__
+    // This file is auto-generated from #{@file}.
+    // Hopt (profile-aware) hash functions
+
+    #{@nodes.map{|name, n| n.build_hopt_func}.join("\n")}
+    C__
   end
 end
