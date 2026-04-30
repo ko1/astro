@@ -900,3 +900,18 @@ node_def_full(CTX * restrict c, NODE * restrict n, ID name, NODE *body, uint32_t
     korb_class_add_method_ast_full_cref(target, name, body, required_cnt, total_cnt, rest_slot, locals_cnt, c->cref);
     return korb_id2sym(name);
 }
+
+NODE_DEF
+node_ary_concat(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs)
+{
+    VALUE l = EA(c, lhs);
+    VALUE r = EA(c, rhs);
+    if (BUILTIN_TYPE(l) != T_ARRAY) return l;
+    if (BUILTIN_TYPE(r) != T_ARRAY) return l;
+    struct korb_array *la = (struct korb_array *)l;
+    struct korb_array *ra = (struct korb_array *)r;
+    VALUE out = korb_ary_new_capa(la->len + ra->len);
+    for (long i = 0; i < la->len; i++) korb_ary_push(out, la->ptr[i]);
+    for (long i = 0; i < ra->len; i++) korb_ary_push(out, ra->ptr[i]);
+    return out;
+}

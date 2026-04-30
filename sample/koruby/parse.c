@@ -483,7 +483,40 @@ T(struct transduce_context *tc, pm_node_t *node)
 
       case PM_ARRAY_NODE: {
           pm_array_node_t *n = (pm_array_node_t *)node;
-          return build_container(tc, &n->elements, true, false, false);
+          /* If there's a splat, build as concatenation: [a, *b, c] → [a] + b.to_a + [c] */
+          bool has_splat = false;
+          for (size_t i = 0; i < n->elements.size; i++) {
+              if (PM_NODE_TYPE_P(n->elements.nodes[i], PM_SPLAT_NODE)) { has_splat = true; break; }
+          }
+          if (!has_splat) {
+              return build_container(tc, &n->elements, true, false, false);
+          }
+          /* Splat path: build runtime concat chain. */
+          NODE *result = NULL;
+          /* Group consecutive non-splats into a sub-array literal, then
+           * concat splats in between. */
+          size_t i = 0;
+          while (i < n->elements.size) {
+              if (PM_NODE_TYPE_P(n->elements.nodes[i], PM_SPLAT_NODE)) {
+                  pm_splat_node_t *sn = (pm_splat_node_t *)n->elements.nodes[i];
+                  NODE *splatted = sn->expression
+                      ? ALLOC_node_splat_to_ary(T(tc, sn->expression))
+                      : ALLOC_node_ary_new(0, 0);
+                  result = result ? ALLOC_node_ary_concat(result, splatted) : splatted;
+                  i++;
+              } else {
+                  /* Group consecutive non-splat */
+                  size_t j = i;
+                  while (j < n->elements.size && !PM_NODE_TYPE_P(n->elements.nodes[j], PM_SPLAT_NODE)) j++;
+                  pm_node_list_t sub = { 0 };
+                  sub.size = sub.capacity = j - i;
+                  sub.nodes = &n->elements.nodes[i];
+                  NODE *part = build_container(tc, &sub, true, false, false);
+                  result = result ? ALLOC_node_ary_concat(result, part) : part;
+                  i = j;
+              }
+          }
+          return result ? result : ALLOC_node_ary_new(0, 0);
       }
       case PM_HASH_NODE: {
           pm_hash_node_t *n = (pm_hash_node_t *)node;
@@ -675,7 +708,16 @@ T(struct transduce_context *tc, pm_node_t *node)
           if (n->rescue_clause) {
               pm_rescue_node_t *rc = (pm_rescue_node_t *)n->rescue_clause;
               NODE *rb = rc->statements ? transduce_statements(tc, rc->statements) : ALLOC_node_nil();
-              uint32_t exc_idx = inc_arg_index(tc);
+              /* If `rescue => e`, bind exception to lvar `e` */
+              uint32_t exc_idx;
+              if (rc->reference && PM_NODE_TYPE_P(rc->reference, PM_LOCAL_VARIABLE_TARGET_NODE)) {
+                  pm_local_variable_target_node_t *lt = (pm_local_variable_target_node_t *)rc->reference;
+                  int slot = lvar_slot(tc, lt->name, lt->depth);
+                  if (slot < 0) slot = lvar_slot_any(tc, lt->name);
+                  exc_idx = (slot >= 0) ? (uint32_t)slot : inc_arg_index(tc);
+              } else {
+                  exc_idx = inc_arg_index(tc);
+              }
               body = ALLOC_node_rescue(body, rb, exc_idx);
           }
           if (n->ensure_clause) {

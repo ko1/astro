@@ -47,9 +47,19 @@ static VALUE kernel_print(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE kernel_raise(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc == 0) {
         korb_raise(c, NULL, "unhandled exception");
-    } else if (argc >= 1 && BUILTIN_TYPE(argv[0]) == T_STRING) {
+    } else if (argc == 1 && BUILTIN_TYPE(argv[0]) == T_STRING) {
         korb_raise(c, NULL, "%s", korb_str_cstr(argv[0]));
+    } else if (argc >= 1 && BUILTIN_TYPE(argv[0]) == T_CLASS) {
+        /* raise Klass, msg */
+        const char *msg = "(unspecified)";
+        if (argc >= 2 && BUILTIN_TYPE(argv[1]) == T_STRING) {
+            msg = korb_str_cstr(argv[1]);
+        }
+        VALUE e = korb_exc_new((struct korb_class *)argv[0], msg);
+        c->state = KORB_RAISE;
+        c->state_value = e;
     } else {
+        /* assume argv[0] is already an exception instance */
         c->state = KORB_RAISE;
         c->state_value = argv[0];
     }
@@ -836,6 +846,25 @@ static VALUE str_eqq(CTX *c, VALUE self, int argc, VALUE *argv) {
     return KORB_BOOL(BUILTIN_TYPE(argv[0]) == T_STRING && korb_eql(self, argv[0]));
 }
 
+static VALUE str_match_op(CTX *c, VALUE self, int argc, VALUE *argv) {
+    /* String#=~ regex — we don't have regex, return nil */
+    (void)c; (void)self; (void)argc; (void)argv;
+    return Qnil;
+}
+
+static VALUE str_match_p(CTX *c, VALUE self, int argc, VALUE *argv) {
+    /* String#match? — false (no regex) */
+    return Qfalse;
+}
+
+static VALUE str_match(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return Qnil;
+}
+
+static VALUE str_scan(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return korb_ary_new();
+}
+
 /* simplistic gsub: replace all non-overlapping occurrences of pattern in self.
  * pattern is treated as a literal string (no regex support). */
 static VALUE str_gsub(CTX *c, VALUE self, int argc, VALUE *argv) {
@@ -1333,6 +1362,50 @@ static VALUE ary_sample(CTX *c, VALUE self, int argc, VALUE *argv) {
     return a->ptr[0]; /* deterministic stub */
 }
 
+static VALUE ary_empty_p(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return KORB_BOOL(((struct korb_array *)self)->len == 0);
+}
+
+static VALUE ary_find(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_array *a = (struct korb_array *)self;
+    for (long i = 0; i < a->len; i++) {
+        VALUE m = korb_yield(c, 1, &a->ptr[i]);
+        if (c->state != KORB_NORMAL) return Qnil;
+        if (RTEST(m)) return a->ptr[i];
+    }
+    return Qnil;
+}
+
+static VALUE ary_min_by(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_array *a = (struct korb_array *)self;
+    if (a->len == 0) return Qnil;
+    VALUE m = a->ptr[0];
+    VALUE mk = korb_yield(c, 1, &m);
+    if (c->state != KORB_NORMAL) return Qnil;
+    for (long i = 1; i < a->len; i++) {
+        VALUE k = korb_yield(c, 1, &a->ptr[i]);
+        if (c->state != KORB_NORMAL) return Qnil;
+        VALUE cmp = korb_funcall(c, mk, korb_intern("<=>"), 1, &k);
+        if (FIXNUM_P(cmp) && FIX2LONG(cmp) > 0) { m = a->ptr[i]; mk = k; }
+    }
+    return m;
+}
+
+static VALUE ary_max_by(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_array *a = (struct korb_array *)self;
+    if (a->len == 0) return Qnil;
+    VALUE m = a->ptr[0];
+    VALUE mk = korb_yield(c, 1, &m);
+    if (c->state != KORB_NORMAL) return Qnil;
+    for (long i = 1; i < a->len; i++) {
+        VALUE k = korb_yield(c, 1, &a->ptr[i]);
+        if (c->state != KORB_NORMAL) return Qnil;
+        VALUE cmp = korb_funcall(c, mk, korb_intern("<=>"), 1, &k);
+        if (FIXNUM_P(cmp) && FIX2LONG(cmp) < 0) { m = a->ptr[i]; mk = k; }
+    }
+    return m;
+}
+
 static VALUE ary_each_with_object(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1) return Qnil;
     VALUE memo = argv[0];
@@ -1448,6 +1521,52 @@ static VALUE hash_delete(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 static VALUE hash_eqq(CTX *c, VALUE self, int argc, VALUE *argv) {
     return KORB_BOOL(BUILTIN_TYPE(argv[0]) == T_HASH);
+}
+
+static VALUE hash_dup(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return hash_merge(c, self, 0, NULL);
+}
+
+static VALUE hash_empty_p(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return KORB_BOOL(((struct korb_hash *)self)->size == 0);
+}
+
+static VALUE hash_map(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_hash *h = (struct korb_hash *)self;
+    VALUE r = korb_ary_new();
+    for (struct korb_hash_entry *e = h->first; e; e = e->next) {
+        VALUE args[2] = { e->key, e->value };
+        VALUE m = korb_yield(c, 2, args);
+        if (c->state != KORB_NORMAL) return Qnil;
+        korb_ary_push(r, m);
+    }
+    return r;
+}
+
+static VALUE hash_select(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_hash *h = (struct korb_hash *)self;
+    VALUE r = korb_hash_new();
+    for (struct korb_hash_entry *e = h->first; e; e = e->next) {
+        VALUE args[2] = { e->key, e->value };
+        VALUE m = korb_yield(c, 2, args);
+        if (c->state != KORB_NORMAL) return Qnil;
+        if (RTEST(m)) korb_hash_aset(r, e->key, e->value);
+    }
+    return r;
+}
+
+static VALUE hash_reduce(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_hash *h = (struct korb_hash *)self;
+    VALUE acc = argc > 0 ? argv[0] : Qnil;
+    for (struct korb_hash_entry *e = h->first; e; e = e->next) {
+        VALUE pair = korb_ary_new_capa(2);
+        korb_ary_push(pair, e->key);
+        korb_ary_push(pair, e->value);
+        VALUE args[2] = { acc, pair };
+        acc = korb_yield(c, 2, args);
+        if (c->state != KORB_NORMAL) return Qnil;
+    }
+    return acc;
 }
 
 /* ---------- Object reflection ---------- */
@@ -2024,6 +2143,10 @@ void korb_init_builtins(void) {
     DEF(cStr, "%",           str_percent,     -1);
     DEF(cStr, "inspect",     kernel_inspect,   0);
     DEF(cStr, "dup",         str_replace,      0); /* stub: returns same not-quite-dup */
+    DEF(cStr, "=~",          str_match_op, 1);
+    DEF(cStr, "match?",      str_match_p, -1);
+    DEF(cStr, "match",       str_match, -1);
+    DEF(cStr, "scan",        str_scan, 1);
 
     /* extra Array */
     DEF(cAry, "sort",       ary_sort,       -1);
@@ -2059,6 +2182,11 @@ void korb_init_builtins(void) {
     DEF(cAry, "take",      ary_take,   1);
     DEF(cAry, "fill",      ary_fill,  -1);
     DEF(cAry, "sample",    ary_sample, -1);
+    DEF(cAry, "empty?",    ary_empty_p, 0);
+    DEF(cAry, "find",      ary_find, 0);
+    DEF(cAry, "detect",    ary_find, 0);
+    DEF(cAry, "min_by",    ary_min_by, 0);
+    DEF(cAry, "max_by",    ary_max_by, 0);
 
     /* extra Hash */
     DEF(cHsh, "keys",       hash_keys,       0);
@@ -2075,6 +2203,15 @@ void korb_init_builtins(void) {
     DEF(cHsh, "to_a",       hash_to_a,       0);
     DEF(cHsh, "delete",     hash_delete,    -1);
     DEF(cHsh, "===",        hash_eqq,        1);
+    DEF(cHsh, "dup",        hash_dup,        0);
+    DEF(cHsh, "clone",      hash_dup,        0);
+    DEF(cHsh, "empty?",     hash_empty_p,    0);
+    DEF(cHsh, "map",        hash_map,        0);
+    DEF(cHsh, "collect",    hash_map,        0);
+    DEF(cHsh, "select",     hash_select,     0);
+    DEF(cHsh, "filter",     hash_select,     0);
+    DEF(cHsh, "reduce",     hash_reduce,    -1);
+    DEF(cHsh, "inject",     hash_reduce,    -1);
 
     /* extra Range */
     DEF(cRng, "step",     rng_step,    -1);

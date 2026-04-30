@@ -954,6 +954,12 @@ VALUE korb_to_s(VALUE v) {
     }
     if (NIL_P(v)) return korb_str_new_cstr("");
     if (SYMBOL_P(v)) return korb_str_new_cstr(korb_id_name(korb_sym2id(v)));
+    if (BUILTIN_TYPE(v) == T_DATA) {
+        /* Exception or other T_DATA: return just the message */
+        struct ko_exception { struct RBasic basic; VALUE message; struct korb_class *exc_class; };
+        struct ko_exception *e = (struct ko_exception *)v;
+        if (BUILTIN_TYPE(e->message) == T_STRING) return e->message;
+    }
     return korb_inspect(v);
 }
 
