@@ -310,6 +310,27 @@ node_call_memcpy(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE 
 // Specialized array-fill emitted by parse.rb's pattern detector for
 // `for (i = start; i < end; i++) array[i] = K;` where the array is
 // addressable as a contiguous int slot region (global int array or
+// Fused `if (cond) fp[idx]++` (where cond is int).  parse.rb folds
+// this from the AST pattern `if (X) lvar++;` (post-increment in stmt
+// context).  The inlined per-element SD chain expanding `node_if`
+// over `node_drop(node_seq(node_lset, node_sub_i_dead))` produces a
+// 2-PHI diamond after gcc's IV-conversion (pointer stride for the
+// surrounding loop) — that defeats if-conversion / sbb-idiom
+// recognition, so castro's count loops emit a branchful update.
+//
+// Rewriting as a single op makes the increment branchless inside the
+// EVAL helper itself: gcc lowers `cv != 0 ? 1 : 0` to `setne`, and
+// the surrounding loop becomes a straight 5-instruction count loop
+// without the prime/composite branch.
+NODE_DEF
+node_inc_local_if(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t idx, NODE *cond)
+{
+    int64_t cv = UNWRAP(EVAL_ARG(c, cond)).i;
+    int64_t inc = (cv != 0);
+    fp[idx].i += inc;
+    return RESULT_OK((VALUE){.i = fp[idx].i});
+}
+
 // pointer to int).  Calls the noinline `castro_fill_i` helper so gcc
 // can vectorize it with AVX-256 (4 int64 stores per iteration), which
 // the inlined per-element SD chain doesn't trigger.

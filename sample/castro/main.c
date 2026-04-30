@@ -806,6 +806,13 @@ build_op(sx_lexer *l, tok_t op)
         return ALLOC_node_array_fill_i(a, b, c, d);
     }
 
+    if (IS("inc_local_if")) {
+        int64_t idx = read_int(l);
+        NODE *cond = build_expr(l);
+        sx_expect(l, TK_RPAREN);
+        return ALLOC_node_inc_local_if((uint32_t)idx, cond);
+    }
+
     if (IS("call")) {
         // (call FUNC_IDX nargs arg_index local_cnt) — self-recursive
         // call.  `local_cnt` is the callee's full local count (params

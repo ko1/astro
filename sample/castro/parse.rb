@@ -579,6 +579,24 @@ def match_for_body(body_sx, iv)
   [base, val]
 end
 
+# Match `consequence = (drop (seq (lset IDX (add_i (lget IDX) 1)) DEAD))`
+# i.e. the post-increment expansion of `lvar++;` in stmt context.
+# Returns IDX, else nil.  Used by the if_statement peephole to fuse
+# `if (cond) lvar++;` into a single branchless `inc_local_if` op.
+def match_inc_local_post(stmt_sx)
+  return nil unless stmt_sx.is_a?(Array) && stmt_sx[0] == :drop
+  inner = stmt_sx[1]
+  return nil unless inner.is_a?(Array) && inner[0] == :seq
+  lset = inner[1]
+  return nil unless lset.is_a?(Array) && lset[0] == :lset
+  idx = lset[1]
+  rhs = lset[2]
+  return nil unless rhs.is_a?(Array) && rhs[0] == :add_i
+  return nil unless rhs[1].is_a?(Array) && rhs[1][0] == :lget && rhs[1][1] == idx
+  return nil unless rhs[2] == [:lit_i, 1]
+  idx
+end
+
 def cast(expr, frm, to)
   return expr if frm == to
   return [:cast_id, expr] if frm.int? && to.float?
@@ -1577,7 +1595,16 @@ def compile_stmt(node, fn, src)
     ts = compile_stmt(node.child_by_field_name('consequence'), fn, src)
     else_node = node.child_by_field_name('alternative')
     es = else_node ? compile_stmt(else_node, fn, src) : [:nop]
-    [:if, to_bool(cs, ct), ts, es]
+    cond_sx = to_bool(cs, ct)
+    # Peephole: `if (cond) lvar++;` → inc_local_if.  Avoids the
+    # diamond-with-step-in-each-arm shape gcc's IV-conversion
+    # produces for a counted loop, which blocks the sbb branchless
+    # idiom.  See node.def:node_inc_local_if for context.
+    if es == [:nop]
+      idx = match_inc_local_post(ts)
+      return [:inc_local_if, idx, cond_sx] if idx
+    end
+    [:if, cond_sx, ts, es]
 
   when 'while_statement'
     cs, ct = compile_expr(node.child_by_field_name('condition'), fn, src)
