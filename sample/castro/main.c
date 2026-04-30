@@ -326,6 +326,12 @@ static struct call_patch *call_patches;
 static size_t call_patch_cnt;
 static size_t call_patch_capa;
 
+extern const struct NodeKind kind_node_call_static;
+extern const struct NodeKind kind_node_call0_static;
+extern const struct NodeKind kind_node_call1_static;
+extern const struct NodeKind kind_node_call2_static;
+extern const struct NodeKind kind_node_call3_static;
+
 static void
 call_patch_record(NODE *call, uint32_t func_idx)
 {
@@ -343,7 +349,18 @@ call_patch_apply(CTX *c)
     for (size_t i = 0; i < call_patch_cnt; i++) {
         NODE *call = call_patches[i].call;
         uint32_t idx = call_patches[i].func_idx;
-        call->u.node_call_static.callee = c->func_bodies[idx];
+        if (call->head.kind == &kind_node_call_static)
+            call->u.node_call_static.callee = c->func_bodies[idx];
+        else if (call->head.kind == &kind_node_call0_static)
+            call->u.node_call0_static.callee = c->func_bodies[idx];
+        else if (call->head.kind == &kind_node_call1_static)
+            call->u.node_call1_static.callee = c->func_bodies[idx];
+        else if (call->head.kind == &kind_node_call2_static)
+            call->u.node_call2_static.callee = c->func_bodies[idx];
+        else if (call->head.kind == &kind_node_call3_static)
+            call->u.node_call3_static.callee = c->func_bodies[idx];
+        else
+            abort();
     }
     free(call_patches);
     call_patches = NULL;
@@ -840,6 +857,48 @@ build_op(sx_lexer *l, tok_t op)
         NODE *call = ALLOC_node_call_static(NULL, (uint32_t)nargs, (uint32_t)arg_index, (uint32_t)local_cnt);
         call_patch_record(call, (uint32_t)func_idx);
         return call;
+    }
+    // Specialized callN_static / callN_recursive forms.  Args are
+    // inline NODE expressions instead of staged-via-fp.
+    // SX:  (callN_static FUNC_IDX local_cnt arg_expr_0 ... arg_expr_{N-1})
+    //      (callN_recursive FUNC_IDX local_cnt arg_expr_0 ... arg_expr_{N-1})
+    // The 4th byte of the op token name is the digit `0`..`3` (= N).
+    if (op.len == 12 && memcmp(op.start, "call", 4) == 0 &&
+        memcmp(op.start + 5, "_static", 7) == 0 &&
+        op.start[4] >= '0' && op.start[4] <= '3') {
+        int narg = op.start[4] - '0';
+        int64_t func_idx = read_int(l);
+        int64_t local_cnt = read_int(l);
+        NODE *args[3] = { NULL, NULL, NULL };
+        for (int i = 0; i < narg; i++) args[i] = build_expr(l);
+        sx_expect(l, TK_RPAREN);
+        NODE *call;
+        switch (narg) {
+        case 0: call = ALLOC_node_call0_static(NULL, (uint32_t)local_cnt); break;
+        case 1: call = ALLOC_node_call1_static(NULL, (uint32_t)local_cnt, args[0]); break;
+        case 2: call = ALLOC_node_call2_static(NULL, (uint32_t)local_cnt, args[0], args[1]); break;
+        case 3: call = ALLOC_node_call3_static(NULL, (uint32_t)local_cnt, args[0], args[1], args[2]); break;
+        default: abort();
+        }
+        call_patch_record(call, (uint32_t)func_idx);
+        return call;
+    }
+    if (op.len == 15 && memcmp(op.start, "call", 4) == 0 &&
+        memcmp(op.start + 5, "_recursive", 10) == 0 &&
+        op.start[4] >= '0' && op.start[4] <= '3') {
+        int narg = op.start[4] - '0';
+        int64_t func_idx = read_int(l);
+        int64_t local_cnt = read_int(l);
+        NODE *args[3] = { NULL, NULL, NULL };
+        for (int i = 0; i < narg; i++) args[i] = build_expr(l);
+        sx_expect(l, TK_RPAREN);
+        switch (narg) {
+        case 0: return ALLOC_node_call0_recursive((uint32_t)func_idx, (uint32_t)local_cnt);
+        case 1: return ALLOC_node_call1_recursive((uint32_t)func_idx, (uint32_t)local_cnt, args[0]);
+        case 2: return ALLOC_node_call2_recursive((uint32_t)func_idx, (uint32_t)local_cnt, args[0], args[1]);
+        case 3: return ALLOC_node_call3_recursive((uint32_t)func_idx, (uint32_t)local_cnt, args[0], args[1], args[2]);
+        default: abort();
+        }
     }
     if (IS("call_printf")) {
         // (call_printf nargs arg_index) — args[0] is format string.

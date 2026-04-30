@@ -815,6 +815,111 @@ node_call_static(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE 
     return RESULT_OK(r.value);
 }
 
+// --- specialized call forms with N inline arg expressions ----------
+//
+// The generic node_call / node_call_static stages args via the caller's
+// fp[arg_index..arg_index+arg_count]: parse.rb emits a `seq` of
+// `lset arg_idx+i (rhs)` per arg, then the call dispatcher reads
+// fp[arg_idx..] and copies into F[0..arg_count].  That's a double-copy
+// (writes to caller fp + reads-and-writes to F), which on tak shows up
+// as ~600M extra instructions vs gcc -O1 (per-call setup is the hot
+// path in deep-recursion benchmarks).
+//
+// node_callN_recursive / _static skip the staging entirely: each arg
+// is a child NODE*, evaluated at SPECIALIZE-time directly into F[i].
+// Same calling convention for the callee SD; only the arg-eval path
+// changes.  parse.rb emits these for ≤3-arg calls.
+//
+// _recursive variant uses func_idx → c->func_bodies[idx] (matches
+// node_call's runtime resolution; needed for self/mutual recursion
+// where the callee body is in a cycle).
+// _static variant carries the callee NODE* directly (matches
+// node_call_static; works only for non-recursive callees).
+
+NODE_DEF
+node_call0_recursive(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t func_idx, uint32_t local_cnt)
+{
+    NODE *body = c->func_bodies[func_idx];
+    VALUE F[local_cnt];
+    RESULT r = (*body->head.dispatcher)(c, body, F);
+    return RESULT_OK(r.value);
+}
+
+NODE_DEF
+node_call1_recursive(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t func_idx, uint32_t local_cnt, NODE *a0)
+{
+    NODE *body = c->func_bodies[func_idx];
+    VALUE F[local_cnt];
+    F[0] = UNWRAP(EVAL_ARG(c, a0));
+    RESULT r = (*body->head.dispatcher)(c, body, F);
+    return RESULT_OK(r.value);
+}
+
+NODE_DEF
+node_call2_recursive(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t func_idx, uint32_t local_cnt, NODE *a0, NODE *a1)
+{
+    NODE *body = c->func_bodies[func_idx];
+    VALUE F[local_cnt];
+    F[0] = UNWRAP(EVAL_ARG(c, a0));
+    F[1] = UNWRAP(EVAL_ARG(c, a1));
+    RESULT r = (*body->head.dispatcher)(c, body, F);
+    return RESULT_OK(r.value);
+}
+
+NODE_DEF
+node_call3_recursive(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t func_idx, uint32_t local_cnt, NODE *a0, NODE *a1, NODE *a2)
+{
+    NODE *body = c->func_bodies[func_idx];
+    VALUE F[local_cnt];
+    F[0] = UNWRAP(EVAL_ARG(c, a0));
+    F[1] = UNWRAP(EVAL_ARG(c, a1));
+    F[2] = UNWRAP(EVAL_ARG(c, a2));
+    RESULT r = (*body->head.dispatcher)(c, body, F);
+    return RESULT_OK(r.value);
+}
+
+NODE_DEF
+node_call0_static(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *callee, uint32_t local_cnt)
+{
+    VALUE F[local_cnt];
+    fp = F;
+    RESULT r = EVAL_ARG(c, callee);
+    return RESULT_OK(r.value);
+}
+
+NODE_DEF
+node_call1_static(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *callee, uint32_t local_cnt, NODE *a0)
+{
+    VALUE F[local_cnt];
+    F[0] = UNWRAP(EVAL_ARG(c, a0));
+    fp = F;
+    RESULT r = EVAL_ARG(c, callee);
+    return RESULT_OK(r.value);
+}
+
+NODE_DEF
+node_call2_static(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *callee, uint32_t local_cnt, NODE *a0, NODE *a1)
+{
+    VALUE F[local_cnt];
+    F[0] = UNWRAP(EVAL_ARG(c, a0));
+    F[1] = UNWRAP(EVAL_ARG(c, a1));
+    fp = F;
+    RESULT r = EVAL_ARG(c, callee);
+    return RESULT_OK(r.value);
+}
+
+NODE_DEF
+node_call3_static(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *callee, uint32_t local_cnt, NODE *a0, NODE *a1, NODE *a2)
+{
+    VALUE F[local_cnt];
+    F[0] = UNWRAP(EVAL_ARG(c, a0));
+    F[1] = UNWRAP(EVAL_ARG(c, a1));
+    F[2] = UNWRAP(EVAL_ARG(c, a2));
+    fp = F;
+    RESULT r = EVAL_ARG(c, callee);
+    return RESULT_OK(r.value);
+}
+
 // --- builtin: printf / putchar / puts -----------------------------
 //
 // printf-family is variadic; each typed arg is read from the caller's

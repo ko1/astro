@@ -45,6 +45,8 @@ class CastroNodeDef < ASTroGen::NodeDef
       case @name
       when 'node_call' then castro_build_call_specializer
       when 'node_call_static' then castro_build_call_static_specializer
+      when /\Anode_call(\d)_recursive\z/ then castro_build_callN_recursive_specializer($1.to_i)
+      when /\Anode_call(\d)_static\z/ then castro_build_callN_static_specializer($1.to_i)
       else super
       end
     end
@@ -191,6 +193,127 @@ class CastroNodeDef < ASTroGen::NodeDef
           for (uint32_t i = 0; i < arg_count; i++) {
               fprintf(fp, "    F[%u].i = fp[%u].i;\\n", i, arg_index + i);
           }
+          fprintf(fp, "    return RESULT_OK(%s(c, n->u.#{@name}.callee, F).value);\\n",
+                  callee_disp);
+          fprintf(fp, "}\\n\\n");
+      }
+      C
+    end
+
+    # SPECIALIZE override for node_callN_recursive (self-recursive call
+    # with N inline arg expressions, no caller-frame staging).  Each arg
+    # is dispatched into F[i] directly via its own SD; the callee body
+    # call is a baked-hash extern direct call (same trick as
+    # castro_build_call_specializer).  N = 0..3.
+    def castro_build_callN_recursive_specializer(narg)
+      arg_dispatch = (0...narg).map { |i|
+        <<~ARG.chomp
+              fprintf(fp, "    F[#{i}] = ");
+              fprintf(fp, "%s(c, n->u.#{@name}.a#{i}, fp).value;\\n", DISPATCHER_NAME(n->u.#{@name}.a#{i}));
+        ARG
+      }.join("\n")
+
+      decls = (0...narg).map { |i|
+        "    if (n->u.#{@name}.a#{i}) { fprintf(fp, \"static inline RESULT %s(CTX *restrict c, NODE *restrict n, VALUE *restrict fp);\\n\", DISPATCHER_NAME(n->u.#{@name}.a#{i})); }"
+      }.join("\n")
+
+      arg_specialize = (0...narg).map { |i|
+        "    SPECIALIZE(fp, n->u.#{@name}.a#{i});"
+      }.join("\n")
+
+      <<~C
+      static void
+      SPECIALIZE_#{@name}(FILE *fp, NODE *n, bool is_public)
+      {
+          uint32_t func_idx = n->u.#{@name}.func_idx;
+          uint32_t local_cnt = n->u.#{@name}.local_cnt;
+          extern NODE **castro_specialize_func_bodies;
+          if (!castro_specialize_func_bodies) {
+              fprintf(stderr, "SPECIALIZE_#{@name}: func_bodies snapshot not initialised\\n");
+              exit(1);
+          }
+          NODE *callee = castro_specialize_func_bodies[func_idx];
+          node_hash_t callee_hash = HASH(callee);
+
+      #{arg_specialize}
+
+          const char *dispatcher_name = alloc_dispatcher_name(n);
+          n->head.dispatcher_name = dispatcher_name;
+
+          fprintf(fp, "// (#{@name} idx=%u local=%u) -> SD_%lx\\n",
+                  func_idx, local_cnt, (unsigned long)callee_hash);
+          fprintf(fp, "extern RESULT SD_%lx(CTX *restrict c, NODE *restrict n, VALUE *restrict fp);\\n",
+                  (unsigned long)callee_hash);
+
+      #{decls}
+
+          if (!is_public) fprintf(fp, "static inline ");
+          fprintf(fp, "__attribute__((no_stack_protector)) RESULT\\n");
+          fprintf(fp, "%s(CTX *restrict c, NODE *restrict n, VALUE *restrict fp)\\n{\\n",
+                  dispatcher_name);
+          fprintf(fp, "    NODE *body = c->func_bodies[%u];\\n", func_idx);
+          fprintf(fp, "    VALUE F[%u];\\n", local_cnt);
+      #{arg_dispatch}
+          fprintf(fp, "    return RESULT_OK(SD_%lx(c, body, F).value);\\n",
+                  (unsigned long)callee_hash);
+          fprintf(fp, "}\\n\\n");
+      }
+      C
+    end
+
+    # SPECIALIZE override for node_callN_static (non-recursive call with
+    # N inline args).  Same idea as castro_build_call_static_specializer
+    # but evals each arg directly into F[i] instead of copying from
+    # fp[arg_index..].
+    def castro_build_callN_static_specializer(narg)
+      arg_dispatch = (0...narg).map { |i|
+        <<~ARG.chomp
+              fprintf(fp, "    F[#{i}] = ");
+              fprintf(fp, "%s(c, n->u.#{@name}.a#{i}, fp).value;\\n", DISPATCHER_NAME(n->u.#{@name}.a#{i}));
+        ARG
+      }.join("\n")
+
+      decls = (0...narg).map { |i|
+        "    if (n->u.#{@name}.a#{i}) { fprintf(fp, \"static inline RESULT %s(CTX *restrict c, NODE *restrict n, VALUE *restrict fp);\\n\", DISPATCHER_NAME(n->u.#{@name}.a#{i})); }"
+      }.join("\n")
+
+      arg_specialize = (0...narg).map { |i|
+        "    SPECIALIZE(fp, n->u.#{@name}.a#{i});"
+      }.join("\n")
+
+      <<~C
+      static void
+      SPECIALIZE_#{@name}(FILE *fp, NODE *n, bool is_public)
+      {
+          uint32_t local_cnt = n->u.#{@name}.local_cnt;
+          NODE *callee = n->u.#{@name}.callee;
+          if (!callee) {
+              fprintf(stderr, "SPECIALIZE_#{@name}: callee not patched\\n");
+              exit(1);
+          }
+          SPECIALIZE(fp, callee);
+      #{arg_specialize}
+
+          const char *dispatcher_name = alloc_dispatcher_name(n);
+          n->head.dispatcher_name = dispatcher_name;
+          const char *callee_disp = DISPATCHER_NAME(callee);
+
+          fprintf(fp, "// (#{@name} local=%u)\\n", local_cnt);
+          if (callee->head.flags.no_inline) {
+              fprintf(fp, "extern RESULT %s(CTX *restrict c, NODE *restrict n, VALUE *restrict fp);\\n",
+                      callee_disp);
+          } else {
+              fprintf(fp, "static inline RESULT %s(CTX *restrict c, NODE *restrict n, VALUE *restrict fp);\\n",
+                      callee_disp);
+          }
+      #{decls}
+
+          if (!is_public) fprintf(fp, "static inline ");
+          fprintf(fp, "__attribute__((no_stack_protector)) RESULT\\n");
+          fprintf(fp, "%s(CTX *restrict c, NODE *restrict n, VALUE *restrict fp)\\n{\\n",
+                  dispatcher_name);
+          fprintf(fp, "    VALUE F[%u];\\n", local_cnt);
+      #{arg_dispatch}
           fprintf(fp, "    return RESULT_OK(%s(c, n->u.#{@name}.callee, F).value);\\n",
                   callee_disp);
           fprintf(fp, "}\\n\\n");

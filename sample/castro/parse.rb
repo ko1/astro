@@ -1480,6 +1480,27 @@ def compile_call(node, fn, src)
         raise CompileError, "call to extern-only function (no definition in TU): #{fname}"
       end
       raise CompileError, "arity mismatch: #{fname}" if args.length != param_tys.length
+
+      # For ≤3-arg calls, emit a specialized callN_static node that
+      # carries the arg expressions inline (no caller-frame staging).
+      # Saves ~6 mem ops per call vs the generic call_static path
+      # (which stages args at fp[arg_index..] and then re-copies into
+      # F[]) — measured 30%+ improvement on tak.
+      #
+      # SX shape: [:callN_static, func_idx, local_cnt_placeholder, a0, ..., aN-1]
+      # `func_idx` at [1] is metadata for downgrade_call_static! (rewrites
+      # to `:callN_recursive` if callee is in a cycle).  `local_cnt` at [2]
+      # is patched by patch_call_local_cnt! after each function's frame
+      # size is finalized.  Remaining positions are arg-expr operands.
+      if args.length <= 3
+        arg_sxs = args.each_with_index.map do |a, i|
+          asx, ats = compile_expr(a, fn, src)
+          cast(asx, ats, param_tys[i])
+        end
+        chain = [:"call#{args.length}_static", func_idx, nil, *arg_sxs]
+        return [chain, ret_ty]
+      end
+
       arg_index = fn.next_local
       fn.next_local += args.length
       seq_ops = []
@@ -2310,7 +2331,9 @@ def collect_callees(body_sx)
   out = []
   walk = lambda do |n|
     return unless n.is_a?(Array)
-    if (n[0] == :call || n[0] == :call_static) && n[1].is_a?(Integer)
+    if (n[0] == :call || n[0] == :call_static ||
+        CALLN_STATIC_TAGS.include?(n[0]) || CALLN_RECURSIVE_TAGS.include?(n[0])) &&
+       n[1].is_a?(Integer)
       out << n[1]
     end
     n.each { |c| walk.call(c) }
@@ -2374,24 +2397,33 @@ require 'set'
 # Walk `body_sx` and rewrite any `[:call_static, idx, ...]` whose
 # callee is in `recursive_idxs` to `[:call, idx, ...]`.  Mutates in
 # place.
+CALLN_STATIC_TAGS = [:call0_static, :call1_static, :call2_static, :call3_static].freeze
+CALLN_RECURSIVE_TAGS = [:call0_recursive, :call1_recursive, :call2_recursive, :call3_recursive].freeze
+
 def downgrade_call_static!(body_sx, recursive_idxs)
   return unless body_sx.is_a?(Array)
   if body_sx[0] == :call_static && recursive_idxs.include?(body_sx[1])
     body_sx[0] = :call
+  elsif (idx = CALLN_STATIC_TAGS.index(body_sx[0])) && recursive_idxs.include?(body_sx[1])
+    body_sx[0] = CALLN_RECURSIVE_TAGS[idx]
   end
   body_sx.each { |c| downgrade_call_static!(c, recursive_idxs) }
 end
 
 # Walk `body_sx` and fill in the trailing `local_cnt` placeholder on
-# each `:call` / `:call_static` node from the callee's now-final local
-# count (`fn.next_local`).  Same shape as downgrade_call_static!, runs
-# in the same post-compile pass.
+# each `:call` / `:call_static` / `:callN_*` node from the callee's
+# now-final local count (`fn.next_local`).  Same shape as
+# downgrade_call_static!, runs in the same post-compile pass.
 def patch_call_local_cnt!(body_sx, local_cnt_by_idx)
   return unless body_sx.is_a?(Array)
   if (body_sx[0] == :call || body_sx[0] == :call_static) &&
      body_sx[1].is_a?(Integer)
     callee_idx = body_sx[1]
     body_sx[4] = local_cnt_by_idx[callee_idx] || 0
+  elsif (CALLN_STATIC_TAGS.include?(body_sx[0]) || CALLN_RECURSIVE_TAGS.include?(body_sx[0])) &&
+        body_sx[1].is_a?(Integer)
+    callee_idx = body_sx[1]
+    body_sx[2] = local_cnt_by_idx[callee_idx] || 0
   end
   body_sx.each { |c| patch_call_local_cnt!(c, local_cnt_by_idx) }
 end
