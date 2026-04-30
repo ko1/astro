@@ -91,11 +91,22 @@ COLUMNS = [
 
 # Parse the engine's self-reported `system ticks` runtime out of stdout.
 # Returns seconds (float) or nil if no recognisable line was found.
+#
+# SOM-st BenchmarkHarness.som prints per-outer-iter:
+#   "<bench>: iterations=1 runtime: <Y>us"   (one line per outer iter)
+#   "<bench>: iterations=<N> average: <X>us total: <Y>us"
+# asom Bench.som prints once at the end:
+#   "<bench>: iterations=<N> runtime: <Y>us" (Y = whole run total)
+#
+# Prefer the "total: Yus" form when present (SOM-st across all outer
+# iters); otherwise fall back to the asom-shape "runtime: Yus" line.
+# Order matters — without this, ITERS>1 would read SOM-st's first-iter
+# time against asom's full total and SOM-st would look ITERS× faster.
 def parse_inner(text)
-  if text =~ /iterations=\d+ runtime: (\d+)us/
+  if text =~ /average: \d+us total: (\d+)us/
     return $1.to_i / 1e6
   end
-  if text =~ /average: \d+us total: (\d+)us/
+  if text =~ /iterations=\d+ runtime: (\d+)us/
     return $1.to_i / 1e6
   end
   nil
