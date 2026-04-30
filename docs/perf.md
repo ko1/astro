@@ -365,6 +365,40 @@ castro は `SPECIALIZE_node_call` で被呼出し SD のシンボル名を直接
 **`-Wl,-Bsymbolic`** がないと GOT 経由になるので必須。castro fib_big の
 disasm が gcc -O3 とほぼ一致するレベルまでいく（`castro perf.md §7`）。
 
+### 4.9 SD body の named-temp が NRVO を阻害する
+
+ASTroGen の `build_specializer` / `build_eval_dispatch` がデフォで
+吐いていた:
+
+```c
+RESULT v = EVAL_<name>(...);
+return v;
+```
+
+の **named temp `v` が深い static-inline SD 連鎖の NRVO を断ち切る**。
+`RESULT` は 16 byte 構造体 (= rax+rdx に乗る大きさ) だが、名前付き
+ローカルにすると gcc が値を一時メモリに落とし、`CLOBBER(eol)` 由来の
+保守的扱いで内側ループの tree-ssa loop deletion を阻む。SCEV が
+閉形式に畳んだ後に dead code を消し損ねる、という現象。
+
+修正は**直接 return**:
+
+```c
+return EVAL_<name>(...);
+```
+
+`lib/astrogen.rb` の `build_eval_dispatch` と `build_specializer` を
+書き換え。castro tight-loop 系で **AOT-cached が 30-77% 改善**、
+luastro でも全 PGC-cached bench が一律 5-18% 改善（fannkuch -18%、
+binarytrees -16%、towers -15%、loop / list / mandelbrot / havlak /
+json -13~14%、その他 -5~9%）。
+
+**教訓**（C コンパイラ依存だが ASTro framework 全体に効く）: 16 byte
+返り値を扱う深い inline 連鎖では、named temp は避けて直接 return。
+gcc は SROA で名前付き struct の中身は分解できても、関数間 NRVO の
+形成は名前があると諦めがち。手で消費しないなら一時ローカルに名前を
+付けない。
+
 ## 5. パーサレベル書き換え
 
 EVAL body には触らないが AST 形は整えてよい。**新しいノード kind を
