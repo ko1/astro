@@ -75,6 +75,7 @@ static inline struct asom_class *
 asom_class_of(CTX *c, VALUE v)
 {
     if (ASOM_IS_INT(v)) return c->cls_integer;
+    if (ASOM_IS_FLO(v)) return c->cls_double;
     struct asom_object *o = ASOM_VAL2OBJ(v);
     return o->klass;
 }

@@ -253,6 +253,11 @@ asom_double_arena_grow(void)
 VALUE
 asom_double_new(CTX *c, double v)
 {
+    // Flonum fast path: representable doubles fit into the VALUE word.
+    VALUE flo = asom_flo2val_try(v);
+    if (LIKELY(flo)) return flo;
+
+    // Out of representable exponent range — heap-box on the bump arena.
     struct asom_double *d = g_double_arena.next;
     if (UNLIKELY(d >= g_double_arena.end)) {
         d = asom_double_arena_grow();

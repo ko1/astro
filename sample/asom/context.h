@@ -22,24 +22,58 @@
 // -----------------------------------------------------------------------------
 // Tagged value representation.
 //
-//   ...0   -> object pointer (8-byte aligned -> low 3 bits zero)
-//   ...1   -> SmallInteger (high 63 bits, sign-extended on shift)
+//   ...x1   -> SmallInteger (top 63 bits, sign-extended on shift)
+//   ...10   -> Flonum (immediate Double, CRuby-style biased-exponent encoding)
+//   ...00   -> object pointer (8-byte aligned -> low 3 bits zero)
 //
-// The low-bit tag is the same encoding SOM++ uses, and lets a value fit in a
-// machine word with branchless integer fast paths.
+// Flonum encoding is a 1:1 port of CRuby's: doubles whose biased exponent
+// is in [897, 1150] (i.e., abs values roughly in [2^-126, 2^127]) round-
+// trip losslessly into 62 bits via subtracting 0x3C<<60 from their bit
+// pattern and OR-ing in 0x2; values outside the range fall back to a
+// boxed `struct asom_double` on the bump arena.
 // -----------------------------------------------------------------------------
 
 typedef intptr_t VALUE;
 
-#define ASOM_TAG_INT  0x1
-#define ASOM_TAG_MASK 0x1
+#define ASOM_TAG_INT   0x1
+#define ASOM_TAG_FLO   0x2
+#define ASOM_TAG_MASK  0x3
 
 #define ASOM_IS_INT(v)  (((VALUE)(v)) & ASOM_TAG_INT)
+#define ASOM_IS_FLO(v)  ((((VALUE)(v)) & ASOM_TAG_MASK) == ASOM_TAG_FLO)
 #define ASOM_IS_OBJ(v)  ((((VALUE)(v)) & ASOM_TAG_MASK) == 0)
 #define ASOM_INT2VAL(i) (((VALUE)(intptr_t)(i) << 1) | ASOM_TAG_INT)
 #define ASOM_VAL2INT(v) ((intptr_t)(v) >> 1)
 #define ASOM_OBJ2VAL(p) ((VALUE)(p))
 #define ASOM_VAL2OBJ(v) ((struct asom_object *)(v))
+
+// Flonum encode/decode (CRuby-style biased-exponent shift).
+// `asom_flo2val_try` returns 0 on out-of-range (caller falls back to heap);
+// callers that hold a known-representable double can use the unconditional
+// macros. `0.0` uses a special encoding (only positive zero — negative zero
+// loses sign through this path, matching CRuby).
+//
+// Range check: ((bits>>60) & 7) ∈ {3, 4} — i.e. exponent biased to be near
+// 1.0 (abs around 2^0 to 2^±127). Outside falls back to boxed.
+static inline VALUE
+asom_flo2val_try(double d)
+{
+    union { double d; uint64_t v; } t;
+    t.d = d;
+    if (t.v == 0) return ((VALUE)1 << 1) | ASOM_TAG_FLO;
+    int bits = (int)((t.v >> 60) & 0x7);
+    if ((bits - 3) & ~0x01) return 0;
+    return (VALUE)((t.v - ((uint64_t)0x3C << 60)) | ASOM_TAG_FLO);
+}
+
+static inline double
+asom_val2flo(VALUE v)
+{
+    if (v == (((VALUE)1 << 1) | ASOM_TAG_FLO)) return 0.0;
+    union { double d; uint64_t v; } t;
+    t.v = ((uint64_t)v - ASOM_TAG_FLO) + ((uint64_t)0x3C << 60);
+    return t.d;
+}
 
 // Forward declarations.
 struct asom_object;

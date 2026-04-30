@@ -30,12 +30,22 @@ is_truthy(CTX *c, VALUE v) { return v == c->val_true; }
 static double
 to_double_value(CTX *c, VALUE v)
 {
+    if (ASOM_IS_FLO(v)) return asom_val2flo(v);
     if (ASOM_IS_INT(v)) return (double)ASOM_VAL2INT(v);
     if (ASOM_IS_OBJ(v)) {
         struct asom_object *o = ASOM_VAL2OBJ(v);
         if (o && o->klass == c->cls_double) return ((struct asom_double *)o)->value;
     }
     return 0.0;
+}
+
+// `to_double` (used by Double primitives that have already gated on the
+// receiver's class) needs to read through the flonum tag too.
+static inline double
+asom_val_double(VALUE v)
+{
+    if (ASOM_IS_FLO(v)) return asom_val2flo(v);
+    return ((struct asom_double *)ASOM_VAL2OBJ(v))->value;
 }
 
 static VALUE
@@ -704,7 +714,7 @@ int_shr(CTX *c, VALUE self, VALUE other) { (void)c; return ASOM_INT2VAL(ASOM_VAL
 
 #define DBL_BIN_PRIM(name, op) \
     static VALUE dbl_##name(CTX *c, VALUE self, VALUE other) { \
-        return asom_double_new(c, to_double(self)->value op to_double_value(c, other)); \
+        return asom_double_new(c, asom_val_double(self) op to_double_value(c, other)); \
     }
 DBL_BIN_PRIM(plus, +)
 DBL_BIN_PRIM(minus, -)
@@ -716,39 +726,39 @@ dbl_floor_div(CTX *c, VALUE self, VALUE other)
 {
     // In SOM, Double>>// is regular floating-point division (matching
     // PySOM/SOM++): only Integer>>// is the floor-truncating variant.
-    double a = to_double(self)->value;
+    double a = asom_val_double(self);
     double b = to_double_value(c, other);
     return asom_double_new(c, a / b);
 }
 
 static VALUE
-dbl_round(CTX *c, VALUE self) { return ASOM_INT2VAL((intptr_t)round(to_double(self)->value)); }
+dbl_round(CTX *c, VALUE self) { return ASOM_INT2VAL((intptr_t)round(asom_val_double(self))); }
 static VALUE
-dbl_floor(CTX *c, VALUE self) { return ASOM_INT2VAL((intptr_t)floor(to_double(self)->value)); }
+dbl_floor(CTX *c, VALUE self) { return ASOM_INT2VAL((intptr_t)floor(asom_val_double(self))); }
 static VALUE
-dbl_ceiling(CTX *c, VALUE self) { return ASOM_INT2VAL((intptr_t)ceil(to_double(self)->value)); }
+dbl_ceiling(CTX *c, VALUE self) { return ASOM_INT2VAL((intptr_t)ceil(asom_val_double(self))); }
 static VALUE
-dbl_sqrt(CTX *c, VALUE self) { return asom_double_new(c, sqrt(to_double(self)->value)); }
+dbl_sqrt(CTX *c, VALUE self) { return asom_double_new(c, sqrt(asom_val_double(self))); }
 static VALUE
-dbl_negated(CTX *c, VALUE self) { return asom_double_new(c, -to_double(self)->value); }
+dbl_negated(CTX *c, VALUE self) { return asom_double_new(c, -asom_val_double(self)); }
 static VALUE
-dbl_abs(CTX *c, VALUE self) { double v = to_double(self)->value; return asom_double_new(c, v < 0 ? -v : v); }
+dbl_abs(CTX *c, VALUE self) { double v = asom_val_double(self); return asom_double_new(c, v < 0 ? -v : v); }
 static VALUE
-dbl_sin(CTX *c, VALUE self) { return asom_double_new(c, sin(to_double(self)->value)); }
+dbl_sin(CTX *c, VALUE self) { return asom_double_new(c, sin(asom_val_double(self))); }
 static VALUE
-dbl_cos(CTX *c, VALUE self) { return asom_double_new(c, cos(to_double(self)->value)); }
+dbl_cos(CTX *c, VALUE self) { return asom_double_new(c, cos(asom_val_double(self))); }
 static VALUE
-dbl_log(CTX *c, VALUE self) { return asom_double_new(c, log(to_double(self)->value)); }
+dbl_log(CTX *c, VALUE self) { return asom_double_new(c, log(asom_val_double(self))); }
 static VALUE
-dbl_exp(CTX *c, VALUE self) { return asom_double_new(c, exp(to_double(self)->value)); }
+dbl_exp(CTX *c, VALUE self) { return asom_double_new(c, exp(asom_val_double(self))); }
 static VALUE
-dbl_neq_(CTX *c, VALUE self, VALUE other) { return to_double(self)->value != to_double_value(c, other) ? c->val_true : c->val_false; }
+dbl_neq_(CTX *c, VALUE self, VALUE other) { return asom_val_double(self) != to_double_value(c, other) ? c->val_true : c->val_false; }
 static VALUE
-dbl_mod(CTX *c, VALUE self, VALUE other) { (void)c; return asom_double_new(c, fmod(to_double(self)->value, to_double_value(c, other))); }
+dbl_mod(CTX *c, VALUE self, VALUE other) { (void)c; return asom_double_new(c, fmod(asom_val_double(self), to_double_value(c, other))); }
 static VALUE
 dbl_rem(CTX *c, VALUE self, VALUE other) { return dbl_mod(c, self, other); }
 static VALUE
-dbl_asInteger(CTX *c, VALUE self) { (void)c; return ASOM_INT2VAL((intptr_t)to_double(self)->value); }
+dbl_asInteger(CTX *c, VALUE self) { (void)c; return ASOM_INT2VAL((intptr_t)asom_val_double(self)); }
 static VALUE
 int_asInteger(CTX *c, VALUE self) { (void)c; return self; }
 static VALUE
@@ -756,7 +766,7 @@ int_asDouble(CTX *c, VALUE self) { return asom_double_new(c, (double)ASOM_VAL2IN
 
 #define DBL_CMP_PRIM(name, op) \
     static VALUE dbl_##name(CTX *c, VALUE self, VALUE other) { \
-        return to_double(self)->value op to_double_value(c, other) ? c->val_true : c->val_false; \
+        return asom_val_double(self) op to_double_value(c, other) ? c->val_true : c->val_false; \
     }
 DBL_CMP_PRIM(lt, <)
 DBL_CMP_PRIM(gt, >)
@@ -768,7 +778,7 @@ static VALUE
 dbl_asString(CTX *c, VALUE self)
 {
     char buf[64];
-    snprintf(buf, sizeof(buf), "%g", to_double(self)->value);
+    snprintf(buf, sizeof(buf), "%g", asom_val_double(self));
     return make_cstr_string(c, buf);
 }
 
@@ -776,7 +786,7 @@ static VALUE
 dbl_println(CTX *c, VALUE self)
 {
     (void)c;
-    printf("%g\n", to_double(self)->value);
+    printf("%g\n", asom_val_double(self));
     return self;
 }
 
