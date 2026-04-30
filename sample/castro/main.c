@@ -786,26 +786,30 @@ build_op(sx_lexer *l, tok_t op)
     }
 
     if (IS("call")) {
-        // (call FUNC_IDX nargs arg_index) — self-recursive call (idx
-        // is dereferenced via `c->func_bodies[idx]` at runtime).
+        // (call FUNC_IDX nargs arg_index local_cnt) — self-recursive
+        // call.  `local_cnt` is the callee's full local count (params
+        // + declared locals) and sizes the stack VLA the call op
+        // allocates for the new frame.
         int64_t func_idx = read_int(l);
         int64_t nargs = read_int(l);
         int64_t arg_index = read_int(l);
+        int64_t local_cnt = read_int(l);
         sx_expect(l, TK_RPAREN);
-        return ALLOC_node_call((uint32_t)func_idx, (uint32_t)nargs, (uint32_t)arg_index);
+        return ALLOC_node_call((uint32_t)func_idx, (uint32_t)nargs, (uint32_t)arg_index, (uint32_t)local_cnt);
     }
     if (IS("call_static")) {
-        // (call_static FUNC_IDX nargs arg_index) — non-recursive call.
-        // The IR carries the callee body NODE * directly so the
-        // framework specializer can walk into it.  At this point the
-        // body may not be built yet (forward reference), so we ALLOC
-        // with callee=NULL and record the func_idx for load_program
-        // to patch in phase 3.
+        // (call_static FUNC_IDX nargs arg_index local_cnt) —
+        // non-recursive call.  The IR carries the callee body NODE *
+        // directly so the framework specializer can walk into it.  At
+        // this point the body may not be built yet (forward
+        // reference), so we ALLOC with callee=NULL and record the
+        // func_idx for load_program to patch in phase 3.
         int64_t func_idx = read_int(l);
         int64_t nargs = read_int(l);
         int64_t arg_index = read_int(l);
+        int64_t local_cnt = read_int(l);
         sx_expect(l, TK_RPAREN);
-        NODE *call = ALLOC_node_call_static(NULL, (uint32_t)nargs, (uint32_t)arg_index);
+        NODE *call = ALLOC_node_call_static(NULL, (uint32_t)nargs, (uint32_t)arg_index, (uint32_t)local_cnt);
         call_patch_record(call, (uint32_t)func_idx);
         return call;
     }

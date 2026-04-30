@@ -450,30 +450,44 @@ end
 # Func: per-function symbol table
 # =====================================================================
 class Func
-  attr_reader :name, :ret_ty, :params, :locals_map
-  attr_accessor :next_local, :uses_goto
+  attr_reader :name, :ret_ty, :params, :locals_map, :max_local
+  attr_accessor :uses_goto
   def initialize(name, ret_ty)
     @name = name
     @ret_ty = ret_ty
     @params = []
     @locals_map = {}
     @next_local = 0
+    @max_local = 0   # high-water mark — used as the callee's stack
+                     # VLA size, must include temporary arg-staging slots
     @uses_goto = false
     @label_map = {}        # label name -> integer index
+  end
+
+  # next_local is the live cursor — bumped/restored around argument
+  # staging.  Writes go through this setter so we can track the
+  # high-water mark independently.
+  def next_local
+    @next_local
+  end
+
+  def next_local=(v)
+    @next_local = v
+    @max_local = v if v > @max_local
   end
 
   def add_param(name, ty)
     idx = @next_local
     @locals_map[name] = [idx, ty]
     @params << [name, ty]
-    @next_local += ty.slot_count
+    self.next_local = @next_local + ty.slot_count
     idx
   end
 
   def add_local(name, ty)
     idx = @next_local
     @locals_map[name] = [idx, ty]
-    @next_local += ty.slot_count
+    self.next_local = @next_local + ty.slot_count
     idx
   end
 
@@ -1409,7 +1423,13 @@ def compile_call(node, fn, src)
       # framework-level inlining of the callee body.  A post-compile
       # pass (downgrade_call_static!) walks the call graph, finds any
       # function in a cycle, and rewrites those calls back to `:call`.
-      chain = [:call_static, func_idx, args.length, arg_index]
+      # The trailing `nil` is a placeholder for the callee's local_cnt
+      # (the size of the stack VLA `node_call` allocates for the new
+      # frame); we can't fill it in here because for self-recursion the
+      # current function's local count isn't final yet.  The post-pass
+      # walks the AST after every function has been compiled and
+      # patches each call site with the resolved local_cnt.
+      chain = [:call_static, func_idx, args.length, arg_index, nil]
       seq_ops.reverse_each { |s| chain = [:seq, s, chain] }
       return [chain, ret_ty]
     end
@@ -2269,6 +2289,20 @@ def downgrade_call_static!(body_sx, recursive_idxs)
   body_sx.each { |c| downgrade_call_static!(c, recursive_idxs) }
 end
 
+# Walk `body_sx` and fill in the trailing `local_cnt` placeholder on
+# each `:call` / `:call_static` node from the callee's now-final local
+# count (`fn.next_local`).  Same shape as downgrade_call_static!, runs
+# in the same post-compile pass.
+def patch_call_local_cnt!(body_sx, local_cnt_by_idx)
+  return unless body_sx.is_a?(Array)
+  if (body_sx[0] == :call || body_sx[0] == :call_static) &&
+     body_sx[1].is_a?(Integer)
+    callee_idx = body_sx[1]
+    body_sx[4] = local_cnt_by_idx[callee_idx] || 0
+  end
+  body_sx.each { |c| patch_call_local_cnt!(c, local_cnt_by_idx) }
+end
+
 # =====================================================================
 # preprocessor
 # =====================================================================
@@ -2336,9 +2370,21 @@ def main
   # `:call_static` walk into a recursive callee would cause its
   # static-inline SD body and our `:call` override's `extern SD_<self>`
   # forward declaration to collide in the same TU.
+  #
+  # Same pass also fills in the deferred `local_cnt` (size of the
+  # caller-allocated stack VLA frame for the callee) — we couldn't
+  # set it during compile_call because for self-recursion the current
+  # function's local count isn't final until its body finishes
+  # compiling.
   recursive_idxs = compute_recursive_funcs(funcs)
+  local_cnt_by_idx = {}
+  funcs.each do |name, fn, _body_sx, _ret_ty|
+    idx = GLOBAL_FUNCS[name][0]
+    local_cnt_by_idx[idx] = fn.max_local if idx
+  end
   funcs.each do |_name, _fn, body_sx, _ret_ty|
     downgrade_call_static!(body_sx, recursive_idxs)
+    patch_call_local_cnt!(body_sx, local_cnt_by_idx)
   end
 
   # Output layout (signatures first, then bodies in matching order):

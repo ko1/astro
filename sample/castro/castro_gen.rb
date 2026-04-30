@@ -54,7 +54,9 @@ class CastroNodeDef < ASTroGen::NodeDef
       SPECIALIZE_#{@name}(FILE *fp, NODE *n, bool is_public)
       {
           uint32_t func_idx = n->u.#{@name}.func_idx;
+          uint32_t arg_count = n->u.#{@name}.arg_count;
           uint32_t arg_index = n->u.#{@name}.arg_index;
+          uint32_t local_cnt = n->u.#{@name}.local_cnt;
           extern NODE **castro_specialize_func_bodies;
           if (!castro_specialize_func_bodies) {
               fprintf(stderr, "SPECIALIZE_#{@name}: func_bodies snapshot not initialised\\n");
@@ -66,8 +68,8 @@ class CastroNodeDef < ASTroGen::NodeDef
           const char *dispatcher_name = alloc_dispatcher_name(n);
           n->head.dispatcher_name = dispatcher_name;
 
-          fprintf(fp, "// (#{@name} idx=%u arg=%u) -> SD_%lx\\n",
-                  func_idx, arg_index, (unsigned long)callee_hash);
+          fprintf(fp, "// (#{@name} idx=%u arg=%u local=%u) -> SD_%lx\\n",
+                  func_idx, arg_index, local_cnt, (unsigned long)callee_hash);
           fprintf(fp, "extern RESULT SD_%lx(CTX *restrict c, NODE *restrict n, VALUE *restrict fp);\\n",
                   (unsigned long)callee_hash);
 
@@ -77,13 +79,25 @@ class CastroNodeDef < ASTroGen::NodeDef
                   dispatcher_name);
           fprintf(fp, "    dispatch_info(c, n, false);\\n");
           fprintf(fp, "    NODE *body = c->func_bodies[%u];\\n", func_idx);
+          // Allocate the callee's frame as a stack VLA with a baked
+          // literal size — gcc's SROA promotes its slots to registers
+          // when the inlined call chain doesn't escape `&F`, which is
+          // the whole point of this transform (see node.def
+          // node_call's commentary).
+          fprintf(fp, "    VALUE F[%u];\\n", local_cnt);
+          for (uint32_t i = 0; i < arg_count; i++) {
+              fprintf(fp, "    F[%u] = fp[%u];\\n", i, arg_index + i);
+          }
+          for (uint32_t i = arg_count; i < local_cnt; i++) {
+              fprintf(fp, "    F[%u].i = 0;\\n", i);
+          }
           // In valid C, BREAK / CONTINUE / GOTO are caught inside the
           // callee, RETURN is its normal exit — discard the callee's
           // state entirely so the caller's surrounding SD sees a
           // compile-time-constant `state==0` and DCEs the UNWRAP
           // branch.
-          fprintf(fp, "    RESULT v = SD_%lx(c, body, fp + %u);\\n",
-                  (unsigned long)callee_hash, arg_index);
+          fprintf(fp, "    RESULT v = SD_%lx(c, body, F);\\n",
+                  (unsigned long)callee_hash);
           fprintf(fp, "    dispatch_info(c, n, true);\\n");
           fprintf(fp, "    return RESULT_OK(v.value);\\n");
           fprintf(fp, "}\\n\\n");
