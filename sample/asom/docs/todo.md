@@ -13,24 +13,9 @@
 
 ## TestSuite で残っている失敗
 
-### IntegerTest 5/25 失敗 — 全部 Bignum (> 2⁶²) 系
-
-| テスト | 内容 | 必要なもの |
-|--------|------|-----------|
-| testClassAndValueRanges | `1180591620717411303424` の round-trip | Bignum |
-| testIntegerLiterals | `9223372036854775807` 等 64-bit 境界 | tagged を 64bit ↔ Bignum 自動切替 |
-| testFromString | bignum 文字列パース | Bignum + `Integer fromString:` |
-| testMin / testMax | bignum vs fixnum 比較 | Bignum 比較 |
-| testAbsoluteValue | `-9223372036854775296 abs` | Bignum |
-
-実装方針候補:
-1. **GMP リンクして mpz_t をヒープオブジェクトに wrap**（abruby と同じ）
-2. **62-bit overflow 検知 → mpz_t に昇格**（fast path 残しつつ）
-3. **オーバーフローを諦めて 32-bit 整数演算でラップ**（簡単だが SOM 仕様違反）
-
-abruby/ascheme は GMP を使っているので 1. が自然。`asom_bignum.c` を分けて、
-`int_plus` 等で `__builtin_add_overflow` で検知し、bignum に昇格する形が
-無難。
+なし — TestSuite 24 ファイル / 221 アサーション全部 pass（IntegerTest
+25/25 含む）。Bignum は GMP-backed LargeInteger で実装済み（[done.md
+GMP-backed LargeInteger](done.md#gmp-backed-largeintegerbignum) 参照）。
 
 ## 未実装の SOM 機能
 
@@ -93,38 +78,38 @@ node_send1_arrayat / node_send2_arrayatput              ← Array at:, at:put:
 
 - [ ] miss 時に PIC エントリを足す（serial が同じで複数 class まで OK な版）
 
-### Double の unboxing
+### Double の unboxing — Flonum tagging 済み、shape unbox が次
 
-**現状**: 全 Double は `asom_double_new` で `calloc` → ヒープオブジェクト。
-Mandelbrot で SOM++ (unboxed) 比 1.9× 遅い主因。
+**実装済み (2026-04)**: 2-bit タグ拡張 + biased-exponent 圧縮で
+**Double を VALUE word 内に即値で持つ** Flonum tagging。詳細は
+[done.md Flonum tagging](done.md#flonum-taggingdouble-を-value-即値化) と
+[perf.md §5 / §10](perf.md#5--flonum-taggingcommit-f0bca38)。Mandelbrot
+の中間 Double 即捨てパターンで効くが、mantissa 低 2bit ≠ 00 の値は
+heap-fallback。
 
-候補:
-- **NaN-tagging** (52-bit double + tag bits)
-  → VALUE 表現を 64bit すべて使う。SmallInteger との同居が複雑
-- **Float の immediate**（abruby Flonum スタイル: 60 bit double）
-  → 微小な精度損失だが allocation 完全消滅
-- **Double 専用ノード** (`node_double_plus` 等) で局所的にレジスタ持ち
+**残タスク**:
 
-abruby は Flonum 採用。asom も同じ路線で行くなら 32-bit 系含めて再設計が要る。
+- [ ] **Shape-based field unbox** — Ball / Tree の field レベル Double が
+      boxed のまま。`make bench-aot` 単独で Bounce / TreeSort で Truffle
+      に負けがちな主因（PG warmup で `node_send1_dbl*` 特化が入ると逆転）
+- [ ] AOT-stage の Double リテラル特化 — 片 operand に double リテラル
+      がある送信を parser-time に `node_send1_dbl*` で発行
+- [x] **`node_double_plus / ...` Double 版** — 実装済（[done.md
+      `node_send1_dbl*` 型特化](done.md#node_send1_dbl-型特化abruby-ミラー)）
 
-### GC
+### GC — Boehm 導入済み
 
-**現状 (2026-04-29)**: `asom_invoke` / `asom_block_invoke` のフレーム+locals は
-スロット数バケット別の **free-list pool**（`g_frame_pool[16]`）で再利用する。
-最初の呼び出しは calloc、以降は pop/push の O(1)。`asom_make_block` で
-nested closure に捕捉されたフレーム (`captured=true`) は pool に戻さず
-そのままヒープに残す（リーク）ので、closure escape は安全。
+**実装済み (2026-04)**: Boehm-Demers-Weiser conservative GC を最小実装で
+リンク。`malloc` / `calloc` / `realloc` / `strdup` / `free` を `context.h`
+末尾でマクロ wrap。`__thread` 修飾子を global pool 系から削除して TLS
+scan 問題を回避。詳細は [done.md Boehm-Demers-Weiser conservative GC](done.md#boehm-demers-weiser-conservative-gc) と
+[perf.md §8](perf.md#8--boehm-gc-commit-ebc7201)。bench は inner ~1 秒で
+major collection 走らずほぼ変わらず（Truffle / SOM++ と同条件に）。
 
-ベンチは走り切るが TestHarness を全部回し続けるとメモリ膨張する状況は
-解消していない（リーク量は減ったが captured フレームと heap オブジェクト
-全般が積もる）。本格的な GC は依然必要:
+**残タスク**:
 
-1. **Boehm GC** をリンク (transparent、依存追加)
-2. **Naive mark-sweep** を自前実装 (root: c->frame chain, asom_global table, asom_intern pool, code_repo)
-3. **Reference counting**（ループのある closure と相性悪い）
-
-abruby は CRuby の GC を借用、ascheme は Boehm を使っている。asom は Boehm が
-最短ルート。
+- [ ] long-running TestHarness を全部回し続けたときの leak / RSS 計測
+      ハーネス（テストはリストに入っているが未実装）
 
 ### AOT subseq の selector lookup ピル
 

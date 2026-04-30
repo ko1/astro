@@ -19,7 +19,8 @@ sample/asom/SOM/
 
 - [docs/runtime.md](docs/runtime.md) — ランタイム構造（VALUE 表現 / クラス階層 / メソッドディスパッチ / ブロック / AOT・PG）
 - [docs/done.md](docs/done.md) — 実装済み機能の網羅リスト
-- [docs/todo.md](docs/todo.md) — 未実装・既知の課題（Bignum / 型特化ノード / GC / etc）
+- [docs/todo.md](docs/todo.md) — 未実装・既知の課題（shape-based field unbox / call-graph PE / AreWeFastYet 残り / etc）
+- [docs/perf.md](docs/perf.md) — 性能最適化のステップごとの履歴と最終 bench 結果
 
 ## ビルド & 実行
 
@@ -52,7 +53,7 @@ make testsuite                     # SOM-st/SOM TestSuite (24 ファイル)
 
 | 項目 | 状態 |
 |------|------|
-| **SOM TestSuite** | 216 / 221 アサーション pass (97.7%)、23 / 24 ファイル clean。残る 5 失敗は全部 Bignum (>2⁶²) |
+| **SOM TestSuite** | 221 / 221 アサーション pass (100%)、24 / 24 ファイル clean |
 | **AreWeFastYet** | 16 ベンチマーク全部 verifyResult 込みで OK（Sieve, Permute, Towers, Queens, List, Storage, Bounce, BubbleSort, QuickSort, TreeSort, Mandelbrot, Fannkuch, Richards, DeltaBlue, Json, NBody, GraphSearch） |
 | **AST ノード** | 25 種（int/double/string/symbol/array literal、send 0–8、super send 0–8、block、return-local/NLR、class field 等） |
 | **プリミティブ** | ~200 個（Object/Class/Method/Boolean/Integer/Double/String/Symbol/Array/Block × 4/Nil/System/Random） |

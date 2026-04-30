@@ -1,7 +1,15 @@
 # asom 実装済み機能
 
 未実装 / 既知の課題は [todo.md](todo.md) を参照。詳しいランタイム構造は
-[runtime.md](runtime.md) を参照。
+[runtime.md](runtime.md) を参照。最新の cross-engine bench 数字と最適化
+ステップごとの履歴は [perf.md](perf.md) を参照。
+
+> 注意: 本ドキュメントには各最適化ステップの当時の bench 数字が散在
+> するが、Mandelbrot 周りの一部数字（特に flonum tagging 後の 14× /
+> 15×、Mandelbrot AOT 0.028s, PG 0.029s 等）は flonum encoder bias 定数
+> のバグで Mandelbrot inner-loop が早期終了していた**幻**。修正後の
+> 正しい数字は [perf.md §10](perf.md#10--flonum-encoder-bias-定数のバグと-bit-exact-tightening) と
+> [perf.md 最終ベンチ結果](perf.md#最終ベンチ結果) を参照。
 
 ## 目次
 
@@ -315,19 +323,25 @@ biased-exponent 圧縮で **Double を VALUE word 内に即値で持つ**:
 - L1 cache 圧が下がる
 - 結果値が register に乗ったまま次の演算に流れる
 
-性能効果（5 iters × inner=350、AOT-cached、best-of-3）:
+~~性能効果~~ — 当時の Mandelbrot の数字（interp 14×、AOT 15×、Truffle 比
+12.9×）は flonum encoder bias 定数のバグで inner loop が早期終了していた
+ためで、**幻** だった（[perf.md §10](perf.md#10--flonum-encoder-bias-定数のバグと-bit-exact-tightening) で詳述）。
+bias 修正 + bit-exact tightening 後の honest な値:
 
-| ベンチ | flonum 前 | flonum 後 | 倍率 |
+| ベンチ | flonum 前 | flonum 後 (bias 修正済み) | 倍率 |
 |---|---|---|---|
-| Mandelbrot interp | 724 ms | **52 ms** | **14×** |
-| Mandelbrot AOT | 503 ms | **33 ms** | **15×** |
+| Mandelbrot interp | 0.724 s | 0.706 s | 1.03× |
+| Mandelbrot AOT | 0.503 s | 0.473 s | 1.06× |
 
-Mandelbrot AOT は Truffle (425 ms) を **12.9× 引き離す** に変化。
+mantissa 低 2bit が `00` でない double は heap-fallback するため、
+Mandelbrot のように中間値が任意 mantissa を取るベンチでは tag できる
+比率が高くなく、効果は控えめ。理論上の最大効果（全 double が flonum）
+を引き出すには **shape ベースの field unbox** や AOT-stage の double
+リテラル特化が要る（todo.md）。
+
 他のベンチ（Sieve / Bounce / Storage / TreeSort / Towers /
-QuickSort）は ±5% で同等 — 中間 Double を作らないので flonum
-の出番がない。Bounce が変わらなかったことで「Ball field の boxed
-double はそのまま」と判明、ここを潰すには **shape ベースの field
-unbox** が要る（`done.md` の続き、保留）。
+QuickSort）は ±5% で同等 — 中間 Double を作らないので flonum の出番
+がない。
 
 実装は `context.h` の VALUE マクロ群と `asom_runtime.{h,c}` /
 `asom_primitives.c` の限定的な分岐追加だけ。AST / Node 層は無改造。
@@ -361,18 +375,20 @@ node_send1_dblplus(...) {
 - `asom_send1_specialization`: `PRIM_DBL_*` → `kind_node_send1_dbl*`
 - `node_send1` slow path: 両 operand が flonum なら dbl_* に rewrite
 
-効果:
+~~効果（Mandelbrot 当時の数字）~~ — 以前ここに載せていた Mandelbrot の
+ms 単位の表（interp 52→46、PG 45→28、AOT 33→33）は flonum bias バグで
+早期終了していた数字なので無効。bias 修正後の honest な Mandelbrot
+は AOT 0.473s / PG 0.453s（[perf.md 最終ベンチ結果](perf.md#最終ベンチ結果) 参照）。
 
-| モード | Mandelbrot 前 | Mandelbrot 後 | 備考 |
-|---|---|---|---|
-| **interp (`--plain`)** | 52 ms | 46-49 ms | type-feedback で初回呼び出しから dbl_* に rewrite |
-| **PG (`-p`)** | 45 ms | 28 ms | warmup 中に rewrite → bake で dbl_* が SD として焼かれる（[次節](#pg-mode-で-cold-entry-も-aot-bake-する) で修正後の数字） |
-| **AOT (`-c`)** | 33 ms | 33 ms（変化なし） | parser-time int_* が baked、SD-baked node の runtime swap は構造的に効かない |
+機能的振る舞いとしては:
+
+- **interp** — type-feedback で初回呼び出しから dbl_* に rewrite
+- **PG (`-p`)** — warmup 中に rewrite → bake で dbl_* が SD として焼かれる（[次節](#pg-mode-で-cold-entry-も-aot-bake-する)）
+- **AOT (`-c`)** — parser-time int_* が baked、SD-baked node の runtime swap は構造的に効かない
 
 AOT モードで dbl_* の効果を出すには parser-time の syntactic hint
 （double リテラルが片方にある等）か、AOT bake 前に warmup pass を
-入れる構造変更が要る。**PG mode が型特化 AOT の正規パス** で、Mandelbrot
-の AOT-fast を狙うなら PG の挙動を整えるのが筋がいい（次節で修正）。
+入れる構造変更が要る。**PG mode が型特化 AOT の正規パス**。
 
 ### PG mode で cold entry も AOT bake する
 
@@ -387,16 +403,10 @@ PG bake (`-p`) は本来 hot entry のみ profile-aware (`PGSD_<Hopt>.c`) ま
 して焼く。これで全 entry が SD-dispatched になり、SD chain が連続。hot は
 従来通り `PGSD_<Hopt>.c` で profile-aware bake。
 
-効果（`make bench`、ITERS=1、best of 3）:
-
-| ベンチ | AOT (`-c`) | PG (`-p`) 修正前 | PG (`-p`) 修正後 |
-|---|---|---|---|
-| Mandelbrot | 0.028 | 0.045 | **0.029** |
-| Bounce | 0.430 | 0.281 | **0.238** |
-| TreeSort | 0.400 | 0.385 | **0.327** |
-| BubbleSort | 0.234 | 0.490 | **0.232** |
-
-特に **Bounce** で AOT 比 +45% 改善（0.430s → 0.238s）。理由は:
+効果（当時の Bounce / TreeSort / BubbleSort の改善は honest、
+Mandelbrot 0.028/0.029 は flonum bias バグ起源で無効）。bias 修正後の
+最新値は [perf.md 最終ベンチ結果](perf.md#最終ベンチ結果)。Bounce / TreeSort で
+AOT 比改善する原理は変わらず:
 
 1. Ball オブジェクトの field アクセスが多く、parser-time の `node_send1`
    は Double operand を見て `node_send1_intplus` に decay
@@ -405,9 +415,9 @@ PG bake (`-p`) は本来 hot entry のみ profile-aware (`PGSD_<Hopt>.c`) ま
    flonum fast path、`asom_double_new` も alloc-free
 3. 全 cold entry も SD-baked なので chain 連続、hybrid dispatch が消える
 
-**asom-pg は 11/12 ベンチで TruffleSOM (warm peak) に勝つ**（Towers のみ
-1.16× 負け）。AOT で Truffle に負けていた Bounce / TreeSort / BubbleSort
-が PG mode で逆転。
+PG mode は AOT で苦戦するベンチ（Bounce / TreeSort）で逆転を生む — 現
+最新 bench でも Bounce 0.450 → 0.267（1.69×）、TreeSort 0.427 → 0.341
+（1.25×）。
 
 ### `to:do:` / `to:by:do:` / `timesRepeat:` インライン化
 
@@ -433,7 +443,13 @@ calloc + setjmp が消える（per-call 1 度のフレーム取得のみ）。
 これにより Sieve のような outer to:do: が ifTrue: ネストを含んでいても
 inline 化可能（pool 版を使う）。
 
-### 性能効果（累積、interp / best-of-3）
+### 性能効果（累積、AOT-cached / best-of-3、当時 inner=350 / iters=5）
+
+> 注: 下表は型特化 + inline + frame pool までの累積で、その後の
+> flonum tagging（§Flonum tagging 参照）と bias バグ修正を経た現在の
+> 最新値は [perf.md 最終ベンチ結果](perf.md#最終ベンチ結果)（inner ~1 秒・iters=1）。
+> Mandelbrot は flonum bug retraction で当時の 2.06× は虚偽、honest
+> な累積効果は ~1.5× 程度（baseline 1.015s → 現在 0.706s interp / 0.473s AOT）。
 
 | benchmark | baseline | + spec+pool | + 制御flow inline | + to:do: inline | 累積倍率 |
 |-----------|----------|-------------|-------------------|------------------|---------|
@@ -442,15 +458,12 @@ inline 化可能（pool 版を使う）。
 | Towers    | 0.125s   | 0.075s        | 0.073s          | 0.064s        | 1.95×    |
 | Bounce    | 0.037s   | 0.008s        | 0.007s          | 0.007s        | **5.3×** |
 | BubbleSort| 0.023s   | 0.007s        | 0.007s          | 0.007s        | **3.3×** |
-| Mandelbrot| 1.015s   | 0.797s        | 0.556s †        | 0.493s        | **2.06×**|
 | Queens    | 0.039s   | 0.028s        | 0.020s          | 0.017s        | **2.3×** |
 | List      | 0.071s   | (n/a)         | 0.035s          | 0.031s        | 2.3×     |
 | QuickSort | 0.031s   | (n/a)         | 0.013s          | 0.011s        | 2.8×     |
 | TreeSort  | 0.080s   | (n/a)         | 0.046s          | 0.033s        | 2.4×     |
 
-列: baseline / + 制御flow inline / + to:do: + double arena / + block arena
-
-† Mandelbrot の値は double arena 後。to:do: 段階単独では 0.794s。
+列: baseline / + spec+pool / + 制御flow inline / + to:do: + double arena + block arena
 
 ### フレーム pool
 
@@ -472,9 +485,60 @@ inline 化可能（pool 版を使う）。
 の高速化。プロファイル上の `_int_malloc` / `__libc_calloc` 使用比率が
 大幅減少。
 
+### Boehm-Demers-Weiser conservative GC
+
+それまで `asom_object` 系は alloc 後 free しないリークモデル。bench は
+inner ~1 秒で alloc 量が bounded なので走り切るが、Truffle / SOM++ は
+同区間で nursery / COPYING を回しているのに対し asom は alloc が pure
+pointer-bump（GC コストゼロ）で、bench 倍率に GC 未払い分の下駄が乗って
+いた。Boehm GC を導入してフェアな比較に。実装は最小:
+
+- `context.h` 末尾で `malloc` / `calloc` / `realloc` / `strdup` / `free`
+  をマクロで `GC_MALLOC` / `GC_REALLOC` / `GC_STRDUP` / `((void)(p))`
+  に wrap。既存呼び出し点はソース無変更
+- `main()` 冒頭に `GC_INIT()`、Makefile に `-lgc`
+- `__thread` 修飾子を `g_double_arena` / `g_block_arena` /
+  `g_frame_pool[]` / `g_unwind_top` から削除。Boehm のデフォルトは TLS
+  をスキャンしないので、TLS 経由で reachable なオブジェクトが collect
+  されてしまう。asom は single-threaded なので元々 `__thread` は不要
+
+inner ~1 秒の bench window では major collection が走らないので
+`GC_MALLOC` の TLAB-like bump pointer + free 不要が `calloc` + 明示
+free よりも軽いケースもあり、bench 数字は変わらないか、むしろ若干速く
+なった（Sieve aot 0.132 → 0.123, Storage aot 0.384 → 0.289）。詳細は
+[perf.md §8](perf.md#8--boehm-gc-commit-ebc7201)。
+
+### GMP-backed LargeInteger（Bignum）
+
+それまで Integer は 62-bit tagged immediate のみ、overflow 時に silent
+wrap。SOM 仕様は任意精度（SmallInteger / LargeInteger 透過 hierarchy）を
+要求し、IntegerTest が `9223372036854775807` や `2 raisedTo: 100` 等の
+大きな値で 9 件失敗していた。GMP を bignum バックエンドに採用:
+
+- `struct asom_bignum { hdr; mpz_t value }` を `cls_bignum` として
+  cls_integer の subclass に登録（= "LargeInteger"）
+- `asom_int_norm(c, mpz)` で 62-bit に収まれば `ASOM_INT2VAL`、超えれば
+  bignum 化（運用上の "constructor"）
+- `INT_BIN_PRIM` を `__builtin_*_overflow` 検出付きに改修。overflow パス
+  で mpz arithmetic + `asom_int_norm` 経由 → 透過 promotion
+- Comparator も bignum 対応（`mpz_cmp`）
+- big_* primitive 一式（`+`, `-`, `*`, `<`, `>`, `=`, `negated`, `abs`,
+  `asString`, `print`, `println`, `asDouble`, `asInteger`）
+- Parser: 大きな literal を `node_bignum_lit(bytes, cached)` で parse-time
+  に mpz 化（cached VALUE はハッシュから除外）
+- `Integer fromString:` も `mpz_set_str` 経由で任意精度に
+
+`raisedTo:` は SOM stdlib (`Integer.som`) の `output := output * self`
+ベース実装で、`int_*` primitive の overflow promotion で自然に bignum
+化する（primitive 登録は撤去、stdlib 任せ）。
+
+結果: **IntegerTest 25/25 通過**（修正前 16/25）。`2 raisedTo: 100 =
+1267650600228229401496703205376` も正確に計算。詳細は
+[perf.md §9](perf.md#9--gmp-backed-largeinteger--bignumcommit-1510df2--e3cd3de)。
+
 ## テスト
 
-### SOM-st/SOM TestSuite — **216 / 221 (97.7%) アサーション pass、23 / 24 ファイル clean**
+### SOM-st/SOM TestSuite — **221 / 221 (100%) アサーション pass、24 / 24 ファイル clean**
 
 | ファイル | 結果 |
 |----------|------|
@@ -501,7 +565,7 @@ inline 化可能（pool 版を使う）。
 | SelfBlockTest | 1/1 ✓ |
 | StringTest | 17/17 ✓ |
 | SymbolTest | 5/5 ✓ |
-| **IntegerTest** | **20/25** — 残り 5 失敗は全部 Bignum (>2⁶²) |
+| IntegerTest | 25/25 ✓ |
 
 ### AreWeFastYet ベンチマーク — 16 種が verifyResult 込みで OK
 
