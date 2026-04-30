@@ -1,7 +1,7 @@
-// Quicksort over a deterministically-generated 5000-element int array.
+// Quicksort over a deterministically-generated 3000-element int array.
 // Stresses: recursion + array swaps + branch-heavy inner partition.
 
-int data[5000];
+int data[3000];
 
 void qs(int lo, int hi) {
     if (lo >= hi) return;
@@ -20,7 +20,7 @@ void qs(int lo, int hi) {
 }
 
 int main() {
-    int n = 5000;
+    int n = 3000;
     for (int i = 0; i < n; i++) data[i] = (i * 137 + 17) % 9973;
     for (int k = 0; k < 4; k++) qs(0, n - 1);   // re-sort an already-sorted array, x4
     int s = 0;

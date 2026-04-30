@@ -21,5 +21,5 @@ int mandelbrot_count(int w, int h, int max_iter) {
 }
 
 int main() {
-    return mandelbrot_count(80, 60, 200);
+    return mandelbrot_count(200, 150, 1500);
 }

@@ -4,5 +4,5 @@ double fib(double n) {
 }
 
 int main() {
-    return (int)fib(28.0);
+    return (int)fib(35.0);
 }

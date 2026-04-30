@@ -8,5 +8,5 @@ int tak(int x, int y, int z) {
 }
 
 int main() {
-    return tak(18, 12, 6);
+    return tak(27, 18, 9);
 }

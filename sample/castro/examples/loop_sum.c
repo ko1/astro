@@ -6,6 +6,6 @@ int sum_to(int n) {
 
 int main() {
     int total = 0;
-    for (int i = 0; i < 10000; i++) total += sum_to(1000);
+    for (int i = 0; i < 36000; i++) total += sum_to(1000);
     return total;
 }

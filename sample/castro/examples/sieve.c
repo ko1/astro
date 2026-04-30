@@ -20,6 +20,6 @@ int sieve(int n) {
 
 int main() {
     int total = 0;
-    for (int k = 0; k < 8; k++) total += sieve(200000);
+    for (int k = 0; k < 64; k++) total += sieve(200000);
     return total & 0xFF;
 }

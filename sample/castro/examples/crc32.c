@@ -15,5 +15,5 @@ unsigned int crc32(int len) {
 }
 
 int main() {
-    return (int)(crc32(2000000) & 0xFF);
+    return (int)(crc32(2500000) & 0xFF);
 }
