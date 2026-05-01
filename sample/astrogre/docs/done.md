@@ -75,6 +75,10 @@ v1 で入っているもの、カテゴリ別。[`todo.md`](./todo.md) の対。
   自前 `build_local.mk`)。
 - **`--self-test`** (44 ケース)、**`--bench`** (in-engine microbench) を
   flag として保持。
+- **`--verbose`**: 主要フェーズ (INIT、pattern compile、mmap、scan、
+  munmap、exit) の wall-clock を `[verbose] tag    elapsed_ms (+delta_ms)`
+  形式で stderr に出力。`strace` 無しでどのフェーズが効いてるか確認
+  できる。`clock_gettime` × 7 回ぶんなので無効時のオーバヘッドはゼロ。
 - **`bench/grep_bench.sh`** / **`bench/aot_bench.sh`**: 他ツール比較
   ハーネス。grep / ripgrep / astrogre / astrogre+onigmo を同じコーパス
   + パターンで実行、tool ごとの best-of-N を表示。
@@ -133,23 +137,81 @@ whole-file mmap 経路。
 して memmem + memchr のタイトループだけで動く。
 
 `astrogre_pattern_pure_literal` がパターンをイントロスペクトして
-シェイプを判定、`process_buffer_pure_literal` が以下のループを
-回す:
+シェイプを判定、`process_buffer_pure_literal` が memmem+memchr
+のタイトループを回す。`-c PURE_LITERAL` の最速経路は別の AST
+ノードに格上げした (下の `node_grep_count_lines_lit` 節を参照)。
+他のモード (`-l`、`-L`、default-print) では今もこの memmem ループ
+を使う。
 
-```c
-while (p < end) {
-    q = memmem(p, end-p, needle, nlen);
-    if (!q) break;
-    matches_this_file++;
-    e = memchr(q, '\n', end-q);
-    if (!e) break;
-    p = e + 1;  // 次の行へ
-}
+## `-c PURE_LITERAL` を AST ノードに折り込み — `node_grep_count_lines_lit`
+
+`node_grep_search` がスタート位置探索ループを AST に取り込んだのと
+同じ発想で、`-c PURE_LITERAL` の per-line カウントループそのものを
+AST ノードに折り畳む。CLI 側は
+
+```
+node_grep_search_memmem(
+    body = cap_start(0) → lit("static") → cap_end(0) → succ,
+    needle = "static", len = 6)
 ```
 
-エンジン呼び出し (CTX init + dispatch chain) を完全に省略するので、
-`-c /lit/` で 50 → 47 ms (理論限界の bare memmem ループ 26 ms に
-対し +20 ms はプロセス起動 + mmap セットアップ + その他 CLI 処理)。
+を、`-c` モードかつ pure-literal 形のときに
+
+```
+node_grep_count_lines_lit(needle = "static", len = 6)
+```
+
+に書き換える。body チェーン (cap_start/lit/cap_end/succ) は CLI
+モードが「verify 不要」を保証するので丸ごと捨てる。
+
+ノード内部は **Hyperscan 風 dual-byte filter**:
+- AVX2 で 64 byte ぶんロード (256-bit × 2 本)、先頭バイトと末尾
+  バイトをそれぞれブロードキャスト即値で `vpcmpeqb`、AND した
+  マスクを `vptest` で全 0 判定 → 99.5%+ のチャンクは hot path で
+  `p += 64` で抜ける
+- 候補ヒット時に中間バイトを `memcmp` で verify (needle 長は AOT
+  bake で即値、`cmpl + cmpb` チェーンに展開)
+- マッチしたら `memchr` で次の `\n` まで飛んで count++
+
+framework が needle を SD ソースに `static const char NEEDLE[] = ...`
+として焼き込むので、`_mm256_set1_epi8(needle[0])` は即値、verify の
+`memcmp` は固定長で `cmpl/cmpb` に展開される (PCRE2-JIT 風 SIMD-
+fused-verify を AOT bake だけで実現)。
+
+性能 (118 MB warm コーパス、`/static/`、160 k matches):
+
+| 段階 | wall (ms) |
+|---|---:|
+| 出発点 (memmem + memchr in main.c) | 64 |
+| `node_grep_count_lines_lit` (32-byte stride) | 27 |
+| 64-byte stride + AOT bake | **23** |
+| GNU grep ref | 3 |
+
+`--verbose` で見える分解:
+
+```
+[verbose] main entry              0.005 ms
+[verbose] after INIT()            0.116 ms  (+0.116)   ← ld.so + dlopen
+[verbose] after pattern compile   0.128 ms  (+0.012)   ← 正規表現 parse
+[verbose] before mmap             0.132 ms  (+0.004)
+[verbose] after mmap             10.041 ms  (+9.900)   ← PTE 30k 個セット
+[verbose] after scan             18.090 ms  (+8.050)   ← SIMD scan (15 GB/s)
+[verbose] after munmap           23.532 ms  (+5.442)   ← PTE 30k 個破棄
+```
+
+scan は 15 GB/s (= シングルコア memory bandwidth ~30 GB/s の半分)
+で memory-bandwidth-bound 寄り。残るギャップ ~13 ms は 118 MB の
+mmap+POPULATE と munmap で、これは PTE 操作の物理コスト。`read()` 路線
+にしても context-copy で同等以上のコストがかかる (実装比較済)。
+
+長い rare needle では grep を上回るケースもある:
+
+| needle (説明) | astrogre `-c` | grep `-c` | 比 |
+|---|---:|---:|---:|
+| `static` (dense common) | 22 ms | 1 ms | 22× behind |
+| `void` | 20 ms | 1 ms | 20× behind |
+| `specialized_dispatcher` (22-byte rare) | 19 ms | **33 ms** | **0.6×** ★ |
+| `XYZ` (no match) | 19 ms | 3 ms | 6× |
 
 ## grep CLI の whole-file mmap 経路
 
@@ -218,18 +280,18 @@ Parser は最も特化したものを選ぶ:
 
 | パターン | astrogre interp | astrogre +AOT | astrogre +onigmo | grep | ripgrep |
 |---|---:|---:|---:|---:|---:|
-| `/(QQQ\|RRR)+\d+/` | 19 | **12** ★ | 488 | 74 | 23 |
-| `/(QQQX\|RRRX\|SSSX)+/` | 40 | **23** ★ | 535 | 27 | 25 |
-| `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/` | 926 | **444** ★ | 548 | 507 | 185 |
-| `/[A-Z]{50,}/` | 741 | **640** ★ | 919 | 1525 | 185 |
-| `/\b(if\|else\|for\|while\|return)\b/` | 252 | 90 | 894 | **2.5** | 118 |
-| `/[a-z][0-9][a-z][0-9][a-z]/` | 1008 | 429 | 535 | **4** | 186 |
-| `/(\d+\.\d+\.\d+\.\d+)/` | 566 | 397 | 554 | **4** | 48 |
-| `/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/` | 13061 | 10096 | 14532 | **5** | 351 |
+| `/(QQQ\|RRR)+\d+/` | 21 | **13** ★ | 568 | 86 | 25 |
+| `/(QQQX\|RRRX\|SSSX)+/` | 45 | 39 | 977 | 54 | 51 |
+| `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/` | 1717 | **455** ★ | 562 | 572 | 209 |
+| `/[A-Z]{50,}/` | 793 | **658** ★ | 920 | 1526 | 184 |
+| `/\b(if\|else\|for\|while\|return)\b/` | 241 | 79 | 985 | **2** | 119 |
+| `/[a-z][0-9][a-z][0-9][a-z]/` | 1127 | 476 | 596 | **4** | 214 |
+| `/(\d+\.\d+\.\d+\.\d+)/` | 596 | 421 | 566 | **4** | 50 |
+| `/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/` | 13381 | 11475 | 14260 | **2** | 216 |
 
 ★ = astrogre + AOT が grep / Onigmo の両方に勝利。太字 = 行内ベスト。
 
-**この set で grep に 4/8 勝、Onigmo に 8/8 勝** (ugrep 7.5 + PCRE2-JIT
+**この set で grep に 3/8 勝、Onigmo に 8/8 勝** (ugrep 7.5 + PCRE2-JIT
 比較)。負けているパターンは全て multi-pattern literal extraction
 (Hyperscan Teddy / FDR) を要するもので、これが次の大きな追加項目。
 

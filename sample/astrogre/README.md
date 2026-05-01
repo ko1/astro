@@ -152,21 +152,30 @@ Two layers of optimisation, both expressed as ASTro nodes:
 
 | pattern | astrogre interp | astrogre +AOT | astrogre +onigmo | grep | ripgrep |
 |---|---:|---:|---:|---:|---:|
-| `/static/` literal | 70 | 70 | 103 | **2** | 35 |
-| `/specialized_dispatcher/` rare | 26 | 27 | 38 | 36 | **20** |
-| `/^static/` anchored | 72 | 73 | 103 | **2** | 35 |
-| `/VALUE/i` case-i | 672 | 720 | 136 | **2** | 51 |
-| `/static\|extern\|inline/` alt-3 | 328 | 334 | 1048 | **3** | 57 |
-| `/[0-9]{4,}/` class-rep | 534 | 506 | 641 | **2** | 62 |
-| `/[a-z_]+_[a-z]+\(/` ident-call | 3727 | 3817 | 3610 | **3** | 207 |
-| `-c /static/` count | 48 | 47 | 87 | **3** | 32 |
+| `/static/` literal | 66 | 64 | 98 | **2** | 34 |
+| `/specialized_dispatcher/` rare | 25 | 25 | 37 | 35 | **20** |
+| `/^static/` anchored | 68 | 65 | 98 | **2** | 35 |
+| `/VALUE/i` case-i | 597 | 579 | 134 | **2** | 48 |
+| `/static\|extern\|inline/` alt-3 | 290 | 294 | 920 | **2** | 49 |
+| `/[0-9]{4,}/` class-rep | 470 | 472 | 558 | **2** | 54 |
+| `/[a-z_]+_[a-z]+\(/` ident-call | 3283 | 3297 | 3159 | **2** | 182 |
+| `-c /static/` count | **24** | **25** | 72 | 2 | 27 |
 
 The whole-file mmap path (used when the pattern has a SIMD/libc
 prefilter) drops literal-led astrogre by 3-10× and **astrogre is
 within ripgrep speed on rare-literal patterns**
-(`literal-rare` 26 ms vs ripgrep's 20 ms; even slightly faster
+(`literal-rare` 25 ms vs ripgrep's 20 ms; even slightly faster
 than ugrep's 35 ms there).  ugrep stays an order of magnitude
 ahead on common literals (memchr at memory-bandwidth).
+
+The `-c /static/` row is the **only one where astrogre beats
+ripgrep** (24 ms vs 27 ms): the per-line counting loop itself was
+folded into a dedicated AST node `node_grep_count_lines_lit`
+(Hyperscan-style dual-byte filter + 64-byte stride + AOT-baked
+needle), bringing it within ~10× of grep's 2 ms. Run with
+`--verbose` to see the wall-clock split — most of the remaining
+gap is mmap+munmap of a 118 MB file (PTE bookkeeping), not the scan
+itself. See [`docs/done.md`](./docs/done.md) for details.
 
 The `/i`, `class-rep`, `ident-call` rows fall back to per-line
 streaming because the engine has no fast scan for the leading
@@ -183,19 +192,19 @@ beats grep AND Onigmo.
 
 | pattern | astrogre interp | astrogre +AOT | astrogre +onigmo | grep | ripgrep |
 |---|---:|---:|---:|---:|---:|
-| `/(QQQ\|RRR)+\d+/` | 19 | **12** ★ | 488 | 74 | 23 |
-| `/(QQQX\|RRRX\|SSSX)+/` | 40 | **23** ★ | 535 | 27 | 25 |
-| `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/` | 926 | **444** ★ | 548 | 507 | 185 |
-| `/[A-Z]{50,}/` | 741 | **640** ★ | 919 | 1525 | 185 |
-| `/\b(if\|else\|for\|while\|return)\b/` | 252 | 90 | 894 | **2.5** | 118 |
-| `/[a-z][0-9][a-z][0-9][a-z]/` | 1008 | 429 | 535 | **4** | 186 |
-| `/(\d+\.\d+\.\d+\.\d+)/` | 566 | 397 | 554 | **4** | 48 |
-| `/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/` | 13061 | 10096 | 14532 | **5** | 351 |
+| `/(QQQ\|RRR)+\d+/` | 21 | **13** ★ | 568 | 86 | 25 |
+| `/(QQQX\|RRRX\|SSSX)+/` | 45 | 39 | 977 | 54 | 51 |
+| `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/` | 1717 | **455** ★ | 562 | 572 | 209 |
+| `/[A-Z]{50,}/` | 793 | **658** ★ | 920 | 1526 | 184 |
+| `/\b(if\|else\|for\|while\|return)\b/` | 241 | 79 | 985 | **2** | 119 |
+| `/[a-z][0-9][a-z][0-9][a-z]/` | 1127 | 476 | 596 | **4** | 214 |
+| `/(\d+\.\d+\.\d+\.\d+)/` | 596 | 421 | 566 | **4** | 50 |
+| `/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/` | 13381 | 11475 | 14260 | **2** | 216 |
 
-★ = astrogre + AOT beats grep AND Onigmo.  **4/8 vs grep, 8/8 vs
-Onigmo.**  AOT typically lands a 1.5-2.8× speedup over interp on
-this set (best: 2.81× on the `\b(if|else|...)\b` pattern).  The
-losses to grep are patterns where the leading char / first-byte
+★ = astrogre + AOT beats grep AND Onigmo.  **3/8 vs grep, 8/8 vs
+Onigmo.**  AOT typically lands a 1.5-3.8× speedup over interp on
+this set (best: 3.77× on `[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]`).
+The losses to grep are patterns where the leading char / first-byte
 set is common in source code, so SIMD scan finds candidates
 everywhere and ugrep's Hyperscan-style multi-pattern literal
 anchor extraction (Teddy / FDR) is the only way to win.  That's

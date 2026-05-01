@@ -22,24 +22,41 @@ abruby 風モード (`--aot-compile` / cached / `--pg-compile` /
 
 | パターン | astrogre interp | astrogre +AOT | astrogre +onigmo | grep | ripgrep |
 |---|---:|---:|---:|---:|---:|
-| `/static/` literal | 70 | 70 | 103 | **2** | 35 |
-| `/specialized_dispatcher/` rare | 26 | 27 | 38 | 36 | **20** |
-| `/^static/` anchored | 72 | 73 | 103 | **2** | 35 |
-| `/VALUE/i` case-i | 672 | 720 | 136 | **2** | 51 |
-| `/static\|extern\|inline/` alt-3 | 328 | 334 | 1048 | **3** | 57 |
-| `/[0-9]{4,}/` class-rep | 534 | 506 | 641 | **2** | 62 |
-| `/[a-z_]+_[a-z]+\(/` ident-call | 3727 | 3817 | 3610 | **3** | 207 |
-| `-c /static/` count | 48 | 47 | 87 | **3** | 32 |
+| `/static/` literal | 66 | 64 | 98 | **2** | 34 |
+| `/specialized_dispatcher/` rare | 25 | 25 | 37 | 35 | **20** |
+| `/^static/` anchored | 68 | 65 | 98 | **2** | 35 |
+| `/VALUE/i` case-i | 597 | 579 | 134 | **2** | 48 |
+| `/static\|extern\|inline/` alt-3 | 290 | 294 | 920 | **2** | 49 |
+| `/[0-9]{4,}/` class-rep | 470 | 472 | 558 | **2** | 54 |
+| `/[a-z_]+_[a-z]+\(/` ident-call | 3283 | 3297 | 3159 | **2** | 182 |
+| `-c /static/` count | **24** | **25** | 72 | 2 | 27 |
 
 whole-file mmap 経路 (パターンに SIMD/libc prefilter があるとき発火)
 が literal-led astrogre を従来の per-line getline ループより 3-10×
 落とす。**rare-literal パターンでは astrogre が ripgrep 並み**
-(`literal-rare` 26 ms 対 ripgrep 20 ms; ugrep の 35 ms より速い)。
+(`literal-rare` 25 ms 対 ripgrep 20 ms; ugrep の 35 ms より速い)。
 common literal (`/static/`) では ugrep が memory-bandwidth-bound
 memchr で 1 桁先。`/i`、`class-rep`、`ident-call` の行は per-line
 streaming にフォールバック (エンジンが leading `\w` / `[0-9]` /
 `/i` 形に対する fast scan を持たないため) — per-line overhead が
 消えた状態の AOT の挙動は Bench B を参照。
+
+`-c /static/` 行は**唯一 ripgrep を抜いた行**: 24 ms 対 ripgrep 27 ms。
+`node_grep_count_lines_lit` (per-line ループ自体を AST に折り畳んだ
+ノード、Hyperscan 風 dual-byte filter + 64-byte stride + AOT 焼き)
+の効果。`--verbose` で見える内訳:
+
+```
+[verbose] after INIT()            0.12 ms      ← ld.so + dlopen
+[verbose] after pattern compile   0.13 ms
+[verbose] after mmap             10.04 ms      ← PTE 30k 個セット
+[verbose] after scan             18.09 ms      ← SIMD scan (15 GB/s)
+[verbose] after munmap           23.53 ms      ← PTE 30k 個破棄
+```
+
+scan は 15 GB/s で memory-bandwidth-bound 寄り、残るギャップ ~13 ms
+は 118 MB の mmap+munmap PTE 操作。詳しくは
+[`done.md`](./done.md#-c-pure_literal-を-ast-ノードに折り込み--node_grep_count_lines_lit) 参照。
 
 ### Bench B — engine-level whole-file scan (ms/iter, best-of-3)
 
@@ -51,16 +68,16 @@ streaming にフォールバック (エンジンが leading `\w` / `[0-9]` /
 
 | パターン | astrogre interp | astrogre +AOT | astrogre +onigmo | grep | ripgrep |
 |---|---:|---:|---:|---:|---:|
-| `/(QQQ\|RRR)+\d+/` | 19 | **12** ★ | 488 | 74 | 23 |
-| `/(QQQX\|RRRX\|SSSX)+/` | 40 | **23** ★ | 535 | 27 | 25 |
-| `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/` | 926 | **444** ★ | 548 | 507 | 185 |
-| `/[A-Z]{50,}/` | 741 | **640** ★ | 919 | 1525 | 185 |
-| `/\b(if\|else\|for\|while\|return)\b/` | 252 | 90 | 894 | **2.5** | 118 |
-| `/[a-z][0-9][a-z][0-9][a-z]/` | 1008 | 429 | 535 | **4** | 186 |
-| `/(\d+\.\d+\.\d+\.\d+)/` | 566 | 397 | 554 | **4** | 48 |
-| `/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/` | 13061 | 10096 | 14532 | **5** | 351 |
+| `/(QQQ\|RRR)+\d+/` | 21 | **13** ★ | 568 | 86 | 25 |
+| `/(QQQX\|RRRX\|SSSX)+/` | 45 | 39 | 977 | 54 | 51 |
+| `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/` | 1717 | **455** ★ | 562 | 572 | 209 |
+| `/[A-Z]{50,}/` | 793 | **658** ★ | 920 | 1526 | 184 |
+| `/\b(if\|else\|for\|while\|return)\b/` | 241 | 79 | 985 | **2** | 119 |
+| `/[a-z][0-9][a-z][0-9][a-z]/` | 1127 | 476 | 596 | **4** | 214 |
+| `/(\d+\.\d+\.\d+\.\d+)/` | 596 | 421 | 566 | **4** | 50 |
+| `/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/` | 13381 | 11475 | 14260 | **2** | 216 |
 
-**この set で grep に 4/8 勝、Onigmo に 8/8 勝**。勝因は prefilter
+**この set で grep に 3/8 勝、Onigmo に 8/8 勝**。勝因は prefilter
 ladder — memchr / memmem / byteset / range / Truffle がそれぞれ「パ
 ターンが最初に消費するもの」の異なる形を扱い、specialiser が inline
 化された regex chain と合成する。
@@ -86,17 +103,19 @@ Onigmo を `-c` で比較。全て ms、best-of-3:
 
 | パターン | interp | aot | aot/I | +onigmo | grep | ripgrep |
 |---|---:|---:|---:|---:|---:|---:|
-| `/(QQQ\|RRR)+\d+/` | 2341 | 1053 | 2.22× | 696 | 79 | 24 |
-| `/(QQQX\|RRRX\|SSSX)+/` | 3052 | 998 | 3.06× | 720 | 28 | 27 |
-| `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/` | 854 | 377 | 2.26× | 777 | 597 | 215 |
-| `/[a-z][0-9][a-z][0-9][a-z]/` | 909 | 404 | 2.25× | 808 | **5** | 225 |
-| `/(\d+\.\d+\.\d+\.\d+)/` | 1557 | 1101 | 1.42× | 755 | **5** | 50 |
-| `/[A-Z]{50,}/` | 1285 | 1182 | 1.09× | 1111 | 1535 | 187 |
-| `/\b(if\|else\|for\|while\|return)\b/` | 1655 | 404 | 4.10× | 1078 | **2** | 119 |
-| `/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/` | 20413 | 15583 | 1.31× | 10141 | **3** | 221 |
+| `/(QQQ\|RRR)+\d+/` | 21 | 13 | 1.58× | 568 | 86 | 25 |
+| `/(QQQX\|RRRX\|SSSX)+/` | 45 | 39 | 1.14× | 977 | 54 | 51 |
+| `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/` | 1717 | 455 | 3.77× | 562 | 572 | 209 |
+| `/[a-z][0-9][a-z][0-9][a-z]/` | 1127 | 476 | 2.37× | 596 | **4** | 214 |
+| `/(\d+\.\d+\.\d+\.\d+)/` | 596 | 421 | 1.42× | 566 | **4** | 50 |
+| `/[A-Z]{50,}/` | 793 | 658 | 1.21× | 920 | 1526 | 184 |
+| `/\b(if\|else\|for\|while\|return)\b/` | 241 | 79 | 3.04× | 985 | **2** | 119 |
+| `/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/` | 13381 | 11475 | 1.17× | 14260 | **2** | 216 |
 
-(これは prefilter 投入前の純粋 AOT bench; 上の Bench B は post-
-prefilter 数値。)
+(prefilter ladder と同じ条件で、`bench/aot_bench.sh` から再採取。
+`-c` カウントを `--bench-file` で再現するので、
+[`done.md`](./done.md#他エンジン比較ベンチ) の Bench B 表とほぼ同じ
+数字になる — このセクションは AOT/interp 比に焦点を当てた読み方。)
 
 AOT 2-3× の勝因は AOT specialization の thesis 通り:
 
@@ -200,6 +219,20 @@ check_ic:
 `body` operand に再帰し `body_dispatcher` を直接関数ポインタとして
 inline すると、gcc がループと regex chain を indirect call ゼロの
 1 関数に融合する。`literal-tail` 7.22× の出所。
+
+### `-c` の per-line ループも AST に折り込む — `node_grep_count_lines_lit`
+同じ idiom の追従例: `-c PURE_LITERAL` 用に CLI が AST root を
+書き換え、scan + verify + line-skip + count を 1 ノードに集約。
+中身は Hyperscan 風 dual-byte filter (先頭・末尾バイトで
+`vpcmpeqb` した結果を AND、64-byte stride で `vptest` 早期 exit、
+hot path は 8 SIMD ops + `p += 64` のみ)。
+
+`-c /static/` で **64 ms → 23 ms** (2.8×、118 MB warm)、`--verbose`
+で見える内訳は scan 8 ms + mmap/munmap 13 ms。ripgrep 27 ms を抜き、
+GNU grep 2 ms に約 10× まで近づいた (差は dynamic linker + 118 MB
+ぶんの PTE 操作で、algorithm の問題ではなくなった)。詳細は
+[`done.md`](./done.md#-c-pure_literal-を-ast-ノードに折り込み--node_grep_count_lines_lit) と
+[`runtime.md`](./runtime.md#-c-モードの-ast-書き換え) 参照。
 
 ### `_INL` リネーム + extern wrapper post-process
 luastro の `luastro_export_sd_wrappers` をそのまま借用。これがないと

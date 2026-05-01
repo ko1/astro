@@ -24,13 +24,15 @@
 詰められる。実装コスト: ~500-1000 行 (parser 抽出 + AVX2 マルチ
 パターンスキャナ + バックアップロジック)。
 
-### 行イテレーションを AST node に
-CLI の whole-file mmap 経路 (`process_buffer` in main.c) でほぼ
-カバー済 — prefilter eligible なパターンでは ripgrep 並みの速度。
-行イテレーションロジック自体を AST に取り込んで `node_grep_lines(body)`
-にすれば、specialiser が行境界探索ループと inline 化された body を
-1 つの SD として bake できるが、ベンチでメモリ帯域を支配的にする
-には mmap 経路で十分。優先度低。
+### 行イテレーションを AST node に — non-`-c` モードでも
+`-c PURE_LITERAL` については `node_grep_count_lines_lit` がこの設計
+そのもの ([`done.md`](./done.md) 参照、64 ms → 23 ms)。non-`-c` モード
+(default print / `-l` / `-L`) の per-line ループ自体は今も main.c の
+`process_buffer` 内に残っていて、行境界探索 (memrchr/memchr) は
+その都度実行している。non-`-c` も `node_grep_lines_<variant>(body)`
+に格上げすれば、specialiser が行境界探索ループと inline 化された
+body を 1 SD として bake できる。`/static/` (default) で 64 ms → 23 ms
+クラスの伸びしろがあるはず。優先度中。
 
 ### 本物の PG signal
 `--pg-compile` は配線済みだが現状は `--aot-compile` の alias
@@ -62,6 +64,20 @@ gcc が switch table / SIMD compare に畳むので bitmap test より
 ### キャプチャ状態を CTX 外、スタック上に
 `c->starts[]` / `c->ends[]` / `c->valid[]` 各 32 entry × 8 byte で
 ~750 byte/CTX。実用パターンはほぼ ≤ 4 group。
+
+### read 経路でラージファイルの mmap 13 ms を回避
+GNU grep のように `read()` を 32–96 KB chunk で回せば 118 MB ファイル
+の mmap+munmap 13 ms がそっくり消える。一度試して 75 ms に逆悪化した
+時点で諦めたが、原因 (chunk size か per-chunk ノード dispatch
+overhead) は未追求。きちんと詰めれば `-c /static/` を 23 → 12 ms 程度
+まで短縮できる見込み (grep 2 ms との差はほぼ dynamic linker と libc
+init になる)。
+
+### file-backed THP / hugetlb
+`madvise(MADV_HUGEPAGE)` を入れて 30 k 個の 4 KB PTE を ~60 個の 2 MB
+PTE に減らせれば mmap+munmap が劇的に速くなる。試した時点では
+test kernel が file-backed THP 無効 (`shmem_enabled = [never]`) で
+逆効果だった。CONFIG_READ_ONLY_THP_FOR_FS が有効な環境で再評価。
 
 ### Code-store mtime 無効化
 `node.def` を編集すると cached `SD_*.c` は古くなるが、`astro_cs_init`
