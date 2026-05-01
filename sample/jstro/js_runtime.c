@@ -357,10 +357,14 @@ static void
 gc_sweep(CTX *c)
 {
     struct GCHead **link = &c->all_objects;
-    size_t freed = 0;
+    size_t freed = 0, alive = 0;
+    // Count survivors during sweep — saves a second pass over the
+    // linked list to recompute alive_count (was ~3 % of binary_trees
+    // sweep time).
     while (*link) {
         struct GCHead *h = *link;
         if (gc_is_marked(h)) {
+            alive++;
             link = &h->next;
         } else {
             *link = h->next;
@@ -369,9 +373,8 @@ gc_sweep(CTX *c)
             freed++;
         }
     }
-    g_gc_alive_count = 0;
-    for (struct GCHead *h = c->all_objects; h; h = h->next) g_gc_alive_count++;
-    c->bytes_allocated = g_gc_alive_count;
+    g_gc_alive_count = alive;
+    c->bytes_allocated = alive;
     // Threshold = 4× alive (was 2×).  Mark+sweep cost is roughly
     // proportional to alive-set size, so halving the GC frequency
     // halves the mark/sweep wall-time budget — at the cost of extra
