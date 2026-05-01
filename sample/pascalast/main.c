@@ -38,6 +38,46 @@ NODE **PASCAL_CALL_ARGS;
 static uint32_t pascal_call_args_size;
 static uint32_t pascal_call_args_capa;
 
+// Post-parse fixup list for baked pcall variants.  mk_pcall emits the
+// _baked NODE leaving body=NULL and the per-proc metadata slots at 0;
+// resolve_pcall_bodies() walks this list once parse_program has
+// returned (every proc body / nslots / etc filled in) and patches in
+// the actual values so SPECIALIZE bakes them as literal constants in
+// the SD source.  The list is small (one entry per call site) and
+// freed after use.  We patch four uint32 metadata slots in addition
+// to body so pascal_call_baked has every per-proc invariant as a
+// constant the C compiler can fold through.
+struct pcall_fixup {
+    NODE     **body_slot;
+    uint32_t  *nslots_slot;
+    uint32_t  *return_slot_slot;
+    uint32_t  *lexical_depth_slot;
+    uint32_t  *is_function_slot;
+    uint32_t   pidx;
+};
+static struct pcall_fixup *pcall_fixups;
+static uint32_t pcall_fixups_size;
+static uint32_t pcall_fixups_capa;
+
+static void
+register_pcall_fixup(NODE **body_slot,
+                     uint32_t *nslots_slot,
+                     uint32_t *return_slot_slot,
+                     uint32_t *lexical_depth_slot,
+                     uint32_t *is_function_slot,
+                     uint32_t pidx)
+{
+    if (pcall_fixups_size >= pcall_fixups_capa) {
+        uint32_t cap = pcall_fixups_capa ? pcall_fixups_capa * 2 : 64;
+        pcall_fixups = realloc(pcall_fixups, cap * sizeof(*pcall_fixups));
+        pcall_fixups_capa = cap;
+    }
+    pcall_fixups[pcall_fixups_size++] = (struct pcall_fixup){
+        body_slot, nslots_slot, return_slot_slot,
+        lexical_depth_slot, is_function_slot, pidx
+    };
+}
+
 // ---------------------------------------------------------------------------
 // Runtime helpers — referenced from node.def bodies and main.
 // ---------------------------------------------------------------------------
@@ -947,16 +987,59 @@ push_call_args(NODE **args, uint32_t argc)
 static NODE *
 mk_pcall(uint32_t pidx, NODE **args, uint32_t argc)
 {
+    NODE *n = NULL;
+    NODE **body_slot = NULL;
+    uint32_t *nslots_slot = NULL;
+    uint32_t *return_slot_slot = NULL;
+    uint32_t *lexical_depth_slot = NULL;
+    uint32_t *is_function_slot = NULL;
     switch (argc) {
-    case 0: return ALLOC_node_pcall_0(pidx);
-    case 1: return ALLOC_node_pcall_1(pidx, args[0]);
-    case 2: return ALLOC_node_pcall_2(pidx, args[0], args[1]);
-    case 3: return ALLOC_node_pcall_3(pidx, args[0], args[1], args[2]);
+    case 0:
+        n = ALLOC_node_pcall_0_baked(NULL, 0, 0, 0, 0);
+        body_slot          = &n->u.node_pcall_0_baked.body;
+        nslots_slot        = &n->u.node_pcall_0_baked.nslots;
+        return_slot_slot   = &n->u.node_pcall_0_baked.return_slot;
+        lexical_depth_slot = &n->u.node_pcall_0_baked.lexical_depth;
+        is_function_slot   = &n->u.node_pcall_0_baked.is_function;
+        break;
+    case 1:
+        n = ALLOC_node_pcall_1_baked(NULL, 0, 0, 0, 0, args[0]);
+        body_slot          = &n->u.node_pcall_1_baked.body;
+        nslots_slot        = &n->u.node_pcall_1_baked.nslots;
+        return_slot_slot   = &n->u.node_pcall_1_baked.return_slot;
+        lexical_depth_slot = &n->u.node_pcall_1_baked.lexical_depth;
+        is_function_slot   = &n->u.node_pcall_1_baked.is_function;
+        break;
+    case 2:
+        n = ALLOC_node_pcall_2_baked(NULL, 0, 0, 0, 0, args[0], args[1]);
+        body_slot          = &n->u.node_pcall_2_baked.body;
+        nslots_slot        = &n->u.node_pcall_2_baked.nslots;
+        return_slot_slot   = &n->u.node_pcall_2_baked.return_slot;
+        lexical_depth_slot = &n->u.node_pcall_2_baked.lexical_depth;
+        is_function_slot   = &n->u.node_pcall_2_baked.is_function;
+        break;
+    case 3:
+        n = ALLOC_node_pcall_3_baked(NULL, 0, 0, 0, 0, args[0], args[1], args[2]);
+        body_slot          = &n->u.node_pcall_3_baked.body;
+        nslots_slot        = &n->u.node_pcall_3_baked.nslots;
+        return_slot_slot   = &n->u.node_pcall_3_baked.return_slot;
+        lexical_depth_slot = &n->u.node_pcall_3_baked.lexical_depth;
+        is_function_slot   = &n->u.node_pcall_3_baked.is_function;
+        break;
     default: {
         uint32_t base = push_call_args(args, argc);
-        return ALLOC_node_pcall_n(pidx, base, argc);
+        n = ALLOC_node_pcall_n_baked(NULL, 0, 0, 0, 0, base, argc);
+        body_slot          = &n->u.node_pcall_n_baked.body;
+        nslots_slot        = &n->u.node_pcall_n_baked.nslots;
+        return_slot_slot   = &n->u.node_pcall_n_baked.return_slot;
+        lexical_depth_slot = &n->u.node_pcall_n_baked.lexical_depth;
+        is_function_slot   = &n->u.node_pcall_n_baked.is_function;
+        break;
     }
     }
+    register_pcall_fixup(body_slot, nslots_slot, return_slot_slot,
+                         lexical_depth_slot, is_function_slot, pidx);
+    return n;
 }
 
 // Build an address-of expression for `s` (the lvalue passed to a `var`
@@ -4400,6 +4483,25 @@ main(int argc, char *argv[])
     line_no = 1;
     next_token();
     NODE *prog = parse_program(c);
+
+    // Resolve every pcall_K_baked NODE's body + per-proc metadata
+    // slots now that all proc bodies have been parsed.  body must be
+    // non-NULL by the time SPECIALIZE walks the AST (its
+    // DISPATCHER_NAME would otherwise dereference NULL).  An
+    // unresolved entry means a `forward;` proc had no matching
+    // definition — already rejected earlier in parse_program with
+    // "forward declaration … has no body".
+    for (uint32_t i = 0; i < pcall_fixups_size; i++) {
+        struct pcall_fixup *f = &pcall_fixups[i];
+        if (f->pidx >= (uint32_t)c->nprocs) continue;
+        struct pascal_proc *p = &c->procs[f->pidx];
+        if (!p->body) continue;
+        *f->body_slot          = p->body;
+        *f->nslots_slot        = (uint32_t)p->nslots;
+        *f->return_slot_slot   = (uint32_t)p->return_slot;
+        *f->lexical_depth_slot = (uint32_t)p->lexical_depth;
+        *f->is_function_slot   = p->is_function ? 1u : 0u;
+    }
 
     // Build per-class vtables now that every method body has been
     // parsed.  We always allocate at least 1 entry so the vtable

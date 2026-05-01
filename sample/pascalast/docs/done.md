@@ -155,17 +155,42 @@ self-contained translation unit to `node_specialized.c`.  The next
 build picks up that file via `#include` in `node.c` and links every
 `SD_<hash>` function into the binary.
 
-`make aot-bench BENCH=<name>` does the round-trip.  Sample numbers:
+`make aot-bench BENCH=<name>` does the round-trip.  Recent numbers
+(post Round 8 baked-pcall — see below):
 
-| benchmark    | interp  | AOT    | speedup |
+| benchmark               | interp  | AOT    | speedup |
 |---|---|---|---|
-| fib.pas      | 0.89 s  | 0.40 s | 2.2 ×   |
-| collatz.pas  | 1.24 s  | ~0.05 s| ~25 ×   |
+| fib.pas                 | 0.84 s  | 0.20 s | 4.2 ×   |
+| tarai.pas               | 1.49 s  | 0.27 s | 5.5 ×   |
+| ackermann.pas           | 1.56 s  | 0.27 s | 5.8 ×   |
+| gcd.pas                 | 0.90 s  | 0.26 s | 3.5 ×   |
+| quicksort.pas           | 1.21 s  | 0.22 s | 5.5 ×   |
+| collatz.pas             | 1.32 s  | 0.05 s | 26 ×    |
+| heron.pas               | 1.33 s  | 0.08 s | 17 ×    |
+| mandelbrot_int.pas      | 1.47 s  | 0.04 s | 37 ×    |
+| mandelbrot_real.pas     | 1.30 s  | 0.05 s | 26 ×    |
+| leibniz_pi.pas          | 1.15 s  | 0.09 s | 13 ×    |
+| matmul.pas              | 1.33 s  | 0.07 s | 19 ×    |
+| matmul_2d.pas           | 1.51 s  | 0.19 s | 8 ×     |
+| varparam_swap.pas       | 1.17 s  | 0.10 s | 12 ×    |
 
-Constant-folded tight loops (collatz) collapse spectacularly; the
-recursive call-heavy benchmarks (fib / tarai / ack) gain ~2 × — the
-remaining cost is the proc-call indirection that even the inline
-cache can't fold across the SD boundary.
+Constant-folded tight loops (collatz, mandelbrot) collapse
+spectacularly.  The recursive call-heavy benchmarks (fib / tarai /
+ack) used to gain only ~2 × under the original pcall_K_cached path
+because the proc-call edge stayed indirect across the SD boundary.
+Round 8's baked pcall variant (see below) bakes body's SD plus the
+per-proc metadata into the call NODE so the AOT'd parent SD calls
+the callee SD directly, lifting recursion-heavy benches to 4-6 ×.
+
+### Round 8 — AOT baked pcall
+
+| Feature                                  | Test / Bench           |
+|---|---|
+| **`node_pcall_K_baked`** (K=0..3, plus N) — body NODE * is a `@nohash` operand visible to SPECIALIZE; per-proc metadata (nslots / return_slot / lexical_depth / is_function) baked as uint32 operands so AOT folds them into literals | (transparent — every call site uses these now) |
+| **`@nohash` operand modifier** in `pascalast_gen.rb` — NODE * operand that doesn't auto-recurse during SPECIALIZE and contributes 0 to HASH; needed to break the body↔pcall hash cycle while still emitting body's `dispatcher_name` as a literal in the SD source | (`pascalast_gen.rb`) |
+| **Eager `dispatcher_name` set in SPECIALIZE** — `node.c::SPECIALIZE` stamps `n->head.dispatcher_name = SD_<hash>` *before* recursing into children, so a child that cycles back to the parent (recursive proc) sees the right name and the recursive-edge SD call is emitted as a direct `SD_X` reference instead of a generic `DISPATCH_node_<kind>` | fib / tarai recursive call sites |
+| **Post-parse fixup pass** — `pcall_fixups[]` records every baked-pcall NODE at parse time; a single sweep after `parse_program()` patches body + nslots + return_slot + lexical_depth + is_function from the resolved `c->procs[pidx]` | mk_pcall + parse_program tail |
+| **Proc-body / main-body roots emitted `static inline`** — matches the forward-decl that baked specializers emit; gcc still lays out a callable copy because `sc_entries[]` takes the address | (`SPECIALIZED_SRC` in node.c) |
 
 ## Bug fixes
 

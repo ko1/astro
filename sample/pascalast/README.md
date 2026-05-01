@@ -51,7 +51,9 @@ which the lexer handles by lowercasing every ID token at lex time.
 - 残: visibility enforcement, `goto` runtime, open array param,
   N-D 配列、`{$R+/-}` ディレクティブ — [`docs/todo.md`](./docs/todo.md).
 - **AOT specialization** が動く。`make aot-bench BENCH=<name>` で
-  parse → SPECIALIZE → 再ビルド → 比較。fib 2.2× / collatz ~25×。
+  parse → SPECIALIZE → 再ビルド → 比較。baked pcall (Round 8) で
+  recursion benches も伸びるようになり fib 4.2× / tarai 5.5× /
+  matmul 19× / collatz 26× / mandelbrot 26-37×。
 
 For the full breakdown of what's done and what's outstanding:
 

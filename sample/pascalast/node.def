@@ -862,6 +862,39 @@ node_exit_with(CTX * restrict c, NODE * restrict n, uint32_t return_slot, NODE *
 // expr)` inside the function body.
 // ---------------------------------------------------------------------------
 
+// Inlined call helper for the *baked* pcall variants.  Every per-proc
+// invariant is a parameter (so SPECIALIZE bakes them as literal
+// constants in the SD source) — body/dispatcher/nslots/return_slot/
+// lexical_depth/is_function.  No cache, no proc-table lookup.  After
+// gcc inlines the SD body and propagates these constants, the unused
+// arms of the `is_function` ternary fold away, the slot-zero-fill loop
+// gets a known bound, and the display save/restore reads from a
+// constant index.  This is what gives baked its edge over the
+// pcall_cached path.
+static inline VALUE
+pascal_call_baked(CTX *c, NODE *body, node_dispatcher_func_t body_dispatcher,
+                  uint32_t nslots, uint32_t return_slot, uint32_t lexical_depth,
+                  uint32_t is_function, uint32_t argc, VALUE *av)
+{
+    int new_fp = c->sp;
+    int new_sp = new_fp + (int)nslots;
+    if (UNLIKELY(new_sp > PASCAL_STACK_SIZE)) pascal_error("call stack overflow");
+    for (uint32_t i = 0; i < argc; i++) c->stack[new_fp + i] = av[i];
+    for (uint32_t i = argc; i < nslots; i++) c->stack[new_fp + i] = 0;
+    int saved_fp      = c->fp;
+    int saved_sp      = c->sp;
+    int saved_display = c->display[lexical_depth];
+    c->fp = new_fp; c->sp = new_sp;
+    c->display[lexical_depth] = new_fp;
+    (*body_dispatcher)(c, body);
+    VALUE rv = is_function ? c->stack[new_fp + (int)return_slot] : 0;
+    c->display[lexical_depth] = saved_display;
+    c->fp = saved_fp; c->sp = saved_sp;
+    c->exit_pending = 0;
+    c->loop_action  = 0;
+    return rv;
+}
+
 // pascal_call with a pre-populated cache — exact same behaviour as
 // the original pascal_call() in main.c, but avoids the per-call
 // procs[] lookup once the cache is filled.  Implemented as a static
@@ -945,6 +978,69 @@ node_pcall_n(CTX * restrict c, NODE * restrict n, uint32_t pidx, uint32_t args_i
         av[i] = (*a->head.dispatcher)(c, a);
     }
     return pascal_call_cached(c, cache, pidx, argc, av);
+}
+
+// ---------------------------------------------------------------------------
+// Baked pcall variants.  Carry the callee's body NODE * as a `@nohash`
+// operand — that way SPECIALIZE emits a literal reference to body's SD
+// (so the AOT'd parent calls body's SD directly, allowing the compiler
+// to inline the entire callee body), but body is *not* part of the
+// parent's structural hash (which would otherwise cycle through any
+// recursive proc) and is *not* auto-recursed by the parent's
+// SPECIALIZE (write_specialized iterates over c->procs[*].body
+// independently).  body=NULL means "not yet resolved" — the EVAL falls
+// back to procs[pidx].body lookup, exactly like pcall_K_cached.
+// resolve_pcall_bodies() in main.c patches `body` post-parse for every
+// pcall_K_baked NODE so by the time SPECIALIZE walks them, body is set.
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+node_pcall_0_baked(CTX * restrict c, NODE * restrict n, NODE *body@nohash, uint32_t nslots, uint32_t return_slot, uint32_t lexical_depth, uint32_t is_function)
+{
+    (void)n;
+    return pascal_call_baked(c, body, body_dispatcher, nslots, return_slot, lexical_depth, is_function, 0, NULL);
+}
+
+NODE_DEF
+node_pcall_1_baked(CTX * restrict c, NODE * restrict n, NODE *body@nohash, uint32_t nslots, uint32_t return_slot, uint32_t lexical_depth, uint32_t is_function, NODE *a0)
+{
+    (void)n;
+    VALUE av[1] = { EVAL_ARG(c, a0) };
+    return pascal_call_baked(c, body, body_dispatcher, nslots, return_slot, lexical_depth, is_function, 1, av);
+}
+
+NODE_DEF
+node_pcall_2_baked(CTX * restrict c, NODE * restrict n, NODE *body@nohash, uint32_t nslots, uint32_t return_slot, uint32_t lexical_depth, uint32_t is_function, NODE *a0, NODE *a1)
+{
+    (void)n;
+    VALUE v0 = EVAL_ARG(c, a0);
+    VALUE v1 = EVAL_ARG(c, a1);
+    VALUE av[2] = { v0, v1 };
+    return pascal_call_baked(c, body, body_dispatcher, nslots, return_slot, lexical_depth, is_function, 2, av);
+}
+
+NODE_DEF
+node_pcall_3_baked(CTX * restrict c, NODE * restrict n, NODE *body@nohash, uint32_t nslots, uint32_t return_slot, uint32_t lexical_depth, uint32_t is_function, NODE *a0, NODE *a1, NODE *a2)
+{
+    (void)n;
+    VALUE v0 = EVAL_ARG(c, a0);
+    VALUE v1 = EVAL_ARG(c, a1);
+    VALUE v2 = EVAL_ARG(c, a2);
+    VALUE av[3] = { v0, v1, v2 };
+    return pascal_call_baked(c, body, body_dispatcher, nslots, return_slot, lexical_depth, is_function, 3, av);
+}
+
+NODE_DEF @noinline
+node_pcall_n_baked(CTX * restrict c, NODE * restrict n, NODE *body@nohash, uint32_t nslots, uint32_t return_slot, uint32_t lexical_depth, uint32_t is_function, uint32_t args_idx, uint32_t argc)
+{
+    (void)n;
+    extern NODE **PASCAL_CALL_ARGS;
+    VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc ? argc : 1));
+    for (uint32_t i = 0; i < argc; i++) {
+        NODE *a = PASCAL_CALL_ARGS[args_idx + i];
+        av[i] = (*a->head.dispatcher)(c, a);
+    }
+    return pascal_call_baked(c, body, body_dispatcher, nslots, return_slot, lexical_depth, is_function, argc, av);
 }
 
 // ---------------------------------------------------------------------------

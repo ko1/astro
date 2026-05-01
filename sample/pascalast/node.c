@@ -245,7 +245,23 @@ SPECIALIZE(FILE *fp, NODE *n)
         if (!n->head.flags.is_specialized) fill_with_sc(n, sc_repo_search(h));
         return;
     }
-    if (n->head.flags.is_specializing) return;
+    // Eagerly stamp dispatcher_name BEFORE recursing into children.
+    // The generated specializer also sets it (post-recursion) — same
+    // value, no conflict — but the eager set means a child that
+    // cycles back to this node sees the right SD name and can emit a
+    // direct call instead of an indirect dispatcher load.  Critical
+    // for baked recursive pcalls (fib calling itself): without this
+    // the recursive edge falls back to DISPATCH_node_<kind>.
+    if (n->head.flags.is_specializing) {
+        // Cycle: also flip no_inline so DISPATCHER_NAME emits the
+        // runtime dispatcher load form, in case the cycle came in
+        // before the eager set somehow runs (defensive — shouldn't
+        // happen with the eager set above, but matches the
+        // astro_code_store.c contract).
+        n->head.flags.no_inline = true;
+        return;
+    }
+    n->head.dispatcher_name = alloc_dispatcher_name(n);
     n->head.flags.is_specializing = true;
     (*n->head.kind->specializer)(fp, n, false);
     n->head.flags.is_specializing = false;
@@ -262,7 +278,19 @@ SPECIALIZED_SRC(NODE *n)
     size_t len = 0;
     FILE *fp = open_memstream(&buf, &len);
     if (!fp) return NULL;
-    (*n->head.kind->specializer)(fp, n, true);
+    // Proc-body roots and the main body are emitted as `static inline`
+    // (is_public=false) so baked pcall forward-decls — which reference
+    // them as static inline — link cleanly.  sc_entries[] takes their
+    // address, which forces gcc to emit an out-of-line callable copy
+    // in this TU; that satisfies the function-pointer load while still
+    // allowing the compiler to inline the SD into call sites where
+    // possible.  Eagerly stamp dispatcher_name first (same as
+    // SPECIALIZE) so a recursive call inside the body sees the proc's
+    // SD name and the AOT'd recursive edge becomes a direct call.
+    n->head.dispatcher_name = alloc_dispatcher_name(n);
+    n->head.flags.is_specializing = true;
+    (*n->head.kind->specializer)(fp, n, false);
+    n->head.flags.is_specializing = false;
     fclose(fp);
     return buf;
 }
