@@ -237,3 +237,19 @@
 
 - `node_gref_q` で qualified / bare の 2 つの名前を runtime に持ち、いずれか先にヒットしたものを返す
 - ネスト module 内の bare 参照を `M.x` 経由でも `x` 経由でも解決
+
+### Method send IC (`obj#m`)
+
+- `node_send` に `struct send_cache *cache @ref` を追加 (gref と同じ ASTroGen `@ref` 機構を流用)
+- ホットパス: `cache->names_ptr == oo->obj.method_names` ならキャッシュ済み closure を即時呼び出し、`strcmp` ループをスキップ
+- 冷ホットパス: `oc_object_lookup_method` で線形探索 → cache 更新
+- field 読み出し / `set_X` のフォールバックは従来の `oc_object_send` ヘルパに丸投げ
+- **効果**: method-call 重ベンチで 1.3-1.6× 高速化
+
+### Closure leaf alloca
+
+- パース時に各 `node_fun` の body を walk → 内部に `node_fun` / `node_lazy` を含まなければ "leaf" マーク (`node_is_leaf` ヘルパ; dump-grep 方式で簡潔安全)
+- closure 値に `is_leaf` フラグを保存 (`oc_make_closure_ex`)
+- `oc_apply` の最初の iteration で leaf closure を呼ぶときは frame を `alloca` (oc_apply の C スタック上に乗る; body は新クロージャを作らないので escape しない)
+- TCO トランポリンの再エントリ (`goto loop`) では `first_iter = false` で `malloc` フォールバック (alloca を積み続けるとスタック爆発する)
+- **効果**: fib(35) で 2.7× 高速化 (1.65 s → 0.57 s)、tak / method_call も 1.5× 程度

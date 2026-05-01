@@ -70,6 +70,8 @@ struct oobj {
             struct Node *body;
             struct oframe *env;
             int nparams;
+            bool is_leaf;           // body creates no inner closures →
+                                    // oc_apply may alloca the frame
         } closure;
         struct {
             oc_prim_fn fn;
@@ -143,6 +145,17 @@ struct gref_cache {
     VALUE    value;
 };
 
+// Inline cache for a `node_send` site.  `names_ptr` keys on the receiver
+// object's method-name array (each instance has its own malloc'd array,
+// so this naturally caches per-receiver — recursive method calls and
+// hot loops on the same instance hit fast).  `closure` is the resolved
+// method to apply (with self prepended at call time).  `idx` is the
+// index into the method table; we keep it for diagnostics.
+struct send_cache {
+    void  *names_ptr;       // o->obj.method_names; NULL if cache empty
+    VALUE  closure;
+};
+
 // Try / with stack: each `try ... with ...` pushes one entry; `raise`
 // longjmps to the topmost.  We support nested handlers up to a fixed depth.
 #define OC_HANDLER_MAX_DEPTH 256
@@ -206,6 +219,7 @@ struct oobj *oc_alloc(int type);
 VALUE oc_cons(VALUE h, VALUE t);
 VALUE oc_make_string(const char *s, size_t len);
 VALUE oc_make_closure(struct Node *body, struct oframe *env, int nparams);
+VALUE oc_make_closure_ex(struct Node *body, struct oframe *env, int nparams, bool is_leaf);
 VALUE oc_make_prim(const char *name, oc_prim_fn fn, int min_argc, int max_argc);
 VALUE oc_make_tuple(int n, VALUE *items);          // copies items
 VALUE oc_make_ref(VALUE init);
@@ -220,6 +234,7 @@ VALUE oc_force_lazy(struct CTX_struct *c, VALUE v);
 VALUE oc_make_object(int n_methods, const char **method_names, VALUE *closures,
                      int n_fields,  const char **field_names, VALUE *field_init);
 VALUE oc_object_send(struct CTX_struct *c, VALUE obj, const char *method, int argc, VALUE *argv);
+VALUE oc_object_lookup_method(VALUE obj, const char *method);
 VALUE oc_object_get_field(VALUE obj, const char *field);
 void  oc_object_set_field(VALUE obj, const char *field, VALUE v);
 VALUE oc_string_concat(VALUE a, VALUE b);

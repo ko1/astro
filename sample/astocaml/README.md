@@ -87,7 +87,7 @@ REPL:
 | `docs/runtime.md` | 実装の解説 (関数まわり中心) |
 | `docs/perf.md` | 性能改善ログ (成功/失敗) |
 | `test/` | 23 のテスト (ML + .expected) |
-| `bench/` | 5 のベンチマーク |
+| `bench/` | 6 のベンチマーク (ack/fib/nqueens/sieve/tak + method_call) |
 
 ## 値表現
 
@@ -189,40 +189,29 @@ astocaml: Type_error((+): expected int)
 
 ## ベンチマーク
 
-`bench/` 内 5 ファイル (持続実行で約 1 秒以上のスケール):
+`bench/` 内 6 ファイル (持続実行で約 1 秒以上のスケール):
 
-| ベンチ | 入力 | 結果 | 概要 |
-|--|--|--|--|
-| ack | ack(3, 9) | 4093 | Ackermann; 深い再帰 |
-| fib | fib(35) | 9227465 | 古典 Fibonacci |
-| nqueens | 10-queens × 3 | 724 | バックトラッキング (相互再帰) |
-| sieve | sum of primes ≤ 8000 × 8 | 3738566 | エラトステネス |
-| tak | tak(24, 16, 8) × 5 | 9 | Takeuchi 関数 |
+| ベンチ | 入力 | 結果 | 時間 | 概要 |
+|--|--|--|--|--|
+| ack | ack(3, 9) | 4093 | 0.62 s | Ackermann; 深い再帰 |
+| fib | fib(35) | 9227465 | 0.57 s | 古典 Fibonacci |
+| nqueens | 10-queens × 3 | 724 | 1.12 s | バックトラッキング (相互再帰) |
+| sieve | sum of primes ≤ 8000 × 8 | 3738566 | 0.97 s | エラトステネス |
+| tak | tak(24, 16, 8) × 5 | 9 | 0.46 s | Takeuchi 関数 |
+| method_call | counter#incr 10M | 10000000 | 0.99 s | OO 重い method send |
 
-実行例:
+主な高速化要因:
+- **gref インラインキャッシュ** (全ベンチ 3-5× 加速)
+- **closure leaf alloca** (frame の malloc を排除; fib で更に 2.7× 加速)
+- **method send IC** (`obj#m` の dispatch をキャッシュ; method-call で 1.3-1.6× 加速)
+- TCO トランポリン、fixnum 比較 fast-path、ASTroGen always_inline
 
-```
-$ make bench
-==> bench/ack.ml
-4093
-  0.80 s, 527104 KB
-==> bench/fib.ml
-9227465
-  1.44 s, 935680 KB
-==> bench/nqueens.ml
-724
-  1.24 s, 939648 KB
-==> bench/sieve.ml
-3738566
-  1.19 s, 928000 KB
-==> bench/tak.ml
-9
-  0.73 s, 586752 KB
-```
+ベースライン実装 (Phase 1 完了時) との累積比較:
+- fib: 2.62 s → 0.57 s (**4.6×**)
+- ack: 1.20 s → 0.62 s (1.9×)
+- tak: 1.23 s → 0.46 s (2.7×)
 
-(gref 用 inline cache、TCO トランポリン、fixnum 比較 fast-path で初期実装比 3-5× 高速化)
-
-メモリ使用量はインタプリタの malloc-leak 戦略によるもの。
+メモリ使用量はインタプリタの malloc-leak 戦略によるもの (将来 Boehm GC で解消予定)。
 
 ## 出典
 

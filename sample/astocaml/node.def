@@ -250,10 +250,10 @@ node_let_pat(CTX * restrict c, NODE * restrict n, NODE *value, uint32_t arity, u
 // ---------------------------------------------------------------------------
 
 NODE_DEF @noinline
-node_fun(CTX * restrict c, NODE * restrict n, uint32_t nparams, NODE *body)
+node_fun(CTX * restrict c, NODE * restrict n, uint32_t nparams, NODE *body, uint32_t is_leaf)
 {
     (void)n;
-    return oc_make_closure(body, c->env, (int)nparams);
+    return oc_make_closure_ex(body, c->env, (int)nparams, is_leaf != 0);
 }
 
 NODE_DEF
@@ -942,11 +942,38 @@ node_field_assign(CTX * restrict c, NODE * restrict n, NODE *obj, const char *fi
 }
 
 NODE_DEF @noinline
-node_send(CTX * restrict c, NODE * restrict n, NODE *obj, const char *method, uint32_t args_idx, uint32_t argc)
+node_send(CTX * restrict c, NODE * restrict n, NODE *obj, const char *method, uint32_t args_idx, uint32_t argc, struct send_cache *cache@ref)
 {
     (void)n;
     extern NODE **OC_CALL_ARGS;
     VALUE o = EVAL_ARG(c, obj);
+
+    // Hot path: object receiver + IC hit.  Skip strcmp loop entirely.
+    if (LIKELY(OC_IS_OBJECT(o))) {
+        struct oobj * const oo = OC_PTR(o);
+        VALUE closure;
+        if (LIKELY(cache->names_ptr == (void *)oo->obj.method_names)) {
+            closure = cache->closure;
+        } else {
+            closure = oc_object_lookup_method(o, method);
+            if (closure != 0) {
+                cache->names_ptr = (void *)oo->obj.method_names;
+                cache->closure  = closure;
+            }
+        }
+        if (LIKELY(closure != 0)) {
+            VALUE *all = (VALUE *)alloca(sizeof(VALUE) * (argc + 1));
+            all[0] = o;
+            for (uint32_t i = 0; i < argc; i++) {
+                NODE *a = OC_CALL_ARGS[args_idx + i];
+                all[i + 1] = (*a->head.dispatcher)(c, a);
+            }
+            return oc_apply(c, closure, (int)(argc + 1), all);
+        }
+    }
+
+    // Cold path: not a method (field read / set_X / error).  Reuse the
+    // generic dispatcher in main.c for the fallback rules.
     VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc ? argc : 1));
     for (uint32_t i = 0; i < argc; i++) {
         NODE *a = OC_CALL_ARGS[args_idx + i];

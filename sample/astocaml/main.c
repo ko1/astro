@@ -80,6 +80,18 @@ oc_make_closure(struct Node *body, struct oframe *env, int nparams)
     o->closure.body = body;
     o->closure.env = env;
     o->closure.nparams = nparams;
+    o->closure.is_leaf = false;
+    return OC_OBJ_VAL(o);
+}
+
+VALUE
+oc_make_closure_ex(struct Node *body, struct oframe *env, int nparams, bool is_leaf)
+{
+    struct oobj *o = oc_alloc(OOBJ_CLOSURE);
+    o->closure.body = body;
+    o->closure.env = env;
+    o->closure.nparams = nparams;
+    o->closure.is_leaf = is_leaf;
     return OC_OBJ_VAL(o);
 }
 
@@ -244,6 +256,22 @@ oc_object_set_field(VALUE obj, const char *field, VALUE v)
             return;
         }
     }
+}
+
+// Pure lookup — returns the method closure VALUE, or 0 (an invalid VALUE
+// since no oobj lives at address 0) when the name is not a method on this
+// object.  Used by the `node_send` IC fast path to avoid both the strcmp
+// loop and the field-fallback machinery on the hot side.
+VALUE
+oc_object_lookup_method(VALUE obj, const char *method)
+{
+    if (!OC_IS_OBJECT(obj)) return 0;
+    struct oobj *o = OC_PTR(obj);
+    for (int i = 0; i < o->obj.n_methods; i++) {
+        if (strcmp(o->obj.method_names[i], method) == 0)
+            return o->obj.method_closures[i];
+    }
+    return 0;
 }
 
 VALUE
@@ -469,6 +497,8 @@ VALUE
 oc_apply(CTX *c, VALUE fn, int argc, VALUE *argv)
 {
     VALUE local_argv[16];   // only used after a tail re-entry
+    bool first_iter = true; // false after the first tail-trampoline goto loop;
+                            // controls whether closure-leaf alloca is safe
 loop:
     if (OC_IS_PRIM(fn)) {
         struct oobj *p = OC_PTR(fn);
@@ -516,7 +546,20 @@ loop:
         p->prim.max_argc = -1;
         return OC_OBJ_VAL(p);
     }
-    struct oframe *f = oc_new_frame(cl->closure.env, np);
+    struct oframe *f;
+    if (LIKELY(cl->closure.is_leaf && first_iter)) {
+        // Leaf closure on first oc_apply iteration: frame can live in our
+        // C stack — body cannot capture it (no inner closure / lazy).
+        // On tail-trampoline re-entry (goto loop) `first_iter` is false,
+        // so we revert to malloc to prevent stack growth across tail iters.
+        size_t bytes = sizeof(struct oframe) + sizeof(VALUE) * (np ? np : 1);
+        f = (struct oframe *)alloca(bytes);
+        f->parent = cl->closure.env;
+        f->nslots = np;
+    }
+    else {
+        f = oc_new_frame(cl->closure.env, np);
+    }
     for (int i = 0; i < np; i++) f->slots[i] = argv[i];
     struct oframe *saved = c->env;
     c->env = f;
@@ -529,6 +572,7 @@ loop:
         if (argc > 16) return oc_apply(c, fn, argc, c->tc_argv);
         for (int i = 0; i < argc; i++) local_argv[i] = c->tc_argv[i];
         argv = local_argv;
+        first_iter = false;
         goto loop;
     }
     if (argc == np) return r;
@@ -2450,6 +2494,7 @@ static struct pat *parse_pattern(void);
 static struct pat *parse_pattern_no_or(void);
 static struct pat *parse_pattern_atom(void);
 static void  mark_tail_calls(NODE *n);
+static uint32_t node_is_leaf(NODE *body);
 
 // ---------------------------------------------------------------------------
 // Patterns parser.
@@ -2904,7 +2949,7 @@ parse_function_after_kw(void)
     push_scope_n(1, fname);
     pop_scope();
     NODE *fun_body = ALLOC_node_let(ALLOC_node_lref(0, 0), match_body);
-    return (mark_tail_calls(fun_body), ALLOC_node_fun(1, fun_body));
+    return (mark_tail_calls(fun_body), ALLOC_node_fun(1, fun_body, node_is_leaf(fun_body)));
 }
 
 // ---------------------------------------------------------------------------
@@ -2980,6 +3025,35 @@ mark_tail_calls(NODE *n)
     }
 }
 
+// Closure-leaf detection.  A closure is a "leaf" if its body never
+// constructs another closure (`node_fun`) or thunk (`node_lazy`).  For
+// such closures, oc_apply may alloca the activation frame instead of
+// malloc-ing it, since nothing the body produces can outlive the call
+// — a frame escape requires a closure capture.
+//
+// Implementation: dump the body to a memstream and scan for the
+// disqualifying dispatcher names.  Conservative: any literal substring
+// that looks like a closure marker also marks non-leaf (rare; the
+// emitted form is `(node_fun ` / `(node_lazy ` with leading paren).
+//
+// Cost is paid once at parse time per `node_fun`, so the simplicity
+// matters more than micro-efficiency here.
+static uint32_t
+node_is_leaf(NODE *body)
+{
+    if (!body) return 1;
+    char *buf = NULL;
+    size_t sz = 0;
+    FILE *fp = open_memstream(&buf, &sz);
+    if (!fp) return 0;
+    DUMP(fp, body, /*oneline=*/true);
+    fclose(fp);
+    bool leaf = (strstr(buf, "(node_fun ") == NULL &&
+                 strstr(buf, "(node_lazy ") == NULL);
+    free(buf);
+    return leaf ? 1u : 0u;
+}
+
 
 // `fun x y z -> body` — collect params, build a single multi-arity closure.
 static NODE *
@@ -3053,7 +3127,7 @@ parse_fun_after_kw(void)
     push_scope_n(n, params);
     NODE *body = parse_expr();
     pop_scope();
-    return (mark_tail_calls(body), ALLOC_node_fun((uint32_t)n, body));
+    return (mark_tail_calls(body), ALLOC_node_fun((uint32_t)n, body, node_is_leaf(body)));
 }
 
 // Parse `let X (params) = ... [in ...]`.  When `in_required` is true and
@@ -3401,7 +3475,7 @@ parse_expr_no_seq(void)
                     push_scope_n(bi->np, bi->params);
                     NODE *body = parse_expr();
                     pop_scope();
-                    bi->value = (mark_tail_calls(body), ALLOC_node_fun((uint32_t)bi->np, body));
+                    bi->value = (mark_tail_calls(body), ALLOC_node_fun((uint32_t)bi->np, body, node_is_leaf(body)));
                 }
                 else {
                     bi->value = parse_expr();
@@ -3417,7 +3491,7 @@ parse_expr_no_seq(void)
                 push_scope_n(lb->np, lb->params);
                 NODE *body = parse_expr();
                 pop_scope();
-                value = (mark_tail_calls(body), ALLOC_node_fun((uint32_t)lb->np, body));
+                value = (mark_tail_calls(body), ALLOC_node_fun((uint32_t)lb->np, body, node_is_leaf(body)));
             }
             else {
                 value = parse_expr();
@@ -4435,7 +4509,7 @@ parse_program_until(CTX *c, int stop_tok)
                     NODE *body = parse_expr();
                     pop_scope();
                     if (ncp > 0) pop_scope();
-                    NODE *closure = (mark_tail_calls(body), ALLOC_node_fun((uint32_t)nmp, body));
+                    NODE *closure = (mark_tail_calls(body), ALLOC_node_fun((uint32_t)nmp, body, node_is_leaf(body)));
                     m_names[nm] = mname; m_closures[nm] = closure; nm++;
                 }
                 else if (tok == TK_INHERIT) {
@@ -4497,8 +4571,8 @@ parse_program_until(CTX *c, int stop_tok)
                 build = ALLOC_node_let(build, seq_inner);
             }
             NODE *ctor;
-            if (ncp == 0) ctor = (mark_tail_calls(build), ALLOC_node_fun(1, build));
-            else          ctor = (mark_tail_calls(build), ALLOC_node_fun((uint32_t)ncp, build));
+            if (ncp == 0) ctor = (mark_tail_calls(build), ALLOC_node_fun(1, build, node_is_leaf(build)));
+            else          ctor = (mark_tail_calls(build), ALLOC_node_fun((uint32_t)ncp, build, node_is_leaf(build)));
             VALUE cv = EVAL(c, ctor);
             oc_global_define(c, make_global_name(cname), cv);
             if (tok == TK_DSEMI) next_token();
@@ -4539,7 +4613,7 @@ parse_program_until(CTX *c, int stop_tok)
                 push_scope_n(lb->np, lb->params);
                 NODE *body = parse_expr();
                 pop_scope();
-                lb->value = (mark_tail_calls(body), ALLOC_node_fun((uint32_t)lb->np, body));
+                lb->value = (mark_tail_calls(body), ALLOC_node_fun((uint32_t)lb->np, body, node_is_leaf(body)));
             }
             else {
                 lb->value = parse_expr();
@@ -4554,7 +4628,7 @@ parse_program_until(CTX *c, int stop_tok)
                     push_scope_n(lb2->np, lb2->params);
                     NODE *body = parse_expr();
                     pop_scope();
-                    lb2->value = (mark_tail_calls(body), ALLOC_node_fun((uint32_t)lb2->np, body));
+                    lb2->value = (mark_tail_calls(body), ALLOC_node_fun((uint32_t)lb2->np, body, node_is_leaf(body)));
                 }
                 else {
                     lb2->value = parse_expr();
