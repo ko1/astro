@@ -813,7 +813,7 @@ VALUE korb_proc_new(struct Node *body, VALUE *fp, uint32_t env_size,
 }
 
 /* Block currently active for yield (set by dispatch_call). */
-__thread struct korb_proc *current_block = NULL;
+struct korb_proc *current_block = NULL;
 
 bool korb_block_given(void) { return current_block != NULL; }
 

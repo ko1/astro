@@ -18,7 +18,7 @@
 
 /* current_block is a thread-local in object.c — declared here so the
  * inline prologues can read/write it directly. */
-extern __thread struct korb_proc *current_block;
+extern struct korb_proc *current_block;
 
 /* CFUNC: just call the C function, then handle break-from-block. */
 static inline __attribute__((always_inline)) VALUE
