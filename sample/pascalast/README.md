@@ -34,15 +34,17 @@ which the lexer handles by lowercasing every ID token at lex time.
 
 ## Status
 
-- **38 / 38** correctness tests pass.
-- ISO 7185 ライン到達: ネスト手続き / 手続き値 / file I/O / variant
-  record の主要 4 項目すべて入った。
+- **40 / 40** correctness tests pass.
+- ISO 7185 + 主要 OO 拡張: ネスト手続き / 手続き値 / file I/O /
+  variant record + 例外 + unit/uses + **真の virtual dispatch (vtable)**
+  + `inherited` + destructor + 最小 OOP。
 - 言語機能: ティア1〜2のフル + 例外 (`try/except/finally/raise`) +
-  `unit/uses` + 最小 OOP (`class`/継承/コンストラクタ/メソッド/Self)
-  + 文字列ミューテーション + for-in + libgc-backed heap。
+  `unit/uses` + OOP (`class`/単一継承/virtual/override/`inherited`/
+  destructor) + 文字列ミューテーション + for-in + libgc-backed heap。
 - 詳細リスト: [`docs/done.md`](./docs/done.md).
-- 残: virtual dispatch, `goto`, range check, open array, properties,
-  N-D 配列ほか — [`docs/todo.md`](./docs/todo.md).
+- 残: properties, `is`/`as`, class methods, `goto`, range check,
+  open array, N-D 配列、dynamic array、AnsiString フル機能 —
+  [`docs/todo.md`](./docs/todo.md).
 - **AOT specialization** が動く。`make aot-bench BENCH=<name>` で
   parse → SPECIALIZE → 再ビルド → 比較。fib 2.2× / collatz ~25×。
 

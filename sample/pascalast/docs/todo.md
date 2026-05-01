@@ -15,13 +15,13 @@ Pascal 拡張、性能のうち高度なもの。「Pascal として完成」の
 | 5 | **配列の `for-in`、set の `for-in`** | 小 | 配列は既に対応。set 列挙はビット走査ループに desugar。 |
 | 6 | **`Result` 暗黙型推論** | 小 | 現状は OK だが、関数戻り型の前方参照を厳密化。 |
 
-## クラス機構の高度化
+## クラス機構の高度化（残り）
 
 | # | 項目 | 工数 | 備考 |
 |---|------|------|------|
-| 7 | **Virtual / override 真のディスパッチ** | 中 | vtable をスロット 0 に格納、`obj.method` が runtime に vtable[slot] を読む。`node_vcall` 自体はもう node.def にある。 |
-| 8 | **`inherited`** | 小 | `inherited.method(args)` は parent の同名メソッドを直接呼ぶ。method dispatch の親方向探索に変換。 |
-| 9 | **`destructor` / `Free`** | 小 | dispose を呼ぶだけ。 |
+| ~~7~~ | ~~Virtual / override 真のディスパッチ~~ | — | **完了** (round 5)。vtable + node_vcall。 |
+| ~~8~~ | ~~`inherited`~~ | — | **完了** (round 5)。 |
+| ~~9~~ | ~~`destructor`~~ | — | **完了** (round 5)。`obj.Done` で呼ぶ。リソース回収は libgc 任せ。 |
 | 10 | **Properties** | 中 | `property X: T read GetX write SetX` を field アクセス時にメソッド呼び出しに置換。 |
 | 11 | **Abstract methods / `is`/`as`** | 中 | 型タグの runtime 比較。 |
 | 12 | **Class methods** | 小 | static メソッド (Self なし)。 |

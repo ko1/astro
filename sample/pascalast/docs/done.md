@@ -49,7 +49,16 @@ pointers (`^Type`, `nil`, `new`, `dispose`, `p^.field`).
 | `unit` / `uses` / `interface` / `implementation` | `test/37_uses.pas` (+`test/myunit.pas`) |
 | OOP: `class`, single inheritance, fields, constructor, methods, `Self`, static dispatch | `test/38_class.pas` |
 
-Total tests: **38 / 38** passing.
+### Round 5 — true OOP
+
+| Feature                                  | Test                       |
+|---|---|
+| **Real virtual dispatch via vtable**     | `test/39_virtual.pas`      |
+| `virtual` / `override` actually mean what they say (vtable slot assignment, override reuses parent's slot) | (same) |
+| `inherited [methodname](args)` — static call into parent | `test/40_inherited.pas` |
+| `destructor T.Done; … end;` (parsed and called like a regular method) | (same) |
+
+Total tests: **40 / 40** passing.
 
 ### Knowingly skipped (deferred to later rounds)
 
@@ -103,13 +112,17 @@ Total tests: **38 / 38** passing.
   restores the lexer state, parses the unit's decls into the same
   global symbol table.  `interface` headers are body-less (auto
   forward); `implementation` provides the bodies.
-- **Classes with static dispatch.**  A class is a record_type +
-  method table.  `T.Create(args)` allocates a record and calls the
-  constructor with `Self` as first arg.  `obj.field` auto-derefs
-  through the pointer; `obj.method` resolves statically by walking
-  the class's method table then its parent's.  `virtual` and
-  `override` keywords are accepted but ignored — fully-virtual
-  dispatch is the next round.
+- **Classes with virtual dispatch (round 5).**  A class is a record_type
+  with slot 0 reserved for the vtable pointer + a method table.
+  `T.Create(args)` emits `node_new_object(slots, class_idx)` which
+  allocates and stamps the per-class vtable address into slot 0; the
+  constructor body then runs with the new pointer as `Self`.
+  `obj.field` auto-derefs through the pointer.  `obj.method` for a
+  virtual method emits `node_vcall(self, vtable_slot, args…)` which
+  reads vtable from `obj[0]` and calls vtable[slot] — actual
+  polymorphism: `a: TAnimal` holding a `TDog` calls `TDog.speak`.
+  `inherited [methodname](args)` is always a *static* call into the
+  parent's same-named method, regardless of virtuality.
 
 ### AOT specialization (still in)
 

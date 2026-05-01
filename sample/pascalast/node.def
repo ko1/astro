@@ -1291,15 +1291,18 @@ node_new_record(CTX * restrict c, NODE * restrict n, uint32_t nslots)
 }
 
 // Allocate an object instance, stamping its vtable pointer at slot 0.
-// `vtable_addr` is the address (cast int64) of the class's static
-// vtable.  The `nslots` includes the leading vtable slot.
+// The vtable lives in a per-class buffer indexed by class_idx; we
+// look it up at runtime so the parser doesn't need to know the
+// vtable address (which isn't allocated until finalize_classes runs
+// after the parse).
 NODE_DEF
-node_new_object(CTX * restrict c, NODE * restrict n, uint32_t nslots, uint64_t vtable_addr)
+node_new_object(CTX * restrict c, NODE * restrict n, uint32_t nslots, uint32_t class_idx)
 {
     (void)c; (void)n;
+    extern int **pascal_vtables;
     int64_t *p = (int64_t *)GC_malloc(nslots * sizeof(int64_t));
     if (!p) pascal_error("out of memory in new()");
-    p[0] = (int64_t)vtable_addr;
+    p[0] = (int64_t)(uintptr_t)pascal_vtables[class_idx];
     return (VALUE)(uintptr_t)p;
 }
 

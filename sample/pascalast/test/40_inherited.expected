@@ -1,0 +1,5 @@
+TBase.Create v=10
+TDerived.Create extra=99
+TBase.show val=10
+TDerived.show extra=99
+TBase.Done bye val=10

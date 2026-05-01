@@ -541,9 +541,15 @@ struct class_type {
     struct method_entry methods[32];
     int  nmethods;
     int  vtable_size;  // total virtuals (own + inherited)
+    int *vtable;       // vtable[i] = proc index for vtable_slot i; built after parse
 };
 static struct class_type class_types[MAX_CLASS_TYPES];
 static int n_class_types;
+
+// Per-class vtable address table — populated by finalize_classes
+// after parsing.  Read at run time by node_new_object to stamp slot
+// 0 of every freshly allocated instance.
+int **pascal_vtables;
 
 // Set by parse_type when consuming a class-typed name.  -1 means
 // the most-recent type isn't a class.
@@ -783,6 +789,11 @@ static NODE *parse_compound(void);
 static NODE *parse_stmt_list(int end_tk1, int end_tk2);
 static void  parse_decls_block(CTX *c);
 static void  parse_unit_file(const char *unit_name, CTX *c);
+
+// Forward decls for class-method context globals; defined alongside
+// parse_subprogram further down.
+extern int  current_method_class_idx;
+extern char current_method_name_buf[64];
 static TE    te_get(struct sym *s, NODE *index, NODE *index2);
 static NODE *mk_set_typed(struct sym *s, NODE *index, NODE *index2, NODE *val);
 static NODE *mk_addr_of(struct sym *s, NODE *index, NODE *index2);
@@ -1333,6 +1344,42 @@ te_factor(void)
     if (tk == TK_TRUE)  { next_token(); return (TE){ ALLOC_node_true(),  PT_BOOL }; }
     if (tk == TK_FALSE) { next_token(); return (TE){ ALLOC_node_false(), PT_BOOL }; }
     if (tk == TK_NIL)   { next_token(); return (TE){ ALLOC_node_nil(),   PT_POINTER }; }
+    if (accept(TK_INHERITED)) {
+        // Same logic as the statement-form, but builds a TE for use
+        // in expression contexts (e.g. `Result := inherited f(x);`).
+        if (current_method_class_idx < 0)
+            pascal_error("'inherited' only valid inside a method");
+        int parent = class_types[current_method_class_idx].parent_idx;
+        if (parent < 0) pascal_error("'inherited' used in a class with no parent");
+        char mname[64];
+        if (tk == TK_ID) { strncpy(mname, tk_id, 63); mname[63] = 0; next_token(); }
+        else { strncpy(mname, current_method_name_buf, 63); mname[63] = 0; }
+        struct method_entry *me = NULL;
+        int walk = parent;
+        while (walk >= 0) {
+            struct class_type *wc = &class_types[walk];
+            for (int i = 0; i < wc->nmethods; i++)
+                if (strcmp(wc->methods[i].name, mname) == 0
+                    && wc->methods[i].proc_idx >= 0) { me = &wc->methods[i]; break; }
+            if (me) break;
+            walk = wc->parent_idx;
+        }
+        if (!me) pascal_error("no inherited method '%s'", mname);
+        NODE *args[16]; uint32_t n = 1;
+        args[0] = ALLOC_node_lref(0);
+        if (accept(TK_LPAREN)) {
+            if (tk != TK_RPAREN) for (;;) {
+                if (n >= 16) pascal_error("too many args");
+                args[n++] = te_expr().n;
+                if (!accept(TK_COMMA)) break;
+            }
+            expect(TK_RPAREN, "')'");
+        }
+        NODE *call = mk_pcall((uint32_t)me->proc_idx, args, n);
+        int t = parser_ctx->procs[me->proc_idx].is_function
+              ? (int)parser_ctx->procs[me->proc_idx].return_type : PT_INT;
+        return (TE){ call, t };
+    }
     if (accept(TK_AT)) {
         // @procname — produce a procedure value (the proc's index).
         if (tk != TK_ID) pascal_error("expected procedure name after '@'");
@@ -1453,7 +1500,7 @@ te_factor(void)
             }
             if (!me->is_constructor) pascal_error("class-side call must be a constructor");
             int slots = record_types[class_types[s->idx].rec_idx].total_slots;
-            args[0] = ALLOC_node_new_record((uint32_t)slots);
+            args[0] = ALLOC_node_new_object((uint32_t)slots, (uint32_t)s->idx);
             NODE *call = mk_pcall((uint32_t)me->proc_idx, args, n);
             return (TE){ call, PT_POINTER };
         }
@@ -1509,7 +1556,10 @@ te_factor(void)
                     walk = wc->parent_idx;
                 }
                 if (me) {
-                    // obj.method(args) — static call with self=obj.
+                    // obj.method(args) — static or virtual dispatch
+                    // depending on the method's declaration.  Virtual
+                    // methods go through node_vcall (reads vtable from
+                    // the object's slot 0); statics use mk_pcall.
                     NODE *self_load = (s->kind == SYM_GVAR) ? ALLOC_node_gref(s->idx)
                                                             : ALLOC_node_lref(s->idx);
                     NODE *args[16]; uint32_t n = 1;
@@ -1522,9 +1572,18 @@ te_factor(void)
                         }
                         expect(TK_RPAREN, "')'");
                     }
-                    NODE *call = mk_pcall((uint32_t)me->proc_idx, args, n);
-                    int rt_type = parser_ctx->procs[me->proc_idx].is_function
+                    NODE *call;
+                    int rt_type;
+                    if (me->is_virtual && me->vtable_slot >= 0) {
+                        uint32_t base = push_call_args(&args[1], n - 1);
+                        call = ALLOC_node_vcall(self_load, (uint32_t)me->vtable_slot, base, n);
+                        rt_type = parser_ctx->procs[me->proc_idx].is_function
                                 ? (int)parser_ctx->procs[me->proc_idx].return_type : PT_INT;
+                    } else {
+                        call = mk_pcall((uint32_t)me->proc_idx, args, n);
+                        rt_type = parser_ctx->procs[me->proc_idx].is_function
+                                ? (int)parser_ctx->procs[me->proc_idx].return_type : PT_INT;
+                    }
                     return (TE){ call, rt_type };
                     (void)ct;
                 }
@@ -2155,6 +2214,10 @@ parse_id_stmt(void)
                     }
                     expect(TK_RPAREN, "')'");
                 }
+                if (me->is_virtual && me->vtable_slot >= 0) {
+                    uint32_t base = push_call_args(&args[1], n - 1);
+                    return ALLOC_node_vcall(self_load, (uint32_t)me->vtable_slot, base, n);
+                }
                 return mk_pcall((uint32_t)me->proc_idx, args, n);
             }
         }
@@ -2283,6 +2346,47 @@ parse_stmt(void)
         }
         pascal_error("expected 'except' or 'finally' at line %d", line_no);
     }
+    case TK_INHERITED: {
+        next_token();
+        if (current_method_class_idx < 0)
+            pascal_error("'inherited' only valid inside a method");
+        int parent = class_types[current_method_class_idx].parent_idx;
+        if (parent < 0) pascal_error("'inherited' used in a class with no parent");
+        // Optional explicit method name; defaults to the current
+        // method's name.
+        char mname[64];
+        if (tk == TK_ID) {
+            strncpy(mname, tk_id, 63); mname[63] = 0;
+            next_token();
+        } else {
+            strncpy(mname, current_method_name_buf, 63); mname[63] = 0;
+        }
+        // Find the method in the parent (or its ancestors).
+        struct method_entry *me = NULL;
+        int walk = parent;
+        while (walk >= 0) {
+            struct class_type *wc = &class_types[walk];
+            for (int i = 0; i < wc->nmethods; i++)
+                if (strcmp(wc->methods[i].name, mname) == 0
+                    && wc->methods[i].proc_idx >= 0) { me = &wc->methods[i]; break; }
+            if (me) break;
+            walk = wc->parent_idx;
+        }
+        if (!me) pascal_error("no inherited method '%s'", mname);
+        NODE *args[16]; uint32_t n = 1;
+        args[0] = ALLOC_node_lref(0);    // Self
+        if (accept(TK_LPAREN)) {
+            if (tk != TK_RPAREN) for (;;) {
+                if (n >= 16) pascal_error("too many args");
+                args[n++] = te_expr().n;
+                if (!accept(TK_COMMA)) break;
+            }
+            expect(TK_RPAREN, "')'");
+        }
+        // `inherited` is always static — even if the method is
+        // virtual, we want to call the parent's specific impl.
+        return mk_pcall((uint32_t)me->proc_idx, args, n);
+    }
     case TK_RAISE: {
         next_token();
         // `raise <expr>` with a string-valued expr.
@@ -2395,7 +2499,6 @@ parse_type(int32_t *lo_out, int32_t *hi_out,
             next_token();
             expect(TK_RPAREN, "')'");
             ct->parent_idx = ps->idx;
-            // Inherit parent's fields (copy into our record) and methods.
             struct class_type  *pc = &class_types[ps->idx];
             struct record_type *pr = &record_types[pc->rec_idx];
             for (int i = 0; i < pr->nfields; i++) {
@@ -2405,6 +2508,7 @@ parse_type(int32_t *lo_out, int32_t *hi_out,
             for (int i = 0; i < pc->nmethods; i++) {
                 ct->methods[ct->nmethods++] = pc->methods[i];
             }
+            ct->vtable_size = pc->vtable_size;
         }
 
         // Fields and method headers, in any order, terminated by `end`.
@@ -2436,23 +2540,44 @@ parse_type(int32_t *lo_out, int32_t *hi_out,
                     (void)parse_type(&a, &b, &c2, &d2, &h2);
                 }
                 expect(TK_SEMI, "';'");
-                // virtual / override / abstract markers — accepted, ignored
-                while (accept(TK_VIRTUAL) || accept(TK_OVERRIDE)) {
+                bool got_virtual  = false;
+                bool got_override = false;
+                while (tk == TK_VIRTUAL || tk == TK_OVERRIDE) {
+                    if (accept(TK_VIRTUAL))  got_virtual  = true;
+                    if (accept(TK_OVERRIDE)) got_override = true;
                     accept(TK_SEMI);
                 }
-                // Find or insert the method entry.
+                // Find an inherited entry by name first (override
+                // updates that one); otherwise insert fresh.
                 struct method_entry *me = NULL;
+                bool inherited_entry = false;
                 for (int i = 0; i < ct->nmethods; i++) {
-                    if (strcmp(ct->methods[i].name, mname) == 0) { me = &ct->methods[i]; break; }
+                    if (strcmp(ct->methods[i].name, mname) == 0) {
+                        me = &ct->methods[i];
+                        inherited_entry = true;
+                        break;
+                    }
                 }
                 if (!me) {
                     if (ct->nmethods >= 32) pascal_error("too many methods");
                     me = &ct->methods[ct->nmethods++];
                     memset(me, 0, sizeof(*me));
                     strncpy(me->name, mname, sizeof(me->name) - 1);
+                    me->vtable_slot = -1;
                 }
-                me->proc_idx = -1;          // patched in by body decl later
+                me->proc_idx = -1;          // patched when the body is parsed
                 me->is_constructor = is_ctor;
+                if (got_virtual && !inherited_entry) {
+                    me->is_virtual  = true;
+                    me->vtable_slot = ct->vtable_size++;
+                } else if (got_override) {
+                    if (!inherited_entry || me->vtable_slot < 0)
+                        pascal_error("override without matching parent virtual");
+                    me->is_virtual = true;
+                } else if (got_virtual && inherited_entry) {
+                    // Re-stating `virtual` on the same name — keep the inherited slot.
+                    me->is_virtual = true;
+                }
                 continue;
             }
             // Field declaration — same shape as a record field.
@@ -3067,8 +3192,10 @@ parse_const_decls_global(void)
 //    re-parse signature (must match), then parse body.
 // Track which class a method body belongs to (the param-list parser
 // uses this to inject the implicit `Self` parameter and also to put
-// fields in scope via the with-stack).
-static int  current_method_class_idx = -1;
+// fields in scope via the with-stack).  current_method_name lets
+// `inherited` find the same-named method in the parent.
+int  current_method_class_idx = -1;
+char current_method_name_buf[64];
 
 static void
 parse_subprogram(bool is_function, CTX *c)
@@ -3078,9 +3205,10 @@ parse_subprogram(bool is_function, CTX *c)
         is_constructor = true;
         is_function    = true;     // constructor returns the new object pointer
     } else if (accept(TK_DESTRUCTOR)) {
-        next_token();              // consume name; treat like procedure
+        // Treat destructor like a regular procedure — the keyword is
+        // already consumed by accept, the method name follows.
     } else {
-        next_token();    // consume 'procedure' / 'function'
+        next_token();              // consume 'procedure' / 'function'
     }
     if (tk != TK_ID) pascal_error("expected name after procedure/function");
     char name[64]; strncpy(name, tk_id, 63); name[63] = 0;
@@ -3180,6 +3308,12 @@ parse_subprogram(bool is_function, CTX *c)
     proc_idx_at_depth[current_depth]    = pidx;
     n_locals_alloc = 0;
     current_method_class_idx = method_class;
+    if (method_class >= 0) {
+        strncpy(current_method_name_buf, method_name, sizeof(current_method_name_buf) - 1);
+        current_method_name_buf[sizeof(current_method_name_buf) - 1] = 0;
+    } else {
+        current_method_name_buf[0] = 0;
+    }
 
     // Inject the implicit `Self` parameter for methods.  Slot 0 of
     // the frame holds a pointer to the receiving object.
@@ -3628,6 +3762,29 @@ main(int argc, char *argv[])
     line_no = 1;
     next_token();
     NODE *prog = parse_program(c);
+
+    // Build per-class vtables now that every method body has been
+    // parsed.  Inheritance: copy the parent's vtable, then override
+    // entries for methods declared in this class.
+    pascal_vtables = (int **)calloc(n_class_types, sizeof(int *));
+    for (int i = 0; i < n_class_types; i++) {
+        struct class_type *ct = &class_types[i];
+        if (ct->vtable_size == 0) { pascal_vtables[i] = NULL; continue; }
+        int *vt = (int *)calloc(ct->vtable_size, sizeof(int));
+        if (ct->parent_idx >= 0 && pascal_vtables[ct->parent_idx]) {
+            int parent_size = class_types[ct->parent_idx].vtable_size;
+            int copy = parent_size < ct->vtable_size ? parent_size : ct->vtable_size;
+            memcpy(vt, pascal_vtables[ct->parent_idx], copy * sizeof(int));
+        }
+        for (int j = 0; j < ct->nmethods; j++) {
+            struct method_entry *me = &ct->methods[j];
+            if (me->is_virtual && me->vtable_slot >= 0 && me->proc_idx >= 0) {
+                vt[me->vtable_slot] = me->proc_idx;
+            }
+        }
+        ct->vtable = vt;
+        pascal_vtables[i] = vt;
+    }
 
     // Allocate global arrays.  2D arrays are stored row-major in a
     // single flat buffer of `size1 * size2` cells.
