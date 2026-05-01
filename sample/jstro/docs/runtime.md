@@ -320,6 +320,41 @@ V8 や CPython のように **C 言語の `setjmp` / `longjmp`** を使う:
 `Map` / `Set` の `[Symbol.iterator]` は `JsMapIter` を返し、`next()` で
 `{value: [k,v], done}` のような結果を返す。
 
+実装は **挿入順を保つ open-addressing ハッシュテーブル** (`js_stdlib.c`):
+
+```
+struct JsMap {
+    GCHead       gc;
+    JsMapEntry  *entries;     // insertion-ordered { k, v, hash, used }
+    int32_t     *index;       // power-of-two hash → entries[] index
+                              //   -1=empty, -2=tombstone, ≥0=entry
+    uint32_t     size;        // live (non-tombstone) entries
+    uint32_t     capa;        // entries[] slots used (incl tombstones)
+    uint32_t     entries_capa;
+    uint32_t     index_capa;  // power of two
+    uint8_t      is_set;
+};
+```
+
+- `get`/`set`/`has`/`delete`: index[] を `(hash & mask)` から線形プロー
+  ブ。平均 O(1)。load > 0.75 で index_capa を 2 倍に rebuild。
+- iteration: entries[] を頭から走査、`!used` (tombstone) は飛ばす —
+  挿入順が JS 仕様通り保たれる。tombstone が 1/3 を超えたら entries[]
+  を compact + index[] を rebuild。
+- `jsval_hash`: SameValueZero を満たす — interned string は precomputed
+  hash、Number は -0/+0 を 0 に、NaN を固定スロットに、ポインタは
+  bit-mix。
+- GC root walk: `mark_value(entry.k)` / `mark_value(entry.v)` を
+  used==true の entries[] に対してだけ呼ぶ (tombstone は飛ばす)。
+- finalize: `entries`, `index` の両方を free。
+
+ベンチ delta (100K string キー insert + lookup):
+
+| | jstro | node v18 |
+| - | - | - |
+| 旧 (linear scan) | 25.5 s | 0.06 s | 432× behind |
+| 新 (hash + insertion order) | 0.082 s | 0.06 s | 1.28× behind |
+
 ## 正規表現 (`js_regex.c`)
 
 NFA バックトラッキングマッチャ。pattern source をそのまま保持し、`.test`

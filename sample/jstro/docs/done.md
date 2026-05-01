@@ -100,6 +100,10 @@ ECMAScript 仕様への対応状況と、性能向上のために行った変更
 - [x] `console.{log, error, warn, info}`
 - [x] `Error` / `TypeError` / `RangeError` / `ReferenceError` / `SyntaxError`
 - [x] **`Map`** (SameValueZero、`size`、CRUD、`forEach`、`keys/values/entries`、for-of)
+      — open-addressing ハッシュテーブル + 挿入順 entries[] 配列の二段
+      構成。100K キーの set+get で旧 linear scan (25.5 s) → 0.082 s
+      (300×)、node v18 (0.064 s) に対し 1.28× 差まで詰めた。詳細は
+      [`docs/runtime.md`](./docs/runtime.md)
 - [x] **`Set`** (同上、`add` 含む)
 - [x] **`WeakMap` / `WeakSet`** (Map/Set へのエイリアス; 真の弱参照は GC 未実装ゆえ)
 - [x] **`TypedArray` ファミリ** (Uint8Array etc.) — Array にエイリアス

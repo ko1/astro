@@ -75,20 +75,29 @@ jstro [options] file.js
 
 ## 性能
 
-ツリーウォーキング+IC ベースとしては妥当。詳しくは [`docs/perf.md`](./docs/perf.md)。
+フェアに勝ち負け両方並べた一覧 (`jstro -c` = AOT bake 後、node v18 の
+inline `Date.now()` 計測):
 
-| benchmark         | jstro (s) | jstro -c (s) | node.js (s) | -c の倍率 vs node |
-|-------------------|-----------|--------------|-------------|-------------------|
-| fib(35)           | 0.78      | 0.29         | 0.09        | 3.4×              |
-| fact ×5M          | 1.82      | 0.48         | 0.07        | 7.5×              |
-| sieve(1M primes)  | 0.10      | 0.03         | 0.01        | 2.4×              |
-| mandelbrot(500)   | 0.90      | 0.39         | 0.04        | 11.0×             |
-| nbody 100k steps  | 0.44      | 0.25         | 0.02        | 14.7×             |
-| binary_trees(15)  | 0.68      | 0.37         | 0.06        | 6.7×              |
+| benchmark         | jstro -c (s) | node v18 (s) | 結果 |
+|-------------------|--------------|--------------|------|
+| **cold**          | 0.015        | 0.900        | **60× ahead** (V8 が tier-up しない 1000 関数 × 1 回) |
+| **try_catch**     | 0.017        | 0.716        | **42× ahead** (longjmp throw vs V8 deopt) |
+| **state**         | 2.27         | 6.96         | **3.07× ahead** (Redux 風 spread reducer) |
+| **sieve_big(40M)**| 1.08         | 2.69         | **2.49× ahead** (flat JsValue vs V8 element-kind) |
+| **sieve(1M)**     | 0.012        | 0.014        | **1.17× ahead** |
+| map_coll          | 0.082        | 0.064        | 1.28× behind |
+| poly              | 0.093        | 0.026        | 3.6× behind (我々は monomorphic IC のみ) |
+| regex             | 0.037        | 0.010        | 3.7× behind (V8 Irregexp に勝てない) |
+| fib(35)           | 0.28         | 0.09         | 3.1× behind |
+| fact ×5M          | 0.31         | 0.07         | 4.6× behind |
+| binary_trees(15)  | 0.36         | 0.06         | 6.4× behind |
+| mandelbrot(500)   | 0.39         | 0.04         | 10.9× behind |
+| nbody 100k        | 0.26         | 0.02         | 14× behind (TurboFan 完全 engage 領域) |
 
-`jstro` がツリー・ウォーキング、`jstro -c` が AOT 特化 (SD bake) 後の
-スコア。AOT で geo-mean 約 2.5× の高速化。`make compiled_jstro` で
-bake 済みバイナリを生成できる。
+勝ちが効くのは **V8 の tier-up 閾値を踏まないワークロード** と
+**deopt しがちなイディオム** と **構造的なランタイム差**。負けるのは
+TurboFan の数値ホットループ、専用エンジン (Irregexp)、polymorphic IC
+の領域。`make compiled_jstro` で bake 済みバイナリ生成可能。
 
 主な高速化:
 - **AOT bake (SD specialization)** — 各 AST ノードを SD_<hash> に
