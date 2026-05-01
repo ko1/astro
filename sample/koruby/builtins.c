@@ -325,6 +325,23 @@ static VALUE int_to_s(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 static VALUE int_to_i(CTX *c, VALUE self, int argc, VALUE *argv) { return self; }
 static VALUE int_to_f(CTX *c, VALUE self, int argc, VALUE *argv) { return korb_float_new((double)FIX2LONG(self)); }
+static VALUE int_even_p(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (FIXNUM_P(self)) return KORB_BOOL((FIX2LONG(self) & 1) == 0);
+    return Qfalse;
+}
+static VALUE int_odd_p(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (FIXNUM_P(self)) return KORB_BOOL((FIX2LONG(self) & 1) == 1);
+    return Qfalse;
+}
+static VALUE int_positive_p(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (FIXNUM_P(self)) return KORB_BOOL(FIX2LONG(self) > 0);
+    return Qfalse;
+}
+static VALUE int_negative_p(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (FIXNUM_P(self)) return KORB_BOOL(FIX2LONG(self) < 0);
+    return Qfalse;
+}
+
 static VALUE int_zero_p(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (FIXNUM_P(self)) return KORB_BOOL(self == INT2FIX(0));
     return Qfalse;
@@ -1491,11 +1508,15 @@ static VALUE ary_rotate_bang(CTX *c, VALUE self, int argc, VALUE *argv) {
     n = n % a->len;
     if (n < 0) n += a->len;
     if (n == 0) return self;
-    /* Rotate left by n */
-    VALUE *tmp = korb_xmalloc(sizeof(VALUE) * n);
-    for (long i = 0; i < n; i++) tmp[i] = a->ptr[i];
-    for (long i = 0; i + n < a->len; i++) a->ptr[i] = a->ptr[i + n];
-    for (long i = 0; i < n; i++) a->ptr[a->len - n + i] = tmp[i];
+    /* Rotate left by n.  Use 3-reverse trick to avoid an extra alloc that
+     * could trigger GC at an unfortunate moment. */
+    long len = a->len;
+    /* reverse [0..n-1] */
+    for (long i = 0, j = n - 1; i < j; i++, j--) { VALUE t = a->ptr[i]; a->ptr[i] = a->ptr[j]; a->ptr[j] = t; }
+    /* reverse [n..len-1] */
+    for (long i = n, j = len - 1; i < j; i++, j--) { VALUE t = a->ptr[i]; a->ptr[i] = a->ptr[j]; a->ptr[j] = t; }
+    /* reverse [0..len-1] */
+    for (long i = 0, j = len - 1; i < j; i++, j--) { VALUE t = a->ptr[i]; a->ptr[i] = a->ptr[j]; a->ptr[j] = t; }
     return self;
 }
 
@@ -2497,6 +2518,10 @@ void korb_init_builtins(void) {
     DEF(cInt, "to_i", int_to_i, 0);
     DEF(cInt, "to_f", int_to_f, 0);
     DEF(cInt, "zero?", int_zero_p, 0);
+    DEF(cInt, "even?", int_even_p, 0);
+    DEF(cInt, "odd?",  int_odd_p,  0);
+    DEF(cInt, "positive?", int_positive_p, 0);
+    DEF(cInt, "negative?", int_negative_p, 0);
     DEF(cInt, "times", int_times, 0);
     DEF(cInt, "succ", int_succ, 0);
     DEF(cInt, "next", int_succ, 0);
