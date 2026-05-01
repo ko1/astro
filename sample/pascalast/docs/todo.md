@@ -12,7 +12,7 @@ Pascal 拡張、性能のうち高度なもの。「Pascal として完成」の
 | ~~2~~ | ~~Subrange の範囲チェック~~ | — | **完了** (round 7+8)。代入時に node_range_check で catchable raise、`{$R+}/{$R-}` (および `(*$R+/-*)`) ディレクティブで toggle 可能 (round 8)。未知の `{$H+}` / `{$MODE OBJFPC}` 等は黙ってスキップ。 |
 | 3 | **N 次元 (≥ 3) 配列** | 中 | per-array に stride table を持たせれば一般化。1D/2D の専用ノードは残してホットパス維持。 |
 | ~~4~~ | ~~Open-array param `array of T`~~ | — | **完了** (round 8 続き)。dynamic-array 値型として受ける形で実装。callee 側は既存の dynarr ノード (length / a[i] / a[i] := v) をそのまま再利用、low/high 組込みも追加。静的配列の自動 wrap はまだ — 動的配列のみ受け付ける。 |
-| 5 | **配列の `for-in`、set の `for-in`** | 小 | 配列は既に対応。set 列挙はビット走査ループに desugar。 |
+| ~~5~~ | ~~配列の `for-in`、set の `for-in`~~ | — | **完了** (round 8)。dynarr の場合 `for IDX := 0 to length(d)-1 do begin x := d[IDX]; BODY end` に desugar、set の場合 `for IDX := 0 to 63 do if IDX in S then begin x := IDX; BODY end` に desugar。 |
 | 6 | **`Result` 暗黙型推論** | 小 | 現状は OK だが、関数戻り型の前方参照を厳密化。 |
 
 ## クラス機構の高度化（残り）

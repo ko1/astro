@@ -193,6 +193,7 @@ the callee SD directly, lifting recursion-heavy benches to 4-6 ×.
 | **Proc-body / main-body roots emitted `static inline`** — matches the forward-decl that baked specializers emit; gcc still lays out a callable copy because `sc_entries[]` takes the address | (`SPECIALIZED_SRC` in node.c) |
 | **`{$R+/-}` / `(*$R+/-*)` directives** — toggle subrange range-check emission in the parser.  Unknown one-letter directives (`{$H+}`, `{$MODE OBJFPC}`, …) are accepted and silently ignored so real-world Pascal programs don't trip the parser | `test/46_directive.pas` |
 | **Open-array params** (`procedure foo(a: array of T)`) — typed as `PT_DYNARR` in the callee so existing `length(a)` / `a[i]` / `a[i] := v` nodes work unchanged.  `low(a)` is a literal 0 and `high(a)` is `length(a) - 1` for dynarrs; static-array names (`low(staticArr)` / `high(staticArr)`) resolve to their declared bounds.  Currently accepts only dynamic-array arguments — wrapping a static array at the call site is a deferred enhancement | `test/47_open_array.pas` |
+| **`for x in d do …`** over dynamic arrays (`for IDX := 0 to length(d)-1 do begin x := d[IDX]; BODY end`) and **`for x in S do …`** over sets (`for IDX := 0 to 63 do if IDX in S then begin x := IDX; BODY end`).  Static-array for-in already worked since round 4 | `test/48_forin_dyn_set.pas` |
 
 ## Bug fixes
 

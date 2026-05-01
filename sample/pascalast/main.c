@@ -2491,42 +2491,88 @@ parse_for(void)
     if (!s || (s->kind != SYM_LVAR && s->kind != SYM_GVAR))
         pascal_error("for-loop variable '%s' must be a scalar var", id);
 
-    // for-in form: `for x in arr do BODY`.  Desugar to
-    //   for IDX := arr_lo to arr_hi do begin x := arr[IDX]; BODY end
+    // for-in form: `for x in expr do BODY`.  Desugars depend on expr's
+    // type:
+    //   * static array  → for IDX := lo to hi do begin x := arr[IDX]; BODY end
+    //   * dynamic array → for IDX := 0 to length(d)-1 do begin x := d[IDX]; BODY end
+    //   * set (bitset)  → for IDX := 0 to 63 do if IDX in S then begin x := IDX; BODY end
     // where IDX is a fresh hidden slot (local in procs, global at
     // the top level — same scheme as `case` temps).
     if (accept(TK_IN)) {
-        if (tk != TK_ID) pascal_error("expected array variable after 'in'");
+        if (tk != TK_ID) pascal_error("expected array/set variable after 'in'");
         char arrid[64]; strncpy(arrid, tk_id, 63); arrid[63] = 0;
         next_token();
         struct sym *as = sym_find(arrid);
-        if (!as || (as->kind != SYM_GARR && as->kind != SYM_LARR && as->kind != SYM_VARR))
-            pascal_error("'%s' is not an array", arrid);
-        if (as->kind == SYM_GARR && as->is_2d)
-            pascal_error("for-in over 2D arrays not supported");
-        expect(TK_DO, "'do'");
+        if (!as) pascal_error("undefined identifier '%s'", arrid);
 
         bool in_proc = (current_proc != NULL);
         int  hidden  = in_proc ? n_locals_alloc++ : n_globals_alloc++;
-        int32_t lo = as->lo, hi = as->hi;
-
-        // x := arr[hidden]
         NODE *idx_ref = in_proc ? ALLOC_node_lref((uint32_t)hidden)
                                 : ALLOC_node_gref((uint32_t)hidden);
-        NODE *elem;
-        if (as->kind == SYM_GARR)
-            elem = ALLOC_node_aref((uint32_t)as->idx, idx_ref);
-        else if (as->kind == SYM_LARR)
-            elem = ALLOC_node_aref_local((uint32_t)as->idx, as->lo, idx_ref);
-        else
-            elem = ALLOC_node_var_aref((uint32_t)as->idx, as->lo, idx_ref);
-        NODE *assign = mk_set_typed(s, NULL, NULL, elem);
-        NODE *user_body = parse_stmt();
-        NODE *body = mk_seq(assign, user_body);
 
-        if (in_proc)
-            return ALLOC_node_lfor_to((uint32_t)hidden, mk_int(lo), mk_int(hi), body);
-        return ALLOC_node_gfor_to((uint32_t)hidden, mk_int(lo), mk_int(hi), body);
+        // Static array path (existing behaviour).
+        if (as->kind == SYM_GARR || as->kind == SYM_LARR || as->kind == SYM_VARR) {
+            if (as->kind == SYM_GARR && as->is_2d)
+                pascal_error("for-in over 2D arrays not supported");
+            expect(TK_DO, "'do'");
+            int32_t lo = as->lo, hi = as->hi;
+            NODE *elem;
+            if (as->kind == SYM_GARR)
+                elem = ALLOC_node_aref((uint32_t)as->idx, idx_ref);
+            else if (as->kind == SYM_LARR)
+                elem = ALLOC_node_aref_local((uint32_t)as->idx, as->lo, idx_ref);
+            else
+                elem = ALLOC_node_var_aref((uint32_t)as->idx, as->lo, idx_ref);
+            NODE *assign = mk_set_typed(s, NULL, NULL, elem);
+            NODE *user_body = parse_stmt();
+            NODE *body = mk_seq(assign, user_body);
+            if (in_proc)
+                return ALLOC_node_lfor_to((uint32_t)hidden, mk_int(lo), mk_int(hi), body);
+            return ALLOC_node_gfor_to((uint32_t)hidden, mk_int(lo), mk_int(hi), body);
+        }
+
+        // Dynamic-array path.
+        if (as->type == PT_DYNARR && (as->kind == SYM_GVAR || as->kind == SYM_LVAR)) {
+            expect(TK_DO, "'do'");
+            NODE *base    = (as->kind == SYM_GVAR)
+                          ? ALLOC_node_gref((uint32_t)as->idx)
+                          : ALLOC_node_lref((uint32_t)as->idx);
+            NODE *base2   = (as->kind == SYM_GVAR)
+                          ? ALLOC_node_gref((uint32_t)as->idx)
+                          : ALLOC_node_lref((uint32_t)as->idx);
+            NODE *elem    = ALLOC_node_dynarr_get(base, idx_ref);
+            NODE *assign  = mk_set_typed(s, NULL, NULL, elem);
+            NODE *user_body = parse_stmt();
+            NODE *body    = mk_seq(assign, user_body);
+            NODE *hi_expr = ALLOC_node_sub(ALLOC_node_dynarr_length(base2), mk_int(1));
+            if (in_proc)
+                return ALLOC_node_lfor_to((uint32_t)hidden, mk_int(0), hi_expr, body);
+            return ALLOC_node_gfor_to((uint32_t)hidden, mk_int(0), hi_expr, body);
+        }
+
+        // Set (bitset) path.
+        if (as->type == PT_SET && (as->kind == SYM_GVAR || as->kind == SYM_LVAR)) {
+            expect(TK_DO, "'do'");
+            NODE *set_ref = (as->kind == SYM_GVAR)
+                          ? ALLOC_node_gref((uint32_t)as->idx)
+                          : ALLOC_node_lref((uint32_t)as->idx);
+            // Body of inner if: x := IDX; BODY.
+            NODE *assign = mk_set_typed(s, NULL, NULL, idx_ref);
+            NODE *user_body = parse_stmt();
+            NODE *inner = mk_seq(assign, user_body);
+            // if (IDX in set) inner.  Re-fetch idx_ref (it's already
+            // consumed for assign) using a fresh allocation.
+            NODE *idx_ref2 = in_proc ? ALLOC_node_lref((uint32_t)hidden)
+                                     : ALLOC_node_gref((uint32_t)hidden);
+            NODE *guard  = ALLOC_node_set_in(idx_ref2, set_ref);
+            NODE *gated  = ALLOC_node_if1(guard, inner);
+            // Iterate IDX = 0..63 (the universe of the 64-bit set).
+            if (in_proc)
+                return ALLOC_node_lfor_to((uint32_t)hidden, mk_int(0), mk_int(63), gated);
+            return ALLOC_node_gfor_to((uint32_t)hidden, mk_int(0), mk_int(63), gated);
+        }
+
+        pascal_error("for-in: '%s' is not an array/dynarr/set", arrid);
     }
 
     expect(TK_ASSIGN, "':='");
