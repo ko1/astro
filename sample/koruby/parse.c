@@ -255,6 +255,11 @@ build_call_with_block(struct transduce_context *tc, NODE *recv, ID name,
     uint32_t env_size = tc->frame->max_cnt;
     pop_frame(tc);
     NODE *block_node = ALLOC_node_block_literal(body, params_cnt, param_base, env_size);
+    /* Register block body so AOT (--aot-compile) emits an SD for it.
+     * Without this, the block dispatcher stays at DISPATCH_node_*
+     * (interpreter), and the hot work inside `iters.times { ... }` —
+     * the `while` loop, ivar set, method call — never gets specialized. */
+    code_repo_add("<block>", body, false);
 
     /* Restore arg_index to original; build_call_simple will re-reserve. */
     rewind_arg_index(tc, saved_arg_index);
