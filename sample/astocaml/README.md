@@ -206,7 +206,8 @@ astocaml: Type_error((+): expected int)
 - **method send IC** (`obj#m` の dispatch をキャッシュ; method-call で 1.3-1.6× 加速)
 - **AOT specialize** (`-c` で .so にコンパイル、各 NODE の dispatcher を SD_* に patch; ack/tak 3×, fib 2× 加速)
 - **`node_appN` closure-leaf fast path** — `oc_apply` の type chain と partial-app 確認を caller 側で in-line skip; fib(40) で更に 1.9× 加速
-- TCO トランポリン、fixnum 比較 fast-path、ASTroGen always_inline
+- **call IC + match_arm SD + cons bump allocator** — sieve / nqueens の list 処理が 2×、fib も per-call IC で +7%
+- TCO トランポリン、fixnum 比較 fast-path、ASTroGen always_inline、`-fno-stack-clash-protection`
 
 `./astocaml -c` (AOT 込み):
 

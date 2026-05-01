@@ -128,6 +128,29 @@ node_lt(...) {
 効果: method_call ベンチで 2.1 s → 1.66 s (**1.34× 高速化**)。
 注: より大きな勝利はクラス間で method table を共有する版だが、現状では各 `new` がフレッシュな配列を確保するため per-instance に留まる。
 
+### ✅ Call IC (`node_appN` per-site cache)
+
+`oc_apply` の inline 化後の SD コードを逆アセンブルしたら、関数呼び出しごとに毎回:
+- gref IC serial check
+- IS_PTR (closure value tag)
+- type field == OOBJ_CLOSURE
+- nparams 一致
+- is_leaf != 0
+
+の 4 段 type chain が走っていた (~10 命令)。
+
+実装: `struct app_cache { VALUE fn; NODE *body; struct oframe *env; }` を `node_app1..4` に `@ref` で追加。hot path は `cache->fn == f` の 1 cmp で全 type check を skip し、`cache->body` / `cache->env` をそのまま使う。
+
+合わせて:
+- gcc の **stack-clash protection probe** を `-fno-stack-clash-protection` で外す (alloca 1 回ごとの dead probe loop が消えた)
+- `f->nslots` の write を削除 (write-only field; 読み手なし)
+
+効果:
+- fib(40) 1.85 s → **1.72 s** (~7% 加速、per-call 6.4 → 5.2 ns)
+- 単独だと小さいが、続く最適化の足場として大事 (`oc_apply` 完全 skip + 直接 body 呼び)
+
+ocamlopt との残差は **3.6×**。ocamlopt の fib body 16 命令の内訳 (recursive call 2 つ込み) を見ると、これ以上の縮小は frame 廃止 + register ABI + body inlining が必要で、ASTro 上の AST walker としての limit に達した感。
+
 ### ✅ list-heavy ベンチ (sieve / nqueens) の最適化
 
 `perf record` で sieve を見たら `DISPATCH_node_match_arm` 13% + `_int_malloc` 18% が支配的。原因を 4 段で潰した:

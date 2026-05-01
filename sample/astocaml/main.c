@@ -49,6 +49,11 @@ maybe_aot_compile(NODE *n)
     // Disable ccache so make can write into its cache dir even on a
     // sandboxed / read-only FS — ccache becomes a pass-through to gcc.
     setenv("CCACHE_DISABLE", "1", 1);
+    // Trim per-call alloca cost: stack-clash protection emits a probe
+    // loop on every variable-size alloca which adds ~10 dead
+    // instructions per fib-style recursive call.  The fast path's
+    // alloca is small (24 bytes) so the probe is unnecessary.
+    setenv("ASTRO_EXTRA_CFLAGS", "-fno-stack-clash-protection -fno-stack-protector", 1);
 
     // Compile any closure bodies registered since last call.
     for (; AOT_COMPILED < AOT_ENTRIES_LEN; AOT_COMPILED++) {

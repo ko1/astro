@@ -145,6 +145,19 @@ struct gref_cache {
     VALUE    value;
 };
 
+// Inline cache for a `node_appN` site.  `fn` is the last seen
+// closure VALUE; on a hit we skip the IS_PTR / OOBJ_CLOSURE / arity
+// / is_leaf chain (they were validated when the cache was filled),
+// reuse the cached `body` dispatcher and captured `env`, and go
+// straight to frame setup + body call.  Saves ~6 instructions per
+// call vs `APPN_FAST_PATH`.  For top-level recursive functions
+// (fib, ack, tak ...) the cache hits 100 % after the first call.
+struct app_cache {
+    VALUE              fn;
+    struct Node       *body;
+    struct oframe     *env;
+};
+
 // Inline cache for a `node_send` site.  `names_ptr` keys on the receiver
 // object's method-name array (each instance has its own malloc'd array,
 // so this naturally caches per-receiver — recursive method calls and

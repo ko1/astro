@@ -280,17 +280,41 @@ node_app0(CTX * restrict c, NODE * restrict n, NODE *fn)
 // chain, the partial-app capture path, and one indirect function
 // call per invocation.  For tight recursive code (fib / tak / ack)
 // this is the dominant call cost.
+//
+// IC: per-call-site `cache` (VALUE fn, body NODE*, env oframe*).
+// Hot path is just (cache->fn == f); on hit we skip the IS_PTR /
+// type / nparams / is_leaf chain (they were validated when the
+// cache was filled).  Save another ~6 instructions per call.
 #define APPN_FAST_PATH(NP)                                              \
     do {                                                                \
+        if (LIKELY(cache->fn == f)) {                                   \
+            struct oframe *_fr = (struct oframe *)                      \
+                alloca(sizeof(struct oframe) +                          \
+                       sizeof(VALUE) * (NP));                           \
+            _fr->parent = cache->env;                                   \
+            /* nslots is write-only at runtime — skip the store. */    \
+            for (int _i = 0; _i < (NP); _i++) _fr->slots[_i] = av[_i]; \
+            struct oframe * const _saved = c->env;                      \
+            c->env = _fr;                                               \
+            VALUE _r = (*cache->body->head.dispatcher)                  \
+                (c, cache->body);                                       \
+            c->env = _saved;                                            \
+            if (LIKELY(!c->tail_call_pending)) return _r;               \
+            c->tail_call_pending = 0;                                   \
+            return oc_apply(c, c->tc_fn, c->tc_argc, c->tc_argv);       \
+        }                                                               \
         if (LIKELY(OC_IS_CLOSURE(f))) {                                 \
             struct oobj * const _cl = OC_PTR(f);                        \
             if (LIKELY(_cl->closure.nparams == (NP) &&                  \
                        _cl->closure.is_leaf)) {                         \
+                /* Fill cache — hot path next time. */                  \
+                cache->fn   = f;                                        \
+                cache->body = _cl->closure.body;                        \
+                cache->env  = _cl->closure.env;                         \
                 struct oframe *_fr = (struct oframe *)                  \
                     alloca(sizeof(struct oframe) +                      \
                            sizeof(VALUE) * (NP));                       \
                 _fr->parent = _cl->closure.env;                         \
-                _fr->nslots = (NP);                                     \
                 for (int _i = 0; _i < (NP); _i++) _fr->slots[_i] = av[_i]; \
                 struct oframe * const _saved = c->env;                  \
                 c->env = _fr;                                           \
@@ -298,7 +322,6 @@ node_app0(CTX * restrict c, NODE * restrict n, NODE *fn)
                     (c, _cl->closure.body);                             \
                 c->env = _saved;                                        \
                 if (LIKELY(!c->tail_call_pending)) return _r;           \
-                /* Body set tail-pending — trampoline via oc_apply. */  \
                 c->tail_call_pending = 0;                               \
                 return oc_apply(c, c->tc_fn, c->tc_argc, c->tc_argv);   \
             }                                                           \
@@ -306,7 +329,7 @@ node_app0(CTX * restrict c, NODE * restrict n, NODE *fn)
     } while (0)
 
 NODE_DEF
-node_app1(CTX * restrict c, NODE * restrict n, NODE *fn, NODE *a0)
+node_app1(CTX * restrict c, NODE * restrict n, NODE *fn, NODE *a0, struct app_cache *cache@ref)
 {
     (void)n;
     VALUE f = EVAL_ARG(c, fn);
@@ -317,7 +340,7 @@ node_app1(CTX * restrict c, NODE * restrict n, NODE *fn, NODE *a0)
 }
 
 NODE_DEF
-node_app2(CTX * restrict c, NODE * restrict n, NODE *fn, NODE *a0, NODE *a1)
+node_app2(CTX * restrict c, NODE * restrict n, NODE *fn, NODE *a0, NODE *a1, struct app_cache *cache@ref)
 {
     (void)n;
     VALUE f = EVAL_ARG(c, fn);
@@ -329,7 +352,7 @@ node_app2(CTX * restrict c, NODE * restrict n, NODE *fn, NODE *a0, NODE *a1)
 }
 
 NODE_DEF
-node_app3(CTX * restrict c, NODE * restrict n, NODE *fn, NODE *a0, NODE *a1, NODE *a2)
+node_app3(CTX * restrict c, NODE * restrict n, NODE *fn, NODE *a0, NODE *a1, NODE *a2, struct app_cache *cache@ref)
 {
     (void)n;
     VALUE f = EVAL_ARG(c, fn);
@@ -342,7 +365,7 @@ node_app3(CTX * restrict c, NODE * restrict n, NODE *fn, NODE *a0, NODE *a1, NOD
 }
 
 NODE_DEF
-node_app4(CTX * restrict c, NODE * restrict n, NODE *fn, NODE *a0, NODE *a1, NODE *a2, NODE *a3)
+node_app4(CTX * restrict c, NODE * restrict n, NODE *fn, NODE *a0, NODE *a1, NODE *a2, NODE *a3, struct app_cache *cache@ref)
 {
     (void)n;
     VALUE f = EVAL_ARG(c, fn);
