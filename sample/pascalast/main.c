@@ -53,6 +53,7 @@ struct pcall_fixup {
     uint32_t  *return_slot_slot;
     uint32_t  *lexical_depth_slot;
     uint32_t  *is_function_slot;
+    uint32_t  *needs_display_slot;
     uint32_t   pidx;
 };
 static struct pcall_fixup *pcall_fixups;
@@ -65,6 +66,7 @@ register_pcall_fixup(NODE **body_slot,
                      uint32_t *return_slot_slot,
                      uint32_t *lexical_depth_slot,
                      uint32_t *is_function_slot,
+                     uint32_t *needs_display_slot,
                      uint32_t pidx)
 {
     if (pcall_fixups_size >= pcall_fixups_capa) {
@@ -74,7 +76,7 @@ register_pcall_fixup(NODE **body_slot,
     }
     pcall_fixups[pcall_fixups_size++] = (struct pcall_fixup){
         body_slot, nslots_slot, return_slot_slot,
-        lexical_depth_slot, is_function_slot, pidx
+        lexical_depth_slot, is_function_slot, needs_display_slot, pidx
     };
 }
 
@@ -1102,52 +1104,59 @@ mk_pcall(uint32_t pidx, NODE **args, uint32_t argc)
     uint32_t *return_slot_slot = NULL;
     uint32_t *lexical_depth_slot = NULL;
     uint32_t *is_function_slot = NULL;
+    uint32_t *needs_display_slot = NULL;
     switch (argc) {
     case 0:
-        n = ALLOC_node_pcall_0_baked(NULL, 0, 0, 0, 0);
+        n = ALLOC_node_pcall_0_baked(NULL, 0, 0, 0, 0, 0);
         body_slot          = &n->u.node_pcall_0_baked.body;
         nslots_slot        = &n->u.node_pcall_0_baked.nslots;
         return_slot_slot   = &n->u.node_pcall_0_baked.return_slot;
         lexical_depth_slot = &n->u.node_pcall_0_baked.lexical_depth;
         is_function_slot   = &n->u.node_pcall_0_baked.is_function;
+        needs_display_slot = &n->u.node_pcall_0_baked.needs_display;
         break;
     case 1:
-        n = ALLOC_node_pcall_1_baked(NULL, 0, 0, 0, 0, args[0]);
+        n = ALLOC_node_pcall_1_baked(NULL, 0, 0, 0, 0, 0, args[0]);
         body_slot          = &n->u.node_pcall_1_baked.body;
         nslots_slot        = &n->u.node_pcall_1_baked.nslots;
         return_slot_slot   = &n->u.node_pcall_1_baked.return_slot;
         lexical_depth_slot = &n->u.node_pcall_1_baked.lexical_depth;
         is_function_slot   = &n->u.node_pcall_1_baked.is_function;
+        needs_display_slot = &n->u.node_pcall_1_baked.needs_display;
         break;
     case 2:
-        n = ALLOC_node_pcall_2_baked(NULL, 0, 0, 0, 0, args[0], args[1]);
+        n = ALLOC_node_pcall_2_baked(NULL, 0, 0, 0, 0, 0, args[0], args[1]);
         body_slot          = &n->u.node_pcall_2_baked.body;
         nslots_slot        = &n->u.node_pcall_2_baked.nslots;
         return_slot_slot   = &n->u.node_pcall_2_baked.return_slot;
         lexical_depth_slot = &n->u.node_pcall_2_baked.lexical_depth;
         is_function_slot   = &n->u.node_pcall_2_baked.is_function;
+        needs_display_slot = &n->u.node_pcall_2_baked.needs_display;
         break;
     case 3:
-        n = ALLOC_node_pcall_3_baked(NULL, 0, 0, 0, 0, args[0], args[1], args[2]);
+        n = ALLOC_node_pcall_3_baked(NULL, 0, 0, 0, 0, 0, args[0], args[1], args[2]);
         body_slot          = &n->u.node_pcall_3_baked.body;
         nslots_slot        = &n->u.node_pcall_3_baked.nslots;
         return_slot_slot   = &n->u.node_pcall_3_baked.return_slot;
         lexical_depth_slot = &n->u.node_pcall_3_baked.lexical_depth;
         is_function_slot   = &n->u.node_pcall_3_baked.is_function;
+        needs_display_slot = &n->u.node_pcall_3_baked.needs_display;
         break;
     default: {
         uint32_t base = push_call_args(args, argc);
-        n = ALLOC_node_pcall_n_baked(NULL, 0, 0, 0, 0, base, argc);
+        n = ALLOC_node_pcall_n_baked(NULL, 0, 0, 0, 0, 0, base, argc);
         body_slot          = &n->u.node_pcall_n_baked.body;
         nslots_slot        = &n->u.node_pcall_n_baked.nslots;
         return_slot_slot   = &n->u.node_pcall_n_baked.return_slot;
         lexical_depth_slot = &n->u.node_pcall_n_baked.lexical_depth;
         is_function_slot   = &n->u.node_pcall_n_baked.is_function;
+        needs_display_slot = &n->u.node_pcall_n_baked.needs_display;
         break;
     }
     }
     register_pcall_fixup(body_slot, nslots_slot, return_slot_slot,
-                         lexical_depth_slot, is_function_slot, pidx);
+                         lexical_depth_slot, is_function_slot,
+                         needs_display_slot, pidx);
     return n;
 }
 
@@ -4388,13 +4397,15 @@ parse_subprogram(bool is_function, CTX *c)
     }
 
     // Body section: any combination of var, const, type, nested
-    // procedure / function declarations, then begin..end.
+    // procedure / function declarations, then begin..end.  When we
+    // see a nested proc declaration, mark this proc as has_nested so
+    // call sites populate display[] for it.
     for (;;) {
         if (accept(TK_VAR))   parse_var_decls_local();
         else if (accept(TK_CONST)) parse_const_decls_global(); // local const ≈ global const
         else if (accept(TK_TYPE))  parse_type_decls_global();
-        else if (tk == TK_PROCEDURE) parse_subprogram(false, c);
-        else if (tk == TK_FUNCTION)  parse_subprogram(true, c);
+        else if (tk == TK_PROCEDURE) { p->has_nested = true; parse_subprogram(false, c); }
+        else if (tk == TK_FUNCTION)  { p->has_nested = true; parse_subprogram(true, c); }
         else break;
     }
 
@@ -4751,6 +4762,7 @@ main(int argc, char *argv[])
         *f->return_slot_slot   = (uint32_t)p->return_slot;
         *f->lexical_depth_slot = (uint32_t)p->lexical_depth;
         *f->is_function_slot   = p->is_function ? 1u : 0u;
+        *f->needs_display_slot = p->has_nested  ? 1u : 0u;
     }
 
     // Build per-class vtables now that every method body has been

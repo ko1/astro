@@ -77,6 +77,7 @@ struct vcall_cache {
     uint32_t            return_slot;
     uint32_t            lexical_depth;
     uint32_t            is_function;
+    uint32_t            needs_display;
 };
 
 // Heap object backing a `text` file variable.  Allocated on first
@@ -113,6 +114,10 @@ struct pascal_proc {
     bool is_function;
     int return_slot;  // valid iff is_function
     int  lexical_depth; // 0 = main, 1 = top-level proc, 2 = nested in top, …
+    bool has_nested;   // body declares at least one nested proc — controls
+                       // whether the call protocol bothers to save/restore
+                       // c->display[lexical_depth].  Top-level procs with
+                       // no nested children skip the dance entirely.
     bool param_by_ref[PASCAL_MAX_PARAMS];
     bool param_is_array[PASCAL_MAX_PARAMS]; // var-array parameter
     int32_t param_arr_lo[PASCAL_MAX_PARAMS];// array param's declared lower bound
