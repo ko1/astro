@@ -888,7 +888,7 @@ static inline VALUE
 pascal_call_baked(CTX *c, NODE *body, node_dispatcher_func_t body_dispatcher,
                   uint32_t nslots, uint32_t return_slot, uint32_t lexical_depth,
                   uint32_t is_function, uint32_t needs_display,
-                  uint32_t return_via_body,
+                  uint32_t return_via_body, uint32_t body_clean,
                   uint32_t argc, VALUE *av)
 {
     int new_fp = c->sp;
@@ -916,7 +916,7 @@ pascal_call_baked(CTX *c, NODE *body, node_dispatcher_func_t body_dispatcher,
     //                             value IS the function's return.
     //   * else                  → conservative: read slot.
     VALUE rv;
-    if (UNLIKELY(c->exit_pending)) {
+    if (!body_clean && UNLIKELY(c->exit_pending)) {
         rv = is_function ? c->stack[new_fp + (int)return_slot] : 0;
         c->exit_pending = 0;
     } else if (return_via_body) {
@@ -926,7 +926,7 @@ pascal_call_baked(CTX *c, NODE *body, node_dispatcher_func_t body_dispatcher,
     }
     if (needs_display) c->display[lexical_depth] = saved_display;
     c->sp = saved_sp;
-    if (UNLIKELY(c->loop_action))  c->loop_action  = 0;
+    if (!body_clean && UNLIKELY(c->loop_action)) c->loop_action = 0;
     return rv;
 }
 
@@ -1029,43 +1029,43 @@ node_pcall_n(CTX * restrict c, NODE * restrict n, int fp, uint32_t pidx, uint32_
 // ---------------------------------------------------------------------------
 
 NODE_DEF
-node_pcall_0_baked(CTX * restrict c, NODE * restrict n, int fp, NODE *body@nohash, uint32_t nslots, uint32_t return_slot, uint32_t lexical_depth, uint32_t is_function, uint32_t needs_display, uint32_t return_via_body)
+node_pcall_0_baked(CTX * restrict c, NODE * restrict n, int fp, NODE *body@nohash, uint32_t nslots, uint32_t return_slot, uint32_t lexical_depth, uint32_t is_function, uint32_t needs_display, uint32_t return_via_body, uint32_t body_clean)
 {
     (void)n;
-    return pascal_call_baked(c, body, body_dispatcher, nslots, return_slot, lexical_depth, is_function, needs_display, return_via_body, 0, NULL);
+    return pascal_call_baked(c, body, body_dispatcher, nslots, return_slot, lexical_depth, is_function, needs_display, return_via_body, body_clean, 0, NULL);
 }
 
 NODE_DEF
-node_pcall_1_baked(CTX * restrict c, NODE * restrict n, int fp, NODE *body@nohash, uint32_t nslots, uint32_t return_slot, uint32_t lexical_depth, uint32_t is_function, uint32_t needs_display, uint32_t return_via_body, NODE *a0)
+node_pcall_1_baked(CTX * restrict c, NODE * restrict n, int fp, NODE *body@nohash, uint32_t nslots, uint32_t return_slot, uint32_t lexical_depth, uint32_t is_function, uint32_t needs_display, uint32_t return_via_body, uint32_t body_clean, NODE *a0)
 {
     (void)n;
     VALUE av[1] = { EVAL_ARG(c, a0) };
-    return pascal_call_baked(c, body, body_dispatcher, nslots, return_slot, lexical_depth, is_function, needs_display, return_via_body, 1, av);
+    return pascal_call_baked(c, body, body_dispatcher, nslots, return_slot, lexical_depth, is_function, needs_display, return_via_body, body_clean, 1, av);
 }
 
 NODE_DEF
-node_pcall_2_baked(CTX * restrict c, NODE * restrict n, int fp, NODE *body@nohash, uint32_t nslots, uint32_t return_slot, uint32_t lexical_depth, uint32_t is_function, uint32_t needs_display, uint32_t return_via_body, NODE *a0, NODE *a1)
+node_pcall_2_baked(CTX * restrict c, NODE * restrict n, int fp, NODE *body@nohash, uint32_t nslots, uint32_t return_slot, uint32_t lexical_depth, uint32_t is_function, uint32_t needs_display, uint32_t return_via_body, uint32_t body_clean, NODE *a0, NODE *a1)
 {
     (void)n;
     VALUE v0 = EVAL_ARG(c, a0);
     VALUE v1 = EVAL_ARG(c, a1);
     VALUE av[2] = { v0, v1 };
-    return pascal_call_baked(c, body, body_dispatcher, nslots, return_slot, lexical_depth, is_function, needs_display, return_via_body, 2, av);
+    return pascal_call_baked(c, body, body_dispatcher, nslots, return_slot, lexical_depth, is_function, needs_display, return_via_body, body_clean, 2, av);
 }
 
 NODE_DEF
-node_pcall_3_baked(CTX * restrict c, NODE * restrict n, int fp, NODE *body@nohash, uint32_t nslots, uint32_t return_slot, uint32_t lexical_depth, uint32_t is_function, uint32_t needs_display, uint32_t return_via_body, NODE *a0, NODE *a1, NODE *a2)
+node_pcall_3_baked(CTX * restrict c, NODE * restrict n, int fp, NODE *body@nohash, uint32_t nslots, uint32_t return_slot, uint32_t lexical_depth, uint32_t is_function, uint32_t needs_display, uint32_t return_via_body, uint32_t body_clean, NODE *a0, NODE *a1, NODE *a2)
 {
     (void)n;
     VALUE v0 = EVAL_ARG(c, a0);
     VALUE v1 = EVAL_ARG(c, a1);
     VALUE v2 = EVAL_ARG(c, a2);
     VALUE av[3] = { v0, v1, v2 };
-    return pascal_call_baked(c, body, body_dispatcher, nslots, return_slot, lexical_depth, is_function, needs_display, return_via_body, 3, av);
+    return pascal_call_baked(c, body, body_dispatcher, nslots, return_slot, lexical_depth, is_function, needs_display, return_via_body, body_clean, 3, av);
 }
 
 NODE_DEF @noinline
-node_pcall_n_baked(CTX * restrict c, NODE * restrict n, int fp, NODE *body@nohash, uint32_t nslots, uint32_t return_slot, uint32_t lexical_depth, uint32_t is_function, uint32_t needs_display, uint32_t return_via_body, uint32_t args_idx, uint32_t argc)
+node_pcall_n_baked(CTX * restrict c, NODE * restrict n, int fp, NODE *body@nohash, uint32_t nslots, uint32_t return_slot, uint32_t lexical_depth, uint32_t is_function, uint32_t needs_display, uint32_t return_via_body, uint32_t body_clean, uint32_t args_idx, uint32_t argc)
 {
     (void)n;
     extern NODE **PASCAL_CALL_ARGS;
@@ -1074,7 +1074,7 @@ node_pcall_n_baked(CTX * restrict c, NODE * restrict n, int fp, NODE *body@nohas
         NODE *a = PASCAL_CALL_ARGS[args_idx + i];
         av[i] = (*a->head.dispatcher)(c, a, fp);
     }
-    return pascal_call_baked(c, body, body_dispatcher, nslots, return_slot, lexical_depth, is_function, needs_display, return_via_body, argc, av);
+    return pascal_call_baked(c, body, body_dispatcher, nslots, return_slot, lexical_depth, is_function, needs_display, return_via_body, body_clean, argc, av);
 }
 
 // ---------------------------------------------------------------------------
@@ -1522,7 +1522,7 @@ node_vcall(CTX * restrict c, NODE * restrict n, int fp, NODE *self_e, uint32_t v
         return pascal_call_baked(c, cache->body, cache->body_dispatcher,
                                  cache->nslots, cache->return_slot,
                                  cache->lexical_depth, cache->is_function,
-                                 cache->needs_display, cache->return_via_body, argc, av);
+                                 cache->needs_display, cache->return_via_body, cache->body_clean, argc, av);
     }
 
     // Cache miss / first call: resolve via vtable + procs[].
@@ -1541,6 +1541,7 @@ node_vcall(CTX * restrict c, NODE * restrict n, int fp, NODE *self_e, uint32_t v
     cache->is_function     = p->is_function ? 1u : 0u;
     cache->needs_display   = p->has_nested  ? 1u : 0u;
     cache->return_via_body = p->return_via_body ? 1u : 0u;
+    cache->body_clean      = p->body_clean      ? 1u : 0u;
     VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc ? argc : 1));
     av[0] = self;
     for (uint32_t i = 1; i < argc; i++) {
@@ -1550,7 +1551,7 @@ node_vcall(CTX * restrict c, NODE * restrict n, int fp, NODE *self_e, uint32_t v
     return pascal_call_baked(c, cache->body, cache->body_dispatcher,
                              cache->nslots, cache->return_slot,
                              cache->lexical_depth, cache->is_function,
-                             cache->needs_display, cache->return_via_body, argc, av);
+                             cache->needs_display, cache->return_via_body, cache->body_clean, argc, av);
 }
 
 NODE_DEF

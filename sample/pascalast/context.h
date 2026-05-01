@@ -79,6 +79,7 @@ struct vcall_cache {
     uint32_t            is_function;
     uint32_t            needs_display;
     uint32_t            return_via_body;
+    uint32_t            body_clean;
 };
 
 // Heap object backing a `text` file variable.  Allocated on first
@@ -126,6 +127,12 @@ struct pascal_proc {
                        // c->stack[new_fp + return_slot] — saves one store
                        // (in node_set_result) and one load (in the
                        // caller) per call.
+    bool body_clean;   // body has no break / continue / exit — set true at
+                       // proc creation, cleared whenever the parser emits
+                       // a raising NODE while this proc is current_proc.
+                       // When true, pascal_call_baked's post-call
+                       // exit_pending / loop_action checks become dead
+                       // and gcc DCEs them.
     bool param_by_ref[PASCAL_MAX_PARAMS];
     bool param_is_array[PASCAL_MAX_PARAMS]; // var-array parameter
     int32_t param_arr_lo[PASCAL_MAX_PARAMS];// array param's declared lower bound
