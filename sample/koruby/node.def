@@ -669,8 +669,12 @@ node_eq(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_
         c->fp[arg_index+1] = r;
         return korb_dispatch_binop(c, l, korb_intern("=="), 1, &c->fp[arg_index+1]);
     }
-    /* Identity covers FIXNUM-FIXNUM equal, FLONUM-FLONUM equal,
-     * nil==nil, obj==obj, etc.  Cheap early exit. */
+    /* Pure FIXNUM compare: identity = numeric equality.  Hot path. */
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) return KORB_BOOL(l == r);
+    /* Pure FLONUM compare: identity = numeric equality (modulo NaN). */
+    if (LIKELY(FLONUM_P(l) && FLONUM_P(r))) return KORB_BOOL(l == r);
+    /* Identity also covers nil==nil, true==true, obj==obj, mixed
+     * Float/Int when bits happen to match (rare). */
     if (l == r) return Qtrue;
     /* Mixed FIXNUM / FLONUM (e.g. 1 == 1.0) compares numerically — let
      * korb_eq handle it.  Only short-circuit when at least one side is
@@ -692,6 +696,8 @@ node_neq(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg
         VALUE eq = korb_dispatch_binop(c, l, korb_intern("=="), 1, &c->fp[arg_index+1]);
         return KORB_BOOL(!RTEST(eq));
     }
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) return KORB_BOOL(l != r);
+    if (LIKELY(FLONUM_P(l) && FLONUM_P(r))) return KORB_BOOL(l != r);
     if (l == r) return Qfalse;
     if ((SPECIAL_CONST_P(l) && !FIXNUM_P(l) && !FLONUM_P(l)) ||
         (SPECIAL_CONST_P(r) && !FIXNUM_P(r) && !FLONUM_P(r))) {
