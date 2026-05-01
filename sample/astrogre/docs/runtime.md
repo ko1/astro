@@ -287,22 +287,91 @@ on ASCII letters.
 ## Encoding
 
 `c->encoding` is set from prism's flag bits (or from the literal CLI
-syntax). Two paths affect actual byte traversal:
+syntax) and reflects the regex's encoding mode:
 
-* **`.` (dot)** — there are four node kinds: `node_re_dot`,
-  `node_re_dot_m`, `node_re_dot_utf8`, `node_re_dot_utf8_m`. The UTF-8
-  variants advance one full codepoint by sniffing the leading byte
-  (`0xxxxxxx` → 1, `110xxxxx` → 2, `1110xxxx` → 3, `11110xxx` → 4) and
-  refusing to match an invalid lead byte.
-* **Literals** — bytes are bytes. UTF-8 multi-byte sequences are
-  emitted by the parser as a single literal token so a quantifier
-  binds to the whole codepoint, not to its trailing byte.
+| flag      | mode      | dot advances by | typical use |
+|-----------|-----------|------------------|-------------|
+| `/n`      | ASCII     | 1 byte           | binary input, performance-critical ASCII |
+| `/u`      | UTF-8     | 1 codepoint      | default in modern Ruby |
+| (default) | UTF-8     | 1 codepoint      | same as `/u` |
 
-Character classes are an ASCII-only 256-bit bitmap (`uint64_t bm[4]`).
-That's enough for `\d \w \s` and ASCII ranges; for non-ASCII inside
-`[...]` v1 simply matches byte-wise, which is wrong for any pattern
-where a multi-byte codepoint should be one class element. See
-[`todo.md`](./todo.md).
+The mode affects three places in the matcher:
+
+### `.` — four node variants
+There are four dot-node kinds, picked at parse time so the matcher
+itself never branches on `c->encoding`:
+
+| node                 | matches                          |
+|----------------------|----------------------------------|
+| `node_re_dot`        | any single byte except `\n`      |
+| `node_re_dot_m`      | any single byte (`/m` flag)      |
+| `node_re_dot_utf8`   | one UTF-8 codepoint, not `\n`    |
+| `node_re_dot_utf8_m` | one UTF-8 codepoint              |
+
+The UTF-8 variants sniff the leading byte (`0xxxxxxx` → 1 byte,
+`110xxxxx` → 2, `1110xxxx` → 3, `11110xxx` → 4) and refuse to match
+an invalid lead.
+
+### Literals — bytes are bytes
+The parser is encoding-aware at one specific point: when it sees a
+UTF-8 leading byte (≥ 0x80), it gobbles the continuation bytes
+(0x80–0xBF) into the same `IRE_LIT` token, so quantifiers bind to
+the whole codepoint:
+
+```
+/é+/  →  node_re_lit "é" 2 (rep ...)   ; not /\xC3 (\xA9+)/
+```
+
+The matcher then compares bytes; UTF-8 well-formedness is preserved
+by construction.  `/i` lowercases at parse time but only on the
+ASCII letters `A`-`Z` — `/É/i` does *not* match `é` today (full
+Unicode case folding is on the runway).
+
+### Character classes — ASCII only
+Classes use a 256-bit bitmap (`uint64_t × 4` baked inline) and so
+operate on raw bytes.  ASCII ranges (`[a-z]`, `[0-9]`, `\d`, `\w`,
+`\s`) work perfectly.  Non-ASCII *characters* inside `[...]` cannot
+be expressed as a single bitmap entry today (`[ä]` for the codepoint
+U+00E4 would need to match the byte sequence `0xC3 0xA4`, not just
+the single byte `0xE4`); the parser builds a bytewise bitmap that's
+wrong for this case, documented under [`todo.md`](./todo.md).
+Multi-byte char-class support would add a hybrid representation
+(ASCII bitmap + sorted codepoint-range list).
+
+### Anchors and `\b`
+`\b`/`\B` use a 7-bit ASCII word-character predicate
+(`[A-Za-z0-9_]`).  This matches Ruby's default behaviour on ASCII
+letters under `/n` and `/u`; Unicode word boundaries (`\p{L}`,
+`\p{N}`) are unsupported.  Other anchors (`\A`, `\z`, `\Z`, `^`,
+`$`) are encoding-agnostic — they just look at byte positions and
+the `\n` byte (0x0A), which is the same in every supported encoding.
+
+### Encoding × SIMD prefilter
+The prefilter nodes operate at the byte level, which composes
+correctly with UTF-8:
+
+- **memchr / memmem / byteset / range** — all scan input as bytes.
+  For ASCII patterns under any encoding mode, perfectly correct.
+  For UTF-8 patterns whose first byte is a UTF-8 leading byte
+  (e.g. `/é+/` starts with `0xC3`), the prefilter scans for `0xC3`
+  candidate positions and the body chain verifies the full
+  codepoint sequence — false positives at random `0xC3` bytes are
+  filtered as expected.
+- **class_scan (Truffle)** — same story.  The 256-bit bitmap is
+  built bytewise; for ASCII classes it's a true class membership
+  test, for hypothetical UTF-8 classes it would prefilter on the
+  first byte of any allowed codepoint and let the body re-verify.
+
+`/i` disables the prefilter ladder entirely today (only the
+ASCII fold case has a cheap two-byte memchr; the parser doesn't
+build it yet).  Twin-memchr for `/i` literals is the smallest fix.
+
+### What's not supported
+- `\p{...}` / `\P{...}` Unicode property classes
+- Unicode case folding for `/i`
+- Multi-byte chars inside `[...]`
+- `\X` extended grapheme cluster
+- EUC-JP (`/e`) and Windows-31J (`/s`) encodings — gated on demand
 
 ## Top-level search
 

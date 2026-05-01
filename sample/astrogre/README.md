@@ -41,6 +41,46 @@ direct head-to-head comparison.
   / prefix.  3-4× win on literal-led grep patterns, bringing
   astrogre to within 20 % of Onigmo on those cases.
 
+## Encoding
+
+Two encoding modes, set per-pattern via the regex flag:
+
+| flag      | mode  | dot advances by | typical use                       |
+|-----------|-------|-----------------|-----------------------------------|
+| `/n`      | ASCII | 1 byte          | binary input / ASCII-only         |
+| `/u`      | UTF-8 | 1 codepoint     | default in modern Ruby            |
+| (default) | UTF-8 | 1 codepoint     | same as `/u`                      |
+
+What works under either mode:
+
+- ASCII literals, ranges (`[a-z]`, `\d`, `\w`, `\s`), anchors,
+  alternation, repetition, captures, backrefs.
+- `\b` / `\B` use the 7-bit ASCII word predicate (`[A-Za-z0-9_]`).
+- `/i` lowercases ASCII letters at parse time.
+- The SIMD prefilter ladder operates on raw bytes and composes
+  cleanly with UTF-8 patterns (the body chain re-verifies the
+  full codepoint at each candidate).
+
+What's UTF-8-aware:
+
+- `.` advances one full codepoint via the leading-byte cascade
+  (`0xxxxxxx` / `110xxxxx` / `1110xxxx` / `11110xxx`); invalid
+  leads don't match.
+- Multi-byte UTF-8 literals are kept as one `IRE_LIT` token by
+  the parser, so quantifiers bind to the codepoint
+  (`/é+/` quantifies `é`, not its trailing 0xA9).
+
+What's not supported (see `docs/todo.md`):
+
+- Multi-byte characters inside `[...]`.
+- `\p{...}` Unicode property classes.
+- Unicode case folding for `/i`.
+- `\X` extended grapheme cluster.
+- EUC-JP (`/e`) and Windows-31J (`/s`).
+
+`docs/runtime.md` has the full breakdown including how the SIMD
+prefilter nodes interact with each encoding.
+
 ## Build and run
 
 ```sh
