@@ -281,7 +281,7 @@ Parser は最も特化したものを選ぶ:
 | パターン | astrogre interp | astrogre +AOT | astrogre +onigmo | grep | ripgrep |
 |---|---:|---:|---:|---:|---:|
 | `/(QQQ\|RRR)+\d+/` | 21 | **13** ★ | 568 | 86 | 25 |
-| `/(QQQX\|RRRX\|SSSX)+/` | 45 | 39 | 977 | 54 | 51 |
+| `/(QQQX\|RRRX\|SSSX)+/` | 45 | **39** ★ | 977 | 54 | 51 |
 | `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/` | 1717 | **455** ★ | 562 | 572 | 209 |
 | `/[A-Z]{50,}/` | 793 | **658** ★ | 920 | 1526 | 184 |
 | `/\b(if\|else\|for\|while\|return)\b/` | 241 | 79 | 985 | **2** | 119 |
@@ -291,7 +291,7 @@ Parser は最も特化したものを選ぶ:
 
 ★ = astrogre + AOT が grep / Onigmo の両方に勝利。太字 = 行内ベスト。
 
-**この set で grep に 3/8 勝、Onigmo に 8/8 勝** (ugrep 7.5 + PCRE2-JIT
+**この set で grep に 4/8 勝、Onigmo に 8/8 勝** (ugrep 7.5 + PCRE2-JIT
 比較)。負けているパターンは全て multi-pattern literal extraction
 (Hyperscan Teddy / FDR) を要するもので、これが次の大きな追加項目。
 

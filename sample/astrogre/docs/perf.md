@@ -69,7 +69,7 @@ scan は 15 GB/s で memory-bandwidth-bound 寄り、残るギャップ ~13 ms
 | パターン | astrogre interp | astrogre +AOT | astrogre +onigmo | grep | ripgrep |
 |---|---:|---:|---:|---:|---:|
 | `/(QQQ\|RRR)+\d+/` | 21 | **13** ★ | 568 | 86 | 25 |
-| `/(QQQX\|RRRX\|SSSX)+/` | 45 | 39 | 977 | 54 | 51 |
+| `/(QQQX\|RRRX\|SSSX)+/` | 45 | **39** ★ | 977 | 54 | 51 |
 | `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/` | 1717 | **455** ★ | 562 | 572 | 209 |
 | `/[A-Z]{50,}/` | 793 | **658** ★ | 920 | 1526 | 184 |
 | `/\b(if\|else\|for\|while\|return)\b/` | 241 | 79 | 985 | **2** | 119 |
@@ -77,7 +77,7 @@ scan は 15 GB/s で memory-bandwidth-bound 寄り、残るギャップ ~13 ms
 | `/(\d+\.\d+\.\d+\.\d+)/` | 596 | 421 | 566 | **4** | 50 |
 | `/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/` | 13381 | 11475 | 14260 | **2** | 216 |
 
-**この set で grep に 3/8 勝、Onigmo に 8/8 勝**。勝因は prefilter
+**この set で grep に 4/8 勝、Onigmo に 8/8 勝**。勝因は prefilter
 ladder — memchr / memmem / byteset / range / Truffle がそれぞれ「パ
 ターンが最初に消費するもの」の異なる形を扱い、specialiser が inline
 化された regex chain と合成する。
@@ -129,42 +129,55 @@ AOT 2-3× の勝因は AOT specialization の thesis 通り:
   全体をスイープする (失敗パターンは exit せず尽く、成功パターンも
   全マッチをカウント)。
 
-`/[A-Z]{50,}/` は全入力をスイープするのに 1.09× にとどまる — chain が
+`/[A-Z]{50,}/` は全入力をスイープするのに 1.21× にとどまる — chain が
 rep_cont ↔ class の 2 ノードしかないので、dispatch がそもそも安い。
+逆に chain が長い `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/` (per-position
+で 9 ノード) では 3.77×。AOT の効きは「per-position の dispatch 数」
+にきれいに比例する。
 
 ### vs Onigmo
 
-astrogre + AOT が Onigmo に勝つ 3 例が興味深い:
+astrogre + AOT は **8/8 全パターンで Onigmo を上回る**:
 
-- `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/`: 377 ms 対 777 ms (**Onigmo より 2.06× 速い**)
-  — 1 試行に class チェック 9 個、ASTro は全部 1 関数に inline、Onigmo の
-  bytecode VM は各々 dispatch。
-- `/[a-z][0-9][a-z][0-9][a-z]/`: 404 ms 対 808 ms (**2.00× 速い**) — 同じ形、
-  class チェック 5 個。
-- `/\b(if|else|for|while|return)\b/`: 404 ms 対 1078 ms (**2.67× 速い**) —
-  `\b` + alt-5; ASTro は alt 各枝を条件分岐に展開、Onigmo の VM は 1 つ
-  ずつ走る。
+| パターン | astrogre+AOT | +onigmo | 速度比 |
+|---|---:|---:|---:|
+| `/(QQQ\|RRR)+\d+/` | 13 ms | 568 ms | **44× 速い** |
+| `/(QQQX\|RRRX\|SSSX)+/` | 39 ms | 977 ms | **25× 速い** |
+| `/\b(if\|else\|for\|while\|return)\b/` | 79 ms | 985 ms | **12× 速い** |
+| `/[A-Z]{50,}/` | 658 ms | 920 ms | 1.40× |
+| `/(\d+\.\d+\.\d+\.\d+)/` | 421 ms | 566 ms | 1.34× |
+| `/[a-z][0-9][a-z][0-9][a-z]/` | 476 ms | 596 ms | 1.25× |
+| `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/` | 455 ms | 562 ms | 1.24× |
+| `/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/` | 11475 ms | 14260 ms | 1.24× |
 
-Onigmo が勝つのは構造的近道を持っているパターン:
-
-- `/(QQQ|RRR)+\d+/`、`(QQQX|RRRX|SSSX)+`: 共通 prefix 付き
-  alternation の最適化があるはず。
-- `/(\d+\.\d+\.\d+\.\d+)/`: greedy-dot + 末尾アンカー heuristic 系。
+特に大きく開くのは alt + literal の prefilter が刺さるケース
+(`(QQQ\|RRR)+\d+` 44×、`(QQQX\|RRRX\|SSSX)+` 25×、`\b(if|else|...)\b`
+12×) — astrogre は byteset / Truffle / boundary-aware alt scan を
+ノード化して bake で即値化、Onigmo は bytecode VM が各分岐で dispatch
+するので 1 桁差以上が開く。残りも全部 1.24-1.40× で安定して上回る
+(class チェーンの inline 化と capture 状態リセットの SIMD 一括クリア
+が効いている)。
 
 ### vs grep / ripgrep
 
 ugrep / ripgrep は literal-prefix prefilter / lazy DFA が発火する
-パターンで 1 桁先 (`/[a-z][0-9][a-z][0-9][a-z]/` ← grep 5 ms。
+パターンで 1 桁先 (`/[a-z][0-9][a-z][0-9][a-z]/` ← grep 4 ms。
 leading `[a-z]` が memchr-class スキャンに崩されている)。
 
-しかし prefilter が適用できないパターンでは、ASTro+AOT は **grep
-より速い**:
+しかし prefilter が適用できないパターンでは、ASTro+AOT は **4/8 で
+grep を上回る**:
 
-- `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/`: astrogre+AOT 377 ms 対
-  grep 597 ms — grep にはこの形に効く prefilter がなく、各位置で
-  PCRE-class マッチにフォールバック; ASTro の inline チェーンの
-  ほうが単に速い。
-- `/[A-Z]{50,}/`: astrogre+AOT 1182 ms 対 grep 1535 ms — 同じ事情。
+- `/(QQQ\|RRR)+\d+/`: astrogre+AOT 13 ms 対 grep 86 ms (**6.6×**) —
+  alt + 共通先頭バイト集合が byteset に落ちる。
+- `/[A-Z]{50,}/`: astrogre+AOT 658 ms 対 grep 1526 ms (**2.3×**) —
+  grep の DFA は class-rep-50 を簡約できず各位置で線形に試す;
+  ASTro は `node_grep_search_class_scan` (Truffle) で先頭スキャン
+  + 短絡。
+- `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/`: astrogre+AOT 455 ms 対
+  grep 572 ms (**1.26×**) — 同じく prefilter 不発、ASTro の inline
+  チェーンが単に速い。
+- `/(QQQX\|RRRX\|SSSX)+/`: astrogre+AOT 39 ms 対 grep 54 ms
+  (**1.38×**) — byteset のおかげ。
 
 ripgrep は全体的に常に速い (lazy DFA + literal-prefix prefilter)
 が、エンジニアリング投資量が桁違い。

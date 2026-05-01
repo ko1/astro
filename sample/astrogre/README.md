@@ -193,7 +193,7 @@ beats grep AND Onigmo.
 | pattern | astrogre interp | astrogre +AOT | astrogre +onigmo | grep | ripgrep |
 |---|---:|---:|---:|---:|---:|
 | `/(QQQ\|RRR)+\d+/` | 21 | **13** ★ | 568 | 86 | 25 |
-| `/(QQQX\|RRRX\|SSSX)+/` | 45 | 39 | 977 | 54 | 51 |
+| `/(QQQX\|RRRX\|SSSX)+/` | 45 | **39** ★ | 977 | 54 | 51 |
 | `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/` | 1717 | **455** ★ | 562 | 572 | 209 |
 | `/[A-Z]{50,}/` | 793 | **658** ★ | 920 | 1526 | 184 |
 | `/\b(if\|else\|for\|while\|return)\b/` | 241 | 79 | 985 | **2** | 119 |
@@ -201,7 +201,7 @@ beats grep AND Onigmo.
 | `/(\d+\.\d+\.\d+\.\d+)/` | 596 | 421 | 566 | **4** | 50 |
 | `/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/` | 13381 | 11475 | 14260 | **2** | 216 |
 
-★ = astrogre + AOT beats grep AND Onigmo.  **3/8 vs grep, 8/8 vs
+★ = astrogre + AOT beats grep AND Onigmo.  **4/8 vs grep, 8/8 vs
 Onigmo.**  AOT typically lands a 1.5-3.8× speedup over interp on
 this set (best: 3.77× on `[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]`).
 The losses to grep are patterns where the leading char / first-byte
