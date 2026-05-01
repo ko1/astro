@@ -343,11 +343,13 @@ Phase 2 で float / string / list / variant の比較を要件にしたため、
 
 それでも 5-10% 程度の遅延が残る。
 
-### ⚠️ malloc-leak (継続)
+### ✅ Boehm libgc 統合 (旧 malloc-leak の解消)
 
-すべてのヒープ確保で `malloc` を直叩きし、解放しない。
-インタプリタ用途では「プログラムが終了するまで生きていてくれれば十分」という割り切り。
-復旧プラン (TODO): Boehm GC 統合 (ascheme 同様)。
+当初は全 alloc を `malloc` 直叩き / 解放なしで、長時間実行で OOM リスクがあった。Boehm libgc を `main.c` に局所 `#define malloc GC_malloc` で全置換 (AST NODE は除く):
+- 影響範囲: oobj, oframe (non-leaf), CTX, globals, type checker, partial_state, etc.
+- cons bump allocator は chunk を GC_malloc 経由で確保 — chunk 内 GC はされないが速度は保てる
+- 1M iter ループで peak RSS 33 MB に収まる
+- ベンチ regress: sieve で 17%、それ以外は誤差レベル
 
 ### ✗ Tiny closure + `c->reg` で frame skip (撤去済)
 
@@ -412,6 +414,6 @@ ocamlopt fib body は 16 命令。我々の AOT は 28-50 命令。差の正体:
 - **環境チェーンキャッシュ** (深い lref のため)
 - **クラス間で method table 共有** — `__class_build` を改造して同じシグネチャの methods/fields 配列を共有 (method send IC が cross-instance で効く)
 - **AOT specialize の本格活用** — 現状の `--compile` パスは loose; PGC まで入れたい
-- **Boehm GC の統合** (frame 以外の malloc リーク対策)
+<!-- Boehm GC: 統合済 (上の done 節参照) -->
 - **Tagged float** (Ruby 流の inline flonum encoding) — boxed double の alloc を削減 (※ 値表現の変更は要相談)
 - **`OPTIMIZE` の本格化** (hot 検出 → JIT)

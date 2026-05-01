@@ -19,7 +19,7 @@ READLINE_LDFLAGS := $(if $(READLINE_CFLAGS),-lreadline)
 astocaml: main.c node.c Makefile $(NODE_GENFILES) context.h node.h
 	gcc -I. -I$(RUNTIME) $(optflags) -ggdb3 -Wall -Wno-unused-function $(READLINE_CFLAGS) \
 	    -rdynamic \
-	    -o astocaml main.c node.c -ldl -lm \
+	    -o astocaml main.c node.c -ldl -lm -lgc \
 	    $(READLINE_LDFLAGS)
 
 node_eval.c: ../../lib/* node.def astocaml_gen.rb

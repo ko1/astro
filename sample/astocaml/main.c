@@ -8,9 +8,21 @@
 #include <stdarg.h>
 #include <stddef.h>
 #include <time.h>
+#include <gc.h>
 #include "context.h"
 #include "node.h"
 #include "astro_code_store.h"
+
+// Route every runtime allocation in this TU through Boehm GC.  AST
+// nodes (in node.c via node_allocate) stay on plain malloc — they
+// outlive the program anyway, no point GC-tracking them.  Boehm's
+// conservative scan still picks up NODE * pointers stored inside
+// GC objects (closures, frames, globals) and treats them as opaque,
+// which is harmless: NODE storage is never freed.
+#define malloc(n)        GC_malloc((n))
+#define calloc(n, s)     GC_malloc((n) * (s))
+#define realloc(p, n)    GC_realloc((p), (n))
+#define free(p)          ((void)(p))
 
 #ifdef USE_READLINE
 #include <readline/readline.h>
@@ -6293,6 +6305,7 @@ init_lexer(const char *text)
 int
 main(int argc, char **argv)
 {
+    GC_INIT();
     g_sys_argc = argc;
     g_sys_argv = argv;
     const char *path = NULL;

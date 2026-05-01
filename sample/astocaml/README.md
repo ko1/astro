@@ -231,7 +231,7 @@ astocaml: Type_error((+): expected int)
 
 ack / fib / tak で **astocaml AOT が ocamlc bytecode を超え** ocaml toplevel との比較ではほぼ全勝。 ocamlopt (native compilation) との差は fib 3.5× / ack 7× / tak 5× / nqueens・sieve 15-20×。 残差の正体は (1) `VALUE` の untag/retag、(2) heap-allocated `oframe`、(3) `oc_apply` 経由の indirect call — いずれも ASTro AST walker としての構造的限界 (詳細は `docs/perf.md`)。
 
-メモリ使用量はインタプリタの malloc-leak 戦略によるもの (cons は bump allocator 化済み、frame は alloca 化済み — 残るは closure / variant / record / ref 等; 将来 Boehm GC で解消予定)。
+メモリは **Boehm libgc** で管理 (`#include <gc.h>` + ローカル `#define malloc GC_malloc` で全 runtime allocation を GC 経由)。AST node のみ plain malloc (永続なので GC 不要)。1M iter ループで peak RSS 33 MB 程度に収まる。
 
 ## 出典
 
