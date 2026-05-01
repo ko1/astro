@@ -1679,11 +1679,11 @@ void korb_runtime_init(void) {
         korb_const_set(cObject, korb_intern(exc_classes[i]), (VALUE)k);
     }
 
-    /* Common stub classes */
-    static const char *stub_classes[] = {
-        "Comparable", "Enumerable", "Numeric", NULL,
-    };
-    (void)stub_classes;
+    /* Register Comparable / Enumerable / Numeric so user code can
+     * `include Comparable` etc.  Comparable's instance methods are
+     * installed in builtins.c. */
+    korb_const_set(cObject, korb_intern("Comparable"), (VALUE)korb_vm->comparable_module);
+    korb_const_set(cObject, korb_intern("Enumerable"), (VALUE)korb_vm->enumerable_module);
 
     korb_init_builtins();
 }

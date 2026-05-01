@@ -803,6 +803,60 @@ static VALUE module_define_method(CTX *c, VALUE self, int argc, VALUE *argv) {
     return Qnil;
 }
 
+/* ---------- Comparable ----------
+ *
+ * All cfuncs invoke `self.<=>(other)` and interpret the result.  If
+ * <=> returns nil (incomparable), comparison ops raise ArgumentError. */
+
+static long korb_cmp_call(CTX *c, VALUE self, VALUE other) {
+    VALUE r = korb_funcall(c, self, korb_intern("<=>"), 1, &other);
+    if (NIL_P(r)) {
+        korb_raise(c, NULL, "comparison of %s with %s failed",
+                   korb_id_name(korb_class_of_class(self)->name),
+                   korb_id_name(korb_class_of_class(other)->name));
+        return 0;
+    }
+    if (FIXNUM_P(r)) return FIX2LONG(r);
+    return 0;
+}
+
+static VALUE cmp_lt(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return KORB_BOOL(korb_cmp_call(c, self, argv[0]) < 0);
+}
+static VALUE cmp_le(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return KORB_BOOL(korb_cmp_call(c, self, argv[0]) <= 0);
+}
+static VALUE cmp_gt(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return KORB_BOOL(korb_cmp_call(c, self, argv[0]) > 0);
+}
+static VALUE cmp_ge(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return KORB_BOOL(korb_cmp_call(c, self, argv[0]) >= 0);
+}
+static VALUE cmp_eq(CTX *c, VALUE self, int argc, VALUE *argv) {
+    /* Comparable#== uses <=> too — returns true iff <=> returns 0. */
+    VALUE r = korb_funcall(c, self, korb_intern("<=>"), 1, argv);
+    if (NIL_P(r)) return Qfalse;
+    return KORB_BOOL(FIXNUM_P(r) && FIX2LONG(r) == 0);
+}
+static VALUE cmp_between(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 2) {
+        korb_raise(c, NULL, "wrong number of arguments to between? (%d for 2)", argc);
+        return Qnil;
+    }
+    long lo = korb_cmp_call(c, self, argv[0]);
+    long hi = korb_cmp_call(c, self, argv[1]);
+    return KORB_BOOL(lo >= 0 && hi <= 0);
+}
+static VALUE cmp_clamp(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 2) {
+        korb_raise(c, NULL, "wrong number of arguments to clamp (%d for 2)", argc);
+        return Qnil;
+    }
+    if (korb_cmp_call(c, self, argv[0]) < 0) return argv[0];
+    if (korb_cmp_call(c, self, argv[1]) > 0) return argv[1];
+    return self;
+}
+
 /* alias_method(:new_name, :existing_name) — register the existing
  * method under a new name on this class.  Reuses the resolved method
  * struct (methods are immutable in koruby). */
@@ -2817,6 +2871,16 @@ void korb_init_builtins(void) {
     DEF(cMod, "===",           class_eqq,            1);
     /* Class < Module — Class instances inherit Module's methods.
      * No need to mirror module_* onto cCls. */
+
+    /* Comparable instance methods */
+    struct korb_class *cCmp = korb_vm->comparable_module;
+    DEF(cCmp, "<",          cmp_lt,       1);
+    DEF(cCmp, "<=",         cmp_le,       1);
+    DEF(cCmp, ">",          cmp_gt,       1);
+    DEF(cCmp, ">=",         cmp_ge,       1);
+    DEF(cCmp, "==",         cmp_eq,       1);
+    DEF(cCmp, "between?",   cmp_between, -1);
+    DEF(cCmp, "clamp",      cmp_clamp,   -1);
 
     /* extra Object methods */
     DEF(cObj, "send",                  obj_send,                 -1);

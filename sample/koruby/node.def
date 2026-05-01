@@ -677,15 +677,19 @@ node_eq(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_
      * (Note: FLONUM excludes NaN — never encodable, so always heap.) */
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) return KORB_BOOL(l == r);
     if (LIKELY(FLONUM_P(l) && FLONUM_P(r))) return KORB_BOOL(l == r);
-    /* Mixed numeric or heap — go through korb_eq, which knows that
-     * heap Float NaN ≠ NaN even at the same address. */
     if ((SPECIAL_CONST_P(l) && !FIXNUM_P(l) && !FLONUM_P(l)) ||
         (SPECIAL_CONST_P(r) && !FIXNUM_P(r) && !FLONUM_P(r))) {
         /* one side is a non-numeric special const (Qnil, Qtrue, Qfalse,
          * Symbol).  Equal iff identical VALUE. */
         return KORB_BOOL(l == r);
     }
-    return KORB_BOOL(korb_eq(l, r));
+    /* General case: dispatch user-defined `==`.  For built-in types
+     * (T_STRING, T_ARRAY, T_HASH, ...) this finds the methods we
+     * registered in builtins.c; for user classes that include
+     * Comparable or override ==, it picks up their definition. */
+    c->fp[arg_index+1] = r;
+    VALUE ret = korb_dispatch_binop(c, l, korb_intern("=="), 1, &c->fp[arg_index+1]);
+    return KORB_BOOL(RTEST(ret));
 }
 
 NODE_DEF
@@ -704,7 +708,9 @@ node_neq(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg
         (SPECIAL_CONST_P(r) && !FIXNUM_P(r) && !FLONUM_P(r))) {
         return KORB_BOOL(l != r);
     }
-    return KORB_BOOL(!korb_eq(l, r));
+    c->fp[arg_index+1] = r;
+    VALUE eq = korb_dispatch_binop(c, l, korb_intern("=="), 1, &c->fp[arg_index+1]);
+    return KORB_BOOL(!RTEST(eq));
 }
 
 // ---------------- subscript [] / []= ----------------
