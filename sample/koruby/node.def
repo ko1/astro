@@ -665,8 +665,20 @@ node_eq(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_
 {
     VALUE l = EA(c, lhs);
     VALUE r = EA(c, rhs);
-    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) return KORB_BOOL(l == r);
-    if (LIKELY(FLONUM_P(l) && FLONUM_P(r) && !korb_g_basic_op_redefined)) return KORB_BOOL(l == r);
+    if (UNLIKELY(korb_g_basic_op_redefined)) {
+        c->fp[arg_index+1] = r;
+        return korb_dispatch_binop(c, l, korb_intern("=="), 1, &c->fp[arg_index+1]);
+    }
+    /* Identity covers FIXNUM-FIXNUM equal, FLONUM-FLONUM equal,
+     * nil==nil, obj==obj, etc.  Cheap early exit. */
+    if (l == r) return Qtrue;
+    /* Mixed FIXNUM / FLONUM (e.g. 1 == 1.0) compares numerically — let
+     * korb_eq handle it.  Only short-circuit when at least one side is
+     * a *non-numeric* special const (Qnil, Qtrue, Qfalse, Symbol). */
+    if ((SPECIAL_CONST_P(l) && !FIXNUM_P(l) && !FLONUM_P(l)) ||
+        (SPECIAL_CONST_P(r) && !FIXNUM_P(r) && !FLONUM_P(r))) {
+        return Qfalse;
+    }
     return KORB_BOOL(korb_eq(l, r));
 }
 
@@ -675,8 +687,16 @@ node_neq(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg
 {
     VALUE l = EA(c, lhs);
     VALUE r = EA(c, rhs);
-    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) return KORB_BOOL(l != r);
-    if (LIKELY(FLONUM_P(l) && FLONUM_P(r) && !korb_g_basic_op_redefined)) return KORB_BOOL(l != r);
+    if (UNLIKELY(korb_g_basic_op_redefined)) {
+        c->fp[arg_index+1] = r;
+        VALUE eq = korb_dispatch_binop(c, l, korb_intern("=="), 1, &c->fp[arg_index+1]);
+        return KORB_BOOL(!RTEST(eq));
+    }
+    if (l == r) return Qfalse;
+    if ((SPECIAL_CONST_P(l) && !FIXNUM_P(l) && !FLONUM_P(l)) ||
+        (SPECIAL_CONST_P(r) && !FIXNUM_P(r) && !FLONUM_P(r))) {
+        return Qtrue;
+    }
     return KORB_BOOL(!korb_eq(l, r));
 }
 
