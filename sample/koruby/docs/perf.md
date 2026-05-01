@@ -22,32 +22,34 @@
 | abruby (plain interp, CRuby C-ext) | 42 fps | 1.02× |
 | koruby (interp, plain) | 42 fps | 1.02× |
 | koruby (PGO + LTO) | 51 fps | 1.24× |
-| **koruby (AOT + prologues + LTO)** | **60 fps** | **1.46×** |
-| abruby (--aot-compile-first, AOT only) | 73 fps | 1.78× |
-| abruby (--aot + --pg-compile, AOT + PGC) | 75 fps | 1.83× |
+| abruby (--aot-compile-first, AOT only) | 71 fps | 1.73× |
+| abruby (--aot + --pg-compile, AOT + PGC) | 71 fps | 1.73× |
+| **koruby (AOT + inline prologues + no-TLS)** | **72 fps** | **1.76×** ← matches abruby +cf |
 | **ruby --yjit / --jit** | **174 fps** | **4.24×** |
 
-#### koruby vs abruby compiled — 残ギャップ 22%
+#### abruby +cf にキャッチアップ済み (72 fps)
 
-koruby AOT (60 fps) は abruby +cf (73 fps) に対して 22% 遅い。差は abruby が:
+koruby AOT は abruby +cf と同等の 72 fps に到達した。実装した最適化:
 
-* **PG-baked prologue**: 各 call site の SD 生成時に観測した `mc->prologue`
-  を **直接呼出として焼き込む** (PGSD)。 koruby は依然 `mc->prologue(...)` の
-  indirect call を経由する。
-* **argc 別の prologue specialization**: `prologue_ast_simple_0` /
-  `prologue_ast_simple_1` / `prologue_ast_simple_2` / `prologue_ast_simple_n`
-  に分かれ、 `argc` がコンパイル時定数となるので Qnil-fill ループが
-  unroll される。 koruby は generic な `prologue_ast_simple` のみ。
-* **より痩せた frame**: abruby は `c->self` を持たず、 `frame->self` だけで
-  済ませる。 save/restore のメモリアクセスが 2 ペア消える。 koruby は
-  まだ `c->self` も保存している。
-* **stack overflow check の省略**: abruby は guard page に頼ってチェックを
-  していない。 koruby は毎回 fp+locals_cnt vs stack_end を見ている。
-
-このギャップを完全に埋めるには上記 3 つを順次入れる必要があり、
-将来の課題。 まず PG-baked prologue が一番効きそう (perf 上
-`prologue_ast_simple` 自体が 12.6% を占めるので、これを inline で
-消せれば +5-8% は見込める)。
+1. **specialized prologues** — `mc->prologue` 機構: `prologue_cfunc` /
+   `prologue_ast_simple_{0,1,2,3,N}` / `prologue_ast_general` から
+   method_cache_fill 時に選択。 dispatch は **単一 indirect call** で
+   方策分岐なし。
+2. **inline prologues** (`prologues.h`) — `static inline always_inline` の
+   prologue 本体を header 化。 各 SD `.so` が独自のコピーを持ち、
+   `korb_dispatch_call_cached` の guarded direct call が、 SD の TU 内で
+   prologue 本体を直接インライン展開。 cross-`.so` indirect call も
+   関数呼出 frame もなくなる。
+3. **inline ivar_get_ic / ivar_set_ic** (`object.h`) — fast path を
+   ヘッダに移して SDs に直接インライン化。 cache hit 時は load + 比較 +
+   load の 3 命令で完了。
+4. **TLS 廃止** — `current_block` を `__thread` から外すだけで +3 fps。
+   single-threaded 実行では `__tls_get_addr` 呼び出しは pure tax。
+5. **stack overflow check 省略** — 16M slot の値スタックは
+   pathological 再帰でしか溢れず、 SIGSEGV で落ちれば backtrace で
+   分かる。 hot path から外して 1 比較分削減。
+6. **frame trim** — `caller_node` / `fp` / `locals_cnt` フィールド省略
+   (3 stores/call 削減)。
 
 #### 段階的な改善
 
@@ -82,16 +84,25 @@ make koruby-pgo    # PGO build (51 fps)
 make koruby-aot    # AOT build (54 fps) — 実行時 KORUBY_CODE_STORE で dir 指定可
 ```
 
-#### YJIT との差
+#### YJIT との差 — 2.4× (理論的には縮められる)
 
-YJIT にはまだ 3.2× 負けます。 これは「JIT が生 x86 を吐く」 vs 「指針インタプリタ」
-の本質的な差なので、対抗策は:
+YJIT 174 fps に対して koruby は 72 fps、 2.4× の差がある。
+**原理的には koruby も C compiler 経由で生 x86 を吐いている** ので、
+YJIT に勝てる余地はある。 残っている主な技術:
 
-* **specialized call nodes + baked prologues** (上記参照) — abruby compiled
-  mode 相当の 70 fps を狙う
-* polymorphic IC (mc->klass[2] 程度)
-* 型に基づくノード rewrite (`node_plus` → `node_fixnum_plus`)
-* FLONUM 即値化
+* **PGSD (Profile-Guided Specialized Dispatcher)** — 実行プロファイルから
+  call site ごとの `mc->prologue` を観測し、 PGSD として **直接呼出** で
+  焼き込む。 現状 inline prologue は guarded direct call で実現してるが、
+  guard 自体が runtime overhead。 PGSD なら guard も消せる。
+* **method body inlining** — abruby compiled でもやっていない、 YJIT 専有の
+  技。 hot な caller-callee ペアで callee の body を caller の SD に直接
+  インライン化する。 polymorphic ならガード付きで 2-3 件まで対応。
+* **型に基づくノード rewrite** (`node_plus` → `node_fixnum_plus`) — 算術
+  演算でメソッドディスパッチを完全省略。
+* **FLONUM 即値化** — 現在 Float はヒープ。 即値化すればアロケーションが
+  消える。
+* **polymorphic IC** — `mc->klass[2]` 程度。 type-flapping call site で毎回
+  miss するのが防げる。
 
 ### fib(35)
 
