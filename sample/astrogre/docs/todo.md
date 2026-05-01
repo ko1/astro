@@ -100,6 +100,26 @@ action ノードが利用する。
 - **反復回数特化**: 観測された反復回数が集中する場合の固定 N 展開
   variant を bake。
 
+### 末端アンカー (`\z` / `\Z`) 用の anchored_eos 最適化
+`\A` には `anchored_bos` フラグがあって「pos = 0 だけ試して終わる」
+短絡が効くが、`\z` / `\Z` には対応する仕組みが無く、`/foo\z/` でも
+ファイル全体を memchr スキャンしてしまう (実際にマッチが成立するのは
+末端 1 箇所だけ)。
+
+段階移行:
+
+- **Stage 1 (簡単 / 大効果)**: parser が「末端が `\z` / `\Z` かつ前が
+  固定長 = literal / 単一クラス / 固定 N rep」を判定して
+  `node_grep_check_at_eos(needle, suffix_len)` のような 1 位置決め打ち
+  ノードを emit。`/foo\z/` (3-byte memcmp 1 回)、`/.{10}\z/`、
+  `/[A-Z]+\.so\z/` の suffix 部分などがカバーできる。
+- **Stage 2 (本格)**: rev 向きの scanner (`memrchr` / 後ろ向き AVX2) と、
+  各 match-node の reverse variant (`re_lit_rev` 等) を導入して、
+  `/.+\.gz\z/` のような可変長 prefix + 固定 suffix パターンも
+  「末尾から `.gz` 確認 → 逆向きに prefix を消費」で動かす。
+  ugrep / RE2 がやっている両方向 scan の方向。実装コストは高め
+  (CPS チェーンの逆向き複製) なので Stage 1 が landing してから検討。
+
 ### `/i` ケースフォールド用 twin-memchr scan
 `/foo/i` — 'f' / 'F' どちらも match 開始候補。選択肢:
 - 入力 chunk ごとに 2 回 memchr → min 位置をピック。
