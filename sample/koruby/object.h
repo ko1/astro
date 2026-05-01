@@ -281,6 +281,26 @@ void  korb_raise(CTX *c, struct korb_class *klass, const char *fmt, ...);
 VALUE korb_funcall(CTX *c, VALUE recv, ID mid, int argc, VALUE *argv);
 VALUE korb_funcall_with_block(CTX *c, VALUE recv, ID mid, int argc, VALUE *argv, VALUE block);
 VALUE korb_dispatch_call(CTX *c, struct Node *callsite, VALUE recv, ID name, uint32_t argc, uint32_t arg_index, struct korb_proc *block, struct method_cache *mc);
+
+struct korb_class *korb_class_of_class(VALUE v);
+extern state_serial_t korb_g_method_serial;  /* mirrored from korb_vm->method_serial */
+
+/* Inline cache-hit fast path for method dispatch.  On cache hit (LIKELY),
+ * directly call mc->prologue — no function call into the slower path.
+ * Cache miss falls through to korb_dispatch_call which fills mc and
+ * dispatches. */
+static inline __attribute__((always_inline)) VALUE
+korb_dispatch_call_cached(CTX * restrict c, struct Node * restrict callsite,
+                          VALUE recv, ID name, uint32_t argc,
+                          uint32_t arg_index, struct korb_proc *block,
+                          struct method_cache *mc)
+{
+    struct korb_class *klass = korb_class_of_class(recv);
+    if (LIKELY(mc && mc->serial == korb_g_method_serial && mc->klass == klass)) {
+        return mc->prologue(c, callsite, recv, argc, arg_index, block, mc);
+    }
+    return korb_dispatch_call(c, callsite, recv, name, argc, arg_index, block, mc);
+}
 VALUE korb_dispatch_binop(CTX *c, VALUE recv, ID name, int argc, VALUE *argv);
 VALUE korb_yield(CTX *c, uint32_t argc, VALUE *argv);
 bool korb_block_given(void);

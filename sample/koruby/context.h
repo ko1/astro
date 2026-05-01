@@ -134,12 +134,21 @@ typedef uint64_t state_serial_t;
  * method->ast.body->head.dispatcher (one indirect call instead of two). */
 struct CTX_struct;
 typedef VALUE (*korb_dispatcher_t)(struct CTX_struct *c, struct Node *n);
+/* Per-callsite specialized prologue.  At method_cache_fill time we pick
+ * one of: ast_simple (no rest, no opt), ast_general (rest/opt), cfunc.
+ * Then dispatch is a single indirect call with no in-function branching. */
+struct method_cache;
+typedef VALUE (*korb_prologue_t)(struct CTX_struct *c, struct Node *callsite,
+                                 VALUE recv, uint32_t argc, uint32_t arg_index,
+                                 struct korb_proc *block, struct method_cache *mc);
+
 struct method_cache {
     state_serial_t serial;
     struct korb_class *klass;
     struct korb_method *method;
     struct Node *body;             /* cached body NODE for AST methods */
-    korb_dispatcher_t dispatcher;    /* its dispatcher fn ptr */
+    korb_dispatcher_t dispatcher;  /* body's dispatcher (specialized SD or default) */
+    korb_prologue_t prologue;      /* selected at fill time — see above */
     uint32_t locals_cnt;
     uint32_t required_params_cnt;
     uint32_t total_params_cnt;     /* required + optional + rest(0/1) */

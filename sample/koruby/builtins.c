@@ -794,7 +794,7 @@ static VALUE module_include(CTX *c, VALUE self, int argc, VALUE *argv) {
         if (BUILTIN_TYPE(argv[i]) != T_MODULE && BUILTIN_TYPE(argv[i]) != T_CLASS) continue;
         korb_module_include(klass, (struct korb_class *)argv[i]);
     }
-    if (korb_vm) korb_vm->method_serial++;
+    if (korb_vm) korb_vm->method_serial++; korb_g_method_serial = korb_vm->method_serial;
     return self;
 }
 
