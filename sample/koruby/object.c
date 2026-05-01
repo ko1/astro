@@ -520,13 +520,6 @@ VALUE korb_ary_pop(VALUE av) {
     return a->ptr[--a->len];
 }
 
-VALUE korb_ary_aref(VALUE av, long i) {
-    struct korb_array *a = (struct korb_array *)av;
-    if (i < 0) i += a->len;
-    if (i < 0 || i >= a->len) return Qnil;
-    return a->ptr[i];
-}
-
 void korb_ary_aset(VALUE av, long i, VALUE v) {
     struct korb_array *a = (struct korb_array *)av;
     if (i < 0) i += a->len;
@@ -544,7 +537,7 @@ void korb_ary_aset(VALUE av, long i, VALUE v) {
     a->ptr[i] = v;
 }
 
-long korb_ary_len(VALUE av) { return ((struct korb_array *)av)->len; }
+/* korb_ary_len, korb_ary_aref: now static inline in object.h. */
 
 /* ---- hash ---- */
 uint64_t korb_hash_value(VALUE v) {

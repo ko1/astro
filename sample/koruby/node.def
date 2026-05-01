@@ -579,6 +579,12 @@ node_lshift(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t 
         }
         return korb_int_lshift(l, r);
     }
+    /* Array#<< — push and return self.  Hot in optcarrot's
+     * render_pixel (`@output_pixels << ...` runs once per pixel). */
+    if (LIKELY(!SPECIAL_CONST_P(l) && BUILTIN_TYPE(l) == T_ARRAY)) {
+        korb_ary_push(l, r);
+        return l;
+    }
     return korb_node_lshift_slow(c, l, r, arg_index);
 }
 

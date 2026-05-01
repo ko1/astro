@@ -265,9 +265,22 @@ VALUE korb_ary_new(void);
 VALUE korb_ary_new_from_values(long n, const VALUE *vals);
 void  korb_ary_push(VALUE ary, VALUE v);
 VALUE korb_ary_pop(VALUE ary);
-VALUE korb_ary_aref(VALUE ary, long i);
 void  korb_ary_aset(VALUE ary, long i, VALUE v);
-long  korb_ary_len(VALUE ary);
+
+/* korb_ary_aref / korb_ary_len: inlined into SDs.  Hot in optcarrot
+ * (`@output_color[pixel]`, `sprite[2]`, etc.).  Both are tiny and
+ * struct korb_array is fully visible above. */
+static inline __attribute__((always_inline)) VALUE
+korb_ary_aref(VALUE av, long i) {
+    struct korb_array *a = (struct korb_array *)av;
+    if (i < 0) i += a->len;
+    if ((unsigned long)i >= (unsigned long)a->len) return Qnil;
+    return a->ptr[i];
+}
+static inline __attribute__((always_inline)) long
+korb_ary_len(VALUE av) {
+    return ((struct korb_array *)av)->len;
+}
 
 /* hash */
 VALUE korb_hash_new(void);
