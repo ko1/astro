@@ -36,8 +36,7 @@ let rec count_cols n queens cols =
   | c :: rest ->
       let here = if safe c queens then solve_step n (c :: queens) else 0 in
       here + count_cols n queens rest
-
-let rec solve_step n queens =
+and solve_step n queens =
   if list_length queens = n then 1
   else count_cols n queens (range n)
 

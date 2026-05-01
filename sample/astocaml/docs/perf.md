@@ -128,6 +128,20 @@ node_lt(...) {
 効果: method_call ベンチで 2.1 s → 1.66 s (**1.34× 高速化**)。
 注: より大きな勝利はクラス間で method table を共有する版だが、現状では各 `new` がフレッシュな配列を確保するため per-instance に留まる。
 
+### ✅ 型特化 binop (`node_add_int` 等)
+
+`infer_arith_int` で両辺 `int` が確定したら、親ノードの dispatcher + kind を `node_add_int` 等の型特化版に in-place swap (同じ ASTro 機構)。型特化版は冒頭の `OC_IS_INT(av) & OC_IS_INT(bv)` チェックがなく、untag → 加算 → retag だけ。比較も `lt_int` 等で polymorphic `oc_compare` への分岐が消える。
+
+`node_eq_int` / `node_ne_int` は更に `av == bv` の単一 cmp に縮小 (タグ付き fixnum はビット同一なら整数値も同一なので)。
+
+ASTro 機構の利点: node.def に新型を追加しただけで dispatcher / SPECIALIZE / hash / replacer がすべて自動生成、整数値版 SD が AOT で素直に出る。runtime は kind と dispatcher を 2 ポインタ書き換えるだけ。
+
+効果 (warm AOT):
+- ack: 0.15 → **0.13** s (eq + sub + add の type-check 全滅)
+- nqueens: 0.45 → **0.41** s
+- sieve: 0.45 → **0.42** s
+- fib(40) で ocamlopt との差: 3.27× → **3.13×**
+
 ### ✅ Tiny closure: frame-less call (ASTro 流 `node_lref0_reg` rewrite)
 
 ocamlopt の fib body 逆アセンブルを見ると frame allocation 自体が無く、引数は register に乗っている。我々の `oframe` chain は意味的には必要だが、形が単純な closure (= "tiny": leaf, body 全て `lref(0, *)` のみ, 内部 let / match / fun / lazy なし) なら frame そのものを skip して `c->reg[16]` に置けば済む。
