@@ -18,17 +18,54 @@
 
 struct astocaml_option OPTION;
 
+// AOT entry registry (definitions live near the parser); forward-decl
+// here so `maybe_aot_compile` can iterate them.  Populated by
+// `aot_add_entry` from the `make_fun` parser wrapper.
+extern NODE **AOT_ENTRIES;
+extern size_t AOT_ENTRIES_LEN;
+
 // AOT compile + reload helper.  Called before EVAL on top-level
 // expressions when --compile is set.  No-ops if already specialized.
+//
+// Beyond compiling the form itself, we also compile every closure body
+// registered via `aot_add_entry` (`make_fun`) — without this the AST
+// inside `let f x = ...` is never specialized, since
+// `SPECIALIZE_node_fun` is empty.  After build+reload, we patch every
+// registered entry's dispatcher (not just the form's), so future
+// `oc_apply` calls into those closures dispatch through the SD_*.
+//
+// Repeat invocations are cheap: `astro_cs_compile` skips files that
+// already exist; `make` only rebuilds .c files newer than their .o;
+// `astro_cs_load` short-circuits if the dispatcher is already SD_*.
+extern void astro_cs_init_dispatcher(NODE *n);
+static size_t AOT_COMPILED = 0;     // index of next entry to compile
+
 static void
 maybe_aot_compile(NODE *n)
 {
     if (!OPTION.compile || !n) return;
     if (n->head.flags.is_specialized) return;
+    // Disable ccache so make can write into its cache dir even on a
+    // sandboxed / read-only FS — ccache becomes a pass-through to gcc.
+    setenv("CCACHE_DISABLE", "1", 1);
+
+    // Compile any closure bodies registered since last call.
+    for (; AOT_COMPILED < AOT_ENTRIES_LEN; AOT_COMPILED++) {
+        NODE *e = AOT_ENTRIES[AOT_COMPILED];
+        if (e && !e->head.flags.is_specialized) astro_cs_compile(e, NULL);
+    }
     astro_cs_compile(n, NULL);
     astro_cs_build(NULL);
     astro_cs_reload();
-    astro_cs_load(n, NULL);
+    // Patch every body's dispatcher, then the form itself.
+    size_t patched = 0;
+    for (size_t i = 0; i < AOT_ENTRIES_LEN; i++) {
+        if (AOT_ENTRIES[i] && astro_cs_load(AOT_ENTRIES[i], NULL)) patched++;
+    }
+    if (astro_cs_load(n, NULL)) patched++;
+    if (getenv("ASTOCAML_AOT_VERBOSE"))
+        fprintf(stderr, "astocaml: AOT patched %zu / %zu entries\n",
+                patched, AOT_ENTRIES_LEN + 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -2496,6 +2533,71 @@ static struct pat *parse_pattern_atom(void);
 static void  mark_tail_calls(NODE *n);
 static uint32_t node_is_leaf(NODE *body);
 
+// AOT entry registry — every closure body and every top-level form gets
+// pushed here.  Under `--compile`, after parsing we hand the entire list
+// to `astro_cs_compile` (one SD_<hash>.c each), build all.so once, load,
+// then patch every entry's dispatcher.  This is the only way closure
+// bodies become AOT-compiled — `SPECIALIZE_node_fun` is empty (the body
+// must not inline into its parent SD), so without this registry the AST
+// inside `let f x = ...` is never specialized.
+NODE **AOT_ENTRIES = NULL;
+size_t AOT_ENTRIES_LEN = 0;
+static size_t AOT_ENTRIES_CAP = 0;
+
+static void
+aot_add_entry(NODE *n)
+{
+    if (!n) return;
+    if (AOT_ENTRIES_LEN == AOT_ENTRIES_CAP) {
+        AOT_ENTRIES_CAP = AOT_ENTRIES_CAP ? AOT_ENTRIES_CAP * 2 : 64;
+        AOT_ENTRIES = (NODE **)realloc(AOT_ENTRIES, sizeof(NODE *) * AOT_ENTRIES_CAP);
+    }
+    AOT_ENTRIES[AOT_ENTRIES_LEN++] = n;
+}
+
+// Wrap ALLOC_node_fun: compute is_leaf and register the body for AOT.
+static inline NODE *
+make_fun(uint32_t nparams, NODE *body)
+{
+    aot_add_entry(body);
+    return ALLOC_node_fun(nparams, body, node_is_leaf(body));
+}
+
+// Same for `@noinline` nodes whose ASTroGen-generated SPECIALIZE is
+// empty: their NODE * children would never become AOT-compiled
+// otherwise.  Pattern arms in particular show up *everywhere* in
+// list-processing OCaml code, so without these the AOT pass leaves
+// most of nqueens / sieve unspecialized.
+static inline NODE *
+make_match_arm(NODE *test, uint32_t arity, uint32_t exi, NODE *body, NODE *failure)
+{
+    aot_add_entry(body);
+    aot_add_entry(failure);
+    return ALLOC_node_match_arm(test, arity, exi, body, failure);
+}
+
+static inline NODE *
+make_let_pat(NODE *value, uint32_t arity, uint32_t exi, NODE *body)
+{
+    aot_add_entry(body);
+    return ALLOC_node_let_pat(value, arity, exi, body);
+}
+
+static inline NODE *
+make_letrec_n(uint32_t nb, uint32_t vidx, NODE *body)
+{
+    aot_add_entry(body);
+    return ALLOC_node_letrec_n(nb, vidx, body);
+}
+
+static inline NODE *
+make_try(NODE *body, NODE *handler)
+{
+    aot_add_entry(body);
+    aot_add_entry(handler);
+    return ALLOC_node_try(body, handler);
+}
+
 // ---------------------------------------------------------------------------
 // Patterns parser.
 // ---------------------------------------------------------------------------
@@ -2785,7 +2887,7 @@ build_match_arms(struct match_arm *arms, int n_arms)
             // conditional, but here we want unconditional bind.  Use
             // node_match_arm with test=true for unconditional path.
             NODE *always = ALLOC_node_const_bool(1);
-            NODE *armnode = ALLOC_node_match_arm(always, (uint32_t)ei, exi, guarded_body, fail);
+            NODE *armnode = make_match_arm(always, (uint32_t)ei, exi, guarded_body, fail);
             // Then wrap with the pattern test.
             NODE *armtest = ALLOC_node_if(test, armnode, fail);
             fail = armtest;
@@ -2800,7 +2902,7 @@ build_match_arms(struct match_arm *arms, int n_arms)
         bctx->depth = 0; bctx->slot = 0;
         pat_gen_extracts(a->pat, scrut_fac_lref, bctx, extracts, &ei);
         uint32_t exi = stash_extract_nodes(extracts, ei);
-        fail = ALLOC_node_match_arm(test, (uint32_t)ei, exi, body, fail);
+        fail = make_match_arm(test, (uint32_t)ei, exi, body, fail);
     }
     return fail;
 }
@@ -2884,15 +2986,15 @@ parse_match_after_kw(void)
             pat_gen_extracts(a->pat, scrut_fac_lref, bctx, extracts, &ei);
             uint32_t exi = stash_extract_nodes(extracts, ei);
             if (a->guard) {
-                NODE *armnode = ALLOC_node_match_arm(ALLOC_node_const_bool(1), (uint32_t)ei, exi, bd, fail);
+                NODE *armnode = make_match_arm(ALLOC_node_const_bool(1), (uint32_t)ei, exi, bd, fail);
                 fail = ALLOC_node_if(test, armnode, fail);
             }
             else {
-                fail = ALLOC_node_match_arm(test, (uint32_t)ei, exi, bd, fail);
+                fail = make_match_arm(test, (uint32_t)ei, exi, bd, fail);
             }
         }
         pop_scope();
-        let_match = ALLOC_node_try(let_match, fail);
+        let_match = make_try(let_match, fail);
     }
     return let_match;
 }
@@ -2949,7 +3051,7 @@ parse_function_after_kw(void)
     push_scope_n(1, fname);
     pop_scope();
     NODE *fun_body = ALLOC_node_let(ALLOC_node_lref(0, 0), match_body);
-    return (mark_tail_calls(fun_body), ALLOC_node_fun(1, fun_body, node_is_leaf(fun_body)));
+    return (mark_tail_calls(fun_body), make_fun(1, fun_body));
 }
 
 // ---------------------------------------------------------------------------
@@ -3127,7 +3229,7 @@ parse_fun_after_kw(void)
     push_scope_n(n, params);
     NODE *body = parse_expr();
     pop_scope();
-    return (mark_tail_calls(body), ALLOC_node_fun((uint32_t)n, body, node_is_leaf(body)));
+    return (mark_tail_calls(body), make_fun((uint32_t)n, body));
 }
 
 // Parse `let X (params) = ... [in ...]`.  When `in_required` is true and
@@ -3390,17 +3492,17 @@ parse_expr_no_seq(void)
                 pat_gen_extracts(a->pat, scrut_fac_lref, bctx, extracts, &ei);
                 uint32_t exi = stash_extract_nodes(extracts, ei);
                 if (a->guard) {
-                    NODE *armnode = ALLOC_node_match_arm(ALLOC_node_const_bool(1), (uint32_t)ei, exi, bd, fail);
+                    NODE *armnode = make_match_arm(ALLOC_node_const_bool(1), (uint32_t)ei, exi, bd, fail);
                     fail = ALLOC_node_if(test, armnode, fail);
                 }
                 else {
-                    fail = ALLOC_node_match_arm(test, (uint32_t)ei, exi, bd, fail);
+                    fail = make_match_arm(test, (uint32_t)ei, exi, bd, fail);
                 }
             }
             handler = fail;
         }
         pop_scope();
-        return ALLOC_node_try(body, handler);
+        return make_try(body, handler);
     }
     if (tok == TK_LET) {
         next_token();
@@ -3475,7 +3577,7 @@ parse_expr_no_seq(void)
                     push_scope_n(bi->np, bi->params);
                     NODE *body = parse_expr();
                     pop_scope();
-                    bi->value = (mark_tail_calls(body), ALLOC_node_fun((uint32_t)bi->np, body, node_is_leaf(body)));
+                    bi->value = (mark_tail_calls(body), make_fun((uint32_t)bi->np, body));
                 }
                 else {
                     bi->value = parse_expr();
@@ -3491,7 +3593,7 @@ parse_expr_no_seq(void)
                 push_scope_n(lb->np, lb->params);
                 NODE *body = parse_expr();
                 pop_scope();
-                value = (mark_tail_calls(body), ALLOC_node_fun((uint32_t)lb->np, body, node_is_leaf(body)));
+                value = (mark_tail_calls(body), make_fun((uint32_t)lb->np, body));
             }
             else {
                 value = parse_expr();
@@ -3533,13 +3635,13 @@ parse_expr_no_seq(void)
             ctx->depth = 0; ctx->slot = 0;
             pat_gen_extracts(lb->pat, scrut_fac_lref, ctx, extracts, &ei);
             uint32_t exi = stash_extract_nodes(extracts, ei);
-            return ALLOC_node_let_pat(lb->value, (uint32_t)ei, exi, cont);
+            return make_let_pat(lb->value, (uint32_t)ei, exi, cont);
         }
         // Multiple bindings — use letrec_n.
         NODE *vals[64];
         for (int i = 0; i < nb; i++) vals[i] = bindings[i]->value;
         uint32_t vidx = stash_letrec_values(vals, nb);
-        return ALLOC_node_letrec_n((uint32_t)nb, vidx, cont);
+        return make_letrec_n((uint32_t)nb, vidx, cont);
     }
     if (tok == TK_MATCH) {
         next_token();
@@ -4509,7 +4611,7 @@ parse_program_until(CTX *c, int stop_tok)
                     NODE *body = parse_expr();
                     pop_scope();
                     if (ncp > 0) pop_scope();
-                    NODE *closure = (mark_tail_calls(body), ALLOC_node_fun((uint32_t)nmp, body, node_is_leaf(body)));
+                    NODE *closure = (mark_tail_calls(body), make_fun((uint32_t)nmp, body));
                     m_names[nm] = mname; m_closures[nm] = closure; nm++;
                 }
                 else if (tok == TK_INHERIT) {
@@ -4571,8 +4673,8 @@ parse_program_until(CTX *c, int stop_tok)
                 build = ALLOC_node_let(build, seq_inner);
             }
             NODE *ctor;
-            if (ncp == 0) ctor = (mark_tail_calls(build), ALLOC_node_fun(1, build, node_is_leaf(build)));
-            else          ctor = (mark_tail_calls(build), ALLOC_node_fun((uint32_t)ncp, build, node_is_leaf(build)));
+            if (ncp == 0) ctor = (mark_tail_calls(build), make_fun(1, build));
+            else          ctor = (mark_tail_calls(build), make_fun((uint32_t)ncp, build));
             VALUE cv = EVAL(c, ctor);
             oc_global_define(c, make_global_name(cname), cv);
             if (tok == TK_DSEMI) next_token();
@@ -4613,7 +4715,7 @@ parse_program_until(CTX *c, int stop_tok)
                 push_scope_n(lb->np, lb->params);
                 NODE *body = parse_expr();
                 pop_scope();
-                lb->value = (mark_tail_calls(body), ALLOC_node_fun((uint32_t)lb->np, body, node_is_leaf(body)));
+                lb->value = (mark_tail_calls(body), make_fun((uint32_t)lb->np, body));
             }
             else {
                 lb->value = parse_expr();
@@ -4628,7 +4730,7 @@ parse_program_until(CTX *c, int stop_tok)
                     push_scope_n(lb2->np, lb2->params);
                     NODE *body = parse_expr();
                     pop_scope();
-                    lb2->value = (mark_tail_calls(body), ALLOC_node_fun((uint32_t)lb2->np, body, node_is_leaf(body)));
+                    lb2->value = (mark_tail_calls(body), make_fun((uint32_t)lb2->np, body));
                 }
                 else {
                     lb2->value = parse_expr();
@@ -4653,7 +4755,7 @@ parse_program_until(CTX *c, int stop_tok)
                     NODE *vals[64];
                     for (int i = 0; i < nb; i++) vals[i] = bindings[i]->value;
                     uint32_t vidx = stash_letrec_values(vals, nb);
-                    expr = ALLOC_node_letrec_n((uint32_t)nb, vidx, cont);
+                    expr = make_letrec_n((uint32_t)nb, vidx, cont);
                 }
                 type_check_top(expr); maybe_aot_compile(expr);
                 VALUE v = EVAL(c, expr);

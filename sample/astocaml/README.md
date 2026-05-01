@@ -204,12 +204,32 @@ astocaml: Type_error((+): expected int)
 - **gref インラインキャッシュ** (全ベンチ 3-5× 加速)
 - **closure leaf alloca** (frame の malloc を排除; fib で更に 2.7× 加速)
 - **method send IC** (`obj#m` の dispatch をキャッシュ; method-call で 1.3-1.6× 加速)
+- **AOT specialize** (`-c` で .so にコンパイル、各 NODE の dispatcher を SD_* に patch; ack/tak 3×, fib 2× 加速)
 - TCO トランポリン、fixnum 比較 fast-path、ASTroGen always_inline
 
-ベースライン実装 (Phase 1 完了時) との累積比較:
-- fib: 2.62 s → 0.57 s (**4.6×**)
-- ack: 1.20 s → 0.62 s (1.9×)
-- tak: 1.23 s → 0.46 s (2.7×)
+`./astocaml -c` (AOT 込み):
+
+| ベンチ | 時間 |
+|--|--|
+| ack | 0.21 s |
+| fib | 0.30 s |
+| nqueens | 0.83 s |
+| sieve | 0.89 s |
+| tak | 0.16 s |
+
+公式 OCaml 4.14.1 との比較:
+
+| bench | astoc | astoc(-c) | ocaml(top) | ocamlc(BC) | ocamlopt |
+|--|--|--|--|--|--|
+| ack | 0.62 | **0.21** | 0.18 | 0.12 | 0.012 |
+| fib | 0.61 | **0.30** | 0.38 | 0.24 | 0.038 |
+| nqueens | 1.14 | 0.83 | 0.23 | 0.17 | 0.017 |
+| sieve | 0.98 | 0.89 | 0.26 | 0.24 | 0.020 |
+| tak | 0.46 | **0.16** | 0.25 | 0.16 | 0.014 |
+
+fib / tak で **astocaml AOT が公式 OCaml の bytecode interpreter (ocaml/ocamlc) より速い** という地点まで到達。
+nqueens / sieve は list 処理が重く、まだ 3-4× の差。
+ocamlopt (native compilation) は別物で 10-20× の差。
 
 メモリ使用量はインタプリタの malloc-leak 戦略によるもの (将来 Boehm GC で解消予定)。
 

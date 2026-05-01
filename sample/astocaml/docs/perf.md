@@ -128,6 +128,31 @@ node_lt(...) {
 効果: method_call ベンチで 2.1 s → 1.66 s (**1.34× 高速化**)。
 注: より大きな勝利はクラス間で method table を共有する版だが、現状では各 `new` がフレッシュな配列を確保するため per-instance に留まる。
 
+### ✅ AOT specialize の本格活用
+
+実装の鍵は **closure body / pattern arm を AOT エントリとして登録**:
+- `SPECIALIZE_node_fun` / `SPECIALIZE_node_match_arm` (および他の `@noinline` ノード) は **空** — 親 SD の中にインライン展開できないので。これにより `let f x = ...` の中身は AOT specialize されないままだった。
+- `make_fun` / `make_match_arm` / `make_let_pat` / `make_letrec_n` / `make_try` のラッパを用意し、各クロージャ body / pattern arm body / try body+handler を `AOT_ENTRIES` に登録。
+- `maybe_aot_compile` がトップレベルフォームと共に未コンパイルのエントリを全部 `astro_cs_compile` に渡し、`astro_cs_build` で .so を一括生成、`astro_cs_load` で各 NODE の dispatcher を patch。
+- `setenv("CCACHE_DISABLE", "1", 1)` で sandbox 環境でも ccache がぶつからないように。
+
+**warm cache での効果** (`./astocaml -c bench/<x>.ml`):
+
+| bench | no-AOT | AOT(warm) | speedup |
+|--|--|--|--|
+| ack | 0.62 s | 0.21 s | **3.0×** |
+| fib | 0.61 s | 0.30 s | **2.0×** |
+| tak | 0.46 s | 0.16 s | **2.9×** |
+| nqueens | 1.14 s | 0.83 s | 1.4× |
+| sieve | 0.98 s | 0.89 s | 1.1× |
+
+公式 OCaml 4.14.1 (interpreter) との比較では:
+- fib / tak で **astocaml(-c) が ocaml toplevel より速い**
+- ack でほぼ同等
+- nqueens / sieve は list 操作が重く、まだ ocaml に大差で負け (3-4×)
+
+cold (build含む) は +100-150ms のオーバーヘッドだが、~1秒以上のスケールでは net win。
+
 ### ✅ Closure leaf alloca
 
 実装:

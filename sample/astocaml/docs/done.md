@@ -216,11 +216,14 @@
 - `node_lt/le/gt/ge` は冒頭で `OC_IS_INT(a) & OC_IS_INT(b)` を確認、両方 fixnum なら直接 `OC_INT_VAL(av) <op> OC_INT_VAL(bv)` で比較
 - それ以外は多相 `oc_compare` にフォールスルー
 
-### コードストア (AOT)
+### コードストア (AOT — 本格活用版)
 
-- `--compile` (または `-c`) オプションで各トップレベル式を `astro_cs_compile` → `astro_cs_build` → `astro_cs_reload` → `astro_cs_load`
+- `--compile` (または `-c`) で各トップレベル式 + 全クロージャ body + 全 pattern arm body を `astro_cs_compile` → `astro_cs_build` → `astro_cs_reload` → `astro_cs_load`
 - `code_store/c/SD_<hash>.c` に specialized C コードを書き出し、`code_store/o/SD_*.o` → `code_store/all.so` を作る
 - `dlopen` で `.so` をロードし、各 NODE の dispatcher を SD_<hash> に置換
+- 鍵: `SPECIALIZE_node_fun` / `SPECIALIZE_node_match_arm` 等の `@noinline` ノードは空 SD なので親 SD に展開されない。`make_fun` / `make_match_arm` / `make_let_pat` / `make_letrec_n` / `make_try` ラッパで body を `AOT_ENTRIES[]` に登録し、batch compile/load。
+- `setenv("CCACHE_DISABLE", "1", 1)` で sandboxed FS でも build 通過。
+- **効果**: warm cache で ack 3.0×、fib 2.0×、tak 2.9× 加速。fib/tak は OCaml 公式 toplevel (`ocaml`) より速い。
 
 ### ASTroGen の always_inline
 
