@@ -29,24 +29,27 @@ and AST build time.
 
 ## Results
 
+Best of 3 for AOT (machine variance is ~30%); single-run for the
+others.
+
 ```
 bench                    interp  fpc -O-  fpc -O3      AOT
 -----                    ------  -------  -------      ---
 ackermann                  1.49     0.18     0.05     0.26
 collatz                    1.42     0.16     0.13     0.05
-fib                        0.83     0.13     0.07     0.19
-gcd                        1.00     0.25     0.13     0.27
+fib                        0.83     0.13     0.07     0.20
+gcd                        1.00     0.25     0.13     0.24
 heron                      1.46     0.16     0.09     0.08
 leibniz_pi                 1.29     0.14     0.13     0.09
 mandelbrot_int             1.44     0.05     0.05     0.04
 mandelbrot_real            1.35     diff     diff     0.06
-matmul                     1.31     0.05     0.02     0.06
-matmul_2d                  1.39     0.11     0.06     0.21
+matmul                     1.31     0.05     0.02     0.05
+matmul_2d                  1.39     0.11     0.06     0.17
 nested_loops               2.07     0.27     0.09     0.00
-oop_shapes                 1.20     0.10     0.05     0.73
+oop_shapes                 1.20     0.10     0.05     0.38
 quicksort                  1.09     0.15     0.10     0.21
-sieve                      1.29     0.12     0.07     0.22
-tarai                      1.72     0.20     0.11     0.29
+sieve                      1.29     0.12     0.07     0.20
+tarai                      1.72     0.20     0.11     0.26
 varparam_swap              1.12     0.07     0.03     0.09
 ```
 
@@ -96,20 +99,25 @@ specialization.
 
 **Virtual dispatch is the largest gap.**
 
-| bench       | fpc -O3 | AOT    | factor |
-|---|---|---|---|
-| oop_shapes  | 0.05 s  | 0.73 s | 14.6 × |
+| bench       | fpc -O3 | AOT (was) | AOT (now) | factor |
+|---|---|---|---|---|
+| oop_shapes  | 0.05 s  | 0.73 s    | 0.38 s    | 7.6 ×  |
 
-`oop_shapes` is the only bench dominated by virtual method calls
-(six `node_vcall` per inner-loop iteration).  AOT can't fold
-through `vcall` — the call target is only known at run time via
-the vtable lookup — so this is essentially the cost of one
-runtime-indirect call per dispatch.  fpc -O3 closes this gap
-because at -O3 it can devirtualize when type-flow analysis sees
-only one possible class per call site.  Class-method inline-cache
-(P5 in todo.md) is the natural fix — cache the resolved proc per
-call site and emit a direct `mk_pcall` when the cache is filled
-and the class still matches.
+`oop_shapes` is dominated by virtual method calls (six `node_vcall`
+per inner-loop iteration).  Round 8 added a **monomorphic inline
+cache** in `node_vcall`: each call site records the receiver's
+vtable address and the resolved body+metadata on first call;
+subsequent dispatches whose receiver has the same vtable take a
+fast path that skips the `vt[slot]` indirection and the procs[]
+lookup, going straight into `pascal_call_baked` with the cached
+body's dispatcher.  All six `oop_shapes` call sites are
+monomorphic at any moment (`base := r; base.area; base := c;
+base.area; …` — each call site sees its own receiver class
+consistently across iterations) so the cache hits 100% in steady
+state, halving the bench time.  fpc -O3 still wins by another
+factor of 7-8× — at that level it can devirtualize entirely
+because type-flow analysis sees only one possible class per call
+site, fully inlining the method body.
 
 **pascalast AOT is essentially on par with fpc -O- (no opt) overall.**
 On every bench except `oop_shapes`, AOT is within ~3× of fpc -O-
