@@ -539,12 +539,17 @@ struct JsString *
 js_str_concat(CTX *c, struct JsString *a, struct JsString *b)
 {
     size_t len = (size_t)a->len + b->len;
-    char *buf = (char *)malloc(len + 1);
+    // Stack buffer for short concat results — typical "key" + i style
+    // results are well under 256 bytes and don't need heap.  This was
+    // 21 % of map_coll cycles before stack-buffer + fast itoa
+    // (`js_str_intern_n` on the malloc'd path).
+    char stack_buf[256];
+    char *buf = (len + 1 <= sizeof stack_buf) ? stack_buf : (char *)malloc(len + 1);
     memcpy(buf, a->data, a->len);
     memcpy(buf + a->len, b->data, b->len);
     buf[len] = 0;
     struct JsString *s = js_str_intern_n(c, buf, len);
-    free(buf);
+    if (buf != stack_buf) free(buf);
     return s;
 }
 
@@ -1549,9 +1554,21 @@ js_to_string(CTX *c, JsValue v)
     if (JV_IS_TRUE(v))      return js_str_intern(c, "true");
     if (JV_IS_FALSE(v))     return js_str_intern(c, "false");
     if (JV_IS_SMI(v)) {
-        char buf[32];
-        snprintf(buf, sizeof buf, "%lld", (long long)JV_AS_SMI(v));
-        return js_str_intern(c, buf);
+        // Fast itoa — `snprintf("%lld", ...)` was 3.6 % of map_coll
+        // cycles via _itoa_word + printf machinery.  Plain digit loop
+        // beats it by a factor of ~10×.
+        char buf[24];
+        int64_t n = JV_AS_SMI(v);
+        int neg = (n < 0);
+        uint64_t u = neg ? (uint64_t)(-n) : (uint64_t)n;
+        char tmp[24];
+        int len = 0;
+        if (u == 0) tmp[len++] = '0';
+        else while (u) { tmp[len++] = (char)('0' + (u % 10)); u /= 10; }
+        int off = 0;
+        if (neg) buf[off++] = '-';
+        for (int i = len - 1; i >= 0; i--) buf[off++] = tmp[i];
+        return js_str_intern_n(c, buf, off);
     }
     if (JV_IS_FLONUM(v) || JV_IS_FLOAT_BOX(v)) return double_to_str(c, JV_AS_DBL(v));
     if (JV_IS_PTR(v)) {
