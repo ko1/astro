@@ -14,23 +14,26 @@
 
 ### optcarrot (Lan_Master.nes, 180 frames headless, last-10-frames fps)
 
-5 runs after 1 warmup, `taskset -c 0`, gcc -O2 -flto.
+10 runs after 3 warmups, `taskset -c 0`, gcc -O2 -flto for the koruby
+binary; SDs in `code_store/all.so` always built with `gcc -O3 -fPIC -fno-plt
+-march=native` (各 SD は独立 .o → `-shared` でリンク、LTO なし).
 
 | 構成 | fps (median) | vs CRuby no-JIT |
 |---|---:|---:|
 | ruby (no JIT) | 41.0 fps | 1.00× |
 | abruby (plain interp, CRuby C-ext) | 42 fps | 1.02× |
 | koruby (interp, plain) | 42 fps | 1.02× |
-| koruby (interp, LTO + PGO — `make koruby-pgo`) | 51 fps | 1.24× |
+| koruby (interp + PGO — `make koruby-pgo`) | 51 fps | 1.24× |
 | abruby (--aot-compile-first, AOT only) | 71 fps | 1.73× |
-| **koruby (AOT — `make koruby-aot`)** | **71 fps** | **1.73×** ← matches abruby +cf |
+| **koruby (AOT — `make koruby-aot`)** | **73 fps** | **1.78×** ← matches abruby +cf |
 | abruby (--aot + --pg-compile, AOT + PGC) | 75 fps | 1.83× |
 | **koruby (AOT + PGO — `make koruby-pgo-aot`)** | **80 fps** | **1.95×** ← exceeds abruby +pgc |
 | **ruby --yjit / --jit** | **175 fps** | **4.27×** |
 
-(注: 同セッション内で taskset -c 0、10 runs after warmup、median を取って比較。
-過去に「76 fps」とした計測はシステム負荷下のばらつきを過大評価したもので、
-クリーン計測では AOT 単独 71 fps、PGO+AOT 80 fps が信頼できる値。)
+(注: cold-tail を `korb_node_*_slow` として koruby 本体に hoist
+し SD 内に複製しないことで `all.so` が 867K → 785K (-10%)、AOT コンパイル
+時間も短縮。LTO は koruby 本体のみで全 6 ファイル小さいので体感差なし、
+all.so の 388 SDs は LTO 関係外。)
 
 #### abruby +cf にキャッチアップ済み (72 fps)
 
