@@ -2196,13 +2196,24 @@ static JsValue cf_function_bind(CTX *c, JsValue t, JsValue *a, uint32_t n) {
 // keys/values/entries iterators, iteration).
 // =====================================================================
 
-typedef struct JsMapEntry { JsValue k; JsValue v; bool used; } JsMapEntry;
+// Open-addressing hash table with insertion-order entry array.
+//   entries[]   : (k, v, hash, used) in insertion order; iteration walks
+//                 this array and skips !used (tombstones).  `capa` is
+//                 the number of entries[] slots used (incl tombstones).
+//   index[]     : power-of-two hash table mapping key → entries[] index;
+//                 -1=empty, -2=tombstone, otherwise a non-negative entry
+//                 index.  We probe `index_capa & mask` linearly.
+typedef struct JsMapEntry { JsValue k; JsValue v; uint32_t hash; bool used; } JsMapEntry;
+
 typedef struct JsMap {
     struct GCHead    gc;
     JsMapEntry      *entries;
-    uint32_t         size;        // active entries
-    uint32_t         capa;
-    uint8_t          is_set;      // 1 = Set semantics (only k matters)
+    int32_t         *index;       // power-of-two hash → entries[] idx
+    uint32_t         size;        // live (non-tombstone) entries
+    uint32_t         capa;        // entries[] slots used (incl tombstones)
+    uint32_t         entries_capa;
+    uint32_t         index_capa;  // power of two
+    uint8_t          is_set;
 } JsMap;
 
 static bool
@@ -2225,45 +2236,129 @@ samevaluezero(JsValue a, JsValue b)
     return false;
 }
 
+// Hash a JsValue under SameValueZero equality.
+static uint32_t
+jsval_hash(JsValue v)
+{
+    // Strings: use the precomputed intern hash.  Strings are interned
+    // so identical bytes share a pointer (and thus a hash) already.
+    if (JV_IS_STR(v)) return JV_AS_STR(v)->hash;
+    // Numbers: SMI hashes by raw integer; flonum by bit pattern;
+    // -0 / +0 share a hash; NaN hashes to a fixed slot.
+    if (JV_IS_NUM(v)) {
+        double d = JV_IS_SMI(v) ? (double)JV_AS_SMI(v) : JV_AS_DBL(v);
+        if (d == 0.0) return 0;
+        if (d != d)   return 0xFFFFFFFFu;
+        union { double d; uint64_t u; } t; t.d = d;
+        uint64_t x = t.u;
+        x ^= x >> 33; x *= 0xff51afd7ed558ccdULL;
+        x ^= x >> 33;
+        return (uint32_t)x ^ (uint32_t)(x >> 32);
+    }
+    // Pointers / singletons.
+    uint64_t x = (uint64_t)v;
+    x ^= x >> 33; x *= 0xff51afd7ed558ccdULL;
+    x ^= x >> 33;
+    return (uint32_t)x ^ (uint32_t)(x >> 32);
+}
+
+#define JSMAP_INDEX_EMPTY (-1)
+#define JSMAP_INDEX_TOMB  (-2)
+
+// Probe `index[]` for k.  Returns the matching entries[] slot on hit,
+// negative on miss.  When *out_target_slot is non-NULL we also pass
+// back the index[] slot that should hold a fresh entry's pointer
+// (preferring the first encountered tombstone, falling through to the
+// empty slot that ended the probe).
+static int
+jsmap_index_lookup(JsMap *m, JsValue k, uint32_t h, uint32_t *out_target_slot)
+{
+    uint32_t mask = m->index_capa - 1;
+    uint32_t i = h & mask;
+    int32_t first_tomb = -1;
+    for (;;) {
+        int32_t idx = m->index[i];
+        if (idx == JSMAP_INDEX_EMPTY) {
+            if (out_target_slot) *out_target_slot = (first_tomb >= 0) ? (uint32_t)first_tomb : i;
+            return -1;
+        }
+        if (idx == JSMAP_INDEX_TOMB) {
+            if (first_tomb < 0) first_tomb = (int32_t)i;
+        } else {
+            JsMapEntry *e = &m->entries[idx];
+            if (e->used && e->hash == h && samevaluezero(e->k, k)) return (int)idx;
+        }
+        i = (i + 1) & mask;
+    }
+}
+
 static int
 jsmap_find(JsMap *m, JsValue k)
 {
-    for (uint32_t i = 0; i < m->capa; i++) {
-        if (!m->entries[i].used) continue;
-        if (samevaluezero(m->entries[i].k, k)) return (int)i;
-    }
-    return -1;
+    if (!m->index_capa) return -1;
+    return jsmap_index_lookup(m, k, jsval_hash(k), NULL);
 }
 
 static void
-jsmap_grow(JsMap *m, uint32_t need)
+jsmap_resize_index(JsMap *m, uint32_t new_capa)
 {
-    uint32_t nc = m->capa ? m->capa * 2 : 8;
-    while (nc < need) nc *= 2;
-    JsMapEntry *neu = (JsMapEntry *)calloc(nc, sizeof(JsMapEntry));
-    uint32_t k = 0;
+    free(m->index);
+    m->index = (int32_t *)malloc(sizeof(int32_t) * new_capa);
+    for (uint32_t i = 0; i < new_capa; i++) m->index[i] = JSMAP_INDEX_EMPTY;
+    m->index_capa = new_capa;
+    uint32_t mask = new_capa - 1;
     for (uint32_t i = 0; i < m->capa; i++) {
-        if (m->entries[i].used) neu[k++] = m->entries[i];
+        if (!m->entries[i].used) continue;
+        uint32_t j = m->entries[i].hash & mask;
+        while (m->index[j] != JSMAP_INDEX_EMPTY) j = (j + 1) & mask;
+        m->index[j] = (int32_t)i;
     }
-    free(m->entries);
-    m->entries = neu;
-    m->capa = nc;
+}
+
+static void
+jsmap_compact_entries(JsMap *m)
+{
+    uint32_t w = 0;
+    for (uint32_t r = 0; r < m->capa; r++) {
+        if (m->entries[r].used) {
+            if (w != r) m->entries[w] = m->entries[r];
+            w++;
+        }
+    }
+    m->capa = w;
+    jsmap_resize_index(m, m->index_capa);
 }
 
 static void
 jsmap_set(JsMap *m, JsValue k, JsValue v)
 {
-    int idx = jsmap_find(m, k);
+    if (m->index_capa == 0) jsmap_resize_index(m, 8);
+    uint32_t h = jsval_hash(k);
+    uint32_t target_slot = 0;
+    int idx = jsmap_index_lookup(m, k, h, &target_slot);
     if (idx >= 0) { m->entries[idx].v = v; return; }
-    if (m->size + 1 >= m->capa) jsmap_grow(m, m->size + 1);
-    for (uint32_t i = 0; i < m->capa; i++) {
-        if (!m->entries[i].used) {
-            m->entries[i].k = k;
-            m->entries[i].v = v;
-            m->entries[i].used = true;
-            m->size++;
-            return;
-        }
+
+    // Append a fresh entry (insertion order); index slot points at it.
+    if (m->capa == m->entries_capa) {
+        uint32_t nc = m->entries_capa ? m->entries_capa * 2 : 8;
+        m->entries = (JsMapEntry *)realloc(m->entries, sizeof(JsMapEntry) * nc);
+        m->entries_capa = nc;
+    }
+    uint32_t e_idx = m->capa++;
+    m->entries[e_idx].k    = k;
+    m->entries[e_idx].v    = v;
+    m->entries[e_idx].hash = h;
+    m->entries[e_idx].used = true;
+    m->index[target_slot]  = (int32_t)e_idx;
+    m->size++;
+
+    // Grow index past 0.75 load.
+    if (m->size * 4 > m->index_capa * 3) {
+        jsmap_resize_index(m, m->index_capa * 2);
+    }
+    // Compact entries[] when tombstones overrun.
+    if (m->capa - m->size > m->capa / 3 && m->capa > 16) {
+        jsmap_compact_entries(m);
     }
 }
 
@@ -2272,7 +2367,14 @@ jsmap_delete(JsMap *m, JsValue k)
 {
     int idx = jsmap_find(m, k);
     if (idx < 0) return false;
+    uint32_t h    = m->entries[idx].hash;
+    uint32_t mask = m->index_capa - 1;
+    uint32_t i    = h & mask;
+    while (m->index[i] != idx) i = (i + 1) & mask;
+    m->index[i] = JSMAP_INDEX_TOMB;
     m->entries[idx].used = false;
+    m->entries[idx].k = JV_UNDEFINED;
+    m->entries[idx].v = JV_UNDEFINED;
     m->size--;
     return true;
 }

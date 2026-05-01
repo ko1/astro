@@ -339,8 +339,11 @@ gc_finalize(struct GCHead *h)
         break;
     }
     case JS_TMAP: case JS_TSET: {
-        struct JsMapData2 { struct GCHead gc; void *entries; } *m = (void *)h;
+        // Layout (private to js_stdlib.c) now has both an entries[]
+        // ordered array and an index[] hash table — free both.
+        struct JsMapData2 { struct GCHead gc; void *entries; void *index; } *m = (void *)h;
         free(m->entries);
+        free(m->index);
         break;
     }
     default:
@@ -1071,8 +1074,11 @@ js_get_member(CTX *c, JsValue obj, struct JsString *name)
         if (jv_heap_type(obj) == JS_TMAP || jv_heap_type(obj) == JS_TSET) {
             // Map/Set are not JsObject; route through dedicated proto.
             if (name == js_str_intern(c, "size")) {
-                struct { struct GCHead gc; void *e; uint32_t sz, capa; uint8_t is; } *m = (void *)(uintptr_t)obj;
-                return JV_INT((int64_t)m->sz);
+                // Layout (private to js_stdlib.c): { GCHead, entries*,
+                // index*, size, capa, entries_capa, index_capa, is_set }.
+                struct { struct GCHead gc; void *entries; void *index; uint32_t size; } *m
+                    = (void *)(uintptr_t)obj;
+                return JV_INT((int64_t)m->size);
             }
             return js_object_get(c, jv_heap_type(obj) == JS_TMAP ? c->map_proto : c->set_proto, name);
         }

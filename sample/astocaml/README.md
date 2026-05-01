@@ -189,52 +189,49 @@ astocaml: Type_error((+): expected int)
 
 ## ベンチマーク
 
-`bench/` 内 6 ファイル (持続実行で約 1 秒以上のスケール):
+`bench/` 内 6 ファイル (持続実行で約 0.1-1 秒のスケール):
 
-| ベンチ | 入力 | 結果 | 時間 | 概要 |
+| ベンチ | 入力 | 結果 | astoc(-c) | 概要 |
 |--|--|--|--|--|
-| ack | ack(3, 9) | 4093 | 0.62 s | Ackermann; 深い再帰 |
-| fib | fib(35) | 9227465 | 0.57 s | 古典 Fibonacci |
-| nqueens | 10-queens × 3 | 724 | 1.12 s | バックトラッキング (相互再帰) |
-| sieve | sum of primes ≤ 8000 × 8 | 3738566 | 0.97 s | エラトステネス |
-| tak | tak(24, 16, 8) × 5 | 9 | 0.46 s | Takeuchi 関数 |
-| method_call | counter#incr 10M | 10000000 | 0.99 s | OO 重い method send |
+| ack | ack(3, 9) | 4093 | 0.092 s | Ackermann; 深い再帰 |
+| fib | fib(35) | 9227465 | 0.149 s | 古典 Fibonacci |
+| nqueens | 10-queens × 3 | 724 | 0.365 s | バックトラッキング (相互再帰) |
+| sieve | sum of primes ≤ 8000 × 8 | 3738566 | 0.372 s | エラトステネス |
+| tak | tak(24, 16, 8) × 5 | 9 | 0.066 s | Takeuchi 関数 |
+| method_call | counter#incr 10M | 10000000 | ~1.0 s | OO 重い method send |
 
 主な高速化要因:
-- **gref インラインキャッシュ** (全ベンチ 3-5× 加速)
-- **closure leaf alloca** (frame の malloc を排除; fib で更に 2.7× 加速)
-- **method send IC** (`obj#m` の dispatch をキャッシュ; method-call で 1.3-1.6× 加速)
-- **AOT specialize** (`-c` で .so にコンパイル、各 NODE の dispatcher を SD_* に patch; ack/tak 3×, fib 2× 加速)
-- **`node_appN` closure-leaf fast path** — `oc_apply` の type chain と partial-app 確認を caller 側で in-line skip; fib(40) で更に 1.9× 加速
-- **call IC + match_arm SD + cons bump allocator** — sieve / nqueens の list 処理が 2×、fib も per-call IC で +7%
+- **gref インラインキャッシュ** (全ベンチ 3-5× 加速 — 単一の最大勝利)
+- **AOT specialize** (`-c` で .so にコンパイル、closure body / match arm body 含めて全 NODE の dispatcher を SD_* に patch)
+- **closure leaf alloca** (frame の malloc を排除; fib で 2.7×)
+- **method send IC** (`obj#m` の dispatch をキャッシュ; method-call で 1.3-1.6×)
+- **`node_appN` closure-leaf fast path** — `oc_apply` の type chain を caller 側で in-line skip
+- **call IC** (per-call-site の `app_cache`) — type chain チェックを更に skip
+- **型特化 binop (`_int` 系)** — 型推論結果を post-infer dispatcher swap で焼き込み
+- **list 系 fix**: `node_match_arm` から `@noinline` 削除 (SD 化) + cons 専用 bump allocator + match arm leaf alloca
+- **LTO + 緩い inline limits** — SD 同士の cross-TU inlining
 - TCO トランポリン、fixnum 比較 fast-path、ASTroGen always_inline、`-fno-stack-clash-protection`
 
-`./astocaml -c` (AOT 込み):
-
-| ベンチ | 時間 |
-|--|--|
-| ack | 0.15 s |
-| fib | 0.19 s |
-| nqueens | 0.83 s |
-| sieve | 0.90 s |
-| tak | 0.09 s |
-
-公式 OCaml 4.14.1 との比較:
+公式 OCaml 4.14.1 との比較 (warm cache):
 
 | bench | astoc | astoc(-c) | ocaml(top) | ocamlc(BC) | ocamlopt |
 |--|--|--|--|--|--|
-| ack | 0.40 | **0.15** | 0.22 | 0.13 | 0.012 |
-| fib | 0.51 | **0.19** | 0.26 | **0.21** | 0.043 |
-| nqueens | 1.14 | 0.83 | 0.22 | 0.18 | 0.019 |
-| sieve | 0.96 | 0.90 | 0.27 | 0.25 | 0.025 |
-| tak | 0.31 | **0.09** | 0.23 | **0.17** | 0.016 |
+| ack | 0.45 | **0.10** | 0.19 | 0.12 | 0.012 |
+| fib | 0.52 | **0.15** | 0.43 | 0.24 | 0.044 |
+| nqueens | 0.83 | 0.40 | 0.25 | 0.18 | 0.020 |
+| sieve | 0.64 | 0.40 | 0.31 | 0.24 | 0.026 |
+| tak | 0.29 | **0.07** | 0.27 | 0.19 | 0.016 |
 
-`fib(40)` で per-call: **astocaml -c 6.4 ns**, ocamlc 7.5 ns, ocamlopt 1.4 ns。
+ベースライン (Phase 1 完了時) からの累積:
+- fib: 2.62 s → 0.149 s (**18× 高速化**)
+- ack: 1.20 s → 0.092 s (**13×**)
+- tak: 1.23 s → 0.066 s (**18×**)
+- nqueens: 1.59 s → 0.365 s (4.4×)
+- sieve: 1.21 s → 0.372 s (3.3×)
 
-fib / tak で **astocaml AOT が ocamlc bytecode を上回る**。ack も BC とほぼ同等。nqueens / sieve は list 処理が AOT 最適化対象外なのでまだ 3-4× の差。
-ocamlopt (native compilation) との差は 4-9× まで縮まったが、依然として真の native code 生成との差は残る。
+ack / fib / tak で **astocaml AOT が ocamlc bytecode を超え** ocaml toplevel との比較ではほぼ全勝。 ocamlopt (native compilation) との差は fib 3.5× / ack 7× / tak 5× / nqueens・sieve 15-20×。 残差の正体は (1) `VALUE` の untag/retag、(2) heap-allocated `oframe`、(3) `oc_apply` 経由の indirect call — いずれも ASTro AST walker としての構造的限界 (詳細は `docs/perf.md`)。
 
-メモリ使用量はインタプリタの malloc-leak 戦略によるもの (将来 Boehm GC で解消予定)。
+メモリ使用量はインタプリタの malloc-leak 戦略によるもの (cons は bump allocator 化済み、frame は alloca 化済み — 残るは closure / variant / record / ref 等; 将来 Boehm GC で解消予定)。
 
 ## 出典
 

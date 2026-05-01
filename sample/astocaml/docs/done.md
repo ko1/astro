@@ -263,3 +263,21 @@
 - `oc_apply` の最初の iteration で leaf closure を呼ぶときは frame を `alloca` (oc_apply の C スタック上に乗る; body は新クロージャを作らないので escape しない)
 - TCO トランポリンの再エントリ (`goto loop`) では `first_iter = false` で `malloc` フォールバック (alloca を積み続けるとスタック爆発する)
 - **効果**: fib(35) で 2.7× 高速化 (1.65 s → 0.57 s)、tak / method_call も 1.5× 程度
+
+### 型特化 binop / `if_bool` / `neg_int` / `and_bool` / `or_bool`
+
+ASTro の dispatcher / kind swap で「型推論結果を専用ノードに焼き込む」パターンを完成。
+
+- `node_add/sub/mul/div/mod/lt/le/gt/ge/eq/ne` の `_int` 版を `node.def` に追加 (struct layout 同一)
+- `infer_arith_int` / 比較の infer / `infer_bool_op` で両 operand が int / bool 確定時に `oc_node_to_int` / `oc_node_to_logic_bool` で **kind + dispatcher を in-place swap**
+- `node_if_bool` (cond bool 確定で OC_FALSE / type_error チェック削除)、`node_neg_int` (operand int 確定)
+- AOT 時に ASTroGen が新 kind の SD を自動生成、SPECIALIZE / hash / replacer すべて再利用
+- **効果**: ack / nqueens / sieve で 5-15%
+
+### LTO + 緩い inline limits
+
+`ASTRO_EXTRA_CFLAGS = -fno-stack-clash-protection -fno-stack-protector -flto -finline-functions -finline-small-functions -finline-limit=10000 --param max-inline-insns-auto=400 --param max-inline-insns-single=400 --param inline-unit-growth=300`
+
+- stack-clash protection の probe loop が alloca ごとに 10 命令の dead code を吐くのを抑制
+- LTO + 大きい inline budget で SD 同士の cross-translation-unit inlining を有効化 — fib body の if_bool / lt_int / lref がほぼ一塊に折り畳まれる
+- **効果**: 軽微 (数 %) だが SD 機械語が綺麗になり、再帰 call SD の prologue/epilogue が縮小
