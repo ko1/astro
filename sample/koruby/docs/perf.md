@@ -19,43 +19,35 @@
 | 構成 | fps (median) | vs CRuby no-JIT |
 |---|---:|---:|
 | ruby (no JIT) | 41.0 fps | 1.00× |
-| abruby (plain interp, CRuby C-ext) | 41.8 fps | 1.02× |
-| koruby (interp, -O2 + LTO) | 43.6 fps | 1.06× |
-| koruby (PGO + LTO) | 51.3 fps | 1.25× |
-| **koruby (AOT + LTO, this branch)** | **54 fps** | **1.32×** |
-| abruby (--aot-compile-first, AOT only) | 70 fps | 1.71× |
+| abruby (plain interp, CRuby C-ext) | 42 fps | 1.02× |
+| koruby (interp, plain) | 42 fps | 1.02× |
+| koruby (PGO + LTO) | 51 fps | 1.24× |
+| **koruby (AOT + prologues + LTO)** | **60 fps** | **1.46×** |
+| abruby (--aot-compile-first, AOT only) | 73 fps | 1.78× |
 | abruby (--aot + --pg-compile, AOT + PGC) | 75 fps | 1.83× |
 | **ruby --yjit / --jit** | **174 fps** | **4.24×** |
 
-#### koruby vs abruby compiled — 残ギャップ 30%
+#### koruby vs abruby compiled — 残ギャップ 22%
 
-abruby compiled mode (70 fps) と koruby AOT (54 fps) の差は、abruby が
-**call site ごとに argc + 呼出先の型でプロローグを焼き分け**ているため:
+koruby AOT (60 fps) は abruby +cf (73 fps) に対して 22% 遅い。差は abruby が:
 
-```
-prologue_ast_simple_0   // AST メソッド + 引数 0
-prologue_ast_simple_1   // AST メソッド + 引数 1
-prologue_ast_simple_2   // AST メソッド + 引数 2
-prologue_ast_simple_n   // AST メソッド + 引数 n
-prologue_cfunc          // C 関数
-prologue_ivar_getter    // attr_reader 系
-prologue_ivar_setter    // attr_writer 系
-```
+* **PG-baked prologue**: 各 call site の SD 生成時に観測した `mc->prologue`
+  を **直接呼出として焼き込む** (PGSD)。 koruby は依然 `mc->prologue(...)` の
+  indirect call を経由する。
+* **argc 別の prologue specialization**: `prologue_ast_simple_0` /
+  `prologue_ast_simple_1` / `prologue_ast_simple_2` / `prologue_ast_simple_n`
+  に分かれ、 `argc` がコンパイル時定数となるので Qnil-fill ループが
+  unroll される。 koruby は generic な `prologue_ast_simple` のみ。
+* **より痩せた frame**: abruby は `c->self` を持たず、 `frame->self` だけで
+  済ませる。 save/restore のメモリアクセスが 2 ペア消える。 koruby は
+  まだ `c->self` も保存している。
+* **stack overflow check の省略**: abruby は guard page に頼ってチェックを
+  していない。 koruby は毎回 fp+locals_cnt vs stack_end を見ている。
 
-`method_cache_fill` の時点で呼出先の型が決まり、`mc->prologue` がそれ専用の
-ものに固定されます。`dispatch_method_frame` は **単純な 1 indirect call** だけで
-方策分岐なし。 abruby `node.def` には `node_call0` / `node_call1` / `node_call2`
-× `_ast` / `_cfunc` / `_ivar_get` 派生で 14+ ノードあり、parse 時点で argc に
-応じて選ばれます。
-
-一方 koruby はすべての call が巨大な `korb_dispatch_call` を通り、関数内で
-cfunc vs AST 判定 + rest_slot 処理 + Qundef fill ループ + frame setup を毎回
-やっています。 perf 上 14-18% を食う最大のホットスポット。
-
-このギャップを埋めるには **specialized call nodes + baked prologues** の
-実装が要る (節定義 +14、prologue 関数群、method_cache 構造拡張、parse.c
-での argc 別 node 選択)。半日〜1日仕事の architectural 改修になるので
-今回の commit には含めていません。
+このギャップを完全に埋めるには上記 3 つを順次入れる必要があり、
+将来の課題。 まず PG-baked prologue が一番効きそう (perf 上
+`prologue_ast_simple` 自体が 12.6% を占めるので、これを inline で
+消せれば +5-8% は見込める)。
 
 #### 段階的な改善
 
@@ -74,6 +66,14 @@ cfunc vs AST 判定 + rest_slot 処理 + Qundef fill ループ + frame setup を
   で 388 個の SD を `code_store/all.so` に。 起動時に `koruby_cs_init` が
   dlopen し、`OPTIMIZE` で各 NODE の hash 値で `dlsym("SD_<hash>")` を引いて
   dispatcher を差し替え。
+* **60 fps** ←← **specialized prologues + inline cache fast path**。
+  `method_cache.prologue` フィールドを追加し、`method_cache_fill` の時点で
+  `prologue_ast_simple` / `prologue_ast_general` / `prologue_cfunc` の中から
+  選ぶ。 dispatch は `mc->prologue(...)` の **単一 indirect call** で内部に
+  cfunc vs AST 判定なし。 さらに `EVAL_node_method_call` 内に inline cache 
+  hit fast path を追加し、 cache hit 時は `korb_dispatch_call` を呼ばずに
+  直接 `mc->prologue` を呼ぶ。 frame init も .caller_node / .fp / .locals_cnt
+  を省いて 3 stores 削減。
 
 #### ビルド方法
 
