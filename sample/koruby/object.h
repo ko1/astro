@@ -456,7 +456,47 @@ VALUE korb_node_ge_slow    (CTX *c, VALUE l, VALUE r, uint32_t arg_index);
 VALUE korb_node_aref_slow  (CTX *c, VALUE r, VALUE i, uint32_t arg_index);
 VALUE korb_node_aset_slow  (CTX *c, VALUE r, VALUE i, VALUE v, uint32_t arg_index);
 
-VALUE korb_yield(CTX *c, uint32_t argc, VALUE *argv);
+/* Cold tail of korb_yield: handles auto-destructure (block has N>1
+ * params, called with single Array of size M), variable argc paths,
+ * and the param/argc-mismatch slow case. */
+VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv);
+
+extern struct korb_proc *current_block;
+
+/* Fast path: hot in `ary.each { |x| ... }` style code (Array#each,
+ * Hash#each, etc.) — argc and params_cnt are usually 1, no
+ * auto-destructure, no need to copy more than 1 arg.  Inlined into
+ * builtins.c iterators (ary_each etc.) so the cross-.so dispatcher
+ * call disappears. */
+static inline __attribute__((always_inline)) VALUE
+korb_yield(CTX *c, uint32_t argc, VALUE *argv) {
+    struct korb_proc *blk = current_block;
+    if (UNLIKELY(!blk)) {
+        korb_raise(c, NULL, "no block given (yield)");
+        return Qnil;
+    }
+    /* Common case: single arg, single param, no destructure.  Inline. */
+    if (LIKELY(argc == 1 && blk->params_cnt == 1)) {
+        VALUE arg = argv[0];  /* snapshot before fp swap */
+        VALUE *prev_fp = c->fp;
+        VALUE prev_self = c->self;
+        VALUE *bfp = blk->env;
+        bfp[blk->param_base] = arg;
+        c->self = blk->self;
+        c->fp = bfp;
+        VALUE r = blk->body->head.dispatcher(c, blk->body);
+        c->fp = prev_fp;
+        c->self = prev_self;
+        if (UNLIKELY(c->state == KORB_NEXT)) {
+            VALUE nv = c->state_value;
+            c->state = KORB_NORMAL; c->state_value = Qnil;
+            return nv;
+        }
+        return r;
+    }
+    return korb_yield_slow(c, blk, argc, argv);
+}
+
 bool korb_block_given(void);
 
 /* gvar */

@@ -814,12 +814,10 @@ struct korb_proc *current_block = NULL;
 
 bool korb_block_given(void) { return current_block != NULL; }
 
-VALUE korb_yield(CTX *c, uint32_t argc, VALUE *argv) {
-    if (UNLIKELY(!current_block)) {
-        korb_raise(c, NULL, "no block given (yield)");
-        return Qnil;
-    }
-    struct korb_proc *blk = current_block;
+/* The single-arg/single-param fast path is inlined in object.h
+ * (korb_yield).  This handles every other shape — auto-destructure,
+ * argc/params mismatch, etc. */
+VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv) {
     /* Shared-fp closure: block evaluates with env_fp's view of locals.
      * IMPORTANT: argv may point into the YIELDER's fp (e.g., a slot inside
      * the calling method's frame) and we're about to overwrite that slot
