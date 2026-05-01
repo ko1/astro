@@ -632,6 +632,12 @@ process_file(grep_state_t *st, const char *path)
                     process_buffer_pure_literal(st, (const char *)map, (size_t)sb.st_size,
                                                  path, pl_needles, pl_needle_lens, st->n_patterns);
                     verbose_mark("after scan");
+                    /* munmap explicitly so --verbose reports honestly.
+                     * Skipping it shifts ~5 ms to kernel exit-time
+                     * teardown (which happens after our last
+                     * verbose_mark and is invisible to it) but doesn't
+                     * actually shrink wall-time — the kernel pays the
+                     * same PTE-teardown cost either way. */
                     munmap(map, (size_t)sb.st_size);
                     verbose_mark("after munmap");
                     close(fd);
