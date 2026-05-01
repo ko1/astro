@@ -5,12 +5,14 @@ ECMAScript 仕様への対応状況と、性能向上のために行った変更
 ## 言語機能 (ES2023+ サブセット)
 
 ### §6 Types
-- [x] Undefined / Null / Boolean / String / Number / Object / Symbol / BigInt
+- [x] Undefined / Null / Boolean / String / Number / Object / Symbol
 - [x] IEEE 754 double のフルレンジ (NaN/±0/±Inf 含む)
-- [x] SMI (符号付き 63 bit 整数) と inline flonum のタグ表現
+- [x] SMI (符号付き 63 bit 整数) と inline flonum のタグ表現 ※ Number 型の内部最適化
 - [x] Symbol — `Symbol(desc)` がユニークな heap 値を返し、`typeof === "symbol"`、
       Symbol.iterator / .asyncIterator / .toPrimitive を well-known string key として公開
-- [x] BigInt リテラル `123n` — int64 で動作 (オーバーフロー検出は未実装)
+- [ ] **BigInt は未実装**。`123n` リテラル構文は lexer が `n` を consume するが、値は通常の
+      Number として扱う。`typeof 123n` は `"number"` を返す (spec は `"bigint"`)。
+      混合算術 (`1 + 1n`) は TypeError にならず Number として動く
 
 ### §7 Abstract operations
 - [x] ToBoolean / ToNumber / ToString / ToPrimitive / ToObject

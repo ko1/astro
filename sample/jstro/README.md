@@ -25,7 +25,8 @@ jstro [-q] [-v] [--show-result] [--dump] [--dump-ic] file.js
 
 詳細は [`docs/done.md`](./docs/done.md)。要約:
 
-- **値型** — Undefined / Null / Boolean / String / Number / Object / Symbol / BigInt(int64)
+- **値型** — Undefined / Null / Boolean / String / Number / Object / Symbol
+  (BigInt は構文 `123n` を受理するだけで値は Number、独立した型としては未実装)
 - **コア構文** — `var/let/const` (TDZ + ホイスト), function 宣言/式/arrow/async/`function*`,
   control flow (`if/while/do/for/for-of/for-in/switch/try-catch-finally/throw`),
   ラベル付き break, あらゆる演算子 (`?? ?. ??= ||= &&= ** ` を含む)
@@ -67,7 +68,8 @@ jstro [-q] [-v] [--show-result] [--dump] [--dump-ic] file.js
 - **真のジェネレータ / async microtask** — 構文は受理するが、yield/await は同期実行
 - **自動 GC は未実装** — 長時間プロセスではメモリが増え続ける
 - **ASTro 特化モード未駆動** — フレームワークは整備済みだが SD bake は未稼働
-- **BigInt** — `123n` リテラルは int64 として動作 (任意精度ではない)
+- **BigInt 未実装** — `123n` リテラル構文は受理するが値は通常の Number に
+  なる (`typeof 123n === "number"`)。独立した primitive type としての BigInt は未対応
 - **`String.length`** が UTF-8 byte 長 (UTF-16 単位ではない)
 - **enumerable/writable/configurable** — hasOwn 相当の 1bit のみ追跡
 - **`with` 文** — パースしない (非推奨)

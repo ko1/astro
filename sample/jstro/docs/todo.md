@@ -16,7 +16,12 @@
       コールバックを次のイベントループ tick に積む。
 
 ### 値 / オブジェクトモデルの細部
-- [ ] **BigInt** の真の任意精度 — 現状 int64 のみ。GMP / mini-gmp を組み込む
+- [ ] **BigInt** の実装 — 現状は `123n` リテラル構文を受理するだけで、値は通常の
+      Number として扱っている (`typeof 123n === "number"` になってしまう)。
+      正しくは独立したプリミティブ型 (`typeof === "bigint"`)。実装には新しい
+      heap 型 `JS_TBIGINT` (任意精度整数; mini-gmp 等)、`+ - * / %` 等の演算子の
+      BigInt 対応、Number との混合をブロックする TypeError、`BigInt(value)` 変換、
+      `BigInt.prototype.{toString, valueOf}` が必要
 - [ ] **Symbol** をプロパティキーとして使う — 現状 well-known は文字列キー化
       してるが、`obj[symbolValue] = v` のようなユーザ定義 Symbol キーは
       JsString と同じ扱いにできない
