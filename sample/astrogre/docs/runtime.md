@@ -175,21 +175,35 @@ where a multi-byte codepoint should be one class element. See
 
 ## Top-level search
 
-`astrogre_search` (in match.c) is the only thing standing between the
-AST and the user. It loops over starting positions:
+The for-each-start-position loop is itself an AST node:
+`node_grep_search`. Its EVAL is the loop, its `body` operand is the
+regex AST, its `anchored_bos` operand short-circuits to one
+position when the pattern starts with `\A`. `astrogre_search` (in
+match.c) just sets up CTX and calls `EVAL(c, root)` once.
 
 ```c
-for (size_t start = 0; start < (anchored ? 1 : len + 1); start++) {
-    c.pos = start;
-    /* reset captures + rep stack */
-    if (EVAL(&c, p->root)) return true;
+NODE_DEF
+node_grep_search(CTX *c, NODE *n, NODE *body, uint32_t anchored_bos)
+{
+    size_t start = c->pos;                  /* caller-set */
+    size_t start_max = anchored_bos ? (start == 0 ? 1 : 0) : c->str_len + 1;
+    for (size_t s = start; s < start_max; s++) {
+        c->pos = s;
+        for (int i = 0; i < ASTROGRE_MAX_GROUPS; i++) c->valid[i] = false;
+        c->rep_top = NULL;
+        if (EVAL_ARG(c, body)) return 1;
+    }
+    return 0;
 }
 ```
 
-`anchored` is set when the parser sees a leading `\A`, in which case
-only `start == 0` is tried — a free 100×–1000× speed-up for anchored
-patterns. (Other anchorable forms — `^pattern` with no `/m`, fixed-
-prefix scan — are listed under future work.)
+Putting the loop in node.def is the key trick. When the specialiser
+recurses into `body` and inlines `body_dispatcher` as a direct
+function pointer, gcc fuses the loop and the regex chain into one
+SD function — no indirect calls, no DISPATCH chain, capture-state
+reset hoisted to a single `vmovdqu`. See
+[`perf.md`](./perf.md) for the disassembly and the 7.22×
+literal-tail microbench number.
 
 ## Memory
 
@@ -226,6 +240,97 @@ the CLI never has to look inside them.
 
 This is plumbing, not optimisation — but it's what made the
 side-by-side comparison in `bench/grep_bench.sh` cheap to write.
+
+## Where ASTro's specialization helps (and where it doesn't)
+
+A bench-driven note on what we learned writing this sample, kept here
+because the answer turns out to depend on the *shape* of the workload
+in a way that might surprise someone coming from "AOT bake good for
+everything".
+
+### Bake helps when per-iter work is non-trivial
+When the inner work per dispatch is meaningful — a method send, a
+type-check, a frame push — the bake's job (eliminating the indirect
+call + constant-folding child operands) is a real share of the wall
+time:
+
+- koruby `fib`: interp → AOT, 3.6×.
+- pascalast typical bench: 2–25× across the table.
+- Our own `literal-tail` microbench (16 KiB single buffer, repeated
+  search): **22.75 s → 3.15 s, 7.22×**. The fused SD has no
+  indirect call left at all.
+
+### Bake stops helping when an algorithmic optimization eats the dispatch
+For the grep CLI the picture flips. Per-position inner work is *one
+or two compares*, not a method send. The dispatch chain bake removes
+is already cheap (3–4 indirect calls per position, all to the same
+hot BTB target, ~1 ns each). And once a literal-prefix prefilter is
+in play (memchr / memmem / Boyer-Moore), the verify chain only runs
+on candidate positions — typically a few hundred per file — so the
+total dispatch overhead the bake could eliminate is in the µs range:
+
+```
+bench: 118 MB corpus
+                                interp     aot-cached
+literal /static/                0.934 s    0.974 s    (essentially noise)
+```
+
+ugrep does the same search in 2 ms via memchr. The 450× gap astrogre
+shows vs ugrep is **not** something specialization can close — it's
+algorithmic, not dispatch-overhead.
+
+### The right pattern: wrap algorithms as nodes
+This is the architectural lesson the sample makes obvious. ASTro's
+specializer can't *invent* algorithmic optimizations; what it gives
+you is a free composition mechanism — once an optimization is
+expressed as a node, the framework hashes it, code-store-shares it,
+and inlines its `body` operand. So the engineering shape is:
+
+> *Identify an algorithmic optimization. Wrap it in a node. Have the
+> parser emit it under the right precondition. The bake handles the
+> rest.*
+
+For astrogre the next-up nodes (under `todo.md → Performance`) all
+fit the shape:
+
+| node                          | inner algorithm           | parser trigger                         |
+|-------------------------------|---------------------------|----------------------------------------|
+| `node_grep_search_memchr`     | `memchr` for first byte   | pattern starts with a fixed byte       |
+| `node_grep_search_memmem`     | `memmem` for prefix       | pattern starts with ≥4 byte literal    |
+| `node_grep_search_bmh`        | Boyer-Moore-Horspool      | whole pattern is fixed (`-F`)          |
+| `node_re_class_pshufb`        | PSHUFB membership in 16 B | class with ≤16 members                 |
+| `node_re_alt_first_byte_skip` | first-byte 256-bit bitmap | alt branches all start with fixed byte |
+| `node_grep_lines`             | newline scan + per-line   | grep CLI driver                        |
+
+Each of these would be ~50–100 lines of node body. The bake gives
+them all the same treatment for free: `body` inlined, constants
+baked, dispatchers swapped post-build.
+
+### Where bake (specifically) might still pay
+For grep-shaped workloads the most plausible bake-only wins are
+small and around encoding / flag specialization:
+
+- **UTF-8 dot leading-byte cascade.** `node_re_dot_utf8`'s 4-way
+  branch on `b < 0x80` / `0xC0` / `0xE0` / `0xF0` could collapse for
+  inputs known to be ASCII-only. But that's a *runtime* property of
+  the input, not a parse-time property of the pattern — bake can't
+  see it without a profile signal.
+- **Case-fold backref.** `node_re_backref` has a `c->case_insensitive`
+  branch. Splitting into ci / non-ci variants at parse time fixes
+  this without bake — the parser knows the flag.
+- **Class bitmap as constants.** Bake commits `bm0..3` as immediates.
+  gcc *might* turn small classes (`[abc]`) into a switch table. We
+  see ~1.11× on `class-word`; small.
+
+### TL;DR
+- Algorithmic optimizations live in *new node types*; bake then
+  composes them with the rest of the AST for free.
+- Bake's contribution shows up cleanly when the inner per-iter work
+  is non-trivial. For grep-shaped workloads where prefilter does
+  most of the heavy lifting, bake is in the noise.
+- "ASTro fast" needs both: per-node algorithmic care (memchr,
+  PSHUFB, BMH, …) AND specialization (so the algorithmic shell can
+  compose with the regex verify it wraps).
 
 ## Driver: grep on top
 
