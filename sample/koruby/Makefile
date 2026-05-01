@@ -4,17 +4,27 @@ NODE_GENFILES = node_eval.c node_dispatch.c node_dump.c node_specialize.c \
                 node_replace.c node_alloc.c node_hash.c node_head.h
 
 CC ?= gcc
+# ccache wraps gcc and sometimes hits a read-only $HOME/.cache; bypass.
+export CCACHE_DISABLE := 1
 optflags ?= -O2
 PRISM_DIR = ./prism
 PGO_DIR = $(CURDIR)/pgo-data
-CFLAGS = -I$(PRISM_DIR)/include -I. $(optflags) -flto=auto -ggdb3 -Wall -Wno-unused-function -Wno-unused-variable -Wno-unused-parameter -Wno-unused-but-set-variable
-LDFLAGS = -L $(PRISM_DIR)/build -Wl,-rpath=$(CURDIR)/$(PRISM_DIR)/build -flto=auto
+CFLAGS = -I$(PRISM_DIR)/include -I. $(optflags) -ggdb3 -Wall -Wno-unused-function -Wno-unused-variable -Wno-unused-parameter -Wno-unused-but-set-variable
+LDFLAGS = -L $(PRISM_DIR)/build -Wl,-rpath=$(CURDIR)/$(PRISM_DIR)/build
 LIBS = -lprism -lgc -lgmp -lm
 
 SRCS = main.c node.c parse.c object.c builtins.c code_store.c
+OBJS = $(SRCS:.c=.o)
 
-koruby: $(SRCS) $(NODE_GENFILES) Makefile
-	$(CC) $(CFLAGS) -rdynamic -o $@ $(SRCS) $(LDFLAGS) $(LIBS) -ldl
+# Per-file compilation so `make -jN` runs the .c → .o steps in
+# parallel.  Hot inlining is already handled via static-inline helpers
+# in object.h / prologues.h, so dropping LTO costs little perf and
+# saves substantial build time.
+%.o: %.c $(NODE_GENFILES)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+koruby: $(OBJS) Makefile
+	$(CC) $(CFLAGS) -rdynamic -o $@ $(OBJS) $(LDFLAGS) $(LIBS) -ldl
 
 # Profile-guided optimization build.  Two-pass:
 # 1) build with -fprofile-generate, run optcarrot to collect profile
@@ -72,7 +82,7 @@ node_specialized.c:
 	touch -t 200001010000 node_specialized.c
 
 clean:
-	rm -fv $(NODE_GENFILES) node_specialized.c koruby compiled_koruby
+	rm -fv $(NODE_GENFILES) node_specialized.c $(OBJS) koruby compiled_koruby
 	rm -rf pgo-data code_store
 
 # regenerate (force rebuild)
