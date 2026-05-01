@@ -11,8 +11,6 @@
 #include <dlfcn.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#include <dirent.h>
-#include <ctype.h>
 
 // ---------------------------------------------------------------------------
 // Specialize dedup: tracks which hashes have been generated during a single
@@ -303,31 +301,6 @@ astro_cs_init(const char *store_dir, const char *src_dir, uint64_t version)
     }
 }
 
-// Delete every `all.<digits>.so` in the code-store directory.  Used by
-// astro_cs_reload before it stamps a new generation, so stale generations
-// from earlier processes don't accumulate.  In-process opendir/unlink
-// (no fork+exec) — saves a few ms vs `system("rm -f …")`.
-static void
-astro_cs_sweep_old_gens(void)
-{
-    if (!astro_cs.store_dir[0]) return;
-    DIR *d = opendir(astro_cs.store_dir);
-    if (!d) return;
-    struct dirent *de;
-    char path[ASTRO_CS_PATH_MAX];
-    while ((de = readdir(d))) {
-        const char *n = de->d_name;
-        if (strncmp(n, "all.", 4) != 0) continue;
-        const char *p = n + 4;
-        if (!isdigit((unsigned char)*p)) continue;       // exclude bare "all.so"
-        while (isdigit((unsigned char)*p)) p++;
-        if (strcmp(p, ".so") != 0) continue;
-        snprintf(path, sizeof(path), "%s/%s", astro_cs.store_dir, n);
-        (void)unlink(path);
-    }
-    closedir(d);
-}
-
 // ---------------------------------------------------------------------------
 // astro_cs_load: look up SD_<hash> in all.so and apply to node
 // ---------------------------------------------------------------------------
@@ -596,15 +569,12 @@ astro_cs_reload(void)
     // "all.so": glibc's dlopen caches handles by pathname (not inode), so
     // dlopen returns the pre-rebuild handle even after make has overwritten
     // / renamed the file.  Work around this by hardlinking (or copying) the
-    // freshly-built all.so to a generation-unique filename and dlopening
-    // that new path.
-
-    // Sweep stale all.<N>.so from previous processes before stamping the
-    // new generation.  Cleanup belongs to reload (whoever creates new
-    // generations is responsible for the old ones), not to init — that
-    // way the cached path (init + dlopen all.so + run) pays nothing.
-    astro_cs_sweep_old_gens();
-
+    // freshly-built all.so to a generation-unique filename, dlopening that
+    // path, then unlinking it immediately — the kernel keeps the inode
+    // alive as long as any process holds the dlopen handle, so the running
+    // code stays valid while the directory entry is gone.  Net effect:
+    // disk is clean for the next process (no leftover all.<N>.so to sweep)
+    // and our running code is unaffected.
     char all_path[ASTRO_CS_PATH_MAX];
     astro_cs_path(all_path, sizeof(all_path), astro_cs.store_dir, "all.so");
 
@@ -624,6 +594,9 @@ astro_cs_reload(void)
     void *new_handle = dlopen(gen_path, RTLD_LAZY);
     if (new_handle) {
         astro_cs.all_handle = new_handle;
+        // dlopen succeeded — the kernel now holds the inode via this
+        // handle, so we can drop the directory entry.
+        (void)unlink(gen_path);
     }
 }
 
