@@ -11,7 +11,7 @@
 #                 Approximates steady-state (warm) performance — no JIT,
 #                 the SDs are precompiled native code dlopen'd at init.
 
-BENCHES = %w[fib fact sieve sieve_big mandelbrot nbody binary_trees try_catch cold]
+BENCHES = %w[fib fact sieve mandelbrot nbody binary_trees try_catch cold]
 ENGINES = [
   ['jstro',        :plain],
   ['jstro-c',      :aot_first],

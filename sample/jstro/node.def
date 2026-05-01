@@ -418,64 +418,6 @@ node_for(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *in
     return RESULT_OK(JV_UNDEFINED);
 }
 
-// Fused int-counter for loop emitted by the parser when the head
-// matches `for (var X = INIT; X </<= END; X += STEP) BODY` and the
-// body doesn't reassign X (a syntactic walk verifies this at parse
-// time).  We hoist init / end / step out of the loop, keep X as a
-// raw int64 in a register, and only write it back to frame[x_slot]
-// before each body invocation.  This eliminates the per-iter type-
-// tag checks on the cond compare and step add — the dominant cost
-// in tight numeric loops like sieve.  Falls back to a slower path
-// if init/end/step aren't all SMI at runtime.
-//
-// op: 0 = `<`, 1 = `<=`.
-NODE_DEF @always_inline
-node_for_int_loop(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, uint32_t x_slot, NODE *init, NODE *end_expr, NODE *step_expr, uint32_t op, NODE *body)
-{
-    (void)n;
-    JsValue init_v  = EVAL_ARG(c, init);
-    JsValue end_v   = EVAL_ARG(c, end_expr);
-    JsValue step_v  = EVAL_ARG(c, step_expr);
-    if (JSTRO_UNLIKELY(!(JV_IS_SMI(init_v) & JV_IS_SMI(end_v) & JV_IS_SMI(step_v)))) {
-        // Type assumption violated — fall back to general semantics by
-        // running the loop with frame slot writes.  Rare path.
-        int64_t i  = JV_IS_SMI(init_v) ? JV_AS_SMI(init_v) : (int64_t)js_to_double(c, init_v);
-        int64_t en = JV_IS_SMI(end_v)  ? JV_AS_SMI(end_v)  : (int64_t)js_to_double(c, end_v);
-        int64_t st = JV_IS_SMI(step_v) ? JV_AS_SMI(step_v) : (int64_t)js_to_double(c, step_v);
-        for (;;) {
-            bool cont = op ? (i <= en) : (i < en);
-            if (!cont) break;
-            frame[x_slot] = JV_INT(i);
-            EVAL_ARG(c, body);
-            if (JSTRO_UNLIKELY(JSTRO_BR != JS_BR_NORMAL)) {
-                if (JSTRO_BR == JS_BR_BREAK && JSTRO_BR_LABEL == NULL) { JSTRO_BR = JS_BR_NORMAL; break; }
-                if (JSTRO_BR == JS_BR_CONTINUE) { JSTRO_BR = JS_BR_NORMAL; }
-                else return JSTRO_BR_VAL;
-            }
-            i += st;
-            jstro_gc_safepoint(c);
-        }
-        return RESULT_OK(JV_UNDEFINED);
-    }
-    int64_t i  = JV_AS_SMI(init_v);
-    int64_t en = JV_AS_SMI(end_v);
-    int64_t st = JV_AS_SMI(step_v);
-    for (;;) {
-        bool cont = op ? (i <= en) : (i < en);
-        if (!cont) break;
-        frame[x_slot] = JV_INT(i);
-        EVAL_ARG(c, body);
-        if (JSTRO_UNLIKELY(JSTRO_BR != JS_BR_NORMAL)) {
-            if (JSTRO_BR == JS_BR_BREAK && JSTRO_BR_LABEL == NULL) { JSTRO_BR = JS_BR_NORMAL; break; }
-            if (JSTRO_BR == JS_BR_CONTINUE) { JSTRO_BR = JS_BR_NORMAL; }
-            else return JSTRO_BR_VAL;
-        }
-        i += st;
-        jstro_gc_safepoint(c);
-    }
-    return RESULT_OK(JV_UNDEFINED);
-}
-
 // for-of iteration: arrays + strings hit a dense fast path; otherwise
 // drive the iterator protocol via the `@@iterator` property (jstro's
 // stand-in for Symbol.iterator).  Falls through to duck-typing if the
