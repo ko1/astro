@@ -327,6 +327,112 @@ node_grep_search_memmem(CTX * restrict c, NODE * restrict n, NODE *body, const c
     return 0;
 }
 
+/* Whole `-c` (count matching lines) for a pure literal pattern.
+ *
+ * This is the same architectural move as node_grep_search itself —
+ * fold the next-outer loop into the AST so the framework bakes
+ * everything into one SD.  Whereas node_grep_search_* loops over
+ * start positions and stops at the first match, this node loops
+ * over the *whole input*, counts each matching line, and skips to
+ * the next newline after every match.  The CLI's `-c PURE_LITERAL`
+ * path rewrites the pattern's root to this node and reads the
+ * count from `c->count_result`.
+ *
+ * Inner algorithm (Hyperscan-style dual-byte filter):
+ *
+ *   For each 32-byte chunk:
+ *       PCMPEQB v, broadcast(needle[0])              -> ma
+ *       PCMPEQB v(p + needle_len-1), broadcast(last) -> mb
+ *       AND                                          -> candidates
+ *
+ *   Per candidate, verify the middle bytes
+ *   (memcmp with constant length → cmpl/cmpb chain),
+ *   then memchr to the next '\n' and resume from there.
+ *
+ * `needle` is baked as a string literal in the SD source by the
+ * specialiser (same path as node_grep_search_memmem's `prefix`),
+ * so `needle[0]` and `needle[needle_len-1]` constant-fold to AVX2
+ * set1 immediates and the verify memcmp lowers to direct compares.
+ * `needle_len` is also baked, which lets gcc dead-code-eliminate
+ * the `needle_len == 1` and `needle_len == 2` branches at AOT-bake
+ * time. */
+NODE_DEF
+node_grep_count_lines_lit(CTX * restrict c, NODE * restrict n, const char *needle, uint32_t needle_len)
+{
+    long count = 0;
+    const uint8_t *p   = c->str + c->pos;
+    const uint8_t *end = c->str + c->str_len;
+
+    if (needle_len == 0) goto done;
+
+    if (needle_len == 1) {
+        const int target = (int)(uint8_t)needle[0];
+        while (p < end) {
+            const uint8_t *q = (const uint8_t *)memchr(p, target, (size_t)(end - p));
+            if (!q) break;
+            count++;
+            const uint8_t *nl = (const uint8_t *)memchr(q + 1, '\n', (size_t)(end - (q + 1)));
+            if (!nl) goto done;
+            p = nl + 1;
+        }
+        goto done;
+    }
+
+#if defined(__AVX2__)
+    {
+        const uint32_t off = needle_len - 1;
+        __m256i v_first = _mm256_set1_epi8((char)(uint8_t)needle[0]);
+        __m256i v_last  = _mm256_set1_epi8((char)(uint8_t)needle[off]);
+        while (p + 32 + needle_len <= end) {
+            __m256i a = _mm256_loadu_si256((const __m256i *)p);
+            __m256i b = _mm256_loadu_si256((const __m256i *)(p + off));
+            __m256i ma = _mm256_cmpeq_epi8(a, v_first);
+            __m256i mb = _mm256_cmpeq_epi8(b, v_last);
+            __m256i mask = _mm256_and_si256(ma, mb);
+            uint32_t bits = (uint32_t)_mm256_movemask_epi8(mask);
+            const uint8_t *line_skip_to = NULL;
+            while (bits) {
+                int idx = __builtin_ctz(bits);
+                const uint8_t *q = p + idx;
+                bits &= bits - 1;
+                if (line_skip_to && q < line_skip_to) continue;
+                bool ok = true;
+                if (needle_len > 2) {
+                    ok = (memcmp(q + 1, needle + 1, (size_t)(needle_len - 2)) == 0);
+                }
+                if (ok) {
+                    count++;
+                    const uint8_t *nl = (const uint8_t *)memchr(q + needle_len, '\n',
+                                                                  (size_t)(end - (q + needle_len)));
+                    if (!nl) goto done;
+                    line_skip_to = nl + 1;
+                }
+            }
+            if (line_skip_to && line_skip_to >= p + 32) p = line_skip_to;
+            else p += 32;
+        }
+    }
+#endif
+
+    /* Tail (and the whole input on non-AVX2 hosts). */
+    while (p + needle_len <= end) {
+        if ((uint8_t)*p == (uint8_t)needle[0]
+            && (needle_len == 1 || memcmp(p + 1, needle + 1, (size_t)(needle_len - 1)) == 0)) {
+            count++;
+            const uint8_t *nl = (const uint8_t *)memchr(p + needle_len, '\n',
+                                                          (size_t)(end - (p + needle_len)));
+            if (!nl) break;
+            p = nl + 1;
+        } else {
+            p++;
+        }
+    }
+
+done:
+    c->count_result = count;
+    return count > 0 ? 1 : 0;
+}
+
 /* ------------------------------------------------------------------ */
 /* Terminator                                                          */
 /* ------------------------------------------------------------------ */

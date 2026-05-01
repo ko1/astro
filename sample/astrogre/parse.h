@@ -6,6 +6,13 @@
 /* Compiled pattern. */
 typedef struct astrogre_pattern {
     NODE *root;          /* root of match AST (chain ending in node_re_succ) */
+    /* Lazily-built alternate root for "count matching lines" — set on
+     * first astrogre_pattern_count_lines() call when the pattern is
+     * pure-literal-shaped.  This is the AST-level rewrite that lets
+     * the CLI's `-c PURE_LITERAL` path fold the per-line scan loop
+     * into a single SD via the framework, instead of running the
+     * regex AST once per line from C. */
+    NODE *count_lines_root;
     int n_groups;        /* number of capturing groups (excluding group 0) */
     bool case_insensitive;
     bool multiline;
@@ -64,6 +71,14 @@ bool astrogre_pattern_pure_literal(astrogre_pattern *p,
  * Called once per unique-hash pattern in --aot-compile mode.  Idempotent —
  * repeated calls with the same hash hit the dedup. */
 void astrogre_pattern_aot_compile(astrogre_pattern *p, bool verbose);
+
+/* Count the matching lines of a pure-literal pattern in [str, str+len).
+ * Returns -1 if the pattern doesn't qualify (not pure-literal-shaped, or
+ * empty needle).  This bypasses the per-line streaming loop in main.c by
+ * folding the whole sweep — scan, verify, count, line-skip — into one
+ * AST node (node_grep_count_lines_lit), which the framework then bakes
+ * with the needle as immediate AVX2 operands. */
+long astrogre_pattern_count_lines(astrogre_pattern *p, const char *str, size_t len);
 
 /* Parse a /pat/flags-style source string (incl. surrounding slashes and
  * trailing flag chars).  Useful from CLI / tests when not going through

@@ -67,6 +67,12 @@ typedef struct CTX_struct {
     agre_encoding_t encoding;
     bool case_insensitive;
     bool multiline;     /* ruby /m: dot matches newline */
+
+    /* Output for count-mode nodes (node_grep_count_lines_lit and
+     * future siblings).  These nodes own the entire scan loop and
+     * emit a count rather than a single match position, so the
+     * caller reads the count from here after EVAL returns. */
+    long count_result;
 } CTX;
 
 struct astrogre_option {

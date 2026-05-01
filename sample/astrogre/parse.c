@@ -1258,6 +1258,14 @@ astrogre_pattern_pure_literal(astrogre_pattern *p,
         if (root->u.node_grep_search_memchr.anchored_bos) return false;
         body = root->u.node_grep_search_memchr.body;
         /* needle filled in from the inner lit node below */
+    } else if (strcmp(root_name, "DISPATCH_node_grep_search") == 0) {
+        /* -F mode: astrogre_parse_fixed builds the plain search loop
+         * directly (no prefix detection).  The literal still lives
+         * in the inner lit node and the shape is otherwise identical,
+         * so the count-lines AST rewrite applies. */
+        if (root->u.node_grep_search.anchored_bos) return false;
+        body = root->u.node_grep_search.body;
+        /* needle filled in from the inner lit node below */
     } else {
         return false;
     }
@@ -1299,6 +1307,38 @@ extern bool astro_cs_load(NODE *n, const char *file);
 extern void astrogre_export_all_sds(void);
 extern void astrogre_reload_all_dispatchers(void);
 
+long
+astrogre_pattern_count_lines(astrogre_pattern *p, const char *str, size_t len)
+{
+    if (!p) return -1;
+    if (!p->count_lines_root) {
+        const char *needle;
+        size_t needle_len;
+        if (!astrogre_pattern_pure_literal(p, &needle, &needle_len)) return -1;
+        if (needle_len == 0) return -1;
+        /* The needle pointer points into the existing AST's lit node and
+         * is stable for the pattern's lifetime; no copy needed. */
+        p->count_lines_root = ALLOC_node_grep_count_lines_lit(needle, (uint32_t)needle_len);
+        /* Pick up any code-store SD that may already be loaded for this
+         * structural hash (e.g. from a previous --aot-compile run). */
+        astro_cs_load(p->count_lines_root, NULL);
+    }
+
+    CTX c;
+    c.str = (const uint8_t *)str;
+    c.str_len = len;
+    c.pos = 0;
+    c.case_insensitive = p->case_insensitive;
+    c.multiline = p->multiline;
+    c.encoding = p->encoding;
+    c.n_groups = 0;
+    c.rep_top = NULL;
+    c.rep_cont_sentinel = NULL;
+    c.count_result = 0;
+    EVAL(&c, p->count_lines_root);
+    return c.count_result;
+}
+
 void
 astrogre_pattern_aot_compile(astrogre_pattern *p, bool verbose)
 {
@@ -1308,6 +1348,24 @@ astrogre_pattern_aot_compile(astrogre_pattern *p, bool verbose)
                 (unsigned long)HASH(p->root), p->pat ? p->pat : "");
     }
     astro_cs_compile(p->root, NULL);
+    /* If the pattern is pure-literal-shaped, also pre-build and bake
+     * the count_lines variant — the CLI's `-c PURE_LITERAL` path picks
+     * it up.  Done eagerly here so AOT compile catches it; otherwise
+     * the lazy build in astrogre_pattern_count_lines would happen
+     * after cs_build and miss the SD. */
+    {
+        const char *needle;
+        size_t needle_len;
+        if (astrogre_pattern_pure_literal(p, &needle, &needle_len) && needle_len > 0
+            && !p->count_lines_root) {
+            p->count_lines_root = ALLOC_node_grep_count_lines_lit(needle, (uint32_t)needle_len);
+            if (verbose) {
+                fprintf(stderr, "astrogre: cs_compile h=%016lx (count_lines)\n",
+                        (unsigned long)HASH(p->count_lines_root));
+            }
+            astro_cs_compile(p->count_lines_root, NULL);
+        }
+    }
     /* Make every inner SD externally visible so cs_load patches the
      * whole chain, not just the root.  See astrogre_export_sd_wrappers
      * in node.c (borrowed from luastro). */

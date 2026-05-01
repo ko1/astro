@@ -300,12 +300,14 @@ print_only_matching(grep_state_t *st, const char *fname, long lineno,
     }
 }
 
-/* Bare memmem loop for the special case where every pattern is a
- * pure literal (cap_start → lit → cap_end → succ).  Bypasses the
- * engine entirely: just memmem to find each match, memchr forward
- * to skip past the matching line.  ~25 % faster than going through
- * search_from on `-c /lit/` because we lose the per-call CTX init
- * + body chain dispatch. */
+/* Whole-file scan for the special case where every pattern is a
+ * pure literal (cap_start → lit → cap_end → succ).  The single-pattern
+ * count-only path goes through node_grep_count_lines_lit — an AST
+ * node that owns the entire scan + verify + line-skip + count loop —
+ * so the framework bakes the needle as immediate AVX2 operands and
+ * the loop runs in one SD with no per-line dispatch.  Multi-pattern
+ * and modes that need per-line printing fall through to a memmem-
+ * earliest-match loop below. */
 static bool
 process_buffer_pure_literal(grep_state_t *st, const char *buf, size_t len,
                              const char *fname,
@@ -318,23 +320,27 @@ process_buffer_pure_literal(grep_state_t *st, const char *buf, size_t len,
     size_t lineno_pos = 0;
 
     /* Tightest path: single pattern, count-only, no filename modes.
-     * Mirrors the bare memmem+memchr loop benchmark — `pos`, `count`,
-     * one branch per iter. */
+     * Goes through node_grep_count_lines_lit — an AST node that
+     * folds the entire scan + verify + line-skip + count loop into
+     * one SD via the framework.  The needle is baked as immediate
+     * AVX2 operands at AOT-compile time (set1_epi8 of needle[0] /
+     * needle[needle_len-1] for a Hyperscan-style dual-byte filter,
+     * memcmp of the middle bytes lowered to direct cmpl/cmpb).
+     * Same architectural trick as node_grep_search itself folding
+     * the start-position search loop into the AST. */
     if (n == 1 && go->count_only && !go->files_with_matches && !go->files_without_match) {
-        const char *needle = needles[0];
-        size_t nlen = needle_lens[0];
-        const char *p = buf;
-        const char *end = buf + len;
-        while (p < end) {
-            const char *q = (const char *)memmem(p, end - p, needle, nlen);
-            if (!q) break;
-            matches_this_file++;
-            const char *e = (const char *)memchr(q, '\n', end - q);
-            if (!e) break;
-            p = e + 1;
+        extern astrogre_pattern *astrogre_backend_pattern_get(backend_pattern_t *);
+        astrogre_pattern *ap = astrogre_backend_pattern_get(st->patterns[0]);
+        long c = ap ? astrogre_pattern_count_lines(ap, buf, len) : -1;
+        if (c >= 0) {
+            matches_this_file = c;
+            any_match = c > 0;
+            goto post_loop;
         }
-        any_match = matches_this_file > 0;
-        goto post_loop;
+        /* Fall through to the multi-pattern memmem loop below if the
+         * count-lines node didn't apply (shouldn't happen here since
+         * the caller already proved pure-literal, but the paranoid
+         * fallback keeps the contract simple). */
     }
 
     size_t pos = 0;
@@ -594,7 +600,11 @@ process_file(grep_state_t *st, const char *path)
         if (fd >= 0) {
             struct stat sb;
             if (fstat(fd, &sb) == 0 && S_ISREG(sb.st_mode) && sb.st_size > 0) {
-                void *map = mmap(NULL, (size_t)sb.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+                /* MAP_POPULATE pre-faults the page tables in the kernel
+                 * — saves the per-page minor-fault cost when we then scan
+                 * the whole file linearly.  GNU grep does the same. */
+                void *map = mmap(NULL, (size_t)sb.st_size, PROT_READ,
+                                  MAP_PRIVATE | MAP_POPULATE, fd, 0);
                 if (map != MAP_FAILED) {
                     process_buffer_pure_literal(st, (const char *)map, (size_t)sb.st_size,
                                                  path, pl_needles, pl_needle_lens, st->n_patterns);
@@ -615,7 +625,8 @@ process_file(grep_state_t *st, const char *path)
         }
         struct stat sb;
         if (fstat(fd, &sb) == 0 && S_ISREG(sb.st_mode) && sb.st_size > 0) {
-            void *map = mmap(NULL, (size_t)sb.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+            void *map = mmap(NULL, (size_t)sb.st_size, PROT_READ,
+                              MAP_PRIVATE | MAP_POPULATE, fd, 0);
             if (map != MAP_FAILED) {
                 process_buffer(st, (const char *)map, (size_t)sb.st_size, path);
                 munmap(map, (size_t)sb.st_size);
