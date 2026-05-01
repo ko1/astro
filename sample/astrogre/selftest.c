@@ -111,6 +111,104 @@ astrogre_run_self_tests(void)
     expect_match("/a.c/", "a\xc3\xa9""c", 0, 4);
     expect_match("/x{1,3}y/", "xxxxy", 1, 5);
 
+    /* ---- Anchors ---- */
+    expect_match("/\\Aabc/", "abcdef", 0, 3);
+    expect_match("/\\A/", "abc", 0, 0);
+    expect_match("/abc\\z/", "abc", 0, 3);
+    expect_match("/abc\\z/", "abc\n", -1, -1);
+    expect_match("/abc\\Z/", "abc\n", 0, 3);
+    expect_match("/abc\\Z/", "abc", 0, 3);
+    expect_match("/^abc/", "abc", 0, 3);
+    expect_match("/^abc/", "x\nabc", 2, 5);
+    expect_match("/abc$/", "xxabc", 2, 5);
+    expect_match("/abc$/", "xxabc\nyy", 2, 5);
+    expect_match("/^$/", "abc\n\nxyz", 4, 4);
+    expect_match("/\\bword\\b/", "the word here", 4, 8);
+    expect_match("/\\bword\\b/", "wordy", -1, -1);
+    expect_match("/\\bword\\b/", "subword", -1, -1);
+    expect_match("/\\Bin\\B/", "binding", 1, 3);
+    expect_match("/\\Bin\\B/", "in front", -1, -1);
+
+    /* ---- Quantifiers ---- */
+    expect_match("/a*/", "", 0, 0);
+    expect_match("/a+/", "", -1, -1);
+    expect_match("/a?b/", "ab", 0, 2);
+    expect_match("/a?b/", "b", 0, 1);
+    expect_match("/a{0}/", "aaa", 0, 0);
+    expect_match("/a{3}/", "aa", -1, -1);
+    expect_match("/a{3}/", "aaaa", 0, 3);
+    expect_match("/a{2,}/", "a", -1, -1);
+    expect_match("/a{2,}/", "aaaaa", 0, 5);
+    expect_match("/a{2,4}/", "aaaaaa", 0, 4);
+    expect_match("/a{2,4}?/", "aaaaaa", 0, 2);
+    expect_match("/a*?b/", "ab", 0, 2);
+    expect_match("/a+?b/", "aaab", 0, 4);
+    expect_match("/a*b/", "b", 0, 1);
+    expect_match("/.*/", "abc", 0, 3);
+    expect_match("/.*?/", "abc", 0, 0);
+
+    /* ---- Character classes ---- */
+    expect_match("/[abc]/", "xyzbq", 3, 4);
+    expect_match("/[a-z]+/", "ABCdefGHI", 3, 6);
+    expect_match("/[^0-9]+/", "12abc34", 2, 5);
+    expect_match("/[\\d\\.]+/", "v1.2.3-rc", 1, 6);
+    expect_match("/[\\W]+/", "abc !! def", 3, 7);
+    expect_match("/[a\\-z]/", "x-y", 1, 2);
+    expect_match("/[\\xC3]/", "\xc3", 0, 1);
+    expect_match("/\\s+/", "  \t\n", 0, 4);
+    expect_match("/\\S+/", "  abc  ", 2, 5);
+
+    /* ---- Alternation ---- */
+    expect_match("/cat|dog/", "see a cat", 6, 9);
+    expect_match("/cat|dog/", "see a dog", 6, 9);
+    expect_match("/foo|bar|baz/", "abazb", 1, 4);
+    expect_match("/^(a|b)/", "ax", 0, 1);
+    expect_match("/(ab|a)b/", "ab", 0, 2);
+    expect_match("/(a|ab)c/", "abc", 0, 3);
+
+    /* ---- Groups ---- */
+    expect_capture("/(foo)+/", "foofoo", 1, "foo");
+    expect_capture("/(?<name>\\d+)/", "abc123", 1, "123");
+    expect_match("/(?:abc)/", "abc", 0, 3);
+    expect_capture("/(a)(b(c))/", "abc", 2, "bc");
+    expect_capture("/(a)(b(c))/", "abc", 3, "c");
+
+    /* ---- Backreference ---- */
+    expect_match("/(a+)\\1/", "aaaa", 0, 4);
+    expect_match("/(a+)\\1/", "aab", 0, 2);
+    expect_match("/(\\w+)\\s+\\1/", "the the cat", 0, 7);
+    expect_match("/(.)\\1{3}/", "aaaa", 0, 4);
+
+    /* ---- Lookaround ---- */
+    expect_match("/foo(?=bar)/", "foobar", 0, 3);
+    expect_match("/foo(?=bar)/", "foobaz", -1, -1);
+    expect_match("/foo(?!bar)/", "foobaz", 0, 3);
+    expect_match("/foo(?!bar)/", "foobar", -1, -1);
+    expect_match("/(?=\\w)\\d/", "abc1", 3, 4);
+
+    /* ---- /i case-insensitive ---- */
+    expect_match("/Hello/i", "say hello", 4, 9);
+    expect_match("/[A-Z]+/i", "abc", 0, 3);
+
+    /* ---- /m multiline (dot matches \n) ---- */
+    expect_match("/a.c/m", "a\nc", 0, 3);
+    expect_match("/a[^q]+c/m", "a\nb\nc", 0, 5);
+
+    /* ---- /x extended ---- */
+    expect_match("/a b c/x", "abc", 0, 3);
+
+    /* ---- UTF-8 ---- */
+    expect_match("/é+/", "héllo", 1, 3);
+    expect_match("/./", "\xe6\x97\xa5", 0, 3);
+    expect_match("/[a-z]+/", "héllo", 0, 1);
+
+    /* ---- Edge cases ---- */
+    expect_match("/(?:)/", "abc", 0, 0);
+    expect_match("/^/", "x", 0, 0);
+    expect_match("/.*/", "", 0, 0);
+    expect_match("/a/", "", -1, -1);
+    expect_match("/\\Afoo/", "xxxfoo", -1, -1);
+
     /* search_from: enumeration */
     {
         astrogre_pattern *p = astrogre_parse_literal("/\\d+/", 5);
