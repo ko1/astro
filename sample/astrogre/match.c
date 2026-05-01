@@ -1,10 +1,13 @@
 /*
  * astrogre top-level matcher.
  *
- * Two entry points:
- *   astrogre_search       - search the whole input from offset 0
- *   astrogre_search_from  - resume from a caller-chosen offset; used
- *                           by grep --color / -o and scan-style enum
+ * The for-each-start-position search loop is now `node_grep_search`
+ * inside the AST itself; what's left here is plumbing — set up the
+ * CTX, dispatch the root, copy out the captures.
+ *
+ * `astrogre_search_from` is the resume entry point used by grep --color
+ * and -o; it just sets c.pos to the requested offset before
+ * dispatching, since node_grep_search reads c.pos as the loop start.
  */
 
 #include "node.h"
@@ -34,37 +37,22 @@ astrogre_search_from(astrogre_pattern *p, const char *str, size_t len,
     c.encoding = p->encoding;
     c.n_groups = p->n_groups;
     c.rep_cont_sentinel = astrogre_rep_cont_singleton();
+    c.pos = start_from;
 
-    /* For \A-anchored patterns, only start==0 is meaningful.  If the
-     * caller resumes from a non-zero offset on such a pattern we know
-     * statically there can be no further match. */
-    size_t start_max;
-    if (p->anchored_bos) {
-        start_max = (start_from == 0) ? 1 : 0;
-    } else {
-        start_max = len + 1;
-    }
+    bool r = (bool)EVAL(&c, p->root);
 
-    for (size_t start = start_from; start < start_max; start++) {
-        c.pos = start;
-        for (int i = 0; i < ASTROGRE_MAX_GROUPS; i++) c.valid[i] = false;
-        c.rep_top = NULL;
-
-        if (EVAL(&c, p->root)) {
-            if (out) {
-                out->matched = true;
-                out->n_groups = p->n_groups;
-                for (int i = 0; i < ASTROGRE_MAX_GROUPS; i++) {
-                    out->starts[i] = c.starts[i];
-                    out->ends[i]   = c.ends[i];
-                    out->valid[i]  = c.valid[i];
-                }
+    if (out) {
+        out->matched = r;
+        if (r) {
+            out->n_groups = p->n_groups;
+            for (int i = 0; i < ASTROGRE_MAX_GROUPS; i++) {
+                out->starts[i] = c.starts[i];
+                out->ends[i]   = c.ends[i];
+                out->valid[i]  = c.valid[i];
             }
-            return true;
         }
     }
-    if (out) out->matched = false;
-    return false;
+    return r;
 }
 
 bool

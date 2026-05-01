@@ -754,8 +754,13 @@ astrogre_parse(const char *pat, size_t pat_len, uint32_t prism_flags)
     NODE *succ = ALLOC_node_re_succ();
     /* Wrap the whole pattern in capture group 0 so the matcher records
      * the final-match span automatically through cap_end. */
-    NODE *root = lower(&L, ir, ALLOC_node_re_cap_end(0, succ));
-    root = ALLOC_node_re_cap_start(0, root);
+    NODE *body = lower(&L, ir, ALLOC_node_re_cap_end(0, succ));
+    body = ALLOC_node_re_cap_start(0, body);
+
+    /* Wrap the whole pattern in node_grep_search so the position-loop
+     * is part of the AST too — the specialiser then bakes the loop
+     * AND the inlined regex chain into a single C function. */
+    NODE *root = ALLOC_node_grep_search(body, anchored_bos ? 1 : 0);
 
     int n_groups = q.n_groups;
     ire_free(ir);
@@ -794,7 +799,8 @@ astrogre_parse_fixed(const char *bytes, size_t len, uint32_t prism_flags)
     NODE *cap_end = ALLOC_node_re_cap_end(0, succ);
     NODE *lit = ci ? ALLOC_node_re_lit_ci(buf, (uint32_t)len, cap_end)
                    : ALLOC_node_re_lit   (buf, (uint32_t)len, cap_end);
-    NODE *root = ALLOC_node_re_cap_start(0, lit);
+    NODE *body = ALLOC_node_re_cap_start(0, lit);
+    NODE *root = ALLOC_node_grep_search(body, 0);
 
     astrogre_pattern *p = (astrogre_pattern *)calloc(1, sizeof(*p));
     p->root = root;

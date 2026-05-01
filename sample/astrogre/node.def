@@ -8,10 +8,47 @@
  * state this node mutated and returns 0 — that's how backtracking is
  * expressed without an explicit thread-list.
  *
- * The chain is terminated by node_re_succ.  Top-level search across input
- * positions is driven from C (see match.c / main.c) — the AST itself is a
- * single anchored pattern.
+ * The chain is terminated by node_re_succ.  The for-each-start-position
+ * search loop is itself a node (node_grep_search) — the specialiser then
+ * folds the loop and the inlined regex chain into one SD function.
  */
+
+/* ------------------------------------------------------------------ */
+/* Top-level search wrapper                                            */
+/* ------------------------------------------------------------------ */
+
+/* node_grep_search wraps the regex AST and *is* the for-each-start-
+ * position search loop.  Putting it in node.def means the specializer
+ * bakes the loop and the inlined regex chain into one SD function —
+ * gcc can then keep `c->str`, `c->str_len`, the start cursor, and the
+ * captures all in registers across iterations, and even vectorise
+ * pieces of the inner match where applicable.
+ *
+ * Caller sets c->pos to the desired starting offset (0 for the first
+ * search; previous match's end for resume / enumeration).  The loop
+ * iterates s from c->pos upwards, writes s into c->pos at each
+ * attempt, and returns 1 on the first success.  When body fails it
+ * is responsible for undoing its own state (cap_start does this for
+ * group 0; inner cap and rep nodes are likewise self-restoring), so
+ * the loop just bumps s and tries again.
+ *
+ * `anchored_bos` is set at parse time when the pattern starts with
+ * \A: in that case only `c->pos == 0` is meaningful.  The framework
+ * sees the flag in the structural hash so an anchored vs unanchored
+ * pattern with the same body get distinct SDs. */
+NODE_DEF
+node_grep_search(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t anchored_bos)
+{
+    size_t start = c->pos;
+    size_t start_max = anchored_bos ? (start == 0 ? 1 : 0) : c->str_len + 1;
+    for (size_t s = start; s < start_max; s++) {
+        c->pos = s;
+        for (int i = 0; i < ASTROGRE_MAX_GROUPS; i++) c->valid[i] = false;
+        c->rep_top = NULL;
+        if (EVAL_ARG(c, body)) return 1;
+    }
+    return 0;
+}
 
 /* ------------------------------------------------------------------ */
 /* Terminator                                                          */

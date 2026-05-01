@@ -110,7 +110,20 @@ externally-visible wrapper, so `dlsym` finds every node, not just
 the root.  A side array tracks every allocated NODE so the post-build
 re-resolve patches the whole chain.
 
-The bake is structurally correct but the speed gain on grep-shaped
-workloads is small (≤ 4 % on the bench corpus).  See
-[`perf.md`](./perf.md) for the analysis and what the next perf lever
-(search-loop fused SD) would look like.
+## Search loop folded into the AST
+
+The for-each-start-position search loop is itself a node
+(`node_grep_search`) — its EVAL is the loop, and the specializer
+treats `body` as a regular NODE * operand, so the SD bakes the
+loop AND the inlined regex chain into a single C function.
+
+For `/static/` against a 16 KiB string, the result is ~30 instructions:
+loop, `cmpl + cmpw` for the literal, `vmovdqu` for the per-iter
+capture-state reset, no indirect calls, no DISPATCH chain.  In-engine
+microbench: **22.75 s → 3.15 s on `literal-tail` (7.2× speedup)**.
+
+The grep CLI bench shows essentially no change because each line
+(~36 bytes) calls the SD and the per-call overhead (`getline`,
+`CTX_struct` zero-init, fwrite of matched lines) dominates.  Folding
+the line iteration into the AST as well is the next lever — see
+[`todo.md`](./todo.md).

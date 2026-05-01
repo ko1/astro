@@ -5,15 +5,18 @@ Backlog of features and performance work.  Companion to
 
 ## Performance — next up
 
-### Search-loop fused SD
-The biggest lever still on the table.  Right now AOT bakes one C
-function per AST node and the search loop calls it once per starting
-position; per-iter dispatch is already cheap (single indirect call
-to a hot BTB target), so the AOT win on grep is small.  A wrapping
-SD that takes `(str, len, &match)` and runs the for-each-start
-loop + the match in one inlined body would drop the per-iter
-overhead to near zero — and we'd finally have a single C function
-the C compiler can vectorise over.
+### Line iteration in the AST
+The grep CLI bench shows no fusion gain because the per-line call
+overhead (`getline`, `CTX_struct` zero-init, `fwrite` for matched
+lines) dominates wall time on ~36-byte lines.  In-engine microbench
+on a 16 KiB string sees the 7.22× literal-tail win because the
+fused loop runs ~16 K iterations per call instead of ~36.
+
+Add `node_grep_lines(body, ...)` whose EVAL walks newlines + dispatches
+the search per line + handles the print/count side-effect — all in
+one SD function.  The grep CLI then dispatches once per file (per
+buffer) instead of once per line, and the fusion benefit comes back
+into view.
 
 ### Real PG signal
 `--pg-compile` is wired but currently aliases to `--aot-compile`

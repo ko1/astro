@@ -1,224 +1,207 @@
 # astrogre performance notes
 
 This is the v1 sample.  ASTro's specialization / code-store machinery
-is now wired up via the abruby-style modes
+is wired up via the abruby-style modes
 (`--aot-compile` / cached / `--pg-compile` / `--plain`); the
-performance gain on grep-shaped workloads is small for the reasons
-documented under "AOT specialization" below.  The doc records what
-*did* and *did not* help, so the next pass (literal-prefix prefilter,
-real PG profile signal) can pick up where this one left off.
+search loop itself is now an AST node (`node_grep_search`) so
+specialization fuses the for-each-start-position loop and the
+inlined regex chain into one SD function.  This doc records what
+*did* and *did not* help on the way to the current numbers.
 
-## Cross-tool grep comparison
+## Where AOT specialization actually wins
 
-`bench/grep_bench.sh` runs each tool on a 118 MB corpus (C / header
-source replicated to ~3.3 M lines) and reports best-of-5 wall-clock
-seconds.
-
-```
-                         grep   ripgrep  +onigmo  interp  aot-cached
-literal    /static/      0.002   0.035    0.221   0.884   0.872
-rare       /specialized_dispatcher/
-                         0.035   0.020    0.190   0.855   0.866
-anchored   /^static/     0.002   0.035    0.227   0.641   0.643
-case-i     /VALUE/i      0.002   0.051    0.273   0.724   0.735
-alt-3      /static|extern|inline/
-                         0.002   0.048    1.131   2.010   1.950
-class-rep  /[0-9]{4,}/   0.002   0.054    0.715   1.284   1.296
-ident-call /[a-z_]+_[a-z]+\(/
-                         0.002   0.183    3.253   3.814   3.792
-count -c   /static/      0.002   0.027    0.218   0.882   0.867
-```
-
-Reading this:
-
-- **ugrep** is essentially memory-bandwidth-bound: SIMD memchr for
-  literals + lazy DFA / literal-prefix prefilter for the rest.  Stays
-  under 5 ms even on the regex cases.
-- **ripgrep** is in a similar class.
-- **Onigmo** is the right comparison for v1 — both engines are
-  backtracking matchers without a literal-prefix prefilter, both walk
-  the input position-by-position.  Onigmo is currently 2–4 × faster.
-- **astrogre interp vs aot-cached**: AOT shaves 0–4 % depending on the
-  pattern.  The reason is below.
-
-## AOT specialization: why the gain is small for grep
-
-`astrogre_pattern_aot_compile` runs the standard ASTro AOT loop —
-`astro_cs_compile` writes one C function per AST node, `make` builds
-`code_store/all.so`, `astro_cs_load` flips each node's
-`head.dispatcher` to the corresponding `SD_<hash>` symbol.  Inner SDs
-are renamed `_INL` and exposed via thin externally-visible wrappers
-(borrowed verbatim from luastro's
-`luastro_export_sd_wrappers`); a side array tracks every allocated
-NODE so the post-build re-resolve patches the whole chain rather than
-just the root.
-
-What the SD ends up containing for `/static/` (the pattern's root
-function, decompiled):
+After folding the search loop into the AST, the in-engine microbench
+(`./astrogre --bench` — single 16 KiB string, repeated calls) shows
+the fusion clearly:
 
 ```
-  bounds-check c->pos + 6 vs c->str_len
-  cmpl  $0x74617473, (str+pos)        ; "stat"
-  jne   fail
-  cmpw  $0x6369,    4(str+pos)         ; "ic"
-  jne   fail
-  set ends[0], valid[0]; ret 1
-fail:
-  ret 0
+                                         interp     aot-cached   speedup
+literal-tail   /match/                   22.75 s       3.15 s     7.22×
+literal-i      /MATCH/i                  15.65 s      15.22 s     1.03×
+class-digit    /\d+/   (matches early)    0.009 s      0.009 s    1.00×
+class-word     /\w+/   (matches late)    11.60 s      10.43 s     1.11×
+alt-3          /cat|dog|match/           15.67 s      12.86 s     1.22×
+rep-greedy     /a.*z/                    11.23 s      10.74 s     1.05×
+group-alt      /(a|b|c)+m/  (no match)   21.53 s      21.99 s     0.98×
+anchored       /\Amatch/                  0.24 s       0.25 s     0.96×
+dot-star       /.*match/                 11.04 s       9.16 s     1.20×
 ```
 
-Roughly 16 instructions for the entire chain — `cap_start → lit("static") →
-cap_end → succ` — and the inner `_INL` functions all inline cleanly.
-That's about as tight as we can get without folding the search loop
-itself into the SD.
+`literal-tail` is the case where the fusion really lands: scanning
+16 KiB for a 5-byte literal in a tight loop, with the inlined
+chain reduced to a `cmpl + cmpw + ja` per position and the
+capture-state reset hoisted to a single `vmovdqu`.  Other patterns
+move 5-25 % depending on how much per-position work the regex chain
+imposes — the more there is, the smaller the share that dispatch
+overhead represented in the first place.
 
-So why does AOT only save ~1 % per search?  Because the indirect
-dispatch chain that the SD removes is *cheap*: 3 indirect calls per
-position, all to the same target as the previous position, all
-predicted correctly by the BTB.  The cost goes from ~3 ns of
-dispatch + memcmp to ~0 ns of dispatch + memcmp — and memcmp is the
-larger half.  At 100 M positions, savings work out to about 100 ms,
-which matches what the bench shows.
-
-The real win for AOT in our shape would be **fusing the search loop
-into the SD**, so the SD becomes "scan the input and report match"
-rather than "match at one position".  That's planned but not done —
-it requires a custom specialize hook that recognises the search
-context, since ASTroGen's specialiser only knows about the per-node
-chain.
-
-## In-engine microbench reference
-
-`./astrogre --bench` against a 16 KiB synthetic input:
+The disassembly of the fused SD for `/static/`:
 
 ```
-literal-tail       /match/         103 µs / search
-literal-i          /MATCH/i         77 µs
-class-digit        /\d+/           166 ns      (matches very early)
-class-word         /\w+/           208 µs      (matches late)
-alt-3              /cat|dog|match/ 296 µs
-rep-greedy         /a.*z/          198 µs
-group-alt          /(a|b|c)+m/     418 µs      (no match — exhaustive)
-anchored           /\Amatch/       118 ns      (one-position search)
-dot-star           /.*match/       222 µs
+SD_<hash>_INL:
+    endbr64
+    mov    8(%rdi),%rcx          ; c->str_len
+    mov    0x10(%rdi),%rax       ; c->pos
+    lea    1(%rcx),%rdx
+    cmp    %rdx,%rax
+    jae    66f                   ; pos >= len + 1 → exit
+    ...
+    vpxor  %xmm0,%xmm0,%xmm0     ; zero ymm0 for capture-state reset
+.loop:
+    lea    -6(%rax),%rdx
+    mov    %rdx,0x10(%rdi)        ; c->pos = s
+    vmovdqu %ymm0,(%rsi)         ; reset all 32 valid[] flags via SIMD
+    ...
+    cmp    %rax,%rcx
+    jb     fail
+    add    (%rdi),%rdx           ; str + pos
+    cmpl   $0x74617473,(%rdx)    ; "stat"
+    je     check_ic
+    inc    %rax
+    cmp    %rax,%r8
+    jne    .loop
+    ret_zero
+check_ic:
+    cmpw   $0x6369,4(%rdx)        ; "ic"
+    jne    fail
+    set ends[0], valid[0]; ret 1
 ```
 
-`anchored` is the engine's *cost floor*: roughly 120 ns to walk the
-chain `cap_start → lit → cap_end → succ` once.  The unanchored cases
-are dominated by the C-level outer loop in `astrogre_search`, which
-retries each starting position.
+That's the entire grep search — start-position loop + inlined regex
+match — in ~30 instructions.  No indirect call, no DISPATCH chain,
+not even a function call out of the SD.
+
+## Why the grep CLI doesn't show the fusion gain
+
+`bench/grep_bench.sh` runs each tool against a 118 MB corpus, line by
+line:
+
+```
+                          grep   ripgrep   +onigmo  interp  aot-cached
+literal    /static/      0.002    0.036     0.238   0.934    0.974
+rare                     0.036    0.020     0.215   1.004    1.024
+anchored   /^static/     0.003    0.041     0.358   0.720    0.672
+case-i     /VALUE/i      0.002    0.050     0.278   0.773    0.784
+alt-3                    0.003    0.055     1.199   2.122    2.348
+class-rep  /[0-9]{4,}/   0.006    0.103     0.861   1.381    1.330
+ident-call               0.002    0.192     3.500   3.990    3.938
+count -c   /static/      0.002    0.029     0.241   0.957    0.933
+```
+
+aot-cached is essentially indistinguishable from interp here, and the
+reason has nothing to do with the SD itself: each line is ~36 bytes
+on average, so the fused loop runs only ~36 iterations per call —
+short enough that the **per-call overhead** (`CTX_struct` zero-init,
+file I/O, getline buffering, `fwrite` of matched lines) dominates the
+wall clock.  The microbench amortizes that across 16 K-byte strings;
+grep doesn't.
+
+The natural next step is to fold the **line iteration** into the AST
+too — a `node_grep_lines(body, str, len)` whose EVAL walks newlines
+and prints matched lines, all inside one SD function.  See
+[`todo.md`](./todo.md).
+
+For an apples-to-apples comparison with Onigmo (also a backtracking
+engine without a literal-prefix prefilter), astrogre+onigmo is
+currently 2-4 × ahead of astrogre.  The remaining gap is the literal-
+prefix prefilter — Onigmo runs Boyer-Moore over `static` even though
+the wrapping pattern is "regex"-shaped.
 
 ## What helped
 
+### Folding the search loop into the AST
+`node_grep_search` is the wrapper that the parser puts at the top of
+every compiled pattern.  Its EVAL is the for-each-start-position
+loop; when the specializer recurses into its `body` operand and
+inlines the `body_dispatcher` direct function pointer, gcc fuses the
+loop and the regex chain into a single function with no indirect
+calls.  That's where the 7.22× literal-tail speedup comes from.
+
+### `_INL` rename + extern wrapper post-process
+Borrowed wholesale from luastro's `luastro_export_sd_wrappers`.
+Without it, `astro_cs_load` only sees the root SD; inner nodes' SDs
+stay hidden behind `static inline` and the runtime chain bounces
+through host-side `DISPATCH_*` for every per-node touch.
+
+### Side-array re-resolve after build
+`node_allocate` tracks every NODE in `astrogre_all_nodes`;
+`astrogre_pattern_aot_compile` walks the array post-build and calls
+`astro_cs_load` on each node so this very run picks up the fresh SDs
+(otherwise only the *next* invocation benefits).
+
 ### Coalesce adjacent literals at parse time
-`parse_concat` checks the previous node before pushing: if the new
-atom is `IRE_LIT` and the previous is too (and the case-fold flag
-matches), the bytes are concatenated.  Turns `\AHello, World/` from
-13 lit nodes into 1.
+Turns `\AHello, World/` from 13 lit nodes into 1 — fewer dispatches
+and fewer SD entries to compile.
 
 ### Pre-fold case at parse time
-`/Hello/i` becomes `node_re_lit_ci("hello", 5, ...)` — the pattern
-side is lowercased once, and the matcher does an asymmetric fold of
-the input byte during the byte-by-byte compare.
+`/Hello/i` becomes `node_re_lit_ci("hello", 5, ...)` — pattern is
+lowercased once, matcher does an asymmetric fold of the input byte
+during the byte-by-byte compare.
 
 ### Anchored-start short-circuit
-The parser sets `pattern->anchored_bos` when it sees a leading `\A`,
-and the search loop short-circuits to one starting position.  On the
-`\Amatch` bench this is the difference between 118 ns and ~100 µs.
-
-### `astrogre_search_from` for grep enumeration
-Letting the caller pick the resume position avoids re-allocating the
-`CTX` per match when listing all hits on a line (`-o` / `--color`).
-
-### Fixed-string parser entry
-`-F` skips the regex parser entirely and builds a single `node_re_lit`
-under a capture-0 wrap.
+`anchored_bos` is an operand on `node_grep_search` so the SD's
+position loop knows statically when to stop after one iteration.
 
 ### Single rep_cont sentinel
-There is exactly one `node_re_rep_cont` allocation, shared by every
-rep node in every compiled pattern.  Keeps the AST acyclic (so
-Merkle hashes survive) and avoids per-rep continuation duplication.
+Exactly one `node_re_rep_cont` allocation, shared by every rep node.
+Keeps the AST acyclic so Merkle hashes survive and code-store
+sharing applies.
 
 ### Backend abstraction
 `backend.h` decouples the grep CLI from the matcher.  Adding the
 Onigmo backend was ~150 lines of wrapper + a 60-line `build_local.mk`
 that compiles Onigmo without the autoconf / libtool dance.
 
-### `restrict` on `c` and `n`
-Following the rest of the codebase.
-
-### 256-bit bitmap class as `uint64_t × 4`
-Inline storage in the union; the matcher does
-`bm[b >> 6] >> (b & 63)` with no indirection.
-
-### `_INL` rename + extern wrapper post-process
-Without it, `astro_cs_load` only sees the root SD; inner nodes' SDs
-stay hidden behind `static inline` and the runtime chain bounces
-through host-side `DISPATCH_*` for every per-node touch.  With the
-post-process, every inner SD is reachable via dlsym, the side-array
-re-resolve loop patches every node, and the chain stays inside
-`all.so`.
+### `restrict` on `c` and `n`, 256-bit bitmap inline as `uint64_t × 4`
+Standard ASTro hygiene.
 
 ## What did not help / was abandoned
 
 ### Per-rep "static" continuation node
-Earlier draft allocated a `rep_cont` *per repeat node* so the
-continuation could carry the rep-frame pointer inline and avoid the
-`c->rep_top` indirection.  Made the AST cyclic, broke Merkle hashing
-and code-store sharing.
+Earlier draft allocated a `rep_cont` *per repeat node*.  Made the
+AST cyclic, broke Merkle hashing.
 
 ### "Body returns one success per call" repetition model
-Simpler design where the rep node iterates body locally without
-continuation passing through body's tail.  Failed `(a|ab)*c` on
-`abc` (the inner alt has to be retryable across iteration backtracks).
+Failed `(a|ab)*c` on `abc` — the inner alt has to be retryable
+across iteration backtracks.
 
 ### UTF-8 multi-byte char-class
 Tried storing class as a 256-bit ASCII bitmap *plus* a sorted list of
-`(lo, hi)` codepoint ranges.  Binary search dominated the dispatch
-on classes with non-ASCII content.
-
-### Inlining the search loop into `EVAL`
-Tried generating a specialized search function per pattern that
-inlines the start-position loop and the AST entry point.  The win on
-`anchored` is zero (already 1-pos) and on `dot-star` is in the noise.
+`(lo, hi)` codepoint ranges.  Binary search dominated dispatch.
 
 ### Storing `bytes` for class as `const char *`
-Saves 24 bytes per node struct vs four `uint64_t`s, but the matcher
-then has to load the bitmap pointer; inline won by ~12 % on
-`class-word`.
+Saves 24 bytes per node struct; matcher then has to load the pointer.
+Inline won by ~12 % on `class-word`.
 
 ### Possessive quantifiers
-Parsed but degraded to plain greedy.  Possessive would forbid
-backtracking across the rep boundary.
+Parsed but degraded to plain greedy.
 
 ### PG (profile-guided) bake
 `--pg-compile` is accepted as a CLI flag for parity with abruby but
 currently behaves as `--aot-compile` because we have no profile
-signal: `HOPT == HORG` in node.h, so the baked SD is the same as
-AOT's.  A real PG signal for regex (hot-alternative reordering, hot
-iteration counts, capture-elision when never read) is on the runway.
+signal.  A real signal for regex (hot-alternative reordering, hot
+iteration counts, capture elision when never read) is on the runway.
 
 ## Things on the runway, not started
 
-* **Search-loop fused SD.**  The biggest performance lever still on
-  the table.  Generate a wrapping `SD_<hash>_search(c, str, len,
-  starts, ends)` that does the for-each-start-position loop plus the
-  match attempt as one inlined function.  Should drop dispatch +
-  loop overhead per attempt to single instructions, closing most of
-  the Onigmo gap on literal/anchored cases.
-* **Literal-prefix prefilter.**  Independent of the AST and a pure
-  C-level win.  For unanchored patterns with a fixed-byte prefix,
-  use Boyer-Moore-style scan to find candidate positions and verify
-  with the AST.  Should drop `literal-rare` from 880 ms to memchr-
-  bound (~20 ms).
-* **First-byte bitmap.**  At compile time, build a 256-bit bitmap
-  of allowed first bytes; skip ahead using a vectorised scan.
-* **Real PG signal.**  Hot-alternative reordering: count which alt
-  branch wins at each `node_re_alt`, bake the hot one as the first
-  branch.  Capture elision: if no backreference uses a given group
-  during the profile run, the bake can drop its save/restore.
-* **JIT.**  Once specialization is fused with the search loop, plug
-  the standard ASTro JIT path: hash-keyed code-store caching applies
-  because the AST is a DAG.
+* **Line iteration in the AST.**  The biggest remaining lever for
+  the grep CLI.  Add a `node_grep_lines(body, str, len, callback)`
+  whose EVAL does newline scanning + per-line search dispatch + the
+  print/count side-effect, all in one SD function.  Should drop the
+  per-call overhead that currently masks the search-loop fusion at
+  the grep level.
+* **Literal-prefix prefilter.**  For unanchored patterns with a
+  fixed-byte prefix, use Boyer-Moore-style scan to find candidate
+  positions and verify with the AST.  Single biggest miss vs
+  ripgrep.  Independent of the AST.
+* **First-byte bitmap.**  Even simpler than full BMH: at compile
+  time, build a 256-bit bitmap of allowed first bytes; skip ahead
+  using a vectorised scan.
+* **Real PG signal.**  Hot-alternative reordering: count branch
+  hits at each `node_re_alt`, bake the hot one as the first branch.
+  Capture elision: if no backreference uses a given group during
+  the profile run, drop its save/restore.
+* **JIT.**  The standard ASTro JIT path applies once we want to
+  generate fresh SDs without an offline build step.
 
 These are listed in [`todo.md`](./todo.md).

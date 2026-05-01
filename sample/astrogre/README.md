@@ -32,10 +32,10 @@ direct head-to-head comparison.
   build via `astro_cs_load` in `OPTIMIZE`.  `--pg-compile` (`-P`) is
   accepted for parity with abruby but currently aliases to AOT —
   there's no profile signal to bake yet.
-- The bake is structurally correct (every inner node's SD is exposed
-  via dlsym through a thin extern wrapper, all chain dispatchers are
-  re-resolved post-build) but the speed gain on grep-shaped workloads
-  is small.  See `docs/perf.md` for the analysis.
+- The for-each-start-position search loop is itself a node
+  (`node_grep_search`), so the specializer fuses the loop AND the
+  inlined regex chain into one SD function — the in-engine bench
+  shows up to **7.2× over interp on long-buffer searches**.
 
 ## Build and run
 
@@ -81,25 +81,40 @@ prism                 symlink to ../naruby/prism (Ruby parser)
 onigmo/               cloned, locally-built Onigmo (build_local.mk)
 ```
 
-## Speed comparison
+## Speed: AOT specialization
 
-`bench/grep_bench.sh` runs each tool on a 118 MB corpus
-(C/header source from a few in-tree samples, replicated) and reports
-best-of-5 wall-clock seconds.  All times in seconds.
+The for-each-start-position search loop is itself an AST node
+(`node_grep_search`), so AOT specialization fuses the loop AND the
+inlined regex chain into one SD function.  The in-engine
+microbench (`./astrogre --bench`) shows the gain:
 
 ```
-                         grep   ripgrep  +onigmo  interp  aot-cached
-literal    /static/      0.002   0.035    0.221   0.884   0.872
+                                  interp     aot-cached   speedup
+literal-tail   /match/            22.75 s      3.15 s      7.22×
+class-word     /\w+/              11.60 s     10.43 s      1.11×
+alt-3          /cat|dog|match/    15.67 s     12.86 s      1.22×
+dot-star       /.*match/          11.04 s      9.16 s      1.20×
+```
+
+The grep CLI bench (`bench/grep_bench.sh`, 118 MB corpus, line by
+line) shows essentially **no fusion gain** — per-line `getline` /
+CTX init / fwrite overhead dominates the wall clock when each line
+is ~36 bytes.  Folding the line iteration into the AST too is on
+the runway.
+
+```
+                          grep   ripgrep   +onigmo  interp  aot-cached
+literal    /static/      0.002    0.036     0.238   0.934    0.974
 rare       /specialized_dispatcher/
-                         0.035   0.020    0.190   0.855   0.866
-anchored   /^static/     0.002   0.035    0.227   0.641   0.643
-case-i     /VALUE/i      0.002   0.051    0.273   0.724   0.735
+                         0.036    0.020     0.215   1.004    1.024
+anchored   /^static/     0.003    0.041     0.358   0.720    0.672
+case-i     /VALUE/i      0.002    0.050     0.278   0.773    0.784
 alt-3      /static|extern|inline/
-                         0.002   0.048    1.131   2.010   1.950
-class-rep  /[0-9]{4,}/   0.002   0.054    0.715   1.284   1.296
+                         0.003    0.055     1.199   2.122    2.348
+class-rep  /[0-9]{4,}/   0.006    0.103     0.861   1.381    1.330
 ident-call /[a-z_]+_[a-z]+\(/
-                         0.002   0.183    3.253   3.814   3.792
-count -c   /static/      0.002   0.027    0.218   0.882   0.867
+                         0.002    0.192     3.500   3.990    3.938
+count -c   /static/      0.002    0.029     0.241   0.957    0.933
 ```
 
 What this says:
@@ -109,15 +124,14 @@ What this says:
   magnitude ahead of v1 work.
 - **astrogre vs Onigmo** is the apples-to-apples comparison (both
   are tree/bytecode backtracking engines without a literal
-  prefilter).  Onigmo is currently 2–4× faster on the bulk of cases.
-- **interp vs aot-cached** is essentially noise.  The dispatch chain
-  AOT removes is already cheap (3 indirect calls per position, all
-  predicted by the BTB).  The big lever for our shape — fusing the
-  search loop into the SD itself — is on the runway, not landed.
+  prefilter).  Onigmo is currently 2–4× faster at the grep-CLI
+  level; the gap is the literal-prefix prefilter Onigmo runs
+  internally, which we don't have yet.
 
-See [`docs/perf.md`](./docs/perf.md) for what's tried + landed and
-the runway items (search-loop fusion, literal-prefix prefilter, real
-PG signal, JIT) that should close the Onigmo gap.
+See [`docs/perf.md`](./docs/perf.md) for what's tried + landed,
+including the disassembly of the fused SD and the runway items
+(line iteration in the AST, literal-prefix prefilter, real PG
+signal, JIT).
 
 ## What it does NOT do (yet)
 
