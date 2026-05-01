@@ -151,7 +151,18 @@ ASTro の `astro_code_store` をまだ使っていない。一度コンパイル
 
 これらを実装すれば、optcarrot の Config parsing → CPU/PPU/APU セットアップ → step ループへ進めると見込まれる。さらに性能ベンチとして競うには core ループの最適化が必要 (具体的には [perf.md](./perf.md) の「PG-baked call_static」「型 rewrite」等)。
 
-## 残バグ: optcarrot の映像チェックサム不一致 (frame 5 から発散)
+## ✅ optcarrot 映像 / チェックサム — 完全一致達成
+
+`tools/trace_optcarrot.rb` および `tools/trace_per_insn.rb` を CRuby と
+koruby に並走させ、`@lut_update[nmt_bank] ||= []` の chain が壊れていた
+ことが判明 → `Hash#compare_by_identity` が `kernel_inspect`（受け側
+String を返すスタブ）にエイリアスされていたのが根本原因。
+
+修正後 (`e99b9a0`): bench 180 frames で `checksum: 59662` (= CRuby), ~24 fps。
+
+過程の参考メモ (削除予定):
+
+## 旧メモ: optcarrot 映像チェックサム不一致 (解決済み)
 
 `tools/trace_optcarrot.rb` を CRuby と koruby に並走させ、180 フレームで
 `csum` が `60838` (CRuby) vs `11264` (koruby) と一致しない。
