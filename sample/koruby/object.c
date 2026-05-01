@@ -410,27 +410,30 @@ void korb_ivar_set(VALUE obj, ID name, VALUE val) {
 }
 
 /* Cached ivar set: same as get but with assign-on-miss semantics. */
-void korb_ivar_set_ic(VALUE obj, ID name, VALUE val, struct ivar_cache *cache) {
-    if (UNLIKELY(SPECIAL_CONST_P(obj))) return;
-    if (UNLIKELY(BUILTIN_TYPE(obj) != T_OBJECT)) return;
+/* Out-of-line slow path for the inline korb_ivar_set_ic in object.h.
+ * Reached on cache miss (different class or unset slot), or when the
+ * slot is past current ivar_capa / ivar_cnt and needs growth. */
+void korb_ivar_set_ic_slow(VALUE obj, ID name, VALUE val, struct ivar_cache *cache) {
+    if (SPECIAL_CONST_P(obj)) return;
+    if (BUILTIN_TYPE(obj) != T_OBJECT) return;
     struct korb_object *o = (struct korb_object *)obj;
     struct korb_class *k = (struct korb_class *)o->basic.klass;
     int s;
-    if (LIKELY(cache->klass == k && cache->slot >= 0)) {
+    if (cache->klass == k && cache->slot >= 0) {
         s = cache->slot;
     } else {
         s = ivar_slot_assign(k, name);
         cache->klass = k;
         cache->slot = s;
     }
-    if (UNLIKELY((uint32_t)s >= o->ivar_capa)) {
+    if ((uint32_t)s >= o->ivar_capa) {
         uint32_t nc = o->ivar_capa == 0 ? 4 : o->ivar_capa * 2;
         while ((uint32_t)s >= nc) nc *= 2;
         o->ivars = korb_xrealloc(o->ivars, nc * sizeof(VALUE));
         for (uint32_t i = o->ivar_capa; i < nc; i++) o->ivars[i] = Qnil;
         o->ivar_capa = nc;
     }
-    if (UNLIKELY((uint32_t)s >= o->ivar_cnt)) {
+    if ((uint32_t)s >= o->ivar_cnt) {
         for (uint32_t i = o->ivar_cnt; i <= (uint32_t)s; i++) o->ivars[i] = Qnil;
         o->ivar_cnt = s + 1;
     }

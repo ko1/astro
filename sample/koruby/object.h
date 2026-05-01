@@ -215,12 +215,10 @@ VALUE korb_object_new(struct korb_class *klass);
 VALUE korb_ivar_get(VALUE obj, ID name);
 void  korb_ivar_set(VALUE obj, ID name, VALUE value);
 VALUE korb_ivar_get_ic_slow(VALUE obj, ID name, struct ivar_cache *cache);
-void  korb_ivar_set_ic(VALUE obj, ID name, VALUE val, struct ivar_cache *cache);
+void  korb_ivar_set_ic_slow(VALUE obj, ID name, VALUE val, struct ivar_cache *cache);
 
-/* Fast inline ivar getter — same hit-path as korb_ivar_get_ic in object.c.
- * Caches a (klass, slot) pair on the AST node and short-circuits on
- * monomorphic class.  Cache miss + non-T_OBJECT receivers go through the
- * out-of-line slow path. */
+/* Fast inline ivar getter — caches (klass, slot) on the AST node.  Cache
+ * miss + non-T_OBJECT goes through the out-of-line slow path. */
 static inline __attribute__((always_inline)) VALUE
 korb_ivar_get_ic(VALUE obj, ID name, struct ivar_cache *cache) {
     if (UNLIKELY(SPECIAL_CONST_P(obj))) return Qnil;
@@ -232,6 +230,24 @@ korb_ivar_get_ic(VALUE obj, ID name, struct ivar_cache *cache) {
         return Qnil;
     }
     return korb_ivar_get_ic_slow(obj, name, cache);
+}
+
+/* Fast inline ivar setter — same monomorphic cache pattern.  Cache miss
+ * (different klass / unset slot / first write past current capa) goes
+ * through the slow path which handles growth + slot assignment. */
+static inline __attribute__((always_inline)) void
+korb_ivar_set_ic(VALUE obj, ID name, VALUE val, struct ivar_cache *cache) {
+    if (UNLIKELY(SPECIAL_CONST_P(obj))) return;
+    if (UNLIKELY(BUILTIN_TYPE(obj) != T_OBJECT)) return;
+    struct korb_object *o = (struct korb_object *)obj;
+    if (LIKELY(cache->klass == (struct korb_class *)o->basic.klass && cache->slot >= 0)) {
+        uint32_t s = (uint32_t)cache->slot;
+        if (LIKELY(s < o->ivar_cnt)) {
+            o->ivars[s] = val;
+            return;
+        }
+    }
+    korb_ivar_set_ic_slow(obj, name, val, cache);
 }
 
 /* string */
