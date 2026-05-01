@@ -878,12 +878,12 @@ pascal_call_baked(CTX *c, NODE *body, node_dispatcher_func_t body_dispatcher,
                   uint32_t argc, VALUE *av)
 {
     int new_fp = c->sp;
+    int saved_sp = new_fp;          // c->sp at entry == new_fp by definition
     int new_sp = new_fp + (int)nslots;
     if (UNLIKELY(new_sp > PASCAL_STACK_SIZE)) pascal_error("call stack overflow");
     for (uint32_t i = 0; i < argc; i++) c->stack[new_fp + i] = av[i];
     for (uint32_t i = argc; i < nslots; i++) c->stack[new_fp + i] = 0;
-    int saved_fp      = c->fp;
-    int saved_sp      = c->sp;
+    int saved_fp = c->fp;
     // The display save/restore only matters if THIS proc has nested
     // children that reference its frame via uref/uset.  When
     // `needs_display` is baked false at the call site, gcc DCEs the
@@ -897,8 +897,12 @@ pascal_call_baked(CTX *c, NODE *body, node_dispatcher_func_t body_dispatcher,
     VALUE rv = is_function ? c->stack[new_fp + (int)return_slot] : 0;
     if (needs_display) c->display[lexical_depth] = saved_display;
     c->fp = saved_fp; c->sp = saved_sp;
-    c->exit_pending = 0;
-    c->loop_action  = 0;
+    // Conditional clears: only pay the store when something is actually
+    // raised.  In the hot path (no exit / break / continue inside the
+    // callee) both flags stay 0 throughout, so the loads + UNLIKELY
+    // branch becomes two register-only compares, no stores.
+    if (UNLIKELY(c->exit_pending)) c->exit_pending = 0;
+    if (UNLIKELY(c->loop_action))  c->loop_action  = 0;
     return rv;
 }
 
