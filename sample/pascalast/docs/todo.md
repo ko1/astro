@@ -9,7 +9,7 @@ Pascal 拡張、性能のうち高度なもの。「Pascal として完成」の
 | # | 項目 | 工数 | 備考 |
 |---|------|------|------|
 | 1 | **`goto` / label runtime** | 中 | 構文受付済み (round 6)。実装は body-level dispatch wrapper が要る — EVAL の force-inline と setjmp が衝突するため、proc body 全体を setjmp ループに wrap して、longjmp 後に label idx で resume する設計が必要。 |
-| ~~2~~ | ~~Subrange の範囲チェック~~ | — | **完了** (round 7)。代入時に node_range_check で catchable raise。`{$R+}/{$R-}` ディレクティブはまだ。 |
+| ~~2~~ | ~~Subrange の範囲チェック~~ | — | **完了** (round 7+8)。代入時に node_range_check で catchable raise、`{$R+}/{$R-}` (および `(*$R+/-*)`) ディレクティブで toggle 可能 (round 8)。未知の `{$H+}` / `{$MODE OBJFPC}` 等は黙ってスキップ。 |
 | 3 | **N 次元 (≥ 3) 配列** | 中 | per-array に stride table を持たせれば一般化。1D/2D の専用ノードは残してホットパス維持。 |
 | 4 | **Open-array param `array of T`** | 中 | base + length の 2 値で渡す必要がある。slot を 2 つ消費するか、heap struct を介す。 |
 | 5 | **配列の `for-in`、set の `for-in`** | 小 | 配列は既に対応。set 列挙はビット走査ループに desugar。 |
@@ -40,7 +40,7 @@ Pascal 拡張、性能のうち高度なもの。「Pascal として完成」の
 
 | # | 項目 | 期待効果 |
 |---|------|---------|
-| P1 | **Body NODE\* を SPECIALIZE 時に bake する pcall** | 再帰系 AOT が 2× → 4-6× に伸びる見込み (現在 cache はあるが SD 越しに inline できない) |
+| ~~P1~~ | ~~**Body NODE\* を SPECIALIZE 時に bake する pcall**~~ | **完了** (round 8)。recursion benches: fib 4.2× / tarai 5.5× / ack 5.8× / matmul 19× / mandelbrot 26-37×。`@nohash` 修飾子 + `pcall_K_baked` 系列 + post-parse fixup + eager dispatcher_name set。 |
 | P2 | **PGC / Hopt** | 分岐が偏る real 数値計算で効く |
 | P3 | **for-loop の literal bounds 特化** | `for i := 1 to 100` を fixed-trip に |
 | P4 | **alloca フレーム** | call-heavy bench で +10-30% |

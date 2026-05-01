@@ -323,6 +323,43 @@ static double  tk_real;
 static char tk_id[256];        // already lowercased
 static char tk_str[1024];
 
+// Compiler-directive state.  `{$R+}` enables subrange range checking
+// at assignment, `{$R-}` disables it.  Default on (matches Free
+// Pascal's default in $MODE OBJFPC and CodeTyphon defaults).  Other
+// `{$X...}` directives are parsed and ignored — many real Pascal
+// programs sprinkle `{$H+}` / `{$MODE OBJFPC}` etc. that we don't
+// implement and shouldn't error on.
+static bool range_check_enabled = true;
+
+// Parse the directive contents inside `{$...}` (after the `{$`).
+// On entry `*src` points at the first character after `$`; on exit
+// it points just past the closing `}`.
+static void
+lex_parse_directive(void)
+{
+    // Skip over the directive payload, capturing what we recognise.
+    // Format: a letter followed by `+` / `-` is the simple form
+    // (e.g. R+, H+).  Anything else is parsed-and-ignored — we just
+    // run to the `}`.
+    if ((*src >= 'A' && *src <= 'Z') || (*src >= 'a' && *src <= 'z')) {
+        char letter = (char)toupper((unsigned char)*src);
+        char sign   = src[1];
+        if ((sign == '+' || sign == '-')
+            && (src[2] == '}' || src[2] == ',' || src[2] == ' ')) {
+            switch (letter) {
+            case 'R': range_check_enabled = (sign == '+'); break;
+            // Other on/off directives accepted silently.
+            default: break;
+            }
+        }
+    }
+    while (*src && *src != '}') {
+        if (*src == '\n') line_no++;
+        src++;
+    }
+    if (*src == '}') src++;
+}
+
 static void
 lex_skip_ws(void)
 {
@@ -330,11 +367,39 @@ lex_skip_ws(void)
         while (*src == ' ' || *src == '\t' || *src == '\r') src++;
         if (*src == '\n') { line_no++; src++; continue; }
         if (*src == '{') {
+            // `{$...}` is a compiler directive — handle separately so
+            // we can flip range-check etc.  Other `{ ... }` is a plain
+            // comment.
+            if (src[1] == '$') {
+                src += 2;
+                lex_parse_directive();
+                continue;
+            }
             while (*src && *src != '}') { if (*src == '\n') line_no++; src++; }
             if (*src == '}') src++;
             continue;
         }
         if (src[0] == '(' && src[1] == '*') {
+            // `(*$...*)` is the alternate-syntax compiler directive.
+            if (src[2] == '$') {
+                src += 3;
+                // Reuse lex_parse_directive but it expects `}` end —
+                // adapt by scanning to `*)` ourselves.
+                if ((*src >= 'A' && *src <= 'Z') || (*src >= 'a' && *src <= 'z')) {
+                    char letter = (char)toupper((unsigned char)*src);
+                    char sign   = src[1];
+                    if ((sign == '+' || sign == '-')
+                        && (src[2] == '*' || src[2] == ',' || src[2] == ' ')) {
+                        if (letter == 'R') range_check_enabled = (sign == '+');
+                    }
+                }
+                while (*src && !(src[0] == '*' && src[1] == ')')) {
+                    if (*src == '\n') line_no++;
+                    src++;
+                }
+                if (*src) src += 2;
+                continue;
+            }
             src += 2;
             while (*src && !(src[0] == '*' && src[1] == ')')) {
                 if (*src == '\n') line_no++;
@@ -2862,7 +2927,7 @@ parse_id_stmt(void)
         return mk_field_set(s, field, rhs);
     }
     NODE *rhs = te_coerce(val, s->type, "assignment");
-    if (s->has_range)
+    if (s->has_range && range_check_enabled)
         rhs = ALLOC_node_range_check(rhs, s->lo, s->hi);
     return mk_set_typed(s, idx1, idx2, rhs);
 }

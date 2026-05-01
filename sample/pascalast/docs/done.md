@@ -182,7 +182,7 @@ Round 8's baked pcall variant (see below) bakes body's SD plus the
 per-proc metadata into the call NODE so the AOT'd parent SD calls
 the callee SD directly, lifting recursion-heavy benches to 4-6 ×.
 
-### Round 8 — AOT baked pcall
+### Round 8 — AOT baked pcall + compiler directives
 
 | Feature                                  | Test / Bench           |
 |---|---|
@@ -191,6 +191,7 @@ the callee SD directly, lifting recursion-heavy benches to 4-6 ×.
 | **Eager `dispatcher_name` set in SPECIALIZE** — `node.c::SPECIALIZE` stamps `n->head.dispatcher_name = SD_<hash>` *before* recursing into children, so a child that cycles back to the parent (recursive proc) sees the right name and the recursive-edge SD call is emitted as a direct `SD_X` reference instead of a generic `DISPATCH_node_<kind>` | fib / tarai recursive call sites |
 | **Post-parse fixup pass** — `pcall_fixups[]` records every baked-pcall NODE at parse time; a single sweep after `parse_program()` patches body + nslots + return_slot + lexical_depth + is_function from the resolved `c->procs[pidx]` | mk_pcall + parse_program tail |
 | **Proc-body / main-body roots emitted `static inline`** — matches the forward-decl that baked specializers emit; gcc still lays out a callable copy because `sc_entries[]` takes the address | (`SPECIALIZED_SRC` in node.c) |
+| **`{$R+/-}` / `(*$R+/-*)` directives** — toggle subrange range-check emission in the parser.  Unknown one-letter directives (`{$H+}`, `{$MODE OBJFPC}`, …) are accepted and silently ignored so real-world Pascal programs don't trip the parser | `test/46_directive.pas` |
 
 ## Bug fixes
 

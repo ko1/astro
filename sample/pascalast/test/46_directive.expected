@@ -1,0 +1,5 @@
+with R+: age=42
+caught: value 200 out of range [0..150]
+with R-: age=200
+caught2: value 999 out of range [0..150]
+done i=7
