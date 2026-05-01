@@ -11,10 +11,10 @@ CFLAGS = -I$(PRISM_DIR)/include -I. $(optflags) -flto=auto -ggdb3 -Wall -Wno-unu
 LDFLAGS = -L $(PRISM_DIR)/build -Wl,-rpath=$(CURDIR)/$(PRISM_DIR)/build -flto=auto
 LIBS = -lprism -lgc -lgmp -lm
 
-SRCS = main.c node.c parse.c object.c builtins.c
+SRCS = main.c node.c parse.c object.c builtins.c code_store.c
 
 koruby: $(SRCS) $(NODE_GENFILES) Makefile
-	$(CC) $(CFLAGS) -o $@ $(SRCS) $(LDFLAGS) $(LIBS)
+	$(CC) $(CFLAGS) -rdynamic -o $@ $(SRCS) $(LDFLAGS) $(LIBS) -ldl
 
 # Profile-guided optimization build.  Two-pass:
 # 1) build with -fprofile-generate, run optcarrot to collect profile
@@ -27,12 +27,30 @@ PGO_BENCH_ARGS = --frames 60 --headless --no-print-fps --no-print-video-checksum
 koruby-pgo: $(SRCS) $(NODE_GENFILES) Makefile
 	@echo "==> Pass 1: instrumented build for profile collection"
 	mkdir -p $(PGO_DIR)
-	$(CC) $(CFLAGS) -fprofile-generate=$(PGO_DIR) -o koruby $(SRCS) $(LDFLAGS) $(LIBS) -fprofile-generate=$(PGO_DIR)
+	$(CC) $(CFLAGS) -fprofile-generate=$(PGO_DIR) -rdynamic -o koruby $(SRCS) $(LDFLAGS) $(LIBS) -ldl -fprofile-generate=$(PGO_DIR)
 	@echo "==> Running optcarrot to collect profile data"
 	./koruby $(PGO_BENCH) $(PGO_BENCH_ARGS) >/dev/null 2>&1
 	@echo "==> Pass 2: rebuild with profile data"
-	$(CC) $(CFLAGS) -fprofile-use=$(PGO_DIR) -fprofile-correction -o koruby $(SRCS) $(LDFLAGS) $(LIBS)
+	$(CC) $(CFLAGS) -fprofile-use=$(PGO_DIR) -fprofile-correction -rdynamic -o koruby $(SRCS) $(LDFLAGS) $(LIBS) -ldl
 	@echo "==> PGO build done"
+
+# AOT (ahead-of-time specialization) build, abruby-style.
+# 1) Build koruby normally
+# 2) Run optcarrot under --aot-compile: this runs the program once,
+#    then for every entry (toplevel + each method body) writes
+#    code_store/c/SD_<hash>.c and builds code_store/all.so.
+# 3) Subsequent runs auto-detect code_store/all.so via dlopen.
+#
+# Result: ~25% faster on optcarrot than -O2 + LTO alone (54 fps vs 43).
+AOT_BENCH = ../abruby/benchmark/optcarrot/bin/optcarrot-bench
+AOT_BENCH_ARGS = --frames 30 --headless --no-print-fps --no-print-video-checksum
+
+koruby-aot: koruby
+	rm -rf code_store
+	@echo "==> Running optcarrot under --aot-compile"
+	./koruby --aot-compile $(AOT_BENCH) $(AOT_BENCH_ARGS) 2>&1 | tail -3
+	@echo "==> AOT build done.  code_store/all.so:"
+	@ls -la code_store/all.so
 
 # generated files come from node.def via koruby_gen.rb
 $(NODE_GENFILES): node.def koruby_gen.rb ../../lib/astrogen.rb
@@ -44,7 +62,7 @@ node_specialized.c:
 
 clean:
 	rm -fv $(NODE_GENFILES) node_specialized.c koruby compiled_koruby
-	rm -rf pgo-data
+	rm -rf pgo-data code_store
 
 # regenerate (force rebuild)
 regen:

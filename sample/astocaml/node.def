@@ -730,6 +730,119 @@ node_phys_ne(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
 }
 
 // ---------------------------------------------------------------------------
+// Type-specialized arithmetic / comparison.  Same struct layout as their
+// generic counterparts (`{a, b}`).  Post-type-inference walker swaps the
+// dispatcher + kind in place when both operands are statically known to
+// be `int`, so the runtime type-tag check disappears and AOT generates a
+// pure-int sequence (untag-untag-add-retag for arith; untag-untag-cmp +
+// cmov for comparison).  Same trick as `node_lref0_reg`.
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+node_add_int(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    return OC_INT(OC_INT_VAL(av) + OC_INT_VAL(bv));
+}
+
+NODE_DEF
+node_sub_int(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    return OC_INT(OC_INT_VAL(av) - OC_INT_VAL(bv));
+}
+
+NODE_DEF
+node_mul_int(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    return OC_INT(OC_INT_VAL(av) * OC_INT_VAL(bv));
+}
+
+NODE_DEF
+node_div_int(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    int64_t bi = OC_INT_VAL(bv);
+    if (UNLIKELY(bi == 0)) oc_raise(c, oc_make_variant("Division_by_zero", 0, NULL));
+    return OC_INT(OC_INT_VAL(av) / bi);
+}
+
+NODE_DEF
+node_mod_int(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    int64_t bi = OC_INT_VAL(bv);
+    if (UNLIKELY(bi == 0)) oc_raise(c, oc_make_variant("Division_by_zero", 0, NULL));
+    return OC_INT(OC_INT_VAL(av) % bi);
+}
+
+NODE_DEF
+node_lt_int(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    return (OC_INT_VAL(av) < OC_INT_VAL(bv)) ? OC_TRUE : OC_FALSE;
+}
+
+NODE_DEF
+node_le_int(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    return (OC_INT_VAL(av) <= OC_INT_VAL(bv)) ? OC_TRUE : OC_FALSE;
+}
+
+NODE_DEF
+node_gt_int(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    return (OC_INT_VAL(av) > OC_INT_VAL(bv)) ? OC_TRUE : OC_FALSE;
+}
+
+NODE_DEF
+node_ge_int(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    return (OC_INT_VAL(av) >= OC_INT_VAL(bv)) ? OC_TRUE : OC_FALSE;
+}
+
+NODE_DEF
+node_eq_int(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    // Tagged ints are bit-identical iff they're equal — single cmp.
+    return (av == bv) ? OC_TRUE : OC_FALSE;
+}
+
+NODE_DEF
+node_ne_int(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    return (av == bv) ? OC_FALSE : OC_TRUE;
+}
+
+// ---------------------------------------------------------------------------
 // Boolean (short-circuiting) and string ops.
 // ---------------------------------------------------------------------------
 

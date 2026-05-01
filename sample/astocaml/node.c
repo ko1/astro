@@ -94,3 +94,26 @@ oc_node_lref_depth(NODE *n)
 {
     return n->u.node_lref.depth;
 }
+
+// Swap a binary-op node to its `_int` specialization in place.
+// All `*_int` variants share `{NODE *a, NODE *b}` struct layout
+// with their generic counterparts (compiler enforces this since
+// they're declared with the same operands).  Returns true if a
+// known mapping fired.
+bool
+oc_node_to_int(NODE *n)
+{
+    node_dispatcher_func_t d = n->head.dispatcher;
+    if (d == DISPATCH_node_add) { n->head.dispatcher = DISPATCH_node_add_int; n->head.kind = &kind_node_add_int; return true; }
+    if (d == DISPATCH_node_sub) { n->head.dispatcher = DISPATCH_node_sub_int; n->head.kind = &kind_node_sub_int; return true; }
+    if (d == DISPATCH_node_mul) { n->head.dispatcher = DISPATCH_node_mul_int; n->head.kind = &kind_node_mul_int; return true; }
+    if (d == DISPATCH_node_div) { n->head.dispatcher = DISPATCH_node_div_int; n->head.kind = &kind_node_div_int; return true; }
+    if (d == DISPATCH_node_mod) { n->head.dispatcher = DISPATCH_node_mod_int; n->head.kind = &kind_node_mod_int; return true; }
+    if (d == DISPATCH_node_lt)  { n->head.dispatcher = DISPATCH_node_lt_int;  n->head.kind = &kind_node_lt_int;  return true; }
+    if (d == DISPATCH_node_le)  { n->head.dispatcher = DISPATCH_node_le_int;  n->head.kind = &kind_node_le_int;  return true; }
+    if (d == DISPATCH_node_gt)  { n->head.dispatcher = DISPATCH_node_gt_int;  n->head.kind = &kind_node_gt_int;  return true; }
+    if (d == DISPATCH_node_ge)  { n->head.dispatcher = DISPATCH_node_ge_int;  n->head.kind = &kind_node_ge_int;  return true; }
+    if (d == DISPATCH_node_eq)  { n->head.dispatcher = DISPATCH_node_eq_int;  n->head.kind = &kind_node_eq_int;  return true; }
+    if (d == DISPATCH_node_ne)  { n->head.dispatcher = DISPATCH_node_ne_int;  n->head.kind = &kind_node_ne_int;  return true; }
+    return false;
+}

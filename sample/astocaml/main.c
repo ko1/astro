@@ -1299,20 +1299,22 @@ ty_node_is(NODE *n, const char *kind_name)
     return strcmp(d + 9, kind_name) == 0;
 }
 
+extern bool oc_node_to_int(NODE *n);
+
 // Helper for binary int ops: infers operands, unifies with int, returns int.
+// On success, also swaps the parent node's dispatcher / kind to its
+// `_int` specialization — both operands are guaranteed `int` by the
+// unify, so the runtime type-tag check in the generic op is dead code.
 static struct ty *
-infer_arith_int(NODE *a, NODE *b, struct ty_env *env, int level, const char *op)
+infer_arith_int(NODE *parent, NODE *a, NODE *b, struct ty_env *env, int level, const char *op)
 {
     struct ty *ta = infer(a, env, level);
     struct ty *tb = infer(b, env, level);
-    if (ty_unify(ta, ty_int) < 0) {
-        ty_err(a, "%s: left operand must be int, got ", op);
-        ty_print(stderr, ta); fputc('\n', stderr);
-    }
-    if (ty_unify(tb, ty_int) < 0) {
-        ty_err(b, "%s: right operand must be int, got ", op);
-        ty_print(stderr, tb); fputc('\n', stderr);
-    }
+    bool a_ok = (ty_unify(ta, ty_int) >= 0);
+    bool b_ok = (ty_unify(tb, ty_int) >= 0);
+    if (!a_ok) { ty_err(a, "%s: left operand must be int, got ", op);  ty_print(stderr, ta); fputc('\n', stderr); }
+    if (!b_ok) { ty_err(b, "%s: right operand must be int, got ", op); ty_print(stderr, tb); fputc('\n', stderr); }
+    if (a_ok && b_ok) oc_node_to_int(parent);
     return ty_int;
 }
 
@@ -1379,11 +1381,11 @@ infer(NODE *n, struct ty_env *env, int level)
     }
 
     // Arithmetic.
-    if (ty_node_is(n, "node_add"))  return infer_arith_int(n->u.node_add.a, n->u.node_add.b, env, level, "(+)");
-    if (ty_node_is(n, "node_sub"))  return infer_arith_int(n->u.node_sub.a, n->u.node_sub.b, env, level, "(-)");
-    if (ty_node_is(n, "node_mul"))  return infer_arith_int(n->u.node_mul.a, n->u.node_mul.b, env, level, "( * )");
-    if (ty_node_is(n, "node_div"))  return infer_arith_int(n->u.node_div.a, n->u.node_div.b, env, level, "(/)");
-    if (ty_node_is(n, "node_mod"))  return infer_arith_int(n->u.node_mod.a, n->u.node_mod.b, env, level, "mod");
+    if (ty_node_is(n, "node_add"))  return infer_arith_int(n, n->u.node_add.a, n->u.node_add.b, env, level, "(+)");
+    if (ty_node_is(n, "node_sub"))  return infer_arith_int(n, n->u.node_sub.a, n->u.node_sub.b, env, level, "(-)");
+    if (ty_node_is(n, "node_mul"))  return infer_arith_int(n, n->u.node_mul.a, n->u.node_mul.b, env, level, "( * )");
+    if (ty_node_is(n, "node_div"))  return infer_arith_int(n, n->u.node_div.a, n->u.node_div.b, env, level, "(/)");
+    if (ty_node_is(n, "node_mod"))  return infer_arith_int(n, n->u.node_mod.a, n->u.node_mod.b, env, level, "mod");
     if (ty_node_is(n, "node_neg")) {
         struct ty *t = infer(n->u.node_neg.e, env, level);
         if (ty_unify(t, ty_int) < 0) {
@@ -1427,6 +1429,13 @@ infer(NODE *n, struct ty_env *env, int level)
             ty_err(n, "comparison operands must have the same type: ");
             ty_print(stderr, ta); fputs(" vs ", stderr); ty_print(stderr, tb); fputc('\n', stderr);
         }
+        // If both operands prove to be `int`, swap to the `_int`
+        // variant: skips both the IS_INT fast-path branch and the
+        // polymorphic `oc_compare` fallback in the generic dispatcher.
+        // Note: phys_eq / phys_ne already do a single-cmp on raw
+        // VALUEs, so no mapping for them.
+        if (ty_unify(ta, ty_int) >= 0 && ty_unify(tb, ty_int) >= 0)
+            oc_node_to_int(n);
         return ty_bool;
     }
 
@@ -2702,6 +2711,12 @@ walk_lref_subtree(NODE *n, bool rewrite)
     BINOP(eq) BINOP(ne) BINOP(phys_eq) BINOP(phys_ne)
     BINOP(and) BINOP(or)
     BINOP(concat)
+    // Type-specialized variants (post-infer dispatcher swap).  Same
+    // struct {a, b} so we just route them through the same field
+    // names — the compiler aliases via the union member.
+    BINOP(add_int) BINOP(sub_int) BINOP(mul_int) BINOP(div_int) BINOP(mod_int)
+    BINOP(lt_int) BINOP(le_int) BINOP(gt_int) BINOP(ge_int)
+    BINOP(eq_int) BINOP(ne_int)
 #undef BINOP
     if (strcmp(dn, "DISPATCH_node_cons") == 0) {
         bool _ok = walk_lref_subtree(n->u.node_cons.hd, rewrite);

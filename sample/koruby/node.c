@@ -40,7 +40,7 @@ static node_hash_t hash_double(double d) {
     return hash_uint64(u.u);
 }
 
-static node_hash_t hash_node(NODE *n) {
+node_hash_t hash_node(NODE *n) {
     if (!n) return 0;
     if (n->head.flags.has_hash_value) return n->head.hash_value;
     return HASH(n);
@@ -188,9 +188,14 @@ static void fill_with_sc(NODE *n, struct specialized_code *sc) {
     n->head.flags.is_specialized = true;
 }
 
+extern bool koruby_cs_load_node(NODE *n);
+
 NODE *OPTIMIZE(NODE *n) {
     if (!n) return n;
     if (OPTION.no_compiled_code) return n;
+    /* First try the runtime code store (dlopen'd all.so).  If it has a
+     * specialized SD_<hash> for this node, the dispatcher is replaced. */
+    if (koruby_cs_load_node(n)) return n;
     node_hash_t h = hash_node(n);
     struct specialized_code *sc = sc_repo_search(n, h);
     if (sc) fill_with_sc(n, sc);

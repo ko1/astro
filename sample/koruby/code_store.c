@@ -1,0 +1,203 @@
+// Koruby code store: AOT-specialized dispatcher cache.
+//
+// At runtime:
+//   - At startup, koruby_cs_init() dlopens code_store/all.so (if it exists).
+//   - During AST construction, OPTIMIZE() calls koruby_cs_load_node() for
+//     every node.  If SD_<hash> is found in all.so, the node's dispatcher
+//     is replaced with the specialized version.
+//
+// To compile:
+//   - `koruby --aot-compile <prog>` runs the program, then for every entry
+//     (toplevel + each AST method body in code_repo) writes
+//     code_store/c/SD_<hash>.c, generates a Makefile, and runs make -j.
+//   - The next normal run picks up code_store/all.so automatically.
+//
+// Compared to abruby's astro_code_store: skips PGC/Hopt indexing.  Only
+// AOT specialization (SD_<hash>) is supported, since koruby doesn't have
+// a per-call-site Hopt distinct from Horg.
+
+#include <dlfcn.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdbool.h>
+#include "node.h"
+
+extern node_hash_t hash_node(NODE *n);
+
+struct code_entry { const char *name; struct Node *body; };
+extern struct code_repo {
+    uint32_t size, capa;
+    struct code_entry *entries;
+} code_repo;
+
+static void *cs_handle = NULL;
+static char cs_dir[1024] = "";
+static char cs_src_dir[1024] = "";
+
+void koruby_cs_init(const char *store_dir, const char *src_dir) {
+    if (store_dir) snprintf(cs_dir, sizeof(cs_dir), "%s", store_dir);
+    if (src_dir)   snprintf(cs_src_dir, sizeof(cs_src_dir), "%s", src_dir);
+    if (!store_dir) return;
+    char path[2048];
+    snprintf(path, sizeof(path), "%s/all.so", cs_dir);
+    cs_handle = dlopen(path, RTLD_LAZY);
+    if (getenv("KORUBY_CS_STATS")) {
+        fprintf(stderr, "[koruby_cs] init: store=%s, all.so=%s\n",
+                cs_dir, cs_handle ? "loaded" : "<not found>");
+        if (!cs_handle) fprintf(stderr, "[koruby_cs] dlerror: %s\n", dlerror());
+    }
+}
+
+static int cs_load_hits = 0;
+static int cs_load_misses = 0;
+
+bool koruby_cs_load_node(NODE *n) {
+    if (!cs_handle || !n) return false;
+    char sym[64];
+    snprintf(sym, sizeof(sym), "SD_%lx", (unsigned long)hash_node(n));
+    void *fn = dlsym(cs_handle, sym);
+    if (!fn) { cs_load_misses++; return false; }
+    char *name = malloc(strlen(sym) + 1);
+    strcpy(name, sym);
+    n->head.dispatcher = (node_dispatcher_func_t)fn;
+    n->head.dispatcher_name = name;
+    n->head.flags.is_specialized = true;
+    cs_load_hits++;
+    return true;
+}
+
+void koruby_cs_print_stats(void) {
+    if (getenv("KORUBY_CS_STATS")) {
+        fprintf(stderr, "[koruby_cs] hits=%d misses=%d\n", cs_load_hits, cs_load_misses);
+    }
+}
+
+/* --- Per-compile-session dedup of emitted hashes. --- */
+static node_hash_t *cs_emitted = NULL;
+static uint32_t cs_emitted_size = 0, cs_emitted_capa = 0;
+
+static bool cs_emitted_has(node_hash_t h) {
+    for (uint32_t i = 0; i < cs_emitted_size; i++) if (cs_emitted[i] == h) return true;
+    return false;
+}
+static void cs_emitted_add(node_hash_t h) {
+    if (cs_emitted_size >= cs_emitted_capa) {
+        cs_emitted_capa = cs_emitted_capa ? cs_emitted_capa * 2 : 16;
+        cs_emitted = realloc(cs_emitted, cs_emitted_capa * sizeof(node_hash_t));
+    }
+    cs_emitted[cs_emitted_size++] = h;
+}
+static void cs_emitted_clear(void) { cs_emitted_size = 0; }
+
+/* Re-implements the SPECIALIZE in node.c — same dedup behavior, but tracks
+ * emissions per compile session so each SD_<hash>.c file has its own dedup
+ * table.  When a node has already been emitted in this file (or is on the
+ * specialize stack — recursion), we set no_inline so the runtime indirects
+ * through n->head.dispatcher. */
+extern const char *alloc_dispatcher_name_local(NODE *n);  /* not used */
+
+void cs_emit_specialize(FILE *fp, NODE *n) {
+    if (!n || !n->head.kind->specializer) return;
+    node_hash_t h = hash_node(n);
+    if (cs_emitted_has(h)) {
+        /* Already in this file — node's dispatcher_name was set on first emit;
+         * subsequent references just use the existing inline declaration. */
+        return;
+    }
+    if (n->head.flags.is_specializing) {
+        n->head.flags.no_inline = true;
+        return;
+    }
+    n->head.flags.is_specializing = true;
+    (*n->head.kind->specializer)(fp, n, false);
+    n->head.flags.is_specializing = false;
+    cs_emitted_add(h);
+}
+
+extern void sc_repo_clear(void);
+
+void koruby_cs_compile_entry(NODE *entry) {
+    if (!entry || !entry->head.kind->specializer) return;
+    if (cs_dir[0] == 0) return;
+
+    node_hash_t h = hash_node(entry);
+    char path[2048], cdir[2048];
+    snprintf(cdir, sizeof(cdir), "%s/c", cs_dir);
+    mkdir(cs_dir, 0755);
+    mkdir(cdir, 0755);
+    snprintf(path, sizeof(path), "%s/SD_%lx.c", cdir, (unsigned long)h);
+
+    /* Same hash → same generated content; skip rewrite. */
+    struct stat st;
+    if (stat(path, &st) == 0) return;
+
+    FILE *fp = fopen(path, "w");
+    if (!fp) return;
+
+    fprintf(fp, "// Auto-generated by koruby code store\n");
+    fprintf(fp, "#include \"%s/context.h\"\n", cs_src_dir);
+    fprintf(fp, "#include \"%s/object.h\"\n", cs_src_dir);
+    fprintf(fp, "#include \"%s/node.h\"\n", cs_src_dir);
+    fprintf(fp, "#include \"%s/node_eval.c\"\n", cs_src_dir);
+    fprintf(fp, "#include \"%s/node_dispatch.c\"\n", cs_src_dir);
+    fprintf(fp, "\n");
+
+    /* Each file gets its own dedup table — sc_repo_clear() resets the
+     * global one used by SPECIALIZE() in node.c.  Without this, a node
+     * already emitted into an earlier file would be skipped here, leaving
+     * a forward declaration with no definition. */
+    sc_repo_clear();
+
+    entry->head.flags.is_specializing = true;
+    (*entry->head.kind->specializer)(fp, entry, true);  /* entry public */
+    entry->head.flags.is_specializing = false;
+
+    fclose(fp);
+}
+
+void koruby_cs_compile_all(NODE *toplevel_ast) {
+    if (cs_dir[0] == 0) return;
+    /* Top-level program */
+    if (toplevel_ast) koruby_cs_compile_entry(toplevel_ast);
+    /* Every AST method body collected during parse */
+    for (uint32_t i = 0; i < code_repo.size; i++) {
+        koruby_cs_compile_entry(code_repo.entries[i].body);
+    }
+}
+
+void koruby_cs_build(void) {
+    if (cs_dir[0] == 0) return;
+
+    char makefile[2048];
+    snprintf(makefile, sizeof(makefile), "%s/Makefile", cs_dir);
+    FILE *fp = fopen(makefile, "w");
+    if (!fp) return;
+    fprintf(fp, "CC ?= gcc\n");
+    fprintf(fp, "CFLAGS ?= -O3 -fPIC -fno-plt -march=native\n");
+    fprintf(fp, "SRCS = $(wildcard c/SD_*.c)\n");
+    fprintf(fp, "OBJS = $(patsubst c/%%.c,o/%%.o,$(SRCS))\n");
+    fprintf(fp, "\nall: all.so\n\n");
+    fprintf(fp, "all.so: $(OBJS)\n");
+    fprintf(fp, "\t$(CC) -shared -o all.tmp.so $^\n");
+    fprintf(fp, "\tmv all.tmp.so $@\n\n");
+    fprintf(fp, "o/%%.o: c/%%.c | o\n");
+    fprintf(fp, "\t$(CC) $(CFLAGS) -c $< -o $@\n\n");
+    fprintf(fp, "o:\n\tmkdir -p o\n\n");
+    fprintf(fp, "clean:\n\trm -rf o all.so\n");
+    fclose(fp);
+
+    char cmd[2048];
+    int nproc = (int)sysconf(_SC_NPROCESSORS_ONLN);
+    if (nproc < 1) nproc = 1;
+    /* Disable ccache: it intermittently fails on read-only home dirs and
+     * each SD_*.c is unique anyway (filename = hash of contents). */
+    snprintf(cmd, sizeof(cmd), "CCACHE_DISABLE=1 make -C %s -j%d 2>&1", cs_dir, nproc);
+    int rc = system(cmd);
+    if (rc != 0) {
+        fprintf(stderr, "[koruby_cs_build] make failed (rc=%d)\n", rc);
+    }
+}

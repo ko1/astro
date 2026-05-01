@@ -15,6 +15,15 @@ NODE *koruby_parse(const char *src, size_t len, const char *filename);
 
 extern void sc_repo_clear(void);
 
+/* code store API (code_store.c) */
+extern void koruby_cs_init(const char *store_dir, const char *src_dir);
+extern bool koruby_cs_load_node(NODE *n);
+extern void koruby_cs_compile_all(NODE *toplevel);
+extern void koruby_cs_build(void);
+
+/* Set when --aot-compile is on the command line. */
+static bool g_aot_compile = false;
+
 static char *read_all(FILE *fp, size_t *out_len) {
     size_t cap = 4096, len = 0;
     char *buf = korb_xmalloc_atomic(cap);
@@ -73,6 +82,35 @@ int main(int argc, char *argv[])
     INIT();
     korb_runtime_init();
 
+    /* Initialize the code store: dlopen code_store/all.so if it exists.
+     * The src_dir is the directory of node.h / node_eval.c — used by the
+     * generated SD_*.c files for #include resolution. */
+    {
+        const char *cs = getenv("KORUBY_CODE_STORE");
+        const char *src = getenv("KORUBY_SRC_DIR");
+        char default_cs[PATH_MAX];
+        char default_src[PATH_MAX];
+        if (!cs || !src) {
+            char self[PATH_MAX] = {0};
+            ssize_t n = readlink("/proc/self/exe", self, sizeof(self) - 1);
+            if (n > 0) {
+                self[n] = 0;
+                /* dirname */
+                char *slash = strrchr(self, '/');
+                if (slash) *slash = 0;
+                if (!cs) {
+                    snprintf(default_cs, sizeof(default_cs), "%s/code_store", self);
+                    cs = default_cs;
+                }
+                if (!src) {
+                    snprintf(default_src, sizeof(default_src), "%s", self);
+                    src = default_src;
+                }
+            }
+        }
+        koruby_cs_init(cs, src);
+    }
+
     const char *e_code = NULL;
     const char *file = NULL;
     int script_arg_start = argc;  /* args beyond the script are passed to ARGV */
@@ -84,6 +122,7 @@ int main(int argc, char *argv[])
         else if (strcmp(a, "-c") == 0) { OPTION.compile_only = true; }
         else if (strcmp(a, "-q") == 0) { OPTION.quiet = true; }
         else if (strcmp(a, "-v") == 0) { OPTION.verbose = true; }
+        else if (strcmp(a, "--aot-compile") == 0) { g_aot_compile = true; }
         else if (a[0] == '-' && a[1] == '-' && file) { script_arg_start = i; break; }
         else if (a[0] == '-') {
             fprintf(stderr, "unknown option: %s\n", a);
@@ -158,19 +197,34 @@ int main(int argc, char *argv[])
 
     OPTIMIZE(ast);
 
-    if (!OPTION.compile_only) {
+    /* In compile_only mode (-c), still run the program so that
+     * `require_relative` chains parse all source files (registering all
+     * methods into code_repo) before we emit node_specialized.c.  Stop
+     * the run early via the compile_run_frames knob if you don't want the
+     * program to run to completion. */
+    {
         VALUE r = EVAL(c, ast);
         (void)r;
         if (c->state == KORB_RAISE) {
             VALUE s = korb_inspect(c->state_value);
             fprintf(stderr, "unhandled exception: %s\n", korb_str_cstr(s));
-            return 1;
+            if (!OPTION.compile_only) return 1;
+            /* For -c: still emit specialized code from whatever got parsed. */
         }
     }
 
     if (OPTION.compile_only) {
         generate_specialized_code(ast);
     }
+    if (g_aot_compile) {
+        /* Generate per-method SD_<hash>.c, then build all.so via make. */
+        fprintf(stderr, "[koruby] AOT compile: writing SD_*.c\n");
+        koruby_cs_compile_all(ast);
+        fprintf(stderr, "[koruby] AOT compile: building all.so\n");
+        koruby_cs_build();
+    }
+    extern void koruby_cs_print_stats(void);
+    koruby_cs_print_stats();
     return 0;
 }
 

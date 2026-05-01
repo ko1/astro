@@ -1,6 +1,7 @@
 koruby
 compiled_koruby
 pgo-data/
+code_store/
 node_eval.c
 node_dispatch.c
 node_alloc.c
