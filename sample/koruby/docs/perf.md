@@ -34,15 +34,25 @@ binary; SDs in `code_store/all.so` always built with `gcc -O3 -fPIC -fno-plt
 
 | 系統 | bench (vs ruby --yjit, smaller=koruby better) |
 |---|---|
-| **win** | collatz 0.7×, fannkuch 0.7×, gcd 0.9×, sieve 1.0×, string 0.8× |
-| **tied** | array 1.0×, array_access 1.0×, array_push 1.0×, hash 1.0×, while 1.1× |
-| Float-heavy (was 7×, now) | mandelbrot 1.7×, nbody 1.5× ← FLONUM 実装で改善 |
-| call-heavy (未着手) | ack 2.7×, fib 2.6×, tak 2.8×, dispatch 2.3×, method_call 2.0×, factorial 1.9× |
-| block-heavy | each 1.8×, inject 1.8×, times 2.0× |
-| その他 | ivar 1.9×, object 2.4×, binary_trees 1.8× |
+| **win (6)** | collatz 0.9×, each 0.83×, fannkuch 0.7×, gcd 0.8×, string 0.8×, times 0.9× |
+| **tied 5%以内 (7)** | array, array_access, array_push, hash, inject, sieve, while |
+| Float-heavy | mandelbrot 1.66×, nbody 1.42× ← FLONUM + 即値 fast path で改善 (元 7×/3.7×) |
+| call-heavy | ack 2.4×, fib 2.3×, tak 2.5×, dispatch 2.4×, method_call 1.7×, factorial 1.9× |
+| block-heavy | (each/inject/times は yield inline で勝ちまたは引き分けに) |
+| その他 | ivar 1.89×, object 2.31×, binary_trees 1.79×, map 1.60× |
 
-call-heavy 系は **prologue 14 stores/call の overhead** が見えるところまで来ていて、
-ここから先は method body inlining (PGSD) が必要。
+直近 round の主な投入:
+- **inline `korb_yield`** (single-arg, single-param fast path): each 0.49→0.23s (2×)
+- **`korb_object_new` ivar 事前確保**: object 0.53→0.42s (-20%)
+- **leaf-pure prologue** (yield/super/block_given/const 不使用 method): fib -27%, tak -26%, method_call -28%, ack -21%
+- **immediate Float (FLONUM)** + Float fast path: mandelbrot 7×→1.7× behind YJIT
+- **basic-op redef guard** (correctness): `class Integer; def +; end` を尊重
+- **`==` identity short-circuit + NaN!=NaN preserve**
+
+残ったレバーは:
+- **method body inlining (PGSD)**: fib/ack/tak の prologue を call 側にインライン化、~50% 削減見込み
+- **polymorphic IC (3+entry)**: dispatch bench は 3-way poly で 2-entry では効かず
+- **map allocator**: GC pressure (現状 Boehm GC、bump allocator にすると map/binary_trees 改善)
 
 #### この round の big wins
 
