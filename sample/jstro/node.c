@@ -49,11 +49,31 @@ clear_hash(NODE *n)
     while (n) { n->head.flags.has_hash_value = false; n = n->head.parent; }
 }
 
-// HORG / HOPT.  jstro doesn't run a separate profile hash — HOPT
-// aliases to HORG so PG-mode bake produces the same SDs as AOT.
+// HORG: structural hash, canonicalised via @canonical so swap_dispatcher
+// family members share a lookup key.  HOPT: profile-aware hash that
+// uses the *actual* (post-swap) kind name; PGC bake names SDs by HOPT.
 typedef uint64_t node_hash_t;
 node_hash_t HORG(NODE *n);
-node_hash_t HOPT(NODE *n) { return HORG(n); }
+
+node_hash_t
+HOPT(NODE *n)
+{
+    if (n == NULL) return 0;
+    if (n->head.flags.has_hash_opt) return n->head.hash_opt;
+    if (n->head.kind->hopt_func) {
+        n->head.flags.has_hash_opt = true;
+        return n->head.hash_opt = (*n->head.kind->hopt_func)(n);
+    }
+    return 0;
+}
+
+node_hash_t
+hash_node_opt(NODE *n)
+{
+    if (!n) return 0;
+    if (n->head.flags.has_hash_opt) return n->head.hash_opt;
+    return HOPT(n);
+}
 
 size_t node_cnt = 0;
 
@@ -143,10 +163,17 @@ code_repo_add(const char *name, NODE *body, bool force)
 // =====================================================================
 // Generated files
 // =====================================================================
+// Forward-declare kinds referenced from node_eval.c's swap_dispatcher
+// calls before the kind definitions land via node_alloc.c.
+extern const struct NodeKind kind_node_smi_lt_ii;
+extern const struct NodeKind kind_node_smi_le_ii;
+extern const struct NodeKind kind_node_smi_add_ii;
+
 #include "node_eval.c"
 #include "node_dispatch.c"
 #include "node_dump.c"
 #include "node_hash.c"
+#include "node_hopt.c"
 #include "node_specialize.c"
 #include "node_replace.c"
 #include "node_alloc.c"

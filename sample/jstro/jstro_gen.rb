@@ -7,6 +7,15 @@ require 'astrogen'
 #      (CTX *c, NODE *n, JsValue *frame, ...).
 #   3. Adds operand types for JsString *, JsPropIC *, JsCallIC *, etc.
 class JstroNodeDef < ASTroGen::NodeDef
+  # Hopt (profile-aware hash) — generates node_hopt.c with HOPT_<name>
+  # functions and wires .hopt_func on each NodeKind.  Used by `-p` PGC
+  # flow so swapped specialised variants get distinct PGSDs while the
+  # original (canonical) kind name is the HORG lookup key.
+  register_gen_task :hopt,
+    func_typedef: "typedef node_hash_t (*node_hash_func_t)(struct Node *n);",
+    func_prefix: "HOPT_",
+    kind_field: "node_hash_func_t hopt_func"
+
   class Operand < ASTroGen::NodeDef::Node::Operand
     def hash_call(val, kind: :horg)
       case @type
@@ -51,6 +60,16 @@ class JstroNodeDef < ASTroGen::NodeDef
             end
       [nil, arg]
     end
+  end
+
+  # Wires the :hopt task's per-NODE template into node_hopt.c.
+  def build_hopt
+    <<~C__
+    // This file is auto-generated from #{@file}.
+    // Hopt (profile-aware) hash functions
+
+    #{@nodes.map{|name, n| n.build_hopt_func}.join("\n")}
+    C__
   end
 
   class Node < ASTroGen::NodeDef::Node

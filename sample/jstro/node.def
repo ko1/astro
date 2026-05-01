@@ -729,9 +729,13 @@ node_add(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *l,
     (void)n;
     JsValue a = EVAL_ARG(c, l);
     JsValue b = EVAL_ARG(c, r);
-    if (JSTRO_LIKELY(JV_IS_SMI(a) && JV_IS_SMI(b))) {
-        // Spec ToNumber on numbers is identity; range fits 63-bit easily.
-        return RESULT_OK(JV_INT(JV_AS_SMI(a) + JV_AS_SMI(b)));
+    if (JSTRO_LIKELY(((a & b) & 1) != 0)) {
+#ifndef NODE_SKIP_COLD
+        swap_dispatcher(n, &kind_node_smi_add_ii);
+#endif
+        // SMI encoding `(raw<<1)|1`: e_a + e_b - 1 == ((raw_a+raw_b)<<1)|1,
+        // so we can add two encoded SMIs without decoding/re-encoding.
+        return RESULT_OK((JsValue)(a + b - 1));
     }
     if (JV_IS_FLONUM(a) && JV_IS_FLONUM(b)) {
         return RESULT_OK(JV_DBL(JV_AS_DBL(a) + JV_AS_DBL(b)));
@@ -950,7 +954,12 @@ node_lt(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *l, 
     // comparison preserves the relation between the underlying raw
     // values — skip the two SAR decodes.  Saves 2 inst/iter on tight
     // numeric loops like sieve.
-    if (JSTRO_LIKELY(JV_IS_SMI(a) && JV_IS_SMI(b))) return RESULT_OK(JV_BOOL((int64_t)a < (int64_t)b));
+    if (JSTRO_LIKELY(((a & b) & 1) != 0)) {
+#ifndef NODE_SKIP_COLD
+        swap_dispatcher(n, &kind_node_smi_lt_ii);
+#endif
+        return RESULT_OK(JV_BOOL((int64_t)a < (int64_t)b));
+    }
     if (JV_IS_FLONUM(a) && JV_IS_FLONUM(b))         return RESULT_OK(JV_BOOL(JV_AS_DBL(a) < JV_AS_DBL(b)));
     if (JV_IS_SMI(a)    && JV_IS_FLONUM(b))         return RESULT_OK(JV_BOOL((double)JV_AS_SMI(a) < JV_AS_DBL(b)));
     if (JV_IS_FLONUM(a) && JV_IS_SMI(b))            return RESULT_OK(JV_BOOL(JV_AS_DBL(a) < (double)JV_AS_SMI(b)));
@@ -964,7 +973,12 @@ node_le(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *l, 
     JsValue b = EVAL_ARG(c, r);
     // Both SMI iff (a & b & 1) — one AND + branch instead of two
     // separate tag tests + two branches.
-    if (JSTRO_LIKELY(((a & b) & 1) != 0)) return RESULT_OK(JV_BOOL((int64_t)a <= (int64_t)b));
+    if (JSTRO_LIKELY(((a & b) & 1) != 0)) {
+#ifndef NODE_SKIP_COLD
+        swap_dispatcher(n, &kind_node_smi_le_ii);
+#endif
+        return RESULT_OK(JV_BOOL((int64_t)a <= (int64_t)b));
+    }
     if (JV_IS_FLONUM(a) && JV_IS_FLONUM(b))         return RESULT_OK(JV_BOOL(JV_AS_DBL(a) <= JV_AS_DBL(b)));
     if (JV_IS_SMI(a)    && JV_IS_FLONUM(b))         return RESULT_OK(JV_BOOL((double)JV_AS_SMI(a) <= JV_AS_DBL(b)));
     if (JV_IS_FLONUM(a) && JV_IS_SMI(b))            return RESULT_OK(JV_BOOL(JV_AS_DBL(a) <= (double)JV_AS_SMI(b)));
@@ -994,6 +1008,45 @@ node_ge(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *l, 
     if (JV_IS_SMI(a)    && JV_IS_FLONUM(b))         return RESULT_OK(JV_BOOL((double)JV_AS_SMI(a) >= JV_AS_DBL(b)));
     if (JV_IS_FLONUM(a) && JV_IS_SMI(b))            return RESULT_OK(JV_BOOL(JV_AS_DBL(a) >= (double)JV_AS_SMI(b)));
     int ts = js_lt_ts(c, a, b, true);
+    return RESULT_OK(JV_BOOL(ts == 0));
+}
+
+// SMI×SMI specialised compare variants: profile-driven swap targets
+// for node_lt / node_le / node_gt / node_ge.  These keep the same
+// HORG (canonical = original kind) so the AOT/PGC bake key doesn't
+// change — but the HOPT differs, so PG bake produces a *distinct*
+// SD per observed specialisation.  Body is monomorphic SMI; if a
+// later run sees a non-SMI operand we fall back to the canonical
+// node's logic via a one-shot reverse-swap.
+NODE_DEF @canonical=node_add @always_inline
+node_smi_add_ii(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *l, NODE *r)
+{
+    (void)n;
+    JsValue a = EVAL_ARG(c, l);
+    JsValue b = EVAL_ARG(c, r);
+    if (JSTRO_LIKELY(((a & b) & 1) != 0)) return RESULT_OK((JsValue)(a + b - 1));
+    return RESULT_OK(js_add(c, a, b));
+}
+
+NODE_DEF @canonical=node_lt @always_inline
+node_smi_lt_ii(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *l, NODE *r)
+{
+    (void)n;
+    JsValue a = EVAL_ARG(c, l);
+    JsValue b = EVAL_ARG(c, r);
+    if (JSTRO_LIKELY(((a & b) & 1) != 0)) return RESULT_OK(JV_BOOL((int64_t)a < (int64_t)b));
+    // Slow path: types diverged from the observed specialisation.
+    return RESULT_OK(JV_BOOL(js_lt(c, a, b, true)));
+}
+
+NODE_DEF @canonical=node_le @always_inline
+node_smi_le_ii(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *l, NODE *r)
+{
+    (void)n;
+    JsValue a = EVAL_ARG(c, l);
+    JsValue b = EVAL_ARG(c, r);
+    if (JSTRO_LIKELY(((a & b) & 1) != 0)) return RESULT_OK(JV_BOOL((int64_t)a <= (int64_t)b));
+    int ts = js_lt_ts(c, b, a, false);
     return RESULT_OK(JV_BOOL(ts == 0));
 }
 

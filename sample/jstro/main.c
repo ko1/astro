@@ -164,7 +164,11 @@ main(int argc, char *argv[])
     }
 
     if (OPTION.pg_mode) {
-        jstro_specialize_all(body, NULL);
+        // PG mode: pass the source filename so astro_cs_compile names
+        // the baked SDs PGSD_<HOPT> (profile-aware).  Subsequent runs
+        // load PGSDs via the (HORG, file, line) → HOPT index, picking
+        // up post-swap_dispatcher specialisations.
+        jstro_specialize_all(body, path);
     }
     jstro_optimize_stats();
 

@@ -30,6 +30,7 @@ struct NodeHead {
         bool is_dumping;
         bool no_inline;
         bool has_hash_opt;        // set when hash_opt has been computed
+        bool kind_swapped;        // set by swap_dispatcher (profile signal)
     } flags;
 
     const struct NodeKind *kind;
@@ -49,15 +50,36 @@ struct NodeHead {
     unsigned int dispatch_cnt;
 };
 
-// HORG: structural hash (canonical name).  jstro doesn't run a
-// separate profile hash, so HOPT aliases to HORG (defined in node.c).
+// HORG: structural hash (canonical name).  Specialised variants
+// declared with `@canonical=BASE` share BASE's HORG so swap_dispatcher
+// keeps the same SD lookup key.
+// HOPT: profile-aware hash that uses the *actual* current kind name —
+// reflects post-swap state.  jstro PGC bake names SDs by HOPT.
 node_hash_t HORG(NODE *n);
+node_hash_t HOPT(NODE *n);
+node_hash_t hash_node_opt(NODE *n);
 
 #define ASTRO_NODEHEAD_PARENT 1
 #define ASTRO_NODEHEAD_JIT_STATUS 1
 #define ASTRO_NODEHEAD_DISPATCH_CNT 1
 
 #include "node_head.h"
+
+// Swap the node's dispatcher to a different kind (used for profile-
+// driven type specialisation: node_le observes SMI×SMI, swaps to
+// kind_node_smi_le_ii).  No-op once a baked SD has patched the
+// dispatcher (the SD already encodes the post-swap behaviour, so a
+// further runtime swap would just clobber the SD pointer with the
+// host-binary default and lose specialisation).
+static inline void
+swap_dispatcher(NODE *n, const struct NodeKind *new_kind)
+{
+    if (n->head.flags.is_specialized || n->head.kind == new_kind) return;
+    n->head.dispatcher       = new_kind->default_dispatcher;
+    n->head.dispatcher_name  = new_kind->default_dispatcher_name;
+    n->head.kind             = new_kind;
+    n->head.flags.kind_swapped = true;
+}
 
 NODE *code_repo_find(node_hash_t h);
 NODE *code_repo_find_by_name(const char *name);
