@@ -25,15 +25,29 @@ binary; SDs in `code_store/all.so` always built with `gcc -O3 -fPIC -fno-plt
 | koruby (interp, plain) | 42 fps | 1.02× |
 | koruby (interp + PGO — `make koruby-pgo`) | 51 fps | 1.24× |
 | abruby (--aot-compile-first, AOT only) | 71 fps | 1.73× |
-| **koruby (AOT — `make koruby-aot`)** | **73 fps** | **1.78×** ← matches abruby +cf |
 | abruby (--aot + --pg-compile, AOT + PGC) | 75 fps | 1.83× |
-| **koruby (AOT + PGO — `make koruby-pgo-aot`)** | **80 fps** | **1.95×** ← exceeds abruby +pgc |
+| **koruby (AOT — `make koruby-aot`)** | **80 fps** | **1.95×** |
+| **koruby (AOT + PGO — `make koruby-pgo-aot`)** | **110 fps** | **2.68×** ← exceeds abruby +pgc by 35 fps |
 | **ruby --yjit / --jit** | **175 fps** | **4.27×** |
 
+#### この round の big wins
+
+render_pixel kernel を抽出して perf 解析しながら段階的に 80 → 110 fps:
+
+| 変更 | optcarrot fps | kernel ms |
+|---|---:|---:|
+| baseline | 80 | 905 |
+| block body を `code_repo` に登録 (parse.c) — block 内の hot loop が SD 化 | 85 | 670 |
+| Array#<< fast path + `korb_ary_aref` を object.h で inline (SD 内に展開) | 87 | 250 |
+| `korb_hash_aref` (FIXNUM/SYMBOL key) + `korb_class_of_class` (heap path) を object.h で inline | 98 | 195 |
+| `EVAL_node_(method/func)_call(_block)` を `korb_dispatch_call_cached` 経由に — IC + prologue を SD 内 inline | **110** | 185 |
+
+ASTro 原則: 全部 fast-path を SD の TU に持ち込んだだけ。新しい NODE 種別も
+AST rewrite も入れていない。 C コンパイラに委ねられる範囲を広げただけ。
+
 (注: cold-tail を `korb_node_*_slow` として koruby 本体に hoist
-し SD 内に複製しないことで `all.so` が 867K → 785K (-10%)、AOT コンパイル
-時間も短縮。LTO は koruby 本体のみで全 6 ファイル小さいので体感差なし、
-all.so の 388 SDs は LTO 関係外。)
+し SD 内に複製しないことで `all.so` のサイズ増を抑える。LTO は koruby
+本体のみ、all.so の 388 SDs は LTO 関係外。)
 
 #### abruby +cf にキャッチアップ済み (72 fps)
 
