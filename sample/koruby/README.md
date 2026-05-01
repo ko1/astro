@@ -47,9 +47,18 @@ naruby (整数のみ Ruby サブセット) と abruby (CRuby C extension) を踏
 
 ### optcarrot 対応状況
 
-- **全 12 ファイルがパース＋ロード成功** (require_relative チェーン、module/class 定義、attr_reader、Struct.new、CodeOptimizationHelper の include まで全部通る)
-- `Optcarrot::NES.new(argv)` を呼ぶと **Config 内部の Parser が走り始める** ところまで到達
-- 停止位置: option parsing で正規表現マッチや splat 引数受けが必要 (詳細は [docs/todo.md](./docs/todo.md))
+✅ **完走!** NES のエミュレーションが最後まで動作:
+
+```sh
+$ /path/to/koruby -e 'require_relative "lib/optcarrot";
+    Optcarrot::NES.new(["-b", "--frames", "30", "examples/Lan_Master.nes"]).run'
+fps: 71.47
+checksum: 4096
+```
+
+- 30 フレーム実行: koruby 12.97s, CRuby 1.18s (~11× 遅い、AOT 特化なし)
+- 注: video checksum は CRuby と一致しない (emulation 細部に微妙な差; 走るが完全互換ではない)
+- 詳細: [docs/done.md](./docs/done.md#optcarrot-対応の現状)
 
 詳細は [docs/done.md](./docs/done.md) と [docs/todo.md](./docs/todo.md) を参照。
 

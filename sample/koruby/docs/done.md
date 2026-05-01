@@ -140,14 +140,44 @@
 
 ## optcarrot 対応の現状
 
-- **全 12 ファイルがパース＋ロード成功** (require_relative 連鎖、module/class 定義チェーン、attr_reader、Struct.new、CodeOptimizationHelper の include など)
-- `Optcarrot::NES.new(argv)` を呼ぶと **Config が走り始め、内部 Parser が `-b` 等を処理しようとする** ところまで到達
-- 停止理由 (本セッション末時点):
-  - 真の正規表現 (`String#=~`) 未実装 (config.rb の option matching で使用)
-  - `*splat` のメソッド引数受け側 未実装 (一部位置)
-  - `each { |key, value| ... }` の destructure 未実装
-  - `String#scan`/`split` の正規表現対応 未実装
-- 完走には [todo.md](./todo.md#optcarrot-完走に必要な追加機能) の追加実装が必要
+✅ **完走しました!** `Optcarrot::NES.new(argv).run` がエンドツーエンドで実行可能。
+
+```sh
+$ cd sample/abruby/benchmark/optcarrot
+$ /path/to/koruby -e 'require_relative "lib/optcarrot";
+    Optcarrot::NES.new(["-b", "--frames", "30", "examples/Lan_Master.nes"]).run'
+fps: 71.47
+checksum: 4096
+```
+
+CRuby (no JIT) との比較 (30 フレーム実行):
+- CRuby: real 1.18s
+- koruby: real 12.97s (約 11× 遅い、AOT 特化なし interp のみ)
+- (注: video checksum は CRuby と一致しない。emulation の細部に微妙なバグが残存。完走は達成、emulation の正確性は今後の課題)
+
+完走に至るまでに追加した主な機能 (本ドキュメント末尾「実装済みの性能改善」と並ぶ大きな塊):
+- **Fiber** (ucontext ベース。256 KB スタック / fiber)
+- **メソッド呼出 splat** (`unshift(*shortcut)` 等を runtime apply 経由で展開)
+- **Range の splat** (`[*0..4096]` を実行時に Array 化)
+- **ブロック destructure** (`each { |k, v| ... }` で Array を分解)
+- **特異クラスメソッド** (`def self.foo` を per-class lazy singleton class へ; class.foo 経由で正しくディスパッチ)
+- **lexical class/module reopen** (`class Optcarrot::ROM` の constant-path)
+- **Optional / rest 引数** (Qundef sentinel + node_default_init prologue)
+- **Hash 多数のメソッド** (fetch / merge / dup / map / select / reduce / compare_by_identity)
+- **Array 多数のメソッド** (transpose / count / slice! / sort_by / each_slice / fill / [start, len]= 含む)
+- **Float 演算** (`** == < <= > >= <=> -@ abs floor` 等)
+- **Integer step / upto / downto** (block 無しでは Array を返すフォールバック)
+- **Process.clock_gettime / Time.now**
+- **Kernel#Integer / Float / String / Array** (型変換関数)
+- **Range の Enumerable 系** (map / all? / any? / count)
+- **Hash の比較 (deep eq)**、Array deep eq
+- **String#sum / String#scan / =~ stub**
+- **File.read / binread / extname / dirname / basename**
+
+### 既知の差分 (要対処)
+- **video checksum が CRuby と一致しない** — PPU 系の bit-twiddling のどこかで integer/array 挙動の差が出ている可能性 (調査未着手)
+- 性能差 ~10×: メソッド呼出ディスパッチの最適化で詰める余地大 (PG-baked call_static)
+- 真の正規表現は未実装 (=~/match/scan は no-op stub)
 
 ## 実装済みの性能改善
 
