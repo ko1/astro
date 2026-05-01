@@ -714,6 +714,30 @@ ire_collect_first_byte_set(ire_node_t *n, uint8_t *out, int *out_n)
     }
 }
 
+/* Build the Truffle nibble-lookup tables T_lo[16] and T_hi[16] from
+ * a 256-bit class bitmap, then pack each table into two uint64s for
+ * passing as node operands.  See node_grep_search_class_scan. */
+static void
+build_truffle_tables(const uint64_t bm[4], uint64_t out[4])
+{
+    uint8_t T_lo[16] = {0}, T_hi[16] = {0};
+    for (int b = 0; b < 256; b++) {
+        if ((bm[b >> 6] >> (b & 63)) & 1ULL) {
+            int lo = b & 0xF, hi = b >> 4;
+            uint8_t mask = (uint8_t)(1u << (hi & 7));
+            T_lo[lo] |= mask;
+            T_hi[hi] |= mask;
+        }
+    }
+    out[0] = out[1] = out[2] = out[3] = 0;
+    for (int i = 0; i < 8; i++) {
+        out[0] |= ((uint64_t)T_lo[i])     << (i * 8);
+        out[1] |= ((uint64_t)T_lo[i + 8]) << (i * 8);
+        out[2] |= ((uint64_t)T_hi[i])     << (i * 8);
+        out[3] |= ((uint64_t)T_hi[i + 8]) << (i * 8);
+    }
+}
+
 /* If the first thing the IR consumes is an IRE_CLASS, return that
  * class node (so the caller can pick a SIMD-class-scan variant
  * without having to re-walk).  Returns NULL if the first consuming
@@ -1036,6 +1060,14 @@ astrogre_parse(const char *pat, size_t pat_len, uint32_t prism_flags)
         }
         else if (have_range) {
             root = ALLOC_node_grep_search_range(body, (uint32_t)lo, (uint32_t)hi, a);
+        }
+        else if (cls) {
+            /* First thing is a class but not a single contiguous range
+             * (e.g. \w == [A-Za-z0-9_], or any other multi-region
+             * class).  Use Truffle-style PSHUFB SIMD scan. */
+            uint64_t tt[4];
+            build_truffle_tables(cls->u.cls.bm, tt);
+            root = ALLOC_node_grep_search_class_scan(body, tt[0], tt[1], tt[2], tt[3], a);
         }
         else {
             root = ALLOC_node_grep_search(body, a);
