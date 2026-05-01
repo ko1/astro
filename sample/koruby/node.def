@@ -362,7 +362,11 @@ node_class_def(CTX * restrict c, NODE * restrict n, ID name, NODE *super_expr, N
     struct korb_class *host = c->cref ? c->cref->klass : c->current_class;
     struct korb_class *klass;
     VALUE existing = korb_const_get(host, name);
-    if (!UNDEF_P(existing) && BUILTIN_TYPE(existing) == T_CLASS) {
+    /* Reopen an existing Class OR Module (Module is itself a class
+     * but with T_MODULE flags — `class Module ... end` is valid and
+     * adds methods to the existing one). */
+    if (!UNDEF_P(existing) && (BUILTIN_TYPE(existing) == T_CLASS ||
+                                BUILTIN_TYPE(existing) == T_MODULE)) {
         klass = (struct korb_class *)existing;
     }
     else {
@@ -920,6 +924,32 @@ node_def_full(CTX * restrict c, NODE * restrict n, ID name, NODE *body, uint32_t
      * paths must stop short-circuiting through C-side arithmetic. */
     korb_check_basic_op_redef(target);
     return korb_id2sym(name);
+}
+
+/* `alias new_name old_name` — keyword form, lexical scope.  Goes
+ * directly to korb_class_alias_method on the cref's class so a
+ * redefinition of Module#alias_method has no effect (`alias` is a
+ * keyword, not a method call). */
+NODE_DEF @noinline
+node_alias_method(CTX * restrict c, NODE * restrict n, NODE *new_name, NODE *old_name)
+{
+    VALUE new_v = EA(c, new_name);
+    VALUE old_v = EA(c, old_name);
+    if (!SYMBOL_P(new_v) || !SYMBOL_P(old_v)) {
+        korb_raise(c, NULL, "alias requires symbol names");
+        return Qnil;
+    }
+    ID new_id = korb_sym2id(new_v);
+    ID old_id = korb_sym2id(old_v);
+    struct korb_class *target = c->cref ? c->cref->klass : c->current_class;
+    struct korb_method *m = korb_class_find_method(target, old_id);
+    if (!m) {
+        korb_raise(c, NULL, "undefined method '%s' for %s",
+                   korb_id_name(old_id), korb_id_name(target->name));
+        return Qnil;
+    }
+    korb_class_alias_method(target, new_id, m);
+    return korb_id2sym(new_id);
 }
 
 NODE_DEF

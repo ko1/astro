@@ -794,13 +794,34 @@ static VALUE module_include(CTX *c, VALUE self, int argc, VALUE *argv) {
         if (BUILTIN_TYPE(argv[i]) != T_MODULE && BUILTIN_TYPE(argv[i]) != T_CLASS) continue;
         korb_module_include(klass, (struct korb_class *)argv[i]);
     }
-    if (korb_vm) korb_vm->method_serial++; korb_g_method_serial = korb_vm->method_serial;
+    if (korb_vm) { korb_vm->method_serial++; korb_g_method_serial = korb_vm->method_serial; }
     return self;
 }
 
 static VALUE module_define_method(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* define_method(:foo) { ... } — not commonly used in optcarrot */
     return Qnil;
+}
+
+/* alias_method(:new_name, :existing_name) — register the existing
+ * method under a new name on this class.  Reuses the resolved method
+ * struct (methods are immutable in koruby). */
+static VALUE module_alias_method(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 2) {
+        korb_raise(c, NULL, "wrong number of arguments to alias_method (%d for 2)", argc);
+        return Qnil;
+    }
+    if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return self;
+    struct korb_class *klass = (struct korb_class *)self;
+    ID new_name = SYMBOL_P(argv[0]) ? korb_sym2id(argv[0]) : korb_intern(korb_str_cstr(argv[0]));
+    ID old_name = SYMBOL_P(argv[1]) ? korb_sym2id(argv[1]) : korb_intern(korb_str_cstr(argv[1]));
+    struct korb_method *m = korb_class_find_method(klass, old_name);
+    if (!m) {
+        korb_raise(c, NULL, "undefined method '%s' for %s", korb_id_name(old_name), korb_id_name(klass->name));
+        return Qnil;
+    }
+    korb_class_alias_method(klass, new_name, m);
+    return korb_id2sym(new_name);
 }
 
 static VALUE module_private(CTX *c, VALUE self, int argc, VALUE *argv) { return self; /* no-op */ }
@@ -2479,10 +2500,11 @@ static VALUE file_read(CTX *c, VALUE self, int argc, VALUE *argv) {
     long sz = ftell(fp);
     fseek(fp, 0, SEEK_SET);
     char *buf = korb_xmalloc_atomic(sz + 1);
-    fread(buf, 1, sz, fp);
-    buf[sz] = 0;
+    long got = (long)fread(buf, 1, sz, fp);
+    if (got < 0) got = 0;
+    buf[got] = 0;
     fclose(fp);
-    return korb_str_new(buf, sz);
+    return korb_str_new(buf, got);
 }
 
 static VALUE file_join(CTX *c, VALUE self, int argc, VALUE *argv) {
@@ -2777,18 +2799,12 @@ void korb_init_builtins(void) {
     DEF(cMod, "protected",     module_protected,     -1);
     DEF(cMod, "module_function", module_module_function, -1);
     DEF(cMod, "define_method", module_define_method, -1);
+    DEF(cMod, "alias_method",  module_alias_method,  -1);
     DEF(cMod, "const_get",     module_const_get,     -1);
     DEF(cMod, "const_set",     module_const_set,     -1);
-    /* mirror onto Class so class-level def works at top level */
-    DEF(cCls, "attr_reader",   module_attr_reader,   -1);
-    DEF(cCls, "attr_writer",   module_attr_writer,   -1);
-    DEF(cCls, "attr_accessor", module_attr_accessor, -1);
-    DEF(cCls, "include",       module_include,       -1);
-    DEF(cCls, "private",       module_private,       -1);
-    DEF(cCls, "public",        module_public,        -1);
-    DEF(cCls, "protected",     module_protected,     -1);
-    DEF(cCls, "===",           class_eqq,            1);
     DEF(cMod, "===",           class_eqq,            1);
+    /* Class < Module — Class instances inherit Module's methods.
+     * No need to mirror module_* onto cCls. */
 
     /* extra Object methods */
     DEF(cObj, "send",                  obj_send,                 -1);

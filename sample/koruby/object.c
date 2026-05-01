@@ -243,7 +243,7 @@ void korb_class_add_method_ast_full_cref(struct korb_class *klass, ID name, stru
     m->u.ast.rest_slot = rest_slot;
     m->u.ast.locals_cnt = locals_cnt;
     method_table_set(&klass->methods, name, m);
-    if (korb_vm) korb_vm->method_serial++; korb_g_method_serial = korb_vm->method_serial;
+    if (korb_vm) { korb_vm->method_serial++; korb_g_method_serial = korb_vm->method_serial; }
 }
 
 void korb_class_add_method_cfunc(struct korb_class *klass, ID name,
@@ -255,7 +255,15 @@ void korb_class_add_method_cfunc(struct korb_class *klass, ID name,
     m->u.cfunc.func = func;
     m->u.cfunc.argc = argc;
     method_table_set(&klass->methods, name, m);
-    if (korb_vm) korb_vm->method_serial++; korb_g_method_serial = korb_vm->method_serial;
+    if (korb_vm) { korb_vm->method_serial++; korb_g_method_serial = korb_vm->method_serial; }
+}
+
+/* Register an existing method object under a new name on `klass`.
+ * Both `alias` (keyword) and `Module#alias_method` lower to this. */
+void korb_class_alias_method(struct korb_class *klass, ID new_name, struct korb_method *m) {
+    method_table_set(&klass->methods, new_name, m);
+    korb_check_basic_op_redef(klass);
+    if (korb_vm) { korb_vm->method_serial++; korb_g_method_serial = korb_vm->method_serial; }
 }
 
 struct korb_class *korb_singleton_class_of(struct korb_class *klass) {
@@ -1587,10 +1595,11 @@ void korb_runtime_init(void) {
     memset(korb_vm, 0, sizeof(*korb_vm));
     korb_vm->method_serial = 1; korb_g_method_serial = 1;
 
-    /* bootstrap classes (forward refs) */
-    struct korb_class *cObject = korb_class_new(korb_intern("Object"), NULL, T_OBJECT);
-    struct korb_class *cClass  = korb_class_new(korb_intern("Class"), cObject, T_CLASS);
+    /* bootstrap classes — CRuby: Class < Module < Object.  Each class's
+     * own metaclass is Class itself. */
+    struct korb_class *cObject = korb_class_new(korb_intern("Object"), NULL,    T_OBJECT);
     struct korb_class *cModule = korb_class_new(korb_intern("Module"), cObject, T_MODULE);
+    struct korb_class *cClass  = korb_class_new(korb_intern("Class"),  cModule, T_CLASS);
     cObject->basic.klass = (VALUE)cClass;
     cClass->basic.klass  = (VALUE)cClass;
     cModule->basic.klass = (VALUE)cClass;

@@ -1254,6 +1254,18 @@ T(struct transduce_context *tc, pm_node_t *node)
           return ALLOC_node_nil();
       }
 
+      case PM_ALIAS_METHOD_NODE: {
+          /* `alias new_name old_name` — KEYWORD, not a method call.
+           * Goes through node_alias_method which uses cref directly,
+           * bypassing any user redefinition of Module#alias_method. */
+          pm_alias_method_node_t *n = (pm_alias_method_node_t *)node;
+          NODE *new_arg = T(tc, n->new_name);
+          NODE *old_arg = T(tc, n->old_name);
+          if (!new_arg) new_arg = ALLOC_node_nil();
+          if (!old_arg) old_arg = ALLOC_node_nil();
+          return ALLOC_node_alias_method(new_arg, old_arg);
+      }
+
       case PM_FOR_NODE: {
           /* for x in coll; body; end ⇒ coll.each {|x| body} */
           pm_for_node_t *n = (pm_for_node_t *)node;
