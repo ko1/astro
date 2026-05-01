@@ -21,12 +21,41 @@
 | ruby (no JIT) | 41.0 fps | 1.00× |
 | abruby (plain interp, CRuby C-ext) | 41.8 fps | 1.02× |
 | koruby (interp, -O2 + LTO) | 43.6 fps | 1.06× |
-| **koruby (PGO + LTO)** | **51.3 fps** | **1.25×** |
+| koruby (PGO + LTO) | 51.3 fps | 1.25× |
+| **koruby (AOT + LTO, this branch)** | **54 fps** | **1.32×** |
+| abruby (--aot-compile-first, AOT only) | 70 fps | 1.71× |
+| abruby (--aot + --pg-compile, AOT + PGC) | 75 fps | 1.83× |
 | **ruby --yjit / --jit** | **174 fps** | **4.24×** |
 
-**koruby (PGO) は abruby plain interp / CRuby no-JIT を 25% 上回る。**
-インタプリタ系の中で先頭。 YJIT には 3.4× 負ける (JIT が x86 を直接吐くので
-当然)。
+#### koruby vs abruby compiled — 残ギャップ 30%
+
+abruby compiled mode (70 fps) と koruby AOT (54 fps) の差は、abruby が
+**call site ごとに argc + 呼出先の型でプロローグを焼き分け**ているため:
+
+```
+prologue_ast_simple_0   // AST メソッド + 引数 0
+prologue_ast_simple_1   // AST メソッド + 引数 1
+prologue_ast_simple_2   // AST メソッド + 引数 2
+prologue_ast_simple_n   // AST メソッド + 引数 n
+prologue_cfunc          // C 関数
+prologue_ivar_getter    // attr_reader 系
+prologue_ivar_setter    // attr_writer 系
+```
+
+`method_cache_fill` の時点で呼出先の型が決まり、`mc->prologue` がそれ専用の
+ものに固定されます。`dispatch_method_frame` は **単純な 1 indirect call** だけで
+方策分岐なし。 abruby `node.def` には `node_call0` / `node_call1` / `node_call2`
+× `_ast` / `_cfunc` / `_ivar_get` 派生で 14+ ノードあり、parse 時点で argc に
+応じて選ばれます。
+
+一方 koruby はすべての call が巨大な `korb_dispatch_call` を通り、関数内で
+cfunc vs AST 判定 + rest_slot 処理 + Qundef fill ループ + frame setup を毎回
+やっています。 perf 上 14-18% を食う最大のホットスポット。
+
+このギャップを埋めるには **specialized call nodes + baked prologues** の
+実装が要る (節定義 +14、prologue 関数群、method_cache 構造拡張、parse.c
+での argc 別 node 選択)。半日〜1日仕事の architectural 改修になるので
+今回の commit には含めていません。
 
 #### 段階的な改善
 
@@ -39,17 +68,27 @@
 * **44 fps** ←← `-flto=auto`。クロス TU の関数インライン化。
 * **51 fps** ←← **PGO** (`make koruby-pgo`)。 optcarrot の 60-frame run で
   プロファイル収集 → re-build with `-fprofile-use`。 ホット分岐の予測が改善。
+* **54 fps** ←← **AOT 特化** (`make koruby-aot`)。abruby と同じ per-method
+  SD_*.c → all.so → dlopen 方式。 optcarrot を 30 フレーム走らせて全 entry
+  を `code_store/c/SD_<hash>.c` に書き出し、`gcc -O3 -fPIC -fno-plt -march=native`
+  で 388 個の SD を `code_store/all.so` に。 起動時に `koruby_cs_init` が
+  dlopen し、`OPTIMIZE` で各 NODE の hash 値で `dlsym("SD_<hash>")` を引いて
+  dispatcher を差し替え。
 
-#### PGO ビルド方法
+#### ビルド方法
 
 ```sh
-make koruby-pgo    # 1) -fprofile-generate でビルド → optcarrot 60 frames で
-                   #    プロファイル収集 → 2) -fprofile-use で再ビルド
+make koruby-pgo    # PGO build (51 fps)
+make koruby-aot    # AOT build (54 fps) — 実行時 KORUBY_CODE_STORE で dir 指定可
 ```
 
-YJIT にはまだ 3.4× 負けるが、これを縮めるには:
-* AOT 特化 (`./koruby -c` 経由の SD_xxxx.c) を optcarrot のフルロード
-  シナリオで動かす — 現状 fib のような単一スクリプト用
+#### YJIT との差
+
+YJIT にはまだ 3.2× 負けます。 これは「JIT が生 x86 を吐く」 vs 「指針インタプリタ」
+の本質的な差なので、対抗策は:
+
+* **specialized call nodes + baked prologues** (上記参照) — abruby compiled
+  mode 相当の 70 fps を狙う
 * polymorphic IC (mc->klass[2] 程度)
 * 型に基づくノード rewrite (`node_plus` → `node_fixnum_plus`)
 * FLONUM 即値化
