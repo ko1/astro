@@ -1,0 +1,1534 @@
+// pascalast — Pascal subset on ASTro.
+//
+// All values are int64.  Booleans use 0/1.  Strings are only allowed as
+// arguments to write/writeln (handled at parse time as node_write_str).
+//
+// Variables are stored in two pools: a fixed-size globals array
+// (c->globals[]) and a stack of local frames (c->stack[c->fp..]).  The
+// parser assigns slot indices at parse time, so every read/write is a
+// direct index — no name lookup at run time.
+
+// ---------------------------------------------------------------------------
+// Constants.
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+node_int(CTX * restrict c, NODE * restrict n, uint64_t v)
+{
+    (void)c; (void)n;
+    return (int64_t)v;
+}
+
+NODE_DEF
+node_true(CTX * restrict c, NODE * restrict n)
+{
+    (void)c; (void)n;
+    return 1;
+}
+
+NODE_DEF
+node_false(CTX * restrict c, NODE * restrict n)
+{
+    (void)c; (void)n;
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Real (float) literal — int64 holds the bit pattern of a double.  The
+// parser lays down node_real for any token containing '.' or 'e'.
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+node_real(CTX * restrict c, NODE * restrict n, uint64_t bits)
+{
+    (void)c; (void)n;
+    return (int64_t)bits;
+}
+
+// ---------------------------------------------------------------------------
+// Variable access.  Locals are at c->stack[c->fp + idx]; globals at
+// c->globals[idx].  Arrays are heap-allocated int64 buffers attached to
+// a global slot (c->arrays[idx]); aref/aset add the lower bound back at
+// parse time so the runtime sees a 0-based index.
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+node_lref(CTX * restrict c, NODE * restrict n, uint32_t idx)
+{
+    (void)n;
+    return c->stack[c->fp + idx];
+}
+
+NODE_DEF
+node_lset(CTX * restrict c, NODE * restrict n, uint32_t idx, NODE *val)
+{
+    (void)n;
+    VALUE v = EVAL_ARG(c, val);
+    c->stack[c->fp + idx] = v;
+    return 0;
+}
+
+// Up-level reference: read/write a slot in an outer (lexically
+// enclosing) procedure's frame, found via the display vector.
+NODE_DEF
+node_uref(CTX * restrict c, NODE * restrict n, uint32_t depth, uint32_t idx)
+{
+    (void)n;
+    return c->stack[c->display[depth] + idx];
+}
+
+NODE_DEF
+node_uset(CTX * restrict c, NODE * restrict n, uint32_t depth, uint32_t idx, NODE *val)
+{
+    (void)n;
+    VALUE v = EVAL_ARG(c, val);
+    c->stack[c->display[depth] + idx] = v;
+    return 0;
+}
+
+// Same idea but through an indirect (var-param) slot: the slot at
+// display[depth]+idx holds a VALUE *.
+NODE_DEF
+node_uvar_ref(CTX * restrict c, NODE * restrict n, uint32_t depth, uint32_t idx)
+{
+    (void)n;
+    VALUE *p = (VALUE *)(uintptr_t)c->stack[c->display[depth] + idx];
+    return *p;
+}
+
+NODE_DEF
+node_uvar_set(CTX * restrict c, NODE * restrict n, uint32_t depth, uint32_t idx, NODE *val)
+{
+    (void)n;
+    VALUE v = EVAL_ARG(c, val);
+    VALUE *p = (VALUE *)(uintptr_t)c->stack[c->display[depth] + idx];
+    *p = v;
+    return 0;
+}
+
+NODE_DEF
+node_uaref_local(CTX * restrict c, NODE * restrict n, uint32_t depth, uint32_t slot, int32_t lo, NODE *idx_e)
+{
+    (void)n;
+    int64_t i = EVAL_ARG(c, idx_e) - (int64_t)lo;
+    return c->stack[c->display[depth] + slot + i];
+}
+
+NODE_DEF
+node_uaset_local(CTX * restrict c, NODE * restrict n, uint32_t depth, uint32_t slot, int32_t lo, NODE *idx_e, NODE *val)
+{
+    (void)n;
+    int64_t i = EVAL_ARG(c, idx_e) - (int64_t)lo;
+    int64_t v = EVAL_ARG(c, val);
+    c->stack[c->display[depth] + slot + i] = v;
+    return 0;
+}
+
+NODE_DEF
+node_gref(CTX * restrict c, NODE * restrict n, uint32_t idx)
+{
+    (void)n;
+    return c->globals[idx];
+}
+
+NODE_DEF
+node_gset(CTX * restrict c, NODE * restrict n, uint32_t idx, NODE *val)
+{
+    (void)n;
+    VALUE v = EVAL_ARG(c, val);
+    c->globals[idx] = v;
+    return 0;
+}
+
+NODE_DEF
+node_aref(CTX * restrict c, NODE * restrict n, uint32_t arr_idx, NODE *idx_e)
+{
+    int64_t i = EVAL_ARG(c, idx_e) - c->array_lo[arr_idx];
+    if (UNLIKELY(i < 0 || i >= c->array_size[arr_idx]))
+        pascal_error_at(n->head.line, "array index out of bounds: index=%ld, size=%d",
+                        (long)(i + c->array_lo[arr_idx]), c->array_size[arr_idx]);
+    return c->arrays[arr_idx][i];
+}
+
+NODE_DEF
+node_aset(CTX * restrict c, NODE * restrict n, uint32_t arr_idx, NODE *idx_e, NODE *val)
+{
+    int64_t i = EVAL_ARG(c, idx_e) - c->array_lo[arr_idx];
+    int64_t v = EVAL_ARG(c, val);
+    if (UNLIKELY(i < 0 || i >= c->array_size[arr_idx]))
+        pascal_error_at(n->head.line, "array index out of bounds: index=%ld, size=%d",
+                        (long)(i + c->array_lo[arr_idx]), c->array_size[arr_idx]);
+    c->arrays[arr_idx][i] = v;
+    return 0;
+}
+
+// Local 1D array — slots `slot..slot+size-1` of the current frame
+// store the array.  `lo` is the declared lower bound, baked into the
+// node so the runtime sees a 0-based index.
+NODE_DEF
+node_aref_local(CTX * restrict c, NODE * restrict n, uint32_t slot, int32_t lo, NODE *idx_e)
+{
+    (void)n;
+    int64_t i = EVAL_ARG(c, idx_e) - (int64_t)lo;
+    return c->stack[c->fp + slot + i];
+}
+
+NODE_DEF
+node_aset_local(CTX * restrict c, NODE * restrict n, uint32_t slot, int32_t lo, NODE *idx_e, NODE *val)
+{
+    (void)n;
+    int64_t i = EVAL_ARG(c, idx_e) - (int64_t)lo;
+    int64_t v = EVAL_ARG(c, val);
+    c->stack[c->fp + slot + i] = v;
+    return 0;
+}
+
+NODE_DEF
+node_addr_aref_local(CTX * restrict c, NODE * restrict n, uint32_t slot, int32_t lo, NODE *idx_e)
+{
+    (void)n;
+    int64_t i = EVAL_ARG(c, idx_e) - (int64_t)lo;
+    return (VALUE)(uintptr_t)&c->stack[c->fp + slot + i];
+}
+
+// `var`-array parameter: the slot holds a `VALUE *` pointing at the
+// caller's array first cell (or `lo`-th cell — caller and callee agree
+// on a 0-based base via the `lo` baked into both ends).  `lo` here is
+// the *callee's* declared lower bound.
+NODE_DEF
+node_var_aref(CTX * restrict c, NODE * restrict n, uint32_t slot, int32_t lo, NODE *idx_e)
+{
+    (void)n;
+    int64_t i = EVAL_ARG(c, idx_e) - (int64_t)lo;
+    int64_t *base = (int64_t *)(uintptr_t)c->stack[c->fp + slot];
+    return base[i];
+}
+
+NODE_DEF
+node_var_aset(CTX * restrict c, NODE * restrict n, uint32_t slot, int32_t lo, NODE *idx_e, NODE *val)
+{
+    (void)n;
+    int64_t i = EVAL_ARG(c, idx_e) - (int64_t)lo;
+    int64_t v = EVAL_ARG(c, val);
+    int64_t *base = (int64_t *)(uintptr_t)c->stack[c->fp + slot];
+    base[i] = v;
+    return 0;
+}
+
+// Address-of a global array's element 0 (caller side of var-array param).
+NODE_DEF
+node_addr_garr_base(CTX * restrict c, NODE * restrict n, uint32_t arr_idx)
+{
+    (void)n;
+    return (VALUE)(uintptr_t)c->arrays[arr_idx];
+}
+
+NODE_DEF
+node_addr_larr_base(CTX * restrict c, NODE * restrict n, uint32_t slot)
+{
+    (void)n;
+    return (VALUE)(uintptr_t)&c->stack[c->fp + slot];
+}
+
+// 2D array access.  We store 2D arrays row-major in the same flat
+// `c->arrays[arr_idx]` buffer; the second-dimension stride is
+// `c->array_size2[arr_idx]`.  Lower bounds for both axes are baked in
+// here at run time (kept on CTX so the same node works for any array).
+NODE_DEF
+node_aref2(CTX * restrict c, NODE * restrict n, uint32_t arr_idx, NODE *i_e, NODE *j_e)
+{
+    (void)n;
+    int64_t i = EVAL_ARG(c, i_e) - c->array_lo[arr_idx];
+    int64_t j = EVAL_ARG(c, j_e) - c->array_lo2[arr_idx];
+    if (UNLIKELY(i < 0 || i >= c->array_size[arr_idx] ||
+                 j < 0 || j >= c->array_size2[arr_idx])) {
+        pascal_error("2D array index out of bounds");
+    }
+    return c->arrays[arr_idx][i * c->array_size2[arr_idx] + j];
+}
+
+NODE_DEF
+node_aset2(CTX * restrict c, NODE * restrict n, uint32_t arr_idx, NODE *i_e, NODE *j_e, NODE *val)
+{
+    (void)n;
+    int64_t i = EVAL_ARG(c, i_e) - c->array_lo[arr_idx];
+    int64_t j = EVAL_ARG(c, j_e) - c->array_lo2[arr_idx];
+    int64_t v = EVAL_ARG(c, val);
+    if (UNLIKELY(i < 0 || i >= c->array_size[arr_idx] ||
+                 j < 0 || j >= c->array_size2[arr_idx])) {
+        pascal_error("2D array index out of bounds");
+    }
+    c->arrays[arr_idx][i * c->array_size2[arr_idx] + j] = v;
+    return 0;
+}
+
+// `var` parameter access.  The slot at c->stack[c->fp + idx] holds a
+// VALUE* pointing into the caller's storage (filled in by node_addr_*
+// at the call site).  Reads/writes deref through that pointer.
+NODE_DEF
+node_var_lref(CTX * restrict c, NODE * restrict n, uint32_t idx)
+{
+    (void)n;
+    VALUE *p = (VALUE *)(uintptr_t)c->stack[c->fp + idx];
+    return *p;
+}
+
+NODE_DEF
+node_var_lset(CTX * restrict c, NODE * restrict n, uint32_t idx, NODE *val)
+{
+    (void)n;
+    VALUE v = EVAL_ARG(c, val);
+    VALUE *p = (VALUE *)(uintptr_t)c->stack[c->fp + idx];
+    *p = v;
+    return 0;
+}
+
+// Address-of nodes used as call-site arguments to var parameters.  The
+// returned int64 is the address of the source storage cast through
+// uintptr_t — read back by node_var_lref / node_var_lset above.
+NODE_DEF
+node_addr_lvar(CTX * restrict c, NODE * restrict n, uint32_t idx)
+{
+    (void)n;
+    return (VALUE)(uintptr_t)&c->stack[c->fp + idx];
+}
+
+NODE_DEF
+node_addr_gvar(CTX * restrict c, NODE * restrict n, uint32_t idx)
+{
+    (void)n;
+    return (VALUE)(uintptr_t)&c->globals[idx];
+}
+
+NODE_DEF
+node_addr_aref(CTX * restrict c, NODE * restrict n, uint32_t arr_idx, NODE *idx_e)
+{
+    (void)n;
+    int64_t i = EVAL_ARG(c, idx_e) - c->array_lo[arr_idx];
+    if (UNLIKELY(i < 0 || i >= c->array_size[arr_idx]))
+        pascal_error("array index out of bounds");
+    return (VALUE)(uintptr_t)&c->arrays[arr_idx][i];
+}
+
+NODE_DEF
+node_addr_aref2(CTX * restrict c, NODE * restrict n, uint32_t arr_idx, NODE *i_e, NODE *j_e)
+{
+    (void)n;
+    int64_t i = EVAL_ARG(c, i_e) - c->array_lo[arr_idx];
+    int64_t j = EVAL_ARG(c, j_e) - c->array_lo2[arr_idx];
+    if (UNLIKELY(i < 0 || i >= c->array_size[arr_idx] ||
+                 j < 0 || j >= c->array_size2[arr_idx]))
+        pascal_error("2D array index out of bounds");
+    return (VALUE)(uintptr_t)&c->arrays[arr_idx][i * c->array_size2[arr_idx] + j];
+}
+
+// `var`-param updates that pass through to the same var-param of an
+// outer call: the passed VALUE is the existing pointer, no deref needed.
+NODE_DEF
+node_addr_passthru(CTX * restrict c, NODE * restrict n, uint32_t idx)
+{
+    (void)n;
+    return c->stack[c->fp + idx];
+}
+
+// ---------------------------------------------------------------------------
+// Arithmetic.  All operands are int64.
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+node_add(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    (void)n;
+    return EVAL_ARG(c, l) + EVAL_ARG(c, r);
+}
+
+NODE_DEF
+node_sub(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    (void)n;
+    return EVAL_ARG(c, l) - EVAL_ARG(c, r);
+}
+
+NODE_DEF
+node_mul(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    (void)n;
+    return EVAL_ARG(c, l) * EVAL_ARG(c, r);
+}
+
+NODE_DEF
+node_div(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    (void)n;
+    return EVAL_ARG(c, l) / EVAL_ARG(c, r);
+}
+
+NODE_DEF
+node_mod(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    (void)n;
+    return EVAL_ARG(c, l) % EVAL_ARG(c, r);
+}
+
+NODE_DEF
+node_neg(CTX * restrict c, NODE * restrict n, NODE *x)
+{
+    (void)n;
+    return -EVAL_ARG(c, x);
+}
+
+// ---------------------------------------------------------------------------
+// Real (double) arithmetic.  Operands and results are int64 bit
+// patterns of doubles; conversion is via a union (memcpy-style).  Type
+// promotion (int → real) is handled by node_i2r at parse time; we
+// never have to inspect operand types at run time.
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+node_radd(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    (void)n;
+    union { VALUE i; double d; } a, b, q;
+    a.i = EVAL_ARG(c, l); b.i = EVAL_ARG(c, r);
+    q.d = a.d + b.d;
+    return q.i;
+}
+
+NODE_DEF
+node_rsub(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    (void)n;
+    union { VALUE i; double d; } a, b, q;
+    a.i = EVAL_ARG(c, l); b.i = EVAL_ARG(c, r);
+    q.d = a.d - b.d;
+    return q.i;
+}
+
+NODE_DEF
+node_rmul(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    (void)n;
+    union { VALUE i; double d; } a, b, q;
+    a.i = EVAL_ARG(c, l); b.i = EVAL_ARG(c, r);
+    q.d = a.d * b.d;
+    return q.i;
+}
+
+NODE_DEF
+node_rdiv(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    (void)n;
+    union { VALUE i; double d; } a, b, q;
+    a.i = EVAL_ARG(c, l); b.i = EVAL_ARG(c, r);
+    q.d = a.d / b.d;
+    return q.i;
+}
+
+NODE_DEF
+node_rneg(CTX * restrict c, NODE * restrict n, NODE *x)
+{
+    (void)n;
+    union { VALUE i; double d; } a, q;
+    a.i = EVAL_ARG(c, x);
+    q.d = -a.d;
+    return q.i;
+}
+
+// int → real promotion.
+NODE_DEF
+node_i2r(CTX * restrict c, NODE * restrict n, NODE *x)
+{
+    (void)n;
+    union { double d; VALUE i; } q;
+    q.d = (double)EVAL_ARG(c, x);
+    return q.i;
+}
+
+// real → int (truncation).
+NODE_DEF
+node_r2i_trunc(CTX * restrict c, NODE * restrict n, NODE *x)
+{
+    (void)n;
+    union { VALUE i; double d; } a;
+    a.i = EVAL_ARG(c, x);
+    return (int64_t)a.d;
+}
+
+// real → int (round-half-away-from-zero, the Pascal `round` builtin).
+NODE_DEF
+node_r2i_round(CTX * restrict c, NODE * restrict n, NODE *x)
+{
+    (void)n;
+    union { VALUE i; double d; } a;
+    a.i = EVAL_ARG(c, x);
+    double d = a.d;
+    return (int64_t)(d >= 0 ? d + 0.5 : d - 0.5);
+}
+
+NODE_DEF
+node_rsqrt(CTX * restrict c, NODE * restrict n, NODE *x)
+{
+    (void)n;
+    union { VALUE i; double d; } a, q;
+    a.i = EVAL_ARG(c, x);
+    extern double sqrt(double);
+    q.d = sqrt(a.d);
+    return q.i;
+}
+
+NODE_DEF
+node_rabs(CTX * restrict c, NODE * restrict n, NODE *x)
+{
+    (void)n;
+    union { VALUE i; double d; } a, q;
+    a.i = EVAL_ARG(c, x);
+    q.d = a.d < 0 ? -a.d : a.d;
+    return q.i;
+}
+
+// ---------------------------------------------------------------------------
+// Comparisons return 0/1.
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+node_eq(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    (void)n;
+    return EVAL_ARG(c, l) == EVAL_ARG(c, r);
+}
+
+NODE_DEF
+node_ne(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    (void)n;
+    return EVAL_ARG(c, l) != EVAL_ARG(c, r);
+}
+
+NODE_DEF
+node_lt(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    (void)n;
+    return EVAL_ARG(c, l) < EVAL_ARG(c, r);
+}
+
+NODE_DEF
+node_le(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    (void)n;
+    return EVAL_ARG(c, l) <= EVAL_ARG(c, r);
+}
+
+NODE_DEF
+node_gt(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    (void)n;
+    return EVAL_ARG(c, l) > EVAL_ARG(c, r);
+}
+
+NODE_DEF
+node_ge(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    (void)n;
+    return EVAL_ARG(c, l) >= EVAL_ARG(c, r);
+}
+
+// Real comparisons (int operands are promoted to double via node_i2r at
+// parse time, so the run-time path is uniform).
+NODE_DEF
+node_req(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    (void)n;
+    union { VALUE i; double d; } a, b;
+    a.i = EVAL_ARG(c, l); b.i = EVAL_ARG(c, r);
+    return a.d == b.d;
+}
+NODE_DEF
+node_rne(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    (void)n;
+    union { VALUE i; double d; } a, b;
+    a.i = EVAL_ARG(c, l); b.i = EVAL_ARG(c, r);
+    return a.d != b.d;
+}
+NODE_DEF
+node_rlt(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    (void)n;
+    union { VALUE i; double d; } a, b;
+    a.i = EVAL_ARG(c, l); b.i = EVAL_ARG(c, r);
+    return a.d < b.d;
+}
+NODE_DEF
+node_rle(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    (void)n;
+    union { VALUE i; double d; } a, b;
+    a.i = EVAL_ARG(c, l); b.i = EVAL_ARG(c, r);
+    return a.d <= b.d;
+}
+NODE_DEF
+node_rgt(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    (void)n;
+    union { VALUE i; double d; } a, b;
+    a.i = EVAL_ARG(c, l); b.i = EVAL_ARG(c, r);
+    return a.d > b.d;
+}
+NODE_DEF
+node_rge(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    (void)n;
+    union { VALUE i; double d; } a, b;
+    a.i = EVAL_ARG(c, l); b.i = EVAL_ARG(c, r);
+    return a.d >= b.d;
+}
+
+// ---------------------------------------------------------------------------
+// Boolean ops.  `and`/`or` short-circuit.
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+node_and(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    (void)n;
+    VALUE lv = EVAL_ARG(c, l);
+    if (!lv) return 0;
+    return EVAL_ARG(c, r) ? 1 : 0;
+}
+
+NODE_DEF
+node_or(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    (void)n;
+    VALUE lv = EVAL_ARG(c, l);
+    if (lv) return 1;
+    return EVAL_ARG(c, r) ? 1 : 0;
+}
+
+NODE_DEF
+node_not(CTX * restrict c, NODE * restrict n, NODE *x)
+{
+    (void)n;
+    return !EVAL_ARG(c, x);
+}
+
+// ---------------------------------------------------------------------------
+// Control flow.
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+node_if(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *thn, NODE *els)
+{
+    (void)n;
+    if (EVAL_ARG(c, cond)) return EVAL_ARG(c, thn);
+    return EVAL_ARG(c, els);
+}
+
+NODE_DEF
+node_if1(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *thn)
+{
+    (void)n;
+    if (EVAL_ARG(c, cond)) EVAL_ARG(c, thn);
+    return 0;
+}
+
+NODE_DEF
+node_while(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *body)
+{
+    (void)n;
+    while (EVAL_ARG(c, cond)) {
+        EVAL_ARG(c, body);
+        if (UNLIKELY(c->exit_pending)) return 0;
+        if (UNLIKELY(c->loop_action)) {
+            int a = c->loop_action;
+            c->loop_action = 0;
+            if (a == 1) break;        // break
+            /* a == 2 (continue): just fall through to next iteration */
+        }
+    }
+    return 0;
+}
+
+NODE_DEF
+node_repeat(CTX * restrict c, NODE * restrict n, NODE *body, NODE *cond)
+{
+    (void)n;
+    for (;;) {
+        EVAL_ARG(c, body);
+        if (UNLIKELY(c->exit_pending)) return 0;
+        if (UNLIKELY(c->loop_action)) {
+            int a = c->loop_action;
+            c->loop_action = 0;
+            if (a == 1) break;
+        }
+        if (EVAL_ARG(c, cond)) break;
+    }
+    return 0;
+}
+
+// for-to with a local loop variable.  Slot `idx` of the current frame is
+// updated each iteration; on exit it's left holding the last assigned
+// value (Free Pascal compatible — undefined per the standard).
+// Helper for the four for-loop variants — keep break/continue/exit
+// handling in one place.  Returns 1 if the loop should stop.
+#define PASCAL_LOOP_CHECK_BREAK(c) \
+    do { \
+        if (UNLIKELY((c)->exit_pending)) return 0; \
+        if (UNLIKELY((c)->loop_action)) { \
+            int _a = (c)->loop_action; (c)->loop_action = 0; \
+            if (_a == 1) return 0; \
+        } \
+    } while (0)
+
+NODE_DEF
+node_lfor_to(CTX * restrict c, NODE * restrict n, uint32_t idx, NODE *from, NODE *to, NODE *body)
+{
+    (void)n;
+    int64_t a = EVAL_ARG(c, from);
+    int64_t b = EVAL_ARG(c, to);
+    int fp = c->fp;
+    for (int64_t i = a; i <= b; i++) {
+        c->stack[fp + idx] = i;
+        EVAL_ARG(c, body);
+        PASCAL_LOOP_CHECK_BREAK(c);
+    }
+    return 0;
+}
+
+NODE_DEF
+node_lfor_downto(CTX * restrict c, NODE * restrict n, uint32_t idx, NODE *from, NODE *to, NODE *body)
+{
+    (void)n;
+    int64_t a = EVAL_ARG(c, from);
+    int64_t b = EVAL_ARG(c, to);
+    int fp = c->fp;
+    for (int64_t i = a; i >= b; i--) {
+        c->stack[fp + idx] = i;
+        EVAL_ARG(c, body);
+        PASCAL_LOOP_CHECK_BREAK(c);
+    }
+    return 0;
+}
+
+NODE_DEF
+node_gfor_to(CTX * restrict c, NODE * restrict n, uint32_t idx, NODE *from, NODE *to, NODE *body)
+{
+    (void)n;
+    int64_t a = EVAL_ARG(c, from);
+    int64_t b = EVAL_ARG(c, to);
+    for (int64_t i = a; i <= b; i++) {
+        c->globals[idx] = i;
+        EVAL_ARG(c, body);
+        PASCAL_LOOP_CHECK_BREAK(c);
+    }
+    return 0;
+}
+
+NODE_DEF
+node_gfor_downto(CTX * restrict c, NODE * restrict n, uint32_t idx, NODE *from, NODE *to, NODE *body)
+{
+    (void)n;
+    int64_t a = EVAL_ARG(c, from);
+    int64_t b = EVAL_ARG(c, to);
+    for (int64_t i = a; i >= b; i--) {
+        c->globals[idx] = i;
+        EVAL_ARG(c, body);
+        PASCAL_LOOP_CHECK_BREAK(c);
+    }
+    return 0;
+}
+
+NODE_DEF
+node_seq(CTX * restrict c, NODE * restrict n, NODE *first, NODE *rest)
+{
+    (void)n;
+    EVAL_ARG(c, first);
+    if (UNLIKELY(c->loop_action || c->exit_pending)) return 0;
+    return EVAL_ARG(c, rest);
+}
+
+// Exception handling.  The setjmp dance lives in pascal_try_run /
+// pascal_try_run_finally (defined in main.c) — `EVAL_node_*` is
+// always force-inlined and inlining setjmp is forbidden, so the
+// machinery has to live in a regular external function.
+extern int pascal_try_run(CTX *c, NODE *body);              // 0 normal, 1 raised
+extern int pascal_try_run_finally(CTX *c, NODE *body);      // same protocol
+
+NODE_DEF
+node_try_except(CTX * restrict c, NODE * restrict n, NODE *body, NODE *handler)
+{
+    (void)n;
+    if (pascal_try_run(c, body) != 0) {
+        EVAL_ARG(c, handler);
+    }
+    return 0;
+}
+
+NODE_DEF
+node_try_finally(CTX * restrict c, NODE * restrict n, NODE *body, NODE *fin)
+{
+    (void)n;
+    int raised = pascal_try_run_finally(c, body);
+    EVAL_ARG(c, fin);
+    if (raised) {
+        if (c->exc_top) longjmp(c->exc_top->buf, 1);
+        pascal_error_at(n->head.line, "uncaught exception after finally: %s",
+                        c->exc_msg ? c->exc_msg : "");
+    }
+    return 0;
+}
+
+NODE_DEF
+node_raise(CTX * restrict c, NODE * restrict n, NODE *msg_e)
+{
+    const char *m = (const char *)(uintptr_t)EVAL_ARG(c, msg_e);
+    c->exc_msg = m;
+    if (c->exc_top) longjmp(c->exc_top->buf, 1);
+    pascal_error_at(n->head.line, "uncaught exception: %s", m ? m : "");
+}
+
+// Read-only access to `c->exc_msg` — used inside `except` blocks via
+// the ExceptObject / ExceptionMessage built-ins.
+NODE_DEF
+node_exc_msg(CTX * restrict c, NODE * restrict n)
+{
+    (void)n;
+    return (VALUE)(uintptr_t)(c->exc_msg ? c->exc_msg : "");
+}
+
+// Non-local control flow.  Each just sets a CTX flag; loops & seq
+// inspect the flag and unwind.
+NODE_DEF
+node_break(CTX * restrict c, NODE * restrict n)
+{
+    (void)n;
+    c->loop_action = 1;
+    return 0;
+}
+
+NODE_DEF
+node_continue(CTX * restrict c, NODE * restrict n)
+{
+    (void)n;
+    c->loop_action = 2;
+    return 0;
+}
+
+NODE_DEF
+node_exit(CTX * restrict c, NODE * restrict n)
+{
+    (void)n;
+    c->exit_pending = 1;
+    return 0;
+}
+
+// `exit(value)` inside a function: assign value to the return slot,
+// then raise the exit flag.
+NODE_DEF
+node_exit_with(CTX * restrict c, NODE * restrict n, uint32_t return_slot, NODE *val)
+{
+    (void)n;
+    VALUE v = EVAL_ARG(c, val);
+    c->stack[c->fp + return_slot] = v;
+    c->exit_pending = 1;
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Procedure / function call.  The parser numbers procs in c->procs[]; a
+// call evaluates its argument expressions in order, pushes the resulting
+// VALUEs into a new frame (slots 0..argc-1), then invokes the proc body.
+// Functions reserve their *last* local slot for the return value, which
+// the parser arranges by translating `f := expr` to `lset(return_slot,
+// expr)` inside the function body.
+// ---------------------------------------------------------------------------
+
+// pascal_call with a pre-populated cache — exact same behaviour as
+// the original pascal_call() in main.c, but avoids the per-call
+// procs[] lookup once the cache is filled.  Implemented as a static
+// inline helper so each pcall_K's EVAL body becomes fairly small.
+static inline VALUE
+pascal_call_cached(CTX *c, struct pcall_cache *cache, uint32_t pidx,
+                   uint32_t argc, VALUE *av)
+{
+    if (UNLIKELY(!cache->body)) {
+        struct pascal_proc *p = &c->procs[pidx];
+        if (!p->body) pascal_error("call to '%s' before its body is parsed", p->name);
+        cache->body          = p->body;
+        cache->nslots        = p->nslots;
+        cache->return_slot   = p->return_slot;
+        cache->lexical_depth = p->lexical_depth;
+        cache->is_function   = p->is_function;
+    }
+    int new_fp = c->sp;
+    int new_sp = new_fp + cache->nslots;
+    if (UNLIKELY(new_sp > PASCAL_STACK_SIZE)) pascal_error("call stack overflow");
+    for (uint32_t i = 0; i < argc; i++) c->stack[new_fp + i] = av[i];
+    for (int i = (int)argc; i < cache->nslots; i++) c->stack[new_fp + i] = 0;
+    int saved_fp      = c->fp;
+    int saved_sp      = c->sp;
+    int saved_display = c->display[cache->lexical_depth];
+    c->fp = new_fp; c->sp = new_sp;
+    c->display[cache->lexical_depth] = new_fp;
+    EVAL(c, cache->body);
+    VALUE rv = cache->is_function ? c->stack[new_fp + cache->return_slot] : 0;
+    c->display[cache->lexical_depth] = saved_display;
+    c->fp = saved_fp; c->sp = saved_sp;
+    c->exit_pending = 0;
+    c->loop_action  = 0;
+    return rv;
+}
+
+NODE_DEF
+node_pcall_0(CTX * restrict c, NODE * restrict n, uint32_t pidx, struct pcall_cache *cache@ref)
+{
+    (void)n;
+    return pascal_call_cached(c, cache, pidx, 0, NULL);
+}
+
+NODE_DEF
+node_pcall_1(CTX * restrict c, NODE * restrict n, uint32_t pidx, NODE *a0, struct pcall_cache *cache@ref)
+{
+    (void)n;
+    VALUE av[1] = { EVAL_ARG(c, a0) };
+    return pascal_call_cached(c, cache, pidx, 1, av);
+}
+
+NODE_DEF
+node_pcall_2(CTX * restrict c, NODE * restrict n, uint32_t pidx, NODE *a0, NODE *a1, struct pcall_cache *cache@ref)
+{
+    (void)n;
+    VALUE v0 = EVAL_ARG(c, a0);
+    VALUE v1 = EVAL_ARG(c, a1);
+    VALUE av[2] = { v0, v1 };
+    return pascal_call_cached(c, cache, pidx, 2, av);
+}
+
+NODE_DEF
+node_pcall_3(CTX * restrict c, NODE * restrict n, uint32_t pidx, NODE *a0, NODE *a1, NODE *a2, struct pcall_cache *cache@ref)
+{
+    (void)n;
+    VALUE v0 = EVAL_ARG(c, a0);
+    VALUE v1 = EVAL_ARG(c, a1);
+    VALUE v2 = EVAL_ARG(c, a2);
+    VALUE av[3] = { v0, v1, v2 };
+    return pascal_call_cached(c, cache, pidx, 3, av);
+}
+
+NODE_DEF @noinline
+node_pcall_n(CTX * restrict c, NODE * restrict n, uint32_t pidx, uint32_t args_idx, uint32_t argc, struct pcall_cache *cache@ref)
+{
+    (void)n;
+    extern NODE **PASCAL_CALL_ARGS;
+    VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc ? argc : 1));
+    for (uint32_t i = 0; i < argc; i++) {
+        NODE *a = PASCAL_CALL_ARGS[args_idx + i];
+        av[i] = (*a->head.dispatcher)(c, a);
+    }
+    return pascal_call_cached(c, cache, pidx, argc, av);
+}
+
+// ---------------------------------------------------------------------------
+// Built-in I/O.  write(int), write('literal'), writeln, halt.  Strings
+// are baked into the node at parse time — at run time we just fputs.
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+node_write_int(CTX * restrict c, NODE * restrict n, NODE *expr)
+{
+    (void)n;
+    int64_t v = EVAL_ARG(c, expr);
+    printf("%ld", (long)v);
+    return 0;
+}
+
+NODE_DEF
+node_write_str(CTX * restrict c, NODE * restrict n, const char *s)
+{
+    (void)c; (void)n;
+    fputs(s, stdout);
+    return 0;
+}
+
+NODE_DEF
+node_writeln(CTX * restrict c, NODE * restrict n)
+{
+    (void)c; (void)n;
+    putchar('\n');
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// String type — slot stores a `char *` (NUL-terminated, malloc'd or a
+// pointer to a static literal buffer).  Strings are immutable: every
+// operation that "modifies" a string allocates a fresh buffer.  We
+// don't free anything; programs are short-running and the volumes are
+// modest.
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+node_str_lit(CTX * restrict c, NODE * restrict n, const char *s)
+{
+    (void)c; (void)n;
+    return (VALUE)(uintptr_t)s;
+}
+
+NODE_DEF
+node_str_concat(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    (void)n;
+    const char *a = (const char *)(uintptr_t)EVAL_ARG(c, l);
+    const char *b = (const char *)(uintptr_t)EVAL_ARG(c, r);
+    if (!a) a = "";
+    if (!b) b = "";
+    size_t la = strlen(a), lb = strlen(b);
+    char *out = (char *)GC_malloc_atomic(la + lb + 1);
+    if (!out) pascal_error("out of memory in string concat");
+    memcpy(out, a, la);
+    memcpy(out + la, b, lb);
+    out[la + lb] = '\0';
+    return (VALUE)(uintptr_t)out;
+}
+
+NODE_DEF
+node_str_eq(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    (void)n;
+    const char *a = (const char *)(uintptr_t)EVAL_ARG(c, l);
+    const char *b = (const char *)(uintptr_t)EVAL_ARG(c, r);
+    return strcmp(a ? a : "", b ? b : "") == 0;
+}
+
+NODE_DEF
+node_str_ne(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    (void)n;
+    const char *a = (const char *)(uintptr_t)EVAL_ARG(c, l);
+    const char *b = (const char *)(uintptr_t)EVAL_ARG(c, r);
+    return strcmp(a ? a : "", b ? b : "") != 0;
+}
+
+NODE_DEF
+node_str_lt(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    (void)n;
+    const char *a = (const char *)(uintptr_t)EVAL_ARG(c, l);
+    const char *b = (const char *)(uintptr_t)EVAL_ARG(c, r);
+    return strcmp(a ? a : "", b ? b : "") < 0;
+}
+
+NODE_DEF
+node_str_le(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    (void)n;
+    const char *a = (const char *)(uintptr_t)EVAL_ARG(c, l);
+    const char *b = (const char *)(uintptr_t)EVAL_ARG(c, r);
+    return strcmp(a ? a : "", b ? b : "") <= 0;
+}
+
+NODE_DEF
+node_str_gt(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    (void)n;
+    const char *a = (const char *)(uintptr_t)EVAL_ARG(c, l);
+    const char *b = (const char *)(uintptr_t)EVAL_ARG(c, r);
+    return strcmp(a ? a : "", b ? b : "") > 0;
+}
+
+NODE_DEF
+node_str_ge(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    (void)n;
+    const char *a = (const char *)(uintptr_t)EVAL_ARG(c, l);
+    const char *b = (const char *)(uintptr_t)EVAL_ARG(c, r);
+    return strcmp(a ? a : "", b ? b : "") >= 0;
+}
+
+NODE_DEF
+node_str_length(CTX * restrict c, NODE * restrict n, NODE *s_e)
+{
+    (void)n;
+    const char *s = (const char *)(uintptr_t)EVAL_ARG(c, s_e);
+    return (VALUE)(s ? (int64_t)strlen(s) : 0);
+}
+
+// s[i]  — 1-based char access (Pascal convention).  Returns the ASCII
+// code at position i; out of range returns 0 silently (Free Pascal
+// behaviour for AnsiString).
+NODE_DEF
+node_str_index(CTX * restrict c, NODE * restrict n, NODE *s_e, NODE *i_e)
+{
+    (void)n;
+    const char *s = (const char *)(uintptr_t)EVAL_ARG(c, s_e);
+    int64_t i = EVAL_ARG(c, i_e);
+    if (!s) return 0;
+    int64_t len = (int64_t)strlen(s);
+    if (i < 1 || i > len) return 0;
+    return (unsigned char)s[i - 1];
+}
+
+// ---------------------------------------------------------------------------
+// Text-file I/O.  All ops take `addr_e` — an address-of-slot
+// expression — so the slot can be lazily allocated by `assign` and
+// rebound on subsequent calls.
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+node_file_assign(CTX * restrict c, NODE * restrict n, NODE *addr_e, NODE *name_e)
+{
+    (void)n;
+    int64_t *p = (int64_t *)(uintptr_t)EVAL_ARG(c, addr_e);
+    const char *name = (const char *)(uintptr_t)EVAL_ARG(c, name_e);
+    struct pascal_file *pf = (struct pascal_file *)(uintptr_t)*p;
+    if (!pf) {
+        pf = (struct pascal_file *)GC_malloc(sizeof(*pf));
+        if (!pf) pascal_error("oom in assign()");
+        memset(pf, 0, sizeof(*pf));
+        *p = (int64_t)(uintptr_t)pf;
+    }
+    if (pf->fp) { fclose(pf->fp); pf->fp = NULL; }
+    strncpy(pf->name, name ? name : "", sizeof(pf->name) - 1);
+    pf->name[sizeof(pf->name) - 1] = 0;
+    return 0;
+}
+
+NODE_DEF
+node_file_reset(CTX * restrict c, NODE * restrict n, NODE *addr_e)
+{
+    (void)n;
+    int64_t *p = (int64_t *)(uintptr_t)EVAL_ARG(c, addr_e);
+    struct pascal_file *pf = (struct pascal_file *)(uintptr_t)*p;
+    if (!pf || !pf->name[0]) pascal_error("reset: file not assigned");
+    if (pf->fp) fclose(pf->fp);
+    pf->fp = fopen(pf->name, "r");
+    if (!pf->fp) pascal_error("reset: cannot open '%s'", pf->name);
+    return 0;
+}
+
+NODE_DEF
+node_file_rewrite(CTX * restrict c, NODE * restrict n, NODE *addr_e)
+{
+    (void)n;
+    int64_t *p = (int64_t *)(uintptr_t)EVAL_ARG(c, addr_e);
+    struct pascal_file *pf = (struct pascal_file *)(uintptr_t)*p;
+    if (!pf || !pf->name[0]) pascal_error("rewrite: file not assigned");
+    if (pf->fp) fclose(pf->fp);
+    pf->fp = fopen(pf->name, "w");
+    if (!pf->fp) pascal_error("rewrite: cannot open '%s'", pf->name);
+    return 0;
+}
+
+NODE_DEF
+node_file_close(CTX * restrict c, NODE * restrict n, NODE *addr_e)
+{
+    (void)n;
+    int64_t *p = (int64_t *)(uintptr_t)EVAL_ARG(c, addr_e);
+    struct pascal_file *pf = (struct pascal_file *)(uintptr_t)*p;
+    if (pf && pf->fp) { fclose(pf->fp); pf->fp = NULL; }
+    return 0;
+}
+
+NODE_DEF
+node_file_eof(CTX * restrict c, NODE * restrict n, NODE *addr_e)
+{
+    (void)n;
+    int64_t *p = (int64_t *)(uintptr_t)EVAL_ARG(c, addr_e);
+    struct pascal_file *pf = (struct pascal_file *)(uintptr_t)*p;
+    if (!pf || !pf->fp) return 1;
+    int ch = fgetc(pf->fp);
+    if (ch == EOF) return 1;
+    ungetc(ch, pf->fp);
+    return 0;
+}
+
+NODE_DEF
+node_fwrite_int(CTX * restrict c, NODE * restrict n, NODE *addr_e, NODE *expr)
+{
+    (void)n;
+    int64_t *p = (int64_t *)(uintptr_t)EVAL_ARG(c, addr_e);
+    struct pascal_file *pf = (struct pascal_file *)(uintptr_t)*p;
+    int64_t v = EVAL_ARG(c, expr);
+    if (pf && pf->fp) fprintf(pf->fp, "%ld", (long)v);
+    return 0;
+}
+
+NODE_DEF
+node_fwrite_str(CTX * restrict c, NODE * restrict n, NODE *addr_e, const char *s)
+{
+    (void)n;
+    int64_t *p = (int64_t *)(uintptr_t)EVAL_ARG(c, addr_e);
+    struct pascal_file *pf = (struct pascal_file *)(uintptr_t)*p;
+    if (pf && pf->fp) fputs(s, pf->fp);
+    return 0;
+}
+
+NODE_DEF
+node_fwrite_strv(CTX * restrict c, NODE * restrict n, NODE *addr_e, NODE *expr)
+{
+    (void)n;
+    int64_t *p = (int64_t *)(uintptr_t)EVAL_ARG(c, addr_e);
+    struct pascal_file *pf = (struct pascal_file *)(uintptr_t)*p;
+    const char *s = (const char *)(uintptr_t)EVAL_ARG(c, expr);
+    if (pf && pf->fp && s) fputs(s, pf->fp);
+    return 0;
+}
+
+NODE_DEF
+node_fwrite_real(CTX * restrict c, NODE * restrict n, NODE *addr_e, NODE *expr)
+{
+    (void)n;
+    int64_t *p = (int64_t *)(uintptr_t)EVAL_ARG(c, addr_e);
+    struct pascal_file *pf = (struct pascal_file *)(uintptr_t)*p;
+    union { VALUE i; double d; } u;
+    u.i = EVAL_ARG(c, expr);
+    if (pf && pf->fp) fprintf(pf->fp, "%.15E", u.d);
+    return 0;
+}
+
+NODE_DEF
+node_fwriteln(CTX * restrict c, NODE * restrict n, NODE *addr_e)
+{
+    (void)n;
+    int64_t *p = (int64_t *)(uintptr_t)EVAL_ARG(c, addr_e);
+    struct pascal_file *pf = (struct pascal_file *)(uintptr_t)*p;
+    if (pf && pf->fp) fputc('\n', pf->fp);
+    return 0;
+}
+
+NODE_DEF
+node_fread_int(CTX * restrict c, NODE * restrict n, NODE *addr_e)
+{
+    (void)n;
+    int64_t *p = (int64_t *)(uintptr_t)EVAL_ARG(c, addr_e);
+    struct pascal_file *pf = (struct pascal_file *)(uintptr_t)*p;
+    int64_t v = 0;
+    if (pf && pf->fp) {
+        if (fscanf(pf->fp, "%ld", (long *)&v) != 1) v = 0;
+    }
+    return v;
+}
+
+NODE_DEF
+node_freadln_eat(CTX * restrict c, NODE * restrict n, NODE *addr_e)
+{
+    (void)n;
+    int64_t *p = (int64_t *)(uintptr_t)EVAL_ARG(c, addr_e);
+    struct pascal_file *pf = (struct pascal_file *)(uintptr_t)*p;
+    if (pf && pf->fp) {
+        int ch;
+        while ((ch = fgetc(pf->fp)) != EOF && ch != '\n') {}
+    }
+    return 0;
+}
+
+// Read a whole line as a string (heap-allocated).  We leave the
+// terminating '\n' in the buffer so a trailing freadln_eat (emitted
+// when the surrounding statement was `readln(f, s)` rather than
+// `read(f, s)`) consumes it cleanly.
+NODE_DEF
+node_fread_line(CTX * restrict c, NODE * restrict n, NODE *addr_e)
+{
+    (void)n;
+    int64_t *p = (int64_t *)(uintptr_t)EVAL_ARG(c, addr_e);
+    struct pascal_file *pf = (struct pascal_file *)(uintptr_t)*p;
+    if (!pf || !pf->fp) return (VALUE)(uintptr_t)"";
+    size_t cap = 64, len = 0;
+    char *buf = (char *)GC_malloc_atomic(cap);
+    if (!buf) pascal_error("oom in readln");
+    int ch;
+    while ((ch = fgetc(pf->fp)) != EOF && ch != '\n') {
+        if (len + 1 >= cap) {
+            cap *= 2;
+            buf = (char *)GC_realloc(buf, cap);
+            if (!buf) pascal_error("oom in readln");
+        }
+        buf[len++] = (char)ch;
+    }
+    if (ch == '\n') ungetc(ch, pf->fp);
+    buf[len] = 0;
+    return (VALUE)(uintptr_t)buf;
+}
+
+// ---------------------------------------------------------------------------
+// Procedure values — call through a runtime-known proc index.  Used by
+// `p(args)` where p is a variable of procedural type.
+// ---------------------------------------------------------------------------
+
+NODE_DEF @noinline
+node_pcall_ind(CTX * restrict c, NODE * restrict n, NODE *fn, uint32_t args_idx, uint32_t argc)
+{
+    (void)n;
+    extern NODE **PASCAL_CALL_ARGS;
+    int pidx = (int)EVAL_ARG(c, fn);
+    VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc ? argc : 1));
+    for (uint32_t i = 0; i < argc; i++) {
+        NODE *a = PASCAL_CALL_ARGS[args_idx + i];
+        av[i] = (*a->head.dispatcher)(c, a);
+    }
+    return pascal_call(c, (uint32_t)pidx, argc, av);
+}
+
+// ---------------------------------------------------------------------------
+// Pointers — slot stores a heap address (0 = nil).  new() allocates a
+// zero-filled buffer of N slots; dispose() frees it.  Field access
+// through a pointer is via node_ptr_field_ref / set.
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+node_nil(CTX * restrict c, NODE * restrict n)
+{
+    (void)c; (void)n;
+    return 0;
+}
+
+NODE_DEF
+node_new_record(CTX * restrict c, NODE * restrict n, uint32_t nslots)
+{
+    (void)c; (void)n;
+    int64_t *p = (int64_t *)GC_malloc(nslots * sizeof(int64_t));
+    if (!p) pascal_error("out of memory in new()");
+    return (VALUE)(uintptr_t)p;
+}
+
+// Allocate an object instance, stamping its vtable pointer at slot 0.
+// `vtable_addr` is the address (cast int64) of the class's static
+// vtable.  The `nslots` includes the leading vtable slot.
+NODE_DEF
+node_new_object(CTX * restrict c, NODE * restrict n, uint32_t nslots, uint64_t vtable_addr)
+{
+    (void)c; (void)n;
+    int64_t *p = (int64_t *)GC_malloc(nslots * sizeof(int64_t));
+    if (!p) pascal_error("out of memory in new()");
+    p[0] = (int64_t)vtable_addr;
+    return (VALUE)(uintptr_t)p;
+}
+
+// Virtual method call: read vtable pointer from obj's slot 0, then
+// proc index at vtable[slot].  Behaves otherwise like node_pcall_n
+// — args are staged in PASCAL_CALL_ARGS[args_idx..argc].  Self is
+// already pushed as the first arg by the parser.
+NODE_DEF @noinline
+node_vcall(CTX * restrict c, NODE * restrict n, NODE *self_e, uint32_t vt_slot, uint32_t args_idx, uint32_t argc)
+{
+    (void)n;
+    extern NODE **PASCAL_CALL_ARGS;
+    int64_t self = EVAL_ARG(c, self_e);
+    if (UNLIKELY(!self)) pascal_error_at(n->head.line, "nil object in method call");
+    int64_t *obj = (int64_t *)(uintptr_t)self;
+    int *vt = (int *)(uintptr_t)obj[0];
+    if (UNLIKELY(!vt)) pascal_error_at(n->head.line, "object has no vtable");
+    int pidx = vt[vt_slot];
+    VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc ? argc : 1));
+    av[0] = self;
+    for (uint32_t i = 1; i < argc; i++) {
+        NODE *a = PASCAL_CALL_ARGS[args_idx + i - 1];
+        av[i] = (*a->head.dispatcher)(c, a);
+    }
+    return pascal_call(c, (uint32_t)pidx, argc, av);
+}
+
+NODE_DEF
+node_dispose(CTX * restrict c, NODE * restrict n, NODE *ptr_e)
+{
+    (void)n;
+    // Under libgc, dispose() is just an explicit hint — the collector
+    // will reap the block whether or not we ask it to.  Calling
+    // GC_free is allowed but not required.
+    int64_t *p = (int64_t *)(uintptr_t)EVAL_ARG(c, ptr_e);
+    GC_free(p);
+    return 0;
+}
+
+NODE_DEF
+node_ptr_field_ref(CTX * restrict c, NODE * restrict n, NODE *ptr_e, uint32_t offset)
+{
+    (void)n;
+    int64_t *p = (int64_t *)(uintptr_t)EVAL_ARG(c, ptr_e);
+    if (UNLIKELY(!p)) pascal_error("nil pointer dereference");
+    return p[offset];
+}
+
+NODE_DEF
+node_ptr_field_set(CTX * restrict c, NODE * restrict n, NODE *ptr_e, uint32_t offset, NODE *val)
+{
+    (void)n;
+    int64_t *p = (int64_t *)(uintptr_t)EVAL_ARG(c, ptr_e);
+    if (UNLIKELY(!p)) pascal_error("nil pointer dereference");
+    int64_t v = EVAL_ARG(c, val);
+    p[offset] = v;
+    return 0;
+}
+
+// `s[i] := ch` — copy-on-write mutation.  We always allocate a fresh
+// buffer so the source (which may be a string literal) stays
+// untouched.  Out-of-range writes are silently ignored, matching
+// Free Pascal AnsiString behaviour.
+NODE_DEF
+node_str_setidx_g(CTX * restrict c, NODE * restrict n, uint32_t slot, NODE *idx_e, NODE *ch_e)
+{
+    (void)n;
+    const char *old = (const char *)(uintptr_t)c->globals[slot];
+    if (!old) old = "";
+    int64_t i  = EVAL_ARG(c, idx_e);
+    int64_t ch = EVAL_ARG(c, ch_e);
+    size_t len = strlen(old);
+    if (i < 1 || (size_t)i > len) return 0;
+    char *buf = (char *)GC_malloc_atomic(len + 1);
+    memcpy(buf, old, len + 1);
+    buf[i - 1] = (char)ch;
+    c->globals[slot] = (VALUE)(uintptr_t)buf;
+    return 0;
+}
+
+NODE_DEF
+node_str_setidx_l(CTX * restrict c, NODE * restrict n, uint32_t slot, NODE *idx_e, NODE *ch_e)
+{
+    (void)n;
+    const char *old = (const char *)(uintptr_t)c->stack[c->fp + slot];
+    if (!old) old = "";
+    int64_t i  = EVAL_ARG(c, idx_e);
+    int64_t ch = EVAL_ARG(c, ch_e);
+    size_t len = strlen(old);
+    if (i < 1 || (size_t)i > len) return 0;
+    char *buf = (char *)GC_malloc_atomic(len + 1);
+    memcpy(buf, old, len + 1);
+    buf[i - 1] = (char)ch;
+    c->stack[c->fp + slot] = (VALUE)(uintptr_t)buf;
+    return 0;
+}
+
+// int (char) → string: allocate a 2-byte buffer.
+NODE_DEF
+node_chr_to_str(CTX * restrict c, NODE * restrict n, NODE *e)
+{
+    (void)n;
+    int64_t v = EVAL_ARG(c, e);
+    char *buf = (char *)GC_malloc_atomic(2);
+    if (!buf) pascal_error("oom");
+    buf[0] = (char)(v & 0xff);
+    buf[1] = '\0';
+    return (VALUE)(uintptr_t)buf;
+}
+
+NODE_DEF
+node_write_strv(CTX * restrict c, NODE * restrict n, NODE *e)
+{
+    (void)n;
+    const char *s = (const char *)(uintptr_t)EVAL_ARG(c, e);
+    if (s) fputs(s, stdout);
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Set type — int64 bitset of [0..63].  Set literal bits are baked at
+// parse time; element insert / range / membership are done with bit ops.
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+node_set_lit(CTX * restrict c, NODE * restrict n, uint64_t bits)
+{
+    (void)c; (void)n;
+    return (int64_t)bits;
+}
+
+NODE_DEF
+node_set_union(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    (void)n;
+    return EVAL_ARG(c, l) | EVAL_ARG(c, r);
+}
+
+NODE_DEF
+node_set_intersect(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    (void)n;
+    return EVAL_ARG(c, l) & EVAL_ARG(c, r);
+}
+
+NODE_DEF
+node_set_diff(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    (void)n;
+    return EVAL_ARG(c, l) & ~EVAL_ARG(c, r);
+}
+
+NODE_DEF
+node_set_in(CTX * restrict c, NODE * restrict n, NODE *elem, NODE *set)
+{
+    (void)n;
+    int64_t e = EVAL_ARG(c, elem);
+    int64_t s = EVAL_ARG(c, set);
+    if (e < 0 || e > 63) return 0;
+    return (s >> e) & 1;
+}
+
+// Discard characters from stdin up to and including the next newline.
+// Issued by the parser at the end of a `readln(...)` to match
+// Free Pascal behaviour.
+NODE_DEF
+node_readln_eat(CTX * restrict c, NODE * restrict n)
+{
+    (void)c; (void)n;
+    int ch;
+    while ((ch = getchar()) != EOF && ch != '\n') { /* eat */ }
+    return 0;
+}
+
+NODE_DEF
+node_write_int_w(CTX * restrict c, NODE * restrict n, NODE *expr, uint32_t width)
+{
+    (void)n;
+    int64_t v = EVAL_ARG(c, expr);
+    printf("%*ld", (int)width, (long)v);
+    return 0;
+}
+
+// Real-valued write.  Default is Pascal's exponent form ("%.16E"-ish),
+// the width-only form right-aligns in `w` columns and still uses
+// exponent form, and the width+precision form (`x:w:p`) uses `%*.*f`.
+NODE_DEF
+node_write_real(CTX * restrict c, NODE * restrict n, NODE *expr)
+{
+    (void)n;
+    union { VALUE i; double d; } a;
+    a.i = EVAL_ARG(c, expr);
+    printf("%.15E", a.d);
+    return 0;
+}
+
+NODE_DEF
+node_write_real_w(CTX * restrict c, NODE * restrict n, NODE *expr, uint32_t width)
+{
+    (void)n;
+    union { VALUE i; double d; } a;
+    a.i = EVAL_ARG(c, expr);
+    printf("%*.15E", (int)width, a.d);
+    return 0;
+}
+
+NODE_DEF
+node_write_real_wp(CTX * restrict c, NODE * restrict n, NODE *expr, uint32_t width, uint32_t prec)
+{
+    (void)n;
+    union { VALUE i; double d; } a;
+    a.i = EVAL_ARG(c, expr);
+    printf("%*.*f", (int)width, (int)prec, a.d);
+    return 0;
+}
+
+NODE_DEF
+node_halt(CTX * restrict c, NODE * restrict n)
+{
+    (void)c; (void)n;
+    exit(0);
+    return 0;
+}
+
+NODE_DEF
+node_halt_with(CTX * restrict c, NODE * restrict n, NODE *expr)
+{
+    (void)n;
+    int64_t v = EVAL_ARG(c, expr);
+    exit((int)v);
+    return 0;
+}

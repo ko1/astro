@@ -1,0 +1,8 @@
+ok with 5
+caught: zero not allowed
+loop -1 caught: negative not allowed
+loop 0 caught: zero not allowed
+ok with 1
+enter
+cleanup ran
+outer caught: mid-fail

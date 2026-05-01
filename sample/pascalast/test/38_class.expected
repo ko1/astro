@@ -1,0 +1,5 @@
+cat makes a generic sound
+cat (legs: x)
+legs=4
+rex barks!
+rex (legs: x)
