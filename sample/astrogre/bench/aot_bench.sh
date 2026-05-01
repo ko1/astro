@@ -73,7 +73,7 @@ run_one() {
     ognm=$(best_of_ms "$ASTROGRE" --backend=onigmo -c "$pat_re" "$CORPUS")
     grep_t=$(best_of_ms "$GREP"      -E -c "$pat_re" "$CORPUS")
     if [ -n "$RG" ]; then
-        rg_t=$(best_of_ms "$RG" --no-mmap -j1 -c -e "$pat_re" "$CORPUS")
+        rg_t=$(best_of_ms "$RG" -j1 -c -e "$pat_re" "$CORPUS")
     else
         rg_t="-"
     fi

@@ -70,7 +70,7 @@ run_pattern() {
     echo "[$label] /$pat/  ${extra[*]:-}"
     best_of "grep"            "$GREP"      -E "${extra[@]}" "$pat" "$CORPUS"
     if [ -n "$RG" ]; then
-        best_of "ripgrep"     "$RG"        --no-mmap -j1 "${extra[@]}" -e "$pat" "$CORPUS"
+        best_of "ripgrep"     "$RG"        -j1 "${extra[@]}" -e "$pat" "$CORPUS"
     fi
     best_of "astrogre +onigmo"  "$ASTROGRE"  --backend=onigmo "${extra[@]}" "$pat" "$CORPUS"
     best_of "astrogre interp"   "$ASTROGRE"  --plain          "${extra[@]}" "$pat" "$CORPUS"
