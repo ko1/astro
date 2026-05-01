@@ -7,6 +7,12 @@
 #endif
 
 #include <stdint.h>
+/* AVX2 intrinsics for SIMD class-scan nodes (node_grep_search_range,
+ * node_grep_search_class_truffle).  The host's CPU has AVX2 today;
+ * non-AVX2 paths fall back to a scalar loop. */
+#if defined(__x86_64__) || defined(__i386__)
+#include <immintrin.h>
+#endif
 #include <stddef.h>
 #include <stdio.h>
 #include <stdbool.h>

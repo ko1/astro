@@ -625,6 +625,136 @@ fixed_prefix_append(fixed_prefix_t *fp, const char *s, size_t n, bool ci)
     fp->ci = ci;
 }
 
+/* If `bm` is a single contiguous run of set bits (like `[a-z]`),
+ * write the lo/hi bounds and return true.  Otherwise return false. */
+static bool
+bm_is_single_range(const uint64_t bm[4], uint8_t *out_lo, uint8_t *out_hi)
+{
+    int lo = -1, hi = -1;
+    bool seen_gap = false;
+    for (int i = 0; i < 256; i++) {
+        bool set = (bm[i >> 6] >> (i & 63)) & 1ULL;
+        if (set) {
+            if (lo < 0) lo = i;
+            else if (seen_gap) return false;     /* second run starts here */
+            hi = i;
+        } else if (lo >= 0) {
+            seen_gap = true;                     /* the run has ended */
+        }
+    }
+    if (lo < 0) return false;
+    *out_lo = (uint8_t)lo;
+    *out_hi = (uint8_t)hi;
+    return true;
+}
+
+/* Collect the set of distinct bytes that could appear at the start of
+ * any successful match.  Returns true only when the set is small
+ * (≤ 8 distinct bytes) and known with certainty — used to emit
+ * node_grep_search_byteset for alt-led patterns like
+ * `(if|else|for|while|return)`.
+ *
+ * Anything that could match an arbitrary byte at position 0 (dot,
+ * large class, `/i`-led literal, rep min=0) returns false. */
+static bool
+ire_collect_first_byte_set(ire_node_t *n, uint8_t *out, int *out_n)
+{
+    if (!n) return false;
+    switch (n->kind) {
+    case IRE_LIT:
+        if (n->u.lit.len == 0 || n->u.lit.ci) return false;
+        {
+            uint8_t b = (uint8_t)n->u.lit.bytes[0];
+            for (int i = 0; i < *out_n; i++) if (out[i] == b) return true;
+            if (*out_n >= 8) return false;
+            out[(*out_n)++] = b;
+            return true;
+        }
+    case IRE_ALT:
+        return ire_collect_first_byte_set(n->u.alt.l, out, out_n)
+            && ire_collect_first_byte_set(n->u.alt.r, out, out_n);
+    case IRE_CONCAT:
+        for (size_t i = 0; i < n->u.cat.n; i++) {
+            ire_node_t *c = n->u.cat.xs[i];
+            switch (c->kind) {
+            case IRE_BOS: case IRE_EOS: case IRE_EOS_NL:
+            case IRE_BOL: case IRE_EOL:
+            case IRE_WB: case IRE_NWB:
+            case IRE_LOOKAHEAD: case IRE_NEG_LOOKAHEAD:
+            case IRE_EMPTY:
+                continue;
+            default:
+                return ire_collect_first_byte_set(c, out, out_n);
+            }
+        }
+        return false;
+    case IRE_GROUP:    return ire_collect_first_byte_set(n->u.group.body, out, out_n);
+    case IRE_NCGROUP:  return ire_collect_first_byte_set(n->u.nc.body, out, out_n);
+    case IRE_REP:
+        if (n->u.rep.min >= 1) return ire_collect_first_byte_set(n->u.rep.body, out, out_n);
+        return false;
+    case IRE_CLASS: {
+        /* Only count classes with ≤8 set bits as a fixed first-byte set. */
+        int n_set = 0;
+        for (int b = 0; b < 256; b++) {
+            if ((n->u.cls.bm[b >> 6] >> (b & 63)) & 1ULL) {
+                if (n_set >= 8) return false;
+                bool dup = false;
+                for (int i = 0; i < *out_n; i++) if (out[i] == (uint8_t)b) { dup = true; break; }
+                if (!dup) {
+                    if (*out_n >= 8) return false;
+                    out[(*out_n)++] = (uint8_t)b;
+                }
+                n_set++;
+            }
+        }
+        return n_set > 0;
+    }
+    default: return false;
+    }
+}
+
+/* If the first thing the IR consumes is an IRE_CLASS, return that
+ * class node (so the caller can pick a SIMD-class-scan variant
+ * without having to re-walk).  Returns NULL if the first consuming
+ * thing isn't a single class. */
+static ire_node_t *
+ire_first_class(ire_node_t *n)
+{
+    if (!n) return NULL;
+    switch (n->kind) {
+    case IRE_CLASS:    return n;
+    case IRE_LIT:      return NULL;          /* literal-led — handled by memchr/memmem */
+    case IRE_CONCAT:
+        for (size_t i = 0; i < n->u.cat.n; i++) {
+            ire_node_t *c = n->u.cat.xs[i];
+            switch (c->kind) {
+            /* zero-width — walk past */
+            case IRE_BOS: case IRE_EOS: case IRE_EOS_NL:
+            case IRE_BOL: case IRE_EOL:
+            case IRE_WB: case IRE_NWB:
+            case IRE_LOOKAHEAD: case IRE_NEG_LOOKAHEAD:
+            case IRE_EMPTY:
+                continue;
+            case IRE_GROUP:    return ire_first_class(c->u.group.body);
+            case IRE_NCGROUP:  return ire_first_class(c->u.nc.body);
+            case IRE_REP:
+                if (c->u.rep.min >= 1) return ire_first_class(c->u.rep.body);
+                return NULL;
+            case IRE_CLASS:    return c;
+            default:           return NULL;
+            }
+        }
+        return NULL;
+    case IRE_GROUP:    return ire_first_class(n->u.group.body);
+    case IRE_NCGROUP:  return ire_first_class(n->u.nc.body);
+    case IRE_REP:
+        if (n->u.rep.min >= 1) return ire_first_class(n->u.rep.body);
+        return NULL;
+    default:           return NULL;
+    }
+}
+
 /* Returns true when the IR consumes some bytes deterministically — i.e.
  * the prefix is settled and the caller should stop walking siblings.
  * Returns false when the IR is zero-width / empty-able, in which case
@@ -862,12 +992,18 @@ astrogre_parse(const char *pat, size_t pat_len, uint32_t prism_flags)
     NODE *body = lower(&L, ir, ALLOC_node_re_cap_end(0, succ));
     body = ALLOC_node_re_cap_start(0, body);
 
-    /* Pick the right wrapper based on what the IR analysis turned up:
-     *   memmem (>= 4-byte literal prefix, no /i)  → node_grep_search_memmem
-     *   memchr (>= 1-byte literal prefix, no /i)  → node_grep_search_memchr
-     *   anything else                              → node_grep_search
+    /* Pick the right wrapper based on what the IR analysis turned up.
+     * Order from most specific / fastest to least:
+     *
+     *   memmem       (>= 4-byte literal prefix, no /i)
+     *   memchr       (>= 1-byte literal prefix, no /i)
+     *   range scan   (single contiguous-range class as first thing)
+     *   plain        (everything else)
+     *
      * The specialiser bakes the prefix bytes / first-byte constants
-     * into the resulting SD. */
+     * / lo-hi into the resulting SD; for the SIMD variants, those
+     * constants become the AVX2 set1 immediates so the scan loop is
+     * a tight `vmovdqu / vpsubusb / vpminub / vpcmpeqb / vpmovmskb`. */
     fixed_prefix_t fp = {0};
     bool consumes = false;
     ire_collect_prefix(ir, &fp, &consumes);
@@ -882,7 +1018,28 @@ astrogre_parse(const char *pat, size_t pat_len, uint32_t prism_flags)
         root = ALLOC_node_grep_search_memchr(body, (uint32_t)(uint8_t)fp.bytes[0], a);
     }
     else {
-        root = ALLOC_node_grep_search(body, a);
+        /* Try byteset (small first-byte set, e.g. alt-led patterns). */
+        uint8_t bset[8]; int bset_n = 0;
+        bool have_byteset = ire_collect_first_byte_set(ir, bset, &bset_n) && bset_n > 0;
+
+        ire_node_t *cls = ire_first_class(ir);
+        uint8_t lo = 0, hi = 0;
+        bool have_range = cls && bm_is_single_range(cls->u.cls.bm, &lo, &hi);
+
+        if (have_byteset && bset_n <= 8 &&
+            /* Prefer range scan when there's only a single contiguous
+             * range; range gets one cmp/iter vs N=8 cmps for byteset. */
+            !(have_range && (uint32_t)(hi - lo + 1) == (uint32_t)bset_n)) {
+            uint64_t packed = 0;
+            for (int i = 0; i < bset_n; i++) packed |= ((uint64_t)bset[i]) << (i * 8);
+            root = ALLOC_node_grep_search_byteset(body, packed, (uint32_t)bset_n, a);
+        }
+        else if (have_range) {
+            root = ALLOC_node_grep_search_range(body, (uint32_t)lo, (uint32_t)hi, a);
+        }
+        else {
+            root = ALLOC_node_grep_search(body, a);
+        }
     }
 
     int n_groups = q.n_groups;
