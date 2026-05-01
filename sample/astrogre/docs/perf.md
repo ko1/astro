@@ -1,24 +1,35 @@
 # astrogre 性能ノート
 
-これは v1 サンプル。ASTro の specialization / code-store 機構が
-abruby 風モード (`--aot-compile` / cached / `--pg-compile` /
-`--plain`) で配線されており、search ループ自体も AST node
-(`node_grep_search`) なので specialization は for-each-start-position
-ループと inline 化された regex chain を 1 つの SD 関数に fuse する。
-このドキュメントは、現在の数字に至るまでに**効いたもの・効かなかった
-もの**を記録する。
+このドキュメントは、astrogre が実際に他の正規表現エンジンと比べて
+どれくらい速いか、どこで勝ってどこで負けるか、なぜそうなるかを
+ベンチマーク結果に沿って書く。実装上の最適化のうち効いたもの・
+効かなかったものも記録する。
 
-## 他エンジン scoreboard
+astrogre は ASTro フレームワークの上で動く正規表現エンジン。
+ASTro の中心機能は **AOT 特化 (specialization)** で、AST の各ノードを
+ノード固有の C 関数として焼き出し、子ノードを inline で展開して
+1 つの SD (= Specialized Dispatcher、特化された関数) に融合する。
+search ループそのもの (= 入力中のすべての位置でマッチを試す for
+ループ) も AST のノード `node_grep_search` として表現してあるため、
+ループも regex マッチングロジックも一緒に焼かれて、indirect call が
+ゼロの 1 関数になる。
 
-ベンチは 2 種類並走:
-- **Bench A**: grep CLI ベンチ (line-by-line、grep の実利用に近い形)
-- **Bench B**: engine-level whole-file ベンチ (コーパス一括ロード、
-  `astrogre_search` をループ呼び出し — エンジン純コストを isolate)
+実行モードは 4 つ:
 
-### Bench A — grep CLI (line-by-line, 118 MB コーパス, ms, best-of-5)
+- `--plain` (`--no-cs`): code store を使わない素のインタプリタ
+- default: 起動時に過去にビルドした特化コードがあれば dlopen して使う
+- `--aot-compile` (`-C`): その実行で AST を特化コンパイル → リンク → 使う
+- `--pg-compile` (`-P`): profile 情報を使った特化 (まだ未配線、現状は `-C` と同じ)
 
-`bench/grep_bench.sh`。全 4 エンジンをそれぞれの grep CLI / `-c` モード
-で起動。
+以下、これらを比較する 2 種類のベンチマークを示す。
+
+## ベンチマーク
+
+### Bench A: grep CLI モード — `bench/grep_bench.sh`
+
+実利用に近い形。1 ファイル (118 MB の C ソースコーパス) を
+`grep PATTERN file` 形式で開き、行ごとに結果を出す。astrogre /
+astrogre+onigmo / GNU grep / ripgrep の 4 つを同条件で動かす。
 
 | パターン | astrogre interp | astrogre +AOT | astrogre +onigmo | grep | ripgrep |
 |---|---:|---:|---:|---:|---:|
@@ -31,48 +42,65 @@ abruby 風モード (`--aot-compile` / cached / `--pg-compile` /
 | `/[a-z_]+_[a-z]+\(/` ident-call | 3183 | 2387 | 2951 | **2** | 178 |
 | `-c /static/` count | **23** | **23** | 70 | 2 | 28 |
 
-whole-file mmap 経路 (パターンに SIMD/libc prefilter があるとき発火)
-が literal-led astrogre を従来の per-line getline ループより 3-10×
-落とす。**literal / rare-literal / `-c` の 3 行で astrogre が
-ripgrep を抜く**:
+ms、5 回実行のうち最速値。ripgrep は `-j1` (並列無効) で動かすので
+シングルスレッドのエンジン比較。太字は行内の最速。
 
-- `/static/` default print 28 ms vs ripgrep 34 ms
-- `/specialized_dispatcher/` rare 22 ms vs ripgrep 20 ms (互角)
-- `-c /static/` count 24 ms vs ripgrep 27 ms
+#### 読み取り
 
-GNU grep は依然として 1 桁先 (memory-bandwidth-bound memchr)。
-`/i`、`class-rep`、`ident-call` の行は per-line streaming に
-フォールバック (エンジンが leading `\w` / `[0-9]` / `/i` 形に対する
-fast scan を持たないため) — per-line overhead が消えた状態の AOT の
-挙動は Bench B を参照。
+**astrogre が ripgrep を抜いた行が 3 つある**:
 
-`/static/` literal と `-c /static/` の 28 ms / 24 ms は同じ仕掛け:
-**case-A factorization** で per-line ループを AST に折り畳み、
-`node_scan_lit_dual_byte` (Hyperscan 風 dual-byte filter + 64-byte
-stride) の body chain として `count → emit → lineskip → continue`
-(default print) または `count → lineskip → continue` (`-c`) を
-渡す。CLI mode 別に末尾の chain が変わるだけで、scanner と AOT 焼き
-は共通。`--verbose` で見える内訳:
+- `/static/` の通常表示 (`-c` 無し): 28 ms 対 ripgrep 34 ms
+- `/specialized_dispatcher/` (まれな literal): 21 ms 対 ripgrep 21 ms (同点)
+- `-c /static/` (一致行のカウント): 23 ms 対 ripgrep 28 ms
+
+GNU grep は依然 1 桁速い。grep の memchr は AVX2 で
+メモリ帯域 (~30 GB/s) いっぱいで動くため、`/static/` のような
+1 バイト先頭の literal では原理的に追いつけない。
+
+`/VALUE/i` (case-insensitive) や `/[0-9]{4,}/` (繰り返し) のような
+パターンが遅い理由は、astrogre の前処理 (= prefilter、後述) が
+これらの形に効かないため、行ごとの per-line ループに落ちるから。
+prefilter が刺さらない場合の AOT の効果は次の Bench B でより
+はっきり見える。
+
+#### `/static/` (28 ms) の内訳
+
+`--verbose` フラグでフェーズ別の経過時間が出る:
 
 ```
-[verbose] after INIT()            0.12 ms      ← ld.so + dlopen
-[verbose] after pattern compile   0.13 ms
-[verbose] after mmap             10.04 ms      ← PTE 30k 個セット
-[verbose] after scan             18.09 ms      ← SIMD scan (15 GB/s)
-[verbose] after munmap           23.53 ms      ← PTE 30k 個破棄
+[verbose] after INIT()            0.12 ms      ← 動的リンカ + dlopen
+[verbose] after pattern compile   0.13 ms      ← 正規表現のパース
+[verbose] after mmap             10.04 ms      ← 118 MB を mmap (約 30 k 個の page table entry を OS が作成)
+[verbose] after scan             18.09 ms      ← SIMD スキャン本体 (~15 GB/s)
+[verbose] after munmap           23.53 ms      ← page table entry の破棄
 ```
 
-scan は 15 GB/s で memory-bandwidth-bound 寄り、残るギャップ ~13 ms
-は 118 MB の mmap+munmap PTE 操作。詳しくは
-[`done.md`](./done.md#-c-pure_literal-を-ast-ノードに折り込み--node_grep_count_lines_lit) 参照。
+実際のスキャンは 8 ms (= 18.09 - 10.04)、メモリ帯域 30 GB/s の
+約半分。残り 13 ms は OS がページテーブルを作って壊す時間で、
+118 MB ファイルを mmap する以上避けられない物理コスト。
+GNU grep が 2 ms で終わるのは、(1) 起動が軽い、(2) 1 バイト
+literal の専用 SIMD ループが完全にメモリ帯域に張り付く、の合算。
 
-### Bench B — engine-level whole-file scan (ms/iter, best-of-3)
+`/static/` のスキャンを高速にしているのは、astrogre が
+`-c` モードと通常表示モードのために**入力を行ごとに走査するループ
+そのものを AST ノードとして実装した**こと。`node_scan_lit_dual_byte`
+というスキャナノードが Hyperscan 風の dual-byte filter
+(needle の先頭バイトと末尾バイトを別々に SIMD 比較してから AND を
+取り、64 バイトずつ進める) で候補位置を見つけ、その後ろにつなぐ
+小さな action ノード列 (count → emit_match_line → lineskip →
+continue) でカウント・行表示・改行までスキップを行う。CLI のモード
+ごとに後ろの action 列だけが入れ替わる構造。
 
-`bench/aot_bench.sh`。astrogre は `--bench-file` (バッファをまるごと
-メモリに置き、全マッチをカウント); grep / ripgrep / onigmo は `-c`。
-パターンは AOT が効きやすい形 (chain が長く、bake の dispatch 削除が
-意味を持つ) を選択。★ = astrogre + AOT が grep / Onigmo の両方に勝利。
-太字 = 行内ベスト。
+### Bench B: エンジン単独ベンチ — `bench/aot_bench.sh`
+
+CLI のオーバーヘッド (起動、mmap、行ごとの I/O) を取り除いて、
+**マッチャ単独の速度**を測る。astrogre は `--bench-file` モードで
+118 MB のバッファを 1 度メモリに置き、エンジンの search 関数を
+ループ呼び出しして全マッチを数える。grep / ripgrep / Onigmo は
+比較のため `-c` (count モード) を使う。
+
+選んだパターンは「astrogre の prefilter が効かず、かつ chain が長い」
+もの。AOT で indirect call を消した効果が一番見える形。
 
 | パターン | astrogre interp | astrogre +AOT | astrogre +onigmo | grep | ripgrep |
 |---|---:|---:|---:|---:|---:|
@@ -85,122 +113,228 @@ scan は 15 GB/s で memory-bandwidth-bound 寄り、残るギャップ ~13 ms
 | `/(\d+\.\d+\.\d+\.\d+)/` | 537 | 390 | 538 | **4** | 54 |
 | `/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/` | 11944 | 9265 | 12183 | **3** | 189 |
 
-**この set で grep に 4/8 勝、Onigmo に 8/8 勝**。勝因は prefilter
-ladder — memchr / memmem / byteset / range / Truffle がそれぞれ「パ
-ターンが最初に消費するもの」の異なる形を扱い、specialiser が inline
-化された regex chain と合成する。
+ms/iter、3 回実行の最速。★ は astrogre+AOT が GNU grep AND Onigmo
+の両方を上回った行 (4/8)。
 
-負けているパターンは共通の性質を持つ: ugrep がパターン内の複数の
-literal を anchor として抽出し、Hyperscan-style multi-pattern スキャン
-(Teddy / Aho-Corasick) を回す。astrogre はそういう「任意位置」の
-literal anchor 抽出を未実装 — `(\w+)\s*\(\s*(\w+)\)` には強制
-literal `(`、`,`、`)` があるが、prefix 解析が先頭しか見ない。
-「任意位置 literal anchor」抽出が次の最大 lever (todo.md 参照)。
+#### 読み取り
 
-## AOT specialization が効くところ
+- **Onigmo には 8/8 全勝**。alt + literal が刺さるパターン
+  (`(QQQ|RRR)+\d+` 40×、`\b(if|else|...)\b` 12×) では桁違い。
+  Onigmo は bytecode VM なので各分岐で dispatch するのに対して、
+  astrogre は AOT 焼きで分岐先が静的展開される。
+- **GNU grep には 4/8 勝**。grep が圧倒する行 (`/[a-z][0-9][a-z][0-9][a-z]/`
+  の 4 ms 等) は、grep の DFA + literal-prefix prefilter が刺さる
+  形のパターン。逆に DFA が状態爆発する `/[A-Z]{50,}/` のような
+  パターンでは astrogre が 2.3× 速い。
+- **astrogre+AOT が interp に対して持つ余地**は per-position の
+  ノード数で決まる。`/[A-Z]{50,}/` は per-position で 2 ノード
+  しかないので 1.18× だが、`/\b(if|else|...)\b/` は 5+ ノードで
+  3.07× 出る。
 
-オリジナルの microbench にあった literal-led パターンは memchr /
-memmem prefilter (次節) に食われた — bake が触る前に prefilter が
-処理するので、もう面白くない。AOT の効きは**反対の形**で見える:
-chain が長い、固定 first byte がない (prefilter 不発)、各位置の
-作業量がそこそこあって dispatch overhead の比率が大きい。
+#### Onigmo を圧倒している 3 行の解剖
 
-`bench/aot_bench.sh` は in-engine `--bench-file` 経路 (118 MB バッファ
-を一度ロード、各 iter で全マッチ count) を使い、grep / ripgrep /
-Onigmo を `-c` で比較。全て ms、best-of-3:
+- `/(QQQ|RRR)+\d+/`: AOT 12 ms、Onigmo 481 ms (40×)。
+  astrogre は「`Q`、`R` のいずれかのバイト」を AVX2 で 32 バイト
+  まとめて検出する `node_grep_search_byteset` ノードに lower する。
+  入力にこれらバイトがほぼ無いので、ほとんどのチャンクは 1 命令で
+  飛ばせる。Onigmo は alt の各分岐を VM 命令でぐるぐる回す。
+- `/(QQQX|RRRX|SSSX)+/`: 同じく byteset (`Q`、`R`、`S`) で先頭
+  スキャン。
+- `/\b(if|else|for|while|return)\b/`: 単語境界 (`\b`) と alt の
+  組み合わせ。astrogre は alt 各枝の先頭バイト集合 `{i,e,f,w,r}`
+  を byteset スキャナに渡し、ヒット位置で `\b` と語チェーンを
+  inline 化したコードで検証する。Onigmo は VM で 1 個ずつ。
 
-| パターン | interp | aot | aot/I | +onigmo | grep | ripgrep |
-|---|---:|---:|---:|---:|---:|---:|
-| `/(QQQ\|RRR)+\d+/` | 18 | 12 | 1.47× | 481 | 74 | 23 |
-| `/(QQQX\|RRRX\|SSSX)+/` | 40 | 20 | 2.04× | 499 | 25 | 25 |
-| `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/` | 893 | 433 | 2.06× | 515 | 486 | 176 |
-| `/[a-z][0-9][a-z][0-9][a-z]/` | 900 | 406 | 2.21× | 516 | **4** | 177 |
-| `/(\d+\.\d+\.\d+\.\d+)/` | 537 | 390 | 1.38× | 538 | **4** | 54 |
-| `/[A-Z]{50,}/` | 737 | 624 | 1.18× | 863 | 1431 | 176 |
-| `/\b(if\|else\|for\|while\|return)\b/` | 234 | 76 | 3.07× | 926 | **2** | 118 |
-| `/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/` | 11944 | 9265 | 1.29× | 12183 | **3** | 189 |
+#### grep が圧倒している 4 行の理由
 
-(prefilter ladder と同じ条件で、`bench/aot_bench.sh` から再採取。
-`-c` カウントを `--bench-file` で再現するので、
-[`done.md`](./done.md#他エンジン比較ベンチ) の Bench B 表とほぼ同じ
-数字になる — このセクションは AOT/interp 比に焦点を当てた読み方。)
+GNU grep (実体は ugrep) は内部で:
 
-AOT 2-3× の勝因は AOT specialization の thesis 通り:
+1. **literal-prefix prefilter** で「パターンの先頭リテラル」を memchr 等で skip
+2. **lazy DFA** で残りのマッチを実行
+3. パターンに含まれる**任意位置のリテラル**を anchor に使う
+   Hyperscan 系の multi-pattern スキャン (Teddy / Aho-Corasick)
 
-- **Chain が長くないと効かない**。alt (`(QQQ|RRR)`) → rep → class /
-  literal → … と各マッチ試行で 5+ ノードを通れば、bake が消す
-  indirect call も 5+ 個。
-- **Prefilter が**発火**してはいけない**。これらのパターンは class
-  / alt 始まりなので memchr / memmem が pre-skip できない、chain は
-  全位置で走る。
-- **Search が入力全体を歩く**必要がある。これらのパターンは 118 MB
-  全体をスイープする (失敗パターンは exit せず尽く、成功パターンも
-  全マッチをカウント)。
+astrogre は 1 と 2 はそれぞれ別の形で持っているが (後述の prefilter
+ladder と、ノード化された continuation-passing chain)、3 を持って
+いない。`/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/` には強制リテラル
+`(`、`,`、`)` があるけれど、astrogre のパーサは先頭しか見ない。
+これが ugrep に対する最大のギャップで、todo.md に記載がある。
 
-`/[A-Z]{50,}/` は全入力をスイープするのに 1.18× にとどまる — chain が
-rep_cont ↔ class の 2 ノードしかないので、dispatch がそもそも安い。
-逆に chain が長い `/\b(if|else|...)\b/` や `/[a-z][0-9][a-z][0-9][a-z]/`
-ではそれぞれ 3.07× / 2.21×。AOT の効きは「per-position の dispatch 数」
-にきれいに比例する。
+## AOT (specialization) が効くところ・効かないところ
 
-### vs Onigmo
+AOT がよく効くのは「per-position の dispatch (= 関数ポインタ
+経由の関数呼び出し) が多い」場面に限る。indirect call を消す
+ことが本業の最適化なので、消す材料が無いと効かない。
 
-astrogre + AOT は **8/8 全パターンで Onigmo を上回る**:
+具体的には:
 
-| パターン | astrogre+AOT | +onigmo | 速度比 |
-|---|---:|---:|---:|
-| `/(QQQ\|RRR)+\d+/` | 12 ms | 481 ms | **40× 速い** |
-| `/(QQQX\|RRRX\|SSSX)+/` | 20 ms | 499 ms | **25× 速い** |
-| `/\b(if\|else\|for\|while\|return)\b/` | 76 ms | 926 ms | **12× 速い** |
-| `/[A-Z]{50,}/` | 624 ms | 863 ms | 1.38× |
-| `/(\d+\.\d+\.\d+\.\d+)/` | 390 ms | 538 ms | 1.38× |
-| `/[a-z][0-9][a-z][0-9][a-z]/` | 406 ms | 516 ms | 1.27× |
-| `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/` | 433 ms | 515 ms | 1.19× |
-| `/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/` | 9265 ms | 12183 ms | 1.31× |
+- **ノード数が少ない短いチェーン** (= 1 位置で 2-3 ノード) では
+  bake は 1.1-1.2× 程度。`/[A-Z]{50,}/` の 1.18× がこれ。
+- **ノード数が多いチェーン** (= 1 位置で 5-9 ノード) では bake は
+  2-3×。`/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/` の 2.06× や
+  `/\b(if|else|...)\b/` の 3.07× がこれ。
+- **prefilter が効くケース** (= 候補位置がスパース) では、bake が
+  消すべき dispatch の総量自体が小さい (大半のバイトは scan の中で
+  飛ばされる) ので、AOT の貢献は小さい。代わりに prefilter ノード
+  そのものが本業 (アルゴリズム勝ち)。
 
-特に大きく開くのは alt + literal の prefilter が刺さるケース
-(`(QQQ\|RRR)+\d+` 40×、`(QQQX\|RRRX\|SSSX)+` 25×、`\b(if|else|...)\b`
-12×) — astrogre は byteset / Truffle / boundary-aware alt scan を
-ノード化して bake で即値化、Onigmo は bytecode VM が各分岐で dispatch
-するので 1 桁差以上が開く。残りも全部 1.19-1.38× で安定して上回る
-(class チェーンの inline 化と capture 状態リセットの SIMD 一括クリア
-が効いている)。
+過去の最高記録は `literal-tail` という人工 microbench での 7.22×
+(SD が 30 命令前後の 1 関数に畳まれた)。現実の正規表現では 2-3×
+が実用上の天井で、それ以上は scan 自体のメモリ帯域に制限される。
 
-### vs grep / ripgrep
+## 実装上の最適化 — 効いたもの
 
-ugrep / ripgrep は literal-prefix prefilter / lazy DFA が発火する
-パターンで 1 桁先 (`/[a-z][0-9][a-z][0-9][a-z]/` ← grep 4 ms。
-leading `[a-z]` が memchr-class スキャンに崩されている)。
+### Search ループを AST ノードに
 
-しかし prefilter が適用できないパターンでは、ASTro+AOT は **4/8 で
-grep を上回る**:
+`node_grep_search` は「入力の各位置で `body` を試す」for ループを
+そのまま AST ノードとして実装している。`body` operand は regex の
+本体 (= cap_start → re_lit → cap_end → succ のような chain)。
+特化処理が `body` operand に再帰し、子の dispatcher を直接の
+関数ポインタとして埋め込むと、gcc は for ループと regex chain を
+1 つの関数に融合する。`literal-tail` 7.22× の出所。
 
-- `/(QQQ\|RRR)+\d+/`: astrogre+AOT 12 ms 対 grep 74 ms (**6.2×**) —
-  alt + 共通先頭バイト集合が byteset に落ちる。
-- `/[A-Z]{50,}/`: astrogre+AOT 624 ms 対 grep 1431 ms (**2.3×**) —
-  grep の DFA は class-rep-50 を簡約できず各位置で線形に試す;
-  ASTro は `node_grep_search_class_scan` (Truffle) で先頭スキャン
-  + 短絡。
-- `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/`: astrogre+AOT 433 ms 対
-  grep 486 ms (**1.12×**) — 同じく prefilter 不発、ASTro の inline
-  チェーンが単に速い。
-- `/(QQQX\|RRRX\|SSSX)+/`: astrogre+AOT 20 ms 対 grep 25 ms
-  (**1.25×**) — byteset のおかげ。
+### 行ごとの走査ループも AST ノードに (case-A factorization)
 
-ripgrep は全体的に常に速い (lazy DFA + literal-prefix prefilter)
-が、エンジニアリング投資量が桁違い。
+`-c` モードと通常表示モードの「ファイル全体を行ごとに走査して
+マッチを数える / 出力する」ループを `node_scan_lit_dual_byte` という
+別のスキャナノードにして、その `body` に小さな action ノード列を
+継ぐ:
 
-### 上限
+| CLI mode | body chain |
+|---|---|
+| `-c LIT` | `count → lineskip → continue` |
+| 通常表示 `LIT FILE` | `count → emit_match_line(opts) → lineskip → continue` |
 
-冒頭 microbench の `literal-tail /match/` 7.22× は今でも bake が
-出せる**上限**として通用 (prefilter なし *かつ* memcmp が per-iter
-を支配しない条件)。だが現実的な regex パターンでは AOT 単独で 2-3×
-が実用上の天井 — それでも chain-heavy パターンでは Onigmo を
-追い越せる、という結果。
+action ノードはどれも 1 つの仕事 (count: カウンタを増やす、
+lineskip: 次の改行までスキップ、emit_match_line: 行を整形して出力、
+continue: スキャナに「続行」を返す) を持ち、`next` operand で次の
+ノードを呼ぶ continuation-passing 形式。スキャナと action の
+組み合わせは AOT 焼きで 1 SD に融合する。
 
-`/static/` の fused SD の逆アセ (search ループ + inline 化された
-regex match が約 30 命令、indirect call なし、DISPATCH chain なし、
-SD 外への関数呼び出しなし):
+`/static/` の `-c` で 64 ms → 23 ms (2.8×)、通常表示で 66 ms →
+28 ms (2.4×) という主要な高速化はこの仕組みから来ている。
+
+### prefilter ladder
+
+正規表現が「最初に何を消費するか」のシェイプに応じて、
+パーサが 5 種類の SIMD/libc ベースのスキャナノードを使い分ける:
+
+| ノード | アルゴリズム | パース時の選択条件 |
+|---|---|---|
+| `node_grep_search_memmem` | glibc memmem (two-way string match) | 4 バイト以上のリテラル先頭 |
+| `node_grep_search_memchr` | glibc memchr (AVX2 PCMPEQB) | 1 バイト以上のリテラル先頭 |
+| `node_grep_search_byteset` | N 個の `vpcmpeqb` を OR (N ≤ 8) | alt の各枝の先頭バイト集合 |
+| `node_grep_search_range` | `vpsubusb` / `vpminub` / `vpcmpeqb` | 単一連続範囲のクラス先頭 (`[a-z]` 等) |
+| `node_grep_search_class_scan` | Hyperscan 風 Truffle (PSHUFB × 2 + AND) | 任意 256-bit クラス先頭 (`\w` 等) |
+
+ノードはそれぞれ「候補位置を見つける」専用の SIMD コードを持ち、
+候補位置で内側の regex chain を試す。AOT 焼きで scan 部分と
+verify 部分が同一 SD に inline 化されるので、バイトレベルで
+固有定数 (memchr のターゲットバイト、range の上限・下限 等) が
+即値になる。
+
+### 静的 inline (`_INL`) リネーム + 弱シンボルラッパー
+
+ASTro の SD は `static inline` として宣言される (gcc が内側の
+関数ポインタ呼び出しを完全に inline 化できるように)。ただし
+`static` だと dlsym で見えないので、ビルド後にソースを後処理
+して `SD_<hash>` を `SD_<hash>_INL` にリネーム + 同名の弱
+シンボルラッパー関数を追加する。これで:
+
+- 内部からは inline 化されたまま
+- 外部からは dlsym(`SD_<hash>`) で取れる
+
+ノードチェーンの末端まで dlsym 経由で dispatcher を差し替えできる。
+
+### サイドアレイによる allocate 後再解決
+
+`node_allocate` がすべての NODE をサイドアレイ
+`astrogre_all_nodes` に登録、AOT ビルド完了後にこの配列を歩いて
+各ノードに対して `astro_cs_load` を再実行する。これがないと、
+今走っているプロセス内では古い dispatcher のままで、次回以降の
+起動でしか新しい SD が効かない。
+
+### パーサ時の隣接リテラル統合
+
+`/Hello/` を 5 個の `lit` ノードではなく 1 個の `lit("Hello", 5)`
+にする。dispatch 数が減るし、SD ファイル数も減る。
+
+### パーサ時の case fold 事前展開
+
+`/Hello/i` は `node_re_lit_ci("hello", 5, ...)` (小文字で保持) に
+lower される。マッチ時はパターン側を毎回 fold せず、入力側の各
+バイトだけを「大文字なら 32 足す」で fold して比較する非対称
+ポリシー。
+
+### `\A` 始まりの短絡
+
+`/\Afoo/` のような pattern 先頭アンカーの場合、`anchored_bos`
+operand を `node_grep_search` に渡しておくと、search ループは
+「位置 0 だけ試して終わる」ことを静的に知れる。AOT 焼きでも
+`anchored_bos = 1` が即値として焼かれるので分岐ごと消える。
+
+### 単一 `rep_cont` センチネル
+
+繰り返しノード (`*`、`+`、`{n,m}`) の body の `next` は、起動時に
+1 個だけ確保される sentinel ノード `node_re_rep_cont` を全 rep
+ノードで共有する。これで AST が DAG (= 後ろ向き辺なし) のまま
+残り、構造ハッシュの計算と code-store でのサブツリー共有が成立する。
+個別の rep ノードごとに別々の continuation を持たせていた初期案では
+AST に cycle ができて構造ハッシュが破綻していた。
+
+### `restrict` と inline 256-bit クラスビットマップ
+
+CTX とノードのポインタ引数に `restrict` を付けて gcc に alias 自由を
+保証。文字クラスは 256-bit ビットマップを `uint64_t × 4` として
+ノード struct に直接埋める (ヒープ参照させない)。標準的な C 高速化。
+
+## 実装上の最適化 — 効かなかった、棄却したもの
+
+### rep ノードごとの専用 continuation
+
+各 `rep` ノードに専用の continuation ノードを割り当てる初期案。
+AST に後ろ向き辺ができて構造ハッシュが循環、code-store の
+サブツリー共有が成立しなくなった。単一 sentinel に変更して解決。
+
+### 「body は呼び出しごとに 1 回成功を返す」という repetition モデル
+
+`(a|ab)*c` を `abc` にマッチさせる際、body の中の alt は
+「最初の枝 `a` でマッチ、次に外側 `c` を試す → 失敗」のあとで、
+内側の alt の **2 番目の枝** (`ab`) も試す機会が必要になる。
+body を「呼び出しごとに最後まで決め打って 1 回返す」と書いてしまうと
+このバックトラックが取れない。現状の rep_cont は「呼び出しの **続き**
+として動く」形にしてあって、外側の失敗を内側の alt が受け取れる。
+
+### UTF-8 マルチバイト文字クラス
+
+クラスを「256-bit ASCII ビットマップ + (lo, hi) コードポイント
+範囲のソート済リスト」のハイブリッドで持つ案。バイナリサーチが
+dispatch を支配して没。マルチバイトクラス対応自体はまだ未実装。
+
+### クラスの bytes を `const char *` で外置きする
+
+ノード struct を 24 バイト削れるが、マッチャがビットマップを
+ロードするために間接参照が増える。実測で `class-word` ベンチが
+12 % 遅化したので没、inline 維持。
+
+### possessive 量化子 (`*+`、`++`、`?+`)
+
+パースのみ受け付けて greedy にデグレード。意味論的には commit
+バリアが必要で、今の rep_cont プロトコルに穴を開けて入れる必要が
+ある — 需要待ち。
+
+### profile-guided コンパイル (PG)
+
+`--pg-compile` フラグは abruby との CLI 互換のため受け付けるが、
+正規表現用の profile 信号 (alt の各枝のヒット率、よく使われる
+反復回数、参照されないキャプチャ等) を集めるパスが未実装。
+現状は `--aot-compile` と同じ経路を通る。
+
+## 実装した最適化の付録: 焼かれた SD のアセンブリ
+
+`/static/` を `node_grep_search_memmem` で wrap した SD の
+逆アセンブリ (約 30 命令、indirect call なし、DISPATCH chain なし、
+SD 外の関数呼び出しもなし):
 
 ```
 SD_<hash>_INL:
@@ -209,9 +343,9 @@ SD_<hash>_INL:
     mov    0x10(%rdi),%rax       ; c->pos
     lea    1(%rcx),%rdx
     cmp    %rdx,%rax
-    jae    66f                   ; pos >= len + 1 → exit
+    jae    66f                   ; pos >= len + 1 → 終了
     ...
-    vpxor  %xmm0,%xmm0,%xmm0     ; capture-state リセット用 ymm0 ゼロ
+    vpxor  %xmm0,%xmm0,%xmm0     ; capture-state リセット用 ymm0 = 0
 .loop:
     lea    -6(%rax),%rdx
     mov    %rdx,0x10(%rdi)        ; c->pos = s
@@ -220,139 +354,39 @@ SD_<hash>_INL:
     cmp    %rax,%rcx
     jb     fail
     add    (%rdi),%rdx           ; str + pos
-    cmpl   $0x74617473,(%rdx)    ; "stat"
+    cmpl   $0x74617473,(%rdx)    ; "stat" を即値で比較
     je     check_ic
     inc    %rax
     cmp    %rax,%r8
     jne    .loop
     ret_zero
 check_ic:
-    cmpw   $0x6369,4(%rdx)        ; "ic"
+    cmpw   $0x6369,4(%rdx)        ; "ic" を即値で比較
     jne    fail
-    set ends[0], valid[0]; ret 1
+    ; ends[0] と valid[0] をセット、return 1
 ```
 
-## 効いたもの
-
-### Search ループを AST に折り込む
-`node_grep_search` がパーサが各コンパイル済みパターンの最上位に置く
-ラッパー。EVAL が for-each-start-position ループで、specialiser が
-`body` operand に再帰し `body_dispatcher` を直接関数ポインタとして
-inline すると、gcc がループと regex chain を indirect call ゼロの
-1 関数に融合する。`literal-tail` 7.22× の出所。
-
-### Per-line ループも AST に折り込む — case-A scanner + action chain
-search ループ折り畳みの自然な拡張: per-line iteration も AST に持って
-くる。`node_scan_lit_dual_byte` (= scanner、Hyperscan 風 dual-byte
-filter + 64-byte stride) の `body` operand として、CLI mode 別の
-小さな action ノード列を渡す:
-
-| CLI mode | body chain |
-|---|---|
-| `-c LIT` | `count → lineskip → continue` |
-| default `LIT FILE` | `count → emit_match_line(opts) → lineskip → continue` |
-
-scanner は候補位置で body を dispatch、body は continuation-passing で
-chain を回す。終端は `re_succ` (return 1 = stop, search-style) または
-新しい `action_continue` (return 2 = "scanner: c->pos 読んで続行")。
-backtracking は body 内部 (rep / alt) で完結し、scanner には影響しない。
-
-性能 (118 MB warm corpus、`/static/`):
-
-| 段階 | wall (ms) |
-|---|---:|
-| 出発点: `-c` は memmem+memchr in main.c、default は per-line | 64 (`-c`) / 66 (default) |
-| stage 1: monolithic `node_grep_count_lines_lit` for `-c` | 23 / 66 |
-| stage 2: scanner + action chain (`-c` + default 共通) | **24** / **28** |
-| ripgrep ref | 27 / 34 |
-| GNU grep ref | 2 / 2 |
-
-stage 2 で **default print の `/static/` が 66 → 28 ms (2.4×)** で
-ripgrep 34 ms を抜いた。`-c` の数字は同等を保つ (factorize しても
-hot path は変わらず、action chain の dispatch は match 候補時のみ)。
-詳細は [`done.md`](./done.md#scanner--action-chain-で-c-と-default-print-を統一) と
-[`runtime.md`](./runtime.md#-c-モードの-ast-書き換え) 参照。
-
-### `_INL` リネーム + extern wrapper post-process
-luastro の `luastro_export_sd_wrappers` をそのまま借用。これがないと
-`astro_cs_load` はルート SD しか見つけられず、内側 node の SD は
-`static inline` の裏に隠れたまま、ランタイム dispatch が host 側の
-`DISPATCH_*` を経由して各 node ごとにバウンスする。
-
-### Side-array 経由の build 後再解決
-`node_allocate` が全 NODE を `astrogre_all_nodes` に track、
-`astrogre_pattern_aot_compile` が build 後に array を歩いて各 node で
-`astro_cs_load`。これがないと「次回起動時」しか SD が効かない (今走っ
-ている run には間に合わない)。
-
-### Parse 時の隣接リテラル coalesce
-`\AHello, World/` を 13 個の lit node から 1 個に — dispatch も SD
-ファイルも減る。
-
-### Parse 時の case fold pre-fold
-`/Hello/i` は `node_re_lit_ci("hello", 5, ...)` になる — pattern 側は
-1 度だけ lowercase に、入力側は byte ごとに非対称に fold して比較。
-
-### \A 始まりの short-circuit
-`anchored_bos` を `node_grep_search` の operand として持たせると、
-SD の position ループが「1 回だけ試して終わる」ことを静的に知れる。
-
-### 単一 rep_cont sentinel
-`node_re_rep_cont` allocation は全 rep node 共通でちょうど 1 つ。
-これで AST が DAG (cycle なし) のまま — Merkle hash が成立し、
-code-store の sharing も適用できる。
-
-### バックエンド抽象
-`backend.h` で grep CLI とマッチャを decouple。Onigmo backend の追加は
-~150 行のラッパー + 60 行の `build_local.mk` (autoconf / libtool 抜きで
-Onigmo をビルド)。
-
-### `restrict` on `c` and `n`、256-bit クラスビットマップを `uint64_t × 4` インライン
-標準的な ASTro hygiene。
-
-## 効かなかった / 棄却した
-
-### 1 rep node ごとの "static" continuation node
-初期案では `rep_cont` を **rep node ごと** に allocate していた。AST
-に cycle が生じて Merkle hash が破綻。
-
-### 「body は呼び出しごとに 1 回成功を返す」repetition モデル
-`(a|ab)*c` の `abc` で fail — 内側の alt は iteration 越しに retry
-できる必要がある。
-
-### UTF-8 マルチバイト char-class
-class を 256-bit ASCII bitmap *に加えて* (lo, hi) コードポイント範囲の
-ソート済リストとして持つ案。binary search が dispatch を支配して没。
-
-### Class の bytes を `const char *` で持つ
-ノード struct を 24 byte 削れるが、マッチャは bitmap ポインタを load
-する必要が出る — `class-word` で inline が ~12 % 勝った。
-
-### Possessive 量化子
-parse のみ、greedy に degrade。
-
-### PG (profile-guided) bake
-`--pg-compile` は abruby との CLI 互換のため flag として受け付けるが、
-profile signal がないので現状は `--aot-compile` と同等動作。regex 用の
-本物の signal (hot-alternative reordering、hot 反復回数、参照されない
-キャプチャの省略等) は今後の課題。
+`"static"` の各バイトが SD ソースに baked literal として埋め込まれた
+結果、gcc が `cmpl $0x74617473` ("stat" の little-endian) と
+`cmpw $0x6369` ("ic") の即値命令にまで畳んでいる。
 
 ## 着手前のもの
 
-* **AST 内の行イテレーション**。grep CLI の C 側 mmap 経路で大半カバー
-  済みだが、行境界スキャンと per-line search dispatch + print/count
-  side-effect を 1 つの SD として bake する `node_grep_lines(body, str,
-  len, callback)` ノードを足せば、まだ残る per-call overhead をさらに
-  下げられる。
-* **マルチパターン Hyperscan-Teddy literal anchor 抽出**。これが ugrep
-  に対する最大の miss。fixed-byte prefix なしのパターンでも、内部に
-  必須リテラルがあれば anchor として使える。
-* **First-byte bitmap**。完全な BMH より更に簡単 — compile 時に「許される
-  first byte」の 256-bit bitmap を作り、ベクトル化スキャンで skip。
-* **本物の PG signal**。各 `node_re_alt` での枝ヒット数を計測、hot な
-  枝を最初に試す alternation を bake。Capture elision: profile run で
-  参照されないグループの save/restore をドロップ。
-* **JIT**。一度 compile すれば次起動でなくこの run の中で SD を生成
-  したい場合の標準 ASTro JIT 経路。AST が DAG なので適用可能。
+- **マルチパターン Hyperscan-Teddy 風の literal anchor 抽出**。
+  パターンの**任意位置**にあるリテラル (例:
+  `/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/` の `(`, `,`, `)`) を抜き
+  出して anchor にする。ugrep に対する最大のギャップ。
+- **AST 内の行イテレーション** (`-c` 以外も)。`-c` と通常表示
+  モードでは入っているが、`-l` (ファイル名のみ) や `-o`
+  (マッチ部分のみ) はまだ main.c の C ループで動いている。
+- **first-byte ビットマップ**。Boyer-Moore-Horspool より単純で、
+  「許される first byte」の 256-bit ビットマップを SIMD で
+  チェックして skip。
+- **本物の PG 信号**。alt 各枝のヒット率を計測して hot な枝を
+  最初に試す並べ替え、参照されないキャプチャの save/restore 省略、
+  反復回数の集中したパターン用の固定 N 展開など。
+- **JIT** (= ランタイム特化)。今は AOT のみ (起動時に dlopen で
+  load)、JIT 経路 (実行中に dlopen し直す) は ASTro 標準として
+  あるが配線していない。
 
 詳細は [`todo.md`](./todo.md)。
