@@ -38,6 +38,137 @@ to match. A failed `next` returns 0 to its caller, which is how
 backtracking is expressed without an explicit thread list or stack
 machine.
 
+## Worked examples — what the AST actually looks like
+
+`./astrogre --dump '/<pat>/'` prints the lowered AST as an
+S-expression.  A few instructive cases:
+
+### Pure literal — `/static/`
+
+```
+(node_grep_search_memmem
+  (node_re_cap_start 0
+    (node_re_lit "static" 6
+      (node_re_cap_end 0
+        (node_re_succ))))
+  "static" 6 0)
+```
+
+Read inside-out: at success time, write `ends[0]` and return 1
+(`node_re_succ`); on the way there, capture-end writes `ends[0]`
+explicitly, the literal compares 6 bytes from `c->str + c->pos`,
+capture-start writes `starts[0]`.  The outer `node_grep_search_memmem`
+is the top-level driver — its EVAL is a `memmem`-driven loop that
+sets `c->pos` to candidate positions and dispatches the chain at
+each one.
+
+### Single class with `+` — `/[a-z]+/`
+
+```
+(node_grep_search_range
+  (node_re_cap_start 0
+    (node_re_rep
+      (node_re_class 0 576460743713488896 0 0
+        (node_re_rep_cont))
+      (node_re_cap_end 0 (node_re_succ))
+      1 -1 1))
+  97 122 0)
+```
+
+The hex-looking number is the bm1 field of the 256-bit class
+bitmap (bits set for `'a'`..`'z'`).  `node_re_rep` operands are
+`body=class`, `outer_next=cap_end → succ`, `min=1`, `max=-1`,
+`greedy=1`.  Body's `next` is `node_re_rep_cont` — the singleton
+sentinel that reads the top of `c->rep_top` to decide "iterate or
+proceed".  Outer wrapper is `node_grep_search_range` because the
+class is contiguous (`'a'`..`'z'`); it AVX2-scans for that range
+and dispatches the inner chain at each hit.
+
+### Alternation of literals — `/\b(if|else|for|while|return)\b/`
+
+```
+(node_grep_search_byteset
+  (node_re_cap_start 0
+    (node_re_word_boundary
+      (node_re_cap_start 1
+        (node_re_alt
+          (node_re_lit "if" 2 (... cap_end 1 → wb → cap_end 0 → succ))
+          (node_re_alt
+            (node_re_lit "else" 4 (...))
+            (node_re_alt
+              (node_re_lit "for" 3 (...))
+              (node_re_alt
+                (node_re_lit "while" 5 (...))
+                (node_re_lit "return" 6 (...)))))))))
+  491629471081 5 0)
+```
+
+The first 8 bytes of `491629471081` (little-endian uint64) are
+`{i, e, f, w, r, 0, 0, 0}` — the distinct first bytes of the alt
+branches.  `node_grep_search_byteset` AVX2-scans for any of them
+in 32-byte chunks and dispatches the chain at each candidate.
+Each alt branch shares the trailing `\b → cap_end → succ` chain,
+so the lowered tree is a DAG (the tail nodes are pointed to by
+multiple parents).
+
+### Backreference — `/(\w+)\s+\1/`
+
+```
+(node_grep_search_class_scan
+  (node_re_cap_start 0
+    (node_re_cap_start 1
+      (node_re_rep
+        (node_re_class <wbm> (node_re_rep_cont))
+        (node_re_cap_end 1
+          (node_re_rep
+            (node_re_class <sbm> (node_re_rep_cont))
+            (node_re_backref 1
+              (node_re_cap_end 0 (node_re_succ)))
+            1 -1 1))
+        1 -1 1)))
+  <truffle nibble tables>  0)
+```
+
+The whole outer wrapper is `node_grep_search_class_scan` because
+the first thing the regex tries to match is `\w` (a non-contiguous
+class).  `node_re_backref 1` reads `c->starts[1]`/`c->ends[1]` to
+re-match the previously-captured group's bytes literally — so its
+behaviour depends on the runtime capture state, not on a constant
+operand.
+
+### Anchored — `/\Afoo/`
+
+```
+(node_grep_search_memmem
+  (node_re_cap_start 0
+    (node_re_bos
+      (node_re_lit "foo" 3
+        (node_re_cap_end 0 (node_re_succ)))))
+  "foo" 3 1)
+```
+
+The trailing `1` on the outer wrapper is `anchored_bos` — the
+search loop will only try `c->pos == 0`.  The framework also sees
+this in the structural hash, so the anchored vs unanchored
+versions of the same body get distinct SDs.
+
+### What the lowering preserves and what it doesn't
+
+The lowered AST is a faithful representation of "what to do at
+runtime", but not of "what the user wrote":
+
+- Adjacent literals are coalesced (`/he/` + `/llo/` would still be
+  one `node_re_lit "hello"`).
+- `/i` literals are pre-folded to lowercase at parse time, with
+  the matcher folding the input on-the-fly via `node_re_lit_ci`.
+- `(?:...)` non-capturing groups disappear — their body is
+  inlined into the surrounding chain.
+- Anchors (`\A`, `\b`, `^`, `$`, etc.) become single nodes;
+  they're zero-width so they just chain through to `next`.
+- Classes are 256-bit bitmaps (4× `uint64_t` baked inline);
+  parser-level `[a-z]`, `\d`, `\w`, etc. all collapse to the
+  same node kind.
+
 ## Continuation-passing convention
 
 Every match-node has the same calling shape:

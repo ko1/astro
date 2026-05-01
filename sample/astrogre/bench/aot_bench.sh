@@ -82,8 +82,8 @@ run_one() {
     ratio_aot=$(awk -v a="$interp" -v b="$aot" 'BEGIN{ if (b > 0) printf "%.2f", a/b; else print "n/a"; }')
     ratio_aot_vs_ognm=$(awk -v a="$aot" -v b="$ognm" 'BEGIN{ if (b > 0 && b != "ERR") printf "%.2f", a/b; else print "n/a"; }')
 
-    printf '  %-44s  interp %8s  aot %8s (%5sx)  +onigmo %8s (aot/ognm %4sx)  grep %8s  ripgrep %8s\n' \
-        "$label" "$interp" "$aot" "$ratio_aot" "$ognm" "$ratio_aot_vs_ognm" "$grep_t" "$rg_t"
+    printf '  %-44s  interp %8s  aot %8s (%5sx)  +onigmo %8s  grep %8s  ripgrep %8s\n' \
+        "$label" "$interp" "$aot" "$ratio_aot" "$ognm" "$grep_t" "$rg_t"
 }
 
 echo "corpus: $CORPUS  ($LINES lines, $BYTES bytes)  best of $N runs   (all ms)"

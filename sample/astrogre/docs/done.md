@@ -122,11 +122,40 @@ loop, `cmpl + cmpw` for the literal, `vmovdqu` for the per-iter
 capture-state reset, no indirect calls, no DISPATCH chain.  In-engine
 microbench: **22.75 s → 3.15 s on `literal-tail` (7.2× speedup)**.
 
-The grep CLI bench shows essentially no change because each line
-(~36 bytes) calls the SD and the per-call overhead (`getline`,
-`CTX_struct` zero-init, fwrite of matched lines) dominates.  Folding
-the line iteration into the AST as well is the next lever — see
-[`todo.md`](./todo.md).
+For the grep CLI to *see* the fusion gain, the per-line `getline`
++ `CTX_struct` zero-init overhead has to go.  The whole-file
+mmap path (below) is what unlocks that.
+
+## Whole-file mmap path in the grep CLI
+
+`process_buffer` (main.c) replaces per-line `getline` for regular
+files when the pattern has a SIMD/libc prefilter (memchr / memmem
+/ byteset / range / class_scan).  The file is mmap'd once, the
+backend's `search_from` runs in a loop over the whole buffer, and
+each match's containing line is identified via memrchr/memchr.
+For plain backtracking patterns (no prefilter), the per-line
+streaming loop wins because each line is short.
+
+Bench impact, line-by-line grep CLI on the 118 MB corpus
+(post-mmap, post-prefilter):
+
+| pattern             | prior interp | mmap interp | grep | ripgrep |
+|---------------------|-------------:|------------:|-----:|--------:|
+| `/static/` literal  | 0.285 s      | **0.077** s | 0.002 | 0.034 |
+| literal-rare        | 0.266        | **0.026**   | 0.035 | 0.020 |
+| `/^static/`         | 0.273        | **0.076**   | 0.002 | 0.036 |
+| `-c /static/`       | 0.279        | **0.048**   | 0.002 | 0.027 |
+
+3-10× over the per-line baseline.  The `literal-rare` row is the
+headline: 26 ms vs ripgrep's 20 ms, even faster than ugrep's
+35 ms — the SIMD memmem in our `node_grep_search_memmem` is at
+ripgrep speed, the mmap path lets it actually fire.
+
+Gating: `backend.h` exposes a `has_fast_scan` op; the CLI
+queries it before taking the mmap path.  Onigmo backend leaves
+the op NULL ("always yes" — Onigmo has its own internal
+prefilter).  -v invert mode skips the mmap path because it needs
+to enumerate every line, including non-matching.
 
 ## Prefilter ladder — algorithms as nodes
 
@@ -167,16 +196,16 @@ fallback.
 Latest results, 118 MB corpus, full-sweep count (`-c` semantics
 mirrored in `--bench-file`), best-of-3 ms/iter:
 
-| pattern | astrogre +AOT | astrogre +onigmo | grep | ripgrep |
-|---|---:|---:|---:|---:|
-| `/(QQQ\|RRR)+\d+/` | **16** ★ | 726 | 85 | 26 |
-| `/(QQQX\|RRRX\|SSSX)+/` | **24** ★ | 700 | 26 | 26 |
-| `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/` | **503** ★ | 717 | 533 | 197 |
-| `/[A-Z]{50,}/` | **678** ★ | 1099 | 1570 | 184 |
-| `/[a-z][0-9][a-z][0-9][a-z]/` | 482 | 722 | **4** | 206 |
-| `/(\d+\.\d+\.\d+\.\d+)/` | 430 | 738 | **4** | 50 |
-| `/\b(if\|else\|for\|while\|return)\b/` | 90 | 1060 | **2.3** | 121 |
-| `/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/` | 10824 | 9353 | **2.7** | 218 |
+| pattern | astrogre interp | astrogre +AOT | astrogre +onigmo | grep | ripgrep |
+|---|---:|---:|---:|---:|---:|
+| `/(QQQ\|RRR)+\d+/` | 19 | **12** ★ | 488 | 74 | 23 |
+| `/(QQQX\|RRRX\|SSSX)+/` | 40 | **23** ★ | 535 | 27 | 25 |
+| `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/` | 926 | **444** ★ | 548 | 507 | 185 |
+| `/[A-Z]{50,}/` | 741 | **640** ★ | 919 | 1525 | 185 |
+| `/\b(if\|else\|for\|while\|return)\b/` | 252 | 90 | 894 | **2.5** | 118 |
+| `/[a-z][0-9][a-z][0-9][a-z]/` | 1008 | 429 | 535 | **4** | 186 |
+| `/(\d+\.\d+\.\d+\.\d+)/` | 566 | 397 | 554 | **4** | 48 |
+| `/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/` | 13061 | 10096 | 14532 | **5** | 351 |
 
 ★ = astrogre + AOT beats grep AND Onigmo.  Bold = winner per row.
 

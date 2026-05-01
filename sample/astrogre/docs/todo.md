@@ -24,13 +24,15 @@ This would close the `(\w+)\s*\(...\)` and `(\d+\.\d+\.\d+\.\d+)`
 gaps with grep.  Implementation cost: ~500-1000 lines (parser
 extraction + AVX2 multi-pattern scanner + back-up logic).
 
-### Line iteration in the AST
-For the grep CLI bench (line-by-line), the per-line `getline` /
-`CTX_struct` zero-init / `fwrite` overhead dominates.  In-engine
-`--bench-file` (whole buffer) shows the SD doing real work; CLI
-doesn't.  `node_grep_lines(body, str, len)` whose EVAL handles
-newline iteration + body dispatch + output all inside one SD
-function would close that.
+### Line iteration as an AST node
+The CLI's whole-file mmap path (`process_buffer` in main.c) gets
+us most of the way; for prefilter-eligible patterns it's already
+within ripgrep speed.  Putting the line-iteration logic itself in
+the AST as `node_grep_lines(body)` would let the specialiser bake
+the line-bound search loop with the inlined body — useful when
+the pattern is simple enough that even the memrchr/memchr per
+match becomes a meaningful share of wall time.  Lower priority
+now that the C-level mmap loop landed.
 
 ### Real PG signal
 `--pg-compile` is wired but currently aliases to `--aot-compile`

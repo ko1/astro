@@ -112,47 +112,54 @@ Two layers of optimisation, both expressed as ASTro nodes:
 
 | pattern | astrogre interp | astrogre +AOT | astrogre +onigmo | grep | ripgrep |
 |---|---:|---:|---:|---:|---:|
-| `/static/` literal | 0.285 | 0.271 | 0.226 | 0.002 | 0.036 |
-| `/specialized_dispatcher/` rare | 0.266 | 0.264 | 0.194 | 0.038 | 0.022 |
-| `/^static/` anchored | 0.273 | 0.283 | 0.229 | 0.002 | 0.038 |
-| `/VALUE/i` case-i | 0.702 | 0.336 | 0.277 | 0.002 | 0.048 |
-| `/static\|extern\|inline/` alt-3 | 0.553 | 0.288 | 1.097 | 0.002 | 0.054 |
-| `/[0-9]{4,}/` class-rep | 0.581 | 0.498 | 0.761 | 0.002 | 0.059 |
-| `/[a-z_]+_[a-z]+\(/` ident-call | 3.828 | 2.885 | 3.524 | 0.002 | 0.192 |
-| `-c /static/` count | 0.279 | 0.270 | 0.226 | 0.002 | 0.029 |
+| `/static/` literal | 0.077 | 0.078 | 0.098 | **0.002** | 0.034 |
+| `/specialized_dispatcher/` rare | 0.026 | 0.026 | 0.038 | 0.035 | **0.020** |
+| `/^static/` anchored | 0.076 | 0.076 | 0.098 | **0.002** | 0.036 |
+| `/VALUE/i` case-i | 0.704 | 0.682 | 0.129 | **0.002** | 0.050 |
+| `/static\|extern\|inline/` alt-3 | 0.308 | 0.313 | 0.959 | **0.002** | 0.050 |
+| `/[0-9]{4,}/` class-rep | 0.475 | 0.471 | 0.565 | **0.002** | 0.055 |
+| `/[a-z_]+_[a-z]+\(/` ident-call | 3.277 | 3.283 | 3.177 | **0.002** | 0.185 |
+| `-c /static/` count | 0.048 | 0.050 | 0.072 | **0.002** | 0.027 |
 
-For literal-led grep, astrogre is now **within 20 % of Onigmo on
-every pattern** (memchr / memmem / byteset all firing).  ugrep
-(`/usr/bin/grep` here) is an order of magnitude ahead — its AVX2
-memchr / lazy DFA + PCRE2-JIT runs at memory bandwidth and the
-per-line CLI overhead doesn't apply.
+The whole-file mmap path (used when the pattern has a SIMD/libc
+prefilter) drops literal-led astrogre by 3-10× and **astrogre is
+within ripgrep speed on rare-literal patterns**
+(`literal-rare` 26 ms vs ripgrep's 20 ms; even slightly faster
+than ugrep's 35 ms there).  ugrep stays an order of magnitude
+ahead on common literals (memchr at memory-bandwidth).
+
+The `/i`, `class-rep`, `ident-call` rows fall back to per-line
+streaming because the engine has no fast scan for the leading
+`\w` / `[0-9]` / `/i` shape — see Bench B for what AOT does once
+the per-line overhead is gone.
 
 ### Bench B — engine-level whole-file scan (ms/iter)
 
 `bench/aot_bench.sh` runs the in-engine `--bench-file` path: full
 buffer in memory, full-sweep count to mirror grep `-c` semantics.
 Patterns chosen for the AOT-favourable shape (long chain, prefilter
-applies).
+applies).  Lower is better; bold = winner per row, ★ = astrogre+AOT
+beats grep AND Onigmo.
 
-| pattern | astrogre +AOT | astrogre +onigmo | grep | ripgrep |
-|---|---:|---:|---:|---:|
-| `/(QQQ\|RRR)+\d+/` | **16** ★ | 726 | 85 | 26 |
-| `/(QQQX\|RRRX\|SSSX)+/` | **24** ★ | 700 | 26 | 26 |
-| `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/` | **503** ★ | 717 | 533 | 197 |
-| `/[A-Z]{50,}/` | **678** ★ | 1099 | 1570 | 184 |
-| `/[a-z][0-9][a-z][0-9][a-z]/` | 482 | 722 | **4** | 206 |
-| `/(\d+\.\d+\.\d+\.\d+)/` | 430 | 738 | **4** | 50 |
-| `/\b(if\|else\|for\|while\|return)\b/` | 90 | 1060 | **2.3** | 121 |
-| `/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/` | 10824 | 9353 | **2.7** | 218 |
+| pattern | astrogre interp | astrogre +AOT | astrogre +onigmo | grep | ripgrep |
+|---|---:|---:|---:|---:|---:|
+| `/(QQQ\|RRR)+\d+/` | 19 | **12** ★ | 488 | 74 | 23 |
+| `/(QQQX\|RRRX\|SSSX)+/` | 40 | **23** ★ | 535 | 27 | 25 |
+| `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/` | 926 | **444** ★ | 548 | 507 | 185 |
+| `/[A-Z]{50,}/` | 741 | **640** ★ | 919 | 1525 | 185 |
+| `/\b(if\|else\|for\|while\|return)\b/` | 252 | 90 | 894 | **2.5** | 118 |
+| `/[a-z][0-9][a-z][0-9][a-z]/` | 1008 | 429 | 535 | **4** | 186 |
+| `/(\d+\.\d+\.\d+\.\d+)/` | 566 | 397 | 554 | **4** | 48 |
+| `/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/` | 13061 | 10096 | 14532 | **5** | 351 |
 
 ★ = astrogre + AOT beats grep AND Onigmo.  **4/8 vs grep, 8/8 vs
-Onigmo.**  Bold = winner per row.  The wins come from the prefilter
-ladder picking the right node for each shape; the losses are
-patterns where the leading char / first-byte-set is common in
-source code, so SIMD scan finds candidates everywhere and ugrep's
-Hyperscan-style multi-pattern literal anchor extraction (Teddy /
-FDR) is the only way to win.  That's the next addition (see
-[`docs/todo.md`](./docs/todo.md)).
+Onigmo.**  AOT typically lands a 1.5-2.8× speedup over interp on
+this set (best: 2.81× on the `\b(if|else|...)\b` pattern).  The
+losses to grep are patterns where the leading char / first-byte
+set is common in source code, so SIMD scan finds candidates
+everywhere and ugrep's Hyperscan-style multi-pattern literal
+anchor extraction (Teddy / FDR) is the only way to win.  That's
+the next addition (see [`docs/todo.md`](./docs/todo.md)).
 
 ripgrep stays a step ahead on most patterns thanks to lazy DFA +
 literal-prefix prefilter; closing that gap would need DFA-style
