@@ -1,0 +1,1740 @@
+// jstro AST node definitions.
+//
+// Each NODE_DEF emits an EVAL_<name>() body.  Signature:
+//   RESULT EVAL_<name>(CTX * restrict c, NODE * restrict n,
+//                      JsValue * restrict frame, /* operands... */)
+//
+// Variable-arity operands (call args, array elements, etc.) live in
+// module-level side arrays indexed by `(idx, cnt)` pairs.
+
+#include <math.h>
+
+extern NODE     **JSTRO_NODE_ARR;
+extern uint32_t  *JSTRO_U32_ARR;
+extern JsValue   *JSTRO_VAL_ARR;
+extern struct JsString **JSTRO_STR_ARR;
+
+extern const struct NodeKind kind_node_smi_add, kind_node_smi_sub, kind_node_smi_mul;
+extern const struct NodeKind kind_node_dbl_add, kind_node_dbl_sub, kind_node_dbl_mul;
+extern const struct NodeKind kind_node_smi_lt, kind_node_smi_le;
+
+NODE_DEF
+node_undefined(CTX * restrict c, NODE * restrict n, JsValue * restrict frame)
+{
+    (void)c; (void)n; (void)frame;
+    return RESULT_OK(JV_UNDEFINED);
+}
+
+NODE_DEF
+node_null(CTX * restrict c, NODE * restrict n, JsValue * restrict frame)
+{
+    (void)c; (void)n; (void)frame;
+    return RESULT_OK(JV_NULL);
+}
+
+NODE_DEF
+node_true(CTX * restrict c, NODE * restrict n, JsValue * restrict frame)
+{
+    (void)c; (void)n; (void)frame;
+    return RESULT_OK(JV_TRUE);
+}
+
+NODE_DEF
+node_false(CTX * restrict c, NODE * restrict n, JsValue * restrict frame)
+{
+    (void)c; (void)n; (void)frame;
+    return RESULT_OK(JV_FALSE);
+}
+
+NODE_DEF @always_inline
+node_smi(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, uint64_t v)
+{
+    (void)c; (void)n; (void)frame;
+    return RESULT_OK(JV_INT((int64_t)v));
+}
+
+NODE_DEF @always_inline
+node_double(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, double v)
+{
+    (void)c; (void)n; (void)frame;
+    return RESULT_OK(JV_DBL(v));
+}
+
+NODE_DEF @always_inline
+node_string(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, JsString *s)
+{
+    (void)c; (void)n; (void)frame;
+    return RESULT_OK(JV_STR(s));
+}
+
+NODE_DEF
+node_this(CTX * restrict c, NODE * restrict n, JsValue * restrict frame)
+{
+    (void)n; (void)frame;
+    return RESULT_OK(c->this_val);
+}
+
+// `arguments` — built lazily on first access from c->cur_args / cur_argc
+// snapshot saved by js_call_func_direct at frame entry.
+NODE_DEF
+node_arguments(CTX * restrict c, NODE * restrict n, JsValue * restrict frame)
+{
+    (void)n; (void)frame;
+    struct JsArray *a = js_array_new(c, c->cur_argc);
+    for (uint32_t i = 0; i < c->cur_argc; i++) a->dense[i] = c->cur_args[i];
+    a->length = c->cur_argc;
+    return RESULT_OK(JV_OBJ(a));
+}
+
+// `new.target` — the constructor passed to `new`, undefined if called
+// without `new`.
+NODE_DEF
+node_new_target(CTX * restrict c, NODE * restrict n, JsValue * restrict frame)
+{
+    (void)n; (void)frame;
+    return RESULT_OK(c->new_target);
+}
+
+// =====================================================================
+// Variable access
+// =====================================================================
+
+NODE_DEF @always_inline
+node_local_get(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, uint32_t idx)
+{
+    (void)c; (void)n;
+    JsValue v = frame[idx];
+    // If a nested closure was parsed AFTER this access node (e.g. the
+    // for-let pattern: `for (let i = 0; i < n; i++) { ... captures i ... }`
+    // where the step's i++ is emitted before the body's closure sees it),
+    // the slot may now hold a JsBox pointer.  Cheap predictable branch.
+    if (JSTRO_UNLIKELY(JV_IS_PTR(v) && jv_heap_type(v) == JS_TBOX)) {
+        return RESULT_OK(((struct JsBox *)(uintptr_t)v)->value);
+    }
+    return RESULT_OK(v);
+}
+
+NODE_DEF @always_inline
+node_local_set(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, uint32_t idx, NODE *rhs)
+{
+    JsValue v = EVAL_ARG(c, rhs);
+    JsValue cur = frame[idx];
+    if (JSTRO_UNLIKELY(JV_IS_PTR(cur) && jv_heap_type(cur) == JS_TBOX)) {
+        ((struct JsBox *)(uintptr_t)cur)->value = v;
+    } else {
+        frame[idx] = v;
+    }
+    return RESULT_OK(v);
+}
+
+// TDZ-checked let read.  Handles boxed slots (slot may hold a JsBox after
+// a nested closure captured this binding).
+NODE_DEF @always_inline
+node_let_get(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, uint32_t idx, JsString *name)
+{
+    (void)n;
+    JsValue v = frame[idx];
+    if (JSTRO_UNLIKELY(JV_IS_PTR(v) && jv_heap_type(v) == JS_TBOX)) {
+        v = ((struct JsBox *)(uintptr_t)v)->value;
+    }
+    if (JSTRO_UNLIKELY(v == JV_HOLE)) {
+        js_throw_reference_error(c, "Cannot access '%s' before initialization", js_str_data(name));
+    }
+    return RESULT_OK(v);
+}
+
+NODE_DEF @always_inline
+node_let_set(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, uint32_t idx, JsString *name, NODE *rhs)
+{
+    (void)n;
+    JsValue cur = frame[idx];
+    if (JSTRO_UNLIKELY(JV_IS_PTR(cur) && jv_heap_type(cur) == JS_TBOX)) {
+        struct JsBox *box = (struct JsBox *)(uintptr_t)cur;
+        if (JSTRO_UNLIKELY(box->value == JV_HOLE)) {
+            js_throw_reference_error(c, "Cannot access '%s' before initialization", js_str_data(name));
+        }
+        JsValue v = EVAL_ARG(c, rhs);
+        box->value = v;
+        return RESULT_OK(v);
+    }
+    if (JSTRO_UNLIKELY(cur == JV_HOLE)) {
+        js_throw_reference_error(c, "Cannot access '%s' before initialization", js_str_data(name));
+    }
+    JsValue v = EVAL_ARG(c, rhs);
+    frame[idx] = v;
+    return RESULT_OK(v);
+}
+
+// First-time initialization of a let / const slot.  No TDZ check
+// (just store).  Handles boxed slots so per-iteration captures see the
+// initialized value.
+NODE_DEF @always_inline
+node_let_init(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, uint32_t idx, NODE *rhs)
+{
+    (void)n;
+    JsValue v = EVAL_ARG(c, rhs);
+    JsValue cur = frame[idx];
+    if (JSTRO_UNLIKELY(JV_IS_PTR(cur) && jv_heap_type(cur) == JS_TBOX)) {
+        ((struct JsBox *)(uintptr_t)cur)->value = v;
+    } else {
+        frame[idx] = v;
+    }
+    return RESULT_OK(v);
+}
+
+// Captured-local read/write through a JsBox heap cell.
+NODE_DEF @always_inline
+node_box_get(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, uint32_t idx)
+{
+    (void)c; (void)n;
+    JsValue p = frame[idx];
+    return RESULT_OK(((struct JsBox *)(uintptr_t)p)->value);
+}
+
+NODE_DEF @always_inline
+node_box_set(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, uint32_t idx, NODE *rhs)
+{
+    JsValue v = EVAL_ARG(c, rhs);
+    JsValue p = frame[idx];
+    ((struct JsBox *)(uintptr_t)p)->value = v;
+    return RESULT_OK(v);
+}
+
+// Upvalue access — reads through the active closure's upval array.
+NODE_DEF @always_inline
+node_upval_get(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, uint32_t idx)
+{
+    (void)n; (void)frame;
+    return RESULT_OK(*c->cur_upvals[idx]);
+}
+
+NODE_DEF @always_inline
+node_upval_set(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, uint32_t idx, NODE *rhs)
+{
+    (void)frame;
+    JsValue v = EVAL_ARG(c, rhs);
+    *c->cur_upvals[idx] = v;
+    return RESULT_OK(v);
+}
+
+NODE_DEF @always_inline
+node_global_get(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, JsString *name, struct JsPropIC *ic@ref)
+{
+    (void)n; (void)frame;
+    struct JsObject *g = c->globals;
+    if (JSTRO_LIKELY(g->shape && (uintptr_t)g->shape == ic->shape && ic->slot < g->shape->nslots)) {
+        if (JSTRO_LIKELY(g->shape->names[ic->slot] == name)) {
+            return RESULT_OK(g->slots[ic->slot]);
+        }
+    }
+    int slot = js_shape_find_slot(g->shape, name);
+    if (slot >= 0) {
+        ic->shape = (uintptr_t)g->shape;
+        ic->slot = (uint32_t)slot;
+        return RESULT_OK(g->slots[slot]);
+    }
+    // Globals: undefined for missing.  (Strict mode would normally throw a
+    // ReferenceError when *reading* an undeclared identifier — but missing
+    // globals as undefined is closer to typical engine behavior; tests
+    // calling unknown names will fail at the call site anyway.)
+    js_throw_reference_error(c, "%s is not defined", js_str_data(name));
+}
+
+NODE_DEF @always_inline
+node_global_set(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, JsString *name, NODE *rhs, struct JsPropIC *ic@ref)
+{
+    (void)n; (void)frame;
+    JsValue v = EVAL_ARG(c, rhs);
+    struct JsObject *g = c->globals;
+    if (JSTRO_LIKELY((uintptr_t)g->shape == ic->shape && ic->slot < g->shape->nslots
+                     && g->shape->names[ic->slot] == name)) {
+        g->slots[ic->slot] = v;
+        return RESULT_OK(v);
+    }
+    js_object_set(c, g, name, v);
+    int slot = js_shape_find_slot(g->shape, name);
+    if (slot >= 0) {
+        ic->shape = (uintptr_t)g->shape;
+        ic->slot = (uint32_t)slot;
+    }
+    return RESULT_OK(v);
+}
+
+// =====================================================================
+// Sequence and control flow
+// =====================================================================
+
+NODE_DEF
+node_seq(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *first, NODE *second)
+{
+    (void)n;
+    RESULT r = EVAL_ARG(c, first);
+    if (JSTRO_UNLIKELY(JSTRO_BR != JS_BR_NORMAL)) return r;
+    return EVAL_ARG(c, second);
+}
+
+// Flat n-statement sequence — used for blocks with ≥3 statements to avoid
+// the deep-nested node_seq chain (which costs one indirect-call hop per
+// statement).  The children are stored in JSTRO_NODE_ARR[idx..idx+cnt].
+NODE_DEF
+node_seqn(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, uint32_t idx, uint32_t cnt)
+{
+    (void)n;
+    JsValue r = JV_UNDEFINED;
+    for (uint32_t i = 0; i < cnt; i++) {
+        NODE *e = JSTRO_NODE_ARR[idx + i];
+        r = EVAL(c, e, frame);
+        if (JSTRO_UNLIKELY(JSTRO_BR != JS_BR_NORMAL)) return r;
+    }
+    return RESULT_OK(r);
+}
+
+NODE_DEF @always_inline
+node_if(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *cond, NODE *then_n, NODE *else_n)
+{
+    JsValue cv = EVAL_ARG(c, cond);
+    if (JSTRO_UNLIKELY(JSTRO_BR != JS_BR_NORMAL)) return cv;
+    if (jv_to_bool(cv)) {
+        return EVAL_ARG(c, then_n);
+    } else if (else_n) {
+        return EVAL_ARG(c, else_n);
+    }
+    return RESULT_OK(JV_UNDEFINED);
+}
+
+NODE_DEF @always_inline
+node_while(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *cond, NODE *body)
+{
+    (void)n;
+    for (;;) {
+        JsValue cv = EVAL_ARG(c, cond);
+        if (JSTRO_UNLIKELY(JSTRO_BR != JS_BR_NORMAL)) return cv;
+        if (!jv_to_bool(cv)) break;
+        EVAL_ARG(c, body);
+        if (JSTRO_UNLIKELY(JSTRO_BR != JS_BR_NORMAL)) {
+            if (JSTRO_BR == JS_BR_BREAK) {
+                JSTRO_BR = JS_BR_NORMAL;
+                break;
+            }
+            if (JSTRO_BR == JS_BR_CONTINUE) {
+                JSTRO_BR = JS_BR_NORMAL;
+                continue;
+            }
+            return JSTRO_BR_VAL;
+        }
+    }
+    return RESULT_OK(JV_UNDEFINED);
+}
+
+NODE_DEF @always_inline
+node_do_while(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *body, NODE *cond)
+{
+    (void)n;
+    for (;;) {
+        EVAL_ARG(c, body);
+        if (JSTRO_UNLIKELY(JSTRO_BR != JS_BR_NORMAL)) {
+            if (JSTRO_BR == JS_BR_BREAK && JSTRO_BR_LABEL == NULL) { JSTRO_BR = JS_BR_NORMAL; break; }
+            if (JSTRO_BR == JS_BR_CONTINUE) { JSTRO_BR = JS_BR_NORMAL; }
+            else return JSTRO_BR_VAL;
+        }
+        JsValue cv = EVAL_ARG(c, cond);
+        if (JSTRO_UNLIKELY(JSTRO_BR != JS_BR_NORMAL)) return cv;
+        if (!jv_to_bool(cv)) break;
+    }
+    return RESULT_OK(JV_UNDEFINED);
+}
+
+// `for (let i = ...; cond; step) body` with per-iteration binding.  Each
+// iteration allocates a fresh JsBox in the loop slot so closures
+// captured within the body see the per-iter value, while cond/step
+// continue to operate on the slot through the dynamic-box-aware
+// node_local_get/set path.
+NODE_DEF @always_inline
+node_for_let(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, uint32_t slot, NODE *init, NODE *cond, NODE *step, NODE *body)
+{
+    (void)n;
+    EVAL_ARG(c, init);
+    for (;;) {
+        JsValue cv = EVAL_ARG(c, cond);
+        if (!jv_to_bool(cv)) break;
+        // Snapshot current slot value (unwrap if already boxed) and put a
+        // fresh JsBox in the slot for this iteration.
+        JsValue cur = frame[slot];
+        JsValue snapshot = (JV_IS_PTR(cur) && jv_heap_type(cur) == JS_TBOX)
+                            ? ((struct JsBox *)(uintptr_t)cur)->value : cur;
+        struct JsBox *box = (struct JsBox *)js_gc_alloc(c, sizeof(struct JsBox), JS_TBOX);
+        box->value = snapshot;
+        frame[slot] = (JsValue)(uintptr_t)box;
+
+        EVAL_ARG(c, body);
+        if (JSTRO_UNLIKELY(JSTRO_BR != JS_BR_NORMAL)) {
+            // Copy current iter value back so step/external observers see it.
+            frame[slot] = box->value;
+            if (JSTRO_BR == JS_BR_BREAK && JSTRO_BR_LABEL == NULL) { JSTRO_BR = JS_BR_NORMAL; break; }
+            if (JSTRO_BR == JS_BR_CONTINUE) { JSTRO_BR = JS_BR_NORMAL; }
+            else return JSTRO_BR_VAL;
+        }
+        // After body, restore the slot to the raw value (so step works on it).
+        frame[slot] = box->value;
+        EVAL_ARG(c, step);
+    }
+    return RESULT_OK(JV_UNDEFINED);
+}
+
+// C-style for: any clause may be NULL.
+NODE_DEF @always_inline
+node_for(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *init, NODE *cond, NODE *step, NODE *body)
+{
+    (void)n;
+    if (init) {
+        EVAL_ARG(c, init);
+        if (JSTRO_UNLIKELY(JSTRO_BR != JS_BR_NORMAL)) return JSTRO_BR_VAL;
+    }
+    for (;;) {
+        if (cond) {
+            JsValue cv = EVAL_ARG(c, cond);
+            if (JSTRO_UNLIKELY(JSTRO_BR != JS_BR_NORMAL)) return cv;
+            if (!jv_to_bool(cv)) break;
+        }
+        EVAL_ARG(c, body);
+        if (JSTRO_UNLIKELY(JSTRO_BR != JS_BR_NORMAL)) {
+            if (JSTRO_BR == JS_BR_BREAK && JSTRO_BR_LABEL == NULL) { JSTRO_BR = JS_BR_NORMAL; break; }
+            if (JSTRO_BR == JS_BR_CONTINUE) { JSTRO_BR = JS_BR_NORMAL; }
+            else return JSTRO_BR_VAL;
+        }
+        if (step) {
+            EVAL_ARG(c, step);
+            if (JSTRO_UNLIKELY(JSTRO_BR != JS_BR_NORMAL)) return JSTRO_BR_VAL;
+        }
+    }
+    return RESULT_OK(JV_UNDEFINED);
+}
+
+// for-of iteration: arrays + strings hit a dense fast path; otherwise
+// drive the iterator protocol via the `@@iterator` property (jstro's
+// stand-in for Symbol.iterator).  Falls through to duck-typing if the
+// value itself has a `next` method.
+NODE_DEF
+node_for_of(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, uint32_t var_idx, uint32_t is_box, NODE *iterable, NODE *body)
+{
+    (void)n;
+    JsValue it = EVAL_ARG(c, iterable);
+    if (JV_IS_ARRAY(it)) {
+        struct JsArray *a = JV_AS_ARRAY(it);
+        for (uint32_t i = 0; i < a->length; i++) {
+            JsValue v = (i < a->dense_capa) ? a->dense[i] : js_array_get(c, a, i);
+            if (v == JV_HOLE) v = JV_UNDEFINED;
+            if (is_box) ((struct JsBox *)(uintptr_t)frame[var_idx])->value = v;
+            else        frame[var_idx] = v;
+            EVAL_ARG(c, body);
+            if (JSTRO_UNLIKELY(JSTRO_BR != JS_BR_NORMAL)) {
+                if (JSTRO_BR == JS_BR_BREAK && JSTRO_BR_LABEL == NULL) { JSTRO_BR = JS_BR_NORMAL; goto done_arr; }
+                if (JSTRO_BR == JS_BR_CONTINUE) { JSTRO_BR = JS_BR_NORMAL; continue; }
+                return JSTRO_BR_VAL;
+            }
+        }
+done_arr:;
+        return RESULT_OK(JV_UNDEFINED);
+    }
+    if (JV_IS_STR(it)) {
+        struct JsString *s = JV_AS_STR(it);
+        for (uint32_t i = 0; i < s->len; i++) {
+            char ch[2] = { s->data[i], 0 };
+            JsValue v = JV_STR(js_str_intern_n(c, ch, 1));
+            if (is_box) ((struct JsBox *)(uintptr_t)frame[var_idx])->value = v;
+            else        frame[var_idx] = v;
+            EVAL_ARG(c, body);
+            if (JSTRO_UNLIKELY(JSTRO_BR != JS_BR_NORMAL)) {
+                if (JSTRO_BR == JS_BR_BREAK && JSTRO_BR_LABEL == NULL) { JSTRO_BR = JS_BR_NORMAL; break; }
+                if (JSTRO_BR == JS_BR_CONTINUE) { JSTRO_BR = JS_BR_NORMAL; continue; }
+                return JSTRO_BR_VAL;
+            }
+        }
+        return RESULT_OK(JV_UNDEFINED);
+    }
+    if (!JV_IS_PTR(it) || jv_heap_type(it) < JS_TOBJECT) {
+        js_throw_type_error(c, "for-of: value is not iterable");
+    }
+    struct JsString *iter_key  = js_str_intern(c, "@@iterator");
+    struct JsString *next_key  = js_str_intern(c, "next");
+    struct JsString *done_key  = js_str_intern(c, "done");
+    struct JsString *value_key = js_str_intern(c, "value");
+    JsValue iter_fn = js_get_member(c, it, iter_key);
+    JsValue iter_obj;
+    if (JV_IS_PTR(iter_fn) && (jv_heap_type(iter_fn) == JS_TFUNCTION || jv_heap_type(iter_fn) == JS_TCFUNCTION)) {
+        iter_obj = js_call(c, iter_fn, it, NULL, 0);
+    } else {
+        JsValue tmp = js_get_member(c, it, next_key);
+        if (!JV_IS_PTR(tmp) || (jv_heap_type(tmp) != JS_TFUNCTION && jv_heap_type(tmp) != JS_TCFUNCTION)) {
+            js_throw_type_error(c, "for-of: value is not iterable");
+        }
+        iter_obj = it;
+    }
+    for (;;) {
+        JsValue next_fn = js_get_member(c, iter_obj, next_key);
+        JsValue result  = js_call(c, next_fn, iter_obj, NULL, 0);
+        if (!JV_IS_PTR(result) || jv_heap_type(result) < JS_TOBJECT) {
+            js_throw_type_error(c, "iterator result is not an object");
+        }
+        JsValue done = js_get_member(c, result, done_key);
+        if (jv_to_bool(done)) break;
+        JsValue v = js_get_member(c, result, value_key);
+        if (is_box) ((struct JsBox *)(uintptr_t)frame[var_idx])->value = v;
+        else        frame[var_idx] = v;
+        EVAL_ARG(c, body);
+        if (JSTRO_UNLIKELY(JSTRO_BR != JS_BR_NORMAL)) {
+            if (JSTRO_BR == JS_BR_BREAK && JSTRO_BR_LABEL == NULL) { JSTRO_BR = JS_BR_NORMAL; break; }
+            if (JSTRO_BR == JS_BR_CONTINUE) { JSTRO_BR = JS_BR_NORMAL; continue; }
+            return JSTRO_BR_VAL;
+        }
+    }
+    return RESULT_OK(JV_UNDEFINED);
+}
+
+// for-in over object own + prototype-chain enumerable keys (we only
+// enumerate own keys for simplicity — most benchmarks use objects-as-maps).
+NODE_DEF @always_inline
+node_for_in(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, uint32_t var_idx, uint32_t is_box, NODE *obj_e, NODE *body)
+{
+    (void)n;
+    JsValue ov = EVAL_ARG(c, obj_e);
+    if (JSTRO_UNLIKELY(JSTRO_BR != JS_BR_NORMAL)) return ov;
+    if (JV_IS_NULLISH(ov)) return RESULT_OK(JV_UNDEFINED);
+    if (JV_IS_ARRAY(ov)) {
+        struct JsArray *a = JV_AS_ARRAY(ov);
+        for (uint32_t i = 0; i < a->length; i++) {
+            char buf[16];
+            int n_ = snprintf(buf, sizeof buf, "%u", i);
+            JsValue v = JV_STR(js_str_intern_n(c, buf, n_));
+            if (is_box) ((struct JsBox *)(uintptr_t)frame[var_idx])->value = v;
+            else        frame[var_idx] = v;
+            EVAL_ARG(c, body);
+            if (JSTRO_UNLIKELY(JSTRO_BR != JS_BR_NORMAL)) {
+                if (JSTRO_BR == JS_BR_BREAK && JSTRO_BR_LABEL == NULL) { JSTRO_BR = JS_BR_NORMAL; goto done_a; }
+                if (JSTRO_BR == JS_BR_CONTINUE) { JSTRO_BR = JS_BR_NORMAL; continue; }
+                return JSTRO_BR_VAL;
+            }
+        }
+done_a:;
+        return RESULT_OK(JV_UNDEFINED);
+    }
+    if (!JV_IS_PTR(ov)) return RESULT_OK(JV_UNDEFINED);  // primitives: nothing
+    if (jv_heap_type(ov) == JS_TOBJECT) {
+        // Walk own + prototype chain, deduping keys we've seen.
+        struct JsObject *o = JV_AS_OBJ(ov);
+        struct JsString *seen[256]; uint32_t nseen = 0;
+        struct JsObject *cur = o;
+        while (cur && nseen < 256) {
+            for (uint32_t i = 0; i < cur->shape->nslots; i++) {
+                struct JsString *name = cur->shape->names[i];
+                if (cur->slots[i] == JV_HOLE) continue;
+                bool dup = false;
+                for (uint32_t j = 0; j < nseen; j++) if (seen[j] == name) { dup = true; break; }
+                if (dup) continue;
+                if (nseen < 256) seen[nseen++] = name;
+                JsValue v = JV_STR(name);
+                if (is_box) ((struct JsBox *)(uintptr_t)frame[var_idx])->value = v;
+                else        frame[var_idx] = v;
+                EVAL_ARG(c, body);
+                if (JSTRO_UNLIKELY(JSTRO_BR != JS_BR_NORMAL)) {
+                    if (JSTRO_BR == JS_BR_BREAK && JSTRO_BR_LABEL == NULL) { JSTRO_BR = JS_BR_NORMAL; goto done_o; }
+                    if (JSTRO_BR == JS_BR_CONTINUE) { JSTRO_BR = JS_BR_NORMAL; continue; }
+                    return JSTRO_BR_VAL;
+                }
+            }
+            cur = cur->proto;
+        }
+done_o:;
+    }
+    return RESULT_OK(JV_UNDEFINED);
+}
+
+NODE_DEF
+node_break(CTX * restrict c, NODE * restrict n, JsValue * restrict frame)
+{
+    (void)c; (void)n; (void)frame;
+    return RESULT_BREAK_(NULL);
+}
+
+NODE_DEF
+node_continue(CTX * restrict c, NODE * restrict n, JsValue * restrict frame)
+{
+    (void)c; (void)n; (void)frame;
+    return RESULT_CONT_(NULL);
+}
+
+NODE_DEF
+node_break_label(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, JsString *label)
+{
+    (void)c; (void)n; (void)frame;
+    return RESULT_BREAK_(js_str_data(label));
+}
+
+NODE_DEF
+node_continue_label(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, JsString *label)
+{
+    (void)c; (void)n; (void)frame;
+    return RESULT_CONT_(js_str_data(label));
+}
+
+// Labeled wrapper.  Consumes a `break label` whose label matches.
+// Labeled `continue` parses but is rewritten to `continue` (no label) —
+// it works only when the immediately wrapped statement is a loop.
+NODE_DEF
+node_label(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, JsString *label, NODE *body)
+{
+    (void)n;
+    EVAL_ARG(c, body);
+    if (JSTRO_BR == JS_BR_BREAK && JSTRO_BR_LABEL != NULL
+        && strcmp(JSTRO_BR_LABEL, js_str_data(label)) == 0) {
+        JSTRO_BR = JS_BR_NORMAL;
+        JSTRO_BR_LABEL = NULL;
+    }
+    return RESULT_OK(JV_UNDEFINED);
+}
+
+NODE_DEF
+node_return(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *expr)
+{
+    (void)n;
+    JsValue v = EVAL_ARG(c, expr);
+    return RESULT_RETURN_(v);
+}
+
+NODE_DEF
+node_throw(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *expr)
+{
+    (void)n;
+    JsValue v = EVAL_ARG(c, expr);
+    js_throw(c, v);   // never returns
+    return RESULT_OK(JV_UNDEFINED);
+}
+
+// Helper macro: should this loop consume the BR=BREAK/CONTINUE?
+// label_str is the loop's label (NULL/empty if unlabeled).
+//   - unlabeled BR (JSTRO_BR_LABEL == NULL): always consume
+//   - labeled BR: consume only if labels match
+static inline __attribute__((always_inline)) bool
+jstro_loop_should_consume(const char *label_str)
+{
+    if (JSTRO_BR_LABEL == NULL) return true;
+    if (label_str == NULL || label_str[0] == 0) return false;
+    return strcmp(JSTRO_BR_LABEL, label_str) == 0;
+}
+
+// Helper for node_try — separated so it can use setjmp.  Declared with
+// __attribute__((noinline)) so EVAL_node_try (force-inlined by ASTroGen)
+// can still be inlined into its dispatcher.
+JsValue jstro_try_run(CTX *c, NODE *body, JsValue *frame,
+                      uint32_t catch_var, uint32_t catch_is_box,
+                      uint32_t has_handler, NODE *handler,
+                      uint32_t has_final, NODE *final_);
+
+NODE_DEF
+node_try(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *body, uint32_t catch_var, uint32_t catch_is_box, uint32_t has_handler, NODE *handler, uint32_t has_final, NODE *final_)
+{
+    (void)n;
+    return RESULT_OK(jstro_try_run(c, body, frame, catch_var, catch_is_box, has_handler, handler, has_final, final_));
+}
+
+// Block scope (used for { ... } in let/const desugaring; also clears
+// branch-state for the outer caller if needed).  Also handles let/const
+// initialization-to-hole.
+NODE_DEF
+node_block(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, uint32_t hole_idx_idx, uint32_t hole_cnt, NODE *body)
+{
+    (void)n;
+    for (uint32_t i = 0; i < hole_cnt; i++) {
+        frame[JSTRO_U32_ARR[hole_idx_idx + i]] = JV_HOLE;
+    }
+    return EVAL_ARG(c, body);
+}
+
+// =====================================================================
+// Logical operators (short-circuit per spec)
+// =====================================================================
+
+NODE_DEF @always_inline
+node_and(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *l, NODE *r)
+{
+    (void)n;
+    JsValue a = EVAL_ARG(c, l);
+    if (!jv_to_bool(a)) return RESULT_OK(a);
+    return EVAL_ARG(c, r);
+}
+
+NODE_DEF @always_inline
+node_or(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *l, NODE *r)
+{
+    (void)n;
+    JsValue a = EVAL_ARG(c, l);
+    if (jv_to_bool(a)) return RESULT_OK(a);
+    return EVAL_ARG(c, r);
+}
+
+NODE_DEF @always_inline
+node_nullish(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *l, NODE *r)
+{
+    (void)n;
+    JsValue a = EVAL_ARG(c, l);
+    if (!JV_IS_NULLISH(a)) return RESULT_OK(a);
+    return EVAL_ARG(c, r);
+}
+
+NODE_DEF @always_inline
+node_not(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *x)
+{
+    (void)n;
+    JsValue a = EVAL_ARG(c, x);
+    return RESULT_OK(JV_BOOL(!jv_to_bool(a)));
+}
+
+// =====================================================================
+// Arithmetic and comparison (specialization: SMI fast paths)
+// =====================================================================
+
+NODE_DEF @always_inline
+node_add(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *l, NODE *r)
+{
+    (void)n;
+    JsValue a = EVAL_ARG(c, l);
+    JsValue b = EVAL_ARG(c, r);
+    if (JSTRO_LIKELY(JV_IS_SMI(a) && JV_IS_SMI(b))) {
+        // Spec ToNumber on numbers is identity; range fits 63-bit easily.
+        return RESULT_OK(JV_INT(JV_AS_SMI(a) + JV_AS_SMI(b)));
+    }
+    if (JV_IS_FLONUM(a) && JV_IS_FLONUM(b)) {
+        return RESULT_OK(JV_DBL(JV_AS_DBL(a) + JV_AS_DBL(b)));
+    }
+    if ((JV_IS_SMI(a) && JV_IS_FLONUM(b)) || (JV_IS_FLONUM(a) && JV_IS_SMI(b))) {
+        double da = JV_IS_SMI(a) ? (double)JV_AS_SMI(a) : JV_AS_DBL(a);
+        double db = JV_IS_SMI(b) ? (double)JV_AS_SMI(b) : JV_AS_DBL(b);
+        return RESULT_OK(JV_DBL(da + db));
+    }
+    return RESULT_OK(js_add(c, a, b));
+}
+
+NODE_DEF @always_inline
+node_sub(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *l, NODE *r)
+{
+    (void)n;
+    JsValue a = EVAL_ARG(c, l);
+    JsValue b = EVAL_ARG(c, r);
+    if (JSTRO_LIKELY(JV_IS_SMI(a) && JV_IS_SMI(b))) {
+        return RESULT_OK(JV_INT(JV_AS_SMI(a) - JV_AS_SMI(b)));
+    }
+    // Flonum-flonum fast path (avoid the call to js_to_double).
+    if (JV_IS_FLONUM(a) && JV_IS_FLONUM(b)) {
+        return RESULT_OK(JV_DBL(JV_AS_DBL(a) - JV_AS_DBL(b)));
+    }
+    // Mixed int/flonum
+    if ((JV_IS_SMI(a) && JV_IS_FLONUM(b)) || (JV_IS_FLONUM(a) && JV_IS_SMI(b))) {
+        double da = JV_IS_SMI(a) ? (double)JV_AS_SMI(a) : JV_AS_DBL(a);
+        double db = JV_IS_SMI(b) ? (double)JV_AS_SMI(b) : JV_AS_DBL(b);
+        return RESULT_OK(JV_DBL(da - db));
+    }
+    return RESULT_OK(js_sub(c, a, b));
+}
+
+NODE_DEF @always_inline
+node_mul(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *l, NODE *r)
+{
+    (void)n;
+    JsValue a = EVAL_ARG(c, l);
+    JsValue b = EVAL_ARG(c, r);
+    if (JSTRO_LIKELY(JV_IS_SMI(a) && JV_IS_SMI(b))) {
+        int64_t x, ax = JV_AS_SMI(a), bx = JV_AS_SMI(b);
+        if (!__builtin_mul_overflow(ax, bx, &x))
+            return RESULT_OK(JV_INT(x));
+        return RESULT_OK(JV_DBL((double)ax * (double)bx));
+    }
+    if (JV_IS_FLONUM(a) && JV_IS_FLONUM(b)) {
+        return RESULT_OK(JV_DBL(JV_AS_DBL(a) * JV_AS_DBL(b)));
+    }
+    if ((JV_IS_SMI(a) && JV_IS_FLONUM(b)) || (JV_IS_FLONUM(a) && JV_IS_SMI(b))) {
+        double da = JV_IS_SMI(a) ? (double)JV_AS_SMI(a) : JV_AS_DBL(a);
+        double db = JV_IS_SMI(b) ? (double)JV_AS_SMI(b) : JV_AS_DBL(b);
+        return RESULT_OK(JV_DBL(da * db));
+    }
+    return RESULT_OK(js_mul(c, a, b));
+}
+
+NODE_DEF @always_inline
+node_div(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *l, NODE *r)
+{
+    (void)n;
+    JsValue a = EVAL_ARG(c, l);
+    JsValue b = EVAL_ARG(c, r);
+    if (JV_IS_FLONUM(a) && JV_IS_FLONUM(b)) {
+        return RESULT_OK(JV_DBL(JV_AS_DBL(a) / JV_AS_DBL(b)));
+    }
+    if ((JV_IS_SMI(a) && JV_IS_FLONUM(b)) || (JV_IS_FLONUM(a) && JV_IS_SMI(b))) {
+        double da = JV_IS_SMI(a) ? (double)JV_AS_SMI(a) : JV_AS_DBL(a);
+        double db = JV_IS_SMI(b) ? (double)JV_AS_SMI(b) : JV_AS_DBL(b);
+        return RESULT_OK(JV_DBL(da / db));
+    }
+    return RESULT_OK(js_div(c, a, b));
+}
+
+NODE_DEF @always_inline
+node_mod(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *l, NODE *r)
+{
+    (void)n;
+    JsValue a = EVAL_ARG(c, l);
+    JsValue b = EVAL_ARG(c, r);
+    if (JSTRO_LIKELY(JV_IS_SMI(a) && JV_IS_SMI(b))) {
+        int64_t bx = JV_AS_SMI(b);
+        if (JSTRO_LIKELY(bx != 0))
+            return RESULT_OK(JV_INT(JV_AS_SMI(a) % bx));
+    }
+    return RESULT_OK(js_mod(c, a, b));
+}
+
+NODE_DEF @always_inline
+node_pow(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *l, NODE *r)
+{
+    (void)n;
+    JsValue a = EVAL_ARG(c, l);
+    JsValue b = EVAL_ARG(c, r);
+    return RESULT_OK(js_pow(c, a, b));
+}
+
+NODE_DEF @always_inline
+node_neg(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *x)
+{
+    (void)n;
+    JsValue a = EVAL_ARG(c, x);
+    if (JSTRO_LIKELY(JV_IS_SMI(a))) {
+        int64_t v = JV_AS_SMI(a);
+        if (v != INT64_MIN) return RESULT_OK(JV_INT(-v));
+    }
+    return RESULT_OK(js_neg(c, a));
+}
+
+NODE_DEF @always_inline
+node_pos(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *x)
+{
+    (void)n;
+    JsValue a = EVAL_ARG(c, x);
+    return RESULT_OK(js_to_number(c, a));
+}
+
+// Bitwise: spec mandates ToInt32 / ToUint32 coercion.
+NODE_DEF @always_inline
+node_band(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *l, NODE *r)
+{
+    (void)n;
+    JsValue a = EVAL_ARG(c, l);
+    JsValue b = EVAL_ARG(c, r);
+    if (JSTRO_LIKELY(JV_IS_SMI(a) && JV_IS_SMI(b))) {
+        int32_t ax = (int32_t)JV_AS_SMI(a), bx = (int32_t)JV_AS_SMI(b);
+        return RESULT_OK(JV_INT((int64_t)(ax & bx)));
+    }
+    return RESULT_OK(js_band(c, a, b));
+}
+NODE_DEF @always_inline
+node_bor(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *l, NODE *r)
+{
+    (void)n;
+    JsValue a = EVAL_ARG(c, l);
+    JsValue b = EVAL_ARG(c, r);
+    if (JSTRO_LIKELY(JV_IS_SMI(a) && JV_IS_SMI(b))) {
+        int32_t ax = (int32_t)JV_AS_SMI(a), bx = (int32_t)JV_AS_SMI(b);
+        return RESULT_OK(JV_INT((int64_t)(ax | bx)));
+    }
+    return RESULT_OK(js_bor(c, a, b));
+}
+NODE_DEF @always_inline
+node_bxor(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *l, NODE *r)
+{
+    (void)n;
+    JsValue a = EVAL_ARG(c, l);
+    JsValue b = EVAL_ARG(c, r);
+    if (JSTRO_LIKELY(JV_IS_SMI(a) && JV_IS_SMI(b))) {
+        int32_t ax = (int32_t)JV_AS_SMI(a), bx = (int32_t)JV_AS_SMI(b);
+        return RESULT_OK(JV_INT((int64_t)(ax ^ bx)));
+    }
+    return RESULT_OK(js_bxor(c, a, b));
+}
+NODE_DEF @always_inline
+node_bnot(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *x)
+{
+    (void)n;
+    JsValue a = EVAL_ARG(c, x);
+    if (JSTRO_LIKELY(JV_IS_SMI(a))) {
+        int32_t ax = (int32_t)JV_AS_SMI(a);
+        return RESULT_OK(JV_INT((int64_t)(int32_t)(~ax)));
+    }
+    return RESULT_OK(js_bnot(c, a));
+}
+NODE_DEF @always_inline
+node_shl(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *l, NODE *r)
+{
+    (void)n;
+    JsValue a = EVAL_ARG(c, l);
+    JsValue b = EVAL_ARG(c, r);
+    if (JSTRO_LIKELY(JV_IS_SMI(a) && JV_IS_SMI(b))) {
+        int32_t ax = (int32_t)JV_AS_SMI(a), bx = (int32_t)(JV_AS_SMI(b) & 31);
+        return RESULT_OK(JV_INT((int64_t)(int32_t)(ax << bx)));
+    }
+    return RESULT_OK(js_shl(c, a, b));
+}
+NODE_DEF @always_inline
+node_sar(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *l, NODE *r)
+{
+    (void)n;
+    JsValue a = EVAL_ARG(c, l);
+    JsValue b = EVAL_ARG(c, r);
+    if (JSTRO_LIKELY(JV_IS_SMI(a) && JV_IS_SMI(b))) {
+        int32_t ax = (int32_t)JV_AS_SMI(a), bx = (int32_t)(JV_AS_SMI(b) & 31);
+        return RESULT_OK(JV_INT((int64_t)(int32_t)(ax >> bx)));
+    }
+    return RESULT_OK(js_sar(c, a, b));
+}
+NODE_DEF @always_inline
+node_shr(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *l, NODE *r)
+{
+    (void)n;
+    JsValue a = EVAL_ARG(c, l);
+    JsValue b = EVAL_ARG(c, r);
+    if (JSTRO_LIKELY(JV_IS_SMI(a) && JV_IS_SMI(b))) {
+        uint32_t ax = (uint32_t)(int32_t)JV_AS_SMI(a);
+        uint32_t bx = (uint32_t)(JV_AS_SMI(b) & 31);
+        return RESULT_OK(JV_INT((int64_t)(ax >> bx)));
+    }
+    return RESULT_OK(js_shr(c, a, b));
+}
+
+// Comparison.  All four relational ops are LessThan with operand swap +
+// negation per spec §7.2.13.
+// jstro_cmp_fast: matched-type SMI / FLONUM / mixed fast paths.
+// Returns -2 if neither side fast-pathed (fallback needed).
+// Otherwise returns 1 (lt) / 0 (eq-or-gt) for use as boolean.
+NODE_DEF @always_inline
+node_lt(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *l, NODE *r)
+{
+    (void)n;
+    JsValue a = EVAL_ARG(c, l);
+    JsValue b = EVAL_ARG(c, r);
+    if (JSTRO_LIKELY(JV_IS_SMI(a) && JV_IS_SMI(b))) return RESULT_OK(JV_BOOL(JV_AS_SMI(a) < JV_AS_SMI(b)));
+    if (JV_IS_FLONUM(a) && JV_IS_FLONUM(b))         return RESULT_OK(JV_BOOL(JV_AS_DBL(a) < JV_AS_DBL(b)));
+    if (JV_IS_SMI(a)    && JV_IS_FLONUM(b))         return RESULT_OK(JV_BOOL((double)JV_AS_SMI(a) < JV_AS_DBL(b)));
+    if (JV_IS_FLONUM(a) && JV_IS_SMI(b))            return RESULT_OK(JV_BOOL(JV_AS_DBL(a) < (double)JV_AS_SMI(b)));
+    return RESULT_OK(JV_BOOL(js_lt(c, a, b, true)));
+}
+NODE_DEF @always_inline
+node_le(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *l, NODE *r)
+{
+    (void)n;
+    JsValue a = EVAL_ARG(c, l);
+    JsValue b = EVAL_ARG(c, r);
+    if (JSTRO_LIKELY(JV_IS_SMI(a) && JV_IS_SMI(b))) return RESULT_OK(JV_BOOL(JV_AS_SMI(a) <= JV_AS_SMI(b)));
+    if (JV_IS_FLONUM(a) && JV_IS_FLONUM(b))         return RESULT_OK(JV_BOOL(JV_AS_DBL(a) <= JV_AS_DBL(b)));
+    if (JV_IS_SMI(a)    && JV_IS_FLONUM(b))         return RESULT_OK(JV_BOOL((double)JV_AS_SMI(a) <= JV_AS_DBL(b)));
+    if (JV_IS_FLONUM(a) && JV_IS_SMI(b))            return RESULT_OK(JV_BOOL(JV_AS_DBL(a) <= (double)JV_AS_SMI(b)));
+    int ts = js_lt_ts(c, b, a, false);
+    return RESULT_OK(JV_BOOL(ts == 0));    // <= true iff !(b < a) AND not undefined (NaN)
+}
+NODE_DEF @always_inline
+node_gt(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *l, NODE *r)
+{
+    (void)n;
+    JsValue a = EVAL_ARG(c, l);
+    JsValue b = EVAL_ARG(c, r);
+    if (JSTRO_LIKELY(JV_IS_SMI(a) && JV_IS_SMI(b))) return RESULT_OK(JV_BOOL(JV_AS_SMI(a) > JV_AS_SMI(b)));
+    if (JV_IS_FLONUM(a) && JV_IS_FLONUM(b))         return RESULT_OK(JV_BOOL(JV_AS_DBL(a) > JV_AS_DBL(b)));
+    if (JV_IS_SMI(a)    && JV_IS_FLONUM(b))         return RESULT_OK(JV_BOOL((double)JV_AS_SMI(a) > JV_AS_DBL(b)));
+    if (JV_IS_FLONUM(a) && JV_IS_SMI(b))            return RESULT_OK(JV_BOOL(JV_AS_DBL(a) > (double)JV_AS_SMI(b)));
+    return RESULT_OK(JV_BOOL(js_lt(c, b, a, false)));
+}
+NODE_DEF @always_inline
+node_ge(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *l, NODE *r)
+{
+    (void)n;
+    JsValue a = EVAL_ARG(c, l);
+    JsValue b = EVAL_ARG(c, r);
+    if (JSTRO_LIKELY(JV_IS_SMI(a) && JV_IS_SMI(b))) return RESULT_OK(JV_BOOL(JV_AS_SMI(a) >= JV_AS_SMI(b)));
+    if (JV_IS_FLONUM(a) && JV_IS_FLONUM(b))         return RESULT_OK(JV_BOOL(JV_AS_DBL(a) >= JV_AS_DBL(b)));
+    if (JV_IS_SMI(a)    && JV_IS_FLONUM(b))         return RESULT_OK(JV_BOOL((double)JV_AS_SMI(a) >= JV_AS_DBL(b)));
+    if (JV_IS_FLONUM(a) && JV_IS_SMI(b))            return RESULT_OK(JV_BOOL(JV_AS_DBL(a) >= (double)JV_AS_SMI(b)));
+    int ts = js_lt_ts(c, a, b, true);
+    return RESULT_OK(JV_BOOL(ts == 0));
+}
+
+// === / !== — strict equality (no coercion).  SMI / pointer common case
+// is just a 64-bit eq.  Strings compare-by-pointer because we intern.
+NODE_DEF @always_inline
+node_strict_eq(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *l, NODE *r)
+{
+    (void)n;
+    JsValue a = EVAL_ARG(c, l);
+    JsValue b = EVAL_ARG(c, r);
+    if (a == b) {
+        // Spec §7.2.16 SameValueNonNumber: NaN === NaN is false even when
+        // identical bit pattern.  Branch out for any number-shaped value.
+        if (JSTRO_UNLIKELY(JV_IS_FLONUM(a) || JV_IS_FLOAT_BOX(a))) {
+            double d = JV_AS_DBL(a);
+            return RESULT_OK(JV_BOOL(d == d));
+        }
+        return RESULT_OK(JV_TRUE);
+    }
+    return RESULT_OK(JV_BOOL(js_strict_eq(a, b)));
+}
+NODE_DEF @always_inline
+node_strict_neq(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *l, NODE *r)
+{
+    (void)n;
+    JsValue a = EVAL_ARG(c, l);
+    JsValue b = EVAL_ARG(c, r);
+    if (a == b) {
+        if (JSTRO_UNLIKELY(JV_IS_FLONUM(a) || JV_IS_FLOAT_BOX(a))) {
+            double d = JV_AS_DBL(a);
+            return RESULT_OK(JV_BOOL(d != d));
+        }
+        return RESULT_OK(JV_FALSE);
+    }
+    return RESULT_OK(JV_BOOL(!js_strict_eq(a, b)));
+}
+NODE_DEF @always_inline
+node_loose_eq(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *l, NODE *r)
+{
+    (void)n;
+    JsValue a = EVAL_ARG(c, l);
+    JsValue b = EVAL_ARG(c, r);
+    return RESULT_OK(JV_BOOL(js_loose_eq(c, a, b)));
+}
+NODE_DEF @always_inline
+node_loose_neq(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *l, NODE *r)
+{
+    (void)n;
+    JsValue a = EVAL_ARG(c, l);
+    JsValue b = EVAL_ARG(c, r);
+    return RESULT_OK(JV_BOOL(!js_loose_eq(c, a, b)));
+}
+
+// =====================================================================
+// typeof / void / instanceof / in / delete
+// =====================================================================
+
+NODE_DEF @always_inline
+node_typeof(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *x)
+{
+    (void)n;
+    JsValue a = EVAL_ARG(c, x);
+    return RESULT_OK(JV_STR(js_str_intern(c, js_typeof(a))));
+}
+NODE_DEF @always_inline
+node_void(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *x)
+{
+    (void)n;
+    JsValue a = EVAL_ARG(c, x);
+    (void)a;
+    return RESULT_OK(JV_UNDEFINED);
+}
+NODE_DEF
+node_instanceof(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *l, NODE *r)
+{
+    (void)n;
+    JsValue a = EVAL_ARG(c, l);
+    JsValue b = EVAL_ARG(c, r);
+    return RESULT_OK(js_instanceof(c, a, b));
+}
+NODE_DEF
+node_in(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *l, NODE *r)
+{
+    (void)n;
+    JsValue a = EVAL_ARG(c, l);
+    JsValue b = EVAL_ARG(c, r);
+    return RESULT_OK(js_in(c, a, b));
+}
+// typeof on a global doesn't throw if undeclared.  Special-cased.
+NODE_DEF @always_inline
+node_typeof_global(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, JsString *name)
+{
+    (void)n; (void)frame;
+    int slot = js_shape_find_slot(c->globals->shape, name);
+    JsValue v = (slot >= 0) ? c->globals->slots[slot] : JV_UNDEFINED;
+    return RESULT_OK(JV_STR(js_str_intern(c, js_typeof(v))));
+}
+
+// =====================================================================
+// Property access
+// =====================================================================
+
+// Optional member access: returns undefined if recv is null/undefined,
+// otherwise reads recv.name normally.  Spec §13.3.9: short-circuits the
+// entire postfix chain that begins with this `?.`; we model this by
+// flagging downstream member/index/call nodes as "may receive undefined".
+// For simple chains (a?.b, a?.[k], a?.()) this single-link form is
+// sufficient because the chain ends at the same syntactic level.
+NODE_DEF @always_inline
+node_optional_member(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *obj, JsString *name)
+{
+    (void)n;
+    JsValue ov = EVAL_ARG(c, obj);
+    if (JV_IS_NULLISH(ov)) return RESULT_OK(JV_UNDEFINED);
+    return RESULT_OK(js_get_member(c, ov, name));
+}
+NODE_DEF @always_inline
+node_optional_index(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *obj, NODE *idx)
+{
+    (void)n;
+    JsValue ov = EVAL_ARG(c, obj);
+    if (JV_IS_NULLISH(ov)) return RESULT_OK(JV_UNDEFINED);
+    JsValue iv = EVAL_ARG(c, idx);
+    return RESULT_OK(js_get_index(c, ov, iv));
+}
+// Optional call: recv?.method(args) or fn?.(args).
+NODE_DEF
+node_optional_call(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *fn, uint32_t args_idx, uint32_t argc)
+{
+    (void)n;
+    JsValue fv = EVAL_ARG(c, fn);
+    if (JV_IS_NULLISH(fv)) return RESULT_OK(JV_UNDEFINED);
+    JsValue argv[16];
+    JsValue *args = (argc <= 16) ? argv : (JsValue *)alloca(sizeof(JsValue) * argc);
+    for (uint32_t i = 0; i < argc; i++) {
+        NODE *e = JSTRO_NODE_ARR[args_idx + i];
+        args[i] = EVAL(c, e, frame);
+    }
+    return RESULT_OK(js_call(c, fv, JV_UNDEFINED, args, argc));
+}
+
+NODE_DEF @always_inline
+node_member_get(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *obj, JsString *name, struct JsPropIC *ic@ref)
+{
+    (void)n;
+    JsValue ov = EVAL_ARG(c, obj);
+    if (JSTRO_LIKELY(JV_IS_PTR(ov) && jv_heap_type(ov) == JS_TOBJECT)) {
+        struct JsObject *o = JV_AS_OBJ(ov);
+        if (JSTRO_LIKELY((uintptr_t)o->shape == ic->shape && ic->slot < o->shape->nslots
+                         && o->shape->names[ic->slot] == name)) {
+            JsValue v = o->slots[ic->slot];
+            // HOLE (deleted) or accessor: fall back to slow path so proto
+            // chain or getter is honoured.
+            if (JSTRO_UNLIKELY(v == JV_HOLE
+                               || (JV_IS_PTR(v) && jv_heap_type(v) == JS_TACCESSOR))) {
+                return RESULT_OK(js_get_member(c, ov, name));
+            }
+            return RESULT_OK(v);
+        }
+        int slot = js_shape_find_slot(o->shape, name);
+        if (slot >= 0) {
+            JsValue v = o->slots[slot];
+            if (JSTRO_LIKELY(v != JV_HOLE
+                             && !(JV_IS_PTR(v) && jv_heap_type(v) == JS_TACCESSOR))) {
+                ic->shape = (uintptr_t)o->shape;
+                ic->slot = (uint32_t)slot;
+                return RESULT_OK(v);
+            }
+        }
+    }
+    return RESULT_OK(js_get_member(c, ov, name));
+}
+
+NODE_DEF @always_inline
+node_member_set(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *obj, JsString *name, NODE *rhs, struct JsPropIC *ic@ref)
+{
+    (void)n;
+    JsValue ov = EVAL_ARG(c, obj);
+    JsValue v = EVAL_ARG(c, rhs);
+    if (JSTRO_LIKELY(JV_IS_PTR(ov) && jv_heap_type(ov) == JS_TOBJECT)) {
+        struct JsObject *o = JV_AS_OBJ(ov);
+        if (JSTRO_UNLIKELY(o->gc.flags & (JS_OBJ_FROZEN | JS_OBJ_NOT_EXTENS))) {
+            // Slow path handles frozen / non-extensible.
+            js_set_member(c, ov, name, v);
+            return RESULT_OK(v);
+        }
+        if (JSTRO_LIKELY((uintptr_t)o->shape == ic->shape && ic->slot < o->shape->nslots
+                         && o->shape->names[ic->slot] == name)) {
+            JsValue cur = o->slots[ic->slot];
+            // Accessor: defer to slow path so setter runs.
+            if (JSTRO_UNLIKELY(JV_IS_PTR(cur) && jv_heap_type(cur) == JS_TACCESSOR)) {
+                js_object_set(c, o, name, v);
+                return RESULT_OK(v);
+            }
+            o->slots[ic->slot] = v;
+            return RESULT_OK(v);
+        }
+        // Constructor-style transition: object's shape is the cached
+        // pre-state — apply the cached transition without scanning.
+        if (JSTRO_LIKELY(ic->pre_shape != 0 && (uintptr_t)o->shape == ic->pre_shape)) {
+            struct JsShape *next = (struct JsShape *)ic->shape;
+            o->shape = next;
+            if (next->nslots > o->slot_capa) {
+                uint32_t nc = o->slot_capa ? o->slot_capa * 2 : 4;
+                while (nc < next->nslots) nc *= 2;
+                o->slots = (JsValue *)realloc(o->slots, sizeof(JsValue) * nc);
+                for (uint32_t i = o->slot_capa; i < nc; i++) o->slots[i] = JV_UNDEFINED;
+                o->slot_capa = nc;
+            }
+            o->slots[ic->slot] = v;
+            return RESULT_OK(v);
+        }
+        // Slow path — record pre-state to enable transition-IC on next call.
+        struct JsShape *pre = o->shape;
+        js_object_set_with_ic(c, o, name, v, ic);
+        if ((uintptr_t)o->shape != (uintptr_t)pre) {
+            ic->pre_shape = (uintptr_t)pre;
+        } else {
+            ic->pre_shape = 0;
+        }
+        return RESULT_OK(v);
+    }
+    js_set_member(c, ov, name, v);
+    return RESULT_OK(v);
+}
+
+NODE_DEF @always_inline
+node_index_get(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *obj, NODE *idx)
+{
+    (void)n;
+    JsValue ov = EVAL_ARG(c, obj);
+    JsValue iv = EVAL_ARG(c, idx);
+    if (JSTRO_LIKELY(JV_IS_ARRAY(ov) && JV_IS_SMI(iv))) {
+        int64_t i = JV_AS_SMI(iv);
+        struct JsArray *a = JV_AS_ARRAY(ov);
+        if (JSTRO_LIKELY(i >= 0 && (uint64_t)i < a->dense_capa && i < a->length)) {
+            JsValue v = a->dense[i];
+            if (v == JV_HOLE) v = JV_UNDEFINED;
+            return RESULT_OK(v);
+        }
+    }
+    return RESULT_OK(js_get_index(c, ov, iv));
+}
+
+NODE_DEF @always_inline
+node_index_set(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *obj, NODE *idx, NODE *rhs)
+{
+    (void)n;
+    JsValue ov = EVAL_ARG(c, obj);
+    JsValue iv = EVAL_ARG(c, idx);
+    JsValue v = EVAL_ARG(c, rhs);
+    if (JSTRO_LIKELY(JV_IS_ARRAY(ov) && JV_IS_SMI(iv))) {
+        int64_t i = JV_AS_SMI(iv);
+        if (JSTRO_LIKELY(i >= 0)) {
+            js_array_set(c, JV_AS_ARRAY(ov), i, v);
+            return RESULT_OK(v);
+        }
+    }
+    js_set_index(c, ov, iv, v);
+    return RESULT_OK(v);
+}
+
+NODE_DEF
+node_delete_member(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *obj, JsString *name)
+{
+    (void)n;
+    JsValue ov = EVAL_ARG(c, obj);
+    if (JV_IS_OBJ(ov)) {
+        if (jv_heap_type(ov) == JS_TOBJECT) {
+            return RESULT_OK(JV_BOOL(js_object_delete(JV_AS_OBJ(ov), name)));
+        }
+    }
+    return RESULT_OK(JV_TRUE);  // delete on primitives is a no-op (returns true)
+}
+
+// =====================================================================
+// Calls
+// =====================================================================
+
+NODE_DEF
+node_call(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *fn, uint32_t args_idx, uint32_t argc)
+{
+    (void)n;
+    JsValue fv = EVAL_ARG(c, fn);
+    JsValue argv[16];
+    JsValue *args = (argc <= 16) ? argv : (JsValue *)alloca(sizeof(JsValue) * argc);
+    for (uint32_t i = 0; i < argc; i++) {
+        NODE *e = JSTRO_NODE_ARR[args_idx + i];
+        args[i] = EVAL(c, e, frame);
+    }
+    JsValue this_val = JV_UNDEFINED;
+    return RESULT_OK(js_call(c, fv, this_val, args, argc));
+}
+
+// Spread-aware call: a parallel side-array of `is_spread` flags lives in
+// JSTRO_U32_ARR[spread_idx..spread_idx+nargs] (1 = spread, 0 = regular).
+// Used when the parser sees `...expr` in any argument position.
+NODE_DEF
+node_call_spread(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *fn, uint32_t args_idx, uint32_t spread_idx, uint32_t nargs)
+{
+    (void)n;
+    JsValue fv = EVAL_ARG(c, fn);
+    JsValue stage[64];
+    uint32_t total = 0;
+    for (uint32_t i = 0; i < nargs; i++) {
+        NODE *e = JSTRO_NODE_ARR[args_idx + i];
+        JsValue v = EVAL(c, e, frame);
+        if (JSTRO_U32_ARR[spread_idx + i]) {
+            if (!JV_IS_ARRAY(v)) js_throw_type_error(c, "spread argument is not iterable");
+            struct JsArray *a = JV_AS_ARRAY(v);
+            for (uint32_t j = 0; j < a->length && total < 64; j++) {
+                stage[total++] = a->dense[j] == JV_HOLE ? JV_UNDEFINED : a->dense[j];
+            }
+        } else {
+            if (total < 64) stage[total++] = v;
+        }
+    }
+    return RESULT_OK(js_call(c, fv, JV_UNDEFINED, stage, total));
+}
+
+// Spread-aware new.
+NODE_DEF
+node_new_spread(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *fn, uint32_t args_idx, uint32_t spread_idx, uint32_t nargs)
+{
+    (void)n;
+    JsValue fv = EVAL_ARG(c, fn);
+    JsValue stage[64];
+    uint32_t total = 0;
+    for (uint32_t i = 0; i < nargs; i++) {
+        NODE *e = JSTRO_NODE_ARR[args_idx + i];
+        JsValue v = EVAL(c, e, frame);
+        if (JSTRO_U32_ARR[spread_idx + i]) {
+            if (!JV_IS_ARRAY(v)) js_throw_type_error(c, "spread argument is not iterable");
+            struct JsArray *a = JV_AS_ARRAY(v);
+            for (uint32_t j = 0; j < a->length && total < 64; j++) {
+                stage[total++] = a->dense[j] == JV_HOLE ? JV_UNDEFINED : a->dense[j];
+            }
+        } else {
+            if (total < 64) stage[total++] = v;
+        }
+    }
+    return RESULT_OK(js_construct(c, fv, stage, total));
+}
+
+// Spread-aware method call: looks up method on receiver, calls with
+// spread-expanded args.
+NODE_DEF
+node_method_call_spread(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *recv, JsString *name, uint32_t args_idx, uint32_t spread_idx, uint32_t nargs)
+{
+    (void)n;
+    JsValue rv = EVAL_ARG(c, recv);
+    JsValue fv = js_get_member(c, rv, name);
+    JsValue stage[64];
+    uint32_t total = 0;
+    for (uint32_t i = 0; i < nargs; i++) {
+        NODE *e = JSTRO_NODE_ARR[args_idx + i];
+        JsValue v = EVAL(c, e, frame);
+        if (JSTRO_U32_ARR[spread_idx + i]) {
+            if (!JV_IS_ARRAY(v)) js_throw_type_error(c, "spread argument is not iterable");
+            struct JsArray *a = JV_AS_ARRAY(v);
+            for (uint32_t j = 0; j < a->length && total < 64; j++) {
+                stage[total++] = a->dense[j] == JV_HOLE ? JV_UNDEFINED : a->dense[j];
+            }
+        } else {
+            if (total < 64) stage[total++] = v;
+        }
+    }
+    return RESULT_OK(js_call(c, fv, rv, stage, total));
+}
+
+// Arity-specialized call nodes — avoid the JSTRO_NODE_ARR indirection and
+// give the dispatcher precise knowledge of arg count.  Hot path for benches
+// like fib (1 arg) / nbody (2 args).
+//
+// IC stash: cache the most-recently-called JsFunction so the hot path can
+// skip the `JV_IS_PTR && heap_type == JS_TFUNCTION` checks.  GC may
+// invalidate cached_fn — relying on automatic GC running between calls
+// would be unsafe, but jstro currently has no automatic GC and the cache
+// validates by pointer equality, which would fail-soft if the address was
+// reused for a different function.
+// Inline call helper (used by node_call0/1/2/3 monomorphic fast path).
+static inline __attribute__((always_inline)) JsValue
+jstro_inline_call(CTX *c, struct JsFunction *jfn, NODE *body, uint32_t nl,
+                  JsValue thisv, JsValue *args, uint32_t argc)
+{
+    if (JSTRO_UNLIKELY(jfn->is_vararg)) {
+        // Vararg path is rare on hot recursive sites; defer to the
+        // out-of-line direct call which already handles rest collection.
+        return js_call_func_direct(c, jfn, thisv, args, argc);
+    }
+    JsValue *callee_frame = (JsValue *)alloca(sizeof(JsValue) * (nl > 0 ? nl : 1));
+    for (uint32_t i = 0; i < argc && i < nl; i++) callee_frame[i] = args[i];
+    if (nl > argc) memset(callee_frame + argc, 0, (nl - argc) * sizeof(JsValue));
+    JsValue saved_this    = c->this_val;
+    JsValue **saved_upvals = c->cur_upvals;
+    JsValue *saved_args   = c->cur_args;
+    uint32_t saved_argc   = c->cur_argc;
+    c->this_val = (jfn->is_arrow && jfn->bound_this) ? (JsValue)(uintptr_t)jfn->bound_this : thisv;
+    c->cur_upvals = jfn->upvals;
+    c->cur_args   = args;
+    c->cur_argc   = argc;
+    JsValue r = EVAL(c, body, callee_frame);
+    if (JSTRO_BR == JS_BR_RETURN) {
+        r = JSTRO_BR_VAL;
+        JSTRO_BR = JS_BR_NORMAL;
+        JSTRO_BR_VAL = JV_UNDEFINED;
+    } else {
+        r = JV_UNDEFINED;
+    }
+    c->this_val = saved_this;
+    c->cur_upvals = saved_upvals;
+    c->cur_args = saved_args;
+    c->cur_argc = saved_argc;
+    return r;
+}
+
+NODE_DEF @always_inline
+node_call0(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *fn, struct JsCallIC *ic@ref)
+{
+    (void)n;
+    JsValue fv = EVAL_ARG(c, fn);
+    if (JSTRO_LIKELY(JV_IS_PTR(fv) && (struct JsFunction *)(uintptr_t)fv == ic->cached_fn)) {
+        return RESULT_OK(jstro_inline_call(c, ic->cached_fn, ic->cached_body, ic->cached_nlocals, JV_UNDEFINED, NULL, 0));
+    }
+    if (JV_IS_PTR(fv) && jv_heap_type(fv) == JS_TFUNCTION) {
+        struct JsFunction *jfn = JV_AS_FUNC(fv);
+        ic->cached_fn = jfn;
+        ic->cached_body = jfn->body;
+        ic->cached_nlocals = jfn->nlocals;
+        return RESULT_OK(js_call_func_direct(c, jfn, JV_UNDEFINED, NULL, 0));
+    }
+    return RESULT_OK(js_call(c, fv, JV_UNDEFINED, NULL, 0));
+}
+NODE_DEF @always_inline
+node_call1(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *fn, NODE *a0, struct JsCallIC *ic@ref)
+{
+    (void)n;
+    JsValue fv = EVAL_ARG(c, fn);
+    JsValue av0 = EVAL_ARG(c, a0);
+    if (JSTRO_LIKELY(JV_IS_PTR(fv) && (struct JsFunction *)(uintptr_t)fv == ic->cached_fn)) {
+        return RESULT_OK(jstro_inline_call(c, ic->cached_fn, ic->cached_body, ic->cached_nlocals, JV_UNDEFINED, &av0, 1));
+    }
+    if (JV_IS_PTR(fv) && jv_heap_type(fv) == JS_TFUNCTION) {
+        struct JsFunction *jfn = JV_AS_FUNC(fv);
+        ic->cached_fn = jfn;
+        ic->cached_body = jfn->body;
+        ic->cached_nlocals = jfn->nlocals;
+        return RESULT_OK(js_call_func_direct(c, jfn, JV_UNDEFINED, &av0, 1));
+    }
+    return RESULT_OK(js_call(c, fv, JV_UNDEFINED, &av0, 1));
+}
+NODE_DEF @always_inline
+node_call2(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *fn, NODE *a0, NODE *a1, struct JsCallIC *ic@ref)
+{
+    (void)n;
+    JsValue fv = EVAL_ARG(c, fn);
+    JsValue argv[2];
+    argv[0] = EVAL_ARG(c, a0);
+    argv[1] = EVAL_ARG(c, a1);
+    if (JSTRO_LIKELY(JV_IS_PTR(fv) && (struct JsFunction *)(uintptr_t)fv == ic->cached_fn)) {
+        return RESULT_OK(jstro_inline_call(c, ic->cached_fn, ic->cached_body, ic->cached_nlocals, JV_UNDEFINED, argv, 2));
+    }
+    if (JV_IS_PTR(fv) && jv_heap_type(fv) == JS_TFUNCTION) {
+        struct JsFunction *jfn = JV_AS_FUNC(fv);
+        ic->cached_fn = jfn;
+        ic->cached_body = jfn->body;
+        ic->cached_nlocals = jfn->nlocals;
+        return RESULT_OK(js_call_func_direct(c, jfn, JV_UNDEFINED, argv, 2));
+    }
+    return RESULT_OK(js_call(c, fv, JV_UNDEFINED, argv, 2));
+}
+NODE_DEF @always_inline
+node_call3(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *fn, NODE *a0, NODE *a1, NODE *a2, struct JsCallIC *ic@ref)
+{
+    (void)n;
+    JsValue fv = EVAL_ARG(c, fn);
+    JsValue argv[3];
+    argv[0] = EVAL_ARG(c, a0);
+    argv[1] = EVAL_ARG(c, a1);
+    argv[2] = EVAL_ARG(c, a2);
+    if (JSTRO_LIKELY(JV_IS_PTR(fv) && (struct JsFunction *)(uintptr_t)fv == ic->cached_fn)) {
+        return RESULT_OK(jstro_inline_call(c, ic->cached_fn, ic->cached_body, ic->cached_nlocals, JV_UNDEFINED, argv, 3));
+    }
+    if (JV_IS_PTR(fv) && jv_heap_type(fv) == JS_TFUNCTION) {
+        struct JsFunction *jfn = JV_AS_FUNC(fv);
+        ic->cached_fn = jfn;
+        ic->cached_body = jfn->body;
+        ic->cached_nlocals = jfn->nlocals;
+        return RESULT_OK(js_call_func_direct(c, jfn, JV_UNDEFINED, argv, 3));
+    }
+    return RESULT_OK(js_call(c, fv, JV_UNDEFINED, argv, 3));
+}
+
+// Method call: obj.name(args).  Looks up name on obj, then calls with
+// obj as `this`.
+NODE_DEF
+node_method_call(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *recv, JsString *name, uint32_t args_idx, uint32_t argc, struct JsPropIC *ic@ref)
+{
+    (void)n;
+    JsValue rv = EVAL_ARG(c, recv);
+    JsValue fv;
+    if (JSTRO_LIKELY(JV_IS_PTR(rv) && jv_heap_type(rv) == JS_TOBJECT)) {
+        struct JsObject *o = JV_AS_OBJ(rv);
+        if (JSTRO_LIKELY((uintptr_t)o->shape == ic->shape && ic->slot < o->shape->nslots
+                         && o->shape->names[ic->slot] == name)) {
+            fv = o->slots[ic->slot];
+        } else {
+            int slot = js_shape_find_slot(o->shape, name);
+            if (slot >= 0) {
+                ic->shape = (uintptr_t)o->shape;
+                ic->slot = (uint32_t)slot;
+                fv = o->slots[slot];
+            } else {
+                // Walk prototype chain.
+                fv = js_object_get(c, o->proto, name);
+                if (JV_IS_UNDEFINED(fv)) fv = js_get_member(c, rv, name);
+            }
+        }
+    } else {
+        fv = js_get_member(c, rv, name);
+    }
+    JsValue argv[16];
+    JsValue *args = (argc <= 16) ? argv : (JsValue *)alloca(sizeof(JsValue) * argc);
+    for (uint32_t i = 0; i < argc; i++) {
+        NODE *e = JSTRO_NODE_ARR[args_idx + i];
+        args[i] = EVAL(c, e, frame);
+    }
+    if (JV_IS_PTR(fv) && jv_heap_type(fv) == JS_TFUNCTION) {
+        return RESULT_OK(js_call_func_direct(c, JV_AS_FUNC(fv), rv, args, argc));
+    }
+    return RESULT_OK(js_call(c, fv, rv, args, argc));
+}
+
+NODE_DEF
+node_new(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *fn, uint32_t args_idx, uint32_t argc)
+{
+    (void)n;
+    JsValue fv = EVAL_ARG(c, fn);
+    JsValue argv[16];
+    JsValue *args = (argc <= 16) ? argv : (JsValue *)alloca(sizeof(JsValue) * argc);
+    for (uint32_t i = 0; i < argc; i++) {
+        NODE *e = JSTRO_NODE_ARR[args_idx + i];
+        args[i] = EVAL(c, e, frame);
+    }
+    return RESULT_OK(js_construct(c, fv, args, argc));
+}
+
+// =====================================================================
+// Function literal: creates a JsFunction with captured upvals.
+// =====================================================================
+
+// Each upvalue source is encoded as a uint32_t pair packed into JSTRO_U32_ARR:
+//   [is_local][slot]   if is_local, capture frame[slot] (boxed lazily)
+//                      else capture cur_upvals[slot]
+// Stored as two consecutive uint32 entries per upvalue.
+JsValue *js_runtime_capture_upval(CTX *c, JsValue *frame, uint32_t is_local, uint32_t slot);
+
+NODE_DEF
+node_func(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *body, uint32_t nparams, uint32_t nlocals, uint32_t nupvals, uint32_t upval_idx, uint32_t is_arrow, JsString *name)
+{
+    (void)n;
+    // is_arrow encodes flags: bit 0 = arrow, bit 1 = has rest parameter
+    // (vararg).  Last declared param is the rest array.
+    bool arrow   = (is_arrow & 1) != 0;
+    bool vararg  = (is_arrow & 2) != 0;
+    struct JsFunction *fn = js_func_new(c, body, nparams, nlocals, nupvals,
+                                        arrow, name ? js_str_data(name) : "");
+    fn->is_vararg = vararg ? 1 : 0;
+    if (nupvals) {
+        fn->upvals = (JsValue **)calloc(nupvals, sizeof(JsValue *));
+        for (uint32_t i = 0; i < nupvals; i++) {
+            uint32_t is_local = JSTRO_U32_ARR[upval_idx + 2*i];
+            uint32_t slot     = JSTRO_U32_ARR[upval_idx + 2*i + 1];
+            fn->upvals[i] = js_runtime_capture_upval(c, frame, is_local, slot);
+        }
+    }
+    if (arrow) {
+        fn->bound_this = (struct JsObject *)(uintptr_t)c->this_val;
+    }
+    return RESULT_OK(JV_FUNC(fn));
+}
+
+// =====================================================================
+// Array / Object literals
+// =====================================================================
+
+NODE_DEF
+node_array_lit(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, uint32_t elem_idx, uint32_t nelems)
+{
+    (void)n;
+    struct JsArray *a = js_array_new(c, nelems);
+    for (uint32_t i = 0; i < nelems; i++) {
+        NODE *e = JSTRO_NODE_ARR[elem_idx + i];
+        if (e == NULL) {
+            if (i < a->dense_capa) a->dense[i] = JV_HOLE;
+            continue;
+        }
+        JsValue v = EVAL(c, e, frame);
+        if (i < a->dense_capa) a->dense[i] = v;
+        else js_array_set(c, a, i, v);
+    }
+    a->length = nelems;
+    return RESULT_OK(JV_OBJ(a));
+}
+
+// Spread-aware array literal: per-element spread bit in JSTRO_U32_ARR.
+NODE_DEF
+node_array_lit_spread(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, uint32_t elem_idx, uint32_t spread_idx, uint32_t nelems)
+{
+    (void)n;
+    struct JsArray *a = js_array_new(c, 0);
+    for (uint32_t i = 0; i < nelems; i++) {
+        NODE *e = JSTRO_NODE_ARR[elem_idx + i];
+        if (e == NULL) { js_array_push(c, a, JV_HOLE); continue; }
+        JsValue v = EVAL(c, e, frame);
+        if (JSTRO_U32_ARR[spread_idx + i]) {
+            if (!JV_IS_ARRAY(v)) js_throw_type_error(c, "spread element is not iterable");
+            struct JsArray *src = JV_AS_ARRAY(v);
+            for (uint32_t j = 0; j < src->length; j++) {
+                JsValue ev = j < src->dense_capa ? src->dense[j] : JV_UNDEFINED;
+                if (ev == JV_HOLE) ev = JV_UNDEFINED;
+                js_array_push(c, a, ev);
+            }
+        } else {
+            js_array_push(c, a, v);
+        }
+    }
+    return RESULT_OK(JV_OBJ(a));
+}
+
+// Object literal with possible spread / computed keys / accessors.
+// JSTRO_U32_ARR[kind_idx + i] selects the per-prop kind:
+//   kind == 0 (static): key is JSTRO_STR_ARR[key_idx + i]   (val NODE_ARR)
+//   kind == 1 (spread): the "value" NODE_ARR slot holds the source expr
+//   kind == 2 (computed): key is JSTRO_NODE_ARR[ckey_idx + i]
+//   kind == 3 (getter): key is JSTRO_STR_ARR[key_idx + i], val is the getter fn
+//   kind == 4 (setter): key is JSTRO_STR_ARR[key_idx + i], val is the setter fn
+NODE_DEF
+node_object_lit_dyn(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, uint32_t key_idx, uint32_t ckey_idx, uint32_t val_idx, uint32_t kind_idx, uint32_t nprops)
+{
+    (void)n;
+    struct JsObject *o = js_object_new(c, c->object_proto);
+    for (uint32_t i = 0; i < nprops; i++) {
+        uint32_t kind = JSTRO_U32_ARR[kind_idx + i];
+        if (kind == 1) {
+            NODE *ve = JSTRO_NODE_ARR[val_idx + i];
+            JsValue sv = EVAL(c, ve, frame);
+            if (JV_IS_PTR(sv) && jv_heap_type(sv) == JS_TOBJECT) {
+                struct JsObject *src = JV_AS_OBJ(sv);
+                for (uint32_t j = 0; j < src->shape->nslots; j++) {
+                    js_object_set(c, o, src->shape->names[j], src->slots[j]);
+                }
+            }
+            continue;
+        }
+        struct JsString *k;
+        if (kind == 2) {
+            NODE *ke = JSTRO_NODE_ARR[ckey_idx + i];
+            JsValue kv = EVAL(c, ke, frame);
+            k = js_to_string(c, kv);
+        } else {
+            k = JSTRO_STR_ARR[key_idx + i];
+        }
+        NODE *ve = JSTRO_NODE_ARR[val_idx + i];
+        JsValue v = EVAL(c, ve, frame);
+        if (kind == 3 || kind == 4) {
+            // Accessor: find existing accessor slot, augment with this half.
+            int slot = js_shape_find_slot(o->shape, k);
+            struct JsObject *acc = NULL;
+            if (slot >= 0 && JV_IS_PTR(o->slots[slot]) && jv_heap_type(o->slots[slot]) == JS_TACCESSOR) {
+                acc = JV_AS_OBJ(o->slots[slot]);
+            } else {
+                acc = (struct JsObject *)js_gc_alloc(c, sizeof(struct JsObject), JS_TACCESSOR);
+                acc->shape = js_shape_root(c);
+                acc->slots = NULL;
+                acc->slot_capa = 0;
+                acc->proto = NULL;
+                js_object_set(c, o, k, JV_OBJ(acc));
+            }
+            js_object_set(c, acc, js_str_intern(c, kind == 3 ? "get" : "set"), v);
+            continue;
+        }
+        js_object_set(c, o, k, v);
+    }
+    return RESULT_OK(JV_OBJ(o));
+}
+
+NODE_DEF
+node_object_lit(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, uint32_t key_idx, uint32_t val_idx, uint32_t nprops)
+{
+    (void)n;
+    struct JsObject *o = js_object_new(c, c->object_proto);
+    for (uint32_t i = 0; i < nprops; i++) {
+        struct JsString *k = JSTRO_STR_ARR[key_idx + i];
+        NODE *ve = JSTRO_NODE_ARR[val_idx + i];
+        JsValue v = EVAL(c, ve, frame);
+            js_object_set(c, o, k, v);
+    }
+    return RESULT_OK(JV_OBJ(o));
+}
+
+// =====================================================================
+// Increment / decrement (returning either pre or post value).
+// =====================================================================
+
+NODE_DEF @always_inline
+node_inc_box(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, uint32_t idx, uint32_t is_pre, uint32_t delta)
+{
+    (void)n;
+    JsValue p = frame[idx];
+    struct JsBox *box = (struct JsBox *)(uintptr_t)p;
+    JsValue cur = box->value;
+    JsValue out;
+    if (JSTRO_LIKELY(JV_IS_SMI(cur))) {
+        out = JV_INT(JV_AS_SMI(cur) + (int32_t)delta);
+    } else {
+        out = JV_DBL(js_to_double(c, cur) + (double)(int32_t)delta);
+    }
+    JsValue ret = is_pre ? out : cur;
+    box->value = out;
+    return RESULT_OK(ret);
+}
+
+NODE_DEF @always_inline
+node_inc_upval(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, uint32_t idx, uint32_t is_pre, uint32_t delta)
+{
+    (void)n; (void)frame;
+    JsValue *cell = c->cur_upvals[idx];
+    JsValue cur = *cell;
+    JsValue out;
+    if (JSTRO_LIKELY(JV_IS_SMI(cur))) {
+        out = JV_INT(JV_AS_SMI(cur) + (int32_t)delta);
+    } else {
+        out = JV_DBL(js_to_double(c, cur) + (double)(int32_t)delta);
+    }
+    JsValue ret = is_pre ? out : cur;
+    *cell = out;
+    return RESULT_OK(ret);
+}
+
+NODE_DEF @always_inline
+node_inc_local(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, uint32_t idx, uint32_t is_pre, uint32_t delta)
+{
+    (void)n;
+    JsValue v = frame[idx];
+    // The parser may emit node_inc_local for a slot before the slot has
+    // been captured by a nested closure (e.g. `for (let i = 0; ...; i++)`
+    // where the body of the loop later closes over `i`).  In that case
+    // the slot holds a JsBox*, not the raw value — handle it here so the
+    // emit-time decision still produces correct semantics.
+    if (JSTRO_UNLIKELY(JV_IS_PTR(v) && jv_heap_type(v) == JS_TBOX)) {
+        struct JsBox *box = (struct JsBox *)(uintptr_t)v;
+        JsValue cur = box->value;
+        JsValue outb;
+        if (JSTRO_LIKELY(JV_IS_SMI(cur))) {
+            outb = JV_INT(JV_AS_SMI(cur) + (int32_t)delta);
+        } else {
+            outb = JV_DBL(js_to_double(c, cur) + (double)(int32_t)delta);
+        }
+        JsValue retb = is_pre ? outb : cur;
+        box->value = outb;
+        return RESULT_OK(retb);
+    }
+    JsValue out;
+    if (JSTRO_LIKELY(JV_IS_SMI(v))) {
+        int64_t i = JV_AS_SMI(v) + (int32_t)delta;
+        out = JV_INT(i);
+    } else {
+        double d = js_to_double(c, v) + (double)(int32_t)delta;
+        out = JV_DBL(d);
+    }
+    JsValue ret = is_pre ? out : v;
+    frame[idx] = out;
+    return RESULT_OK(ret);
+}
+
+// =====================================================================
+// noinline helper: deeper / colder forms emit @noinline so they don't
+// blow the SD up.  (We keep as-is for now.)

@@ -1,0 +1,23 @@
+# ASTroGen-generated sources
+node_alloc.c
+node_dispatch.c
+node_dump.c
+node_eval.c
+node_hash.c
+node_head.h
+node_replace.c
+node_specialize.c
+node_specialized.c
+
+# Build artifacts
+jstro
+jstro_pgo
+jstro_pgo2
+
+# Local scratch / perf
+tmp/
+perf*.data
+perf*.data.old
+*.gcda
+*.gcno
+code_store/
