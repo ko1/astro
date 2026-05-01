@@ -375,24 +375,17 @@ VALUE korb_ivar_get(VALUE obj, ID name) {
     return o->ivars[s];
 }
 
-/* Cached ivar get.  Caches only a positive slot — a missing ivar may be
- * assigned later, so we re-lookup until the slot exists. */
-VALUE korb_ivar_get_ic(VALUE obj, ID name, struct ivar_cache *cache) {
-    if (UNLIKELY(SPECIAL_CONST_P(obj))) return Qnil;
-    if (UNLIKELY(BUILTIN_TYPE(obj) != T_OBJECT)) return Qnil;
+/* Out-of-line slow path for the inline korb_ivar_get_ic (object.h).
+ * Reached on cache miss (different class or unset slot) or non-T_OBJECT
+ * receiver. */
+VALUE korb_ivar_get_ic_slow(VALUE obj, ID name, struct ivar_cache *cache) {
+    if (SPECIAL_CONST_P(obj)) return Qnil;
+    if (BUILTIN_TYPE(obj) != T_OBJECT) return Qnil;
     struct korb_object *o = (struct korb_object *)obj;
     struct korb_class *k = (struct korb_class *)o->basic.klass;
-    int s;
-    if (LIKELY(cache->klass == k && cache->slot >= 0)) {
-        s = cache->slot;
-    } else {
-        s = ivar_slot(k, name);
-        if (s >= 0) {
-            cache->klass = k;
-            cache->slot = s;
-        }
-    }
-    if (UNLIKELY(s < 0 || (uint32_t)s >= o->ivar_cnt)) return Qnil;
+    int s = ivar_slot(k, name);
+    if (s >= 0) { cache->klass = k; cache->slot = s; }
+    if (s < 0 || (uint32_t)s >= o->ivar_cnt) return Qnil;
     return o->ivars[s];
 }
 
@@ -1106,7 +1099,7 @@ state_serial_t korb_g_method_serial = 0;
  * no in-function branching for cfunc-vs-AST or rest-slot/opt-arg shapes. */
 
 /* CFUNC: just call the C function, then handle break-from-block. */
-static VALUE prologue_cfunc(CTX *c, struct Node *callsite, VALUE recv,
+VALUE prologue_cfunc(CTX *c, struct Node *callsite, VALUE recv,
                             uint32_t argc, uint32_t arg_index,
                             struct korb_proc *block, struct method_cache *mc)
 {
@@ -1127,16 +1120,19 @@ static VALUE prologue_cfunc(CTX *c, struct Node *callsite, VALUE recv,
     return r;
 }
 
-/* AST simple: rest_slot < 0, total == required (no opt args).  Most common
- * shape — a `def foo(a, b)` with N positional args and nothing fancy.
- * Skips the rest_slot loop and the Qundef fill loop. */
-static VALUE prologue_ast_simple(CTX *c, struct Node *callsite, VALUE recv,
-                                 uint32_t argc, uint32_t arg_index,
-                                 struct korb_proc *block, struct method_cache *mc)
+/* AST simple core.  Compile-time PARAMS_KNOWN is the required parameter
+ * count (or -1 for "unknown — read from mc"); when it's a literal the
+ * Qnil-fill loop unrolls and the argc check folds. */
+static __attribute__((always_inline)) inline VALUE
+prologue_ast_simple_inner(CTX *c, struct Node *callsite, VALUE recv,
+                          uint32_t argc, uint32_t arg_index,
+                          struct korb_proc *block, struct method_cache *mc,
+                          int PARAMS_KNOWN)
 {
-    if (UNLIKELY(argc > mc->total_params_cnt)) {
+    uint32_t total = (PARAMS_KNOWN >= 0) ? (uint32_t)PARAMS_KNOWN : mc->total_params_cnt;
+    if (UNLIKELY(argc > total)) {
         korb_raise(c, NULL, "wrong number of arguments (given %u, expected %u)",
-                   argc, mc->required_params_cnt);
+                   argc, total);
         return Qnil;
     }
     VALUE *prev_fp = c->fp;
@@ -1145,25 +1141,23 @@ static VALUE prologue_ast_simple(CTX *c, struct Node *callsite, VALUE recv,
     struct korb_cref *prev_cref = c->cref;
     current_block = block;
 
-    c->fp = prev_fp + arg_index;
-    if (UNLIKELY(c->fp + mc->locals_cnt >= c->stack_end)) {
-        c->fp = prev_fp;
+    VALUE *new_fp = prev_fp + arg_index;
+    if (UNLIKELY(new_fp + mc->locals_cnt >= c->stack_end)) {
         korb_raise(c, NULL, "stack overflow");
         current_block = prev_block;
         return Qnil;
     }
-    if (c->fp + mc->locals_cnt > c->sp) c->sp = c->fp + mc->locals_cnt;
+    c->fp = new_fp;
+    if (new_fp + mc->locals_cnt > c->sp) c->sp = new_fp + mc->locals_cnt;
     if (mc->def_cref) c->cref = mc->def_cref;
 
-    /* Locals beyond params start as Qnil. */
-    for (uint32_t i = mc->total_params_cnt; i < mc->locals_cnt; i++) {
-        c->fp[i] = Qnil;
+    /* Locals beyond params start as Qnil.  When PARAMS_KNOWN is a literal
+     * the C compiler unrolls fully — no loop, no branch. */
+    for (uint32_t i = total; i < mc->locals_cnt; i++) {
+        new_fp[i] = Qnil;
     }
     c->self = recv;
 
-    /* Trimmed frame: only fields actually read elsewhere (.prev,
-     * .method for super, .self for backtrace, .block for block_given?).
-     * Skipping .caller_node / .fp / .locals_cnt saves 3 stores per call. */
     struct korb_frame frame;
     frame.prev = c->current_frame;
     frame.method = mc->method;
@@ -1184,6 +1178,34 @@ static VALUE prologue_ast_simple(CTX *c, struct Node *callsite, VALUE recv,
     }
     return r;
 }
+
+/* argc-specialized variants — picked by method_cache_fill when the method
+ * has a small fixed parameter count.  Each version has a literal PARAMS,
+ * letting gcc fold the argc check and unroll the Qnil-fill. */
+VALUE prologue_ast_simple_0(CTX *c, struct Node *callsite, VALUE recv,
+                                   uint32_t argc, uint32_t arg_index,
+                                   struct korb_proc *block, struct method_cache *mc)
+{ return prologue_ast_simple_inner(c, callsite, recv, argc, arg_index, block, mc, 0); }
+
+VALUE prologue_ast_simple_1(CTX *c, struct Node *callsite, VALUE recv,
+                                   uint32_t argc, uint32_t arg_index,
+                                   struct korb_proc *block, struct method_cache *mc)
+{ return prologue_ast_simple_inner(c, callsite, recv, argc, arg_index, block, mc, 1); }
+
+VALUE prologue_ast_simple_2(CTX *c, struct Node *callsite, VALUE recv,
+                                   uint32_t argc, uint32_t arg_index,
+                                   struct korb_proc *block, struct method_cache *mc)
+{ return prologue_ast_simple_inner(c, callsite, recv, argc, arg_index, block, mc, 2); }
+
+static VALUE prologue_ast_simple_3(CTX *c, struct Node *callsite, VALUE recv,
+                                   uint32_t argc, uint32_t arg_index,
+                                   struct korb_proc *block, struct method_cache *mc)
+{ return prologue_ast_simple_inner(c, callsite, recv, argc, arg_index, block, mc, 3); }
+
+static VALUE prologue_ast_simple(CTX *c, struct Node *callsite, VALUE recv,
+                                 uint32_t argc, uint32_t arg_index,
+                                 struct korb_proc *block, struct method_cache *mc)
+{ return prologue_ast_simple_inner(c, callsite, recv, argc, arg_index, block, mc, -1); }
 
 /* AST general: handles opt args, rest_slot, all the trimmings.  Same body
  * as the legacy korb_dispatch_call AST hot path. */
@@ -1274,9 +1296,20 @@ korb_method_cache_fill(struct method_cache *mc, struct korb_class *klass, struct
         mc->type = 0;
         mc->cfunc = NULL;
         mc->def_cref = m->def_cref;
-        /* Pick simple vs general based on parameter shape. */
-        mc->prologue = (mc->rest_slot < 0 && mc->total_params_cnt == mc->required_params_cnt)
-                       ? prologue_ast_simple : prologue_ast_general;
+        /* Pick simple vs general based on parameter shape; for the simple
+         * case prefer an argc-specialized variant so the C compiler can
+         * fold the argc check + unroll the Qnil fill. */
+        if (mc->rest_slot < 0 && mc->total_params_cnt == mc->required_params_cnt) {
+            switch (mc->required_params_cnt) {
+                case 0:  mc->prologue = prologue_ast_simple_0; break;
+                case 1:  mc->prologue = prologue_ast_simple_1; break;
+                case 2:  mc->prologue = prologue_ast_simple_2; break;
+                case 3:  mc->prologue = prologue_ast_simple_3; break;
+                default: mc->prologue = prologue_ast_simple;   break;
+            }
+        } else {
+            mc->prologue = prologue_ast_general;
+        }
     } else {
         mc->body = NULL;
         mc->dispatcher = NULL;
