@@ -626,7 +626,9 @@ VALUE korb_hash_aset(VALUE hv, VALUE key, VALUE val) {
     return val;
 }
 
-VALUE korb_hash_aref(VALUE hv, VALUE key) {
+/* The inline fast path lives in object.h.  This handles all the
+ * cases the inline can't (T_STRING keys, compare_by_identity tables). */
+VALUE korb_hash_aref_slow(VALUE hv, VALUE key) {
     struct korb_hash *h = (struct korb_hash *)hv;
     uint64_t hh = korb_hash_key(h, key);
     uint32_t b = (uint32_t)(hh % h->bucket_cnt);
@@ -863,14 +865,16 @@ VALUE korb_yield(CTX *c, uint32_t argc, VALUE *argv) {
 }
 
 /* ---- class lookup ---- */
-struct korb_class *korb_class_of_class(VALUE v) {
+/* Heap-object fast path is inline in object.h.  This handles the
+ * immediate values: only reached when SPECIAL_CONST_P(v) is true. */
+struct korb_class *korb_class_of_class_slow(VALUE v) {
     if (FIXNUM_P(v)) return korb_vm->integer_class;
     if (FLONUM_P(v)) return korb_vm->float_class;
     if (SYMBOL_P(v)) return korb_vm->symbol_class;
     if (NIL_P(v))   return korb_vm->nil_class;
     if (TRUE_P(v))  return korb_vm->true_class;
     if (FALSE_P(v)) return korb_vm->false_class;
-    /* heap object */
+    /* shouldn't happen for true SPECIAL_CONST_P, but be safe */
     return (struct korb_class *)((struct RBasic *)v)->klass;
 }
 

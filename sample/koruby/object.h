@@ -188,7 +188,15 @@ const char *korb_id_name(ID id);
 
 /* class system */
 VALUE korb_class_of(VALUE v);
-struct korb_class *korb_class_of_class(VALUE v); /* returns C struct */
+struct korb_class *korb_class_of_class_slow(VALUE v); /* immediate fallbacks */
+/* Hot path: heap T_OBJECT load.  Called per method dispatch. */
+static inline __attribute__((always_inline)) struct korb_class *
+korb_class_of_class(VALUE v) {
+    if (LIKELY(!SPECIAL_CONST_P(v))) {
+        return (struct korb_class *)((struct RBasic *)v)->klass;
+    }
+    return korb_class_of_class_slow(v);
+}
 struct korb_class *korb_class_new(ID name, struct korb_class *super, enum korb_type instance_type);
 struct korb_class *korb_module_new(ID name);
 void korb_class_add_method_ast(struct korb_class *klass, ID name, struct Node *body, uint32_t params_cnt, uint32_t locals_cnt);
@@ -284,7 +292,31 @@ korb_ary_len(VALUE av) {
 
 /* hash */
 VALUE korb_hash_new(void);
-VALUE korb_hash_aref(VALUE h, VALUE key);
+VALUE korb_hash_aref_slow(VALUE h, VALUE key);
+
+/* korb_hash_aref: inlined fast path for FIXNUM / SYMBOL keys (the
+ * common case in optcarrot's @sp_map[@hclk]).  Strings and
+ * compare_by_identity tables go through korb_hash_aref_slow.
+ * bucket_cnt is always a power of 2 (init=8, resize doubles), so
+ * `& (bucket_cnt-1)` replaces modulo. */
+static inline __attribute__((always_inline)) VALUE
+korb_hash_aref(VALUE hv, VALUE key) {
+    struct korb_hash *h = (struct korb_hash *)hv;
+    if (UNLIKELY(h->compare_by_identity)) return korb_hash_aref_slow(hv, key);
+    uint64_t hh;
+    if (LIKELY(FIXNUM_P(key))) {
+        hh = (uint64_t)key * 11400714819323198485ULL;
+    } else if (SYMBOL_P(key)) {
+        hh = (uint64_t)key * 2654435761ULL;
+    } else {
+        return korb_hash_aref_slow(hv, key);
+    }
+    uint32_t b = (uint32_t)hh & (h->bucket_cnt - 1);
+    for (struct korb_hash_entry *e = h->buckets[b]; e; e = e->bucket_next) {
+        if (e->hash == hh && e->key == key) return e->value;
+    }
+    return h->default_value;
+}
 VALUE korb_hash_aset(VALUE h, VALUE key, VALUE val);
 long  korb_hash_size(VALUE h);
 
@@ -328,7 +360,6 @@ VALUE korb_funcall(CTX *c, VALUE recv, ID mid, int argc, VALUE *argv);
 VALUE korb_funcall_with_block(CTX *c, VALUE recv, ID mid, int argc, VALUE *argv, VALUE block);
 VALUE korb_dispatch_call(CTX *c, struct Node *callsite, VALUE recv, ID name, uint32_t argc, uint32_t arg_index, struct korb_proc *block, struct method_cache *mc);
 
-struct korb_class *korb_class_of_class(VALUE v);
 extern state_serial_t korb_g_method_serial;  /* mirrored from korb_vm->method_serial */
 
 /* Stable function-pointer addresses for mc->prologue — used as kind tags

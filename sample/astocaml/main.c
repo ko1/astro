@@ -118,33 +118,21 @@ oc_alloc(int type)
     return o;
 }
 
-// Bump allocator for cons cells.  Cons is the single hottest
-// allocation in list-heavy code (sieve / nqueens) — `_int_malloc`
-// dominated the profile even after switching to malloc.  Bumping
-// from a pre-allocated arena collapses each `oc_cons` to a 16-byte
-// add + a couple of stores; no malloc bookkeeping.  We never free
-// (consistent with the rest of the runtime — see docs/todo.md;
-// Boehm GC is the planned cleanup).
-static struct {
-    char  *base;
-    size_t pos;
-    size_t cap;
-} g_cons_pool;
-
-#define CONS_POOL_CHUNK    (4u * 1024u * 1024u)
-#define CONS_CELL_SIZE     ((sizeof(((struct oobj *)0)->cons) + offsetof(struct oobj, cons) + 7u) & ~7u)
-
+// One `GC_malloc` per cons cell — properly collectable.  Earlier
+// versions bump-allocated from a 4 MB chunk for raw speed, but
+// Boehm sees the chunk as one opaque object: a single live cell
+// pinned the entire 4 MB.  Per-cell allocation costs ~30 ns of
+// Boehm small-object fast path per cons, but the cells get
+// collected so RSS stays flat across long-running list-heavy code.
+//
+// Allocate just `{type, head, tail}` (24 bytes); reads of other
+// oobj union members are guarded by `OC_IS_CONS` so the truncated
+// allocation is safe.
 VALUE
 oc_cons(VALUE h, VALUE t)
 {
-    if (UNLIKELY(g_cons_pool.pos + CONS_CELL_SIZE > g_cons_pool.cap)) {
-        g_cons_pool.base = (char *)malloc(CONS_POOL_CHUNK);
-        if (!g_cons_pool.base) { fprintf(stderr, "astocaml: oom (cons pool)\n"); exit(1); }
-        g_cons_pool.pos = 0;
-        g_cons_pool.cap = CONS_POOL_CHUNK;
-    }
-    struct oobj *o = (struct oobj *)(g_cons_pool.base + g_cons_pool.pos);
-    g_cons_pool.pos += CONS_CELL_SIZE;
+    struct oobj *o = (struct oobj *)malloc(offsetof(struct oobj, cons) + sizeof(o->cons));
+    if (!o) { fprintf(stderr, "astocaml: oom\n"); exit(1); }
     o->type = OOBJ_CONS;
     o->cons.head = h;
     o->cons.tail = t;
