@@ -578,8 +578,14 @@ astro_cs_reload(void)
     char all_path[ASTRO_CS_PATH_MAX];
     astro_cs_path(all_path, sizeof(all_path), astro_cs.store_dir, "all.so");
 
+    /* Pathname must be unique across concurrent processes too — two
+     * processes both incrementing a per-process counter would race
+     * (each unlink/link sequence on `all.1.so`).  PID prefix gives
+     * inter-process separation, the counter handles repeat reloads
+     * within a single process. */
     char gen_file[64];
-    snprintf(gen_file, sizeof(gen_file), "all.%u.so", ++astro_cs.reload_gen);
+    snprintf(gen_file, sizeof(gen_file), "all.%d.%u.so",
+             (int)getpid(), ++astro_cs.reload_gen);
     char gen_path[ASTRO_CS_PATH_MAX];
     astro_cs_path(gen_path, sizeof(gen_path), astro_cs.store_dir, gen_file);
 
