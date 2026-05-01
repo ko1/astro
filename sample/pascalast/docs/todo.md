@@ -41,9 +41,11 @@ Pascal 拡張、性能のうち高度なもの。「Pascal として完成」の
 | # | 項目 | 期待効果 |
 |---|------|---------|
 | ~~P1~~ | ~~**Body NODE\* を SPECIALIZE 時に bake する pcall**~~ | **完了** (round 8)。recursion benches: fib 4.2× / tarai 5.5× / ack 5.8× / matmul 19× / mandelbrot 26-37×。`@nohash` 修飾子 + `pcall_K_baked` 系列 + post-parse fixup + eager dispatcher_name set。 |
+| ~~P5~~ | ~~**Inline-cache for class method**~~ | **完了** (round 8)。`node_vcall` が `struct vcall_cache` を持ち、receiver vtable がヒットすれば proc-table lookup を skip して `pascal_call_baked` を直接呼ぶ。oop_shapes 14.6× → 7.6× (vs fpc -O3)。 |
+| ~~P-extra~~ | ~~**`needs_display` フラグ**~~ | **完了** (round 8)。proc が nested children を持たないとき `pascal_call_baked` の display save/restore を gcc が DCE する。call-heavy bench で +5-10%。 |
 | P2 | **PGC / Hopt** | 分岐が偏る real 数値計算で効く |
 | P3 | **for-loop の literal bounds 特化** | `for i := 1 to 100` を fixed-trip に |
-| P4 | **alloca フレーム** | call-heavy bench で +10-30% |
+| P4 | **alloca フレーム / fp threading** | call-heavy bench で 1.5-2× 期待。c->fp / c->sp の毎-call メモリトラフィックが現在の主要ボトルネック (perf record で fib AOT は 99% が SD 内、再帰呼出し前後で gcc が c->fp / c->sp を reload するため)。共通 NODE_DEF 引数に `int fp` を追加して dispatch chain で thread すれば fpc -O3 のレジスタ受け渡しに近づける。316 NODE_DEF への引数追加が必要なので大改修。 |
 | P5 | **Inline-cache for class method** | virtual 化したときの monomorphic な site に有効 |
 | P6 | **JIT (L0 / L1 / L2)** | 他の ASTro サンプル並みの起動高速化 |
 
