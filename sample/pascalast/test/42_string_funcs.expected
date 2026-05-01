@@ -1,0 +1,12 @@
+length=12
+copy 8..12: "world"
+pos "world": 8
+pos "x": 0
+insert: abcXYZdef
+delete: abcdef
+truncated: "abc"
+extended: "abc     " (len 8)
+42/-7
+123
+3.1400
+6.28

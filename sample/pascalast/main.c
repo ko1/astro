@@ -95,6 +95,19 @@ pascal_aset(CTX *c, uint32_t arr_idx, int64_t i, int64_t v)
 // restores fp/sp/display and returns 1.  pascal_try_run_finally is
 // the same except it pops the handler before returning so the caller
 // can run the finally clause and re-raise itself.
+struct pascal_label_buf pascal_label_bufs[PASCAL_MAX_LABELS];
+
+// Called by `node_label_set` — performs the setjmp dance.  Lives
+// outside the EVAL body so the inlined dispatcher chain doesn't
+// inherit the setjmp restriction.
+int
+pascal_label_setjmp(int label_idx)
+{
+    if (label_idx < 0 || label_idx >= PASCAL_MAX_LABELS) return 0;
+    pascal_label_bufs[label_idx].active = 1;
+    return setjmp(pascal_label_bufs[label_idx].buf);
+}
+
 int
 pascal_try_run(CTX *c, NODE *body)
 {
@@ -197,6 +210,8 @@ enum {
     TK_PACKED, TK_GOTO, TK_LABEL,
     TK_UNIT, TK_USES, TK_INTERFACE, TK_IMPLEMENTATION,
     TK_CLASS, TK_CONSTRUCTOR, TK_DESTRUCTOR, TK_VIRTUAL, TK_OVERRIDE, TK_INHERITED, TK_SELF,
+    TK_PROPERTY, TK_PRIVATE, TK_PUBLIC, TK_PROTECTED, TK_PUBLISHED,
+    TK_IS, TK_AS,
 };
 
 static const struct { const char *s; int tk; } KEYWORDS[] = {
@@ -229,6 +244,10 @@ static const struct { const char *s; int tk; } KEYWORDS[] = {
     {"class", TK_CLASS}, {"constructor", TK_CONSTRUCTOR}, {"destructor", TK_DESTRUCTOR},
     {"virtual", TK_VIRTUAL}, {"override", TK_OVERRIDE},
     {"inherited", TK_INHERITED},
+    {"property", TK_PROPERTY},
+    {"private", TK_PRIVATE}, {"public", TK_PUBLIC},
+    {"protected", TK_PROTECTED}, {"published", TK_PUBLISHED},
+    {"is", TK_IS}, {"as", TK_AS},
     {NULL, 0}
 };
 
@@ -534,22 +553,62 @@ struct method_entry {
     bool is_virtual;
     bool is_constructor;
 };
+struct property_entry {
+    char name[48];
+    int  type;
+    // Reader: either a field offset (read_field_offset >= 0) or a
+    // method idx (read_method_idx >= 0).  Same for writer.  Read-only
+    // properties have write_method_idx = -1 and write_field_offset = -1.
+    int  read_field_offset;
+    int  read_method_idx;
+    int  write_field_offset;
+    int  write_method_idx;
+};
+
 struct class_type {
     char name[64];
     int  parent_idx;   // -1 if no parent
     int  rec_idx;      // record_types[] entry holding the layout
     struct method_entry methods[32];
     int  nmethods;
+    struct property_entry properties[16];
+    int  nprops;
     int  vtable_size;  // total virtuals (own + inherited)
     int *vtable;       // vtable[i] = proc index for vtable_slot i; built after parse
 };
 static struct class_type class_types[MAX_CLASS_TYPES];
-static int n_class_types;
+int n_class_types;     // referenced via extern from node.def helpers
 
 // Per-class vtable address table — populated by finalize_classes
 // after parsing.  Read at run time by node_new_object to stamp slot
 // 0 of every freshly allocated instance.
 int **pascal_vtables;
+
+// Map an object pointer back to its class_idx by looking up the
+// vtable pointer stamped into slot 0.  Linear scan over
+// pascal_vtables — O(n_class_types), small in practice.
+int
+pascal_class_of_obj(int64_t obj)
+{
+    int64_t *o = (int64_t *)(uintptr_t)obj;
+    int *vt = (int *)(uintptr_t)o[0];
+    if (!vt) return -1;
+    for (int i = 0; i < n_class_types; i++) {
+        if (pascal_vtables[i] == vt) return i;
+    }
+    return -1;
+}
+
+int
+pascal_class_is_descendant(int sub, int sup)
+{
+    int walk = sub;
+    while (walk >= 0) {
+        if (walk == sup) return 1;
+        walk = class_types[walk].parent_idx;
+    }
+    return 0;
+}
 
 // Set by parse_type when consuming a class-typed name.  -1 means
 // the most-recent type isn't a class.
@@ -693,7 +752,8 @@ mk_int(int64_t v) { return ALLOC_node_int((uint64_t)v); }
 // symbol or operator that produced the node.
 typedef struct {
     NODE *n;
-    int   t;     // pascal_type (PT_INT / PT_BOOL / PT_REAL)
+    int   t;          // pascal_type (PT_INT / PT_BOOL / PT_REAL / PT_STR / PT_POINTER ...)
+    int   class_idx;  // -1 unless t == PT_POINTER and we statically know the class
 } TE;
 
 // Reinterpret a `double` as a `uint64_t` for stuffing into node_real.
@@ -720,8 +780,8 @@ te_field_get(struct sym *s, struct record_field *f)
     if (s->kind == SYM_VREC)
         return (TE){ ALLOC_node_var_aref((uint32_t)s->idx, 0, mk_int(f->offset)),
                      f->type };
-    if (s->kind == SYM_GREC) return (TE){ ALLOC_node_gref((uint32_t)slot), f->type };
-    return (TE){ ALLOC_node_lref((uint32_t)slot), f->type };
+    if (s->kind == SYM_GREC) return (TE){ ALLOC_node_gref((uint32_t)slot), f->type, -1 };
+    return (TE){ ALLOC_node_lref((uint32_t)slot), f->type, -1 };
 }
 
 static NODE *
@@ -739,7 +799,7 @@ static TE
 te_promote_real(TE e)
 {
     if (e.t == PT_REAL) return e;
-    return (TE){ .n = ALLOC_node_i2r(e.n), .t = PT_REAL };
+    return (TE){ .n = ALLOC_node_i2r(e.n), .t = PT_REAL, -1 };
 }
 
 // For binary numeric ops: promote both operands to real if either is
@@ -1016,7 +1076,7 @@ te_builtin_call_in_expr(const char *name)
         expect(TK_LPAREN, "'('");
         TE e = te_expr();
         expect(TK_RPAREN, "')'");
-        if (e.t == PT_REAL) return (TE){ ALLOC_node_rabs(e.n), PT_REAL };
+        if (e.t == PT_REAL) return (TE){ ALLOC_node_rabs(e.n), PT_REAL, -1 };
         return (TE){ ALLOC_node_if(ALLOC_node_lt(e.n, mk_int(0)),
                                    ALLOC_node_neg(e.n), e.n),
                      PT_INT };
@@ -1025,54 +1085,54 @@ te_builtin_call_in_expr(const char *name)
         expect(TK_LPAREN, "'('");
         TE e = te_expr();
         expect(TK_RPAREN, "')'");
-        if (e.t == PT_REAL) return (TE){ ALLOC_node_rmul(e.n, e.n), PT_REAL };
-        return (TE){ ALLOC_node_mul(e.n, e.n), PT_INT };
+        if (e.t == PT_REAL) return (TE){ ALLOC_node_rmul(e.n, e.n), PT_REAL, -1 };
+        return (TE){ ALLOC_node_mul(e.n, e.n), PT_INT, -1 };
     }
     if (strcmp(name, "sqrt") == 0) {
         expect(TK_LPAREN, "'('");
         TE e = te_promote_real(te_expr());
         expect(TK_RPAREN, "')'");
-        return (TE){ ALLOC_node_rsqrt(e.n), PT_REAL };
+        return (TE){ ALLOC_node_rsqrt(e.n), PT_REAL, -1 };
     }
     if (strcmp(name, "trunc") == 0) {
         expect(TK_LPAREN, "'('");
         TE e = te_expr();
         expect(TK_RPAREN, "')'");
         if (e.t != PT_REAL) e = te_promote_real(e);
-        return (TE){ ALLOC_node_r2i_trunc(e.n), PT_INT };
+        return (TE){ ALLOC_node_r2i_trunc(e.n), PT_INT, -1 };
     }
     if (strcmp(name, "round") == 0) {
         expect(TK_LPAREN, "'('");
         TE e = te_expr();
         expect(TK_RPAREN, "')'");
         if (e.t != PT_REAL) e = te_promote_real(e);
-        return (TE){ ALLOC_node_r2i_round(e.n), PT_INT };
+        return (TE){ ALLOC_node_r2i_round(e.n), PT_INT, -1 };
     }
     if (strcmp(name, "succ") == 0) {
         expect(TK_LPAREN, "'('");
         TE e = te_expr();
         expect(TK_RPAREN, "')'");
         if (e.t == PT_REAL) pascal_error("succ requires integer");
-        return (TE){ ALLOC_node_add(e.n, mk_int(1)), PT_INT };
+        return (TE){ ALLOC_node_add(e.n, mk_int(1)), PT_INT, -1 };
     }
     if (strcmp(name, "pred") == 0) {
         expect(TK_LPAREN, "'('");
         TE e = te_expr();
         expect(TK_RPAREN, "')'");
         if (e.t == PT_REAL) pascal_error("pred requires integer");
-        return (TE){ ALLOC_node_sub(e.n, mk_int(1)), PT_INT };
+        return (TE){ ALLOC_node_sub(e.n, mk_int(1)), PT_INT, -1 };
     }
     if (strcmp(name, "ord") == 0 || strcmp(name, "chr") == 0) {
         expect(TK_LPAREN, "'('");
         TE e = te_expr();
         expect(TK_RPAREN, "')'");
-        return (TE){ e.n, PT_INT };       // identity for int/bool
+        return (TE){ e.n, PT_INT, -1 };       // identity for int/bool
     }
     if (strcmp(name, "exceptionmessage") == 0
         || strcmp(name, "exceptobject") == 0) {
         // No arglist required.
         if (accept(TK_LPAREN)) expect(TK_RPAREN, "')'");
-        return (TE){ ALLOC_node_exc_msg(), PT_STR };
+        return (TE){ ALLOC_node_exc_msg(), PT_STR, -1 };
     }
     if (strcmp(name, "eof") == 0) {
         expect(TK_LPAREN, "'('");
@@ -1082,23 +1142,64 @@ te_builtin_call_in_expr(const char *name)
         expect(TK_RPAREN, "')'");
         struct sym *fs = sym_find(fid);
         if (!fs || fs->type != PT_FILE) pascal_error("'%s' is not a file", fid);
-        return (TE){ ALLOC_node_file_eof(mk_addr_of(fs, NULL, NULL)), PT_BOOL };
+        return (TE){ ALLOC_node_file_eof(mk_addr_of(fs, NULL, NULL)), PT_BOOL, -1 };
     }
     if (strcmp(name, "length") == 0) {
         expect(TK_LPAREN, "'('");
         TE e = te_expr();
         expect(TK_RPAREN, "')'");
         if (e.t != PT_STR) pascal_error("length() requires a string");
-        return (TE){ ALLOC_node_str_length(e.n), PT_INT };
+        return (TE){ ALLOC_node_str_length(e.n), PT_INT, -1 };
+    }
+    if (strcmp(name, "copy") == 0) {
+        expect(TK_LPAREN, "'('");
+        TE s = te_expr(); expect(TK_COMMA, "','");
+        TE st = te_expr(); expect(TK_COMMA, "','");
+        TE cn = te_expr(); expect(TK_RPAREN, "')'");
+        if (s.t == PT_INT) s.n = ALLOC_node_chr_to_str(s.n);
+        return (TE){ ALLOC_node_str_copy(s.n, st.n, cn.n), PT_STR, -1 };
+    }
+    if (strcmp(name, "pos") == 0) {
+        expect(TK_LPAREN, "'('");
+        TE sub = te_expr(); expect(TK_COMMA, "','");
+        TE s   = te_expr(); expect(TK_RPAREN, "')'");
+        // Allow single-char literal as the needle (`pos('x', s)`).
+        if (sub.t == PT_INT) sub.n = ALLOC_node_chr_to_str(sub.n);
+        if (s.t   == PT_INT) s.n   = ALLOC_node_chr_to_str(s.n);
+        return (TE){ ALLOC_node_str_pos(sub.n, s.n), PT_INT, -1 };
+    }
+    if (strcmp(name, "inttostr") == 0) {
+        expect(TK_LPAREN, "'('");
+        TE e = te_expr(); expect(TK_RPAREN, "')'");
+        if (e.t != PT_INT && e.t != PT_BOOL) pascal_error("inttostr requires integer");
+        return (TE){ ALLOC_node_int_to_str(e.n), PT_STR, -1 };
+    }
+    if (strcmp(name, "strtoint") == 0) {
+        expect(TK_LPAREN, "'('");
+        TE e = te_expr(); expect(TK_RPAREN, "')'");
+        if (e.t != PT_STR) pascal_error("strtoint requires string");
+        return (TE){ ALLOC_node_str_to_int(e.n), PT_INT, -1 };
+    }
+    if (strcmp(name, "strtofloat") == 0) {
+        expect(TK_LPAREN, "'('");
+        TE e = te_expr(); expect(TK_RPAREN, "')'");
+        if (e.t != PT_STR) pascal_error("strtofloat requires string");
+        return (TE){ ALLOC_node_str_to_real(e.n), PT_REAL, -1 };
+    }
+    if (strcmp(name, "floattostr") == 0) {
+        expect(TK_LPAREN, "'('");
+        TE e = te_expr(); expect(TK_RPAREN, "')'");
+        if (e.t != PT_REAL) e = te_promote_real(e);
+        return (TE){ ALLOC_node_real_to_str(e.n), PT_STR, -1 };
     }
     if (strcmp(name, "odd") == 0) {
         expect(TK_LPAREN, "'('");
         TE e = te_expr();
         expect(TK_RPAREN, "')'");
         if (e.t == PT_REAL) pascal_error("odd requires integer");
-        return (TE){ ALLOC_node_eq(ALLOC_node_mod(e.n, mk_int(2)), mk_int(1)), PT_BOOL };
+        return (TE){ ALLOC_node_eq(ALLOC_node_mod(e.n, mk_int(2)), mk_int(1)), PT_BOOL, -1 };
     }
-    return (TE){ NULL, PT_INT };
+    return (TE){ NULL, PT_INT, -1 };
 }
 
 static NODE *
@@ -1230,50 +1331,50 @@ static TE
 te_get(struct sym *s, NODE *index, NODE *index2)
 {
     switch (s->kind) {
-    case SYM_GVAR: return (TE){ ALLOC_node_gref(s->idx), s->type };
+    case SYM_GVAR: return (TE){ ALLOC_node_gref(s->idx), s->type, -1 };
     case SYM_LVAR:
         if (s->depth < current_depth) {
             if (s->by_ref)
-                return (TE){ ALLOC_node_uvar_ref((uint32_t)s->depth, s->idx), s->type };
-            return (TE){ ALLOC_node_uref((uint32_t)s->depth, s->idx), s->type };
+                return (TE){ ALLOC_node_uvar_ref((uint32_t)s->depth, s->idx), s->type, -1 };
+            return (TE){ ALLOC_node_uref((uint32_t)s->depth, s->idx), s->type, -1 };
         }
-        if (s->by_ref) return (TE){ ALLOC_node_var_lref(s->idx), s->type };
-        return (TE){ ALLOC_node_lref(s->idx), s->type };
+        if (s->by_ref) return (TE){ ALLOC_node_var_lref(s->idx), s->type, -1 };
+        return (TE){ ALLOC_node_lref(s->idx), s->type, -1 };
     case SYM_GARR:
         if (s->is_2d) {
             if (!index || !index2) pascal_error("2D array '%s' needs both indices", s->name);
-            return (TE){ ALLOC_node_aref2(s->idx, index, index2), s->type };
+            return (TE){ ALLOC_node_aref2(s->idx, index, index2), s->type, -1 };
         }
         if (!index) pascal_error("array '%s' needs index", s->name);
-        return (TE){ ALLOC_node_aref(s->idx, index), s->type };
+        return (TE){ ALLOC_node_aref(s->idx, index), s->type, -1 };
     case SYM_LARR:
         if (!index) pascal_error("local array '%s' needs index", s->name);
         if (s->depth < current_depth)
-            return (TE){ ALLOC_node_uaref_local((uint32_t)s->depth, (uint32_t)s->idx, s->lo, index), s->type };
-        return (TE){ ALLOC_node_aref_local((uint32_t)s->idx, s->lo, index), s->type };
+            return (TE){ ALLOC_node_uaref_local((uint32_t)s->depth, (uint32_t)s->idx, s->lo, index), s->type, -1 };
+        return (TE){ ALLOC_node_aref_local((uint32_t)s->idx, s->lo, index), s->type, -1 };
     case SYM_VARR:
         if (!index) pascal_error("var-array '%s' needs index", s->name);
         // var-array params reaching into an enclosing scope aren't
         // currently implemented (would need a uref + indirect deref).
         if (s->depth < current_depth)
             pascal_error("var-array '%s' from enclosing scope not supported", s->name);
-        return (TE){ ALLOC_node_var_aref((uint32_t)s->idx, s->lo, index), s->type };
+        return (TE){ ALLOC_node_var_aref((uint32_t)s->idx, s->lo, index), s->type, -1 };
     case SYM_CONST:
         if (s->type == PT_STR) {
             // String constants: emit a literal node with the baked
             // pointer.  ALLOC_node_str_lit takes a const char * which
             // is exactly what s->cval holds (cast through int64).
-            return (TE){ ALLOC_node_str_lit((const char *)(uintptr_t)s->cval), PT_STR };
+            return (TE){ ALLOC_node_str_lit((const char *)(uintptr_t)s->cval), PT_STR, -1 };
         }
-        return (TE){ mk_int(s->cval), PT_INT };
+        return (TE){ mk_int(s->cval), PT_INT, -1 };
     case SYM_RCONST: {
         union { int64_t i; double d; } u; u.i = s->cval;
-        return (TE){ mk_real(u.d), PT_REAL };
+        return (TE){ mk_real(u.d), PT_REAL, -1 };
     }
     default:
         pascal_error("cannot read '%s'", s->name);
     }
-    return (TE){ NULL, PT_INT };
+    return (TE){ NULL, PT_INT, -1 };
 }
 
 // Build a node that writes `val` (already a NODE*, of the right type
@@ -1318,19 +1419,19 @@ te_factor(void)
     if (tk == TK_INT) {
         int64_t v = tk_int;
         next_token();
-        return (TE){ mk_int(v), PT_INT };
+        return (TE){ mk_int(v), PT_INT, -1 };
     }
     if (tk == TK_RNUM) {
         double v = tk_real;
         next_token();
-        return (TE){ mk_real(v), PT_REAL };
+        return (TE){ mk_real(v), PT_REAL, -1 };
     }
     if (tk == TK_STR) {
         size_t len = strlen(tk_str);
         if (len == 1) {
             int ch = (unsigned char)tk_str[0];
             next_token();
-            return (TE){ mk_int(ch), PT_INT };
+            return (TE){ mk_int(ch), PT_INT, -1 };
         }
         // Multi-character literal → string value.  Allocate a
         // permanent copy under libgc; the parser tree owns the
@@ -1339,11 +1440,11 @@ te_factor(void)
         if (!buf) pascal_error("out of memory");
         memcpy(buf, tk_str, len + 1);
         next_token();
-        return (TE){ ALLOC_node_str_lit(buf), PT_STR };
+        return (TE){ ALLOC_node_str_lit(buf), PT_STR, -1 };
     }
-    if (tk == TK_TRUE)  { next_token(); return (TE){ ALLOC_node_true(),  PT_BOOL }; }
-    if (tk == TK_FALSE) { next_token(); return (TE){ ALLOC_node_false(), PT_BOOL }; }
-    if (tk == TK_NIL)   { next_token(); return (TE){ ALLOC_node_nil(),   PT_POINTER }; }
+    if (tk == TK_TRUE)  { next_token(); return (TE){ ALLOC_node_true(),  PT_BOOL, -1 }; }
+    if (tk == TK_FALSE) { next_token(); return (TE){ ALLOC_node_false(), PT_BOOL, -1 }; }
+    if (tk == TK_NIL)   { next_token(); return (TE){ ALLOC_node_nil(),   PT_POINTER, -1 }; }
     if (accept(TK_INHERITED)) {
         // Same logic as the statement-form, but builds a TE for use
         // in expression contexts (e.g. `Result := inherited f(x);`).
@@ -1378,7 +1479,7 @@ te_factor(void)
         NODE *call = mk_pcall((uint32_t)me->proc_idx, args, n);
         int t = parser_ctx->procs[me->proc_idx].is_function
               ? (int)parser_ctx->procs[me->proc_idx].return_type : PT_INT;
-        return (TE){ call, t };
+        return (TE){ call, t, -1 };
     }
     if (accept(TK_AT)) {
         // @procname — produce a procedure value (the proc's index).
@@ -1387,11 +1488,86 @@ te_factor(void)
         if (!s || s->kind != SYM_PROC)
             pascal_error("'%s' is not a procedure or function", tk_id);
         next_token();
-        return (TE){ mk_int(s->idx), PT_PROC };
+        return (TE){ mk_int(s->idx), PT_PROC, -1 };
     }
     if (accept(TK_LPAREN)) {
         TE e = te_expr();
         expect(TK_RPAREN, "')'");
+        // Postfix `.field` / `.method` on a parenthesised
+        // class-typed expression (e.g. `(p as TDog).speak`).
+        while (e.t == PT_POINTER && e.class_idx >= 0 && tk == TK_DOT) {
+            next_token();
+            if (tk != TK_ID) pascal_error("expected field/method name after '.'");
+            char fname[64]; strncpy(fname, tk_id, 63); fname[63] = 0;
+            next_token();
+            // Save the obj into a temp by using a local slot — but we
+            // don't have a slot allocator here, so re-evaluating is
+            // OK only if the expression is pure.  For typical cases
+            // (`(p as T).field`, `obj.field`) it is.
+            // Property first
+            struct property_entry *pe = NULL;
+            int walk = e.class_idx;
+            while (walk >= 0) {
+                struct class_type *wc = &class_types[walk];
+                for (int i = 0; i < wc->nprops; i++)
+                    if (strcmp(wc->properties[i].name, fname) == 0) { pe = &wc->properties[i]; break; }
+                if (pe) break;
+                walk = wc->parent_idx;
+            }
+            if (pe) {
+                if (pe->read_field_offset >= 0) {
+                    e = (TE){ ALLOC_node_ptr_field_ref(e.n, (uint32_t)pe->read_field_offset),
+                              pe->type, -1 };
+                } else if (pe->read_method_idx >= 0) {
+                    struct method_entry *gme = &class_types[e.class_idx].methods[pe->read_method_idx];
+                    NODE *args[1] = { e.n };
+                    e = (TE){ mk_pcall((uint32_t)gme->proc_idx, args, 1), pe->type, -1 };
+                } else pascal_error("property '%s' is write-only", fname);
+                continue;
+            }
+            // Method
+            struct method_entry *me = NULL;
+            walk = e.class_idx;
+            while (walk >= 0) {
+                struct class_type *wc = &class_types[walk];
+                for (int i = 0; i < wc->nmethods; i++)
+                    if (strcmp(wc->methods[i].name, fname) == 0
+                        && wc->methods[i].proc_idx >= 0) { me = &wc->methods[i]; break; }
+                if (me) break;
+                walk = wc->parent_idx;
+            }
+            if (me) {
+                NODE *args[16]; uint32_t n = 1;
+                args[0] = e.n;
+                if (accept(TK_LPAREN)) {
+                    if (tk != TK_RPAREN) for (;;) {
+                        if (n >= 16) pascal_error("too many args");
+                        args[n++] = te_expr().n;
+                        if (!accept(TK_COMMA)) break;
+                    }
+                    expect(TK_RPAREN, "')'");
+                }
+                NODE *call;
+                int rt;
+                if (me->is_virtual && me->vtable_slot >= 0) {
+                    uint32_t base = push_call_args(&args[1], n - 1);
+                    call = ALLOC_node_vcall(args[0], (uint32_t)me->vtable_slot, base, n);
+                } else {
+                    call = mk_pcall((uint32_t)me->proc_idx, args, n);
+                }
+                rt = parser_ctx->procs[me->proc_idx].is_function
+                   ? (int)parser_ctx->procs[me->proc_idx].return_type : PT_INT;
+                e = (TE){ call, rt, -1 };
+                continue;
+            }
+            // Field
+            struct record_type *rt = &record_types[class_types[e.class_idx].rec_idx];
+            struct record_field *f = NULL;
+            for (int i = 0; i < rt->nfields; i++)
+                if (strcmp(rt->fields[i].name, fname) == 0) { f = &rt->fields[i]; break; }
+            if (!f) pascal_error("no field/method '%s' in '%s'", fname, rt->name);
+            e = (TE){ ALLOC_node_ptr_field_ref(e.n, (uint32_t)f->offset), f->type, -1 };
+        }
         return e;
     }
     if (accept(TK_LBRACK)) {
@@ -1419,16 +1595,16 @@ te_factor(void)
             if (!accept(TK_COMMA)) break;
         }
         expect(TK_RBRACK, "']'");
-        return (TE){ ALLOC_node_set_lit(bits), PT_SET };
+        return (TE){ ALLOC_node_set_lit(bits), PT_SET, -1 };
     }
     if (accept(TK_NOT)) {
         TE e = te_factor();
-        return (TE){ ALLOC_node_not(e.n), PT_BOOL };
+        return (TE){ ALLOC_node_not(e.n), PT_BOOL, -1 };
     }
     if (accept(TK_MINUS)) {
         TE e = te_factor();
-        if (e.t == PT_REAL) return (TE){ ALLOC_node_rneg(e.n), PT_REAL };
-        return (TE){ ALLOC_node_neg(e.n), PT_INT };
+        if (e.t == PT_REAL) return (TE){ ALLOC_node_rneg(e.n), PT_REAL, -1 };
+        return (TE){ ALLOC_node_neg(e.n), PT_INT, -1 };
     }
     if (accept(TK_PLUS)) {
         return te_factor();
@@ -1445,6 +1621,47 @@ te_factor(void)
             if (f) return te_field_get(rs, f);
         }
 
+        // Inside a method body, bare names that match a class field
+        // or property auto-resolve to Self.<name>.  But only if the
+        // name doesn't shadow a local (param, loop variable, …) or
+        // global — otherwise `x` in a method body whose class also has
+        // a property `X` would get the property instead of the param.
+        if (current_method_class_idx >= 0
+            && sym_find_local(id) == NULL
+            && sym_find_global(id) == NULL) {
+            int walk = current_method_class_idx;
+            while (walk >= 0) {
+                struct class_type *wc = &class_types[walk];
+                for (int i = 0; i < wc->nprops; i++) {
+                    if (strcmp(wc->properties[i].name, id) == 0) {
+                        struct property_entry *pe = &wc->properties[i];
+                        NODE *self_load = ALLOC_node_lref(0);
+                        if (pe->read_field_offset >= 0)
+                            return (TE){ ALLOC_node_ptr_field_ref(self_load, (uint32_t)pe->read_field_offset),
+                                         pe->type, -1 };
+                        if (pe->read_method_idx >= 0) {
+                            struct method_entry *gme = &class_types[walk].methods[pe->read_method_idx];
+                            NODE *args[1] = { self_load };
+                            return (TE){ mk_pcall((uint32_t)gme->proc_idx, args, 1), pe->type, -1 };
+                        }
+                    }
+                }
+                walk = wc->parent_idx;
+            }
+            walk = current_method_class_idx;
+            while (walk >= 0) {
+                struct record_type *rt = &record_types[class_types[walk].rec_idx];
+                for (int i = 0; i < rt->nfields; i++) {
+                    if (strcmp(rt->fields[i].name, id) == 0) {
+                        NODE *self_load = ALLOC_node_lref(0);
+                        return (TE){ ALLOC_node_ptr_field_ref(self_load, (uint32_t)rt->fields[i].offset),
+                                     rt->fields[i].type, -1 };
+                    }
+                }
+                walk = class_types[walk].parent_idx;
+            }
+        }
+
         // Built-in pure functions (abs, sqr, sqrt, sin, ...).
         TE bi = te_builtin_call_in_expr(id);
         if (bi.n) return bi;
@@ -1455,7 +1672,7 @@ te_factor(void)
             NODE *args[16]; int arg_t[16]; uint32_t n = 0;
             if (tk == TK_LPAREN) n = parse_typed_call_args(current_proc, args, arg_t, 16);
             NODE *call = mk_call_with_promotion(current_proc_idx, args, arg_t, n);
-            return (TE){ call, current_proc->return_type };
+            return (TE){ call, current_proc->return_type, -1 };
         }
         // `Result` (modern Pascal) — alias for the return slot.  Reading
         // it gives the current draft return value.
@@ -1470,7 +1687,7 @@ te_factor(void)
             NODE *args[16]; int arg_t[16]; uint32_t n = 0;
             if (tk == TK_LPAREN) n = parse_typed_call_args(p, args, arg_t, 16);
             NODE *call = mk_call_with_promotion(s->idx, args, arg_t, n);
-            return (TE){ call, p->is_function ? p->return_type : PT_INT };
+            return (TE){ call, p->is_function ? p->return_type : PT_INT, -1 };
         }
         // `T.Create(args)` — class-side constructor invocation.
         if (s && s->kind == SYM_CLASSTYPE && tk == TK_DOT) {
@@ -1502,7 +1719,7 @@ te_factor(void)
             int slots = record_types[class_types[s->idx].rec_idx].total_slots;
             args[0] = ALLOC_node_new_object((uint32_t)slots, (uint32_t)s->idx);
             NODE *call = mk_pcall((uint32_t)me->proc_idx, args, n);
-            return (TE){ call, PT_POINTER };
+            return (TE){ call, PT_POINTER, -1 };
         }
 
         if (!s) pascal_error("undefined identifier '%s' at line %d", id, line_no);
@@ -1517,7 +1734,7 @@ te_factor(void)
             uint32_t base = push_call_args(args, n);
             NODE *fn = (s->kind == SYM_GVAR) ? ALLOC_node_gref(s->idx)
                                              : ALLOC_node_lref(s->idx);
-            return (TE){ ALLOC_node_pcall_ind(fn, base, n), PT_INT };
+            return (TE){ ALLOC_node_pcall_ind(fn, base, n), PT_INT, -1 };
         }
 
         if (s->kind == SYM_GARR || s->kind == SYM_LARR || s->kind == SYM_VARR) {
@@ -1538,6 +1755,40 @@ te_factor(void)
             if (tk != TK_ID) pascal_error("expected field/method name after '.'");
             char fname[64]; strncpy(fname, tk_id, 63); fname[63] = 0;
             next_token();
+            // Properties (read) — check first so a field-shadowing
+            // property is found before the underlying field.
+            if (s->class_idx >= 0) {
+                struct class_type *cct = &class_types[s->class_idx];
+                struct property_entry *pe = NULL;
+                int walk = s->class_idx;
+                while (walk >= 0) {
+                    struct class_type *wc = &class_types[walk];
+                    for (int i = 0; i < wc->nprops; i++)
+                        if (strcmp(wc->properties[i].name, fname) == 0) { pe = &wc->properties[i]; break; }
+                    if (pe) break;
+                    walk = wc->parent_idx;
+                }
+                if (pe) {
+                    NODE *self_load = (s->kind == SYM_GVAR) ? ALLOC_node_gref(s->idx)
+                                                            : ALLOC_node_lref(s->idx);
+                    if (pe->read_field_offset >= 0) {
+                        return (TE){ ALLOC_node_ptr_field_ref(self_load, (uint32_t)pe->read_field_offset),
+                                     pe->type };
+                    }
+                    if (pe->read_method_idx >= 0) {
+                        struct method_entry *gme = &class_types[s->class_idx].methods[pe->read_method_idx];
+                        if (gme->is_virtual && gme->vtable_slot >= 0) {
+                            uint32_t base = push_call_args(NULL, 0);
+                            return (TE){ ALLOC_node_vcall(self_load, (uint32_t)gme->vtable_slot, base, 1),
+                                         pe->type };
+                        }
+                        NODE *args[1] = { self_load };
+                        return (TE){ mk_pcall((uint32_t)gme->proc_idx, args, 1), pe->type, -1 };
+                    }
+                    pascal_error("property '%s' is write-only", fname);
+                }
+                (void)cct;
+            }
             // Class methods take precedence — try those first if it's a class.
             if (s->class_idx >= 0) {
                 struct class_type *ct = &class_types[s->class_idx];
@@ -1584,7 +1835,7 @@ te_factor(void)
                         rt_type = parser_ctx->procs[me->proc_idx].is_function
                                 ? (int)parser_ctx->procs[me->proc_idx].return_type : PT_INT;
                     }
-                    return (TE){ call, rt_type };
+                    return (TE){ call, rt_type, -1 };
                     (void)ct;
                 }
             }
@@ -1610,7 +1861,7 @@ te_factor(void)
             if (s->kind == SYM_GVAR)      base = ALLOC_node_gref(s->idx);
             else if (s->kind == SYM_LVAR) base = ALLOC_node_lref(s->idx);
             else pascal_error("string index on non-variable '%s'", s->name);
-            return (TE){ ALLOC_node_str_index(base, idxn), PT_INT };
+            return (TE){ ALLOC_node_str_index(base, idxn), PT_INT, -1 };
         }
         if (s->kind == SYM_GREC || s->kind == SYM_LREC || s->kind == SYM_VREC) {
             // Walk through any number of `.field` accesses.  Nested
@@ -1647,16 +1898,16 @@ te_factor(void)
             }
             int slot = s->idx + extra_off;
             if (s->kind == SYM_GREC)
-                return (TE){ ALLOC_node_gref((uint32_t)slot), final_type };
+                return (TE){ ALLOC_node_gref((uint32_t)slot), final_type, -1 };
             // SYM_LREC: respect lexical depth.
             if (s->depth < current_depth)
-                return (TE){ ALLOC_node_uref((uint32_t)s->depth, (uint32_t)slot), final_type };
-            return (TE){ ALLOC_node_lref((uint32_t)slot), final_type };
+                return (TE){ ALLOC_node_uref((uint32_t)s->depth, (uint32_t)slot), final_type, -1 };
+            return (TE){ ALLOC_node_lref((uint32_t)slot), final_type, -1 };
         }
         return te_get(s, NULL, NULL);
     }
     pascal_error("unexpected %s in expression at line %d", tk_name(tk), line_no);
-    return (TE){ NULL, PT_INT };
+    return (TE){ NULL, PT_INT, -1 };
 }
 
 static TE
@@ -1667,32 +1918,32 @@ te_term(void)
         if (accept(TK_STAR)) {
             TE r = te_factor();
             if (left.t == PT_SET || r.t == PT_SET) {
-                left = (TE){ ALLOC_node_set_intersect(left.n, r.n), PT_SET };
+                left = (TE){ ALLOC_node_set_intersect(left.n, r.n), PT_SET, -1 };
                 continue;
             }
             int t = te_unify_numeric(&left, &r);
             left = (t == PT_REAL)
-                 ? (TE){ ALLOC_node_rmul(left.n, r.n), PT_REAL }
-                 : (TE){ ALLOC_node_mul(left.n, r.n),  PT_INT };
+                 ? (TE){ ALLOC_node_rmul(left.n, r.n), PT_REAL, -1 }
+                 : (TE){ ALLOC_node_mul(left.n, r.n), PT_INT, -1 };
         } else if (accept(TK_SLASH)) {
             // Pascal's `/` is always real division — promote both.
             left = te_promote_real(left);
             TE r = te_promote_real(te_factor());
-            left = (TE){ ALLOC_node_rdiv(left.n, r.n), PT_REAL };
+            left = (TE){ ALLOC_node_rdiv(left.n, r.n), PT_REAL, -1 };
         } else if (accept(TK_DIV)) {
             // Integer division.  Both operands must be integer.
             if (left.t != PT_INT) pascal_error("'div' requires integer operands");
             TE r = te_factor();
             if (r.t != PT_INT) pascal_error("'div' requires integer operands");
-            left = (TE){ ALLOC_node_div(left.n, r.n), PT_INT };
+            left = (TE){ ALLOC_node_div(left.n, r.n), PT_INT, -1 };
         } else if (accept(TK_MOD)) {
             if (left.t != PT_INT) pascal_error("'mod' requires integer operands");
             TE r = te_factor();
             if (r.t != PT_INT) pascal_error("'mod' requires integer operands");
-            left = (TE){ ALLOC_node_mod(left.n, r.n), PT_INT };
+            left = (TE){ ALLOC_node_mod(left.n, r.n), PT_INT, -1 };
         } else if (accept(TK_AND)) {
             TE r = te_factor();
-            left = (TE){ ALLOC_node_and(left.n, r.n), PT_BOOL };
+            left = (TE){ ALLOC_node_and(left.n, r.n), PT_BOOL, -1 };
         } else break;
     }
     return left;
@@ -1708,30 +1959,30 @@ te_simple(void)
             if (left.t == PT_STR || r.t == PT_STR) {
                 NODE *ln = (left.t == PT_STR) ? left.n : ALLOC_node_chr_to_str(left.n);
                 NODE *rn = (r.t    == PT_STR) ? r.n    : ALLOC_node_chr_to_str(r.n);
-                left = (TE){ ALLOC_node_str_concat(ln, rn), PT_STR };
+                left = (TE){ ALLOC_node_str_concat(ln, rn), PT_STR, -1 };
                 continue;
             }
             if (left.t == PT_SET || r.t == PT_SET) {
-                left = (TE){ ALLOC_node_set_union(left.n, r.n), PT_SET };
+                left = (TE){ ALLOC_node_set_union(left.n, r.n), PT_SET, -1 };
                 continue;
             }
             int t = te_unify_numeric(&left, &r);
             left = (t == PT_REAL)
-                 ? (TE){ ALLOC_node_radd(left.n, r.n), PT_REAL }
-                 : (TE){ ALLOC_node_add(left.n, r.n),  PT_INT };
+                 ? (TE){ ALLOC_node_radd(left.n, r.n), PT_REAL, -1 }
+                 : (TE){ ALLOC_node_add(left.n, r.n), PT_INT, -1 };
         } else if (accept(TK_MINUS)) {
             TE r = te_term();
             if (left.t == PT_SET || r.t == PT_SET) {
-                left = (TE){ ALLOC_node_set_diff(left.n, r.n), PT_SET };
+                left = (TE){ ALLOC_node_set_diff(left.n, r.n), PT_SET, -1 };
                 continue;
             }
             int t = te_unify_numeric(&left, &r);
             left = (t == PT_REAL)
-                 ? (TE){ ALLOC_node_rsub(left.n, r.n), PT_REAL }
-                 : (TE){ ALLOC_node_sub(left.n, r.n),  PT_INT };
+                 ? (TE){ ALLOC_node_rsub(left.n, r.n), PT_REAL, -1 }
+                 : (TE){ ALLOC_node_sub(left.n, r.n), PT_INT, -1 };
         } else if (accept(TK_OR)) {
             TE r = te_term();
-            left = (TE){ ALLOC_node_or(left.n, r.n), PT_BOOL };
+            left = (TE){ ALLOC_node_or(left.n, r.n), PT_BOOL, -1 };
         } else break;
     }
     return left;
@@ -1744,7 +1995,21 @@ te_expr(void)
     if (accept(TK_IN)) {
         TE rhs = te_simple();
         if (rhs.t != PT_SET) pascal_error("'in' rhs must be a set");
-        return (TE){ ALLOC_node_set_in(left.n, rhs.n), PT_BOOL };
+        return (TE){ ALLOC_node_set_in(left.n, rhs.n), PT_BOOL, -1 };
+    }
+    if (accept(TK_IS)) {
+        if (tk != TK_ID) pascal_error("expected class name after 'is'");
+        struct sym *cs = sym_find_global(tk_id);
+        if (!cs || cs->kind != SYM_CLASSTYPE) pascal_error("'%s' is not a class", tk_id);
+        next_token();
+        return (TE){ ALLOC_node_is_class(left.n, (uint32_t)cs->idx), PT_BOOL, -1 };
+    }
+    if (accept(TK_AS)) {
+        if (tk != TK_ID) pascal_error("expected class name after 'as'");
+        struct sym *cs = sym_find_global(tk_id);
+        if (!cs || cs->kind != SYM_CLASSTYPE) pascal_error("'%s' is not a class", tk_id);
+        next_token();
+        return (TE){ ALLOC_node_as_class(left.n, (uint32_t)cs->idx), PT_POINTER, cs->idx };
     }
     int op = 0;
     switch (tk) {
@@ -1764,7 +2029,7 @@ te_expr(void)
         case TK_GE: n = ALLOC_node_str_ge(left.n, right.n); break;
         default: n = NULL;
         }
-        return (TE){ n, PT_BOOL };
+        return (TE){ n, PT_BOOL, -1 };
     }
     int t = te_unify_numeric(&left, &right);
     if (t == PT_REAL) {
@@ -1788,7 +2053,7 @@ te_expr(void)
         default: n = NULL;
         }
     }
-    return (TE){ n, PT_BOOL };
+    return (TE){ n, PT_BOOL, -1 };
 }
 
 // ---------------------------------------------------------------------------
@@ -2026,6 +2291,56 @@ parse_id_stmt(void)
     if (strcmp(id, "inc") == 0) return parse_inc_dec("inc", true);
     if (strcmp(id, "dec") == 0) return parse_inc_dec("dec", false);
 
+    // String mutators: insert / delete / setlength.  All take a
+    // string variable as one of their args; the new value is built
+    // by the runtime helper and assigned back.
+    if (strcmp(id, "insert") == 0) {
+        expect(TK_LPAREN, "'('");
+        TE sube = te_expr();
+        NODE *sub = (sube.t == PT_INT) ? ALLOC_node_chr_to_str(sube.n) : sube.n;
+        expect(TK_COMMA, "','");
+        if (tk != TK_ID) pascal_error("insert: 2nd arg must be a string variable");
+        char sname[64]; strncpy(sname, tk_id, 63); sname[63] = 0;
+        next_token();
+        struct sym *ss = sym_find(sname);
+        if (!ss || ss->type != PT_STR) pascal_error("insert: '%s' is not a string", sname);
+        expect(TK_COMMA, "','");
+        NODE *pos = parse_expr(); expect(TK_RPAREN, "')'");
+        NODE *load = (ss->kind == SYM_GVAR) ? ALLOC_node_gref(ss->idx)
+                                            : ALLOC_node_lref(ss->idx);
+        NODE *fresh = ALLOC_node_str_insert(sub, load, pos);
+        return mk_set_typed(ss, NULL, NULL, fresh);
+    }
+    if (strcmp(id, "delete") == 0) {
+        expect(TK_LPAREN, "'('");
+        if (tk != TK_ID) pascal_error("delete: 1st arg must be a string variable");
+        char sname[64]; strncpy(sname, tk_id, 63); sname[63] = 0;
+        next_token();
+        struct sym *ss = sym_find(sname);
+        if (!ss || ss->type != PT_STR) pascal_error("delete: '%s' is not a string", sname);
+        expect(TK_COMMA, "','");
+        NODE *st = parse_expr(); expect(TK_COMMA, "','");
+        NODE *cn = parse_expr(); expect(TK_RPAREN, "')'");
+        NODE *load = (ss->kind == SYM_GVAR) ? ALLOC_node_gref(ss->idx)
+                                            : ALLOC_node_lref(ss->idx);
+        NODE *fresh = ALLOC_node_str_delete(load, st, cn);
+        return mk_set_typed(ss, NULL, NULL, fresh);
+    }
+    if (strcmp(id, "setlength") == 0) {
+        expect(TK_LPAREN, "'('");
+        if (tk != TK_ID) pascal_error("setlength: 1st arg must be a string variable");
+        char sname[64]; strncpy(sname, tk_id, 63); sname[63] = 0;
+        next_token();
+        struct sym *ss = sym_find(sname);
+        if (!ss || ss->type != PT_STR) pascal_error("setlength: '%s' is not a string", sname);
+        expect(TK_COMMA, "','");
+        NODE *ln = parse_expr(); expect(TK_RPAREN, "')'");
+        NODE *load = (ss->kind == SYM_GVAR) ? ALLOC_node_gref(ss->idx)
+                                            : ALLOC_node_lref(ss->idx);
+        NODE *fresh = ALLOC_node_str_setlength(load, ln);
+        return mk_set_typed(ss, NULL, NULL, fresh);
+    }
+
     // File I/O built-ins.  Each takes a file variable's slot address
     // so the runtime can read/write the heap-allocated `pascal_file *`
     // it points at.
@@ -2133,6 +2448,51 @@ parse_id_stmt(void)
         }
     }
 
+    // Inside a method body, bare LHS that names a class field or
+    // property auto-resolves to Self.<name>.  Skip if the name
+    // shadows a local or global to avoid clobbering params and
+    // loop vars (which are valid lvalue targets too).
+    if (current_method_class_idx >= 0
+        && sym_find_local(id) == NULL
+        && sym_find_global(id) == NULL) {
+        int walk = current_method_class_idx;
+        while (walk >= 0) {
+            struct class_type *wc = &class_types[walk];
+            for (int i = 0; i < wc->nprops; i++) {
+                if (strcmp(wc->properties[i].name, id) == 0) {
+                    struct property_entry *pe = &wc->properties[i];
+                    expect(TK_ASSIGN, "':='");
+                    TE v = te_expr();
+                    NODE *rhs = te_coerce(v, pe->type, "property assignment");
+                    NODE *self_load = ALLOC_node_lref(0);
+                    if (pe->write_field_offset >= 0)
+                        return ALLOC_node_ptr_field_set(self_load, (uint32_t)pe->write_field_offset, rhs);
+                    if (pe->write_method_idx >= 0) {
+                        struct method_entry *sme = &class_types[walk].methods[pe->write_method_idx];
+                        NODE *args[2] = { self_load, rhs };
+                        return mk_pcall((uint32_t)sme->proc_idx, args, 2);
+                    }
+                    pascal_error("property '%s' is read-only", id);
+                }
+            }
+            walk = wc->parent_idx;
+        }
+        walk = current_method_class_idx;
+        while (walk >= 0) {
+            struct record_type *rt = &record_types[class_types[walk].rec_idx];
+            for (int i = 0; i < rt->nfields; i++) {
+                if (strcmp(rt->fields[i].name, id) == 0) {
+                    expect(TK_ASSIGN, "':='");
+                    TE v = te_expr();
+                    NODE *rhs = te_coerce(v, rt->fields[i].type, "field assignment");
+                    NODE *self_load = ALLOC_node_lref(0);
+                    return ALLOC_node_ptr_field_set(self_load, (uint32_t)rt->fields[i].offset, rhs);
+                }
+            }
+            walk = class_types[walk].parent_idx;
+        }
+    }
+
     // function name self-reference inside body → either call or
     // assignment to return slot.  `Result` is the modern alias.
     // For methods (proc->name like "TAnimal.describe") we also accept
@@ -2189,6 +2549,37 @@ parse_id_stmt(void)
         char fname[64]; strncpy(fname, tk_id, 63); fname[63] = 0;
         next_token();
 
+        // Property write — check before method/field paths.
+        if (s->class_idx >= 0) {
+            struct property_entry *pe = NULL;
+            int walk = s->class_idx;
+            while (walk >= 0) {
+                struct class_type *wc = &class_types[walk];
+                for (int i = 0; i < wc->nprops; i++)
+                    if (strcmp(wc->properties[i].name, fname) == 0) { pe = &wc->properties[i]; break; }
+                if (pe) break;
+                walk = wc->parent_idx;
+            }
+            if (pe && tk == TK_ASSIGN) {
+                next_token();
+                TE val = te_expr();
+                NODE *rhs = te_coerce(val, pe->type, "property assignment");
+                NODE *self_load = (s->kind == SYM_GVAR) ? ALLOC_node_gref(s->idx)
+                                                        : ALLOC_node_lref(s->idx);
+                if (pe->write_field_offset >= 0)
+                    return ALLOC_node_ptr_field_set(self_load, (uint32_t)pe->write_field_offset, rhs);
+                if (pe->write_method_idx >= 0) {
+                    struct method_entry *sme = &class_types[s->class_idx].methods[pe->write_method_idx];
+                    NODE *args[2] = { self_load, rhs };
+                    if (sme->is_virtual && sme->vtable_slot >= 0) {
+                        uint32_t base = push_call_args(&args[1], 1);
+                        return ALLOC_node_vcall(self_load, (uint32_t)sme->vtable_slot, base, 2);
+                    }
+                    return mk_pcall((uint32_t)sme->proc_idx, args, 2);
+                }
+                pascal_error("property '%s' is read-only", fname);
+            }
+        }
         // obj.method(args)  — statement form (discard return value).
         if (s->class_idx >= 0) {
             struct method_entry *me = NULL;
@@ -2394,6 +2785,32 @@ parse_stmt(void)
         NODE *msg = (e.t == PT_STR) ? e.n : ALLOC_node_chr_to_str(e.n);
         return ALLOC_node_raise(msg);
     }
+    case TK_GOTO: {
+        next_token();
+        if (tk != TK_INT) pascal_error("expected label number after 'goto'");
+        int64_t v = tk_int;
+        next_token();
+        if (v < 0 || v >= PASCAL_MAX_LABELS)
+            pascal_error("label %ld out of range", (long)v);
+        return ALLOC_node_goto((uint32_t)v);
+    }
+    case TK_INT: {
+        // Maybe a label statement:  N: stmt
+        int64_t v = tk_int;
+        const char *save_src = src; int save_line = line_no;
+        next_token();
+        if (accept(TK_COLON)) {
+            if (v < 0 || v >= PASCAL_MAX_LABELS)
+                pascal_error("label %ld out of range", (long)v);
+            NODE *here = ALLOC_node_label_set((uint32_t)v);
+            NODE *next = parse_stmt();
+            return mk_seq(here, next);
+        }
+        // Wasn't a label — restore and bail (an integer can't start a statement).
+        src = save_src; line_no = save_line;
+        tk = TK_INT; tk_int = v;
+        pascal_error("unexpected integer at statement start (line %d)", line_no);
+    }
     case TK_BREAK:    next_token(); return ALLOC_node_break();
     case TK_CONTINUE: next_token(); return ALLOC_node_continue();
     case TK_EXIT:
@@ -2508,11 +2925,69 @@ parse_type(int32_t *lo_out, int32_t *hi_out,
             for (int i = 0; i < pc->nmethods; i++) {
                 ct->methods[ct->nmethods++] = pc->methods[i];
             }
+            for (int i = 0; i < pc->nprops; i++) {
+                ct->properties[ct->nprops++] = pc->properties[i];
+            }
             ct->vtable_size = pc->vtable_size;
         }
 
         // Fields and method headers, in any order, terminated by `end`.
         while (tk != TK_END && tk != TK_EOF) {
+            // Visibility markers — accepted and ignored (no real
+            // access checking yet).
+            if (accept(TK_PRIVATE)   || accept(TK_PUBLIC)
+                || accept(TK_PROTECTED) || accept(TK_PUBLISHED)) {
+                continue;
+            }
+            // property NAME : TYPE read SOURCE [write TARGET];
+            if (accept(TK_PROPERTY)) {
+                if (tk != TK_ID) pascal_error("expected property name");
+                char pname[48]; strncpy(pname, tk_id, 47); pname[47] = 0;
+                next_token();
+                expect(TK_COLON, "':'");
+                int32_t a, b, c2, d2; bool h2 = false;
+                int t = parse_type(&a, &b, &c2, &d2, &h2);
+                int read_off = -1, read_m = -1, write_off = -1, write_m = -1;
+                if (tk == TK_ID && strcmp(tk_id, "read") == 0) {
+                    next_token();
+                    if (tk != TK_ID) pascal_error("expected reader name");
+                    char rname[48]; strncpy(rname, tk_id, 47); rname[47] = 0;
+                    next_token();
+                    for (int i = 0; i < rt->nfields; i++)
+                        if (strcmp(rt->fields[i].name, rname) == 0) { read_off = rt->fields[i].offset; break; }
+                    if (read_off < 0) {
+                        for (int i = 0; i < ct->nmethods; i++)
+                            if (strcmp(ct->methods[i].name, rname) == 0) { read_m = i; break; }
+                    }
+                    if (read_off < 0 && read_m < 0)
+                        pascal_error("property '%s': no reader '%s'", pname, rname);
+                }
+                if (tk == TK_ID && strcmp(tk_id, "write") == 0) {
+                    next_token();
+                    if (tk != TK_ID) pascal_error("expected writer name");
+                    char wname[48]; strncpy(wname, tk_id, 47); wname[47] = 0;
+                    next_token();
+                    for (int i = 0; i < rt->nfields; i++)
+                        if (strcmp(rt->fields[i].name, wname) == 0) { write_off = rt->fields[i].offset; break; }
+                    if (write_off < 0) {
+                        for (int i = 0; i < ct->nmethods; i++)
+                            if (strcmp(ct->methods[i].name, wname) == 0) { write_m = i; break; }
+                    }
+                    if (write_off < 0 && write_m < 0)
+                        pascal_error("property '%s': no writer '%s'", pname, wname);
+                }
+                expect(TK_SEMI, "';'");
+                if (ct->nprops >= 16) pascal_error("too many properties");
+                struct property_entry *pe = &ct->properties[ct->nprops++];
+                memset(pe, 0, sizeof(*pe));
+                strncpy(pe->name, pname, sizeof(pe->name) - 1);
+                pe->type = t;
+                pe->read_field_offset  = read_off;
+                pe->read_method_idx    = read_m;
+                pe->write_field_offset = write_off;
+                pe->write_method_idx   = write_m;
+                continue;
+            }
             if (tk == TK_PROCEDURE || tk == TK_FUNCTION
                 || tk == TK_CONSTRUCTOR || tk == TK_DESTRUCTOR) {
                 bool is_func = (tk == TK_FUNCTION);
@@ -3530,6 +4005,18 @@ parse_decls_block(CTX *c)
             }
             expect(TK_SEMI, "';'");
         }
+        else if (accept(TK_LABEL)) {
+            // `label N1, N2, ...;` — labels are tracked by their
+            // number directly (mapped into pascal_label_bufs); the
+            // declaration just consumes the list.
+            while (tk == TK_INT) {
+                if (tk_int < 0 || tk_int >= PASCAL_MAX_LABELS)
+                    pascal_error("label %ld out of range [0..%d]", (long)tk_int, PASCAL_MAX_LABELS - 1);
+                next_token();
+                if (!accept(TK_COMMA)) break;
+            }
+            expect(TK_SEMI, "';'");
+        }
         else if (accept(TK_VAR))   parse_var_decls_global();
         else if (accept(TK_CONST)) parse_const_decls_global();
         else if (accept(TK_TYPE))  parse_type_decls_global();
@@ -3764,13 +4251,14 @@ main(int argc, char *argv[])
     NODE *prog = parse_program(c);
 
     // Build per-class vtables now that every method body has been
-    // parsed.  Inheritance: copy the parent's vtable, then override
-    // entries for methods declared in this class.
+    // parsed.  We always allocate at least 1 entry so the vtable
+    // address is unique-per-class — `is` / `as` rely on identifying
+    // a class by its vtable pointer.
     pascal_vtables = (int **)calloc(n_class_types, sizeof(int *));
     for (int i = 0; i < n_class_types; i++) {
         struct class_type *ct = &class_types[i];
-        if (ct->vtable_size == 0) { pascal_vtables[i] = NULL; continue; }
-        int *vt = (int *)calloc(ct->vtable_size, sizeof(int));
+        int sz = ct->vtable_size > 0 ? ct->vtable_size : 1;
+        int *vt = (int *)calloc(sz, sizeof(int));
         if (ct->parent_idx >= 0 && pascal_vtables[ct->parent_idx]) {
             int parent_size = class_types[ct->parent_idx].vtable_size;
             int copy = parent_size < ct->vtable_size ? parent_size : ct->vtable_size;

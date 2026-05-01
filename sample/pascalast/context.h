@@ -147,6 +147,17 @@ struct exc_handler {
     int saved_display[PASCAL_MAX_DEPTH];
 };
 
+// Per-procedure label table.  Each declared label gets a jmp_buf
+// that the labeled statement initializes at runtime; `goto` longjmps
+// to it.  Backward jumps (label seen before goto) work; forward
+// jumps are UB.
+#define PASCAL_MAX_LABELS 32
+struct pascal_label_buf {
+    jmp_buf buf;
+    int     active;
+};
+extern struct pascal_label_buf pascal_label_bufs[PASCAL_MAX_LABELS];
+
 struct pascalast_option {
     bool quiet;
     bool dump_ast;

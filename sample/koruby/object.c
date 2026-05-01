@@ -1003,6 +1003,16 @@ bool korb_eq(VALUE a, VALUE b) {
         if (FIXNUM_P(a) && FIXNUM_P(b)) return a == b;
         if (FIXNUM_P(a) && BUILTIN_TYPE(b) == T_BIGNUM) return korb_int_eq(a, b);
         if (FIXNUM_P(b) && BUILTIN_TYPE(a) == T_BIGNUM) return korb_int_eq(a, b);
+        if (FIXNUM_P(a) && (FLONUM_P(b) || BUILTIN_TYPE(b) == T_FLOAT))
+            return (double)FIX2LONG(a) == korb_num2dbl(b);
+        if (FIXNUM_P(b) && (FLONUM_P(a) || BUILTIN_TYPE(a) == T_FLOAT))
+            return korb_num2dbl(a) == (double)FIX2LONG(b);
+        return false;
+    }
+    if (FLONUM_P(a) || FLONUM_P(b)) {
+        if ((FLONUM_P(a) || BUILTIN_TYPE(a) == T_FLOAT) &&
+            (FLONUM_P(b) || BUILTIN_TYPE(b) == T_FLOAT))
+            return korb_num2dbl(a) == korb_num2dbl(b);
         return false;
     }
     if (NIL_P(a) || NIL_P(b)) return a == b;
@@ -1104,6 +1114,13 @@ VALUE korb_dispatch_call(CTX *c, struct Node *callsite, VALUE recv, ID name,
             VALUE r = m->u.cfunc.func(c, recv, argc, argv);
             c->self = prev_self;
             current_block = prev_block;
+            /* If a block was passed and it broke out, clear the BREAK state
+             * here — break only escapes the iterator, not its caller. */
+            if (block && c->state == KORB_BREAK) {
+                r = c->state_value;
+                c->state = KORB_NORMAL;
+                c->state_value = Qnil;
+            }
             return r;
         }
         /* fallthrough to AST path with mc filled in */
@@ -1119,6 +1136,11 @@ VALUE korb_dispatch_call(CTX *c, struct Node *callsite, VALUE recv, ID name,
         VALUE r = mc->cfunc(c, recv, argc, argv);
         c->self = prev_self;
         current_block = prev_block;
+        if (block && c->state == KORB_BREAK) {
+            r = c->state_value;
+            c->state = KORB_NORMAL;
+            c->state_value = Qnil;
+        }
         return r;
     }
 
@@ -1230,9 +1252,11 @@ VALUE korb_dispatch_binop(CTX *c, VALUE recv, ID name, int argc, VALUE *argv) {
         return Qnil;
     }
     VALUE *prev_fp = c->fp;
+    VALUE *prev_sp = c->sp;
     VALUE prev_self = c->self;
     /* push frame after all current locals; we don't know exactly the boundary,
-       so use sp as upper bound */
+     * so use sp as upper bound.  Restore sp at end so repeated send-style
+     * dispatches don't leak high-water mark. */
     VALUE *new_fp = c->sp + 1;
     if (new_fp + m->u.ast.locals_cnt >= c->stack_end) {
         korb_raise(c, NULL, "stack overflow");
@@ -1278,6 +1302,7 @@ VALUE korb_dispatch_binop(CTX *c, VALUE recv, ID name, int argc, VALUE *argv) {
     VALUE r = EVAL(c, m->u.ast.body);
     c->current_frame = frame2.prev;
     c->fp = prev_fp;
+    c->sp = prev_sp;
     c->self = prev_self;
     c->cref = prev_cref2;
     if (c->state == KORB_RETURN) {
@@ -1552,17 +1577,24 @@ struct korb_fiber {
     VALUE *args;
     int argc;
     VALUE result;
-    /* CTX snapshot to restore on swap */
     CTX *c;
-    VALUE *fp_save;
-    VALUE *sp_save;
-    VALUE self_save;
-    struct korb_cref *cref_save;
-    struct korb_proc *block_save;
+
+    /* Resumer-side save: stashed on resume, restored on yield. */
+    VALUE *resumer_fp;
+    VALUE *resumer_sp;
+    VALUE *resumer_stack_base;
+    VALUE *resumer_stack_end;
+
+    /* Fiber-side save: stashed on yield, restored on resume.
+     * Initialized at fiber creation (or first resume) to point into
+     * the fiber's heap frame so the body's slots don't overlap the
+     * resumer's value-stack. */
+    VALUE *fiber_fp;
+    VALUE *fiber_sp;
 
     /* Per-fiber value-stack area: heap-allocated, lives as long as the
-     * fiber, used for the block's local frame so its slots don't overlap
-     * the resumer's stack. */
+     * fiber, used for the block's frame and for any method calls made
+     * from within the fiber. */
     VALUE *frame;
     size_t frame_size;
 };
@@ -1608,16 +1640,28 @@ VALUE korb_fiber_new(struct korb_proc *block) {
     fib->result = Qnil;
     fib->c = NULL;
     /* Allocate a heap value-frame for the fiber's locals so they don't
-     * share the resumer's stack slots. */
-    fib->frame_size = 4096;
+     * share the resumer's stack slots.  Optcarrot's PPU pipeline can
+     * have deep call chains (rendering helpers calling block-yields
+     * down several levels), so size generously. */
+    fib->frame_size = 64 * 1024;
     fib->frame = korb_xmalloc(sizeof(VALUE) * fib->frame_size);
     for (size_t i = 0; i < fib->frame_size; i++) fib->frame[i] = Qnil;
     /* Pre-fill from env so closure captured locals are visible. */
+    uint32_t env_size = 0;
     if (block) {
-        for (uint32_t i = 0; i < block->env_size && i < fib->frame_size; i++) {
+        env_size = block->env_size;
+        for (uint32_t i = 0; i < env_size && i < fib->frame_size; i++) {
             fib->frame[i] = block->env[i];
         }
     }
+    /* Initial fiber c->fp/sp: fp at frame base, sp just past block's
+     * env (so method calls inside the block don't overlap its locals). */
+    fib->fiber_fp = fib->frame;
+    fib->fiber_sp = fib->frame + env_size;
+    fib->resumer_fp = NULL;
+    fib->resumer_sp = NULL;
+    fib->resumer_stack_base = NULL;
+    fib->resumer_stack_end = NULL;
     return (VALUE)fib;
 }
 
@@ -1646,20 +1690,27 @@ VALUE korb_fiber_resume(CTX *c, VALUE fibv, int argc, VALUE *argv) {
         makecontext(&fib->ctx, (void (*)(void))korb_fiber_entry, 2, hi, lo);
     }
 
-    /* Save current fiber and switch.  Also swap c->fp to the fiber's
-     * heap frame so the block's lvars don't collide with the resumer's
-     * value-stack slots. */
+    /* Save resumer's c->fp/sp/stack_base/stack_end into the fiber, swap
+     * in the fiber's saved fp/sp + heap-frame extents, then swapcontext.
+     * Yield will reverse this. */
     struct korb_fiber *prev = current_fiber;
     current_fiber = fib;
-    VALUE *saved_fp = c->fp;
-    VALUE *saved_sp = c->sp;
-    c->fp = fib->frame;
-    c->sp = fib->frame + fib->frame_size - 1;
+    fib->resumer_fp = c->fp;
+    fib->resumer_sp = c->sp;
+    fib->resumer_stack_base = c->stack_base;
+    fib->resumer_stack_end = c->stack_end;
+    c->fp = fib->fiber_fp;
+    c->sp = fib->fiber_sp;
+    c->stack_base = fib->frame;
+    c->stack_end = fib->frame + fib->frame_size;
     fib->state = KF_RUNNING;
     swapcontext(&fib->prev_ctx, &fib->ctx);
-    /* Returned from yield/end — restore resumer's fp/sp. */
-    c->fp = saved_fp;
-    c->sp = saved_sp;
+    /* Returned from yield/end — restore resumer's fp/sp from where the
+     * yield path stashed them. */
+    c->fp = fib->resumer_fp;
+    c->sp = fib->resumer_sp;
+    c->stack_base = fib->resumer_stack_base;
+    c->stack_end = fib->resumer_stack_end;
     current_fiber = prev;
     if (fib->state != KF_DEAD) fib->state = KF_SUSPENDED;
     return fib->result;
@@ -1673,8 +1724,25 @@ VALUE korb_fiber_yield(CTX *c, int argc, VALUE *argv) {
     }
     fib->result = argc > 0 ? argv[0] : Qnil;
     fib->state = KF_SUSPENDED;
+    /* Save fiber's c->fp/sp so the next resume can pick up where we
+     * yielded; restore the resumer's fp/sp/stack so it sees its own
+     * value-stack. */
+    fib->fiber_fp = c->fp;
+    fib->fiber_sp = c->sp;
+    c->fp = fib->resumer_fp;
+    c->sp = fib->resumer_sp;
+    c->stack_base = fib->resumer_stack_base;
+    c->stack_end = fib->resumer_stack_end;
     swapcontext(&fib->ctx, &fib->prev_ctx);
-    /* When resumed, return new args */
+    /* Resumed — restore the fiber's heap-frame extents so subsequent
+     * method calls inside the fiber check against the right bounds. */
+    c->stack_base = fib->frame;
+    c->stack_end = fib->frame + fib->frame_size;
+    /* Resumed: restore the fiber's fp/sp (resume already did this from
+     * its side, but in a chain of resume->yield->resume the inner ctx
+     * comes back here and the resumer's wrapper has overwritten c->fp
+     * to its own; resume sets fp again before swapcontext, so by the
+     * time we land here, c->fp is fib->fiber_fp). */
     if (fib->argc > 0) return fib->args[0];
     return Qnil;
 }

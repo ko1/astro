@@ -8,7 +8,7 @@ Pascal 拡張、性能のうち高度なもの。「Pascal として完成」の
 
 | # | 項目 | 工数 | 備考 |
 |---|------|------|------|
-| 1 | **`goto` / label** | 小 | `break`/`continue`/`exit`/`raise` でほぼカバーできているが、ISO 仕様には残る。setjmp+longjmp で実装可能。 |
+| 1 | **`goto` / label runtime** | 中 | 構文受付済み (round 6)。実装は body-level dispatch wrapper が要る — EVAL の force-inline と setjmp が衝突するため、proc body 全体を setjmp ループに wrap して、longjmp 後に label idx で resume する設計が必要。 |
 | 2 | **Subrange の範囲チェック** | 小 | 代入時 / for-loop 境界で min/max 検査。`{$R+}` ディレクティブで on/off。 |
 | 3 | **N 次元 (≥ 3) 配列** | 中 | per-array に stride table を持たせれば一般化。1D/2D の専用ノードは残してホットパス維持。 |
 | 4 | **Open-array param `array of T`** | 中 | base + length の 2 値で渡す必要がある。slot を 2 つ消費するか、heap struct を介す。 |
@@ -22,15 +22,17 @@ Pascal 拡張、性能のうち高度なもの。「Pascal として完成」の
 | ~~7~~ | ~~Virtual / override 真のディスパッチ~~ | — | **完了** (round 5)。vtable + node_vcall。 |
 | ~~8~~ | ~~`inherited`~~ | — | **完了** (round 5)。 |
 | ~~9~~ | ~~`destructor`~~ | — | **完了** (round 5)。`obj.Done` で呼ぶ。リソース回収は libgc 任せ。 |
-| 10 | **Properties** | 中 | `property X: T read GetX write SetX` を field アクセス時にメソッド呼び出しに置換。 |
-| 11 | **Abstract methods / `is`/`as`** | 中 | 型タグの runtime 比較。 |
+| ~~10~~ | ~~Properties~~ | — | **完了** (round 6)。field-backed と method-backed 両方。 |
+| ~~11~~ | ~~`is` / `as`~~ | — | **完了** (round 6)。vtable 同定 + 親チェーン走査。 |
+| 11b | **Abstract methods** | 小 | virtual で proc_idx=-1 のまま runtime で raise。 |
 | 12 | **Class methods** | 小 | static メソッド (Self なし)。 |
+| 12b | **Visibility 強制** | 中 | private/protected を実際にチェックする。現状受付のみ。 |
 
 ## 文字列・コレクション
 
 | # | 項目 | 工数 | 備考 |
 |---|------|------|------|
-| 13 | **AnsiString フル機能** | 小〜中 | `copy / pos / delete / insert / val / str / setlength`。char* で大体行ける。 |
+| ~~13~~ | ~~AnsiString フル機能~~ | — | **完了** (round 6)。`copy / pos / insert / delete / setlength / IntToStr / StrToInt / FloatToStr / StrToFloat` + 文字↔文字列の自動 promote。 |
 | 14 | **dynamic array `array of T` (値)** | 中 | length() / setlength() で確保。 |
 | 15 | **`TStringList` 風の標準コレクション** | 中 | クラス基盤がそろったので追加可能。 |
 

@@ -58,7 +58,19 @@ pointers (`^Type`, `nil`, `new`, `dispose`, `p^.field`).
 | `inherited [methodname](args)` — static call into parent | `test/40_inherited.pas` |
 | `destructor T.Done; … end;` (parsed and called like a regular method) | (same) |
 
-Total tests: **40 / 40** passing.
+### Round 6 — OOP polish + string lib + parsing
+
+| Feature                                  | Test                       |
+|---|---|
+| **Properties** (`property X: T read R [write W]`) — read/write via field offset or method idx | `test/41_property_isas.pas` |
+| **`is` / `as`** — runtime class hierarchy check via vtable lookup | (same) |
+| **Bare-name auto-resolve** — inside a method, unqualified `field` / `Property` becomes `Self.X` (locals shadow) | (same) |
+| **`(p as T).field` / `(p as T).method(args)`** — postfix dispatch on parenthesised class expressions | (same) |
+| Visibility keywords (`private`, `public`, `protected`, `published`) — accepted, no enforcement | (same) |
+| **AnsiString full helpers**: `copy`, `pos`, `insert`, `delete`, `setlength`, `IntToStr`, `StrToInt`, `FloatToStr`, `StrToFloat` (auto-promotes char→string) | `test/42_string_funcs.pas` |
+| `label N1, N2, …;` declarations + `goto N` / `N: stmt` syntax accepted (runtime stubbed — see todo.md) | — |
+
+Total tests: **42 / 42** passing.
 
 ### Knowingly skipped (deferred to later rounds)
 

@@ -796,6 +796,25 @@ node_exc_msg(CTX * restrict c, NODE * restrict n)
     return (VALUE)(uintptr_t)(c->exc_msg ? c->exc_msg : "");
 }
 
+// goto / label — accepted as syntax for legacy-Pascal compatibility,
+// but the runtime is not yet implemented.  EVAL bodies are
+// force-inlined, which precludes a setjmp at the label; a proper
+// implementation needs a body-level dispatch wrapper that survives
+// the longjmp.  See docs/todo.md.
+NODE_DEF
+node_label_set(CTX * restrict c, NODE * restrict n, uint32_t label_idx)
+{
+    (void)c; (void)n; (void)label_idx;
+    return 0;
+}
+
+NODE_DEF
+node_goto(CTX * restrict c, NODE * restrict n, uint32_t label_idx)
+{
+    (void)c; (void)label_idx;
+    pascal_error_at(n->head.line, "goto is parsed but not yet implemented");
+}
+
 // Non-local control flow.  Each just sets a CTX flag; loops & seq
 // inspect the flag and unwind.
 NODE_DEF
@@ -1306,6 +1325,35 @@ node_new_object(CTX * restrict c, NODE * restrict n, uint32_t nslots, uint32_t c
     return (VALUE)(uintptr_t)p;
 }
 
+// Runtime class check: walks the hierarchy from `obj`'s actual
+// class up to the targets's parent chain.  Returns 1 iff the obj is
+// an instance of `target_class_idx` (or a descendant).
+extern int pascal_class_of_obj(int64_t obj);   // implemented in main.c
+extern int pascal_class_is_descendant(int sub, int sup);
+
+NODE_DEF
+node_is_class(CTX * restrict c, NODE * restrict n, NODE *obj_e, uint32_t target_class_idx)
+{
+    (void)n;
+    int64_t obj = EVAL_ARG(c, obj_e);
+    if (!obj) return 0;
+    int my = pascal_class_of_obj(obj);
+    if (my < 0) return 0;
+    return pascal_class_is_descendant(my, (int)target_class_idx);
+}
+
+NODE_DEF
+node_as_class(CTX * restrict c, NODE * restrict n, NODE *obj_e, uint32_t target_class_idx)
+{
+    (void)n;
+    int64_t obj = EVAL_ARG(c, obj_e);
+    if (!obj) return 0;
+    int my = pascal_class_of_obj(obj);
+    if (my < 0 || !pascal_class_is_descendant(my, (int)target_class_idx))
+        pascal_error_at(n->head.line, "invalid 'as' typecast");
+    return obj;
+}
+
 // Virtual method call: read vtable pointer from obj's slot 0, then
 // proc index at vtable[slot].  Behaves otherwise like node_pcall_n
 // — args are staged in PASCAL_CALL_ARGS[args_idx..argc].  Self is
@@ -1360,6 +1408,142 @@ node_ptr_field_set(CTX * restrict c, NODE * restrict n, NODE *ptr_e, uint32_t of
     int64_t v = EVAL_ARG(c, val);
     p[offset] = v;
     return 0;
+}
+
+// AnsiString helpers.  All return fresh strings (no in-place
+// mutation through the helper itself; callers `s := …` to commit).
+
+NODE_DEF
+node_str_copy(CTX * restrict c, NODE * restrict n, NODE *s_e, NODE *start_e, NODE *count_e)
+{
+    (void)n;
+    const char *s = (const char *)(uintptr_t)EVAL_ARG(c, s_e);
+    int64_t start = EVAL_ARG(c, start_e);
+    int64_t count = EVAL_ARG(c, count_e);
+    if (!s) s = "";
+    int64_t len = (int64_t)strlen(s);
+    if (start < 1) start = 1;
+    if (start > len) { char *e = (char *)GC_malloc_atomic(1); e[0] = 0; return (VALUE)(uintptr_t)e; }
+    if (count < 0) count = 0;
+    if (start - 1 + count > len) count = len - (start - 1);
+    char *buf = (char *)GC_malloc_atomic(count + 1);
+    memcpy(buf, s + start - 1, count);
+    buf[count] = 0;
+    return (VALUE)(uintptr_t)buf;
+}
+
+NODE_DEF
+node_str_pos(CTX * restrict c, NODE * restrict n, NODE *sub_e, NODE *s_e)
+{
+    (void)n;
+    const char *sub = (const char *)(uintptr_t)EVAL_ARG(c, sub_e);
+    const char *s   = (const char *)(uintptr_t)EVAL_ARG(c, s_e);
+    if (!sub || !s) return 0;
+    const char *p = strstr(s, sub);
+    return p ? (VALUE)(p - s + 1) : (VALUE)0;
+}
+
+NODE_DEF
+node_str_insert(CTX * restrict c, NODE * restrict n, NODE *sub_e, NODE *s_e, NODE *pos_e)
+{
+    (void)n;
+    const char *sub = (const char *)(uintptr_t)EVAL_ARG(c, sub_e);
+    const char *s   = (const char *)(uintptr_t)EVAL_ARG(c, s_e);
+    int64_t pos     = EVAL_ARG(c, pos_e);
+    if (!sub) sub = "";
+    if (!s)   s   = "";
+    int64_t slen = (int64_t)strlen(s);
+    int64_t sublen = (int64_t)strlen(sub);
+    if (pos < 1) pos = 1;
+    if (pos > slen + 1) pos = slen + 1;
+    char *buf = (char *)GC_malloc_atomic(slen + sublen + 1);
+    memcpy(buf, s, pos - 1);
+    memcpy(buf + pos - 1, sub, sublen);
+    memcpy(buf + pos - 1 + sublen, s + pos - 1, slen - (pos - 1));
+    buf[slen + sublen] = 0;
+    return (VALUE)(uintptr_t)buf;
+}
+
+NODE_DEF
+node_str_delete(CTX * restrict c, NODE * restrict n, NODE *s_e, NODE *start_e, NODE *count_e)
+{
+    (void)n;
+    const char *s = (const char *)(uintptr_t)EVAL_ARG(c, s_e);
+    int64_t start = EVAL_ARG(c, start_e);
+    int64_t count = EVAL_ARG(c, count_e);
+    if (!s) s = "";
+    int64_t len = (int64_t)strlen(s);
+    if (start < 1) start = 1;
+    if (start > len) { char *e = (char *)GC_malloc_atomic(len + 1); memcpy(e, s, len + 1); return (VALUE)(uintptr_t)e; }
+    if (count < 0) count = 0;
+    if (start - 1 + count > len) count = len - (start - 1);
+    int64_t newlen = len - count;
+    char *buf = (char *)GC_malloc_atomic(newlen + 1);
+    memcpy(buf, s, start - 1);
+    memcpy(buf + start - 1, s + start - 1 + count, len - (start - 1) - count);
+    buf[newlen] = 0;
+    return (VALUE)(uintptr_t)buf;
+}
+
+NODE_DEF
+node_str_setlength(CTX * restrict c, NODE * restrict n, NODE *s_e, NODE *len_e)
+{
+    (void)n;
+    const char *s = (const char *)(uintptr_t)EVAL_ARG(c, s_e);
+    int64_t newlen = EVAL_ARG(c, len_e);
+    if (newlen < 0) newlen = 0;
+    if (!s) s = "";
+    int64_t old = (int64_t)strlen(s);
+    char *buf = (char *)GC_malloc_atomic(newlen + 1);
+    int64_t copy = old < newlen ? old : newlen;
+    memcpy(buf, s, copy);
+    if (newlen > copy) memset(buf + copy, ' ', newlen - copy);
+    buf[newlen] = 0;
+    return (VALUE)(uintptr_t)buf;
+}
+
+NODE_DEF
+node_int_to_str(CTX * restrict c, NODE * restrict n, NODE *e)
+{
+    (void)n;
+    int64_t v = EVAL_ARG(c, e);
+    char tmp[32];
+    int len = snprintf(tmp, sizeof(tmp), "%ld", (long)v);
+    char *buf = (char *)GC_malloc_atomic(len + 1);
+    memcpy(buf, tmp, len + 1);
+    return (VALUE)(uintptr_t)buf;
+}
+
+NODE_DEF
+node_str_to_int(CTX * restrict c, NODE * restrict n, NODE *e)
+{
+    (void)n;
+    const char *s = (const char *)(uintptr_t)EVAL_ARG(c, e);
+    if (!s) return 0;
+    return (int64_t)strtoll(s, NULL, 10);
+}
+
+NODE_DEF
+node_str_to_real(CTX * restrict c, NODE * restrict n, NODE *e)
+{
+    (void)n;
+    const char *s = (const char *)(uintptr_t)EVAL_ARG(c, e);
+    union { double d; int64_t i; } u;
+    u.d = s ? strtod(s, NULL) : 0.0;
+    return u.i;
+}
+
+NODE_DEF
+node_real_to_str(CTX * restrict c, NODE * restrict n, NODE *e)
+{
+    (void)n;
+    union { int64_t i; double d; } u;
+    u.i = EVAL_ARG(c, e);
+    char tmp[64];
+    int len = snprintf(tmp, sizeof(tmp), "%g", u.d);
+    char *buf = (char *)GC_malloc_atomic(len + 1);
+    memcpy(buf, tmp, len + 1);
+    return (VALUE)(uintptr_t)buf;
 }
 
 // `s[i] := ch` — copy-on-write mutation.  We always allocate a fresh

@@ -131,6 +131,15 @@ static VALUE kernel_block_given(CTX *c, VALUE self, int argc, VALUE *argv) {
     return KORB_BOOL(korb_block_given());
 }
 
+static VALUE kernel_dir(CTX *c, VALUE self, int argc, VALUE *argv) {
+    const char *cur = c->current_file ? c->current_file : ".";
+    return korb_str_new_cstr(korb_dirname(cur));
+}
+
+static VALUE kernel_file(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return korb_str_new_cstr(c->current_file ? c->current_file : "(eval)");
+}
+
 static VALUE kernel_require_relative(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc != 1 || BUILTIN_TYPE(argv[0]) != T_STRING) {
         korb_raise(c, NULL, "require_relative: expected 1 String");
@@ -295,11 +304,31 @@ static VALUE int_or(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE int_xor(CTX *c, VALUE self, int argc, VALUE *argv) {
     return korb_int_xor(self, argv[0]);
 }
-static VALUE int_lt(CTX *c, VALUE self, int argc, VALUE *argv) { return KORB_BOOL(korb_int_cmp(self, argv[0]) < 0); }
-static VALUE int_le(CTX *c, VALUE self, int argc, VALUE *argv) { return KORB_BOOL(korb_int_cmp(self, argv[0]) <= 0); }
-static VALUE int_gt(CTX *c, VALUE self, int argc, VALUE *argv) { return KORB_BOOL(korb_int_cmp(self, argv[0]) > 0); }
-static VALUE int_ge(CTX *c, VALUE self, int argc, VALUE *argv) { return KORB_BOOL(korb_int_cmp(self, argv[0]) >= 0); }
-static VALUE int_eq(CTX *c, VALUE self, int argc, VALUE *argv) { return KORB_BOOL(korb_int_eq(self, argv[0])); }
+static VALUE int_lt(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (FLONUM_P(argv[0]) || BUILTIN_TYPE(argv[0]) == T_FLOAT)
+        return KORB_BOOL((double)FIX2LONG(self) < korb_num2dbl(argv[0]));
+    return KORB_BOOL(korb_int_cmp(self, argv[0]) < 0);
+}
+static VALUE int_le(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (FLONUM_P(argv[0]) || BUILTIN_TYPE(argv[0]) == T_FLOAT)
+        return KORB_BOOL((double)FIX2LONG(self) <= korb_num2dbl(argv[0]));
+    return KORB_BOOL(korb_int_cmp(self, argv[0]) <= 0);
+}
+static VALUE int_gt(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (FLONUM_P(argv[0]) || BUILTIN_TYPE(argv[0]) == T_FLOAT)
+        return KORB_BOOL((double)FIX2LONG(self) > korb_num2dbl(argv[0]));
+    return KORB_BOOL(korb_int_cmp(self, argv[0]) > 0);
+}
+static VALUE int_ge(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (FLONUM_P(argv[0]) || BUILTIN_TYPE(argv[0]) == T_FLOAT)
+        return KORB_BOOL((double)FIX2LONG(self) >= korb_num2dbl(argv[0]));
+    return KORB_BOOL(korb_int_cmp(self, argv[0]) >= 0);
+}
+static VALUE int_eq(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (FLONUM_P(argv[0]) || BUILTIN_TYPE(argv[0]) == T_FLOAT)
+        return KORB_BOOL((double)FIX2LONG(self) == korb_num2dbl(argv[0]));
+    return KORB_BOOL(korb_int_eq(self, argv[0]));
+}
 static VALUE int_cmp(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1) return Qnil;
     if (FIXNUM_P(self) && FIXNUM_P(argv[0])) {
@@ -309,9 +338,9 @@ static VALUE int_cmp(CTX *c, VALUE self, int argc, VALUE *argv) {
         (FIXNUM_P(argv[0]) || BUILTIN_TYPE(argv[0]) == T_BIGNUM)) {
         return INT2FIX(korb_int_cmp(self, argv[0]));
     }
-    if (BUILTIN_TYPE(argv[0]) == T_FLOAT) {
+    if (FLONUM_P(argv[0]) || BUILTIN_TYPE(argv[0]) == T_FLOAT) {
         double a = (double)FIX2LONG(self);
-        double b = ((struct korb_float *)argv[0])->value;
+        double b = korb_num2dbl(argv[0]);
         return INT2FIX(a < b ? -1 : a > b ? 1 : 0);
     }
     return Qnil;
@@ -1221,6 +1250,14 @@ static VALUE kernel_format(CTX *c, VALUE self, int argc, VALUE *argv) {
     return out;
 }
 
+/* printf — format then write to stdout */
+static VALUE kernel_printf(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc == 0) return Qnil;
+    VALUE s = kernel_format(c, self, argc, argv);
+    fwrite(((struct korb_string *)s)->ptr, 1, ((struct korb_string *)s)->len, stdout);
+    return Qnil;
+}
+
 /* String#% — same as format but self is the format string */
 static VALUE str_percent(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* arg may be a single value or an Array */
@@ -2102,21 +2139,31 @@ static VALUE int_chr(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE int_format(CTX *c, VALUE self, int argc, VALUE *argv) {
-    /* Integer#to_s(base) */
+    /* Integer#to_s(base).  For non-decimal bases Ruby renders negatives
+     * as "-<digits>", not as the unsigned twos-complement word. */
     if (!FIXNUM_P(self)) return korb_to_s(self);
     long v = FIX2LONG(self);
     int base = argc >= 1 && FIXNUM_P(argv[0]) ? (int)FIX2LONG(argv[0]) : 10;
     char buf[80];
-    if (base == 10) snprintf(buf, sizeof(buf), "%ld", v);
-    else if (base == 16) snprintf(buf, sizeof(buf), "%lx", v);
-    else if (base == 8) snprintf(buf, sizeof(buf), "%lo", v);
+    if (base == 10) {
+        snprintf(buf, sizeof(buf), "%ld", v);
+        return korb_str_new_cstr(buf);
+    }
+    bool neg = v < 0;
+    unsigned long uv = neg ? (unsigned long)(-v) : (unsigned long)v;
+    if (base == 16) snprintf(buf, sizeof(buf), neg ? "-%lx" : "%lx", uv);
+    else if (base == 8) snprintf(buf, sizeof(buf), neg ? "-%lo" : "%lo", uv);
     else if (base == 2) {
-        unsigned long uv = (unsigned long)v;
         char tmp[80]; int tl = 0;
         if (uv == 0) tmp[tl++] = '0';
         while (uv) { tmp[tl++] = '0' + (uv & 1); uv >>= 1; }
         for (int i = 0; i < tl/2; i++) { char t = tmp[i]; tmp[i] = tmp[tl-1-i]; tmp[tl-1-i] = t; }
         tmp[tl] = 0;
+        if (neg) {
+            char out[82]; out[0] = '-';
+            memcpy(out+1, tmp, tl+1);
+            return korb_str_new_cstr(out);
+        }
         return korb_str_new_cstr(tmp);
     }
     else snprintf(buf, sizeof(buf), "%ld", v);
@@ -2487,6 +2534,7 @@ void korb_init_builtins(void) {
     DEF(cObj, "block_given?", kernel_block_given, 0);
     DEF(cObj, "require_relative", kernel_require_relative, 1);
     DEF(cObj, "require", kernel_require, 1);
+    DEF(cObj, "__dir__", kernel_dir, 0);
     DEF(cObj, "load", kernel_load, -1);
     DEF(cObj, "abort", kernel_abort, -1);
     DEF(cObj, "exit", kernel_exit, -1);
@@ -2632,7 +2680,7 @@ void korb_init_builtins(void) {
     DEF(cObj, "tap",                   kernel_inspect,            0); /* stub */
     DEF(cObj, "format",                kernel_format,            -1);
     DEF(cObj, "sprintf",               kernel_format,            -1);
-    DEF(cObj, "printf",                kernel_print,             -1);
+    DEF(cObj, "printf",                kernel_printf,            -1);
 
     /* extra Integer */
     DEF(cInt, "chr",   int_chr, 0);
@@ -2954,6 +3002,17 @@ void korb_init_builtins(void) {
 
     /* Make sure ARGV is at least an empty array; main.c will override */
     korb_const_set(korb_vm->object_class, korb_intern("ARGV"), korb_ary_new());
-    /* ENV stub: empty hash */
-    korb_const_set(korb_vm->object_class, korb_intern("ENV"), korb_hash_new());
+    /* ENV: populate from real environment (read-only snapshot). */
+    {
+        extern char **environ;
+        VALUE env = korb_hash_new();
+        for (char **p = environ; *p; p++) {
+            const char *eq = strchr(*p, '=');
+            if (!eq) continue;
+            VALUE key = korb_str_new(*p, (size_t)(eq - *p));
+            VALUE val = korb_str_new_cstr(eq + 1);
+            korb_hash_aset(env, key, val);
+        }
+        korb_const_set(korb_vm->object_class, korb_intern("ENV"), env);
+    }
 }

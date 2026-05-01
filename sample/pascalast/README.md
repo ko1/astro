@@ -34,17 +34,20 @@ which the lexer handles by lowercasing every ID token at lex time.
 
 ## Status
 
-- **40 / 40** correctness tests pass.
-- ISO 7185 + 主要 OO 拡張: ネスト手続き / 手続き値 / file I/O /
-  variant record + 例外 + unit/uses + **真の virtual dispatch (vtable)**
-  + `inherited` + destructor + 最小 OOP。
+- **42 / 42** correctness tests pass.
+- ISO 7185 + Free Pascal 風 OO 拡張: ネスト手続き / 手続き値 /
+  file I/O / variant record + 例外 + unit/uses + **真の virtual
+  dispatch (vtable)** + `inherited` + destructor + **`is` / `as`**
+  + **properties** (read/write via field or method).
 - 言語機能: ティア1〜2のフル + 例外 (`try/except/finally/raise`) +
-  `unit/uses` + OOP (`class`/単一継承/virtual/override/`inherited`/
-  destructor) + 文字列ミューテーション + for-in + libgc-backed heap。
+  `unit/uses` + OOP (`class`/単一継承/virtual/override/properties/
+  `is`/`as`/`inherited`/destructor) + 文字列ミューテーション +
+  for-in + libgc-backed heap + AnsiString フル機能 (`copy / pos /
+  insert / delete / setlength / IntToStr / StrToInt / …`).
 - 詳細リスト: [`docs/done.md`](./docs/done.md).
-- 残: properties, `is`/`as`, class methods, `goto`, range check,
-  open array, N-D 配列、dynamic array、AnsiString フル機能 —
-  [`docs/todo.md`](./docs/todo.md).
+- 残: class methods, abstract methods, visibility enforcement,
+  `goto` runtime, range check, open array, N-D 配列、dynamic array
+   — [`docs/todo.md`](./docs/todo.md).
 - **AOT specialization** が動く。`make aot-bench BENCH=<name>` で
   parse → SPECIALIZE → 再ビルド → 比較。fib 2.2× / collatz ~25×。
 
