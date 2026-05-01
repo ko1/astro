@@ -7,6 +7,7 @@
 #include <ctype.h>
 #include <stdarg.h>
 #include <stddef.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <gc.h>
 #include "context.h"
@@ -67,12 +68,45 @@ maybe_aot_compile(NODE *n)
     // alloca is small (24 bytes) so the probe is unnecessary.
     // LTO + relaxed inline limits let gcc fold child SDs (lref / cmp /
     // const) into the recursive-call SD across .o boundaries.
-    setenv("ASTRO_EXTRA_CFLAGS",
-           "-fno-stack-clash-protection -fno-stack-protector "
-           "-flto -finline-functions -finline-small-functions "
-           "-finline-limit=10000 --param max-inline-insns-auto=400 "
-           "--param max-inline-insns-single=400 --param inline-unit-growth=300", 1);
-    setenv("ASTRO_EXTRA_LDFLAGS", "-flto", 1);
+    // Append base flags to whatever the user already set.  PGO mode
+    // (Makefile target `pgo-sd`) auto-injects `-fprofile-use=pgo-sd`
+    // into ASTRO_EXTRA_CFLAGS — if the directory exists, we also
+    // pull it in implicitly so plain `./astocaml -c` benefits.
+    {
+        const char *base_cf = "-fno-stack-clash-protection -fno-stack-protector "
+                              "-flto -finline-functions -finline-small-functions "
+                              "-finline-limit=10000 --param max-inline-insns-auto=400 "
+                              "--param max-inline-insns-single=400 --param inline-unit-growth=300";
+        char auto_pgo[1024]; auto_pgo[0] = '\0';
+        if (!getenv("ASTRO_NO_PGO")) {
+            // Probe relative to argv[0] direcotry; fall back to cwd.
+            const char *try_dirs[] = { "pgo-sd", "./pgo-sd", NULL };
+            for (int i = 0; try_dirs[i]; i++) {
+                struct stat st;
+                if (stat(try_dirs[i], &st) == 0 && S_ISDIR(st.st_mode)) {
+                    snprintf(auto_pgo, sizeof auto_pgo,
+                             " -fprofile-use=%s/%s -fprofile-correction",
+                             getenv("PWD") ? getenv("PWD") : ".", try_dirs[i]);
+                    break;
+                }
+            }
+        }
+        const char *user_cf = getenv("ASTRO_EXTRA_CFLAGS");
+        size_t cap = strlen(base_cf) + strlen(auto_pgo) + (user_cf ? strlen(user_cf) : 0) + 4;
+        char *combined = (char *)malloc(cap);
+        snprintf(combined, cap, "%s%s%s%s", base_cf, auto_pgo,
+                 (user_cf && *user_cf) ? " " : "", (user_cf && *user_cf) ? user_cf : "");
+        setenv("ASTRO_EXTRA_CFLAGS", combined, 1);
+
+        const char *user_ld = getenv("ASTRO_EXTRA_LDFLAGS");
+        if (user_ld && *user_ld) {
+            char *combined_ld = (char *)malloc(strlen("-flto ") + strlen(user_ld) + 1);
+            sprintf(combined_ld, "-flto %s", user_ld);
+            setenv("ASTRO_EXTRA_LDFLAGS", combined_ld, 1);
+        } else {
+            setenv("ASTRO_EXTRA_LDFLAGS", "-flto", 1);
+        }
+    }
 
     // Compile any closure bodies registered since last call.
     for (; AOT_COMPILED < AOT_ENTRIES_LEN; AOT_COMPILED++) {

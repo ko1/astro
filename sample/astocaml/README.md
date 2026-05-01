@@ -193,11 +193,13 @@ astocaml: Type_error((+): expected int)
 
 | ベンチ | 入力 | 結果 | astoc(-c) | 概要 |
 |--|--|--|--|--|
-| ack | ack(3, 9) | 4093 | 0.090 s | Ackermann; 深い再帰 |
-| fib | fib(35) | 9227465 | 0.146 s | 古典 Fibonacci |
-| nqueens | 10-queens × 3 | 724 | 0.275 s | バックトラッキング (相互再帰) |
-| sieve | sum of primes ≤ 8000 × 8 | 3738566 | 0.322 s | エラトステネス |
-| tak | tak(24, 16, 8) × 5 | 9 | 0.075 s | Takeuchi 関数 |
+| ack | ack(3, 9) | 4093 | 0.081 s | Ackermann; 深い再帰 |
+| fib | fib(35) | 9227465 | 0.113 s | 古典 Fibonacci |
+| nqueens | 10-queens × 3 | 724 | 0.253 s | バックトラッキング (相互再帰) |
+| sieve | sum of primes ≤ 8000 × 8 | 3738566 | 0.279 s | エラトステネス |
+| tak | tak(24, 16, 8) × 5 | 9 | 0.054 s | Takeuchi 関数 |
+
+(`make pgo` で astocaml binary + SD `.so` の両方に PGO を適用、起動時 `pgo-sd/` を自動検出して `-fprofile-use` を SD 側に注入)
 | method_call | counter#incr 10M | 10000000 | ~1.0 s | OO 重い method send |
 
 主な高速化要因:
@@ -216,18 +218,18 @@ astocaml: Type_error((+): expected int)
 
 | bench | astoc | astoc(-c) | ocaml(top) | ocamlc(BC) | ocamlopt |
 |--|--|--|--|--|--|
-| ack | 0.35 | **0.09** | 0.20 | 0.12 | 0.011 |
-| fib | 0.44 | **0.15** | 0.38 | 0.20 | 0.040 |
-| nqueens | 0.64 | 0.28 | 0.22 | 0.17 | 0.017 |
-| sieve | 0.55 | 0.32 | 0.26 | 0.23 | 0.019 |
-| tak | 0.28 | **0.08** | 0.25 | 0.15 | 0.014 |
+| ack | 0.35 | **0.08** | 0.15 | 0.11 | 0.010 |
+| fib | 0.44 | **0.11** | 0.34 | 0.23 | 0.039 |
+| nqueens | 0.64 | 0.25 | 0.23 | 0.17 | 0.018 |
+| sieve | 0.55 | 0.28 | 0.26 | 0.24 | 0.025 |
+| tak | 0.28 | **0.05** | 0.26 | 0.15 | 0.015 |
 
 ベースライン (Phase 1 完了時) からの累積:
-- fib: 2.62 s → 0.146 s (**18× 高速化**)
-- ack: 1.20 s → 0.090 s (**13×**)
-- tak: 1.23 s → 0.075 s (16×)
-- nqueens: 1.59 s → 0.275 s (5.8×)
-- sieve: 1.21 s → 0.322 s (3.8×)
+- fib: 2.62 s → 0.113 s (**23× 高速化**)
+- ack: 1.20 s → 0.081 s (15×)
+- tak: 1.23 s → 0.054 s (**23×**)
+- nqueens: 1.59 s → 0.253 s (6.3×)
+- sieve: 1.21 s → 0.279 s (4.3×)
 
 ack / fib / tak で **astocaml AOT が ocamlc bytecode を超え** ocaml toplevel との比較ではほぼ全勝。 ocamlopt (native compilation) との差は fib 3.5× / ack 7× / tak 5× / nqueens・sieve 15-20×。 残差の正体は (1) `VALUE` の untag/retag、(2) heap-allocated `oframe`、(3) `oc_apply` 経由の indirect call — いずれも ASTro AST walker としての構造的限界 (詳細は `docs/perf.md`)。
 
