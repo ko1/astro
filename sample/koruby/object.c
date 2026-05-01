@@ -1076,7 +1076,17 @@ void korb_p(VALUE v) {
 }
 
 bool korb_eq(VALUE a, VALUE b) {
-    if (a == b) return true;
+    /* Identity is normally enough — *except* for NaN (which is never
+     * equal to anything, including itself).  Heap T_FLOAT might be NaN,
+     * so fall through to numeric compare for that case. */
+    if (a == b) {
+        if (UNLIKELY(!FIXNUM_P(a) && !FLONUM_P(a) && !SPECIAL_CONST_P(a) &&
+                     BUILTIN_TYPE(a) == T_FLOAT)) {
+            double x = ((struct korb_float *)a)->value;
+            return x == x; /* false only for NaN */
+        }
+        return true;
+    }
     if (FIXNUM_P(a) || FIXNUM_P(b)) {
         if (FIXNUM_P(a) && FIXNUM_P(b)) return a == b;
         if (FIXNUM_P(a) && BUILTIN_TYPE(b) == T_BIGNUM) return korb_int_eq(a, b);

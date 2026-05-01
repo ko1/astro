@@ -79,8 +79,14 @@ static inline VALUE
 korb_double_to_flonum(double d) {
     union { double d; VALUE v; } t;
     t.d = d;
+    /* CRuby's encoding: only doubles whose top 3 exponent bits are
+     * 011 or 100 fit (bits ∈ {3, 4}).  Everything else — 0.0, NaN, Inf,
+     * denorms, very large / very small — heap-boxes via the caller. */
     int bits = (int)((t.v >> 60) & 0x7);
-    if ((unsigned)(bits - 3) >= 5) return 0; /* out-of-range — caller must heap */
+    if (((bits - 3) & ~0x01) != 0) return 0;
+    /* Special-case 1.72723e-77 (all-zero mantissa with bits=3) — CRuby
+     * reserves that pattern for +0.0 encoded as flonum.  We just heap. */
+    if (t.v == 0x3000000000000000ULL) return 0;
     return (KORB_BIT_ROTL64(t.v, 3) & ~(VALUE)0x01) | FLONUM_FLAG;
 }
 

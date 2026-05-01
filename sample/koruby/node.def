@@ -669,19 +669,17 @@ node_eq(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_
         c->fp[arg_index+1] = r;
         return korb_dispatch_binop(c, l, korb_intern("=="), 1, &c->fp[arg_index+1]);
     }
-    /* Pure FIXNUM compare: identity = numeric equality.  Hot path. */
+    /* Pure FIXNUM / FLONUM compare: identity = numeric equality.
+     * (Note: FLONUM excludes NaN — never encodable, so always heap.) */
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) return KORB_BOOL(l == r);
-    /* Pure FLONUM compare: identity = numeric equality (modulo NaN). */
     if (LIKELY(FLONUM_P(l) && FLONUM_P(r))) return KORB_BOOL(l == r);
-    /* Identity also covers nil==nil, true==true, obj==obj, mixed
-     * Float/Int when bits happen to match (rare). */
-    if (l == r) return Qtrue;
-    /* Mixed FIXNUM / FLONUM (e.g. 1 == 1.0) compares numerically — let
-     * korb_eq handle it.  Only short-circuit when at least one side is
-     * a *non-numeric* special const (Qnil, Qtrue, Qfalse, Symbol). */
+    /* Mixed numeric or heap — go through korb_eq, which knows that
+     * heap Float NaN ≠ NaN even at the same address. */
     if ((SPECIAL_CONST_P(l) && !FIXNUM_P(l) && !FLONUM_P(l)) ||
         (SPECIAL_CONST_P(r) && !FIXNUM_P(r) && !FLONUM_P(r))) {
-        return Qfalse;
+        /* one side is a non-numeric special const (Qnil, Qtrue, Qfalse,
+         * Symbol).  Equal iff identical VALUE. */
+        return KORB_BOOL(l == r);
     }
     return KORB_BOOL(korb_eq(l, r));
 }
@@ -698,10 +696,9 @@ node_neq(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg
     }
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) return KORB_BOOL(l != r);
     if (LIKELY(FLONUM_P(l) && FLONUM_P(r))) return KORB_BOOL(l != r);
-    if (l == r) return Qfalse;
     if ((SPECIAL_CONST_P(l) && !FIXNUM_P(l) && !FLONUM_P(l)) ||
         (SPECIAL_CONST_P(r) && !FIXNUM_P(r) && !FLONUM_P(r))) {
-        return Qtrue;
+        return KORB_BOOL(l != r);
     }
     return KORB_BOOL(!korb_eq(l, r));
 }
