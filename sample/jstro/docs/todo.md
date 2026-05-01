@@ -63,37 +63,44 @@
 
 ## 性能上の課題
 
-### High — まだ大きな伸び代がある
-- [ ] **profile-driven kind swap** — luastro の `swap_dispatcher` 相当。
-      `node_add` を観測した型に応じて `node_int_add_ii` / `node_flt_add_ff`
-      に promote。AOT/PG 経路は通っているが、PG bake が AOT と等価
-      (HOPT == HORG) なのが現状。整数/double 専用ノード + IC 経路を
-      追加すれば PG 単独で +20-40% 期待できる。
-- [ ] **多形性 IC** — 4-way 程度でいい。同じサイトで複数 shape を見ても
-      毎回 `js_shape_find_slot` に落ちないようにする。
-- [ ] **method call IC の融合** — `obj.foo(args)` が `foo` を IC ヒットで
-      取り出した後、`js_call_func_direct` の indirect call が残っている。
+V8 TurboFan に直接届かない領域。それぞれ独立した中〜大プロジェクト。
+
+### High — TurboFan の数値最適化を追うのが本筋
+- [ ] **Generational GC (nursery + write barrier)** — binary_trees / state
+      など allocation-heavy ベンチで mark+sweep が 30 % 占めている。
+      短命オブジェクトを nursery で copy collection、tenured には
+      昇格でしか入れない構成。見積: 500-1000 行、~1 週間。
+- [ ] **Escape analysis / 型推論で box 除去** — mandelbrot / nbody は
+      JV_DBL の box/unbox + 型タグ検査が支配。double をレジスタで保持
+      するのは whole-method 解析が前提なので、まずは call 単位の
+      escape analysis から。見積: 数週間。
+- [ ] **call frame の register-pass 化** — jstro_inline_call が alloca +
+      memcpy + CTX 4 フィールドの save/restore を毎回。fib / fact の
+      ホット recursion がここで失速。callee_frame をレジスタで運ぶ
+      ABI に切り替えれば 10-20 % 取れそう。
+- [ ] **多形性 IC (4-way)** — `node_member_get` の IC が 1-way (monomorphic)
+      なので、複数 shape を見るサイトで毎回 `js_shape_find_slot` に
+      落ちる。poly.js が 4.4× 後ろなのはここ。
+- [ ] **method call IC の融合** — `obj.foo(args)` が `foo` を IC ヒット
+      で取り出した後、`js_call_func_direct` の indirect call が残っている。
       cached_fn を IC に積めば直接 call できる。
 
 ### Mid
-- [ ] **proto chain IC** — `instance.method` で proto から取り出すパスが
-      毎回プロトタイプ走査。`(own_shape, proto, proto_slot)` IC。
-- [ ] **`for` ループの専用ノード** — 整数カウンタの `for(let i=0;i<n;i++)`
-      パターンを `node_for_int` のような融合ノードに。
-- [ ] **オブジェクトリテラルの shape pre-computation** — `{x:1, y:2, z:3}`
-      の shape は構文位置から決まるので、AST ノードに shape pointer を
-      埋め込めば `js_shape_transition` を回避できる。
+- [ ] **regex JIT** — V8 Irregexp 相当の NFA → DFA → native コード経路。
+      現状の NFA バックトラッキングマッチャでは 2.75× 後ろ。Onigmo
+      組み込みもアリ。
+- [ ] **proto chain IC** — `instance.method` で proto から取り出すパス
+      が毎回プロトタイプ走査。`(own_shape, proto, proto_slot)` IC。
 - [ ] **アリティ ≥4 の call 特化** — 現状 0-3 のみ。
 
-### Low
-- [ ] **regex compile 結果のキャッシュ** — 現状 `js_regex_new` 毎にパターン
-      をパースし直す形 (実際には pattern を保存してマッチ時に解釈)。NFA を
-      事前構築すれば速い。
-- [ ] **GC-safe heap walking** — `js_str_concat` が string 連結のたびに
-      malloc/free を呼ぶ; arena allocator にすれば short-lived 文字列が
-      速くなる。
+### Low — マイナーチューニング
+- [ ] **string transient skip-intern** — `"key" + i` の concat 結果を
+      Map key として食わせるとき、毎回 intern してる (map_coll で 25 %
+      の cycle)。Map key としてだけ使うなら content hash + 一時 buffer
+      で済むはず。
 - [ ] **オーバーフロー検出での lazy double 昇格** — 加算は overflow しない
       と仮定 (63bit 余裕がある前提)。乗算のみ `__builtin_mul_overflow`。
+- [ ] **arena allocator for short-lived strings**
 
 ## デバッグ性 / 開発体験
 

@@ -183,10 +183,54 @@ ECMAScript 仕様への対応状況と、性能向上のために行った変更
 - [x] **自動 GC (mark-sweep)** — `c->all_objects` リンクトリストを基盤にしたマーク&スイープ。
       ルート: globals / protos / this / cur_args / last_thrown / break-val / intern_buckets / modules /
       `frame_stack` (alloca フレーム連鎖)。トリガはセーフポイント方式 (node_seq / node_for /
-      node_while などの文境界で `jstro_gc_safepoint`)。閾値は alive オブジェクト数の 2× で
-      動的調整 (floor 4096 / ceiling 1M)。color polarity flip でスイープせずマーク反転だけで再利用。
+      node_while などの文境界で `jstro_gc_safepoint`)。閾値は alive オブジェクト数の **4×** で
+      動的調整 (floor 4096 / ceiling 4 MiB)。color polarity flip でスイープせずマーク反転だけで再利用。
       引数評価中の use-after-free 対策として、各 call dispatcher と array/object literal が
-      `js_frame_link` を介して半構築 argv / 受け手を pin する。
+      `js_frame_link` を介して半構築 argv / 受け手を pin する。sweep フェーズで生存数を同時集計
+      する (rescan pass を排除)。
+- [x] **profile-driven kind swap (`swap_dispatcher`)** — luastro 互換の値ドメイン
+      特化機構。`node_lt` / `node_le` / `node_add` が SMI×SMI を観測したとき
+      `node_smi_lt_ii` / `node_smi_le_ii` / `node_smi_add_ii` (`@canonical=base` 指定で
+      HORG 共有) に kind を昇格。HOPT は post-swap kind を反映するので、PG bake
+      (`-p`) は specialized SD を `PGSD_<hopt>` として焼き、次回起動時に
+      `(HORG, file, line) → HOPT` 索引経由で specialized SD が dlsym される。
+      jstro_gen.rb に `:hopt` task を追加して `node_hopt.c` を自動生成。
+- [x] **fused int-counter for ループ (`node_for_int_loop`)** — parser-time に
+      `for (var/let X = E1; X </<= E2; X++/X+=k) BODY` パターンを検出 (body が X を
+      書き換えないことを syntactic 走査で確認)、init/end/step を 1 回だけ評価して
+      ループ内で X を raw int64 のレジスタ変数として保持する fused dispatcher に
+      置き換える。type tag check / SMI encode-decode が毎反復消えるので sieve(1M)
+      系の数値ループで効く。
+- [x] **JsObject inline 4-slot 内蔵** — 小オブジェクト (≤4 props) は slots[] を別途
+      malloc せず JsObject 自身の `inline_slots[4]` を指す。binary_trees の
+      `{ l, r, v }` ノード生成で大きく効く。
+- [x] **JsObjLitIC で object literal の shape pre-computation** — `node_object_lit`
+      に `JsObjLitIC *@ref` を埋め、初回実行時の最終 shape をキャッシュ。2 回目以降は
+      `js_shape_transition` を nprops 回スキップして直接 slots に書く。
+- [x] **safepoint inline 化 + `gc_pending` フラグ** — `jstro_gc_safepoint` を
+      `static inline` にして per-statement の関数呼び出しオーバヘッドを除去。
+      さらに、threshold 判定を allocator 側に押し込んで safepoint hot path は
+      `gc_pending` フラグ 1 つの load+branch だけにした。`node_seqn` の per-child
+      safepoint も block 境界に hoist して innermost SD chain から消滅。
+- [x] **encoded-form SMI compare** — `node_lt` / `node_le` / `node_gt` / `node_ge` の SMI×SMI
+      fast path を encoded JsValue 同士の signed compare に書き換え (SAR デコードを
+      省略)。combined-AND の SMI tag 判定 (`(a & b) & 1`) で 2 つの分岐を 1 つに。
+- [x] **node_index_set のインライン dense 配列パス** — `a[j] = v` の hot loop で
+      `js_array_set` への out-of-line call を削除、SMI index + array obj fast path
+      を直接 SD 内にインライン展開。sieve / state で効く。
+- [x] **Map / Set のハッシュテーブル化** — 旧 linear scan (O(N) get/set) を
+      open-addressing ハッシュ + 挿入順 entries[] 配列の二段構成に置き換え。
+      100K キーの set+get が 25.5 s → 0.082 s (**300× speedup**)。
+      実装詳細は [`runtime.md`](./runtime.md) 参照。
+- [x] **stack-buffer string concat + 高速 SMI itoa** — `js_str_concat` が短い結果
+      (≤256 byte) を stack バッファで生成。`js_to_string(SMI)` を `snprintf` 不使用の
+      手書き digit loop に置換。`"key" + i` 大量生成パスで効く。
+- [x] **fair な benchmark suite** — 数値専用ベンチ (fib / fact / sieve /
+      mandelbrot / nbody / binary_trees) に加えて勝ち負け両方を含む 7 ベンチを追加:
+      - 勝ち寄り: `try_catch` (longjmp throw vs V8 deopt), `cold` (V8 が tier-up
+        しない 1000 関数 × 1 回), `state` (Redux 風 spread reducer の deopt 多発),
+        `sieve_big` (40M 配列で V8 element-kind 遷移 / GC pressure)
+      - 負け寄り: `regex` (V8 Irregexp), `poly` (4-way IC 不在), `map_coll`
 
 ### 開発体験
 - [x] `--dump-ic` オプション — `js_shape_find_slot` 呼び出し回数を表示
@@ -194,8 +238,10 @@ ECMAScript 仕様への対応状況と、性能向上のために行った変更
 
 ## 未実装 (詳細は [`todo.md`](./todo.md))
 
+- Generational GC (binary_trees 系で V8 と差が出るのはここ)
+- Escape analysis / 型推論 (mandelbrot / nbody の数値最適化)
 - 多形性 IC (4-way) — call IC は monomorphic、shape IC も 1 段
+- regex JIT (Irregexp 相当)
 - 真のジェネレータ (suspendable frame; ucontext 等)
 - async/await の microtask スケジューリング
-- 多形性 IC (4-way)
 - Source map / Error.stack の行番号

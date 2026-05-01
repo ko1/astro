@@ -1,7 +1,11 @@
 # jstro — JavaScript on ASTro
 
 ASTro 上に構築した JavaScript (ECMAScript) インタプリタ。
-ツリー・ウォーキング型ながら、V8 風の hidden class + inline cache、CRuby 風の SMI/inline-flonum 値表現、`longjmp` ベースの例外伝播、単形性の関数呼び出し IC、shape 遷移 IC、safepoint 駆動の mark-sweep GC など動的言語の典型的な高速化を多数取り込んでいる。
+ツリー・ウォーキング型ながら、V8 風の hidden class + inline cache、CRuby 風の SMI/inline-flonum 値表現、`longjmp` ベースの例外伝播、単形性の関数呼び出し IC、shape 遷移 IC、safepoint 駆動の mark-sweep GC、profile-driven kind swap、AOT/PG specialization (`astro_code_store`)、open-addressing なハッシュ Map など動的言語の典型的な高速化を多数取り込んでいる。
+
+数値ホットループでは V8 TurboFan に届かないが、V8 が tier-up しない短い
+ワークロードや deopt しがちなイディオム (try-catch 多発、object spread)
+では node v18 を 2〜50× 上回る。詳細は下のベンチ表 / [`docs/perf.md`](./docs/perf.md)。
 
 ES2023+ をかなりカバーする。クラス継承+`super`、destructuring、spread、optional chaining、Map/Set、Symbol、regex、Promise (sync)、CommonJS+ES モジュール、Proxy/Reflect、`eval`、JSON、tagged templates、private fields、static blocks、テキスト pre-scan による関数/let/const ホイスティング、for-let の per-iteration binding まで動く。
 
@@ -99,15 +103,22 @@ inline `Date.now()` 計測):
 TurboFan の数値ホットループ、専用エンジン (Irregexp)、polymorphic IC
 の領域。`make compiled_jstro` で bake 済みバイナリ生成可能。
 
-主な高速化:
+主な高速化 (詳細は [`docs/perf.md`](./docs/perf.md)):
 - **AOT bake (SD specialization)** — 各 AST ノードを SD_<hash> に
-  specialize、`dlopen` 後に dispatcher を patch。詳細は
-  [`docs/runtime.md`](./docs/runtime.md)。
+  specialize、`dlopen` 後に dispatcher を patch
+- **profile-driven kind swap** — `swap_dispatcher` で SMI×SMI を観測
+  したら specialized kind に昇格。`-p` (PG bake) で SD に焼く
+- **fused int-counter for ループ** — parser-time に `for(var X=0; X<n; X++)`
+  パターンを認識して raw int64 カウンタの fused dispatcher に置換
+- **Map / Set のハッシュテーブル化** — open-addressing + 挿入順
+  entries[] の二段構成。100K キーの set+get で linear scan 25.5 s →
+  0.082 s (300× speedup)
 - **JsObject inline 4-slot** — 小オブジェクト (≤4 props) は
-  slots[] を別途 malloc せず JsObject 内蔵。binary_trees で大きな
-  改善 (-38%)。
-- **safepoint inline** — `jstro_gc_safepoint` の fast path を
-  `static inline` 化。fact / mandelbrot で -10% 程度。
+  slots[] を別途 malloc せず JsObject 内蔵
+- **safepoint inline + `gc_pending` フラグ** — per-statement の関数
+  呼び出しを 1 load + 1 branch に短縮
+- **encoded-form SMI compare** — encoded JsValue 同士を直接 signed
+  compare (SAR デコード省略)
 
 ## 既知の制限
 
@@ -115,9 +126,10 @@ TurboFan の数値ホットループ、専用エンジン (Irregexp)、polymorph
 
 - **真のジェネレータ / async microtask** — 構文は受理するが、yield/await は同期実行
 - **WeakMap/WeakSet は strong ref で代用** — GC 自体は実装済みだが weak reference は未対応
-- **profile-driven kind swap 未実装** — AOT 経路は通っているが、PG bake は
-  AOT と同じ SD を出力する (kind-swap がないため)。整数/double 専用ノードを
-  足せば PG が AOT を上回る
+- **多形性 IC 不在 / regex JIT 不在 / 数値最適化 (escape analysis 等) 不在**
+  — TurboFan が完全に engage する数値ホットループ系では 3〜14× 後ろ。
+  generational GC / escape analysis を入れるのが次の山 (それぞれ独立した
+  プロジェクト、詳細は [`docs/todo.md`](./docs/todo.md))
 - **BigInt 未実装** — `123n` リテラル構文は受理するが値は通常の Number に
   なる (`typeof 123n === "number"`)。独立した primitive type としての BigInt は未対応
 - **`String.length`** が UTF-8 byte 長 (UTF-16 単位ではない)

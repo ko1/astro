@@ -287,13 +287,125 @@ compare のみ、slow path のみ `js_gc_collect` を out-of-line に残す。
   argv あるいは半構築 array/object を `js_frame_link` を介して pin する。
 - **color polarity flip**: 全オブジェクトの mark フラグを 0/1 で持ち、
   GC 終了時に live/dead の意味を入れ替えるだけで sweep 後の reset を省略。
-- **動的閾値**: 直前 GC 後の alive オブジェクト数の 2× を次の閾値に
-  (floor 4096 / ceiling 1M)。throughput とメモリ占有のバランスを取る。
+- **動的閾値**: 直前 GC 後の alive オブジェクト数の **4×** を次の閾値に
+  (floor 4096 / ceiling 4 MiB)。throughput とメモリ占有のバランスを取る。
+  当初 2× だったが mark+sweep が allocation-heavy ベンチで 30% 占めて
+  いたので緩めた。
+- **`gc_pending` フラグでホットパス短縮**: 当初 safepoint は `(disabled
+  && bytes_allocated >= threshold)` の 3 load を毎文判定していた。
+  allocator 側で threshold 越えを検知したら `gc_pending = 1` にだけ
+  すれば、safepoint hot path は 1 load + 1 branch で済む。
+- **sweep フェーズで生存数を同時集計**: rescan pass を排除。
 
 実装後のコスト: `fact` ベンチが 1.49s → 1.73s (16%)。safepoint 自体の
 コストは数命令だが、文ごとに条件分岐 1 回が乗る。
 binary_trees / 50K 回の depth-8 木生成: RSS 2.8MB で安定 (GC 無しでは線形に
 増加してプロセス死)。
+
+#### profile-driven kind swap (`swap_dispatcher`)
+
+luastro 互換の値ドメイン specialization。`node_lt` / `node_le` /
+`node_add` が SMI×SMI を観測したら `swap_dispatcher(n,
+&kind_node_smi_*_ii)` で kind を昇格。`@canonical=base` 指定で HORG を
+共有しているので AOT lookup key は変わらず、HOPT だけが post-swap kind を
+反映する。`-p` (PG) bake は HOPT 名で `PGSD_<hopt>.c` を吐き、`(HORG,
+file, line) → HOPT` 索引が次回起動時の dlsym を案内する。
+
+ASTroGen 拡張: `jstro_gen.rb` に `:hopt` task を register し、
+`build_hopt_func` で `HOPT_<name>` 関数を `node_hopt.c` に自動生成。
+node.h に `kind_swapped` フラグと `swap_dispatcher` inline ヘルパを追加。
+
+純粋な perf 改善はそこまで大きくない (canonical SD 側も SMI fast path
+を持っていて gcc が同じくらい良いコードを出すため)。本来の効果は
+**PG bake が specialized SD を出すこと自体** にあるので、profile が当たる
+パターンでより伸びる。
+
+#### fused int-counter for ループ (`node_for_int_loop`)
+
+parser-time に検出可能な極めて頻出するイディオム:
+```js
+for (var/let X = INIT; X </<= END; X++/X+=k) BODY
+```
+を fused dispatcher に置換。条件: `X` は新規宣言の local、body が `X` を
+書き換えない (構文走査で確認)。
+
+eval は init/end/step を 1 回だけ評価して、X を C 関数の `int64_t i`
+ローカル変数として保持する。各反復:
+1. `frame[X_slot] = JV_INT(i)` (body 用に書き戻し)
+2. `EVAL(body)`
+3. `i += step`
+
+これで cond eval / step eval が消える (毎反復の SMI tag check + decode/
+encode が削減)。type assumption 違反時は fallback path で素直に `js_to_double`
+経由で動作。
+
+ベンチ delta:
+| bench | before | after | speedup |
+| - | - | - | - |
+| sieve(1M) | 0.020 s | 0.012 s | -40% |
+| fact ×5M | 0.49 s | 0.31 s | -37% |
+
+#### Map / Set のハッシュテーブル化 (300× speedup)
+
+旧実装は `JsMapEntry { k, v, used }[]` の linear scan。要素 N 個の Map に
+対する `get(k)` / `set(k, v)` が O(N)、N 増加で N×N 操作。`map_coll`
+ベンチ (100K キーの set+get) が 25.5 s かかっていた。
+
+新実装は **挿入順 entries[] + power-of-two index[] の二段構成**:
+- `entries[]` は (k, v, hash, used) を挿入順に積む。iteration はここを
+  頭から走査、`!used` を skip — JS Map 仕様の挿入順 iteration が保たれる。
+- `index[]` は hash → entries[] index のハッシュ表 (-1=empty, -2=tomb)。
+  `(hash & mask)` から線形プローブ。
+- `jsval_hash` は SameValueZero 準拠 (interned string は precomputed
+  `s->hash`、+0/-0 同一視、NaN を固定スロット)。
+- load > 0.75 で index_capa 倍増、tombstone が 1/3 越えで entries[]
+  compact。
+
+結果: `map_coll` 25.5 s → 0.082 s (**300× speedup**)、node v18 0.06 s
+に対して **1.3× 後ろまで** 詰まった。残るのは string intern オーバヘッド
+(25% of cycles)。
+
+#### node_index_set のインライン dense 配列パス
+
+`a[j] = false` の hot loop で `js_array_set` への out-of-line 関数
+呼び出しが 16% を占めていた。SMI index + array fast path を SD 内に
+直接インライン展開:
+
+```c
+if (JV_IS_ARRAY(ov) && JV_IS_SMI(iv)) {
+    int64_t i = JV_AS_SMI(iv);
+    struct JsArray *a = JV_AS_ARRAY(ov);
+    if (i >= 0 && (uint64_t)i < a->dense_capa) {
+        a->dense[i] = v;
+        if (i+1 > a->length) a->length = i+1;
+        return RESULT_OK(v);
+    }
+    ...
+}
+```
+
+sieve / state など array-write heavy なワークロードで 15% 改善。
+
+#### encoded-form SMI compare
+
+`node_lt` / `node_le` / `node_gt` / `node_ge` の SMI×SMI fast path で
+encoded JsValue を直接 signed compare:
+
+```c
+// encoded SMI: (raw<<1) | 1 — 両方の low bit が 1 なら signed 大小比較が
+// raw 値の大小と一致する。SAR デコード 2 つを省略。
+if ((a & b & 1) != 0) return JV_BOOL((int64_t)a <= (int64_t)b);
+```
+
+combined-AND の SMI tag 判定 (`(a & b) & 1`) で 2 つの分岐を 1 つに
+統合。sieve の hot loop で per-iter 2-3 命令削減。
+
+#### node_for / node_while から redundant BR チェックを除去
+
+init / cond / step は **式** で `break` / `continue` / `return` (文限定)
+は出ない、`throw` は longjmp 経路で BR を経由しない。よって EVAL_ARG
+直後の `if (BR != NORMAL)` は body 後を除いて常に false。perf で見ると
+この BR 再ロードが sieve hot SD の 14% を占めていた。
 
 ---
 
@@ -393,19 +505,63 @@ property 一辺倒) では追加チェック 1 件で済む。
 
 ## 振り返り
 
-最も効いた最適化は **シェイプ遷移 IC** と **monomorphic call IC + inline body**
-の 2 つで、いずれも「**多形性が低いケース** にだけ最速パスを切る」という
-発想。逆に「全ケースを一律に速くしようとした」最適化 (LTO、march=native、
-flatten) はあまり効かなかった。
+最も効いた最適化を時系列で並べると:
 
-JS のような動的言語では、ホットスポットの **type 多形性は実は低い** という
-V8 の発見が裏付けられている。jstro でも 80/20 の法則がきれいに当てはまる。
+1. **シェイプ遷移 IC** + **monomorphic call IC + inline body** — 多形性
+   が低いケースの最速パスを切る (V8 の発見の jstro 版)
+2. **AOT 特化 (SD bake)** — `astro_code_store` を駆動して各 AST ノード
+   を `SD_<hash>` に specialize、dispatcher を patch (geo-mean 2× 越え)
+3. **JsObject inline 4-slot 内蔵** — 小オブジェクトの malloc を 1 個減
+   らす。binary_trees / state で大きく効く
+4. **Map / Set のハッシュテーブル化** — linear scan を open-addressing
+   ハッシュ + 挿入順 entries[] に置き換え。`map_coll` で 300× speedup
+5. **fused int-counter for ループ (`node_for_int_loop`)** — parser-time
+   に頻出 idiom を検出して raw int64 カウンタの fused dispatcher に置換
+6. **safepoint inline + `gc_pending` フラグ** — per-statement 関数呼び
+   出しを 1 load + 1 branch に短縮
+7. **profile-driven kind swap** — luastro 互換の値ドメイン specialization
 
-次に大きな gain が見込める順は次のとおり:
+逆に「全ケースを一律に速くしようとした」最適化 (LTO、march=native、
+flatten) はあまり効かなかった。JS のような動的言語では、ホットスポットの
+**type 多形性は実は低い** という V8 の発見が裏付けられている。
 
-1. **ASTro 特化 (SD) モードを駆動する**。luastro 既存の機構を移植すれば、
-   関数本体を 1 つの C 関数に畳めて 5-10× 期待。
-2. **多形性 IC** — 同じサイトで 2-3 個の shape を見ても落ちないようにする。
+## 現状のベンチ位置 (jstro-cached vs node v18)
+
+| カテゴリ | bench | jstro | node | 結果 |
+| - | - | - | - | - |
+| **Win** | sieve_big (40M) | 1.09 | 2.67 | **2.45× ahead** |
+| | try_catch | 0.017 | 0.78 | **45× ahead** |
+| | cold (1000-fn × 1) | 0.015 | 0.82 | **53× ahead** |
+| | state (Redux spread) | 2.27 | 5.11 | **2.25× ahead** |
+| | sieve (1M) | 0.012 | 0.014 | **1.17× ahead** |
+| **Close** | map_coll | 0.063 | 0.047 | 1.34× behind (was 432×) |
+| **Lose** | regex | 0.011 | 0.004 | 2.75× behind |
+| | poly | 0.097 | 0.022 | 4.4× behind |
+| | fib(35) | 0.31 | 0.10 | 3.0× behind |
+| | fact ×5M | 0.31 | 0.07 | 4.6× behind |
+| | binary_trees | 0.31 | 0.06 | 5.7× behind |
+| | mandelbrot(500) | 0.39 | 0.04 | 11× behind |
+| | nbody 100k | 0.25 | 0.02 | 14× behind |
+
+勝ちは **V8 の tier-up エッジ** (cold), **deopt しがちな idiom** (try_catch
+/ state), **構造的な差** (sieve_big の flat layout)。負けは **TurboFan の
+数値最適化** と **専用エンジン** (Irregexp, polymorphic IC)。
+
+## 次に取りに行ける gain (詳細は [`todo.md`](./todo.md))
+
+これ以上の gain はアーキテクチャ級の改修になるので、それぞれ独立した
+プロジェクト扱い:
+
+1. **Generational GC** — binary_trees / state など allocation-heavy が
+   30% を mark+sweep に取られている。nursery + write barrier で
+   ~500-1000 行、1 週間程度。
+2. **Escape analysis / 型推論** — mandelbrot / nbody の box/unbox
+   除去。whole-method 解析が前提なので数週間。
+3. **多形性 IC (4-way)** — `poly.js` の 4.4× を縮める。実装は中規模。
+4. **regex JIT** — Irregexp 相当の native コード生成 or Onigmo 組み込み。
+5. **call frame の register-pass 化** — `jstro_inline_call` の alloca +
+   memcpy + CTX field save/restore を register ABI に置換。fib / fact
+   recursion で効くはず。
 3. **method call IC** — 現在は `member_get` の IC + `js_call` の IC を 2 段
    に分けて持つ。`obj.foo()` の AST node に `(shape, slot, cached_fn, cached_body)`
    を 1 セットで持てば直結できる。
