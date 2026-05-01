@@ -372,9 +372,15 @@ gc_sweep(CTX *c)
     g_gc_alive_count = 0;
     for (struct GCHead *h = c->all_objects; h; h = h->next) g_gc_alive_count++;
     c->bytes_allocated = g_gc_alive_count;
-    size_t want = g_gc_alive_count * 2;
+    // Threshold = 4× alive (was 2×).  Mark+sweep cost is roughly
+    // proportional to alive-set size, so halving the GC frequency
+    // halves the mark/sweep wall-time budget — at the cost of extra
+    // peak memory while we coast to the next collection.
+    // binary_trees mark/sweep was ~30 % of cycles before this; the
+    // higher threshold trades that for a ~30 MB peak RSS bump.
+    size_t want = g_gc_alive_count * 4;
     if (want < 4096)        want = 4096;
-    if (want > 1024 * 1024) want = 1024 * 1024;
+    if (want > 4 * 1024 * 1024) want = 4 * 1024 * 1024;
     c->gc_threshold = want;
     if (getenv("JSTRO_GC_TRACE")) {
         size_t cnt[64] = {0};
