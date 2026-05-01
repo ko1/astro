@@ -624,7 +624,10 @@ process_file(grep_state_t *st, const char *path)
             if (fstat(fd, &sb) == 0 && S_ISREG(sb.st_mode) && sb.st_size > 0) {
                 /* MAP_POPULATE pre-faults the page tables in the kernel
                  * — saves the per-page minor-fault cost when we then scan
-                 * the whole file linearly.  GNU grep does the same. */
+                 * the whole file linearly.  GNU grep does the same.
+                 * (Tried MADV_HUGEPAGE here: file-backed THP isn't
+                 * enabled on the test kernel and the madvise actually
+                 * slowed the populate slightly, so we don't issue it.) */
                 void *map = mmap(NULL, (size_t)sb.st_size, PROT_READ,
                                   MAP_PRIVATE | MAP_POPULATE, fd, 0);
                 verbose_mark("after mmap");
