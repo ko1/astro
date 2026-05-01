@@ -23,12 +23,40 @@
 /* Maximum number of capturing groups (including \0 = whole match). */
 #define ASTROGRE_MAX_GROUPS 32
 
-/* Match-result type returned by EVAL.  1 = continuation succeeded,
- * 0 = failed.  Width matters: the framework's SPECIALIZE emits
- * `(VALUE)<n>ULL` for uint64_t fields (class bitmaps), so VALUE must
- * be at least 64 bits wide or those casts truncate.  int64_t is the
- * convention across the other samples for the same reason. */
+/* Match-result type returned by EVAL.  Width matters: the framework's
+ * SPECIALIZE emits `(VALUE)<n>ULL` for uint64_t fields (class bitmaps),
+ * so VALUE must be at least 64 bits wide or those casts truncate.
+ * int64_t is the convention across the other samples for the same
+ * reason. */
 typedef int64_t VALUE;
+
+/* Match-result codes used as VALUE return values throughout node.def.
+ *
+ * Two protocols share the same VALUE channel:
+ *
+ *   regex chain (rep / alt / lit / class / lookaround / capture / ...)
+ *     uses MR_FAIL / MR_STOP only.  MR_FAIL means "this branch didn't
+ *     match here"; MR_STOP means "the chain completed (re_succ)".
+ *     Backtracking is encoded in this 2-value protocol — a parent
+ *     node sees MR_FAIL from its child and undoes its own state.
+ *
+ *   scanner ↔ body chain boundary (case-A factorization)
+ *     adds MR_CONTINUE for the `-c` / default-print modes.  When the
+ *     body chain ends in `node_action_continue` instead of `re_succ`,
+ *     it returns MR_CONTINUE to tell the scanner "match recorded,
+ *     please resume scanning from c->pos".  Regex internals never
+ *     see MR_CONTINUE; only the scanner has to switch on all three.
+ *
+ * MR_FAIL is required to be 0 so the conventional `if (!r) ...` and
+ * `if (r) ...` patterns work in regex-chain code that only deals
+ * with MR_FAIL / MR_STOP.  MR_CONTINUE = 2 is treated as truthy by
+ * those (correctly: it's a "matched" outcome) but the scanner has
+ * to compare explicitly to distinguish from MR_STOP. */
+enum match_result {
+    MR_FAIL     = 0,
+    MR_STOP     = 1,
+    MR_CONTINUE = 2,
+};
 
 typedef enum {
     AGRE_ENC_ASCII = 0,

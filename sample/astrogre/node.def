@@ -1,16 +1,32 @@
 /*
  * astrogre AST nodes.
  *
- * Each match node returns VALUE (1 = the continuation matched, 0 = no match
- * along this branch).  The "next" operand on every match node is the
- * continuation: when this node has consumed its piece, it dispatches `next`
- * to verify the rest of the pattern.  A failed continuation undoes any
- * state this node mutated and returns 0 — that's how backtracking is
- * expressed without an explicit thread-list.
+ * Each match node returns one of three VALUEs (defined as `enum
+ * match_result` in context.h):
  *
- * The chain is terminated by node_re_succ.  The for-each-start-position
- * search loop is itself a node (node_grep_search) — the specialiser then
- * folds the loop and the inlined regex chain into one SD function.
+ *   MR_FAIL     — this branch didn't match here.  Parents undo their own
+ *                 state and propagate MR_FAIL up; backtracking is encoded
+ *                 in this falsy return without an explicit thread-list.
+ *   MR_STOP     — the regex chain reached `node_re_succ`; the scanner
+ *                 returns 1 to its caller (search semantics).
+ *   MR_CONTINUE — produced only by `node_action_continue` at the tail of
+ *                 a `-c` / default-print body chain; tells the scanner
+ *                 "match recorded, please resume from c->pos".
+ *
+ * Regex-chain internals (rep / alt / lit / class / lookaround / capture)
+ * only ever see MR_FAIL / MR_STOP, so `if (!r) ...` and `if (r) ...`
+ * patterns work as expected.  Only the scanner ↔ body boundary has to
+ * distinguish MR_STOP from MR_CONTINUE explicitly.
+ *
+ * The "next" operand on every match node is the continuation: when this
+ * node has consumed its piece, it dispatches `next` to verify the rest
+ * of the pattern.  Chains terminate either at `node_re_succ` (search
+ * style) or at `node_action_continue` (case-A scan-and-act style).
+ *
+ * The for-each-start-position search loop is itself a node
+ * (node_grep_search), and the per-line scan-and-act loop is a node
+ * (node_scan_lit_dual_byte) — the specialiser folds the loop and the
+ * inlined body chain into one SD function in both cases.
  */
 
 /* ------------------------------------------------------------------ */
@@ -45,9 +61,9 @@ node_grep_search(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t ancho
         c->pos = s;
         for (int i = 0; i < ASTROGRE_MAX_GROUPS; i++) c->valid[i] = false;
         c->rep_top = NULL;
-        if (EVAL_ARG(c, body)) return 1;
+        if (EVAL_ARG(c, body)) return MR_STOP;
     }
-    return 0;
+    return MR_FAIL;
 }
 
 /* memchr-prefilter variant of node_grep_search.
@@ -66,7 +82,7 @@ NODE_DEF
 node_grep_search_memchr(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t first_byte, uint32_t anchored_bos)
 {
     if (anchored_bos) {
-        if (c->pos != 0) return 0;
+        if (c->pos != 0) return MR_FAIL;
         for (int i = 0; i < ASTROGRE_MAX_GROUPS; i++) c->valid[i] = false;
         c->rep_top = NULL;
         return EVAL_ARG(c, body);
@@ -75,14 +91,14 @@ node_grep_search_memchr(CTX * restrict c, NODE * restrict n, NODE *body, uint32_
     const uint8_t *end = c->str + c->str_len;
     while (p < end) {
         const uint8_t *q = (const uint8_t *)memchr(p, (int)(unsigned char)first_byte, (size_t)(end - p));
-        if (!q) return 0;
+        if (!q) return MR_FAIL;
         c->pos = (size_t)(q - c->str);
         for (int i = 0; i < ASTROGRE_MAX_GROUPS; i++) c->valid[i] = false;
         c->rep_top = NULL;
-        if (EVAL_ARG(c, body)) return 1;
+        if (EVAL_ARG(c, body)) return MR_STOP;
         p = q + 1;
     }
-    return 0;
+    return MR_FAIL;
 }
 
 /* SIMD class membership scan via two PSHUFB nibble lookups —
@@ -98,7 +114,7 @@ NODE_DEF
 node_grep_search_class_scan(CTX * restrict c, NODE * restrict n, NODE *body, uint64_t t_lo_a, uint64_t t_lo_b, uint64_t t_hi_a, uint64_t t_hi_b, uint32_t anchored_bos)
 {
     if (anchored_bos) {
-        if (c->pos != 0) return 0;
+        if (c->pos != 0) return MR_FAIL;
         for (int i = 0; i < ASTROGRE_MAX_GROUPS; i++) c->valid[i] = false;
         c->rep_top = NULL;
         return EVAL_ARG(c, body);
@@ -130,7 +146,7 @@ node_grep_search_class_scan(CTX * restrict c, NODE * restrict n, NODE *body, uin
                 c->pos = (size_t)((p + idx) - c->str);
                 for (int i = 0; i < ASTROGRE_MAX_GROUPS; i++) c->valid[i] = false;
                 c->rep_top = NULL;
-                if (EVAL_ARG(c, body)) return 1;
+                if (EVAL_ARG(c, body)) return MR_STOP;
                 bits &= bits - 1;
             }
             p += 32;
@@ -151,12 +167,12 @@ node_grep_search_class_scan(CTX * restrict c, NODE * restrict n, NODE *body, uin
                 c->pos = (size_t)(p - c->str);
                 for (int i = 0; i < ASTROGRE_MAX_GROUPS; i++) c->valid[i] = false;
                 c->rep_top = NULL;
-                if (EVAL_ARG(c, body)) return 1;
+                if (EVAL_ARG(c, body)) return MR_STOP;
             }
             p++;
         }
     }
-    return 0;
+    return MR_FAIL;
 }
 
 /* SIMD multi-byte scan — for patterns where the very first byte of
@@ -173,12 +189,12 @@ NODE_DEF
 node_grep_search_byteset(CTX * restrict c, NODE * restrict n, NODE *body, uint64_t packed, uint32_t n_bytes, uint32_t anchored_bos)
 {
     if (anchored_bos) {
-        if (c->pos != 0) return 0;
+        if (c->pos != 0) return MR_FAIL;
         for (int i = 0; i < ASTROGRE_MAX_GROUPS; i++) c->valid[i] = false;
         c->rep_top = NULL;
         return EVAL_ARG(c, body);
     }
-    if (n_bytes == 0 || n_bytes > 8) return 0;
+    if (n_bytes == 0 || n_bytes > 8) return MR_FAIL;
 
     uint8_t bs[8];
     for (int i = 0; i < 8; i++) bs[i] = (uint8_t)((packed >> (i * 8)) & 0xFF);
@@ -204,7 +220,7 @@ node_grep_search_byteset(CTX * restrict c, NODE * restrict n, NODE *body, uint64
                 c->pos = (size_t)((p + idx) - c->str);
                 for (int i = 0; i < ASTROGRE_MAX_GROUPS; i++) c->valid[i] = false;
                 c->rep_top = NULL;
-                if (EVAL_ARG(c, body)) return 1;
+                if (EVAL_ARG(c, body)) return MR_STOP;
                 bits &= bits - 1;
             }
             p += 32;
@@ -223,11 +239,11 @@ node_grep_search_byteset(CTX * restrict c, NODE * restrict n, NODE *body, uint64
             c->pos = (size_t)(p - c->str);
             for (int i = 0; i < ASTROGRE_MAX_GROUPS; i++) c->valid[i] = false;
             c->rep_top = NULL;
-            if (EVAL_ARG(c, body)) return 1;
+            if (EVAL_ARG(c, body)) return MR_STOP;
         }
         p++;
     }
-    return 0;
+    return MR_FAIL;
 }
 
 /* SIMD class-range prefilter — for patterns starting with a single
@@ -247,7 +263,7 @@ NODE_DEF
 node_grep_search_range(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t lo, uint32_t hi, uint32_t anchored_bos)
 {
     if (anchored_bos) {
-        if (c->pos != 0) return 0;
+        if (c->pos != 0) return MR_FAIL;
         for (int i = 0; i < ASTROGRE_MAX_GROUPS; i++) c->valid[i] = false;
         c->rep_top = NULL;
         return EVAL_ARG(c, body);
@@ -271,7 +287,7 @@ node_grep_search_range(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t
                 c->pos = (size_t)((p + idx) - c->str);
                 for (int i = 0; i < ASTROGRE_MAX_GROUPS; i++) c->valid[i] = false;
                 c->rep_top = NULL;
-                if (EVAL_ARG(c, body)) return 1;
+                if (EVAL_ARG(c, body)) return MR_STOP;
                 bits &= bits - 1;
             }
             p += 32;
@@ -285,11 +301,11 @@ node_grep_search_range(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t
             c->pos = (size_t)(p - c->str);
             for (int i = 0; i < ASTROGRE_MAX_GROUPS; i++) c->valid[i] = false;
             c->rep_top = NULL;
-            if (EVAL_ARG(c, body)) return 1;
+            if (EVAL_ARG(c, body)) return MR_STOP;
         }
         p++;
     }
-    return 0;
+    return MR_FAIL;
 }
 
 /* memmem-prefilter variant: same shape as memchr but with a multi-
@@ -308,7 +324,7 @@ NODE_DEF
 node_grep_search_memmem(CTX * restrict c, NODE * restrict n, NODE *body, const char *prefix, uint32_t prefix_len, uint32_t anchored_bos)
 {
     if (anchored_bos) {
-        if (c->pos != 0) return 0;
+        if (c->pos != 0) return MR_FAIL;
         for (int i = 0; i < ASTROGRE_MAX_GROUPS; i++) c->valid[i] = false;
         c->rep_top = NULL;
         return EVAL_ARG(c, body);
@@ -317,14 +333,14 @@ node_grep_search_memmem(CTX * restrict c, NODE * restrict n, NODE *body, const c
     const uint8_t *end = c->str + c->str_len;
     while ((size_t)(end - p) >= (size_t)prefix_len) {
         const uint8_t *q = (const uint8_t *)memmem(p, (size_t)(end - p), prefix, (size_t)prefix_len);
-        if (!q) return 0;
+        if (!q) return MR_FAIL;
         c->pos = (size_t)(q - c->str);
         for (int i = 0; i < ASTROGRE_MAX_GROUPS; i++) c->valid[i] = false;
         c->rep_top = NULL;
-        if (EVAL_ARG(c, body)) return 1;
+        if (EVAL_ARG(c, body)) return MR_STOP;
         p = q + 1;
     }
-    return 0;
+    return MR_FAIL;
 }
 
 /* Generic literal-prefilter scanner.  Same dual-byte filter as the
@@ -354,7 +370,7 @@ node_scan_lit_dual_byte(CTX * restrict c, NODE * restrict n, NODE *body, const c
     const uint8_t *p   = c->str + c->pos;
     const uint8_t *end = c->str + c->str_len;
 
-    if (needle_len == 0) return 0;
+    if (needle_len == 0) return MR_FAIL;
 
     if (needle_len == 1) {
         const int target = (int)(uint8_t)needle[0];
@@ -363,11 +379,11 @@ node_scan_lit_dual_byte(CTX * restrict c, NODE * restrict n, NODE *body, const c
             if (!q) break;
             c->pos = (size_t)(q - c->str);
             VALUE r = EVAL_ARG(c, body);
-            if (r == 1) return 1;
-            if (r == 2) p = c->str + c->pos;
+            if (r == MR_STOP) return MR_STOP;
+            if (r == MR_CONTINUE) p = c->str + c->pos;
             else        p = q + 1;
         }
-        return 0;
+        return MR_FAIL;
     }
 
 #if defined(__AVX2__)
@@ -407,12 +423,12 @@ node_scan_lit_dual_byte(CTX * restrict c, NODE * restrict n, NODE *body, const c
                 if (ok) {
                     c->pos = (size_t)(q - c->str);
                     VALUE r = EVAL_ARG(c, body);
-                    if (r == 1) return 1;
-                    if (r == 2) {
+                    if (r == MR_STOP) return MR_STOP;
+                    if (r == MR_CONTINUE) {
                         new_p = c->str + c->pos;
                         if (new_p >= p + 64) goto chunk_done;
                     }
-                    /* r == 0 (regex chain failed at q): keep walking bits. */
+                    /* r == MR_FAIL (regex chain failed at q): keep walking bits. */
                 }
             }
             p = (new_p && new_p > p + 64) ? new_p : p + 64;
@@ -428,14 +444,14 @@ node_scan_lit_dual_byte(CTX * restrict c, NODE * restrict n, NODE *body, const c
             && (needle_len == 1 || memcmp(p + 1, needle + 1, (size_t)(needle_len - 1)) == 0)) {
             c->pos = (size_t)(p - c->str);
             VALUE r = EVAL_ARG(c, body);
-            if (r == 1) return 1;
-            if (r == 2) p = c->str + c->pos;
+            if (r == MR_STOP) return MR_STOP;
+            if (r == MR_CONTINUE) p = c->str + c->pos;
             else        p++;
         } else {
             p++;
         }
     }
-    return 0;
+    return MR_FAIL;
 }
 
 /* ------------------------------------------------------------------ */
@@ -471,7 +487,7 @@ node_action_lineskip(CTX * restrict c, NODE * restrict n, NODE *next)
 NODE_DEF
 node_action_continue(CTX * restrict c, NODE * restrict n)
 {
-    return 2;
+    return MR_CONTINUE;
 }
 
 /* Emit the line containing the current match for grep-style printing.
@@ -574,7 +590,7 @@ node_re_succ(CTX * restrict c, NODE * restrict n)
     /* Reached end of pattern: record end of whole match and signal success. */
     c->ends[0]  = c->pos;
     c->valid[0] = true;
-    return 1;
+    return MR_STOP;
 }
 
 /* ------------------------------------------------------------------ */
@@ -584,8 +600,8 @@ node_re_succ(CTX * restrict c, NODE * restrict n)
 NODE_DEF
 node_re_lit(CTX * restrict c, NODE * restrict n, const char *bytes, uint32_t len, NODE *next)
 {
-    if (c->pos + (size_t)len > c->str_len) return 0;
-    if (memcmp(c->str + c->pos, bytes, len) != 0) return 0;
+    if (c->pos + (size_t)len > c->str_len) return MR_FAIL;
+    if (memcmp(c->str + c->pos, bytes, len) != 0) return MR_FAIL;
     c->pos += len;
     VALUE r = EVAL_ARG(c, next);
     if (!r) c->pos -= len;
@@ -597,12 +613,12 @@ node_re_lit(CTX * restrict c, NODE * restrict n, const char *bytes, uint32_t len
 NODE_DEF
 node_re_lit_ci(CTX * restrict c, NODE * restrict n, const char *bytes, uint32_t len, NODE *next)
 {
-    if (c->pos + (size_t)len > c->str_len) return 0;
+    if (c->pos + (size_t)len > c->str_len) return MR_FAIL;
     const uint8_t *s = c->str + c->pos;
     for (uint32_t i = 0; i < len; i++) {
         uint8_t b = s[i];
         if (b >= 'A' && b <= 'Z') b += 32;
-        if (b != (uint8_t)bytes[i]) return 0;
+        if (b != (uint8_t)bytes[i]) return MR_FAIL;
     }
     c->pos += len;
     VALUE r = EVAL_ARG(c, next);
@@ -618,8 +634,8 @@ node_re_lit_ci(CTX * restrict c, NODE * restrict n, const char *bytes, uint32_t 
 NODE_DEF
 node_re_dot(CTX * restrict c, NODE * restrict n, NODE *next)
 {
-    if (c->pos >= c->str_len) return 0;
-    if (c->str[c->pos] == '\n') return 0;
+    if (c->pos >= c->str_len) return MR_FAIL;
+    if (c->str[c->pos] == '\n') return MR_FAIL;
     c->pos++;
     VALUE r = EVAL_ARG(c, next);
     if (!r) c->pos--;
@@ -630,7 +646,7 @@ node_re_dot(CTX * restrict c, NODE * restrict n, NODE *next)
 NODE_DEF
 node_re_dot_m(CTX * restrict c, NODE * restrict n, NODE *next)
 {
-    if (c->pos >= c->str_len) return 0;
+    if (c->pos >= c->str_len) return MR_FAIL;
     c->pos++;
     VALUE r = EVAL_ARG(c, next);
     if (!r) c->pos--;
@@ -641,16 +657,16 @@ node_re_dot_m(CTX * restrict c, NODE * restrict n, NODE *next)
 NODE_DEF
 node_re_dot_utf8(CTX * restrict c, NODE * restrict n, NODE *next)
 {
-    if (c->pos >= c->str_len) return 0;
+    if (c->pos >= c->str_len) return MR_FAIL;
     uint8_t b = c->str[c->pos];
-    if (b == '\n') return 0;
+    if (b == '\n') return MR_FAIL;
     int adv;
     if      (b < 0x80)         adv = 1;
     else if ((b & 0xE0)==0xC0) adv = 2;
     else if ((b & 0xF0)==0xE0) adv = 3;
     else if ((b & 0xF8)==0xF0) adv = 4;
-    else                       return 0;
-    if (c->pos + (size_t)adv > c->str_len) return 0;
+    else                       return MR_FAIL;
+    if (c->pos + (size_t)adv > c->str_len) return MR_FAIL;
     c->pos += adv;
     VALUE r = EVAL_ARG(c, next);
     if (!r) c->pos -= adv;
@@ -661,15 +677,15 @@ node_re_dot_utf8(CTX * restrict c, NODE * restrict n, NODE *next)
 NODE_DEF
 node_re_dot_utf8_m(CTX * restrict c, NODE * restrict n, NODE *next)
 {
-    if (c->pos >= c->str_len) return 0;
+    if (c->pos >= c->str_len) return MR_FAIL;
     uint8_t b = c->str[c->pos];
     int adv;
     if      (b < 0x80)         adv = 1;
     else if ((b & 0xE0)==0xC0) adv = 2;
     else if ((b & 0xF0)==0xE0) adv = 3;
     else if ((b & 0xF8)==0xF0) adv = 4;
-    else                       return 0;
-    if (c->pos + (size_t)adv > c->str_len) return 0;
+    else                       return MR_FAIL;
+    if (c->pos + (size_t)adv > c->str_len) return MR_FAIL;
     c->pos += adv;
     VALUE r = EVAL_ARG(c, next);
     if (!r) c->pos -= adv;
@@ -688,10 +704,10 @@ node_re_dot_utf8_m(CTX * restrict c, NODE * restrict n, NODE *next)
 NODE_DEF
 node_re_class(CTX * restrict c, NODE * restrict n, uint64_t bm0, uint64_t bm1, uint64_t bm2, uint64_t bm3, NODE *next)
 {
-    if (c->pos >= c->str_len) return 0;
+    if (c->pos >= c->str_len) return MR_FAIL;
     uint8_t b = c->str[c->pos];
     uint64_t bm[4] = { bm0, bm1, bm2, bm3 };
-    if (!((bm[b >> 6] >> (b & 63)) & 1ULL)) return 0;
+    if (!((bm[b >> 6] >> (b & 63)) & 1ULL)) return MR_FAIL;
     c->pos++;
     VALUE r = EVAL_ARG(c, next);
     if (!r) c->pos--;
@@ -709,7 +725,7 @@ NODE_DEF
 node_re_alt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
 {
     size_t saved = c->pos;
-    if (EVAL_ARG(c, left)) return 1;
+    if (EVAL_ARG(c, left)) return MR_STOP;
     c->pos = saved;
     return EVAL_ARG(c, right);
 }
@@ -757,7 +773,7 @@ node_re_rep_cont(CTX * restrict c, NODE * restrict n)
             f->min = (f->min > 0) ? f->min - 1 : 0;
             f->max = (f->max == -1) ? -1 : f->max - 1;
             VALUE r = (*f->body->head.dispatcher)(c, f->body);
-            if (r) return 1;
+            if (r) return MR_STOP;
             c->pos = saved_pos;
             f->min = saved_min;
             f->max = saved_max;
@@ -770,7 +786,7 @@ node_re_rep_cont(CTX * restrict c, NODE * restrict n)
             c->rep_top = f;
             return r;
         }
-        return 0;
+        return MR_FAIL;
     }
     else {
         /* Lazy: try outer_next first, only iterate if it fails. */
@@ -778,7 +794,7 @@ node_re_rep_cont(CTX * restrict c, NODE * restrict n)
             struct rep_frame *prev = f->prev;
             c->rep_top = prev;
             VALUE r = (*f->outer_next->head.dispatcher)(c, f->outer_next);
-            if (r) return 1;
+            if (r) return MR_STOP;
             c->rep_top = f;
         }
         if (f->max != 0) {
@@ -788,12 +804,12 @@ node_re_rep_cont(CTX * restrict c, NODE * restrict n)
             f->min = (f->min > 0) ? f->min - 1 : 0;
             f->max = (f->max == -1) ? -1 : f->max - 1;
             VALUE r = (*f->body->head.dispatcher)(c, f->body);
-            if (r) return 1;
+            if (r) return MR_STOP;
             c->pos = saved_pos;
             f->min = saved_min;
             f->max = saved_max;
         }
-        return 0;
+        return MR_FAIL;
     }
 }
 
@@ -837,14 +853,14 @@ node_re_cap_end(CTX * restrict c, NODE * restrict n, uint32_t idx, NODE *next)
 NODE_DEF
 node_re_bos(CTX * restrict c, NODE * restrict n, NODE *next)
 {
-    if (c->pos != 0) return 0;
+    if (c->pos != 0) return MR_FAIL;
     return EVAL_ARG(c, next);
 }
 
 NODE_DEF
 node_re_eos(CTX * restrict c, NODE * restrict n, NODE *next)
 {
-    if (c->pos != c->str_len) return 0;
+    if (c->pos != c->str_len) return MR_FAIL;
     return EVAL_ARG(c, next);
 }
 
@@ -854,7 +870,7 @@ node_re_eos_nl(CTX * restrict c, NODE * restrict n, NODE *next)
 {
     if (c->pos == c->str_len) return EVAL_ARG(c, next);
     if (c->pos == c->str_len - 1 && c->str[c->pos] == '\n') return EVAL_ARG(c, next);
-    return 0;
+    return MR_FAIL;
 }
 
 NODE_DEF
@@ -862,7 +878,7 @@ node_re_bol(CTX * restrict c, NODE * restrict n, NODE *next)
 {
     if (c->pos == 0) return EVAL_ARG(c, next);
     if (c->str[c->pos - 1] == '\n') return EVAL_ARG(c, next);
-    return 0;
+    return MR_FAIL;
 }
 
 NODE_DEF
@@ -870,7 +886,7 @@ node_re_eol(CTX * restrict c, NODE * restrict n, NODE *next)
 {
     if (c->pos == c->str_len) return EVAL_ARG(c, next);
     if (c->str[c->pos] == '\n') return EVAL_ARG(c, next);
-    return 0;
+    return MR_FAIL;
 }
 
 static inline int agre_is_word_char(uint8_t b)
@@ -886,7 +902,7 @@ node_re_word_boundary(CTX * restrict c, NODE * restrict n, NODE *next)
 {
     int prev_w = (c->pos > 0)            ? agre_is_word_char(c->str[c->pos - 1]) : 0;
     int next_w = (c->pos < c->str_len)   ? agre_is_word_char(c->str[c->pos])     : 0;
-    if (prev_w == next_w) return 0;
+    if (prev_w == next_w) return MR_FAIL;
     return EVAL_ARG(c, next);
 }
 
@@ -895,7 +911,7 @@ node_re_non_word_boundary(CTX * restrict c, NODE * restrict n, NODE *next)
 {
     int prev_w = (c->pos > 0)            ? agre_is_word_char(c->str[c->pos - 1]) : 0;
     int next_w = (c->pos < c->str_len)   ? agre_is_word_char(c->str[c->pos])     : 0;
-    if (prev_w != next_w) return 0;
+    if (prev_w != next_w) return MR_FAIL;
     return EVAL_ARG(c, next);
 }
 
@@ -906,20 +922,20 @@ node_re_non_word_boundary(CTX * restrict c, NODE * restrict n, NODE *next)
 NODE_DEF
 node_re_backref(CTX * restrict c, NODE * restrict n, uint32_t idx, NODE *next)
 {
-    if (!c->valid[idx]) return 0;
+    if (!c->valid[idx]) return MR_FAIL;
     size_t s = c->starts[idx];
     size_t e = c->ends[idx];
     size_t cap_len = e - s;
-    if (c->pos + cap_len > c->str_len) return 0;
+    if (c->pos + cap_len > c->str_len) return MR_FAIL;
     if (c->case_insensitive) {
         for (size_t i = 0; i < cap_len; i++) {
             uint8_t a = c->str[s + i], b = c->str[c->pos + i];
             if (a >= 'A' && a <= 'Z') a += 32;
             if (b >= 'A' && b <= 'Z') b += 32;
-            if (a != b) return 0;
+            if (a != b) return MR_FAIL;
         }
     } else {
-        if (memcmp(c->str + s, c->str + c->pos, cap_len) != 0) return 0;
+        if (memcmp(c->str + s, c->str + c->pos, cap_len) != 0) return MR_FAIL;
     }
     c->pos += cap_len;
     VALUE r = EVAL_ARG(c, next);
@@ -942,7 +958,7 @@ node_re_lookahead(CTX * restrict c, NODE * restrict n, NODE *body, NODE *next)
      * on success, only on failure. */
     if (!(*body->head.dispatcher)(c, body)) {
         c->pos = saved_pos;
-        return 0;
+        return MR_FAIL;
     }
     c->pos = saved_pos;
     return EVAL_ARG(c, next);
@@ -965,6 +981,6 @@ node_re_neg_lookahead(CTX * restrict c, NODE * restrict n, NODE *body, NODE *nex
     memcpy(c->starts, st, sizeof(st));
     memcpy(c->ends,   en, sizeof(en));
     memcpy(c->valid,  vd, sizeof(vd));
-    if (r) return 0;
+    if (r) return MR_FAIL;
     return EVAL_ARG(c, next);
 }
