@@ -24,15 +24,57 @@
 詰められる。実装コスト: ~500-1000 行 (parser 抽出 + AVX2 マルチ
 パターンスキャナ + バックアップロジック)。
 
-### 行イテレーションを AST node に — non-`-c` モードでも
-`-c PURE_LITERAL` については `node_grep_count_lines_lit` がこの設計
-そのもの ([`done.md`](./done.md) 参照、64 ms → 23 ms)。non-`-c` モード
-(default print / `-l` / `-L`) の per-line ループ自体は今も main.c の
-`process_buffer` 内に残っていて、行境界探索 (memrchr/memchr) は
-その都度実行している。non-`-c` も `node_grep_lines_<variant>(body)`
-に格上げすれば、specialiser が行境界探索ループと inline 化された
-body を 1 SD として bake できる。`/static/` (default) で 64 ms → 23 ms
-クラスの伸びしろがあるはず。優先度中。
+### scanner + per-match action factorization (案 A)
+`-c PURE_LITERAL` 専用の `node_grep_count_lines_lit` を、より汎用な
+**「scanner ノードが候補位置を見つけて body chain に dispatch、body は
+mode 別の action 列」** という形に factorize する。default print /
+`-c` / `-l` / `-L` / `-o` を同じ scanner + 異なる body chain で書ける
+ようにするのが目的。
+[done.md](./done.md) の count_lines_lit セクションも合わせて参照。
+
+設計決定:
+
+- **scanner**: `node_scan_lit_dual_byte / _memmem / _memchr / _byteset /
+  _class_range / _class_truffle / _plain` — 既存 `node_grep_search_*`
+  を body protocol で一般化したもの。引数は body + アルゴリズム定数。
+- **action ノード** (新規、いずれも `next` 持ち continuation):
+  `action_count` / `action_emit_match_line(opts)` / `action_emit_match`
+  / `action_emit_filename` / `action_lineskip` /
+  `action_match_end_advance` / `action_first_only` / `action_continue`
+  (terminator).
+- **return code 拡張** (2 値 → 3 値):
+  - 0 = body 失敗 (regex chain がここでマッチしなかった)
+  - 1 = body 成功 + stop (= 既存 search セマンティクス、`re_succ`)
+  - 2 = body 成功 + continue (= action chain 完了、`action_continue`)
+- **scanner の主ループ**:
+  ```c
+  VALUE r = EVAL_ARG(c, body);
+  if (r == 1) return 1;
+  if (r == 2) p = c->pos;       /* action chain advanced pos */
+  else        p = q + 1;        /* body failed at this candidate */
+  ```
+- **CLI が AST 末尾を差し替えで mode を表現**:
+  - search: `... → re_succ`
+  - `-c`: `... → action_count → action_lineskip → action_continue`
+  - default print: `... → action_emit_match_line(opts) → action_lineskip → action_continue`
+  - `-l`: `... → action_emit_filename → re_succ`
+  - `-o`: `... → action_emit_match → action_match_end_advance → action_continue`
+
+backtracking は body 内部 (rep / alt / lookahead) で完結し、scanner には
+影響しない。CTX に `fname` / `lineno` / `lineno_pos` / `out` を追加して
+action ノードが利用する。
+
+実装は段階移行:
+1. 3 値 protocol + `action_count` / `action_lineskip` / `action_continue`
+   追加 → count_lines_lit を `scan_lit_dual_byte(count → lineskip →
+   continue)` に書き換え (perf 同等を確認)
+2. `action_emit_match_line(opts)` 追加 → default print を新形に切替
+   (期待 ~15-20 ms、現 64-66 ms から大幅減)
+3. 残り `node_grep_search_*` を `node_scan_*` に揃え、`-l` / `-o` を
+   action 列で表現
+
+`/static/` (default print) の予測 ~15-20 ms で、現 64 ms から ripgrep
+33 ms を抜けるかどうかというライン。期待値は高い。
 
 ### 本物の PG signal
 `--pg-compile` は配線済みだが現状は `--aot-compile` の alias
