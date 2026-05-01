@@ -7,13 +7,15 @@ type
   TBase = class
   private
     secret: integer;
+    function helperPriv: integer;     { private method }
   protected
     family: integer;
+    function helperProt: integer;     { protected method }
   public
     open: integer;
     constructor Create(s, f, o: integer);
-    function ShowSecret: integer;     { allowed: same class }
-    function ShowFamily: integer;     { allowed: same class }
+    function ShowSecret: integer;     { allowed: same class — calls private }
+    function ShowFamily: integer;     { allowed: same class — calls protected }
   end;
 
   TChild = class(TBase)
@@ -29,19 +31,29 @@ begin
   open   := o
 end;
 
+function TBase.helperPriv: integer;
+begin
+  helperPriv := 100
+end;
+
+function TBase.helperProt: integer;
+begin
+  helperProt := 200
+end;
+
 function TBase.ShowSecret: integer;
 begin
-  ShowSecret := secret               { OK — private from same class }
+  ShowSecret := secret + Self.helperPriv      { OK — private from same class }
 end;
 
 function TBase.ShowFamily: integer;
 begin
-  ShowFamily := family               { OK — protected from same class }
+  ShowFamily := family + Self.helperProt      { OK — protected from same class }
 end;
 
 function TChild.GetFamily: integer;
 begin
-  GetFamily := family                { OK — protected, descendant }
+  GetFamily := family + Self.helperProt   { OK — protected method, descendant }
 end;
 
 function TChild.TryGetSecret: integer;

@@ -26,7 +26,7 @@ Pascal 拡張、性能のうち高度なもの。「Pascal として完成」の
 | ~~11~~ | ~~`is` / `as`~~ | — | **完了** (round 6)。vtable 同定 + 親チェーン走査。 |
 | ~~11b~~ | ~~Abstract methods~~ | — | **完了** (round 7)。pascal_raise で catchable に。 |
 | ~~12~~ | ~~Class methods~~ | — | **完了** (round 7)。`class procedure / class function`、Self なしで T.foo(args) 呼び出し。 |
-| ~~12b~~ | ~~Visibility 強制~~ | — | **完了** (round 8 続き)。field の vis (`private` / `protected` / `public` / `published`) を保持し、obj.field / Self.field / (p as T).field の各アクセス点で `check_access` を呼ぶ。クラス外からの private/protected はエラー、protected は declaring class とその子孫からのみ可。method/property の visibility 強制は未対応 (フィールドのみ)。 |
+| ~~12b~~ | ~~Visibility 強制~~ | — | **完了** (round 8)。field と method の vis (`private` / `protected` / `public` / `published`) を保持し、`obj.field` / `Self.field` / `(p as T).field` のフィールド各アクセス点と `obj.method` / `b.method` のメソッド呼び出し点で `check_access` を呼ぶ。クラス外からの private/protected はエラー、protected は declaring class とその子孫からのみ可。property の visibility 強制は未対応 (property は内部的に field か method 経由なのでバックドアにはならない)。 |
 
 ## 文字列・コレクション
 

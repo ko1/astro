@@ -1845,6 +1845,7 @@ te_factor(void)
                 walk = wc->parent_idx;
             }
             if (me) {
+                check_access(me->decl_class, me->vis, "method", me->name);
                 NODE *args[16]; uint32_t n = 1;
                 args[0] = e.n;
                 if (accept(TK_LPAREN)) {
@@ -2128,6 +2129,7 @@ te_factor(void)
                     walk = wc->parent_idx;
                 }
                 if (me) {
+                    check_access(me->decl_class, me->vis, "method", me->name);
                     // obj.method(args) — static or virtual dispatch
                     // depending on the method's declaration.  Virtual
                     // methods go through node_vcall (reads vtable from
