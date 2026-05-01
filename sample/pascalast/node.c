@@ -192,9 +192,9 @@ HASH(NODE *n)
 }
 
 VALUE
-EVAL(CTX *c, NODE *n)
+EVAL(CTX *c, NODE *n, int fp)
 {
-    return (*n->head.dispatcher)(c, n);
+    return (*n->head.dispatcher)(c, n, fp);
 }
 
 void

@@ -4,7 +4,7 @@
 // arguments to write/writeln (handled at parse time as node_write_str).
 //
 // Variables are stored in two pools: a fixed-size globals array
-// (c->globals[]) and a stack of local frames (c->stack[c->fp..]).  The
+// (c->globals[]) and a stack of local frames (c->stack[fp..]).  The
 // parser assigns slot indices at parse time, so every read/write is a
 // direct index — no name lookup at run time.
 
@@ -13,21 +13,21 @@
 // ---------------------------------------------------------------------------
 
 NODE_DEF
-node_int(CTX * restrict c, NODE * restrict n, uint64_t v)
+node_int(CTX * restrict c, NODE * restrict n, int fp, uint64_t v)
 {
     (void)c; (void)n;
     return (int64_t)v;
 }
 
 NODE_DEF
-node_true(CTX * restrict c, NODE * restrict n)
+node_true(CTX * restrict c, NODE * restrict n, int fp)
 {
     (void)c; (void)n;
     return 1;
 }
 
 NODE_DEF
-node_false(CTX * restrict c, NODE * restrict n)
+node_false(CTX * restrict c, NODE * restrict n, int fp)
 {
     (void)c; (void)n;
     return 0;
@@ -39,46 +39,46 @@ node_false(CTX * restrict c, NODE * restrict n)
 // ---------------------------------------------------------------------------
 
 NODE_DEF
-node_real(CTX * restrict c, NODE * restrict n, uint64_t bits)
+node_real(CTX * restrict c, NODE * restrict n, int fp, uint64_t bits)
 {
     (void)c; (void)n;
     return (int64_t)bits;
 }
 
 // ---------------------------------------------------------------------------
-// Variable access.  Locals are at c->stack[c->fp + idx]; globals at
+// Variable access.  Locals are at c->stack[fp + idx]; globals at
 // c->globals[idx].  Arrays are heap-allocated int64 buffers attached to
 // a global slot (c->arrays[idx]); aref/aset add the lower bound back at
 // parse time so the runtime sees a 0-based index.
 // ---------------------------------------------------------------------------
 
 NODE_DEF
-node_lref(CTX * restrict c, NODE * restrict n, uint32_t idx)
+node_lref(CTX * restrict c, NODE * restrict n, int fp, uint32_t idx)
 {
     (void)n;
-    return c->stack[c->fp + idx];
+    return c->stack[fp + idx];
 }
 
 NODE_DEF
-node_lset(CTX * restrict c, NODE * restrict n, uint32_t idx, NODE *val)
+node_lset(CTX * restrict c, NODE * restrict n, int fp, uint32_t idx, NODE *val)
 {
     (void)n;
     VALUE v = EVAL_ARG(c, val);
-    c->stack[c->fp + idx] = v;
+    c->stack[fp + idx] = v;
     return 0;
 }
 
 // Up-level reference: read/write a slot in an outer (lexically
 // enclosing) procedure's frame, found via the display vector.
 NODE_DEF
-node_uref(CTX * restrict c, NODE * restrict n, uint32_t depth, uint32_t idx)
+node_uref(CTX * restrict c, NODE * restrict n, int fp, uint32_t depth, uint32_t idx)
 {
     (void)n;
     return c->stack[c->display[depth] + idx];
 }
 
 NODE_DEF
-node_uset(CTX * restrict c, NODE * restrict n, uint32_t depth, uint32_t idx, NODE *val)
+node_uset(CTX * restrict c, NODE * restrict n, int fp, uint32_t depth, uint32_t idx, NODE *val)
 {
     (void)n;
     VALUE v = EVAL_ARG(c, val);
@@ -89,7 +89,7 @@ node_uset(CTX * restrict c, NODE * restrict n, uint32_t depth, uint32_t idx, NOD
 // Same idea but through an indirect (var-param) slot: the slot at
 // display[depth]+idx holds a VALUE *.
 NODE_DEF
-node_uvar_ref(CTX * restrict c, NODE * restrict n, uint32_t depth, uint32_t idx)
+node_uvar_ref(CTX * restrict c, NODE * restrict n, int fp, uint32_t depth, uint32_t idx)
 {
     (void)n;
     VALUE *p = (VALUE *)(uintptr_t)c->stack[c->display[depth] + idx];
@@ -97,7 +97,7 @@ node_uvar_ref(CTX * restrict c, NODE * restrict n, uint32_t depth, uint32_t idx)
 }
 
 NODE_DEF
-node_uvar_set(CTX * restrict c, NODE * restrict n, uint32_t depth, uint32_t idx, NODE *val)
+node_uvar_set(CTX * restrict c, NODE * restrict n, int fp, uint32_t depth, uint32_t idx, NODE *val)
 {
     (void)n;
     VALUE v = EVAL_ARG(c, val);
@@ -107,7 +107,7 @@ node_uvar_set(CTX * restrict c, NODE * restrict n, uint32_t depth, uint32_t idx,
 }
 
 NODE_DEF
-node_uaref_local(CTX * restrict c, NODE * restrict n, uint32_t depth, uint32_t slot, int32_t lo, NODE *idx_e)
+node_uaref_local(CTX * restrict c, NODE * restrict n, int fp, uint32_t depth, uint32_t slot, int32_t lo, NODE *idx_e)
 {
     (void)n;
     int64_t i = EVAL_ARG(c, idx_e) - (int64_t)lo;
@@ -115,7 +115,7 @@ node_uaref_local(CTX * restrict c, NODE * restrict n, uint32_t depth, uint32_t s
 }
 
 NODE_DEF
-node_uaset_local(CTX * restrict c, NODE * restrict n, uint32_t depth, uint32_t slot, int32_t lo, NODE *idx_e, NODE *val)
+node_uaset_local(CTX * restrict c, NODE * restrict n, int fp, uint32_t depth, uint32_t slot, int32_t lo, NODE *idx_e, NODE *val)
 {
     (void)n;
     int64_t i = EVAL_ARG(c, idx_e) - (int64_t)lo;
@@ -125,14 +125,14 @@ node_uaset_local(CTX * restrict c, NODE * restrict n, uint32_t depth, uint32_t s
 }
 
 NODE_DEF
-node_gref(CTX * restrict c, NODE * restrict n, uint32_t idx)
+node_gref(CTX * restrict c, NODE * restrict n, int fp, uint32_t idx)
 {
     (void)n;
     return c->globals[idx];
 }
 
 NODE_DEF
-node_gset(CTX * restrict c, NODE * restrict n, uint32_t idx, NODE *val)
+node_gset(CTX * restrict c, NODE * restrict n, int fp, uint32_t idx, NODE *val)
 {
     (void)n;
     VALUE v = EVAL_ARG(c, val);
@@ -141,7 +141,7 @@ node_gset(CTX * restrict c, NODE * restrict n, uint32_t idx, NODE *val)
 }
 
 NODE_DEF
-node_aref(CTX * restrict c, NODE * restrict n, uint32_t arr_idx, NODE *idx_e)
+node_aref(CTX * restrict c, NODE * restrict n, int fp, uint32_t arr_idx, NODE *idx_e)
 {
     int64_t i = EVAL_ARG(c, idx_e) - c->array_lo[arr_idx];
     if (UNLIKELY(i < 0 || i >= c->array_size[arr_idx]))
@@ -151,7 +151,7 @@ node_aref(CTX * restrict c, NODE * restrict n, uint32_t arr_idx, NODE *idx_e)
 }
 
 NODE_DEF
-node_aset(CTX * restrict c, NODE * restrict n, uint32_t arr_idx, NODE *idx_e, NODE *val)
+node_aset(CTX * restrict c, NODE * restrict n, int fp, uint32_t arr_idx, NODE *idx_e, NODE *val)
 {
     int64_t i = EVAL_ARG(c, idx_e) - c->array_lo[arr_idx];
     int64_t v = EVAL_ARG(c, val);
@@ -166,29 +166,29 @@ node_aset(CTX * restrict c, NODE * restrict n, uint32_t arr_idx, NODE *idx_e, NO
 // store the array.  `lo` is the declared lower bound, baked into the
 // node so the runtime sees a 0-based index.
 NODE_DEF
-node_aref_local(CTX * restrict c, NODE * restrict n, uint32_t slot, int32_t lo, NODE *idx_e)
+node_aref_local(CTX * restrict c, NODE * restrict n, int fp, uint32_t slot, int32_t lo, NODE *idx_e)
 {
     (void)n;
     int64_t i = EVAL_ARG(c, idx_e) - (int64_t)lo;
-    return c->stack[c->fp + slot + i];
+    return c->stack[fp + slot + i];
 }
 
 NODE_DEF
-node_aset_local(CTX * restrict c, NODE * restrict n, uint32_t slot, int32_t lo, NODE *idx_e, NODE *val)
+node_aset_local(CTX * restrict c, NODE * restrict n, int fp, uint32_t slot, int32_t lo, NODE *idx_e, NODE *val)
 {
     (void)n;
     int64_t i = EVAL_ARG(c, idx_e) - (int64_t)lo;
     int64_t v = EVAL_ARG(c, val);
-    c->stack[c->fp + slot + i] = v;
+    c->stack[fp + slot + i] = v;
     return 0;
 }
 
 NODE_DEF
-node_addr_aref_local(CTX * restrict c, NODE * restrict n, uint32_t slot, int32_t lo, NODE *idx_e)
+node_addr_aref_local(CTX * restrict c, NODE * restrict n, int fp, uint32_t slot, int32_t lo, NODE *idx_e)
 {
     (void)n;
     int64_t i = EVAL_ARG(c, idx_e) - (int64_t)lo;
-    return (VALUE)(uintptr_t)&c->stack[c->fp + slot + i];
+    return (VALUE)(uintptr_t)&c->stack[fp + slot + i];
 }
 
 // `var`-array parameter: the slot holds a `VALUE *` pointing at the
@@ -196,38 +196,38 @@ node_addr_aref_local(CTX * restrict c, NODE * restrict n, uint32_t slot, int32_t
 // on a 0-based base via the `lo` baked into both ends).  `lo` here is
 // the *callee's* declared lower bound.
 NODE_DEF
-node_var_aref(CTX * restrict c, NODE * restrict n, uint32_t slot, int32_t lo, NODE *idx_e)
+node_var_aref(CTX * restrict c, NODE * restrict n, int fp, uint32_t slot, int32_t lo, NODE *idx_e)
 {
     (void)n;
     int64_t i = EVAL_ARG(c, idx_e) - (int64_t)lo;
-    int64_t *base = (int64_t *)(uintptr_t)c->stack[c->fp + slot];
+    int64_t *base = (int64_t *)(uintptr_t)c->stack[fp + slot];
     return base[i];
 }
 
 NODE_DEF
-node_var_aset(CTX * restrict c, NODE * restrict n, uint32_t slot, int32_t lo, NODE *idx_e, NODE *val)
+node_var_aset(CTX * restrict c, NODE * restrict n, int fp, uint32_t slot, int32_t lo, NODE *idx_e, NODE *val)
 {
     (void)n;
     int64_t i = EVAL_ARG(c, idx_e) - (int64_t)lo;
     int64_t v = EVAL_ARG(c, val);
-    int64_t *base = (int64_t *)(uintptr_t)c->stack[c->fp + slot];
+    int64_t *base = (int64_t *)(uintptr_t)c->stack[fp + slot];
     base[i] = v;
     return 0;
 }
 
 // Address-of a global array's element 0 (caller side of var-array param).
 NODE_DEF
-node_addr_garr_base(CTX * restrict c, NODE * restrict n, uint32_t arr_idx)
+node_addr_garr_base(CTX * restrict c, NODE * restrict n, int fp, uint32_t arr_idx)
 {
     (void)n;
     return (VALUE)(uintptr_t)c->arrays[arr_idx];
 }
 
 NODE_DEF
-node_addr_larr_base(CTX * restrict c, NODE * restrict n, uint32_t slot)
+node_addr_larr_base(CTX * restrict c, NODE * restrict n, int fp, uint32_t slot)
 {
     (void)n;
-    return (VALUE)(uintptr_t)&c->stack[c->fp + slot];
+    return (VALUE)(uintptr_t)&c->stack[fp + slot];
 }
 
 // 2D array access.  We store 2D arrays row-major in the same flat
@@ -235,7 +235,7 @@ node_addr_larr_base(CTX * restrict c, NODE * restrict n, uint32_t slot)
 // `c->array_size2[arr_idx]`.  Lower bounds for both axes are baked in
 // here at run time (kept on CTX so the same node works for any array).
 NODE_DEF
-node_aref2(CTX * restrict c, NODE * restrict n, uint32_t arr_idx, NODE *i_e, NODE *j_e)
+node_aref2(CTX * restrict c, NODE * restrict n, int fp, uint32_t arr_idx, NODE *i_e, NODE *j_e)
 {
     (void)n;
     int64_t i = EVAL_ARG(c, i_e) - c->array_lo[arr_idx];
@@ -248,7 +248,7 @@ node_aref2(CTX * restrict c, NODE * restrict n, uint32_t arr_idx, NODE *i_e, NOD
 }
 
 NODE_DEF
-node_aset2(CTX * restrict c, NODE * restrict n, uint32_t arr_idx, NODE *i_e, NODE *j_e, NODE *val)
+node_aset2(CTX * restrict c, NODE * restrict n, int fp, uint32_t arr_idx, NODE *i_e, NODE *j_e, NODE *val)
 {
     (void)n;
     int64_t i = EVAL_ARG(c, i_e) - c->array_lo[arr_idx];
@@ -262,23 +262,23 @@ node_aset2(CTX * restrict c, NODE * restrict n, uint32_t arr_idx, NODE *i_e, NOD
     return 0;
 }
 
-// `var` parameter access.  The slot at c->stack[c->fp + idx] holds a
+// `var` parameter access.  The slot at c->stack[fp + idx] holds a
 // VALUE* pointing into the caller's storage (filled in by node_addr_*
 // at the call site).  Reads/writes deref through that pointer.
 NODE_DEF
-node_var_lref(CTX * restrict c, NODE * restrict n, uint32_t idx)
+node_var_lref(CTX * restrict c, NODE * restrict n, int fp, uint32_t idx)
 {
     (void)n;
-    VALUE *p = (VALUE *)(uintptr_t)c->stack[c->fp + idx];
+    VALUE *p = (VALUE *)(uintptr_t)c->stack[fp + idx];
     return *p;
 }
 
 NODE_DEF
-node_var_lset(CTX * restrict c, NODE * restrict n, uint32_t idx, NODE *val)
+node_var_lset(CTX * restrict c, NODE * restrict n, int fp, uint32_t idx, NODE *val)
 {
     (void)n;
     VALUE v = EVAL_ARG(c, val);
-    VALUE *p = (VALUE *)(uintptr_t)c->stack[c->fp + idx];
+    VALUE *p = (VALUE *)(uintptr_t)c->stack[fp + idx];
     *p = v;
     return 0;
 }
@@ -287,21 +287,21 @@ node_var_lset(CTX * restrict c, NODE * restrict n, uint32_t idx, NODE *val)
 // returned int64 is the address of the source storage cast through
 // uintptr_t — read back by node_var_lref / node_var_lset above.
 NODE_DEF
-node_addr_lvar(CTX * restrict c, NODE * restrict n, uint32_t idx)
+node_addr_lvar(CTX * restrict c, NODE * restrict n, int fp, uint32_t idx)
 {
     (void)n;
-    return (VALUE)(uintptr_t)&c->stack[c->fp + idx];
+    return (VALUE)(uintptr_t)&c->stack[fp + idx];
 }
 
 NODE_DEF
-node_addr_gvar(CTX * restrict c, NODE * restrict n, uint32_t idx)
+node_addr_gvar(CTX * restrict c, NODE * restrict n, int fp, uint32_t idx)
 {
     (void)n;
     return (VALUE)(uintptr_t)&c->globals[idx];
 }
 
 NODE_DEF
-node_addr_aref(CTX * restrict c, NODE * restrict n, uint32_t arr_idx, NODE *idx_e)
+node_addr_aref(CTX * restrict c, NODE * restrict n, int fp, uint32_t arr_idx, NODE *idx_e)
 {
     (void)n;
     int64_t i = EVAL_ARG(c, idx_e) - c->array_lo[arr_idx];
@@ -311,7 +311,7 @@ node_addr_aref(CTX * restrict c, NODE * restrict n, uint32_t arr_idx, NODE *idx_
 }
 
 NODE_DEF
-node_addr_aref2(CTX * restrict c, NODE * restrict n, uint32_t arr_idx, NODE *i_e, NODE *j_e)
+node_addr_aref2(CTX * restrict c, NODE * restrict n, int fp, uint32_t arr_idx, NODE *i_e, NODE *j_e)
 {
     (void)n;
     int64_t i = EVAL_ARG(c, i_e) - c->array_lo[arr_idx];
@@ -325,10 +325,10 @@ node_addr_aref2(CTX * restrict c, NODE * restrict n, uint32_t arr_idx, NODE *i_e
 // `var`-param updates that pass through to the same var-param of an
 // outer call: the passed VALUE is the existing pointer, no deref needed.
 NODE_DEF
-node_addr_passthru(CTX * restrict c, NODE * restrict n, uint32_t idx)
+node_addr_passthru(CTX * restrict c, NODE * restrict n, int fp, uint32_t idx)
 {
     (void)n;
-    return c->stack[c->fp + idx];
+    return c->stack[fp + idx];
 }
 
 // ---------------------------------------------------------------------------
@@ -336,42 +336,42 @@ node_addr_passthru(CTX * restrict c, NODE * restrict n, uint32_t idx)
 // ---------------------------------------------------------------------------
 
 NODE_DEF
-node_add(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_add(CTX * restrict c, NODE * restrict n, int fp, NODE *l, NODE *r)
 {
     (void)n;
     return EVAL_ARG(c, l) + EVAL_ARG(c, r);
 }
 
 NODE_DEF
-node_sub(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_sub(CTX * restrict c, NODE * restrict n, int fp, NODE *l, NODE *r)
 {
     (void)n;
     return EVAL_ARG(c, l) - EVAL_ARG(c, r);
 }
 
 NODE_DEF
-node_mul(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_mul(CTX * restrict c, NODE * restrict n, int fp, NODE *l, NODE *r)
 {
     (void)n;
     return EVAL_ARG(c, l) * EVAL_ARG(c, r);
 }
 
 NODE_DEF
-node_div(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_div(CTX * restrict c, NODE * restrict n, int fp, NODE *l, NODE *r)
 {
     (void)n;
     return EVAL_ARG(c, l) / EVAL_ARG(c, r);
 }
 
 NODE_DEF
-node_mod(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_mod(CTX * restrict c, NODE * restrict n, int fp, NODE *l, NODE *r)
 {
     (void)n;
     return EVAL_ARG(c, l) % EVAL_ARG(c, r);
 }
 
 NODE_DEF
-node_neg(CTX * restrict c, NODE * restrict n, NODE *x)
+node_neg(CTX * restrict c, NODE * restrict n, int fp, NODE *x)
 {
     (void)n;
     return -EVAL_ARG(c, x);
@@ -385,7 +385,7 @@ node_neg(CTX * restrict c, NODE * restrict n, NODE *x)
 // ---------------------------------------------------------------------------
 
 NODE_DEF
-node_radd(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_radd(CTX * restrict c, NODE * restrict n, int fp, NODE *l, NODE *r)
 {
     (void)n;
     union { VALUE i; double d; } a, b, q;
@@ -395,7 +395,7 @@ node_radd(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
 }
 
 NODE_DEF
-node_rsub(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_rsub(CTX * restrict c, NODE * restrict n, int fp, NODE *l, NODE *r)
 {
     (void)n;
     union { VALUE i; double d; } a, b, q;
@@ -405,7 +405,7 @@ node_rsub(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
 }
 
 NODE_DEF
-node_rmul(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_rmul(CTX * restrict c, NODE * restrict n, int fp, NODE *l, NODE *r)
 {
     (void)n;
     union { VALUE i; double d; } a, b, q;
@@ -415,7 +415,7 @@ node_rmul(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
 }
 
 NODE_DEF
-node_rdiv(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_rdiv(CTX * restrict c, NODE * restrict n, int fp, NODE *l, NODE *r)
 {
     (void)n;
     union { VALUE i; double d; } a, b, q;
@@ -425,7 +425,7 @@ node_rdiv(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
 }
 
 NODE_DEF
-node_rneg(CTX * restrict c, NODE * restrict n, NODE *x)
+node_rneg(CTX * restrict c, NODE * restrict n, int fp, NODE *x)
 {
     (void)n;
     union { VALUE i; double d; } a, q;
@@ -436,7 +436,7 @@ node_rneg(CTX * restrict c, NODE * restrict n, NODE *x)
 
 // int → real promotion.
 NODE_DEF
-node_i2r(CTX * restrict c, NODE * restrict n, NODE *x)
+node_i2r(CTX * restrict c, NODE * restrict n, int fp, NODE *x)
 {
     (void)n;
     union { double d; VALUE i; } q;
@@ -446,7 +446,7 @@ node_i2r(CTX * restrict c, NODE * restrict n, NODE *x)
 
 // real → int (truncation).
 NODE_DEF
-node_r2i_trunc(CTX * restrict c, NODE * restrict n, NODE *x)
+node_r2i_trunc(CTX * restrict c, NODE * restrict n, int fp, NODE *x)
 {
     (void)n;
     union { VALUE i; double d; } a;
@@ -456,7 +456,7 @@ node_r2i_trunc(CTX * restrict c, NODE * restrict n, NODE *x)
 
 // real → int (round-half-away-from-zero, the Pascal `round` builtin).
 NODE_DEF
-node_r2i_round(CTX * restrict c, NODE * restrict n, NODE *x)
+node_r2i_round(CTX * restrict c, NODE * restrict n, int fp, NODE *x)
 {
     (void)n;
     union { VALUE i; double d; } a;
@@ -466,7 +466,7 @@ node_r2i_round(CTX * restrict c, NODE * restrict n, NODE *x)
 }
 
 NODE_DEF
-node_rsqrt(CTX * restrict c, NODE * restrict n, NODE *x)
+node_rsqrt(CTX * restrict c, NODE * restrict n, int fp, NODE *x)
 {
     (void)n;
     union { VALUE i; double d; } a, q;
@@ -477,7 +477,7 @@ node_rsqrt(CTX * restrict c, NODE * restrict n, NODE *x)
 }
 
 NODE_DEF
-node_rabs(CTX * restrict c, NODE * restrict n, NODE *x)
+node_rabs(CTX * restrict c, NODE * restrict n, int fp, NODE *x)
 {
     (void)n;
     union { VALUE i; double d; } a, q;
@@ -491,42 +491,42 @@ node_rabs(CTX * restrict c, NODE * restrict n, NODE *x)
 // ---------------------------------------------------------------------------
 
 NODE_DEF
-node_eq(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_eq(CTX * restrict c, NODE * restrict n, int fp, NODE *l, NODE *r)
 {
     (void)n;
     return EVAL_ARG(c, l) == EVAL_ARG(c, r);
 }
 
 NODE_DEF
-node_ne(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_ne(CTX * restrict c, NODE * restrict n, int fp, NODE *l, NODE *r)
 {
     (void)n;
     return EVAL_ARG(c, l) != EVAL_ARG(c, r);
 }
 
 NODE_DEF
-node_lt(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_lt(CTX * restrict c, NODE * restrict n, int fp, NODE *l, NODE *r)
 {
     (void)n;
     return EVAL_ARG(c, l) < EVAL_ARG(c, r);
 }
 
 NODE_DEF
-node_le(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_le(CTX * restrict c, NODE * restrict n, int fp, NODE *l, NODE *r)
 {
     (void)n;
     return EVAL_ARG(c, l) <= EVAL_ARG(c, r);
 }
 
 NODE_DEF
-node_gt(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_gt(CTX * restrict c, NODE * restrict n, int fp, NODE *l, NODE *r)
 {
     (void)n;
     return EVAL_ARG(c, l) > EVAL_ARG(c, r);
 }
 
 NODE_DEF
-node_ge(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_ge(CTX * restrict c, NODE * restrict n, int fp, NODE *l, NODE *r)
 {
     (void)n;
     return EVAL_ARG(c, l) >= EVAL_ARG(c, r);
@@ -535,7 +535,7 @@ node_ge(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
 // Real comparisons (int operands are promoted to double via node_i2r at
 // parse time, so the run-time path is uniform).
 NODE_DEF
-node_req(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_req(CTX * restrict c, NODE * restrict n, int fp, NODE *l, NODE *r)
 {
     (void)n;
     union { VALUE i; double d; } a, b;
@@ -543,7 +543,7 @@ node_req(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
     return a.d == b.d;
 }
 NODE_DEF
-node_rne(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_rne(CTX * restrict c, NODE * restrict n, int fp, NODE *l, NODE *r)
 {
     (void)n;
     union { VALUE i; double d; } a, b;
@@ -551,7 +551,7 @@ node_rne(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
     return a.d != b.d;
 }
 NODE_DEF
-node_rlt(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_rlt(CTX * restrict c, NODE * restrict n, int fp, NODE *l, NODE *r)
 {
     (void)n;
     union { VALUE i; double d; } a, b;
@@ -559,7 +559,7 @@ node_rlt(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
     return a.d < b.d;
 }
 NODE_DEF
-node_rle(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_rle(CTX * restrict c, NODE * restrict n, int fp, NODE *l, NODE *r)
 {
     (void)n;
     union { VALUE i; double d; } a, b;
@@ -567,7 +567,7 @@ node_rle(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
     return a.d <= b.d;
 }
 NODE_DEF
-node_rgt(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_rgt(CTX * restrict c, NODE * restrict n, int fp, NODE *l, NODE *r)
 {
     (void)n;
     union { VALUE i; double d; } a, b;
@@ -575,7 +575,7 @@ node_rgt(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
     return a.d > b.d;
 }
 NODE_DEF
-node_rge(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_rge(CTX * restrict c, NODE * restrict n, int fp, NODE *l, NODE *r)
 {
     (void)n;
     union { VALUE i; double d; } a, b;
@@ -588,7 +588,7 @@ node_rge(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
 // ---------------------------------------------------------------------------
 
 NODE_DEF
-node_and(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_and(CTX * restrict c, NODE * restrict n, int fp, NODE *l, NODE *r)
 {
     (void)n;
     VALUE lv = EVAL_ARG(c, l);
@@ -597,7 +597,7 @@ node_and(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
 }
 
 NODE_DEF
-node_or(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_or(CTX * restrict c, NODE * restrict n, int fp, NODE *l, NODE *r)
 {
     (void)n;
     VALUE lv = EVAL_ARG(c, l);
@@ -606,7 +606,7 @@ node_or(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
 }
 
 NODE_DEF
-node_not(CTX * restrict c, NODE * restrict n, NODE *x)
+node_not(CTX * restrict c, NODE * restrict n, int fp, NODE *x)
 {
     (void)n;
     return !EVAL_ARG(c, x);
@@ -617,7 +617,7 @@ node_not(CTX * restrict c, NODE * restrict n, NODE *x)
 // ---------------------------------------------------------------------------
 
 NODE_DEF
-node_if(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *thn, NODE *els)
+node_if(CTX * restrict c, NODE * restrict n, int fp, NODE *cond, NODE *thn, NODE *els)
 {
     (void)n;
     if (EVAL_ARG(c, cond)) return EVAL_ARG(c, thn);
@@ -625,7 +625,7 @@ node_if(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *thn, NODE *els)
 }
 
 NODE_DEF
-node_if1(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *thn)
+node_if1(CTX * restrict c, NODE * restrict n, int fp, NODE *cond, NODE *thn)
 {
     (void)n;
     if (EVAL_ARG(c, cond)) EVAL_ARG(c, thn);
@@ -633,7 +633,7 @@ node_if1(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *thn)
 }
 
 NODE_DEF
-node_while(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *body)
+node_while(CTX * restrict c, NODE * restrict n, int fp, NODE *cond, NODE *body)
 {
     (void)n;
     while (EVAL_ARG(c, cond)) {
@@ -650,7 +650,7 @@ node_while(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *body)
 }
 
 NODE_DEF
-node_repeat(CTX * restrict c, NODE * restrict n, NODE *body, NODE *cond)
+node_repeat(CTX * restrict c, NODE * restrict n, int fp, NODE *body, NODE *cond)
 {
     (void)n;
     for (;;) {
@@ -681,12 +681,11 @@ node_repeat(CTX * restrict c, NODE * restrict n, NODE *body, NODE *cond)
     } while (0)
 
 NODE_DEF
-node_lfor_to(CTX * restrict c, NODE * restrict n, uint32_t idx, NODE *from, NODE *to, NODE *body)
+node_lfor_to(CTX * restrict c, NODE * restrict n, int fp, uint32_t idx, NODE *from, NODE *to, NODE *body)
 {
     (void)n;
     int64_t a = EVAL_ARG(c, from);
     int64_t b = EVAL_ARG(c, to);
-    int fp = c->fp;
     for (int64_t i = a; i <= b; i++) {
         c->stack[fp + idx] = i;
         EVAL_ARG(c, body);
@@ -696,12 +695,11 @@ node_lfor_to(CTX * restrict c, NODE * restrict n, uint32_t idx, NODE *from, NODE
 }
 
 NODE_DEF
-node_lfor_downto(CTX * restrict c, NODE * restrict n, uint32_t idx, NODE *from, NODE *to, NODE *body)
+node_lfor_downto(CTX * restrict c, NODE * restrict n, int fp, uint32_t idx, NODE *from, NODE *to, NODE *body)
 {
     (void)n;
     int64_t a = EVAL_ARG(c, from);
     int64_t b = EVAL_ARG(c, to);
-    int fp = c->fp;
     for (int64_t i = a; i >= b; i--) {
         c->stack[fp + idx] = i;
         EVAL_ARG(c, body);
@@ -711,7 +709,7 @@ node_lfor_downto(CTX * restrict c, NODE * restrict n, uint32_t idx, NODE *from, 
 }
 
 NODE_DEF
-node_gfor_to(CTX * restrict c, NODE * restrict n, uint32_t idx, NODE *from, NODE *to, NODE *body)
+node_gfor_to(CTX * restrict c, NODE * restrict n, int fp, uint32_t idx, NODE *from, NODE *to, NODE *body)
 {
     (void)n;
     int64_t a = EVAL_ARG(c, from);
@@ -725,7 +723,7 @@ node_gfor_to(CTX * restrict c, NODE * restrict n, uint32_t idx, NODE *from, NODE
 }
 
 NODE_DEF
-node_gfor_downto(CTX * restrict c, NODE * restrict n, uint32_t idx, NODE *from, NODE *to, NODE *body)
+node_gfor_downto(CTX * restrict c, NODE * restrict n, int fp, uint32_t idx, NODE *from, NODE *to, NODE *body)
 {
     (void)n;
     int64_t a = EVAL_ARG(c, from);
@@ -739,7 +737,7 @@ node_gfor_downto(CTX * restrict c, NODE * restrict n, uint32_t idx, NODE *from, 
 }
 
 NODE_DEF
-node_seq(CTX * restrict c, NODE * restrict n, NODE *first, NODE *rest)
+node_seq(CTX * restrict c, NODE * restrict n, int fp, NODE *first, NODE *rest)
 {
     (void)n;
     EVAL_ARG(c, first);
@@ -755,7 +753,7 @@ extern int pascal_try_run(CTX *c, NODE *body);              // 0 normal, 1 raise
 extern int pascal_try_run_finally(CTX *c, NODE *body);      // same protocol
 
 NODE_DEF
-node_try_except(CTX * restrict c, NODE * restrict n, NODE *body, NODE *handler)
+node_try_except(CTX * restrict c, NODE * restrict n, int fp, NODE *body, NODE *handler)
 {
     (void)n;
     if (pascal_try_run(c, body) != 0) {
@@ -765,7 +763,7 @@ node_try_except(CTX * restrict c, NODE * restrict n, NODE *body, NODE *handler)
 }
 
 NODE_DEF
-node_try_finally(CTX * restrict c, NODE * restrict n, NODE *body, NODE *fin)
+node_try_finally(CTX * restrict c, NODE * restrict n, int fp, NODE *body, NODE *fin)
 {
     (void)n;
     int raised = pascal_try_run_finally(c, body);
@@ -779,7 +777,7 @@ node_try_finally(CTX * restrict c, NODE * restrict n, NODE *body, NODE *fin)
 }
 
 NODE_DEF
-node_raise(CTX * restrict c, NODE * restrict n, NODE *msg_e)
+node_raise(CTX * restrict c, NODE * restrict n, int fp, NODE *msg_e)
 {
     const char *m = (const char *)(uintptr_t)EVAL_ARG(c, msg_e);
     c->exc_msg = m;
@@ -790,7 +788,7 @@ node_raise(CTX * restrict c, NODE * restrict n, NODE *msg_e)
 // Read-only access to `c->exc_msg` — used inside `except` blocks via
 // the ExceptObject / ExceptionMessage built-ins.
 NODE_DEF
-node_exc_msg(CTX * restrict c, NODE * restrict n)
+node_exc_msg(CTX * restrict c, NODE * restrict n, int fp)
 {
     (void)n;
     return (VALUE)(uintptr_t)(c->exc_msg ? c->exc_msg : "");
@@ -802,14 +800,14 @@ node_exc_msg(CTX * restrict c, NODE * restrict n)
 // implementation needs a body-level dispatch wrapper that survives
 // the longjmp.  See docs/todo.md.
 NODE_DEF
-node_label_set(CTX * restrict c, NODE * restrict n, uint32_t label_idx)
+node_label_set(CTX * restrict c, NODE * restrict n, int fp, uint32_t label_idx)
 {
     (void)c; (void)n; (void)label_idx;
     return 0;
 }
 
 NODE_DEF
-node_goto(CTX * restrict c, NODE * restrict n, uint32_t label_idx)
+node_goto(CTX * restrict c, NODE * restrict n, int fp, uint32_t label_idx)
 {
     (void)c; (void)label_idx;
     pascal_error_at(n->head.line, "goto is parsed but not yet implemented");
@@ -818,7 +816,7 @@ node_goto(CTX * restrict c, NODE * restrict n, uint32_t label_idx)
 // Non-local control flow.  Each just sets a CTX flag; loops & seq
 // inspect the flag and unwind.
 NODE_DEF
-node_break(CTX * restrict c, NODE * restrict n)
+node_break(CTX * restrict c, NODE * restrict n, int fp)
 {
     (void)n;
     c->loop_action = 1;
@@ -826,7 +824,7 @@ node_break(CTX * restrict c, NODE * restrict n)
 }
 
 NODE_DEF
-node_continue(CTX * restrict c, NODE * restrict n)
+node_continue(CTX * restrict c, NODE * restrict n, int fp)
 {
     (void)n;
     c->loop_action = 2;
@@ -834,7 +832,7 @@ node_continue(CTX * restrict c, NODE * restrict n)
 }
 
 NODE_DEF
-node_exit(CTX * restrict c, NODE * restrict n)
+node_exit(CTX * restrict c, NODE * restrict n, int fp)
 {
     (void)n;
     c->exit_pending = 1;
@@ -844,11 +842,11 @@ node_exit(CTX * restrict c, NODE * restrict n)
 // `exit(value)` inside a function: assign value to the return slot,
 // then raise the exit flag.
 NODE_DEF
-node_exit_with(CTX * restrict c, NODE * restrict n, uint32_t return_slot, NODE *val)
+node_exit_with(CTX * restrict c, NODE * restrict n, int fp, uint32_t return_slot, NODE *val)
 {
     (void)n;
     VALUE v = EVAL_ARG(c, val);
-    c->stack[c->fp + return_slot] = v;
+    c->stack[fp + return_slot] = v;
     c->exit_pending = 1;
     return 0;
 }
@@ -883,7 +881,6 @@ pascal_call_baked(CTX *c, NODE *body, node_dispatcher_func_t body_dispatcher,
     if (UNLIKELY(new_sp > PASCAL_STACK_SIZE)) pascal_error("call stack overflow");
     for (uint32_t i = 0; i < argc; i++) c->stack[new_fp + i] = av[i];
     for (uint32_t i = argc; i < nslots; i++) c->stack[new_fp + i] = 0;
-    int saved_fp = c->fp;
     // The display save/restore only matters if THIS proc has nested
     // children that reference its frame via uref/uset.  When
     // `needs_display` is baked false at the call site, gcc DCEs the
@@ -891,12 +888,17 @@ pascal_call_baked(CTX *c, NODE *body, node_dispatcher_func_t body_dispatcher,
     // common case for top-level procs without nested children, which
     // covers every benchmark except the explicit nested-proc test.
     int saved_display = needs_display ? c->display[lexical_depth] : 0;
-    c->fp = new_fp; c->sp = new_sp;
+    // c->fp is no longer touched in the call protocol — fp is threaded
+    // as a parameter through the dispatch chain so the body's lref /
+    // lset access locals via the parameter, not c->fp.  c->sp still
+    // needs maintenance because pcall_baked reads it to compute the
+    // next callee's new_fp.
+    c->sp = new_sp;
     if (needs_display) c->display[lexical_depth] = new_fp;
-    (*body_dispatcher)(c, body);
+    (*body_dispatcher)(c, body, new_fp);
     VALUE rv = is_function ? c->stack[new_fp + (int)return_slot] : 0;
     if (needs_display) c->display[lexical_depth] = saved_display;
-    c->fp = saved_fp; c->sp = saved_sp;
+    c->sp = saved_sp;
     // Conditional clears: only pay the store when something is actually
     // raised.  In the hot path (no exit / break / continue inside the
     // callee) both flags stay 0 throughout, so the loads + UNLIKELY
@@ -925,32 +927,31 @@ pascal_call_cached(CTX *c, struct pcall_cache *cache, uint32_t pidx,
     }
     int new_fp = c->sp;
     int new_sp = new_fp + cache->nslots;
+    int saved_sp = new_fp;
     if (UNLIKELY(new_sp > PASCAL_STACK_SIZE)) pascal_error("call stack overflow");
     for (uint32_t i = 0; i < argc; i++) c->stack[new_fp + i] = av[i];
     for (int i = (int)argc; i < cache->nslots; i++) c->stack[new_fp + i] = 0;
-    int saved_fp      = c->fp;
-    int saved_sp      = c->sp;
     int saved_display = c->display[cache->lexical_depth];
-    c->fp = new_fp; c->sp = new_sp;
+    c->sp = new_sp;
     c->display[cache->lexical_depth] = new_fp;
-    EVAL(c, cache->body);
+    EVAL(c, cache->body, new_fp);
     VALUE rv = cache->is_function ? c->stack[new_fp + cache->return_slot] : 0;
     c->display[cache->lexical_depth] = saved_display;
-    c->fp = saved_fp; c->sp = saved_sp;
-    c->exit_pending = 0;
-    c->loop_action  = 0;
+    c->sp = saved_sp;
+    if (UNLIKELY(c->exit_pending)) c->exit_pending = 0;
+    if (UNLIKELY(c->loop_action))  c->loop_action  = 0;
     return rv;
 }
 
 NODE_DEF
-node_pcall_0(CTX * restrict c, NODE * restrict n, uint32_t pidx, struct pcall_cache *cache@ref)
+node_pcall_0(CTX * restrict c, NODE * restrict n, int fp, uint32_t pidx, struct pcall_cache *cache@ref)
 {
     (void)n;
     return pascal_call_cached(c, cache, pidx, 0, NULL);
 }
 
 NODE_DEF
-node_pcall_1(CTX * restrict c, NODE * restrict n, uint32_t pidx, NODE *a0, struct pcall_cache *cache@ref)
+node_pcall_1(CTX * restrict c, NODE * restrict n, int fp, uint32_t pidx, NODE *a0, struct pcall_cache *cache@ref)
 {
     (void)n;
     VALUE av[1] = { EVAL_ARG(c, a0) };
@@ -958,7 +959,7 @@ node_pcall_1(CTX * restrict c, NODE * restrict n, uint32_t pidx, NODE *a0, struc
 }
 
 NODE_DEF
-node_pcall_2(CTX * restrict c, NODE * restrict n, uint32_t pidx, NODE *a0, NODE *a1, struct pcall_cache *cache@ref)
+node_pcall_2(CTX * restrict c, NODE * restrict n, int fp, uint32_t pidx, NODE *a0, NODE *a1, struct pcall_cache *cache@ref)
 {
     (void)n;
     VALUE v0 = EVAL_ARG(c, a0);
@@ -968,7 +969,7 @@ node_pcall_2(CTX * restrict c, NODE * restrict n, uint32_t pidx, NODE *a0, NODE 
 }
 
 NODE_DEF
-node_pcall_3(CTX * restrict c, NODE * restrict n, uint32_t pidx, NODE *a0, NODE *a1, NODE *a2, struct pcall_cache *cache@ref)
+node_pcall_3(CTX * restrict c, NODE * restrict n, int fp, uint32_t pidx, NODE *a0, NODE *a1, NODE *a2, struct pcall_cache *cache@ref)
 {
     (void)n;
     VALUE v0 = EVAL_ARG(c, a0);
@@ -979,14 +980,14 @@ node_pcall_3(CTX * restrict c, NODE * restrict n, uint32_t pidx, NODE *a0, NODE 
 }
 
 NODE_DEF @noinline
-node_pcall_n(CTX * restrict c, NODE * restrict n, uint32_t pidx, uint32_t args_idx, uint32_t argc, struct pcall_cache *cache@ref)
+node_pcall_n(CTX * restrict c, NODE * restrict n, int fp, uint32_t pidx, uint32_t args_idx, uint32_t argc, struct pcall_cache *cache@ref)
 {
     (void)n;
     extern NODE **PASCAL_CALL_ARGS;
     VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc ? argc : 1));
     for (uint32_t i = 0; i < argc; i++) {
         NODE *a = PASCAL_CALL_ARGS[args_idx + i];
-        av[i] = (*a->head.dispatcher)(c, a);
+        av[i] = (*a->head.dispatcher)(c, a, fp);
     }
     return pascal_call_cached(c, cache, pidx, argc, av);
 }
@@ -1006,14 +1007,14 @@ node_pcall_n(CTX * restrict c, NODE * restrict n, uint32_t pidx, uint32_t args_i
 // ---------------------------------------------------------------------------
 
 NODE_DEF
-node_pcall_0_baked(CTX * restrict c, NODE * restrict n, NODE *body@nohash, uint32_t nslots, uint32_t return_slot, uint32_t lexical_depth, uint32_t is_function, uint32_t needs_display)
+node_pcall_0_baked(CTX * restrict c, NODE * restrict n, int fp, NODE *body@nohash, uint32_t nslots, uint32_t return_slot, uint32_t lexical_depth, uint32_t is_function, uint32_t needs_display)
 {
     (void)n;
     return pascal_call_baked(c, body, body_dispatcher, nslots, return_slot, lexical_depth, is_function, needs_display, 0, NULL);
 }
 
 NODE_DEF
-node_pcall_1_baked(CTX * restrict c, NODE * restrict n, NODE *body@nohash, uint32_t nslots, uint32_t return_slot, uint32_t lexical_depth, uint32_t is_function, uint32_t needs_display, NODE *a0)
+node_pcall_1_baked(CTX * restrict c, NODE * restrict n, int fp, NODE *body@nohash, uint32_t nslots, uint32_t return_slot, uint32_t lexical_depth, uint32_t is_function, uint32_t needs_display, NODE *a0)
 {
     (void)n;
     VALUE av[1] = { EVAL_ARG(c, a0) };
@@ -1021,7 +1022,7 @@ node_pcall_1_baked(CTX * restrict c, NODE * restrict n, NODE *body@nohash, uint3
 }
 
 NODE_DEF
-node_pcall_2_baked(CTX * restrict c, NODE * restrict n, NODE *body@nohash, uint32_t nslots, uint32_t return_slot, uint32_t lexical_depth, uint32_t is_function, uint32_t needs_display, NODE *a0, NODE *a1)
+node_pcall_2_baked(CTX * restrict c, NODE * restrict n, int fp, NODE *body@nohash, uint32_t nslots, uint32_t return_slot, uint32_t lexical_depth, uint32_t is_function, uint32_t needs_display, NODE *a0, NODE *a1)
 {
     (void)n;
     VALUE v0 = EVAL_ARG(c, a0);
@@ -1031,7 +1032,7 @@ node_pcall_2_baked(CTX * restrict c, NODE * restrict n, NODE *body@nohash, uint3
 }
 
 NODE_DEF
-node_pcall_3_baked(CTX * restrict c, NODE * restrict n, NODE *body@nohash, uint32_t nslots, uint32_t return_slot, uint32_t lexical_depth, uint32_t is_function, uint32_t needs_display, NODE *a0, NODE *a1, NODE *a2)
+node_pcall_3_baked(CTX * restrict c, NODE * restrict n, int fp, NODE *body@nohash, uint32_t nslots, uint32_t return_slot, uint32_t lexical_depth, uint32_t is_function, uint32_t needs_display, NODE *a0, NODE *a1, NODE *a2)
 {
     (void)n;
     VALUE v0 = EVAL_ARG(c, a0);
@@ -1042,14 +1043,14 @@ node_pcall_3_baked(CTX * restrict c, NODE * restrict n, NODE *body@nohash, uint3
 }
 
 NODE_DEF @noinline
-node_pcall_n_baked(CTX * restrict c, NODE * restrict n, NODE *body@nohash, uint32_t nslots, uint32_t return_slot, uint32_t lexical_depth, uint32_t is_function, uint32_t needs_display, uint32_t args_idx, uint32_t argc)
+node_pcall_n_baked(CTX * restrict c, NODE * restrict n, int fp, NODE *body@nohash, uint32_t nslots, uint32_t return_slot, uint32_t lexical_depth, uint32_t is_function, uint32_t needs_display, uint32_t args_idx, uint32_t argc)
 {
     (void)n;
     extern NODE **PASCAL_CALL_ARGS;
     VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc ? argc : 1));
     for (uint32_t i = 0; i < argc; i++) {
         NODE *a = PASCAL_CALL_ARGS[args_idx + i];
-        av[i] = (*a->head.dispatcher)(c, a);
+        av[i] = (*a->head.dispatcher)(c, a, fp);
     }
     return pascal_call_baked(c, body, body_dispatcher, nslots, return_slot, lexical_depth, is_function, needs_display, argc, av);
 }
@@ -1060,7 +1061,7 @@ node_pcall_n_baked(CTX * restrict c, NODE * restrict n, NODE *body@nohash, uint3
 // ---------------------------------------------------------------------------
 
 NODE_DEF
-node_write_int(CTX * restrict c, NODE * restrict n, NODE *expr)
+node_write_int(CTX * restrict c, NODE * restrict n, int fp, NODE *expr)
 {
     (void)n;
     int64_t v = EVAL_ARG(c, expr);
@@ -1069,7 +1070,7 @@ node_write_int(CTX * restrict c, NODE * restrict n, NODE *expr)
 }
 
 NODE_DEF
-node_write_str(CTX * restrict c, NODE * restrict n, const char *s)
+node_write_str(CTX * restrict c, NODE * restrict n, int fp, const char *s)
 {
     (void)c; (void)n;
     fputs(s, stdout);
@@ -1077,7 +1078,7 @@ node_write_str(CTX * restrict c, NODE * restrict n, const char *s)
 }
 
 NODE_DEF
-node_writeln(CTX * restrict c, NODE * restrict n)
+node_writeln(CTX * restrict c, NODE * restrict n, int fp)
 {
     (void)c; (void)n;
     putchar('\n');
@@ -1093,14 +1094,14 @@ node_writeln(CTX * restrict c, NODE * restrict n)
 // ---------------------------------------------------------------------------
 
 NODE_DEF
-node_str_lit(CTX * restrict c, NODE * restrict n, const char *s)
+node_str_lit(CTX * restrict c, NODE * restrict n, int fp, const char *s)
 {
     (void)c; (void)n;
     return (VALUE)(uintptr_t)s;
 }
 
 NODE_DEF
-node_str_concat(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_str_concat(CTX * restrict c, NODE * restrict n, int fp, NODE *l, NODE *r)
 {
     (void)n;
     const char *a = (const char *)(uintptr_t)EVAL_ARG(c, l);
@@ -1117,7 +1118,7 @@ node_str_concat(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
 }
 
 NODE_DEF
-node_str_eq(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_str_eq(CTX * restrict c, NODE * restrict n, int fp, NODE *l, NODE *r)
 {
     (void)n;
     const char *a = (const char *)(uintptr_t)EVAL_ARG(c, l);
@@ -1126,7 +1127,7 @@ node_str_eq(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
 }
 
 NODE_DEF
-node_str_ne(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_str_ne(CTX * restrict c, NODE * restrict n, int fp, NODE *l, NODE *r)
 {
     (void)n;
     const char *a = (const char *)(uintptr_t)EVAL_ARG(c, l);
@@ -1135,7 +1136,7 @@ node_str_ne(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
 }
 
 NODE_DEF
-node_str_lt(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_str_lt(CTX * restrict c, NODE * restrict n, int fp, NODE *l, NODE *r)
 {
     (void)n;
     const char *a = (const char *)(uintptr_t)EVAL_ARG(c, l);
@@ -1144,7 +1145,7 @@ node_str_lt(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
 }
 
 NODE_DEF
-node_str_le(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_str_le(CTX * restrict c, NODE * restrict n, int fp, NODE *l, NODE *r)
 {
     (void)n;
     const char *a = (const char *)(uintptr_t)EVAL_ARG(c, l);
@@ -1153,7 +1154,7 @@ node_str_le(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
 }
 
 NODE_DEF
-node_str_gt(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_str_gt(CTX * restrict c, NODE * restrict n, int fp, NODE *l, NODE *r)
 {
     (void)n;
     const char *a = (const char *)(uintptr_t)EVAL_ARG(c, l);
@@ -1162,7 +1163,7 @@ node_str_gt(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
 }
 
 NODE_DEF
-node_str_ge(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_str_ge(CTX * restrict c, NODE * restrict n, int fp, NODE *l, NODE *r)
 {
     (void)n;
     const char *a = (const char *)(uintptr_t)EVAL_ARG(c, l);
@@ -1171,7 +1172,7 @@ node_str_ge(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
 }
 
 NODE_DEF
-node_str_length(CTX * restrict c, NODE * restrict n, NODE *s_e)
+node_str_length(CTX * restrict c, NODE * restrict n, int fp, NODE *s_e)
 {
     (void)n;
     const char *s = (const char *)(uintptr_t)EVAL_ARG(c, s_e);
@@ -1182,7 +1183,7 @@ node_str_length(CTX * restrict c, NODE * restrict n, NODE *s_e)
 // code at position i; out of range returns 0 silently (Free Pascal
 // behaviour for AnsiString).
 NODE_DEF
-node_str_index(CTX * restrict c, NODE * restrict n, NODE *s_e, NODE *i_e)
+node_str_index(CTX * restrict c, NODE * restrict n, int fp, NODE *s_e, NODE *i_e)
 {
     (void)n;
     const char *s = (const char *)(uintptr_t)EVAL_ARG(c, s_e);
@@ -1200,7 +1201,7 @@ node_str_index(CTX * restrict c, NODE * restrict n, NODE *s_e, NODE *i_e)
 // ---------------------------------------------------------------------------
 
 NODE_DEF
-node_file_assign(CTX * restrict c, NODE * restrict n, NODE *addr_e, NODE *name_e)
+node_file_assign(CTX * restrict c, NODE * restrict n, int fp, NODE *addr_e, NODE *name_e)
 {
     (void)n;
     int64_t *p = (int64_t *)(uintptr_t)EVAL_ARG(c, addr_e);
@@ -1219,7 +1220,7 @@ node_file_assign(CTX * restrict c, NODE * restrict n, NODE *addr_e, NODE *name_e
 }
 
 NODE_DEF
-node_file_reset(CTX * restrict c, NODE * restrict n, NODE *addr_e)
+node_file_reset(CTX * restrict c, NODE * restrict n, int fp, NODE *addr_e)
 {
     (void)n;
     int64_t *p = (int64_t *)(uintptr_t)EVAL_ARG(c, addr_e);
@@ -1232,7 +1233,7 @@ node_file_reset(CTX * restrict c, NODE * restrict n, NODE *addr_e)
 }
 
 NODE_DEF
-node_file_rewrite(CTX * restrict c, NODE * restrict n, NODE *addr_e)
+node_file_rewrite(CTX * restrict c, NODE * restrict n, int fp, NODE *addr_e)
 {
     (void)n;
     int64_t *p = (int64_t *)(uintptr_t)EVAL_ARG(c, addr_e);
@@ -1245,7 +1246,7 @@ node_file_rewrite(CTX * restrict c, NODE * restrict n, NODE *addr_e)
 }
 
 NODE_DEF
-node_file_close(CTX * restrict c, NODE * restrict n, NODE *addr_e)
+node_file_close(CTX * restrict c, NODE * restrict n, int fp, NODE *addr_e)
 {
     (void)n;
     int64_t *p = (int64_t *)(uintptr_t)EVAL_ARG(c, addr_e);
@@ -1255,7 +1256,7 @@ node_file_close(CTX * restrict c, NODE * restrict n, NODE *addr_e)
 }
 
 NODE_DEF
-node_file_eof(CTX * restrict c, NODE * restrict n, NODE *addr_e)
+node_file_eof(CTX * restrict c, NODE * restrict n, int fp, NODE *addr_e)
 {
     (void)n;
     int64_t *p = (int64_t *)(uintptr_t)EVAL_ARG(c, addr_e);
@@ -1268,7 +1269,7 @@ node_file_eof(CTX * restrict c, NODE * restrict n, NODE *addr_e)
 }
 
 NODE_DEF
-node_fwrite_int(CTX * restrict c, NODE * restrict n, NODE *addr_e, NODE *expr)
+node_fwrite_int(CTX * restrict c, NODE * restrict n, int fp, NODE *addr_e, NODE *expr)
 {
     (void)n;
     int64_t *p = (int64_t *)(uintptr_t)EVAL_ARG(c, addr_e);
@@ -1279,7 +1280,7 @@ node_fwrite_int(CTX * restrict c, NODE * restrict n, NODE *addr_e, NODE *expr)
 }
 
 NODE_DEF
-node_fwrite_str(CTX * restrict c, NODE * restrict n, NODE *addr_e, const char *s)
+node_fwrite_str(CTX * restrict c, NODE * restrict n, int fp, NODE *addr_e, const char *s)
 {
     (void)n;
     int64_t *p = (int64_t *)(uintptr_t)EVAL_ARG(c, addr_e);
@@ -1289,7 +1290,7 @@ node_fwrite_str(CTX * restrict c, NODE * restrict n, NODE *addr_e, const char *s
 }
 
 NODE_DEF
-node_fwrite_strv(CTX * restrict c, NODE * restrict n, NODE *addr_e, NODE *expr)
+node_fwrite_strv(CTX * restrict c, NODE * restrict n, int fp, NODE *addr_e, NODE *expr)
 {
     (void)n;
     int64_t *p = (int64_t *)(uintptr_t)EVAL_ARG(c, addr_e);
@@ -1300,7 +1301,7 @@ node_fwrite_strv(CTX * restrict c, NODE * restrict n, NODE *addr_e, NODE *expr)
 }
 
 NODE_DEF
-node_fwrite_real(CTX * restrict c, NODE * restrict n, NODE *addr_e, NODE *expr)
+node_fwrite_real(CTX * restrict c, NODE * restrict n, int fp, NODE *addr_e, NODE *expr)
 {
     (void)n;
     int64_t *p = (int64_t *)(uintptr_t)EVAL_ARG(c, addr_e);
@@ -1312,7 +1313,7 @@ node_fwrite_real(CTX * restrict c, NODE * restrict n, NODE *addr_e, NODE *expr)
 }
 
 NODE_DEF
-node_fwriteln(CTX * restrict c, NODE * restrict n, NODE *addr_e)
+node_fwriteln(CTX * restrict c, NODE * restrict n, int fp, NODE *addr_e)
 {
     (void)n;
     int64_t *p = (int64_t *)(uintptr_t)EVAL_ARG(c, addr_e);
@@ -1322,7 +1323,7 @@ node_fwriteln(CTX * restrict c, NODE * restrict n, NODE *addr_e)
 }
 
 NODE_DEF
-node_fread_int(CTX * restrict c, NODE * restrict n, NODE *addr_e)
+node_fread_int(CTX * restrict c, NODE * restrict n, int fp, NODE *addr_e)
 {
     (void)n;
     int64_t *p = (int64_t *)(uintptr_t)EVAL_ARG(c, addr_e);
@@ -1335,7 +1336,7 @@ node_fread_int(CTX * restrict c, NODE * restrict n, NODE *addr_e)
 }
 
 NODE_DEF
-node_freadln_eat(CTX * restrict c, NODE * restrict n, NODE *addr_e)
+node_freadln_eat(CTX * restrict c, NODE * restrict n, int fp, NODE *addr_e)
 {
     (void)n;
     int64_t *p = (int64_t *)(uintptr_t)EVAL_ARG(c, addr_e);
@@ -1352,7 +1353,7 @@ node_freadln_eat(CTX * restrict c, NODE * restrict n, NODE *addr_e)
 // when the surrounding statement was `readln(f, s)` rather than
 // `read(f, s)`) consumes it cleanly.
 NODE_DEF
-node_fread_line(CTX * restrict c, NODE * restrict n, NODE *addr_e)
+node_fread_line(CTX * restrict c, NODE * restrict n, int fp, NODE *addr_e)
 {
     (void)n;
     int64_t *p = (int64_t *)(uintptr_t)EVAL_ARG(c, addr_e);
@@ -1381,7 +1382,7 @@ node_fread_line(CTX * restrict c, NODE * restrict n, NODE *addr_e)
 // ---------------------------------------------------------------------------
 
 NODE_DEF @noinline
-node_pcall_ind(CTX * restrict c, NODE * restrict n, NODE *fn, uint32_t args_idx, uint32_t argc)
+node_pcall_ind(CTX * restrict c, NODE * restrict n, int fp, NODE *fn, uint32_t args_idx, uint32_t argc)
 {
     (void)n;
     extern NODE **PASCAL_CALL_ARGS;
@@ -1389,7 +1390,7 @@ node_pcall_ind(CTX * restrict c, NODE * restrict n, NODE *fn, uint32_t args_idx,
     VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc ? argc : 1));
     for (uint32_t i = 0; i < argc; i++) {
         NODE *a = PASCAL_CALL_ARGS[args_idx + i];
-        av[i] = (*a->head.dispatcher)(c, a);
+        av[i] = (*a->head.dispatcher)(c, a, fp);
     }
     return pascal_call(c, (uint32_t)pidx, argc, av);
 }
@@ -1401,14 +1402,14 @@ node_pcall_ind(CTX * restrict c, NODE * restrict n, NODE *fn, uint32_t args_idx,
 // ---------------------------------------------------------------------------
 
 NODE_DEF
-node_nil(CTX * restrict c, NODE * restrict n)
+node_nil(CTX * restrict c, NODE * restrict n, int fp)
 {
     (void)c; (void)n;
     return 0;
 }
 
 NODE_DEF
-node_new_record(CTX * restrict c, NODE * restrict n, uint32_t nslots)
+node_new_record(CTX * restrict c, NODE * restrict n, int fp, uint32_t nslots)
 {
     (void)c; (void)n;
     int64_t *p = (int64_t *)GC_malloc(nslots * sizeof(int64_t));
@@ -1422,7 +1423,7 @@ node_new_record(CTX * restrict c, NODE * restrict n, uint32_t nslots)
 // vtable address (which isn't allocated until finalize_classes runs
 // after the parse).
 NODE_DEF
-node_new_object(CTX * restrict c, NODE * restrict n, uint32_t nslots, uint32_t class_idx)
+node_new_object(CTX * restrict c, NODE * restrict n, int fp, uint32_t nslots, uint32_t class_idx)
 {
     (void)c; (void)n;
     extern int **pascal_vtables;
@@ -1439,7 +1440,7 @@ extern int pascal_class_of_obj(int64_t obj);   // implemented in main.c
 extern int pascal_class_is_descendant(int sub, int sup);
 
 NODE_DEF
-node_is_class(CTX * restrict c, NODE * restrict n, NODE *obj_e, uint32_t target_class_idx)
+node_is_class(CTX * restrict c, NODE * restrict n, int fp, NODE *obj_e, uint32_t target_class_idx)
 {
     (void)n;
     int64_t obj = EVAL_ARG(c, obj_e);
@@ -1450,7 +1451,7 @@ node_is_class(CTX * restrict c, NODE * restrict n, NODE *obj_e, uint32_t target_
 }
 
 NODE_DEF
-node_as_class(CTX * restrict c, NODE * restrict n, NODE *obj_e, uint32_t target_class_idx)
+node_as_class(CTX * restrict c, NODE * restrict n, int fp, NODE *obj_e, uint32_t target_class_idx)
 {
     (void)n;
     int64_t obj = EVAL_ARG(c, obj_e);
@@ -1479,7 +1480,7 @@ node_as_class(CTX * restrict c, NODE * restrict n, NODE *obj_e, uint32_t target_
 // No — the parser pushes the rest of the args starting at args_idx;
 // self_e is evaluated separately and prepended.
 NODE_DEF
-node_vcall(CTX * restrict c, NODE * restrict n, NODE *self_e, uint32_t vt_slot, uint32_t args_idx, uint32_t argc, struct vcall_cache *cache@ref)
+node_vcall(CTX * restrict c, NODE * restrict n, int fp, NODE *self_e, uint32_t vt_slot, uint32_t args_idx, uint32_t argc, struct vcall_cache *cache@ref)
 {
     extern NODE **PASCAL_CALL_ARGS;
     int64_t self = EVAL_ARG(c, self_e);
@@ -1494,7 +1495,7 @@ node_vcall(CTX * restrict c, NODE * restrict n, NODE *self_e, uint32_t vt_slot, 
         av[0] = self;
         for (uint32_t i = 1; i < argc; i++) {
             NODE *a = PASCAL_CALL_ARGS[args_idx + i - 1];
-            av[i] = (*a->head.dispatcher)(c, a);
+            av[i] = (*a->head.dispatcher)(c, a, fp);
         }
         return pascal_call_baked(c, cache->body, cache->body_dispatcher,
                                  cache->nslots, cache->return_slot,
@@ -1521,7 +1522,7 @@ node_vcall(CTX * restrict c, NODE * restrict n, NODE *self_e, uint32_t vt_slot, 
     av[0] = self;
     for (uint32_t i = 1; i < argc; i++) {
         NODE *a = PASCAL_CALL_ARGS[args_idx + i - 1];
-        av[i] = (*a->head.dispatcher)(c, a);
+        av[i] = (*a->head.dispatcher)(c, a, fp);
     }
     return pascal_call_baked(c, cache->body, cache->body_dispatcher,
                              cache->nslots, cache->return_slot,
@@ -1530,7 +1531,7 @@ node_vcall(CTX * restrict c, NODE * restrict n, NODE *self_e, uint32_t vt_slot, 
 }
 
 NODE_DEF
-node_dispose(CTX * restrict c, NODE * restrict n, NODE *ptr_e)
+node_dispose(CTX * restrict c, NODE * restrict n, int fp, NODE *ptr_e)
 {
     (void)n;
     // Under libgc, dispose() is just an explicit hint — the collector
@@ -1542,7 +1543,7 @@ node_dispose(CTX * restrict c, NODE * restrict n, NODE *ptr_e)
 }
 
 NODE_DEF
-node_ptr_field_ref(CTX * restrict c, NODE * restrict n, NODE *ptr_e, uint32_t offset)
+node_ptr_field_ref(CTX * restrict c, NODE * restrict n, int fp, NODE *ptr_e, uint32_t offset)
 {
     (void)n;
     int64_t *p = (int64_t *)(uintptr_t)EVAL_ARG(c, ptr_e);
@@ -1551,7 +1552,7 @@ node_ptr_field_ref(CTX * restrict c, NODE * restrict n, NODE *ptr_e, uint32_t of
 }
 
 NODE_DEF
-node_ptr_field_set(CTX * restrict c, NODE * restrict n, NODE *ptr_e, uint32_t offset, NODE *val)
+node_ptr_field_set(CTX * restrict c, NODE * restrict n, int fp, NODE *ptr_e, uint32_t offset, NODE *val)
 {
     (void)n;
     int64_t *p = (int64_t *)(uintptr_t)EVAL_ARG(c, ptr_e);
@@ -1565,7 +1566,7 @@ node_ptr_field_set(CTX * restrict c, NODE * restrict n, NODE *ptr_e, uint32_t of
 // mutation through the helper itself; callers `s := …` to commit).
 
 NODE_DEF
-node_str_copy(CTX * restrict c, NODE * restrict n, NODE *s_e, NODE *start_e, NODE *count_e)
+node_str_copy(CTX * restrict c, NODE * restrict n, int fp, NODE *s_e, NODE *start_e, NODE *count_e)
 {
     (void)n;
     const char *s = (const char *)(uintptr_t)EVAL_ARG(c, s_e);
@@ -1584,7 +1585,7 @@ node_str_copy(CTX * restrict c, NODE * restrict n, NODE *s_e, NODE *start_e, NOD
 }
 
 NODE_DEF
-node_str_pos(CTX * restrict c, NODE * restrict n, NODE *sub_e, NODE *s_e)
+node_str_pos(CTX * restrict c, NODE * restrict n, int fp, NODE *sub_e, NODE *s_e)
 {
     (void)n;
     const char *sub = (const char *)(uintptr_t)EVAL_ARG(c, sub_e);
@@ -1595,7 +1596,7 @@ node_str_pos(CTX * restrict c, NODE * restrict n, NODE *sub_e, NODE *s_e)
 }
 
 NODE_DEF
-node_str_insert(CTX * restrict c, NODE * restrict n, NODE *sub_e, NODE *s_e, NODE *pos_e)
+node_str_insert(CTX * restrict c, NODE * restrict n, int fp, NODE *sub_e, NODE *s_e, NODE *pos_e)
 {
     (void)n;
     const char *sub = (const char *)(uintptr_t)EVAL_ARG(c, sub_e);
@@ -1616,7 +1617,7 @@ node_str_insert(CTX * restrict c, NODE * restrict n, NODE *sub_e, NODE *s_e, NOD
 }
 
 NODE_DEF
-node_str_delete(CTX * restrict c, NODE * restrict n, NODE *s_e, NODE *start_e, NODE *count_e)
+node_str_delete(CTX * restrict c, NODE * restrict n, int fp, NODE *s_e, NODE *start_e, NODE *count_e)
 {
     (void)n;
     const char *s = (const char *)(uintptr_t)EVAL_ARG(c, s_e);
@@ -1637,7 +1638,7 @@ node_str_delete(CTX * restrict c, NODE * restrict n, NODE *s_e, NODE *start_e, N
 }
 
 NODE_DEF
-node_str_setlength(CTX * restrict c, NODE * restrict n, NODE *s_e, NODE *len_e)
+node_str_setlength(CTX * restrict c, NODE * restrict n, int fp, NODE *s_e, NODE *len_e)
 {
     (void)n;
     const char *s = (const char *)(uintptr_t)EVAL_ARG(c, s_e);
@@ -1654,7 +1655,7 @@ node_str_setlength(CTX * restrict c, NODE * restrict n, NODE *s_e, NODE *len_e)
 }
 
 NODE_DEF
-node_int_to_str(CTX * restrict c, NODE * restrict n, NODE *e)
+node_int_to_str(CTX * restrict c, NODE * restrict n, int fp, NODE *e)
 {
     (void)n;
     int64_t v = EVAL_ARG(c, e);
@@ -1666,7 +1667,7 @@ node_int_to_str(CTX * restrict c, NODE * restrict n, NODE *e)
 }
 
 NODE_DEF
-node_str_to_int(CTX * restrict c, NODE * restrict n, NODE *e)
+node_str_to_int(CTX * restrict c, NODE * restrict n, int fp, NODE *e)
 {
     (void)n;
     const char *s = (const char *)(uintptr_t)EVAL_ARG(c, e);
@@ -1675,7 +1676,7 @@ node_str_to_int(CTX * restrict c, NODE * restrict n, NODE *e)
 }
 
 NODE_DEF
-node_str_to_real(CTX * restrict c, NODE * restrict n, NODE *e)
+node_str_to_real(CTX * restrict c, NODE * restrict n, int fp, NODE *e)
 {
     (void)n;
     const char *s = (const char *)(uintptr_t)EVAL_ARG(c, e);
@@ -1685,7 +1686,7 @@ node_str_to_real(CTX * restrict c, NODE * restrict n, NODE *e)
 }
 
 NODE_DEF
-node_real_to_str(CTX * restrict c, NODE * restrict n, NODE *e)
+node_real_to_str(CTX * restrict c, NODE * restrict n, int fp, NODE *e)
 {
     (void)n;
     union { int64_t i; double d; } u;
@@ -1702,7 +1703,7 @@ node_real_to_str(CTX * restrict c, NODE * restrict n, NODE *e)
 // untouched.  Out-of-range writes are silently ignored, matching
 // Free Pascal AnsiString behaviour.
 NODE_DEF
-node_str_setidx_g(CTX * restrict c, NODE * restrict n, uint32_t slot, NODE *idx_e, NODE *ch_e)
+node_str_setidx_g(CTX * restrict c, NODE * restrict n, int fp, uint32_t slot, NODE *idx_e, NODE *ch_e)
 {
     (void)n;
     const char *old = (const char *)(uintptr_t)c->globals[slot];
@@ -1719,10 +1720,10 @@ node_str_setidx_g(CTX * restrict c, NODE * restrict n, uint32_t slot, NODE *idx_
 }
 
 NODE_DEF
-node_str_setidx_l(CTX * restrict c, NODE * restrict n, uint32_t slot, NODE *idx_e, NODE *ch_e)
+node_str_setidx_l(CTX * restrict c, NODE * restrict n, int fp, uint32_t slot, NODE *idx_e, NODE *ch_e)
 {
     (void)n;
-    const char *old = (const char *)(uintptr_t)c->stack[c->fp + slot];
+    const char *old = (const char *)(uintptr_t)c->stack[fp + slot];
     if (!old) old = "";
     int64_t i  = EVAL_ARG(c, idx_e);
     int64_t ch = EVAL_ARG(c, ch_e);
@@ -1731,13 +1732,13 @@ node_str_setidx_l(CTX * restrict c, NODE * restrict n, uint32_t slot, NODE *idx_
     char *buf = (char *)GC_malloc_atomic(len + 1);
     memcpy(buf, old, len + 1);
     buf[i - 1] = (char)ch;
-    c->stack[c->fp + slot] = (VALUE)(uintptr_t)buf;
+    c->stack[fp + slot] = (VALUE)(uintptr_t)buf;
     return 0;
 }
 
 // int (char) → string: allocate a 2-byte buffer.
 NODE_DEF
-node_chr_to_str(CTX * restrict c, NODE * restrict n, NODE *e)
+node_chr_to_str(CTX * restrict c, NODE * restrict n, int fp, NODE *e)
 {
     (void)n;
     int64_t v = EVAL_ARG(c, e);
@@ -1749,7 +1750,7 @@ node_chr_to_str(CTX * restrict c, NODE * restrict n, NODE *e)
 }
 
 NODE_DEF
-node_write_strv(CTX * restrict c, NODE * restrict n, NODE *e)
+node_write_strv(CTX * restrict c, NODE * restrict n, int fp, NODE *e)
 {
     (void)n;
     const char *s = (const char *)(uintptr_t)EVAL_ARG(c, e);
@@ -1763,35 +1764,35 @@ node_write_strv(CTX * restrict c, NODE * restrict n, NODE *e)
 // ---------------------------------------------------------------------------
 
 NODE_DEF
-node_set_lit(CTX * restrict c, NODE * restrict n, uint64_t bits)
+node_set_lit(CTX * restrict c, NODE * restrict n, int fp, uint64_t bits)
 {
     (void)c; (void)n;
     return (int64_t)bits;
 }
 
 NODE_DEF
-node_set_union(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_set_union(CTX * restrict c, NODE * restrict n, int fp, NODE *l, NODE *r)
 {
     (void)n;
     return EVAL_ARG(c, l) | EVAL_ARG(c, r);
 }
 
 NODE_DEF
-node_set_intersect(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_set_intersect(CTX * restrict c, NODE * restrict n, int fp, NODE *l, NODE *r)
 {
     (void)n;
     return EVAL_ARG(c, l) & EVAL_ARG(c, r);
 }
 
 NODE_DEF
-node_set_diff(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+node_set_diff(CTX * restrict c, NODE * restrict n, int fp, NODE *l, NODE *r)
 {
     (void)n;
     return EVAL_ARG(c, l) & ~EVAL_ARG(c, r);
 }
 
 NODE_DEF
-node_set_in(CTX * restrict c, NODE * restrict n, NODE *elem, NODE *set)
+node_set_in(CTX * restrict c, NODE * restrict n, int fp, NODE *elem, NODE *set)
 {
     (void)n;
     int64_t e = EVAL_ARG(c, elem);
@@ -1806,7 +1807,7 @@ node_set_in(CTX * restrict c, NODE * restrict n, NODE *elem, NODE *set)
 // arrays in a loop don't leak.
 
 NODE_DEF
-node_dynarr_setlen(CTX * restrict c, NODE * restrict n, NODE *addr_e, NODE *new_len_e)
+node_dynarr_setlen(CTX * restrict c, NODE * restrict n, int fp, NODE *addr_e, NODE *new_len_e)
 {
     (void)n;
     int64_t *slot = (int64_t *)(uintptr_t)EVAL_ARG(c, addr_e);
@@ -1825,7 +1826,7 @@ node_dynarr_setlen(CTX * restrict c, NODE * restrict n, NODE *addr_e, NODE *new_
 }
 
 NODE_DEF
-node_dynarr_get(CTX * restrict c, NODE * restrict n, NODE *base_e, NODE *idx_e)
+node_dynarr_get(CTX * restrict c, NODE * restrict n, int fp, NODE *base_e, NODE *idx_e)
 {
     (void)n;
     int64_t *p = (int64_t *)(uintptr_t)EVAL_ARG(c, base_e);
@@ -1838,7 +1839,7 @@ node_dynarr_get(CTX * restrict c, NODE * restrict n, NODE *base_e, NODE *idx_e)
 }
 
 NODE_DEF
-node_dynarr_set(CTX * restrict c, NODE * restrict n, NODE *base_e, NODE *idx_e, NODE *val_e)
+node_dynarr_set(CTX * restrict c, NODE * restrict n, int fp, NODE *base_e, NODE *idx_e, NODE *val_e)
 {
     (void)n;
     int64_t *p = (int64_t *)(uintptr_t)EVAL_ARG(c, base_e);
@@ -1853,7 +1854,7 @@ node_dynarr_set(CTX * restrict c, NODE * restrict n, NODE *base_e, NODE *idx_e, 
 }
 
 NODE_DEF
-node_dynarr_length(CTX * restrict c, NODE * restrict n, NODE *base_e)
+node_dynarr_length(CTX * restrict c, NODE * restrict n, int fp, NODE *base_e)
 {
     (void)n;
     int64_t *p = (int64_t *)(uintptr_t)EVAL_ARG(c, base_e);
@@ -1863,7 +1864,7 @@ node_dynarr_length(CTX * restrict c, NODE * restrict n, NODE *base_e)
 // Pass-through that checks an integer value lies in [lo, hi] and
 // raises otherwise.  Used for subrange-typed assignments.
 NODE_DEF
-node_range_check(CTX * restrict c, NODE * restrict n, NODE *expr, int32_t lo, int32_t hi)
+node_range_check(CTX * restrict c, NODE * restrict n, int fp, NODE *expr, int32_t lo, int32_t hi)
 {
     int64_t v = EVAL_ARG(c, expr);
     if (UNLIKELY(v < (int64_t)lo || v > (int64_t)hi))
@@ -1875,7 +1876,7 @@ node_range_check(CTX * restrict c, NODE * restrict n, NODE *expr, int32_t lo, in
 // Issued by the parser at the end of a `readln(...)` to match
 // Free Pascal behaviour.
 NODE_DEF
-node_readln_eat(CTX * restrict c, NODE * restrict n)
+node_readln_eat(CTX * restrict c, NODE * restrict n, int fp)
 {
     (void)c; (void)n;
     int ch;
@@ -1884,7 +1885,7 @@ node_readln_eat(CTX * restrict c, NODE * restrict n)
 }
 
 NODE_DEF
-node_write_int_w(CTX * restrict c, NODE * restrict n, NODE *expr, uint32_t width)
+node_write_int_w(CTX * restrict c, NODE * restrict n, int fp, NODE *expr, uint32_t width)
 {
     (void)n;
     int64_t v = EVAL_ARG(c, expr);
@@ -1896,7 +1897,7 @@ node_write_int_w(CTX * restrict c, NODE * restrict n, NODE *expr, uint32_t width
 // the width-only form right-aligns in `w` columns and still uses
 // exponent form, and the width+precision form (`x:w:p`) uses `%*.*f`.
 NODE_DEF
-node_write_real(CTX * restrict c, NODE * restrict n, NODE *expr)
+node_write_real(CTX * restrict c, NODE * restrict n, int fp, NODE *expr)
 {
     (void)n;
     union { VALUE i; double d; } a;
@@ -1906,7 +1907,7 @@ node_write_real(CTX * restrict c, NODE * restrict n, NODE *expr)
 }
 
 NODE_DEF
-node_write_real_w(CTX * restrict c, NODE * restrict n, NODE *expr, uint32_t width)
+node_write_real_w(CTX * restrict c, NODE * restrict n, int fp, NODE *expr, uint32_t width)
 {
     (void)n;
     union { VALUE i; double d; } a;
@@ -1916,7 +1917,7 @@ node_write_real_w(CTX * restrict c, NODE * restrict n, NODE *expr, uint32_t widt
 }
 
 NODE_DEF
-node_write_real_wp(CTX * restrict c, NODE * restrict n, NODE *expr, uint32_t width, uint32_t prec)
+node_write_real_wp(CTX * restrict c, NODE * restrict n, int fp, NODE *expr, uint32_t width, uint32_t prec)
 {
     (void)n;
     union { VALUE i; double d; } a;
@@ -1926,7 +1927,7 @@ node_write_real_wp(CTX * restrict c, NODE * restrict n, NODE *expr, uint32_t wid
 }
 
 NODE_DEF
-node_halt(CTX * restrict c, NODE * restrict n)
+node_halt(CTX * restrict c, NODE * restrict n, int fp)
 {
     (void)c; (void)n;
     exit(0);
@@ -1934,7 +1935,7 @@ node_halt(CTX * restrict c, NODE * restrict n)
 }
 
 NODE_DEF
-node_halt_with(CTX * restrict c, NODE * restrict n, NODE *expr)
+node_halt_with(CTX * restrict c, NODE * restrict n, int fp, NODE *expr)
 {
     (void)n;
     int64_t v = EVAL_ARG(c, expr);

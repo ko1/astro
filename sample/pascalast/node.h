@@ -4,12 +4,16 @@
 #include "context.h"
 
 typedef struct Node NODE;
-typedef VALUE (*node_dispatcher_func_t)(CTX *c, NODE *n);
+// Dispatcher takes (c, n, fp).  fp is the current call frame's base
+// index into c->stack — threaded through the dispatch chain so each
+// node can access locals at fp+idx without reloading c->fp from
+// memory at every access.
+typedef VALUE (*node_dispatcher_func_t)(CTX *c, NODE *n, int fp);
 typedef uint64_t node_hash_t;
 
 void INIT(void);
 node_hash_t HASH(NODE *n);
-VALUE EVAL(CTX *c, NODE *n);
+VALUE EVAL(CTX *c, NODE *n, int fp);
 void DUMP(FILE *fp, NODE *n, bool oneline);
 NODE *OPTIMIZE(NODE *n);
 void SPECIALIZE(FILE *fp, NODE *n);

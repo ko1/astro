@@ -175,30 +175,29 @@ pascal_label_setjmp(int label_idx)
 }
 
 int
-pascal_try_run(CTX *c, NODE *body)
+pascal_try_run(CTX *c, NODE *body, int fp)
 {
     struct exc_handler h;
     h.prev     = c->exc_top;
-    h.saved_fp = c->fp;
+    h.saved_fp = fp;
     h.saved_sp = c->sp;
     memcpy(h.saved_display, c->display, sizeof(c->display));
     c->exc_top = &h;
     if (setjmp(h.buf) == 0) {
-        EVAL(c, body);
+        EVAL(c, body, fp);
         c->exc_top = h.prev;
         return 0;
     }
     c->exc_top = h.prev;
-    c->fp = h.saved_fp;
     c->sp = h.saved_sp;
     memcpy(c->display, h.saved_display, sizeof(c->display));
     return 1;
 }
 
 int
-pascal_try_run_finally(CTX *c, NODE *body)
+pascal_try_run_finally(CTX *c, NODE *body, int fp)
 {
-    return pascal_try_run(c, body);
+    return pascal_try_run(c, body, fp);
 }
 
 VALUE
@@ -212,6 +211,7 @@ pascal_call(CTX *c, uint32_t pidx, uint32_t argc, VALUE *av)
 
     int new_fp = c->sp;
     int new_sp = new_fp + p->nslots;
+    int saved_sp = new_fp;
 
     if (UNLIKELY(new_sp > PASCAL_STACK_SIZE)) {
         pascal_error("call stack overflow at %s", p->name);
@@ -220,9 +220,6 @@ pascal_call(CTX *c, uint32_t pidx, uint32_t argc, VALUE *av)
     for (uint32_t i = 0; i < argc; i++) c->stack[new_fp + i] = av[i];
     for (int i = (int)argc; i < p->nslots; i++) c->stack[new_fp + i] = 0;
 
-    int saved_fp = c->fp;
-    int saved_sp = c->sp;
-    c->fp = new_fp;
     c->sp = new_sp;
 
     // Display vector: save the previous binding for the callee's
@@ -233,11 +230,10 @@ pascal_call(CTX *c, uint32_t pidx, uint32_t argc, VALUE *av)
     int saved_display = c->display[d];
     c->display[d] = new_fp;
 
-    EVAL(c, p->body);
+    EVAL(c, p->body, new_fp);
 
     VALUE rv = p->is_function ? c->stack[new_fp + p->return_slot] : 0;
     c->display[d] = saved_display;
-    c->fp = saved_fp;
     c->sp = saved_sp;
     // `exit` only escapes the current procedure — clear before
     // returning to the caller.  break/continue must not leak across a
@@ -4532,9 +4528,9 @@ parse_decls_block(CTX *c)
 extern const struct NodeKind kind_node_int;
 
 static VALUE
-DISPATCH_node_read_int(CTX *c, NODE *n)
+DISPATCH_node_read_int(CTX *c, NODE *n, int fp)
 {
-    (void)c; (void)n;
+    (void)c; (void)n; (void)fp;
     int64_t v = 0;
     if (scanf("%ld", &v) != 1) v = 0;
     return v;
@@ -4818,7 +4814,7 @@ main(int argc, char *argv[])
         write_specialized(c, prog, "node_specialized.c");
         return 0;
     }
-    if (!OPTION.no_run) EVAL(c, prog);
+    if (!OPTION.no_run) EVAL(c, prog, 0);
 
     return 0;
 }

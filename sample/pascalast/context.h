@@ -32,7 +32,7 @@ extern size_t GC_get_total_bytes(void);
 struct CTX_struct;
 struct Node;
 typedef int64_t VALUE;
-typedef VALUE (*node_dispatcher_func_t)(struct CTX_struct *c, struct Node *n);
+typedef VALUE (*node_dispatcher_func_t)(struct CTX_struct *c, struct Node *n, int fp);
 
 // Static type tags carried alongside parsed expressions and stored in
 // per-symbol metadata.  They never appear at run time — every value is

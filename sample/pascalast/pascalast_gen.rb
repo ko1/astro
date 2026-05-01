@@ -12,6 +12,17 @@ require 'astrogen'
 # See ascheme_gen.rb for the @ref-only pattern.
 class PascalastNodeDef < ASTroGen::NodeDef
   class Node < ASTroGen::NodeDef::Node
+    # Thread `int fp` as a third common parameter through every
+    # NODE_DEF / DISPATCH / EVAL_ARG signature.  This lets each
+    # node access the *current* call frame as a register-resident
+    # parameter instead of reloading c->fp from memory at every
+    # access — the dominant call-heavy bottleneck per perf
+    # record.  Every NODE_DEF in node.def writes the parameter
+    # visibly: `node_X(CTX *c, NODE *n, int fp, …)`.
+    def common_param_count
+      3
+    end
+
     # Accept @nohash alongside @ref; the base regex hardcodes @ref only.
     def parse_operands(str)
       @operands = str.split(',').tap do
