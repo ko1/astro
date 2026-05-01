@@ -228,7 +228,73 @@ Lower された AST は「ランタイムで何をするか」に忠実だが「
 
 ## Continuation-passing 規約
 
-各 match-node は同じ呼び出し形:
+このセクションは regex がランタイムでどう走るかを動かして説明する。
+最初に小さい例で挙動を追って、共通の規約と return code、最後に
+「なぜ CPS なのか — specialization との関係」までいく。
+
+### 動かす例: `/abc/` を `"xabcd"` に当てる (pos = 1)
+
+`/abc/` の AST は 4 ノードのチェーン:
+
+```
+lit_a → lit_b → lit_c → succ
+```
+
+各ノードは同じ形をしている (引数の `next` が「残りのチェーン」を指す):
+
+```c
+node_re_lit(c, n, byte, next) {
+    if (c->str[c->pos] != byte) return 0;   /* 自分の局所チェック */
+    c->pos += 1;                             /* 自分の仕事を反映 */
+    VALUE r = EVAL_ARG(c, next);             /* 残りに任せる */
+    if (!r) c->pos -= 1;                     /* 残りが失敗したら巻き戻す */
+    return r;
+}
+```
+
+`succ` は終端で常に 1 を返す。
+
+成功 trace (`"xabcd"` の pos=1 から開始):
+
+```
+EVAL(lit_a)
+├ str[1] == 'a' ✓
+├ pos = 2
+└ EVAL(lit_b)
+  ├ str[2] == 'b' ✓
+  ├ pos = 3
+  └ EVAL(lit_c)
+    ├ str[3] == 'c' ✓
+    ├ pos = 4
+    └ EVAL(succ) → return 1
+    return 1
+  return 1
+return 1                ← lit_a から
+```
+
+成功時は 1 を伝搬するだけ。各ノードの `c->pos += 1` が積み重なって
+1 → 4 になる。
+
+### 失敗 trace: `/abc/` を `"xaxcd"` に (pos = 1)
+
+```
+EVAL(lit_a)
+├ str[1] == 'a' ✓
+├ pos = 2
+└ EVAL(lit_b)
+  ├ str[2] == 'b'?  実際は 'x'  ✗
+  └ return 0
+pos = 1   ← lit_a が「失敗だ」と知って自分が進めた分を戻す
+return 0  ← lit_a から
+```
+
+ここがポイント: **lit_a は「lit_b が失敗した」と知ると、自分が pos を
+進めた分だけを undo する**。各ノードが自分のローカル変更だけ責任を持って
+戻すので、別途 backtrack スタックを管理する必要がない。
+
+### 共通の規約
+
+各 match-node は同じシグネチャ:
 
 ```c
 NODE_DEF
@@ -255,9 +321,44 @@ node_re_xxx(CTX *c, NODE *n, ..., NODE *next)
 エントリポイントの特別扱い無しでキャプチャグループ 0 が全体マッチ範囲を
 記録できるように。
 
+### alt はどう乗るか
+
+選択 `a|b` は 2 つの「枝」を順に試すノード:
+
+```c
+node_re_alt(c, n, branch_a, branch_b) {
+    size_t saved = c->pos;
+    if (EVAL_ARG(c, branch_a)) return 1;   /* 第 1 枝が通ったら成功 */
+    c->pos = saved;                         /* 失敗したら巻き戻して */
+    return EVAL_ARG(c, branch_b);           /* 第 2 枝を試す */
+}
+```
+
+これだけで「最初の枝を試す → 失敗したら次の枝を試す」という backtrack
+が表現できる。明示的な thread list / 状態集合は要らない。
+
+### capture も同じ形
+
+```c
+node_re_cap_start(c, n, idx, next) {
+    size_t saved = c->starts[idx];          /* 古い値を覚える */
+    bool   savedv = c->valid[idx];
+    c->starts[idx] = c->pos;                /* 自分の仕事 */
+    VALUE r = EVAL_ARG(c, next);            /* 残りに任せる */
+    if (!r) {                               /* 失敗したら戻す */
+        c->starts[idx] = saved;
+        c->valid[idx] = savedv;
+    }
+    return r;
+}
+```
+
+「進めて → 残りに任せて → 失敗なら戻す」の同じ形。
+
 ### Return code の意味 (0 / 1 / 2)
 
-scanner と body chain の境界では 3 値の return code が走る:
+regex chain 内部では戻り値は 0 / 1 だけ。case-A factorization の
+scanner と body chain の境界で 3 値目が出る:
 
 | 戻り値 | 意味 | 起点 | scanner の動作 |
 |---:|---|---|---|
@@ -265,13 +366,76 @@ scanner と body chain の境界では 3 値の return code が走る:
 | 1 | body 成功 + stop | `node_re_succ` | 即 `return 1` |
 | 2 | body 成功 + continue | `node_action_continue` | `c->pos` を読んで再開 |
 
-regex chain 内部 (rep / alt / lookaround) は **0 / 1 のみ**で動く。
 2 が出るのは action chain (scanner の body 末尾) が `action_continue`
-で終わる場合だけ。だから既存の regex 用ノードの内部実装は何も変わらない。
-
+で終わる場合だけ。既存の regex 用ノードの内部実装は何も変わらない。
 backtracking は body 内部で完結する: rep_cont が body をもう 1 度試し
 て失敗 (0) なら次の選択肢に降り、…と既存の CPS で進む。scanner には
 何も漏れない。
+
+### なぜ CPS なのか — specialization と相性が良い
+
+3 つ嬉しいことがある:
+
+**(a) C のコールスタックがそのまま backtrack スタックになる**
+
+普通の Thompson NFA だと「現在 active な状態の集合」をリストで持って
+入力 1 byte ごとに全状態を進める。astrogre は各ノードが自分のローカル
+変更を C の関数フレームの寿命と紐付けて undo するので、別途スタックが
+要らない。深く降りた先で `return 0` が 1 段ずつ戻ってきて、各 frame が
+自分の足跡を消していく。
+
+**(b) AST が前向きの DAG になる**
+
+各ノードは `next` を指すだけで、後ろ向きの矢印もループも無い (rep だけ
+sentinel で別扱い)。framework の hash と AOT bake は前向き DAG にとても
+向いている — ノードを 1 個ずつ hash して、子ノードを見つけたら inline、
+で全部 1 つの SD 関数になる。
+
+**(c) specialize と相性が良い (= astrogre の本命)**
+
+CPS のチェーンは静的に解決可能な小さい関数呼び出しの連続なので、
+framework が `EVAL_ARG(c, next)` の `next` を operand として知っていて、
+各ノードを `static inline` として SD ソースに書き出すと gcc が連鎖を
+fuse する。`/abc/` の SD は概ねこうなる:
+
+```c
+SD_chain_INL(CTX *c, NODE *n) {
+    /* lit_a inline */
+    if (c->str[c->pos] != 'a') return 0;
+    c->pos += 1;
+    /* lit_b inline */
+    if (c->str[c->pos] != 'b') goto fail_b;
+    c->pos += 1;
+    /* lit_c inline */
+    if (c->str[c->pos] != 'c') goto fail_c;
+    c->pos += 1;
+    /* succ inline */
+    c->ends[0] = c->pos;
+    c->valid[0] = true;
+    return 1;
+
+fail_c: c->pos -= 1;
+fail_b: c->pos -= 1;
+        c->pos -= 1;
+        return 0;
+}
+```
+
+各ノードの「成功なら next を呼ぶ」が **静的な call** だから framework
+から「次に何が呼ばれるか」が見える → dispatcher を直接埋め込める →
+inline 連鎖が fuse → indirect call ゼロ。各ノードの「失敗時に undo」も
+C コンパイラが普通に goto/フローグラフで畳む。
+
+これが NFA simulation 系 (Thompson 風 thread list、TaggedDFA、…) だと
+話が変わる。あの形は `for each active thread: advance per state table`
+という data-driven loop なので、specializer から見て「次に何が起きるか」
+が runtime まで分からない。inline できない。
+
+CPS のトリックは「正規表現の各構造を**静的に解決可能な小さい関数呼び出し
+の連鎖**に lower する」点で、これが framework の強みと完全にレジが合う。
+[`perf.md`](./perf.md) で 7.22× の `literal-tail` microbench が出ている
+のは、ここで説明したのと同じ仕組みで bake が 30 命令ぐらいの 1 関数に
+畳んだ結果。
 
 ## 繰り返しの仕組み
 
