@@ -15,31 +15,40 @@ static VALUE kernel_p(CTX *c, VALUE self, int argc, VALUE *argv) {
     return korb_ary_new_from_values(argc, argv);
 }
 
+/* Pick the FILE * for IO-method writes.  When the receiver is a special
+ * object marked as $stderr, write to stderr; otherwise stdout. */
+static VALUE g_stderr_obj = 0;  /* set during init; treated as a marker */
+static FILE *io_stream(VALUE self) {
+    return (g_stderr_obj && self == g_stderr_obj) ? stderr : stdout;
+}
+
 static VALUE kernel_puts(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc == 0) { fputc('\n', stdout); return Qnil; }
+    FILE *out = io_stream(self);
+    if (argc == 0) { fputc('\n', out); return Qnil; }
     for (int i = 0; i < argc; i++) {
         VALUE v = argv[i];
         if (BUILTIN_TYPE(v) == T_ARRAY) {
             struct korb_array *a = (struct korb_array *)v;
             for (long j = 0; j < a->len; j++) {
                 VALUE s = korb_to_s(a->ptr[j]);
-                fwrite(((struct korb_string *)s)->ptr, 1, ((struct korb_string *)s)->len, stdout);
-                fputc('\n', stdout);
+                fwrite(((struct korb_string *)s)->ptr, 1, ((struct korb_string *)s)->len, out);
+                fputc('\n', out);
             }
         } else {
             VALUE s = korb_to_s(v);
             struct korb_string *str = (struct korb_string *)s;
-            fwrite(str->ptr, 1, str->len, stdout);
-            if (str->len == 0 || str->ptr[str->len-1] != '\n') fputc('\n', stdout);
+            fwrite(str->ptr, 1, str->len, out);
+            if (str->len == 0 || str->ptr[str->len-1] != '\n') fputc('\n', out);
         }
     }
     return Qnil;
 }
 
 static VALUE kernel_print(CTX *c, VALUE self, int argc, VALUE *argv) {
+    FILE *out = io_stream(self);
     for (int i = 0; i < argc; i++) {
         VALUE s = korb_to_s(argv[i]);
-        fwrite(((struct korb_string *)s)->ptr, 1, ((struct korb_string *)s)->len, stdout);
+        fwrite(((struct korb_string *)s)->ptr, 1, ((struct korb_string *)s)->len, out);
     }
     return Qnil;
 }
@@ -946,6 +955,20 @@ static VALUE str_aref(CTX *c, VALUE self, int argc, VALUE *argv) {
         if (i < 0 || i >= s->len) return Qnil;
         return korb_str_new(s->ptr + i, 1);
     }
+    if (argc == 1 && BUILTIN_TYPE(argv[0]) == T_RANGE) {
+        struct korb_range *r = (struct korb_range *)argv[0];
+        if (!FIXNUM_P(r->begin) || !FIXNUM_P(r->end)) return Qnil;
+        long b = FIX2LONG(r->begin);
+        long e = FIX2LONG(r->end);
+        if (b < 0) b += s->len;
+        if (e < 0) e += s->len;
+        if (b < 0 || b > s->len) return Qnil;
+        if (r->exclude_end) e -= 1;
+        if (e >= s->len) e = s->len - 1;
+        long len = e - b + 1;
+        if (len < 0) len = 0;
+        return korb_str_new(s->ptr + b, len);
+    }
     if (argc == 2 && FIXNUM_P(argv[0]) && FIXNUM_P(argv[1])) {
         long i = FIX2LONG(argv[0]);
         long len = FIX2LONG(argv[1]);
@@ -960,6 +983,35 @@ static VALUE str_aref(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 static VALUE str_aset(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* not used by optcarrot main path; stub */
+    return Qnil;
+}
+
+static VALUE str_index(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return Qnil;
+    struct korb_string *s = (struct korb_string *)self;
+    struct korb_string *needle = (struct korb_string *)argv[0];
+    long start = (argc >= 2 && FIXNUM_P(argv[1])) ? FIX2LONG(argv[1]) : 0;
+    if (start < 0) start += s->len;
+    if (start < 0) start = 0;
+    if (needle->len == 0) return INT2FIX(start <= s->len ? start : s->len);
+    for (long i = start; i + needle->len <= s->len; i++) {
+        if (memcmp(s->ptr + i, needle->ptr, needle->len) == 0) return INT2FIX(i);
+    }
+    return Qnil;
+}
+
+static VALUE str_rindex(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return Qnil;
+    struct korb_string *s = (struct korb_string *)self;
+    struct korb_string *needle = (struct korb_string *)argv[0];
+    long start = (argc >= 2 && FIXNUM_P(argv[1])) ? FIX2LONG(argv[1]) : s->len;
+    if (start < 0) start += s->len;
+    if (start > s->len - needle->len) start = s->len - needle->len;
+    if (start < 0) return Qnil;
+    if (needle->len == 0) return INT2FIX(start);
+    for (long i = start; i >= 0; i--) {
+        if (memcmp(s->ptr + i, needle->ptr, needle->len) == 0) return INT2FIX(i);
+    }
     return Qnil;
 }
 
@@ -2726,6 +2778,8 @@ void korb_init_builtins(void) {
     DEF(cStr, "to_f",        str_to_f,         0);
     DEF(cStr, "[]",          str_aref,        -1);
     DEF(cStr, "[]=",         str_aset,        -1);
+    DEF(cStr, "index",       str_index,       -1);
+    DEF(cStr, "rindex",      str_rindex,      -1);
     DEF(cStr, "chars",       str_chars,        0);
     DEF(cStr, "bytes",       str_bytes,        0);
     DEF(cStr, "each_char",   str_each_char,    0);
@@ -2918,6 +2972,7 @@ void korb_init_builtins(void) {
     /* dummy STDOUT/STDERR */
     VALUE stdout_obj = korb_object_new(cIO);
     VALUE stderr_obj = korb_object_new(cIO);
+    g_stderr_obj = stderr_obj;
     korb_const_set(korb_vm->object_class, korb_intern("STDOUT"), stdout_obj);
     korb_const_set(korb_vm->object_class, korb_intern("STDERR"), stderr_obj);
     korb_const_set(korb_vm->object_class, korb_intern("STDIN"), korb_object_new(cIO));
