@@ -200,6 +200,33 @@ struct korb_cref *korb_cref_dup(struct korb_cref *src) {
     return head;
 }
 
+/* Walk the body's textual dump (oneline) and decide whether the method
+ * needs the heavy frame setup: yield, super, block_given?, const access,
+ * or any block-passing call.  Method bodies without these can run with
+ * a slim prologue (no current_block / cref / current_frame churn).  We
+ * scan the dump string instead of writing a generic AST walker — the
+ * scan happens once per method definition. */
+static bool korb_method_body_is_simple_frame(struct Node *body) {
+    if (!body) return true;
+    char *buf = NULL;
+    size_t sz = 0;
+    FILE *fp = open_memstream(&buf, &sz);
+    if (!fp) return false;
+    DUMP(fp, body, true);
+    fclose(fp);
+    bool ok =
+        strstr(buf, "(node_yield ")             == NULL &&
+        strstr(buf, "(node_super")              == NULL &&
+        strstr(buf, "(node_method_call_block ") == NULL &&
+        strstr(buf, "(node_func_call_block ")   == NULL &&
+        strstr(buf, "(node_const_get ")         == NULL &&
+        strstr(buf, "(node_const_set ")         == NULL &&
+        strstr(buf, "(node_const_path_get ")    == NULL &&
+        strstr(buf, "block_given?")             == NULL;
+    free(buf);
+    return ok;
+}
+
 void korb_class_add_method_ast_full_cref(struct korb_class *klass, ID name, struct Node *body,
                                           uint32_t required_params, uint32_t total_params,
                                           int rest_slot, uint32_t locals_cnt,
@@ -209,6 +236,7 @@ void korb_class_add_method_ast_full_cref(struct korb_class *klass, ID name, stru
     m->name = name;
     m->defining_class = klass;
     m->def_cref = korb_cref_dup(def_cref);
+    m->is_simple_frame = korb_method_body_is_simple_frame(body);
     m->u.ast.body = body;
     m->u.ast.required_params_cnt = required_params;
     m->u.ast.total_params_cnt = total_params;
@@ -1250,6 +1278,7 @@ korb_method_cache_fill(struct method_cache *mc, struct korb_class *klass, struct
     mc->serial = korb_vm->method_serial;
     mc->klass = klass;
     mc->method = m;
+    mc->is_simple_frame = m->is_simple_frame;
     if (m->type == KORB_METHOD_AST) {
         mc->body = m->u.ast.body;
         mc->dispatcher = (korb_dispatcher_t)m->u.ast.body->head.dispatcher;

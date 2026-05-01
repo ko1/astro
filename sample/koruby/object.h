@@ -70,6 +70,7 @@ struct korb_method {
     ID name;
     struct korb_class *defining_class;
     struct korb_cref *def_cref;   /* lexical cref captured at def-time */
+    bool is_simple_frame;         /* AST methods only: body has no yield/super/block_given/const/blocked-call */
     union {
         struct {
             struct Node *body;

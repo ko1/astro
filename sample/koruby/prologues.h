@@ -44,7 +44,11 @@ prologue_cfunc_inl(CTX *c, struct Node *callsite, VALUE recv,
 }
 
 /* AST-method prologue, parameterized by PARAMS_KNOWN at compile time so
- * each argc-specialized variant unrolls the locals-fill loop. */
+ * each argc-specialized variant unrolls the locals-fill loop.  The
+ * SIMPLE_FRAME flag (set on methods whose body has no super / yield /
+ * block_given? / const access / blocked call) lets us skip current_block
+ * save/restore, cref save/restore, and frame chain setup — about 10
+ * stores per call on tight recursive paths (fib / ack / tak / incr). */
 static inline __attribute__((always_inline)) VALUE
 prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
                         uint32_t argc, uint32_t arg_index,
@@ -59,32 +63,42 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
     }
     VALUE *prev_fp = c->fp;
     VALUE prev_self = c->self;
-    struct korb_proc *prev_block = current_block;
-    struct korb_cref *prev_cref = c->cref;
-    current_block = block;
 
     VALUE *new_fp = prev_fp + arg_index;
     c->fp = new_fp;
     if (new_fp + mc->locals_cnt > c->sp) c->sp = new_fp + mc->locals_cnt;
-    if (mc->def_cref) c->cref = mc->def_cref;
+
+    /* Heavy state save/restore only when method body actually uses it. */
+    bool simple = mc->is_simple_frame;
+    struct korb_proc *prev_block = NULL;
+    struct korb_cref *prev_cref = NULL;
+    struct korb_frame frame;
+    if (UNLIKELY(!simple)) {
+        prev_block = current_block;
+        prev_cref = c->cref;
+        current_block = block;
+        if (mc->def_cref) c->cref = mc->def_cref;
+        frame.prev = c->current_frame;
+        frame.method = mc->method;
+        frame.self = recv;
+        frame.block = block;
+        c->current_frame = &frame;
+    }
 
     for (uint32_t i = total; i < mc->locals_cnt; i++) {
         new_fp[i] = Qnil;
     }
     c->self = recv;
 
-    struct korb_frame frame;
-    frame.prev = c->current_frame;
-    frame.method = mc->method;
-    frame.self = recv;
-    frame.block = block;
-    c->current_frame = &frame;
     VALUE r = mc->dispatcher(c, mc->body);
-    c->current_frame = frame.prev;
+
+    if (UNLIKELY(!simple)) {
+        c->current_frame = frame.prev;
+        c->cref = prev_cref;
+        current_block = prev_block;
+    }
     c->fp = prev_fp;
     c->self = prev_self;
-    c->cref = prev_cref;
-    current_block = prev_block;
 
     if (UNLIKELY(c->state == KORB_RETURN || c->state == KORB_BREAK)) {
         r = c->state_value;

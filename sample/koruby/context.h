@@ -182,6 +182,7 @@ struct method_cache {
     uint32_t total_params_cnt;     /* required + optional + rest(0/1) */
     int      rest_slot;            /* -1 if no *rest */
     uint8_t  type;                 /* 0=AST, 1=CFUNC */
+    bool     is_simple_frame;      /* method body has no yield/super/block_given/_block — slim prologue */
     VALUE (*cfunc)(struct CTX_struct *, VALUE, int, VALUE *);
     struct korb_cref *def_cref;    /* lexical cref captured at def-time */
 };
