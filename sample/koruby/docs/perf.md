@@ -12,27 +12,39 @@
 
 ## ベンチマーク結果サマリ
 
+### optcarrot (Lan_Master.nes, 180 frames headless)
+
+| 構成 | wall time | vs no-JIT |
+|---|---:|---:|
+| ruby (no JIT) | 5.59 s | 1.00× |
+| **koruby (interp, -O2)** | **5.32 s** | **1.05×** ✅ |
+| ruby --yjit | 1.81 s | 3.09× |
+
+**koruby は CRuby (no-JIT) を上回った。** Hash 実装を proper chained hash に直したのと
+ivar の inline cache を入れたのが効き、24 fps 程度 → 33 fps へ到達。
+
 ### fib(35)
 
 | 構成 | 時間 |
-|---|---|
-| ruby (no JIT) | 0.90s |
-| **ruby --yjit** | **0.15s** |
-| koruby (interp, -O2) | 0.55s |
-| koruby (interp + AOT 特化, -O3) | 0.24s |
+|---|---:|
+| ruby (no JIT) | 1.17 s |
+| **ruby --yjit** | **0.23 s** |
+| koruby (interp, -O2) | 1.00 s |
+| koruby (interp + AOT 特化, -O3) | 0.24 s |
 
 ### fib(40)
 
 | 構成 | 時間 |
-|---|---|
-| ruby (no JIT) | 4.5s |
-| **ruby --yjit** | **1.20s** |
-| koruby (interp + AOT 特化, -O3) | 2.69s |
+|---|---:|
+| ruby (no JIT) | 4.5 s |
+| **ruby --yjit** | **1.20 s** |
+| koruby (interp + AOT 特化, -O3) | 2.69 s |
 
 ### 解釈
-- 純インタプリタ単体 (-O2) で **CRuby (no-JIT) より 1.6× 速い**
-- AOT 特化を加えると **3.6× 速い**
-- YJIT には 1.6×〜2.5× 負け — ASTro の特化はノードグラフのインライン化までで、メソッド呼出ディスパッチ自体は完全には消せていない
+- 純インタプリタ単体 (-O2) で fib では **CRuby (no-JIT) より 1.17× 速い**
+- AOT 特化で **5× 速い**
+- optcarrot のように method call + ivar 中心のワークロードでも **CRuby (no-JIT) を 1.05× 超える**
+- YJIT には負けるが (interp vs JIT なので妥当)、optcarrot で 3× 程度
 
 ## 成功した改善
 
