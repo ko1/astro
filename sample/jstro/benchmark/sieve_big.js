@@ -5,8 +5,8 @@
 // values into a much slower representation and pays heavy young-gen
 // GC at this scale.  Combined with our other optimisations (inline
 // 4-slot JsObject, inlined safepoint, encoded-form SMI compares,
-// AOT specialisation), jstro AOT runs this in ~1.27 s vs node v18's
-// ~2.82 s — a 2.2× win on a textbook numerical benchmark.
+// AOT specialisation, fused int-counter for-loop, swap_dispatcher
+// kind specialisation), jstro AOT comfortably beats node v18 here.
 function sieve(n) {
   var a = new Array(n + 1);
   for (var i = 0; i <= n; i++) a[i] = true;
