@@ -2021,12 +2021,45 @@ static VALUE hash_reduce(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 /* ---------- Object reflection ---------- */
 
+/* Global send cache — small (klass, name) → method_cache table.
+ * obj_send is shared across all `obj.send(name, args)` AST sites and
+ * has no per-callsite mc, so we'd otherwise do a full method-table walk
+ * on every call.  optcarrot's CPU.run does send(*DISPATCH[opcode]) for
+ * every instruction, so this table is hot. */
+#define KORB_SEND_CACHE_SIZE 512
+static struct korb_send_cache_entry {
+    state_serial_t serial;
+    struct korb_class *klass;
+    ID name;
+    struct method_cache mc;
+} korb_send_cache[KORB_SEND_CACHE_SIZE];
+
+extern void korb_method_cache_fill(struct method_cache *mc, struct korb_class *klass, struct korb_method *m);
+extern struct korb_method *korb_class_find_method(const struct korb_class *klass, ID name);
+
 static VALUE obj_send(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1) return Qnil;
     ID name;
     if (SYMBOL_P(argv[0])) name = korb_sym2id(argv[0]);
     else if (BUILTIN_TYPE(argv[0]) == T_STRING) name = korb_intern_n(((struct korb_string *)argv[0])->ptr, ((struct korb_string *)argv[0])->len);
     else return Qnil;
+    /* argv+1 is &c->fp[arg_index+1] — points into the caller's frame.
+     * Translate to arg_index for the prologue path. */
+    if (LIKELY(argv >= c->fp && argv < c->stack_end)) {
+        struct korb_class *klass = korb_class_of_class(self);
+        uint32_t slot = (uint32_t)(((uintptr_t)klass ^ (uintptr_t)name * 0x9E3779B97F4A7C15ULL) % KORB_SEND_CACHE_SIZE);
+        struct korb_send_cache_entry *e = &korb_send_cache[slot];
+        if (UNLIKELY(e->serial != korb_g_method_serial || e->klass != klass || e->name != name)) {
+            struct korb_method *m = korb_class_find_method(klass, name);
+            if (!m) return korb_funcall(c, self, name, argc - 1, argv + 1);
+            korb_method_cache_fill(&e->mc, klass, m);
+            e->klass = klass;
+            e->name = name;
+            e->serial = korb_g_method_serial;
+        }
+        uint32_t arg_index = (uint32_t)((argv + 1) - c->fp);
+        return e->mc.prologue(c, NULL, self, (uint32_t)(argc - 1), arg_index, NULL, &e->mc);
+    }
     return korb_funcall(c, self, name, argc - 1, argv + 1);
 }
 
