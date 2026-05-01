@@ -1526,6 +1526,11 @@ parse_primary(Parser *p, Scope *s)
             uint32_t nu = child->nupvals;
             uint32_t nl = child->nlocals;
             scope_free(child);
+            // Register the body so the AOT bake walker has it as an
+            // entry point — without this, recursive / indirect calls
+            // dispatch into the host's DISPATCH_node_* chain instead of
+            // a baked SD_<hash>.
+            code_repo_add(NULL, body, true);
             return ALLOC_node_func(body, 1, nl, nu, up_idx, /*is_arrow=*/1, NULL);
         }
         advance(p);
@@ -1583,6 +1588,7 @@ parse_primary(Parser *p, Scope *s)
             }
             uint32_t nu = child->nupvals, nl = child->nlocals;
             scope_free(child);
+            code_repo_add(NULL, body, true);
             return ALLOC_node_func(body, nn, nl, nu, up_idx, 1, NULL);
         }
         // backtrack
@@ -2619,6 +2625,7 @@ parse_function_expr(Parser *p, Scope *s, struct JsString *name)
     }
     uint32_t nu = child->nupvals, nl = child->nlocals;
     scope_free(child);
+    code_repo_add(name ? js_str_data(name) : NULL, body, true);
     NODE *fn = ALLOC_node_func(body, nparams, nl, nu, up_idx, 0, name);
     if (has_rest) {
         // Mark the JsFunction as vararg via a flag accessible at runtime.
@@ -3136,6 +3143,7 @@ parse_class(Parser *p, Scope *s)
             JSTRO_U32_ARR[up_idx + 2*i] = child->upvals[i].is_local;
             JSTRO_U32_ARR[up_idx + 2*i + 1] = child->upvals[i].slot;
         }
+        code_repo_add(name ? js_str_data(name) : NULL, body, true);
         ctor = ALLOC_node_func(body, 0, child->nlocals, child->nupvals, up_idx, 0, name);
         scope_free(child);
     }

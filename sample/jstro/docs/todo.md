@@ -64,10 +64,11 @@
 ## 性能上の課題
 
 ### High — まだ大きな伸び代がある
-- [ ] **ASTro 特化 (specialization) モードの駆動**
-      `node.def` から SD を生成する基盤は整備済み。luastro 同様 dlopen/dlsym
-      で SD を読み込めば、関数本体ごと一つの C 関数に畳めて 5-10× の高速化
-      が期待できる。
+- [ ] **profile-driven kind swap** — luastro の `swap_dispatcher` 相当。
+      `node_add` を観測した型に応じて `node_int_add_ii` / `node_flt_add_ff`
+      に promote。AOT/PG 経路は通っているが、PG bake が AOT と等価
+      (HOPT == HORG) なのが現状。整数/double 専用ノード + IC 経路を
+      追加すれば PG 単独で +20-40% 期待できる。
 - [ ] **多形性 IC** — 4-way 程度でいい。同じサイトで複数 shape を見ても
       毎回 `js_shape_find_slot` に落ちないようにする。
 - [ ] **method call IC の融合** — `obj.foo(args)` が `foo` を IC ヒットで

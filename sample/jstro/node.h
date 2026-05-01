@@ -29,12 +29,15 @@ struct NodeHead {
         bool is_specializing;
         bool is_dumping;
         bool no_inline;
+        bool has_hash_opt;        // set when hash_opt has been computed
     } flags;
 
     const struct NodeKind *kind;
     struct Node *parent;
 
     node_hash_t hash_value;
+    node_hash_t hash_opt;         // profile-aware hash (aliases to hash_value today)
+    int         line;             // source line (for PGC keying); 0 if unknown
 
     const char *dispatcher_name;
 
@@ -45,6 +48,14 @@ struct NodeHead {
     } jit_status;
     unsigned int dispatch_cnt;
 };
+
+// HORG: structural hash (canonical name).  jstro doesn't run a
+// separate profile hash, so HOPT aliases to HORG (defined in node.c).
+node_hash_t HORG(NODE *n);
+
+#define ASTRO_NODEHEAD_PARENT 1
+#define ASTRO_NODEHEAD_JIT_STATUS 1
+#define ASTRO_NODEHEAD_DISPATCH_CNT 1
 
 #include "node_head.h"
 

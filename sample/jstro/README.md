@@ -18,8 +18,33 @@ ruby test/fuzz.rb # 簡易 differential fuzzer (vs node)
 CLI:
 
 ```
-jstro [-q] [-v] [--show-result] [--dump] [--dump-ic] file.js
+jstro [options] file.js
+
+  -q, --quiet              suppress non-essential output
+  -v                       verbose (cs hit/miss stats etc.)
+  --show-result            print the value of the last top-level expr
+  --dump                   dump the parsed AST
+  --dump-ic                print IC and GC counters at exit
+  -c, --aot-compile-first  AOT-bake SDs into code_store/, then run with them active
+  --aot-compile            AOT-bake SDs into code_store/ and exit (no run)
+  -p, --pg-compile         run first (profile), then bake SDs (currently == -c)
+  --no-compile             don't consult / write code store (pure interpreter)
 ```
+
+実行モード:
+
+- **plain** (`./jstro file.js`): 既存の `code_store/all.so` があれば
+  起動時に `dlopen` し、parse 中に各ノードの dispatcher を SD に
+  差し替える。なければ純インタプリタとして動く。
+- **AOT bake-then-run** (`-c`): 上記の bake を 1 プロセスで実施し、
+  続けて実行。`code_store/c/SD_<hash>.c` → `gcc -O3 -fPIC` →
+  `dlopen` の流れ。
+- **AOT bake only** (`--aot-compile`): bake のみ、即終了。次回以降
+  `./jstro file.js` がキャッシュを利用する。
+- **plain (no compile)** (`--no-compile`): code store を完全に無視。
+- **PG** (`-p`): 実行 → bake。jstro はまだ kind-swap を実装して
+  いないので bake 内容は AOT と等価。将来の profile-driven
+  specialization 用に経路だけ確保。
 
 ## サポートしている JavaScript 機能
 
@@ -52,14 +77,18 @@ jstro [-q] [-v] [--show-result] [--dump] [--dump-ic] file.js
 
 ツリーウォーキング+IC ベースとしては妥当。詳しくは [`docs/perf.md`](./docs/perf.md)。
 
-| benchmark         | jstro (s) | node.js (s) | 倍率 |
-|-------------------|-----------|-------------|------|
-| fib(35)           | 0.55      | 0.08        | 7×   |
-| fact ×5M          | 1.40      | 0.06        | 23×  |
-| sieve(1M primes)  | 0.09      | 0.01        | 9×   |
-| mandelbrot(500)   | 0.79      | 0.04        | 22×  |
-| nbody 100k steps  | 0.38      | 0.02        | 21×  |
-| binary_trees(14)  | 0.49      | 0.05        | 10×  |
+| benchmark         | jstro (s) | jstro -c (s) | node.js (s) | -c の倍率 vs node |
+|-------------------|-----------|--------------|-------------|-------------------|
+| fib(35)           | 0.78      | 0.32         | 0.10        | 3.1×              |
+| fact ×5M          | 1.82      | 0.59         | 0.07        | 9.0×              |
+| sieve(1M primes)  | 0.10      | 0.03         | 0.01        | 2.4×              |
+| mandelbrot(500)   | 0.90      | 0.46         | 0.04        | 12.2×             |
+| nbody 100k steps  | 0.44      | 0.28         | 0.02        | 16.6×             |
+| binary_trees(15)  | 0.68      | 0.56         | 0.06        | 9.7×              |
+
+`jstro` がツリー・ウォーキング、`jstro -c` が AOT 特化 (SD bake) 後の
+スコア。AOT で geo-mean 約 2.0× の高速化。`make compiled_jstro` で
+bake 済みバイナリを生成できる。
 
 ## 既知の制限
 
@@ -67,7 +96,9 @@ jstro [-q] [-v] [--show-result] [--dump] [--dump-ic] file.js
 
 - **真のジェネレータ / async microtask** — 構文は受理するが、yield/await は同期実行
 - **WeakMap/WeakSet は strong ref で代用** — GC 自体は実装済みだが weak reference は未対応
-- **ASTro 特化モード未駆動** — フレームワークは整備済みだが SD bake は未稼働
+- **profile-driven kind swap 未実装** — AOT 経路は通っているが、PG bake は
+  AOT と同じ SD を出力する (kind-swap がないため)。整数/double 専用ノードを
+  足せば PG が AOT を上回る
 - **BigInt 未実装** — `123n` リテラル構文は受理するが値は通常の Number に
   なる (`typeof 123n === "number"`)。独立した primitive type としての BigInt は未対応
 - **`String.length`** が UTF-8 byte 長 (UTF-16 単位ではない)

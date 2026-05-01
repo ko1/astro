@@ -14,7 +14,9 @@ class JstroNodeDef < ASTroGen::NodeDef
         # hash by underlying bytes so identical names hash equal regardless
         # of intern-pool pointer identity (mostly defensive — strings are
         # interned, so pointer equality already implies content equality).
-        "hash_cstr(js_str_data(#{val}))"
+        # Handle NULL (anonymous function names, optional identifiers) so
+        # hash_cstr doesn't dereference garbage.
+        "(#{val} ? hash_cstr(js_str_data(#{val})) : 0)"
       when 'struct JsPropIC *', 'struct JsCallIC *'
         '0'
       else
@@ -25,7 +27,7 @@ class JstroNodeDef < ASTroGen::NodeDef
     def build_dumper(name)
       case @type
       when 'JsString *', 'struct JsString *'
-        "        astro_fprintf_cstr(fp, js_str_data(n->u.#{name}.#{self.name}));"
+        "        astro_fprintf_cstr(fp, n->u.#{name}.#{self.name} ? js_str_data(n->u.#{name}.#{self.name}) : NULL);"
       when 'struct JsPropIC *', 'struct JsCallIC *'
         "        fprintf(fp, \"<ic>\");"
       else

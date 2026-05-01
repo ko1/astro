@@ -189,6 +189,52 @@ if (JSTRO_UNLIKELY(JSTRO_BR != JS_BR_NORMAL)) return b;
 ホイスト名を予約してから本パースに入るので、内部の参照が `RES_LOCAL`/
 `RES_BOXED`/`RES_UPVAL` のいずれかに正しく解決される。
 
+#### AOT 特化 (SD bake)
+
+各 AST ノードを `astro_code_store` で個別に C ソースに specialize し、
+`gcc -O3 -fPIC` で `all.so` にビルド、`dlopen` + `dlsym` で各ノードの
+dispatcher を SD に差し替える。`-c` でこの bake を実行 → 即実行、
+`--aot-compile` は bake のみ、`--no-compile` は code store を完全に
+無視。
+
+設計上のポイント:
+
+- **関数本体の登録**: `parser` の各 `ALLOC_node_func` で
+  `code_repo_add(name, body, true)` を呼び、bake walker の entry point
+  に追加。これがないと再帰呼出しが host バイナリの `DISPATCH_node_func`
+  に戻ってしまう。
+- **side-array ノードの bake**: `JSTRO_NODE_ARR` に格納されている
+  variadic-operand の子 (call の args、object literal の値、等) は
+  ASTroGen の typed-operand specializer が見落とすので、
+  `jstro_specialize_side_array` が個別に `astro_cs_compile` する。
+- **inner SD wrapper export**: ASTroGen は inner SD を `static inline`
+  で吐く (in-source の関数ポインタ鎖を gcc が devirtualize できるように)。
+  だが `static` だと `dlsym` で見えないので、`jstro_export_sd_wrappers`
+  が SD ファイルを後処理して `SD_<h>` を全部 `SD_<h>_INL` にリネームし、
+  末尾に `__attribute__((weak)) RESULT SD_<h>(...) { return SD_<h>_INL(...); }`
+  という extern wrapper を append する。これで `dlsym` が全 SD を
+  解決できる (luastro 同様)。
+- **4 GiB virtual stack worker thread**: 深い AOT-inline 鎖は 1 関数
+  呼び出しあたり数百バイト C スタックを食う。`fact(20)` を 5M 回回す
+  ような hot loop で 8 MB スタックを食い潰すので、`pthread_create` で
+  4 GiB stacksize の worker に切り出して実行。luastro の同名ヘルパを
+  そのまま流用。
+
+ベンチ (geo-mean 2.0×):
+| bench | plain | -c (bake+run) | speedup |
+| - | - | - | - |
+| fib(35) | 0.78s | 0.32s | 2.4× |
+| fact ×5M | 1.82s | 0.59s | 3.1× |
+| sieve | 0.10s | 0.03s | 2.9× |
+| mandelbrot(500) | 0.90s | 0.46s | 1.9× |
+| nbody 100k | 0.44s | 0.28s | 1.6× |
+| binary_trees(15) | 0.68s | 0.56s | 1.2× |
+
+bake コスト自体は ~30-50 ms (SD ファイル数 × gcc 起動)。`-c` と
+`-cached` (bake 済みを再起動して dlopen のみ) の差分がそれ。
+binary_trees の伸び率が小さいのは、ノード割り当て / GC の比率が高く
+SD で削れるのが eval ディスパッチ部分だけだから。
+
 #### Mark-sweep GC (safepoint 駆動 + frame_stack root)
 
 長時間ベンチでメモリが頭打ちにならない問題を解決するために自動 GC を追加。

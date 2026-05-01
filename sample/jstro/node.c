@@ -2,91 +2,45 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <ctype.h>
+#include <dirent.h>
 
 #include "node.h"
 #include "context.h"
+#include "astro_code_store.h"
 
 // =====================================================================
-// Hash helpers used by node_hash.c
+// node_allocate — every NODE comes through here so we can track them
+// for the AOT bake walker (compiles each registered body + every parser
+// side-array node so dlsym(SD_<hash>) resolves the whole AST).
 // =====================================================================
-typedef uint64_t node_hash_t;
-
-static node_hash_t
-hash_merge(node_hash_t h, node_hash_t v)
-{
-    h ^= v + 0x9e3779b97f4a7c15ULL + (h << 12) + (h >> 4);
-    return h;
-}
-static node_hash_t
-hash_cstr(const char *s)
-{
-    node_hash_t h = 14695981039346656037ULL;
-    const node_hash_t FNV_PRIME = 1099511628211ULL;
-    while (*s) { h ^= (unsigned char)(*s++); h *= FNV_PRIME; }
-    return h;
-}
-static node_hash_t
-hash_uint32(uint32_t ui)
-{
-    node_hash_t x = (node_hash_t)ui;
-    x ^= x >> 33; x *= 0xff51afd7ed558ccdULL;
-    x ^= x >> 33; x *= 0xc4ceb9fe1a85ec53ULL;
-    x ^= x >> 33;
-    return x;
-}
-static node_hash_t hash_uint64(uint64_t ui) { return hash_uint32((uint32_t)ui) ^ hash_uint32((uint32_t)(ui >> 32)); }
-static node_hash_t hash_double(double d) {
-    union { double d; uint64_t u; } t; t.d = d; return hash_uint64(t.u);
-}
-
-static node_hash_t
-hash_node(NODE *n)
-{
-    if (!n) return 0;
-    if (n->head.flags.has_hash_value) return n->head.hash_value;
-    return HASH(n);
-}
-
-// Specialized-code repository (currently unused since we run interpreter only).
-static struct specialized_code_repo {
-    uint32_t size;
-    uint32_t capa;
-    struct specialized_code {
-        node_hash_t hash;
-        const char *dispatcher_name;
-        node_dispatcher_func_t dispatcher;
-    } *entries;
-} sc_repo;
-
-static struct specialized_code *
-sc_repo_search(NODE *n, node_hash_t h)
-{
-    (void)n;
-    for (uint32_t i = 0; i < sc_repo.size; i++) {
-        if (sc_repo.entries[i].hash == h) return &sc_repo.entries[i];
-    }
-    return NULL;
-}
-void sc_repo_clear(void) { sc_repo.size = 0; }
-
-static const char *
-alloc_dispatcher_name(NODE *n)
-{
-    char buff[128], *name;
-    snprintf(buff, 128, "SD_%lx", (unsigned long)hash_node(n));
-    name = malloc(strlen(buff) + 1);
-    strcpy(name, buff);
-    return name;
-}
-
 extern size_t node_cnt;
+static struct {
+    NODE   **arr;
+    uint32_t cnt;
+    uint32_t cap;
+} g_all_nodes = {0};
+
 static __attribute__((noinline)) NODE *
 node_allocate(size_t size)
 {
-    NODE *n = (NODE *)malloc(size);
-    if (!n) { fprintf(stderr, "OOM\n"); exit(1); }
+    NODE *n = (NODE *)calloc(1, size);
+    if (!n) { fprintf(stderr, "node_allocate: out of memory\n"); exit(1); }
+    if (g_all_nodes.cnt == g_all_nodes.cap) {
+        g_all_nodes.cap = g_all_nodes.cap ? g_all_nodes.cap * 2 : 256;
+        g_all_nodes.arr = (NODE **)realloc(g_all_nodes.arr,
+                                           g_all_nodes.cap * sizeof(NODE *));
+        if (!g_all_nodes.arr) { fprintf(stderr, "node_allocate: oom (track)\n"); exit(1); }
+    }
+    g_all_nodes.arr[g_all_nodes.cnt++] = n;
     node_cnt++;
     return n;
+}
+
+static void
+dispatch_info(CTX *c, NODE *n, bool end)
+{
+    (void)c; (void)n; (void)end;
 }
 
 void
@@ -95,68 +49,96 @@ clear_hash(NODE *n)
     while (n) { n->head.flags.has_hash_value = false; n = n->head.parent; }
 }
 
-node_hash_t
-HASH(NODE *n)
-{
-    if (!n) return 0;
-    if (n->head.flags.has_hash_value) return n->head.hash_value;
-    if (n->head.kind->hash_func) {
-        n->head.flags.has_hash_value = true;
-        return n->head.hash_value = (*n->head.kind->hash_func)(n);
-    }
-    return 0;
-}
-
-void
-DUMP(FILE *fp, NODE *n, bool oneline)
-{
-    if (!n) { fprintf(fp, "<NULL>"); return; }
-    if (n->head.flags.is_dumping) { fprintf(fp, "..."); return; }
-    n->head.flags.is_dumping = true;
-    (*n->head.kind->dumper)(fp, n, oneline);
-    n->head.flags.is_dumping = false;
-}
-
-NODE *
-OPTIMIZE(NODE *n)
-{
-    return n;  // interpreter mode for now
-}
-
-void
-SPECIALIZE(FILE *fp, NODE *n)
-{
-    (void)fp; (void)n;  // not used yet
-}
-
-// Minimal code repository (unused for now).
-static struct code_repo {
-    uint32_t size; uint32_t capa;
-    struct { const char *name; NODE *body; } *entries;
-} code_repo;
-
-NODE *code_repo_find(node_hash_t h) { (void)h; return NULL; }
-NODE *code_repo_find_by_name(const char *name) { (void)name; return NULL; }
-void  code_repo_add(const char *name, NODE *body, bool force_add) { (void)name; (void)body; (void)force_add; }
+// HORG / HOPT.  jstro doesn't run a separate profile hash — HOPT
+// aliases to HORG so PG-mode bake produces the same SDs as AOT.
+typedef uint64_t node_hash_t;
+node_hash_t HORG(NODE *n);
+node_hash_t HOPT(NODE *n) { return HORG(n); }
 
 size_t node_cnt = 0;
 
 // EVAL function — kept for callers that take the function-pointer form.
 // Hot internal callers use the EVAL macro from node.h.
-#undef EVAL
 RESULT
 EVAL_func(CTX *c, NODE *n, JsValue *frame)
 {
     return (*n->head.dispatcher)(c, n, frame);
 }
-#define EVAL(c, n, frame) ((*(n)->head.dispatcher)((c), (n), (frame)))
 
-// Forward decls used by generated node_dump.c.
-void astro_fprintf_cstr(FILE *fp, const char *s);
-void astro_fprint_cstr(FILE *fp, const char *s);
+// =====================================================================
+// ASTro common infrastructure (HASH, DUMP, hash_*, alloc_dispatcher_name).
+// astro_node.c references node_allocate / dispatch_info so it must be
+// included AFTER those definitions, but BEFORE astro_code_store.c and
+// the generated files.
+// =====================================================================
+#include "astro_node.c"
+
+// HORG implementation now that HASH is defined.
+node_hash_t HORG(NODE *n) { return HASH(n); }
+
+#define EVAL(c, n, frame) ((*(n)->head.dispatcher)((c), (n), (frame)))
 
 // Regex engine — included here so it sees JsRegex etc.
 #include "js_regex.c"
+
+// =====================================================================
+// OPTIMIZE — called from each ALLOC_<name>.  Asks the code store for
+// an SD matching this node's hash; if found, patches head.dispatcher
+// to the specialized function, otherwise leaves DISPATCH_<name>.
+// =====================================================================
+static int g_opt_hit = 0;
+static int g_opt_miss = 0;
+const char *jstro_current_src_file = NULL;
+
+NODE *
+OPTIMIZE(NODE *n)
+{
+    if (OPTION.no_compiled_code) return n;
+    if (astro_cs_load(n, jstro_current_src_file)) g_opt_hit++; else g_opt_miss++;
+    return n;
+}
+
+void
+jstro_optimize_stats(void)
+{
+    if (OPTION.verbose) fprintf(stderr, "jstro: cs hit=%d miss=%d\n", g_opt_hit, g_opt_miss);
+}
+
+// SPECIALIZE is provided by astro_code_store.c.
+
+// =====================================================================
+// code_repo: track every closure body so the AOT bake step has a list
+// of entry points to specialize (recursive call sites otherwise stay on
+// DISPATCH_node_func instead of jumping into a baked SD).
+// =====================================================================
+struct code_entry {
+    const char *name;
+    NODE       *body;
+};
+static struct {
+    struct code_entry *entries;
+    uint32_t cnt, cap;
+} CR = {0};
+
+NODE *code_repo_find(node_hash_t h) { (void)h; return NULL; }
+NODE *code_repo_find_by_name(const char *name) { (void)name; return NULL; }
+
+void
+code_repo_add(const char *name, NODE *body, bool force)
+{
+    (void)force;
+    if (!body) return;
+    if (CR.cnt == CR.cap) {
+        CR.cap = CR.cap ? CR.cap * 2 : 16;
+        CR.entries = (struct code_entry *)realloc(CR.entries, CR.cap * sizeof(struct code_entry));
+    }
+    CR.entries[CR.cnt++] = (struct code_entry){name, body};
+}
+
+// =====================================================================
+// Code store
+// =====================================================================
+#include "astro_code_store.c"
 
 // =====================================================================
 // Generated files
@@ -169,34 +151,183 @@ void astro_fprint_cstr(FILE *fp, const char *s);
 #include "node_replace.c"
 #include "node_alloc.c"
 
+// node_specialized.c is overwritten by `./jstro -c` / `--aot-compile` to
+// embed baked SDs at link time.  In the plain interpreter build it is a
+// near-empty placeholder produced by the Makefile rule.
+#include "node_specialized.c"
+
+// =====================================================================
+// SD wrapper post-process: ASTroGen emits inner SD bodies as `static
+// inline` so the in-source function-pointer chain devirtualizes inside
+// the SD module.  But `static` hides them from `dlsym`, so at runtime
+// `astro_cs_load` only finds the externally-named root SD and every
+// other AST node falls back to the host binary's DISPATCH_<name>.  We
+// rewrite each `SD_<hash>` reference to `SD_<hash>_INL` and append a
+// thin `__attribute__((weak)) RESULT SD_<hash>(...)` wrapper that
+// forwards to the _INL version — `dlsym` now finds every node and the
+// in-source chain still inlines.  Mirrors luastro_export_sd_wrappers.
+// =====================================================================
+static void
+jstro_export_sd_wrappers(const char *path)
+{
+    FILE *fp = fopen(path, "r");
+    if (!fp) return;
+    fseek(fp, 0, SEEK_END);
+    long sz = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+    char *src = (char *)malloc(sz + 1);
+    if (!src) { fclose(fp); return; }
+    if (fread(src, 1, sz, fp) != (size_t)sz) { free(src); fclose(fp); return; }
+    src[sz] = '\0';
+    fclose(fp);
+
+    #define SD_PREFIX_LEN(p) ((p)[0] == 'S' && (p)[1] == 'D' && (p)[2] == '_' ? 3 \
+                              : (p)[0] == 'P' && (p)[1] == 'G' && (p)[2] == 'S' \
+                                && (p)[3] == 'D' && (p)[4] == '_' ? 5 : 0)
+    size_t name_cap = 256, name_cnt = 0;
+    char (*names)[24] = (char (*)[24])malloc(name_cap * 24);
+    for (const char *p = src; *p; ) {
+        bool at_line_start = (p == src) || (p[-1] == '\n');
+        size_t plen = at_line_start ? SD_PREFIX_LEN(p) : 0;
+        if (plen) {
+            const char *q = p + plen;
+            while (isxdigit((unsigned char)*q)) q++;
+            size_t len = q - p;
+            if (len > plen && len < 24 && *q == '(') {
+                bool dup = false;
+                for (size_t i = 0; i < name_cnt; i++) {
+                    if (strncmp(names[i], p, len) == 0 && names[i][len] == '\0') { dup = true; break; }
+                }
+                if (!dup) {
+                    if (name_cnt >= name_cap) {
+                        name_cap *= 2;
+                        names = (char (*)[24])realloc(names, name_cap * 24);
+                    }
+                    memcpy(names[name_cnt], p, len);
+                    names[name_cnt][len] = '\0';
+                    name_cnt++;
+                }
+            }
+            p = q;
+        } else {
+            p++;
+        }
+    }
+
+    size_t out_cap = sz + name_cnt * 8 + 4096;
+    char *out = (char *)malloc(out_cap);
+    size_t out_len = 0;
+    for (const char *p = src; *p; ) {
+        size_t plen = SD_PREFIX_LEN(p);
+        if (plen && (p == src || !(isalnum((unsigned char)p[-1]) || p[-1] == '_'))) {
+            const char *q = p + plen;
+            while (isxdigit((unsigned char)*q)) q++;
+            size_t len = q - p;
+            if (len > plen && len < 24) {
+                memcpy(out + out_len, p, len);
+                out_len += len;
+                memcpy(out + out_len, "_INL", 4);
+                out_len += 4;
+                p = q;
+                continue;
+            }
+        }
+        out[out_len++] = *p++;
+    }
+    #undef SD_PREFIX_LEN
+
+    const char *banner =
+        "\n// Externally-visible thin wrappers — make every SD reachable via\n"
+        "// dlsym so astro_cs_load can patch every node, not just the chunk root.\n";
+    size_t banner_len = strlen(banner);
+    if (out_len + banner_len + 1 >= out_cap) {
+        out_cap = out_len + banner_len + name_cnt * 128 + 1024;
+        out = (char *)realloc(out, out_cap);
+    }
+    memcpy(out + out_len, banner, banner_len);
+    out_len += banner_len;
+    for (size_t i = 0; i < name_cnt; i++) {
+        char line[256];
+        int n = snprintf(line, sizeof(line),
+            "__attribute__((weak)) RESULT %s(CTX *c, NODE *n, JsValue *frame) { return %s_INL(c, n, frame); }\n",
+            names[i], names[i]);
+        if (out_len + n + 1 >= out_cap) {
+            out_cap = (out_len + n + 1) * 2;
+            out = (char *)realloc(out, out_cap);
+        }
+        memcpy(out + out_len, line, n);
+        out_len += n;
+    }
+    out[out_len] = '\0';
+
+    fp = fopen(path, "w");
+    if (fp) {
+        fwrite(out, 1, out_len, fp);
+        fclose(fp);
+    }
+    free(out);
+    free(names);
+    free(src);
+}
+
+static void
+jstro_export_all_sds(void)
+{
+    DIR *d = opendir("code_store/c");
+    if (!d) return;
+    struct dirent *de;
+    while ((de = readdir(d))) {
+        const char *name = de->d_name;
+        size_t nlen = strlen(name);
+        if (nlen <= 2 || strcmp(name + nlen - 2, ".c") != 0) continue;
+        if (strncmp(name, "SD_", 3) != 0 && strncmp(name, "PGSD_", 5) != 0) continue;
+        char path[ASTRO_CS_PATH_MAX];
+        snprintf(path, sizeof(path), "code_store/c/%s", name);
+        jstro_export_sd_wrappers(path);
+    }
+    closedir(d);
+}
+
+// Variadic-operand children live in JSTRO_NODE_ARR (parser side array)
+// — ASTroGen's specializer walks only typed `NODE *` operands, so
+// these never get an SD baked.  Compile each one directly so every node
+// in the program ends up addressable by dlsym(SD_<hash>).
+extern struct Node **JSTRO_NODE_ARR;
+extern uint32_t      JSTRO_NODE_ARR_CNT;
+
+static void
+jstro_specialize_side_array(const char *file)
+{
+    for (uint32_t i = 0; i < JSTRO_NODE_ARR_CNT; i++) {
+        if (JSTRO_NODE_ARR[i]) astro_cs_compile(JSTRO_NODE_ARR[i], file);
+    }
+}
+
+void
+jstro_specialize_all(NODE *root, const char *file)
+{
+    if (root) astro_cs_compile(root, file);
+    for (uint32_t i = 0; i < CR.cnt; i++) {
+        astro_cs_compile(CR.entries[i].body, file);
+    }
+    jstro_specialize_side_array(file);
+    jstro_export_all_sds();
+    astro_cs_build(NULL);
+    astro_cs_reload();
+    if (root) astro_cs_load(root, file);
+    for (uint32_t i = 0; i < CR.cnt; i++) {
+        astro_cs_load(CR.entries[i].body, file);
+    }
+    for (uint32_t i = 0; i < JSTRO_NODE_ARR_CNT; i++) {
+        if (JSTRO_NODE_ARR[i]) astro_cs_load(JSTRO_NODE_ARR[i], file);
+    }
+}
+
+// =====================================================================
+// INIT — runs once before parsing.
+// =====================================================================
 void
 INIT(void)
 {
-    sc_repo.size = 0;
-    sc_repo.capa = 4;
-    sc_repo.entries = malloc(sizeof(*sc_repo.entries) * sc_repo.capa);
-    code_repo.size = 0;
-    code_repo.capa = 0;
-    code_repo.entries = NULL;
+    astro_cs_init("code_store", ".", 0);
 }
-
-// Helper used by node_dump.c for const char * values containing arbitrary bytes.
-#ifndef ASTRO_FPRINTF_CSTR_DEFINED
-#define ASTRO_FPRINTF_CSTR_DEFINED
-void astro_fprintf_cstr(FILE *fp, const char *s)
-{
-    if (!s) { fprintf(fp, "(null)"); return; }
-    fputc('"', fp);
-    for (; *s; s++) {
-        if (*s == '"') fputs("\\\"", fp);
-        else if (*s == '\\') fputs("\\\\", fp);
-        else if (*s == '\n') fputs("\\n", fp);
-        else fputc(*s, fp);
-    }
-    fputc('"', fp);
-}
-void astro_fprint_cstr(FILE *fp, const char *s)
-{
-    astro_fprintf_cstr(fp, s);
-}
-#endif

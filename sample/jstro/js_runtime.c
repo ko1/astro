@@ -26,6 +26,11 @@ static uint32_t JSTRO_NODE_ARR_cap = 0, JSTRO_NODE_ARR_cnt = 0;
 static uint32_t JSTRO_U32_ARR_cap  = 0, JSTRO_U32_ARR_cnt  = 0;
 static uint32_t JSTRO_STR_ARR_cap  = 0, JSTRO_STR_ARR_cnt  = 0;
 
+// Exposed for the AOT bake walker (jstro_specialize_side_array) so it
+// knows how many parser side-array nodes to compile.
+uint32_t JSTRO_NODE_ARR_CNT;
+void jstro_node_arr_publish(void) { JSTRO_NODE_ARR_CNT = JSTRO_NODE_ARR_cnt; }
+
 uint32_t jstro_node_arr_alloc(uint32_t cnt) {
     if (JSTRO_NODE_ARR_cnt + cnt > JSTRO_NODE_ARR_cap) {
         uint32_t nc = JSTRO_NODE_ARR_cap ? JSTRO_NODE_ARR_cap * 2 : 64;

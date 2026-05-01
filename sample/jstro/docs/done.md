@@ -158,6 +158,24 @@ ECMAScript 仕様への対応状況と、性能向上のために行った変更
 - [x] **`#priv` トークン** — `#` を識別子の一部として字句解析
 - [x] `typeof` で symbol / bigint を返す
 - [x] **`__chainProto__` / `__defAccessor__` / `__makeRegex__` / `__awaitSync__`** ランタイム補助関数
+- [x] **AOT 特化 (SD bake) モード** — `astro_code_store` 連携。`-c` で
+      `code_store/c/SD_<hash>.c` を吐いて `make` で `all.so` にビルド、
+      その場で `dlopen` + `dlsym` して各ノードの dispatcher を SD に
+      差し替える。`--aot-compile` は bake のみ、`--no-compile` は
+      code store を完全に無視する純インタプリタ。`-p` (PG) は run-
+      then-bake — jstro は kind-swap を実装していないので現状 AOT と
+      等価だが、将来の profile-driven specialization 用に経路を確保。
+      関数本体は `code_repo_add` で個別に登録し、parser side-array
+      ノードも個別に bake することで dlsym カバレッジを最大化
+      (luastro と同様)。inner SD は `static inline` だが
+      `jstro_export_sd_wrappers` が `SD_<h>_INL` にリネームして
+      `__attribute__((weak)) RESULT SD_<h>(...) { return SD_<h>_INL(...); }`
+      の薄い extern wrapper を append し、dlsym が全ノードを解決
+      できるようにしている。深い AOT-inline 鎖が 8 MB スタックを
+      食い潰すので、本体は `pthread_create` で 4 GiB virtual stack の
+      worker thread に切り出して実行 (luastro と同じ手法)。
+      ベンチ結果 (geo-mean 2.0×): fib 2.4× / fact 3.1× / sieve 2.9× /
+      mandelbrot 1.9× / nbody 1.6× / binary_trees 1.2×。
 - [x] **自動 GC (mark-sweep)** — `c->all_objects` リンクトリストを基盤にしたマーク&スイープ。
       ルート: globals / protos / this / cur_args / last_thrown / break-val / intern_buckets / modules /
       `frame_stack` (alloca フレーム連鎖)。トリガはセーフポイント方式 (node_seq / node_for /
@@ -172,7 +190,7 @@ ECMAScript 仕様への対応状況と、性能向上のために行った変更
 
 ## 未実装 (詳細は [`todo.md`](./todo.md))
 
-- ASTro 特化 (SD bake) — フレームワークは整備済みだが駆動していない
+- 多形性 IC (4-way) — call IC は monomorphic、shape IC も 1 段
 - 真のジェネレータ (suspendable frame; ucontext 等)
 - async/await の microtask スケジューリング
 - 多形性 IC (4-way)
