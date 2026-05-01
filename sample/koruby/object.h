@@ -362,6 +362,12 @@ VALUE korb_dispatch_call(CTX *c, struct Node *callsite, VALUE recv, ID name, uin
 
 extern state_serial_t korb_g_method_serial;  /* mirrored from korb_vm->method_serial */
 
+/* True once user code has redefined a method on Integer/Float/Array/...
+ * Fast paths in node.def consult this flag; it stays true for the rest
+ * of the run. */
+extern bool korb_g_basic_op_redefined;
+void korb_check_basic_op_redef(struct korb_class *target);
+
 /* Stable function-pointer addresses for mc->prologue — used as kind tags
  * in the guarded direct call below (compared by name, then dispatched
  * inline via the static-inline body in prologues.h). */

@@ -1100,6 +1100,32 @@ bool korb_eq(VALUE a, VALUE b) {
  * read this directly without seeing struct korb_vm's full definition. */
 state_serial_t korb_g_method_serial = 0;
 
+/* Set to true once user code redefines a method on Integer / Float /
+ * Array / Hash / String / Symbol — the receiver classes that EVAL_node_*
+ * fast paths assume are unmodified.  Each fast path includes an
+ * UNLIKELY check; if the flag flips, the path falls through to slow
+ * dispatch.  Coarse-grained (any redefinition flips it forever), but
+ * common-case correct and zero-cost on the normal path. */
+bool korb_g_basic_op_redefined = false;
+
+/* Called from node_def_full when a Ruby-level `def` lands.  If the
+ * target class is one whose basic ops we shortcut, flip the flag. */
+void korb_check_basic_op_redef(struct korb_class *target) {
+    if (!korb_vm) return;
+    if (target == korb_vm->integer_class ||
+        target == korb_vm->float_class   ||
+        target == korb_vm->array_class   ||
+        target == korb_vm->hash_class    ||
+        target == korb_vm->string_class  ||
+        target == korb_vm->symbol_class  ||
+        target == korb_vm->numeric_class ||
+        target == korb_vm->true_class    ||
+        target == korb_vm->false_class   ||
+        target == korb_vm->nil_class) {
+        korb_g_basic_op_redefined = true;
+    }
+}
+
 /* ---- method dispatch ---- */
 
 /* ---- specialized prologues -----------------------------------------------

@@ -464,14 +464,14 @@ node_plus(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t ar
 {
     VALUE l = EA(c, lhs);
     VALUE r = EA(c, rhs);
-    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) {
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) {
         long a = FIX2LONG(l), b = FIX2LONG(r), s;
         if (LIKELY(!__builtin_add_overflow(a, b, &s) && FIXABLE(s))) return INT2FIX(s);
         return korb_int_plus(l, r);
     }
     /* Float fast path: skip dispatch_binop when both ops can be coerced
      * to double cheaply (FLONUM or FIXNUM). */
-    if (LIKELY(FLONUM_P(l) && FLONUM_P(r))) {
+    if (LIKELY(FLONUM_P(l) && FLONUM_P(r) && !korb_g_basic_op_redefined)) {
         return korb_float_new(korb_flonum_to_double(l) + korb_flonum_to_double(r));
     }
     return korb_node_plus_slow(c, l, r, arg_index);
@@ -482,12 +482,12 @@ node_minus(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t a
 {
     VALUE l = EA(c, lhs);
     VALUE r = EA(c, rhs);
-    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) {
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) {
         long a = FIX2LONG(l), b = FIX2LONG(r), s;
         if (LIKELY(!__builtin_sub_overflow(a, b, &s) && FIXABLE(s))) return INT2FIX(s);
         return korb_int_minus(l, r);
     }
-    if (LIKELY(FLONUM_P(l) && FLONUM_P(r))) {
+    if (LIKELY(FLONUM_P(l) && FLONUM_P(r) && !korb_g_basic_op_redefined)) {
         return korb_float_new(korb_flonum_to_double(l) - korb_flonum_to_double(r));
     }
     return korb_node_minus_slow(c, l, r, arg_index);
@@ -498,12 +498,12 @@ node_mul(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg
 {
     VALUE l = EA(c, lhs);
     VALUE r = EA(c, rhs);
-    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) {
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) {
         long a = FIX2LONG(l), b = FIX2LONG(r), s;
         if (LIKELY(!__builtin_mul_overflow(a, b, &s) && FIXABLE(s))) return INT2FIX(s);
         return korb_int_mul(l, r);
     }
-    if (LIKELY(FLONUM_P(l) && FLONUM_P(r))) {
+    if (LIKELY(FLONUM_P(l) && FLONUM_P(r) && !korb_g_basic_op_redefined)) {
         return korb_float_new(korb_flonum_to_double(l) * korb_flonum_to_double(r));
     }
     return korb_node_mul_slow(c, l, r, arg_index);
@@ -514,7 +514,7 @@ node_div(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg
 {
     VALUE l = EA(c, lhs);
     VALUE r = EA(c, rhs);
-    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) {
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) {
         long a = FIX2LONG(l), b = FIX2LONG(r);
         if (UNLIKELY(b == 0)) { korb_raise(c, NULL, "divided by 0"); return Qnil; }
         long q = a / b;
@@ -522,7 +522,7 @@ node_div(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg
         if (FIXABLE(q)) return INT2FIX(q);
         return korb_int_div(l, r);
     }
-    if (LIKELY(FLONUM_P(l) && FLONUM_P(r))) {
+    if (LIKELY(FLONUM_P(l) && FLONUM_P(r) && !korb_g_basic_op_redefined)) {
         return korb_float_new(korb_flonum_to_double(l) / korb_flonum_to_double(r));
     }
     return korb_node_div_slow(c, l, r, arg_index);
@@ -533,7 +533,7 @@ node_mod(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg
 {
     VALUE l = EA(c, lhs);
     VALUE r = EA(c, rhs);
-    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) {
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) {
         long a = FIX2LONG(l), b = FIX2LONG(r);
         if (UNLIKELY(b == 0)) { korb_raise(c, NULL, "divided by 0"); return Qnil; }
         long m = a % b;
@@ -547,7 +547,7 @@ NODE_DEF
 node_uminus(CTX * restrict c, NODE * restrict n, NODE *operand, uint32_t arg_index)
 {
     VALUE v = EA(c, operand);
-    if (FIXNUM_P(v)) {
+    if (LIKELY(FIXNUM_P(v) && !korb_g_basic_op_redefined)) {
         long a = FIX2LONG(v), s;
         if (!__builtin_sub_overflow(0L, a, &s) && FIXABLE(s)) return INT2FIX(s);
     }
@@ -561,7 +561,7 @@ node_bit_and(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t
 {
     VALUE l = EA(c, lhs);
     VALUE r = EA(c, rhs);
-    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) return l & r;
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) return l & r;
     return korb_node_band_slow(c, l, r, arg_index);
 }
 
@@ -570,7 +570,7 @@ node_bit_or(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t 
 {
     VALUE l = EA(c, lhs);
     VALUE r = EA(c, rhs);
-    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) return l | r;
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) return l | r;
     return korb_node_bor_slow(c, l, r, arg_index);
 }
 
@@ -579,7 +579,7 @@ node_bit_xor(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t
 {
     VALUE l = EA(c, lhs);
     VALUE r = EA(c, rhs);
-    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) return (l ^ r) | FIXNUM_FLAG;
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) return (l ^ r) | FIXNUM_FLAG;
     return korb_node_bxor_slow(c, l, r, arg_index);
 }
 
@@ -588,7 +588,7 @@ node_lshift(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t 
 {
     VALUE l = EA(c, lhs);
     VALUE r = EA(c, rhs);
-    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) {
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) {
         long a = FIX2LONG(l), b = FIX2LONG(r);
         if (b >= 0 && b < 62) {
             long s = a << b;
@@ -598,7 +598,7 @@ node_lshift(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t 
     }
     /* Array#<< — push and return self.  Hot in optcarrot's
      * render_pixel (`@output_pixels << ...` runs once per pixel). */
-    if (LIKELY(!SPECIAL_CONST_P(l) && BUILTIN_TYPE(l) == T_ARRAY)) {
+    if (LIKELY(!SPECIAL_CONST_P(l) && BUILTIN_TYPE(l) == T_ARRAY && !korb_g_basic_op_redefined)) {
         korb_ary_push(l, r);
         return l;
     }
@@ -610,7 +610,7 @@ node_rshift(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t 
 {
     VALUE l = EA(c, lhs);
     VALUE r = EA(c, rhs);
-    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) {
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) {
         long a = FIX2LONG(l), b = FIX2LONG(r);
         if (b >= 0 && b < 62) return INT2FIX(a >> b);
         return korb_int_rshift(l, r);
@@ -625,8 +625,8 @@ node_lt(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_
 {
     VALUE l = EA(c, lhs);
     VALUE r = EA(c, rhs);
-    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) return KORB_BOOL((intptr_t)l < (intptr_t)r);
-    if (LIKELY(FLONUM_P(l) && FLONUM_P(r))) return KORB_BOOL(korb_flonum_to_double(l) < korb_flonum_to_double(r));
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) return KORB_BOOL((intptr_t)l < (intptr_t)r);
+    if (LIKELY(FLONUM_P(l) && FLONUM_P(r) && !korb_g_basic_op_redefined)) return KORB_BOOL(korb_flonum_to_double(l) < korb_flonum_to_double(r));
     return korb_node_lt_slow(c, l, r, arg_index);
 }
 
@@ -635,8 +635,8 @@ node_le(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_
 {
     VALUE l = EA(c, lhs);
     VALUE r = EA(c, rhs);
-    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) return KORB_BOOL((intptr_t)l <= (intptr_t)r);
-    if (LIKELY(FLONUM_P(l) && FLONUM_P(r))) return KORB_BOOL(korb_flonum_to_double(l) <= korb_flonum_to_double(r));
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) return KORB_BOOL((intptr_t)l <= (intptr_t)r);
+    if (LIKELY(FLONUM_P(l) && FLONUM_P(r) && !korb_g_basic_op_redefined)) return KORB_BOOL(korb_flonum_to_double(l) <= korb_flonum_to_double(r));
     return korb_node_le_slow(c, l, r, arg_index);
 }
 
@@ -645,8 +645,8 @@ node_gt(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_
 {
     VALUE l = EA(c, lhs);
     VALUE r = EA(c, rhs);
-    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) return KORB_BOOL((intptr_t)l > (intptr_t)r);
-    if (LIKELY(FLONUM_P(l) && FLONUM_P(r))) return KORB_BOOL(korb_flonum_to_double(l) > korb_flonum_to_double(r));
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) return KORB_BOOL((intptr_t)l > (intptr_t)r);
+    if (LIKELY(FLONUM_P(l) && FLONUM_P(r) && !korb_g_basic_op_redefined)) return KORB_BOOL(korb_flonum_to_double(l) > korb_flonum_to_double(r));
     return korb_node_gt_slow(c, l, r, arg_index);
 }
 
@@ -655,8 +655,8 @@ node_ge(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_
 {
     VALUE l = EA(c, lhs);
     VALUE r = EA(c, rhs);
-    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) return KORB_BOOL((intptr_t)l >= (intptr_t)r);
-    if (LIKELY(FLONUM_P(l) && FLONUM_P(r))) return KORB_BOOL(korb_flonum_to_double(l) >= korb_flonum_to_double(r));
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) return KORB_BOOL((intptr_t)l >= (intptr_t)r);
+    if (LIKELY(FLONUM_P(l) && FLONUM_P(r) && !korb_g_basic_op_redefined)) return KORB_BOOL(korb_flonum_to_double(l) >= korb_flonum_to_double(r));
     return korb_node_ge_slow(c, l, r, arg_index);
 }
 
@@ -665,8 +665,8 @@ node_eq(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_
 {
     VALUE l = EA(c, lhs);
     VALUE r = EA(c, rhs);
-    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) return KORB_BOOL(l == r);
-    if (LIKELY(FLONUM_P(l) && FLONUM_P(r))) return KORB_BOOL(l == r);
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) return KORB_BOOL(l == r);
+    if (LIKELY(FLONUM_P(l) && FLONUM_P(r) && !korb_g_basic_op_redefined)) return KORB_BOOL(l == r);
     return KORB_BOOL(korb_eq(l, r));
 }
 
@@ -675,8 +675,8 @@ node_neq(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg
 {
     VALUE l = EA(c, lhs);
     VALUE r = EA(c, rhs);
-    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) return KORB_BOOL(l != r);
-    if (LIKELY(FLONUM_P(l) && FLONUM_P(r))) return KORB_BOOL(l != r);
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) return KORB_BOOL(l != r);
+    if (LIKELY(FLONUM_P(l) && FLONUM_P(r) && !korb_g_basic_op_redefined)) return KORB_BOOL(l != r);
     return KORB_BOOL(!korb_eq(l, r));
 }
 
@@ -687,7 +687,7 @@ node_aref(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *idx, uint32_t a
 {
     VALUE r = EA(c, recv);
     VALUE i = EA(c, idx);
-    if (LIKELY(!SPECIAL_CONST_P(r))) {
+    if (LIKELY(!SPECIAL_CONST_P(r) && !korb_g_basic_op_redefined)) {
         if (BUILTIN_TYPE(r) == T_ARRAY && FIXNUM_P(i)) return korb_ary_aref(r, FIX2LONG(i));
         if (BUILTIN_TYPE(r) == T_HASH) return korb_hash_aref(r, i);
     }
@@ -700,7 +700,7 @@ node_aset(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *idx, NODE *val,
     VALUE r = EA(c, recv);
     VALUE i = EA(c, idx);
     VALUE v = EA(c, val);
-    if (LIKELY(!SPECIAL_CONST_P(r))) {
+    if (LIKELY(!SPECIAL_CONST_P(r) && !korb_g_basic_op_redefined)) {
         if (BUILTIN_TYPE(r) == T_ARRAY && FIXNUM_P(i)) { korb_ary_aset(r, FIX2LONG(i), v); return v; }
         if (BUILTIN_TYPE(r) == T_HASH)                 { korb_hash_aset(r, i, v);          return v; }
     }
@@ -893,6 +893,9 @@ node_def_full(CTX * restrict c, NODE * restrict n, ID name, NODE *body, uint32_t
 {
     struct korb_class *target = c->cref ? c->cref->klass : c->current_class;
     korb_class_add_method_ast_full_cref(target, name, body, required_cnt, total_cnt, rest_slot, locals_cnt, c->cref);
+    /* If user redefined something on a basic class, EVAL_node_* fast
+     * paths must stop short-circuiting through C-side arithmetic. */
+    korb_check_basic_op_redef(target);
     return korb_id2sym(name);
 }
 
