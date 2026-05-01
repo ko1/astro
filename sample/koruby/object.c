@@ -341,9 +341,21 @@ VALUE korb_object_new(struct korb_class *klass) {
     struct korb_object *o = korb_xmalloc(sizeof(*o));
     o->basic.flags = klass->instance_type ? klass->instance_type : T_OBJECT;
     o->basic.klass = (VALUE)klass;
-    o->ivar_cnt = 0;
-    o->ivar_capa = 0;
-    o->ivars = NULL;
+    /* Preallocate ivar slots based on the class's known ivar shape, so
+     * the inline ivar_set_ic fast path hits on the first write to each
+     * @ivar (otherwise every fresh object pays korb_ivar_set_ic_slow
+     * twice through initialize, which showed up as 6% on bm_object). */
+    uint32_t n = klass->ivar_count;
+    if (n) {
+        o->ivar_cnt = n;
+        o->ivar_capa = n;
+        o->ivars = korb_xmalloc(n * sizeof(VALUE));
+        for (uint32_t i = 0; i < n; i++) o->ivars[i] = Qnil;
+    } else {
+        o->ivar_cnt = 0;
+        o->ivar_capa = 0;
+        o->ivars = NULL;
+    }
     return (VALUE)o;
 }
 
