@@ -682,6 +682,7 @@ T(struct transduce_context *tc, pm_node_t *node)
           uint32_t required_cnt = 0;
           uint32_t total_cnt = 0;
           int rest_slot = -1;
+          int block_slot = -1;
           push_frame(tc, &n->locals, false);
 
           NODE *prologue = NULL;  /* default-value initialization */
@@ -722,6 +723,14 @@ T(struct transduce_context *tc, pm_node_t *node)
                   }
               }
               /* keyword params: not supported, skip for now */
+              /* &blk — reify block as Proc into a local slot */
+              if (pn->block && PM_NODE_TYPE_P((pm_node_t *)pn->block, PM_BLOCK_PARAMETER_NODE)) {
+                  pm_block_parameter_node_t *bp = (pm_block_parameter_node_t *)pn->block;
+                  if (bp->name) {
+                      int slot = lvar_slot(tc, bp->name, 0);
+                      if (slot >= 0) block_slot = slot;
+                  }
+              }
           }
           NODE *body = n->body ? T(tc, n->body) : ALLOC_node_nil();
           if (prologue) body = ALLOC_node_seq(prologue, body);
@@ -735,7 +744,7 @@ T(struct transduce_context *tc, pm_node_t *node)
               fprintf(stderr, "[koruby] only def self.foo supported\n");
               return ALLOC_node_singleton_def(name, body, required_cnt, locals);
           }
-          return ALLOC_node_def_full(name, body, required_cnt, total_cnt, (int32_t)rest_slot, locals);
+          return ALLOC_node_def_full(name, body, required_cnt, total_cnt, (int32_t)rest_slot, (int32_t)block_slot, locals);
       }
 
       case PM_CLASS_NODE: {

@@ -241,9 +241,18 @@ void korb_class_add_method_ast_full_cref(struct korb_class *klass, ID name, stru
     m->u.ast.required_params_cnt = required_params;
     m->u.ast.total_params_cnt = total_params;
     m->u.ast.rest_slot = rest_slot;
+    m->u.ast.block_slot = -1;
     m->u.ast.locals_cnt = locals_cnt;
     method_table_set(&klass->methods, name, m);
     if (korb_vm) { korb_vm->method_serial++; korb_g_method_serial = korb_vm->method_serial; }
+}
+
+/* Set the &blk parameter slot on the most-recently-added AST method
+ * for `klass::name`.  Called from node_def_full when the def's
+ * parameter list has a block parameter. */
+void korb_class_set_method_block_slot(struct korb_class *klass, ID name, int slot) {
+    struct korb_method *m = korb_class_find_method(klass, name);
+    if (m && m->type == KORB_METHOD_AST) m->u.ast.block_slot = slot;
 }
 
 void korb_class_add_method_cfunc(struct korb_class *klass, ID name,
@@ -1262,7 +1271,14 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
     }
     for (uint32_t i = mc->total_params_cnt; i < mc->locals_cnt; i++) {
         if ((int)i == mc->rest_slot) continue;
+        if ((int)i == mc->block_slot) continue;
         c->fp[i] = Qnil;
+    }
+    /* &blk parameter — store the incoming block as a Proc into its
+     * slot.  block can be NULL (no block given), in which case the
+     * local reads as nil. */
+    if (mc->block_slot >= 0) {
+        c->fp[mc->block_slot] = block ? (VALUE)block : Qnil;
     }
     c->self = recv;
 
@@ -1304,13 +1320,17 @@ korb_method_cache_fill(struct method_cache *mc, struct korb_class *klass, struct
         mc->required_params_cnt = m->u.ast.required_params_cnt;
         mc->total_params_cnt = m->u.ast.total_params_cnt;
         mc->rest_slot = m->u.ast.rest_slot;
+        mc->block_slot = m->u.ast.block_slot;
         mc->type = 0;
         mc->cfunc = NULL;
         mc->def_cref = m->def_cref;
-        /* Pick simple vs general based on parameter shape; for the simple
-         * case prefer an argc-specialized variant so the C compiler can
-         * fold the argc check + unroll the Qnil fill. */
-        if (mc->rest_slot < 0 && mc->total_params_cnt == mc->required_params_cnt) {
+        /* &blk reification needs a runtime store, so it goes through the
+         * general prologue.  Pick simple vs general based on parameter
+         * shape; for the simple case prefer an argc-specialized variant
+         * so the C compiler can fold the argc check + unroll the Qnil
+         * fill. */
+        if (mc->rest_slot < 0 && mc->block_slot < 0 &&
+            mc->total_params_cnt == mc->required_params_cnt) {
             switch (mc->required_params_cnt) {
                 case 0:  mc->prologue = prologue_ast_simple_0; break;
                 case 1:  mc->prologue = prologue_ast_simple_1; break;

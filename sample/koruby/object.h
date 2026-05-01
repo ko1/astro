@@ -78,6 +78,7 @@ struct korb_method {
             uint32_t total_params_cnt;     /* required + optional + rest(0/1) */
             uint32_t locals_cnt;
             int rest_slot;                 /* -1 if no *rest */
+            int block_slot;                /* -1 if no &blk */
         } ast;
         struct {
             VALUE (*func)(CTX *c, VALUE self, int argc, VALUE *argv);
@@ -210,6 +211,7 @@ void korb_class_add_method_ast_full_cref(struct korb_class *klass, ID name, stru
                                           struct korb_cref *def_cref);
 struct korb_cref *korb_cref_dup(struct korb_cref *src);
 void korb_class_add_method_cfunc(struct korb_class *klass, ID name, VALUE (*func)(CTX *, VALUE, int, VALUE *), int argc);
+void korb_class_set_method_block_slot(struct korb_class *klass, ID name, int slot);
 void korb_class_alias_method(struct korb_class *klass, ID new_name, struct korb_method *m);
 struct korb_method *korb_class_find_method(const struct korb_class *klass, ID name);
 void korb_module_include(struct korb_class *klass, struct korb_class *mod);

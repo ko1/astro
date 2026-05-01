@@ -46,6 +46,8 @@
 #include <sys/mman.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <fnmatch.h>
+#include <ctype.h>
 #include <time.h>
 #include "node.h"
 #include "context.h"
@@ -103,15 +105,39 @@ typedef struct grep_opt {
     bool count_only;
     bool invert;
     bool word_match;
+    bool line_regexp;           /* -x: pattern must match the whole line */
     bool fixed_string;
     bool files_with_matches;
     bool files_without_match;
     bool with_filename_force;
     bool no_filename_force;
     bool only_matching;
+    bool quiet;                 /* -q: suppress output, exit code only */
+    bool null_separator;        /* -Z: NUL terminate filenames in output */
     bool recursive;
     int  color_mode;            /* 0 never, 1 always, 2 auto */
     bool via_prism;
+
+    /* -m N: stop after N matching lines per file.  0 = unlimited. */
+    long max_count;
+
+    /* -A N / -B N / -C N: context lines.  Activates the per-line
+     * streaming path (whole-file mmap fast path is bypassed) since
+     * we need to remember recent lines for -B and emit lines after
+     * a match for -A. */
+    long before_context;
+    long after_context;
+
+    /* --include=GLOB / --exclude=GLOB: file-name globs filtering
+     * which files -r descends into.  Multiple --include / --exclude
+     * accumulate (all-include must be matched, no-exclude must NOT
+     * be matched).  Compared by fnmatch(3) against basename only. */
+    const char **include_globs;
+    int n_include_globs;
+    int include_globs_cap;
+    const char **exclude_globs;
+    int n_exclude_globs;
+    int exclude_globs_cap;
 
     /* Code-store mode (astrogre backend only — Onigmo ignores it).  */
     cs_mode_t cs_mode;
@@ -130,6 +156,40 @@ push_pattern(grep_opt_t *go, const char *pat)
     go->patterns[go->n_patterns++] = pat;
 }
 
+/* Read patterns from a file, one per line (-f FILE).  Empty lines are
+ * skipped per GNU grep convention. */
+static void
+load_patterns_file(grep_opt_t *go, const char *path)
+{
+    FILE *fp = fopen(path, "r");
+    if (!fp) {
+        fprintf(stderr, "astrogre: %s: %s\n", path, strerror(errno));
+        exit(2);
+    }
+    char *line = NULL;
+    size_t cap = 0;
+    ssize_t n;
+    while ((n = getline(&line, &cap, fp)) >= 0) {
+        if (n > 0 && line[n - 1] == '\n') { line[--n] = '\0'; }
+        if (n > 0 && line[n - 1] == '\r') { line[--n] = '\0'; }
+        if (n == 0) continue;
+        char *dup = strdup(line);
+        push_pattern(go, dup);
+    }
+    free(line);
+    fclose(fp);
+}
+
+static void
+push_glob(const char ***arr, int *n, int *cap, const char *glob)
+{
+    if (*n == *cap) {
+        *cap = *cap ? *cap * 2 : 4;
+        *arr = (const char **)realloc(*arr, sizeof(char *) * (size_t)*cap);
+    }
+    (*arr)[(*n)++] = glob;
+}
+
 static const backend_ops_t *
 backend_by_name(const char *name)
 {
@@ -145,32 +205,67 @@ backend_by_name(const char *name)
 /* Compile pattern through the chosen backend                          */
 /* ------------------------------------------------------------------ */
 
+/* Escape regex metacharacters in a literal, so we can splice an
+ * `-F` literal into a regex skeleton (-w / -x wrapping).  Caller-
+ * sized buffer; returns the byte count written.  Worst case = 2× input. */
+static size_t
+escape_regex_meta(const char *pat, size_t len, char *out)
+{
+    char *p = out;
+    for (size_t i = 0; i < len; i++) {
+        char c = pat[i];
+        if (strchr("\\.^$|()[]{}*+?-/", c)) *p++ = '\\';
+        *p++ = c;
+    }
+    return (size_t)(p - out);
+}
+
 /* When -w (word-match) is requested, wrap the pattern in \b...\b at the
- * regex level.  -F + -w wraps the literal in a non-capturing-style
- * pattern that we still build via the regex parser.  Returns malloc'd
- * string, or NULL if no transformation needed. */
+ * regex level.  When -x (line-regexp) is requested, wrap in \A...\z so
+ * the pattern must consume the whole line (we feed lines to the matcher
+ * separately so \A/\z are line bounds in this context).  Both can stack
+ * (`-wx`).  -F + -w/-x escapes regex metacharacters in the literal first.
+ * Returns malloc'd string, or NULL if no transformation needed. */
 static char *
 wrap_word(const char *pat, bool fixed)
 {
     size_t len = strlen(pat);
-    /* For -F we still need to escape regex metacharacters when wrapping.
-     * Simpler: when both -F and -w are given, emit the regex parser
-     * route with each metacharacter escaped. */
+    /* For -F we still need to escape regex metacharacters when wrapping. */
     size_t need = len + 6;
     if (fixed) need += len;  /* worst case every byte gets escaped */
     char *out = (char *)malloc(need);
     char *p = out;
     *p++ = '\\'; *p++ = 'b';
     if (fixed) {
-        for (size_t i = 0; i < len; i++) {
-            char c = pat[i];
-            if (strchr("\\.^$|()[]{}*+?-/", c)) *p++ = '\\';
-            *p++ = c;
-        }
+        p += escape_regex_meta(pat, len, p);
     } else {
         memcpy(p, pat, len); p += len;
     }
     *p++ = '\\'; *p++ = 'b';
+    *p = 0;
+    return out;
+}
+
+/* -x: wrap the pattern as `\A(?:...)\z` so the matcher only succeeds
+ * when the whole line is consumed.  -F + -x escapes regex metacharacters
+ * first.  Returns malloc'd string. */
+static char *
+wrap_line(const char *pat, bool fixed)
+{
+    size_t len = strlen(pat);
+    size_t need = len + 10;
+    if (fixed) need += len;
+    char *out = (char *)malloc(need);
+    char *p = out;
+    *p++ = '\\'; *p++ = 'A';
+    *p++ = '(';  *p++ = '?'; *p++ = ':';
+    if (fixed) {
+        p += escape_regex_meta(pat, len, p);
+    } else {
+        memcpy(p, pat, len); p += len;
+    }
+    *p++ = ')';
+    *p++ = '\\'; *p++ = 'z';
     *p = 0;
     return out;
 }
@@ -187,10 +282,21 @@ compile_pattern(grep_opt_t *go, const char *pat)
     char *wrapped = NULL;
     const char *use_pat = pat;
     bool use_fixed = go->fixed_string;
+    /* -w then -x compose: word-bounded match, anchored to whole line.
+     * `\b...\b` first, then `\A...\z` outside.  -F escapes literals
+     * inside the inner wrap, the outer wrap is plain regex. */
     if (go->word_match) {
         wrapped = wrap_word(pat, go->fixed_string);
         use_pat = wrapped;
         use_fixed = false;       /* the wrap is regex syntax */
+        f.fixed_string = false;
+    }
+    if (go->line_regexp) {
+        char *outer = wrap_line(use_pat, use_fixed);
+        if (wrapped) free(wrapped);
+        wrapped = outer;
+        use_pat = wrapped;
+        use_fixed = false;
         f.fixed_string = false;
     }
     backend_pattern_t *bp = go->backend->compile(use_pat, strlen(use_pat), f);
@@ -235,6 +341,15 @@ typedef struct grep_state {
     long total_match_count;
 } grep_state_t;
 
+/* Filename separator used after the filename / line-number prefix.
+ * GNU grep's -Z swaps the trailing ':' for a NUL byte so the output
+ * is safe to feed `xargs -0`. */
+static char
+fname_sep(grep_opt_t *go)
+{
+    return go->null_separator ? '\0' : ':';
+}
+
 /* Print one line, with --color insertion of N matches.  `line` is the
  * line bytes (not null-terminated; len excludes any trailing newline). */
 static void
@@ -242,13 +357,16 @@ print_line_with_color(grep_state_t *st, const char *fname, long lineno,
                       const char *line, size_t len)
 {
     grep_opt_t *go = st->go;
+    char sep = fname_sep(go);
     if (st->show_filename) {
-        if (color_active) printf(COLOR_PURPLE "%s" COLOR_RESET ":", fname);
-        else              printf("%s:", fname);
+        if (color_active) printf(COLOR_PURPLE "%s" COLOR_RESET, fname);
+        else              fputs(fname, stdout);
+        fputc(sep, stdout);
     }
     if (go->line_numbers) {
-        if (color_active) printf(COLOR_GREEN "%ld" COLOR_RESET ":", lineno);
-        else              printf("%ld:", lineno);
+        if (color_active) printf(COLOR_GREEN "%ld" COLOR_RESET, lineno);
+        else              printf("%ld", lineno);
+        fputc(sep, stdout);
     }
 
     if (!color_active) {
@@ -301,8 +419,9 @@ print_only_matching(grep_state_t *st, const char *fname, long lineno,
         }
         if (best_start == (size_t)-1) break;
         if (st->show_filename) {
-            if (color_active) printf(COLOR_PURPLE "%s" COLOR_RESET ":", fname);
-            else              printf("%s:", fname);
+            if (color_active) printf(COLOR_PURPLE "%s" COLOR_RESET, fname);
+            else              fputs(fname, stdout);
+            fputc(fname_sep(st->go), stdout);
         }
         if (go->line_numbers) {
             if (color_active) printf(COLOR_GREEN "%ld" COLOR_RESET ":", lineno);
@@ -349,7 +468,10 @@ process_buffer_pure_literal(grep_state_t *st, const char *buf, size_t len,
      * memcmp of the middle bytes lowered to direct cmpl/cmpb).
      * Same architectural trick as node_grep_search itself folding
      * the start-position search loop into the AST. */
-    if (n == 1 && go->count_only && !go->files_with_matches && !go->files_without_match) {
+    if (n == 1 && go->count_only
+        && !go->files_with_matches && !go->files_without_match
+        && go->max_count == 0          /* -m needs early break, not whole-buffer count */
+        && !go->quiet                  /* -q needs early bail too */) {
         extern astrogre_pattern *astrogre_backend_pattern_get(backend_pattern_t *);
         astrogre_pattern *ap = astrogre_backend_pattern_get(st->patterns[0]);
         long c = ap ? astrogre_pattern_count_lines(ap, buf, len) : -1;
@@ -376,7 +498,11 @@ process_buffer_pure_literal(grep_state_t *st, const char *buf, size_t len,
         && !go->files_without_match
         && !go->only_matching
         && !go->invert
-        && !go->ignore_case) {
+        && !go->ignore_case
+        && !go->quiet                  /* -q needs early bail */
+        && go->max_count == 0          /* -m needs early break */
+        && go->before_context == 0     /* context lines need ring buffer */
+        && go->after_context == 0) {
         extern astrogre_pattern *astrogre_backend_pattern_get(backend_pattern_t *);
         astrogre_pattern *ap = astrogre_backend_pattern_get(st->patterns[0]);
         if (ap) {
@@ -416,6 +542,7 @@ process_buffer_pure_literal(grep_state_t *st, const char *buf, size_t len,
         any_match = true;
         matches_this_file++;
         if (go->files_with_matches || go->files_without_match) break;
+        if (go->quiet) break;
 
         if (!go->count_only) {
             const char *line_start_ptr = (earliest_start > 0)
@@ -441,16 +568,17 @@ process_buffer_pure_literal(grep_state_t *st, const char *buf, size_t len,
             }
             lineno_pos = (line_end < len) ? line_end + 1 : line_end;
         }
+        if (go->max_count > 0 && matches_this_file >= go->max_count) break;
         pos = (line_end < len) ? line_end + 1 : len + 1;
     }
 
 post_loop:
     if (go->files_with_matches) {
-        if (any_match) printf("%s\n", fname);
+        if (any_match) { fputs(fname, stdout); fputc(go->null_separator ? '\0' : '\n', stdout); }
     } else if (go->files_without_match) {
-        if (!any_match) printf("%s\n", fname);
+        if (!any_match) { fputs(fname, stdout); fputc(go->null_separator ? '\0' : '\n', stdout); }
     } else if (go->count_only) {
-        if (st->show_filename) printf("%s:", fname);
+        if (st->show_filename) { fputs(fname, stdout); fputc(fname_sep(go), stdout); }
         printf("%ld\n", matches_this_file);
     }
     st->total_match_count += matches_this_file;
@@ -519,6 +647,22 @@ process_buffer(grep_state_t *st, const char *buf, size_t len, const char *fname)
         any_match = true;
         matches_this_file++;
         if (go->files_with_matches || go->files_without_match) break;
+        if (go->quiet) break;
+        if (go->max_count > 0 && matches_this_file >= go->max_count) {
+            /* Print this match (-m N includes the Nth) but stop after. */
+            if (!go->count_only) {
+                ADVANCE_LINENO(line_start);
+                lineno++;
+                if (go->only_matching) {
+                    print_only_matching(st, fname, lineno,
+                                        buf + line_start, line_end - line_start);
+                } else {
+                    print_line_with_color(st, fname, lineno,
+                                          buf + line_start, line_end - line_start);
+                }
+            }
+            break;
+        }
 
         if (!go->count_only) {
             ADVANCE_LINENO(line_start);
@@ -541,18 +685,24 @@ process_buffer(grep_state_t *st, const char *buf, size_t len, const char *fname)
     }
 
     if (go->files_with_matches) {
-        if (any_match) printf("%s\n", fname);
+        if (any_match) { fputs(fname, stdout); fputc(go->null_separator ? '\0' : '\n', stdout); }
     } else if (go->files_without_match) {
-        if (!any_match) printf("%s\n", fname);
+        if (!any_match) { fputs(fname, stdout); fputc(go->null_separator ? '\0' : '\n', stdout); }
     } else if (go->count_only) {
-        if (st->show_filename) printf("%s:", fname);
+        if (st->show_filename) { fputs(fname, stdout); fputc(fname_sep(go), stdout); }
         printf("%ld\n", matches_this_file);
     }
     st->total_match_count += matches_this_file;
     return any_match;
 }
 
-/* Returns true if at least one match was found (regardless of -v). */
+/* Returns true if at least one match was found (regardless of -v).
+ *
+ * This path also implements -A/-B/-C context lines via a small ring
+ * buffer of recent lines.  Layout: when a match is hit, emit the
+ * preceding `before_context` lines, the matching line, and then the
+ * next `after_context` non-matching lines.  Adjacent match groups
+ * are separated by a `--` line (matches GNU grep's default). */
 static bool
 process_stream(grep_state_t *st, FILE *fp, const char *fname)
 {
@@ -563,6 +713,19 @@ process_stream(grep_state_t *st, FILE *fp, const char *fname)
     long lineno = 0;
     long matches_this_file = 0;
     bool any_match = false;
+
+    /* Ring buffer for -B (before-context).  Allocated lazily and only
+     * when before_context > 0.  Each slot owns its own malloc'd line. */
+    long bsize = go->before_context > 0 ? go->before_context : 0;
+    char **bring = bsize ? (char **)calloc((size_t)bsize, sizeof(char *)) : NULL;
+    long *bring_lineno = bsize ? (long *)calloc((size_t)bsize, sizeof(long)) : NULL;
+    size_t *bring_llen = bsize ? (size_t *)calloc((size_t)bsize, sizeof(size_t)) : NULL;
+    long bring_head = 0;        /* next slot to overwrite */
+    long bring_count = 0;       /* current valid entries (≤ bsize) */
+
+    long after_remaining = 0;   /* -A: lines still to emit after a match */
+    long last_emitted_lineno = 0;  /* for the `--` separator */
+    bool need_separator = false;
 
     while ((n = getline(&line, &cap, fp)) != -1) {
         lineno++;
@@ -577,29 +740,78 @@ process_stream(grep_state_t *st, FILE *fp, const char *fname)
             }
         }
         bool keep = go->invert ? !any : any;
+
         if (keep) {
             matches_this_file++;
             any_match = true;
-            if (go->files_with_matches || go->files_without_match) {
-                /* Just need to know there is/isn't a match; bail early. */
-                break;
+            if (go->files_with_matches || go->files_without_match) break;
+            if (go->quiet) break;
+            if (go->count_only) {
+                if (go->max_count > 0 && matches_this_file >= go->max_count) break;
+                continue;
             }
-            if (go->count_only) continue;
+
+            /* -B: flush the buffered preceding lines. */
+            if (bsize > 0 && bring_count > 0) {
+                if (need_separator && last_emitted_lineno > 0) {
+                    long earliest = bring_lineno[(bring_head - bring_count + bsize) % bsize];
+                    if (earliest > last_emitted_lineno + 1) fputs("--\n", stdout);
+                }
+                for (long k = 0; k < bring_count; k++) {
+                    long idx = (bring_head - bring_count + k + bsize) % bsize;
+                    print_line_with_color(st, fname, bring_lineno[idx],
+                                          bring[idx], bring_llen[idx]);
+                }
+                bring_count = 0;
+            } else if (need_separator && lineno > last_emitted_lineno + 1) {
+                fputs("--\n", stdout);
+            }
+
+            /* Emit this matching line. */
             if (go->only_matching && !go->invert) {
                 print_only_matching(st, fname, lineno, line, llen);
             } else {
                 print_line_with_color(st, fname, lineno, line, llen);
             }
+            last_emitted_lineno = lineno;
+            after_remaining = go->after_context;
+            need_separator = (go->before_context > 0 || go->after_context > 0);
+
+            if (go->max_count > 0 && matches_this_file >= go->max_count) {
+                /* Continue only as long as -A still wants lines. */
+                if (after_remaining == 0) break;
+            }
+        } else if (after_remaining > 0) {
+            /* -A: trailing context after a match. */
+            print_line_with_color(st, fname, lineno, line, llen);
+            last_emitted_lineno = lineno;
+            after_remaining--;
+            if (go->max_count > 0 && matches_this_file >= go->max_count
+                && after_remaining == 0) break;
+        } else if (bsize > 0) {
+            /* Stash into the before-context ring buffer. */
+            long slot = bring_head;
+            free(bring[slot]);
+            bring[slot] = (char *)malloc(llen);
+            if (bring[slot]) memcpy(bring[slot], line, llen);
+            bring_llen[slot] = llen;
+            bring_lineno[slot] = lineno;
+            bring_head = (bring_head + 1) % bsize;
+            if (bring_count < bsize) bring_count++;
         }
     }
     free(line);
+    if (bring) {
+        for (long i = 0; i < bsize; i++) free(bring[i]);
+        free(bring); free(bring_lineno); free(bring_llen);
+    }
 
     if (go->files_with_matches) {
-        if (any_match) printf("%s\n", fname);
+        if (any_match) { fputs(fname, stdout); fputc(go->null_separator ? '\0' : '\n', stdout); }
     } else if (go->files_without_match) {
-        if (!any_match) printf("%s\n", fname);
+        if (!any_match) { fputs(fname, stdout); fputc(go->null_separator ? '\0' : '\n', stdout); }
     } else if (go->count_only) {
-        if (st->show_filename) printf("%s:", fname);
+        if (st->show_filename) { fputs(fname, stdout); fputc(fname_sep(go), stdout); }
         printf("%ld\n", matches_this_file);
     }
     st->total_match_count += matches_this_file;
@@ -635,8 +847,16 @@ process_file(grep_state_t *st, const char *path)
     extern astrogre_pattern *astrogre_backend_pattern_get(backend_pattern_t *);
     const char *pl_needles[16];
     size_t pl_needle_lens[16];
+    /* Pure-literal mmap fast paths require the matcher to operate on
+     * the whole file buffer.  -x wraps the pattern in \A...\z which
+     * only fires at file boundaries (we want LINE boundaries), so it
+     * must drop to the per-line streaming path.  Same for context
+     * options that need a ring buffer of recent lines. */
     bool all_pure_literal = !go->invert && go->backend == &backend_astrogre_ops
-                          && st->n_patterns > 0 && st->n_patterns <= 16;
+                          && st->n_patterns > 0 && st->n_patterns <= 16
+                          && !go->line_regexp
+                          && go->before_context == 0
+                          && go->after_context == 0;
     if (all_pure_literal) {
         for (int i = 0; i < st->n_patterns; i++) {
             astrogre_pattern *ap = astrogre_backend_pattern_get(st->patterns[i]);
@@ -680,7 +900,14 @@ process_file(grep_state_t *st, const char *path)
         }
     }
 
-    if (!go->invert && fast) {
+    /* Fall through to streaming when context lines are requested
+     * (the mmap path's per-match search loop doesn't carry the
+     * before-buffer / after-counter that -A/-B/-C need), or when
+     * -x is set (the \A...\z wrap only matches at FILE boundaries
+     * if the matcher sees the whole buffer; we want LINE boundaries). */
+    if (!go->invert && fast
+        && go->before_context == 0 && go->after_context == 0
+        && !go->line_regexp) {
         int fd = open(path, O_RDONLY);
         if (fd < 0) {
             fprintf(stderr, "astrogre: %s: %s\n", path, strerror(errno));
@@ -709,9 +936,35 @@ process_file(grep_state_t *st, const char *path)
     return 0;
 }
 
+/* True iff `name` (basename only) passes the --include / --exclude
+ * filters.  --include: when set, name must match at least one.
+ * --exclude: when matched, the entry is dropped. */
+static bool
+glob_filter_pass(grep_opt_t *go, const char *name, bool is_dir)
+{
+    /* Excludes apply to both files and directories — useful for
+     * `--exclude=node_modules` in -r. */
+    for (int i = 0; i < go->n_exclude_globs; i++) {
+        if (fnmatch(go->exclude_globs[i], name, 0) == 0) return false;
+    }
+    /* Includes apply only to files; directories always descended. */
+    if (!is_dir && go->n_include_globs > 0) {
+        bool ok = false;
+        for (int i = 0; i < go->n_include_globs; i++) {
+            if (fnmatch(go->include_globs[i], name, 0) == 0) { ok = true; break; }
+        }
+        if (!ok) return false;
+    }
+    return true;
+}
+
 static int
 process_path(grep_state_t *st, const char *path)
 {
+    /* -q: once we've seen a match, the exit code is decided.  Bail
+     * before we touch any more files. */
+    if (st->go->quiet && st->total_match_count > 0) return 0;
+
     struct stat sb;
     if (stat(path, &sb) != 0) {
         fprintf(stderr, "astrogre: %s: %s\n", path, strerror(errno));
@@ -728,9 +981,11 @@ process_path(grep_state_t *st, const char *path)
         while ((e = readdir(d))) {
             if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
             if (e->d_name[0] == '.') continue;  /* skip dotfiles */
+            if (!glob_filter_pass(st->go, e->d_name, e->d_type == DT_DIR)) continue;
             char sub[4096];
             snprintf(sub, sizeof(sub), "%s/%s", path, e->d_name);
             process_path(st, sub);
+            if (st->go->quiet && st->total_match_count > 0) break;
         }
         closedir(d);
         return 0;
@@ -752,11 +1007,15 @@ usage(void)
         "Options:\n"
         "  -i  case-insensitive            -n  print line numbers\n"
         "  -c  count                       -v  invert match\n"
-        "  -w  whole word                  -F  fixed string\n"
+        "  -w  whole word                  -x  match whole line\n"
+        "  -F  fixed string                -q  quiet (exit code only)\n"
         "  -l  files with matches          -L  files without\n"
         "  -H  always show filename        -h  never show filename\n"
         "  -o  only matching parts         -r  recursive\n"
-        "  -e  PATTERN (repeatable)\n"
+        "  -Z  NUL-separated filenames     -m N  stop after N matches/file\n"
+        "  -A N / -B N / -C N              context lines (after/before/both)\n"
+        "  -e  PATTERN (repeatable)        -f  read patterns from FILE\n"
+        "  --include=GLOB / --exclude=GLOB filter for -r\n"
         "  --color=never|always|auto       --backend=astrogre|onigmo\n"
         "  -C, --aot-compile               specialize patterns to code_store/ then run\n"
         "  --plain, --no-cs                bypass code store entirely\n"
@@ -834,9 +1093,24 @@ main(int argc, char *argv[])
             go.backend = backend_by_name(a + 10);
             argi++; continue;
         }
-        if (strcmp(a, "--aot-compile") == 0 || strcmp(a, "-C") == 0) {
+        if (strcmp(a, "--aot-compile") == 0) {
             go.cs_mode = CS_MODE_AOT_COMPILE;
             argi++; continue;
+        }
+        if (strcmp(a, "-C") == 0) {
+            /* GNU grep's -C is `--context=NUM`; ours doubles as
+             * --aot-compile when no numeric arg follows.  Disambiguate
+             * by peeking at the next argv. */
+            if (argi + 1 < argc && isdigit((unsigned char)argv[argi + 1][0])) {
+                long n = strtol(argv[argi + 1], NULL, 10);
+                go.before_context = n;
+                go.after_context = n;
+                argi += 2;
+            } else {
+                go.cs_mode = CS_MODE_AOT_COMPILE;
+                argi++;
+            }
+            continue;
         }
         if (strcmp(a, "--pg-compile") == 0 || strcmp(a, "-P") == 0) {
             /* For v1 we do not have a meaningful profile signal for
@@ -867,6 +1141,34 @@ main(int argc, char *argv[])
             push_pattern(&go, argv[argi + 1]);
             argi += 2; continue;
         }
+        if (strcmp(a, "-f") == 0) {
+            if (argi + 1 >= argc) { usage(); return 2; }
+            load_patterns_file(&go, argv[argi + 1]);
+            argi += 2; continue;
+        }
+        if (strcmp(a, "-m") == 0) {
+            if (argi + 1 >= argc) { usage(); return 2; }
+            go.max_count = strtol(argv[argi + 1], NULL, 10);
+            argi += 2; continue;
+        }
+        if (strcmp(a, "-A") == 0) {
+            if (argi + 1 >= argc) { usage(); return 2; }
+            go.after_context = strtol(argv[argi + 1], NULL, 10);
+            argi += 2; continue;
+        }
+        if (strcmp(a, "-B") == 0) {
+            if (argi + 1 >= argc) { usage(); return 2; }
+            go.before_context = strtol(argv[argi + 1], NULL, 10);
+            argi += 2; continue;
+        }
+        if (strncmp(a, "--include=", 10) == 0) {
+            push_glob(&go.include_globs, &go.n_include_globs, &go.include_globs_cap, a + 10);
+            argi++; continue;
+        }
+        if (strncmp(a, "--exclude=", 10) == 0) {
+            push_glob(&go.exclude_globs, &go.n_exclude_globs, &go.exclude_globs_cap, a + 10);
+            argi++; continue;
+        }
         if (a[0] == '-' && a[1] != '-' && a[1] != 0) {
             for (const char *q = a + 1; *q; q++) {
                 switch (*q) {
@@ -882,6 +1184,9 @@ main(int argc, char *argv[])
                 case 'h': go.no_filename_force = true; break;
                 case 'o': go.only_matching = true; break;
                 case 'r': go.recursive = true; break;
+                case 'q': go.quiet = true; break;
+                case 'x': go.line_regexp = true; break;
+                case 'Z': go.null_separator = true; break;
                 case 'E': /* compatibility no-op (we always use Ruby regex) */ break;
                 case 's': /* suppress error msgs — not yet */ break;
                 default:
@@ -956,6 +1261,8 @@ main(int argc, char *argv[])
     } else {
         for (int i = argi; i < argc; i++) {
             process_path(&st, argv[i]);
+            /* -q: stop iterating files as soon as we know the answer. */
+            if (go.quiet && st.total_match_count > 0) break;
         }
         rc = (st.total_match_count > 0) ? 0 : 1;
     }

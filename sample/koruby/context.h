@@ -187,6 +187,7 @@ struct method_cache {
     uint32_t required_params_cnt;
     uint32_t total_params_cnt;     /* required + optional + rest(0/1) */
     int      rest_slot;            /* -1 if no *rest */
+    int      block_slot;           /* -1 if no &blk */
     uint8_t  type;                 /* 0=AST, 1=CFUNC */
     bool     is_simple_frame;      /* method body has no yield/super/block_given/_block — slim prologue */
     VALUE (*cfunc)(struct CTX_struct *, VALUE, int, VALUE *);

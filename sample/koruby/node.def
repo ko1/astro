@@ -916,10 +916,11 @@ node_default_init(CTX * restrict c, NODE * restrict n, uint32_t slot, NODE *defa
 }
 
 NODE_DEF @noinline
-node_def_full(CTX * restrict c, NODE * restrict n, ID name, NODE *body, uint32_t required_cnt, uint32_t total_cnt, int32_t rest_slot, uint32_t locals_cnt)
+node_def_full(CTX * restrict c, NODE * restrict n, ID name, NODE *body, uint32_t required_cnt, uint32_t total_cnt, int32_t rest_slot, int32_t block_slot, uint32_t locals_cnt)
 {
     struct korb_class *target = c->cref ? c->cref->klass : c->current_class;
     korb_class_add_method_ast_full_cref(target, name, body, required_cnt, total_cnt, rest_slot, locals_cnt, c->cref);
+    if (block_slot >= 0) korb_class_set_method_block_slot(target, name, block_slot);
     /* If user redefined something on a basic class, EVAL_node_* fast
      * paths must stop short-circuiting through C-side arithmetic. */
     korb_check_basic_op_redef(target);
