@@ -1,0 +1,8 @@
+caught: oops
+div0
+nf
+outer caught: inner
+42
+ok-true
+ok-false
+inv: bad

@@ -1,0 +1,21 @@
+astocaml: type error: (+): left operand must be int, got 
+string
+astocaml: type error: (+): left operand must be int, got 
+bool
+astocaml: type error: if: condition must be bool, got 
+int
+astocaml: type error: (+.): right operand must be float, got 
+int
+astocaml: type error: (^): operand must be string, got 
+int
+astocaml: type error: not: operand must be bool, got 
+int
+astocaml: type error: if: then/else types differ: 
+int vs string
+type-error
+type-error
+type-error
+type-error
+type-error
+type-error
+ok

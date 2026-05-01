@@ -1,0 +1,956 @@
+// astocaml — small OCaml interpreter on ASTro.
+//
+// Tree-walking; lexical envs are heap-allocated `oframe` chains; closures
+// hold (body, env, nparams).  Most helpers live in main.c so the EVAL
+// bodies stay short.
+
+// ---------------------------------------------------------------------------
+// Constants.
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+node_const_int(CTX * restrict c, NODE * restrict n, int32_t v)
+{
+    (void)c; (void)n;
+    return OC_INT(v);
+}
+
+NODE_DEF
+node_const_int64(CTX * restrict c, NODE * restrict n, uint64_t v)
+{
+    (void)c; (void)n;
+    return OC_INT((int64_t)v);
+}
+
+NODE_DEF
+node_const_float(CTX * restrict c, NODE * restrict n, double v)
+{
+    (void)c; (void)n;
+    return oc_make_float(v);
+}
+
+NODE_DEF
+node_const_bool(CTX * restrict c, NODE * restrict n, uint32_t v)
+{
+    (void)c; (void)n;
+    return v ? OC_TRUE : OC_FALSE;
+}
+
+NODE_DEF
+node_const_unit(CTX * restrict c, NODE * restrict n)
+{
+    (void)c; (void)n;
+    return OC_UNIT;
+}
+
+NODE_DEF
+node_const_nil(CTX * restrict c, NODE * restrict n)
+{
+    (void)c; (void)n;
+    return OC_NIL;
+}
+
+NODE_DEF
+node_const_str(CTX * restrict c, NODE * restrict n, const char *s)
+{
+    (void)c; (void)n;
+    return oc_make_string(s, strlen(s));
+}
+
+NODE_DEF
+node_const_char(CTX * restrict c, NODE * restrict n, uint32_t cp)
+{
+    (void)c; (void)n;
+    return OC_INT((int32_t)cp);            // OCaml chars are integers in [0, 255]
+}
+
+// ---------------------------------------------------------------------------
+// Variable access.
+// ---------------------------------------------------------------------------
+
+static inline struct oframe *
+oc_env_at(CTX *c, uint32_t depth)
+{
+    struct oframe *f = c->env;
+    for (uint32_t i = 0; i < depth; i++) f = f->parent;
+    return f;
+}
+
+NODE_DEF
+node_lref(CTX * restrict c, NODE * restrict n, uint32_t depth, uint32_t idx)
+{
+    (void)n;
+    return oc_env_at(c, depth)->slots[idx];
+}
+
+NODE_DEF
+node_gref(CTX * restrict c, NODE * restrict n, const char *name, struct gref_cache *cache@ref)
+{
+    (void)n;
+    if (LIKELY(cache->serial == c->globals_serial)) return cache->value;
+    VALUE v = oc_global_ref(c, name);
+    cache->serial = c->globals_serial;
+    cache->value = v;
+    return v;
+}
+
+// Module-aware global ref — try qualified name first, then bare.  Used
+// for references inside `module M = struct ... end` so that `foo`
+// resolves to `M.foo` if available.
+NODE_DEF
+node_gref_q(CTX * restrict c, NODE * restrict n, const char *qualified, const char *bare, struct gref_cache *cache@ref)
+{
+    (void)n;
+    if (LIKELY(cache->serial == c->globals_serial)) return cache->value;
+    VALUE v = oc_global_ref2(c, qualified, bare);
+    cache->serial = c->globals_serial;
+    cache->value = v;
+    return v;
+}
+
+// ---------------------------------------------------------------------------
+// Control flow.
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+node_if(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *thn, NODE *els)
+{
+    (void)n;
+    VALUE cv = EVAL_ARG(c, cond);
+    if (cv == OC_TRUE)  return EVAL_ARG(c, thn);
+    if (cv == OC_FALSE) return EVAL_ARG(c, els);
+    oc_type_error(c, "if", "bool");
+}
+
+NODE_DEF
+node_seq(CTX * restrict c, NODE * restrict n, NODE *first, NODE *rest)
+{
+    (void)n;
+    EVAL_ARG(c, first);
+    return EVAL_ARG(c, rest);
+}
+
+// `let x = v in body`: extends env by one slot, evaluates body, restores.
+NODE_DEF
+node_let(CTX * restrict c, NODE * restrict n, NODE *value, NODE *body)
+{
+    (void)n;
+    VALUE v = EVAL_ARG(c, value);
+    struct oframe *f = oc_new_frame(c->env, 1);
+    f->slots[0] = v;
+    struct oframe *saved = c->env;
+    c->env = f;
+    VALUE r = EVAL_ARG(c, body);
+    c->env = saved;
+    return r;
+}
+
+// `let rec f = v in body` — pre-binds slot 0 so `v` (typically `fun ...`)
+// can reference itself.
+NODE_DEF
+node_letrec(CTX * restrict c, NODE * restrict n, NODE *value, NODE *body)
+{
+    (void)n;
+    struct oframe *f = oc_new_frame(c->env, 1);
+    f->slots[0] = OC_UNIT;
+    struct oframe *saved = c->env;
+    c->env = f;
+    f->slots[0] = EVAL_ARG(c, value);
+    VALUE r = EVAL_ARG(c, body);
+    c->env = saved;
+    return r;
+}
+
+// `let rec f1 = v1 and f2 = v2 ... in body` — N-binding letrec.
+NODE_DEF @noinline
+node_letrec_n(CTX * restrict c, NODE * restrict n, uint32_t nbindings, uint32_t values_idx, NODE *body)
+{
+    (void)n;
+    extern NODE **OC_LETREC_VALUES;
+    struct oframe *f = oc_new_frame(c->env, nbindings);
+    for (uint32_t i = 0; i < nbindings; i++) f->slots[i] = OC_UNIT;
+    struct oframe *saved = c->env;
+    c->env = f;
+    for (uint32_t i = 0; i < nbindings; i++) {
+        NODE *vexpr = OC_LETREC_VALUES[values_idx + i];
+        f->slots[i] = (*vexpr->head.dispatcher)(c, vexpr);
+    }
+    VALUE r = EVAL_ARG(c, body);
+    c->env = saved;
+    return r;
+}
+
+// `match arm` — when the parser desugars one arm with a passing pattern,
+// it emits this with the test expression and a vector of slot extractors.
+// On test-true: pushes a fresh `arity`-slot frame, evaluates each
+// extractor in the OUTER env (before the push), populates the frame, and
+// runs the arm body.  On test-false: runs `failure` in the unchanged env.
+NODE_DEF @noinline
+node_match_arm(CTX * restrict c, NODE * restrict n, NODE *test, uint32_t arity, uint32_t extracts_idx, NODE *body, NODE *failure)
+{
+    (void)n;
+    extern NODE **OC_EXTRACT_NODES;
+    VALUE tv = EVAL_ARG(c, test);
+    if (tv != OC_TRUE) return EVAL_ARG(c, failure);
+    if (arity == 0) {
+        // No bindings — run body in unchanged env.
+        return EVAL_ARG(c, body);
+    }
+    VALUE *vals = (VALUE *)alloca(sizeof(VALUE) * arity);
+    for (uint32_t i = 0; i < arity; i++) {
+        NODE *e = OC_EXTRACT_NODES[extracts_idx + i];
+        vals[i] = (*e->head.dispatcher)(c, e);
+    }
+    struct oframe *f = oc_new_frame(c->env, (int)arity);
+    for (uint32_t i = 0; i < arity; i++) f->slots[i] = vals[i];
+    struct oframe *saved = c->env;
+    c->env = f;
+    VALUE r = EVAL_ARG(c, body);
+    c->env = saved;
+    return r;
+}
+
+// `let <pattern> = e in body` — like node_match_arm but without `test`
+// and `failure` (the pattern is irrefutable).  Used by `let (a, b) = ...`
+// and friends; the parser can prove the pattern always matches (or raises
+// at runtime via the test guard if it's refutable — see node_let_pat).
+NODE_DEF @noinline
+node_let_pat(CTX * restrict c, NODE * restrict n, NODE *value, uint32_t arity, uint32_t extracts_idx, NODE *body)
+{
+    (void)n;
+    extern NODE **OC_EXTRACT_NODES;
+    // Bind value to a fresh single-slot frame so extractors can reference
+    // it via lref(0, 0); without this, sub-extractors would see whatever
+    // arbitrary node we got from the parser and might re-evaluate it.
+    VALUE v = EVAL_ARG(c, value);
+    struct oframe *bind = oc_new_frame(c->env, 1);
+    bind->slots[0] = v;
+    struct oframe *saved = c->env;
+    c->env = bind;
+    if (arity == 0) {
+        VALUE r = EVAL_ARG(c, body);
+        c->env = saved;
+        return r;
+    }
+    VALUE *vals = (VALUE *)alloca(sizeof(VALUE) * arity);
+    for (uint32_t i = 0; i < arity; i++) {
+        NODE *e = OC_EXTRACT_NODES[extracts_idx + i];
+        vals[i] = (*e->head.dispatcher)(c, e);
+    }
+    struct oframe *f = oc_new_frame(c->env, (int)arity);
+    for (uint32_t i = 0; i < arity; i++) f->slots[i] = vals[i];
+    c->env = f;
+    VALUE r = EVAL_ARG(c, body);
+    c->env = saved;
+    return r;
+}
+
+// ---------------------------------------------------------------------------
+// Functions and application.
+// ---------------------------------------------------------------------------
+
+NODE_DEF @noinline
+node_fun(CTX * restrict c, NODE * restrict n, uint32_t nparams, NODE *body)
+{
+    (void)n;
+    return oc_make_closure(body, c->env, (int)nparams);
+}
+
+NODE_DEF
+node_app0(CTX * restrict c, NODE * restrict n, NODE *fn)
+{
+    (void)n;
+    VALUE f = EVAL_ARG(c, fn);
+    return oc_apply(c, f, 0, NULL);
+}
+
+NODE_DEF
+node_app1(CTX * restrict c, NODE * restrict n, NODE *fn, NODE *a0)
+{
+    (void)n;
+    VALUE f = EVAL_ARG(c, fn);
+    VALUE av[1];
+    av[0] = EVAL_ARG(c, a0);
+    return oc_apply(c, f, 1, av);
+}
+
+NODE_DEF
+node_app2(CTX * restrict c, NODE * restrict n, NODE *fn, NODE *a0, NODE *a1)
+{
+    (void)n;
+    VALUE f = EVAL_ARG(c, fn);
+    VALUE av[2];
+    av[0] = EVAL_ARG(c, a0);
+    av[1] = EVAL_ARG(c, a1);
+    return oc_apply(c, f, 2, av);
+}
+
+NODE_DEF
+node_app3(CTX * restrict c, NODE * restrict n, NODE *fn, NODE *a0, NODE *a1, NODE *a2)
+{
+    (void)n;
+    VALUE f = EVAL_ARG(c, fn);
+    VALUE av[3];
+    av[0] = EVAL_ARG(c, a0);
+    av[1] = EVAL_ARG(c, a1);
+    av[2] = EVAL_ARG(c, a2);
+    return oc_apply(c, f, 3, av);
+}
+
+NODE_DEF
+node_app4(CTX * restrict c, NODE * restrict n, NODE *fn, NODE *a0, NODE *a1, NODE *a2, NODE *a3)
+{
+    (void)n;
+    VALUE f = EVAL_ARG(c, fn);
+    VALUE av[4];
+    av[0] = EVAL_ARG(c, a0);
+    av[1] = EVAL_ARG(c, a1);
+    av[2] = EVAL_ARG(c, a2);
+    av[3] = EVAL_ARG(c, a3);
+    return oc_apply(c, f, 4, av);
+}
+
+// Tail-call variants: signal the trampoline in oc_apply rather than
+// recursing.  Emitted by the parser only when the call is in tail
+// position (function body / if-branches / match arms / seq-last / let-in
+// body).  Falls back to oc_apply for prims and arity mismatches.
+
+NODE_DEF
+node_tail_app0(CTX * restrict c, NODE * restrict n, NODE *fn)
+{
+    (void)n;
+    VALUE f = EVAL_ARG(c, fn);
+    if (OC_IS_CLOSURE(f) && OC_PTR(f)->closure.nparams == 0) {
+        c->tc_fn = f; c->tc_argc = 0;
+        c->tail_call_pending = 1;
+        return 0;
+    }
+    return oc_apply(c, f, 0, NULL);
+}
+
+NODE_DEF
+node_tail_app1(CTX * restrict c, NODE * restrict n, NODE *fn, NODE *a0)
+{
+    (void)n;
+    VALUE f = EVAL_ARG(c, fn);
+    VALUE v0 = EVAL_ARG(c, a0);
+    if (OC_IS_CLOSURE(f) && OC_PTR(f)->closure.nparams == 1) {
+        c->tc_fn = f; c->tc_argc = 1; c->tc_argv[0] = v0;
+        c->tail_call_pending = 1;
+        return 0;
+    }
+    return oc_apply(c, f, 1, &v0);
+}
+
+NODE_DEF
+node_tail_app2(CTX * restrict c, NODE * restrict n, NODE *fn, NODE *a0, NODE *a1)
+{
+    (void)n;
+    VALUE f = EVAL_ARG(c, fn);
+    VALUE v0 = EVAL_ARG(c, a0);
+    VALUE v1 = EVAL_ARG(c, a1);
+    if (OC_IS_CLOSURE(f) && OC_PTR(f)->closure.nparams == 2) {
+        c->tc_fn = f; c->tc_argc = 2;
+        c->tc_argv[0] = v0; c->tc_argv[1] = v1;
+        c->tail_call_pending = 1;
+        return 0;
+    }
+    VALUE av[2] = { v0, v1 };
+    return oc_apply(c, f, 2, av);
+}
+
+NODE_DEF
+node_tail_app3(CTX * restrict c, NODE * restrict n, NODE *fn, NODE *a0, NODE *a1, NODE *a2)
+{
+    (void)n;
+    VALUE f = EVAL_ARG(c, fn);
+    VALUE v0 = EVAL_ARG(c, a0);
+    VALUE v1 = EVAL_ARG(c, a1);
+    VALUE v2 = EVAL_ARG(c, a2);
+    if (OC_IS_CLOSURE(f) && OC_PTR(f)->closure.nparams == 3) {
+        c->tc_fn = f; c->tc_argc = 3;
+        c->tc_argv[0] = v0; c->tc_argv[1] = v1; c->tc_argv[2] = v2;
+        c->tail_call_pending = 1;
+        return 0;
+    }
+    VALUE av[3] = { v0, v1, v2 };
+    return oc_apply(c, f, 3, av);
+}
+
+NODE_DEF
+node_tail_app4(CTX * restrict c, NODE * restrict n, NODE *fn, NODE *a0, NODE *a1, NODE *a2, NODE *a3)
+{
+    (void)n;
+    VALUE f = EVAL_ARG(c, fn);
+    VALUE v0 = EVAL_ARG(c, a0);
+    VALUE v1 = EVAL_ARG(c, a1);
+    VALUE v2 = EVAL_ARG(c, a2);
+    VALUE v3 = EVAL_ARG(c, a3);
+    if (OC_IS_CLOSURE(f) && OC_PTR(f)->closure.nparams == 4) {
+        c->tc_fn = f; c->tc_argc = 4;
+        c->tc_argv[0] = v0; c->tc_argv[1] = v1;
+        c->tc_argv[2] = v2; c->tc_argv[3] = v3;
+        c->tail_call_pending = 1;
+        return 0;
+    }
+    VALUE av[4] = { v0, v1, v2, v3 };
+    return oc_apply(c, f, 4, av);
+}
+
+NODE_DEF @noinline
+node_appn(CTX * restrict c, NODE * restrict n, NODE *fn, uint32_t args_idx, uint32_t argc)
+{
+    (void)n;
+    extern NODE **OC_CALL_ARGS;
+    VALUE f = EVAL_ARG(c, fn);
+    VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc ? argc : 1));
+    for (uint32_t i = 0; i < argc; i++) {
+        NODE *arg = OC_CALL_ARGS[args_idx + i];
+        av[i] = (*arg->head.dispatcher)(c, arg);
+    }
+    return oc_apply(c, f, (int)argc, av);
+}
+
+// ---------------------------------------------------------------------------
+// Integer arithmetic.
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+node_add(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    if (UNLIKELY(!(OC_IS_INT(av) & OC_IS_INT(bv)))) oc_type_error(c, "(+)", "int");
+    return OC_INT(OC_INT_VAL(av) + OC_INT_VAL(bv));
+}
+
+NODE_DEF
+node_sub(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    if (UNLIKELY(!(OC_IS_INT(av) & OC_IS_INT(bv)))) oc_type_error(c, "(-)", "int");
+    return OC_INT(OC_INT_VAL(av) - OC_INT_VAL(bv));
+}
+
+NODE_DEF
+node_mul(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    if (UNLIKELY(!(OC_IS_INT(av) & OC_IS_INT(bv)))) oc_type_error(c, "( * )", "int");
+    return OC_INT(OC_INT_VAL(av) * OC_INT_VAL(bv));
+}
+
+NODE_DEF
+node_div(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    if (UNLIKELY(!(OC_IS_INT(av) & OC_IS_INT(bv)))) oc_type_error(c, "(/)", "int");
+    int64_t bi = OC_INT_VAL(bv);
+    if (bi == 0) oc_raise(c, oc_make_variant("Division_by_zero", 0, NULL));
+    return OC_INT(OC_INT_VAL(av) / bi);
+}
+
+NODE_DEF
+node_mod(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    if (UNLIKELY(!(OC_IS_INT(av) & OC_IS_INT(bv)))) oc_type_error(c, "mod", "int");
+    int64_t bi = OC_INT_VAL(bv);
+    if (bi == 0) oc_raise(c, oc_make_variant("Division_by_zero", 0, NULL));
+    return OC_INT(OC_INT_VAL(av) % bi);
+}
+
+NODE_DEF
+node_neg(CTX * restrict c, NODE * restrict n, NODE *e)
+{
+    (void)n;
+    VALUE v = EVAL_ARG(c, e);
+    if (UNLIKELY(!OC_IS_INT(v))) oc_type_error(c, "(unary -)", "int");
+    return OC_INT(-OC_INT_VAL(v));
+}
+
+// ---------------------------------------------------------------------------
+// Float arithmetic — separate ops (`+. -. *. /.`).  OCaml is monomorphic at
+// these sites.  Boxed-float representation; `oc_get_float` accepts ints too
+// for convenience but real OCaml requires explicit `float_of_int`.
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+node_fadd(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    if (UNLIKELY(!OC_IS_FLOAT(av) || !OC_IS_FLOAT(bv))) oc_type_error(c, "(+.)", "float");
+    return oc_make_float(OC_PTR(av)->dbl + OC_PTR(bv)->dbl);
+}
+
+NODE_DEF
+node_fsub(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    if (UNLIKELY(!OC_IS_FLOAT(av) || !OC_IS_FLOAT(bv))) oc_type_error(c, "(-.)", "float");
+    return oc_make_float(OC_PTR(av)->dbl - OC_PTR(bv)->dbl);
+}
+
+NODE_DEF
+node_fmul(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    if (UNLIKELY(!OC_IS_FLOAT(av) || !OC_IS_FLOAT(bv))) oc_type_error(c, "( *. )", "float");
+    return oc_make_float(OC_PTR(av)->dbl * OC_PTR(bv)->dbl);
+}
+
+NODE_DEF
+node_fdiv(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    if (UNLIKELY(!OC_IS_FLOAT(av) || !OC_IS_FLOAT(bv))) oc_type_error(c, "(/.)", "float");
+    return oc_make_float(OC_PTR(av)->dbl / OC_PTR(bv)->dbl);
+}
+
+NODE_DEF
+node_fneg(CTX * restrict c, NODE * restrict n, NODE *e)
+{
+    (void)n;
+    VALUE v = EVAL_ARG(c, e);
+    if (UNLIKELY(!OC_IS_FLOAT(v))) oc_type_error(c, "(unary -.)", "float");
+    return oc_make_float(-OC_PTR(v)->dbl);
+}
+
+// ---------------------------------------------------------------------------
+// Polymorphic comparison.  OCaml's `=`, `<`, `>`, `<=`, `>=`, `<>` work on
+// ints, floats, strings, lists, tuples, variants, records — anything but
+// closures.  We delegate to `oc_compare` which returns -1/0/1.
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+node_lt(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    if (LIKELY(OC_IS_INT(av) & OC_IS_INT(bv)))
+        return (OC_INT_VAL(av) < OC_INT_VAL(bv)) ? OC_TRUE : OC_FALSE;
+    return (oc_compare(av, bv) <  0) ? OC_TRUE : OC_FALSE;
+}
+
+NODE_DEF
+node_le(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    if (LIKELY(OC_IS_INT(av) & OC_IS_INT(bv)))
+        return (OC_INT_VAL(av) <= OC_INT_VAL(bv)) ? OC_TRUE : OC_FALSE;
+    return (oc_compare(av, bv) <= 0) ? OC_TRUE : OC_FALSE;
+}
+
+NODE_DEF
+node_gt(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    if (LIKELY(OC_IS_INT(av) & OC_IS_INT(bv)))
+        return (OC_INT_VAL(av) > OC_INT_VAL(bv)) ? OC_TRUE : OC_FALSE;
+    return (oc_compare(av, bv) >  0) ? OC_TRUE : OC_FALSE;
+}
+
+NODE_DEF
+node_ge(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    if (LIKELY(OC_IS_INT(av) & OC_IS_INT(bv)))
+        return (OC_INT_VAL(av) >= OC_INT_VAL(bv)) ? OC_TRUE : OC_FALSE;
+    return (oc_compare(av, bv) >= 0) ? OC_TRUE : OC_FALSE;
+}
+
+NODE_DEF
+node_eq(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    return oc_structural_eq(av, bv) ? OC_TRUE : OC_FALSE;
+}
+
+NODE_DEF
+node_ne(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    return oc_structural_eq(av, bv) ? OC_FALSE : OC_TRUE;
+}
+
+// Physical equality (`==` / `!=`).
+NODE_DEF
+node_phys_eq(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    return (av == bv) ? OC_TRUE : OC_FALSE;
+}
+
+NODE_DEF
+node_phys_ne(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    return (av == bv) ? OC_FALSE : OC_TRUE;
+}
+
+// ---------------------------------------------------------------------------
+// Boolean (short-circuiting) and string ops.
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+node_and(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    if (UNLIKELY(av != OC_TRUE && av != OC_FALSE)) oc_type_error(c, "(&&)", "bool");
+    if (av == OC_FALSE) return OC_FALSE;
+    VALUE bv = EVAL_ARG(c, b);
+    if (UNLIKELY(bv != OC_TRUE && bv != OC_FALSE)) oc_type_error(c, "(&&)", "bool");
+    return bv;
+}
+
+NODE_DEF
+node_or(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    if (UNLIKELY(av != OC_TRUE && av != OC_FALSE)) oc_type_error(c, "(||)", "bool");
+    if (av == OC_TRUE) return OC_TRUE;
+    VALUE bv = EVAL_ARG(c, b);
+    if (UNLIKELY(bv != OC_TRUE && bv != OC_FALSE)) oc_type_error(c, "(||)", "bool");
+    return bv;
+}
+
+NODE_DEF
+node_not(CTX * restrict c, NODE * restrict n, NODE *e)
+{
+    (void)n;
+    VALUE v = EVAL_ARG(c, e);
+    if (UNLIKELY(v != OC_TRUE && v != OC_FALSE)) oc_type_error(c, "not", "bool");
+    return (v == OC_TRUE) ? OC_FALSE : OC_TRUE;
+}
+
+NODE_DEF
+node_concat(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    if (UNLIKELY(!OC_IS_STRING(av) || !OC_IS_STRING(bv))) oc_type_error(c, "(^)", "string");
+    return oc_string_concat(av, bv);
+}
+
+// ---------------------------------------------------------------------------
+// List and tuple constructors / accessors / pattern primitives.
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+node_cons(CTX * restrict c, NODE * restrict n, NODE *hd, NODE *tl)
+{
+    (void)n;
+    VALUE h = EVAL_ARG(c, hd);
+    VALUE t = EVAL_ARG(c, tl);
+    return oc_cons(h, t);
+}
+
+NODE_DEF
+node_cons_head(CTX * restrict c, NODE * restrict n, NODE *e)
+{
+    (void)n;
+    VALUE v = EVAL_ARG(c, e);
+    if (UNLIKELY(!OC_IS_CONS(v))) oc_raise(c, oc_make_variant("Match_failure", 0, NULL));
+    return OC_PTR(v)->cons.head;
+}
+
+NODE_DEF
+node_cons_tail(CTX * restrict c, NODE * restrict n, NODE *e)
+{
+    (void)n;
+    VALUE v = EVAL_ARG(c, e);
+    if (UNLIKELY(!OC_IS_CONS(v))) oc_raise(c, oc_make_variant("Match_failure", 0, NULL));
+    return OC_PTR(v)->cons.tail;
+}
+
+NODE_DEF
+node_is_cons(CTX * restrict c, NODE * restrict n, NODE *e)
+{
+    (void)n;
+    VALUE v = EVAL_ARG(c, e);
+    return OC_IS_CONS(v) ? OC_TRUE : OC_FALSE;
+}
+
+NODE_DEF
+node_is_nil(CTX * restrict c, NODE * restrict n, NODE *e)
+{
+    (void)n;
+    VALUE v = EVAL_ARG(c, e);
+    return (v == OC_NIL) ? OC_TRUE : OC_FALSE;
+}
+
+// Tuple construction (variable arity).
+NODE_DEF @noinline
+node_tuple_n(CTX * restrict c, NODE * restrict n, uint32_t args_idx, uint32_t argc)
+{
+    (void)n;
+    extern NODE **OC_CALL_ARGS;
+    VALUE *items = (VALUE *)alloca(sizeof(VALUE) * (argc ? argc : 1));
+    for (uint32_t i = 0; i < argc; i++) {
+        NODE *e = OC_CALL_ARGS[args_idx + i];
+        items[i] = (*e->head.dispatcher)(c, e);
+    }
+    return oc_make_tuple((int)argc, items);
+}
+
+NODE_DEF
+node_tuple_get(CTX * restrict c, NODE * restrict n, NODE *e, uint32_t idx)
+{
+    (void)n;
+    VALUE v = EVAL_ARG(c, e);
+    if (UNLIKELY(!OC_IS_TUPLE(v))) oc_raise(c, oc_make_variant("Match_failure", 0, NULL));
+    return OC_PTR(v)->tup.items[idx];
+}
+
+NODE_DEF
+node_is_tuple(CTX * restrict c, NODE * restrict n, NODE *e, uint32_t arity)
+{
+    (void)n;
+    VALUE v = EVAL_ARG(c, e);
+    return (OC_IS_TUPLE(v) && (uint32_t)OC_PTR(v)->tup.n == arity) ? OC_TRUE : OC_FALSE;
+}
+
+// ---------------------------------------------------------------------------
+// References (`ref e`, `!r`, `r := e`).
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+node_ref(CTX * restrict c, NODE * restrict n, NODE *e)
+{
+    (void)n;
+    return oc_make_ref(EVAL_ARG(c, e));
+}
+
+NODE_DEF
+node_deref(CTX * restrict c, NODE * restrict n, NODE *e)
+{
+    (void)n;
+    VALUE r = EVAL_ARG(c, e);
+    if (UNLIKELY(!OC_IS_REF(r))) oc_raise(c, oc_make_variant("Failure", 1, (VALUE[]){oc_make_string("dereference of non-ref", 22)}));
+    return OC_PTR(r)->refval;
+}
+
+NODE_DEF
+node_assign(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs)
+{
+    (void)n;
+    VALUE r = EVAL_ARG(c, lhs);
+    VALUE v = EVAL_ARG(c, rhs);
+    if (UNLIKELY(!OC_IS_REF(r))) oc_raise(c, oc_make_variant("Failure", 1, (VALUE[]){oc_make_string("assignment to non-ref", 21)}));
+    OC_PTR(r)->refval = v;
+    return OC_UNIT;
+}
+
+// ---------------------------------------------------------------------------
+// Variants (also used for exceptions).
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+node_variant_0(CTX * restrict c, NODE * restrict n, const char *name)
+{
+    (void)c; (void)n;
+    return oc_make_variant(name, 0, NULL);
+}
+
+NODE_DEF @noinline
+node_variant_n(CTX * restrict c, NODE * restrict n, const char *name, uint32_t args_idx, uint32_t argc)
+{
+    (void)n;
+    extern NODE **OC_CALL_ARGS;
+    VALUE *items = (VALUE *)alloca(sizeof(VALUE) * (argc ? argc : 1));
+    for (uint32_t i = 0; i < argc; i++) {
+        NODE *e = OC_CALL_ARGS[args_idx + i];
+        items[i] = (*e->head.dispatcher)(c, e);
+    }
+    return oc_make_variant(name, (int)argc, items);
+}
+
+NODE_DEF
+node_variant_get(CTX * restrict c, NODE * restrict n, NODE *e, uint32_t idx)
+{
+    (void)n;
+    VALUE v = EVAL_ARG(c, e);
+    if (UNLIKELY(!OC_IS_VARIANT(v))) oc_raise(c, oc_make_variant("Match_failure", 0, NULL));
+    return OC_PTR(v)->var.items[idx];
+}
+
+NODE_DEF
+node_is_variant(CTX * restrict c, NODE * restrict n, NODE *e, const char *name)
+{
+    (void)n;
+    VALUE v = EVAL_ARG(c, e);
+    return (OC_IS_VARIANT(v) && strcmp(OC_PTR(v)->var.name, name) == 0) ? OC_TRUE : OC_FALSE;
+}
+
+// ---------------------------------------------------------------------------
+// Records.
+// ---------------------------------------------------------------------------
+
+NODE_DEF @noinline
+node_record_n(CTX * restrict c, NODE * restrict n, uint32_t fields_idx, uint32_t args_idx, uint32_t argc)
+{
+    (void)n;
+    extern NODE **OC_CALL_ARGS;
+    extern const char **OC_RECORD_FIELDS;
+    VALUE *items = (VALUE *)alloca(sizeof(VALUE) * (argc ? argc : 1));
+    for (uint32_t i = 0; i < argc; i++) {
+        NODE *e = OC_CALL_ARGS[args_idx + i];
+        items[i] = (*e->head.dispatcher)(c, e);
+    }
+    return oc_make_record((int)argc, OC_RECORD_FIELDS + fields_idx, items);
+}
+
+NODE_DEF
+node_record_get(CTX * restrict c, NODE * restrict n, NODE *e, const char *field)
+{
+    (void)n;
+    VALUE v = EVAL_ARG(c, e);
+    if (UNLIKELY(!OC_IS_RECORD(v))) oc_raise(c, oc_make_variant("Match_failure", 0, NULL));
+    struct oobj *o = OC_PTR(v);
+    for (int i = 0; i < o->rec.n; i++) {
+        if (strcmp(o->rec.fields[i], field) == 0) return o->rec.items[i];
+    }
+    oc_raise(c, oc_make_variant("Failure", 1, (VALUE[]){oc_make_string("no such field", 13)}));
+}
+
+// `{ r with f1 = v1; f2 = v2 }` — copy r and overwrite the listed fields.
+NODE_DEF @noinline
+node_record_with(CTX * restrict c, NODE * restrict n, NODE *base, uint32_t fields_idx, uint32_t args_idx, uint32_t argc)
+{
+    (void)n;
+    extern NODE **OC_CALL_ARGS;
+    extern const char **OC_RECORD_FIELDS;
+    VALUE bv = EVAL_ARG(c, base);
+    if (UNLIKELY(!OC_IS_RECORD(bv))) oc_raise(c, oc_make_variant("Match_failure", 0, NULL));
+    struct oobj *o = OC_PTR(bv);
+    int n_total = o->rec.n;
+    VALUE *items = (VALUE *)malloc(sizeof(VALUE) * n_total);
+    const char **flds = (const char **)malloc(sizeof(char *) * n_total);
+    for (int i = 0; i < n_total; i++) { items[i] = o->rec.items[i]; flds[i] = o->rec.fields[i]; }
+    for (uint32_t i = 0; i < argc; i++) {
+        const char *fname = OC_RECORD_FIELDS[fields_idx + i];
+        NODE *e = OC_CALL_ARGS[args_idx + i];
+        VALUE v = (*e->head.dispatcher)(c, e);
+        bool found = false;
+        for (int j = 0; j < n_total; j++) {
+            if (strcmp(flds[j], fname) == 0) { items[j] = v; found = true; break; }
+        }
+        if (!found) oc_raise(c, oc_make_variant("Failure", 1, (VALUE[]){oc_make_string("no such field in {with}", 23)}));
+    }
+    struct oobj *nr = oc_alloc(OOBJ_RECORD);
+    nr->rec.n = n_total;
+    nr->rec.fields = flds;
+    nr->rec.items = items;
+    return OC_OBJ_VAL(nr);
+}
+
+// ---------------------------------------------------------------------------
+// Try / raise.  The setjmp must live in a non-inline helper because
+// ASTroGen marks every EVAL_node_* as `always_inline` (and gcc forbids
+// setjmp inside such functions).
+// ---------------------------------------------------------------------------
+
+NODE_DEF @noinline
+node_try(CTX * restrict c, NODE * restrict n, NODE *body, NODE *handler)
+{
+    (void)n;
+    return oc_run_try(c, body, handler);
+}
+
+NODE_DEF
+node_raise(CTX * restrict c, NODE * restrict n, NODE *e)
+{
+    (void)n;
+    VALUE v = EVAL_ARG(c, e);
+    oc_raise(c, v);
+}
+
+// ---------------------------------------------------------------------------
+// Lazy / force.  `lazy e` builds a thunk over the current env; force eval
+// it on first access and cache the result.
+// ---------------------------------------------------------------------------
+
+NODE_DEF @noinline
+node_lazy(CTX * restrict c, NODE * restrict n, NODE *body)
+{
+    (void)n;
+    return oc_make_lazy(body, c->env);
+}
+
+// ---------------------------------------------------------------------------
+// Method send `obj#method args...`.  Dispatches to the closure stored in
+// the object's method table.
+// ---------------------------------------------------------------------------
+
+// Field assignment `obj.field <- value` — handles both records and
+// objects (mutable fields).
+NODE_DEF
+node_field_assign(CTX * restrict c, NODE * restrict n, NODE *obj, const char *field, NODE *val)
+{
+    (void)n;
+    VALUE o = EVAL_ARG(c, obj);
+    VALUE v = EVAL_ARG(c, val);
+    if (OC_IS_OBJECT(o)) {
+        oc_object_set_field(o, field, v);
+        return OC_UNIT;
+    }
+    if (OC_IS_RECORD(o)) {
+        struct oobj *r = OC_PTR(o);
+        for (int i = 0; i < r->rec.n; i++) {
+            if (strcmp(r->rec.fields[i], field) == 0) {
+                r->rec.items[i] = v;
+                return OC_UNIT;
+            }
+        }
+    }
+    oc_raise(c, oc_make_variant("Failure", 1, (VALUE[]){oc_make_string("field assign", 12)}));
+}
+
+NODE_DEF @noinline
+node_send(CTX * restrict c, NODE * restrict n, NODE *obj, const char *method, uint32_t args_idx, uint32_t argc)
+{
+    (void)n;
+    extern NODE **OC_CALL_ARGS;
+    VALUE o = EVAL_ARG(c, obj);
+    VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc ? argc : 1));
+    for (uint32_t i = 0; i < argc; i++) {
+        NODE *a = OC_CALL_ARGS[args_idx + i];
+        av[i] = (*a->head.dispatcher)(c, a);
+    }
+    return oc_object_send(c, o, method, (int)argc, av);
+}
