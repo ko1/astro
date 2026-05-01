@@ -653,9 +653,13 @@ VALUE korb_range_new(VALUE b, VALUE e, bool excl) {
 }
 
 /* ---- float ---- */
+/* CRuby-compatible immediate Float (FLONUM): tag bits 0x02 in the
+ * low 2 bits, double bit-pattern rotated left by 3.  Most doubles
+ * encountered in practice (no NaN/Inf/0/denorm, exponent within
+ * normal range) fit immediately and avoid heap allocation. */
 VALUE korb_float_new(double d) {
-    /* Use FLONUM encoding for typical doubles */
-    /* CRuby flonum encoding: rotate exponent bits.  We just heap-box for safety. */
+    VALUE flo = korb_double_to_flonum(d);
+    if (flo) return flo;
     struct korb_float *f = korb_xmalloc(sizeof(*f));
     f->basic.flags = T_FLOAT;
     f->basic.klass = korb_vm ? (VALUE)korb_vm->float_class : 0;
@@ -664,8 +668,9 @@ VALUE korb_float_new(double d) {
 }
 
 double korb_num2dbl(VALUE v) {
+    if (FLONUM_P(v)) return korb_flonum_to_double(v);
     if (FIXNUM_P(v)) return (double)FIX2LONG(v);
-    if (BUILTIN_TYPE(v) == T_FLOAT) return ((struct korb_float *)v)->value;
+    if (KORB_IS_FLOAT(v)) return ((struct korb_float *)v)->value;
     if (BUILTIN_TYPE(v) == T_BIGNUM) return mpz_get_d((mpz_ptr)(((struct korb_bignum *)v)->mpz));
     return 0.0;
 }
@@ -924,6 +929,10 @@ static VALUE korb_inspect_inner(VALUE v, int depth) {
         char b[32]; snprintf(b, 32, "%ld", FIX2LONG(v));
         return korb_str_new_cstr(b);
     }
+    if (FLONUM_P(v)) {
+        char b[64]; snprintf(b, 64, "%.17g", korb_flonum_to_double(v));
+        return korb_str_new_cstr(b);
+    }
     if (NIL_P(v)) return korb_str_new_cstr("nil");
     if (TRUE_P(v)) return korb_str_new_cstr("true");
     if (FALSE_P(v)) return korb_str_new_cstr("false");
@@ -1037,15 +1046,15 @@ bool korb_eq(VALUE a, VALUE b) {
         if (FIXNUM_P(a) && FIXNUM_P(b)) return a == b;
         if (FIXNUM_P(a) && BUILTIN_TYPE(b) == T_BIGNUM) return korb_int_eq(a, b);
         if (FIXNUM_P(b) && BUILTIN_TYPE(a) == T_BIGNUM) return korb_int_eq(a, b);
-        if (FIXNUM_P(a) && (FLONUM_P(b) || BUILTIN_TYPE(b) == T_FLOAT))
+        if (FIXNUM_P(a) && (FLONUM_P(b) || KORB_IS_FLOAT(b)))
             return (double)FIX2LONG(a) == korb_num2dbl(b);
-        if (FIXNUM_P(b) && (FLONUM_P(a) || BUILTIN_TYPE(a) == T_FLOAT))
+        if (FIXNUM_P(b) && (FLONUM_P(a) || KORB_IS_FLOAT(a)))
             return korb_num2dbl(a) == (double)FIX2LONG(b);
         return false;
     }
     if (FLONUM_P(a) || FLONUM_P(b)) {
-        if ((FLONUM_P(a) || BUILTIN_TYPE(a) == T_FLOAT) &&
-            (FLONUM_P(b) || BUILTIN_TYPE(b) == T_FLOAT))
+        if ((FLONUM_P(a) || KORB_IS_FLOAT(a)) &&
+            (FLONUM_P(b) || KORB_IS_FLOAT(b)))
             return korb_num2dbl(a) == korb_num2dbl(b);
         return false;
     }
@@ -1057,7 +1066,7 @@ bool korb_eq(VALUE a, VALUE b) {
         return korb_eql(a, b);
     }
     if (ta == T_BIGNUM && tb == T_BIGNUM) return korb_int_eq(a, b);
-    if (ta == T_FLOAT && tb == T_FLOAT) return ((struct korb_float *)a)->value == ((struct korb_float *)b)->value;
+    if (KORB_IS_FLOAT(a) && KORB_IS_FLOAT(b)) return korb_num2dbl(a) == korb_num2dbl(b);
     if (ta == T_ARRAY && tb == T_ARRAY) {
         struct korb_array *ax = (struct korb_array *)a;
         struct korb_array *bx = (struct korb_array *)b;

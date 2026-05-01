@@ -210,8 +210,8 @@ static VALUE kernel_integer(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1) { korb_raise(c, NULL, "Integer() needs argument"); return Qnil; }
     if (FIXNUM_P(argv[0])) return argv[0];
     if (BUILTIN_TYPE(argv[0]) == T_BIGNUM) return argv[0];
-    if (BUILTIN_TYPE(argv[0]) == T_FLOAT) {
-        return INT2FIX((long)((struct korb_float *)argv[0])->value);
+    if (KORB_IS_FLOAT(argv[0])) {
+        return INT2FIX((long)korb_num2dbl(argv[0]));
     }
     if (BUILTIN_TYPE(argv[0]) == T_STRING) {
         const char *s = korb_str_cstr(argv[0]);
@@ -230,7 +230,7 @@ static VALUE kernel_integer(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 static VALUE kernel_float(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1) return Qnil;
-    if (BUILTIN_TYPE(argv[0]) == T_FLOAT) return argv[0];
+    if (KORB_IS_FLOAT(argv[0])) return argv[0];
     if (FIXNUM_P(argv[0])) return korb_float_new((double)FIX2LONG(argv[0]));
     if (BUILTIN_TYPE(argv[0]) == T_STRING) {
         return korb_float_new(strtod(korb_str_cstr(argv[0]), NULL));
@@ -256,7 +256,7 @@ static VALUE kernel_array(CTX *c, VALUE self, int argc, VALUE *argv) {
 #define COERCE_OR_RAISE(c, v, op_name)                                  \
     do {                                                                 \
         if (!FIXNUM_P(v) && BUILTIN_TYPE(v) != T_BIGNUM) {                \
-            if (BUILTIN_TYPE(v) == T_FLOAT) {                              \
+            if (KORB_IS_FLOAT(v)) {                              \
                 /* fall through — caller handles */                        \
             } else {                                                       \
                 korb_raise((c), NULL, "%s expected Integer, got %s",       \
@@ -267,29 +267,29 @@ static VALUE kernel_array(CTX *c, VALUE self, int argc, VALUE *argv) {
     } while (0)
 
 static VALUE int_plus(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (BUILTIN_TYPE(argv[0]) == T_FLOAT) {
-        return korb_float_new((double)FIX2LONG(self) + ((struct korb_float *)argv[0])->value);
+    if (KORB_IS_FLOAT(argv[0])) {
+        return korb_float_new((double)FIX2LONG(self) + korb_num2dbl(argv[0]));
     }
     COERCE_OR_RAISE(c, argv[0], "+");
     return korb_int_plus(self, argv[0]);
 }
 static VALUE int_minus(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (BUILTIN_TYPE(argv[0]) == T_FLOAT) {
-        return korb_float_new((double)FIX2LONG(self) - ((struct korb_float *)argv[0])->value);
+    if (KORB_IS_FLOAT(argv[0])) {
+        return korb_float_new((double)FIX2LONG(self) - korb_num2dbl(argv[0]));
     }
     COERCE_OR_RAISE(c, argv[0], "-");
     return korb_int_minus(self, argv[0]);
 }
 static VALUE int_mul(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (BUILTIN_TYPE(argv[0]) == T_FLOAT) {
-        return korb_float_new((double)FIX2LONG(self) * ((struct korb_float *)argv[0])->value);
+    if (KORB_IS_FLOAT(argv[0])) {
+        return korb_float_new((double)FIX2LONG(self) * korb_num2dbl(argv[0]));
     }
     COERCE_OR_RAISE(c, argv[0], "*");
     return korb_int_mul(self, argv[0]);
 }
 static VALUE int_div(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (BUILTIN_TYPE(argv[0]) == T_FLOAT) {
-        return korb_float_new((double)FIX2LONG(self) / ((struct korb_float *)argv[0])->value);
+    if (KORB_IS_FLOAT(argv[0])) {
+        return korb_float_new((double)FIX2LONG(self) / korb_num2dbl(argv[0]));
     }
     COERCE_OR_RAISE(c, argv[0], "/");
     return korb_int_div(self, argv[0]);
@@ -314,27 +314,27 @@ static VALUE int_xor(CTX *c, VALUE self, int argc, VALUE *argv) {
     return korb_int_xor(self, argv[0]);
 }
 static VALUE int_lt(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (FLONUM_P(argv[0]) || BUILTIN_TYPE(argv[0]) == T_FLOAT)
+    if (FLONUM_P(argv[0]) || KORB_IS_FLOAT(argv[0]))
         return KORB_BOOL((double)FIX2LONG(self) < korb_num2dbl(argv[0]));
     return KORB_BOOL(korb_int_cmp(self, argv[0]) < 0);
 }
 static VALUE int_le(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (FLONUM_P(argv[0]) || BUILTIN_TYPE(argv[0]) == T_FLOAT)
+    if (FLONUM_P(argv[0]) || KORB_IS_FLOAT(argv[0]))
         return KORB_BOOL((double)FIX2LONG(self) <= korb_num2dbl(argv[0]));
     return KORB_BOOL(korb_int_cmp(self, argv[0]) <= 0);
 }
 static VALUE int_gt(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (FLONUM_P(argv[0]) || BUILTIN_TYPE(argv[0]) == T_FLOAT)
+    if (FLONUM_P(argv[0]) || KORB_IS_FLOAT(argv[0]))
         return KORB_BOOL((double)FIX2LONG(self) > korb_num2dbl(argv[0]));
     return KORB_BOOL(korb_int_cmp(self, argv[0]) > 0);
 }
 static VALUE int_ge(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (FLONUM_P(argv[0]) || BUILTIN_TYPE(argv[0]) == T_FLOAT)
+    if (FLONUM_P(argv[0]) || KORB_IS_FLOAT(argv[0]))
         return KORB_BOOL((double)FIX2LONG(self) >= korb_num2dbl(argv[0]));
     return KORB_BOOL(korb_int_cmp(self, argv[0]) >= 0);
 }
 static VALUE int_eq(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (FLONUM_P(argv[0]) || BUILTIN_TYPE(argv[0]) == T_FLOAT)
+    if (FLONUM_P(argv[0]) || KORB_IS_FLOAT(argv[0]))
         return KORB_BOOL((double)FIX2LONG(self) == korb_num2dbl(argv[0]));
     return KORB_BOOL(korb_int_eq(self, argv[0]));
 }
@@ -347,7 +347,7 @@ static VALUE int_cmp(CTX *c, VALUE self, int argc, VALUE *argv) {
         (FIXNUM_P(argv[0]) || BUILTIN_TYPE(argv[0]) == T_BIGNUM)) {
         return INT2FIX(korb_int_cmp(self, argv[0]));
     }
-    if (FLONUM_P(argv[0]) || BUILTIN_TYPE(argv[0]) == T_FLOAT) {
+    if (FLONUM_P(argv[0]) || KORB_IS_FLOAT(argv[0])) {
         double a = (double)FIX2LONG(self);
         double b = korb_num2dbl(argv[0]);
         return INT2FIX(a < b ? -1 : a > b ? 1 : 0);
@@ -405,19 +405,19 @@ static VALUE int_pred(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 /* ---------- Float ---------- */
 static VALUE flt_plus(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return korb_float_new(((struct korb_float *)self)->value + korb_num2dbl(argv[0]));
+    return korb_float_new(korb_num2dbl(self) + korb_num2dbl(argv[0]));
 }
 static VALUE flt_minus(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return korb_float_new(((struct korb_float *)self)->value - korb_num2dbl(argv[0]));
+    return korb_float_new(korb_num2dbl(self) - korb_num2dbl(argv[0]));
 }
 static VALUE flt_mul(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return korb_float_new(((struct korb_float *)self)->value * korb_num2dbl(argv[0]));
+    return korb_float_new(korb_num2dbl(self) * korb_num2dbl(argv[0]));
 }
 static VALUE flt_div(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return korb_float_new(((struct korb_float *)self)->value / korb_num2dbl(argv[0]));
+    return korb_float_new(korb_num2dbl(self) / korb_num2dbl(argv[0]));
 }
 static VALUE flt_to_s(CTX *c, VALUE self, int argc, VALUE *argv) {
-    char b[64]; snprintf(b, 64, "%.17g", ((struct korb_float *)self)->value);
+    char b[64]; snprintf(b, 64, "%.17g", korb_num2dbl(self));
     return korb_str_new_cstr(b);
 }
 
@@ -2420,45 +2420,45 @@ static VALUE int_pow(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 /* ---------- Float methods (extended) ---------- */
 static VALUE flt_floor(CTX *c, VALUE self, int argc, VALUE *argv) {
-    double v = ((struct korb_float *)self)->value;
+    double v = korb_num2dbl(self);
     return INT2FIX((long)v);
 }
 
 static VALUE flt_pow(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1) return self;
-    double a = ((struct korb_float *)self)->value;
+    double a = korb_num2dbl(self);
     double b = korb_num2dbl(argv[0]);
     return korb_float_new(pow(a, b));
 }
 
 static VALUE flt_lt(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return KORB_BOOL(((struct korb_float *)self)->value < korb_num2dbl(argv[0]));
+    return KORB_BOOL(korb_num2dbl(self) < korb_num2dbl(argv[0]));
 }
 static VALUE flt_le(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return KORB_BOOL(((struct korb_float *)self)->value <= korb_num2dbl(argv[0]));
+    return KORB_BOOL(korb_num2dbl(self) <= korb_num2dbl(argv[0]));
 }
 static VALUE flt_gt(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return KORB_BOOL(((struct korb_float *)self)->value > korb_num2dbl(argv[0]));
+    return KORB_BOOL(korb_num2dbl(self) > korb_num2dbl(argv[0]));
 }
 static VALUE flt_ge(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return KORB_BOOL(((struct korb_float *)self)->value >= korb_num2dbl(argv[0]));
+    return KORB_BOOL(korb_num2dbl(self) >= korb_num2dbl(argv[0]));
 }
 static VALUE flt_cmp(CTX *c, VALUE self, int argc, VALUE *argv) {
-    double a = ((struct korb_float *)self)->value;
+    double a = korb_num2dbl(self);
     double b = korb_num2dbl(argv[0]);
     return INT2FIX(a < b ? -1 : a > b ? 1 : 0);
 }
 static VALUE flt_to_i(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return INT2FIX((long)((struct korb_float *)self)->value);
+    return INT2FIX((long)korb_num2dbl(self));
 }
 static VALUE flt_to_f(CTX *c, VALUE self, int argc, VALUE *argv) {
     return self;
 }
 static VALUE flt_uminus(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return korb_float_new(-((struct korb_float *)self)->value);
+    return korb_float_new(-korb_num2dbl(self));
 }
 static VALUE flt_abs(CTX *c, VALUE self, int argc, VALUE *argv) {
-    double v = ((struct korb_float *)self)->value;
+    double v = korb_num2dbl(self);
     return korb_float_new(v < 0 ? -v : v);
 }
 

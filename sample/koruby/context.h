@@ -52,6 +52,9 @@ typedef uintptr_t ID;
 
 #define FIXNUM_P(v)   (((VALUE)(v)) & FIXNUM_FLAG)
 #define FLONUM_P(v)   (((((VALUE)(v)) & FLONUM_MASK)) == FLONUM_FLAG)
+/* True for both FLONUM (immediate Float) and heap T_FLOAT.  Use this
+ * everywhere a `BUILTIN_TYPE(v) == T_FLOAT` check used to live. */
+#define KORB_IS_FLOAT(v) (FLONUM_P(v) || (!SPECIAL_CONST_P(v) && BUILTIN_TYPE(v) == T_FLOAT))
 #define SYMBOL_P(v)   ((((VALUE)(v)) & SYMBOL_MASK) == SYMBOL_FLAG)
 #define NIL_P(v)      ((v) == Qnil)
 #define TRUE_P(v)     ((v) == Qtrue)
@@ -63,6 +66,31 @@ typedef uintptr_t ID;
 
 #define INT2FIX(i)    ((VALUE)(((intptr_t)(i)) << 1) | FIXNUM_FLAG)
 #define FIX2LONG(v)   ((long)((intptr_t)(v) >> 1))
+
+/* FLONUM (immediate Float) — CRuby-compatible encoding.
+ * Rotate-left-by-3 of the IEEE-754 double bits, mask LSB, OR FLONUM_FLAG.
+ * Doubles whose top 3 exponent bits aren't 011 or 100 (i.e. NaN / Inf /
+ * very large / very small / denorm / 0.0) cannot be encoded; in that
+ * case korb_float_new heap-boxes via struct korb_float. */
+#define KORB_BIT_ROTL64(x, n)  (((VALUE)(x) << (n)) | ((VALUE)(x) >> (64 - (n))))
+#define KORB_BIT_ROTR64(x, n)  (((VALUE)(x) >> (n)) | ((VALUE)(x) << (64 - (n))))
+
+static inline VALUE
+korb_double_to_flonum(double d) {
+    union { double d; VALUE v; } t;
+    t.d = d;
+    int bits = (int)((t.v >> 60) & 0x7);
+    if ((unsigned)(bits - 3) >= 5) return 0; /* out-of-range — caller must heap */
+    return (KORB_BIT_ROTL64(t.v, 3) & ~(VALUE)0x01) | FLONUM_FLAG;
+}
+
+static inline double
+korb_flonum_to_double(VALUE v) {
+    union { double d; VALUE v; } t;
+    VALUE b63 = v >> 63;
+    t.v = KORB_BIT_ROTR64((2 - b63) | (v & ~(VALUE)0x03), 3);
+    return t.d;
+}
 
 #define FIXNUM_MAX  ((intptr_t)((((uintptr_t)1) << (sizeof(VALUE)*8 - 2)) - 1))
 #define FIXNUM_MIN  (-FIXNUM_MAX - 1)
