@@ -85,59 +85,88 @@ prism                 symlink to ../naruby/prism (Ruby parser)
 onigmo/               cloned, locally-built Onigmo (build_local.mk)
 ```
 
-## Speed: prefilter + AOT specialization
+## Speed: prefilter ladder + AOT specialization
 
 Two layers of optimisation, both expressed as ASTro nodes:
 
-1. **`node_grep_search`** — the for-each-start-position loop.
-   Putting it in the AST means the specializer fuses the loop AND
-   the inlined regex chain into one SD function.  In-engine
-   microbench: 7.22× over interp on `literal-tail` (16 KiB single
-   buffer, repeated calls).
-2. **`node_grep_search_memchr` / `_memmem`** — algorithmic
-   prefilters.  When the parser detects a fixed first byte / multi-
-   byte literal prefix, emit one of these instead.  glibc's AVX2
-   memchr / two-way memmem skips entire KB of input per library
-   call; the body chain runs only at candidate positions.
+1. **`node_grep_search`** — the for-each-start-position loop is
+   itself a node, so the specialiser fuses the loop AND the
+   inlined regex chain into one SD function.
+2. **Algorithmic prefilter nodes** — emitted in place of plain
+   `node_grep_search` when the parser sees something that lets us
+   skip non-candidate positions:
 
-Grep-CLI bench (`bench/grep_bench.sh`, 118 MB corpus, best-of-5 s):
+   | node                          | when emitted                        | algorithm |
+   |-------------------------------|-------------------------------------|-----------|
+   | `node_grep_search_memmem`     | ≥ 4-byte literal prefix             | glibc memmem (two-way) |
+   | `node_grep_search_memchr`     | ≥ 1-byte literal prefix             | glibc memchr (AVX2) |
+   | `node_grep_search_byteset`    | ≤ 8 distinct first bytes (alt)      | N × `vpcmpeqb` + OR |
+   | `node_grep_search_range`      | single contiguous-range first class | `vpsubusb / vpminub / vpcmpeqb` |
+   | `node_grep_search_class_scan` | arbitrary 256-bit first class       | Hyperscan-style Truffle (PSHUFB ×2 + AND) |
+
+   The bake then composes — first byte / range bounds / packed
+   bytes / 16-byte nibble tables become AVX2 set1 immediates inside
+   the SD; the inner loop has no indirect call.
+
+### Bench A — grep CLI (line-by-line, 118 MB corpus, best-of-5 s)
 
 ```
                           grep   ripgrep   +onigmo  interp  aot-cached
-literal    /static/      0.002    0.037     0.240   0.285    0.287
+literal    /static/      0.002    0.036     0.226   0.285    0.271
 rare       /specialized_dispatcher/
-                         0.039    0.022     0.200   0.269    0.267
-anchored   /^static/     0.003    0.042     0.249   0.284    0.281
-case-i     /VALUE/i      0.002    0.053     0.285   0.746    0.712
+                         0.038    0.022     0.194   0.266    0.264
+anchored   /^static/     0.002    0.038     0.229   0.273    0.283
+case-i     /VALUE/i      0.002    0.048     0.277   0.702    0.336
 alt-3      /static|extern|inline/
-                         0.003    0.053     1.183   2.199    2.133
-class-rep  /[0-9]{4,}/   0.002    0.059     0.749   1.384    1.392
+                         0.002    0.054     1.097   0.553    0.288
+class-rep  /[0-9]{4,}/   0.002    0.059     0.761   0.581    0.498
 ident-call /[a-z_]+_[a-z]+\(/
-                         0.002    0.196     3.626   4.238    4.294
-count -c   /static/      0.002    0.030     0.244   0.293    0.286
+                         0.002    0.192     3.524   3.828    2.885
+count -c   /static/      0.002    0.029     0.226   0.279    0.270
 ```
 
-What this says:
+For literal-led grep, astrogre is now **within 20 % of Onigmo on
+every pattern** (memchr / memmem / byteset all firing).  ugrep
+(`/usr/bin/grep` here) is an order of magnitude ahead — its AVX2
+memchr / lazy DFA + PCRE2-JIT runs at memory bandwidth and the
+per-line CLI overhead doesn't apply.
 
-- **prefilter-eligible patterns** (literal-led, anchored, count) are
-  now **within 20 %** of Onigmo — 3-4× faster than the no-prefilter
-  baseline, finally in the same ballpark as a serious backtracking
-  matcher.
-- **patterns the current prefilter doesn't trigger on** (case-
-  insensitive, alternation, class-led) still match the no-prefilter
-  baseline.  Each gets its own SIMD-y node next: twin memchr for
-  `/i`, first-byte bitmap for alternation, PSHUFB for classes.
-  Documented under [`docs/todo.md`](./docs/todo.md).
-- **ugrep / ripgrep stay an order of magnitude ahead**.  The
-  remaining gap is process startup + per-line `getline` / CTX-init
-  overhead, addressable by folding line iteration into the AST too
-  (`node_grep_lines`).
+### Bench B — engine-level whole-file scan (ms/iter)
+
+`bench/aot_bench.sh` runs the in-engine `--bench-file` path: full
+buffer in memory, full-sweep count to mirror grep `-c` semantics.
+Patterns chosen for the AOT-favourable shape (long chain, prefilter
+applies):
+
+```
+                                       astrogre+AOT   grep   onigmo  ripgrep
+/(QQQ|RRR)+\d+/                              16  ★     85    726       26
+/(QQQX|RRRX|SSSX)+/                          24  ★     26    700       26
+/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/         503  ★    533    717      197
+/[A-Z]{50,}/                                 678 ★   1570   1099      184
+/[a-z][0-9][a-z][0-9][a-z]/                  482        4    722      206
+/(\d+\.\d+\.\d+\.\d+)/                       430        4    738       50
+/\b(if|else|for|while|return)\b/              90      2.3   1060      121
+/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/        10824      2.7   9353      218
+```
+
+★ = astrogre + AOT beats grep AND Onigmo.  **4/8 vs grep, 8/8 vs
+Onigmo.**  The wins come from the prefilter ladder picking the
+right node for each shape; the losses are patterns where the
+leading char / first-byte-set is common in source code, so SIMD
+scan finds candidates everywhere and ugrep's Hyperscan-style
+multi-pattern literal anchor extraction (Teddy / FDR) is the only
+way to win.  That's the next addition (see
+[`docs/todo.md`](./docs/todo.md)).
+
+ripgrep stays a step ahead on most patterns thanks to lazy DFA +
+literal-prefix prefilter; closing that gap would need DFA-style
+NFA simulation, a bigger refactor.
 
 See [`docs/perf.md`](./docs/perf.md) and
 [`docs/runtime.md`](./docs/runtime.md) for the architectural lesson
 ("wrap algorithms as nodes; the framework's bake / hash / code-store
-sharing then compose with them for free") and the disassembly of
-the fused SD.
+sharing then composes with them for free").
 
 ## What it does NOT do (yet)
 

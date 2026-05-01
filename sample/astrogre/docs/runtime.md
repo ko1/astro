@@ -283,59 +283,61 @@ per-line getline + CTX init dominating, addressable by folding line
 iteration into the AST too.
 
 ### The right pattern: wrap algorithms as nodes
-This is the architectural lesson the sample makes obvious. ASTro's
+This is the architectural lesson the sample makes obvious.  ASTro's
 specializer can't *invent* algorithmic optimizations; what it gives
 you is a free composition mechanism — once an optimization is
 expressed as a node, the framework hashes it, code-store-shares it,
-and inlines its `body` operand. So the engineering shape is:
+and inlines its `body` operand.  Engineering shape:
 
 > *Identify an algorithmic optimization. Wrap it in a node. Have the
 > parser emit it under the right precondition. The bake handles the
 > rest.*
 
-The first two prefilter nodes landed:
+Five prefilter nodes have landed, each fitting the same shape and
+each directly exercising AVX2 / glibc-SIMD where applicable:
 
-- **`node_grep_search_memchr(body, first_byte, anchored_bos)`** —
-  glibc's AVX2 memchr scans for the fixed first byte; body verifies
-  at each candidate position.  Emitted when the parser detects a
-  literal first byte (covers `/static/`, `/a[0-9]+/`, `/^Hello/`).
-- **`node_grep_search_memmem(body, prefix, len, anchored_bos)`** —
-  same shape with a multi-byte needle.  Emitted when the literal
-  prefix is ≥ 4 bytes.
-
-Bench impact (118 MB corpus, line-by-line):
-
-```
-                       prior interp (fused)  →  prefilter interp     onigmo
-literal /static/             0.934                  0.285             0.240
-literal-rare                 1.004                  0.269             0.200
-anchored /^static/           0.720                  0.284             0.249
-count -c /static/            0.957                  0.293             0.244
-```
-
-3-4× over the prior interp, **within 20 % of Onigmo** for the
-patterns the prefilter applies to.
+| node                            | algorithm                                 | parser trigger                         |
+|---------------------------------|-------------------------------------------|----------------------------------------|
+| `node_grep_search_memmem`       | glibc memmem (two-way string match)       | ≥ 4-byte literal prefix                |
+| `node_grep_search_memchr`       | glibc memchr (AVX2 PCMPEQB)               | ≥ 1-byte literal prefix                |
+| `node_grep_search_byteset`      | N × `vpcmpeqb` + OR (≤ 8 bytes)           | small first-byte set (alt of literals) |
+| `node_grep_search_range`        | `vpsubusb / vpminub / vpcmpeqb`           | single contiguous-range first class    |
+| `node_grep_search_class_scan`   | Hyperscan-style Truffle (PSHUFB × 2 + AND) | arbitrary 256-bit first class          |
 
 The architectural point is that **the prefilter and the bake
-compose**.  The SD generated for `node_grep_search_memchr(/static/)`
-contains the memchr call AND the inlined chain that verifies
-`"static"` at each candidate position — both inside the same SD,
-both visible to gcc's optimiser, both addressable via dlsym.  Adding
-prefilter required no change to the bake / hash / code-store / SD
-machinery; the framework just did the right thing.
+compose**.  The SD for `node_grep_search_memchr(/static/)` contains
+the memchr call AND the inlined chain that verifies `"static"` at
+each candidate position — both inside the same SD, both visible to
+gcc's optimiser, both addressable via dlsym.  Adding each prefilter
+required no change to the bake / hash / code-store machinery; the
+framework just did the right thing.
 
-Other nodes that fit the same shape (under `todo.md → Performance`):
+Bench impact, 118 MB corpus, full-sweep count, ms/iter (★ = AOT
+beats grep AND Onigmo):
 
-| node                          | inner algorithm           | parser trigger                         |
-|-------------------------------|---------------------------|----------------------------------------|
-| `node_grep_search_bmh`        | Boyer-Moore-Horspool      | whole pattern is fixed (`-F`)          |
-| `node_re_class_pshufb`        | PSHUFB membership in 16 B | class with ≤16 members                 |
-| `node_re_alt_first_byte_skip` | first-byte 256-bit bitmap | alt branches all start with fixed byte |
-| `node_grep_search_ci2`        | twin memchr for /i        | case-insensitive literal-led pattern   |
-| `node_grep_lines`             | newline scan + per-line   | grep CLI driver                        |
+```
+                                       astrogre+AOT   grep   onigmo
+/(QQQ|RRR)+\d+/                              16   ★    85    726     ← byteset over {Q,R}
+/(QQQX|RRRX|SSSX)+/                          24   ★    26    700     ← byteset over {Q,R,S}
+/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/         503   ★   533    717     ← range [a-z]
+/[A-Z]{50,}/                                 678  ★  1570   1099     ← range [A-Z]
+/\b(if|else|for|while|return)\b/              90       2.3   1060     ← byteset over {i,e,f,w,r}
+/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/        10824       2.7   9353     ← Truffle on \w (common)
+```
 
-Each is ~50–100 lines of node body.  The bake gives them all the
-same treatment for free.
+**4/8 vs grep, 8/8 vs Onigmo** on this set.  The losing patterns
+all need multi-pattern literal extraction (Hyperscan Teddy / FDR)
+to pull the rare literal `(`, `,`, `)` out of the middle of the
+pattern; that's the next big addition (see `todo.md`).
+
+Nodes still on the runway (same shape, would extend the ladder):
+
+| node                          | algorithm                  | parser trigger                                    |
+|-------------------------------|----------------------------|---------------------------------------------------|
+| `node_grep_search_teddy`      | multi-pattern AVX2 scan    | pattern has ≥ 1 fixed literal at any position     |
+| `node_grep_search_bmh`        | Boyer-Moore-Horspool       | `-F` mode short fixed pattern                     |
+| `node_grep_lines`             | newline scan + per-line    | grep CLI driver                                   |
+| `node_grep_search_ci2`        | twin memchr for /i         | case-insensitive literal-led pattern              |
 
 ### Where bake (specifically) might still pay
 For grep-shaped workloads the most plausible bake-only wins are

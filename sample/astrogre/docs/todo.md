@@ -5,102 +5,79 @@ Backlog of features and performance work.  Companion to
 
 ## Performance — next up
 
-### Line iteration in the AST
-The grep CLI bench shows no fusion gain because the per-line call
-overhead (`getline`, `CTX_struct` zero-init, `fwrite` for matched
-lines) dominates wall time on ~36-byte lines.  In-engine microbench
-on a 16 KiB string sees the 7.22× literal-tail win because the
-fused loop runs ~16 K iterations per call instead of ~36.
+### Multi-pattern / Hyperscan-Teddy literal anchor scan
+The single biggest miss vs ugrep on the bench.  Patterns like
+`/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/` carry forced literals (`(`,
+`,`, `)`) somewhere inside; ugrep extracts them and runs a
+multi-pattern Teddy / FDR scan, then verifies.  We only look at
+the *start* of the pattern today.
 
-Add `node_grep_lines(body, ...)` whose EVAL walks newlines + dispatches
-the search per line + handles the print/count side-effect — all in
-one SD function.  The grep CLI then dispatches once per file (per
-buffer) instead of once per line, and the fusion benefit comes back
-into view.
+Plan:
+- Walk the IR collecting "must-appear" literal byte sequences from
+  any position, with their min-distance from match start.
+- Pick the rarest (or longest) as the anchor.
+- New node: `node_grep_search_teddy(body, anchors, max_back)` —
+  AVX2 multi-pattern scan; for each anchor hit, run the body from
+  positions in `[hit - max_back, hit]`.
+
+This would close the `(\w+)\s*\(...\)` and `(\d+\.\d+\.\d+\.\d+)`
+gaps with grep.  Implementation cost: ~500-1000 lines (parser
+extraction + AVX2 multi-pattern scanner + back-up logic).
+
+### Line iteration in the AST
+For the grep CLI bench (line-by-line), the per-line `getline` /
+`CTX_struct` zero-init / `fwrite` overhead dominates.  In-engine
+`--bench-file` (whole buffer) shows the SD doing real work; CLI
+doesn't.  `node_grep_lines(body, str, len)` whose EVAL handles
+newline iteration + body dispatch + output all inside one SD
+function would close that.
 
 ### Real PG signal
 `--pg-compile` is wired but currently aliases to `--aot-compile`
 because `HOPT == HORG`.  Real signals to bake:
 - **Hot-alternative reordering**: count branch hits at each
   `node_re_alt`, emit alternation with the hot one tested first.
-- **Capture elision**: if no backreference reads a group during the
-  profile run, drop its save/restore.
+- **Capture elision**: if no backreference reads a group during
+  the profile run, drop its save/restore.
 - **Iteration-count specialisation**: bake unrolled fixed-N
   variants for repetitions whose observed count is concentrated.
 
-### First-byte bitmap for /i and alt patterns
-memchr/memmem nodes landed for plain literal prefixes; the next
-slice of patterns that benefits from a SIMD prefilter:
-- `/foo/i` — both 'f'/'F' could start a match.  A 16-byte PSHUFB
-  (or twin memchr + branch on whichever fires first) handles
-  case-insensitive scan.
-- `/cat|dog|match/` — three alternative first bytes.  A 256-bit
-  "any-of" bitmap + AVX2 `VPCMPESTRM`-style scan, or just multi-
-  call memchr with min-position pick.
-- `/[0-9]+/` — class-led.  PSHUFB membership in 16 char ranges,
-  see Hyperscan / re2's literal extraction.
+### Twin-memchr scan for /i case-fold
+`/foo/i` — both 'f' / 'F' could start a match.  Either:
+- Two memchrs per input chunk + min-position pick.
+- Or 2-byte byteset entry: pre-compute {'f', 'F'} and use the
+  existing `node_grep_search_byteset`.
+The second is trivial — just extend `ire_collect_first_byte_set`
+to handle `/i` literals by pushing both cases.
 
-### Class first-byte PSHUFB scan
-For class-led patterns, build a 16-byte set of allowed bytes
-(if it fits) and PSHUFB-scan 16 bytes per cycle.  Hyperscan does
-this; the implementation in C is ~50 lines.
-
-### `node_grep_search_bmh`
-Boyer-Moore-Horspool over the full pattern when `-F` is given.
-glibc memmem already does two-way; BMH would be faster for short
-needles where the bad-character table dominates.
+### `node_grep_search_bmh` for `-F` mode
+glibc memmem is two-way; classic Boyer-Moore-Horspool with a
+bake-time bad-character table can be faster on short needles.
 
 ### Inline small char-classes as comparisons
-For a class like `[abc]`, `b == 'a' || b == 'b' || b == 'c'` is
-faster than the bitmap test because gcc folds it to a switch table
-or SIMD comparison.  Specializer candidate.
-
-### JIT
-Once the search-loop fused SD lands, plug the standard ASTro JIT
-path: the rep_cont sentinel keeps the AST a DAG, so hash-keyed
-code-store caching applies.
-
-### Capture state on the stack instead of CTX
-`c->starts[]` / `c->ends[]` / `c->valid[]` are 32 entries each, ~750
-bytes per CTX.  Most patterns have ≤ 4 groups.
-
-### Literal-prefix prefilter
-The single biggest miss vs ripgrep / ugrep.  For unanchored patterns
-with a fixed-byte prefix, use Boyer-Moore-style scan to find
-candidate positions and verify with the AST.  Independent of the AST
-and a pure C-level win.  Cheap version: `memchr` for the first
-literal byte; full version: BMH on a longer required substring.
-
-### First-byte bitmap
-Even simpler than full BMH: at compile time, build a 256-bit bitmap
-of allowed first bytes; skip ahead using a vectorised scan.
-
-### Inline small char-classes as comparisons
-For a class like `[abc]`, `b == 'a' || b == 'b' || b == 'c'` is
-faster than the bitmap test because gcc folds it to a switch table
-or SIMD comparison.  Specializer candidate.
-
-### JIT
-Once specialization works, plug the standard ASTro JIT path: the
-rep_cont sentinel keeps the AST a DAG, so hash-keyed code-store
-caching applies.
+For `[abc]`, `b == 'a' || b == 'b' || b == 'c'` may fold to a
+switch table or SIMD compare faster than the bitmap test.
+Specializer candidate.
 
 ### Capture state on the stack instead of CTX
 `c->starts[]` / `c->ends[]` / `c->valid[]` are 32 entries each, ~750
 bytes per CTX.  Most patterns have ≤ 4 groups.
 
 ### Code-store mtime invalidation
-When `node.def` changes, every cached `SD_*.c` is stale, but
-`astro_cs_init`'s version arg is currently `0`.  Pass the binary
-mtime so a recompile forces a full rebuild.
+When `node.def` changes, every cached `SD_*.c` is stale; pass the
+binary mtime to `astro_cs_init` so a recompile forces a rebuild.
+
+### JIT
+Once the Teddy / line-iteration nodes land, plug the standard
+ASTro JIT path: code-store sharing applies because the AST is a
+DAG.
 
 ## Language gaps
 
 ### Lookbehind
 - `(?<=...)` and `(?<!...)`.  Parser explicitly errors out.
 - Fixed-length form: compute body length at parse, jump back.
-- Variable-length: needs the same continuation-passing machinery
-  that lookahead uses but in reverse.
+- Variable-length: continuation-passing in reverse.
 
 ### Atomic groups and possessive quantifiers
 - `(?>...)` and `*+`, `++`, `?+`.
@@ -108,70 +85,62 @@ mtime so a recompile forces a full rebuild.
 - Needs a "commit barrier" inside the rep_frame protocol.
 
 ### `\k<name>` actually following the name table
-- Named captures are recognised but stored only by index.
-- `\k<name>` currently matches group 1 unconditionally.
+Named captures are recognised but stored only by index.  `\k<name>`
+currently matches group 1 unconditionally.
 
-### Conditional groups, recursion, options
+### Conditional groups, recursion
 - `(?(cond)yes|no)`.
 - `\g<name>` / `\g<n>` recursive subroutine calls.
-- `(?#...)` comments — easy.
-- `(?adlux-imsx)` Ruby's "options around" — partially landed.
+- `(?#...)` comments.
 
 ### Unicode
-- `\p{...}` / `\P{...}` Unicode property classes.
-- Unicode case folding for `/i` (currently ASCII only).
+- `\p{...}` / `\P{...}` property classes.
+- Case folding for `/i` (currently ASCII only).
 - `\X` extended grapheme cluster.
 
 ### Multi-byte chars in classes
-- `[äé]` currently builds an ASCII bitmap and writes the high bytes
-  byte-by-byte, which doesn't match a single codepoint.
-- Want: hybrid class — ASCII bitmap + sorted codepoint range list.
+`[äé]` currently builds an ASCII bitmap and writes high bytes
+byte-by-byte, which doesn't match a single codepoint.  Want a
+hybrid class — ASCII bitmap + sorted codepoint range list.
 
 ### Encodings
-- EUC-JP (`/e`).
-- Windows-31J (`/s`).
-- Mostly relevant for legacy Ruby code; gated on demand.
+EUC-JP (`/e`), Windows-31J (`/s`).  Gated on demand.
 
 ### Anchors / boundaries
 - `\G` "anchor at last match end".
 - `\R` line break.
 
 ### `Regexp.new(str)` / `Regexp.compile(str)`
-- The `--via-prism` path only catches *literal* `/.../` regexes
-  from prism.  A separate path that takes a runtime string and a
-  flags arg would let astrogre be used as a regex *library* from a
-  host program.
+The `--via-prism` path only catches literal `/.../` regexes from
+prism source.  A separate runtime-string + flags entry would let
+astrogre be used as a regex *library* from a host program.
 
 ## API / driver
 
 ### grep CLI gaps vs GNU grep
-- `-A`/`-B`/`-C` context lines.
+- `-A` / `-B` / `-C` context lines.
 - `-Z` / `-z` NUL-delimited output / input.
 - `--include` / `--exclude` glob filters during `-r`.
-- `--include-dir` / `--exclude-dir`.
 - `-q` quiet (exit-code-only).
-- Binary-file detection (currently we always treat input as text).
+- Binary-file detection.
 - `--mmap` for large files (currently `getline`-based).
 
 ### Engine API
-- `MatchData`-like result struct exposing every group, named or
-  numbered, with line / column information.
-- A `gsub`-equivalent: walk the input, repeatedly match, splice in
-  a replacement.
-- A `scan`-equivalent: enumerate non-overlapping matches into a
-  caller-supplied callback.
+- `MatchData`-like result struct exposing every group with line /
+  column info.
+- `gsub`-equivalent: walk input, repeatedly match, splice
+  replacements.
+- `scan`-equivalent: enumerate non-overlapping matches via callback.
 
 ### Diagnostics
-- Better parse error reporting (line / column from the prism source
-  span, not the regex offset).
-- Optional trace mode that prints each dispatch + position.
-- Feed astrogre through `re_test` corpora (PCRE / Onigmo /
-  re2-tests) to find behaviour gaps systematically.
+- Parse-error line / column from the prism source span.
+- Trace mode (per dispatch + position).
+- Feed astrogre through `re_test` corpora (PCRE / Onigmo / re2-tests).
 
 ## Tests
 
-- More UTF-8 coverage once `[multi-byte char-class]` lands.
-- Cross-check the grep CLI's output against GNU grep on a battery
+- More UTF-8 coverage when multi-byte char-class lands.
+- Cross-check the grep CLI output against GNU grep on a battery
   of patterns + corpora to catch drift in match positions.
-- Pathological backtracking inputs (`/(a+)+b/`) — currently exposes
+- Pathological backtracking (`/(a+)+b/`) — currently exposes
   exponential blowup; documented limitation.

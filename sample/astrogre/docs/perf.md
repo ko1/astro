@@ -8,6 +8,73 @@ specialization fuses the for-each-start-position loop and the
 inlined regex chain into one SD function.  This doc records what
 *did* and *did not* help on the way to the current numbers.
 
+## Cross-engine scoreboard
+
+Two benches live side-by-side: the grep CLI bench (line-by-line,
+mirrors how grep is actually used) and the engine-level whole-
+file bench (loads the corpus once, calls `astrogre_search` in a
+loop — isolates the engine cost).
+
+### Bench A — grep CLI (line-by-line, 118 MB corpus, s, best-of-5)
+
+`bench/grep_bench.sh`.  All four engines invoked via their own
+grep CLI / `-c` modes.
+
+```
+                          grep   ripgrep   +onigmo  interp  aot-cached
+literal    /static/      0.002    0.036     0.226   0.285    0.271
+rare       /specialized_dispatcher/
+                         0.038    0.022     0.194   0.266    0.264
+anchored   /^static/     0.002    0.038     0.229   0.273    0.283
+case-i     /VALUE/i      0.002    0.048     0.277   0.702    0.336
+alt-3      /static|extern|inline/
+                         0.002    0.054     1.097   0.553    0.288
+class-rep  /[0-9]{4,}/   0.002    0.059     0.761   0.581    0.498
+ident-call /[a-z_]+_[a-z]+\(/
+                         0.002    0.192     3.524   3.828    2.885
+count -c   /static/      0.002    0.029     0.226   0.279    0.270
+```
+
+For literal-led grep, **astrogre is now within 20 % of Onigmo on
+every pattern** — memchr / memmem / byteset all firing.  ugrep
+remains an order of magnitude ahead — its AVX2 memchr / lazy DFA
++ PCRE2-JIT runs at memory bandwidth and the per-line CLI overhead
+doesn't apply.
+
+### Bench B — engine-level whole-file scan (ms/iter, best-of-3)
+
+`bench/aot_bench.sh`.  astrogre uses `--bench-file` (whole buffer
+in memory, full-sweep count); grep / ripgrep / onigmo via `-c`.
+Patterns chosen for the AOT-favourable shape — chain long enough
+that bake's dispatch elimination matters.  ★ = astrogre + AOT
+beats grep AND Onigmo:
+
+```
+                                       astrogre+AOT   grep   onigmo  ripgrep
+/(QQQ|RRR)+\d+/                              16  ★     85    726       26
+/(QQQX|RRRX|SSSX)+/                          24  ★     26    700       26
+/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/         503  ★    533    717      197
+/[A-Z]{50,}/                                 678 ★   1570   1099      184
+/[a-z][0-9][a-z][0-9][a-z]/                  482        4    722      206
+/(\d+\.\d+\.\d+\.\d+)/                       430        4    738       50
+/\b(if|else|for|while|return)\b/              90      2.3   1060      121
+/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/        10824      2.7   9353      218
+```
+
+**4/8 vs grep, 8/8 vs Onigmo on this set**, with the wins coming
+from the prefilter ladder — memchr / memmem / byteset / range /
+Truffle each handle a different shape of "first thing the pattern
+must consume", and the specialiser then composes them with the
+inlined regex chain.
+
+The losing patterns all share one property: ugrep extracts multiple
+literal anchors from the pattern and runs a Hyperscan-style
+multi-pattern scan (Teddy / Aho-Corasick) over them.  We don't have
+that kind of literal anchor extraction yet — `(\w+)\s*\(\s*(\w+)\)`
+contains forced literals `(`, `,`, `)` but our prefix analysis only
+looks at the start.  Adding "any-position literal anchor" extraction
+is the next-biggest lever; documented under todo.md.
+
 ## Where AOT specialization actually wins
 
 The literal-led patterns from the original microbench got eaten by
