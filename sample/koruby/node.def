@@ -469,6 +469,11 @@ node_plus(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t ar
         if (LIKELY(!__builtin_add_overflow(a, b, &s) && FIXABLE(s))) return INT2FIX(s);
         return korb_int_plus(l, r);
     }
+    /* Float fast path: skip dispatch_binop when both ops can be coerced
+     * to double cheaply (FLONUM or FIXNUM). */
+    if (LIKELY(FLONUM_P(l) && FLONUM_P(r))) {
+        return korb_float_new(korb_flonum_to_double(l) + korb_flonum_to_double(r));
+    }
     return korb_node_plus_slow(c, l, r, arg_index);
 }
 
@@ -482,6 +487,9 @@ node_minus(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t a
         if (LIKELY(!__builtin_sub_overflow(a, b, &s) && FIXABLE(s))) return INT2FIX(s);
         return korb_int_minus(l, r);
     }
+    if (LIKELY(FLONUM_P(l) && FLONUM_P(r))) {
+        return korb_float_new(korb_flonum_to_double(l) - korb_flonum_to_double(r));
+    }
     return korb_node_minus_slow(c, l, r, arg_index);
 }
 
@@ -494,6 +502,9 @@ node_mul(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg
         long a = FIX2LONG(l), b = FIX2LONG(r), s;
         if (LIKELY(!__builtin_mul_overflow(a, b, &s) && FIXABLE(s))) return INT2FIX(s);
         return korb_int_mul(l, r);
+    }
+    if (LIKELY(FLONUM_P(l) && FLONUM_P(r))) {
+        return korb_float_new(korb_flonum_to_double(l) * korb_flonum_to_double(r));
     }
     return korb_node_mul_slow(c, l, r, arg_index);
 }
@@ -510,6 +521,9 @@ node_div(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg
         if ((a % b) != 0 && ((a ^ b) < 0)) q--;
         if (FIXABLE(q)) return INT2FIX(q);
         return korb_int_div(l, r);
+    }
+    if (LIKELY(FLONUM_P(l) && FLONUM_P(r))) {
+        return korb_float_new(korb_flonum_to_double(l) / korb_flonum_to_double(r));
     }
     return korb_node_div_slow(c, l, r, arg_index);
 }
@@ -612,6 +626,7 @@ node_lt(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_
     VALUE l = EA(c, lhs);
     VALUE r = EA(c, rhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) return KORB_BOOL((intptr_t)l < (intptr_t)r);
+    if (LIKELY(FLONUM_P(l) && FLONUM_P(r))) return KORB_BOOL(korb_flonum_to_double(l) < korb_flonum_to_double(r));
     return korb_node_lt_slow(c, l, r, arg_index);
 }
 
@@ -621,6 +636,7 @@ node_le(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_
     VALUE l = EA(c, lhs);
     VALUE r = EA(c, rhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) return KORB_BOOL((intptr_t)l <= (intptr_t)r);
+    if (LIKELY(FLONUM_P(l) && FLONUM_P(r))) return KORB_BOOL(korb_flonum_to_double(l) <= korb_flonum_to_double(r));
     return korb_node_le_slow(c, l, r, arg_index);
 }
 
@@ -630,6 +646,7 @@ node_gt(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_
     VALUE l = EA(c, lhs);
     VALUE r = EA(c, rhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) return KORB_BOOL((intptr_t)l > (intptr_t)r);
+    if (LIKELY(FLONUM_P(l) && FLONUM_P(r))) return KORB_BOOL(korb_flonum_to_double(l) > korb_flonum_to_double(r));
     return korb_node_gt_slow(c, l, r, arg_index);
 }
 
@@ -639,6 +656,7 @@ node_ge(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_
     VALUE l = EA(c, lhs);
     VALUE r = EA(c, rhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) return KORB_BOOL((intptr_t)l >= (intptr_t)r);
+    if (LIKELY(FLONUM_P(l) && FLONUM_P(r))) return KORB_BOOL(korb_flonum_to_double(l) >= korb_flonum_to_double(r));
     return korb_node_ge_slow(c, l, r, arg_index);
 }
 
@@ -648,6 +666,7 @@ node_eq(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_
     VALUE l = EA(c, lhs);
     VALUE r = EA(c, rhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) return KORB_BOOL(l == r);
+    if (LIKELY(FLONUM_P(l) && FLONUM_P(r))) return KORB_BOOL(l == r);
     return KORB_BOOL(korb_eq(l, r));
 }
 
@@ -657,6 +676,7 @@ node_neq(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg
     VALUE l = EA(c, lhs);
     VALUE r = EA(c, rhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) return KORB_BOOL(l != r);
+    if (LIKELY(FLONUM_P(l) && FLONUM_P(r))) return KORB_BOOL(l != r);
     return KORB_BOOL(!korb_eq(l, r));
 }
 
