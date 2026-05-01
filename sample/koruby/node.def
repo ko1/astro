@@ -89,16 +89,16 @@ node_lvar_set(CTX * restrict c, NODE * restrict n, uint32_t index, NODE *rhs)
 }
 
 NODE_DEF
-node_ivar_get(CTX * restrict c, NODE * restrict n, ID name)
+node_ivar_get(CTX * restrict c, NODE * restrict n, ID name, struct ivar_cache *cache@ref)
 {
-    return korb_ivar_get(c->self, name);
+    return korb_ivar_get_ic(c->self, name, cache);
 }
 
 NODE_DEF
-node_ivar_set(CTX * restrict c, NODE * restrict n, ID name, NODE *rhs)
+node_ivar_set(CTX * restrict c, NODE * restrict n, ID name, NODE *rhs, struct ivar_cache *cache@ref)
 {
     VALUE v = EA(c, rhs);
-    korb_ivar_set(c->self, name, v);
+    korb_ivar_set_ic(c->self, name, v, cache);
     return v;
 }
 

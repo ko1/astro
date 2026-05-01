@@ -10,7 +10,7 @@ class KoRubyNodeDef < ASTroGen::NodeDef
           "hash_cstr(korb_id_name(#{val}))"
         when 'intptr_t'
           "hash_uint64((uint64_t)#{val})"
-        when 'struct method_cache *', 'struct call_cache *', 'struct korb_proc *', 'struct korb_class *'
+        when 'struct method_cache *', 'struct call_cache *', 'struct ivar_cache *', 'struct korb_proc *', 'struct korb_class *'
           "0"
         else
           super
@@ -44,7 +44,7 @@ class KoRubyNodeDef < ASTroGen::NodeDef
         when 'intptr_t'
           arg = "    fprintf(fp, \"        (intptr_t)%ld\", (long)n->u.#{name}.#{self.name});"
           return nil, arg
-        when 'struct method_cache *', 'struct call_cache *', 'struct korb_proc *', 'struct korb_class *'
+        when 'struct method_cache *', 'struct call_cache *', 'struct ivar_cache *', 'struct korb_proc *', 'struct korb_class *'
           arg = "    fprintf(fp, \"        n->u.#{name}.#{self.name}\");"
           return nil, arg
         else

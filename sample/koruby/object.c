@@ -375,6 +375,27 @@ VALUE korb_ivar_get(VALUE obj, ID name) {
     return o->ivars[s];
 }
 
+/* Cached ivar get.  Caches only a positive slot — a missing ivar may be
+ * assigned later, so we re-lookup until the slot exists. */
+VALUE korb_ivar_get_ic(VALUE obj, ID name, struct ivar_cache *cache) {
+    if (UNLIKELY(SPECIAL_CONST_P(obj))) return Qnil;
+    if (UNLIKELY(BUILTIN_TYPE(obj) != T_OBJECT)) return Qnil;
+    struct korb_object *o = (struct korb_object *)obj;
+    struct korb_class *k = (struct korb_class *)o->basic.klass;
+    int s;
+    if (LIKELY(cache->klass == k && cache->slot >= 0)) {
+        s = cache->slot;
+    } else {
+        s = ivar_slot(k, name);
+        if (s >= 0) {
+            cache->klass = k;
+            cache->slot = s;
+        }
+    }
+    if (UNLIKELY(s < 0 || (uint32_t)s >= o->ivar_cnt)) return Qnil;
+    return o->ivars[s];
+}
+
 void korb_ivar_set(VALUE obj, ID name, VALUE val) {
     if (SPECIAL_CONST_P(obj)) return;
     if (BUILTIN_TYPE(obj) != T_OBJECT) return;
@@ -389,6 +410,34 @@ void korb_ivar_set(VALUE obj, ID name, VALUE val) {
         o->ivar_capa = nc;
     }
     if ((uint32_t)s >= o->ivar_cnt) {
+        for (uint32_t i = o->ivar_cnt; i <= (uint32_t)s; i++) o->ivars[i] = Qnil;
+        o->ivar_cnt = s + 1;
+    }
+    o->ivars[s] = val;
+}
+
+/* Cached ivar set: same as get but with assign-on-miss semantics. */
+void korb_ivar_set_ic(VALUE obj, ID name, VALUE val, struct ivar_cache *cache) {
+    if (UNLIKELY(SPECIAL_CONST_P(obj))) return;
+    if (UNLIKELY(BUILTIN_TYPE(obj) != T_OBJECT)) return;
+    struct korb_object *o = (struct korb_object *)obj;
+    struct korb_class *k = (struct korb_class *)o->basic.klass;
+    int s;
+    if (LIKELY(cache->klass == k && cache->slot >= 0)) {
+        s = cache->slot;
+    } else {
+        s = ivar_slot_assign(k, name);
+        cache->klass = k;
+        cache->slot = s;
+    }
+    if (UNLIKELY((uint32_t)s >= o->ivar_capa)) {
+        uint32_t nc = o->ivar_capa == 0 ? 4 : o->ivar_capa * 2;
+        while ((uint32_t)s >= nc) nc *= 2;
+        o->ivars = korb_xrealloc(o->ivars, nc * sizeof(VALUE));
+        for (uint32_t i = o->ivar_capa; i < nc; i++) o->ivars[i] = Qnil;
+        o->ivar_capa = nc;
+    }
+    if (UNLIKELY((uint32_t)s >= o->ivar_cnt)) {
         for (uint32_t i = o->ivar_cnt; i <= (uint32_t)s; i++) o->ivars[i] = Qnil;
         o->ivar_cnt = s + 1;
     }
@@ -539,47 +588,33 @@ VALUE korb_hash_new(void) {
     return (VALUE)h;
 }
 
-static void korb_hash_resize(struct korb_hash *h) {
-    uint32_t nc = h->bucket_cnt * 2;
+static inline uint64_t korb_hash_key(const struct korb_hash *h, VALUE key) {
+    return h->compare_by_identity ? (uint64_t)key : korb_hash_value(key);
+}
+
+static inline bool korb_hash_keys_match(const struct korb_hash *h, VALUE a, VALUE b) {
+    return h->compare_by_identity ? (a == b) : korb_eql(a, b);
+}
+
+static void korb_hash_resize(struct korb_hash *h, uint32_t nc) {
     struct korb_hash_entry **newbk = korb_xcalloc(nc, sizeof(*newbk));
-    /* re-insert by iterating insertion order */
+    /* re-insert each entry into the new bucket array via its bucket_next chain. */
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
         uint32_t b = (uint32_t)(e->hash % nc);
-        /* note: e->next is the insertion order chain, which we don't change */
-        /* we need a separate per-bucket chain. Let's just rehash. */
-        /* simpler: store via aset which uses bucket chain. */
+        e->bucket_next = newbk[b];
+        newbk[b] = e;
     }
-    /* simpler approach: rebuild from scratch via aset */
-    struct korb_hash_entry *first = h->first;
     h->buckets = newbk;
     h->bucket_cnt = nc;
-    h->size = 0;
-    h->first = h->last = NULL;
-    for (struct korb_hash_entry *e = first; e; ) {
-        struct korb_hash_entry *nx = e->next;
-        korb_hash_aset((VALUE)h, e->key, e->value);
-        e = nx;
-    }
 }
 
 VALUE korb_hash_aset(VALUE hv, VALUE key, VALUE val) {
     struct korb_hash *h = (struct korb_hash *)hv;
-    if (h->size * 2 > h->bucket_cnt) korb_hash_resize(h);
-    uint64_t hh = h->compare_by_identity ? (uint64_t)key : korb_hash_value(key);
+    uint64_t hh = korb_hash_key(h, key);
     uint32_t b = (uint32_t)(hh % h->bucket_cnt);
-    /* search existing */
-    for (struct korb_hash_entry *e = h->buckets[b]; e; ) {
-        if (e->hash == hh &&
-            (h->compare_by_identity ? (e->key == key) : korb_eql(e->key, key))) {
-            e->value = val;
-            return val;
-        }
-        break;
-    }
-    /* full linear scan to be safe */
-    for (struct korb_hash_entry *e = h->first; e; e = e->next) {
-        if (e->hash == hh &&
-            (h->compare_by_identity ? (e->key == key) : korb_eql(e->key, key))) {
+    /* search existing within this bucket only — proper chained hash */
+    for (struct korb_hash_entry *e = h->buckets[b]; e; e = e->bucket_next) {
+        if (e->hash == hh && korb_hash_keys_match(h, e->key, key)) {
             e->value = val;
             return val;
         }
@@ -589,20 +624,25 @@ VALUE korb_hash_aset(VALUE hv, VALUE key, VALUE val) {
     e->value = val;
     e->hash = hh;
     e->next = NULL;
+    e->bucket_next = h->buckets[b];
+    h->buckets[b] = e;
     if (!h->first) h->first = e;
     else h->last->next = e;
     h->last = e;
-    h->buckets[b] = e; /* simplistic: just stash */
     h->size++;
+    /* grow when load factor passes 0.75 (or always above ~75% capacity) */
+    if (h->size * 4 > h->bucket_cnt * 3) {
+        korb_hash_resize(h, h->bucket_cnt * 2);
+    }
     return val;
 }
 
 VALUE korb_hash_aref(VALUE hv, VALUE key) {
     struct korb_hash *h = (struct korb_hash *)hv;
-    uint64_t hh = h->compare_by_identity ? (uint64_t)key : korb_hash_value(key);
-    for (struct korb_hash_entry *e = h->first; e; e = e->next) {
-        if (e->hash == hh &&
-            (h->compare_by_identity ? (e->key == key) : korb_eql(e->key, key)))
+    uint64_t hh = korb_hash_key(h, key);
+    uint32_t b = (uint32_t)(hh % h->bucket_cnt);
+    for (struct korb_hash_entry *e = h->buckets[b]; e; e = e->bucket_next) {
+        if (e->hash == hh && korb_hash_keys_match(h, e->key, key))
             return e->value;
     }
     return h->default_value;

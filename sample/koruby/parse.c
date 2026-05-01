@@ -52,6 +52,12 @@ static struct method_cache *alloc_method_cache(void) {
     return korb_xcalloc(1, sizeof(struct method_cache));
 }
 
+static struct ivar_cache *alloc_ivar_cache(void) {
+    struct ivar_cache *c = korb_xcalloc(1, sizeof(*c));
+    c->slot = -1;
+    return c;
+}
+
 static void push_frame(struct transduce_context *tc, pm_constant_id_list_t *locals, bool is_block) {
     struct frame_context *f = korb_xmalloc(sizeof(*f));
     f->prev = tc->frame;

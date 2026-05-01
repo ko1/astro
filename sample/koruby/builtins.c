@@ -1820,19 +1820,17 @@ static VALUE ary_each_with_object(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 static VALUE hash_compare_by_identity(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_hash *h = (struct korb_hash *)self;
-    if (h->size > 0) {
-        /* In CRuby, calling on a non-empty hash rehashes.  We'd need to
-         * rebuild every entry's hash; do a simple rebuild here. */
-        struct korb_hash_entry *first = h->first;
-        h->first = h->last = NULL;
-        h->size = 0;
-        memset(h->buckets, 0, h->bucket_cnt * sizeof(*h->buckets));
-        h->compare_by_identity = true;
-        for (struct korb_hash_entry *e = first; e; e = e->next) {
-            korb_hash_aset((VALUE)h, e->key, e->value);
-        }
-    } else {
-        h->compare_by_identity = true;
+    if (h->compare_by_identity) return self;
+    h->compare_by_identity = true;
+    if (h->size == 0) return self;
+    /* Rehash every entry under the new (identity) hash function and rebuild
+     * bucket chains.  Insertion order (h->first chain) is preserved. */
+    memset(h->buckets, 0, h->bucket_cnt * sizeof(*h->buckets));
+    for (struct korb_hash_entry *e = h->first; e; e = e->next) {
+        e->hash = (uint64_t)e->key;
+        uint32_t b = (uint32_t)(e->hash % h->bucket_cnt);
+        e->bucket_next = h->buckets[b];
+        h->buckets[b] = e;
     }
     return self;
 }
@@ -1940,20 +1938,35 @@ static VALUE hash_fetch(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE hash_delete(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1) return Qnil;
     struct korb_hash *h = (struct korb_hash *)self;
-    uint64_t hh = korb_hash_value(argv[0]);
+    VALUE key = argv[0];
+    uint64_t hh = h->compare_by_identity ? (uint64_t)key : korb_hash_value(key);
+    uint32_t b = (uint32_t)(hh % h->bucket_cnt);
+    /* Unlink from bucket chain */
+    struct korb_hash_entry **slot = &h->buckets[b];
+    struct korb_hash_entry *target = NULL;
+    while (*slot) {
+        if ((*slot)->hash == hh &&
+            (h->compare_by_identity ? ((*slot)->key == key) : korb_eql((*slot)->key, key))) {
+            target = *slot;
+            *slot = target->bucket_next;
+            break;
+        }
+        slot = &(*slot)->bucket_next;
+    }
+    if (!target) return Qnil;
+    /* Unlink from insertion-order chain */
     struct korb_hash_entry *prev = NULL;
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
-        if (e->hash == hh && korb_eql(e->key, argv[0])) {
-            VALUE v = e->value;
+        if (e == target) {
             if (prev) prev->next = e->next;
             else h->first = e->next;
             if (h->last == e) h->last = prev;
-            h->size--;
-            return v;
+            break;
         }
         prev = e;
     }
-    return Qnil;
+    h->size--;
+    return target->value;
 }
 
 static VALUE hash_eqq(CTX *c, VALUE self, int argc, VALUE *argv) {

@@ -30,7 +30,8 @@ struct korb_hash_entry {
     VALUE key;
     VALUE value;
     uint64_t hash;
-    struct korb_hash_entry *next; /* insertion order chain */
+    struct korb_hash_entry *next;        /* insertion order chain */
+    struct korb_hash_entry *bucket_next; /* per-bucket collision chain */
 };
 
 struct korb_hash {
@@ -213,6 +214,8 @@ bool korb_const_has(struct korb_class *klass, ID name);
 VALUE korb_object_new(struct korb_class *klass);
 VALUE korb_ivar_get(VALUE obj, ID name);
 void  korb_ivar_set(VALUE obj, ID name, VALUE value);
+VALUE korb_ivar_get_ic(VALUE obj, ID name, struct ivar_cache *cache);
+void  korb_ivar_set_ic(VALUE obj, ID name, VALUE val, struct ivar_cache *cache);
 
 /* string */
 VALUE korb_str_new(const char *p, long len);

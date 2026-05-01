@@ -157,6 +157,13 @@ struct call_cache {
     uint32_t params_cnt;
 };
 
+/* inline ivar cache: each ivar AST node carries one of these.  The cache
+ * is monomorphic on the receiver's class — same class ⇒ same slot. */
+struct ivar_cache {
+    struct korb_class *klass;
+    int32_t slot;             /* -1 if name not present in klass */
+};
+
 /* lexical constant scope: chain of currently-nested classes/modules */
 struct korb_cref {
     struct korb_class *klass;
