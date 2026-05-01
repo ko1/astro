@@ -1772,6 +1772,9 @@ typedef struct ModuleEntry {
 } ModuleEntry;
 static ModuleEntry *g_modules = NULL;
 
+// GC root walkers are defined at the end of this file (after JsMap /
+// JsMapIter type defs).
+
 extern char *jstro_read_file(const char *path, size_t *out_len);
 
 static char *
@@ -2803,4 +2806,37 @@ jstro_install_stdlib(CTX *c)
     def_global(c, "NaN", JV_DBL(NAN));
     def_global(c, "Infinity", JV_DBL(INFINITY));
     def_global(c, "globalThis", JV_OBJ(c->globals));
+}
+
+// =====================================================================
+// GC root walkers (need to come after JsMap / JsMapIter type defs).
+// =====================================================================
+extern void jstro_gc_mark_value(JsValue v);
+
+void
+jstro_gc_mark_modules(void)
+{
+    for (ModuleEntry *m = g_modules; m; m = m->next) {
+        jstro_gc_mark_value(m->exports);
+    }
+}
+
+void
+jstro_gc_mark_map(void *m_ptr)
+{
+    JsMap *m = (JsMap *)m_ptr;
+    if (!m->entries) return;
+    for (uint32_t i = 0; i < m->capa; i++) {
+        if (m->entries[i].used) {
+            jstro_gc_mark_value(m->entries[i].k);
+            jstro_gc_mark_value(m->entries[i].v);
+        }
+    }
+}
+
+void
+jstro_gc_mark_mapiter(void *iter)
+{
+    JsMapIter *it = (JsMapIter *)iter;
+    if (it->m) jstro_gc_mark_value((JsValue)(uintptr_t)it->m);
 }

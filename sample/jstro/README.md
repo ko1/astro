@@ -1,7 +1,7 @@
 # jstro — JavaScript on ASTro
 
 ASTro 上に構築した JavaScript (ECMAScript) インタプリタ。
-ツリー・ウォーキング型ながら、V8 風の hidden class + inline cache、CRuby 風の SMI/inline-flonum 値表現、`longjmp` ベースの例外伝播、単形性の関数呼び出し IC、shape 遷移 IC など動的言語の典型的な高速化を多数取り込んでいる。
+ツリー・ウォーキング型ながら、V8 風の hidden class + inline cache、CRuby 風の SMI/inline-flonum 値表現、`longjmp` ベースの例外伝播、単形性の関数呼び出し IC、shape 遷移 IC、safepoint 駆動の mark-sweep GC など動的言語の典型的な高速化を多数取り込んでいる。
 
 ES2023+ をかなりカバーする。クラス継承+`super`、destructuring、spread、optional chaining、Map/Set、Symbol、regex、Promise (sync)、CommonJS+ES モジュール、Proxy/Reflect、`eval`、JSON、tagged templates、private fields、static blocks、テキスト pre-scan による関数/let/const ホイスティング、for-let の per-iteration binding まで動く。
 
@@ -66,7 +66,7 @@ jstro [-q] [-v] [--show-result] [--dump] [--dump-ic] file.js
 詳しくは [`docs/todo.md`](./docs/todo.md)。代表:
 
 - **真のジェネレータ / async microtask** — 構文は受理するが、yield/await は同期実行
-- **自動 GC は未実装** — 長時間プロセスではメモリが増え続ける
+- **WeakMap/WeakSet は strong ref で代用** — GC 自体は実装済みだが weak reference は未対応
 - **ASTro 特化モード未駆動** — フレームワークは整備済みだが SD bake は未稼働
 - **BigInt 未実装** — `123n` リテラル構文は受理するが値は通常の Number に
   なる (`typeof 123n === "number"`)。独立した primitive type としての BigInt は未対応

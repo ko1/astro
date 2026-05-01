@@ -61,20 +61,376 @@ uint32_t jstro_str_arr_alloc(uint32_t cnt) {
 }
 
 // =====================================================================
-// GC (currently a no-op heap walker; tracks allocation for stats)
+// GC — simple mark-sweep with explicit root set.  The hard part is
+// finding roots in alloca'd call frames; we maintain a linked list
+// (`c->frame_stack`) that every call entry/exit pushes and pops.
+// `try`-frames snapshot the stack head so `longjmp` doesn't leave
+// stale pointers.
 // =====================================================================
+
+// Per-allocation size record so sweep can update bytes_allocated.
+// We piggyback on GCHead by reserving 4 high bits of the type-byte
+// `_pad` for a size hint — but it's easier to keep a parallel size in
+// a fixed offset.  Cheat: store sizes in a separate alloc list.  Even
+// easier: don't track allocated bytes precisely; just count entries.
+// For threshold heuristics we use object count instead of bytes.
+
+static void mark_value(JsValue v);
+static void mark_object_struct(struct JsObject *o);
+
+// Mark color: we use a single bit, flipping the polarity each cycle so
+// we don't need a separate clear pass.
+static uint8_t  g_mark_live = 1;
+static uint8_t  g_mark_dead = 0;
+
+static inline bool
+gc_is_marked(struct GCHead *h)
+{
+    return h->mark == g_mark_live;
+}
+
+static inline void
+gc_set_marked(struct GCHead *h)
+{
+    h->mark = g_mark_live;
+}
+
+// Forward.
+static void mark_string(struct JsString *s);
+static void mark_shape(struct JsShape *s);
+static void mark_function(struct JsFunction *fn);
+static void mark_cfunction(struct JsCFunction *cf);
+
+static void
+mark_string(struct JsString *s)
+{
+    if (!s) return;
+    if (gc_is_marked(&s->gc)) return;
+    gc_set_marked(&s->gc);
+}
+
+static void
+mark_shape(struct JsShape *s)
+{
+    if (!s) return;
+    if (gc_is_marked(&s->gc)) return;
+    gc_set_marked(&s->gc);
+    for (uint32_t i = 0; i < s->nslots; i++) mark_string(s->names[i]);
+    for (uint32_t i = 0; i < s->ntrans; i++) {
+        mark_string(s->trans[i].name);
+        mark_shape(s->trans[i].to);
+    }
+    if (s->parent) mark_shape(s->parent);
+}
+
+static void
+mark_object_struct(struct JsObject *o)
+{
+    if (!o) return;
+    if (gc_is_marked(&o->gc)) return;
+    gc_set_marked(&o->gc);
+    if (o->shape) mark_shape(o->shape);
+    for (uint32_t i = 0; i < o->shape->nslots; i++) mark_value(o->slots[i]);
+    if (o->proto) mark_object_struct(o->proto);
+}
+
+static void
+mark_array(struct JsArray *a)
+{
+    if (!a) return;
+    if (gc_is_marked(&a->gc)) return;
+    gc_set_marked(&a->gc);
+    // Trace dense up to dense_capa (slots past length may still be live
+    // if the array has been shrunk; safer to trace allocated capa).
+    for (uint32_t i = 0; i < a->length && i < a->dense_capa; i++) {
+        mark_value(a->dense[i]);
+    }
+    if (a->fallback) mark_object_struct(a->fallback);
+    if (a->proto)    mark_object_struct(a->proto);
+}
+
+static void
+mark_function(struct JsFunction *fn)
+{
+    if (!fn) return;
+    if (gc_is_marked(&fn->gc)) return;
+    gc_set_marked(&fn->gc);
+    if (fn->upvals) {
+        for (uint32_t i = 0; i < fn->nupvals; i++) {
+            // upvals[i] is a JsValue * pointing into a JsBox.value (or
+            // a stack slot of a still-live caller).  We can't easily
+            // recover the JsBox from the value pointer; just trace the
+            // pointed-to value as a root.
+            mark_value(*fn->upvals[i]);
+        }
+    }
+    if (fn->home_proto) mark_object_struct(fn->home_proto);
+    if (fn->bound_this) mark_object_struct(fn->bound_this);
+    if (fn->own_props)  mark_object_struct(fn->own_props);
+}
+
+static void
+mark_cfunction(struct JsCFunction *cf)
+{
+    if (!cf) return;
+    if (gc_is_marked(&cf->gc)) return;
+    gc_set_marked(&cf->gc);
+    if (cf->own_props) mark_object_struct(cf->own_props);
+}
+
+static void mark_value(JsValue v);  // forward
+void
+jstro_gc_mark_value(JsValue v) { mark_value(v); }
+
+static void
+mark_value(JsValue v)
+{
+    if (!JV_IS_PTR(v)) return;
+    struct GCHead *h = (struct GCHead *)(uintptr_t)v;
+    if (gc_is_marked(h)) return;
+    switch (h->type) {
+    case JS_TSTRING:    mark_string((struct JsString *)h); break;
+    case JS_TFLOAT:     gc_set_marked(h); break;
+    case JS_TBOX: {
+        gc_set_marked(h);
+        struct JsBox *b = (struct JsBox *)h;
+        mark_value(b->value);
+        break;
+    }
+    case JS_TOBJECT:    mark_object_struct((struct JsObject *)h); break;
+    case JS_TARRAY:     mark_array((struct JsArray *)h); break;
+    case JS_TFUNCTION:  mark_function((struct JsFunction *)h); break;
+    case JS_TCFUNCTION: mark_cfunction((struct JsCFunction *)h); break;
+    case JS_TERROR:     mark_object_struct((struct JsObject *)h); break;
+    case JS_TACCESSOR:  mark_object_struct((struct JsObject *)h); break;
+    case JS_TSYMBOL: {
+        gc_set_marked(h);
+        struct JsSymObj { struct GCHead gc; struct JsString *desc; } *sy =
+            (struct JsSymObj *)h;
+        if (sy->desc) mark_string(sy->desc);
+        break;
+    }
+    case JS_TMAP:
+    case JS_TSET: {
+        gc_set_marked(h);
+        struct JsMapData { struct GCHead gc; void *entries; uint32_t size, capa; uint8_t is_set; } *m
+            = (struct JsMapData *)h;
+        // entries is JsMapEntry { JsValue k, v; bool used } * — but the
+        // layout is private to js_stdlib.c.  We tracein via a public
+        // helper.  Simpler: chase via a forward decl.
+        extern void jstro_gc_mark_map(void *m_ptr);
+        jstro_gc_mark_map(m);
+        break;
+    }
+    case JS_TMAPITER: {
+        gc_set_marked(h);
+        // points to a JsMap; trace via the same helper.
+        extern void jstro_gc_mark_mapiter(void *iter);
+        jstro_gc_mark_mapiter(h);
+        break;
+    }
+    case JS_TREGEX: {
+        gc_set_marked(h);
+        // {gc, source, flags, ...}
+        struct { struct GCHead gc; struct JsString *src; struct JsString *fl; } *re = (void *)h;
+        mark_string(re->src);
+        mark_string(re->fl);
+        break;
+    }
+    case JS_TPROXY: {
+        gc_set_marked(h);
+        struct { struct GCHead gc; JsValue target; JsValue handler; } *px = (void *)h;
+        mark_value(px->target);
+        mark_value(px->handler);
+        break;
+    }
+    case JS_TPROMISE:   mark_object_struct((struct JsObject *)h); break;
+    default:
+        gc_set_marked(h);
+        break;
+    }
+}
+
+// Module cache (defined in js_stdlib.c).  Externally walked here.
+extern void jstro_gc_mark_modules(void);
+
+static void
+gc_mark_roots(CTX *c)
+{
+    // CTX prototypes and globals.
+    mark_object_struct(c->object_proto);
+    mark_object_struct(c->function_proto);
+    mark_object_struct(c->array_proto);
+    mark_object_struct(c->string_proto);
+    mark_object_struct(c->number_proto);
+    mark_object_struct(c->boolean_proto);
+    mark_object_struct(c->error_proto);
+    mark_object_struct(c->map_proto);
+    mark_object_struct(c->set_proto);
+    mark_object_struct(c->mapiter_proto);
+    mark_object_struct(c->regex_proto);
+    mark_object_struct(c->globals);
+
+    // Active call state.
+    mark_value(c->this_val);
+    mark_value(c->new_target);
+    mark_value(c->last_thrown);
+    mark_value(JSTRO_BR_VAL);
+    if (c->cur_upvals) {
+        // We don't know how many upvals the active closure has — but each
+        // is referenced via cur_upvals[i] in body code through node_upval_*.
+        // Without size info, we trust that the closures themselves are
+        // already kept alive (via frame's locals or via own_props), and
+        // their upvals[] arrays are reached through them.  So we don't
+        // walk cur_upvals here.
+    }
+    if (c->cur_args) {
+        for (uint32_t i = 0; i < c->cur_argc; i++) mark_value(c->cur_args[i]);
+    }
+    // The root shape singleton — needed because intermediate transitions
+    // chain back to it.
+    mark_shape(c->root_shape);
+
+    // Active frame stack — every alloca'd frame in flight.
+    for (struct js_frame_link *fl = c->frame_stack; fl; fl = fl->prev) {
+        for (uint32_t i = 0; i < fl->nlocals; i++) mark_value(fl->frame[i]);
+        if (fl->args) {
+            for (uint32_t i = 0; i < fl->argc; i++) mark_value(fl->args[i]);
+        }
+    }
+
+    // Throw-frame chain.  The frames themselves don't store JsValues, but
+    // c->last_thrown is already covered above.
+
+    // String intern table — strong root (interned strings live forever
+    // until the intern table itself is rebuilt; this avoids the need for
+    // weak refs).
+    for (uint32_t i = 0; i < c->intern_cap; i++) {
+        if (c->intern_buckets[i]) mark_string(c->intern_buckets[i]);
+    }
+
+    // Module cache (private to js_stdlib.c).
+    jstro_gc_mark_modules();
+}
+
+// Free an unmarked object's auxiliary buffers (mallocs the GCHead doesn't own).
+static void
+gc_finalize(struct GCHead *h)
+{
+    switch (h->type) {
+    case JS_TOBJECT: case JS_TERROR: case JS_TACCESSOR: case JS_TPROMISE: {
+        struct JsObject *o = (struct JsObject *)h;
+        free(o->slots);
+        break;
+    }
+    case JS_TARRAY: {
+        struct JsArray *a = (struct JsArray *)h;
+        free(a->dense);
+        break;
+    }
+    case JS_TFUNCTION: {
+        struct JsFunction *fn = (struct JsFunction *)h;
+        free(fn->upvals);
+        break;
+    }
+    case JS_TMAP: case JS_TSET: {
+        struct JsMapData2 { struct GCHead gc; void *entries; } *m = (void *)h;
+        free(m->entries);
+        break;
+    }
+    default:
+        break;
+    }
+}
+
+static size_t g_gc_alive_count = 0;
+
+static void
+gc_sweep(CTX *c)
+{
+    struct GCHead **link = &c->all_objects;
+    size_t freed = 0;
+    while (*link) {
+        struct GCHead *h = *link;
+        if (gc_is_marked(h)) {
+            link = &h->next;
+        } else {
+            *link = h->next;
+            gc_finalize(h);
+            free(h);
+            freed++;
+        }
+    }
+    g_gc_alive_count = 0;
+    for (struct GCHead *h = c->all_objects; h; h = h->next) g_gc_alive_count++;
+    c->bytes_allocated = g_gc_alive_count;
+    size_t want = g_gc_alive_count * 2;
+    if (want < 4096)        want = 4096;
+    if (want > 1024 * 1024) want = 1024 * 1024;
+    c->gc_threshold = want;
+    if (getenv("JSTRO_GC_TRACE")) {
+        size_t cnt[64] = {0};
+        for (struct GCHead *h = c->all_objects; h; h = h->next) {
+            if (h->type < 64) cnt[h->type]++;
+        }
+        fprintf(stderr, "[GC] freed=%zu alive=%zu threshold=%zu",
+                freed, g_gc_alive_count, c->gc_threshold);
+        for (int i = 0; i < 64; i++) {
+            if (cnt[i] > 5) fprintf(stderr, " t%d:%zu", i, cnt[i]);
+        }
+        fputc('\n', stderr);
+    }
+}
+
+unsigned long jstro_gc_run_count = 0;
+
+// Safepoint check: called from node_seq / node_while / node_for between
+// statements.  Triggers GC if the allocation count crossed the threshold.
+// Inlined into the dispatchers via the macro `JSTRO_SAFEPOINT(c)`.
+void
+jstro_gc_safepoint(CTX *c)
+{
+    if (!c->gc_disabled && c->bytes_allocated >= c->gc_threshold) {
+        js_gc_collect(c);
+    }
+}
+
+void
+js_gc_collect(CTX *c)
+{
+    if (c->gc_disabled) return;
+    jstro_gc_run_count++;
+    // Flip live/dead polarity (so all currently-marked objects effectively
+    // become unmarked without a clear pass).
+    g_mark_dead  = g_mark_live;
+    g_mark_live ^= 1;
+    gc_mark_roots(c);
+    gc_sweep(c);
+}
 
 void *
 js_gc_alloc(CTX *c, size_t size, uint8_t type)
 {
+    // We do NOT trigger GC inside the allocator: newly-allocated objects
+    // are typically referenced only from C-stack locals during multi-step
+    // construction (e.g. js_object_new + js_object_set + ...), and tracing
+    // those would require either a pin list or a write-barrier protocol.
+    // Instead, GC fires at "safepoints" — `node_seq` between statements,
+    // `node_while`/`for` bodies, and other places where we know the only
+    // live JsValues are reachable through CTX (frame_stack + cur_args + ...).
+    // See `jstro_gc_safepoint` below.
     void *p = calloc(1, size);
     if (!p) { fprintf(stderr, "OOM\n"); exit(1); }
     struct GCHead *gc = (struct GCHead *)p;
     gc->type = type;
-    gc->mark = 0;
+    // New objects start out with the current live color so they aren't
+    // swept until the next GC sweeps them after deciding they're dead.
+    // (At the next GC entry we flip live↔dead; surviving = reachable +
+    // re-marked, unreachable = mark stays at the now-dead color.)
+    gc->mark = g_mark_live;
     gc->next = c->all_objects;
     c->all_objects = gc;
-    c->bytes_allocated += size;
+    c->bytes_allocated += 1;
     return p;
 }
 
@@ -83,11 +439,10 @@ js_gc_register(CTX *c, void *obj, uint8_t type)
 {
     struct GCHead *gc = (struct GCHead *)obj;
     gc->type = type;
+    gc->mark = g_mark_live;
     gc->next = c->all_objects;
     c->all_objects = gc;
 }
-
-void js_gc_collect(CTX *c) { (void)c; /* TODO */ }
 
 // =====================================================================
 // Heap-boxed double (for out-of-range flonum encoding).
@@ -870,6 +1225,9 @@ js_call_func_direct(CTX *c, struct JsFunction *fn, JsValue thisv, JsValue *args,
     c->cur_args   = args;
     c->cur_argc   = argc;
 
+    struct js_frame_link link = { frame, nlocals, args, argc, c->frame_stack };
+    c->frame_stack = &link;
+
     JsValue r = EVAL(c, fn->body, frame);
 
     // Throws longjmp to the nearest try-frame, never reaching here.
@@ -881,6 +1239,7 @@ js_call_func_direct(CTX *c, struct JsFunction *fn, JsValue thisv, JsValue *args,
     } else {
         r = JV_UNDEFINED;
     }
+    c->frame_stack = link.prev;
     c->this_val = saved_this;
     c->cur_upvals = saved_upvals;
     c->cur_args = saved_args;
@@ -941,6 +1300,7 @@ jstro_try_run(CTX *c, NODE *body, JsValue *frame,
     jf.prev = c->throw_top;
     jf.frame_save = frame;
     jf.sp_save = c->sp;
+    jf.frame_stack_save = c->frame_stack;
     uint32_t saved_br = JSTRO_BR;
     JsValue  saved_br_val = JSTRO_BR_VAL;
 
@@ -951,6 +1311,8 @@ jstro_try_run(CTX *c, NODE *body, JsValue *frame,
     } else {
         c->throw_top = jf.prev;
         c->sp = jf.sp_save;
+        // longjmp skipped frame_link pops; restore the stack head.
+        c->frame_stack = jf.frame_stack_save;
         JSTRO_BR = saved_br;
         JSTRO_BR_VAL = saved_br_val;
         if (has_handler) {
@@ -1511,7 +1873,7 @@ js_create_context(void)
     c->throw_top = NULL;
     c->all_objects = NULL;
     c->bytes_allocated = 0;
-    c->gc_threshold = 16 * 1024 * 1024;
+    c->gc_threshold = 4096;     // initial: collect after 4K objects allocated
     c->gc_disabled = false;
     c->root_shape = NULL;
     jstro_main_ctx = c;

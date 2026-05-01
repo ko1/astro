@@ -318,6 +318,19 @@ struct js_throw_frame {
     struct js_throw_frame *prev;
     JsValue *frame_save;
     JsValue *sp_save;
+    struct js_frame_link *frame_stack_save;  // for GC root unwind on throw
+};
+
+// Linked list of live alloca'd frames so the mark-and-sweep GC can find
+// roots that aren't reachable through CTX.  Push on call entry, pop on
+// return; throw-frames snapshot the head so GC stays consistent across
+// longjmp.
+struct js_frame_link {
+    JsValue              *frame;     // alloca'd local slots
+    uint32_t              nlocals;
+    JsValue              *args;      // caller-provided args
+    uint32_t              argc;
+    struct js_frame_link *prev;
 };
 
 typedef struct CTX_struct {
@@ -355,6 +368,7 @@ typedef struct CTX_struct {
     JsValue         *cur_args;      // arguments seen by current call
     uint32_t         cur_argc;
     JsValue          new_target;    // constructor passed to `new`, else undefined
+    struct js_frame_link *frame_stack;  // GC roots: stack of alloca'd frames
 
     JsValue          last_thrown;   // for throw inside generated SD code
 
@@ -362,7 +376,7 @@ typedef struct CTX_struct {
     struct GCHead   *all_objects;
     size_t           bytes_allocated;
     size_t           gc_threshold;
-    bool             gc_disabled;
+    int              gc_disabled;     // counter; >0 = no GC
 } CTX;
 
 // =====================================================================
@@ -495,6 +509,7 @@ int     js_regex_search(struct JsRegex *re, struct JsString *s, int32_t from, in
 void js_gc_register(CTX *c, void *obj, uint8_t type);
 void js_gc_register_size(CTX *c, void *obj, uint8_t type, size_t size);
 void js_gc_collect(CTX *c);
+void jstro_gc_safepoint(CTX *c);
 void *js_gc_alloc(CTX *c, size_t size, uint8_t type);
 
 // =====================================================================

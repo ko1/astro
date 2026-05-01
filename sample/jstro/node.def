@@ -270,6 +270,7 @@ node_seq(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *fi
     (void)n;
     RESULT r = EVAL_ARG(c, first);
     if (JSTRO_UNLIKELY(JSTRO_BR != JS_BR_NORMAL)) return r;
+    jstro_gc_safepoint(c);
     return EVAL_ARG(c, second);
 }
 
@@ -285,6 +286,7 @@ node_seqn(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, uint32_
         NODE *e = JSTRO_NODE_ARR[idx + i];
         r = EVAL(c, e, frame);
         if (JSTRO_UNLIKELY(JSTRO_BR != JS_BR_NORMAL)) return r;
+        jstro_gc_safepoint(c);
     }
     return RESULT_OK(r);
 }
@@ -322,6 +324,7 @@ node_while(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *
             }
             return JSTRO_BR_VAL;
         }
+        jstro_gc_safepoint(c);
     }
     return RESULT_OK(JV_UNDEFINED);
 }
@@ -340,6 +343,7 @@ node_do_while(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NOD
         JsValue cv = EVAL_ARG(c, cond);
         if (JSTRO_UNLIKELY(JSTRO_BR != JS_BR_NORMAL)) return cv;
         if (!jv_to_bool(cv)) break;
+        jstro_gc_safepoint(c);
     }
     return RESULT_OK(JV_UNDEFINED);
 }
@@ -377,6 +381,7 @@ node_for_let(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, uint
         // After body, restore the slot to the raw value (so step works on it).
         frame[slot] = box->value;
         EVAL_ARG(c, step);
+        jstro_gc_safepoint(c);
     }
     return RESULT_OK(JV_UNDEFINED);
 }
@@ -406,6 +411,7 @@ node_for(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *in
             EVAL_ARG(c, step);
             if (JSTRO_UNLIKELY(JSTRO_BR != JS_BR_NORMAL)) return JSTRO_BR_VAL;
         }
+        jstro_gc_safepoint(c);
     }
     return RESULT_OK(JV_UNDEFINED);
 }
@@ -418,7 +424,14 @@ NODE_DEF
 node_for_of(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, uint32_t var_idx, uint32_t is_box, NODE *iterable, NODE *body)
 {
     (void)n;
-    JsValue it = EVAL_ARG(c, iterable);
+    // Pin slots: [0]=it, [1]=iter_obj.  Both must outlive each iteration's
+    // body EVAL (which can trigger GC at safepoints).
+    JsValue pinslots[2] = { JV_UNDEFINED, JV_UNDEFINED };
+    struct js_frame_link pin = { pinslots, 2, NULL, 0, c->frame_stack };
+    c->frame_stack = &pin;
+    pinslots[0] = EVAL_ARG(c, iterable);
+    JsValue it = pinslots[0];
+    JsValue ret;
     if (JV_IS_ARRAY(it)) {
         struct JsArray *a = JV_AS_ARRAY(it);
         for (uint32_t i = 0; i < a->length; i++) {
@@ -430,11 +443,12 @@ node_for_of(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, uint3
             if (JSTRO_UNLIKELY(JSTRO_BR != JS_BR_NORMAL)) {
                 if (JSTRO_BR == JS_BR_BREAK && JSTRO_BR_LABEL == NULL) { JSTRO_BR = JS_BR_NORMAL; goto done_arr; }
                 if (JSTRO_BR == JS_BR_CONTINUE) { JSTRO_BR = JS_BR_NORMAL; continue; }
-                return JSTRO_BR_VAL;
+                ret = JSTRO_BR_VAL; goto out;
             }
+            jstro_gc_safepoint(c);
         }
 done_arr:;
-        return RESULT_OK(JV_UNDEFINED);
+        ret = RESULT_OK(JV_UNDEFINED); goto out;
     }
     if (JV_IS_STR(it)) {
         struct JsString *s = JV_AS_STR(it);
@@ -447,10 +461,11 @@ done_arr:;
             if (JSTRO_UNLIKELY(JSTRO_BR != JS_BR_NORMAL)) {
                 if (JSTRO_BR == JS_BR_BREAK && JSTRO_BR_LABEL == NULL) { JSTRO_BR = JS_BR_NORMAL; break; }
                 if (JSTRO_BR == JS_BR_CONTINUE) { JSTRO_BR = JS_BR_NORMAL; continue; }
-                return JSTRO_BR_VAL;
+                ret = JSTRO_BR_VAL; goto out;
             }
+            jstro_gc_safepoint(c);
         }
-        return RESULT_OK(JV_UNDEFINED);
+        ret = RESULT_OK(JV_UNDEFINED); goto out;
     }
     if (!JV_IS_PTR(it) || jv_heap_type(it) < JS_TOBJECT) {
         js_throw_type_error(c, "for-of: value is not iterable");
@@ -460,19 +475,18 @@ done_arr:;
     struct JsString *done_key  = js_str_intern(c, "done");
     struct JsString *value_key = js_str_intern(c, "value");
     JsValue iter_fn = js_get_member(c, it, iter_key);
-    JsValue iter_obj;
     if (JV_IS_PTR(iter_fn) && (jv_heap_type(iter_fn) == JS_TFUNCTION || jv_heap_type(iter_fn) == JS_TCFUNCTION)) {
-        iter_obj = js_call(c, iter_fn, it, NULL, 0);
+        pinslots[1] = js_call(c, iter_fn, it, NULL, 0);
     } else {
         JsValue tmp = js_get_member(c, it, next_key);
         if (!JV_IS_PTR(tmp) || (jv_heap_type(tmp) != JS_TFUNCTION && jv_heap_type(tmp) != JS_TCFUNCTION)) {
             js_throw_type_error(c, "for-of: value is not iterable");
         }
-        iter_obj = it;
+        pinslots[1] = it;
     }
     for (;;) {
-        JsValue next_fn = js_get_member(c, iter_obj, next_key);
-        JsValue result  = js_call(c, next_fn, iter_obj, NULL, 0);
+        JsValue next_fn = js_get_member(c, pinslots[1], next_key);
+        JsValue result  = js_call(c, next_fn, pinslots[1], NULL, 0);
         if (!JV_IS_PTR(result) || jv_heap_type(result) < JS_TOBJECT) {
             js_throw_type_error(c, "iterator result is not an object");
         }
@@ -485,10 +499,14 @@ done_arr:;
         if (JSTRO_UNLIKELY(JSTRO_BR != JS_BR_NORMAL)) {
             if (JSTRO_BR == JS_BR_BREAK && JSTRO_BR_LABEL == NULL) { JSTRO_BR = JS_BR_NORMAL; break; }
             if (JSTRO_BR == JS_BR_CONTINUE) { JSTRO_BR = JS_BR_NORMAL; continue; }
-            return JSTRO_BR_VAL;
+            ret = JSTRO_BR_VAL; goto out;
         }
+        jstro_gc_safepoint(c);
     }
-    return RESULT_OK(JV_UNDEFINED);
+    ret = RESULT_OK(JV_UNDEFINED);
+out:
+    c->frame_stack = pin.prev;
+    return ret;
 }
 
 // for-in over object own + prototype-chain enumerable keys (we only
@@ -497,9 +515,14 @@ NODE_DEF @always_inline
 node_for_in(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, uint32_t var_idx, uint32_t is_box, NODE *obj_e, NODE *body)
 {
     (void)n;
-    JsValue ov = EVAL_ARG(c, obj_e);
-    if (JSTRO_UNLIKELY(JSTRO_BR != JS_BR_NORMAL)) return ov;
-    if (JV_IS_NULLISH(ov)) return RESULT_OK(JV_UNDEFINED);
+    JsValue ov_slot = JV_UNDEFINED;
+    struct js_frame_link pin = { &ov_slot, 1, NULL, 0, c->frame_stack };
+    c->frame_stack = &pin;
+    ov_slot = EVAL_ARG(c, obj_e);
+    if (JSTRO_UNLIKELY(JSTRO_BR != JS_BR_NORMAL)) { c->frame_stack = pin.prev; return ov_slot; }
+    if (JV_IS_NULLISH(ov_slot)) { c->frame_stack = pin.prev; return RESULT_OK(JV_UNDEFINED); }
+    JsValue ret;
+    JsValue ov = ov_slot;
     if (JV_IS_ARRAY(ov)) {
         struct JsArray *a = JV_AS_ARRAY(ov);
         for (uint32_t i = 0; i < a->length; i++) {
@@ -512,13 +535,14 @@ node_for_in(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, uint3
             if (JSTRO_UNLIKELY(JSTRO_BR != JS_BR_NORMAL)) {
                 if (JSTRO_BR == JS_BR_BREAK && JSTRO_BR_LABEL == NULL) { JSTRO_BR = JS_BR_NORMAL; goto done_a; }
                 if (JSTRO_BR == JS_BR_CONTINUE) { JSTRO_BR = JS_BR_NORMAL; continue; }
-                return JSTRO_BR_VAL;
+                ret = JSTRO_BR_VAL; goto out;
             }
+            jstro_gc_safepoint(c);
         }
 done_a:;
-        return RESULT_OK(JV_UNDEFINED);
+        ret = RESULT_OK(JV_UNDEFINED); goto out;
     }
-    if (!JV_IS_PTR(ov)) return RESULT_OK(JV_UNDEFINED);  // primitives: nothing
+    if (!JV_IS_PTR(ov)) { ret = RESULT_OK(JV_UNDEFINED); goto out; }  // primitives: nothing
     if (jv_heap_type(ov) == JS_TOBJECT) {
         // Walk own + prototype chain, deduping keys we've seen.
         struct JsObject *o = JV_AS_OBJ(ov);
@@ -539,14 +563,18 @@ done_a:;
                 if (JSTRO_UNLIKELY(JSTRO_BR != JS_BR_NORMAL)) {
                     if (JSTRO_BR == JS_BR_BREAK && JSTRO_BR_LABEL == NULL) { JSTRO_BR = JS_BR_NORMAL; goto done_o; }
                     if (JSTRO_BR == JS_BR_CONTINUE) { JSTRO_BR = JS_BR_NORMAL; continue; }
-                    return JSTRO_BR_VAL;
+                    ret = JSTRO_BR_VAL; goto out;
                 }
+                jstro_gc_safepoint(c);
             }
             cur = cur->proto;
         }
 done_o:;
     }
-    return RESULT_OK(JV_UNDEFINED);
+    ret = RESULT_OK(JV_UNDEFINED);
+out:
+    c->frame_stack = pin.prev;
+    return ret;
 }
 
 NODE_DEF
@@ -1089,15 +1117,19 @@ NODE_DEF
 node_optional_call(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *fn, uint32_t args_idx, uint32_t argc)
 {
     (void)n;
-    JsValue fv = EVAL_ARG(c, fn);
-    if (JV_IS_NULLISH(fv)) return RESULT_OK(JV_UNDEFINED);
+    JsValue fvslot = EVAL_ARG(c, fn);
+    if (JV_IS_NULLISH(fvslot)) return RESULT_OK(JV_UNDEFINED);
     JsValue argv[16];
     JsValue *args = (argc <= 16) ? argv : (JsValue *)alloca(sizeof(JsValue) * argc);
+    struct js_frame_link pin = { &fvslot, 1, args, 0, c->frame_stack };
+    c->frame_stack = &pin;
     for (uint32_t i = 0; i < argc; i++) {
         NODE *e = JSTRO_NODE_ARR[args_idx + i];
         args[i] = EVAL(c, e, frame);
+        pin.argc = i + 1;
     }
-    return RESULT_OK(js_call(c, fv, JV_UNDEFINED, args, argc));
+    c->frame_stack = pin.prev;
+    return RESULT_OK(js_call(c, fvslot, JV_UNDEFINED, args, argc));
 }
 
 NODE_DEF @always_inline
@@ -1242,15 +1274,22 @@ NODE_DEF
 node_call(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *fn, uint32_t args_idx, uint32_t argc)
 {
     (void)n;
-    JsValue fv = EVAL_ARG(c, fn);
     JsValue argv[16];
     JsValue *args = (argc <= 16) ? argv : (JsValue *)alloca(sizeof(JsValue) * argc);
+    JsValue fvslot = JV_UNDEFINED;
+    // Pin fvslot + args as GC roots while arg evaluation runs (each
+    // EVAL can recursively allocate; the C-stack-local argv would
+    // otherwise be invisible to the collector).
+    struct js_frame_link pin = { &fvslot, 1, args, 0, c->frame_stack };
+    c->frame_stack = &pin;
+    fvslot = EVAL_ARG(c, fn);
     for (uint32_t i = 0; i < argc; i++) {
         NODE *e = JSTRO_NODE_ARR[args_idx + i];
         args[i] = EVAL(c, e, frame);
+        pin.argc = i + 1;
     }
-    JsValue this_val = JV_UNDEFINED;
-    return RESULT_OK(js_call(c, fv, this_val, args, argc));
+    c->frame_stack = pin.prev;
+    return RESULT_OK(js_call(c, fvslot, JV_UNDEFINED, args, argc));
 }
 
 // Spread-aware call: a parallel side-array of `is_spread` flags lives in
@@ -1260,8 +1299,11 @@ NODE_DEF
 node_call_spread(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *fn, uint32_t args_idx, uint32_t spread_idx, uint32_t nargs)
 {
     (void)n;
-    JsValue fv = EVAL_ARG(c, fn);
+    JsValue fvslot = JV_UNDEFINED;
     JsValue stage[64];
+    struct js_frame_link pin = { &fvslot, 1, stage, 0, c->frame_stack };
+    c->frame_stack = &pin;
+    fvslot = EVAL_ARG(c, fn);
     uint32_t total = 0;
     for (uint32_t i = 0; i < nargs; i++) {
         NODE *e = JSTRO_NODE_ARR[args_idx + i];
@@ -1271,12 +1313,14 @@ node_call_spread(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, 
             struct JsArray *a = JV_AS_ARRAY(v);
             for (uint32_t j = 0; j < a->length && total < 64; j++) {
                 stage[total++] = a->dense[j] == JV_HOLE ? JV_UNDEFINED : a->dense[j];
+                pin.argc = total;
             }
         } else {
-            if (total < 64) stage[total++] = v;
+            if (total < 64) { stage[total++] = v; pin.argc = total; }
         }
     }
-    return RESULT_OK(js_call(c, fv, JV_UNDEFINED, stage, total));
+    c->frame_stack = pin.prev;
+    return RESULT_OK(js_call(c, fvslot, JV_UNDEFINED, stage, total));
 }
 
 // Spread-aware new.
@@ -1284,8 +1328,11 @@ NODE_DEF
 node_new_spread(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *fn, uint32_t args_idx, uint32_t spread_idx, uint32_t nargs)
 {
     (void)n;
-    JsValue fv = EVAL_ARG(c, fn);
+    JsValue fvslot = JV_UNDEFINED;
     JsValue stage[64];
+    struct js_frame_link pin = { &fvslot, 1, stage, 0, c->frame_stack };
+    c->frame_stack = &pin;
+    fvslot = EVAL_ARG(c, fn);
     uint32_t total = 0;
     for (uint32_t i = 0; i < nargs; i++) {
         NODE *e = JSTRO_NODE_ARR[args_idx + i];
@@ -1295,12 +1342,14 @@ node_new_spread(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, N
             struct JsArray *a = JV_AS_ARRAY(v);
             for (uint32_t j = 0; j < a->length && total < 64; j++) {
                 stage[total++] = a->dense[j] == JV_HOLE ? JV_UNDEFINED : a->dense[j];
+                pin.argc = total;
             }
         } else {
-            if (total < 64) stage[total++] = v;
+            if (total < 64) { stage[total++] = v; pin.argc = total; }
         }
     }
-    return RESULT_OK(js_construct(c, fv, stage, total));
+    c->frame_stack = pin.prev;
+    return RESULT_OK(js_construct(c, fvslot, stage, total));
 }
 
 // Spread-aware method call: looks up method on receiver, calls with
@@ -1309,9 +1358,13 @@ NODE_DEF
 node_method_call_spread(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *recv, JsString *name, uint32_t args_idx, uint32_t spread_idx, uint32_t nargs)
 {
     (void)n;
-    JsValue rv = EVAL_ARG(c, recv);
-    JsValue fv = js_get_member(c, rv, name);
+    // Pin slots: [0]=recv, [1]=fv (so they survive arg-eval GC cycles).
+    JsValue pinslots[2] = { JV_UNDEFINED, JV_UNDEFINED };
     JsValue stage[64];
+    struct js_frame_link pin = { pinslots, 2, stage, 0, c->frame_stack };
+    c->frame_stack = &pin;
+    pinslots[0] = EVAL_ARG(c, recv);
+    pinslots[1] = js_get_member(c, pinslots[0], name);
     uint32_t total = 0;
     for (uint32_t i = 0; i < nargs; i++) {
         NODE *e = JSTRO_NODE_ARR[args_idx + i];
@@ -1321,12 +1374,14 @@ node_method_call_spread(CTX * restrict c, NODE * restrict n, JsValue * restrict 
             struct JsArray *a = JV_AS_ARRAY(v);
             for (uint32_t j = 0; j < a->length && total < 64; j++) {
                 stage[total++] = a->dense[j] == JV_HOLE ? JV_UNDEFINED : a->dense[j];
+                pin.argc = total;
             }
         } else {
-            if (total < 64) stage[total++] = v;
+            if (total < 64) { stage[total++] = v; pin.argc = total; }
         }
     }
-    return RESULT_OK(js_call(c, fv, rv, stage, total));
+    c->frame_stack = pin.prev;
+    return RESULT_OK(js_call(c, pinslots[1], pinslots[0], stage, total));
 }
 
 // Arity-specialized call nodes — avoid the JSTRO_NODE_ARR indirection and
@@ -1360,7 +1415,10 @@ jstro_inline_call(CTX *c, struct JsFunction *jfn, NODE *body, uint32_t nl,
     c->cur_upvals = jfn->upvals;
     c->cur_args   = args;
     c->cur_argc   = argc;
+    struct js_frame_link link = { callee_frame, nl, args, argc, c->frame_stack };
+    c->frame_stack = &link;
     JsValue r = EVAL(c, body, callee_frame);
+    c->frame_stack = link.prev;
     if (JSTRO_BR == JS_BR_RETURN) {
         r = JSTRO_BR_VAL;
         JSTRO_BR = JS_BR_NORMAL;
@@ -1375,11 +1433,23 @@ jstro_inline_call(CTX *c, struct JsFunction *jfn, NODE *body, uint32_t nl,
     return r;
 }
 
+// Helper: build a one-shot js_frame_link that pins fv + argv during
+// arg evaluation.  argv must outlive the link; argc is kept in sync as
+// elements fill so a partial set is also marked.
+#define JSTRO_BEGIN_ARG_PIN(c, fvslot, argv_ptr) \
+    struct js_frame_link _pin = { &(fvslot), 1, (argv_ptr), 0, (c)->frame_stack }; \
+    (c)->frame_stack = &_pin
+#define JSTRO_END_ARG_PIN(c) \
+    (c)->frame_stack = _pin.prev
+
 NODE_DEF @always_inline
 node_call0(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *fn, struct JsCallIC *ic@ref)
 {
     (void)n;
-    JsValue fv = EVAL_ARG(c, fn);
+    JsValue fv;
+    JSTRO_BEGIN_ARG_PIN(c, fv, NULL);
+    fv = EVAL_ARG(c, fn);
+    JSTRO_END_ARG_PIN(c);
     if (JSTRO_LIKELY(JV_IS_PTR(fv) && (struct JsFunction *)(uintptr_t)fv == ic->cached_fn)) {
         return RESULT_OK(jstro_inline_call(c, ic->cached_fn, ic->cached_body, ic->cached_nlocals, JV_UNDEFINED, NULL, 0));
     }
@@ -1396,28 +1466,35 @@ NODE_DEF @always_inline
 node_call1(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *fn, NODE *a0, struct JsCallIC *ic@ref)
 {
     (void)n;
-    JsValue fv = EVAL_ARG(c, fn);
-    JsValue av0 = EVAL_ARG(c, a0);
+    JsValue argv[1];
+    JsValue fv = JV_UNDEFINED;
+    JSTRO_BEGIN_ARG_PIN(c, fv, argv);
+    fv = EVAL_ARG(c, fn);
+    argv[0] = EVAL_ARG(c, a0); _pin.argc = 1;
+    JSTRO_END_ARG_PIN(c);
     if (JSTRO_LIKELY(JV_IS_PTR(fv) && (struct JsFunction *)(uintptr_t)fv == ic->cached_fn)) {
-        return RESULT_OK(jstro_inline_call(c, ic->cached_fn, ic->cached_body, ic->cached_nlocals, JV_UNDEFINED, &av0, 1));
+        return RESULT_OK(jstro_inline_call(c, ic->cached_fn, ic->cached_body, ic->cached_nlocals, JV_UNDEFINED, argv, 1));
     }
     if (JV_IS_PTR(fv) && jv_heap_type(fv) == JS_TFUNCTION) {
         struct JsFunction *jfn = JV_AS_FUNC(fv);
         ic->cached_fn = jfn;
         ic->cached_body = jfn->body;
         ic->cached_nlocals = jfn->nlocals;
-        return RESULT_OK(js_call_func_direct(c, jfn, JV_UNDEFINED, &av0, 1));
+        return RESULT_OK(js_call_func_direct(c, jfn, JV_UNDEFINED, argv, 1));
     }
-    return RESULT_OK(js_call(c, fv, JV_UNDEFINED, &av0, 1));
+    return RESULT_OK(js_call(c, fv, JV_UNDEFINED, argv, 1));
 }
 NODE_DEF @always_inline
 node_call2(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *fn, NODE *a0, NODE *a1, struct JsCallIC *ic@ref)
 {
     (void)n;
-    JsValue fv = EVAL_ARG(c, fn);
     JsValue argv[2];
-    argv[0] = EVAL_ARG(c, a0);
-    argv[1] = EVAL_ARG(c, a1);
+    JsValue fv = JV_UNDEFINED;
+    JSTRO_BEGIN_ARG_PIN(c, fv, argv);
+    fv = EVAL_ARG(c, fn);
+    argv[0] = EVAL_ARG(c, a0); _pin.argc = 1;
+    argv[1] = EVAL_ARG(c, a1); _pin.argc = 2;
+    JSTRO_END_ARG_PIN(c);
     if (JSTRO_LIKELY(JV_IS_PTR(fv) && (struct JsFunction *)(uintptr_t)fv == ic->cached_fn)) {
         return RESULT_OK(jstro_inline_call(c, ic->cached_fn, ic->cached_body, ic->cached_nlocals, JV_UNDEFINED, argv, 2));
     }
@@ -1434,11 +1511,14 @@ NODE_DEF @always_inline
 node_call3(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *fn, NODE *a0, NODE *a1, NODE *a2, struct JsCallIC *ic@ref)
 {
     (void)n;
-    JsValue fv = EVAL_ARG(c, fn);
     JsValue argv[3];
-    argv[0] = EVAL_ARG(c, a0);
-    argv[1] = EVAL_ARG(c, a1);
-    argv[2] = EVAL_ARG(c, a2);
+    JsValue fv = JV_UNDEFINED;
+    JSTRO_BEGIN_ARG_PIN(c, fv, argv);
+    fv = EVAL_ARG(c, fn);
+    argv[0] = EVAL_ARG(c, a0); _pin.argc = 1;
+    argv[1] = EVAL_ARG(c, a1); _pin.argc = 2;
+    argv[2] = EVAL_ARG(c, a2); _pin.argc = 3;
+    JSTRO_END_ARG_PIN(c);
     if (JSTRO_LIKELY(JV_IS_PTR(fv) && (struct JsFunction *)(uintptr_t)fv == ic->cached_fn)) {
         return RESULT_OK(jstro_inline_call(c, ic->cached_fn, ic->cached_body, ic->cached_nlocals, JV_UNDEFINED, argv, 3));
     }
@@ -1458,52 +1538,65 @@ NODE_DEF
 node_method_call(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *recv, JsString *name, uint32_t args_idx, uint32_t argc, struct JsPropIC *ic@ref)
 {
     (void)n;
-    JsValue rv = EVAL_ARG(c, recv);
-    JsValue fv;
-    if (JSTRO_LIKELY(JV_IS_PTR(rv) && jv_heap_type(rv) == JS_TOBJECT)) {
-        struct JsObject *o = JV_AS_OBJ(rv);
+    JsValue argv[16];
+    JsValue *args = (argc <= 16) ? argv : (JsValue *)alloca(sizeof(JsValue) * argc);
+    // Pin slots: [0]=rv, [1]=fv.  Both stay live across arg evaluation.
+    JsValue pinslots[2] = { JV_UNDEFINED, JV_UNDEFINED };
+    struct js_frame_link pin = { pinslots, 2, args, 0, c->frame_stack };
+    c->frame_stack = &pin;
+    pinslots[0] = EVAL_ARG(c, recv);
+    if (JSTRO_LIKELY(JV_IS_PTR(pinslots[0]) && jv_heap_type(pinslots[0]) == JS_TOBJECT)) {
+        struct JsObject *o = JV_AS_OBJ(pinslots[0]);
         if (JSTRO_LIKELY((uintptr_t)o->shape == ic->shape && ic->slot < o->shape->nslots
                          && o->shape->names[ic->slot] == name)) {
-            fv = o->slots[ic->slot];
+            pinslots[1] = o->slots[ic->slot];
         } else {
             int slot = js_shape_find_slot(o->shape, name);
             if (slot >= 0) {
                 ic->shape = (uintptr_t)o->shape;
                 ic->slot = (uint32_t)slot;
-                fv = o->slots[slot];
+                pinslots[1] = o->slots[slot];
             } else {
                 // Walk prototype chain.
-                fv = js_object_get(c, o->proto, name);
-                if (JV_IS_UNDEFINED(fv)) fv = js_get_member(c, rv, name);
+                pinslots[1] = js_object_get(c, o->proto, name);
+                if (JV_IS_UNDEFINED(pinslots[1])) pinslots[1] = js_get_member(c, pinslots[0], name);
             }
         }
     } else {
-        fv = js_get_member(c, rv, name);
+        pinslots[1] = js_get_member(c, pinslots[0], name);
     }
-    JsValue argv[16];
-    JsValue *args = (argc <= 16) ? argv : (JsValue *)alloca(sizeof(JsValue) * argc);
     for (uint32_t i = 0; i < argc; i++) {
         NODE *e = JSTRO_NODE_ARR[args_idx + i];
         args[i] = EVAL(c, e, frame);
+        pin.argc = i + 1;
     }
-    if (JV_IS_PTR(fv) && jv_heap_type(fv) == JS_TFUNCTION) {
-        return RESULT_OK(js_call_func_direct(c, JV_AS_FUNC(fv), rv, args, argc));
+    c->frame_stack = pin.prev;
+    if (JV_IS_PTR(pinslots[1]) && jv_heap_type(pinslots[1]) == JS_TFUNCTION) {
+        return RESULT_OK(js_call_func_direct(c, JV_AS_FUNC(pinslots[1]), pinslots[0], args, argc));
     }
-    return RESULT_OK(js_call(c, fv, rv, args, argc));
+    return RESULT_OK(js_call(c, pinslots[1], pinslots[0], args, argc));
 }
 
 NODE_DEF
 node_new(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NODE *fn, uint32_t args_idx, uint32_t argc)
 {
     (void)n;
-    JsValue fv = EVAL_ARG(c, fn);
+    // Pin the under-construction argv against GC by using a per-call
+    // js_frame_link as a synthetic frame.  See node.def comment near
+    // node_call for the rationale.
     JsValue argv[16];
     JsValue *args = (argc <= 16) ? argv : (JsValue *)alloca(sizeof(JsValue) * argc);
+    JsValue fvslot = JV_UNDEFINED;
+    struct js_frame_link pin = { &fvslot, 1, args, 0, c->frame_stack };
+    c->frame_stack = &pin;
+    fvslot = EVAL_ARG(c, fn);
     for (uint32_t i = 0; i < argc; i++) {
         NODE *e = JSTRO_NODE_ARR[args_idx + i];
         args[i] = EVAL(c, e, frame);
+        pin.argc = i + 1;
     }
-    return RESULT_OK(js_construct(c, fv, args, argc));
+    c->frame_stack = pin.prev;
+    return RESULT_OK(js_construct(c, fvslot, args, argc));
 }
 
 // =====================================================================
@@ -1550,6 +1643,10 @@ node_array_lit(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, ui
 {
     (void)n;
     struct JsArray *a = js_array_new(c, nelems);
+    // Pin the freshly allocated array against GC during element eval.
+    JsValue pinslot = JV_OBJ(a);
+    struct js_frame_link pin = { &pinslot, 1, NULL, 0, c->frame_stack };
+    c->frame_stack = &pin;
     for (uint32_t i = 0; i < nelems; i++) {
         NODE *e = JSTRO_NODE_ARR[elem_idx + i];
         if (e == NULL) {
@@ -1561,6 +1658,7 @@ node_array_lit(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, ui
         else js_array_set(c, a, i, v);
     }
     a->length = nelems;
+    c->frame_stack = pin.prev;
     return RESULT_OK(JV_OBJ(a));
 }
 
@@ -1570,6 +1668,9 @@ node_array_lit_spread(CTX * restrict c, NODE * restrict n, JsValue * restrict fr
 {
     (void)n;
     struct JsArray *a = js_array_new(c, 0);
+    JsValue pinslot = JV_OBJ(a);
+    struct js_frame_link pin = { &pinslot, 1, NULL, 0, c->frame_stack };
+    c->frame_stack = &pin;
     for (uint32_t i = 0; i < nelems; i++) {
         NODE *e = JSTRO_NODE_ARR[elem_idx + i];
         if (e == NULL) { js_array_push(c, a, JV_HOLE); continue; }
@@ -1586,6 +1687,7 @@ node_array_lit_spread(CTX * restrict c, NODE * restrict n, JsValue * restrict fr
             js_array_push(c, a, v);
         }
     }
+    c->frame_stack = pin.prev;
     return RESULT_OK(JV_OBJ(a));
 }
 
@@ -1601,6 +1703,9 @@ node_object_lit_dyn(CTX * restrict c, NODE * restrict n, JsValue * restrict fram
 {
     (void)n;
     struct JsObject *o = js_object_new(c, c->object_proto);
+    JsValue pinslot = JV_OBJ(o);
+    struct js_frame_link pin = { &pinslot, 1, NULL, 0, c->frame_stack };
+    c->frame_stack = &pin;
     for (uint32_t i = 0; i < nprops; i++) {
         uint32_t kind = JSTRO_U32_ARR[kind_idx + i];
         if (kind == 1) {
@@ -1643,6 +1748,7 @@ node_object_lit_dyn(CTX * restrict c, NODE * restrict n, JsValue * restrict fram
         }
         js_object_set(c, o, k, v);
     }
+    c->frame_stack = pin.prev;
     return RESULT_OK(JV_OBJ(o));
 }
 
@@ -1651,12 +1757,16 @@ node_object_lit(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, u
 {
     (void)n;
     struct JsObject *o = js_object_new(c, c->object_proto);
+    JsValue pinslot = JV_OBJ(o);
+    struct js_frame_link pin = { &pinslot, 1, NULL, 0, c->frame_stack };
+    c->frame_stack = &pin;
     for (uint32_t i = 0; i < nprops; i++) {
         struct JsString *k = JSTRO_STR_ARR[key_idx + i];
         NODE *ve = JSTRO_NODE_ARR[val_idx + i];
         JsValue v = EVAL(c, ve, frame);
-            js_object_set(c, o, k, v);
+        js_object_set(c, o, k, v);
     }
+    c->frame_stack = pin.prev;
     return RESULT_OK(JV_OBJ(o));
 }
 

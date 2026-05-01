@@ -356,6 +356,73 @@ ES `import` / `export` は parser が CommonJS 相当に desugar:
 ユーザーが `node` のようなコマンドラインで実行する場合は wrapper が必要
 (または最上位は CommonJS 同等にする)。
 
+## 自動 GC (mark-sweep)
+
+`js_gc_alloc` で確保した全オブジェクトは `c->all_objects` に侵入リスト
+形式 (`gc.next`) で繋がれる。GC は **safepoint 駆動の stop-the-world
+mark-sweep**。
+
+### マークフェーズ
+
+ルート集合:
+- グローバル / 各種 proto オブジェクト (`object_proto`, `array_proto`, etc.)
+- 文字列 intern bucket (`intern_buckets`)
+- モジュールキャッシュ
+- `c->this_val` / `c->cur_args[0..argc]` / `c->new_target` /
+  `c->last_thrown` / `JSTRO_BR_VAL`
+- **`c->frame_stack` 連鎖** — 後述の `js_frame_link` チェイン
+
+`mark_value` は `JV_IS_PTR` のみ追跡。type に応じて `mark_object_struct`
+(shape + slots + proto)、`mark_array` (dense + sparse entries + proto)、
+`mark_function` (body はノードなので不動だが upvals + bound_this + own_props)、
+`mark_string` (intern table の生存確認)、`mark_shape` (parents + transitions)
+を再帰呼び出し。
+
+### スイープフェーズ
+
+`all_objects` を線形走査し、現在の dead 色のものを `gc_finalize` で解放
+(slots / dense / upvals / map entries 等の malloc 領域も)。GC 終了時に
+`g_mark_live` ⇄ `g_mark_dead` を flip するので、sweep 後の色リセットは不要。
+
+### `js_frame_link`: alloca フレーム連鎖
+
+```c
+struct js_frame_link {
+    JsValue              *frame;     // alloca'd local slots
+    uint32_t              nlocals;
+    JsValue              *args;      // caller-provided args
+    uint32_t              argc;
+    struct js_frame_link *prev;
+};
+```
+
+- `js_call_func_direct` / `jstro_inline_call` が **callee_frame + args** を
+  リンクに登録。リンクは callee の C スタックに置くだけなので O(1)。
+- 各 call dispatcher が **arg 評価中** に半構築 argv を pin する一時リンクを
+  積む。`new T(f(), g())` で `f()` 結果を argv[0] に置き、`g()` 評価中に
+  GC が起きてもこの pin で argv[0] が live と判定される。
+- `js_throw_frame` (try-catch 用) に `frame_stack` の snapshot を持たせ、
+  longjmp で巻き戻った際にチェインを正しい深さに戻す。
+
+### セーフポイント
+
+`js_gc_alloc` は GC を起動しない (使われたばかりの半構築値が C スタック
+にある可能性が高いため)。代わりに以下の文境界でのみ `jstro_gc_safepoint`
+が起動条件 (allocated > threshold) を確認:
+
+- `node_seq` / `node_seqn` の各文後
+- `node_for` / `node_for_let` / `node_while` / `node_do_while` の反復後
+- `node_for_of` / `node_for_in` の反復後
+
+閾値は前回 GC 後の生存数の 2× で動的調整 (floor 4096 / ceiling 1M)。
+`gc_disabled` カウンタが正のときは safepoint でも skip (現状は使用箇所
+なし、`js_str_concat` 等の delicate path 用に予約)。
+
+### Weak ref / finalizer
+
+未実装。`WeakMap` / `WeakSet` は現状 strong ref で代用しているため、
+キーが他から参照されなくなっても解放されない。
+
 ## ASTroGen との接続
 
 ASTro フレームワークの dispatcher / evaluator 分離パターンを使う。

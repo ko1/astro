@@ -25,7 +25,9 @@
 - [ ] **Symbol** をプロパティキーとして使う — 現状 well-known は文字列キー化
       してるが、`obj[symbolValue] = v` のようなユーザ定義 Symbol キーは
       JsString と同じ扱いにできない
-- [ ] **真の WeakMap/WeakSet** — 自動 GC 必須
+- [ ] **真の WeakMap/WeakSet** — 自動 GC は実装済みだが、weak reference を
+      考慮したマーカー (キー reachability の 2-pass walk) が未実装。現状は
+      強参照で代用。
 - [ ] **TypedArray の型強制** — Uint8Array に 256 を入れたら 0、Int32Array に
       double を入れたら trunc 等の coercion
 - [ ] **enumerable / configurable / writable** プロパティ属性 — 現状 hasOwn
@@ -66,10 +68,6 @@
       `node.def` から SD を生成する基盤は整備済み。luastro 同様 dlopen/dlsym
       で SD を読み込めば、関数本体ごと一つの C 関数に畳めて 5-10× の高速化
       が期待できる。
-- [ ] **自動 GC (mark-sweep)**
-      `c->all_objects` リンクトリストは既に整備されている。alloca フレーム
-      の保守的スキャンがあれば実装可能。長時間ベンチでメモリが頭打ちに
-      ならなくなる。
 - [ ] **多形性 IC** — 4-way 程度でいい。同じサイトで複数 shape を見ても
       毎回 `js_shape_find_slot` に落ちないようにする。
 - [ ] **method call IC の融合** — `obj.foo(args)` が `foo` を IC ヒットで

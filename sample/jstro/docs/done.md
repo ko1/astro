@@ -158,6 +158,13 @@ ECMAScript 仕様への対応状況と、性能向上のために行った変更
 - [x] **`#priv` トークン** — `#` を識別子の一部として字句解析
 - [x] `typeof` で symbol / bigint を返す
 - [x] **`__chainProto__` / `__defAccessor__` / `__makeRegex__` / `__awaitSync__`** ランタイム補助関数
+- [x] **自動 GC (mark-sweep)** — `c->all_objects` リンクトリストを基盤にしたマーク&スイープ。
+      ルート: globals / protos / this / cur_args / last_thrown / break-val / intern_buckets / modules /
+      `frame_stack` (alloca フレーム連鎖)。トリガはセーフポイント方式 (node_seq / node_for /
+      node_while などの文境界で `jstro_gc_safepoint`)。閾値は alive オブジェクト数の 2× で
+      動的調整 (floor 4096 / ceiling 1M)。color polarity flip でスイープせずマーク反転だけで再利用。
+      引数評価中の use-after-free 対策として、各 call dispatcher と array/object literal が
+      `js_frame_link` を介して半構築 argv / 受け手を pin する。
 
 ### 開発体験
 - [x] `--dump-ic` オプション — `js_shape_find_slot` 呼び出し回数を表示
@@ -165,7 +172,6 @@ ECMAScript 仕様への対応状況と、性能向上のために行った変更
 
 ## 未実装 (詳細は [`todo.md`](./todo.md))
 
-- 自動 GC (mark-sweep やそれ以上)
 - ASTro 特化 (SD bake) — フレームワークは整備済みだが駆動していない
 - 真のジェネレータ (suspendable frame; ucontext 等)
 - async/await の microtask スケジューリング

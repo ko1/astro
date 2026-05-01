@@ -46,6 +46,10 @@ main(int argc, char *argv[])
 
     JsValue *frame = (JsValue *)calloc(JSTRO_TOP_NLOCALS + 16, sizeof(JsValue));
 
+    // Push top-level frame so the GC can see its slots as roots.
+    struct js_frame_link top_link = { frame, JSTRO_TOP_NLOCALS, NULL, 0, NULL };
+    c->frame_stack = &top_link;
+
     JsValue r = EVAL(c, body, frame);
     if (JSTRO_BR == JS_BR_THROW) {
         fprintf(stderr, "Uncaught: ");
@@ -58,9 +62,11 @@ main(int argc, char *argv[])
         fputc('\n', stdout);
     }
     if (g_dump_ic) {
+        extern unsigned long jstro_gc_run_count;
         fprintf(stderr, "[IC] js_shape_find_slot: %lu\n", jstro_shape_find_count);
         fprintf(stderr, "[IC] js_object_set:      %lu\n", jstro_object_set_count);
         fprintf(stderr, "[IC] call_ic_miss:       %lu\n", jstro_call_ic_miss);
+        fprintf(stderr, "[GC] collections:        %lu\n", jstro_gc_run_count);
     }
     return 0;
 }

@@ -189,6 +189,35 @@ if (JSTRO_UNLIKELY(JSTRO_BR != JS_BR_NORMAL)) return b;
 ホイスト名を予約してから本パースに入るので、内部の参照が `RES_LOCAL`/
 `RES_BOXED`/`RES_UPVAL` のいずれかに正しく解決される。
 
+#### Mark-sweep GC (safepoint 駆動 + frame_stack root)
+
+長時間ベンチでメモリが頭打ちにならない問題を解決するために自動 GC を追加。
+設計判断:
+
+- **保守的スキャンではなく明示的ルート**: alloca フレームの C スタック走査は
+  ASTro の SD 化と相性が悪い (フレーム境界が消える) ため、`js_frame_link` の
+  侵入リストを `c->frame_stack` でつないで明示的に walk する。各 callee は
+  alloca した callee_frame と argv をリンクに登録、退出時に外す。
+- **セーフポイント方式**: `js_gc_alloc` 内では GC を起動しない。半構築
+  オブジェクトが C スタック上にあるタイミングで GC が走ると use-after-free
+  になるため、`node_seq` / `node_seqn` / 各種ループの **文境界** で
+  `jstro_gc_safepoint(c)` だけが GC を起動できる。
+- **arg 評価中の pin**: それでも `new T(f(), g())` のように 1 引数評価が
+  recursion を起こす場合、最初の引数値は C スタック上 (argv[0]) にあるが
+  どの GC ルートからも参照されない。各 call dispatcher
+  (call0/1/2/3 / call / call_spread / new / new_spread / method_call /
+  method_call_spread / optional_call) と array/object literal の builder で、
+  argv あるいは半構築 array/object を `js_frame_link` を介して pin する。
+- **color polarity flip**: 全オブジェクトの mark フラグを 0/1 で持ち、
+  GC 終了時に live/dead の意味を入れ替えるだけで sweep 後の reset を省略。
+- **動的閾値**: 直前 GC 後の alive オブジェクト数の 2× を次の閾値に
+  (floor 4096 / ceiling 1M)。throughput とメモリ占有のバランスを取る。
+
+実装後のコスト: `fact` ベンチが 1.49s → 1.73s (16%)。safepoint 自体の
+コストは数命令だが、文ごとに条件分岐 1 回が乗る。
+binary_trees / 50K 回の depth-8 木生成: RSS 2.8MB で安定 (GC 無しでは線形に
+増加してプロセス死)。
+
 ---
 
 ## ✗ 試したが効かなかった最適化
