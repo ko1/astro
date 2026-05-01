@@ -23,9 +23,9 @@
 | koruby (interp, plain) | 42 fps | 1.02× |
 | koruby (PGO + LTO) | 51 fps | 1.24× |
 | abruby (--aot-compile-first, AOT only) | 71 fps | 1.73× |
-| abruby (--aot + --pg-compile, AOT + PGC) | 71 fps | 1.73× |
-| **koruby (AOT + inline prologues + no-TLS)** | **72 fps** | **1.76×** ← matches abruby +cf |
-| **ruby --yjit / --jit** | **174 fps** | **4.24×** |
+| abruby (--aot + --pg-compile, AOT + PGC) | 75 fps | 1.83× |
+| **koruby (AOT — this branch)** | **76 fps** | **1.85×** ← exceeds abruby +pgc |
+| **ruby --yjit / --jit** | **175 fps** | **4.27×** |
 
 #### abruby +cf にキャッチアップ済み (72 fps)
 
