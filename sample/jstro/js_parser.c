@@ -2792,6 +2792,224 @@ parse_do(Parser *p, Scope *s)
     return ALLOC_node_do_while(body, cond);
 }
 
+// =====================================================================
+// node_for_int_loop pattern detection.
+// =====================================================================
+extern const struct NodeKind kind_node_local_set;
+extern const struct NodeKind kind_node_local_get;
+extern const struct NodeKind kind_node_le;
+extern const struct NodeKind kind_node_lt;
+extern const struct NodeKind kind_node_add;
+extern const struct NodeKind kind_node_sub;
+extern const struct NodeKind kind_node_inc_local;
+extern const struct NodeKind kind_node_let_get;
+extern const struct NodeKind kind_node_let_set;
+extern const struct NodeKind kind_node_box_get;
+extern const struct NodeKind kind_node_box_set;
+extern const struct NodeKind kind_node_inc_box;
+extern const struct NodeKind kind_node_inc_upval;
+
+// Recursively walk `n`; return true if any descendant is a write to
+// the local slot `slot`.  Stops as soon as one is found.  Conservative
+// for unknown kinds (returns true to disable the optimization).
+static bool jstro_node_writes_local_slot(NODE *n, uint32_t slot);
+
+static bool
+jstro_for_int_walk_kids(NODE *n, uint32_t slot)
+{
+    // Conservative walker: cover the common cases; fall back to "writes"
+    // for kinds we don't structurally understand.
+    if (!n) return false;
+    const struct NodeKind *k = n->head.kind;
+    // Local writes / inc to the loop slot.
+    if (k == &kind_node_local_set && n->u.node_local_set.idx == slot) return true;
+    if (k == &kind_node_inc_local && n->u.node_inc_local.idx  == slot) return true;
+    return false;
+}
+
+static bool
+jstro_node_writes_local_slot(NODE *n, uint32_t slot)
+{
+    if (!n) return false;
+    if (jstro_for_int_walk_kids(n, slot)) return true;
+    // Recurse into typed NODE * children of common kinds.  We don't need
+    // to be exhaustive — if a kind has children we don't peer into, we
+    // err on the side of safety and *disallow* the optimization (return
+    // true).  The set below covers what shows up in the standard
+    // benchmarks (sieve / fact / fib / mandelbrot / nbody / cold).
+    const struct NodeKind *k = n->head.kind;
+    extern const struct NodeKind kind_node_seq, kind_node_seqn, kind_node_block;
+    extern const struct NodeKind kind_node_if, kind_node_while, kind_node_do_while;
+    extern const struct NodeKind kind_node_for, kind_node_for_let;
+    extern const struct NodeKind kind_node_index_set, kind_node_index_get;
+    extern const struct NodeKind kind_node_member_set, kind_node_member_get;
+    extern const struct NodeKind kind_node_return, kind_node_throw, kind_node_typeof;
+    extern const struct NodeKind kind_node_neg, kind_node_not, kind_node_bnot;
+    extern const struct NodeKind kind_node_mul, kind_node_div, kind_node_mod;
+    extern const struct NodeKind kind_node_strict_eq, kind_node_strict_neq;
+    extern const struct NodeKind kind_node_loose_eq, kind_node_loose_neq;
+    extern const struct NodeKind kind_node_gt, kind_node_ge;
+    extern const struct NodeKind kind_node_band, kind_node_bor, kind_node_bxor;
+    extern const struct NodeKind kind_node_shl, kind_node_sar, kind_node_shr;
+    extern const struct NodeKind kind_node_and, kind_node_or, kind_node_nullish;
+    extern const struct NodeKind kind_node_assign;
+    if (k == &kind_node_seq)        return jstro_node_writes_local_slot(n->u.node_seq.first, slot)
+                                        || jstro_node_writes_local_slot(n->u.node_seq.second, slot);
+    if (k == &kind_node_if)         return jstro_node_writes_local_slot(n->u.node_if.cond, slot)
+                                        || jstro_node_writes_local_slot(n->u.node_if.then_n, slot)
+                                        || jstro_node_writes_local_slot(n->u.node_if.else_n, slot);
+    if (k == &kind_node_while)      return jstro_node_writes_local_slot(n->u.node_while.cond, slot)
+                                        || jstro_node_writes_local_slot(n->u.node_while.body, slot);
+    if (k == &kind_node_do_while)   return jstro_node_writes_local_slot(n->u.node_do_while.body, slot)
+                                        || jstro_node_writes_local_slot(n->u.node_do_while.cond, slot);
+    if (k == &kind_node_for)        return jstro_node_writes_local_slot(n->u.node_for.init, slot)
+                                        || jstro_node_writes_local_slot(n->u.node_for.cond, slot)
+                                        || jstro_node_writes_local_slot(n->u.node_for.step, slot)
+                                        || jstro_node_writes_local_slot(n->u.node_for.body, slot);
+    if (k == &kind_node_index_set)  return jstro_node_writes_local_slot(n->u.node_index_set.obj, slot)
+                                        || jstro_node_writes_local_slot(n->u.node_index_set.idx, slot)
+                                        || jstro_node_writes_local_slot(n->u.node_index_set.rhs, slot);
+    if (k == &kind_node_index_get)  return jstro_node_writes_local_slot(n->u.node_index_get.obj, slot)
+                                        || jstro_node_writes_local_slot(n->u.node_index_get.idx, slot);
+    if (k == &kind_node_member_set) return jstro_node_writes_local_slot(n->u.node_member_set.obj, slot)
+                                        || jstro_node_writes_local_slot(n->u.node_member_set.rhs, slot);
+    if (k == &kind_node_member_get) return jstro_node_writes_local_slot(n->u.node_member_get.obj, slot);
+    if (k == &kind_node_local_set)  return jstro_node_writes_local_slot(n->u.node_local_set.rhs, slot);
+    if (k == &kind_node_add)        return jstro_node_writes_local_slot(n->u.node_add.l, slot)
+                                        || jstro_node_writes_local_slot(n->u.node_add.r, slot);
+    if (k == &kind_node_sub)        return jstro_node_writes_local_slot(n->u.node_sub.l, slot)
+                                        || jstro_node_writes_local_slot(n->u.node_sub.r, slot);
+    if (k == &kind_node_mul)        return jstro_node_writes_local_slot(n->u.node_mul.l, slot)
+                                        || jstro_node_writes_local_slot(n->u.node_mul.r, slot);
+    if (k == &kind_node_div)        return jstro_node_writes_local_slot(n->u.node_div.l, slot)
+                                        || jstro_node_writes_local_slot(n->u.node_div.r, slot);
+    if (k == &kind_node_mod)        return jstro_node_writes_local_slot(n->u.node_mod.l, slot)
+                                        || jstro_node_writes_local_slot(n->u.node_mod.r, slot);
+    if (k == &kind_node_lt)         return jstro_node_writes_local_slot(n->u.node_lt.l, slot)
+                                        || jstro_node_writes_local_slot(n->u.node_lt.r, slot);
+    if (k == &kind_node_le)         return jstro_node_writes_local_slot(n->u.node_le.l, slot)
+                                        || jstro_node_writes_local_slot(n->u.node_le.r, slot);
+    if (k == &kind_node_gt)         return jstro_node_writes_local_slot(n->u.node_gt.l, slot)
+                                        || jstro_node_writes_local_slot(n->u.node_gt.r, slot);
+    if (k == &kind_node_ge)         return jstro_node_writes_local_slot(n->u.node_ge.l, slot)
+                                        || jstro_node_writes_local_slot(n->u.node_ge.r, slot);
+    if (k == &kind_node_local_get || k == &kind_node_let_get || k == &kind_node_box_get) return false;
+    // Compound bodies that point at a single child.
+    if (k == &kind_node_block) return jstro_node_writes_local_slot(n->u.node_block.body, slot);
+    if (k == &kind_node_return) return jstro_node_writes_local_slot(n->u.node_return.expr, slot);
+    if (k == &kind_node_throw) return jstro_node_writes_local_slot(n->u.node_throw.expr, slot);
+    if (k == &kind_node_typeof) return jstro_node_writes_local_slot(n->u.node_typeof.x, slot);
+    if (k == &kind_node_neg) return jstro_node_writes_local_slot(n->u.node_neg.x, slot);
+    if (k == &kind_node_not) return jstro_node_writes_local_slot(n->u.node_not.x, slot);
+    if (k == &kind_node_bnot) return jstro_node_writes_local_slot(n->u.node_bnot.x, slot);
+    // node_seqn / node_for_let bodies.
+    if (k == &kind_node_seqn) {
+        extern struct Node **JSTRO_NODE_ARR;
+        for (uint32_t i = 0; i < n->u.node_seqn.cnt; i++) {
+            if (jstro_node_writes_local_slot(JSTRO_NODE_ARR[n->u.node_seqn.idx + i], slot)) return true;
+        }
+        return false;
+    }
+    if (k == &kind_node_for_let) return jstro_node_writes_local_slot(n->u.node_for_let.init, slot)
+                                     || jstro_node_writes_local_slot(n->u.node_for_let.cond, slot)
+                                     || jstro_node_writes_local_slot(n->u.node_for_let.step, slot)
+                                     || jstro_node_writes_local_slot(n->u.node_for_let.body, slot);
+    extern const struct NodeKind kind_node_for_int_loop;
+    if (k == &kind_node_for_int_loop) {
+        if (n->u.node_for_int_loop.x_slot == slot) return true;
+        return jstro_node_writes_local_slot(n->u.node_for_int_loop.init, slot)
+            || jstro_node_writes_local_slot(n->u.node_for_int_loop.end_expr, slot)
+            || jstro_node_writes_local_slot(n->u.node_for_int_loop.step_expr, slot)
+            || jstro_node_writes_local_slot(n->u.node_for_int_loop.body, slot);
+    }
+    // Logical short-circuit / nullish: both sides are expressions.
+    if (k == &kind_node_and) return jstro_node_writes_local_slot(n->u.node_and.l, slot) || jstro_node_writes_local_slot(n->u.node_and.r, slot);
+    if (k == &kind_node_or)  return jstro_node_writes_local_slot(n->u.node_or.l,  slot) || jstro_node_writes_local_slot(n->u.node_or.r,  slot);
+    if (k == &kind_node_nullish) return jstro_node_writes_local_slot(n->u.node_nullish.l, slot) || jstro_node_writes_local_slot(n->u.node_nullish.r, slot);
+    // Strict / loose equality.
+    if (k == &kind_node_strict_eq)  return jstro_node_writes_local_slot(n->u.node_strict_eq.l, slot)  || jstro_node_writes_local_slot(n->u.node_strict_eq.r, slot);
+    if (k == &kind_node_strict_neq) return jstro_node_writes_local_slot(n->u.node_strict_neq.l, slot) || jstro_node_writes_local_slot(n->u.node_strict_neq.r, slot);
+    if (k == &kind_node_loose_eq)   return jstro_node_writes_local_slot(n->u.node_loose_eq.l, slot)   || jstro_node_writes_local_slot(n->u.node_loose_eq.r, slot);
+    if (k == &kind_node_loose_neq)  return jstro_node_writes_local_slot(n->u.node_loose_neq.l, slot)  || jstro_node_writes_local_slot(n->u.node_loose_neq.r, slot);
+    // Bitwise.
+    if (k == &kind_node_band) return jstro_node_writes_local_slot(n->u.node_band.l, slot) || jstro_node_writes_local_slot(n->u.node_band.r, slot);
+    if (k == &kind_node_bor)  return jstro_node_writes_local_slot(n->u.node_bor.l, slot)  || jstro_node_writes_local_slot(n->u.node_bor.r, slot);
+    if (k == &kind_node_bxor) return jstro_node_writes_local_slot(n->u.node_bxor.l, slot) || jstro_node_writes_local_slot(n->u.node_bxor.r, slot);
+    if (k == &kind_node_shl)  return jstro_node_writes_local_slot(n->u.node_shl.l, slot)  || jstro_node_writes_local_slot(n->u.node_shl.r, slot);
+    if (k == &kind_node_sar)  return jstro_node_writes_local_slot(n->u.node_sar.l, slot)  || jstro_node_writes_local_slot(n->u.node_sar.r, slot);
+    if (k == &kind_node_shr)  return jstro_node_writes_local_slot(n->u.node_shr.l, slot)  || jstro_node_writes_local_slot(n->u.node_shr.r, slot);
+    // Inc/let-set against a *different* slot is fine (we only flag X).
+    if (k == &kind_node_let_set) return jstro_node_writes_local_slot(n->u.node_let_set.rhs, slot);
+    if (k == &kind_node_box_set) return jstro_node_writes_local_slot(n->u.node_box_set.rhs, slot);
+    if (k == &kind_node_inc_box || k == &kind_node_inc_upval || k == &kind_node_inc_local) return false;  // unrelated slot (the matching-slot case is handled in jstro_for_int_walk_kids)
+    // Leaf nodes that don't have NODE * children: literals etc.
+    extern const struct NodeKind kind_node_undefined, kind_node_null, kind_node_true, kind_node_false;
+    extern const struct NodeKind kind_node_smi, kind_node_double, kind_node_string, kind_node_this;
+    if (k == &kind_node_undefined || k == &kind_node_null || k == &kind_node_true || k == &kind_node_false
+     || k == &kind_node_smi || k == &kind_node_double || k == &kind_node_string || k == &kind_node_this) return false;
+    // Unknown kind — be safe and refuse the optimization.
+    return true;
+}
+
+// Returns NODE *for_int_loop if the (init, cond, step, body) shape
+// matches the int-counter idiom; NULL otherwise.
+static NODE *
+jstro_try_fuse_for_int(NODE *init, NODE *cond, NODE *step, NODE *body, bool init_is_decl, uint8_t init_decl_kind)
+{
+    // init must be a single `var X = INIT_EXPR` — we only support
+    // bare-`var` declarations for now (let's per-iteration binding
+    // semantics conflict with our hoist of init).
+    if (!init || !init_is_decl || init_decl_kind != 0) return NULL;
+    if (init->head.kind != &kind_node_local_set) return NULL;
+    uint32_t x_slot   = init->u.node_local_set.idx;
+    NODE    *init_rhs = init->u.node_local_set.rhs;
+
+    // cond must be `node_le(local_get(X), END_EXPR)` or `node_lt(...)`.
+    if (!cond) return NULL;
+    uint32_t op;
+    NODE *cond_l, *cond_r;
+    if (cond->head.kind == &kind_node_le) {
+        op = 1; cond_l = cond->u.node_le.l; cond_r = cond->u.node_le.r;
+    } else if (cond->head.kind == &kind_node_lt) {
+        op = 0; cond_l = cond->u.node_lt.l; cond_r = cond->u.node_lt.r;
+    } else {
+        return NULL;
+    }
+    if (!cond_l || cond_l->head.kind != &kind_node_local_get
+        || cond_l->u.node_local_get.idx != x_slot) return NULL;
+    NODE *end_expr = cond_r;
+
+    // step must be either:
+    //   - `local_set(X, add(local_get(X), STEP_EXPR))`     (X = X + STEP / X += STEP)
+    //   - `inc_local(X, _, delta)`                          (X++ / ++X / X+=lit)
+    NODE *step_expr = NULL;
+    if (step && step->head.kind == &kind_node_local_set
+        && step->u.node_local_set.idx == x_slot) {
+        NODE *step_rhs = step->u.node_local_set.rhs;
+        if (!step_rhs || step_rhs->head.kind != &kind_node_add) return NULL;
+        NODE *step_add_l = step_rhs->u.node_add.l;
+        NODE *step_add_r = step_rhs->u.node_add.r;
+        if (!step_add_l || step_add_l->head.kind != &kind_node_local_get
+            || step_add_l->u.node_local_get.idx != x_slot) return NULL;
+        step_expr = step_add_r;
+    } else if (step && step->head.kind == &kind_node_inc_local
+               && step->u.node_inc_local.idx == x_slot) {
+        // Synthesize a literal SMI step from the inc_local's delta.
+        step_expr = ALLOC_node_smi((uint64_t)step->u.node_inc_local.delta);
+    } else {
+        return NULL;
+    }
+
+    // Body must not write X (otherwise our cached register copy of X
+    // would diverge from the frame slot).  Walk conservatively: if the
+    // walker hits an unfamiliar node kind, refuse the fuse.
+    if (jstro_node_writes_local_slot(body, x_slot)) return NULL;
+    if (jstro_node_writes_local_slot(end_expr, x_slot)) return NULL;
+    if (jstro_node_writes_local_slot(step_expr, x_slot)) return NULL;
+
+    return ALLOC_node_for_int_loop(x_slot, init_rhs, end_expr, step_expr, op, body);
+}
+
 static NODE *
 parse_for(Parser *p, Scope *s)
 {
@@ -2901,7 +3119,17 @@ parse_for(Parser *p, Scope *s)
     NODE *body = parse_stmt(p, block);
     block->loop_depth--;
     NODE *r;
-    if (init_is_decl && init_decl_kind == 1 && block->nvars > 0) {
+    // Try to detect the canonical int-counter pattern:
+    //   for (var X = INIT; X </<= END; X += STEP) BODY
+    // and emit the fused node_for_int_loop, which keeps X as a raw
+    // int64 in a register across iterations and only writes it back
+    // to frame[X_slot] before each body invocation.  Skips the type
+    // tag checks on the cond compare and step add — the dominant cost
+    // in tight numeric loops like sieve.
+    NODE *fused = jstro_try_fuse_for_int(init, cond, step, body, init_is_decl, init_decl_kind);
+    if (fused) {
+        r = fused;
+    } else if (init_is_decl && init_decl_kind == 1 && block->nvars > 0) {
         // Per-iteration binding for `for (let X ...) body`: use the first
         // declared let var's slot.  (Multiple let vars in the head are
         // unusual; if present we still use the first one — others share
