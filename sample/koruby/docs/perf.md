@@ -30,6 +30,20 @@ binary; SDs in `code_store/all.so` always built with `gcc -O3 -fPIC -fno-plt
 | **koruby (AOT + PGO — `make koruby-pgo-aot`)** | **110 fps** | **2.68×** ← exceeds abruby +pgc by 35 fps |
 | **ruby --yjit / --jit** | **175 fps** | **4.27×** |
 
+#### 26 bench の現状 (best of 3, taskset -c 0)
+
+| 系統 | bench (vs ruby --yjit, smaller=koruby better) |
+|---|---|
+| **win** | collatz 0.7×, fannkuch 0.7×, gcd 0.9×, sieve 1.0×, string 0.8× |
+| **tied** | array 1.0×, array_access 1.0×, array_push 1.0×, hash 1.0×, while 1.1× |
+| Float-heavy (was 7×, now) | mandelbrot 1.7×, nbody 1.5× ← FLONUM 実装で改善 |
+| call-heavy (未着手) | ack 2.7×, fib 2.6×, tak 2.8×, dispatch 2.3×, method_call 2.0×, factorial 1.9× |
+| block-heavy | each 1.8×, inject 1.8×, times 2.0× |
+| その他 | ivar 1.9×, object 2.4×, binary_trees 1.8× |
+
+call-heavy 系は **prologue 14 stores/call の overhead** が見えるところまで来ていて、
+ここから先は method body inlining (PGSD) が必要。
+
 #### この round の big wins
 
 render_pixel kernel を抽出して perf 解析しながら段階的に 80 → 110 fps:
