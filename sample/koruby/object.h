@@ -363,6 +363,30 @@ korb_dispatch_call_cached(CTX * restrict c, struct Node * restrict callsite,
     return korb_dispatch_call(c, callsite, recv, name, argc, arg_index, block, mc);
 }
 VALUE korb_dispatch_binop(CTX *c, VALUE recv, ID name, int argc, VALUE *argv);
+
+/* Cold tails for fast-path NODEs.  Bodies live in object.c and are
+ * called via PLT/GOT from each SD.so, instead of being inlined into
+ * every SD that uses node_plus / node_aref / etc.  Trades a tiny
+ * extra call (only on the slow path) for a substantially smaller
+ * all.so and lower compile time. */
+VALUE korb_node_plus_slow  (CTX *c, VALUE l, VALUE r, uint32_t arg_index);
+VALUE korb_node_minus_slow (CTX *c, VALUE l, VALUE r, uint32_t arg_index);
+VALUE korb_node_mul_slow   (CTX *c, VALUE l, VALUE r, uint32_t arg_index);
+VALUE korb_node_div_slow   (CTX *c, VALUE l, VALUE r, uint32_t arg_index);
+VALUE korb_node_mod_slow   (CTX *c, VALUE l, VALUE r, uint32_t arg_index);
+VALUE korb_node_uminus_slow(CTX *c, VALUE v);
+VALUE korb_node_band_slow  (CTX *c, VALUE l, VALUE r, uint32_t arg_index);
+VALUE korb_node_bor_slow   (CTX *c, VALUE l, VALUE r, uint32_t arg_index);
+VALUE korb_node_bxor_slow  (CTX *c, VALUE l, VALUE r, uint32_t arg_index);
+VALUE korb_node_lshift_slow(CTX *c, VALUE l, VALUE r, uint32_t arg_index);
+VALUE korb_node_rshift_slow(CTX *c, VALUE l, VALUE r, uint32_t arg_index);
+VALUE korb_node_lt_slow    (CTX *c, VALUE l, VALUE r, uint32_t arg_index);
+VALUE korb_node_le_slow    (CTX *c, VALUE l, VALUE r, uint32_t arg_index);
+VALUE korb_node_gt_slow    (CTX *c, VALUE l, VALUE r, uint32_t arg_index);
+VALUE korb_node_ge_slow    (CTX *c, VALUE l, VALUE r, uint32_t arg_index);
+VALUE korb_node_aref_slow  (CTX *c, VALUE r, VALUE i, uint32_t arg_index);
+VALUE korb_node_aset_slow  (CTX *c, VALUE r, VALUE i, VALUE v, uint32_t arg_index);
+
 VALUE korb_yield(CTX *c, uint32_t argc, VALUE *argv);
 bool korb_block_given(void);
 

@@ -51,9 +51,15 @@ which the lexer handles by lowercasing every ID token at lex time.
 - 残: visibility enforcement, `goto` runtime, open array param,
   N-D 配列、`{$R+/-}` ディレクティブ — [`docs/todo.md`](./docs/todo.md).
 - **AOT specialization** が動く。`make aot-bench BENCH=<name>` で
-  parse → SPECIALIZE → 再ビルド → 比較。baked pcall (Round 8) で
-  recursion benches も伸びるようになり fib 4.2× / tarai 5.5× /
-  matmul 19× / collatz 26× / mandelbrot 26-37×。
+  parse → SPECIALIZE → 再ビルド → 比較。Round 8 の累積最適化
+  (baked pcall + vcall IC + fp threading + return_via_body +
+  zero-fill skip + body_clean) で fpc -O3 と頭を並べる:
+  - **AOT が fpc -O3 に勝つ or 同等**: nested_loops ≥80×、
+    mandelbrot_int 1.3×、collatz 2.4×、leibniz_pi 1.6×、heron 同等。
+  - **2× 以内**: gcd 1.2×、fib 1.7×、tarai 1.9×、quicksort 2.0×。
+  - インタプリタ比では fib 6.3×、gcd 6.8×、collatz 26×、
+    mandelbrot_int 48×、nested_loops ≥80×。
+  - 詳細は [`docs/compare_fpc.md`](./docs/compare_fpc.md)。
 
 For the full breakdown of what's done and what's outstanding:
 
@@ -61,7 +67,7 @@ For the full breakdown of what's done and what's outstanding:
 - [`docs/todo.md`](./docs/todo.md) — what's missing from a "real" Pascal and the next perf experiments to try.
 - [`docs/runtime.md`](./docs/runtime.md) — how everything works at run time, with a focus on the call protocol and var-param indirection.
 - [`docs/perf.md`](./docs/perf.md) — successful and unsuccessful tuning attempts.
-- [`docs/compare_fpc.md`](./docs/compare_fpc.md) — head-to-head with Free Pascal 3.2.2 (`-O-` and `-O3`) on the same 15 benchmarks; pascalast AOT beats `fpc -O3` on tight constant-folding loops (collatz, mandelbrot_int, nested_loops) and trails it 2-5× on function-call-heavy benches (fib / ack / tarai).
+- [`docs/compare_fpc.md`](./docs/compare_fpc.md) — head-to-head with Free Pascal 3.2.2 (`-O-` and `-O3`) on 16 benchmarks; pascalast AOT now wins or matches `fpc -O3` on 6/16 (constant-folding loops + heron + mandelbrot_int) and is within 1.7-2× on the call-heavy benches (fib / tarai / quicksort).  gcd is at 1.2× — basically measurement-noise close.
 
 ## Build & run
 

@@ -466,18 +466,7 @@ node_plus(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t ar
         if (LIKELY(!__builtin_add_overflow(a, b, &s) && FIXABLE(s))) return INT2FIX(s);
         return korb_int_plus(l, r);
     }
-    if (BUILTIN_TYPE(l) == T_STRING && BUILTIN_TYPE(r) == T_STRING) {
-        return korb_str_concat(l, r);
-    }
-    if (BUILTIN_TYPE(l) == T_ARRAY && BUILTIN_TYPE(r) == T_ARRAY) {
-        VALUE a = korb_ary_new_capa(korb_ary_len(l) + korb_ary_len(r));
-        for (long i = 0, n2 = korb_ary_len(l); i < n2; i++) korb_ary_push(a, korb_ary_aref(l, i));
-        for (long i = 0, n2 = korb_ary_len(r); i < n2; i++) korb_ary_push(a, korb_ary_aref(r, i));
-        return a;
-    }
-    c->fp[arg_index] = l;
-    c->fp[arg_index+1] = r;
-    return korb_dispatch_binop(c, l, id_op_plus, 1, &c->fp[arg_index+1]);
+    return korb_node_plus_slow(c, l, r, arg_index);
 }
 
 NODE_DEF
@@ -490,8 +479,7 @@ node_minus(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t a
         if (LIKELY(!__builtin_sub_overflow(a, b, &s) && FIXABLE(s))) return INT2FIX(s);
         return korb_int_minus(l, r);
     }
-    c->fp[arg_index+1] = r;
-    return korb_dispatch_binop(c, l, id_op_minus, 1, &c->fp[arg_index+1]);
+    return korb_node_minus_slow(c, l, r, arg_index);
 }
 
 NODE_DEF
@@ -504,8 +492,7 @@ node_mul(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg
         if (LIKELY(!__builtin_mul_overflow(a, b, &s) && FIXABLE(s))) return INT2FIX(s);
         return korb_int_mul(l, r);
     }
-    c->fp[arg_index+1] = r;
-    return korb_dispatch_binop(c, l, id_op_mul, 1, &c->fp[arg_index+1]);
+    return korb_node_mul_slow(c, l, r, arg_index);
 }
 
 NODE_DEF
@@ -521,8 +508,7 @@ node_div(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg
         if (FIXABLE(q)) return INT2FIX(q);
         return korb_int_div(l, r);
     }
-    c->fp[arg_index+1] = r;
-    return korb_dispatch_binop(c, l, id_op_div, 1, &c->fp[arg_index+1]);
+    return korb_node_div_slow(c, l, r, arg_index);
 }
 
 NODE_DEF
@@ -537,8 +523,7 @@ node_mod(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg
         if (m != 0 && ((a ^ b) < 0)) m += b;
         return INT2FIX(m);
     }
-    c->fp[arg_index+1] = r;
-    return korb_dispatch_binop(c, l, id_op_mod, 1, &c->fp[arg_index+1]);
+    return korb_node_mod_slow(c, l, r, arg_index);
 }
 
 NODE_DEF
@@ -549,7 +534,7 @@ node_uminus(CTX * restrict c, NODE * restrict n, NODE *operand, uint32_t arg_ind
         long a = FIX2LONG(v), s;
         if (!__builtin_sub_overflow(0L, a, &s) && FIXABLE(s)) return INT2FIX(s);
     }
-    return korb_dispatch_binop(c, v, korb_intern("-@"), 0, NULL);
+    return korb_node_uminus_slow(c, v);
 }
 
 // ---------------- bit ops ----------------
@@ -560,8 +545,7 @@ node_bit_and(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t
     VALUE l = EA(c, lhs);
     VALUE r = EA(c, rhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) return l & r;
-    c->fp[arg_index+1] = r;
-    return korb_dispatch_binop(c, l, id_op_and, 1, &c->fp[arg_index+1]);
+    return korb_node_band_slow(c, l, r, arg_index);
 }
 
 NODE_DEF
@@ -570,8 +554,7 @@ node_bit_or(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t 
     VALUE l = EA(c, lhs);
     VALUE r = EA(c, rhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) return l | r;
-    c->fp[arg_index+1] = r;
-    return korb_dispatch_binop(c, l, id_op_or, 1, &c->fp[arg_index+1]);
+    return korb_node_bor_slow(c, l, r, arg_index);
 }
 
 NODE_DEF
@@ -580,8 +563,7 @@ node_bit_xor(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t
     VALUE l = EA(c, lhs);
     VALUE r = EA(c, rhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) return (l ^ r) | FIXNUM_FLAG;
-    c->fp[arg_index+1] = r;
-    return korb_dispatch_binop(c, l, id_op_xor, 1, &c->fp[arg_index+1]);
+    return korb_node_bxor_slow(c, l, r, arg_index);
 }
 
 NODE_DEF
@@ -597,8 +579,7 @@ node_lshift(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t 
         }
         return korb_int_lshift(l, r);
     }
-    c->fp[arg_index+1] = r;
-    return korb_dispatch_binop(c, l, id_op_lshift, 1, &c->fp[arg_index+1]);
+    return korb_node_lshift_slow(c, l, r, arg_index);
 }
 
 NODE_DEF
@@ -611,8 +592,7 @@ node_rshift(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t 
         if (b >= 0 && b < 62) return INT2FIX(a >> b);
         return korb_int_rshift(l, r);
     }
-    c->fp[arg_index+1] = r;
-    return korb_dispatch_binop(c, l, id_op_rshift, 1, &c->fp[arg_index+1]);
+    return korb_node_rshift_slow(c, l, r, arg_index);
 }
 
 // ---------------- comparisons ----------------
@@ -623,8 +603,7 @@ node_lt(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_
     VALUE l = EA(c, lhs);
     VALUE r = EA(c, rhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) return KORB_BOOL((intptr_t)l < (intptr_t)r);
-    c->fp[arg_index+1] = r;
-    return korb_dispatch_binop(c, l, id_op_lt, 1, &c->fp[arg_index+1]);
+    return korb_node_lt_slow(c, l, r, arg_index);
 }
 
 NODE_DEF
@@ -633,8 +612,7 @@ node_le(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_
     VALUE l = EA(c, lhs);
     VALUE r = EA(c, rhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) return KORB_BOOL((intptr_t)l <= (intptr_t)r);
-    c->fp[arg_index+1] = r;
-    return korb_dispatch_binop(c, l, id_op_le, 1, &c->fp[arg_index+1]);
+    return korb_node_le_slow(c, l, r, arg_index);
 }
 
 NODE_DEF
@@ -643,8 +621,7 @@ node_gt(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_
     VALUE l = EA(c, lhs);
     VALUE r = EA(c, rhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) return KORB_BOOL((intptr_t)l > (intptr_t)r);
-    c->fp[arg_index+1] = r;
-    return korb_dispatch_binop(c, l, id_op_gt, 1, &c->fp[arg_index+1]);
+    return korb_node_gt_slow(c, l, r, arg_index);
 }
 
 NODE_DEF
@@ -653,8 +630,7 @@ node_ge(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_
     VALUE l = EA(c, lhs);
     VALUE r = EA(c, rhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) return KORB_BOOL((intptr_t)l >= (intptr_t)r);
-    c->fp[arg_index+1] = r;
-    return korb_dispatch_binop(c, l, id_op_ge, 1, &c->fp[arg_index+1]);
+    return korb_node_ge_slow(c, l, r, arg_index);
 }
 
 NODE_DEF
@@ -682,19 +658,11 @@ node_aref(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *idx, uint32_t a
 {
     VALUE r = EA(c, recv);
     VALUE i = EA(c, idx);
-    if (UNLIKELY(SPECIAL_CONST_P(r))) {
-        if (NIL_P(r)) return Qnil;
-        c->fp[arg_index+1] = i;
-        return korb_dispatch_binop(c, r, id_op_aref, 1, &c->fp[arg_index+1]);
+    if (LIKELY(!SPECIAL_CONST_P(r))) {
+        if (BUILTIN_TYPE(r) == T_ARRAY && FIXNUM_P(i)) return korb_ary_aref(r, FIX2LONG(i));
+        if (BUILTIN_TYPE(r) == T_HASH) return korb_hash_aref(r, i);
     }
-    if (BUILTIN_TYPE(r) == T_ARRAY && FIXNUM_P(i)) {
-        return korb_ary_aref(r, FIX2LONG(i));
-    }
-    if (BUILTIN_TYPE(r) == T_HASH) {
-        return korb_hash_aref(r, i);
-    }
-    c->fp[arg_index+1] = i;
-    return korb_dispatch_binop(c, r, id_op_aref, 1, &c->fp[arg_index+1]);
+    return korb_node_aref_slow(c, r, i, arg_index);
 }
 
 NODE_DEF
@@ -703,25 +671,11 @@ node_aset(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *idx, NODE *val,
     VALUE r = EA(c, recv);
     VALUE i = EA(c, idx);
     VALUE v = EA(c, val);
-    if (UNLIKELY(SPECIAL_CONST_P(r))) {
-        if (NIL_P(r)) return v;
-        VALUE *args = &c->fp[arg_index+1];
-        args[0] = i; args[1] = v;
-        korb_dispatch_binop(c, r, id_op_aset, 2, args);
-        return v;
+    if (LIKELY(!SPECIAL_CONST_P(r))) {
+        if (BUILTIN_TYPE(r) == T_ARRAY && FIXNUM_P(i)) { korb_ary_aset(r, FIX2LONG(i), v); return v; }
+        if (BUILTIN_TYPE(r) == T_HASH)                 { korb_hash_aset(r, i, v);          return v; }
     }
-    if (BUILTIN_TYPE(r) == T_ARRAY && FIXNUM_P(i)) {
-        korb_ary_aset(r, FIX2LONG(i), v);
-        return v;
-    }
-    if (BUILTIN_TYPE(r) == T_HASH) {
-        korb_hash_aset(r, i, v);
-        return v;
-    }
-    VALUE *args = &c->fp[arg_index+1];
-    args[0] = i; args[1] = v;
-    korb_dispatch_binop(c, r, id_op_aset, 2, args);
-    return v;
+    return korb_node_aset_slow(c, r, i, v, arg_index);
 }
 
 // ---------------- exception ----------------

@@ -196,6 +196,46 @@ the callee SD directly, lifting recursion-heavy benches to 4-6 ×.
 | **`for x in d do …`** over dynamic arrays (`for IDX := 0 to length(d)-1 do begin x := d[IDX]; BODY end`) and **`for x in S do …`** over sets (`for IDX := 0 to 63 do if IDX in S then begin x := IDX; BODY end`).  Static-array for-in already worked since round 4 | `test/48_forin_dyn_set.pas` |
 | **Visibility enforcement for class fields & methods** — `private` / `protected` / `public` / `published` sections inside `class … end` are tracked per field and per method; `check_access` is called at every field load / store site (`obj.field`, `Self.field` via bare-name auto-resolve, `(p as T).field`) and at every method call site (`obj.method(args)`, `b.method`).  Private members are accessible only from methods of the *declaring* class; protected from the declaring class and any descendant.  Plain (non-class) record fields skip the check (`decl_class = -1`) | `test/49_visibility.pas` |
 
+### Round 8 — perf push (post-baseline AOT)
+
+After the initial round-8 baked-pcall delivered 4-6× over INTERP,
+the comparison vs `fpc -O3` (in [`docs/compare_fpc.md`](./compare_fpc.md))
+showed pascalast AOT trailing 2-15× on call-heavy benches and the
+OOP virtual-dispatch case.  The following layered specialisations
+closed most of that gap.  Each one bakes a per-proc invariant
+(known at parse time) into the call site as a uint32 operand so
+SPECIALIZE emits it as a literal in the SD source — gcc DCEs the
+dead arms.
+
+| Optimisation | Mechanism | Effect |
+|---|---|---|
+| **vcall inline cache** | `struct vcall_cache` per `node_vcall` records `(vt, body, body_dispatcher, …)` on first dispatch; subsequent calls with the same `obj[0]` skip `vt[slot]` + `procs[]` lookup, fall straight into `pascal_call_baked` | oop_shapes 14.6× → 7.6× vs fpc -O3 |
+| **`needs_display` flag** | Per-proc bool: true iff the body declares a nested proc.  When false, `pascal_call_baked` skips the `c->display[lexical_depth]` save/set/restore — gcc DCEs three memory ops per call | call-heavy +5-10% |
+| **`UNLIKELY` post-call cleanup** | `c->exit_pending = 0` / `c->loop_action = 0` wrapped in `UNLIKELY(c->...)` so the hot path is a load+compare with a not-taken branch instead of two unconditional stores | ~5% |
+| **`fp` threading** | `int fp` becomes the third common parameter of every dispatcher (`common_param_count = 3` in `pascalast_gen.rb`).  Locals access via the parameter, not `c->fp` — completely removes c->fp memory traffic across recursive call boundaries | call-heavy +8-29%. fib 0.20 → 0.16. The biggest single win. |
+| **`return_via_body`** | New `node_set_result` writes the return slot **and** returns the assigned value via the C return path.  Static analysis (`tail_assigns_result`) recognises bodies whose every executable path ends in `Result := …`; for those, `pascal_call_baked` uses the body's C return value directly and skips the `c->stack[return_slot]` read + the slot write inside `node_set_result` | gcd 0.18 → 0.13 (-22%); fib/tarai/ack +13% |
+| **Slot zero-fill removed** | Pascal locals are uninitialised by spec (and by fpc).  The parser already inserts explicit init for the constructs that need it (case-stmt hidden temps, for-loop counters), so the defensive zero-fill in `pascal_call_baked` was up to `nslots-argc` dead stores per call | gcd 0.18 → 0.13 (-28%); ackermann -14% |
+| **`body_clean` flag** | Per-proc bool: true iff the body has no `break` / `continue` / `exit`.  When true, `pascal_call_baked`'s post-call `c->exit_pending` / `c->loop_action` checks are guaranteed-zero loads and gcc DCEs them | fib 0.13 → 0.12 (-8%); tarai/sieve -5% |
+
+Cumulative effect (round-8 entry → end), best of 5:
+
+| bench | round-8 entry | now | vs fpc -O3 |
+|---|---|---|---|
+| fib | 0.20 s | **0.12 s** (−40%) | 1.7× |
+| tarai | 0.29 s | **0.19 s** (−34%) | 1.9× |
+| gcd | 0.29 s | **0.13 s** (−55%) | **1.2×** |
+| ackermann | 0.28 s | **0.19 s** (−32%) | 3.8× |
+| oop_shapes | 0.73 s | **0.25 s** (−66%) | 5.0× |
+| matmul_2d | 0.21 s | **0.17 s** (−19%) | 2.8× |
+
+**ASTro 設計原則の遵守**: すべてのフラグは `node.def`
+の uint32 オペランドとして見える形に揃え、ASTroGen が DISPATCH
+に bake する。EVAL のセマンティクスは触らず、SPECIALIZE が
+literal に置換した値を読み取るだけ。Dispatcher / Evaluator の
+分離、Merkle-tree hashing、C-source-as-IR、Code Store のいずれも
+変更なし。`@nohash` 修飾子だけは pascalast 局所 (`pascalast_gen.rb`)
+で導入したが、core (`lib/astrogen.rb`) には変更なし。
+
 ## Bug fixes
 
 - **Stale `by_ref` flag** — `lsyms[]` re-use across procedures
