@@ -41,6 +41,7 @@ struct korb_hash {
     struct korb_hash_entry *first;  /* insertion order */
     struct korb_hash_entry *last;
     VALUE default_value;
+    bool compare_by_identity;       /* keys compared by object identity */
 };
 
 struct korb_range {

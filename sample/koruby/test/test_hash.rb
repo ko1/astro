@@ -117,11 +117,52 @@ def test_empty
   assert_equal false, {a: 1}.empty?
 end
 
+# compare_by_identity returns self and switches the hash to identity-based
+# key comparison.  optcarrot's PPU.setup_lut chains this:
+#   @lut_update = {}.compare_by_identity
+# A previous bug returned the inspect string instead of the hash, so the
+# chain silently collapsed @lut_update to a String and attr_lut updates
+# were dropped — caused PPU rendering to use stale TILE_LUT entries.
+def test_compare_by_identity_returns_self
+  h = {}
+  result = h.compare_by_identity
+  assert_equal h.object_id, result.object_id, "compare_by_identity must return self"
+  assert_equal true, h.compare_by_identity?
+end
+
+# Even on a non-empty hash, calling compare_by_identity should work and
+# return self (CRuby rehashes existing entries; koruby just keeps them).
+def test_compare_by_identity_on_nonempty
+  arr1 = [1, 2, 3]
+  h = {}
+  h[arr1] = "x"
+  result = h.compare_by_identity
+  assert_equal h.object_id, result.object_id
+  # arr1 still resolvable by identity
+  assert_equal "x", h[arr1]
+end
+
+# Hash with Array keys uses identity comparison — different Array instances
+# with same content are different keys (this is how optcarrot keeps 4
+# nmt_banks distinct in @lut_update).
+def test_array_key_identity
+  arr1 = [1, 2, 3]
+  arr2 = [1, 2, 3]  # different object
+  h = {}.compare_by_identity
+  h[arr1] = "first"
+  h[arr2] = "second"
+  assert_equal 2, h.size
+  assert_equal "first", h[arr1]
+  assert_equal "second", h[arr2]
+end
+
 TESTS = %i[
   test_basic test_nested test_keys_values test_each test_each_value
   test_merge test_merge_overwrite test_invert test_to_a
   test_delete test_key_p test_fetch test_dup test_eq
   test_string_keys test_mixed_keys test_empty
+  test_compare_by_identity_returns_self
+  test_compare_by_identity_on_nonempty test_array_key_identity
 ]
 TESTS.each {|t| run_test(t) }
 report("Hash")

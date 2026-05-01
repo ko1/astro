@@ -1818,6 +1818,30 @@ static VALUE ary_each_with_object(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 /* ---------- Hash methods (extended) ---------- */
 
+static VALUE hash_compare_by_identity(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_hash *h = (struct korb_hash *)self;
+    if (h->size > 0) {
+        /* In CRuby, calling on a non-empty hash rehashes.  We'd need to
+         * rebuild every entry's hash; do a simple rebuild here. */
+        struct korb_hash_entry *first = h->first;
+        h->first = h->last = NULL;
+        h->size = 0;
+        memset(h->buckets, 0, h->bucket_cnt * sizeof(*h->buckets));
+        h->compare_by_identity = true;
+        for (struct korb_hash_entry *e = first; e; e = e->next) {
+            korb_hash_aset((VALUE)h, e->key, e->value);
+        }
+    } else {
+        h->compare_by_identity = true;
+    }
+    return self;
+}
+
+static VALUE hash_compare_by_identity_p(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_hash *h = (struct korb_hash *)self;
+    return KORB_BOOL(h->compare_by_identity);
+}
+
 static VALUE hash_keys(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_hash *h = (struct korb_hash *)self;
     VALUE r = korb_ary_new();
@@ -2878,7 +2902,8 @@ void korb_init_builtins(void) {
     DEF(cHsh, "to_a",       hash_to_a,       0);
     DEF(cHsh, "delete",     hash_delete,    -1);
     DEF(cHsh, "fetch",      hash_fetch,     -1);
-    DEF(cHsh, "compare_by_identity", kernel_inspect, 0); /* no-op */
+    DEF(cHsh, "compare_by_identity",  hash_compare_by_identity, 0);
+    DEF(cHsh, "compare_by_identity?", hash_compare_by_identity_p, 0);
     DEF(cHsh, "default",    kernel_inspect, 0); /* nil */
     DEF(cHsh, "default=",   kernel_inspect, 1); /* no-op */
     DEF(cHsh, "===",        hash_eqq,        1);

@@ -535,6 +535,7 @@ VALUE korb_hash_new(void) {
     h->size = 0;
     h->first = h->last = NULL;
     h->default_value = Qnil;
+    h->compare_by_identity = false;
     return (VALUE)h;
 }
 
@@ -564,23 +565,21 @@ static void korb_hash_resize(struct korb_hash *h) {
 VALUE korb_hash_aset(VALUE hv, VALUE key, VALUE val) {
     struct korb_hash *h = (struct korb_hash *)hv;
     if (h->size * 2 > h->bucket_cnt) korb_hash_resize(h);
-    uint64_t hh = korb_hash_value(key);
+    uint64_t hh = h->compare_by_identity ? (uint64_t)key : korb_hash_value(key);
     uint32_t b = (uint32_t)(hh % h->bucket_cnt);
     /* search existing */
     for (struct korb_hash_entry *e = h->buckets[b]; e; ) {
-        /* we use 'next' as insertion-order chain; need separate bucket chain.
-         * Simplification: linear scan within bucket via insertion-order entries
-         * filtered by hash. Not super efficient but correct. */
-        if (e->hash == hh && korb_eql(e->key, key)) {
+        if (e->hash == hh &&
+            (h->compare_by_identity ? (e->key == key) : korb_eql(e->key, key))) {
             e->value = val;
             return val;
         }
-        /* break — bucket only holds first matching */
         break;
     }
     /* full linear scan to be safe */
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
-        if (e->hash == hh && korb_eql(e->key, key)) {
+        if (e->hash == hh &&
+            (h->compare_by_identity ? (e->key == key) : korb_eql(e->key, key))) {
             e->value = val;
             return val;
         }
@@ -600,9 +599,11 @@ VALUE korb_hash_aset(VALUE hv, VALUE key, VALUE val) {
 
 VALUE korb_hash_aref(VALUE hv, VALUE key) {
     struct korb_hash *h = (struct korb_hash *)hv;
-    uint64_t hh = korb_hash_value(key);
+    uint64_t hh = h->compare_by_identity ? (uint64_t)key : korb_hash_value(key);
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
-        if (e->hash == hh && korb_eql(e->key, key)) return e->value;
+        if (e->hash == hh &&
+            (h->compare_by_identity ? (e->key == key) : korb_eql(e->key, key)))
+            return e->value;
     }
     return h->default_value;
 }
