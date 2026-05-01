@@ -2441,8 +2441,20 @@ static VALUE int_pow(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 /* ---------- Float methods (extended) ---------- */
 static VALUE flt_floor(CTX *c, VALUE self, int argc, VALUE *argv) {
-    double v = korb_num2dbl(self);
-    return INT2FIX((long)v);
+    /* largest integer <= v.  C's floor() handles negatives correctly. */
+    return INT2FIX((long)floor(korb_num2dbl(self)));
+}
+static VALUE flt_ceil(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return INT2FIX((long)ceil(korb_num2dbl(self)));
+}
+static VALUE flt_round(CTX *c, VALUE self, int argc, VALUE *argv) {
+    /* Ruby's Float#round (no digits arg) is "round half away from zero",
+     * which C's round() implements directly. */
+    return INT2FIX((long)round(korb_num2dbl(self)));
+}
+static VALUE flt_truncate(CTX *c, VALUE self, int argc, VALUE *argv) {
+    /* truncate toward zero — same as to_i for Float. */
+    return INT2FIX((long)korb_num2dbl(self));
 }
 
 static VALUE flt_pow(CTX *c, VALUE self, int argc, VALUE *argv) {
@@ -2853,8 +2865,9 @@ void korb_init_builtins(void) {
     DEF(cFlt, "to_f",  flt_to_f, 0);
     DEF(cFlt, "-@",    flt_uminus, 0);
     DEF(cFlt, "abs",   flt_abs, 0);
-    DEF(cFlt, "ceil",  flt_floor, -1);
-    DEF(cFlt, "round", flt_floor, -1);
+    DEF(cFlt, "ceil",     flt_ceil,    -1);
+    DEF(cFlt, "round",    flt_round,   -1);
+    DEF(cFlt, "truncate", flt_truncate, 0);
 
     /* extra String */
     DEF(cStr, "split",       str_split,       -1);
