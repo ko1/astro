@@ -43,6 +43,10 @@ typedef struct backend_ops {
     /* Optional: drive AOT-compile of this pattern.  NULL means the
      * backend doesn't participate in ASTro's code store (Onigmo). */
     void               (*aot_compile)(backend_pattern_t *p, bool verbose);
+    /* True iff the backend's compiled pattern has a fast scan
+     * primitive (so whole-file mmap is worthwhile).  NULL → assume
+     * yes (Onigmo always has internal optimisation). */
+    bool               (*has_fast_scan)(backend_pattern_t *p);
 } backend_ops_t;
 
 extern const backend_ops_t backend_astrogre_ops;

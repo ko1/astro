@@ -30,6 +30,12 @@
  *                    first regex literal as the search pattern
  */
 
+/* _GNU_SOURCE before any system header — needed for memrchr (used in
+ * the whole-file scan path).  context.h would also set this, but the
+ * system <string.h> below is included before context.h's transitive
+ * includes get a chance, so the macro must be visible at this point. */
+#define _GNU_SOURCE 1
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,6 +43,8 @@
 #include <unistd.h>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <sys/mman.h>
+#include <fcntl.h>
 #include <errno.h>
 #include "node.h"
 #include "context.h"
@@ -292,6 +300,101 @@ print_only_matching(grep_state_t *st, const char *fname, long lineno,
     }
 }
 
+/* Whole-file scan path.  Uses backend->search_from over the full
+ * mmap'd buffer in a single CTX, identifies the line containing
+ * each match via memrchr/memchr, and emits / counts.  This avoids
+ * the per-line getline + per-call CTX-init overhead that bottle-
+ * necks the streaming path; for literal-led patterns this is what
+ * lets astrogre approach grep speed.
+ *
+ * Used only for default and -c modes — -v (invert) needs all
+ * non-matching lines, and the streaming path's per-line model is
+ * already the right fit there. */
+static bool
+process_buffer(grep_state_t *st, const char *buf, size_t len, const char *fname)
+{
+    grep_opt_t *go = st->go;
+    long matches_this_file = 0;
+    bool any_match = false;
+
+    /* Lazy lineno tracking: we count newlines from `lineno_pos` to
+     * the start of each printed line, on demand.  Avoids a full
+     * pre-pass for files that have very few matches. */
+    long lineno = 0;
+    size_t lineno_pos = 0;
+    #define ADVANCE_LINENO(target) do {                                \
+        const char *_lp = buf + lineno_pos;                            \
+        const char *_te = buf + (target);                              \
+        while (_lp < _te) {                                            \
+            const char *nl = (const char *)memchr(_lp, '\n', _te - _lp);\
+            if (!nl) break;                                            \
+            lineno++; _lp = nl + 1;                                    \
+        }                                                              \
+        lineno_pos = (target);                                         \
+    } while (0)
+
+    size_t pos = 0;
+    while (pos <= len) {
+        /* Find earliest match at or after pos across all patterns. */
+        backend_match_t m;
+        size_t earliest_start = SIZE_MAX, earliest_end = 0;
+        bool found = false;
+        for (int i = 0; i < st->n_patterns; i++) {
+            if (st->go->backend->search_from(st->patterns[i], buf, len, pos, &m) && m.matched) {
+                if (m.start < earliest_start) {
+                    earliest_start = m.start;
+                    earliest_end = m.end;
+                    found = true;
+                }
+            }
+        }
+        if (!found) break;
+
+        /* Line bounds. */
+        const char *line_start_ptr = (earliest_start > 0)
+            ? (const char *)memrchr(buf, '\n', earliest_start)
+            : NULL;
+        size_t line_start = line_start_ptr ? (size_t)(line_start_ptr - buf) + 1 : 0;
+        const char *line_end_ptr = (const char *)memchr(buf + earliest_start, '\n',
+                                                        len - earliest_start);
+        size_t line_end = line_end_ptr ? (size_t)(line_end_ptr - buf) : len;
+
+        any_match = true;
+        matches_this_file++;
+        if (go->files_with_matches || go->files_without_match) break;
+
+        if (!go->count_only) {
+            ADVANCE_LINENO(line_start);
+            lineno++;        /* current line is one beyond any prior newline */
+            if (go->only_matching) {
+                print_only_matching(st, fname, lineno,
+                                    buf + line_start, line_end - line_start);
+            } else {
+                print_line_with_color(st, fname, lineno,
+                                      buf + line_start, line_end - line_start);
+            }
+            lineno_pos = line_end;
+            if (line_end < len) { lineno_pos = line_end + 1; lineno++; }
+            /* Already counted current line; -1 because the next
+             * ADVANCE_LINENO will count newlines starting at
+             * lineno_pos. */
+            lineno--;
+        }
+        pos = (line_end < len) ? line_end + 1 : len + 1;
+    }
+
+    if (go->files_with_matches) {
+        if (any_match) printf("%s\n", fname);
+    } else if (go->files_without_match) {
+        if (!any_match) printf("%s\n", fname);
+    } else if (go->count_only) {
+        if (st->show_filename) printf("%s:", fname);
+        printf("%ld\n", matches_this_file);
+    }
+    st->total_match_count += matches_this_file;
+    return any_match;
+}
+
 /* Returns true if at least one match was found (regardless of -v). */
 static bool
 process_stream(grep_state_t *st, FILE *fp, const char *fname)
@@ -349,6 +452,42 @@ process_stream(grep_state_t *st, FILE *fp, const char *fname)
 static int
 process_file(grep_state_t *st, const char *path)
 {
+    /* Whole-file mmap path is preferred for regular files when:
+     *   - the mode supports it (no -v invert — that needs to
+     *     enumerate every line, including non-matching ones), and
+     *   - the backend's pattern has a fast scan primitive (memchr /
+     *     memmem / SIMD class scan).  For plain backtracking
+     *     patterns (\w-led, /i without prefilter, etc.) the per-
+     *     line streaming loop wins because each line is short and
+     *     a single 36-byte naive scan is faster than a whole-file
+     *     naive sweep.  has_fast_scan == NULL on the backend means
+     *     "always yes" (Onigmo has its own internal optimisation). */
+    grep_opt_t *go = st->go;
+    bool fast = true;
+    if (go->backend->has_fast_scan) {
+        fast = false;
+        for (int i = 0; i < st->n_patterns; i++) {
+            if (go->backend->has_fast_scan(st->patterns[i])) { fast = true; break; }
+        }
+    }
+    if (!go->invert && fast) {
+        int fd = open(path, O_RDONLY);
+        if (fd < 0) {
+            fprintf(stderr, "astrogre: %s: %s\n", path, strerror(errno));
+            return 2;
+        }
+        struct stat sb;
+        if (fstat(fd, &sb) == 0 && S_ISREG(sb.st_mode) && sb.st_size > 0) {
+            void *map = mmap(NULL, (size_t)sb.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+            if (map != MAP_FAILED) {
+                process_buffer(st, (const char *)map, (size_t)sb.st_size, path);
+                munmap(map, (size_t)sb.st_size);
+                close(fd);
+                return 0;
+            }
+        }
+        close(fd);
+    }
     FILE *fp = fopen(path, "rb");
     if (!fp) {
         fprintf(stderr, "astrogre: %s: %s\n", path, strerror(errno));

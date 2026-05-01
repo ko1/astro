@@ -120,10 +120,11 @@ ognm_free(backend_pattern_t *bp)
 }
 
 const backend_ops_t backend_onigmo_ops = {
-    .name        = "onigmo",
-    .compile     = ognm_compile,
-    .search      = ognm_search,
-    .search_from = ognm_search_from,
-    .free        = ognm_free,
-    .aot_compile = NULL,    /* Onigmo doesn't participate in ASTro code store */
+    .name          = "onigmo",
+    .compile       = ognm_compile,
+    .search        = ognm_search,
+    .search_from   = ognm_search_from,
+    .free          = ognm_free,
+    .aot_compile   = NULL,    /* Onigmo doesn't participate in ASTro code store */
+    .has_fast_scan = NULL,    /* assume yes — Onigmo has its own internal prefilter */
 };

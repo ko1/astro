@@ -1223,6 +1223,19 @@ astrogre_pattern_hash(astrogre_pattern *p)
     return (uint64_t)HASH(p->root);
 }
 
+bool
+astrogre_pattern_has_prefilter(astrogre_pattern *p)
+{
+    if (!p || !p->root) return false;
+    const char *name = p->root->head.kind->default_dispatcher_name;
+    if (!name) return false;
+    return strcmp(name, "DISPATCH_node_grep_search_memchr")     == 0
+        || strcmp(name, "DISPATCH_node_grep_search_memmem")     == 0
+        || strcmp(name, "DISPATCH_node_grep_search_byteset")    == 0
+        || strcmp(name, "DISPATCH_node_grep_search_range")      == 0
+        || strcmp(name, "DISPATCH_node_grep_search_class_scan") == 0;
+}
+
 extern void astro_cs_compile(NODE *entry, const char *file);
 extern void astro_cs_build(const char *extra_cflags);
 extern void astro_cs_reload(void);

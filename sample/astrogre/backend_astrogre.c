@@ -77,11 +77,18 @@ agre_aot_compile(backend_pattern_t *bp, bool verbose)
     if (bp) astrogre_pattern_aot_compile(bp->p, verbose);
 }
 
+static bool
+agre_has_fast_scan(backend_pattern_t *bp)
+{
+    return bp && astrogre_pattern_has_prefilter(bp->p);
+}
+
 const backend_ops_t backend_astrogre_ops = {
-    .name        = "astrogre",
-    .compile     = agre_compile,
-    .search      = agre_search,
-    .search_from = agre_search_from,
-    .free        = agre_free,
-    .aot_compile = agre_aot_compile,
+    .name          = "astrogre",
+    .compile       = agre_compile,
+    .search        = agre_search,
+    .search_from   = agre_search_from,
+    .free          = agre_free,
+    .aot_compile   = agre_aot_compile,
+    .has_fast_scan = agre_has_fast_scan,
 };

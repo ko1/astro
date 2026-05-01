@@ -43,6 +43,13 @@ astrogre_pattern *astrogre_parse(const char *pat, size_t pat_len, uint32_t prism
  * keys on, exposed for diagnostics (`-d`, `--cs-status`). */
 uint64_t astrogre_pattern_hash(astrogre_pattern *p);
 
+/* True iff the pattern's root is one of the SIMD / libc-prefilter
+ * wrappers (memchr / memmem / byteset / range / class_scan).  Used
+ * by the grep CLI to decide whether the whole-file mmap path is
+ * worth taking — for plain node_grep_search the per-line streaming
+ * loop is faster on typical inputs because each line is short. */
+bool astrogre_pattern_has_prefilter(astrogre_pattern *p);
+
 /* Drive astro_cs_compile + cs_build + cs_reload for this pattern.
  * Called once per unique-hash pattern in --aot-compile mode.  Idempotent —
  * repeated calls with the same hash hit the dedup. */
