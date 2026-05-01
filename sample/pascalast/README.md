@@ -61,6 +61,7 @@ For the full breakdown of what's done and what's outstanding:
 - [`docs/todo.md`](./docs/todo.md) — what's missing from a "real" Pascal and the next perf experiments to try.
 - [`docs/runtime.md`](./docs/runtime.md) — how everything works at run time, with a focus on the call protocol and var-param indirection.
 - [`docs/perf.md`](./docs/perf.md) — successful and unsuccessful tuning attempts.
+- [`docs/compare_fpc.md`](./docs/compare_fpc.md) — head-to-head with Free Pascal 3.2.2 (`-O-` and `-O3`) on the same 15 benchmarks; pascalast AOT beats `fpc -O3` on tight constant-folding loops (collatz, mandelbrot_int, nested_loops) and trails it 2-5× on function-call-heavy benches (fib / ack / tarai).
 
 ## Build & run
 
