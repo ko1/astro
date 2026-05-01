@@ -1161,15 +1161,14 @@ static VALUE prologue_ast_simple(CTX *c, struct Node *callsite, VALUE recv,
     }
     c->self = recv;
 
-    struct korb_frame frame = {
-        .prev = c->current_frame,
-        .caller_node = callsite,
-        .method = mc->method,
-        .self = recv,
-        .fp = c->fp,
-        .locals_cnt = mc->locals_cnt,
-        .block = block,
-    };
+    /* Trimmed frame: only fields actually read elsewhere (.prev,
+     * .method for super, .self for backtrace, .block for block_given?).
+     * Skipping .caller_node / .fp / .locals_cnt saves 3 stores per call. */
+    struct korb_frame frame;
+    frame.prev = c->current_frame;
+    frame.method = mc->method;
+    frame.self = recv;
+    frame.block = block;
     c->current_frame = &frame;
     VALUE r = mc->dispatcher(c, mc->body);
     c->current_frame = frame.prev;
@@ -1235,15 +1234,14 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
     }
     c->self = recv;
 
-    struct korb_frame frame = {
-        .prev = c->current_frame,
-        .caller_node = callsite,
-        .method = mc->method,
-        .self = recv,
-        .fp = c->fp,
-        .locals_cnt = mc->locals_cnt,
-        .block = block,
-    };
+    /* Trimmed frame: only fields actually read elsewhere (.prev,
+     * .method for super, .self for backtrace, .block for block_given?).
+     * Skipping .caller_node / .fp / .locals_cnt saves 3 stores per call. */
+    struct korb_frame frame;
+    frame.prev = c->current_frame;
+    frame.method = mc->method;
+    frame.self = recv;
+    frame.block = block;
     c->current_frame = &frame;
     VALUE r = mc->dispatcher(c, mc->body);
     c->current_frame = frame.prev;
