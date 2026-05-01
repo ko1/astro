@@ -6,6 +6,7 @@
 
 #include <ctype.h>
 #include <stdarg.h>
+#include <stddef.h>
 #include <time.h>
 #include "context.h"
 #include "node.h"
@@ -84,16 +85,43 @@ struct oobj OC_NIL_OBJ   = { .type = OOBJ_NIL };
 struct oobj *
 oc_alloc(int type)
 {
-    struct oobj *o = (struct oobj *)calloc(1, sizeof(struct oobj));
+    // malloc + manual type-tag init: caller will overwrite the union
+    // member it cares about, so zero-initing the whole ~64-byte oobj
+    // (calloc) is wasted memset traffic on a hot path.
+    struct oobj *o = (struct oobj *)malloc(sizeof(struct oobj));
     if (!o) { fprintf(stderr, "astocaml: oom\n"); exit(1); }
     o->type = type;
     return o;
 }
 
+// Bump allocator for cons cells.  Cons is the single hottest
+// allocation in list-heavy code (sieve / nqueens) — `_int_malloc`
+// dominated the profile even after switching to malloc.  Bumping
+// from a pre-allocated arena collapses each `oc_cons` to a 16-byte
+// add + a couple of stores; no malloc bookkeeping.  We never free
+// (consistent with the rest of the runtime — see docs/todo.md;
+// Boehm GC is the planned cleanup).
+static struct {
+    char  *base;
+    size_t pos;
+    size_t cap;
+} g_cons_pool;
+
+#define CONS_POOL_CHUNK    (4u * 1024u * 1024u)
+#define CONS_CELL_SIZE     ((sizeof(((struct oobj *)0)->cons) + offsetof(struct oobj, cons) + 7u) & ~7u)
+
 VALUE
 oc_cons(VALUE h, VALUE t)
 {
-    struct oobj *o = oc_alloc(OOBJ_CONS);
+    if (UNLIKELY(g_cons_pool.pos + CONS_CELL_SIZE > g_cons_pool.cap)) {
+        g_cons_pool.base = (char *)malloc(CONS_POOL_CHUNK);
+        if (!g_cons_pool.base) { fprintf(stderr, "astocaml: oom (cons pool)\n"); exit(1); }
+        g_cons_pool.pos = 0;
+        g_cons_pool.cap = CONS_POOL_CHUNK;
+    }
+    struct oobj *o = (struct oobj *)(g_cons_pool.base + g_cons_pool.pos);
+    g_cons_pool.pos += CONS_CELL_SIZE;
+    o->type = OOBJ_CONS;
     o->cons.head = h;
     o->cons.tail = t;
     return OC_OBJ_VAL(o);
@@ -2573,7 +2601,7 @@ make_match_arm(NODE *test, uint32_t arity, uint32_t exi, NODE *body, NODE *failu
 {
     aot_add_entry(body);
     aot_add_entry(failure);
-    return ALLOC_node_match_arm(test, arity, exi, body, failure);
+    return ALLOC_node_match_arm(test, arity, exi, body, failure, node_is_leaf(body));
 }
 
 static inline NODE *

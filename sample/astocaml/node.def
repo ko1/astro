@@ -185,8 +185,8 @@ node_letrec_n(CTX * restrict c, NODE * restrict n, uint32_t nbindings, uint32_t 
 // On test-true: pushes a fresh `arity`-slot frame, evaluates each
 // extractor in the OUTER env (before the push), populates the frame, and
 // runs the arm body.  On test-false: runs `failure` in the unchanged env.
-NODE_DEF @noinline
-node_match_arm(CTX * restrict c, NODE * restrict n, NODE *test, uint32_t arity, uint32_t extracts_idx, NODE *body, NODE *failure)
+NODE_DEF
+node_match_arm(CTX * restrict c, NODE * restrict n, NODE *test, uint32_t arity, uint32_t extracts_idx, NODE *body, NODE *failure, uint32_t is_leaf)
 {
     (void)n;
     extern NODE **OC_EXTRACT_NODES;
@@ -196,13 +196,21 @@ node_match_arm(CTX * restrict c, NODE * restrict n, NODE *test, uint32_t arity, 
         // No bindings — run body in unchanged env.
         return EVAL_ARG(c, body);
     }
-    VALUE *vals = (VALUE *)alloca(sizeof(VALUE) * arity);
+    struct oframe *f;
+    if (LIKELY(is_leaf)) {
+        // Leaf body cannot create a closure capturing this frame, so
+        // we can put it on the C stack — saves the per-arm-success
+        // malloc (huge for filter/sieve-style list processing).
+        f = (struct oframe *)alloca(sizeof(struct oframe) + sizeof(VALUE) * arity);
+        f->parent = c->env;
+        f->nslots = (int)arity;
+    } else {
+        f = oc_new_frame(c->env, (int)arity);
+    }
     for (uint32_t i = 0; i < arity; i++) {
         NODE *e = OC_EXTRACT_NODES[extracts_idx + i];
-        vals[i] = (*e->head.dispatcher)(c, e);
+        f->slots[i] = (*e->head.dispatcher)(c, e);
     }
-    struct oframe *f = oc_new_frame(c->env, (int)arity);
-    for (uint32_t i = 0; i < arity; i++) f->slots[i] = vals[i];
     struct oframe *saved = c->env;
     c->env = f;
     VALUE r = EVAL_ARG(c, body);

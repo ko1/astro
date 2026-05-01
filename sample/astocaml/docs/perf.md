@@ -128,6 +128,31 @@ node_lt(...) {
 効果: method_call ベンチで 2.1 s → 1.66 s (**1.34× 高速化**)。
 注: より大きな勝利はクラス間で method table を共有する版だが、現状では各 `new` がフレッシュな配列を確保するため per-instance に留まる。
 
+### ✅ list-heavy ベンチ (sieve / nqueens) の最適化
+
+`perf record` で sieve を見たら `DISPATCH_node_match_arm` 13% + `_int_malloc` 18% が支配的。原因を 4 段で潰した:
+
+1. **`oc_alloc` の calloc → malloc** — `struct oobj` は ~64 byte の union だが、caller は対象の union member 1 つしか触らない。zero-init は無駄。
+2. **`oc_cons` 専用の小サイズ alloc** — cons は `{type, head, tail}` 24 byte で十分。union 全体を取らない。
+3. **match_arm body の leaf alloca** — `node_is_leaf(body)` で leaf マークし、leaf なら frame を C スタックに alloca。filter 等の per-success malloc を排除。
+4. **`node_match_arm` から `@noinline` 削除** — SD が生成され dispatcher indirection が消える (DISPATCH_node_match_arm は perf 上位から消えた)。
+5. **cons 専用 bump allocator** — 4MB プールを線形消費、`oc_cons` は `{add, store, store, store}` 程度に。malloc bookkeeping を完全 skip。
+
+効果:
+
+| bench | before | after | speedup |
+|--|--|--|--|
+| sieve  | 0.90 s | **0.42 s** | 2.1× |
+| nqueens| 0.83 s | **0.42 s** | 2.0× |
+
+profile 後 (sieve):
+- `_int_malloc` 18% → 9%
+- `oc_cons` 10% → 2.4%
+- `DISPATCH_node_match_arm` 13% → 圏外
+- 上位は SD_xxx (実計算) 中心
+
+ユーザの示唆「機械語に落ちてないんじゃないか」が大当たり — 関数呼び出し dispatcher chain が dispatch indirection + malloc で消えていた。
+
 ### ✅ `node_appN` の closure-leaf fast path (oc_apply inline)
 
 `oc_apply` は per-call で:
