@@ -72,10 +72,6 @@ struct oobj {
             int nparams;
             bool is_leaf;           // body creates no inner closures →
                                     // oc_apply may alloca the frame
-            bool is_tiny;           // is_leaf + body has no `lref(d>0)`
-                                    // and no captures.  APPN_FAST_PATH
-                                    // skips frame entirely; args go
-                                    // through `c->reg[]`.
         } closure;
         struct {
             oc_prim_fn fn;
@@ -160,8 +156,6 @@ struct app_cache {
     VALUE              fn;
     struct Node       *body;
     struct oframe     *env;
-    bool               is_tiny;     // body uses `lref0_reg` only —
-                                    // skip frame, args via c->reg[]
 };
 
 // Inline cache for a `node_send` site.  `names_ptr` keys on the receiver
@@ -186,12 +180,6 @@ struct oc_handler {
 
 typedef struct CTX_struct {
     struct oframe *env;
-
-    // Frame-less arg slots for "tiny" closures.  APPN_FAST_PATH writes
-    // here instead of allocating an oframe; `node_lref0_reg(idx)`
-    // reads back.  Saved/restored across calls so recursion is safe.
-    // 16 slots covers any realistic single-frame arg count.
-    VALUE reg[16];
 
     struct gentry *globals;
     size_t globals_size;
@@ -245,7 +233,6 @@ VALUE oc_cons(VALUE h, VALUE t);
 VALUE oc_make_string(const char *s, size_t len);
 VALUE oc_make_closure(struct Node *body, struct oframe *env, int nparams);
 VALUE oc_make_closure_ex(struct Node *body, struct oframe *env, int nparams, bool is_leaf);
-VALUE oc_make_closure_ex2(struct Node *body, struct oframe *env, int nparams, bool is_leaf, bool is_tiny);
 VALUE oc_make_prim(const char *name, oc_prim_fn fn, int min_argc, int max_argc);
 VALUE oc_make_tuple(int n, VALUE *items);          // copies items
 VALUE oc_make_ref(VALUE init);

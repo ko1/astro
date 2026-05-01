@@ -72,29 +72,6 @@ oc_node_to_tail(NODE *n)
     else if (d == DISPATCH_node_app4) n->head.dispatcher = DISPATCH_node_tail_app4;
 }
 
-// Swap a `node_lref` to `node_lref0_reg` in place: same struct
-// layout (depth, idx) so we just retarget dispatcher + kind so both
-// the interpreter (head.dispatcher) and the AOT specializer
-// (head.kind->specializer) emit the frame-less variant.
-bool
-oc_node_is_lref(NODE *n)
-{
-    return n && n->head.dispatcher == DISPATCH_node_lref;
-}
-
-void
-oc_node_to_lref0_reg(NODE *n)
-{
-    n->head.dispatcher = DISPATCH_node_lref0_reg;
-    n->head.kind       = &kind_node_lref0_reg;
-}
-
-uint32_t
-oc_node_lref_depth(NODE *n)
-{
-    return n->u.node_lref.depth;
-}
-
 // Swap a binary-op node to its `_int` specialization in place.
 // All `*_int` variants share `{NODE *a, NODE *b}` struct layout
 // with their generic counterparts (compiler enforces this since
@@ -115,5 +92,35 @@ oc_node_to_int(NODE *n)
     if (d == DISPATCH_node_ge)  { n->head.dispatcher = DISPATCH_node_ge_int;  n->head.kind = &kind_node_ge_int;  return true; }
     if (d == DISPATCH_node_eq)  { n->head.dispatcher = DISPATCH_node_eq_int;  n->head.kind = &kind_node_eq_int;  return true; }
     if (d == DISPATCH_node_ne)  { n->head.dispatcher = DISPATCH_node_ne_int;  n->head.kind = &kind_node_ne_int;  return true; }
+    return false;
+}
+
+// Swap unary `-` to its int specialization.
+bool
+oc_node_to_neg_int(NODE *n)
+{
+    if (n->head.dispatcher != DISPATCH_node_neg) return false;
+    n->head.dispatcher = DISPATCH_node_neg_int;
+    n->head.kind       = &kind_node_neg_int;
+    return true;
+}
+
+// Swap `if` to its bool-cond specialization.
+bool
+oc_node_to_if_bool(NODE *n)
+{
+    if (n->head.dispatcher != DISPATCH_node_if) return false;
+    n->head.dispatcher = DISPATCH_node_if_bool;
+    n->head.kind       = &kind_node_if_bool;
+    return true;
+}
+
+// Swap `&&` / `||` to bool-operand specializations.
+bool
+oc_node_to_logic_bool(NODE *n)
+{
+    node_dispatcher_func_t d = n->head.dispatcher;
+    if (d == DISPATCH_node_and) { n->head.dispatcher = DISPATCH_node_and_bool; n->head.kind = &kind_node_and_bool; return true; }
+    if (d == DISPATCH_node_or)  { n->head.dispatcher = DISPATCH_node_or_bool;  n->head.kind = &kind_node_or_bool;  return true; }
     return false;
 }

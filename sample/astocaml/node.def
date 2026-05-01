@@ -83,22 +83,6 @@ node_lref(CTX * restrict c, NODE * restrict n, uint32_t depth, uint32_t idx)
     return oc_env_at(c, depth)->slots[idx];
 }
 
-// Frame-less argument access — used inside "tiny" closures (leaf
-// body, all `lref` are depth 0, no inner closure capture).  The
-// caller skipped the oframe alloca + parent / slots writes and put
-// the args directly into `c->reg[]`; this node just reads them
-// back.  Post-parse `mark_tiny_closures` rewrites matching `lref(0,
-// i)` nodes into this kind so AOT generates a 1-instruction SD.
-//
-// Operands match `node_lref` (same struct layout) so we can swap
-// the dispatcher + kind in place — `depth` is read but ignored.
-NODE_DEF
-node_lref0_reg(CTX * restrict c, NODE * restrict n, uint32_t depth, uint32_t idx)
-{
-    (void)n; (void)depth;
-    return c->reg[idx];
-}
-
 NODE_DEF
 node_gref(CTX * restrict c, NODE * restrict n, const char *name, struct gref_cache *cache@ref)
 {
@@ -274,10 +258,10 @@ node_let_pat(CTX * restrict c, NODE * restrict n, NODE *value, uint32_t arity, u
 // ---------------------------------------------------------------------------
 
 NODE_DEF @noinline
-node_fun(CTX * restrict c, NODE * restrict n, uint32_t nparams, NODE *body, uint32_t is_leaf, uint32_t is_tiny)
+node_fun(CTX * restrict c, NODE * restrict n, uint32_t nparams, NODE *body, uint32_t is_leaf)
 {
     (void)n;
-    return oc_make_closure_ex2(body, c->env, (int)nparams, is_leaf != 0, is_tiny != 0);
+    return oc_make_closure_ex(body, c->env, (int)nparams, is_leaf != 0);
 }
 
 NODE_DEF
@@ -288,35 +272,16 @@ node_app0(CTX * restrict c, NODE * restrict n, NODE *fn)
     return oc_apply(c, f, 0, NULL);
 }
 
-// Fast path for closure calls.  Two tiers, both keyed on a per-
-// call-site `app_cache` (VALUE fn, body, env, is_tiny).  Hot path
-// compares `cache->fn == f` and dispatches:
-//
-//   tiny  — body has only `lref(0, *)` (rewritten to `lref0_reg`)
-//           and no inner closures / lets / matches.  Args go into
-//           `c->reg[]`; no oframe allocation, no env save/restore
-//           beyond the small reg array.
-//   leaf  — body has no inner closure / lazy.  Frame goes on the
-//           C stack via alloca; env is saved & restored.
-//
-// Cache miss (first call or fn changed): validate, fill cache,
-// take the appropriate fast path; if neither tier qualifies, fall
-// through to general `oc_apply`.
+// Fast path for closure calls.  Hot path: per-call-site `app_cache`
+// (VALUE fn, body, env).  `cache->fn == f` skips the IS_PTR / type
+// / nparams / is_leaf chain (validated once on cache fill); body's
+// frame goes on the C stack via alloca, env is saved + restored,
+// dispatcher called directly.  Tail-call escapes (body set
+// `tail_call_pending`) fall through to general `oc_apply` so the
+// trampoline picks them up.
 #define APPN_FAST_PATH(NP)                                              \
     do {                                                                \
         if (LIKELY(cache->fn == f)) {                                   \
-            if (LIKELY(cache->is_tiny)) {                               \
-                VALUE _saved[NP];                                       \
-                for (int _i = 0; _i < (NP); _i++) {                     \
-                    _saved[_i] = c->reg[_i]; c->reg[_i] = av[_i];       \
-                }                                                       \
-                VALUE _r = (*cache->body->head.dispatcher)              \
-                    (c, cache->body);                                   \
-                for (int _i = 0; _i < (NP); _i++) c->reg[_i] = _saved[_i]; \
-                if (LIKELY(!c->tail_call_pending)) return _r;           \
-                c->tail_call_pending = 0;                               \
-                return oc_apply(c, c->tc_fn, c->tc_argc, c->tc_argv);   \
-            }                                                           \
             struct oframe *_fr = (struct oframe *)                      \
                 alloca(sizeof(struct oframe) +                          \
                        sizeof(VALUE) * (NP));                           \
@@ -335,23 +300,9 @@ node_app0(CTX * restrict c, NODE * restrict n, NODE *fn)
             struct oobj * const _cl = OC_PTR(f);                        \
             if (LIKELY(_cl->closure.nparams == (NP) &&                  \
                        _cl->closure.is_leaf)) {                         \
-                /* Fill cache — hot path next time. */                  \
-                cache->fn      = f;                                     \
-                cache->body    = _cl->closure.body;                     \
-                cache->env     = _cl->closure.env;                      \
-                cache->is_tiny = _cl->closure.is_tiny;                  \
-                if (cache->is_tiny) {                                   \
-                    VALUE _saved[NP];                                   \
-                    for (int _i = 0; _i < (NP); _i++) {                 \
-                        _saved[_i] = c->reg[_i]; c->reg[_i] = av[_i];   \
-                    }                                                   \
-                    VALUE _r = (*cache->body->head.dispatcher)          \
-                        (c, cache->body);                               \
-                    for (int _i = 0; _i < (NP); _i++) c->reg[_i] = _saved[_i]; \
-                    if (LIKELY(!c->tail_call_pending)) return _r;       \
-                    c->tail_call_pending = 0;                           \
-                    return oc_apply(c, c->tc_fn, c->tc_argc, c->tc_argv); \
-                }                                                       \
+                cache->fn   = f;                                        \
+                cache->body = _cl->closure.body;                        \
+                cache->env  = _cl->closure.env;                         \
                 struct oframe *_fr = (struct oframe *)                  \
                     alloca(sizeof(struct oframe) +                      \
                            sizeof(VALUE) * (NP));                       \
@@ -840,6 +791,46 @@ node_ne_int(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
     VALUE av = EVAL_ARG(c, a);
     VALUE bv = EVAL_ARG(c, b);
     return (av == bv) ? OC_FALSE : OC_TRUE;
+}
+
+// `if` whose `cond` was inferred `bool`: skip the OC_FALSE check
+// and the type-error trap that the generic `node_if` has to keep.
+// Loads OC_TRUE_OBJ once, single cmp, single cmov-able branch.
+NODE_DEF
+node_if_bool(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *thn, NODE *els)
+{
+    (void)n;
+    VALUE cv = EVAL_ARG(c, cond);
+    return (cv == OC_TRUE) ? EVAL_ARG(c, thn) : EVAL_ARG(c, els);
+}
+
+// Unary minus on a known-int operand.
+NODE_DEF
+node_neg_int(CTX * restrict c, NODE * restrict n, NODE *e)
+{
+    (void)n;
+    VALUE v = EVAL_ARG(c, e);
+    return OC_INT(-OC_INT_VAL(v));
+}
+
+// `&&` / `||` on known-bool operands: short-circuit but skip both
+// the per-operand type-error checks.
+NODE_DEF
+node_and_bool(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    if (av == OC_FALSE) return OC_FALSE;
+    return EVAL_ARG(c, b);
+}
+
+NODE_DEF
+node_or_bool(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    if (av == OC_TRUE) return OC_TRUE;
+    return EVAL_ARG(c, b);
 }
 
 // ---------------------------------------------------------------------------

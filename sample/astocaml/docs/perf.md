@@ -128,6 +128,20 @@ node_lt(...) {
 効果: method_call ベンチで 2.1 s → 1.66 s (**1.34× 高速化**)。
 注: より大きな勝利はクラス間で method table を共有する版だが、現状では各 `new` がフレッシュな配列を確保するため per-instance に留まる。
 
+### ✅ tiny / `c->reg` / `_iu` を撤去 — シンプル路線へ
+
+短期的に `c->reg[16]` + `node_lref0_reg` で frame skip を試した (commit a3b7234) が、user 指摘で再検討:
+
+問題:
+- `c->reg` は CTX 内の共有スクラッチ。CPU register と違い memory access。
+- 再帰のたびに save/restore する N 個の store/load。
+- GC を入れる時、reg slot が tagged か raw int か kind 依存で曖昧 (root 扱い困難)。
+- multi-thread になったら破綻。
+
+検証で **撤去した方がベンチも速かった** (ack 0.13 → 0.09, nqueens 0.41 → 0.37 など)。c->reg の cache pressure と save/restore コストが累積していた。
+
+教訓: 「教科書通りの heap-allocated env + leaf には alloca」が clean かつ十分速い。`c->reg` は中途半端な「register file もどき」で、本物の register passing (= dispatcher signature 変更) ほど速くもなく、frame アプローチほどクリーンでもなかった。
+
 ### ✅ 型特化 binop (`node_add_int` 等)
 
 `infer_arith_int` で両辺 `int` が確定したら、親ノードの dispatcher + kind を `node_add_int` 等の型特化版に in-place swap (同じ ASTro 機構)。型特化版は冒頭の `OC_IS_INT(av) & OC_IS_INT(bv)` チェックがなく、untag → 加算 → retag だけ。比較も `lt_int` 等で polymorphic `oc_compare` への分岐が消える。
@@ -142,7 +156,19 @@ ASTro 機構の利点: node.def に新型を追加しただけで dispatcher / S
 - sieve: 0.45 → **0.42** s
 - fib(40) で ocamlopt との差: 3.27× → **3.13×**
 
-### ✅ Tiny closure: frame-less call (ASTro 流 `node_lref0_reg` rewrite)
+### ✅ さらに型特化: `if_bool` / `neg_int` / `and_bool` / `or_bool`
+
+型推論で確定したものはどんどん専用ノードへ焼き込む方針。
+
+- `node_if`: cond が bool 確定なら `cv == OC_TRUE ? then : els` の 1 cmp に短縮 (元の `OC_TRUE` / `OC_FALSE` / type_error の 3-way 判定を全廃)
+- `node_neg`: 単項マイナス、operand int 確定で type check 削除
+- `node_and` / `node_or`: 短絡 + 両 operand bool 確定で per-operand type check 削除
+
+仕掛けは `_int` 系と同じ ASTro dispatcher / kind swap。type infer の各 unify 後に `oc_node_to_*` を呼ぶだけで、AOT codegen は何も知らずに新 dispatcher の SD を吐く。
+
+効果: ack / tak で +5%、fib / nqueens / sieve は影響軽微 (条件分岐は branch predictor が既に効いていた)。コードの clean 化が主目的。
+
+### ✅ (旧) Tiny closure 試み — 撤去済み
 
 ocamlopt の fib body 逆アセンブルを見ると frame allocation 自体が無く、引数は register に乗っている。我々の `oframe` chain は意味的には必要だが、形が単純な closure (= "tiny": leaf, body 全て `lref(0, *)` のみ, 内部 let / match / fun / lazy なし) なら frame そのものを skip して `c->reg[16]` に置けば済む。
 
