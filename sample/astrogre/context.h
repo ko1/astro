@@ -68,11 +68,19 @@ typedef struct CTX_struct {
     bool case_insensitive;
     bool multiline;     /* ruby /m: dot matches newline */
 
-    /* Output for count-mode nodes (node_grep_count_lines_lit and
-     * future siblings).  These nodes own the entire scan loop and
-     * emit a count rather than a single match position, so the
-     * caller reads the count from here after EVAL returns. */
+    /* Output for count-mode nodes (action_count and future siblings).
+     * These actions own the per-match work; the caller reads the count
+     * from here after EVAL returns. */
     long count_result;
+
+    /* Per-file state used by node_action_emit_match_line and friends.
+     * Caller (CLI driver) sets `fname` / `out` once per file and zeros
+     * `lineno` / `lineno_pos`; emit actions advance `lineno` by counting
+     * newlines from `lineno_pos` to the next match's line start. */
+    const char *fname;
+    FILE *out;
+    long lineno;
+    size_t lineno_pos;
 } CTX;
 
 struct astrogre_option {
@@ -91,6 +99,13 @@ struct astrogre_option {
 };
 
 extern struct astrogre_option OPTION;
+
+/* Bit flags for node_action_emit_match_line's `opts` operand.  Defined
+ * here (not just in node.def) so the CLI driver in main.c can build
+ * the value before constructing the AST. */
+#define ASTROGRE_EMIT_FNAME  0x01u
+#define ASTROGRE_EMIT_LINENO 0x02u
+#define ASTROGRE_EMIT_COLOR  0x04u
 
 #define LIKELY(expr)   __builtin_expect(!!(expr), 1)
 #define UNLIKELY(expr) __builtin_expect(!!(expr), 0)

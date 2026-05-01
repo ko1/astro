@@ -143,28 +143,45 @@ whole-file mmap 経路。
 他のモード (`-l`、`-L`、default-print) では今もこの memmem ループ
 を使う。
 
-## `-c PURE_LITERAL` を AST ノードに折り込み — `node_grep_count_lines_lit`
+## scanner + action chain で `-c` と default print を統一
 
-`node_grep_search` がスタート位置探索ループを AST に取り込んだのと
-同じ発想で、`-c PURE_LITERAL` の per-line カウントループそのものを
-AST ノードに折り畳む。CLI 側は
-
-```
-node_grep_search_memmem(
-    body = cap_start(0) → lit("static") → cap_end(0) → succ,
-    needle = "static", len = 6)
-```
-
-を、`-c` モードかつ pure-literal 形のときに
+case-A factorization。`node_grep_search` がスタート位置探索ループを
+AST に取り込んだのと同じ発想で、per-line iteration も AST に上げる。
+**1 つの scanner ノードを `body` operand 経由で複数の per-match action
+chain と組み合わせる**:
 
 ```
-node_grep_count_lines_lit(needle = "static", len = 6)
+node_scan_lit_dual_byte(needle, body)         ← Hyperscan 風 scanner
+   body は per-match action 列:
+     ↳ action_count                           ← c->count_result++
+     ↳ action_emit_match_line(opts)           ← 行範囲確定 + print
+     ↳ action_lineskip                        ← c->pos = 次の \n + 1
+     ↳ action_continue                        ← terminator (return 2)
 ```
 
-に書き換える。body チェーン (cap_start/lit/cap_end/succ) は CLI
-モードが「verify 不要」を保証するので丸ごと捨てる。
+CLI mode 別に末尾の chain だけが変わる:
 
-ノード内部は **Hyperscan 風 dual-byte filter**:
+| CLI mode | body chain |
+|---|---|
+| `-c LIT` | `count → lineskip → continue` |
+| default `LIT FILE` | `count → emit_match_line(opts) → lineskip → continue` |
+| `-l` (将来) | `print_filename → re_succ` |
+| `-o` (将来) | `print_match_span → match_end_advance → continue` |
+| 通常 search (regex) | `cap_start → ... → cap_end → re_succ` (既存通り) |
+
+return code を 0/1 → 0/1/2 に拡張:
+- 0 = body 失敗 (regex chain がここでマッチしなかった) → scanner は
+  次の byte/chunk に進む
+- 1 = body 成功 + stop (`re_succ` の意味、既存 search) → scanner は
+  即 return
+- 2 = body 成功 + continue (新 `action_continue`) → scanner は
+  c->pos を読んでそこから再開
+
+backtracking (rep / alt / lookahead) は body 内部の既存 CPS 機構で
+完結し、scanner には影響しない。CTX には `fname` / `out` / `lineno`
+/ `lineno_pos` を追加して emit action が利用する。
+
+scanner 内部は **Hyperscan 風 dual-byte filter**:
 - AVX2 で 64 byte ぶんロード (256-bit × 2 本)、先頭バイトと末尾
   バイトをそれぞれブロードキャスト即値で `vpcmpeqb`、AND した
   マスクを `vptest` で全 0 判定 → 99.5%+ のチャンクは hot path で
@@ -180,12 +197,19 @@ fused-verify を AOT bake だけで実現)。
 
 性能 (118 MB warm コーパス、`/static/`、160 k matches):
 
-| 段階 | wall (ms) |
-|---|---:|
-| 出発点 (memmem + memchr in main.c) | 64 |
-| `node_grep_count_lines_lit` (32-byte stride) | 27 |
-| 64-byte stride + AOT bake | **23** |
-| GNU grep ref | 3 |
+| 段階 | `-c` (ms) | default print (ms) |
+|---|---:|---:|
+| 出発点 (memmem + memchr in main.c) | 64 | 66 |
+| stage 1: monolithic `count_lines_lit` | 23 | 66 |
+| stage 2: scanner + action chain (今) | **24** | **28** |
+| ripgrep ref | 27 | 34 |
+| GNU grep ref | 2 | 2 |
+
+stage 2 で **default print が 66 → 28 ms (2.4×)** で ripgrep 34 ms を
+**抜いた**。`-c` は同等を保つ (factorize しても hot path は変わらず、
+action chain の dispatch は match 候補時のみで全 byte の数千分の一)。
+GNU grep には依然 1 桁先 (memory-bandwidth-bound、残り差は dynamic
+linker + 118 MB の mmap PTE bookkeeping)。
 
 `--verbose` で見える分解:
 

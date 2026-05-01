@@ -1,3 +1,9 @@
+/* memrchr is a GNU extension used by node_action_emit_match_line; needs
+ * _GNU_SOURCE set before any system header pulls in <string.h>. */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

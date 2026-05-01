@@ -327,76 +327,54 @@ node_grep_search_memmem(CTX * restrict c, NODE * restrict n, NODE *body, const c
     return 0;
 }
 
-/* Whole `-c` (count matching lines) for a pure literal pattern.
+/* Generic literal-prefilter scanner.  Same dual-byte filter as the
+ * old monolithic node_grep_count_lines_lit, but the per-match work
+ * is delegated to `body` — a chain that may include action nodes
+ * (count / lineskip / emit / etc) and/or the existing regex AST.
  *
- * This is the same architectural move as node_grep_search itself —
- * fold the next-outer loop into the AST so the framework bakes
- * everything into one SD.  Whereas node_grep_search_* loops over
- * start positions and stops at the first match, this node loops
- * over the *whole input*, counts each matching line, and skips to
- * the next newline after every match.  The CLI's `-c PURE_LITERAL`
- * path rewrites the pattern's root to this node and reads the
- * count from `c->count_result`.
+ * Return-code protocol (see context.h):
+ *   0 = body failed (regex chain didn't match here) → scanner advances
+ *       by 1 byte and tries the next position.
+ *   1 = body succeeded, search-style stop (re_succ at the tail) →
+ *       scanner returns 1 immediately.
+ *   2 = body succeeded, action chain completed and may have advanced
+ *       c->pos (lineskip / match_end_advance) → scanner reads c->pos
+ *       and resumes from there.
  *
- * Inner algorithm (Hyperscan-style dual-byte filter):
- *
- *   For each 32-byte chunk:
- *       PCMPEQB v, broadcast(needle[0])              -> ma
- *       PCMPEQB v(p + needle_len-1), broadcast(last) -> mb
- *       AND                                          -> candidates
- *
- *   Per candidate, verify the middle bytes
- *   (memcmp with constant length → cmpl/cmpb chain),
- *   then memchr to the next '\n' and resume from there.
- *
- * `needle` is baked as a string literal in the SD source by the
- * specialiser (same path as node_grep_search_memmem's `prefix`),
- * so `needle[0]` and `needle[needle_len-1]` constant-fold to AVX2
- * set1 immediates and the verify memcmp lowers to direct compares.
- * `needle_len` is also baked, which lets gcc dead-code-eliminate
- * the `needle_len == 1` and `needle_len == 2` branches at AOT-bake
- * time. */
+ * Hot path (the 99% case where the 64-byte window has no candidate
+ * for the dual-byte filter): 8 SIMD ops + vptest + p += 64.  Cold path
+ * walks bit-set candidates, verifies the middle bytes, and dispatches
+ * body.  Because `needle` is a baked const-string operand and
+ * `needle_len` is a baked uint32 immediate, the SD has set1_epi8 of
+ * needle[0] / needle[off] folded to constants and the verify memcmp
+ * lowered to direct cmpl/cmpb chains. */
 NODE_DEF
-node_grep_count_lines_lit(CTX * restrict c, NODE * restrict n, const char *needle, uint32_t needle_len)
+node_scan_lit_dual_byte(CTX * restrict c, NODE * restrict n, NODE *body, const char *needle, uint32_t needle_len)
 {
-    long count = 0;
     const uint8_t *p   = c->str + c->pos;
     const uint8_t *end = c->str + c->str_len;
 
-    if (needle_len == 0) goto done;
+    if (needle_len == 0) return 0;
 
     if (needle_len == 1) {
         const int target = (int)(uint8_t)needle[0];
         while (p < end) {
             const uint8_t *q = (const uint8_t *)memchr(p, target, (size_t)(end - p));
             if (!q) break;
-            count++;
-            const uint8_t *nl = (const uint8_t *)memchr(q + 1, '\n', (size_t)(end - (q + 1)));
-            if (!nl) goto done;
-            p = nl + 1;
+            c->pos = (size_t)(q - c->str);
+            VALUE r = EVAL_ARG(c, body);
+            if (r == 1) return 1;
+            if (r == 2) p = c->str + c->pos;
+            else        p = q + 1;
         }
-        goto done;
+        return 0;
     }
 
 #if defined(__AVX2__)
     {
-        /* 64-byte stride dual-byte filter.
-         *
-         * Hot path: load 2x32 bytes for first-byte compare and 2x32 for
-         * last-byte compare, AND each pair, OR the two halves, and
-         * vptest for zero — when no candidate is in the 64-byte
-         * window (the common case for selective dual-byte filters,
-         * 99.5%+ for 6-byte needles on real text) the loop body is
-         * 8 SIMD ops + a fused test+jcc, which lets gcc keep the
-         * scan close to memory bandwidth.
-         *
-         * Slow path runs only when at least one byte position passed
-         * both first-byte and last-byte filters, and verifies + line-
-         * skips. */
         const uint32_t off = needle_len - 1;
         __m256i v_first = _mm256_set1_epi8((char)(uint8_t)needle[0]);
         __m256i v_last  = _mm256_set1_epi8((char)(uint8_t)needle[off]);
-        const uint8_t *skip_until = NULL;
         while (p + 64 + needle_len <= end) {
             __m256i a0 = _mm256_loadu_si256((const __m256i *)p);
             __m256i a1 = _mm256_loadu_si256((const __m256i *)(p + 32));
@@ -413,28 +391,33 @@ node_grep_count_lines_lit(CTX * restrict c, NODE * restrict n, const char *needl
                 p += 64;
                 continue;
             }
-            /* Slow path: walk bits in lo half then hi half. */
+            /* Cold: walk candidate bits, verify, dispatch body. */
             uint64_t bits = (uint64_t)(uint32_t)_mm256_movemask_epi8(mask0)
                           | ((uint64_t)(uint32_t)_mm256_movemask_epi8(mask1) << 32);
+            const uint8_t *new_p = NULL;
             while (bits) {
                 int idx = __builtin_ctzll(bits);
                 const uint8_t *q = p + idx;
                 bits &= bits - 1;
-                if (skip_until && q < skip_until) continue;
+                if (new_p && q < new_p) continue;          /* a previous match advanced past q */
                 bool ok = true;
                 if (needle_len > 2) {
                     ok = (memcmp(q + 1, needle + 1, (size_t)(needle_len - 2)) == 0);
                 }
                 if (ok) {
-                    count++;
-                    const uint8_t *nl = (const uint8_t *)memchr(q + needle_len, '\n',
-                                                                  (size_t)(end - (q + needle_len)));
-                    if (!nl) goto done;
-                    skip_until = nl + 1;
+                    c->pos = (size_t)(q - c->str);
+                    VALUE r = EVAL_ARG(c, body);
+                    if (r == 1) return 1;
+                    if (r == 2) {
+                        new_p = c->str + c->pos;
+                        if (new_p >= p + 64) goto chunk_done;
+                    }
+                    /* r == 0 (regex chain failed at q): keep walking bits. */
                 }
             }
-            if (skip_until && skip_until >= p + 64) p = skip_until;
-            else p += 64;
+            p = (new_p && new_p > p + 64) ? new_p : p + 64;
+        chunk_done:
+            if (new_p) p = new_p;
         }
     }
 #endif
@@ -443,19 +426,142 @@ node_grep_count_lines_lit(CTX * restrict c, NODE * restrict n, const char *needl
     while (p + needle_len <= end) {
         if ((uint8_t)*p == (uint8_t)needle[0]
             && (needle_len == 1 || memcmp(p + 1, needle + 1, (size_t)(needle_len - 1)) == 0)) {
-            count++;
-            const uint8_t *nl = (const uint8_t *)memchr(p + needle_len, '\n',
-                                                          (size_t)(end - (p + needle_len)));
-            if (!nl) break;
-            p = nl + 1;
+            c->pos = (size_t)(p - c->str);
+            VALUE r = EVAL_ARG(c, body);
+            if (r == 1) return 1;
+            if (r == 2) p = c->str + c->pos;
+            else        p++;
         } else {
             p++;
         }
     }
+    return 0;
+}
 
-done:
-    c->count_result = count;
-    return count > 0 ? 1 : 0;
+/* ------------------------------------------------------------------ */
+/* Per-match action nodes (case-A factorization)                       */
+/* ------------------------------------------------------------------ */
+
+/* `c->count_result++`, dispatch next.  Used in the body chain for `-c`
+ * mode: scanner finds match, count action increments, lineskip advances
+ * past the line, continue terminator returns 2 to scanner. */
+NODE_DEF
+node_action_count(CTX * restrict c, NODE * restrict n, NODE *next)
+{
+    c->count_result++;
+    return EVAL_ARG(c, next);
+}
+
+/* Advance `c->pos` to the byte after the next '\n' (or to str_len + 1
+ * when no more newlines).  Used after count / emit so the scanner
+ * resumes from the next line. */
+NODE_DEF
+node_action_lineskip(CTX * restrict c, NODE * restrict n, NODE *next)
+{
+    const uint8_t *p   = c->str + c->pos;
+    const uint8_t *end = c->str + c->str_len;
+    const uint8_t *nl  = (const uint8_t *)memchr(p, '\n', (size_t)(end - p));
+    c->pos = nl ? (size_t)(nl - c->str) + 1 : c->str_len + 1;
+    return EVAL_ARG(c, next);
+}
+
+/* Action-chain terminator: signals "match recorded, please continue
+ * scanning from c->pos" (= return code 2).  Contrast with re_succ
+ * which returns 1 (= "stop, search succeeded"). */
+NODE_DEF
+node_action_continue(CTX * restrict c, NODE * restrict n)
+{
+    return 2;
+}
+
+/* Emit the line containing the current match for grep-style printing.
+ *
+ * Inputs:
+ *   c->pos     — match start (set by scanner)
+ *   match_len  — match length in bytes (baked immediate)
+ *   opts       — bit field, baked immediate; the framework's structural
+ *                hash treats this as part of the operand list so each
+ *                option combo produces its own SD:
+ *                  bit 0: emit `<fname>:` prefix
+ *                  bit 1: emit `<lineno>:` prefix (uses c->lineno)
+ *                  bit 2: --color: surround the match span with ANSI
+ *                         red and reset
+ *
+ * Side-effect on c->pos: none.  Lineskip happens in a separate
+ * `node_action_lineskip` downstream; emitting and advancing are kept
+ * orthogonal so a future `-o` (only-matching) variant can reuse this
+ * shape with a different advance strategy.
+ *
+ * lineno tracking: when bit 1 is set, advance c->lineno by counting
+ * '\n' bytes between c->lineno_pos and the matched line's start.  The
+ * caller initialises lineno=0, lineno_pos=0 per file; this action keeps
+ * them in sync incrementally so per-file work is O(file_size) total
+ * regardless of how many matches there are. */
+/* ASTROGRE_EMIT_FNAME / _LINENO / _COLOR are in context.h so the CLI
+ * driver can build the opts bitfield before constructing the AST. */
+NODE_DEF
+node_action_emit_match_line(CTX * restrict c, NODE * restrict n, NODE *next, uint32_t match_len, uint32_t opts)
+{
+    const uint8_t *str = c->str;
+    const size_t str_len = c->str_len;
+    const size_t match_start = c->pos;
+    const size_t match_end   = match_start + match_len;
+
+    /* Line bounds. */
+    size_t line_start = 0;
+    if (match_start > 0) {
+        const uint8_t *p = (const uint8_t *)memrchr(str, '\n', match_start);
+        if (p) line_start = (size_t)(p - str) + 1;
+    }
+    size_t line_end = str_len;
+    if (match_end < str_len) {
+        const uint8_t *p = (const uint8_t *)memchr(str + match_end, '\n',
+                                                     str_len - match_end);
+        if (p) line_end = (size_t)(p - str);
+    }
+
+    /* Lazy lineno: advance from previous lineno_pos to this line's start. */
+    if (opts & ASTROGRE_EMIT_LINENO) {
+        const uint8_t *lp = str + c->lineno_pos;
+        const uint8_t *te = str + line_start;
+        while (lp < te) {
+            const uint8_t *nl = (const uint8_t *)memchr(lp, '\n', (size_t)(te - lp));
+            if (!nl) break;
+            c->lineno++;
+            lp = nl + 1;
+        }
+        c->lineno_pos = line_start;
+        c->lineno++;       /* the matching line itself */
+    }
+
+    FILE *out = c->out ? c->out : stdout;
+    if (opts & ASTROGRE_EMIT_FNAME) {
+        fputs(c->fname ? c->fname : "", out);
+        fputc(':', out);
+    }
+    if (opts & ASTROGRE_EMIT_LINENO) {
+        fprintf(out, "%ld:", c->lineno);
+    }
+
+    if (opts & ASTROGRE_EMIT_COLOR) {
+        /* before-match | RED match RESET | after-match | NL */
+        fwrite(str + line_start, 1, match_start - line_start, out);
+        fputs("\x1b[01;31m\x1b[K", out);
+        fwrite(str + match_start, 1, match_end - match_start, out);
+        fputs("\x1b[m\x1b[K", out);
+        fwrite(str + match_end, 1, line_end - match_end, out);
+    } else {
+        fwrite(str + line_start, 1, line_end - line_start, out);
+    }
+    fputc('\n', out);
+
+    /* Bump lineno_pos past the just-emitted line so subsequent matches
+     * on later lines don't re-count the newlines we already crossed. */
+    if (opts & ASTROGRE_EMIT_LINENO) {
+        c->lineno_pos = (line_end < str_len) ? line_end + 1 : str_len;
+    }
+
+    return EVAL_ARG(c, next);
 }
 
 /* ------------------------------------------------------------------ */

@@ -152,30 +152,30 @@ Two layers of optimisation, both expressed as ASTro nodes:
 
 | pattern | astrogre interp | astrogre +AOT | astrogre +onigmo | grep | ripgrep |
 |---|---:|---:|---:|---:|---:|
-| `/static/` literal | 66 | 64 | 98 | **2** | 34 |
-| `/specialized_dispatcher/` rare | 25 | 25 | 37 | 35 | **20** |
-| `/^static/` anchored | 68 | 65 | 98 | **2** | 35 |
-| `/VALUE/i` case-i | 597 | 579 | 134 | **2** | 48 |
-| `/static\|extern\|inline/` alt-3 | 290 | 294 | 920 | **2** | 49 |
-| `/[0-9]{4,}/` class-rep | 470 | 472 | 558 | **2** | 54 |
-| `/[a-z_]+_[a-z]+\(/` ident-call | 3283 | 3297 | 3159 | **2** | 182 |
-| `-c /static/` count | **24** | **25** | 72 | 2 | 27 |
+| `/static/` literal | **28** | **29** | 99 | 2 | 34 |
+| `/specialized_dispatcher/` rare | **22** | **23** | 37 | 35 | 20 |
+| `/^static/` anchored | 69 | 68 | 99 | **2** | 36 |
+| `/VALUE/i` case-i | 600 | 255 | 128 | **2** | 51 |
+| `/static\|extern\|inline/` alt-3 | 300 | 87 | 950 | **2** | 49 |
+| `/[0-9]{4,}/` class-rep | 473 | 404 | 553 | **2** | 55 |
+| `/[a-z_]+_[a-z]+\(/` ident-call | 3250 | 2473 | 3241 | **2** | 181 |
+| `-c /static/` count | **24** | 25 | 71 | 2 | 27 |
 
 The whole-file mmap path (used when the pattern has a SIMD/libc
-prefilter) drops literal-led astrogre by 3-10× and **astrogre is
-within ripgrep speed on rare-literal patterns**
-(`literal-rare` 25 ms vs ripgrep's 20 ms; even slightly faster
-than ugrep's 35 ms there).  ugrep stays an order of magnitude
-ahead on common literals (memchr at memory-bandwidth).
+prefilter) drops literal-led astrogre by 3-10×.  After the case-A
+factorization (per-line iteration folded into AST as scanner +
+action chain — see [`docs/done.md`](./docs/done.md)), **astrogre
+beats ripgrep on the literal/rare/-c rows**:
 
-The `-c /static/` row is the **only one where astrogre beats
-ripgrep** (24 ms vs 27 ms): the per-line counting loop itself was
-folded into a dedicated AST node `node_grep_count_lines_lit`
-(Hyperscan-style dual-byte filter + 64-byte stride + AOT-baked
-needle), bringing it within ~10× of grep's 2 ms. Run with
-`--verbose` to see the wall-clock split — most of the remaining
-gap is mmap+munmap of a 118 MB file (PTE bookkeeping), not the scan
-itself. See [`docs/done.md`](./docs/done.md) for details.
+- `/static/` default print: 28 ms vs ripgrep's 34 ms
+- `/specialized_dispatcher/` rare-literal: 22 ms vs 20 ms (close)
+- `-c /static/`: 24 ms vs 27 ms
+
+GNU grep stays an order of magnitude ahead on common literals
+(memchr at memory-bandwidth).  Run with `--verbose` to see the
+wall-clock split — most of the remaining gap to grep is the
+mmap+munmap of a 118 MB file (PTE bookkeeping), not the scan
+itself.
 
 The `/i`, `class-rep`, `ident-call` rows fall back to per-line
 streaming because the engine has no fast scan for the leading

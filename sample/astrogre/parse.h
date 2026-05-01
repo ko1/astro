@@ -6,13 +6,14 @@
 /* Compiled pattern. */
 typedef struct astrogre_pattern {
     NODE *root;          /* root of match AST (chain ending in node_re_succ) */
-    /* Lazily-built alternate root for "count matching lines" — set on
-     * first astrogre_pattern_count_lines() call when the pattern is
-     * pure-literal-shaped.  This is the AST-level rewrite that lets
-     * the CLI's `-c PURE_LITERAL` path fold the per-line scan loop
-     * into a single SD via the framework, instead of running the
-     * regex AST once per line from C. */
-    NODE *count_lines_root;
+    /* Lazily-built alternate roots for the per-mode action-chain
+     * scanners.  All produced by the case-A factorization: scanner
+     * (node_scan_lit_dual_byte) + body chain that does the per-match
+     * work.  Built on first use for pure-literal patterns; NULL for
+     * patterns that don't qualify or modes that haven't been hit yet. */
+    NODE *count_lines_root;       /* `-c PURE_LITERAL`: count → lineskip → continue */
+    NODE *print_lines_root;       /* default print: count → emit → lineskip → continue */
+    uint32_t print_lines_opts;    /* the emit_opts used when print_lines_root was built */
     int n_groups;        /* number of capturing groups (excluding group 0) */
     bool case_insensitive;
     bool multiline;
@@ -74,11 +75,21 @@ void astrogre_pattern_aot_compile(astrogre_pattern *p, bool verbose);
 
 /* Count the matching lines of a pure-literal pattern in [str, str+len).
  * Returns -1 if the pattern doesn't qualify (not pure-literal-shaped, or
- * empty needle).  This bypasses the per-line streaming loop in main.c by
- * folding the whole sweep — scan, verify, count, line-skip — into one
- * AST node (node_grep_count_lines_lit), which the framework then bakes
- * with the needle as immediate AVX2 operands. */
+ * empty needle).  Builds an action chain `count → lineskip → continue`
+ * under a `node_scan_lit_dual_byte` scanner; the framework AOT-bakes
+ * everything into one SD with the needle as immediate AVX2 operands. */
 long astrogre_pattern_count_lines(astrogre_pattern *p, const char *str, size_t len);
+
+/* Default-print: emit every matching line in [str, str+len) for a
+ * pure-literal pattern.  Action chain is `count → emit_match_line(opts)
+ * → lineskip → continue` under the same scanner; returns the number of
+ * matching lines emitted, or -1 if the pattern doesn't qualify.
+ *
+ * `emit_opts` is the OR of `ASTROGRE_EMIT_FNAME` / `_LINENO` / `_COLOR`
+ * (see node.def).  `fname` and `out` are passed through to the emit
+ * action via CTX. */
+long astrogre_pattern_print_lines(astrogre_pattern *p, const char *str, size_t len,
+                                   const char *fname, FILE *out, uint32_t emit_opts);
 
 /* Parse a /pat/flags-style source string (incl. surrounding slashes and
  * trailing flag chars).  Useful from CLI / tests when not going through

@@ -364,6 +364,35 @@ process_buffer_pure_literal(grep_state_t *st, const char *buf, size_t len,
          * fallback keeps the contract simple). */
     }
 
+    /* Default print fast path: single pattern, no count-only, no
+     * filename-only modes, no -o (only-matching) — use the
+     * `node_scan_lit_dual_byte → count → emit_match_line → lineskip
+     * → continue` AST chain for the same architectural win as `-c`.
+     * The whole per-line scan + emit folds into one SD with the
+     * needle baked as AVX2 immediates. */
+    if (n == 1
+        && !go->count_only
+        && !go->files_with_matches
+        && !go->files_without_match
+        && !go->only_matching
+        && !go->invert
+        && !go->ignore_case) {
+        extern astrogre_pattern *astrogre_backend_pattern_get(backend_pattern_t *);
+        astrogre_pattern *ap = astrogre_backend_pattern_get(st->patterns[0]);
+        if (ap) {
+            uint32_t emit_opts = 0;
+            if (st->show_filename)  emit_opts |= ASTROGRE_EMIT_FNAME;
+            if (go->line_numbers)   emit_opts |= ASTROGRE_EMIT_LINENO;
+            if (color_active)       emit_opts |= ASTROGRE_EMIT_COLOR;
+            long c = astrogre_pattern_print_lines(ap, buf, len, fname, stdout, emit_opts);
+            if (c >= 0) {
+                matches_this_file = c;
+                any_match = c > 0;
+                goto post_loop;
+            }
+        }
+    }
+
     size_t pos = 0;
     while (pos < len) {
         size_t earliest_start = SIZE_MAX, earliest_end = 0;

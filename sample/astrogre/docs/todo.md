@@ -24,15 +24,29 @@
 詰められる。実装コスト: ~500-1000 行 (parser 抽出 + AVX2 マルチ
 パターンスキャナ + バックアップロジック)。
 
-### scanner + per-match action factorization (案 A)
-`-c PURE_LITERAL` 専用の `node_grep_count_lines_lit` を、より汎用な
-**「scanner ノードが候補位置を見つけて body chain に dispatch、body は
-mode 別の action 列」** という形に factorize する。default print /
-`-c` / `-l` / `-L` / `-o` を同じ scanner + 異なる body chain で書ける
-ようにするのが目的。
-[done.md](./done.md) の count_lines_lit セクションも合わせて参照。
+### scanner + per-match action factorization (案 A) ── 段階 1+2 完了
+`-c PURE_LITERAL` と default print の per-line ループを `node_scan_lit_dual_byte`
++ action chain に factorize 済 ([done.md](./done.md) の case-A セクション)。
+`/static/` default print が 66 → 28 ms (2.4×) で ripgrep 34 ms を抜いた。
+`-c` は 23 → 24 ms で perf 同等を維持。
 
-設計決定:
+残作業:
+
+- **`-l` / `-L`**: action_emit_filename + 適切な terminator
+  (`re_succ` で stop / 最後にまとめて出力)
+- **`-o`**: action_emit_match + action_match_end_advance (重複なし
+  複数マッチ列挙)
+- **`-i` (case-fold)**: scanner 側に case-fold variant を入れる、
+  もしくは IR 側で needle のケース全パターンを byteset 化
+- **`-v` (invert)**: 「マッチ**しない**行」を出すモード。scanner では
+  expressible しない (line-aware ではないため)。要別経路
+- **anchored (`^pat`)**: 現在 fast path にフォールバックしない
+  (anchored_bos = true で pure_literal が false 返す)。
+  anchored 専用の per-line scanner variant を入れる
+- **既存 `node_grep_search_*` を `node_scan_*` に揃える**: protocol
+  統一で scanner / body の組み合わせ自由度を上げる
+
+設計決定 (実装済):
 
 - **scanner**: `node_scan_lit_dual_byte / _memmem / _memchr / _byteset /
   _class_range / _class_truffle / _plain` — 既存 `node_grep_search_*`

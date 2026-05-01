@@ -1316,12 +1316,29 @@ astrogre_pattern_count_lines(astrogre_pattern *p, const char *str, size_t len)
         size_t needle_len;
         if (!astrogre_pattern_pure_literal(p, &needle, &needle_len)) return -1;
         if (needle_len == 0) return -1;
-        /* The needle pointer points into the existing AST's lit node and
-         * is stable for the pattern's lifetime; no copy needed. */
-        p->count_lines_root = ALLOC_node_grep_count_lines_lit(needle, (uint32_t)needle_len);
-        /* Pick up any code-store SD that may already be loaded for this
-         * structural hash (e.g. from a previous --aot-compile run). */
+        /* Body chain for `-c PURE_LITERAL`:
+         *
+         *   count → lineskip → continue
+         *
+         * Scanner verifies the literal via dual-byte filter + memcmp,
+         * dispatches body at each match.  count++ increments
+         * c->count_result, lineskip advances c->pos past the next \n,
+         * continue returns 2 to signal "scanner: resume from c->pos".
+         *
+         * The needle pointer points into the existing AST's lit node
+         * and is stable for the pattern's lifetime; no copy needed. */
+        NODE *cont    = ALLOC_node_action_continue();
+        NODE *skip    = ALLOC_node_action_lineskip(cont);
+        NODE *counter = ALLOC_node_action_count(skip);
+        p->count_lines_root = ALLOC_node_scan_lit_dual_byte(counter, needle, (uint32_t)needle_len);
+        /* Pick up any code-store SDs that may already be loaded for
+         * these structural hashes (e.g. from a previous --aot-compile
+         * run).  Each node in the chain is registered, so cs_load on
+         * each keeps things consistent. */
         astro_cs_load(p->count_lines_root, NULL);
+        astro_cs_load(counter, NULL);
+        astro_cs_load(skip, NULL);
+        astro_cs_load(cont, NULL);
     }
 
     CTX c;
@@ -1336,6 +1353,58 @@ astrogre_pattern_count_lines(astrogre_pattern *p, const char *str, size_t len)
     c.rep_cont_sentinel = NULL;
     c.count_result = 0;
     EVAL(&c, p->count_lines_root);
+    return c.count_result;
+}
+
+long
+astrogre_pattern_print_lines(astrogre_pattern *p, const char *str, size_t len,
+                              const char *fname, FILE *out, uint32_t emit_opts)
+{
+    if (!p) return -1;
+    if (p->print_lines_root && p->print_lines_opts != emit_opts) {
+        /* opts changed (rare — usually fixed for the whole CLI run);
+         * the framework can't reuse the SD because emit_opts is part of
+         * the structural hash.  Drop the cached root and rebuild. */
+        p->print_lines_root = NULL;
+    }
+    if (!p->print_lines_root) {
+        const char *needle;
+        size_t needle_len;
+        if (!astrogre_pattern_pure_literal(p, &needle, &needle_len)) return -1;
+        if (needle_len == 0) return -1;
+        /* Body: count → emit_match_line(needle_len, opts) → lineskip → continue.
+         * `count` lets the caller read the matching-line total back via
+         * c->count_result; emit prints; lineskip jumps past the matched
+         * line so the scanner's next chunk starts at the next line. */
+        NODE *cont    = ALLOC_node_action_continue();
+        NODE *skip    = ALLOC_node_action_lineskip(cont);
+        NODE *emit    = ALLOC_node_action_emit_match_line(skip, (uint32_t)needle_len, emit_opts);
+        NODE *counter = ALLOC_node_action_count(emit);
+        p->print_lines_root = ALLOC_node_scan_lit_dual_byte(counter, needle, (uint32_t)needle_len);
+        p->print_lines_opts = emit_opts;
+        astro_cs_load(p->print_lines_root, NULL);
+        astro_cs_load(counter, NULL);
+        astro_cs_load(emit, NULL);
+        astro_cs_load(skip, NULL);
+        astro_cs_load(cont, NULL);
+    }
+
+    CTX c;
+    c.str = (const uint8_t *)str;
+    c.str_len = len;
+    c.pos = 0;
+    c.case_insensitive = p->case_insensitive;
+    c.multiline = p->multiline;
+    c.encoding = p->encoding;
+    c.n_groups = 0;
+    c.rep_top = NULL;
+    c.rep_cont_sentinel = NULL;
+    c.count_result = 0;
+    c.fname = fname;
+    c.out = out;
+    c.lineno = 0;
+    c.lineno_pos = 0;
+    EVAL(&c, p->print_lines_root);
     return c.count_result;
 }
 
@@ -1358,7 +1427,10 @@ astrogre_pattern_aot_compile(astrogre_pattern *p, bool verbose)
         size_t needle_len;
         if (astrogre_pattern_pure_literal(p, &needle, &needle_len) && needle_len > 0
             && !p->count_lines_root) {
-            p->count_lines_root = ALLOC_node_grep_count_lines_lit(needle, (uint32_t)needle_len);
+            NODE *cont    = ALLOC_node_action_continue();
+            NODE *skip    = ALLOC_node_action_lineskip(cont);
+            NODE *counter = ALLOC_node_action_count(skip);
+            p->count_lines_root = ALLOC_node_scan_lit_dual_byte(counter, needle, (uint32_t)needle_len);
             if (verbose) {
                 fprintf(stderr, "astrogre: cs_compile h=%016lx (count_lines)\n",
                         (unsigned long)HASH(p->count_lines_root));

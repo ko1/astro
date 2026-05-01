@@ -22,29 +22,37 @@ abruby 風モード (`--aot-compile` / cached / `--pg-compile` /
 
 | パターン | astrogre interp | astrogre +AOT | astrogre +onigmo | grep | ripgrep |
 |---|---:|---:|---:|---:|---:|
-| `/static/` literal | 66 | 64 | 98 | **2** | 34 |
-| `/specialized_dispatcher/` rare | 25 | 25 | 37 | 35 | **20** |
-| `/^static/` anchored | 68 | 65 | 98 | **2** | 35 |
-| `/VALUE/i` case-i | 597 | 579 | 134 | **2** | 48 |
-| `/static\|extern\|inline/` alt-3 | 290 | 294 | 920 | **2** | 49 |
-| `/[0-9]{4,}/` class-rep | 470 | 472 | 558 | **2** | 54 |
-| `/[a-z_]+_[a-z]+\(/` ident-call | 3283 | 3297 | 3159 | **2** | 182 |
-| `-c /static/` count | **24** | **25** | 72 | 2 | 27 |
+| `/static/` literal | **28** | **29** | 99 | 2 | 34 |
+| `/specialized_dispatcher/` rare | **22** | **23** | 37 | 35 | 20 |
+| `/^static/` anchored | 69 | 68 | 99 | **2** | 36 |
+| `/VALUE/i` case-i | 600 | 255 | 128 | **2** | 51 |
+| `/static\|extern\|inline/` alt-3 | 300 | 87 | 950 | **2** | 49 |
+| `/[0-9]{4,}/` class-rep | 473 | 404 | 553 | **2** | 55 |
+| `/[a-z_]+_[a-z]+\(/` ident-call | 3250 | 2473 | 3241 | **2** | 181 |
+| `-c /static/` count | **24** | 25 | 71 | 2 | 27 |
 
 whole-file mmap 経路 (パターンに SIMD/libc prefilter があるとき発火)
 が literal-led astrogre を従来の per-line getline ループより 3-10×
-落とす。**rare-literal パターンでは astrogre が ripgrep 並み**
-(`literal-rare` 25 ms 対 ripgrep 20 ms; ugrep の 35 ms より速い)。
-common literal (`/static/`) では ugrep が memory-bandwidth-bound
-memchr で 1 桁先。`/i`、`class-rep`、`ident-call` の行は per-line
-streaming にフォールバック (エンジンが leading `\w` / `[0-9]` /
-`/i` 形に対する fast scan を持たないため) — per-line overhead が
-消えた状態の AOT の挙動は Bench B を参照。
+落とす。**literal / rare-literal / `-c` の 3 行で astrogre が
+ripgrep を抜く**:
 
-`-c /static/` 行は**唯一 ripgrep を抜いた行**: 24 ms 対 ripgrep 27 ms。
-`node_grep_count_lines_lit` (per-line ループ自体を AST に折り畳んだ
-ノード、Hyperscan 風 dual-byte filter + 64-byte stride + AOT 焼き)
-の効果。`--verbose` で見える内訳:
+- `/static/` default print 28 ms vs ripgrep 34 ms
+- `/specialized_dispatcher/` rare 22 ms vs ripgrep 20 ms (互角)
+- `-c /static/` count 24 ms vs ripgrep 27 ms
+
+GNU grep は依然として 1 桁先 (memory-bandwidth-bound memchr)。
+`/i`、`class-rep`、`ident-call` の行は per-line streaming に
+フォールバック (エンジンが leading `\w` / `[0-9]` / `/i` 形に対する
+fast scan を持たないため) — per-line overhead が消えた状態の AOT の
+挙動は Bench B を参照。
+
+`/static/` literal と `-c /static/` の 28 ms / 24 ms は同じ仕掛け:
+**case-A factorization** で per-line ループを AST に折り畳み、
+`node_scan_lit_dual_byte` (Hyperscan 風 dual-byte filter + 64-byte
+stride) の body chain として `count → emit → lineskip → continue`
+(default print) または `count → lineskip → continue` (`-c`) を
+渡す。CLI mode 別に末尾の chain が変わるだけで、scanner と AOT 焼き
+は共通。`--verbose` で見える内訳:
 
 ```
 [verbose] after INIT()            0.12 ms      ← ld.so + dlopen
@@ -233,18 +241,36 @@ check_ic:
 inline すると、gcc がループと regex chain を indirect call ゼロの
 1 関数に融合する。`literal-tail` 7.22× の出所。
 
-### `-c` の per-line ループも AST に折り込む — `node_grep_count_lines_lit`
-同じ idiom の追従例: `-c PURE_LITERAL` 用に CLI が AST root を
-書き換え、scan + verify + line-skip + count を 1 ノードに集約。
-中身は Hyperscan 風 dual-byte filter (先頭・末尾バイトで
-`vpcmpeqb` した結果を AND、64-byte stride で `vptest` 早期 exit、
-hot path は 8 SIMD ops + `p += 64` のみ)。
+### Per-line ループも AST に折り込む — case-A scanner + action chain
+search ループ折り畳みの自然な拡張: per-line iteration も AST に持って
+くる。`node_scan_lit_dual_byte` (= scanner、Hyperscan 風 dual-byte
+filter + 64-byte stride) の `body` operand として、CLI mode 別の
+小さな action ノード列を渡す:
 
-`-c /static/` で **64 ms → 23 ms** (2.8×、118 MB warm)、`--verbose`
-で見える内訳は scan 8 ms + mmap/munmap 13 ms。ripgrep 27 ms を抜き、
-GNU grep 2 ms に約 10× まで近づいた (差は dynamic linker + 118 MB
-ぶんの PTE 操作で、algorithm の問題ではなくなった)。詳細は
-[`done.md`](./done.md#-c-pure_literal-を-ast-ノードに折り込み--node_grep_count_lines_lit) と
+| CLI mode | body chain |
+|---|---|
+| `-c LIT` | `count → lineskip → continue` |
+| default `LIT FILE` | `count → emit_match_line(opts) → lineskip → continue` |
+
+scanner は候補位置で body を dispatch、body は continuation-passing で
+chain を回す。終端は `re_succ` (return 1 = stop, search-style) または
+新しい `action_continue` (return 2 = "scanner: c->pos 読んで続行")。
+backtracking は body 内部 (rep / alt) で完結し、scanner には影響しない。
+
+性能 (118 MB warm corpus、`/static/`):
+
+| 段階 | wall (ms) |
+|---|---:|
+| 出発点: `-c` は memmem+memchr in main.c、default は per-line | 64 (`-c`) / 66 (default) |
+| stage 1: monolithic `node_grep_count_lines_lit` for `-c` | 23 / 66 |
+| stage 2: scanner + action chain (`-c` + default 共通) | **24** / **28** |
+| ripgrep ref | 27 / 34 |
+| GNU grep ref | 2 / 2 |
+
+stage 2 で **default print の `/static/` が 66 → 28 ms (2.4×)** で
+ripgrep 34 ms を抜いた。`-c` の数字は同等を保つ (factorize しても
+hot path は変わらず、action chain の dispatch は match 候補時のみ)。
+詳細は [`done.md`](./done.md#scanner--action-chain-で-c-と-default-print-を統一) と
 [`runtime.md`](./runtime.md#-c-モードの-ast-書き換え) 参照。
 
 ### `_INL` リネーム + extern wrapper post-process
