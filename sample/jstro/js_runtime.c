@@ -390,15 +390,8 @@ gc_sweep(CTX *c)
 unsigned long jstro_gc_run_count = 0;
 
 // Safepoint check: called from node_seq / node_while / node_for between
-// statements.  Triggers GC if the allocation count crossed the threshold.
-// Inlined into the dispatchers via the macro `JSTRO_SAFEPOINT(c)`.
-void
-jstro_gc_safepoint(CTX *c)
-{
-    if (!c->gc_disabled && c->bytes_allocated >= c->gc_threshold) {
-        js_gc_collect(c);
-    }
-}
+// jstro_gc_safepoint is now `static inline` in context.h so the hot-loop
+// per-statement check is just two loads + a compare with no call frame.
 
 void
 js_gc_collect(CTX *c)

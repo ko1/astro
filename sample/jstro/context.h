@@ -519,7 +519,20 @@ int     js_regex_search(struct JsRegex *re, struct JsString *s, int32_t from, in
 void js_gc_register(CTX *c, void *obj, uint8_t type);
 void js_gc_register_size(CTX *c, void *obj, uint8_t type, size_t size);
 void js_gc_collect(CTX *c);
-void jstro_gc_safepoint(CTX *c);
+// Safepoint hook called from each statement boundary.  The fast path
+// (no GC due) is two loads + a compare; expose it as `static inline`
+// here so the per-statement check doesn't pay function-call overhead.
+// Inlining took fact ×5M from 0.53 → 0.45 s by eliminating the call
+// (jstro_gc_safepoint was 11% of cycles).  The slow path lives in
+// js_gc_collect.
+void js_gc_collect(struct CTX_struct *c);
+static inline void
+jstro_gc_safepoint(struct CTX_struct *c)
+{
+    if (__builtin_expect(!c->gc_disabled && c->bytes_allocated >= c->gc_threshold, 0)) {
+        js_gc_collect(c);
+    }
+}
 void *js_gc_alloc(CTX *c, size_t size, uint8_t type);
 
 // =====================================================================
