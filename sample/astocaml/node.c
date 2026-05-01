@@ -71,3 +71,26 @@ oc_node_to_tail(NODE *n)
     else if (d == DISPATCH_node_app3) n->head.dispatcher = DISPATCH_node_tail_app3;
     else if (d == DISPATCH_node_app4) n->head.dispatcher = DISPATCH_node_tail_app4;
 }
+
+// Swap a `node_lref` to `node_lref0_reg` in place: same struct
+// layout (depth, idx) so we just retarget dispatcher + kind so both
+// the interpreter (head.dispatcher) and the AOT specializer
+// (head.kind->specializer) emit the frame-less variant.
+bool
+oc_node_is_lref(NODE *n)
+{
+    return n && n->head.dispatcher == DISPATCH_node_lref;
+}
+
+void
+oc_node_to_lref0_reg(NODE *n)
+{
+    n->head.dispatcher = DISPATCH_node_lref0_reg;
+    n->head.kind       = &kind_node_lref0_reg;
+}
+
+uint32_t
+oc_node_lref_depth(NODE *n)
+{
+    return n->u.node_lref.depth;
+}

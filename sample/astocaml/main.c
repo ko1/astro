@@ -162,6 +162,19 @@ oc_make_closure_ex(struct Node *body, struct oframe *env, int nparams, bool is_l
     o->closure.env = env;
     o->closure.nparams = nparams;
     o->closure.is_leaf = is_leaf;
+    o->closure.is_tiny = false;
+    return OC_OBJ_VAL(o);
+}
+
+VALUE
+oc_make_closure_ex2(struct Node *body, struct oframe *env, int nparams, bool is_leaf, bool is_tiny)
+{
+    struct oobj *o = oc_alloc(OOBJ_CLOSURE);
+    o->closure.body = body;
+    o->closure.env = env;
+    o->closure.nparams = nparams;
+    o->closure.is_leaf = is_leaf;
+    o->closure.is_tiny = is_tiny;
     return OC_OBJ_VAL(o);
 }
 
@@ -616,6 +629,31 @@ loop:
         p->prim.max_argc = -1;
         return OC_OBJ_VAL(p);
     }
+    // Tiny closure: body uses `lref0_reg` for parameter access — no
+    // oframe needed, args go via `c->reg[]`.  Save and restore so
+    // recursion / nested tiny calls don't trash each other's regs.
+    if (LIKELY(cl->closure.is_tiny && np <= 16)) {
+        VALUE reg_saved[16];
+        for (int i = 0; i < np; i++) {
+            reg_saved[i] = c->reg[i];
+            c->reg[i] = argv[i];
+        }
+        VALUE r = EVAL(c, cl->closure.body);
+        for (int i = 0; i < np; i++) c->reg[i] = reg_saved[i];
+        if (UNLIKELY(c->tail_call_pending)) {
+            c->tail_call_pending = 0;
+            fn = c->tc_fn;
+            argc = c->tc_argc;
+            if (argc > 16) return oc_apply(c, fn, argc, c->tc_argv);
+            for (int i = 0; i < argc; i++) local_argv[i] = c->tc_argv[i];
+            argv = local_argv;
+            first_iter = false;
+            goto loop;
+        }
+        if (argc == np) return r;
+        return oc_apply(c, r, argc - np, argv + np);
+    }
+
     struct oframe *f;
     if (LIKELY(cl->closure.is_leaf && first_iter)) {
         // Leaf closure on first oc_apply iteration: frame can live in our
@@ -2565,6 +2603,11 @@ static struct pat *parse_pattern_no_or(void);
 static struct pat *parse_pattern_atom(void);
 static void  mark_tail_calls(NODE *n);
 static uint32_t node_is_leaf(NODE *body);
+static bool  node_is_tiny(NODE *body);
+static bool  walk_lref_subtree(NODE *body, bool rewrite);
+extern bool  oc_node_is_lref(NODE *n);
+extern void  oc_node_to_lref0_reg(NODE *n);
+extern uint32_t oc_node_lref_depth(NODE *n);
 
 // AOT entry registry — every closure body and every top-level form gets
 // pushed here.  Under `--compile`, after parsing we hand the entire list
@@ -2588,12 +2631,169 @@ aot_add_entry(NODE *n)
     AOT_ENTRIES[AOT_ENTRIES_LEN++] = n;
 }
 
-// Wrap ALLOC_node_fun: compute is_leaf and register the body for AOT.
+// "Tiny" closure: leaf body (no inner closure / lazy) + body has no
+// `lref(d > 0)` references + no inner frame-creating nodes (let,
+// letrec, let_pat, match_arm).  Such bodies can be called without
+// allocating an oframe at all — args go in `c->reg[]` and the body
+// reads them via `node_lref0_reg`.  Detection uses the same dump-
+// grep trick as `node_is_leaf` for safety: any unrecognized
+// substring conservatively kills the optimization.
+static bool
+node_is_tiny(NODE *body)
+{
+    if (!body) return false;
+    if (!node_is_leaf(body)) return false;
+    char *buf = NULL;
+    size_t sz = 0;
+    FILE *fp = open_memstream(&buf, &sz);
+    if (!fp) return false;
+    DUMP(fp, body, /*oneline=*/true);
+    fclose(fp);
+    bool tiny = (
+        strstr(buf, "(node_let ")       == NULL &&
+        strstr(buf, "(node_letrec ")    == NULL &&
+        strstr(buf, "(node_let_pat ")   == NULL &&
+        strstr(buf, "(node_letrec_n ")  == NULL &&
+        strstr(buf, "(node_match_arm ") == NULL &&
+        strstr(buf, "(node_try ")       == NULL
+    );
+    if (tiny) {
+        // All `(node_lref D ...)` must have D == 0.  Format is
+        // "(node_lref %u %u)"; depth is a single digit for d=0.
+        const char *p = buf;
+        while ((p = strstr(p, "(node_lref ")) != NULL) {
+            p += sizeof("(node_lref ") - 1;
+            if (p[0] != '0' || p[1] != ' ') { tiny = false; break; }
+            p += 2;
+        }
+    }
+    free(buf);
+    return tiny;
+}
+
+// Walk body and either (a) verify every node kind is known, without
+// mutating, or (b) swap every `node_lref` to `node_lref0_reg`.  Run
+// (a) first so a partial rewrite from a mid-walk failure can't leave
+// orphan `lref0_reg` nodes behind (those would read `c->reg` when
+// the closure ended up on the oframe path — segfault).
+//
+// Leaf kinds (consts, gref, lref0_reg) need no recursion.
+static bool
+walk_lref_subtree(NODE *n, bool rewrite)
+{
+    if (!n) return true;
+    if (oc_node_is_lref(n)) { if (rewrite) oc_node_to_lref0_reg(n); return true; }
+    const char *dn = n->head.kind->default_dispatcher_name;
+
+    // Leaves we explicitly know about.
+    if (strcmp(dn, "DISPATCH_node_lref0_reg") == 0) return true;
+    if (strncmp(dn, "DISPATCH_node_const_", 20) == 0) return true;
+    if (strcmp(dn, "DISPATCH_node_gref") == 0) return true;
+    if (strcmp(dn, "DISPATCH_node_gref_q") == 0) return true;
+
+#define BINOP(name) \
+    if (strcmp(dn, "DISPATCH_node_" #name) == 0) { \
+        bool _ok = walk_lref_subtree(n->u.node_##name.a, rewrite); \
+        return walk_lref_subtree(n->u.node_##name.b, rewrite) && _ok; \
+    }
+    BINOP(add) BINOP(sub) BINOP(mul) BINOP(div) BINOP(mod)
+    BINOP(fadd) BINOP(fsub) BINOP(fmul) BINOP(fdiv)
+    BINOP(lt) BINOP(le) BINOP(gt) BINOP(ge)
+    BINOP(eq) BINOP(ne) BINOP(phys_eq) BINOP(phys_ne)
+    BINOP(and) BINOP(or)
+    BINOP(concat)
+#undef BINOP
+    if (strcmp(dn, "DISPATCH_node_cons") == 0) {
+        bool _ok = walk_lref_subtree(n->u.node_cons.hd, rewrite);
+        return walk_lref_subtree(n->u.node_cons.tl, rewrite) && _ok;
+    }
+    if (strcmp(dn, "DISPATCH_node_if") == 0) {
+        bool _ok = walk_lref_subtree(n->u.node_if.cond, rewrite);
+        _ok = walk_lref_subtree(n->u.node_if.thn, rewrite) && _ok;
+        return walk_lref_subtree(n->u.node_if.els, rewrite) && _ok;
+    }
+    if (strcmp(dn, "DISPATCH_node_seq") == 0) {
+        bool _ok = walk_lref_subtree(n->u.node_seq.first, rewrite);
+        return walk_lref_subtree(n->u.node_seq.rest, rewrite) && _ok;
+    }
+    if (strcmp(dn, "DISPATCH_node_neg")  == 0) return walk_lref_subtree(n->u.node_neg.e, rewrite);
+    if (strcmp(dn, "DISPATCH_node_not")  == 0) return walk_lref_subtree(n->u.node_not.e, rewrite);
+    if (strcmp(dn, "DISPATCH_node_fneg") == 0) return walk_lref_subtree(n->u.node_fneg.e, rewrite);
+
+#define APP(name, code) \
+    if (strcmp(dn, "DISPATCH_node_" #name) == 0) { bool _ok = true; code; return _ok; }
+    APP(app0,
+        _ok = walk_lref_subtree(n->u.node_app0.fn, rewrite) && _ok;)
+    APP(app1,
+        _ok = walk_lref_subtree(n->u.node_app1.fn, rewrite) && _ok;
+        _ok = walk_lref_subtree(n->u.node_app1.a0, rewrite) && _ok;)
+    APP(app2,
+        _ok = walk_lref_subtree(n->u.node_app2.fn, rewrite) && _ok;
+        _ok = walk_lref_subtree(n->u.node_app2.a0, rewrite) && _ok;
+        _ok = walk_lref_subtree(n->u.node_app2.a1, rewrite) && _ok;)
+    APP(app3,
+        _ok = walk_lref_subtree(n->u.node_app3.fn, rewrite) && _ok;
+        _ok = walk_lref_subtree(n->u.node_app3.a0, rewrite) && _ok;
+        _ok = walk_lref_subtree(n->u.node_app3.a1, rewrite) && _ok;
+        _ok = walk_lref_subtree(n->u.node_app3.a2, rewrite) && _ok;)
+    APP(app4,
+        _ok = walk_lref_subtree(n->u.node_app4.fn, rewrite) && _ok;
+        _ok = walk_lref_subtree(n->u.node_app4.a0, rewrite) && _ok;
+        _ok = walk_lref_subtree(n->u.node_app4.a1, rewrite) && _ok;
+        _ok = walk_lref_subtree(n->u.node_app4.a2, rewrite) && _ok;
+        _ok = walk_lref_subtree(n->u.node_app4.a3, rewrite) && _ok;)
+    APP(tail_app0,
+        _ok = walk_lref_subtree(n->u.node_tail_app0.fn, rewrite) && _ok;)
+    APP(tail_app1,
+        _ok = walk_lref_subtree(n->u.node_tail_app1.fn, rewrite) && _ok;
+        _ok = walk_lref_subtree(n->u.node_tail_app1.a0, rewrite) && _ok;)
+    APP(tail_app2,
+        _ok = walk_lref_subtree(n->u.node_tail_app2.fn, rewrite) && _ok;
+        _ok = walk_lref_subtree(n->u.node_tail_app2.a0, rewrite) && _ok;
+        _ok = walk_lref_subtree(n->u.node_tail_app2.a1, rewrite) && _ok;)
+    APP(tail_app3,
+        _ok = walk_lref_subtree(n->u.node_tail_app3.fn, rewrite) && _ok;
+        _ok = walk_lref_subtree(n->u.node_tail_app3.a0, rewrite) && _ok;
+        _ok = walk_lref_subtree(n->u.node_tail_app3.a1, rewrite) && _ok;
+        _ok = walk_lref_subtree(n->u.node_tail_app3.a2, rewrite) && _ok;)
+    APP(tail_app4,
+        _ok = walk_lref_subtree(n->u.node_tail_app4.fn, rewrite) && _ok;
+        _ok = walk_lref_subtree(n->u.node_tail_app4.a0, rewrite) && _ok;
+        _ok = walk_lref_subtree(n->u.node_tail_app4.a1, rewrite) && _ok;
+        _ok = walk_lref_subtree(n->u.node_tail_app4.a2, rewrite) && _ok;
+        _ok = walk_lref_subtree(n->u.node_tail_app4.a3, rewrite) && _ok;)
+#undef APP
+
+    // Unknown kind: variable-arity (appn / tuple_n / record_n / send),
+    // refs, deref, field_assign, raise, lazy ... reject the optimization.
+    return false;
+}
+
+// Wrap ALLOC_node_fun: compute is_leaf / is_tiny and register the
+// body for AOT.  Tiny bodies get their lref nodes rewritten so the
+// frame-less call path works.
 static inline NODE *
 make_fun(uint32_t nparams, NODE *body)
 {
     aot_add_entry(body);
-    return ALLOC_node_fun(nparams, body, node_is_leaf(body));
+    bool leaf = node_is_leaf(body);
+    // node_is_tiny is the cheap pre-screen (no inner let/match/etc,
+    // all `lref` at depth 0).  rewrite_lref_to_reg is the expensive
+    // confirmation: it only succeeds if the walker recognized every
+    // node it visited — any unknown kind kills the optimization, so
+    // we never claim is_tiny while leaving a stray `lref` behind.
+    bool tiny = false;
+    if (leaf && node_is_tiny(body)) {
+        // Two passes: first verify (no mutation), then rewrite.  A
+        // partial rewrite would leave orphan `lref0_reg` nodes that
+        // read `c->reg[]` while the closure ran through the oframe
+        // path — segfault.
+        if (walk_lref_subtree(body, false)) {
+            walk_lref_subtree(body, true);
+            tiny = true;
+        }
+    }
+    return ALLOC_node_fun(nparams, body, leaf, tiny ? 1 : 0);
 }
 
 // Same for `@noinline` nodes whose ASTroGen-generated SPECIALIZE is

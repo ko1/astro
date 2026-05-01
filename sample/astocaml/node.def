@@ -83,6 +83,22 @@ node_lref(CTX * restrict c, NODE * restrict n, uint32_t depth, uint32_t idx)
     return oc_env_at(c, depth)->slots[idx];
 }
 
+// Frame-less argument access — used inside "tiny" closures (leaf
+// body, all `lref` are depth 0, no inner closure capture).  The
+// caller skipped the oframe alloca + parent / slots writes and put
+// the args directly into `c->reg[]`; this node just reads them
+// back.  Post-parse `mark_tiny_closures` rewrites matching `lref(0,
+// i)` nodes into this kind so AOT generates a 1-instruction SD.
+//
+// Operands match `node_lref` (same struct layout) so we can swap
+// the dispatcher + kind in place — `depth` is read but ignored.
+NODE_DEF
+node_lref0_reg(CTX * restrict c, NODE * restrict n, uint32_t depth, uint32_t idx)
+{
+    (void)n; (void)depth;
+    return c->reg[idx];
+}
+
 NODE_DEF
 node_gref(CTX * restrict c, NODE * restrict n, const char *name, struct gref_cache *cache@ref)
 {
@@ -258,10 +274,10 @@ node_let_pat(CTX * restrict c, NODE * restrict n, NODE *value, uint32_t arity, u
 // ---------------------------------------------------------------------------
 
 NODE_DEF @noinline
-node_fun(CTX * restrict c, NODE * restrict n, uint32_t nparams, NODE *body, uint32_t is_leaf)
+node_fun(CTX * restrict c, NODE * restrict n, uint32_t nparams, NODE *body, uint32_t is_leaf, uint32_t is_tiny)
 {
     (void)n;
-    return oc_make_closure_ex(body, c->env, (int)nparams, is_leaf != 0);
+    return oc_make_closure_ex2(body, c->env, (int)nparams, is_leaf != 0, is_tiny != 0);
 }
 
 NODE_DEF
@@ -272,27 +288,39 @@ node_app0(CTX * restrict c, NODE * restrict n, NODE *fn)
     return oc_apply(c, f, 0, NULL);
 }
 
-// Fast path for closure-leaf calls: if `f` is a closure of matching
-// arity with a leaf body, skip oc_apply entirely.  We open-code the
-// frame setup, then call the body's dispatcher directly.  Tail-call
-// escapes (body set `tail_call_pending`) fall through to oc_apply so
-// the trampoline picks them up.  Saves the prim-vs-closure type
-// chain, the partial-app capture path, and one indirect function
-// call per invocation.  For tight recursive code (fib / tak / ack)
-// this is the dominant call cost.
+// Fast path for closure calls.  Two tiers, both keyed on a per-
+// call-site `app_cache` (VALUE fn, body, env, is_tiny).  Hot path
+// compares `cache->fn == f` and dispatches:
 //
-// IC: per-call-site `cache` (VALUE fn, body NODE*, env oframe*).
-// Hot path is just (cache->fn == f); on hit we skip the IS_PTR /
-// type / nparams / is_leaf chain (they were validated when the
-// cache was filled).  Save another ~6 instructions per call.
+//   tiny  — body has only `lref(0, *)` (rewritten to `lref0_reg`)
+//           and no inner closures / lets / matches.  Args go into
+//           `c->reg[]`; no oframe allocation, no env save/restore
+//           beyond the small reg array.
+//   leaf  — body has no inner closure / lazy.  Frame goes on the
+//           C stack via alloca; env is saved & restored.
+//
+// Cache miss (first call or fn changed): validate, fill cache,
+// take the appropriate fast path; if neither tier qualifies, fall
+// through to general `oc_apply`.
 #define APPN_FAST_PATH(NP)                                              \
     do {                                                                \
         if (LIKELY(cache->fn == f)) {                                   \
+            if (LIKELY(cache->is_tiny)) {                               \
+                VALUE _saved[NP];                                       \
+                for (int _i = 0; _i < (NP); _i++) {                     \
+                    _saved[_i] = c->reg[_i]; c->reg[_i] = av[_i];       \
+                }                                                       \
+                VALUE _r = (*cache->body->head.dispatcher)              \
+                    (c, cache->body);                                   \
+                for (int _i = 0; _i < (NP); _i++) c->reg[_i] = _saved[_i]; \
+                if (LIKELY(!c->tail_call_pending)) return _r;           \
+                c->tail_call_pending = 0;                               \
+                return oc_apply(c, c->tc_fn, c->tc_argc, c->tc_argv);   \
+            }                                                           \
             struct oframe *_fr = (struct oframe *)                      \
                 alloca(sizeof(struct oframe) +                          \
                        sizeof(VALUE) * (NP));                           \
             _fr->parent = cache->env;                                   \
-            /* nslots is write-only at runtime — skip the store. */    \
             for (int _i = 0; _i < (NP); _i++) _fr->slots[_i] = av[_i]; \
             struct oframe * const _saved = c->env;                      \
             c->env = _fr;                                               \
@@ -308,9 +336,22 @@ node_app0(CTX * restrict c, NODE * restrict n, NODE *fn)
             if (LIKELY(_cl->closure.nparams == (NP) &&                  \
                        _cl->closure.is_leaf)) {                         \
                 /* Fill cache — hot path next time. */                  \
-                cache->fn   = f;                                        \
-                cache->body = _cl->closure.body;                        \
-                cache->env  = _cl->closure.env;                         \
+                cache->fn      = f;                                     \
+                cache->body    = _cl->closure.body;                     \
+                cache->env     = _cl->closure.env;                      \
+                cache->is_tiny = _cl->closure.is_tiny;                  \
+                if (cache->is_tiny) {                                   \
+                    VALUE _saved[NP];                                   \
+                    for (int _i = 0; _i < (NP); _i++) {                 \
+                        _saved[_i] = c->reg[_i]; c->reg[_i] = av[_i];   \
+                    }                                                   \
+                    VALUE _r = (*cache->body->head.dispatcher)          \
+                        (c, cache->body);                               \
+                    for (int _i = 0; _i < (NP); _i++) c->reg[_i] = _saved[_i]; \
+                    if (LIKELY(!c->tail_call_pending)) return _r;       \
+                    c->tail_call_pending = 0;                           \
+                    return oc_apply(c, c->tc_fn, c->tc_argc, c->tc_argv); \
+                }                                                       \
                 struct oframe *_fr = (struct oframe *)                  \
                     alloca(sizeof(struct oframe) +                      \
                            sizeof(VALUE) * (NP));                       \

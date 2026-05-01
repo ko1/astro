@@ -128,6 +128,25 @@ node_lt(...) {
 効果: method_call ベンチで 2.1 s → 1.66 s (**1.34× 高速化**)。
 注: より大きな勝利はクラス間で method table を共有する版だが、現状では各 `new` がフレッシュな配列を確保するため per-instance に留まる。
 
+### ✅ Tiny closure: frame-less call (ASTro 流 `node_lref0_reg` rewrite)
+
+ocamlopt の fib body 逆アセンブルを見ると frame allocation 自体が無く、引数は register に乗っている。我々の `oframe` chain は意味的には必要だが、形が単純な closure (= "tiny": leaf, body 全て `lref(0, *)` のみ, 内部 let / match / fun / lazy なし) なら frame そのものを skip して `c->reg[16]` に置けば済む。
+
+実装は ASTro の dispatcher / kind 差し替え機構で:
+
+1. **新 NODE 型 `node_lref0_reg`** を `node.def` に追加 (struct layout は `node_lref` と同一: `{depth, idx}` — depth は読まないが互換性のため残す)
+2. **post-parse rewrite**: tiny 判定が通ったクロージャの body を walk し、各 `node_lref` の `head.dispatcher` と `head.kind` を `lref0_reg` のものに in-place swap
+3. **2 段階 walker**: 1 回目は mutation なしで全 NODE kind を認識できるか確認 (record / tuple / send 等の variable-arity を含む body は reject)、OK なら 2 回目で実際に rewrite。中途半端な部分 rewrite は orphan `lref0_reg` を残してしまい、oframe path に逃げた時に segfault するので両パス必須
+4. **APPN_FAST_PATH と oc_apply の tiny 分岐**: `cache->is_tiny` または `cl->closure.is_tiny` の場合は `c->reg[i] = av[i]` で frame skip して body を直呼び出し
+5. **AOT 連携**: kind ごと差し替えたので ASTroGen の specializer も自動的に `EVAL_node_lref0_reg` を呼ぶ SD を生成 → AOT で 1 命令 (`mov 0x80(%rdi), %rax` 相当) になる
+
+効果:
+- fib(35): 0.17 → 0.15 s (~12%)
+- tak: 0.10 → 0.08 s (~20%)
+- fib(40) で ocamlopt との差: 3.85× → **3.27×**
+
+ocamlopt は frame alloc も無く register ABI なので ~3× が AST walker としての残り限界。さらに詰めるには (1) closure value 廃止 + 関数ポインタ ABI、(2) 型推論結果を SD codegen に流して unboxed int 計算、のような **値表現自体の変更** が必要で、これは別の話 (要相談)。
+
 ### ✅ Call IC (`node_appN` per-site cache)
 
 `oc_apply` の inline 化後の SD コードを逆アセンブルしたら、関数呼び出しごとに毎回:
