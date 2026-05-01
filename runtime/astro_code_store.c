@@ -11,6 +11,8 @@
 #include <dlfcn.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <dirent.h>
+#include <ctype.h>
 
 // ---------------------------------------------------------------------------
 // Specialize dedup: tracks which hashes have been generated during a single
@@ -287,15 +289,10 @@ astro_cs_init(const char *store_dir, const char *src_dir, uint64_t version)
     }
 
     if (store_dir) {
-        // Clean up any all.<N>.so leftovers from a previous process.  Those
-        // are only meaningful while the process that dlopen'd them is still
-        // alive; at init time we know every generation is stale.
-        char sweep_cmd[ASTRO_CS_PATH_MAX + 32];
-        snprintf(sweep_cmd, sizeof(sweep_cmd),
-                 "rm -f %s/all.[0-9]*.so", astro_cs.store_dir);
-        (void)!system(sweep_cmd);
-
-        // Try to load all.so
+        // Try to load all.so.  Cached path stops here — no fork+exec, no
+        // directory walk.  Cleanup of stale all.<N>.so generations is the
+        // responsibility of whoever calls astro_cs_reload (since they're
+        // the one creating new generations); see astro_cs_sweep_old_gens.
         char path[ASTRO_CS_PATH_MAX];
         astro_cs_path(path, sizeof(path), astro_cs.store_dir, "all.so");
         astro_cs.all_handle = dlopen(path, RTLD_LAZY);
@@ -304,6 +301,31 @@ astro_cs_init(const char *store_dir, const char *src_dir, uint64_t version)
         // Read hopt_index.txt (PGC lookup table).  Missing file is fine.
         hopt_index_load_file();
     }
+}
+
+// Delete every `all.<digits>.so` in the code-store directory.  Used by
+// astro_cs_reload before it stamps a new generation, so stale generations
+// from earlier processes don't accumulate.  In-process opendir/unlink
+// (no fork+exec) — saves a few ms vs `system("rm -f …")`.
+static void
+astro_cs_sweep_old_gens(void)
+{
+    if (!astro_cs.store_dir[0]) return;
+    DIR *d = opendir(astro_cs.store_dir);
+    if (!d) return;
+    struct dirent *de;
+    char path[ASTRO_CS_PATH_MAX];
+    while ((de = readdir(d))) {
+        const char *n = de->d_name;
+        if (strncmp(n, "all.", 4) != 0) continue;
+        const char *p = n + 4;
+        if (!isdigit((unsigned char)*p)) continue;       // exclude bare "all.so"
+        while (isdigit((unsigned char)*p)) p++;
+        if (strcmp(p, ".so") != 0) continue;
+        snprintf(path, sizeof(path), "%s/%s", astro_cs.store_dir, n);
+        (void)unlink(path);
+    }
+    closedir(d);
 }
 
 // ---------------------------------------------------------------------------
@@ -575,8 +597,14 @@ astro_cs_reload(void)
     // dlopen returns the pre-rebuild handle even after make has overwritten
     // / renamed the file.  Work around this by hardlinking (or copying) the
     // freshly-built all.so to a generation-unique filename and dlopening
-    // that new path.  Stale all.<N>.so files from earlier runs are swept by
-    // astro_cs_init.
+    // that new path.
+
+    // Sweep stale all.<N>.so from previous processes before stamping the
+    // new generation.  Cleanup belongs to reload (whoever creates new
+    // generations is responsible for the old ones), not to init — that
+    // way the cached path (init + dlopen all.so + run) pays nothing.
+    astro_cs_sweep_old_gens();
+
     char all_path[ASTRO_CS_PATH_MAX];
     astro_cs_path(all_path, sizeof(all_path), astro_cs.store_dir, "all.so");
 
