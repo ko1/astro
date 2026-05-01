@@ -646,6 +646,13 @@ struct sym {
 // Record-type table.  Each declared record type lives here; the
 // parser stores an index in the SYM_RECTYPE entry and in every
 // record-valued variable.
+// Free Pascal-style visibility section.  PUBLIC is the default — bare
+// records (non-class) get PUBLIC for every field, and any class field
+// that appears before the first visibility marker is also PUBLIC.  We
+// don't distinguish PUBLISHED from PUBLIC at the language-semantic
+// level (PUBLISHED is for RTTI in real FPC; we treat it as PUBLIC).
+typedef enum { VIS_PUBLIC = 0, VIS_PRIVATE = 1, VIS_PROTECTED = 2, VIS_PUBLISHED = 3 } pascal_vis_t;
+
 struct record_field {
     char name[48];
     int  offset;       // in slots
@@ -655,6 +662,8 @@ struct record_field {
     int  elem_type;    // PT_ARRAY: element type
     int  arr_elem_size;// PT_ARRAY: slots per element (1 for scalars, N for nested record)
     int  arr_elem_rec; // PT_ARRAY: rec_idx of element if record-valued
+    int  vis;          // pascal_vis_t — public for record fields, may be private/protected for class fields
+    int  decl_class;   // class_types[] idx that declared the field (-1 for plain records)
 };
 
 struct record_type {
@@ -686,6 +695,8 @@ struct method_entry {
     bool is_class;     // class procedure / class function — no Self
     bool is_function;  // captured from class header so virtual-call return-type
     char return_type;  // is known even when proc_idx is still -1
+    int  vis;          // pascal_vis_t
+    int  decl_class;   // class_types[] idx that declared the method
 };
 struct property_entry {
     char name[48];
@@ -697,6 +708,7 @@ struct property_entry {
     int  read_method_idx;
     int  write_field_offset;
     int  write_method_idx;
+    int  vis;          // pascal_vis_t
 };
 
 struct class_type {
@@ -941,6 +953,38 @@ mk_field_set(struct sym *s, struct record_field *f, NODE *val)
         return ALLOC_node_var_aset((uint32_t)s->idx, 0, mk_int(f->offset), val);
     if (s->kind == SYM_GREC) return ALLOC_node_gset((uint32_t)slot, val);
     return ALLOC_node_lset((uint32_t)slot, val);
+}
+
+// Visibility check for class fields / methods / properties.  `vis` is
+// the entry's pascal_vis_t and `decl_class` is the class_types[] index
+// that declared it.  Plain record fields pass through (decl_class = -1,
+// vis = VIS_PUBLIC), so calling this from a code path that mixes
+// records and classes is safe.  current_method_class_idx is the class
+// being parsed if we're inside a method body, else -1.
+extern int current_method_class_idx;   // defined later in this TU
+static void
+check_access(int decl_class, int vis, const char *kind, const char *name)
+{
+    if (decl_class < 0) return;       // plain record — always public
+    if (vis == VIS_PUBLIC || vis == VIS_PUBLISHED) return;
+    int cur = current_method_class_idx;
+    if (cur < 0) {
+        pascal_error("%s '%s' is %s and not accessible from outside the class",
+                     kind, name, vis == VIS_PRIVATE ? "private" : "protected");
+    }
+    if (vis == VIS_PRIVATE) {
+        if (cur == decl_class) return;
+        pascal_error("%s '%s' is private to class '%s' (cannot access from '%s')",
+                     kind, name, class_types[decl_class].name, class_types[cur].name);
+    }
+    // VIS_PROTECTED: cur must be decl_class or a descendant.
+    int walk = cur;
+    while (walk >= 0) {
+        if (walk == decl_class) return;
+        walk = class_types[walk].parent_idx;
+    }
+    pascal_error("%s '%s' is protected (declared in '%s'); '%s' is not a descendant",
+                 kind, name, class_types[decl_class].name, class_types[cur].name);
 }
 
 // int → real promotion if needed; identity for already-real or bool.
@@ -1829,6 +1873,7 @@ te_factor(void)
             for (int i = 0; i < rt->nfields; i++)
                 if (strcmp(rt->fields[i].name, fname) == 0) { f = &rt->fields[i]; break; }
             if (!f) pascal_error("no field/method '%s' in '%s'", fname, rt->name);
+            check_access(f->decl_class, f->vis, "field", f->name);
             e = (TE){ ALLOC_node_ptr_field_ref(e.n, (uint32_t)f->offset), f->type, -1 };
         }
         return e;
@@ -1916,6 +1961,7 @@ te_factor(void)
                 struct record_type *rt = &record_types[class_types[walk].rec_idx];
                 for (int i = 0; i < rt->nfields; i++) {
                     if (strcmp(rt->fields[i].name, id) == 0) {
+                        check_access(rt->fields[i].decl_class, rt->fields[i].vis, "field", rt->fields[i].name);
                         NODE *self_load = ALLOC_node_lref(0);
                         return (TE){ ALLOC_node_ptr_field_ref(self_load, (uint32_t)rt->fields[i].offset),
                                      rt->fields[i].type, -1 };
@@ -2116,6 +2162,7 @@ te_factor(void)
             struct record_type *rt = &record_types[s->rec_idx];
             for (int i = 0; i < rt->nfields; i++) {
                 if (strcmp(rt->fields[i].name, fname) == 0) {
+                    check_access(rt->fields[i].decl_class, rt->fields[i].vis, "field", rt->fields[i].name);
                     NODE *base = (s->kind == SYM_GVAR) ? ALLOC_node_gref(s->idx)
                                                        : ALLOC_node_lref(s->idx);
                     return (TE){ ALLOC_node_ptr_field_ref(base, (uint32_t)rt->fields[i].offset),
@@ -2817,6 +2864,7 @@ parse_id_stmt(void)
             struct record_type *rt = &record_types[class_types[walk].rec_idx];
             for (int i = 0; i < rt->nfields; i++) {
                 if (strcmp(rt->fields[i].name, id) == 0) {
+                    check_access(rt->fields[i].decl_class, rt->fields[i].vis, "field", rt->fields[i].name);
                     expect(TK_ASSIGN, "':='");
                     TE v = te_expr();
                     NODE *rhs = te_coerce(v, rt->fields[i].type, "field assignment");
@@ -2954,6 +3002,7 @@ parse_id_stmt(void)
             if (strcmp(rt->fields[i].name, fname) == 0) { fld = &rt->fields[i]; break; }
         }
         if (!fld) pascal_error("no field '%s' in '%s'", fname, rt->name);
+        check_access(fld->decl_class, fld->vis, "field", fld->name);
         expect(TK_ASSIGN, "':='");
         TE val = te_expr();
         NODE *rhs = te_coerce(val, fld->type, "field assignment");
@@ -3283,13 +3332,17 @@ parse_type(int32_t *lo_out, int32_t *hi_out,
         }
 
         // Fields and method headers, in any order, terminated by `end`.
+        // `current_vis` tracks the active visibility section.  Free
+        // Pascal (and Delphi) default new fields to `published`, but
+        // before *any* visibility marker the convention is `public` —
+        // we follow that here.  A marker switches the section until
+        // the next marker.
+        int current_vis = VIS_PUBLIC;
         while (tk != TK_END && tk != TK_EOF) {
-            // Visibility markers — accepted and ignored (no real
-            // access checking yet).
-            if (accept(TK_PRIVATE)   || accept(TK_PUBLIC)
-                || accept(TK_PROTECTED) || accept(TK_PUBLISHED)) {
-                continue;
-            }
+            if (accept(TK_PRIVATE))   { current_vis = VIS_PRIVATE;   continue; }
+            if (accept(TK_PROTECTED)) { current_vis = VIS_PROTECTED; continue; }
+            if (accept(TK_PUBLIC))    { current_vis = VIS_PUBLIC;    continue; }
+            if (accept(TK_PUBLISHED)) { current_vis = VIS_PUBLISHED; continue; }
             // property NAME : TYPE read SOURCE [write TARGET];
             if (accept(TK_PROPERTY)) {
                 if (tk != TK_ID) pascal_error("expected property name");
@@ -3337,6 +3390,7 @@ parse_type(int32_t *lo_out, int32_t *hi_out,
                 pe->read_method_idx    = read_m;
                 pe->write_field_offset = write_off;
                 pe->write_method_idx   = write_m;
+                pe->vis = current_vis;
                 continue;
             }
             // `class` modifier before procedure/function = class
@@ -3405,6 +3459,8 @@ parse_type(int32_t *lo_out, int32_t *hi_out,
                 me->is_abstract    = got_abstract;
                 me->is_function    = is_func;
                 me->return_type    = (char)header_return_type;
+                me->vis            = current_vis;
+                me->decl_class     = cidx;
                 if (got_virtual && !inherited_entry) {
                     me->is_virtual  = true;
                     me->vtable_slot = ct->vtable_size++;
@@ -3439,6 +3495,8 @@ parse_type(int32_t *lo_out, int32_t *hi_out,
                 strncpy(f->name, fnames[i], sizeof(f->name) - 1);
                 f->offset = offset++;
                 f->type   = ft;
+                f->vis    = current_vis;
+                f->decl_class = cidx;
             }
             accept(TK_SEMI);
         }
