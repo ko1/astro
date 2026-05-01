@@ -10,30 +10,96 @@ inlined regex chain into one SD function.  This doc records what
 
 ## Where AOT specialization actually wins
 
-After folding the search loop into the AST, the in-engine microbench
-(`./astrogre --bench` — single 16 KiB string, repeated calls) shows
-the fusion clearly:
+The literal-led patterns from the original microbench got eaten by
+the memchr / memmem prefilter (next section) — those numbers are
+no longer interesting because the prefilter handles them outside
+the bake's reach.  The AOT win is now visible on the *opposite*
+shape: long node chain, no fixed-byte first prefix (so prefilter
+doesn't fire), enough per-position work that dispatch overhead is
+a meaningful share.
+
+`bench/aot_bench.sh` runs the in-engine `--bench-file` path (whole
+118 MB corpus loaded once, full-sweep count of all matches per
+iter) and compares against grep / ripgrep / Onigmo via their
+respective `-c` modes.  All times in milliseconds, best-of-3:
 
 ```
-                                         interp     aot-cached   speedup
-literal-tail   /match/                   22.75 s       3.15 s     7.22×
-literal-i      /MATCH/i                  15.65 s      15.22 s     1.03×
-class-digit    /\d+/   (matches early)    0.009 s      0.009 s    1.00×
-class-word     /\w+/   (matches late)    11.60 s      10.43 s     1.11×
-alt-3          /cat|dog|match/           15.67 s      12.86 s     1.22×
-rep-greedy     /a.*z/                    11.23 s      10.74 s     1.05×
-group-alt      /(a|b|c)+m/  (no match)   21.53 s      21.99 s     0.98×
-anchored       /\Amatch/                  0.24 s       0.25 s     0.96×
-dot-star       /.*match/                 11.04 s       9.16 s     1.20×
+                                              interp     aot      aot/I  +onigmo  aot/O   grep  ripgrep
+/(QQQ|RRR)+\d+/                                2341    1053     2.22×    696    1.51×    79      24
+/(QQQX|RRRX|SSSX)+/                            3052     998     3.06×    720    1.39×    28      27
+/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/             854     377     2.26×    777    0.49× ★ 597     215
+/[a-z][0-9][a-z][0-9][a-z]/                     909     404     2.25×    808    0.50× ★   5     225
+/(\d+\.\d+\.\d+\.\d+)/                         1557    1101     1.42×    755    1.46×     5      50
+/[A-Z]{50,}/                                   1285    1182     1.09×   1111    1.06×  1535     187
+/\b(if|else|for|while|return)\b/               1655     404     4.10×   1078    0.37× ★   2     119
+/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/            20413   15583     1.31×  10141    1.54×     3     221
 ```
+★ = astrogre + AOT beats Onigmo.
 
-`literal-tail` is the case where the fusion really lands: scanning
-16 KiB for a 5-byte literal in a tight loop, with the inlined
-chain reduced to a `cmpl + cmpw + ja` per position and the
-capture-state reset hoisted to a single `vmovdqu`.  Other patterns
-move 5-25 % depending on how much per-position work the regex chain
-imposes — the more there is, the smaller the share that dispatch
-overhead represented in the first place.
+The 2-3× AOT wins line up with the AOT specialisation thesis:
+
+- **Chain has to be long.**  alt (`(QQQ|RRR)`) → rep → class /
+  literal → ... — five or more nodes per match attempt means five+
+  indirect calls bake removes.
+- **Prefilter has to NOT fire.**  These patterns start with a class
+  or alt, so memchr/memmem can't pre-skip; the chain runs at
+  every position.
+- **Search has to walk the whole input.**  All these patterns
+  scan the entire 118 MB (failing patterns sweep with no exit;
+  matching patterns count all hits).
+
+`/[A-Z]{50,}/` stays at 1.09× even though it sweeps the whole
+input — the chain is just rep_cont ↔ class, two nodes, so dispatch
+was already cheap.
+
+### vs Onigmo
+
+The interesting cells are the three where astrogre + AOT beats
+Onigmo:
+
+- `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/`: 377 ms vs 777 ms (**2.06×
+  faster than Onigmo**) — 9 class checks per attempt, ASTro inlines
+  all into one function while Onigmo's bytecode VM dispatches each.
+- `/[a-z][0-9][a-z][0-9][a-z]/`: 404 ms vs 808 ms (**2.00× faster**)
+  — same shape, 5 class checks.
+- `/\b(if|else|for|while|return)\b/`: 404 ms vs 1078 ms (**2.67×
+  faster**) — `\b` + alt-5; ASTro inlines the alt branches as
+  conditional compares, Onigmo's VM walks them one at a time.
+
+Onigmo wins on patterns where it has structural shortcuts our
+chain doesn't:
+
+- `/(QQQ|RRR)+\d+/`, `(QQQX|RRRX|SSSX)+`: probably an alternation-
+  with-shared-prefix optimisation we don't do.
+- `/(\d+\.\d+\.\d+\.\d+)/`: greedy-dot-with-anchored-ending heuristic.
+
+### vs grep / ripgrep
+
+ugrep / ripgrep stay an order of magnitude ahead on patterns where
+their literal-prefix prefilter or lazy DFA fires
+(`/[a-z][0-9][a-z][0-9][a-z]/` ← grep 5 ms because the leading
+`[a-z]` collapses to a memchr-class scan).
+
+But for patterns where prefilter can't apply, ASTro+AOT can be
+**faster than grep**:
+
+- `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/`: astrogre+AOT 377 ms vs
+  grep 597 ms — grep doesn't have a useful prefilter for this shape
+  and falls back to PCRE-class matching per position; ASTro's
+  inlined chain is just faster.
+- `/[A-Z]{50,}/`: astrogre+AOT 1182 ms vs grep 1535 ms — ditto.
+
+ripgrep stays consistently fast across all (lazy DFA + literal-
+prefix prefilter), the engineering cost is much higher.
+
+### Upper bound
+
+The earlier microbench's `literal-tail /match/` 7.22× still
+applies as the *upper bound* the bake can deliver (no prefilter
+*and* no memcmp dominating per-iter), but for realistic regex
+patterns 2-3× is the practical ceiling for AOT alone — and the
+bake is enough to **leapfrog Onigmo** on chain-heavy patterns
+even without dedicated alt / class scan optimisations.
 
 The disassembly of the fused SD for `/static/`:
 

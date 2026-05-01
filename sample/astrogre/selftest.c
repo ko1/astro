@@ -190,24 +190,37 @@ astrogre_run_file_bench(const char *file, const char *pat_lit, int iters, bool a
 
     if (aot) astrogre_pattern_aot_compile(p, false);
 
-    /* warmup */
+    /* warmup — count all matches once (also confirms total
+     * matches in the buffer for the iter loop below) */
     astrogre_match_t m;
-    astrogre_search(p, buf, (size_t)sz, &m);
+    int total_matches = 0;
+    {
+        size_t pos = 0;
+        while (astrogre_search_from(p, buf, (size_t)sz, pos, &m)) {
+            total_matches++;
+            pos = (m.ends[0] == m.starts[0]) ? m.ends[0] + 1 : m.ends[0];
+        }
+    }
 
+    /* Bench: full-sweep count (mimics grep -c semantics) so
+     * comparison with grep / ripgrep / onigmo is apples-to-apples. */
     double t0 = mono_seconds();
     int hits = 0;
     for (int i = 0; i < iters; i++) {
-        if (astrogre_search(p, buf, (size_t)sz, &m)) hits++;
+        size_t pos = 0;
+        while (astrogre_search_from(p, buf, (size_t)sz, pos, &m)) {
+            hits++;
+            pos = (m.ends[0] == m.starts[0]) ? m.ends[0] + 1 : m.ends[0];
+        }
     }
     double t1 = mono_seconds();
     double total = t1 - t0;
     double per = total / iters;
     double bytes_per_sec = (double)sz / per;
-    printf("%-22s %s  %s  iters=%d hits=%d  total=%.3fs  per=%.3fms  %.1f MB/s\n",
+    printf("%-22s %s  total_matches=%d  iters=%d hits=%d  total=%.3fs  per=%.3fms  %.1f MB/s\n",
            pat_lit,
            plain ? "interp"     : (aot ? "aot-cached" : "default"),
-           (m.matched ? "MATCH" : "nil  "),
-           iters, hits, total, per * 1e3, bytes_per_sec / (1024 * 1024));
+           total_matches, iters, hits, total, per * 1e3, bytes_per_sec / (1024 * 1024));
 
     astrogre_pattern_free(p);
     free(buf);
