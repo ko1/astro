@@ -38,21 +38,30 @@ Pascal 拡張、性能のうち高度なもの。「Pascal として完成」の
 
 ## 性能
 
+### 完了 (round 8 一連)
+
+| 項目 | 効果 |
+|------|------|
+| ~~P1: body NODE\* SPECIALIZE bake~~ | recursion benches を 2× → 4-6× に。 `@nohash` + `pcall_K_baked` 系列 + post-parse fixup + eager dispatcher_name。 |
+| ~~P5: vcall inline cache~~ | oop_shapes 14.6× → 5.4× (vs fpc -O3)。 receiver vtable hit で proc-table lookup を skip。 |
+| ~~P-needs_display~~ | nested children のない proc で display save/restore を AOT で DCE。 |
+| ~~P4: fp threading (alloca-frames-lite)~~ | `int fp` を common parameter に。c->fp の memory traffic 全消滅。call-heavy で +8-29%。 |
+| ~~P-via_body~~ | body の tail が `Result := expr` のとき C return path で値を返す。 fib/tarai/gcd で +13-22%、slot read 1 回 + slot write 1 回が消える。 |
+| ~~P-zero-fill~~ | Pascal 仕様通り locals を uninit に。 pascal_call_baked から zero-fill loop を削除。 gcd 28%、ackermann 14% 改善。 |
+
+### 残り
+
 | # | 項目 | 期待効果 |
 |---|------|---------|
-| ~~P1~~ | ~~**Body NODE\* を SPECIALIZE 時に bake する pcall**~~ | **完了** (round 8)。recursion benches: fib 4.2× / tarai 5.5× / ack 5.8× / matmul 19× / mandelbrot 26-37×。`@nohash` 修飾子 + `pcall_K_baked` 系列 + post-parse fixup + eager dispatcher_name set。 |
-| ~~P5~~ | ~~**Inline-cache for class method**~~ | **完了** (round 8)。`node_vcall` が `struct vcall_cache` を持ち、receiver vtable がヒットすれば proc-table lookup を skip して `pascal_call_baked` を直接呼ぶ。oop_shapes 14.6× → 7.6× (vs fpc -O3)。 |
-| ~~P-extra~~ | ~~**`needs_display` フラグ**~~ | **完了** (round 8)。proc が nested children を持たないとき `pascal_call_baked` の display save/restore を gcc が DCE する。call-heavy bench で +5-10%。 |
-| P2 | **PGC / Hopt** | 分岐が偏る real 数値計算で効く |
-| P3 | **for-loop の literal bounds 特化** | `for i := 1 to 100` を fixed-trip に |
-| P4 | **alloca フレーム / fp threading** | call-heavy bench で 1.5-2× 期待。c->fp / c->sp の毎-call メモリトラフィックが現在の主要ボトルネック (perf record で fib AOT は 99% が SD 内、再帰呼出し前後で gcc が c->fp / c->sp を reload するため)。共通 NODE_DEF 引数に `int fp` を追加して dispatch chain で thread すれば fpc -O3 のレジスタ受け渡しに近づける。316 NODE_DEF への引数追加が必要なので大改修。 |
-| P5 | **Inline-cache for class method** | virtual 化したときの monomorphic な site に有効 |
-| P6 | **JIT (L0 / L1 / L2)** | 他の ASTro サンプル並みの起動高速化 |
+| **P2/P6 (統合)** | **PGC / Hopt → JIT** | 本質的に同じ最適化。 PGC は静的二段 (`pascalast -p` で profile dump → `pascalast -c -P prof` で profile-guided AOT)、JIT は同プロセスで動的にトリガー。両方とも:<br>- vcall site の guarded direct call (devirtualization) で oop_shapes 4.6× → 1-2× が見込める<br>- branch 偏り情報で `__builtin_expect` を AOT 出力に注入<br>- 観測された定数を bake<br>JIT (P6) は実装的には PGC (P2) + 動的 trigger なので、P2 を先に作れば P6 は薄い差分。 |
+| P3 | for-loop の literal bounds 特化 | `for i := 1 to 100` 等を fixed-trip に。AOT で from/to が node_int(literal) になっていれば gcc は既に展開しているはずだが、確認していない。 |
+| P-cleanup-flag | exit_pending/loop_action check の skip | proc body に break/continue/exit/halt がなければ pascal_call_baked 末尾の UNLIKELY check 2 回が完全に DCE 可。 fib で +3-5% 見込み。 |
+| P-leaf-no-sp | leaf proc で c->sp 更新を skip | 内部呼出しを持たない proc 専用。 fib/tarai のような recursion ヘビーなものには効かないが、math 系の inner function に効く可能性。 |
 
 ## サンプル整備
 
 - **Free Pascal RTL self-tests** や **BSI Pascal validation suite** に
   pass 数を当てる。
-- **`fpc -O3` ビルド**との直接比較 (現状は naïve interpreter と AOT)。
-- **ベンチに OOP バージョン** を追加 (matmul-class とか)。
-- **`pascalast -p FILE.pas`** — PGC 駆動。
+- ~~**`fpc -O3` ビルド**との直接比較~~ ([`docs/compare_fpc.md`](./compare_fpc.md))
+- **ベンチに OOP バージョン** を追加 ([`bench/oop_shapes.pas`](../bench/oop_shapes.pas) で着手済)。
+- **`pascalast -p FILE.pas`** — PGC 駆動 (P2 と同じ)。
