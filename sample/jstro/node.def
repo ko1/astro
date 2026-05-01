@@ -286,8 +286,12 @@ node_seqn(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, uint32_
         NODE *e = JSTRO_NODE_ARR[idx + i];
         r = EVAL(c, e, frame);
         if (JSTRO_UNLIKELY(JSTRO_BR != JS_BR_NORMAL)) return r;
-        jstro_gc_safepoint(c);
     }
+    // One safepoint per `seqn` block (was per-statement before — that
+    // dominated mandelbrot's hot SD chain through 6-statement bodies,
+    // ~10% of cycles in the inner SD).  Block boundary still fires
+    // often enough; binary_trees keeps the same ~36 collections.
+    jstro_gc_safepoint(c);
     return RESULT_OK(r);
 }
 
