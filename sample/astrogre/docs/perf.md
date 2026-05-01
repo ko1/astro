@@ -15,21 +15,21 @@ mirrors how grep is actually used) and the engine-level whole-
 file bench (loads the corpus once, calls `astrogre_search` in a
 loop — isolates the engine cost).
 
-### Bench A — grep CLI (line-by-line, 118 MB corpus, s, best-of-5)
+### Bench A — grep CLI (line-by-line, 118 MB corpus, ms, best-of-5)
 
 `bench/grep_bench.sh`.  All four engines invoked via their own
 grep CLI / `-c` modes.
 
 | pattern | astrogre interp | astrogre +AOT | astrogre +onigmo | grep | ripgrep |
 |---|---:|---:|---:|---:|---:|
-| `/static/` literal | 0.077 | 0.078 | 0.098 | **0.002** | 0.034 |
-| `/specialized_dispatcher/` rare | 0.026 | 0.026 | 0.038 | 0.035 | **0.020** |
-| `/^static/` anchored | 0.076 | 0.076 | 0.098 | **0.002** | 0.036 |
-| `/VALUE/i` case-i | 0.704 | 0.682 | 0.129 | **0.002** | 0.050 |
-| `/static\|extern\|inline/` alt-3 | 0.308 | 0.313 | 0.959 | **0.002** | 0.050 |
-| `/[0-9]{4,}/` class-rep | 0.475 | 0.471 | 0.565 | **0.002** | 0.055 |
-| `/[a-z_]+_[a-z]+\(/` ident-call | 3.277 | 3.283 | 3.177 | **0.002** | 0.185 |
-| `-c /static/` count | 0.048 | 0.050 | 0.072 | **0.002** | 0.027 |
+| `/static/` literal | 77 | 78 | 98 | **2** | 34 |
+| `/specialized_dispatcher/` rare | 26 | 26 | 38 | 35 | **20** |
+| `/^static/` anchored | 76 | 76 | 98 | **2** | 36 |
+| `/VALUE/i` case-i | 704 | 682 | 129 | **2** | 50 |
+| `/static\|extern\|inline/` alt-3 | 308 | 313 | 959 | **2** | 50 |
+| `/[0-9]{4,}/` class-rep | 475 | 471 | 565 | **2** | 55 |
+| `/[a-z_]+_[a-z]+\(/` ident-call | 3277 | 3283 | 3177 | **2** | 185 |
+| `-c /static/` count | 48 | 50 | 72 | **2** | 27 |
 
 The whole-file mmap path (used when the pattern has a SIMD/libc
 prefilter) drops literal-led astrogre by 3-10× over the previous
