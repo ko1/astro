@@ -896,7 +896,12 @@ pascal_call_baked(CTX *c, NODE *body, node_dispatcher_func_t body_dispatcher,
     int new_sp = new_fp + (int)nslots;
     if (UNLIKELY(new_sp > PASCAL_STACK_SIZE)) pascal_error("call stack overflow");
     for (uint32_t i = 0; i < argc; i++) c->stack[new_fp + i] = av[i];
-    for (uint32_t i = argc; i < nslots; i++) c->stack[new_fp + i] = 0;
+    // Pascal locals are uninitialised by spec (and by fpc).  The
+    // parser inserts explicit init for the few constructs that need
+    // it (case-stmt hidden temps; loop counters get initialised in
+    // the for-node before the body runs).  Skipping the loop here
+    // saves up to nslots-argc stores per call, e.g. 1 store/call on
+    // fib (one local besides the param).
     int saved_display = needs_display ? c->display[lexical_depth] : 0;
     c->sp = new_sp;
     if (needs_display) c->display[lexical_depth] = new_fp;
