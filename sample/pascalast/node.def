@@ -1450,30 +1450,71 @@ node_as_class(CTX * restrict c, NODE * restrict n, NODE *obj_e, uint32_t target_
     return obj;
 }
 
-// Virtual method call: read vtable pointer from obj's slot 0, then
-// proc index at vtable[slot].  Behaves otherwise like node_pcall_n
-// — args are staged in PASCAL_CALL_ARGS[args_idx..argc].  Self is
-// already pushed as the first arg by the parser.
-NODE_DEF @noinline
-node_vcall(CTX * restrict c, NODE * restrict n, NODE *self_e, uint32_t vt_slot, uint32_t args_idx, uint32_t argc)
+// Virtual method call with monomorphic inline cache.
+//
+// Hot path (cache hit, vt matches the last-seen vtable): no
+// vtable[slot] read, no procs[] lookup — just call the cached
+// body's dispatcher directly via pascal_call_baked.  After AOT,
+// cache->body_dispatcher is the SD function pointer for that body
+// (it's read from body->head.dispatcher on cache fill, and AOT
+// load patches that to the SD), so the hot-path call lands in a
+// specialized SD.
+//
+// Cold path: read vt[slot], look up procs[pidx], populate cache.
+// Abstract/nil checks live on this path so the hot path stays
+// straight-line.
+//
+// Self is already in PASCAL_CALL_ARGS[args_idx..argc-1] as arg 0?
+// No — the parser pushes the rest of the args starting at args_idx;
+// self_e is evaluated separately and prepended.
+NODE_DEF
+node_vcall(CTX * restrict c, NODE * restrict n, NODE *self_e, uint32_t vt_slot, uint32_t args_idx, uint32_t argc, struct vcall_cache *cache@ref)
 {
-    (void)n;
     extern NODE **PASCAL_CALL_ARGS;
     int64_t self = EVAL_ARG(c, self_e);
     if (UNLIKELY(!self)) pascal_error_at(n->head.line, "nil object in method call");
     int64_t *obj = (int64_t *)(uintptr_t)self;
-    int *vt = (int *)(uintptr_t)obj[0];
+    void *vt = (void *)(uintptr_t)obj[0];
+
+    if (LIKELY(vt == cache->vt)) {
+        // Cache hit — body / metadata already populated.  Stage args
+        // and dispatch through cache->body_dispatcher.
+        VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc ? argc : 1));
+        av[0] = self;
+        for (uint32_t i = 1; i < argc; i++) {
+            NODE *a = PASCAL_CALL_ARGS[args_idx + i - 1];
+            av[i] = (*a->head.dispatcher)(c, a);
+        }
+        return pascal_call_baked(c, cache->body, cache->body_dispatcher,
+                                 cache->nslots, cache->return_slot,
+                                 cache->lexical_depth, cache->is_function,
+                                 argc, av);
+    }
+
+    // Cache miss / first call: resolve via vtable + procs[].
     if (UNLIKELY(!vt)) pascal_error_at(n->head.line, "object has no vtable");
-    int pidx = vt[vt_slot];
+    int *vt_int = (int *)vt;
+    int pidx = vt_int[vt_slot];
     if (UNLIKELY(pidx <= 0))
         pascal_raise(n->head.line, "abstract method has no implementation");
+    struct pascal_proc *p = &c->procs[pidx];
+    cache->vt              = vt;
+    cache->body            = p->body;
+    cache->body_dispatcher = p->body->head.dispatcher;
+    cache->nslots          = (uint32_t)p->nslots;
+    cache->return_slot     = (uint32_t)p->return_slot;
+    cache->lexical_depth   = (uint32_t)p->lexical_depth;
+    cache->is_function     = p->is_function ? 1u : 0u;
     VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc ? argc : 1));
     av[0] = self;
     for (uint32_t i = 1; i < argc; i++) {
         NODE *a = PASCAL_CALL_ARGS[args_idx + i - 1];
         av[i] = (*a->head.dispatcher)(c, a);
     }
-    return pascal_call(c, (uint32_t)pidx, argc, av);
+    return pascal_call_baked(c, cache->body, cache->body_dispatcher,
+                             cache->nslots, cache->return_slot,
+                             cache->lexical_depth, cache->is_function,
+                             argc, av);
 }
 
 NODE_DEF

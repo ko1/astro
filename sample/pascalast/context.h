@@ -18,13 +18,21 @@
 extern void *GC_malloc(size_t);
 extern void *GC_malloc_atomic(size_t);   // pointer-free buffers (strings, etc)
 extern void *GC_realloc(void *, size_t);
+
 extern void  GC_free(void *);
 extern void  GC_init(void);
 extern void  GC_gcollect(void);
 extern size_t GC_get_heap_size(void);
 extern size_t GC_get_total_bytes(void);
 
+// Forward declarations.  context.h is included before node.h's typedefs
+// run, but struct vcall_cache below references node_dispatcher_func_t
+// (and CTX/Node).  Without these forward decls, the field types fall
+// back to implicit-int and the struct accesses miscompile silently.
+struct CTX_struct;
+struct Node;
 typedef int64_t VALUE;
+typedef VALUE (*node_dispatcher_func_t)(struct CTX_struct *c, struct Node *n);
 
 // Static type tags carried alongside parsed expressions and stored in
 // per-symbol metadata.  They never appear at run time — every value is
@@ -53,6 +61,22 @@ struct pcall_cache {
     int   return_slot;
     int   lexical_depth;
     bool  is_function;
+};
+
+// Inline cache for virtual method dispatch.  Each `node_vcall` carries
+// one inline.  On first dispatch we record the receiver's vtable
+// pointer and the resolved proc body; subsequent calls whose receiver
+// has the same vtable take a fast path that skips the vtable[slot]
+// indirection and the procs[] lookup.  Monomorphic call sites (the
+// common case in tight loops) hit this every time.
+struct vcall_cache {
+    void               *vt;             // last-seen vtable address; NULL = empty
+    struct Node        *body;
+    node_dispatcher_func_t body_dispatcher;
+    uint32_t            nslots;
+    uint32_t            return_slot;
+    uint32_t            lexical_depth;
+    uint32_t            is_function;
 };
 
 // Heap object backing a `text` file variable.  Allocated on first
