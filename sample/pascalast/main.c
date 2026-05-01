@@ -38,6 +38,32 @@ NODE **PASCAL_CALL_ARGS;
 static uint32_t pascal_call_args_size;
 static uint32_t pascal_call_args_capa;
 
+// Static analysis helper: walk the tail of `body` and return true if
+// every executable path ends with a node_set_result that writes the
+// function's return slot.  Lets pascal_call_baked skip reading
+// c->stack[return_slot] for "well-formed" function bodies.
+extern const struct NodeKind kind_node_set_result;
+extern const struct NodeKind kind_node_seq;
+extern const struct NodeKind kind_node_if;
+bool
+tail_assigns_result(NODE *body, uint32_t return_slot)
+{
+    if (!body) return false;
+    if (body->head.kind == &kind_node_set_result) {
+        return body->u.node_set_result.idx == return_slot;
+    }
+    if (body->head.kind == &kind_node_seq) {
+        return tail_assigns_result(body->u.node_seq.rest, return_slot);
+    }
+    if (body->head.kind == &kind_node_if) {
+        return tail_assigns_result(body->u.node_if.thn, return_slot)
+            && tail_assigns_result(body->u.node_if.els, return_slot);
+    }
+    // Conservative: anything else (case, loops, plain stmts, if1 with
+    // no else, etc.) doesn't guarantee a tail Result assignment.
+    return false;
+}
+
 // Post-parse fixup list for baked pcall variants.  mk_pcall emits the
 // _baked NODE leaving body=NULL and the per-proc metadata slots at 0;
 // resolve_pcall_bodies() walks this list once parse_program has
@@ -54,6 +80,7 @@ struct pcall_fixup {
     uint32_t  *lexical_depth_slot;
     uint32_t  *is_function_slot;
     uint32_t  *needs_display_slot;
+    uint32_t  *return_via_body_slot;
     uint32_t   pidx;
 };
 static struct pcall_fixup *pcall_fixups;
@@ -67,6 +94,7 @@ register_pcall_fixup(NODE **body_slot,
                      uint32_t *lexical_depth_slot,
                      uint32_t *is_function_slot,
                      uint32_t *needs_display_slot,
+                     uint32_t *return_via_body_slot,
                      uint32_t pidx)
 {
     if (pcall_fixups_size >= pcall_fixups_capa) {
@@ -76,7 +104,8 @@ register_pcall_fixup(NODE **body_slot,
     }
     pcall_fixups[pcall_fixups_size++] = (struct pcall_fixup){
         body_slot, nslots_slot, return_slot_slot,
-        lexical_depth_slot, is_function_slot, needs_display_slot, pidx
+        lexical_depth_slot, is_function_slot, needs_display_slot,
+        return_via_body_slot, pidx
     };
 }
 
@@ -1101,58 +1130,64 @@ mk_pcall(uint32_t pidx, NODE **args, uint32_t argc)
     uint32_t *lexical_depth_slot = NULL;
     uint32_t *is_function_slot = NULL;
     uint32_t *needs_display_slot = NULL;
+    uint32_t *return_via_body_slot = NULL;
     switch (argc) {
     case 0:
-        n = ALLOC_node_pcall_0_baked(NULL, 0, 0, 0, 0, 0);
-        body_slot          = &n->u.node_pcall_0_baked.body;
-        nslots_slot        = &n->u.node_pcall_0_baked.nslots;
-        return_slot_slot   = &n->u.node_pcall_0_baked.return_slot;
-        lexical_depth_slot = &n->u.node_pcall_0_baked.lexical_depth;
-        is_function_slot   = &n->u.node_pcall_0_baked.is_function;
-        needs_display_slot = &n->u.node_pcall_0_baked.needs_display;
+        n = ALLOC_node_pcall_0_baked(NULL, 0, 0, 0, 0, 0, 0);
+        body_slot            = &n->u.node_pcall_0_baked.body;
+        nslots_slot          = &n->u.node_pcall_0_baked.nslots;
+        return_slot_slot     = &n->u.node_pcall_0_baked.return_slot;
+        lexical_depth_slot   = &n->u.node_pcall_0_baked.lexical_depth;
+        is_function_slot     = &n->u.node_pcall_0_baked.is_function;
+        needs_display_slot   = &n->u.node_pcall_0_baked.needs_display;
+        return_via_body_slot = &n->u.node_pcall_0_baked.return_via_body;
         break;
     case 1:
-        n = ALLOC_node_pcall_1_baked(NULL, 0, 0, 0, 0, 0, args[0]);
-        body_slot          = &n->u.node_pcall_1_baked.body;
-        nslots_slot        = &n->u.node_pcall_1_baked.nslots;
-        return_slot_slot   = &n->u.node_pcall_1_baked.return_slot;
-        lexical_depth_slot = &n->u.node_pcall_1_baked.lexical_depth;
-        is_function_slot   = &n->u.node_pcall_1_baked.is_function;
-        needs_display_slot = &n->u.node_pcall_1_baked.needs_display;
+        n = ALLOC_node_pcall_1_baked(NULL, 0, 0, 0, 0, 0, 0, args[0]);
+        body_slot            = &n->u.node_pcall_1_baked.body;
+        nslots_slot          = &n->u.node_pcall_1_baked.nslots;
+        return_slot_slot     = &n->u.node_pcall_1_baked.return_slot;
+        lexical_depth_slot   = &n->u.node_pcall_1_baked.lexical_depth;
+        is_function_slot     = &n->u.node_pcall_1_baked.is_function;
+        needs_display_slot   = &n->u.node_pcall_1_baked.needs_display;
+        return_via_body_slot = &n->u.node_pcall_1_baked.return_via_body;
         break;
     case 2:
-        n = ALLOC_node_pcall_2_baked(NULL, 0, 0, 0, 0, 0, args[0], args[1]);
-        body_slot          = &n->u.node_pcall_2_baked.body;
-        nslots_slot        = &n->u.node_pcall_2_baked.nslots;
-        return_slot_slot   = &n->u.node_pcall_2_baked.return_slot;
-        lexical_depth_slot = &n->u.node_pcall_2_baked.lexical_depth;
-        is_function_slot   = &n->u.node_pcall_2_baked.is_function;
-        needs_display_slot = &n->u.node_pcall_2_baked.needs_display;
+        n = ALLOC_node_pcall_2_baked(NULL, 0, 0, 0, 0, 0, 0, args[0], args[1]);
+        body_slot            = &n->u.node_pcall_2_baked.body;
+        nslots_slot          = &n->u.node_pcall_2_baked.nslots;
+        return_slot_slot     = &n->u.node_pcall_2_baked.return_slot;
+        lexical_depth_slot   = &n->u.node_pcall_2_baked.lexical_depth;
+        is_function_slot     = &n->u.node_pcall_2_baked.is_function;
+        needs_display_slot   = &n->u.node_pcall_2_baked.needs_display;
+        return_via_body_slot = &n->u.node_pcall_2_baked.return_via_body;
         break;
     case 3:
-        n = ALLOC_node_pcall_3_baked(NULL, 0, 0, 0, 0, 0, args[0], args[1], args[2]);
-        body_slot          = &n->u.node_pcall_3_baked.body;
-        nslots_slot        = &n->u.node_pcall_3_baked.nslots;
-        return_slot_slot   = &n->u.node_pcall_3_baked.return_slot;
-        lexical_depth_slot = &n->u.node_pcall_3_baked.lexical_depth;
-        is_function_slot   = &n->u.node_pcall_3_baked.is_function;
-        needs_display_slot = &n->u.node_pcall_3_baked.needs_display;
+        n = ALLOC_node_pcall_3_baked(NULL, 0, 0, 0, 0, 0, 0, args[0], args[1], args[2]);
+        body_slot            = &n->u.node_pcall_3_baked.body;
+        nslots_slot          = &n->u.node_pcall_3_baked.nslots;
+        return_slot_slot     = &n->u.node_pcall_3_baked.return_slot;
+        lexical_depth_slot   = &n->u.node_pcall_3_baked.lexical_depth;
+        is_function_slot     = &n->u.node_pcall_3_baked.is_function;
+        needs_display_slot   = &n->u.node_pcall_3_baked.needs_display;
+        return_via_body_slot = &n->u.node_pcall_3_baked.return_via_body;
         break;
     default: {
         uint32_t base = push_call_args(args, argc);
-        n = ALLOC_node_pcall_n_baked(NULL, 0, 0, 0, 0, 0, base, argc);
-        body_slot          = &n->u.node_pcall_n_baked.body;
-        nslots_slot        = &n->u.node_pcall_n_baked.nslots;
-        return_slot_slot   = &n->u.node_pcall_n_baked.return_slot;
-        lexical_depth_slot = &n->u.node_pcall_n_baked.lexical_depth;
-        is_function_slot   = &n->u.node_pcall_n_baked.is_function;
-        needs_display_slot = &n->u.node_pcall_n_baked.needs_display;
+        n = ALLOC_node_pcall_n_baked(NULL, 0, 0, 0, 0, 0, 0, base, argc);
+        body_slot            = &n->u.node_pcall_n_baked.body;
+        nslots_slot          = &n->u.node_pcall_n_baked.nslots;
+        return_slot_slot     = &n->u.node_pcall_n_baked.return_slot;
+        lexical_depth_slot   = &n->u.node_pcall_n_baked.lexical_depth;
+        is_function_slot     = &n->u.node_pcall_n_baked.is_function;
+        needs_display_slot   = &n->u.node_pcall_n_baked.needs_display;
+        return_via_body_slot = &n->u.node_pcall_n_baked.return_via_body;
         break;
     }
     }
     register_pcall_fixup(body_slot, nslots_slot, return_slot_slot,
                          lexical_depth_slot, is_function_slot,
-                         needs_display_slot, pidx);
+                         needs_display_slot, return_via_body_slot, pidx);
     return n;
 }
 
@@ -2900,7 +2935,11 @@ parse_id_stmt(void)
         if (accept(TK_ASSIGN)) {
             TE val = te_expr();
             NODE *rhs = te_coerce(val, current_proc->return_type, "function return");
-            return ALLOC_node_lset((uint32_t)current_proc->return_slot, rhs);
+            // Use node_set_result (writes slot AND returns value) so a
+            // body whose tail is Result := expr delivers the return
+            // value via the C return path — pascal_call_baked can
+            // skip reading c->stack[return_slot] on the fast path.
+            return ALLOC_node_set_result((uint32_t)current_proc->return_slot, rhs);
         }
         // bare `Result;` is meaningless — fall through to call handling
         // only when the name matches the function name.
@@ -4420,6 +4459,20 @@ parse_subprogram(bool is_function, CTX *c)
 
     p->body   = body;
     p->nslots = n_locals_alloc;
+    // Static analysis: does every executable path through `body` end
+    // with a node_set_result writing this proc's return slot?  When
+    // yes, the caller's pascal_call_baked can use the body's C return
+    // value directly and skip the c->stack[return_slot] read.  We
+    // descend through the canonical control-flow shapes (seq / if /
+    // if1) and bail out conservatively for anything else (case, loop,
+    // bare statement) — non-trivial functions just keep the slot
+    // read.  Constructors are explicitly excluded because their
+    // implicit `Result := Self` seed is at the head of the body, not
+    // the tail.
+    if (p->is_function && !is_constructor) {
+        extern bool tail_assigns_result(NODE *body, uint32_t return_slot);
+        p->return_via_body = tail_assigns_result(body, (uint32_t)p->return_slot);
+    }
 
     // Pop the scope: truncate lsyms back, restore the caller's
     // n_locals_alloc, restore current_depth.
@@ -4753,12 +4806,13 @@ main(int argc, char *argv[])
         if (f->pidx >= (uint32_t)c->nprocs) continue;
         struct pascal_proc *p = &c->procs[f->pidx];
         if (!p->body) continue;
-        *f->body_slot          = p->body;
-        *f->nslots_slot        = (uint32_t)p->nslots;
-        *f->return_slot_slot   = (uint32_t)p->return_slot;
-        *f->lexical_depth_slot = (uint32_t)p->lexical_depth;
-        *f->is_function_slot   = p->is_function ? 1u : 0u;
-        *f->needs_display_slot = p->has_nested  ? 1u : 0u;
+        *f->body_slot            = p->body;
+        *f->nslots_slot          = (uint32_t)p->nslots;
+        *f->return_slot_slot     = (uint32_t)p->return_slot;
+        *f->lexical_depth_slot   = (uint32_t)p->lexical_depth;
+        *f->is_function_slot     = p->is_function ? 1u : 0u;
+        *f->needs_display_slot   = p->has_nested  ? 1u : 0u;
+        *f->return_via_body_slot = p->return_via_body ? 1u : 0u;
     }
 
     // Build per-class vtables now that every method body has been

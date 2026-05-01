@@ -78,6 +78,7 @@ struct vcall_cache {
     uint32_t            lexical_depth;
     uint32_t            is_function;
     uint32_t            needs_display;
+    uint32_t            return_via_body;
 };
 
 // Heap object backing a `text` file variable.  Allocated on first
@@ -118,6 +119,13 @@ struct pascal_proc {
                        // whether the call protocol bothers to save/restore
                        // c->display[lexical_depth].  Top-level procs with
                        // no nested children skip the dance entirely.
+    bool return_via_body;  // body's tail evaluates to the function's return
+                       // value (every executable path ends in `Result :=`).
+                       // When true, pascal_call_baked uses the body's C
+                       // return value directly instead of reading
+                       // c->stack[new_fp + return_slot] — saves one store
+                       // (in node_set_result) and one load (in the
+                       // caller) per call.
     bool param_by_ref[PASCAL_MAX_PARAMS];
     bool param_is_array[PASCAL_MAX_PARAMS]; // var-array parameter
     int32_t param_arr_lo[PASCAL_MAX_PARAMS];// array param's declared lower bound
