@@ -141,6 +141,17 @@ astrogre_export_sd_wrappers(const char *path)
     src[sz] = '\0';
     fclose(fp);
 
+    /* Idempotency guard: if we've already rewritten this file (our
+     * banner is present), skip.  Re-applying stacks `_INL` suffixes —
+     * after N runs the originally-named `SD_<hash>` is gone, only
+     * `SD_<hash>_INL_INL_..._INL` remains, and dlsym lookups by the
+     * canonical name miss.  Encountered when the bench script runs
+     * `-C` 8 times in a row across different patterns. */
+    if (strstr(src, "// Externally-visible thin wrappers")) {
+        free(src);
+        return;
+    }
+
     #define SD_PREFIX_LEN(p) ((p)[0] == 'S' && (p)[1] == 'D' && (p)[2] == '_' ? 3 \
                               : (p)[0] == 'P' && (p)[1] == 'G' && (p)[2] == 'S' \
                                 && (p)[3] == 'D' && (p)[4] == '_' ? 5 : 0)

@@ -152,14 +152,14 @@ Two layers of optimisation, both expressed as ASTro nodes:
 
 | pattern | astrogre interp | astrogre +AOT | astrogre +onigmo | grep | ripgrep |
 |---|---:|---:|---:|---:|---:|
-| `/static/` literal | **28** | **29** | 99 | 2 | 34 |
-| `/specialized_dispatcher/` rare | **22** | **23** | 37 | 35 | 20 |
-| `/^static/` anchored | 69 | 68 | 99 | **2** | 36 |
-| `/VALUE/i` case-i | 600 | 255 | 128 | **2** | 51 |
-| `/static\|extern\|inline/` alt-3 | 300 | 87 | 950 | **2** | 49 |
-| `/[0-9]{4,}/` class-rep | 473 | 404 | 553 | **2** | 55 |
-| `/[a-z_]+_[a-z]+\(/` ident-call | 3250 | 2473 | 3241 | **2** | 181 |
-| `-c /static/` count | **24** | 25 | 71 | 2 | 27 |
+| `/static/` literal | **28** | **28** | 94 | 2 | 34 |
+| `/specialized_dispatcher/` rare | **21** | **21** | 36 | 34 | **21** |
+| `/^static/` anchored | 68 | 66 | 95 | **2** | 35 |
+| `/VALUE/i` case-i | 587 | 240 | 129 | **2** | 48 |
+| `/static\|extern\|inline/` alt-3 | 278 | 81 | 903 | **2** | 49 |
+| `/[0-9]{4,}/` class-rep | 458 | 389 | 540 | **2** | 52 |
+| `/[a-z_]+_[a-z]+\(/` ident-call | 3183 | 2387 | 2951 | **2** | 178 |
+| `-c /static/` count | **23** | **23** | 70 | 2 | 28 |
 
 The whole-file mmap path (used when the pattern has a SIMD/libc
 prefilter) drops literal-led astrogre by 3-10×.  After the case-A
@@ -192,14 +192,14 @@ beats grep AND Onigmo.
 
 | pattern | astrogre interp | astrogre +AOT | astrogre +onigmo | grep | ripgrep |
 |---|---:|---:|---:|---:|---:|
-| `/(QQQ\|RRR)+\d+/` | 21 | **13** ★ | 568 | 86 | 25 |
-| `/(QQQX\|RRRX\|SSSX)+/` | 45 | **39** ★ | 977 | 54 | 51 |
-| `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/` | 1717 | **455** ★ | 562 | 572 | 209 |
-| `/[A-Z]{50,}/` | 793 | **658** ★ | 920 | 1526 | 184 |
-| `/\b(if\|else\|for\|while\|return)\b/` | 241 | 79 | 985 | **2** | 119 |
-| `/[a-z][0-9][a-z][0-9][a-z]/` | 1127 | 476 | 596 | **4** | 214 |
-| `/(\d+\.\d+\.\d+\.\d+)/` | 596 | 421 | 566 | **4** | 50 |
-| `/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/` | 13381 | 11475 | 14260 | **2** | 216 |
+| `/(QQQ\|RRR)+\d+/` | 18 | **12** ★ | 481 | 74 | 23 |
+| `/(QQQX\|RRRX\|SSSX)+/` | 40 | **20** ★ | 499 | 25 | 25 |
+| `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/` | 893 | **433** ★ | 515 | 486 | 176 |
+| `/[A-Z]{50,}/` | 737 | **624** ★ | 863 | 1431 | 176 |
+| `/\b(if\|else\|for\|while\|return)\b/` | 234 | 76 | 926 | **2** | 118 |
+| `/[a-z][0-9][a-z][0-9][a-z]/` | 900 | 406 | 516 | **4** | 177 |
+| `/(\d+\.\d+\.\d+\.\d+)/` | 537 | 390 | 538 | **4** | 54 |
+| `/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/` | 11944 | 9265 | 12183 | **3** | 189 |
 
 ★ = astrogre + AOT beats grep AND Onigmo.  **4/8 vs grep, 8/8 vs
 Onigmo.**  AOT typically lands a 1.5-3.8× speedup over interp on

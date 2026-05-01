@@ -22,14 +22,14 @@ abruby 風モード (`--aot-compile` / cached / `--pg-compile` /
 
 | パターン | astrogre interp | astrogre +AOT | astrogre +onigmo | grep | ripgrep |
 |---|---:|---:|---:|---:|---:|
-| `/static/` literal | **28** | **29** | 99 | 2 | 34 |
-| `/specialized_dispatcher/` rare | **22** | **23** | 37 | 35 | 20 |
-| `/^static/` anchored | 69 | 68 | 99 | **2** | 36 |
-| `/VALUE/i` case-i | 600 | 255 | 128 | **2** | 51 |
-| `/static\|extern\|inline/` alt-3 | 300 | 87 | 950 | **2** | 49 |
-| `/[0-9]{4,}/` class-rep | 473 | 404 | 553 | **2** | 55 |
-| `/[a-z_]+_[a-z]+\(/` ident-call | 3250 | 2473 | 3241 | **2** | 181 |
-| `-c /static/` count | **24** | 25 | 71 | 2 | 27 |
+| `/static/` literal | **28** | **28** | 94 | 2 | 34 |
+| `/specialized_dispatcher/` rare | **21** | **21** | 36 | 34 | **21** |
+| `/^static/` anchored | 68 | 66 | 95 | **2** | 35 |
+| `/VALUE/i` case-i | 587 | 240 | 129 | **2** | 48 |
+| `/static\|extern\|inline/` alt-3 | 278 | 81 | 903 | **2** | 49 |
+| `/[0-9]{4,}/` class-rep | 458 | 389 | 540 | **2** | 52 |
+| `/[a-z_]+_[a-z]+\(/` ident-call | 3183 | 2387 | 2951 | **2** | 178 |
+| `-c /static/` count | **23** | **23** | 70 | 2 | 28 |
 
 whole-file mmap 経路 (パターンに SIMD/libc prefilter があるとき発火)
 が literal-led astrogre を従来の per-line getline ループより 3-10×
@@ -76,14 +76,14 @@ scan は 15 GB/s で memory-bandwidth-bound 寄り、残るギャップ ~13 ms
 
 | パターン | astrogre interp | astrogre +AOT | astrogre +onigmo | grep | ripgrep |
 |---|---:|---:|---:|---:|---:|
-| `/(QQQ\|RRR)+\d+/` | 21 | **13** ★ | 568 | 86 | 25 |
-| `/(QQQX\|RRRX\|SSSX)+/` | 45 | **39** ★ | 977 | 54 | 51 |
-| `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/` | 1717 | **455** ★ | 562 | 572 | 209 |
-| `/[A-Z]{50,}/` | 793 | **658** ★ | 920 | 1526 | 184 |
-| `/\b(if\|else\|for\|while\|return)\b/` | 241 | 79 | 985 | **2** | 119 |
-| `/[a-z][0-9][a-z][0-9][a-z]/` | 1127 | 476 | 596 | **4** | 214 |
-| `/(\d+\.\d+\.\d+\.\d+)/` | 596 | 421 | 566 | **4** | 50 |
-| `/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/` | 13381 | 11475 | 14260 | **2** | 216 |
+| `/(QQQ\|RRR)+\d+/` | 18 | **12** ★ | 481 | 74 | 23 |
+| `/(QQQX\|RRRX\|SSSX)+/` | 40 | **20** ★ | 499 | 25 | 25 |
+| `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/` | 893 | **433** ★ | 515 | 486 | 176 |
+| `/[A-Z]{50,}/` | 737 | **624** ★ | 863 | 1431 | 176 |
+| `/\b(if\|else\|for\|while\|return)\b/` | 234 | 76 | 926 | **2** | 118 |
+| `/[a-z][0-9][a-z][0-9][a-z]/` | 900 | 406 | 516 | **4** | 177 |
+| `/(\d+\.\d+\.\d+\.\d+)/` | 537 | 390 | 538 | **4** | 54 |
+| `/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/` | 11944 | 9265 | 12183 | **3** | 189 |
 
 **この set で grep に 4/8 勝、Onigmo に 8/8 勝**。勝因は prefilter
 ladder — memchr / memmem / byteset / range / Truffle がそれぞれ「パ
@@ -111,14 +111,14 @@ Onigmo を `-c` で比較。全て ms、best-of-3:
 
 | パターン | interp | aot | aot/I | +onigmo | grep | ripgrep |
 |---|---:|---:|---:|---:|---:|---:|
-| `/(QQQ\|RRR)+\d+/` | 21 | 13 | 1.58× | 568 | 86 | 25 |
-| `/(QQQX\|RRRX\|SSSX)+/` | 45 | 39 | 1.14× | 977 | 54 | 51 |
-| `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/` | 1717 | 455 | 3.77× | 562 | 572 | 209 |
-| `/[a-z][0-9][a-z][0-9][a-z]/` | 1127 | 476 | 2.37× | 596 | **4** | 214 |
-| `/(\d+\.\d+\.\d+\.\d+)/` | 596 | 421 | 1.42× | 566 | **4** | 50 |
-| `/[A-Z]{50,}/` | 793 | 658 | 1.21× | 920 | 1526 | 184 |
-| `/\b(if\|else\|for\|while\|return)\b/` | 241 | 79 | 3.04× | 985 | **2** | 119 |
-| `/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/` | 13381 | 11475 | 1.17× | 14260 | **2** | 216 |
+| `/(QQQ\|RRR)+\d+/` | 18 | 12 | 1.47× | 481 | 74 | 23 |
+| `/(QQQX\|RRRX\|SSSX)+/` | 40 | 20 | 2.04× | 499 | 25 | 25 |
+| `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/` | 893 | 433 | 2.06× | 515 | 486 | 176 |
+| `/[a-z][0-9][a-z][0-9][a-z]/` | 900 | 406 | 2.21× | 516 | **4** | 177 |
+| `/(\d+\.\d+\.\d+\.\d+)/` | 537 | 390 | 1.38× | 538 | **4** | 54 |
+| `/[A-Z]{50,}/` | 737 | 624 | 1.18× | 863 | 1431 | 176 |
+| `/\b(if\|else\|for\|while\|return)\b/` | 234 | 76 | 3.07× | 926 | **2** | 118 |
+| `/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/` | 11944 | 9265 | 1.29× | 12183 | **3** | 189 |
 
 (prefilter ladder と同じ条件で、`bench/aot_bench.sh` から再採取。
 `-c` カウントを `--bench-file` で再現するので、
@@ -137,10 +137,10 @@ AOT 2-3× の勝因は AOT specialization の thesis 通り:
   全体をスイープする (失敗パターンは exit せず尽く、成功パターンも
   全マッチをカウント)。
 
-`/[A-Z]{50,}/` は全入力をスイープするのに 1.21× にとどまる — chain が
+`/[A-Z]{50,}/` は全入力をスイープするのに 1.18× にとどまる — chain が
 rep_cont ↔ class の 2 ノードしかないので、dispatch がそもそも安い。
-逆に chain が長い `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/` (per-position
-で 9 ノード) では 3.77×。AOT の効きは「per-position の dispatch 数」
+逆に chain が長い `/\b(if|else|...)\b/` や `/[a-z][0-9][a-z][0-9][a-z]/`
+ではそれぞれ 3.07× / 2.21×。AOT の効きは「per-position の dispatch 数」
 にきれいに比例する。
 
 ### vs Onigmo
@@ -149,20 +149,20 @@ astrogre + AOT は **8/8 全パターンで Onigmo を上回る**:
 
 | パターン | astrogre+AOT | +onigmo | 速度比 |
 |---|---:|---:|---:|
-| `/(QQQ\|RRR)+\d+/` | 13 ms | 568 ms | **44× 速い** |
-| `/(QQQX\|RRRX\|SSSX)+/` | 39 ms | 977 ms | **25× 速い** |
-| `/\b(if\|else\|for\|while\|return)\b/` | 79 ms | 985 ms | **12× 速い** |
-| `/[A-Z]{50,}/` | 658 ms | 920 ms | 1.40× |
-| `/(\d+\.\d+\.\d+\.\d+)/` | 421 ms | 566 ms | 1.34× |
-| `/[a-z][0-9][a-z][0-9][a-z]/` | 476 ms | 596 ms | 1.25× |
-| `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/` | 455 ms | 562 ms | 1.24× |
-| `/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/` | 11475 ms | 14260 ms | 1.24× |
+| `/(QQQ\|RRR)+\d+/` | 12 ms | 481 ms | **40× 速い** |
+| `/(QQQX\|RRRX\|SSSX)+/` | 20 ms | 499 ms | **25× 速い** |
+| `/\b(if\|else\|for\|while\|return)\b/` | 76 ms | 926 ms | **12× 速い** |
+| `/[A-Z]{50,}/` | 624 ms | 863 ms | 1.38× |
+| `/(\d+\.\d+\.\d+\.\d+)/` | 390 ms | 538 ms | 1.38× |
+| `/[a-z][0-9][a-z][0-9][a-z]/` | 406 ms | 516 ms | 1.27× |
+| `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/` | 433 ms | 515 ms | 1.19× |
+| `/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/` | 9265 ms | 12183 ms | 1.31× |
 
 特に大きく開くのは alt + literal の prefilter が刺さるケース
-(`(QQQ\|RRR)+\d+` 44×、`(QQQX\|RRRX\|SSSX)+` 25×、`\b(if|else|...)\b`
+(`(QQQ\|RRR)+\d+` 40×、`(QQQX\|RRRX\|SSSX)+` 25×、`\b(if|else|...)\b`
 12×) — astrogre は byteset / Truffle / boundary-aware alt scan を
 ノード化して bake で即値化、Onigmo は bytecode VM が各分岐で dispatch
-するので 1 桁差以上が開く。残りも全部 1.24-1.40× で安定して上回る
+するので 1 桁差以上が開く。残りも全部 1.19-1.38× で安定して上回る
 (class チェーンの inline 化と capture 状態リセットの SIMD 一括クリア
 が効いている)。
 
@@ -175,17 +175,17 @@ leading `[a-z]` が memchr-class スキャンに崩されている)。
 しかし prefilter が適用できないパターンでは、ASTro+AOT は **4/8 で
 grep を上回る**:
 
-- `/(QQQ\|RRR)+\d+/`: astrogre+AOT 13 ms 対 grep 86 ms (**6.6×**) —
+- `/(QQQ\|RRR)+\d+/`: astrogre+AOT 12 ms 対 grep 74 ms (**6.2×**) —
   alt + 共通先頭バイト集合が byteset に落ちる。
-- `/[A-Z]{50,}/`: astrogre+AOT 658 ms 対 grep 1526 ms (**2.3×**) —
+- `/[A-Z]{50,}/`: astrogre+AOT 624 ms 対 grep 1431 ms (**2.3×**) —
   grep の DFA は class-rep-50 を簡約できず各位置で線形に試す;
   ASTro は `node_grep_search_class_scan` (Truffle) で先頭スキャン
   + 短絡。
-- `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/`: astrogre+AOT 455 ms 対
-  grep 572 ms (**1.26×**) — 同じく prefilter 不発、ASTro の inline
+- `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/`: astrogre+AOT 433 ms 対
+  grep 486 ms (**1.12×**) — 同じく prefilter 不発、ASTro の inline
   チェーンが単に速い。
-- `/(QQQX\|RRRX\|SSSX)+/`: astrogre+AOT 39 ms 対 grep 54 ms
-  (**1.38×**) — byteset のおかげ。
+- `/(QQQX\|RRRX\|SSSX)+/`: astrogre+AOT 20 ms 対 grep 25 ms
+  (**1.25×**) — byteset のおかげ。
 
 ripgrep は全体的に常に速い (lazy DFA + literal-prefix prefilter)
 が、エンジニアリング投資量が桁違い。
