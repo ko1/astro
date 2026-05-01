@@ -326,8 +326,27 @@ ID    korb_sym2id(VALUE sym);
 VALUE korb_str_to_sym(VALUE str);
 
 /* float / bignum */
-VALUE korb_float_new(double d);
-double korb_num2dbl(VALUE v);
+/* korb_float_new: try FLONUM-encode (fast inline), heap-allocate via
+ * out-of-line slow path otherwise.  Inlined so that mandelbrot-style
+ * Float-heavy hot loops don't pay a cross-.so call per arithmetic
+ * intermediate. */
+VALUE korb_float_new_heap(double d);
+static inline __attribute__((always_inline)) VALUE
+korb_float_new(double d) {
+    VALUE flo = korb_double_to_flonum(d);
+    if (LIKELY(flo)) return flo;
+    return korb_float_new_heap(d);
+}
+
+/* korb_num2dbl: same.  Most calls hit FLONUM/FIXNUM paths and bail out
+ * before touching the slow heap-Float / Bignum branches. */
+double korb_num2dbl_slow(VALUE v);
+static inline __attribute__((always_inline)) double
+korb_num2dbl(VALUE v) {
+    if (LIKELY(FLONUM_P(v))) return korb_flonum_to_double(v);
+    if (LIKELY(FIXNUM_P(v))) return (double)FIX2LONG(v);
+    return korb_num2dbl_slow(v);
+}
 VALUE korb_bignum_new_str(const char *str, int base);
 VALUE korb_bignum_new_long(long v);
 VALUE korb_int_plus(VALUE a, VALUE b);

@@ -653,13 +653,10 @@ VALUE korb_range_new(VALUE b, VALUE e, bool excl) {
 }
 
 /* ---- float ---- */
-/* CRuby-compatible immediate Float (FLONUM): tag bits 0x02 in the
- * low 2 bits, double bit-pattern rotated left by 3.  Most doubles
- * encountered in practice (no NaN/Inf/0/denorm, exponent within
- * normal range) fit immediately and avoid heap allocation. */
-VALUE korb_float_new(double d) {
-    VALUE flo = korb_double_to_flonum(d);
-    if (flo) return flo;
+/* The FLONUM-encode fast path lives inline in object.h.  This is the
+ * heap-allocate fallback used when the double doesn't fit FLONUM
+ * (NaN/Inf/0/denorm/very large/very small). */
+VALUE korb_float_new_heap(double d) {
     struct korb_float *f = korb_xmalloc(sizeof(*f));
     f->basic.flags = T_FLOAT;
     f->basic.klass = korb_vm ? (VALUE)korb_vm->float_class : 0;
@@ -667,9 +664,9 @@ VALUE korb_float_new(double d) {
     return (VALUE)f;
 }
 
-double korb_num2dbl(VALUE v) {
-    if (FLONUM_P(v)) return korb_flonum_to_double(v);
-    if (FIXNUM_P(v)) return (double)FIX2LONG(v);
+/* Slow tail of korb_num2dbl (heap T_FLOAT, T_BIGNUM).  FLONUM and
+ * FIXNUM are handled inline in object.h. */
+double korb_num2dbl_slow(VALUE v) {
     if (KORB_IS_FLOAT(v)) return ((struct korb_float *)v)->value;
     if (BUILTIN_TYPE(v) == T_BIGNUM) return mpz_get_d((mpz_ptr)(((struct korb_bignum *)v)->mpz));
     return 0.0;
