@@ -9,7 +9,7 @@ Pascal 拡張、性能のうち高度なもの。「Pascal として完成」の
 | # | 項目 | 工数 | 備考 |
 |---|------|------|------|
 | 1 | **`goto` / label runtime** | 中 | 構文受付済み (round 6)。実装は body-level dispatch wrapper が要る — EVAL の force-inline と setjmp が衝突するため、proc body 全体を setjmp ループに wrap して、longjmp 後に label idx で resume する設計が必要。 |
-| 2 | **Subrange の範囲チェック** | 小 | 代入時 / for-loop 境界で min/max 検査。`{$R+}` ディレクティブで on/off。 |
+| ~~2~~ | ~~Subrange の範囲チェック~~ | — | **完了** (round 7)。代入時に node_range_check で catchable raise。`{$R+}/{$R-}` ディレクティブはまだ。 |
 | 3 | **N 次元 (≥ 3) 配列** | 中 | per-array に stride table を持たせれば一般化。1D/2D の専用ノードは残してホットパス維持。 |
 | 4 | **Open-array param `array of T`** | 中 | base + length の 2 値で渡す必要がある。slot を 2 つ消費するか、heap struct を介す。 |
 | 5 | **配列の `for-in`、set の `for-in`** | 小 | 配列は既に対応。set 列挙はビット走査ループに desugar。 |
@@ -24,8 +24,8 @@ Pascal 拡張、性能のうち高度なもの。「Pascal として完成」の
 | ~~9~~ | ~~`destructor`~~ | — | **完了** (round 5)。`obj.Done` で呼ぶ。リソース回収は libgc 任せ。 |
 | ~~10~~ | ~~Properties~~ | — | **完了** (round 6)。field-backed と method-backed 両方。 |
 | ~~11~~ | ~~`is` / `as`~~ | — | **完了** (round 6)。vtable 同定 + 親チェーン走査。 |
-| 11b | **Abstract methods** | 小 | virtual で proc_idx=-1 のまま runtime で raise。 |
-| 12 | **Class methods** | 小 | static メソッド (Self なし)。 |
+| ~~11b~~ | ~~Abstract methods~~ | — | **完了** (round 7)。pascal_raise で catchable に。 |
+| ~~12~~ | ~~Class methods~~ | — | **完了** (round 7)。`class procedure / class function`、Self なしで T.foo(args) 呼び出し。 |
 | 12b | **Visibility 強制** | 中 | private/protected を実際にチェックする。現状受付のみ。 |
 
 ## 文字列・コレクション
@@ -33,7 +33,7 @@ Pascal 拡張、性能のうち高度なもの。「Pascal として完成」の
 | # | 項目 | 工数 | 備考 |
 |---|------|------|------|
 | ~~13~~ | ~~AnsiString フル機能~~ | — | **完了** (round 6)。`copy / pos / insert / delete / setlength / IntToStr / StrToInt / FloatToStr / StrToFloat` + 文字↔文字列の自動 promote。 |
-| 14 | **dynamic array `array of T` (値)** | 中 | length() / setlength() で確保。 |
+| ~~14~~ | ~~dynamic array `array of T` (値)~~ | — | **完了** (round 7)。slot に `int64_t *` (ptr[0]=length), `setlength` / `length` / `a[i]`。 |
 | 15 | **`TStringList` 風の標準コレクション** | 中 | クラス基盤がそろったので追加可能。 |
 
 ## 性能

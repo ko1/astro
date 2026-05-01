@@ -34,20 +34,22 @@ which the lexer handles by lowercasing every ID token at lex time.
 
 ## Status
 
-- **42 / 42** correctness tests pass.
-- ISO 7185 + Free Pascal 風 OO 拡張: ネスト手続き / 手続き値 /
-  file I/O / variant record + 例外 + unit/uses + **真の virtual
-  dispatch (vtable)** + `inherited` + destructor + **`is` / `as`**
-  + **properties** (read/write via field or method).
+- **45 / 45** correctness tests pass.
+- ISO 7185 + Free Pascal 風 OO 完全(ish): ネスト手続き / 手続き値 /
+  file I/O / variant record + 例外 (catchable raise) + unit/uses +
+  **真の virtual dispatch (vtable)** + `inherited` + destructor +
+  **`is` / `as`** + **properties** + **abstract methods** +
+  **class methods** + 動的配列 + subrange range-check.
 - 言語機能: ティア1〜2のフル + 例外 (`try/except/finally/raise`) +
-  `unit/uses` + OOP (`class`/単一継承/virtual/override/properties/
-  `is`/`as`/`inherited`/destructor) + 文字列ミューテーション +
-  for-in + libgc-backed heap + AnsiString フル機能 (`copy / pos /
-  insert / delete / setlength / IntToStr / StrToInt / …`).
+  `unit/uses` + OOP (`class`/単一継承/virtual/override/abstract/
+  class methods/properties/`is`/`as`/`inherited`/destructor) +
+  文字列ミューテーション + AnsiString フル機能 (`copy / pos /
+  insert / delete / setlength / IntToStr / StrToInt / …`) +
+  動的配列 (`array of T`) + subrange `var x: 1..100` で代入時の
+  範囲チェック + for-in + libgc-backed heap.
 - 詳細リスト: [`docs/done.md`](./docs/done.md).
-- 残: class methods, abstract methods, visibility enforcement,
-  `goto` runtime, range check, open array, N-D 配列、dynamic array
-   — [`docs/todo.md`](./docs/todo.md).
+- 残: visibility enforcement, `goto` runtime, open array param,
+  N-D 配列、`{$R+/-}` ディレクティブ — [`docs/todo.md`](./docs/todo.md).
 - **AOT specialization** が動く。`make aot-bench BENCH=<name>` で
   parse → SPECIALIZE → 再ビルド → 比較。fib 2.2× / collatz ~25×。
 

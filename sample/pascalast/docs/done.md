@@ -70,7 +70,18 @@ pointers (`^Type`, `nil`, `new`, `dispose`, `p^.field`).
 | **AnsiString full helpers**: `copy`, `pos`, `insert`, `delete`, `setlength`, `IntToStr`, `StrToInt`, `FloatToStr`, `StrToFloat` (auto-promotes char→string) | `test/42_string_funcs.pas` |
 | `label N1, N2, …;` declarations + `goto N` / `N: stmt` syntax accepted (runtime stubbed — see todo.md) | — |
 
-Total tests: **42 / 42** passing.
+### Round 7 — class polish + dynamic arrays + range checks
+
+| Feature                                  | Test                       |
+|---|---|
+| **Dynamic arrays** (`array of T` value type) — slot stores `int64_t *` (length at index 0); `setlength` / `length` / `a[i]` | `test/43_dynarr.pas` |
+| **Subrange range checks** — `var x: 1..100` raises a *catchable* exception on out-of-range assignment | `test/44_subrange.pas` |
+| **Abstract methods** (`virtual; abstract;`) — vtable slot 0 / -1; calling raises a catchable runtime exception | `test/45_abstract_class.pas` |
+| **Class methods** (`class procedure foo` / `class function bar`) — no implicit `Self`; called as `T.foo(args)` | (same) |
+| **Polymorphic return-type** — virtual-call result type is captured from the class header, so `s.name` typed `string` even when proc_idx is still -1 (abstract base) | (same) |
+| **`pascal_raise`** — runtime helper that longjmps to the active try/except; range checks and abstract-method calls now go through it | (same) |
+
+Total tests: **45 / 45** passing.
 
 ### Knowingly skipped (deferred to later rounds)
 

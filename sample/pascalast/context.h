@@ -40,6 +40,7 @@ enum pascal_type {
     PT_POINTER = 7,  // pointer — slot stores a heap address (or 0 for nil)
     PT_PROC    = 8,  // procedure value — slot stores a proc index (cast int64)
     PT_FILE    = 9,  // text file handle — slot stores `struct pascal_file *`
+    PT_DYNARR  = 10, // dynamic array — slot stores `int64_t *` (ptr[0] = length, ptr[1..] = data; or 0 for empty)
 };
 
 // Inline cache embedded in each procedure-call node.  Populated
@@ -175,5 +176,6 @@ int64_t pascal_aref(CTX *c, uint32_t arr_idx, int64_t i);
 void pascal_aset(CTX *c, uint32_t arr_idx, int64_t i, int64_t v);
 __attribute__((noreturn)) void pascal_error(const char *fmt, ...);
 __attribute__((noreturn)) void pascal_error_at(int line, const char *fmt, ...);
+__attribute__((noreturn)) void pascal_raise(int line, const char *fmt, ...);
 
 #endif

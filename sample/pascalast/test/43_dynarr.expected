@@ -1,0 +1,7 @@
+1 4 9 16 25 
+len=5
+1 4 9 16 25 500 600 700 
+sum=1855
+after shrink len=3
+1 4 9 
+b empty length=0

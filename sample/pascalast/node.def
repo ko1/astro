@@ -1369,6 +1369,8 @@ node_vcall(CTX * restrict c, NODE * restrict n, NODE *self_e, uint32_t vt_slot, 
     int *vt = (int *)(uintptr_t)obj[0];
     if (UNLIKELY(!vt)) pascal_error_at(n->head.line, "object has no vtable");
     int pidx = vt[vt_slot];
+    if (UNLIKELY(pidx <= 0))
+        pascal_raise(n->head.line, "abstract method has no implementation");
     VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc ? argc : 1));
     av[0] = self;
     for (uint32_t i = 1; i < argc; i++) {
@@ -1647,6 +1649,77 @@ node_set_in(CTX * restrict c, NODE * restrict n, NODE *elem, NODE *set)
     int64_t s = EVAL_ARG(c, set);
     if (e < 0 || e > 63) return 0;
     return (s >> e) & 1;
+}
+
+// Dynamic arrays.  Slot stores a (int64_t *) where ptr[0] = current
+// length and ptr[1..length] = data.  Empty arrays are represented as
+// 0 (null).  Allocation goes through libgc — programs that expand
+// arrays in a loop don't leak.
+
+NODE_DEF
+node_dynarr_setlen(CTX * restrict c, NODE * restrict n, NODE *addr_e, NODE *new_len_e)
+{
+    (void)n;
+    int64_t *slot = (int64_t *)(uintptr_t)EVAL_ARG(c, addr_e);
+    int64_t newlen = EVAL_ARG(c, new_len_e);
+    int64_t *old = (int64_t *)(uintptr_t)*slot;
+    int64_t oldlen = old ? old[0] : 0;
+    if (newlen < 0) newlen = 0;
+    int64_t *fresh = (int64_t *)GC_malloc((newlen + 1) * sizeof(int64_t));
+    if (!fresh) pascal_error_at(n->head.line, "out of memory in setlength");
+    fresh[0] = newlen;
+    int64_t copy = oldlen < newlen ? oldlen : newlen;
+    for (int64_t i = 0; i < copy; i++) fresh[i + 1] = old[i + 1];
+    // remaining slots already zero-initialised by GC_malloc
+    *slot = (int64_t)(uintptr_t)fresh;
+    return 0;
+}
+
+NODE_DEF
+node_dynarr_get(CTX * restrict c, NODE * restrict n, NODE *base_e, NODE *idx_e)
+{
+    (void)n;
+    int64_t *p = (int64_t *)(uintptr_t)EVAL_ARG(c, base_e);
+    int64_t i = EVAL_ARG(c, idx_e);
+    if (UNLIKELY(!p))
+        pascal_error_at(n->head.line, "dynamic array not initialised");
+    if (UNLIKELY(i < 0 || i >= p[0]))
+        pascal_error_at(n->head.line, "dynamic array index %ld out of bounds (length %ld)", (long)i, (long)p[0]);
+    return p[i + 1];
+}
+
+NODE_DEF
+node_dynarr_set(CTX * restrict c, NODE * restrict n, NODE *base_e, NODE *idx_e, NODE *val_e)
+{
+    (void)n;
+    int64_t *p = (int64_t *)(uintptr_t)EVAL_ARG(c, base_e);
+    int64_t i = EVAL_ARG(c, idx_e);
+    int64_t v = EVAL_ARG(c, val_e);
+    if (UNLIKELY(!p))
+        pascal_error_at(n->head.line, "dynamic array not initialised");
+    if (UNLIKELY(i < 0 || i >= p[0]))
+        pascal_error_at(n->head.line, "dynamic array index %ld out of bounds (length %ld)", (long)i, (long)p[0]);
+    p[i + 1] = v;
+    return 0;
+}
+
+NODE_DEF
+node_dynarr_length(CTX * restrict c, NODE * restrict n, NODE *base_e)
+{
+    (void)n;
+    int64_t *p = (int64_t *)(uintptr_t)EVAL_ARG(c, base_e);
+    return p ? p[0] : 0;
+}
+
+// Pass-through that checks an integer value lies in [lo, hi] and
+// raises otherwise.  Used for subrange-typed assignments.
+NODE_DEF
+node_range_check(CTX * restrict c, NODE * restrict n, NODE *expr, int32_t lo, int32_t hi)
+{
+    int64_t v = EVAL_ARG(c, expr);
+    if (UNLIKELY(v < (int64_t)lo || v > (int64_t)hi))
+        pascal_raise(n->head.line, "value %ld out of range [%d..%d]", (long)v, lo, hi);
+    return v;
 }
 
 // Discard characters from stdin up to and including the next newline.

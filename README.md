@@ -56,10 +56,10 @@ All samples share a uniform layout (`node.def`, `Makefile`, optional language-sp
 - [`sample/ascheme/`](./sample/ascheme/) — R5RS Scheme. Full numeric tower (fixnum / bignum / rational / flonum / complex via GMP), tail calls, `call/cc`, multiple values, ports. Passes 179/179 of chibi's `r5rs-tests.scm`.
 - [`sample/astocaml/`](./sample/astocaml/) — OCaml subset (~80 nodes). Full ADTs, exceptions, labeled / optional args, real functor instantiation, single-inheritance classes, HM-lite type inference, tail-call optimization.
 - [`sample/asom/`](./sample/asom/) — Smalltalk dialect ([SOM](https://som-st.github.io/)). Type-specialized sends, control-flow inlining, Boehm GC + GMP. Passes the full SOM TestSuite (221/221).
-- [`sample/pascalast/`](./sample/pascalast/) — Pascal subset (~170 nodes), ISO 7185 + Free Pascal–style OO. Variant records, sets, `with`, `virtual` / `override` / `inherited`, properties, `is` / `as`, hand-written parser.
+- [`sample/pascalast/`](./sample/pascalast/) — Pascal subset (~190 nodes), ISO 7185 + Free Pascal–style OO. Variant records, sets, `with`, dynamic arrays (`array of T`), subrange range-checking, `virtual` / `override` / `inherited` / `abstract` / `class procedure`, properties, `is` / `as`, catchable `try/except/finally`, hand-written parser. 45/45 tests, AOT 2-25× over interp.
 - [`sample/castro/`](./sample/castro/) — C subset. tree-sitter-c front-end, slot-based 8-byte VALUE, structs / function pointers / `printf`, `gcc -E` preprocessing. AOT beats `gcc -O0` on tight loops.
 - [`sample/wastro/`](./sample/wastro/) — WebAssembly 1.0 (MVP) interpreter (~210 nodes). Reads both `.wat` and `.wasm`, runs the wasm spec-test `.wast` harness.
-- [`sample/astrogre/`](./sample/astrogre/) — Ruby-style regex engine (~22 match nodes — the matcher itself is an AST) plus a grep CLI. Switchable at runtime between the astrogre backend and Onigmo.
+- [`sample/astrogre/`](./sample/astrogre/) — Ruby-style regex engine (~22 match nodes — the matcher itself is an AST) plus a grep CLI. Switchable at runtime between the astrogre backend and Onigmo. The for-each-start-position search loop is itself a node, so AOT specialization fuses the loop + inlined regex chain into one SD function (7.2× over interp on long-buffer literal search).
 
 ## References
 

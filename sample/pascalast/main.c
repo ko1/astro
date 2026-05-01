@@ -70,6 +70,30 @@ pascal_error_at(int line, const char *fmt, ...)
     exit(1);
 }
 
+// Catchable variant — when an exception handler is active, raise a
+// Pascal-level exception that try/except can intercept; otherwise
+// fall back to pascal_error_at.  Used by range checks and similar
+// runtime contracts.
+CTX *pascal_runtime_ctx;
+
+void
+pascal_raise(int line, const char *fmt, ...)
+{
+    pascal_runtime_line = line;
+    static char buf[256];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    char *msg = (char *)GC_malloc_atomic(strlen(buf) + 1);
+    strcpy(msg, buf);
+    if (pascal_runtime_ctx && pascal_runtime_ctx->exc_top) {
+        pascal_runtime_ctx->exc_msg = msg;
+        longjmp(pascal_runtime_ctx->exc_top->buf, 1);
+    }
+    pascal_error_at(line, "%s", msg);
+}
+
 int64_t
 pascal_aref(CTX *c, uint32_t arr_idx, int64_t i)
 {
@@ -211,7 +235,7 @@ enum {
     TK_UNIT, TK_USES, TK_INTERFACE, TK_IMPLEMENTATION,
     TK_CLASS, TK_CONSTRUCTOR, TK_DESTRUCTOR, TK_VIRTUAL, TK_OVERRIDE, TK_INHERITED, TK_SELF,
     TK_PROPERTY, TK_PRIVATE, TK_PUBLIC, TK_PROTECTED, TK_PUBLISHED,
-    TK_IS, TK_AS,
+    TK_IS, TK_AS, TK_ABSTRACT,
 };
 
 static const struct { const char *s; int tk; } KEYWORDS[] = {
@@ -247,7 +271,7 @@ static const struct { const char *s; int tk; } KEYWORDS[] = {
     {"property", TK_PROPERTY},
     {"private", TK_PRIVATE}, {"public", TK_PUBLIC},
     {"protected", TK_PROTECTED}, {"published", TK_PUBLISHED},
-    {"is", TK_IS}, {"as", TK_AS},
+    {"is", TK_IS}, {"as", TK_AS}, {"abstract", TK_ABSTRACT},
     {NULL, 0}
 };
 
@@ -502,6 +526,7 @@ struct sym {
     int type;         // PT_INT / PT_BOOL / PT_REAL / PT_RECORD — element type for arrays
     bool by_ref;      // SYM_LVAR: true if this is a `var` parameter
     bool is_2d;       // SYM_GARR: true for 2D arrays
+    bool has_range;   // SYM_GVAR/SYM_LVAR: subrange bounds (lo/hi reused)
     int32_t lo, hi;
     int32_t lo2, hi2; // 2D
     int64_t cval;     // SYM_CONST (raw bits — interpret as double if SYM_RCONST)
@@ -552,6 +577,10 @@ struct method_entry {
     int  vtable_slot;  // index into class's vtable (for virtual)
     bool is_virtual;
     bool is_constructor;
+    bool is_abstract;  // virtual; abstract; — calling raises at runtime
+    bool is_class;     // class procedure / class function — no Self
+    bool is_function;  // captured from class header so virtual-call return-type
+    char return_type;  // is known even when proc_idx is still -1
 };
 struct property_entry {
     char name[48];
@@ -583,6 +612,21 @@ int n_class_types;     // referenced via extern from node.def helpers
 // after parsing.  Read at run time by node_new_object to stamp slot
 // 0 of every freshly allocated instance.
 int **pascal_vtables;
+
+extern CTX *parser_ctx;
+
+// Helper: get the return type of a method, falling back to the class
+// header's declared return type when the body's proc isn't yet
+// resolved (abstract methods stay at proc_idx = -1 forever).
+static inline int
+method_return_type(struct method_entry *me)
+{
+    if (me->proc_idx >= 0) {
+        return parser_ctx->procs[me->proc_idx].is_function
+             ? (int)parser_ctx->procs[me->proc_idx].return_type : PT_INT;
+    }
+    return me->is_function ? (int)me->return_type : PT_INT;
+}
 
 // Map an object pointer back to its class_idx by looking up the
 // vtable pointer stamped into slot 0.  Linear scan over
@@ -645,7 +689,7 @@ int scope_start_at_depth[PASCAL_MAX_DEPTH + 1];
 
 // Set by parse_program at the start of parsing so deeper helpers can
 // reach the proc table without threading CTX* through every signature.
-static CTX *parser_ctx;
+CTX *parser_ctx;
 #define PASCAL_PROCS (parser_ctx->procs)
 
 // `with` stack: each entry maps a record-typed symbol's fields into
@@ -854,6 +898,16 @@ static void  parse_unit_file(const char *unit_name, CTX *c);
 // parse_subprogram further down.
 extern int  current_method_class_idx;
 extern char current_method_name_buf[64];
+
+struct method_entry;
+static inline int method_return_type(struct method_entry *me);
+extern CTX *parser_ctx;
+
+// Subrange-bound carry-out from parse_type (defined further down so
+// callers like parse_var_decls_global can pick up bounds for `var x:
+// 1..10` and stamp them on the symbol for runtime range-checking).
+extern int32_t g_last_subrange_lo, g_last_subrange_hi;
+extern bool    g_last_subrange_set;
 static TE    te_get(struct sym *s, NODE *index, NODE *index2);
 static NODE *mk_set_typed(struct sym *s, NODE *index, NODE *index2, NODE *val);
 static NODE *mk_addr_of(struct sym *s, NODE *index, NODE *index2);
@@ -1148,8 +1202,9 @@ te_builtin_call_in_expr(const char *name)
         expect(TK_LPAREN, "'('");
         TE e = te_expr();
         expect(TK_RPAREN, "')'");
-        if (e.t != PT_STR) pascal_error("length() requires a string");
-        return (TE){ ALLOC_node_str_length(e.n), PT_INT, -1 };
+        if (e.t == PT_STR)    return (TE){ ALLOC_node_str_length(e.n), PT_INT, -1 };
+        if (e.t == PT_DYNARR) return (TE){ ALLOC_node_dynarr_length(e.n), PT_INT, -1 };
+        pascal_error("length() requires a string or dynamic array");
     }
     if (strcmp(name, "copy") == 0) {
         expect(TK_LPAREN, "'('");
@@ -1461,7 +1516,7 @@ te_factor(void)
             struct class_type *wc = &class_types[walk];
             for (int i = 0; i < wc->nmethods; i++)
                 if (strcmp(wc->methods[i].name, mname) == 0
-                    && wc->methods[i].proc_idx >= 0) { me = &wc->methods[i]; break; }
+                    && (wc->methods[i].is_virtual || wc->methods[i].proc_idx >= 0)) { me = &wc->methods[i]; break; }
             if (me) break;
             walk = wc->parent_idx;
         }
@@ -1477,8 +1532,7 @@ te_factor(void)
             expect(TK_RPAREN, "')'");
         }
         NODE *call = mk_pcall((uint32_t)me->proc_idx, args, n);
-        int t = parser_ctx->procs[me->proc_idx].is_function
-              ? (int)parser_ctx->procs[me->proc_idx].return_type : PT_INT;
+        int t = method_return_type(me);
         return (TE){ call, t, -1 };
     }
     if (accept(TK_AT)) {
@@ -1532,7 +1586,7 @@ te_factor(void)
                 struct class_type *wc = &class_types[walk];
                 for (int i = 0; i < wc->nmethods; i++)
                     if (strcmp(wc->methods[i].name, fname) == 0
-                        && wc->methods[i].proc_idx >= 0) { me = &wc->methods[i]; break; }
+                        && (wc->methods[i].is_virtual || wc->methods[i].proc_idx >= 0)) { me = &wc->methods[i]; break; }
                 if (me) break;
                 walk = wc->parent_idx;
             }
@@ -1555,8 +1609,7 @@ te_factor(void)
                 } else {
                     call = mk_pcall((uint32_t)me->proc_idx, args, n);
                 }
-                rt = parser_ctx->procs[me->proc_idx].is_function
-                   ? (int)parser_ctx->procs[me->proc_idx].return_type : PT_INT;
+                rt = method_return_type(me);
                 e = (TE){ call, rt, -1 };
                 continue;
             }
@@ -1701,7 +1754,7 @@ te_factor(void)
                 struct class_type *wc = &class_types[walk];
                 for (int i = 0; i < wc->nmethods; i++)
                     if (strcmp(wc->methods[i].name, mname) == 0
-                        && wc->methods[i].proc_idx >= 0) { me = &wc->methods[i]; break; }
+                        && (wc->methods[i].is_virtual || wc->methods[i].proc_idx >= 0)) { me = &wc->methods[i]; break; }
                 if (me) break;
                 walk = wc->parent_idx;
             }
@@ -1715,11 +1768,18 @@ te_factor(void)
                 }
                 expect(TK_RPAREN, "')'");
             }
-            if (!me->is_constructor) pascal_error("class-side call must be a constructor");
+            if (me->is_class) {
+                NODE *real_args[16]; uint32_t real_n = 0;
+                for (uint32_t i = 1; i < n; i++) real_args[real_n++] = args[i];
+                NODE *call = mk_pcall((uint32_t)me->proc_idx, real_args, real_n);
+                int rt = method_return_type(me);
+                return (TE){ call, rt, -1 };
+            }
+            if (!me->is_constructor) pascal_error("class-side call must be a constructor or class method");
             int slots = record_types[class_types[s->idx].rec_idx].total_slots;
             args[0] = ALLOC_node_new_object((uint32_t)slots, (uint32_t)s->idx);
             NODE *call = mk_pcall((uint32_t)me->proc_idx, args, n);
-            return (TE){ call, PT_POINTER, -1 };
+            return (TE){ call, PT_POINTER, s->idx };
         }
 
         if (!s) pascal_error("undefined identifier '%s' at line %d", id, line_no);
@@ -1797,8 +1857,13 @@ te_factor(void)
                 while (walk >= 0) {
                     struct class_type *wc = &class_types[walk];
                     for (int i = 0; i < wc->nmethods; i++) {
+                        // Match by name; accept methods that are
+                        // virtual (proc_idx may be -1 if abstract —
+                        // the runtime vtable will dispatch) or that
+                        // have a body proc_idx.
                         if (strcmp(wc->methods[i].name, fname) == 0
-                            && wc->methods[i].proc_idx >= 0) {
+                            && (wc->methods[i].is_virtual
+                                || wc->methods[i].proc_idx >= 0)) {
                             me = &wc->methods[i];
                             break;
                         }
@@ -1828,12 +1893,10 @@ te_factor(void)
                     if (me->is_virtual && me->vtable_slot >= 0) {
                         uint32_t base = push_call_args(&args[1], n - 1);
                         call = ALLOC_node_vcall(self_load, (uint32_t)me->vtable_slot, base, n);
-                        rt_type = parser_ctx->procs[me->proc_idx].is_function
-                                ? (int)parser_ctx->procs[me->proc_idx].return_type : PT_INT;
+                        rt_type = method_return_type(me);
                     } else {
                         call = mk_pcall((uint32_t)me->proc_idx, args, n);
-                        rt_type = parser_ctx->procs[me->proc_idx].is_function
-                                ? (int)parser_ctx->procs[me->proc_idx].return_type : PT_INT;
+                        rt_type = method_return_type(me);
                     }
                     return (TE){ call, rt_type, -1 };
                     (void)ct;
@@ -1850,6 +1913,15 @@ te_factor(void)
                 }
             }
             pascal_error("no field/method '%s' in '%s'", fname, rt->name);
+        }
+        // Dynamic array element a[i].
+        if (s->type == PT_DYNARR && tk == TK_LBRACK) {
+            next_token();
+            NODE *idx = parse_expr();
+            expect(TK_RBRACK, "']'");
+            NODE *base = (s->kind == SYM_GVAR) ? ALLOC_node_gref(s->idx)
+                                                : ALLOC_node_lref(s->idx);
+            return (TE){ ALLOC_node_dynarr_get(base, idx), s->rec_idx, -1 };
         }
         // String element s[i] — read-only.  String variables are
         // ordinary scalar slots whose value is a char *.
@@ -2328,13 +2400,20 @@ parse_id_stmt(void)
     }
     if (strcmp(id, "setlength") == 0) {
         expect(TK_LPAREN, "'('");
-        if (tk != TK_ID) pascal_error("setlength: 1st arg must be a string variable");
+        if (tk != TK_ID) pascal_error("setlength: 1st arg must be a variable");
         char sname[64]; strncpy(sname, tk_id, 63); sname[63] = 0;
         next_token();
         struct sym *ss = sym_find(sname);
-        if (!ss || ss->type != PT_STR) pascal_error("setlength: '%s' is not a string", sname);
+        if (!ss || (ss->type != PT_STR && ss->type != PT_DYNARR))
+            pascal_error("setlength: '%s' is not a string or dynamic array", sname);
         expect(TK_COMMA, "','");
         NODE *ln = parse_expr(); expect(TK_RPAREN, "')'");
+        NODE *addr = (ss->kind == SYM_GVAR) ? ALLOC_node_addr_gvar(ss->idx)
+                                             : ALLOC_node_addr_lvar(ss->idx);
+        if (ss->type == PT_DYNARR) {
+            return ALLOC_node_dynarr_setlen(addr, ln);
+        }
+        // string variant takes a value, not an address — keep old code.
         NODE *load = (ss->kind == SYM_GVAR) ? ALLOC_node_gref(ss->idx)
                                             : ALLOC_node_lref(ss->idx);
         NODE *fresh = ALLOC_node_str_setlength(load, ln);
@@ -2588,7 +2667,7 @@ parse_id_stmt(void)
                 struct class_type *wc = &class_types[walk];
                 for (int i = 0; i < wc->nmethods; i++)
                     if (strcmp(wc->methods[i].name, fname) == 0
-                        && wc->methods[i].proc_idx >= 0) { me = &wc->methods[i]; break; }
+                        && (wc->methods[i].is_virtual || wc->methods[i].proc_idx >= 0)) { me = &wc->methods[i]; break; }
                 if (me) break;
                 walk = wc->parent_idx;
             }
@@ -2625,6 +2704,19 @@ parse_id_stmt(void)
         NODE *base = (s->kind == SYM_GVAR) ? ALLOC_node_gref(s->idx)
                                            : ALLOC_node_lref(s->idx);
         return ALLOC_node_ptr_field_set(base, (uint32_t)fld->offset, rhs);
+    }
+    // a[i] := v — dynamic array element write.
+    if (s->type == PT_DYNARR && (s->kind == SYM_GVAR || s->kind == SYM_LVAR)
+        && tk == TK_LBRACK) {
+        next_token();
+        NODE *idx = parse_expr();
+        expect(TK_RBRACK, "']'");
+        expect(TK_ASSIGN, "':='");
+        NODE *base = (s->kind == SYM_GVAR) ? ALLOC_node_gref(s->idx)
+                                            : ALLOC_node_lref(s->idx);
+        TE val = te_expr();
+        NODE *rhs = te_coerce(val, s->rec_idx, "dynamic array element assignment");
+        return ALLOC_node_dynarr_set(base, idx, rhs);
     }
     // s[i] := ch — string element write (copy-on-write).
     if (s->type == PT_STR && (s->kind == SYM_GVAR || s->kind == SYM_LVAR)
@@ -2687,6 +2779,8 @@ parse_id_stmt(void)
         return mk_field_set(s, field, rhs);
     }
     NODE *rhs = te_coerce(val, s->type, "assignment");
+    if (s->has_range)
+        rhs = ALLOC_node_range_check(rhs, s->lo, s->hi);
     return mk_set_typed(s, idx1, idx2, rhs);
 }
 
@@ -2759,7 +2853,7 @@ parse_stmt(void)
             struct class_type *wc = &class_types[walk];
             for (int i = 0; i < wc->nmethods; i++)
                 if (strcmp(wc->methods[i].name, mname) == 0
-                    && wc->methods[i].proc_idx >= 0) { me = &wc->methods[i]; break; }
+                    && (wc->methods[i].is_virtual || wc->methods[i].proc_idx >= 0)) { me = &wc->methods[i]; break; }
             if (me) break;
             walk = wc->parent_idx;
         }
@@ -2856,7 +2950,8 @@ parse_type(int32_t *lo_out, int32_t *hi_out,
            int32_t *lo2_out, int32_t *hi2_out, bool *has2)
 {
     if (has2) *has2 = false;
-    g_last_class_idx = -1;     // reset; only set by class branch / class-name lookup
+    g_last_class_idx = -1;
+    g_last_subrange_set = false;
     // `packed` is a layout hint; we ignore it (no packed-storage
     // support yet, but consuming the keyword keeps source compatible).
     accept(TK_PACKED);
@@ -2988,6 +3083,11 @@ parse_type(int32_t *lo_out, int32_t *hi_out,
                 pe->write_method_idx   = write_m;
                 continue;
             }
+            // `class` modifier before procedure/function = class
+            // method (no implicit Self).  The class-method body
+            // declared outside the class also uses this form.
+            bool is_class_method = false;
+            if (accept(TK_CLASS)) is_class_method = true;
             if (tk == TK_PROCEDURE || tk == TK_FUNCTION
                 || tk == TK_CONSTRUCTOR || tk == TK_DESTRUCTOR) {
                 bool is_func = (tk == TK_FUNCTION);
@@ -3009,17 +3109,20 @@ parse_type(int32_t *lo_out, int32_t *hi_out,
                     }
                     expect(TK_RPAREN, "')'");
                 }
+                int header_return_type = PT_INT;
                 if (is_func) {
                     expect(TK_COLON, "':'");
                     int32_t a, b, c2, d2; bool h2 = false;
-                    (void)parse_type(&a, &b, &c2, &d2, &h2);
+                    header_return_type = parse_type(&a, &b, &c2, &d2, &h2);
                 }
                 expect(TK_SEMI, "';'");
                 bool got_virtual  = false;
                 bool got_override = false;
-                while (tk == TK_VIRTUAL || tk == TK_OVERRIDE) {
+                bool got_abstract = false;
+                while (tk == TK_VIRTUAL || tk == TK_OVERRIDE || tk == TK_ABSTRACT) {
                     if (accept(TK_VIRTUAL))  got_virtual  = true;
                     if (accept(TK_OVERRIDE)) got_override = true;
+                    if (accept(TK_ABSTRACT)) got_abstract = true;
                     accept(TK_SEMI);
                 }
                 // Find an inherited entry by name first (override
@@ -3042,6 +3145,10 @@ parse_type(int32_t *lo_out, int32_t *hi_out,
                 }
                 me->proc_idx = -1;          // patched when the body is parsed
                 me->is_constructor = is_ctor;
+                me->is_class       = is_class_method;
+                me->is_abstract    = got_abstract;
+                me->is_function    = is_func;
+                me->return_type    = (char)header_return_type;
                 if (got_virtual && !inherited_entry) {
                     me->is_virtual  = true;
                     me->vtable_slot = ct->vtable_size++;
@@ -3050,7 +3157,6 @@ parse_type(int32_t *lo_out, int32_t *hi_out,
                         pascal_error("override without matching parent virtual");
                     me->is_virtual = true;
                 } else if (got_virtual && inherited_entry) {
-                    // Re-stating `virtual` on the same name — keep the inherited slot.
                     me->is_virtual = true;
                 }
                 continue;
@@ -3161,8 +3267,13 @@ parse_type(int32_t *lo_out, int32_t *hi_out,
                 if (accept(TK_MINUS)) s2 = -1;
                 else if (accept(TK_PLUS)) s2 = 1;
                 if (tk != TK_INT) pascal_error("expected upper bound of subrange");
-                (void)lo_v; (void)s2;
+                int64_t hi_v = s2 * tk_int;
                 next_token();
+                extern int32_t g_last_subrange_lo, g_last_subrange_hi;
+                extern bool g_last_subrange_set;
+                g_last_subrange_lo  = (int32_t)lo_v;
+                g_last_subrange_hi  = (int32_t)hi_v;
+                g_last_subrange_set = true;
                 return PT_INT;
             }
             // Not a subrange — rewind to the integer token.
@@ -3345,6 +3456,18 @@ parse_type(int32_t *lo_out, int32_t *hi_out,
         return PT_RECORD;
     }
     if (accept(TK_ARRAY)) {
+        // `array of T` (no [lo..hi]) — dynamic array.
+        if (accept(TK_OF)) {
+            int elem = PT_INT;
+            if      (accept(TK_INTEGER)) elem = PT_INT;
+            else if (accept(TK_BOOLEAN)) elem = PT_BOOL;
+            else if (accept(TK_REAL))    elem = PT_REAL;
+            else if (accept(TK_STRING))  elem = PT_STR;
+            else pascal_error("dynamic array element must be integer/boolean/real/string");
+            extern int g_last_array_elem;
+            g_last_array_elem = elem;
+            return PT_DYNARR;
+        }
         expect(TK_LBRACK, "'['");
         int sign = 1;
         if (accept(TK_MINUS)) sign = -1;
@@ -3424,6 +3547,8 @@ parse_type(int32_t *lo_out, int32_t *hi_out,
 // for arrays, and we store the element type as PT_INT (we don't
 // distinguish int vs bool vs real on the array yet — extend later).
 int g_last_array_elem;     // set by parse_type when it scans an array element kw
+int32_t g_last_subrange_lo, g_last_subrange_hi;
+bool    g_last_subrange_set;
 
 static int
 parse_type_with_elem(int32_t *lo, int32_t *hi, int32_t *lo2, int32_t *hi2,
@@ -3488,10 +3613,20 @@ parse_var_decls_global(void)
                 s->type      = PT_POINTER;
                 s->rec_idx   = rec;
                 s->class_idx = g_last_class_idx;
+            } else if (t == PT_DYNARR) {
+                s->kind = SYM_GVAR;
+                s->idx  = n_globals_alloc++;
+                s->type = PT_DYNARR;
+                s->rec_idx = g_last_array_elem;   // element type
             } else {
                 s->kind = SYM_GVAR;
                 s->idx  = n_globals_alloc++;
                 s->type = t;
+                if (g_last_subrange_set) {
+                    s->has_range = true;
+                    s->lo = g_last_subrange_lo;
+                    s->hi = g_last_subrange_hi;
+                }
             }
         }
     }
@@ -3541,9 +3676,18 @@ parse_var_decls_local(void)
                 s->type      = PT_POINTER;
                 s->rec_idx   = rec;
                 s->class_idx = g_last_class_idx;
+            } else if (t == PT_DYNARR) {
+                struct sym *s = sym_add_local(names[i]);
+                s->type = PT_DYNARR;
+                s->rec_idx = g_last_array_elem;
             } else {
                 struct sym *s = sym_add_local(names[i]);
                 s->type = t;
+                if (g_last_subrange_set) {
+                    s->has_range = true;
+                    s->lo = g_last_subrange_lo;
+                    s->hi = g_last_subrange_hi;
+                }
             }
         }
     }
@@ -3676,7 +3820,14 @@ static void
 parse_subprogram(bool is_function, CTX *c)
 {
     bool is_constructor = false;
-    if (accept(TK_CONSTRUCTOR)) {
+    bool is_class_method = false;
+    // `class procedure` / `class function` — outside-the-class body of
+    // a class method.  No implicit Self.
+    if (accept(TK_CLASS)) {
+        is_class_method = true;
+        if (tk == TK_FUNCTION) is_function = true;
+        next_token();   // consume the following procedure/function
+    } else if (accept(TK_CONSTRUCTOR)) {
         is_constructor = true;
         is_function    = true;     // constructor returns the new object pointer
     } else if (accept(TK_DESTRUCTOR)) {
@@ -3790,10 +3941,10 @@ parse_subprogram(bool is_function, CTX *c)
         current_method_name_buf[0] = 0;
     }
 
-    // Inject the implicit `Self` parameter for methods.  Slot 0 of
-    // the frame holds a pointer to the receiving object.
+    // Inject the implicit `Self` parameter for instance methods.
+    // Class methods (declared `class procedure T.foo`) skip this.
     int nparams = 0;
-    if (method_class >= 0) {
+    if (method_class >= 0 && !is_class_method) {
         struct sym *self_s = sym_add_local("self");
         self_s->type      = PT_POINTER;
         self_s->rec_idx   = class_types[method_class].rec_idx;
@@ -3920,10 +4071,8 @@ parse_subprogram(bool is_function, CTX *c)
     NODE *body = parse_compound();
     expect(TK_SEMI, "';'");
 
-    // Constructors return the freshly-allocated Self pointer.  Prepend
-    // `return_slot := Self` so callers get the object even when the
-    // user-written body doesn't touch it.
-    if (is_constructor) {
+    // Constructors return the freshly-allocated Self pointer.
+    if (is_constructor && !is_class_method) {
         NODE *seed = ALLOC_node_lset((uint32_t)p->return_slot,
                                      ALLOC_node_lref(0));
         body = mk_seq(seed, body);
@@ -4024,6 +4173,7 @@ parse_decls_block(CTX *c)
         else if (tk == TK_FUNCTION)    parse_subprogram(true,  c);
         else if (tk == TK_CONSTRUCTOR) parse_subprogram(true,  c);
         else if (tk == TK_DESTRUCTOR)  parse_subprogram(false, c);
+        else if (tk == TK_CLASS)       parse_subprogram(false, c);
         else break;
     }
 }
@@ -4227,6 +4377,7 @@ main(int argc, char *argv[])
 
     INIT();
     CTX *c = calloc(1, sizeof(CTX));
+    pascal_runtime_ctx = c;
     c->stack = malloc(sizeof(VALUE) * PASCAL_STACK_SIZE);
     c->fp = 0;
     c->sp = 0;
