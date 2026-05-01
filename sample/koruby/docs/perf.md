@@ -21,11 +21,16 @@
 | ruby (no JIT) | 41.0 fps | 1.00× |
 | abruby (plain interp, CRuby C-ext) | 42 fps | 1.02× |
 | koruby (interp, plain) | 42 fps | 1.02× |
-| koruby (PGO + LTO) | 51 fps | 1.24× |
+| koruby (interp, LTO + PGO — `make koruby-pgo`) | 51 fps | 1.24× |
 | abruby (--aot-compile-first, AOT only) | 71 fps | 1.73× |
+| **koruby (AOT — `make koruby-aot`)** | **71 fps** | **1.73×** ← matches abruby +cf |
 | abruby (--aot + --pg-compile, AOT + PGC) | 75 fps | 1.83× |
-| **koruby (AOT — this branch)** | **76 fps** | **1.85×** ← exceeds abruby +pgc |
+| **koruby (AOT + PGO — `make koruby-pgo-aot`)** | **80 fps** | **1.95×** ← exceeds abruby +pgc |
 | **ruby --yjit / --jit** | **175 fps** | **4.27×** |
+
+(注: 同セッション内で taskset -c 0、10 runs after warmup、median を取って比較。
+過去に「76 fps」とした計測はシステム負荷下のばらつきを過大評価したもので、
+クリーン計測では AOT 単独 71 fps、PGO+AOT 80 fps が信頼できる値。)
 
 #### abruby +cf にキャッチアップ済み (72 fps)
 

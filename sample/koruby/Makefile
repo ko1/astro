@@ -52,6 +52,17 @@ koruby-aot: koruby
 	@echo "==> AOT build done.  code_store/all.so:"
 	@ls -la code_store/all.so
 
+# PGO + AOT: both layers profile-driven.  Rebuilds koruby via koruby-pgo
+# (instrument → run → re-link with profile data), then generates the AOT
+# code_store/ on top of the PGO'd koruby.  Optcarrot: ~80 fps median vs
+# ~71 fps for AOT alone.
+koruby-pgo-aot: koruby-pgo
+	rm -rf code_store
+	@echo "==> Running optcarrot under --aot-compile (on PGO'd koruby)"
+	./koruby --aot-compile $(AOT_BENCH) $(AOT_BENCH_ARGS) 2>&1 | tail -3
+	@echo "==> PGO+AOT build done.  code_store/all.so:"
+	@ls -la code_store/all.so
+
 # generated files come from node.def via koruby_gen.rb
 $(NODE_GENFILES): node.def koruby_gen.rb ../../lib/astrogen.rb
 	ruby -I ../../lib -r ./koruby_gen -e 'ASTroGen.start([], node_def_class: KoRubyNodeDef)'
@@ -90,4 +101,4 @@ test: koruby
 	    ./koruby "$$f" 2>&1 | tail -1; \
 	done
 
-.PHONY: all clean regen run bench-fib compiled_koruby test
+.PHONY: all clean regen run bench-fib compiled_koruby test koruby-pgo koruby-aot koruby-pgo-aot
