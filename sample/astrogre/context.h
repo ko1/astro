@@ -18,9 +18,11 @@
 #define ASTROGRE_MAX_GROUPS 32
 
 /* Match-result type returned by EVAL.  1 = continuation succeeded,
- * 0 = failed.  We use plain int rather than bool so that the framework's
- * VALUE-returning EVAL signature can carry it through. */
-typedef int VALUE;
+ * 0 = failed.  Width matters: the framework's SPECIALIZE emits
+ * `(VALUE)<n>ULL` for uint64_t fields (class bitmaps), so VALUE must
+ * be at least 64 bits wide or those casts truncate.  int64_t is the
+ * convention across the other samples for the same reason. */
+typedef int64_t VALUE;
 
 typedef enum {
     AGRE_ENC_ASCII = 0,

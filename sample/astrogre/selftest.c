@@ -160,6 +160,60 @@ bench_one(const char *name, const char *pat_lit, const char *input, int iters)
     astrogre_pattern_free(p);
 }
 
+extern void astrogre_pattern_aot_compile(astrogre_pattern *p, bool verbose);
+extern struct astrogre_option OPTION;
+extern int errno;
+#include <errno.h>
+
+/* Reads `file` into memory once, then runs N iterations of
+ * astrogre_search over the whole buffer.  This isolates the regex
+ * engine cost from per-line getline / CTX-init overhead, so the
+ * AOT-vs-interp delta becomes visible. */
+int
+astrogre_run_file_bench(const char *file, const char *pat_lit, int iters, bool aot, bool plain)
+{
+    if (plain) OPTION.no_compiled_code = true;
+
+    FILE *fp = fopen(file, "rb");
+    if (!fp) { fprintf(stderr, "open %s: %s\n", file, strerror(errno)); return 2; }
+    fseek(fp, 0, SEEK_END);
+    long sz = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+    char *buf = (char *)malloc((size_t)sz + 1);
+    if (!buf) { fclose(fp); return 2; }
+    if (fread(buf, 1, (size_t)sz, fp) != (size_t)sz) { free(buf); fclose(fp); return 2; }
+    buf[sz] = 0;
+    fclose(fp);
+
+    astrogre_pattern *p = astrogre_parse_literal(pat_lit, strlen(pat_lit));
+    if (!p) { free(buf); return 2; }
+
+    if (aot) astrogre_pattern_aot_compile(p, false);
+
+    /* warmup */
+    astrogre_match_t m;
+    astrogre_search(p, buf, (size_t)sz, &m);
+
+    double t0 = mono_seconds();
+    int hits = 0;
+    for (int i = 0; i < iters; i++) {
+        if (astrogre_search(p, buf, (size_t)sz, &m)) hits++;
+    }
+    double t1 = mono_seconds();
+    double total = t1 - t0;
+    double per = total / iters;
+    double bytes_per_sec = (double)sz / per;
+    printf("%-22s %s  %s  iters=%d hits=%d  total=%.3fs  per=%.3fms  %.1f MB/s\n",
+           pat_lit,
+           plain ? "interp"     : (aot ? "aot-cached" : "default"),
+           (m.matched ? "MATCH" : "nil  "),
+           iters, hits, total, per * 1e3, bytes_per_sec / (1024 * 1024));
+
+    astrogre_pattern_free(p);
+    free(buf);
+    return 0;
+}
+
 int
 astrogre_run_microbench(void)
 {

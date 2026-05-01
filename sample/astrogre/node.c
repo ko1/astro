@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include <ctype.h>
 #include <dirent.h>
+#include <limits.h>
+#include <unistd.h>
 #include "node.h"
 #include "context.h"
 
@@ -263,5 +265,27 @@ INIT(void)
      * the whole process so make's compiler probe and its child cc both
      * see it; harmless when ccache isn't present. */
     setenv("CCACHE_DISABLE", "1", 0);
-    astro_cs_init("code_store", ".", 0);
+
+    /* Resolve the source directory (where node.h lives) once at INIT.
+     * Using "." would tie cs_compile to the cwd of the *invoking shell*,
+     * which breaks when the user runs astrogre from a different
+     * directory (e.g. bench/) — the generated SD .c files would
+     * `#include "<cwd>/node.h"` and compilation would fail.  We
+     * read the binary's own path via /proc/self/exe and strip the
+     * filename, which gives us a stable absolute src dir even when
+     * cwd != bin dir. */
+    char src_dir[PATH_MAX];
+    src_dir[0] = '.'; src_dir[1] = '\0';
+    char exe_path[PATH_MAX];
+    ssize_t n = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
+    if (n > 0) {
+        exe_path[n] = '\0';
+        char *slash = strrchr(exe_path, '/');
+        if (slash) {
+            *slash = '\0';
+            strncpy(src_dir, exe_path, sizeof(src_dir) - 1);
+            src_dir[sizeof(src_dir) - 1] = '\0';
+        }
+    }
+    astro_cs_init("code_store", src_dir, 0);
 }

@@ -432,6 +432,21 @@ main(int argc, char *argv[])
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--self-test") == 0) return astrogre_run_self_tests();
         if (strcmp(argv[i], "--bench") == 0)     return astrogre_run_microbench();
+        if (strcmp(argv[i], "--bench-file") == 0) {
+            extern int astrogre_run_file_bench(const char *file, const char *pat,
+                                                int iters, bool aot, bool plain);
+            if (i + 2 >= argc) {
+                fprintf(stderr, "usage: astrogre --bench-file FILE PATTERN [ITERS] [--aot|--plain]\n");
+                return 2;
+            }
+            int iters = (i + 3 < argc && argv[i+3][0] != '-') ? atoi(argv[i+3]) : 50;
+            bool aot = false, plain = false;
+            for (int j = i + 1; j < argc; j++) {
+                if (strcmp(argv[j], "--aot") == 0) aot = true;
+                else if (strcmp(argv[j], "--plain") == 0) plain = true;
+            }
+            return astrogre_run_file_bench(argv[i+1], argv[i+2], iters, aot, plain);
+        }
     }
 
     /* Parse flags. */
