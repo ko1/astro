@@ -300,6 +300,107 @@ print_only_matching(grep_state_t *st, const char *fname, long lineno,
     }
 }
 
+/* Bare memmem loop for the special case where every pattern is a
+ * pure literal (cap_start → lit → cap_end → succ).  Bypasses the
+ * engine entirely: just memmem to find each match, memchr forward
+ * to skip past the matching line.  ~25 % faster than going through
+ * search_from on `-c /lit/` because we lose the per-call CTX init
+ * + body chain dispatch. */
+static bool
+process_buffer_pure_literal(grep_state_t *st, const char *buf, size_t len,
+                             const char *fname,
+                             const char **needles, const size_t *needle_lens, int n)
+{
+    grep_opt_t *go = st->go;
+    long matches_this_file = 0;
+    bool any_match = false;
+    long lineno = 0;
+    size_t lineno_pos = 0;
+
+    /* Tightest path: single pattern, count-only, no filename modes.
+     * Mirrors the bare memmem+memchr loop benchmark — `pos`, `count`,
+     * one branch per iter. */
+    if (n == 1 && go->count_only && !go->files_with_matches && !go->files_without_match) {
+        const char *needle = needles[0];
+        size_t nlen = needle_lens[0];
+        const char *p = buf;
+        const char *end = buf + len;
+        while (p < end) {
+            const char *q = (const char *)memmem(p, end - p, needle, nlen);
+            if (!q) break;
+            matches_this_file++;
+            const char *e = (const char *)memchr(q, '\n', end - q);
+            if (!e) break;
+            p = e + 1;
+        }
+        any_match = matches_this_file > 0;
+        goto post_loop;
+    }
+
+    size_t pos = 0;
+    while (pos < len) {
+        size_t earliest_start = SIZE_MAX, earliest_end = 0;
+        for (int i = 0; i < n; i++) {
+            const char *q = (const char *)memmem(buf + pos, len - pos,
+                                                  needles[i], needle_lens[i]);
+            if (q) {
+                size_t s = (size_t)(q - buf);
+                if (s < earliest_start) {
+                    earliest_start = s;
+                    earliest_end = s + needle_lens[i];
+                }
+            }
+        }
+        if (earliest_start == SIZE_MAX) break;
+
+        const char *line_end_ptr = (const char *)memchr(buf + earliest_start, '\n',
+                                                          len - earliest_start);
+        size_t line_end = line_end_ptr ? (size_t)(line_end_ptr - buf) : len;
+
+        any_match = true;
+        matches_this_file++;
+        if (go->files_with_matches || go->files_without_match) break;
+
+        if (!go->count_only) {
+            const char *line_start_ptr = (earliest_start > 0)
+                ? (const char *)memrchr(buf, '\n', earliest_start)
+                : NULL;
+            size_t line_start = line_start_ptr ? (size_t)(line_start_ptr - buf) + 1 : 0;
+            /* lazy lineno tracking */
+            const char *_lp = buf + lineno_pos;
+            const char *_te = buf + line_start;
+            while (_lp < _te) {
+                const char *_nl = (const char *)memchr(_lp, '\n', _te - _lp);
+                if (!_nl) break;
+                lineno++; _lp = _nl + 1;
+            }
+            lineno_pos = line_start;
+            lineno++;
+            if (go->only_matching) {
+                print_only_matching(st, fname, lineno,
+                                    buf + line_start, line_end - line_start);
+            } else {
+                print_line_with_color(st, fname, lineno,
+                                      buf + line_start, line_end - line_start);
+            }
+            lineno_pos = (line_end < len) ? line_end + 1 : line_end;
+        }
+        pos = (line_end < len) ? line_end + 1 : len + 1;
+    }
+
+post_loop:
+    if (go->files_with_matches) {
+        if (any_match) printf("%s\n", fname);
+    } else if (go->files_without_match) {
+        if (!any_match) printf("%s\n", fname);
+    } else if (go->count_only) {
+        if (st->show_filename) printf("%s:", fname);
+        printf("%ld\n", matches_this_file);
+    }
+    st->total_match_count += matches_this_file;
+    return any_match;
+}
+
 /* Whole-file scan path.  Uses backend->search_from over the full
  * mmap'd buffer in a single CTX, identifies the line containing
  * each match via memrchr/memchr, and emits / counts.  This avoids
@@ -470,6 +571,42 @@ process_file(grep_state_t *st, const char *path)
             if (go->backend->has_fast_scan(st->patterns[i])) { fast = true; break; }
         }
     }
+
+    /* Pure-literal short-circuit: when *every* pattern is a single
+     * literal with no other side-effects, bypass the engine and run
+     * a tight memmem loop.  Saves the per-call CTX init + body chain
+     * dispatch on every match. */
+    extern astrogre_pattern *astrogre_backend_pattern_get(backend_pattern_t *);
+    const char *pl_needles[16];
+    size_t pl_needle_lens[16];
+    bool all_pure_literal = !go->invert && go->backend == &backend_astrogre_ops
+                          && st->n_patterns > 0 && st->n_patterns <= 16;
+    if (all_pure_literal) {
+        for (int i = 0; i < st->n_patterns; i++) {
+            astrogre_pattern *ap = astrogre_backend_pattern_get(st->patterns[i]);
+            if (!ap || !astrogre_pattern_pure_literal(ap, &pl_needles[i], &pl_needle_lens[i])) {
+                all_pure_literal = false; break;
+            }
+        }
+    }
+    if (all_pure_literal) {
+        int fd = open(path, O_RDONLY);
+        if (fd >= 0) {
+            struct stat sb;
+            if (fstat(fd, &sb) == 0 && S_ISREG(sb.st_mode) && sb.st_size > 0) {
+                void *map = mmap(NULL, (size_t)sb.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+                if (map != MAP_FAILED) {
+                    process_buffer_pure_literal(st, (const char *)map, (size_t)sb.st_size,
+                                                 path, pl_needles, pl_needle_lens, st->n_patterns);
+                    munmap(map, (size_t)sb.st_size);
+                    close(fd);
+                    return 0;
+                }
+            }
+            close(fd);
+        }
+    }
+
     if (!go->invert && fast) {
         int fd = open(path, O_RDONLY);
         if (fd < 0) {

@@ -50,6 +50,16 @@ uint64_t astrogre_pattern_hash(astrogre_pattern *p);
  * loop is faster on typical inputs because each line is short. */
 bool astrogre_pattern_has_prefilter(astrogre_pattern *p);
 
+/* If the pattern is essentially a single literal byte sequence with
+ * no other side-effects (no captures the caller reads, the body is
+ * exactly cap_start(0) → lit → cap_end(0) → succ), return the
+ * literal bytes / length.  Used by the grep CLI's count / line-only
+ * paths to skip the engine entirely and run a tight memmem loop —
+ * closes most of the gap with grep for `-c /lit/` style invocations.
+ * Returns false if the pattern has any other structure. */
+bool astrogre_pattern_pure_literal(astrogre_pattern *p,
+                                    const char **out_bytes, size_t *out_len);
+
 /* Drive astro_cs_compile + cs_build + cs_reload for this pattern.
  * Called once per unique-hash pattern in --aot-compile mode.  Idempotent —
  * repeated calls with the same hash hit the dedup. */

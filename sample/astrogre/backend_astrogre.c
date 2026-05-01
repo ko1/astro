@@ -19,6 +19,15 @@
 
 struct backend_pattern { astrogre_pattern *p; };
 
+/* Exposed so main.c can introspect the underlying astrogre_pattern
+ * for fast-path detection (pure-literal short-circuit, etc).
+ * Returns NULL for non-astrogre backends. */
+astrogre_pattern *
+astrogre_backend_pattern_get(backend_pattern_t *bp)
+{
+    return bp ? bp->p : NULL;
+}
+
 static backend_pattern_t *
 agre_compile(const char *pat, size_t len, backend_flags_t f)
 {

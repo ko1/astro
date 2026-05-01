@@ -1236,6 +1236,62 @@ astrogre_pattern_has_prefilter(astrogre_pattern *p)
         || strcmp(name, "DISPATCH_node_grep_search_class_scan") == 0;
 }
 
+bool
+astrogre_pattern_pure_literal(astrogre_pattern *p,
+                               const char **out_bytes, size_t *out_len)
+{
+    if (!p || !p->root) return false;
+    NODE *root = p->root;
+    const char *root_name = root->head.kind->default_dispatcher_name;
+    if (!root_name) return false;
+
+    NODE *body = NULL;
+    const char *needle = NULL;
+    size_t needle_len = 0;
+
+    if (strcmp(root_name, "DISPATCH_node_grep_search_memmem") == 0) {
+        if (root->u.node_grep_search_memmem.anchored_bos) return false;
+        body = root->u.node_grep_search_memmem.body;
+        needle = root->u.node_grep_search_memmem.prefix;
+        needle_len = root->u.node_grep_search_memmem.prefix_len;
+    } else if (strcmp(root_name, "DISPATCH_node_grep_search_memchr") == 0) {
+        if (root->u.node_grep_search_memchr.anchored_bos) return false;
+        body = root->u.node_grep_search_memchr.body;
+        /* needle filled in from the inner lit node below */
+    } else {
+        return false;
+    }
+
+    /* body must be cap_start(0, ...) */
+    if (strcmp(body->head.kind->default_dispatcher_name,
+               "DISPATCH_node_re_cap_start") != 0) return false;
+    if (body->u.node_re_cap_start.idx != 0) return false;
+    NODE *lit = body->u.node_re_cap_start.next;
+
+    /* lit must be node_re_lit (not lit_ci) */
+    if (strcmp(lit->head.kind->default_dispatcher_name,
+               "DISPATCH_node_re_lit") != 0) return false;
+    if (needle == NULL) {
+        needle     = lit->u.node_re_lit.bytes;
+        needle_len = lit->u.node_re_lit.len;
+    }
+
+    /* lit's next must be cap_end(0, ...) */
+    NODE *cap_end = lit->u.node_re_lit.next;
+    if (strcmp(cap_end->head.kind->default_dispatcher_name,
+               "DISPATCH_node_re_cap_end") != 0) return false;
+    if (cap_end->u.node_re_cap_end.idx != 0) return false;
+
+    /* cap_end's next must be node_re_succ (the terminator) */
+    NODE *succ = cap_end->u.node_re_cap_end.next;
+    if (strcmp(succ->head.kind->default_dispatcher_name,
+               "DISPATCH_node_re_succ") != 0) return false;
+
+    if (out_bytes) *out_bytes = needle;
+    if (out_len)   *out_len   = needle_len;
+    return true;
+}
+
 extern void astro_cs_compile(NODE *entry, const char *file);
 extern void astro_cs_build(const char *extra_cflags);
 extern void astro_cs_reload(void);

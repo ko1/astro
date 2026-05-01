@@ -125,6 +125,32 @@ grep CLI で fusion の効果を見るには、per-line `getline` + `CTX_struct`
 ゼロ初期化のオーバヘッドを取り除く必要がある。これを解いたのが下の
 whole-file mmap 経路。
 
+## 純リテラルパターンの fast path
+
+パターンが `cap_start(0) → lit → cap_end(0) → succ` の純粋リテラル
+形 (regex メタ無し、capture 参照無し) で、かつモードが `-c` /
+`-l` / `-L` / default-print のとき、**エンジンを丸ごとバイパス**
+して memmem + memchr のタイトループだけで動く。
+
+`astrogre_pattern_pure_literal` がパターンをイントロスペクトして
+シェイプを判定、`process_buffer_pure_literal` が以下のループを
+回す:
+
+```c
+while (p < end) {
+    q = memmem(p, end-p, needle, nlen);
+    if (!q) break;
+    matches_this_file++;
+    e = memchr(q, '\n', end-q);
+    if (!e) break;
+    p = e + 1;  // 次の行へ
+}
+```
+
+エンジン呼び出し (CTX init + dispatch chain) を完全に省略するので、
+`-c /lit/` で 50 → 47 ms (理論限界の bare memmem ループ 26 ms に
+対し +20 ms はプロセス起動 + mmap セットアップ + その他 CLI 処理)。
+
 ## grep CLI の whole-file mmap 経路
 
 `process_buffer` (main.c) は、パターンが SIMD/libc prefilter を持つ

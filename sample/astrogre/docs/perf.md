@@ -22,14 +22,14 @@ abruby 風モード (`--aot-compile` / cached / `--pg-compile` /
 
 | パターン | astrogre interp | astrogre +AOT | astrogre +onigmo | grep | ripgrep |
 |---|---:|---:|---:|---:|---:|
-| `/static/` literal | 77 | 78 | 98 | **2** | 34 |
-| `/specialized_dispatcher/` rare | 26 | 26 | 38 | 35 | **20** |
-| `/^static/` anchored | 76 | 76 | 98 | **2** | 36 |
-| `/VALUE/i` case-i | 704 | 682 | 129 | **2** | 50 |
-| `/static\|extern\|inline/` alt-3 | 308 | 313 | 959 | **2** | 50 |
-| `/[0-9]{4,}/` class-rep | 475 | 471 | 565 | **2** | 55 |
-| `/[a-z_]+_[a-z]+\(/` ident-call | 3277 | 3283 | 3177 | **2** | 185 |
-| `-c /static/` count | 48 | 50 | 72 | **2** | 27 |
+| `/static/` literal | 70 | 70 | 103 | **2** | 35 |
+| `/specialized_dispatcher/` rare | 26 | 27 | 38 | 36 | **20** |
+| `/^static/` anchored | 72 | 73 | 103 | **2** | 35 |
+| `/VALUE/i` case-i | 672 | 720 | 136 | **2** | 51 |
+| `/static\|extern\|inline/` alt-3 | 328 | 334 | 1048 | **3** | 57 |
+| `/[0-9]{4,}/` class-rep | 534 | 506 | 641 | **2** | 62 |
+| `/[a-z_]+_[a-z]+\(/` ident-call | 3727 | 3817 | 3610 | **3** | 207 |
+| `-c /static/` count | 48 | 47 | 87 | **3** | 32 |
 
 whole-file mmap 経路 (パターンに SIMD/libc prefilter があるとき発火)
 が literal-led astrogre を従来の per-line getline ループより 3-10×
