@@ -415,15 +415,18 @@ node_module_def(CTX * restrict c, NODE * restrict n, ID name, NODE *body)
 NODE_DEF
 node_func_call(CTX * restrict c, NODE * restrict n, ID name, uint32_t argc, uint32_t arg_index, struct method_cache *mc)
 {
-    /* implicit-self call */
-    return korb_dispatch_call(c, n, c->self, name, argc, arg_index, NULL, mc);
+    /* implicit-self call — _cached version inlines the IC + prologue
+     * dispatch directly into the SD body, so a hot self-call (e.g.
+     * `render_pixel` from the per-frame loop) avoids a function-pointer
+     * jump per call. */
+    return korb_dispatch_call_cached(c, n, c->self, name, argc, arg_index, NULL, mc);
 }
 
 NODE_DEF
 node_method_call(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, uint32_t argc, uint32_t arg_index, struct method_cache *mc)
 {
     VALUE r = EA(c, recv);
-    return korb_dispatch_call(c, n, r, name, argc, arg_index, NULL, mc);
+    return korb_dispatch_call_cached(c, n, r, name, argc, arg_index, NULL, mc);
 }
 
 NODE_DEF
@@ -432,14 +435,14 @@ node_method_call_block(CTX * restrict c, NODE * restrict n, NODE *recv, ID name,
     VALUE r = EA(c, recv);
     /* blk node is node_block_literal which when EVAL'd produces a Proc */
     VALUE block = blk ? EA(c, blk) : Qnil;
-    return korb_dispatch_call(c, n, r, name, argc, arg_index, block == Qnil ? NULL : (struct korb_proc *)block, mc);
+    return korb_dispatch_call_cached(c, n, r, name, argc, arg_index, block == Qnil ? NULL : (struct korb_proc *)block, mc);
 }
 
 NODE_DEF
 node_func_call_block(CTX * restrict c, NODE * restrict n, ID name, uint32_t argc, uint32_t arg_index, NODE *blk, struct method_cache *mc)
 {
     VALUE block = blk ? EA(c, blk) : Qnil;
-    return korb_dispatch_call(c, n, c->self, name, argc, arg_index, block == Qnil ? NULL : (struct korb_proc *)block, mc);
+    return korb_dispatch_call_cached(c, n, c->self, name, argc, arg_index, block == Qnil ? NULL : (struct korb_proc *)block, mc);
 }
 
 NODE_DEF @noinline
