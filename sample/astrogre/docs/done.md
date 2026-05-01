@@ -82,11 +82,35 @@ What's in v1, by category.  Companion to [`todo.md`](./todo.md).
 ## Backend abstraction
 
 - `backend.h` declares an ops table (`compile / search / search_from
-  / free`) that the grep CLI talks to.
+  / free / aot_compile`) that the grep CLI talks to.
 - `backend_astrogre.c` (~80 lines) wraps the in-house engine.
 - `backend_onigmo.c` (~110 lines) wraps Onigmo's `onig_new` /
   `onig_search` / `onig_region`.  Both implement `-F` (Onigmo by
   escaping metacharacters at compile time).
 
-See [`perf.md`](./perf.md) for what was tried and rejected, and the
-cross-tool benchmark numbers.
+## AOT / cached / PG
+
+- **`--aot-compile` (`-C`)**: compile every pattern to
+  `code_store/c/SD_<hash>.c`, build `code_store/all.so`, swap each
+  node's dispatcher, then run.  Subsequent runs (default mode)
+  pick up the cached `all.so` automatically via `astro_cs_load` in
+  `OPTIMIZE`.
+- **default (cached)**: at pattern allocation time, `OPTIMIZE` calls
+  `astro_cs_load` for every node.  Hits use the specialized
+  dispatcher; misses fall back to the interpreter.
+- **`--pg-compile` (`-P`)**: accepted for CLI parity with abruby;
+  currently routes through the same path as `--aot-compile`.  No PG
+  profile signal exists yet (HOPT == HORG).
+- **`--plain` (`--no-cs`)**: bypass the code store entirely.
+
+Inner SDs are made externally visible via the
+`astrogre_export_sd_wrappers` post-process (borrowed from luastro):
+each generated SD gets renamed to `SD_<hash>_INL` plus a thin
+externally-visible wrapper, so `dlsym` finds every node, not just
+the root.  A side array tracks every allocated NODE so the post-build
+re-resolve patches the whole chain.
+
+The bake is structurally correct but the speed gain on grep-shaped
+workloads is small (≤ 4 % on the bench corpus).  See
+[`perf.md`](./perf.md) for the analysis and what the next perf lever
+(search-loop fused SD) would look like.

@@ -43,6 +43,12 @@
 #include "parse.h"
 #include "backend.h"
 
+/* Code-store API (defined by astro_code_store.c included from node.c) */
+extern void astro_cs_compile(NODE *entry, const char *file);
+extern void astro_cs_build(const char *extra_cflags);
+extern void astro_cs_reload(void);
+extern bool astro_cs_load(NODE *n, const char *file);
+
 struct astrogre_option OPTION = {0};
 
 int astrogre_run_self_tests(void);
@@ -51,6 +57,12 @@ int astrogre_run_microbench(void);
 /* ------------------------------------------------------------------ */
 /* Options                                                             */
 /* ------------------------------------------------------------------ */
+
+typedef enum {
+    CS_MODE_DEFAULT = 0,    /* try cs_load on each pattern; otherwise interp */
+    CS_MODE_AOT_COMPILE,    /* cs_compile + cs_build + cs_reload + cs_load */
+    CS_MODE_PLAIN,          /* skip the code store entirely */
+} cs_mode_t;
 
 typedef struct grep_opt {
     const char **patterns;
@@ -71,6 +83,11 @@ typedef struct grep_opt {
     bool recursive;
     int  color_mode;            /* 0 never, 1 always, 2 auto */
     bool via_prism;
+
+    /* Code-store mode (astrogre backend only — Onigmo ignores it).  */
+    cs_mode_t cs_mode;
+    bool cs_verbose;            /* print cs_load hit/miss + cs_compile */
+
     const backend_ops_t *backend;
 } grep_opt_t;
 
@@ -391,6 +408,9 @@ usage(void)
         "  -o  only matching parts         -r  recursive\n"
         "  -e  PATTERN (repeatable)\n"
         "  --color=never|always|auto       --backend=astrogre|onigmo\n"
+        "  -C, --aot-compile               specialize patterns to code_store/ then run\n"
+        "  --plain, --no-cs                bypass code store entirely\n"
+        "  --cs-verbose                    log cs_load / cs_compile activity\n"
         "Modes:\n"
         "  --self-test                     --bench\n"
         "  --dump PATTERN                  --via-prism\n",
@@ -441,6 +461,28 @@ main(int argc, char *argv[])
             go.backend = backend_by_name(a + 10);
             argi++; continue;
         }
+        if (strcmp(a, "--aot-compile") == 0 || strcmp(a, "-C") == 0) {
+            go.cs_mode = CS_MODE_AOT_COMPILE;
+            argi++; continue;
+        }
+        if (strcmp(a, "--pg-compile") == 0 || strcmp(a, "-P") == 0) {
+            /* For v1 we do not have a meaningful profile signal for
+             * regex matching — `Hopt == Horg` in node.h, so the baked
+             * SD bytes are the same as `--aot-compile` would produce.
+             * The flag is accepted to match abruby's CLI shape; warn
+             * once so the user understands the equivalence. */
+            fprintf(stderr, "astrogre: --pg-compile: no profile signal yet, behaves as --aot-compile\n");
+            go.cs_mode = CS_MODE_AOT_COMPILE;
+            argi++; continue;
+        }
+        if (strcmp(a, "--plain") == 0 || strcmp(a, "--no-cs") == 0) {
+            go.cs_mode = CS_MODE_PLAIN;
+            argi++; continue;
+        }
+        if (strcmp(a, "--cs-verbose") == 0) {
+            go.cs_verbose = true;
+            argi++; continue;
+        }
         if (strcmp(a, "-e") == 0) {
             if (argi + 1 >= argc) { usage(); return 2; }
             push_pattern(&go, argv[argi + 1]);
@@ -474,6 +516,11 @@ main(int argc, char *argv[])
         usage(); return 2;
     }
 
+    /* Code-store options — apply to the astrogre backend only.  Onigmo
+     * gets all matches done in its own engine. */
+    if (go.cs_mode == CS_MODE_PLAIN) OPTION.no_compiled_code = true;
+    if (go.cs_verbose) OPTION.cs_verbose = true;
+
     /* If no -e patterns given, the next positional is the pattern. */
     if (go.n_patterns == 0) {
         if (argi >= argc) { usage(); return 2; }
@@ -501,6 +548,15 @@ main(int argc, char *argv[])
         if (!bps[i]) return 2;
     }
 
+    /* AOT compile mode: ask the backend to specialize each pattern
+     * before any input is processed.  Onigmo's `.aot_compile` is NULL
+     * and we silently skip it there. */
+    if (go.cs_mode == CS_MODE_AOT_COMPILE && go.backend->aot_compile) {
+        for (int i = 0; i < go.n_patterns; i++) {
+            go.backend->aot_compile(bps[i], go.cs_verbose);
+        }
+    }
+
     grep_state_t st = {0};
     st.go = &go;
     st.patterns = bps;
@@ -521,6 +577,11 @@ main(int argc, char *argv[])
             process_path(&st, argv[i]);
         }
         rc = (st.total_match_count > 0) ? 0 : 1;
+    }
+
+    if (go.cs_verbose) {
+        extern void astrogre_cs_stats(void);
+        astrogre_cs_stats();
     }
 
     for (int i = 0; i < go.n_patterns; i++) go.backend->free(bps[i]);

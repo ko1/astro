@@ -71,10 +71,17 @@ agre_free(backend_pattern_t *bp)
     free(bp);
 }
 
+static void
+agre_aot_compile(backend_pattern_t *bp, bool verbose)
+{
+    if (bp) astrogre_pattern_aot_compile(bp->p, verbose);
+}
+
 const backend_ops_t backend_astrogre_ops = {
     .name        = "astrogre",
     .compile     = agre_compile,
     .search      = agre_search,
     .search_from = agre_search_from,
     .free        = agre_free,
+    .aot_compile = agre_aot_compile,
 };

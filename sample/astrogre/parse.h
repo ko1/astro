@@ -39,6 +39,15 @@ bool astrogre_search_from(astrogre_pattern *p, const char *str, size_t len, size
  * astrogre_pattern_free. */
 astrogre_pattern *astrogre_parse(const char *pat, size_t pat_len, uint32_t prism_flags);
 
+/* Hash of the compiled pattern AST root — same value `astro_cs_load`
+ * keys on, exposed for diagnostics (`-d`, `--cs-status`). */
+uint64_t astrogre_pattern_hash(astrogre_pattern *p);
+
+/* Drive astro_cs_compile + cs_build + cs_reload for this pattern.
+ * Called once per unique-hash pattern in --aot-compile mode.  Idempotent —
+ * repeated calls with the same hash hit the dedup. */
+void astrogre_pattern_aot_compile(astrogre_pattern *p, bool verbose);
+
 /* Parse a /pat/flags-style source string (incl. surrounding slashes and
  * trailing flag chars).  Useful from CLI / tests when not going through
  * prism. */

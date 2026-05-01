@@ -16,9 +16,14 @@ void SPECIALIZE(FILE *fp, NODE *n);
 
 #define DISPATCHER_NAME(n) ((n)->head.flags.no_inline ? (#n "->head.dispatcher") : (n)->head.dispatcher_name)
 
+/* No PG support yet — HOPT == HORG == HASH. */
+#define HORG(n) HASH(n)
+#define HOPT(n) HASH(n)
+
 struct NodeHead {
     struct NodeFlags {
         bool has_hash_value;
+        bool has_hash_opt;          /* PGC tracking; not used for v1 */
         bool is_specialized;
         bool is_specializing;
         bool is_dumping;
@@ -29,6 +34,7 @@ struct NodeHead {
     struct Node *parent;
 
     node_hash_t hash_value;
+    node_hash_t hash_opt;           /* same as hash_value while PGC is inactive */
 
     const char *dispatcher_name;
     node_dispatcher_func_t dispatcher;
@@ -37,6 +43,7 @@ struct NodeHead {
         JIT_STATUS_Unknown,
     } jit_status;
     unsigned int dispatch_cnt;
+    int line;                       /* source line for diagnostics; v1 unused */
 };
 
 #include "node_head.h"

@@ -897,3 +897,38 @@ astrogre_pattern_free(astrogre_pattern *p)
     free(p->pat);
     free(p);
 }
+
+uint64_t
+astrogre_pattern_hash(astrogre_pattern *p)
+{
+    if (!p || !p->root) return 0;
+    return (uint64_t)HASH(p->root);
+}
+
+extern void astro_cs_compile(NODE *entry, const char *file);
+extern void astro_cs_build(const char *extra_cflags);
+extern void astro_cs_reload(void);
+extern bool astro_cs_load(NODE *n, const char *file);
+extern void astrogre_export_all_sds(void);
+extern void astrogre_reload_all_dispatchers(void);
+
+void
+astrogre_pattern_aot_compile(astrogre_pattern *p, bool verbose)
+{
+    if (!p || !p->root) return;
+    if (verbose) {
+        fprintf(stderr, "astrogre: cs_compile h=%016lx /%s/\n",
+                (unsigned long)HASH(p->root), p->pat ? p->pat : "");
+    }
+    astro_cs_compile(p->root, NULL);
+    /* Make every inner SD externally visible so cs_load patches the
+     * whole chain, not just the root.  See astrogre_export_sd_wrappers
+     * in node.c (borrowed from luastro). */
+    astrogre_export_all_sds();
+    astro_cs_build(NULL);
+    astro_cs_reload();
+    /* Re-resolve every node so this very run picks up the freshly-baked
+     * SDs (otherwise only the *next* invocation benefits, since the
+     * inner nodes' dispatchers were locked in at allocation time). */
+    astrogre_reload_all_dispatchers();
+}

@@ -7,12 +7,13 @@ CC ?= gcc
 optflags ?= -O2
 PRISM_DIR = ./prism
 ONIGMO_DIR = ./onigmo
+RUNTIME_DIR = ../../runtime
 
-CFLAGS = -I$(PRISM_DIR)/include -I. $(optflags) -ggdb3 -Wall \
+CFLAGS = -I$(PRISM_DIR)/include -I. -I$(RUNTIME_DIR) $(optflags) -ggdb3 -Wall \
          -Wno-unused-function -Wno-unused-variable -Wno-unused-parameter \
          -Wno-unused-but-set-variable
 LDFLAGS = -L $(PRISM_DIR)/build -Wl,-rpath=$(CURDIR)/$(PRISM_DIR)/build
-LIBS = -lprism
+LIBS = -lprism -ldl
 
 SRCS = main.c node.c parse.c match.c selftest.c backend_astrogre.c
 

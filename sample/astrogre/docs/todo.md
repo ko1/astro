@@ -5,21 +5,49 @@ Backlog of features and performance work.  Companion to
 
 ## Performance — next up
 
-### AOT / PG specialization (abruby-style)
-Wire the framework's `astro_code_store` into `OPTIMIZE` / pattern
-compile so we get the four-mode loop the rest of ASTro already has:
+### Search-loop fused SD
+The biggest lever still on the table.  Right now AOT bakes one C
+function per AST node and the search loop calls it once per starting
+position; per-iter dispatch is already cheap (single indirect call
+to a hot BTB target), so the AOT win on grep is small.  A wrapping
+SD that takes `(str, len, &match)` and runs the for-each-start
+loop + the match in one inlined body would drop the per-iter
+overhead to near zero — and we'd finally have a single C function
+the C compiler can vectorise over.
 
-| mode             | first run                              | subsequent runs                |
-|------------------|----------------------------------------|--------------------------------|
-| AOT compile      | parse → `astro_cs_compile(root)` → build all.so | -                     |
-| AOT cached       | parse → `astro_cs_load(root)` → run    | swapped dispatcher fires       |
-| PG compile       | parse → run-and-record → `astro_cs_compile_hopt` | -                    |
-| PG cached        | parse → `astro_cs_load(root)` → run with profile baked in     |        |
+### Real PG signal
+`--pg-compile` is wired but currently aliases to `--aot-compile`
+because `HOPT == HORG`.  Real signals to bake:
+- **Hot-alternative reordering**: count branch hits at each
+  `node_re_alt`, emit alternation with the hot one tested first.
+- **Capture elision**: if no backreference reads a group during the
+  profile run, drop its save/restore.
+- **Iteration-count specialisation**: bake unrolled fixed-N
+  variants for repetitions whose observed count is concentrated.
 
-For a long-running grep on a single pattern that's the difference
-between "interpret the chain N million times" and "run one inlined
-C function N million times".  Should close most of the
-astrogre-vs-Onigmo gap on literal/anchored cases.
+### Literal-prefix prefilter
+Independent of the AST and a pure C-level win.  For unanchored
+patterns with a fixed-byte prefix, use Boyer-Moore-style scan to
+find candidate positions and verify with the AST.  Should drop
+`literal-rare` from 880 ms to memchr-bound (~20 ms).
+
+### First-byte bitmap
+Even simpler than full BMH: at compile time, build a 256-bit bitmap
+of allowed first bytes; skip ahead using a vectorised scan.
+
+### Inline small char-classes as comparisons
+For a class like `[abc]`, `b == 'a' || b == 'b' || b == 'c'` is
+faster than the bitmap test because gcc folds it to a switch table
+or SIMD comparison.  Specializer candidate.
+
+### JIT
+Once the search-loop fused SD lands, plug the standard ASTro JIT
+path: the rep_cont sentinel keeps the AST a DAG, so hash-keyed
+code-store caching applies.
+
+### Capture state on the stack instead of CTX
+`c->starts[]` / `c->ends[]` / `c->valid[]` are 32 entries each, ~750
+bytes per CTX.  Most patterns have ≤ 4 groups.
 
 ### Literal-prefix prefilter
 The single biggest miss vs ripgrep / ugrep.  For unanchored patterns
@@ -45,6 +73,11 @@ caching applies.
 ### Capture state on the stack instead of CTX
 `c->starts[]` / `c->ends[]` / `c->valid[]` are 32 entries each, ~750
 bytes per CTX.  Most patterns have ≤ 4 groups.
+
+### Code-store mtime invalidation
+When `node.def` changes, every cached `SD_*.c` is stale, but
+`astro_cs_init`'s version arg is currently `0`.  Pass the binary
+mtime so a recompile forces a full rebuild.
 
 ## Language gaps
 

@@ -125,4 +125,5 @@ const backend_ops_t backend_onigmo_ops = {
     .search      = ognm_search,
     .search_from = ognm_search_from,
     .free        = ognm_free,
+    .aot_compile = NULL,    /* Onigmo doesn't participate in ASTro code store */
 };

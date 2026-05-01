@@ -26,8 +26,16 @@ direct head-to-head comparison.
 - prism integration + standalone `/pat/flags` syntax.
 - grep CLI: `-i -n -c -v -w -F -l -L -H -h -o -r -e --color=auto`.
 - Backend abstraction: `--backend=astrogre` (default) or `--backend=onigmo`.
-- Pure tree-walking interpreter for both backends; AOT specialization
-  (the abruby-style "compile / cached" loop) is on the next-up list.
+- AOT specialization wired up: `--aot-compile` (`-C`) writes
+  `code_store/c/SD_<hash>.c`, builds `all.so`, and patches every node's
+  dispatcher.  Subsequent runs (default mode) auto-load the cached
+  build via `astro_cs_load` in `OPTIMIZE`.  `--pg-compile` (`-P`) is
+  accepted for parity with abruby but currently aliases to AOT —
+  there's no profile signal to bake yet.
+- The bake is structurally correct (every inner node's SD is exposed
+  via dlsym through a thin extern wrapper, all chain dispatchers are
+  re-resolved post-build) but the speed gain on grep-shaped workloads
+  is small.  See `docs/perf.md` for the analysis.
 
 ## Build and run
 
@@ -45,6 +53,8 @@ make WITH_ONIGMO=1
 ./astrogre -n -i 'pattern' *.c
 ./astrogre -r -F 'literal_str' src/
 ./astrogre --backend=onigmo --color=always 'pat' file.txt
+./astrogre -C 'pat' file.txt          # AOT-compile pattern, then run
+./astrogre --plain 'pat' file.txt     # bypass code store entirely
 
 # Engine-level
 ./astrogre --self-test               # 44-case self-test
@@ -75,49 +85,50 @@ onigmo/               cloned, locally-built Onigmo (build_local.mk)
 
 `bench/grep_bench.sh` runs each tool on a 118 MB corpus
 (C/header source from a few in-tree samples, replicated) and reports
-best-of-3 wall-clock seconds.  All times in seconds.
+best-of-5 wall-clock seconds.  All times in seconds.
 
 ```
-                          grep   ripgrep  astrogre  +onigmo
-  literal    /static/    0.002    0.034    0.839    0.217
-  rare       /specialized_dispatcher/
-                         0.035    0.020    0.830    0.178
-  anchored   /^static/   0.002    0.035    0.603    0.220
-  case-i     /VALUE/i    0.002    0.049    0.699    0.254
-  alt-3      /static|extern|inline/
-                         0.002    0.049    1.857    1.096
-  class-rep  /[0-9]{4,}/ 0.003    0.056    1.293    0.713
-  ident-call /[a-z_]+_[a-z]+\(/
-                         0.002    0.188    3.801    3.366
-  count -c   /static/    0.002    0.027    0.841    0.218
+                         grep   ripgrep  +onigmo  interp  aot-cached
+literal    /static/      0.002   0.035    0.221   0.884   0.872
+rare       /specialized_dispatcher/
+                         0.035   0.020    0.190   0.855   0.866
+anchored   /^static/     0.002   0.035    0.227   0.641   0.643
+case-i     /VALUE/i      0.002   0.051    0.273   0.724   0.735
+alt-3      /static|extern|inline/
+                         0.002   0.048    1.131   2.010   1.950
+class-rep  /[0-9]{4,}/   0.002   0.054    0.715   1.284   1.296
+ident-call /[a-z_]+_[a-z]+\(/
+                         0.002   0.183    3.253   3.814   3.792
+count -c   /static/      0.002   0.027    0.218   0.882   0.867
 ```
 
 What this says:
 
-- **ugrep / ripgrep are not really competing**: they have SIMD memchr
-  for plain literals + lazy DFA / Hyperscan-like prefilters for
-  regex-shaped patterns.  These are an order of magnitude beyond the
-  scope of v1.
-- **astrogre vs Onigmo** is the apples-to-apples comparison (both are
-  tree/bytecode backtracking engines without a literal prefilter).
-  Onigmo is currently 2–4× faster on the bulk of cases.  The gap is
-  narrowest on heavy-regex patterns (`ident-call`: 12%) and widest on
-  literal / anchored cases where Onigmo's BM-class prefilter still
-  fires while astrogre's plain search loop has to retry every position.
+- **ugrep / ripgrep are not really competing**: SIMD memchr +
+  literal-prefix prefilters / lazy DFA put them an order of
+  magnitude ahead of v1 work.
+- **astrogre vs Onigmo** is the apples-to-apples comparison (both
+  are tree/bytecode backtracking engines without a literal
+  prefilter).  Onigmo is currently 2–4× faster on the bulk of cases.
+- **interp vs aot-cached** is essentially noise.  The dispatch chain
+  AOT removes is already cheap (3 indirect calls per position, all
+  predicted by the BTB).  The big lever for our shape — fusing the
+  search loop into the SD itself — is on the runway, not landed.
 
-See [`docs/perf.md`](./docs/perf.md) for what's tried + landed and the
-runway items (prefilter, AOT specialization, JIT) that should close
-the Onigmo gap.
+See [`docs/perf.md`](./docs/perf.md) for what's tried + landed and
+the runway items (search-loop fusion, literal-prefix prefilter, real
+PG signal, JIT) that should close the Onigmo gap.
 
 ## What it does NOT do (yet)
 
-- AOT / PG specialization through ASTro's code-store.  The framework
-  hooks (`SPECIALIZE_node_re_*`) are generated already; the cache
-  driver is not wired into `OPTIMIZE` yet.  Adding it in the
-  abruby-style "compile first / cached / pg-compile / pg-cached"
-  shape is the next item.
+- Search-loop fused SD.  Per-position AOT dispatch is already cheap;
+  the bigger lever is folding the start-position loop into the
+  specialized C function so the whole "scan + match" lives in one
+  basic block.  Without it, AOT-cached barely beats interp on grep.
+- Real PG profile signal (`HOPT == HORG` for now — `--pg-compile`
+  bakes the same bytes as `--aot-compile`).
 - Literal-prefix prefilter (Boyer–Moore or memchr-on-first-byte).
-  This is the single biggest miss vs ripgrep.
+  Single biggest miss vs ripgrep.
 - Lookbehind `(?<=...)` / `(?<!...)`.
 - Atomic groups `(?>...)` / possessive quantifiers — parsed, degraded
   to plain greedy.

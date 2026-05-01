@@ -40,6 +40,9 @@ typedef struct backend_ops {
     bool               (*search)  (backend_pattern_t *p, const char *str, size_t len, backend_match_t *out);
     bool               (*search_from)(backend_pattern_t *p, const char *str, size_t len, size_t start, backend_match_t *out);
     void               (*free)    (backend_pattern_t *p);
+    /* Optional: drive AOT-compile of this pattern.  NULL means the
+     * backend doesn't participate in ASTro's code store (Onigmo). */
+    void               (*aot_compile)(backend_pattern_t *p, bool verbose);
 } backend_ops_t;
 
 extern const backend_ops_t backend_astrogre_ops;

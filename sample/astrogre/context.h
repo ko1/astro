@@ -68,6 +68,7 @@ struct astrogre_option {
     /* misc */
     bool quiet;
     bool dump_ast;
+    bool cs_verbose;
 };
 
 extern struct astrogre_option OPTION;

@@ -72,8 +72,11 @@ run_pattern() {
     if [ -n "$RG" ]; then
         best_of "ripgrep"     "$RG"        --no-mmap -j1 "${extra[@]}" -e "$pat" "$CORPUS"
     fi
-    best_of "astrogre"        "$ASTROGRE"                          "${extra[@]}" "$pat" "$CORPUS"
-    best_of "astrogre+onigmo" "$ASTROGRE"  --backend=onigmo        "${extra[@]}" "$pat" "$CORPUS"
+    best_of "astrogre +onigmo"  "$ASTROGRE"  --backend=onigmo "${extra[@]}" "$pat" "$CORPUS"
+    best_of "astrogre interp"   "$ASTROGRE"  --plain          "${extra[@]}" "$pat" "$CORPUS"
+    # AOT-cached: ensure the SD has been built, then time the cached run.
+    "$ASTROGRE" -C "${extra[@]}" "$pat" "$CORPUS" >/dev/null 2>&1 || true
+    best_of "astrogre aot-cached" "$ASTROGRE"                "${extra[@]}" "$pat" "$CORPUS"
 }
 
 echo "corpus: $CORPUS  ($LINES lines, $BYTES bytes)  best of $N runs"
