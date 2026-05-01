@@ -46,10 +46,31 @@
 #include <sys/mman.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <time.h>
 #include "node.h"
 #include "context.h"
 #include "parse.h"
 #include "backend.h"
+
+/* --verbose phase timing — captures wall-clock between key points
+ * (INIT, mmap, scan, munmap, …) so users can see where each ms goes
+ * without strace.  Activated by `--verbose`; the per-mark cost is one
+ * clock_gettime (~30 ns) which is invisible in normal runs. */
+static struct timespec g_verbose_t0;
+static bool g_verbose = false;
+static double g_verbose_last_ms = 0;
+static void verbose_start(void) {
+    clock_gettime(CLOCK_MONOTONIC, &g_verbose_t0);
+}
+static void verbose_mark(const char *tag) {
+    if (!g_verbose) return;
+    struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
+    double ms = (t.tv_sec - g_verbose_t0.tv_sec) * 1000.0
+              + (t.tv_nsec - g_verbose_t0.tv_nsec) / 1.0e6;
+    fprintf(stderr, "[verbose] %-24s %8.3f ms  (+%.3f)\n",
+            tag, ms, ms - g_verbose_last_ms);
+    g_verbose_last_ms = ms;
+}
 
 /* Code-store API (defined by astro_code_store.c included from node.c) */
 extern void astro_cs_compile(NODE *entry, const char *file);
@@ -596,6 +617,7 @@ process_file(grep_state_t *st, const char *path)
         }
     }
     if (all_pure_literal) {
+        verbose_mark("before mmap");
         int fd = open(path, O_RDONLY);
         if (fd >= 0) {
             struct stat sb;
@@ -605,10 +627,13 @@ process_file(grep_state_t *st, const char *path)
                  * the whole file linearly.  GNU grep does the same. */
                 void *map = mmap(NULL, (size_t)sb.st_size, PROT_READ,
                                   MAP_PRIVATE | MAP_POPULATE, fd, 0);
+                verbose_mark("after mmap");
                 if (map != MAP_FAILED) {
                     process_buffer_pure_literal(st, (const char *)map, (size_t)sb.st_size,
                                                  path, pl_needles, pl_needle_lens, st->n_patterns);
+                    verbose_mark("after scan");
                     munmap(map, (size_t)sb.st_size);
+                    verbose_mark("after munmap");
                     close(fd);
                     return 0;
                 }
@@ -698,6 +723,7 @@ usage(void)
         "  -C, --aot-compile               specialize patterns to code_store/ then run\n"
         "  --plain, --no-cs                bypass code store entirely\n"
         "  --cs-verbose                    log cs_load / cs_compile activity\n"
+        "  --verbose                       phase-by-phase wall-clock timing on stderr\n"
         "Modes:\n"
         "  --self-test                     --bench\n"
         "  --dump PATTERN                  --via-prism\n",
@@ -707,7 +733,14 @@ usage(void)
 int
 main(int argc, char *argv[])
 {
+    verbose_start();
+    /* Pre-scan for --verbose so timing covers INIT() too. */
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--verbose") == 0) { g_verbose = true; break; }
+    }
+    verbose_mark("main entry");
     INIT();
+    verbose_mark("after INIT()");
     grep_opt_t go = {0};
     go.color_mode = 2;
     go.backend = &backend_astrogre_ops;
@@ -785,6 +818,12 @@ main(int argc, char *argv[])
             go.cs_verbose = true;
             argi++; continue;
         }
+        if (strcmp(a, "--verbose") == 0) {
+            /* g_verbose is already set in the pre-scan in main(); we
+             * still consume the flag here so it doesn't get treated
+             * as a pattern. */
+            argi++; continue;
+        }
         if (strcmp(a, "-e") == 0) {
             if (argi + 1 >= argc) { usage(); return 2; }
             push_pattern(&go, argv[argi + 1]);
@@ -849,6 +888,7 @@ main(int argc, char *argv[])
         bps[i] = compile_pattern(&go, go.patterns[i]);
         if (!bps[i]) return 2;
     }
+    verbose_mark("after pattern compile");
 
     /* AOT compile mode: ask the backend to specialize each pattern
      * before any input is processed.  Onigmo's `.aot_compile` is NULL
@@ -857,6 +897,7 @@ main(int argc, char *argv[])
         for (int i = 0; i < go.n_patterns; i++) {
             go.backend->aot_compile(bps[i], go.cs_verbose);
         }
+        verbose_mark("after AOT compile");
     }
 
     grep_state_t st = {0};
@@ -889,5 +930,6 @@ main(int argc, char *argv[])
     for (int i = 0; i < go.n_patterns; i++) go.backend->free(bps[i]);
     free(bps);
     free(go.patterns);
+    verbose_mark("at exit");
     return rc;
 }
