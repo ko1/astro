@@ -173,6 +173,38 @@ static NODE *transduce_statements(struct transduce_context *tc, pm_statements_no
     return result;
 }
 
+static NODE *
+build_container(struct transduce_context *tc, pm_node_list_t *items, bool is_array, bool is_hash, bool is_str_concat);
+
+/* Build a single Array NODE that flattens splatted args at runtime.
+ * For `[a, *b, c]` form: build [a] + b.to_a + [c]. */
+static NODE *
+build_args_array_with_splat(struct transduce_context *tc, pm_node_list_t *args)
+{
+    NODE *result = NULL;
+    size_t i = 0;
+    while (i < args->size) {
+        if (PM_NODE_TYPE_P(args->nodes[i], PM_SPLAT_NODE)) {
+            pm_splat_node_t *sn = (pm_splat_node_t *)args->nodes[i];
+            NODE *splatted = sn->expression
+                ? ALLOC_node_splat_to_ary(T(tc, sn->expression))
+                : ALLOC_node_ary_new(0, 0);
+            result = result ? ALLOC_node_ary_concat(result, splatted) : splatted;
+            i++;
+        } else {
+            size_t j = i;
+            while (j < args->size && !PM_NODE_TYPE_P(args->nodes[j], PM_SPLAT_NODE)) j++;
+            pm_node_list_t sub = { 0 };
+            sub.size = sub.capacity = j - i;
+            sub.nodes = &args->nodes[i];
+            NODE *part = build_container(tc, &sub, true, false, false);
+            result = result ? ALLOC_node_ary_concat(result, part) : part;
+            i = j;
+        }
+    }
+    return result ? result : ALLOC_node_ary_new(0, 0);
+}
+
 /* Build call: receiver is optional (NULL = func_call). args list is pm_arguments_node_t
    children (already known length). args_cnt = number of pre-evaluated args.
    block is optional. */
@@ -182,8 +214,27 @@ build_call_simple(struct transduce_context *tc, NODE *recv, ID name,
 {
     uint32_t arg_cnt = args ? (uint32_t)args->size : 0;
     uint32_t call_arg_idx = arg_index(tc);
-    /* Reserve all arg slots first so inner expressions don't allocate
-     * overlapping staging. */
+
+    /* Detect splat: if any arg is a splat, use the apply-style call which
+     * builds a runtime array of args and copies it into staging slots. */
+    bool has_splat = false;
+    if (args) {
+        for (uint32_t i = 0; i < arg_cnt; i++) {
+            if (PM_NODE_TYPE_P(args->nodes[i], PM_SPLAT_NODE)) { has_splat = true; break; }
+        }
+    }
+    if (has_splat) {
+        NODE *args_array = build_args_array_with_splat(tc, args);
+        struct method_cache *mc = alloc_method_cache();
+        /* reserve up to a sane maximum staging slots; we use 16 for now. */
+        for (int s = 0; s < 16; s++) inc_arg_index(tc);
+        rewind_arg_index(tc, call_arg_idx);
+        NODE *blk = block_node ? block_node : ALLOC_node_nil();
+        return ALLOC_node_apply_call(recv ? recv : ALLOC_node_self(), name, args_array,
+                                     call_arg_idx, blk, is_method ? 1 : 0, mc);
+    }
+
+    /* Non-splat path */
     uint32_t *slots = arg_cnt ? korb_xmalloc(sizeof(uint32_t) * arg_cnt) : NULL;
     for (uint32_t i = 0; i < arg_cnt; i++) slots[i] = inc_arg_index(tc);
     NODE *seq = NULL;
@@ -468,8 +519,15 @@ T(struct transduce_context *tc, pm_node_t *node)
       }
       case PM_RETURN_NODE: {
           pm_return_node_t *n = (pm_return_node_t *)node;
-          NODE *v = n->arguments && n->arguments->arguments.size > 0
-              ? T(tc, n->arguments->arguments.nodes[0]) : ALLOC_node_nil();
+          NODE *v;
+          if (!n->arguments || n->arguments->arguments.size == 0) {
+              v = ALLOC_node_nil();
+          } else if (n->arguments->arguments.size == 1) {
+              v = T(tc, n->arguments->arguments.nodes[0]);
+          } else {
+              /* return a, b, c → return [a, b, c] */
+              v = build_container(tc, &n->arguments->arguments, true, false, false);
+          }
           return ALLOC_node_return(v);
       }
       case PM_AND_NODE: {
@@ -601,6 +659,12 @@ T(struct transduce_context *tc, pm_node_t *node)
           uint32_t mx = tc->frame->max_cnt;
           pop_frame(tc);
           NODE *body_scope = ALLOC_node_scope(mx, body);
+          /* If constant_path is a ConstantPathNode, attach to parent module */
+          if (n->constant_path && PM_NODE_TYPE_P(n->constant_path, PM_CONSTANT_PATH_NODE)) {
+              pm_constant_path_node_t *cp = (pm_constant_path_node_t *)n->constant_path;
+              NODE *parent = cp->parent ? T(tc, cp->parent) : ALLOC_node_const_get(korb_intern("Object"));
+              return ALLOC_node_class_def_in(parent, name, super, body_scope);
+          }
           return ALLOC_node_class_def(name, super, body_scope);
       }
 
@@ -612,6 +676,11 @@ T(struct transduce_context *tc, pm_node_t *node)
           uint32_t mx = tc->frame->max_cnt;
           pop_frame(tc);
           NODE *body_scope = ALLOC_node_scope(mx, body);
+          if (n->constant_path && PM_NODE_TYPE_P(n->constant_path, PM_CONSTANT_PATH_NODE)) {
+              pm_constant_path_node_t *cp = (pm_constant_path_node_t *)n->constant_path;
+              NODE *parent = cp->parent ? T(tc, cp->parent) : ALLOC_node_const_get(korb_intern("Object"));
+              return ALLOC_node_module_def_in(parent, name, body_scope);
+          }
           return ALLOC_node_module_def(name, body_scope);
       }
 
@@ -769,33 +838,29 @@ T(struct transduce_context *tc, pm_node_t *node)
            *   if (a === tmp) X
            *   elsif (b === tmp || c === tmp) Y
            *   else Z
-           * We store tmp at the next staging slot. */
+           */
           pm_case_node_t *n = (pm_case_node_t *)node;
           NODE *subject = n->predicate ? T(tc, n->predicate) : NULL;
           uint32_t slot = inc_arg_index(tc);
           NODE *prep = subject ? ALLOC_node_lvar_set(slot, subject) : NULL;
           NODE *else_n = n->else_clause ? T(tc, (pm_node_t *)n->else_clause) : ALLOC_node_nil();
-          /* build chain right-to-left */
           NODE *chain = else_n;
           for (size_t i = n->conditions.size; i > 0; i--) {
               pm_when_node_t *wn = (pm_when_node_t *)n->conditions.nodes[i-1];
               NODE *body = wn->statements ? transduce_statements(tc, wn->statements) : ALLOC_node_nil();
-              /* condition: (cond1 === tmp) || (cond2 === tmp) || ... */
               NODE *cond_chain = NULL;
               for (size_t j = 0; j < wn->conditions.size; j++) {
                   NODE *cv = T(tc, wn->conditions.nodes[j]);
-                  /* cv === tmp */
-                  uint32_t ai = arg_index(tc);
-                  inc_arg_index(tc); inc_arg_index(tc); rewind_arg_index(tc, ai);
-                  struct method_cache *mc = alloc_method_cache();
                   NODE *eqq;
                   if (subject) {
-                      NODE *staged_lhs = cv;
-                      NODE *staged_rhs = ALLOC_node_lvar_get(slot);
-                      NODE *seq_arg = ALLOC_node_lvar_set(ai+1, staged_rhs);
-                      eqq = ALLOC_node_seq(seq_arg, ALLOC_node_method_call(staged_lhs, korb_intern("==="), 1, ai, mc));
+                      /* cv.===(tmp) — stage tmp at arg slot, then method_call */
+                      uint32_t ai = inc_arg_index(tc);
+                      inc_arg_index(tc); /* extra slot for fallback */
+                      rewind_arg_index(tc, ai);
+                      struct method_cache *mc = alloc_method_cache();
+                      NODE *seq_arg = ALLOC_node_lvar_set(ai, ALLOC_node_lvar_get(slot));
+                      eqq = ALLOC_node_seq(seq_arg, ALLOC_node_method_call(cv, korb_intern("==="), 1, ai, mc));
                   } else {
-                      /* case without subject — when cond is a boolean */
                       eqq = cv;
                   }
                   cond_chain = cond_chain ? ALLOC_node_or(cond_chain, eqq) : eqq;
@@ -841,6 +906,12 @@ T(struct transduce_context *tc, pm_node_t *node)
               } else if (PM_NODE_TYPE_P(target, PM_INSTANCE_VARIABLE_TARGET_NODE)) {
                   pm_instance_variable_target_node_t *t = (pm_instance_variable_target_node_t *)target;
                   assign = ALLOC_node_ivar_set(intern_constant(tc->parser, t->name), get);
+              } else if (PM_NODE_TYPE_P(target, PM_CONSTANT_TARGET_NODE)) {
+                  pm_constant_target_node_t *t = (pm_constant_target_node_t *)target;
+                  assign = ALLOC_node_const_set(intern_constant(tc->parser, t->name), get);
+              } else if (PM_NODE_TYPE_P(target, PM_GLOBAL_VARIABLE_TARGET_NODE)) {
+                  pm_global_variable_target_node_t *t = (pm_global_variable_target_node_t *)target;
+                  assign = ALLOC_node_gvar_set(intern_constant(tc->parser, t->name), get);
               }
               if (assign) chain = ALLOC_node_seq(chain, assign);
           }

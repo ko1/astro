@@ -765,6 +765,18 @@ node_splat_to_ary(CTX * restrict c, NODE * restrict n, NODE *expr)
 {
     VALUE v = EA(c, expr);
     if (BUILTIN_TYPE(v) == T_ARRAY) return v;
+    if (BUILTIN_TYPE(v) == T_RANGE) {
+        /* convert Range to Array for splat */
+        struct korb_range *r = (struct korb_range *)v;
+        if (FIXNUM_P(r->begin) && FIXNUM_P(r->end)) {
+            long b = FIX2LONG(r->begin), e = FIX2LONG(r->end);
+            if (r->exclude_end) e--;
+            if (e < b) return korb_ary_new();
+            VALUE a = korb_ary_new_capa(e - b + 1);
+            for (long i = b; i <= e; i++) korb_ary_push(a, INT2FIX(i));
+            return a;
+        }
+    }
     VALUE a = korb_ary_new_capa(1);
     korb_ary_push(a, v);
     return a;
@@ -914,4 +926,89 @@ node_ary_concat(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs)
     for (long i = 0; i < la->len; i++) korb_ary_push(out, la->ptr[i]);
     for (long i = 0; i < ra->len; i++) korb_ary_push(out, ra->ptr[i]);
     return out;
+}
+
+NODE_DEF
+node_apply_call(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, NODE *args_node, uint32_t arg_index, NODE *blk, uint32_t is_method, struct method_cache *mc)
+{
+    VALUE recv_val = is_method ? EA(c, recv) : c->self;
+    VALUE args_array = EA(c, args_node);
+    long n_args = 0;
+    if (BUILTIN_TYPE(args_array) == T_ARRAY) {
+        struct korb_array *aa = (struct korb_array *)args_array;
+        n_args = aa->len;
+        for (long i = 0; i < n_args; i++) {
+            c->fp[arg_index + i] = aa->ptr[i];
+        }
+    }
+    VALUE block_v = blk ? EA(c, blk) : Qnil;
+    struct korb_proc *block = (BUILTIN_TYPE(block_v) == T_PROC) ? (struct korb_proc *)block_v : NULL;
+    return korb_dispatch_call(c, n, recv_val, name, (uint32_t)n_args, arg_index, block, mc);
+}
+
+NODE_DEF @noinline
+node_class_def_in(CTX * restrict c, NODE * restrict n, NODE *parent_expr, ID name, NODE *super_expr, NODE *body)
+{
+    VALUE parent_v = EA(c, parent_expr);
+    if (BUILTIN_TYPE(parent_v) != T_CLASS && BUILTIN_TYPE(parent_v) != T_MODULE) {
+        korb_raise(c, NULL, "not a class/module");
+        return Qnil;
+    }
+    struct korb_class *parent = (struct korb_class *)parent_v;
+    struct korb_class *super = korb_vm->object_class;
+    if (super_expr) {
+        VALUE sv = EA(c, super_expr);
+        if (BUILTIN_TYPE(sv) == T_CLASS) super = (struct korb_class *)sv;
+    }
+    struct korb_class *klass;
+    VALUE existing = korb_const_get(parent, name);
+    if (!UNDEF_P(existing) && BUILTIN_TYPE(existing) == T_CLASS) {
+        klass = (struct korb_class *)existing;
+    } else {
+        klass = korb_class_new(name, super, T_OBJECT);
+        korb_const_set(parent, name, (VALUE)klass);
+    }
+    struct korb_class *prev_class = c->current_class;
+    VALUE prev_self = c->self;
+    struct korb_cref new_cref = { .klass = klass, .prev = c->cref };
+    struct korb_cref *prev_cref = c->cref;
+    c->current_class = klass;
+    c->self = (VALUE)klass;
+    c->cref = &new_cref;
+    VALUE r = body ? EVAL_ARG(c, body) : Qnil;
+    c->current_class = prev_class;
+    c->self = prev_self;
+    c->cref = prev_cref;
+    return r;
+}
+
+NODE_DEF @noinline
+node_module_def_in(CTX * restrict c, NODE * restrict n, NODE *parent_expr, ID name, NODE *body)
+{
+    VALUE parent_v = EA(c, parent_expr);
+    if (BUILTIN_TYPE(parent_v) != T_CLASS && BUILTIN_TYPE(parent_v) != T_MODULE) {
+        korb_raise(c, NULL, "not a class/module");
+        return Qnil;
+    }
+    struct korb_class *parent = (struct korb_class *)parent_v;
+    struct korb_class *mod;
+    VALUE existing = korb_const_get(parent, name);
+    if (!UNDEF_P(existing) && BUILTIN_TYPE(existing) == T_MODULE) {
+        mod = (struct korb_class *)existing;
+    } else {
+        mod = korb_module_new(name);
+        korb_const_set(parent, name, (VALUE)mod);
+    }
+    struct korb_class *prev_class = c->current_class;
+    VALUE prev_self = c->self;
+    struct korb_cref new_cref = { .klass = mod, .prev = c->cref };
+    struct korb_cref *prev_cref = c->cref;
+    c->current_class = mod;
+    c->self = (VALUE)mod;
+    c->cref = &new_cref;
+    VALUE r = body ? EVAL_ARG(c, body) : Qnil;
+    c->current_class = prev_class;
+    c->self = prev_self;
+    c->cref = prev_cref;
+    return r;
 }

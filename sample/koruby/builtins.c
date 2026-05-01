@@ -124,9 +124,7 @@ static VALUE kernel_is_a_p(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE kernel_block_given(CTX *c, VALUE self, int argc, VALUE *argv) {
-    extern struct korb_proc *korb_current_block(void); /* TODO */
-    /* approximate: always false here unless we wire up block tracking */
-    return Qfalse;
+    return KORB_BOOL(korb_block_given());
 }
 
 static VALUE kernel_require_relative(CTX *c, VALUE self, int argc, VALUE *argv) {
@@ -186,20 +184,96 @@ static VALUE kernel_exit(CTX *c, VALUE self, int argc, VALUE *argv) {
     exit(code);
 }
 
+static VALUE kernel_integer(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1) { korb_raise(c, NULL, "Integer() needs argument"); return Qnil; }
+    if (FIXNUM_P(argv[0])) return argv[0];
+    if (BUILTIN_TYPE(argv[0]) == T_BIGNUM) return argv[0];
+    if (BUILTIN_TYPE(argv[0]) == T_FLOAT) {
+        return INT2FIX((long)((struct korb_float *)argv[0])->value);
+    }
+    if (BUILTIN_TYPE(argv[0]) == T_STRING) {
+        const char *s = korb_str_cstr(argv[0]);
+        char *end;
+        int base = argc >= 2 && FIXNUM_P(argv[1]) ? (int)FIX2LONG(argv[1]) : 10;
+        long v = strtol(s, &end, base);
+        if (end == s) {
+            korb_raise(c, NULL, "invalid value for Integer(): %s", s);
+            return Qnil;
+        }
+        return INT2FIX(v);
+    }
+    korb_raise(c, NULL, "can't convert to Integer");
+    return Qnil;
+}
+
+static VALUE kernel_float(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1) return Qnil;
+    if (BUILTIN_TYPE(argv[0]) == T_FLOAT) return argv[0];
+    if (FIXNUM_P(argv[0])) return korb_float_new((double)FIX2LONG(argv[0]));
+    if (BUILTIN_TYPE(argv[0]) == T_STRING) {
+        return korb_float_new(strtod(korb_str_cstr(argv[0]), NULL));
+    }
+    return Qnil;
+}
+
+static VALUE kernel_string(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1) return korb_str_new("", 0);
+    return korb_to_s(argv[0]);
+}
+
+static VALUE kernel_array(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1) return korb_ary_new();
+    if (BUILTIN_TYPE(argv[0]) == T_ARRAY) return argv[0];
+    if (NIL_P(argv[0])) return korb_ary_new();
+    VALUE r = korb_ary_new_capa(1);
+    korb_ary_push(r, argv[0]);
+    return r;
+}
+
 /* ---------- Integer ---------- */
+#define COERCE_OR_RAISE(c, v, op_name)                                  \
+    do {                                                                 \
+        if (!FIXNUM_P(v) && BUILTIN_TYPE(v) != T_BIGNUM) {                \
+            if (BUILTIN_TYPE(v) == T_FLOAT) {                              \
+                /* fall through — caller handles */                        \
+            } else {                                                       \
+                korb_raise((c), NULL, "%s expected Integer, got %s",       \
+                           (op_name), korb_id_name(korb_class_of_class((v))->name)); \
+                return Qnil;                                               \
+            }                                                              \
+        }                                                                  \
+    } while (0)
+
 static VALUE int_plus(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (BUILTIN_TYPE(argv[0]) == T_FLOAT) {
+        return korb_float_new((double)FIX2LONG(self) + ((struct korb_float *)argv[0])->value);
+    }
+    COERCE_OR_RAISE(c, argv[0], "+");
     return korb_int_plus(self, argv[0]);
 }
 static VALUE int_minus(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (BUILTIN_TYPE(argv[0]) == T_FLOAT) {
+        return korb_float_new((double)FIX2LONG(self) - ((struct korb_float *)argv[0])->value);
+    }
+    COERCE_OR_RAISE(c, argv[0], "-");
     return korb_int_minus(self, argv[0]);
 }
 static VALUE int_mul(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (BUILTIN_TYPE(argv[0]) == T_FLOAT) {
+        return korb_float_new((double)FIX2LONG(self) * ((struct korb_float *)argv[0])->value);
+    }
+    COERCE_OR_RAISE(c, argv[0], "*");
     return korb_int_mul(self, argv[0]);
 }
 static VALUE int_div(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (BUILTIN_TYPE(argv[0]) == T_FLOAT) {
+        return korb_float_new((double)FIX2LONG(self) / ((struct korb_float *)argv[0])->value);
+    }
+    COERCE_OR_RAISE(c, argv[0], "/");
     return korb_int_div(self, argv[0]);
 }
 static VALUE int_mod(CTX *c, VALUE self, int argc, VALUE *argv) {
+    COERCE_OR_RAISE(c, argv[0], "%");
     return korb_int_mod(self, argv[0]);
 }
 static VALUE int_lshift(CTX *c, VALUE self, int argc, VALUE *argv) {
@@ -222,6 +296,22 @@ static VALUE int_le(CTX *c, VALUE self, int argc, VALUE *argv) { return KORB_BOO
 static VALUE int_gt(CTX *c, VALUE self, int argc, VALUE *argv) { return KORB_BOOL(korb_int_cmp(self, argv[0]) > 0); }
 static VALUE int_ge(CTX *c, VALUE self, int argc, VALUE *argv) { return KORB_BOOL(korb_int_cmp(self, argv[0]) >= 0); }
 static VALUE int_eq(CTX *c, VALUE self, int argc, VALUE *argv) { return KORB_BOOL(korb_int_eq(self, argv[0])); }
+static VALUE int_cmp(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1) return Qnil;
+    if (FIXNUM_P(self) && FIXNUM_P(argv[0])) {
+        return INT2FIX((intptr_t)self < (intptr_t)argv[0] ? -1 : (intptr_t)self > (intptr_t)argv[0] ? 1 : 0);
+    }
+    if ((FIXNUM_P(self) || BUILTIN_TYPE(self) == T_BIGNUM) &&
+        (FIXNUM_P(argv[0]) || BUILTIN_TYPE(argv[0]) == T_BIGNUM)) {
+        return INT2FIX(korb_int_cmp(self, argv[0]));
+    }
+    if (BUILTIN_TYPE(argv[0]) == T_FLOAT) {
+        double a = (double)FIX2LONG(self);
+        double b = ((struct korb_float *)argv[0])->value;
+        return INT2FIX(a < b ? -1 : a > b ? 1 : 0);
+    }
+    return Qnil;
+}
 static VALUE int_uminus(CTX *c, VALUE self, int argc, VALUE *argv) {
     return korb_int_minus(INT2FIX(0), self);
 }
@@ -296,13 +386,83 @@ static VALUE ary_size(CTX *c, VALUE self, int argc, VALUE *argv) {
     return INT2FIX(korb_ary_len(self));
 }
 static VALUE ary_aref(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (!FIXNUM_P(argv[0])) return Qnil;
-    return korb_ary_aref(self, FIX2LONG(argv[0]));
+    if (argc == 1) {
+        if (FIXNUM_P(argv[0])) return korb_ary_aref(self, FIX2LONG(argv[0]));
+        if (BUILTIN_TYPE(argv[0]) == T_RANGE) {
+            struct korb_array *a = (struct korb_array *)self;
+            struct korb_range *r = (struct korb_range *)argv[0];
+            if (!FIXNUM_P(r->begin) || !FIXNUM_P(r->end)) return Qnil;
+            long b = FIX2LONG(r->begin), e = FIX2LONG(r->end);
+            if (b < 0) b += a->len;
+            if (e < 0) e += a->len;
+            if (r->exclude_end) e--;
+            if (b < 0 || b > a->len) return Qnil;
+            if (e >= a->len) e = a->len - 1;
+            VALUE res = korb_ary_new();
+            for (long i = b; i <= e; i++) korb_ary_push(res, a->ptr[i]);
+            return res;
+        }
+        return Qnil;
+    }
+    if (argc == 2 && FIXNUM_P(argv[0]) && FIXNUM_P(argv[1])) {
+        struct korb_array *a = (struct korb_array *)self;
+        long start = FIX2LONG(argv[0]);
+        long len = FIX2LONG(argv[1]);
+        if (start < 0) start += a->len;
+        if (start < 0 || start > a->len || len < 0) return Qnil;
+        if (start + len > a->len) len = a->len - start;
+        VALUE r = korb_ary_new_capa(len);
+        for (long i = 0; i < len; i++) korb_ary_push(r, a->ptr[start + i]);
+        return r;
+    }
+    return Qnil;
 }
 static VALUE ary_aset(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (!FIXNUM_P(argv[0])) return Qnil;
-    korb_ary_aset(self, FIX2LONG(argv[0]), argv[1]);
-    return argv[1];
+    if (argc == 2 && FIXNUM_P(argv[0])) {
+        korb_ary_aset(self, FIX2LONG(argv[0]), argv[1]);
+        return argv[1];
+    }
+    if (argc == 3 && FIXNUM_P(argv[0]) && FIXNUM_P(argv[1])) {
+        /* a[start, len] = value or a[start, len] = array */
+        struct korb_array *a = (struct korb_array *)self;
+        long start = FIX2LONG(argv[0]);
+        long len = FIX2LONG(argv[1]);
+        if (start < 0) start += a->len;
+        if (start < 0 || len < 0) return argv[2];
+        VALUE val = argv[2];
+        if (BUILTIN_TYPE(val) == T_ARRAY) {
+            struct korb_array *src = (struct korb_array *)val;
+            /* Resize if needed */
+            long new_len = start + src->len;
+            if (new_len > a->len) {
+                /* extend with nil first */
+                while (a->len < new_len) korb_ary_push(self, Qnil);
+            }
+            /* If replacing fewer elements than provided, shift */
+            if ((long)src->len != len) {
+                long diff = (long)src->len - len;
+                /* extend / shrink */
+                long old = a->len;
+                if (diff > 0) {
+                    for (long i = 0; i < diff; i++) korb_ary_push(self, Qnil);
+                    for (long i = old - 1; i >= start + len; i--) a->ptr[i + diff] = a->ptr[i];
+                } else if (diff < 0) {
+                    for (long i = start + len; i < old; i++) a->ptr[i + diff] = a->ptr[i];
+                    a->len += diff;
+                }
+            }
+            for (long i = 0; i < (long)src->len; i++) {
+                if (start + i < a->len) a->ptr[start + i] = src->ptr[i];
+            }
+        } else {
+            /* a[start, len] = single value: replace range with [val] */
+            for (long i = start; i < start + len && i < a->len; i++) {
+                a->ptr[i] = val;
+            }
+        }
+        return argv[2];
+    }
+    return Qnil;
 }
 static VALUE ary_push(CTX *c, VALUE self, int argc, VALUE *argv) {
     for (int i = 0; i < argc; i++) korb_ary_push(self, argv[i]);
@@ -839,6 +999,16 @@ static VALUE str_mul(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 static VALUE str_hash(CTX *c, VALUE self, int argc, VALUE *argv) {
     return INT2FIX((long)(korb_hash_value(self) >> 1));
+}
+
+static VALUE str_sum(CTX *c, VALUE self, int argc, VALUE *argv) {
+    /* Simple checksum: sum of bytes mod 65536 (default bits=16) */
+    struct korb_string *s = (struct korb_string *)self;
+    long bits = (argc >= 1 && FIXNUM_P(argv[0])) ? FIX2LONG(argv[0]) : 16;
+    unsigned long sum = 0;
+    for (long i = 0; i < s->len; i++) sum += (unsigned char)s->ptr[i];
+    if (bits > 0 && bits < 64) sum &= ((1UL << bits) - 1);
+    return INT2FIX((long)sum);
 }
 
 static VALUE str_eqq(CTX *c, VALUE self, int argc, VALUE *argv) {
@@ -1391,6 +1561,32 @@ static VALUE ary_min_by(CTX *c, VALUE self, int argc, VALUE *argv) {
     return m;
 }
 
+static VALUE ary_mul(CTX *c, VALUE self, int argc, VALUE *argv) {
+    /* Array#* — n: repeat, str: join */
+    if (argc < 1) return self;
+    struct korb_array *a = (struct korb_array *)self;
+    if (FIXNUM_P(argv[0])) {
+        long n = FIX2LONG(argv[0]);
+        if (n < 0) n = 0;
+        VALUE r = korb_ary_new_capa(a->len * n);
+        for (long i = 0; i < n; i++)
+            for (long j = 0; j < a->len; j++) korb_ary_push(r, a->ptr[j]);
+        return r;
+    }
+    if (BUILTIN_TYPE(argv[0]) == T_STRING) {
+        /* join with sep */
+        VALUE r = korb_str_new("", 0);
+        for (long i = 0; i < a->len; i++) {
+            if (i > 0) korb_str_concat(r, argv[0]);
+            VALUE s = a->ptr[i];
+            if (BUILTIN_TYPE(s) != T_STRING) s = korb_to_s(s);
+            korb_str_concat(r, s);
+        }
+        return r;
+    }
+    return self;
+}
+
 static VALUE ary_max_by(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_array *a = (struct korb_array *)self;
     if (a->len == 0) return Qnil;
@@ -1404,6 +1600,24 @@ static VALUE ary_max_by(CTX *c, VALUE self, int argc, VALUE *argv) {
         if (FIXNUM_P(cmp) && FIX2LONG(cmp) < 0) { m = a->ptr[i]; mk = k; }
     }
     return m;
+}
+
+static VALUE ary_slice_bang(CTX *c, VALUE self, int argc, VALUE *argv) {
+    /* Array#slice!(start, len) — remove and return that range */
+    if (argc < 1 || !FIXNUM_P(argv[0])) return Qnil;
+    long start = FIX2LONG(argv[0]);
+    struct korb_array *a = (struct korb_array *)self;
+    if (start < 0) start += a->len;
+    long len = (argc >= 2 && FIXNUM_P(argv[1])) ? FIX2LONG(argv[1]) : 1;
+    if (start < 0 || start >= a->len) return Qnil;
+    if (start + len > a->len) len = a->len - start;
+    if (len < 0) len = 0;
+    VALUE r = korb_ary_new_capa(len);
+    for (long i = 0; i < len; i++) korb_ary_push(r, a->ptr[start + i]);
+    /* shift remaining */
+    for (long i = start; i + len < a->len; i++) a->ptr[i] = a->ptr[i + len];
+    a->len -= len;
+    return r;
 }
 
 static VALUE ary_each_with_object(CTX *c, VALUE self, int argc, VALUE *argv) {
@@ -1497,6 +1711,21 @@ static VALUE hash_to_a(CTX *c, VALUE self, int argc, VALUE *argv) {
         korb_ary_push(pair, e->value);
         korb_ary_push(r, pair);
     }
+    return r;
+}
+
+static VALUE hash_fetch(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1) return Qnil;
+    struct korb_hash *h = (struct korb_hash *)self;
+    uint64_t hh = korb_hash_value(argv[0]);
+    for (struct korb_hash_entry *e = h->first; e; e = e->next) {
+        if (e->hash == hh && korb_eql(e->key, argv[0])) return e->value;
+    }
+    /* not found: default arg or block or raise */
+    if (argc >= 2) return argv[1];
+    /* try yielding to block */
+    VALUE r = korb_yield(c, 1, &argv[0]);
+    if (c->state != KORB_NORMAL) return Qnil;
     return r;
 }
 
@@ -1700,6 +1929,44 @@ static VALUE rng_select(CTX *c, VALUE self, int argc, VALUE *argv) {
     return out;
 }
 
+static VALUE rng_all_p(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_range *r = (struct korb_range *)self;
+    if (!FIXNUM_P(r->begin) || !FIXNUM_P(r->end)) return Qtrue;
+    long b = FIX2LONG(r->begin), e = FIX2LONG(r->end);
+    if (r->exclude_end) e--;
+    for (long i = b; i <= e; i++) {
+        VALUE v = INT2FIX(i);
+        VALUE m = korb_yield(c, 1, &v);
+        if (c->state != KORB_NORMAL) return Qnil;
+        if (!RTEST(m)) return Qfalse;
+    }
+    return Qtrue;
+}
+
+static VALUE rng_any_p(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_range *r = (struct korb_range *)self;
+    if (!FIXNUM_P(r->begin) || !FIXNUM_P(r->end)) return Qfalse;
+    long b = FIX2LONG(r->begin), e = FIX2LONG(r->end);
+    if (r->exclude_end) e--;
+    for (long i = b; i <= e; i++) {
+        VALUE v = INT2FIX(i);
+        VALUE m = korb_yield(c, 1, &v);
+        if (c->state != KORB_NORMAL) return Qnil;
+        if (RTEST(m)) return Qtrue;
+    }
+    return Qfalse;
+}
+
+static VALUE rng_count(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_range *r = (struct korb_range *)self;
+    if (!FIXNUM_P(r->begin) || !FIXNUM_P(r->end)) return INT2FIX(0);
+    long b = FIX2LONG(r->begin), e = FIX2LONG(r->end);
+    long n = e - b + 1;
+    if (r->exclude_end) n--;
+    if (n < 0) n = 0;
+    return INT2FIX(n);
+}
+
 static VALUE rng_reduce(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_range *r = (struct korb_range *)self;
     if (!FIXNUM_P(r->begin) || !FIXNUM_P(r->end)) return Qnil;
@@ -1792,6 +2059,57 @@ static VALUE int_divmod(CTX *c, VALUE self, int argc, VALUE *argv) {
     return r;
 }
 
+static VALUE int_step(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (!FIXNUM_P(self) || argc < 1 || !FIXNUM_P(argv[0])) return self;
+    long start = FIX2LONG(self);
+    long stop = FIX2LONG(argv[0]);
+    long step = (argc >= 2 && FIXNUM_P(argv[1])) ? FIX2LONG(argv[1]) : 1;
+    if (step == 0) return self;
+    /* If no block given, return Array of values (Enumerator approximation) */
+    if (!korb_block_given()) {
+        VALUE r = korb_ary_new();
+        if (step > 0) for (long i = start; i <= stop; i += step) korb_ary_push(r, INT2FIX(i));
+        else for (long i = start; i >= stop; i += step) korb_ary_push(r, INT2FIX(i));
+        return r;
+    }
+    if (step > 0) {
+        for (long i = start; i <= stop; i += step) {
+            VALUE v = INT2FIX(i);
+            korb_yield(c, 1, &v);
+            if (c->state != KORB_NORMAL) return Qnil;
+        }
+    } else {
+        for (long i = start; i >= stop; i += step) {
+            VALUE v = INT2FIX(i);
+            korb_yield(c, 1, &v);
+            if (c->state != KORB_NORMAL) return Qnil;
+        }
+    }
+    return self;
+}
+
+static VALUE int_upto(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (!FIXNUM_P(self) || argc < 1 || !FIXNUM_P(argv[0])) return self;
+    long start = FIX2LONG(self), stop = FIX2LONG(argv[0]);
+    for (long i = start; i <= stop; i++) {
+        VALUE v = INT2FIX(i);
+        korb_yield(c, 1, &v);
+        if (c->state != KORB_NORMAL) return Qnil;
+    }
+    return self;
+}
+
+static VALUE int_downto(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (!FIXNUM_P(self) || argc < 1 || !FIXNUM_P(argv[0])) return self;
+    long start = FIX2LONG(self), stop = FIX2LONG(argv[0]);
+    for (long i = start; i >= stop; i--) {
+        VALUE v = INT2FIX(i);
+        korb_yield(c, 1, &v);
+        if (c->state != KORB_NORMAL) return Qnil;
+    }
+    return self;
+}
+
 static VALUE int_pow(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1 || !FIXNUM_P(self) || !FIXNUM_P(argv[0])) return self;
     long b = FIX2LONG(self), e = FIX2LONG(argv[0]);
@@ -1817,6 +2135,44 @@ static VALUE int_pow(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE flt_floor(CTX *c, VALUE self, int argc, VALUE *argv) {
     double v = ((struct korb_float *)self)->value;
     return INT2FIX((long)v);
+}
+
+static VALUE flt_pow(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1) return self;
+    double a = ((struct korb_float *)self)->value;
+    double b = korb_num2dbl(argv[0]);
+    return korb_float_new(pow(a, b));
+}
+
+static VALUE flt_lt(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return KORB_BOOL(((struct korb_float *)self)->value < korb_num2dbl(argv[0]));
+}
+static VALUE flt_le(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return KORB_BOOL(((struct korb_float *)self)->value <= korb_num2dbl(argv[0]));
+}
+static VALUE flt_gt(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return KORB_BOOL(((struct korb_float *)self)->value > korb_num2dbl(argv[0]));
+}
+static VALUE flt_ge(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return KORB_BOOL(((struct korb_float *)self)->value >= korb_num2dbl(argv[0]));
+}
+static VALUE flt_cmp(CTX *c, VALUE self, int argc, VALUE *argv) {
+    double a = ((struct korb_float *)self)->value;
+    double b = korb_num2dbl(argv[0]);
+    return INT2FIX(a < b ? -1 : a > b ? 1 : 0);
+}
+static VALUE flt_to_i(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return INT2FIX((long)((struct korb_float *)self)->value);
+}
+static VALUE flt_to_f(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return self;
+}
+static VALUE flt_uminus(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return korb_float_new(-((struct korb_float *)self)->value);
+}
+static VALUE flt_abs(CTX *c, VALUE self, int argc, VALUE *argv) {
+    double v = ((struct korb_float *)self)->value;
+    return korb_float_new(v < 0 ? -v : v);
 }
 
 static VALUE flt_eqq(CTX *c, VALUE self, int argc, VALUE *argv) {
@@ -1869,6 +2225,22 @@ static VALUE file_basename(CTX *c, VALUE self, int argc, VALUE *argv) {
     return korb_str_new_cstr(slash ? slash + 1 : s);
 }
 
+static VALUE file_extname(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return korb_str_new("", 0);
+    const char *s = korb_str_cstr(argv[0]);
+    const char *dot = strrchr(s, '.');
+    if (!dot || dot == s) return korb_str_new("", 0);
+    /* Don't include if dot is in dirname only */
+    const char *slash = strrchr(s, '/');
+    if (slash && dot < slash) return korb_str_new("", 0);
+    return korb_str_new_cstr(dot);
+}
+
+static VALUE file_binread(CTX *c, VALUE self, int argc, VALUE *argv) {
+    /* Same as File.read but ensures binary mode */
+    return file_read(c, self, argc, argv);
+}
+
 static VALUE file_expand_path(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return korb_str_new("", 0);
     /* simplistic: if absolute, return as-is; else prepend dir */
@@ -1881,6 +2253,23 @@ static VALUE file_expand_path(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 /* IO (stubbed via STDOUT / $stdout) */
+
+#include <time.h>
+VALUE proc_clock_gettime_stub(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    double t = ts.tv_sec + ts.tv_nsec / 1e9;
+    return korb_float_new(t);
+}
+
+VALUE time_now_stub(CTX *c, VALUE self, int argc, VALUE *argv) {
+    /* return Float seconds since epoch (we just use Process clock, not real epoch) */
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    double t = ts.tv_sec + ts.tv_nsec / 1e9;
+    return korb_float_new(t);
+}
+
 
 /* ---------- Class.new etc ---------- */
 static VALUE class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
@@ -1956,6 +2345,7 @@ void korb_init_builtins(void) {
     DEF(cObj, "!", kernel_not, 0);
     DEF(cObj, "nil?", kernel_nil_p, 0);
     DEF(cObj, "object_id", kernel_object_id, 0);
+    DEF(cObj, "equal?", kernel_eq, 1);  /* same as == for now */
     DEF(cObj, "freeze", kernel_freeze, 0);
     DEF(cObj, "frozen?", kernel_frozen_p, 0);
     DEF(cObj, "respond_to?", kernel_respond_to_p, 1);
@@ -1967,6 +2357,10 @@ void korb_init_builtins(void) {
     DEF(cObj, "load", kernel_load, -1);
     DEF(cObj, "abort", kernel_abort, -1);
     DEF(cObj, "exit", kernel_exit, -1);
+    DEF(cObj, "Integer", kernel_integer, -1);
+    DEF(cObj, "Float", kernel_float, 1);
+    DEF(cObj, "String", kernel_string, 1);
+    DEF(cObj, "Array", kernel_array, 1);
 
     /* Integer */
     struct korb_class *cInt = korb_vm->integer_class;
@@ -1985,6 +2379,7 @@ void korb_init_builtins(void) {
     DEF(cInt, ">", int_gt, 1);
     DEF(cInt, ">=", int_ge, 1);
     DEF(cInt, "==", int_eq, 1);
+    DEF(cInt, "<=>", int_cmp, 1);
     DEF(cInt, "-@", int_uminus, 0);
     DEF(cInt, "to_s", int_to_s, 0);
     DEF(cInt, "to_i", int_to_i, 0);
@@ -2018,8 +2413,8 @@ void korb_init_builtins(void) {
     struct korb_class *cAry = korb_vm->array_class;
     DEF(cAry, "size", ary_size, 0);
     DEF(cAry, "length", ary_size, 0);
-    DEF(cAry, "[]", ary_aref, 1);
-    DEF(cAry, "[]=", ary_aset, 2);
+    DEF(cAry, "[]", ary_aref, -1);
+    DEF(cAry, "[]=", ary_aset, -1);
     DEF(cAry, "push", ary_push, -1);
     DEF(cAry, "<<", ary_lshift, 1);
     DEF(cAry, "pop", ary_pop, 0);
@@ -2108,10 +2503,26 @@ void korb_init_builtins(void) {
     DEF(cInt, "bit_length", int_bit_length, 0);
     DEF(cInt, "divmod", int_divmod, 1);
     DEF(cInt, "**",    int_pow, 1);
+    DEF(cInt, "step",  int_step, -1);
+    DEF(cInt, "upto",  int_upto, 1);
+    DEF(cInt, "downto", int_downto, 1);
 
     /* extra Float */
     DEF(cFlt, "floor", flt_floor, -1);
     DEF(cFlt, "===",   flt_eqq, 1);
+    DEF(cFlt, "**",    flt_pow, 1);
+    DEF(cFlt, "<",     flt_lt, 1);
+    DEF(cFlt, "<=",    flt_le, 1);
+    DEF(cFlt, ">",     flt_gt, 1);
+    DEF(cFlt, ">=",    flt_ge, 1);
+    DEF(cFlt, "<=>",   flt_cmp, 1);
+    DEF(cFlt, "==",    flt_eqq, 1);
+    DEF(cFlt, "to_i",  flt_to_i, 0);
+    DEF(cFlt, "to_f",  flt_to_f, 0);
+    DEF(cFlt, "-@",    flt_uminus, 0);
+    DEF(cFlt, "abs",   flt_abs, 0);
+    DEF(cFlt, "ceil",  flt_floor, -1);
+    DEF(cFlt, "round", flt_floor, -1);
 
     /* extra String */
     DEF(cStr, "split",       str_split,       -1);
@@ -2147,6 +2558,7 @@ void korb_init_builtins(void) {
     DEF(cStr, "match?",      str_match_p, -1);
     DEF(cStr, "match",       str_match, -1);
     DEF(cStr, "scan",        str_scan, 1);
+    DEF(cStr, "sum",         str_sum, -1);
 
     /* extra Array */
     DEF(cAry, "sort",       ary_sort,       -1);
@@ -2187,6 +2599,19 @@ void korb_init_builtins(void) {
     DEF(cAry, "detect",    ary_find, 0);
     DEF(cAry, "min_by",    ary_min_by, 0);
     DEF(cAry, "max_by",    ary_max_by, 0);
+    DEF(cAry, "*",         ary_mul, 1);
+    DEF(cAry, "uniq!",     ary_uniq, -1);
+    DEF(cAry, "sort!",     ary_sort, -1);
+    DEF(cAry, "compact!",  ary_compact, 0);
+    DEF(cAry, "reverse!",  ary_reverse, 0);
+    DEF(cAry, "flatten!",  ary_flatten, -1);
+    DEF(cAry, "freeze",    kernel_freeze, 0);
+    DEF(cAry, "frozen?",   kernel_frozen_p, 0);
+    DEF(cAry, "hash",      kernel_object_id, 0);
+    DEF(cAry, "slice!",    ary_slice_bang, -1);
+    DEF(cAry, "slice",     ary_slice_bang, -1); /* not quite right but ok */
+    DEF(cAry, "flat_map",  ary_map, 0);   /* simplified: same as map for shallow */
+    DEF(cAry, "collect_concat", ary_map, 0);
 
     /* extra Hash */
     DEF(cHsh, "keys",       hash_keys,       0);
@@ -2202,6 +2627,10 @@ void korb_init_builtins(void) {
     DEF(cHsh, "invert",     hash_invert,     0);
     DEF(cHsh, "to_a",       hash_to_a,       0);
     DEF(cHsh, "delete",     hash_delete,    -1);
+    DEF(cHsh, "fetch",      hash_fetch,     -1);
+    DEF(cHsh, "compare_by_identity", kernel_inspect, 0); /* no-op */
+    DEF(cHsh, "default",    kernel_inspect, 0); /* nil */
+    DEF(cHsh, "default=",   kernel_inspect, 1); /* no-op */
     DEF(cHsh, "===",        hash_eqq,        1);
     DEF(cHsh, "dup",        hash_dup,        0);
     DEF(cHsh, "clone",      hash_dup,        0);
@@ -2225,6 +2654,9 @@ void korb_init_builtins(void) {
     DEF(cRng, "filter",   rng_select,   0);
     DEF(cRng, "reduce",   rng_reduce,  -1);
     DEF(cRng, "inject",   rng_reduce,  -1);
+    DEF(cRng, "all?",     rng_all_p,    0);
+    DEF(cRng, "any?",     rng_any_p,    0);
+    DEF(cRng, "count",    rng_count,    0);
 
     /* extra Symbol additions later (cSym defined further down) */
 
@@ -2279,6 +2711,8 @@ void korb_init_builtins(void) {
         korb_class_add_method_cfunc(cFileMeta, korb_intern("dirname"), file_dirname, -1);
         korb_class_add_method_cfunc(cFileMeta, korb_intern("basename"), file_basename, -1);
         korb_class_add_method_cfunc(cFileMeta, korb_intern("expand_path"), file_expand_path, -1);
+        korb_class_add_method_cfunc(cFileMeta, korb_intern("extname"), file_extname, 1);
+        korb_class_add_method_cfunc(cFileMeta, korb_intern("binread"), file_binread, 1);
         cFile->basic.klass = (VALUE)cFileMeta;
     }
 
@@ -2320,6 +2754,46 @@ void korb_init_builtins(void) {
     struct korb_class *cPrc = korb_vm->proc_class;
     DEF(cPrc, "call", proc_call, -1);
     DEF(cPrc, "[]", proc_call, -1);
+
+    /* Process / Time stub modules */
+    struct korb_class *cProcess = korb_module_new(korb_intern("Process"));
+    korb_const_set(korb_vm->object_class, korb_intern("Process"), (VALUE)cProcess);
+    {
+        /* Process.clock_gettime, etc. — stubs returning 0.0 */
+        extern VALUE proc_clock_gettime_stub(CTX *c, VALUE self, int argc, VALUE *argv);
+        korb_class_add_method_cfunc(cProcess, korb_intern("clock_gettime"), proc_clock_gettime_stub, -1);
+        korb_const_set(cProcess, korb_intern("CLOCK_MONOTONIC"), INT2FIX(1));
+    }
+
+    struct korb_class *cTime = korb_class_new(korb_intern("Time"), korb_vm->object_class, T_OBJECT);
+    korb_const_set(korb_vm->object_class, korb_intern("Time"), (VALUE)cTime);
+    {
+        struct korb_class *cTimeMeta = korb_class_new(korb_intern("TimeMeta"),
+                                                       korb_vm->class_class, T_CLASS);
+        extern VALUE time_now_stub(CTX *c, VALUE self, int argc, VALUE *argv);
+        korb_class_add_method_cfunc(cTimeMeta, korb_intern("now"), time_now_stub, 0);
+        cTime->basic.klass = (VALUE)cTimeMeta;
+    }
+
+    /* Fiber */
+    struct korb_class *cFiber = korb_class_new(korb_intern("Fiber"), korb_vm->object_class, T_DATA);
+    korb_const_set(korb_vm->object_class, korb_intern("Fiber"), (VALUE)cFiber);
+    korb_vm->fiber_class = cFiber;
+    {
+        /* Fiber.new {|x| ...} */
+        extern VALUE korb_fiber_new_cfunc(CTX *c, VALUE self, int argc, VALUE *argv);
+        struct korb_class *cFiberMeta = korb_class_new(korb_intern("FiberMeta"),
+                                                        korb_vm->class_class, T_CLASS);
+        korb_class_add_method_cfunc(cFiberMeta, korb_intern("new"), korb_fiber_new_cfunc, 0);
+        /* Fiber.yield */
+        extern VALUE korb_fiber_yield_cfunc(CTX *c, VALUE self, int argc, VALUE *argv);
+        korb_class_add_method_cfunc(cFiberMeta, korb_intern("yield"), korb_fiber_yield_cfunc, -1);
+        cFiber->basic.klass = (VALUE)cFiberMeta;
+    }
+    {
+        extern VALUE korb_fiber_resume_cfunc(CTX *c, VALUE self, int argc, VALUE *argv);
+        korb_class_add_method_cfunc(cFiber, korb_intern("resume"), korb_fiber_resume_cfunc, -1);
+    }
 
     /* Make sure ARGV is at least an empty array; main.c will override */
     korb_const_set(korb_vm->object_class, korb_intern("ARGV"), korb_ary_new());

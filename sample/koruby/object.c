@@ -15,6 +15,8 @@
 #include "object.h"
 #include "node.h"
 
+#include <ucontext.h>
+
 struct korb_vm *korb_vm = NULL;
 
 ID id_initialize, id_to_s, id_inspect, id_call, id_each, id_new;
@@ -776,6 +778,8 @@ VALUE korb_proc_new(struct Node *body, VALUE *fp, uint32_t env_size,
 /* Block currently active for yield (set by dispatch_call). */
 static __thread struct korb_proc *current_block = NULL;
 
+bool korb_block_given(void) { return current_block != NULL; }
+
 VALUE korb_yield(CTX *c, uint32_t argc, VALUE *argv) {
     if (UNLIKELY(!current_block)) {
         korb_raise(c, NULL, "no block given (yield)");
@@ -785,8 +789,21 @@ VALUE korb_yield(CTX *c, uint32_t argc, VALUE *argv) {
     /* Shared-fp closure: block evaluates with env_fp's view of locals. */
     VALUE *fp = blk->env;
     VALUE prev_self = c->self;
-    for (uint32_t i = 0; i < blk->params_cnt && i < argc; i++) {
-        fp[blk->param_base + i] = argv[i];
+    /* Auto-destructure: block with N params yielded a single Array of size M
+     * → assign array elements to params (Ruby block calling convention). */
+    if (blk->params_cnt > 1 && argc == 1 && BUILTIN_TYPE(argv[0]) == T_ARRAY) {
+        struct korb_array *a = (struct korb_array *)argv[0];
+        for (uint32_t i = 0; i < blk->params_cnt; i++) {
+            fp[blk->param_base + i] = (i < (uint32_t)a->len) ? a->ptr[i] : Qnil;
+        }
+    } else {
+        for (uint32_t i = 0; i < blk->params_cnt && i < argc; i++) {
+            fp[blk->param_base + i] = argv[i];
+        }
+        /* fill missing params with nil */
+        for (uint32_t i = (argc < blk->params_cnt ? argc : blk->params_cnt); i < blk->params_cnt; i++) {
+            fp[blk->param_base + i] = Qnil;
+        }
     }
     c->self = blk->self;
     VALUE r = EVAL(c, blk->body);
@@ -986,6 +1003,31 @@ bool korb_eq(VALUE a, VALUE b) {
     }
     if (ta == T_BIGNUM && tb == T_BIGNUM) return korb_int_eq(a, b);
     if (ta == T_FLOAT && tb == T_FLOAT) return ((struct korb_float *)a)->value == ((struct korb_float *)b)->value;
+    if (ta == T_ARRAY && tb == T_ARRAY) {
+        struct korb_array *ax = (struct korb_array *)a;
+        struct korb_array *bx = (struct korb_array *)b;
+        if (ax->len != bx->len) return false;
+        for (long i = 0; i < ax->len; i++) {
+            if (!korb_eq(ax->ptr[i], bx->ptr[i])) return false;
+        }
+        return true;
+    }
+    if (ta == T_HASH && tb == T_HASH) {
+        struct korb_hash *ah = (struct korb_hash *)a;
+        struct korb_hash *bh = (struct korb_hash *)b;
+        if (ah->size != bh->size) return false;
+        for (struct korb_hash_entry *e = ah->first; e; e = e->next) {
+            VALUE bv = korb_hash_aref(b, e->key);
+            if (!korb_eq(e->value, bv)) return false;
+        }
+        return true;
+    }
+    if (ta == T_RANGE && tb == T_RANGE) {
+        struct korb_range *ar = (struct korb_range *)a;
+        struct korb_range *br = (struct korb_range *)b;
+        return ar->exclude_end == br->exclude_end &&
+               korb_eq(ar->begin, br->begin) && korb_eq(ar->end, br->end);
+    }
     return false;
 }
 
@@ -1027,7 +1069,15 @@ VALUE korb_dispatch_call(CTX *c, struct Node *callsite, VALUE recv, ID name,
     struct korb_class *klass = korb_class_of_class(recv);
 
     if (UNLIKELY(!mc || mc->serial != korb_vm->method_serial || mc->klass != klass)) {
-        struct korb_method *m = korb_class_find_method(klass, name);
+        struct korb_method *m = NULL;
+        /* For Module receivers (only — NOT Class): check the module's own
+         * instance method table first.  This is how we support
+         * module_function-style class-level methods without confusing them
+         * with class-level method lookup for actual classes. */
+        if (BUILTIN_TYPE(recv) == T_MODULE) {
+            m = korb_class_find_method((struct korb_class *)recv, name);
+        }
+        if (!m) m = korb_class_find_method(klass, name);
         if (UNLIKELY(!m)) {
             korb_raise(c, NULL, "undefined method '%s' for %s",
                      korb_id_name(name), korb_id_name(klass->name));
@@ -1460,6 +1510,138 @@ static void mark_loaded(const char *path) {
     char *cp = korb_xmalloc_atomic(strlen(path) + 1);
     strcpy(cp, path);
     loaded_files.paths[loaded_files.size++] = cp;
+}
+
+/* ---- Fiber ---- */
+struct korb_fiber {
+    struct RBasic basic;
+    ucontext_t ctx;
+    ucontext_t prev_ctx;
+    struct korb_proc *block;
+    char *stack;
+    size_t stack_size;
+    enum { KF_INIT, KF_RUNNING, KF_SUSPENDED, KF_DEAD } state;
+    /* args/return values */
+    VALUE *args;
+    int argc;
+    VALUE result;
+    /* CTX snapshot to restore on swap */
+    CTX *c;
+    VALUE *fp_save;
+    VALUE *sp_save;
+    VALUE self_save;
+    struct korb_cref *cref_save;
+    struct korb_proc *block_save;
+};
+
+static __thread struct korb_fiber *current_fiber = NULL;
+
+static void korb_fiber_entry(unsigned int hi, unsigned int lo) {
+    /* Reconstruct pointer from two uints (ucontext requires int args) */
+    uintptr_t p = ((uintptr_t)hi << 32) | (uintptr_t)lo;
+    struct korb_fiber *fib = (struct korb_fiber *)p;
+    /* Run the block */
+    if (fib->block) {
+        VALUE result = Qnil;
+        struct korb_proc *blk = fib->block;
+        VALUE *fp = blk->env;
+        for (uint32_t i = 0; i < blk->params_cnt && i < (uint32_t)fib->argc; i++) {
+            fp[blk->param_base + i] = fib->args[i];
+        }
+        struct korb_proc *prev_block = current_block;
+        current_block = NULL;  /* fiber's block has no enclosing block */
+        VALUE prev_self = fib->c->self;
+        fib->c->self = blk->self;
+        result = EVAL(fib->c, blk->body);
+        fib->c->self = prev_self;
+        current_block = prev_block;
+        fib->result = result;
+    }
+    fib->state = KF_DEAD;
+    /* Swap back to caller */
+    swapcontext(&fib->ctx, &fib->prev_ctx);
+}
+
+VALUE korb_fiber_new(struct korb_proc *block) {
+    struct korb_fiber *fib = korb_xmalloc(sizeof(*fib));
+    fib->basic.flags = T_DATA;
+    fib->basic.klass = korb_vm->fiber_class
+                         ? (VALUE)korb_vm->fiber_class
+                         : (VALUE)korb_vm->object_class;
+    fib->block = block;
+    fib->stack_size = 256 * 1024;
+    fib->stack = korb_xmalloc(fib->stack_size);  /* GC tracks this */
+    fib->state = KF_INIT;
+    fib->args = NULL;
+    fib->argc = 0;
+    fib->result = Qnil;
+    fib->c = NULL;
+    return (VALUE)fib;
+}
+
+VALUE korb_fiber_resume(CTX *c, VALUE fibv, int argc, VALUE *argv) {
+    struct korb_fiber *fib = (struct korb_fiber *)fibv;
+    if (fib->state == KF_DEAD) {
+        korb_raise(c, NULL, "dead fiber called");
+        return Qnil;
+    }
+    if (fib->state == KF_RUNNING) {
+        korb_raise(c, NULL, "double resume");
+        return Qnil;
+    }
+    fib->args = argv;
+    fib->argc = argc;
+    fib->c = c;
+
+    if (fib->state == KF_INIT) {
+        getcontext(&fib->ctx);
+        fib->ctx.uc_stack.ss_sp = fib->stack;
+        fib->ctx.uc_stack.ss_size = fib->stack_size;
+        fib->ctx.uc_link = &fib->prev_ctx;
+        uintptr_t p = (uintptr_t)fib;
+        unsigned int hi = (unsigned int)(p >> 32);
+        unsigned int lo = (unsigned int)(p & 0xffffffff);
+        makecontext(&fib->ctx, (void (*)(void))korb_fiber_entry, 2, hi, lo);
+    }
+
+    /* Save current fiber and switch */
+    struct korb_fiber *prev = current_fiber;
+    current_fiber = fib;
+    fib->state = KF_RUNNING;
+    swapcontext(&fib->prev_ctx, &fib->ctx);
+    /* Returned from yield/end */
+    current_fiber = prev;
+    if (fib->state != KF_DEAD) fib->state = KF_SUSPENDED;
+    return fib->result;
+}
+
+VALUE korb_fiber_yield(CTX *c, int argc, VALUE *argv) {
+    struct korb_fiber *fib = current_fiber;
+    if (!fib) {
+        korb_raise(c, NULL, "Fiber.yield called outside a fiber");
+        return Qnil;
+    }
+    fib->result = argc > 0 ? argv[0] : Qnil;
+    fib->state = KF_SUSPENDED;
+    swapcontext(&fib->ctx, &fib->prev_ctx);
+    /* When resumed, return new args */
+    if (fib->argc > 0) return fib->args[0];
+    return Qnil;
+}
+
+VALUE korb_fiber_new_cfunc(CTX *c, VALUE self, int argc, VALUE *argv) {
+    /* Block is the current_block when Fiber.new is called */
+    if (!current_block) {
+        korb_raise(c, NULL, "Fiber.new requires a block");
+        return Qnil;
+    }
+    return korb_fiber_new(current_block);
+}
+VALUE korb_fiber_yield_cfunc(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return korb_fiber_yield(c, argc, argv);
+}
+VALUE korb_fiber_resume_cfunc(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return korb_fiber_resume(c, self, argc, argv);
 }
 
 VALUE korb_load_file(CTX *c, const char *path) {

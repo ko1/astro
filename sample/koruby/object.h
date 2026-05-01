@@ -148,6 +148,7 @@ struct korb_vm {
     struct korb_class *comparable_module;
     struct korb_class *enumerable_module;
     struct korb_class *numeric_class;
+    struct korb_class *fiber_class;
 
     /* globals */
     struct korb_method_table globals;
@@ -270,6 +271,7 @@ VALUE korb_funcall_with_block(CTX *c, VALUE recv, ID mid, int argc, VALUE *argv,
 VALUE korb_dispatch_call(CTX *c, struct Node *callsite, VALUE recv, ID name, uint32_t argc, uint32_t arg_index, struct korb_proc *block, struct method_cache *mc);
 VALUE korb_dispatch_binop(CTX *c, VALUE recv, ID name, int argc, VALUE *argv);
 VALUE korb_yield(CTX *c, uint32_t argc, VALUE *argv);
+bool korb_block_given(void);
 
 /* gvar */
 VALUE korb_gvar_get(ID name);
@@ -286,6 +288,12 @@ VALUE korb_proc_new(struct Node *body, VALUE *fp, uint32_t env_size, uint32_t pa
 
 /* Builtins init */
 void korb_init_builtins(void);
+
+/* Fiber */
+struct korb_fiber;
+VALUE korb_fiber_new(struct korb_proc *block);
+VALUE korb_fiber_resume(CTX *c, VALUE fib, int argc, VALUE *argv);
+VALUE korb_fiber_yield(CTX *c, int argc, VALUE *argv);
 
 /* file load (parse + eval) */
 VALUE korb_load_file(CTX *c, const char *path);
