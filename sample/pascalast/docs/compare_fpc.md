@@ -35,25 +35,31 @@ others.
 ```
 bench                    interp  fpc -O-  fpc -O3      AOT
 -----                    ------  -------  -------      ---
-ackermann                  1.38     0.17     0.05     0.24
+ackermann                  1.38     0.17     0.05     0.21
 collatz                    1.32     0.15     0.12     0.05  *
-fib                        0.75     0.13     0.07     0.16
-gcd                        0.89     0.23     0.11     0.23
+fib                        0.75     0.13     0.07     0.14
+gcd                        0.89     0.23     0.11     0.18
 heron                      1.28     0.14     0.07     0.07  ≈
 leibniz_pi                 1.07     0.12     0.11     0.07  *
 mandelbrot_int             1.45     0.05     0.04     0.04  ≈
 mandelbrot_real            1.20     diff     diff     0.05
 matmul                     1.23     0.05     0.02     0.05
-matmul_2d                  1.35     0.10     0.06     0.18
+matmul_2d                  1.35     0.10     0.06     0.17
 nested_loops               1.80     0.23     0.08     0.00  *
 oop_shapes                 0.96     0.10     0.05     0.27
-quicksort                  0.98     0.14     0.09     0.20
-sieve                      1.19     0.13     0.06     0.20
-tarai                      1.42     0.18     0.10     0.23
+quicksort                  0.98     0.14     0.09     0.19
+sieve                      1.19     0.13     0.06     0.19
+tarai                      1.42     0.18     0.10     0.20
 varparam_swap              1.10     0.07     0.02     0.07
 ```
 
 `*` AOT beats fpc -O3, `≈` AOT matches fpc -O3.
+
+AOT (best of 5) is now ≤ 2.1× fpc -O3 on **gcd** (1.6×), **fib** (2.0×),
+**tarai** (2.0×), **quicksort** (2.1×).  The biggest remaining gap
+is `oop_shapes` (5.4×) — pure virtual-dispatch overhead — and
+`ackermann` (4.2×) where the call protocol still dwarfs the
+arithmetic body.
 
 `diff` on `mandelbrot_real` means fpc and pascalast print numerically
 different but plausible real-valued results — fpc 3.2.2 on x86-64
