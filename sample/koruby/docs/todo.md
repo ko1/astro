@@ -150,3 +150,28 @@ ASTro の `astro_code_store` をまだ使っていない。一度コンパイル
 10. **エラー時の line 情報** — デバッグ効率化のため
 
 これらを実装すれば、optcarrot の Config parsing → CPU/PPU/APU セットアップ → step ループへ進めると見込まれる。さらに性能ベンチとして競うには core ループの最適化が必要 (具体的には [perf.md](./perf.md) の「PG-baked call_static」「型 rewrite」等)。
+
+## 残バグ: optcarrot の映像チェックサム不一致 (frame 5 から発散)
+
+`tools/trace_optcarrot.rb` を CRuby と koruby に並走させ、180 フレームで
+`csum` が `60838` (CRuby) vs `11264` (koruby) と一致しない。
+
+調査済み事実:
+
+* CPU 状態 (PC, A, X, Y, SP, P, clk_total, clk_frame) は **30 フレームまで毎フレーム末で完全一致**。
+  CPU 命令実行ロジックは正しい。
+* PPU 状態 (hclk, vclk, scanline, hclk_target, scroll_addr_*, palette_ram[],
+  io_addr, bg_pattern_base, sp_phase, sp_addr, sp_active, sp_ram[], sp_map,
+  nmt_ref[][], chr_mem[], coloring, emphasis, …全 ivar) も **frame 5 開始時点で完全一致**
+  (`tools/trace_optcarrot.rb` の `DUMP_BEFORE_5=1` で 65,611 行どちらも同一)。
+* それにも関わらず frame 5 を実行すると `bg_pattern` / `bg_pixels` /
+  `bg_pattern_lut` が末尾で乖離し、frame 6 以降ピクセル出力が異なる。
+* TILE_LUT (定数), Array#rotate!, Array#[]=` (slice 代入), Integer 演算,
+  Integer#[] (bit) は単体テスト的に CRuby と一致。
+* `==` `<` `<=>` の Integer/Float 混在は当初バグだったが現修正済み。
+
+仮説: CPU の `send(*DISPATCH[opcode])` 経由ディスパッチ、または
+`@ppu.sync(@clk)` 呼出時の Fiber 再開タイミングなど、**実行フローの動的な側面**
+で 1 命令分くらいズレが生じている可能性。frame 5 開始時の状態は完全一致なので、
+frame 5 実行中の **per-instruction trace** で初発散点を割り出す必要がある。
+trace_optcarrot.rb を per-instruction にしないと特定できない (今は per-frame)。
