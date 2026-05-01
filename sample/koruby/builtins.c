@@ -30,12 +30,12 @@ static VALUE kernel_puts(CTX *c, VALUE self, int argc, VALUE *argv) {
         if (BUILTIN_TYPE(v) == T_ARRAY) {
             struct korb_array *a = (struct korb_array *)v;
             for (long j = 0; j < a->len; j++) {
-                VALUE s = korb_to_s(a->ptr[j]);
+                VALUE s = korb_to_s_dispatch(c, a->ptr[j]);
                 fwrite(((struct korb_string *)s)->ptr, 1, ((struct korb_string *)s)->len, out);
                 fputc('\n', out);
             }
         } else {
-            VALUE s = korb_to_s(v);
+            VALUE s = korb_to_s_dispatch(c, v);
             struct korb_string *str = (struct korb_string *)s;
             fwrite(str->ptr, 1, str->len, out);
             if (str->len == 0 || str->ptr[str->len-1] != '\n') fputc('\n', out);
@@ -47,7 +47,7 @@ static VALUE kernel_puts(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE kernel_print(CTX *c, VALUE self, int argc, VALUE *argv) {
     FILE *out = io_stream(self);
     for (int i = 0; i < argc; i++) {
-        VALUE s = korb_to_s(argv[i]);
+        VALUE s = korb_to_s_dispatch(c, argv[i]);
         fwrite(((struct korb_string *)s)->ptr, 1, ((struct korb_string *)s)->len, out);
     }
     return Qnil;

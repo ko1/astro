@@ -1069,6 +1069,26 @@ static VALUE korb_inspect_inner(VALUE v, int depth) {
 
 VALUE korb_inspect(VALUE v) { return korb_inspect_inner(v, 0); }
 
+/* CTX-aware to_s — dispatches a user-defined to_s if the receiver's
+ * class has one (e.g., a class with `def to_s; "..."; end`).  Used
+ * by kernel_puts / kernel_print so user objects render via their
+ * own to_s instead of the default `#<Class:0x...>` inspect. */
+VALUE korb_to_s_dispatch(CTX *c, VALUE v) {
+    if (BUILTIN_TYPE(v) == T_STRING) return v;
+    if (!SPECIAL_CONST_P(v)) {
+        struct korb_class *klass = korb_class_of_class(v);
+        struct korb_method *m = korb_class_find_method(klass, korb_intern("to_s"));
+        if (m && m->type == KORB_METHOD_AST) {
+            VALUE r = korb_funcall(c, v, korb_intern("to_s"), 0, NULL);
+            /* If user's to_s returned something other than a String,
+             * fall through to the default rendering rather than
+             * crash inside korb_str_concat. */
+            if (BUILTIN_TYPE(r) == T_STRING) return r;
+        }
+    }
+    return korb_to_s(v);
+}
+
 VALUE korb_to_s(VALUE v) {
     if (BUILTIN_TYPE(v) == T_STRING) return v;
     if (FIXNUM_P(v)) {

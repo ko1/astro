@@ -328,7 +328,7 @@ node_str_concat(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg
     for (uint32_t i = 0; i < argc; i++) {
         VALUE part = c->fp[arg_index + i];
         if (BUILTIN_TYPE(part) != T_STRING) {
-            part = korb_to_s(part);
+            part = korb_to_s_dispatch(c, part);
         }
         r = korb_str_concat(r, part);
     }
