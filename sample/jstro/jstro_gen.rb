@@ -17,7 +17,7 @@ class JstroNodeDef < ASTroGen::NodeDef
         # Handle NULL (anonymous function names, optional identifiers) so
         # hash_cstr doesn't dereference garbage.
         "(#{val} ? hash_cstr(js_str_data(#{val})) : 0)"
-      when 'struct JsPropIC *', 'struct JsCallIC *'
+      when 'struct JsPropIC *', 'struct JsCallIC *', 'struct JsObjLitIC *'
         '0'
       else
         super
@@ -28,7 +28,7 @@ class JstroNodeDef < ASTroGen::NodeDef
       case @type
       when 'JsString *', 'struct JsString *'
         "        astro_fprintf_cstr(fp, n->u.#{name}.#{self.name} ? js_str_data(n->u.#{name}.#{self.name}) : NULL);"
-      when 'struct JsPropIC *', 'struct JsCallIC *'
+      when 'struct JsPropIC *', 'struct JsCallIC *', 'struct JsObjLitIC *'
         "        fprintf(fp, \"<ic>\");"
       else
         super
@@ -36,7 +36,7 @@ class JstroNodeDef < ASTroGen::NodeDef
     end
 
     def build_specializer(name)
-      if @type == 'struct JsPropIC *' || @type == 'struct JsCallIC *'
+      if @type == 'struct JsPropIC *' || @type == 'struct JsCallIC *' || @type == 'struct JsObjLitIC *'
         # @ref operand: address-of the inline IC slot.
         arg = "    fprintf(fp, \"        &n->u.#{name}.#{self.name}\");"
         return nil, arg

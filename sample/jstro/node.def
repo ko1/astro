@@ -1755,18 +1755,34 @@ node_object_lit_dyn(CTX * restrict c, NODE * restrict n, JsValue * restrict fram
 }
 
 NODE_DEF
-node_object_lit(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, uint32_t key_idx, uint32_t val_idx, uint32_t nprops)
+node_object_lit(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, uint32_t key_idx, uint32_t val_idx, uint32_t nprops, struct JsObjLitIC *ic@ref)
 {
     (void)n;
     struct JsObject *o = js_object_new(c, c->object_proto);
     JsValue pinslot = JV_OBJ(o);
     struct js_frame_link pin = { &pinslot, 1, NULL, 0, c->frame_stack };
     c->frame_stack = &pin;
-    for (uint32_t i = 0; i < nprops; i++) {
-        struct JsString *k = JSTRO_STR_ARR[key_idx + i];
-        NODE *ve = JSTRO_NODE_ARR[val_idx + i];
-        JsValue v = EVAL(c, ve, frame);
-        js_object_set(c, o, k, v);
+    // Fast path: shape chain has been observed before — install the
+    // cached shape directly, evaluate values into slots[].  Skips
+    // nprops-many js_shape_transition lookups per object construction.
+    // The cache is monomorphic (object literals always produce the same
+    // key sequence at the same source location), so once filled, this
+    // hits forever.
+    if (JSTRO_LIKELY(ic->cached_shape != NULL)) {
+        o->shape = ic->cached_shape;
+        if (ic->cached_shape->nslots > o->slot_capa) js_object_grow_slots(o, ic->cached_shape->nslots);
+        for (uint32_t i = 0; i < nprops; i++) {
+            NODE *ve = JSTRO_NODE_ARR[val_idx + i];
+            o->slots[i] = EVAL(c, ve, frame);
+        }
+    } else {
+        for (uint32_t i = 0; i < nprops; i++) {
+            struct JsString *k = JSTRO_STR_ARR[key_idx + i];
+            NODE *ve = JSTRO_NODE_ARR[val_idx + i];
+            JsValue v = EVAL(c, ve, frame);
+            js_object_set(c, o, k, v);
+        }
+        ic->cached_shape = o->shape;
     }
     c->frame_stack = pin.prev;
     return RESULT_OK(JV_OBJ(o));

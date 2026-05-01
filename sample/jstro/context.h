@@ -169,6 +169,15 @@ struct JsCallIC {
     uint32_t           _pad;
 };
 
+// Inline cache for object literals — caches the post-transition shape
+// chain so `{x: 1, y: 2, z: 3}` skips three js_shape_transition lookups
+// after the first invocation.  Shapes are reachable from c->root_shape
+// via the parent->child trans tree so caching a pointer here is safe
+// against GC.
+struct JsObjLitIC {
+    struct JsShape *cached_shape;
+};
+
 // String: interned, immutable.  data[] holds UTF-8 bytes; len is
 // byte-length (we treat .length per spec as approximate for ASCII —
 // accurate UTF-16 length tracking is in a follow-up).
