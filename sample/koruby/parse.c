@@ -976,6 +976,29 @@ T(struct transduce_context *tc, pm_node_t *node)
               } else if (PM_NODE_TYPE_P(target, PM_GLOBAL_VARIABLE_TARGET_NODE)) {
                   pm_global_variable_target_node_t *t = (pm_global_variable_target_node_t *)target;
                   assign = ALLOC_node_gvar_set(intern_constant(tc->parser, t->name), get);
+              } else if (PM_NODE_TYPE_P(target, PM_CALL_TARGET_NODE)) {
+                  /* obj.attr = ... — call attr= on the receiver */
+                  pm_call_target_node_t *t = (pm_call_target_node_t *)target;
+                  ID setter_name = intern_constant(tc->parser, t->name);
+                  /* Stage the argument and emit a method_call to setter */
+                  uint32_t ai = inc_arg_index(tc);
+                  inc_arg_index(tc); /* extra slot for fallback */
+                  rewind_arg_index(tc, ai);
+                  struct method_cache *mc = alloc_method_cache();
+                  NODE *seq_arg = ALLOC_node_lvar_set(ai, get);
+                  NODE *recv_n = T(tc, t->receiver);
+                  assign = ALLOC_node_seq(seq_arg, ALLOC_node_method_call(recv_n, setter_name, 1, ai, mc));
+              } else if (PM_NODE_TYPE_P(target, PM_INDEX_TARGET_NODE)) {
+                  /* a[i] = ... in multi-assign */
+                  pm_index_target_node_t *t = (pm_index_target_node_t *)target;
+                  uint32_t ai = inc_arg_index(tc);
+                  inc_arg_index(tc); inc_arg_index(tc);
+                  rewind_arg_index(tc, ai);
+                  if (t->arguments && t->arguments->arguments.size >= 1) {
+                      NODE *recv_n = T(tc, t->receiver);
+                      NODE *idx_n  = T(tc, t->arguments->arguments.nodes[0]);
+                      assign = ALLOC_node_aset(recv_n, idx_n, get, ai);
+                  }
               }
               if (assign) chain = ALLOC_node_seq(chain, assign);
           }

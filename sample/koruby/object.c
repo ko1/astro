@@ -1600,8 +1600,8 @@ VALUE korb_fiber_new(struct korb_proc *block) {
                          ? (VALUE)korb_vm->fiber_class
                          : (VALUE)korb_vm->object_class;
     fib->block = block;
-    fib->stack_size = 256 * 1024;
-    fib->stack = korb_xmalloc(fib->stack_size);  /* GC tracks this */
+    fib->stack_size = 4 * 1024 * 1024;  /* 4 MB — PPU pixel pipeline can be deep */
+    fib->stack = korb_xmalloc(fib->stack_size);
     fib->state = KF_INIT;
     fib->args = NULL;
     fib->argc = 0;

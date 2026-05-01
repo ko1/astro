@@ -1484,6 +1484,32 @@ static VALUE ary_reverse(CTX *c, VALUE self, int argc, VALUE *argv) {
     return r;
 }
 
+static VALUE ary_rotate_bang(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_array *a = (struct korb_array *)self;
+    if (a->len <= 1) return self;
+    long n = (argc >= 1 && FIXNUM_P(argv[0])) ? FIX2LONG(argv[0]) : 1;
+    n = n % a->len;
+    if (n < 0) n += a->len;
+    if (n == 0) return self;
+    /* Rotate left by n */
+    VALUE *tmp = korb_xmalloc(sizeof(VALUE) * n);
+    for (long i = 0; i < n; i++) tmp[i] = a->ptr[i];
+    for (long i = 0; i + n < a->len; i++) a->ptr[i] = a->ptr[i + n];
+    for (long i = 0; i < n; i++) a->ptr[a->len - n + i] = tmp[i];
+    return self;
+}
+
+static VALUE ary_rotate(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_array *a = (struct korb_array *)self;
+    long n = (argc >= 1 && FIXNUM_P(argv[0])) ? FIX2LONG(argv[0]) : 1;
+    if (a->len == 0) return korb_ary_new();
+    n = n % a->len;
+    if (n < 0) n += a->len;
+    VALUE r = korb_ary_new_capa(a->len);
+    for (long i = 0; i < a->len; i++) korb_ary_push(r, a->ptr[(i + n) % a->len]);
+    return r;
+}
+
 static VALUE ary_reverse_bang(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_array *a = (struct korb_array *)self;
     for (long i = 0, j = a->len - 1; i < j; i++, j--) {
@@ -2699,6 +2725,8 @@ void korb_init_builtins(void) {
     DEF(cAry, "sort!",     ary_sort, -1);
     DEF(cAry, "compact!",  ary_compact, 0);
     DEF(cAry, "reverse!",  ary_reverse_bang, 0);
+    DEF(cAry, "rotate!",   ary_rotate_bang, -1);
+    DEF(cAry, "rotate",    ary_rotate, -1);
     DEF(cAry, "flatten!",  ary_flatten, -1);
     DEF(cAry, "freeze",    kernel_freeze, 0);
     DEF(cAry, "frozen?",   kernel_frozen_p, 0);
