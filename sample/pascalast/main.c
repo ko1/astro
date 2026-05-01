@@ -1354,6 +1354,68 @@ te_builtin_call_in_expr(const char *name)
         if (e.t == PT_DYNARR) return (TE){ ALLOC_node_dynarr_length(e.n), PT_INT, -1 };
         pascal_error("length() requires a string or dynamic array");
     }
+    if (strcmp(name, "low") == 0) {
+        // low(arr) — for static arrays it's the declared lo, but the
+        // common use with open-array params (PT_DYNARR) is a literal 0.
+        // We accept any of: a static-array name (returns lo), a
+        // dynarr expression (returns 0).
+        expect(TK_LPAREN, "'('");
+        // Peek for identifier first — static-array case wants the
+        // sym's lo before evaluating, since te_expr would reject a
+        // bare static-array name.
+        if (tk == TK_ID) {
+            char id[64]; strncpy(id, tk_id, 63); id[63] = 0;
+            const char *peek = src;
+            int peek_line = line_no;
+            next_token();
+            if (tk == TK_RPAREN) {
+                struct sym *s = sym_find(id);
+                if (s && (s->kind == SYM_GARR || s->kind == SYM_LARR || s->kind == SYM_VARR)) {
+                    next_token();
+                    return (TE){ mk_int(s->lo), PT_INT, -1 };
+                }
+                // Fall through — id wasn't a static array; rewind and
+                // fall into expression path.
+                src = peek; line_no = peek_line;
+                tk = TK_ID; strncpy(tk_id, id, 63); tk_id[63] = 0;
+            } else {
+                src = peek; line_no = peek_line;
+                tk = TK_ID; strncpy(tk_id, id, 63); tk_id[63] = 0;
+            }
+        }
+        TE e = te_expr();
+        expect(TK_RPAREN, "')'");
+        if (e.t == PT_DYNARR) return (TE){ mk_int(0), PT_INT, -1 };
+        pascal_error("low() requires an array");
+    }
+    if (strcmp(name, "high") == 0) {
+        // high(arr) — for static arrays it's the declared hi; for
+        // dynarrs (open arrays) it's length(a) - 1.
+        expect(TK_LPAREN, "'('");
+        if (tk == TK_ID) {
+            char id[64]; strncpy(id, tk_id, 63); id[63] = 0;
+            const char *peek = src;
+            int peek_line = line_no;
+            next_token();
+            if (tk == TK_RPAREN) {
+                struct sym *s = sym_find(id);
+                if (s && (s->kind == SYM_GARR || s->kind == SYM_LARR || s->kind == SYM_VARR)) {
+                    next_token();
+                    return (TE){ mk_int(s->hi), PT_INT, -1 };
+                }
+                src = peek; line_no = peek_line;
+                tk = TK_ID; strncpy(tk_id, id, 63); tk_id[63] = 0;
+            } else {
+                src = peek; line_no = peek_line;
+                tk = TK_ID; strncpy(tk_id, id, 63); tk_id[63] = 0;
+            }
+        }
+        TE e = te_expr();
+        expect(TK_RPAREN, "')'");
+        if (e.t == PT_DYNARR)
+            return (TE){ ALLOC_node_sub(ALLOC_node_dynarr_length(e.n), mk_int(1)), PT_INT, -1 };
+        pascal_error("high() requires an array");
+    }
     if (strcmp(name, "copy") == 0) {
         expect(TK_LPAREN, "'('");
         TE s = te_expr(); expect(TK_COMMA, "','");
@@ -4130,6 +4192,15 @@ parse_subprogram(bool is_function, CTX *c)
                 pascal_error("2D var-array params not yet supported");
             if (t == PT_RECORD && !by_ref)
                 pascal_error("record params must be `var`");
+            // `array of T` (open array, no bounds) becomes a PT_DYNARR
+            // value-passed param.  Element type sits in the global
+            // g_last_array_elem set by parse_type.  The callee uses
+            // length(a) / a[i] / a[i] := v exactly as for a local
+            // dynamic array.  Caller side accepts a dynarr expression
+            // directly, or a static-array name (auto-wrapped at the
+            // call site — see parse_typed_call_args).
+            extern int g_last_array_elem;
+            int oarr_elem = (t == PT_DYNARR) ? g_last_array_elem : 0;
             for (int i = 0; i < pcount; i++) {
                 if (nparams >= PASCAL_MAX_PARAMS) pascal_error("too many params");
                 struct sym *ls = sym_add_local(pnames[i]);
@@ -4142,6 +4213,14 @@ parse_subprogram(bool is_function, CTX *c)
                     p->param_is_array[nparams] = true;
                     p->param_arr_lo[nparams]   = lo;
                     p->param_type[nparams]     = (char)elem;
+                } else if (t == PT_DYNARR) {
+                    if (by_ref) pascal_error("open-array param must not be `var`");
+                    ls->type    = PT_DYNARR;
+                    ls->rec_idx = oarr_elem;        // dynarr elem type
+                    p->param_by_ref[nparams]   = false;
+                    p->param_is_array[nparams] = false;
+                    p->param_type[nparams]     = (char)PT_DYNARR;
+                    p->param_arr_lo[nparams]   = oarr_elem; // stash elem
                 } else if (t == PT_RECORD) {
                     ls->kind = SYM_VREC;
                     ls->rec_idx = rec;
