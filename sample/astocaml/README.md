@@ -205,31 +205,33 @@ astocaml: Type_error((+): expected int)
 - **closure leaf alloca** (frame の malloc を排除; fib で更に 2.7× 加速)
 - **method send IC** (`obj#m` の dispatch をキャッシュ; method-call で 1.3-1.6× 加速)
 - **AOT specialize** (`-c` で .so にコンパイル、各 NODE の dispatcher を SD_* に patch; ack/tak 3×, fib 2× 加速)
+- **`node_appN` closure-leaf fast path** — `oc_apply` の type chain と partial-app 確認を caller 側で in-line skip; fib(40) で更に 1.9× 加速
 - TCO トランポリン、fixnum 比較 fast-path、ASTroGen always_inline
 
 `./astocaml -c` (AOT 込み):
 
 | ベンチ | 時間 |
 |--|--|
-| ack | 0.21 s |
-| fib | 0.30 s |
+| ack | 0.15 s |
+| fib | 0.19 s |
 | nqueens | 0.83 s |
-| sieve | 0.89 s |
-| tak | 0.16 s |
+| sieve | 0.90 s |
+| tak | 0.09 s |
 
 公式 OCaml 4.14.1 との比較:
 
 | bench | astoc | astoc(-c) | ocaml(top) | ocamlc(BC) | ocamlopt |
 |--|--|--|--|--|--|
-| ack | 0.62 | **0.21** | 0.18 | 0.12 | 0.012 |
-| fib | 0.61 | **0.30** | 0.38 | 0.24 | 0.038 |
-| nqueens | 1.14 | 0.83 | 0.23 | 0.17 | 0.017 |
-| sieve | 0.98 | 0.89 | 0.26 | 0.24 | 0.020 |
-| tak | 0.46 | **0.16** | 0.25 | 0.16 | 0.014 |
+| ack | 0.40 | **0.15** | 0.22 | 0.13 | 0.012 |
+| fib | 0.51 | **0.19** | 0.26 | **0.21** | 0.043 |
+| nqueens | 1.14 | 0.83 | 0.22 | 0.18 | 0.019 |
+| sieve | 0.96 | 0.90 | 0.27 | 0.25 | 0.025 |
+| tak | 0.31 | **0.09** | 0.23 | **0.17** | 0.016 |
 
-fib / tak で **astocaml AOT が公式 OCaml の bytecode interpreter (ocaml/ocamlc) より速い** という地点まで到達。
-nqueens / sieve は list 処理が重く、まだ 3-4× の差。
-ocamlopt (native compilation) は別物で 10-20× の差。
+`fib(40)` で per-call: **astocaml -c 6.4 ns**, ocamlc 7.5 ns, ocamlopt 1.4 ns。
+
+fib / tak で **astocaml AOT が ocamlc bytecode を上回る**。ack も BC とほぼ同等。nqueens / sieve は list 処理が AOT 最適化対象外なのでまだ 3-4× の差。
+ocamlopt (native compilation) との差は 4-9× まで縮まったが、依然として真の native code 生成との差は残る。
 
 メモリ使用量はインタプリタの malloc-leak 戦略によるもの (将来 Boehm GC で解消予定)。
 

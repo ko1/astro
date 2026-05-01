@@ -249,6 +249,13 @@
 - field 読み出し / `set_X` のフォールバックは従来の `oc_object_send` ヘルパに丸投げ
 - **効果**: method-call 重ベンチで 1.3-1.6× 高速化
 
+### `node_appN` closure-leaf fast path (oc_apply inline)
+
+- `node_app1` ... `node_app4` の本体に `APPN_FAST_PATH(NP)` macro を inline
+- 受け側が closure かつ matching arity かつ leaf body の場合: `oc_apply` 関数呼び出しを完全 skip し、frame alloca + body dispatcher 直呼び
+- tail-call escape (body が `tail_call_pending` を立てた場合) のみ general `oc_apply` でトランポリン
+- **効果**: fib(40) で per-call 12.0 ns → 6.4 ns (1.9×)。astocaml -c が ocamlc bytecode を抜き、ocamlopt との差が 8.5× → 4.6× に縮小。
+
 ### Closure leaf alloca
 
 - パース時に各 `node_fun` の body を walk → 内部に `node_fun` / `node_lazy` を含まなければ "leaf" マーク (`node_is_leaf` ヘルパ; dump-grep 方式で簡潔安全)

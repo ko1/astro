@@ -128,6 +128,37 @@ node_lt(...) {
 効果: method_call ベンチで 2.1 s → 1.66 s (**1.34× 高速化**)。
 注: より大きな勝利はクラス間で method table を共有する版だが、現状では各 `new` がフレッシュな配列を確保するため per-instance に留まる。
 
+### ✅ `node_appN` の closure-leaf fast path (oc_apply inline)
+
+`oc_apply` は per-call で:
+- `OC_IS_PRIM` 判定
+- `OC_IS_CLOSURE` 判定
+- `argc < nparams` (partial application) 判定
+- frame 確保 (alloca か malloc)
+- env save / restore
+- `tail_call_pending` 判定
+- `argc > nparams` (over-application) 判定
+
+を毎回実行。**fib 級の tight recursive code ではこれが本体計算時間を上回るレベル**。
+
+実装:
+- `node_app1` ... `node_app4` の本体に `APPN_FAST_PATH(NP)` macro を inline。
+- 受け側が closure かつ matching arity かつ leaf body の場合、`oc_apply` 関数呼び出しを完全 skip して直接 frame 確保 + body dispatcher 呼び出し。
+- tail-call escape (body が `tail_call_pending` を立てた) のみ general `oc_apply` にフォールスルーしてトランポリンを使う。
+
+効果 (fib 40、累積比較):
+
+| 実装 | 時間 | per-call |
+|--|--|--|
+| astocaml -c (fast path 前) | 3.97 s | 12.0 ns |
+| astocaml -c (fast path 後) | **2.12 s** | **6.4 ns** |
+| ocamlc (BC) | 2.49 s | 7.5 ns |
+| ocamlopt (native) | 0.46 s | 1.4 ns |
+
+**astocaml -c が ocamlc bytecode を抜いた**。ocamlopt との差は 8.5× → 4.6× に縮小。
+
+ユーザの直感「call/apply ごとに毎回検索してたりする？」がきっかけで気付いた。直接の検索ではなかったが、oc_apply 内部の type chain check + partial-app 機構の per-call コストがここまで効いていた。
+
 ### ✅ AOT specialize の本格活用
 
 実装の鍵は **closure body / pattern arm を AOT エントリとして登録**:
