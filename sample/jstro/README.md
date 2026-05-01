@@ -79,16 +79,26 @@ jstro [options] file.js
 
 | benchmark         | jstro (s) | jstro -c (s) | node.js (s) | -c の倍率 vs node |
 |-------------------|-----------|--------------|-------------|-------------------|
-| fib(35)           | 0.78      | 0.32         | 0.10        | 3.1×              |
-| fact ×5M          | 1.82      | 0.59         | 0.07        | 9.0×              |
+| fib(35)           | 0.78      | 0.29         | 0.09        | 3.4×              |
+| fact ×5M          | 1.82      | 0.48         | 0.07        | 7.5×              |
 | sieve(1M primes)  | 0.10      | 0.03         | 0.01        | 2.4×              |
-| mandelbrot(500)   | 0.90      | 0.46         | 0.04        | 12.2×             |
-| nbody 100k steps  | 0.44      | 0.28         | 0.02        | 16.6×             |
-| binary_trees(15)  | 0.68      | 0.56         | 0.06        | 9.7×              |
+| mandelbrot(500)   | 0.90      | 0.39         | 0.04        | 11.0×             |
+| nbody 100k steps  | 0.44      | 0.25         | 0.02        | 14.7×             |
+| binary_trees(15)  | 0.68      | 0.37         | 0.06        | 6.7×              |
 
 `jstro` がツリー・ウォーキング、`jstro -c` が AOT 特化 (SD bake) 後の
-スコア。AOT で geo-mean 約 2.0× の高速化。`make compiled_jstro` で
+スコア。AOT で geo-mean 約 2.5× の高速化。`make compiled_jstro` で
 bake 済みバイナリを生成できる。
+
+主な高速化:
+- **AOT bake (SD specialization)** — 各 AST ノードを SD_<hash> に
+  specialize、`dlopen` 後に dispatcher を patch。詳細は
+  [`docs/runtime.md`](./docs/runtime.md)。
+- **JsObject inline 4-slot** — 小オブジェクト (≤4 props) は
+  slots[] を別途 malloc せず JsObject 内蔵。binary_trees で大きな
+  改善 (-38%)。
+- **safepoint inline** — `jstro_gc_safepoint` の fast path を
+  `static inline` 化。fact / mandelbrot で -10% 程度。
 
 ## 既知の制限
 

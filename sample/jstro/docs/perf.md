@@ -235,6 +235,37 @@ bake コスト自体は ~30-50 ms (SD ファイル数 × gcc 起動)。`-c` と
 binary_trees の伸び率が小さいのは、ノード割り当て / GC の比率が高く
 SD で削れるのが eval ディスパッチ部分だけだから。
 
+#### JsObject inline 4-slot storage
+
+binary_trees の AOT 結果が plain と大差ないのを `perf` で見たら
+malloc/free が 16% を占めていた (ノード `{ l, r, v }` の作成で
+JsObject 本体 + slots 配列の 2 つ malloc)。JsObject 構造体に
+`JsValue inline_slots[4]` を埋め込み、≤4 props のオブジェクトは
+slots を inline_slots に向ける (一切 malloc しない) ように変更。
+gc_finalize は `slots != inline_slots` のときだけ free。
+
+ベンチ delta (AOT):
+| bench | before | after | speedup |
+| - | - | - | - |
+| binary_trees | 0.56 s | 0.35 s | -38% |
+| fib | 0.32 s | 0.30 s | -7% |
+| fact | 0.59 s | 0.53 s | -10% |
+| nbody | 0.28 s | 0.25 s | -10% |
+
+#### Safepoint の inline 化
+
+`jstro_gc_safepoint` を関数ポインタ呼び出し (extern) から
+`static inline` に変更。fact ×5M の `perf` で 11% を占めていた
+(per-statement の関数呼び出し overhead)。fast path は 2 loads +
+compare のみ、slow path のみ `js_gc_collect` を out-of-line に残す。
+
+ベンチ delta (AOT):
+| bench | before | after | speedup |
+| - | - | - | - |
+| fact | 0.53 s | 0.48 s | -9% |
+| mandelbrot | 0.45 s | 0.39 s | -13% |
+| fib | 0.30 s | 0.29 s | -3% |
+
 #### Mark-sweep GC (safepoint 駆動 + frame_stack root)
 
 長時間ベンチでメモリが頭打ちにならない問題を解決するために自動 GC を追加。
