@@ -813,7 +813,7 @@ VALUE korb_proc_new(struct Node *body, VALUE *fp, uint32_t env_size,
 }
 
 /* Block currently active for yield (set by dispatch_call). */
-static __thread struct korb_proc *current_block = NULL;
+__thread struct korb_proc *current_block = NULL;
 
 bool korb_block_given(void) { return current_block != NULL; }
 
@@ -1101,114 +1101,36 @@ state_serial_t korb_g_method_serial = 0;
  * and parameter shape.  After fill, dispatch is a single indirect call —
  * no in-function branching for cfunc-vs-AST or rest-slot/opt-arg shapes. */
 
-/* CFUNC: just call the C function, then handle break-from-block. */
-VALUE prologue_cfunc(CTX *c, struct Node *callsite, VALUE recv,
-                            uint32_t argc, uint32_t arg_index,
-                            struct korb_proc *block, struct method_cache *mc)
-{
-    (void)callsite;
-    VALUE *argv = &c->fp[arg_index];
-    struct korb_proc *prev_block = current_block;
-    current_block = block;
-    VALUE prev_self = c->self;
-    c->self = recv;
-    VALUE r = mc->cfunc(c, recv, argc, argv);
-    c->self = prev_self;
-    current_block = prev_block;
-    if (UNLIKELY(block && c->state == KORB_BREAK)) {
-        r = c->state_value;
-        c->state = KORB_NORMAL;
-        c->state_value = Qnil;
-    }
-    return r;
-}
+#include "prologues.h"
 
-/* AST simple core.  Compile-time PARAMS_KNOWN is the required parameter
- * count (or -1 for "unknown — read from mc"); when it's a literal the
- * Qnil-fill loop unrolls and the argc check folds. */
-static __attribute__((always_inline)) inline VALUE
-prologue_ast_simple_inner(CTX *c, struct Node *callsite, VALUE recv,
-                          uint32_t argc, uint32_t arg_index,
-                          struct korb_proc *block, struct method_cache *mc,
-                          int PARAMS_KNOWN)
-{
-    uint32_t total = (PARAMS_KNOWN >= 0) ? (uint32_t)PARAMS_KNOWN : mc->total_params_cnt;
-    if (UNLIKELY(argc > total)) {
-        korb_raise(c, NULL, "wrong number of arguments (given %u, expected %u)",
-                   argc, total);
-        return Qnil;
-    }
-    VALUE *prev_fp = c->fp;
-    VALUE prev_self = c->self;
-    struct korb_proc *prev_block = current_block;
-    struct korb_cref *prev_cref = c->cref;
-    current_block = block;
+/* Out-of-line wrappers: the inline bodies live in prologues.h so each
+ * TU (main + every SD .so) gets its own inlined copy.  These named
+ * non-inline wrappers exist so method_cache.prologue can hold a stable
+ * function pointer in the main koruby binary; inside an SD the call is
+ * compared against these names and inlined directly when it matches. */
+VALUE prologue_cfunc(CTX *c, struct Node *cs, VALUE recv, uint32_t argc,
+                     uint32_t ai, struct korb_proc *bl, struct method_cache *mc)
+{ return prologue_cfunc_inl(c, cs, recv, argc, ai, bl, mc); }
 
-    VALUE *new_fp = prev_fp + arg_index;
-    /* Stack overflow check: the value stack is 16M slots; on x86_64 we
-     * mmap it as anonymous pages with PROT_READ|PROT_WRITE.  Past the end
-     * we hit the guard zone (heap allocation boundary) which segfaults.
-     * Skipping this in-loop check — Linux's per-process VM map handles
-     * the rare overflow as a SIGSEGV with a useful crash report. */
-    c->fp = new_fp;
-    if (new_fp + mc->locals_cnt > c->sp) c->sp = new_fp + mc->locals_cnt;
-    if (mc->def_cref) c->cref = mc->def_cref;
+VALUE prologue_ast_simple_0(CTX *c, struct Node *cs, VALUE recv, uint32_t argc,
+                            uint32_t ai, struct korb_proc *bl, struct method_cache *mc)
+{ return prologue_ast_simple_inl(c, cs, recv, argc, ai, bl, mc, 0); }
 
-    /* Locals beyond params start as Qnil.  When PARAMS_KNOWN is a literal
-     * the C compiler unrolls fully — no loop, no branch. */
-    for (uint32_t i = total; i < mc->locals_cnt; i++) {
-        new_fp[i] = Qnil;
-    }
-    c->self = recv;
+VALUE prologue_ast_simple_1(CTX *c, struct Node *cs, VALUE recv, uint32_t argc,
+                            uint32_t ai, struct korb_proc *bl, struct method_cache *mc)
+{ return prologue_ast_simple_inl(c, cs, recv, argc, ai, bl, mc, 1); }
 
-    struct korb_frame frame;
-    frame.prev = c->current_frame;
-    frame.method = mc->method;
-    frame.self = recv;
-    frame.block = block;
-    c->current_frame = &frame;
-    VALUE r = mc->dispatcher(c, mc->body);
-    c->current_frame = frame.prev;
-    c->fp = prev_fp;
-    c->self = prev_self;
-    c->cref = prev_cref;
-    current_block = prev_block;
+VALUE prologue_ast_simple_2(CTX *c, struct Node *cs, VALUE recv, uint32_t argc,
+                            uint32_t ai, struct korb_proc *bl, struct method_cache *mc)
+{ return prologue_ast_simple_inl(c, cs, recv, argc, ai, bl, mc, 2); }
 
-    if (UNLIKELY(c->state == KORB_RETURN || c->state == KORB_BREAK)) {
-        r = c->state_value;
-        c->state = KORB_NORMAL;
-        c->state_value = Qnil;
-    }
-    return r;
-}
+static VALUE prologue_ast_simple_3(CTX *c, struct Node *cs, VALUE recv, uint32_t argc,
+                                   uint32_t ai, struct korb_proc *bl, struct method_cache *mc)
+{ return prologue_ast_simple_inl(c, cs, recv, argc, ai, bl, mc, 3); }
 
-/* argc-specialized variants — picked by method_cache_fill when the method
- * has a small fixed parameter count.  Each version has a literal PARAMS,
- * letting gcc fold the argc check and unroll the Qnil-fill. */
-VALUE prologue_ast_simple_0(CTX *c, struct Node *callsite, VALUE recv,
-                                   uint32_t argc, uint32_t arg_index,
-                                   struct korb_proc *block, struct method_cache *mc)
-{ return prologue_ast_simple_inner(c, callsite, recv, argc, arg_index, block, mc, 0); }
-
-VALUE prologue_ast_simple_1(CTX *c, struct Node *callsite, VALUE recv,
-                                   uint32_t argc, uint32_t arg_index,
-                                   struct korb_proc *block, struct method_cache *mc)
-{ return prologue_ast_simple_inner(c, callsite, recv, argc, arg_index, block, mc, 1); }
-
-VALUE prologue_ast_simple_2(CTX *c, struct Node *callsite, VALUE recv,
-                                   uint32_t argc, uint32_t arg_index,
-                                   struct korb_proc *block, struct method_cache *mc)
-{ return prologue_ast_simple_inner(c, callsite, recv, argc, arg_index, block, mc, 2); }
-
-static VALUE prologue_ast_simple_3(CTX *c, struct Node *callsite, VALUE recv,
-                                   uint32_t argc, uint32_t arg_index,
-                                   struct korb_proc *block, struct method_cache *mc)
-{ return prologue_ast_simple_inner(c, callsite, recv, argc, arg_index, block, mc, 3); }
-
-static VALUE prologue_ast_simple(CTX *c, struct Node *callsite, VALUE recv,
-                                 uint32_t argc, uint32_t arg_index,
-                                 struct korb_proc *block, struct method_cache *mc)
-{ return prologue_ast_simple_inner(c, callsite, recv, argc, arg_index, block, mc, -1); }
+static VALUE prologue_ast_simple(CTX *c, struct Node *cs, VALUE recv, uint32_t argc,
+                                 uint32_t ai, struct korb_proc *bl, struct method_cache *mc)
+{ return prologue_ast_simple_inl(c, cs, recv, argc, ai, bl, mc, -1); }
 
 /* AST general: handles opt args, rest_slot, all the trimmings.  Same body
  * as the legacy korb_dispatch_call AST hot path. */

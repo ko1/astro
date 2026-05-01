@@ -318,8 +318,9 @@ VALUE korb_dispatch_call(CTX *c, struct Node *callsite, VALUE recv, ID name, uin
 struct korb_class *korb_class_of_class(VALUE v);
 extern state_serial_t korb_g_method_serial;  /* mirrored from korb_vm->method_serial */
 
-/* Forward decls for the hot prologues — referenced by the guarded direct
- * call below to let the C compiler inline them on the predicted path. */
+/* Stable function-pointer addresses for mc->prologue — used as kind tags
+ * in the guarded direct call below (compared by name, then dispatched
+ * inline via the static-inline body in prologues.h). */
 VALUE prologue_ast_simple_0(CTX *c, struct Node *callsite, VALUE recv,
                             uint32_t argc, uint32_t arg_index,
                             struct korb_proc *block, struct method_cache *mc);
@@ -339,11 +340,11 @@ VALUE prologue_cfunc(CTX *c, struct Node *callsite, VALUE recv,
  * dispatches.
  *
  * Guarded direct call: compare mc->prologue to the hottest variants and
- * dispatch via a literal function pointer when matched.  Most call sites
- * stably dispatch one prologue, so the predicted path collapses to a
- * direct call (and the prologue body inlines, since they're declared
- * static inline in object.c — when LTO is on, gcc happily inlines the
- * literal-pointer call into this site). */
+ * dispatch via the inline body when matched.  prologues.h provides the
+ * inline implementations so each TU gets its own copy and gcc can fully
+ * inline the prologue body into the SD that includes us. */
+#include "prologues.h"
+
 static inline __attribute__((always_inline)) VALUE
 korb_dispatch_call_cached(CTX * restrict c, struct Node * restrict callsite,
                           VALUE recv, ID name, uint32_t argc,
@@ -353,10 +354,10 @@ korb_dispatch_call_cached(CTX * restrict c, struct Node * restrict callsite,
     struct korb_class *klass = korb_class_of_class(recv);
     if (LIKELY(mc && mc->serial == korb_g_method_serial && mc->klass == klass)) {
         korb_prologue_t p = mc->prologue;
-        if (p == prologue_ast_simple_0) return prologue_ast_simple_0(c, callsite, recv, argc, arg_index, block, mc);
-        if (p == prologue_ast_simple_1) return prologue_ast_simple_1(c, callsite, recv, argc, arg_index, block, mc);
-        if (p == prologue_ast_simple_2) return prologue_ast_simple_2(c, callsite, recv, argc, arg_index, block, mc);
-        if (p == prologue_cfunc)        return prologue_cfunc       (c, callsite, recv, argc, arg_index, block, mc);
+        if (p == prologue_ast_simple_0) return prologue_ast_simple_inl(c, callsite, recv, argc, arg_index, block, mc, 0);
+        if (p == prologue_ast_simple_1) return prologue_ast_simple_inl(c, callsite, recv, argc, arg_index, block, mc, 1);
+        if (p == prologue_ast_simple_2) return prologue_ast_simple_inl(c, callsite, recv, argc, arg_index, block, mc, 2);
+        if (p == prologue_cfunc)        return prologue_cfunc_inl     (c, callsite, recv, argc, arg_index, block, mc);
         return p(c, callsite, recv, argc, arg_index, block, mc);
     }
     return korb_dispatch_call(c, callsite, recv, name, argc, arg_index, block, mc);
