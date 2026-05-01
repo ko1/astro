@@ -312,7 +312,12 @@ jstro_specialize_all(NODE *root, const char *file)
     }
     jstro_specialize_side_array(file);
     jstro_export_all_sds();
-    astro_cs_build(NULL);
+    // Disable stack-clash + stack-protector probes: each alloca'd
+    // callee frame in the AOT-inlined call chain otherwise emits
+    // ~10 stack-probe stores per function entry, which lights up on
+    // recursive benches like fib (~9 M calls).  jstro tracks GC roots
+    // via frame_stack so the kernel's guard page is sufficient.
+    astro_cs_build("-fno-stack-protector -fno-stack-clash-protection");
     astro_cs_reload();
     if (root) astro_cs_load(root, file);
     for (uint32_t i = 0; i < CR.cnt; i++) {

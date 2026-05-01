@@ -396,6 +396,10 @@ unsigned long jstro_gc_run_count = 0;
 void
 js_gc_collect(CTX *c)
 {
+    // Always clear the pending flag — even if GC is currently disabled
+    // (try-frame setup etc.), the safepoint should not loop on the same
+    // signal.  The next allocation past the threshold will re-arm it.
+    c->gc_pending = 0;
     if (c->gc_disabled) return;
     jstro_gc_run_count++;
     // Flip live/dead polarity (so all currently-marked objects effectively
@@ -429,6 +433,12 @@ js_gc_alloc(CTX *c, size_t size, uint8_t type)
     gc->next = c->all_objects;
     c->all_objects = gc;
     c->bytes_allocated += 1;
+    // Arm the next safepoint when the threshold has been crossed.  This
+    // moves the threshold check off the safepoint hot path (which now
+    // just checks gc_pending) into the allocator's already-cold path.
+    if (__builtin_expect(c->bytes_allocated >= c->gc_threshold, 0)) {
+        c->gc_pending = 1;
+    }
     return p;
 }
 

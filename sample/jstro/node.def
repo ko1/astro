@@ -1238,8 +1238,16 @@ node_index_set(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, NO
     JsValue v = EVAL_ARG(c, rhs);
     if (JSTRO_LIKELY(JV_IS_ARRAY(ov) && JV_IS_SMI(iv))) {
         int64_t i = JV_AS_SMI(iv);
-        if (JSTRO_LIKELY(i >= 0)) {
-            js_array_set(c, JV_AS_ARRAY(ov), i, v);
+        struct JsArray *a = JV_AS_ARRAY(ov);
+        // Inline the dense fast path so hot loops like sieve's `a[j] = false`
+        // don't pay an out-of-line js_array_set call.
+        if (JSTRO_LIKELY(i >= 0 && (uint64_t)i < a->dense_capa)) {
+            a->dense[i] = v;
+            if ((uint32_t)i + 1 > a->length) a->length = (uint32_t)i + 1;
+            return RESULT_OK(v);
+        }
+        if (i >= 0) {
+            js_array_set(c, a, i, v);
             return RESULT_OK(v);
         }
     }
