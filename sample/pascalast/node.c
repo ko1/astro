@@ -245,26 +245,40 @@ SPECIALIZE(FILE *fp, NODE *n)
         if (!n->head.flags.is_specialized) fill_with_sc(n, sc_repo_search(h));
         return;
     }
-    // Eagerly stamp dispatcher_name BEFORE recursing into children.
-    // The generated specializer also sets it (post-recursion) — same
-    // value, no conflict — but the eager set means a child that
-    // cycles back to this node sees the right SD name and can emit a
-    // direct call instead of an indirect dispatcher load.  Critical
-    // for baked recursive pcalls (fib calling itself): without this
-    // the recursive edge falls back to DISPATCH_node_<kind>.
     if (n->head.flags.is_specializing) {
-        // Cycle: also flip no_inline so DISPATCHER_NAME emits the
-        // runtime dispatcher load form, in case the cycle came in
-        // before the eager set somehow runs (defensive — shouldn't
-        // happen with the eager set above, but matches the
-        // astro_code_store.c contract).
+        // Cycle: parent on the call stack hit by recursion through a
+        // child.  Flip no_inline so the parent's specializer emits a
+        // runtime `n->u.X.field->head.dispatcher` indirection instead
+        // of trying to reference an SD whose body is still being
+        // emitted.  Critically, do NOT rename this node's dispatcher
+        // — leaving it as the default `DISPATCH_<kind>` lets the
+        // runtime fallback resolve correctly.
         n->head.flags.no_inline = true;
         return;
     }
+    // Eagerly stamp dispatcher_name BEFORE recursing into children.
+    // The generated specializer also sets it (post-recursion), same
+    // value, no conflict — but the eager set means a child that
+    // cycles back to this node sees the right SD name and can emit a
+    // direct call.  Critical for baked recursive pcalls (fib calling
+    // itself): otherwise the recursive edge falls back to
+    // DISPATCH_node_<kind>.
+    long pos_before = ftell(fp);
+    const char *prev_name = n->head.dispatcher_name;
     n->head.dispatcher_name = alloc_dispatcher_name(n);
     n->head.flags.is_specializing = true;
     (*n->head.kind->specializer)(fp, n, false);
     n->head.flags.is_specializing = false;
+    if (ftell(fp) == pos_before) {
+        // The specializer is a no-op (`@noinline` node — e.g. vcall,
+        // pcall_n).  No SD body was emitted, so don't register one in
+        // sc_repo and don't pretend the node has an SD name — restore
+        // the original dispatcher_name so any forward-decl emitted by
+        // the parent's specializer points at the real DISPATCH_<kind>
+        // function (always linked) rather than a non-existent SD.
+        n->head.dispatcher_name = prev_name;
+        return;
+    }
     sc_repo_add(n, h);
 }
 
@@ -287,10 +301,26 @@ SPECIALIZED_SRC(NODE *n)
     // possible.  Eagerly stamp dispatcher_name first (same as
     // SPECIALIZE) so a recursive call inside the body sees the proc's
     // SD name and the AOT'd recursive edge becomes a direct call.
+    // Deduplicate against previously-emitted SDs.  Two distinct proc
+    // bodies can hash equal when they're structurally identical
+    // (e.g. two methods that both return a constant) — without this
+    // check, write_specialized's per-proc loop would emit two
+    // copies of the same SD_<hash> and the linker would reject it.
+    // We still need to *stamp* the dispatcher_name on this NODE so
+    // call sites know what to reference, but the body emission is
+    // skipped when the hash is already in sc_repo.
+    node_hash_t h = HASH(n);
     n->head.dispatcher_name = alloc_dispatcher_name(n);
+    if (sc_repo_search(h)) {
+        if (!n->head.flags.is_specialized) fill_with_sc(n, sc_repo_search(h));
+        fclose(fp);
+        free(buf);
+        return NULL;
+    }
     n->head.flags.is_specializing = true;
     (*n->head.kind->specializer)(fp, n, false);
     n->head.flags.is_specializing = false;
+    sc_repo_add(n, h);
     fclose(fp);
     return buf;
 }

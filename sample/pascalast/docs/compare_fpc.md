@@ -32,21 +32,22 @@ and AST build time.
 ```
 bench                    interp  fpc -O-  fpc -O3      AOT
 -----                    ------  -------  -------      ---
-ackermann                  1.61     0.19     0.06     0.28
-collatz                    1.69     0.19     0.16     0.06
-fib                        0.94     0.15     0.09     0.21
-gcd                        1.03     0.25     0.14     0.29
-heron                      1.38     0.16     0.09     0.09
-leibniz_pi                 1.23     0.14     0.13     0.10
-mandelbrot_int             1.61     0.06     0.05     0.04
-mandelbrot_real            1.50     diff     diff     0.06
-matmul                     1.37     0.05     0.02     0.06
-matmul_2d                  1.41     0.10     0.06     0.17
-nested_loops               1.72     0.23     0.07     0.00
+ackermann                  1.49     0.18     0.05     0.26
+collatz                    1.42     0.16     0.13     0.05
+fib                        0.83     0.13     0.07     0.19
+gcd                        1.00     0.25     0.13     0.27
+heron                      1.46     0.16     0.09     0.08
+leibniz_pi                 1.29     0.14     0.13     0.09
+mandelbrot_int             1.44     0.05     0.05     0.04
+mandelbrot_real            1.35     diff     diff     0.06
+matmul                     1.31     0.05     0.02     0.06
+matmul_2d                  1.39     0.11     0.06     0.21
+nested_loops               2.07     0.27     0.09     0.00
+oop_shapes                 1.20     0.10     0.05     0.73
 quicksort                  1.09     0.15     0.10     0.21
-sieve                      1.23     0.12     0.06     0.25
-tarai                      1.59     0.20     0.11     0.29
-varparam_swap              1.16     0.07     0.03     0.10
+sieve                      1.29     0.12     0.07     0.22
+tarai                      1.72     0.20     0.11     0.29
+varparam_swap              1.12     0.07     0.03     0.09
 ```
 
 `diff` on `mandelbrot_real` means fpc and pascalast print numerically
@@ -93,8 +94,26 @@ zero-fill — that fpc collapses entirely.  A bare native `call`
 instruction is hard to beat with a tree-walker even after heavy
 specialization.
 
+**Virtual dispatch is the largest gap.**
+
+| bench       | fpc -O3 | AOT    | factor |
+|---|---|---|---|
+| oop_shapes  | 0.05 s  | 0.73 s | 14.6 × |
+
+`oop_shapes` is the only bench dominated by virtual method calls
+(six `node_vcall` per inner-loop iteration).  AOT can't fold
+through `vcall` — the call target is only known at run time via
+the vtable lookup — so this is essentially the cost of one
+runtime-indirect call per dispatch.  fpc -O3 closes this gap
+because at -O3 it can devirtualize when type-flow analysis sees
+only one possible class per call site.  Class-method inline-cache
+(P5 in todo.md) is the natural fix — cache the resolved proc per
+call site and emit a direct `mk_pcall` when the cache is filled
+and the class still matches.
+
 **pascalast AOT is essentially on par with fpc -O- (no opt) overall.**
-On every bench, AOT is within ~3× of fpc -O- and often beats it:
+On every bench except `oop_shapes`, AOT is within ~3× of fpc -O-
+and often beats it:
 
 | where AOT > fpc -O- (faster) | where AOT < fpc -O- (slower) |
 |---|---|
