@@ -592,6 +592,111 @@ static ire_node_t *parse_alt(re_parser_t *q) {
 }
 
 /* ------------------------------------------------------------------ */
+/* First-byte / first-prefix analysis                                  */
+/* ------------------------------------------------------------------ */
+
+/* Walk the IR and collect the longest-known fixed literal prefix that
+ * any successful match must begin with.  Used by astrogre_parse to
+ * emit a memchr- or memmem-prefiltered grep_search variant.
+ *
+ * Limits (intentional, keep the analysis tractable):
+ *   - case-insensitive flag disables the prefilter (we'd need to
+ *     scan for both cases, which memchr can't do; doable with a
+ *     16-byte PSHUFB scan, deferred).
+ *   - alternation, lookahead/behind, backref, optional rep, dot
+ *     all stop prefix accumulation.
+ *   - anchors (\A ^ $ etc.) are zero-width and we walk through them.
+ *   - a `(...)` group inherits its body's prefix. */
+typedef struct {
+    char bytes[64];
+    size_t len;
+    bool ci;
+} fixed_prefix_t;
+
+static void
+fixed_prefix_append(fixed_prefix_t *fp, const char *s, size_t n, bool ci)
+{
+    if (fp->len > 0 && fp->ci != ci) return;
+    size_t cap = sizeof(fp->bytes);
+    if (fp->len >= cap) return;
+    size_t take = (fp->len + n > cap) ? cap - fp->len : n;
+    memcpy(fp->bytes + fp->len, s, take);
+    fp->len += take;
+    fp->ci = ci;
+}
+
+/* Returns true when the IR consumes some bytes deterministically — i.e.
+ * the prefix is settled and the caller should stop walking siblings.
+ * Returns false when the IR is zero-width / empty-able, in which case
+ * the caller may continue walking.
+ * `*consumes_anything` is set to true if some non-empty consumption
+ * happens anywhere in the tree (used to gate the prefilter — pure
+ * zero-width patterns shouldn't get a literal scan). */
+static bool
+ire_collect_prefix(ire_node_t *n, fixed_prefix_t *out, bool *consumes_anything)
+{
+    if (!n) return false;
+    switch (n->kind) {
+    case IRE_LIT:
+        if (n->u.lit.len == 0) return false;
+        if (out->len > 0 && out->ci != n->u.lit.ci) {
+            *consumes_anything = true;
+            return true;
+        }
+        fixed_prefix_append(out, n->u.lit.bytes, n->u.lit.len, n->u.lit.ci);
+        *consumes_anything = true;
+        return true;
+
+    case IRE_CONCAT:
+        for (size_t i = 0; i < n->u.cat.n; i++) {
+            bool consumed = false;
+            bool done = ire_collect_prefix(n->u.cat.xs[i], out, &consumed);
+            if (consumed) *consumes_anything = true;
+            if (done) return true;
+        }
+        return false;
+
+    case IRE_GROUP:
+        return ire_collect_prefix(n->u.group.body, out, consumes_anything);
+    case IRE_NCGROUP:
+        return ire_collect_prefix(n->u.nc.body, out, consumes_anything);
+
+    case IRE_REP:
+        /* min >= 1 → body is guaranteed to run at least once and its
+         * prefix appears at the start of the match.
+         *
+         * min == 0 → tricky.  We can't continue past the rep to grab
+         * the next sibling's prefix, because the *leftmost match*
+         * might start before that sibling (`/(a|ab)*c/` on "abc"
+         * matches at offset 0 with iter=1, so the match's first byte
+         * is 'a', not 'c').  Stop accumulation right here and let
+         * whatever prefix we already have from earlier siblings (if
+         * any) drive the prefilter. */
+        if (n->u.rep.min >= 1) {
+            return ire_collect_prefix(n->u.rep.body, out, consumes_anything);
+        }
+        return true;
+
+    /* Zero-width — walk past. */
+    case IRE_BOS: case IRE_EOS: case IRE_EOS_NL:
+    case IRE_BOL: case IRE_EOL:
+    case IRE_WB: case IRE_NWB:
+    case IRE_LOOKAHEAD: case IRE_NEG_LOOKAHEAD:
+    case IRE_EMPTY:
+        return false;
+
+    /* Everything else: stops prefix accumulation. */
+    case IRE_DOT:
+    case IRE_CLASS:
+    case IRE_ALT:
+    case IRE_BACKREF:
+    default:
+        *consumes_anything = true;
+        return true;
+    }
+}
+
+/* ------------------------------------------------------------------ */
 /* Lower IR -> AST (continuation-passing assembly)                     */
 /* ------------------------------------------------------------------ */
 
@@ -757,10 +862,28 @@ astrogre_parse(const char *pat, size_t pat_len, uint32_t prism_flags)
     NODE *body = lower(&L, ir, ALLOC_node_re_cap_end(0, succ));
     body = ALLOC_node_re_cap_start(0, body);
 
-    /* Wrap the whole pattern in node_grep_search so the position-loop
-     * is part of the AST too — the specialiser then bakes the loop
-     * AND the inlined regex chain into a single C function. */
-    NODE *root = ALLOC_node_grep_search(body, anchored_bos ? 1 : 0);
+    /* Pick the right wrapper based on what the IR analysis turned up:
+     *   memmem (>= 4-byte literal prefix, no /i)  → node_grep_search_memmem
+     *   memchr (>= 1-byte literal prefix, no /i)  → node_grep_search_memchr
+     *   anything else                              → node_grep_search
+     * The specialiser bakes the prefix bytes / first-byte constants
+     * into the resulting SD. */
+    fixed_prefix_t fp = {0};
+    bool consumes = false;
+    ire_collect_prefix(ir, &fp, &consumes);
+    NODE *root;
+    uint32_t a = anchored_bos ? 1 : 0;
+    if (consumes && !fp.ci && fp.len >= 4) {
+        char *needle = (char *)malloc(fp.len + 1);
+        memcpy(needle, fp.bytes, fp.len); needle[fp.len] = 0;
+        root = ALLOC_node_grep_search_memmem(body, needle, (uint32_t)fp.len, a);
+    }
+    else if (consumes && !fp.ci && fp.len >= 1) {
+        root = ALLOC_node_grep_search_memchr(body, (uint32_t)(uint8_t)fp.bytes[0], a);
+    }
+    else {
+        root = ALLOC_node_grep_search(body, a);
+    }
 
     int n_groups = q.n_groups;
     ire_free(ir);

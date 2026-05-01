@@ -1,6 +1,11 @@
 #ifndef ASTROGRE_CONTEXT_H
 #define ASTROGRE_CONTEXT_H 1
 
+/* memmem is a GNU extension; needed by node_grep_search_memmem. */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif
+
 #include <stdint.h>
 #include <stddef.h>
 #include <stdio.h>

@@ -36,6 +36,10 @@ direct head-to-head comparison.
   (`node_grep_search`), so the specializer fuses the loop AND the
   inlined regex chain into one SD function — the in-engine bench
   shows up to **7.2× over interp on long-buffer searches**.
+- Algorithmic prefilter nodes — `node_grep_search_memchr` /
+  `_memmem` — emitted when the parser detects a literal first byte
+  / prefix.  3-4× win on literal-led grep patterns, bringing
+  astrogre to within 20 % of Onigmo on those cases.
 
 ## Build and run
 
@@ -81,57 +85,59 @@ prism                 symlink to ../naruby/prism (Ruby parser)
 onigmo/               cloned, locally-built Onigmo (build_local.mk)
 ```
 
-## Speed: AOT specialization
+## Speed: prefilter + AOT specialization
 
-The for-each-start-position search loop is itself an AST node
-(`node_grep_search`), so AOT specialization fuses the loop AND the
-inlined regex chain into one SD function.  The in-engine
-microbench (`./astrogre --bench`) shows the gain:
+Two layers of optimisation, both expressed as ASTro nodes:
 
-```
-                                  interp     aot-cached   speedup
-literal-tail   /match/            22.75 s      3.15 s      7.22×
-class-word     /\w+/              11.60 s     10.43 s      1.11×
-alt-3          /cat|dog|match/    15.67 s     12.86 s      1.22×
-dot-star       /.*match/          11.04 s      9.16 s      1.20×
-```
+1. **`node_grep_search`** — the for-each-start-position loop.
+   Putting it in the AST means the specializer fuses the loop AND
+   the inlined regex chain into one SD function.  In-engine
+   microbench: 7.22× over interp on `literal-tail` (16 KiB single
+   buffer, repeated calls).
+2. **`node_grep_search_memchr` / `_memmem`** — algorithmic
+   prefilters.  When the parser detects a fixed first byte / multi-
+   byte literal prefix, emit one of these instead.  glibc's AVX2
+   memchr / two-way memmem skips entire KB of input per library
+   call; the body chain runs only at candidate positions.
 
-The grep CLI bench (`bench/grep_bench.sh`, 118 MB corpus, line by
-line) shows essentially **no fusion gain** — per-line `getline` /
-CTX init / fwrite overhead dominates the wall clock when each line
-is ~36 bytes.  Folding the line iteration into the AST too is on
-the runway.
+Grep-CLI bench (`bench/grep_bench.sh`, 118 MB corpus, best-of-5 s):
 
 ```
                           grep   ripgrep   +onigmo  interp  aot-cached
-literal    /static/      0.002    0.036     0.238   0.934    0.974
+literal    /static/      0.002    0.037     0.240   0.285    0.287
 rare       /specialized_dispatcher/
-                         0.036    0.020     0.215   1.004    1.024
-anchored   /^static/     0.003    0.041     0.358   0.720    0.672
-case-i     /VALUE/i      0.002    0.050     0.278   0.773    0.784
+                         0.039    0.022     0.200   0.269    0.267
+anchored   /^static/     0.003    0.042     0.249   0.284    0.281
+case-i     /VALUE/i      0.002    0.053     0.285   0.746    0.712
 alt-3      /static|extern|inline/
-                         0.003    0.055     1.199   2.122    2.348
-class-rep  /[0-9]{4,}/   0.006    0.103     0.861   1.381    1.330
+                         0.003    0.053     1.183   2.199    2.133
+class-rep  /[0-9]{4,}/   0.002    0.059     0.749   1.384    1.392
 ident-call /[a-z_]+_[a-z]+\(/
-                         0.002    0.192     3.500   3.990    3.938
-count -c   /static/      0.002    0.029     0.241   0.957    0.933
+                         0.002    0.196     3.626   4.238    4.294
+count -c   /static/      0.002    0.030     0.244   0.293    0.286
 ```
 
 What this says:
 
-- **ugrep / ripgrep are not really competing**: SIMD memchr +
-  literal-prefix prefilters / lazy DFA put them an order of
-  magnitude ahead of v1 work.
-- **astrogre vs Onigmo** is the apples-to-apples comparison (both
-  are tree/bytecode backtracking engines without a literal
-  prefilter).  Onigmo is currently 2–4× faster at the grep-CLI
-  level; the gap is the literal-prefix prefilter Onigmo runs
-  internally, which we don't have yet.
+- **prefilter-eligible patterns** (literal-led, anchored, count) are
+  now **within 20 %** of Onigmo — 3-4× faster than the no-prefilter
+  baseline, finally in the same ballpark as a serious backtracking
+  matcher.
+- **patterns the current prefilter doesn't trigger on** (case-
+  insensitive, alternation, class-led) still match the no-prefilter
+  baseline.  Each gets its own SIMD-y node next: twin memchr for
+  `/i`, first-byte bitmap for alternation, PSHUFB for classes.
+  Documented under [`docs/todo.md`](./docs/todo.md).
+- **ugrep / ripgrep stay an order of magnitude ahead**.  The
+  remaining gap is process startup + per-line `getline` / CTX-init
+  overhead, addressable by folding line iteration into the AST too
+  (`node_grep_lines`).
 
-See [`docs/perf.md`](./docs/perf.md) for what's tried + landed,
-including the disassembly of the fused SD and the runway items
-(line iteration in the AST, literal-prefix prefilter, real PG
-signal, JIT).
+See [`docs/perf.md`](./docs/perf.md) and
+[`docs/runtime.md`](./docs/runtime.md) for the architectural lesson
+("wrap algorithms as nodes; the framework's bake / hash / code-store
+sharing then compose with them for free") and the disassembly of
+the fused SD.
 
 ## What it does NOT do (yet)
 

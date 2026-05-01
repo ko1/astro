@@ -50,6 +50,76 @@ node_grep_search(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t ancho
     return 0;
 }
 
+/* memchr-prefilter variant of node_grep_search.
+ *
+ * Used when the parser detects that the pattern can only match at
+ * positions where the input has a known fixed first byte (e.g.
+ * `/static/` always wants 's' at pos).  glibc's memchr is AVX2
+ * PCMPEQB-based on x86-64; ~30 GB/s scan throughput is enough to
+ * skip whole KB of input in one library call, so the body chain
+ * runs only at candidate positions.
+ *
+ * Constants `first_byte` and `anchored_bos` are baked into the SD
+ * by the specialiser; the memchr call survives as a libc PLT call
+ * but with the second argument as an immediate. */
+NODE_DEF
+node_grep_search_memchr(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t first_byte, uint32_t anchored_bos)
+{
+    if (anchored_bos) {
+        if (c->pos != 0) return 0;
+        for (int i = 0; i < ASTROGRE_MAX_GROUPS; i++) c->valid[i] = false;
+        c->rep_top = NULL;
+        return EVAL_ARG(c, body);
+    }
+    const uint8_t *p   = c->str + c->pos;
+    const uint8_t *end = c->str + c->str_len;
+    while (p < end) {
+        const uint8_t *q = (const uint8_t *)memchr(p, (int)(unsigned char)first_byte, (size_t)(end - p));
+        if (!q) return 0;
+        c->pos = (size_t)(q - c->str);
+        for (int i = 0; i < ASTROGRE_MAX_GROUPS; i++) c->valid[i] = false;
+        c->rep_top = NULL;
+        if (EVAL_ARG(c, body)) return 1;
+        p = q + 1;
+    }
+    return 0;
+}
+
+/* memmem-prefilter variant: same shape as memchr but with a multi-
+ * byte needle, used when the pattern starts with a >= 4-byte literal
+ * (e.g. `/specialized_dispatcher/`).  glibc's memmem is two-way
+ * string match — sublinear average case, much harder to fool than
+ * a single-byte memchr scan when the first byte happens to be
+ * common.
+ *
+ * The needle bytes live in `prefix` (a const char * baked into the
+ * SD); the body chain re-verifies from c->pos onwards exactly as in
+ * the plain search, so a memmem false-positive (the wider regex
+ * doesn't match here) just drops back to a normal candidate-position
+ * retry. */
+NODE_DEF
+node_grep_search_memmem(CTX * restrict c, NODE * restrict n, NODE *body, const char *prefix, uint32_t prefix_len, uint32_t anchored_bos)
+{
+    if (anchored_bos) {
+        if (c->pos != 0) return 0;
+        for (int i = 0; i < ASTROGRE_MAX_GROUPS; i++) c->valid[i] = false;
+        c->rep_top = NULL;
+        return EVAL_ARG(c, body);
+    }
+    const uint8_t *p   = c->str + c->pos;
+    const uint8_t *end = c->str + c->str_len;
+    while ((size_t)(end - p) >= (size_t)prefix_len) {
+        const uint8_t *q = (const uint8_t *)memmem(p, (size_t)(end - p), prefix, (size_t)prefix_len);
+        if (!q) return 0;
+        c->pos = (size_t)(q - c->str);
+        for (int i = 0; i < ASTROGRE_MAX_GROUPS; i++) c->valid[i] = false;
+        c->rep_top = NULL;
+        if (EVAL_ARG(c, body)) return 1;
+        p = q + 1;
+    }
+    return 0;
+}
+
 /* ------------------------------------------------------------------ */
 /* Terminator                                                          */
 /* ------------------------------------------------------------------ */

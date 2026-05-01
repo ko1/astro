@@ -28,15 +28,27 @@ because `HOPT == HORG`.  Real signals to bake:
 - **Iteration-count specialisation**: bake unrolled fixed-N
   variants for repetitions whose observed count is concentrated.
 
-### Literal-prefix prefilter
-Independent of the AST and a pure C-level win.  For unanchored
-patterns with a fixed-byte prefix, use Boyer-Moore-style scan to
-find candidate positions and verify with the AST.  Should drop
-`literal-rare` from 880 ms to memchr-bound (~20 ms).
+### First-byte bitmap for /i and alt patterns
+memchr/memmem nodes landed for plain literal prefixes; the next
+slice of patterns that benefits from a SIMD prefilter:
+- `/foo/i` — both 'f'/'F' could start a match.  A 16-byte PSHUFB
+  (or twin memchr + branch on whichever fires first) handles
+  case-insensitive scan.
+- `/cat|dog|match/` — three alternative first bytes.  A 256-bit
+  "any-of" bitmap + AVX2 `VPCMPESTRM`-style scan, or just multi-
+  call memchr with min-position pick.
+- `/[0-9]+/` — class-led.  PSHUFB membership in 16 char ranges,
+  see Hyperscan / re2's literal extraction.
 
-### First-byte bitmap
-Even simpler than full BMH: at compile time, build a 256-bit bitmap
-of allowed first bytes; skip ahead using a vectorised scan.
+### Class first-byte PSHUFB scan
+For class-led patterns, build a 16-byte set of allowed bytes
+(if it fits) and PSHUFB-scan 16 bytes per cycle.  Hyperscan does
+this; the implementation in C is ~50 lines.
+
+### `node_grep_search_bmh`
+Boyer-Moore-Horspool over the full pattern when `-F` is given.
+glibc memmem already does two-way; BMH would be faster for short
+needles where the bad-character table dominates.
 
 ### Inline small char-classes as comparisons
 For a class like `[abc]`, `b == 'a' || b == 'b' || b == 'c'` is

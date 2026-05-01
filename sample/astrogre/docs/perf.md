@@ -71,41 +71,71 @@ That's the entire grep search — start-position loop + inlined regex
 match — in ~30 instructions.  No indirect call, no DISPATCH chain,
 not even a function call out of the SD.
 
-## Why the grep CLI doesn't show the fusion gain
+## Prefilter nodes — closing the Onigmo gap
 
-`bench/grep_bench.sh` runs each tool against a 118 MB corpus, line by
-line:
+`node_grep_search_memchr` / `node_grep_search_memmem` (added after
+the original fusion experiment) skip directly to candidate
+positions when the pattern starts with a known fixed byte / multi-
+byte literal.  Same architectural shape as `node_grep_search`: an
+EVAL that does the algorithmic skip + a body operand that the
+specialiser inlines for verification.
+
+Bench, post-prefilter (118 MB corpus, line by line, best-of-5 s):
+
+```
+                          grep   ripgrep   +onigmo  interp  aot-cached
+literal    /static/      0.002    0.037     0.240   0.285    0.287
+rare                     0.039    0.022     0.200   0.269    0.267
+anchored   /^static/     0.003    0.042     0.249   0.284    0.281
+case-i     /VALUE/i      0.002    0.053     0.285   0.746    0.712
+alt-3                    0.003    0.053     1.183   2.199    2.133
+class-rep  /[0-9]{4,}/   0.002    0.059     0.749   1.384    1.392
+ident-call               0.002    0.196     3.626   4.238    4.294
+count -c   /static/      0.002    0.030     0.244   0.293    0.286
+```
+
+Compared to the prior interp (no prefilter), the prefilter-eligible
+patterns drop **3-4×**:
+
+```
+                         prior interp  →  prefilter interp
+literal /static/             0.934            0.285  (3.27×)
+literal-rare                 1.004            0.269  (3.73×)
+anchored /^static/           0.720            0.284  (2.54×)
+count -c /static/            0.957            0.293  (3.27×)
+```
+
+For the patterns the prefilter handles, astrogre is now **within
+20 %** of Onigmo (vs 2-4× behind without it).  The remaining gap is
+process startup + per-line `getline` + CTX-init.  Patterns the
+current prefilter doesn't trigger on (case-i, alt, class-led) are
+unchanged — those need their own analysis-and-emit, all listed in
+[`todo.md`](./todo.md).
+
+aot-cached vs interp is now essentially noise.  That's expected —
+the prefilter has eaten the dispatch chain bake was meant to remove.
+
+## Why the grep CLI bench doesn't show the fusion gain
+
+For comparison, the prior bench (before prefilter, after fusion):
 
 ```
                           grep   ripgrep   +onigmo  interp  aot-cached
 literal    /static/      0.002    0.036     0.238   0.934    0.974
-rare                     0.036    0.020     0.215   1.004    1.024
-anchored   /^static/     0.003    0.041     0.358   0.720    0.672
-case-i     /VALUE/i      0.002    0.050     0.278   0.773    0.784
-alt-3                    0.003    0.055     1.199   2.122    2.348
-class-rep  /[0-9]{4,}/   0.006    0.103     0.861   1.381    1.330
 ident-call               0.002    0.192     3.500   3.990    3.938
-count -c   /static/      0.002    0.029     0.241   0.957    0.933
 ```
 
-aot-cached is essentially indistinguishable from interp here, and the
-reason has nothing to do with the SD itself: each line is ~36 bytes
-on average, so the fused loop runs only ~36 iterations per call —
-short enough that the **per-call overhead** (`CTX_struct` zero-init,
-file I/O, getline buffering, `fwrite` of matched lines) dominates the
-wall clock.  The microbench amortizes that across 16 K-byte strings;
-grep doesn't.
+aot-cached was essentially indistinguishable from interp because
+each input line is ~36 bytes — the fused loop ran only ~36
+iterations per call, short enough that the **per-call overhead**
+(`CTX_struct` zero-init, getline buffering, fwrite of matched
+lines) dominated the wall clock.  The in-engine microbench
+amortizes that across 16 K-byte strings; grep doesn't.
 
-The natural next step is to fold the **line iteration** into the AST
-too — a `node_grep_lines(body, str, len)` whose EVAL walks newlines
-and prints matched lines, all inside one SD function.  See
-[`todo.md`](./todo.md).
-
-For an apples-to-apples comparison with Onigmo (also a backtracking
-engine without a literal-prefix prefilter), astrogre+onigmo is
-currently 2-4 × ahead of astrogre.  The remaining gap is the literal-
-prefix prefilter — Onigmo runs Boyer-Moore over `static` even though
-the wrapping pattern is "regex"-shaped.
+The natural next step is to fold the **line iteration** into the
+AST too — a `node_grep_lines(body, str, len)` whose EVAL walks
+newlines and prints matched lines, all inside one SD function.
+See [`todo.md`](./todo.md).
 
 ## What helped
 

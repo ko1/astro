@@ -264,6 +264,39 @@ node_app0(CTX * restrict c, NODE * restrict n, NODE *fn)
     return oc_apply(c, f, 0, NULL);
 }
 
+// Fast path for closure-leaf calls: if `f` is a closure of matching
+// arity with a leaf body, skip oc_apply entirely.  We open-code the
+// frame setup, then call the body's dispatcher directly.  Tail-call
+// escapes (body set `tail_call_pending`) fall through to oc_apply so
+// the trampoline picks them up.  Saves the prim-vs-closure type
+// chain, the partial-app capture path, and one indirect function
+// call per invocation.  For tight recursive code (fib / tak / ack)
+// this is the dominant call cost.
+#define APPN_FAST_PATH(NP)                                              \
+    do {                                                                \
+        if (LIKELY(OC_IS_CLOSURE(f))) {                                 \
+            struct oobj * const _cl = OC_PTR(f);                        \
+            if (LIKELY(_cl->closure.nparams == (NP) &&                  \
+                       _cl->closure.is_leaf)) {                         \
+                struct oframe *_fr = (struct oframe *)                  \
+                    alloca(sizeof(struct oframe) +                      \
+                           sizeof(VALUE) * (NP));                       \
+                _fr->parent = _cl->closure.env;                         \
+                _fr->nslots = (NP);                                     \
+                for (int _i = 0; _i < (NP); _i++) _fr->slots[_i] = av[_i]; \
+                struct oframe * const _saved = c->env;                  \
+                c->env = _fr;                                           \
+                VALUE _r = (*_cl->closure.body->head.dispatcher)        \
+                    (c, _cl->closure.body);                             \
+                c->env = _saved;                                        \
+                if (LIKELY(!c->tail_call_pending)) return _r;           \
+                /* Body set tail-pending — trampoline via oc_apply. */  \
+                c->tail_call_pending = 0;                               \
+                return oc_apply(c, c->tc_fn, c->tc_argc, c->tc_argv);   \
+            }                                                           \
+        }                                                               \
+    } while (0)
+
 NODE_DEF
 node_app1(CTX * restrict c, NODE * restrict n, NODE *fn, NODE *a0)
 {
@@ -271,6 +304,7 @@ node_app1(CTX * restrict c, NODE * restrict n, NODE *fn, NODE *a0)
     VALUE f = EVAL_ARG(c, fn);
     VALUE av[1];
     av[0] = EVAL_ARG(c, a0);
+    APPN_FAST_PATH(1);
     return oc_apply(c, f, 1, av);
 }
 
@@ -282,6 +316,7 @@ node_app2(CTX * restrict c, NODE * restrict n, NODE *fn, NODE *a0, NODE *a1)
     VALUE av[2];
     av[0] = EVAL_ARG(c, a0);
     av[1] = EVAL_ARG(c, a1);
+    APPN_FAST_PATH(2);
     return oc_apply(c, f, 2, av);
 }
 
@@ -294,6 +329,7 @@ node_app3(CTX * restrict c, NODE * restrict n, NODE *fn, NODE *a0, NODE *a1, NOD
     av[0] = EVAL_ARG(c, a0);
     av[1] = EVAL_ARG(c, a1);
     av[2] = EVAL_ARG(c, a2);
+    APPN_FAST_PATH(3);
     return oc_apply(c, f, 3, av);
 }
 
@@ -307,6 +343,7 @@ node_app4(CTX * restrict c, NODE * restrict n, NODE *fn, NODE *a0, NODE *a1, NOD
     av[1] = EVAL_ARG(c, a1);
     av[2] = EVAL_ARG(c, a2);
     av[3] = EVAL_ARG(c, a3);
+    APPN_FAST_PATH(4);
     return oc_apply(c, f, 4, av);
 }
 

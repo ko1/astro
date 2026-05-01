@@ -264,20 +264,23 @@ time:
 For the grep CLI the picture flips. Per-position inner work is *one
 or two compares*, not a method send. The dispatch chain bake removes
 is already cheap (3–4 indirect calls per position, all to the same
-hot BTB target, ~1 ns each). And once a literal-prefix prefilter is
-in play (memchr / memmem / Boyer-Moore), the verify chain only runs
-on candidate positions — typically a few hundred per file — so the
-total dispatch overhead the bake could eliminate is in the µs range:
+hot BTB target, ~1 ns each). And once the literal-prefix prefilter
+nodes landed (`node_grep_search_memchr` / `_memmem`), the verify
+chain only runs on candidate positions — a handful per kilobyte —
+so the total dispatch overhead the bake could eliminate is in the
+µs range:
 
 ```
-bench: 118 MB corpus
+bench: 118 MB corpus, post-prefilter
                                 interp     aot-cached
-literal /static/                0.934 s    0.974 s    (essentially noise)
+literal /static/                0.285 s    0.287 s    (essentially noise)
 ```
 
-ugrep does the same search in 2 ms via memchr. The 450× gap astrogre
-shows vs ugrep is **not** something specialization can close — it's
-algorithmic, not dispatch-overhead.
+ugrep does the same search in 2 ms via mmap + memchr-spanning-the-
+whole-file. The 100× gap astrogre still shows vs ugrep is **not**
+something specialization can close — it's process startup +
+per-line getline + CTX init dominating, addressable by folding line
+iteration into the AST too.
 
 ### The right pattern: wrap algorithms as nodes
 This is the architectural lesson the sample makes obvious. ASTro's
@@ -290,21 +293,49 @@ and inlines its `body` operand. So the engineering shape is:
 > parser emit it under the right precondition. The bake handles the
 > rest.*
 
-For astrogre the next-up nodes (under `todo.md → Performance`) all
-fit the shape:
+The first two prefilter nodes landed:
+
+- **`node_grep_search_memchr(body, first_byte, anchored_bos)`** —
+  glibc's AVX2 memchr scans for the fixed first byte; body verifies
+  at each candidate position.  Emitted when the parser detects a
+  literal first byte (covers `/static/`, `/a[0-9]+/`, `/^Hello/`).
+- **`node_grep_search_memmem(body, prefix, len, anchored_bos)`** —
+  same shape with a multi-byte needle.  Emitted when the literal
+  prefix is ≥ 4 bytes.
+
+Bench impact (118 MB corpus, line-by-line):
+
+```
+                       prior interp (fused)  →  prefilter interp     onigmo
+literal /static/             0.934                  0.285             0.240
+literal-rare                 1.004                  0.269             0.200
+anchored /^static/           0.720                  0.284             0.249
+count -c /static/            0.957                  0.293             0.244
+```
+
+3-4× over the prior interp, **within 20 % of Onigmo** for the
+patterns the prefilter applies to.
+
+The architectural point is that **the prefilter and the bake
+compose**.  The SD generated for `node_grep_search_memchr(/static/)`
+contains the memchr call AND the inlined chain that verifies
+`"static"` at each candidate position — both inside the same SD,
+both visible to gcc's optimiser, both addressable via dlsym.  Adding
+prefilter required no change to the bake / hash / code-store / SD
+machinery; the framework just did the right thing.
+
+Other nodes that fit the same shape (under `todo.md → Performance`):
 
 | node                          | inner algorithm           | parser trigger                         |
 |-------------------------------|---------------------------|----------------------------------------|
-| `node_grep_search_memchr`     | `memchr` for first byte   | pattern starts with a fixed byte       |
-| `node_grep_search_memmem`     | `memmem` for prefix       | pattern starts with ≥4 byte literal    |
 | `node_grep_search_bmh`        | Boyer-Moore-Horspool      | whole pattern is fixed (`-F`)          |
 | `node_re_class_pshufb`        | PSHUFB membership in 16 B | class with ≤16 members                 |
 | `node_re_alt_first_byte_skip` | first-byte 256-bit bitmap | alt branches all start with fixed byte |
+| `node_grep_search_ci2`        | twin memchr for /i        | case-insensitive literal-led pattern   |
 | `node_grep_lines`             | newline scan + per-line   | grep CLI driver                        |
 
-Each of these would be ~50–100 lines of node body. The bake gives
-them all the same treatment for free: `body` inlined, constants
-baked, dispatchers swapped post-build.
+Each is ~50–100 lines of node body.  The bake gives them all the
+same treatment for free.
 
 ### Where bake (specifically) might still pay
 For grep-shaped workloads the most plausible bake-only wins are

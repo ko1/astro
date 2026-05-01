@@ -127,3 +127,43 @@ The grep CLI bench shows essentially no change because each line
 `CTX_struct` zero-init, fwrite of matched lines) dominates.  Folding
 the line iteration into the AST as well is the next lever — see
 [`todo.md`](./todo.md).
+
+## Prefilter as a node — memchr / memmem variants
+
+Two algorithmic prefilter nodes that share the same shape as
+`node_grep_search` but skip directly to candidate positions
+instead of scanning every byte:
+
+- **`node_grep_search_memchr(body, first_byte, anchored_bos)`** —
+  emitted when the parser detects the pattern starts with a known
+  fixed byte (e.g. `/a[0-9]+/`).  Calls glibc's memchr (AVX2
+  `PCMPEQB`-driven) to skip non-`first_byte` regions; verifies with
+  the body chain at each hit.  The byte constant is baked by the
+  specialiser.
+- **`node_grep_search_memmem(body, prefix, prefix_len, anchored_bos)`** —
+  emitted when the prefix is a >= 4-byte literal (e.g.
+  `/specialized_dispatcher/`).  Same shape but with glibc's two-way
+  string match (sublinear average case).
+
+The parser's `ire_collect_prefix` walks the IR — handling concat,
+groups, anchors (zero-width pass-through), `rep min>=1` (body
+contributes prefix), `rep min==0` (stops accumulation, since the
+leftmost match might start before the post-rep prefix) — and picks
+the right wrapper.  Case-insensitive flag (`/i`) currently disables
+the prefilter; alternation, char-class-led patterns, and dot-led
+patterns also fall back to the plain `node_grep_search`.
+
+Bench impact (118 MB corpus, line by line, best-of-5 seconds):
+
+```
+                       interp(prefilter)   onigmo   prior interp(no-prefilter)
+literal /static/             0.285          0.240        0.934
+literal-rare                 0.269          0.200        1.004
+anchored /^static/           0.284          0.249        0.720
+count -c /static/            0.293          0.244        0.957
+```
+
+3-4× over the no-prefilter interp; within 20 % of Onigmo for the
+cases the prefilter applies to.  The remaining gap is per-line
+`getline` / CTX-init overhead, addressable by folding the line
+iteration into the AST as well.
