@@ -315,15 +315,14 @@ framework just did the right thing.
 Bench impact, 118 MB corpus, full-sweep count, ms/iter (★ = AOT
 beats grep AND Onigmo):
 
-```
-                                       astrogre+AOT   grep   onigmo
-/(QQQ|RRR)+\d+/                              16   ★    85    726     ← byteset over {Q,R}
-/(QQQX|RRRX|SSSX)+/                          24   ★    26    700     ← byteset over {Q,R,S}
-/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/         503   ★   533    717     ← range [a-z]
-/[A-Z]{50,}/                                 678  ★  1570   1099     ← range [A-Z]
-/\b(if|else|for|while|return)\b/              90       2.3   1060     ← byteset over {i,e,f,w,r}
-/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/        10824       2.7   9353     ← Truffle on \w (common)
-```
+| pattern | astrogre +AOT | grep | onigmo | prefilter node fired |
+|---|---:|---:|---:|---|
+| `/(QQQ\|RRR)+\d+/` | **16** ★ | 85 | 726 | byteset over {Q,R} |
+| `/(QQQX\|RRRX\|SSSX)+/` | **24** ★ | 26 | 700 | byteset over {Q,R,S} |
+| `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/` | **503** ★ | 533 | 717 | range `[a-z]` |
+| `/[A-Z]{50,}/` | **678** ★ | 1570 | 1099 | range `[A-Z]` |
+| `/\b(if\|else\|for\|while\|return)\b/` | 90 | **2.3** | 1060 | byteset over {i,e,f,w,r} |
+| `/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/` | 10824 | **2.7** | 9353 | Truffle on `\w` (common) |
 
 **4/8 vs grep, 8/8 vs Onigmo** on this set.  The losing patterns
 all need multi-pattern literal extraction (Hyperscan Teddy / FDR)

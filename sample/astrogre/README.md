@@ -110,20 +110,16 @@ Two layers of optimisation, both expressed as ASTro nodes:
 
 ### Bench A — grep CLI (line-by-line, 118 MB corpus, best-of-5 s)
 
-```
-                          grep   ripgrep   +onigmo  interp  aot-cached
-literal    /static/      0.002    0.036     0.226   0.285    0.271
-rare       /specialized_dispatcher/
-                         0.038    0.022     0.194   0.266    0.264
-anchored   /^static/     0.002    0.038     0.229   0.273    0.283
-case-i     /VALUE/i      0.002    0.048     0.277   0.702    0.336
-alt-3      /static|extern|inline/
-                         0.002    0.054     1.097   0.553    0.288
-class-rep  /[0-9]{4,}/   0.002    0.059     0.761   0.581    0.498
-ident-call /[a-z_]+_[a-z]+\(/
-                         0.002    0.192     3.524   3.828    2.885
-count -c   /static/      0.002    0.029     0.226   0.279    0.270
-```
+| pattern | astrogre interp | astrogre +AOT | astrogre +onigmo | grep | ripgrep |
+|---|---:|---:|---:|---:|---:|
+| `/static/` literal | 0.285 | 0.271 | 0.226 | 0.002 | 0.036 |
+| `/specialized_dispatcher/` rare | 0.266 | 0.264 | 0.194 | 0.038 | 0.022 |
+| `/^static/` anchored | 0.273 | 0.283 | 0.229 | 0.002 | 0.038 |
+| `/VALUE/i` case-i | 0.702 | 0.336 | 0.277 | 0.002 | 0.048 |
+| `/static\|extern\|inline/` alt-3 | 0.553 | 0.288 | 1.097 | 0.002 | 0.054 |
+| `/[0-9]{4,}/` class-rep | 0.581 | 0.498 | 0.761 | 0.002 | 0.059 |
+| `/[a-z_]+_[a-z]+\(/` ident-call | 3.828 | 2.885 | 3.524 | 0.002 | 0.192 |
+| `-c /static/` count | 0.279 | 0.270 | 0.226 | 0.002 | 0.029 |
 
 For literal-led grep, astrogre is now **within 20 % of Onigmo on
 every pattern** (memchr / memmem / byteset all firing).  ugrep
@@ -136,27 +132,26 @@ per-line CLI overhead doesn't apply.
 `bench/aot_bench.sh` runs the in-engine `--bench-file` path: full
 buffer in memory, full-sweep count to mirror grep `-c` semantics.
 Patterns chosen for the AOT-favourable shape (long chain, prefilter
-applies):
+applies).
 
-```
-                                       astrogre+AOT   grep   onigmo  ripgrep
-/(QQQ|RRR)+\d+/                              16  ★     85    726       26
-/(QQQX|RRRX|SSSX)+/                          24  ★     26    700       26
-/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/         503  ★    533    717      197
-/[A-Z]{50,}/                                 678 ★   1570   1099      184
-/[a-z][0-9][a-z][0-9][a-z]/                  482        4    722      206
-/(\d+\.\d+\.\d+\.\d+)/                       430        4    738       50
-/\b(if|else|for|while|return)\b/              90      2.3   1060      121
-/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/        10824      2.7   9353      218
-```
+| pattern | astrogre +AOT | astrogre +onigmo | grep | ripgrep |
+|---|---:|---:|---:|---:|
+| `/(QQQ\|RRR)+\d+/` | **16** ★ | 726 | 85 | 26 |
+| `/(QQQX\|RRRX\|SSSX)+/` | **24** ★ | 700 | 26 | 26 |
+| `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/` | **503** ★ | 717 | 533 | 197 |
+| `/[A-Z]{50,}/` | **678** ★ | 1099 | 1570 | 184 |
+| `/[a-z][0-9][a-z][0-9][a-z]/` | 482 | 722 | **4** | 206 |
+| `/(\d+\.\d+\.\d+\.\d+)/` | 430 | 738 | **4** | 50 |
+| `/\b(if\|else\|for\|while\|return)\b/` | 90 | 1060 | **2.3** | 121 |
+| `/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/` | 10824 | 9353 | **2.7** | 218 |
 
 ★ = astrogre + AOT beats grep AND Onigmo.  **4/8 vs grep, 8/8 vs
-Onigmo.**  The wins come from the prefilter ladder picking the
-right node for each shape; the losses are patterns where the
-leading char / first-byte-set is common in source code, so SIMD
-scan finds candidates everywhere and ugrep's Hyperscan-style
-multi-pattern literal anchor extraction (Teddy / FDR) is the only
-way to win.  That's the next addition (see
+Onigmo.**  Bold = winner per row.  The wins come from the prefilter
+ladder picking the right node for each shape; the losses are
+patterns where the leading char / first-byte-set is common in
+source code, so SIMD scan finds candidates everywhere and ugrep's
+Hyperscan-style multi-pattern literal anchor extraction (Teddy /
+FDR) is the only way to win.  That's the next addition (see
 [`docs/todo.md`](./docs/todo.md)).
 
 ripgrep stays a step ahead on most patterns thanks to lazy DFA +

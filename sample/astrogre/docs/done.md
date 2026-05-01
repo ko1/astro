@@ -167,19 +167,18 @@ fallback.
 Latest results, 118 MB corpus, full-sweep count (`-c` semantics
 mirrored in `--bench-file`), best-of-3 ms/iter:
 
-```
-                                       astrogre+AOT   grep   onigmo  ripgrep
-/(QQQ|RRR)+\d+/                              16   ★    85    726      26
-/(QQQX|RRRX|SSSX)+/                          24   ★    26    700      26
-/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/         503   ★   533    717     197
-/[A-Z]{50,}/                                 678  ★  1570   1099     184
-/[a-z][0-9][a-z][0-9][a-z]/                  482         4    722     206
-/(\d+\.\d+\.\d+\.\d+)/                       430         4    738      50
-/\b(if|else|for|while|return)\b/              90       2.3   1060     121
-/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/        10824       2.7   9353     218
-```
+| pattern | astrogre +AOT | astrogre +onigmo | grep | ripgrep |
+|---|---:|---:|---:|---:|
+| `/(QQQ\|RRR)+\d+/` | **16** ★ | 726 | 85 | 26 |
+| `/(QQQX\|RRRX\|SSSX)+/` | **24** ★ | 700 | 26 | 26 |
+| `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/` | **503** ★ | 717 | 533 | 197 |
+| `/[A-Z]{50,}/` | **678** ★ | 1099 | 1570 | 184 |
+| `/[a-z][0-9][a-z][0-9][a-z]/` | 482 | 722 | **4** | 206 |
+| `/(\d+\.\d+\.\d+\.\d+)/` | 430 | 738 | **4** | 50 |
+| `/\b(if\|else\|for\|while\|return)\b/` | 90 | 1060 | **2.3** | 121 |
+| `/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/` | 10824 | 9353 | **2.7** | 218 |
 
-★ = astrogre + AOT beats grep AND Onigmo.
+★ = astrogre + AOT beats grep AND Onigmo.  Bold = winner per row.
 
 **4/8 vs grep (ugrep 7.5 + PCRE2-JIT), 8/8 vs Onigmo** on this set.
 The losing patterns all need multi-pattern literal extraction
