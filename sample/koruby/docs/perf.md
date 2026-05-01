@@ -12,16 +12,47 @@
 
 ## ベンチマーク結果サマリ
 
-### optcarrot (Lan_Master.nes, 180 frames headless)
+### optcarrot (Lan_Master.nes, 180 frames headless, last-10-frames fps)
 
-| 構成 | wall time | vs no-JIT |
+5 runs after 1 warmup, `taskset -c 0`, gcc -O2 -flto.
+
+| 構成 | fps (median) | vs CRuby no-JIT |
 |---|---:|---:|
-| ruby (no JIT) | 5.59 s | 1.00× |
-| **koruby (interp, -O2)** | **5.32 s** | **1.05×** ✅ |
-| ruby --yjit | 1.81 s | 3.09× |
+| ruby (no JIT) | 41.0 fps | 1.00× |
+| abruby (plain interp, CRuby C-ext) | 41.8 fps | 1.02× |
+| koruby (interp, -O2 + LTO) | 43.6 fps | 1.06× |
+| **koruby (PGO + LTO)** | **51.3 fps** | **1.25×** |
+| **ruby --yjit / --jit** | **174 fps** | **4.24×** |
 
-**koruby は CRuby (no-JIT) を上回った。** Hash 実装を proper chained hash に直したのと
-ivar の inline cache を入れたのが効き、24 fps 程度 → 33 fps へ到達。
+**koruby (PGO) は abruby plain interp / CRuby no-JIT を 25% 上回る。**
+インタプリタ系の中で先頭。 YJIT には 3.4× 負ける (JIT が x86 を直接吐くので
+当然)。
+
+#### 段階的な改善
+
+* **24 fps** (compare_by_identity 修正後 — レンダリング正常化直後)
+* **32 fps** ←← Hash#aref が 47% / aset が 19% 食ってた。実装が full linear
+  scan O(N) になっていたのを proper chained hash に直して 1.65× 高速化。
+* **43 fps** ←← ivar_get が 36%。`class.ivar_names` を線形スキャンしていた
+  のを、AST node に `struct ivar_cache { klass; slot; }` を `@ref` operand
+  として inline cache 化して 1.6× 高速化。
+* **44 fps** ←← `-flto=auto`。クロス TU の関数インライン化。
+* **51 fps** ←← **PGO** (`make koruby-pgo`)。 optcarrot の 60-frame run で
+  プロファイル収集 → re-build with `-fprofile-use`。 ホット分岐の予測が改善。
+
+#### PGO ビルド方法
+
+```sh
+make koruby-pgo    # 1) -fprofile-generate でビルド → optcarrot 60 frames で
+                   #    プロファイル収集 → 2) -fprofile-use で再ビルド
+```
+
+YJIT にはまだ 3.4× 負けるが、これを縮めるには:
+* AOT 特化 (`./koruby -c` 経由の SD_xxxx.c) を optcarrot のフルロード
+  シナリオで動かす — 現状 fib のような単一スクリプト用
+* polymorphic IC (mc->klass[2] 程度)
+* 型に基づくノード rewrite (`node_plus` → `node_fixnum_plus`)
+* FLONUM 即値化
 
 ### fib(35)
 
