@@ -201,12 +201,21 @@ struct JsShape {
 };
 
 // Plain object (Object.prototype-derived by default).
+//
+// Small objects (shape->nslots ≤ JS_INLINE_SLOTS) keep their values in
+// `inline_slots` and `slots` aliases at `&inline_slots[0]`.  Once the
+// object grows past the inline capacity, we malloc a separate buffer
+// and `slots` points there instead.  Saves one malloc + one free per
+// small object (most JS objects are small) — measurable on
+// binary_trees / object-heavy workloads.
+#define JS_INLINE_SLOTS 4
 struct JsObject {
     struct GCHead    gc;
     struct JsShape  *shape;
-    JsValue         *slots;         // length = shape->nslots
+    JsValue         *slots;         // points to inline_slots OR a malloc'd buffer
     uint32_t         slot_capa;     // slots[] allocation size
     struct JsObject *proto;         // [[Prototype]]
+    JsValue          inline_slots[JS_INLINE_SLOTS];
 };
 
 // Array: dense backing + sparse fallback.  We try to keep `dense`
@@ -393,6 +402,7 @@ bool             js_str_eq(struct JsString *a, struct JsString *b);
 
 // Object / shape / property.
 struct JsObject *js_object_new(CTX *c, struct JsObject *proto);
+void             js_object_grow_slots(struct JsObject *o, uint32_t need);
 struct JsShape  *js_shape_root(CTX *c);
 struct JsShape  *js_shape_transition(CTX *c, struct JsShape *from, struct JsString *name);
 void             js_object_set(CTX *c, struct JsObject *o, struct JsString *key, JsValue v);

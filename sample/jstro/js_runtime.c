@@ -325,7 +325,7 @@ gc_finalize(struct GCHead *h)
     switch (h->type) {
     case JS_TOBJECT: case JS_TERROR: case JS_TACCESSOR: case JS_TPROMISE: {
         struct JsObject *o = (struct JsObject *)h;
-        free(o->slots);
+        if (o->slots != o->inline_slots) free(o->slots);
         break;
     }
     case JS_TARRAY: {
@@ -615,19 +615,30 @@ js_object_new(CTX *c, struct JsObject *proto)
 {
     struct JsObject *o = (struct JsObject *)js_gc_alloc(c, sizeof(struct JsObject), JS_TOBJECT);
     o->shape = js_shape_root(c);
-    o->slots = NULL;
-    o->slot_capa = 0;
+    o->slots = o->inline_slots;     // js_gc_alloc zeroes inline_slots → JV_UNDEFINED
+    o->slot_capa = JS_INLINE_SLOTS;
     o->proto = proto;
     return o;
 }
 
-static void
-object_grow_slots(struct JsObject *o, uint32_t need)
+// Non-static so node_member_set's IC fast path (which lives in node.def
+// → node.c via the generated EVAL files) can call it without duplicating
+// the inline-slots / malloc-buffer transition logic.
+void
+js_object_grow_slots(struct JsObject *o, uint32_t need)
 {
-    uint32_t nc = o->slot_capa ? o->slot_capa * 2 : 4;
+    uint32_t nc = o->slot_capa ? o->slot_capa * 2 : JS_INLINE_SLOTS;
     while (nc < need) nc *= 2;
-    o->slots = (JsValue *)realloc(o->slots, sizeof(JsValue) * nc);
-    for (uint32_t i = o->slot_capa; i < nc; i++) o->slots[i] = JV_UNDEFINED;
+    if (o->slots == o->inline_slots) {
+        // Currently using inline storage — switch to malloc'd buffer.
+        JsValue *buf = (JsValue *)malloc(sizeof(JsValue) * nc);
+        for (uint32_t i = 0; i < o->slot_capa; i++) buf[i] = o->slots[i];
+        for (uint32_t i = o->slot_capa; i < nc; i++) buf[i] = JV_UNDEFINED;
+        o->slots = buf;
+    } else {
+        o->slots = (JsValue *)realloc(o->slots, sizeof(JsValue) * nc);
+        for (uint32_t i = o->slot_capa; i < nc; i++) o->slots[i] = JV_UNDEFINED;
+    }
     o->slot_capa = nc;
 }
 
@@ -661,7 +672,7 @@ js_object_set(CTX *c, struct JsObject *o, struct JsString *key, JsValue v)
                             js_str_data(key));
     }
     o->shape = js_shape_transition(c, o->shape, key);
-    if (o->shape->nslots > o->slot_capa) object_grow_slots(o, o->shape->nslots);
+    if (o->shape->nslots > o->slot_capa) js_object_grow_slots(o, o->shape->nslots);
     o->slots[o->shape->nslots - 1] = v;
 }
 
@@ -680,7 +691,7 @@ js_object_set_with_ic(CTX *c, struct JsObject *o, struct JsString *key, JsValue 
             }
             struct JsShape *next = cur->trans[i].to;
             o->shape = next;
-            if (next->nslots > o->slot_capa) object_grow_slots(o, next->nslots);
+            if (next->nslots > o->slot_capa) js_object_grow_slots(o, next->nslots);
             o->slots[next->nslots - 1] = v;
             ic->shape = (uintptr_t)next;
             ic->slot = next->nslots - 1;
@@ -709,7 +720,7 @@ js_object_set_with_ic(CTX *c, struct JsObject *o, struct JsString *key, JsValue 
         js_throw_type_error(c, "Cannot add property '%s', object is not extensible", js_str_data(key));
     }
     o->shape = js_shape_transition(c, cur, key);
-    if (o->shape->nslots > o->slot_capa) object_grow_slots(o, o->shape->nslots);
+    if (o->shape->nslots > o->slot_capa) js_object_grow_slots(o, o->shape->nslots);
     o->slots[o->shape->nslots - 1] = v;
     ic->shape = (uintptr_t)o->shape;
     ic->slot = o->shape->nslots - 1;

@@ -1435,8 +1435,8 @@ static JsValue cf_def_accessor(CTX *c, JsValue t, JsValue *a, uint32_t n) {
     } else {
         acc = (struct JsObject *)js_gc_alloc(c, sizeof(struct JsObject), JS_TACCESSOR);
         acc->shape = js_shape_root(c);
-        acc->slots = NULL;
-        acc->slot_capa = 0;
+        acc->slots = acc->inline_slots;
+        acc->slot_capa = JS_INLINE_SLOTS;
         acc->proto = NULL;
         js_object_set(c, o, k, JV_OBJ(acc));
     }
@@ -1593,8 +1593,8 @@ static JsValue cf_promise_then(CTX *c, JsValue t, JsValue *a, uint32_t n) {
         // Wrap result in a new resolved Promise.
         struct JsObject *np = (struct JsObject *)js_gc_alloc(c, sizeof(struct JsObject), JS_TPROMISE);
         np->shape = js_shape_root(c);
-        np->slots = NULL;
-        np->slot_capa = 0;
+        np->slots = np->inline_slots;
+        np->slot_capa = JS_INLINE_SLOTS;
         np->proto = NULL;
         js_object_set(c, np, js_str_intern(c, "__value"), r);
         js_object_set(c, np, js_str_intern(c, "then"), js_object_get(c, p, js_str_intern(c, "then")));
@@ -1607,8 +1607,8 @@ make_resolved_promise(CTX *c, JsValue v)
 {
     struct JsObject *p = (struct JsObject *)js_gc_alloc(c, sizeof(struct JsObject), JS_TPROMISE);
     p->shape = js_shape_root(c);
-    p->slots = NULL;
-    p->slot_capa = 0;
+    p->slots = p->inline_slots;
+    p->slot_capa = JS_INLINE_SLOTS;
     p->proto = NULL;
     js_object_set(c, p, js_str_intern(c, "__value"), v);
     struct JsCFunction *th = js_cfunc_new(c, "then", cf_promise_then, 1);

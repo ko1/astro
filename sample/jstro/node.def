@@ -1193,13 +1193,7 @@ node_member_set(CTX * restrict c, NODE * restrict n, JsValue * restrict frame, N
         if (JSTRO_LIKELY(ic->pre_shape != 0 && (uintptr_t)o->shape == ic->pre_shape)) {
             struct JsShape *next = (struct JsShape *)ic->shape;
             o->shape = next;
-            if (next->nslots > o->slot_capa) {
-                uint32_t nc = o->slot_capa ? o->slot_capa * 2 : 4;
-                while (nc < next->nslots) nc *= 2;
-                o->slots = (JsValue *)realloc(o->slots, sizeof(JsValue) * nc);
-                for (uint32_t i = o->slot_capa; i < nc; i++) o->slots[i] = JV_UNDEFINED;
-                o->slot_capa = nc;
-            }
+            if (next->nslots > o->slot_capa) js_object_grow_slots(o, next->nslots);
             o->slots[ic->slot] = v;
             return RESULT_OK(v);
         }
@@ -1738,8 +1732,8 @@ node_object_lit_dyn(CTX * restrict c, NODE * restrict n, JsValue * restrict fram
             } else {
                 acc = (struct JsObject *)js_gc_alloc(c, sizeof(struct JsObject), JS_TACCESSOR);
                 acc->shape = js_shape_root(c);
-                acc->slots = NULL;
-                acc->slot_capa = 0;
+                acc->slots = acc->inline_slots;
+                acc->slot_capa = JS_INLINE_SLOTS;
                 acc->proto = NULL;
                 js_object_set(c, o, k, JV_OBJ(acc));
             }
