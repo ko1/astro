@@ -1,0 +1,62 @@
+#ifndef ASTROGRE_PARSE_H
+#define ASTROGRE_PARSE_H 1
+
+#include "node.h"
+
+/* Compiled pattern. */
+typedef struct astrogre_pattern {
+    NODE *root;          /* root of match AST (chain ending in node_re_succ) */
+    int n_groups;        /* number of capturing groups (excluding group 0) */
+    bool case_insensitive;
+    bool multiline;
+    agre_encoding_t encoding;
+    bool anchored_bos;   /* true when pattern starts with \A — search loop can stop after pos==0 */
+    bool fixed_string;   /* true when built via astrogre_parse_fixed (-F mode) */
+    char *pat;           /* original pattern text (heap, owned) */
+} astrogre_pattern;
+
+/* Match result (filled by astrogre_search / astrogre_search_from). */
+typedef struct astrogre_match {
+    bool matched;
+    size_t starts[ASTROGRE_MAX_GROUPS];
+    size_t ends[ASTROGRE_MAX_GROUPS];
+    bool   valid[ASTROGRE_MAX_GROUPS];
+    int    n_groups;
+} astrogre_match_t;
+
+bool astrogre_search(astrogre_pattern *p, const char *str, size_t len, astrogre_match_t *out);
+
+/* Resume search from a starting offset.  Used by grep --color, -o, and
+ * any caller that needs to enumerate non-overlapping matches on a
+ * single buffer.  The caller is responsible for advancing past
+ * zero-width matches. */
+bool astrogre_search_from(astrogre_pattern *p, const char *str, size_t len, size_t start_from, astrogre_match_t *out);
+
+/* Parse a Ruby-style regex source.  `pat` is the bytes between the slashes
+ * (post-prism unescaping); `pat_len` is its length; `flags` is the bitmask
+ * from prism's pm_regular_expression_flags_t.  Returns NULL on error
+ * (and logs to stderr).  Caller frees the returned pattern with
+ * astrogre_pattern_free. */
+astrogre_pattern *astrogre_parse(const char *pat, size_t pat_len, uint32_t prism_flags);
+
+/* Parse a /pat/flags-style source string (incl. surrounding slashes and
+ * trailing flag chars).  Useful from CLI / tests when not going through
+ * prism. */
+astrogre_pattern *astrogre_parse_literal(const char *src, size_t len);
+
+/* Build a "literal-bytes" pattern that matches `bytes` exactly — the
+ * regex parser is bypassed entirely so the bytes can contain any
+ * regex metacharacters with no escaping.  This is the -F mode entry
+ * point.  `prism_flags` is honoured for /i, /n, /u (case-fold and
+ * encoding); /m and /x are ignored since there's no syntax to enable. */
+astrogre_pattern *astrogre_parse_fixed(const char *bytes, size_t len, uint32_t prism_flags);
+
+/* Parse `src` as Ruby code with prism, find the FIRST regex literal in it
+ * (top-level, not interpolated), and return the parsed pattern.  Returns
+ * NULL if no regex literal is found.  This is the path used to drive the
+ * engine from Ruby source. */
+astrogre_pattern *astrogre_parse_via_prism(const char *src, size_t len);
+
+void astrogre_pattern_free(astrogre_pattern *p);
+
+#endif

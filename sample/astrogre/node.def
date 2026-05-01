@@ -1,0 +1,419 @@
+/*
+ * astrogre AST nodes.
+ *
+ * Each match node returns VALUE (1 = the continuation matched, 0 = no match
+ * along this branch).  The "next" operand on every match node is the
+ * continuation: when this node has consumed its piece, it dispatches `next`
+ * to verify the rest of the pattern.  A failed continuation undoes any
+ * state this node mutated and returns 0 — that's how backtracking is
+ * expressed without an explicit thread-list.
+ *
+ * The chain is terminated by node_re_succ.  Top-level search across input
+ * positions is driven from C (see match.c / main.c) — the AST itself is a
+ * single anchored pattern.
+ */
+
+/* ------------------------------------------------------------------ */
+/* Terminator                                                          */
+/* ------------------------------------------------------------------ */
+
+NODE_DEF
+node_re_succ(CTX * restrict c, NODE * restrict n)
+{
+    /* Reached end of pattern: record end of whole match and signal success. */
+    c->ends[0]  = c->pos;
+    c->valid[0] = true;
+    return 1;
+}
+
+/* ------------------------------------------------------------------ */
+/* Literal byte sequence                                               */
+/* ------------------------------------------------------------------ */
+
+NODE_DEF
+node_re_lit(CTX * restrict c, NODE * restrict n, const char *bytes, uint32_t len, NODE *next)
+{
+    if (c->pos + (size_t)len > c->str_len) return 0;
+    if (memcmp(c->str + c->pos, bytes, len) != 0) return 0;
+    c->pos += len;
+    VALUE r = EVAL_ARG(c, next);
+    if (!r) c->pos -= len;
+    return r;
+}
+
+/* Case-insensitive literal (ASCII fold).  `bytes` is already lowercased
+ * at parse time; we lowercase the input on the fly. */
+NODE_DEF
+node_re_lit_ci(CTX * restrict c, NODE * restrict n, const char *bytes, uint32_t len, NODE *next)
+{
+    if (c->pos + (size_t)len > c->str_len) return 0;
+    const uint8_t *s = c->str + c->pos;
+    for (uint32_t i = 0; i < len; i++) {
+        uint8_t b = s[i];
+        if (b >= 'A' && b <= 'Z') b += 32;
+        if (b != (uint8_t)bytes[i]) return 0;
+    }
+    c->pos += len;
+    VALUE r = EVAL_ARG(c, next);
+    if (!r) c->pos -= len;
+    return r;
+}
+
+/* ------------------------------------------------------------------ */
+/* "."                                                                 */
+/* ------------------------------------------------------------------ */
+
+/* ASCII dot: any single byte except '\n' */
+NODE_DEF
+node_re_dot(CTX * restrict c, NODE * restrict n, NODE *next)
+{
+    if (c->pos >= c->str_len) return 0;
+    if (c->str[c->pos] == '\n') return 0;
+    c->pos++;
+    VALUE r = EVAL_ARG(c, next);
+    if (!r) c->pos--;
+    return r;
+}
+
+/* ASCII dot with /m flag: any single byte */
+NODE_DEF
+node_re_dot_m(CTX * restrict c, NODE * restrict n, NODE *next)
+{
+    if (c->pos >= c->str_len) return 0;
+    c->pos++;
+    VALUE r = EVAL_ARG(c, next);
+    if (!r) c->pos--;
+    return r;
+}
+
+/* UTF-8 dot: one full codepoint, except '\n' */
+NODE_DEF
+node_re_dot_utf8(CTX * restrict c, NODE * restrict n, NODE *next)
+{
+    if (c->pos >= c->str_len) return 0;
+    uint8_t b = c->str[c->pos];
+    if (b == '\n') return 0;
+    int adv;
+    if      (b < 0x80)         adv = 1;
+    else if ((b & 0xE0)==0xC0) adv = 2;
+    else if ((b & 0xF0)==0xE0) adv = 3;
+    else if ((b & 0xF8)==0xF0) adv = 4;
+    else                       return 0;
+    if (c->pos + (size_t)adv > c->str_len) return 0;
+    c->pos += adv;
+    VALUE r = EVAL_ARG(c, next);
+    if (!r) c->pos -= adv;
+    return r;
+}
+
+/* UTF-8 dot, /m flag */
+NODE_DEF
+node_re_dot_utf8_m(CTX * restrict c, NODE * restrict n, NODE *next)
+{
+    if (c->pos >= c->str_len) return 0;
+    uint8_t b = c->str[c->pos];
+    int adv;
+    if      (b < 0x80)         adv = 1;
+    else if ((b & 0xE0)==0xC0) adv = 2;
+    else if ((b & 0xF0)==0xE0) adv = 3;
+    else if ((b & 0xF8)==0xF0) adv = 4;
+    else                       return 0;
+    if (c->pos + (size_t)adv > c->str_len) return 0;
+    c->pos += adv;
+    VALUE r = EVAL_ARG(c, next);
+    if (!r) c->pos -= adv;
+    return r;
+}
+
+/* ------------------------------------------------------------------ */
+/* Character class (256-bit ASCII bitmap)                              */
+/* ------------------------------------------------------------------ */
+
+/* For UTF-8 input with non-ASCII bytes (>= 0x80), matching is byte-wise
+ * on the leading byte.  Patterns intended to match arbitrary UTF-8
+ * codepoints inside a class fall back to a two-stage check the parser
+ * builds (alternation of literals).  For ASCII-only classes this is the
+ * fast path. */
+NODE_DEF
+node_re_class(CTX * restrict c, NODE * restrict n, uint64_t bm0, uint64_t bm1, uint64_t bm2, uint64_t bm3, NODE *next)
+{
+    if (c->pos >= c->str_len) return 0;
+    uint8_t b = c->str[c->pos];
+    uint64_t bm[4] = { bm0, bm1, bm2, bm3 };
+    if (!((bm[b >> 6] >> (b & 63)) & 1ULL)) return 0;
+    c->pos++;
+    VALUE r = EVAL_ARG(c, next);
+    if (!r) c->pos--;
+    return r;
+}
+
+/* ------------------------------------------------------------------ */
+/* Alternation                                                         */
+/* ------------------------------------------------------------------ */
+
+/* Branches each carry their own continuation (the parser threads the
+ * outer next into both left and right), so alt only needs to try left,
+ * and on failure restore pos and try right. */
+NODE_DEF
+node_re_alt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
+{
+    size_t saved = c->pos;
+    if (EVAL_ARG(c, left)) return 1;
+    c->pos = saved;
+    return EVAL_ARG(c, right);
+}
+
+/* ------------------------------------------------------------------ */
+/* Repetition (*, +, ?, {n,m})                                         */
+/* ------------------------------------------------------------------ */
+
+/* Push a frame and dispatch the rep_cont sentinel to drive iteration.
+ * The body of the rep has its tail wired to the rep_cont sentinel, so
+ * each successful body run lands back in rep_cont — which decides to
+ * iterate again or to proceed to outer_next. */
+NODE_DEF
+node_re_rep(CTX * restrict c, NODE * restrict n, NODE *body, NODE *outer_next, int32_t min, int32_t max, uint32_t greedy)
+{
+    struct rep_frame f;
+    f.body = body;
+    f.outer_next = outer_next;
+    f.min = min;
+    f.max = max;
+    f.greedy = greedy;
+    f.prev = c->rep_top;
+    c->rep_top = &f;
+
+    NODE *cont = c->rep_cont_sentinel;
+    VALUE r = (*cont->head.dispatcher)(c, cont);
+
+    c->rep_top = f.prev;
+    return r;
+}
+
+/* Singleton continuation node attached as the `next` of every rep body.
+ * Reads top of c->rep_top to know which rep frame is active. */
+NODE_DEF
+node_re_rep_cont(CTX * restrict c, NODE * restrict n)
+{
+    struct rep_frame *f = c->rep_top;
+
+    if (f->greedy) {
+        /* Greedy: try to take one more iteration first. */
+        if (f->max != 0) {
+            int32_t saved_min = f->min;
+            int32_t saved_max = f->max;
+            size_t  saved_pos = c->pos;
+            f->min = (f->min > 0) ? f->min - 1 : 0;
+            f->max = (f->max == -1) ? -1 : f->max - 1;
+            VALUE r = (*f->body->head.dispatcher)(c, f->body);
+            if (r) return 1;
+            c->pos = saved_pos;
+            f->min = saved_min;
+            f->max = saved_max;
+        }
+        /* Otherwise, if min satisfied, fall through to outer_next. */
+        if (f->min == 0) {
+            struct rep_frame *prev = f->prev;
+            c->rep_top = prev;
+            VALUE r = (*f->outer_next->head.dispatcher)(c, f->outer_next);
+            c->rep_top = f;
+            return r;
+        }
+        return 0;
+    }
+    else {
+        /* Lazy: try outer_next first, only iterate if it fails. */
+        if (f->min == 0) {
+            struct rep_frame *prev = f->prev;
+            c->rep_top = prev;
+            VALUE r = (*f->outer_next->head.dispatcher)(c, f->outer_next);
+            if (r) return 1;
+            c->rep_top = f;
+        }
+        if (f->max != 0) {
+            int32_t saved_min = f->min;
+            int32_t saved_max = f->max;
+            size_t  saved_pos = c->pos;
+            f->min = (f->min > 0) ? f->min - 1 : 0;
+            f->max = (f->max == -1) ? -1 : f->max - 1;
+            VALUE r = (*f->body->head.dispatcher)(c, f->body);
+            if (r) return 1;
+            c->pos = saved_pos;
+            f->min = saved_min;
+            f->max = saved_max;
+        }
+        return 0;
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* Captures                                                            */
+/* ------------------------------------------------------------------ */
+
+NODE_DEF
+node_re_cap_start(CTX * restrict c, NODE * restrict n, uint32_t idx, NODE *next)
+{
+    size_t saved_start = c->starts[idx];
+    bool   saved_valid = c->valid[idx];
+    c->starts[idx] = c->pos;
+    VALUE r = EVAL_ARG(c, next);
+    if (!r) {
+        c->starts[idx] = saved_start;
+        c->valid[idx]  = saved_valid;
+    }
+    return r;
+}
+
+NODE_DEF
+node_re_cap_end(CTX * restrict c, NODE * restrict n, uint32_t idx, NODE *next)
+{
+    size_t saved_end   = c->ends[idx];
+    bool   saved_valid = c->valid[idx];
+    c->ends[idx]  = c->pos;
+    c->valid[idx] = true;
+    VALUE r = EVAL_ARG(c, next);
+    if (!r) {
+        c->ends[idx]  = saved_end;
+        c->valid[idx] = saved_valid;
+    }
+    return r;
+}
+
+/* ------------------------------------------------------------------ */
+/* Anchors                                                             */
+/* ------------------------------------------------------------------ */
+
+NODE_DEF
+node_re_bos(CTX * restrict c, NODE * restrict n, NODE *next)
+{
+    if (c->pos != 0) return 0;
+    return EVAL_ARG(c, next);
+}
+
+NODE_DEF
+node_re_eos(CTX * restrict c, NODE * restrict n, NODE *next)
+{
+    if (c->pos != c->str_len) return 0;
+    return EVAL_ARG(c, next);
+}
+
+/* \Z — end of string, or just before a final \n */
+NODE_DEF
+node_re_eos_nl(CTX * restrict c, NODE * restrict n, NODE *next)
+{
+    if (c->pos == c->str_len) return EVAL_ARG(c, next);
+    if (c->pos == c->str_len - 1 && c->str[c->pos] == '\n') return EVAL_ARG(c, next);
+    return 0;
+}
+
+NODE_DEF
+node_re_bol(CTX * restrict c, NODE * restrict n, NODE *next)
+{
+    if (c->pos == 0) return EVAL_ARG(c, next);
+    if (c->str[c->pos - 1] == '\n') return EVAL_ARG(c, next);
+    return 0;
+}
+
+NODE_DEF
+node_re_eol(CTX * restrict c, NODE * restrict n, NODE *next)
+{
+    if (c->pos == c->str_len) return EVAL_ARG(c, next);
+    if (c->str[c->pos] == '\n') return EVAL_ARG(c, next);
+    return 0;
+}
+
+static inline int agre_is_word_char(uint8_t b)
+{
+    return (b >= 'A' && b <= 'Z')
+        || (b >= 'a' && b <= 'z')
+        || (b >= '0' && b <= '9')
+        || (b == '_');
+}
+
+NODE_DEF
+node_re_word_boundary(CTX * restrict c, NODE * restrict n, NODE *next)
+{
+    int prev_w = (c->pos > 0)            ? agre_is_word_char(c->str[c->pos - 1]) : 0;
+    int next_w = (c->pos < c->str_len)   ? agre_is_word_char(c->str[c->pos])     : 0;
+    if (prev_w == next_w) return 0;
+    return EVAL_ARG(c, next);
+}
+
+NODE_DEF
+node_re_non_word_boundary(CTX * restrict c, NODE * restrict n, NODE *next)
+{
+    int prev_w = (c->pos > 0)            ? agre_is_word_char(c->str[c->pos - 1]) : 0;
+    int next_w = (c->pos < c->str_len)   ? agre_is_word_char(c->str[c->pos])     : 0;
+    if (prev_w != next_w) return 0;
+    return EVAL_ARG(c, next);
+}
+
+/* ------------------------------------------------------------------ */
+/* Backreference                                                       */
+/* ------------------------------------------------------------------ */
+
+NODE_DEF
+node_re_backref(CTX * restrict c, NODE * restrict n, uint32_t idx, NODE *next)
+{
+    if (!c->valid[idx]) return 0;
+    size_t s = c->starts[idx];
+    size_t e = c->ends[idx];
+    size_t cap_len = e - s;
+    if (c->pos + cap_len > c->str_len) return 0;
+    if (c->case_insensitive) {
+        for (size_t i = 0; i < cap_len; i++) {
+            uint8_t a = c->str[s + i], b = c->str[c->pos + i];
+            if (a >= 'A' && a <= 'Z') a += 32;
+            if (b >= 'A' && b <= 'Z') b += 32;
+            if (a != b) return 0;
+        }
+    } else {
+        if (memcmp(c->str + s, c->str + c->pos, cap_len) != 0) return 0;
+    }
+    c->pos += cap_len;
+    VALUE r = EVAL_ARG(c, next);
+    if (!r) c->pos -= cap_len;
+    return r;
+}
+
+/* ------------------------------------------------------------------ */
+/* Lookaround (zero-width)                                             */
+/* ------------------------------------------------------------------ */
+
+/* (?=body) — body matches but consumes nothing. */
+NODE_DEF
+node_re_lookahead(CTX * restrict c, NODE * restrict n, NODE *body, NODE *next)
+{
+    size_t saved_pos = c->pos;
+    /* Save and restore captures: lookahead's body may run cap_start/end,
+     * but the conventional Ruby semantics keeps captures opened inside
+     * lookahead live if they succeed. We honour that: don't restore caps
+     * on success, only on failure. */
+    if (!(*body->head.dispatcher)(c, body)) {
+        c->pos = saved_pos;
+        return 0;
+    }
+    c->pos = saved_pos;
+    return EVAL_ARG(c, next);
+}
+
+NODE_DEF
+node_re_neg_lookahead(CTX * restrict c, NODE * restrict n, NODE *body, NODE *next)
+{
+    size_t saved_pos = c->pos;
+    /* Snapshot caps so the inner body can't leak captures on success
+     * (which we treat as failure here). */
+    size_t st[ASTROGRE_MAX_GROUPS], en[ASTROGRE_MAX_GROUPS];
+    bool   vd[ASTROGRE_MAX_GROUPS];
+    memcpy(st, c->starts, sizeof(st));
+    memcpy(en, c->ends,   sizeof(en));
+    memcpy(vd, c->valid,  sizeof(vd));
+
+    VALUE r = (*body->head.dispatcher)(c, body);
+    c->pos = saved_pos;
+    memcpy(c->starts, st, sizeof(st));
+    memcpy(c->ends,   en, sizeof(en));
+    memcpy(c->valid,  vd, sizeof(vd));
+    if (r) return 0;
+    return EVAL_ARG(c, next);
+}
