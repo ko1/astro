@@ -200,6 +200,7 @@ struct korb_frame {
     VALUE self;
     VALUE *fp;
     uint32_t locals_cnt;
+    struct korb_proc *block;   /* block passed to this method (NULL if none) */
 };
 
 /* push/pop frame helpers via macro */

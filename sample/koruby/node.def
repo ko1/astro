@@ -1012,3 +1012,55 @@ node_module_def_in(CTX * restrict c, NODE * restrict n, NODE *parent_expr, ID na
     c->cref = prev_cref;
     return r;
 }
+
+NODE_DEF
+node_do_while(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *body)
+{
+    /* begin; body; end while cond */
+    do {
+        EVAL_ARG(c, body);
+        if (UNLIKELY(c->state != KORB_NORMAL)) {
+            if (c->state == KORB_BREAK) {
+                VALUE bv = c->state_value;
+                c->state = KORB_NORMAL;
+                c->state_value = Qnil;
+                return bv;
+            }
+            else if (c->state == KORB_NEXT) {
+                c->state = KORB_NORMAL;
+                c->state_value = Qnil;
+                /* go back to cond check */
+            }
+            else return Qnil;
+        }
+        VALUE v = EVAL_ARG(c, cond);
+        if (UNLIKELY(c->state != KORB_NORMAL)) return Qnil;
+        if (!RTEST(v)) break;
+    } while (1);
+    return Qnil;
+}
+
+NODE_DEF
+node_do_until(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *body)
+{
+    do {
+        EVAL_ARG(c, body);
+        if (UNLIKELY(c->state != KORB_NORMAL)) {
+            if (c->state == KORB_BREAK) {
+                VALUE bv = c->state_value;
+                c->state = KORB_NORMAL;
+                c->state_value = Qnil;
+                return bv;
+            }
+            else if (c->state == KORB_NEXT) {
+                c->state = KORB_NORMAL;
+                c->state_value = Qnil;
+            }
+            else return Qnil;
+        }
+        VALUE v = EVAL_ARG(c, cond);
+        if (UNLIKELY(c->state != KORB_NORMAL)) return Qnil;
+        if (RTEST(v)) break;
+    } while (1);
+    return Qnil;
+}

@@ -47,4 +47,9 @@ bench-fib: koruby
 	@echo "=== ruby --yjit ==="
 	@time -p ruby --yjit fib.ko.rb || true
 
-.PHONY: all clean regen run bench-fib compiled_koruby
+test: koruby
+	@for f in test/test_*.rb; do \
+	    ./koruby "$$f" 2>&1 | tail -1; \
+	done
+
+.PHONY: all clean regen run bench-fib compiled_koruby test

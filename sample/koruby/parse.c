@@ -130,7 +130,7 @@ static bool ceq(struct transduce_context *tc, pm_constant_id_t cid, const char *
 
 /* binop detection */
 static bool is_binop_name(struct transduce_context *tc, pm_constant_id_t name) {
-    static const char *ops[] = {"+","-","*","/","%","<","<=",">",">=","==","!=","<<",">>","&","|","^", NULL};
+    static const char *ops[] = {"+","-","*","/","%","<","<=",">",">=","==","!=","<<",">>","&","|","^","**", NULL};
     for (int i = 0; ops[i]; i++) if (ceq(tc, name, ops[i])) return true;
     return false;
 }
@@ -156,6 +156,12 @@ static NODE *alloc_binop(struct transduce_context *tc, pm_constant_id_t name, NO
     if (ceq(tc, name, "&"))  return ALLOC_node_bit_and(l, r, ai);
     if (ceq(tc, name, "|"))  return ALLOC_node_bit_or(l, r, ai);
     if (ceq(tc, name, "^"))  return ALLOC_node_bit_xor(l, r, ai);
+    if (ceq(tc, name, "**")) {
+        /* No specialized node for ** — call as a method on l */
+        struct method_cache *mc = alloc_method_cache();
+        NODE *seq_arg = ALLOC_node_lvar_set(ai, r);
+        return ALLOC_node_seq(seq_arg, ALLOC_node_method_call(l, korb_intern("**"), 1, ai, mc));
+    }
     return NULL;
 }
 
@@ -205,6 +211,51 @@ build_args_array_with_splat(struct transduce_context *tc, pm_node_list_t *args)
     return result ? result : ALLOC_node_ary_new(0, 0);
 }
 
+static NODE *build_call_simple(struct transduce_context *tc, NODE *recv, ID name,
+                                pm_node_list_t *args, NODE *block_node, bool is_method);
+
+/* Wrapper: build a call where the block is given as a prism node, so we
+ * can construct the block AFTER reserving call arg slots — making the
+ * block's param_base sit above the staging area. */
+static NODE *
+build_call_with_block(struct transduce_context *tc, NODE *recv, ID name,
+                       pm_node_list_t *args, pm_node_t *block_pm, bool is_method)
+{
+    if (!block_pm) {
+        return build_call_simple(tc, recv, name, args, NULL, is_method);
+    }
+    pm_block_node_t *bn = (pm_block_node_t *)block_pm;
+    uint32_t params_cnt = 0;
+    if (bn->parameters && PM_NODE_TYPE_P(bn->parameters, PM_BLOCK_PARAMETERS_NODE)) {
+        pm_block_parameters_node_t *bp = (pm_block_parameters_node_t *)bn->parameters;
+        if (bp->parameters && PM_NODE_TYPE_P((pm_node_t *)bp->parameters, PM_PARAMETERS_NODE)) {
+            params_cnt = (uint32_t)((pm_parameters_node_t *)bp->parameters)->requireds.size;
+        }
+    }
+    /* Reserve slots for recv (if any) + args first, so block's slot_base
+     * lands past them. */
+    uint32_t arg_cnt = args ? (uint32_t)args->size : 0;
+    uint32_t saved_arg_index = arg_index(tc);
+    /* Reserve recv slot (only if there are args) and arg slots */
+    bool reserve_recv = recv && arg_cnt > 0;
+    uint32_t reserve_n = (reserve_recv ? 1 : 0) + arg_cnt;
+    for (uint32_t r = 0; r < reserve_n; r++) inc_arg_index(tc);
+
+    /* Now build block — its slot_base = parent.max_cnt = past the
+     * reserved staging slots. */
+    push_frame(tc, &bn->locals, true);
+    uint32_t param_base = tc->frame->slot_base;
+    NODE *body = bn->body ? T(tc, bn->body) : ALLOC_node_nil();
+    uint32_t env_size = tc->frame->max_cnt;
+    pop_frame(tc);
+    NODE *block_node = ALLOC_node_block_literal(body, params_cnt, param_base, env_size);
+
+    /* Restore arg_index to original; build_call_simple will re-reserve. */
+    rewind_arg_index(tc, saved_arg_index);
+
+    return build_call_simple(tc, recv, name, args, block_node, is_method);
+}
+
 /* Build call: receiver is optional (NULL = func_call). args list is pm_arguments_node_t
    children (already known length). args_cnt = number of pre-evaluated args.
    block is optional. */
@@ -234,10 +285,26 @@ build_call_simple(struct transduce_context *tc, NODE *recv, ID name,
                                      call_arg_idx, blk, is_method ? 1 : 0, mc);
     }
 
-    /* Non-splat path */
+    /* Non-splat path.
+     * IMPORTANT: When the call has args + a receiver expression, the
+     * receiver expression may itself stage temporaries that overlap with
+     * the arg slots we're about to use.  To avoid clobber, we evaluate
+     * recv first into its own slot, then re-read it from that slot at
+     * call site. */
+    NODE *recv_set = NULL;
+    NODE *recv_for_call = recv;
+    if (recv && arg_cnt > 0) {
+        uint32_t recv_slot = inc_arg_index(tc);
+        recv_set = ALLOC_node_lvar_set(recv_slot, recv);
+        recv_for_call = ALLOC_node_lvar_get(recv_slot);
+        /* Re-read call_arg_idx since we've consumed one slot for recv;
+         * args start at the new arg_index. */
+        call_arg_idx = arg_index(tc);
+    }
+
     uint32_t *slots = arg_cnt ? korb_xmalloc(sizeof(uint32_t) * arg_cnt) : NULL;
     for (uint32_t i = 0; i < arg_cnt; i++) slots[i] = inc_arg_index(tc);
-    NODE *seq = NULL;
+    NODE *seq = recv_set;
     for (uint32_t i = 0; i < arg_cnt; i++) {
         NODE *arg = T(tc, args->nodes[i]);
         if (!arg) arg = ALLOC_node_nil();
@@ -248,18 +315,20 @@ build_call_simple(struct transduce_context *tc, NODE *recv, ID name,
     struct method_cache *mc = alloc_method_cache();
     if (block_node) {
         if (is_method) {
-            call = ALLOC_node_method_call_block(recv, name, arg_cnt, call_arg_idx, block_node, mc);
+            call = ALLOC_node_method_call_block(recv_for_call, name, arg_cnt, call_arg_idx, block_node, mc);
         } else {
             call = ALLOC_node_func_call_block(name, arg_cnt, call_arg_idx, block_node, mc);
         }
     } else {
         if (is_method) {
-            call = ALLOC_node_method_call(recv, name, arg_cnt, call_arg_idx, mc);
+            call = ALLOC_node_method_call(recv_for_call, name, arg_cnt, call_arg_idx, mc);
         } else {
             call = ALLOC_node_func_call(name, arg_cnt, call_arg_idx, mc);
         }
     }
-    rewind_arg_index(tc, call_arg_idx);
+    /* Rewind to the original arg_idx so subsequent siblings reuse slots,
+     * but keep max_cnt high enough (already done by inc_arg_index). */
+    rewind_arg_index(tc, recv_set ? call_arg_idx - 1 : call_arg_idx);
     return seq ? ALLOC_node_seq(seq, call) : call;
 }
 
@@ -497,12 +566,20 @@ T(struct transduce_context *tc, pm_node_t *node)
           pm_while_node_t *n = (pm_while_node_t *)node;
           NODE *cond = T(tc, n->predicate);
           NODE *body = transduce_statements(tc, n->statements);
+          if (n->base.flags & PM_LOOP_FLAGS_BEGIN_MODIFIER) {
+              /* `begin; body; end while cond` — run body once unconditionally,
+               * then check cond. */
+              return ALLOC_node_do_while(cond, body);
+          }
           return ALLOC_node_while(cond, body);
       }
       case PM_UNTIL_NODE: {
           pm_until_node_t *n = (pm_until_node_t *)node;
           NODE *cond = T(tc, n->predicate);
           NODE *body = transduce_statements(tc, n->statements);
+          if (n->base.flags & PM_LOOP_FLAGS_BEGIN_MODIFIER) {
+              return ALLOC_node_do_until(cond, body);
+          }
           return ALLOC_node_until(cond, body);
       }
       case PM_BREAK_NODE: {
@@ -751,24 +828,11 @@ T(struct transduce_context *tc, pm_node_t *node)
           ID name = intern_constant(tc->parser, n->name);
           NODE *recv = n->receiver ? T(tc, n->receiver) : NULL;
           /* block */
-          NODE *block_node = NULL;
-          if (n->block && PM_NODE_TYPE_P(n->block, PM_BLOCK_NODE)) {
-              pm_block_node_t *bn = (pm_block_node_t *)n->block;
-              uint32_t params_cnt = 0;
-              if (bn->parameters && PM_NODE_TYPE_P(bn->parameters, PM_BLOCK_PARAMETERS_NODE)) {
-                  pm_block_parameters_node_t *bp = (pm_block_parameters_node_t *)bn->parameters;
-                  if (bp->parameters && PM_NODE_TYPE_P((pm_node_t *)bp->parameters, PM_PARAMETERS_NODE)) {
-                      params_cnt = (uint32_t)((pm_parameters_node_t *)bp->parameters)->requireds.size;
-                  }
-              }
-              push_frame(tc, &bn->locals, true);
-              uint32_t param_base = tc->frame->slot_base;
-              NODE *body = bn->body ? T(tc, bn->body) : ALLOC_node_nil();
-              uint32_t env_size = tc->frame->max_cnt;
-              pop_frame(tc);
-              block_node = ALLOC_node_block_literal(body, params_cnt, param_base, env_size);
-          }
-          return build_call_simple(tc, recv, name, args ? &args->arguments : NULL, block_node, recv != NULL);
+          /* Defer block construction so its slot_base sits ABOVE the call's
+           * arg staging slots — otherwise the block's params collide with
+           * the outer's arg staging. */
+          pm_node_t *block_pm = (n->block && PM_NODE_TYPE_P(n->block, PM_BLOCK_NODE)) ? n->block : NULL;
+          return build_call_with_block(tc, recv, name, args ? &args->arguments : NULL, block_pm, recv != NULL);
       }
 
       case PM_BEGIN_NODE: {
@@ -956,6 +1020,23 @@ T(struct transduce_context *tc, pm_node_t *node)
           if (slot < 0) slot = lvar_slot_any(tc, n->name);
           NODE *cur = ALLOC_node_lvar_get(slot);
           return ALLOC_node_and(cur, ALLOC_node_lvar_set(slot, T(tc, n->value)));
+      }
+
+      case PM_GLOBAL_VARIABLE_OPERATOR_WRITE_NODE: {
+          pm_global_variable_operator_write_node_t *n = (pm_global_variable_operator_write_node_t *)node;
+          ID name = intern_constant(tc->parser, n->name);
+          NODE *cur = ALLOC_node_gvar_get(name);
+          NODE *rhs = T(tc, n->value);
+          NODE *combined = alloc_binop(tc, n->binary_operator, cur, rhs);
+          return ALLOC_node_gvar_set(name, combined);
+      }
+      case PM_CONSTANT_OPERATOR_WRITE_NODE: {
+          pm_constant_operator_write_node_t *n = (pm_constant_operator_write_node_t *)node;
+          ID name = intern_constant(tc->parser, n->name);
+          NODE *cur = ALLOC_node_const_get(name);
+          NODE *rhs = T(tc, n->value);
+          NODE *combined = alloc_binop(tc, n->binary_operator, cur, rhs);
+          return ALLOC_node_const_set(name, combined);
       }
 
       case PM_GLOBAL_VARIABLE_OR_WRITE_NODE: {

@@ -786,19 +786,29 @@ VALUE korb_yield(CTX *c, uint32_t argc, VALUE *argv) {
         return Qnil;
     }
     struct korb_proc *blk = current_block;
-    /* Shared-fp closure: block evaluates with env_fp's view of locals. */
+    /* Shared-fp closure: block evaluates with env_fp's view of locals.
+     * IMPORTANT: argv may point into the YIELDER's fp (e.g., a slot inside
+     * the calling method's frame) and we're about to overwrite that slot
+     * via blk->env[param_base + i] (which IS the caller's fp — same memory
+     * if blk's outer is the yielder's caller).  Snapshot args first. */
+    VALUE saved_args[16];  /* fast path for common case */
+    VALUE *args_buf = saved_args;
+    if (argc > 16) args_buf = korb_xmalloc(sizeof(VALUE) * argc);
+    for (uint32_t i = 0; i < argc; i++) args_buf[i] = argv[i];
+
     VALUE *fp = blk->env;
+    VALUE *prev_fp = c->fp;
     VALUE prev_self = c->self;
     /* Auto-destructure: block with N params yielded a single Array of size M
      * → assign array elements to params (Ruby block calling convention). */
-    if (blk->params_cnt > 1 && argc == 1 && BUILTIN_TYPE(argv[0]) == T_ARRAY) {
-        struct korb_array *a = (struct korb_array *)argv[0];
+    if (blk->params_cnt > 1 && argc == 1 && BUILTIN_TYPE(args_buf[0]) == T_ARRAY) {
+        struct korb_array *a = (struct korb_array *)args_buf[0];
         for (uint32_t i = 0; i < blk->params_cnt; i++) {
             fp[blk->param_base + i] = (i < (uint32_t)a->len) ? a->ptr[i] : Qnil;
         }
     } else {
         for (uint32_t i = 0; i < blk->params_cnt && i < argc; i++) {
-            fp[blk->param_base + i] = argv[i];
+            fp[blk->param_base + i] = args_buf[i];
         }
         /* fill missing params with nil */
         for (uint32_t i = (argc < blk->params_cnt ? argc : blk->params_cnt); i < blk->params_cnt; i++) {
@@ -806,13 +816,14 @@ VALUE korb_yield(CTX *c, uint32_t argc, VALUE *argv) {
         }
     }
     c->self = blk->self;
+    /* Switch fp so block body's lvar_get/set hit the captured frame's slots. */
+    c->fp = blk->env;
     VALUE r = EVAL(c, blk->body);
+    c->fp = prev_fp;
     c->self = prev_self;
-    if (c->state == KORB_BREAK) {
-        VALUE bv = c->state_value;
-        c->state = KORB_NORMAL; c->state_value = Qnil;
-        return bv;
-    }
+    /* `next` inside a block: yield returns the next value, state cleared.
+     * `break` should NOT be cleared here — it propagates to the yielding
+     * method, where dispatch_call catches it as that method's return. */
     if (c->state == KORB_NEXT) {
         VALUE nv = c->state_value;
         c->state = KORB_NORMAL; c->state_value = Qnil;
@@ -1169,7 +1180,7 @@ VALUE korb_dispatch_call(CTX *c, struct Node *callsite, VALUE recv, ID name,
     }
     /* Args between required and argc: leave as supplied (already in fp[i]) */
     c->self = recv;
-    /* push frame for super() / backtrace */
+    /* push frame for super() / backtrace / block_given? */
     struct korb_frame frame = {
         .prev = c->current_frame,
         .caller_node = callsite,
@@ -1177,6 +1188,7 @@ VALUE korb_dispatch_call(CTX *c, struct Node *callsite, VALUE recv, ID name,
         .self = recv,
         .fp = c->fp,
         .locals_cnt = mc->locals_cnt,
+        .block = block,
     };
     c->current_frame = &frame;
     /* Direct dispatcher call — avoids one level of indirection compared to EVAL */
@@ -1187,7 +1199,9 @@ VALUE korb_dispatch_call(CTX *c, struct Node *callsite, VALUE recv, ID name,
     c->cref = prev_cref;
     current_block = prev_block;
 
-    if (UNLIKELY(c->state == KORB_RETURN)) {
+    if (UNLIKELY(c->state == KORB_RETURN || c->state == KORB_BREAK)) {
+        /* break inside a block called via yield from this method propagates
+         * up as the method's return value. */
         r = c->state_value;
         c->state = KORB_NORMAL;
         c->state_value = Qnil;
@@ -1426,10 +1440,23 @@ bool korb_file_exists(const char *path) {
 }
 
 char *korb_resolve_relative(const char *current_file, const char *name) {
-    /* Try dirname(current_file)/name and add .rb if missing */
-    const char *dir = current_file ? korb_dirname(current_file) : ".";
+    /* If name is absolute, do not join with current_file's dir */
     long nl = strlen(name);
     bool has_rb = nl >= 3 && strcmp(name + nl - 3, ".rb") == 0;
+    if (name[0] == '/') {
+        if (!has_rb) {
+            char *with = korb_xmalloc_atomic(nl + 4);
+            sprintf(with, "%s.rb", name);
+            if (korb_file_exists(with)) return with;
+        }
+        if (korb_file_exists(name)) {
+            char *r = korb_xmalloc_atomic(nl + 1);
+            strcpy(r, name);
+            return r;
+        }
+        return NULL;
+    }
+    const char *dir = current_file ? korb_dirname(current_file) : ".";
     char *base = korb_join_path(dir, name);
     if (!has_rb) {
         char *with = korb_xmalloc_atomic(strlen(base) + 4);
@@ -1532,33 +1559,37 @@ struct korb_fiber {
     VALUE self_save;
     struct korb_cref *cref_save;
     struct korb_proc *block_save;
+
+    /* Per-fiber value-stack area: heap-allocated, lives as long as the
+     * fiber, used for the block's local frame so its slots don't overlap
+     * the resumer's stack. */
+    VALUE *frame;
+    size_t frame_size;
 };
 
 static __thread struct korb_fiber *current_fiber = NULL;
 
 static void korb_fiber_entry(unsigned int hi, unsigned int lo) {
-    /* Reconstruct pointer from two uints (ucontext requires int args) */
     uintptr_t p = ((uintptr_t)hi << 32) | (uintptr_t)lo;
     struct korb_fiber *fib = (struct korb_fiber *)p;
-    /* Run the block */
     if (fib->block) {
-        VALUE result = Qnil;
         struct korb_proc *blk = fib->block;
-        VALUE *fp = blk->env;
+        CTX *c = fib->c;
+        /* Place initial args into the fiber's heap frame at the block's
+         * param slots (env was pre-copied at fiber creation). */
         for (uint32_t i = 0; i < blk->params_cnt && i < (uint32_t)fib->argc; i++) {
-            fp[blk->param_base + i] = fib->args[i];
+            fib->frame[blk->param_base + i] = fib->args[i];
         }
+        VALUE prev_self = c->self;
+        c->self = blk->self;
         struct korb_proc *prev_block = current_block;
-        current_block = NULL;  /* fiber's block has no enclosing block */
-        VALUE prev_self = fib->c->self;
-        fib->c->self = blk->self;
-        result = EVAL(fib->c, blk->body);
-        fib->c->self = prev_self;
+        current_block = NULL;
+        VALUE result = EVAL(c, blk->body);
+        c->self = prev_self;
         current_block = prev_block;
         fib->result = result;
     }
     fib->state = KF_DEAD;
-    /* Swap back to caller */
     swapcontext(&fib->ctx, &fib->prev_ctx);
 }
 
@@ -1576,6 +1607,17 @@ VALUE korb_fiber_new(struct korb_proc *block) {
     fib->argc = 0;
     fib->result = Qnil;
     fib->c = NULL;
+    /* Allocate a heap value-frame for the fiber's locals so they don't
+     * share the resumer's stack slots. */
+    fib->frame_size = 4096;
+    fib->frame = korb_xmalloc(sizeof(VALUE) * fib->frame_size);
+    for (size_t i = 0; i < fib->frame_size; i++) fib->frame[i] = Qnil;
+    /* Pre-fill from env so closure captured locals are visible. */
+    if (block) {
+        for (uint32_t i = 0; i < block->env_size && i < fib->frame_size; i++) {
+            fib->frame[i] = block->env[i];
+        }
+    }
     return (VALUE)fib;
 }
 
@@ -1604,12 +1646,20 @@ VALUE korb_fiber_resume(CTX *c, VALUE fibv, int argc, VALUE *argv) {
         makecontext(&fib->ctx, (void (*)(void))korb_fiber_entry, 2, hi, lo);
     }
 
-    /* Save current fiber and switch */
+    /* Save current fiber and switch.  Also swap c->fp to the fiber's
+     * heap frame so the block's lvars don't collide with the resumer's
+     * value-stack slots. */
     struct korb_fiber *prev = current_fiber;
     current_fiber = fib;
+    VALUE *saved_fp = c->fp;
+    VALUE *saved_sp = c->sp;
+    c->fp = fib->frame;
+    c->sp = fib->frame + fib->frame_size - 1;
     fib->state = KF_RUNNING;
     swapcontext(&fib->prev_ctx, &fib->ctx);
-    /* Returned from yield/end */
+    /* Returned from yield/end — restore resumer's fp/sp. */
+    c->fp = saved_fp;
+    c->sp = saved_sp;
     current_fiber = prev;
     if (fib->state != KF_DEAD) fib->state = KF_SUSPENDED;
     return fib->result;

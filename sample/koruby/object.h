@@ -125,6 +125,13 @@ struct korb_proc {
     bool is_lambda;
 };
 
+/* Method object: a bound (receiver, method) pair, callable via #call/#[] */
+struct korb_method_obj {
+    struct RBasic basic;
+    VALUE receiver;
+    ID name;
+};
+
 /* global VM */
 struct korb_vm {
     state_serial_t method_serial;
@@ -149,6 +156,7 @@ struct korb_vm {
     struct korb_class *enumerable_module;
     struct korb_class *numeric_class;
     struct korb_class *fiber_class;
+    struct korb_class *method_class;
 
     /* globals */
     struct korb_method_table globals;
