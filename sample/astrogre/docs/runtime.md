@@ -1,49 +1,48 @@
-# astrogre runtime
+# astrogre ランタイム
 
-This document explains how astrogre actually matches a regex against an
-input — i.e. the runtime semantics of the AST nodes, with particular
-emphasis on how repetition and continuation flow are wired up.
+このドキュメントは astrogre が実際にどう regex を入力にマッチさせて
+いるか — つまり AST node のランタイム意味論 — を解説する。特に繰り返し
+と continuation flow の配線に重点を置く。
 
-## High-level shape
+## 全体像
 
 ```
-Ruby src ──prism──▶ pm_regular_expression_node_t.unescaped + flags
-                      │
-                      ▼
-                ┌────────────┐
-                │ regex      │  hand-written recursive-descent parser
-                │ parser     │  (parse.c) — reads /.../ body, builds IR
-                └─────┬──────┘
-                      │
-                      ▼
-                ┌────────────┐
-                │ IR (ire_*) │  little tree of unions: LIT, CONCAT, ALT,
-                │            │  REP, GROUP, CLASS, ...
-                └─────┬──────┘
-                      │  lower(..., tail=succ)        right-to-left:
-                      ▼                                each node's
-                ┌────────────┐                         `next` is the
-                │ ASTro AST  │  node_re_*              already-built
-                │ (ALLOC_*)  │  generated from         remainder
-                └─────┬──────┘  node.def
-                      │
-                      ▼ EVAL(c, root)
+Ruby ソース ──prism──▶ pm_regular_expression_node_t.unescaped + flags
+                       │
+                       ▼
+                 ┌────────────┐
+                 │ regex      │  手書き再帰下降パーサ
+                 │ parser     │  (parse.c) — /.../ の本体を読み IR を組み立て
+                 └─────┬──────┘
+                       │
+                       ▼
+                 ┌────────────┐
+                 │ IR (ire_*) │  union ベースの小さい木: LIT, CONCAT, ALT,
+                 │            │  REP, GROUP, CLASS, ...
+                 └─────┬──────┘
+                       │  lower(..., tail=succ)        right-to-left:
+                       ▼                                各 node の
+                 ┌────────────┐                         `next` は組み立て済みの
+                 │ ASTro AST  │  node_re_*              残り
+                 │ (ALLOC_*)  │  node.def から自動生成
+                 └─────┬──────┘
+                       │
+                       ▼ EVAL(c, root)
                   match / no match + captures
 ```
 
-The "lowering" step is what makes the AST itself a directed chain in
-*continuation-passing* form: each match node carries a `next` operand,
-and dispatching `next` is how it tells "the rest of the pattern" to try
-to match. A failed `next` returns 0 to its caller, which is how
-backtracking is expressed without an explicit thread list or stack
-machine.
+「lowering」段階が AST を *continuation-passing 形式* の有向チェーン
+にしている: 各 match node が `next` operand を持ち、`next` を dispatch
+することで「パターンの残り」にマッチを試させる。`next` が失敗 (= 0
+を返す) と呼び出し元に戻る — これが、明示的な thread list / stack
+machine なしの backtracking 表現になる。
 
-## Worked examples — what the AST actually looks like
+## 動く例 — AST が実際にどう見えるか
 
-`./astrogre --dump '/<pat>/'` prints the lowered AST as an
-S-expression.  A few instructive cases:
+`./astrogre --dump '/<pat>/'` でそのパターンを lower した AST が
+S 式で出る。代表例:
 
-### Pure literal — `/static/`
+### 純リテラル — `/static/`
 
 ```
 (node_grep_search_memmem
@@ -54,15 +53,14 @@ S-expression.  A few instructive cases:
   "static" 6 0)
 ```
 
-Read inside-out: at success time, write `ends[0]` and return 1
-(`node_re_succ`); on the way there, capture-end writes `ends[0]`
-explicitly, the literal compares 6 bytes from `c->str + c->pos`,
-capture-start writes `starts[0]`.  The outer `node_grep_search_memmem`
-is the top-level driver — its EVAL is a `memmem`-driven loop that
-sets `c->pos` to candidate positions and dispatches the chain at
-each one.
+内側から読む: 成功時に `ends[0]` を書いて 1 を返す (`node_re_succ`)、
+そこに至るまでに cap_end が `ends[0]` を明示的に書き、リテラルが
+`c->str + c->pos` から 6 byte 比較、cap_start が `starts[0]` を書く。
+最も外側の `node_grep_search_memmem` がトップレベルの driver — EVAL は
+memmem 駆動のループで、候補位置に `c->pos` を設定して各位置でチェーン
+を dispatch する。
 
-### Single class with `+` — `/[a-z]+/`
+### 単一クラス + `+` — `/[a-z]+/`
 
 ```
 (node_grep_search_range
@@ -75,16 +73,16 @@ each one.
   97 122 0)
 ```
 
-The hex-looking number is the bm1 field of the 256-bit class
-bitmap (bits set for `'a'`..`'z'`).  `node_re_rep` operands are
-`body=class`, `outer_next=cap_end → succ`, `min=1`, `max=-1`,
-`greedy=1`.  Body's `next` is `node_re_rep_cont` — the singleton
-sentinel that reads the top of `c->rep_top` to decide "iterate or
-proceed".  Outer wrapper is `node_grep_search_range` because the
-class is contiguous (`'a'`..`'z'`); it AVX2-scans for that range
-and dispatches the inner chain at each hit.
+16 進っぽい数字は 256-bit クラス bitmap の bm1 フィールド (`'a'`..`'z'`
+のビットが立っている)。`node_re_rep` の operand は `body=class`、
+`outer_next=cap_end → succ`、`min=1`、`max=-1`、`greedy=1`。Body の
+`next` は `node_re_rep_cont` — `c->rep_top` のトップを読んで「もう
+1 回繰り返すか抜けるか」を決める singleton sentinel。外側ラッパーが
+`node_grep_search_range` なのはクラスが連続範囲 (`'a'`..`'z'`) だから
+で、その範囲に対して AVX2 スキャンし、ヒットごとに内側チェーンを
+dispatch する。
 
-### Alternation of literals — `/\b(if|else|for|while|return)\b/`
+### リテラルの alt — `/\b(if|else|for|while|return)\b/`
 
 ```
 (node_grep_search_byteset
@@ -103,15 +101,14 @@ and dispatches the inner chain at each hit.
   491629471081 5 0)
 ```
 
-The first 8 bytes of `491629471081` (little-endian uint64) are
-`{i, e, f, w, r, 0, 0, 0}` — the distinct first bytes of the alt
-branches.  `node_grep_search_byteset` AVX2-scans for any of them
-in 32-byte chunks and dispatches the chain at each candidate.
-Each alt branch shares the trailing `\b → cap_end → succ` chain,
-so the lowered tree is a DAG (the tail nodes are pointed to by
-multiple parents).
+`491629471081` の最初 8 byte (リトルエンディアン uint64) は
+`{i, e, f, w, r, 0, 0, 0}` — alt 各枝の先頭 byte。
+`node_grep_search_byteset` は 32 byte chunk で「これらのいずれかの
+byte があるか」を AVX2 で判定し、候補位置でチェーンを dispatch。
+alt の各枝は末尾の `\b → cap_end → succ` を共有しているので、
+lower された木は DAG (末尾 node が複数の親から指される)。
 
-### Backreference — `/(\w+)\s+\1/`
+### 後方参照 — `/(\w+)\s+\1/`
 
 ```
 (node_grep_search_class_scan
@@ -129,12 +126,11 @@ multiple parents).
   <truffle nibble tables>  0)
 ```
 
-The whole outer wrapper is `node_grep_search_class_scan` because
-the first thing the regex tries to match is `\w` (a non-contiguous
-class).  `node_re_backref 1` reads `c->starts[1]`/`c->ends[1]` to
-re-match the previously-captured group's bytes literally — so its
-behaviour depends on the runtime capture state, not on a constant
-operand.
+外側ラッパーが `node_grep_search_class_scan` なのは、regex が最初に
+マッチさせるのが `\w` (非連続クラス) だから。`node_re_backref 1` は
+`c->starts[1]` / `c->ends[1]` を読んで先のキャプチャグループのバイトを
+そのままマッチする — つまり振る舞いが定数 operand ではなくランタイムの
+キャプチャ状態に依存する node。
 
 ### Anchored — `/\Afoo/`
 
@@ -147,44 +143,41 @@ operand.
   "foo" 3 1)
 ```
 
-The trailing `1` on the outer wrapper is `anchored_bos` — the
-search loop will only try `c->pos == 0`.  The framework also sees
-this in the structural hash, so the anchored vs unanchored
-versions of the same body get distinct SDs.
+外側ラッパー末尾の `1` が `anchored_bos` — search ループは `c->pos == 0`
+だけ試して終わる。フレームワークもこの flag を構造ハッシュで見るので、
+anchored / unanchored バリアントは別 SD として別個に bake される。
 
-### What the lowering preserves and what it doesn't
+### Lower で残るもの・落ちるもの
 
-The lowered AST is a faithful representation of "what to do at
-runtime", but not of "what the user wrote":
+Lower された AST は「ランタイムで何をするか」に忠実だが「ユーザが
+何を書いたか」には忠実でない:
 
-- Adjacent literals are coalesced (`/he/` + `/llo/` would still be
-  one `node_re_lit "hello"`).
-- `/i` literals are pre-folded to lowercase at parse time, with
-  the matcher folding the input on-the-fly via `node_re_lit_ci`.
-- `(?:...)` non-capturing groups disappear — their body is
-  inlined into the surrounding chain.
-- Anchors (`\A`, `\b`, `^`, `$`, etc.) become single nodes;
-  they're zero-width so they just chain through to `next`.
-- Classes are 256-bit bitmaps (4× `uint64_t` baked inline);
-  parser-level `[a-z]`, `\d`, `\w`, etc. all collapse to the
-  same node kind.
+- 隣接リテラルは coalesce (`/he/` + `/llo/` で 1 個の `node_re_lit "hello"`)。
+- `/i` リテラルは parse 時に lowercase に pre-fold、マッチャ側は入力を
+  on-the-fly で fold (`node_re_lit_ci`)。
+- `(?:...)` 非キャプチャグループは消える — body が囲い側のチェーンに
+  inline される。
+- アンカー (`\A`、`\b`、`^`、`$` 等) は単一 node になる、zero-width な
+  ので `next` をそのまま dispatch するだけ。
+- クラスは 256-bit bitmap (`uint64_t × 4` をインライン bake)、parser
+  レベルの `[a-z]`、`\d`、`\w` 等は全部同じ node kind に潰れる。
 
-## Continuation-passing convention
+## Continuation-passing 規約
 
-Every match-node has the same calling shape:
+各 match-node は同じ呼び出し形:
 
 ```c
 NODE_DEF
 node_re_xxx(CTX *c, NODE *n, ..., NODE *next)
 {
-    /* try to consume something */
+    /* 自分の局所チェック */
     if (this node's local check fails) return 0;
 
-    /* save state we'll need to undo */
+    /* undo 用に状態を保存 */
     size_t saved_pos = c->pos;
     c->pos += how_much_we_consumed;
 
-    /* let the rest of the pattern try */
+    /* パターンの残りに試させる */
     VALUE r = EVAL_ARG(c, next);
 
     if (!r) c->pos = saved_pos;     /* backtrack */
@@ -192,37 +185,36 @@ node_re_xxx(CTX *c, NODE *n, ..., NODE *next)
 }
 ```
 
-This shape generalises to anchors (no `c->pos` change), captures (save
-the slot, restore on tail-fail), and lookaround (always restore `c->pos`
-even on success). The terminator is `node_re_succ`, which sets
-`ends[0] = c->pos` and returns 1 — that's how we record where the whole
-match ended.
+この形は anchor (`c->pos` を変えない)、capture (slot を save、tail
+失敗で restore)、lookaround (成功時も `c->pos` を restore) にも一般化
+する。終端は `node_re_succ`、これが `ends[0] = c->pos` を書いて 1 を
+返す — マッチがどこで終わったかの記録機構。
 
-The chain ends in `node_re_succ`. The chain *starts* at `cap_start(0,
-...)` (added implicitly by the parser) so capture group 0 records the
-whole match span without special-casing the entry point.
+チェーンは `node_re_succ` で終端。チェーンの **始まり** は parser が
+暗黙に挿入する `cap_start(0, ...)` — エントリポイントの特別扱い無しで
+キャプチャグループ 0 が全体マッチ範囲を記録できるように。
 
-## The repetition mechanism
+## 繰り返しの仕組み
 
-Repetition is the only construct where continuation passing alone isn't
-enough: `a*b` lets the body match zero or more times, with the outer
-`b` competing for the input. We use a small runtime stack:
+繰り返しは continuation-passing 単独では足りない唯一の構造: `a*b` は
+body が 0 回以上マッチでき、外側の `b` が入力を奪い合う。小さい
+ランタイムスタックを使う:
 
 ```c
 struct rep_frame {
-    NODE *body;           /* what's iterating */
-    NODE *outer_next;     /* what comes after the rep */
-    int32_t min, max;     /* remaining counts; max == -1 means ∞ */
+    NODE *body;           /* 何が繰り返されているか */
+    NODE *outer_next;     /* rep の後ろにくるもの */
+    int32_t min, max;     /* 残り回数; max == -1 で ∞ */
     uint32_t greedy;
     struct rep_frame *prev;
 };
 ```
 
-`node_re_rep` pushes a fresh frame and dispatches a single, shared
-sentinel node — `node_re_rep_cont`, allocated once at startup — which
-reads `c->rep_top` to decide what to do next. The body's `next` operand
-is wired to the same sentinel, so each successful body iteration lands
-back in `rep_cont`.
+`node_re_rep` は新しいフレームを push し、起動時に確保された 1 つ
+だけの sentinel — `node_re_rep_cont` — を dispatch する。これが
+`c->rep_top` を読んで次の動作を決める。Body の `next` operand は
+同じ sentinel に配線されるので、body の各成功 iteration が rep_cont
+に戻ってくる。
 
 ```c
 NODE_DEF
@@ -236,156 +228,147 @@ node_re_rep(CTX *c, NODE *n, NODE *body, NODE *outer_next, ...)
 }
 ```
 
-`node_re_rep_cont` then implements the greedy / lazy contract:
+`node_re_rep_cont` は greedy / lazy 契約を実装:
 
-* **Greedy** — try to take one more iteration first (recursing through
-  body → rep_cont → body → ...); if any depth eventually fails to reach
-  `outer_next` successfully, fall back to "min satisfied? try
-  outer_next" at this level.
-* **Lazy** — try `outer_next` first (if `min == 0`); only if that fails
-  do we try one more body iteration.
+* **Greedy** — まず body をもう 1 回試す (再帰的に body → rep_cont →
+  body → ...)、どの深さでも `outer_next` が成功しないなら「min を
+  満たしているか? なら outer_next」にこの階層でフォールバック。
+* **Lazy** — まず `outer_next` を試す (`min == 0` のとき); 失敗したら
+  ようやく body をもう 1 回試す。
 
-The pop-on-recurse pattern is important: when we dispatch
-`outer_next`, we temporarily pop our own frame off `c->rep_top` so any
-*nested* rep_cont triggered from inside the rest of the pattern reads
-the right frame. We restore on backtrack.
+「再帰時に pop する」パターンが大事: `outer_next` を dispatch する
+ときに自分のフレームを `c->rep_top` から一時的に外す — そうすると
+パターンの残りから引き起こされる**ネストした** rep_cont が正しい
+フレームを読める。backtrack 時に restore する。
 
-This handles the case `(a|ab)*c` matching `abc` correctly: after `a`
-matches in iteration 1 and the outer `c` fails at position 1, control
-returns up through the body's continuation (rep_cont). With the body's
-`next` wired to rep_cont, the *inner* `alt` gets a chance to retry
-its other branch (`ab`) on the way back, which is what makes the
-composite match `ab` then `c`. A "body returns one success per call"
-short-cut would miss this.
+これで `(a|ab)*c` を `abc` にマッチする例も正しく動く: iteration 1 で
+`a` がマッチ、外側の `c` が pos 1 で失敗、コントロールが body の
+continuation (rep_cont) を通って戻る。Body の `next` を rep_cont に
+配線してあるので、戻り際に**内側の** alt がもう一方の枝 (`ab`) を
+試す機会を得る — これが合成全体として `ab` then `c` をマッチさせる。
+「body は呼び出しごとに 1 回成功を返す」short-cut だとこれを取り逃
+がす。
 
-## Captures
+## キャプチャ
 
-Captures live in `c->starts[]`, `c->ends[]`, `c->valid[]`. There are
-two nodes:
+キャプチャは `c->starts[]`、`c->ends[]`、`c->valid[]` に持つ。2 つの
+node:
 
-* `node_re_cap_start(idx, next)` — saves the slot, writes
-  `starts[idx] = c->pos`, dispatches `next`. On tail failure the slot
-  is restored.
-* `node_re_cap_end(idx, next)` — symmetric on the end side; sets
-  `valid[idx] = true` so a backreference / output reader knows the slot
-  has data.
+* `node_re_cap_start(idx, next)` — slot を save し `starts[idx] = c->pos`
+  を書き、`next` を dispatch。tail 失敗時に slot を restore。
+* `node_re_cap_end(idx, next)` — end 側も対称、`valid[idx] = true` を
+  set して後方参照 / 出力読み出し側が「slot にデータあり」と分かる
+  ように。
 
-Group 0 is wrapped around the whole AST by the parser, so callers
-always get `starts[0]` / `ends[0]` for the overall match span without a
-special success path. `node_re_succ` also writes `ends[0]` for the
-match-found case (defensive — it's redundant when group 0 is wrapped,
-but cheap and means a future "don't wrap" optimisation won't break).
+グループ 0 は parser が AST 全体を包むので、呼び出し側は特別なルートを
+通らず `starts[0]` / `ends[0]` で全体マッチ範囲を取れる。`node_re_succ`
+は `ends[0]` も書く (group 0 がラップされてるので冗長だが安価で、将来
+「ラップしない」最適化が入っても破綻しない保険)。
 
-## Anchors
+## アンカー
 
-`\A`, `\z`, `\Z`, `^`, `$`, `\b`, `\B` are zero-width: they look at
-`c->pos` (and possibly the surrounding bytes) and either dispatch
-`next` or return 0. `\b` / `\B` use a 7-bit ASCII word-character
-predicate (`[A-Za-z0-9_]`), matching Ruby's default for `/n` and `/u`
-on ASCII letters.
+`\A`、`\z`、`\Z`、`^`、`$`、`\b`、`\B` は zero-width: `c->pos` (および
+周辺 byte) を見て `next` を dispatch するか 0 を返すかだけ。`\b` /
+`\B` は 7-bit ASCII の単語文字述語 (`[A-Za-z0-9_]`) を使う — これが
+Ruby のデフォルトで `/n` / `/u` モードの ASCII 文字での挙動。
 
-## Encoding
+## エンコーディング
 
-`c->encoding` is set from prism's flag bits (or from the literal CLI
-syntax) and reflects the regex's encoding mode:
+`c->encoding` は prism のフラグビット (またはリテラル CLI 構文) から
+セットされ、regex のエンコーディングモードを反映する:
 
-| flag      | mode      | dot advances by | typical use |
-|-----------|-----------|------------------|-------------|
-| `/n`      | ASCII     | 1 byte           | binary input, performance-critical ASCII |
-| `/u`      | UTF-8     | 1 codepoint      | default in modern Ruby |
-| (default) | UTF-8     | 1 codepoint      | same as `/u` |
+| flag      | mode      | dot の進み量 | 典型用途 |
+|-----------|-----------|--------------|--------|
+| `/n`      | ASCII     | 1 byte       | バイナリ入力、性能重視 ASCII |
+| `/u`      | UTF-8     | 1 codepoint  | モダン Ruby のデフォルト |
+| (無指定)  | UTF-8     | 1 codepoint  | `/u` と同じ |
 
-The mode affects three places in the matcher:
+モードはマッチャの 3 箇所に効く:
 
-### `.` — four node variants
-There are four dot-node kinds, picked at parse time so the matcher
-itself never branches on `c->encoding`:
+### `.` — 4 つの node variant
+dot ノードは 4 種類あり、parse 時に選ばれるのでマッチャ自体は
+`c->encoding` で分岐しない:
 
-| node                 | matches                          |
+| node                 | マッチするもの                  |
 |----------------------|----------------------------------|
-| `node_re_dot`        | any single byte except `\n`      |
-| `node_re_dot_m`      | any single byte (`/m` flag)      |
-| `node_re_dot_utf8`   | one UTF-8 codepoint, not `\n`    |
-| `node_re_dot_utf8_m` | one UTF-8 codepoint              |
+| `node_re_dot`        | `\n` 以外の任意の 1 byte         |
+| `node_re_dot_m`      | 任意の 1 byte (`/m` フラグ)      |
+| `node_re_dot_utf8`   | `\n` 以外の 1 UTF-8 codepoint    |
+| `node_re_dot_utf8_m` | 1 UTF-8 codepoint                |
 
-The UTF-8 variants sniff the leading byte (`0xxxxxxx` → 1 byte,
-`110xxxxx` → 2, `1110xxxx` → 3, `11110xxx` → 4) and refuse to match
-an invalid lead.
+UTF-8 バリアントはリーディングバイトを見て (`0xxxxxxx` → 1 byte、
+`110xxxxx` → 2、`1110xxxx` → 3、`11110xxx` → 4) 進み量を決め、
+不正なリードバイトは拒否する。
 
-### Literals — bytes are bytes
-The parser is encoding-aware at one specific point: when it sees a
-UTF-8 leading byte (≥ 0x80), it gobbles the continuation bytes
-(0x80–0xBF) into the same `IRE_LIT` token, so quantifiers bind to
-the whole codepoint:
+### リテラル — bytes are bytes
+パーサが encoding を意識する箇所は 1 つだけ: UTF-8 リーディングバイト
+(≥ 0x80) を見たら継続バイト (0x80–0xBF) を同じ `IRE_LIT` トークンに
+吸い込む — そうすることで quantifier が codepoint 全体に bind する:
 
 ```
-/é+/  →  node_re_lit "é" 2 (rep ...)   ; not /\xC3 (\xA9+)/
+/é+/  →  node_re_lit "é" 2 (rep ...)   ; /\xC3 (\xA9+)/ ではなく
 ```
 
-The matcher then compares bytes; UTF-8 well-formedness is preserved
-by construction.  `/i` lowercases at parse time but only on the
-ASCII letters `A`-`Z` — `/É/i` does *not* match `é` today (full
-Unicode case folding is on the runway).
+マッチャは byte を比較; UTF-8 well-formedness は構築上保たれる。
+`/i` は parse 時に lowercase に fold するが ASCII 文字 (`A`-`Z`) のみ
+— `/É/i` は今 `é` にマッチしない (本格的な Unicode case fold は今後
+の課題)。
 
-### Character classes — ASCII only
-Classes use a 256-bit bitmap (`uint64_t × 4` baked inline) and so
-operate on raw bytes.  ASCII ranges (`[a-z]`, `[0-9]`, `\d`, `\w`,
-`\s`) work perfectly.  Non-ASCII *characters* inside `[...]` cannot
-be expressed as a single bitmap entry today (`[ä]` for the codepoint
-U+00E4 would need to match the byte sequence `0xC3 0xA4`, not just
-the single byte `0xE4`); the parser builds a bytewise bitmap that's
-wrong for this case, documented under [`todo.md`](./todo.md).
-Multi-byte char-class support would add a hybrid representation
-(ASCII bitmap + sorted codepoint-range list).
+### 文字クラス — ASCII のみ
+クラスは 256-bit bitmap (`uint64_t × 4` インライン bake) で、生バイト
+で動く。ASCII 範囲 (`[a-z]`、`[0-9]`、`\d`、`\w`、`\s`) は完全に動作。
+`[...]` 内の非 ASCII *文字* は 1 つの bitmap エントリで表現できない
+(`[ä]` の U+00E4 はバイト列 `0xC3 0xA4` をマッチする必要があり、
+バイト `0xE4` だけではない); 今は parser が wrong な byte-wise bitmap
+を作る、これは [`todo.md`](./todo.md) で文書化している。マルチバイト
+クラスをサポートするには hybrid 表現 (ASCII bitmap + ソート済み
+codepoint 範囲リスト) が必要。
 
-### Anchors and `\b`
-`\b`/`\B` use a 7-bit ASCII word-character predicate
-(`[A-Za-z0-9_]`).  This matches Ruby's default behaviour on ASCII
-letters under `/n` and `/u`; Unicode word boundaries (`\p{L}`,
-`\p{N}`) are unsupported.  Other anchors (`\A`, `\z`, `\Z`, `^`,
-`$`) are encoding-agnostic — they just look at byte positions and
-the `\n` byte (0x0A), which is the same in every supported encoding.
+### アンカーと `\b`
+`\b` / `\B` は 7-bit ASCII 単語文字述語 (`[A-Za-z0-9_]`) を使う。
+これが Ruby のデフォルト (`/n` / `/u` の ASCII 文字でのふるまい);
+Unicode 単語境界 (`\p{L}`、`\p{N}` 由来) は未対応。他のアンカー
+(`\A`、`\z`、`\Z`、`^`、`$`) はエンコーディング非依存 — byte 位置と
+`\n` byte (0x0A) を見るだけで、これは全対応エンコーディングで同じ。
 
-### Encoding × SIMD prefilter
-The prefilter nodes operate at the byte level, which composes
-correctly with UTF-8:
+### エンコーディング × SIMD prefilter
+prefilter ノードは byte レベルで動くので UTF-8 とちゃんと合成する:
 
-- **memchr / memmem / byteset / range** — all scan input as bytes.
-  For ASCII patterns under any encoding mode, perfectly correct.
-  For UTF-8 patterns whose first byte is a UTF-8 leading byte
-  (e.g. `/é+/` starts with `0xC3`), the prefilter scans for `0xC3`
-  candidate positions and the body chain verifies the full
-  codepoint sequence — false positives at random `0xC3` bytes are
-  filtered as expected.
-- **class_scan (Truffle)** — same story.  The 256-bit bitmap is
-  built bytewise; for ASCII classes it's a true class membership
-  test, for hypothetical UTF-8 classes it would prefilter on the
-  first byte of any allowed codepoint and let the body re-verify.
+- **memchr / memmem / byteset / range** — どれも入力を byte として
+  スキャン。ASCII パターンならどのエンコーディングモードでも完全に
+  正しい。最初のバイトが UTF-8 リーディングバイトのパターン (例:
+  `/é+/` は `0xC3` で始まる) では prefilter が `0xC3` の候補位置を
+  スキャンし、body chain が codepoint 全体を verify する — ランダムな
+  `0xC3` バイトでの false positive は期待通り body で弾かれる。
+- **class_scan (Truffle)** — 同じ。256-bit bitmap は byte ごとに
+  build されるので、ASCII クラスでは真のクラスメンバーシップ判定、
+  仮想的な UTF-8 クラスでは「許される codepoint の最初の byte」を
+  prefilter にして body 側に再 verify を任せる形になる。
 
-`/i` disables the prefilter ladder entirely today (only the
-ASCII fold case has a cheap two-byte memchr; the parser doesn't
-build it yet).  Twin-memchr for `/i` literals is the smallest fix.
+`/i` は今 prefilter ladder 全体を無効化する (cheap な ASCII fold ケース
+の twin-memchr すら parser がまだ作っていない)。`/i` リテラル用の
+twin-memchr が最も小さい修正。
 
-### What's not supported
+### 未対応
 - `\p{...}` / `\P{...}` Unicode property classes
-- Unicode case folding for `/i`
-- Multi-byte chars inside `[...]`
+- `/i` の Unicode case folding
+- `[...]` 内のマルチバイト文字
 - `\X` extended grapheme cluster
-- EUC-JP (`/e`) and Windows-31J (`/s`) encodings — gated on demand
+- EUC-JP (`/e`) / Windows-31J (`/s`) — 需要次第
 
-## Top-level search
+## トップレベル search
 
-The for-each-start-position loop is itself an AST node:
-`node_grep_search`. Its EVAL is the loop, its `body` operand is the
-regex AST, its `anchored_bos` operand short-circuits to one
-position when the pattern starts with `\A`. `astrogre_search` (in
-match.c) just sets up CTX and calls `EVAL(c, root)` once.
+For-each-start-position ループそれ自体が AST node: `node_grep_search`。
+EVAL がループ、`body` operand が regex AST、`anchored_bos` operand は
+`\A` 始まりパターン用に「1 位置だけ」に short-circuit する。
+`astrogre_search` (match.c) は CTX をセットアップして `EVAL(c, root)`
+を 1 度呼ぶだけ。
 
 ```c
 NODE_DEF
 node_grep_search(CTX *c, NODE *n, NODE *body, uint32_t anchored_bos)
 {
-    size_t start = c->pos;                  /* caller-set */
+    size_t start = c->pos;                  /* 呼び出し側がセット */
     size_t start_max = anchored_bos ? (start == 0 ? 1 : 0) : c->str_len + 1;
     for (size_t s = start; s < start_max; s++) {
         c->pos = s;
@@ -397,78 +380,68 @@ node_grep_search(CTX *c, NODE *n, NODE *body, uint32_t anchored_bos)
 }
 ```
 
-Putting the loop in node.def is the key trick. When the specialiser
-recurses into `body` and inlines `body_dispatcher` as a direct
-function pointer, gcc fuses the loop and the regex chain into one
-SD function — no indirect calls, no DISPATCH chain, capture-state
-reset hoisted to a single `vmovdqu`. See
-[`perf.md`](./perf.md) for the disassembly and the 7.22×
-literal-tail microbench number.
+ループを node.def に置くのが鍵。Specialiser が `body` に再帰し
+`body_dispatcher` を直接関数ポインタとして inline すると、gcc が
+ループと regex chain を 1 つの SD 関数に融合する — indirect call も
+DISPATCH chain もなく、capture 状態リセットは `vmovdqu` 1 つに集約。
+逆アセと 7.22× の `literal-tail` microbench 数値は
+[`perf.md`](./perf.md) を参照。
 
-## Memory
+## メモリ
 
-* AST nodes are heap-allocated via the framework's `node_allocate`
-  (calloc). They live for the life of the pattern; freeing happens
-  in `astrogre_pattern_free`.
-* The intermediate IR (`ire_*`) is freed right after lowering — only
-  the AST persists.
-* CTX and rep frames are stack-allocated, so no malloc on the hot
-  path.
+* AST node はフレームワークの `node_allocate` (calloc) で heap allocate。
+  パターンの寿命の間生き、`astrogre_pattern_free` で解放。
+* 中間 IR (`ire_*`) は lower 直後に解放 — AST だけが残る。
+* CTX と rep frame は stack 確保なので hot path での malloc なし。
 
-## Threading model
+## スレッドモデル
 
-None. CTX is per-call and the rep_cont sentinel is shared globally,
-but everything mutable (rep stack, captures) lives on the calling CTX.
-Two threads can match concurrently with separate CTX instances even
-though they share the AST.
+無し。CTX は呼び出しごと、rep_cont sentinel はグローバル共有だが、
+mutable な状態 (rep stack、captures) は呼び出し側 CTX に置く。2 スレッ
+ドが別 CTX で AST を共有しつつ並行マッチ可能。
 
-## Backend abstraction
+## バックエンド抽象
 
-The grep CLI (main.c) talks only to `backend.h`.  Two backends are
-plugged in:
+grep CLI (main.c) は `backend.h` だけと話す。プラグインされている
+バックエンドは 2 つ:
 
-* `backend_astrogre.c` — the in-house engine (this whole file).
+* `backend_astrogre.c` — in-house エンジン (この一連の解説の対象)。
 * `backend_onigmo.c`   — Onigmo (`onig_new` + `onig_search` + region
-                         object), built only when WITH_ONIGMO=1.
+                          オブジェクト)、`WITH_ONIGMO=1` で build。
 
-The ops table is `compile / search / search_from / free`.  Each
-backend implements `-F` (fixed-string) at the compile call: in our
-engine via `astrogre_parse_fixed`, in Onigmo by escaping
-metacharacters before passing to `onig_new` (Onigmo doesn't have a
-fixed-string mode).  Pattern objects are opaque on either side, so
-the CLI never has to look inside them.
+ops 表は `compile / search / search_from / free`。`-F` (固定文字列)
+は両者とも compile 呼び出しで実装 — 自前エンジンは
+`astrogre_parse_fixed` 経由、Onigmo はメタ文字を escape してから
+`onig_new` に渡す (Onigmo 自体には固定文字列モードがない)。パターン
+オブジェクトはどちらも opaque、CLI 側は中身を見ない。
 
-This is plumbing, not optimisation — but it's what made the
-side-by-side comparison in `bench/grep_bench.sh` cheap to write.
+これは plumbing で最適化ではないが、`bench/grep_bench.sh` の比較
+ハーネスを安く書けるようにしているのはこの抽象。
 
-## Where ASTro's specialization helps (and where it doesn't)
+## ASTro の specialization が効くところ・効かないところ
 
-A bench-driven note on what we learned writing this sample, kept here
-because the answer turns out to depend on the *shape* of the workload
-in a way that might surprise someone coming from "AOT bake good for
-everything".
+このサンプルを書いていて分かったことのベンチ駆動メモ。「AOT bake は
+何にでも効く」と思っていると裏切られる種類の答えなのでここに残す。
 
-### Bake helps when per-iter work is non-trivial
-When the inner work per dispatch is meaningful — a method send, a
-type-check, a frame push — the bake's job (eliminating the indirect
-call + constant-folding child operands) is a real share of the wall
-time:
+### 1 回の dispatch あたりの仕事が大きい時に bake は効く
+1 dispatch の中身が意味のあるサイズ — メソッド呼出、型チェック、
+フレーム push — のとき、bake の役割 (indirect call の削除 + 子
+operand の定数畳み込み) が wall time の有意な部分を占める:
 
-- koruby `fib`: interp → AOT, 3.6×.
-- pascalast typical bench: 2–25× across the table.
-- Our own `literal-tail` microbench (16 KiB single buffer, repeated
-  search): **22.75 s → 3.15 s, 7.22×**. The fused SD has no
-  indirect call left at all.
+- koruby `fib`: interp → AOT で 3.6×。
+- pascalast の典型的ベンチ: 表全体で 2–25×。
+- 自前の `literal-tail` microbench (16 KiB single buffer、繰り返し
+  search): **22.75 s → 3.15 s, 7.22×**。fused SD には indirect call が
+  1 つも残らない。
 
-### Bake stops helping when an algorithmic optimization eats the dispatch
-For the grep CLI the picture flips. Per-position inner work is *one
-or two compares*, not a method send. The dispatch chain bake removes
-is already cheap (3–4 indirect calls per position, all to the same
-hot BTB target, ~1 ns each). And once the literal-prefix prefilter
-nodes landed (`node_grep_search_memchr` / `_memmem`), the verify
-chain only runs on candidate positions — a handful per kilobyte —
-so the total dispatch overhead the bake could eliminate is in the
-µs range:
+### algorithmic optimization が dispatch を食ったら bake は効かなくなる
+grep CLI では話が逆になる。各位置の中身は「1 〜 2 個の compare」で
+あって、メソッド呼出ではない。bake が消す dispatch chain (1 位置
+あたり 3〜4 個の indirect call、全部同じ hot BTB target、~1 ns 程度)
+は元から安い。さらに literal-prefix prefilter ノード
+(`node_grep_search_memchr` / `_memmem`) が landing したことで、
+verify chain は候補位置でしか動かない (1 KB あたり数回)、bake が
+削減できる総 dispatch 量は µs オーダー:
 
 ```
 bench: 118 MB corpus, post-prefilter
@@ -476,46 +449,43 @@ bench: 118 MB corpus, post-prefilter
 literal /static/                0.285 s    0.287 s    (essentially noise)
 ```
 
-ugrep does the same search in 2 ms via mmap + memchr-spanning-the-
-whole-file. The 100× gap astrogre still shows vs ugrep is **not**
-something specialization can close — it's process startup +
-per-line getline + CTX init dominating, addressable by folding line
-iteration into the AST too.
+ugrep は同じ search を 2 ms で終える (mmap + memchr-spans-whole-file)。
+astrogre が ugrep に対して残している 100× 差は specialization では
+**埋まらない** — process startup + per-line getline + CTX init が
+支配的で、行イテレーションを AST 側にも畳み込めば縮められる。
 
-### The right pattern: wrap algorithms as nodes
-This is the architectural lesson the sample makes obvious.  ASTro's
-specializer can't *invent* algorithmic optimizations; what it gives
-you is a free composition mechanism — once an optimization is
-expressed as a node, the framework hashes it, code-store-shares it,
-and inlines its `body` operand.  Engineering shape:
+### 正解パターン: アルゴリズムをノードに包む
+これがこのサンプルが明示している設計上の教訓。ASTro の specialiser は
+algorithmic optimization を*発明*できない; 与えてくれるのは「無料の
+合成機構」 — 一度 optimization を node として表現すれば、フレームワー
+クが hash し、code-store で共有し、`body` operand を inline する。
+エンジニアリングの形は:
 
-> *Identify an algorithmic optimization. Wrap it in a node. Have the
-> parser emit it under the right precondition. The bake handles the
-> rest.*
+> *algorithmic optimization を見つけたら、ノードに包む。parser に
+> 適切な前提条件下で emit させる。bake が残りをやってくれる。*
 
-Five prefilter nodes have landed, each fitting the same shape and
-each directly exercising AVX2 / glibc-SIMD where applicable:
+5 つの prefilter ノードがランディング済み、全て同じ形に従い、AVX2
+/ glibc-SIMD を使う:
 
-| node                            | algorithm                                 | parser trigger                         |
-|---------------------------------|-------------------------------------------|----------------------------------------|
-| `node_grep_search_memmem`       | glibc memmem (two-way string match)       | ≥ 4-byte literal prefix                |
-| `node_grep_search_memchr`       | glibc memchr (AVX2 PCMPEQB)               | ≥ 1-byte literal prefix                |
-| `node_grep_search_byteset`      | N × `vpcmpeqb` + OR (≤ 8 bytes)           | small first-byte set (alt of literals) |
-| `node_grep_search_range`        | `vpsubusb / vpminub / vpcmpeqb`           | single contiguous-range first class    |
-| `node_grep_search_class_scan`   | Hyperscan-style Truffle (PSHUFB × 2 + AND) | arbitrary 256-bit first class          |
+| node                            | アルゴリズム                                | parser trigger                         |
+|---------------------------------|---------------------------------------------|----------------------------------------|
+| `node_grep_search_memmem`       | glibc memmem (two-way string match)         | ≥ 4-byte literal prefix                |
+| `node_grep_search_memchr`       | glibc memchr (AVX2 PCMPEQB)                 | ≥ 1-byte literal prefix                |
+| `node_grep_search_byteset`      | N × `vpcmpeqb` + OR (≤ 8 bytes)             | 小さい first-byte set (alt of literals) |
+| `node_grep_search_range`        | `vpsubusb / vpminub / vpcmpeqb`             | 単一連続範囲の first class             |
+| `node_grep_search_class_scan`   | Hyperscan-style Truffle (PSHUFB × 2 + AND)  | 任意 256-bit first class               |
 
-The architectural point is that **the prefilter and the bake
-compose**.  The SD for `node_grep_search_memchr(/static/)` contains
-the memchr call AND the inlined chain that verifies `"static"` at
-each candidate position — both inside the same SD, both visible to
-gcc's optimiser, both addressable via dlsym.  Adding each prefilter
-required no change to the bake / hash / code-store machinery; the
-framework just did the right thing.
+設計上のポイントは **prefilter と bake が合成する** こと。
+`node_grep_search_memchr(/static/)` の SD は memchr 呼び出し AND `"static"`
+を候補位置で verify する inline 化されたチェーンの**両方**を含む —
+両方が同じ SD 内、両方が gcc の optimiser から見える、両方が dlsym
+で到達可能。各 prefilter を足すのに bake / hash / code-store 機構を
+変える必要は無かった — フレームワークが自然と正しく振舞った。
 
-Bench impact, 118 MB corpus, full-sweep count, ms/iter (★ = AOT
-beats grep AND Onigmo):
+ベンチ影響、118 MB コーパス、full-sweep count、ms/iter (★ = AOT が
+grep / Onigmo の両方に勝利):
 
-| pattern | astrogre +AOT | grep | onigmo | prefilter node fired |
+| パターン | astrogre +AOT | grep | onigmo | 発火した prefilter node |
 |---|---:|---:|---:|---|
 | `/(QQQ\|RRR)+\d+/` | **16** ★ | 85 | 726 | byteset over {Q,R} |
 | `/(QQQX\|RRRX\|SSSX)+/` | **24** ★ | 26 | 700 | byteset over {Q,R,S} |
@@ -524,59 +494,67 @@ beats grep AND Onigmo):
 | `/\b(if\|else\|for\|while\|return)\b/` | 90 | **2.3** | 1060 | byteset over {i,e,f,w,r} |
 | `/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/` | 10824 | **2.7** | 9353 | Truffle on `\w` (common) |
 
-**4/8 vs grep, 8/8 vs Onigmo** on this set.  The losing patterns
-all need multi-pattern literal extraction (Hyperscan Teddy / FDR)
-to pull the rare literal `(`, `,`, `)` out of the middle of the
-pattern; that's the next big addition (see `todo.md`).
+**grep に 4/8 勝、Onigmo に 8/8 勝**。負けているパターンはどれも
+multi-pattern literal extraction (Hyperscan Teddy / FDR) を要するもの
+で、パターン中央の rare literal `(`、`,`、`)` を引き抜くアプローチが
+必要。これが次の大きい追加項目 (`todo.md` 参照)。
 
-Nodes still on the runway (same shape, would extend the ladder):
+ladder を拡張する候補 node (まだ手付かず、同じ形):
 
-| node                          | algorithm                  | parser trigger                                    |
-|-------------------------------|----------------------------|---------------------------------------------------|
-| `node_grep_search_teddy`      | multi-pattern AVX2 scan    | pattern has ≥ 1 fixed literal at any position     |
-| `node_grep_search_bmh`        | Boyer-Moore-Horspool       | `-F` mode short fixed pattern                     |
-| `node_grep_lines`             | newline scan + per-line    | grep CLI driver                                   |
-| `node_grep_search_ci2`        | twin memchr for /i         | case-insensitive literal-led pattern              |
+| node                          | アルゴリズム               | parser trigger                                    |
+|-------------------------------|---------------------------|---------------------------------------------------|
+| `node_grep_search_teddy`      | multi-pattern AVX2 scan   | パターンの任意位置に ≥ 1 個の固定 literal あり    |
+| `node_grep_search_bmh`        | Boyer-Moore-Horspool      | `-F` モード短い固定パターン                       |
+| `node_grep_lines`             | newline scan + per-line   | grep CLI driver                                   |
+| `node_grep_search_ci2`        | twin memchr for /i        | case-insensitive literal-led pattern              |
 
-### Where bake (specifically) might still pay
-For grep-shaped workloads the most plausible bake-only wins are
-small and around encoding / flag specialization:
+### bake (固有) の効きそうな残り
+grep 形ワークロードでは bake 単独の勝ちは小さく、エンコーディング /
+flag specialization 周りに集中する:
 
-- **UTF-8 dot leading-byte cascade.** `node_re_dot_utf8`'s 4-way
-  branch on `b < 0x80` / `0xC0` / `0xE0` / `0xF0` could collapse for
-  inputs known to be ASCII-only. But that's a *runtime* property of
-  the input, not a parse-time property of the pattern — bake can't
-  see it without a profile signal.
-- **Case-fold backref.** `node_re_backref` has a `c->case_insensitive`
-  branch. Splitting into ci / non-ci variants at parse time fixes
-  this without bake — the parser knows the flag.
-- **Class bitmap as constants.** Bake commits `bm0..3` as immediates.
-  gcc *might* turn small classes (`[abc]`) into a switch table. We
-  see ~1.11× on `class-word`; small.
+- **UTF-8 dot leading-byte cascade**。`node_re_dot_utf8` の 4-way
+  branch (`b < 0x80` / `0xC0` / `0xE0` / `0xF0`) は ASCII-only と
+  分かっている入力では潰せる。だがそれは*ランタイム*の入力性質で
+  あってパターンの parse-time 性質ではない — profile signal なしには
+  bake が見えない。
+- **Case-fold backref**。`node_re_backref` は `c->case_insensitive`
+  branch を持つ。parse 時に ci / non-ci variant を分ければ bake 不要
+  で消える — parser が flag を知っている。
+- **クラス bitmap を定数として**。bake が `bm0..3` を即値に commit。
+  小さいクラス (`[abc]`) なら gcc が switch table に展開するかも。
+  `class-word` で ~1.11×、小さい。
 
-### TL;DR
-- Algorithmic optimizations live in *new node types*; bake then
-  composes them with the rest of the AST for free.
-- Bake's contribution shows up cleanly when the inner per-iter work
-  is non-trivial. For grep-shaped workloads where prefilter does
-  most of the heavy lifting, bake is in the noise.
-- "ASTro fast" needs both: per-node algorithmic care (memchr,
-  PSHUFB, BMH, …) AND specialization (so the algorithmic shell can
-  compose with the regex verify it wraps).
+### 要約
+- algorithmic optimization は新しい node 種類として住まわせる; bake は
+  そのあと AST の他の部分と無料で合成する。
+- bake の貢献が綺麗に出るのは、内側の per-iter の仕事が trivial でない
+  とき。grep 形ワークロードのように prefilter が重い仕事の大半を
+  食ってしまう領域では、bake は noise レベル。
+- 「ASTro が速い」には両方が要る: per-node のアルゴリズム工夫
+  (memchr、PSHUFB、BMH, …) AND specialization (アルゴリズム外殻が
+  内部で wrap する regex verify と合成できるように)。
 
-## Driver: grep on top
+## ドライバ: 上に乗っている grep
 
-`main.c` is the grep front-end.  It does no regex work itself;
-everything goes through the backend ops.  The interesting parts:
+`main.c` が grep フロントエンド。それ自体は regex の仕事を一切
+しない; 全部バックエンド ops を経由する。要点:
 
-* `getline` per file / stdin, then `backend->search` per line — one
-  pattern compile per pattern, reused across the whole input.
-* `--color` / `-o`: drive `backend->search_from` in a loop to
-  enumerate every match on a line.  Zero-width matches advance the
-  cursor by one byte to avoid spinning.
-* `-w` (whole-word): wraps the pattern in `\b...\b` at the regex
-  level (with `-F` escaping the literal first).
-* `-r`: `opendir` + recursive descent; skips dotfiles by default.
-* `--via-prism`: replaces each `-e PATTERN` with the body of the
-  first `/.../` found inside it (parsed as Ruby source by prism).
-  Useful for piping snippets straight from Ruby code.
+* ファイル / stdin から `getline`、`backend->search` を 1 行ずつ
+  呼ぶ — パターンコンパイルは 1 パターンに 1 度、入力全体で再利用。
+* `--color` / `-o`: `backend->search_from` をループで動かして
+  1 行内の全マッチを enumerate。zero-width マッチはカーソルを 1 byte
+  進めて空回りを避ける。
+* `-w` (whole-word): regex レベルで `\b...\b` で包む (`-F` のときは
+  literal を先に escape)。
+* `-r`: `opendir` + 再帰下降; デフォルトでドットファイルをスキップ。
+* `--via-prism`: 各 `-e PATTERN` を、その引数を Ruby ソースとして
+  prism で parse して見つかる最初の `/.../` の本体で置き換える。
+  Ruby コードのスニペットを直接渡したいときに便利。
+* whole-file mmap 経路 (`process_buffer`): regular file かつパターンに
+  SIMD/libc prefilter があるとき (memchr / memmem / byteset / range
+  / class_scan) 自動で発火する高速化路。ファイルを一度 mmap、
+  `backend->search_from` を whole buffer に対し回し、各マッチの含まれる
+  行を memrchr/memchr で identify。`-v` invert モードはこの path を
+  スキップ (非マッチ行も列挙する必要があるため)。`backend.h` の
+  `has_fast_scan` op で gate される — Onigmo backend は op を NULL
+  のまま ("常に yes" — Onigmo は内部 prefilter あり)。

@@ -1,148 +1,146 @@
-# astrogre — todo
+# astrogre — TODO
 
-Backlog of features and performance work.  Companion to
-[`done.md`](./done.md).  Ordered roughly by impact / pain level.
+未実装機能 / 未完了の性能改善のバックログ。[`done.md`](./done.md) の対。
+おおむねインパクト / 実装コスト順。
 
-## Performance — next up
+## 性能 — 次の一手
 
-### Multi-pattern / Hyperscan-Teddy literal anchor scan
-The single biggest miss vs ugrep on the bench.  Patterns like
-`/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/` carry forced literals (`(`,
-`,`, `)`) somewhere inside; ugrep extracts them and runs a
-multi-pattern Teddy / FDR scan, then verifies.  We only look at
-the *start* of the pattern today.
+### マルチパターン Hyperscan-Teddy literal anchor scan
+ベンチで ugrep に対する一番大きいギャップ。`/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/`
+のようなパターンは内部に必須リテラル (`(`、`,`、`)`) を持つ — ugrep は
+これらを抽出してマルチパターン Teddy / FDR スキャンを走らせ、ヒット
+した位置で本格 verify する。astrogre は今、パターンの「先頭」しか
+見ていない。
 
-Plan:
-- Walk the IR collecting "must-appear" literal byte sequences from
-  any position, with their min-distance from match start.
-- Pick the rarest (or longest) as the anchor.
-- New node: `node_grep_search_teddy(body, anchors, max_back)` —
-  AVX2 multi-pattern scan; for each anchor hit, run the body from
-  positions in `[hit - max_back, hit]`.
+計画:
+- IR を歩いて任意位置の「必ず現れる」リテラル byte 列を、マッチ開始
+  からの最小距離付きで集める。
+- 最も rare(または最長)なものを anchor として選ぶ。
+- 新ノード `node_grep_search_teddy(body, anchors, max_back)` — AVX2
+  マルチパターンスキャン。各 anchor ヒット位置から
+  `[hit - max_back, hit]` の窓で body を試す。
 
-This would close the `(\w+)\s*\(...\)` and `(\d+\.\d+\.\d+\.\d+)`
-gaps with grep.  Implementation cost: ~500-1000 lines (parser
-extraction + AVX2 multi-pattern scanner + back-up logic).
+これで `(\w+)\s*\(...\)` と `(\d+\.\d+\.\d+\.\d+)` の grep 差を
+詰められる。実装コスト: ~500-1000 行 (parser 抽出 + AVX2 マルチ
+パターンスキャナ + バックアップロジック)。
 
-### Line iteration as an AST node
-The CLI's whole-file mmap path (`process_buffer` in main.c) gets
-us most of the way; for prefilter-eligible patterns it's already
-within ripgrep speed.  Putting the line-iteration logic itself in
-the AST as `node_grep_lines(body)` would let the specialiser bake
-the line-bound search loop with the inlined body — useful when
-the pattern is simple enough that even the memrchr/memchr per
-match becomes a meaningful share of wall time.  Lower priority
-now that the C-level mmap loop landed.
+### 行イテレーションを AST node に
+CLI の whole-file mmap 経路 (`process_buffer` in main.c) でほぼ
+カバー済 — prefilter eligible なパターンでは ripgrep 並みの速度。
+行イテレーションロジック自体を AST に取り込んで `node_grep_lines(body)`
+にすれば、specialiser が行境界探索ループと inline 化された body を
+1 つの SD として bake できるが、ベンチでメモリ帯域を支配的にする
+には mmap 経路で十分。優先度低。
 
-### Real PG signal
-`--pg-compile` is wired but currently aliases to `--aot-compile`
-because `HOPT == HORG`.  Real signals to bake:
-- **Hot-alternative reordering**: count branch hits at each
-  `node_re_alt`, emit alternation with the hot one tested first.
-- **Capture elision**: if no backreference reads a group during
-  the profile run, drop its save/restore.
-- **Iteration-count specialisation**: bake unrolled fixed-N
-  variants for repetitions whose observed count is concentrated.
+### 本物の PG signal
+`--pg-compile` は配線済みだが現状は `--aot-compile` の alias
+(`HOPT == HORG` のため)。本物の signal:
+- **Hot-alternative reordering**: 各 `node_re_alt` の枝ヒット数を計測し、
+  hot な枝を最初に試すよう alternation を再構成。
+- **Capture elision**: profile run で参照されないキャプチャグループは
+  save/restore を省略。
+- **反復回数特化**: 観測された反復回数が集中する場合の固定 N 展開
+  variant を bake。
 
-### Twin-memchr scan for /i case-fold
-`/foo/i` — both 'f' / 'F' could start a match.  Either:
-- Two memchrs per input chunk + min-position pick.
-- Or 2-byte byteset entry: pre-compute {'f', 'F'} and use the
-  existing `node_grep_search_byteset`.
-The second is trivial — just extend `ire_collect_first_byte_set`
-to handle `/i` literals by pushing both cases.
+### `/i` ケースフォールド用 twin-memchr scan
+`/foo/i` — 'f' / 'F' どちらも match 開始候補。選択肢:
+- 入力 chunk ごとに 2 回 memchr → min 位置をピック。
+- もしくは 2-byte byteset エントリ: {'f', 'F'} を pre-compute して
+  既存の `node_grep_search_byteset` を流用。
+2番目はほぼ trivial — `ire_collect_first_byte_set` を `/i` リテラル
+で両ケース push するよう拡張するだけ。
 
-### `node_grep_search_bmh` for `-F` mode
-glibc memmem is two-way; classic Boyer-Moore-Horspool with a
-bake-time bad-character table can be faster on short needles.
+### `node_grep_search_bmh` for `-F` モード
+glibc memmem は two-way アルゴリズム。Boyer-Moore-Horspool に bake-time
+bad-character テーブル付きの方が短い針では速いことが多い。
 
-### Inline small char-classes as comparisons
-For `[abc]`, `b == 'a' || b == 'b' || b == 'c'` may fold to a
-switch table or SIMD compare faster than the bitmap test.
-Specializer candidate.
+### 小さい char-class の比較展開
+`[abc]` のような場合、`b == 'a' || b == 'b' || b == 'c'` の方が
+gcc が switch table / SIMD compare に畳むので bitmap test より
+速いケースあり。Specialiser candidate。
 
-### Capture state on the stack instead of CTX
-`c->starts[]` / `c->ends[]` / `c->valid[]` are 32 entries each, ~750
-bytes per CTX.  Most patterns have ≤ 4 groups.
+### キャプチャ状態を CTX 外、スタック上に
+`c->starts[]` / `c->ends[]` / `c->valid[]` 各 32 entry × 8 byte で
+~750 byte/CTX。実用パターンはほぼ ≤ 4 group。
 
-### Code-store mtime invalidation
-When `node.def` changes, every cached `SD_*.c` is stale; pass the
-binary mtime to `astro_cs_init` so a recompile forces a rebuild.
+### Code-store mtime 無効化
+`node.def` を編集すると cached `SD_*.c` は古くなるが、`astro_cs_init`
+の version 引数は今 `0`。バイナリの mtime を渡せば再コンパイルで強制
+リビルドされる。
 
 ### JIT
-Once the Teddy / line-iteration nodes land, plug the standard
-ASTro JIT path: code-store sharing applies because the AST is a
-DAG.
+Teddy / line-iteration nodes が landing したあと、標準の ASTro JIT
+経路にプラグイン: AST が DAG なので code-store sharing が応用できる。
 
-## Language gaps
+## 言語仕様の不足
 
-### Lookbehind
-- `(?<=...)` and `(?<!...)`.  Parser explicitly errors out.
-- Fixed-length form: compute body length at parse, jump back.
-- Variable-length: continuation-passing in reverse.
+### 後読み (lookbehind)
+- `(?<=...)` / `(?<!...)`。Parser は明示的にエラーを返す。
+- 固定長: parse 時に body の長さを計算して逆方向にジャンプ。
+- 可変長: 逆方向の continuation-passing が必要。
 
-### Atomic groups and possessive quantifiers
-- `(?>...)` and `*+`, `++`, `?+`.
-- Possessive *parsed* but degraded to plain greedy.
-- Needs a "commit barrier" inside the rep_frame protocol.
+### Atomic group / possessive 量化子
+- `(?>...)` および `*+`、`++`、`?+`。
+- Possessive は parse のみ — greedy に degrade。
+- rep_frame プロトコルに「commit barrier」が必要。
 
-### `\k<name>` actually following the name table
-Named captures are recognised but stored only by index.  `\k<name>`
-currently matches group 1 unconditionally.
+### `\k<name>` の name-table 参照
+名前付きキャプチャは認識されているが index でしか保存されていない。
+`\k<name>` は今 group 1 を無条件にマッチしてしまう。
 
-### Conditional groups, recursion
-- `(?(cond)yes|no)`.
-- `\g<name>` / `\g<n>` recursive subroutine calls.
-- `(?#...)` comments.
+### 条件付きグループ / 再帰
+- `(?(cond)yes|no)`。
+- `\g<name>` / `\g<n>` (再帰サブルーチン)。
+- `(?#...)` コメント。
 
 ### Unicode
-- `\p{...}` / `\P{...}` property classes.
-- Case folding for `/i` (currently ASCII only).
-- `\X` extended grapheme cluster.
+- `\p{...}` / `\P{...}` プロパティクラス。
+- `/i` の Unicode case fold (今は ASCII のみ)。
+- `\X` extended grapheme cluster。
 
-### Multi-byte chars in classes
-`[äé]` currently builds an ASCII bitmap and writes high bytes
-byte-by-byte, which doesn't match a single codepoint.  Want a
-hybrid class — ASCII bitmap + sorted codepoint range list.
+### クラス内マルチバイト文字
+`[äé]` は今、ASCII bitmap に高位バイトを byte-by-byte で書き込んで
+いるだけで、コードポイント単位のマッチにはならない。ハイブリッド
+クラス (ASCII bitmap + ソート済みコードポイント範囲リスト) が必要。
 
-### Encodings
-EUC-JP (`/e`), Windows-31J (`/s`).  Gated on demand.
+### エンコーディング
+EUC-JP (`/e`)、Windows-31J (`/s`)。需要次第で。
 
-### Anchors / boundaries
-- `\G` "anchor at last match end".
-- `\R` line break.
+### アンカー / 境界
+- `\G` (前回マッチ末尾アンカー)。
+- `\R` (改行種)。
 
 ### `Regexp.new(str)` / `Regexp.compile(str)`
-The `--via-prism` path only catches literal `/.../` regexes from
-prism source.  A separate runtime-string + flags entry would let
-astrogre be used as a regex *library* from a host program.
+`--via-prism` 経路は prism がリテラル `/.../` として認識する正規表現
+しか拾わない。ランタイム文字列 + フラグ引数を取る別経路があれば、
+astrogre をホストプログラムから regex *ライブラリ* として使える。
 
-## API / driver
+## API / ドライバ
 
-### grep CLI gaps vs GNU grep
-- `-A` / `-B` / `-C` context lines.
-- `-Z` / `-z` NUL-delimited output / input.
-- `--include` / `--exclude` glob filters during `-r`.
-- `-q` quiet (exit-code-only).
-- Binary-file detection.
-- `--mmap` for large files (currently `getline`-based).
+### grep CLI の GNU grep 比不足
+- `-A` / `-B` / `-C` 文脈行。
+- `-Z` / `-z` NUL 区切り出力 / 入力。
+- `--include` / `--exclude` glob (再帰時)。
+- `-q` quiet (exit code のみ)。
+- バイナリファイル検出。
+- `--mmap` ラージファイル用 (今は `getline` ベース; 通常ファイルは
+  すでに mmap を使っているが、CLI flag による明示は無し)。
 
-### Engine API
-- `MatchData`-like result struct exposing every group with line /
-  column info.
-- `gsub`-equivalent: walk input, repeatedly match, splice
-  replacements.
-- `scan`-equivalent: enumerate non-overlapping matches via callback.
+### エンジン API
+- 全グループを行・列番号付きで露出する `MatchData` 相当の構造体。
+- `gsub` 相当: 入力を歩いて、繰り返しマッチ、置換を splice。
+- `scan` 相当: 非重複マッチを callback で列挙。
 
-### Diagnostics
-- Parse-error line / column from the prism source span.
-- Trace mode (per dispatch + position).
-- Feed astrogre through `re_test` corpora (PCRE / Onigmo / re2-tests).
+### 診断
+- prism のソース span 由来の line / column 付き parse エラー報告。
+- Trace モード (dispatch + 位置を毎回出力)。
+- PCRE / Onigmo / re2-tests コーパスを通して挙動ギャップを系統的に
+  洗い出す。
 
-## Tests
+## テスト
 
-- More UTF-8 coverage when multi-byte char-class lands.
-- Cross-check the grep CLI output against GNU grep on a battery
-  of patterns + corpora to catch drift in match positions.
-- Pathological backtracking (`/(a+)+b/`) — currently exposes
-  exponential blowup; documented limitation.
+- マルチバイト char-class 実装後の UTF-8 カバレッジ拡張。
+- マッチ位置の drift をキャッチするための grep CLI 出力 vs GNU grep
+  クロスチェック (パターン × コーパスを多数)。
+- 病的バックトラッキング (`/(a+)+b/`) — 今は指数爆発する; 既知の
+  制約。

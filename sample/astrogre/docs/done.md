@@ -1,202 +1,196 @@
-# astrogre — implemented
+# astrogre — 実装済み機能
 
-What's in v1, by category.  Companion to [`todo.md`](./todo.md).
+v1 で入っているもの、カテゴリ別。[`todo.md`](./todo.md) の対。
 
-## Engine — language surface
+## エンジン — 言語仕様
 
-### Atoms
-- Literal byte sequence.  Adjacent literals coalesce at parse time.
-- `.` (dot).  Four variants: ASCII, ASCII-`/m`, UTF-8, UTF-8-`/m`.
-- Character class `[...]`, negated `[^...]`.
-- ASCII ranges in classes (`[a-z]`).
-- Escaped char-class shortcuts inside `[...]`: `\d \D \w \W \s \S`.
-- Numeric escapes `\xHH`, `\0`, `\n \t \r \f \v \a \e`.
-- Anchors: `\A` `\z` `\Z` `^` `$` `\b` `\B`.
-- Plain-literal escapes `\\ \/ \. \^ \$ \( \) \[ \] \{ \} \| \* \+ \? \-`.
+### Atom
+- リテラル byte 列。隣接リテラルは parse 時に coalesce。
+- `.` (dot)。4 variant: ASCII、ASCII-`/m`、UTF-8、UTF-8-`/m`。
+- 文字クラス `[...]`、否定 `[^...]`。
+- クラス内 ASCII 範囲 (`[a-z]`)。
+- クラス内 escape ショートカット: `\d \D \w \W \s \S`。
+- 数値 escape: `\xHH`、`\0`、`\n \t \r \f \v \a \e`。
+- アンカー: `\A` `\z` `\Z` `^` `$` `\b` `\B`。
+- リテラル escape: `\\ \/ \. \^ \$ \( \) \[ \] \{ \} \| \* \+ \? \-`。
 
-### Quantifiers
-- `*` `+` `?`, greedy and lazy (`*?` `+?` `??`).
-- `{n}` / `{n,}` / `{n,m}`, greedy and lazy.
-- Possessive (`*+` `++` `?+`) parsed; falls through to greedy.
+### 量化子
+- `*` `+` `?` の greedy / lazy (`*?` `+?` `??`)。
+- `{n}` / `{n,}` / `{n,m}` の greedy / lazy。
+- Possessive (`*+` `++` `?+`) は parse のみ — greedy に degrade。
 
-### Groups
-- Capturing groups `(...)`.
-- Non-capturing `(?:...)`.
-- Named capture `(?<name>...)` — captured by left-to-right index.
-- Inline-flag groups `(?ixm-ixm:...)` and `(?ixm)`.
-- Positive lookahead `(?=...)` and negative `(?!...)`.
+### グループ
+- キャプチャ `(...)`。
+- 非キャプチャ `(?:...)`。
+- 名前付きキャプチャ `(?<name>...)` — 左右順 index で。
+- インラインフラグ `(?ixm-ixm:...)` / `(?ixm)`。
+- 先読み `(?=...)` / 否定先読み `(?!...)`。
 
-### Backreferences
-- `\1`–`\9`.
+### 後方参照
+- `\1`–`\9`。
 
-### Flags / encoding
-- `/i` (ASCII case-fold).  `/m` (dot matches newline).  `/x` (extended).
-  `/n` (ASCII byte mode).  `/u` (UTF-8 default).
+### フラグ / エンコーディング
+- `/i` (ASCII case-fold)、`/m` (dot は newline にマッチ)、`/x` (extended)、
+  `/n` (ASCII byte mode)、`/u` (UTF-8、デフォルト)。
 
-### Front-end
-- prism integration (`astrogre_parse_via_prism`): walks any Ruby
-  source's AST, picks the first `PM_REGULAR_EXPRESSION_NODE`.
-- `astrogre_parse_literal`: `/pat/flags` syntax for tests / CLI.
-- `astrogre_parse_fixed`: `-F` mode, no regex parser.
+### フロントエンド
+- prism 統合 (`astrogre_parse_via_prism`): 任意の Ruby ソース AST を
+  歩いて、最初の `PM_REGULAR_EXPRESSION_NODE` を拾う。
+- `astrogre_parse_literal`: テスト / CLI 用 `/pat/flags` 構文。
+- `astrogre_parse_fixed`: `-F` モード、regex parser バイパス。
 
-## Engine — runtime
+## エンジン — ランタイム
 
-- AST in continuation-passing form: every match-node carries a
-  `next` operand; chain ends in `node_re_succ`.
-- Repetition via shared `node_re_rep_cont` sentinel + per-call
-  `rep_frame` on `c->rep_top` (no AST cycles).
-- Capture group 0 wrapped around the whole AST so the matcher records
-  the overall match span the same way as user-numbered groups.
-- `astrogre_search` and `astrogre_search_from` for caller-resumable
-  enumeration of hits.
+- AST は continuation-passing 形式 — 各 match-node が `next` operand を持ち、
+  チェーンは `node_re_succ` で終端。
+- 繰り返しは shared `node_re_rep_cont` sentinel + per-call `rep_frame`
+  on `c->rep_top`(AST に cycle なし)。
+- キャプチャグループ 0 は parser が AST 全体を包むので、全体マッチ範囲は
+  ユーザ番号付きグループと同じ機構で記録される。
+- `astrogre_search` / `astrogre_search_from`: caller が中断・再開できる
+  ヒット enumeration。
 
-## Engine — performance work that landed
+## エンジン — 性能改善 (ランディング済み)
 
-- Adjacent-literal coalescing at the IR level.
-- Pre-folding pattern literals to lowercase under `/i`.
-- Anchored-`\A` short-circuit in the search loop.
-- Single global rep_cont sentinel.
-- 4× `uint64_t` inline class bitmap.
-- `restrict` on `CTX *` and `NODE *` parameters across `node.def`.
+- IR レベルで隣接リテラルを coalesce。
+- `/i` 下のパターンリテラルは parse 時に lowercase に pre-fold。
+- `\A` 始まりパターンの search loop short-circuit (1 位置だけ試す)。
+- 単一グローバル `rep_cont` sentinel。
+- クラスビットマップは `uint64_t × 4` インライン。
+- `node.def` 全体で `CTX *` / `NODE *` に `restrict`。
 
-## Drivers / tooling
+## ドライバ / ツーリング
 
-- **grep CLI**: `./astrogre PATTERN [FILE...]` with the standard
-  options `-i -n -c -v -w -F -l -L -H -h -o -r -e --color=auto`.
-  Recurses into directories with `-r`, skips dotfiles.  Multi-pattern
-  support via repeated `-e PATTERN`.  Filename-only output (`-l`,
-  `-L`).  `-o` prints just the matched span(s).
-- **`--color`**: red on match, green on line numbers, magenta on
-  filenames, matching GNU grep.  `--color=auto` honours `isatty`.
-- **`--via-prism`**: parse the pattern argument as Ruby source via
-  prism, take the first `/.../`'s body as the search pattern.
-- **`--backend=astrogre|onigmo`**: switchable matcher backend at
-  runtime.  Onigmo is built locally with `make WITH_ONIGMO=1` (a
-  hand-rolled `build_local.mk` skips the autoconf / libtool dance).
-- **`--self-test`** (44 cases) and **`--bench`** (in-engine
-  microbench) preserved as flags.
-- **`bench/grep_bench.sh`**: cross-tool comparison harness; runs
-  grep / ripgrep / astrogre / astrogre+onigmo on the same corpus
-  and patterns and reports best-of-N seconds per tool.
+- **grep CLI**: `./astrogre PATTERN [FILE...]` — 標準オプション
+  `-i -n -c -v -w -F -l -L -H -h -o -r -e --color=auto`。
+  `-r` でディレクトリ再帰、ドットファイルはスキップ。複数パターンは
+  `-e PATTERN` 反復。`-l` / `-L` でファイル名のみ出力、`-o` でマッチ
+  span のみ出力。
+- **`--color`**: マッチを赤、行番号を緑、ファイル名を紫(GNU grep 互換)。
+  `--color=auto` は `isatty` を見る。
+- **`--via-prism`**: パターン引数を Ruby ソースとして prism で parse、
+  最初の `/.../` の本体を検索パターンとして使う。
+- **`--backend=astrogre|onigmo`**: 実行時バックエンド切り替え。Onigmo
+  は `make WITH_ONIGMO=1` で local build (autoconf / libtool 不要の
+  自前 `build_local.mk`)。
+- **`--self-test`** (44 ケース)、**`--bench`** (in-engine microbench) を
+  flag として保持。
+- **`bench/grep_bench.sh`** / **`bench/aot_bench.sh`**: 他ツール比較
+  ハーネス。grep / ripgrep / astrogre / astrogre+onigmo を同じコーパス
+  + パターンで実行、tool ごとの best-of-N を表示。
 
-## Backend abstraction
+## バックエンド抽象
 
-- `backend.h` declares an ops table (`compile / search / search_from
-  / free / aot_compile`) that the grep CLI talks to.
-- `backend_astrogre.c` (~80 lines) wraps the in-house engine.
-- `backend_onigmo.c` (~110 lines) wraps Onigmo's `onig_new` /
-  `onig_search` / `onig_region`.  Both implement `-F` (Onigmo by
-  escaping metacharacters at compile time).
+- `backend.h`: ops 表 (`compile / search / search_from / free /
+  aot_compile / has_fast_scan`) を grep CLI に提供。
+- `backend_astrogre.c` (~80 行): in-house エンジンを wrap。
+- `backend_onigmo.c` (~110 行): Onigmo の `onig_new` / `onig_search`
+  / `onig_region` を wrap。両者とも `-F` をサポート (Onigmo 側は
+  compile 時にメタ文字を escape)。
 
 ## AOT / cached / PG
 
-- **`--aot-compile` (`-C`)**: compile every pattern to
-  `code_store/c/SD_<hash>.c`, build `code_store/all.so`, swap each
-  node's dispatcher, then run.  Subsequent runs (default mode)
-  pick up the cached `all.so` automatically via `astro_cs_load` in
-  `OPTIMIZE`.
-- **default (cached)**: at pattern allocation time, `OPTIMIZE` calls
-  `astro_cs_load` for every node.  Hits use the specialized
-  dispatcher; misses fall back to the interpreter.
-- **`--pg-compile` (`-P`)**: accepted for CLI parity with abruby;
-  currently routes through the same path as `--aot-compile`.  No PG
-  profile signal exists yet (HOPT == HORG).
-- **`--plain` (`--no-cs`)**: bypass the code store entirely.
+- **`--aot-compile` (`-C`)**: 各パターンを `code_store/c/SD_<hash>.c` に
+  コンパイル、`code_store/all.so` をビルド、各 node の dispatcher を
+  swap、その上で実行。次回以降はデフォルトモードで `OPTIMIZE` 内の
+  `astro_cs_load` が自動的に cached `all.so` を拾う。
+- **default (cached)**: パターン allocation 時に `OPTIMIZE` が各 node に
+  対し `astro_cs_load`。Hit なら specialized dispatcher、miss なら
+  interp フォールバック。
+- **`--pg-compile` (`-P`)**: abruby との CLI 互換のため受け付け、現状は
+  `--aot-compile` と同じ経路を通る (PG profile signal 未実装、
+  HOPT == HORG)。
+- **`--plain` (`--no-cs`)**: code store を完全 bypass。
 
-Inner SDs are made externally visible via the
-`astrogre_export_sd_wrappers` post-process (borrowed from luastro):
-each generated SD gets renamed to `SD_<hash>_INL` plus a thin
-externally-visible wrapper, so `dlsym` finds every node, not just
-the root.  A side array tracks every allocated NODE so the post-build
-re-resolve patches the whole chain.
+内側 SD は `astrogre_export_sd_wrappers` post-process (luastro 由来) で
+外部可視化される — 各 SD を `SD_<hash>_INL` にリネームし、薄い
+externally-visible wrapper を append、`dlsym` がルートだけでなく全
+node を見つけられるように。サイドアレイで全 allocated NODE を track
+してビルド後に `astro_cs_load` を全 node に再適用、チェーン全体に
+パッチ。
 
-## Search loop folded into the AST
+## search ループを AST に折り込み
 
-The for-each-start-position search loop is itself a node
-(`node_grep_search`) — its EVAL is the loop, and the specializer
-treats `body` as a regular NODE * operand, so the SD bakes the
-loop AND the inlined regex chain into a single C function.
+For-each-start-position search ループそれ自体が node (`node_grep_search`)
+になっている — EVAL がループ、specialiser は `body` を通常の NODE *
+operand として扱うので、SD はループ + inline 化された regex chain を
+1 個の C 関数として bake する。
 
-For `/static/` against a 16 KiB string, the result is ~30 instructions:
-loop, `cmpl + cmpw` for the literal, `vmovdqu` for the per-iter
-capture-state reset, no indirect calls, no DISPATCH chain.  In-engine
-microbench: **22.75 s → 3.15 s on `literal-tail` (7.2× speedup)**.
+`/static/` を 16 KiB 文字列に対して回した SD は約 30 命令: ループ、
+リテラル比較の `cmpl + cmpw`、capture 状態リセットの `vmovdqu`、
+indirect call 一切なし、DISPATCH chain なし。In-engine microbench:
+**22.75 s → 3.15 s on `literal-tail` (7.2× 高速化)**。
 
-For the grep CLI to *see* the fusion gain, the per-line `getline`
-+ `CTX_struct` zero-init overhead has to go.  The whole-file
-mmap path (below) is what unlocks that.
+grep CLI で fusion の効果を見るには、per-line `getline` + `CTX_struct`
+ゼロ初期化のオーバヘッドを取り除く必要がある。これを解いたのが下の
+whole-file mmap 経路。
 
-## Whole-file mmap path in the grep CLI
+## grep CLI の whole-file mmap 経路
 
-`process_buffer` (main.c) replaces per-line `getline` for regular
-files when the pattern has a SIMD/libc prefilter (memchr / memmem
-/ byteset / range / class_scan).  The file is mmap'd once, the
-backend's `search_from` runs in a loop over the whole buffer, and
-each match's containing line is identified via memrchr/memchr.
-For plain backtracking patterns (no prefilter), the per-line
-streaming loop wins because each line is short.
+`process_buffer` (main.c) は、パターンが SIMD/libc prefilter を持つ
+場合 (memchr / memmem / byteset / range / class_scan) 通常ファイルに
+対して per-line `getline` を置き換える。ファイルを一度 mmap、バック
+エンドの `search_from` をバッファ全体に対しループ、各マッチの所属行
+を memrchr/memchr で identify。prefilter 無しのプレーン backtracking
+パターンでは per-line streaming のほうが速い (1 行が短いため)。
 
-Bench impact, line-by-line grep CLI on the 118 MB corpus
-(post-mmap, post-prefilter):
+ベンチ影響: line-by-line grep CLI、118 MB コーパス (mmap + prefilter 後):
 
-| pattern             | prior interp | mmap interp | grep | ripgrep |
-|---------------------|-------------:|------------:|-----:|--------:|
-| `/static/` literal  | 0.285 s      | **0.077** s | 0.002 | 0.034 |
-| literal-rare        | 0.266        | **0.026**   | 0.035 | 0.020 |
-| `/^static/`         | 0.273        | **0.076**   | 0.002 | 0.036 |
-| `-c /static/`       | 0.279        | **0.048**   | 0.002 | 0.027 |
+| パターン | 旧 interp | mmap interp | grep | ripgrep |
+|---|---:|---:|---:|---:|
+| `/static/` literal | 285 ms | **77** ms | 2 | 34 |
+| literal-rare | 266 | **26** | 35 | 20 |
+| `/^static/` | 273 | **76** | 2 | 36 |
+| `-c /static/` | 279 | **48** | 2 | 27 |
 
-3-10× over the per-line baseline.  The `literal-rare` row is the
-headline: 26 ms vs ripgrep's 20 ms, even faster than ugrep's
-35 ms — the SIMD memmem in our `node_grep_search_memmem` is at
-ripgrep speed, the mmap path lets it actually fire.
+per-line baseline 比 3-10×。`literal-rare` 行が見出し: 26 ms 対
+ripgrep 20 ms、ugrep 35 ms より速い — `node_grep_search_memmem` の
+SIMD memmem は ripgrep 並み、mmap path がそれを実際に発火させて
+いる。
 
-Gating: `backend.h` exposes a `has_fast_scan` op; the CLI
-queries it before taking the mmap path.  Onigmo backend leaves
-the op NULL ("always yes" — Onigmo has its own internal
-prefilter).  -v invert mode skips the mmap path because it needs
-to enumerate every line, including non-matching.
+ゲート: `backend.h` に `has_fast_scan` op を露出、CLI が問い合わせて
+mmap path を取るかどうか決定。Onigmo backend は op を NULL のまま
+("always yes" — Onigmo は内部 prefilter あり)。`-v` invert モードは
+mmap path をスキップ (非マッチ行も列挙する必要があるため)。
 
-## Prefilter ladder — algorithms as nodes
+## Prefilter ladder — アルゴリズムを node として
 
-Five algorithmic prefilter nodes, all sharing `node_grep_search`'s
-shape: the EVAL is the SIMD / libc scan, the body operand is the
-regex chain that verifies at each candidate.  The specialiser
-inlines the body and bakes the algorithmic constants (first byte,
-needle bytes, range bounds, nibble tables, packed byte-set) as
-immediates inside the SD.
+5 つのアルゴリズム prefilter node、全て `node_grep_search` の形を
+共有: EVAL が SIMD / libc スキャン、body operand が候補位置で
+verify する regex chain。Specialiser が body を inline、algorithmic
+constants (first byte、needle bytes、範囲境界、nibble テーブル、
+packed byte-set) を SD 内の即値として bake。
 
-The parser's analysis ladder picks the most specific that fits:
+Parser は最も特化したものを選ぶ:
 
-| node                            | when emitted                              | inner algorithm |
-|---------------------------------|-------------------------------------------|-----------------|
-| `node_grep_search_memmem`       | ≥ 4-byte literal prefix, no `/i`          | glibc memmem (two-way) |
-| `node_grep_search_memchr`       | ≥ 1-byte literal prefix, no `/i`          | glibc memchr (AVX2) |
-| `node_grep_search_byteset`      | ≤ 8 distinct first bytes (alt of literals) | N × `vpcmpeqb` + OR |
-| `node_grep_search_range`        | single contiguous-range first class       | `vpsubusb / vpminub / vpcmpeqb` |
-| `node_grep_search_class_scan`   | arbitrary 256-bit first class (\w, etc.) | Truffle (PSHUFB nibble lookup) |
-| `node_grep_search`              | none of the above                         | plain start-position loop |
+| node                            | 発火条件                                  | 内部アルゴリズム |
+|---------------------------------|-------------------------------------------|---------------|
+| `node_grep_search_memmem`       | ≥ 4-byte リテラル prefix、`/i` なし       | glibc memmem (two-way) |
+| `node_grep_search_memchr`       | ≥ 1-byte リテラル prefix、`/i` なし       | glibc memchr (AVX2) |
+| `node_grep_search_byteset`      | ≤ 8 個の固有 first byte (alt of literal)  | N × `vpcmpeqb` + OR |
+| `node_grep_search_range`        | 単一連続範囲の first class                | `vpsubusb / vpminub / vpcmpeqb` |
+| `node_grep_search_class_scan`   | 任意 256-bit first class (\w 等)          | Truffle (PSHUFB nibble lookup) |
+| `node_grep_search`              | 上記いずれにも該当せず                    | プレーン start-position ループ |
 
-Detection helpers (in parse.c):
+検出ヘルパ (parse.c 内):
 
-- `ire_collect_prefix` — longest fixed literal prefix
-- `ire_first_class` — first class node walking past zero-width
-- `bm_is_single_range` — recognises `[a-z]`-style classes
-- `ire_collect_first_byte_set` — collects distinct first bytes from
-  alt branches; bails if > 8
-- `build_truffle_tables` — Hyperscan-style nibble encoding
-  for arbitrary 256-bit classes
+- `ire_collect_prefix` — 最長固定リテラル prefix
+- `ire_first_class` — zero-width を walk-through した最初の class node
+- `bm_is_single_range` — `[a-z]` 風のクラス検出
+- `ire_collect_first_byte_set` — alt 各枝の固有先頭 byte を収集
+  (>8 で諦め)
+- `build_truffle_tables` — 任意 256-bit クラス用 Hyperscan-style
+  nibble エンコード
 
-`/i` disables the prefilter for now (would need twin memchr for
-case-fold).  All scans flagged behind `__AVX2__` with scalar
-fallback.
+`/i` 下では prefilter 無効化 (case-fold には twin memchr が必要)。
+全 SIMD scan は `__AVX2__` ガード、スカラフォールバックあり。
 
-## Cross-engine bench
+## 他エンジン比較ベンチ
 
-Latest results, 118 MB corpus, full-sweep count (`-c` semantics
-mirrored in `--bench-file`), best-of-3 ms/iter:
+最新結果、118 MB コーパス、full-sweep count (grep `-c` セマンティクス
+を `--bench-file` で再現)、best-of-3 ms/iter:
 
-| pattern | astrogre interp | astrogre +AOT | astrogre +onigmo | grep | ripgrep |
+| パターン | astrogre interp | astrogre +AOT | astrogre +onigmo | grep | ripgrep |
 |---|---:|---:|---:|---:|---:|
 | `/(QQQ\|RRR)+\d+/` | 19 | **12** ★ | 488 | 74 | 23 |
 | `/(QQQX\|RRRX\|SSSX)+/` | 40 | **23** ★ | 535 | 27 | 25 |
@@ -207,14 +201,13 @@ mirrored in `--bench-file`), best-of-3 ms/iter:
 | `/(\d+\.\d+\.\d+\.\d+)/` | 566 | 397 | 554 | **4** | 48 |
 | `/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/` | 13061 | 10096 | 14532 | **5** | 351 |
 
-★ = astrogre + AOT beats grep AND Onigmo.  Bold = winner per row.
+★ = astrogre + AOT が grep / Onigmo の両方に勝利。太字 = 行内ベスト。
 
-**4/8 vs grep (ugrep 7.5 + PCRE2-JIT), 8/8 vs Onigmo** on this set.
-The losing patterns all need multi-pattern literal extraction
-(Hyperscan Teddy / FDR), which would be the next big addition.
+**この set で grep に 4/8 勝、Onigmo に 8/8 勝** (ugrep 7.5 + PCRE2-JIT
+比較)。負けているパターンは全て multi-pattern literal extraction
+(Hyperscan Teddy / FDR) を要するもので、これが次の大きな追加項目。
 
-See [`perf.md`](./perf.md) for the bench analysis and
-[`runtime.md`](./runtime.md) for the architectural lesson —
-ASTro's bake composes with each prefilter node uniformly,
-turning each algorithm into one specialised C function with
-constant operands inlined.
+ベンチ詳細は [`perf.md`](./perf.md)、ASTro 設計上の教訓は
+[`runtime.md`](./runtime.md) を参照 — bake が各 prefilter node と
+均一に合成される様子と、各アルゴリズムが定数オペランドつき特化
+C 関数 1 個になる過程が解説されている。

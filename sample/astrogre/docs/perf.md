@@ -1,26 +1,26 @@
-# astrogre performance notes
+# astrogre 性能ノート
 
-This is the v1 sample.  ASTro's specialization / code-store machinery
-is wired up via the abruby-style modes
-(`--aot-compile` / cached / `--pg-compile` / `--plain`); the
-search loop itself is now an AST node (`node_grep_search`) so
-specialization fuses the for-each-start-position loop and the
-inlined regex chain into one SD function.  This doc records what
-*did* and *did not* help on the way to the current numbers.
+これは v1 サンプル。ASTro の specialization / code-store 機構が
+abruby 風モード (`--aot-compile` / cached / `--pg-compile` /
+`--plain`) で配線されており、search ループ自体も AST node
+(`node_grep_search`) なので specialization は for-each-start-position
+ループと inline 化された regex chain を 1 つの SD 関数に fuse する。
+このドキュメントは、現在の数字に至るまでに**効いたもの・効かなかった
+もの**を記録する。
 
-## Cross-engine scoreboard
+## 他エンジン scoreboard
 
-Two benches live side-by-side: the grep CLI bench (line-by-line,
-mirrors how grep is actually used) and the engine-level whole-
-file bench (loads the corpus once, calls `astrogre_search` in a
-loop — isolates the engine cost).
+ベンチは 2 種類並走:
+- **Bench A**: grep CLI ベンチ (line-by-line、grep の実利用に近い形)
+- **Bench B**: engine-level whole-file ベンチ (コーパス一括ロード、
+  `astrogre_search` をループ呼び出し — エンジン純コストを isolate)
 
-### Bench A — grep CLI (line-by-line, 118 MB corpus, ms, best-of-5)
+### Bench A — grep CLI (line-by-line, 118 MB コーパス, ms, best-of-5)
 
-`bench/grep_bench.sh`.  All four engines invoked via their own
-grep CLI / `-c` modes.
+`bench/grep_bench.sh`。全 4 エンジンをそれぞれの grep CLI / `-c` モード
+で起動。
 
-| pattern | astrogre interp | astrogre +AOT | astrogre +onigmo | grep | ripgrep |
+| パターン | astrogre interp | astrogre +AOT | astrogre +onigmo | grep | ripgrep |
 |---|---:|---:|---:|---:|---:|
 | `/static/` literal | 77 | 78 | 98 | **2** | 34 |
 | `/specialized_dispatcher/` rare | 26 | 26 | 38 | 35 | **20** |
@@ -31,26 +31,25 @@ grep CLI / `-c` modes.
 | `/[a-z_]+_[a-z]+\(/` ident-call | 3277 | 3283 | 3177 | **2** | 185 |
 | `-c /static/` count | 48 | 50 | 72 | **2** | 27 |
 
-The whole-file mmap path (used when the pattern has a SIMD/libc
-prefilter) drops literal-led astrogre by 3-10× over the previous
-per-line getline loop.  **astrogre is within ripgrep speed on
-rare-literal patterns** (`literal-rare` 26 ms vs ripgrep 20 ms;
-even slightly faster than ugrep at 35 ms there).  For common
-literals (`/static/`) ugrep stays an order of magnitude ahead via
-memory-bandwidth memchr.  The `/i`, `class-rep`, `ident-call`
-rows fall back to per-line streaming because the engine has no
-fast scan for the leading `\w` / `[0-9]` / `/i` shape — see
-Bench B for what AOT does once the per-line overhead is gone.
+whole-file mmap 経路 (パターンに SIMD/libc prefilter があるとき発火)
+が literal-led astrogre を従来の per-line getline ループより 3-10×
+落とす。**rare-literal パターンでは astrogre が ripgrep 並み**
+(`literal-rare` 26 ms 対 ripgrep 20 ms; ugrep の 35 ms より速い)。
+common literal (`/static/`) では ugrep が memory-bandwidth-bound
+memchr で 1 桁先。`/i`、`class-rep`、`ident-call` の行は per-line
+streaming にフォールバック (エンジンが leading `\w` / `[0-9]` /
+`/i` 形に対する fast scan を持たないため) — per-line overhead が
+消えた状態の AOT の挙動は Bench B を参照。
 
 ### Bench B — engine-level whole-file scan (ms/iter, best-of-3)
 
-`bench/aot_bench.sh`.  astrogre uses `--bench-file` (whole buffer
-in memory, full-sweep count); grep / ripgrep / onigmo via `-c`.
-Patterns chosen for the AOT-favourable shape — chain long enough
-that bake's dispatch elimination matters.  ★ = astrogre + AOT
-beats grep AND Onigmo.  Bold = winner per row.
+`bench/aot_bench.sh`。astrogre は `--bench-file` (バッファをまるごと
+メモリに置き、全マッチをカウント); grep / ripgrep / onigmo は `-c`。
+パターンは AOT が効きやすい形 (chain が長く、bake の dispatch 削除が
+意味を持つ) を選択。★ = astrogre + AOT が grep / Onigmo の両方に勝利。
+太字 = 行内ベスト。
 
-| pattern | astrogre interp | astrogre +AOT | astrogre +onigmo | grep | ripgrep |
+| パターン | astrogre interp | astrogre +AOT | astrogre +onigmo | grep | ripgrep |
 |---|---:|---:|---:|---:|---:|
 | `/(QQQ\|RRR)+\d+/` | 19 | **12** ★ | 488 | 74 | 23 |
 | `/(QQQX\|RRRX\|SSSX)+/` | 40 | **23** ★ | 535 | 27 | 25 |
@@ -61,114 +60,107 @@ beats grep AND Onigmo.  Bold = winner per row.
 | `/(\d+\.\d+\.\d+\.\d+)/` | 566 | 397 | 554 | **4** | 48 |
 | `/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/` | 13061 | 10096 | 14532 | **5** | 351 |
 
-**4/8 vs grep, 8/8 vs Onigmo on this set**, with the wins coming
-from the prefilter ladder — memchr / memmem / byteset / range /
-Truffle each handle a different shape of "first thing the pattern
-must consume", and the specialiser then composes them with the
-inlined regex chain.
+**この set で grep に 4/8 勝、Onigmo に 8/8 勝**。勝因は prefilter
+ladder — memchr / memmem / byteset / range / Truffle がそれぞれ「パ
+ターンが最初に消費するもの」の異なる形を扱い、specialiser が inline
+化された regex chain と合成する。
 
-The losing patterns all share one property: ugrep extracts multiple
-literal anchors from the pattern and runs a Hyperscan-style
-multi-pattern scan (Teddy / Aho-Corasick) over them.  We don't have
-that kind of literal anchor extraction yet — `(\w+)\s*\(\s*(\w+)\)`
-contains forced literals `(`, `,`, `)` but our prefix analysis only
-looks at the start.  Adding "any-position literal anchor" extraction
-is the next-biggest lever; documented under todo.md.
+負けているパターンは共通の性質を持つ: ugrep がパターン内の複数の
+literal を anchor として抽出し、Hyperscan-style multi-pattern スキャン
+(Teddy / Aho-Corasick) を回す。astrogre はそういう「任意位置」の
+literal anchor 抽出を未実装 — `(\w+)\s*\(\s*(\w+)\)` には強制
+literal `(`、`,`、`)` があるが、prefix 解析が先頭しか見ない。
+「任意位置 literal anchor」抽出が次の最大 lever (todo.md 参照)。
 
-## Where AOT specialization actually wins
+## AOT specialization が効くところ
 
-The literal-led patterns from the original microbench got eaten by
-the memchr / memmem prefilter (next section) — those numbers are
-no longer interesting because the prefilter handles them outside
-the bake's reach.  The AOT win is now visible on the *opposite*
-shape: long node chain, no fixed-byte first prefix (so prefilter
-doesn't fire), enough per-position work that dispatch overhead is
-a meaningful share.
+オリジナルの microbench にあった literal-led パターンは memchr /
+memmem prefilter (次節) に食われた — bake が触る前に prefilter が
+処理するので、もう面白くない。AOT の効きは**反対の形**で見える:
+chain が長い、固定 first byte がない (prefilter 不発)、各位置の
+作業量がそこそこあって dispatch overhead の比率が大きい。
 
-`bench/aot_bench.sh` runs the in-engine `--bench-file` path (whole
-118 MB corpus loaded once, full-sweep count of all matches per
-iter) and compares against grep / ripgrep / Onigmo via their
-respective `-c` modes.  All times in milliseconds, best-of-3:
+`bench/aot_bench.sh` は in-engine `--bench-file` 経路 (118 MB バッファ
+を一度ロード、各 iter で全マッチ count) を使い、grep / ripgrep /
+Onigmo を `-c` で比較。全て ms、best-of-3:
 
-```
-                                              interp     aot      aot/I  +onigmo  aot/O   grep  ripgrep
-/(QQQ|RRR)+\d+/                                2341    1053     2.22×    696    1.51×    79      24
-/(QQQX|RRRX|SSSX)+/                            3052     998     3.06×    720    1.39×    28      27
-/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/             854     377     2.26×    777    0.49× ★ 597     215
-/[a-z][0-9][a-z][0-9][a-z]/                     909     404     2.25×    808    0.50× ★   5     225
-/(\d+\.\d+\.\d+\.\d+)/                         1557    1101     1.42×    755    1.46×     5      50
-/[A-Z]{50,}/                                   1285    1182     1.09×   1111    1.06×  1535     187
-/\b(if|else|for|while|return)\b/               1655     404     4.10×   1078    0.37× ★   2     119
-/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/            20413   15583     1.31×  10141    1.54×     3     221
-```
-★ = astrogre + AOT beats Onigmo.
+| パターン | interp | aot | aot/I | +onigmo | grep | ripgrep |
+|---|---:|---:|---:|---:|---:|---:|
+| `/(QQQ\|RRR)+\d+/` | 2341 | 1053 | 2.22× | 696 | 79 | 24 |
+| `/(QQQX\|RRRX\|SSSX)+/` | 3052 | 998 | 3.06× | 720 | 28 | 27 |
+| `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/` | 854 | 377 | 2.26× | 777 | 597 | 215 |
+| `/[a-z][0-9][a-z][0-9][a-z]/` | 909 | 404 | 2.25× | 808 | **5** | 225 |
+| `/(\d+\.\d+\.\d+\.\d+)/` | 1557 | 1101 | 1.42× | 755 | **5** | 50 |
+| `/[A-Z]{50,}/` | 1285 | 1182 | 1.09× | 1111 | 1535 | 187 |
+| `/\b(if\|else\|for\|while\|return)\b/` | 1655 | 404 | 4.10× | 1078 | **2** | 119 |
+| `/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/` | 20413 | 15583 | 1.31× | 10141 | **3** | 221 |
 
-The 2-3× AOT wins line up with the AOT specialisation thesis:
+(これは prefilter 投入前の純粋 AOT bench; 上の Bench B は post-
+prefilter 数値。)
 
-- **Chain has to be long.**  alt (`(QQQ|RRR)`) → rep → class /
-  literal → ... — five or more nodes per match attempt means five+
-  indirect calls bake removes.
-- **Prefilter has to NOT fire.**  These patterns start with a class
-  or alt, so memchr/memmem can't pre-skip; the chain runs at
-  every position.
-- **Search has to walk the whole input.**  All these patterns
-  scan the entire 118 MB (failing patterns sweep with no exit;
-  matching patterns count all hits).
+AOT 2-3× の勝因は AOT specialization の thesis 通り:
 
-`/[A-Z]{50,}/` stays at 1.09× even though it sweeps the whole
-input — the chain is just rep_cont ↔ class, two nodes, so dispatch
-was already cheap.
+- **Chain が長くないと効かない**。alt (`(QQQ|RRR)`) → rep → class /
+  literal → … と各マッチ試行で 5+ ノードを通れば、bake が消す
+  indirect call も 5+ 個。
+- **Prefilter が**発火**してはいけない**。これらのパターンは class
+  / alt 始まりなので memchr / memmem が pre-skip できない、chain は
+  全位置で走る。
+- **Search が入力全体を歩く**必要がある。これらのパターンは 118 MB
+  全体をスイープする (失敗パターンは exit せず尽く、成功パターンも
+  全マッチをカウント)。
+
+`/[A-Z]{50,}/` は全入力をスイープするのに 1.09× にとどまる — chain が
+rep_cont ↔ class の 2 ノードしかないので、dispatch がそもそも安い。
 
 ### vs Onigmo
 
-The interesting cells are the three where astrogre + AOT beats
-Onigmo:
+astrogre + AOT が Onigmo に勝つ 3 例が興味深い:
 
-- `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/`: 377 ms vs 777 ms (**2.06×
-  faster than Onigmo**) — 9 class checks per attempt, ASTro inlines
-  all into one function while Onigmo's bytecode VM dispatches each.
-- `/[a-z][0-9][a-z][0-9][a-z]/`: 404 ms vs 808 ms (**2.00× faster**)
-  — same shape, 5 class checks.
-- `/\b(if|else|for|while|return)\b/`: 404 ms vs 1078 ms (**2.67×
-  faster**) — `\b` + alt-5; ASTro inlines the alt branches as
-  conditional compares, Onigmo's VM walks them one at a time.
+- `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/`: 377 ms 対 777 ms (**Onigmo より 2.06× 速い**)
+  — 1 試行に class チェック 9 個、ASTro は全部 1 関数に inline、Onigmo の
+  bytecode VM は各々 dispatch。
+- `/[a-z][0-9][a-z][0-9][a-z]/`: 404 ms 対 808 ms (**2.00× 速い**) — 同じ形、
+  class チェック 5 個。
+- `/\b(if|else|for|while|return)\b/`: 404 ms 対 1078 ms (**2.67× 速い**) —
+  `\b` + alt-5; ASTro は alt 各枝を条件分岐に展開、Onigmo の VM は 1 つ
+  ずつ走る。
 
-Onigmo wins on patterns where it has structural shortcuts our
-chain doesn't:
+Onigmo が勝つのは構造的近道を持っているパターン:
 
-- `/(QQQ|RRR)+\d+/`, `(QQQX|RRRX|SSSX)+`: probably an alternation-
-  with-shared-prefix optimisation we don't do.
-- `/(\d+\.\d+\.\d+\.\d+)/`: greedy-dot-with-anchored-ending heuristic.
+- `/(QQQ|RRR)+\d+/`、`(QQQX|RRRX|SSSX)+`: 共通 prefix 付き
+  alternation の最適化があるはず。
+- `/(\d+\.\d+\.\d+\.\d+)/`: greedy-dot + 末尾アンカー heuristic 系。
 
 ### vs grep / ripgrep
 
-ugrep / ripgrep stay an order of magnitude ahead on patterns where
-their literal-prefix prefilter or lazy DFA fires
-(`/[a-z][0-9][a-z][0-9][a-z]/` ← grep 5 ms because the leading
-`[a-z]` collapses to a memchr-class scan).
+ugrep / ripgrep は literal-prefix prefilter / lazy DFA が発火する
+パターンで 1 桁先 (`/[a-z][0-9][a-z][0-9][a-z]/` ← grep 5 ms。
+leading `[a-z]` が memchr-class スキャンに崩されている)。
 
-But for patterns where prefilter can't apply, ASTro+AOT can be
-**faster than grep**:
+しかし prefilter が適用できないパターンでは、ASTro+AOT は **grep
+より速い**:
 
-- `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/`: astrogre+AOT 377 ms vs
-  grep 597 ms — grep doesn't have a useful prefilter for this shape
-  and falls back to PCRE-class matching per position; ASTro's
-  inlined chain is just faster.
-- `/[A-Z]{50,}/`: astrogre+AOT 1182 ms vs grep 1535 ms — ditto.
+- `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/`: astrogre+AOT 377 ms 対
+  grep 597 ms — grep にはこの形に効く prefilter がなく、各位置で
+  PCRE-class マッチにフォールバック; ASTro の inline チェーンの
+  ほうが単に速い。
+- `/[A-Z]{50,}/`: astrogre+AOT 1182 ms 対 grep 1535 ms — 同じ事情。
 
-ripgrep stays consistently fast across all (lazy DFA + literal-
-prefix prefilter), the engineering cost is much higher.
+ripgrep は全体的に常に速い (lazy DFA + literal-prefix prefilter)
+が、エンジニアリング投資量が桁違い。
 
-### Upper bound
+### 上限
 
-The earlier microbench's `literal-tail /match/` 7.22× still
-applies as the *upper bound* the bake can deliver (no prefilter
-*and* no memcmp dominating per-iter), but for realistic regex
-patterns 2-3× is the practical ceiling for AOT alone — and the
-bake is enough to **leapfrog Onigmo** on chain-heavy patterns
-even without dedicated alt / class scan optimisations.
+冒頭 microbench の `literal-tail /match/` 7.22× は今でも bake が
+出せる**上限**として通用 (prefilter なし *かつ* memcmp が per-iter
+を支配しない条件)。だが現実的な regex パターンでは AOT 単独で 2-3×
+が実用上の天井 — それでも chain-heavy パターンでは Onigmo を
+追い越せる、という結果。
 
-The disassembly of the fused SD for `/static/`:
+`/static/` の fused SD の逆アセ (search ループ + inline 化された
+regex match が約 30 命令、indirect call なし、DISPATCH chain なし、
+SD 外への関数呼び出しなし):
 
 ```
 SD_<hash>_INL:
@@ -179,11 +171,11 @@ SD_<hash>_INL:
     cmp    %rdx,%rax
     jae    66f                   ; pos >= len + 1 → exit
     ...
-    vpxor  %xmm0,%xmm0,%xmm0     ; zero ymm0 for capture-state reset
+    vpxor  %xmm0,%xmm0,%xmm0     ; capture-state リセット用 ymm0 ゼロ
 .loop:
     lea    -6(%rax),%rdx
     mov    %rdx,0x10(%rdi)        ; c->pos = s
-    vmovdqu %ymm0,(%rsi)         ; reset all 32 valid[] flags via SIMD
+    vmovdqu %ymm0,(%rsi)         ; valid[] 32 個を SIMD で一括クリア
     ...
     cmp    %rax,%rcx
     jb     fail
@@ -200,171 +192,95 @@ check_ic:
     set ends[0], valid[0]; ret 1
 ```
 
-That's the entire grep search — start-position loop + inlined regex
-match — in ~30 instructions.  No indirect call, no DISPATCH chain,
-not even a function call out of the SD.
+## 効いたもの
 
-## Prefilter nodes — closing the Onigmo gap
+### Search ループを AST に折り込む
+`node_grep_search` がパーサが各コンパイル済みパターンの最上位に置く
+ラッパー。EVAL が for-each-start-position ループで、specialiser が
+`body` operand に再帰し `body_dispatcher` を直接関数ポインタとして
+inline すると、gcc がループと regex chain を indirect call ゼロの
+1 関数に融合する。`literal-tail` 7.22× の出所。
 
-`node_grep_search_memchr` / `node_grep_search_memmem` (added after
-the original fusion experiment) skip directly to candidate
-positions when the pattern starts with a known fixed byte / multi-
-byte literal.  Same architectural shape as `node_grep_search`: an
-EVAL that does the algorithmic skip + a body operand that the
-specialiser inlines for verification.
+### `_INL` リネーム + extern wrapper post-process
+luastro の `luastro_export_sd_wrappers` をそのまま借用。これがないと
+`astro_cs_load` はルート SD しか見つけられず、内側 node の SD は
+`static inline` の裏に隠れたまま、ランタイム dispatch が host 側の
+`DISPATCH_*` を経由して各 node ごとにバウンスする。
 
-Bench, post-prefilter (118 MB corpus, line by line, best-of-5 s):
+### Side-array 経由の build 後再解決
+`node_allocate` が全 NODE を `astrogre_all_nodes` に track、
+`astrogre_pattern_aot_compile` が build 後に array を歩いて各 node で
+`astro_cs_load`。これがないと「次回起動時」しか SD が効かない (今走っ
+ている run には間に合わない)。
 
-```
-                          grep   ripgrep   +onigmo  interp  aot-cached
-literal    /static/      0.002    0.037     0.240   0.285    0.287
-rare                     0.039    0.022     0.200   0.269    0.267
-anchored   /^static/     0.003    0.042     0.249   0.284    0.281
-case-i     /VALUE/i      0.002    0.053     0.285   0.746    0.712
-alt-3                    0.003    0.053     1.183   2.199    2.133
-class-rep  /[0-9]{4,}/   0.002    0.059     0.749   1.384    1.392
-ident-call               0.002    0.196     3.626   4.238    4.294
-count -c   /static/      0.002    0.030     0.244   0.293    0.286
-```
+### Parse 時の隣接リテラル coalesce
+`\AHello, World/` を 13 個の lit node から 1 個に — dispatch も SD
+ファイルも減る。
 
-Compared to the prior interp (no prefilter), the prefilter-eligible
-patterns drop **3-4×**:
+### Parse 時の case fold pre-fold
+`/Hello/i` は `node_re_lit_ci("hello", 5, ...)` になる — pattern 側は
+1 度だけ lowercase に、入力側は byte ごとに非対称に fold して比較。
 
-```
-                         prior interp  →  prefilter interp
-literal /static/             0.934            0.285  (3.27×)
-literal-rare                 1.004            0.269  (3.73×)
-anchored /^static/           0.720            0.284  (2.54×)
-count -c /static/            0.957            0.293  (3.27×)
-```
+### \A 始まりの short-circuit
+`anchored_bos` を `node_grep_search` の operand として持たせると、
+SD の position ループが「1 回だけ試して終わる」ことを静的に知れる。
 
-For the patterns the prefilter handles, astrogre is now **within
-20 %** of Onigmo (vs 2-4× behind without it).  The remaining gap is
-process startup + per-line `getline` + CTX-init.  Patterns the
-current prefilter doesn't trigger on (case-i, alt, class-led) are
-unchanged — those need their own analysis-and-emit, all listed in
-[`todo.md`](./todo.md).
+### 単一 rep_cont sentinel
+`node_re_rep_cont` allocation は全 rep node 共通でちょうど 1 つ。
+これで AST が DAG (cycle なし) のまま — Merkle hash が成立し、
+code-store の sharing も適用できる。
 
-aot-cached vs interp is now essentially noise.  That's expected —
-the prefilter has eaten the dispatch chain bake was meant to remove.
+### バックエンド抽象
+`backend.h` で grep CLI とマッチャを decouple。Onigmo backend の追加は
+~150 行のラッパー + 60 行の `build_local.mk` (autoconf / libtool 抜きで
+Onigmo をビルド)。
 
-## Why the grep CLI bench doesn't show the fusion gain
+### `restrict` on `c` and `n`、256-bit クラスビットマップを `uint64_t × 4` インライン
+標準的な ASTro hygiene。
 
-For comparison, the prior bench (before prefilter, after fusion):
+## 効かなかった / 棄却した
 
-```
-                          grep   ripgrep   +onigmo  interp  aot-cached
-literal    /static/      0.002    0.036     0.238   0.934    0.974
-ident-call               0.002    0.192     3.500   3.990    3.938
-```
+### 1 rep node ごとの "static" continuation node
+初期案では `rep_cont` を **rep node ごと** に allocate していた。AST
+に cycle が生じて Merkle hash が破綻。
 
-aot-cached was essentially indistinguishable from interp because
-each input line is ~36 bytes — the fused loop ran only ~36
-iterations per call, short enough that the **per-call overhead**
-(`CTX_struct` zero-init, getline buffering, fwrite of matched
-lines) dominated the wall clock.  The in-engine microbench
-amortizes that across 16 K-byte strings; grep doesn't.
+### 「body は呼び出しごとに 1 回成功を返す」repetition モデル
+`(a|ab)*c` の `abc` で fail — 内側の alt は iteration 越しに retry
+できる必要がある。
 
-The natural next step is to fold the **line iteration** into the
-AST too — a `node_grep_lines(body, str, len)` whose EVAL walks
-newlines and prints matched lines, all inside one SD function.
-See [`todo.md`](./todo.md).
+### UTF-8 マルチバイト char-class
+class を 256-bit ASCII bitmap *に加えて* (lo, hi) コードポイント範囲の
+ソート済リストとして持つ案。binary search が dispatch を支配して没。
 
-## What helped
+### Class の bytes を `const char *` で持つ
+ノード struct を 24 byte 削れるが、マッチャは bitmap ポインタを load
+する必要が出る — `class-word` で inline が ~12 % 勝った。
 
-### Folding the search loop into the AST
-`node_grep_search` is the wrapper that the parser puts at the top of
-every compiled pattern.  Its EVAL is the for-each-start-position
-loop; when the specializer recurses into its `body` operand and
-inlines the `body_dispatcher` direct function pointer, gcc fuses the
-loop and the regex chain into a single function with no indirect
-calls.  That's where the 7.22× literal-tail speedup comes from.
-
-### `_INL` rename + extern wrapper post-process
-Borrowed wholesale from luastro's `luastro_export_sd_wrappers`.
-Without it, `astro_cs_load` only sees the root SD; inner nodes' SDs
-stay hidden behind `static inline` and the runtime chain bounces
-through host-side `DISPATCH_*` for every per-node touch.
-
-### Side-array re-resolve after build
-`node_allocate` tracks every NODE in `astrogre_all_nodes`;
-`astrogre_pattern_aot_compile` walks the array post-build and calls
-`astro_cs_load` on each node so this very run picks up the fresh SDs
-(otherwise only the *next* invocation benefits).
-
-### Coalesce adjacent literals at parse time
-Turns `\AHello, World/` from 13 lit nodes into 1 — fewer dispatches
-and fewer SD entries to compile.
-
-### Pre-fold case at parse time
-`/Hello/i` becomes `node_re_lit_ci("hello", 5, ...)` — pattern is
-lowercased once, matcher does an asymmetric fold of the input byte
-during the byte-by-byte compare.
-
-### Anchored-start short-circuit
-`anchored_bos` is an operand on `node_grep_search` so the SD's
-position loop knows statically when to stop after one iteration.
-
-### Single rep_cont sentinel
-Exactly one `node_re_rep_cont` allocation, shared by every rep node.
-Keeps the AST acyclic so Merkle hashes survive and code-store
-sharing applies.
-
-### Backend abstraction
-`backend.h` decouples the grep CLI from the matcher.  Adding the
-Onigmo backend was ~150 lines of wrapper + a 60-line `build_local.mk`
-that compiles Onigmo without the autoconf / libtool dance.
-
-### `restrict` on `c` and `n`, 256-bit bitmap inline as `uint64_t × 4`
-Standard ASTro hygiene.
-
-## What did not help / was abandoned
-
-### Per-rep "static" continuation node
-Earlier draft allocated a `rep_cont` *per repeat node*.  Made the
-AST cyclic, broke Merkle hashing.
-
-### "Body returns one success per call" repetition model
-Failed `(a|ab)*c` on `abc` — the inner alt has to be retryable
-across iteration backtracks.
-
-### UTF-8 multi-byte char-class
-Tried storing class as a 256-bit ASCII bitmap *plus* a sorted list of
-`(lo, hi)` codepoint ranges.  Binary search dominated dispatch.
-
-### Storing `bytes` for class as `const char *`
-Saves 24 bytes per node struct; matcher then has to load the pointer.
-Inline won by ~12 % on `class-word`.
-
-### Possessive quantifiers
-Parsed but degraded to plain greedy.
+### Possessive 量化子
+parse のみ、greedy に degrade。
 
 ### PG (profile-guided) bake
-`--pg-compile` is accepted as a CLI flag for parity with abruby but
-currently behaves as `--aot-compile` because we have no profile
-signal.  A real signal for regex (hot-alternative reordering, hot
-iteration counts, capture elision when never read) is on the runway.
+`--pg-compile` は abruby との CLI 互換のため flag として受け付けるが、
+profile signal がないので現状は `--aot-compile` と同等動作。regex 用の
+本物の signal (hot-alternative reordering、hot 反復回数、参照されない
+キャプチャの省略等) は今後の課題。
 
-## Things on the runway, not started
+## 着手前のもの
 
-* **Line iteration in the AST.**  The biggest remaining lever for
-  the grep CLI.  Add a `node_grep_lines(body, str, len, callback)`
-  whose EVAL does newline scanning + per-line search dispatch + the
-  print/count side-effect, all in one SD function.  Should drop the
-  per-call overhead that currently masks the search-loop fusion at
-  the grep level.
-* **Literal-prefix prefilter.**  For unanchored patterns with a
-  fixed-byte prefix, use Boyer-Moore-style scan to find candidate
-  positions and verify with the AST.  Single biggest miss vs
-  ripgrep.  Independent of the AST.
-* **First-byte bitmap.**  Even simpler than full BMH: at compile
-  time, build a 256-bit bitmap of allowed first bytes; skip ahead
-  using a vectorised scan.
-* **Real PG signal.**  Hot-alternative reordering: count branch
-  hits at each `node_re_alt`, bake the hot one as the first branch.
-  Capture elision: if no backreference uses a given group during
-  the profile run, drop its save/restore.
-* **JIT.**  The standard ASTro JIT path applies once we want to
-  generate fresh SDs without an offline build step.
+* **AST 内の行イテレーション**。grep CLI の C 側 mmap 経路で大半カバー
+  済みだが、行境界スキャンと per-line search dispatch + print/count
+  side-effect を 1 つの SD として bake する `node_grep_lines(body, str,
+  len, callback)` ノードを足せば、まだ残る per-call overhead をさらに
+  下げられる。
+* **マルチパターン Hyperscan-Teddy literal anchor 抽出**。これが ugrep
+  に対する最大の miss。fixed-byte prefix なしのパターンでも、内部に
+  必須リテラルがあれば anchor として使える。
+* **First-byte bitmap**。完全な BMH より更に簡単 — compile 時に「許される
+  first byte」の 256-bit bitmap を作り、ベクトル化スキャンで skip。
+* **本物の PG signal**。各 `node_re_alt` での枝ヒット数を計測、hot な
+  枝を最初に試す alternation を bake。Capture elision: profile run で
+  参照されないグループの save/restore をドロップ。
+* **JIT**。一度 compile すれば次起動でなくこの run の中で SD を生成
+  したい場合の標準 ASTro JIT 経路。AST が DAG なので適用可能。
 
-These are listed in [`todo.md`](./todo.md).
+詳細は [`todo.md`](./todo.md)。
