@@ -826,3 +826,162 @@ static VALUE str_percent(CTX *c, VALUE self, int argc, VALUE *argv) {
     return kernel_format(c, self, 1 + argc, full);
 }
 
+/* ---------- String#hex ----------
+ * Parses an optional sign, optional "0x"/"0X" prefix, then hex digits.
+ * Stops at first non-digit; returns 0 for fully unparsable input. */
+static VALUE str_hex(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_string *s = (struct korb_string *)self;
+    long i = 0, len = s->len;
+    while (i < len && (s->ptr[i] == ' ' || s->ptr[i] == '\t')) i++;
+    int sign = 1;
+    if (i < len && (s->ptr[i] == '+' || s->ptr[i] == '-')) {
+        if (s->ptr[i] == '-') sign = -1;
+        i++;
+    }
+    if (i + 1 < len && s->ptr[i] == '0' && (s->ptr[i+1] == 'x' || s->ptr[i+1] == 'X')) i += 2;
+    long v = 0;
+    bool any = false;
+    while (i < len) {
+        char ch = s->ptr[i];
+        int d;
+        if      (ch >= '0' && ch <= '9') d = ch - '0';
+        else if (ch >= 'a' && ch <= 'f') d = 10 + (ch - 'a');
+        else if (ch >= 'A' && ch <= 'F') d = 10 + (ch - 'A');
+        else break;
+        v = v * 16 + d;
+        any = true;
+        i++;
+    }
+    if (!any) return INT2FIX(0);
+    return INT2FIX(v * sign);
+}
+
+/* ---------- String#oct ----------
+ * Returns the integer parsed using base inferred from prefix:
+ *   "0x"/"0X" → 16, "0b"/"0B" → 2, "0o"/"0O" or just leading '0' → 8,
+ *   anything else → 10.  Sign-aware; 0 on no digits parsed. */
+static VALUE str_oct(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_string *s = (struct korb_string *)self;
+    long i = 0, len = s->len;
+    while (i < len && (s->ptr[i] == ' ' || s->ptr[i] == '\t')) i++;
+    int sign = 1;
+    if (i < len && (s->ptr[i] == '+' || s->ptr[i] == '-')) {
+        if (s->ptr[i] == '-') sign = -1;
+        i++;
+    }
+    int base = 8;
+    if (i + 1 < len && s->ptr[i] == '0') {
+        char p = s->ptr[i+1];
+        if (p == 'x' || p == 'X') { base = 16; i += 2; }
+        else if (p == 'b' || p == 'B') { base = 2;  i += 2; }
+        else if (p == 'o' || p == 'O') { base = 8;  i += 2; }
+        /* otherwise stay at 8, leading '0' itself is part of the number */
+    }
+    long v = 0;
+    bool any = false;
+    while (i < len) {
+        char ch = s->ptr[i];
+        int d = -1;
+        if      (ch >= '0' && ch <= '9') d = ch - '0';
+        else if (ch >= 'a' && ch <= 'f') d = 10 + (ch - 'a');
+        else if (ch >= 'A' && ch <= 'F') d = 10 + (ch - 'A');
+        else break;
+        if (d >= base) break;
+        v = v * base + d;
+        any = true;
+        i++;
+    }
+    if (!any) return INT2FIX(0);
+    return INT2FIX(v * sign);
+}
+
+/* ---------- String#prepend ----------
+ * Mutates self by inserting other(s) at position 0; returns self. */
+static VALUE str_prepend(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_string *s = (struct korb_string *)self;
+    /* Concatenate args into a single buffer first to keep the math simple. */
+    long extra = 0;
+    for (int i = 0; i < argc; i++) {
+        if (BUILTIN_TYPE(argv[i]) != T_STRING) return self;
+        extra += ((struct korb_string *)argv[i])->len;
+    }
+    long total = extra + s->len;
+    char *np = korb_xmalloc_atomic(total + 1);
+    long w = 0;
+    for (int i = 0; i < argc; i++) {
+        struct korb_string *p = (struct korb_string *)argv[i];
+        memcpy(np + w, p->ptr, p->len); w += p->len;
+    }
+    memcpy(np + w, s->ptr, s->len);
+    np[total] = 0;
+    s->ptr = np;
+    s->len = total;
+    s->capa = total;
+    return self;
+}
+
+/* ---------- String#insert(pos, str) ----------
+ * Mutates self.  pos can be negative (counts from end + 1, so -1
+ * inserts before the last char as in CRuby).  Returns self. */
+static VALUE str_insert(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 2 || !FIXNUM_P(argv[0]) || BUILTIN_TYPE(argv[1]) != T_STRING) return self;
+    struct korb_string *s = (struct korb_string *)self;
+    struct korb_string *p = (struct korb_string *)argv[1];
+    long pos = FIX2LONG(argv[0]);
+    if (pos < 0) pos = s->len + pos + 1;
+    if (pos < 0) pos = 0;
+    if (pos > s->len) pos = s->len;
+    long total = s->len + p->len;
+    char *np = korb_xmalloc_atomic(total + 1);
+    memcpy(np, s->ptr, pos);
+    memcpy(np + pos, p->ptr, p->len);
+    memcpy(np + pos + p->len, s->ptr + pos, s->len - pos);
+    np[total] = 0;
+    s->ptr = np;
+    s->len = total;
+    s->capa = total;
+    return self;
+}
+
+/* ---------- String#delete_prefix / delete_suffix ----------
+ * Non-mutating; returns the string without the prefix/suffix or a copy
+ * of self if the prefix/suffix doesn't match. */
+static VALUE str_delete_prefix(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return self;
+    struct korb_string *s = (struct korb_string *)self;
+    struct korb_string *p = (struct korb_string *)argv[0];
+    if (p->len <= s->len && memcmp(s->ptr, p->ptr, p->len) == 0)
+        return korb_str_new(s->ptr + p->len, s->len - p->len);
+    return korb_str_new(s->ptr, s->len);
+}
+
+static VALUE str_delete_suffix(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return self;
+    struct korb_string *s = (struct korb_string *)self;
+    struct korb_string *p = (struct korb_string *)argv[0];
+    if (p->len <= s->len && memcmp(s->ptr + s->len - p->len, p->ptr, p->len) == 0)
+        return korb_str_new(s->ptr, s->len - p->len);
+    return korb_str_new(s->ptr, s->len);
+}
+
+/* ---------- String#each_line (real impl) ----------
+ * Was registered as str_split, which split on whitespace.  Walks the
+ * string yielding each line including its trailing '\n'; returns self. */
+static VALUE str_each_line(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_string *s = (struct korb_string *)self;
+    long start = 0;
+    for (long i = 0; i < s->len; i++) {
+        if (s->ptr[i] == '\n') {
+            VALUE line = korb_str_new(s->ptr + start, i - start + 1);
+            korb_yield(c, 1, &line);
+            if (c->state != KORB_NORMAL) return Qnil;
+            start = i + 1;
+        }
+    }
+    if (start < s->len) {
+        VALUE line = korb_str_new(s->ptr + start, s->len - start);
+        korb_yield(c, 1, &line);
+        if (c->state != KORB_NORMAL) return Qnil;
+    }
+    return self;
+}

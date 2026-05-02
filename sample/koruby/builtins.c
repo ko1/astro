@@ -293,7 +293,7 @@ void korb_init_builtins(void) {
     DEF(cStr, "chars",       str_chars,        0);
     DEF(cStr, "bytes",       str_bytes,        0);
     DEF(cStr, "each_char",   str_each_char,    0);
-    DEF(cStr, "each_line",   str_split,       -1); /* approximate */
+    DEF(cStr, "each_line",   str_each_line,    0);
     DEF(cStr, "start_with?", str_start_with,  -1);
     DEF(cStr, "end_with?",   str_end_with,    -1);
     DEF(cStr, "include?",    str_include,     -1);
@@ -402,6 +402,16 @@ void korb_init_builtins(void) {
     DEF(cAry, "shuffle",        ary_shuffle,    0);
     DEF(cAry, "bsearch",        ary_bsearch,    0);
     DEF(cAry, "one?",           ary_one_p,      0);
+    /* String additions */
+    DEF(cStr, "hex",           str_hex,           0);
+    DEF(cStr, "oct",           str_oct,           0);
+    DEF(cStr, "prepend",       str_prepend,      -1);
+    DEF(cStr, "insert",        str_insert,        2);
+    DEF(cStr, "delete_prefix", str_delete_prefix, 1);
+    DEF(cStr, "delete_suffix", str_delete_suffix, 1);
+    /* Numeric eql? — type-strict */
+    DEF(cInt, "eql?",          int_eql,           1);
+    DEF(cFlt, "eql?",          flt_eql,           1);
     DEF(cAry, "each_cons",      ary_each_cons,  1);
     DEF(cAry, "minmax_by",      ary_minmax_by,  0);
     DEF(cAry, "assoc",       ary_assoc,       1);
@@ -621,8 +631,10 @@ void korb_init_builtins(void) {
     DEF(cSym, "size",    sym_length,     0);
     DEF(cSym, "length",  sym_length,     0);
     DEF(cSym, "empty?",  sym_empty_p,    0);
-    DEF(cSym, "upcase",  sym_upcase,     0);
-    DEF(cSym, "downcase",sym_downcase,   0);
+    DEF(cSym, "upcase",     sym_upcase,     0);
+    DEF(cSym, "downcase",   sym_downcase,   0);
+    DEF(cSym, "capitalize", sym_capitalize, 0);
+    DEF(cSym, "swapcase",   sym_swapcase,   0);
 
     /* Boolean / Nil */
     DEF(korb_vm->true_class, "to_s", true_to_s, 0);

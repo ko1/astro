@@ -299,6 +299,20 @@ static VALUE int_size(CTX *c, VALUE self, int argc, VALUE *argv) {
     return INT2FIX((long)sizeof(long));
 }
 
+/* Integer#eql? — type-strict: `1.eql?(1.0) == false`.  Object's default
+ * eql? falls through to ==, which coerces; that's wrong here. */
+static VALUE int_eql(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1) return Qfalse;
+    VALUE other = argv[0];
+    if (FIXNUM_P(self) && FIXNUM_P(other)) return KORB_BOOL(self == other);
+    /* Bignum: compare by class + numeric equality. */
+    if (!FIXNUM_P(self) && !FIXNUM_P(other) &&
+        !SPECIAL_CONST_P(self) && !SPECIAL_CONST_P(other) &&
+        BUILTIN_TYPE(self) == T_BIGNUM && BUILTIN_TYPE(other) == T_BIGNUM)
+        return KORB_BOOL(korb_eq(self, other));
+    return Qfalse;
+}
+
 static VALUE int_abs(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (FIXNUM_P(self)) {
         long v = FIX2LONG(self);

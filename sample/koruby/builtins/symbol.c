@@ -79,4 +79,29 @@ static VALUE sym_downcase(CTX *c, VALUE self, int argc, VALUE *argv) {
     VALUE r = korb_id2sym(korb_intern_n(buf, (long)n));
     return r;
 }
+static VALUE sym_capitalize(CTX *c, VALUE self, int argc, VALUE *argv) {
+    const char *s = korb_id_name(korb_sym2id(self));
+    size_t n = strlen(s);
+    char *buf = korb_xmalloc_atomic(n + 1);
+    for (size_t i = 0; i < n; i++) {
+        unsigned char ch = s[i];
+        if (i == 0)  buf[i] = (ch >= 'a' && ch <= 'z') ? ch - 32 : ch;
+        else         buf[i] = (ch >= 'A' && ch <= 'Z') ? ch + 32 : ch;
+    }
+    buf[n] = 0;
+    return korb_id2sym(korb_intern_n(buf, (long)n));
+}
+static VALUE sym_swapcase(CTX *c, VALUE self, int argc, VALUE *argv) {
+    const char *s = korb_id_name(korb_sym2id(self));
+    size_t n = strlen(s);
+    char *buf = korb_xmalloc_atomic(n + 1);
+    for (size_t i = 0; i < n; i++) {
+        unsigned char ch = s[i];
+        if      (ch >= 'a' && ch <= 'z') buf[i] = ch - 32;
+        else if (ch >= 'A' && ch <= 'Z') buf[i] = ch + 32;
+        else                              buf[i] = ch;
+    }
+    buf[n] = 0;
+    return korb_id2sym(korb_intern_n(buf, (long)n));
+}
 

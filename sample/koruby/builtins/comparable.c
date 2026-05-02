@@ -45,12 +45,28 @@ static VALUE cmp_between(CTX *c, VALUE self, int argc, VALUE *argv) {
     return KORB_BOOL(lo >= 0 && hi <= 0);
 }
 static VALUE cmp_clamp(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 2) {
-        korb_raise(c, NULL, "wrong number of arguments to clamp (%d for 2)", argc);
+    /* Two forms:
+     *   clamp(min, max)  — both bounds explicit
+     *   clamp(range)     — bounds taken from range.begin / range.end
+     *                      (either end may be nil for half-bounded ranges) */
+    VALUE lo, hi;
+    if (argc == 1 && !SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_RANGE) {
+        struct korb_range *r = (struct korb_range *)argv[0];
+        lo = r->begin;
+        hi = r->end;
+        /* Exclusive-end Integer ranges: drop the upper bound by 1 so
+         * `0.clamp(1...5)` behaves like `0.clamp(1, 4)`. */
+        if (r->exclude_end && !NIL_P(hi) && FIXNUM_P(hi))
+            hi = INT2FIX(FIX2LONG(hi) - 1);
+    } else if (argc == 2) {
+        lo = argv[0];
+        hi = argv[1];
+    } else {
+        korb_raise(c, NULL, "wrong number of arguments to clamp (%d for 1..2)", argc);
         return Qnil;
     }
-    if (korb_cmp_call(c, self, argv[0]) < 0) return argv[0];
-    if (korb_cmp_call(c, self, argv[1]) > 0) return argv[1];
+    if (!NIL_P(lo) && korb_cmp_call(c, self, lo) < 0) return lo;
+    if (!NIL_P(hi) && korb_cmp_call(c, self, hi) > 0) return hi;
     return self;
 }
 

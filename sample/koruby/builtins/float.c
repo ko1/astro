@@ -27,6 +27,19 @@ static VALUE flt_floor(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE flt_ceil(CTX *c, VALUE self, int argc, VALUE *argv) {
     return INT2FIX((long)ceil(korb_num2dbl(self)));
 }
+/* Float#eql? — type-strict.  `1.0.eql?(1) == false` in CRuby; the
+ * default Object#eql? falls through to ==, which coerces, so we need
+ * a bespoke version here. */
+static VALUE flt_eql(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1) return Qfalse;
+    VALUE other = argv[0];
+    if (FLONUM_P(self) && FLONUM_P(other)) return KORB_BOOL(korb_num2dbl(self) == korb_num2dbl(other));
+    if (!SPECIAL_CONST_P(other) && BUILTIN_TYPE(other) == T_FLOAT &&
+        (!SPECIAL_CONST_P(self) ? BUILTIN_TYPE(self) == T_FLOAT : FLONUM_P(self)))
+        return KORB_BOOL(korb_num2dbl(self) == korb_num2dbl(other));
+    return Qfalse;
+}
+
 static VALUE flt_round(CTX *c, VALUE self, int argc, VALUE *argv) {
     double v = korb_num2dbl(self);
     /* No-arg / arg==0 → round to integer, return Integer. */
