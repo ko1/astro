@@ -120,19 +120,23 @@ static VALUE rng_to_a(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 /* ---------- Range methods (extended) ---------- */
 static VALUE rng_step(CTX *c, VALUE self, int argc, VALUE *argv) {
-    struct korb_range *r = (struct korb_range *)self;
-    if (!FIXNUM_P(r->begin) || !FIXNUM_P(r->end)) return Qnil;
-    /* Float step → walk in floating point so 1..3 step 0.5 yields
-     * 1.0, 1.5, 2.0, 2.5, 3.0.  Otherwise integer arithmetic. */
-    bool flt_step = (argc >= 1 && KORB_IS_FLOAT(argv[0]));
+    const struct korb_range *r = (const struct korb_range *)self;
+    bool begin_num = FIXNUM_P(r->begin) || KORB_IS_FLOAT(r->begin);
+    bool end_num = FIXNUM_P(r->end) || KORB_IS_FLOAT(r->end);
+    if (!begin_num || !end_num) return Qnil;
+    /* Float step OR float endpoints → walk in floating point so
+     * 1..3 step 0.5 yields 1.0, 1.5, 2.0, 2.5, 3.0.  Otherwise
+     * integer arithmetic. */
+    bool flt_step = (argc >= 1 && KORB_IS_FLOAT(argv[0]))
+                  || KORB_IS_FLOAT(r->begin) || KORB_IS_FLOAT(r->end);
     if (flt_step) {
-        double step = korb_num2dbl(argv[0]);
+        double step = (argc >= 1) ? korb_num2dbl(argv[0]) : 1.0;
         if (step == 0.0) return self;
-        double b = (double)FIX2LONG(r->begin);
-        double e = (double)FIX2LONG(r->end);
+        double b = korb_num2dbl(r->begin);
+        double e = korb_num2dbl(r->end);
         bool has_block = korb_block_given();
         VALUE out = has_block ? Qnil : korb_ary_new();
-        for (double v = b; v <= e + 1e-12; v += step) {
+        for (double v = b; r->exclude_end ? (v < e) : (v <= e + 1e-12); v += step) {
             VALUE fv = korb_float_new(v);
             if (has_block) {
                 korb_yield(c, 1, &fv);

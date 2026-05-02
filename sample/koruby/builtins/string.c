@@ -1004,10 +1004,15 @@ static VALUE str_eql(CTX *c, VALUE self, int argc, VALUE *argv) {
     return str_eq(c, self, argc, argv);
 }
 
-/* String#clone — fresh independent copy. */
+/* String#clone — fresh independent copy.  Preserves frozen state
+ * (clone does, dup doesn't — matching CRuby). */
 static VALUE str_clone(CTX *c, VALUE self, int argc, VALUE *argv) {
-    struct korb_string *s = (struct korb_string *)self;
-    return korb_str_new(s->ptr, s->len);
+    const struct korb_string *s = (const struct korb_string *)self;
+    VALUE r = korb_str_new(s->ptr, s->len);
+    if (korb_obj_frozen_p(self)) {
+        ((struct RBasic *)r)->flags |= FL_FROZEN;
+    }
+    return r;
 }
 
 /* String#% — same as format but self is the format string.  When the

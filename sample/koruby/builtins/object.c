@@ -411,38 +411,44 @@ VALUE obj_itself(CTX *c, VALUE self, int argc, VALUE *argv) { return self; }
 
 
 /* ---------- Object#dup / clone / instance_variables ---------- */
+static VALUE obj_dup_impl(CTX *c, VALUE self, bool preserve_frozen);
+
+static VALUE obj_clone(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return obj_dup_impl(c, self, true);
+}
 static VALUE obj_dup(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return obj_dup_impl(c, self, false);
+}
+static VALUE obj_dup_impl(CTX *c, VALUE self, bool preserve_frozen) {
     if (SPECIAL_CONST_P(self)) return self;
     enum korb_type t = BUILTIN_TYPE(self);
+    VALUE r = self;
     if (t == T_OBJECT) {
         struct korb_object *o = (struct korb_object *)self;
         struct korb_class *k = (struct korb_class *)o->basic.klass;
-        VALUE r = korb_object_new(k);
+        r = korb_object_new(k);
         struct korb_object *no = (struct korb_object *)r;
         for (uint32_t i = 0; i < o->ivar_cnt && i < no->ivar_capa; i++) {
             no->ivars[i] = o->ivars[i];
         }
         if (no->ivar_cnt < o->ivar_cnt) no->ivar_cnt = o->ivar_cnt;
-        return r;
-    }
-    if (t == T_ARRAY) {
+    } else if (t == T_ARRAY) {
         struct korb_array *a = (struct korb_array *)self;
-        VALUE r = korb_ary_new_capa(a->len);
+        r = korb_ary_new_capa(a->len);
         for (long i = 0; i < a->len; i++) korb_ary_push(r, a->ptr[i]);
-        return r;
-    }
-    if (t == T_STRING) {
-        return korb_str_new(korb_str_cstr(self), korb_str_len(self));
-    }
-    if (t == T_HASH) {
-        VALUE r = korb_hash_new();
+    } else if (t == T_STRING) {
+        r = korb_str_new(korb_str_cstr(self), korb_str_len(self));
+    } else if (t == T_HASH) {
+        r = korb_hash_new();
         struct korb_hash *h = (struct korb_hash *)self;
         for (struct korb_hash_entry *e = h->first; e; e = e->next) {
             korb_hash_aset(r, e->key, e->value);
         }
-        return r;
     }
-    return self;
+    if (preserve_frozen && r != self && !SPECIAL_CONST_P(r) && korb_obj_frozen_p(self)) {
+        ((struct RBasic *)r)->flags |= FL_FROZEN;
+    }
+    return r;
 }
 static VALUE obj_instance_variables(CTX *c, VALUE self, int argc, VALUE *argv) {
     VALUE arr = korb_ary_new();

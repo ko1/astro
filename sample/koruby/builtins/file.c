@@ -382,6 +382,21 @@ static VALUE process_pid(CTX *c, VALUE self, int argc, VALUE *argv) {
 /* IO (stubbed via STDOUT / $stdout) */
 
 #include <time.h>
+/* Kernel#sleep — pause for N seconds (Float or Integer).  No timer
+ * accuracy goal beyond what nanosleep gives. */
+VALUE kernel_sleep(CTX *c, VALUE self, int argc, VALUE *argv) {
+    double secs = 0;
+    if (argc >= 1) {
+        if (FIXNUM_P(argv[0])) secs = (double)FIX2LONG(argv[0]);
+        else if (FLONUM_P(argv[0]) || (BUILTIN_TYPE(argv[0]) == T_FLOAT))
+            secs = korb_num2dbl(argv[0]);
+    }
+    if (secs <= 0) return INT2FIX(0);
+    struct timespec ts = { (time_t)secs, (long)((secs - (long)secs) * 1e9) };
+    nanosleep(&ts, NULL);
+    return INT2FIX((long)secs);
+}
+
 VALUE proc_clock_gettime_stub(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);

@@ -1327,9 +1327,13 @@ static VALUE ary_each_index(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 /* Array#clone — shallow copy (same as dup for our purposes). */
 static VALUE ary_clone(CTX *c, VALUE self, int argc, VALUE *argv) {
-    struct korb_array *a = (struct korb_array *)self;
+    const struct korb_array *a = (const struct korb_array *)self;
     VALUE r = korb_ary_new_capa(a->len);
     for (long i = 0; i < a->len; i++) korb_ary_push(r, a->ptr[i]);
+    /* clone preserves frozen state (`dup` does not) — match CRuby. */
+    if (korb_obj_frozen_p(self)) {
+        ((struct RBasic *)r)->flags |= FL_FROZEN;
+    }
     return r;
 }
 

@@ -238,6 +238,15 @@ static VALUE hash_dup(CTX *c, VALUE self, int argc, VALUE *argv) {
     return hash_merge(c, self, 0, NULL);
 }
 
+/* Hash#clone — like dup but preserves frozen flag (CRuby semantics). */
+static VALUE hash_clone(CTX *c, VALUE self, int argc, VALUE *argv) {
+    VALUE r = hash_merge(c, self, 0, NULL);
+    if (korb_obj_frozen_p(self) && !SPECIAL_CONST_P(r)) {
+        ((struct RBasic *)r)->flags |= FL_FROZEN;
+    }
+    return r;
+}
+
 static VALUE hash_empty_p(CTX *c, VALUE self, int argc, VALUE *argv) {
     return KORB_BOOL(((struct korb_hash *)self)->size == 0);
 }
@@ -255,13 +264,50 @@ static VALUE hash_map(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE hash_select(CTX *c, VALUE self, int argc, VALUE *argv) {
-    struct korb_hash *h = (struct korb_hash *)self;
+    const struct korb_hash *h = (const struct korb_hash *)self;
     VALUE r = korb_hash_new();
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
         VALUE args[2] = { e->key, e->value };
         VALUE m = korb_yield(c, 2, args);
         if (c->state != KORB_NORMAL) return Qnil;
         if (RTEST(m)) korb_hash_aset(r, e->key, e->value);
+    }
+    return r;
+}
+
+/* Hash#partition — yield [k, v] pairs to block; return [[match],[no_match]]
+ * each as Arrays of [k,v] pairs (not Hashes — matching CRuby's Enumerable
+ * behavior on Hash). */
+static VALUE hash_partition(CTX *c, VALUE self, int argc, VALUE *argv) {
+    const struct korb_hash *h = (const struct korb_hash *)self;
+    VALUE yes = korb_ary_new();
+    VALUE no = korb_ary_new();
+    for (struct korb_hash_entry *e = h->first; e; e = e->next) {
+        VALUE args[2] = { e->key, e->value };
+        VALUE m = korb_yield(c, 2, args);
+        if (c->state != KORB_NORMAL) return Qnil;
+        VALUE pair = korb_ary_new_capa(2);
+        korb_ary_push(pair, e->key);
+        korb_ary_push(pair, e->value);
+        korb_ary_push(RTEST(m) ? yes : no, pair);
+    }
+    VALUE pair = korb_ary_new_capa(2);
+    korb_ary_push(pair, yes);
+    korb_ary_push(pair, no);
+    return pair;
+}
+
+/* Hash#tally — Enumerable's tally returns counts of distinct values.
+ * For a hash, counts pairs (which are unique by key already), so returns
+ * each pair → 1.  CRuby behaves the same way. */
+static VALUE hash_tally(CTX *c, VALUE self, int argc, VALUE *argv) {
+    const struct korb_hash *h = (const struct korb_hash *)self;
+    VALUE r = korb_hash_new();
+    for (struct korb_hash_entry *e = h->first; e; e = e->next) {
+        VALUE pair = korb_ary_new_capa(2);
+        korb_ary_push(pair, e->key);
+        korb_ary_push(pair, e->value);
+        korb_hash_aset(r, pair, INT2FIX(1));
     }
     return r;
 }

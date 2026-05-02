@@ -61,6 +61,7 @@ void korb_init_builtins(void) {
     DEF(cObj, "load", kernel_load, -1);
     DEF(cObj, "abort", kernel_abort, -1);
     DEF(cObj, "exit", kernel_exit, -1);
+    DEF(cObj, "sleep", kernel_sleep, -1);
     DEF(cObj, "Integer", kernel_integer, -1);
     DEF(cObj, "Float", kernel_float, 1);
     DEF(cObj, "String", kernel_string, 1);
@@ -207,7 +208,7 @@ void korb_init_builtins(void) {
     /* extra Object methods */
     /* Object dup / clone / instance_variables */
     DEF(cObj, "dup",                obj_dup,                   0);
-    DEF(cObj, "clone",              obj_dup,                   0);
+    DEF(cObj, "clone",              obj_clone,                 0);
     DEF(cObj, "instance_variables", obj_instance_variables,    0);
     DEF(cObj, "instance_variable_defined?", obj_ivar_defined_p, 1);
     /* Kernel#__method__, caller, eval, loop, lambda, proc */
@@ -533,11 +534,14 @@ void korb_init_builtins(void) {
     }
     DEF(cHsh, "===",        hash_eqq,        1);
     DEF(cHsh, "dup",        hash_dup,        0);
-    DEF(cHsh, "clone",      hash_dup,        0);
+    DEF(cHsh, "clone",      hash_clone,      0);
     DEF(cHsh, "empty?",     hash_empty_p,    0);
     DEF(cHsh, "map",        hash_map,        0);
     DEF(cHsh, "collect",    hash_map,        0);
     DEF(cHsh, "select",     hash_select,     0);
+    DEF(cHsh, "filter",     hash_select,     0);
+    DEF(cHsh, "partition",  hash_partition,  0);
+    DEF(cHsh, "tally",      hash_tally,      0);
     DEF(cHsh, "filter",     hash_select,     0);
     DEF(cHsh, "reduce",     hash_reduce,    -1);
     DEF(cHsh, "inject",     hash_reduce,    -1);
