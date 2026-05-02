@@ -225,6 +225,14 @@ class Range
 end
 
 # Numeric / String have <=> so they pick up Comparable's between?/clamp.
+# Integer / Float / String / Symbol include Comparable directly so
+# their methods table holds the snapshot.  Numeric also includes
+# Comparable for the benefit of `Integer < Numeric < Comparable`
+# ancestor checks and user `class Foo < Numeric` getting between? etc.
+class Numeric
+  include Comparable
+end
+
 class Integer
   include Comparable
 

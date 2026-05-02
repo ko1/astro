@@ -365,16 +365,30 @@ static VALUE class_ancestors(CTX *c, VALUE self, int argc, VALUE *argv) {
     VALUE arr = korb_ary_new();
     if (SPECIAL_CONST_P(self)) return arr;
     struct korb_class *k = (struct korb_class *)self;
+    /* Dedupe: an included module that also appears further up the
+     * super chain (because the super class includes it too) should
+     * only appear at its first/most-specific position. */
     while (k) {
-        /* prepended modules come BEFORE the class itself in MRO. */
         for (int32_t i = (int32_t)k->prepends_cnt - 1; i >= 0; i--) {
-            korb_ary_push(arr, (VALUE)k->prepends[i]);
+            VALUE v = (VALUE)k->prepends[i];
+            bool dup = false;
+            for (long j = 0; j < ((struct korb_array *)arr)->len; j++) {
+                if (((struct korb_array *)arr)->ptr[j] == v) { dup = true; break; }
+            }
+            if (!dup) korb_ary_push(arr, v);
         }
-        korb_ary_push(arr, (VALUE)k);
-        /* included modules go right after this class, in reverse
-         * include order (Ruby semantics: most recent include first). */
+        bool dup_self = false;
+        for (long j = 0; j < ((struct korb_array *)arr)->len; j++) {
+            if (((struct korb_array *)arr)->ptr[j] == (VALUE)k) { dup_self = true; break; }
+        }
+        if (!dup_self) korb_ary_push(arr, (VALUE)k);
         for (int32_t i = (int32_t)k->includes_cnt - 1; i >= 0; i--) {
-            korb_ary_push(arr, (VALUE)k->includes[i]);
+            VALUE v = (VALUE)k->includes[i];
+            bool dup = false;
+            for (long j = 0; j < ((struct korb_array *)arr)->len; j++) {
+                if (((struct korb_array *)arr)->ptr[j] == v) { dup = true; break; }
+            }
+            if (!dup) korb_ary_push(arr, v);
         }
         k = k->super;
     }
