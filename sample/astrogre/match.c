@@ -96,7 +96,13 @@ astrogre_search_from(astrogre_pattern *p, const char *str, size_t len,
 
     bool r = (bool)EVAL(&c, p->root);
 
-    if (getenv("ASTROGRE_MEMO_DEBUG")) {
+    /* getenv() is a libc syscall-equivalent (binary-search through
+     * environ + strncmp).  In line-by-line grep this gets called
+     * ~once per matching line, which on a 35 MB log of 400k lines
+     * showed up at 24% of total CPU in `perf record`.  Cache once. */
+    static int memo_debug = -1;
+    if (memo_debug < 0) memo_debug = (getenv("ASTROGRE_MEMO_DEBUG") != NULL);
+    if (memo_debug) {
         fprintf(stderr, "[memo] eligible=%d n_branches=%d backtracks=%zu memo_alloc=%s\n",
                 p->memo_eligible, p->n_branches, c.backtrack_count,
                 c.memo ? "yes" : "no");
