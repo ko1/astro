@@ -595,8 +595,8 @@ static VALUE int_pow(CTX *c, VALUE self, int argc, VALUE *argv) {
             if (__builtin_mul_overflow(r, b, &s)) {
                 /* Promote to Bignum: finish the rest of the calculation
                  * via korb_int_mul which handles arbitrary precision. */
-                VALUE big_r = INT2FIX(r);
-                VALUE big_b = INT2FIX(b);
+                VALUE big_r = korb_bignum_new_long(r);
+                VALUE big_b = korb_bignum_new_long(b);
                 big_r = korb_int_mul(big_r, big_b);
                 e >>= 1;
                 while (e > 0) {
@@ -615,9 +615,11 @@ static VALUE int_pow(CTX *c, VALUE self, int argc, VALUE *argv) {
         }
         long s;
         if (__builtin_mul_overflow(b, b, &s)) {
-            /* Same: promote and finish. */
-            VALUE big_r = INT2FIX(r);
-            VALUE big_b = INT2FIX(b);
+            /* Same: promote and finish.  Use bignum_new_long so r and b
+             * promote correctly even when they're already past FIXNUM
+             * range (2^62 ≤ r ≤ 2^63-1 fits in long but not Fixnum). */
+            VALUE big_r = korb_bignum_new_long(r);
+            VALUE big_b = korb_bignum_new_long(b);
             e >>= 1;
             while (e > 0) {
                 big_b = korb_int_mul(big_b, big_b);
@@ -634,6 +636,10 @@ static VALUE int_pow(CTX *c, VALUE self, int argc, VALUE *argv) {
         if (has_mod) b %= mod;
         e >>= 1;
     }
-    return INT2FIX(r);
+    /* `r` may have grown past FIXNUM range (e.g. 2**62 — 4.6e18 — fits
+     * in signed long but not the 63-bit FIXNUM payload).  Promote to
+     * Bignum when needed so the encoded VALUE doesn't sign-flip. */
+    if (FIXABLE(r)) return INT2FIX(r);
+    return korb_bignum_new_long(r);
 }
 
