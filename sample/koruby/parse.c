@@ -529,6 +529,247 @@ T(struct transduce_context *tc, pm_node_t *node)
     return r;
 }
 
+/* Pattern matching support: lower a prism pattern node to a NODE that
+ * EAs to true/false (binding subpattern lvars as a side-effect).
+ *
+ * subj_slot is the absolute lvar slot holding the value being matched. */
+static NODE *build_pattern_check(struct transduce_context *tc, pm_node_t *pat,
+                                  uint32_t subj_slot)
+{
+    if (!pat) return ALLOC_node_true();
+
+    switch (PM_NODE_TYPE(pat)) {
+      case PM_LOCAL_VARIABLE_TARGET_NODE: {
+          /* `in name` always matches; bind subject to `name`. */
+          pm_local_variable_target_node_t *t = (pm_local_variable_target_node_t *)pat;
+          int slot = lvar_slot(tc, t->name, t->depth);
+          if (slot < 0) slot = lvar_slot_any(tc, t->name);
+          if (slot < 0) return ALLOC_node_true();
+          NODE *bind = ALLOC_node_lvar_set((uint32_t)slot,
+                                            ALLOC_node_lvar_get(subj_slot));
+          return ALLOC_node_seq(bind, ALLOC_node_true());
+      }
+
+      case PM_PINNED_EXPRESSION_NODE: {
+          pm_pinned_expression_node_t *p = (pm_pinned_expression_node_t *)pat;
+          NODE *expr = T(tc, p->expression);
+          uint32_t ai = inc_arg_index(tc);
+          inc_arg_index(tc);
+          rewind_arg_index(tc, ai);
+          return ALLOC_node_eq(expr, ALLOC_node_lvar_get(subj_slot), ai);
+      }
+
+      case PM_PINNED_VARIABLE_NODE: {
+          pm_pinned_variable_node_t *p = (pm_pinned_variable_node_t *)pat;
+          NODE *expr = T(tc, (pm_node_t *)p->variable);
+          uint32_t ai = inc_arg_index(tc);
+          inc_arg_index(tc);
+          rewind_arg_index(tc, ai);
+          return ALLOC_node_eq(expr, ALLOC_node_lvar_get(subj_slot), ai);
+      }
+
+      case PM_ARRAY_PATTERN_NODE: {
+          /* in [p1, p2, ..., *rest]
+           *   subj.is_a?(Array) && subj.size matches && p1(subj[0]) && ... */
+          pm_array_pattern_node_t *a = (pm_array_pattern_node_t *)pat;
+          uint32_t req_cnt = (uint32_t)a->requireds.size;
+          uint32_t post_cnt = (uint32_t)a->posts.size;
+          bool has_rest = (a->rest != NULL);
+
+          /* subj.is_a?(Array) */
+          uint32_t ai = inc_arg_index(tc);
+          inc_arg_index(tc);
+          rewind_arg_index(tc, ai);
+          struct method_cache *mc_isa = alloc_method_cache();
+          NODE *array_const = ALLOC_node_const_get(korb_intern("Array"));
+          NODE *isa_arg = ALLOC_node_lvar_set(ai, array_const);
+          NODE *isa_call = ALLOC_node_method_call(ALLOC_node_lvar_get(subj_slot),
+                                                  korb_intern("is_a?"), 1, ai, mc_isa);
+          NODE *isa = ALLOC_node_seq(isa_arg, isa_call);
+
+          /* size check */
+          uint32_t ai2 = inc_arg_index(tc);
+          inc_arg_index(tc);
+          rewind_arg_index(tc, ai2);
+          struct method_cache *mc_size = alloc_method_cache();
+          NODE *size_call = ALLOC_node_method_call(ALLOC_node_lvar_get(subj_slot),
+                                                   korb_intern("size"), 0, ai2, mc_size);
+          NODE *size_check;
+          if (has_rest) {
+              size_check = ALLOC_node_method_call(
+                  size_call, korb_intern(">="), 1,
+                  (inc_arg_index(tc), inc_arg_index(tc), rewind_arg_index(tc, ai2), ai2),
+                  alloc_method_cache());
+              /* the args were re-allocated; build properly */
+              uint32_t ai3 = inc_arg_index(tc);
+              inc_arg_index(tc); rewind_arg_index(tc, ai3);
+              struct method_cache *mc_ge = alloc_method_cache();
+              NODE *expected = ALLOC_node_int_lit(req_cnt + post_cnt);
+              NODE *ge_arg = ALLOC_node_lvar_set(ai3, expected);
+              size_check = ALLOC_node_seq(ge_arg,
+                  ALLOC_node_method_call(size_call, korb_intern(">="), 1, ai3, mc_ge));
+          } else {
+              uint32_t ai3 = inc_arg_index(tc);
+              inc_arg_index(tc); rewind_arg_index(tc, ai3);
+              struct method_cache *mc_eq = alloc_method_cache();
+              NODE *expected = ALLOC_node_int_lit(req_cnt + post_cnt);
+              size_check = ALLOC_node_eq(size_call, expected, ai3);
+          }
+
+          NODE *combined = ALLOC_node_and(isa, size_check);
+
+          /* element checks */
+          for (uint32_t i = 0; i < req_cnt; i++) {
+              uint32_t elem_slot = inc_arg_index(tc);
+              uint32_t aii = inc_arg_index(tc);
+              inc_arg_index(tc); rewind_arg_index(tc, aii);
+              struct method_cache *mc_idx = alloc_method_cache();
+              NODE *idx_set = ALLOC_node_lvar_set(aii, ALLOC_node_int_lit((intptr_t)i));
+              NODE *aref = ALLOC_node_seq(idx_set,
+                  ALLOC_node_method_call(ALLOC_node_lvar_get(subj_slot),
+                                         korb_intern("[]"), 1, aii, mc_idx));
+              NODE *bind_subj = ALLOC_node_lvar_set(elem_slot, aref);
+              NODE *sub_check = build_pattern_check(tc, a->requireds.nodes[i], elem_slot);
+              combined = ALLOC_node_and(combined, ALLOC_node_seq(bind_subj, sub_check));
+          }
+          /* posts: indexed from -post_cnt to -1 (i.e. last N) */
+          for (uint32_t i = 0; i < post_cnt; i++) {
+              uint32_t elem_slot = inc_arg_index(tc);
+              uint32_t aii = inc_arg_index(tc);
+              inc_arg_index(tc); rewind_arg_index(tc, aii);
+              struct method_cache *mc_idx = alloc_method_cache();
+              intptr_t idx = -(intptr_t)(post_cnt - i);
+              NODE *idx_set = ALLOC_node_lvar_set(aii, ALLOC_node_int_lit(idx));
+              NODE *aref = ALLOC_node_seq(idx_set,
+                  ALLOC_node_method_call(ALLOC_node_lvar_get(subj_slot),
+                                         korb_intern("[]"), 1, aii, mc_idx));
+              NODE *bind_subj = ALLOC_node_lvar_set(elem_slot, aref);
+              NODE *sub_check = build_pattern_check(tc, a->posts.nodes[i], elem_slot);
+              combined = ALLOC_node_and(combined, ALLOC_node_seq(bind_subj, sub_check));
+          }
+          /* rest binding (if it's a local target with a name) */
+          if (has_rest && PM_NODE_TYPE_P(a->rest, PM_SPLAT_NODE)) {
+              pm_splat_node_t *sn = (pm_splat_node_t *)a->rest;
+              if (sn->expression && PM_NODE_TYPE_P(sn->expression, PM_LOCAL_VARIABLE_TARGET_NODE)) {
+                  pm_local_variable_target_node_t *t =
+                      (pm_local_variable_target_node_t *)sn->expression;
+                  int rslot = lvar_slot(tc, t->name, t->depth);
+                  if (rslot < 0) rslot = lvar_slot_any(tc, t->name);
+                  if (rslot >= 0) {
+                      uint32_t aii = inc_arg_index(tc);
+                      inc_arg_index(tc); inc_arg_index(tc); rewind_arg_index(tc, aii);
+                      struct method_cache *mc_sl = alloc_method_cache();
+                      NODE *from = ALLOC_node_lvar_set(aii, ALLOC_node_int_lit((intptr_t)req_cnt));
+                      NODE *cnt = ALLOC_node_lvar_set(aii + 1,
+                          ALLOC_node_method_call(ALLOC_node_lvar_get(subj_slot),
+                                                 korb_intern("size"), 0,
+                                                 (inc_arg_index(tc), inc_arg_index(tc), rewind_arg_index(tc, ai2), ai2),
+                                                 alloc_method_cache()));
+                      /* simpler: subj[req_cnt, subj.size - req_cnt - post_cnt] */
+                      uint32_t ai_sl = inc_arg_index(tc);
+                      inc_arg_index(tc); inc_arg_index(tc); rewind_arg_index(tc, ai_sl);
+                      struct method_cache *mc_size2 = alloc_method_cache();
+                      struct method_cache *mc_minus = alloc_method_cache();
+                      struct method_cache *mc_minus2 = alloc_method_cache();
+                      NODE *size2 = ALLOC_node_method_call(ALLOC_node_lvar_get(subj_slot),
+                                                          korb_intern("size"), 0, ai_sl + 1, mc_size2);
+                      uint32_t ai_a1 = inc_arg_index(tc);
+                      inc_arg_index(tc); rewind_arg_index(tc, ai_a1);
+                      NODE *minus_arg = ALLOC_node_lvar_set(ai_a1, ALLOC_node_int_lit((intptr_t)req_cnt));
+                      NODE *minus1 = ALLOC_node_seq(minus_arg,
+                          ALLOC_node_method_call(size2, korb_intern("-"), 1, ai_a1, mc_minus));
+                      uint32_t ai_a2 = inc_arg_index(tc);
+                      inc_arg_index(tc); rewind_arg_index(tc, ai_a2);
+                      NODE *minus_arg2 = ALLOC_node_lvar_set(ai_a2, ALLOC_node_int_lit((intptr_t)post_cnt));
+                      NODE *count = ALLOC_node_seq(minus_arg2,
+                          ALLOC_node_method_call(minus1, korb_intern("-"), 1, ai_a2, mc_minus2));
+                      NODE *set_from = ALLOC_node_lvar_set(ai_sl,
+                          ALLOC_node_int_lit((intptr_t)req_cnt));
+                      NODE *set_cnt = ALLOC_node_lvar_set(ai_sl + 1, count);
+                      struct method_cache *mc_sub = alloc_method_cache();
+                      NODE *slice = ALLOC_node_seq(set_from,
+                          ALLOC_node_seq(set_cnt,
+                              ALLOC_node_method_call(ALLOC_node_lvar_get(subj_slot),
+                                                     korb_intern("[]"), 2, ai_sl, mc_sub)));
+                      NODE *bind_rest = ALLOC_node_lvar_set((uint32_t)rslot, slice);
+                      combined = ALLOC_node_and(combined,
+                          ALLOC_node_seq(bind_rest, ALLOC_node_true()));
+                  }
+              }
+          }
+          return combined;
+      }
+
+      case PM_HASH_PATTERN_NODE: {
+          /* in {k: pat, ...}
+           *   subj.is_a?(Hash) && subj.has_key?(k) && pat(subj[k]) && ... */
+          pm_hash_pattern_node_t *h = (pm_hash_pattern_node_t *)pat;
+          uint32_t cnt = (uint32_t)h->elements.size;
+          uint32_t ai = inc_arg_index(tc);
+          inc_arg_index(tc); rewind_arg_index(tc, ai);
+          struct method_cache *mc_isa = alloc_method_cache();
+          NODE *isa_arg = ALLOC_node_lvar_set(ai, ALLOC_node_const_get(korb_intern("Hash")));
+          NODE *isa_call = ALLOC_node_method_call(ALLOC_node_lvar_get(subj_slot),
+                                                  korb_intern("is_a?"), 1, ai, mc_isa);
+          NODE *combined = ALLOC_node_seq(isa_arg, isa_call);
+
+          for (uint32_t i = 0; i < cnt; i++) {
+              pm_node_t *el = h->elements.nodes[i];
+              if (!PM_NODE_TYPE_P(el, PM_ASSOC_NODE)) continue;
+              pm_assoc_node_t *as = (pm_assoc_node_t *)el;
+              if (!PM_NODE_TYPE_P(as->key, PM_SYMBOL_NODE)) continue;
+              pm_symbol_node_t *sym = (pm_symbol_node_t *)as->key;
+              const char *kstr = (const char *)pm_string_source(&sym->unescaped);
+              size_t klen = pm_string_length(&sym->unescaped);
+              ID kid = korb_intern_n(kstr, (long)klen);
+
+              /* has_key?(k) */
+              uint32_t aih = inc_arg_index(tc);
+              inc_arg_index(tc); rewind_arg_index(tc, aih);
+              struct method_cache *mc_hk = alloc_method_cache();
+              NODE *karg = ALLOC_node_lvar_set(aih, ALLOC_node_sym_lit(kid));
+              NODE *hk = ALLOC_node_seq(karg,
+                  ALLOC_node_method_call(ALLOC_node_lvar_get(subj_slot),
+                                         korb_intern("has_key?"), 1, aih, mc_hk));
+              combined = ALLOC_node_and(combined, hk);
+
+              /* subj[k] */
+              uint32_t elem_slot = inc_arg_index(tc);
+              uint32_t aih2 = inc_arg_index(tc);
+              inc_arg_index(tc); rewind_arg_index(tc, aih2);
+              struct method_cache *mc_aref = alloc_method_cache();
+              NODE *karg2 = ALLOC_node_lvar_set(aih2, ALLOC_node_sym_lit(kid));
+              NODE *aref = ALLOC_node_seq(karg2,
+                  ALLOC_node_method_call(ALLOC_node_lvar_get(subj_slot),
+                                         korb_intern("[]"), 1, aih2, mc_aref));
+              NODE *bind_subj = ALLOC_node_lvar_set(elem_slot, aref);
+
+              /* If value side is implicit (`{k:}`), bind subj[k] to lvar named k */
+              pm_node_t *val_pat = as->value;
+              if (val_pat && PM_NODE_TYPE_P(val_pat, PM_IMPLICIT_NODE)) {
+                  /* prism's implicit-value wraps the local target — get the inner */
+                  pm_implicit_node_t *imp = (pm_implicit_node_t *)val_pat;
+                  val_pat = imp->value;
+              }
+              NODE *sub = build_pattern_check(tc, val_pat, elem_slot);
+              combined = ALLOC_node_and(combined, ALLOC_node_seq(bind_subj, sub));
+          }
+          return combined;
+      }
+
+      default: {
+          /* Anything else: treat as `pattern_value === subject`. */
+          NODE *pv = T(tc, pat);
+          uint32_t ai = inc_arg_index(tc);
+          inc_arg_index(tc); rewind_arg_index(tc, ai);
+          struct method_cache *mc = alloc_method_cache();
+          NODE *arg = ALLOC_node_lvar_set(ai, ALLOC_node_lvar_get(subj_slot));
+          return ALLOC_node_seq(arg,
+              ALLOC_node_method_call(pv, korb_intern("==="), 1, ai, mc));
+      }
+    }
+}
+
 static NODE *
 T_inner(struct transduce_context *tc, pm_node_t *node)
 {
@@ -1266,6 +1507,35 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
       case PM_WHEN_NODE: {
           /* should be handled inside PM_CASE_NODE */
           return ALLOC_node_nil();
+      }
+
+      case PM_CASE_MATCH_NODE: {
+          /* case x in pattern1; body1 in pattern2; body2 ... else; eb end
+           *   __t = x
+           *   if check(pattern1, __t) then body1
+           *   elsif check(pattern2, __t) then body2
+           *   ...
+           *   else eb (or nil)
+           * end
+           */
+          pm_case_match_node_t *cm = (pm_case_match_node_t *)node;
+          NODE *subject = cm->predicate ? T(tc, cm->predicate) : ALLOC_node_nil();
+          uint32_t subj_slot = inc_arg_index(tc);
+          NODE *prep = ALLOC_node_lvar_set(subj_slot, subject);
+          NODE *else_n = cm->else_clause
+              ? T(tc, (pm_node_t *)cm->else_clause)
+              : ALLOC_node_nil();
+          NODE *chain = else_n;
+          for (size_t i = cm->conditions.size; i > 0; i--) {
+              pm_in_node_t *in_n = (pm_in_node_t *)cm->conditions.nodes[i-1];
+              NODE *body = in_n->statements
+                  ? transduce_statements(tc, in_n->statements)
+                  : ALLOC_node_nil();
+              NODE *check = build_pattern_check(tc, in_n->pattern, subj_slot);
+              chain = ALLOC_node_if(check, body, chain);
+          }
+          rewind_arg_index(tc, subj_slot);
+          return ALLOC_node_seq(prep, chain);
       }
 
       case PM_SPLAT_NODE: {
