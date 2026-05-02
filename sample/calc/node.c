@@ -43,7 +43,7 @@ OPTIMIZE(NODE *n)
         return n;
     }
 
-    if (astro_cs_load(n)) {
+    if (astro_cs_load(n, NULL)) {
         if (!OPTION.quiet) {
             fprintf(stderr, "hit!: h:%16lx %s ",
                     (unsigned long)hash_node(n),

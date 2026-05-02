@@ -70,8 +70,10 @@ hash_double(double d)
 
 // Write s to fp quoted as a C string literal, escaping special characters so
 // dumpers can safely embed arbitrary strings inside source-code comments or
-// C literal contexts.  Used by generated DUMP_node_* functions.
-static void
+// C literal contexts.  Used by generated DUMP_node_* functions for samples
+// that have `const char *` operands; samples without any string operands
+// don't reference it, hence the explicit unused-suppression.
+__attribute__((unused)) static void
 astro_fprintf_cstr(FILE *fp, const char *s)
 {
     if (s == NULL) { fputs("\"\"", fp); return; }

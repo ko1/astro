@@ -115,10 +115,10 @@ main(int argc, char *argv[])
         NODE *ast = parse(line);
         if (!OPTION.no_generate_specialized_code) {
             if (!ast->head.flags.is_specialized) {
-                astro_cs_compile(ast);
+                astro_cs_compile(ast, NULL);
                 astro_cs_build(NULL);
                 astro_cs_reload();
-                astro_cs_load(ast);
+                astro_cs_load(ast, NULL);
             }
             astro_cs_disasm(ast);
         }
