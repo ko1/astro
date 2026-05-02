@@ -2,8 +2,41 @@
 
 [done.md](./done.md) は実装済み。ここは **未実装 / 不完全 / 既知バグ** をまとめる。
 
-現状: **test/ruby/ 142 ファイル全 pass**。
+現状: **test/ruby/ 148 ファイル全 pass**, benchmark/ 26 ファイル全 pass。
 optcarrot は ruby と checksum 一致、CRuby の 2.2x、YJIT の 0.55x。
+
+## 最近の追加 (5 時間 push session 内、2026-05-02)
+
+- **Class-level @ivars**: `class Foo; @count = 0` 動く (struct korb_class.class_ivars)
+- **Module include MRO**: M2 が M1 を override、`super` が include 経由で reach
+- **Set クラス**: Hash-backed、include? / | & - / subset? / superset?
+- **File.open(block) / write / IO methods**: read / gets / each_line / puts / write / print / eof? / close
+- **Dir.pwd / glob / entries / chdir**: 簡易 fnmatch 含む
+- **Process.pid / clock_gettime**
+- **Kernel#sleep**, **Kernel#at_exit**
+- **const_missing hook** (Mod::CONST 経由)
+- **Method#unbind → UnboundMethod#bind**
+- **Object#methods / singleton_methods**
+- **Array#to_h, Array#fill(val, start, len)**, **pop(n) / shift(n)**
+- **Hash#partition / filter / tally**, **Hash#fetch raises KeyError**
+- **Required kwarg → ArgumentError** ("missing keyword: :x")
+- **String#gsub! / sub! / scan**, **upcase! / downcase! / capitalize! / swapcase! / reverse!**
+- **Symbol#to_sym / id2name**
+- **Integer#round / floor / ceil with negative ndigits**, **Integer#remainder / modulo / magnitude**
+- **Integer#** Float / negative exp** (3.14 でなく 3.14)
+- **Float#step**, **Float#magnitude**, **Float to_s shortest round-trip**
+- **Range#first(N) for endless / Float::INFINITY range**, **Range#step over Float endpoints**, **Range#cover?(Range) for mixed exclude_end**, **Range#=== for endless/beginless**
+- **Comparable raises ArgumentError on nil <=>**
+- **Module#<=> / Module#< returns nil for unrelated**
+- **Array#any?/all?/none?/one? with pattern arg via ===**
+- **Enumerable#grep / grep_v / find_index / cycle / find_all / with_index / each_slice / each_cons / chunk_while** (FIRST `class Enumerable` block へ移動)
+- **Hash pattern `**rest`** (kwrest 残りキー bind)
+- **Numeric includes Comparable** (`Integer < Numeric < Comparable` chain)
+- **Module#ancestors dedupes**
+- **clone preserves frozen** (vs dup)
+- **Object#extend preserves @ivars** (singleton class が ivar shape を継承)
+- **per-frame backtrace source_file**, **Kernel#caller**, **Method/Proc#source_location**
+- **user-defined #inspect dispatch** from `p` / Array#inspect / Hash#inspect
 
 ---
 
@@ -20,21 +53,21 @@ optcarrot は ruby と checksum 一致、CRuby の 2.2x、YJIT の 0.55x。
 
 ## 2. 大きく欠けている領域
 
-### 2.1 Enumerator / Enumerator::Lazy  ✅ 2026-05-02 部分完
+### 2.1 Enumerator / Enumerator::Lazy  ✅ 2026-05-02 大方完
 - 完: no-block 形 (each / map / select / reject / each_with_index /
   reverse_each / Range#each / Range#map) は **Array stand-in** を返し、
   `.to_a` / 後続 `.map { }` / etc. が機能
-- 完: `Range#lazy` は `LazyRange` (bootstrap.rb 実装) を返し、
-  `(1..Float::INFINITY).lazy.map.first(N)` / `select.first(N)` /
-  `map.select.first(N)` の chain が無限 range で動く
-- 未: `Enumerator.new { |y| y << ... }`
-- 未: Array#lazy / 任意 Enumerable に対する真の Lazy (LazyRange は Range 専用)
+- 完: `Range#lazy` (LazyRange) と `Array#lazy` (LazyEnum) で
+  `(1..Float::INFINITY).lazy.map.first(N)` / `[1,2,3].lazy.select.first(N)` 動く
+- 未: `Enumerator.new { |y| y << ... }` (yielder 機構)
 
-### 2.2 IO / File / Dir
-- `File.read(path)` / `File.open` 程度のみ
-- `IO.read` / `IO.write` / `IO.pipe` / `IO.select` / `STDIN.gets` 限定
-- `Dir.glob` / `Dir.entries` / `Dir.chdir` 無し
-- `Pathname` モジュール無し
+### 2.2 IO / File / Dir  ✅ 2026-05-02 部分完
+- 完: File.read / File.write / File.open(block-form) / File.exist? /
+  File.basename / dirname / extname / join / expand_path
+- 完: 開いた File 上の read / gets / each_line / puts / write / print / close
+- 完: Dir.pwd / entries / chdir / glob (簡易 fnmatch 含む) / Dir[]
+- 未: `IO.pipe` / `IO.select` / `STDIN.gets` (TTY経由)
+- 未: `Pathname` モジュール
 
 ### 2.3 Marshal / シリアライゼーション
 - `Marshal.dump` / `Marshal.load` 無し
