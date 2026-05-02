@@ -182,6 +182,169 @@ static void bm_set_ci(uint64_t bm[4], uint8_t b, bool ci) {
     }
 }
 
+/* ------------------------------------------------------------------ */
+/* Aho-Corasick — multi-literal prefilter.                             */
+/* ------------------------------------------------------------------ */
+/*
+ * Used by node_grep_search_ac when the pattern's leading edge is an
+ * alternation of two or more literal byte strings (e.g.
+ * `cat|dog|match`, or `(error|warning|fatal):`).  The AC automaton
+ * scans the haystack in a single pass and reports the start position
+ * of each literal occurrence; the regex matcher then verifies from
+ * that position.
+ *
+ * Trie shape: each state has a 256-entry child table (-1 = no child),
+ * a `fail` link (longest proper suffix that's a trie prefix), and an
+ * `output_len` (length of the pattern that ends at this state, or 0
+ * if none).  No `output_link` chain in this MVP — we assume the
+ * literal set is small enough that overlapping outputs are rare; the
+ * matcher's body will retry adjacent positions if needed.
+ *
+ * Memory: ~1 KiB per state.  For the typical "alt of 3-10 short
+ * literals" case the automaton has ~30-100 states (~30-100 KiB),
+ * comfortable per-pattern.
+ *
+ * No baking: ASTro's operand encoding is scalar-only, so the AC
+ * tables can't be folded into the AOT-specialised SD.  The node
+ * carries the `ac_t *` as an opaque void* operand and the table
+ * itself lives on the heap, owned by the pattern.  This is fine —
+ * the inner AC scan is data-driven (one indirect load per byte),
+ * and "data on the heap vs static const" makes no measurable
+ * difference for a memory-bound loop.  The body chain that runs
+ * AFTER an AC hit is the part that benefits from AOT, and it
+ * specialises normally.
+ */
+
+typedef struct ac_state {
+    int32_t children[256];   /* -1 if no transition */
+    int32_t fail;            /* failure-link state index */
+    int32_t output_len;      /* > 0 if a pattern ends here */
+} ac_state_t;
+
+typedef struct ac_t {
+    ac_state_t *states;
+    int         n_states;
+    int         cap_states;
+    int         min_pat_len;      /* shortest pattern, for early skip */
+} ac_t;
+
+static int
+ac_new_state(ac_t *ac)
+{
+    if (ac->n_states == ac->cap_states) {
+        ac->cap_states = ac->cap_states ? ac->cap_states * 2 : 16;
+        ac->states = (ac_state_t *)realloc(ac->states,
+                                           sizeof(ac_state_t) * (size_t)ac->cap_states);
+    }
+    ac_state_t *s = &ac->states[ac->n_states];
+    for (int i = 0; i < 256; i++) s->children[i] = -1;
+    s->fail = 0;
+    s->output_len = 0;
+    return ac->n_states++;
+}
+
+static ac_t *
+ac_build(const char *const *needles, const uint32_t *lens, int n)
+{
+    ac_t *ac = (ac_t *)calloc(1, sizeof(*ac));
+    ac->min_pat_len = INT32_MAX;
+    ac_new_state(ac);  /* state 0 = root */
+
+    /* Phase 1: insert each needle into the trie. */
+    for (int p = 0; p < n; p++) {
+        int s = 0;
+        const uint8_t *bytes = (const uint8_t *)needles[p];
+        for (uint32_t i = 0; i < lens[p]; i++) {
+            const uint8_t c = bytes[i];
+            int next = ac->states[s].children[c];
+            if (next < 0) {
+                next = ac_new_state(ac);
+                /* Re-fetch ac->states after realloc may have moved it. */
+                ac->states[s].children[c] = next;
+            }
+            s = next;
+        }
+        if (ac->states[s].output_len < (int32_t)lens[p]) {
+            ac->states[s].output_len = (int32_t)lens[p];
+        }
+        if ((int)lens[p] < ac->min_pat_len) ac->min_pat_len = (int)lens[p];
+    }
+    if (ac->min_pat_len == INT32_MAX) ac->min_pat_len = 0;
+
+    /* Phase 2: BFS from root to compute failure links. */
+    int *queue = (int *)malloc(sizeof(int) * (size_t)ac->n_states);
+    int qhead = 0, qtail = 0;
+    /* Depth-1 children fail to root. */
+    for (int c = 0; c < 256; c++) {
+        int child = ac->states[0].children[c];
+        if (child < 0) {
+            ac->states[0].children[c] = 0;  /* root is its own failure for missing chars */
+        } else {
+            ac->states[child].fail = 0;
+            queue[qtail++] = child;
+        }
+    }
+    while (qhead < qtail) {
+        int u = queue[qhead++];
+        for (int c = 0; c < 256; c++) {
+            int v = ac->states[u].children[c];
+            if (v < 0) {
+                /* Goto failure: when no transition, fall back to fail
+                 * link's transition.  Fold it into children[c] so the
+                 * scan loop is branchless (no inner while). */
+                ac->states[u].children[c] = ac->states[ac->states[u].fail].children[c];
+            } else {
+                ac->states[v].fail = ac->states[ac->states[u].fail].children[c];
+                /* Inherit output_len if the failure state has a longer
+                 * pattern than us (overlap case). */
+                if (ac->states[ac->states[v].fail].output_len > ac->states[v].output_len) {
+                    ac->states[v].output_len = ac->states[ac->states[v].fail].output_len;
+                }
+                queue[qtail++] = v;
+            }
+        }
+    }
+    free(queue);
+    return ac;
+}
+
+static void
+ac_free(ac_t *ac)
+{
+    if (!ac) return;
+    free(ac->states);
+    free(ac);
+}
+
+/* Non-static — called from node_grep_search_ac in node.def via an
+ * extern declaration.  Advances the scan from `*io_pos` until a
+ * literal output is found or the haystack ends.  On success returns
+ * true and writes the literal's start position to `*out_match_start`,
+ * with `*io_pos`/`*io_state` set so the next call resumes immediately
+ * after the match.  Returns false at end-of-input. */
+bool
+astrogre_ac_scan(void *ac_handle, const uint8_t *hay, size_t end,
+                 size_t *io_pos, int32_t *io_state, size_t *out_match_start)
+{
+    const ac_t *ac = (const ac_t *)ac_handle;
+    int32_t state = *io_state;
+    size_t pos = *io_pos;
+    while (pos < end) {
+        state = ac->states[state].children[hay[pos]];
+        const int32_t olen = ac->states[state].output_len;
+        pos++;
+        if (olen > 0) {
+            *out_match_start = pos - (size_t)olen;
+            *io_pos          = pos;     /* resume one past last matched byte */
+            *io_state        = state;
+            return true;
+        }
+    }
+    *io_pos = pos;
+    *io_state = state;
+    return false;
+}
+
 /* POSIX bracket-class names.  ASCII semantics only (no Unicode). */
 static bool
 bm_posix_class(const char *restrict name, size_t name_len, uint64_t out[restrict 4])
@@ -1186,6 +1349,108 @@ ire_collect_first_byte_set(ire_node_t *n, uint8_t *out, int *out_n)
     }
 }
 
+/* Walks an IR sub-tree and collects literal byte strings if the node
+ * is essentially "alt-of-LIT" (possibly wrapped in groups).  On
+ * success appends each literal's `{bytes, len}` to the out arrays
+ * and returns true.  The pointers borrow from the IR — caller must
+ * either copy the bytes before `ire_free` or use them only within
+ * the parse-time lifetime.
+ *
+ * Bails out (returns false) when:
+ *   - any branch is a non-literal
+ *   - any branch is an empty literal (LIT len == 0)
+ *   - the literals mix /i and non-/i (we only AC over consistent
+ *     case; mixed-case alternations fall back to the existing
+ *     first-byte-set scanner)
+ *
+ * `out_*` arrays grow geometrically.  `*all_ci` is set on the first
+ * literal seen and verified against subsequent ones.
+ */
+static bool
+ire_collect_alt_lits(ire_node_t *n,
+                     const char ***out_bytes, uint32_t **out_lens,
+                     int *out_n, int *out_cap,
+                     bool *all_ci, bool *first)
+{
+    if (!n) return false;
+    switch (n->kind) {
+    case IRE_LIT:
+        if (n->u.lit.len == 0) return false;
+        if (*first) { *all_ci = n->u.lit.ci; *first = false; }
+        else if (*all_ci != n->u.lit.ci) return false;
+        if (*out_n == *out_cap) {
+            *out_cap = *out_cap ? *out_cap * 2 : 4;
+            *out_bytes = (const char **)realloc(*out_bytes, sizeof(char *) * (size_t)*out_cap);
+            *out_lens  = (uint32_t *)   realloc(*out_lens,  sizeof(uint32_t) * (size_t)*out_cap);
+        }
+        (*out_bytes)[*out_n] = n->u.lit.bytes;
+        (*out_lens)[*out_n]  = n->u.lit.len;
+        (*out_n)++;
+        return true;
+    case IRE_ALT:
+        return ire_collect_alt_lits(n->u.alt.l, out_bytes, out_lens, out_n, out_cap, all_ci, first)
+            && ire_collect_alt_lits(n->u.alt.r, out_bytes, out_lens, out_n, out_cap, all_ci, first);
+    case IRE_GROUP:
+        return ire_collect_alt_lits(n->u.group.body, out_bytes, out_lens, out_n, out_cap, all_ci, first);
+    case IRE_NCGROUP:
+        return ire_collect_alt_lits(n->u.nc.body, out_bytes, out_lens, out_n, out_cap, all_ci, first);
+    case IRE_CONCAT:
+        /* parse_concat wraps every parsed atom in an IRE_CONCAT, even
+         * single-atom branches like the `dog` in `cat|dog|match`.
+         * Peel through single-element concats so the collector treats
+         * `IRE_CONCAT[LIT "dog"]` as the LIT itself.  Multi-element
+         * concats are not pure literals (the suffix would have to
+         * verify) — bail. */
+        if (n->u.cat.n != 1) return false;
+        return ire_collect_alt_lits(n->u.cat.xs[0], out_bytes, out_lens, out_n, out_cap, all_ci, first);
+    default:
+        return false;
+    }
+}
+
+/* Top-level entry: try to find an "alt-of-literals" at the leading
+ * edge of the pattern.  Returns true (and fills the out arrays) if
+ * the leading edge is exactly such an alt with >= 2 distinct
+ * literals; false otherwise.
+ *
+ * "Leading edge" means: the very first thing the matcher consumes
+ * is one of the literals.  This covers `(a|b|c)REST`, `a|b`, and
+ * `(?:a|b|c)REST` shapes — but NOT `\A(a|b)` (the BOS prefix is
+ * fine, we step past it) nor `[abc]REST` (that's class-scan's job,
+ * single-byte).
+ *
+ * Caller frees `*out_bytes` and `*out_lens` (the `*out_bytes`
+ * pointers themselves point into the IR — do NOT free those). */
+static bool
+ire_collect_leading_alt_lits(ire_node_t *root,
+                             const char ***out_bytes, uint32_t **out_lens,
+                             int *out_n, bool *all_ci)
+{
+    *out_bytes = NULL; *out_lens = NULL; *out_n = 0; *all_ci = false;
+    int cap = 0;
+    bool first = true;
+
+    ire_node_t *cur = root;
+    /* Peel one level of CONCAT — if the first elt is the alt, use it. */
+    if (cur && cur->kind == IRE_CONCAT && cur->u.cat.n > 0) {
+        cur = cur->u.cat.xs[0];
+    }
+    /* Peel the implicit group-0 wrapper that astrogre_parse adds. */
+    while (cur && (cur->kind == IRE_GROUP || cur->kind == IRE_NCGROUP)) {
+        cur = (cur->kind == IRE_GROUP) ? cur->u.group.body : cur->u.nc.body;
+    }
+
+    if (!cur || cur->kind != IRE_ALT) return false;
+
+    if (!ire_collect_alt_lits(cur, out_bytes, out_lens, out_n, &cap, all_ci, &first)
+        || *out_n < 2) {
+        free(*out_bytes); free(*out_lens);
+        *out_bytes = NULL; *out_lens = NULL; *out_n = 0;
+        return false;
+    }
+    return true;
+}
+
 /* Build the Truffle nibble-lookup tables T_lo[16] and T_hi[16] from
  * a 256-bit class bitmap, then pack each table into two uint64s for
  * passing as node operands.  See node_grep_search_class_scan. */
@@ -1983,14 +2248,42 @@ astrogre_parse(const char *pat, size_t pat_len, uint32_t prism_flags)
     bool consumes = false;
     ire_collect_prefix(ir, &fp, &consumes);
     NODE *root;
+    ac_t *ac_handle = NULL;       /* set when AC scan is selected */
     uint32_t a = anchored_bos ? 1 : 0;
+
+    /* Try AC build up-front when the leading edge is alt-of-literals
+     * that won't fit in the 8-entry byteset (or the literals share
+     * prefixes so AC's structural filter beats byteset's per-byte
+     * one).  We stash the result and consult it inside the cascade
+     * below.  For "few literals with distinct first bytes" — e.g.
+     * `ERROR|WARN|FATAL` — the SIMD byteset wins over AC's scalar
+     * loop, so byteset takes priority. */
+    if (!fp.ci) {
+        const char **lits = NULL;
+        uint32_t    *lens = NULL;
+        int          n_lits = 0;
+        bool         all_ci = false;
+        if (ire_collect_leading_alt_lits(ir, &lits, &lens, &n_lits, &all_ci)
+            && n_lits >= 2 && !all_ci) {
+            uint32_t min_len = lens[0];
+            for (int i = 1; i < n_lits; i++) if (lens[i] < min_len) min_len = lens[i];
+            if (min_len >= 2) {
+                ac_handle = ac_build(lits, lens, n_lits);
+            }
+        }
+        free(lits);
+        free(lens);
+    }
+
     if (consumes && !fp.ci && fp.len >= 4) {
         char *needle = (char *)malloc(fp.len + 1);
         memcpy(needle, fp.bytes, fp.len); needle[fp.len] = 0;
         root = ALLOC_node_grep_search_memmem(body, needle, (uint32_t)fp.len, a);
+        if (ac_handle) { ac_free(ac_handle); ac_handle = NULL; }  /* memmem wins */
     }
     else if (consumes && !fp.ci && fp.len >= 1) {
         root = ALLOC_node_grep_search_memchr(body, (uint32_t)(uint8_t)fp.bytes[0], a);
+        if (ac_handle) { ac_free(ac_handle); ac_handle = NULL; }
     }
     else {
         /* Try byteset (small first-byte set, e.g. alt-led patterns). */
@@ -2008,9 +2301,19 @@ astrogre_parse(const char *pat, size_t pat_len, uint32_t prism_flags)
             uint64_t packed = 0;
             for (int i = 0; i < bset_n; i++) packed |= ((uint64_t)bset[i]) << (i * 8);
             root = ALLOC_node_grep_search_byteset(body, packed, (uint32_t)bset_n, a);
+            if (ac_handle) { ac_free(ac_handle); ac_handle = NULL; }
         }
         else if (have_range) {
             root = ALLOC_node_grep_search_range(body, (uint32_t)lo, (uint32_t)hi, a);
+            if (ac_handle) { ac_free(ac_handle); ac_handle = NULL; }
+        }
+        /* AC fills the slot above the byteset's 8-byte cliff:
+         * patterns whose literals collectively need >= 9 distinct
+         * first bytes (e.g. a 12-way alternation).  Build was done
+         * up-front; if `ac_handle` is set here, no other prefilter
+         * fired. */
+        else if (ac_handle) {
+            root = ALLOC_node_grep_search_ac(body, (void *)ac_handle, a);
         }
         else if (cls) {
             /* First thing is a class but not a single contiguous range
@@ -2053,6 +2356,9 @@ astrogre_parse(const char *pat, size_t pat_len, uint32_t prism_flags)
      * verdict — false locks the cache off for this pattern. */
     p->n_branches     = L.next_branch_id;
     p->memo_eligible  = memo_eligible;
+    /* Aho-Corasick automaton (NULL if not used).  Pattern owns the
+     * heap allocation; freed in astrogre_pattern_free. */
+    p->ac = (void *)ac_handle;
     free(L.sub_needed);
     return p;
 }
@@ -2184,6 +2490,7 @@ astrogre_pattern_free(astrogre_pattern *p)
     free(p->group_names);
     free(p->group_name_idx);
     free(p->sub_chains);  /* node memory owned by framework's side array */
+    ac_free((ac_t *)p->ac);
     free(p);
 }
 
@@ -2225,7 +2532,8 @@ astrogre_pattern_has_prefilter(astrogre_pattern *p)
         || strcmp(name, "DISPATCH_node_grep_search_memmem")     == 0
         || strcmp(name, "DISPATCH_node_grep_search_byteset")    == 0
         || strcmp(name, "DISPATCH_node_grep_search_range")      == 0
-        || strcmp(name, "DISPATCH_node_grep_search_class_scan") == 0;
+        || strcmp(name, "DISPATCH_node_grep_search_class_scan") == 0
+        || strcmp(name, "DISPATCH_node_grep_search_ac")         == 0;
 }
 
 bool

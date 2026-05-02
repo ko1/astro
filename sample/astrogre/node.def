@@ -343,6 +343,47 @@ node_grep_search_memmem(CTX * restrict c, NODE * restrict n, NODE *body, const c
     return MR_FAIL;
 }
 
+/* Aho-Corasick multi-literal prefilter for patterns whose leading
+ * edge is `(L1|L2|...|Lk)REST`.  Single-pass scan over the haystack;
+ * at each AC output (a literal completed at the current byte) we
+ * compute the start position and dispatch the body chain to verify
+ * the rest of the pattern.  Body failure resumes the AC scan from
+ * the same state — the literal "catalog" inside "catalog" is still
+ * findable even if the "cat" hit failed verification.
+ *
+ * `ac` is a `struct ac_t *` baked as an opaque void*; ASTro's scalar
+ * operand encoding doesn't bake the trie tables themselves, but the
+ * AC inner loop is a single indirect children[byte] load per byte
+ * which is memory-bandwidth-bound — a static-const table and a heap
+ * table run identically.  The body chain that fires on a hit is
+ * what benefits from the AOT specialiser. */
+NODE_DEF
+node_grep_search_ac(CTX * restrict c, NODE * restrict n, NODE *body, void *ac, uint32_t anchored_bos)
+{
+    extern bool astrogre_ac_scan(void *ac, const uint8_t *hay, size_t end,
+                                 size_t *io_pos, int32_t *io_state, size_t *out_match_start);
+    if (anchored_bos) {
+        if (c->pos != 0) return MR_FAIL;
+        for (int i = 0; i < ASTROGRE_MAX_GROUPS; i++) c->valid[i] = false;
+        c->rep_top = NULL;
+        return EVAL_ARG(c, body);
+    }
+    const uint8_t *hay = c->str;
+    size_t pos = c->pos;
+    int32_t state = 0;
+    size_t match_start;
+    while (astrogre_ac_scan(ac, hay, c->str_len, &pos, &state, &match_start)) {
+        c->pos = match_start;
+        for (int i = 0; i < ASTROGRE_MAX_GROUPS; i++) c->valid[i] = false;
+        c->rep_top = NULL;
+        if (EVAL_ARG(c, body)) return MR_STOP;
+        /* Body failed: pos / state already point one past the matched
+         * literal's last byte (astrogre_ac_scan advanced them), so the
+         * next call resumes from there with the same state. */
+    }
+    return MR_FAIL;
+}
+
 /* Generic literal-prefilter scanner.  Same dual-byte filter as the
  * old monolithic node_grep_count_lines_lit, but the per-match work
  * is delegated to `body` — a chain that may include action nodes

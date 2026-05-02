@@ -123,6 +123,12 @@ module ASTroGen
             "hash_cstr(#{val})"
           when 'double'
             "hash_double(#{val})"
+          when 'void *'
+            # Opaque per-process pointer.  Hash to a constant so two
+            # patterns with the same structural shape hash identically
+            # — the operand value is determined by other operands /
+            # build phase, not by the pointer itself.
+            "0ULL"
           else
             raise "no hash function: #{self.join}"
           end
@@ -146,6 +152,13 @@ module ASTroGen
             "        astro_fprintf_cstr(fp, n->u.#{name}.#{self.name});"
           when 'double'
             "        fprintf(fp, \"%.17g\", n->u.#{name}.#{self.name});"
+          when 'void *'
+            # The pointer value isn't reproducible across runs and the
+            # contents are too large to render usefully in textual
+            # form — emit the operand's NAME as a placeholder
+            # (`<ac>` for an `ac` operand, etc.) so the dump reads
+            # naturally and the operand list stays well-formed.
+            "        fputs(\"<#{self.name}>\", fp);"
           else
             raise "unknown operand type: #{self.join}"
           end
@@ -167,6 +180,12 @@ module ASTroGen
             "    astro_fprint_cstr(fp, n->u.#{name}.#{self.name});"
           when 'double'
             "    fprintf(fp, \"        %.17g\", n->u.#{name}.#{self.name});"
+          when 'void *'
+            # Pointers can't be safely baked into a code-store SD —
+            # the value is per-process.  Emit NULL; nodes that take
+            # a void* operand should arrange for the pointer to be
+            # resolved at runtime (or AOT for those nodes is a no-op).
+            "    fprintf(fp, \"        (void *)NULL\");"
           else
             raise "unknown operand type: #{self.join}"
           end

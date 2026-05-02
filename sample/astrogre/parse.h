@@ -44,6 +44,13 @@ typedef struct astrogre_pattern {
      * the (id, pos) → fail mapping unsound. */
     int  n_branches;
     bool memo_eligible;
+
+    /* Aho-Corasick automaton for the leading-alt-of-literals
+     * prefilter (used by node_grep_search_ac).  Owned by the
+     * pattern; freed via the parse-internal ac_free in
+     * astrogre_pattern_free.  NULL when the pattern doesn't qualify
+     * (no leading alt of literals, single-byte alternation, etc.). */
+    void *ac;
 } astrogre_pattern;
 
 /* Match result (filled by astrogre_search / astrogre_search_from). */
