@@ -151,14 +151,78 @@ static VALUE module_instance_methods(CTX *c, VALUE self, int argc, VALUE *argv) 
     return r;
 }
 
-/* Module#method_defined?(name) */
+/* Module#method_defined?(name) — true for public/protected. */
 static VALUE module_method_defined_p(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1) return Qfalse;
     if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return Qfalse;
     ID name = SYMBOL_P(argv[0]) ? korb_sym2id(argv[0]) :
               korb_intern_n(((struct korb_string *)argv[0])->ptr,
                              ((struct korb_string *)argv[0])->len);
-    return KORB_BOOL(korb_class_find_method((struct korb_class *)self, name) != NULL);
+    struct korb_method *m = korb_class_find_method((struct korb_class *)self, name);
+    if (!m) return Qfalse;
+    /* CRuby: method_defined? returns true only for public / protected
+     * methods (not private).  Match that. */
+    return KORB_BOOL(m->visibility != KORB_VIS_PRIVATE);
+}
+
+/* Module#public_method_defined? / private_method_defined? /
+ * protected_method_defined? — visibility-filtered counterparts. */
+static VALUE module_public_method_defined_p(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1) return Qfalse;
+    if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return Qfalse;
+    ID name = SYMBOL_P(argv[0]) ? korb_sym2id(argv[0]) :
+              korb_intern_n(((struct korb_string *)argv[0])->ptr, ((struct korb_string *)argv[0])->len);
+    struct korb_method *m = korb_class_find_method((struct korb_class *)self, name);
+    return KORB_BOOL(m && m->visibility == KORB_VIS_PUBLIC);
+}
+
+static VALUE module_private_method_defined_p(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1) return Qfalse;
+    if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return Qfalse;
+    ID name = SYMBOL_P(argv[0]) ? korb_sym2id(argv[0]) :
+              korb_intern_n(((struct korb_string *)argv[0])->ptr, ((struct korb_string *)argv[0])->len);
+    struct korb_method *m = korb_class_find_method((struct korb_class *)self, name);
+    return KORB_BOOL(m && m->visibility == KORB_VIS_PRIVATE);
+}
+
+static VALUE module_protected_method_defined_p(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1) return Qfalse;
+    if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return Qfalse;
+    ID name = SYMBOL_P(argv[0]) ? korb_sym2id(argv[0]) :
+              korb_intern_n(((struct korb_string *)argv[0])->ptr, ((struct korb_string *)argv[0])->len);
+    struct korb_method *m = korb_class_find_method((struct korb_class *)self, name);
+    return KORB_BOOL(m && m->visibility == KORB_VIS_PROTECTED);
+}
+
+/* Module#private_instance_methods / public_instance_methods /
+ * protected_instance_methods — visibility-filtered list.  Only own
+ * methods (no inherited) since the existing instance_methods walks
+ * super for inherited. */
+static VALUE module_methods_by_vis(CTX *c, VALUE self, int argc, VALUE *argv,
+                                     enum korb_visibility vis) {
+    if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return korb_ary_new();
+    bool include_inherited = (argc < 1) || RTEST(argv[0]);
+    struct korb_class *k = (struct korb_class *)self;
+    VALUE r = korb_ary_new();
+    while (k) {
+        for (uint32_t b = 0; b < k->methods.bucket_cnt; b++) {
+            for (struct korb_method_table_entry *e = k->methods.buckets[b]; e; e = e->next) {
+                if (e->method && e->method->visibility == vis) korb_ary_push(r, korb_id2sym(e->name));
+            }
+        }
+        if (!include_inherited) break;
+        k = k->super;
+    }
+    return r;
+}
+static VALUE module_private_instance_methods(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return module_methods_by_vis(c, self, argc, argv, KORB_VIS_PRIVATE);
+}
+static VALUE module_public_instance_methods(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return module_methods_by_vis(c, self, argc, argv, KORB_VIS_PUBLIC);
+}
+static VALUE module_protected_instance_methods(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return module_methods_by_vis(c, self, argc, argv, KORB_VIS_PROTECTED);
 }
 
 /* Module#constants — sym list of declared constants. */

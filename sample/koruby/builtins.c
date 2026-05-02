@@ -739,7 +739,13 @@ void korb_init_builtins(void) {
     DEF(cObj, "instance_exec",    obj_instance_exec,       -1);
     DEF(cMod, "instance_method",  module_instance_method,   1);
     DEF(cMod, "instance_methods", module_instance_methods, -1);
-    DEF(cMod, "method_defined?",  module_method_defined_p,  1);
+    DEF(cMod, "method_defined?",            module_method_defined_p,            1);
+    DEF(cMod, "public_method_defined?",     module_public_method_defined_p,     1);
+    DEF(cMod, "private_method_defined?",    module_private_method_defined_p,    1);
+    DEF(cMod, "protected_method_defined?",  module_protected_method_defined_p,  1);
+    DEF(cMod, "private_instance_methods",   module_private_instance_methods,   -1);
+    DEF(cMod, "public_instance_methods",    module_public_instance_methods,    -1);
+    DEF(cMod, "protected_instance_methods", module_protected_instance_methods, -1);
     DEF(cMod, "constants",        module_constants,         0);
     DEF(cMod, "class_eval",       module_class_eval,       -1);
     DEF(cMod, "module_eval",      module_class_eval,       -1);

@@ -165,6 +165,7 @@ static VALUE str_aref(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE str_aset(CTX *c, VALUE self, int argc, VALUE *argv) {
+    CHECK_FROZEN_RET(c, self, Qnil);
     /* not used by optcarrot main path; stub */
     return Qnil;
 }
@@ -261,6 +262,7 @@ static VALUE str_include(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE str_replace(CTX *c, VALUE self, int argc, VALUE *argv) {
+    CHECK_FROZEN_RET(c, self, Qnil);
     if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return self;
     struct korb_string *s = (struct korb_string *)self;
     struct korb_string *o = (struct korb_string *)argv[0];
@@ -1005,6 +1007,7 @@ static VALUE str_oct(CTX *c, VALUE self, int argc, VALUE *argv) {
 /* ---------- String#prepend ----------
  * Mutates self by inserting other(s) at position 0; returns self. */
 static VALUE str_prepend(CTX *c, VALUE self, int argc, VALUE *argv) {
+    CHECK_FROZEN_RET(c, self, Qnil);
     struct korb_string *s = (struct korb_string *)self;
     /* Concatenate args into a single buffer first to keep the math simple. */
     long extra = 0;
@@ -1031,6 +1034,7 @@ static VALUE str_prepend(CTX *c, VALUE self, int argc, VALUE *argv) {
  * Mutates self.  pos can be negative (counts from end + 1, so -1
  * inserts before the last char as in CRuby).  Returns self. */
 static VALUE str_insert(CTX *c, VALUE self, int argc, VALUE *argv) {
+    CHECK_FROZEN_RET(c, self, Qnil);
     if (argc < 2 || !FIXNUM_P(argv[0]) || BUILTIN_TYPE(argv[1]) != T_STRING) return self;
     struct korb_string *s = (struct korb_string *)self;
     struct korb_string *p = (struct korb_string *)argv[1];

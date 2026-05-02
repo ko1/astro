@@ -778,6 +778,7 @@ static VALUE str_unpack(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE ary_concat(CTX *c, VALUE self, int argc, VALUE *argv) {
+    CHECK_FROZEN_RET(c, self, Qnil);
     for (int i = 0; i < argc; i++) {
         if (BUILTIN_TYPE(argv[i]) == T_ARRAY) {
             struct korb_array *o = (struct korb_array *)argv[i];
@@ -824,6 +825,7 @@ static VALUE ary_reverse(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE ary_rotate_bang(CTX *c, VALUE self, int argc, VALUE *argv) {
+    CHECK_FROZEN_RET(c, self, Qnil);
     struct korb_array *a = (struct korb_array *)self;
     if (a->len <= 1) return self;
     long n = (argc >= 1 && FIXNUM_P(argv[0])) ? FIX2LONG(argv[0]) : 1;
@@ -865,6 +867,7 @@ static VALUE ary_rotate(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE ary_reverse_bang(CTX *c, VALUE self, int argc, VALUE *argv) {
+    CHECK_FROZEN_RET(c, self, Qnil);
     struct korb_array *a = (struct korb_array *)self;
     for (long i = 0, j = a->len - 1; i < j; i++, j--) {
         VALUE t = a->ptr[i]; a->ptr[i] = a->ptr[j]; a->ptr[j] = t;
@@ -873,11 +876,13 @@ static VALUE ary_reverse_bang(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE ary_clear(CTX *c, VALUE self, int argc, VALUE *argv) {
+    CHECK_FROZEN_RET(c, self, Qnil);
     ((struct korb_array *)self)->len = 0;
     return self;
 }
 
 static VALUE ary_unshift(CTX *c, VALUE self, int argc, VALUE *argv) {
+    CHECK_FROZEN_RET(c, self, Qnil);
     struct korb_array *a = (struct korb_array *)self;
     /* shift right argc times */
     long oldlen = a->len;
@@ -888,6 +893,7 @@ static VALUE ary_unshift(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE ary_shift(CTX *c, VALUE self, int argc, VALUE *argv) {
+    CHECK_FROZEN_RET(c, self, Qnil);
     struct korb_array *a = (struct korb_array *)self;
     if (a->len == 0) return Qnil;
     VALUE v = a->ptr[0];
@@ -957,6 +963,7 @@ static VALUE ary_take(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE ary_fill(CTX *c, VALUE self, int argc, VALUE *argv) {
+    CHECK_FROZEN_RET(c, self, Qnil);
     /* Array#fill(val) — fill all slots with val */
     if (argc < 1) return self;
     struct korb_array *a = (struct korb_array *)self;
@@ -1041,6 +1048,7 @@ static VALUE ary_max_by(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE ary_slice_bang(CTX *c, VALUE self, int argc, VALUE *argv) {
+    CHECK_FROZEN_RET(c, self, Qnil);
     /* Array#slice!(start, len) — remove and return that range */
     if (argc < 1 || !FIXNUM_P(argv[0])) return Qnil;
     long start = FIX2LONG(argv[0]);
@@ -1110,6 +1118,7 @@ static VALUE ary_at(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 /* Array#delete(obj) — remove all == matches; return obj if found else nil. */
 static VALUE ary_delete(CTX *c, VALUE self, int argc, VALUE *argv) {
+    CHECK_FROZEN_RET(c, self, Qnil);
     struct korb_array *a = (struct korb_array *)self;
     long w = 0;
     bool found = false;
@@ -1126,6 +1135,7 @@ static VALUE ary_delete(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 /* Array#delete_at(i) — remove element at i, return removed or nil. */
 static VALUE ary_delete_at(CTX *c, VALUE self, int argc, VALUE *argv) {
+    CHECK_FROZEN_RET(c, self, Qnil);
     if (!FIXNUM_P(argv[0])) return Qnil;
     struct korb_array *a = (struct korb_array *)self;
     long i = FIX2LONG(argv[0]);
@@ -1139,6 +1149,7 @@ static VALUE ary_delete_at(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 /* Array#delete_if { |x| ... } — remove where block returns truthy. */
 static VALUE ary_delete_if(CTX *c, VALUE self, int argc, VALUE *argv) {
+    CHECK_FROZEN_RET(c, self, Qnil);
     struct korb_array *a = (struct korb_array *)self;
     long w = 0;
     for (long r = 0; r < a->len; r++) {
@@ -1155,6 +1166,7 @@ static VALUE ary_delete_if(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 /* Array#reject { |x| ... } — like delete_if but returns a new array. */
 static VALUE ary_reject(CTX *c, VALUE self, int argc, VALUE *argv) {
+    CHECK_FROZEN_RET(c, self, Qnil);
     struct korb_array *a = (struct korb_array *)self;
     VALUE r = korb_ary_new();
     for (long i = 0; i < a->len; i++) {
@@ -1167,6 +1179,7 @@ static VALUE ary_reject(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 /* Array#insert(i, *elts) — splice elts into self starting at i. */
 static VALUE ary_insert(CTX *c, VALUE self, int argc, VALUE *argv) {
+    CHECK_FROZEN_RET(c, self, Qnil);
     if (argc < 1 || !FIXNUM_P(argv[0])) return self;
     struct korb_array *a = (struct korb_array *)self;
     long i = FIX2LONG(argv[0]);
@@ -1183,6 +1196,7 @@ static VALUE ary_insert(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 /* Array#replace(other) — destructive replace. */
 static VALUE ary_replace(CTX *c, VALUE self, int argc, VALUE *argv) {
+    CHECK_FROZEN_RET(c, self, Qnil);
     if (BUILTIN_TYPE(argv[0]) != T_ARRAY) return self;
     struct korb_array *a = (struct korb_array *)self;
     struct korb_array *b = (struct korb_array *)argv[0];

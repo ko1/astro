@@ -2146,11 +2146,13 @@ void korb_runtime_init(void) {
     memset(korb_vm, 0, sizeof(*korb_vm));
     korb_vm->method_serial = 1; korb_g_method_serial = 1;
 
-    /* bootstrap classes — CRuby: Class < Module < Object.  Each class's
-     * own metaclass is Class itself. */
-    struct korb_class *cObject = korb_class_new(korb_intern("Object"), NULL,    T_OBJECT);
-    struct korb_class *cModule = korb_class_new(korb_intern("Module"), cObject, T_MODULE);
-    struct korb_class *cClass  = korb_class_new(korb_intern("Class"),  cModule, T_CLASS);
+    /* bootstrap classes — CRuby: BasicObject ← Object ← Module ← Class.
+     * Each class's own metaclass is Class itself. */
+    struct korb_class *cBasic  = korb_class_new(korb_intern("BasicObject"), NULL,    T_OBJECT);
+    struct korb_class *cObject = korb_class_new(korb_intern("Object"),      cBasic,  T_OBJECT);
+    struct korb_class *cModule = korb_class_new(korb_intern("Module"),      cObject, T_MODULE);
+    struct korb_class *cClass  = korb_class_new(korb_intern("Class"),       cModule, T_CLASS);
+    cBasic->basic.klass  = (VALUE)cClass;
     cObject->basic.klass = (VALUE)cClass;
     cClass->basic.klass  = (VALUE)cClass;
     cModule->basic.klass = (VALUE)cClass;
@@ -2175,7 +2177,21 @@ void korb_runtime_init(void) {
     korb_vm->comparable_module = korb_module_new(korb_intern("Comparable"));
     korb_vm->enumerable_module = korb_module_new(korb_intern("Enumerable"));
 
+    /* CRuby's hierarchy has Object include Kernel — that's how every
+     * object gets `puts` / `nil?` / `is_a?` etc.  Hook the include here
+     * so `Object.ancestors` reports `[Object, Kernel, BasicObject]`. */
+    {
+        struct korb_class *o = cObject;
+        if (o->includes_capa == 0) {
+            o->includes_capa = 4;
+            o->includes = korb_xmalloc(o->includes_capa * sizeof(*o->includes));
+        }
+        o->includes[o->includes_cnt++] = korb_vm->kernel_module;
+    }
+
     /* register top-level constants */
+    korb_const_set(cObject, cBasic->name,                 (VALUE)cBasic);
+    korb_const_set(cObject, korb_vm->kernel_module->name, (VALUE)korb_vm->kernel_module);
     korb_const_set(cObject, korb_vm->object_class->name,  (VALUE)cObject);
     korb_const_set(cObject, korb_vm->class_class->name,   (VALUE)cClass);
     korb_const_set(cObject, korb_vm->module_class->name,  (VALUE)cModule);

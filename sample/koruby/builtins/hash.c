@@ -148,6 +148,7 @@ static VALUE hash_merge(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 /* Hash#merge! / #update — destructive merge into self. */
 static VALUE hash_merge_bang(CTX *c, VALUE self, int argc, VALUE *argv) {
+    CHECK_FROZEN_RET(c, self, Qnil);
     for (int i = 0; i < argc; i++) {
         if (BUILTIN_TYPE(argv[i]) != T_HASH) continue;
         struct korb_hash *o = (struct korb_hash *)argv[i];
@@ -195,6 +196,7 @@ static VALUE hash_fetch(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE hash_delete(CTX *c, VALUE self, int argc, VALUE *argv) {
+    CHECK_FROZEN_RET(c, self, Qnil);
     if (argc < 1) return Qnil;
     struct korb_hash *h = (struct korb_hash *)self;
     VALUE key = argv[0];
@@ -295,6 +297,7 @@ static VALUE hash_default_proc_get(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 /* Hash#clear — empty the hash. */
 static VALUE hash_clear(CTX *c, VALUE self, int argc, VALUE *argv) {
+    CHECK_FROZEN_RET(c, self, Qnil);
     struct korb_hash *h = (struct korb_hash *)self;
     /* Walk buckets and clear chains. */
     for (uint32_t i = 0; i < h->bucket_cnt; i++) h->buckets[i] = NULL;
@@ -305,6 +308,7 @@ static VALUE hash_clear(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 /* Hash#delete_if { |k, v| ... } — destructive reject. */
 static VALUE hash_delete_if(CTX *c, VALUE self, int argc, VALUE *argv) {
+    CHECK_FROZEN_RET(c, self, Qnil);
     struct korb_hash *h = (struct korb_hash *)self;
     /* Snapshot keys so we can iterate without mutation issues. */
     VALUE keys = korb_ary_new();
@@ -328,6 +332,7 @@ static VALUE hash_delete_if(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 /* Hash#keep_if { |k, v| ... } — opposite of delete_if. */
 static VALUE hash_keep_if(CTX *c, VALUE self, int argc, VALUE *argv) {
+    CHECK_FROZEN_RET(c, self, Qnil);
     struct korb_hash *h = (struct korb_hash *)self;
     VALUE keys = korb_ary_new();
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
@@ -360,6 +365,7 @@ static VALUE hash_compact(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 /* Hash#compact! — destructive compact. */
 static VALUE hash_compact_bang(CTX *c, VALUE self, int argc, VALUE *argv) {
+    CHECK_FROZEN_RET(c, self, Qnil);
     struct korb_hash *h = (struct korb_hash *)self;
     VALUE keys = korb_ary_new();
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
@@ -420,6 +426,7 @@ static VALUE hash_reject(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 /* Hash#replace(other) — destructive replace. */
 static VALUE hash_replace(CTX *c, VALUE self, int argc, VALUE *argv) {
+    CHECK_FROZEN_RET(c, self, Qnil);
     if (BUILTIN_TYPE(argv[0]) != T_HASH) return self;
     hash_clear(c, self, 0, NULL);
     struct korb_hash *src = (struct korb_hash *)argv[0];
@@ -431,6 +438,7 @@ static VALUE hash_replace(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 /* Hash#shift — remove and return the first [k, v] pair. */
 static VALUE hash_shift(CTX *c, VALUE self, int argc, VALUE *argv) {
+    CHECK_FROZEN_RET(c, self, Qnil);
     struct korb_hash *h = (struct korb_hash *)self;
     if (!h->first) return Qnil;
     VALUE k = h->first->key;
