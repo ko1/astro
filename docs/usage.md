@@ -188,31 +188,40 @@ struct NodeHead {
 
 ## Writing `node.c`
 
-Provide the runtime support functions, then `#include` the generated files:
+You provide a few small helpers (allocator, optional dispatch trace) and
+then `#include` two runtime files plus the generated ones.  The runtime
+files (`runtime/astro_node.c` and `runtime/astro_code_store.c`) are
+intentionally `#include`-style — they need to see your `NODE`,
+`node_hash_t`, and `NodeKind` types, so they can't be a separately-
+compiled library.
 
 ```c
 #include "node.h"
 
-// --- Hash functions (required by generated hash code) ---
-static node_hash_t hash_merge(node_hash_t h, node_hash_t v) { /* ... */ }
-static node_hash_t hash_cstr(const char *s) { /* FNV hash */ }
-static node_hash_t hash_uint32(uint32_t ui) { /* MurmurHash */ }
-static node_hash_t hash_node(NODE *n) { /* cached HASH() call */ }
+// --- Required by runtime/astro_node.c (#include'd below) ---
+static NODE *node_allocate(size_t size) {
+    NODE *n = calloc(1, size);
+    if (!n) { fprintf(stderr, "out of memory\n"); abort(); }
+    return n;
+}
 
-// --- Node allocation ---
-static NODE *node_allocate(size_t size) { /* malloc + error check */ }
+static void dispatch_info(CTX *c, NODE *n, bool end) {
+    // Optional tracing hook, called from generated DISPATCH_xxx when
+    // a debug option is set.  Empty body is fine if you don't need it.
+}
 
-// --- Debug tracing ---
-static void dispatch_info(CTX *c, NODE *n, bool end) { /* optional */ }
+// --- Common runtime helpers ---
+// Provides hash_merge / hash_cstr / hash_uint32 / hash_node, plus the
+// public HASH() / DUMP() implementations and alloc_dispatcher_name().
+// Must come AFTER node_allocate / dispatch_info above.
+#include "astro_node.c"
 
-// --- Specialized code repository ---
-// sc_repo_clear, sc_repo_search, sc_repo_add, alloc_dispatcher_name
-// ... (see sample/calc/node.c for reference)
+// --- Code Store (AOT / PG / JIT lookup + build) ---
+// Provides astro_cs_init / astro_cs_load / astro_cs_compile /
+// astro_cs_build / astro_cs_reload / astro_cs_disasm.
+#include "astro_code_store.c"
 
-// --- Core functions: HASH, EVAL, DUMP, OPTIMIZE, SPECIALIZE, INIT ---
-// ... (see sample/calc/node.c for reference)
-
-// --- Include generated code ---
+// --- Generated code ---
 #include "node_eval.c"
 #include "node_dispatch.c"
 #include "node_dump.c"
@@ -220,42 +229,211 @@ static void dispatch_info(CTX *c, NODE *n, bool end) { /* optional */ }
 #include "node_specialize.c"
 #include "node_replace.c"
 #include "node_alloc.c"
-#include "node_specialized.c"
 
-#ifndef NODE_SPECIALIZED_INCLUDED
-static struct specialized_code sc_entries[] = {};
-#endif
+// --- The two functions that ASTroGen / runtime expect you to provide ---
+
+VALUE EVAL(CTX *c, NODE *n) {
+    return (*n->head.dispatcher)(c, n);
+}
+
+NODE *OPTIMIZE(NODE *n) {
+    // Default: ask the code store; on hit, the dispatcher is patched in
+    // place and subsequent EVAL goes straight to the specialised SD.
+    astro_cs_load(n, NULL);
+    return n;
+}
 
 void INIT(void) {
-    // Load pre-compiled specialized dispatchers from sc_entries[]
+    // Initialise the code store.  store_dir is where SD_<hash>.c and
+    // all.so live; src_dir is what specialised .c files will #include
+    // (your node.h etc.); the version arg is a cache-busting key — pass
+    // 0 to skip version checking.
+    astro_cs_init("code_store", ".", 0);
 }
 ```
+
+Larger samples customise `OPTIMIZE` and `INIT` — e.g. `sample/naruby`
+launches a JIT submit thread inside `OPTIMIZE`, `sample/astrogre`
+collects all entry nodes during parse and walks the list in
+`astrogre_pattern_aot_compile` (see [Entry nodes](#entry-nodes) below).
 
 ## Build Setup
 
 ### Makefile
 
+The build only needs the host binary itself; specialised code is
+generated and compiled at runtime by `astro_cs_build`.  Point `-I` at
+both your sample directory and `runtime/` so `node.c` can find
+`astro_node.c` and `astro_code_store.c` for `#include`.
+
 ```makefile
+ASTRO_LIB     = path/to/astro/lib
+ASTRO_RUNTIME = path/to/astro/runtime
+
 GENERATED = node_eval.c node_dispatch.c node_hash.c \
             node_dump.c node_alloc.c node_specialize.c \
             node_replace.c node_head.h
 
 # Generate from node.def
 $(GENERATED): node.def
-	ruby -I path/to/astro/lib -r astrogen -e 'ASTroGen.start []'
-
-# Empty file on first build (populated after first run)
-node_specialized.c:
-	touch node_specialized.c
+	ruby -I $(ASTRO_LIB) -r astrogen -e 'ASTroGen.start []'
 
 my_lang: main.c node.c $(GENERATED)
-	gcc -O3 -o my_lang main.c node.c
+	gcc -O2 -I. -I$(ASTRO_RUNTIME) -o my_lang main.c node.c -ldl
 ```
 
-### Two-pass compilation cycle
+`-ldl` is needed because `astro_code_store.c` calls `dlopen` /
+`dlsym` to load `code_store/all.so` at runtime.
 
-1. **First build**: `node_specialized.c` is empty. The interpreter runs and generates specialized dispatchers into `node_specialized.c`.
-2. **Second build**: Recompile with the generated specializations. The C compiler inlines the specialized dispatchers, producing optimized native code.
+### Code Store lifecycle
+
+The runtime code store replaces the older two-pass node_specialized.c
+flow.  Specialised dispatchers are emitted, compiled, and patched into
+the AST at runtime — no second `gcc` invocation on the host source.
+
+```
+[1st run, no code_store/all.so present]
+  INIT() → astro_cs_init("code_store", ".", 0)   # nothing to load yet
+  parse → ALLOC nodes → OPTIMIZE → astro_cs_load # all miss
+  EVAL                                           # interpreter path
+  astro_cs_compile(entry, NULL)                  # writes code_store/c/SD_<hash>.c
+  astro_cs_build(NULL)                           # invokes cc to produce all.so
+  astro_cs_reload()                              # dlopen the just-built .so
+
+[2nd run, all.so present]
+  INIT() → astro_cs_init(...)                    # dlopen all.so
+  parse → ALLOC → OPTIMIZE → astro_cs_load       # hit → dispatcher patched
+  EVAL                                           # specialised SD path
+```
+
+For AOT mode, samples typically call `astro_cs_compile` →
+`astro_cs_build` → `astro_cs_reload` once during the first run, then
+re-resolve every NODE's dispatcher so the freshly-baked SDs take
+effect immediately (otherwise only the next process invocation
+benefits).  See `sample/<lang>/node.c::INIT` and the
+`<lang>_reload_all_dispatchers` helper for the standard pattern.
+
+For JIT mode, `OPTIMIZE` submits the entry node to a background
+thread that runs `astro_cs_compile` + `astro_cs_build` asynchronously,
+then patches the dispatcher when the build completes.  See
+`sample/naruby/`.
+
+## Runtime Library — `runtime/astro_node.c` and `runtime/astro_code_store.{h,c}`
+
+The runtime files are framework-supplied helpers that every ASTro
+sample pulls in.  They are intentionally `#include`-style (not a
+separately compiled library) because they need to see the host's
+`NODE`, `node_hash_t`, `NodeKind` types — which are defined per
+sample.  Pre-conditions for each include are noted below.
+
+### `runtime/astro_node.c` — common per-node helpers
+
+`#include` it from your `node.c` AFTER defining `node_allocate` and
+`dispatch_info`, AFTER `#include "node.h"`, and BEFORE
+`#include "astro_code_store.c"` and the generated files.
+
+| Symbol | Purpose |
+|--------|---------|
+| `node_hash_t hash_merge(h, v)`               | Combine two hashes (FNV-mix variant). |
+| `node_hash_t hash_cstr(const char *s)`        | FNV-1a 64-bit string hash. |
+| `node_hash_t hash_uint32(uint32_t)`           | MurmurHash3 finaliser. |
+| `node_hash_t hash_uint64(uint64_t)`           | Same, on 64-bit. |
+| `node_hash_t hash_double(double)`             | Same, on `double` bit-pattern. |
+| `node_hash_t hash_node(NODE *)`               | Cached child-node hash; uses `head.flags.has_hash_value`. |
+| `node_hash_t HASH(NODE *)`                    | Public hash entry; cycles → 0; cached on first call. |
+| `void DUMP(FILE *, NODE *, bool oneline)`     | Public dump entry; cycle-safe via `flags.is_dumping`. |
+| `astro_fprintf_cstr(FILE *, const char *)`   | Escape-and-quote a C string for embedding in generated source. |
+| `alloc_dispatcher_name(NODE *)`               | Produce `SD_<hash>` (or `PGSD_<hash>` under PG mode). |
+
+The hash functions are the building blocks ASTroGen's generated
+`node_hash.c` calls into — you don't write them yourself, you just
+have to provide the file via the include.
+
+### `runtime/astro_code_store.h` — public AOT/PG/JIT API
+
+Include this header before `astro_code_store.c` so your sample's
+public-facing code (e.g. `INIT`, `OPTIMIZE`) can call into it.
+
+```c
+// Initialise.  Reads `store_dir`/all.so if present, dlopens it.  Subsequent
+// astro_cs_load calls hit the in-memory dispatcher table populated from .so
+// symbols.  src_dir is what generated SD_<hash>.c will #include — usually
+// the directory containing your node.h.  version is a cache-busting key
+// (e.g. mtime of host binary); 0 disables the check.
+void astro_cs_init(const char *store_dir, const char *src_dir, uint64_t version);
+
+// Look up specialised code for n's hash; on hit, patches n->head.dispatcher
+// and returns true.  `file` (nullable) selects PGC mode (Hopt lookup) when
+// non-NULL; pass NULL for AOT (Horg) lookup.
+bool astro_cs_load(NODE *n, const char *file);
+
+// Generate specialised C source for an entry node.  The entry becomes the
+// public extern symbol; its subtree's nodes are emitted as static inline
+// children — gcc inlines them through the dispatcher arg, so the chain
+// becomes one tight basic block in the SD function.  Writes to
+// <store_dir>/c/SD_<hash>.c (or PGSD_<hash>.c if `file != NULL`).
+void astro_cs_compile(NODE *entry, const char *file);
+
+// Compile every SD_*.c in store_dir into all.so via `make -j`.  extra_cflags
+// is appended to the cc invocation (e.g. `-I/usr/include/ruby` for embedded
+// hosts); pass NULL when none.
+void astro_cs_build(const char *extra_cflags);
+
+// dlclose + dlopen of all.so.  Use after astro_cs_build to make freshly-
+// baked symbols visible in the running process.
+void astro_cs_reload(void);
+
+// Disassembly print (via objdump) of the specialised dispatcher for n.
+// No-op if n isn't specialised yet.  Diagnostic only.
+void astro_cs_disasm(NODE *n);
+```
+
+The full design rationale (entry-as-public, hash-keyed dedup, the
+PGC vs AOT split, the JIT/AOT/PG mode matrix) is in
+[`idea.md` §7](./idea.md).  Known traps with the dlopen-based loader
+(path-name caching, mid-run library replacement, etc.) are in
+[`code_store_quirks.md`](./code_store_quirks.md).
+
+### Entry nodes — what to register
+
+Most samples have a single entry per top-level execution unit (a
+script, a method body, a regex pattern), and a single
+`astro_cs_compile(root, NULL)` call covers the whole tree because
+every reachable node gets emitted as `static inline` inside the
+root's SD file.  The chain of dispatcher pointers passed via
+`EVAL_ARG`-style arguments lets gcc inline the entire chain.
+
+But some patterns of dispatch break that assumption: when a NODE's
+dispatcher is read at runtime through some indirection — a CTX
+field, a stack frame, a runtime selection — the SD specialiser
+cannot constant-fold the dispatcher value.  Those sites need the
+target NODE registered as its **own** entry so its SD becomes a
+public extern symbol that `astro_cs_load` can dlsym.
+
+Concrete examples from `sample/astrogre`:
+
+| Site (in `node.def`)                       | Entry NODE that needs registration |
+|--------------------------------------------|-----------------------------------|
+| `EVAL(c, c->rep_cont_sentinel)` — global singleton | The rep_cont sentinel itself      |
+| `EVAL(c, f->body)` — frame-stored          | Each `node_re_rep`'s body operand |
+| `EVAL(c, f->outer_next)` — frame-stored    | Each `node_re_rep`'s outer_next   |
+| `EVAL(c, c->sub_chains[idx])` — array lookup | Each subroutine chain root      |
+| `EVAL(c, c->sub_top->return_to)` — frame-stored | Each subroutine_call's outer_next |
+
+The convention used by `astrogre` is to push these candidates onto
+a list during IR-lower (when the role is locally known: "this is
+a rep body", "this is a subroutine target") and iterate the list
+in the AOT-compile entry point.  See `sample/astrogre/parse.c::lower_push_entry`
+and `astrogre_pattern_aot_compile`.
+
+A previous approach was a post-build file rewrite that turned every
+inner SD into an extern weak wrapper (`SD_<hash>` → `SD_<hash>_INL`
++ extern alias).  It worked but was a band-aid — entry registration
+is the framework-supported path and yields cleaner dlopen output.
+
+For samples without frame-stored or runtime-indirect dispatch (e.g.
+`sample/calc`, `sample/naruby` for the simple cases), one entry per
+top-level callable (= per method body, per script root) is enough.
 
 ## Extending ASTroGen
 
@@ -410,9 +588,24 @@ end
 
 | Name | Description |
 |------|-------------|
-| `EVAL_ARG(c, child)` | Evaluate a child node (direct dispatcher call) |
-| `OPTIMIZE(n)` | Look up and apply specialized dispatcher for node `n` |
-| `OPTION` | Global options struct (user-defined) |
+| `EVAL_ARG(c, child)` | Evaluate a child node via the dispatcher value passed in as a NODE_DEF parameter.  The SD specialiser folds this into a direct call to the child's inlined SD, so the chain becomes one tight basic block. |
+| `EVAL(c, n)` | Evaluate a node via runtime read of `n->head.dispatcher`.  Use when the NODE pointer comes from a CTX field, stack frame, or runtime selection — anywhere the specialiser cannot constant-fold the dispatcher value (e.g. singletons, frame-stored continuations, array lookups).  The target NODE typically needs to be registered with `astro_cs_compile` so it has a public-extern SD that dlsym can find. |
+| `OPTIMIZE(n)` | Walk the tree and ask `astro_cs_load` to patch each node's dispatcher to its specialised SD when the code store has one. |
+| `OPTION` | Global options struct (user-defined). |
+
+### Runtime API summary
+
+| Function | Header | Purpose |
+|----------|--------|---------|
+| `astro_cs_init(store_dir, src_dir, ver)` | `astro_code_store.h` | Set up code-store paths; dlopen all.so if present. |
+| `astro_cs_load(n, file)`                  | "                    | Try patching n's dispatcher from the dlopen'd SDs. |
+| `astro_cs_compile(entry, file)`           | "                    | Emit specialised C source for an entry node's subtree. |
+| `astro_cs_build(extra_cflags)`            | "                    | `make -j` all SD_*.c → all.so. |
+| `astro_cs_reload()`                       | "                    | dlclose + dlopen of all.so to pick up freshly-baked code. |
+| `astro_cs_disasm(n)`                      | "                    | Diagnostic: objdump n's specialised SD. |
+| `HASH(n)`                                 | (via `astro_node.c`) | Cached structural hash, used as the SD lookup key. |
+| `DUMP(fp, n, oneline)`                    | "                    | Cycle-safe AST pretty-printer. |
+| `EVAL(c, n)` / `EVAL_ARG(c, n)`           | (defined per-sample) | Dispatch macros — see the table above. |
 
 ### ASTroGen command-line options
 
@@ -427,6 +620,8 @@ ruby -r astrogen -e 'ASTroGen.start ARGV' -- [options]
 
 ### Examples
 
-- `sample/calc/` — Minimal calculator. Good starting point.
-- `sample/naruby/` — Ruby subset with functions, variables, operators, JIT support. Standalone C program.
-- `sample/abruby/` — Ruby subset as a CRuby C extension. Classes, methods, blocks, GC integration, builtins. Demonstrates `register_gen_task` for custom mark function generation and `@ref` operands for inline caches.
+- `sample/calc/` — Minimal calculator (3 nodes).  Good starting point for understanding the runtime + ASTroGen flow without language-design noise.
+- `sample/naruby/` — Ruby subset with functions, variables, operators, JIT support.  Standalone C program; the canonical "real language" example.
+- `sample/abruby/` — Ruby subset as a CRuby C extension.  Classes, methods, blocks, GC integration, builtins.  Demonstrates `register_gen_task` for custom mark function generation and `@ref` operands for inline caches.
+- `sample/luastro/`, `sample/ascheme/`, `sample/wastro/`, `sample/jstro/`, `sample/astocaml/`, `sample/castro/`, `sample/koruby/`, `sample/asom/` — additional language fronts using the same framework.
+- `sample/astrogre/` — Ruby/Onigmo-compatible regex engine with a grep CLI (`are`).  Demonstrates entry-node registration for AST shapes that have multiple runtime-indirect dispatch sites (rep continuations, subroutine chains).  Particularly useful when the AST isn't tree-shaped from a single root.
