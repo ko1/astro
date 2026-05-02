@@ -20,6 +20,14 @@ struct frame_context {
     uint32_t slot_base;   /* absolute slot of locals[0] */
     uint32_t arg_index;   /* next free absolute slot for arg staging */
     uint32_t max_cnt;     /* highest absolute slot ever used */
+    /* `block_floor` — the lowest slot that arg_index is allowed to
+     * rewind to.  Bumped when a child block (closure) is popped: its
+     * slot range stays committed forever, because the captured proc
+     * can be invoked any time and will write to its param_base /
+     * locals.  Without this, a later sibling expression in the parent
+     * would happily allocate the same slots and the proc's later
+     * yield would clobber whatever the sibling wrote. */
+    uint32_t block_floor;
     bool is_block;        /* true for block frames (share parent fp) */
     /* `def f(...)` forwarding: hidden slots holding the captured *args,
      * **kwargs, and &blk so the body's `f(...)` calls can splat them. */
@@ -82,6 +90,7 @@ static void push_frame(struct transduce_context *tc, pm_constant_id_list_t *loca
     }
     f->arg_index = f->slot_base + (locals ? locals->size : 0);
     f->max_cnt = f->arg_index;
+    f->block_floor = f->arg_index;
     f->fwd_rest_slot = -1;
     f->fwd_kwh_slot = -1;
     f->fwd_blk_slot = -1;
@@ -104,6 +113,7 @@ static void pop_frame(struct transduce_context *tc) {
     if (parent && child->is_block) {
         if (child->max_cnt > parent->max_cnt) parent->max_cnt = child->max_cnt;
         if (child->max_cnt > parent->arg_index) parent->arg_index = child->max_cnt;
+        if (child->max_cnt > parent->block_floor) parent->block_floor = child->max_cnt;
     }
     tc->frame = parent;
 }
@@ -143,6 +153,10 @@ static uint32_t inc_arg_index(struct transduce_context *tc) {
 }
 
 static void rewind_arg_index(struct transduce_context *tc, uint32_t to) {
+    /* Don't reuse slots that have been committed to a captured block
+     * (closure).  Those slots stay reserved forever — see the
+     * block_floor comment in struct frame_context. */
+    if (to < tc->frame->block_floor) to = tc->frame->block_floor;
     tc->frame->arg_index = to;
 }
 

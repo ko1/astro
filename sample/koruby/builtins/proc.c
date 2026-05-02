@@ -80,13 +80,16 @@ VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     VALUE *prev_fp = c->fp;
     VALUE prev_self = c->self;
-    VALUE *new_fp = c->sp + 1;
-    if (new_fp + p->env_size + 16 >= c->stack_end) {
-        korb_raise(c, NULL, "stack overflow (proc call)");
+    /* Use the proc's own captured env directly so writes to closure
+     * variables (`r = ...` inside the block) reach the outer scope.
+     * korb_proc_snapshot_env_if_in_frame already detaches env to heap
+     * when the enclosing method's frame goes away, so by the time
+     * proc.call runs the env is safe to share. */
+    VALUE *new_fp = p->env;
+    if (UNLIKELY(!new_fp)) {
+        korb_raise(c, NULL, "proc with no env");
         return Qnil;
     }
-    /* Snapshot env */
-    for (uint32_t i = 0; i < p->env_size; i++) new_fp[i] = p->env[i];
     /* Kwargs peel: if block declares kwargs and last arg is a Hash,
      * stash it; otherwise default to {}. */
     VALUE peeled_kwh = Qundef;
