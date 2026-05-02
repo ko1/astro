@@ -1134,9 +1134,13 @@ ire_optimize(ire_node_t *n)
  * outcome at (id, pos) depends only on local state (pos + str), not on
  * captures or recursion depth.  Backref / atomic / subroutine /
  * conditional break that — different code paths reaching the same
- * (id, pos) may have different captures and different outcomes. */
+ * (id, pos) may have different captures and different outcomes.  A
+ * capture INSIDE a lookaround is also unsound: which capture set
+ * survives the lookaround can vary by path, so two memo-keyed-equal
+ * subtrees aren't actually equivalent.  Tracked via the `in_la` flag
+ * recursing through (?=…), (?!…), (?<=…), (?<!…) bodies. */
 static bool
-ire_memo_eligible(const ire_node_t *n)
+ire_memo_eligible_inner(const ire_node_t *n, bool in_la)
 {
     if (!n) return true;
     switch (n->kind) {
@@ -1153,21 +1157,31 @@ ire_memo_eligible(const ire_node_t *n)
     case IRE_KEEP:
     case IRE_LAST_MATCH:
         return true;
-    case IRE_GROUP:         return ire_memo_eligible(n->u.group.body);
+    case IRE_GROUP:
+        if (in_la) return false;  /* capture inside lookaround → unsound */
+        return ire_memo_eligible_inner(n->u.group.body, in_la);
     case IRE_NCGROUP:
+        return ire_memo_eligible_inner(n->u.nc.body, in_la);
     case IRE_LOOKAHEAD: case IRE_NEG_LOOKAHEAD:
     case IRE_LOOKBEHIND: case IRE_NEG_LOOKBEHIND:
-        return ire_memo_eligible(n->u.nc.body);
-    case IRE_REP:           return ire_memo_eligible(n->u.rep.body);
+        return ire_memo_eligible_inner(n->u.nc.body, true);
+    case IRE_REP:           return ire_memo_eligible_inner(n->u.rep.body, in_la);
     case IRE_CONCAT:
         for (size_t i = 0; i < n->u.cat.n; i++) {
-            if (!ire_memo_eligible(n->u.cat.xs[i])) return false;
+            if (!ire_memo_eligible_inner(n->u.cat.xs[i], in_la)) return false;
         }
         return true;
     case IRE_ALT:
-        return ire_memo_eligible(n->u.alt.l) && ire_memo_eligible(n->u.alt.r);
+        return ire_memo_eligible_inner(n->u.alt.l, in_la) &&
+               ire_memo_eligible_inner(n->u.alt.r, in_la);
     }
     return false;
+}
+
+static bool
+ire_memo_eligible(const ire_node_t *n)
+{
+    return ire_memo_eligible_inner(n, false);
 }
 
 /* True iff matching `n` is guaranteed to consume at least one byte on

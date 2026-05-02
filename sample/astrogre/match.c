@@ -79,13 +79,19 @@ astrogre_search_from(astrogre_pattern *p, const char *str, size_t len,
     c.stack_limit = astrogre_stack_limit();
 
     /* MatchCache state.  Allocated lazily by node_re_alt /
-     * node_re_rep_cont once backtrack_count exceeds memo_threshold;
-     * if the pattern isn't eligible (backref / atomic / subroutine /
-     * conditional) we leave memo_eligible false so it never fires. */
+     * node_re_rep_cont once backtrack_count exceeds memo_threshold.
+     *
+     * Threshold formula matches Onigmo's: `str_len × n_branches`.
+     * Below this, backtracking volume is consistent with normal
+     * matching (each branch may try ~str_len positions).  Above it,
+     * backtracking is super-linear and almost certainly catastrophic.
+     * Keeping the threshold proportional to n_branches avoids paying
+     * memory on patterns that just have a lot of branches but each
+     * fails quickly (alt-3-of-literals on long input etc.). */
     c.memo            = NULL;
     c.n_branches      = p->n_branches;
     c.backtrack_count = 0;
-    c.memo_threshold  = len;
+    c.memo_threshold  = (size_t)len * (size_t)(p->n_branches > 0 ? p->n_branches : 1);
     c.memo_eligible   = p->memo_eligible;
 
     bool r = (bool)EVAL(&c, p->root);
