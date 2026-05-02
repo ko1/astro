@@ -406,26 +406,82 @@ static VALUE str_sub(CTX *c, VALUE self, int argc, VALUE *argv) {
     return out;
 }
 
-static VALUE str_tr(CTX *c, VALUE self, int argc, VALUE *argv) {
-    /* simplistic: each char in arg0 maps to corresponding char in arg1 */
-    if (argc < 2 || BUILTIN_TYPE(argv[0]) != T_STRING || BUILTIN_TYPE(argv[1]) != T_STRING) return korb_str_dup(self);
-    struct korb_string *s = (struct korb_string *)self;
-    struct korb_string *from = (struct korb_string *)argv[0];
-    struct korb_string *to = (struct korb_string *)argv[1];
-    char *out = korb_xmalloc_atomic(s->len + 1);
-    for (long i = 0; i < s->len; i++) {
-        char ch = s->ptr[i];
-        out[i] = ch;
-        for (long j = 0; j < from->len; j++) {
-            if (from->ptr[j] == ch) {
-                if (j < to->len) out[i] = to->ptr[j];
-                else if (to->len > 0) out[i] = to->ptr[to->len-1];
-                break;
-            }
+/* Expand a tr-spec ("a-zA-Z") into a 256-byte character table where
+ * tbl[ch] = mapped_char_or_(-1 if not in spec).  Both `from` and `to`
+ * are expanded into their full char sequences first; if `to` is
+ * shorter, its last char is repeated.  Negation (^) on the `from`
+ * side is supported. */
+static long str_tr_expand(const char *spec, long len, char *out, long out_cap) {
+    long w = 0;
+    long i = 0;
+    while (i < len && w < out_cap) {
+        if (i + 2 < len && spec[i+1] == '-') {
+            unsigned char a = (unsigned char)spec[i];
+            unsigned char b = (unsigned char)spec[i+2];
+            if (b < a) { unsigned char t = a; a = b; b = t; }
+            for (int k = a; k <= b && w < out_cap; k++) out[w++] = (char)k;
+            i += 3;
+        } else {
+            out[w++] = spec[i++];
         }
     }
-    out[s->len] = 0;
-    return korb_str_new(out, s->len);
+    return w;
+}
+
+/* Run tr/tr_s with `squeeze` controlling whether runs of replaced chars
+ * collapse.  tr_s squeezes; tr doesn't. */
+static VALUE str_tr_impl(VALUE self, int argc, VALUE *argv, bool squeeze) {
+    if (argc < 2 || BUILTIN_TYPE(argv[0]) != T_STRING || BUILTIN_TYPE(argv[1]) != T_STRING)
+        return korb_str_dup(self);
+    struct korb_string *s = (struct korb_string *)self;
+    struct korb_string *from_in = (struct korb_string *)argv[0];
+    struct korb_string *to_in   = (struct korb_string *)argv[1];
+    bool negate = (from_in->len > 0 && from_in->ptr[0] == '^');
+    const char *fs = negate ? from_in->ptr + 1 : from_in->ptr;
+    long fs_len = negate ? from_in->len - 1 : from_in->len;
+    char from_buf[512], to_buf[512];
+    long from_n = str_tr_expand(fs, fs_len, from_buf, sizeof(from_buf));
+    long to_n   = str_tr_expand(to_in->ptr, to_in->len, to_buf, sizeof(to_buf));
+    int tbl[256];
+    for (int k = 0; k < 256; k++) tbl[k] = -1;
+    if (negate) {
+        char repl = to_n > 0 ? to_buf[to_n - 1] : '\0';
+        for (int k = 0; k < 256; k++) tbl[k] = (unsigned char)repl;
+        for (long j = 0; j < from_n; j++) tbl[(unsigned char)from_buf[j]] = -1;
+    } else {
+        for (long j = 0; j < from_n; j++) {
+            int repl = j < to_n ? (unsigned char)to_buf[j]
+                                : (to_n > 0 ? (unsigned char)to_buf[to_n - 1] : -2);
+            tbl[(unsigned char)from_buf[j]] = repl;
+        }
+    }
+    char *out = korb_xmalloc_atomic(s->len + 1);
+    long w = 0;
+    int last_repl = -1;
+    for (long i = 0; i < s->len; i++) {
+        unsigned char ch = (unsigned char)s->ptr[i];
+        int repl = tbl[ch];
+        if (repl == -1) {
+            out[w++] = (char)ch;
+            last_repl = -1;
+        } else if (repl == -2) {
+            last_repl = -1;
+        } else {
+            if (squeeze && repl == last_repl) continue;
+            out[w++] = (char)repl;
+            last_repl = repl;
+        }
+    }
+    out[w] = 0;
+    return korb_str_new(out, w);
+}
+
+static VALUE str_tr(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return str_tr_impl(self, argc, argv, false);
+}
+
+static VALUE str_tr_s(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return str_tr_impl(self, argc, argv, true);
 }
 
 /* sprintf — limited; supports %d %s %x %o %X %b %f %g %% %c, with width/0pad */

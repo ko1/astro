@@ -310,7 +310,7 @@ void korb_init_builtins(void) {
     DEF(cStr, "gsub",        str_gsub,        -1);
     DEF(cStr, "sub",         str_sub,         -1);
     DEF(cStr, "tr",          str_tr,          -1);
-    DEF(cStr, "tr_s",        str_tr,          -1);
+    DEF(cStr, "tr_s",        str_tr_s,        -1);
     DEF(cStr, "%",           str_percent,     -1);
     DEF(cStr, "inspect",     kernel_inspect,   0);
     DEF(cStr, "dup",         obj_dup,          0);

@@ -110,8 +110,11 @@ static VALUE hash_key_p(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE hash_merge(CTX *c, VALUE self, int argc, VALUE *argv) {
-    /* shallow copy then merge args */
+    /* shallow copy then merge args.  When a block is given, on key
+     * conflict it's invoked as `block.call(key, old_val, new_val)`
+     * and its return value becomes the merged value. */
     struct korb_hash *src = (struct korb_hash *)self;
+    bool has_block = korb_block_given();
     VALUE r = korb_hash_new();
     for (struct korb_hash_entry *e = src->first; e; e = e->next) {
         korb_hash_aset(r, e->key, e->value);
@@ -120,7 +123,23 @@ static VALUE hash_merge(CTX *c, VALUE self, int argc, VALUE *argv) {
         if (BUILTIN_TYPE(argv[i]) != T_HASH) continue;
         struct korb_hash *o = (struct korb_hash *)argv[i];
         for (struct korb_hash_entry *e = o->first; e; e = e->next) {
-            korb_hash_aset(r, e->key, e->value);
+            /* Detect "key already present in r" via the entry list, not
+             * korb_hash_aref's value (which returns the default value on
+             * miss and is indistinguishable from a stored nil/undef). */
+            bool already = false;
+            VALUE existing = Qnil;
+            struct korb_hash *rh = (struct korb_hash *)r;
+            for (struct korb_hash_entry *re = rh->first; re; re = re->next) {
+                if (korb_eql(re->key, e->key)) { existing = re->value; already = true; break; }
+            }
+            if (has_block && already) {
+                VALUE args[3] = { e->key, existing, e->value };
+                VALUE merged = korb_yield(c, 3, args);
+                if (c->state != KORB_NORMAL) return Qnil;
+                korb_hash_aset(r, e->key, merged);
+            } else {
+                korb_hash_aset(r, e->key, e->value);
+            }
         }
     }
     return r;
