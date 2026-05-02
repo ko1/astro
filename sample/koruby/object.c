@@ -980,6 +980,25 @@ bool korb_int_eq(VALUE a, VALUE b) { return korb_int_cmp(a, b) == 0; }
  * proc escapes (returned/assigned), env_fp may dangle — for the subset we
  * support that won't happen in practice.
  */
+/* Snapshot a proc's env into a heap array if it currently points into
+ * the about-to-be-deallocated stack frame `fp`.  Called from method
+ * prologue exits: when a method returns a Proc whose env is the
+ * caller's stack, we have to make a copy or the next stack push will
+ * clobber the captured state.  Hot path is no-op (proc not in fp's
+ * range), so cheap to call per return. */
+void korb_proc_snapshot_env_if_in_frame(VALUE v, VALUE *fp_lo, VALUE *fp_hi) {
+    if (SPECIAL_CONST_P(v) || BUILTIN_TYPE(v) != T_PROC) return;
+    struct korb_proc *p = (struct korb_proc *)v;
+    if (!p->env) return;
+    /* Snapshot if env points anywhere into the dying frame's slot range
+     * [fp_lo, fp_hi).  A proc captured in this frame has env == fp_lo
+     * typically, but a nested block may have env at fp_lo + N. */
+    if (p->env < fp_lo || p->env >= fp_hi) return;
+    VALUE *snap = korb_xmalloc(p->env_size * sizeof(VALUE));
+    for (uint32_t i = 0; i < p->env_size; i++) snap[i] = p->env[i];
+    p->env = snap;
+}
+
 VALUE korb_proc_new(struct Node *body, VALUE *fp, uint32_t env_size,
                   uint32_t params_cnt, uint32_t param_base, VALUE self, bool is_lambda) {
     struct korb_proc *p = korb_xmalloc(sizeof(*p));
@@ -991,6 +1010,8 @@ VALUE korb_proc_new(struct Node *body, VALUE *fp, uint32_t env_size,
     p->params_cnt = params_cnt;
     p->param_base = param_base;
     p->rest_slot = -1;
+    p->kwh_save_slot = -1;
+    p->enclosing_block = current_block;  /* capture enclosing-method's block */
     p->self = self;
     p->is_lambda = is_lambda;
     return (VALUE)p;
@@ -1054,6 +1075,10 @@ VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv)
     c->self = blk->self;
     /* Switch fp so block body's lvar_get/set hit the captured frame's slots. */
     c->fp = blk->env;
+    /* Lexical block target: yield inside block body refers to the
+     * enclosing method's block, not back to this block. */
+    struct korb_proc *prev_block = current_block;
+    current_block = blk->enclosing_block;
     VALUE r;
 redo_block:
     r = EVAL(c, blk->body);
@@ -1065,6 +1090,7 @@ redo_block:
     }
     c->fp = prev_fp;
     c->self = prev_self;
+    current_block = prev_block;
     /* `next` inside a block: yield returns the next value, state cleared.
      * `break` should NOT be cleared here — it propagates to the yielding
      * method, where dispatch_call catches it as that method's return. */
@@ -1570,8 +1596,14 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
     frame.block = block;
     frame.caller_node = callsite;
     c->current_frame = &frame;
+    VALUE *frame_lo = c->fp;
+    VALUE *frame_hi = c->fp + mc->locals_cnt;
     VALUE r = mc->dispatcher(c, mc->body);
     c->current_frame = frame.prev;
+    korb_proc_snapshot_env_if_in_frame(r, frame_lo, frame_hi);
+    if (UNLIKELY(c->state == KORB_RETURN || c->state == KORB_BREAK)) {
+        korb_proc_snapshot_env_if_in_frame(c->state_value, frame_lo, frame_hi);
+    }
     c->fp = prev_fp;
     c->self = prev_self;
     c->cref = prev_cref;

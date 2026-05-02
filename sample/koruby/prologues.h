@@ -20,6 +20,10 @@
  * inline prologues can read/write it directly. */
 extern struct korb_proc *current_block;
 
+/* Forward declared from object.c — heap-snapshots a returned Proc's
+ * env if it points into the about-to-be-popped frame. */
+void korb_proc_snapshot_env_if_in_frame(VALUE v, VALUE *fp_lo, VALUE *fp_hi);
+
 /* CFUNC: just call the C function, then handle break-from-block. */
 static inline __attribute__((always_inline)) VALUE
 prologue_cfunc_inl(CTX *c, struct Node *callsite, VALUE recv,
@@ -102,6 +106,13 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
         c->cref = prev_cref;
         current_block = prev_block;
     }
+    /* If we're returning a Proc whose env points into the about-to-be-
+     * popped frame, heap-snapshot it so the next stack push doesn't
+     * trash the closure's captured state. */
+    korb_proc_snapshot_env_if_in_frame(r, new_fp, new_fp + mc->locals_cnt);
+    if (UNLIKELY(c->state == KORB_RETURN || c->state == KORB_BREAK)) {
+        korb_proc_snapshot_env_if_in_frame(c->state_value, new_fp, new_fp + mc->locals_cnt);
+    }
     c->fp = prev_fp;
     c->self = prev_self;
 
@@ -171,6 +182,10 @@ prologue_ast_simple_static_inl(CTX *c, struct Node *callsite, VALUE recv,
     if (UNLIKELY(!simple)) {
         c->cref = prev_cref;
         current_block = prev_block;
+    }
+    korb_proc_snapshot_env_if_in_frame(r, new_fp, new_fp + mc->locals_cnt);
+    if (UNLIKELY(c->state == KORB_RETURN || c->state == KORB_BREAK)) {
+        korb_proc_snapshot_env_if_in_frame(c->state_value, new_fp, new_fp + mc->locals_cnt);
     }
     c->fp = prev_fp;
     c->self = prev_self;

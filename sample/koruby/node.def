@@ -465,6 +465,18 @@ node_block_literal_rest(CTX * restrict c, NODE * restrict n, NODE *body, uint32_
     return p;
 }
 
+/* Block literal with both *rest_slot AND kwh_save_slot.  Used when the
+ * block declares keyword params; proc_call uses kwh_save_slot to peel
+ * the trailing Hash argument. */
+NODE_DEF @noinline
+node_block_literal_kw(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t params_cnt, uint32_t param_base, uint32_t env_size, int32_t rest_slot, int32_t kwh_save_slot)
+{
+    VALUE p = korb_proc_new(body, c->fp, env_size, params_cnt, param_base, c->self, false);
+    ((struct korb_proc *)p)->rest_slot = rest_slot;
+    ((struct korb_proc *)p)->kwh_save_slot = kwh_save_slot;
+    return p;
+}
+
 NODE_DEF
 node_yield(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_index)
 {

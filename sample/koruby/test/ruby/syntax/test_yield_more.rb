@@ -70,10 +70,9 @@ def outer
 end
 def inner; yield 5; end
 def test_nested_yield
-  # Same lexical-block-capture issue as test_break_in_yield.
-  # r = nil
-  # outer { |x| r = x }
-  # assert_equal 50, r
+  r = nil
+  outer { |x| r = x }
+  assert_equal 50, r
 end
 
 # block returning from method (non-local return)

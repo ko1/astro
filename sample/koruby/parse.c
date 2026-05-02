@@ -1828,13 +1828,14 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
           pm_lambda_node_t *n = (pm_lambda_node_t *)node;
           uint32_t params_cnt = 0;
           pm_constant_id_t lambda_rest_name = 0;
+          pm_parameters_node_t *pn_l = NULL;
           if (n->parameters && PM_NODE_TYPE_P(n->parameters, PM_BLOCK_PARAMETERS_NODE)) {
               pm_block_parameters_node_t *bp = (pm_block_parameters_node_t *)n->parameters;
               if (bp->parameters) {
-                  pm_parameters_node_t *pn = (pm_parameters_node_t *)bp->parameters;
-                  params_cnt = (uint32_t)pn->requireds.size;
-                  if (pn->rest && PM_NODE_TYPE_P(pn->rest, PM_REST_PARAMETER_NODE)) {
-                      pm_rest_parameter_node_t *rp = (pm_rest_parameter_node_t *)pn->rest;
+                  pn_l = (pm_parameters_node_t *)bp->parameters;
+                  params_cnt = (uint32_t)pn_l->requireds.size;
+                  if (pn_l->rest && PM_NODE_TYPE_P(pn_l->rest, PM_REST_PARAMETER_NODE)) {
+                      pm_rest_parameter_node_t *rp = (pm_rest_parameter_node_t *)pn_l->rest;
                       if (rp->name) lambda_rest_name = rp->name;
                   }
               }
@@ -1846,11 +1847,101 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
               int rs = lvar_slot(tc, lambda_rest_name, 0);
               if (rs >= 0) lambda_rest_slot = rs;
           }
+          /* kwargs prelude — peel handled by proc_call into kwh_slot. */
+          int lambda_kwh_slot = -1;
+          NODE *kw_prologue = NULL;
+          int lambda_kwrest_target = -1;
+          if (pn_l) {
+              bool has_kw = pn_l->keywords.size > 0 ||
+                            (pn_l->keyword_rest && PM_NODE_TYPE_P(pn_l->keyword_rest, PM_KEYWORD_REST_PARAMETER_NODE));
+              if (pn_l->keyword_rest && PM_NODE_TYPE_P(pn_l->keyword_rest, PM_KEYWORD_REST_PARAMETER_NODE)) {
+                  pm_keyword_rest_parameter_node_t *kr =
+                      (pm_keyword_rest_parameter_node_t *)pn_l->keyword_rest;
+                  if (kr->name) lambda_kwrest_target = lvar_slot(tc, kr->name, 0);
+              }
+              if (has_kw) {
+                  lambda_kwh_slot = (int)inc_arg_index(tc);
+                  for (size_t i = 0; i < pn_l->keywords.size; i++) {
+                      pm_node_t *kp = pn_l->keywords.nodes[i];
+                      if (PM_NODE_TYPE_P(kp, PM_REQUIRED_KEYWORD_PARAMETER_NODE)) {
+                          pm_required_keyword_parameter_node_t *rk =
+                              (pm_required_keyword_parameter_node_t *)kp;
+                          int slot = lvar_slot(tc, rk->name, 0);
+                          if (slot < 0) continue;
+                          uint32_t ai = inc_arg_index(tc);
+                          inc_arg_index(tc); rewind_arg_index(tc, ai);
+                          struct method_cache *mc = alloc_method_cache();
+                          NODE *karg = ALLOC_node_lvar_set(ai,
+                              ALLOC_node_sym_lit(intern_constant(tc->parser, rk->name)));
+                          NODE *fetch = ALLOC_node_seq(karg,
+                              ALLOC_node_method_call(ALLOC_node_lvar_get((uint32_t)lambda_kwh_slot),
+                                                     korb_intern("fetch"), 1, ai, mc));
+                          NODE *ext = ALLOC_node_lvar_set((uint32_t)slot, fetch);
+                          kw_prologue = kw_prologue ? ALLOC_node_seq(kw_prologue, ext) : ext;
+                      } else if (PM_NODE_TYPE_P(kp, PM_OPTIONAL_KEYWORD_PARAMETER_NODE)) {
+                          pm_optional_keyword_parameter_node_t *ok =
+                              (pm_optional_keyword_parameter_node_t *)kp;
+                          int slot = lvar_slot(tc, ok->name, 0);
+                          if (slot < 0) continue;
+                          NODE *def_val = T(tc, ok->value);
+                          ID kid = intern_constant(tc->parser, ok->name);
+                          uint32_t ai = inc_arg_index(tc);
+                          inc_arg_index(tc); rewind_arg_index(tc, ai);
+                          struct method_cache *mc_hk = alloc_method_cache();
+                          NODE *hk_arg = ALLOC_node_lvar_set(ai, ALLOC_node_sym_lit(kid));
+                          NODE *hk = ALLOC_node_seq(hk_arg,
+                              ALLOC_node_method_call(ALLOC_node_lvar_get((uint32_t)lambda_kwh_slot),
+                                                     korb_intern("has_key?"), 1, ai, mc_hk));
+                          uint32_t ai2 = inc_arg_index(tc);
+                          inc_arg_index(tc); rewind_arg_index(tc, ai2);
+                          struct method_cache *mc_aref = alloc_method_cache();
+                          NODE *karg = ALLOC_node_lvar_set(ai2, ALLOC_node_sym_lit(kid));
+                          NODE *aref = ALLOC_node_seq(karg,
+                              ALLOC_node_method_call(ALLOC_node_lvar_get((uint32_t)lambda_kwh_slot),
+                                                     korb_intern("[]"), 1, ai2, mc_aref));
+                          NODE *if_n = ALLOC_node_if(hk, aref, def_val);
+                          NODE *set_lv = ALLOC_node_lvar_set((uint32_t)slot, if_n);
+                          kw_prologue = kw_prologue ? ALLOC_node_seq(kw_prologue, set_lv) : set_lv;
+                      }
+                  }
+                  if (lambda_kwrest_target >= 0) {
+                      uint32_t ai_dup = inc_arg_index(tc);
+                      rewind_arg_index(tc, ai_dup);
+                      struct method_cache *mc_dup = alloc_method_cache();
+                      NODE *dup = ALLOC_node_method_call(ALLOC_node_lvar_get((uint32_t)lambda_kwh_slot),
+                                                        korb_intern("dup"), 0, ai_dup, mc_dup);
+                      NODE *bind = ALLOC_node_lvar_set((uint32_t)lambda_kwrest_target, dup);
+                      kw_prologue = kw_prologue ? ALLOC_node_seq(kw_prologue, bind) : bind;
+                      for (size_t i = 0; i < pn_l->keywords.size; i++) {
+                          pm_node_t *kp = pn_l->keywords.nodes[i];
+                          ID kid = 0;
+                          if (PM_NODE_TYPE_P(kp, PM_REQUIRED_KEYWORD_PARAMETER_NODE)) {
+                              kid = intern_constant(tc->parser, ((pm_required_keyword_parameter_node_t *)kp)->name);
+                          } else if (PM_NODE_TYPE_P(kp, PM_OPTIONAL_KEYWORD_PARAMETER_NODE)) {
+                              kid = intern_constant(tc->parser, ((pm_optional_keyword_parameter_node_t *)kp)->name);
+                          } else continue;
+                          uint32_t aid = inc_arg_index(tc);
+                          inc_arg_index(tc); rewind_arg_index(tc, aid);
+                          struct method_cache *mc_del = alloc_method_cache();
+                          NODE *karg = ALLOC_node_lvar_set(aid, ALLOC_node_sym_lit(kid));
+                          NODE *del = ALLOC_node_seq(karg,
+                              ALLOC_node_method_call(ALLOC_node_lvar_get((uint32_t)lambda_kwrest_target),
+                                                     korb_intern("delete"), 1, aid, mc_del));
+                          kw_prologue = kw_prologue ? ALLOC_node_seq(kw_prologue, del) : del;
+                      }
+                  }
+              }
+          }
           NODE *body = n->body ? T(tc, n->body) : ALLOC_node_nil();
+          if (kw_prologue) body = ALLOC_node_seq(kw_prologue, body);
           uint32_t env_size = tc->frame->max_cnt;
           pop_frame(tc);
           NODE *blk;
-          if (lambda_rest_slot >= 0) {
+          if (lambda_kwh_slot >= 0) {
+              blk = ALLOC_node_block_literal_kw(body, params_cnt, param_base,
+                                                 env_size, (int32_t)lambda_rest_slot,
+                                                 (int32_t)lambda_kwh_slot);
+          } else if (lambda_rest_slot >= 0) {
               blk = ALLOC_node_block_literal_rest(body, params_cnt, param_base,
                                                    env_size, (int32_t)lambda_rest_slot);
           } else {

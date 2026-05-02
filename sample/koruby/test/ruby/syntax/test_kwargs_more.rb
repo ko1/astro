@@ -81,8 +81,7 @@ end
 TESTS = [
   :test_default_chain, :test_full, :test_kw_splat_call,
   :test_splat_into_positional, :test_anon_kwrest, :test_nil_default,
-  # :test_lambda_kwargs — block params don't yet honor keyword params.
-  :test_super_kwargs,
+  :test_lambda_kwargs, :test_super_kwargs,
 ]
 TESTS.each { |t| run_test(t) }
 report "KwargsMore"

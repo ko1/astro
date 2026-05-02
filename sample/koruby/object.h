@@ -155,6 +155,12 @@ struct korb_proc {
     uint32_t params_cnt;
     uint32_t param_base;    /* absolute slot where block's params begin */
     int rest_slot;          /* absolute slot for *rest, or -1 */
+    int kwh_save_slot;      /* absolute slot for peeled kwargs hash, or -1 */
+    /* Enclosing method's block as seen at proc creation time.  When the
+     * block's body itself does `yield`, dispatch to this enclosing block
+     * rather than the block being currently executed.  Captures the
+     * lexical-block-target semantics CRuby uses. */
+    struct korb_proc *enclosing_block;
     VALUE self;
     bool is_lambda;
 };
@@ -551,10 +557,14 @@ korb_yield(CTX *c, uint32_t argc, VALUE *argv) {
         VALUE arg = argv[0];  /* snapshot before fp swap */
         VALUE *prev_fp = c->fp;
         VALUE prev_self = c->self;
+        struct korb_proc *prev_block = current_block;
         VALUE *bfp = blk->env;
         bfp[blk->param_base] = arg;
         c->self = blk->self;
         c->fp = bfp;
+        /* Lexical block target: yield inside this block goes to the
+         * enclosing method's block, not back to this block itself. */
+        current_block = blk->enclosing_block;
         VALUE r;
     redo_yield:
         r = blk->body->head.dispatcher(c, blk->body);
@@ -564,6 +574,7 @@ korb_yield(CTX *c, uint32_t argc, VALUE *argv) {
         }
         c->fp = prev_fp;
         c->self = prev_self;
+        current_block = prev_block;
         if (UNLIKELY(c->state == KORB_NEXT)) {
             VALUE nv = c->state_value;
             c->state = KORB_NORMAL; c->state_value = Qnil;
@@ -588,6 +599,7 @@ VALUE korb_range_new(VALUE begin, VALUE end, bool exclude_end);
 
 /* proc */
 VALUE korb_proc_new(struct Node *body, VALUE *fp, uint32_t env_size, uint32_t params_cnt, uint32_t param_base, VALUE self, bool is_lambda);
+void korb_proc_snapshot_env_if_in_frame(VALUE v, VALUE *fp_lo, VALUE *fp_hi);
 
 /* Builtins init */
 void korb_init_builtins(void);

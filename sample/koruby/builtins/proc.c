@@ -67,6 +67,18 @@ VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     /* Snapshot env */
     for (uint32_t i = 0; i < p->env_size; i++) new_fp[i] = p->env[i];
+    /* Kwargs peel: if block declares kwargs and last arg is a Hash,
+     * stash it; otherwise default to {}. */
+    VALUE peeled_kwh = Qundef;
+    if (p->kwh_save_slot >= 0) {
+        if (argc > 0 && !SPECIAL_CONST_P(argv[argc - 1]) &&
+            BUILTIN_TYPE(argv[argc - 1]) == T_HASH) {
+            peeled_kwh = argv[argc - 1];
+            argc--;
+        } else {
+            peeled_kwh = korb_hash_new();
+        }
+    }
     /* Copy params — Ruby block calling convention: when called with a
      * single Array argument and the block declares >1 param, the array
      * is auto-destructured into individual params (so blk.call([1,2])
@@ -93,10 +105,26 @@ VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
             new_fp[p->rest_slot] = rest;
         }
     }
+    /* Stash kwh into save slot. */
+    if (p->kwh_save_slot >= 0 && !UNDEF_P(peeled_kwh)) {
+        new_fp[p->kwh_save_slot] = peeled_kwh;
+    }
     c->fp = new_fp;
     if (c->fp + p->env_size > c->sp) c->sp = c->fp + p->env_size;
     c->self = p->self;
+    /* yield inside the proc body targets the enclosing method's block
+     * captured at proc creation time. */
+    extern struct korb_proc *current_block;
+    struct korb_proc *prev_block = current_block;
+    current_block = p->enclosing_block;
     VALUE r = EVAL(c, p->body);
+    current_block = prev_block;
+    /* Snapshot any returned proc whose env points into our about-to-be-
+     * popped frame. */
+    korb_proc_snapshot_env_if_in_frame(r, new_fp, new_fp + p->env_size);
+    if (c->state == KORB_RETURN || c->state == KORB_BREAK) {
+        korb_proc_snapshot_env_if_in_frame(c->state_value, new_fp, new_fp + p->env_size);
+    }
     c->fp = prev_fp;
     c->self = prev_self;
     /* Lambda: `return` inside the body targets the lambda itself, so we
