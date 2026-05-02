@@ -45,6 +45,7 @@ static VALUE ary_aref(CTX *c, VALUE self, int argc, VALUE *argv) {
     return Qnil;
 }
 static VALUE ary_aset(CTX *c, VALUE self, int argc, VALUE *argv) {
+    CHECK_FROZEN_RET(c, self, Qnil);
     if (argc == 2 && FIXNUM_P(argv[0])) {
         korb_ary_aset(self, FIX2LONG(argv[0]), argv[1]);
         return argv[1];
@@ -107,10 +108,12 @@ static VALUE ary_aset(CTX *c, VALUE self, int argc, VALUE *argv) {
     return Qnil;
 }
 static VALUE ary_push(CTX *c, VALUE self, int argc, VALUE *argv) {
+    CHECK_FROZEN_RET(c, self, Qnil);
     for (int i = 0; i < argc; i++) korb_ary_push(self, argv[i]);
     return self;
 }
 static VALUE ary_pop(CTX *c, VALUE self, int argc, VALUE *argv) {
+    CHECK_FROZEN_RET(c, self, Qnil);
     return korb_ary_pop(self);
 }
 static VALUE ary_first(CTX *c, VALUE self, int argc, VALUE *argv) {
@@ -196,6 +199,7 @@ static VALUE ary_eq(CTX *c, VALUE self, int argc, VALUE *argv) {
     return Qtrue;
 }
 static VALUE ary_lshift(CTX *c, VALUE self, int argc, VALUE *argv) {
+    CHECK_FROZEN_RET(c, self, Qnil);
     korb_ary_push(self, argv[0]);
     return self;
 }

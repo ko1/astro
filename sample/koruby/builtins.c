@@ -718,7 +718,7 @@ void korb_init_builtins(void) {
         korb_class_add_method_cfunc(cMethod, korb_intern("unbind"),   method_to_proc,   0); /* approx */
         korb_vm->method_class = cMethod;
     }
-    DEF(cObj, "instance_eval",    obj_instance_eval,        0);
+    DEF(cObj, "instance_eval",    obj_instance_eval,       -1);
     DEF(cObj, "instance_exec",    obj_instance_exec,       -1);
     DEF(cMod, "instance_method",  module_instance_method,   1);
     DEF(cMod, "instance_methods", module_instance_methods, -1);

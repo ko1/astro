@@ -628,6 +628,23 @@ char *korb_resolve_relative(const char *current_file, const char *name);
 #define FL_USER_SHIFT 12
 #define FL_USER(n)    ((VALUE)1 << (FL_USER_SHIFT + (n)))
 
+/* Frozen-object guard.  Inserted at the entry of mutating cfuncs so
+ * `frozen_str << "x"` etc. raise FrozenError instead of silently
+ * mutating.  Skipped for immediates (Fixnum / Symbol / nil/true/false
+ * are inherently frozen but we don't track FL_FROZEN on them and
+ * none of the cfuncs that call this take them as `self` anyway). */
+static inline bool korb_obj_frozen_p(VALUE v) {
+    if (SPECIAL_CONST_P(v)) return true;
+    return (RBASIC(v)->flags & FL_FROZEN) != 0;
+}
+#define CHECK_FROZEN_RET(c, self, ret) do { \
+    if (UNLIKELY(korb_obj_frozen_p(self))) { \
+        VALUE _eFrozen = korb_const_get(korb_vm->object_class, korb_intern("FrozenError")); \
+        korb_raise((c), (struct korb_class *)_eFrozen, "can't modify frozen object"); \
+        return (ret); \
+    } \
+} while (0)
+
 /* well-known IDs */
 extern ID id_initialize, id_to_s, id_inspect, id_call, id_each, id_new;
 extern ID id_op_plus, id_op_minus, id_op_mul, id_op_div, id_op_mod;

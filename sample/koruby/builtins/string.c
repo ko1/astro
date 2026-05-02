@@ -7,6 +7,7 @@ static VALUE str_plus(CTX *c, VALUE self, int argc, VALUE *argv) {
     return korb_str_concat(r, argv[0]);
 }
 static VALUE str_concat(CTX *c, VALUE self, int argc, VALUE *argv) {
+    CHECK_FROZEN_RET(c, self, Qnil);
     return korb_str_concat(self, argv[0]);
 }
 static VALUE str_size(CTX *c, VALUE self, int argc, VALUE *argv) {

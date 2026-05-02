@@ -625,6 +625,7 @@ node_lshift(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t 
     /* Array#<< — push and return self.  Hot in optcarrot's
      * render_pixel (`@output_pixels << ...` runs once per pixel). */
     if (LIKELY(!SPECIAL_CONST_P(l) && BUILTIN_TYPE(l) == T_ARRAY && !korb_g_basic_op_redefined)) {
+        CHECK_FROZEN_RET(c, l, Qnil);
         korb_ary_push(l, r);
         return l;
     }
@@ -783,8 +784,14 @@ node_aset(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *idx, NODE *val,
     VALUE i = EA(c, idx);
     VALUE v = EA(c, val);
     if (LIKELY(!SPECIAL_CONST_P(r) && !korb_g_basic_op_redefined)) {
-        if (BUILTIN_TYPE(r) == T_ARRAY && FIXNUM_P(i)) { korb_ary_aset(r, FIX2LONG(i), v); return v; }
-        if (BUILTIN_TYPE(r) == T_HASH)                 { korb_hash_aset(r, i, v);          return v; }
+        if (BUILTIN_TYPE(r) == T_ARRAY && FIXNUM_P(i)) {
+            CHECK_FROZEN_RET(c, r, Qnil);
+            korb_ary_aset(r, FIX2LONG(i), v); return v;
+        }
+        if (BUILTIN_TYPE(r) == T_HASH) {
+            CHECK_FROZEN_RET(c, r, Qnil);
+            korb_hash_aset(r, i, v); return v;
+        }
     }
     return korb_node_aset_slow(c, r, i, v, arg_index);
 }

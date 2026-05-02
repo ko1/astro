@@ -2306,6 +2306,34 @@ VALUE korb_eval_string(CTX *c, const char *src, size_t len, const char *filename
     return r;
 }
 
+/* Like korb_eval_string but uses the caller's `self` and the receiver's
+ * class for cref — used by Object#instance_eval(string). */
+VALUE korb_eval_string_in_self(CTX *c, const char *src, size_t len,
+                                const char *filename, VALUE recv) {
+    NODE *ast = koruby_parse(src, len, filename ? filename : "(eval)");
+    if (!ast) return Qnil;
+    VALUE *prev_fp = c->fp;
+    VALUE prev_self = c->self;
+    struct korb_class *prev_class = c->current_class;
+    struct korb_cref *prev_cref = c->cref;
+    const char *prev_file = c->current_file;
+    c->fp = c->sp + 1;
+    c->self = recv;
+    struct korb_class *recv_klass = korb_class_of_class(recv);
+    c->current_class = recv_klass;
+    struct korb_cref top_cref = { .klass = recv_klass, .prev = NULL };
+    c->cref = &top_cref;
+    c->current_file = filename;
+    OPTIMIZE(ast);
+    VALUE r = EVAL(c, ast);
+    c->fp = prev_fp;
+    c->self = prev_self;
+    c->current_class = prev_class;
+    c->cref = prev_cref;
+    c->current_file = prev_file;
+    return r;
+}
+
 /* loaded file tracker (for require) */
 static struct {
     char **paths;

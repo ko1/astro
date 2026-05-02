@@ -27,6 +27,7 @@ static VALUE hash_aref(CTX *c, VALUE self, int argc, VALUE *argv) {
     return h->default_value;
 }
 static VALUE hash_aset(CTX *c, VALUE self, int argc, VALUE *argv) {
+    CHECK_FROZEN_RET(c, self, Qnil);
     return korb_hash_aset(self, argv[0], argv[1]);
 }
 static VALUE hash_size(CTX *c, VALUE self, int argc, VALUE *argv) {

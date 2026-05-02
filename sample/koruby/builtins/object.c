@@ -86,9 +86,16 @@ static VALUE obj_method(CTX *c, VALUE self, int argc, VALUE *argv) {
     return (VALUE)m;
 }
 
-/* Object#instance_eval { ... } — evaluate the block with self = receiver. */
+/* Object#instance_eval { ... } / instance_eval(string) —
+ * evaluate the block (or parsed string) with self = receiver. */
+extern VALUE korb_eval_string_in_self(CTX *c, const char *src, size_t len,
+                                       const char *filename, VALUE recv);
 static VALUE obj_instance_eval(CTX *c, VALUE self, int argc, VALUE *argv) {
     extern struct korb_proc *current_block;
+    if (argc >= 1 && !SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_STRING) {
+        struct korb_string *s = (struct korb_string *)argv[0];
+        return korb_eval_string_in_self(c, s->ptr, (size_t)s->len, "(instance_eval)", self);
+    }
     if (!current_block) return Qnil;
     VALUE prev_blk_self = current_block->self;
     current_block->self = self;

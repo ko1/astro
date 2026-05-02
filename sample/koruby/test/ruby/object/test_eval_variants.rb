@@ -17,14 +17,9 @@ def test_instance_eval_sets_self
 end
 
 def test_instance_eval_with_string
-  # NOTE: koruby's instance_eval(string) form returns nil instead of
-  # evaluating the string in the receiver's context.  Block form works
-  # (test_instance_eval_sets_self covers it).  TODO: implement string
-  # arg path in instance_eval.
   h = IEHost.new
   result = h.instance_eval("@x")
-  assert(result == 100 || result == nil,
-         "instance_eval(string) should be 100 or (current) nil, got #{result.inspect}")
+  assert_equal 100, result
 end
 
 # ---------- class_eval / module_eval ----------

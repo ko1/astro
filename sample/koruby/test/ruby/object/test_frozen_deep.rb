@@ -2,14 +2,38 @@ require_relative "../../test_helper"
 
 # Frozen semantics: modifying a frozen object should raise FrozenError.
 
-# NOTE: koruby's mutating cfuncs (String#<<, Array#<<, Hash#[]=, etc.)
-# do not currently consult FL_FROZEN — modification of frozen objects
-# silently succeeds.  Tests for this behavior are commented out until
-# the frozen-check is wired through the cfunc set; the freeze/frozen?
-# query path itself works (see test_dup_clone_frozen).
-# def test_modify_frozen_string_raises ... end
-# def test_modify_frozen_array_raises ... end
-# def test_modify_frozen_hash_raises ... end
+def test_modify_frozen_string_raises
+  s = "x".freeze
+  raised = false
+  begin
+    s << "y"
+  rescue FrozenError, RuntimeError
+    raised = true
+  end
+  assert raised, "expected FrozenError modifying frozen string"
+end
+
+def test_modify_frozen_array_raises
+  a = [1, 2].freeze
+  raised = false
+  begin
+    a << 3
+  rescue FrozenError, RuntimeError
+    raised = true
+  end
+  assert raised, "expected FrozenError modifying frozen array"
+end
+
+def test_modify_frozen_hash_raises
+  h = {a: 1}.freeze
+  raised = false
+  begin
+    h[:b] = 2
+  rescue FrozenError, RuntimeError
+    raised = true
+  end
+  assert raised, "expected FrozenError modifying frozen hash"
+end
 
 # ---------- dup unfreeze, clone preserves ----------
 
@@ -39,6 +63,9 @@ def test_nil_true_false_frozen
 end
 
 TESTS = [
+  :test_modify_frozen_string_raises,
+  :test_modify_frozen_array_raises,
+  :test_modify_frozen_hash_raises,
   :test_dup_does_not_inherit_freeze,
   :test_numeric_frozen,
   :test_symbol_frozen,
