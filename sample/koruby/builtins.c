@@ -828,15 +828,12 @@ static VALUE module_include(CTX *c, VALUE self, int argc, VALUE *argv) {
     return self;
 }
 
-extern void korb_class_add_method_ast_full(struct korb_class *klass, ID name, struct Node *body,
-                                            uint32_t required_params, uint32_t total_params,
-                                            int rest_slot, uint32_t locals_cnt);
+extern void korb_class_add_method_proc(struct korb_class *klass, ID name, struct korb_proc *p);
 
 static VALUE module_define_method(CTX *c, VALUE self, int argc, VALUE *argv) {
-    /* define_method(:name) { |args| body } — register the block's body
-     * as an AST method on the class.  We drop the block's captured env
-     * (no real closure semantics here), which is enough for tests that
-     * just exercise the dispatch shape. */
+    /* define_method(:name) { |args| body } — register the block as a
+     * proc-method.  Dispatch (prologue_proc_method) calls the proc via
+     * proc_call so its captured env is preserved (closure semantics). */
     if (argc < 1) return Qnil;
     if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return Qnil;
     ID name;
@@ -854,10 +851,7 @@ static VALUE module_define_method(CTX *c, VALUE self, int argc, VALUE *argv) {
     } else {
         return Qnil;
     }
-    korb_class_add_method_ast_full(
-        (struct korb_class *)self, name, p->body,
-        p->params_cnt, p->params_cnt, -1,
-        p->env_size > p->params_cnt ? p->env_size : p->params_cnt + 1);
+    korb_class_add_method_proc((struct korb_class *)self, name, p);
     return korb_id2sym(name);
 }
 
@@ -2253,6 +2247,54 @@ static VALUE method_call(CTX *c, VALUE self, int argc, VALUE *argv) {
     return korb_funcall(c, m->receiver, m->name, argc, argv);
 }
 
+static VALUE method_to_proc(CTX *c, VALUE self, int argc, VALUE *argv) {
+    /* Method#to_proc — return a shim Proc whose body == NULL and whose
+     * self is the Method object.  korb_yield_slow / proc_call detect this
+     * and dispatch as `m.receiver.send(m.name, *args)`. */
+    struct korb_proc *p = korb_xcalloc(1, sizeof(*p));
+    p->basic.flags = T_PROC;
+    p->basic.klass = (VALUE)korb_vm->proc_class;
+    p->body = NULL;
+    p->env = NULL;
+    p->env_size = 0;
+    p->params_cnt = 1;
+    p->param_base = 0;
+    p->self = self;            /* the Method object */
+    p->is_lambda = false;
+    return (VALUE)p;
+}
+
+static VALUE method_arity(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_method_obj *m = (struct korb_method_obj *)self;
+    struct korb_method *km = korb_class_find_method(korb_class_of_class(m->receiver), m->name);
+    if (!km) return INT2FIX(0);
+    if (km->type == KORB_METHOD_AST) {
+        long req = (long)km->u.ast.required_params_cnt;
+        long total = (long)km->u.ast.total_params_cnt;
+        if (km->u.ast.rest_slot >= 0 || total > req) return INT2FIX(-(req + 1));
+        return INT2FIX(req);
+    }
+    if (km->type == KORB_METHOD_CFUNC && km->u.cfunc.argc < 0) return INT2FIX(-1);
+    return INT2FIX(km->type == KORB_METHOD_CFUNC ? km->u.cfunc.argc : 0);
+}
+
+static VALUE method_name(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_method_obj *m = (struct korb_method_obj *)self;
+    return korb_id2sym(m->name);
+}
+
+static VALUE method_receiver(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_method_obj *m = (struct korb_method_obj *)self;
+    return m->receiver;
+}
+
+static VALUE method_owner(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_method_obj *m = (struct korb_method_obj *)self;
+    struct korb_method *km = korb_class_find_method(korb_class_of_class(m->receiver), m->name);
+    if (km && km->defining_class) return (VALUE)km->defining_class;
+    return korb_class_of(m->receiver);
+}
+
 static VALUE obj_instance_of_p(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1) return Qfalse;
     return KORB_BOOL((VALUE)korb_class_of_class(self) == argv[0]);
@@ -2777,6 +2819,41 @@ static VALUE class_name(CTX *c, VALUE self, int argc, VALUE *argv) {
     return korb_str_new_cstr(korb_id_name(((struct korb_class *)self)->name));
 }
 
+/* ---------- Array#hash (content-based) ---------- */
+/* FNV-1a-style mix over each element's hash.  For FIXNUM/SYMBOL/special
+ * we use the value bits directly; for heap objects we use the address
+ * (stable for the lifetime of the array, matches Ruby's behavior closely
+ * enough for `[1,2].hash == [1,2].hash` to hold). */
+VALUE ary_hash_content(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_ARRAY) return INT2FIX(0);
+    struct korb_array *a = (struct korb_array *)self;
+    uint64_t h = 0xcbf29ce484222325ULL;  /* FNV-1a init */
+    for (long i = 0; i < a->len; i++) {
+        VALUE elt = a->ptr[i];
+        uint64_t eh;
+        if (FIXNUM_P(elt) || SYMBOL_P(elt) || NIL_P(elt) || TRUE_P(elt) || FALSE_P(elt)) {
+            eh = (uint64_t)elt;
+        } else if (FLONUM_P(elt)) {
+            eh = (uint64_t)elt;
+        } else if (BUILTIN_TYPE(elt) == T_STRING) {
+            /* hash by content for strings */
+            struct korb_string *s = (struct korb_string *)elt;
+            eh = 0xcbf29ce484222325ULL;
+            for (long j = 0; j < s->len; j++) {
+                eh ^= (uint64_t)(unsigned char)s->ptr[j];
+                eh *= 0x100000001b3ULL;
+            }
+        } else {
+            eh = (uint64_t)elt;
+        }
+        h ^= eh;
+        h *= 0x100000001b3ULL;
+    }
+    /* Drop the top bit so the result fits in a signed long → FIXNUM. */
+    long r = (long)(h & 0x7fffffffffffffffULL);
+    return INT2FIX(r >> 1);
+}
+
 /* ---------- Object#tap / #then / #itself ---------- */
 VALUE obj_tap(CTX *c, VALUE self, int argc, VALUE *argv) {
     extern struct korb_proc *current_block;
@@ -3004,12 +3081,34 @@ static VALUE obj_instance_variables(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_OBJECT) return arr;
     struct korb_object *o = (struct korb_object *)self;
     struct korb_class *k = (struct korb_class *)o->basic.klass;
+    /* Only report ivars that have been set (i.e. slot has a non-Qundef
+     * value).  ivar_names[i] is the name; o->ivars[i] is the value. */
     for (uint32_t i = 0; i < k->ivar_count && i < o->ivar_cnt; i++) {
-        char buf[64];
-        snprintf(buf, sizeof(buf), "@%s", korb_id_name(k->ivar_names[i]));
-        korb_ary_push(arr, korb_id2sym(korb_intern(buf)));
+        if (UNDEF_P(o->ivars[i])) continue;
+        const char *base = korb_id_name(k->ivar_names[i]);
+        /* The stored ID may already include the leading `@`; if not, prefix. */
+        if (base && base[0] == '@') {
+            korb_ary_push(arr, korb_id2sym(k->ivar_names[i]));
+        } else {
+            char buf[64];
+            snprintf(buf, sizeof(buf), "@%s", base ? base : "");
+            korb_ary_push(arr, korb_id2sym(korb_intern(buf)));
+        }
     }
     return arr;
+}
+
+static VALUE obj_ivar_defined_p(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1) return Qfalse;
+    if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_OBJECT) return Qfalse;
+    ID name;
+    if (SYMBOL_P(argv[0])) name = korb_sym2id(argv[0]);
+    else if (BUILTIN_TYPE(argv[0]) == T_STRING)
+        name = korb_intern_n(((struct korb_string *)argv[0])->ptr,
+                             ((struct korb_string *)argv[0])->len);
+    else return Qfalse;
+    VALUE v = korb_ivar_get(self, name);
+    return KORB_BOOL(!UNDEF_P(v) && !NIL_P(v));
 }
 
 /* ---------- Kernel#caller / __method__ / eval (stub) / loop ---------- */
@@ -3106,7 +3205,7 @@ static VALUE nil_inspect(CTX *c, VALUE self, int argc, VALUE *argv) { return kor
 /* ---------- Proc ---------- */
 extern VALUE korb_yield(CTX *c, uint32_t argc, VALUE *argv);
 
-static VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
+VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* Proc#call is the "escape" path: the proc may be invoked long after
      * its enclosing scope is gone, so we cannot share its env with that
      * scope's stack slots.  Push a fresh frame on top of the current sp,
@@ -3122,6 +3221,14 @@ static VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
         }
         ID name = korb_sym2id(p->self);
         return korb_funcall(c, argv[0], name, argc - 1, argv + 1);
+    }
+    /* Method-proc shim: created by Method#to_proc; dispatch as
+     * `m.receiver.send(m.name, *args)`. */
+    if (p->body == NULL && !SPECIAL_CONST_P(p->self) &&
+        BUILTIN_TYPE(p->self) == T_DATA &&
+        ((struct RBasic *)p->self)->klass == (VALUE)korb_vm->method_class) {
+        struct korb_method_obj *m = (struct korb_method_obj *)p->self;
+        return korb_funcall(c, m->receiver, m->name, argc, argv);
     }
     VALUE *prev_fp = c->fp;
     VALUE prev_self = c->self;
@@ -3158,7 +3265,16 @@ static VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
     VALUE r = EVAL(c, p->body);
     c->fp = prev_fp;
     c->self = prev_self;
-    if (c->state == KORB_RETURN || c->state == KORB_BREAK) {
+    /* Lambda: `return` inside the body targets the lambda itself, so we
+     * consume it here and the caller sees the value as the call's result.
+     * Plain Proc: `return` is non-local — let it propagate up to the
+     * lexically-enclosing method, where it'll be consumed at that
+     * method's prologue. */
+    if (c->state == KORB_BREAK) {
+        r = c->state_value;
+        c->state = KORB_NORMAL;
+        c->state_value = Qnil;
+    } else if (c->state == KORB_RETURN && p->is_lambda) {
         r = c->state_value;
         c->state = KORB_NORMAL;
         c->state_value = Qnil;
@@ -3341,6 +3457,7 @@ void korb_init_builtins(void) {
     DEF(cObj, "dup",                obj_dup,                   0);
     DEF(cObj, "clone",              obj_dup,                   0);
     DEF(cObj, "instance_variables", obj_instance_variables,    0);
+    DEF(cObj, "instance_variable_defined?", obj_ivar_defined_p, 1);
     /* Kernel#__method__, caller, eval, loop, lambda, proc */
     DEF(cObj, "__method__",         kernel_method_name,        0);
     DEF(cObj, "__callee__",         kernel_method_name,        0);
@@ -3500,7 +3617,10 @@ void korb_init_builtins(void) {
     DEF(cAry, "flatten!",  ary_flatten, -1);
     DEF(cAry, "freeze",    kernel_freeze, 0);
     DEF(cAry, "frozen?",   kernel_frozen_p, 0);
-    DEF(cAry, "hash",      kernel_object_id, 0);
+    {
+        VALUE ary_hash_content(CTX *c, VALUE self, int argc, VALUE *argv);
+        DEF(cAry, "hash",      ary_hash_content, 0);
+    }
     DEF(cAry, "slice!",    ary_slice_bang, -1);
     DEF(cAry, "slice",     ary_slice_bang, -1); /* not quite right but ok */
     DEF(cAry, "flat_map",  ary_map, 0);   /* simplified: same as map for shallow */
@@ -3698,8 +3818,13 @@ void korb_init_builtins(void) {
     {
         struct korb_class *cMethod = korb_class_new(korb_intern("Method"), korb_vm->object_class, T_DATA);
         korb_const_set(korb_vm->object_class, korb_intern("Method"), (VALUE)cMethod);
-        korb_class_add_method_cfunc(cMethod, korb_intern("call"), method_call, -1);
-        korb_class_add_method_cfunc(cMethod, korb_intern("[]"),   method_call, -1);
+        korb_class_add_method_cfunc(cMethod, korb_intern("call"),     method_call,     -1);
+        korb_class_add_method_cfunc(cMethod, korb_intern("[]"),       method_call,     -1);
+        korb_class_add_method_cfunc(cMethod, korb_intern("to_proc"),  method_to_proc,   0);
+        korb_class_add_method_cfunc(cMethod, korb_intern("arity"),    method_arity,     0);
+        korb_class_add_method_cfunc(cMethod, korb_intern("name"),     method_name,      0);
+        korb_class_add_method_cfunc(cMethod, korb_intern("receiver"), method_receiver,  0);
+        korb_class_add_method_cfunc(cMethod, korb_intern("owner"),    method_owner,     0);
         korb_vm->method_class = cMethod;
     }
 

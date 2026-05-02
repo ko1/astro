@@ -953,7 +953,12 @@ T(struct transduce_context *tc, pm_node_t *node)
           NODE *body = n->body ? T(tc, n->body) : ALLOC_node_nil();
           uint32_t env_size = tc->frame->max_cnt;
           pop_frame(tc);
-          return ALLOC_node_block_literal(body, params_cnt, param_base, env_size);
+          NODE *blk = ALLOC_node_block_literal(body, params_cnt, param_base, env_size);
+          /* `-> { ... }` and `lambda { ... }` produce a *lambda* — same as
+           * a block literal except is_lambda=true.  Emit a call to the
+           * Kernel#lambda cfunc which flips the flag on the passed block. */
+          struct method_cache *mc = alloc_method_cache();
+          return ALLOC_node_func_call_block(korb_intern("lambda"), 0, arg_index(tc), blk, mc);
       }
 
       case PM_CASE_NODE: {

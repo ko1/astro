@@ -168,6 +168,9 @@ struct korb_class *korb_class_new(ID name, struct korb_class *super, enum korb_t
     k->includes = NULL;
     k->includes_cnt = 0;
     k->includes_capa = 0;
+    k->prepends = NULL;
+    k->prepends_cnt = 0;
+    k->prepends_capa = 0;
     return k;
 }
 
@@ -271,6 +274,35 @@ void korb_class_add_method_cfunc(struct korb_class *klass, ID name,
     m->defining_class = klass;
     m->u.cfunc.func = func;
     m->u.cfunc.argc = argc;
+    method_table_set(&klass->methods, name, m);
+    if (korb_vm) { korb_vm->method_serial++; korb_g_method_serial = korb_vm->method_serial; }
+}
+
+/* Register a proc-bodied method (used by Module#define_method).
+ *
+ * Closure capture: the block's env field originally points into the
+ * defining method's stack frame.  Once that method returns, those slots
+ * get reused by the next call.  Snapshot the env onto the heap so the
+ * closure values survive — this matches how Proc#call's env-snapshot
+ * works, but baked at registration time.  (Live binding semantics —
+ * where a later mutation of the defining method's lvar would be seen
+ * — would require keeping the live fp pointer; not worth it for
+ * define_method.)  */
+void korb_class_add_method_proc(struct korb_class *klass, ID name, struct korb_proc *p) {
+    struct korb_proc *snap = korb_xmalloc(sizeof(*snap));
+    *snap = *p;
+    if (p->env_size > 0 && p->env) {
+        snap->env = korb_xmalloc(p->env_size * sizeof(VALUE));
+        for (uint32_t i = 0; i < p->env_size; i++) snap->env[i] = p->env[i];
+    } else {
+        snap->env = NULL;
+    }
+    struct korb_method *m = korb_xmalloc(sizeof(*m));
+    m->type = KORB_METHOD_PROC;
+    m->name = name;
+    m->defining_class = klass;
+    m->is_simple_frame = false;
+    m->u.proc.proc = snap;
     method_table_set(&klass->methods, name, m);
     if (korb_vm) { korb_vm->method_serial++; korb_g_method_serial = korb_vm->method_serial; }
 }
@@ -902,6 +934,14 @@ VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv)
         ID name = korb_sym2id(blk->self);
         return korb_funcall(c, argv[0], name, argc - 1, argv + 1);
     }
+    /* Method-proc shim (`&obj.method(:m)`): dispatch as receiver.send(name, *args). */
+    if (blk->body == NULL && !SPECIAL_CONST_P(blk->self) &&
+        BUILTIN_TYPE(blk->self) == T_DATA &&
+        ((struct RBasic *)blk->self)->klass == (VALUE)korb_vm->method_class) {
+        struct korb_method_obj { struct RBasic basic; VALUE receiver; ID name; };
+        struct korb_method_obj *mo = (struct korb_method_obj *)blk->self;
+        return korb_funcall(c, mo->receiver, mo->name, argc, argv);
+    }
     /* Shared-fp closure: block evaluates with env_fp's view of locals.
      * IMPORTANT: argv may point into the YIELDER's fp (e.g., a slot inside
      * the calling method's frame) and we're about to overwrite that slot
@@ -1397,6 +1437,25 @@ korb_method_cache_fill(struct method_cache *mc, struct korb_class *klass, struct
         } else {
             mc->prologue = prologue_ast_general;
         }
+    } else if (m->type == KORB_METHOD_PROC) {
+        /* define_method: dispatch via the proc-method prologue which
+         * pulls the proc from mc->method->u.proc.proc and invokes it
+         * via proc_call (so closure env is preserved). */
+        extern VALUE prologue_proc_method(CTX *c, struct Node *callsite,
+                                          VALUE recv, uint32_t argc,
+                                          uint32_t arg_index,
+                                          struct korb_proc *block,
+                                          struct method_cache *mc);
+        mc->body = NULL;
+        mc->dispatcher = NULL;
+        mc->locals_cnt = 0;
+        mc->required_params_cnt = 0;
+        mc->total_params_cnt = 0;
+        mc->rest_slot = -1;
+        mc->type = 2;
+        mc->cfunc = NULL;
+        mc->def_cref = NULL;
+        mc->prologue = prologue_proc_method;
     } else {
         mc->body = NULL;
         mc->dispatcher = NULL;
@@ -1409,6 +1468,39 @@ korb_method_cache_fill(struct method_cache *mc, struct korb_class *klass, struct
         mc->def_cref = NULL;
         mc->prologue = prologue_cfunc;
     }
+}
+
+/* Shim cfunc for proc-bodied methods (define_method).  We need to look
+ * up the method again from (current_frame's caller side) — simpler: walk
+ * receiver's class chain for a method named __method__ matching the call
+ * site.  Hack: store the proc on a thread-local before dispatch.  But
+ * the cfunc receives self/argc/argv with no method-name handle...
+ * Workaround: walk class for a KORB_METHOD_PROC entry whose name matches
+ * the most recent ID we resolved.  The cleanest C-level approach is to
+ * keep a tiny cache; we put the (klass, proc) pair into the method
+ * itself and reach it through `c->current_callsite` if present.  For
+ * the common case we walk the class methods and find any PROC entry —
+ * not great if multiple PROC methods exist, but our tests have one
+ * recipient at a time.  TODO: real solution is a per-method cfunc
+ * trampoline (one per define_method).  See todo.md. */
+/* Prologue for define_method-defined methods: dispatch the captured
+ * proc via proc_call so its env (closure) is preserved. */
+VALUE prologue_proc_method(CTX *c, struct Node *callsite, VALUE recv,
+                           uint32_t argc, uint32_t arg_index,
+                           struct korb_proc *block, struct method_cache *mc)
+{
+    (void)callsite; (void)block;
+    extern VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv);
+    if (!mc || !mc->method || mc->method->type != KORB_METHOD_PROC) return Qnil;
+    struct korb_proc *p = mc->method->u.proc.proc;
+    if (!p) return Qnil;
+    /* args live at fp[arg_index..arg_index+argc-1]; pass that view. */
+    VALUE *argv = &c->fp[arg_index];
+    VALUE prev_self = c->self;
+    c->self = recv;
+    VALUE r = proc_call(c, (VALUE)p, (int)argc, argv);
+    c->self = prev_self;
+    return r;
 }
 
 VALUE korb_dispatch_call(CTX *c, struct Node *callsite, VALUE recv, ID name,

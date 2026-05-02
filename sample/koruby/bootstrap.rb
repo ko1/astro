@@ -731,13 +731,10 @@ rescue StopIteration
   nil
 end
 
-def lambda(&block)
-  block
-end
-
-def proc(&block)
-  block
-end
+# lambda / proc are cfuncs in builtins.c; the cfunc flips is_lambda
+# on the captured block.  Don't redefine them here — a Ruby def would
+# silently drop the lambda flag and break `lambda { return X }.call`'s
+# local-return semantics.
 
 # --- String extensions ---
 class String

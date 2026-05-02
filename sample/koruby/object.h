@@ -66,6 +66,7 @@ struct korb_method {
     enum {
         KORB_METHOD_AST,
         KORB_METHOD_CFUNC,
+        KORB_METHOD_PROC,        /* `define_method(:n) { ... }` — body is a proc */
     } type;
     ID name;
     struct korb_class *defining_class;
@@ -84,6 +85,9 @@ struct korb_method {
             VALUE (*func)(CTX *c, VALUE self, int argc, VALUE *argv);
             int argc; /* -1 for varargs */
         } cfunc;
+        struct {
+            struct korb_proc *proc;        /* captured block: env + body + param_base */
+        } proc;
     } u;
 };
 
@@ -122,6 +126,12 @@ struct korb_class {
     struct korb_class **includes;
     uint32_t includes_cnt;
     uint32_t includes_capa;
+    /* Modules `prepend`ed.  Their methods are also flattened into
+     * `methods` (overriding the class's own) but the prepend list is
+     * kept so that `ancestors` orders them BEFORE the class itself. */
+    struct korb_class **prepends;
+    uint32_t prepends_cnt;
+    uint32_t prepends_capa;
 };
 
 struct korb_proc {
