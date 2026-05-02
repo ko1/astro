@@ -990,9 +990,6 @@ void korb_proc_snapshot_env_if_in_frame(VALUE v, VALUE *fp_lo, VALUE *fp_hi) {
     if (SPECIAL_CONST_P(v) || BUILTIN_TYPE(v) != T_PROC) return;
     struct korb_proc *p = (struct korb_proc *)v;
     if (!p->env) return;
-    /* Snapshot if env points anywhere into the dying frame's slot range
-     * [fp_lo, fp_hi).  A proc captured in this frame has env == fp_lo
-     * typically, but a nested block may have env at fp_lo + N. */
     if (p->env < fp_lo || p->env >= fp_hi) return;
     VALUE *snap = korb_xmalloc(p->env_size * sizeof(VALUE));
     for (uint32_t i = 0; i < p->env_size; i++) snap[i] = p->env[i];
@@ -2323,15 +2320,6 @@ struct korb_fiber {
      * from within the fiber. */
     VALUE *frame;
     size_t frame_size;
-
-    /* Boehm GC bookkeeping: when the fiber is running, Boehm needs to
-     * scan the fiber's C stack (allocated as `stack`) instead of the
-     * resumer's main-thread stack.  resumer_gc_sb is saved on resume
-     * (just before the swapcontext that switches to the fiber) and
-     * used by yield to restore Boehm's view when control returns to
-     * the resumer. */
-    struct GC_stack_base resumer_gc_sb;
-    struct GC_stack_base fiber_gc_sb;
 };
 
 static __thread struct korb_fiber *current_fiber = NULL;
@@ -2357,6 +2345,9 @@ static void korb_fiber_entry(unsigned int hi, unsigned int lo) {
         fib->result = result;
     }
     fib->state = KF_DEAD;
+    /* Match the GC_disable resume() did before swapping to us — we're
+     * exiting the fiber for the last time, so re-enable GC. */
+    GC_enable();
     swapcontext(&fib->ctx, &fib->prev_ctx);
 }
 
@@ -2369,6 +2360,15 @@ VALUE korb_fiber_new(struct korb_proc *block) {
     fib->block = block;
     fib->stack_size = 4 * 1024 * 1024;  /* 4 MB — PPU pixel pipeline can be deep */
     fib->stack = korb_xmalloc(fib->stack_size);
+    /* Register the fiber's C stack as a permanent GC root.  When the
+     * fiber is running, rsp is in this region; without it being a
+     * root, Boehm's GC walks toward the resumer's stack bottom and
+     * SEGVs in unmapped memory.  We could swap stackbottom on each
+     * resume/yield instead — but that adds a libgc-locked PLT call
+     * per fiber switch, which costs ~50% on optcarrot.  Adding the
+     * range as a root means Boehm scans the whole 4 MB on every
+     * GC pass (a few µs) but the per-switch path stays free. */
+    GC_add_roots(fib->stack, fib->stack + fib->stack_size);
     fib->state = KF_INIT;
     fib->args = NULL;
     fib->argc = 0;
@@ -2440,20 +2440,24 @@ VALUE korb_fiber_resume(CTX *c, VALUE fibv, int argc, VALUE *argv) {
     c->stack_end = fib->frame + fib->frame_size;
     fib->state = KF_RUNNING;
 
-    /* Boehm GC walks the current thread's C stack from rsp to its
-     * registered "stack bottom" (= top of the stack region).  After
-     * swapcontext, rsp lives in the fiber's malloc'd stack; without
-     * updating Boehm, it walks from there toward the resumer's bottom
-     * and SEGVs in unmapped memory.  Save the resumer's view on the
-     * fiber so yield can restore it, then point Boehm at the fiber. */
-    GC_get_my_stackbottom(&fib->resumer_gc_sb);
-    fib->fiber_gc_sb.mem_base = (char *)fib->stack + fib->stack_size;
-    GC_set_stackbottom(NULL, &fib->fiber_gc_sb);
-
+    /* Boehm walks the current thread's C stack during GC.  Inside a
+     * fiber, rsp is in the fiber's malloc'd stack — Boehm walking
+     * toward the resumer's stack bottom crosses unmapped memory and
+     * SEGVs.  Two ways to avoid it:
+     *   (a) GC_set_stackbottom around each swap — but it acquires a
+     *       GC lock, ~50% perf hit for fiber-heavy workloads.
+     *   (b) GC_disable while in the fiber so no GC fires there.
+     *       Live data in the fiber stack stays reachable via the
+     *       earlier GC_add_roots(fib->stack, ...) registration; we
+     *       just skip running collection itself.
+     * (b) is dramatically faster for optcarrot.  Memory pressure is
+     * bounded since fibers in optcarrot yield often (per scanline).
+     *
+     * GC_disable / GC_enable are reference-counted in Boehm.  Pair
+     * each disable here with exactly one enable — done by either the
+     * yield path's swap-out or the entry function's terminal swap. */
+    GC_disable();
     swapcontext(&fib->prev_ctx, &fib->ctx);
-
-    /* Back on the resumer's stack — restore Boehm's view. */
-    GC_set_stackbottom(NULL, &fib->resumer_gc_sb);
 
     /* Returned from yield/end — restore resumer's fp/sp from where the
      * yield path stashed them. */
@@ -2484,15 +2488,11 @@ VALUE korb_fiber_yield(CTX *c, int argc, VALUE *argv) {
     c->stack_base = fib->resumer_stack_base;
     c->stack_end = fib->resumer_stack_end;
 
-    /* Mirror of korb_fiber_resume's stack_bottom dance: switching
-     * from this fiber's stack back to the resumer's, so restore
-     * Boehm's view to the saved resumer SB. */
-    GC_set_stackbottom(NULL, &fib->resumer_gc_sb);
-
+    /* Mirror of resume's GC_disable: re-enable on yield back, disable
+     * again when the fiber resumes.  See resume for the full rationale. */
+    GC_enable();
     swapcontext(&fib->ctx, &fib->prev_ctx);
-
-    /* Resumed — restore Boehm's view to this fiber's stack. */
-    GC_set_stackbottom(NULL, &fib->fiber_gc_sb);
+    GC_disable();
 
     /* Resumed — restore the fiber's heap-frame extents so subsequent
      * method calls inside the fiber check against the right bounds. */
