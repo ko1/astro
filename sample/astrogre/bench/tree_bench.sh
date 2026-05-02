@@ -28,8 +28,12 @@ done
 
 N=${1:-3}
 
+# Raw mode: per-run TSV dump.  See grep_bench.sh for the schema.
+RAW="${RAW:-}"
+
 # Best-of-N timer.  Accepts exit 0 or 1 as success (grep returns 1 for
-# "no matches"); anything else gets recorded as ERR.
+# "no matches"); anything else gets recorded as ERR.  When RAW is set,
+# each individual measurement is appended as a TSV row.
 best_of() {
     local tag="$1"; shift
     local best="999"
@@ -44,6 +48,11 @@ best_of() {
             ok_any=1
             t=$(awk -v a="$s" -v b="$e" 'BEGIN{print b-a}')
             best=$(awk -v a="$best" -v b="$t" 'BEGIN{print (b<a)?b:a}')
+            if [ -n "$RAW" ]; then
+                printf '%s\t%s\t%s\t%d\t%s\n' "$tag" "$RAW_LABEL" "$RAW_PAT" "$i" "$t" >>"$RAW"
+            fi
+        elif [ -n "$RAW" ]; then
+            printf '%s\t%s\t%s\t%d\tERR\n' "$tag" "$RAW_LABEL" "$RAW_PAT" "$i" >>"$RAW"
         fi
     done
     if [ "$ok_any" -eq 0 ]; then
@@ -59,6 +68,7 @@ best_of() {
 run_tree() {
     local label="$1" pat="$2" tree="$3" t_short="$4"
     [ -d "$tree" ] || { echo; echo "[$label] (skip — no $tree)"; return; }
+    RAW_LABEL="$label" RAW_PAT="$pat"
     echo
     echo "[$label] /$pat/  in $tree  (-t $t_short)"
     best_of "are -j4"      "$ARE"  -j 4 -c -t "$t_short" -- "$pat" "$tree"
@@ -75,6 +85,10 @@ run_tree() {
 }
 
 echo "best of $N runs · -j 4 for are · same -t LANG / --include for grep"
+if [ -n "$RAW" ]; then
+    printf 'tool\tlabel\tpattern\trun\tseconds\n' > "$RAW"
+    echo "raw: $RAW"
+fi
 
 # Single-literal: walker dominates.
 run_tree "1lit usr/include" \
