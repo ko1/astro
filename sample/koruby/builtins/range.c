@@ -30,10 +30,45 @@ static VALUE rng_each(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE rng_first(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return ((struct korb_range *)self)->begin;
+    struct korb_range *r = (struct korb_range *)self;
+    if (argc < 1) return r->begin;
+    if (!FIXNUM_P(argv[0]) || !FIXNUM_P(r->begin) || !FIXNUM_P(r->end)) return Qnil;
+    long n = FIX2LONG(argv[0]);
+    if (n < 0) {
+        VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+        korb_raise(c, (struct korb_class *)eArg, "negative array size");
+        return Qnil;
+    }
+    long b = FIX2LONG(r->begin), e = FIX2LONG(r->end);
+    if (r->exclude_end) e--;
+    long avail = e - b + 1; if (avail < 0) avail = 0;
+    if (n > avail) n = avail;
+    VALUE a = korb_ary_new_capa(n);
+    for (long i = 0; i < n; i++) korb_ary_push(a, INT2FIX(b + i));
+    return a;
 }
 static VALUE rng_last(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return ((struct korb_range *)self)->end;
+    struct korb_range *r = (struct korb_range *)self;
+    if (argc < 1) {
+        /* Plain end on an inclusive range; on an exclusive range CRuby
+         * still returns the stored end (not end-1).  Match that. */
+        return r->end;
+    }
+    if (!FIXNUM_P(argv[0]) || !FIXNUM_P(r->begin) || !FIXNUM_P(r->end)) return Qnil;
+    long n = FIX2LONG(argv[0]);
+    if (n < 0) {
+        VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+        korb_raise(c, (struct korb_class *)eArg, "negative array size");
+        return Qnil;
+    }
+    long b = FIX2LONG(r->begin), e = FIX2LONG(r->end);
+    if (r->exclude_end) e--;
+    long avail = e - b + 1; if (avail < 0) avail = 0;
+    if (n > avail) n = avail;
+    long start = e - n + 1;
+    VALUE a = korb_ary_new_capa(n);
+    for (long i = 0; i < n; i++) korb_ary_push(a, INT2FIX(start + i));
+    return a;
 }
 static VALUE rng_to_a(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_range *r = (struct korb_range *)self;
@@ -70,6 +105,13 @@ static VALUE rng_step(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (step == 0) return self;
     long b = FIX2LONG(r->begin), e = FIX2LONG(r->end);
     if (r->exclude_end) e--;
+    /* Block-less form returns an Array of stepped values — koruby's
+     * Enumerator stand-in (matches Integer#step's behavior). */
+    if (!korb_block_given()) {
+        VALUE a = korb_ary_new();
+        for (long i = b; i <= e; i += step) korb_ary_push(a, INT2FIX(i));
+        return a;
+    }
     for (long i = b; i <= e; i += step) {
         VALUE v = INT2FIX(i);
         korb_yield(c, 1, &v);

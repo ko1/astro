@@ -536,3 +536,97 @@ static VALUE hash_reduce(CTX *c, VALUE self, int argc, VALUE *argv) {
     return acc;
 }
 
+/* ---------- Hash#dig ----------
+ * h.dig(k1, k2, ...) — equivalent to h[k1][k2]..., short-circuiting on
+ * nil and dispatching #dig on intermediates so Hash/Array chains compose. */
+static VALUE hash_dig(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1) {
+        VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+        korb_raise(c, (struct korb_class *)eArg, "wrong number of arguments to dig (0 for 1+)");
+        return Qnil;
+    }
+    VALUE first = korb_hash_aref(self, argv[0]);
+    if (UNDEF_P(first)) first = Qnil;
+    if (argc == 1) return first;
+    if (NIL_P(first)) return Qnil;
+    return korb_funcall(c, first, korb_intern("dig"), argc - 1, argv + 1);
+}
+
+/* ---------- Hash#has_value? / value? ---------- */
+static VALUE hash_has_value_p(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1) return Qfalse;
+    struct korb_hash *h = (struct korb_hash *)self;
+    for (struct korb_hash_entry *e = h->first; e; e = e->next) {
+        if (korb_eq(e->value, argv[0])) return Qtrue;
+    }
+    return Qfalse;
+}
+
+/* ---------- Hash#group_by ----------
+ * Bins [k, v] pairs under whatever the block returns. */
+static VALUE hash_group_by(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_hash *h = (struct korb_hash *)self;
+    VALUE r = korb_hash_new();
+    for (struct korb_hash_entry *e = h->first; e; e = e->next) {
+        VALUE pair = korb_ary_new_capa(2);
+        korb_ary_push(pair, e->key);
+        korb_ary_push(pair, e->value);
+        VALUE args[2] = { e->key, e->value };
+        VALUE key = korb_yield(c, 2, args);
+        if (c->state != KORB_NORMAL) return Qnil;
+        VALUE bucket = korb_hash_aref(r, key);
+        if (UNDEF_P(bucket) || NIL_P(bucket)) {
+            bucket = korb_ary_new();
+            korb_hash_aset(r, key, bucket);
+        }
+        korb_ary_push(bucket, pair);
+    }
+    return r;
+}
+
+/* ---------- Hash#sort_by ----------
+ * Materialize [k, v] pairs + sort-keys, insertion-sort, return ordered
+ * pair list.  Hash sizes encountered here are small enough that O(n^2)
+ * is fine. */
+static VALUE hash_sort_by(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_hash *h = (struct korb_hash *)self;
+    VALUE pairs = korb_ary_new();
+    VALUE keys  = korb_ary_new();
+    for (struct korb_hash_entry *e = h->first; e; e = e->next) {
+        VALUE pair = korb_ary_new_capa(2);
+        korb_ary_push(pair, e->key);
+        korb_ary_push(pair, e->value);
+        VALUE args[2] = { e->key, e->value };
+        VALUE k = korb_yield(c, 2, args);
+        if (c->state != KORB_NORMAL) return Qnil;
+        korb_ary_push(pairs, pair);
+        korb_ary_push(keys, k);
+    }
+    struct korb_array *pa = (struct korb_array *)pairs;
+    struct korb_array *ka = (struct korb_array *)keys;
+    for (long i = 1; i < ka->len; i++) {
+        long j = i;
+        while (j > 0) {
+            VALUE cmp = korb_funcall(c, ka->ptr[j], korb_intern("<=>"), 1, &ka->ptr[j-1]);
+            if (!FIXNUM_P(cmp) || FIX2LONG(cmp) >= 0) break;
+            VALUE tk = ka->ptr[j]; ka->ptr[j] = ka->ptr[j-1]; ka->ptr[j-1] = tk;
+            VALUE tp = pa->ptr[j]; pa->ptr[j] = pa->ptr[j-1]; pa->ptr[j-1] = tp;
+            j--;
+        }
+    }
+    return pairs;
+}
+
+/* ---------- Hash#filter_map ---------- */
+static VALUE hash_filter_map(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_hash *h = (struct korb_hash *)self;
+    VALUE r = korb_ary_new();
+    for (struct korb_hash_entry *e = h->first; e; e = e->next) {
+        VALUE args[2] = { e->key, e->value };
+        VALUE m = korb_yield(c, 2, args);
+        if (c->state != KORB_NORMAL) return Qnil;
+        if (RTEST(m)) korb_ary_push(r, m);
+    }
+    return r;
+}
+

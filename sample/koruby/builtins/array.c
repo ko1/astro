@@ -1317,3 +1317,146 @@ VALUE ary_hash_content(CTX *c, VALUE self, int argc, VALUE *argv) {
     return INT2FIX(r >> 1);
 }
 
+/* ---------- Array#dig ----------
+ * Walks a chain of indices: a.dig(i, j, k) == a[i][j][k], returning nil
+ * the moment any intermediate is nil.  After the first hop it dispatches
+ * the rest via #dig so Hash/Struct chains compose. */
+static VALUE ary_dig(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1) {
+        VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+        korb_raise(c, (struct korb_class *)eArg, "wrong number of arguments to dig (0 for 1+)");
+        return Qnil;
+    }
+    VALUE first = korb_ary_aref(self, FIXNUM_P(argv[0]) ? FIX2LONG(argv[0]) : 0);
+    if (argc == 1) return first;
+    if (NIL_P(first)) return Qnil;
+    return korb_funcall(c, first, korb_intern("dig"), argc - 1, argv + 1);
+}
+
+/* ---------- Array#take_while / drop_while ---------- */
+static VALUE ary_take_while(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_array *a = (struct korb_array *)self;
+    VALUE r = korb_ary_new();
+    for (long i = 0; i < a->len; i++) {
+        VALUE m = korb_yield(c, 1, &a->ptr[i]);
+        if (c->state != KORB_NORMAL) return Qnil;
+        if (!RTEST(m)) break;
+        korb_ary_push(r, a->ptr[i]);
+    }
+    return r;
+}
+
+static VALUE ary_drop_while(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_array *a = (struct korb_array *)self;
+    long i = 0;
+    for (; i < a->len; i++) {
+        VALUE m = korb_yield(c, 1, &a->ptr[i]);
+        if (c->state != KORB_NORMAL) return Qnil;
+        if (!RTEST(m)) break;
+    }
+    VALUE r = korb_ary_new();
+    for (; i < a->len; i++) korb_ary_push(r, a->ptr[i]);
+    return r;
+}
+
+/* ---------- Array#flat_map ----------
+ * Concatenates one level of nesting: if the block returns an Array the
+ * elements are appended; otherwise the value itself is appended.
+ * Previously aliased to #map, which is wrong for the common
+ * `[[1,2],[3,4]].flat_map { |x| x }` shape. */
+static VALUE ary_flat_map(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_array *a = (struct korb_array *)self;
+    VALUE r = korb_ary_new();
+    for (long i = 0; i < a->len; i++) {
+        VALUE m = korb_yield(c, 1, &a->ptr[i]);
+        if (c->state != KORB_NORMAL) return Qnil;
+        if (!SPECIAL_CONST_P(m) && BUILTIN_TYPE(m) == T_ARRAY) {
+            struct korb_array *ma = (struct korb_array *)m;
+            for (long j = 0; j < ma->len; j++) korb_ary_push(r, ma->ptr[j]);
+        } else {
+            korb_ary_push(r, m);
+        }
+    }
+    return r;
+}
+
+/* ---------- first(n) / last(n) overloads ----------
+ * Existing ary_first/ary_last only handle the zero-arg form.  The
+ * one-arg form returns up to n leading / trailing elements as a new
+ * array; n > size yields the whole array, n == 0 an empty array. */
+static VALUE ary_first_n(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_array *a = (struct korb_array *)self;
+    if (argc < 1) return a->len == 0 ? Qnil : a->ptr[0];
+    if (!FIXNUM_P(argv[0])) {
+        korb_raise(c, NULL, "first: non-Integer argument");
+        return Qnil;
+    }
+    long n = FIX2LONG(argv[0]);
+    if (n < 0) {
+        korb_raise(c, NULL, "negative array size");
+        return Qnil;
+    }
+    if (n > a->len) n = a->len;
+    VALUE r = korb_ary_new_capa(n);
+    for (long i = 0; i < n; i++) korb_ary_push(r, a->ptr[i]);
+    return r;
+}
+
+static VALUE ary_last_n(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_array *a = (struct korb_array *)self;
+    if (argc < 1) return a->len == 0 ? Qnil : a->ptr[a->len - 1];
+    if (!FIXNUM_P(argv[0])) {
+        korb_raise(c, NULL, "last: non-Integer argument");
+        return Qnil;
+    }
+    long n = FIX2LONG(argv[0]);
+    if (n < 0) {
+        korb_raise(c, NULL, "negative array size");
+        return Qnil;
+    }
+    if (n > a->len) n = a->len;
+    long start = a->len - n;
+    VALUE r = korb_ary_new_capa(n);
+    for (long i = start; i < a->len; i++) korb_ary_push(r, a->ptr[i]);
+    return r;
+}
+
+/* ---------- Array#shuffle ----------
+ * Fisher–Yates over a copy.  Uses rand(3); good enough for tests and the
+ * occasional `.sample` cousin (already implemented).  Doesn't mutate self. */
+static VALUE ary_shuffle(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_array *a = (struct korb_array *)self;
+    VALUE r = korb_ary_new_capa(a->len);
+    for (long i = 0; i < a->len; i++) korb_ary_push(r, a->ptr[i]);
+    struct korb_array *ra = (struct korb_array *)r;
+    for (long i = ra->len - 1; i > 0; i--) {
+        long j = (long)(((unsigned long)rand()) % (unsigned long)(i + 1));
+        VALUE tmp = ra->ptr[i];
+        ra->ptr[i] = ra->ptr[j];
+        ra->ptr[j] = tmp;
+    }
+    return r;
+}
+
+/* ---------- Array#bsearch ----------
+ * Find-minimum mode only (block returns boolean).  Assumes the array is
+ * sorted and the block result transitions from false to true exactly
+ * once; returns the first true element, nil if all are false. */
+static VALUE ary_bsearch(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_array *a = (struct korb_array *)self;
+    long lo = 0, hi = a->len;
+    VALUE found = Qnil;
+    while (lo < hi) {
+        long mid = lo + (hi - lo) / 2;
+        VALUE r = korb_yield(c, 1, &a->ptr[mid]);
+        if (c->state != KORB_NORMAL) return Qnil;
+        if (RTEST(r)) {
+            found = a->ptr[mid];
+            hi = mid;
+        } else {
+            lo = mid + 1;
+        }
+    }
+    return found;
+}
+

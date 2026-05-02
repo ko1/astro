@@ -134,8 +134,8 @@ void korb_init_builtins(void) {
     DEF(cAry, "push", ary_push, -1);
     DEF(cAry, "<<", ary_lshift, 1);
     DEF(cAry, "pop", ary_pop, 0);
-    DEF(cAry, "first", ary_first, 0);
-    DEF(cAry, "last", ary_last, 0);
+    DEF(cAry, "first", ary_first_n, -1);
+    DEF(cAry, "last",  ary_last_n,  -1);
     DEF(cAry, "each", ary_each, 0);
     DEF(cAry, "each_with_index", ary_each_with_index, 0);
     DEF(cAry, "map", ary_map, 0);
@@ -161,8 +161,8 @@ void korb_init_builtins(void) {
     /* Range */
     struct korb_class *cRng = korb_vm->range_class;
     DEF(cRng, "each", rng_each, 0);
-    DEF(cRng, "first", rng_first, 0);
-    DEF(cRng, "last", rng_last, 0);
+    DEF(cRng, "first", rng_first, -1);
+    DEF(cRng, "last",  rng_last,  -1);
     DEF(cRng, "to_a", rng_to_a, 0);
 
     /* Class */
@@ -391,8 +391,13 @@ void korb_init_builtins(void) {
     }
     DEF(cAry, "slice!",    ary_slice_bang, -1);
     DEF(cAry, "slice",     ary_slice_bang, -1); /* not quite right but ok */
-    DEF(cAry, "flat_map",  ary_map, 0);   /* simplified: same as map for shallow */
-    DEF(cAry, "collect_concat", ary_map, 0);
+    DEF(cAry, "flat_map",       ary_flat_map, 0);
+    DEF(cAry, "collect_concat", ary_flat_map, 0);
+    DEF(cAry, "dig",            ary_dig,      -1);
+    DEF(cAry, "take_while",     ary_take_while, 0);
+    DEF(cAry, "drop_while",     ary_drop_while, 0);
+    DEF(cAry, "shuffle",        ary_shuffle,    0);
+    DEF(cAry, "bsearch",        ary_bsearch,    0);
     DEF(cAry, "assoc",       ary_assoc,       1);
     DEF(cAry, "rassoc",      ary_rassoc,      1);
     DEF(cAry, "at",          ary_at,          1);
@@ -458,6 +463,12 @@ void korb_init_builtins(void) {
     DEF(cHsh, "min_by",      hash_min_by,       0);
     DEF(cHsh, "max_by",      hash_max_by,       0);
     DEF(cHsh, "sort",        hash_sort,         0);
+    DEF(cHsh, "dig",         hash_dig,         -1);
+    DEF(cHsh, "has_value?",  hash_has_value_p,  1);
+    DEF(cHsh, "value?",      hash_has_value_p,  1);
+    DEF(cHsh, "group_by",    hash_group_by,     0);
+    DEF(cHsh, "sort_by",     hash_sort_by,      0);
+    DEF(cHsh, "filter_map",  hash_filter_map,   0);
     DEF(cHsh, "default",      hash_default_get,      0);
     DEF(cHsh, "default=",     hash_default_set,      1);
     DEF(cHsh, "default_proc", hash_default_proc_get, 0);
