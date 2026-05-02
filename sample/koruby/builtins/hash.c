@@ -336,6 +336,41 @@ static VALUE hash_tally(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 /* Hash.new(default = nil) / Hash.new { |h, k| ... }. */
+/* Hash[pairs] / Hash[k1,v1,k2,v2,...] / Hash[other_hash] — convert to Hash. */
+static VALUE hash_class_aref(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc == 0) return korb_hash_new();
+    if (argc == 1) {
+        VALUE arg = argv[0];
+        if (!SPECIAL_CONST_P(arg) && BUILTIN_TYPE(arg) == T_HASH) {
+            VALUE r = korb_hash_new();
+            struct korb_hash *src = (struct korb_hash *)arg;
+            for (struct korb_hash_entry *e = src->first; e; e = e->next) {
+                korb_hash_aset(r, e->key, e->value);
+            }
+            return r;
+        }
+        if (!SPECIAL_CONST_P(arg) && BUILTIN_TYPE(arg) == T_ARRAY) {
+            /* Hash[ [[k,v], [k,v]] ] form. */
+            VALUE r = korb_hash_new();
+            struct korb_array *a = (struct korb_array *)arg;
+            for (long i = 0; i < a->len; i++) {
+                VALUE pair = a->ptr[i];
+                if (!SPECIAL_CONST_P(pair) && BUILTIN_TYPE(pair) == T_ARRAY) {
+                    struct korb_array *p = (struct korb_array *)pair;
+                    if (p->len == 2) korb_hash_aset(r, p->ptr[0], p->ptr[1]);
+                }
+            }
+            return r;
+        }
+    }
+    /* Hash[k,v,k,v,...] flat form. */
+    VALUE r = korb_hash_new();
+    for (int i = 0; i + 1 < argc; i += 2) {
+        korb_hash_aset(r, argv[i], argv[i+1]);
+    }
+    return r;
+}
+
 static VALUE hash_class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
     VALUE h = korb_hash_new();
     struct korb_hash *hh = (struct korb_hash *)h;

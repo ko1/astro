@@ -541,6 +541,7 @@ void korb_init_builtins(void) {
         struct korb_class *cHshMeta = korb_class_new(korb_intern("HashMeta"),
                                                       korb_vm->class_class, T_CLASS);
         korb_class_add_method_cfunc(cHshMeta, korb_intern("new"), hash_class_new, -1);
+        korb_class_add_method_cfunc(cHshMeta, korb_intern("[]"),  hash_class_aref, -1);
         cHsh->basic.klass = (VALUE)cHshMeta;
     }
     /* String.new(s = "") — initialize from optional string. */
