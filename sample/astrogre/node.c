@@ -48,14 +48,6 @@ node_allocate(size_t size)
 /* defined later — astro_cs_load lives inside astro_code_store.c which is
  * included below.  This function is also defined below. */
 
-/* --- Dispatch tracing (no-op) --- */
-
-static void
-dispatch_info(CTX *c, NODE *n, bool end)
-{
-    (void)c; (void)n; (void)end;
-}
-
 /* --- ASTro infrastructure (HASH, DUMP, hash funcs, alloc_dispatcher_name) --- */
 #include "astro_node.c"
 

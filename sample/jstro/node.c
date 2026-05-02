@@ -37,12 +37,6 @@ node_allocate(size_t size)
     return n;
 }
 
-static void
-dispatch_info(CTX *c, NODE *n, bool end)
-{
-    (void)c; (void)n; (void)end;
-}
-
 void
 clear_hash(NODE *n)
 {
@@ -87,9 +81,9 @@ EVAL_func(CTX *c, NODE *n, JsValue *frame)
 
 // =====================================================================
 // ASTro common infrastructure (HASH, DUMP, hash_*, alloc_dispatcher_name).
-// astro_node.c references node_allocate / dispatch_info so it must be
-// included AFTER those definitions, but BEFORE astro_code_store.c and
-// the generated files.
+// astro_node.c references node_allocate so it must be included AFTER
+// node_allocate is defined, but BEFORE astro_code_store.c and the
+// generated files.
 // =====================================================================
 #include "astro_node.c"
 

@@ -1,8 +1,8 @@
 // asom: ASTro SOM runtime support.
 //
-// Mirrors sample/calc/node.c: provides node_allocate / dispatch_info / EVAL /
-// OPTIMIZE / INIT, then includes the generated infrastructure and the
-// asom-specific runtime helpers.
+// Mirrors sample/calc/node.c: provides node_allocate / EVAL / OPTIMIZE /
+// INIT, then includes the generated infrastructure and the asom-specific
+// runtime helpers.
 
 #include <stdio.h>
 #include <stdlib.h>

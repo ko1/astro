@@ -2,10 +2,8 @@
 //
 // Provides hash functions, HASH, DUMP, and alloc_dispatcher_name.
 //
-// #include this file from your node.c, AFTER defining:
-//   - node_allocate(size_t)
-//   - dispatch_info(CTX*, NODE*, bool)
-// and BEFORE #including astro_code_store.c and generated files.
+// #include this file from your node.c, AFTER defining `node_allocate(size_t)`
+// and BEFORE #including astro_code_store.c and the generated files.
 
 // ---------------------------------------------------------------------------
 // Hash functions (used by generated node_hash.c)

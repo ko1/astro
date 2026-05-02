@@ -205,15 +205,10 @@ static NODE *node_allocate(size_t size) {
     return n;
 }
 
-static void dispatch_info(CTX *c, NODE *n, bool end) {
-    // Optional tracing hook, called from generated DISPATCH_xxx when
-    // a debug option is set.  Empty body is fine if you don't need it.
-}
-
 // --- Common runtime helpers ---
 // Provides hash_merge / hash_cstr / hash_uint32 / hash_node, plus the
 // public HASH() / DUMP() implementations and alloc_dispatcher_name().
-// Must come AFTER node_allocate / dispatch_info above.
+// Must come AFTER node_allocate above.
 #include "astro_node.c"
 
 // --- Code Store (AOT / PG / JIT lookup + build) ---

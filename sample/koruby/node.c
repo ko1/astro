@@ -8,10 +8,9 @@
 #include "node.h"
 
 /* Hash helpers + HASH / DUMP / hash_node / alloc_dispatcher_name come
- * from runtime/astro_node.c.  We forward-declare the host hooks the
- * shared runtime expects, then include it. */
+ * from runtime/astro_node.c.  We forward-declare node_allocate (the one
+ * host hook the shared runtime expects), then include it. */
 static __attribute__((noinline)) NODE *node_allocate(size_t size);
-static void dispatch_info(CTX *c, NODE *n, bool end);
 
 #include "../../runtime/astro_node.c"
 
@@ -102,8 +101,6 @@ void sc_repo_clear(void) { sc_repo.size = 0; }
 
 /* alloc_dispatcher_name, astro_fprintf_cstr, astro_fprint_cstr come
  * from runtime/astro_node.c. */
-
-static void dispatch_info(CTX *c, NODE *n, bool end) { (void)c; (void)n; (void)end; }
 
 /* OPTIMIZE / SPECIALIZE */
 
