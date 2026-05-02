@@ -251,7 +251,10 @@ void korb_init_builtins(void) {
     DEF(cInt, "===",   int_eqq, 1);
     DEF(cInt, "floor", int_floor, -1);
     DEF(cInt, "ceil",  int_floor, -1);
-    DEF(cInt, "round", int_floor, -1);
+    DEF(cInt, "round",    int_round, -1);
+    DEF(cInt, "floor",    int_floor, -1);
+    DEF(cInt, "ceil",     int_ceil,  -1);
+    DEF(cInt, "truncate", int_floor, -1);
     DEF(cInt, "abs",   int_abs, 0);
     DEF(cInt, "[]",    int_aref, -1);
     DEF(cInt, "bit_length", int_bit_length, 0);
@@ -265,7 +268,9 @@ void korb_init_builtins(void) {
     DEF(cInt, "upto",  int_upto, 1);
     DEF(cInt, "downto", int_downto, 1);
     DEF(cInt, "div",   int_method_div, 1);
-    DEF(cInt, "fdiv",  int_fdiv, 1);
+    DEF(cInt, "fdiv",       int_fdiv,       1);
+    DEF(cInt, "remainder",  int_remainder,  1);
+    DEF(cInt, "modulo",     int_mod,        1);
     DEF(cInt, "size",  int_size, 0);
     DEF(cInt, "coerce", int_coerce, 1);
     DEF(cInt, "abs2",   int_abs2,   0);

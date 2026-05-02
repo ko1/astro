@@ -1142,3 +1142,84 @@ class Method
     to_proc.curry(arity)
   end
 end
+
+# ---------- Set (minimal Hash-backed) ----------
+# Backed by a Hash {elem => true}.  No real ordering guarantees beyond
+# Hash insertion order (which Ruby's Hash preserves).
+class Set
+  include Enumerable
+
+  def self.[](*args) = new(args)
+
+  def initialize(enum = nil)
+    @h = {}
+    enum.each { |e| @h[e] = true } if enum
+  end
+
+  def add(o); @h[o] = true; self; end
+  alias << add
+
+  def delete(o); @h.delete(o); self; end
+
+  def include?(o); @h.key?(o); end
+  alias member? include?
+
+  def size; @h.size; end
+  alias length size
+  alias count size
+
+  def empty?; @h.empty?; end
+
+  def each(&blk)
+    if blk
+      @h.each_key(&blk)
+      self
+    else
+      @h.keys
+    end
+  end
+
+  def to_a; @h.keys; end
+
+  def |(other)
+    n = Set.new(@h.keys)
+    other.each { |e| n.add(e) }
+    n
+  end
+  alias + |
+  alias union |
+
+  def &(other)
+    n = Set.new
+    @h.each_key { |e| n.add(e) if other.include?(e) }
+    n
+  end
+  alias intersection &
+
+  def -(other)
+    n = Set.new
+    @h.each_key { |e| n.add(e) unless other.include?(e) }
+    n
+  end
+  alias difference -
+
+  def ==(other)
+    return false unless other.is_a?(Set)
+    return false unless size == other.size
+    @h.each_key { |e| return false unless other.include?(e) }
+    true
+  end
+
+  def hash; @h.keys.sort_by(&:hash).hash; end
+
+  def inspect
+    "#<Set: {" + @h.keys.map(&:inspect).join(", ") + "}>"
+  end
+  alias to_s inspect
+
+  def subset?(other)
+    @h.each_key { |e| return false unless other.include?(e) }
+    true
+  end
+  def superset?(other); other.subset?(self); end
+end

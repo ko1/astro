@@ -287,7 +287,51 @@ static VALUE int_eqq(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE int_floor(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return self;
+    if (argc < 1 || !FIXNUM_P(self)) return self;
+    long n = FIXNUM_P(argv[0]) ? FIX2LONG(argv[0]) : 0;
+    if (n >= 0) return self;  /* floor with ndigits >= 0 on Int is identity */
+    /* Floor toward -inf at the 10^|n| boundary. */
+    long v = FIX2LONG(self);
+    long scale = 1;
+    for (long i = 0; i < -n; i++) scale *= 10;
+    long r = v % scale;
+    if (r != 0 && (r < 0) != (scale < 0)) r += scale;  /* floor */
+    return INT2FIX(v - r);
+}
+
+/* Integer#round(ndigits=0) — for n >= 0 returns self (matching CRuby).
+ * For n < 0, rounds to the nearest 10^|n|.  Half rounds away from zero
+ * (Ruby's default).  `154.round(-1) == 150`. */
+static VALUE int_round(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (!FIXNUM_P(self) || argc < 1) return self;
+    if (!FIXNUM_P(argv[0])) return self;
+    long n = FIX2LONG(argv[0]);
+    if (n >= 0) return self;
+    long v = FIX2LONG(self);
+    long scale = 1;
+    for (long i = 0; i < -n; i++) scale *= 10;
+    long half = scale / 2;
+    if (v >= 0) {
+        return INT2FIX(((v + half) / scale) * scale);
+    } else {
+        return INT2FIX(-(((-v + half) / scale) * scale));
+    }
+}
+
+/* Integer#ceil(ndigits=0) — for n >= 0 returns self.  For n < 0 rounds
+ * toward +inf at the 10^|n| boundary. */
+static VALUE int_ceil(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (!FIXNUM_P(self) || argc < 1) return self;
+    if (!FIXNUM_P(argv[0])) return self;
+    long n = FIX2LONG(argv[0]);
+    if (n >= 0) return self;
+    long v = FIX2LONG(self);
+    long scale = 1;
+    for (long i = 0; i < -n; i++) scale *= 10;
+    long r = v % scale;
+    if (r > 0) v += (scale - r);
+    else if (r < 0) v -= r;
+    return INT2FIX(v);
 }
 
 /* ---------- Integer#div / Integer#fdiv ----------
@@ -322,6 +366,21 @@ static VALUE int_fdiv(CTX *c, VALUE self, int argc, VALUE *argv) {
  * `1.size == 8` on a 64-bit build. */
 static VALUE int_size(CTX *c, VALUE self, int argc, VALUE *argv) {
     return INT2FIX((long)sizeof(long));
+}
+
+/* Integer#remainder — like %, but with truncation-toward-zero
+ * semantics (rather than floor division).  `-10.remainder(3) == -1`
+ * vs `-10 % 3 == 2`. */
+static VALUE int_remainder(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1 || !FIXNUM_P(self) || !FIXNUM_P(argv[0])) return Qnil;
+    long a = FIX2LONG(self), b = FIX2LONG(argv[0]);
+    if (b == 0) {
+        VALUE eZ = korb_const_get(korb_vm->object_class, korb_intern("ZeroDivisionError"));
+        korb_raise(c, (struct korb_class *)eZ, "divided by 0");
+        return Qnil;
+    }
+    /* C's % truncates toward zero — exactly what remainder wants. */
+    return INT2FIX(a % b);
 }
 
 /* Numeric#coerce(other) — returns [other_as_self_type, self_as_other_type]
