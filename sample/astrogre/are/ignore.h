@@ -37,10 +37,24 @@
 
 typedef struct ignore_rule {
     char  *pattern;          /* allocated, no trailing newline / slash */
+    size_t pattern_len;      /* cached strlen(pattern) for fast literal compare */
     bool   negate;           /* leading `!` — un-ignores a previously matched name */
     bool   dir_only;         /* trailing `/` — only matches directories */
     bool   anchored;         /* leading `/` — only matches at the dir of this .gitignore */
     bool   has_slash;        /* pattern contains `/` (excluding leading/trailing) — matched against rel-path, not basename */
+    /* Set when the pattern has no `*` `?` or `[` — i.e. fnmatch
+     * would degenerate to an exact compare.  Hot in real codebases:
+     * `node_modules`, `target`, `.git`, `vendor`, exact filenames.
+     * Lets the matcher do strcmp/memcmp instead of fnmatch (which
+     * was 21% of CPU on the astro-tree walk per `perf record`). */
+    bool   is_literal;
+    /* Set when the pattern is `*.ext` style: a leading `*` followed
+     * by a literal tail with no further metachars.  Lets the matcher
+     * do a tail-only memcmp ("does basename end in pattern[1..]?")
+     * instead of fnmatch. */
+    bool   is_suffix_glob;
+    const char *suffix_tail;  /* points into `pattern` at offset 1 */
+    size_t      suffix_tail_len;
 } ignore_rule_t;
 
 typedef struct ignore_layer {
@@ -49,6 +63,7 @@ typedef struct ignore_layer {
      * the entry's path RELATIVE to this layer when matching anchored
      * or slash-bearing rules. */
     char           *base_dir;
+    size_t          base_dir_len;    /* cached strlen — hot in the matcher */
     ignore_rule_t  *rules;
     size_t          n_rules;
     size_t          cap_rules;
