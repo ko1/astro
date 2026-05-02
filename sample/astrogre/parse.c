@@ -54,6 +54,7 @@ typedef enum {
     IRE_LAST_MATCH,     /* \G — anchor at scan_start */
     IRE_CONDITIONAL,    /* (?(N)yes|no) — branch on capture validity */
     IRE_SUBROUTINE,     /* \g<name> / \g<N> — re-evaluate a named group */
+    IRE_ABSENCE,        /* (?~BODY) — match while BODY can't match here */
 } ire_kind_t;
 
 typedef struct ire_node {
@@ -167,6 +168,9 @@ static void bm_invert(uint64_t bm[4]) {
 }
 static void bm_or(uint64_t a[4], const uint64_t b[4]) {
     for (int i = 0; i < 4; i++) a[i] |= b[i];
+}
+static void bm_and(uint64_t a[4], const uint64_t b[4]) {
+    for (int i = 0; i < 4; i++) a[i] &= b[i];
 }
 
 /* Apply /i case-fold expansion to a single ASCII char */
@@ -284,6 +288,48 @@ static int parse_class_escape(re_parser_t *q, uint64_t bm[4], uint8_t *out_byte)
         *out_byte = (uint8_t)strtol(h, NULL, 16);
         return 0;
     }
+    case 'u': {
+        /* \uHHHH or \u{H...} inside [].  Our class is byte-level
+         * so only ASCII codepoints (cp < 0x80) can be expressed
+         * as a single bitmap entry; for multi-byte we would have
+         * to special-case the matcher.  Match Onigmo's behavior
+         * for ASCII; reject the rest with a clear error. */
+        uint32_t cp = 0;
+        if (q->p < q->end && *q->p == '{') {
+            q->p++;
+            int n = 0;
+            while (q->p < q->end && *q->p != '}' && n < 8) {
+                const int ch = *q->p;
+                int d;
+                if (ch >= '0' && ch <= '9') d = ch - '0';
+                else if (ch >= 'a' && ch <= 'f') d = ch - 'a' + 10;
+                else if (ch >= 'A' && ch <= 'F') d = ch - 'A' + 10;
+                else { re_error(q, "bad \\u{} hex digit in []"); return 0; }
+                cp = (cp << 4) | (uint32_t)d;
+                q->p++; n++;
+            }
+            if (q->p >= q->end || *q->p != '}') { re_error(q, "expected } in \\u{} in []"); return 0; }
+            q->p++;
+        } else {
+            if (q->p + 4 > q->end) { re_error(q, "bad \\u in []: need 4 hex digits"); return 0; }
+            for (int n = 0; n < 4; n++) {
+                const int ch = q->p[n];
+                int d;
+                if (ch >= '0' && ch <= '9') d = ch - '0';
+                else if (ch >= 'a' && ch <= 'f') d = ch - 'a' + 10;
+                else if (ch >= 'A' && ch <= 'F') d = ch - 'A' + 10;
+                else { re_error(q, "bad \\u hex digit in []"); return 0; }
+                cp = (cp << 4) | (uint32_t)d;
+            }
+            q->p += 4;
+        }
+        if (cp >= 0x80) {
+            re_error(q, "multi-byte \\u inside [] is not supported");
+            return 0;
+        }
+        *out_byte = (uint8_t)cp;
+        return 0;
+    }
     case '\\': *out_byte = '\\'; return 0;
     case ']':  *out_byte = ']';  return 0;
     case '-':  *out_byte = '-';  return 0;
@@ -297,18 +343,41 @@ static int parse_class_escape(re_parser_t *q, uint64_t bm[4], uint8_t *out_byte)
     }
 }
 
-static ire_node_t *parse_class(re_parser_t *q) {
-    /* '[' already consumed */
-    ire_node_t *n = ire_new(IRE_CLASS);
-    bool negate = false;
-    if (re_peek(q) == '^') { negate = true; q->p++; }
+/* Forward decls: parse_class is called recursively for nested `[...]`
+ * members and for `&&`-RHS sub-classes; ire_free disposes those
+ * temporary nested-class nodes after we copy out their bitmap. */
+static ire_node_t *parse_class(re_parser_t *q);
+static void ire_free(ire_node_t *n);
 
-    /* In Ruby, `]` immediately after `[` (or `[^`) is literal */
+/* Parse one class operand into `bm` until ']' (consumed) or '&&' (left
+ * unconsumed for the caller).  Already past leading `[` and optional
+ * `^` (the caller handles the operand-level negate).  Members include
+ * literals, ranges, escapes, POSIX bracket classes, and nested `[...]`
+ * (which contributes its bitmap by union).
+ *
+ * `&&` chains intersection: when seen, recursively parses the RHS
+ * operand into a fresh bitmap and ANDs it in.  Recursion is left-
+ * associative (`A&&B&&C` = `(A&&B)&&C`), which matches Onigmo. */
+static void parse_class_body(re_parser_t *q, uint64_t bm[4]) {
     bool first = true;
 
     while (q->p < q->end) {
         int c = re_peek(q);
-        if (c == ']' && !first) { q->p++; goto done; }
+
+        if (c == ']' && !first) { q->p++; return; }
+
+        /* `&&` set intersection.  Onigmo requires at least one prior
+         * member (so `[&&x]` is `&` `&` `x`), which our `!first` guard
+         * matches.  After consuming `&&`, recursively parse the RHS
+         * into a fresh bitmap, then AND it in.  The recursive call
+         * consumes the closing `]`, so we return immediately. */
+        if (!first && q->p + 1 < q->end && q->p[0] == '&' && q->p[1] == '&') {
+            q->p += 2;
+            uint64_t rhs[4] = {0};
+            parse_class_body(q, rhs);
+            bm_and(bm, rhs);
+            return;
+        }
 
         /* POSIX bracket class: `[:NAME:]` or `[:^NAME:]`. */
         if (c == '[' && q->p + 1 < q->end && q->p[1] == ':') {
@@ -324,14 +393,26 @@ static ire_node_t *parse_class(re_parser_t *q) {
                 if (bm_posix_class((const char *)name_start, name_len, mask)) {
                     q->p += 2;  /* consume `:]` */
                     if (neg) bm_invert(mask);
-                    bm_or(n->u.cls.bm, mask);
+                    bm_or(bm, mask);
                     first = false;
                     continue;
                 }
                 re_error(q, "unknown POSIX class");
-                return n;
+                return;
             }
-            q->p = save;  /* restore; treat `[` as literal below */
+            q->p = save;  /* restore; treat `[` as nested class below */
+        }
+
+        /* Nested `[...]` member: contributes its bitmap by union.
+         * Used both standalone (e.g. `[abc[def]]`) and as the RHS of
+         * `&&` (e.g. `[a-z&&[^aeiou]]`). */
+        if (c == '[') {
+            q->p++;  /* consume '[' */
+            ire_node_t *nested = parse_class(q);
+            bm_or(bm, nested->u.cls.bm);
+            ire_free(nested);
+            first = false;
+            continue;
         }
 
         first = false;
@@ -341,7 +422,7 @@ static ire_node_t *parse_class(re_parser_t *q) {
 
         if (c == '\\') {
             q->p++;
-            if (parse_class_escape(q, n->u.cls.bm, &byte_val)) {
+            if (parse_class_escape(q, bm, &byte_val)) {
                 continue;  /* set was applied */
             }
             got_byte = true;
@@ -353,8 +434,11 @@ static ire_node_t *parse_class(re_parser_t *q) {
 
         if (!got_byte) continue;
 
-        /* range? */
-        if (q->p + 1 < q->end && q->p[0] == '-' && q->p[1] != ']') {
+        /* range? — but stop short of `&&` (Onigmo treats `x-&` as not
+         * a range; here `&&` ends the operand even if it follows `-`). */
+        const bool peek_amp = (q->p + 2 < q->end && q->p[0] == '-' &&
+                               q->p[1] == '&' && q->p[2] == '&');
+        if (q->p + 1 < q->end && q->p[0] == '-' && q->p[1] != ']' && !peek_amp) {
             q->p++;  /* consume '-' */
             uint8_t hi;
             int c2 = re_peek(q);
@@ -364,7 +448,7 @@ static ire_node_t *parse_class(re_parser_t *q) {
                 uint8_t hib;
                 if (parse_class_escape(q, dummy, &hib)) {
                     re_error(q, "char-class escape in range");
-                    return n;
+                    return;
                 }
                 hi = hib;
             } else {
@@ -372,16 +456,23 @@ static ire_node_t *parse_class(re_parser_t *q) {
                 hi = (uint8_t)c2;
             }
             uint8_t lo = byte_val;
-            if (lo > hi) { re_error(q, "bad range"); return n; }
+            if (lo > hi) { re_error(q, "bad range"); return; }
             for (int i = lo; i <= hi; i++) {
-                bm_set_ci(n->u.cls.bm, (uint8_t)i, q->case_insensitive);
+                bm_set_ci(bm, (uint8_t)i, q->case_insensitive);
             }
         } else {
-            bm_set_ci(n->u.cls.bm, byte_val, q->case_insensitive);
+            bm_set_ci(bm, byte_val, q->case_insensitive);
         }
     }
     re_error(q, "unterminated character class");
-done:
+}
+
+static ire_node_t *parse_class(re_parser_t *q) {
+    /* '[' already consumed */
+    ire_node_t *n = ire_new(IRE_CLASS);
+    bool negate = false;
+    if (re_peek(q) == '^') { negate = true; q->p++; }
+    parse_class_body(q, n->u.cls.bm);
     if (negate) bm_invert(n->u.cls.bm);
     return n;
 }
@@ -465,7 +556,19 @@ static ire_node_t *parse_atom(re_parser_t *q) {
 
         if (q->p < q->end && *q->p == '?') {
             q->p++;
-            if (q->p < q->end && *q->p == ':') {
+            if (q->p < q->end && *q->p == '#') {
+                /* (?#…) inline comment — read up to the matching ')'.
+                 * Onigmo allows arbitrary bytes inside (including ')'
+                 * if escaped with backslash); the simple form matches
+                 * the docs and what most regexes use. */
+                q->p++;
+                while (q->p < q->end && *q->p != ')') {
+                    if (*q->p == '\\' && q->p + 1 < q->end) q->p++;
+                    q->p++;
+                }
+                if (q->p < q->end) q->p++;  /* consume ')' */
+                return ire_new(IRE_EMPTY);
+            } else if (q->p < q->end && *q->p == ':') {
                 q->p++; capture = false; nc = true;
             } else if (q->p < q->end && *q->p == '=') {
                 q->p++; capture = false; lookahead = true;
@@ -473,6 +576,18 @@ static ire_node_t *parse_atom(re_parser_t *q) {
                 q->p++; capture = false; neg_lookahead = true;
             } else if (q->p < q->end && *q->p == '>') {
                 q->p++; capture = false; atomic = true;
+            } else if (q->p < q->end && *q->p == '~') {
+                /* (?~BODY) — Onigmo absence operator.  Greedy match
+                 * of input bytes such that BODY does not match
+                 * starting anywhere inside the matched range.  We
+                 * implement the simpler `(?:(?!BODY).)*` variant —
+                 * see node_re_absence for the exact semantics. */
+                q->p++;
+                ire_node_t *body_inner = parse_alt(q);
+                if (re_get(q) != ')') re_error(q, "expected ) closing (?~");
+                ire_node_t *abs_node = ire_new(IRE_ABSENCE);
+                abs_node->u.nc.body = body_inner;
+                return abs_node;
             } else if (q->p < q->end && *q->p == '(') {
                 /* (?(N)YES) / (?(N)YES|NO) / (?(<name>)YES|NO) — conditional. */
                 q->p++;
@@ -695,6 +810,72 @@ static ire_node_t *parse_atom(re_parser_t *q) {
         case '6': case '7': case '8': case '9': {
             ire_node_t *n = ire_new(IRE_BACKREF);
             n->u.backref.idx = e - '0';
+            return n;
+        }
+        case 'u': {
+            /* \uHHHH or \u{H...} — Unicode codepoint.  Encode as
+             * UTF-8 bytes (1-4) and emit as IRE_LIT.  This way the
+             * matcher's existing byte-by-byte comparison works on
+             * UTF-8 input without any class-side multibyte support. */
+            uint32_t cp = 0;
+            if (q->p < q->end && *q->p == '{') {
+                q->p++;
+                int n = 0;
+                while (q->p < q->end && *q->p != '}' && n < 8) {
+                    const int c = *q->p;
+                    int d;
+                    if (c >= '0' && c <= '9') d = c - '0';
+                    else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;
+                    else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;
+                    else { re_error(q, "bad \\u{} hex digit"); return NULL; }
+                    cp = (cp << 4) | (uint32_t)d;
+                    q->p++;
+                    n++;
+                }
+                if (q->p >= q->end || *q->p != '}') { re_error(q, "expected } in \\u{}"); return NULL; }
+                q->p++;
+            } else {
+                if (q->p + 4 > q->end) { re_error(q, "bad \\u: need 4 hex digits"); return NULL; }
+                for (int n = 0; n < 4; n++) {
+                    const int c = q->p[n];
+                    int d;
+                    if (c >= '0' && c <= '9') d = c - '0';
+                    else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;
+                    else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;
+                    else { re_error(q, "bad \\u hex digit"); return NULL; }
+                    cp = (cp << 4) | (uint32_t)d;
+                }
+                q->p += 4;
+            }
+            /* Encode `cp` as UTF-8 (RFC 3629). */
+            uint8_t bytes[4];
+            int len = 0;
+            if (cp < 0x80) {
+                bytes[0] = (uint8_t)cp; len = 1;
+            } else if (cp < 0x800) {
+                bytes[0] = (uint8_t)(0xC0 | (cp >> 6));
+                bytes[1] = (uint8_t)(0x80 | (cp & 0x3F));
+                len = 2;
+            } else if (cp < 0x10000) {
+                bytes[0] = (uint8_t)(0xE0 | (cp >> 12));
+                bytes[1] = (uint8_t)(0x80 | ((cp >> 6) & 0x3F));
+                bytes[2] = (uint8_t)(0x80 | (cp & 0x3F));
+                len = 3;
+            } else if (cp < 0x110000) {
+                bytes[0] = (uint8_t)(0xF0 | (cp >> 18));
+                bytes[1] = (uint8_t)(0x80 | ((cp >> 12) & 0x3F));
+                bytes[2] = (uint8_t)(0x80 | ((cp >> 6) & 0x3F));
+                bytes[3] = (uint8_t)(0x80 | (cp & 0x3F));
+                len = 4;
+            } else {
+                re_error(q, "\\u codepoint out of range");
+                return NULL;
+            }
+            ire_node_t *n = ire_new(IRE_LIT);
+            n->u.lit.bytes = (char *)malloc((size_t)len);
+            memcpy(n->u.lit.bytes, bytes, (size_t)len);
+            n->u.lit.len = (uint32_t)len;
+            n->u.lit.ci = q->case_insensitive;
             return n;
         }
         case 'n': case 't': case 'r': case 'f': case 'v':
@@ -1120,7 +1301,8 @@ ire_optimize(ire_node_t *n)
     case IRE_NEG_LOOKAHEAD:
     case IRE_LOOKBEHIND:
     case IRE_NEG_LOOKBEHIND:
-    case IRE_ATOMIC:     ire_optimize(n->u.nc.body); break;
+    case IRE_ATOMIC:
+    case IRE_ABSENCE:    ire_optimize(n->u.nc.body); break;
     case IRE_CONDITIONAL:
         ire_optimize(n->u.cond.yes);
         ire_optimize(n->u.cond.no);
@@ -1165,6 +1347,11 @@ ire_memo_eligible_inner(const ire_node_t *n, bool in_la)
     case IRE_LOOKAHEAD: case IRE_NEG_LOOKAHEAD:
     case IRE_LOOKBEHIND: case IRE_NEG_LOOKBEHIND:
         return ire_memo_eligible_inner(n->u.nc.body, true);
+    case IRE_ABSENCE:
+        /* The absence body is only ever evaluated as a probe (like a
+         * negative lookahead) — captures inside don't survive, so the
+         * memo soundness rule for lookarounds applies. */
+        return ire_memo_eligible_inner(n->u.nc.body, true);
     case IRE_REP:           return ire_memo_eligible_inner(n->u.rep.body, in_la);
     case IRE_CONCAT:
         for (size_t i = 0; i < n->u.cat.n; i++) {
@@ -1205,6 +1392,7 @@ ire_must_consume(const ire_node_t *n)
     case IRE_LAST_MATCH:
     case IRE_BACKREF:       /* backref of empty group could be 0-byte */
     case IRE_SUBROUTINE:    /* unknown until expanded — be conservative */
+    case IRE_ABSENCE:       /* greedy 0..* — empty match always allowed */
         return false;
     case IRE_GROUP:         return ire_must_consume(n->u.group.body);
     case IRE_NCGROUP:
@@ -1276,6 +1464,7 @@ ire_fixed_len(const ire_node_t *n, agre_encoding_t enc)
         return y;
     }
     case IRE_SUBROUTINE:    return -1;
+    case IRE_ABSENCE:       return -1;
     }
     return -1;
 }
@@ -1546,6 +1735,14 @@ lower(lower_ctx_t *L, ire_node_t *n, NODE *tail)
          * outer continuation doesn't reach into body's alternatives. */
         NODE *body = lower(L, n->u.nc.body, ALLOC_node_re_succ());
         return ALLOC_node_re_atomic(body, tail);
+    }
+    case IRE_ABSENCE: {
+        /* (?~body) — the body is invoked as a probe at each candidate
+         * position (like a negative lookahead).  Lower with its own
+         * succ tail so probe-failure doesn't leak into the outer
+         * continuation. */
+        NODE *body = lower(L, n->u.nc.body, ALLOC_node_re_succ());
+        return ALLOC_node_re_absence(body, tail);
     }
     case IRE_KEEP:          return ALLOC_node_re_keep(tail);
     case IRE_LAST_MATCH:    return ALLOC_node_re_last_match(tail);

@@ -9,29 +9,68 @@ v1 で入っているもの、カテゴリ別。[`todo.md`](./todo.md) の対。
 - `.` (dot)。4 variant: ASCII、ASCII-`/m`、UTF-8、UTF-8-`/m`。
 - 文字クラス `[...]`、否定 `[^...]`。
 - クラス内 ASCII 範囲 (`[a-z]`)。
-- クラス内 escape ショートカット: `\d \D \w \W \s \S`。
+- クラス内 escape ショートカット: `\d \D \w \W \s \S \h \H`。
+- POSIX bracket class `[[:alpha:]]` ほか (`alnum` `alpha` `ascii`
+  `blank` `cntrl` `digit` `graph` `lower` `print` `punct` `space`
+  `upper` `word` `xdigit`)、否定形 `[[:^alpha:]]`。
+- クラス内集合演算: `[a-z&&[^aeiou]]` (`&&` で intersection、左結合、
+  ネストした `[...]` は union メンバー)。
 - 数値 escape: `\xHH`、`\0`、`\n \t \r \f \v \a \e`。
-- アンカー: `\A` `\z` `\Z` `^` `$` `\b` `\B`。
+- Unicode コードポイント escape: `\uHHHH` (4 hex 桁) と `\u{H...}`
+  (1–8 hex 桁) — UTF-8 byte 列にエンコードして埋め込む。クラス内では
+  ASCII (cp < 0x80) のみ許可、multi-byte は parse error。
+- アンカー: `\A` `\z` `\Z` `^` `$` `\b` `\B` `\G` (前回マッチ末尾)。
+- 改行種 `\R` (`\r\n` または `[\n\v\f\r]`)。
+- `\K` keep-marker — 全体マッチ開始位置を現在の pos に reset。
 - リテラル escape: `\\ \/ \. \^ \$ \( \) \[ \] \{ \} \| \* \+ \? \-`。
+- インラインコメント `(?#...)` — マッチ `)` まで読み飛ばし、
+  `\)` エスケープも対応。
 
 ### 量化子
 - `*` `+` `?` の greedy / lazy (`*?` `+?` `??`)。
 - `{n}` / `{n,}` / `{n,m}` の greedy / lazy。
-- Possessive (`*+` `++` `?+`) は parse のみ — greedy に degrade。
+- Possessive (`*+` `++` `?+`) は atomic group 等価で実装。
+  `{m,n}+` は Onigmo に倣い nested rep として扱う(possessive ではない)。
 
 ### グループ
 - キャプチャ `(...)`。
 - 非キャプチャ `(?:...)`。
-- 名前付きキャプチャ `(?<name>...)` — 左右順 index で。
+- 名前付きキャプチャ `(?<name>...)` — name table 経由で `\k<name>` /
+  `\g<name>` から参照可。
 - インラインフラグ `(?ixm-ixm:...)` / `(?ixm)`。
 - 先読み `(?=...)` / 否定先読み `(?!...)`。
+- 後読み `(?<=...)` / 否定後読み `(?<!...)`。
+  - 固定長: parse 時に幅を計算して逆方向ジャンプ。
+  - alt-of-fixed (`(?<=ab|cd)`): 各枝を per-branch 後読みに分割。
+  - 真の可変長: 候補幅を長い順にスキャンし `node_re_lb_check` で末尾
+    一致を検証。
+- Atomic group `(?>...)` — body は自前の succ tail で動き、外側の
+  バックトラックが内側の枝に届かない。
+- 条件分岐 `(?(N)yes|no)` / `(?(<name>)yes|no)` — capture の
+  valid/invalid で yes/no 枝を選ぶ。
+- サブルーチン呼び出し `\g<name>` / `\g<N>` — group の lower 結果を
+  CTX 経由で indirect dispatch。再帰可。`stack_base`/`stack_limit`
+  による動的スタックガード (RLIMIT_STACK の半分、最低 1 MB)。
+- 不在 (absence) 演算子 `(?~body)` — body が現在位置でマッチし得ない
+  限り 1 byte ずつ greedy に進める。tail 失敗時は 1 byte ずつ縮退。
+  `(?:(?!body).)*` 等価の単純実装で、Onigmo の "no contiguous
+  substring" semantics とはアンカーなし時に長さが異なる場合あり。
 
 ### 後方参照
-- `\1`–`\9`。
+- `\1`–`\9` 数値、`\k<name>` 名前付き — name table を引いて idx 解決。
 
 ### フラグ / エンコーディング
 - `/i` (ASCII case-fold)、`/m` (dot は newline にマッチ)、`/x` (extended)、
   `/n` (ASCII byte mode)、`/u` (UTF-8、デフォルト)。
+
+### ReDoS 対策
+- Onigmo 互換 MatchCache を移植。`node_re_alt` / `node_re_rep_cont` で
+  `(branch_id, pos)` ペアを bit array にメモして既知失敗点を skip。
+- メモは lazy alloc — `backtrack_count > str_len × n_branches` に
+  なるまで割り当てない (Onigmo の閾値式)。
+- 静的 eligibility 判定: backref / atomic / subroutine / conditional /
+  capture-inside-lookaround を含む式は memoize 不可と判定して
+  `memo_eligible = false`。
 
 ### フロントエンド
 - prism 統合 (`astrogre_parse_via_prism`): 任意の Ruby ソース AST を

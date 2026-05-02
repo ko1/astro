@@ -1465,6 +1465,59 @@ node_re_atomic(CTX * restrict c, NODE * restrict n, NODE *body, NODE *next)
     return EVAL_ARG(c, next);
 }
 
+/* `(?~BODY)` Onigmo absence operator.  Greedy match of the longest
+ * prefix of the remaining input such that BODY does not match at any
+ * starting position within that prefix.  Implemented as the simpler
+ * `(?:(?!BODY).)*`-style greedy expansion: at each pos, probe BODY;
+ * if BODY matches, stop extending; otherwise advance one byte.  Then
+ * try the outer continuation, backtracking one byte at a time on
+ * failure (so the absence is greedy but yieldable to the tail).
+ *
+ * Note: this is the standard simple semantics ("don't start a match
+ * here") and matches what most users want.  It differs from Onigmo's
+ * fully-precise "no contiguous substring of the matched range can
+ * match BODY", which would consider e.g. /(?~aaa)/ on "aaab" to match
+ * "aab" at offset 1 — here we will instead match the same length but
+ * via the outer scan loop, since at offset 0 we would stop at length
+ * 0 (probe-fail because BODY=aaa matches @0).  For most patterns the
+ * difference is invisible. */
+NODE_DEF
+node_re_absence(CTX * restrict c, NODE * restrict n, NODE *body, NODE *next)
+{
+    const size_t start = c->pos;
+
+    /* Phase 1: greedily extend pos.  At each step, probe BODY at the
+     * current pos with captures snapshot/restore (the probe must not
+     * leak captures or move pos).  Stop on probe success. */
+    while (c->pos < c->str_len) {
+        const size_t saved_pos = c->pos;
+        size_t st[ASTROGRE_MAX_GROUPS], en[ASTROGRE_MAX_GROUPS];
+        bool   vd[ASTROGRE_MAX_GROUPS];
+        memcpy(st, c->starts, sizeof(st));
+        memcpy(en, c->ends,   sizeof(en));
+        memcpy(vd, c->valid,  sizeof(vd));
+        const VALUE probe = (*body->head.dispatcher)(c, body);
+        c->pos = saved_pos;
+        memcpy(c->starts, st, sizeof(st));
+        memcpy(c->ends,   en, sizeof(en));
+        memcpy(c->valid,  vd, sizeof(vd));
+        if (probe) break;          /* BODY would match here → can't extend */
+        c->pos++;
+    }
+
+    /* Phase 2: try the tail; on failure shrink the absence by one
+     * byte and retry, down to length 0. */
+    while (c->pos >= start) {
+        const size_t cur = c->pos;
+        const VALUE r = EVAL_ARG(c, next);
+        if (r) return r;
+        if (cur == start) break;
+        c->pos = cur - 1;
+    }
+    c->pos = start;
+    return MR_FAIL;
+}
+
 /* `(?(N)YES|NO)` conditional. */
 NODE_DEF
 node_re_conditional(CTX * restrict c, NODE * restrict n, uint32_t idx, NODE *yes_chain, NODE *no_chain)

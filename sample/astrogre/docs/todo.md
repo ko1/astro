@@ -166,25 +166,6 @@ Teddy / line-iteration nodes が landing したあと、標準の ASTro JIT
 
 ## 言語仕様の不足
 
-### 後読み (lookbehind)
-- `(?<=...)` / `(?<!...)`。Parser は明示的にエラーを返す。
-- 固定長: parse 時に body の長さを計算して逆方向にジャンプ。
-- 可変長: 逆方向の continuation-passing が必要。
-
-### Atomic group / possessive 量化子
-- `(?>...)` および `*+`、`++`、`?+`。
-- Possessive は parse のみ — greedy に degrade。
-- rep_frame プロトコルに「commit barrier」が必要。
-
-### `\k<name>` の name-table 参照
-名前付きキャプチャは認識されているが index でしか保存されていない。
-`\k<name>` は今 group 1 を無条件にマッチしてしまう。
-
-### 条件付きグループ / 再帰
-- `(?(cond)yes|no)`。
-- `\g<name>` / `\g<n>` (再帰サブルーチン)。
-- `(?#...)` コメント。
-
 ### Unicode
 - `\p{...}` / `\P{...}` プロパティクラス。
 - `/i` の Unicode case fold (今は ASCII のみ)。
@@ -194,18 +175,24 @@ Teddy / line-iteration nodes が landing したあと、標準の ASTro JIT
 `[äé]` は今、ASCII bitmap に高位バイトを byte-by-byte で書き込んで
 いるだけで、コードポイント単位のマッチにはならない。ハイブリッド
 クラス (ASCII bitmap + ソート済みコードポイント範囲リスト) が必要。
+これが入れば `\u` のクラス内 multi-byte 形式も扱える。
 
 ### エンコーディング
 EUC-JP (`/e`)、Windows-31J (`/s`)。需要次第で。
 
-### アンカー / 境界
-- `\G` (前回マッチ末尾アンカー)。
-- `\R` (改行種)。
+### `(?~)` 不在演算子の精度
+今の実装は `(?:(?!body).)*` 等価で、Onigmo の "matched range の
+contiguous substring が body にマッチしない最長文字列" semantics とは
+アンカーなしで長さが変わるケースがある (例: `/(?~aaa)/` on
+`"aaab"` は今 `""`、Onigmo は `"aa"`)。 厳密版は body の出現可能
+位置をスライディングウィンドウで track する必要があり、本当に
+要求が出るまで保留。
 
 ### `Regexp.new(str)` / `Regexp.compile(str)`
 `--via-prism` 経路は prism がリテラル `/.../` として認識する正規表現
 しか拾わない。ランタイム文字列 + フラグ引数を取る別経路があれば、
 astrogre をホストプログラムから regex *ライブラリ* として使える。
+(rubyext 側は `ASTrogre.compile(str)` で既にこの経路を提供済み。)
 
 ## API / ドライバ
 

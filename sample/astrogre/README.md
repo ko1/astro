@@ -227,18 +227,31 @@ sharing then composes with them for free").
   basic block.  Without it, AOT-cached barely beats interp on grep.
 - Real PG profile signal (`HOPT == HORG` for now — `--pg-compile`
   bakes the same bytes as `--aot-compile`).
-- Literal-prefix prefilter (Boyer–Moore or memchr-on-first-byte).
-  Single biggest miss vs ripgrep.
-- Lookbehind `(?<=...)` / `(?<!...)`.
-- Atomic groups `(?>...)` / possessive quantifiers — parsed, degraded
-  to plain greedy.
 - Unicode case folding for non-ASCII, `\p{...}` properties, multi-byte
-  characters inside `[...]`.
+  characters inside `[...]` (multi-byte `\u` outside `[]` works fine
+  via UTF-8 byte expansion).
 - EUC-JP / Windows-31J encodings.
-- `Regexp.new(string)` — only literal `/.../` regexes via prism.
-- `gsub` / `scan` / `MatchData`-equivalent API.
+- The `(?~e)` absence operator uses the simple `(?:(?!e).)*` semantics;
+  Onigmo's stricter "no contiguous substring matches" length can
+  differ for unanchored cases.
+- `Regexp.new(string)` from the CLI front (`--via-prism` only takes
+  literal `/.../`); the Ruby C extension `ASTrogre.compile(string)`
+  already exposes the runtime-string compile path.
 
-See [`docs/todo.md`](./docs/todo.md) for the full backlog.
+What landed recently and ISN'T in this list anymore:
+- Lookbehind `(?<=...)` / `(?<!...)` — fixed-width, alt-of-fixed,
+  and a variable-width fallback.
+- Atomic groups `(?>...)` and the possessive `*+ ++ ?+` forms.
+- Conditional `(?(N)yes|no)` and `\g<>` subroutine calls (recursive,
+  with a dynamic stack guard).
+- Inline comments `(?#...)`, `\u` escapes, character-class set
+  intersection `[a-z&&[^aeiou]]`, the absence operator `(?~e)`.
+- Onigmo-style MatchCache memoization for ReDoS-prone patterns.
+- `MatchData` equivalent + `match` / `match?` / `=~` / `===` / `scan`
+  / `match_all` on the Ruby extension side.
+
+See [`docs/done.md`](./docs/done.md) and
+[`docs/todo.md`](./docs/todo.md) for the full status.
 
 ## References
 
