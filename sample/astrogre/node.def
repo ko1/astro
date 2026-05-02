@@ -979,14 +979,33 @@ node_re_class(CTX * restrict c, NODE * restrict n, uint64_t bm0, uint64_t bm1, u
 
 /* Branches each carry their own continuation (the parser threads the
  * outer next into both left and right), so alt only needs to try left,
- * and on failure restore pos and try right. */
+ * and on failure restore pos and try right.  `id` is a per-branch-node
+ * counter assigned at parse time; together with `c->pos` it forms the
+ * key into the MatchCache memo (Onigmo-style ReDoS mitigation).  When
+ * both branches fail at this (id, pos), record it so a later code path
+ * landing here doesn't re-explore the same exhausted subtree.  Cache
+ * is allocated lazily — only after `c->backtrack_count` exceeds the
+ * input length, so well-behaved patterns pay no memory at all. */
 NODE_DEF
-node_re_alt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
+node_re_alt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t id)
 {
-    size_t saved = c->pos;
+    const size_t bit = (size_t)id * (c->str_len + 1) + c->pos;
+    if (c->memo && (c->memo[bit >> 3] & (uint8_t)(1u << (bit & 7)))) return MR_FAIL;
+
+    const size_t saved = c->pos;
     if (EVAL_ARG(c, left)) return MR_STOP;
     c->pos = saved;
-    return EVAL_ARG(c, right);
+    if (EVAL_ARG(c, right)) return MR_STOP;
+
+    if (c->memo_eligible) {
+        c->backtrack_count++;
+        if (!c->memo && c->backtrack_count > c->memo_threshold && c->n_branches > 0) {
+            const size_t bits = (size_t)c->n_branches * (c->str_len + 1);
+            c->memo = (uint8_t *)calloc(1, (bits + 7) / 8);
+        }
+        if (c->memo) c->memo[bit >> 3] |= (uint8_t)(1u << (bit & 7));
+    }
+    return MR_FAIL;
 }
 
 /* ------------------------------------------------------------------ */
@@ -998,7 +1017,7 @@ node_re_alt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
  * each successful body run lands back in rep_cont — which decides to
  * iterate again or to proceed to outer_next. */
 NODE_DEF
-node_re_rep(CTX * restrict c, NODE * restrict n, NODE *body, NODE *outer_next, int32_t min, int32_t max, uint32_t greedy, uint32_t body_must_consume)
+node_re_rep(CTX * restrict c, NODE * restrict n, NODE *body, NODE *outer_next, int32_t min, int32_t max, uint32_t greedy, uint32_t body_must_consume, uint32_t id)
 {
     struct rep_frame f;
     f.body = body;
@@ -1007,6 +1026,7 @@ node_re_rep(CTX * restrict c, NODE * restrict n, NODE *body, NODE *outer_next, i
     f.max = max;
     f.greedy = greedy;
     f.body_must_consume = body_must_consume;
+    f.id = id;
     f.last_pos = SIZE_MAX;
     f.prev = c->rep_top;
     c->rep_top = &f;
@@ -1018,12 +1038,12 @@ node_re_rep(CTX * restrict c, NODE * restrict n, NODE *body, NODE *outer_next, i
     return r;
 }
 
-/* Singleton continuation node attached as the `next` of every rep body.
- * Reads top of c->rep_top to know which rep frame is active. */
-NODE_DEF
-node_re_rep_cont(CTX * restrict c, NODE * restrict n)
+/* Inner helper for node_re_rep_cont — the original rep iteration
+ * logic without memoize bookkeeping.  Wrapped below so the entry/exit
+ * memoize check stays out of the per-iter dispatch path. */
+static VALUE
+rep_cont_inner(CTX *c, struct rep_frame *f)
 {
-    struct rep_frame *f = c->rep_top;
 
     /* Fast path: body is statically guaranteed to consume ≥1 byte on
      * success.  Each iter advances pos, so the empty-match carve-out
@@ -1136,6 +1156,30 @@ node_re_rep_cont(CTX * restrict c, NODE * restrict n)
         }
         return MR_FAIL;
     }
+}
+
+/* MatchCache-aware wrapper.  Same key idea as node_re_alt: if we've
+ * already seen (rep_id, pos) fail before, return MR_FAIL straight
+ * away instead of re-exploring.  Lazy alloc — only after the
+ * backtrack rate gets suspicious. */
+NODE_DEF
+node_re_rep_cont(CTX * restrict c, NODE * restrict n)
+{
+    struct rep_frame *f = c->rep_top;
+    const size_t bit = (size_t)f->id * (c->str_len + 1) + c->pos;
+    if (c->memo && (c->memo[bit >> 3] & (uint8_t)(1u << (bit & 7)))) return MR_FAIL;
+
+    const VALUE r = rep_cont_inner(c, f);
+
+    if (!r && c->memo_eligible) {
+        c->backtrack_count++;
+        if (!c->memo && c->backtrack_count > c->memo_threshold && c->n_branches > 0) {
+            const size_t bits = (size_t)c->n_branches * (c->str_len + 1);
+            c->memo = (uint8_t *)calloc(1, (bits + 7) / 8);
+        }
+        if (c->memo) c->memo[bit >> 3] |= (uint8_t)(1u << (bit & 7));
+    }
+    return r;
 }
 
 /* ------------------------------------------------------------------ */

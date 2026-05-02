@@ -78,7 +78,24 @@ astrogre_search_from(astrogre_pattern *p, const char *str, size_t len,
     c.stack_base  = (uintptr_t)&stack_marker;
     c.stack_limit = astrogre_stack_limit();
 
+    /* MatchCache state.  Allocated lazily by node_re_alt /
+     * node_re_rep_cont once backtrack_count exceeds memo_threshold;
+     * if the pattern isn't eligible (backref / atomic / subroutine /
+     * conditional) we leave memo_eligible false so it never fires. */
+    c.memo            = NULL;
+    c.n_branches      = p->n_branches;
+    c.backtrack_count = 0;
+    c.memo_threshold  = len;
+    c.memo_eligible   = p->memo_eligible;
+
     bool r = (bool)EVAL(&c, p->root);
+
+    if (getenv("ASTROGRE_MEMO_DEBUG")) {
+        fprintf(stderr, "[memo] eligible=%d n_branches=%d backtracks=%zu memo_alloc=%s\n",
+                p->memo_eligible, p->n_branches, c.backtrack_count,
+                c.memo ? "yes" : "no");
+    }
+    if (c.memo) free(c.memo);
 
     if (out) {
         out->matched = r;

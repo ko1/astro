@@ -35,6 +35,15 @@ typedef struct astrogre_pattern {
      * node_re_subroutine_call via CTX. */
     struct Node **sub_chains;
     int           sub_chains_n;
+
+    /* MatchCache (ReDoS mitigation).  `n_branches` is the count of
+     * branch-able sites (ALT + REP nodes) — the cache is sized
+     * proportionally.  `memo_eligible` is false when the pattern uses
+     * features whose semantics depend on capture / state history
+     * (backref, atomic, subroutine, conditional) — those would make
+     * the (id, pos) → fail mapping unsound. */
+    int  n_branches;
+    bool memo_eligible;
 } astrogre_pattern;
 
 /* Match result (filled by astrogre_search / astrogre_search_from). */

@@ -1129,6 +1129,47 @@ ire_optimize(ire_node_t *n)
     }
 }
 
+/* True iff `n` (and everything it reaches) is safe to MatchCache.
+ * The memo records (id, pos) → known-fail; this is sound when the
+ * outcome at (id, pos) depends only on local state (pos + str), not on
+ * captures or recursion depth.  Backref / atomic / subroutine /
+ * conditional break that — different code paths reaching the same
+ * (id, pos) may have different captures and different outcomes. */
+static bool
+ire_memo_eligible(const ire_node_t *n)
+{
+    if (!n) return true;
+    switch (n->kind) {
+    case IRE_BACKREF:
+    case IRE_ATOMIC:
+    case IRE_SUBROUTINE:
+    case IRE_CONDITIONAL:
+        return false;
+    case IRE_LIT: case IRE_DOT: case IRE_CLASS:
+    case IRE_BOS: case IRE_EOS: case IRE_EOS_NL:
+    case IRE_BOL: case IRE_EOL:
+    case IRE_WB: case IRE_NWB:
+    case IRE_EMPTY:
+    case IRE_KEEP:
+    case IRE_LAST_MATCH:
+        return true;
+    case IRE_GROUP:         return ire_memo_eligible(n->u.group.body);
+    case IRE_NCGROUP:
+    case IRE_LOOKAHEAD: case IRE_NEG_LOOKAHEAD:
+    case IRE_LOOKBEHIND: case IRE_NEG_LOOKBEHIND:
+        return ire_memo_eligible(n->u.nc.body);
+    case IRE_REP:           return ire_memo_eligible(n->u.rep.body);
+    case IRE_CONCAT:
+        for (size_t i = 0; i < n->u.cat.n; i++) {
+            if (!ire_memo_eligible(n->u.cat.xs[i])) return false;
+        }
+        return true;
+    case IRE_ALT:
+        return ire_memo_eligible(n->u.alt.l) && ire_memo_eligible(n->u.alt.r);
+    }
+    return false;
+}
+
 /* True iff matching `n` is guaranteed to consume at least one byte on
  * success.  Conservative: returns false when in doubt, which makes the
  * caller take the slow (carve-out-tracking) path. */
@@ -1362,6 +1403,10 @@ typedef struct lower_ctx {
      * subroutine_call node looks the chain up via CTX at runtime. */
     bool *sub_needed;
     int   sub_needed_cap;
+    /* Counter for ALT / REP node IDs used by the MatchCache memo.
+     * Each call to ALLOC_node_re_alt / ALLOC_node_re_rep takes the
+     * next id; total ends up in pattern->n_branches. */
+    int   next_branch_id;
 } lower_ctx_t;
 
 static NODE *lower(lower_ctx_t *L, ire_node_t *n, NODE *tail);
@@ -1385,7 +1430,7 @@ lower_lookbehind(lower_ctx_t *L, ire_node_t *body, NODE *tail, bool negative)
         if (!negative) {
             NODE *const l_path = lower_lookbehind(L, body->u.alt.l, tail, false);
             NODE *const r_path = lower_lookbehind(L, body->u.alt.r, tail, false);
-            return ALLOC_node_re_alt(l_path, r_path);
+            return ALLOC_node_re_alt(l_path, r_path, (uint32_t)L->next_branch_id++);
         } else {
             NODE *const inner = lower_lookbehind(L, body->u.alt.r, tail, true);
             return lower_lookbehind(L, body->u.alt.l, inner, true);
@@ -1461,7 +1506,7 @@ lower(lower_ctx_t *L, ire_node_t *n, NODE *tail)
         /* Both branches embed their own (shared) tail. */
         NODE *l = lower(L, n->u.alt.l, tail);
         NODE *r = lower(L, n->u.alt.r, tail);
-        return ALLOC_node_re_alt(l, r);
+        return ALLOC_node_re_alt(l, r, (uint32_t)L->next_branch_id++);
     }
     case IRE_GROUP: {
         /* cap_start; body; cap_end; tail */
@@ -1578,7 +1623,8 @@ lower(lower_ctx_t *L, ire_node_t *n, NODE *tail)
         NODE *body = lower(L, n->u.rep.body, L->rep_cont);
         return ALLOC_node_re_rep(body, tail, n->u.rep.min, n->u.rep.max,
                                  n->u.rep.greedy ? 1 : 0,
-                                 ire_must_consume(n->u.rep.body) ? 1 : 0);
+                                 ire_must_consume(n->u.rep.body) ? 1 : 0,
+                                 (uint32_t)L->next_branch_id++);
     }
     }
     return tail;
@@ -1769,6 +1815,9 @@ astrogre_parse(const char *pat, size_t pat_len, uint32_t prism_flags)
     }
 
     int n_groups = q.n_groups;
+    /* Compute memo eligibility BEFORE we free the IR — the walk reads
+     * the same kind/union we're about to release. */
+    const bool memo_eligible = ire_memo_eligible(ir);
     ire_free(ir);
 
     astrogre_pattern *p = (astrogre_pattern *)calloc(1, sizeof(*p));
@@ -1788,6 +1837,11 @@ astrogre_parse(const char *pat, size_t pat_len, uint32_t prism_flags)
     p->n_named        = q.n_names;
     p->sub_chains     = sub_chains;
     p->sub_chains_n   = sub_chains_n;
+    /* MatchCache memo metadata.  n_branches counts every ALT and REP
+     * node lower assigned an id to.  memo_eligible is the static
+     * verdict — false locks the cache off for this pattern. */
+    p->n_branches     = L.next_branch_id;
+    p->memo_eligible  = memo_eligible;
     free(L.sub_needed);
     return p;
 }

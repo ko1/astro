@@ -86,6 +86,10 @@ struct rep_frame {
      * pos so the (last_pos == pos) test would always be false anyway.
      * Saves 4 memory ops / iteration on the hot path. */
     uint32_t body_must_consume;
+    /* Per-rep id assigned at parse time.  Used together with c->pos as
+     * the key into the MatchCache memo (Onigmo-style ReDoS mitigation
+     * — see node_re_rep_cont). */
+    uint32_t id;
     /* Position at the start of the most recently dispatched body iter.
      * SIZE_MAX before any iter has run.  Used only on the slow path
      * (body_must_consume = 0): when a body iter completes with c->pos
@@ -131,6 +135,18 @@ typedef struct CTX_struct {
     int           sub_depth;
     uintptr_t     stack_base;
     size_t        stack_limit;
+
+    /* MatchCache memo (Onigmo-style ReDoS mitigation).  Sized
+     * `n_branches × (str_len + 1)` bits, NULL until backtrack_count
+     * exceeds `memo_threshold` (= str_len) — well-behaved patterns
+     * never allocate.  When active, node_re_alt and node_re_rep_cont
+     * test the bit at (id, pos) on entry; if set, they short-circuit
+     * to MR_FAIL.  The memo is freed at the end of each search. */
+    uint8_t   *memo;
+    int        n_branches;
+    size_t     backtrack_count;
+    size_t     memo_threshold;
+    bool       memo_eligible;
 
     /* Encoding / flags */
     agre_encoding_t encoding;

@@ -1044,6 +1044,33 @@ category "newline-R" do
   assert_same_match_all(/\R/,                "a\nb\r\nc\rd")
 end
 
+category "redos-memo" do
+  # MatchCache (Onigmo-style) — patterns that without memoization would
+  # take exponential time should now be sub-second even for inputs that
+  # would have produced 2^N backtrack paths.  Tested via wall-clock
+  # rather than positions: just verify they finish quickly.
+  patterns = [
+    '(?:a*)*b',
+    '(a|a)*b',
+    '(?:a|aa)*b',
+    '^(.*)*b$',
+  ]
+  patterns.each do |src|
+    re = ASTrogre.compile(src)
+    [28, 100, 500].each do |n|
+      input = "a" * n
+      t0 = Time.now
+      md = re.match(input)
+      ms = ((Time.now - t0) * 1000).to_i
+      if md.nil? && ms < 1000
+        record_pass("redos-memo #{src.inspect} n=#{n} (#{ms}ms)")
+      else
+        record_fail("redos-memo #{src.inspect} n=#{n}", "took #{ms}ms (expected < 1000)")
+      end
+    end
+  end
+end
+
 category "empty-rep" do
   sweep(/(a*)*/,         ["", "aaa", "bbb"],            [])
   sweep(/(?:)*/,         ["", "xyz", "abc"],            [])
