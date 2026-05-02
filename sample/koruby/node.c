@@ -7,44 +7,13 @@
 #include "object.h"
 #include "node.h"
 
-/* hash helpers */
-static node_hash_t hash_merge(node_hash_t h, node_hash_t v) {
-    h ^= v + 0x9e3779b97f4a7c15ULL + (h << 12) + (h >> 4);
-    return h;
-}
+/* Hash helpers + HASH / DUMP / hash_node / alloc_dispatcher_name come
+ * from runtime/astro_node.c.  We forward-declare the host hooks the
+ * shared runtime expects, then include it. */
+static __attribute__((noinline)) NODE *node_allocate(size_t size);
+static void dispatch_info(CTX *c, NODE *n, bool end);
 
-static node_hash_t hash_cstr(const char *s) {
-    if (!s) return 0;
-    node_hash_t h = 14695981039346656037ULL;
-    while (*s) { h ^= (unsigned char)(*s++); h *= 1099511628211ULL; }
-    return h;
-}
-
-static node_hash_t hash_uint32(uint32_t ui) {
-    node_hash_t x = (node_hash_t)ui;
-    x ^= x >> 33; x *= 0xff51afd7ed558ccdULL;
-    x ^= x >> 33; x *= 0xc4ceb9fe1a85ec53ULL;
-    x ^= x >> 33;
-    return x;
-}
-
-static node_hash_t hash_uint64(uint64_t v) {
-    v ^= v >> 33; v *= 0xff51afd7ed558ccdULL;
-    v ^= v >> 33; v *= 0xc4ceb9fe1a85ec53ULL;
-    v ^= v >> 33;
-    return v;
-}
-
-static node_hash_t hash_double(double d) {
-    union { double d; uint64_t u; } u; u.d = d;
-    return hash_uint64(u.u);
-}
-
-node_hash_t hash_node(NODE *n) {
-    if (!n) return 0;
-    if (n->head.flags.has_hash_value) return n->head.hash_value;
-    return HASH(n);
-}
+#include "../../runtime/astro_node.c"
 
 void clear_hash(NODE *n) {
     while (n) {
@@ -53,25 +22,8 @@ void clear_hash(NODE *n) {
     }
 }
 
-node_hash_t HASH(NODE *n) {
-    if (!n) return 0;
-    if (n->head.flags.has_hash_value) return n->head.hash_value;
-    if (n->head.kind->hash_func) {
-        n->head.flags.has_hash_value = true;
-        return n->head.hash_value = (*n->head.kind->hash_func)(n);
-    }
-    return 0;
-}
-
-void DUMP(FILE *fp, NODE *n, bool oneline) {
-    if (!n) { fprintf(fp, "<NULL>"); return; }
-    if (n->head.flags.is_dumping) { fprintf(fp, "..."); return; }
-    n->head.flags.is_dumping = true;
-    (*n->head.kind->dumper)(fp, n, oneline);
-    n->head.flags.is_dumping = false;
-}
-
-/* node allocation via Boehm GC */
+/* node allocation via Boehm GC.  Forward-declared above the
+ * runtime/astro_node.c include so the runtime helpers can reach it. */
 extern size_t korb_node_cnt;
 size_t korb_node_cnt = 0;
 
@@ -148,37 +100,10 @@ static void sc_repo_add(NODE *n, node_hash_t h) {
 
 void sc_repo_clear(void) { sc_repo.size = 0; }
 
-static const char *alloc_dispatcher_name(NODE *n) {
-    char buf[128];
-    snprintf(buf, sizeof(buf), "SD_%lx", (unsigned long)hash_node(n));
-    char *s = korb_xmalloc_atomic(strlen(buf)+1);
-    strcpy(s, buf);
-    return s;
-}
+/* alloc_dispatcher_name, astro_fprintf_cstr, astro_fprint_cstr come
+ * from runtime/astro_node.c. */
 
 static void dispatch_info(CTX *c, NODE *n, bool end) { (void)c; (void)n; (void)end; }
-
-static void astro_fprintf_cstr(FILE *fp, const char *s) {
-    fputc('"', fp);
-    for (; *s; s++) {
-        switch (*s) {
-            case '"':  fputs("\\\"", fp); break;
-            case '\\': fputs("\\\\", fp); break;
-            case '\n': fputs("\\n", fp); break;
-            case '\r': fputs("\\r", fp); break;
-            case '\t': fputs("\\t", fp); break;
-            default:
-                if ((unsigned char)*s < 32) fprintf(fp, "\\x%02x", (unsigned char)*s);
-                else fputc(*s, fp);
-        }
-    }
-    fputc('"', fp);
-}
-
-static void astro_fprint_cstr(FILE *fp, const char *s) {
-    fprintf(fp, "        ");
-    astro_fprintf_cstr(fp, s);
-}
 
 /* OPTIMIZE / SPECIALIZE */
 
@@ -188,34 +113,24 @@ static void fill_with_sc(NODE *n, struct specialized_code *sc) {
     n->head.flags.is_specialized = true;
 }
 
-extern bool koruby_cs_load_node(NODE *n);
+/* Code store: AOT lookup goes through the shared runtime/.  Pulled in
+ * after astro_node.c so the runtime can use hash_merge / hash_node /
+ * alloc_dispatcher_name etc. that astro_node.c provides. */
+#include "../../runtime/astro_code_store.h"
 
 NODE *OPTIMIZE(NODE *n) {
     if (!n) return n;
     if (OPTION.no_compiled_code) return n;
-    /* First try the runtime code store (dlopen'd all.so).  If it has a
-     * specialized SD_<hash> for this node, the dispatcher is replaced. */
-    if (koruby_cs_load_node(n)) return n;
+    /* First try the runtime code store (dlopen'd all.so).  AOT-only —
+     * pass file=NULL so PGC lookup is skipped. */
+    if (astro_cs_load(n, NULL)) return n;
     node_hash_t h = hash_node(n);
     struct specialized_code *sc = sc_repo_search(n, h);
     if (sc) fill_with_sc(n, sc);
     return n;
 }
 
-void SPECIALIZE(FILE *fp, NODE *n) {
-    if (!n || !n->head.kind->specializer) return;
-    node_hash_t h = HASH(n);
-    struct specialized_code *sc = sc_repo_search(n, h);
-    if (sc) {
-        if (!n->head.flags.is_specialized) fill_with_sc(n, sc);
-        return;
-    }
-    if (n->head.flags.is_specializing) return;
-    n->head.flags.is_specializing = true;
-    (*n->head.kind->specializer)(fp, n, false);
-    n->head.flags.is_specializing = false;
-    sc_repo_add(n, h);
-}
+/* SPECIALIZE comes from runtime/astro_code_store.c (included below). */
 
 void node_replace(NODE *parent, NODE *old, NODE *new_node) {
     if (!parent || !parent->head.kind->replacer) return;
@@ -240,6 +155,10 @@ void korb_swap_dispatcher(NODE *n, const struct NodeKind *new_kind) {
 #include "node_specialize.c"
 #include "node_replace.c"
 #include "node_alloc.c"
+
+/* Pulled in last — uses HASH/HORG/HOPT and the static helpers from
+ * astro_node.c above. */
+#include "../../runtime/astro_code_store.c"
 
 /* try to include specialized */
 #if __has_include("node_specialized.c")

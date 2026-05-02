@@ -15,11 +15,16 @@ NODE *koruby_parse(const char *src, size_t len, const char *filename);
 
 extern void sc_repo_clear(void);
 
-/* code store API (code_store.c) */
-extern void koruby_cs_init(const char *store_dir, const char *src_dir);
-extern bool koruby_cs_load_node(NODE *n);
-extern void koruby_cs_compile_all(NODE *toplevel);
-extern void koruby_cs_build(void);
+/* code store API (runtime/astro_code_store.{h,c} via node.c). */
+#include "../../runtime/astro_code_store.h"
+
+/* code repo (defined in node.c) — exposed here so main can iterate the
+ * collected per-method AST entries when AOT-compiling. */
+struct code_repo {
+    uint32_t size, capa;
+    struct code_entry { const char *name; struct Node *body; } *entries;
+};
+extern struct code_repo code_repo;
 
 /* Set when --aot-compile is on the command line. */
 static bool g_aot_compile = false;
@@ -108,7 +113,7 @@ int main(int argc, char *argv[])
                 }
             }
         }
-        koruby_cs_init(cs, src);
+        astro_cs_init(cs, src, 0);
     }
 
     const char *e_code = NULL;
@@ -235,21 +240,17 @@ int main(int argc, char *argv[])
     if (g_aot_compile) {
         /* Generate per-method SD_<hash>.c, then build all.so via make. */
         fprintf(stderr, "[koruby] AOT compile: writing SD_*.c\n");
-        koruby_cs_compile_all(ast);
+        astro_cs_compile(ast, NULL);
+        for (uint32_t i = 0; i < code_repo.size; i++) {
+            astro_cs_compile(code_repo.entries[i].body, NULL);
+        }
         fprintf(stderr, "[koruby] AOT compile: building all.so\n");
-        koruby_cs_build();
+        astro_cs_build(NULL);
     }
-    extern void koruby_cs_print_stats(void);
-    koruby_cs_print_stats();
     return 0;
 }
 
 /* hooks for specialized-code generation */
-struct code_repo {
-    uint32_t size, capa;
-    struct code_entry { const char *name; struct Node *body; } *entries;
-};
-extern struct code_repo code_repo;
 
 void koruby_specialize_repo(FILE *fp) {
     extern void SPECIALIZE(FILE *, NODE *);

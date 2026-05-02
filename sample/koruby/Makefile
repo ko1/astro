@@ -11,12 +11,14 @@ CFLAGS = -I$(PRISM_DIR)/include -I. $(optflags) -flto=auto -ggdb3 -Wall -Wno-unu
 LDFLAGS = -L $(PRISM_DIR)/build -Wl,-rpath=$(CURDIR)/$(PRISM_DIR)/build -flto=auto
 LIBS = -lprism -lgc -lgmp -lm
 
-SRCS = main.c node.c parse.c object.c builtins.c code_store.c bootstrap_src.c
+SRCS = main.c node.c parse.c object.c builtins.c bootstrap_src.c
 # builtins/*.c are #included from builtins.c, but list them here so
-# `make` rebuilds when any of them changes.
+# `make` rebuilds when any of them changes.  Same for the shared
+# runtime files included from node.c.
 BUILTINS_INCLUDED = $(wildcard builtins/*.c)
+RUNTIME_INCLUDED = ../../runtime/astro_node.c ../../runtime/astro_code_store.c ../../runtime/astro_code_store.h
 
-koruby: $(SRCS) $(BUILTINS_INCLUDED) $(NODE_GENFILES) Makefile
+koruby: $(SRCS) $(BUILTINS_INCLUDED) $(RUNTIME_INCLUDED) $(NODE_GENFILES) Makefile
 	$(CC) $(CFLAGS) -rdynamic -o $@ $(SRCS) $(LDFLAGS) $(LIBS) -ldl
 
 # Profile-guided optimization build.  Two-pass:

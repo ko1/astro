@@ -46,7 +46,7 @@ hash_uint32(uint32_t ui)
     return x;
 }
 
-static node_hash_t
+__attribute__((unused)) static node_hash_t
 hash_uint64(uint64_t u)
 {
     node_hash_t x = (node_hash_t)u;
@@ -60,7 +60,7 @@ hash_uint64(uint64_t u)
     return x;
 }
 
-static node_hash_t
+__attribute__((unused)) static node_hash_t
 hash_double(double d)
 {
     union { double d; uint64_t u; } conv;

@@ -548,7 +548,12 @@ astro_cs_build(const char *extra_cflags)
     // stdout to null — leaving stderr still attached to the parent
     // (so compile warnings leaked into the host process's stdout
     // capture, breaking output-comparison test runners).
-    snprintf(cmd, sizeof(cmd), "make -C %s -j%ld --no-print-directory -s all.so >/dev/null 2>&1",
+    //
+    // Disable ccache: each SD_*.c is unique by content (filename = hash
+    // of contents) so ccache hits ~never, and it intermittently fails
+    // on read-only home dirs / sandboxed environments.
+    snprintf(cmd, sizeof(cmd),
+             "CCACHE_DISABLE=1 make -C %s -j%ld --no-print-directory -s all.so >/dev/null 2>&1",
              astro_cs.store_dir, jobs);
 
     int ret = system(cmd);
