@@ -166,7 +166,13 @@ int main(int argc, char *argv[])
     }
     else usage();
 
-    NODE *ast = koruby_parse(src, len, filename);
+    /* Hold ast through a static so Boehm's data-section scan keeps it
+     * rooted regardless of register/spill placement.  Long runs (lots
+     * of GC cycles) had main's local `ast` register-evicted between
+     * GC sample points, leading to ast being collected before AOT
+     * compile read it back. */
+    static NODE *ast;
+    ast = koruby_parse(src, len, filename);
     if (OPTION.dump_ast) {
         DUMP(stdout, ast, true);
         printf("\n");
