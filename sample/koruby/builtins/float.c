@@ -84,6 +84,9 @@ static VALUE flt_ge(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE flt_cmp(CTX *c, VALUE self, int argc, VALUE *argv) {
     double a = korb_num2dbl(self);
     double b = korb_num2dbl(argv[0]);
+    /* NaN compared to anything (including itself) is undefined — Ruby
+     * returns nil to signal incomparable. */
+    if (isnan(a) || isnan(b)) return Qnil;
     return INT2FIX(a < b ? -1 : a > b ? 1 : 0);
 }
 static VALUE flt_to_i(CTX *c, VALUE self, int argc, VALUE *argv) {
