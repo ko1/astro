@@ -116,6 +116,12 @@ struct korb_class {
     ID *ivar_names;
     uint32_t ivar_count;
     uint32_t ivar_capa;
+    /* Modules `include`d into this class (in include-order, last include
+     * first in lookup).  Tracked so `ancestors` / `is_a?` see them; the
+     * actual method lookup still uses the flatten-copy in `methods`. */
+    struct korb_class **includes;
+    uint32_t includes_cnt;
+    uint32_t includes_capa;
 };
 
 struct korb_proc {
@@ -404,6 +410,9 @@ VALUE prologue_ast_simple_1(CTX *c, struct Node *callsite, VALUE recv,
 VALUE prologue_ast_simple_2(CTX *c, struct Node *callsite, VALUE recv,
                             uint32_t argc, uint32_t arg_index,
                             struct korb_proc *block, struct method_cache *mc);
+VALUE prologue_ast_simple_3(CTX *c, struct Node *callsite, VALUE recv,
+                            uint32_t argc, uint32_t arg_index,
+                            struct korb_proc *block, struct method_cache *mc);
 VALUE prologue_cfunc(CTX *c, struct Node *callsite, VALUE recv,
                      uint32_t argc, uint32_t arg_index,
                      struct korb_proc *block, struct method_cache *mc);
@@ -431,6 +440,7 @@ korb_dispatch_call_cached(CTX * restrict c, struct Node * restrict callsite,
         if (p == prologue_ast_simple_0) return prologue_ast_simple_inl(c, callsite, recv, argc, arg_index, block, mc, 0);
         if (p == prologue_ast_simple_1) return prologue_ast_simple_inl(c, callsite, recv, argc, arg_index, block, mc, 1);
         if (p == prologue_ast_simple_2) return prologue_ast_simple_inl(c, callsite, recv, argc, arg_index, block, mc, 2);
+        if (p == prologue_ast_simple_3) return prologue_ast_simple_inl(c, callsite, recv, argc, arg_index, block, mc, 3);
         if (p == prologue_cfunc)        return prologue_cfunc_inl     (c, callsite, recv, argc, arg_index, block, mc);
         return p(c, callsite, recv, argc, arg_index, block, mc);
     }
@@ -480,6 +490,8 @@ korb_yield(CTX *c, uint32_t argc, VALUE *argv) {
         korb_raise(c, NULL, "no block given (yield)");
         return Qnil;
     }
+    /* Symbol-proc shim — fall to slow path. */
+    if (UNLIKELY(blk->body == NULL)) return korb_yield_slow(c, blk, argc, argv);
     /* Common case: single arg, single param, no destructure.  Inline. */
     if (LIKELY(argc == 1 && blk->params_cnt == 1)) {
         VALUE arg = argv[0];  /* snapshot before fp swap */

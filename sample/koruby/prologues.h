@@ -108,4 +108,73 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
     return r;
 }
 
+/* AOT-baked variant: dispatcher is supplied as an argument.  The C
+ * compiler then sees a known target at the call site (when STATIC_DISP
+ * is a constant function symbol), turning the indirect `mc->dispatcher`
+ * call into a direct call which gcc can in turn inline at -O3.  Used
+ * by the AOT specializer when it can statically determine that a hot
+ * call site always reaches a specific method body. */
+static inline __attribute__((always_inline)) VALUE
+prologue_ast_simple_static_inl(CTX *c, struct Node *callsite, VALUE recv,
+                               uint32_t argc, uint32_t arg_index,
+                               struct korb_proc *block,
+                               struct method_cache *mc,
+                               int PARAMS_KNOWN,
+                               korb_dispatcher_t static_disp)
+{
+    uint32_t total = (PARAMS_KNOWN >= 0) ? (uint32_t)PARAMS_KNOWN : mc->total_params_cnt;
+    if (UNLIKELY(argc > total)) {
+        korb_raise(c, NULL, "wrong number of arguments (given %u, expected %u)",
+                   argc, total);
+        return Qnil;
+    }
+    VALUE *prev_fp = c->fp;
+    VALUE prev_self = c->self;
+
+    VALUE *new_fp = prev_fp + arg_index;
+    c->fp = new_fp;
+    if (new_fp + mc->locals_cnt > c->sp) c->sp = new_fp + mc->locals_cnt;
+
+    bool simple = mc->is_simple_frame;
+    struct korb_proc *prev_block = NULL;
+    struct korb_cref *prev_cref = NULL;
+    struct korb_frame frame;
+    if (UNLIKELY(!simple)) {
+        prev_block = current_block;
+        prev_cref = c->cref;
+        current_block = block;
+        if (mc->def_cref) c->cref = mc->def_cref;
+        frame.prev = c->current_frame;
+        frame.method = mc->method;
+        frame.self = recv;
+        frame.block = block;
+        c->current_frame = &frame;
+    }
+
+    for (uint32_t i = total; i < mc->locals_cnt; i++) {
+        new_fp[i] = Qnil;
+    }
+    c->self = recv;
+
+    /* Direct call: linker resolves static_disp to a concrete SD_*
+     * symbol; gcc emits a direct call instead of going through
+     * mc->dispatcher (one indirect load + indirect call removed). */
+    VALUE r = static_disp(c, mc->body);
+
+    if (UNLIKELY(!simple)) {
+        c->current_frame = frame.prev;
+        c->cref = prev_cref;
+        current_block = prev_block;
+    }
+    c->fp = prev_fp;
+    c->self = prev_self;
+
+    if (UNLIKELY(c->state == KORB_RETURN || c->state == KORB_BREAK)) {
+        r = c->state_value;
+        c->state = KORB_NORMAL;
+        c->state_value = Qnil;
+    }
+    return r;
+}
+
 #endif

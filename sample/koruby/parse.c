@@ -227,6 +227,36 @@ static NODE *
 build_call_with_block(struct transduce_context *tc, NODE *recv, ID name,
                        pm_node_list_t *args, pm_node_t *block_pm, bool is_method)
 {
+    /* `&expr` block-pass — appears in arguments list (rare; usually
+     * lands in n->block at the call-node level). */
+    if (!block_pm && args) {
+        for (uint32_t i = 0; i < args->size; i++) {
+            if (args->nodes[i] && PM_NODE_TYPE_P(args->nodes[i], PM_BLOCK_ARGUMENT_NODE)) {
+                pm_block_argument_node_t *ba = (pm_block_argument_node_t *)args->nodes[i];
+                /* Build a private args list without the block-arg. */
+                pm_node_list_t real_args = { .size = 0, .capacity = args->capacity, .nodes = args->nodes };
+                /* In-place compaction copy onto a stack-buffer is fine
+                 * for small arg counts. */
+                pm_node_t *buf[16];
+                if (args->size > 16) {
+                    /* Fallback: skip rewrite; treat as ordinary call. */
+                    return build_call_simple(tc, recv, name, args, NULL, is_method);
+                }
+                uint32_t bn = 0;
+                for (uint32_t j = 0; j < args->size; j++) {
+                    if (j == i) continue;
+                    buf[bn++] = args->nodes[j];
+                }
+                real_args.size = bn;
+                real_args.nodes = buf;
+                /* Build `expr.to_proc` node manually. */
+                NODE *expr = ba->expression ? T(tc, ba->expression) : ALLOC_node_nil();
+                struct method_cache *mc = alloc_method_cache();
+                NODE *to_proc = ALLOC_node_method_call(expr, korb_intern("to_proc"), 0, arg_index(tc), mc);
+                return build_call_simple(tc, recv, name, &real_args, to_proc, is_method);
+            }
+        }
+    }
     if (!block_pm) {
         return build_call_simple(tc, recv, name, args, NULL, is_method);
     }
@@ -852,6 +882,16 @@ T(struct transduce_context *tc, pm_node_t *node)
            * arg staging slots — otherwise the block's params collide with
            * the outer's arg staging. */
           pm_node_t *block_pm = (n->block && PM_NODE_TYPE_P(n->block, PM_BLOCK_NODE)) ? n->block : NULL;
+          /* &expr block-pass: the call's `block` slot holds a
+           * BLOCK_ARGUMENT_NODE.  Rewrite to `expr.to_proc` and pass as
+           * the block_node directly. */
+          if (!block_pm && n->block && PM_NODE_TYPE_P(n->block, PM_BLOCK_ARGUMENT_NODE)) {
+              pm_block_argument_node_t *ba = (pm_block_argument_node_t *)n->block;
+              NODE *expr = ba->expression ? T(tc, ba->expression) : ALLOC_node_nil();
+              struct method_cache *mc_tp = alloc_method_cache();
+              NODE *to_proc = ALLOC_node_method_call(expr, korb_intern("to_proc"), 0, arg_index(tc), mc_tp);
+              return build_call_simple(tc, recv, name, args ? &args->arguments : NULL, to_proc, recv != NULL);
+          }
           return build_call_with_block(tc, recv, name, args ? &args->arguments : NULL, block_pm, recv != NULL);
       }
 
@@ -1159,7 +1199,8 @@ T(struct transduce_context *tc, pm_node_t *node)
       }
 
       case PM_BLOCK_ARGUMENT_NODE: {
-          /* &expr — used at call site to convert to block; handled at callsite */
+          /* Reached here only as a sub-expression (the call site rewrites
+           * &expr in build_call_with_block).  Pass the expr through. */
           pm_block_argument_node_t *n = (pm_block_argument_node_t *)node;
           if (n->expression) return T(tc, n->expression);
           return ALLOC_node_nil();

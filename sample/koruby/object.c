@@ -165,6 +165,9 @@ struct korb_class *korb_class_new(ID name, struct korb_class *super, enum korb_t
     k->ivar_names = NULL;
     k->ivar_count = 0;
     k->ivar_capa = 0;
+    k->includes = NULL;
+    k->includes_cnt = 0;
+    k->includes_capa = 0;
     return k;
 }
 
@@ -222,7 +225,12 @@ static bool korb_method_body_is_simple_frame(struct Node *body) {
         strstr(buf, "(node_const_get ")         == NULL &&
         strstr(buf, "(node_const_set ")         == NULL &&
         strstr(buf, "(node_const_path_get ")    == NULL &&
-        strstr(buf, "block_given?")             == NULL;
+        strstr(buf, "block_given?")             == NULL &&
+        /* __method__ / __callee__ / caller need a real frame so they
+         * can find the enclosing method; skip the slim path. */
+        strstr(buf, "__method__")               == NULL &&
+        strstr(buf, "__callee__")               == NULL &&
+        strstr(buf, "caller")                   == NULL;
     free(buf);
     return ok;
 }
@@ -299,6 +307,16 @@ void korb_module_include(struct korb_class *klass, struct korb_class *mod) {
     for (struct korb_const_entry *ce = mod->constants; ce; ce = ce->next) {
         if (!korb_const_has(klass, ce->name)) korb_const_set(klass, ce->name, ce->value);
     }
+    /* Record the include for ancestors / is_a?.  Skip duplicates. */
+    for (uint32_t i = 0; i < klass->includes_cnt; i++) {
+        if (klass->includes[i] == mod) return;
+    }
+    if (klass->includes_cnt >= klass->includes_capa) {
+        uint32_t nc = klass->includes_capa ? klass->includes_capa * 2 : 4;
+        klass->includes = korb_xrealloc(klass->includes, nc * sizeof(*klass->includes));
+        klass->includes_capa = nc;
+    }
+    klass->includes[klass->includes_cnt++] = mod;
 }
 
 struct korb_method *korb_class_find_method(const struct korb_class *klass, ID name) {
@@ -875,6 +893,15 @@ bool korb_block_given(void) { return current_block != NULL; }
  * (korb_yield).  This handles every other shape — auto-destructure,
  * argc/params mismatch, etc. */
 VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv) {
+    /* Symbol-proc shim (`&:method`): dispatch as argv[0].send(symbol, *rest). */
+    if (blk->body == NULL && SYMBOL_P(blk->self)) {
+        if (argc < 1) {
+            korb_raise(c, NULL, "no receiver for symbol proc");
+            return Qnil;
+        }
+        ID name = korb_sym2id(blk->self);
+        return korb_funcall(c, argv[0], name, argc - 1, argv + 1);
+    }
     /* Shared-fp closure: block evaluates with env_fp's view of locals.
      * IMPORTANT: argv may point into the YIELDER's fp (e.g., a slot inside
      * the calling method's frame) and we're about to overwrite that slot
@@ -937,20 +964,27 @@ struct korb_class *korb_class_of_class_slow(VALUE v) {
 
 VALUE korb_class_of(VALUE v) { return (VALUE)korb_class_of_class(v); }
 
-/* ---- exceptions ---- */
-struct korb_exception {
-    struct RBasic basic;
-    VALUE message;
-    struct korb_class *exc_class;
-};
-
+/* ---- exceptions ----
+ * Exception is a T_OBJECT — its message lives in the @message ivar
+ * just like any other Ruby object.  This keeps user code (`e.message`,
+ * `e.instance_variable_get(:@message)`) consistent with Exception.new
+ * created instances and with raise-built ones. */
 VALUE korb_exc_new(struct korb_class *klass, const char *msg) {
-    struct korb_exception *e = korb_xmalloc(sizeof(*e));
-    e->basic.flags = T_DATA;
-    e->basic.klass = klass ? (VALUE)klass : (VALUE)korb_vm->object_class;
-    e->message = korb_str_new_cstr(msg);
-    e->exc_class = klass;
-    return (VALUE)e;
+    if (!klass) {
+        VALUE eRuntime = korb_const_get(korb_vm->object_class,
+                                        korb_intern("RuntimeError"));
+        if (eRuntime && !SPECIAL_CONST_P(eRuntime) &&
+            BUILTIN_TYPE(eRuntime) == T_CLASS) {
+            klass = (struct korb_class *)eRuntime;
+        } else {
+            klass = korb_vm->object_class;
+        }
+    }
+    VALUE obj = korb_object_new(klass);
+    if (msg) {
+        korb_ivar_set(obj, korb_intern("@message"), korb_str_new_cstr(msg));
+    }
+    return obj;
 }
 
 void korb_raise(CTX *c, struct korb_class *klass, const char *fmt, ...) {
@@ -1047,19 +1081,22 @@ static VALUE korb_inspect_inner(VALUE v, int depth) {
         return korb_str_new_cstr(korb_id_name(((struct korb_class *)v)->name));
     }
     if (t == T_OBJECT) {
-        char b[64];
         struct korb_class *k = (struct korb_class *)((struct korb_object *)v)->basic.klass;
-        snprintf(b, 64, "#<%s:%p>", korb_id_name(k->name), (void *)v);
-        return korb_str_new_cstr(b);
-    }
-    if (t == T_DATA) {
-        struct korb_exception *e = (struct korb_exception *)v;
-        if (BUILTIN_TYPE(e->message) == T_STRING) {
-            VALUE r = korb_str_new_cstr("#<Exception: ");
-            korb_str_concat(r, e->message);
+        VALUE msg = korb_ivar_get(v, korb_intern("@message"));
+        if (msg && !UNDEF_P(msg) && !SPECIAL_CONST_P(msg) && BUILTIN_TYPE(msg) == T_STRING) {
+            /* Exception-shaped: "#<ClassName: message>" */
+            VALUE r = korb_str_new_cstr("#<");
+            korb_str_concat(r, korb_str_new_cstr(k && k->name ? korb_id_name(k->name) : "Object"));
+            korb_str_concat(r, korb_str_new_cstr(": "));
+            korb_str_concat(r, msg);
             korb_str_concat(r, korb_str_new_cstr(">"));
             return r;
         }
+        char b[64];
+        snprintf(b, 64, "#<%s:%p>", k && k->name ? korb_id_name(k->name) : "Object", (void *)v);
+        return korb_str_new_cstr(b);
+    }
+    if (t == T_DATA) {
         return korb_str_new_cstr("#<data>");
     }
     if (t == T_PROC) return korb_str_new_cstr("#<Proc>");
@@ -1097,11 +1134,10 @@ VALUE korb_to_s(VALUE v) {
     }
     if (NIL_P(v)) return korb_str_new_cstr("");
     if (SYMBOL_P(v)) return korb_str_new_cstr(korb_id_name(korb_sym2id(v)));
-    if (BUILTIN_TYPE(v) == T_DATA) {
-        /* Exception or other T_DATA: return just the message */
-        struct ko_exception { struct RBasic basic; VALUE message; struct korb_class *exc_class; };
-        struct ko_exception *e = (struct ko_exception *)v;
-        if (BUILTIN_TYPE(e->message) == T_STRING) return e->message;
+    if (BUILTIN_TYPE(v) == T_OBJECT) {
+        /* Exception-like: prefer @message ivar if it's a String. */
+        VALUE msg = korb_ivar_get(v, korb_intern("@message"));
+        if (msg && !SPECIAL_CONST_P(msg) && BUILTIN_TYPE(msg) == T_STRING) return msg;
     }
     return korb_inspect(v);
 }
@@ -1238,8 +1274,8 @@ VALUE prologue_ast_simple_2(CTX *c, struct Node *cs, VALUE recv, uint32_t argc,
                             uint32_t ai, struct korb_proc *bl, struct method_cache *mc)
 { return prologue_ast_simple_inl(c, cs, recv, argc, ai, bl, mc, 2); }
 
-static VALUE prologue_ast_simple_3(CTX *c, struct Node *cs, VALUE recv, uint32_t argc,
-                                   uint32_t ai, struct korb_proc *bl, struct method_cache *mc)
+VALUE prologue_ast_simple_3(CTX *c, struct Node *cs, VALUE recv, uint32_t argc,
+                            uint32_t ai, struct korb_proc *bl, struct method_cache *mc)
 { return prologue_ast_simple_inl(c, cs, recv, argc, ai, bl, mc, 3); }
 
 static VALUE prologue_ast_simple(CTX *c, struct Node *cs, VALUE recv, uint32_t argc,
@@ -1388,6 +1424,22 @@ VALUE korb_dispatch_call(CTX *c, struct Node *callsite, VALUE recv, ID name,
         }
         if (!m) m = korb_class_find_method(klass, name);
         if (UNLIKELY(!m)) {
+            /* method_missing fallback: prepend the missing name to the
+             * argv and dispatch :method_missing if defined. */
+            struct korb_method *mm = korb_class_find_method(klass, korb_intern("method_missing"));
+            if (mm) {
+                /* Shift args right by one; insert :name in front. */
+                VALUE *fp = c->fp;
+                if (fp + arg_index + argc + 1 < c->stack_end) {
+                    for (int i = (int)argc - 1; i >= 0; i--) {
+                        fp[arg_index + 1 + i] = fp[arg_index + i];
+                    }
+                    fp[arg_index] = korb_id2sym(name);
+                    struct method_cache tmp = {0};
+                    korb_method_cache_fill(&tmp, klass, mm);
+                    return tmp.prologue(c, callsite, recv, argc + 1, arg_index, block, &tmp);
+                }
+            }
             korb_raise(c, NULL, "undefined method '%s' for %s",
                      korb_id_name(name), korb_id_name(klass->name));
             return Qnil;
@@ -1684,7 +1736,7 @@ void korb_runtime_init(void) {
 
     /* Exception class hierarchy.  We don't model the full chain — just add
      * common classes so `rescue StandardError`, etc., parse successfully. */
-    struct korb_class *cException = korb_class_new(korb_intern("Exception"), cObject, T_DATA);
+    struct korb_class *cException = korb_class_new(korb_intern("Exception"), cObject, T_OBJECT);
     korb_const_set(cObject, korb_intern("Exception"), (VALUE)cException);
     static const char *exc_classes[] = {
         "StandardError", "RuntimeError", "ArgumentError", "TypeError",
@@ -1695,7 +1747,7 @@ void korb_runtime_init(void) {
         "ScriptError", "SyntaxError", NULL,
     };
     for (int i = 0; exc_classes[i]; i++) {
-        struct korb_class *k = korb_class_new(korb_intern(exc_classes[i]), cException, T_DATA);
+        struct korb_class *k = korb_class_new(korb_intern(exc_classes[i]), cException, T_OBJECT);
         korb_const_set(cObject, korb_intern(exc_classes[i]), (VALUE)k);
     }
 
