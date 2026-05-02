@@ -173,13 +173,15 @@ end
 
 # Yielding fewer args than the block declares — extras get nil.
 def test_block_underflow_args
-  r = nil
-  blk = ->(a, b) { r = [a, b] }
+  # Lambdas now enforce strict arity (matches CRuby).  Use a Proc to
+  # keep the lenient pad-with-nil behavior; lambda strictness has
+  # dedicated coverage in test_lambda_vs_proc.  Result captured via
+  # array mutation (proc.call snapshots env on koruby — write-back
+  # of `r = ...` doesn't propagate; tracked elsewhere).
+  r = []
+  blk = proc { |a, b| r << a; r << b }
   blk.call(1)
-  # In CRuby this raises ArgumentError for lambdas (strict arity).
-  # If we got here without raise, koruby is either lenient or it raised.
-  # Either is acceptable, so just check the trial completed.
-  assert(true)
+  assert_equal [1, nil], r
 end
 
 # Nested break — break from inner block stops only inner iterator

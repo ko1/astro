@@ -11,11 +11,18 @@ static VALUE ary_aref(CTX *c, VALUE self, int argc, VALUE *argv) {
         if (BUILTIN_TYPE(argv[0]) == T_RANGE) {
             struct korb_array *a = (struct korb_array *)self;
             struct korb_range *r = (struct korb_range *)argv[0];
-            if (!FIXNUM_P(r->begin) || !FIXNUM_P(r->end)) return Qnil;
-            long b = FIX2LONG(r->begin), e = FIX2LONG(r->end);
+            /* Endless / beginless ranges: nil begin/end stand in for
+             * 0 / size-1.  Common in Ruby 2.7+ slicing. */
+            long b, e;
+            if (NIL_P(r->begin))      b = 0;
+            else if (FIXNUM_P(r->begin)) b = FIX2LONG(r->begin);
+            else return Qnil;
+            if (NIL_P(r->end))        e = a->len - 1;
+            else if (FIXNUM_P(r->end)) e = FIX2LONG(r->end);
+            else return Qnil;
             if (b < 0) b += a->len;
             if (e < 0) e += a->len;
-            if (r->exclude_end) e--;
+            if (r->exclude_end && !NIL_P(r->end)) e--;
             if (b < 0 || b > a->len) return Qnil;
             if (e >= a->len) e = a->len - 1;
             VALUE res = korb_ary_new();
@@ -41,6 +48,21 @@ static VALUE ary_aset(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc == 2 && FIXNUM_P(argv[0])) {
         korb_ary_aset(self, FIX2LONG(argv[0]), argv[1]);
         return argv[1];
+    }
+    /* `a[range] = ...` — translate to the (start, len, value) form. */
+    if (argc == 2 && !SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_RANGE) {
+        struct korb_array *a = (struct korb_array *)self;
+        struct korb_range *r = (struct korb_range *)argv[0];
+        long b = NIL_P(r->begin) ? 0 :
+                 (FIXNUM_P(r->begin) ? FIX2LONG(r->begin) : 0);
+        long e = NIL_P(r->end) ? a->len - 1 :
+                 (FIXNUM_P(r->end) ? FIX2LONG(r->end) : 0);
+        if (b < 0) b += a->len;
+        if (e < 0) e += a->len;
+        if (r->exclude_end && !NIL_P(r->end)) e--;
+        if (e < b - 1) e = b - 1;
+        VALUE three[3] = { INT2FIX(b), INT2FIX(e - b + 1), argv[1] };
+        return ary_aset(c, self, 3, three);
     }
     if (argc == 3 && FIXNUM_P(argv[0]) && FIXNUM_P(argv[1])) {
         /* a[start, len] = value or a[start, len] = array */
@@ -1133,9 +1155,17 @@ static VALUE ary_clone(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 /* Array#eql? — for our impl, same as ==. */
 static VALUE ary_eql(CTX *c, VALUE self, int argc, VALUE *argv) {
+    /* eql? is type-strict, including for elements: [1, 2.0].eql?([1, 2])
+     * is false because 2.0.eql?(2) is false. */
     if (BUILTIN_TYPE(argv[0]) != T_ARRAY) return Qfalse;
-    extern VALUE ary_eq(CTX *c, VALUE self, int argc, VALUE *argv);
-    return ary_eq(c, self, argc, argv);
+    struct korb_array *a = (struct korb_array *)self;
+    struct korb_array *b = (struct korb_array *)argv[0];
+    if (a->len != b->len) return Qfalse;
+    for (long i = 0; i < a->len; i++) {
+        VALUE r = korb_funcall(c, a->ptr[i], korb_intern("eql?"), 1, &b->ptr[i]);
+        if (!RTEST(r)) return Qfalse;
+    }
+    return Qtrue;
 }
 
 /* Array#<=> — lexical comparison. */

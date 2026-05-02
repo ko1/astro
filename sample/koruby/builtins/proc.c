@@ -58,6 +58,26 @@ VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
         struct korb_method_obj *m = (struct korb_method_obj *)p->self;
         return korb_funcall(c, m->receiver, m->name, argc, argv);
     }
+    /* Lambda is strict: argc must match params_cnt (or be in
+     * required..total range when rest/optional are present).
+     * Exception: when the lambda accepts kwargs (kwh_save_slot >= 0),
+     * an extra trailing Hash is consumed as kwargs and doesn't count
+     * toward the positional arity check. */
+    if (p->is_lambda && p->rest_slot < 0) {
+        int eff_argc = argc;
+        if (p->kwh_save_slot >= 0 && argc > 0 &&
+            !SPECIAL_CONST_P(argv[argc - 1]) &&
+            BUILTIN_TYPE(argv[argc - 1]) == T_HASH) {
+            eff_argc = argc - 1;
+        }
+        if ((uint32_t)eff_argc != p->params_cnt) {
+            VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+            korb_raise(c, (struct korb_class *)eArg,
+                     "wrong number of arguments (given %d, expected %u)",
+                     eff_argc, p->params_cnt);
+            return Qnil;
+        }
+    }
     VALUE *prev_fp = c->fp;
     VALUE prev_self = c->self;
     VALUE *new_fp = c->sp + 1;

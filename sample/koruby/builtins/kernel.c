@@ -298,10 +298,18 @@ static VALUE kernel_string(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 static VALUE kernel_array(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1) return korb_ary_new();
-    if (BUILTIN_TYPE(argv[0]) == T_ARRAY) return argv[0];
-    if (NIL_P(argv[0])) return korb_ary_new();
+    VALUE v = argv[0];
+    if (NIL_P(v)) return korb_ary_new();
+    if (!SPECIAL_CONST_P(v) && BUILTIN_TYPE(v) == T_ARRAY) return v;
+    /* Range / Hash / anything responding to to_a: delegate.  Only
+     * wrap in a 1-element Array when the value doesn't.  CRuby uses
+     * to_ary first then falls back to to_a; for koruby's coverage
+     * to_a is enough. */
+    if (!SPECIAL_CONST_P(v) && (BUILTIN_TYPE(v) == T_RANGE || BUILTIN_TYPE(v) == T_HASH)) {
+        return korb_funcall(c, v, korb_intern("to_a"), 0, NULL);
+    }
     VALUE r = korb_ary_new_capa(1);
-    korb_ary_push(r, argv[0]);
+    korb_ary_push(r, v);
     return r;
 }
 
