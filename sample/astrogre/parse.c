@@ -1708,7 +1708,26 @@ typedef struct lower_ctx {
      * Each call to ALLOC_node_re_alt / ALLOC_node_re_rep takes the
      * next id; total ends up in pattern->n_branches. */
     int   next_branch_id;
+    /* AOT entries collected at ALLOC time.  Every node that the engine
+     * later dispatches via the generic `EVAL(c, X)` macro (i.e. reads
+     * X->head.dispatcher at runtime — rep body/outer_next stored in a
+     * frame, subroutine_call outer_next stored in sub_top) needs to be
+     * a public SD or astro_cs_load can't dlsym it.  Pushed at the
+     * ALLOC site since that's where we know the role. */
+    struct Node **entries;
+    int n_entries, entries_cap;
 } lower_ctx_t;
+
+static void
+lower_push_entry(lower_ctx_t *L, NODE *n)
+{
+    if (!n) return;
+    if (L->n_entries >= L->entries_cap) {
+        L->entries_cap = L->entries_cap ? L->entries_cap * 2 : 8;
+        L->entries = (NODE **)realloc(L->entries, sizeof(NODE *) * (size_t)L->entries_cap);
+    }
+    L->entries[L->n_entries++] = n;
+}
 
 static NODE *lower(lower_ctx_t *L, ire_node_t *n, NODE *tail);
 
@@ -1862,6 +1881,9 @@ lower(lower_ctx_t *L, ire_node_t *n, NODE *tail)
             L->sub_needed_cap = new_cap;
         }
         L->sub_needed[idx] = true;
+        /* node_re_sub_return dispatches `tail` via `c->sub_top->return_to`
+         * at runtime — i.e. EVAL(c, target).  Mark `tail` as an AOT entry. */
+        lower_push_entry(L, tail);
         return ALLOC_node_re_subroutine_call((uint32_t)idx, tail);
     }
     case IRE_REP: {
@@ -1930,6 +1952,11 @@ lower(lower_ctx_t *L, ire_node_t *n, NODE *tail)
             }
         }
         NODE *body = lower(L, n->u.rep.body, L->rep_cont);
+        /* rep_cont_inner reads `f->body` and `f->outer_next` from the
+         * runtime stack frame and dispatches them via EVAL — so both
+         * are AOT entries. */
+        lower_push_entry(L, body);
+        lower_push_entry(L, tail);
         return ALLOC_node_re_rep(body, tail, n->u.rep.min, n->u.rep.max,
                                  n->u.rep.greedy ? 1 : 0,
                                  ire_must_consume(n->u.rep.body) ? 1 : 0,
@@ -2048,6 +2075,9 @@ astrogre_parse(const char *pat, size_t pat_len, uint32_t flags)
                 if (!target) continue;
                 NODE *const ret = ALLOC_node_re_sub_return();
                 sub_chains[idx] = lower(&L, target, ret);
+                /* node_re_subroutine_call dispatches the chain head it
+                 * looked up in `c->sub_chains[idx]` via EVAL — entry. */
+                lower_push_entry(&L, sub_chains[idx]);
                 any_new = true;
             }
             if (L.sub_needed_cap > sub_chains_n) {
@@ -2192,6 +2222,21 @@ astrogre_parse(const char *pat, size_t pat_len, uint32_t flags)
     /* Aho-Corasick automaton (NULL if not used).  Pattern owns the
      * heap allocation; freed in astrogre_pattern_free. */
     p->ac = (void *)ac_handle;
+
+    /* AOT entries: take ownership of the list `lower` accumulated
+     * (rep body/outer_next, sub_call outer_next, sub_chain heads) and
+     * append the pattern root.  These are the nodes astro_cs_compile
+     * needs to register as public extern SDs. */
+    p->entries     = L.entries;
+    p->n_entries   = L.n_entries;
+    p->entries_cap = L.entries_cap;
+    /* Push root last; aot_compile iterates in order. */
+    if (p->n_entries >= p->entries_cap) {
+        p->entries_cap = p->entries_cap ? p->entries_cap * 2 : 8;
+        p->entries = (NODE **)realloc(p->entries, sizeof(NODE *) * (size_t)p->entries_cap);
+    }
+    p->entries[p->n_entries++] = p->root;
+
     free(L.sub_needed);
     return p;
 }
@@ -2275,6 +2320,7 @@ astrogre_pattern_free(astrogre_pattern *p)
     free(p->group_names);
     free(p->group_name_idx);
     free(p->sub_chains);  /* node memory owned by framework's side array */
+    free(p->entries);     /* pointer array; nodes themselves owned by framework */
     astrogre_ac_free((ac_t *)p->ac);
     free(p);
 }
@@ -2389,8 +2435,8 @@ extern void astro_cs_compile(NODE *entry, const char *file);
 extern void astro_cs_build(const char *extra_cflags);
 extern void astro_cs_reload(void);
 extern bool astro_cs_load(NODE *n, const char *file);
-extern void astrogre_export_all_sds(void);
 extern void astrogre_reload_all_dispatchers(void);
+extern NODE *astrogre_rep_cont_singleton(void);
 
 long
 astrogre_pattern_count_lines(astrogre_pattern *p, const char *str, size_t len)
@@ -2501,7 +2547,29 @@ astrogre_pattern_aot_compile(astrogre_pattern *p, bool verbose)
         fprintf(stderr, "astrogre: cs_compile h=%016lx /%s/\n",
                 (unsigned long)HASH(p->root), p->pat ? p->pat : "");
     }
-    astro_cs_compile(p->root, NULL);
+
+    /* Register every node that's dispatched at runtime via the generic
+     * EVAL(c, X) macro (i.e. its dispatcher is read indirectly from a
+     * stack frame, CTX field, or pattern-scoped pointer).  Each gets
+     * its own SD_<hash>.c with the node as the public entry, so
+     * astro_cs_load can dlsym it and patch the dispatcher.  Nodes
+     * dispatched via EVAL_ARG (parameter-borne dispatcher value, the
+     * case ASTroGen's specialiser can constant-fold) are NOT entries —
+     * they get inlined into their parent SD as `static inline _INL`.
+     *
+     * The list was collected at IR-lower time in lower_push_entry —
+     * see `lower_ctx_t::entries`.  We just iterate it here.  rep body /
+     * outer_next, subroutine_call outer_next, sub_chain heads, and the
+     * pattern root are all covered. */
+    for (int i = 0; i < p->n_entries; i++) {
+        astro_cs_compile(p->entries[i], NULL);
+    }
+
+    /* The rep_cont sentinel is a process-wide singleton: every rep in
+     * every pattern dispatches through it.  Register once per AOT run
+     * (cs_compile is idempotent on hash). */
+    astro_cs_compile(astrogre_rep_cont_singleton(), NULL);
+
     /* If the pattern is pure-literal-shaped, also pre-build and bake
      * the count_lines variant — the CLI's `-c PURE_LITERAL` path picks
      * it up.  Done eagerly here so AOT compile catches it; otherwise
@@ -2523,10 +2591,7 @@ astrogre_pattern_aot_compile(astrogre_pattern *p, bool verbose)
             astro_cs_compile(p->count_lines_root, NULL);
         }
     }
-    /* Make every inner SD externally visible so cs_load patches the
-     * whole chain, not just the root.  See astrogre_export_sd_wrappers
-     * in node.c (borrowed from luastro). */
-    astrogre_export_all_sds();
+
     astro_cs_build(NULL);
     astro_cs_reload();
     /* Re-resolve every node so this very run picks up the freshly-baked

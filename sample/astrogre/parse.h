@@ -51,6 +51,18 @@ typedef struct astrogre_pattern {
      * astrogre_pattern_free.  NULL when the pattern doesn't qualify
      * (no leading alt of literals, single-byte alternation, etc.). */
     void *ac;
+
+    /* AOT entry-point list.  Every NODE that gets dispatched via a
+     * runtime-indirect path (rep body / outer_next, subroutine_call
+     * outer_next, sub_chain root, count_lines / print_lines roots,
+     * the pattern root itself) is collected here at lower time and
+     * registered with astro_cs_compile so the SD it produces is
+     * extern-visible — otherwise dlsym can't find it and astro_cs_load
+     * leaves the dispatcher as the host interpreter.  Owned by the
+     * pattern; freed in astrogre_pattern_free. */
+    struct Node **entries;
+    int           n_entries;
+    int           entries_cap;
 } astrogre_pattern;
 
 /* Match result (filled by astrogre_search / astrogre_search_from). */
