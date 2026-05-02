@@ -48,7 +48,7 @@ extern void INIT(void);
 extern bool astrogre_search(astrogre_pattern *p, const char *str, size_t len, astrogre_match_t *out);
 extern bool astrogre_search_from(astrogre_pattern *p, const char *str, size_t len,
                                   size_t start, astrogre_match_t *out);
-extern astrogre_pattern *astrogre_parse(const char *pat, size_t pat_len, uint32_t prism_flags);
+extern astrogre_pattern *astrogre_parse(const char *pat, size_t pat_len, uint32_t flags);
 extern void astrogre_pattern_free(astrogre_pattern *p);
 extern void astrogre_pattern_aot_compile(astrogre_pattern *p, bool verbose);
 extern int  astrogre_pattern_n_named(const astrogre_pattern *p);
@@ -71,7 +71,7 @@ extern void astrogre_ext_dump_root(astrogre_pattern *p, FILE *fp);
 #define RB_RE_OPT_EXTENDED   2
 #define RB_RE_OPT_MULTILINE  4
 
-/* astrogre prism-flag bits (mirrored from parse.c). */
+/* astrogre regex flag bits (mirrored from parse.c). */
 #define PR_FLAGS_IGNORE_CASE 4
 #define PR_FLAGS_EXTENDED    8
 #define PR_FLAGS_MULTI_LINE  16
