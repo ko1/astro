@@ -116,4 +116,7 @@ test: koruby
 	    ./koruby "$$f" 2>&1 | tail -1; \
 	done
 
-.PHONY: all clean regen run bench-fib compiled_koruby test koruby-pgo koruby-aot koruby-pgo-aot
+bench-optcarrot: koruby
+	@bash tools/bench-optcarrot.sh
+
+.PHONY: all clean regen run bench-fib bench-optcarrot compiled_koruby test koruby-pgo koruby-aot koruby-pgo-aot
