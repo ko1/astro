@@ -42,6 +42,7 @@ struct korb_hash {
     struct korb_hash_entry *first;  /* insertion order */
     struct korb_hash_entry *last;
     VALUE default_value;
+    VALUE default_proc;             /* Proc for Hash.new { |h, k| ... }; Qnil otherwise */
     bool compare_by_identity;       /* keys compared by object identity */
 };
 

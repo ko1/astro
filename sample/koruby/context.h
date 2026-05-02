@@ -124,6 +124,7 @@ enum korb_type {
 };
 
 #define T_MASK 0x1f
+#define FL_FROZEN ((VALUE)0x20)
 
 struct RBasic {
     VALUE flags;       /* low 5 bits = type, others = flags */

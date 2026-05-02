@@ -722,8 +722,17 @@ static VALUE ary_minus(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE ary_index(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1) return Qnil;
     struct korb_array *a = (struct korb_array *)self;
+    extern struct korb_proc *current_block;
+    if (argc < 1 && current_block) {
+        for (long i = 0; i < a->len; i++) {
+            VALUE r = korb_yield(c, 1, &a->ptr[i]);
+            if (c->state == KORB_RAISE) return Qnil;
+            if (!NIL_P(r) && r != Qfalse) return INT2FIX(i);
+        }
+        return Qnil;
+    }
+    if (argc < 1) return Qnil;
     for (long i = 0; i < a->len; i++) if (korb_eq(a->ptr[i], argv[0])) return INT2FIX(i);
     return Qnil;
 }
@@ -830,6 +839,16 @@ static VALUE ary_transpose(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 static VALUE ary_count(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_array *a = (struct korb_array *)self;
+    extern struct korb_proc *current_block;
+    if (argc == 0 && current_block) {
+        long n = 0;
+        for (long i = 0; i < a->len; i++) {
+            VALUE r = korb_yield(c, 1, &a->ptr[i]);
+            if (c->state == KORB_RAISE) return Qnil;
+            if (!NIL_P(r) && r != Qfalse) n++;
+        }
+        return INT2FIX(n);
+    }
     if (argc == 0) return INT2FIX(a->len);
     long n = 0;
     for (long i = 0; i < a->len; i++) if (korb_eq(a->ptr[i], argv[0])) n++;
@@ -978,6 +997,296 @@ static VALUE ary_each_with_object(CTX *c, VALUE self, int argc, VALUE *argv) {
  * we use the value bits directly; for heap objects we use the address
  * (stable for the lifetime of the array, matches Ruby's behavior closely
  * enough for `[1,2].hash == [1,2].hash` to hold). */
+/* Array#assoc — find a sub-array whose first element == arg. */
+static VALUE ary_assoc(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_array *a = (struct korb_array *)self;
+    for (long i = 0; i < a->len; i++) {
+        VALUE e = a->ptr[i];
+        if (BUILTIN_TYPE(e) == T_ARRAY && ((struct korb_array *)e)->len > 0 &&
+            korb_eq(((struct korb_array *)e)->ptr[0], argv[0])) {
+            return e;
+        }
+    }
+    return Qnil;
+}
+
+/* Array#rassoc — same but matches the second element. */
+static VALUE ary_rassoc(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_array *a = (struct korb_array *)self;
+    for (long i = 0; i < a->len; i++) {
+        VALUE e = a->ptr[i];
+        if (BUILTIN_TYPE(e) == T_ARRAY && ((struct korb_array *)e)->len > 1 &&
+            korb_eq(((struct korb_array *)e)->ptr[1], argv[0])) {
+            return e;
+        }
+    }
+    return Qnil;
+}
+
+/* Array#at(i) — like a[i] for a single integer index. */
+static VALUE ary_at(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (!FIXNUM_P(argv[0])) return Qnil;
+    return korb_ary_aref(self, FIX2LONG(argv[0]));
+}
+
+/* Array#delete(obj) — remove all == matches; return obj if found else nil. */
+static VALUE ary_delete(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_array *a = (struct korb_array *)self;
+    long w = 0;
+    bool found = false;
+    for (long r = 0; r < a->len; r++) {
+        if (korb_eq(a->ptr[r], argv[0])) {
+            found = true;
+        } else {
+            a->ptr[w++] = a->ptr[r];
+        }
+    }
+    a->len = w;
+    return found ? argv[0] : Qnil;
+}
+
+/* Array#delete_at(i) — remove element at i, return removed or nil. */
+static VALUE ary_delete_at(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (!FIXNUM_P(argv[0])) return Qnil;
+    struct korb_array *a = (struct korb_array *)self;
+    long i = FIX2LONG(argv[0]);
+    if (i < 0) i += a->len;
+    if (i < 0 || i >= a->len) return Qnil;
+    VALUE r = a->ptr[i];
+    for (long j = i; j + 1 < a->len; j++) a->ptr[j] = a->ptr[j + 1];
+    a->len--;
+    return r;
+}
+
+/* Array#delete_if { |x| ... } — remove where block returns truthy. */
+static VALUE ary_delete_if(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_array *a = (struct korb_array *)self;
+    long w = 0;
+    for (long r = 0; r < a->len; r++) {
+        VALUE elt = a->ptr[r];
+        VALUE drop = korb_yield(c, 1, &elt);
+        if (c->state == KORB_RAISE) return Qnil;
+        if (NIL_P(drop) || drop == Qfalse) {
+            a->ptr[w++] = elt;
+        }
+    }
+    a->len = w;
+    return self;
+}
+
+/* Array#reject { |x| ... } — like delete_if but returns a new array. */
+static VALUE ary_reject(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_array *a = (struct korb_array *)self;
+    VALUE r = korb_ary_new();
+    for (long i = 0; i < a->len; i++) {
+        VALUE drop = korb_yield(c, 1, &a->ptr[i]);
+        if (c->state == KORB_RAISE) return Qnil;
+        if (NIL_P(drop) || drop == Qfalse) korb_ary_push(r, a->ptr[i]);
+    }
+    return r;
+}
+
+/* Array#insert(i, *elts) — splice elts into self starting at i. */
+static VALUE ary_insert(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1 || !FIXNUM_P(argv[0])) return self;
+    struct korb_array *a = (struct korb_array *)self;
+    long i = FIX2LONG(argv[0]);
+    if (i < 0) i += a->len + 1;
+    if (i < 0) i = 0;
+    long ins = argc - 1;
+    if (ins == 0) return self;
+    while (a->len < i) korb_ary_push(self, Qnil);
+    for (long k = 0; k < ins; k++) korb_ary_push(self, Qnil);
+    for (long k = a->len - 1; k >= i + ins; k--) a->ptr[k] = a->ptr[k - ins];
+    for (long k = 0; k < ins; k++) a->ptr[i + k] = argv[1 + k];
+    return self;
+}
+
+/* Array#replace(other) — destructive replace. */
+static VALUE ary_replace(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (BUILTIN_TYPE(argv[0]) != T_ARRAY) return self;
+    struct korb_array *a = (struct korb_array *)self;
+    struct korb_array *b = (struct korb_array *)argv[0];
+    a->len = 0;
+    for (long i = 0; i < b->len; i++) korb_ary_push(self, b->ptr[i]);
+    return self;
+}
+
+/* Array#each_index { |i| ... } — yields successive indices. */
+static VALUE ary_each_index(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_array *a = (struct korb_array *)self;
+    for (long i = 0; i < a->len; i++) {
+        VALUE iv = INT2FIX(i);
+        korb_yield(c, 1, &iv);
+        if (c->state == KORB_RAISE) return Qnil;
+    }
+    return self;
+}
+
+/* Array#clone — shallow copy (same as dup for our purposes). */
+static VALUE ary_clone(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_array *a = (struct korb_array *)self;
+    VALUE r = korb_ary_new_capa(a->len);
+    for (long i = 0; i < a->len; i++) korb_ary_push(r, a->ptr[i]);
+    return r;
+}
+
+/* Array#eql? — for our impl, same as ==. */
+static VALUE ary_eql(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (BUILTIN_TYPE(argv[0]) != T_ARRAY) return Qfalse;
+    extern VALUE ary_eq(CTX *c, VALUE self, int argc, VALUE *argv);
+    return ary_eq(c, self, argc, argv);
+}
+
+/* Array#<=> — lexical comparison. */
+static VALUE ary_cmp(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (BUILTIN_TYPE(argv[0]) != T_ARRAY) return Qnil;
+    struct korb_array *a = (struct korb_array *)self;
+    struct korb_array *b = (struct korb_array *)argv[0];
+    long n = a->len < b->len ? a->len : b->len;
+    for (long i = 0; i < n; i++) {
+        VALUE r = korb_funcall(c, a->ptr[i], korb_intern("<=>"), 1, &b->ptr[i]);
+        if (!FIXNUM_P(r) || FIX2LONG(r) != 0) return r;
+    }
+    if (a->len == b->len) return INT2FIX(0);
+    return INT2FIX(a->len < b->len ? -1 : 1);
+}
+
+/* Helpers / impl for combination + permutation. */
+static void ary_combine(CTX *c, struct korb_array *a, long r, long start,
+                         VALUE buf, VALUE result_or_nil) {
+    if (((struct korb_array *)buf)->len == r) {
+        VALUE copy = korb_ary_new_capa(r);
+        struct korb_array *bb = (struct korb_array *)buf;
+        for (long i = 0; i < bb->len; i++) korb_ary_push(copy, bb->ptr[i]);
+        if (NIL_P(result_or_nil)) korb_yield(c, 1, &copy);
+        else korb_ary_push(result_or_nil, copy);
+        return;
+    }
+    for (long i = start; i < a->len; i++) {
+        korb_ary_push(buf, a->ptr[i]);
+        ary_combine(c, a, r, i + 1, buf, result_or_nil);
+        ((struct korb_array *)buf)->len--;
+    }
+}
+
+static VALUE ary_combination(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1 || !FIXNUM_P(argv[0])) return Qnil;
+    long r = FIX2LONG(argv[0]);
+    struct korb_array *a = (struct korb_array *)self;
+    if (r < 0 || r > a->len) return korb_ary_new();
+    VALUE buf = korb_ary_new_capa(r);
+    extern struct korb_proc *current_block;
+    if (current_block) {
+        ary_combine(c, a, r, 0, buf, Qnil);
+        return self;
+    }
+    VALUE result = korb_ary_new();
+    ary_combine(c, a, r, 0, buf, result);
+    return result;
+}
+
+static void ary_perm(CTX *c, struct korb_array *a, long r,
+                      VALUE used, VALUE buf, VALUE result_or_nil) {
+    if (((struct korb_array *)buf)->len == r) {
+        VALUE copy = korb_ary_new_capa(r);
+        struct korb_array *bb = (struct korb_array *)buf;
+        for (long i = 0; i < bb->len; i++) korb_ary_push(copy, bb->ptr[i]);
+        if (NIL_P(result_or_nil)) korb_yield(c, 1, &copy);
+        else korb_ary_push(result_or_nil, copy);
+        return;
+    }
+    struct korb_array *uu = (struct korb_array *)used;
+    for (long i = 0; i < a->len; i++) {
+        if (uu->ptr[i] == Qtrue) continue;
+        uu->ptr[i] = Qtrue;
+        korb_ary_push(buf, a->ptr[i]);
+        ary_perm(c, a, r, used, buf, result_or_nil);
+        ((struct korb_array *)buf)->len--;
+        uu->ptr[i] = Qfalse;
+    }
+}
+
+static VALUE ary_permutation(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_array *a = (struct korb_array *)self;
+    long r = (argc >= 1 && FIXNUM_P(argv[0])) ? FIX2LONG(argv[0]) : a->len;
+    if (r < 0 || r > a->len) return korb_ary_new();
+    VALUE used = korb_ary_new_capa(a->len);
+    for (long i = 0; i < a->len; i++) korb_ary_push(used, Qfalse);
+    VALUE buf = korb_ary_new_capa(r);
+    extern struct korb_proc *current_block;
+    if (current_block) {
+        ary_perm(c, a, r, used, buf, Qnil);
+        return self;
+    }
+    VALUE result = korb_ary_new();
+    ary_perm(c, a, r, used, buf, result);
+    return result;
+}
+
+/* Array#product(*others) — Cartesian product. */
+static VALUE ary_product(CTX *c, VALUE self, int argc, VALUE *argv) {
+    long n = argc + 1;
+    struct korb_array **arrays = korb_xmalloc(sizeof(*arrays) * n);
+    arrays[0] = (struct korb_array *)self;
+    for (int i = 0; i < argc; i++) {
+        if (BUILTIN_TYPE(argv[i]) != T_ARRAY) return Qnil;
+        arrays[i + 1] = (struct korb_array *)argv[i];
+    }
+    VALUE result = korb_ary_new();
+    long *idx = korb_xcalloc(n, sizeof(long));
+    while (true) {
+        VALUE row = korb_ary_new_capa(n);
+        bool empty = false;
+        for (long i = 0; i < n; i++) {
+            if (arrays[i]->len == 0) { empty = true; break; }
+            korb_ary_push(row, arrays[i]->ptr[idx[i]]);
+        }
+        if (empty) break;
+        korb_ary_push(result, row);
+        long j = n - 1;
+        while (j >= 0) {
+            idx[j]++;
+            if (idx[j] < arrays[j]->len) break;
+            idx[j] = 0;
+            j--;
+        }
+        if (j < 0) break;
+    }
+    return result;
+}
+
+/* Array.new(size = 0, default = nil) — create an array of `size` slots
+ * pre-filled with `default`, or, if a block is given, with the block's
+ * return value for each index. */
+static VALUE ary_class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
+    long size = 0;
+    VALUE def = Qnil;
+    if (argc >= 1 && FIXNUM_P(argv[0])) size = FIX2LONG(argv[0]);
+    if (argc >= 2) def = argv[1];
+    /* Single-array-arg form: Array.new([1,2,3]) — copy. */
+    if (argc == 1 && BUILTIN_TYPE(argv[0]) == T_ARRAY) {
+        struct korb_array *src = (struct korb_array *)argv[0];
+        VALUE r = korb_ary_new_capa(src->len);
+        for (long i = 0; i < src->len; i++) korb_ary_push(r, src->ptr[i]);
+        return r;
+    }
+    if (size < 0) size = 0;
+    VALUE arr = korb_ary_new_capa(size);
+    extern struct korb_proc *current_block;
+    if (current_block) {
+        for (long i = 0; i < size; i++) {
+            VALUE iv = INT2FIX(i);
+            VALUE v = korb_yield(c, 1, &iv);
+            if (c->state == KORB_RAISE) return Qnil;
+            korb_ary_push(arr, v);
+        }
+    } else {
+        for (long i = 0; i < size; i++) korb_ary_push(arr, def);
+    }
+    return arr;
+}
+
 VALUE ary_hash_content(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_ARRAY) return INT2FIX(0);
     struct korb_array *a = (struct korb_array *)self;

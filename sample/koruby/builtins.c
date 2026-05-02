@@ -373,6 +373,33 @@ void korb_init_builtins(void) {
     DEF(cAry, "slice",     ary_slice_bang, -1); /* not quite right but ok */
     DEF(cAry, "flat_map",  ary_map, 0);   /* simplified: same as map for shallow */
     DEF(cAry, "collect_concat", ary_map, 0);
+    DEF(cAry, "assoc",       ary_assoc,       1);
+    DEF(cAry, "rassoc",      ary_rassoc,      1);
+    DEF(cAry, "at",          ary_at,          1);
+    DEF(cAry, "delete",      ary_delete,      1);
+    DEF(cAry, "delete_at",   ary_delete_at,   1);
+    DEF(cAry, "delete_if",   ary_delete_if,   0);
+    DEF(cAry, "reject",      ary_reject,      0);
+    DEF(cAry, "reject!",     ary_delete_if,   0);
+    DEF(cAry, "insert",      ary_insert,     -1);
+    DEF(cAry, "replace",     ary_replace,     1);
+    DEF(cAry, "each_index",  ary_each_index,  0);
+    DEF(cAry, "clone",       ary_clone,       0);
+    DEF(cAry, "eql?",        ary_eql,         1);
+    DEF(cAry, "<=>",         ary_cmp,         1);
+    DEF(cAry, "combination", ary_combination, 1);
+    DEF(cAry, "permutation", ary_permutation, -1);
+    DEF(cAry, "product",     ary_product,    -1);
+    {
+        /* Override Class.new on Array's metaclass so Array.new(n, default)
+         * and Array.new(n) { ... } actually build an array of the right
+         * size — Class#new's generic path uses korb_object_new which
+         * doesn't size a T_ARRAY correctly. */
+        struct korb_class *cAryMeta = korb_class_new(korb_intern("ArrayMeta"),
+                                                      korb_vm->class_class, T_CLASS);
+        korb_class_add_method_cfunc(cAryMeta, korb_intern("new"), ary_class_new, -1);
+        cAry->basic.klass = (VALUE)cAryMeta;
+    }
 
     /* extra Hash */
     DEF(cHsh, "keys",       hash_keys,       0);
@@ -384,15 +411,44 @@ void korb_init_builtins(void) {
     DEF(cHsh, "has_key?",   hash_key_p,      1);
     DEF(cHsh, "include?",   hash_key_p,      1);
     DEF(cHsh, "merge",      hash_merge,     -1);
-    DEF(cHsh, "merge!",     hash_merge,     -1);
+    DEF(cHsh, "merge!",     hash_merge_bang,-1);
     DEF(cHsh, "invert",     hash_invert,     0);
     DEF(cHsh, "to_a",       hash_to_a,       0);
     DEF(cHsh, "delete",     hash_delete,    -1);
     DEF(cHsh, "fetch",      hash_fetch,     -1);
     DEF(cHsh, "compare_by_identity",  hash_compare_by_identity, 0);
     DEF(cHsh, "compare_by_identity?", hash_compare_by_identity_p, 0);
-    DEF(cHsh, "default",    kernel_inspect, 0); /* nil */
-    DEF(cHsh, "default=",   kernel_inspect, 1); /* no-op */
+    DEF(cHsh, "clear",       hash_clear,        0);
+    DEF(cHsh, "delete_if",   hash_delete_if,    0);
+    DEF(cHsh, "keep_if",     hash_keep_if,      0);
+    DEF(cHsh, "compact",     hash_compact,      0);
+    DEF(cHsh, "compact!",    hash_compact_bang, 0);
+    DEF(cHsh, "values_at",   hash_values_at,   -1);
+    DEF(cHsh, "fetch_values",hash_fetch_values,-1);
+    DEF(cHsh, "member?",     hash_key_p,        1);
+    DEF(cHsh, "reject",      hash_reject,       0);
+    DEF(cHsh, "reject!",     hash_delete_if,    0);
+    DEF(cHsh, "replace",     hash_replace,      1);
+    DEF(cHsh, "shift",       hash_shift,        0);
+    DEF(cHsh, "store",       hash_aset,         2);
+    DEF(cHsh, "update",      hash_merge_bang,  -1);
+    DEF(cHsh, "slice",       hash_slice,       -1);
+    DEF(cHsh, "except",      hash_except,      -1);
+    DEF(cHsh, "count",       hash_count,       -1);
+    DEF(cHsh, "min_by",      hash_min_by,       0);
+    DEF(cHsh, "max_by",      hash_max_by,       0);
+    DEF(cHsh, "sort",        hash_sort,         0);
+    DEF(cHsh, "default",      hash_default_get,      0);
+    DEF(cHsh, "default=",     hash_default_set,      1);
+    DEF(cHsh, "default_proc", hash_default_proc_get, 0);
+    {
+        /* Override Class.new on Hash's metaclass so Hash.new(default) and
+         * Hash.new { ... } actually create a real hash with the default. */
+        struct korb_class *cHshMeta = korb_class_new(korb_intern("HashMeta"),
+                                                      korb_vm->class_class, T_CLASS);
+        korb_class_add_method_cfunc(cHshMeta, korb_intern("new"), hash_class_new, -1);
+        cHsh->basic.klass = (VALUE)cHshMeta;
+    }
     DEF(cHsh, "===",        hash_eqq,        1);
     DEF(cHsh, "dup",        hash_dup,        0);
     DEF(cHsh, "clone",      hash_dup,        0);
@@ -506,6 +562,12 @@ void korb_init_builtins(void) {
     DEF(cSym, "to_proc", sym_to_proc, 0);
     DEF(cSym, "===", sym_eq, 1);
     DEF(cSym, "inspect", kernel_inspect, 0);
+    DEF(cSym, "<=>",     sym_cmp,        1);
+    DEF(cSym, "size",    sym_length,     0);
+    DEF(cSym, "length",  sym_length,     0);
+    DEF(cSym, "empty?",  sym_empty_p,    0);
+    DEF(cSym, "upcase",  sym_upcase,     0);
+    DEF(cSym, "downcase",sym_downcase,   0);
 
     /* Boolean / Nil */
     DEF(korb_vm->true_class, "to_s", true_to_s, 0);

@@ -750,6 +750,7 @@ VALUE korb_hash_new(void) {
     h->size = 0;
     h->first = h->last = NULL;
     h->default_value = Qnil;
+    h->default_proc  = Qnil;
     h->compare_by_identity = false;
     return (VALUE)h;
 }
@@ -813,6 +814,8 @@ VALUE korb_hash_aref_slow(VALUE hv, VALUE key) {
         if (e->hash == hh && korb_hash_keys_match(h, e->key, key))
             return e->value;
     }
+    /* Miss: return default_value.  default_proc is handled by Hash#[]
+     * in builtins/hash.c which has a CTX to invoke the proc. */
     return h->default_value;
 }
 

@@ -101,14 +101,15 @@ static VALUE kernel_object_id(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE kernel_freeze(CTX *c, VALUE self, int argc, VALUE *argv) {
-    /* no-op for now */
+    if (!SPECIAL_CONST_P(self)) RBASIC(self)->flags |= FL_FROZEN;
     return self;
 }
 
 static VALUE kernel_frozen_p(CTX *c, VALUE self, int argc, VALUE *argv) {
-    /* immediates are always frozen */
+    /* immediates and Symbol/String literals are always frozen — we
+     * only track heap objects via the FL_FROZEN flag. */
     if (SPECIAL_CONST_P(self)) return Qtrue;
-    return Qfalse;
+    return KORB_BOOL(RBASIC(self)->flags & FL_FROZEN);
 }
 
 static VALUE kernel_respond_to_p(CTX *c, VALUE self, int argc, VALUE *argv) {
