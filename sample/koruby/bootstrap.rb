@@ -887,6 +887,162 @@ class Array
   end
 end
 
+class Array
+  # chunk_while { |a, b| ... } — group consecutive pairs where the
+  # block returns truthy.
+  def chunk_while(&blk)
+    return [] if empty?
+    chunks = []
+    cur = [self[0]]
+    i = 1
+    while i < size
+      a = self[i - 1]
+      b = self[i]
+      if blk.call(a, b)
+        cur << b
+      else
+        chunks << cur
+        cur = [b]
+      end
+      i += 1
+    end
+    chunks << cur
+    chunks
+  end
+
+  # slice_when — opposite of chunk_while: split where the block returns truthy.
+  def slice_when(&blk)
+    return [] if empty?
+    chunks = []
+    cur = [self[0]]
+    i = 1
+    while i < size
+      a = self[i - 1]
+      b = self[i]
+      if blk.call(a, b)
+        chunks << cur
+        cur = [b]
+      else
+        cur << b
+      end
+      i += 1
+    end
+    chunks << cur
+    chunks
+  end
+
+  def minmax
+    [min, max]
+  end
+
+  # chain — concatenate self + other lists' enumerations.
+  def chain(*others)
+    r = self.dup
+    others.each { |o| r.concat(o.to_a) }
+    r
+  end
+
+  # filter_map { |x| ... } — map then drop falsy results.
+  def filter_map(&blk)
+    r = []
+    each { |x|
+      v = blk.call(x)
+      r << v if v
+    }
+    r
+  end
+end
+
+# Range — give it a few enumerable basics it can delegate via to_a.
+class Range
+  def group_by(&blk)
+    to_a.group_by(&blk)
+  end
+
+  def filter_map(&blk)
+    to_a.filter_map(&blk)
+  end
+
+  def chain(*others)
+    to_a.chain(*others)
+  end
+
+  # Lazy enumeration shim — sufficient for `(1..Float::INFINITY).lazy.map { ... }.first(N)`.
+  def lazy
+    LazyRange.new(self)
+  end
+end
+
+# Minimal Lazy enumerator: chains map/select calls without materializing
+# the whole range.  Only supports map/select + first/take.
+class LazyRange
+  def initialize(range)
+    @range = range
+    @ops = []          # Array of [:map | :select, proc]
+  end
+
+  def map(&blk)
+    n = LazyRange.new(@range)
+    n.instance_variable_set(:@ops, @ops + [[:map, blk]])
+    n
+  end
+
+  def select(&blk)
+    n = LazyRange.new(@range)
+    n.instance_variable_set(:@ops, @ops + [[:select, blk]])
+    n
+  end
+  alias filter select
+
+  def first(n = nil)
+    one = n.nil?
+    n = 1 if one
+    out = []
+    iter_range(@range) { |x|
+      v = x
+      keep = true
+      @ops.each { |op, p|
+        if op == :map
+          v = p.call(v)
+        elsif op == :select
+          unless p.call(v)
+            keep = false
+            break
+          end
+        end
+      }
+      next unless keep
+      out << v
+      break if out.size >= n
+    }
+    one ? out.first : out
+  end
+  alias take first
+
+  def force
+    first(1 << 30)  # huge cap; not truly infinite, but ok for tests
+  end
+  alias to_a force
+
+  private
+
+  # Iterate the range, but stop early when the block raises StopIteration
+  # or breaks.  Range#each handles infinite end via Float::INFINITY by
+  # incrementing forever — we need an explicit early-exit.
+  def iter_range(r)
+    cur = r.first
+    last = r.last
+    excl = r.exclude_end?
+    while true
+      if !last.nil? && (excl ? cur >= last : cur > last)
+        break
+      end
+      yield cur
+      cur = cur + 1
+    end
+  end
+end
+
 class Proc
   # Curry: each call accumulates args until enough; then invokes self.
   # Args can come singly (`c[1][2][3]`) or multiply (`c[1, 2][3]`).

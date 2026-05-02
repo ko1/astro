@@ -2148,11 +2148,38 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                                    ALLOC_node_str_lit("constant", 8),
                                    ALLOC_node_nil());
             }
-            case PM_CALL_NODE:
-              /* Conservative: assume "method"; not strictly correct
-               * (we'd need to actually resolve the method) but covers
-               * the common case. */
-              return ALLOC_node_str_lit("method", 6);
+            case PM_CALL_NODE: {
+              /* Check at runtime via recv.respond_to?(name).  When the
+               * receiver itself is a literal (1+2 → 1.+(2)), it's an
+               * "expression" rather than a "method".  Otherwise it's
+               * "method" if respond_to? is true, nil otherwise. */
+              pm_call_node_t *cn = (pm_call_node_t *)expr;
+              ID method_name = intern_constant(tc->parser, cn->name);
+              /* If the call has a receiver that is itself a literal,
+               * defined? returns "expression". */
+              if (cn->receiver) {
+                  switch (PM_NODE_TYPE(cn->receiver)) {
+                    case PM_INTEGER_NODE: case PM_FLOAT_NODE:
+                    case PM_STRING_NODE:  case PM_SYMBOL_NODE:
+                    case PM_ARRAY_NODE:   case PM_HASH_NODE:
+                    case PM_TRUE_NODE:    case PM_FALSE_NODE:
+                    case PM_NIL_NODE:
+                      return ALLOC_node_str_lit("expression", 10);
+                    default: break;
+                  }
+              }
+              NODE *recv_node = cn->receiver ? T(tc, cn->receiver) : ALLOC_node_self();
+              uint32_t ai = inc_arg_index(tc);
+              inc_arg_index(tc); rewind_arg_index(tc, ai);
+              struct method_cache *mc = alloc_method_cache();
+              NODE *karg = ALLOC_node_lvar_set(ai, ALLOC_node_sym_lit(method_name));
+              NODE *check = ALLOC_node_seq(karg,
+                  ALLOC_node_method_call(recv_node, korb_intern("respond_to?"),
+                                          1, ai, mc));
+              return ALLOC_node_if(check,
+                                    ALLOC_node_str_lit("method", 6),
+                                    ALLOC_node_nil());
+            }
             default:
               return ALLOC_node_str_lit("expression", 10);
           }

@@ -122,6 +122,113 @@ static VALUE module_define_method(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 
+/* Class#superclass */
+static VALUE class_superclass(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (BUILTIN_TYPE(self) != T_CLASS) return Qnil;
+    struct korb_class *k = (struct korb_class *)self;
+    return k->super ? (VALUE)k->super : Qnil;
+}
+
+/* Module#instance_methods([include_inherited=true]) — sym list. */
+static VALUE module_instance_methods(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) {
+        return korb_ary_new();
+    }
+    bool include_inherited = (argc < 1) || RTEST(argv[0]);
+    struct korb_class *root = (struct korb_class *)self;
+    VALUE r = korb_ary_new();
+    /* Walk from root through includes / super if requested. */
+    struct korb_class *k = root;
+    while (k) {
+        for (uint32_t b = 0; b < k->methods.bucket_cnt; b++) {
+            for (struct korb_method_table_entry *e = k->methods.buckets[b]; e; e = e->next) {
+                korb_ary_push(r, korb_id2sym(e->name));
+            }
+        }
+        if (!include_inherited) break;
+        k = k->super;
+    }
+    return r;
+}
+
+/* Module#method_defined?(name) */
+static VALUE module_method_defined_p(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1) return Qfalse;
+    if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return Qfalse;
+    ID name = SYMBOL_P(argv[0]) ? korb_sym2id(argv[0]) :
+              korb_intern_n(((struct korb_string *)argv[0])->ptr,
+                             ((struct korb_string *)argv[0])->len);
+    return KORB_BOOL(korb_class_find_method((struct korb_class *)self, name) != NULL);
+}
+
+/* Module#constants — sym list of declared constants. */
+static VALUE module_constants(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) {
+        return korb_ary_new();
+    }
+    VALUE r = korb_ary_new();
+    for (struct korb_const_entry *e = ((struct korb_class *)self)->constants; e; e = e->next) {
+        korb_ary_push(r, korb_id2sym(e->name));
+    }
+    return r;
+}
+
+/* Module#class_eval { ... } — evaluate the block with self = the module. */
+static VALUE module_class_eval(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return self;
+    extern struct korb_proc *current_block;
+    if (!current_block) return self;
+    struct korb_class *klass = (struct korb_class *)self;
+    VALUE prev_self = c->self;
+    struct korb_class *prev_class = c->current_class;
+    struct korb_cref *prev_cref = c->cref;
+    struct korb_cref new_cref = { .klass = klass, .prev = c->cref };
+    VALUE prev_blk_self = current_block->self;
+    c->self = self;
+    c->current_class = klass;
+    c->cref = &new_cref;
+    current_block->self = self;
+    VALUE av0[1] = { self };
+    VALUE r = korb_yield(c, 1, av0);
+    current_block->self = prev_blk_self;
+    c->self = prev_self;
+    c->current_class = prev_class;
+    c->cref = prev_cref;
+    if (c->state == KORB_BREAK) { c->state = KORB_NORMAL; c->state_value = Qnil; }
+    return r;
+}
+
+/* Module#< — true if self is a subclass/submodule of other. */
+static VALUE module_lt(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1) return Qnil;
+    if (BUILTIN_TYPE(argv[0]) != T_CLASS && BUILTIN_TYPE(argv[0]) != T_MODULE) return Qnil;
+    if (self == argv[0]) return Qfalse;
+    struct korb_class *target = (struct korb_class *)argv[0];
+    for (struct korb_class *k = (struct korb_class *)self; k; k = k->super) {
+        if (k == target) return Qtrue;
+        for (uint32_t i = 0; i < k->includes_cnt; i++) {
+            if (k->includes[i] == target) return Qtrue;
+        }
+    }
+    return Qfalse;
+}
+static VALUE module_le(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1) return Qnil;
+    if (self == argv[0]) return Qtrue;
+    return module_lt(c, self, argc, argv);
+}
+static VALUE module_gt(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1 || (BUILTIN_TYPE(argv[0]) != T_CLASS && BUILTIN_TYPE(argv[0]) != T_MODULE)) return Qnil;
+    if (self == argv[0]) return Qfalse;
+    VALUE swap[1] = {self};
+    return module_lt(c, argv[0], 1, swap);
+}
+static VALUE module_ge(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1) return Qnil;
+    if (self == argv[0]) return Qtrue;
+    return module_gt(c, self, argc, argv);
+}
+
 /* ---------- Class === (for case/when class match) ---------- */
 static VALUE class_eqq(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* Class === obj  ⇔ obj.is_a?(self) */

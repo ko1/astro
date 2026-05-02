@@ -681,7 +681,19 @@ void korb_init_builtins(void) {
         korb_class_add_method_cfunc(cMethod, korb_intern("unbind"),   method_to_proc,   0); /* approx */
         korb_vm->method_class = cMethod;
     }
-    DEF(cMod, "instance_method", module_instance_method, 1);
+    DEF(cObj, "instance_eval",    obj_instance_eval,        0);
+    DEF(cObj, "instance_exec",    obj_instance_exec,       -1);
+    DEF(cMod, "instance_method",  module_instance_method,   1);
+    DEF(cMod, "instance_methods", module_instance_methods, -1);
+    DEF(cMod, "method_defined?",  module_method_defined_p,  1);
+    DEF(cMod, "constants",        module_constants,         0);
+    DEF(cMod, "class_eval",       module_class_eval,       -1);
+    DEF(cMod, "module_eval",      module_class_eval,       -1);
+    DEF(cMod, "<",                module_lt,                1);
+    DEF(cMod, "<=",               module_le,                1);
+    DEF(cMod, ">",                module_gt,                1);
+    DEF(cMod, ">=",               module_ge,                1);
+    DEF(cCls, "superclass",       class_superclass,         0);
 
     /* Math module — populated with libm-backed functions and constants. */
     {

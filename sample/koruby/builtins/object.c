@@ -86,6 +86,30 @@ static VALUE obj_method(CTX *c, VALUE self, int argc, VALUE *argv) {
     return (VALUE)m;
 }
 
+/* Object#instance_eval { ... } — evaluate the block with self = receiver. */
+static VALUE obj_instance_eval(CTX *c, VALUE self, int argc, VALUE *argv) {
+    extern struct korb_proc *current_block;
+    if (!current_block) return Qnil;
+    VALUE prev_blk_self = current_block->self;
+    current_block->self = self;
+    VALUE av0[1] = { self };
+    VALUE r = korb_yield(c, 1, av0);
+    current_block->self = prev_blk_self;
+    return r;
+}
+
+/* Object#instance_exec(*args) { |args| ... } — like instance_eval but
+ * passes args to the block. */
+static VALUE obj_instance_exec(CTX *c, VALUE self, int argc, VALUE *argv) {
+    extern struct korb_proc *current_block;
+    if (!current_block) return Qnil;
+    VALUE prev_blk_self = current_block->self;
+    current_block->self = self;
+    VALUE r = korb_yield(c, (uint32_t)argc, argv);
+    current_block->self = prev_blk_self;
+    return r;
+}
+
 /* Module#instance_method(name) — returns an UnboundMethod, represented
  * as a Method object whose receiver is the class itself. */
 static VALUE module_instance_method(CTX *c, VALUE self, int argc, VALUE *argv) {
