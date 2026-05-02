@@ -209,33 +209,53 @@ static VALUE ary_dup(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 /* ---------- Array methods (extended) ---------- */
 
-static VALUE ary_sort(CTX *c, VALUE self, int argc, VALUE *argv) {
-    struct korb_array *a = (struct korb_array *)self;
-    long n = a->len;
-    /* shallow copy */
-    VALUE r = korb_ary_new_capa(n);
-    for (long i = 0; i < n; i++) korb_ary_push(r, a->ptr[i]);
-    /* simple insertion sort using <=> via < */
-    struct korb_array *ra = (struct korb_array *)r;
+/* Compare two values using either the supplied block or default `<=>`,
+ * returning a negative/zero/positive long like a C sort comparator. */
+static long ary_sort_compare(CTX *c, VALUE x, VALUE y, bool has_block) {
+    VALUE r;
+    if (has_block) {
+        VALUE pair[2] = { x, y };
+        r = korb_yield(c, 2, pair);
+    } else if (FIXNUM_P(x) && FIXNUM_P(y)) {
+        return (intptr_t)x < (intptr_t)y ? -1 : (intptr_t)x > (intptr_t)y ? 1 : 0;
+    } else {
+        r = korb_funcall(c, x, korb_intern("<=>"), 1, &y);
+    }
+    if (!FIXNUM_P(r)) return 0;
+    return FIX2LONG(r);
+}
+
+static void ary_sort_in_place(CTX *c, struct korb_array *ra, bool has_block) {
+    long n = ra->len;
     for (long i = 1; i < n; i++) {
         VALUE v = ra->ptr[i];
         long j = i - 1;
         while (j >= 0) {
-            VALUE comp;
-            if (FIXNUM_P(ra->ptr[j]) && FIXNUM_P(v)) {
-                if ((intptr_t)v >= (intptr_t)ra->ptr[j]) break;
-            } else {
-                /* fallback */
-                comp = korb_funcall(c, ra->ptr[j], korb_intern("<=>"), 1, &v);
-                if (FIXNUM_P(comp) && FIX2LONG(comp) <= 0) break;
-                if (!FIXNUM_P(comp)) break;
-            }
+            long cmp = ary_sort_compare(c, ra->ptr[j], v, has_block);
+            if (c->state != KORB_NORMAL) return;
+            if (cmp <= 0) break;
             ra->ptr[j+1] = ra->ptr[j];
             j--;
         }
         ra->ptr[j+1] = v;
     }
+}
+
+static VALUE ary_sort(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_array *a = (struct korb_array *)self;
+    long n = a->len;
+    VALUE r = korb_ary_new_capa(n);
+    for (long i = 0; i < n; i++) korb_ary_push(r, a->ptr[i]);
+    ary_sort_in_place(c, (struct korb_array *)r, korb_block_given());
     return r;
+}
+
+/* Array#sort! — mutates self, returns self.  The existing
+ * registration aliases sort! to ary_sort which would build a copy and
+ * return it; for the bang form we need to sort the receiver directly. */
+static VALUE ary_sort_bang(CTX *c, VALUE self, int argc, VALUE *argv) {
+    ary_sort_in_place(c, (struct korb_array *)self, korb_block_given());
+    return self;
 }
 
 static VALUE ary_sort_by(CTX *c, VALUE self, int argc, VALUE *argv) {

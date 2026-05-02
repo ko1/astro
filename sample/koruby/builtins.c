@@ -382,7 +382,7 @@ void korb_init_builtins(void) {
     DEF(cAry, "max_by",    ary_max_by, 0);
     DEF(cAry, "*",         ary_mul, 1);
     DEF(cAry, "uniq!",     ary_uniq, -1);
-    DEF(cAry, "sort!",     ary_sort, -1);
+    DEF(cAry, "sort!",     ary_sort_bang, -1);
     DEF(cAry, "compact!",  ary_compact, 0);
     DEF(cAry, "reverse!",  ary_reverse_bang, 0);
     DEF(cAry, "rotate!",   ary_rotate_bang, -1);

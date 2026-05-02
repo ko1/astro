@@ -48,6 +48,14 @@ static VALUE kernel_print(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 static VALUE kernel_raise(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc == 0) {
+        /* Bare `raise` re-raises $! if set; only fall back to a fresh
+         * RuntimeError when there's no current exception. */
+        VALUE bang = korb_gvar_get(korb_intern("$!"));
+        if (!NIL_P(bang)) {
+            c->state = KORB_RAISE;
+            c->state_value = bang;
+            return Qnil;
+        }
         korb_raise(c, NULL, "unhandled exception");
     } else if (argc == 1 && BUILTIN_TYPE(argv[0]) == T_STRING) {
         korb_raise(c, NULL, "%s", korb_str_cstr(argv[0]));

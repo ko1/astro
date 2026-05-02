@@ -801,14 +801,21 @@ retry:;
         c->state = KORB_NORMAL;
         c->state_value = Qnil;
         c->fp[exception_lvar_index] = exc;
+        /* $! reflects the current exception throughout the rescue body
+         * (CRuby semantics).  Reset to nil after — bare `raise` already
+         * re-raises via `raise(*nil)` interpreting nil as "use $!". */
+        VALUE prev_bang = korb_gvar_get(korb_intern("$!"));
+        korb_gvar_set(korb_intern("$!"), exc);
         v = EVAL_ARG(c, rescue_body);
         /* `retry` inside the rescue body sets state=KORB_RETRY; clear
          * and jump back to re-evaluate the begin body. */
         if (c->state == KORB_RETRY) {
             c->state = KORB_NORMAL;
             c->state_value = Qnil;
+            korb_gvar_set(korb_intern("$!"), prev_bang);
             goto retry;
         }
+        korb_gvar_set(korb_intern("$!"), prev_bang);
     }
     return v;
 }
