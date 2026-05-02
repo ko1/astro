@@ -1746,7 +1746,9 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                               (pm_required_keyword_parameter_node_t *)kp;
                           int slot = lvar_slot(tc, rk->name, 0);
                           if (slot < 0) continue;
-                          /* slot = kwh_save.fetch(:name) */
+                          /* slot = kwh_save.__korb_required_kwarg__(:name) —
+                           * raises ArgumentError "missing keyword" on miss
+                           * (instead of KeyError from plain fetch). */
                           uint32_t ai = inc_arg_index(tc);
                           inc_arg_index(tc); rewind_arg_index(tc, ai);
                           struct method_cache *mc = alloc_method_cache();
@@ -1754,7 +1756,8 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                               ALLOC_node_sym_lit(intern_constant(tc->parser, rk->name)));
                           NODE *fetch = ALLOC_node_seq(karg,
                               ALLOC_node_method_call(ALLOC_node_lvar_get(kwh_save_slot),
-                                                     korb_intern("fetch"), 1, ai, mc));
+                                                     korb_intern("__korb_required_kwarg__"),
+                                                     1, ai, mc));
                           NODE *ext = ALLOC_node_lvar_set((uint32_t)slot, fetch);
                           prologue = prologue ? ALLOC_node_seq(prologue, ext) : ext;
                       } else if (PM_NODE_TYPE_P(kp, PM_OPTIONAL_KEYWORD_PARAMETER_NODE)) {

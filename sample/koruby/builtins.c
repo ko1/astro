@@ -489,6 +489,7 @@ void korb_init_builtins(void) {
     DEF(cHsh, "to_a",       hash_to_a,       0);
     DEF(cHsh, "delete",     hash_delete,    -1);
     DEF(cHsh, "fetch",      hash_fetch,     -1);
+    DEF(cHsh, "__korb_required_kwarg__", hash_required_kwarg, 1);
     DEF(cHsh, "compare_by_identity",  hash_compare_by_identity, 0);
     DEF(cHsh, "compare_by_identity?", hash_compare_by_identity_p, 0);
     DEF(cHsh, "clear",       hash_clear,        0);
@@ -809,7 +810,7 @@ void korb_init_builtins(void) {
         korb_class_add_method_cfunc(cMethod, korb_intern("receiver"),   method_receiver,   0);
         korb_class_add_method_cfunc(cMethod, korb_intern("owner"),      method_owner,      0);
         korb_class_add_method_cfunc(cMethod, korb_intern("bind"),       method_bind,       1);
-        korb_class_add_method_cfunc(cMethod, korb_intern("unbind"),     method_to_proc,    0); /* approx */
+        korb_class_add_method_cfunc(cMethod, korb_intern("unbind"),     method_unbind,     0);
         korb_class_add_method_cfunc(cMethod, korb_intern("parameters"),      method_parameters,      0);
         korb_class_add_method_cfunc(cMethod, korb_intern("source_location"), method_source_location, 0);
         korb_vm->method_class = cMethod;

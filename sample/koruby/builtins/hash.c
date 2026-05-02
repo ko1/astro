@@ -180,6 +180,23 @@ static VALUE hash_to_a(CTX *c, VALUE self, int argc, VALUE *argv) {
     return r;
 }
 
+/* Hash#__korb_required_kwarg__(name) — internal: fetch the key or raise
+ * ArgumentError "missing keyword: name".  Used by parse.c when emitting
+ * the prologue for `def f(name:)` so the missing-key path produces the
+ * canonical ArgumentError instead of a leaked KeyError. */
+static VALUE hash_required_kwarg(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1) return Qnil;
+    const struct korb_hash *h = (const struct korb_hash *)self;
+    uint64_t hh = korb_hash_value(argv[0]);
+    for (struct korb_hash_entry *e = h->first; e; e = e->next) {
+        if (e->hash == hh && korb_eql(e->key, argv[0])) return e->value;
+    }
+    VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+    const char *kn = SYMBOL_P(argv[0]) ? korb_id_name(korb_sym2id(argv[0])) : "?";
+    korb_raise(c, (struct korb_class *)eArg, "missing keyword: :%s", kn);
+    return Qnil;
+}
+
 static VALUE hash_fetch(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1) return Qnil;
     const struct korb_hash *h = (const struct korb_hash *)self;

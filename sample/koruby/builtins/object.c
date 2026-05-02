@@ -164,6 +164,19 @@ static VALUE module_instance_method(CTX *c, VALUE self, int argc, VALUE *argv) {
     return (VALUE)m;
 }
 
+/* Method#unbind — return an UnboundMethod (a Method-shaped record
+ * whose receiver is the class instead of an instance). */
+static VALUE method_unbind(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_method_obj *src = (struct korb_method_obj *)self;
+    struct korb_method_obj *m = korb_xmalloc(sizeof(*m));
+    m->basic.flags = T_DATA;
+    m->basic.klass = (VALUE)korb_vm->method_class;
+    /* Drop the bound receiver — bind() will set it. */
+    m->receiver = (VALUE)korb_class_of_class(src->receiver);
+    m->name = src->name;
+    return (VALUE)m;
+}
+
 /* UnboundMethod#bind(obj) — return a Method bound to obj. */
 static VALUE method_bind(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1) return Qnil;
