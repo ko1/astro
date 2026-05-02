@@ -223,6 +223,56 @@ class Enumerable
     }
     blk ? self : out
   end
+
+  # Enumerable#each_slice / each_cons — Array overrides these as cfunc;
+  # this picks up the missing Range / Hash / String case.
+  def each_slice(n, &blk)
+    out = blk ? nil : []
+    buf = []
+    each { |x|
+      buf << x
+      if buf.size == n
+        if blk then blk.call(buf) else out << buf end
+        buf = []
+      end
+    }
+    if !buf.empty?
+      if blk then blk.call(buf) else out << buf end
+    end
+    blk ? self : out
+  end
+
+  def each_cons(n, &blk)
+    out = blk ? nil : []
+    buf = []
+    each { |x|
+      buf << x
+      buf.shift if buf.size > n
+      if buf.size == n
+        if blk then blk.call(buf.dup) else out << buf.dup end
+      end
+    }
+    blk ? self : out
+  end
+
+  # Enumerable#chunk_while / slice_when — Array overrides; fallback here.
+  def chunk_while(&blk)
+    out = []
+    cur = nil
+    prev = nil
+    first = true
+    each { |x|
+      if first
+        cur = [x]; prev = x; first = false
+      elsif blk.call(prev, x)
+        cur << x; prev = x
+      else
+        out << cur; cur = [x]; prev = x
+      end
+    }
+    out << cur if cur && !cur.empty?
+    out
+  end
 end
 
 # Array, Hash, Range, String all support `each`, so wire up Enumerable.

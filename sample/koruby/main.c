@@ -236,9 +236,19 @@ int main(int argc, char *argv[])
         if (c->state == KORB_RAISE) {
             VALUE s = korb_inspect(c->state_value);
             fprintf(stderr, "unhandled exception: %s\n", korb_str_cstr(s));
-            if (!OPTION.compile_only) return 1;
-            /* For -c: still emit specialized code from whatever got parsed. */
+            if (!OPTION.compile_only) {
+                /* Still run at_exit hooks so cleanup code runs even
+                 * after an uncaught raise — match CRuby. */
+                extern void korb_run_at_exit_hooks(CTX *c);
+                korb_run_at_exit_hooks(c);
+                return 1;
+            }
         }
+    }
+    /* Normal completion: run at_exit hooks in LIFO order. */
+    {
+        extern void korb_run_at_exit_hooks(CTX *c);
+        korb_run_at_exit_hooks(c);
     }
 
     if (OPTION.compile_only) {

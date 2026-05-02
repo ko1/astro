@@ -1,5 +1,48 @@
 /* Kernel — moved from builtins.c.  Includes caller / __method__ / loop / lambda / proc / eval. */
 
+/* ---------- at_exit hooks (LIFO Proc list) ---------- */
+static struct {
+    struct korb_proc **procs;
+    uint32_t cnt, capa;
+} g_at_exit = {0};
+
+static VALUE kernel_at_exit(CTX *c, VALUE self, int argc, VALUE *argv) {
+    extern struct korb_proc *current_block;
+    if (!current_block) {
+        korb_raise(c, NULL, "called without a block");
+        return Qnil;
+    }
+    if (g_at_exit.cnt >= g_at_exit.capa) {
+        uint32_t nc = g_at_exit.capa ? g_at_exit.capa * 2 : 4;
+        g_at_exit.procs = korb_xrealloc(g_at_exit.procs, nc * sizeof(*g_at_exit.procs));
+        g_at_exit.capa = nc;
+    }
+    g_at_exit.procs[g_at_exit.cnt++] = current_block;
+    return (VALUE)current_block;
+}
+
+void korb_run_at_exit_hooks(CTX *c) {
+    /* LIFO order — last-registered runs first. */
+    for (int i = (int)g_at_exit.cnt - 1; i >= 0; i--) {
+        struct korb_proc *p = g_at_exit.procs[i];
+        if (!p) continue;
+        VALUE prev_state = c->state;
+        VALUE prev_value = c->state_value;
+        c->state = KORB_NORMAL;
+        korb_funcall(c, (VALUE)p, korb_intern("call"), 0, NULL);
+        if (c->state == KORB_RAISE) {
+            VALUE s = korb_inspect(c->state_value);
+            fprintf(stderr, "at_exit hook raised: %s\n", korb_str_cstr(s));
+            c->state = KORB_NORMAL;
+        }
+        /* Restore the original raise so the process exits with the
+         * right status. */
+        c->state = prev_state;
+        c->state_value = prev_value;
+    }
+    g_at_exit.cnt = 0;
+}
+
 /* ---------- Kernel ---------- */
 static VALUE kernel_p(CTX *c, VALUE self, int argc, VALUE *argv) {
     for (int i = 0; i < argc; i++) {
