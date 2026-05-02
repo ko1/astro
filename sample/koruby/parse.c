@@ -2090,6 +2090,26 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
               } else if (PM_NODE_TYPE_P(_t, PM_GLOBAL_VARIABLE_TARGET_NODE)) {         \
                   pm_global_variable_target_node_t *_gt = (pm_global_variable_target_node_t *)_t; \
                   _assign = ALLOC_node_gvar_set(intern_constant(tc->parser, _gt->name), _g); \
+              } else if (PM_NODE_TYPE_P(_t, PM_CALL_TARGET_NODE)) {                    \
+                  /* recv.name=(get_expr) — name already includes '='. */              \
+                  pm_call_target_node_t *_ct = (pm_call_target_node_t *)_t;            \
+                  NODE *_recv = T(tc, _ct->receiver);                                  \
+                  ID _wname = intern_constant(tc->parser, _ct->name);                  \
+                  uint32_t _ai = inc_arg_index(tc); rewind_arg_index(tc, _ai);         \
+                  struct method_cache *_mc = alloc_method_cache();                     \
+                  NODE *_st = ALLOC_node_lvar_set(_ai, _g);                            \
+                  NODE *_call = ALLOC_node_method_call(_recv, _wname, 1, _ai, _mc);    \
+                  _assign = ALLOC_node_seq(_st, _call);                                \
+              } else if (PM_NODE_TYPE_P(_t, PM_INDEX_TARGET_NODE)) {                   \
+                  /* recv[args] = get_expr — currently only single-index supported. */ \
+                  pm_index_target_node_t *_it = (pm_index_target_node_t *)_t;          \
+                  if (_it->arguments && _it->arguments->arguments.size == 1) {         \
+                      NODE *_recv = T(tc, _it->receiver);                              \
+                      NODE *_idx = T(tc, _it->arguments->arguments.nodes[0]);          \
+                      uint32_t _ai = inc_arg_index(tc);                                \
+                      inc_arg_index(tc); inc_arg_index(tc); rewind_arg_index(tc, _ai); \
+                      _assign = ALLOC_node_aset(_recv, _idx, _g, _ai);                 \
+                  }                                                                    \
               }                                                                        \
               _assign;                                                                 \
           })
