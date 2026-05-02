@@ -261,6 +261,78 @@ is_binary_file(const char *path)
     return memchr(buf, 0, (size_t)n) != NULL;
 }
 
+/* Small-file threshold below which we read() into a heap buffer
+ * instead of mmap()ing.  Linux's per-process mmap_lock is a
+ * write-exclusive rwsem — every mmap+munmap pair has to acquire it,
+ * which serialises across all worker threads in the same process.
+ * Switching small files to read() avoids that contention path
+ * entirely (read() touches its own per-fd lock, not mm_struct).
+ * 256 KiB covers ~99% of source files in practice. */
+#define ARE_MMAP_THRESHOLD (256 * 1024)
+
+/* Open `path`, slurp it into memory.  For small files we malloc +
+ * read; for large files we mmap with MAP_POPULATE (still preferable
+ * because the alternative is multi-MB allocations + memory pressure).
+ * On success returns 0 and fills `*out_buf`, `*out_len`,
+ * `*out_is_mmap`.  On failure returns -1 and prints to stderr.
+ *
+ * Caller MUST release via:
+ *   munmap(buf, len)  if is_mmap
+ *   free(buf)         otherwise
+ */
+static int
+load_file(const char *path, const char **out_buf, size_t *out_len, bool *out_is_mmap)
+{
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) {
+        fprintf(stderr, "are: %s: %s\n", path, strerror(errno));
+        return -1;
+    }
+    struct stat sb;
+    if (fstat(fd, &sb) != 0 || !S_ISREG(sb.st_mode) || sb.st_size <= 0) {
+        close(fd);
+        *out_buf = NULL; *out_len = 0; *out_is_mmap = false;
+        return 0;  /* not a regular file or empty — caller will skip */
+    }
+
+    if ((size_t)sb.st_size <= ARE_MMAP_THRESHOLD) {
+        /* read() path — avoids mmap_lock contention.  Heap allocation
+         * scales with per-thread arenas in glibc malloc, so workers
+         * don't serialise on it the way they would on mmap. */
+        char *buf = (char *)malloc((size_t)sb.st_size);
+        if (!buf) { close(fd); return -1; }
+        ssize_t got = 0;
+        while (got < sb.st_size) {
+            ssize_t n = read(fd, buf + got, (size_t)(sb.st_size - got));
+            if (n < 0) { if (errno == EINTR) continue; free(buf); close(fd); return -1; }
+            if (n == 0) break;  /* short read — file shrunk under us */
+            got += n;
+        }
+        close(fd);
+        *out_buf = buf;
+        *out_len = (size_t)got;
+        *out_is_mmap = false;
+        return 0;
+    }
+
+    void *map = mmap(NULL, (size_t)sb.st_size, PROT_READ,
+                      MAP_PRIVATE | MAP_POPULATE, fd, 0);
+    close(fd);
+    if (map == MAP_FAILED) return -1;
+    *out_buf = (const char *)map;
+    *out_len = (size_t)sb.st_size;
+    *out_is_mmap = true;
+    return 0;
+}
+
+static void
+release_file(const char *buf, size_t len, bool is_mmap)
+{
+    if (!buf) return;
+    if (is_mmap) munmap((void *)buf, len);
+    else         free  ((void *)buf);
+}
+
 /* ------------------------------------------------------------------ */
 /* Compile pattern through the chosen backend                          */
 /* ------------------------------------------------------------------ */
@@ -942,38 +1014,16 @@ process_file(grep_state_t *st, const char *path)
         }
     }
     if (all_pure_literal) {
-        verbose_mark("before mmap");
-        int fd = open(path, O_RDONLY);
-        if (fd >= 0) {
-            struct stat sb;
-            if (fstat(fd, &sb) == 0 && S_ISREG(sb.st_mode) && sb.st_size > 0) {
-                /* MAP_POPULATE pre-faults the page tables in the kernel
-                 * — saves the per-page minor-fault cost when we then scan
-                 * the whole file linearly.  GNU grep does the same.
-                 * (Tried MADV_HUGEPAGE here: file-backed THP isn't
-                 * enabled on the test kernel and the madvise actually
-                 * slowed the populate slightly, so we don't issue it.) */
-                void *map = mmap(NULL, (size_t)sb.st_size, PROT_READ,
-                                  MAP_PRIVATE | MAP_POPULATE, fd, 0);
-                verbose_mark("after mmap");
-                if (map != MAP_FAILED) {
-                    process_buffer_pure_literal(st, (const char *)map, (size_t)sb.st_size,
-                                                 path, pl_needles, pl_needle_lens, st->n_patterns);
-                    verbose_mark("after scan");
-                    /* munmap explicitly so --verbose reports honestly.
-                     * Skipping it shifts ~5 ms to kernel exit-time
-                     * teardown (which happens after our last
-                     * verbose_mark and is invisible to it) but doesn't
-                     * actually shrink wall-time — the kernel pays the
-                     * same PTE-teardown cost either way. */
-                    munmap(map, (size_t)sb.st_size);
-                    verbose_mark("after munmap");
-                    close(fd);
-                    return 0;
-                }
-            }
-            close(fd);
+        const char *buf = NULL;
+        size_t len = 0;
+        bool is_mmap = false;
+        if (load_file(path, &buf, &len, &is_mmap) == 0 && buf) {
+            process_buffer_pure_literal(st, buf, len, path,
+                                        pl_needles, pl_needle_lens, st->n_patterns);
+            release_file(buf, len, is_mmap);
+            return 0;
         }
+        if (buf) release_file(buf, len, is_mmap);
     }
 
     /* Fall through to streaming when context lines are requested
@@ -984,23 +1034,15 @@ process_file(grep_state_t *st, const char *path)
     if (!go->invert && fast
         && go->before_context == 0 && go->after_context == 0
         && !go->line_regexp) {
-        int fd = open(path, O_RDONLY);
-        if (fd < 0) {
-            fprintf(stderr, "are: %s: %s\n", path, strerror(errno));
-            return 2;
+        const char *buf = NULL;
+        size_t len = 0;
+        bool is_mmap = false;
+        if (load_file(path, &buf, &len, &is_mmap) == 0 && buf) {
+            process_buffer(st, buf, len, path);
+            release_file(buf, len, is_mmap);
+            return 0;
         }
-        struct stat sb;
-        if (fstat(fd, &sb) == 0 && S_ISREG(sb.st_mode) && sb.st_size > 0) {
-            void *map = mmap(NULL, (size_t)sb.st_size, PROT_READ,
-                              MAP_PRIVATE | MAP_POPULATE, fd, 0);
-            if (map != MAP_FAILED) {
-                process_buffer(st, (const char *)map, (size_t)sb.st_size, path);
-                munmap(map, (size_t)sb.st_size);
-                close(fd);
-                return 0;
-            }
-        }
-        close(fd);
+        if (buf) release_file(buf, len, is_mmap);
     }
     FILE *fp = fopen(path, "rb");
     if (!fp) {
@@ -1132,14 +1174,29 @@ typedef struct worker_setup {
 
 /* Per-thread state.  Allocated once per worker (in `worker_setup_fn`)
  * and reused across all tasks the thread runs.  Holds its own
- * grep_state with the same flags / patterns as the base; the `out`
- * memstream is opened FRESH per task (open_memstream's reset path
- * via fseek isn't a clean wipe — the *size_p sticks at the
- * high-water mark — so allocating per task is both simpler and not
- * meaningfully more expensive at file-grep cadence). */
+ * grep_state plus a thread-local batch buffer that accumulates
+ * per-file output until it crosses ARE_BATCH_FLUSH_BYTES, at which
+ * point it's fwritten to stdout under the pool's shared mutex —
+ * one mutex acquisition per batch instead of per file.
+ *
+ * The batch is flushed in three places:
+ *   1. After each file scan, IF the accumulated size crosses the
+ *      threshold (worker_task_fn).
+ *   2. When the worker exits (worker_teardown_fn) — leftover bytes.
+ *   3. join_and_destroy waits for both before returning.
+ *
+ * Output ordering: per-batch FIFO (file order within a batch);
+ * across batches and across workers it's interleaved at batch
+ * boundaries — same trade-off as ripgrep's `--sort=none` default. */
+#define ARE_BATCH_FLUSH_BYTES (64 * 1024)
+
 typedef struct worker_state {
     grep_state_t  st;
     work_pool_t  *pool;
+    char         *batch_buf;       /* heap, grown via realloc */
+    size_t        batch_len;
+    size_t        batch_cap;
+    long          batch_match_delta;
 } worker_state_t;
 
 static void *
@@ -1155,46 +1212,86 @@ worker_setup_fn(work_pool_t *pool, void *user)
     w->st.out = NULL;
     w->st.pool = NULL;        /* worker dispatches process_file directly */
     w->pool = pool;
+    /* Pre-size the batch buffer to one flush threshold so the first
+     * few files don't trigger any realloc.  realloc beyond this is
+     * fine (memory-bandwidth bound, not lock-bound). */
+    w->batch_cap = ARE_BATCH_FLUSH_BYTES;
+    w->batch_buf = (char *)malloc(w->batch_cap);
+    w->batch_len = 0;
+    w->batch_match_delta = 0;
     return w;
+}
+
+/* Flush the worker's accumulated batch to stdout under the pool's
+ * shared mutex.  Resets the local counters so the next file starts
+ * fresh.  No-op when the batch is empty. */
+static void
+worker_flush(worker_state_t *w)
+{
+    if (w->batch_len == 0 && w->batch_match_delta == 0) return;
+    work_pool_flush_batch(w->pool, w->batch_buf, w->batch_len, w->batch_match_delta);
+    w->batch_len = 0;
+    w->batch_match_delta = 0;
 }
 
 static void
 worker_teardown_fn(void *worker_arg)
 {
     worker_state_t *w = (worker_state_t *)worker_arg;
+    if (!w) return;
+    worker_flush(w);              /* push leftover bytes before exit */
+    free(w->batch_buf);
     free(w);
 }
 
 /* The per-task work function.  Runs in a worker thread.  We re-do
  * the binary skip here (process_path skipped it for parallel mode)
- * and then call the same process_file the serial path uses, with
- * the worker's grep_state pointed at a fresh memstream buffer for
- * this file's output. */
+ * then run process_file with `w->st.out` pointed at a per-task
+ * memstream so the print helpers append into a small heap buffer.
+ * After the scan we copy that buffer onto the worker's batch (no
+ * cross-thread sync) and decide whether to flush. */
 static void
 worker_task_fn(const char *path, void *worker_arg)
 {
     worker_state_t *w = (worker_state_t *)worker_arg;
     if (!w->st.go->include_binary && is_binary_file(path)) return;
 
-    char  *buf  = NULL;
-    size_t blen = 0;
-    FILE  *out  = open_memstream(&buf, &blen);
+    /* Per-task memstream so process_file's existing fprintf'/fwrite
+     * helpers don't have to know about batching.  The buffer lives
+     * only for this scan; we copy it into the worker's batch right
+     * after fclose. */
+    char  *file_buf  = NULL;
+    size_t file_blen = 0;
+    FILE  *out = open_memstream(&file_buf, &file_blen);
     if (!out) {
-        /* Fall back to direct stdout under the pool's mutex if
-         * memstream alloc fails (extremely rare; OOM territory). */
-        w->st.out = stdout;
-        process_file(&w->st, path);
+        /* OOM territory — open_memstream only fails on allocation
+         * failure.  Drop this file's output (the per-thread batch
+         * may still hold useful prior bytes); the caller will see
+         * a fresh OOM on the next syscall anyway. */
         return;
     }
     w->st.out = out;
     const long pre = w->st.total_match_count;
     process_file(&w->st, path);
-    fflush(out);
+    fclose(out);
     const long delta = w->st.total_match_count - pre;
 
-    work_pool_flush_buf(w->pool, buf, blen, delta);
-    fclose(out);
-    free(buf);
+    /* Append the file's output to the worker's batch.  Grow the
+     * batch buffer geometrically so realloc cost amortises to O(1)
+     * per byte across the worker's lifetime. */
+    if (w->batch_len + file_blen > w->batch_cap) {
+        size_t need = w->batch_len + file_blen;
+        size_t cap  = w->batch_cap ? w->batch_cap : ARE_BATCH_FLUSH_BYTES;
+        while (cap < need) cap *= 2;
+        w->batch_buf = (char *)realloc(w->batch_buf, cap);
+        w->batch_cap = cap;
+    }
+    memcpy(w->batch_buf + w->batch_len, file_buf, file_blen);
+    w->batch_len += file_blen;
+    w->batch_match_delta += delta;
+    free(file_buf);
+
+    if (w->batch_len >= ARE_BATCH_FLUSH_BYTES) worker_flush(w);
 }
 
 /* ------------------------------------------------------------------ */

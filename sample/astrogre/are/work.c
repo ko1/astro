@@ -1,18 +1,12 @@
 /*
- * Bounded MPMC queue + worker pool.  See work.h for the contract.
+ * Bounded MPMC work queue + worker pool with shared-stdout output
+ * batching.  See work.h for the design rationale.
  *
- * Implementation: a circular ring of strings, mutex-protected, two
- * condvars (`not_full` / `not_empty`).  Producer waits on `not_full`
- * when slots are exhausted; workers wait on `not_empty` while the
- * ring is empty AND `closed` is false.  When the producer is done it
- * sets `closed=true` and broadcasts `not_empty`; workers exit once
- * they see `closed` and the ring is drained.
- *
- * One global `out_mutex` serialises stdout flushes so per-file blocks
- * never interleave across threads.  We don't need it for the shared
- * counters because `total_match_count` is folded back into the base
- * grep_state under the same flush mutex, so the lock is held for the
- * whole "flush + accounting" critical section.
+ * One `pthread_mutex_t` protects the queue (producer ↔ workers); a
+ * second protects stdout + the total match counter.  Workers call
+ * `work_pool_flush_batch` once per batch (rather than once per file)
+ * which drops mutex acquisition rate to roughly 1/k where k is the
+ * number of files per batch.
  */
 
 #include "work.h"
@@ -21,30 +15,27 @@
 #include <unistd.h>
 
 struct work_pool {
-    /* Bounded ring. */
-    char           **slots;     /* strdup'd paths */
-    int              cap;       /* power of 2 not required */
-    int              n;         /* number of slots in use */
-    int              head;      /* dequeue index */
-    int              tail;      /* enqueue index */
-
+    /* ─── Work queue ─────────────────────────────────────────── */
+    char           **slots;
+    int              cap;
+    int              n;
+    int              head;
+    int              tail;
     pthread_mutex_t  q_mutex;
     pthread_cond_t   not_full;
     pthread_cond_t   not_empty;
-    bool             closed;    /* producer says no more work */
+    bool             closed;
 
-    /* Worker plumbing. */
+    /* ─── Worker plumbing ────────────────────────────────────── */
     pthread_t       *threads;
-    void           **worker_args;   /* one per thread, from `setup` */
+    void           **worker_args;
     int              n_workers;
     work_fn          fn;
     work_setup_fn    setup;
     work_teardown_fn teardown;
     void            *setup_user;
 
-    /* Output serialisation + shared match counter (folded under the
-     * same mutex at flush time — read by the producer after join to
-     * decide the exit code). */
+    /* ─── Output batching ────────────────────────────────────── */
     pthread_mutex_t  out_mutex;
     long             total_match_count;
 };
@@ -54,14 +45,12 @@ worker_main(void *arg)
 {
     work_pool_t *p = (work_pool_t *)arg;
 
-    /* Pick up our slot index by atomic stamp.  Cheaper than passing
-     * an explicit index in: each thread races to claim the next free
-     * `worker_args` slot under the queue mutex. */
+    /* Claim a worker_args slot under q_mutex (race-free). */
     pthread_mutex_lock(&p->q_mutex);
     int my_slot = -1;
     for (int i = 0; i < p->n_workers; i++) {
         if (p->worker_args[i] == (void *)-1) {
-            p->worker_args[i] = NULL;   /* claimed; will fill below */
+            p->worker_args[i] = NULL;
             my_slot = i;
             break;
         }
@@ -124,10 +113,6 @@ work_pool_create(int n_workers,
     p->setup_user  = setup_user;
     p->threads     = (pthread_t *)calloc((size_t)n_workers, sizeof(pthread_t));
     p->worker_args = (void **)    calloc((size_t)n_workers, sizeof(void *));
-    /* Sentinel `(void*)-1` means "slot claimable"; workers swap it
-     * for their `self` pointer the first time they run.  This avoids
-     * passing an explicit per-thread index to the worker — we don't
-     * need ordering, just unique ownership. */
     for (int i = 0; i < n_workers; i++) p->worker_args[i] = (void *)-1;
 
     for (int i = 0; i < n_workers; i++) {
@@ -153,6 +138,16 @@ work_pool_submit(work_pool_t *p, const char *path)
     pthread_mutex_unlock(&p->q_mutex);
 }
 
+void
+work_pool_flush_batch(work_pool_t *p, const char *buf, size_t len, long delta_matches)
+{
+    if (len == 0 && delta_matches == 0) return;
+    pthread_mutex_lock(&p->out_mutex);
+    if (len) fwrite(buf, 1, len, stdout);
+    p->total_match_count += delta_matches;
+    pthread_mutex_unlock(&p->out_mutex);
+}
+
 long
 work_pool_join_and_destroy(work_pool_t *p)
 {
@@ -163,8 +158,9 @@ work_pool_join_and_destroy(work_pool_t *p)
 
     for (int i = 0; i < p->n_workers; i++) pthread_join(p->threads[i], NULL);
 
-    /* All workers exited → no more flushes can race; safe to read
-     * the counter without the out_mutex. */
+    /* All workers have finished their teardown — including the
+     * final flush of any leftover batch — so the counter is fully
+     * accumulated and stable. */
     const long total = p->total_match_count;
 
     pthread_mutex_destroy(&p->q_mutex);
@@ -176,13 +172,4 @@ work_pool_join_and_destroy(work_pool_t *p)
     free(p->worker_args);
     free(p);
     return total;
-}
-
-void
-work_pool_flush_buf(work_pool_t *p, const char *buf, size_t len, long delta_matches)
-{
-    pthread_mutex_lock(&p->out_mutex);
-    if (len) fwrite(buf, 1, len, stdout);
-    p->total_match_count += delta_matches;
-    pthread_mutex_unlock(&p->out_mutex);
 }
