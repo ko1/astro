@@ -650,6 +650,30 @@ static VALUE hash_filter_map(CTX *c, VALUE self, int argc, VALUE *argv) {
     return r;
 }
 
+/* ---------- Hash#sum ----------
+ * Yields (k, v) and sums the block's return values onto an
+ * accumulator (default 0).  Without a block, attempts +-aggregation
+ * over [k, v] pairs (CRuby's behavior, may raise on Symbol+Integer). */
+static VALUE hash_sum(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_hash *h = (struct korb_hash *)self;
+    VALUE acc = argc >= 1 ? argv[0] : INT2FIX(0);
+    for (struct korb_hash_entry *e = h->first; e; e = e->next) {
+        VALUE addend;
+        if (korb_block_given()) {
+            VALUE args[2] = { e->key, e->value };
+            addend = korb_yield(c, 2, args);
+            if (c->state != KORB_NORMAL) return Qnil;
+        } else {
+            addend = korb_ary_new_capa(2);
+            korb_ary_push(addend, e->key);
+            korb_ary_push(addend, e->value);
+        }
+        acc = korb_funcall(c, acc, korb_intern("+"), 1, &addend);
+        if (c->state != KORB_NORMAL) return Qnil;
+    }
+    return acc;
+}
+
 /* ---------- Hash#each_with_object ----------
  * Yields ([k, v], memo) and returns memo at the end. */
 static VALUE hash_each_with_object(CTX *c, VALUE self, int argc, VALUE *argv) {

@@ -22,6 +22,9 @@ static VALUE str_concat(CTX *c, VALUE self, int argc, VALUE *argv) {
     CHECK_FROZEN_RET(c, self, Qnil);
     return korb_str_concat(self, argv[0]);
 }
+static VALUE str_bytesize(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return INT2FIX(((struct korb_string *)self)->len);
+}
 static VALUE str_size(CTX *c, VALUE self, int argc, VALUE *argv) {
     return INT2FIX(((struct korb_string *)self)->len);
 }
@@ -211,6 +214,13 @@ static VALUE str_bytes(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 static VALUE str_each_char(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_string *s = (struct korb_string *)self;
+    /* Block-less form: koruby has no Enumerator, so return an Array of
+     * single-char strings (matches what `.to_a` would yield). */
+    if (!korb_block_given()) {
+        VALUE r = korb_ary_new();
+        for (long i = 0; i < s->len; i++) korb_ary_push(r, korb_str_new(s->ptr + i, 1));
+        return r;
+    }
     for (long i = 0; i < s->len; i++) {
         VALUE ch = korb_str_new(s->ptr + i, 1);
         korb_yield(c, 1, &ch);
@@ -874,15 +884,43 @@ static VALUE str_clone(CTX *c, VALUE self, int argc, VALUE *argv) {
     return korb_str_new(s->ptr, s->len);
 }
 
-/* String#% — same as format but self is the format string */
+/* String#% — same as format but self is the format string.  When the
+ * argument is a Hash, the format string supports `%{name}` lookups
+ * (e.g. `"%{a}+%{b}" % {a:1, b:2}` → `"1+2"`); otherwise we
+ * delegate to the Array / single-arg printf-style path. */
 static VALUE str_percent(CTX *c, VALUE self, int argc, VALUE *argv) {
-    /* arg may be a single value or an Array */
-    VALUE *fargv;
-    int fargc;
-    VALUE single[2];
+    if (argc == 1 && !SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_HASH) {
+        struct korb_string *fmt = (struct korb_string *)self;
+        struct korb_hash *h = (struct korb_hash *)argv[0];
+        VALUE out = korb_str_new("", 0);
+        long i = 0;
+        while (i < fmt->len) {
+            if (i + 1 < fmt->len && fmt->ptr[i] == '%' && fmt->ptr[i+1] == '{') {
+                long j = i + 2;
+                while (j < fmt->len && fmt->ptr[j] != '}') j++;
+                if (j < fmt->len) {
+                    long klen = j - (i + 2);
+                    char keybuf[256];
+                    if (klen < (long)sizeof(keybuf)) {
+                        memcpy(keybuf, fmt->ptr + i + 2, klen);
+                        keybuf[klen] = 0;
+                        VALUE key = korb_id2sym(korb_intern(keybuf));
+                        VALUE v = korb_hash_aref((VALUE)h, key);
+                        if (UNDEF_P(v)) v = Qnil;
+                        VALUE vs = korb_to_s(v);
+                        korb_str_concat(out, vs);
+                        i = j + 1;
+                        continue;
+                    }
+                }
+            }
+            korb_str_concat(out, korb_str_new(fmt->ptr + i, 1));
+            i++;
+        }
+        return out;
+    }
     if (argc == 1 && BUILTIN_TYPE(argv[0]) == T_ARRAY) {
         struct korb_array *a = (struct korb_array *)argv[0];
-        single[0] = self;
         VALUE *full = korb_xmalloc((1 + a->len) * sizeof(VALUE));
         full[0] = self;
         for (long i = 0; i < a->len; i++) full[1+i] = a->ptr[i];

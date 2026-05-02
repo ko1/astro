@@ -314,6 +314,7 @@ void korb_init_builtins(void) {
     DEF(cStr, "tr",          str_tr,          -1);
     DEF(cStr, "tr_s",        str_tr_s,        -1);
     DEF(cStr, "%",           str_percent,     -1);
+    DEF(cStr, "bytesize",    str_bytesize,     0);
     DEF(cStr, "inspect",     kernel_inspect,   0);
     DEF(cStr, "dup",         obj_dup,          0);
     DEF(cStr, "=~",          str_match_op, 1);
@@ -492,6 +493,7 @@ void korb_init_builtins(void) {
     DEF(cHsh, "group_by",         hash_group_by,          0);
     DEF(cHsh, "sort_by",          hash_sort_by,           0);
     DEF(cHsh, "filter_map",       hash_filter_map,        0);
+    DEF(cHsh, "sum",              hash_sum,              -1);
     DEF(cHsh, "each_with_object", hash_each_with_object,  1);
     DEF(cHsh, "take",             hash_take,              1);
     DEF(cHsh, "flat_map",         hash_flat_map,          0);
