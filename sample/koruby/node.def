@@ -744,7 +744,13 @@ node_aref(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *idx, uint32_t a
     VALUE i = EA(c, idx);
     if (LIKELY(!SPECIAL_CONST_P(r) && !korb_g_basic_op_redefined)) {
         if (BUILTIN_TYPE(r) == T_ARRAY && FIXNUM_P(i)) return korb_ary_aref(r, FIX2LONG(i));
-        if (BUILTIN_TYPE(r) == T_HASH) return korb_hash_aref(r, i);
+        /* Hash fast path is only safe when there's no default_proc — the
+         * inline korb_hash_aref returns default_value on miss but can't
+         * call a Ruby-side block.  Fall through to the cfunc dispatch
+         * (Hash#[]) when a default_proc is registered. */
+        if (BUILTIN_TYPE(r) == T_HASH && NIL_P(((struct korb_hash *)r)->default_proc)) {
+            return korb_hash_aref(r, i);
+        }
     }
     return korb_node_aref_slow(c, r, i, arg_index);
 }
@@ -1118,7 +1124,7 @@ node_def_full(CTX * restrict c, NODE * restrict n, ID name, NODE *body, uint32_t
     if (block_slot >= 0) korb_class_set_method_block_slot(target, name, block_slot);
     /* If user redefined something on a basic class, EVAL_node_* fast
      * paths must stop short-circuiting through C-side arithmetic. */
-    korb_check_basic_op_redef(target);
+    korb_check_basic_op_redef(target, name);
     return korb_id2sym(name);
 }
 
@@ -1130,7 +1136,7 @@ node_def_post(CTX * restrict c, NODE * restrict n, ID name, NODE *body, uint32_t
     korb_class_add_method_ast_full_cref(target, name, body, required_cnt, total_cnt, rest_slot, locals_cnt, c->cref);
     if (block_slot >= 0) korb_class_set_method_block_slot(target, name, block_slot);
     if (post_cnt > 0)    korb_class_set_method_post_params_cnt(target, name, post_cnt);
-    korb_check_basic_op_redef(target);
+    korb_check_basic_op_redef(target, name);
     return korb_id2sym(name);
 }
 

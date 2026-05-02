@@ -329,7 +329,7 @@ void korb_class_add_method_proc(struct korb_class *klass, ID name, struct korb_p
  * Both `alias` (keyword) and `Module#alias_method` lower to this. */
 void korb_class_alias_method(struct korb_class *klass, ID new_name, struct korb_method *m) {
     method_table_set(&klass->methods, new_name, m);
-    korb_check_basic_op_redef(klass);
+    korb_check_basic_op_redef(klass, new_name);
     if (korb_vm) { korb_vm->method_serial++; korb_g_method_serial = korb_vm->method_serial; }
 }
 
@@ -1423,22 +1423,54 @@ state_serial_t korb_g_method_serial = 0;
  * common-case correct and zero-cost on the normal path. */
 bool korb_g_basic_op_redefined = false;
 
-/* Called from node_def_full when a Ruby-level `def` lands.  If the
- * target class is one whose basic ops we shortcut, flip the flag. */
-void korb_check_basic_op_redef(struct korb_class *target) {
-    if (!korb_vm) return;
-    if (target == korb_vm->integer_class ||
-        target == korb_vm->float_class   ||
-        target == korb_vm->array_class   ||
-        target == korb_vm->hash_class    ||
-        target == korb_vm->string_class  ||
-        target == korb_vm->symbol_class  ||
-        target == korb_vm->numeric_class ||
-        target == korb_vm->true_class    ||
-        target == korb_vm->false_class   ||
-        target == korb_vm->nil_class) {
-        korb_g_basic_op_redefined = true;
+/* Called from node_def_full when a Ruby-level `def` lands.  Flip the
+ * basic-op fast-path flag only when both the target class AND the
+ * method name are ones we actually shortcut.  Earlier this fired for
+ * any def on Integer / Float / etc., so bootstrap.rb's `class Integer;
+ * def gcd; ...` permanently disabled the FIXNUM fast path even though
+ * gcd has nothing to do with `+`. */
+static bool korb_is_basic_op_id(ID name) {
+    static ID id_plus, id_minus, id_mul, id_div, id_mod, id_pow;
+    static ID id_lt, id_le, id_gt, id_ge, id_eq, id_ne, id_cmp;
+    static ID id_aref, id_aset, id_lshift, id_rshift, id_band, id_bor, id_bxor;
+    static bool init = false;
+    if (!init) {
+        id_plus  = korb_intern("+");  id_minus = korb_intern("-");
+        id_mul   = korb_intern("*");  id_div   = korb_intern("/");
+        id_mod   = korb_intern("%");  id_pow   = korb_intern("**");
+        id_lt    = korb_intern("<");  id_le    = korb_intern("<=");
+        id_gt    = korb_intern(">");  id_ge    = korb_intern(">=");
+        id_eq    = korb_intern("=="); id_ne    = korb_intern("!=");
+        id_cmp   = korb_intern("<=>");
+        id_aref  = korb_intern("[]"); id_aset  = korb_intern("[]=");
+        id_lshift= korb_intern("<<"); id_rshift= korb_intern(">>");
+        id_band  = korb_intern("&");  id_bor   = korb_intern("|");
+        id_bxor  = korb_intern("^");
+        init = true;
     }
+    return name == id_plus || name == id_minus || name == id_mul ||
+           name == id_div  || name == id_mod   || name == id_pow ||
+           name == id_lt   || name == id_le    || name == id_gt  ||
+           name == id_ge   || name == id_eq    || name == id_ne  ||
+           name == id_cmp  || name == id_aref  || name == id_aset ||
+           name == id_lshift || name == id_rshift ||
+           name == id_band || name == id_bor   || name == id_bxor;
+}
+
+void korb_check_basic_op_redef(struct korb_class *target, ID name) {
+    if (!korb_vm) return;
+    if (target != korb_vm->integer_class &&
+        target != korb_vm->float_class   &&
+        target != korb_vm->array_class   &&
+        target != korb_vm->hash_class    &&
+        target != korb_vm->string_class  &&
+        target != korb_vm->symbol_class  &&
+        target != korb_vm->numeric_class &&
+        target != korb_vm->true_class    &&
+        target != korb_vm->false_class   &&
+        target != korb_vm->nil_class) return;
+    if (!korb_is_basic_op_id(name)) return;
+    korb_g_basic_op_redefined = true;
 }
 
 /* ---- method dispatch ---- */
