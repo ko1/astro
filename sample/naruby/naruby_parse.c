@@ -21,28 +21,42 @@ alloc_cstr(pm_parser_t *parser, pm_constant_id_t cid)
     return str;
 }
 
-static struct callcache *
-alloc_callcache(void)
-{
-    return (struct callcache *)malloc(sizeof(struct callcache));
-}
-
+// Pending call-site link.  Used by both -s (static_lang, sets
+// `node_call_static.body`) and -p (pg_mode, sets `node_pg_call_<N>.sp_body`
+// or `node_call2.sp_body` for fallback) for forward references /
+// self-recursive calls.  `target_field` points directly at the NODE *
+// operand slot that callsite_resolve will write the body into.
+//
+// For pg_call_<N> we also need to patch `locals_cnt` (the callee's
+// frame size — used to size the VLA in the fast path).  When
+// `locals_cnt_field` is non-NULL, callsite_resolve also writes the
+// resolved body's locals_cnt to that uint32_t slot.
 struct callsite {
     struct callsite *prev;
     const char *name;
-    NODE *cn; /* call node */
+    NODE *cn;
+    NODE **target_field;
+    uint32_t *locals_cnt_field;
 };
 
 struct callsite *callsites = NULL;
 
 static void
-callsite_add(const char *name, NODE *cn)
+callsite_add_full(const char *name, NODE *cn, NODE **target_field, uint32_t *locals_cnt_field)
 {
     struct callsite *cs = malloc(sizeof(struct callsite));
     cs->cn = cn;
     cs->name = name;
+    cs->target_field = target_field;
+    cs->locals_cnt_field = locals_cnt_field;
     cs->prev = callsites;
     callsites = cs;
+}
+
+static void
+callsite_add(const char *name, NODE *cn, NODE **target_field)
+{
+    callsite_add_full(name, cn, target_field, NULL);
 }
 
 static void
@@ -58,13 +72,23 @@ callsite_resolve(void)
             printf("%s is not defined.\n", cs->name);
             exit(1);
         }
-        cs->cn->u.node_call_static.body = body;
+        *cs->target_field = body;
+        if (cs->locals_cnt_field) {
+            *cs->locals_cnt_field = code_repo_find_locals_cnt_by_name(cs->name);
+        }
+        // sp_body is excluded from HASH (see naruby_gen.rb), so the
+        // patch doesn't change the hash; clear_hash is just for the
+        // static_lang path (where node_call_static.body IS hashed) and
+        // is harmless for the PG path.
         clear_hash(cs->cn);
         free(cs);
         cs = cs_prev;
     }
 }
 
+// Build a node_call2 / node_call (arg-less) call site.  Used for
+// arity 0 directly, and as a fallback (after lset+seq arg setup) for
+// arity > 3 in pg_mode.
 static NODE *
 alloc_call(const char *fname, uint32_t args_cnt, uint32_t call_arg_idx)
 {
@@ -72,16 +96,104 @@ alloc_call(const char *fname, uint32_t args_cnt, uint32_t call_arg_idx)
         NODE *body = code_repo_find_by_name(fname);
         if (body == NULL) {
             body = ALLOC_node_call_static(NULL, call_arg_idx);
-            callsite_add(fname, body);
+            callsite_add(fname, body, &body->u.node_call_static.body);
         }
         return body;
     }
     else if (OPTION.pg_mode) {
-        return ALLOC_node_call2(fname, args_cnt, call_arg_idx, alloc_callcache(), ALLOC_node_num(0));
+        // Resolve sp_body at parse time so the SD baked for this call
+        // site sees a stable body identity.  Forward refs (incl. self-
+        // recursion) leave sp_body as a placeholder NODE that
+        // callsite_resolve patches once the def is parsed.
+        NODE *body = code_repo_find_by_name(fname);
+        if (body) {
+            return ALLOC_node_call2(fname, args_cnt, call_arg_idx, body);
+        }
+        else {
+            NODE *cn = ALLOC_node_call2(fname, args_cnt, call_arg_idx, ALLOC_node_num(0));
+            callsite_add(fname, cn, &cn->u.node_call2.sp_body);
+            return cn;
+        }
     }
     else {
-        return ALLOC_node_call(fname, args_cnt, call_arg_idx, alloc_callcache());
+        return ALLOC_node_call(fname, args_cnt, call_arg_idx);
     }
+}
+
+// Arity-specialized PG call construction.  In pg_mode for argc ≤ 3 we
+// fold argument evaluation into the call node itself (`node_pg_call_<N>`)
+// instead of emitting separate `node_lset` + `node_seq` chain.  This
+// gives one EVAL_ function body containing arg evaluation, store, and
+// dispatch — gcc sees the dataflow and can inline the chain better.
+//
+// Returns NULL if pg_mode + this arity isn't supported (caller falls
+// back to lset+seq + alloc_call).
+static NODE *
+alloc_pg_call_specialized(const char *fname, uint32_t call_arg_idx,
+                          uint32_t args_cnt, NODE **arg_nodes)
+{
+    if (!OPTION.pg_mode) return NULL;
+    if (args_cnt > 3) return NULL;
+
+    NODE *body = code_repo_find_by_name(fname);
+    NODE *placeholder = body ? body : ALLOC_node_num(0);
+    // If body already known (forward decl resolved), we have its
+    // locals_cnt now.  Else use placeholder 1; callsite_resolve will
+    // overwrite at end of parse.  Min 1 because VLA `VALUE F[0]` is
+    // ill-defined; pg_call0 special-cases inside its body.
+    uint32_t locals_cnt = body ? code_repo_find_locals_cnt_by_name(fname) : 1;
+    if (locals_cnt < args_cnt) locals_cnt = args_cnt;
+
+    NODE *cn;
+    switch (args_cnt) {
+      case 0:
+        cn = ALLOC_node_pg_call0(fname, call_arg_idx, locals_cnt, placeholder);
+        break;
+      case 1:
+        cn = ALLOC_node_pg_call1(fname, call_arg_idx, locals_cnt, placeholder,
+                                 arg_nodes[0]);
+        break;
+      case 2:
+        cn = ALLOC_node_pg_call2(fname, call_arg_idx, locals_cnt, placeholder,
+                                 arg_nodes[0], arg_nodes[1]);
+        break;
+      case 3:
+        cn = ALLOC_node_pg_call3(fname, call_arg_idx, locals_cnt, placeholder,
+                                 arg_nodes[0], arg_nodes[1], arg_nodes[2]);
+        break;
+      default:
+        return NULL;
+    }
+
+    if (!body) {
+        // Forward ref: callsite_resolve patches sp_body and locals_cnt
+        // when the def finishes parsing.  Use &<call>.sp_body / .locals_cnt
+        // so each kind's operand slot is found by direct pointer
+        // regardless of the node's struct layout.
+        NODE **sp_target;
+        uint32_t *lc_target;
+        switch (args_cnt) {
+          case 0:
+            sp_target = &cn->u.node_pg_call0.sp_body;
+            lc_target = &cn->u.node_pg_call0.locals_cnt;
+            break;
+          case 1:
+            sp_target = &cn->u.node_pg_call1.sp_body;
+            lc_target = &cn->u.node_pg_call1.locals_cnt;
+            break;
+          case 2:
+            sp_target = &cn->u.node_pg_call2.sp_body;
+            lc_target = &cn->u.node_pg_call2.locals_cnt;
+            break;
+          case 3:
+            sp_target = &cn->u.node_pg_call3.sp_body;
+            lc_target = &cn->u.node_pg_call3.locals_cnt;
+            break;
+          default: return NULL;
+        }
+        callsite_add_full(fname, cn, sp_target, lc_target);
+    }
+    return cn;
 }
 
 static int
@@ -351,8 +463,29 @@ transduce(struct transduce_context *tc, pm_node_t *node, int indent) {
           else {
               const char *fname = alloc_cstr(tc->parser, n->name);
               uint32_t call_arg_idx = arg_index(tc);
-              // fprintf(stderr, "args_cnt:%u\n", args_cnt);
 
+              // pg_mode + arity ≤ 3: fold args into a node_pg_call_<N>
+              // with explicit arg operands.  No node_lset / node_seq
+              // wrapping needed.
+              if (OPTION.pg_mode && args_cnt <= 3) {
+                  NODE *arg_nodes[3] = { NULL, NULL, NULL };
+                  // Reserve arg_index slots up-front so any temporaries
+                  // produced inside the arg expressions (e.g. nested
+                  // calls) get fresh indices past ours.
+                  for (uint32_t i = 0; i < args_cnt; i++) {
+                      increment_arg_index(tc);
+                  }
+                  for (uint32_t i = 0; i < args_cnt; i++) {
+                      arg_nodes[i] = TRANSDUCE(args->arguments.nodes[i]);
+                  }
+                  rewind_arg_index(tc, call_arg_idx);
+                  return alloc_pg_call_specialized(fname, call_arg_idx,
+                                                   args_cnt, arg_nodes);
+              }
+
+              // Generic path: emit lset chain that writes args into
+              // fp[call_arg_idx + i], then dispatch to alloc_call.  Used
+              // for non-pg modes and pg_mode + arity > 3.
               if (args != 0) {
                   NODE *nargs = NULL;
 
@@ -521,9 +654,18 @@ transduce(struct transduce_context *tc, pm_node_t *node, int indent) {
           }
           pop_frame(tc);
 
-          // printf("def name:%s\n", name);
-
-          code_repo_add(name, fn, true);
+          // The body's "true" locals count = params + declared body
+          // locals (Prism's `n->locals.size`), NOT max_cnt.  max_cnt
+          // includes the slot indices the parser assigned to nested
+          // call args, which were used in the OLD calling convention
+          // (writing args into caller's `fp[arg_index..]` then bumping
+          // fp past them).  In the new pg_call_<N> path each call has
+          // its own VLA frame, so nested call arg slots aren't
+          // allocated in the body's frame.  Sizing F to max_cnt would
+          // over-allocate (e.g. ackermann body has 2 declared locals
+          // but max_cnt = 6 due to 4-deep nested calls).
+          uint32_t body_locals = (uint32_t)n->locals.size;
+          code_repo_add2(name, fn, true, body_locals);
           return ALLOC_node_def(name, fn, params_cnt, max_cnt);
       }
       case PM_DEFINED_NODE: {
@@ -965,8 +1107,21 @@ transduce(struct transduce_context *tc, pm_node_t *node, int indent) {
       }
       case PM_RETURN_NODE: {
           pm_return_node_t *n = (pm_return_node_t *)(node);
-          fprintf(stderr, "unsupported node: PM_RETURN_NODE\n");
-          break;
+          NODE *value;
+          if (n->arguments) {
+              pm_arguments_node_t *args = (pm_arguments_node_t *)n->arguments;
+              // Multiple values (`return a, b`) aren't representable in
+              // naruby's int64-only VALUE, so we just take the first.
+              if (args->arguments.size > 0) {
+                  value = TRANSDUCE(args->arguments.nodes[0]);
+              } else {
+                  value = ALLOC_node_num(0);
+              }
+          } else {
+              // Bare `return` → return 0.
+              value = ALLOC_node_num(0);
+          }
+          return ALLOC_node_return(value);
       }
       case PM_SELF_NODE: {
           pm_self_node_t *n = (pm_self_node_t *)(node);
@@ -1093,7 +1248,7 @@ show_help(void)
     printf("  -q: don't show information\n");
     printf("  -c: compile given script\n");
     printf("  -s: static language mode: function is resovled at compile time\n");
-    printf("  -i: interepreter mode: don't use compiled code\n");
+    printf("  -i: plain mode: don't use compiled code\n");
     printf("  -b: benchmark mode: don't dump specialized code\n");
     printf("  -p: Profile guided mode: use call2\n");
     printf("  -a: record all node\n");

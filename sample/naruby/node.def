@@ -2,55 +2,50 @@
 // literal
 
 NODE_DEF
-node_num(CTX * restrict c, NODE * restrict n, int32_t num)
+node_num(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, int32_t num)
 {
-    return num;
+    return RESULT_OK(num);
 }
 
-// local variables
+// local variables — fp[index] reads/writes the current frame slot
+// directly, so the SD chain never has to round-trip through `c->fp`.
 
 NODE_DEF
-node_lget(CTX * restrict c, NODE * restrict n, uint32_t index)
+node_lget(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t index)
 {
-    return c->fp[index];
+    return RESULT_OK(fp[index]);
 }
 
 NODE_DEF
-node_lset(CTX * restrict c, NODE * restrict n, uint32_t index, NODE *rhs)
+node_lset(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t index, NODE *rhs)
 {
-    VALUE v = EVAL_ARG(c, rhs);
-    c->fp[index] = v;
-    return v;
+    VALUE v = UNWRAP(EVAL_ARG(c, rhs));
+    fp[index] = v;
+    return RESULT_OK(v);
 }
 
 // syntax
 
 NODE_DEF
-node_scope(CTX * restrict c, NODE * restrict n, uint32_t envsize, NODE *body)
+node_scope(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t envsize, NODE *body)
 {
-#if NARUBY_DEBUG
-    VALUE *prev_fp = c->fp;
-#endif
-    c->fp += envsize;
-    VALUE v = EVAL_ARG(c, body);
-    c->fp -= envsize;
-
-    NARUBY_ASSERT(prev_fp == c->fp);
-
-    return v;
+    return EVAL(c, body, fp + envsize);
 }
 
 NODE_DEF
-node_seq(CTX * restrict c, NODE * restrict n, NODE *head, NODE *tail)
+node_seq(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *head, NODE *tail)
 {
-    EVAL_ARG(c, head);
+    // Discard head's value but propagate non-NORMAL state (e.g. RETURN
+    // inside an `if` whose branch is `head`).  UNWRAP returns from the
+    // current function on non-NORMAL.
+    (void)UNWRAP(EVAL_ARG(c, head));
     return EVAL_ARG(c, tail);
 }
 
 NODE_DEF
-node_if(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *then_node, NODE *else_node)
+node_if(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *cond, NODE *then_node, NODE *else_node)
 {
-    if (EVAL_ARG(c, cond)) {
+    if (UNWRAP(EVAL_ARG(c, cond))) {
         return EVAL_ARG(c, then_node);
     }
     else {
@@ -59,12 +54,25 @@ node_if(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *then_node, NODE *
 }
 
 NODE_DEF
-node_while(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *body)
+node_while(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *cond, NODE *body)
 {
-    while(EVAL_ARG(c, cond)) {
-        EVAL_ARG(c, body);
+    while (UNWRAP(EVAL_ARG(c, cond))) {
+        RESULT r = EVAL_ARG(c, body);
+        // RETURN propagates up; the body's value is discarded.
+        if (UNLIKELY(r.state != RESULT_NORMAL)) return r;
     }
-    return 0;
+    return RESULT_OK(0);
+}
+
+// `return expr` — emit RESULT_RETURN.  The enclosing function-call site
+// (call_body / node_call2's fast path) catches it and converts back to
+// RESULT_NORMAL so the caller sees a normal return value.
+
+NODE_DEF
+node_return(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *value)
+{
+    VALUE v = UNWRAP(EVAL_ARG(c, value));
+    return RESULT_RETURN_(v);
 }
 
 // functions
@@ -82,7 +90,7 @@ get_func_entry(CTX * restrict c, const char *name)
 }
 
 NODE_DEF @noinline
-node_def(CTX * restrict c, NODE * restrict n, const char *name, NODE *body, uint32_t params_cnt, uint32_t locals_cnt)
+node_def(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, const char *name, NODE *body, uint32_t params_cnt, uint32_t locals_cnt)
 {
     struct function_entry *fe = get_func_entry(c, name);
     fe->name = name;
@@ -91,7 +99,7 @@ node_def(CTX * restrict c, NODE * restrict n, const char *name, NODE *body, uint
     fe->locals_cnt = locals_cnt;
     c->serial++;
 
-    return 0;
+    return RESULT_OK(0);
 }
 
 static struct function_entry *
@@ -108,26 +116,6 @@ find_func_entry(CTX * restrict c, const char *name)
 }
 
 static void
-push_frame(CTX * restrict c, uint32_t arg_index)
-{
-    c->fp += arg_index;
-
-#if DEBUG_EVAL
-    c->frame_cnt++;
-#endif
-}
-
-static void
-pop_frame(CTX * restrict c, uint32_t arg_index)
-{
-    c->fp -= arg_index;
-
-#if DEBUG_EVAL
-    c->frame_cnt--;
-#endif
-}
-
-static void
 call_check(struct function_entry *fe, const char *name, uint32_t params_cnt)
 {
     if (UNLIKELY(fe == NULL)) {
@@ -141,8 +129,16 @@ call_check(struct function_entry *fe, const char *name, uint32_t params_cnt)
 
 #define CALL_DEBUG 0
 
-static VALUE
-call_body(CTX * restrict c, uint32_t arg_index, NODE *body)
+// Catch RESULT_RETURN at the function boundary.  A `return expr` inside
+// `body` propagates up via RESULT.state until it hits this catch — at
+// which point it converts to RESULT_NORMAL so the caller sees the value
+// as the call's return.  Other states (none yet for naruby) would pass
+// through unchanged.
+//
+// `fp` is the caller's frame; the callee's frame is `fp + arg_index`
+// (args were already laid down by the caller's `lset` chain).
+static RESULT
+call_body(CTX * restrict c, VALUE * restrict fp, uint32_t arg_index, NODE *body)
 {
 #ifndef ASTRO_SPECIALIZED
     // profile
@@ -159,184 +155,314 @@ call_body(CTX * restrict c, uint32_t arg_index, NODE *body)
     }
 #endif
 
-    push_frame(c, arg_index);
-    VALUE v = EVAL(c, body);
-    pop_frame(c, arg_index);
-    return v;
+    RESULT r = EVAL(c, body, fp + arg_index);
+
+    // Unconditional state-clear (≡ `RESULT_OK(r.value)`): naruby's only
+    // non-NORMAL state is RESULT_RETURN, which we want to catch at the
+    // function boundary anyway.  vs the conditional form
+    // `if (state == RETURN) state = NORMAL`, this lets gcc see state
+    // is provably 0 after the call — caller's UNWRAP DCEs to a no-op
+    // and the SD chain inlines deeper.
+    return RESULT_OK(r.value);
 }
 
 NODE_DEF
-node_call(CTX * restrict c, NODE * restrict n, const char *name, uint32_t params_cnt, uint32_t arg_index, struct callcache *cc)
+node_call(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, const char *name, uint32_t params_cnt, uint32_t arg_index, struct callcache *cc@ref)
 {
     if (LIKELY(c->serial == cc->serial)) {
-        //fprintf(stderr, "name:%s / sp:%d hit\n", name, cached_body->head.flags.is_specialized);
-        return call_body(c, arg_index, cc->body);
+        return call_body(c, fp, arg_index, cc->body);
     }
     else {
-        //fprintf(stderr, "name:%s miss\n", name);
         struct function_entry *fe = find_func_entry(c, name);
         call_check(fe, name, params_cnt);
 
         cc->serial = c->serial;
         cc->body = fe->body;
 
-        return call_body(c, arg_index, fe->body);
+        return call_body(c, fp, arg_index, fe->body);
     }
 }
 
-static VALUE
-__attribute__((noinline))
-node_call2_slowpath(CTX * restrict c, NODE * restrict n, const char *name, uint32_t params_cnt, uint32_t arg_index, struct callcache * restrict cc)
-{
-        if (CALL_DEBUG) fprintf(stderr, "name:%s miss1\n", name);
-        struct function_entry *fe = find_func_entry(c, name);
-        call_check(fe, name, params_cnt);
-        cc->serial = c->serial;
-        n->u.node_call2.sp_body = cc->body = fe->body;
-        return call_body(c, arg_index, fe->body);
-}
+// Slowpath bodies for `node_call2` / `node_pg_call_<N>` are defined
+// in node_slowpath.c and declared extern in node.h.  Splitting them
+// out of node_eval.c (which is `#include`d by every AOT/PG
+// code_store/*.c) keeps each generated .so small: the slowpath lives
+// only in the main binary, and dlopen + -rdynamic resolves the
+// extern reference at load time.
+
 
 NODE_DEF
-node_call2(CTX * restrict c, NODE * restrict n, const char *name, uint32_t params_cnt, uint32_t arg_index, struct callcache * restrict cc, NODE *sp_body)
+node_call2(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, const char *name, uint32_t params_cnt, uint32_t arg_index, struct callcache *cc@ref, NODE *sp_body)
 {
     if (LIKELY(c->serial == cc->serial)) {
         if (CALL_DEBUG) fprintf(stderr, "name:%s hit!\n", name);
-        push_frame(c, arg_index);
-        VALUE v = EVAL_ARG(c, sp_body);
-        pop_frame(c, arg_index);
-        return v;
+        // Use sp_body_dispatcher (= the framework-supplied
+        // node_dispatcher_func_t parameter for `sp_body`) so the SD
+        // calls the dispatcher that was baked at SPECIALIZE time as a
+        // constant — i.e. SD_<HASH(sp_body)> for the AOT path.  EVAL()
+        // would re-load `sp_body->head.dispatcher` at runtime and lose
+        // the direct call.
+        RESULT r = (*sp_body_dispatcher)(c, sp_body, fp + arg_index);
+        return RESULT_OK(r.value);   // unconditional state-clear: see call_body
     }
     else {
-        return node_call2_slowpath(c, n, name, params_cnt, arg_index, cc);
+        return node_pg_call_slowpath(c, n, fp, name, params_cnt, arg_index, cc,
+                                     &n->u.node_call2.sp_body);
     }
 }
 
+// Arity-specialized PG call sites.  Each `node_pg_call_<N>` evaluates
+// its `N` argument operands inline (instead of going through separate
+// `node_lset` writes the parser would otherwise emit), then dispatches
+// to the linked body.
+//
+// Why specialize on arity:
+//
+//   - Args are explicit `NODE *` operands of the call node, so the SD's
+//     specializer recurses into them, enabling cross-arg fusion (each
+//     arg evaluation, the `fp[arg_index+i] = ...` store, and the body
+//     dispatch all live in one EVAL_ function body).
+//   - The parser no longer wraps argument evaluation in a node_lset +
+//     node_seq chain — fewer NODE allocations, fewer dispatch hops in
+//     plain mode, smaller AST hash chain in PG mode.
+//
+// Slowpath is shared with `node_call2_slowpath` since the recovery
+// (look up `name` in func_set, refill `cc`, demote dispatcher on
+// redef) is identical.
+
+// In each pg_call_<N>, fast path allocates the callee's frame as a
+// fresh VLA `VALUE F[locals_cnt]` so it doesn't alias with the
+// caller's `fp` slots (jstro's pattern).  With `restrict fp` on the
+// dispatcher param and the alloca-style fresh allocation, gcc can
+// keep the caller's `fp[0]` (= the caller's parameter, e.g. `n` in
+// fib) in a register across the recursive call instead of reloading
+// it after each recursion.
+//
+// `locals_cnt` is patched at parse time (callsite_resolve) — it's the
+// callee's full frame size including param slots and any temporaries
+// the body uses.  Stored separately from sp_body in the node operand
+// list so SPECIALIZE can bake both as constants.
+//
+// Slowpath path uses caller's `fp[arg_index..]` (unchanged convention)
+// — only fired on cc miss.
+
+// pg_call_<N>: each call site allocates a fresh `VALUE F[locals_cnt]`
+// (callee's frame) and dispatches the body with F as its `fp`.  F is
+// disjoint from the caller's fp slots — `restrict` lets gcc keep the
+// caller's locals in registers across the recursive call.
+//
+// `locals_cnt` is an operand (patched at parse-time / callsite_resolve)
+// so the framework's generic SPECIALIZE machinery bakes it as a literal
+// constant.  EVAL_<name> is `static inline always_inline`, so gcc
+// constant-propagates the literal into the inlined body — the VLA
+// `VALUE F[locals_cnt]` becomes a fixed-size array `VALUE F[<n>]` in
+// the optimized SD, no runtime VLA cost.
+//
+// `arg_index` is unused at runtime here (the callee frame is F, not
+// caller_fp + arg_index).  Kept as an operand only for the legacy
+// `node_pg_call_slowpath` fallback in interpreter mode (arity > 3).
+
 NODE_DEF
-node_call_static(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t arg_index)
+node_pg_call0(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, const char *name, uint32_t arg_index, uint32_t locals_cnt, struct callcache *cc@ref, NODE *sp_body)
 {
-    push_frame(c, arg_index);
-    VALUE v = EVAL_ARG(c, body);
-    pop_frame(c, arg_index);
-    return v;
+    (void)arg_index;
+    if (LIKELY(c->serial == cc->serial)) {
+        VALUE F[locals_cnt > 0 ? locals_cnt : 1];
+        // Reassign fp = F so EVAL_ARG below dispatches sp_body with F
+        // (the fresh callee frame).  EVAL_ARG uses the baked
+        // sp_body_dispatcher (= constant SD pointer in specialized SD).
+        fp = F;
+        return RESULT_OK(EVAL_ARG(c, sp_body).value);
+    }
+    return node_pg_call_n_slowpath(c, n, NULL, 0, name, cc,
+                                   &n->u.node_pg_call0.sp_body);
 }
 
 NODE_DEF
-node_call_builtin(CTX * restrict c, NODE * restrict n, struct builtin_func *bf, builtin_func_ptr func_ptr, uint32_t params_cnt)
+node_pg_call1(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, const char *name, uint32_t arg_index, uint32_t locals_cnt, struct callcache *cc@ref, NODE *sp_body, NODE *a0)
 {
+    (void)arg_index;
+    VALUE v0 = UNWRAP(EVAL_ARG(c, a0));
+    if (LIKELY(c->serial == cc->serial)) {
+        VALUE F[locals_cnt];
+        F[0] = v0;
+        fp = F;
+        return RESULT_OK(EVAL_ARG(c, sp_body).value);
+    }
+    VALUE args[1] = { v0 };
+    return node_pg_call_n_slowpath(c, n, args, 1, name, cc,
+                                   &n->u.node_pg_call1.sp_body);
+}
+
+NODE_DEF
+node_pg_call2(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, const char *name, uint32_t arg_index, uint32_t locals_cnt, struct callcache *cc@ref, NODE *sp_body, NODE *a0, NODE *a1)
+{
+    (void)arg_index;
+    VALUE v0 = UNWRAP(EVAL_ARG(c, a0));
+    VALUE v1 = UNWRAP(EVAL_ARG(c, a1));
+    if (LIKELY(c->serial == cc->serial)) {
+        VALUE F[locals_cnt];
+        F[0] = v0;
+        F[1] = v1;
+        fp = F;
+        return RESULT_OK(EVAL_ARG(c, sp_body).value);
+    }
+    VALUE args[2] = { v0, v1 };
+    return node_pg_call_n_slowpath(c, n, args, 2, name, cc,
+                                   &n->u.node_pg_call2.sp_body);
+}
+
+NODE_DEF
+node_pg_call3(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, const char *name, uint32_t arg_index, uint32_t locals_cnt, struct callcache *cc@ref, NODE *sp_body, NODE *a0, NODE *a1, NODE *a2)
+{
+    (void)arg_index;
+    VALUE v0 = UNWRAP(EVAL_ARG(c, a0));
+    VALUE v1 = UNWRAP(EVAL_ARG(c, a1));
+    VALUE v2 = UNWRAP(EVAL_ARG(c, a2));
+    if (LIKELY(c->serial == cc->serial)) {
+        VALUE F[locals_cnt];
+        F[0] = v0;
+        F[1] = v1;
+        F[2] = v2;
+        fp = F;
+        return RESULT_OK(EVAL_ARG(c, sp_body).value);
+    }
+    VALUE args[3] = { v0, v1, v2 };
+    return node_pg_call_n_slowpath(c, n, args, 3, name, cc,
+                                   &n->u.node_pg_call3.sp_body);
+}
+
+NODE_DEF
+node_call_static(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *body, uint32_t arg_index)
+{
+    RESULT r = (*body_dispatcher)(c, body, fp + arg_index);
+    return RESULT_OK(r.value);
+}
+
+NODE_DEF
+node_call_builtin(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, struct builtin_func *bf, builtin_func_ptr func_ptr, uint32_t params_cnt)
+{
+    VALUE v;
     switch (params_cnt) {
       case 0:
-        return (*func_ptr)();
+        v = (*func_ptr)();
+        break;
       case 1:
-        return (*(builtin_func1_ptr)func_ptr)(c->fp[0]);
+        v = (*(builtin_func1_ptr)func_ptr)(fp[0]);
+        break;
       case 2:
-        return (*(builtin_func2_ptr)func_ptr)(c->fp[0], c->fp[1]);
+        v = (*(builtin_func2_ptr)func_ptr)(fp[0], fp[1]);
+        break;
       case 3:
-        return (*(builtin_func3_ptr)func_ptr)(c->fp[0], c->fp[1], c->fp[2]);
+        v = (*(builtin_func3_ptr)func_ptr)(fp[0], fp[1], fp[2]);
+        break;
       case 4:
-        return (*(builtin_func4_ptr)func_ptr)(c->fp[0], c->fp[1], c->fp[2], c->fp[3]);
+        v = (*(builtin_func4_ptr)func_ptr)(fp[0], fp[1], fp[2], fp[3]);
+        break;
       default:
         fprintf(stderr, "too much params:%u\n", params_cnt);
-        return 0;
+        v = 0;
     }
+    return RESULT_OK(v);
 }
 
 // binary operators
 
 NODE_DEF
-node_add(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs)
+node_add(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *lhs, NODE *rhs)
 {
-    VALUE l = EVAL_ARG(c, lhs);
-    VALUE r = EVAL_ARG(c, rhs);
+    VALUE l = UNWRAP(EVAL_ARG(c, lhs));
+    VALUE r = UNWRAP(EVAL_ARG(c, rhs));
 
-    return l + r;
+    return RESULT_OK(l + r);
 }
 
 NODE_DEF
-node_sub(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs)
+node_sub(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *lhs, NODE *rhs)
 {
-    VALUE l = EVAL_ARG(c, lhs);
-    VALUE r = EVAL_ARG(c, rhs);
+    VALUE l = UNWRAP(EVAL_ARG(c, lhs));
+    VALUE r = UNWRAP(EVAL_ARG(c, rhs));
 
-    return l - r;
+    return RESULT_OK(l - r);
 }
 
 NODE_DEF
-node_mul(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs)
+node_mul(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *lhs, NODE *rhs)
 {
-    VALUE l = EVAL_ARG(c, lhs);
-    VALUE r = EVAL_ARG(c, rhs);
+    VALUE l = UNWRAP(EVAL_ARG(c, lhs));
+    VALUE r = UNWRAP(EVAL_ARG(c, rhs));
 
-    return l * r;
+    return RESULT_OK(l * r);
 }
 
 NODE_DEF
-node_div(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs)
+node_div(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *lhs, NODE *rhs)
 {
-    VALUE l = EVAL_ARG(c, lhs);
-    VALUE r = EVAL_ARG(c, rhs);
+    VALUE l = UNWRAP(EVAL_ARG(c, lhs));
+    VALUE r = UNWRAP(EVAL_ARG(c, rhs));
 
-    return l / r;
+    return RESULT_OK(l / r);
 }
 
 NODE_DEF
-node_mod(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs)
+node_mod(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *lhs, NODE *rhs)
 {
-    VALUE l = EVAL_ARG(c, lhs);
-    VALUE r = EVAL_ARG(c, rhs);
+    VALUE l = UNWRAP(EVAL_ARG(c, lhs));
+    VALUE r = UNWRAP(EVAL_ARG(c, rhs));
 
-    return l % r;
+    return RESULT_OK(l % r);
 }
 
 NODE_DEF
-node_lt(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs)
+node_lt(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *lhs, NODE *rhs)
 {
-    VALUE l = EVAL_ARG(c, lhs);
-    VALUE r = EVAL_ARG(c, rhs);
+    VALUE l = UNWRAP(EVAL_ARG(c, lhs));
+    VALUE r = UNWRAP(EVAL_ARG(c, rhs));
 
-    return l < r;
+    return RESULT_OK(l < r);
 }
 
 NODE_DEF
-node_le(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs)
+node_le(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *lhs, NODE *rhs)
 {
-    VALUE l = EVAL_ARG(c, lhs);
-    VALUE r = EVAL_ARG(c, rhs);
+    VALUE l = UNWRAP(EVAL_ARG(c, lhs));
+    VALUE r = UNWRAP(EVAL_ARG(c, rhs));
 
-    return l <= r;
+    return RESULT_OK(l <= r);
 }
 
 NODE_DEF
-node_gt(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs)
+node_gt(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *lhs, NODE *rhs)
 {
-    VALUE l = EVAL_ARG(c, lhs);
-    VALUE r = EVAL_ARG(c, rhs);
+    VALUE l = UNWRAP(EVAL_ARG(c, lhs));
+    VALUE r = UNWRAP(EVAL_ARG(c, rhs));
 
-    return l > r;
+    return RESULT_OK(l > r);
 }
 
 NODE_DEF
-node_ge(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs)
+node_ge(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *lhs, NODE *rhs)
 {
-    VALUE l = EVAL_ARG(c, lhs);
-    VALUE r = EVAL_ARG(c, rhs);
+    VALUE l = UNWRAP(EVAL_ARG(c, lhs));
+    VALUE r = UNWRAP(EVAL_ARG(c, rhs));
 
-    return l >= r;
+    return RESULT_OK(l >= r);
 }
 
 NODE_DEF
-node_eq(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs)
+node_eq(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *lhs, NODE *rhs)
 {
-    VALUE l = EVAL_ARG(c, lhs);
-    VALUE r = EVAL_ARG(c, rhs);
+    VALUE l = UNWRAP(EVAL_ARG(c, lhs));
+    VALUE r = UNWRAP(EVAL_ARG(c, rhs));
 
-    return l == r;
+    return RESULT_OK(l == r);
 }
 
 NODE_DEF
-node_neq(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs)
+node_neq(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *lhs, NODE *rhs)
 {
-    VALUE l = EVAL_ARG(c, lhs);
-    VALUE r = EVAL_ARG(c, rhs);
+    VALUE l = UNWRAP(EVAL_ARG(c, lhs));
+    VALUE r = UNWRAP(EVAL_ARG(c, rhs));
 
-    return l != r;
+    return RESULT_OK(l != r);
 }

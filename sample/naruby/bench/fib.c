@@ -15,5 +15,7 @@ int
 main(int argc, const char *argv[])
 {
     int r = fib(40);
-    if (argc > 1) fprintf(stderr, "ret:%d\n", r);
+    printf("%d\n", r);
+    (void)argc; (void)argv;
+    return 0;
 }

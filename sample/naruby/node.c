@@ -7,143 +7,29 @@
 #include "context.h"
 #include "astro_jit.h"
 
-typedef uint64_t node_hash_t;
+// --- User-provided: allocation ---
 
-static node_hash_t
-hash_merge(node_hash_t h, node_hash_t v)
+extern size_t node_cnt;
+
+static __attribute__((noinline)) NODE *
+node_allocate(size_t size)
 {
-    h ^= v + 0x9e3779b97f4a7c15ULL + (h << 12) + (h >> 4);
-    return h;
+    NODE *n = (NODE *)malloc(size);
+    if (n == NULL) {
+        fprintf(stderr, "Memory allocation failed\n");
+        exit(EXIT_FAILURE);
+    }
+    node_cnt++;
+    return n;
 }
 
-static node_hash_t
-hash_cstr(const char *s)
-{
-    node_hash_t h = 14695981039346656037ULL; // FNV offset basis for 64-bit
-    const node_hash_t FNV_PRIME = 1099511628211ULL;
+// --- Optional dispatch tracing ---
+//
+// Older astrogen-generated node_dispatch.c calls dispatch_info();
+// modern astrogen no longer emits it.  Provide a no-op stub so locally-
+// regenerated and historic generated files both link.
 
-    while (*s) {
-        h ^= (unsigned char)(*s++);
-        h *= FNV_PRIME;
-    }
-
-    return h;
-}
-
-static node_hash_t
-hash_uint32(uint32_t ui)
-{
-    node_hash_t x = (node_hash_t)ui;
-
-    x ^= x >> 33;
-    x *= 0xff51afd7ed558ccdULL;
-    x ^= x >> 33;
-    x *= 0xc4ceb9fe1a85ec53ULL;
-    x ^= x >> 33;
-
-    return x;
-}
-
-static node_hash_t
-hash_node(NODE *n)
-{
-    if (!n) return 0;
-    if (n->head.flags.has_hash_value) {
-        return n->head.hash_value;
-    }
-    else {
-        return HASH(n);
-    }
-}
-
-static node_hash_t
-hash_builtin_func(builtin_func_t *bf)
-{
-    if (bf->have_src) {
-        node_hash_t h = hash_cstr(bf->name);
-        return hash_merge(h, hash_cstr(bf->func_name));
-    }
-    else {
-        return 0;
-    }
-}
-
-static struct specialized_code_repo {
-    uint32_t size;
-    uint32_t capa;
-
-    struct specialized_code {
-        node_hash_t hash;
-        const char *dispatcher_name;
-        node_dispatcher_func_t dispatcher;
-    } *entries;
-} sc_repo;
-
-static struct specialized_code *
-sc_repo_search(NODE *n, node_hash_t h)
-{
-    for (int i=0; i<sc_repo.size; i++) {
-        if (sc_repo.entries[i].hash == h) {
-            // fprintf(stderr, "found:%d\n", i);
-            return &sc_repo.entries[i];
-        }
-    }
-    return NULL;
-};
-
-static struct specialized_code *
-sc_repo_new_entry(void)
-{
-    if (sc_repo.size < sc_repo.capa) {
-        return &sc_repo.entries[sc_repo.size++];
-    }
-    else {
-        uint32_t capa = sc_repo.capa * 2;
-        sc_repo.entries = realloc(sc_repo.entries, sizeof(struct specialized_code) * capa);
-
-        if (sc_repo.entries) {
-            sc_repo.capa = capa;
-            return sc_repo_new_entry();
-        }
-        else {
-            fprintf(stderr, "no memory for capa:%u\n", capa);
-            exit(1);
-        }
-    }
-}
-
-static void
-sc_repo_add(NODE *n, node_hash_t h) {
-    struct specialized_code *sc = sc_repo_new_entry();
-    sc->hash = h;
-    sc->dispatcher_name = n->head.dispatcher_name;
-    sc->dispatcher = n->head.dispatcher;
-
-#if 0
-    fprintf(stderr, "add h:%lx\n", h);
-    for (uint32_t i=0; i<sc_repo.size; i++) {
-        fprintf(stderr, "* %u:%s\n", i, sc_repo.entries[i].dispatcher_name);
-    }
-#endif
-}
-
-void
-sc_repo_clear(void)
-{
-    sc_repo.size = 0;
-}
-
-static const char *
-alloc_dispatcher_name(NODE *n)
-{
-    char buff[128], *name;
-    snprintf(buff, 128, "SD_%lx", hash_node(n));
-    name = malloc(strlen(buff) + 1);
-    strcpy(name, buff);
-    return name; // TODO: need free
-}
-
-static void
+__attribute__((unused)) static void
 dispatch_info(CTX *c, NODE *n, bool end)
 {
 #if DEBUG_EVAL
@@ -157,25 +43,36 @@ dispatch_info(CTX *c, NODE *n, bool end)
         fprintf(stderr, "%s\n", n->head.dispatcher_name);
         c->rec_cnt++;
     }
+#else
+    (void)c; (void)n; (void)end;
 #endif
 }
 
-// allocation
-extern size_t node_cnt;
-static __attribute__((noinline)) NODE *
-node_allocate(size_t size) 
+// --- ASTro node infrastructure (hashes, HASH, DUMP, alloc_dispatcher_name) ---
+
+#include "astro_node.c"
+
+// naruby-specific hash: identifies a builtin function by its source identity
+// (C symbol name) so two distinct cfunc entries don't collide in the code
+// store.  Used by node_call_builtin's auto-generated hash function.
+
+static node_hash_t
+hash_builtin_func(builtin_func_t *bf)
 {
-    NODE *n = (NODE *)malloc(size);
-    if (n == NULL) {
-        fprintf(stderr, "Memory allocation failed\n");
-        exit(EXIT_FAILURE);
+    if (bf->have_src) {
+        node_hash_t h = hash_cstr(bf->name);
+        return hash_merge(h, hash_cstr(bf->func_name));
     }
-    node_cnt++;
-    return n;
+    else {
+        return 0;
+    }
 }
 
-// general node operation functions
+// --- Code store (SPECIALIZE, astro_cs_*) ---
 
+#include "astro_code_store.c"
+
+// --- naruby-specific helpers ---
 
 void
 clear_hash(NODE *n)
@@ -186,50 +83,7 @@ clear_hash(NODE *n)
     }
 }
 
-node_hash_t
-HASH(NODE *n)
-{
-    if (n == NULL) {
-        return 0;
-    }
-    else if (n->head.flags.has_hash_value) {
-        return n->head.hash_value;
-    }
-    else if (n->head.kind->hash_func) {
-        n->head.flags.has_hash_value = true;
-        return n->head.hash_value = (*n->head.kind->hash_func)(n);
-    }
-    else {
-        return 0;
-    }
-}
-
-void
-DUMP(FILE *fp, NODE *n, bool oneline)
-{
-    if (!n) {
-        fprintf(fp, "<NULL>");
-    }
-    else if (n->head.flags.is_dumping) {
-        // recursive
-        fprintf(fp, "...");
-    }
-    else {
-        n->head.flags.is_dumping = true;
-        (*n->head.kind->dumper)(fp, n, oneline);
-        n->head.flags.is_dumping = false;
-    }
-}
-
-static void
-fill_with_sc(NODE *n, struct specialized_code *sc)
-{
-    n->head.dispatcher_name = sc->dispatcher_name;
-    n->head.dispatcher = sc->dispatcher;
-    n->head.flags.is_specialized = true;
-}
-
-#define DEBUG_OPT 0
+// --- User-provided: OPTIMIZE ---
 
 NODE *
 OPTIMIZE(NODE *n)
@@ -242,64 +96,23 @@ OPTIMIZE(NODE *n)
         return n;
     }
     else {
-        // AOT compiled
-        node_hash_t h = hash_node(n);
-        struct specialized_code *sc = sc_repo_search(n, h);
-
-        if (sc) {
-            if (DEBUG_OPT) fprintf(stderr, "hit!: h:%16lx %s\n", h, n->head.kind->default_dispatcher_name);
-            fill_with_sc(n, sc);
-        }
-        else {
-            if (DEBUG_OPT) fprintf(stderr, "miss: h:%16lx %s\n", h, n->head.kind->default_dispatcher_name);
-        }
+        // AOT compiled — try to bind SD_<hash> from code_store/all.so
+        (void)astro_cs_load(n, NULL);
     }
 
     return n;
 }
 
-void
-SPECIALIZE(FILE *fp, NODE *n)
-{
-    if (n && n->head.kind->specializer) {
-        node_hash_t h = HASH(n);
-
-        struct specialized_code *sc = sc_repo_search(n, h);
-
-        if (sc) {
-            // already specialized same form tree
-            if (!n->head.flags.is_specialized) {
-                fill_with_sc(n, sc);
-            }
-        }
-        else if (n->head.flags.is_specializing) {
-            // recursive specializing
-        }
-        else {
-            if (false) {
-                fprintf(stderr, "START specialize:%p hash:%p\n", n, (void *)h);
-                DUMP(stderr, n, true);
-                fprintf(stderr, "\n");
-            }
-
-            n->head.flags.is_specializing = true;
-            (*n->head.kind->specializer)(fp, n, false);
-            n->head.flags.is_specializing = false;
-
-            sc_repo_add(n, h);
-        }
-    }
-    else {
-        // fprintf(stderr, "no specializer for %p\n", n);
-    }
-}
+// Render the specialized C source for a single entry node into a malloc'd
+// string buffer.  Used by the JIT path (sample/naruby/astro_jit.c) to send
+// SPECIALIZE output to L1 without touching the on-disk code store.
 
 char *
 SPECIALIZED_SRC(NODE *n)
 {
     if (n == NULL) return NULL;
 
-    sc_repo_clear();
+    astro_spec_dedup_clear();
 
     char *buf = NULL;
     size_t len = 0;
@@ -319,6 +132,8 @@ SPECIALIZED_SRC(NODE *n)
     return buf;
 }
 
+// --- Generated code ---
+
 #include "node_eval.c"
 #include "node_dispatch.c"
 #include "node_dump.c"
@@ -327,17 +142,10 @@ SPECIALIZED_SRC(NODE *n)
 #include "node_replace.c"
 #include "node_alloc.c"
 
-#include "node_specialized.c"
-
-#ifndef NODE_SPECIALIZED_INCLUDED
-static struct specialized_code sc_entries[] = {};
-#endif
+// --- INIT ---
 
 void
 INIT(void)
 {
-    sc_repo.size = sizeof(sc_entries) / sizeof(sc_entries[0]);
-    sc_repo.capa = sc_repo.size == 0 ? 2 : sc_repo.size * 2;
-    sc_repo.entries = malloc(sc_repo.capa * sizeof(struct specialized_code));
-    memcpy(sc_repo.entries, sc_entries, sizeof(sc_entries));
+    astro_cs_init("code_store", ".", 0);
 }

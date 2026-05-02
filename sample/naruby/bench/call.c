@@ -113,11 +113,14 @@ static A int f0(int n){ return f1(n); }
 extern int f0(int n);
 #endif
 
+#include <stdio.h>
+
 int main(void)
 {
     int sz = 100 * 1000 * 1000;
     for (int i=0; i<sz; i++) {
         f0(42);
     }
+    printf("%d\n", f0(42));
     return 0;
 }

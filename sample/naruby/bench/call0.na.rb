@@ -10,6 +10,7 @@ def test
 end
 
 test
+p zero(0)
 
 =begin
                       user     system      total        real

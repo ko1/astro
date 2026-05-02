@@ -13,6 +13,7 @@ while i<100
   test
   i+=1
 end
+p i
 
 =begin
 

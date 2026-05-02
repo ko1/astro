@@ -35,6 +35,33 @@ extern struct naruby_option OPTION;
 typedef int64_t VALUE;
 typedef uint64_t state_serial_t;
 
+// RESULT: 2-register return type for non-local exit support (`return`).
+// Same shape as castro's RESULT — fits in rax:rdx so the function return
+// ABI carries both VALUE and a state bit without needing setjmp.
+//
+// On the fast path (no `return`), `state == RESULT_NORMAL == 0` lets the
+// `if (r.state)` test fold to a single branch the predictor handles for
+// free.  Within an inlined SD chain `state` is a compile-time-constant 0
+// almost everywhere, so gcc DCE's the propagation tests entirely.
+
+#define RESULT_NORMAL 0u
+#define RESULT_RETURN 1u   /* node_return — caught at function-call boundary */
+
+typedef struct {
+    VALUE        value;
+    unsigned int state;
+} RESULT;
+
+#define RESULT_OK(v)        ((RESULT){(v), RESULT_NORMAL})
+#define RESULT_RETURN_(v)   ((RESULT){(v), RESULT_RETURN})
+
+// UNWRAP: extract VALUE from RESULT, or propagate non-NORMAL state by
+// returning from the *caller* function (statement expression).  Use this
+// at every internal EVAL_ARG site so e.g. `return` inside a deeply
+// nested if/while bubbles up to the enclosing function-call boundary
+// without setjmp.  Borrowed from castro/abruby.
+#define UNWRAP(r) ({ RESULT _r = (r); if (UNLIKELY(_r.state != RESULT_NORMAL)) return _r; _r.value; })
+
 struct function_entry {
     const char *name;
     struct Node *body;

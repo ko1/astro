@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "node.h"
+#include "astro_code_store.h"
 #include "astro_jit.h"
 
 NODE *PARSE(int argc, char *argv[]);
@@ -13,8 +14,6 @@ struct naruby_option OPTION = {
 static CTX *global_c;
 
 size_t node_cnt;
-
-void sc_repo_clear(void);
 
 // builtin functions
 
@@ -33,7 +32,9 @@ define_func(CTX *c, const char *name, const char *func_name, builtin_func_ptr fu
     fe->params_cnt = params_cnt;
     fe->locals_cnt = params_cnt;
 
-    code_repo_add(name, fe->body, true);
+    // Builtins use params_cnt as locals_cnt — the body just calls the
+    // C function with fp[0..params_cnt-1]; no further temporaries.
+    code_repo_add2(name, fe->body, true, params_cnt);
 }
 
 #define DEFINE_FUNC(c, name, func_name, arity) define_func(c, name, #func_name, (builtin_func_ptr)func_name, arity)
@@ -56,6 +57,7 @@ static struct code_repo {
         const char *name;
         NODE *body;
         uint32_t params_cnt;
+        uint32_t locals_cnt;   // = max slot index used by body, ≥ params_cnt
         bool skip_specialize;
     } *entries;
 } code_repo;
@@ -114,6 +116,12 @@ code_repo_find_by_name(const char *name)
 void
 code_repo_add(const char *name, NODE *body, bool force_add)
 {
+    code_repo_add2(name, body, force_add, 0);
+}
+
+void
+code_repo_add2(const char *name, NODE *body, bool force_add, uint32_t locals_cnt)
+{
     bool found = code_repo_find(HASH(body)) != NULL;
 
     if (body == NULL || (!force_add && found)) {
@@ -123,8 +131,31 @@ code_repo_add(const char *name, NODE *body, bool force_add)
         struct code_entry *ce = code_repo_new_entry();
         ce->name = name;
         ce->body = body;
+        ce->locals_cnt = locals_cnt;
         ce->skip_specialize = found;
     }
+}
+
+uint32_t
+code_repo_find_locals_cnt_by_body(NODE *body)
+{
+    for (uint32_t i = 0; i < code_repo.size; i++) {
+        if (code_repo.entries[i].body == body) {
+            return code_repo.entries[i].locals_cnt;
+        }
+    }
+    return 0;
+}
+
+uint32_t
+code_repo_find_locals_cnt_by_name(const char *name)
+{
+    for (uint32_t i = 0; i < code_repo.size; i++) {
+        if (strcmp(code_repo.entries[i].name, name) == 0) {
+            return code_repo.entries[i].locals_cnt;
+        }
+    }
+    return 0;
 }
 
 // context management
@@ -147,67 +178,47 @@ create_context(int frames, int funcs)
     return c;
 }
 
-// generate specialized code
+// AOT compile: emit one SD_<hash>.c per entry into code_store/c/, then
+// `make` the bundle into code_store/all.so.  Subsequent runs auto-load
+// SD_<hash> via OPTIMIZE() → astro_cs_load (in node.c).
+//
+// Entries: the program AST plus every named body in code_repo.  Bodies
+// flagged `skip_specialize` are duplicates already emitted under another
+// entry's hash — astro_cs_compile would still file-dedup them, but we
+// keep the explicit skip to avoid touching the same .c twice.
 
 static void
-generate_sc_entry(FILE *fp, NODE *n, const char *name)
+build_code_store(NODE *ast)
 {
-    node_hash_t hash_value = HASH(n);
+    if (ast) astro_cs_compile(ast, NULL);
 
-    if (hash_value) {
-        fprintf(stderr, "generate_sc_entry - name:%s func:%s\n", name, n->head.dispatcher_name);
-        fprintf(fp, "    { // %s\n", name);
-        fprintf(fp, "     .hash = 0x%lxLL,\n", hash_value);
-        fprintf(fp, "     .dispatcher_name = \"%s\",\n", n->head.dispatcher_name);
-        fprintf(fp, "     .dispatcher      = %s,\n", n->head.dispatcher_name);
-        fprintf(fp, "    },\n");
-    }
-    else {
-        fprintf(stderr, "generate_sc_entry - hash value is 0 for %s (%p)\n", name, n);
-    }
-}
-
-static void
-generate_specialized_code(NODE *n)
-{
-    // fprintf(stderr, "START generating specialized code\n");
-
-    FILE *fp = fopen("node_specialized.c", "w");
-
-    if (fp == NULL) {
-        perror("can't open for write");
-        exit(1);
-    }
-
-    sc_repo_clear();
-
-    // specialize main
-    SPECIALIZE(fp, n);
-
-    // specialize code_repo
-    for (uint32_t i=0; i<code_repo.size; i++) {
-        if (code_repo.entries[i].skip_specialize) {
-            printf("skip %s\n", code_repo.entries[i].name);
-            continue;
-        }
-        NODE *body = code_repo.entries[i].body;
-        SPECIALIZE(fp, body);
-    }
-
-    fprintf(fp, "struct specialized_code sc_entries[] = {\n");
-
-    if (n) generate_sc_entry(fp, n, "main");
-
-    for (uint32_t i=0; i<code_repo.size; i++) {
+    for (uint32_t i = 0; i < code_repo.size; i++) {
         if (code_repo.entries[i].skip_specialize) continue;
         NODE *body = code_repo.entries[i].body;
-        generate_sc_entry(fp, body, code_repo.entries[i].name);
+        if (body) astro_cs_compile(body, NULL);
     }
 
-    fprintf(fp, "};\n\n");
-    fprintf(fp, "#define NODE_SPECIALIZED_INCLUDED 1\n");
+    // -Wl,-Bsymbolic: SDs in all.so call each other (the recursive
+    // call site SD calls the body's SD baked as a constant); without
+    // this flag the linker routes those references through the GOT
+    // even though the symbol is defined in the same .so, costing one
+    // extra load per call and disabling tail-call optimisation across
+    // SD boundaries.
+    setenv("ASTRO_EXTRA_LDFLAGS", "-Wl,-Bsymbolic", 0);
 
-    fclose(fp);
+    // --param=early-inlining-insns=100: gcc's default early-inliner
+    // budget is ~14 insns; that's enough for leaf nodes but bails out
+    // on the medium-sized EVAL_node_call2 / call_body chain that the
+    // SD wants to inline (cc check + push frame + EVAL + state catch).
+    // Bumping the budget unblocks SROA on the inlined chain.
+    //
+    // (We tried -flto=auto for cross-TU IPA on the recursive call
+    // chain — it removed the post-call state check but didn't fix
+    // the `fp[0]` reload, and slightly regressed call-heavy benches.
+    // Bsymbolic-only direct call already gives us most of the win.)
+    astro_cs_build("--param=early-inlining-insns=100");
+
+    astro_cs_reload();
 }
 
 int
@@ -227,12 +238,12 @@ main(int argc, char *argv[])
     if (!OPTION.compile_only) {
         OPTIMIZE(ast);
         // printf("main dispatcher:%s (h:%lx)\n", ast->head.dispatcher_name, HASH(ast));
-        VALUE r = EVAL(c, ast);
-        printf("Result: %ld, node_cnt:%lu\n", r, node_cnt);
+        RESULT r = EVAL(c, ast, c->env);
+        printf("Result: %ld, node_cnt:%lu\n", r.value, node_cnt);
     }
 
     if (!OPTION.no_generate_specialized_code) {
-        generate_specialized_code(ast);
+        build_code_store(ast);
     }
 
     return 0;

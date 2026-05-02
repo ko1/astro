@@ -6,5 +6,5 @@ def fib n
   end
 end
 
-fib 40
+p fib(40)
 

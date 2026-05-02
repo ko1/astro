@@ -22,3 +22,4 @@ while i<100
   prime_count(n)
   i+=1
 end
+p prime_count(100_000)
