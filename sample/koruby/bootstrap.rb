@@ -1118,6 +1118,81 @@ class Range
   end
 end
 
+# Array also supports lazy enumeration by delegating to LazyRange-like
+# semantics on a wrapped enumerable source.
+class Array
+  def lazy
+    LazyEnum.new(self)
+  end
+end
+
+# Generic lazy chain over any enumerable that responds to `each`.
+class LazyEnum
+  def initialize(src)
+    @src = src
+    @ops = []
+  end
+
+  def map(&blk)
+    n = LazyEnum.new(@src)
+    n.instance_variable_set(:@ops, @ops + [[:map, blk]])
+    n
+  end
+
+  def select(&blk)
+    n = LazyEnum.new(@src)
+    n.instance_variable_set(:@ops, @ops + [[:select, blk]])
+    n
+  end
+  alias filter select
+
+  def first(n = nil)
+    one = n.nil?
+    n = 1 if one
+    out = []
+    @src.each { |x|
+      v = x
+      keep = true
+      @ops.each { |op, p|
+        if op == :map
+          v = p.call(v)
+        elsif op == :select
+          unless p.call(v)
+            keep = false
+            break
+          end
+        end
+      }
+      next unless keep
+      out << v
+      break if out.size >= n
+    }
+    one ? out.first : out
+  end
+  alias take first
+
+  def force
+    out = []
+    @src.each { |x|
+      v = x
+      keep = true
+      @ops.each { |op, p|
+        if op == :map
+          v = p.call(v)
+        elsif op == :select
+          unless p.call(v)
+            keep = false
+            break
+          end
+        end
+      }
+      out << v if keep
+    }
+    out
+  end
+  alias to_a force
+end
+
 # Minimal Lazy enumerator: chains map/select calls without materializing
 # the whole range.  Only supports map/select + first/take.
 class LazyRange

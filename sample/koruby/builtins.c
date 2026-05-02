@@ -276,6 +276,10 @@ void korb_init_builtins(void) {
     DEF(cInt, "fdiv",       int_fdiv,       1);
     DEF(cInt, "remainder",  int_remainder,  1);
     DEF(cInt, "modulo",     int_mod,        1);
+    {
+        VALUE int_abs(CTX *c, VALUE self, int argc, VALUE *argv);
+        DEF(cInt, "magnitude", int_abs, 0);
+    }
     DEF(cInt, "size",  int_size, 0);
     DEF(cInt, "coerce", int_coerce, 1);
     DEF(cInt, "abs2",   int_abs2,   0);
@@ -296,6 +300,7 @@ void korb_init_builtins(void) {
     DEF(cFlt, "to_f",  flt_to_f, 0);
     DEF(cFlt, "-@",    flt_uminus, 0);
     DEF(cFlt, "abs",   flt_abs, 0);
+    DEF(cFlt, "magnitude", flt_abs, 0);
     DEF(cFlt, "ceil",     flt_ceil,    -1);
     DEF(cFlt, "round",    flt_round,   -1);
     DEF(cFlt, "truncate", flt_truncate, 0);
