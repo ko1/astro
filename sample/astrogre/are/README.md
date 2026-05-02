@@ -61,24 +61,26 @@ To get back grep-like behaviour: `--no-recursive`, `--hidden`, `-a`
 | User-defined types           |  -   | ✓  | ✓  | ✓  | ✓ |
 | Look-around / named captures | `-P` | -  | ✓  | `-P` | ✓ |
 | Onigmo extensions (cond / recursion / atomic / `\g<name>`) | - | - | - | - | ✓ |
-| Engine                       | DFA  | NFA + memoize | NFA (PCRE) | hybrid lazy DFA + NFA fallback | NFA backtracking + SIMD prefilter |
-| ReDoS-safe by default ¹      |  ✓ (BRE/ERE) | -  | -  | ✓ default · - under `-P` | -  ² |
+| Engine                       | DFA  | NFA + Onigmo MatchCache | NFA (PCRE) | hybrid lazy DFA + NFA fallback | NFA backtracking + Onigmo MatchCache + SIMD prefilter |
+| ReDoS-safe by default ¹      | ✓ (BRE/ERE) · - under `-P` | ✓ | - | ✓ default · - under `-P` | ✓ ² |
 | AOT specialisation cache     |  -   | -  | -  | -  | ✓ (`--aot`) |
 | Embeddable as C library      |  -   | -  | -  | -  | ✓ (`astrogre.h`) |
 
-¹ "ReDoS-safe" = pathological patterns (e.g. `(a|a)*b`) cannot push a
+¹ "ReDoS-safe" = pathological patterns (e.g. `(a+)+b`) cannot push a
   full scan into exponential time on adversarial input.  This is a
   property of the engine, not the CLI — `grep -P` and `rg -P` lose it
   because they switch to PCRE2's backtracking NFA.
 
-² `are` defaults to the `astrogre` engine, which is currently NFA
-  backtracking with no memoization — pathological patterns blow up.
-  Don't feed it user-controlled patterns from the network.  Two
-  workarounds today: (a) `--engine=onigmo` swaps in Onigmo proper,
-  which does carry MatchCache; (b) keep patterns vetted.  The
-  long-term fix is a lazy-DFA path inside the astrogre engine
-  (RE2-style), not Onigmo-style memoization — tracked in
-  [`../docs/todo.md`](../docs/todo.md).
+² The `astrogre` engine carries an Onigmo-style MatchCache: lazily
+  allocated once `backtrack_count > strlen × n_branches`, and gated
+  by a static eligibility check at parse time.  The cache is *off*
+  for patterns containing backreferences, atomic groups (`(?>…)`),
+  subroutine calls (`\g<name>`), conditional groups (`(?(cond)…)`),
+  or captures inside look-around — these constructs make
+  `(node_id, pos) → known-fail` memoization unsound, so we fall back
+  to plain NFA on them.  Long-term the lazy-DFA path will close that
+  remaining hole for cache-ineligible patterns
+  ([`../docs/todo.md`](../docs/todo.md)).
 
 ## Options
 
@@ -280,10 +282,10 @@ Where `are` is the right tool:
    PCRE2 (close but not identical to Onigmo); `are` is byte-for-byte
    the same `Regexp` engine semantics you get in Ruby.  Look-behind,
    named captures, conditional groups, subroutine calls, set
-   operations on character classes — all on by default, no flag
-   needed.  ReDoS resistance is *not* yet on the default engine
-   (lazy-DFA work pending); use `--engine=onigmo` if you need
-   Onigmo's MatchCache mitigation today.
+   operations on character classes, and Onigmo MatchCache for ReDoS
+   mitigation on the eligible pattern subset — all on by default,
+   no flag needed.  See the *ReDoS-safe by default* row in the
+   feature table above for the cache-ineligible constructs.
 2. **AOT pattern specialisation.**  `--aot` writes per-pattern
    specialised C to `code_store/` and links it back in.  For a
    pattern you grep with hundreds of times (CI scripts, editor
