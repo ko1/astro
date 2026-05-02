@@ -6,15 +6,17 @@
 # repeats, capture-heavy regex), so dispatcher elimination is
 # worth measuring.
 #
-# Astrogre is timed via `--bench-file` (whole 118 MB corpus loaded
-# once, astrogre_search called N times in-process) so the engine
-# cost is isolated from CLI per-line CTX-init overhead.  Other
-# tools run via their CLI in count mode (`-c`) — they sweep the
-# whole file in one go, which matches what `--bench-file` does.
+# Astrogre engine is timed via `selftest_runner bench-file` (whole
+# 118 MB corpus loaded once, astrogre_search called N times in-
+# process) so the engine cost is isolated from CLI per-line CTX-
+# init overhead.  The Onigmo backend comparison runs through the
+# `are` CLI in count mode (`-c`) — that sweeps the whole file in
+# one go, which matches what `bench-file` does.
 #
 # Usage: ruby aot_bench.rb [N]   (best-of-N, default 3)
 # Env:   RAW=path/to/results.tsv
-#        ASTROGRE=/alt/binary
+#        ARE=/alt/are/are
+#        SELFTEST=/alt/selftest_runner
 #
 # Same /dev/null pitfall as grep_bench.rb — GNU grep's
 # af6af288 short-circuits on /dev/null output, so timed runs go to
@@ -22,7 +24,8 @@
 
 N        = (ARGV[0] || 3).to_i
 RAW      = ENV["RAW"]
-ASTROGRE = ENV["ASTROGRE"] || "../astrogre"
+ARE      = ENV["ARE"]      || "../are/are"
+SELFTEST = ENV["SELFTEST"] || "../selftest_runner"
 GREP     = "/usr/bin/grep"
 OUT      = ENV["OUT"] || "/tmp/aot_bench.out"
 
@@ -39,7 +42,9 @@ RG = [
 
 ENV["CCACHE_DISABLE"] = "1"
 Dir.chdir(__dir__)
-abort "build #{ASTROGRE} first" unless File.executable?(ASTROGRE)
+abort "build #{ARE} first (cd ../are && make)"  unless File.executable?(ARE)
+abort "build #{SELFTEST} first (cd .. && make selftest_runner)" \
+  unless File.executable?(SELFTEST)
 
 CORPUS = ENV["CORPUS"] ||
          (File.exist?("corpus_big.txt") ? "corpus_big.txt" : "corpus.txt")
@@ -62,11 +67,12 @@ def extract_per(text)
   m ? m[1].to_f : nil
 end
 
-# In-engine bench: --bench-file runs the full sweep N times.
+# In-engine bench: selftest_runner bench-file runs the full sweep
+# N times in one process and prints `per=X.XXXms`.
 def astrogre_bench_file(pat_literal, mode)
   FileUtils.rm_rf("code_store") if mode == "--aot"
   out, _ = Open3.capture2e(
-    ASTROGRE, "--bench-file", CORPUS, pat_literal, N.to_s, mode)
+    SELFTEST, "bench-file", CORPUS, pat_literal, N.to_s, mode)
   extract_per(out)
 end
 
@@ -115,15 +121,15 @@ puts "-" * 100
 PATTERNS.each do |pat_lit, pat_re|
   interp = astrogre_bench_file(pat_lit, "--plain")
   aot    = astrogre_bench_file(pat_lit, "--aot")
-  ognm   = best_of_ms("astrogre +onigmo", pat_lit, pat_re,
-                     [ASTROGRE, "--backend=onigmo", "-c", pat_re, CORPUS])
+  ognm   = best_of_ms("are +onigmo", pat_lit, pat_re,
+                     [ARE, "-j", "1", "--engine=onigmo", "-c", "-e", pat_re, CORPUS])
   grep_t = best_of_ms("grep -E", pat_lit, pat_re,
                      [GREP, "-E", "-c", pat_re, CORPUS])
   rg_t   = RG ? best_of_ms("ripgrep", pat_lit, pat_re,
                             [RG, "-j1", "-c", "-e", pat_re, CORPUS]) : nil
 
-  raw_row("astrogre interp", pat_lit, pat_re, "best", "%.3f" % interp) if interp
-  raw_row("astrogre aot",    pat_lit, pat_re, "best", "%.3f" % aot)    if aot
+  raw_row("are engine interp", pat_lit, pat_re, "best", "%.3f" % interp) if interp
+  raw_row("are engine aot",    pat_lit, pat_re, "best", "%.3f" % aot)    if aot
 
   fmt = ->(v) { v.nil? ? "ERR" : "%.3f" % v }
   printf "%-50s %8s %8s %9s %8s %8s\n",

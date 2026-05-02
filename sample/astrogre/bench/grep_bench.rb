@@ -8,7 +8,7 @@
 #
 # Usage: ruby grep_bench.rb [N]   (best-of-N, default N=3)
 # Env:   RAW=/path/to/results.tsv  → also dump per-run TSV
-#        ASTROGRE=/alt/binary, ARE=/alt/are/are
+#        ARE=/alt/are/are
 #
 # Importantly, timed output goes to a regular file, NOT /dev/null.
 # GNU grep since commit af6af288 (2016, "/dev/null output speedup")
@@ -22,7 +22,6 @@ require "open3"
 
 N        = (ARGV[0] || 3).to_i
 RAW      = ENV["RAW"]
-ASTROGRE = ENV["ASTROGRE"] || "../astrogre"
 ARE      = ENV["ARE"]      || "../are/are"
 
 # astro_cs creates `code_store/` relative to the launching process's
@@ -58,10 +57,9 @@ ENV["CCACHE_DISABLE"] = "1"
 # Working dir matches the old shell script (cd into bench/).
 Dir.chdir(__dir__)
 
-unless File.executable?(ASTROGRE)
-  abort "build #{ASTROGRE} first (cd .. && make)"
+unless File.executable?(ARE)
+  abort "build #{ARE} first (cd ../are && make)"
 end
-puts "(no #{ARE} — skipping the are -j1 row)" unless File.executable?(ARE)
 
 corpus =
   if    File.exist?("corpus_big.txt") then "corpus_big.txt"
@@ -122,36 +120,24 @@ def run_pattern(label, pattern, *extra)
   best_of "grep -E",  label, pattern, [GREP, "-E", *extra, pattern, $corpus]
   best_of "ripgrep",  label, pattern, [$rg, "-j1", *extra, "-e", pattern, $corpus] if $rg
 
-  # ASTro engine variants — the actual experiment.
-  best_of "astrogre plain",       label, pattern,
-          [$astrogre, "--plain", *extra, pattern, $corpus]
-  best_of "astrogre +onigmo",     label, pattern,
-          [$astrogre, "--backend=onigmo", *extra, pattern, $corpus]
-  best_of "astrogre aot/first",   label, pattern,
-          [$astrogre, "--aot-compile", *extra, pattern, $corpus],
+  # ASTro engine variants on the `are` CLI.  All four rows use -j1
+  # so the bench measures the engine, not the parallel walker.
+  best_of "are interp",      label, pattern,
+          [$are, "-j", "1", *extra, "-e", pattern, $corpus]
+  best_of "are +onigmo",     label, pattern,
+          [$are, "-j", "1", "--engine=onigmo", *extra, "-e", pattern, $corpus]
+  best_of "are aot/first",   label, pattern,
+          [$are, "-j", "1", "--aot", *extra, "-e", pattern, $corpus],
           clear_cs: true
   # Warm the cache once before timing the cached path.
   Process.wait Process.spawn(
-    $astrogre, "--aot-compile", *extra, pattern, $corpus,
+    $are, "-j", "1", "--aot", *extra, "-e", pattern, $corpus,
     out: OUT, err: "/dev/null")
-  best_of "astrogre aot/cached",  label, pattern,
-          [$astrogre, "--aot-compile", *extra, pattern, $corpus]
-
-  # are: production CLI on the same engine, defaults to interp.
-  # Also time the AOT-cached path (single warm-up + best-of-N).
-  if $are
-    best_of "are -j1",         label, pattern,
-            [$are, "-j", "1", *extra, "-e", pattern, $corpus]
-    Process.wait Process.spawn(
-      $are, "-j", "1", "--aot", *extra, "-e", pattern, $corpus,
-      out: OUT, err: "/dev/null")
-    best_of "are -j1 aot/cached", label, pattern,
-            [$are, "-j", "1", "--aot", *extra, "-e", pattern, $corpus]
-  end
+  best_of "are aot/cached",  label, pattern,
+          [$are, "-j", "1", "--aot", *extra, "-e", pattern, $corpus]
 end
 
-$astrogre = ASTROGRE
-$are      = File.executable?(ARE) ? ARE : nil
+$are      = ARE
 $rg       = RG
 $corpus   = corpus
 

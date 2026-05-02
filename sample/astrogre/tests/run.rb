@@ -1,16 +1,15 @@
 #!/usr/bin/env ruby
-# Ruby-driven test suite for astrogre.
-#
-# Three layers of tests, all using Ruby's own Regexp / String / system
-# grep as ground truth so we don't have to maintain expected values
-# manually:
+# Ruby-driven test suite for the astrogre engine, exercised through
+# the `are` CLI.  Three layers, all using Ruby's own Regexp / String /
+# system grep as ground truth so we don't have to maintain expected
+# values manually:
 #
 #   1. Engine-level (--dump): parse a regex, check the AST shape we
 #      expect (smoke tests for parser / lower).
-#   2. CLI-level: run `./astrogre [flags] PATTERN file` and diff against
-#      `grep [flags] PATTERN file` byte-for-byte.
-#   3. Ruby-vs-astrogre: build a small corpus, run the same regex in
-#      Ruby and via astrogre's CLI, compare matched lines / counts.
+#   2. CLI-level: run `./are/are [flags] -e PATTERN file` and diff
+#      against `grep [flags] PATTERN file` byte-for-byte.
+#   3. Ruby-vs-engine: build a small corpus, run the same regex in
+#      Ruby and via the engine's CLI, compare matched lines / counts.
 #
 # Run: ruby tests/run.rb
 # Optional: ruby tests/run.rb --verbose
@@ -19,9 +18,9 @@ require "tmpdir"
 require "open3"
 require "fileutils"
 
-ROOT      = File.expand_path("..", __dir__)
-ASTROGRE  = File.join(ROOT, "astrogre")
-GREP      = ENV["GREP"] || "/usr/bin/grep"
+ROOT = File.expand_path("..", __dir__)
+ARE  = File.join(ROOT, "are", "are")
+GREP = ENV["GREP"] || "/usr/bin/grep"
 
 VERBOSE = ARGV.include?("--verbose")
 
@@ -83,7 +82,7 @@ ENGINE_PATTERNS = [
 ]
 
 ENGINE_PATTERNS.each do |pat|
-  out, err, st = run(ASTROGRE, "--dump", pat)
+  out, err, st = run(ARE, "--dump", pat)
   if st.success? && !out.empty?
     C.ok!("engine parse #{pat}")
   else
@@ -151,21 +150,27 @@ CLI_CASES = [
 ]
 
 CLI_CASES.each do |name, flags, pat|
-  a_out, _, a_st = run(ASTROGRE, *flags, pat, corpus_file)
+  # `are` defaults to including the filename when a path is given
+  # (rg / ag convention).  GNU grep doesn't, when there's a single
+  # named file.  Force-suppress with -h on the are side so the
+  # byte-equality test stays meaningful — none of the test cases
+  # care about file-prefixing.  -l / -L produce only filenames so
+  # are passes them through regardless of -h.
+  a_out, _, a_st = run(ARE, "-h", *flags, "-e", pat, corpus_file)
   # grep: prepend -E unless -F is in play (they're mutually exclusive).
   grep_flags = flags.dup
   grep_flags = ["-E"] + grep_flags unless grep_flags.include?("-F") || grep_flags.include?("-E")
   g_out, _, g_st = run(GREP,     *grep_flags, pat, corpus_file)
   outcome = ->(st) { st.exitstatus < 2 ? (st.exitstatus == 0 ? :match : :no_match) : :error }
   if outcome.call(a_st) != outcome.call(g_st)
-    C.fail!("CLI #{name} `#{pat}`", "exit class differs astrogre=#{a_st.exitstatus} grep=#{g_st.exitstatus}")
+    C.fail!("CLI #{name} `#{pat}`", "exit class differs are=#{a_st.exitstatus} grep=#{g_st.exitstatus}")
     next
   end
   if a_out != g_out
-    C.fail!("CLI #{name} `#{pat}`", "stdout differs (astrogre #{a_out.bytesize} bytes, grep #{g_out.bytesize} bytes)")
+    C.fail!("CLI #{name} `#{pat}`", "stdout differs (are #{a_out.bytesize} bytes, grep #{g_out.bytesize} bytes)")
     if VERBOSE
-      puts "    --- astrogre ---"; puts a_out.lines.first(5).join
-      puts "    --- grep ---";     puts g_out.lines.first(5).join
+      puts "    --- are ---";  puts a_out.lines.first(5).join
+      puts "    --- grep ---"; puts g_out.lines.first(5).join
     end
   else
     C.ok!("CLI #{name} `#{pat}`")
@@ -173,8 +178,8 @@ CLI_CASES.each do |name, flags, pat|
 end
 
 # ---------------------------------------------------------------------
-# Layer 3: Ruby Regexp vs astrogre — match / no-match should agree on
-# many random patterns + inputs.  Captures aren't compared (output
+# Layer 3: Ruby Regexp vs the engine — match / no-match should agree
+# on many random patterns + inputs.  Captures aren't compared (output
 # format differs); we just check that the line-level decision matches.
 # ---------------------------------------------------------------------
 
@@ -219,24 +224,24 @@ RUBY_CASES.each_with_index do |(pat, yes_inputs, no_inputs), i|
     # Ground truth: Ruby says it matches.
     raise "Ruby disagrees: #{pat.inspect} should match #{inp.inspect}" unless ruby_re =~ inp
 
-    # astrogre via stdin.
-    out, _, st = Open3.capture3(ASTROGRE, "-q", pat, stdin_data: inp)
+    # are via stdin.
+    out, _, st = Open3.capture3(ARE, "-q", "-e", pat, stdin_data: inp)
     if st.exitstatus == 0
-      C.ok!("Ruby vs astrogre yes #{pat.inspect} / #{inp.inspect}")
+      C.ok!("Ruby vs are yes #{pat.inspect} / #{inp.inspect}")
     else
-      C.fail!("Ruby vs astrogre yes #{pat.inspect} / #{inp.inspect}",
-              "astrogre exit=#{st.exitstatus} (Ruby matched)")
+      C.fail!("Ruby vs are yes #{pat.inspect} / #{inp.inspect}",
+              "are exit=#{st.exitstatus} (Ruby matched)")
     end
   end
 
   no_inputs.each do |inp|
     raise "Ruby disagrees: #{pat.inspect} should NOT match #{inp.inspect}" if ruby_re =~ inp
-    out, _, st = Open3.capture3(ASTROGRE, "-q", pat, stdin_data: inp)
+    out, _, st = Open3.capture3(ARE, "-q", "-e", pat, stdin_data: inp)
     if st.exitstatus == 1
-      C.ok!("Ruby vs astrogre no  #{pat.inspect} / #{inp.inspect}")
+      C.ok!("Ruby vs are no  #{pat.inspect} / #{inp.inspect}")
     else
-      C.fail!("Ruby vs astrogre no  #{pat.inspect} / #{inp.inspect}",
-              "astrogre exit=#{st.exitstatus} (Ruby did not match)")
+      C.fail!("Ruby vs are no  #{pat.inspect} / #{inp.inspect}",
+              "are exit=#{st.exitstatus} (Ruby did not match)")
     end
   end
 end
