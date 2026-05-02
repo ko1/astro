@@ -1292,6 +1292,69 @@ class Method
   end
 end
 
+# ---------- Random (LCG-backed) ----------
+# Independent of Kernel#rand — useful when you need a reproducible
+# stream that doesn't share global state.  Not Mersenne-Twister, just
+# numerical-recipes-style 64-bit LCG.  Adequate for tests.
+class Random
+  def initialize(seed = nil)
+    @s = (seed || (Time.now * 1e6).to_i) & 0xffffffffffffffff
+  end
+
+  def _next
+    @s = (@s * 6364136223846793005 + 1442695040888963407) & 0xffffffffffffffff
+    @s
+  end
+
+  # Use 2.0**64 (Float) to convert raw 64-bit state into a [0, 1)
+  # uniform.  `(1 << 64)` is an Integer that's larger than what fits
+  # in some operations on koruby (no Bignum on Float division here),
+  # so just precompute the Float divisor.
+  RAND_SCALE = 18446744073709552000.0  # ~ 2.0**64
+
+  def rand(*args)
+    if args.empty?
+      (_next & 0xffffffffffffffff).to_f / RAND_SCALE
+    else
+      a = args[0]
+      if a.is_a?(Integer)
+        return (_next & 0xffffffffffffffff).to_f / RAND_SCALE if a <= 0
+        _next % a
+      elsif a.is_a?(Float)
+        return (_next & 0xffffffffffffffff).to_f / RAND_SCALE if a <= 0
+        ((_next & 0xffffffffffffffff).to_f / RAND_SCALE) * a
+      elsif a.is_a?(Range)
+        lo = a.first; hi = a.last
+        if lo.is_a?(Integer) && hi.is_a?(Integer)
+          hi += 1 unless a.exclude_end?
+          span = hi - lo
+          return lo if span <= 0
+          lo + (_next % span)
+        else
+          lo + ((_next & 0xffffffffffffffff).to_f / RAND_SCALE) * (hi - lo)
+        end
+      else
+        (_next & 0xffffffffffffffff).to_f / RAND_SCALE
+      end
+    end
+  end
+
+  def bytes(n)
+    (0...n).map { _next & 0xff }.pack("C*") rescue (0...n).map { _next & 0xff }.map(&:chr).join
+  end
+
+  def seed; @s; end
+
+  def self.new_seed
+    (Time.now * 1e9).to_i
+  end
+
+  def self.rand(*args)
+    @global ||= Random.new
+    @global.rand(*args)
+  end
+end
+
 # ---------- Set (minimal Hash-backed) ----------
 # Backed by a Hash {elem => true}.  No real ordering guarantees beyond
 # Hash insertion order (which Ruby's Hash preserves).

@@ -193,7 +193,13 @@ static VALUE int_to_s(CTX *c, VALUE self, int argc, VALUE *argv) {
     return int_format(c, self, argc, argv);
 }
 static VALUE int_to_i(CTX *c, VALUE self, int argc, VALUE *argv) { return self; }
-static VALUE int_to_f(CTX *c, VALUE self, int argc, VALUE *argv) { return korb_float_new((double)FIX2LONG(self)); }
+static VALUE int_to_f(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (FIXNUM_P(self)) return korb_float_new((double)FIX2LONG(self));
+    if (!SPECIAL_CONST_P(self) && BUILTIN_TYPE(self) == T_BIGNUM) {
+        return korb_float_new(mpz_get_d((mpz_ptr)((struct korb_bignum *)self)->mpz));
+    }
+    return korb_float_new(0.0);
+}
 static VALUE int_even_p(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (FIXNUM_P(self)) return KORB_BOOL((FIX2LONG(self) & 1) == 0);
     return Qfalse;

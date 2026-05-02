@@ -66,6 +66,8 @@ void korb_init_builtins(void) {
     DEF(cObj, "exit", kernel_exit, -1);
     DEF(cObj, "sleep", kernel_sleep, -1);
     DEF(cObj, "at_exit", kernel_at_exit, 0);
+    DEF(cObj, "rand",    kernel_rand,   -1);
+    DEF(cObj, "srand",   kernel_srand,  -1);
     DEF(cObj, "Integer", kernel_integer, -1);
     DEF(cObj, "Float", kernel_float, 1);
     DEF(cObj, "String", kernel_string, 1);

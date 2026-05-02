@@ -43,6 +43,62 @@ void korb_run_at_exit_hooks(CTX *c) {
     g_at_exit.cnt = 0;
 }
 
+/* ---------- Kernel#rand / srand ---------- */
+#include <stdlib.h>
+#include <time.h>
+
+static VALUE kernel_srand(CTX *c, VALUE self, int argc, VALUE *argv) {
+    unsigned int seed;
+    if (argc >= 1 && FIXNUM_P(argv[0])) {
+        seed = (unsigned int)FIX2LONG(argv[0]);
+    } else {
+        seed = (unsigned int)(time(NULL) ^ (long)self);
+    }
+    srand(seed);
+    return INT2FIX((long)seed);
+}
+
+static bool g_srand_initialized = false;
+static void korb_srand_lazy(void) {
+    if (!g_srand_initialized) {
+        srand((unsigned int)time(NULL));
+        g_srand_initialized = true;
+    }
+}
+
+static VALUE kernel_rand(CTX *c, VALUE self, int argc, VALUE *argv) {
+    korb_srand_lazy();
+    /* rand           → Float in [0, 1)
+     * rand(N)        → Integer in [0, N) for Integer N
+     * rand(F)        → Float in [0, F)
+     * rand(a..b)     → Integer in [a, b]  (or [a, b) for exclusive) */
+    if (argc < 1) {
+        return korb_float_new((double)rand() / ((double)RAND_MAX + 1.0));
+    }
+    VALUE a = argv[0];
+    if (FIXNUM_P(a)) {
+        long n = FIX2LONG(a);
+        if (n <= 0) return korb_float_new((double)rand() / ((double)RAND_MAX + 1.0));
+        return INT2FIX((long)(rand() % n));
+    }
+    if (KORB_IS_FLOAT(a)) {
+        double d = korb_num2dbl(a);
+        if (d <= 0) return korb_float_new((double)rand() / ((double)RAND_MAX + 1.0));
+        return korb_float_new(((double)rand() / ((double)RAND_MAX + 1.0)) * d);
+    }
+    if (!SPECIAL_CONST_P(a) && BUILTIN_TYPE(a) == T_RANGE) {
+        struct korb_range *r = (struct korb_range *)a;
+        if (FIXNUM_P(r->begin) && FIXNUM_P(r->end)) {
+            long lo = FIX2LONG(r->begin), hi = FIX2LONG(r->end);
+            if (!r->exclude_end) hi++;
+            long span = hi - lo;
+            if (span <= 0) return INT2FIX(lo);
+            return INT2FIX(lo + (rand() % span));
+        }
+    }
+    return korb_float_new((double)rand() / ((double)RAND_MAX + 1.0));
+}
+
 /* ---------- Kernel ---------- */
 static VALUE kernel_p(CTX *c, VALUE self, int argc, VALUE *argv) {
     for (int i = 0; i < argc; i++) {

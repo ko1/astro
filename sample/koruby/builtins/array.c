@@ -1108,9 +1108,36 @@ static VALUE ary_fill(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE ary_sample(CTX *c, VALUE self, int argc, VALUE *argv) {
-    struct korb_array *a = (struct korb_array *)self;
-    if (a->len == 0) return Qnil;
-    return a->ptr[0]; /* deterministic stub */
+    const struct korb_array *a = (const struct korb_array *)self;
+    if (a->len == 0) return argc >= 1 ? korb_ary_new() : Qnil;
+    /* sample (no arg) → one random element.
+     * sample(n) → fresh Array of n random elements without replacement. */
+    if (argc < 1) {
+        return a->ptr[rand() % a->len];
+    }
+    if (!FIXNUM_P(argv[0])) return Qnil;
+    long n = FIX2LONG(argv[0]);
+    if (n <= 0) return korb_ary_new();
+    if (n >= a->len) {
+        VALUE shuf = korb_ary_new_capa(a->len);
+        for (long i = 0; i < a->len; i++) korb_ary_push(shuf, a->ptr[i]);
+        struct korb_array *out = (struct korb_array *)shuf;
+        for (long i = out->len - 1; i > 0; i--) {
+            long j = rand() % (i + 1);
+            VALUE t = out->ptr[i]; out->ptr[i] = out->ptr[j]; out->ptr[j] = t;
+        }
+        return shuf;
+    }
+    VALUE shuf = korb_ary_new_capa(a->len);
+    for (long i = 0; i < a->len; i++) korb_ary_push(shuf, a->ptr[i]);
+    struct korb_array *tmp = (struct korb_array *)shuf;
+    for (long i = 0; i < n; i++) {
+        long j = i + (rand() % (tmp->len - i));
+        VALUE t = tmp->ptr[i]; tmp->ptr[i] = tmp->ptr[j]; tmp->ptr[j] = t;
+    }
+    VALUE out = korb_ary_new_capa(n);
+    for (long i = 0; i < n; i++) korb_ary_push(out, tmp->ptr[i]);
+    return out;
 }
 
 static VALUE ary_empty_p(CTX *c, VALUE self, int argc, VALUE *argv) {
