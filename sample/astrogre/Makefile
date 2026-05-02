@@ -35,7 +35,7 @@ $(ONIGMO_DIR)/build/libonigmo.a: $(ONIGMO_DIR)/build_local.mk
 	$(MAKE) -C $(ONIGMO_DIR) -f build_local.mk
 
 clean:
-	rm -fv $(NODE_GENFILES) astrogre
+	rm -fv $(NODE_GENFILES) astrogre selftest_runner
 
 clean-onigmo:
 	rm -rf $(ONIGMO_DIR)/build
@@ -44,12 +44,31 @@ regen:
 	rm -fv $(NODE_GENFILES)
 	$(MAKE)
 
-self-test: astrogre
-	./astrogre --self-test
+# Standalone engine self-test / microbench runner.  Doesn't link any
+# of main.c's grep CLI code — just the engine + selftest.c.  Used by
+# `make self-test`, `make bench`, `make bench-file`.
+SELFTEST_SRCS = selftest_runner.c selftest.c node.c parse.c match.c \
+                backend_astrogre.c aho_corasick.c
+
+selftest_runner: $(SELFTEST_SRCS) $(NODE_GENFILES) Makefile node.h context.h \
+                 backend.h aho_corasick.h $(ASTROGRE_DEPS)
+	$(CC) $(CFLAGS) -o $@ $(SELFTEST_SRCS) $(LDFLAGS) $(LIBS)
+
+self-test: selftest_runner
+	./selftest_runner test
 
 # Engine microbench (per-pattern ns/match — internal numbers).
-bench: astrogre
-	./astrogre --bench
+bench: selftest_runner
+	./selftest_runner bench
+
+# In-engine bench on a real input file.  Pattern uses /pat/flags
+# syntax (same as `--dump`).  Example:
+#   make bench-file FILE=bench/corpus_big.txt PATTERN=/static/ ITERS=50
+FILE    ?= bench/corpus_big.txt
+PATTERN ?= /static/
+ITERS   ?= 50
+bench-file: selftest_runner
+	./selftest_runner bench-file $(FILE) $(PATTERN) $(ITERS)
 
 # Build-bench helpers.  `are` is the production CLI; benches that
 # compare against grep / rg need it built.
@@ -83,4 +102,4 @@ bench-aot: astrogre
 bench-all: bench bench-rg bench-tree bench-aot
 
 .PHONY: all clean clean-onigmo regen self-test \
-        bench bench-rg bench-tree bench-aot bench-all
+        bench bench-file bench-rg bench-tree bench-aot bench-all
