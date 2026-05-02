@@ -104,6 +104,11 @@ struct korb_method {
 struct korb_method_table_entry {
     ID name;
     struct korb_method *method;
+    /* MRO depth: 0 = defined directly on the class (or cfunc registered
+     * via DEF), 1+ = imported from an included module.  Newer includes
+     * may override older include entries (depth>0) but never a depth-0
+     * entry. */
+    uint16_t include_depth;
     struct korb_method_table_entry *next;
 };
 
@@ -145,6 +150,15 @@ struct korb_class {
     /* `private` / `protected` / `public` with no args inside a class
      * body sets this default; subsequent `def`s pick it up. */
     enum korb_visibility default_visibility;
+    /* Class-level @ivars (`class Foo; @count = 0; ...`).  Stored as a
+     * tiny linear (name, value) list — class-level ivars are typically
+     * very few (counters, configuration), so a list beats a hashtable. */
+    struct korb_class_ivar {
+        ID name;
+        VALUE value;
+    } *class_ivars;
+    uint32_t class_ivar_cnt;
+    uint32_t class_ivar_capa;
 };
 
 struct korb_proc {
@@ -286,7 +300,7 @@ void  korb_ivar_set_ic_slow(VALUE obj, ID name, VALUE val, struct ivar_cache *ca
 static inline __attribute__((always_inline)) VALUE
 korb_ivar_get_ic(VALUE obj, ID name, struct ivar_cache *cache) {
     if (UNLIKELY(SPECIAL_CONST_P(obj))) return Qnil;
-    if (UNLIKELY(BUILTIN_TYPE(obj) != T_OBJECT)) return Qnil;
+    if (UNLIKELY(BUILTIN_TYPE(obj) != T_OBJECT)) return korb_ivar_get_ic_slow(obj, name, cache);
     struct korb_object *o = (struct korb_object *)obj;
     if (LIKELY(cache->klass == (struct korb_class *)o->basic.klass && cache->slot >= 0)) {
         uint32_t s = (uint32_t)cache->slot;
@@ -302,7 +316,10 @@ korb_ivar_get_ic(VALUE obj, ID name, struct ivar_cache *cache) {
 static inline __attribute__((always_inline)) void
 korb_ivar_set_ic(VALUE obj, ID name, VALUE val, struct ivar_cache *cache) {
     if (UNLIKELY(SPECIAL_CONST_P(obj))) return;
-    if (UNLIKELY(BUILTIN_TYPE(obj) != T_OBJECT)) return;
+    if (UNLIKELY(BUILTIN_TYPE(obj) != T_OBJECT)) {
+        korb_ivar_set_ic_slow(obj, name, val, cache);
+        return;
+    }
     struct korb_object *o = (struct korb_object *)obj;
     if (LIKELY(cache->klass == (struct korb_class *)o->basic.klass && cache->slot >= 0)) {
         uint32_t s = (uint32_t)cache->slot;

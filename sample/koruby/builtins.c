@@ -631,6 +631,32 @@ void korb_init_builtins(void) {
         korb_class_add_method_cfunc(cFileMeta, korb_intern("write"), file_write, -1);
         cFile->basic.klass = (VALUE)cFileMeta;
     }
+    /* Dir / Process classes — stubs so common Ruby idioms don't NPE. */
+    {
+        struct korb_class *cDir = korb_class_new(korb_intern("Dir"), korb_vm->object_class, T_OBJECT);
+        korb_const_set(korb_vm->object_class, korb_intern("Dir"), (VALUE)cDir);
+        struct korb_class *cDirMeta = korb_class_new(korb_intern("DirMeta"), korb_vm->class_class, T_CLASS);
+        korb_class_add_method_cfunc(cDirMeta, korb_intern("pwd"),     dir_pwd,     0);
+        korb_class_add_method_cfunc(cDirMeta, korb_intern("getwd"),   dir_pwd,     0);
+        korb_class_add_method_cfunc(cDirMeta, korb_intern("entries"), dir_entries, 1);
+        korb_class_add_method_cfunc(cDirMeta, korb_intern("chdir"),   dir_chdir,  -1);
+        korb_class_add_method_cfunc(cDirMeta, korb_intern("glob"),    dir_glob,    1);
+        korb_class_add_method_cfunc(cDirMeta, korb_intern("[]"),      dir_glob,    1);
+        cDir->basic.klass = (VALUE)cDirMeta;
+    }
+    {
+        struct korb_class *cProcess = korb_class_new(korb_intern("Process"), korb_vm->object_class, T_OBJECT);
+        korb_const_set(korb_vm->object_class, korb_intern("Process"), (VALUE)cProcess);
+        struct korb_class *cProcessMeta = korb_class_new(korb_intern("ProcessMeta"), korb_vm->class_class, T_CLASS);
+        korb_class_add_method_cfunc(cProcessMeta, korb_intern("pid"), process_pid, 0);
+        korb_class_add_method_cfunc(cProcessMeta, korb_intern("clock_gettime"), proc_clock_gettime_stub, -1);
+        cProcess->basic.klass = (VALUE)cProcessMeta;
+        /* CLOCK_MONOTONIC constant on Process — sentinel value, used
+         * only by clock_gettime which ignores it. */
+        korb_const_set(cProcess, korb_intern("CLOCK_MONOTONIC"), INT2FIX(1));
+        korb_const_set(cProcess, korb_intern("CLOCK_REALTIME"), INT2FIX(0));
+    }
+
     /* Instance methods on File: it doubles as our IO class for opened
      * files.  Walk-style readers + line iterators + writers. */
     korb_class_add_method_cfunc(cFile, korb_intern("close"),     io_close,     0);

@@ -252,6 +252,133 @@ static VALUE file_expand_path(CTX *c, VALUE self, int argc, VALUE *argv) {
     return argv[0];
 }
 
+/* ---------- Dir ---------- */
+#include <dirent.h>
+#include <unistd.h>
+#include <sys/stat.h>
+
+static VALUE dir_pwd(CTX *c, VALUE self, int argc, VALUE *argv) {
+    char buf[4096];
+    if (!getcwd(buf, sizeof(buf))) return korb_str_new_cstr(".");
+    return korb_str_new_cstr(buf);
+}
+
+static VALUE dir_entries(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return korb_ary_new();
+    const char *path = korb_str_cstr(argv[0]);
+    DIR *d = opendir(path);
+    if (!d) {
+        korb_raise(c, NULL, "no such directory -- %s", path);
+        return Qnil;
+    }
+    VALUE out = korb_ary_new();
+    struct dirent *de;
+    while ((de = readdir(d))) {
+        korb_ary_push(out, korb_str_new_cstr(de->d_name));
+    }
+    closedir(d);
+    return out;
+}
+
+static VALUE dir_chdir(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return Qnil;
+    const char *path = korb_str_cstr(argv[0]);
+    if (korb_block_given()) {
+        char prev[4096];
+        if (!getcwd(prev, sizeof(prev))) return Qnil;
+        if (chdir(path) != 0) {
+            korb_raise(c, NULL, "could not chdir to %s", path);
+            return Qnil;
+        }
+        VALUE r = korb_yield(c, 0, NULL);
+        if (chdir(prev) != 0) { /* unlikely; best-effort restore */ }
+        return r;
+    }
+    if (chdir(path) != 0) {
+        korb_raise(c, NULL, "could not chdir to %s", path);
+        return Qnil;
+    }
+    return INT2FIX(0);
+}
+
+/* Dir.glob — minimal pattern matching: literal paths, single star
+ * (no /), and the common recursive double-star form.  Real fnmatch
+ * would need a tracked dependency; keep this small. */
+static bool korb_glob_simple_match(const char *pat, const char *name) {
+    /* Walk pat; * matches any run of non-/ chars.  No bracket exprs. */
+    while (*pat && *name) {
+        if (*pat == '*') {
+            pat++;
+            if (!*pat) {
+                /* trailing * — match rest unless name has '/' */
+                while (*name && *name != '/') name++;
+                return *name == 0;
+            }
+            while (*name) {
+                if (korb_glob_simple_match(pat, name)) return true;
+                if (*name == '/') break;
+                name++;
+            }
+            return false;
+        }
+        if (*pat != *name) return false;
+        pat++; name++;
+    }
+    while (*pat == '*') pat++;
+    return !*pat && !*name;
+}
+
+static void korb_glob_walk(const char *dir, const char *pat, VALUE out, bool recursive) {
+    DIR *d = opendir(dir);
+    if (!d) return;
+    struct dirent *de;
+    while ((de = readdir(d))) {
+        if (de->d_name[0] == '.') continue;
+        char path[4096];
+        snprintf(path, sizeof(path), "%s/%s", dir, de->d_name);
+        if (korb_glob_simple_match(pat, de->d_name)) {
+            korb_ary_push(out, korb_str_new_cstr(path));
+        }
+        if (recursive) {
+            struct stat st;
+            if (stat(path, &st) == 0 && S_ISDIR(st.st_mode)) {
+                korb_glob_walk(path, pat, out, true);
+            }
+        }
+    }
+    closedir(d);
+}
+
+static VALUE dir_glob(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return korb_ary_new();
+    const char *pat = korb_str_cstr(argv[0]);
+    VALUE out = korb_ary_new();
+    /* Detect double-star + slash + rest recursive form. */
+    if (strncmp(pat, "**/", 3) == 0) {
+        korb_glob_walk(".", pat + 3, out, true);
+        return out;
+    }
+    /* Otherwise look in `.` if no /; else split last component. */
+    const char *slash = strrchr(pat, '/');
+    if (!slash) {
+        korb_glob_walk(".", pat, out, false);
+    } else {
+        char dir[4096];
+        long dl = slash - pat;
+        if (dl >= (long)sizeof(dir)) dl = sizeof(dir) - 1;
+        memcpy(dir, pat, dl); dir[dl] = 0;
+        korb_glob_walk(dir, slash + 1, out, false);
+    }
+    return out;
+}
+
+/* ---------- Process ---------- */
+#include <sys/types.h>
+
+static VALUE process_pid(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return INT2FIX((long)getpid());
+}
+
 /* IO (stubbed via STDOUT / $stdout) */
 
 #include <time.h>

@@ -385,10 +385,28 @@ struct korb_class *korb_singleton_class_of_value(VALUE v) {
 }
 
 void korb_module_include(struct korb_class *klass, struct korb_class *mod) {
+    /* CRuby semantics: when M2 is included after M1 (`include M1; include M2`),
+     * M2's methods take precedence over M1's.  Both still lose to methods
+     * defined directly on the class.
+     *
+     * We mark each entry's `include_depth`: 0 = defined directly on the
+     * class (or cfunc registered via DEF), >0 = pulled in from a module
+     * include.  A fresh include overrides any existing module-imported
+     * entry, but never an entry with depth 0. */
     for (uint32_t b = 0; b < mod->methods.bucket_cnt; b++) {
         for (struct korb_method_table_entry *e = mod->methods.buckets[b]; e; e = e->next) {
-            if (!method_table_get(&klass->methods, e->name)) {
-                method_table_set(&klass->methods, e->name, e->method);
+            /* Look up existing entry to read its include_depth. */
+            uint32_t bb = (uint32_t)(e->name % klass->methods.bucket_cnt);
+            struct korb_method_table_entry *existing = NULL;
+            for (struct korb_method_table_entry *me = klass->methods.buckets[bb]; me; me = me->next) {
+                if (me->name == e->name) { existing = me; break; }
+            }
+            if (existing && existing->include_depth == 0) continue;  /* class wins */
+            method_table_set(&klass->methods, e->name, e->method);
+            /* Re-lookup (resize may have moved buckets) and mark imported. */
+            uint32_t bb2 = (uint32_t)(e->name % klass->methods.bucket_cnt);
+            for (struct korb_method_table_entry *me = klass->methods.buckets[bb2]; me; me = me->next) {
+                if (me->name == e->name) { me->include_depth = 1; break; }
             }
         }
     }
@@ -426,9 +444,14 @@ struct korb_method *korb_class_find_method(const struct korb_class *klass, ID na
  * Used for `super`: receiver_klass = class of `c->self`,
  * defining_class = current method's defining_class.
  *
- * MRO order at each class level: prepends (last-first), class itself,
- * then super class (recursively).  Includes are flattened into the
- * class's own table, so they aren't a separate MRO step here. */
+ * MRO order at each class level:
+ *   prepends (last-included first), class itself, includes (last-first),
+ *   then super class (recursively).
+ *
+ * For includes, since their methods are flattened into the class's own
+ * `methods` table at include-time, the "find within an included module"
+ * step also reads from `mod->methods` directly (matching CRuby's own
+ * include semantics). */
 struct korb_method *korb_class_find_super_method(const struct korb_class *receiver_klass,
                                                  const struct korb_class *defining_class,
                                                  ID name) {
@@ -449,6 +472,17 @@ struct korb_method *korb_class_find_super_method(const struct korb_class *receiv
             if (m) return m;
         } else if (k == defining_class) {
             past = true;
+        }
+        /* Includes: most-recently-included first.  These come BETWEEN
+         * the class and its super in the MRO. */
+        for (int32_t i = (int32_t)k->includes_cnt - 1; i >= 0; i--) {
+            const struct korb_class *inc = k->includes[i];
+            if (past) {
+                struct korb_method *m = method_table_get(&inc->methods, name);
+                if (m) return m;
+            } else if (inc == defining_class) {
+                past = true;
+            }
         }
         k = k->super;
     }
@@ -569,6 +603,13 @@ static int ivar_slot_assign(struct korb_class *k, ID name) {
 
 VALUE korb_ivar_get(VALUE obj, ID name) {
     if (SPECIAL_CONST_P(obj)) return Qnil;
+    if (BUILTIN_TYPE(obj) == T_CLASS || BUILTIN_TYPE(obj) == T_MODULE) {
+        struct korb_class *k = (struct korb_class *)obj;
+        for (uint32_t i = 0; i < k->class_ivar_cnt; i++) {
+            if (k->class_ivars[i].name == name) return k->class_ivars[i].value;
+        }
+        return Qnil;
+    }
     if (BUILTIN_TYPE(obj) != T_OBJECT) return Qnil;
     struct korb_object *o = (struct korb_object *)obj;
     struct korb_class *k = (struct korb_class *)o->basic.klass;
@@ -582,6 +623,9 @@ VALUE korb_ivar_get(VALUE obj, ID name) {
  * receiver. */
 VALUE korb_ivar_get_ic_slow(VALUE obj, ID name, struct ivar_cache *cache) {
     if (SPECIAL_CONST_P(obj)) return Qnil;
+    if (BUILTIN_TYPE(obj) == T_CLASS || BUILTIN_TYPE(obj) == T_MODULE) {
+        return korb_ivar_get(obj, name);
+    }
     if (BUILTIN_TYPE(obj) != T_OBJECT) return Qnil;
     struct korb_object *o = (struct korb_object *)obj;
     struct korb_class *k = (struct korb_class *)o->basic.klass;
@@ -593,6 +637,25 @@ VALUE korb_ivar_get_ic_slow(VALUE obj, ID name, struct ivar_cache *cache) {
 
 void korb_ivar_set(VALUE obj, ID name, VALUE val) {
     if (SPECIAL_CONST_P(obj)) return;
+    /* Class-level @ivars (rare but legal — `class Foo; @count = 0`). */
+    if (BUILTIN_TYPE(obj) == T_CLASS || BUILTIN_TYPE(obj) == T_MODULE) {
+        struct korb_class *k = (struct korb_class *)obj;
+        for (uint32_t i = 0; i < k->class_ivar_cnt; i++) {
+            if (k->class_ivars[i].name == name) {
+                k->class_ivars[i].value = val;
+                return;
+            }
+        }
+        if (k->class_ivar_cnt >= k->class_ivar_capa) {
+            uint32_t nc = k->class_ivar_capa ? k->class_ivar_capa * 2 : 4;
+            k->class_ivars = korb_xrealloc(k->class_ivars, nc * sizeof(*k->class_ivars));
+            k->class_ivar_capa = nc;
+        }
+        k->class_ivars[k->class_ivar_cnt].name = name;
+        k->class_ivars[k->class_ivar_cnt].value = val;
+        k->class_ivar_cnt++;
+        return;
+    }
     if (BUILTIN_TYPE(obj) != T_OBJECT) return;
     struct korb_object *o = (struct korb_object *)obj;
     struct korb_class *k = (struct korb_class *)o->basic.klass;
@@ -617,6 +680,10 @@ void korb_ivar_set(VALUE obj, ID name, VALUE val) {
  * slot is past current ivar_capa / ivar_cnt and needs growth. */
 void korb_ivar_set_ic_slow(VALUE obj, ID name, VALUE val, struct ivar_cache *cache) {
     if (SPECIAL_CONST_P(obj)) return;
+    if (BUILTIN_TYPE(obj) == T_CLASS || BUILTIN_TYPE(obj) == T_MODULE) {
+        korb_ivar_set(obj, name, val);
+        return;
+    }
     if (BUILTIN_TYPE(obj) != T_OBJECT) return;
     struct korb_object *o = (struct korb_object *)obj;
     struct korb_class *k = (struct korb_class *)o->basic.klass;
