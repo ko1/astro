@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
+#include <gmp.h>
 #include "context.h"
 #include "object.h"
 #include "node.h"
@@ -139,7 +140,7 @@ void korb_init_builtins(void) {
     DEF(cAry, "[]=", ary_aset, -1);
     DEF(cAry, "push", ary_push, -1);
     DEF(cAry, "<<", ary_lshift, 1);
-    DEF(cAry, "pop", ary_pop, 0);
+    DEF(cAry, "pop", ary_pop, -1);
     DEF(cAry, "first", ary_first_n, -1);
     DEF(cAry, "last",  ary_last_n,  -1);
     DEF(cAry, "each", ary_each, 0);

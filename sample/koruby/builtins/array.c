@@ -114,6 +114,21 @@ static VALUE ary_push(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 static VALUE ary_pop(CTX *c, VALUE self, int argc, VALUE *argv) {
     CHECK_FROZEN_RET(c, self, Qnil);
+    if (argc >= 1 && FIXNUM_P(argv[0])) {
+        long n = FIX2LONG(argv[0]);
+        if (n < 0) {
+            VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+            korb_raise(c, (struct korb_class *)eArg, "negative array size");
+            return Qnil;
+        }
+        struct korb_array *a = (struct korb_array *)self;
+        long take = n > a->len ? a->len : n;
+        VALUE out = korb_ary_new_capa(take);
+        long start = a->len - take;
+        for (long i = start; i < a->len; i++) korb_ary_push(out, a->ptr[i]);
+        a->len = start;
+        return out;
+    }
     return korb_ary_pop(self);
 }
 static VALUE ary_first(CTX *c, VALUE self, int argc, VALUE *argv) {
@@ -986,6 +1001,20 @@ static VALUE ary_unshift(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE ary_shift(CTX *c, VALUE self, int argc, VALUE *argv) {
     CHECK_FROZEN_RET(c, self, Qnil);
     struct korb_array *a = (struct korb_array *)self;
+    if (argc >= 1 && FIXNUM_P(argv[0])) {
+        long n = FIX2LONG(argv[0]);
+        if (n < 0) {
+            VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+            korb_raise(c, (struct korb_class *)eArg, "negative array size");
+            return Qnil;
+        }
+        long take = n > a->len ? a->len : n;
+        VALUE out = korb_ary_new_capa(take);
+        for (long i = 0; i < take; i++) korb_ary_push(out, a->ptr[i]);
+        for (long i = 0; i + take < a->len; i++) a->ptr[i] = a->ptr[i + take];
+        a->len -= take;
+        return out;
+    }
     if (a->len == 0) return Qnil;
     VALUE v = a->ptr[0];
     for (long i = 0; i + 1 < a->len; i++) a->ptr[i] = a->ptr[i+1];

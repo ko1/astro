@@ -182,17 +182,23 @@ static VALUE hash_to_a(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 static VALUE hash_fetch(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1) return Qnil;
-    struct korb_hash *h = (struct korb_hash *)self;
+    const struct korb_hash *h = (const struct korb_hash *)self;
     uint64_t hh = korb_hash_value(argv[0]);
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
         if (e->hash == hh && korb_eql(e->key, argv[0])) return e->value;
     }
-    /* not found: default arg or block or raise */
+    /* Not found: priority is block > default arg > KeyError. */
+    if (korb_block_given()) {
+        VALUE r = korb_yield(c, 1, &argv[0]);
+        if (c->state != KORB_NORMAL) return Qnil;
+        return r;
+    }
     if (argc >= 2) return argv[1];
-    /* try yielding to block */
-    VALUE r = korb_yield(c, 1, &argv[0]);
-    if (c->state != KORB_NORMAL) return Qnil;
-    return r;
+    VALUE eKey = korb_const_get(korb_vm->object_class, korb_intern("KeyError"));
+    if (UNDEF_P(eKey) || !eKey) eKey = (VALUE)NULL;
+    VALUE ks = korb_inspect(argv[0]);
+    korb_raise(c, (struct korb_class *)eKey, "key not found: %s", korb_str_cstr(ks));
+    return Qnil;
 }
 
 static VALUE hash_delete(CTX *c, VALUE self, int argc, VALUE *argv) {

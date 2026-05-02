@@ -454,12 +454,23 @@ static VALUE int_aref(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE int_bit_length(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (!FIXNUM_P(self)) return INT2FIX(0);
-    long v = FIX2LONG(self);
-    if (v < 0) v = ~v;
-    int n = 0;
-    while (v > 0) { n++; v >>= 1; }
-    return INT2FIX(n);
+    if (FIXNUM_P(self)) {
+        long v = FIX2LONG(self);
+        if (v < 0) v = ~v;
+        int n = 0;
+        while (v > 0) { n++; v >>= 1; }
+        return INT2FIX(n);
+    }
+    if (!SPECIAL_CONST_P(self) && BUILTIN_TYPE(self) == T_BIGNUM) {
+        const struct korb_bignum *bn = (const struct korb_bignum *)self;
+        /* For negatives, GMP's mpz_sizeinbase counts the bits of |n| but
+         * for `bit_length` we want the bits needed to represent the
+         * twos-complement, which for n<0 is `bit_length(~n)`. */
+        size_t bits = mpz_sizeinbase((mpz_ptr)bn->mpz, 2);
+        if (mpz_sgn((mpz_ptr)bn->mpz) == 0) bits = 0;
+        return INT2FIX((long)bits);
+    }
+    return INT2FIX(0);
 }
 
 static VALUE int_divmod(CTX *c, VALUE self, int argc, VALUE *argv) {
