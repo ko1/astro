@@ -257,11 +257,16 @@ build_call_with_block(struct transduce_context *tc, NODE *recv, ID name,
                 }
                 real_args.size = bn;
                 real_args.nodes = buf;
-                /* Build `expr.to_proc` node manually. */
+                /* Build `expr.to_proc` node manually.  Reserve a fresh
+                 * slot for its dispatch so we don't alias an outer
+                 * call's staging area. */
                 NODE *expr = ba->expression ? T(tc, ba->expression) : ALLOC_node_nil();
                 struct method_cache *mc = alloc_method_cache();
-                NODE *to_proc = ALLOC_node_method_call(expr, korb_intern("to_proc"), 0, arg_index(tc), mc);
-                return build_call_simple(tc, recv, name, &real_args, to_proc, is_method);
+                uint32_t tp_slot = inc_arg_index(tc);
+                NODE *to_proc = ALLOC_node_method_call(expr, korb_intern("to_proc"), 0, tp_slot, mc);
+                NODE *r = build_call_simple(tc, recv, name, &real_args, to_proc, is_method);
+                rewind_arg_index(tc, tp_slot);
+                return r;
             }
         }
     }
@@ -1745,13 +1750,20 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
           pm_node_t *block_pm = (n->block && PM_NODE_TYPE_P(n->block, PM_BLOCK_NODE)) ? n->block : NULL;
           /* &expr block-pass: the call's `block` slot holds a
            * BLOCK_ARGUMENT_NODE.  Rewrite to `expr.to_proc` and pass as
-           * the block_node directly. */
+           * the block_node directly.  Reserve a dedicated temp slot for
+           * the to_proc dispatch so it doesn't share with whatever the
+           * outer call is using for its own arg staging — that
+           * reservation collision is what made `f arg, ary.map(&proc)`
+           * clobber the outer arg into a number. */
           if (!block_pm && n->block && PM_NODE_TYPE_P(n->block, PM_BLOCK_ARGUMENT_NODE)) {
               pm_block_argument_node_t *ba = (pm_block_argument_node_t *)n->block;
               NODE *expr = ba->expression ? T(tc, ba->expression) : ALLOC_node_nil();
               struct method_cache *mc_tp = alloc_method_cache();
-              NODE *to_proc = ALLOC_node_method_call(expr, korb_intern("to_proc"), 0, arg_index(tc), mc_tp);
-              return build_call_simple(tc, recv, name, args ? &args->arguments : NULL, to_proc, recv != NULL);
+              uint32_t tp_slot = inc_arg_index(tc);
+              NODE *to_proc = ALLOC_node_method_call(expr, korb_intern("to_proc"), 0, tp_slot, mc_tp);
+              NODE *r = build_call_simple(tc, recv, name, args ? &args->arguments : NULL, to_proc, recv != NULL);
+              rewind_arg_index(tc, tp_slot);
+              return r;
           }
           return build_call_with_block(tc, recv, name, args ? &args->arguments : NULL, block_pm, recv != NULL);
       }
