@@ -113,4 +113,4 @@ TESTS = [
   :test_kind_of,
 ]
 TESTS.each { |t| run_test(t) }
-report "ModuleMore"
+report "Module"

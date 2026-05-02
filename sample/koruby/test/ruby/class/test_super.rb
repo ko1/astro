@@ -100,4 +100,4 @@ TESTS = [
   :test_super_with_block,
 ]
 TESTS.each { |t| run_test(t) }
-report "SuperMore"
+report "Super"
