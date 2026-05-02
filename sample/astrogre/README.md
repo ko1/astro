@@ -174,15 +174,19 @@ the pitfall note below).  Bold = row minimum.
 
 | pattern                              | are interp | are aot/cached | are +onigmo | grep | ripgrep |
 |--------------------------------------|---:|---:|---:|---:|---:|
-| `/static/`                           | **38** | 41 | 111 | 74 | 41 |
-| `/specialized_dispatcher/`           | **21** | 24 | 39 | 38 | **21** |
-| `/^static/` anchored                 | 77 | 80 | 114 | 76 | **41** |
-| `/VALUE/i`                           | 85 | 76 | 141 | 98 | **56** |
-| `/static\|extern\|inline/`           | 376 | 121 | 1027 | 205 | **63** |
-| 12-way alt (AC prefilter)            | 444 | 409 | 2609 | 276 | **139** |
-| `/[0-9]{4,}/`                        | 362 | 168 | 601 | 97 | **55** |
-| `/[a-z_]+_[a-z]+\(/`                 | 1858 | 1202 | 3400 | 2214 | **203** |
-| `-c /static/`                        | **22** | 24 | 71 | 64 | 27 |
+| `/static/`                           | **38** | 38 | 110 | 76 | 41 |
+| `/specialized_dispatcher/`           | **19** | 22 | 34 | 34 | 20 |
+| `/^static/` anchored                 | 75 | 78 | 102 | 66 | **38** |
+| `/VALUE/i`                           | 80 | 71 | 146 | 97 | **55** |
+| `/static\|extern\|inline/`           | 392 | 119 | 990 | 185 | **58** |
+| 12-way alt (AC prefilter)            | 379 | 378 | 2582 | 257 | **133** |
+| `/[0-9]{4,}/`                        | 363 | 136 | 569 | 86 | **54** |
+| `/[a-z_]+_[a-z]+\(/`                 | 1824 | 632 | 3391 | 2211 | **204** |
+| `-c /static/`                        | **23** | 23 | 70 | 63 | 28 |
+
+Honest tally: are 3 wins · rg 6 wins · grep 0 wins.  AOT cached
+beats interp on the long-chain rows (alt-3: 392→119, class-rep:
+363→136, ident-call: 1824→632 — the heavy ones speed up 2.7-3.3×).
 
 `+onigmo` requires `make WITH_ONIGMO=1`; if onigmo isn't linked the
 column comes back ERR.  See [`are/README.md`](./are/README.md) for
@@ -212,43 +216,47 @@ winner.
 
 | pattern                                 | interp | +AOT | +onigmo | grep | rg    |
 |-----------------------------------------|---:|---:|---:|---:|---:|
-| `/(QQQ\|RRR)+\d+/`                       | 25 | **14** | 590 | 104 | 27 |
-| `/(QQQX\|RRRX\|SSSX)+/`                  | 57 | **26** | 608 | 29 | 27 |
-| `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/`   | 1126 | 517 | 611 | 778 | **223** |
-| `/[A-Z]{50,}/`                           | 472 | **206** | 1026 | 1722 | 306 |
-| `/\b(if\|else\|for\|while\|return)\b/`   | 595 | **203** | 2226 | 2241 | 227 |
-| `/[a-z][0-9][a-z][0-9][a-z]/`           | 1141 | 506 | 616 | 1114 | **209** |
-| `/(\d+\.\d+\.\d+\.\d+)/`                | 467 | 229 | 634 | **93** | 274 |
-| `/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/`    | 7694 | 5314 | 13081 | 6170 | **237** |
+| `/(QQQ\|RRR)+\d+/`                       | 23 | **13** | 510 | 94 | 23 |
+| `/(QQQX\|RRRX\|SSSX)+/`                  | 48 | 25 | 539 | 26 | **24** |
+| `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/`   | 1023 | 646 | 558 | 701 | **181** |
+| `/[A-Z]{50,}/`                           | 479 | **156** | 945 | 1587 | 180 |
+| `/\b(if\|else\|for\|while\|return)\b/`   | 284 | **120** | 914 | 825 | 123 |
+| `/[a-z][0-9][a-z][0-9][a-z]/`           | 1021 | 445 | 552 | 1005 | **180** |
+| `/(\d+\.\d+\.\d+\.\d+)/`                | 430 | 105 | 565 | **82** | 185 |
+| `/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/`    | 6958 | **2086** | 12291 | 5708 | 217 |
 
 #### AOT effect
 
-AOT cuts interp time by **1.4×–2.95×** on every row.  Win count:
+AOT cuts interp time by **1.6×–4.1×** on every row.  Win count:
 
 - **vs Onigmo: 8/8 wins** — usually 3-15× faster.  Onigmo is a
   bytecode VM dispatching every alt branch, every quantifier
   iter; AOT folds those into a flat SD with no indirect call.
-- **vs GNU grep: 4/8 wins**.  Notably:
-  - `[A-Z]{50,}`: AOT 206 ms vs grep 1722 ms (8.4×).  The DFA
+- **vs GNU grep: 6/8 wins**.  Notably:
+  - `[A-Z]{50,}`: AOT 156 ms vs grep 1587 ms (10×).  The DFA
     explodes on long uppercase runs; `greedy_class` fast-path
     walks them in SIMD.
-  - `\b(if|else|for|while|return)\b`: AOT 203 ms vs grep 2241 ms
-    (11×).  Long alt-of-LIT body chain compiled into one SD.
-  - `(QQQ|RRR)+\d+`, `(QQQX|RRRX|SSSX)+`: byteset prefilter +
-    AOT-folded body match grep / ripgrep.
-- **vs ripgrep: 2/8 wins** (`[A-Z]{50,}`, `\b(if|else|...)\b`).
-  Ripgrep wins or ties the rest 1.05×–25× thanks to lazy DFA +
-  the Aho-Corasick / Teddy multi-pattern literal prefilter in the
+  - `\b(if|else|for|while|return)\b`: AOT 120 ms vs grep 825 ms
+    (7×).  Long alt-of-LIT body chain compiled into one SD.
+  - `(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)`: AOT 2086 ms vs grep
+    5708 ms (2.7×).
+  - `(QQQ|RRR)+\d+`: byteset prefilter + AOT-folded body
+    leaves only ~zero-cost candidate verification.
+- **vs ripgrep: 3/8 wins + 1 tie**.  Wins on `(QQQ|RRR)+\d+`,
+  `[A-Z]{50,}`, `\b(if|else|...)\b` — the AOT path beats rg's
+  lazy DFA when our byteset / greedy_class fast paths apply.
+  Ripgrep wins the rest 1.4×–9.6×: lazy DFA + the Aho-Corasick /
+  Teddy multi-pattern literal prefilter in the
   [`regex-automata`](https://github.com/rust-lang/regex/) crate.
-  The `(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)` row (5314 ms vs rg
-  237 ms) is the worst gap: rg extracts mid-pattern literal
+  The `(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)` row (2086 ms vs rg
+  217 ms) is the worst gap: rg extracts mid-pattern literal
   anchors (`(`, `,`, `)`) and runs SIMD AC on them; we only
   extract leading-edge alts of literals.  Tracked in
   [`docs/todo.md`](./docs/todo.md).
 
 #### What grep still wins
 
-`(\d+\.\d+\.\d+\.\d+)` (93 ms) — the leading `\d` class is rare
+`(\d+\.\d+\.\d+\.\d+)` (82 ms) — the leading `\d` class is rare
 in C source, so grep's `\d`-led DFA + Boyer-Moore-Horspool skips
 ahead by needle length.  Our `greedy_class` walks every byte via
 SIMD — same throughput, but the byte budget is fundamentally

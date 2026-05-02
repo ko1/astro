@@ -152,12 +152,27 @@ v1 で入っているもの、カテゴリ別。[`todo.md`](./todo.md) の対。
   HOPT == HORG)。
 - **`--plain` (`--no-cs`)**: code store を完全 bypass。
 
-内側 SD は `astrogre_export_sd_wrappers` post-process (luastro 由来) で
-外部可視化される — 各 SD を `SD_<hash>_INL` にリネームし、薄い
-externally-visible wrapper を append、`dlsym` がルートだけでなく全
-node を見つけられるように。サイドアレイで全 allocated NODE を track
-してビルド後に `astro_cs_load` を全 node に再適用、チェーン全体に
-パッチ。
+SD は ASTroGen が `static inline` で出すので gcc が chain を 1 個の
+basic block に inline 化する。一方で `static` は dlsym で見えない
+ので、何らかの方法で「外部から call 可能な entry symbol を出す」
+必要がある。
+
+これに対し、最初は luastro 由来のファイル後処理 hack
+(`astrogre_export_sd_wrappers` で全 SD を `_INL` にリネーム + 薄い
+extern wrapper を append) を使っていた。現在は **framework の正規
+API `astro_cs_compile(node, NULL)` を必要な entry node ぶん呼ぶ**
+方式に置き換え済み (~140 行の hack 撤去)。`astro_cs_compile` は
+entry を public、その subtree を `static inline` として 1 個の
+SD ファイルに emit するので、ASTroGen の意図通り chain は SD 内
+inline、entry は dlsym 可能、という両立が **設計レベルで** 成立する。
+
+「どの NODE が entry になる必要があるか」は parse / lower 時に
+機械的に決まる: rep の body と outer_next、subroutine_call の
+outer_next、各 sub_chain の root、pattern root、count_lines_root /
+print_lines_root、rep_cont_sentinel singleton。`lower_ctx_t::entries`
+配列に push しておき AOT compile 時に iterate。サイドアレイで全
+allocated NODE を track してビルド後に `astro_cs_load` を全 node
+に再適用、チェーン全体にパッチする仕組みは併存。
 
 ## search ループを AST に折り込み
 
@@ -249,19 +264,21 @@ regular file — `/dev/null` だと grep の dev_null 短絡 (af6af288) で
 |---------------------------------------------|---:|---:|
 | 出発点 (memmem + memchr in are/main.c)      | 64 | 66 |
 | stage 1: monolithic `count_lines_lit`       | 23 | 66 |
-| stage 2: scanner + action chain (現在)      | **27** | **71** |
-| stage 2 + AOT cached                        | **26** | **40** |
-| ripgrep                                     | 30 | 86 |
-| GNU grep                                    | 71 | 153 |
+| stage 2: scanner + action chain (現在)      | **23** | **38** |
+| stage 2 + AOT cached                        | 23 | 38 |
+| ripgrep                                     | 28 | 41 |
+| GNU grep                                    | 63 | 76 |
 
-`-c /static/` で astrogre interp が **27 ms ─ ripgrep 30 ms / GNU
-grep 71 ms** を抑えて行内最速。default print は AOT 込みで 40 ms と
-ripgrep 86 ms の半分を切る。GNU grep は両方とも我々より遅い (153 /
-71 ms) が、これは grep が `static` のような頻出パターンで毎マッチ
-ごと output (`fname:lineno:line` フォーマット + write) を生成する
-コストが大きいため。`-c` だけなら grep もタイトな count loop で
-済むので 71 ms までは詰まる、それでも我々の AC + scanner
-factorization のほうが速い。
+`-c /static/` で are interp が **23 ms ─ ripgrep 28 ms / GNU grep
+63 ms** を抑えて行内最速。default print も同じく interp 38 ms で
+ripgrep 41 ms / grep 76 ms を抑えて最速 (AOT cached は同 38 ms で
+変化なし ─ scan path が既に 1 個の SD で indirect call ゼロなので
+dlopen のオーバヘッドぶん損も得もしない)。GNU grep は両方とも我々
+より遅い (76 / 63 ms) が、これは grep が `static` のような頻出
+パターンで毎マッチごと output (`fname:lineno:line` フォーマット +
+write) を生成するコストが大きいため。`-c` だけなら grep もタイトな
+count loop で済むので 63 ms までは詰まる、それでも我々の scanner +
+action chain factorization のほうが速い。
 
 `--verbose` で見える分解:
 

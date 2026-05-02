@@ -46,42 +46,44 @@ mode (= `-q` 相当)** へ切り替える最適化が入っている。
 
 ### Bench A: grep CLI モード — `bench/grep_bench.rb`
 
-実利用に近い形。1 ファイル (118 MB の C ソースコーパス) を
-`PATTERN file` 形式で開いて行ごとに結果を出す。astrogre interp
-(`--plain`) / astrogre AOT-cached (warm `code_store/`) / GNU grep /
-ripgrep の 4 を同条件で動かす。Onigmo backend は `WITH_ONIGMO=1`
-で再ビルドしたときだけ。
+実利用に近い形。1 ファイル (118 MB の C ソースコーパス) を `are PATTERN file`
+形式で開いて行ごとに結果を出す。`are` は astrogre engine の grep CLI、
+`-j 1` で並列 walker を切ってエンジン単体の比較にする。Onigmo backend
+は `WITH_ONIGMO=1` で再ビルドしたときだけ列挙される。
 
-| パターン                                | astrogre interp | astrogre +AOT/cached | grep | ripgrep |
-|----------------------------------------|---:|---:|---:|---:|
-| `/static/` literal                     | 71 | **40** | 153 | 86 |
-| `/specialized_dispatcher/` rare        | **22** | 25 | 37 | **21** |
-| `/^static/` anchored                   | 77 | 83 | **71** | 41 |
-| `/VALUE/i` case-insens                 | 82 | **76** | 105 | 60 |
-| `/static\|extern\|inline/` alt-3       | 389 | **128** | 204 | 64 |
-| 12-way alt (AC prefilter)              | 418 | 419 | 281 | **147** |
-| `/[0-9]{4,}/` class-rep                | 373 | 177 | **92** | 59 |
-| `/[a-z_]+_[a-z]+\(/` ident-call        | 1911 | 1341 | 2421 | **220** |
-| `-c /static/` count                    | 27 | 26 | 71 | **30** |
+| パターン                                | are interp | are AOT cached | are +onigmo | rg | grep |
+|----------------------------------------|---:|---:|---:|---:|---:|
+| `/static/`                             | **38** | 38 | 110 | 41 | 76 |
+| `/specialized_dispatcher/`             | **19** | 22 | 34 | 20 | 34 |
+| `/^static/` anchored                   | 75 | 78 | 102 | **38** | 66 |
+| `/VALUE/i` case-insens                 | 80 | 71 | 146 | **55** | 97 |
+| `/static\|extern\|inline/` alt-3       | 392 | 119 | 990 | **58** | 185 |
+| 12-way alt (AC prefilter)              | 379 | 378 | 2582 | **133** | 257 |
+| `/[0-9]{4,}/` class-rep                | 363 | 136 | 569 | **54** | 86 |
+| `/[a-z_]+_[a-z]+\(/` ident-call        | 1824 | 632 | 3391 | **204** | 2211 |
+| `-c /static/` count                    | **23** | 23 | 70 | 28 | 63 |
 
-ms、3 回実行の最速。太字は行内の最速。
+ms、`taskset -c 4` 固定 + 7 回実行の最速。太字は行内の最速。
+honest 集計: are 3 勝、rg 6 勝、grep 0 勝。
 
 #### 読み取り
 
-- **AOT が interp を上回るのは prefilter のあるパターン**で、
-  `/static/` で 71→40 ms (1.78×)、alt-3 で 389→128 ms (3.04×)。
-  両方とも候補位置で動く body chain (cap_start → lit/alt →
-  cap_end → succ) が長く、AOT がそれを 1 個の SD 関数に折り畳む。
-- **`-c /static/` で astrogre が rg / grep を抑えて勝つ** (26 ms
-  vs rg 30 ms vs grep 71 ms)。`node_grep_count_lines_lit` 経由で
-  scan + lineskip + count を 1 ループに融合した結果。
-- **GNU grep は anchored / class-rep の 2 行で勝つ**。`^` 始まりは
-  grep の line-oriented loop と相性が良く、`[0-9]{4,}` は数字
-  リテラルがコードで疎なので grep の Boyer-Moore-Horspool が skip
-  ahead しやすい。
-- **ripgrep は ident-call / 12lit で圧勝**。前者は lazy DFA、
-  後者は AC prefilter (我々と同方式) が SIMD で 1.5× 上手い。
-  どちらも我々が次フェーズで詰める領域 (todo.md)。
+- **AOT が interp を上回るのは body chain が長いパターン**: alt-3
+  で 392→119 ms (3.3×)、class-rep で 363→136 ms (2.7×)、ident-call
+  で 1824→632 ms (2.9×)。SD specializer が candidate 位置で走る
+  body chain (cap_start → alt/lit → cap_end → succ) を 1 個の SD
+  関数に折り畳む。
+- **`-c /static/` で are が rg / grep を抑えて勝つ** (23 ms vs rg
+  28 ms vs grep 63 ms)。`node_grep_count_lines_lit` 経由で scan +
+  lineskip + count を 1 ループに融合。
+- **`/static/` 単独 print も are が最速** (38 ms vs rg 41 vs grep
+  76)。dual-byte SIMD scan + emit-line action chain が AOT で 1
+  basic block に焼かれる。
+- **ripgrep が anchored / `/i` / class-rep / alt-3 / ident-call で
+  勝つ**。lazy DFA + literal-prefix prefilter の組合せが構造的に
+  強く、AOT で chain inline しても追いつけない箇所がある。
+- **alt-12 (AC prefilter)**: rg の AC + Teddy SIMD multi-pattern
+  は per-byte で 2-3× 速い。todo.md に `Teddy 風 SIMD AC` を残置。
 
 #### `/static/` の内訳 — `--verbose` から
 
@@ -113,46 +115,54 @@ continue) でカウント・行表示・改行スキップを行う。CLI のモ
 ### Bench B: エンジン単独ベンチ — `bench/aot_bench.rb`
 
 CLI のオーバーヘッド (起動、mmap、行ごとの I/O) を取り除いて
-**マッチャ単独の速度**を測る。astrogre は `--bench-file` モードで
-118 MB バッファを 1 度メモリに置き、エンジンの search 関数を
-ループ呼び出しして全マッチを数える。grep / ripgrep は比較のため
-`-c` (count モード)。
+**マッチャ単独の速度**を測る。astrogre は `selftest_runner bench-file`
+モードで 118 MB バッファを 1 度メモリに置き、エンジンの search 関数を
+ループ呼び出しして全マッチを数える。grep / ripgrep は比較のため `-c`
+(count モード)。
 
 選んだパターンは「astrogre の prefilter が効かず、chain が長い」
 もの。AOT が indirect call を消した効果が一番見える形。
 
-| パターン                                          | astrogre interp | astrogre +AOT | grep | ripgrep |
-|--------------------------------------------------|---:|---:|---:|---:|
-| `/(QQQ\|RRR)+\d+/`                                | 26 | **14** | 101 | 26 |
-| `/(QQQX\|RRRX\|SSSX)+/`                           | 56 | **25** | 30 | 28 |
-| `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/`           | 1078 | 520 | 762 | **207** |
-| `/[A-Z]{50,}/`                                    | 481 | 219 | 1737 | **209** |
-| `/\b(if\|else\|for\|while\|return)\b/`            | 306 | **107** | 929 | 135 |
-| `/[a-z][0-9][a-z][0-9][a-z]/`                    | 1144 | 497 | 1105 | **229** |
-| `/(\d+\.\d+\.\d+\.\d+)/`                         | 458 | 223 | **97** | 231 |
-| `/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/`             | 7523 | 5364 | 6170 | **215** |
+| パターン                                          | interp | +AOT | +onigmo | grep | rg |
+|--------------------------------------------------|---:|---:|---:|---:|---:|
+| `/(QQQ\|RRR)+\d+/`                                | 23 | **13** | 510 | 94 | 23 |
+| `/(QQQX\|RRRX\|SSSX)+/`                           | 48 | 25 | 539 | 26 | **24** |
+| `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/`             | 1023 | 646 | 558 | 701 | **181** |
+| `/[A-Z]{50,}/`                                    | 479 | **156** | 945 | 1587 | 180 |
+| `/\b(if\|else\|for\|while\|return)\b/`            | 284 | **120** | 914 | 825 | 123 |
+| `/[a-z][0-9][a-z][0-9][a-z]/`                     | 1021 | 445 | 552 | 1005 | **180** |
+| `/(\d+\.\d+\.\d+\.\d+)/`                          | 430 | 105 | 565 | **82** | 185 |
+| `/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/`              | 6958 | **2086** | 12291 | 5708 | 217 |
 
-ms/iter、3 回実行の最速。
+ms/iter、`taskset -c 4` 固定 + 3 回実行の最速。太字は行内の最速。
 
 #### 読み取り
 
-- **AOT は interp 比 1.4×–2.85× の高速化**を全行で出す。これが
-  ASTro framework のコア成果。`(if|else|for|while|return)` の
-  alt-of-LIT は 306→107 ms (2.85×) で、grep の 929 ms と
-  ripgrep の 135 ms を抑えて行内最速。
-- **`(QQQ|RRR)+\d+`、`(QQQX|RRRX|SSSX)+`** で astrogre+AOT が
-  GNU grep 以上 + ripgrep と互角。`Q`/`R`/`S` の byteset prefilter
-  が刺さって候補位置がほぼゼロ → 残ったコストが指数的に短縮。
-- **`[A-Z]{50,}` で grep に 8× 勝ち** (219 ms vs 1737 ms)。grep の
-  DFA は連続大文字 50 個以上 (= 100+ 状態) で破裂、astrogre は
-  greedy_class fast-path で `[A-Z]+` を SIMD で進める。
-- **ripgrep は `(\w+)\s*\(...\)` で 25× 速い** (215 ms vs 5364 ms)。
-  rg は AC/Teddy で `(`, `,`, `)` を **任意位置のリテラル anchor**
-  として抽出する。astrogre は先頭リテラルしか見ない (我々の AC
-  実装は `(cat|dog|...)` 形式専用)。これが現在 rg に対する一番
-  大きいギャップ。
+- **AOT は interp 比 1.6×–3.3× の高速化**を全行で出す。これが
+  ASTro framework のコア成果。`(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)` の
+  capture-heavy chain は 6958→2086 ms (3.3×)、`(\d+\.\d+\.\d+\.\d+)`
+  は 430→105 ms (4.1×)、`\b(if\|else\|...)\b` の alt-of-LIT は
+  284→120 ms (2.4×)。
+- **vs Onigmo: 8/8 勝ち** (3-15× ペース)。Onigmo は bytecode VM、
+  alt branch / quantifier iter ごとに dispatch する; AOT は indirect
+  call 無しの flat SD に折り畳む。
+- **vs GNU grep: 6/8 勝ち**。
+  - `[A-Z]{50,}`: AOT 156 vs grep 1587 (10×)。grep の DFA は連続
+    大文字 50 個以上で破裂、greedy_class fast-path が SIMD で進める。
+  - `\b(if\|else\|...)\b`: AOT 120 vs grep 825 (7×)。
+  - `(\w+)\s*\(...\)`: AOT 2086 vs grep 5708 (2.7×)。
+  - 1 敗 (`(\d+\.\d+\.\d+\.\d+)`): grep の Boyer-Moore-Horspool が
+    `\d` 疎なコード入力で skip ahead しやすい。
+- **vs ripgrep: 3/8 勝ち + 1 引き分け**。
+  - 勝つ行: `(QQQ\|RRR)+\d+`、`[A-Z]{50,}`、`\b(if\|else\|...)\b`。
+    どれも byteset prefilter or greedy_class fast-path が刺さる場面。
+  - 負ける行: `(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)` で 10× 負け
+    (2086 vs 217)。rg は AC/Teddy で `(`, `,`, `)` を **任意位置の
+    リテラル anchor** として抽出する。astrogre は先頭リテラル
+    しか見ない (我々の AC 実装は `(cat|dog|...)` 形式専用)。
+    これが現在 rg に対する一番大きいギャップ。
 
-#### grep が勝つ唯一の行: `(\d+\.\d+\.\d+\.\d+)` の 97 ms
+#### grep が勝つ唯一の行: `(\d+\.\d+\.\d+\.\d+)` の 82 ms
 
 数字バイト (`0-9`) はコードに疎なので grep の Boyer-Moore-Horspool
 が skip ahead しやすく、scan 量が物理的に少ない。astrogre の
@@ -232,18 +242,68 @@ verify 部分が同一 SD に inline 化されるので、バイトレベルで
 固有定数 (memchr のターゲットバイト、range の上限・下限 等) が
 即値になる。
 
-### 静的 inline (`_INL`) リネーム + 弱シンボルラッパー
+### EVAL_ARG (chain inline) と EVAL (runtime indirect) の分離
 
-ASTro の SD は `static inline` として宣言される (gcc が内側の
-関数ポインタ呼び出しを完全に inline 化できるように)。ただし
-`static` だと dlsym で見えないので、ビルド後にソースを後処理
-して `SD_<hash>` を `SD_<hash>_INL` にリネーム + 同名の弱
-シンボルラッパー関数を追加する。これで:
+dispatch site は **どこから dispatcher 値が来るか** で 2 種類に
+分けられる:
 
-- 内部からは inline 化されたまま
-- 外部からは dlsym(`SD_<hash>`) で取れる
+- **EVAL_ARG(c, X)**: `X` が NODE_DEF の **直接 param** (= 親 node の
+  static body operand 由来)。ASTroGen の `DISPATCH_xxx` は `X` の
+  dispatcher を別 param として EVAL_xxx に渡すので、SD specializer
+  はその dispatcher 値を **直接呼び出し** に展開できる。chain inline
+  → indirect call ゼロ → 1 個の SD 関数に折り畳まれる。
+- **EVAL(c, X)**: `X` が CTX field / stack frame / runtime selection
+  から来る (例: `c->rep_cont_sentinel`、`f->body`、`c->sub_chains[idx]`、
+  `c->sub_top->return_to`)。SD 生成時には dispatcher 値が分からない
+  ので、runtime に `X->head.dispatcher` を読む真の indirect call。
 
-ノードチェーンの末端まで dlsym 経由で dispatcher を差し替えできる。
+node.def の dispatch site を grep 可能なマクロにしたうえで、
+chain 部分は EVAL_ARG、runtime indirect は EVAL に分けて書く。
+これで「どの site が SD 内 inline、どの site が dlsym 経由」が
+ソースレベルで明示される。
+
+### entry node の正しい登録 — `astro_cs_compile` を必要箇所だけ呼ぶ
+
+EVAL(c, X) で叩かれる NODE は **public extern symbol** として SD
+に出ないと dlsym で見つからず、interp dispatcher のままになる。
+chain bouncing (interp ↔ SD ping-pong) を防ぐには、これらを
+全部 `astro_cs_compile(node, NULL)` で entry 登録する必要がある。
+
+**重要なのは「全 NODE 登録ではない」点**。chain inline される
+EVAL_ARG site の NODE は parent SD の中で `static inline _INL`
+として展開される ─ 個別に extern にする必要は無い。framework の
+`astro_cs_compile` は entry を public、subtree を `static inline`
+として 1 SD ファイルに出すので、chain dispatch の NODE はそこに
+吸収される。
+
+EVAL される (= entry になる) NODE はソース上で機械的に列挙可能:
+
+| dispatch site | entry NODE |
+|---|---|
+| `node_re_rep` の `c->rep_cont_sentinel` 呼び | `rep_cont_sentinel` (process global singleton) |
+| `rep_cont_inner` の `f->body`, `f->outer_next` | 各 `node_re_rep` の body / outer_next operand |
+| `node_re_subroutine_call` の `c->sub_chains[idx]` | 各 `p->sub_chains[i]` (= 各 `\g<i>` の lower 結果) |
+| `node_re_sub_return` の `c->sub_top->return_to` | 各 `node_re_subroutine_call` の outer_next operand |
+| pattern root | `p->root`、`p->count_lines_root`、`p->print_lines_root` |
+
+`lower_ctx_t::entries` に IR-lower 時に push しておき、
+`astrogre_pattern_aot_compile` で iterate して `astro_cs_compile`
+に渡す。この方式により以前あった「全 SD を後処理で `_INL`+wrapper
+化する」ファイル書き換え hack (~140 行) は撤去できた。
+
+#### なぜ `node_re_rep_cont` だけ singleton なのか
+
+各 rep ごとに per-rep cont を allocate して body / outer_next を
+struct field にする案 (= EVAL を完全に EVAL_ARG に置換する案) は
+**subroutine 再帰と本質的に conflict** する。rep_cont が固定された
+NODE になると `sub_call.outer_next` が静的に「自分のレキシカル
+コンテキストの cont」を指してしまい、再帰で多段 unwind するときに
+正しくない cont を dispatch する。OLD の singleton 設計は **`c->rep_top`
+で動的に「今どの rep の中か」判定** することで、`(\((?:[^()]|\g<paren>)*\))`
+のような任意深さの再帰を 1 個の generic NODE で処理できる。
+
+per-rep 案は depth=3 以上の `(((triple)))` で `c->rep_top = NULL`
+で crash することを実装で確認した (revert 済)。
 
 ### サイドアレイによる allocate 後再解決
 

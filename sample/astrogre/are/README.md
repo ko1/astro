@@ -196,59 +196,62 @@ time only; the cold path adds a one-shot `cc` compile of ≈ 400 ms
 
 | pattern                          | are -j1 | are +AOT cached | ripgrep | GNU grep |
 |----------------------------------|--------:|----------------:|--------:|---------:|
-| `/static/`                       | **38**  | 41              | 41      | 74       |
-| `/specialized_dispatcher/`       | **21**  | 24              | **21**  | 38       |
-| `/^static/` anchored             | 77      | 80              | **41**  | 76       |
-| `/VALUE/i`                       | 85      | 76              | **56**  | 98       |
-| `/static\|extern\|inline/`       | 376     | 121             | **63**  | 205      |
-| 12-way alt (AC prefilter)        | 444     | 409             | **139** | 276      |
-| `/[0-9]{4,}/`                    | 362     | 168             | **55**  | 97       |
-| `/[a-z_]+_[a-z]+\(/`             | 1858    | 1202            | **203** | 2214     |
-| `-c /static/`                    | **22**  | 24              | 27      | 64       |
+| `/static/`                       | **38**  | **38**          | 41      | 76       |
+| `/specialized_dispatcher/`       | **19**  | 22              | 20      | 34       |
+| `/^static/` anchored             | 75      | 78              | **38**  | 66       |
+| `/VALUE/i`                       | 80      | 71              | **55**  | 97       |
+| `/static\|extern\|inline/`       | 392     | 119             | **58**  | 185      |
+| 12-way alt (AC prefilter)        | 379     | 378             | **133** | 257      |
+| `/[0-9]{4,}/`                    | 363     | 136             | **54**  | 86       |
+| `/[a-z_]+_[a-z]+\(/`             | 1824    | 632             | **204** | 2211     |
+| `-c /static/`                    | **23**  | 23              | 28      | 63       |
 
-Honest row count: **`are` 2 wins + 1 tie · `rg` 6 wins + 1 tie ·
-`grep` 0 wins** on this set of 9 patterns.  For ad-hoc grep-style
-usage on a single file, **`rg` is still the better default tool.**
-The cases where `are` does win are all in the literal / count
-family where the engine has a specialised SIMD path.
+Honest row count: **`are` 3 wins · `rg` 6 wins · `grep` 0 wins** on
+this set of 9 patterns.  For ad-hoc grep-style usage on a single
+file, **`rg` is still the better default tool.**  The cases where
+`are` does win are all in the literal / count family where the
+engine has a specialised SIMD path.
 
 Where `are` wins outright:
 
-- **`-c /static/`** (count): `are` 22 ms vs `rg` 27 ms vs `grep`
-  64 ms.  The `node_grep_count_lines_lit` path is a single
+- **`-c /static/`** (count): `are` 23 ms vs `rg` 28 ms vs `grep`
+  63 ms.  The `node_grep_count_lines_lit` path is a single
   specialised dispatcher that does SIMD scan + line-skip + count
   in one tight loop.
 - **`/static/` default print**: `are` 38 ms vs `rg` 41 ms vs
-  `grep` 74 ms.  Same SIMD scanner plus an inlined emit-line
-  action.
-- **`/specialized_dispatcher/`**: tied with `rg` at 21 ms — long
-  literal, tight `memmem`.
+  `grep` 76 ms.  Same SIMD scanner plus an inlined emit-line
+  action.  AOT cached gives no extra speed-up here because the
+  scan path is already a single SD; `dlopen` adds nothing.
+- **`/specialized_dispatcher/`**: 19 ms vs `rg` 20 ms — long
+  literal, tight `memmem`, ahead by a hair.
 
 Where AOT helps (`are -j1` → `are +AOT cached`):
 
 | pattern                 | interp  | AOT      | speed-up |
 |-------------------------|--------:|---------:|---------:|
-| `static\|extern\|inline`| 376 ms  | 121 ms   | **3.1×** |
-| `[0-9]{4,}`             | 362 ms  | 168 ms   | **2.2×** |
-| `[a-z_]+_[a-z]+\(`      | 1858 ms | 1202 ms  | **1.5×** |
-| `VALUE/i`               | 85 ms   | 76 ms    | 1.1×     |
+| `static\|extern\|inline`| 392 ms  | 119 ms   | **3.3×** |
+| `[a-z_]+_[a-z]+\(`      | 1824 ms | 632 ms   | **2.9×** |
+| `[0-9]{4,}`             | 363 ms  | 136 ms   | **2.7×** |
+| `VALUE/i`               | 80 ms   | 71 ms    | 1.1×     |
 
 AOT has a small constant cost (≈ 2–4 ms for `dlopen` + dispatcher
-swap) which shows up as a slight regression on already-fast
-patterns (`-c /static/` 22 → 24 ms).  Worth turning on when (a)
-the body chain has substantial work to fold (alt-of-LIT, greedy
-class-rep) **and** (b) the same pattern is being re-used many
-times — `--aot` caches per-pattern in `code_store/`, so ad-hoc
-one-off greps with a fresh pattern each time pay the cold compile
-each time and never reach the cached column.
+swap) that's a wash on the already-fast literal cases.  Worth
+turning on when (a) the body chain has substantial work to fold
+(alt-of-LIT, greedy class-rep) **and** (b) the same pattern is
+being re-used many times — `--aot` caches per-pattern in
+`code_store/`, so ad-hoc one-off greps with a fresh pattern each
+time pay the cold compile each time and never reach the cached
+column.
 
 Where ripgrep wins (and what would close the gap):
 
-- **Anchored / `/i` / class-rep**: rg's literal-prefix prefilter
-  plus lazy DFA beats AOT by 1.5–3×.
-- **`/[a-z_]+_[a-z]+\(/`**: rg lazy DFA at 203 ms; we're at
-  1.2 s even with AOT.  This is the biggest engine gap and it's
-  structural — only a DFA-based path closes it.
+- **Anchored / `/i` / class-rep / alt-3**: rg's literal-prefix
+  prefilter plus lazy DFA beats AOT by 1.4–2× even after our SD
+  speed-up.
+- **`/[a-z_]+_[a-z]+\(/`**: rg lazy DFA at 204 ms; we're at 632 ms
+  with AOT (3× gap).  This is the biggest engine gap among the
+  AOT-favourable rows and it's structural — only a DFA-based path
+  closes it further.
 - **Multi-literal alt (12-way)**: rg's Aho-Corasick + Teddy SIMD
   is 2–3× faster per byte than ours.  Pure engine work, tracked
   in [`../docs/todo.md`](../docs/todo.md).
