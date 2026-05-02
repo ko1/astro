@@ -86,6 +86,43 @@ static VALUE obj_method(CTX *c, VALUE self, int argc, VALUE *argv) {
     return (VALUE)m;
 }
 
+/* Module#instance_method(name) — returns an UnboundMethod, represented
+ * as a Method object whose receiver is the class itself. */
+static VALUE module_instance_method(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1) return Qnil;
+    ID name;
+    if (SYMBOL_P(argv[0])) name = korb_sym2id(argv[0]);
+    else if (BUILTIN_TYPE(argv[0]) == T_STRING)
+        name = korb_intern_n(((struct korb_string *)argv[0])->ptr,
+                              ((struct korb_string *)argv[0])->len);
+    else return Qnil;
+    if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return Qnil;
+    struct korb_method *km = korb_class_find_method((struct korb_class *)self, name);
+    if (!km) {
+        korb_raise(c, NULL, "undefined method '%s' for %s",
+                   korb_id_name(name), korb_id_name(((struct korb_class *)self)->name));
+        return Qnil;
+    }
+    struct korb_method_obj *m = korb_xmalloc(sizeof(*m));
+    m->basic.flags = T_DATA;
+    m->basic.klass = (VALUE)korb_vm->method_class;
+    m->receiver = self;   /* class as "receiver" — unbound */
+    m->name = name;
+    return (VALUE)m;
+}
+
+/* UnboundMethod#bind(obj) — return a Method bound to obj. */
+static VALUE method_bind(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1) return Qnil;
+    struct korb_method_obj *src = (struct korb_method_obj *)self;
+    struct korb_method_obj *m = korb_xmalloc(sizeof(*m));
+    m->basic.flags = T_DATA;
+    m->basic.klass = (VALUE)korb_vm->method_class;
+    m->receiver = argv[0];
+    m->name = src->name;
+    return (VALUE)m;
+}
+
 static VALUE method_call(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* Method#call / Method#[] — dispatch to receiver.name(*args) */
     struct korb_method_obj *m = (struct korb_method_obj *)self;
@@ -135,9 +172,19 @@ static VALUE method_receiver(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 static VALUE method_owner(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_method_obj *m = (struct korb_method_obj *)self;
-    struct korb_method *km = korb_class_find_method(korb_class_of_class(m->receiver), m->name);
+    /* If the "receiver" is itself a class/module (UnboundMethod from
+     * instance_method), search it as the lookup root rather than its
+     * metaclass. */
+    struct korb_class *root;
+    if (!SPECIAL_CONST_P(m->receiver) &&
+        (BUILTIN_TYPE(m->receiver) == T_CLASS || BUILTIN_TYPE(m->receiver) == T_MODULE)) {
+        root = (struct korb_class *)m->receiver;
+    } else {
+        root = korb_class_of_class(m->receiver);
+    }
+    struct korb_method *km = korb_class_find_method(root, m->name);
     if (km && km->defining_class) return (VALUE)km->defining_class;
-    return korb_class_of(m->receiver);
+    return (VALUE)root;
 }
 
 static VALUE obj_instance_of_p(CTX *c, VALUE self, int argc, VALUE *argv) {

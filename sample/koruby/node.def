@@ -455,6 +455,16 @@ node_block_literal(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t par
     return korb_proc_new(body, c->fp, env_size, params_cnt, param_base, c->self, false);
 }
 
+/* Variant with an explicit *rest slot.  rest_slot is the absolute slot
+ * the proc binds *rest into; -1 means "no rest". */
+NODE_DEF @noinline
+node_block_literal_rest(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t params_cnt, uint32_t param_base, uint32_t env_size, int32_t rest_slot)
+{
+    VALUE p = korb_proc_new(body, c->fp, env_size, params_cnt, param_base, c->self, false);
+    ((struct korb_proc *)p)->rest_slot = rest_slot;
+    return p;
+}
+
 NODE_DEF
 node_yield(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_index)
 {

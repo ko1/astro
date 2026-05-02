@@ -153,6 +153,7 @@ struct korb_proc {
     uint32_t env_size;      /* slots covered by env (absolute high-water of body) */
     uint32_t params_cnt;
     uint32_t param_base;    /* absolute slot where block's params begin */
+    int rest_slot;          /* absolute slot for *rest, or -1 */
     VALUE self;
     bool is_lambda;
 };

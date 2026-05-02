@@ -315,6 +315,26 @@ void korb_init_builtins(void) {
     DEF(cStr, "scan",        str_scan, 1);
     DEF(cStr, "sum",         str_sum, -1);
     DEF(cStr, "unpack",      str_unpack, -1);
+    DEF(cStr, "center",      str_center, -1);
+    DEF(cStr, "ljust",       str_ljust,  -1);
+    DEF(cStr, "rjust",       str_rjust,  -1);
+    DEF(cStr, "chop",        str_chop,    0);
+    DEF(cStr, "chop!",       str_chop_bang, 0);
+    DEF(cStr, "count",       str_count_chars, -1);
+    DEF(cStr, "delete",      str_delete_chars, -1);
+    DEF(cStr, "squeeze",     str_squeeze, -1);
+    DEF(cStr, "swapcase",    str_swapcase, 0);
+    DEF(cStr, "capitalize",  str_capitalize, 0);
+    DEF(cStr, "lines",       str_lines,   -1);
+    DEF(cStr, "partition",   str_partition, 1);
+    DEF(cStr, "rpartition",  str_rpartition, 1);
+    DEF(cStr, "succ",        str_succ,    0);
+    DEF(cStr, "next",        str_succ,    0);
+    DEF(cStr, "each_byte",   str_each_byte, 0);
+    DEF(cStr, "ord",         str_ord,     0);
+    DEF(cStr, "eql?",        str_eql,     1);
+    DEF(cStr, "clone",       str_clone,   0);
+    DEF(cStr, "intern",      str_to_sym,  0);
 
     /* extra Array */
     DEF(cAry, "sort",       ary_sort,       -1);
@@ -579,6 +599,16 @@ void korb_init_builtins(void) {
     struct korb_class *cPrc = korb_vm->proc_class;
     DEF(cPrc, "call", proc_call, -1);
     DEF(cPrc, "[]", proc_call, -1);
+    DEF(cPrc, "lambda?", proc_lambda_p, 0);
+    DEF(cPrc, "arity", proc_arity, 0);
+    DEF(cPrc, "==", proc_eq, 1);
+    DEF(cPrc, "eql?", proc_eq, 1);
+    {
+        struct korb_class *cProcMeta = korb_class_new(korb_intern("ProcMeta"),
+                                                      korb_vm->class_class, T_CLASS);
+        korb_class_add_method_cfunc(cProcMeta, korb_intern("new"), proc_class_new, -1);
+        cPrc->basic.klass = (VALUE)cProcMeta;
+    }
     {
         VALUE obj_itself(CTX *c, VALUE self, int argc, VALUE *argv);
         DEF(cPrc, "to_proc", obj_itself, 0);
@@ -635,8 +665,11 @@ void korb_init_builtins(void) {
         korb_class_add_method_cfunc(cMethod, korb_intern("name"),     method_name,      0);
         korb_class_add_method_cfunc(cMethod, korb_intern("receiver"), method_receiver,  0);
         korb_class_add_method_cfunc(cMethod, korb_intern("owner"),    method_owner,     0);
+        korb_class_add_method_cfunc(cMethod, korb_intern("bind"),     method_bind,      1);
+        korb_class_add_method_cfunc(cMethod, korb_intern("unbind"),   method_to_proc,   0); /* approx */
         korb_vm->method_class = cMethod;
     }
+    DEF(cMod, "instance_method", module_instance_method, 1);
 
     /* Math module — populated with libm-backed functions and constants. */
     {

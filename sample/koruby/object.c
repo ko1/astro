@@ -984,6 +984,7 @@ VALUE korb_proc_new(struct Node *body, VALUE *fp, uint32_t env_size,
     p->env = fp;
     p->params_cnt = params_cnt;
     p->param_base = param_base;
+    p->rest_slot = -1;
     p->self = self;
     p->is_lambda = is_lambda;
     return (VALUE)p;

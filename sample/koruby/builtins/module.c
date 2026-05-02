@@ -105,6 +105,13 @@ static VALUE module_define_method(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_proc *p;
     if (argc >= 2 && !SPECIAL_CONST_P(argv[1]) && BUILTIN_TYPE(argv[1]) == T_PROC) {
         p = (struct korb_proc *)argv[1];
+    } else if (argc >= 2 && !SPECIAL_CONST_P(argv[1]) &&
+               BUILTIN_TYPE(argv[1]) == T_DATA &&
+               ((struct RBasic *)argv[1])->klass == (VALUE)korb_vm->method_class) {
+        /* Method object: convert via Method#to_proc. */
+        VALUE pr = korb_funcall(c, argv[1], korb_intern("to_proc"), 0, NULL);
+        if (BUILTIN_TYPE(pr) != T_PROC) return Qnil;
+        p = (struct korb_proc *)pr;
     } else if (current_block) {
         p = current_block;
     } else {
@@ -150,11 +157,14 @@ static VALUE class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
             struct korb_class *prev_class = c->current_class;
             struct korb_cref *prev_cref = c->cref;
             struct korb_cref new_cref = { .klass = nk, .prev = c->cref };
+            VALUE prev_blk_self = current_block->self;
             c->self = (VALUE)nk;
             c->current_class = nk;
             c->cref = &new_cref;
+            current_block->self = (VALUE)nk;   /* class_eval semantics */
             VALUE av0[1] = { (VALUE)nk };
             korb_yield(c, 1, av0);
+            current_block->self = prev_blk_self;
             c->self = prev_self;
             c->current_class = prev_class;
             c->cref = prev_cref;

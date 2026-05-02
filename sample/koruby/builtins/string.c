@@ -336,41 +336,74 @@ static VALUE str_scan(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 /* simplistic gsub: replace all non-overlapping occurrences of pattern in self.
  * pattern is treated as a literal string (no regex support). */
-static VALUE str_gsub(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 2 || BUILTIN_TYPE(argv[0]) != T_STRING || BUILTIN_TYPE(argv[1]) != T_STRING) return korb_str_dup(self);
-    struct korb_string *s = (struct korb_string *)self;
-    struct korb_string *p = (struct korb_string *)argv[0];
-    struct korb_string *r = (struct korb_string *)argv[1];
-    if (p->len == 0) return korb_str_dup(self);
-    VALUE out = korb_str_new("", 0);
-    long start = 0;
-    for (long i = 0; i + p->len <= s->len; ) {
+/* Helper: locate the next match of `pattern` in `s` starting at `from`.
+ * Returns (start, len) via out-params and 1 on match, 0 on miss.  We
+ * special-case our shim Regexp objects (which embed the pattern as a
+ * String ivar) and fall back to byte-string search otherwise. */
+static int str_find_pat(VALUE pattern, struct korb_string *s, long from,
+                        long *match_start, long *match_len) {
+    struct korb_string *p = NULL;
+    if (BUILTIN_TYPE(pattern) == T_STRING) {
+        p = (struct korb_string *)pattern;
+    } else if (!SPECIAL_CONST_P(pattern) && BUILTIN_TYPE(pattern) == T_OBJECT) {
+        VALUE src = korb_ivar_get(pattern, korb_intern("@source"));
+        if (BUILTIN_TYPE(src) == T_STRING) p = (struct korb_string *)src;
+    }
+    if (!p || p->len == 0) return 0;
+    for (long i = from; i + p->len <= s->len; i++) {
         if (memcmp(s->ptr + i, p->ptr, p->len) == 0) {
-            korb_str_concat(out, korb_str_new(s->ptr + start, i - start));
+            *match_start = i; *match_len = p->len;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static VALUE str_gsub(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1) return korb_str_dup(self);
+    struct korb_string *s = (struct korb_string *)self;
+    extern struct korb_proc *current_block;
+    VALUE out = korb_str_new("", 0);
+    long start = 0, i = 0;
+    long ms, ml;
+    while (str_find_pat(argv[0], s, i, &ms, &ml)) {
+        korb_str_concat(out, korb_str_new(s->ptr + start, ms - start));
+        if (argc >= 2 && BUILTIN_TYPE(argv[1]) == T_STRING) {
+            struct korb_string *r = (struct korb_string *)argv[1];
             korb_str_concat(out, korb_str_new(r->ptr, r->len));
-            i += p->len;
-            start = i;
-        } else i++;
+        } else if (current_block) {
+            VALUE m = korb_str_new(s->ptr + ms, ml);
+            VALUE r = korb_yield(c, 1, &m);
+            if (c->state == KORB_RAISE) return Qnil;
+            if (BUILTIN_TYPE(r) == T_STRING) korb_str_concat(out, r);
+            else korb_str_concat(out, korb_to_s(r));
+        }
+        i = ms + (ml > 0 ? ml : 1);
+        start = i;
     }
     korb_str_concat(out, korb_str_new(s->ptr + start, s->len - start));
     return out;
 }
 
 static VALUE str_sub(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 2 || BUILTIN_TYPE(argv[0]) != T_STRING || BUILTIN_TYPE(argv[1]) != T_STRING) return korb_str_dup(self);
+    if (argc < 1) return korb_str_dup(self);
     struct korb_string *s = (struct korb_string *)self;
-    struct korb_string *p = (struct korb_string *)argv[0];
-    struct korb_string *r = (struct korb_string *)argv[1];
-    if (p->len == 0) return korb_str_dup(self);
-    for (long i = 0; i + p->len <= s->len; i++) {
-        if (memcmp(s->ptr + i, p->ptr, p->len) == 0) {
-            VALUE out = korb_str_new(s->ptr, i);
-            korb_str_concat(out, korb_str_new(r->ptr, r->len));
-            korb_str_concat(out, korb_str_new(s->ptr + i + p->len, s->len - i - p->len));
-            return out;
-        }
+    extern struct korb_proc *current_block;
+    long ms, ml;
+    if (!str_find_pat(argv[0], s, 0, &ms, &ml)) return korb_str_dup(self);
+    VALUE out = korb_str_new(s->ptr, ms);
+    if (argc >= 2 && BUILTIN_TYPE(argv[1]) == T_STRING) {
+        struct korb_string *r = (struct korb_string *)argv[1];
+        korb_str_concat(out, korb_str_new(r->ptr, r->len));
+    } else if (current_block) {
+        VALUE m = korb_str_new(s->ptr + ms, ml);
+        VALUE r = korb_yield(c, 1, &m);
+        if (c->state == KORB_RAISE) return Qnil;
+        if (BUILTIN_TYPE(r) == T_STRING) korb_str_concat(out, r);
+        else korb_str_concat(out, korb_to_s(r));
     }
-    return korb_str_dup(self);
+    korb_str_concat(out, korb_str_new(s->ptr + ms + ml, s->len - ms - ml));
+    return out;
 }
 
 static VALUE str_tr(CTX *c, VALUE self, int argc, VALUE *argv) {
@@ -475,6 +508,301 @@ static VALUE kernel_printf(CTX *c, VALUE self, int argc, VALUE *argv) {
     VALUE s = kernel_format(c, self, argc, argv);
     fwrite(((struct korb_string *)s)->ptr, 1, ((struct korb_string *)s)->len, stdout);
     return Qnil;
+}
+
+/* String#center(width, padstr=" ") — center self within `width` cols. */
+static VALUE str_center(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1 || !FIXNUM_P(argv[0])) return self;
+    long width = FIX2LONG(argv[0]);
+    struct korb_string *s = (struct korb_string *)self;
+    if (width <= s->len) return self;
+    const char *pad = " "; long padlen = 1;
+    if (argc >= 2 && BUILTIN_TYPE(argv[1]) == T_STRING) {
+        struct korb_string *ps = (struct korb_string *)argv[1];
+        pad = ps->ptr; padlen = ps->len;
+        if (padlen == 0) return self;
+    }
+    long extra = width - s->len;
+    long left = extra / 2, right = extra - left;
+    char *buf = korb_xmalloc_atomic(width);
+    for (long i = 0; i < left;  i++) buf[i] = pad[i % padlen];
+    memcpy(buf + left, s->ptr, s->len);
+    for (long i = 0; i < right; i++) buf[left + s->len + i] = pad[i % padlen];
+    return korb_str_new(buf, width);
+}
+
+/* String#ljust / rjust */
+static VALUE str_ljust(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1 || !FIXNUM_P(argv[0])) return self;
+    long width = FIX2LONG(argv[0]);
+    struct korb_string *s = (struct korb_string *)self;
+    if (width <= s->len) return self;
+    const char *pad = " "; long padlen = 1;
+    if (argc >= 2 && BUILTIN_TYPE(argv[1]) == T_STRING) {
+        struct korb_string *ps = (struct korb_string *)argv[1];
+        pad = ps->ptr; padlen = ps->len;
+        if (padlen == 0) return self;
+    }
+    long extra = width - s->len;
+    char *buf = korb_xmalloc_atomic(width);
+    memcpy(buf, s->ptr, s->len);
+    for (long i = 0; i < extra; i++) buf[s->len + i] = pad[i % padlen];
+    return korb_str_new(buf, width);
+}
+static VALUE str_rjust(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1 || !FIXNUM_P(argv[0])) return self;
+    long width = FIX2LONG(argv[0]);
+    struct korb_string *s = (struct korb_string *)self;
+    if (width <= s->len) return self;
+    const char *pad = " "; long padlen = 1;
+    if (argc >= 2 && BUILTIN_TYPE(argv[1]) == T_STRING) {
+        struct korb_string *ps = (struct korb_string *)argv[1];
+        pad = ps->ptr; padlen = ps->len;
+        if (padlen == 0) return self;
+    }
+    long extra = width - s->len;
+    char *buf = korb_xmalloc_atomic(width);
+    for (long i = 0; i < extra; i++) buf[i] = pad[i % padlen];
+    memcpy(buf + extra, s->ptr, s->len);
+    return korb_str_new(buf, width);
+}
+
+/* String#chop / chop! */
+static VALUE str_chop(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_string *s = (struct korb_string *)self;
+    if (s->len == 0) return korb_str_new("", 0);
+    long n = s->len - 1;
+    if (n > 0 && s->ptr[n] == '\n' && s->ptr[n-1] == '\r') n--;
+    return korb_str_new(s->ptr, n);
+}
+static VALUE str_chop_bang(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_string *s = (struct korb_string *)self;
+    if (s->len == 0) return Qnil;
+    long n = s->len - 1;
+    if (n > 0 && s->ptr[n] == '\n' && s->ptr[n-1] == '\r') n--;
+    s->len = n;
+    s->ptr[n] = 0;
+    return self;
+}
+
+/* tr-style char-class bitmap.  `^` at the start inverts the set; `a-z`
+ * expands to a range. */
+static void str_charclass_build(const char *spec, long len, unsigned char *bits) {
+    bool invert = false;
+    long i = 0;
+    if (len > 0 && spec[0] == '^') { invert = true; i = 1; }
+    memset(bits, 0, 256);
+    while (i < len) {
+        if (i + 2 < len && spec[i+1] == '-') {
+            unsigned char a = (unsigned char)spec[i];
+            unsigned char b = (unsigned char)spec[i+2];
+            if (b < a) { unsigned char t = a; a = b; b = t; }
+            for (int k = a; k <= b; k++) bits[k] = 1;
+            i += 3;
+        } else {
+            bits[(unsigned char)spec[i]] = 1;
+            i++;
+        }
+    }
+    if (invert) for (int k = 0; k < 256; k++) bits[k] = !bits[k];
+}
+
+static VALUE str_count_chars(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return INT2FIX(0);
+    unsigned char bits[256];
+    struct korb_string *cs = (struct korb_string *)argv[0];
+    str_charclass_build(cs->ptr, cs->len, bits);
+    struct korb_string *s = (struct korb_string *)self;
+    long n = 0;
+    for (long i = 0; i < s->len; i++) if (bits[(unsigned char)s->ptr[i]]) n++;
+    return INT2FIX(n);
+}
+
+static VALUE str_delete_chars(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return self;
+    unsigned char bits[256];
+    struct korb_string *cs = (struct korb_string *)argv[0];
+    str_charclass_build(cs->ptr, cs->len, bits);
+    struct korb_string *s = (struct korb_string *)self;
+    char *buf = korb_xmalloc_atomic(s->len > 0 ? s->len : 1);
+    long w = 0;
+    for (long i = 0; i < s->len; i++) {
+        if (!bits[(unsigned char)s->ptr[i]]) buf[w++] = s->ptr[i];
+    }
+    return korb_str_new(buf, w);
+}
+
+static VALUE str_squeeze(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_string *s = (struct korb_string *)self;
+    bool any_class = (argc >= 1 && BUILTIN_TYPE(argv[0]) == T_STRING);
+    unsigned char bits[256];
+    if (any_class) {
+        struct korb_string *cs = (struct korb_string *)argv[0];
+        str_charclass_build(cs->ptr, cs->len, bits);
+    }
+    char *buf = korb_xmalloc_atomic(s->len > 0 ? s->len : 1);
+    long w = 0;
+    int prev = -1;
+    for (long i = 0; i < s->len; i++) {
+        unsigned char ch = s->ptr[i];
+        if ((int)ch == prev && (!any_class || bits[ch])) continue;
+        buf[w++] = ch;
+        prev = ch;
+    }
+    return korb_str_new(buf, w);
+}
+
+static VALUE str_swapcase(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_string *s = (struct korb_string *)self;
+    char *buf = korb_xmalloc_atomic(s->len > 0 ? s->len : 1);
+    for (long i = 0; i < s->len; i++) {
+        unsigned char ch = s->ptr[i];
+        if (ch >= 'a' && ch <= 'z')      buf[i] = ch - 32;
+        else if (ch >= 'A' && ch <= 'Z') buf[i] = ch + 32;
+        else                              buf[i] = ch;
+    }
+    return korb_str_new(buf, s->len);
+}
+
+static VALUE str_capitalize(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_string *s = (struct korb_string *)self;
+    if (s->len == 0) return korb_str_new("", 0);
+    char *buf = korb_xmalloc_atomic(s->len);
+    unsigned char first = s->ptr[0];
+    buf[0] = (first >= 'a' && first <= 'z') ? first - 32 : first;
+    for (long i = 1; i < s->len; i++) {
+        unsigned char ch = s->ptr[i];
+        buf[i] = (ch >= 'A' && ch <= 'Z') ? ch + 32 : ch;
+    }
+    return korb_str_new(buf, s->len);
+}
+
+/* String#lines — split on \n, keep newlines. */
+static VALUE str_lines(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_string *s = (struct korb_string *)self;
+    VALUE r = korb_ary_new();
+    long start = 0;
+    for (long i = 0; i < s->len; i++) {
+        if (s->ptr[i] == '\n') {
+            korb_ary_push(r, korb_str_new(s->ptr + start, i - start + 1));
+            start = i + 1;
+        }
+    }
+    if (start < s->len) korb_ary_push(r, korb_str_new(s->ptr + start, s->len - start));
+    return r;
+}
+
+static VALUE str_partition(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return self;
+    struct korb_string *s = (struct korb_string *)self;
+    struct korb_string *sep = (struct korb_string *)argv[0];
+    VALUE r = korb_ary_new_capa(3);
+    if (sep->len == 0 || sep->len > s->len) {
+        korb_ary_push(r, korb_str_new(s->ptr, s->len));
+        korb_ary_push(r, korb_str_new("", 0));
+        korb_ary_push(r, korb_str_new("", 0));
+        return r;
+    }
+    for (long i = 0; i + sep->len <= s->len; i++) {
+        if (memcmp(s->ptr + i, sep->ptr, sep->len) == 0) {
+            korb_ary_push(r, korb_str_new(s->ptr, i));
+            korb_ary_push(r, korb_str_new(sep->ptr, sep->len));
+            korb_ary_push(r, korb_str_new(s->ptr + i + sep->len, s->len - i - sep->len));
+            return r;
+        }
+    }
+    korb_ary_push(r, korb_str_new(s->ptr, s->len));
+    korb_ary_push(r, korb_str_new("", 0));
+    korb_ary_push(r, korb_str_new("", 0));
+    return r;
+}
+
+static VALUE str_rpartition(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return self;
+    struct korb_string *s = (struct korb_string *)self;
+    struct korb_string *sep = (struct korb_string *)argv[0];
+    VALUE r = korb_ary_new_capa(3);
+    if (sep->len == 0 || sep->len > s->len) {
+        korb_ary_push(r, korb_str_new("", 0));
+        korb_ary_push(r, korb_str_new("", 0));
+        korb_ary_push(r, korb_str_new(s->ptr, s->len));
+        return r;
+    }
+    for (long i = s->len - sep->len; i >= 0; i--) {
+        if (memcmp(s->ptr + i, sep->ptr, sep->len) == 0) {
+            korb_ary_push(r, korb_str_new(s->ptr, i));
+            korb_ary_push(r, korb_str_new(sep->ptr, sep->len));
+            korb_ary_push(r, korb_str_new(s->ptr + i + sep->len, s->len - i - sep->len));
+            return r;
+        }
+    }
+    korb_ary_push(r, korb_str_new("", 0));
+    korb_ary_push(r, korb_str_new("", 0));
+    korb_ary_push(r, korb_str_new(s->ptr, s->len));
+    return r;
+}
+
+/* String#succ — alphabetic increment; ASCII-only, simplified rules. */
+static VALUE str_succ(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_string *s = (struct korb_string *)self;
+    if (s->len == 0) return korb_str_new("", 0);
+    char *buf = korb_xmalloc_atomic(s->len);
+    memcpy(buf, s->ptr, s->len);
+    long i = s->len - 1;
+    bool overflow = false;
+    while (i >= 0) {
+        unsigned char ch = buf[i];
+        if      (ch >= 'a' && ch <  'z') { buf[i] = ch + 1; overflow = false; break; }
+        else if (ch >= 'A' && ch <  'Z') { buf[i] = ch + 1; overflow = false; break; }
+        else if (ch >= '0' && ch <  '9') { buf[i] = ch + 1; overflow = false; break; }
+        else if (ch == 'z') { buf[i] = 'a'; overflow = true; i--; continue; }
+        else if (ch == 'Z') { buf[i] = 'A'; overflow = true; i--; continue; }
+        else if (ch == '9') { buf[i] = '0'; overflow = true; i--; continue; }
+        else                { buf[i] = ch + 1; overflow = false; break; }
+    }
+    if (overflow) {
+        char *grown = korb_xmalloc_atomic(s->len + 1);
+        char first  = s->ptr[0];
+        grown[0] = (first >= '0' && first <= '9') ? '1'
+                 : (first >= 'a' && first <= 'z') ? 'a' : 'A';
+        memcpy(grown + 1, buf, s->len);
+        return korb_str_new(grown, s->len + 1);
+    }
+    return korb_str_new(buf, s->len);
+}
+
+/* String#each_byte — yields each byte as Integer. */
+static VALUE str_each_byte(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_string *s = (struct korb_string *)self;
+    for (long i = 0; i < s->len; i++) {
+        VALUE b = INT2FIX((unsigned char)s->ptr[i]);
+        korb_yield(c, 1, &b);
+        if (c->state == KORB_RAISE) return Qnil;
+    }
+    return self;
+}
+
+/* String#ord */
+static VALUE str_ord(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_string *s = (struct korb_string *)self;
+    if (s->len == 0) {
+        korb_raise(c, NULL, "empty string");
+        return Qnil;
+    }
+    return INT2FIX((unsigned char)s->ptr[0]);
+}
+
+/* String#eql? — content equality; rejects non-strings. */
+static VALUE str_eql(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (BUILTIN_TYPE(argv[0]) != T_STRING) return Qfalse;
+    extern VALUE str_eq(CTX *c, VALUE self, int argc, VALUE *argv);
+    return str_eq(c, self, argc, argv);
+}
+
+/* String#clone — fresh independent copy. */
+static VALUE str_clone(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_string *s = (struct korb_string *)self;
+    return korb_str_new(s->ptr, s->len);
 }
 
 /* String#% — same as format but self is the format string */

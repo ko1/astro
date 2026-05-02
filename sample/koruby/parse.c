@@ -270,10 +270,17 @@ build_call_with_block(struct transduce_context *tc, NODE *recv, ID name,
     }
     pm_block_node_t *bn = (pm_block_node_t *)block_pm;
     uint32_t params_cnt = 0;
+    int block_rest_slot_pre = -1;     /* set below once frame is pushed */
+    pm_constant_id_t block_rest_name = 0;
     if (bn->parameters && PM_NODE_TYPE_P(bn->parameters, PM_BLOCK_PARAMETERS_NODE)) {
         pm_block_parameters_node_t *bp = (pm_block_parameters_node_t *)bn->parameters;
         if (bp->parameters && PM_NODE_TYPE_P((pm_node_t *)bp->parameters, PM_PARAMETERS_NODE)) {
-            params_cnt = (uint32_t)((pm_parameters_node_t *)bp->parameters)->requireds.size;
+            pm_parameters_node_t *pn = (pm_parameters_node_t *)bp->parameters;
+            params_cnt = (uint32_t)pn->requireds.size;
+            if (pn->rest && PM_NODE_TYPE_P(pn->rest, PM_REST_PARAMETER_NODE)) {
+                pm_rest_parameter_node_t *rp = (pm_rest_parameter_node_t *)pn->rest;
+                if (rp->name) block_rest_name = rp->name;
+            }
         }
     }
     /* Reserve slots for recv (if any) + args first, so block's slot_base
@@ -339,11 +346,22 @@ build_call_with_block(struct transduce_context *tc, NODE *recv, ID name,
             }
         }
     }
+    /* Resolve *rest's slot now that the block frame is up. */
+    if (block_rest_name) {
+        int rs = lvar_slot(tc, block_rest_name, 0);
+        if (rs >= 0) block_rest_slot_pre = rs;
+    }
     NODE *body = bn->body ? T(tc, bn->body) : ALLOC_node_nil();
     if (destructure_pre) body = ALLOC_node_seq(destructure_pre, body);
     uint32_t env_size = tc->frame->max_cnt;
     pop_frame(tc);
-    NODE *block_node = ALLOC_node_block_literal(body, params_cnt, param_base, env_size);
+    NODE *block_node;
+    if (block_rest_slot_pre >= 0) {
+        block_node = ALLOC_node_block_literal_rest(body, params_cnt, param_base,
+                                                    env_size, (int32_t)block_rest_slot_pre);
+    } else {
+        block_node = ALLOC_node_block_literal(body, params_cnt, param_base, env_size);
+    }
     /* Register block body so AOT (--aot-compile) emits an SD for it.
      * Without this, the block dispatcher stays at DISPATCH_node_*
      * (interpreter), and the hot work inside `iters.times { ... }` —
@@ -1734,17 +1752,35 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
       case PM_LAMBDA_NODE: {
           pm_lambda_node_t *n = (pm_lambda_node_t *)node;
           uint32_t params_cnt = 0;
+          pm_constant_id_t lambda_rest_name = 0;
           if (n->parameters && PM_NODE_TYPE_P(n->parameters, PM_BLOCK_PARAMETERS_NODE)) {
               pm_block_parameters_node_t *bp = (pm_block_parameters_node_t *)n->parameters;
-              if (bp->parameters)
-                  params_cnt = (uint32_t)((pm_parameters_node_t *)bp->parameters)->requireds.size;
+              if (bp->parameters) {
+                  pm_parameters_node_t *pn = (pm_parameters_node_t *)bp->parameters;
+                  params_cnt = (uint32_t)pn->requireds.size;
+                  if (pn->rest && PM_NODE_TYPE_P(pn->rest, PM_REST_PARAMETER_NODE)) {
+                      pm_rest_parameter_node_t *rp = (pm_rest_parameter_node_t *)pn->rest;
+                      if (rp->name) lambda_rest_name = rp->name;
+                  }
+              }
           }
           push_frame(tc, &n->locals, true);
           uint32_t param_base = tc->frame->slot_base;
+          int lambda_rest_slot = -1;
+          if (lambda_rest_name) {
+              int rs = lvar_slot(tc, lambda_rest_name, 0);
+              if (rs >= 0) lambda_rest_slot = rs;
+          }
           NODE *body = n->body ? T(tc, n->body) : ALLOC_node_nil();
           uint32_t env_size = tc->frame->max_cnt;
           pop_frame(tc);
-          NODE *blk = ALLOC_node_block_literal(body, params_cnt, param_base, env_size);
+          NODE *blk;
+          if (lambda_rest_slot >= 0) {
+              blk = ALLOC_node_block_literal_rest(body, params_cnt, param_base,
+                                                   env_size, (int32_t)lambda_rest_slot);
+          } else {
+              blk = ALLOC_node_block_literal(body, params_cnt, param_base, env_size);
+          }
           /* `-> { ... }` and `lambda { ... }` produce a *lambda* — same as
            * a block literal except is_lambda=true.  Emit a call to the
            * Kernel#lambda cfunc which flips the flag on the passed block. */

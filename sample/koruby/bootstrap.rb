@@ -886,3 +886,32 @@ class Array
     nil
   end
 end
+
+class Proc
+  # Curry: each call accumulates args until enough; then invokes self.
+  # Args can come singly (`c[1][2][3]`) or multiply (`c[1, 2][3]`).
+  def curry(arity = nil)
+    arity ||= self.arity
+    arity = -arity if arity < 0
+    me = self
+    accumulate = nil
+    accumulate = ->(collected) {
+      ->(*more) {
+        all = collected + more
+        if all.size >= arity
+          me.call(*all)
+        else
+          accumulate.call(all)
+        end
+      }
+    }
+    accumulate.call([])
+  end
+end
+
+class Method
+  # Method#curry — fall back through to_proc.
+  def curry(arity = nil)
+    to_proc.curry(arity)
+  end
+end
