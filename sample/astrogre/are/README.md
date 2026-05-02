@@ -59,9 +59,26 @@ To get back grep-like behaviour: `--no-recursive`, `--hidden`, `-a`
 | Multi-thread file walking    |  -   | ✓  | -  | ✓  | ✓ |
 | Type filter (`-t LANG`)      |  -   | ✓  | ✓  | ✓  | ✓ |
 | User-defined types           |  -   | ✓  | ✓  | ✓  | ✓ |
-| Look-around / named captures |  -   | -  | ✓  | `-P` | ✓ |
-| Onigmo MatchCache (ReDoS)    |  -   | -  | -  | -  | ✓ |
+| Look-around / named captures | `-P` | -  | ✓  | `-P` | ✓ |
+| Onigmo extensions (cond / recursion / atomic / `\g<name>`) | - | - | - | - | ✓ |
+| Engine                       | DFA  | NFA + memoize | NFA (PCRE) | hybrid lazy DFA + NFA fallback | NFA backtracking + SIMD prefilter |
+| ReDoS-safe by default ¹      |  ✓ (BRE/ERE) | -  | -  | ✓ default · - under `-P` | -  ² |
 | AOT specialisation cache     |  -   | -  | -  | -  | ✓ (`--aot`) |
+| Embeddable as C library      |  -   | -  | -  | -  | ✓ (`astrogre.h`) |
+
+¹ "ReDoS-safe" = pathological patterns (e.g. `(a|a)*b`) cannot push a
+  full scan into exponential time on adversarial input.  This is a
+  property of the engine, not the CLI — `grep -P` and `rg -P` lose it
+  because they switch to PCRE2's backtracking NFA.
+
+² `are` defaults to the `astrogre` engine, which is currently NFA
+  backtracking with no memoization — pathological patterns blow up.
+  Don't feed it user-controlled patterns from the network.  Two
+  workarounds today: (a) `--engine=onigmo` swaps in Onigmo proper,
+  which does carry MatchCache; (b) keep patterns vetted.  The
+  long-term fix is a lazy-DFA path inside the astrogre engine
+  (RE2-style), not Onigmo-style memoization — tracked in
+  [`../docs/todo.md`](../docs/todo.md).
 
 ## Options
 
@@ -157,55 +174,71 @@ and reproduction instructions.
 ### Single-file scan (`bench/grep_bench.rb`)
 
 `are` shares the engine with `astrogre`, so single-file numbers
-track the engine directly.  `--aot` is shown as a warm-cache
-column — first invocation pays a `cc` compile (~400 ms); we only
-report the cached load time, the steady-state.
+track the engine directly.  Numbers below are **ms / best-of-7**
+on a 118 MB C-source corpus, single core (`taskset -c 4`), output
+to a regular file.  Bold cell = row minimum (the fastest tool on
+that pattern).  The `+AOT cached` column reports the warm-cache
+time only; the cold path adds a one-shot `cc` compile of ≈ 400 ms
+(steady-state thereafter).
 
-| pattern                       | are -j1 | are +AOT/cached | ripgrep | GNU grep |
-|-------------------------------|--------:|----------------:|--------:|---------:|
-| `/static/`                    | **39**  | 41              | 42      | 79       |
-| `/specialized_dispatcher/`    | **18**  | 22              | 22      | 37       |
-| `/^static/` anchored          | 79      | 80              | **40**  | 71       |
-| `/VALUE/i`                    | 83      | **76**          | 58      | 101      |
-| `/static\|extern\|inline/`    | 392     | **127**         | 61      | 196      |
-| 12-way alt (AC prefilter)     | 419     | 421             | **143** | 275      |
-| `/[0-9]{4,}/`                 | 377     | **174**         | 59      | 89       |
-| `/[a-z_]+_[a-z]+\(/`          | 1965    | 1307            | **216** | 2391     |
-| `-c /static/`                 | **21**  | 25              | 28      | 66       |
+| pattern                          | are -j1 | are +AOT cached | ripgrep | GNU grep |
+|----------------------------------|--------:|----------------:|--------:|---------:|
+| `/static/`                       | **38**  | 41              | 41      | 74       |
+| `/specialized_dispatcher/`       | **21**  | 24              | **21**  | 38       |
+| `/^static/` anchored             | 77      | 80              | **41**  | 76       |
+| `/VALUE/i`                       | 85      | 76              | **56**  | 98       |
+| `/static\|extern\|inline/`       | 376     | 121             | **63**  | 205      |
+| 12-way alt (AC prefilter)        | 444     | 409             | **139** | 276      |
+| `/[0-9]{4,}/`                    | 362     | 168             | **55**  | 97       |
+| `/[a-z_]+_[a-z]+\(/`             | 1858    | 1202            | **203** | 2214     |
+| `-c /static/`                    | **22**  | 24              | 27      | 64       |
+
+Honest row count: **`are` 2 wins + 1 tie · `rg` 6 wins + 1 tie ·
+`grep` 0 wins** on this set of 9 patterns.  For ad-hoc grep-style
+usage on a single file, **`rg` is still the better default tool.**
+The cases where `are` does win are all in the literal / count
+family where the engine has a specialised SIMD path.
 
 Where `are` wins outright:
 
-- **`-c /static/`** (count): 21 ms — fastest tool here.  The
-  `node_grep_count_lines_lit` path is a single specialised SD
-  that does SIMD scan + line-skip + count in one tight loop.
-- **`/static/` default print**: 39 ms vs grep 79 ms vs rg 42 ms.
-  Same scanner + an inlined emit-line action.
-- **`/specialized_dispatcher/`**: 18 ms — long literal, tight
-  memmem.  Slightly ahead of ripgrep (22 ms).
+- **`-c /static/`** (count): `are` 22 ms vs `rg` 27 ms vs `grep`
+  64 ms.  The `node_grep_count_lines_lit` path is a single
+  specialised dispatcher that does SIMD scan + line-skip + count
+  in one tight loop.
+- **`/static/` default print**: `are` 38 ms vs `rg` 41 ms vs
+  `grep` 74 ms.  Same SIMD scanner plus an inlined emit-line
+  action.
+- **`/specialized_dispatcher/`**: tied with `rg` at 21 ms — long
+  literal, tight `memmem`.
 
-Where AOT pulls its weight:
+Where AOT helps (`are -j1` → `are +AOT cached`):
 
-- **alt-of-LIT** (`/static|extern|inline/`): 392 → 127 ms (3.1×).
-  Per-byte alt-branch dispatch folds into the SD function.
-- **class-rep** (`/[0-9]{4,}/`): 377 → 174 ms (2.2×).
-- **ident-call**: 1965 → 1307 ms (1.5×).
+| pattern                 | interp  | AOT      | speed-up |
+|-------------------------|--------:|---------:|---------:|
+| `static\|extern\|inline`| 376 ms  | 121 ms   | **3.1×** |
+| `[0-9]{4,}`             | 362 ms  | 168 ms   | **2.2×** |
+| `[a-z_]+_[a-z]+\(`      | 1858 ms | 1202 ms  | **1.5×** |
+| `VALUE/i`               | 85 ms   | 76 ms    | 1.1×     |
 
-AOT has a small constant cost (≈ 4 ms for dlopen + dispatch swap)
-that shows up as a slight regression on already-fast cases like
-`-c /static/` (21 → 25 ms).  Not worth turning on for trivial
-patterns; very worth it for anything with an alt-of-LIT body or a
-greedy class-rep.
+AOT has a small constant cost (≈ 2–4 ms for `dlopen` + dispatcher
+swap) which shows up as a slight regression on already-fast
+patterns (`-c /static/` 22 → 24 ms).  Worth turning on when (a)
+the body chain has substantial work to fold (alt-of-LIT, greedy
+class-rep) **and** (b) the same pattern is being re-used many
+times — `--aot` caches per-pattern in `code_store/`, so ad-hoc
+one-off greps with a fresh pattern each time pay the cold compile
+each time and never reach the cached column.
 
-Where ripgrep still wins:
+Where ripgrep wins (and what would close the gap):
 
-- Anchored / `/i` / class-rep: ripgrep's literal-prefix prefilter
-  + lazy DFA wins by 1.5–2× even against AOT.
-- **ident-call** `[a-z_]+_[a-z]+\(`: rg gets to 216 ms via
-  lazy DFA where prefilter doesn't apply; we're at 1.3 s with
-  AOT.  Biggest engine gap.
-- **Multi-literal alt** (12-way): rg's Aho-Corasick + Teddy SIMD
-  is 2–3× faster per byte than ours.  Engine work tracked in
-  [`../docs/todo.md`](../docs/todo.md).
+- **Anchored / `/i` / class-rep**: rg's literal-prefix prefilter
+  plus lazy DFA beats AOT by 1.5–3×.
+- **`/[a-z_]+_[a-z]+\(/`**: rg lazy DFA at 203 ms; we're at
+  1.2 s even with AOT.  This is the biggest engine gap and it's
+  structural — only a DFA-based path closes it.
+- **Multi-literal alt (12-way)**: rg's Aho-Corasick + Teddy SIMD
+  is 2–3× faster per byte than ours.  Pure engine work, tracked
+  in [`../docs/todo.md`](../docs/todo.md).
 
 ### Tree walk (`bench/tree_bench.rb`)
 
@@ -214,10 +247,12 @@ day-to-day code grep actually looks like.
 
 | pattern              | tree           | are -j4 | ripgrep | grep -r |
 |----------------------|----------------|--------:|--------:|--------:|
-| `/CONFIG/`           | /usr/include   | 49      | **20**  | 88      |
-| `PROT_READ\|PROT_W…` | /usr/include   | 45      | **22**  | 101     |
-| 12-lit alt (AC)      | /usr/include   | 109     | **21**  | 164     |
-| `/verbose_mark/`     | astro tree     | 134     | **37**  | 605     |
+| `/CONFIG/`           | /usr/include   | 45      | **17**  | 76      |
+| `PROT_READ\|PROT_W…` | /usr/include   | 41      | **18**  | 93      |
+| 12-lit alt (AC)      | /usr/include   | 94      | **18**  | 144     |
+| `/verbose_mark/`     | astro tree     | 106     | **31**  | 474     |
+
+(ms / best-of-5, `-j 4` for `are`, `-t c` for all three.)
 
 `are` consistently beats `grep -r` by 2–5× on tree walk thanks to
 `.gitignore` filtering, parallel file scanning (`-j 4` here), and
@@ -243,10 +278,12 @@ Where `are` is the right tool:
 
 1. **Ruby/Onigmo regex semantics out of the box.**  `rg -P` enables
    PCRE2 (close but not identical to Onigmo); `are` is byte-for-byte
-   the same engine you get from `Regexp` in Ruby.  Look-behind,
+   the same `Regexp` engine semantics you get in Ruby.  Look-behind,
    named captures, conditional groups, subroutine calls, set
-   operations on character classes, MatchCache for ReDoS — all on
-   by default, no flag needed.
+   operations on character classes — all on by default, no flag
+   needed.  ReDoS resistance is *not* yet on the default engine
+   (lazy-DFA work pending); use `--engine=onigmo` if you need
+   Onigmo's MatchCache mitigation today.
 2. **AOT pattern specialisation.**  `--aot` writes per-pattern
    specialised C to `code_store/` and links it back in.  For a
    pattern you grep with hundreds of times (CI scripts, editor
