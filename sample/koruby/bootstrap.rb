@@ -207,6 +207,22 @@ class Enumerable
       n.times { each { |x| blk.call(x) } }
     end
   end
+
+  # Enumerator stand-in: with_index(start=0) — pairs each element with
+  # an incrementing index.  Without a block, returns Array of [el, i].
+  def with_index(start = 0, &blk)
+    out = []
+    i = start
+    each { |x|
+      if blk
+        blk.call(x, i)
+      else
+        out << [x, i]
+      end
+      i += 1
+    }
+    blk ? self : out
+  end
 end
 
 # Array, Hash, Range, String all support `each`, so wire up Enumerable.
