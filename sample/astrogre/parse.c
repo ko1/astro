@@ -1,23 +1,18 @@
 /*
- * astrogre regex parser.
- *
- * Two layers:
- *   (1) astrogre_parse_via_prism: take Ruby source, drive prism, find a
- *       RegularExpressionNode, hand its content + flags to (2).
- *   (2) astrogre_parse:           classic recursive-descent regex parser
- *       that produces our AST.  Continuation-passing assembly is done in
- *       a second walk over an intermediate struct tree (ire_node_t) so
- *       that "tail" can be threaded right-to-left without making the
- *       lexer lookahead-heavy.
+ * astrogre regex parser.  Classic recursive-descent regex parser that
+ * produces our AST.  Continuation-passing assembly is done in a second
+ * walk over an intermediate struct tree (ire_node_t) so that "tail"
+ * can be threaded right-to-left without making the lexer lookahead-
+ * heavy.
  */
 
 #include <ctype.h>
 #include "parse.h"
-#include "prism.h"
 #include "aho_corasick.h"
 
-/* prism flag bits we care about (mirrored to avoid relying on the enum
- * being visible here). */
+/* Regex compile flag bits.  Numeric values match prism's
+ * pm_regular_expression_flags_t for callers that have a prism-derived
+ * bitmask in hand, but the engine itself does not depend on prism. */
 #define PR_FLAGS_IGNORE_CASE 4
 #define PR_FLAGS_EXTENDED    8
 #define PR_FLAGS_MULTI_LINE  16
@@ -1980,17 +1975,17 @@ static void ire_free(ire_node_t *n) {
 NODE *astrogre_rep_cont_singleton(void);  /* defined in match.c */
 
 astrogre_pattern *
-astrogre_parse(const char *pat, size_t pat_len, uint32_t prism_flags)
+astrogre_parse(const char *pat, size_t pat_len, uint32_t flags)
 {
     re_parser_t q = {0};
     q.p   = (const uint8_t *)pat;
     q.end = q.p + pat_len;
-    q.case_insensitive = (prism_flags & PR_FLAGS_IGNORE_CASE) != 0;
-    q.multiline        = (prism_flags & PR_FLAGS_MULTI_LINE)  != 0;
-    q.extended         = (prism_flags & PR_FLAGS_EXTENDED)    != 0;
-    if (prism_flags & PR_FLAGS_ASCII_8BIT) q.encoding = AGRE_ENC_ASCII;
-    else                                    q.encoding = AGRE_ENC_UTF8;
-    /* prism's UTF-8 / forced encoding bits both map to UTF-8 here */
+    q.case_insensitive = (flags & PR_FLAGS_IGNORE_CASE) != 0;
+    q.multiline        = (flags & PR_FLAGS_MULTI_LINE)  != 0;
+    q.extended         = (flags & PR_FLAGS_EXTENDED)    != 0;
+    if (flags & PR_FLAGS_ASCII_8BIT) q.encoding = AGRE_ENC_ASCII;
+    else                              q.encoding = AGRE_ENC_UTF8;
+    /* PR_FLAGS_UTF_8 also maps to UTF-8 here (default). */
 
     /* Detect leading \A so search loop can early-out on first iteration. */
     bool anchored_bos = (pat_len >= 2 && pat[0] == '\\' && pat[1] == 'A');
@@ -2202,10 +2197,10 @@ astrogre_parse(const char *pat, size_t pat_len, uint32_t prism_flags)
 }
 
 astrogre_pattern *
-astrogre_parse_fixed(const char *bytes, size_t len, uint32_t prism_flags)
+astrogre_parse_fixed(const char *bytes, size_t len, uint32_t flags)
 {
-    bool ci = (prism_flags & PR_FLAGS_IGNORE_CASE) != 0;
-    agre_encoding_t enc = (prism_flags & PR_FLAGS_ASCII_8BIT) ? AGRE_ENC_ASCII : AGRE_ENC_UTF8;
+    bool ci = (flags & PR_FLAGS_IGNORE_CASE) != 0;
+    agre_encoding_t enc = (flags & PR_FLAGS_ASCII_8BIT) ? AGRE_ENC_ASCII : AGRE_ENC_UTF8;
 
     /* Pre-fold for /i so the matcher's CI compare is asymmetric. */
     char *buf = (char *)malloc(len + 1);
@@ -2269,54 +2264,6 @@ astrogre_parse_literal(const char *src, size_t len)
         }
     }
     return astrogre_parse(src + pat_start, pat_end - pat_start, flags);
-}
-
-/* ------------------------------------------------------------------ */
-/* Prism-driven path                                                   */
-/* ------------------------------------------------------------------ */
-
-struct find_re_ctx { const pm_node_t *found; };
-static bool find_re_visit(const pm_node_t *node, void *data) {
-    struct find_re_ctx *fr = (struct find_re_ctx *)data;
-    if (fr->found) return false;
-    if (PM_NODE_TYPE(node) == PM_REGULAR_EXPRESSION_NODE) {
-        fr->found = node;
-        return false;
-    }
-    return true;  /* recurse into children */
-}
-
-static const pm_node_t *find_regex_node(const pm_node_t *node)
-{
-    struct find_re_ctx fr = { .found = NULL };
-    pm_visit_node(node, find_re_visit, &fr);
-    return fr.found;
-}
-
-astrogre_pattern *
-astrogre_parse_via_prism(const char *src, size_t len)
-{
-    pm_parser_t parser;
-    pm_options_t options = {0};
-    pm_parser_init(&parser, (const uint8_t *)src, len, &options);
-    pm_node_t *root = pm_parse(&parser);
-
-    const pm_node_t *re = find_regex_node(root);
-    astrogre_pattern *p = NULL;
-
-    if (re) {
-        const pm_regular_expression_node_t *r = (const pm_regular_expression_node_t *)re;
-        const uint8_t *cs = pm_string_source(&r->unescaped);
-        size_t        cl = pm_string_length(&r->unescaped);
-        uint32_t flags = (uint32_t)re->flags;
-        p = astrogre_parse((const char *)cs, cl, flags);
-    } else {
-        fprintf(stderr, "astrogre: no regex literal found in source\n");
-    }
-
-    pm_node_destroy(&parser, root);
-    pm_parser_free(&parser);
-    return p;
 }
 
 void

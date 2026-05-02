@@ -7,10 +7,10 @@ on top.  The matcher itself is the "engine"; the binary is the grep CLI.
 The matcher is itself an AST: `node.def` defines ~22 match-node kinds
 (literal, char-class, dot, anchors, repetition, alternation, capture,
 lookahead, backreference) and ASTroGen turns that into a tree-walking
-interpreter.  The front-end uses [prism](https://github.com/ruby/prism)
-to parse Ruby source, find a `PM_REGULAR_EXPRESSION_NODE`, and feed
-its unescaped body + flag bits into a small recursive-descent regex
-parser that produces our AST.
+interpreter.  Patterns enter through a small recursive-descent regex
+parser (`parse.c`) that takes the bytes between the slashes plus a
+flag bitmask and produces the AST.  No external regex parser is
+required.
 
 The binary `./astrogre` is a grep tool that uses the `astrogre`
 engine by default.  An [Onigmo](https://github.com/k-takata/Onigmo)
@@ -23,7 +23,7 @@ Two CLIs ship in this directory:
   engine, kept close to GNU grep semantics for benching: explicit
   PATH required, no recursion default, `-r` to descend, all flags
   including the lib-internal ones (`--self-test`, `--bench`,
-  `--bench-file`, `--dump`, `--via-prism`, `--plain`, `--aot-compile`,
+  `--bench-file`, `--dump`, `--plain`, `--aot-compile`,
   `--backend=`, `--verbose`).  This is the binary used in the
   benches below.
 - **`./are/are`** — production CLI with modern defaults (recursive
@@ -39,7 +39,7 @@ Two CLIs ship in this directory:
   anchors, greedy/lazy quantifiers, capturing/non-capturing/named groups,
   back-references, lookahead, alternation, `/x` extended, inline flag
   groups, `search_from` enumeration, fixed-string mode.
-- prism integration + standalone `/pat/flags` syntax.
+- Standalone `/pat/flags` source-string syntax via `astrogre_parse_literal`.
 - grep CLI: `-i -n -c -v -w -F -l -L -H -h -o -r -e --color=auto`.
 - Backend abstraction: `--backend=astrogre` (default) or `--backend=onigmo`.
 - AOT specialization wired up: `--aot-compile` (`-C`) writes
@@ -120,7 +120,6 @@ make WITH_ONIGMO=1
 ./astrogre --self-test               # 44-case self-test
 ./astrogre --bench                   # in-engine microbench
 ./astrogre --dump '/(a|b)*c/'        # show compiled AST
-./astrogre --via-prism 'p /\d+/i' input.txt   # extract regex via prism
 make bench-rg                        # cross-tool grep comparison
 make bench-tree                      # recursive-walk comparison
 make bench-aot                       # AOT-favourable engine bench
@@ -130,7 +129,7 @@ make bench-aot                       # AOT-favourable engine bench
 
 ```
 node.def              22 match-node kinds (continuation-passing form)
-parse.c / parse.h     prism integration + recursive-descent regex parser
+parse.c / parse.h     recursive-descent regex parser
 match.c               astrogre_search / astrogre_search_from + rep_cont singleton
 backend.h             abstract ops table (compile/search/free)
 backend_astrogre.c    in-house engine bound to backend_ops_t
@@ -141,7 +140,6 @@ main.c                grep CLI (file walk, options, color, --backend)
 bench/grep_bench.rb   cross-tool single-file comparison
 bench/aot_bench.rb    engine-internal AOT-favourable bench
 bench/tree_bench.rb   recursive walk vs ripgrep / grep -r
-prism                 symlink to ../naruby/prism (Ruby parser)
 onigmo/               cloned, locally-built Onigmo (build_local.mk)
 ```
 
@@ -289,9 +287,9 @@ sharing then composes with them for free").
 - The `(?~e)` absence operator uses the simple `(?:(?!e).)*` semantics;
   Onigmo's stricter "no contiguous substring matches" length can
   differ for unanchored cases.
-- `Regexp.new(string)` from the CLI front (`--via-prism` only takes
-  literal `/.../`); the Ruby C extension `ASTrogre.compile(string)`
-  already exposes the runtime-string compile path.
+- `Regexp.new(string)` from the CLI front; the Ruby C extension
+  `ASTrogre.compile(string)` already exposes the runtime-string
+  compile path.
 
 What landed recently and ISN'T in this list anymore:
 - Lookbehind `(?<=...)` / `(?<!...)` — fixed-width, alt-of-fixed,
@@ -312,10 +310,5 @@ See [`docs/done.md`](./docs/done.md) and
 
 - ASTro framework: top-level [README](../../README.md) and
   [`docs/idea.md`](../../docs/idea.md).
-- prism `pm_regular_expression_node_t` —
-  `prism/include/prism/ast.h`.  Note that prism gives us only the
-  regex *source bytes* and the `/imxnu` flag bits; it does **not**
-  parse the regex syntax itself (`[a-z]`, `\d`, etc.).  That's why
-  this sample ships its own recursive-descent regex parser.
 - Onigmo: <https://github.com/k-takata/Onigmo> — cloned at build
   time with `make WITH_ONIGMO=1`.

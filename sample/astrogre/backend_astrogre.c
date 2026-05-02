@@ -12,7 +12,8 @@
 #include "context.h"
 #include "parse.h"
 
-/* prism flag bits we need (mirrored to avoid pulling prism.h here) */
+/* Regex compile flag bits — same numeric layout the engine uses
+ * (PR_FLAGS_*, kept compatible with prism's enum but no prism dep). */
 #define PR_FLAGS_IGNORE_CASE 4
 #define PR_FLAGS_EXTENDED    8
 #define PR_FLAGS_MULTI_LINE  16

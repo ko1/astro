@@ -73,10 +73,12 @@ v1 で入っているもの、カテゴリ別。[`todo.md`](./todo.md) の対。
   `memo_eligible = false`。
 
 ### フロントエンド
-- prism 統合 (`astrogre_parse_via_prism`): 任意の Ruby ソース AST を
-  歩いて、最初の `PM_REGULAR_EXPRESSION_NODE` を拾う。
+- `astrogre_parse(pat, len, flags)`: regex 本体 + flag bitmask の主入口。
 - `astrogre_parse_literal`: テスト / CLI 用 `/pat/flags` 構文。
 - `astrogre_parse_fixed`: `-F` モード、regex parser バイパス。
+- prism 依存はドロップ済み (旧 `--via-prism` ・`astrogre_parse_via_prism`
+  は撤去)。flag ビット値 (`PR_FLAGS_*`) は prism のレイアウトと数値
+  互換だが、prism リンクは不要。
 
 ## エンジン — ランタイム
 
@@ -107,8 +109,6 @@ v1 で入っているもの、カテゴリ別。[`todo.md`](./todo.md) の対。
   span のみ出力。
 - **`--color`**: マッチを赤、行番号を緑、ファイル名を紫(GNU grep 互換)。
   `--color=auto` は `isatty` を見る。
-- **`--via-prism`**: パターン引数を Ruby ソースとして prism で parse、
-  最初の `/.../` の本体を検索パターンとして使う。
 - **`--backend=astrogre|onigmo`**: 実行時バックエンド切り替え。Onigmo
   は `make WITH_ONIGMO=1` で local build (autoconf / libtool 不要の
   自前 `build_local.mk`)。

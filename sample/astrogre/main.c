@@ -26,8 +26,6 @@
  *   --bench          run engine microbench
  *   --dump           dump pattern AST (then exit)
  *   --regex-dump     same as --dump
- *   --via-prism      parse PATTERN as Ruby source via prism, take the
- *                    first regex literal as the search pattern
  */
 
 /* _GNU_SOURCE before any system header — needed for memrchr (used in
@@ -116,7 +114,6 @@ typedef struct grep_opt {
     bool null_separator;        /* -Z: NUL terminate filenames in output */
     bool recursive;
     int  color_mode;            /* 0 never, 1 always, 2 auto */
-    bool via_prism;
 
     /* -m N: stop after N matching lines per file.  0 = unlimited. */
     long max_count;
@@ -1023,7 +1020,7 @@ usage(void)
         "  --verbose                       phase-by-phase wall-clock timing on stderr\n"
         "Modes:\n"
         "  --self-test                     --bench\n"
-        "  --dump PATTERN                  --via-prism\n",
+        "  --dump PATTERN\n",
         stderr);
 }
 
@@ -1072,7 +1069,6 @@ main(int argc, char *argv[])
         if (a[0] != '-' || strcmp(a, "-") == 0) break;
         if (strcmp(a, "--") == 0) { argi++; break; }
 
-        if (strcmp(a, "--via-prism") == 0)            { go.via_prism = true; argi++; continue; }
         if (strcmp(a, "--dump") == 0 || strcmp(a, "--regex-dump") == 0) {
             if (argi + 1 >= argc) { usage(); return 2; }
             astrogre_pattern *p = astrogre_parse_literal(argv[argi + 1], strlen(argv[argi + 1]));
@@ -1209,18 +1205,6 @@ main(int argc, char *argv[])
     if (go.n_patterns == 0) {
         if (argi >= argc) { usage(); return 2; }
         push_pattern(&go, argv[argi++]);
-    }
-
-    /* If --via-prism, replace each PATTERN by the body of the first
-     * /.../ found inside it (parsed as Ruby source by prism). */
-    if (go.via_prism) {
-        for (int i = 0; i < go.n_patterns; i++) {
-            astrogre_pattern *p = astrogre_parse_via_prism(go.patterns[i], strlen(go.patterns[i]));
-            if (!p) return 2;
-            go.patterns[i] = strdup(p->pat);
-            if (p->case_insensitive) go.ignore_case = true;
-            astrogre_pattern_free(p);
-        }
     }
 
     color_init(go.color_mode);

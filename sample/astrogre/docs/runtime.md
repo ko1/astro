@@ -18,7 +18,7 @@
 ## 全体像
 
 ```
-Ruby ソース ──prism──▶ pm_regular_expression_node_t.unescaped + flags
+正規表現ソース (slash 内のバイト列 + flag bits)
                        │
                        ▼
                  ┌────────────┐
@@ -513,8 +513,11 @@ node:
 
 ## エンコーディング
 
-`c->encoding` は prism のフラグビット (またはリテラル CLI 構文) から
-セットされ、regex のエンコーディングモードを反映する:
+`c->encoding` は parse.h の `astrogre_parse(..., flags)` に渡された
+flag ビット (`PR_FLAGS_ASCII_8BIT` / `PR_FLAGS_UTF_8`) からセットされ、
+regex のエンコーディングモードを反映する。リテラル CLI 構文
+(`/pat/n`、`/pat/u`) は `astrogre_parse_literal` で同じビットに
+マップされる:
 
 | flag      | mode      | dot の進み量 | 典型用途 |
 |-----------|-----------|--------------|--------|
@@ -883,8 +886,6 @@ ladder を拡張する候補 node (まだ手付かず、同じ形):
 * **`-w` (whole-word)**: regex レベルで `\b...\b` で包む (`-F` のときは
   literal を先に escape)
 * **`-r`**: `opendir` + 再帰下降; デフォルトでドットファイルをスキップ
-* **`--via-prism`**: 各 `-e PATTERN` を、その引数を Ruby ソースとして
-  prism で parse して見つかる最初の `/.../` の本体で置き換える
 * **`--verbose`**: フェーズ別の wall-clock を stderr に出す。`INIT` /
   `pattern compile` / `mmap` / `scan` / `munmap` / `at exit` の各時刻が
   見えるので、何が支配的かを strace 無しで判断できる

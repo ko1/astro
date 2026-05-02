@@ -30,8 +30,7 @@ GNU grep, but awkward to actually use day-to-day on a code base.
 `are` is the production CLI — same engine, modern UX.  The two
 binaries coexist; the legacy `astrogre` binary still owns the
 library-internal sub-commands (`--self-test`, `--bench`, `--dump`,
-`--via-prism`, `--verbose`, …) which `are` deliberately doesn't
-expose.
+`--verbose`, …) which `are` deliberately doesn't expose.
 
 ## Defaults that differ from GNU grep
 

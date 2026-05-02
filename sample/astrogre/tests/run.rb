@@ -5,8 +5,8 @@
 # grep as ground truth so we don't have to maintain expected values
 # manually:
 #
-#   1. Engine-level (--via-prism + --dump): parse a regex, check the
-#      AST shape we expect (smoke tests for parser / lower).
+#   1. Engine-level (--dump): parse a regex, check the AST shape we
+#      expect (smoke tests for parser / lower).
 #   2. CLI-level: run `./astrogre [flags] PATTERN file` and diff against
 #      `grep [flags] PATTERN file` byte-for-byte.
 #   3. Ruby-vs-astrogre: build a small corpus, run the same regex in
@@ -238,30 +238,6 @@ RUBY_CASES.each_with_index do |(pat, yes_inputs, no_inputs), i|
       C.fail!("Ruby vs astrogre no  #{pat.inspect} / #{inp.inspect}",
               "astrogre exit=#{st.exitstatus} (Ruby did not match)")
     end
-  end
-end
-
-# ---------------------------------------------------------------------
-# Layer 4: --via-prism — the same Ruby source string should yield the
-# same regex behaviour as Ruby's own Regexp.
-# ---------------------------------------------------------------------
-
-VIA_PRISM_CASES = [
-  ['/\d+/',        "abc123def",  true],
-  ['/\d+/',        "no digits",  false],
-  ['/foo/i',       "FoO",        true],
-  ['/(?<num>\d+)/', "x42y",      true],
-  ['/^\s*$/',      "   ",        true],
-]
-
-VIA_PRISM_CASES.each do |ruby_src, input, should_match|
-  out, _, st = Open3.capture3(ASTROGRE, "--via-prism", "-q", ruby_src, stdin_data: input)
-  matched = (st.exitstatus == 0)
-  if matched == should_match
-    C.ok!("via-prism #{ruby_src.inspect} / #{input.inspect}")
-  else
-    C.fail!("via-prism #{ruby_src.inspect} / #{input.inspect}",
-            "want #{should_match}, got #{matched} (exit=#{st.exitstatus})")
   end
 end
 

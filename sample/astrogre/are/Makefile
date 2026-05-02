@@ -10,7 +10,6 @@
 ARE_DIR     := $(CURDIR)
 ENGINE_DIR  := $(ARE_DIR)/..
 RUNTIME_DIR := $(ENGINE_DIR)/../../runtime
-PRISM_DIR   := $(ENGINE_DIR)/prism
 ONIGMO_DIR  := $(ENGINE_DIR)/onigmo
 
 CC      ?= gcc
@@ -20,13 +19,13 @@ optflags ?= -O2
 # main.c; the unused-function suppressions match the parent build so
 # we don't get noise from forked code paths that aren't reached in
 # every config.
-CFLAGS = -I$(PRISM_DIR)/include -I$(ENGINE_DIR) -I$(RUNTIME_DIR) -I$(ARE_DIR) \
+CFLAGS = -I$(ENGINE_DIR) -I$(RUNTIME_DIR) -I$(ARE_DIR) \
          $(optflags) -ggdb3 -Wall -mavx2 \
          -Wno-unused-function -Wno-unused-variable -Wno-unused-parameter \
          -Wno-unused-but-set-variable
 
-LDFLAGS = -L $(PRISM_DIR)/build -Wl,-rpath=$(PRISM_DIR)/build
-LIBS    = -lprism -ldl
+LDFLAGS =
+LIBS    = -ldl
 
 # Source set.  The engine sources are pulled from the parent dir so
 # we never fork them; only main.c + types.c live under are/.

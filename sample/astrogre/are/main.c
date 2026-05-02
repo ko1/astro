@@ -47,8 +47,8 @@
  *   -V / --version                  print version and exit
  *
  * The library-internal `--self-test`, `--bench`, `--bench-file`,
- * `--dump`, `--via-prism`, `--verbose`, `--cs-verbose` etc. live on the
- * legacy `astrogre` binary in the parent directory.  `are` keeps its
+ * `--dump`, `--verbose`, `--cs-verbose` etc. live on the legacy
+ * `astrogre` binary in the parent directory.  `are` keeps its
  * surface clean.
  */
 
@@ -129,7 +129,6 @@ typedef struct grep_opt {
     bool include_binary;        /* -a / --text: do NOT skip binary files */
     bool no_ignore;             /* --no-ignore: disable .gitignore filtering */
     int  color_mode;            /* 0 never, 1 always, 2 auto */
-    bool via_prism;
 
     /* -t LANG / -T LANG: file-type filter via the table in types.[ch].
      * `included` are positive selectors (file must match at least one);
@@ -1388,8 +1387,7 @@ usage(void)
         "      --help                      print this help and exit\n"
         "\n"
         "For library-internal commands (--self-test, --bench, --dump,\n"
-        "--via-prism, ...) use the legacy `astrogre` binary in the same\n"
-        "directory.\n",
+        "...) use the legacy `astrogre` binary in the same directory.\n",
         stderr);
 }
 
