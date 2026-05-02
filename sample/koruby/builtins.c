@@ -172,6 +172,11 @@ void korb_init_builtins(void) {
 
     /* Range */
     struct korb_class *cRng = korb_vm->range_class;
+    {
+        /* Class method Range.new — register on Range's metaclass. */
+        struct korb_class *cRngMeta = korb_singleton_class_of(cRng);
+        korb_class_add_method_cfunc(cRngMeta, korb_intern("new"), rng_class_new, -1);
+    }
     DEF(cRng, "each", rng_each, 0);
     DEF(cRng, "first", rng_first, -1);
     DEF(cRng, "last",  rng_last,  -1);

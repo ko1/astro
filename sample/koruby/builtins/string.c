@@ -659,7 +659,15 @@ static VALUE kernel_format(CTX *c, VALUE self, int argc, VALUE *argv) {
             case '%': buf[0] = '%'; buf[1] = 0; break;
             case 'd': case 'i': case 'u':
             case 'x': case 'X': case 'o': case 'b': case 'c': {
-                long v = ai < argc && FIXNUM_P(argv[ai]) ? FIX2LONG(argv[ai]) : 0;
+                long v;
+                if (conv == 'c' && ai < argc && !SPECIAL_CONST_P(argv[ai]) &&
+                    BUILTIN_TYPE(argv[ai]) == T_STRING) {
+                    /* %c with a String arg: use the first byte. */
+                    const struct korb_string *cs = (const struct korb_string *)argv[ai];
+                    v = cs->len > 0 ? (unsigned char)cs->ptr[0] : 0;
+                } else {
+                    v = ai < argc && FIXNUM_P(argv[ai]) ? FIX2LONG(argv[ai]) : 0;
+                }
                 if (conv == 'b') {
                     /* binary — manually */
                     char tmp[64]; int tl = 0;

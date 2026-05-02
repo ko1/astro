@@ -1,6 +1,19 @@
 /* Range — moved from builtins.c. */
 
 /* ---------- Range ---------- */
+extern VALUE korb_range_new(VALUE b, VALUE e, bool excl);
+
+static VALUE rng_class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
+    /* Range.new(begin, end[, exclude_end=false]) */
+    if (argc < 2) {
+        VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+        korb_raise(c, (struct korb_class *)eArg, "wrong number of arguments to Range.new");
+        return Qnil;
+    }
+    bool excl = (argc >= 3) && RTEST(argv[2]);
+    return korb_range_new(argv[0], argv[1], excl);
+}
+
 static VALUE rng_each(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* No block → return Array stand-in (Enumerator placeholder).  An
      * Array is "Enumerable enough" for the common chains like
