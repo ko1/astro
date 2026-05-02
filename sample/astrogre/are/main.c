@@ -36,7 +36,8 @@
  *   --type-add NAME:GLOB[:GLOB...]  define a custom type
  *   --type-list                     dump the file-type table and exit
  *   --hidden                        descend into hidden dirs/files
- *   --no-recursive / -d skip        do NOT descend into directories
+ *   --no-ignore                     do NOT honour .gitignore files
+ *   --no-recursive                  do NOT descend into directories
  *   -a / --text                     do NOT skip binary files
  *   --include=GLOB / --exclude=GLOB extra basename filters
  *   --color=never|always|auto       (default auto via isatty)
@@ -74,6 +75,7 @@
 #include "parse.h"
 #include "backend.h"
 #include "types.h"
+#include "ignore.h"
 
 /* `verbose_mark` is wired throughout the search loop in the parent
  * astrogre/main.c for `--verbose` profiling.  In `are` we leave it as
@@ -123,6 +125,7 @@ typedef struct grep_opt {
     bool no_recursive;          /* --no-recursive / -d skip: turn it off */
     bool show_hidden;           /* --hidden: descend into dot-prefixed entries */
     bool include_binary;        /* -a / --text: do NOT skip binary files */
+    bool no_ignore;             /* --no-ignore: disable .gitignore filtering */
     int  color_mode;            /* 0 never, 1 always, 2 auto */
     bool via_prism;
 
@@ -390,6 +393,10 @@ typedef struct grep_state {
     int n_patterns;
     bool show_filename;
     long total_match_count;
+    /* `.gitignore` stack — pushed/popped around opendir/closedir in
+     * the recursive walker.  Seeded once from the cwd's repo root at
+     * search start (`ignore_stack_seed_from_repo_root`). */
+    ignore_stack_t ignore;
 } grep_state_t;
 
 /* Filename separator used after the filename / line-number prefix.
@@ -1046,20 +1053,34 @@ process_path(grep_state_t *st, const char *path)
         }
         DIR *d = opendir(path);
         if (!d) { fprintf(stderr, "are: %s: %s\n", path, strerror(errno)); return 2; }
+
+        /* Push this directory's `.gitignore` (if any) so descendants
+         * see its rules.  We track the stack depth before the push
+         * so we know whether to pop on closedir without leaking the
+         * "no .gitignore here" case. */
+        const size_t pre_push_depth = st->ignore.n_layers;
+        ignore_stack_push_dir(&st->ignore, path);
+        const bool pushed = (st->ignore.n_layers > pre_push_depth);
+
         struct dirent *e;
         while ((e = readdir(d))) {
             if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
             /* Skip hidden dot-prefixed entries unless --hidden was set.
-             * Same rule for files and dirs — `.git/`, `.cache/`,
-             * `.DS_Store` all stay invisible. */
+             * Same rule for files and dirs — `.cache/`, `.DS_Store`
+             * all stay invisible.  `.git/` is also force-skipped by
+             * `ignore_should_skip` even with --hidden, since scanning
+             * pack files is never useful. */
             if (!st->go->show_hidden && e->d_name[0] == '.') continue;
-            if (!glob_filter_pass(st->go, e->d_name, e->d_type == DT_DIR)) continue;
+            const bool is_dir = (e->d_type == DT_DIR);
+            if (ignore_should_skip(&st->ignore, path, e->d_name, is_dir)) continue;
+            if (!glob_filter_pass(st->go, e->d_name, is_dir)) continue;
             char sub[4096];
             snprintf(sub, sizeof(sub), "%s/%s", path, e->d_name);
             process_path(st, sub);
             if (st->go->quiet && st->total_match_count > 0) break;
         }
         closedir(d);
+        if (pushed) ignore_stack_pop(&st->ignore);
         return 0;
     }
     /* Skip binary files unless `-a` (--text) was given.  We probe the
@@ -1124,6 +1145,7 @@ usage(void)
         "  --type-list                     list known types and exit\n"
         "  --include=GLOB / --exclude=GLOB extra basename glob filters\n"
         "  --hidden                        descend into hidden entries\n"
+        "  --no-ignore                     ignore .gitignore files\n"
         "  -a, --text                      do NOT skip binary files\n"
         "  --no-recursive                  do NOT descend into directories\n"
         "\n"
@@ -1191,6 +1213,7 @@ main(int argc, char *argv[])
         if (strcmp(a, "--hidden") == 0)        { go.show_hidden    = true;  argi++; continue; }
         if (strcmp(a, "--text") == 0)          { go.include_binary = true;  argi++; continue; }
         if (strcmp(a, "--no-recursive") == 0)  { go.recursive      = false; argi++; continue; }
+        if (strcmp(a, "--no-ignore") == 0)     { go.no_ignore      = true;  argi++; continue; }
 
         if (strncmp(a, "--color", 7) == 0) {
             const char *val = (a[7] == '=') ? a + 8 : "always";
@@ -1339,11 +1362,21 @@ main(int argc, char *argv[])
         else if (go.with_filename_force) st.show_filename = true;
         else                             st.show_filename = (n > 1) || go.recursive;
 
+        /* Seed the .gitignore stack from the enclosing repo root —
+         * picks up the cwd's .gitignore + every parent .gitignore up
+         * to the dir that contains `.git`.  Per-dir layers are
+         * pushed/popped inside the recursive walker (process_path).
+         * `--no-ignore` puts the stack into pass-through mode but
+         * still hard-skips `.git/`. */
+        ignore_stack_init(&st.ignore, go.no_ignore);
+        ignore_stack_seed_from_repo_root(&st.ignore, paths[0]);
+
         for (int i = 0; i < n; i++) {
             process_path(&st, paths[i]);
             if (go.quiet && st.total_match_count > 0) break;
         }
         rc = (st.total_match_count > 0) ? 0 : 1;
+        ignore_stack_free(&st.ignore);
     }
 
     for (int i = 0; i < go.n_patterns; i++) go.backend->free(bps[i]);
