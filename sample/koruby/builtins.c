@@ -151,6 +151,7 @@ void korb_init_builtins(void) {
     DEF(cAry, "to_s", ary_inspect, 0);
     DEF(cAry, "==", ary_eq, 1);
     DEF(cAry, "dup", ary_dup, 0);
+    DEF(cAry, "to_h", ary_to_h, 0);
 
     /* Hash */
     struct korb_class *cHsh = korb_vm->hash_class;
@@ -307,8 +308,11 @@ void korb_init_builtins(void) {
     DEF(cStr, "include?",    str_include,     -1);
     DEF(cStr, "replace",     str_replace,      1);
     DEF(cStr, "reverse",     str_reverse,      0);
+    DEF(cStr, "reverse!",    str_reverse_bang, 0);
     DEF(cStr, "upcase",      str_upcase,       0);
+    DEF(cStr, "upcase!",     str_upcase_bang,  0);
     DEF(cStr, "downcase",    str_downcase,     0);
+    DEF(cStr, "downcase!",   str_downcase_bang, 0);
     DEF(cStr, "empty?",      str_empty_p,      0);
     DEF(cStr, "*",           str_mul,          1);
     DEF(cStr, "hash",        str_hash,         0);
@@ -337,8 +341,10 @@ void korb_init_builtins(void) {
     DEF(cStr, "count",       str_count_chars, -1);
     DEF(cStr, "delete",      str_delete_chars, -1);
     DEF(cStr, "squeeze",     str_squeeze, -1);
-    DEF(cStr, "swapcase",    str_swapcase, 0);
-    DEF(cStr, "capitalize",  str_capitalize, 0);
+    DEF(cStr, "swapcase",     str_swapcase,        0);
+    DEF(cStr, "swapcase!",    str_swapcase_bang,   0);
+    DEF(cStr, "capitalize",   str_capitalize,      0);
+    DEF(cStr, "capitalize!",  str_capitalize_bang, 0);
     DEF(cStr, "lines",       str_lines,   -1);
     DEF(cStr, "partition",   str_partition, 1);
     DEF(cStr, "rpartition",  str_rpartition, 1);
@@ -647,7 +653,12 @@ void korb_init_builtins(void) {
 
     /* Symbol */
     struct korb_class *cSym = korb_vm->symbol_class;
+    {
+        VALUE obj_itself(CTX *c, VALUE self, int argc, VALUE *argv);
+        DEF(cSym, "to_sym",  obj_itself, 0);
+    }
     DEF(cSym, "to_s", sym_to_s, 0);
+    DEF(cSym, "id2name", sym_to_s, 0);
     DEF(cSym, "==", sym_eq, 1);
     DEF(cSym, "to_proc", sym_to_proc, 0);
     DEF(cSym, "===", sym_eq, 1);

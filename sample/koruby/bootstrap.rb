@@ -714,6 +714,21 @@ end
 
 # --- Range extensions ---
 class Range
+  def to_h(&blk)
+    h = {}
+    if blk
+      each { |x|
+        pair = blk.call(x)
+        h[pair[0]] = pair[1]
+      }
+    else
+      each { |pair|
+        h[pair[0]] = pair[1]
+      }
+    end
+    h
+  end
+
   def cover?(v)
     f = first
     l = last

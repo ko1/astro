@@ -239,6 +239,32 @@ static VALUE ary_join(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE ary_inspect(CTX *c, VALUE self, int argc, VALUE *argv) {
     return korb_inspect(self);
 }
+
+/* Array#to_h — convert [[k,v], [k,v], ...] (or yield-pair-from-block)
+ * into a Hash.  With a block, the block's return value (a 2-element
+ * Array) supplies the pair for each element — mirrors CRuby's
+ * `[1,2,3].to_h { |i| [i, i*i] }` form. */
+static VALUE ary_to_h(CTX *c, VALUE self, int argc, VALUE *argv) {
+    const struct korb_array *a = (const struct korb_array *)self;
+    VALUE h = korb_hash_new();
+    bool has_block = korb_block_given();
+    for (long i = 0; i < a->len; i++) {
+        VALUE pair = a->ptr[i];
+        if (has_block) {
+            pair = korb_yield(c, 1, &a->ptr[i]);
+            if (c->state != KORB_NORMAL) return Qnil;
+        }
+        if (BUILTIN_TYPE(pair) != T_ARRAY || ((struct korb_array *)pair)->len != 2) {
+            VALUE eType = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+            korb_raise(c, (struct korb_class *)eType,
+                       "wrong element type (expected 2-element Array)");
+            return Qnil;
+        }
+        struct korb_array *p = (struct korb_array *)pair;
+        korb_hash_aset(h, p->ptr[0], p->ptr[1]);
+    }
+    return h;
+}
 static VALUE ary_eq(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (BUILTIN_TYPE(argv[0]) != T_ARRAY) return Qfalse;
     long la = korb_ary_len(self), lb = korb_ary_len(argv[0]);

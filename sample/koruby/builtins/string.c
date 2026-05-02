@@ -310,6 +310,79 @@ static VALUE str_empty_p(CTX *c, VALUE self, int argc, VALUE *argv) {
     return KORB_BOOL(((struct korb_string *)self)->len == 0);
 }
 
+/* Generic in-place case mutator: walks the buffer and applies `xform`
+ * to each byte.  Returns self if anything changed, nil otherwise
+ * (matching CRuby's `!` semantics).  Frozen-checked. */
+static VALUE str_case_bang(CTX * restrict c, VALUE self, char (*xform)(char)) {
+    if (BUILTIN_TYPE(self) != T_STRING) return Qnil;
+    CHECK_FROZEN_RET(c, self, Qnil);
+    struct korb_string *s = (struct korb_string *)self;
+    /* Buffer may be shared (from a dup or substr); allocate fresh
+     * before mutating so we don't trample the source. */
+    char *buf = korb_xmalloc_atomic(s->len + 1);
+    bool changed = false;
+    for (long i = 0; i < s->len; i++) {
+        char ch = xform(s->ptr[i]);
+        if (ch != s->ptr[i]) changed = true;
+        buf[i] = ch;
+    }
+    buf[s->len] = 0;
+    if (!changed) return Qnil;
+    s->ptr = buf;
+    return self;
+}
+
+static char xform_upcase(char ch)   { return (ch >= 'a' && ch <= 'z') ? ch - 32 : ch; }
+static char xform_downcase(char ch) { return (ch >= 'A' && ch <= 'Z') ? ch + 32 : ch; }
+static char xform_swapcase(char ch) {
+    if (ch >= 'a' && ch <= 'z') return ch - 32;
+    if (ch >= 'A' && ch <= 'Z') return ch + 32;
+    return ch;
+}
+
+static VALUE str_upcase_bang(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return str_case_bang(c, self, xform_upcase);
+}
+static VALUE str_downcase_bang(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return str_case_bang(c, self, xform_downcase);
+}
+static VALUE str_swapcase_bang(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return str_case_bang(c, self, xform_swapcase);
+}
+
+/* String#capitalize! — first char up, rest down.  Returns self if
+ * anything changed, nil otherwise. */
+static VALUE str_capitalize_bang(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (BUILTIN_TYPE(self) != T_STRING) return Qnil;
+    CHECK_FROZEN_RET(c, self, Qnil);
+    struct korb_string *s = (struct korb_string *)self;
+    if (s->len == 0) return Qnil;
+    char *buf = korb_xmalloc_atomic(s->len + 1);
+    bool changed = false;
+    for (long i = 0; i < s->len; i++) {
+        char ch = (i == 0) ? xform_upcase(s->ptr[i]) : xform_downcase(s->ptr[i]);
+        if (ch != s->ptr[i]) changed = true;
+        buf[i] = ch;
+    }
+    buf[s->len] = 0;
+    if (!changed) return Qnil;
+    s->ptr = buf;
+    return self;
+}
+
+/* String#reverse! — reverse in place.  Always returns self (CRuby
+ * does too — empty/single-char strings still return self, not nil). */
+static VALUE str_reverse_bang(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (BUILTIN_TYPE(self) != T_STRING) return Qnil;
+    CHECK_FROZEN_RET(c, self, Qnil);
+    struct korb_string *s = (struct korb_string *)self;
+    char *buf = korb_xmalloc_atomic(s->len + 1);
+    for (long i = 0; i < s->len; i++) buf[i] = s->ptr[s->len - 1 - i];
+    buf[s->len] = 0;
+    s->ptr = buf;
+    return self;
+}
+
 static VALUE str_mul(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (!FIXNUM_P(argv[0])) return self;
     long n = FIX2LONG(argv[0]);
