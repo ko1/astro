@@ -114,6 +114,7 @@ typedef struct grep_opt {
     bool null_separator;        /* -Z: NUL terminate filenames in output */
     bool recursive;
     int  color_mode;            /* 0 never, 1 always, 2 auto */
+    bool ascii_8bit;            /* --encoding=ascii (default = utf-8) */
 
     /* -m N: stop after N matching lines per file.  0 = unlimited. */
     long max_count;
@@ -275,6 +276,7 @@ compile_pattern(grep_opt_t *go, const char *pat)
         .multiline        = false,
         .extended         = false,
         .fixed_string     = go->fixed_string,
+        .ascii_8bit       = go->ascii_8bit,
     };
     char *wrapped = NULL;
     const char *use_pat = pat;
@@ -1014,6 +1016,7 @@ usage(void)
         "  -e  PATTERN (repeatable)        -f  read patterns from FILE\n"
         "  --include=GLOB / --exclude=GLOB filter for -r\n"
         "  --color=never|always|auto       --backend=astrogre|onigmo\n"
+        "  --encoding=utf-8|ascii          regex encoding (default utf-8)\n"
         "  -C, --aot-compile               specialize patterns to code_store/ then run\n"
         "  --plain, --no-cs                bypass code store entirely\n"
         "  --cs-verbose                    log cs_load / cs_compile activity\n"
@@ -1087,6 +1090,27 @@ main(int argc, char *argv[])
         }
         if (strncmp(a, "--backend=", 10) == 0) {
             go.backend = backend_by_name(a + 10);
+            argi++; continue;
+        }
+        if (strncmp(a, "--encoding=", 11) == 0) {
+            const char *val = a + 11;
+            if      (strcmp(val, "ascii") == 0
+                  || strcmp(val, "ASCII") == 0
+                  || strcmp(val, "ascii-8bit") == 0
+                  || strcmp(val, "binary") == 0) {
+                go.ascii_8bit = true;
+            }
+            else if (strcmp(val, "utf-8") == 0
+                  || strcmp(val, "utf8")  == 0
+                  || strcmp(val, "UTF-8") == 0) {
+                go.ascii_8bit = false;
+            }
+            else {
+                fprintf(stderr,
+                        "astrogre: --encoding: unknown value '%s' "
+                        "(supported: ascii, utf-8)\n", val);
+                return 2;
+            }
             argi++; continue;
         }
         if (strcmp(a, "--aot-compile") == 0) {

@@ -31,6 +31,7 @@ typedef struct backend_flags {
     bool multiline;
     bool extended;
     bool fixed_string;   /* -F */
+    bool ascii_8bit;     /* --encoding=ascii.  Default (false) = UTF-8. */
 } backend_flags_t;
 
 /* Backend ops table — populated per implementation, picked at runtime. */

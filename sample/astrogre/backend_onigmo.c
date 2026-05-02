@@ -20,7 +20,6 @@ struct backend_pattern {
     OnigRegion *region;
 };
 
-static OnigEncoding s_encoding = ONIG_ENCODING_UTF8;
 static int s_initialised = 0;
 
 static void
@@ -60,12 +59,14 @@ ognm_compile(const char *pat, size_t len, backend_flags_t f)
     if (f.multiline)        opt |= ONIG_OPTION_MULTILINE;
     if (f.extended)         opt |= ONIG_OPTION_EXTEND;
 
+    OnigEncoding enc = f.ascii_8bit ? ONIG_ENCODING_ASCII : ONIG_ENCODING_UTF8;
+
     regex_t *reg = NULL;
     OnigErrorInfo einfo;
     int r = onig_new(&reg,
                      (const OnigUChar *)use_pat,
                      (const OnigUChar *)use_pat + use_len,
-                     opt, s_encoding, ONIG_SYNTAX_DEFAULT, &einfo);
+                     opt, enc, ONIG_SYNTAX_DEFAULT, &einfo);
     free(escaped);
     if (r != ONIG_NORMAL) {
         OnigUChar buf[ONIG_MAX_ERROR_MESSAGE_LEN];

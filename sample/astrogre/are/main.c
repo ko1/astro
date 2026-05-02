@@ -42,6 +42,7 @@
  *   --include=GLOB / --exclude=GLOB extra basename filters
  *   --color=never|always|auto       (default auto via isatty)
  *   --engine=astrogre|onigmo        backend select (default astrogre)
+ *   --encoding=utf-8|ascii          regex encoding (default utf-8)
  *   --aot                           AOT-specialise patterns to code_store/
  *   -j N                            parallel workers (default: NCPU)
  *   -V / --version                  print version and exit
@@ -129,6 +130,7 @@ typedef struct grep_opt {
     bool include_binary;        /* -a / --text: do NOT skip binary files */
     bool no_ignore;             /* --no-ignore: disable .gitignore filtering */
     int  color_mode;            /* 0 never, 1 always, 2 auto */
+    bool ascii_8bit;            /* --encoding=ascii (default = utf-8) */
 
     /* -t LANG / -T LANG: file-type filter via the table in types.[ch].
      * `included` are positive selectors (file must match at least one);
@@ -428,6 +430,7 @@ compile_pattern(grep_opt_t *go, const char *pat)
         .multiline        = false,
         .extended         = false,
         .fixed_string     = go->fixed_string,
+        .ascii_8bit       = go->ascii_8bit,
     };
     char *wrapped = NULL;
     const char *use_pat = pat;
@@ -1382,6 +1385,7 @@ usage(void)
         "Other:\n"
         "  --color=never|always|auto       (default auto via isatty)\n"
         "  --engine=astrogre|onigmo        backend selection (default astrogre)\n"
+        "  --encoding=utf-8|ascii          regex encoding (default utf-8)\n"
         "  --aot                           AOT-specialise patterns to code_store/\n"
         "  -V, --version                   print version and exit\n"
         "      --help                      print this help and exit\n"
@@ -1486,6 +1490,27 @@ main(int argc, char *argv[])
         }
         if (strncmp(a, "--engine=", 9) == 0) {
             go.backend = backend_by_name(a + 9);
+            argi++; continue;
+        }
+        if (strncmp(a, "--encoding=", 11) == 0) {
+            const char *val = a + 11;
+            if      (strcmp(val, "ascii")    == 0
+                  || strcmp(val, "ASCII")    == 0
+                  || strcmp(val, "ascii-8bit") == 0
+                  || strcmp(val, "binary")   == 0) {
+                go.ascii_8bit = true;
+            }
+            else if (strcmp(val, "utf-8") == 0
+                  || strcmp(val, "utf8")  == 0
+                  || strcmp(val, "UTF-8") == 0) {
+                go.ascii_8bit = false;
+            }
+            else {
+                fprintf(stderr,
+                        "are: --encoding: unknown value '%s' "
+                        "(supported: ascii, utf-8)\n", val);
+                return 2;
+            }
             argi++; continue;
         }
         if (strcmp(a, "--aot") == 0) {

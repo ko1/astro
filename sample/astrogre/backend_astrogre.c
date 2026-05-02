@@ -17,6 +17,8 @@
 #define PR_FLAGS_IGNORE_CASE 4
 #define PR_FLAGS_EXTENDED    8
 #define PR_FLAGS_MULTI_LINE  16
+#define PR_FLAGS_ASCII_8BIT  128
+#define PR_FLAGS_UTF_8       512
 
 struct backend_pattern { astrogre_pattern *p; };
 
@@ -36,6 +38,7 @@ agre_compile(const char *pat, size_t len, backend_flags_t f)
     if (f.case_insensitive) flags |= PR_FLAGS_IGNORE_CASE;
     if (f.multiline)        flags |= PR_FLAGS_MULTI_LINE;
     if (f.extended)         flags |= PR_FLAGS_EXTENDED;
+    if (f.ascii_8bit)       flags |= PR_FLAGS_ASCII_8BIT;
 
     astrogre_pattern *p = f.fixed_string
         ? astrogre_parse_fixed(pat, len, flags)
