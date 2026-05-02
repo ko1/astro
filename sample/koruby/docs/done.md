@@ -3,6 +3,21 @@
 本書は **すでに動く** 言語機能と、**取り入れた性能改善** を一覧する。
 未実装は [todo.md](./todo.md) に分離してある。
 
+## テストスイートの現状 (2026-05-02)
+
+`test/ruby/<category>/test_*.rb` に CRuby-スタイルのテストを配置。
+
+```
+$ for f in $(find test/ruby -name 'test_*.rb' | sort); do
+    out=$(./koruby "$f" 2>&1 | tail -1)
+    echo "$out" | grep -q "OK\|0 failures" && pass=$((pass+1)) || fail=$((fail+1))
+  done
+  echo "pass=$pass fail=$fail"
+pass=42 fail=25
+```
+
+42 / 67 通る。残り 25 の内訳と要件は [todo.md](./todo.md) §「失敗テスト一覧」を参照。
+
 ## 言語機能
 
 ### リテラル
@@ -37,7 +52,16 @@
 - `ensure` (raise / return / break いずれの非局所脱出でも実行)
 
 ### メソッド / クラス
-- `def name(a, b, c) ... end` (位置パラメータのみ; `*args` `**kwargs` `&blk` 受けは未対応)
+- `def name(a, b, c) ... end` (位置パラメータ; `*args` rest と `&blk` 受けは対応; `**kwargs` 受けは未対応)
+- 真の **ancestor チェイン** (`include` した modules を `korb_class.includes[]` に保持。`Class#ancestors` / `is_a?` / `kind_of?` がこれを walk; method lookup は依然 flatten copy で fast path)
+- `Module.new { ... }` / `Class.new(superclass) { ... }` (block を新クラスの context で eval)
+- `Module#define_method(:name) { ... }` (proc body を AST メソッドとして登録; closure キャプチャは drop)
+- `Module#prepend` (現在は include と同じ MRO 挿入で stub)
+- `Object#extend(M)` (object の singleton class に M を include)
+- `method_missing` フォールバック (find 失敗時に `method_missing(:name, *args)` で再 dispatch)
+- `Object#dup / clone` (T_OBJECT / T_ARRAY / T_STRING / T_HASH をコピー)
+- `Object#tap { |v| } / then / yield_self / itself`
+- `Object#instance_variables`
 - メソッドディスパッチ `obj.foo(a, b)` / 暗黙 self `foo(a, b)`
 - インラインキャッシュ (`struct method_cache` が node に @ref 相当で埋まる; `klass + method_serial` でヒット判定; 同一 callsite + 同一 receiver-class なら body + dispatcher を即実行)
 - ブロック付き呼出 `foo { |x| ... }`、`foo(args) { ... }`
@@ -53,9 +77,13 @@
 
 ### 例外
 - 階層: `Exception` 以下に `StandardError` `RuntimeError` `ArgumentError` `TypeError` `NameError` `NoMethodError` `IndexError` `KeyError` `RangeError` `FloatDomainError` `ZeroDivisionError` `IOError` `LoadError` `FrozenError` `StopIteration` `LocalJumpError` `NotImplementedError` `ScriptError` `SyntaxError` を一通り定義
-- `raise "msg"` → RuntimeError 風
+- `Exception` を **T_OBJECT 化** (`@message` ivar に message を持つ → `Exception.new("x")` と raise 由来の両方が同じ layout)
+- `Exception#initialize / message / to_s / inspect / backtrace` (Ruby 互換)
+- `raise "msg"` → RuntimeError
 - `raise Klass, "msg"` → 指定クラスの exception (msg 付き)
 - ラッパ `begin ... rescue Klass => e ... end` (Klass 指定は受けるが現在は match を緩く判定 — 実際にクラス階層チェックは未対応)
+- `1 / 0` で `ZeroDivisionError` が raise (cfunc 側 zero check も追加; HEAD では SIGFPE していた)
+- 比較演算 `Integer#< > <= >=` は非数値 RHS で `ArgumentError` raise (HEAD では `1 < nil` が SIGFPE していた)
 
 ### 組込クラス / メソッド (主要なもの)
 
@@ -65,32 +93,51 @@
 - `require` / `require_relative` / `load` (循環防止 + `.rb` 補完)
 - `inspect` / `to_s` / `class` / `==` / `!=` / `!` / `nil?` / `object_id`
 - `freeze` / `frozen?` / `is_a?` / `kind_of?` / `instance_of?` / `respond_to?`
-- `send` / `__send__` / `public_send`
-- `instance_variable_get` / `instance_variable_set`
-- `tap` (ほぼ no-op)、`block_given?` (常に false; 未配線)
+- `send` / `__send__` / `public_send` (block forward 対応; `obj.send(:m, ...) { ... }` で内部 yield も動く)
+- `instance_variable_get` / `instance_variable_set` / `instance_variables`
+- `dup` / `clone` (T_OBJECT/T_ARRAY/T_STRING/T_HASH をコピー)
+- `tap` / `then` / `yield_self` / `itself`
+- `block_given?` (現フレームの block 有無を見る)
+- `caller` (呼出フレーム chain を walk; 行番号は HEAD では未保持で `(eval):in '<name>'` 形式)
+- `__method__` / `__callee__`
+- `loop` (StopIteration を swallow)
+- `lambda` / `proc` (block を Proc 化; lambda flag セット)
+- `eval` (stub: warn + nil)
+
+#### Math
+- `Math::PI` / `Math::E`
+- `sqrt sin cos tan asin acos atan sinh cosh tanh exp cbrt`
+- `log` (1 引数 = ln, 2 引数 = base 指定)、`log2 log10`
+- `atan2 hypot pow`
 
 #### Integer
 - 算術 `+ - * / %`、比較 `< <= > >= == !=`、ビット `& | ^ << >> ~`、単項 `-`、`abs`
 - `chr`、`to_s`、`to_i`、`to_f`、`zero?`、`succ` / `next` / `pred`、`floor` / `ceil` / `round` (整数なので no-op)
 - `times { |i| ... }` (ブロック付き)
 - `===` (== と同じ)
+- `gcd` / `lcm` / `gcdlcm` / `digits(base)` / `pow(exp[, mod])`
 
 #### Float
-- 算術 `+ - * /`、`to_s`、`floor`
+- 算術 `+ - * / **`、`to_s` / `to_i` / `to_f`、`floor` / `ceil` / `round` / `truncate`
+- `<` / `<=` / `>` / `>=` / `==` / `<=>` (Integer 混在対応)
+- `-@` / `abs`
+- `zero?` / `positive?` / `negative?` / `finite?` / `infinite?` / `nan?` / `divmod`
+- 定数: `Float::INFINITY` / `NAN` / `MAX` / `MIN` / `EPSILON`
 
 #### String
 - `+` / `<<` / `*` / `==` / `===`、`size` / `length` / `empty?`
-- `to_s` / `to_sym` / `to_i(base)` / `to_f`
+- `to_s` / `to_sym` / `intern` / `to_i(base)` / `to_f`
 - `inspect`、`hash`
-- `[]` / `[]=` (添字; 簡易)
-- `chars`、`bytes`、`each_char`、`each_line` (split で代用)
+- `[]` / `[]=` (添字; 簡易)、`slice(a[, b])`
+- `chars`、`bytes`、`each_char`、`each_line` / `lines`
 - `start_with?` / `end_with?` / `include?`
-- `upcase` / `downcase` / `reverse` / `replace`
-- `chomp` / `strip`、`split` (空白 / 文字列セパレータ)
+- `upcase` / `downcase` / `swapcase` / `capitalize` / `reverse` / `replace`
+- `chomp` / `strip` / `lstrip` / `rstrip`、`split` (空白 / 文字列セパレータ)
+- `ljust` / `rjust` / `center` / `squeeze`
 - `gsub` / `sub` (リテラル文字列マッチのみ; 正規表現は未対応)
 - `tr` / `tr_s` (簡易)
 - `%` (sprintf 連携)
-- `dup` (簡易)
+- `dup` (Object#dup 経由で本物のコピー)
 
 #### Array
 - `[]` / `[]=`、`size` / `length`、`first` / `last`、`push` / `<<` / `pop`、`shift` / `unshift` / `prepend`
@@ -99,30 +146,52 @@
 - `sort` (`<=>` ベースの insertion sort)、`sort_by` (yield → ソート)
 - `zip`、`flatten` (深さ 1)、`compact`、`uniq`
 - `include?` / `index` / `find_index`
-- `any?` / `all?` (ブロック受けは現状 truthy ベース; ブロック付き未対応)
-- `min` / `max` / `sum`、`each_slice(n)`
+- `any?` / `all?` / `none?` (ブロック受けは `&blk` 経由で動作)
+- `min` / `max` / `sum`、`each_slice(n)`、`each_cons(n)`
 - `reverse`、`clear`、`dup`、`concat`、`+`、`-`、`pack("C*")` (バイト並び限定)
 - `inspect` / `to_s` / `==` / `===`
+- `group_by` / `partition` / `tally` / `min_by` / `max_by` / `flat_map` / `take_while` / `drop_while` / `chunk_while` (bootstrap.rb)
+- `rotate!(n)` (長さの半分回転には memcpy fast path)
 
 #### Hash
 - `[]` / `[]=`、`size` / `length`
 - `keys` / `values`、`each` / `each_pair` / `each_key` / `each_value`
 - `key?` / `has_key?` / `include?`
-- `merge` / `merge!`、`invert`、`to_a`
-- `delete`
+- `merge` / `merge!`、`invert`、`to_a`、`to_h`、`to_s` / `inspect`
+- `delete` / `fetch` / `compare_by_identity`
+- `transform_values` / `transform_keys` / `reject` / `select` / `filter`
+- `any?` / `all?` / `count` / `find` / `detect` / `min_by` / `max_by` / `values_at` / `sort`
+- `dup` / `clone` / `empty?` / `===` / `map` / `collect` / `reduce` / `inject`
 
 #### Range
 - `each` / `map` / `collect` / `select` / `filter`、`reduce` / `inject`
 - `first` / `last` / `to_a`、`step(n) { ... }`、`size` / `length`、`include?` / `===`
+- `cover?(v)` (endless / beginless 対応)、`min` / `max` / `sum`、`exclude_end?`
+- `(5..)` / `(..10)` (endless / beginless リテラル)
+
+#### Enumerable mixin (bootstrap.rb)
+- `each` を持つクラスに `include Enumerable` で全 helper を提供
+- `to_a / count / map / select / reject / find / reduce / min / max / include? / first / each_with_index / any? / all? / none? / sort`
+- `group_by / partition / each_cons / tally / min_by / max_by / sum / zip / flat_map / take_while / drop_while / each_with_object / chunk_while`
+- alias: `collect / filter / inject / detect / entries / member?`
+- 注: `yield` 内側 yield (block forwarding) 未実装のため、内部実装は `&blk` で `blk.call` する形
 
 #### Symbol
-- `to_s`、`==` / `===`、`inspect`、`to_proc` (現状は self を返すだけのスタブ)
+- `to_s`、`==` / `===`、`inspect`
+- `to_proc` (専用 proc shim を返す; `body == NULL && SYMBOL_P(self)` のとき `argv[0].send(sym)` に dispatch)
 
 #### Proc
-- `call`、`[]`
+- `call` / `[]` / `to_proc` (self を返す)
+
+#### Rational / Complex (bootstrap.rb)
+- `Rational(n, d)` / `Rational.new(n, d)` (gcd で簡約; Comparable include)
+- `Complex(r, i)` / `Complex.new(r, i)`
+- 算術・比較・`to_f` / `to_i` / `inspect` / `to_s`
 
 #### Class / Module
-- `new`、`name`、`===`、`attr_*`、`include`、`private` 系、`const_get` / `const_set`
+- `new(...)`、`new(super){...}` / `Module.new{...}` 対応
+- `name`、`===`、`attr_*`、`include`、`prepend` / `extend`、`private` 系、`const_get` / `const_set`
+- `ancestors` / `define_method(:name) { ... }`
 
 #### File (クラスメソッドのみ)
 - `File.read`、`File.join`、`File.exist?` / `exists?`、`File.dirname`、`File.basename`、`File.expand_path`
