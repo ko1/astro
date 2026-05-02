@@ -255,6 +255,12 @@ class Enumerable
     blk ? self : out
   end
 
+  # Enumerable#minmax — Array overrides; this is a fallback for Range etc.
+  def minmax
+    arr = to_a
+    arr.empty? ? [nil, nil] : [arr.min, arr.max]
+  end
+
   # Enumerable#chunk_while / slice_when — Array overrides; fallback here.
   def chunk_while(&blk)
     out = []

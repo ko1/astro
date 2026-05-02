@@ -38,7 +38,14 @@ static VALUE rng_each(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE rng_first(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_range *r = (struct korb_range *)self;
     if (argc < 1) return r->begin;
-    if (!FIXNUM_P(argv[0]) || !FIXNUM_P(r->begin)) return Qnil;
+    if (!FIXNUM_P(argv[0])) return Qnil;
+    /* Non-numeric (`('a'..'e').first(2)`): delegate to to_a then take. */
+    if (!FIXNUM_P(r->begin)) {
+        VALUE arr = korb_funcall(c, self, korb_intern("to_a"), 0, NULL);
+        if (c->state != KORB_NORMAL || BUILTIN_TYPE(arr) != T_ARRAY) return Qnil;
+        VALUE n = argv[0];
+        return korb_funcall(c, arr, korb_intern("first"), 1, &n);
+    }
     long n = FIX2LONG(argv[0]);
     if (n < 0) {
         VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
@@ -207,26 +214,62 @@ static VALUE rng_each_with_index(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 static VALUE rng_size(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_range *r = (struct korb_range *)self;
-    if (!FIXNUM_P(r->begin) || !FIXNUM_P(r->end)) return Qnil;
-    long b = FIX2LONG(r->begin), e = FIX2LONG(r->end);
-    long sz = e - b + 1; if (r->exclude_end) sz--;
-    if (sz < 0) sz = 0;
-    return INT2FIX(sz);
+    if (FIXNUM_P(r->begin) && FIXNUM_P(r->end)) {
+        long b = FIX2LONG(r->begin), e = FIX2LONG(r->end);
+        long sz = e - b + 1; if (r->exclude_end) sz--;
+        if (sz < 0) sz = 0;
+        return INT2FIX(sz);
+    }
+    /* Float::INFINITY end → infinite (CRuby returns Float::INFINITY). */
+    if (FIXNUM_P(r->begin) && KORB_IS_FLOAT(r->end)) {
+        double e = korb_num2dbl(r->end);
+        if (e > 1e18) {
+            VALUE finf = korb_const_get(korb_vm->float_class, korb_intern("INFINITY"));
+            return UNDEF_P(finf) ? Qnil : finf;
+        }
+    }
+    /* Non-numeric (e.g. String range): delegate to to_a.  Use CRuby's
+     * convention of returning nil for non-numeric — but we offer Array#size
+     * via to_a as a friendly extension. */
+    VALUE arr = korb_funcall(c, self, korb_intern("to_a"), 0, NULL);
+    if (c->state == KORB_NORMAL && BUILTIN_TYPE(arr) == T_ARRAY) {
+        return INT2FIX(((struct korb_array *)arr)->len);
+    }
+    return Qnil;
 }
 
 static VALUE rng_include(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1 || !FIXNUM_P(argv[0])) return Qfalse;
+    if (argc < 1) return Qfalse;
     const struct korb_range *r = (const struct korb_range *)self;
-    if (!FIXNUM_P(r->begin) && !NIL_P(r->begin)) return Qfalse;
-    if (!FIXNUM_P(r->end)   && !NIL_P(r->end))   return Qfalse;
-    long v = FIX2LONG(argv[0]);
-    /* Endless / beginless ranges: missing end is +infinity, missing
-     * begin is -infinity.  Inclusive on the present side only. */
-    bool ge_b = NIL_P(r->begin) || v >= FIX2LONG(r->begin);
-    bool lt_e;
-    if (NIL_P(r->end)) lt_e = true;
-    else lt_e = r->exclude_end ? (v < FIX2LONG(r->end)) : (v <= FIX2LONG(r->end));
-    return KORB_BOOL(ge_b && lt_e);
+    /* Numeric range with FIXNUM endpoints: fast path. */
+    if (FIXNUM_P(argv[0]) &&
+        (FIXNUM_P(r->begin) || NIL_P(r->begin)) &&
+        (FIXNUM_P(r->end)   || NIL_P(r->end))) {
+        long v = FIX2LONG(argv[0]);
+        bool ge_b = NIL_P(r->begin) || v >= FIX2LONG(r->begin);
+        bool lt_e;
+        if (NIL_P(r->end)) lt_e = true;
+        else lt_e = r->exclude_end ? (v < FIX2LONG(r->end)) : (v <= FIX2LONG(r->end));
+        return KORB_BOOL(ge_b && lt_e);
+    }
+    /* Non-numeric ranges (e.g. ("a".."z")): walk via #<=>.  We can't
+     * just use cover? semantics here because String#<=> on bytes is
+     * order-preserving but not a proper "discrete includes" relation
+     * — but for the koruby subset (no full encoding awareness) the
+     * comparison is sufficient. */
+    VALUE arg = argv[0];
+    VALUE end_copy = r->end;
+    if (!NIL_P(r->begin)) {
+        VALUE cmp = korb_funcall(c, r->begin, korb_intern("<=>"), 1, &arg);
+        if (!FIXNUM_P(cmp) || FIX2LONG(cmp) > 0) return Qfalse;
+    }
+    if (!NIL_P(r->end)) {
+        VALUE cmp = korb_funcall(c, arg, korb_intern("<=>"), 1, &end_copy);
+        if (!FIXNUM_P(cmp)) return Qfalse;
+        long cv = FIX2LONG(cmp);
+        if (r->exclude_end ? (cv >= 0) : (cv > 0)) return Qfalse;
+    }
+    return Qtrue;
 }
 
 static VALUE rng_map(CTX *c, VALUE self, int argc, VALUE *argv) {
