@@ -258,6 +258,9 @@ void korb_init_builtins(void) {
     DEF(cInt, "step",  int_step, -1);
     DEF(cInt, "upto",  int_upto, 1);
     DEF(cInt, "downto", int_downto, 1);
+    DEF(cInt, "div",   int_method_div, 1);
+    DEF(cInt, "fdiv",  int_fdiv, 1);
+    DEF(cInt, "size",  int_size, 0);
 
     /* extra Float */
     DEF(cFlt, "floor", flt_floor, -1);
@@ -398,6 +401,9 @@ void korb_init_builtins(void) {
     DEF(cAry, "drop_while",     ary_drop_while, 0);
     DEF(cAry, "shuffle",        ary_shuffle,    0);
     DEF(cAry, "bsearch",        ary_bsearch,    0);
+    DEF(cAry, "one?",           ary_one_p,      0);
+    DEF(cAry, "each_cons",      ary_each_cons,  1);
+    DEF(cAry, "minmax_by",      ary_minmax_by,  0);
     DEF(cAry, "assoc",       ary_assoc,       1);
     DEF(cAry, "rassoc",      ary_rassoc,      1);
     DEF(cAry, "at",          ary_at,          1);
@@ -463,12 +469,16 @@ void korb_init_builtins(void) {
     DEF(cHsh, "min_by",      hash_min_by,       0);
     DEF(cHsh, "max_by",      hash_max_by,       0);
     DEF(cHsh, "sort",        hash_sort,         0);
-    DEF(cHsh, "dig",         hash_dig,         -1);
-    DEF(cHsh, "has_value?",  hash_has_value_p,  1);
-    DEF(cHsh, "value?",      hash_has_value_p,  1);
-    DEF(cHsh, "group_by",    hash_group_by,     0);
-    DEF(cHsh, "sort_by",     hash_sort_by,      0);
-    DEF(cHsh, "filter_map",  hash_filter_map,   0);
+    DEF(cHsh, "dig",              hash_dig,              -1);
+    DEF(cHsh, "has_value?",       hash_has_value_p,       1);
+    DEF(cHsh, "value?",           hash_has_value_p,       1);
+    DEF(cHsh, "group_by",         hash_group_by,          0);
+    DEF(cHsh, "sort_by",          hash_sort_by,           0);
+    DEF(cHsh, "filter_map",       hash_filter_map,        0);
+    DEF(cHsh, "each_with_object", hash_each_with_object,  1);
+    DEF(cHsh, "take",             hash_take,              1);
+    DEF(cHsh, "flat_map",         hash_flat_map,          0);
+    DEF(cHsh, "collect_concat",   hash_flat_map,          0);
     DEF(cHsh, "default",      hash_default_get,      0);
     DEF(cHsh, "default=",     hash_default_set,      1);
     DEF(cHsh, "default_proc", hash_default_proc_get, 0);

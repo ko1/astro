@@ -873,18 +873,9 @@ class Array
     h
   end
 
-  def each_cons(n, &blk)
-    buf = []
-    i = 0
-    while i < self.size
-      x = self[i]
-      buf << x
-      buf.shift if buf.size > n
-      blk.call(buf.dup) if buf.size == n
-      i += 1
-    end
-    nil
-  end
+  # Array#each_cons is registered as a cfunc (builtins/array.c) so it
+  # supports both the block form and the Array-of-windows return form;
+  # the AST version here would otherwise win and reject no-block calls.
 end
 
 class Array

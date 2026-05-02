@@ -265,6 +265,40 @@ static VALUE int_floor(CTX *c, VALUE self, int argc, VALUE *argv) {
     return self;
 }
 
+/* ---------- Integer#div / Integer#fdiv ----------
+ * Integer#div is floored division (rounds toward -infinity).  This is
+ * a different method from Integer#/ (the `/` operator above), which
+ * already exists; div is registered separately as the named method. */
+static VALUE int_method_div(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1 || !FIXNUM_P(self) || !FIXNUM_P(argv[0])) return Qnil;
+    long a = FIX2LONG(self), b = FIX2LONG(argv[0]);
+    if (b == 0) {
+        VALUE eDiv = korb_const_get(korb_vm->object_class, korb_intern("ZeroDivisionError"));
+        korb_raise(c, (struct korb_class *)eDiv, "divided by 0");
+        return Qnil;
+    }
+    long q = a / b;
+    long r = a % b;
+    if ((r != 0) && ((r < 0) != (b < 0))) q--;
+    return INT2FIX(q);
+}
+
+static VALUE int_fdiv(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1) return Qnil;
+    double a = (double)(FIXNUM_P(self) ? FIX2LONG(self) : 0);
+    double b;
+    if      (FIXNUM_P(argv[0]))                                            b = (double)FIX2LONG(argv[0]);
+    else if (!SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_FLOAT) b = korb_num2dbl(argv[0]);
+    else return Qnil;
+    return korb_float_new(a / b);
+}
+
+/* Integer#size — width in bytes of the machine word.  Matches CRuby's
+ * `1.size == 8` on a 64-bit build. */
+static VALUE int_size(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return INT2FIX((long)sizeof(long));
+}
+
 static VALUE int_abs(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (FIXNUM_P(self)) {
         long v = FIX2LONG(self);

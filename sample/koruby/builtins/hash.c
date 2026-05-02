@@ -630,3 +630,55 @@ static VALUE hash_filter_map(CTX *c, VALUE self, int argc, VALUE *argv) {
     return r;
 }
 
+/* ---------- Hash#each_with_object ----------
+ * Yields ([k, v], memo) and returns memo at the end. */
+static VALUE hash_each_with_object(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1) return Qnil;
+    VALUE memo = argv[0];
+    struct korb_hash *h = (struct korb_hash *)self;
+    for (struct korb_hash_entry *e = h->first; e; e = e->next) {
+        VALUE pair = korb_ary_new_capa(2);
+        korb_ary_push(pair, e->key);
+        korb_ary_push(pair, e->value);
+        VALUE args[2] = { pair, memo };
+        korb_yield(c, 2, args);
+        if (c->state != KORB_NORMAL) return Qnil;
+    }
+    return memo;
+}
+
+/* ---------- Hash#take(n) ---------- */
+static VALUE hash_take(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1 || !FIXNUM_P(argv[0])) return korb_ary_new();
+    long n = FIX2LONG(argv[0]);
+    struct korb_hash *h = (struct korb_hash *)self;
+    VALUE out = korb_ary_new();
+    long taken = 0;
+    for (struct korb_hash_entry *e = h->first; e && taken < n; e = e->next, taken++) {
+        VALUE pair = korb_ary_new_capa(2);
+        korb_ary_push(pair, e->key);
+        korb_ary_push(pair, e->value);
+        korb_ary_push(out, pair);
+    }
+    return out;
+}
+
+/* ---------- Hash#flat_map ----------
+ * Yields (k, v); flattens one level into the result. */
+static VALUE hash_flat_map(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_hash *h = (struct korb_hash *)self;
+    VALUE r = korb_ary_new();
+    for (struct korb_hash_entry *e = h->first; e; e = e->next) {
+        VALUE args[2] = { e->key, e->value };
+        VALUE m = korb_yield(c, 2, args);
+        if (c->state != KORB_NORMAL) return Qnil;
+        if (!SPECIAL_CONST_P(m) && BUILTIN_TYPE(m) == T_ARRAY) {
+            struct korb_array *ma = (struct korb_array *)m;
+            for (long i = 0; i < ma->len; i++) korb_ary_push(r, ma->ptr[i]);
+        } else {
+            korb_ary_push(r, m);
+        }
+    }
+    return r;
+}
+

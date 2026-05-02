@@ -28,9 +28,21 @@ static VALUE flt_ceil(CTX *c, VALUE self, int argc, VALUE *argv) {
     return INT2FIX((long)ceil(korb_num2dbl(self)));
 }
 static VALUE flt_round(CTX *c, VALUE self, int argc, VALUE *argv) {
-    /* Ruby's Float#round (no digits arg) is "round half away from zero",
-     * which C's round() implements directly. */
-    return INT2FIX((long)round(korb_num2dbl(self)));
+    double v = korb_num2dbl(self);
+    /* No-arg / arg==0 → round to integer, return Integer. */
+    if (argc < 1 || (FIXNUM_P(argv[0]) && FIX2LONG(argv[0]) == 0)) {
+        return INT2FIX((long)round(v));
+    }
+    if (!FIXNUM_P(argv[0])) return INT2FIX((long)round(v));
+    long n = FIX2LONG(argv[0]);
+    if (n > 0) {
+        /* Round to n decimals, return Float. */
+        double scale = pow(10.0, (double)n);
+        return korb_float_new(round(v * scale) / scale);
+    }
+    /* Negative precision → round to nearest 10^|n|, return Float. */
+    double scale = pow(10.0, (double)(-n));
+    return korb_float_new(round(v / scale) * scale);
 }
 static VALUE flt_truncate(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* truncate toward zero — same as to_i for Float. */

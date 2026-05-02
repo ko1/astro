@@ -1438,6 +1438,79 @@ static VALUE ary_shuffle(CTX *c, VALUE self, int argc, VALUE *argv) {
     return r;
 }
 
+/* ---------- Array#one? ----------
+ * Without a block: true iff exactly one element is truthy.
+ * With a block: true iff the block returns truthy for exactly one element. */
+static VALUE ary_one_p(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_array *a = (struct korb_array *)self;
+    long count = 0;
+    for (long i = 0; i < a->len; i++) {
+        VALUE v;
+        if (korb_block_given()) {
+            v = korb_yield(c, 1, &a->ptr[i]);
+            if (c->state != KORB_NORMAL) return Qnil;
+        } else {
+            v = a->ptr[i];
+        }
+        if (RTEST(v)) {
+            count++;
+            if (count > 1) return Qfalse;
+        }
+    }
+    return KORB_BOOL(count == 1);
+}
+
+/* ---------- Array#each_cons(n) ----------
+ * Sliding window of size n.  No block: returns Array<Array> of all
+ * windows (koruby has no Enumerator).  With block: yields each window. */
+static VALUE ary_each_cons(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1 || !FIXNUM_P(argv[0])) return Qnil;
+    long n = FIX2LONG(argv[0]);
+    struct korb_array *a = (struct korb_array *)self;
+    bool has_block = korb_block_given();
+    VALUE out = has_block ? Qnil : korb_ary_new();
+    if (n <= 0 || n > a->len) return has_block ? Qnil : out;
+    for (long i = 0; i + n <= a->len; i++) {
+        VALUE win = korb_ary_new_capa(n);
+        for (long j = 0; j < n; j++) korb_ary_push(win, a->ptr[i + j]);
+        if (has_block) {
+            korb_yield(c, 1, &win);
+            if (c->state != KORB_NORMAL) return Qnil;
+        } else {
+            korb_ary_push(out, win);
+        }
+    }
+    return has_block ? Qnil : out;
+}
+
+/* ---------- Array#minmax_by ----------
+ * Returns [min_elem, max_elem] keyed by the block's return value;
+ * [nil, nil] for an empty array. */
+static VALUE ary_minmax_by(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_array *a = (struct korb_array *)self;
+    VALUE pair = korb_ary_new_capa(2);
+    if (a->len == 0) {
+        korb_ary_push(pair, Qnil);
+        korb_ary_push(pair, Qnil);
+        return pair;
+    }
+    VALUE min_e = a->ptr[0], max_e = a->ptr[0];
+    VALUE min_k = korb_yield(c, 1, &a->ptr[0]);
+    if (c->state != KORB_NORMAL) return Qnil;
+    VALUE max_k = min_k;
+    for (long i = 1; i < a->len; i++) {
+        VALUE k = korb_yield(c, 1, &a->ptr[i]);
+        if (c->state != KORB_NORMAL) return Qnil;
+        VALUE cmp_min = korb_funcall(c, k, korb_intern("<=>"), 1, &min_k);
+        if (FIXNUM_P(cmp_min) && FIX2LONG(cmp_min) < 0) { min_e = a->ptr[i]; min_k = k; }
+        VALUE cmp_max = korb_funcall(c, k, korb_intern("<=>"), 1, &max_k);
+        if (FIXNUM_P(cmp_max) && FIX2LONG(cmp_max) > 0) { max_e = a->ptr[i]; max_k = k; }
+    }
+    korb_ary_push(pair, min_e);
+    korb_ary_push(pair, max_e);
+    return pair;
+}
+
 /* ---------- Array#bsearch ----------
  * Find-minimum mode only (block returns boolean).  Assumes the array is
  * sorted and the block result transitions from false to true exactly
