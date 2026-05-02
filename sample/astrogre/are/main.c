@@ -80,12 +80,25 @@
 #include "ignore.h"
 #include "work.h"
 
-/* `verbose_mark` is wired throughout the search loop in the parent
- * astrogre/main.c for `--verbose` profiling.  In `are` we leave it as
- * a no-op stub so the rest of the (forked) code compiles unchanged;
- * the user-facing flag is gone — for that, run the underlying
- * `astrogre` binary with `--verbose`. */
-static inline void verbose_mark(const char *tag) { (void)tag; }
+/* `--verbose` phase timing.  Marks the framework-init, parse, AOT
+ * compile, and exit boundaries — the per-file marks the legacy
+ * astrogre binary had don't translate to are's parallel walker.
+ * Cost when off: one branch on a static bool. */
+static struct timespec g_verbose_t0;
+static bool g_verbose = false;
+static double g_verbose_last_ms = 0;
+static inline void verbose_start(void) {
+    clock_gettime(CLOCK_MONOTONIC, &g_verbose_t0);
+}
+static inline void verbose_mark(const char *tag) {
+    if (!g_verbose) return;
+    struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
+    const double ms = (t.tv_sec - g_verbose_t0.tv_sec) * 1000.0
+                    + (t.tv_nsec - g_verbose_t0.tv_nsec) / 1.0e6;
+    fprintf(stderr, "[verbose] %-24s %8.3f ms  (+%.3f)\n",
+            tag, ms, ms - g_verbose_last_ms);
+    g_verbose_last_ms = ms;
+}
 
 /* Code-store API (defined by astro_code_store.c included from node.c) */
 extern void astro_cs_compile(NODE *entry, const char *file);
@@ -1390,14 +1403,21 @@ usage(void)
         "  -V, --version                   print version and exit\n"
         "      --help                      print this help and exit\n"
         "\n"
-        "For library-internal commands (--self-test, --bench, --dump,\n"
-        "...) use the legacy `astrogre` binary in the same directory.\n",
+        "Dev flags (--dump PATTERN, --verbose, --cs-verbose) are\n"
+        "intentionally absent from this help — see README.md.\n",
         stderr);
 }
 
 int
 main(int argc, char *argv[])
 {
+    verbose_start();
+    /* Pre-scan for --verbose so timing covers INIT() too. */
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--verbose") == 0) { g_verbose = true; break; }
+    }
+    verbose_mark("main entry");
+
     /* astrogre's `node.c` auto-detects the source dir from
      * `/proc/self/exe`'s parent — for `astrogre` itself that's
      * `<engine_dir>/`, but for `are` it's `<engine_dir>/are/`,
@@ -1417,6 +1437,7 @@ main(int argc, char *argv[])
         }
     }
     INIT();
+    verbose_mark("after INIT()");
     /* Bypass the code-store auto-load by default.  Otherwise an
      * `are` invoked from a directory that happens to contain a
      * stale `code_store/all.so` (e.g. a leftover from a previous
@@ -1517,6 +1538,28 @@ main(int argc, char *argv[])
             go.cs_mode = CS_MODE_AOT_COMPILE;
             argi++; continue;
         }
+        /* dev / debug flags (intentionally absent from --help). */
+        if (strcmp(a, "--verbose") == 0) {
+            /* Already consumed by the pre-scan before INIT(); just
+             * skip the argv slot here so the main loop doesn't bail
+             * with "unknown option". */
+            argi++; continue;
+        }
+        if (strcmp(a, "--cs-verbose") == 0) {
+            go.cs_verbose = true;
+            OPTION.cs_verbose = true;
+            argi++; continue;
+        }
+        if (strcmp(a, "--dump") == 0 || strcmp(a, "--regex-dump") == 0) {
+            if (argi + 1 >= argc) { usage(); return 2; }
+            astrogre_pattern *p = astrogre_parse_literal(
+                argv[argi + 1], strlen(argv[argi + 1]));
+            if (!p) return 2;
+            DUMP(stdout, p->root, true);
+            printf("\n");
+            astrogre_pattern_free(p);
+            return 0;
+        }
         if (strcmp(a, "-C") == 0) {
             /* `are` keeps -C as the GNU `--context=NUM` form (no AOT
              * collision; AOT is the long-form `--aot`). */
@@ -1605,6 +1648,7 @@ main(int argc, char *argv[])
         bps[i] = compile_pattern(&go, go.patterns[i]);
         if (!bps[i]) return 2;
     }
+    verbose_mark("after pattern compile");
 
     /* AOT-compile each pattern via the backend.  Onigmo's
      * `.aot_compile` slot is NULL → silent skip.  Re-enable the
@@ -1613,8 +1657,9 @@ main(int argc, char *argv[])
     if (go.cs_mode == CS_MODE_AOT_COMPILE && go.backend->aot_compile) {
         OPTION.no_compiled_code = false;
         for (int i = 0; i < go.n_patterns; i++) {
-            go.backend->aot_compile(bps[i], false);
+            go.backend->aot_compile(bps[i], go.cs_verbose);
         }
+        verbose_mark("after AOT compile");
     }
 
     grep_state_t st = {0};
@@ -1700,5 +1745,6 @@ main(int argc, char *argv[])
     for (int i = 0; i < go.n_patterns; i++) go.backend->free(bps[i]);
     free(bps);
     free(go.patterns);
+    verbose_mark("at exit");
     return rc;
 }
