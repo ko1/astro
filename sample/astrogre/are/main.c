@@ -1397,6 +1397,15 @@ int
 main(int argc, char *argv[])
 {
     INIT();
+    /* Bypass the code-store auto-load by default.  Otherwise an
+     * `are` invoked from a directory that happens to contain a
+     * stale `code_store/all.so` (e.g. a leftover from a previous
+     * `--aot` run or a different build) will dlopen it and dispatch
+     * patterns through dispatchers that no longer match the
+     * current binary's NODE layout — segfaults that take an hour
+     * to track down.  `--aot` opts back into the cache. */
+    OPTION.no_compiled_code = true;
+
     grep_opt_t go = {0};
     go.color_mode  = 2;        /* auto */
     go.backend     = &backend_astrogre_ops;
@@ -1557,8 +1566,11 @@ main(int argc, char *argv[])
     }
 
     /* AOT-compile each pattern via the backend.  Onigmo's
-     * `.aot_compile` slot is NULL → silent skip. */
+     * `.aot_compile` slot is NULL → silent skip.  Re-enable the
+     * code-store load so the freshly-compiled SDs actually get
+     * picked up. */
     if (go.cs_mode == CS_MODE_AOT_COMPILE && go.backend->aot_compile) {
+        OPTION.no_compiled_code = false;
         for (int i = 0; i < go.n_patterns; i++) {
             go.backend->aot_compile(bps[i], false);
         }

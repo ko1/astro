@@ -48,7 +48,31 @@ regen:
 self-test: astrogre
 	./astrogre --self-test
 
+# Engine microbench (per-pattern ns/match — internal numbers).
 bench: astrogre
 	./astrogre --bench
 
-.PHONY: all clean clean-onigmo regen self-test bench
+# Build-bench helpers.  `are` is the production CLI; benches that
+# compare against grep / rg need it built.
+are/are: are/main.c are/types.c are/ignore.c are/work.c \
+         $(SRCS) $(NODE_GENFILES) aho_corasick.h are/types.h are/ignore.h are/work.h
+	$(MAKE) -C are
+
+# CLI vs grep / ripgrep on a single 118 MB corpus.
+bench-rg: astrogre are/are
+	./bench/grep_bench.sh
+
+# CLI vs grep / ripgrep on recursive tree walks (.gitignore-aware).
+bench-tree: astrogre are/are
+	./bench/tree_bench.sh
+
+# Engine variants (interp / aot / +onigmo) vs grep / rg on the same
+# corpus — for measuring the AOT specialiser's effect.
+bench-aot: astrogre
+	./bench/aot_bench.sh
+
+# Run everything in one go.
+bench-all: bench bench-rg bench-tree bench-aot
+
+.PHONY: all clean clean-onigmo regen self-test \
+        bench bench-rg bench-tree bench-aot bench-all

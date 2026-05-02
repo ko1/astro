@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
-# Compare grep / ripgrep / astrogre (in-house engine) / astrogre with
-# Onigmo backend on a fixed corpus + a small set of representative
-# patterns.  Each tool's output is sent to /dev/null and wall-clock
-# time is taken with /usr/bin/time -f %e.
+# Compare `are` (production CLI on the astrogre engine) against
+# grep -E and ripgrep on a fixed single-file corpus + a small set
+# of representative patterns.  Each tool's output is sent to
+# /dev/null and wall-clock time is taken with date +%s.%N.
+#
+# Engine-internal variants (astrogre interp / aot / +onigmo) live in
+# aot_bench.sh — that's the engine perf rig.  This bench is for
+# the user-facing CLI comparison.
 #
 # Best-of-N seconds (default N=3) — keeps the table to a sustained
 # ~1 s scale so first-run setup doesn't dominate.
@@ -22,19 +26,20 @@ BYTES=$(wc -c <"$CORPUS")
 
 N=${1:-3}
 
-ASTROGRE=../astrogre
+ARE=../are/are
 GREP=$(command -v grep)
 
 # `rg` may be a shell wrapper for Claude Code in the user's profile;
 # look for a real binary instead.
 RG=""
 for cand in /usr/bin/rg /usr/local/bin/rg \
+            /home/ko1/.vscode-server/extensions/github.copilot-chat-*/node_modules/@github/copilot/sdk/ripgrep/bin/linux-x64/rg \
             /home/ko1/.vscode-server/cli/servers/Stable-*/server/node_modules/@vscode/ripgrep/bin/rg
 do
     if [ -x "$cand" ]; then RG="$cand"; break; fi
 done
 
-[ -x "$ASTROGRE" ] || { echo "build ../astrogre first"; exit 1; }
+[ -x "$ARE" ] || { echo "build ../are/are first (cd ../are && make)"; exit 1; }
 
 # Best of N — accept exit 0 (matches) or 1 (no matches) as success;
 # anything else is a real failure and we record "ERR".
@@ -68,15 +73,11 @@ run_pattern() {
     local extra=("$@")          # extra grep-style flags applied to all tools
     echo
     echo "[$label] /$pat/  ${extra[*]:-}"
-    best_of "grep"            "$GREP"      -E "${extra[@]}" "$pat" "$CORPUS"
+    best_of "grep -E"        "$GREP"  -E "${extra[@]}" "$pat" "$CORPUS"
     if [ -n "$RG" ]; then
-        best_of "ripgrep"     "$RG"        -j1 "${extra[@]}" -e "$pat" "$CORPUS"
+        best_of "ripgrep"    "$RG"    -j1 "${extra[@]}" -e "$pat" "$CORPUS"
     fi
-    best_of "astrogre +onigmo"  "$ASTROGRE"  --backend=onigmo "${extra[@]}" "$pat" "$CORPUS"
-    best_of "astrogre interp"   "$ASTROGRE"  --plain          "${extra[@]}" "$pat" "$CORPUS"
-    # AOT-cached: ensure the SD has been built, then time the cached run.
-    "$ASTROGRE" -C "${extra[@]}" "$pat" "$CORPUS" >/dev/null 2>&1 || true
-    best_of "astrogre aot-cached" "$ASTROGRE"                "${extra[@]}" "$pat" "$CORPUS"
+    best_of "are -j1"        "$ARE"   -j 1 "${extra[@]}" -e "$pat" "$CORPUS"
 }
 
 echo "corpus: $CORPUS  ($LINES lines, $BYTES bytes)  best of $N runs"
@@ -86,6 +87,8 @@ run_pattern "literal-rare"   "specialized_dispatcher"
 run_pattern "anchored"       "^static"
 run_pattern "case-insens"    "VALUE"                  -i
 run_pattern "alt-3"          "static|extern|inline"
+# alt-12: stresses the AC prefilter (>8 distinct first bytes).
+run_pattern "alt-12"         "static|extern|inline|return|while|switch|break|case|goto|asm|defined|sizeof"
 run_pattern "class-rep"      "[0-9]{4,}"
 run_pattern "ident-call"     "[a-z_]+_[a-z]+\("
 run_pattern "count"          "static"                 -c
