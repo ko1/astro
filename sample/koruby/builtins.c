@@ -837,6 +837,7 @@ void korb_init_builtins(void) {
     DEF(cMod, "module_eval",      module_class_eval,       -1);
     DEF(cMod, "<",                module_lt,                1);
     DEF(cMod, "<=",               module_le,                1);
+    DEF(cMod, "<=>",              module_cmp,               1);
     DEF(cMod, ">",                module_gt,                1);
     DEF(cMod, ">=",               module_ge,                1);
     DEF(cCls, "superclass",       class_superclass,         0);

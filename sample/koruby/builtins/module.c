@@ -319,7 +319,7 @@ static VALUE module_class_eval(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE module_lt(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1) return Qnil;
     if (BUILTIN_TYPE(argv[0]) != T_CLASS && BUILTIN_TYPE(argv[0]) != T_MODULE) return Qnil;
-    if (self == argv[0]) return Qfalse;
+    if (self == argv[0]) return Qnil;  /* CRuby: same → nil, not false */
     struct korb_class *target = (struct korb_class *)argv[0];
     for (struct korb_class *k = (struct korb_class *)self; k; k = k->super) {
         if (k == target) return Qtrue;
@@ -327,7 +327,27 @@ static VALUE module_lt(CTX *c, VALUE self, int argc, VALUE *argv) {
             if (k->includes[i] == target) return Qtrue;
         }
     }
-    return Qfalse;
+    /* If target has self as a strict ancestor, return false (we are
+     * the ancestor, target is the subclass).  Else nil (unrelated). */
+    for (struct korb_class *k = target; k; k = k->super) {
+        if (k == (struct korb_class *)self) return Qfalse;
+        for (uint32_t i = 0; i < k->includes_cnt; i++) {
+            if (k->includes[i] == (struct korb_class *)self) return Qfalse;
+        }
+    }
+    return Qnil;
+}
+
+/* Module#<=> — -1 if self < target, 0 if equal, 1 if self > target,
+ * nil if unrelated. */
+static VALUE module_cmp(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1) return Qnil;
+    if (BUILTIN_TYPE(argv[0]) != T_CLASS && BUILTIN_TYPE(argv[0]) != T_MODULE) return Qnil;
+    if (self == argv[0]) return INT2FIX(0);
+    VALUE lt = module_lt(c, self, argc, argv);
+    if (lt == Qtrue) return INT2FIX(-1);
+    if (lt == Qfalse) return INT2FIX(1);
+    return Qnil;
 }
 static VALUE module_le(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1) return Qnil;
