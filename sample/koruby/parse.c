@@ -1730,6 +1730,46 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
           pm_arguments_node_t *args = (pm_arguments_node_t *)n->arguments;
           uint32_t args_cnt = args ? (uint32_t)args->arguments.size : 0;
 
+          /* Safe-navigation `recv&.method(args)`: evaluate recv into a
+           * temp; if nil, the entire call expression is nil; otherwise
+           * call as usual.  We rewrite the prism node to a non-safe
+           * call that uses a lvar_get-of-temp as the receiver, then
+           * wrap the result with the nil-check. */
+          if (n->base.flags & PM_CALL_NODE_FLAGS_SAFE_NAVIGATION) {
+              uint32_t tmp = inc_arg_index(tc);
+              NODE *save = ALLOC_node_lvar_set(tmp, T(tc, n->receiver));
+              /* Re-translate the call but with the receiver replaced
+               * by an lvar_get of `tmp` — so we don't evaluate the
+               * recv expression twice (and so its temps don't collide
+               * with the cached value). */
+              n->receiver = NULL;  /* prevent the general path from re-translating it */
+              NODE *recv_get = ALLOC_node_lvar_get(tmp);
+              /* Translate the call with recv pre-evaluated.  Drop the
+               * SAFE_NAVIGATION flag for the recursive translation. */
+              n->base.flags &= ~PM_CALL_NODE_FLAGS_SAFE_NAVIGATION;
+              ID name = intern_constant(tc->parser, n->name);
+              pm_node_t *block_pm = (n->block && PM_NODE_TYPE_P(n->block, PM_BLOCK_NODE)) ? n->block : NULL;
+              NODE *call;
+              if (!block_pm && n->block && PM_NODE_TYPE_P(n->block, PM_BLOCK_ARGUMENT_NODE)) {
+                  pm_block_argument_node_t *ba = (pm_block_argument_node_t *)n->block;
+                  NODE *expr = ba->expression ? T(tc, ba->expression) : ALLOC_node_nil();
+                  struct method_cache *mc_tp = alloc_method_cache();
+                  uint32_t tp_slot = inc_arg_index(tc);
+                  NODE *to_proc = ALLOC_node_method_call(expr, korb_intern("to_proc"), 0, tp_slot, mc_tp);
+                  call = build_call_simple(tc, recv_get, name, args ? &args->arguments : NULL, to_proc, true);
+                  rewind_arg_index(tc, tp_slot);
+              } else {
+                  call = build_call_with_block(tc, recv_get, name, args ? &args->arguments : NULL, block_pm, true);
+              }
+              /* Result: tmp = recv; tmp.nil? ? nil : <call>.  But we
+               * need to evaluate save FIRST regardless of the test, so
+               * the seq is: save; (lvar(tmp).nil? ? nil : call). */
+              NODE *check = ALLOC_node_eq(ALLOC_node_lvar_get(tmp), ALLOC_node_nil(), tmp);
+              NODE *guarded = ALLOC_node_if(check, ALLOC_node_nil(), call);
+              rewind_arg_index(tc, tmp);
+              return ALLOC_node_seq(save, guarded);
+          }
+
           /* binop fast path */
           if (n->receiver && args_cnt == 1 && is_binop_name(tc, n->name) && !n->block) {
               NODE *lhs = T(tc, n->receiver);
