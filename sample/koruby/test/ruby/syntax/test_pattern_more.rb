@@ -86,9 +86,7 @@ end
 
 TESTS = [
   :test_deconstruct_array, :test_deconstruct_keys_hash,
-  :test_alternative,
-  # :test_guard — pattern `if` guard not yet wired (todo #61).
-  :test_match_expression,
+  :test_alternative, :test_guard, :test_match_expression,
   :test_nested_mixed, :test_array_rest, :test_in_operator,
 ]
 TESTS.each { |t| run_test(t) }

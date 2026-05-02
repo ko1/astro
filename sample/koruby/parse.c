@@ -972,6 +972,33 @@ static NODE *build_pattern_check(struct transduce_context *tc, pm_node_t *pat,
           return ALLOC_node_or(left, right);
       }
 
+      case PM_IF_NODE: {
+          /* Pattern guard: `pat if guard` — prism wraps the actual
+           * pattern in pm_if_node { predicate = guard, statements = pat }. */
+          pm_if_node_t *ifn = (pm_if_node_t *)pat;
+          pm_node_t *inner_pat = NULL;
+          if (ifn->statements && ((pm_statements_node_t *)ifn->statements)->body.size > 0) {
+              inner_pat = ((pm_statements_node_t *)ifn->statements)->body.nodes[0];
+          }
+          NODE *pat_check = inner_pat ? build_pattern_check(tc, inner_pat, subj_slot)
+                                       : ALLOC_node_true();
+          NODE *guard = ifn->predicate ? T(tc, ifn->predicate) : ALLOC_node_true();
+          return ALLOC_node_and(pat_check, guard);
+      }
+
+      case PM_UNLESS_NODE: {
+          /* `pat unless guard` — same with negated predicate. */
+          pm_unless_node_t *un = (pm_unless_node_t *)pat;
+          pm_node_t *inner_pat = NULL;
+          if (un->statements && ((pm_statements_node_t *)un->statements)->body.size > 0) {
+              inner_pat = ((pm_statements_node_t *)un->statements)->body.nodes[0];
+          }
+          NODE *pat_check = inner_pat ? build_pattern_check(tc, inner_pat, subj_slot)
+                                       : ALLOC_node_true();
+          NODE *guard = un->predicate ? T(tc, un->predicate) : ALLOC_node_true();
+          return ALLOC_node_and(pat_check, ALLOC_node_if(guard, ALLOC_node_false(), ALLOC_node_true()));
+      }
+
       default: {
           /* Anything else: treat as `pattern_value === subject`. */
           NODE *pv = T(tc, pat);

@@ -595,6 +595,8 @@ void korb_init_builtins(void) {
     DEF(cSym, "===", sym_eq, 1);
     DEF(cSym, "inspect", kernel_inspect, 0);
     DEF(cSym, "<=>",     sym_cmp,        1);
+    DEF(cSym, "succ",    sym_succ,       0);
+    DEF(cSym, "next",    sym_succ,       0);
     DEF(cSym, "size",    sym_length,     0);
     DEF(cSym, "length",  sym_length,     0);
     DEF(cSym, "empty?",  sym_empty_p,    0);

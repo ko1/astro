@@ -81,9 +81,11 @@ def test_range_eq
 end
 
 def test_string_range
-  # Range#to_a uses succ-stepping in CRuby; koruby's Range#to_a is
-  # specialized to numeric.  String ranges → todo #62.
-  # assert_equal ["a", "b", "c", "d"], ("a".."d").to_a
+  assert_equal ["a", "b", "c", "d"], ("a".."d").to_a
+end
+
+def test_symbol_range
+  assert_equal [:a, :b, :c], (:a..:c).to_a
 end
 
 TESTS = [
@@ -91,7 +93,7 @@ TESTS = [
   :test_size_range, :test_each_range, :test_step_range,
   :test_cover_range, :test_eqq_range, :test_min_max_range,
   :test_include_range, :test_endless_range, :test_beginless_range,
-  :test_range_eq,
+  :test_range_eq, :test_string_range, :test_symbol_range,
 ]
 TESTS.each { |t| run_test(t) }
 report "RangeMore"

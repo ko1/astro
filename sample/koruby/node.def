@@ -935,8 +935,8 @@ node_super_forward(CTX * restrict c, NODE * restrict n)
         ? korb_class_find_super_method(recv_klass, m->defining_class, m->name)
         : NULL;
     if (!sm) { korb_raise(c, NULL, "no superclass method"); return Qnil; }
-    /* Forward all positionals: required + (splatted *rest if any).  We
-     * stage them into a small buffer first so we can pass argc cleanly. */
+    /* Forward all positionals: required + (splatted *rest if any) +
+     * (kwh hash if both this method and the super accept kwargs). */
     VALUE forward_buf[64];
     int argc = 0;
     if (m->type == KORB_METHOD_AST) {
@@ -953,11 +953,30 @@ node_super_forward(CTX * restrict c, NODE * restrict n)
                 }
             }
         }
+        /* If this method captured kwargs and super accepts them, append
+         * the kwh hash as the last positional — the super's prologue
+         * will peel it back off. */
+        if (m->u.ast.kwh_save_slot >= 0 &&
+            sm->type == KORB_METHOD_AST && sm->u.ast.kwh_save_slot >= 0 &&
+            argc < 64) {
+            forward_buf[argc++] = c->fp[m->u.ast.kwh_save_slot];
+        }
     }
     if (sm->type == KORB_METHOD_CFUNC) return sm->u.cfunc.func(c, c->self, argc, forward_buf);
     VALUE *prev_fp = c->fp;
     VALUE *new_fp = prev_fp + (m->type == KORB_METHOD_AST ? m->u.ast.locals_cnt : 0);
     if (new_fp + sm->u.ast.locals_cnt >= c->stack_end) { korb_raise(c, NULL, "stack overflow"); return Qnil; }
+    /* Peel kwh from forward_buf's tail if the super accepts kwargs. */
+    VALUE peeled_kwh = Qundef;
+    if (sm->u.ast.kwh_save_slot >= 0) {
+        if (argc > 0 && !SPECIAL_CONST_P(forward_buf[argc - 1]) &&
+            BUILTIN_TYPE(forward_buf[argc - 1]) == T_HASH) {
+            peeled_kwh = forward_buf[argc - 1];
+            argc--;
+        } else {
+            peeled_kwh = korb_hash_new();
+        }
+    }
     for (int i = 0; i < argc; i++) new_fp[i] = forward_buf[i];
     for (uint32_t i = argc; i < sm->u.ast.locals_cnt; i++) new_fp[i] = Qnil;
     /* If the super method itself has *rest, gather extras. */
@@ -969,6 +988,9 @@ node_super_forward(CTX * restrict c, NODE * restrict n)
         VALUE rest_arr = korb_ary_new_capa(extra);
         for (long i = 0; i < extra; i++) korb_ary_push(rest_arr, new_fp[fixed_pre + i]);
         new_fp[sm->u.ast.rest_slot] = rest_arr;
+    }
+    if (sm->u.ast.kwh_save_slot >= 0 && !UNDEF_P(peeled_kwh)) {
+        new_fp[sm->u.ast.kwh_save_slot] = peeled_kwh;
     }
     c->fp = new_fp;
     if (c->fp + sm->u.ast.locals_cnt > c->sp) c->sp = c->fp + sm->u.ast.locals_cnt;
