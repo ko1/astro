@@ -912,18 +912,26 @@ static NODE *build_pattern_check(struct transduce_context *tc, pm_node_t *pat,
                   if (rslot >= 0) {
                       /* rest = subj[req_cnt, subj.size - req_cnt - post_cnt]
                        *
-                       * Build it cleanly: stage offset and length into two
-                       * fresh slots, then call subj.[](off, len). */
+                       * Stage offset and length into two slots that
+                       * stay reserved while the slice call happens.
+                       * Earlier this rewound arg_index past off_slot
+                       * before reserving size/sub-temps for the
+                       * len_expr — and those temps then aliased
+                       * off_slot, so set_len's eval wrote 2 into off
+                       * and we ended up with subj[2, 3] instead of
+                       * subj[1, 3].  Fix: reserve off_slot / len_slot
+                       * and DON'T rewind, so the inner size/-(arg)
+                       * calls allocate fresh slots above. */
                       uint32_t off_slot = inc_arg_index(tc);
                       uint32_t len_slot = inc_arg_index(tc);
-                      rewind_arg_index(tc, off_slot);
 
-                      /* size = subj.size; len = size - req_cnt - post_cnt */
+                      /* size = subj.size */
                       uint32_t ai_sz = inc_arg_index(tc);
                       rewind_arg_index(tc, ai_sz);
                       NODE *size_call = ALLOC_node_method_call(
                           ALLOC_node_lvar_get(subj_slot),
                           korb_intern("size"), 0, ai_sz, alloc_method_cache());
+                      /* size - (req_cnt + post_cnt) */
                       uint32_t ai_m1 = inc_arg_index(tc);
                       inc_arg_index(tc); rewind_arg_index(tc, ai_m1);
                       NODE *m1_arg = ALLOC_node_lvar_set(ai_m1,
@@ -945,10 +953,114 @@ static NODE *build_pattern_check(struct transduce_context *tc, pm_node_t *pat,
                               ALLOC_node_seq(set_len, slice)));
                       combined = ALLOC_node_and(combined,
                           ALLOC_node_seq(bind_rest, ALLOC_node_true()));
+                      rewind_arg_index(tc, off_slot);
                   }
               }
           }
           return ALLOC_node_seq(coerce_step, combined);
+      }
+
+      case PM_CAPTURE_PATTERN_NODE: {
+          /* `pattern => var` — match value against pattern, then bind
+           * subj to var.  Only the LocalVariableTarget shape is
+           * supported (constant or instance-var capture is rare). */
+          pm_capture_pattern_node_t *cp = (pm_capture_pattern_node_t *)pat;
+          NODE *check = build_pattern_check(tc, cp->value, subj_slot);
+          if (cp->target) {
+              pm_local_variable_target_node_t *t = cp->target;
+              int slot = lvar_slot(tc, t->name, t->depth);
+              if (slot < 0) slot = lvar_slot_any(tc, t->name);
+              if (slot >= 0) {
+                  NODE *bind = ALLOC_node_lvar_set((uint32_t)slot,
+                                                    ALLOC_node_lvar_get(subj_slot));
+                  /* On match: bind, then return true. */
+                  return ALLOC_node_and(check, ALLOC_node_seq(bind, ALLOC_node_true()));
+              }
+          }
+          return check;
+      }
+
+      case PM_FIND_PATTERN_NODE: {
+          /* in [*left, p1, p2, ..., *right] — match if there's some
+           * contiguous window in subj where p1..pN match.  We only
+           * support the common "left and right are anonymous (or
+           * unnamed) splats" form here; named splats are bound to the
+           * pre/post slices on success. */
+          pm_find_pattern_node_t *fp = (pm_find_pattern_node_t *)pat;
+          uint32_t n = (uint32_t)fp->requireds.size;
+          if (n == 0) {
+              /* `[*, *]` — matches anything Array-shaped. */
+              uint32_t ai = inc_arg_index(tc); inc_arg_index(tc); rewind_arg_index(tc, ai);
+              NODE *cnst = ALLOC_node_const_get(korb_intern("Array"));
+              NODE *set = ALLOC_node_lvar_set(ai, cnst);
+              return ALLOC_node_seq(set,
+                  ALLOC_node_method_call(ALLOC_node_lvar_get(subj_slot),
+                                          korb_intern("is_a?"), 1, ai, alloc_method_cache()));
+          }
+          /* For each candidate window start p in [0, size-n], try to
+           * match.  Build that as a runtime loop using a counter
+           * lvar plus a `while` node that returns the first match.
+           *
+           * Simpler approach for the prevalent `[*, x, *]` (n=1) case:
+           * just walk subj.each, run the pattern check on each elem,
+           * bind on first match.  Fall back to `false` on no match.
+           *
+           * For now, implement n=1 only; n>1 is rare.  Larger forms
+           * fall through to false (no match).  Returns false (no
+           * match) or true (match + lvars bound). */
+          if (n != 1) {
+              /* TODO: implement n>1 windows. */
+              return ALLOC_node_false();
+          }
+          /* `each` over subj.  When the elem matches, bind elem to
+           * the pattern's lvar (via build_pattern_check) AND any
+           * named splat lvars to nil-or-pre/post slices, set found
+           * flag, break.  After: return found. */
+          int found_slot = (int)inc_arg_index(tc);
+          int idx_slot   = (int)inc_arg_index(tc);
+          int sz_slot    = (int)inc_arg_index(tc);
+          NODE *init_found = ALLOC_node_lvar_set((uint32_t)found_slot, ALLOC_node_false());
+          NODE *init_idx   = ALLOC_node_lvar_set((uint32_t)idx_slot,   ALLOC_node_int_lit(0));
+          uint32_t ai_sz = inc_arg_index(tc);
+          rewind_arg_index(tc, ai_sz);
+          NODE *sz_call = ALLOC_node_method_call(ALLOC_node_lvar_get(subj_slot),
+                                                  korb_intern("size"), 0, ai_sz, alloc_method_cache());
+          NODE *init_sz = ALLOC_node_lvar_set((uint32_t)sz_slot, sz_call);
+          /* loop: while idx < size && !found do ... end */
+          uint32_t ai_lt = inc_arg_index(tc); inc_arg_index(tc); rewind_arg_index(tc, ai_lt);
+          NODE *lt_arg = ALLOC_node_lvar_set(ai_lt, ALLOC_node_lvar_get((uint32_t)sz_slot));
+          NODE *idx_lt_size = ALLOC_node_seq(lt_arg,
+              ALLOC_node_method_call(ALLOC_node_lvar_get((uint32_t)idx_slot),
+                                      korb_intern("<"), 1, ai_lt, alloc_method_cache()));
+          NODE *not_found = ALLOC_node_not(ALLOC_node_lvar_get((uint32_t)found_slot));
+          NODE *cond = ALLOC_node_and(idx_lt_size, not_found);
+          /* body: elem = subj[idx]; if pat(elem) then found = true; break end; idx += 1 */
+          uint32_t elem_slot = inc_arg_index(tc);
+          uint32_t ai_idx = inc_arg_index(tc); inc_arg_index(tc); rewind_arg_index(tc, ai_idx);
+          NODE *idx_arg = ALLOC_node_lvar_set(ai_idx, ALLOC_node_lvar_get((uint32_t)idx_slot));
+          NODE *aref = ALLOC_node_seq(idx_arg,
+              ALLOC_node_method_call(ALLOC_node_lvar_get(subj_slot),
+                                      korb_intern("[]"), 1, ai_idx, alloc_method_cache()));
+          NODE *bind_elem = ALLOC_node_lvar_set(elem_slot, aref);
+          NODE *sub_check = build_pattern_check(tc, fp->requireds.nodes[0], elem_slot);
+          NODE *match_action = ALLOC_node_lvar_set((uint32_t)found_slot, ALLOC_node_true());
+          NODE *if_match = ALLOC_node_if(sub_check, match_action, ALLOC_node_nil());
+          /* idx += 1 */
+          uint32_t ai_inc = inc_arg_index(tc); inc_arg_index(tc); rewind_arg_index(tc, ai_inc);
+          NODE *inc_arg_n = ALLOC_node_lvar_set(ai_inc, ALLOC_node_int_lit(1));
+          NODE *idx_plus_1 = ALLOC_node_seq(inc_arg_n,
+              ALLOC_node_method_call(ALLOC_node_lvar_get((uint32_t)idx_slot),
+                                      korb_intern("+"), 1, ai_inc, alloc_method_cache()));
+          NODE *step_idx = ALLOC_node_lvar_set((uint32_t)idx_slot, idx_plus_1);
+          NODE *body = ALLOC_node_seq(bind_elem, ALLOC_node_seq(if_match, step_idx));
+          NODE *loop = ALLOC_node_while(cond, body);
+          NODE *result = ALLOC_node_seq(init_found,
+              ALLOC_node_seq(init_idx,
+                  ALLOC_node_seq(init_sz,
+                      ALLOC_node_seq(loop,
+                                     ALLOC_node_lvar_get((uint32_t)found_slot)))));
+          rewind_arg_index(tc, (uint32_t)found_slot);
+          return result;
       }
 
       case PM_HASH_PATTERN_NODE: {
