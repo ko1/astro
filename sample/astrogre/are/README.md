@@ -156,41 +156,55 @@ and reproduction instructions.
 
 ### Single-file scan (`bench/grep_bench.rb`)
 
-`are` is the production CLI on the same engine that powers
-`astrogre`, so its single-file numbers track the engine's directly.
-Notable rows (use `make bench-rg N=5` to reproduce):
+`are` shares the engine with `astrogre`, so single-file numbers
+track the engine directly.  `--aot` is shown as a warm-cache
+column — first invocation pays a `cc` compile (~400 ms); we only
+report the cached load time, the steady-state.
 
-| pattern                       | are -j1 | ripgrep | GNU grep |
-|------------------------------ |--------:|--------:|---------:|
-| `/static/`                    | **41**  | 86      | 153      |
-| `/specialized_dispatcher/`    | 23      | **24**  | 36       |
-| `/^static/` anchored          | 86      | **42**  | 78       |
-| `/VALUE/i`                    | 94      | **64**  | 107      |
-| `/static\|extern\|inline/`    | 402     | **69**  | 224      |
-| 12-way alt (uses our AC)      | 428     | **142** | 281      |
-| `/[0-9]{4,}/`                 | 404     | 60      | **96**   |
-| `/[a-z_]+_[a-z]+\(/`          | 2154    | **230** | 2478     |
-| `-c /static/`                 | **24**  | 30      | 77       |
+| pattern                       | are -j1 | are +AOT/cached | ripgrep | GNU grep |
+|-------------------------------|--------:|----------------:|--------:|---------:|
+| `/static/`                    | **39**  | 41              | 42      | 79       |
+| `/specialized_dispatcher/`    | **18**  | 22              | 22      | 37       |
+| `/^static/` anchored          | 79      | 80              | **40**  | 71       |
+| `/VALUE/i`                    | 83      | **76**          | 58      | 101      |
+| `/static\|extern\|inline/`    | 392     | **127**         | 61      | 196      |
+| 12-way alt (AC prefilter)     | 419     | 421             | **143** | 275      |
+| `/[0-9]{4,}/`                 | 377     | **174**         | 59      | 89       |
+| `/[a-z_]+_[a-z]+\(/`          | 1965    | 1307            | **216** | 2391     |
+| `-c /static/`                 | **21**  | 25              | 28      | 66       |
 
-Where `are` wins:
+Where `are` wins outright:
 
-- `-c /static/` (count): 24 ms vs grep 77 ms vs rg 30 ms.  The
-  `node_grep_count_lines_lit` path is a single specialised SD that
-  does SIMD scan + line-skip + count in one tight loop.
-- `/static/` default print: 41 ms vs grep 153 ms vs rg 86 ms.
+- **`-c /static/`** (count): 21 ms — fastest tool here.  The
+  `node_grep_count_lines_lit` path is a single specialised SD
+  that does SIMD scan + line-skip + count in one tight loop.
+- **`/static/` default print**: 39 ms vs grep 79 ms vs rg 42 ms.
   Same scanner + an inlined emit-line action.
+- **`/specialized_dispatcher/`**: 18 ms — long literal, tight
+  memmem.  Slightly ahead of ripgrep (22 ms).
 
-Where `are` loses:
+Where AOT pulls its weight:
+
+- **alt-of-LIT** (`/static|extern|inline/`): 392 → 127 ms (3.1×).
+  Per-byte alt-branch dispatch folds into the SD function.
+- **class-rep** (`/[0-9]{4,}/`): 377 → 174 ms (2.2×).
+- **ident-call**: 1965 → 1307 ms (1.5×).
+
+AOT has a small constant cost (≈ 4 ms for dlopen + dispatch swap)
+that shows up as a slight regression on already-fast cases like
+`-c /static/` (21 → 25 ms).  Not worth turning on for trivial
+patterns; very worth it for anything with an alt-of-LIT body or a
+greedy class-rep.
+
+Where ripgrep still wins:
 
 - Anchored / `/i` / class-rep: ripgrep's literal-prefix prefilter
-  + lazy DFA wins by 1.5–2×.  Closing this needs DFA-style NFA
-  simulation — a bigger refactor.
-- `[a-z_]+_[a-z]+\(`: rg's lazy DFA gets to 230 ms, we're at
-  2.2 s.  The DFA shape advantage is biggest where prefilter
-  doesn't apply.
-- Multi-literal alt: our AC kicks in for 9+ distinct first bytes,
-  but rg's Aho-Corasick + Teddy SIMD lookup is 2–3× faster
-  per byte.  Engine work tracked in
+  + lazy DFA wins by 1.5–2× even against AOT.
+- **ident-call** `[a-z_]+_[a-z]+\(`: rg gets to 216 ms via
+  lazy DFA where prefilter doesn't apply; we're at 1.3 s with
+  AOT.  Biggest engine gap.
+- **Multi-literal alt** (12-way): rg's Aho-Corasick + Teddy SIMD
+  is 2–3× faster per byte than ours.  Engine work tracked in
   [`../docs/todo.md`](../docs/todo.md).
 
 ### Tree walk (`bench/tree_bench.rb`)

@@ -138,9 +138,15 @@ def run_pattern(label, pattern, *extra)
           [$astrogre, "--aot-compile", *extra, pattern, $corpus]
 
   # are: production CLI on the same engine, defaults to interp.
+  # Also time the AOT-cached path (single warm-up + best-of-N).
   if $are
-    best_of "are -j1", label, pattern,
+    best_of "are -j1",         label, pattern,
             [$are, "-j", "1", *extra, "-e", pattern, $corpus]
+    Process.wait Process.spawn(
+      $are, "-j", "1", "--aot", *extra, "-e", pattern, $corpus,
+      out: OUT, err: "/dev/null")
+    best_of "are -j1 aot/cached", label, pattern,
+            [$are, "-j", "1", "--aot", *extra, "-e", pattern, $corpus]
   end
 end
 

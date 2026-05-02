@@ -1396,6 +1396,24 @@ usage(void)
 int
 main(int argc, char *argv[])
 {
+    /* astrogre's `node.c` auto-detects the source dir from
+     * `/proc/self/exe`'s parent — for `astrogre` itself that's
+     * `<engine_dir>/`, but for `are` it's `<engine_dir>/are/`,
+     * which doesn't have node.h.  Tell astro_cs to look one
+     * level up before INIT() runs.  The framework respects
+     * `ASTRO_CS_SRC_DIR` and the env var takes precedence over
+     * the auto-detected value. */
+    {
+        char p[PATH_MAX];
+        const ssize_t n = readlink("/proc/self/exe", p, sizeof(p) - 1);
+        if (n > 0) {
+            p[n] = '\0';
+            char *slash = strrchr(p, '/');     /* strip "are" binary */
+            if (slash) *slash = '\0';
+            slash = strrchr(p, '/');           /* strip "are" subdir */
+            if (slash) { *slash = '\0'; setenv("ASTRO_CS_SRC_DIR", p, 1); }
+        }
+    }
     INIT();
     /* Bypass the code-store auto-load by default.  Otherwise an
      * `are` invoked from a directory that happens to contain a
