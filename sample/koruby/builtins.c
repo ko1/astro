@@ -115,6 +115,7 @@ void korb_init_builtins(void) {
     DEF(cFlt, "*", flt_mul, 1);
     DEF(cFlt, "/", flt_div, 1);
     DEF(cFlt, "to_s", flt_to_s, 0);
+    DEF(cFlt, "step", flt_step, -1);
 
     /* String */
     struct korb_class *cStr = korb_vm->string_class;

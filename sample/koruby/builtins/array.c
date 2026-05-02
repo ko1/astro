@@ -1084,10 +1084,26 @@ static VALUE ary_take(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 static VALUE ary_fill(CTX *c, VALUE self, int argc, VALUE *argv) {
     CHECK_FROZEN_RET(c, self, Qnil);
-    /* Array#fill(val) — fill all slots with val */
     if (argc < 1) return self;
     struct korb_array *a = (struct korb_array *)self;
-    for (long i = 0; i < a->len; i++) a->ptr[i] = argv[0];
+    /* fill(val[, start[, length]]) — fill specific slice with val.
+     * Negative start counts from the end; out-of-range length is clamped. */
+    long start = 0, len = a->len;
+    if (argc >= 2 && FIXNUM_P(argv[1])) {
+        start = FIX2LONG(argv[1]);
+        if (start < 0) start += a->len;
+        if (start < 0) start = 0;
+    }
+    if (argc >= 3 && FIXNUM_P(argv[2])) {
+        len = FIX2LONG(argv[2]);
+        if (len < 0) return self;
+    } else if (argc >= 2) {
+        len = a->len - start;
+    }
+    if (start >= a->len) return self;
+    long end = start + len;
+    if (end > a->len) end = a->len;
+    for (long i = start; i < end; i++) a->ptr[i] = argv[0];
     return self;
 }
 

@@ -25,6 +25,40 @@ static void korb_float_to_shortest(double d, char *out, size_t out_cap) {
     snprintf(out, out_cap, "%.17g", d);
 }
 
+/* Float#step(limit, step) [{ |x| ... }] — yield self, self+step, ...
+ * up to (and including) limit.  Mirrors Numeric#step. */
+static VALUE flt_step(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1) return Qnil;
+    double start = korb_num2dbl(self);
+    double limit = korb_num2dbl(argv[0]);
+    double step  = (argc >= 2) ? korb_num2dbl(argv[1]) : 1.0;
+    bool has_block = korb_block_given();
+    VALUE out = has_block ? Qnil : korb_ary_new();
+    if (step == 0.0) return self;
+    if (step > 0.0) {
+        for (double v = start; v <= limit + 1e-12; v += step) {
+            VALUE fv = korb_float_new(v);
+            if (has_block) {
+                korb_yield(c, 1, &fv);
+                if (c->state != KORB_NORMAL) return Qnil;
+            } else {
+                korb_ary_push(out, fv);
+            }
+        }
+    } else {
+        for (double v = start; v >= limit - 1e-12; v += step) {
+            VALUE fv = korb_float_new(v);
+            if (has_block) {
+                korb_yield(c, 1, &fv);
+                if (c->state != KORB_NORMAL) return Qnil;
+            } else {
+                korb_ary_push(out, fv);
+            }
+        }
+    }
+    return has_block ? self : out;
+}
+
 static VALUE flt_to_s(CTX *c, VALUE self, int argc, VALUE *argv) {
     double d = korb_num2dbl(self);
     /* Ruby uses fixed names for special values, not C's "inf" / "nan". */
