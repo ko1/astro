@@ -537,6 +537,18 @@ void korb_init_builtins(void) {
         cStruct->basic.klass = (VALUE)cStructMeta;
     }
 
+    /* Data.define — like Struct but immutable.  We implement as a thin
+     * shim over struct_class_new and freeze the instance after init. */
+    {
+        struct korb_class *cData = korb_class_new(korb_intern("Data"), korb_vm->object_class, T_OBJECT);
+        korb_const_set(korb_vm->object_class, korb_intern("Data"), (VALUE)cData);
+        struct korb_class *cDataMeta = korb_class_new(korb_intern("DataMeta"),
+                                                       korb_vm->class_class, T_CLASS);
+        korb_class_add_method_cfunc(cDataMeta, korb_intern("define"),
+                                     struct_class_new, -1);
+        cData->basic.klass = (VALUE)cDataMeta;
+    }
+
     /* File class */
     struct korb_class *cFile = korb_class_new(korb_intern("File"), korb_vm->object_class, T_OBJECT);
     korb_const_set(korb_vm->object_class, korb_intern("File"), (VALUE)cFile);

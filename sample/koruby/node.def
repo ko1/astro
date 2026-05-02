@@ -905,7 +905,18 @@ node_super(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_inde
     if (new_fp + sm->u.ast.locals_cnt > c->sp) c->sp = new_fp + sm->u.ast.locals_cnt;
     for (uint32_t i = argc; i < sm->u.ast.locals_cnt; i++) new_fp[i] = Qnil;
     c->fp = new_fp;
+    /* Push a frame so a nested `super` inside sm sees sm as its method
+     * (otherwise current_frame still points to the calling method and
+     * super recurses into the same target — stack overflow). */
+    struct korb_frame frame;
+    frame.prev = c->current_frame;
+    frame.method = sm;
+    frame.self = c->self;
+    frame.block = current_block;
+    frame.caller_node = n;
+    c->current_frame = &frame;
     VALUE r = EVAL(c, sm->u.ast.body);
+    c->current_frame = frame.prev;
     c->fp = prev_fp;
     if (c->state == KORB_RETURN) { r = c->state_value; c->state = KORB_NORMAL; c->state_value = Qnil; }
     return r;
@@ -924,17 +935,53 @@ node_super_forward(CTX * restrict c, NODE * restrict n)
         ? korb_class_find_super_method(recv_klass, m->defining_class, m->name)
         : NULL;
     if (!sm) { korb_raise(c, NULL, "no superclass method"); return Qnil; }
-    int argc = (m->type == KORB_METHOD_AST) ? (int)m->u.ast.required_params_cnt : 0;
-    VALUE *args = c->fp;
-    if (sm->type == KORB_METHOD_CFUNC) return sm->u.cfunc.func(c, c->self, argc, args);
+    /* Forward all positionals: required + (splatted *rest if any).  We
+     * stage them into a small buffer first so we can pass argc cleanly. */
+    VALUE forward_buf[64];
+    int argc = 0;
+    if (m->type == KORB_METHOD_AST) {
+        uint32_t req = m->u.ast.required_params_cnt;
+        for (uint32_t i = 0; i < req && argc < 64; i++) {
+            forward_buf[argc++] = c->fp[i];
+        }
+        if (m->u.ast.rest_slot >= 0) {
+            VALUE rest = c->fp[m->u.ast.rest_slot];
+            if (BUILTIN_TYPE(rest) == T_ARRAY) {
+                struct korb_array *a = (struct korb_array *)rest;
+                for (long i = 0; i < a->len && argc < 64; i++) {
+                    forward_buf[argc++] = a->ptr[i];
+                }
+            }
+        }
+    }
+    if (sm->type == KORB_METHOD_CFUNC) return sm->u.cfunc.func(c, c->self, argc, forward_buf);
     VALUE *prev_fp = c->fp;
     VALUE *new_fp = prev_fp + (m->type == KORB_METHOD_AST ? m->u.ast.locals_cnt : 0);
     if (new_fp + sm->u.ast.locals_cnt >= c->stack_end) { korb_raise(c, NULL, "stack overflow"); return Qnil; }
-    for (int i = 0; i < argc; i++) new_fp[i] = args[i];
+    for (int i = 0; i < argc; i++) new_fp[i] = forward_buf[i];
     for (uint32_t i = argc; i < sm->u.ast.locals_cnt; i++) new_fp[i] = Qnil;
+    /* If the super method itself has *rest, gather extras. */
+    if (sm->u.ast.rest_slot >= 0) {
+        long fixed_pre  = (long)sm->u.ast.required_params_cnt;
+        long fixed_post = (long)sm->u.ast.post_params_cnt;
+        long extra = (long)argc - fixed_pre - fixed_post;
+        if (extra < 0) extra = 0;
+        VALUE rest_arr = korb_ary_new_capa(extra);
+        for (long i = 0; i < extra; i++) korb_ary_push(rest_arr, new_fp[fixed_pre + i]);
+        new_fp[sm->u.ast.rest_slot] = rest_arr;
+    }
     c->fp = new_fp;
     if (c->fp + sm->u.ast.locals_cnt > c->sp) c->sp = c->fp + sm->u.ast.locals_cnt;
+    /* Push frame so nested super inside sm sees sm's defining_class. */
+    struct korb_frame frame;
+    frame.prev = c->current_frame;
+    frame.method = sm;
+    frame.self = c->self;
+    frame.block = current_block;
+    frame.caller_node = n;
+    c->current_frame = &frame;
     VALUE r = EVAL(c, sm->u.ast.body);
+    c->current_frame = frame.prev;
     c->fp = prev_fp;
     if (c->state == KORB_RETURN) { r = c->state_value; c->state = KORB_NORMAL; c->state_value = Qnil; }
     return r;

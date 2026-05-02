@@ -171,18 +171,169 @@ static VALUE struct_to_a(CTX *c, VALUE self, int argc, VALUE *argv) {
     return r;
 }
 
+/* Struct#[] — read by index or symbol. */
+static VALUE struct_aref(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_class *klass = (struct korb_class *)((struct korb_object *)self)->basic.klass;
+    VALUE members_v = korb_const_get(klass, korb_intern("__members__"));
+    if (UNDEF_P(members_v) || BUILTIN_TYPE(members_v) != T_ARRAY) return Qnil;
+    struct korb_array *members = (struct korb_array *)members_v;
+    long idx = -1;
+    if (FIXNUM_P(argv[0])) {
+        idx = FIX2LONG(argv[0]);
+        if (idx < 0) idx += members->len;
+    } else if (SYMBOL_P(argv[0])) {
+        ID want = korb_sym2id(argv[0]);
+        for (long i = 0; i < members->len; i++) {
+            if (SYMBOL_P(members->ptr[i]) && korb_sym2id(members->ptr[i]) == want) {
+                idx = i; break;
+            }
+        }
+    }
+    if (idx < 0 || idx >= members->len) return Qnil;
+    ID name = SYMBOL_P(members->ptr[idx]) ? korb_sym2id(members->ptr[idx]) :
+              korb_intern(korb_str_cstr(members->ptr[idx]));
+    const char *base = korb_id_name(name);
+    long bl = strlen(base);
+    char *iv = korb_xmalloc_atomic(bl + 2);
+    iv[0] = '@'; memcpy(iv + 1, base, bl); iv[bl + 1] = 0;
+    return korb_ivar_get(self, korb_intern(iv));
+}
+
+/* Struct#[]= */
+static VALUE struct_aset(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 2) return Qnil;
+    struct korb_class *klass = (struct korb_class *)((struct korb_object *)self)->basic.klass;
+    VALUE members_v = korb_const_get(klass, korb_intern("__members__"));
+    if (UNDEF_P(members_v) || BUILTIN_TYPE(members_v) != T_ARRAY) return Qnil;
+    struct korb_array *members = (struct korb_array *)members_v;
+    long idx = -1;
+    if (FIXNUM_P(argv[0])) {
+        idx = FIX2LONG(argv[0]);
+        if (idx < 0) idx += members->len;
+    } else if (SYMBOL_P(argv[0])) {
+        ID want = korb_sym2id(argv[0]);
+        for (long i = 0; i < members->len; i++) {
+            if (SYMBOL_P(members->ptr[i]) && korb_sym2id(members->ptr[i]) == want) {
+                idx = i; break;
+            }
+        }
+    }
+    if (idx < 0 || idx >= members->len) return Qnil;
+    ID name = SYMBOL_P(members->ptr[idx]) ? korb_sym2id(members->ptr[idx]) :
+              korb_intern(korb_str_cstr(members->ptr[idx]));
+    const char *base = korb_id_name(name);
+    long bl = strlen(base);
+    char *iv = korb_xmalloc_atomic(bl + 2);
+    iv[0] = '@'; memcpy(iv + 1, base, bl); iv[bl + 1] = 0;
+    korb_ivar_set(self, korb_intern(iv), argv[1]);
+    return argv[1];
+}
+
+/* Struct#each — yield each value. */
+static VALUE struct_each(CTX *c, VALUE self, int argc, VALUE *argv) {
+    VALUE arr = struct_to_a(c, self, 0, NULL);
+    struct korb_array *a = (struct korb_array *)arr;
+    for (long i = 0; i < a->len; i++) {
+        korb_yield(c, 1, &a->ptr[i]);
+        if (c->state == KORB_RAISE) return Qnil;
+    }
+    return self;
+}
+
+/* Struct#== — same struct class + equal members. */
+static VALUE struct_eq(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (SPECIAL_CONST_P(argv[0])) return Qfalse;
+    if (((struct RBasic *)self)->klass != ((struct RBasic *)argv[0])->klass) return Qfalse;
+    VALUE a = struct_to_a(c, self, 0, NULL);
+    VALUE b = struct_to_a(c, argv[0], 0, NULL);
+    return korb_funcall(c, a, korb_intern("=="), 1, &b);
+}
+
+/* Struct#to_h */
+static VALUE struct_to_h(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_class *klass = (struct korb_class *)((struct korb_object *)self)->basic.klass;
+    VALUE members_v = korb_const_get(klass, korb_intern("__members__"));
+    if (UNDEF_P(members_v) || BUILTIN_TYPE(members_v) != T_ARRAY) return korb_hash_new();
+    struct korb_array *members = (struct korb_array *)members_v;
+    VALUE h = korb_hash_new();
+    for (long i = 0; i < members->len; i++) {
+        ID name = SYMBOL_P(members->ptr[i]) ? korb_sym2id(members->ptr[i]) :
+                  korb_intern(korb_str_cstr(members->ptr[i]));
+        const char *base = korb_id_name(name);
+        long bl = strlen(base);
+        char *iv = korb_xmalloc_atomic(bl + 2);
+        iv[0] = '@'; memcpy(iv + 1, base, bl); iv[bl + 1] = 0;
+        korb_hash_aset(h, members->ptr[i], korb_ivar_get(self, korb_intern(iv)));
+    }
+    return h;
+}
+
+/* Struct#size / length */
+static VALUE struct_size(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_class *klass = (struct korb_class *)((struct korb_object *)self)->basic.klass;
+    VALUE members_v = korb_const_get(klass, korb_intern("__members__"));
+    if (UNDEF_P(members_v) || BUILTIN_TYPE(members_v) != T_ARRAY) return INT2FIX(0);
+    return INT2FIX(((struct korb_array *)members_v)->len);
+}
+
+/* Struct.members at the class level — return the members array. */
+static VALUE struct_class_members(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (BUILTIN_TYPE(self) != T_CLASS) return korb_ary_new();
+    VALUE members_v = korb_const_get((struct korb_class *)self, korb_intern("__members__"));
+    if (UNDEF_P(members_v)) return korb_ary_new();
+    return members_v;
+}
+
 static VALUE struct_class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* Struct.new(:a, :b) — create new class */
     struct korb_class *klass = korb_class_new(korb_intern("Struct"), korb_vm->object_class, T_OBJECT);
     /* save members */
     VALUE members = korb_ary_new_from_values(argc, argv);
     korb_const_set(klass, korb_intern("__members__"), members);
-    /* attr_accessor for each member */
-    module_attr_accessor(c, (VALUE)klass, argc, argv);
-    /* initialize */
+    /* Install Struct's standard instance methods FIRST, then let
+     * attr_accessor overwrite any collisions (e.g. Data.define(:length)
+     * means user-given `length` accessor wins over Struct#length). */
     korb_class_add_method_cfunc(klass, korb_intern("initialize"), struct_initialize, -1);
-    korb_class_add_method_cfunc(klass, korb_intern("to_a"), struct_to_a, 0);
-    korb_class_add_method_cfunc(klass, korb_intern("members"), struct_to_a, 0);
+    korb_class_add_method_cfunc(klass, korb_intern("to_a"),       struct_to_a,        0);
+    korb_class_add_method_cfunc(klass, korb_intern("values"),     struct_to_a,        0);
+    korb_class_add_method_cfunc(klass, korb_intern("members"),    struct_to_a,        0);
+    korb_class_add_method_cfunc(klass, korb_intern("[]"),         struct_aref,        1);
+    korb_class_add_method_cfunc(klass, korb_intern("[]="),        struct_aset,       -1);
+    korb_class_add_method_cfunc(klass, korb_intern("each"),       struct_each,        0);
+    korb_class_add_method_cfunc(klass, korb_intern("==" ),        struct_eq,          1);
+    korb_class_add_method_cfunc(klass, korb_intern("to_h"),       struct_to_h,        0);
+    korb_class_add_method_cfunc(klass, korb_intern("size"),       struct_size,        0);
+    korb_class_add_method_cfunc(klass, korb_intern("length"),     struct_size,        0);
+    /* Now attr_accessor — overrides Struct#length etc. when a member
+     * shadows a standard name. */
+    module_attr_accessor(c, (VALUE)klass, argc, argv);
+    /* class-level .members */
+    {
+        struct korb_class *meta = korb_singleton_class_of(klass);
+        korb_class_add_method_cfunc(meta, korb_intern("members"),
+                                     struct_class_members, 0);
+    }
+    /* If a block was given, evaluate it with self = the new class
+     * (Struct.new(:x) { def hello; ... end } pattern). */
+    extern struct korb_proc *current_block;
+    if (current_block) {
+        VALUE prev_self = c->self;
+        struct korb_class *prev_class = c->current_class;
+        struct korb_cref *prev_cref = c->cref;
+        struct korb_cref new_cref = { .klass = klass, .prev = c->cref };
+        VALUE prev_blk_self = current_block->self;
+        c->self = (VALUE)klass;
+        c->current_class = klass;
+        c->cref = &new_cref;
+        current_block->self = (VALUE)klass;
+        VALUE av0[1] = { (VALUE)klass };
+        korb_yield(c, 1, av0);
+        current_block->self = prev_blk_self;
+        c->self = prev_self;
+        c->current_class = prev_class;
+        c->cref = prev_cref;
+        if (c->state == KORB_BREAK) { c->state = KORB_NORMAL; c->state_value = Qnil; }
+    }
     return (VALUE)klass;
 }
 
