@@ -225,7 +225,7 @@ void korb_init_builtins(void) {
     DEF(cObj, "extend",             obj_extend,               -1);
     DEF(cObj, "send",                  obj_send,                 -1);
     DEF(cObj, "__send__",              obj_send,                 -1);
-    DEF(cObj, "public_send",           obj_send,                 -1);
+    DEF(cObj, "public_send",           obj_public_send,          -1);
     DEF(cObj, "instance_variable_get", obj_instance_variable_get, 1);
     DEF(cObj, "instance_variable_set", obj_instance_variable_set, 2);
     DEF(cObj, "method",                obj_method,                1);

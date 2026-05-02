@@ -20,7 +20,10 @@ static struct korb_send_cache_entry korb_send_cache[KORB_SEND_CACHE_SIZE];
 extern void korb_method_cache_fill(struct method_cache *mc, struct korb_class *klass, struct korb_method *m);
 extern struct korb_method *korb_class_find_method(const struct korb_class *klass, ID name);
 
-static VALUE obj_send(CTX *c, VALUE self, int argc, VALUE *argv) {
+/* Shared implementation for send / __send__ / public_send.
+ * `enforce_public` ⇒ refuse to call private/protected methods (the
+ * public_send semantics).  send / __send__ ignore visibility. */
+static VALUE obj_send_impl(CTX *c, VALUE self, int argc, VALUE *argv, bool enforce_public) {
     if (argc < 1) return Qnil;
     ID name;
     if (SYMBOL_P(argv[0])) name = korb_sym2id(argv[0]);
@@ -30,6 +33,17 @@ static VALUE obj_send(CTX *c, VALUE self, int argc, VALUE *argv) {
      * should run with the block visible to foo's `yield`. */
     extern struct korb_proc *current_block;
     struct korb_proc *blk = current_block;
+    if (enforce_public) {
+        struct korb_class *klass = korb_class_of_class(self);
+        struct korb_method *m = korb_class_find_method(klass, name);
+        if (m && m->visibility != KORB_VIS_PUBLIC) {
+            VALUE eNo = korb_const_get(korb_vm->object_class, korb_intern("NoMethodError"));
+            korb_raise(c, (struct korb_class *)eNo,
+                     "private method '%s' called for %s",
+                     korb_id_name(name), korb_id_name(klass->name));
+            return Qnil;
+        }
+    }
     /* argv+1 is &c->fp[arg_index+1] — points into the caller's frame.
      * Translate to arg_index for the prologue path. */
     if (LIKELY(argv >= c->fp && argv < c->stack_end)) {
@@ -48,6 +62,14 @@ static VALUE obj_send(CTX *c, VALUE self, int argc, VALUE *argv) {
         return e->mc.prologue(c, NULL, self, (uint32_t)(argc - 1), arg_index, blk, &e->mc);
     }
     return korb_funcall(c, self, name, argc - 1, argv + 1);
+}
+
+static VALUE obj_send(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return obj_send_impl(c, self, argc, argv, false);
+}
+
+static VALUE obj_public_send(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return obj_send_impl(c, self, argc, argv, true);
 }
 
 static VALUE obj_instance_variable_get(CTX *c, VALUE self, int argc, VALUE *argv) {
