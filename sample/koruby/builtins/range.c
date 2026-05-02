@@ -38,16 +38,31 @@ static VALUE rng_each(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE rng_first(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_range *r = (struct korb_range *)self;
     if (argc < 1) return r->begin;
-    if (!FIXNUM_P(argv[0]) || !FIXNUM_P(r->begin) || !FIXNUM_P(r->end)) return Qnil;
+    if (!FIXNUM_P(argv[0]) || !FIXNUM_P(r->begin)) return Qnil;
     long n = FIX2LONG(argv[0]);
     if (n < 0) {
         VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
         korb_raise(c, (struct korb_class *)eArg, "negative array size");
         return Qnil;
     }
-    long b = FIX2LONG(r->begin), e = FIX2LONG(r->end);
-    if (r->exclude_end) e--;
-    long avail = e - b + 1; if (avail < 0) avail = 0;
+    long b = FIX2LONG(r->begin);
+    long avail;
+    bool is_inf_float = false;
+    if (FLONUM_P(r->end)) {
+        is_inf_float = (korb_flonum_to_double(r->end) > 1e18);
+    } else if (!SPECIAL_CONST_P(r->end) && BUILTIN_TYPE(r->end) == T_FLOAT) {
+        is_inf_float = (((struct korb_float *)r->end)->value > 1e18);
+    }
+    if (NIL_P(r->end) || is_inf_float) {
+        /* Endless range or `..Float::INFINITY` — supply n elements. */
+        avail = n;
+    } else if (FIXNUM_P(r->end)) {
+        long e = FIX2LONG(r->end);
+        if (r->exclude_end) e--;
+        avail = e - b + 1; if (avail < 0) avail = 0;
+    } else {
+        return Qnil;
+    }
     if (n > avail) n = avail;
     VALUE a = korb_ary_new_capa(n);
     for (long i = 0; i < n; i++) korb_ary_push(a, INT2FIX(b + i));

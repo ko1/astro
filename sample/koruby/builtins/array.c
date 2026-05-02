@@ -468,14 +468,20 @@ static VALUE ary_each_slice(CTX *c, VALUE self, int argc, VALUE *argv) {
     long n = FIX2LONG(argv[0]);
     if (n <= 0) return Qnil;
     struct korb_array *a = (struct korb_array *)self;
+    bool has_block = korb_block_given();
+    VALUE collected = has_block ? Qnil : korb_ary_new();
     for (long i = 0; i < a->len; i += n) {
         long end = i + n; if (end > a->len) end = a->len;
         VALUE slice = korb_ary_new_capa(end - i);
         for (long j = i; j < end; j++) korb_ary_push(slice, a->ptr[j]);
-        korb_yield(c, 1, &slice);
-        if (c->state != KORB_NORMAL) return Qnil;
+        if (has_block) {
+            korb_yield(c, 1, &slice);
+            if (c->state != KORB_NORMAL) return Qnil;
+        } else {
+            korb_ary_push(collected, slice);
+        }
     }
-    return self;
+    return has_block ? self : collected;
 }
 
 static VALUE ary_step(CTX *c, VALUE self, int argc, VALUE *argv) {
