@@ -1846,11 +1846,13 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
           code_repo_add(korb_id_name(name), body, false);
           if (n->receiver) {
               if (PM_NODE_TYPE_P(n->receiver, PM_SELF_NODE)) {
-                  return ALLOC_node_singleton_def(name, body, required_cnt, locals);
+                  return ALLOC_node_singleton_def(name, body, required_cnt, total_cnt,
+                                                   (int32_t)rest_slot, locals);
               }
               /* def obj.foo — install on obj's singleton class. */
               NODE *recv = T(tc, n->receiver);
-              return ALLOC_node_obj_singleton_def(recv, name, body, required_cnt, locals);
+              return ALLOC_node_obj_singleton_def(recv, name, body, required_cnt,
+                                                   total_cnt, (int32_t)rest_slot, locals);
           }
           /* posts size — params after *rest, e.g. `def f(a, *r, b, c)`. */
           uint32_t post_cnt = 0;

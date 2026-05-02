@@ -1098,7 +1098,7 @@ node_ensure(CTX * restrict c, NODE * restrict n, NODE *body, NODE *ensure_body)
 }
 
 NODE_DEF @noinline
-node_singleton_def(CTX * restrict c, NODE * restrict n, ID name, NODE *body, uint32_t params_cnt, uint32_t locals_cnt)
+node_singleton_def(CTX * restrict c, NODE * restrict n, ID name, NODE *body, uint32_t required_cnt, uint32_t total_cnt, int32_t rest_slot, uint32_t locals_cnt)
 {
     /* def self.foo — install on c->self's singleton class. */
     if (BUILTIN_TYPE(c->self) != T_CLASS && BUILTIN_TYPE(c->self) != T_MODULE) {
@@ -1106,12 +1106,12 @@ node_singleton_def(CTX * restrict c, NODE * restrict n, ID name, NODE *body, uin
         return Qnil;
     }
     struct korb_class *target = korb_singleton_class_of((struct korb_class *)c->self);
-    korb_class_add_method_ast_full_cref(target, name, body, params_cnt, params_cnt, -1, locals_cnt, c->cref);
+    korb_class_add_method_ast_full_cref(target, name, body, required_cnt, total_cnt, rest_slot, locals_cnt, c->cref);
     return korb_id2sym(name);
 }
 
 NODE_DEF @noinline
-node_obj_singleton_def(CTX * restrict c, NODE * restrict n, NODE *recv_expr, ID name, NODE *body, uint32_t params_cnt, uint32_t locals_cnt)
+node_obj_singleton_def(CTX * restrict c, NODE * restrict n, NODE *recv_expr, ID name, NODE *body, uint32_t required_cnt, uint32_t total_cnt, int32_t rest_slot, uint32_t locals_cnt)
 {
     /* def obj.foo — install on the value of `recv_expr`'s singleton
      * class.  For T_OBJECT we lazily allocate one; for T_CLASS /
@@ -1123,7 +1123,7 @@ node_obj_singleton_def(CTX * restrict c, NODE * restrict n, NODE *recv_expr, ID 
         korb_raise(c, NULL, "cannot define singleton method on this value");
         return Qnil;
     }
-    korb_class_add_method_ast_full_cref(meta, name, body, params_cnt, params_cnt, -1, locals_cnt, c->cref);
+    korb_class_add_method_ast_full_cref(meta, name, body, required_cnt, total_cnt, rest_slot, locals_cnt, c->cref);
     return korb_id2sym(name);
 }
 

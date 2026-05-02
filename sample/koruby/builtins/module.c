@@ -122,6 +122,17 @@ static VALUE module_define_method(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 
+/* Object#define_singleton_method — same as define_method but installs
+ * on the receiver's singleton class instead of `self`'s class. */
+static VALUE obj_define_singleton_method(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1) return Qnil;
+    extern struct korb_class *korb_singleton_class_of_value(VALUE v);
+    struct korb_class *meta = korb_singleton_class_of_value(self);
+    if (!meta) return Qnil;
+    /* Reuse module_define_method with self overridden to the meta class. */
+    return module_define_method(c, (VALUE)meta, argc, argv);
+}
+
 /* Class#superclass */
 static VALUE class_superclass(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (BUILTIN_TYPE(self) != T_CLASS) return Qnil;
