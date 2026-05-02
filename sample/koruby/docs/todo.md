@@ -166,26 +166,19 @@ optcarrot は ruby と checksum 一致、CRuby の 2.2x、YJIT の 0.55x。
 
 ## 4. 既知バグ
 
-### 4.1 ブロック実行時の slot collision  ⚠️ アーキテクチャ
-- `def f(&blk); x = ...; result = blk.call; ...; end` で `blk` 内で
-  別のメソッド呼び出しが起きると、 そのメソッドの local slot が `f` の
-  slot を踏むことがある (env=caller's fp の shared-fp model に由来)
-- 影響: ブロック呼び出し後の caller-side ローカル変数が壊れる
-- 例:
-  ```
-  def trace(&blk)
-    start = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-    result = blk.call
-    elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - start
-    [result, elapsed]
-  end
-  result, time = trace { (1..100).sum }  # time が変な値になる
-  ```
-- 対処: 当面手動で回避 (block 内で複雑なメソッド呼び出しを避ける、
-  あるいは block を渡した method の中で重要な local を block 後に
-  読まない)
-- 真の解決には fresh-env-with-writeback 経路を `creates_proc` 以外も
-  使う仕様変更が必要
+### 4.1 ブロック実行時の slot collision  ✅ 2026-05-02 解決
+- proc.call で `prev_fp != env` のとき env を fresh location に clone
+  して body を実行、 closure-captured slots `[0, param_base)` を後で
+  書き戻すように proc.c を修正
+- `def trace(&blk); start = ...; result = blk.call; elapsed = ... - start; end`
+  パターンが正常動作 (caller-side ローカルが踏まれない)
+
+### 4.2 Proc#curry の失敗ケース
+- `add.curry[1][2][3]` で「comparison of Integer with non-numeric failed」
+  エラー。 closure capture 内の lvar (n=arity) が Proc に化ける.
+- 本質は Proc#curry の Ruby 実装で再帰的に proc を返すパターンで、
+  `creates_proc` が複数 nested proc 経由で適切に伝播しないと推測
+- 当面: `add[1, 2, 3]` 直接呼びで回避
 
 ---
 
