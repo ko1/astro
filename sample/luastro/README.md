@@ -83,13 +83,13 @@ sample/luastro/
 - **Inline closure call**: `luastro_inline_call()` (out-of-line in
   `lua_runtime.c`) bypasses `lua_call`'s metamethod / cfunc dispatch
   on the hot path of recursive Lua-to-Lua calls.
-- **AOT via code store**: `-c` emits per-node `code_store/c/SD_<hash>.c`,
-  post-processes each file (rename `SD_<hash>` → `SD_<hash>_INL`
-  in-source + append a weak extern wrapper so `dlsym` finds every SD,
-  and walk `LUASTRO_NODE_ARR` so variadic-operand children get baked
-  too), links into `all.so`, and re-resolves each AST node's dispatcher
-  to its specialized SD entry.  The hash is structural, so the cache
-  is reusable across runs and across programs that share AST shapes.
+- **AOT via code store**: `-c` registers entry NODEs (chunk root,
+  every closure body in `CR.entries`, every variadic operand in
+  `LUASTRO_NODE_ARR`) with `astro_cs_compile`, links the resulting
+  per-entry `SD_<hash>.c` files into `code_store/all.so`, and re-
+  resolves each NODE's dispatcher to its specialised SD via
+  `dlsym`.  The hash is structural, so the cache is reusable
+  across runs and across programs that share AST shapes.
 - **Inline cache on `node_field_get`** — shape-token IC stored as
   `@ref` inline state on the AST node (`hash_cap` + slot offset).
   Hot path: shape match + slot-key match → return value with no
@@ -195,7 +195,7 @@ similar tracing JIT layer; out of scope.
 | GC               | Stop-the-world mark-sweep, weak tables (`__mode = "k"/"v"/"kv"`), `__gc` finalizer |
 | Standard library | base, `math.*`, `string.*` (full pattern matcher), `table.*`, `io.write`, `os.*`, `coroutine.*` |
 | Specialization   | `node_int_*` / `node_flt_*` / `node_call_argN`                                  |
-| AOT              | `astro_cs_compile` + `astro_cs_build`; `make compiled_luastro`, `make pg_luastro` |
+| AOT              | `astro_cs_compile` + `astro_cs_build` baking SDs to `code_store/all.so`; `./luastro -c FILE` warms the cache, subsequent runs auto-load.  `-p / --pg-compile` is the profile-guided variant. |
 | Tests            | 8/8 passing (compared byte-for-byte against `lua5.4`)                           |
 
 See [`docs/done.md`](docs/done.md) for the detailed inventory and

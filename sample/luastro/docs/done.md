@@ -150,8 +150,7 @@ swaps in, yield swaps back, errors inside a coroutine propagate as
 | `LUASTRO_S_*` (e.g. `LUASTRO_S___INDEX`) | Pre-interned metamethod / library names used by `node_field_get`, `lua_lt`, `lua_arith`, `lua_call`, … to avoid re-interning the same C string per access |
 | `struct LuaFieldIC` | Inline cache for `node_field_get` (shape token = `hash_cap`, plus slot offset).  Stored as an `@ref` operand on the AST node, skipped from the structural hash. |
 | `lua_table_seti` | Routes integer keys ≤ `2 × arr_cap + 4` to the dense array part even if not strictly contiguous (so `for i=2,N do t[i]=... end` doesn't drop into the hash) |
-| `luastro_export_sd_wrappers` (in `luastro_specialize_all`) | Post-process pass that renames every `SD_<hash>` reference inside each generated `code_store/c/SD_<hash>.c` to `SD_<hash>_INL` and appends a `__attribute__((weak)) RESULT SD_<hash>(...) { return SD_<hash>_INL(...); }` extern wrapper.  Lets `dlsym` find every baked SD so `astro_cs_load` patches every node, not just the chunk root. |
-| `luastro_specialize_side_array` | Walks `LUASTRO_NODE_ARR[0..CNT)` and calls `astro_cs_compile` on each entry, baking SDs for variadic-operand children (`@noinline` parents like `node_call_argN` / `node_table_new` whose children ASTroGen's typed-operand walker skips). |
+| `luastro_specialize_all` entries | Three precise classes of NODE registered with `astro_cs_compile` so each becomes a public extern SD that `astro_cs_load` can dlsym: (1) the chunk root, (2) every closure body in `CR.entries[]` (each `function ... end` registered via `code_repo_add` from the parser, dispatched at runtime via `cl->body->head.dispatcher`), and (3) every variadic-operand entry in `LUASTRO_NODE_ARR[]` (call args, table elements, multi-assign rhs, multi-return — dispatched via `EVAL(c, LUASTRO_NODE_ARR[idx + k], frame)`).  No file-rewrite hack: ASTroGen emits inner SDs as `static inline` which the SD specialiser folds through the `EVAL_ARG` dispatcher arg, and the entries above cover every site where a NODE is actually dispatched at runtime through an indirect read. |
 | `luastro_reoptimize_all` | Tracks every NODE through `node_allocate`; called once at the end of `PARSE_lua` (after `pf_finalize_local_refs` and `pf_fold_constants`) to invalidate cached hashes / patched dispatchers and re-run `OPTIMIZE`.  Required because on AOT-cached startup, `OPTIMIZE` runs during each `ALLOC_*` and patches dispatchers *before* the capture rewrite (`local_get → box_get`) flips the kind — without re-optimization, captured-slot reads keep dispatching through the `local_get`-shaped SD and return the raw `LuaBox*`. |
 
 ## Build / driver
@@ -161,8 +160,11 @@ swaps in, yield swaps back, errors inside a coroutine propagate as
 | `make` | Builds `./luastro` |
 | `make test` | Runs `test/run_all.rb` (8 .lua test files compared against lua5.4 output) |
 | `make bench` | Runs `benchmark/run.rb` (lua5.4 + luajit comparison) |
-| `make compiled_luastro` | Bakes SDs from `examples/hello.lua` and rebuilds with the snapshot |
-| `make pg_luastro` | Profile-guided variant: run, then bake |
+
+Bake the SD cache once with `./luastro -c <file.lua>` (AOT) or
+`./luastro -p <file.lua>` (profile-guided); subsequent runs auto-load
+from `code_store/all.so`.  No separate build target — the cache is
+just a file the same `./luastro` binary picks up.
 
 CLI flags:
 

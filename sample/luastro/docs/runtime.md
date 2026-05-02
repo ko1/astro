@@ -371,32 +371,32 @@ between the source emission and the gcc compile step:
 ./luastro -c foo.lua
    │
    ├──▶ astro_cs_compile(chunk_root)         — emit code_store/c/SD_<h>.c
-   ├──▶ for each LuaClosure body (registered at construction time):
-   │       astro_cs_compile(body)
+   ├──▶ for each closure body in CR.entries: — every `function ... end`
+   │       astro_cs_compile(body)              registered via code_repo_add
+   │                                            during parse; later dispatched
+   │                                            from node_call_N via
+   │                                            cl->body->head.dispatcher
    │
-   ├──▶ luastro_specialize_side_array()      — bake SDs for the
-   │                                            variadic-operand children
-   │                                            that ASTroGen's typed-
-   │                                            operand walker skips
-   │                                            (LUASTRO_NODE_ARR entries)
+   ├──▶ for each variadic-operand entry in LUASTRO_NODE_ARR:
+   │       astro_cs_compile(node)            — call args, table elements,
+   │                                            multi-assign rhs, multi-
+   │                                            return list elements; each
+   │                                            is dispatched at runtime via
+   │                                            EVAL(c, LUASTRO_NODE_ARR[idx
+   │                                            + k], frame) which is opaque
+   │                                            to the SD specialiser.
    │
-   ├──▶ luastro_export_all_sds()             — for every SD_<h>.c file,
-   │                                            rename SD_<hash> → SD_<hash>_INL
-   │                                            inside the file (so the
-   │                                            in-source function-pointer
-   │                                            chain still inlines through
-   │                                            `static inline`) and append
-   │                                            an extern weak wrapper
-   │                                            `RESULT SD_<hash>(...) {
-   │                                                return SD_<hash>_INL(...);
-   │                                            }` so dlsym can find every
-   │                                            SD, not just the chunk root
-   │
-   ├──▶ astro_cs_build()                     — gcc -shared → all.so
+   ├──▶ astro_cs_build()                     — gcc -shared → all.so.  Every
+   │                                            entry registered above is
+   │                                            emitted public-extern; its
+   │                                            subtree is `static inline`,
+   │                                            which gcc inlines through
+   │                                            the EVAL_ARG dispatcher
+   │                                            arg into each SD's body.
    ├──▶ astro_cs_reload()                    — dlopen(all.so)
-   ├──▶ astro_cs_load(chunk_root)            — patch each AST node's
-   │                                            head.dispatcher to its
-   │                                            SD wrapper (via dlsym)
+   ├──▶ astro_cs_load(chunk_root)            — patch each registered NODE's
+   │     + every CR.entries[i].body            head.dispatcher to its SD
+   │     + every LUASTRO_NODE_ARR[i]           via dlsym
    └──▶ run as usual; every specialized node now jumps to its SD_<h>.
 ```
 
@@ -464,7 +464,7 @@ falls back to running on the main stack.
 | Sparse-start array promotion        | **Done.** `t[2..N]` reaches the array part (sieve fix)   |
 | `node_local_decl` 1-LHS/1-RHS path  | **Done.** Inner-loop `local x = expr` skips staging      |
 | Pre-interned metamethod names       | **Done.** `__index` / `__call` / `__add` / ... cached    |
-| Inner SDs externally visible        | **Done.** `_INL` rename + extern weak wrapper post-pass  |
+| Every dispatched NODE dlsym-able    | **Done.** Entry-registration via `astro_cs_compile` (chunk root + `CR.entries` closure bodies + `LUASTRO_NODE_ARR` variadic operands).  Replaced the earlier `_INL`-rename+wrapper post-pass. |
 | `node_local_decl_one`               | **Done.** Parser-emitted 1-LHS/1-RHS specialized node    |
 | Direct `LuaString *` operands       | **Done.** SD reads `n->u.X.field` instead of re-interning  |
 | Shape-token IC on `node_field_get`  | **Done.** Per-node `LuaFieldIC` `@ref` slot caches `hash_cap` + slot pos |

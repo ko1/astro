@@ -9,8 +9,6 @@
 #include <string.h>
 #include <stdint.h>
 #include <limits.h>
-#include <ctype.h>
-#include <dirent.h>
 #include "node.h"
 #include "context.h"
 
@@ -193,215 +191,57 @@ code_repo_add(const char *name, NODE *body, bool force)
     CR.entries[CR.cnt++] = (struct code_entry){name, body, false};
 }
 
-// Post-process every astro_cs_compile-produced SD source file to make
-// the otherwise-`static inline` inner SD bodies externally visible
-// (under their original name) without losing inlining at the in-source
-// call sites.
-//
-// Why: ASTroGen emits inner SDs as `static inline` so that gcc can
-// devirtualize the function-pointer chain inside the SD module.  But
-// `static` makes them invisible to dlsym, so at runtime
-// `astro_cs_load` only finds the single externally-named root SD —
-// every other AST node falls back to `n->head.dispatcher` =
-// `&DISPATCH_<name>` (in the host binary).  When the SD body chains
-// runtime dispatch through a child's `head.dispatcher`, that path goes
-// out of `all.so`, into the host's `DISPATCH_*`, and back, on every
-// per-node touch — which on `mandelbrot` was ~50% of cycles.
-//
-// Fix: rewrite every `SD_<hash>` reference inside the file to
-// `SD_<hash>_INL` (so the in-source function-pointer chain still
-// inlines through `static inline`), then append a single extern
-// wrapper `SD_<hash>(...)` per SD that just forwards to its `_INL`
-// counterpart.  The wrapper is what dlsym now finds and what
-// `head.dispatcher` ends up pointing to; gcc inlines the wrapper's
-// body to a tail call so the runtime cost is one extra `jmp`.
-//
-// `cs hit` count goes from 2 → ~80 nodes resolved per mandelbrot run
-// and AOT-c drops a further ~13%.
-static void
-luastro_export_sd_wrappers(const char *path)
-{
-    FILE *fp = fopen(path, "r");
-    if (!fp) return;
-    fseek(fp, 0, SEEK_END);
-    long sz = ftell(fp);
-    fseek(fp, 0, SEEK_SET);
-    char *src = (char *)malloc(sz + 1);
-    if (!src) { fclose(fp); return; }
-    if (fread(src, 1, sz, fp) != (size_t)sz) { free(src); fclose(fp); return; }
-    src[sz] = '\0';
-    fclose(fp);
 
-    // Collect every `SD_<hex>` / `PGSD_<hex>` token that appears as a
-    // function DEFINITION in this file — i.e. the name sits at the start
-    // of a line followed by `(`.  Forward-decls (one-liners ending with
-    // `;`) reference SDs whose body lives in another `.c`; emitting a
-    // wrapper here would create an undefined-symbol reference at dlopen.
-    //
-    // Pattern matched (after the upcoming `_INL` rename, but the rename
-    // doesn't affect the start-of-line property): `\n(PG)?SD_<hex>(`.
-    // Inline helper: returns prefix length if `p` starts with SD_ /
-    // PGSD_, else 0.  PGSD bake (file-keyed) names baked SDs PGSD_;
-    // AOT (file == NULL) uses SD_.
-    #define SD_PREFIX_LEN(p) ((p)[0] == 'S' && (p)[1] == 'D' && (p)[2] == '_' ? 3 \
-                              : (p)[0] == 'P' && (p)[1] == 'G' && (p)[2] == 'S' \
-                                && (p)[3] == 'D' && (p)[4] == '_' ? 5 : 0)
-    size_t name_cap = 256, name_cnt = 0;
-    char (*names)[24] = (char (*)[24])malloc(name_cap * 24);
-    for (const char *p = src; *p; ) {
-        bool at_line_start = (p == src) || (p[-1] == '\n');
-        size_t plen = at_line_start ? SD_PREFIX_LEN(p) : 0;
-        if (plen) {
-            const char *q = p + plen;
-            while (isxdigit((unsigned char)*q)) q++;
-            size_t len = q - p;
-            // Definition: name immediately followed by `(`.
-            if (len > plen && len < 24 && *q == '(') {
-                bool dup = false;
-                for (size_t i = 0; i < name_cnt; i++) {
-                    if (strncmp(names[i], p, len) == 0 && names[i][len] == '\0') { dup = true; break; }
-                }
-                if (!dup) {
-                    if (name_cnt >= name_cap) {
-                        name_cap *= 2;
-                        names = (char (*)[24])realloc(names, name_cap * 24);
-                    }
-                    memcpy(names[name_cnt], p, len);
-                    names[name_cnt][len] = '\0';
-                    name_cnt++;
-                }
-            }
-            p = q;
-        } else {
-            p++;
-        }
-    }
-
-    // Rewrite every SD_<hash> / PGSD_<hash> token in src to *_INL.
-    // Worst-case length: 4 extra bytes per token.  Walk the source, copy
-    // to a new buffer, replace as we go.
-    size_t out_cap = sz + name_cnt * 8 + 4096;
-    char *out = (char *)malloc(out_cap);
-    size_t out_len = 0;
-    for (const char *p = src; *p; ) {
-        size_t plen = SD_PREFIX_LEN(p);
-        if (plen && (p == src || !(isalnum((unsigned char)p[-1]) || p[-1] == '_'))) {
-            const char *q = p + plen;
-            while (isxdigit((unsigned char)*q)) q++;
-            size_t len = q - p;
-            if (len > plen && len < 24) {
-                memcpy(out + out_len, p, len);
-                out_len += len;
-                memcpy(out + out_len, "_INL", 4);
-                out_len += 4;
-                p = q;
-                continue;
-            }
-        }
-        out[out_len++] = *p++;
-    }
-    #undef SD_PREFIX_LEN
-
-    // Append the extern wrappers.
-    const char *banner =
-        "\n// Externally-visible thin wrappers — make every SD reachable\n"
-        "// via dlsym so the runtime astro_cs_load can patch every node's\n"
-        "// head.dispatcher to its specialized SD (rather than only the\n"
-        "// chunk root).  See luastro_export_sd_wrappers for the why.\n";
-    size_t banner_len = strlen(banner);
-    if (out_len + banner_len + 1 >= out_cap) {
-        out_cap = out_len + banner_len + name_cnt * 128 + 1024;
-        out = (char *)realloc(out, out_cap);
-    }
-    memcpy(out + out_len, banner, banner_len);
-    out_len += banner_len;
-    for (size_t i = 0; i < name_cnt; i++) {
-        char line[256];
-        // `weak` so identical SD shapes shared across multiple chunks
-        // (chunk root + every closure body) link without a duplicate-
-        // symbol error — the linker keeps one and discards the rest.
-        int n = snprintf(line, sizeof(line),
-            "__attribute__((weak)) RESULT %s(CTX *c, NODE *n, LuaValue *frame) { return %s_INL(c, n, frame); }\n",
-            names[i], names[i]);
-        if (out_len + n + 1 >= out_cap) {
-            out_cap = (out_len + n + 1) * 2;
-            out = (char *)realloc(out, out_cap);
-        }
-        memcpy(out + out_len, line, n);
-        out_len += n;
-    }
-    out[out_len] = '\0';
-
-    fp = fopen(path, "w");
-    if (fp) {
-        fwrite(out, 1, out_len, fp);
-        fclose(fp);
-    }
-    free(out);
-    free(names);
-    free(src);
-}
-
-static void
-luastro_export_all_sds(void)
-{
-    // Walk code_store/c/*.c and rewrite each.  The dir layout is set
-    // by astro_cs_init's "code_store" arg in INIT().
-    DIR *d = opendir("code_store/c");
-    if (!d) return;
-    struct dirent *de;
-    while ((de = readdir(d))) {
-        const char *name = de->d_name;
-        size_t nlen = strlen(name);
-        if (nlen <= 2 || strcmp(name + nlen - 2, ".c") != 0) continue;
-        if (strncmp(name, "SD_", 3) != 0 && strncmp(name, "PGSD_", 5) != 0) continue;
-        char path[ASTRO_CS_PATH_MAX];
-        snprintf(path, sizeof(path), "code_store/c/%s", name);
-        luastro_export_sd_wrappers(path);
-    }
-    closedir(d);
-}
-
-// Variadic-operand children live in `LUASTRO_NODE_ARR` (the parser's
-// side array), referenced from `@noinline` nodes (`node_local_decl`,
-// multi-arg calls, table constructors).  ASTroGen's specializer walks
-// only typed `NODE *` operands so those side-array children never get
-// their own SD baked, leaving their `head.dispatcher` stuck at
-// `&DISPATCH_<name>` and forcing a host-binary bounce on every touch.
-//
-// Compile each side-array entry directly so every node in the
-// program ends up addressable by `dlsym(SD_<hash>)`.
+// Variadic-operand entries live in `LUASTRO_NODE_ARR` (the parser-side
+// array; populated by `reg_node_arr` for multi-arg calls, table
+// constructors, multi-assign rhs, multi-return lists, ...).  Each
+// entry is dispatched at runtime via `EVAL(c, LUASTRO_NODE_ARR[idx +
+// k], frame)` from inside its parent NODE's EVAL body, so the SD
+// specialiser cannot fold the dispatcher value: the indexed read into
+// the side array is opaque to it.  Each such entry needs its own
+// public extern SD so `astro_cs_load` can dlsym and patch the
+// dispatcher.
 extern NODE     **LUASTRO_NODE_ARR;
 extern uint32_t   LUASTRO_NODE_ARR_CNT;
-
-static void
-luastro_specialize_side_array(const char *file)
-{
-    for (uint32_t i = 0; i < LUASTRO_NODE_ARR_CNT; i++) {
-        if (LUASTRO_NODE_ARR[i]) astro_cs_compile(LUASTRO_NODE_ARR[i], file);
-    }
-}
 
 void
 luastro_specialize_all(NODE *root, const char *file)
 {
+    // Three flavours of entry node, each known at parse time:
+    //
+    //   1. The chunk root — passed in.  Whole-tree EVAL anchor.
+    //   2. Closure bodies in CR.entries — every `function ... end` in
+    //      the chunk gets registered via `code_repo_add` and is later
+    //      dispatched from `node_call_N` via `cl->body->head.dispatcher`,
+    //      which is a runtime-indirect read (cl is a runtime LuaClosure).
+    //   3. Variadic-operand entries in LUASTRO_NODE_ARR — see comment
+    //      above on why these need their own SD.
+    //
+    // We compile each entry once.  astro_cs_compile dedups by hash, so
+    // identical sub-shapes shared across entries collapse to a single
+    // SD_<hash>.c and a single all.so symbol.
+
     if (root) astro_cs_compile(root, file);
     for (uint32_t i = 0; i < CR.cnt; i++) {
         astro_cs_compile(CR.entries[i].body, file);
     }
-    // Side-array walk: also bake SDs for variadic-operand children
-    // that ASTroGen's typed-operand specializer skips.  This raises the
-    // cs-hit rate from ~80% to ~95% on mandelbrot etc.
-    luastro_specialize_side_array(file);
-    luastro_export_all_sds();   // post-process before the gcc build runs
+    for (uint32_t i = 0; i < LUASTRO_NODE_ARR_CNT; i++) {
+        if (LUASTRO_NODE_ARR[i]) astro_cs_compile(LUASTRO_NODE_ARR[i], file);
+    }
+
     astro_cs_build(NULL);
     astro_cs_reload();
+
     // After reload, re-resolve the live nodes' dispatchers so this
     // very run picks up the freshly-baked SDs (otherwise only the
-    // *next* invocation benefits).
+    // *next* invocation benefits, since `head.dispatcher` was locked in
+    // at allocation time to interp's DISPATCH_).
     if (root) astro_cs_load(root, file);
     for (uint32_t i = 0; i < CR.cnt; i++) {
         astro_cs_load(CR.entries[i].body, file);
+    }
+    for (uint32_t i = 0; i < LUASTRO_NODE_ARR_CNT; i++) {
+        if (LUASTRO_NODE_ARR[i]) astro_cs_load(LUASTRO_NODE_ARR[i], file);
     }
 }
 
@@ -415,12 +255,6 @@ luastro_specialize_all(NODE *root, const char *file)
 #include "node_specialize.c"
 #include "node_replace.c"
 #include "node_alloc.c"
-
-// node_specialized.c contains the AOT/PGC-baked SD_*/PGSD_* dispatchers
-// and an `sc_entries[]` array (see luastro_specialize_all).  When we
-// build the plain interpreter, this file may be empty (created by the
-// Makefile rule), so guard against missing definitions.
-#include "node_specialized.c"
 
 // --- INIT -----------------------------------------------------
 
