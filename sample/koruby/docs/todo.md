@@ -2,7 +2,7 @@
 
 [done.md](./done.md) は実装済み。ここは **未実装 / 不完全 / 既知バグ** をまとめる。
 
-現状: **test/ruby/ 139 ファイル全 pass**。
+現状: **test/ruby/ 141 ファイル全 pass**。
 optcarrot は ruby と checksum 一致、CRuby の 2.2x、YJIT の 0.55x。
 
 ---
@@ -79,8 +79,9 @@ optcarrot は ruby と checksum 一致、CRuby の 2.2x、YJIT の 0.55x。
   slice! / rotate! / reverse!,
   Hash `[]=` / delete / clear / merge! / replace / delete_if / keep_if /
   compact! / shift,
-  String `<<` / aset / replace / prepend / insert
-- 残: `String#tr!` / `sub!` / `gsub!` 等の `!` 形は未確認 (実装そのものが薄い)
+  String `<<` / aset / replace / prepend / insert / gsub! / sub!
+- 完: `String#gsub!` / `sub!` / `scan` (literal pattern; 真の Regexp は astrorge 待ち)
+- 残: `String#tr!` (`tr` 自体はあるが `!` 形未実装、用途稀につき保留)
 
 ### 3.2 Object.ancestors  ✅ 2026-05-02 完
 - `Object.ancestors == [Object, Kernel, BasicObject]` (CRuby と一致)

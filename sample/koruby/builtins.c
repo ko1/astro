@@ -314,7 +314,9 @@ void korb_init_builtins(void) {
     DEF(cStr, "hash",        str_hash,         0);
     DEF(cStr, "===",         str_eqq,          1);
     DEF(cStr, "gsub",        str_gsub,        -1);
+    DEF(cStr, "gsub!",       str_gsub_bang,   -1);
     DEF(cStr, "sub",         str_sub,         -1);
+    DEF(cStr, "sub!",        str_sub_bang,    -1);
     DEF(cStr, "tr",          str_tr,          -1);
     DEF(cStr, "tr_s",        str_tr_s,        -1);
     DEF(cStr, "%",           str_percent,     -1);

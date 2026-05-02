@@ -355,10 +355,6 @@ static VALUE str_match(CTX *c, VALUE self, int argc, VALUE *argv) {
     return Qnil;
 }
 
-static VALUE str_scan(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return korb_ary_new();
-}
-
 /* simplistic gsub: replace all non-overlapping occurrences of pattern in self.
  * pattern is treated as a literal string (no regex support). */
 /* Helper: locate the next match of `pattern` in `s` starting at `from`.
@@ -428,6 +424,56 @@ static VALUE str_sub(CTX *c, VALUE self, int argc, VALUE *argv) {
         else korb_str_concat(out, korb_to_s(r));
     }
     korb_str_concat(out, korb_str_new(s->ptr + ms + ml, s->len - ms - ml));
+    return out;
+}
+
+/* gsub! / sub!: in-place mutating variants.  Return self (or nil if
+ * no match).  We re-use the gsub/sub implementations to compute the
+ * new content and copy it back into self's buffer. */
+static VALUE str_gsub_bang(CTX * restrict c, VALUE self, int argc, VALUE *argv) {
+    if (BUILTIN_TYPE(self) != T_STRING) return Qnil;
+    CHECK_FROZEN_RET(c, self, Qnil);
+    struct korb_string *s = (struct korb_string *)self;
+    long ms, ml;
+    if (argc < 1 || !str_find_pat(argv[0], s, 0, &ms, &ml)) return Qnil;
+    VALUE replaced = str_gsub(c, self, argc, argv);
+    if (c->state == KORB_RAISE || BUILTIN_TYPE(replaced) != T_STRING) return Qnil;
+    const struct korb_string *r = (const struct korb_string *)replaced;
+    char *buf = korb_xmalloc_atomic(r->len + 1);
+    memcpy(buf, r->ptr, r->len); buf[r->len] = 0;
+    s->ptr = buf;
+    s->len = r->len;
+    return self;
+}
+
+static VALUE str_sub_bang(CTX * restrict c, VALUE self, int argc, VALUE *argv) {
+    if (BUILTIN_TYPE(self) != T_STRING) return Qnil;
+    CHECK_FROZEN_RET(c, self, Qnil);
+    struct korb_string *s = (struct korb_string *)self;
+    long ms, ml;
+    if (argc < 1 || !str_find_pat(argv[0], s, 0, &ms, &ml)) return Qnil;
+    VALUE replaced = str_sub(c, self, argc, argv);
+    if (c->state == KORB_RAISE || BUILTIN_TYPE(replaced) != T_STRING) return Qnil;
+    const struct korb_string *r = (const struct korb_string *)replaced;
+    char *buf = korb_xmalloc_atomic(r->len + 1);
+    memcpy(buf, r->ptr, r->len); buf[r->len] = 0;
+    s->ptr = buf;
+    s->len = r->len;
+    return self;
+}
+
+/* String#scan(pattern) — return Array of all non-overlapping matches.
+ * Treats pattern as a literal string when given a String, mirroring
+ * koruby's gsub/sub behavior (no regex without astrorge). */
+static VALUE str_scan(CTX * restrict c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1 || BUILTIN_TYPE(self) != T_STRING) return korb_ary_new();
+    const struct korb_string *s = (const struct korb_string *)self;
+    VALUE out = korb_ary_new();
+    long ms, ml, i = 0;
+    while (str_find_pat(argv[0], (struct korb_string *)s, i, &ms, &ml)) {
+        korb_ary_push(out, korb_str_new(s->ptr + ms, ml));
+        i = ms + (ml > 0 ? ml : 1);
+    }
     return out;
 }
 
