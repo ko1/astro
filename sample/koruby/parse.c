@@ -501,8 +501,36 @@ static char *integer_to_string(pm_integer_t *integer) {
     return s;
 }
 
+/* Resolve the source line for a prism node by binary-searching the
+ * parser's newline-offset table — pm_newline_list_line is internal so
+ * we inline it here.  Returns 1-based line, or 0 if no parser. */
+static int line_of_node(struct transduce_context *tc, pm_node_t *node) {
+    if (!tc || !tc->parser || !node) return 0;
+    const pm_newline_list_t *nl = &tc->parser->newline_list;
+    if (!nl->offsets || nl->size == 0) return 0;
+    size_t off = (size_t)(node->location.start - nl->start);
+    long lo = 0, hi = (long)nl->size - 1, best = 0;
+    while (lo <= hi) {
+        long m = (lo + hi) / 2;
+        if (nl->offsets[m] <= off) { best = m; lo = m + 1; }
+        else hi = m - 1;
+    }
+    return (int)(best + 1);
+}
+
+static NODE *
+T_inner(struct transduce_context *tc, pm_node_t *node);
+
 static NODE *
 T(struct transduce_context *tc, pm_node_t *node)
+{
+    NODE *r = T_inner(tc, node);
+    if (r && node) r->head.line = line_of_node(tc, node);
+    return r;
+}
+
+static NODE *
+T_inner(struct transduce_context *tc, pm_node_t *node)
 {
     if (!node) return NULL;
 

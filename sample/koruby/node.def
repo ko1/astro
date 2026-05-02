@@ -793,6 +793,7 @@ node_raise(CTX * restrict c, NODE * restrict n, NODE *exc_expr)
     else {
         e = korb_exc_new(NULL, "unhandled exception");
     }
+    korb_exc_set_backtrace(c, e, n ? n->head.line : 0);
     c->state = KORB_RAISE;
     c->state_value = e;
     return Qnil;

@@ -409,6 +409,8 @@ void  korb_p(VALUE v); /* writes to stdout with newline */
 /* errors / exceptions */
 VALUE korb_exc_new(struct korb_class *klass, const char *msg);
 void  korb_raise(CTX *c, struct korb_class *klass, const char *fmt, ...);
+VALUE korb_build_backtrace(CTX *c, int raise_line);
+void  korb_exc_set_backtrace(CTX *c, VALUE exc, int raise_line);
 
 /* method dispatch helper */
 VALUE korb_funcall(CTX *c, VALUE recv, ID mid, int argc, VALUE *argv);

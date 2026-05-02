@@ -229,6 +229,7 @@ static bool korb_method_body_is_simple_frame(struct Node *body) {
         strstr(buf, "(node_const_get ")         == NULL &&
         strstr(buf, "(node_const_set ")         == NULL &&
         strstr(buf, "(node_const_path_get ")    == NULL &&
+        strstr(buf, "(node_raise ")             == NULL &&
         strstr(buf, "block_given?")             == NULL &&
         /* __method__ / __callee__ / caller need a real frame so they
          * can find the enclosing method; skip the slim path. */
@@ -1086,6 +1087,50 @@ VALUE korb_class_of(VALUE v) { return (VALUE)korb_class_of_class(v); }
  * just like any other Ruby object.  This keeps user code (`e.message`,
  * `e.instance_variable_get(:@message)`) consistent with Exception.new
  * created instances and with raise-built ones. */
+/* Build a backtrace array by walking c->current_frame.
+ * Format: "FILE:LINE:in `METHOD'"  (matches CRuby).
+ *
+ * The first entry is for the raise site itself: we use raise_line if
+ * non-zero, falling back to caller_node's line.  Subsequent entries
+ * use each frame's caller_node->head.line. */
+VALUE korb_build_backtrace(CTX *c, int raise_line) {
+    VALUE arr = korb_ary_new();
+    const char *file = c->current_file ? c->current_file : "(unknown)";
+    char buf[512];
+    struct korb_frame *f = c->current_frame;
+    bool first = true;
+    while (f) {
+        const char *name = (f->method && f->method->name)
+                             ? korb_id_name(f->method->name) : "<main>";
+        int line;
+        if (first) {
+            line = raise_line;
+            if (line == 0 && f->caller_node) line = f->caller_node->head.line;
+            first = false;
+        } else {
+            line = f->caller_node ? f->caller_node->head.line : 0;
+        }
+        snprintf(buf, sizeof(buf), "%s:%d:in `%s'", file, line, name);
+        korb_ary_push(arr, korb_str_new_cstr(buf));
+        f = f->prev;
+    }
+    /* Always include a top-level entry so the trace is non-empty even
+     * for raises from main. */
+    snprintf(buf, sizeof(buf), "%s:%d:in `<main>'", file, raise_line);
+    if (((struct korb_array *)arr)->len == 0) {
+        korb_ary_push(arr, korb_str_new_cstr(buf));
+    }
+    return arr;
+}
+
+void korb_exc_set_backtrace(CTX *c, VALUE exc, int raise_line) {
+    if (SPECIAL_CONST_P(exc)) return;
+    ID id = korb_intern("@__backtrace__");
+    VALUE existing = korb_ivar_get(exc, id);
+    if (!UNDEF_P(existing) && !NIL_P(existing)) return;
+    korb_ivar_set(exc, id, korb_build_backtrace(c, raise_line));
+}
+
 VALUE korb_exc_new(struct korb_class *klass, const char *msg) {
     if (!klass) {
         VALUE eRuntime = korb_const_get(korb_vm->object_class,
@@ -1110,6 +1155,8 @@ void korb_raise(CTX *c, struct korb_class *klass, const char *fmt, ...) {
     vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
     VALUE e = korb_exc_new(klass, buf);
+    int line = (c->last_cfunc_callsite ? c->last_cfunc_callsite->head.line : 0);
+    korb_exc_set_backtrace(c, e, line);
     c->state = KORB_RAISE;
     c->state_value = e;
 }

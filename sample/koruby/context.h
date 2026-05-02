@@ -237,6 +237,11 @@ typedef struct CTX_struct {
 
     /* for call site & frame info */
     struct korb_frame *current_frame;
+
+    /* Most-recent callsite of a cfunc dispatch — set by prologue_cfunc_inl
+     * before calling the cfunc, so cfunc bodies (e.g. kernel_raise) can
+     * record the line of the call into a backtrace. */
+    struct Node *last_cfunc_callsite;
 } CTX;
 
 #define KORB_NORMAL 0

@@ -26,13 +26,15 @@ prologue_cfunc_inl(CTX *c, struct Node *callsite, VALUE recv,
                    uint32_t argc, uint32_t arg_index,
                    struct korb_proc *block, struct method_cache *mc)
 {
-    (void)callsite;
     VALUE *argv = &c->fp[arg_index];
     struct korb_proc *prev_block = current_block;
     current_block = block;
     VALUE prev_self = c->self;
     c->self = recv;
+    struct Node *prev_cs = c->last_cfunc_callsite;
+    c->last_cfunc_callsite = callsite;
     VALUE r = mc->cfunc(c, recv, argc, argv);
+    c->last_cfunc_callsite = prev_cs;
     c->self = prev_self;
     current_block = prev_block;
     if (UNLIKELY(block && c->state == KORB_BREAK)) {
@@ -72,17 +74,20 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
     bool simple = mc->is_simple_frame;
     struct korb_proc *prev_block = NULL;
     struct korb_cref *prev_cref = NULL;
+    /* Always push a minimal frame for backtrace.  Heavy state save
+     * (block/cref/current_block) only when the body actually uses it. */
     struct korb_frame frame;
+    frame.prev = c->current_frame;
+    frame.method = mc->method;
+    frame.self = recv;
+    frame.block = block;
+    frame.caller_node = callsite;
+    c->current_frame = &frame;
     if (UNLIKELY(!simple)) {
         prev_block = current_block;
         prev_cref = c->cref;
         current_block = block;
         if (mc->def_cref) c->cref = mc->def_cref;
-        frame.prev = c->current_frame;
-        frame.method = mc->method;
-        frame.self = recv;
-        frame.block = block;
-        c->current_frame = &frame;
     }
 
     for (uint32_t i = total; i < mc->locals_cnt; i++) {
@@ -92,8 +97,8 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
 
     VALUE r = mc->dispatcher(c, mc->body);
 
+    c->current_frame = frame.prev;
     if (UNLIKELY(!simple)) {
-        c->current_frame = frame.prev;
         c->cref = prev_cref;
         current_block = prev_block;
     }
@@ -139,16 +144,17 @@ prologue_ast_simple_static_inl(CTX *c, struct Node *callsite, VALUE recv,
     struct korb_proc *prev_block = NULL;
     struct korb_cref *prev_cref = NULL;
     struct korb_frame frame;
+    frame.prev = c->current_frame;
+    frame.method = mc->method;
+    frame.self = recv;
+    frame.block = block;
+    frame.caller_node = callsite;
+    c->current_frame = &frame;
     if (UNLIKELY(!simple)) {
         prev_block = current_block;
         prev_cref = c->cref;
         current_block = block;
         if (mc->def_cref) c->cref = mc->def_cref;
-        frame.prev = c->current_frame;
-        frame.method = mc->method;
-        frame.self = recv;
-        frame.block = block;
-        c->current_frame = &frame;
     }
 
     for (uint32_t i = total; i < mc->locals_cnt; i++) {
@@ -161,8 +167,8 @@ prologue_ast_simple_static_inl(CTX *c, struct Node *callsite, VALUE recv,
      * mc->dispatcher (one indirect load + indirect call removed). */
     VALUE r = static_disp(c, mc->body);
 
+    c->current_frame = frame.prev;
     if (UNLIKELY(!simple)) {
-        c->current_frame = frame.prev;
         c->cref = prev_cref;
         current_block = prev_block;
     }
