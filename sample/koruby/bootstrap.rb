@@ -1126,21 +1126,21 @@ class Proc
   # Curry: each call accumulates args until enough; then invokes self.
   # Args can come singly (`c[1][2][3]`) or multiply (`c[1, 2][3]`).
   def curry(arity = nil)
-    arity ||= self.arity
-    arity = -arity if arity < 0
+    n = arity || self.arity
+    n = -n if n < 0
     me = self
-    accumulate = nil
-    accumulate = ->(collected) {
+    accum = nil
+    accum = ->(collected) {
       ->(*more) {
         all = collected + more
-        if all.size >= arity
+        if all.size >= n
           me.call(*all)
         else
-          accumulate.call(all)
+          accum.call(all)
         end
       }
     }
-    accumulate.call([])
+    accum.call([])
   end
 end
 

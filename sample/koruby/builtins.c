@@ -52,6 +52,8 @@ void korb_init_builtins(void) {
     DEF(cObj, "respond_to?", kernel_respond_to_p, 1);
     DEF(cObj, "is_a?", kernel_is_a_p, 1);
     DEF(cObj, "kind_of?", kernel_is_a_p, 1);
+    DEF(cObj, "methods", obj_methods, -1);
+    DEF(cObj, "singleton_methods", obj_singleton_methods, -1);
     DEF(cObj, "block_given?", kernel_block_given, 0);
     DEF(cObj, "throw",        kernel_throw,      -1);
     DEF(cObj, "catch",        kernel_catch,      -1);

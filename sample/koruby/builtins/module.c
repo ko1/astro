@@ -151,6 +151,59 @@ static VALUE module_instance_methods(CTX *c, VALUE self, int argc, VALUE *argv) 
     return r;
 }
 
+/* Object#methods([include_inherited=true]) — list public + protected
+ * methods accessible on the receiver, walking the class chain. */
+static VALUE obj_methods(CTX *c, VALUE self, int argc, VALUE *argv) {
+    bool include_inherited = (argc < 1) || RTEST(argv[0]);
+    struct korb_class *k = korb_class_of_class(self);
+    VALUE r = korb_ary_new();
+    while (k) {
+        for (uint32_t b = 0; b < k->methods.bucket_cnt; b++) {
+            for (struct korb_method_table_entry *e = k->methods.buckets[b]; e; e = e->next) {
+                if (e->method->visibility == KORB_VIS_PRIVATE) continue;
+                /* Avoid duplicates from super chain. */
+                bool dup = false;
+                for (long j = 0; j < ((struct korb_array *)r)->len; j++) {
+                    VALUE existing = ((struct korb_array *)r)->ptr[j];
+                    if (SYMBOL_P(existing) && korb_sym2id(existing) == e->name) {
+                        dup = true; break;
+                    }
+                }
+                if (!dup) korb_ary_push(r, korb_id2sym(e->name));
+            }
+        }
+        if (!include_inherited) break;
+        k = k->super;
+    }
+    return r;
+}
+
+/* Object#singleton_methods — methods defined directly on this object's
+ * singleton class (not inherited from regular class). */
+static VALUE obj_singleton_methods(CTX *c, VALUE self, int argc, VALUE *argv) {
+    VALUE r = korb_ary_new();
+    if (SPECIAL_CONST_P(self)) return r;
+    struct korb_class *k = NULL;
+    if (BUILTIN_TYPE(self) == T_CLASS || BUILTIN_TYPE(self) == T_MODULE) {
+        /* For a class, singleton_methods returns the metaclass methods. */
+        struct korb_class *meta = korb_singleton_class_of((struct korb_class *)self);
+        k = meta;
+    } else if (BUILTIN_TYPE(self) == T_OBJECT) {
+        struct korb_object *o = (struct korb_object *)self;
+        struct korb_class *cur = (struct korb_class *)o->basic.klass;
+        if (cur && cur->name == korb_intern("(singleton)")) k = cur;
+    }
+    if (!k) return r;
+    for (uint32_t b = 0; b < k->methods.bucket_cnt; b++) {
+        for (struct korb_method_table_entry *e = k->methods.buckets[b]; e; e = e->next) {
+            if (e->include_depth == 0) {
+                korb_ary_push(r, korb_id2sym(e->name));
+            }
+        }
+    }
+    return r;
+}
+
 /* Module#method_defined?(name) — true for public/protected. */
 static VALUE module_method_defined_p(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1) return Qfalse;
@@ -408,6 +461,16 @@ static VALUE obj_extend(CTX *c, VALUE self, int argc, VALUE *argv) {
             meta = cur;
         } else {
             meta = korb_class_new(korb_intern("(singleton)"), cur, cur ? cur->instance_type : T_OBJECT);
+            /* Copy ivar shape so @ivars set before extend remain
+             * accessible: korb_ivar_get / korb_ivar_set look up slots
+             * by name on the object's class, which is now meta. */
+            if (cur && cur->ivar_count > 0) {
+                meta->ivar_capa = cur->ivar_capa;
+                meta->ivar_count = cur->ivar_count;
+                meta->ivar_names = korb_xmalloc(cur->ivar_capa * sizeof(*meta->ivar_names));
+                memcpy(meta->ivar_names, cur->ivar_names,
+                       cur->ivar_count * sizeof(*meta->ivar_names));
+            }
             o->basic.klass = (VALUE)meta;
         }
         for (int i = 0; i < argc; i++) {
