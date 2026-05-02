@@ -410,20 +410,62 @@ static VALUE int_downto(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 static VALUE int_pow(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1 || !FIXNUM_P(self) || !FIXNUM_P(argv[0])) return self;
-    long b = FIX2LONG(self), e = FIX2LONG(argv[0]);
+    long base = FIX2LONG(self), exp = FIX2LONG(argv[0]);
+    /* Optional second arg = modulus: a.pow(b, m) == (a**b) mod m. */
+    long mod = 0;
+    bool has_mod = (argc >= 2 && FIXNUM_P(argv[1]));
+    if (has_mod) mod = FIX2LONG(argv[1]);
+    if (exp < 0) {
+        if (has_mod) return INT2FIX(0);
+        /* a ** -k → Float reciprocal of a ** k. */
+        return korb_float_new(1.0 / pow((double)base, (double)-exp));
+    }
+    /* Fixnum-only square-and-multiply, switching to Bignum on overflow. */
+    long b = base, e = exp;
     long r = 1;
     while (e > 0) {
         if (e & 1) {
             long s;
             if (__builtin_mul_overflow(r, b, &s)) {
-                /* fallback to bignum */
-                return korb_int_mul(self, INT2FIX(1));  /* TODO */
+                /* Promote to Bignum: finish the rest of the calculation
+                 * via korb_int_mul which handles arbitrary precision. */
+                VALUE big_r = INT2FIX(r);
+                VALUE big_b = INT2FIX(b);
+                big_r = korb_int_mul(big_r, big_b);
+                e >>= 1;
+                while (e > 0) {
+                    big_b = korb_int_mul(big_b, big_b);
+                    if (e & 1) big_r = korb_int_mul(big_r, big_b);
+                    e >>= 1;
+                }
+                if (has_mod) {
+                    VALUE m = argv[1];
+                    return korb_funcall(c, big_r, korb_intern("%"), 1, &m);
+                }
+                return big_r;
             }
             r = s;
+            if (has_mod) r %= mod;
         }
         long s;
-        if (__builtin_mul_overflow(b, b, &s)) break;
+        if (__builtin_mul_overflow(b, b, &s)) {
+            /* Same: promote and finish. */
+            VALUE big_r = INT2FIX(r);
+            VALUE big_b = INT2FIX(b);
+            e >>= 1;
+            while (e > 0) {
+                big_b = korb_int_mul(big_b, big_b);
+                if (e & 1) big_r = korb_int_mul(big_r, big_b);
+                e >>= 1;
+            }
+            if (has_mod) {
+                VALUE m = argv[1];
+                return korb_funcall(c, big_r, korb_intern("%"), 1, &m);
+            }
+            return big_r;
+        }
         b = s;
+        if (has_mod) b %= mod;
         e >>= 1;
     }
     return INT2FIX(r);

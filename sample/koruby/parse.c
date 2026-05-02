@@ -296,52 +296,82 @@ build_call_with_block(struct transduce_context *tc, NODE *recv, ID name,
      * reserved staging slots. */
     push_frame(tc, &bn->locals, true);
     uint32_t param_base = tc->frame->slot_base;
-    /* Build a destructure prelude for any `(a, b)` style block params.
-     * Each MULTI_TARGET param sits in its own param slot at runtime;
-     * we read it as an Array and assign each component to the named
-     * lvar before the body runs. */
+    /* Build a param-dispatch prelude.
+     *
+     * Block param positions don't always line up with prism's locals
+     * indices — for `|(k, v), acc|` prism's locals = [k, v, acc] but
+     * the second positional param is `acc`, which sits at locals[2],
+     * not locals[1].  At runtime korb_yield_slow fills fp[base+i] for
+     * each yield arg i; without the prelude that would put `acc`'s
+     * value into `v`'s slot and never assign `acc`.
+     *
+     * Strategy: if any param needs renaming (destructure or
+     * positional-vs-named slot mismatch), snapshot ALL required-param
+     * slots into temps, then re-dispatch each one to its correct slot
+     * — destructure params expand component-by-component, named
+     * params copy the snapshot. */
     NODE *destructure_pre = NULL;
     if (bn->parameters && PM_NODE_TYPE_P(bn->parameters, PM_BLOCK_PARAMETERS_NODE)) {
         pm_block_parameters_node_t *bp = (pm_block_parameters_node_t *)bn->parameters;
         if (bp->parameters && PM_NODE_TYPE_P((pm_node_t *)bp->parameters, PM_PARAMETERS_NODE)) {
             pm_parameters_node_t *pn = (pm_parameters_node_t *)bp->parameters;
-            /* Two passes: first snapshot all MULTI_TARGET param slots to
-             * fresh temps (so later destructure writes don't clobber
-             * not-yet-snapshot params), then expand each one. */
-            uint32_t saved_tmp[16] = {0};
-            int n_mt = 0;
-            for (size_t i = 0; i < pn->requireds.size && n_mt < 16; i++) {
-                if (PM_NODE_TYPE_P(pn->requireds.nodes[i], PM_MULTI_TARGET_NODE)) {
+            size_t nreq = pn->requireds.size;
+            /* Decide whether we need a prelude at all: we need one if
+             * any param is a destructure OR any named param's local
+             * slot index doesn't match its param position. */
+            bool need_prelude = false;
+            for (size_t i = 0; i < nreq; i++) {
+                pm_node_t *req = pn->requireds.nodes[i];
+                if (PM_NODE_TYPE_P(req, PM_MULTI_TARGET_NODE)) { need_prelude = true; break; }
+                if (PM_NODE_TYPE_P(req, PM_REQUIRED_PARAMETER_NODE)) {
+                    pm_required_parameter_node_t *rp = (pm_required_parameter_node_t *)req;
+                    int slot = lvar_slot_any(tc, rp->name);
+                    if (slot >= 0 && (uint32_t)slot != param_base + (uint32_t)i) {
+                        need_prelude = true; break;
+                    }
+                }
+            }
+            if (need_prelude && nreq > 0 && nreq <= 16) {
+                /* Phase 1: snapshot every required param slot into a temp. */
+                uint32_t saved_tmp[16] = {0};
+                for (size_t i = 0; i < nreq; i++) {
                     uint32_t holder_slot = param_base + (uint32_t)i;
                     uint32_t tmp_slot = inc_arg_index(tc);
                     saved_tmp[i] = tmp_slot;
                     NODE *snap = ALLOC_node_lvar_set(tmp_slot, ALLOC_node_lvar_get(holder_slot));
                     destructure_pre = destructure_pre ? ALLOC_node_seq(destructure_pre, snap) : snap;
-                    n_mt++;
                 }
-            }
-            for (size_t i = 0; i < pn->requireds.size; i++) {
-                pm_node_t *req = pn->requireds.nodes[i];
-                if (!PM_NODE_TYPE_P(req, PM_MULTI_TARGET_NODE)) continue;
-                pm_multi_target_node_t *mt = (pm_multi_target_node_t *)req;
-                uint32_t tmp_slot = saved_tmp[i];
-                for (size_t j = 0; j < mt->lefts.size; j++) {
-                    pm_node_t *t = mt->lefts.nodes[j];
-                    ID name_id = 0;
-                    uint32_t name_depth = 0;
-                    if (PM_NODE_TYPE_P(t, PM_LOCAL_VARIABLE_TARGET_NODE)) {
-                        pm_local_variable_target_node_t *lt = (pm_local_variable_target_node_t *)t;
-                        name_id = lt->name; name_depth = lt->depth;
-                    } else if (PM_NODE_TYPE_P(t, PM_REQUIRED_PARAMETER_NODE)) {
-                        pm_required_parameter_node_t *rp = (pm_required_parameter_node_t *)t;
-                        name_id = rp->name;
-                    } else continue;
-                    int slot = lvar_slot(tc, name_id, name_depth);
-                    if (slot < 0) slot = lvar_slot_any(tc, name_id);
-                    if (slot < 0) continue;
-                    NODE *get = ALLOC_node_ary_aget(ALLOC_node_lvar_get(tmp_slot), (uint32_t)j);
-                    NODE *set = ALLOC_node_lvar_set((uint32_t)slot, get);
-                    destructure_pre = ALLOC_node_seq(destructure_pre, set);
+                /* Phase 2: dispatch each snapshot to its real target. */
+                for (size_t i = 0; i < nreq; i++) {
+                    pm_node_t *req = pn->requireds.nodes[i];
+                    uint32_t tmp_slot = saved_tmp[i];
+                    if (PM_NODE_TYPE_P(req, PM_MULTI_TARGET_NODE)) {
+                        pm_multi_target_node_t *mt = (pm_multi_target_node_t *)req;
+                        for (size_t j = 0; j < mt->lefts.size; j++) {
+                            pm_node_t *t = mt->lefts.nodes[j];
+                            ID name_id = 0;
+                            uint32_t name_depth = 0;
+                            if (PM_NODE_TYPE_P(t, PM_LOCAL_VARIABLE_TARGET_NODE)) {
+                                pm_local_variable_target_node_t *lt = (pm_local_variable_target_node_t *)t;
+                                name_id = lt->name; name_depth = lt->depth;
+                            } else if (PM_NODE_TYPE_P(t, PM_REQUIRED_PARAMETER_NODE)) {
+                                pm_required_parameter_node_t *rp = (pm_required_parameter_node_t *)t;
+                                name_id = rp->name;
+                            } else continue;
+                            int slot = lvar_slot(tc, name_id, name_depth);
+                            if (slot < 0) slot = lvar_slot_any(tc, name_id);
+                            if (slot < 0) continue;
+                            NODE *get = ALLOC_node_ary_aget(ALLOC_node_lvar_get(tmp_slot), (uint32_t)j);
+                            NODE *set = ALLOC_node_lvar_set((uint32_t)slot, get);
+                            destructure_pre = ALLOC_node_seq(destructure_pre, set);
+                        }
+                    } else if (PM_NODE_TYPE_P(req, PM_REQUIRED_PARAMETER_NODE)) {
+                        pm_required_parameter_node_t *rp = (pm_required_parameter_node_t *)req;
+                        int slot = lvar_slot_any(tc, rp->name);
+                        if (slot < 0) continue;
+                        NODE *set = ALLOC_node_lvar_set((uint32_t)slot, ALLOC_node_lvar_get(tmp_slot));
+                        destructure_pre = ALLOC_node_seq(destructure_pre, set);
+                    }
                 }
             }
         }

@@ -114,7 +114,18 @@ static VALUE kernel_frozen_p(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 static VALUE kernel_respond_to_p(CTX *c, VALUE self, int argc, VALUE *argv) {
     ID name = SYMBOL_P(argv[0]) ? korb_sym2id(argv[0]) : korb_intern_n(((struct korb_string *)argv[0])->ptr, ((struct korb_string *)argv[0])->len);
-    return KORB_BOOL(korb_class_find_method(korb_class_of_class(self), name) != NULL);
+    struct korb_class *klass = korb_class_of_class(self);
+    if (korb_class_find_method(klass, name) != NULL) return Qtrue;
+    /* Defer to user-defined respond_to_missing?, but only if the class
+     * actually overrode it (the default Object#respond_to_missing?
+     * returns false and we just answered false anyway). */
+    struct korb_method *rtm = korb_class_find_method(klass, korb_intern("respond_to_missing?"));
+    if (rtm) {
+        VALUE args[2] = { korb_id2sym(name), (argc >= 2 ? argv[1] : Qfalse) };
+        VALUE r = korb_funcall(c, self, korb_intern("respond_to_missing?"), 2, args);
+        return RTEST(r) ? Qtrue : Qfalse;
+    }
+    return Qfalse;
 }
 
 static VALUE kernel_is_a_p(CTX *c, VALUE self, int argc, VALUE *argv) {

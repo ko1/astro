@@ -1055,11 +1055,20 @@ VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv)
     VALUE prev_self = c->self;
     /* Auto-destructure: block with N params yielded a single Array of size M
      * → assign array elements to params (Ruby block calling convention). */
-    if (blk->params_cnt > 1 && argc == 1 && BUILTIN_TYPE(args_buf[0]) == T_ARRAY) {
+    if (blk->params_cnt > 1 && argc == 1 &&
+        !SPECIAL_CONST_P(args_buf[0]) && BUILTIN_TYPE(args_buf[0]) == T_ARRAY) {
         struct korb_array *a = (struct korb_array *)args_buf[0];
         for (uint32_t i = 0; i < blk->params_cnt; i++) {
             fp[blk->param_base + i] = (i < (uint32_t)a->len) ? a->ptr[i] : Qnil;
         }
+    }
+    /* Auto-pack: 1-param non-lambda block yielded with N>1 args — Ruby
+     * packs them into an Array so `|x|` sees `[a, b, ...]`.  Hash#each
+     * { |(k, v)| ... } and { |x| ... } both rely on this. */
+    else if (blk->params_cnt == 1 && argc > 1 && !blk->is_lambda) {
+        VALUE pack = korb_ary_new_capa((long)argc);
+        for (uint32_t i = 0; i < argc; i++) korb_ary_push(pack, args_buf[i]);
+        fp[blk->param_base] = pack;
     } else {
         for (uint32_t i = 0; i < blk->params_cnt && i < argc; i++) {
             fp[blk->param_base + i] = args_buf[i];
@@ -1796,7 +1805,8 @@ VALUE korb_dispatch_call(CTX *c, struct Node *callsite, VALUE recv, ID name,
                     return tmp.prologue(c, callsite, recv, argc + 1, arg_index, block, &tmp);
                 }
             }
-            korb_raise(c, NULL, "undefined method '%s' for %s",
+            VALUE eNo = korb_const_get(korb_vm->object_class, korb_intern("NoMethodError"));
+            korb_raise(c, (struct korb_class *)eNo, "undefined method '%s' for %s",
                      korb_id_name(name), korb_id_name(klass->name));
             return Qnil;
         }
@@ -1948,7 +1958,8 @@ VALUE korb_dispatch_binop(CTX *c, VALUE recv, ID name, int argc, VALUE *argv) {
     struct korb_class *klass = korb_class_of_class(recv);
     struct korb_method *m = korb_class_find_method(klass, name);
     if (!m) {
-        korb_raise(c, NULL, "undefined method '%s' for %s",
+        VALUE eNo = korb_const_get(korb_vm->object_class, korb_intern("NoMethodError"));
+        korb_raise(c, (struct korb_class *)eNo, "undefined method '%s' for %s",
                  korb_id_name(name), korb_id_name(klass->name));
         return Qnil;
     }
