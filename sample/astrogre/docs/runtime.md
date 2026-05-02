@@ -60,7 +60,7 @@
 
 ## 動く例 — AST が実際にどう見えるか
 
-`./astrogre --dump '/<pat>/'` でそのパターンを lower した AST が
+`./are/are --dump '/<pat>/'` でそのパターンを lower した AST が
 S 式で出る。代表例:
 
 ### 純リテラル search — `/static/`
@@ -758,7 +758,7 @@ mutable な状態 (rep stack、captures、count_result、lineno、…) は呼び
 
 ## バックエンド抽象
 
-grep CLI (main.c) は `backend.h` だけと話す。プラグインされている
+grep CLI (`are/main.c`) は `backend.h` だけと話す。プラグインされている
 バックエンドは 2 つ:
 
 * `backend_astrogre.c` — in-house エンジン (この一連の解説の対象)
@@ -860,7 +860,7 @@ ladder を拡張する候補 node (まだ手付かず、同じ形):
 
 ## ドライバ: 上に乗っている grep
 
-`main.c` が grep フロントエンド。それ自体は regex の仕事を一切
+`are/main.c` が grep フロントエンド。それ自体は regex の仕事を一切
 しない; 全部バックエンド ops と AST API を経由する。要点:
 
 * **ファイル / stdin の per-line 経路** — `getline`、`backend->search`

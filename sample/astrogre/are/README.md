@@ -21,16 +21,18 @@ $ ./are --type-list             # show the file-type table
 
 ## Why it exists
 
-`astrogre` has a perfectly serviceable grep front-end already
-(`../astrogre`), but it inherited GNU grep's defaults: PATH required,
-no recursion without `-r`, dotfiles included, no file-type filter.
-That makes it fine for engine testing and for benchmarking against
-GNU grep, but awkward to actually use day-to-day on a code base.
+The astrogre engine library needs a CLI you'd actually keep on your
+PATH: GNU grep's defaults (PATH required, no recursion without `-r`,
+dotfiles included, no file-type filter) make sense for the original
+1970s setting but get in the way day-to-day on a code base.  `are` is
+that CLI — same engine, modern UX.
 
-`are` is the production CLI — same engine, modern UX.  The two
-binaries coexist; the legacy `astrogre` binary still owns the
-library-internal sub-commands (`--self-test`, `--bench`, `--dump`,
-`--verbose`, …) which `are` deliberately doesn't expose.
+Engine self-test and microbench live as Makefile targets in the parent
+directory (`make self-test`, `make bench`, `make bench-file`); they
+don't need a CLI surface.  Three dev/debug flags
+(`--dump PATTERN`, `--verbose`, `--cs-verbose`) are built into `are`
+itself but intentionally absent from `--help` to keep the user-facing
+manual focused.
 
 ## Defaults that differ from GNU grep
 
@@ -166,10 +168,11 @@ backend_astrogre.c` straight from the parent `astrogre/` directory,
 along with the codegen products (`node_eval.c` etc.) — there's no
 separate static library, just one `cc` invocation per build.
 
-`main.c` is currently a fork of `../main.c` with modernised defaults
-and the lib-internal sub-commands stripped.  Consolidating it into a
-shared `lib_grep.c` with two thin entry points (one per binary) is
-on the roadmap.
+`main.c` was originally forked from a now-removed legacy CLI; it's
+the only grep front-end now.  Three dev flags
+(`--dump` / `--verbose` / `--cs-verbose`) live here but stay out of
+`--help`; engine self-test / microbench moved to Makefile targets
+(`make self-test` / `make bench` / `make bench-file`).
 
 ## Performance
 

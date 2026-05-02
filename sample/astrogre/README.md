@@ -1,8 +1,9 @@
 # sample/astrogre — Ruby-style regex engine on ASTro
 
-`astrogre` (pronounced *astrouga*) is an experimental Ruby-style
-regex engine implemented as an ASTro sample, plus a small grep front-end
-on top.  The matcher itself is the "engine"; the binary is the grep CLI.
+`astrogre` (pronounced *astrouga*) is an experimental Ruby/Onigmo-
+compatible regex engine implemented as an ASTro sample.  This
+directory holds the engine library; the user-facing binary,
+[`are`](./are/), is a modern grep CLI built on top.
 
 The matcher is itself an AST: `node.def` defines ~22 match-node kinds
 (literal, char-class, dot, anchors, repetition, alternation, capture,
@@ -12,60 +13,50 @@ parser (`parse.c`) that takes the bytes between the slashes plus a
 flag bitmask and produces the AST.  No external regex parser is
 required.
 
-The binary `./astrogre` is a grep tool that uses the `astrogre`
-engine by default.  An [Onigmo](https://github.com/k-takata/Onigmo)
-backend can be swapped in at runtime with `--backend=onigmo` for
-direct head-to-head comparison.
-
-Two CLIs ship in this directory:
-
-- **`./astrogre`** — the original grep front-end on top of the
-  engine, kept close to GNU grep semantics for benching: explicit
-  PATH required, no recursion default, `-r` to descend, all flags
-  including the lib-internal ones (`--self-test`, `--bench`,
-  `--bench-file`, `--dump`, `--plain`, `--aot-compile`,
-  `--backend=`, `--verbose`).  This is the binary used in the
-  benches below.
-- **`./are/are`** — production CLI with modern defaults (recursive
-  by default, `.gitignore`-aware, parallel walking via `-j N`,
-  binary skip, type filter `-t LANG`).  Same regex engine, just a
-  user-facing front end with rg/ag-style ergonomics — see
-  [`are/README.md`](./are/README.md) for its own benches and
-  options.
+The grep CLI `./are/are` uses the astrogre engine by default.  An
+[Onigmo](https://github.com/k-takata/Onigmo) backend can be swapped
+in at runtime with `--engine=onigmo` for direct head-to-head
+comparison.
 
 ## Status
 
-- 44/44 self-tests pass: literals (`/i`), `.` (with `/m`), char classes,
-  anchors, greedy/lazy quantifiers, capturing/non-capturing/named groups,
-  back-references, lookahead, alternation, `/x` extended, inline flag
-  groups, `search_from` enumeration, fixed-string mode.
-- Standalone `/pat/flags` source-string syntax via `astrogre_parse_literal`.
-- grep CLI: `-i -n -c -v -w -F -l -L -H -h -o -r -e --color=auto`.
-- Backend abstraction: `--backend=astrogre` (default) or `--backend=onigmo`.
-- AOT specialization wired up: `--aot-compile` (`-C`) writes
-  `code_store/c/SD_<hash>.c`, builds `all.so`, and patches every node's
-  dispatcher.  Subsequent runs (default mode) auto-load the cached
-  build via `astro_cs_load` in `OPTIMIZE`.  `--pg-compile` (`-P`) is
-  accepted for parity with abruby but currently aliases to AOT —
-  there's no profile signal to bake yet.
+- 118/118 self-tests pass: literals (`/i`), `.` (with `/m`), char
+  classes, anchors, greedy/lazy quantifiers, capturing/non-capturing/
+  named groups, back-references, lookahead, alternation, `/x`
+  extended, inline flag groups, `search_from` enumeration, fixed-
+  string mode.
+- Standalone `/pat/flags` source-string syntax via
+  `astrogre_parse_literal`.
+- grep CLI (`are`): full `-i -n -c -v -w -F -l -L -H -h -o -A/-B/-C
+  --color=auto`, plus `.gitignore`-aware recursive walk, type
+  filters (`-t LANG`), and a parallel worker pool (`-j N`).  See
+  [`are/README.md`](./are/README.md).
+- Backend abstraction: `--engine=astrogre` (default) or
+  `--engine=onigmo` (build with `WITH_ONIGMO=1`).
+- `--encoding=utf-8|ascii` selects regex encoding (default UTF-8).
+- AOT specialization: `are --aot` writes
+  `code_store/c/SD_<hash>.c`, builds `all.so`, and patches every
+  node's dispatcher.  Subsequent runs auto-load the cached build
+  via `astro_cs_load`.
 - The for-each-start-position search loop is itself a node
   (`node_grep_search`), so the specializer fuses the loop AND the
   inlined regex chain into one SD function — the in-engine bench
   shows up to **7.2× over interp on long-buffer searches**.
 - Algorithmic prefilter nodes — `node_grep_search_memchr` /
-  `_memmem` — emitted when the parser detects a literal first byte
-  / prefix.  3-4× win on literal-led grep patterns, bringing
-  astrogre to within 20 % of Onigmo on those cases.
+  `_memmem` / `_byteset` / `_range` / `_class_scan` — emitted when
+  the parser detects a literal first byte / prefix / byteset.
 
 ## Encoding
 
-Two encoding modes, set per-pattern via the regex flag:
+Two encoding modes, selectable per pattern:
 
-| flag      | mode  | dot advances by | typical use                       |
-|-----------|-------|-----------------|-----------------------------------|
-| `/n`      | ASCII | 1 byte          | binary input / ASCII-only         |
-| `/u`      | UTF-8 | 1 codepoint     | default in modern Ruby            |
-| (default) | UTF-8 | 1 codepoint     | same as `/u`                      |
+| flag                | mode  | dot advances by | typical use             |
+|---------------------|-------|-----------------|-------------------------|
+| `--encoding=ascii`  | ASCII | 1 byte          | binary input, ASCII     |
+| `--encoding=utf-8`  | UTF-8 | 1 codepoint     | default, modern Ruby    |
+| (default)           | UTF-8 | 1 codepoint     | same as `--encoding=utf-8` |
+| `/n` source string  | ASCII | 1 byte          | same as `--encoding=ascii` |
+| `/u` source string  | UTF-8 | 1 codepoint     | (in `astrogre_parse_literal`) |
 
 What works under either mode:
 
@@ -74,8 +65,8 @@ What works under either mode:
 - `\b` / `\B` use the 7-bit ASCII word predicate (`[A-Za-z0-9_]`).
 - `/i` lowercases ASCII letters at parse time.
 - The SIMD prefilter ladder operates on raw bytes and composes
-  cleanly with UTF-8 patterns (the body chain re-verifies the
-  full codepoint at each candidate).
+  cleanly with UTF-8 patterns (the body chain re-verifies the full
+  codepoint at each candidate).
 
 What's UTF-8-aware:
 
@@ -86,13 +77,13 @@ What's UTF-8-aware:
   the parser, so quantifiers bind to the codepoint
   (`/é+/` quantifies `é`, not its trailing 0xA9).
 
-What's not supported (see `docs/todo.md`):
+What's not supported (see [`docs/todo.md`](./docs/todo.md)):
 
 - Multi-byte characters inside `[...]`.
 - `\p{...}` Unicode property classes.
 - Unicode case folding for `/i`.
 - `\X` extended grapheme cluster.
-- EUC-JP (`/e`) and Windows-31J (`/s`).
+- EUC-JP and Windows-31J.
 
 `docs/runtime.md` has the full breakdown including how the SIMD
 prefilter nodes interact with each encoding.
@@ -102,27 +93,32 @@ prefilter nodes interact with each encoding.
 ```sh
 cd sample/astrogre
 
-# In-house engine only (default)
+# Build the engine + are CLI
 make
 
 # With Onigmo as a switchable backend
 make WITH_ONIGMO=1
 
-# grep usage
-./astrogre 'foo[0-9]+' file.txt
-./astrogre -n -i 'pattern' *.c
-./astrogre -r -F 'literal_str' src/
-./astrogre --backend=onigmo --color=always 'pat' file.txt
-./astrogre -C 'pat' file.txt          # AOT-compile pattern, then run
-./astrogre --plain 'pat' file.txt     # bypass code store entirely
+# Grep usage (see are/README.md for the full flag set)
+./are/are 'foo[0-9]+' file.txt
+./are/are -n -i 'pattern' src/                    # recursive by default
+./are/are -F 'literal_str' src/
+./are/are --engine=onigmo --color=always 'pat' file.txt
+./are/are --aot 'pat' file.txt                    # AOT-specialise pattern
+./are/are --encoding=ascii '\xff+' binary.bin
 
-# Engine-level
-./astrogre --self-test               # 44-case self-test
-./astrogre --bench                   # in-engine microbench
-./astrogre --dump '/(a|b)*c/'        # show compiled AST
-make bench-rg                        # cross-tool grep comparison
-make bench-tree                      # recursive-walk comparison
-make bench-aot                       # AOT-favourable engine bench
+# Engine-level (no grep CLI in the loop)
+make self-test                              # 118-case engine self-test
+make bench                                  # in-engine microbench
+make bench-file FILE=file PATTERN=/pat/     # bench-file harness
+make bench-rg                               # cross-tool grep comparison
+make bench-tree                             # recursive-walk comparison
+make bench-aot                              # AOT-favourable engine bench
+
+# Pattern AST inspection (dev flag, not in are --help)
+./are/are --dump '/(a|b)*c/'
+./are/are --verbose -e static file.txt      # phase-by-phase wall-clock
+./are/are --aot --cs-verbose -e foo file.txt
 ```
 
 ## Layout
@@ -135,8 +131,10 @@ backend.h             abstract ops table (compile/search/free)
 backend_astrogre.c    in-house engine bound to backend_ops_t
 backend_onigmo.c      Onigmo engine bound to backend_ops_t (WITH_ONIGMO=1)
 node.c                ASTro framework glue (hash funcs, EVAL, OPTIMIZE)
-selftest.c            engine self-test + microbench
-main.c                grep CLI (file walk, options, color, --backend)
+selftest.c            engine self-test + microbench harnesses
+selftest_runner.c     standalone driver behind `make {self-test,bench,bench-file}`
+aho_corasick.c / .h   AC trie + branchless scanner used by alt-of-LIT prefilter
+are/                  user-facing grep CLI (own README, own Makefile)
 bench/grep_bench.rb   cross-tool single-file comparison
 bench/aot_bench.rb    engine-internal AOT-favourable bench
 bench/tree_bench.rb   recursive walk vs ripgrep / grep -r
@@ -161,62 +159,51 @@ Two layers of optimisation, both expressed as ASTro nodes:
    | `node_grep_search_byteset`    | ≤ 8 distinct first bytes (alt)      | N × `vpcmpeqb` + OR |
    | `node_grep_search_range`      | single contiguous-range first class | `vpsubusb / vpminub / vpcmpeqb` |
    | `node_grep_search_class_scan` | arbitrary 256-bit first class       | Hyperscan-style Truffle (PSHUFB ×2 + AND) |
+   | `node_grep_search_ac`         | ≥ 9 leading literal alternatives    | Aho-Corasick with branchless inner loop |
 
    The bake then composes — first byte / range bounds / packed
-   bytes / 16-byte nibble tables become AVX2 set1 immediates inside
-   the SD; the inner loop has no indirect call.
+   bytes / 16-byte nibble tables become AVX2 `vpbroadcastb` / `set1`
+   immediates inside the SD; the inner loop has no indirect call.
 
-### Bench A — grep CLI (118 MB C-source corpus, best-of-3 ms)
+### Bench A — grep CLI (118 MB C-source corpus, best-of-7 ms)
 
-`bench/grep_bench.rb` — see that script for the full setup
-(re-runnable with `make bench-rg`).  Each tool's stdout is
-redirected to a regular file (NOT `/dev/null` — see the pitfall
-note at the bottom of this section).
+`bench/grep_bench.rb` — re-runnable with `make bench-rg`.  All
+`are` rows use `-j 1` so the bench measures the engine, not the
+parallel walker.  Output to a regular file (NOT `/dev/null` — see
+the pitfall note below).  Bold = row minimum.
 
-| pattern                                | astrogre interp | astrogre +AOT/cached | astrogre +onigmo | grep | ripgrep |
-|----------------------------------------|---:|---:|---:|---:|---:|
-| `/static/` literal                     | 71 | **40** | n/a | 153 | 86 |
-| `/specialized_dispatcher/` rare        | **22** | 25 | n/a | 37 | **21** |
-| `/^static/` anchored                   | 77 | 83 | n/a | **71** | 41 |
-| `/VALUE/i` case-insens                 | 82 | **76** | n/a | 105 | 60 |
-| `/static\|extern\|inline/` alt-3       | 389 | **128** | n/a | 204 | 64 |
-| 12-way alt (AC prefilter)              | 418 | 419 | n/a | 281 | **147** |
-| `/[0-9]{4,}/` class-rep                | 373 | 177 | n/a | **92** | 59 |
-| `/[a-z_]+_[a-z]+\(/` ident-call        | 1911 | 1341 | n/a | 2421 | **220** |
-| `-c /static/` count                    | 27 | 26 | n/a | 71 | **30** |
+| pattern                              | are interp | are aot/cached | are +onigmo | grep | ripgrep |
+|--------------------------------------|---:|---:|---:|---:|---:|
+| `/static/`                           | **38** | 41 | 111 | 74 | 41 |
+| `/specialized_dispatcher/`           | **21** | 24 | 39 | 38 | **21** |
+| `/^static/` anchored                 | 77 | 80 | 114 | 76 | **41** |
+| `/VALUE/i`                           | 85 | 76 | 141 | 98 | **56** |
+| `/static\|extern\|inline/`           | 376 | 121 | 1027 | 205 | **63** |
+| 12-way alt (AC prefilter)            | 444 | 409 | 2609 | 276 | **139** |
+| `/[0-9]{4,}/`                        | 362 | 168 | 601 | 97 | **55** |
+| `/[a-z_]+_[a-z]+\(/`                 | 1858 | 1202 | 3400 | 2214 | **203** |
+| `-c /static/`                        | **22** | 24 | 71 | 64 | 27 |
 
-`+onigmo` rows are `n/a` here because this build was made without
-`WITH_ONIGMO=1`; the harness records ERR when the backend isn't
-linked.
-
-#### Headline rows
-
-- **`/static/`**: AOT is 1.8× faster than interp here (71 → 40 ms),
-  closing the gap to ripgrep's 86 ms and beating GNU grep's
-  150 ms.  AOT folds the per-byte alt-of-LIT body chain into the
-  scanner SD; the inner loop has zero indirect calls.
-- **`-c /static/`**: 26 ms — fastest tool on this row, ahead of
-  ripgrep (30 ms) and well ahead of GNU grep (71 ms).
-- **`/[a-z_]+_[a-z]+\(/`** (ident-call): 1.9 s for us, 220 ms for
-  ripgrep, 2.4 s for GNU grep.  Both we and grep miss ripgrep's
-  lazy-DFA optimisation here; AOT shaves ~30 % off interp but the
-  algorithmic gap dominates.
+`+onigmo` requires `make WITH_ONIGMO=1`; if onigmo isn't linked the
+column comes back ERR.  See [`are/README.md`](./are/README.md) for
+a fuller analysis of these numbers including which rows ripgrep
+takes home and why.
 
 #### Pitfall — DON'T pipe to `/dev/null` while benching grep
 
 GNU grep since
 [commit `af6af28`](https://cgit.git.savannah.gnu.org/cgit/grep.git/commit/?id=af6af288)
 (Paul Eggert, May 2016, "grep: /dev/null output speedup")
-`fstat`s stdout, recognises `/dev/null`, and switches to
-first-match-and-exit mode — `-q`-equivalent — because the output
-won't be visible anyway.  Benches that redirect to `/dev/null`
-look like grep is doing 2 ms over a 118 MB file when in fact it's
-short-circuiting after the first match.  `bench/grep_bench.rb`
+`fstat`s stdout, recognises `/dev/null`, and switches to first-
+match-and-exit mode — `-q`-equivalent — because the output won't
+be visible anyway.  Benches that redirect to `/dev/null` look like
+grep is doing 2 ms over a 118 MB file when in fact it's short-
+circuiting after the first match.  `bench/grep_bench.rb`
 explicitly avoids this.
 
 ### Bench B — engine-level whole-file scan (ms/iter)
 
-`bench/aot_bench.rb` runs the in-engine `--bench-file` path: the
+`bench/aot_bench.rb` runs the in-engine `bench-file` path: the
 118 MB buffer is loaded once, then `astrogre_search` is called N
 times.  Other tools run via their CLI in count mode.  Patterns are
 deliberately chosen for an AOT-favourable shape (long chain, no
@@ -243,7 +230,7 @@ AOT cuts interp time by **1.4×–2.95×** on every row.  Win count:
   iter; AOT folds those into a flat SD with no indirect call.
 - **vs GNU grep: 4/8 wins**.  Notably:
   - `[A-Z]{50,}`: AOT 206 ms vs grep 1722 ms (8.4×).  The DFA
-    explodes on long uppercase runs; greedy_class fast-path
+    explodes on long uppercase runs; `greedy_class` fast-path
     walks them in SIMD.
   - `\b(if|else|for|while|return)\b`: AOT 203 ms vs grep 2241 ms
     (11×).  Long alt-of-LIT body chain compiled into one SD.
@@ -262,46 +249,45 @@ AOT cuts interp time by **1.4×–2.95×** on every row.  Win count:
 #### What grep still wins
 
 `(\d+\.\d+\.\d+\.\d+)` (93 ms) — the leading `\d` class is rare
-in C source, so grep's `\d`-led DFA + Boyer-Moore-Horspool skip
+in C source, so grep's `\d`-led DFA + Boyer-Moore-Horspool skips
 ahead by needle length.  Our `greedy_class` walks every byte via
 SIMD — same throughput, but the byte budget is fundamentally
 larger.  Algorithmic miss, not a SIMD one.
 
 See [`docs/perf.md`](./docs/perf.md) and
-[`docs/runtime.md`](./docs/runtime.md) for the architectural lesson
-("wrap algorithms as nodes; the framework's bake / hash / code-store
-sharing then composes with them for free").
+[`docs/runtime.md`](./docs/runtime.md) for the architectural
+lesson ("wrap algorithms as nodes; the framework's bake / hash /
+code-store sharing then composes with them for free").
 
 ## What it does NOT do (yet)
 
-- Search-loop fused SD.  Per-position AOT dispatch is already cheap;
-  the bigger lever is folding the start-position loop into the
-  specialized C function so the whole "scan + match" lives in one
-  basic block.  Without it, AOT-cached barely beats interp on grep.
-- Real PG profile signal (`HOPT == HORG` for now — `--pg-compile`
-  bakes the same bytes as `--aot-compile`).
-- Unicode case folding for non-ASCII, `\p{...}` properties, multi-byte
-  characters inside `[...]` (multi-byte `\u` outside `[]` works fine
-  via UTF-8 byte expansion).
+- Real PG profile signal (`HOPT == HORG` for now — there's no
+  profile signal to bake yet).
+- Unicode case folding for non-ASCII, `\p{...}` properties, multi-
+  byte characters inside `[...]` (multi-byte `\u` outside `[]`
+  works fine via UTF-8 byte expansion).
 - EUC-JP / Windows-31J encodings.
-- The `(?~e)` absence operator uses the simple `(?:(?!e).)*` semantics;
-  Onigmo's stricter "no contiguous substring matches" length can
-  differ for unanchored cases.
+- The `(?~e)` absence operator uses the simple `(?:(?!e).)*`
+  semantics; Onigmo's stricter "no contiguous substring matches"
+  length can differ for unanchored cases.
 - `Regexp.new(string)` from the CLI front; the Ruby C extension
   `ASTrogre.compile(string)` already exposes the runtime-string
   compile path.
+- Mid-pattern literal extraction (Teddy / multi-pattern AC across
+  arbitrary positions).  Today's AC prefilter only handles the
+  leading-edge alternation case.
 
 What landed recently and ISN'T in this list anymore:
 - Lookbehind `(?<=...)` / `(?<!...)` — fixed-width, alt-of-fixed,
   and a variable-width fallback.
 - Atomic groups `(?>...)` and the possessive `*+ ++ ?+` forms.
-- Conditional `(?(N)yes|no)` and `\g<>` subroutine calls (recursive,
-  with a dynamic stack guard).
+- Conditional `(?(N)yes|no)` and `\g<>` subroutine calls
+  (recursive, with a dynamic stack guard).
 - Inline comments `(?#...)`, `\u` escapes, character-class set
   intersection `[a-z&&[^aeiou]]`, the absence operator `(?~e)`.
 - Onigmo-style MatchCache memoization for ReDoS-prone patterns.
-- `MatchData` equivalent + `match` / `match?` / `=~` / `===` / `scan`
-  / `match_all` on the Ruby extension side.
+- `MatchData` equivalent + `match` / `match?` / `=~` / `===` /
+  `scan` / `match_all` on the Ruby extension side.
 
 See [`docs/done.md`](./docs/done.md) and
 [`docs/todo.md`](./docs/todo.md) for the full status.

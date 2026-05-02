@@ -102,25 +102,32 @@ v1 で入っているもの、カテゴリ別。[`todo.md`](./todo.md) の対。
 
 ## ドライバ / ツーリング
 
-- **grep CLI**: `./astrogre PATTERN [FILE...]` — 標準オプション
-  `-i -n -c -v -w -F -l -L -H -h -o -r -e --color=auto`。
-  `-r` でディレクトリ再帰、ドットファイルはスキップ。複数パターンは
-  `-e PATTERN` 反復。`-l` / `-L` でファイル名のみ出力、`-o` でマッチ
-  span のみ出力。
+- **grep CLI**: `./are/are PATTERN [PATH...]` — 標準オプション
+  `-i -n -c -v -w -F -l -L -H -h -o -e -A/-B/-C --color=auto`。
+  default で再帰 + `.gitignore` 尊重 + dotfile / binary skip + 並列
+  walker。複数パターンは `-e PATTERN` 反復。`-l` / `-L` でファイル名
+  のみ出力、`-o` でマッチ span のみ出力。`--no-recursive` / `--hidden`
+  / `-a` で grep 互換の挙動に切り替え可能。
 - **`--color`**: マッチを赤、行番号を緑、ファイル名を紫(GNU grep 互換)。
   `--color=auto` は `isatty` を見る。
-- **`--backend=astrogre|onigmo`**: 実行時バックエンド切り替え。Onigmo
+- **`--engine=astrogre|onigmo`**: 実行時バックエンド切り替え。Onigmo
   は `make WITH_ONIGMO=1` で local build (autoconf / libtool 不要の
   自前 `build_local.mk`)。
-- **`--self-test`** (44 ケース)、**`--bench`** (in-engine microbench) を
-  flag として保持。
-- **`--verbose`**: 主要フェーズ (INIT、pattern compile、mmap、scan、
-  munmap、exit) の wall-clock を `[verbose] tag    elapsed_ms (+delta_ms)`
-  形式で stderr に出力。`strace` 無しでどのフェーズが効いてるか確認
-  できる。`clock_gettime` × 7 回ぶんなので無効時のオーバヘッドはゼロ。
+- **`--encoding=utf-8|ascii`**: regex エンコーディング選択。default は
+  UTF-8 (`/u` 相当)、`--encoding=ascii` で `/n` モード。両 backend
+  共通で pass-through。
+- **engine self-test / microbench**: `make self-test` (118 ケース) /
+  `make bench` (in-engine microbench) / `make bench-file` の Makefile
+  ターゲット。grep CLI から切り出した `selftest_runner` 専用バイナリで
+  動かすので、grep 経路を一切経由せずエンジンの結果を確認できる。
+- **`--verbose`**: 主要フェーズ (main entry、INIT、pattern compile、
+  AOT compile、exit) の wall-clock を `[verbose] tag    elapsed_ms
+  (+delta_ms)` 形式で stderr に出力。`strace` 無しでどのフェーズが
+  効いてるか確認できる。`clock_gettime` × 5 回ぶんなので無効時の
+  オーバヘッドはゼロ。
 - **`bench/grep_bench.rb`** / **`bench/aot_bench.rb`**: 他ツール比較
-  ハーネス。grep / ripgrep / astrogre / astrogre+onigmo を同じコーパス
-  + パターンで実行、tool ごとの best-of-N を表示。
+  ハーネス。grep / ripgrep / are / are +onigmo を同じコーパス +
+  パターンで実行、tool ごとの best-of-N を表示。
 
 ## バックエンド抽象
 
@@ -240,7 +247,7 @@ regular file — `/dev/null` だと grep の dev_null 短絡 (af6af288) で
 
 | 段階                                        | `-c` (ms) | default print (ms) |
 |---------------------------------------------|---:|---:|
-| 出発点 (memmem + memchr in main.c)          | 64 | 66 |
+| 出発点 (memmem + memchr in are/main.c)      | 64 | 66 |
 | stage 1: monolithic `count_lines_lit`       | 23 | 66 |
 | stage 2: scanner + action chain (現在)      | **27** | **71** |
 | stage 2 + AOT cached                        | **26** | **40** |
@@ -284,7 +291,7 @@ mmap+POPULATE と munmap で、これは PTE 操作の物理コスト。`read()`
 
 ## grep CLI の whole-file mmap 経路
 
-`process_buffer` (main.c) は、パターンが SIMD/libc prefilter を持つ
+`process_buffer` (are/main.c) は、パターンが SIMD/libc prefilter を持つ
 場合 (memchr / memmem / byteset / range / class_scan) 通常ファイルに
 対して per-line `getline` を置き換える。ファイルを一度 mmap、バック
 エンドの `search_from` をバッファ全体に対しループ、各マッチの所属行
