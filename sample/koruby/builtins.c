@@ -528,6 +528,8 @@ void korb_init_builtins(void) {
 
     /* extra Range */
     DEF(cRng, "step",     rng_step,    -1);
+    DEF(cRng, "zip",      rng_zip,     -1);
+    DEF(cRng, "each_with_index", rng_each_with_index, 0);
     DEF(cRng, "size",     rng_size,     0);
     DEF(cRng, "length",   rng_size,     0);
     DEF(cRng, "include?", rng_include, -1);

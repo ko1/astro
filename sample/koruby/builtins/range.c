@@ -101,12 +101,31 @@ static VALUE rng_to_a(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE rng_step(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_range *r = (struct korb_range *)self;
     if (!FIXNUM_P(r->begin) || !FIXNUM_P(r->end)) return Qnil;
+    /* Float step → walk in floating point so 1..3 step 0.5 yields
+     * 1.0, 1.5, 2.0, 2.5, 3.0.  Otherwise integer arithmetic. */
+    bool flt_step = (argc >= 1 && KORB_IS_FLOAT(argv[0]));
+    if (flt_step) {
+        double step = korb_num2dbl(argv[0]);
+        if (step == 0.0) return self;
+        double b = (double)FIX2LONG(r->begin);
+        double e = (double)FIX2LONG(r->end);
+        bool has_block = korb_block_given();
+        VALUE out = has_block ? Qnil : korb_ary_new();
+        for (double v = b; v <= e + 1e-12; v += step) {
+            VALUE fv = korb_float_new(v);
+            if (has_block) {
+                korb_yield(c, 1, &fv);
+                if (c->state != KORB_NORMAL) return Qnil;
+            } else {
+                korb_ary_push(out, fv);
+            }
+        }
+        return has_block ? self : out;
+    }
     long step = argc >= 1 && FIXNUM_P(argv[0]) ? FIX2LONG(argv[0]) : 1;
     if (step == 0) return self;
     long b = FIX2LONG(r->begin), e = FIX2LONG(r->end);
     if (r->exclude_end) e--;
-    /* Block-less form returns an Array of stepped values — koruby's
-     * Enumerator stand-in (matches Integer#step's behavior). */
     if (!korb_block_given()) {
         VALUE a = korb_ary_new();
         for (long i = b; i <= e; i += step) korb_ary_push(a, INT2FIX(i));
@@ -116,6 +135,47 @@ static VALUE rng_step(CTX *c, VALUE self, int argc, VALUE *argv) {
         VALUE v = INT2FIX(i);
         korb_yield(c, 1, &v);
         if (c->state != KORB_NORMAL) return Qnil;
+    }
+    return self;
+}
+
+/* Range#zip — pair each element with the corresponding element of
+ * each given Array.  Missing slots get nil. */
+static VALUE rng_zip(CTX *c, VALUE self, int argc, VALUE *argv) {
+    /* Materialize self via to_a then delegate to Array#zip. */
+    VALUE arr = korb_funcall(c, self, korb_intern("to_a"), 0, NULL);
+    if (c->state != KORB_NORMAL) return Qnil;
+    return korb_funcall(c, arr, korb_intern("zip"), argc, argv);
+}
+
+/* Range#each_with_index — yields (value, index) pairs. */
+static VALUE rng_each_with_index(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_range *r = (struct korb_range *)self;
+    long idx = 0;
+    if (FIXNUM_P(r->begin) && FIXNUM_P(r->end)) {
+        long b = FIX2LONG(r->begin), e = FIX2LONG(r->end);
+        if (r->exclude_end) e--;
+        for (long i = b; i <= e; i++, idx++) {
+            VALUE pair[2] = { INT2FIX(i), INT2FIX(idx) };
+            korb_yield(c, 2, pair);
+            if (c->state != KORB_NORMAL) return Qnil;
+        }
+        return self;
+    }
+    /* Non-numeric: walk via #succ */
+    if (NIL_P(r->begin) || NIL_P(r->end)) return self;
+    VALUE cur = r->begin;
+    while (true) {
+        VALUE cmp = korb_funcall(c, cur, korb_intern("<=>"), 1, &r->end);
+        if (!FIXNUM_P(cmp)) break;
+        long cv = FIX2LONG(cmp);
+        if (r->exclude_end ? (cv >= 0) : (cv > 0)) break;
+        VALUE pair[2] = { cur, INT2FIX(idx) };
+        korb_yield(c, 2, pair);
+        if (c->state != KORB_NORMAL) return Qnil;
+        cur = korb_funcall(c, cur, korb_intern("succ"), 0, NULL);
+        if (c->state != KORB_NORMAL) return Qnil;
+        idx++;
     }
     return self;
 }
@@ -212,7 +272,32 @@ static VALUE rng_reduce(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (!FIXNUM_P(r->begin) || !FIXNUM_P(r->end)) return Qnil;
     long b = FIX2LONG(r->begin), e = FIX2LONG(r->end);
     if (r->exclude_end) e--;
-    VALUE acc = argc > 0 ? argv[0] : INT2FIX(b++);
+    /* Symbol-arg form: reduce(:+) or reduce(init, :+). */
+    ID op = 0;
+    int sym_idx = -1;
+    if (argc >= 1 && SYMBOL_P(argv[argc - 1]) && !korb_block_given()) {
+        op = korb_sym2id(argv[argc - 1]);
+        sym_idx = argc - 1;
+    }
+    VALUE acc;
+    long start;
+    if (op != 0) {
+        if (sym_idx == 0) {            /* (:+) */
+            if (b > e) return Qnil;
+            acc = INT2FIX(b);
+            start = b + 1;
+        } else {                        /* (init, :+) */
+            acc = argv[0];
+            start = b;
+        }
+        for (long i = start; i <= e; i++) {
+            VALUE other = INT2FIX(i);
+            acc = korb_funcall(c, acc, op, 1, &other);
+            if (c->state != KORB_NORMAL) return Qnil;
+        }
+        return acc;
+    }
+    acc = argc > 0 ? argv[0] : INT2FIX(b++);
     for (long i = b; i <= e; i++) {
         VALUE args[2] = { acc, INT2FIX(i) };
         acc = korb_yield(c, 2, args);

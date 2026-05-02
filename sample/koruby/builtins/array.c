@@ -164,9 +164,42 @@ static VALUE ary_select(CTX *c, VALUE self, int argc, VALUE *argv) {
     return r;
 }
 static VALUE ary_reduce(CTX *c, VALUE self, int argc, VALUE *argv) {
+    /* CRuby's reduce / inject overloads:
+     *   reduce(sym)              — reduce by sending sym (e.g. :+)
+     *   reduce(init, sym)        — same with explicit init
+     *   reduce { |a, b| ... }    — block-driven, no init
+     *   reduce(init) { |a, b| }  — block-driven with init
+     * The Symbol form short-circuits the yield path entirely. */
     long len = korb_ary_len(self);
-    VALUE acc = argc > 0 ? argv[0] : korb_ary_aref(self, 0);
-    long i = argc > 0 ? 0 : 1;
+    /* Detect "last positional arg is a Symbol" → reduce-by-method form. */
+    ID op = 0;
+    int sym_idx = -1;
+    if (argc >= 1 && SYMBOL_P(argv[argc - 1]) && !korb_block_given()) {
+        op = korb_sym2id(argv[argc - 1]);
+        sym_idx = argc - 1;
+    }
+    VALUE acc;
+    long i;
+    if (op != 0) {
+        /* Symbol form */
+        if (sym_idx == 0) { /* reduce(:+) */
+            if (len == 0) return Qnil;
+            acc = korb_ary_aref(self, 0);
+            i = 1;
+        } else {            /* reduce(init, :+) */
+            acc = argv[0];
+            i = 0;
+        }
+        for (; i < len; i++) {
+            VALUE other = korb_ary_aref(self, i);
+            acc = korb_funcall(c, acc, op, 1, &other);
+            if (c->state != KORB_NORMAL) return Qnil;
+        }
+        return acc;
+    }
+    /* Block form */
+    acc = argc > 0 ? argv[0] : korb_ary_aref(self, 0);
+    i = argc > 0 ? 0 : 1;
     for (; i < len; i++) {
         VALUE args[2] = { acc, korb_ary_aref(self, i) };
         acc = korb_yield(c, 2, args);
