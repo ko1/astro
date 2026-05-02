@@ -164,10 +164,28 @@ optcarrot は ruby と checksum 一致、CRuby の 2.2x、YJIT の 0.55x。
 
 ---
 
-## 4. 既知バグ (テストにコメント付きで残してあるもの)
+## 4. 既知バグ
 
-無し — 2026-05-02 時点で全 documented バグは修正済み。
-過去にあった `procs << proc { i }` per-iteration capture も `creates_proc` flag + fresh-env-with-writeback で解決。
+### 4.1 ブロック実行時の slot collision  ⚠️ アーキテクチャ
+- `def f(&blk); x = ...; result = blk.call; ...; end` で `blk` 内で
+  別のメソッド呼び出しが起きると、 そのメソッドの local slot が `f` の
+  slot を踏むことがある (env=caller's fp の shared-fp model に由来)
+- 影響: ブロック呼び出し後の caller-side ローカル変数が壊れる
+- 例:
+  ```
+  def trace(&blk)
+    start = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    result = blk.call
+    elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - start
+    [result, elapsed]
+  end
+  result, time = trace { (1..100).sum }  # time が変な値になる
+  ```
+- 対処: 当面手動で回避 (block 内で複雑なメソッド呼び出しを避ける、
+  あるいは block を渡した method の中で重要な local を block 後に
+  読まない)
+- 真の解決には fresh-env-with-writeback 経路を `creates_proc` 以外も
+  使う仕様変更が必要
 
 ---
 
