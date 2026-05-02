@@ -21,6 +21,11 @@ struct frame_context {
     uint32_t arg_index;   /* next free absolute slot for arg staging */
     uint32_t max_cnt;     /* highest absolute slot ever used */
     bool is_block;        /* true for block frames (share parent fp) */
+    /* `def f(...)` forwarding: hidden slots holding the captured *args,
+     * **kwargs, and &blk so the body's `f(...)` calls can splat them. */
+    int fwd_rest_slot;
+    int fwd_kwh_slot;
+    int fwd_blk_slot;
     struct frame_context *prev;
 };
 
@@ -77,6 +82,9 @@ static void push_frame(struct transduce_context *tc, pm_constant_id_list_t *loca
     }
     f->arg_index = f->slot_base + (locals ? locals->size : 0);
     f->max_cnt = f->arg_index;
+    f->fwd_rest_slot = -1;
+    f->fwd_kwh_slot = -1;
+    f->fwd_blk_slot = -1;
     tc->frame = f;
 }
 
@@ -358,6 +366,66 @@ build_call_simple(struct transduce_context *tc, NODE *recv, ID name,
     uint32_t arg_cnt = args ? (uint32_t)args->size : 0;
     uint32_t call_arg_idx = arg_index(tc);
 
+    /* `f(...)` — arguments contain a single PM_FORWARDING_ARGUMENTS_NODE.
+     * Forward via the captured fwd_* slots set when entering `def f(...)`. */
+    if (args && arg_cnt == 1 &&
+        PM_NODE_TYPE_P(args->nodes[0], PM_FORWARDING_ARGUMENTS_NODE)) {
+        struct frame_context *df = tc->frame;
+        while (df && df->fwd_rest_slot < 0) df = df->prev;
+        if (df) {
+            int fr = df->fwd_rest_slot;
+            int fk = df->fwd_kwh_slot;
+            int fb = df->fwd_blk_slot;
+            /* args_array = fwd_rest + [fwd_kwh]   (kwh as last positional) */
+            uint32_t ai = inc_arg_index(tc);
+            inc_arg_index(tc); rewind_arg_index(tc, ai);
+            struct method_cache *mc_one = alloc_method_cache();
+            NODE *one = ALLOC_node_method_call(ALLOC_node_lvar_get((uint32_t)fk),
+                                                korb_intern("any?"), 0, ai, mc_one);
+            (void)one;
+            /* Always include kwh; receiver doesn't need to know it's empty. */
+            uint32_t ai2 = inc_arg_index(tc);
+            inc_arg_index(tc); rewind_arg_index(tc, ai2);
+            struct method_cache *mc_push = alloc_method_cache();
+            /* args_array = fwd_rest.dup; args_array.push(fwd_kwh) */
+            uint32_t saved_slot = inc_arg_index(tc);
+            uint32_t ai_dup = inc_arg_index(tc);
+            rewind_arg_index(tc, ai_dup);
+            struct method_cache *mc_dup = alloc_method_cache();
+            NODE *dup_call = ALLOC_node_method_call(ALLOC_node_lvar_get((uint32_t)fr),
+                                                    korb_intern("dup"), 0, ai_dup, mc_dup);
+            NODE *save_arr = ALLOC_node_lvar_set(saved_slot, dup_call);
+            /* Only push kwh if non-empty: forwarding to a method that
+             * doesn't take kwargs would otherwise see a stray {}. */
+            uint32_t ai_p = inc_arg_index(tc);
+            inc_arg_index(tc); rewind_arg_index(tc, ai_p);
+            struct method_cache *mc_p = alloc_method_cache();
+            uint32_t ai_any = inc_arg_index(tc);
+            rewind_arg_index(tc, ai_any);
+            struct method_cache *mc_any = alloc_method_cache();
+            NODE *non_empty = ALLOC_node_method_call(
+                ALLOC_node_lvar_get((uint32_t)fk),
+                korb_intern("any?"), 0, ai_any, mc_any);
+            NODE *karg = ALLOC_node_lvar_set(ai_p, ALLOC_node_lvar_get((uint32_t)fk));
+            NODE *do_push = ALLOC_node_seq(karg,
+                ALLOC_node_method_call(ALLOC_node_lvar_get(saved_slot),
+                                       korb_intern("push"), 1, ai_p, mc_p));
+            NODE *push_kwh = ALLOC_node_if(non_empty, do_push, ALLOC_node_nil());
+            NODE *args_array = ALLOC_node_seq(save_arr,
+                ALLOC_node_seq(push_kwh, ALLOC_node_lvar_get(saved_slot)));
+
+            /* reserve up to 16 staging slots for apply_call. */
+            uint32_t apply_idx = inc_arg_index(tc);
+            for (int s = 1; s < 16; s++) inc_arg_index(tc);
+            rewind_arg_index(tc, call_arg_idx);
+            struct method_cache *mc = alloc_method_cache();
+            NODE *blk = ALLOC_node_lvar_get((uint32_t)fb);
+            return ALLOC_node_apply_call(recv ? recv : ALLOC_node_self(), name,
+                                          args_array, apply_idx, blk,
+                                          is_method ? 1 : 0, mc);
+        }
+    }
+
     /* Detect splat: if any arg is a splat, use the apply-style call which
      * builds a runtime array of args and copies it into staging slots. */
     bool has_splat = false;
@@ -437,6 +505,57 @@ build_container(struct transduce_context *tc, pm_node_list_t *items, bool is_arr
     uint32_t arg_idx = arg_index(tc);
     NODE *seq = NULL;
     if (is_hash) {
+        /* If any element is a `**splat`, build the hash via base + merges
+         * instead of a single hash_new.  Treat the simple all-assoc case
+         * with the original fast path. */
+        bool has_splat = false;
+        for (size_t i = 0; i < items->size; i++) {
+            if (PM_NODE_TYPE_P(items->nodes[i], PM_ASSOC_SPLAT_NODE)) {
+                has_splat = true;
+                break;
+            }
+        }
+        if (has_splat) {
+            /* Build base = {} then walk: for assoc, base[k]=v; for splat,
+             * base.merge!(splat_expr). */
+            uint32_t base_slot = inc_arg_index(tc);
+            NODE *base_init = ALLOC_node_lvar_set(base_slot,
+                                                   ALLOC_node_hash_new(0, base_slot + 1));
+            seq = base_init;
+            for (size_t i = 0; i < items->size; i++) {
+                pm_node_t *it = items->nodes[i];
+                if (PM_NODE_TYPE_P(it, PM_ASSOC_NODE)) {
+                    pm_assoc_node_t *as = (pm_assoc_node_t *)it;
+                    NODE *kn = T(tc, as->key);
+                    NODE *vn = T(tc, as->value);
+                    uint32_t ai = inc_arg_index(tc);
+                    inc_arg_index(tc); inc_arg_index(tc);
+                    rewind_arg_index(tc, ai);
+                    struct method_cache *mc = alloc_method_cache();
+                    NODE *kset = ALLOC_node_lvar_set(ai, kn);
+                    NODE *vset = ALLOC_node_lvar_set(ai + 1, vn);
+                    NODE *call = ALLOC_node_method_call(ALLOC_node_lvar_get(base_slot),
+                                                        korb_intern("[]="), 2, ai, mc);
+                    seq = ALLOC_node_seq(seq,
+                            ALLOC_node_seq(kset, ALLOC_node_seq(vset, call)));
+                } else if (PM_NODE_TYPE_P(it, PM_ASSOC_SPLAT_NODE)) {
+                    pm_assoc_splat_node_t *sn = (pm_assoc_splat_node_t *)it;
+                    NODE *sval = sn->value ? T(tc, sn->value) : ALLOC_node_hash_new(0, base_slot + 1);
+                    uint32_t ai = inc_arg_index(tc);
+                    inc_arg_index(tc); rewind_arg_index(tc, ai);
+                    struct method_cache *mc = alloc_method_cache();
+                    NODE *aset = ALLOC_node_lvar_set(ai, sval);
+                    /* hash_merge returns a new hash — re-assign base. */
+                    NODE *call = ALLOC_node_method_call(ALLOC_node_lvar_get(base_slot),
+                                                        korb_intern("merge"), 1, ai, mc);
+                    NODE *update = ALLOC_node_lvar_set(base_slot, call);
+                    seq = ALLOC_node_seq(seq, ALLOC_node_seq(aset, update));
+                }
+            }
+            NODE *get = ALLOC_node_lvar_get(base_slot);
+            rewind_arg_index(tc, arg_idx);
+            return ALLOC_node_seq(seq, get);
+        }
         /* First pass: reserve all key/value slot pairs.  This bumps the
          * frame's arg_index high so subsequent T() calls allocate fresh
          * slots that won't overlap with our pending writes. */
@@ -1170,8 +1289,27 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                   prologue = prologue ? ALLOC_node_seq(prologue, init) : init;
                   total_cnt++;
               }
-              /* rest */
-              if (pn->rest) {
+              /* rest (or `def f(...)` forwarding parameter, which prism
+               * sometimes places here too). */
+              bool fwd_param = false;
+              if (pn->rest && PM_NODE_TYPE_P(pn->rest, PM_FORWARDING_PARAMETER_NODE)) {
+                  fwd_param = true;
+              }
+              if (pn->keyword_rest && PM_NODE_TYPE_P(pn->keyword_rest, PM_FORWARDING_PARAMETER_NODE)) {
+                  fwd_param = true;
+              }
+              if (fwd_param) {
+                  /* def f(...) — capture into 3 hidden slots for `f(...)` to forward. */
+                  uint32_t fr = inc_arg_index(tc);
+                  uint32_t fk = inc_arg_index(tc);
+                  uint32_t fb = inc_arg_index(tc);
+                  rest_slot = (int)fr;
+                  total_cnt++;                         /* rest is one param slot */
+                  block_slot = (int)fb;
+                  tc->frame->fwd_rest_slot = (int)fr;
+                  tc->frame->fwd_kwh_slot = (int)fk;
+                  tc->frame->fwd_blk_slot = (int)fb;
+              } else if (pn->rest) {
                   pm_node_t *rp = pn->rest;
                   if (PM_NODE_TYPE_P(rp, PM_REST_PARAMETER_NODE)) {
                       pm_rest_parameter_node_t *r = (pm_rest_parameter_node_t *)rp;
@@ -1192,7 +1330,156 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                       total_cnt++;
                   }
               }
-              /* keyword params: not supported, skip for now */
+              /* keyword params (`def f(a:, b: 10)`).
+               *
+               * Lower to: caller's last positional arg is the kwargs hash;
+               * body prelude snapshots it and extracts each key.  The
+               * positional-only-total stays as-is; we add ONE more total
+               * for the kwh slot.  The hash lands at fp[positional_only_total]
+               * (collides with whichever local prism placed there — the
+               * snapshot dance preserves it).  kwh_save_slot is a fresh
+               * slot beyond locals_cnt that holds the hash for extraction. */
+              bool has_kwrest = pn->keyword_rest && PM_NODE_TYPE_P(pn->keyword_rest, PM_KEYWORD_REST_PARAMETER_NODE);
+              int kwrest_target_slot = -1;
+              if (has_kwrest) {
+                  pm_keyword_rest_parameter_node_t *kr =
+                      (pm_keyword_rest_parameter_node_t *)pn->keyword_rest;
+                  if (kr->name) {
+                      kwrest_target_slot = lvar_slot(tc, kr->name, 0);
+                  }
+              }
+              if (fwd_param) {
+                  /* forward `(...)` also accepts kwargs — use the hidden
+                   * fwd_kwh slot as the kwrest target. */
+                  has_kwrest = true;
+                  kwrest_target_slot = tc->frame->fwd_kwh_slot;
+              }
+              if (pn->keywords.size > 0 || has_kwrest) {
+                  uint32_t kwh_save_slot;
+                  if (rest_slot >= 0) {
+                      /* Method has *rest — peel kwh off rest's tail. The
+                       * prologue puts every caller arg into rest; if the
+                       * last is a Hash, treat it as kwh. */
+                      kwh_save_slot = inc_arg_index(tc);
+                      /* if rest.last.is_a?(Hash) then kwh = rest.pop else kwh = {} */
+                      uint32_t ai_last = inc_arg_index(tc);
+                      rewind_arg_index(tc, ai_last);
+                      struct method_cache *mc_last = alloc_method_cache();
+                      NODE *last_call = ALLOC_node_method_call(
+                          ALLOC_node_lvar_get((uint32_t)rest_slot),
+                          korb_intern("last"), 0, ai_last, mc_last);
+                      uint32_t ai_isa = inc_arg_index(tc);
+                      inc_arg_index(tc); rewind_arg_index(tc, ai_isa);
+                      struct method_cache *mc_isa = alloc_method_cache();
+                      NODE *isa_arg = ALLOC_node_lvar_set(ai_isa,
+                          ALLOC_node_const_get(korb_intern("Hash")));
+                      NODE *isa = ALLOC_node_seq(isa_arg,
+                          ALLOC_node_method_call(last_call, korb_intern("is_a?"),
+                                                  1, ai_isa, mc_isa));
+                      uint32_t ai_pop = inc_arg_index(tc);
+                      rewind_arg_index(tc, ai_pop);
+                      struct method_cache *mc_pop = alloc_method_cache();
+                      NODE *pop_call = ALLOC_node_method_call(
+                          ALLOC_node_lvar_get((uint32_t)rest_slot),
+                          korb_intern("pop"), 0, ai_pop, mc_pop);
+                      NODE *empty_hash = ALLOC_node_hash_new(0, kwh_save_slot);
+                      NODE *if_n = ALLOC_node_if(isa, pop_call, empty_hash);
+                      NODE *peel = ALLOC_node_lvar_set(kwh_save_slot, if_n);
+                      prologue = prologue ? ALLOC_node_seq(prologue, peel) : peel;
+                  } else {
+                      uint32_t kwh_arg_slot = total_cnt;
+                      kwh_save_slot = inc_arg_index(tc);
+                      total_cnt++;
+                      NODE *empty_hash = ALLOC_node_hash_new(0, kwh_save_slot);
+                      NODE *kwh_default = ALLOC_node_default_init(kwh_arg_slot, empty_hash);
+                      prologue = prologue ? ALLOC_node_seq(prologue, kwh_default) : kwh_default;
+                      NODE *snap = ALLOC_node_lvar_set(kwh_save_slot,
+                                                        ALLOC_node_lvar_get(kwh_arg_slot));
+                      prologue = ALLOC_node_seq(prologue, snap);
+                  }
+                  /* For forwarding, also stash kwh in fwd_kwh_slot for the
+                   * call-site `f(...)` to pick up. */
+                  if (fwd_param) {
+                      tc->frame->fwd_kwh_slot = (int)kwh_save_slot;
+                  }
+                  /* For each keyword: extract from kwh_save_slot into the
+                   * named local's slot. */
+                  for (size_t i = 0; i < pn->keywords.size; i++) {
+                      pm_node_t *kp = pn->keywords.nodes[i];
+                      if (PM_NODE_TYPE_P(kp, PM_REQUIRED_KEYWORD_PARAMETER_NODE)) {
+                          pm_required_keyword_parameter_node_t *rk =
+                              (pm_required_keyword_parameter_node_t *)kp;
+                          int slot = lvar_slot(tc, rk->name, 0);
+                          if (slot < 0) continue;
+                          /* slot = kwh_save.fetch(:name) */
+                          uint32_t ai = inc_arg_index(tc);
+                          inc_arg_index(tc); rewind_arg_index(tc, ai);
+                          struct method_cache *mc = alloc_method_cache();
+                          NODE *karg = ALLOC_node_lvar_set(ai,
+                              ALLOC_node_sym_lit(intern_constant(tc->parser, rk->name)));
+                          NODE *fetch = ALLOC_node_seq(karg,
+                              ALLOC_node_method_call(ALLOC_node_lvar_get(kwh_save_slot),
+                                                     korb_intern("fetch"), 1, ai, mc));
+                          NODE *ext = ALLOC_node_lvar_set((uint32_t)slot, fetch);
+                          prologue = ALLOC_node_seq(prologue, ext);
+                      } else if (PM_NODE_TYPE_P(kp, PM_OPTIONAL_KEYWORD_PARAMETER_NODE)) {
+                          pm_optional_keyword_parameter_node_t *ok =
+                              (pm_optional_keyword_parameter_node_t *)kp;
+                          int slot = lvar_slot(tc, ok->name, 0);
+                          if (slot < 0) continue;
+                          NODE *def_val = T(tc, ok->value);
+                          /* slot = kwh.has_key?(:name) ? kwh[:name] : default */
+                          ID kid = intern_constant(tc->parser, ok->name);
+                          uint32_t ai = inc_arg_index(tc);
+                          inc_arg_index(tc); rewind_arg_index(tc, ai);
+                          struct method_cache *mc_hk = alloc_method_cache();
+                          NODE *hk_arg = ALLOC_node_lvar_set(ai, ALLOC_node_sym_lit(kid));
+                          NODE *hk = ALLOC_node_seq(hk_arg,
+                              ALLOC_node_method_call(ALLOC_node_lvar_get(kwh_save_slot),
+                                                     korb_intern("has_key?"), 1, ai, mc_hk));
+                          uint32_t ai2 = inc_arg_index(tc);
+                          inc_arg_index(tc); rewind_arg_index(tc, ai2);
+                          struct method_cache *mc_aref = alloc_method_cache();
+                          NODE *karg = ALLOC_node_lvar_set(ai2, ALLOC_node_sym_lit(kid));
+                          NODE *aref = ALLOC_node_seq(karg,
+                              ALLOC_node_method_call(ALLOC_node_lvar_get(kwh_save_slot),
+                                                     korb_intern("[]"), 1, ai2, mc_aref));
+                          NODE *if_n = ALLOC_node_if(hk, aref, def_val);
+                          prologue = ALLOC_node_seq(prologue,
+                              ALLOC_node_lvar_set((uint32_t)slot, if_n));
+                      }
+                  }
+                  /* **kwrest: copy kwh and delete the named keys.  If no
+                   * name was given (anonymous **), skip — nothing to bind. */
+                  if (kwrest_target_slot >= 0) {
+                      /* rest = kwh.dup */
+                      uint32_t ai_dup = inc_arg_index(tc);
+                      rewind_arg_index(tc, ai_dup);
+                      struct method_cache *mc_dup = alloc_method_cache();
+                      NODE *dup = ALLOC_node_method_call(ALLOC_node_lvar_get(kwh_save_slot),
+                                                        korb_intern("dup"), 0, ai_dup, mc_dup);
+                      NODE *bind = ALLOC_node_lvar_set((uint32_t)kwrest_target_slot, dup);
+                      prologue = ALLOC_node_seq(prologue, bind);
+                      /* For each named kwarg, delete from rest. */
+                      for (size_t i = 0; i < pn->keywords.size; i++) {
+                          pm_node_t *kp = pn->keywords.nodes[i];
+                          ID kid = 0;
+                          if (PM_NODE_TYPE_P(kp, PM_REQUIRED_KEYWORD_PARAMETER_NODE)) {
+                              kid = intern_constant(tc->parser, ((pm_required_keyword_parameter_node_t *)kp)->name);
+                          } else if (PM_NODE_TYPE_P(kp, PM_OPTIONAL_KEYWORD_PARAMETER_NODE)) {
+                              kid = intern_constant(tc->parser, ((pm_optional_keyword_parameter_node_t *)kp)->name);
+                          } else continue;
+                          uint32_t aid = inc_arg_index(tc);
+                          inc_arg_index(tc); rewind_arg_index(tc, aid);
+                          struct method_cache *mc_del = alloc_method_cache();
+                          NODE *karg = ALLOC_node_lvar_set(aid, ALLOC_node_sym_lit(kid));
+                          NODE *del = ALLOC_node_seq(karg,
+                              ALLOC_node_method_call(ALLOC_node_lvar_get((uint32_t)kwrest_target_slot),
+                                                     korb_intern("delete"), 1, aid, mc_del));
+                          prologue = ALLOC_node_seq(prologue, del);
+                      }
+                  }
+              }
               /* &blk — reify block as Proc into a local slot */
               if (pn->block && PM_NODE_TYPE_P((pm_node_t *)pn->block, PM_BLOCK_PARAMETER_NODE)) {
                   pm_block_parameter_node_t *bp = (pm_block_parameter_node_t *)pn->block;

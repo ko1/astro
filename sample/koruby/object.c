@@ -1522,13 +1522,15 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
     c->self = recv;
 
     /* Trimmed frame: only fields actually read elsewhere (.prev,
-     * .method for super, .self for backtrace, .block for block_given?).
-     * Skipping .caller_node / .fp / .locals_cnt saves 3 stores per call. */
+     * .method for super, .self for backtrace, .block for block_given?,
+     * .caller_node for backtrace lines).  Skipping .fp / .locals_cnt
+     * saves a couple stores per call. */
     struct korb_frame frame;
     frame.prev = c->current_frame;
     frame.method = mc->method;
     frame.self = recv;
     frame.block = block;
+    frame.caller_node = callsite;
     c->current_frame = &frame;
     VALUE r = mc->dispatcher(c, mc->body);
     c->current_frame = frame.prev;
