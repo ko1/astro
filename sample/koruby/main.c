@@ -244,6 +244,11 @@ int main(int argc, char *argv[])
         for (uint32_t i = 0; i < code_repo.size; i++) {
             astro_cs_compile(code_repo.entries[i].body, NULL);
         }
+        /* Each SD_*.c is unique by content (filename = hash) so ccache
+         * never hits, and it intermittently fails on sandboxed / read-
+         * only home dirs.  Caller-side opt-out (the runtime stays
+         * env-agnostic). */
+        setenv("CCACHE_DISABLE", "1", 0);
         fprintf(stderr, "[koruby] AOT compile: building all.so\n");
         astro_cs_build(NULL);
     }
