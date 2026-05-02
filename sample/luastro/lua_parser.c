@@ -968,7 +968,15 @@ parse_args(NODE *callee, bool is_method, struct LuaString *method_name)
         lua_tok_error("expected arguments");
     }
     if (is_method) {
-        uint32_t base = nargs ? reg_node_arr(args, nargs) : 0;
+        // Mirror the call_argN specialisation for the common 0..3-arg
+        // shape so each arg is a NODE_DEF parameter that the SD
+        // specialiser can chain-inline via EVAL_ARG.  Variadic form
+        // is the fallback for nargs >= 4.
+        if (nargs == 0) return ALLOC_node_method_call_arg0(callee, method_name);
+        if (nargs == 1) return ALLOC_node_method_call_arg1(callee, method_name, args[0]);
+        if (nargs == 2) return ALLOC_node_method_call_arg2(callee, method_name, args[0], args[1]);
+        if (nargs == 3) return ALLOC_node_method_call_arg3(callee, method_name, args[0], args[1], args[2]);
+        uint32_t base = reg_node_arr(args, nargs);
         return ALLOC_node_method_call(callee, method_name, base, nargs);
     }
     if (nargs == 0) return ALLOC_node_call_arg0(callee);

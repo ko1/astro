@@ -252,22 +252,16 @@ node_local_decl_one(CTX * restrict c, NODE * restrict n, LuaValue * restrict fra
 // Local declaration with N RHS values.
 //   - lhs_idx points at LUASTRO_U32_ARR[lhs_idx..lhs_idx+nlhs] for slot indices
 //   - rhs_idx points at LUASTRO_NODE_ARR[rhs_idx..rhs_idx+nrhs] for value exprs
+//
+// The 1-LHS / 1-RHS case is routed to `node_local_decl_one` by the
+// parser (lua_parser.c handle_local_decl), which has `NODE *rhs` as a
+// real parameter and uses EVAL_ARG.  This NODE_DEF is reached only for
+// genuinely variadic shapes (N-LHS / M-RHS) where the dispatcher of
+// each rhs comes from a runtime LUASTRO_NODE_ARR lookup.
 NODE_DEF @noinline
 node_local_decl(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, uint32_t lhs_idx, uint32_t nlhs, uint32_t rhs_idx, uint32_t nrhs)
 {
     (void)n;
-    // Hot path: single LHS, single RHS — by far the most common form
-    // in inner loops (`local xn = x*x - y*y + x0`).  Skip the staging
-    // array and the ret_info plumbing entirely.
-    if (__builtin_expect(nlhs == 1 && nrhs == 1, 1)) {
-        NODE *e = LUASTRO_NODE_ARR[rhs_idx];
-        LuaValue v = EVAL(c, e, frame);
-        c->ret_info.result_cnt = 0;
-        LuaValue *slot = &frame[LUASTRO_U32_ARR[lhs_idx]];
-        if (LV_IS_BOX(*slot)) ((struct LuaBox *)(uintptr_t)*slot)->value = v;
-        else *slot = v;
-        return RESULT_OK(LUAV_NIL);
-    }
     // Lua semantics: if the LAST rhs returns multiple values, they
     // spread to fill any unmatched lhs slots.  We evaluate the rhs
     // expressions in order; for the last one we read c->ret_info to
@@ -1284,42 +1278,112 @@ node_call(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *
     return lua_call(c, fn, av, nargs);
 }
 
-NODE_DEF @noinline
-node_method_call(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *recv, LuaString *method, uint32_t args_idx, uint32_t nargs, struct LuaMethodIC *ic@ref)
+// Resolve `r:method(...)` to the function value, including the IC fast
+// path and the metatable-`__index` chain walk.  Shared between the
+// arity-N specialisations (`node_method_call_arg{0,1,2,3}`) and the
+// generic variadic form (`node_method_call`).  Inlined into each
+// caller's SD body so the IC test stays a single `cmp + jne` in the
+// hot path.
+static inline __attribute__((always_inline)) LuaValue
+luastro_method_lookup(CTX *c, LuaValue r, LuaString *method, struct LuaMethodIC *ic)
 {
-    (void)n;
-    LuaValue r = EVAL_ARG(c, recv);
     LuaValue fn = LUAV_NIL;
     if (LV_IS_TBL(r)) {
         struct LuaTable *t = LV_AS_TBL(r);
         // IC fast path: same metatable as last successful resolve →
         // method lookup result is stable.
         if (__builtin_expect(t->metatable && t->metatable == ic->cached_metatable, 1)) {
-            fn = ic->cached_fn;
-        } else {
-            // Walk t, then `__index` chain through any number of meta
-            // targets — multi-level OO inheritance via
-            // setmetatable(Sub, {__index = Super}) is standard.
-            struct LuaTable *cur = t;
-            while (cur) {
-                fn = lua_table_get_str(cur, method);
-                if (!LV_IS_NIL(fn)) break;
-                if (!cur->metatable) break;
-                LuaValue idx = lua_table_get_str(cur->metatable, LUASTRO_S___INDEX);
-                if (LV_IS_TBL(idx)) { cur = LV_AS_TBL(idx); continue; }
-                break;
-            }
-            if (t->metatable && (LV_IS_FN(fn) || LV_IS_CF(fn))) {
-                ic->cached_metatable = t->metatable;
-                ic->cached_fn        = fn;
-            }
+            return ic->cached_fn;
         }
-    } else if (LV_IS_STR(r)) {
-        LuaValue strlib = lua_table_get_str(c->globals, LUASTRO_S_STRING);
-        if (LV_IS_TBL(strlib)) fn = lua_table_get_str(LV_AS_TBL(strlib), method);
-    } else {
-        lua_raisef(c, "attempt to index a %s value", lua_type_name(r));
+        // Walk t, then `__index` chain through any number of meta
+        // targets — multi-level OO inheritance via
+        // setmetatable(Sub, {__index = Super}) is standard.
+        struct LuaTable *cur = t;
+        while (cur) {
+            fn = lua_table_get_str(cur, method);
+            if (!LV_IS_NIL(fn)) break;
+            if (!cur->metatable) break;
+            LuaValue idx = lua_table_get_str(cur->metatable, LUASTRO_S___INDEX);
+            if (LV_IS_TBL(idx)) { cur = LV_AS_TBL(idx); continue; }
+            break;
+        }
+        if (t->metatable && (LV_IS_FN(fn) || LV_IS_CF(fn))) {
+            ic->cached_metatable = t->metatable;
+            ic->cached_fn        = fn;
+        }
+        return fn;
     }
+    if (LV_IS_STR(r)) {
+        LuaValue strlib = lua_table_get_str(c->globals, LUASTRO_S_STRING);
+        if (LV_IS_TBL(strlib)) return lua_table_get_str(LV_AS_TBL(strlib), method);
+        return LUAV_NIL;
+    }
+    lua_raisef(c, "attempt to index a %s value", lua_type_name(r));
+    return LUAV_NIL;  /* unreachable */
+}
+
+// Arity-fixed `r:method(args...)` for the common 0..3-arg cases.  Each
+// arg is a NODE_DEF parameter and dispatched via EVAL_ARG, so the SD
+// specialiser folds the chain (recv → method-lookup IC → arg evals →
+// call) into a single tight basic block.  Mirrors `node_call_arg{0..3}`.
+//
+// node_method_call below is the variadic fallback for nargs >= 4.
+
+NODE_DEF @always_inline
+node_method_call_arg0(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *recv, LuaString *method, struct LuaMethodIC *ic@ref)
+{
+    (void)n; (void)frame;
+    LuaValue r  = EVAL_ARG(c, recv);
+    LuaValue fn = luastro_method_lookup(c, r, method, ic);
+    LuaValue av[1] = { r };
+    return lua_call(c, fn, av, 1);
+}
+
+NODE_DEF @always_inline
+node_method_call_arg1(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *recv, LuaString *method, NODE *a0, struct LuaMethodIC *ic@ref)
+{
+    (void)n; (void)frame;
+    LuaValue r  = EVAL_ARG(c, recv);
+    LuaValue fn = luastro_method_lookup(c, r, method, ic);
+    LuaValue av[2];
+    av[0] = r;
+    av[1] = EVAL_ARG(c, a0);
+    return lua_call(c, fn, av, 2);
+}
+
+NODE_DEF @always_inline
+node_method_call_arg2(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *recv, LuaString *method, NODE *a0, NODE *a1, struct LuaMethodIC *ic@ref)
+{
+    (void)n; (void)frame;
+    LuaValue r  = EVAL_ARG(c, recv);
+    LuaValue fn = luastro_method_lookup(c, r, method, ic);
+    LuaValue av[3];
+    av[0] = r;
+    av[1] = EVAL_ARG(c, a0);
+    av[2] = EVAL_ARG(c, a1);
+    return lua_call(c, fn, av, 3);
+}
+
+NODE_DEF @always_inline
+node_method_call_arg3(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *recv, LuaString *method, NODE *a0, NODE *a1, NODE *a2, struct LuaMethodIC *ic@ref)
+{
+    (void)n; (void)frame;
+    LuaValue r  = EVAL_ARG(c, recv);
+    LuaValue fn = luastro_method_lookup(c, r, method, ic);
+    LuaValue av[4];
+    av[0] = r;
+    av[1] = EVAL_ARG(c, a0);
+    av[2] = EVAL_ARG(c, a1);
+    av[3] = EVAL_ARG(c, a2);
+    return lua_call(c, fn, av, 4);
+}
+
+NODE_DEF @noinline
+node_method_call(CTX * restrict c, NODE * restrict n, LuaValue * restrict frame, NODE *recv, LuaString *method, uint32_t args_idx, uint32_t nargs, struct LuaMethodIC *ic@ref)
+{
+    (void)n;
+    LuaValue r  = EVAL_ARG(c, recv);
+    LuaValue fn = luastro_method_lookup(c, r, method, ic);
     LuaValue *av = (LuaValue *)alloca(sizeof(LuaValue) * (nargs + 1));
     av[0] = r;
     for (uint32_t i = 0; i < nargs; i++)
