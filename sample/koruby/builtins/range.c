@@ -2,6 +2,12 @@
 
 /* ---------- Range ---------- */
 static VALUE rng_each(CTX *c, VALUE self, int argc, VALUE *argv) {
+    /* No block → return Array stand-in (Enumerator placeholder).  An
+     * Array is "Enumerable enough" for the common chains like
+     * `(1..3).each.map { ... }` and `.each.to_a`. */
+    if (!korb_block_given()) {
+        return korb_funcall(c, self, korb_intern("to_a"), 0, NULL);
+    }
     struct korb_range *r = (struct korb_range *)self;
     if (FIXNUM_P(r->begin) && FIXNUM_P(r->end)) {
         long b = FIX2LONG(r->begin), e = FIX2LONG(r->end);
@@ -200,6 +206,9 @@ static VALUE rng_include(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE rng_map(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (!korb_block_given()) {
+        return korb_funcall(c, self, korb_intern("to_a"), 0, NULL);
+    }
     struct korb_range *r = (struct korb_range *)self;
     if (!FIXNUM_P(r->begin) || !FIXNUM_P(r->end)) return korb_ary_new();
     long b = FIX2LONG(r->begin), e = FIX2LONG(r->end);

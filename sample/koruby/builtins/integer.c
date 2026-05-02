@@ -23,12 +23,31 @@ static VALUE int_to_rational_obj(CTX *c, VALUE self) {
     return korb_funcall(c, klass, korb_intern("new"), 2, args);
 }
 
+/* CRuby's Numeric#coerce protocol: when an arithmetic op gets a non-
+ * builtin numeric on the RHS, ask the RHS via #coerce(self) for a
+ * pair [coerced_self, coerced_other], then send the op to the pair.
+ * Returns Qundef when the RHS doesn't respond to :coerce so the
+ * caller can fall through to TypeError. */
+static VALUE int_coerce_dispatch(CTX *c, VALUE self, VALUE other, ID op) {
+    struct korb_class *ok = korb_class_of_class(other);
+    if (!korb_class_find_method(ok, korb_intern("coerce"))) return Qundef;
+    VALUE pair = korb_funcall(c, other, korb_intern("coerce"), 1, &self);
+    if (c->state != KORB_NORMAL) return Qnil;
+    if (SPECIAL_CONST_P(pair) || BUILTIN_TYPE(pair) != T_ARRAY) return Qundef;
+    struct korb_array *p = (struct korb_array *)pair;
+    if (p->len != 2) return Qundef;
+    return korb_funcall(c, p->ptr[0], op, 1, &p->ptr[1]);
+}
+
 #define COERCE_OR_RAISE(c, v, op_name)                                  \
     do {                                                                 \
         if (!FIXNUM_P(v) && BUILTIN_TYPE(v) != T_BIGNUM) {                \
             if (KORB_IS_FLOAT(v)) {                              \
                 /* fall through — caller handles */                        \
             } else {                                                       \
+                /* Try the coerce protocol before giving up. */            \
+                VALUE _coerced = int_coerce_dispatch((c), self, (v), korb_intern((op_name))); \
+                if (!UNDEF_P(_coerced)) return _coerced;                   \
                 korb_raise((c), NULL, "%s expected Integer, got %s",       \
                            (op_name), korb_id_name(korb_class_of_class((v))->name)); \
                 return Qnil;                                               \

@@ -124,6 +124,9 @@ static VALUE ary_last(CTX *c, VALUE self, int argc, VALUE *argv) {
     return korb_ary_aref(self, len - 1);
 }
 static VALUE ary_each(CTX *c, VALUE self, int argc, VALUE *argv) {
+    /* No block → return self (the Array IS its own enumerator
+     * stand-in — supports `.each.to_a`, `.each.map { ... }`, etc.). */
+    if (!korb_block_given()) return self;
     long len = korb_ary_len(self);
     for (long i = 0; i < len; i++) {
         VALUE v = korb_ary_aref(self, i);
@@ -134,6 +137,17 @@ static VALUE ary_each(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 static VALUE ary_each_with_index(CTX *c, VALUE self, int argc, VALUE *argv) {
     long len = korb_ary_len(self);
+    /* No block → Array of [elem, index] pairs (Enumerator stand-in). */
+    if (!korb_block_given()) {
+        VALUE r = korb_ary_new_capa(len);
+        for (long i = 0; i < len; i++) {
+            VALUE pair = korb_ary_new_capa(2);
+            korb_ary_push(pair, korb_ary_aref(self, i));
+            korb_ary_push(pair, INT2FIX(i));
+            korb_ary_push(r, pair);
+        }
+        return r;
+    }
     for (long i = 0; i < len; i++) {
         VALUE args[2] = { korb_ary_aref(self, i), INT2FIX(i) };
         korb_yield(c, 2, args);
@@ -142,6 +156,8 @@ static VALUE ary_each_with_index(CTX *c, VALUE self, int argc, VALUE *argv) {
     return self;
 }
 static VALUE ary_map(CTX *c, VALUE self, int argc, VALUE *argv) {
+    /* No block → return self (caller will likely chain another op). */
+    if (!korb_block_given()) return self;
     long len = korb_ary_len(self);
     VALUE r = korb_ary_new_capa(len);
     for (long i = 0; i < len; i++) {
@@ -153,6 +169,7 @@ static VALUE ary_map(CTX *c, VALUE self, int argc, VALUE *argv) {
     return r;
 }
 static VALUE ary_select(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (!korb_block_given()) return self;
     long len = korb_ary_len(self);
     VALUE r = korb_ary_new();
     for (long i = 0; i < len; i++) {
@@ -1165,8 +1182,26 @@ static VALUE ary_delete_if(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 /* Array#reject { |x| ... } — like delete_if but returns a new array. */
+/* Array#reverse_each — yields elements in reverse order; no block →
+ * Array (Enumerator stand-in). */
+static VALUE ary_reverse_each(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_array *a = (struct korb_array *)self;
+    if (!korb_block_given()) {
+        VALUE r = korb_ary_new_capa(a->len);
+        for (long i = a->len - 1; i >= 0; i--) korb_ary_push(r, a->ptr[i]);
+        return r;
+    }
+    for (long i = a->len - 1; i >= 0; i--) {
+        korb_yield(c, 1, &a->ptr[i]);
+        if (c->state != KORB_NORMAL) return Qnil;
+    }
+    return self;
+}
+
 static VALUE ary_reject(CTX *c, VALUE self, int argc, VALUE *argv) {
-    CHECK_FROZEN_RET(c, self, Qnil);
+    /* Non-mutating — reject! is the in-place form (registered as
+     * delete_if, which does mutate and is FROZEN-checked). */
+    if (!korb_block_given()) return self;
     struct korb_array *a = (struct korb_array *)self;
     VALUE r = korb_ary_new();
     for (long i = 0; i < a->len; i++) {

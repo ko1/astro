@@ -370,7 +370,8 @@ void korb_init_builtins(void) {
     DEF(cAry, "+",          ary_concat,     -1);
     DEF(cAry, "index",      ary_index,      -1);
     DEF(cAry, "find_index", ary_index,      -1);
-    DEF(cAry, "reverse",    ary_reverse,     0);
+    DEF(cAry, "reverse",      ary_reverse,      0);
+    DEF(cAry, "reverse_each", ary_reverse_each, 0);
     DEF(cAry, "clear",      ary_clear,       0);
     DEF(cAry, "unshift",    ary_unshift,    -1);
     DEF(cAry, "prepend",    ary_unshift,    -1);
