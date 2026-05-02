@@ -2,7 +2,7 @@
 
 [done.md](./done.md) は実装済み。ここは **未実装 / 不完全 / 既知バグ** をまとめる。
 
-現状: **test/ruby/ 124 ファイル全 pass**。
+現状: **test/ruby/ 139 ファイル全 pass**。
 optcarrot は ruby と checksum 一致、CRuby の 2.2x、YJIT の 0.55x。
 
 ---
@@ -24,9 +24,11 @@ optcarrot は ruby と checksum 一致、CRuby の 2.2x、YJIT の 0.55x。
 - 完: no-block 形 (each / map / select / reject / each_with_index /
   reverse_each / Range#each / Range#map) は **Array stand-in** を返し、
   `.to_a` / 後続 `.map { }` / etc. が機能
-- 未: 真の `Enumerator::Lazy` (`(1..Float::INFINITY).lazy.map.first(N)`)
+- 完: `Range#lazy` は `LazyRange` (bootstrap.rb 実装) を返し、
+  `(1..Float::INFINITY).lazy.map.first(N)` / `select.first(N)` /
+  `map.select.first(N)` の chain が無限 range で動く
 - 未: `Enumerator.new { |y| y << ... }`
-- 影響: 普通の `.each.to_a` は動く。 無限 lazy が必要なコードのみ落ちる
+- 未: Array#lazy / 任意 Enumerable に対する真の Lazy (LazyRange は Range 専用)
 
 ### 2.2 IO / File / Dir
 - `File.read(path)` / `File.open` 程度のみ
@@ -44,14 +46,16 @@ optcarrot は ruby と checksum 一致、CRuby の 2.2x、YJIT の 0.55x。
   `garbage_collect`、 stub `each_object` (yields nothing — Boehm に live-object
   enum API 無し)
 - 完: `Method#parameters` / `Proc#parameters` ([[kind], ...]、 names は無し)
+- 完: `Method#source_location` / `Proc#source_location`
+  ([file, line] / cfunc は nil、empty def も def 行を返す)
 - 未: `Kernel#binding` → `eval(str, binding)` 不可
-- 未: `Proc#source_location` / `Method#source_location`
 
-### 2.5 Complex / Rational
-- リテラル `1r` / `1+2i` 未対応
-- `Rational` / `Complex` クラスは stub (bootstrap.rb で簡易実装)
-- Numeric#coerce の rational/complex 経路は coerce protocol で動くが、Rational
-  自体の演算が脆弱
+### 2.5 Complex / Rational  ✅ 2026-05-02 部分完
+- 完: `1r` / `2.5r` / `1+2i` / `3i` リテラル (parse.c で PM_RATIONAL_NODE /
+  PM_IMAGINARY_NODE → Rational/Complex 構築 seq)
+- 完: user `#inspect` を `p` / Array#inspect / Hash#inspect から dispatch
+  (`(1/2)` / `(1+2i)` 表示が正しく出る、入れ子もOK)
+- 未: Rational ↔ Bignum、Complex の極座標、Float ↔ Rational の coerce 全経路
 
 ### 2.6 Comparable on user Numerics  ✅ 2026-05-02 完
 - `1 + my_num` で my_num.coerce(1) を呼ぶ protocol 実装
@@ -115,10 +119,14 @@ optcarrot は ruby と checksum 一致、CRuby の 2.2x、YJIT の 0.55x。
 - Hash shorthand `{x:, y:}` (PM_IMPLICIT_NODE unwrap)
 - Numbered block param `_1` / `_2` (PM_NUMBERED_PARAMETERS_NODE)
 
-### 3.8 Backtrace
-- `e.backtrace` 動くが内容が CRuby と異なる (line 番号 / file 名フォーマット)
-- `Kernel#caller` も簡易版
-- 細部は実用上問題ないので保留
+### 3.8 Backtrace  ✅ 2026-05-02 部分改善
+- `<file>:<line>:in '<method>'` 形式で出力 (CRuby と一致)
+- 各 frame は method body の `head.source_file` を使うので、 require した
+  別ファイルで定義された method は正しい file を返す
+- 残: 第一 frame の line が cfunc raise の場合 `last_cfunc_callsite->head.line`
+  に依存するが、そのノードが build helper 経由で line=0 のまま作られている
+  ケースで caller frame line に fallback する。 細部は実用上問題ないので保留
+- 残: `Kernel#caller` も簡易版
 
 ---
 
@@ -136,8 +144,9 @@ optcarrot は ruby と checksum 一致、CRuby の 2.2x、YJIT の 0.55x。
 2. ~~Enumerator stand-in 強化~~ ✅ 完
 3. ~~Object.ancestors に Kernel, BasicObject を入れる~~ ✅ 完
 4. ~~Numeric#coerce protocol~~ ✅ 完
-5. **Comparable mixin の派生メソッド網羅再検証** — `<`, `<=`, `==`, `>`,
-   `>=`, `between?`, `clamp` が user `<=>` から自動的に来ること
+5. ~~Comparable mixin の派生メソッド網羅再検証~~ ✅ 完
+   (`<`, `<=`, `==`, `>`, `>=`, `between?`, `clamp` 全部 `<=>` 経由で派生、
+   不一致 type で `<=>` が nil 返した場合は ArgumentError raise — CRuby 一致)
 6. **Kernel#binding** + `eval(str, binding)` — caller の locals を見せる
    binding object
 
@@ -145,10 +154,8 @@ optcarrot は ruby と checksum 一致、CRuby の 2.2x、YJIT の 0.55x。
 7. ~~Custom class as Hash key~~ ✅ 完
 8. ~~Method#parameters / Proc#parameters~~ ✅ 完
 9. ~~Endless method def, numbered block param, hash shorthand~~ ✅ 完
-10. **`__send__` / `public_send` の visibility 区別** — public_send は
-    private を block するべき
-11. **Method#source_location / Proc#source_location** — file:line を
-    返す。 require して定義されたメソッドの位置情報
+10. ~~`__send__` / `public_send` の visibility 区別~~ ✅ 完
+11. ~~Method#source_location / Proc#source_location~~ ✅ 完
 
 ### Low (大きい・別 project 待ち)
 12. **Regexp** — sample/astrorge 完成後に integrate

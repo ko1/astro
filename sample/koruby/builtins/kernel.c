@@ -2,7 +2,12 @@
 
 /* ---------- Kernel ---------- */
 static VALUE kernel_p(CTX *c, VALUE self, int argc, VALUE *argv) {
-    for (int i = 0; i < argc; i++) korb_p(argv[i]);
+    for (int i = 0; i < argc; i++) {
+        VALUE s = korb_inspect_dispatch(c, argv[i]);
+        struct korb_string *str = (struct korb_string *)s;
+        fwrite(str->ptr, 1, str->len, stdout);
+        fputc('\n', stdout);
+    }
     if (argc == 0) return Qnil;
     if (argc == 1) return argv[0];
     return korb_ary_new_from_values(argc, argv);
@@ -77,6 +82,9 @@ static VALUE kernel_raise(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE kernel_inspect(CTX *c, VALUE self, int argc, VALUE *argv) {
+    /* Default Kernel#inspect for objects that don't override it.
+     * Avoid calling korb_inspect_dispatch here — that would loop
+     * straight back to this cfunc.  korb_inspect skips user dispatch. */
     return korb_inspect(self);
 }
 

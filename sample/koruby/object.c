@@ -1230,13 +1230,21 @@ VALUE korb_class_of(VALUE v) { return (VALUE)korb_class_of_class(v); }
  * use each frame's caller_node->head.line. */
 VALUE korb_build_backtrace(CTX *c, int raise_line) {
     VALUE arr = korb_ary_new();
-    const char *file = c->current_file ? c->current_file : "(unknown)";
+    const char *default_file = c->current_file ? c->current_file : "(unknown)";
     char buf[512];
     struct korb_frame *f = c->current_frame;
     bool first = true;
     while (f) {
         const char *name = (f->method && f->method->name)
                              ? korb_id_name(f->method->name) : "<main>";
+        /* Prefer the method body's source_file (set when the def was
+         * parsed) so methods from required files report their own
+         * file, not the entry-point's. */
+        const char *file = default_file;
+        if (f->method && f->method->type == KORB_METHOD_AST &&
+            f->method->u.ast.body && f->method->u.ast.body->head.source_file) {
+            file = f->method->u.ast.body->head.source_file;
+        }
         int line;
         if (first) {
             line = raise_line;
@@ -1251,7 +1259,7 @@ VALUE korb_build_backtrace(CTX *c, int raise_line) {
     }
     /* Always include a top-level entry so the trace is non-empty even
      * for raises from main. */
-    snprintf(buf, sizeof(buf), "%s:%d:in `<main>'", file, raise_line);
+    snprintf(buf, sizeof(buf), "%s:%d:in `<main>'", default_file, raise_line);
     if (((struct korb_array *)arr)->len == 0) {
         korb_ary_push(arr, korb_str_new_cstr(buf));
     }
@@ -1412,6 +1420,17 @@ static VALUE korb_inspect_inner(VALUE v, int depth) {
     }
     if (t == T_OBJECT) {
         struct korb_class *k = (struct korb_class *)((struct korb_object *)v)->basic.klass;
+        /* If the class defines its own #inspect, delegate (so nested
+         * Rational / Complex / user-class inside Array/Hash render
+         * via their inspect rather than the default `#<Cls:0x...>`). */
+        if (k && korb_vm && korb_vm->current_ctx) {
+            struct korb_method *m = korb_class_find_method(k, korb_intern("inspect"));
+            if (m && m->type == KORB_METHOD_AST) {
+                VALUE r = korb_funcall(korb_vm->current_ctx, v,
+                                       korb_intern("inspect"), 0, NULL);
+                if (BUILTIN_TYPE(r) == T_STRING) return r;
+            }
+        }
         VALUE msg = korb_ivar_get(v, korb_intern("@message"));
         if (msg && !UNDEF_P(msg) && !SPECIAL_CONST_P(msg) && BUILTIN_TYPE(msg) == T_STRING) {
             /* Exception-shaped: "#<ClassName: message>" */
@@ -1435,6 +1454,27 @@ static VALUE korb_inspect_inner(VALUE v, int depth) {
 }
 
 VALUE korb_inspect(VALUE v) { return korb_inspect_inner(v, 0); }
+
+/* CTX-aware inspect — dispatches a user-defined inspect if the
+ * receiver's class has one (e.g., Rational defines `def inspect;
+ * "(num/den)"; end`).  Used by kernel_p and #inspect-from-Ruby
+ * so user objects render via their own inspect rather than the
+ * default `#<Class:0x...>` form. */
+VALUE korb_inspect_dispatch(CTX *c, VALUE v) {
+    if (!c) return korb_inspect(v);
+    if (!SPECIAL_CONST_P(v)) {
+        struct korb_class *klass = korb_class_of_class(v);
+        struct korb_method *m = korb_class_find_method(klass, korb_intern("inspect"));
+        /* Skip the inherited Kernel#inspect cfunc (which would just
+         * loop back here); only redirect when the user actually
+         * overrode it as an AST method. */
+        if (m && m->type == KORB_METHOD_AST) {
+            VALUE r = korb_funcall(c, v, korb_intern("inspect"), 0, NULL);
+            if (BUILTIN_TYPE(r) == T_STRING) return r;
+        }
+    }
+    return korb_inspect(v);
+}
 
 /* CTX-aware to_s — dispatches a user-defined to_s if the receiver's
  * class has one (e.g., a class with `def to_s; "..."; end`).  Used

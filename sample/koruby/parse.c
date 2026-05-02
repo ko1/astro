@@ -45,6 +45,7 @@ struct frame_context {
 struct transduce_context {
     struct frame_context *frame;
     pm_parser_t *parser;
+    const char *source_file;   /* for NodeHead.source_file */
     bool verbose;
     int last_line;
 };
@@ -743,7 +744,10 @@ static NODE *
 T(struct transduce_context *tc, pm_node_t *node)
 {
     NODE *r = T_inner(tc, node);
-    if (r && node) r->head.line = line_of_node(tc, node);
+    if (r && node) {
+        r->head.line = line_of_node(tc, node);
+        if (!r->head.source_file && tc->source_file) r->head.source_file = tc->source_file;
+    }
     return r;
 }
 
@@ -1777,6 +1781,18 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
           }
           NODE *body = n->body ? T(tc, n->body) : ALLOC_node_nil();
           if (prologue) body = ALLOC_node_seq(prologue, body);
+          /* For Method#source_location: prefer the def's own line over
+           * whatever the body happens to be at, so empty defs and defs
+           * whose first statement is on a separate line both report the
+           * `def` keyword's line (matching CRuby). */
+          {
+              int def_line = line_of_node(tc, node);
+              if (body) {
+                  body->head.line = def_line;
+                  if (!body->head.source_file && tc->source_file)
+                      body->head.source_file = tc->source_file;
+              }
+          }
           uint32_t locals = tc->frame->max_cnt;
           pop_frame(tc);
           code_repo_add(korb_id_name(name), body, false);
@@ -2751,6 +2767,14 @@ koruby_parse(const char *src, size_t len, const char *filename)
 
     struct transduce_context tc = { 0 };
     tc.parser = &parser;
+    /* Stash a heap-stable copy of filename so NodeHead.source_file
+     * stays valid past the parser's lifetime. */
+    if (filename) {
+        size_t fl = strlen(filename);
+        char *buf = korb_xmalloc_atomic(fl + 1);
+        memcpy(buf, filename, fl + 1);
+        tc.source_file = buf;
+    }
     NODE *r = T(&tc, root);
 
     pm_node_destroy(&parser, root);

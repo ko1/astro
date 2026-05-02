@@ -304,6 +304,37 @@ static VALUE method_parameters(CTX *c, VALUE self, int argc, VALUE *argv) {
     return method_params_for_method(korb_class_find_method(k, m->name));
 }
 
+/* Method#source_location — [file, line] of the method's body node,
+ * or nil for cfunc / synthesized methods. */
+static VALUE method_source_location(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_method_obj *m = (struct korb_method_obj *)self;
+    struct korb_class *k;
+    if (!SPECIAL_CONST_P(m->receiver) &&
+        (BUILTIN_TYPE(m->receiver) == T_CLASS || BUILTIN_TYPE(m->receiver) == T_MODULE)) {
+        k = (struct korb_class *)m->receiver;
+    } else {
+        k = korb_class_of_class(m->receiver);
+    }
+    struct korb_method *km = korb_class_find_method(k, m->name);
+    if (!km || km->type != KORB_METHOD_AST || !km->u.ast.body) return Qnil;
+    struct Node *body = km->u.ast.body;
+    VALUE r = korb_ary_new_capa(2);
+    korb_ary_push(r, body->head.source_file ? korb_str_new_cstr(body->head.source_file) : Qnil);
+    korb_ary_push(r, INT2FIX(body->head.line));
+    return r;
+}
+
+/* Proc#source_location — same shape, drawn from blk->body. */
+VALUE proc_source_location(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (BUILTIN_TYPE(self) != T_PROC) return Qnil;
+    struct korb_proc *p = (struct korb_proc *)self;
+    if (!p->body) return Qnil;
+    VALUE r = korb_ary_new_capa(2);
+    korb_ary_push(r, p->body->head.source_file ? korb_str_new_cstr(p->body->head.source_file) : Qnil);
+    korb_ary_push(r, INT2FIX(p->body->head.line));
+    return r;
+}
+
 /* Proc#parameters — derive from korb_proc fields. */
 VALUE proc_parameters(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (BUILTIN_TYPE(self) != T_PROC) return korb_ary_new();

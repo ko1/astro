@@ -674,7 +674,9 @@ void korb_init_builtins(void) {
     DEF(cPrc, "arity", proc_arity, 0);
     {
         VALUE proc_parameters(CTX *c, VALUE self, int argc, VALUE *argv);
-        DEF(cPrc, "parameters", proc_parameters, 0);
+        VALUE proc_source_location(CTX *c, VALUE self, int argc, VALUE *argv);
+        DEF(cPrc, "parameters",      proc_parameters,      0);
+        DEF(cPrc, "source_location", proc_source_location, 0);
     }
     DEF(cPrc, "==", proc_eq, 1);
     DEF(cPrc, "eql?", proc_eq, 1);
@@ -742,7 +744,8 @@ void korb_init_builtins(void) {
         korb_class_add_method_cfunc(cMethod, korb_intern("owner"),      method_owner,      0);
         korb_class_add_method_cfunc(cMethod, korb_intern("bind"),       method_bind,       1);
         korb_class_add_method_cfunc(cMethod, korb_intern("unbind"),     method_to_proc,    0); /* approx */
-        korb_class_add_method_cfunc(cMethod, korb_intern("parameters"), method_parameters, 0);
+        korb_class_add_method_cfunc(cMethod, korb_intern("parameters"),      method_parameters,      0);
+        korb_class_add_method_cfunc(cMethod, korb_intern("source_location"), method_source_location, 0);
         korb_vm->method_class = cMethod;
     }
     DEF(cObj, "instance_eval",    obj_instance_eval,       -1);

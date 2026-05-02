@@ -8,7 +8,8 @@
 static long korb_cmp_call(CTX *c, VALUE self, VALUE other) {
     VALUE r = korb_funcall(c, self, korb_intern("<=>"), 1, &other);
     if (NIL_P(r)) {
-        korb_raise(c, NULL, "comparison of %s with %s failed",
+        VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+        korb_raise(c, (struct korb_class *)eArg, "comparison of %s with %s failed",
                    korb_id_name(korb_class_of_class(self)->name),
                    korb_id_name(korb_class_of_class(other)->name));
         return 0;
