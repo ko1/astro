@@ -900,7 +900,12 @@ static VALUE str_succ(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 /* String#each_byte — yields each byte as Integer. */
 static VALUE str_each_byte(CTX *c, VALUE self, int argc, VALUE *argv) {
-    struct korb_string *s = (struct korb_string *)self;
+    const struct korb_string *s = (const struct korb_string *)self;
+    if (!korb_block_given()) {
+        VALUE r = korb_ary_new_capa(s->len);
+        for (long i = 0; i < s->len; i++) korb_ary_push(r, INT2FIX((unsigned char)s->ptr[i]));
+        return r;
+    }
     for (long i = 0; i < s->len; i++) {
         VALUE b = INT2FIX((unsigned char)s->ptr[i]);
         korb_yield(c, 1, &b);
@@ -1125,20 +1130,30 @@ static VALUE str_delete_suffix(CTX *c, VALUE self, int argc, VALUE *argv) {
  * Was registered as str_split, which split on whitespace.  Walks the
  * string yielding each line including its trailing '\n'; returns self. */
 static VALUE str_each_line(CTX *c, VALUE self, int argc, VALUE *argv) {
-    struct korb_string *s = (struct korb_string *)self;
+    const struct korb_string *s = (const struct korb_string *)self;
+    bool has_block = korb_block_given();
+    VALUE collected = has_block ? Qnil : korb_ary_new();
     long start = 0;
     for (long i = 0; i < s->len; i++) {
         if (s->ptr[i] == '\n') {
             VALUE line = korb_str_new(s->ptr + start, i - start + 1);
-            korb_yield(c, 1, &line);
-            if (c->state != KORB_NORMAL) return Qnil;
+            if (has_block) {
+                korb_yield(c, 1, &line);
+                if (c->state != KORB_NORMAL) return Qnil;
+            } else {
+                korb_ary_push(collected, line);
+            }
             start = i + 1;
         }
     }
     if (start < s->len) {
         VALUE line = korb_str_new(s->ptr + start, s->len - start);
-        korb_yield(c, 1, &line);
-        if (c->state != KORB_NORMAL) return Qnil;
+        if (has_block) {
+            korb_yield(c, 1, &line);
+            if (c->state != KORB_NORMAL) return Qnil;
+        } else {
+            korb_ary_push(collected, line);
+        }
     }
-    return self;
+    return has_block ? self : collected;
 }

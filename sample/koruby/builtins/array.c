@@ -409,20 +409,62 @@ static VALUE ary_include(CTX *c, VALUE self, int argc, VALUE *argv) {
     return Qfalse;
 }
 
+/* Predicates with optional pattern arg + optional block.
+ *   any?           — any element truthy
+ *   any?(pat)      — pat === elem for any element
+ *   any? { blk }   — blk(elem) truthy for any element
+ * If both pattern and block are given, CRuby uses the block (and warns).
+ * Returns Qtrue/Qfalse. */
+static int ary_predicate_match(CTX *c, VALUE elem, int argc, VALUE *argv) {
+    if (korb_block_given()) {
+        VALUE r = korb_yield(c, 1, &elem);
+        return RTEST(r);
+    }
+    if (argc >= 1) {
+        VALUE r = korb_funcall(c, argv[0], korb_intern("==="), 1, &elem);
+        return RTEST(r);
+    }
+    return RTEST(elem);
+}
+
 static VALUE ary_any_p(CTX *c, VALUE self, int argc, VALUE *argv) {
-    struct korb_array *a = (struct korb_array *)self;
+    const struct korb_array *a = (const struct korb_array *)self;
     for (long i = 0; i < a->len; i++) {
-        if (RTEST(a->ptr[i])) return Qtrue;
+        if (ary_predicate_match(c, a->ptr[i], argc, argv)) return Qtrue;
+        if (c->state != KORB_NORMAL) return Qnil;
     }
     return Qfalse;
 }
 
 static VALUE ary_all_p(CTX *c, VALUE self, int argc, VALUE *argv) {
-    struct korb_array *a = (struct korb_array *)self;
+    const struct korb_array *a = (const struct korb_array *)self;
     for (long i = 0; i < a->len; i++) {
-        if (!RTEST(a->ptr[i])) return Qfalse;
+        if (!ary_predicate_match(c, a->ptr[i], argc, argv)) return Qfalse;
+        if (c->state != KORB_NORMAL) return Qnil;
     }
     return Qtrue;
+}
+
+static VALUE ary_none_p(CTX *c, VALUE self, int argc, VALUE *argv) {
+    const struct korb_array *a = (const struct korb_array *)self;
+    for (long i = 0; i < a->len; i++) {
+        if (ary_predicate_match(c, a->ptr[i], argc, argv)) return Qfalse;
+        if (c->state != KORB_NORMAL) return Qnil;
+    }
+    return Qtrue;
+}
+
+static VALUE ary_one_p(CTX *c, VALUE self, int argc, VALUE *argv) {
+    const struct korb_array *a = (const struct korb_array *)self;
+    long count = 0;
+    for (long i = 0; i < a->len; i++) {
+        if (ary_predicate_match(c, a->ptr[i], argc, argv)) {
+            count++;
+            if (count > 1) return Qfalse;
+        }
+        if (c->state != KORB_NORMAL) return Qnil;
+    }
+    return KORB_BOOL(count == 1);
 }
 
 static VALUE ary_min(CTX *c, VALUE self, int argc, VALUE *argv) {
@@ -1585,28 +1627,6 @@ static VALUE ary_shuffle(CTX *c, VALUE self, int argc, VALUE *argv) {
         ra->ptr[j] = tmp;
     }
     return r;
-}
-
-/* ---------- Array#one? ----------
- * Without a block: true iff exactly one element is truthy.
- * With a block: true iff the block returns truthy for exactly one element. */
-static VALUE ary_one_p(CTX *c, VALUE self, int argc, VALUE *argv) {
-    struct korb_array *a = (struct korb_array *)self;
-    long count = 0;
-    for (long i = 0; i < a->len; i++) {
-        VALUE v;
-        if (korb_block_given()) {
-            v = korb_yield(c, 1, &a->ptr[i]);
-            if (c->state != KORB_NORMAL) return Qnil;
-        } else {
-            v = a->ptr[i];
-        }
-        if (RTEST(v)) {
-            count++;
-            if (count > 1) return Qfalse;
-        }
-    }
-    return KORB_BOOL(count == 1);
 }
 
 /* ---------- Array#each_cons(n) ----------

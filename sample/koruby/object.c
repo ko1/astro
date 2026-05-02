@@ -5,6 +5,7 @@
 
 #include <gc.h>
 #include <gmp.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1316,6 +1317,31 @@ static void str_appendf(VALUE s, const char *fmt, ...) {
 
 static VALUE korb_inspect_inner(VALUE v, int depth);
 
+/* Shortest round-tripping decimal for a double (matches CRuby's
+ * `3.14.to_s == "3.14"` while staying unambiguous).  Tries %.1g..%.17g
+ * and returns the first that strtod()s back to the same bit pattern.
+ * Always emits `.0` for whole numbers so the type is visible. */
+static void korb_double_to_str(double d, char *out, size_t out_cap) {
+    if (isnan(d)) { snprintf(out, out_cap, "NaN"); return; }
+    if (isinf(d)) { snprintf(out, out_cap, d < 0 ? "-Infinity" : "Infinity"); return; }
+    for (int p = 1; p <= 17; p++) {
+        snprintf(out, out_cap, "%.*g", p, d);
+        if (strtod(out, NULL) == d) goto check_dot;
+    }
+    snprintf(out, out_cap, "%.17g", d);
+  check_dot:
+    {
+        bool has_dot_or_e = false;
+        for (char *q = out; *q; q++) {
+            if (*q == '.' || *q == 'e' || *q == 'E') { has_dot_or_e = true; break; }
+        }
+        if (!has_dot_or_e) {
+            size_t l = strlen(out);
+            if (l + 2 < out_cap) { out[l] = '.'; out[l+1] = '0'; out[l+2] = 0; }
+        }
+    }
+}
+
 static VALUE korb_inspect_inner(VALUE v, int depth) {
     if (depth > 32) return korb_str_new_cstr("...");
     if (FIXNUM_P(v)) {
@@ -1323,7 +1349,7 @@ static VALUE korb_inspect_inner(VALUE v, int depth) {
         return korb_str_new_cstr(b);
     }
     if (FLONUM_P(v)) {
-        char b[64]; snprintf(b, 64, "%.17g", korb_flonum_to_double(v));
+        char b[64]; korb_double_to_str(korb_flonum_to_double(v), b, sizeof(b));
         return korb_str_new_cstr(b);
     }
     if (NIL_P(v)) return korb_str_new_cstr("nil");
@@ -1405,7 +1431,7 @@ static VALUE korb_inspect_inner(VALUE v, int depth) {
         return s;
     }
     if (t == T_FLOAT) {
-        char b[64]; snprintf(b, 64, "%.17g", ((struct korb_float *)v)->value);
+        char b[64]; korb_double_to_str(((struct korb_float *)v)->value, b, sizeof(b));
         return korb_str_new_cstr(b);
     }
     if (t == T_BIGNUM) {

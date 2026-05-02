@@ -13,15 +13,27 @@ static VALUE flt_mul(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE flt_div(CTX *c, VALUE self, int argc, VALUE *argv) {
     return korb_float_new(korb_num2dbl(self) / korb_num2dbl(argv[0]));
 }
+/* Format a double using the shortest %.<p>g that round-trips back
+ * to the same bit pattern.  This matches CRuby's `3.14.to_s == "3.14"`
+ * (not "3.1400000000000001") while still being unambiguous. */
+static void korb_float_to_shortest(double d, char *out, size_t out_cap) {
+    for (int p = 1; p <= 17; p++) {
+        snprintf(out, out_cap, "%.*g", p, d);
+        double back = strtod(out, NULL);
+        if (back == d) return;
+    }
+    snprintf(out, out_cap, "%.17g", d);
+}
+
 static VALUE flt_to_s(CTX *c, VALUE self, int argc, VALUE *argv) {
     double d = korb_num2dbl(self);
     /* Ruby uses fixed names for special values, not C's "inf" / "nan". */
     if (isnan(d)) return korb_str_new_cstr("NaN");
     if (isinf(d)) return korb_str_new_cstr(d < 0 ? "-Infinity" : "Infinity");
     char b[64];
+    korb_float_to_shortest(d, b, sizeof(b));
     /* Ruby's Float#to_s appends ".0" for whole-number Floats so the
      * type is unambiguous: `1.0.to_s == "1.0"` (not "1"). */
-    snprintf(b, 64, "%.17g", d);
     bool has_dot_or_e = false;
     for (char *p = b; *p; p++) {
         if (*p == '.' || *p == 'e' || *p == 'E') { has_dot_or_e = true; break; }

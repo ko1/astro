@@ -219,7 +219,13 @@ static VALUE int_times(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* call block self times */
     if (!FIXNUM_P(self)) return Qnil;
     long n = FIX2LONG(self);
-    /* yield current block: for simplicity we use korb_yield */
+    if (!korb_block_given()) {
+        /* No-block: return Array stand-in [0, 1, ..., n-1] for chains
+         * like `5.times.to_a` / `5.times.map { ... }`. */
+        VALUE a = korb_ary_new_capa(n > 0 ? n : 0);
+        for (long i = 0; i < n; i++) korb_ary_push(a, INT2FIX(i));
+        return a;
+    }
     for (long i = 0; i < n; i++) {
         VALUE arg = INT2FIX(i);
         VALUE r = korb_yield(c, 1, &arg);
@@ -446,6 +452,11 @@ static VALUE int_step(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE int_upto(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (!FIXNUM_P(self) || argc < 1 || !FIXNUM_P(argv[0])) return self;
     long start = FIX2LONG(self), stop = FIX2LONG(argv[0]);
+    if (!korb_block_given()) {
+        VALUE a = korb_ary_new();
+        for (long i = start; i <= stop; i++) korb_ary_push(a, INT2FIX(i));
+        return a;
+    }
     for (long i = start; i <= stop; i++) {
         VALUE v = INT2FIX(i);
         korb_yield(c, 1, &v);
@@ -457,6 +468,11 @@ static VALUE int_upto(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE int_downto(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (!FIXNUM_P(self) || argc < 1 || !FIXNUM_P(argv[0])) return self;
     long start = FIX2LONG(self), stop = FIX2LONG(argv[0]);
+    if (!korb_block_given()) {
+        VALUE a = korb_ary_new();
+        for (long i = start; i >= stop; i--) korb_ary_push(a, INT2FIX(i));
+        return a;
+    }
     for (long i = start; i >= stop; i--) {
         VALUE v = INT2FIX(i);
         korb_yield(c, 1, &v);

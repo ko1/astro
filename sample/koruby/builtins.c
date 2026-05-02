@@ -360,6 +360,7 @@ void korb_init_builtins(void) {
     DEF(cAry, "include?",   ary_include,     1);
     DEF(cAry, "any?",       ary_any_p,      -1);
     DEF(cAry, "all?",       ary_all_p,      -1);
+    DEF(cAry, "none?",      ary_none_p,     -1);
     DEF(cAry, "min",        ary_min,        -1);
     DEF(cAry, "max",        ary_max,        -1);
     DEF(cAry, "sum",        ary_sum,        -1);
@@ -413,7 +414,7 @@ void korb_init_builtins(void) {
     DEF(cAry, "drop_while",     ary_drop_while, 0);
     DEF(cAry, "shuffle",        ary_shuffle,    0);
     DEF(cAry, "bsearch",        ary_bsearch,    0);
-    DEF(cAry, "one?",           ary_one_p,      0);
+    DEF(cAry, "one?",           ary_one_p,     -1);
     /* String additions */
     DEF(cStr, "hex",           str_hex,           0);
     DEF(cStr, "oct",           str_oct,           0);

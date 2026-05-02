@@ -380,17 +380,36 @@ static VALUE kernel_array(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 /* ---------- Kernel#caller / __method__ / eval (stub) / loop ---------- */
 static VALUE kernel_caller(CTX *c, VALUE self, int argc, VALUE *argv) {
-    /* Walk current_frame chain.  HEAD doesn't track caller_node so we
-     * just return method names in the form "in `name'". */
+    /* Walk current_frame chain, skipping the kernel_caller cfunc itself
+     * AND the AST method that called it (matching CRuby — caller starts
+     * at the *caller's* frame).  Each entry uses the method body's
+     * source_file when available, falling back to c->current_file. */
     VALUE arr = korb_ary_new();
+    const char *default_file = c->current_file ? c->current_file : "(unknown)";
+    /* Start one frame up: kernel_caller (cfunc) doesn't push its own
+     * frame, so current_frame is the caller method.  caller() returns
+     * the *caller's* caller chain → skip current_frame's level. */
     struct korb_frame *f = c->current_frame ? c->current_frame->prev : NULL;
+    char buf[512];
     while (f) {
         const char *name = (f->method && f->method->name)
-                             ? korb_id_name(f->method->name) : "<unknown>";
-        char buf[128];
-        snprintf(buf, sizeof(buf), "(eval):in `%s'", name);
+                             ? korb_id_name(f->method->name) : "<main>";
+        const char *file = default_file;
+        if (f->method && f->method->type == KORB_METHOD_AST &&
+            f->method->u.ast.body && f->method->u.ast.body->head.source_file) {
+            file = f->method->u.ast.body->head.source_file;
+        }
+        int line = f->caller_node ? f->caller_node->head.line : 0;
+        snprintf(buf, sizeof(buf), "%s:%d:in `%s'", file, line, name);
         korb_ary_push(arr, korb_str_new_cstr(buf));
         f = f->prev;
+    }
+    /* If the caller chain is empty (called from top-level main), append
+     * a synthetic main entry so the result mirrors CRuby's at least one
+     * line — chains like `caller.first` then don't NPE. */
+    if (((struct korb_array *)arr)->len == 0) {
+        snprintf(buf, sizeof(buf), "%s:0:in `<main>'", default_file);
+        korb_ary_push(arr, korb_str_new_cstr(buf));
     }
     return arr;
 }

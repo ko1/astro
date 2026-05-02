@@ -717,6 +717,22 @@ class Range
   def cover?(v)
     f = first
     l = last
+    # Range vs Range: normalize each range's effective last (subtract
+    # one when exclude_end and the bound is an Integer) so comparisons
+    # are uniform.
+    if v.is_a?(Range)
+      vf = v.first
+      vl = v.last
+      return false if vf.nil? && !f.nil?
+      return false if vl.nil? && !l.nil?
+      return false if !f.nil? && !vf.nil? && vf < f
+      if !l.nil? && !vl.nil?
+        outer_last = (exclude_end? && l.is_a?(Integer)) ? l - 1 : l
+        inner_last = (v.exclude_end? && vl.is_a?(Integer)) ? vl - 1 : vl
+        return inner_last <= outer_last
+      end
+      return true
+    end
     if f.nil?
       return v < l if exclude_end?
       return v <= l

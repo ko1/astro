@@ -212,12 +212,17 @@ static VALUE rng_size(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 static VALUE rng_include(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1 || !FIXNUM_P(argv[0])) return Qfalse;
-    struct korb_range *r = (struct korb_range *)self;
-    if (!FIXNUM_P(r->begin) || !FIXNUM_P(r->end)) return Qfalse;
+    const struct korb_range *r = (const struct korb_range *)self;
+    if (!FIXNUM_P(r->begin) && !NIL_P(r->begin)) return Qfalse;
+    if (!FIXNUM_P(r->end)   && !NIL_P(r->end))   return Qfalse;
     long v = FIX2LONG(argv[0]);
-    long b = FIX2LONG(r->begin), e = FIX2LONG(r->end);
-    if (r->exclude_end) return KORB_BOOL(v >= b && v < e);
-    return KORB_BOOL(v >= b && v <= e);
+    /* Endless / beginless ranges: missing end is +infinity, missing
+     * begin is -infinity.  Inclusive on the present side only. */
+    bool ge_b = NIL_P(r->begin) || v >= FIX2LONG(r->begin);
+    bool lt_e;
+    if (NIL_P(r->end)) lt_e = true;
+    else lt_e = r->exclude_end ? (v < FIX2LONG(r->end)) : (v <= FIX2LONG(r->end));
+    return KORB_BOOL(ge_b && lt_e);
 }
 
 static VALUE rng_map(CTX *c, VALUE self, int argc, VALUE *argv) {
