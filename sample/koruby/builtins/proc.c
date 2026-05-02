@@ -79,16 +79,36 @@ VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
         }
     }
     VALUE *prev_fp = c->fp;
+    VALUE *prev_sp = c->sp;
     VALUE prev_self = c->self;
     /* Use the proc's own captured env directly so writes to closure
      * variables (`r = ...` inside the block) reach the outer scope.
      * korb_proc_snapshot_env_if_in_frame already detaches env to heap
      * when the enclosing method's frame goes away, so by the time
-     * proc.call runs the env is safe to share. */
+     * proc.call runs the env is safe to share.
+     *
+     * Slot-collision guard: if a method is currently active above env
+     * (prev_fp lies inside env's slot range), the block's own slot
+     * range [param_base, env_size) overlaps that method's locals.
+     * Clone env to a fresh location above c->sp, run there, then write
+     * back the closure-captured slots [0, param_base) so outer-scope
+     * assignments survive. */
     VALUE *new_fp = p->env;
+    VALUE *fresh_env = NULL;     /* non-null when we cloned */
     if (UNLIKELY(!new_fp)) {
         korb_raise(c, NULL, "proc with no env");
         return Qnil;
+    }
+    /* Clone env whenever we're called from a different frame (prev_fp
+     * != env): nested method calls inside the body would otherwise
+     * write into slots that overlap with prev_fp's locals.  After the
+     * body, the closure-captured slots [0, param_base) are written
+     * back so outer-scope assignments survive. */
+    if (prev_fp && prev_fp != new_fp) {
+        fresh_env = c->sp;
+        for (uint32_t i = 0; i < p->env_size; i++) fresh_env[i] = new_fp[i];
+        c->sp = fresh_env + p->env_size;
+        new_fp = fresh_env;
     }
     /* Kwargs peel: if block declares kwargs and last arg is a Hash,
      * stash it; otherwise default to {}. */
@@ -147,6 +167,15 @@ VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
     korb_proc_snapshot_env_if_in_frame(r, new_fp, new_fp + p->env_size);
     if (c->state == KORB_RETURN || c->state == KORB_BREAK) {
         korb_proc_snapshot_env_if_in_frame(c->state_value, new_fp, new_fp + p->env_size);
+    }
+    /* If we used a cloned env, write back the closure-captured slots
+     * (everything below the block's own param_base) so outer-scope
+     * assignments survive. */
+    if (fresh_env) {
+        for (uint32_t i = 0; i < p->param_base; i++) {
+            p->env[i] = fresh_env[i];
+        }
+        c->sp = prev_sp;
     }
     c->fp = prev_fp;
     c->self = prev_self;
