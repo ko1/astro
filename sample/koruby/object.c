@@ -2323,6 +2323,15 @@ struct korb_fiber {
      * from within the fiber. */
     VALUE *frame;
     size_t frame_size;
+
+    /* Boehm GC bookkeeping: when the fiber is running, Boehm needs to
+     * scan the fiber's C stack (allocated as `stack`) instead of the
+     * resumer's main-thread stack.  resumer_gc_sb is saved on resume
+     * (just before the swapcontext that switches to the fiber) and
+     * used by yield to restore Boehm's view when control returns to
+     * the resumer. */
+    struct GC_stack_base resumer_gc_sb;
+    struct GC_stack_base fiber_gc_sb;
 };
 
 static __thread struct korb_fiber *current_fiber = NULL;
@@ -2430,7 +2439,22 @@ VALUE korb_fiber_resume(CTX *c, VALUE fibv, int argc, VALUE *argv) {
     c->stack_base = fib->frame;
     c->stack_end = fib->frame + fib->frame_size;
     fib->state = KF_RUNNING;
+
+    /* Boehm GC walks the current thread's C stack from rsp to its
+     * registered "stack bottom" (= top of the stack region).  After
+     * swapcontext, rsp lives in the fiber's malloc'd stack; without
+     * updating Boehm, it walks from there toward the resumer's bottom
+     * and SEGVs in unmapped memory.  Save the resumer's view on the
+     * fiber so yield can restore it, then point Boehm at the fiber. */
+    GC_get_my_stackbottom(&fib->resumer_gc_sb);
+    fib->fiber_gc_sb.mem_base = (char *)fib->stack + fib->stack_size;
+    GC_set_stackbottom(NULL, &fib->fiber_gc_sb);
+
     swapcontext(&fib->prev_ctx, &fib->ctx);
+
+    /* Back on the resumer's stack — restore Boehm's view. */
+    GC_set_stackbottom(NULL, &fib->resumer_gc_sb);
+
     /* Returned from yield/end — restore resumer's fp/sp from where the
      * yield path stashed them. */
     c->fp = fib->resumer_fp;
@@ -2459,7 +2483,17 @@ VALUE korb_fiber_yield(CTX *c, int argc, VALUE *argv) {
     c->sp = fib->resumer_sp;
     c->stack_base = fib->resumer_stack_base;
     c->stack_end = fib->resumer_stack_end;
+
+    /* Mirror of korb_fiber_resume's stack_bottom dance: switching
+     * from this fiber's stack back to the resumer's, so restore
+     * Boehm's view to the saved resumer SB. */
+    GC_set_stackbottom(NULL, &fib->resumer_gc_sb);
+
     swapcontext(&fib->ctx, &fib->prev_ctx);
+
+    /* Resumed — restore Boehm's view to this fiber's stack. */
+    GC_set_stackbottom(NULL, &fib->fiber_gc_sb);
+
     /* Resumed — restore the fiber's heap-frame extents so subsequent
      * method calls inside the fiber check against the right bounds. */
     c->stack_base = fib->frame;

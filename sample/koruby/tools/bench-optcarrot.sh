@@ -5,8 +5,8 @@
 # (so AOT-first folds in compile cost).
 #
 # Tunables (env):
-#   BENCH_FRAMES=<n>   frames to render per run.  Default 180 — koruby
-#                      currently SEGVs in Boehm GC at higher counts.
+#   BENCH_FRAMES=<n>   frames to render per run.  Default 1000 —
+#                      sustained scale that amortizes startup / GC noise.
 #   BENCH_RUNS=<n>     repeat each target N times, report best FPS
 #                      and corresponding total.  Default 3.
 
@@ -14,7 +14,7 @@ set -uo pipefail
 
 BENCH=${BENCH:-../abruby/benchmark/optcarrot/bin/optcarrot-bench}
 RUBY=${RUBY:-ruby}
-FRAMES=${BENCH_FRAMES:-180}
+FRAMES=${BENCH_FRAMES:-1000}
 RUNS=${BENCH_RUNS:-3}
 
 # Common args: headless, print fps once at the end, fixed frame count.
