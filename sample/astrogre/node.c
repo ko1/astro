@@ -64,13 +64,9 @@ dispatch_info(CTX *c, NODE *n, bool end)
 /* --- Code Store (SPECIALIZE, astro_cs_*) --- */
 #include "astro_code_store.c"
 
-/* --- User-provided EVAL / OPTIMIZE --- */
+/* --- User-provided OPTIMIZE / specialize hooks --- */
 
-VALUE
-EVAL(CTX *c, NODE *n)
-{
-    return (*n->head.dispatcher)(c, n);
-}
+/* EVAL is a macro defined in node.h. */
 
 static int g_cs_hit = 0, g_cs_miss = 0;
 

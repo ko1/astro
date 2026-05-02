@@ -9,10 +9,21 @@ typedef uint64_t node_hash_t;
 
 void INIT(void);
 node_hash_t HASH(NODE *n);
-VALUE EVAL(CTX *c, NODE *n);
 void DUMP(FILE *fp, NODE *n, bool oneline);
 NODE *OPTIMIZE(NODE *n);
 void SPECIALIZE(FILE *fp, NODE *n);
+
+/* Dispatch a NODE through its `head.dispatcher` pointer.  Defined as a
+ * macro so the call sites stay grep-friendly without going through a
+ * function call.  Used at runtime-indirect dispatch sites where the
+ * NODE pointer comes from a CTX field, a stack frame, or a runtime
+ * selection (so ASTroGen's specialiser cannot constant-fold the
+ * dispatcher value).  For chain dispatch sites where the NODE is a
+ * NODE_DEF parameter, prefer `EVAL_ARG(c, X)` — that macro is emitted
+ * by ASTroGen into node_eval.c and does receive the dispatcher value
+ * as a constant arg, which the specialiser can fold into a direct
+ * call to the inlined SD. */
+#define EVAL(c, n)   ((*(n)->head.dispatcher)((c), (n)))
 
 #define DISPATCHER_NAME(n) ((n)->head.flags.no_inline ? (#n "->head.dispatcher") : (n)->head.dispatcher_name)
 

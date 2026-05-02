@@ -730,7 +730,7 @@ node_re_greedy_dot(CTX * restrict c, NODE * restrict n, int32_t min, int32_t max
      * first success wins. */
     for (size_t pos = lim_end;; pos--) {
         c->pos = pos;
-        const VALUE r = (*next->head.dispatcher)(c, next);
+        const VALUE r = EVAL_ARG(c, next);
         if (r) return MR_STOP;
         if (pos <= min_pos) break;
     }
@@ -774,7 +774,7 @@ node_re_greedy_dot_utf8(CTX * restrict c, NODE * restrict n, int32_t min, int32_
     /* Backtrack one codepoint at a time. */
     for (;;) {
         c->pos = pos;
-        const VALUE r = (*next->head.dispatcher)(c, next);
+        const VALUE r = EVAL_ARG(c, next);
         if (r) return MR_STOP;
         if (count <= min) break;
         /* Step pos back to the start of the previous codepoint. */
@@ -820,7 +820,7 @@ node_re_greedy_class(CTX * restrict c, NODE * restrict n, uint64_t bm0, uint64_t
     /* Backtrack one byte at a time (class members are always 1 byte). */
     for (;;) {
         c->pos = pos;
-        const VALUE r = (*next->head.dispatcher)(c, next);
+        const VALUE r = EVAL_ARG(c, next);
         if (r) return MR_STOP;
         if (count <= min) break;
         if (pos == start) break;
@@ -874,7 +874,7 @@ node_re_greedy_class_cap(CTX * restrict c, NODE * restrict n, uint64_t bm0, uint
             c->valid[cap_idx]  = saved_cap_valid;
         }
         c->pos = pos;
-        const VALUE r = (*next->head.dispatcher)(c, next);
+        const VALUE r = EVAL_ARG(c, next);
         if (r) return MR_STOP;
         if (count <= min) break;
         if (pos == start) break;
@@ -911,7 +911,7 @@ node_re_lazy_class(CTX * restrict c, NODE * restrict n, uint64_t bm0, uint64_t b
     const int32_t cap = (max == -1) ? INT32_MAX : max;
     for (;;) {
         c->pos = pos;
-        const VALUE r = (*next->head.dispatcher)(c, next);
+        const VALUE r = EVAL_ARG(c, next);
         if (r) return MR_STOP;
         if (count >= cap || pos >= total) break;
         const uint8_t b = str[pos];
@@ -946,7 +946,7 @@ node_re_lazy_dot(CTX * restrict c, NODE * restrict n, int32_t min, int32_t max, 
 
     for (size_t pos = min_pos; pos <= lim_end; pos++) {
         c->pos = pos;
-        const VALUE r = (*next->head.dispatcher)(c, next);
+        const VALUE r = EVAL_ARG(c, next);
         if (r) return MR_STOP;
     }
     c->pos = start;
@@ -1073,7 +1073,7 @@ node_re_rep(CTX * restrict c, NODE * restrict n, NODE *body, NODE *outer_next, i
     c->rep_top = &f;
 
     NODE *cont = c->rep_cont_sentinel;
-    VALUE r = (*cont->head.dispatcher)(c, cont);
+    VALUE r = EVAL(c, cont);
 
     c->rep_top = f.prev;
     return r;
@@ -1099,7 +1099,7 @@ rep_cont_inner(CTX *c, struct rep_frame *f)
                 const size_t  saved_pos = c->pos;
                 f->min = (f->min > 0) ? f->min - 1 : 0;
                 f->max = (f->max == -1) ? -1 : f->max - 1;
-                const VALUE r = (*f->body->head.dispatcher)(c, f->body);
+                const VALUE r = EVAL(c, f->body);
                 if (r) return MR_STOP;
                 c->pos = saved_pos;
                 f->min = saved_min;
@@ -1108,7 +1108,7 @@ rep_cont_inner(CTX *c, struct rep_frame *f)
             if (f->min == 0) {
                 struct rep_frame *const prev = f->prev;
                 c->rep_top = prev;
-                const VALUE r = (*f->outer_next->head.dispatcher)(c, f->outer_next);
+                const VALUE r = EVAL(c, f->outer_next);
                 c->rep_top = f;
                 return r;
             }
@@ -1117,7 +1117,7 @@ rep_cont_inner(CTX *c, struct rep_frame *f)
             if (f->min == 0) {
                 struct rep_frame *const prev = f->prev;
                 c->rep_top = prev;
-                const VALUE r = (*f->outer_next->head.dispatcher)(c, f->outer_next);
+                const VALUE r = EVAL(c, f->outer_next);
                 if (r) return MR_STOP;
                 c->rep_top = f;
             }
@@ -1127,7 +1127,7 @@ rep_cont_inner(CTX *c, struct rep_frame *f)
                 const size_t  saved_pos = c->pos;
                 f->min = (f->min > 0) ? f->min - 1 : 0;
                 f->max = (f->max == -1) ? -1 : f->max - 1;
-                const VALUE r = (*f->body->head.dispatcher)(c, f->body);
+                const VALUE r = EVAL(c, f->body);
                 if (r) return MR_STOP;
                 c->pos = saved_pos;
                 f->min = saved_min;
@@ -1157,7 +1157,7 @@ rep_cont_inner(CTX *c, struct rep_frame *f)
             f->min = (f->min > 0) ? f->min - 1 : 0;
             f->max = (f->max == -1) ? -1 : f->max - 1;
             f->last_pos = c->pos;
-            const VALUE r = (*f->body->head.dispatcher)(c, f->body);
+            const VALUE r = EVAL(c, f->body);
             if (r) return MR_STOP;
             c->pos = saved_pos;
             f->min = saved_min;
@@ -1167,7 +1167,7 @@ rep_cont_inner(CTX *c, struct rep_frame *f)
         if (f->min == 0) {
             struct rep_frame *const prev = f->prev;
             c->rep_top = prev;
-            const VALUE r = (*f->outer_next->head.dispatcher)(c, f->outer_next);
+            const VALUE r = EVAL(c, f->outer_next);
             c->rep_top = f;
             return r;
         }
@@ -1176,7 +1176,7 @@ rep_cont_inner(CTX *c, struct rep_frame *f)
         if (f->min == 0) {
             struct rep_frame *const prev = f->prev;
             c->rep_top = prev;
-            const VALUE r = (*f->outer_next->head.dispatcher)(c, f->outer_next);
+            const VALUE r = EVAL(c, f->outer_next);
             if (r) return MR_STOP;
             c->rep_top = f;
         }
@@ -1188,7 +1188,7 @@ rep_cont_inner(CTX *c, struct rep_frame *f)
             f->min = (f->min > 0) ? f->min - 1 : 0;
             f->max = (f->max == -1) ? -1 : f->max - 1;
             f->last_pos = c->pos;
-            const VALUE r = (*f->body->head.dispatcher)(c, f->body);
+            const VALUE r = EVAL(c, f->body);
             if (r) return MR_STOP;
             c->pos = saved_pos;
             f->min = saved_min;
@@ -1366,7 +1366,7 @@ node_re_lookahead(CTX * restrict c, NODE * restrict n, NODE *body, NODE *next)
      * but the conventional Ruby semantics keeps captures opened inside
      * lookahead live if they succeed. We honour that: don't restore caps
      * on success, only on failure. */
-    if (!(*body->head.dispatcher)(c, body)) {
+    if (!EVAL_ARG(c, body)) {
         c->pos = saved_pos;
         return MR_FAIL;
     }
@@ -1386,7 +1386,7 @@ node_re_neg_lookahead(CTX * restrict c, NODE * restrict n, NODE *body, NODE *nex
     memcpy(en, c->ends,   sizeof(en));
     memcpy(vd, c->valid,  sizeof(vd));
 
-    VALUE r = (*body->head.dispatcher)(c, body);
+    VALUE r = EVAL_ARG(c, body);
     c->pos = saved_pos;
     memcpy(c->starts, st, sizeof(st));
     memcpy(c->ends,   en, sizeof(en));
@@ -1461,7 +1461,7 @@ node_re_lookbehind_var(CTX * restrict c, NODE * restrict n, NODE *body, NODE *ne
     c->lb_target = saved;
     for (size_t w = saved; ; w--) {
         c->pos = saved - w;
-        const VALUE r = (*body->head.dispatcher)(c, body);
+        const VALUE r = EVAL_ARG(c, body);
         if (r) {
             c->pos = saved;
             c->lb_target = saved_target;
@@ -1483,7 +1483,7 @@ node_re_neg_lookbehind_var(CTX * restrict c, NODE * restrict n, NODE *body, NODE
     c->lb_target = saved;
     for (size_t w = saved; ; w--) {
         c->pos = saved - w;
-        const VALUE r = (*body->head.dispatcher)(c, body);
+        const VALUE r = EVAL_ARG(c, body);
         if (r) {
             c->pos = saved;
             c->lb_target = saved_target;
@@ -1537,7 +1537,7 @@ node_re_absence(CTX * restrict c, NODE * restrict n, NODE *body, NODE *next)
         memcpy(st, c->starts, sizeof(st));
         memcpy(en, c->ends,   sizeof(en));
         memcpy(vd, c->valid,  sizeof(vd));
-        const VALUE probe = (*body->head.dispatcher)(c, body);
+        const VALUE probe = EVAL_ARG(c, body);
         c->pos = saved_pos;
         memcpy(c->starts, st, sizeof(st));
         memcpy(c->ends,   en, sizeof(en));
@@ -1563,9 +1563,13 @@ node_re_absence(CTX * restrict c, NODE * restrict n, NODE *body, NODE *next)
 NODE_DEF
 node_re_conditional(CTX * restrict c, NODE * restrict n, uint32_t idx, NODE *yes_chain, NODE *no_chain)
 {
-    NODE *const target = (idx <= (uint32_t)c->n_groups && c->valid[idx])
-                            ? yes_chain : no_chain;
-    return (*target->head.dispatcher)(c, target);
+    /* Dispatch the picked chain via EVAL_ARG (rather than via a
+     * NODE *target local) so the SD specialiser can constant-fold
+     * each branch's dispatcher into a direct call to its inlined SD. */
+    if (idx <= (uint32_t)c->n_groups && c->valid[idx])
+        return EVAL_ARG(c, yes_chain);
+    else
+        return EVAL_ARG(c, no_chain);
 }
 
 /* `\g<idx>` subroutine call.  Looks up the lowered "callable" body
@@ -1592,7 +1596,7 @@ node_re_subroutine_call(CTX * restrict c, NODE * restrict n, uint32_t idx, NODE 
     c->sub_top  = &f;
     c->sub_depth++;
 
-    const VALUE r = (*body->head.dispatcher)(c, body);
+    const VALUE r = EVAL(c, body);
 
     c->sub_top = f.prev;
     c->sub_depth--;
@@ -1604,5 +1608,5 @@ NODE_DEF
 node_re_sub_return(CTX * restrict c, NODE * restrict n)
 {
     NODE *const target = c->sub_top->return_to;
-    return (*target->head.dispatcher)(c, target);
+    return EVAL(c, target);
 }
