@@ -75,9 +75,49 @@ static VALUE module_alias_method(CTX *c, VALUE self, int argc, VALUE *argv) {
     return korb_id2sym(new_name);
 }
 
-static VALUE module_private(CTX *c, VALUE self, int argc, VALUE *argv) { return self; /* no-op */ }
-static VALUE module_public(CTX *c, VALUE self, int argc, VALUE *argv) { return self; }
-static VALUE module_protected(CTX *c, VALUE self, int argc, VALUE *argv) { return self; }
+static void module_set_visibility_for_args(CTX *c, VALUE self, int argc, VALUE *argv,
+                                            enum korb_visibility v)
+{
+    if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return;
+    struct korb_class *k = (struct korb_class *)self;
+    for (int i = 0; i < argc; i++) {
+        ID name;
+        if (SYMBOL_P(argv[i])) name = korb_sym2id(argv[i]);
+        else if (!SPECIAL_CONST_P(argv[i]) && BUILTIN_TYPE(argv[i]) == T_STRING)
+            name = korb_intern_n(((struct korb_string *)argv[i])->ptr,
+                                 ((struct korb_string *)argv[i])->len);
+        else continue;
+        struct korb_method *m = korb_class_find_method(k, name);
+        if (m) m->visibility = v;
+    }
+    /* No-arg `private` / `public` / `protected` would set the default
+     * visibility for subsequent defs.  We don't track that yet; tests
+     * pass with explicit `private :name` form. */
+}
+static VALUE module_set_visibility(CTX *c, VALUE self, int argc, VALUE *argv,
+                                   enum korb_visibility v)
+{
+    if (argc == 0) {
+        /* No-arg form: change the default visibility for subsequent
+         * `def`s in this class body.  `protected` / `private` /
+         * `public` toggle. */
+        if (BUILTIN_TYPE(self) == T_CLASS || BUILTIN_TYPE(self) == T_MODULE) {
+            ((struct korb_class *)self)->default_visibility = v;
+        }
+    } else {
+        module_set_visibility_for_args(c, self, argc, argv, v);
+    }
+    return self;
+}
+static VALUE module_private(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return module_set_visibility(c, self, argc, argv, KORB_VIS_PRIVATE);
+}
+static VALUE module_public(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return module_set_visibility(c, self, argc, argv, KORB_VIS_PUBLIC);
+}
+static VALUE module_protected(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return module_set_visibility(c, self, argc, argv, KORB_VIS_PROTECTED);
+}
 static VALUE module_module_function(CTX *c, VALUE self, int argc, VALUE *argv) { return self; }
 
 /* Struct.new(:a, :b) → returns a new Class with attr_accessor for each */

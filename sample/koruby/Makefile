@@ -12,8 +12,11 @@ LDFLAGS = -L $(PRISM_DIR)/build -Wl,-rpath=$(CURDIR)/$(PRISM_DIR)/build -flto=au
 LIBS = -lprism -lgc -lgmp -lm
 
 SRCS = main.c node.c parse.c object.c builtins.c code_store.c bootstrap_src.c
+# builtins/*.c are #included from builtins.c, but list them here so
+# `make` rebuilds when any of them changes.
+BUILTINS_INCLUDED = $(wildcard builtins/*.c)
 
-koruby: $(SRCS) $(NODE_GENFILES) Makefile
+koruby: $(SRCS) $(BUILTINS_INCLUDED) $(NODE_GENFILES) Makefile
 	$(CC) $(CFLAGS) -rdynamic -o $@ $(SRCS) $(LDFLAGS) $(LIBS) -ldl
 
 # Profile-guided optimization build.  Two-pass:

@@ -171,6 +171,7 @@ struct korb_class *korb_class_new(ID name, struct korb_class *super, enum korb_t
     k->prepends = NULL;
     k->prepends_cnt = 0;
     k->prepends_capa = 0;
+    k->default_visibility = KORB_VIS_PUBLIC;
     return k;
 }
 
@@ -248,6 +249,7 @@ void korb_class_add_method_ast_full_cref(struct korb_class *klass, ID name, stru
     m->defining_class = klass;
     m->def_cref = korb_cref_dup(def_cref);
     m->is_simple_frame = korb_method_body_is_simple_frame(body);
+    m->visibility = klass ? klass->default_visibility : KORB_VIS_PUBLIC;
     m->u.ast.body = body;
     m->u.ast.required_params_cnt = required_params;
     m->u.ast.total_params_cnt = total_params;
@@ -272,6 +274,8 @@ void korb_class_add_method_cfunc(struct korb_class *klass, ID name,
     m->type = KORB_METHOD_CFUNC;
     m->name = name;
     m->defining_class = klass;
+    m->is_simple_frame = false;
+    m->visibility = KORB_VIS_PUBLIC;
     m->u.cfunc.func = func;
     m->u.cfunc.argc = argc;
     method_table_set(&klass->methods, name, m);
@@ -302,6 +306,7 @@ void korb_class_add_method_proc(struct korb_class *klass, ID name, struct korb_p
     m->name = name;
     m->defining_class = klass;
     m->is_simple_frame = false;
+    m->visibility = klass ? klass->default_visibility : KORB_VIS_PUBLIC;
     m->u.proc.proc = snap;
     method_table_set(&klass->methods, name, m);
     if (korb_vm) { korb_vm->method_serial++; korb_g_method_serial = korb_vm->method_serial; }
@@ -974,7 +979,15 @@ VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv)
     c->self = blk->self;
     /* Switch fp so block body's lvar_get/set hit the captured frame's slots. */
     c->fp = blk->env;
-    VALUE r = EVAL(c, blk->body);
+    VALUE r;
+redo_block:
+    r = EVAL(c, blk->body);
+    /* `redo` inside the block: re-evaluate the block body with the
+     * same args (params keep their current bindings). */
+    if (c->state == KORB_REDO) {
+        c->state = KORB_NORMAL; c->state_value = Qnil;
+        goto redo_block;
+    }
     c->fp = prev_fp;
     c->self = prev_self;
     /* `next` inside a block: yield returns the next value, state cleared.
@@ -1503,6 +1516,22 @@ VALUE prologue_proc_method(CTX *c, struct Node *callsite, VALUE recv,
     return r;
 }
 
+VALUE korb_dispatch_visibility_raise(CTX *c, struct korb_method *m, ID name,
+                                     struct korb_class *klass, VALUE recv) {
+    (void)recv;
+    const char *kind = (m->visibility == KORB_VIS_PRIVATE) ? "private" : "protected";
+    VALUE eNoMethodError = korb_const_get(korb_vm->object_class, korb_intern("NoMethodError"));
+    struct korb_class *exc_class = NULL;
+    if (eNoMethodError && !SPECIAL_CONST_P(eNoMethodError) &&
+        (BUILTIN_TYPE(eNoMethodError) == T_CLASS || BUILTIN_TYPE(eNoMethodError) == T_MODULE)) {
+        exc_class = (struct korb_class *)eNoMethodError;
+    }
+    korb_raise(c, exc_class, "%s method '%s' called for %s",
+               kind, korb_id_name(name),
+               klass && klass->name ? korb_id_name(klass->name) : "?");
+    return Qnil;
+}
+
 VALUE korb_dispatch_call(CTX *c, struct Node *callsite, VALUE recv, ID name,
                        uint32_t argc, uint32_t arg_index, struct korb_proc *block,
                        struct method_cache *mc)
@@ -1542,7 +1571,33 @@ VALUE korb_dispatch_call(CTX *c, struct Node *callsite, VALUE recv, ID name,
             /* No mc — slow one-shot path.  Synthesize a temp cache and dispatch. */
             struct method_cache tmp = {0};
             korb_method_cache_fill(&tmp, klass, m);
+            if (m->visibility == KORB_VIS_PRIVATE && recv != c->self) {
+                return korb_dispatch_visibility_raise(c, m, name, klass, recv);
+            }
+            if (m->visibility == KORB_VIS_PROTECTED) {
+                struct korb_class *caller_klass = korb_class_of_class(c->self);
+                bool ok = false;
+                for (struct korb_class *k = caller_klass; k; k = k->super) {
+                    if (k == m->defining_class) { ok = true; break; }
+                }
+                if (!ok) return korb_dispatch_visibility_raise(c, m, name, klass, recv);
+            }
             return tmp.prologue(c, callsite, recv, argc, arg_index, block, &tmp);
+        }
+    }
+    /* Visibility check on the freshly-filled mc (cache miss path) and
+     * for cache hits — same logic as the inline fast path. */
+    if (UNLIKELY(mc->method && mc->method->visibility != KORB_VIS_PUBLIC)) {
+        if (mc->method->visibility == KORB_VIS_PRIVATE && recv != c->self) {
+            return korb_dispatch_visibility_raise(c, mc->method, name, klass, recv);
+        }
+        if (mc->method->visibility == KORB_VIS_PROTECTED) {
+            struct korb_class *caller_klass = korb_class_of_class(c->self);
+            bool ok = false;
+            for (struct korb_class *k = caller_klass; k; k = k->super) {
+                if (k == mc->method->defining_class) { ok = true; break; }
+            }
+            if (!ok) return korb_dispatch_visibility_raise(c, mc->method, name, klass, recv);
         }
     }
     return mc->prologue(c, callsite, recv, argc, arg_index, block, mc);
@@ -1826,21 +1881,62 @@ void korb_runtime_init(void) {
     korb_vm->main_obj_class = korb_class_new(korb_intern("Main"), cObject, T_OBJECT);
     korb_vm->main_obj = korb_object_new(korb_vm->main_obj_class);
 
-    /* Exception class hierarchy.  We don't model the full chain — just add
-     * common classes so `rescue StandardError`, etc., parse successfully. */
+    /* Exception class hierarchy.  Real CRuby tree:
+     *   Exception
+     *     StandardError
+     *       RuntimeError, ArgumentError, TypeError, NameError,
+     *       NoMethodError (< NameError), IndexError,
+     *       KeyError (< IndexError), RangeError, FloatDomainError (< RangeError),
+     *       ZeroDivisionError, IOError, FrozenError (< RuntimeError),
+     *       NotImplementedError, StopIteration, LocalJumpError,
+     *       SystemCallError, Errno
+     *     ScriptError
+     *       LoadError, SyntaxError
+     * `rescue StandardError` only matches StandardError descendants —
+     * the parent/child relationships need to reflect that. */
     struct korb_class *cException = korb_class_new(korb_intern("Exception"), cObject, T_OBJECT);
     korb_const_set(cObject, korb_intern("Exception"), (VALUE)cException);
-    static const char *exc_classes[] = {
-        "StandardError", "RuntimeError", "ArgumentError", "TypeError",
-        "NameError", "NoMethodError", "IndexError", "KeyError",
-        "RangeError", "FloatDomainError", "ZeroDivisionError",
-        "IOError", "Errno", "NotImplementedError", "LoadError",
-        "FrozenError", "StopIteration", "LocalJumpError", "SystemCallError",
-        "ScriptError", "SyntaxError", NULL,
+    struct korb_class *cStandardError = korb_class_new(korb_intern("StandardError"), cException, T_OBJECT);
+    korb_const_set(cObject, korb_intern("StandardError"), (VALUE)cStandardError);
+    struct korb_class *cScriptError = korb_class_new(korb_intern("ScriptError"), cException, T_OBJECT);
+    korb_const_set(cObject, korb_intern("ScriptError"), (VALUE)cScriptError);
+    struct korb_class *cRuntimeError = korb_class_new(korb_intern("RuntimeError"), cStandardError, T_OBJECT);
+    korb_const_set(cObject, korb_intern("RuntimeError"), (VALUE)cRuntimeError);
+    struct korb_class *cIndexError = korb_class_new(korb_intern("IndexError"), cStandardError, T_OBJECT);
+    korb_const_set(cObject, korb_intern("IndexError"), (VALUE)cIndexError);
+    struct korb_class *cNameError = korb_class_new(korb_intern("NameError"), cStandardError, T_OBJECT);
+    korb_const_set(cObject, korb_intern("NameError"), (VALUE)cNameError);
+    struct korb_class *cRangeError = korb_class_new(korb_intern("RangeError"), cStandardError, T_OBJECT);
+    korb_const_set(cObject, korb_intern("RangeError"), (VALUE)cRangeError);
+    /* Direct StandardError children. */
+    static const char *std_subs[] = {
+        "ArgumentError", "TypeError",
+        "ZeroDivisionError", "IOError", "Errno",
+        "NotImplementedError", "StopIteration", "LocalJumpError",
+        "SystemCallError",
+        NULL,
     };
-    for (int i = 0; exc_classes[i]; i++) {
-        struct korb_class *k = korb_class_new(korb_intern(exc_classes[i]), cException, T_OBJECT);
-        korb_const_set(cObject, korb_intern(exc_classes[i]), (VALUE)k);
+    for (int i = 0; std_subs[i]; i++) {
+        struct korb_class *k = korb_class_new(korb_intern(std_subs[i]), cStandardError, T_OBJECT);
+        korb_const_set(cObject, korb_intern(std_subs[i]), (VALUE)k);
+    }
+    /* Children of more-specific classes. */
+    {
+        struct korb_class *k = korb_class_new(korb_intern("NoMethodError"), cNameError, T_OBJECT);
+        korb_const_set(cObject, korb_intern("NoMethodError"), (VALUE)k);
+        k = korb_class_new(korb_intern("KeyError"), cIndexError, T_OBJECT);
+        korb_const_set(cObject, korb_intern("KeyError"), (VALUE)k);
+        k = korb_class_new(korb_intern("FloatDomainError"), cRangeError, T_OBJECT);
+        korb_const_set(cObject, korb_intern("FloatDomainError"), (VALUE)k);
+        k = korb_class_new(korb_intern("FrozenError"), cRuntimeError, T_OBJECT);
+        korb_const_set(cObject, korb_intern("FrozenError"), (VALUE)k);
+    }
+    /* ScriptError children. */
+    {
+        struct korb_class *k = korb_class_new(korb_intern("LoadError"), cScriptError, T_OBJECT);
+        korb_const_set(cObject, korb_intern("LoadError"), (VALUE)k);
+        k = korb_class_new(korb_intern("SyntaxError"), cScriptError, T_OBJECT);
+        korb_const_set(cObject, korb_intern("SyntaxError"), (VALUE)k);
     }
 
     /* Register Comparable / Enumerable / Numeric so user code can

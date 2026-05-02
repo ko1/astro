@@ -745,6 +745,7 @@ node_aset(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *idx, NODE *val,
 NODE_DEF @noinline
 node_rescue(CTX * restrict c, NODE * restrict n, NODE *body, NODE *rescue_body, uint32_t exception_lvar_index)
 {
+retry:;
     VALUE v = EVAL_ARG(c, body);
     if (c->state == KORB_RAISE && rescue_body) {
         VALUE exc = c->state_value;
@@ -752,8 +753,31 @@ node_rescue(CTX * restrict c, NODE * restrict n, NODE *body, NODE *rescue_body, 
         c->state_value = Qnil;
         c->fp[exception_lvar_index] = exc;
         v = EVAL_ARG(c, rescue_body);
+        /* `retry` inside the rescue body sets state=KORB_RETRY; clear
+         * and jump back to re-evaluate the begin body. */
+        if (c->state == KORB_RETRY) {
+            c->state = KORB_NORMAL;
+            c->state_value = Qnil;
+            goto retry;
+        }
     }
     return v;
+}
+
+NODE_DEF
+node_retry(CTX * restrict c, NODE * restrict n)
+{
+    c->state = KORB_RETRY;
+    c->state_value = Qnil;
+    return Qnil;
+}
+
+NODE_DEF
+node_redo(CTX * restrict c, NODE * restrict n)
+{
+    c->state = KORB_REDO;
+    c->state_value = Qnil;
+    return Qnil;
 }
 
 NODE_DEF

@@ -635,6 +635,76 @@ T(struct transduce_context *tc, pm_node_t *node)
               ? T(tc, n->arguments->arguments.nodes[0]) : ALLOC_node_nil();
           return ALLOC_node_next(v);
       }
+      case PM_RETRY_NODE: {
+          return ALLOC_node_retry();
+      }
+      case PM_REDO_NODE: {
+          return ALLOC_node_redo();
+      }
+      case PM_SOURCE_LINE_NODE: {
+          /* `__LINE__` — line of this token in the source file.
+           * pm_newline_list_line is libprism-internal (not exported),
+           * so do the binary search in-line.  newline_list.offsets
+           * holds source offsets where each line *begins* (after a
+           * preceding '\n'); offsets[0] is 0, offsets[i] = start of
+           * line i+1.  Find the largest i with offsets[i] <= our
+           * cursor offset; the line number is i+1. */
+          const pm_newline_list_t *nl = &tc->parser->newline_list;
+          size_t cursor_off = (size_t)(node->location.start - nl->start);
+          long lo = 0, hi = (long)nl->size - 1, best = 0;
+          while (lo <= hi) {
+              long m = (lo + hi) / 2;
+              if (nl->offsets[m] <= cursor_off) { best = m; lo = m + 1; }
+              else hi = m - 1;
+          }
+          return ALLOC_node_int_lit((intptr_t)(best + 1));
+      }
+      case PM_SOURCE_FILE_NODE: {
+          /* `__FILE__` — the script's path. */
+          pm_source_file_node_t *n = (pm_source_file_node_t *)node;
+          const char *path = (const char *)pm_string_source(&n->filepath);
+          size_t plen = pm_string_length(&n->filepath);
+          return ALLOC_node_str_lit(path, (uint32_t)plen);
+      }
+      case PM_FOR_NODE: {
+          /* `for x in coll; body; end` — Ruby semantics: x and any
+           * lvars set inside body are *not* scope-gated (visible to
+           * the surrounding scope).  Lower to coll.each {|x| body}
+           * but with the block's param landing in x's parent-frame
+           * slot — body evaluates with the parent fp, so its lvar
+           * reads/writes hit the parent slots directly. */
+          pm_for_node_t *n = (pm_for_node_t *)node;
+          NODE *coll = T(tc, n->collection);
+          int x_slot = -1;
+          if (n->index && PM_NODE_TYPE_P(n->index, PM_LOCAL_VARIABLE_TARGET_NODE)) {
+              pm_local_variable_target_node_t *lt = (pm_local_variable_target_node_t *)n->index;
+              x_slot = lvar_slot(tc, lt->name, lt->depth);
+              if (x_slot < 0) x_slot = lvar_slot_any(tc, lt->name);
+          }
+          if (x_slot < 0) x_slot = (int)inc_arg_index(tc);  /* fallback */
+          NODE *body = n->statements ? transduce_statements(tc, n->statements) : ALLOC_node_nil();
+          uint32_t env_size = tc->frame->max_cnt;
+          NODE *block_node = ALLOC_node_block_literal(body, 1, (uint32_t)x_slot, env_size);
+          code_repo_add("<for>", body, false);
+          struct method_cache *mc = alloc_method_cache();
+          return ALLOC_node_method_call_block(coll, korb_intern("each"), 0, arg_index(tc), block_node, mc);
+      }
+      case PM_PRE_EXECUTION_NODE: {
+          /* `BEGIN { stmts }` — koruby is single-pass, so we execute
+           * inline (instead of hoisting to the very top of the program).
+           * Close enough for tests. */
+          pm_pre_execution_node_t *n = (pm_pre_execution_node_t *)node;
+          if (n->statements) return transduce_statements(tc, n->statements);
+          return ALLOC_node_nil();
+      }
+      case PM_POST_EXECUTION_NODE: {
+          /* `END { stmts }` — Ruby runs these at exit (LIFO).  We don't
+           * have an at_exit hook here; treat as no-op (registers but
+           * never fires).  Tests that check `END { ... }` doesn't raise
+           * pass; tests that observe the side effect do not. */
+          (void)node;
+          return ALLOC_node_nil();
+      }
       case PM_RETURN_NODE: {
           pm_return_node_t *n = (pm_return_node_t *)node;
           NODE *v;
@@ -899,19 +969,72 @@ T(struct transduce_context *tc, pm_node_t *node)
           pm_begin_node_t *n = (pm_begin_node_t *)node;
           NODE *body = n->statements ? transduce_statements(tc, n->statements) : ALLOC_node_nil();
           if (n->rescue_clause) {
-              pm_rescue_node_t *rc = (pm_rescue_node_t *)n->rescue_clause;
-              NODE *rb = rc->statements ? transduce_statements(tc, rc->statements) : ALLOC_node_nil();
-              /* If `rescue => e`, bind exception to lvar `e` */
+              /* The exception object always lands in `exc_idx`.  We may
+               * reuse the user's named lvar (`rescue => e`) — the
+               * is_a? checks read this slot too. */
               uint32_t exc_idx;
-              if (rc->reference && PM_NODE_TYPE_P(rc->reference, PM_LOCAL_VARIABLE_TARGET_NODE)) {
-                  pm_local_variable_target_node_t *lt = (pm_local_variable_target_node_t *)rc->reference;
-                  int slot = lvar_slot(tc, lt->name, lt->depth);
-                  if (slot < 0) slot = lvar_slot_any(tc, lt->name);
-                  exc_idx = (slot >= 0) ? (uint32_t)slot : inc_arg_index(tc);
-              } else {
-                  exc_idx = inc_arg_index(tc);
+              {
+                  pm_rescue_node_t *rc = (pm_rescue_node_t *)n->rescue_clause;
+                  if (rc->reference && PM_NODE_TYPE_P(rc->reference, PM_LOCAL_VARIABLE_TARGET_NODE)) {
+                      pm_local_variable_target_node_t *lt = (pm_local_variable_target_node_t *)rc->reference;
+                      int slot = lvar_slot(tc, lt->name, lt->depth);
+                      if (slot < 0) slot = lvar_slot_any(tc, lt->name);
+                      exc_idx = (slot >= 0) ? (uint32_t)slot : inc_arg_index(tc);
+                  } else {
+                      exc_idx = inc_arg_index(tc);
+                  }
               }
-              body = ALLOC_node_rescue(body, rb, exc_idx);
+              /* Build a rescue-clause chain from the back so we can
+               * fall through to a re-raise when nothing matches.
+               *   if K1 === exc || K2 === exc then body1
+               *   elsif K3 === exc then body2
+               *   else raise exc
+               * end
+               * `rescue` with no class list catches StandardError
+               * (Ruby's default).  We approximate by matching anything.
+               */
+              NODE *exc_get_for_raise = ALLOC_node_lvar_get(exc_idx);
+              NODE *chain = ALLOC_node_raise(exc_get_for_raise);
+              /* Walk the chain backwards.  Build a temp array of clauses
+               * first to make order easy. */
+              pm_rescue_node_t *clauses[16];
+              int n_clauses = 0;
+              for (pm_rescue_node_t *rc = (pm_rescue_node_t *)n->rescue_clause;
+                   rc && n_clauses < 16;
+                   rc = rc->subsequent) {
+                  clauses[n_clauses++] = rc;
+              }
+              for (int i = n_clauses - 1; i >= 0; i--) {
+                  pm_rescue_node_t *rc = clauses[i];
+                  /* If the user named the exception (`=> name`) and the
+                   * lvar is a *different* slot than exc_idx (because we
+                   * walked into multiple clauses with different names),
+                   * copy through.  In practice all clauses in a single
+                   * begin/rescue share one binding so this is rare. */
+                  NODE *body_for_clause = rc->statements
+                      ? transduce_statements(tc, rc->statements)
+                      : ALLOC_node_nil();
+                  /* Build cond: K1 === exc || K2 === exc || ...
+                   * If exceptions list is empty, match anything. */
+                  NODE *cond = NULL;
+                  if (rc->exceptions.size == 0) {
+                      cond = ALLOC_node_true();
+                  } else {
+                      for (size_t j = 0; j < rc->exceptions.size; j++) {
+                          NODE *klass = T(tc, rc->exceptions.nodes[j]);
+                          uint32_t ai = inc_arg_index(tc);
+                          rewind_arg_index(tc, ai);
+                          struct method_cache *mc = alloc_method_cache();
+                          NODE *exc_get = ALLOC_node_lvar_get(exc_idx);
+                          NODE *seq = ALLOC_node_lvar_set(ai, exc_get);
+                          NODE *one = ALLOC_node_seq(seq,
+                              ALLOC_node_method_call(klass, korb_intern("==="), 1, ai, mc));
+                          cond = cond ? ALLOC_node_or(cond, one) : one;
+                      }
+                  }
+                  chain = ALLOC_node_if(cond, body_for_clause, chain);
+              }
+              body = ALLOC_node_rescue(body, chain, exc_idx);
           }
           if (n->ensure_clause) {
               pm_ensure_node_t *en = (pm_ensure_node_t *)n->ensure_clause;
@@ -1287,15 +1410,8 @@ T(struct transduce_context *tc, pm_node_t *node)
           NODE *set = ALLOC_node_aset(recv2, idx2, rhs, ai);
           return ALLOC_node_and(cur, set);
       }
-      case PM_SOURCE_FILE_NODE: {
-          /* __FILE__ */
-          return ALLOC_node_str_lit(
-              tc->parser->filepath.source ? (const char *)tc->parser->filepath.source : "(unknown)",
-              (uint32_t)(tc->parser->filepath.length));
-      }
-      case PM_SOURCE_LINE_NODE: {
-          return ALLOC_node_num(0);
-      }
+      /* PM_SOURCE_FILE_NODE / PM_SOURCE_LINE_NODE handled earlier with
+       * proper line lookup via prism's newline_list. */
       case PM_SOURCE_ENCODING_NODE: {
           return ALLOC_node_str_lit("UTF-8", 5);
       }
@@ -1321,14 +1437,7 @@ T(struct transduce_context *tc, pm_node_t *node)
           return ALLOC_node_alias_method(new_arg, old_arg);
       }
 
-      case PM_FOR_NODE: {
-          /* for x in coll; body; end ⇒ coll.each {|x| body} */
-          pm_for_node_t *n = (pm_for_node_t *)node;
-          /* Build a synthetic call with a block.  Simplified: only LocalTarget. */
-          (void)n;
-          fprintf(stderr, "[koruby] PM_FOR_NODE not yet supported\n");
-          return ALLOC_node_nil();
-      }
+      /* PM_FOR_NODE handled above (lowered to .each with parent-frame param). */
 
       default:
         fprintf(stderr, "[koruby] unsupported node: %s (line %d)\n",
@@ -1342,6 +1451,7 @@ koruby_parse(const char *src, size_t len, const char *filename)
 {
     pm_parser_t parser;
     pm_options_t options = {0};
+    if (filename) pm_options_filepath_set(&options, filename);
     pm_parser_init(&parser, (const uint8_t *)src, len, &options);
     pm_node_t *root = pm_parse(&parser);
 

@@ -62,6 +62,12 @@ struct korb_float {
     double value;
 };
 
+enum korb_visibility {
+    KORB_VIS_PUBLIC = 0,
+    KORB_VIS_PRIVATE = 1,
+    KORB_VIS_PROTECTED = 2,
+};
+
 struct korb_method {
     enum {
         KORB_METHOD_AST,
@@ -72,6 +78,7 @@ struct korb_method {
     struct korb_class *defining_class;
     struct korb_cref *def_cref;   /* lexical cref captured at def-time */
     bool is_simple_frame;         /* AST methods only: body has no yield/super/block_given/const/blocked-call */
+    enum korb_visibility visibility;
     union {
         struct {
             struct Node *body;
@@ -132,6 +139,9 @@ struct korb_class {
     struct korb_class **prepends;
     uint32_t prepends_cnt;
     uint32_t prepends_capa;
+    /* `private` / `protected` / `public` with no args inside a class
+     * body sets this default; subsequent `def`s pick it up. */
+    enum korb_visibility default_visibility;
 };
 
 struct korb_proc {
@@ -438,6 +448,12 @@ VALUE prologue_cfunc(CTX *c, struct Node *callsite, VALUE recv,
  * inline the prologue body into the SD that includes us. */
 #include "prologues.h"
 
+/* Cold path: resolved-but-non-public method, raise NoMethodError per
+ * Ruby semantics.  Defined out-of-line in object.c. */
+extern VALUE korb_dispatch_visibility_raise(CTX *c, struct korb_method *m,
+                                            ID name, struct korb_class *klass,
+                                            VALUE recv);
+
 static inline __attribute__((always_inline)) VALUE
 korb_dispatch_call_cached(CTX * restrict c, struct Node * restrict callsite,
                           VALUE recv, ID name, uint32_t argc,
@@ -446,6 +462,23 @@ korb_dispatch_call_cached(CTX * restrict c, struct Node * restrict callsite,
 {
     struct korb_class *klass = korb_class_of_class(recv);
     if (LIKELY(mc && mc->serial == korb_g_method_serial && mc->klass == klass)) {
+        /* Visibility check: private methods need an implicit-self call
+         * (recv == c->self).  Protected methods need the caller's class
+         * to include the target's class in its hierarchy. */
+        if (UNLIKELY(mc->method && mc->method->visibility != KORB_VIS_PUBLIC)) {
+            if (mc->method->visibility == KORB_VIS_PRIVATE && recv != c->self) {
+                return korb_dispatch_visibility_raise(c, mc->method, name, klass, recv);
+            }
+            if (mc->method->visibility == KORB_VIS_PROTECTED) {
+                struct korb_class *caller_klass = korb_class_of_class(c->self);
+                struct korb_class *target = mc->method->defining_class;
+                bool ok = false;
+                for (struct korb_class *k = caller_klass; k; k = k->super) {
+                    if (k == target) { ok = true; break; }
+                }
+                if (!ok) return korb_dispatch_visibility_raise(c, mc->method, name, klass, recv);
+            }
+        }
         korb_prologue_t p = mc->prologue;
         if (p == prologue_ast_simple_0) return prologue_ast_simple_inl(c, callsite, recv, argc, arg_index, block, mc, 0);
         if (p == prologue_ast_simple_1) return prologue_ast_simple_inl(c, callsite, recv, argc, arg_index, block, mc, 1);
@@ -511,7 +544,13 @@ korb_yield(CTX *c, uint32_t argc, VALUE *argv) {
         bfp[blk->param_base] = arg;
         c->self = blk->self;
         c->fp = bfp;
-        VALUE r = blk->body->head.dispatcher(c, blk->body);
+        VALUE r;
+    redo_yield:
+        r = blk->body->head.dispatcher(c, blk->body);
+        if (UNLIKELY(c->state == KORB_REDO)) {
+            c->state = KORB_NORMAL; c->state_value = Qnil;
+            goto redo_yield;
+        }
         c->fp = prev_fp;
         c->self = prev_self;
         if (UNLIKELY(c->state == KORB_NEXT)) {

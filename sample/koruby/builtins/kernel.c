@@ -273,10 +273,20 @@ static VALUE kernel_method_name(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (!f || !f->method) return Qnil;
     return korb_id2sym(f->method->name);
 }
+extern VALUE korb_eval_string(CTX *c, const char *src, size_t len, const char *filename);
 static VALUE kernel_eval_stub(CTX *c, VALUE self, int argc, VALUE *argv) {
-    /* Real eval would re-parse + run the source.  Stub: warn + nil. */
-    fprintf(stderr, "[koruby] eval is not implemented (stub)\n");
-    return Qnil;
+    /* eval(string [, binding [, filename [, line]]]).
+     * Binding-aware semantics aren't supported (no real binding); the
+     * string is parsed + evaluated at the top level — which means it
+     * sees globals / constants but not the caller's local variables.
+     * Enough for tests that just `eval "1 + 2"`. */
+    if (argc < 1) return Qnil;
+    if (SPECIAL_CONST_P(argv[0]) || BUILTIN_TYPE(argv[0]) != T_STRING) {
+        korb_raise(c, NULL, "eval: argument must be a String");
+        return Qnil;
+    }
+    struct korb_string *s = (struct korb_string *)argv[0];
+    return korb_eval_string(c, s->ptr, (size_t)s->len, "(eval)");
 }
 static VALUE kernel_loop(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* loop { ... } — call block forever, swallow StopIteration. */
