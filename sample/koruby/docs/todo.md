@@ -62,43 +62,57 @@ optcarrot は ruby と checksum 一致、CRuby の 2.2x、YJIT の 0.55x。
 
 ## 3. 部分実装 / 穴あり
 
-### 3.1 Frozen check
-- 入ってる: `Array#<<`, `Array#push`, `Array#pop`, `Array#[]=`, `Hash#[]=`, `String#concat`
-- 入ってない: `Array#unshift`, `Array#shift`, `Array#clear`, `Array#delete`, `Array#delete_at`, `Array#concat`, `Array#fill`, `Hash#delete`, `Hash#clear`, `Hash#merge!`, `String#prepend`, `String#insert`, `String#tr!`, `String#sub!`, `String#gsub!` 等
-- 全 mutator に `CHECK_FROZEN_RET(c, self, Qnil)` を撒く必要
+### 3.1 Frozen check  ✅ 2026-05-02 完
+- 主要 mutator + サブ mutator に `CHECK_FROZEN_RET` 配備:
+  Array `<<` / push / pop / `[]=` / unshift / shift / clear / concat /
+  delete / delete_at / delete_if / reject / insert / replace / fill /
+  slice! / rotate! / reverse!,
+  Hash `[]=` / delete / clear / merge! / replace / delete_if / keep_if /
+  compact! / shift,
+  String `<<` / aset / replace / prepend / insert
+- 残: `String#tr!` / `sub!` / `gsub!` 等の `!` 形は未確認 (実装そのものが薄い)
 
-### 3.2 Object.ancestors
-- `Object.ancestors` が `[Object]` のみ
-- 期待: `[Object, Kernel, BasicObject]`
-- `BasicObject` クラスがそもそも存在しない可能性
+### 3.2 Object.ancestors  ✅ 2026-05-02 完
+- `Object.ancestors == [Object, Kernel, BasicObject]` (CRuby と一致)
+- `BasicObject` クラスを root として導入、`Kernel` を Object の include に
 
-### 3.3 Numeric edge cases
-- Bignum × Float × Rational mixed 演算の網羅未確認
-- `1 ** -1` → Rational 期待だが Float 返る
-- Integer#coerce, Numeric#abs2 未実装
+### 3.3 Numeric edge cases  ✅ 2026-05-02 部分完
+- 完: `Integer#coerce` / `Float#coerce` (TypeError on bad arg)、`Numeric#abs2`、
+  `Float#to_s` の `1.0` / `Infinity` / `NaN` フォーマット
+- 未: `1 ** -1` → Rational (現状 Float 返り。Rational 演算 protocol 全体の
+  整備が必要)、Bignum×Rational 等の混合
+- 未: `Numeric#coerce` を経由する user-defined Numeric subclass の混合演算
 
-### 3.4 Heredoc edge cases
-- 基本 `<<~`, `<<-`, single-quoted heredoc は通る
-- ネスト heredoc / 同行に複数 heredoc / heredoc 内の interpolation 込みの複雑形は未確認
+### 3.4 Heredoc edge cases  ✅ 2026-05-02 検証済
+- 確認: 同行に複数 heredoc、heredoc を method 引数に、`#{}` 内に method call、
+  `#{}` 内に nested heredoc、`<<-` (indent 維持) と `<<~` (strip) 混在、
+  single-quoted heredoc (no interp)
+- bonus: String#inspect が control char (`\n`/`\t`/etc.) を escape するように
+  修正 (re-evalable な repr に)
 
-### 3.5 Pattern match (`case/in`)
-- 基本パターン (literal / array / hash) は通る
-- `^x` (pin operator), `=>` への local bind, `[*a, x, *b]` の split, find pattern (`[*, x, *]`) 等は不確か
+### 3.5 Pattern match (`case/in`)  ✅ 2026-05-02 完
+- 完: literal / array / hash / `^x` pin / `=>` capture (`Integer => x`) /
+  rightward assignment (`expr => pat`) / array `[a, *mid, b]` (slot collision
+  bug 修正) / find pattern `[*, x, *]` (n=1)、nested pattern
+- 未: find pattern n>1 (`[*, p1, p2, *]`) — rare、n=1 ケースで walk 実装済
+- 未: `case in` ガード式 + 複雑な destructure の組み合わせ
 
-### 3.6 method_defined? 系
-- `method_defined?(:foo)` 動く
-- `private_method_defined?` / `public_method_defined?` / `protected_method_defined?` 未確認
-- `instance_methods(false)` (own only flag) の挙動確認必要
+### 3.6 method_defined? 系  ✅ 2026-05-02 完
+- `method_defined?` を visibility 込み (private は false 返し) に修正
+- `public_method_defined?` / `private_method_defined?` /
+  `protected_method_defined?` 追加
+- `private_instance_methods` / `public_instance_methods` /
+  `protected_instance_methods` (`include_inherited` flag) 追加
 
-### 3.7 Ruby 3.x 構文
-- Endless method `def f(x) = x+1` — 未確認
-- Numbered block param `_1`, `_2` — 未確認
-- Hash shorthand `{x:, y:}` (Ruby 3.1+) — 未確認
-- Pattern `=>` (rightward assignment) — 未確認
+### 3.7 Ruby 3.x 構文  ✅ 2026-05-02 完
+- Endless method `def f(x) = x+1` / `def hello = "hi"`
+- Hash shorthand `{x:, y:}` (PM_IMPLICIT_NODE unwrap)
+- Numbered block param `_1` / `_2` (PM_NUMBERED_PARAMETERS_NODE)
 
 ### 3.8 Backtrace
-- `e.backtrace` 動くが内容が CRuby と異なる
+- `e.backtrace` 動くが内容が CRuby と異なる (line 番号 / file 名フォーマット)
 - `Kernel#caller` も簡易版
+- 細部は実用上問題ないので保留
 
 ---
 
