@@ -10,13 +10,66 @@
 - コンパイラ: gcc 13.3 (-O2 / -O3)
 - Ruby (比較対象): CRuby 3.4 系 (no-JIT / `--yjit`)
 
-## ベンチマーク結果サマリ
+## 2026-05-02 現状サマリ (検証付き)
 
-### optcarrot (Lan_Master.nes, 180 frames headless, last-10-frames fps)
+過去の数字は checksum 検証なしで取られていて、optcarrot の rendering loop
+が壊れた状態 (空フレーム返す bug) のまま速い数字を記録していた。
+今は `tools/bench-optcarrot.sh` が checksum 行を比較して mismatch 検出
+するので、以下は **CRuby 出力と一致した状態での実測**。
 
-10 runs after 3 warmups, `taskset -c 0`, gcc -O2 -flto for the koruby
-binary; SDs in `code_store/all.so` always built with `gcc -O3 -fPIC -fno-plt
--march=native` (各 SD は独立 .o → `-shared` でリンク、LTO なし).
+### optcarrot (Lan_Master.nes, 600 frames headless)
+
+`taskset -c 0`, koruby は `gcc -O2 -flto`, SDs は `gcc -O3 -fPIC -fno-plt -march=native`.
+
+| 構成 | fps | checksum | vs CRuby no-JIT |
+|---|---:|---:|---:|
+| ruby (no JIT) | 38.0 | 60838 | 1.00× |
+| **koruby (interp)** | **50.1** | 60838 | **1.32×** |
+| **koruby (AOT-cached, `--aot-compile`)** | **87.4** | 60838 | **2.30×** |
+| ruby --yjit | 162.7 | 60838 | 4.28× |
+
+YJIT との差は ~1.86×。 まだ縮める余地あり。
+
+### whileloop (`n += i; i += 1` を 100M iter)
+
+| 構成 | wall time |
+|---|---:|
+| ruby (no JIT) | 1.61 s |
+| ruby --yjit | 1.58 s |
+| koruby (interp) | 2.02 s |
+| **koruby (AOT-cached)** | **0.28 s** ← yjit の 5.7×、ruby の 5.8× |
+
+整数しか出ない tight loop は AOT の partial-eval が効いて圧勝。
+optcarrot のように method call + ivar + array indexing 中心になると
+2.3× にとどまる。
+
+### 直近の修正で効いた correctness 系 (perf 数字を歪めていたバグ)
+
+* **masgn の attribute setter** — `@a, @b, @cpu.next_frame_clock = ...` の
+  3つ目が無視されていて optcarrot の PPU が常に空フレーム返してた。
+  fix 後も "速さ" は変わらず (むしろ正しく描画する分遅くなる) が、
+  **以前の "248 fps" は嘘** で、実際は CRuby に勝ってもなかった。
+* **基本演算 redef guard の絞り込み** — `class Integer; def gcd; end` で
+  `+` の fast path まで無効化されていた。 名前が basic op か検査するよう
+  修正 → whileloop 1.65s → 0.30s (5.5×)、 fib(30) 0.49s → 0.17s (2.9×)。
+* **block-as-&proc slot collision (parse.c)** — `f arg, ary.map(&proc)` で
+  arg が proc の param 値で上書きされていた。 `pop_frame` で
+  parent.arg_index を child.max_cnt まで上げる + `block_floor` で
+  rewind を抑止。 perf には直接効かないが正しく動かない code が動く。
+* **proc.call の env 共有化** — `proc.call` が env を snapshot して block
+  内の outer 変数書き戻しが伝搬しなかった。 直接共有に変更で正しく動く
+  (パフォーマンスは ~わずかに上がる: 1 アロケーションを削減)。
+* **per-iteration closure capture** — `(1..3).each { |i| procs << proc { i } }`
+  で全 proc が同じ env を見ていた。 parse-time に block 体を walk して
+  inner block_literal がある block にだけ `creates_proc` flag を立て、
+  yield 時に fresh env を allocate + outer slot copy-back する slow path に
+  切替。 普通の `each` body (proc を作らない) は fast path のまま。
+
+---
+
+## 過去の summary table (historical, 2026-04-30 以前)
+
+過去のベンチ表は checksum 検証前の数字。 そのまま残す:
 
 | 構成 | fps (median) | vs CRuby no-JIT |
 |---|---:|---:|
@@ -26,9 +79,13 @@ binary; SDs in `code_store/all.so` always built with `gcc -O3 -fPIC -fno-plt
 | koruby (interp + PGO — `make koruby-pgo`) | 51 fps | 1.24× |
 | abruby (--aot-compile-first, AOT only) | 71 fps | 1.73× |
 | abruby (--aot + --pg-compile, AOT + PGC) | 75 fps | 1.83× |
-| **koruby (AOT — `make koruby-aot`)** | **80 fps** | **1.95×** |
-| **koruby (AOT + PGO — `make koruby-pgo-aot`)** | **110 fps** | **2.68×** ← exceeds abruby +pgc by 35 fps |
-| **ruby --yjit / --jit** | **175 fps** | **4.27×** |
+| koruby (AOT — `make koruby-aot`) | 80 fps | 1.95× |
+| koruby (AOT + PGO — `make koruby-pgo-aot`) | 110 fps | 2.68× |
+| ruby --yjit / --jit | 175 fps | 4.27× |
+
+**注**: `koruby AOT + PGO` の 110 fps は当時の rendering loop が完全に
+動いてたかは怪しい。 今は AOT-cached で ~87 fps が再現可能な値。
+PGO + AOT は再測定 (TODO)。
 
 #### 26 bench の現状 (best of 3, taskset -c 0)
 

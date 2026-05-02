@@ -128,43 +128,97 @@ struct method_cache {
 
 ## 4. クロージャ (yield ベース)
 
-ブロック (`{ ... }` / `do ... end`) は **共有 fp** で実装している。
+ブロック (`{ ... }` / `do ... end`) は **共有 fp** が原則。
+ただし block 体に `proc { }` などの inner block_literal が含まれる場合は
+**fresh-env-with-writeback** に切り替わる (per-iteration capture のため)。
 
 ### 4.1 ブロック作成 (`node_block_literal`)
 
 ```c
 NODE_DEF @noinline
 node_block_literal(CTX *c, NODE *n, NODE *body, uint32_t params_cnt,
-                   uint32_t param_base, uint32_t env_size)
+                   uint32_t param_base, uint32_t env_size, uint32_t creates_proc)
 {
-    return korb_proc_new(body, c->fp, env_size, params_cnt, param_base, c->self, false);
+    VALUE p = korb_proc_new(body, c->fp, env_size, params_cnt, param_base, c->self, false);
+    if (creates_proc) ((struct korb_proc *)p)->creates_proc = true;
+    return p;
 }
 ```
 
-- `c->fp` を **そのまま env として保存** — コピーしない
+- `c->fp` を **そのまま env として保存** — コピーしない (fast path)
 - `env_size` = ブロック内で使う最大 slot (parser が `frame->max_cnt` から決める)
 - `param_base` = ブロックの第1パラメータが入る fp slot (= `slot_base` of block frame)
+- `creates_proc` = parse 時に「body 中に `proc { }` / lambda / `->()` リテラルが含まれる」と検出されたフラグ
 
-### 4.2 yield (`korb_yield`)
+parse 時の検出:
+```c
+// parse.c push_frame(): 新しい block 子 frame を push する瞬間に、
+// 親 frame chain を上方向に walk して全ての is_block 親 の has_inner_block を立てる
+if (is_block) {
+    for (frame *p = f->prev; p; p = p->prev) {
+        if (p->is_block) p->has_inner_block = true;
+    }
+}
+// pop_frame() 時に has_inner_block をその block の `creates_proc` 引数として
+// node_block_literal_xxx に渡す
+```
+
+### 4.2 yield fast path (共有 fp、`creates_proc == false`)
 
 ```c
 VALUE korb_yield(CTX *c, uint32_t argc, VALUE *argv) {
     struct korb_proc *blk = current_block;
+    if (UNLIKELY(blk->creates_proc)) return korb_yield_slow(c, blk, argc, argv);
     VALUE *fp = blk->env;   // 親と同じ fp
-    for (i = 0; i < blk->params_cnt; i++) fp[blk->param_base + i] = argv[i];
-    c->self = blk->self;
+    fp[blk->param_base] = argv[0];   // 単一引数 fast path
+    c->fp = fp;
     return EVAL(c, blk->body);  // body は共通 fp で動く
 }
 ```
 
-- `c->fp` を **変更しない** — ブロックは親フレームの上に乗っかる
-- ブロックが親の `s` を参照すれば `fp[親の slot]` を直接見る (= 親と同じメモリ)
+- `c->fp` を blk->env (親 fp) に切替
+- ブロックが親の `s` を参照すれば fp[親の slot] を直接見る (= 親と同じメモリ)
 - ブロックが書き込めば親の値も即更新される (closure semantics ✓)
+- `each` / `map` / `reduce` body のような proc-を-作らない一般ケースでは
+  追加の allocation なしで動く
 
-### 4.3 制限
+### 4.3 yield slow path (fresh env、`creates_proc == true`)
 
-- このブロックを `proc` として保存して **後から呼ぶ** (escape) は危険: 親フレームが既に消えていれば fp は無効
-- escape 対応には env を heap 化する必要がある (todo)
+```c
+VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, ...) {
+    VALUE *fp;
+    VALUE *outer_env_ptr = blk->env;
+    if (blk->creates_proc) {
+        fp = malloc(blk->env_size * sizeof(VALUE));
+        memcpy(fp, blk->env, blk->env_size * sizeof(VALUE));   // outer も含めて全コピー
+    } else {
+        fp = blk->env;
+    }
+    /* ... params 書き込み、body eval ... */
+    if (blk->creates_proc) {
+        /* outer slot だけ shared env に書き戻す */
+        for (i = 0; i < blk->param_base; i++) outer_env_ptr[i] = fp[i];
+    }
+}
+```
+
+これで:
+- `(1..3).each { |i| procs << proc { i } }` の各 iter は fresh fp を持ち、
+  内側 proc が異なる env に bind される → 後で `procs.map(&:call)` が `[1, 2, 3]`
+- `[1,2,3].each { |x| count += 1 }` は fresh fp で count 読み書きするが、
+  block 終了時に outer の `count` slot に copy back → ちゃんと 3 になる
+
+### 4.4 escape 対応
+
+`korb_proc_snapshot_env_if_in_frame` が enclosing method 終了時に
+proc.env を heap copy する。 これで「method を return して proc を返す」
+パターンが安全に動く。
+
+### 4.5 proc.call の env
+
+proc.call は **blk->env を直接共有**する (snapshot しない)。 過去には
+snapshot していて `r = ...` が outer に伝搬しなかったが、 escape 時の
+snapshot で env はすでに heap にあるので直接利用で正しい。
 
 ## 5. 例外伝搬 (state propagation)
 
@@ -212,10 +266,25 @@ node_rescue(CTX *c, NODE *n, NODE *body, NODE *rescue_body, uint32_t exc_idx)
         VALUE exc = c->state_value;
         c->state = KORB_NORMAL;
         c->fp[exc_idx] = exc;
+        /* $! を rescue body の間だけ exc に挿げ替える。 ensure 後に
+         * 復元するため prev_bang を保存しておく。 */
+        VALUE prev_bang = korb_gvar_get(korb_intern("$!"));
+        korb_gvar_set(korb_intern("$!"), exc);
         v = EVAL_ARG(c, rescue_body);
+        korb_gvar_set(korb_intern("$!"), prev_bang);
     }
     return v;
 }
+```
+
+bare `raise` (引数なし) は `$!` の値を再 raise:
+```c
+if (argc == 0) {
+    VALUE bang = korb_gvar_get(korb_intern("$!"));
+    if (!NIL_P(bang)) { c->state = KORB_RAISE; c->state_value = bang; }
+    else korb_raise(c, NULL, "unhandled exception");
+}
+```
 
 NODE_DEF
 node_ensure(CTX *c, NODE *n, NODE *body, NODE *ensure_body)
@@ -237,7 +306,24 @@ node_ensure(CTX *c, NODE *n, NODE *body, NODE *ensure_body)
 }
 ```
 
-### 5.4 setjmp/longjmp と比べて
+### 5.4 全 state 一覧
+
+| state | 用途 | 設定箇所 |
+|---|---|---|
+| `KORB_NORMAL` | 通常 | (defalt) |
+| `KORB_RAISE` | 例外 raise 中 | `node_raise` / `korb_raise` |
+| `KORB_RETURN` | メソッド return | `node_return` |
+| `KORB_BREAK`  | ループ break / yield 中の break | `node_break` |
+| `KORB_NEXT`   | ループ next / yield 中の next | `node_next` |
+| `KORB_REDO`   | block redo | `node_redo` |
+| `KORB_RETRY`  | rescue 中の retry | `node_retry` |
+| `KORB_THROW`  | catch/throw の unwind | `kernel_throw` |
+
+`KORB_THROW` は state_value に `[tag, value]` の 2-element Array を載せる。
+`kernel_catch` は受信側で tag 比較 → 一致なら state を NORMAL に戻して
+value を返す。 不一致は state を維持して呼出元へ伝搬。
+
+### 5.5 setjmp/longjmp と比べて
 
 | 項目 | state 伝搬 | setjmp/longjmp |
 |---|---|---|
