@@ -2,7 +2,7 @@
 
 [done.md](./done.md) は実装済み。ここは **未実装 / 不完全 / 既知バグ** をまとめる。
 
-現状: **test/ruby/ 141 ファイル全 pass**。
+現状: **test/ruby/ 142 ファイル全 pass**。
 optcarrot は ruby と checksum 一致、CRuby の 2.2x、YJIT の 0.55x。
 
 ---

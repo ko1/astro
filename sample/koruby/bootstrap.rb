@@ -154,10 +154,59 @@ class Enumerable
 
   alias collect map
   alias filter select
+  alias find_all select
   alias inject reduce
   alias detect find
   alias entries to_a
   alias member? include?
+
+  # Pattern-conditional filters.  Use `===` so user-defined classes
+  # that respond to it (Range, Class, etc.) work without special-casing.
+  def grep(pattern, &blk)
+    out = []
+    each { |x|
+      if pattern === x
+        out << (blk ? blk.call(x) : x)
+      end
+    }
+    out
+  end
+
+  def grep_v(pattern, &blk)
+    out = []
+    each { |x|
+      unless pattern === x
+        out << (blk ? blk.call(x) : x)
+      end
+    }
+    out
+  end
+
+  def find_index(target = nil, &blk)
+    i = 0
+    each { |x|
+      hit = blk ? blk.call(x) : (x == target)
+      return i if hit
+      i += 1
+    }
+    nil
+  end
+
+  # cycle(n) — yield each element n times in order.  Without a block
+  # we return an Array of the cycled elements (koruby has no real
+  # Enumerator).  Without n and without a block CRuby would return
+  # an infinite Enumerator; we materialize 100 cycles which is enough
+  # for typical `.first(N)` / `.take(N)` consumers.
+  def cycle(n = nil, &blk)
+    if blk.nil?
+      return n.nil? ? to_a * 100 : to_a * n
+    end
+    if n.nil?
+      loop { each { |x| blk.call(x) } }
+    else
+      n.times { each { |x| blk.call(x) } }
+    end
+  end
 end
 
 # Array, Hash, Range, String all support `each`, so wire up Enumerable.
