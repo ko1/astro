@@ -452,18 +452,21 @@ node_func_call_block(CTX * restrict c, NODE * restrict n, ID name, uint32_t argc
 }
 
 NODE_DEF @noinline
-node_block_literal(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t params_cnt, uint32_t param_base, uint32_t env_size)
+node_block_literal(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t params_cnt, uint32_t param_base, uint32_t env_size, uint32_t creates_proc)
 {
-    return korb_proc_new(body, c->fp, env_size, params_cnt, param_base, c->self, false);
+    VALUE p = korb_proc_new(body, c->fp, env_size, params_cnt, param_base, c->self, false);
+    if (creates_proc) ((struct korb_proc *)p)->creates_proc = true;
+    return p;
 }
 
 /* Variant with an explicit *rest slot.  rest_slot is the absolute slot
  * the proc binds *rest into; -1 means "no rest". */
 NODE_DEF @noinline
-node_block_literal_rest(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t params_cnt, uint32_t param_base, uint32_t env_size, int32_t rest_slot)
+node_block_literal_rest(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t params_cnt, uint32_t param_base, uint32_t env_size, int32_t rest_slot, uint32_t creates_proc)
 {
     VALUE p = korb_proc_new(body, c->fp, env_size, params_cnt, param_base, c->self, false);
     ((struct korb_proc *)p)->rest_slot = rest_slot;
+    if (creates_proc) ((struct korb_proc *)p)->creates_proc = true;
     return p;
 }
 
@@ -471,11 +474,12 @@ node_block_literal_rest(CTX * restrict c, NODE * restrict n, NODE *body, uint32_
  * block declares keyword params; proc_call uses kwh_save_slot to peel
  * the trailing Hash argument. */
 NODE_DEF @noinline
-node_block_literal_kw(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t params_cnt, uint32_t param_base, uint32_t env_size, int32_t rest_slot, int32_t kwh_save_slot)
+node_block_literal_kw(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t params_cnt, uint32_t param_base, uint32_t env_size, int32_t rest_slot, int32_t kwh_save_slot, uint32_t creates_proc)
 {
     VALUE p = korb_proc_new(body, c->fp, env_size, params_cnt, param_base, c->self, false);
     ((struct korb_proc *)p)->rest_slot = rest_slot;
     ((struct korb_proc *)p)->kwh_save_slot = kwh_save_slot;
+    if (creates_proc) ((struct korb_proc *)p)->creates_proc = true;
     return p;
 }
 

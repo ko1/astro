@@ -163,6 +163,12 @@ struct korb_proc {
     struct korb_proc *enclosing_block;
     VALUE self;
     bool is_lambda;
+    /* Set at parse time when the body contains a `proc { }`/lambda/`->()`
+     * literal.  Yield uses this to switch to a fresh-env-with-writeback
+     * path so each iteration captures its own block-local slots —
+     * without the flag, every iteration's captured proc would alias
+     * the same env memory and see the last iter's values. */
+    bool creates_proc;
 };
 
 /* Method object: a bound (receiver, method) pair, callable via #call/#[] */
@@ -552,6 +558,10 @@ korb_yield(CTX *c, uint32_t argc, VALUE *argv) {
     }
     /* Symbol-proc shim — fall to slow path. */
     if (UNLIKELY(blk->body == NULL)) return korb_yield_slow(c, blk, argc, argv);
+    /* Block creates a Proc inside its body — needs per-iteration env
+     * (via the slow path's fresh-env-with-writeback) so each captured
+     * proc has its own block-locals. */
+    if (UNLIKELY(blk->creates_proc)) return korb_yield_slow(c, blk, argc, argv);
     /* Common case: single arg, single param, no destructure.  Inline. */
     if (LIKELY(argc == 1 && blk->params_cnt == 1)) {
         VALUE arg = argv[0];  /* snapshot before fp swap */

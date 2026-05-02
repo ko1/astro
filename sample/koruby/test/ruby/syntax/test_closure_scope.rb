@@ -29,18 +29,13 @@ def test_nested_blocks_share_scope
 end
 
 # ---------- Proc captures bindings (one closure per iteration) ----------
-# DISABLED: koruby allocates the block's env once at block creation and
-# reuses the same memory across yield invocations.  Procs created inside
-# the block all alias that single env, so they all observe the LAST
-# value of `i` (CRuby gives [1, 2, 3]; koruby gives [3, 3, 3]).  Fixing
-# this requires allocating a fresh env per yield invocation and
-# adjusting the depth-walk accordingly — substantial frame-model work.
-# def test_procs_capture_separate_bindings
-#   procs = []
-#   (1..3).each { |i| procs << proc { i } }
-#   results = procs.map(&:call)
-#   assert_equal [1, 2, 3], results
-# end
+
+def test_procs_capture_separate_bindings
+  procs = []
+  (1..3).each { |i| procs << proc { i } }
+  results = procs.map(&:call)
+  assert_equal [1, 2, 3], results
+end
 
 # ---------- Late-binding semantics for outer locals ----------
 
@@ -81,7 +76,7 @@ TESTS = [
   :test_block_reads_outer_local,
   :test_block_writes_outer_local,
   :test_nested_blocks_share_scope,
-  # :test_procs_capture_separate_bindings — see comment above
+  :test_procs_capture_separate_bindings,
   :test_proc_sees_later_assignment,
   :test_method_locals_dont_leak,
   :test_block_local_shadows,

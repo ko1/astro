@@ -1052,6 +1052,7 @@ VALUE korb_proc_new(struct Node *body, VALUE *fp, uint32_t env_size,
     p->enclosing_block = current_block;  /* capture enclosing-method's block */
     p->self = self;
     p->is_lambda = is_lambda;
+    p->creates_proc = false;
     return (VALUE)p;
 }
 
@@ -1091,7 +1092,24 @@ VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv)
     if (argc > 16) args_buf = korb_xmalloc(sizeof(VALUE) * argc);
     for (uint32_t i = 0; i < argc; i++) args_buf[i] = argv[i];
 
-    VALUE *fp = blk->env;
+    /* Per-iteration capture path: when the block creates inner procs
+     * (`(1..3).each { |i| procs << proc { i } }`), allocate a fresh env
+     * for THIS yield's block-locals so the captured proc sees its own
+     * `i`.  Outer slots are aliased via copy-in / copy-back.  Non-
+     * creates_proc blocks share env directly (faster, and matches
+     * shared-state semantics for `count += 1`-style accumulators). */
+    bool fresh_env_path = blk->creates_proc;
+    VALUE *fp;
+    VALUE *outer_env_ptr = blk->env;
+    if (fresh_env_path) {
+        fp = (VALUE *)korb_xmalloc(blk->env_size * sizeof(VALUE));
+        /* Copy ALL of env: outer slots so depth-walks/reads see their
+         * current values; block-local slots are about to be overwritten
+         * by params/destructure anyway. */
+        for (uint32_t i = 0; i < blk->env_size; i++) fp[i] = blk->env[i];
+    } else {
+        fp = blk->env;
+    }
     VALUE *prev_fp = c->fp;
     VALUE prev_self = c->self;
     /* Auto-destructure: block with N params yielded a single Array of size M
@@ -1121,7 +1139,7 @@ VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv)
     }
     c->self = blk->self;
     /* Switch fp so block body's lvar_get/set hit the captured frame's slots. */
-    c->fp = blk->env;
+    c->fp = fp;
     /* Lexical block target: yield inside block body refers to the
      * enclosing method's block, not back to this block. */
     struct korb_proc *prev_block = current_block;
@@ -1134,6 +1152,13 @@ redo_block:
     if (c->state == KORB_REDO) {
         c->state = KORB_NORMAL; c->state_value = Qnil;
         goto redo_block;
+    }
+    /* Copy outer-slot writes back to the shared env so updates like
+     * `count += 1` propagate.  Only outer slots — block-local slots
+     * stay in `fp` (the fresh env), captured by any procs created
+     * during this iteration. */
+    if (fresh_env_path) {
+        for (uint32_t i = 0; i < blk->param_base; i++) outer_env_ptr[i] = fp[i];
     }
     c->fp = prev_fp;
     c->self = prev_self;

@@ -29,6 +29,11 @@ struct frame_context {
      * yield would clobber whatever the sibling wrote. */
     uint32_t block_floor;
     bool is_block;        /* true for block frames (share parent fp) */
+    /* Set to true when a child block / lambda is encountered inside
+     * this frame's body.  Propagated to the proc at korb_proc_new
+     * time as `creates_proc`, so korb_yield can pick a fresh-env
+     * path for blocks that capture procs per iteration. */
+    bool has_inner_block;
     /* `def f(...)` forwarding: hidden slots holding the captured *args,
      * **kwargs, and &blk so the body's `f(...)` calls can splat them. */
     int fwd_rest_slot;
@@ -91,6 +96,15 @@ static void push_frame(struct transduce_context *tc, pm_constant_id_list_t *loca
     f->arg_index = f->slot_base + (locals ? locals->size : 0);
     f->max_cnt = f->arg_index;
     f->block_floor = f->arg_index;
+    f->has_inner_block = false;
+    /* If we're a new block frame, mark every enclosing block as having
+     * an inner block — any of them might be the yielding context that
+     * captures the eventual proc. */
+    if (is_block) {
+        for (struct frame_context *p = f->prev; p; p = p->prev) {
+            if (p->is_block) p->has_inner_block = true;
+        }
+    }
     f->fwd_rest_slot = -1;
     f->fwd_kwh_slot = -1;
     f->fwd_blk_slot = -1;
@@ -413,13 +427,14 @@ build_call_with_block(struct transduce_context *tc, NODE *recv, ID name,
     NODE *body = bn->body ? T(tc, bn->body) : ALLOC_node_nil();
     if (destructure_pre) body = ALLOC_node_seq(destructure_pre, body);
     uint32_t env_size = tc->frame->max_cnt;
+    uint32_t creates_proc = tc->frame->has_inner_block ? 1 : 0;
     pop_frame(tc);
     NODE *block_node;
     if (block_rest_slot_pre >= 0) {
         block_node = ALLOC_node_block_literal_rest(body, params_cnt, param_base,
-                                                    env_size, (int32_t)block_rest_slot_pre);
+                                                    env_size, (int32_t)block_rest_slot_pre, creates_proc);
     } else {
-        block_node = ALLOC_node_block_literal(body, params_cnt, param_base, env_size);
+        block_node = ALLOC_node_block_literal(body, params_cnt, param_base, env_size, creates_proc);
     }
     /* Register block body so AOT (--aot-compile) emits an SD for it.
      * Without this, the block dispatcher stays at DISPATCH_node_*
@@ -1349,7 +1364,7 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
           if (x_slot < 0) x_slot = (int)inc_arg_index(tc);  /* fallback */
           NODE *body = n->statements ? transduce_statements(tc, n->statements) : ALLOC_node_nil();
           uint32_t env_size = tc->frame->max_cnt;
-          NODE *block_node = ALLOC_node_block_literal(body, 1, (uint32_t)x_slot, env_size);
+          NODE *block_node = ALLOC_node_block_literal(body, 1, (uint32_t)x_slot, env_size, 0);
           code_repo_add("<for>", body, false);
           struct method_cache *mc = alloc_method_cache();
           return ALLOC_node_method_call_block(coll, korb_intern("each"), 0, arg_index(tc), block_node, mc);
@@ -2041,17 +2056,18 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
           NODE *body = n->body ? T(tc, n->body) : ALLOC_node_nil();
           if (kw_prologue) body = ALLOC_node_seq(kw_prologue, body);
           uint32_t env_size = tc->frame->max_cnt;
+          uint32_t l_creates_proc = tc->frame->has_inner_block ? 1 : 0;
           pop_frame(tc);
           NODE *blk;
           if (lambda_kwh_slot >= 0) {
               blk = ALLOC_node_block_literal_kw(body, params_cnt, param_base,
                                                  env_size, (int32_t)lambda_rest_slot,
-                                                 (int32_t)lambda_kwh_slot);
+                                                 (int32_t)lambda_kwh_slot, l_creates_proc);
           } else if (lambda_rest_slot >= 0) {
               blk = ALLOC_node_block_literal_rest(body, params_cnt, param_base,
-                                                   env_size, (int32_t)lambda_rest_slot);
+                                                   env_size, (int32_t)lambda_rest_slot, l_creates_proc);
           } else {
-              blk = ALLOC_node_block_literal(body, params_cnt, param_base, env_size);
+              blk = ALLOC_node_block_literal(body, params_cnt, param_base, env_size, l_creates_proc);
           }
           /* `-> { ... }` and `lambda { ... }` produce a *lambda* — same as
            * a block literal except is_lambda=true.  Emit a call to the
