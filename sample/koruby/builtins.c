@@ -627,8 +627,21 @@ void korb_init_builtins(void) {
         korb_class_add_method_cfunc(cFileMeta, korb_intern("expand_path"), file_expand_path, -1);
         korb_class_add_method_cfunc(cFileMeta, korb_intern("extname"), file_extname, 1);
         korb_class_add_method_cfunc(cFileMeta, korb_intern("binread"), file_binread, 1);
+        korb_class_add_method_cfunc(cFileMeta, korb_intern("open"), file_open, -1);
+        korb_class_add_method_cfunc(cFileMeta, korb_intern("write"), file_write, -1);
         cFile->basic.klass = (VALUE)cFileMeta;
     }
+    /* Instance methods on File: it doubles as our IO class for opened
+     * files.  Walk-style readers + line iterators + writers. */
+    korb_class_add_method_cfunc(cFile, korb_intern("close"),     io_close,     0);
+    korb_class_add_method_cfunc(cFile, korb_intern("read"),      io_read,     -1);
+    korb_class_add_method_cfunc(cFile, korb_intern("gets"),      io_gets,     -1);
+    korb_class_add_method_cfunc(cFile, korb_intern("each_line"), io_each_line, 0);
+    korb_class_add_method_cfunc(cFile, korb_intern("each"),      io_each_line, 0);
+    korb_class_add_method_cfunc(cFile, korb_intern("puts"),      io_puts,     -1);
+    korb_class_add_method_cfunc(cFile, korb_intern("write"),     io_write,    -1);
+    korb_class_add_method_cfunc(cFile, korb_intern("print"),     io_print,    -1);
+    korb_class_add_method_cfunc(cFile, korb_intern("eof?"),      io_eof_p,     0);
 
     /* IO / STDOUT / $stdout */
     struct korb_class *cIO = korb_class_new(korb_intern("IO"), korb_vm->object_class, T_OBJECT);

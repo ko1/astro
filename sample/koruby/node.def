@@ -142,6 +142,15 @@ node_const_path_get(CTX * restrict c, NODE * restrict n, NODE *parent, ID name)
             VALUE v = korb_const_get(k, name);
             if (!UNDEF_P(v)) return v;
         }
+        /* const_missing hook: if the class defines a (singleton) method
+         * named const_missing, dispatch to it with the missing name as
+         * a Symbol — CRuby's protocol for autoload / lazy const lookup. */
+        struct korb_class *p_class = (struct korb_class *)p;
+        struct korb_class *meta = korb_singleton_class_of(p_class);
+        if (meta && korb_class_find_method(meta, korb_intern("const_missing"))) {
+            VALUE sym = korb_id2sym(name);
+            return korb_funcall(c, p, korb_intern("const_missing"), 1, &sym);
+        }
         korb_raise(c, NULL, "uninitialized constant %s::%s",
                  korb_id_name(((struct korb_class *)p)->name), korb_id_name(name));
         return Qnil;
