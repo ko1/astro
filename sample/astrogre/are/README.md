@@ -62,7 +62,7 @@ To get back grep-like behaviour: `--no-recursive`, `--hidden`, `-a`
 | Look-around / named captures | `-P` | -  | ✓  | `-P` | ✓ |
 | Onigmo extensions (cond / recursion / atomic / `\g<name>`) | - | - | - | - | ✓ |
 | Engine                       | DFA  | NFA + Onigmo MatchCache | NFA (PCRE) | hybrid lazy DFA + NFA fallback | NFA backtracking + Onigmo MatchCache + SIMD prefilter |
-| ReDoS-safe by default ¹      | ✓ (BRE/ERE) · - under `-P` | ✓ | - | ✓ default · - under `-P` | ✓ ² |
+| ReDoS-safe by default ¹      | ✓ (BRE/ERE) · - under `-P` | ✓ | - | ✓ default · - under `-P` | partial ² |
 | AOT specialisation cache     |  -   | -  | -  | -  | ✓ (`--aot`) |
 | Embeddable as C library      |  -   | -  | -  | -  | ✓ (`astrogre.h`) |
 
@@ -73,14 +73,23 @@ To get back grep-like behaviour: `--no-recursive`, `--hidden`, `-a`
 
 ² The `astrogre` engine carries an Onigmo-style MatchCache: lazily
   allocated once `backtrack_count > strlen × n_branches`, and gated
-  by a static eligibility check at parse time.  The cache is *off*
+  by a static eligibility check at parse time.  Catches the usual
+  catastrophic-backtracking shapes (`(a+)+b`, `(a|a)*b`, …) — those
+  finish in linear time on adversarial input.  The cache is *off*
   for patterns containing backreferences, atomic groups (`(?>…)`),
   subroutine calls (`\g<name>`), conditional groups (`(?(cond)…)`),
   or captures inside look-around — these constructs make
-  `(node_id, pos) → known-fail` memoization unsound, so we fall back
-  to plain NFA on them.  Long-term the lazy-DFA path will close that
-  remaining hole for cache-ineligible patterns
-  ([`../docs/todo.md`](../docs/todo.md)).
+  `(node_id, pos) → known-fail` memoization unsound (different code
+  paths reaching the same `(id, pos)` can have different captures
+  or recursion depth and so different outcomes), so we fall back to
+  plain backtracking on them.  This residual hole is *not* closable
+  by adding a lazy DFA: backreferences put the language outside the
+  regular class entirely, and atomic / subroutine / conditional
+  carry stateful semantics a DFA can't represent.  The realistic
+  mitigation for the ineligible subset is a runaway-detector
+  (abort after N steps with a clear error) rather than a different
+  matching algorithm.  Until that's in, treat memo-ineligible
+  patterns as untrusted-input-unsafe.
 
 ## Options
 
