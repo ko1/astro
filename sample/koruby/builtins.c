@@ -53,6 +53,8 @@ void korb_init_builtins(void) {
     DEF(cObj, "is_a?", kernel_is_a_p, 1);
     DEF(cObj, "kind_of?", kernel_is_a_p, 1);
     DEF(cObj, "block_given?", kernel_block_given, 0);
+    DEF(cObj, "throw",        kernel_throw,      -1);
+    DEF(cObj, "catch",        kernel_catch,      -1);
     DEF(cObj, "require_relative", kernel_require_relative, 1);
     DEF(cObj, "require", kernel_require, 1);
     DEF(cObj, "__dir__", kernel_dir, 0);

@@ -148,6 +148,51 @@ static VALUE kernel_block_given(CTX *c, VALUE self, int argc, VALUE *argv) {
     return KORB_BOOL(korb_block_given());
 }
 
+/* ---------- catch / throw ----------
+ * `catch(tag) { ... }` runs the block; if `throw(tag, val)` fires
+ * inside, unwinding stops here and `val` becomes the return value.
+ * Mismatched tag → propagates further up.
+ *
+ * Implementation: throw sets c->state = KORB_THROW and parks
+ * [tag, val] in c->state_value as a 2-element Array.  catch yields,
+ * then if state==THROW with a matching tag clears state and returns
+ * val; otherwise re-propagates.  No setjmp/longjmp — the existing
+ * EVAL_ARG / korb_yield bail-on-non-NORMAL machinery does the work. */
+static VALUE kernel_throw(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1) {
+        korb_raise(c, NULL, "throw: tag required");
+        return Qnil;
+    }
+    VALUE tag = argv[0];
+    VALUE val = argc >= 2 ? argv[1] : Qnil;
+    VALUE pair = korb_ary_new_capa(2);
+    korb_ary_push(pair, tag);
+    korb_ary_push(pair, val);
+    c->state = KORB_THROW;
+    c->state_value = pair;
+    return Qnil;
+}
+
+static VALUE kernel_catch(CTX *c, VALUE self, int argc, VALUE *argv) {
+    /* `catch` invocations may use either an explicit tag (`catch(:t) {}`)
+     * or no tag (`catch {}` — the block param is the implicit tag).
+     * For the no-tag form we synthesize a fresh Object as the tag. */
+    VALUE tag = (argc >= 1) ? argv[0] : korb_object_new(korb_vm->object_class);
+    VALUE block_arg[1] = { tag };
+    VALUE r = korb_yield(c, 1, block_arg);
+    if (c->state == KORB_THROW && !SPECIAL_CONST_P(c->state_value) &&
+        BUILTIN_TYPE(c->state_value) == T_ARRAY) {
+        struct korb_array *pair = (struct korb_array *)c->state_value;
+        if (pair->len == 2 && korb_eq(pair->ptr[0], tag)) {
+            VALUE v = pair->ptr[1];
+            c->state = KORB_NORMAL;
+            c->state_value = Qnil;
+            return v;
+        }
+    }
+    return r;
+}
+
 static VALUE kernel_dir(CTX *c, VALUE self, int argc, VALUE *argv) {
     const char *cur = c->current_file ? c->current_file : ".";
     return korb_str_new_cstr(korb_dirname(cur));

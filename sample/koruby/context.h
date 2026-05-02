@@ -253,6 +253,7 @@ typedef struct CTX_struct {
 #define KORB_NEXT   4
 #define KORB_RETRY  5
 #define KORB_REDO   6
+#define KORB_THROW  7
 
 /* current_frame chain (for backtrace + GC root) */
 struct korb_frame {
