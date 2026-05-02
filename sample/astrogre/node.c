@@ -14,6 +14,7 @@
 #include <unistd.h>
 #include "node.h"
 #include "context.h"
+#include "aho_corasick.h"
 
 /* --- Allocation --- */
 

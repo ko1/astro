@@ -16,7 +16,7 @@ CFLAGS = -I$(PRISM_DIR)/include -I. -I$(RUNTIME_DIR) $(optflags) -ggdb3 -Wall \
 LDFLAGS = -L $(PRISM_DIR)/build -Wl,-rpath=$(CURDIR)/$(PRISM_DIR)/build
 LIBS = -lprism -ldl
 
-SRCS = main.c node.c parse.c match.c selftest.c backend_astrogre.c
+SRCS = main.c node.c parse.c match.c selftest.c backend_astrogre.c aho_corasick.c
 
 # Onigmo backend (built locally; opt-in via WITH_ONIGMO=1)
 ifdef WITH_ONIGMO
@@ -26,7 +26,7 @@ LIBS += $(ONIGMO_DIR)/build/libonigmo.a
 ASTROGRE_DEPS = $(ONIGMO_DIR)/build/libonigmo.a
 endif
 
-astrogre: $(SRCS) $(NODE_GENFILES) Makefile node.h context.h backend.h $(ASTROGRE_DEPS)
+astrogre: $(SRCS) $(NODE_GENFILES) Makefile node.h context.h backend.h aho_corasick.h $(ASTROGRE_DEPS)
 	$(CC) $(CFLAGS) -o $@ $(SRCS) $(LDFLAGS) $(LIBS)
 
 $(NODE_GENFILES): node.def ../../lib/astrogen.rb

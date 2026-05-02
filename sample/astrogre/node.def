@@ -360,8 +360,8 @@ node_grep_search_memmem(CTX * restrict c, NODE * restrict n, NODE *body, const c
 NODE_DEF
 node_grep_search_ac(CTX * restrict c, NODE * restrict n, NODE *body, void *ac, uint32_t anchored_bos)
 {
-    extern bool astrogre_ac_scan(void *ac, const uint8_t *hay, size_t end,
-                                 size_t *io_pos, int32_t *io_state, size_t *out_match_start);
+    /* astrogre_ac_scan is declared in aho_corasick.h, included via
+     * node.c above the generated dispatch tables. */
     if (anchored_bos) {
         if (c->pos != 0) return MR_FAIL;
         for (int i = 0; i < ASTROGRE_MAX_GROUPS; i++) c->valid[i] = false;
