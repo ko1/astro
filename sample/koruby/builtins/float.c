@@ -15,14 +15,12 @@ static VALUE flt_div(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 /* Format a double using the shortest %.<p>g that round-trips back
  * to the same bit pattern.  This matches CRuby's `3.14.to_s == "3.14"`
- * (not "3.1400000000000001") while still being unambiguous. */
+ * (not "3.1400000000000001") while still being unambiguous.  Prefers
+ * fixed-point over scientific when both round-trip and the magnitude
+ * is reasonable (CRuby uses a similar threshold). */
+extern void korb_double_to_str(double d, char *out, size_t out_cap);
 static void korb_float_to_shortest(double d, char *out, size_t out_cap) {
-    for (int p = 1; p <= 17; p++) {
-        snprintf(out, out_cap, "%.*g", p, d);
-        double back = strtod(out, NULL);
-        if (back == d) return;
-    }
-    snprintf(out, out_cap, "%.17g", d);
+    korb_double_to_str(d, out, out_cap);
 }
 
 /* Float#step(limit, step) [{ |x| ... }] — yield self, self+step, ...

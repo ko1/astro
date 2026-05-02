@@ -1385,10 +1385,14 @@ static void str_appendf(VALUE s, const char *fmt, ...) {
 static VALUE korb_inspect_inner(VALUE v, int depth);
 
 /* Shortest round-tripping decimal for a double (matches CRuby's
- * `3.14.to_s == "3.14"` while staying unambiguous).  Tries %.1g..%.17g
- * and returns the first that strtod()s back to the same bit pattern.
- * Always emits `.0` for whole numbers so the type is visible. */
-static void korb_double_to_str(double d, char *out, size_t out_cap) {
+ * `3.14.to_s == "3.14"` while staying unambiguous).  Strategy:
+ *   1. Try the shortest %.<p>g that round-trips.
+ *   2. If the result uses scientific (e+NN), try %f at the same
+ *      precision in case the fixed-point form also round-trips and
+ *      is shorter / more conventional.  CRuby prefers `10.0` over
+ *      `1e+01` and `0.001` over `1e-03`.
+ * Always emits `.0` for whole numbers so the Float type stays visible. */
+void korb_double_to_str(double d, char *out, size_t out_cap) {
     if (isnan(d)) { snprintf(out, out_cap, "NaN"); return; }
     if (isinf(d)) { snprintf(out, out_cap, d < 0 ? "-Infinity" : "Infinity"); return; }
     for (int p = 1; p <= 17; p++) {
@@ -1397,6 +1401,26 @@ static void korb_double_to_str(double d, char *out, size_t out_cap) {
     }
     snprintf(out, out_cap, "%.17g", d);
   check_dot:
+    /* If the chosen %.*g representation went scientific, try a fixed-
+     * point form for the same value.  Reasonable threshold: |d| in
+     * [1e-4, 1e16) is what CRuby prefers as fixed-point. */
+    {
+        bool has_e = false;
+        for (char *q = out; *q; q++) {
+            if (*q == 'e' || *q == 'E') { has_e = true; break; }
+        }
+        double ad = d < 0 ? -d : d;
+        if (has_e && ad >= 1e-4 && ad < 1e16) {
+            char alt[64];
+            for (int p = 0; p <= 17; p++) {
+                snprintf(alt, sizeof(alt), "%.*f", p, d);
+                if (strtod(alt, NULL) == d) {
+                    snprintf(out, out_cap, "%s", alt);
+                    break;
+                }
+            }
+        }
+    }
     {
         bool has_dot_or_e = false;
         for (char *q = out; *q; q++) {
