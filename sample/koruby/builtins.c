@@ -184,6 +184,8 @@ void korb_init_builtins(void) {
     DEF(cMod, "module_function", module_module_function, -1);
     DEF(cMod, "define_method", module_define_method, -1);
     DEF(cMod, "alias_method",  module_alias_method,  -1);
+    DEF(cMod, "undef_method",  module_undef_or_remove_method, -1);
+    DEF(cMod, "remove_method", module_undef_or_remove_method, -1);
     DEF(cMod, "const_get",     module_const_get,     -1);
     DEF(cMod, "const_set",     module_const_set,     -1);
     DEF(cMod, "const_defined?", module_const_defined_p, -1);

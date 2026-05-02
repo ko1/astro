@@ -73,6 +73,28 @@ static VALUE cmp_clamp(CTX *c, VALUE self, int argc, VALUE *argv) {
 /* alias_method(:new_name, :existing_name) — register the existing
  * method under a new name on this class.  Reuses the resolved method
  * struct (methods are immutable in koruby). */
+/* Module#undef_method / remove_method.  Real CRuby distinguishes
+ * these (undef tombstones the slot to also block super dispatch);
+ * koruby's method tables are simple, so both just unlink the entry
+ * from this class.  Inherited methods remain reachable, which is
+ * remove_method's semantics; for undef_method on a class that
+ * doesn't override a super method this still raises NoMethodError
+ * because Object doesn't define the name either. */
+extern void korb_method_table_remove(struct korb_method_table *mt, ID name);
+static VALUE module_undef_or_remove_method(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1) return self;
+    if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return self;
+    struct korb_class *klass = (struct korb_class *)self;
+    for (int i = 0; i < argc; i++) {
+        ID name = SYMBOL_P(argv[i]) ? korb_sym2id(argv[i])
+                                     : korb_intern(korb_str_cstr(argv[i]));
+        korb_method_table_remove(&klass->methods, name);
+    }
+    /* Bump method serial so cached method-lookup entries invalidate. */
+    if (korb_vm) { korb_vm->method_serial++; korb_g_method_serial = korb_vm->method_serial; }
+    return self;
+}
+
 static VALUE module_alias_method(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 2) {
         korb_raise(c, NULL, "wrong number of arguments to alias_method (%d for 2)", argc);

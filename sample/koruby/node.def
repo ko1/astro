@@ -136,13 +136,15 @@ node_const_path_get(CTX * restrict c, NODE * restrict n, NODE *parent, ID name)
 {
     VALUE p = EA(c, parent);
     if (BUILTIN_TYPE(p) == T_CLASS || BUILTIN_TYPE(p) == T_MODULE) {
-        VALUE v = korb_const_get((struct korb_class *)p, name);
-        if (UNDEF_P(v)) {
-            korb_raise(c, NULL, "uninitialized constant %s::%s",
-                     korb_id_name(((struct korb_class *)p)->name), korb_id_name(name));
-            return Qnil;
+        /* Walk super chain — CRuby's `Sub::CONST` finds inherited
+         * constants too. */
+        for (struct korb_class *k = (struct korb_class *)p; k; k = k->super) {
+            VALUE v = korb_const_get(k, name);
+            if (!UNDEF_P(v)) return v;
         }
-        return v;
+        korb_raise(c, NULL, "uninitialized constant %s::%s",
+                 korb_id_name(((struct korb_class *)p)->name), korb_id_name(name));
+        return Qnil;
     }
     korb_raise(c, NULL, "not a class/module");
     return Qnil;

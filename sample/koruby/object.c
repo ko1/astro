@@ -144,6 +144,24 @@ static void method_table_set(struct korb_method_table *mt, ID name, struct korb_
     mt->size++;
 }
 
+/* Used by undef_method / remove_method.  Walks the bucket chain and
+ * unlinks the entry; method records themselves stay live (cached
+ * elsewhere — caches will miss on the next lookup and fall through). */
+void korb_method_table_remove(struct korb_method_table *mt, ID name) {
+    if (!mt->buckets) return;
+    uint32_t b = (uint32_t)(name % mt->bucket_cnt);
+    struct korb_method_table_entry **slot = &mt->buckets[b];
+    while (*slot) {
+        if ((*slot)->name == name) {
+            struct korb_method_table_entry *gone = *slot;
+            *slot = gone->next;
+            mt->size--;
+            return;
+        }
+        slot = &(*slot)->next;
+    }
+}
+
 static struct korb_method *method_table_get(const struct korb_method_table *mt, ID name) {
     if (!mt->buckets) return NULL;
     uint32_t b = (uint32_t)(name % mt->bucket_cnt);
@@ -733,6 +751,17 @@ uint64_t korb_hash_value(VALUE v) {
     if (BUILTIN_TYPE(v) == T_STRING) {
         return fnv_hash(((struct korb_string *)v)->ptr, ((struct korb_string *)v)->len);
     }
+    /* Arrays hash by content so `h[[1, 2]]` works on a fresh literal. */
+    if (BUILTIN_TYPE(v) == T_ARRAY) {
+        struct korb_array *a = (struct korb_array *)v;
+        uint64_t h = 0xcbf29ce484222325ULL;
+        for (long i = 0; i < a->len; i++) {
+            uint64_t eh = korb_hash_value(a->ptr[i]);
+            h ^= eh;
+            h *= 0x100000001b3ULL;
+        }
+        return h;
+    }
     return (uint64_t)v;
 }
 
@@ -743,6 +772,18 @@ bool korb_eql(VALUE a, VALUE b) {
         struct korb_string *x = (struct korb_string *)a;
         struct korb_string *y = (struct korb_string *)b;
         return x->len == y->len && memcmp(x->ptr, y->ptr, x->len) == 0;
+    }
+    /* Arrays compared by content (eql? element-wise via ==).  Match
+     * Hash's equality semantics so an Array key looks the same on
+     * lookup as on insert. */
+    if (BUILTIN_TYPE(a) == T_ARRAY && BUILTIN_TYPE(b) == T_ARRAY) {
+        struct korb_array *x = (struct korb_array *)a;
+        struct korb_array *y = (struct korb_array *)b;
+        if (x->len != y->len) return false;
+        for (long i = 0; i < x->len; i++) {
+            if (!korb_eql(x->ptr[i], y->ptr[i])) return false;
+        }
+        return true;
     }
     return false;
 }
