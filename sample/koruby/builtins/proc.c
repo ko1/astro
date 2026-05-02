@@ -99,12 +99,17 @@ VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
         korb_raise(c, NULL, "proc with no env");
         return Qnil;
     }
-    /* Clone env whenever we're called from a different frame (prev_fp
-     * != env): nested method calls inside the body would otherwise
-     * write into slots that overlap with prev_fp's locals.  After the
-     * body, the closure-captured slots [0, param_base) are written
-     * back so outer-scope assignments survive. */
-    if (prev_fp && prev_fp != new_fp) {
+    /* Slot collision guard: when prev_fp is inside the env's range
+     * (a method's frame sits on top of env), the block body's nested
+     * method calls would write into prev_fp's locals.  Clone env
+     * to a fresh location above c->sp, then write back the closure-
+     * captured slots [0, param_base) on return.  Don't clone when
+     * prev_fp IS the env (the block is being called from within its
+     * defining scope — closure writes propagate naturally) — that
+     * case is also where nested-proc curry chains depend on direct
+     * env aliasing for n-deep variable lookup to work. */
+    if (prev_fp && prev_fp != new_fp &&
+        prev_fp >= new_fp && prev_fp <= new_fp + p->env_size) {
         fresh_env = c->sp;
         for (uint32_t i = 0; i < p->env_size; i++) fresh_env[i] = new_fp[i];
         c->sp = fresh_env + p->env_size;
