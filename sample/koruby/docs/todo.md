@@ -20,11 +20,13 @@ optcarrot は ruby と checksum 一致、CRuby の 2.2x、YJIT の 0.55x。
 
 ## 2. 大きく欠けている領域
 
-### 2.1 Enumerator / Enumerator::Lazy
-- `each` / `map` / `select` 等の no-block 形は **Array stand-in** (CRuby は Enumerator)
-- `(1..Float::INFINITY).lazy.map.first(N)` 系の lazy chain 不可
-- `Enumerator.new { |y| y << ... }` 不可
-- 影響: `each_with_index.to_a` など中間 chain は動くが、本物 lazy が必要なコードは死ぬ
+### 2.1 Enumerator / Enumerator::Lazy  ✅ 2026-05-02 部分完
+- 完: no-block 形 (each / map / select / reject / each_with_index /
+  reverse_each / Range#each / Range#map) は **Array stand-in** を返し、
+  `.to_a` / 後続 `.map { }` / etc. が機能
+- 未: 真の `Enumerator::Lazy` (`(1..Float::INFINITY).lazy.map.first(N)`)
+- 未: `Enumerator.new { |y| y << ... }`
+- 影響: 普通の `.each.to_a` は動く。 無限 lazy が必要なコードのみ落ちる
 
 ### 2.2 IO / File / Dir
 - `File.read(path)` / `File.open` 程度のみ
@@ -37,26 +39,30 @@ optcarrot は ruby と checksum 一致、CRuby の 2.2x、YJIT の 0.55x。
 - `JSON` / `YAML` 無し (gem も無し)
 - `Object#to_yaml` 無し
 
-### 2.4 ObjectSpace / 内省
-- `ObjectSpace.each_object(Klass)` 無し
-- `ObjectSpace.count_objects` 無し
-- `Kernel#binding` 無し → `eval(str, binding)` 不可
-- `Method#parameters` / `Proc#parameters` 無し
-- `Proc#source_location` / `Method#source_location` 無し
+### 2.4 ObjectSpace / 内省  ✅ 2026-05-02 部分完
+- 完: `ObjectSpace.count_objects` (Boehm GC_get_heap_size 経由の :TOTAL)、
+  `garbage_collect`、 stub `each_object` (yields nothing — Boehm に live-object
+  enum API 無し)
+- 完: `Method#parameters` / `Proc#parameters` ([[kind], ...]、 names は無し)
+- 未: `Kernel#binding` → `eval(str, binding)` 不可
+- 未: `Proc#source_location` / `Method#source_location`
 
 ### 2.5 Complex / Rational
 - リテラル `1r` / `1+2i` 未対応
-- `Rational` / `Complex` クラスは stub
-- Numeric#coerce の rational/complex 経路無し
+- `Rational` / `Complex` クラスは stub (bootstrap.rb で簡易実装)
+- Numeric#coerce の rational/complex 経路は coerce protocol で動くが、Rational
+  自体の演算が脆弱
 
-### 2.6 Comparable on user Numerics
-- user-defined `Numeric` subclass + `coerce` で `1 + my_num` を動かす protocol 未対応
-- 現状は組込みの Integer/Float/Bignum 間のみ自然に coerce
+### 2.6 Comparable on user Numerics  ✅ 2026-05-02 完
+- `1 + my_num` で my_num.coerce(1) を呼ぶ protocol 実装
+- bad return / no method の場合 fall through → TypeError raise
 
-### 2.7 Hash key with custom #hash / #eql?
-- user の `def hash; ...; end` を Hash 内部の `korb_hash_value` が呼ばない
-- 影響: `class Pt; def hash; [@x,@y].hash; end; end; h[Pt.new(1,2)] = ...; h[Pt.new(1,2)]` は別オブジェクト扱いで取れない
-- 修正には `korb_hash_value` を CTX 持ちに refactor
+### 2.7 Hash key with custom #hash / #eql?  ✅ 2026-05-02 完
+- `korb_vm->current_ctx` を main.c で set
+- `korb_hash_value` が user の `#hash` を呼ぶ (T_OBJECT で Object/Kernel
+  以外の class が override してれば)
+- `korb_eql` も `#eql?` を delegation
+- `class Pt; def hash; ...; end; def eql?(o); ...; end; end; h[Pt.new(1,2)] = ...; h[Pt.new(1,2)]` 動く
 
 ---
 
@@ -126,26 +132,32 @@ optcarrot は ruby と checksum 一致、CRuby の 2.2x、YJIT の 0.55x。
 ## 5. やるなら次にやるべきこと (priority)
 
 ### High (実用度大)
-1. **Frozen check 残り mutator に展開** — 機械作業、半日
-2. **Enumerator stand-in 強化** — `Array#each.to_a` 系を一通り通す
-3. **Comparable mixin の派生メソッド網羅** — `<`, `<=`, `==`, `>`, `>=`, `between?`, `clamp` が user `<=>` から自動的に来ることを確認
-4. **Object.ancestors** に `Kernel`, `BasicObject` を入れる
-5. **Numeric#coerce protocol** — `1 + custom_numeric` を user の `coerce` 経由で
+1. ~~Frozen check 残り mutator に展開~~ ✅ 完
+2. ~~Enumerator stand-in 強化~~ ✅ 完
+3. ~~Object.ancestors に Kernel, BasicObject を入れる~~ ✅ 完
+4. ~~Numeric#coerce protocol~~ ✅ 完
+5. **Comparable mixin の派生メソッド網羅再検証** — `<`, `<=`, `==`, `>`,
+   `>=`, `between?`, `clamp` が user `<=>` から自動的に来ること
+6. **Kernel#binding** + `eval(str, binding)` — caller の locals を見せる
+   binding object
 
 ### Medium
-6. **Custom class as Hash key** (`korb_hash_value` を CTX 取れる版に refactor)
-7. **Method#parameters / Proc#parameters**
-8. **Endless method def, numbered block param** (Ruby 3.x 構文)
-9. **`Kernel#binding`** + `eval(str, binding)`
-10. **`__send__` / `public_send` の visibility 区別**
+7. ~~Custom class as Hash key~~ ✅ 完
+8. ~~Method#parameters / Proc#parameters~~ ✅ 完
+9. ~~Endless method def, numbered block param, hash shorthand~~ ✅ 完
+10. **`__send__` / `public_send` の visibility 区別** — public_send は
+    private を block するべき
+11. **Method#source_location / Proc#source_location** — file:line を
+    返す。 require して定義されたメソッドの位置情報
 
 ### Low (大きい・別 project 待ち)
-11. **Regexp** — sample/astrorge 完成後に integrate
-12. **Encoding** — まずは UTF-8 aware に
-13. **Thread** — 並行性が必要になったら
-14. **Marshal** — シリアライゼーションが必要になったら
-15. **Enumerator::Lazy** — 本物の lazy chain
-16. **Real File / IO / Dir / Pathname** — fixture 読み書きを超える用途が出たら
+12. **Regexp** — sample/astrorge 完成後に integrate
+13. **Encoding** — まずは UTF-8 aware に
+14. **Thread** — 並行性が必要になったら
+15. **Marshal** — シリアライゼーションが必要になったら
+16. **Enumerator::Lazy** — 本物の lazy chain (`(1..Float::INFINITY).lazy`)
+17. **Real File / IO / Dir / Pathname** — fixture 読み書きを超える用途が出たら
+18. **Rational / Complex 演算の網羅** — bootstrap.rb の薄い実装を厚くする
 
 ---
 
