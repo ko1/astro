@@ -180,6 +180,7 @@ int main(int argc, char *argv[])
 
     /* Set up a CTX. Stack is registered with GC by virtue of being a GC alloc. */
     CTX *c = korb_xcalloc(1, sizeof(CTX));
+    korb_vm->current_ctx = c;
     /* The value stack is heap allocated so GC scans it.  Use 64K slots. */
     size_t stack_size = 16 * 1024 * 1024;  /* 16 M slots */
     c->stack_base = korb_xmalloc(stack_size * sizeof(VALUE));

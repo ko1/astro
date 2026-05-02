@@ -457,3 +457,39 @@ static VALUE kernel_proc(CTX *c, VALUE self, int argc, VALUE *argv) {
     return (VALUE)current_block;
 }
 
+
+/* ---------- ObjectSpace stubs ----------
+ * Boehm GC doesn't expose live-object enumeration.  These stubs keep
+ * the API surface so calling code doesn't crash; real programs that
+ * depend on each_object will need a weak-ref registry layered on top
+ * of GC_register_finalizer (TODO). */
+extern void GC_gcollect(void);
+extern size_t GC_get_heap_size(void);
+
+VALUE objspace_each_object(CTX *c, VALUE self, int argc, VALUE *argv) {
+    /* Yields nothing.  Returns 0 (the count of yielded objects). */
+    if (!korb_block_given()) return korb_ary_new();
+    return INT2FIX(0);
+}
+
+VALUE objspace_count_objects(CTX *c, VALUE self, int argc, VALUE *argv) {
+    /* Hash{ :TOTAL => N, :FREE => 0, ...:T_OBJECT => 0, ... }.  We
+     * don't track per-type counts so just provide :TOTAL from the
+     * heap size and zero counts for the per-T_xxx keys. */
+    VALUE h = korb_hash_new();
+    korb_hash_aset(h, korb_id2sym(korb_intern("TOTAL")),
+                   INT2FIX((long)(GC_get_heap_size() / 64)));
+    korb_hash_aset(h, korb_id2sym(korb_intern("FREE")), INT2FIX(0));
+    /* Optionally accept a result-hash arg to merge into. */
+    if (argc >= 1 && !SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_HASH) {
+        korb_hash_aset(argv[0], korb_id2sym(korb_intern("TOTAL")),
+                       INT2FIX((long)(GC_get_heap_size() / 64)));
+        return argv[0];
+    }
+    return h;
+}
+
+VALUE objspace_garbage_collect(CTX *c, VALUE self, int argc, VALUE *argv) {
+    GC_gcollect();
+    return Qnil;
+}

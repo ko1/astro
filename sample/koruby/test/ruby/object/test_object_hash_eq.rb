@@ -56,14 +56,14 @@ class Pt
 end
 
 def test_custom_class_as_hash_key
-  # NOTE: koruby's hash key path doesn't yet invoke user-defined #hash
-  # and #eql? on custom classes — keys default to object-identity
-  # hashing.  CRuby calls those methods.  Skipped until the runtime
-  # has a CTX-bearing hash-value path.
-  # h = {}
-  # h[Pt.new(1, 2)] = :origin
-  # assert_equal :origin, h[Pt.new(1, 2)]
-  assert true
+  h = {}
+  h[Pt.new(1, 2)] = :origin
+  assert_equal :origin, h[Pt.new(1, 2)]
+  # different content → distinct entry
+  h[Pt.new(3, 4)] = :other
+  assert_equal :other, h[Pt.new(3, 4)]
+  # not present
+  assert_equal nil, h[Pt.new(99, 99)]
 end
 
 # ---------- equality matches hash ----------

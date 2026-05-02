@@ -762,6 +762,21 @@ uint64_t korb_hash_value(VALUE v) {
         }
         return h;
     }
+    /* Custom class with user-defined #hash — call it through current
+     * CTX (single-threaded global).  Falls back to identity if no
+     * CTX is available (boot phase) or if the user method's result
+     * isn't a Fixnum. */
+    if (BUILTIN_TYPE(v) == T_OBJECT && korb_vm && korb_vm->current_ctx) {
+        struct korb_class *k = korb_class_of_class(v);
+        struct korb_method *m = korb_class_find_method(k, korb_intern("hash"));
+        /* Skip Object#hash (our default identity-based version) — it
+         * lives on the Object class.  Otherwise we'd recurse forever. */
+        if (m && m->defining_class != korb_vm->object_class &&
+            m->defining_class != korb_vm->kernel_module) {
+            VALUE r = korb_funcall(korb_vm->current_ctx, v, korb_intern("hash"), 0, NULL);
+            if (FIXNUM_P(r)) return (uint64_t)FIX2LONG(r) * 11400714819323198485ULL;
+        }
+    }
     return (uint64_t)v;
 }
 
@@ -784,6 +799,18 @@ bool korb_eql(VALUE a, VALUE b) {
             if (!korb_eql(x->ptr[i], y->ptr[i])) return false;
         }
         return true;
+    }
+    /* Custom class with user-defined eql? — invoke it through
+     * current CTX, falling back to identity if not overridden. */
+    if (BUILTIN_TYPE(a) == T_OBJECT && korb_vm && korb_vm->current_ctx) {
+        struct korb_class *k = korb_class_of_class(a);
+        struct korb_method *m = korb_class_find_method(k, korb_intern("eql?"));
+        if (m && m->defining_class != korb_vm->object_class &&
+            m->defining_class != korb_vm->kernel_module) {
+            VALUE arg = b;
+            VALUE r = korb_funcall(korb_vm->current_ctx, a, korb_intern("eql?"), 1, &arg);
+            return RTEST(r);
+        }
     }
     return false;
 }
@@ -2205,6 +2232,24 @@ void korb_runtime_init(void) {
     korb_vm->proc_class    = korb_class_new(korb_intern("Proc"),       cObject, T_PROC);
     korb_vm->range_class   = korb_class_new(korb_intern("Range"),      cObject, T_RANGE);
     korb_vm->kernel_module = korb_module_new(korb_intern("Kernel"));
+    /* ObjectSpace — stub module for the API surface.  Real
+     * each_object enumeration would need a weak-ref registry on top
+     * of Boehm GC (which doesn't expose object iteration); for now
+     * each_object yields nothing and count_objects returns a small
+     * Hash with :TOTAL = 0 so callers don't crash. */
+    {
+        struct korb_class *cOS = korb_module_new(korb_intern("ObjectSpace"));
+        korb_const_set(cObject, cOS->name, (VALUE)cOS);
+        struct korb_class *cOSMeta = korb_class_new(korb_intern("ObjectSpaceMeta"),
+                                                     cClass, T_CLASS);
+        VALUE objspace_each_object(CTX *c, VALUE self, int argc, VALUE *argv);
+        VALUE objspace_count_objects(CTX *c, VALUE self, int argc, VALUE *argv);
+        VALUE objspace_garbage_collect(CTX *c, VALUE self, int argc, VALUE *argv);
+        korb_class_add_method_cfunc(cOSMeta, korb_intern("each_object"),     objspace_each_object,     -1);
+        korb_class_add_method_cfunc(cOSMeta, korb_intern("count_objects"),   objspace_count_objects,   -1);
+        korb_class_add_method_cfunc(cOSMeta, korb_intern("garbage_collect"), objspace_garbage_collect,  0);
+        cOS->basic.klass = (VALUE)cOSMeta;
+    }
     korb_vm->comparable_module = korb_module_new(korb_intern("Comparable"));
     korb_vm->enumerable_module = korb_module_new(korb_intern("Enumerable"));
 

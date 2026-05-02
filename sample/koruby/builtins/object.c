@@ -201,6 +201,114 @@ static VALUE method_receiver(CTX *c, VALUE self, int argc, VALUE *argv) {
     return m->receiver;
 }
 
+/* Method#parameters / Proc#parameters — return [[kind, name], ...].
+ * koruby doesn't preserve the per-param Symbol name on korb_method
+ * (only the locals_cnt and kind counts), so we emit single-element
+ * arrays [:req] / [:opt] / etc.  CRuby accepts that form for
+ * anonymous parameters. */
+static VALUE method_params_for_method(struct korb_method *km) {
+    VALUE r = korb_ary_new();
+    if (!km) return r;
+    if (km->type == KORB_METHOD_CFUNC) {
+        int n = km->u.cfunc.argc;
+        if (n < 0) {
+            VALUE pair = korb_ary_new_capa(1);
+            korb_ary_push(pair, korb_id2sym(korb_intern("rest")));
+            korb_ary_push(r, pair);
+        } else {
+            for (int i = 0; i < n; i++) {
+                VALUE pair = korb_ary_new_capa(1);
+                korb_ary_push(pair, korb_id2sym(korb_intern("req")));
+                korb_ary_push(r, pair);
+            }
+        }
+        return r;
+    }
+    if (km->type == KORB_METHOD_AST) {
+        long req   = (long)km->u.ast.required_params_cnt;
+        long total = (long)km->u.ast.total_params_cnt;
+        long post  = (long)km->u.ast.post_params_cnt;
+        bool has_rest = km->u.ast.rest_slot >= 0;
+        bool has_block = km->u.ast.block_slot >= 0;
+        bool has_kwh = km->u.ast.kwh_save_slot >= 0;
+        long opt_cnt = total - req - post - (has_rest ? 1 : 0) - (has_kwh ? 1 : 0);
+        if (opt_cnt < 0) opt_cnt = 0;
+        long pre_req = req - post;
+        if (pre_req < 0) pre_req = 0;
+        for (long i = 0; i < pre_req; i++) {
+            VALUE pair = korb_ary_new_capa(1);
+            korb_ary_push(pair, korb_id2sym(korb_intern("req")));
+            korb_ary_push(r, pair);
+        }
+        for (long i = 0; i < opt_cnt; i++) {
+            VALUE pair = korb_ary_new_capa(1);
+            korb_ary_push(pair, korb_id2sym(korb_intern("opt")));
+            korb_ary_push(r, pair);
+        }
+        if (has_rest) {
+            VALUE pair = korb_ary_new_capa(1);
+            korb_ary_push(pair, korb_id2sym(korb_intern("rest")));
+            korb_ary_push(r, pair);
+        }
+        for (long i = 0; i < post; i++) {
+            VALUE pair = korb_ary_new_capa(1);
+            korb_ary_push(pair, korb_id2sym(korb_intern("req")));
+            korb_ary_push(r, pair);
+        }
+        if (has_kwh) {
+            VALUE pair = korb_ary_new_capa(1);
+            korb_ary_push(pair, korb_id2sym(korb_intern("keyrest")));
+            korb_ary_push(r, pair);
+        }
+        if (has_block) {
+            VALUE pair = korb_ary_new_capa(1);
+            korb_ary_push(pair, korb_id2sym(korb_intern("block")));
+            korb_ary_push(r, pair);
+        }
+        return r;
+    }
+    return r;
+}
+
+static VALUE method_parameters(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_method_obj *m = (struct korb_method_obj *)self;
+    struct korb_class *k;
+    if (!SPECIAL_CONST_P(m->receiver) &&
+        (BUILTIN_TYPE(m->receiver) == T_CLASS || BUILTIN_TYPE(m->receiver) == T_MODULE)) {
+        k = (struct korb_class *)m->receiver;
+    } else {
+        k = korb_class_of_class(m->receiver);
+    }
+    return method_params_for_method(korb_class_find_method(k, m->name));
+}
+
+/* Proc#parameters — derive from korb_proc fields. */
+VALUE proc_parameters(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (BUILTIN_TYPE(self) != T_PROC) return korb_ary_new();
+    struct korb_proc *p = (struct korb_proc *)self;
+    VALUE r = korb_ary_new();
+    /* Required params: params_cnt at param_base. */
+    /* Lambda is strict; proc is lenient.  Same shape either way for
+     * the parameter list — opts/post are not tracked separately on
+     * korb_proc so emit `req` for each. */
+    for (uint32_t i = 0; i < p->params_cnt; i++) {
+        VALUE pair = korb_ary_new_capa(1);
+        korb_ary_push(pair, korb_id2sym(korb_intern(p->is_lambda ? "req" : "opt")));
+        korb_ary_push(r, pair);
+    }
+    if (p->rest_slot >= 0) {
+        VALUE pair = korb_ary_new_capa(1);
+        korb_ary_push(pair, korb_id2sym(korb_intern("rest")));
+        korb_ary_push(r, pair);
+    }
+    if (p->kwh_save_slot >= 0) {
+        VALUE pair = korb_ary_new_capa(1);
+        korb_ary_push(pair, korb_id2sym(korb_intern("keyrest")));
+        korb_ary_push(r, pair);
+    }
+    return r;
+}
+
 static VALUE method_owner(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_method_obj *m = (struct korb_method_obj *)self;
     /* If the "receiver" is itself a class/module (UnboundMethod from

@@ -210,6 +210,11 @@ struct korb_vm {
     /* topframe class (for top-level def, top-level constants) */
     struct korb_class *main_obj_class; /* the singleton-of-main-obj */
     VALUE main_obj;
+
+    /* The currently-executing CTX (set by main).  Used by
+     * korb_hash_value to invoke user-defined #hash on custom-class
+     * keys.  Single-threaded, so a single global is fine. */
+    struct CTX_struct *current_ctx;
 };
 
 extern struct korb_vm *korb_vm;
