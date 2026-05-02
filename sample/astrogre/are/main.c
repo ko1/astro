@@ -43,6 +43,7 @@
  *   --color=never|always|auto       (default auto via isatty)
  *   --engine=astrogre|onigmo        backend select (default astrogre)
  *   --aot                           AOT-specialise patterns to code_store/
+ *   -j N                            parallel workers (default: NCPU)
  *   -V / --version                  print version and exit
  *
  * The library-internal `--self-test`, `--bench`, `--bench-file`,
@@ -76,6 +77,7 @@
 #include "backend.h"
 #include "types.h"
 #include "ignore.h"
+#include "work.h"
 
 /* `verbose_mark` is wired throughout the search loop in the parent
  * astrogre/main.c for `--verbose` profiling.  In `are` we leave it as
@@ -164,6 +166,10 @@ typedef struct grep_opt {
     /* Code-store mode (astrogre backend only — Onigmo ignores it).  */
     cs_mode_t cs_mode;
     bool cs_verbose;            /* print cs_load hit/miss + cs_compile */
+
+    /* `-j N` parallel workers.  Default = sysconf(_SC_NPROCESSORS_ONLN);
+     * 1 means serial mode and bypasses the pool entirely. */
+    int n_jobs;
 
     const backend_ops_t *backend;
 } grep_opt_t;
@@ -397,6 +403,18 @@ typedef struct grep_state {
      * the recursive walker.  Seeded once from the cwd's repo root at
      * search start (`ignore_stack_seed_from_repo_root`). */
     ignore_stack_t ignore;
+    /* Output sink for the per-file print functions.  Default is
+     * stdout; in parallel mode the worker overrides this with a
+     * per-task `open_memstream` buffer that gets flushed to the real
+     * stdout under a mutex once the file's scan is complete.  All
+     * print_line / print_only_matching / process_buffer / process_stream
+     * write here rather than to `stdout` directly. */
+    FILE *out;
+    /* Worker pool — set when `-j N` (N > 1).  When non-NULL,
+     * process_path's file branch enqueues the path instead of
+     * scanning inline; workers pop and call process_file with their
+     * own per-thread grep_state copy. */
+    work_pool_t *pool;
 } grep_state_t;
 
 /* Filename separator used after the filename / line-number prefix.
@@ -417,19 +435,19 @@ print_line_with_color(grep_state_t *st, const char *fname, long lineno,
     grep_opt_t *go = st->go;
     char sep = fname_sep(go);
     if (st->show_filename) {
-        if (color_active) printf(COLOR_PURPLE "%s" COLOR_RESET, fname);
-        else              fputs(fname, stdout);
-        fputc(sep, stdout);
+        if (color_active) fprintf(st->out, COLOR_PURPLE "%s" COLOR_RESET, fname);
+        else              fputs(fname, st->out);
+        fputc(sep, st->out);
     }
     if (go->line_numbers) {
-        if (color_active) printf(COLOR_GREEN "%ld" COLOR_RESET, lineno);
-        else              printf("%ld", lineno);
-        fputc(sep, stdout);
+        if (color_active) fprintf(st->out, COLOR_GREEN "%ld" COLOR_RESET, lineno);
+        else              fprintf(st->out, "%ld", lineno);
+        fputc(sep, st->out);
     }
 
     if (!color_active) {
-        fwrite(line, 1, len, stdout);
-        fputc('\n', stdout);
+        fwrite(line, 1, len, st->out);
+        fputc('\n', st->out);
         return;
     }
 
@@ -444,21 +462,21 @@ print_line_with_color(grep_state_t *st, const char *fname, long lineno,
             }
         }
         if (best_start == (size_t)-1) {
-            fwrite(line + pos, 1, len - pos, stdout);
+            fwrite(line + pos, 1, len - pos, st->out);
             break;
         }
-        if (best_start > pos) fwrite(line + pos, 1, best_start - pos, stdout);
-        fputs(COLOR_RED, stdout);
-        fwrite(line + best_start, 1, best_end - best_start, stdout);
-        fputs(COLOR_RESET, stdout);
+        if (best_start > pos) fwrite(line + pos, 1, best_start - pos, st->out);
+        fputs(COLOR_RED, st->out);
+        fwrite(line + best_start, 1, best_end - best_start, st->out);
+        fputs(COLOR_RESET, st->out);
         if (best_end == best_start) { /* zero-width — advance one byte */
-            if (best_end < len) fputc(line[best_end], stdout);
+            if (best_end < len) fputc(line[best_end], st->out);
             pos = best_end + 1;
         } else {
             pos = best_end;
         }
     }
-    fputc('\n', stdout);
+    fputc('\n', st->out);
 }
 
 static void
@@ -477,22 +495,22 @@ print_only_matching(grep_state_t *st, const char *fname, long lineno,
         }
         if (best_start == (size_t)-1) break;
         if (st->show_filename) {
-            if (color_active) printf(COLOR_PURPLE "%s" COLOR_RESET, fname);
-            else              fputs(fname, stdout);
-            fputc(fname_sep(st->go), stdout);
+            if (color_active) fprintf(st->out, COLOR_PURPLE "%s" COLOR_RESET, fname);
+            else              fputs(fname, st->out);
+            fputc(fname_sep(st->go), st->out);
         }
         if (go->line_numbers) {
-            if (color_active) printf(COLOR_GREEN "%ld" COLOR_RESET ":", lineno);
-            else              printf("%ld:", lineno);
+            if (color_active) fprintf(st->out, COLOR_GREEN "%ld" COLOR_RESET ":", lineno);
+            else              fprintf(st->out, "%ld:", lineno);
         }
         if (color_active) {
-            fputs(COLOR_RED, stdout);
-            fwrite(line + best_start, 1, best_end - best_start, stdout);
-            fputs(COLOR_RESET, stdout);
+            fputs(COLOR_RED, st->out);
+            fwrite(line + best_start, 1, best_end - best_start, st->out);
+            fputs(COLOR_RESET, st->out);
         } else {
-            fwrite(line + best_start, 1, best_end - best_start, stdout);
+            fwrite(line + best_start, 1, best_end - best_start, st->out);
         }
-        fputc('\n', stdout);
+        fputc('\n', st->out);
         if (best_end == best_start) pos = best_end + 1;
         else                        pos = best_end;
     }
@@ -568,7 +586,7 @@ process_buffer_pure_literal(grep_state_t *st, const char *buf, size_t len,
             if (st->show_filename)  emit_opts |= ASTROGRE_EMIT_FNAME;
             if (go->line_numbers)   emit_opts |= ASTROGRE_EMIT_LINENO;
             if (color_active)       emit_opts |= ASTROGRE_EMIT_COLOR;
-            long c = astrogre_pattern_print_lines(ap, buf, len, fname, stdout, emit_opts);
+            long c = astrogre_pattern_print_lines(ap, buf, len, fname, st->out, emit_opts);
             if (c >= 0) {
                 matches_this_file = c;
                 any_match = c > 0;
@@ -632,12 +650,12 @@ process_buffer_pure_literal(grep_state_t *st, const char *buf, size_t len,
 
 post_loop:
     if (go->files_with_matches) {
-        if (any_match) { fputs(fname, stdout); fputc(go->null_separator ? '\0' : '\n', stdout); }
+        if (any_match) { fputs(fname, st->out); fputc(go->null_separator ? '\0' : '\n', st->out); }
     } else if (go->files_without_match) {
-        if (!any_match) { fputs(fname, stdout); fputc(go->null_separator ? '\0' : '\n', stdout); }
+        if (!any_match) { fputs(fname, st->out); fputc(go->null_separator ? '\0' : '\n', st->out); }
     } else if (go->count_only) {
-        if (st->show_filename) { fputs(fname, stdout); fputc(fname_sep(go), stdout); }
-        printf("%ld\n", matches_this_file);
+        if (st->show_filename) { fputs(fname, st->out); fputc(fname_sep(go), st->out); }
+        fprintf(st->out, "%ld\n", matches_this_file);
     }
     st->total_match_count += matches_this_file;
     return any_match;
@@ -743,12 +761,12 @@ process_buffer(grep_state_t *st, const char *buf, size_t len, const char *fname)
     }
 
     if (go->files_with_matches) {
-        if (any_match) { fputs(fname, stdout); fputc(go->null_separator ? '\0' : '\n', stdout); }
+        if (any_match) { fputs(fname, st->out); fputc(go->null_separator ? '\0' : '\n', st->out); }
     } else if (go->files_without_match) {
-        if (!any_match) { fputs(fname, stdout); fputc(go->null_separator ? '\0' : '\n', stdout); }
+        if (!any_match) { fputs(fname, st->out); fputc(go->null_separator ? '\0' : '\n', st->out); }
     } else if (go->count_only) {
-        if (st->show_filename) { fputs(fname, stdout); fputc(fname_sep(go), stdout); }
-        printf("%ld\n", matches_this_file);
+        if (st->show_filename) { fputs(fname, st->out); fputc(fname_sep(go), st->out); }
+        fprintf(st->out, "%ld\n", matches_this_file);
     }
     st->total_match_count += matches_this_file;
     return any_match;
@@ -813,7 +831,7 @@ process_stream(grep_state_t *st, FILE *fp, const char *fname)
             if (bsize > 0 && bring_count > 0) {
                 if (need_separator && last_emitted_lineno > 0) {
                     long earliest = bring_lineno[(bring_head - bring_count + bsize) % bsize];
-                    if (earliest > last_emitted_lineno + 1) fputs("--\n", stdout);
+                    if (earliest > last_emitted_lineno + 1) fputs("--\n", st->out);
                 }
                 for (long k = 0; k < bring_count; k++) {
                     long idx = (bring_head - bring_count + k + bsize) % bsize;
@@ -822,7 +840,7 @@ process_stream(grep_state_t *st, FILE *fp, const char *fname)
                 }
                 bring_count = 0;
             } else if (need_separator && lineno > last_emitted_lineno + 1) {
-                fputs("--\n", stdout);
+                fputs("--\n", st->out);
             }
 
             /* Emit this matching line. */
@@ -865,12 +883,12 @@ process_stream(grep_state_t *st, FILE *fp, const char *fname)
     }
 
     if (go->files_with_matches) {
-        if (any_match) { fputs(fname, stdout); fputc(go->null_separator ? '\0' : '\n', stdout); }
+        if (any_match) { fputs(fname, st->out); fputc(go->null_separator ? '\0' : '\n', st->out); }
     } else if (go->files_without_match) {
-        if (!any_match) { fputs(fname, stdout); fputc(go->null_separator ? '\0' : '\n', stdout); }
+        if (!any_match) { fputs(fname, st->out); fputc(go->null_separator ? '\0' : '\n', st->out); }
     } else if (go->count_only) {
-        if (st->show_filename) { fputs(fname, stdout); fputc(fname_sep(go), stdout); }
-        printf("%ld\n", matches_this_file);
+        if (st->show_filename) { fputs(fname, st->out); fputc(fname_sep(go), st->out); }
+        fprintf(st->out, "%ld\n", matches_this_file);
     }
     st->total_match_count += matches_this_file;
     return any_match;
@@ -1084,9 +1102,99 @@ process_path(grep_state_t *st, const char *path)
         return 0;
     }
     /* Skip binary files unless `-a` (--text) was given.  We probe the
-     * first 8 KiB for a NUL byte; same heuristic as ripgrep / git. */
+     * first 8 KiB for a NUL byte; same heuristic as ripgrep / git.
+     *
+     * In parallel mode we hand the path off to the worker pool and
+     * return immediately; the worker re-runs the binary check on its
+     * own thread so the producer doesn't block on the 8 KiB read.
+     * (Open + read + close of one file is faster on the worker than
+     * blocking the dir-walk loop.) */
+    if (st->pool) {
+        work_pool_submit(st->pool, path);
+        return 0;
+    }
     if (!st->go->include_binary && is_binary_file(path)) return 0;
     return process_file(st, path);
+}
+
+/* ------------------------------------------------------------------ */
+/* Worker pool plumbing                                                */
+/* ------------------------------------------------------------------ */
+
+/* Setup payload shared with the workers — just the base grep_state
+ * (read-only fields like `go`, `patterns`, `n_patterns`, `show_filename`).
+ * The pool itself is delivered to setup as a separate argument by the
+ * work_pool runtime, so we don't need to hold a (potentially still-NULL)
+ * pool pointer in here. */
+typedef struct worker_setup {
+    const grep_state_t *base;
+} worker_setup_t;
+
+/* Per-thread state.  Allocated once per worker (in `worker_setup_fn`)
+ * and reused across all tasks the thread runs.  Holds its own
+ * grep_state with the same flags / patterns as the base; the `out`
+ * memstream is opened FRESH per task (open_memstream's reset path
+ * via fseek isn't a clean wipe — the *size_p sticks at the
+ * high-water mark — so allocating per task is both simpler and not
+ * meaningfully more expensive at file-grep cadence). */
+typedef struct worker_state {
+    grep_state_t  st;
+    work_pool_t  *pool;
+} worker_state_t;
+
+static void *
+worker_setup_fn(work_pool_t *pool, void *user)
+{
+    const worker_setup_t *us = (const worker_setup_t *)user;
+    worker_state_t *w = (worker_state_t *)calloc(1, sizeof(*w));
+    /* Copy the base grep_state — patterns/go/show_filename are
+     * read-only after compile, so the shallow copy is safe to share.
+     * `total_match_count`, `out`, `pool` are per-thread. */
+    w->st = *us->base;
+    w->st.total_match_count = 0;
+    w->st.out = NULL;
+    w->st.pool = NULL;        /* worker dispatches process_file directly */
+    w->pool = pool;
+    return w;
+}
+
+static void
+worker_teardown_fn(void *worker_arg)
+{
+    worker_state_t *w = (worker_state_t *)worker_arg;
+    free(w);
+}
+
+/* The per-task work function.  Runs in a worker thread.  We re-do
+ * the binary skip here (process_path skipped it for parallel mode)
+ * and then call the same process_file the serial path uses, with
+ * the worker's grep_state pointed at a fresh memstream buffer for
+ * this file's output. */
+static void
+worker_task_fn(const char *path, void *worker_arg)
+{
+    worker_state_t *w = (worker_state_t *)worker_arg;
+    if (!w->st.go->include_binary && is_binary_file(path)) return;
+
+    char  *buf  = NULL;
+    size_t blen = 0;
+    FILE  *out  = open_memstream(&buf, &blen);
+    if (!out) {
+        /* Fall back to direct stdout under the pool's mutex if
+         * memstream alloc fails (extremely rare; OOM territory). */
+        w->st.out = stdout;
+        process_file(&w->st, path);
+        return;
+    }
+    w->st.out = out;
+    const long pre = w->st.total_match_count;
+    process_file(&w->st, path);
+    fflush(out);
+    const long delta = w->st.total_match_count - pre;
+
+    work_pool_flush_buf(w->pool, buf, blen, delta);
+    fclose(out);
+    free(buf);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1148,6 +1256,7 @@ usage(void)
         "  --no-ignore                     ignore .gitignore files\n"
         "  -a, --text                      do NOT skip binary files\n"
         "  --no-recursive                  do NOT descend into directories\n"
+        "  -j N                            parallel workers (default: NCPU)\n"
         "\n"
         "Other:\n"
         "  --color=never|always|auto       (default auto via isatty)\n"
@@ -1214,6 +1323,12 @@ main(int argc, char *argv[])
         if (strcmp(a, "--text") == 0)          { go.include_binary = true;  argi++; continue; }
         if (strcmp(a, "--no-recursive") == 0)  { go.recursive      = false; argi++; continue; }
         if (strcmp(a, "--no-ignore") == 0)     { go.no_ignore      = true;  argi++; continue; }
+        if (strcmp(a, "-j") == 0) {
+            if (argi + 1 >= argc) { usage(); return 2; }
+            go.n_jobs = (int)strtol(argv[argi + 1], NULL, 10);
+            if (go.n_jobs < 1) go.n_jobs = 1;
+            argi += 2; continue;
+        }
 
         if (strncmp(a, "--color", 7) == 0) {
             const char *val = (a[7] == '=') ? a + 8 : "always";
@@ -1328,7 +1443,8 @@ main(int argc, char *argv[])
     }
 
     grep_state_t st = {0};
-    st.go = &go;
+    st.go  = &go;
+    st.out = stdout;
     st.patterns = bps;
     st.n_patterns = go.n_patterns;
 
@@ -1362,6 +1478,15 @@ main(int argc, char *argv[])
         else if (go.with_filename_force) st.show_filename = true;
         else                             st.show_filename = (n > 1) || go.recursive;
 
+        /* Default `-j N` to the number of online CPUs; clamp to 1 if
+         * sysconf fails.  N=1 keeps the serial path (no thread setup,
+         * no per-task memstream — same numbers as the pre-parallel
+         * code on a single core). */
+        if (go.n_jobs <= 0) {
+            const long ncpu = sysconf(_SC_NPROCESSORS_ONLN);
+            go.n_jobs = (ncpu > 0) ? (int)ncpu : 1;
+        }
+
         /* Seed the .gitignore stack from the enclosing repo root —
          * picks up the cwd's .gitignore + every parent .gitignore up
          * to the dir that contains `.git`.  Per-dir layers are
@@ -1371,9 +1496,27 @@ main(int argc, char *argv[])
         ignore_stack_init(&st.ignore, go.no_ignore);
         ignore_stack_seed_from_repo_root(&st.ignore, paths[0]);
 
+        worker_setup_t ws = { .base = &st };
+        if (go.n_jobs > 1) {
+            st.pool = work_pool_create(go.n_jobs, worker_task_fn,
+                                       worker_setup_fn, worker_teardown_fn, &ws);
+        }
+
         for (int i = 0; i < n; i++) {
             process_path(&st, paths[i]);
-            if (go.quiet && st.total_match_count > 0) break;
+            /* `-q` early-exit only kicks in for the serial path; in
+             * parallel mode the workers may still be processing
+             * already-enqueued tasks, but we don't enqueue more. */
+            if (!st.pool && go.quiet && st.total_match_count > 0) break;
+        }
+
+        if (st.pool) {
+            /* `join_and_destroy` waits for all in-flight tasks to
+             * drain (workers exit on `closed && empty`), captures
+             * the accumulated match count, then frees the pool.
+             * Roll the count into the local total so the exit-code
+             * decision below works the same as the serial path. */
+            st.total_match_count += work_pool_join_and_destroy(st.pool);
         }
         rc = (st.total_match_count > 0) ? 0 : 1;
         ignore_stack_free(&st.ignore);

@@ -53,18 +53,15 @@ To get back grep-like behaviour: `--no-recursive`, `--hidden`, `-a`
 | Feature                      | grep | ag | ack | rg | **are** |
 | ---------------------------- | :--: | :-: | :-: | :-: | :-: |
 | Recursive default            |  -   | ✓  | ✓  | ✓  | ✓ |
-| `.gitignore` aware           |  -   | ✓  | -  | ✓  | _planned_ |
+| `.gitignore` aware           |  -   | ✓  | -  | ✓  | ✓ |
 | Skip binary by default       |  -   | ✓  | ✓  | ✓  | ✓ |
 | Skip hidden by default       |  -   | ✓  | ✓  | ✓  | ✓ |
-| Multi-thread file walking    |  -   | ✓  | -  | ✓  | _planned_ |
+| Multi-thread file walking    |  -   | ✓  | -  | ✓  | ✓ |
 | Type filter (`-t LANG`)      |  -   | ✓  | ✓  | ✓  | ✓ |
 | User-defined types           |  -   | ✓  | ✓  | ✓  | ✓ |
 | Look-around / named captures |  -   | -  | ✓  | `-P` | ✓ |
 | Onigmo MatchCache (ReDoS)    |  -   | -  | -  | -  | ✓ |
 | AOT specialisation cache     |  -   | -  | -  | -  | ✓ (`--aot`) |
-
-The "_planned_" items are tracked in [Roadmap](#roadmap) below; the
-✓-only column is the part that's already shipping.
 
 ## Options
 
@@ -87,8 +84,10 @@ Walking options:
   --type-list                     list known types and exit
   --include=GLOB / --exclude=GLOB extra basename glob filters
   --hidden                        descend into hidden entries
+  --no-ignore                     ignore .gitignore files
   -a, --text                      do NOT skip binary files
   --no-recursive                  do NOT descend into directories
+  -j N                            parallel workers (default: NCPU)
 
 Other:
   --color=never|always|auto       (default auto via isatty)
@@ -117,9 +116,23 @@ are/
 ├── main.c    ← CLI entry, opt parser, recursive walker, mmap fast paths
 ├── types.c   ← `-t LANG` table + lookup
 ├── types.h
+├── ignore.c  ← .gitignore parser + per-dir matcher stack
+├── ignore.h
+├── work.c    ← bounded MPMC queue + worker pool for `-j N`
+├── work.h
 ├── Makefile  ← reuses parent astrogre/ sources directly
 └── README.md
 ```
+
+The walker (in `main.c`) is the producer: it descends directories
+single-threaded — the `.gitignore` stack is push/pop'd at each
+opendir/closedir, which only the producer touches — and submits one
+file per scan to the work pool.  Workers pop, run `process_file` with
+their own `grep_state` (cloned from the base; per-thread match
+counter; per-task `open_memstream` output buffer), then flush the
+buffer to real `stdout` under a single mutex.  This keeps per-file
+output blocks coherent (no interleaved match lines) while letting the
+scan itself run on N cores.
 
 The Makefile pulls `node.c parse.c match.c selftest.c
 backend_astrogre.c` straight from the parent `astrogre/` directory,
@@ -160,34 +173,35 @@ Where `are` aims to land:
 What we have NOT done yet (and where `rg` will keep winning until we
 do):
 
-- `.gitignore` parsing — currently you need `--exclude=` per pattern.
-- Parallel file walking — single-threaded today.
-- Aho-Corasick / Teddy multi-pattern literal prefilter — the engine
-  picks ONE literal anchor and runs `memmem`/`memchr` on it.
+- **Multi-pattern Aho-Corasick / Teddy literal prefilter** — the
+  engine picks ONE literal anchor and runs `memmem`/`memchr`.  This
+  is the single biggest remaining gap.  Belongs in the astrogre
+  engine itself (so embedders benefit), not in `are`.
 
 ## Roadmap
 
 In rough order of expected impact:
 
-1. **`.gitignore` walker** — hierarchical (parent + per-dir),
-   negation patterns, `**/`.  ~500 LoC.  Parity with `rg` for
-   "doesn't waste time scanning `node_modules/`".
-2. **Aho-Corasick multi-pattern anchor** — extract necessary literals
-   from each compiled IRE, build an AC automaton, scan once per
-   buffer, verify hits with the full engine.  ~1000 LoC.  This is
-   the single biggest performance lever vs `rg`.
-3. **Parallel file walking** — POSIX threads + work-stealing queue
-   on the dirent stream.  ~300 LoC.  CPU-bound on big trees.
-4. **Smart-case** (`-S`): if the pattern has no uppercase, behave as
+1. **Multi-pattern anchor in the astrogre engine** — extract
+   necessary literals from the compiled IRE, build an
+   Aho-Corasick / Teddy scanner, replace the single-literal
+   `memmem` prefilter.  Lives in `astrogre/`, not here.
+2. **`.gitignore` polish** — global `core.excludesFile`,
+   `.git/info/exclude`, mid-path double-star.  v1 covers the 95%
+   case; these are the long tail.
+3. **Smart-case** (`-S`): if the pattern has no uppercase, behave as
    `-i`; else case-sensitive.  Trivial.
-5. **`--files`** — list every file `are` would otherwise search.
+4. **`--files`** — list every file `are` would otherwise search.
    Useful for piping to other tools and for debugging the walker.
-6. **JSON output** (`--json`) — for editor integration / piping into
+5. **JSON output** (`--json`) — for editor integration / piping into
    `jq`.  Mirrors `rg --json`.
+6. **Adaptive `-j`** — drop worker count on small input where
+   thread setup outweighs the parallelism win, raise on large.
+7. **Parallel directory walking** — currently the producer is
+   single-threaded.  On NVMe storage with cold cache this can be
+   IO-bound; spreading dir reads across workers helps.
 
-When 1–3 land, we should be able to make a serious case against
-`rg` on a code-base benchmark.  Until then, `are` is "modern grep
-with a Ruby regex engine and a roadmap".
+The astrogre engine roadmap is in [`../docs/todo.md`](../docs/todo.md).
 
 ## See also
 

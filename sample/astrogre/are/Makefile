@@ -30,7 +30,7 @@ LIBS    = -lprism -ldl
 
 # Source set.  The engine sources are pulled from the parent dir so
 # we never fork them; only main.c + types.c live under are/.
-ARE_SRCS = $(ARE_DIR)/main.c $(ARE_DIR)/types.c $(ARE_DIR)/ignore.c
+ARE_SRCS = $(ARE_DIR)/main.c $(ARE_DIR)/types.c $(ARE_DIR)/ignore.c $(ARE_DIR)/work.c
 ENG_SRCS = $(ENGINE_DIR)/node.c   \
            $(ENGINE_DIR)/parse.c  \
            $(ENGINE_DIR)/match.c  \
@@ -58,7 +58,10 @@ endif
 
 all: are
 
-are: $(ARE_SRCS) $(ENG_SRCS) $(NODE_GENFILES) $(ARE_DIR)/types.h $(ARE_DIR)/ignore.h \
+LIBS    += -lpthread
+
+are: $(ARE_SRCS) $(ENG_SRCS) $(NODE_GENFILES) \
+     $(ARE_DIR)/types.h $(ARE_DIR)/ignore.h $(ARE_DIR)/work.h \
      $(ENGINE_DIR)/node.h $(ENGINE_DIR)/context.h $(ENGINE_DIR)/parse.h \
      $(ENGINE_DIR)/backend.h Makefile $(ARE_DEPS)
 	$(CC) $(CFLAGS) -o $@ $(ARE_SRCS) $(ENG_SRCS) $(LDFLAGS) $(LIBS)
