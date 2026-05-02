@@ -1,0 +1,28 @@
+# Dependency hints for mkmf — picked up automatically when present and
+# merged into the generated Makefile.  Without this, mkmf only tracks
+# the .c → .o edge, so changes to the engine's headers (context.h /
+# parse.h / node.h, sitting in ../) don't trigger a rebuild and you end
+# up with an .so that was compiled against a different CTX layout
+# (which can SEGV when the AOT-baked SD library encodes one layout and
+# the .so encodes another).
+
+# The Cext itself (forward-declares only — no engine headers needed).
+astrogre_ext.o: astrogre_ext.c
+
+# Bridge TU pulls in the engine's header trio for DUMP().
+astrogre_dump_helper.o: astrogre_dump_helper.c \
+    $(srcdir)/../node.h $(srcdir)/../context.h $(srcdir)/../parse.h \
+    $(srcdir)/../node_head.h
+
+# Engine sources, compiled fresh into this .so via $VPATH.
+node.o: $(srcdir)/../node.c \
+    $(srcdir)/../node.h $(srcdir)/../context.h \
+    $(srcdir)/../node_head.h \
+    $(srcdir)/../node_eval.c $(srcdir)/../node_dispatch.c
+
+parse.o: $(srcdir)/../parse.c \
+    $(srcdir)/../node.h $(srcdir)/../context.h $(srcdir)/../parse.h \
+    $(srcdir)/../node_head.h
+
+match.o: $(srcdir)/../match.c \
+    $(srcdir)/../node.h $(srcdir)/../context.h $(srcdir)/../parse.h
