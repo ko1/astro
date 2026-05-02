@@ -63,6 +63,12 @@ typedef enum {
     AGRE_ENC_UTF8  = 1,
 } agre_encoding_t;
 
+/* Stack frame for a `\g<…>` subroutine call in flight. */
+struct sub_call_frame {
+    struct Node *return_to;
+    struct sub_call_frame *prev;
+};
+
 /* One frame on the repetition stack.  Pushed by node_re_rep when entering
  * a repeat, read by node_re_rep_cont (a singleton continuation node that
  * sits as `next` of every repeat-body) to decide whether to iterate again
@@ -73,6 +79,19 @@ struct rep_frame {
     int32_t min;        /* remaining min iterations (>= 0) */
     int32_t max;        /* remaining max iterations; -1 = unbounded */
     uint32_t greedy;    /* 1 = greedy, 0 = lazy */
+    /* Set at parse time when body is statically guaranteed to consume
+     * ≥1 byte on success (DOT, single-char class, lit > 0, alt where
+     * both branches must consume, etc.).  When true, rep_cont skips
+     * the empty-match carve-out entirely — each body match advances
+     * pos so the (last_pos == pos) test would always be false anyway.
+     * Saves 4 memory ops / iteration on the hot path. */
+    uint32_t body_must_consume;
+    /* Position at the start of the most recently dispatched body iter.
+     * SIZE_MAX before any iter has run.  Used only on the slow path
+     * (body_must_consume = 0): when a body iter completes with c->pos
+     * unchanged, treat min as satisfied and stop iterating instead of
+     * recursing forever — matches Ruby/PCRE semantics on `(a*)*` etc. */
+    size_t last_pos;
     struct rep_frame *prev;
 };
 
@@ -80,6 +99,9 @@ typedef struct CTX_struct {
     const uint8_t *str;
     size_t str_len;
     size_t pos;
+    /* Position passed to astrogre_search_from — the "scan anchor" that
+     * `\G` matches against.  Stays fixed for the lifetime of one search. */
+    size_t scan_start;
 
     /* Capture state.  Index 0 is the whole match. */
     size_t starts[ASTROGRE_MAX_GROUPS];
@@ -90,6 +112,25 @@ typedef struct CTX_struct {
     /* Repetition stack. */
     struct rep_frame *rep_top;
     struct Node *rep_cont_sentinel;
+
+    /* Variable-length lookbehind target.  When dispatching the body of
+     * a (?<=…) / (?<!…) whose width isn't fixed, the lookbehind node
+     * sets this to the original c->pos; the body chain ends in
+     * node_re_lb_check which only succeeds when c->pos reaches it. */
+    size_t lb_target;
+
+    /* Subroutine call machinery for `\g<…>`.  sub_chains[i] is the
+     * lowered "callable" body chain for capture group i (NULL when not
+     * subroutine-referenced).  At call time the call node pushes a
+     * sub_call_frame whose return_to is the continuation to dispatch
+     * when the subroutine succeeds.  stack_base / stack_limit form the
+     * dynamic recursion guard — see node_re_subroutine_call. */
+    struct Node **sub_chains;
+    int           sub_chains_n;
+    struct sub_call_frame *sub_top;
+    int           sub_depth;
+    uintptr_t     stack_base;
+    size_t        stack_limit;
 
     /* Encoding / flags */
     agre_encoding_t encoding;

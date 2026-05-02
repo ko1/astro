@@ -10,9 +10,32 @@
  * dispatching, since node_grep_search reads c.pos as the loop start.
  */
 
+#include <sys/resource.h>
 #include "node.h"
 #include "context.h"
 #include "parse.h"
+
+/* RLIMIT_STACK at process start, halved + floored — the runtime cap
+ * for recursive `\g<>` calls.  See node_re_subroutine_call. */
+static size_t g_stack_limit = 0;
+
+static size_t
+astrogre_stack_limit(void)
+{
+    if (g_stack_limit) return g_stack_limit;
+    struct rlimit rl;
+    size_t total = 8u * 1024u * 1024u;
+    if (getrlimit(RLIMIT_STACK, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY) {
+        total = (size_t)rl.rlim_cur;
+    }
+    /* Half the reported stack — the host (Ruby, the CLI) already burned
+     * some before we got here, and each recursive call drags more than
+     * just its own frame onto the stack (rep_cont, body chain, ...). */
+    const size_t halved = total / 2;
+    const size_t floor  = 1u * 1024u * 1024u;
+    g_stack_limit = halved > floor ? halved : floor;
+    return g_stack_limit;
+}
 
 /* The single rep_cont sentinel node used by all repeats.  Allocated
  * lazily on first request so it works regardless of whether main() has
@@ -45,7 +68,15 @@ astrogre_search_from(astrogre_pattern *p, const char *str, size_t len,
     c.n_groups = p->n_groups;
     c.rep_cont_sentinel = astrogre_rep_cont_singleton();
     c.pos = start_from;
+    c.scan_start = start_from;
     c.rep_top = NULL;
+    c.sub_chains   = p->sub_chains;
+    c.sub_chains_n = p->sub_chains_n;
+    c.sub_top      = NULL;
+    c.sub_depth    = 0;
+    char stack_marker;
+    c.stack_base  = (uintptr_t)&stack_marker;
+    c.stack_limit = astrogre_stack_limit();
 
     bool r = (bool)EVAL(&c, p->root);
 

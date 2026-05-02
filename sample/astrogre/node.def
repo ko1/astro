@@ -653,6 +653,265 @@ node_re_dot_m(CTX * restrict c, NODE * restrict n, NODE *next)
     return r;
 }
 
+/* Greedy `.*` / `.+` / `.{m,n}` over ASCII bytes — specialized form of
+ * REP(DOT, ...) that bypasses rep_cont entirely.  Walks pos forward to
+ * the rightmost feasible end position (end of string, or the first
+ * `\n` if not multiline), then iterates pos downward dispatching `next`
+ * at each candidate.  First successful `next` wins.  This collapses
+ * ~N rep_cont sentinel dispatches + N dot-byte checks into a single
+ * memchr (to find newline / end) plus N tail dispatches — saving ~50
+ * ns/byte of pattern overhead on /a.*z/, /.*match/, /<.+?>/ etc.
+ *
+ * `multiline` is the /m flag; `min`/`max` are the rep bounds (max=-1
+ * = unbounded). */
+NODE_DEF
+node_re_greedy_dot(CTX * restrict c, NODE * restrict n, int32_t min, int32_t max, NODE *next, uint32_t multiline)
+{
+    const size_t start = c->pos;
+    const size_t total = c->str_len;
+
+    /* Greedy upper bound: how far can `.` consume? */
+    size_t lim_end = total;
+    if (!multiline) {
+        const uint8_t *nl = (const uint8_t *)memchr(c->str + start, '\n', total - start);
+        if (nl) lim_end = (size_t)(nl - c->str);
+    }
+    if (max != -1) {
+        const size_t cap = start + (size_t)max;
+        if (cap < lim_end) lim_end = cap;
+    }
+
+    const size_t min_pos = start + (size_t)min;
+    if (min_pos > lim_end) { c->pos = start; return MR_FAIL; }
+
+    /* Greedy: try the longest match first, then shorten one byte at a
+     * time.  Each candidate end-pos dispatches the outer continuation;
+     * first success wins. */
+    for (size_t pos = lim_end;; pos--) {
+        c->pos = pos;
+        const VALUE r = (*next->head.dispatcher)(c, next);
+        if (r) return MR_STOP;
+        if (pos <= min_pos) break;
+    }
+    c->pos = start;
+    return MR_FAIL;
+}
+
+/* UTF-8 greedy `.*` / `.+` / `.{m,n}` — same idea as node_re_greedy_dot
+ * but walks codepoint boundaries.  `min`/`max` are codepoint counts;
+ * the loop tracks bytes (`pos`) and codepoints consumed (`count`)
+ * separately so backtrack can step back one codepoint at a time even
+ * when that codepoint is multi-byte. */
+NODE_DEF
+node_re_greedy_dot_utf8(CTX * restrict c, NODE * restrict n, int32_t min, int32_t max, NODE *next, uint32_t multiline)
+{
+    const size_t start = c->pos;
+    const size_t total = c->str_len;
+    const uint8_t *const str = c->str;
+
+    /* Forward scan: consume up to `max` codepoints, stopping at \n
+     * (when not multiline) or at end-of-input. */
+    size_t pos = start;
+    int32_t count = 0;
+    const int32_t cap = (max == -1) ? INT32_MAX : max;
+    while (pos < total && count < cap) {
+        const uint8_t b = str[pos];
+        if (!multiline && b == '\n') break;
+        int adv;
+        if      (b < 0x80)         adv = 1;
+        else if ((b & 0xE0) == 0xC0) adv = 2;
+        else if ((b & 0xF0) == 0xE0) adv = 3;
+        else if ((b & 0xF8) == 0xF0) adv = 4;
+        else                          adv = 1;
+        if (pos + (size_t)adv > total) break;
+        pos += (size_t)adv;
+        count++;
+    }
+
+    if (count < min) { c->pos = start; return MR_FAIL; }
+
+    /* Backtrack one codepoint at a time. */
+    for (;;) {
+        c->pos = pos;
+        const VALUE r = (*next->head.dispatcher)(c, next);
+        if (r) return MR_STOP;
+        if (count <= min) break;
+        /* Step pos back to the start of the previous codepoint. */
+        if (pos <= start) break;
+        do { pos--; } while (pos > start && (str[pos] & 0xC0) == 0x80);
+        count--;
+    }
+    c->pos = start;
+    return MR_FAIL;
+}
+
+/* Greedy `[…]*` / `[…]+` / `[…]{m,n}` — same trick as greedy_dot but
+ * for character classes.  Walks pos forward while bytes are in the
+ * class, then backtracks one byte at a time dispatching `next`.  The
+ * inner forward-scan is the hot path for /\w+/, /\d+/, /[a-z]+/ etc.
+ * on typical text inputs and saves a per-byte rep_cont round-trip.
+ *
+ * The bitmap is split into four uint64s so the framework can pass it
+ * through the operand mechanism (which doesn't take arrays).  The
+ * whole NODE is hashed, so distinct character sets get distinct SDs
+ * — the AOT specialiser bakes the bitmap as an immediate. */
+NODE_DEF
+node_re_greedy_class(CTX * restrict c, NODE * restrict n, uint64_t bm0, uint64_t bm1, uint64_t bm2, uint64_t bm3, int32_t min, int32_t max, NODE *next)
+{
+    const size_t start = c->pos;
+    const size_t total = c->str_len;
+    const uint8_t *const str = c->str;
+    const uint64_t bm[4] = { bm0, bm1, bm2, bm3 };
+
+    /* Forward scan: advance while in class. */
+    size_t pos = start;
+    int32_t count = 0;
+    const int32_t cap = (max == -1) ? INT32_MAX : max;
+    while (pos < total && count < cap) {
+        const uint8_t b = str[pos];
+        if (!((bm[b >> 6] >> (b & 63)) & 1ULL)) break;
+        pos++;
+        count++;
+    }
+
+    if (count < min) { c->pos = start; return MR_FAIL; }
+
+    /* Backtrack one byte at a time (class members are always 1 byte). */
+    for (;;) {
+        c->pos = pos;
+        const VALUE r = (*next->head.dispatcher)(c, next);
+        if (r) return MR_STOP;
+        if (count <= min) break;
+        if (pos == start) break;
+        pos--;
+        count--;
+    }
+    c->pos = start;
+    return MR_FAIL;
+}
+
+/* Greedy class rep, but the body is wrapped in a capturing group
+ * (`(X)+`).  After consuming, set capture group `cap_idx` to the span
+ * of the LAST matched byte, matching Ruby's "last iter wins" capture
+ * semantics for `(X)+` over a single-byte body.  Restored on backtrack
+ * so each fail-and-shorten step updates the capture to the new last
+ * byte too.  When the rep ends up consuming 0 bytes (min == 0 case),
+ * the capture is left invalid. */
+NODE_DEF
+node_re_greedy_class_cap(CTX * restrict c, NODE * restrict n, uint64_t bm0, uint64_t bm1, uint64_t bm2, uint64_t bm3, int32_t min, int32_t max, uint32_t cap_idx, NODE *next)
+{
+    const size_t start = c->pos;
+    const size_t total = c->str_len;
+    const uint8_t *const str = c->str;
+    const uint64_t bm[4] = { bm0, bm1, bm2, bm3 };
+
+    /* Save capture state for restore on fail. */
+    const size_t saved_cap_start = c->starts[cap_idx];
+    const size_t saved_cap_end   = c->ends[cap_idx];
+    const bool   saved_cap_valid = c->valid[cap_idx];
+
+    /* Forward scan. */
+    size_t pos = start;
+    int32_t count = 0;
+    const int32_t cap_max = (max == -1) ? INT32_MAX : max;
+    while (pos < total && count < cap_max) {
+        const uint8_t b = str[pos];
+        if (!((bm[b >> 6] >> (b & 63)) & 1ULL)) break;
+        pos++;
+        count++;
+    }
+
+    if (count < min) { c->pos = start; return MR_FAIL; }
+
+    /* Backtrack with capture update. */
+    for (;;) {
+        if (count > 0) {
+            c->starts[cap_idx] = pos - 1;
+            c->ends[cap_idx]   = pos;
+            c->valid[cap_idx]  = true;
+        } else {
+            c->valid[cap_idx]  = saved_cap_valid;
+        }
+        c->pos = pos;
+        const VALUE r = (*next->head.dispatcher)(c, next);
+        if (r) return MR_STOP;
+        if (count <= min) break;
+        if (pos == start) break;
+        pos--;
+        count--;
+    }
+    c->pos = start;
+    c->starts[cap_idx] = saved_cap_start;
+    c->ends[cap_idx]   = saved_cap_end;
+    c->valid[cap_idx]  = saved_cap_valid;
+    return MR_FAIL;
+}
+
+/* Lazy variant of greedy_class: shortest first. */
+NODE_DEF
+node_re_lazy_class(CTX * restrict c, NODE * restrict n, uint64_t bm0, uint64_t bm1, uint64_t bm2, uint64_t bm3, int32_t min, int32_t max, NODE *next)
+{
+    const size_t start = c->pos;
+    const size_t total = c->str_len;
+    const uint8_t *const str = c->str;
+    const uint64_t bm[4] = { bm0, bm1, bm2, bm3 };
+
+    /* Walk to the minimum required first. */
+    size_t pos = start;
+    int32_t count = 0;
+    while (count < min) {
+        if (pos >= total) { c->pos = start; return MR_FAIL; }
+        const uint8_t b = str[pos];
+        if (!((bm[b >> 6] >> (b & 63)) & 1ULL)) { c->pos = start; return MR_FAIL; }
+        pos++;
+        count++;
+    }
+    /* Try shortest first; extend by one byte each fail. */
+    const int32_t cap = (max == -1) ? INT32_MAX : max;
+    for (;;) {
+        c->pos = pos;
+        const VALUE r = (*next->head.dispatcher)(c, next);
+        if (r) return MR_STOP;
+        if (count >= cap || pos >= total) break;
+        const uint8_t b = str[pos];
+        if (!((bm[b >> 6] >> (b & 63)) & 1ULL)) break;
+        pos++;
+        count++;
+    }
+    c->pos = start;
+    return MR_FAIL;
+}
+
+/* Lazy variant: try the SHORTEST match first.  Used for `.*?`, `.+?`,
+ * `.{m,n}?`. */
+NODE_DEF
+node_re_lazy_dot(CTX * restrict c, NODE * restrict n, int32_t min, int32_t max, NODE *next, uint32_t multiline)
+{
+    const size_t start = c->pos;
+    const size_t total = c->str_len;
+
+    size_t lim_end = total;
+    if (!multiline) {
+        const uint8_t *nl = (const uint8_t *)memchr(c->str + start, '\n', total - start);
+        if (nl) lim_end = (size_t)(nl - c->str);
+    }
+    if (max != -1) {
+        const size_t cap = start + (size_t)max;
+        if (cap < lim_end) lim_end = cap;
+    }
+
+    const size_t min_pos = start + (size_t)min;
+    if (min_pos > lim_end) { c->pos = start; return MR_FAIL; }
+
+    for (size_t pos = min_pos; pos <= lim_end; pos++) {
+        c->pos = pos;
+        const VALUE r = (*next->head.dispatcher)(c, next);
+        if (r) return MR_STOP;
+    }
+    c->pos = start;
+    return MR_FAIL;
+}
+
 /* UTF-8 dot: one full codepoint, except '\n' */
 NODE_DEF
 node_re_dot_utf8(CTX * restrict c, NODE * restrict n, NODE *next)
@@ -739,7 +998,7 @@ node_re_alt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right)
  * each successful body run lands back in rep_cont — which decides to
  * iterate again or to proceed to outer_next. */
 NODE_DEF
-node_re_rep(CTX * restrict c, NODE * restrict n, NODE *body, NODE *outer_next, int32_t min, int32_t max, uint32_t greedy)
+node_re_rep(CTX * restrict c, NODE * restrict n, NODE *body, NODE *outer_next, int32_t min, int32_t max, uint32_t greedy, uint32_t body_must_consume)
 {
     struct rep_frame f;
     f.body = body;
@@ -747,6 +1006,8 @@ node_re_rep(CTX * restrict c, NODE * restrict n, NODE *body, NODE *outer_next, i
     f.min = min;
     f.max = max;
     f.greedy = greedy;
+    f.body_must_consume = body_must_consume;
+    f.last_pos = SIZE_MAX;
     f.prev = c->rep_top;
     c->rep_top = &f;
 
@@ -764,50 +1025,114 @@ node_re_rep_cont(CTX * restrict c, NODE * restrict n)
 {
     struct rep_frame *f = c->rep_top;
 
+    /* Fast path: body is statically guaranteed to consume ≥1 byte on
+     * success.  Each iter advances pos, so the empty-match carve-out
+     * is moot; skip the (last_pos, c->pos) check and the save/restore
+     * of last_pos around body dispatch.  This is the path /\w+/,
+     * /\d+/, /a.*z/ etc. take. */
+    if (f->body_must_consume) {
+        if (f->greedy) {
+            if (f->max != 0) {
+                const int32_t saved_min = f->min;
+                const int32_t saved_max = f->max;
+                const size_t  saved_pos = c->pos;
+                f->min = (f->min > 0) ? f->min - 1 : 0;
+                f->max = (f->max == -1) ? -1 : f->max - 1;
+                const VALUE r = (*f->body->head.dispatcher)(c, f->body);
+                if (r) return MR_STOP;
+                c->pos = saved_pos;
+                f->min = saved_min;
+                f->max = saved_max;
+            }
+            if (f->min == 0) {
+                struct rep_frame *const prev = f->prev;
+                c->rep_top = prev;
+                const VALUE r = (*f->outer_next->head.dispatcher)(c, f->outer_next);
+                c->rep_top = f;
+                return r;
+            }
+            return MR_FAIL;
+        } else {
+            if (f->min == 0) {
+                struct rep_frame *const prev = f->prev;
+                c->rep_top = prev;
+                const VALUE r = (*f->outer_next->head.dispatcher)(c, f->outer_next);
+                if (r) return MR_STOP;
+                c->rep_top = f;
+            }
+            if (f->max != 0) {
+                const int32_t saved_min = f->min;
+                const int32_t saved_max = f->max;
+                const size_t  saved_pos = c->pos;
+                f->min = (f->min > 0) ? f->min - 1 : 0;
+                f->max = (f->max == -1) ? -1 : f->max - 1;
+                const VALUE r = (*f->body->head.dispatcher)(c, f->body);
+                if (r) return MR_STOP;
+                c->pos = saved_pos;
+                f->min = saved_min;
+                f->max = saved_max;
+            }
+            return MR_FAIL;
+        }
+    }
+
+    /* Slow path: body might match empty.  Carve-out: if the most
+     * recently dispatched body iter ended without advancing pos, treat
+     * min as satisfied and fall through to outer_next instead of
+     * iterating forever (`(a*)*` / `(?:)*` etc.).  `last_pos` is
+     * save/restored across body dispatch — when this rep is the body
+     * of an outer rep, body's tail re-enters rep_cont for the SAME f
+     * and writes last_pos to its own iter start; without restoring,
+     * outer iterations would see a stale value and `(?:a*)*b/` style
+     * patterns would recurse forever. */
+    const bool empty_iter = (f->last_pos != SIZE_MAX && f->last_pos == c->pos);
+
     if (f->greedy) {
-        /* Greedy: try to take one more iteration first. */
-        if (f->max != 0) {
-            int32_t saved_min = f->min;
-            int32_t saved_max = f->max;
-            size_t  saved_pos = c->pos;
+        if (f->max != 0 && !empty_iter) {
+            const int32_t saved_min = f->min;
+            const int32_t saved_max = f->max;
+            const size_t  saved_pos = c->pos;
+            const size_t  saved_last_pos = f->last_pos;
             f->min = (f->min > 0) ? f->min - 1 : 0;
             f->max = (f->max == -1) ? -1 : f->max - 1;
-            VALUE r = (*f->body->head.dispatcher)(c, f->body);
+            f->last_pos = c->pos;
+            const VALUE r = (*f->body->head.dispatcher)(c, f->body);
             if (r) return MR_STOP;
             c->pos = saved_pos;
             f->min = saved_min;
             f->max = saved_max;
+            f->last_pos = saved_last_pos;
         }
-        /* Otherwise, if min satisfied, fall through to outer_next. */
         if (f->min == 0) {
-            struct rep_frame *prev = f->prev;
+            struct rep_frame *const prev = f->prev;
             c->rep_top = prev;
-            VALUE r = (*f->outer_next->head.dispatcher)(c, f->outer_next);
+            const VALUE r = (*f->outer_next->head.dispatcher)(c, f->outer_next);
             c->rep_top = f;
             return r;
         }
         return MR_FAIL;
-    }
-    else {
-        /* Lazy: try outer_next first, only iterate if it fails. */
+    } else {
         if (f->min == 0) {
-            struct rep_frame *prev = f->prev;
+            struct rep_frame *const prev = f->prev;
             c->rep_top = prev;
-            VALUE r = (*f->outer_next->head.dispatcher)(c, f->outer_next);
+            const VALUE r = (*f->outer_next->head.dispatcher)(c, f->outer_next);
             if (r) return MR_STOP;
             c->rep_top = f;
         }
-        if (f->max != 0) {
-            int32_t saved_min = f->min;
-            int32_t saved_max = f->max;
-            size_t  saved_pos = c->pos;
+        if (f->max != 0 && !empty_iter) {
+            const int32_t saved_min = f->min;
+            const int32_t saved_max = f->max;
+            const size_t  saved_pos = c->pos;
+            const size_t  saved_last_pos = f->last_pos;
             f->min = (f->min > 0) ? f->min - 1 : 0;
             f->max = (f->max == -1) ? -1 : f->max - 1;
-            VALUE r = (*f->body->head.dispatcher)(c, f->body);
+            f->last_pos = c->pos;
+            const VALUE r = (*f->body->head.dispatcher)(c, f->body);
             if (r) return MR_STOP;
             c->pos = saved_pos;
             f->min = saved_min;
             f->max = saved_max;
+            f->last_pos = saved_last_pos;
         }
         return MR_FAIL;
     }
@@ -983,4 +1308,163 @@ node_re_neg_lookahead(CTX * restrict c, NODE * restrict n, NODE *body, NODE *nex
     memcpy(c->valid,  vd, sizeof(vd));
     if (r) return MR_FAIL;
     return EVAL_ARG(c, next);
+}
+
+/* `\K` — keep marker.  Resets the whole-match start to current pos. */
+NODE_DEF
+node_re_keep(CTX * restrict c, NODE * restrict n, NODE *next)
+{
+    const size_t saved = c->starts[0];
+    c->starts[0] = c->pos;
+    const VALUE r = EVAL_ARG(c, next);
+    if (!r) c->starts[0] = saved;
+    return r;
+}
+
+/* `\G` — anchor at the position the current search started from. */
+NODE_DEF
+node_re_last_match(CTX * restrict c, NODE * restrict n, NODE *next)
+{
+    if (c->pos != c->scan_start) return MR_FAIL;
+    return EVAL_ARG(c, next);
+}
+
+/* `(?<=BODY)` positive lookbehind, fixed width. */
+NODE_DEF
+node_re_lookbehind(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t width, NODE *next)
+{
+    if (c->pos < width) return MR_FAIL;
+    const size_t saved = c->pos;
+    c->pos -= width;
+    const VALUE r = EVAL_ARG(c, body);
+    c->pos = saved;
+    if (!r) return MR_FAIL;
+    return EVAL_ARG(c, next);
+}
+
+/* `(?<!BODY)` negative lookbehind, fixed width. */
+NODE_DEF
+node_re_neg_lookbehind(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t width, NODE *next)
+{
+    if (c->pos >= width) {
+        const size_t saved = c->pos;
+        c->pos -= width;
+        const VALUE r = EVAL_ARG(c, body);
+        c->pos = saved;
+        if (r) return MR_FAIL;
+    }
+    return EVAL_ARG(c, next);
+}
+
+/* End-of-body marker for variable-width lookbehind.  Only succeeds
+ * when c->pos lands at c->lb_target. */
+NODE_DEF
+node_re_lb_check(CTX * restrict c, NODE * restrict n, NODE *next)
+{
+    if (c->pos != c->lb_target) return MR_FAIL;
+    return EVAL_ARG(c, next);
+}
+
+/* Variable-width positive lookbehind.  Scans candidate widths from
+ * widest first; the body chain ends in node_re_lb_check so it only
+ * signals success at the right pos. */
+NODE_DEF
+node_re_lookbehind_var(CTX * restrict c, NODE * restrict n, NODE *body, NODE *next)
+{
+    const size_t saved        = c->pos;
+    const size_t saved_target = c->lb_target;
+    c->lb_target = saved;
+    for (size_t w = saved; ; w--) {
+        c->pos = saved - w;
+        const VALUE r = (*body->head.dispatcher)(c, body);
+        if (r) {
+            c->pos = saved;
+            c->lb_target = saved_target;
+            return EVAL_ARG(c, next);
+        }
+        if (w == 0) break;
+    }
+    c->pos = saved;
+    c->lb_target = saved_target;
+    return MR_FAIL;
+}
+
+/* Variable-width negative lookbehind. */
+NODE_DEF
+node_re_neg_lookbehind_var(CTX * restrict c, NODE * restrict n, NODE *body, NODE *next)
+{
+    const size_t saved        = c->pos;
+    const size_t saved_target = c->lb_target;
+    c->lb_target = saved;
+    for (size_t w = saved; ; w--) {
+        c->pos = saved - w;
+        const VALUE r = (*body->head.dispatcher)(c, body);
+        if (r) {
+            c->pos = saved;
+            c->lb_target = saved_target;
+            return MR_FAIL;
+        }
+        if (w == 0) break;
+    }
+    c->pos = saved;
+    c->lb_target = saved_target;
+    return EVAL_ARG(c, next);
+}
+
+/* `(?>BODY)` atomic group.  Body matches once with its own succ tail
+ * so backtracking can't reach into its alternatives. */
+NODE_DEF
+node_re_atomic(CTX * restrict c, NODE * restrict n, NODE *body, NODE *next)
+{
+    const VALUE r = EVAL_ARG(c, body);
+    if (!r) return MR_FAIL;
+    return EVAL_ARG(c, next);
+}
+
+/* `(?(N)YES|NO)` conditional. */
+NODE_DEF
+node_re_conditional(CTX * restrict c, NODE * restrict n, uint32_t idx, NODE *yes_chain, NODE *no_chain)
+{
+    NODE *const target = (idx <= (uint32_t)c->n_groups && c->valid[idx])
+                            ? yes_chain : no_chain;
+    return (*target->head.dispatcher)(c, target);
+}
+
+/* `\g<idx>` subroutine call.  Looks up the lowered "callable" body
+ * chain for capture group idx in c->sub_chains and dispatches it.
+ * Pushes a sub_call_frame so node_re_sub_return can resume into the
+ * outer continuation when the subroutine succeeds.  Dynamic stack
+ * guard via stack_base / stack_limit prevents runaway recursion. */
+NODE_DEF
+node_re_subroutine_call(CTX * restrict c, NODE * restrict n, uint32_t idx, NODE *outer_next)
+{
+    if ((int)idx >= c->sub_chains_n) return MR_FAIL;
+    NODE *const body = c->sub_chains[idx];
+    if (!body) return MR_FAIL;
+    /* Dynamic stack guard — distance from snapshot at search start. */
+    char stack_marker;
+    const uintptr_t cur = (uintptr_t)&stack_marker;
+    const size_t used = (c->stack_base > cur) ? (size_t)(c->stack_base - cur)
+                                              : (size_t)(cur - c->stack_base);
+    if (used >= c->stack_limit) return MR_FAIL;
+
+    struct sub_call_frame f;
+    f.return_to = outer_next;
+    f.prev      = c->sub_top;
+    c->sub_top  = &f;
+    c->sub_depth++;
+
+    const VALUE r = (*body->head.dispatcher)(c, body);
+
+    c->sub_top = f.prev;
+    c->sub_depth--;
+    return r;
+}
+
+/* Tail of a callable subroutine body. */
+NODE_DEF
+node_re_sub_return(CTX * restrict c, NODE * restrict n)
+{
+    NODE *const target = c->sub_top->return_to;
+    return (*target->head.dispatcher)(c, target);
 }

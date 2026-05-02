@@ -21,6 +21,20 @@ typedef struct astrogre_pattern {
     bool anchored_bos;   /* true when pattern starts with \A — search loop can stop after pos==0 */
     bool fixed_string;   /* true when built via astrogre_parse_fixed (-F mode) */
     char *pat;           /* original pattern text (heap, owned) */
+
+    /* Named-capture index — parallel arrays.  group_names[i] is the
+     * NUL-terminated name of group #(group_name_idx[i]).  Both NULL
+     * if no named groups.  Owned by the pattern. */
+    char    **group_names;
+    int      *group_name_idx;
+    int       n_named;
+
+    /* Lowered subroutine bodies, indexed by capture group # (slot 0
+     * unused; slot i is the callable chain for group i, or NULL if no
+     * `\g<i>` reference exists in the pattern).  Read by
+     * node_re_subroutine_call via CTX. */
+    struct Node **sub_chains;
+    int           sub_chains_n;
 } astrogre_pattern;
 
 /* Match result (filled by astrogre_search / astrogre_search_from). */
@@ -110,5 +124,15 @@ astrogre_pattern *astrogre_parse_fixed(const char *bytes, size_t len, uint32_t p
 astrogre_pattern *astrogre_parse_via_prism(const char *src, size_t len);
 
 void astrogre_pattern_free(astrogre_pattern *p);
+
+/* Named-capture introspection. */
+int astrogre_pattern_n_named(const astrogre_pattern *p);
+const char *astrogre_pattern_named_at(const astrogre_pattern *p, int i, int *out_idx);
+
+/* Original pattern source + flag accessors (used by the Cext for
+ * Pattern#source / #options). */
+const char *astrogre_pattern_source(const astrogre_pattern *p, size_t *out_len);
+bool astrogre_pattern_case_insensitive(const astrogre_pattern *p);
+bool astrogre_pattern_multiline(const astrogre_pattern *p);
 
 #endif

@@ -38,6 +38,9 @@ typedef enum {
     IRE_NCGROUP,        /* non-capturing */
     IRE_LOOKAHEAD,
     IRE_NEG_LOOKAHEAD,
+    IRE_LOOKBEHIND,
+    IRE_NEG_LOOKBEHIND,
+    IRE_ATOMIC,         /* (?>BODY) — body commits, no backtrack */
     IRE_BOS,
     IRE_EOS,
     IRE_EOS_NL,
@@ -47,6 +50,10 @@ typedef enum {
     IRE_NWB,
     IRE_BACKREF,
     IRE_EMPTY,
+    IRE_KEEP,           /* \K — reset whole-match start at current pos */
+    IRE_LAST_MATCH,     /* \G — anchor at scan_start */
+    IRE_CONDITIONAL,    /* (?(N)yes|no) — branch on capture validity */
+    IRE_SUBROUTINE,     /* \g<name> / \g<N> — re-evaluate a named group */
 } ire_kind_t;
 
 typedef struct ire_node {
@@ -60,6 +67,13 @@ typedef struct ire_node {
         struct { int idx; struct ire_node *body; } group;
         struct { struct ire_node *body; } nc;
         struct { int idx; } backref;
+        /* Conditional (?(idx)yes|no): if capture group #idx is set,
+         * dispatch the `yes` branch, else `no` (which is IRE_EMPTY when
+         * only "yes" was given). */
+        struct { int idx; struct ire_node *yes; struct ire_node *no; } cond;
+        /* Subroutine call: lower walks pattern->groups_by_idx[idx] to
+         * build a callable chain (cached) so recursion works at runtime. */
+        struct { int idx; } sub;
     } u;
 } ire_node_t;
 
@@ -92,6 +106,19 @@ typedef struct re_parser {
     int n_groups;     /* # of capturing groups assigned so far */
     bool error;
     char errbuf[256];
+
+    /* Named-capture (name, idx) pairs.  Names are heap dups; ownership
+     * passes to the astrogre_pattern at the end of parsing. */
+    char **names;
+    int   *name_idx;
+    int    n_names;
+    int    cap_names;
+
+    /* Group-by-index table — populated when each capture group's
+     * IRE_GROUP node is fully built so backward `\g<N>` / `\g<name>`
+     * references can resolve.  Forward references error out. */
+    struct ire_node **groups_by_idx;
+    int               cap_groups;
 } re_parser_t;
 
 static void re_error(re_parser_t *q, const char *msg) {
@@ -151,6 +178,36 @@ static void bm_set_ci(uint64_t bm[4], uint8_t b, bool ci) {
     }
 }
 
+/* POSIX bracket-class names.  ASCII semantics only (no Unicode). */
+static bool
+bm_posix_class(const char *restrict name, size_t name_len, uint64_t out[restrict 4])
+{
+    out[0] = out[1] = out[2] = out[3] = 0;
+    #define MATCH(s) (name_len == sizeof(s) - 1 && memcmp(name, s, sizeof(s) - 1) == 0)
+    if      (MATCH("alpha"))  { bm_set_range(out, 'A', 'Z'); bm_set_range(out, 'a', 'z'); }
+    else if (MATCH("digit"))  { bm_set_range(out, '0', '9'); }
+    else if (MATCH("alnum"))  { bm_set_range(out, 'A', 'Z'); bm_set_range(out, 'a', 'z'); bm_set_range(out, '0', '9'); }
+    else if (MATCH("upper"))  { bm_set_range(out, 'A', 'Z'); }
+    else if (MATCH("lower"))  { bm_set_range(out, 'a', 'z'); }
+    else if (MATCH("xdigit")) { bm_set_range(out, '0', '9'); bm_set_range(out, 'A', 'F'); bm_set_range(out, 'a', 'f'); }
+    else if (MATCH("space"))  { bm_set(out, ' '); bm_set(out, '\t'); bm_set(out, '\n'); bm_set(out, '\v'); bm_set(out, '\f'); bm_set(out, '\r'); }
+    else if (MATCH("blank"))  { bm_set(out, ' '); bm_set(out, '\t'); }
+    else if (MATCH("print"))  { bm_set_range(out, 0x20, 0x7e); }
+    else if (MATCH("graph"))  { bm_set_range(out, 0x21, 0x7e); }
+    else if (MATCH("cntrl"))  { bm_set_range(out, 0x00, 0x1f); bm_set(out, 0x7f); }
+    else if (MATCH("punct"))  {
+        for (int i = 0x21; i <= 0x7e; i++) {
+            const int alnum = (i >= '0' && i <= '9') || (i >= 'A' && i <= 'Z') || (i >= 'a' && i <= 'z');
+            if (!alnum) bm_set(out, (uint8_t)i);
+        }
+    }
+    else if (MATCH("ascii")) { bm_set_range(out, 0x00, 0x7f); }
+    else if (MATCH("word"))  { bm_set_range(out, 'A', 'Z'); bm_set_range(out, 'a', 'z'); bm_set_range(out, '0', '9'); bm_set(out, '_'); }
+    else { return false; }
+    #undef MATCH
+    return true;
+}
+
 /* \d \w \s and friends inside a class */
 static void bm_add_special(uint64_t bm[4], int c) {
     switch (c) {
@@ -185,6 +242,18 @@ static void bm_add_special(uint64_t bm[4], int c) {
             if (!ws) bm_set(bm, (uint8_t)i);
         }
         break;
+    /* Onigmo extensions: \h / \H — hex digit shortcut. */
+    case 'h':
+        bm_set_range(bm, '0', '9');
+        bm_set_range(bm, 'A', 'F');
+        bm_set_range(bm, 'a', 'f');
+        break;
+    case 'H':
+        for (int i = 0; i < 256; i++) {
+            const int hex = (i >= '0' && i <= '9') || (i >= 'A' && i <= 'F') || (i >= 'a' && i <= 'f');
+            if (!hex) bm_set(bm, (uint8_t)i);
+        }
+        break;
     default: break;
     }
 }
@@ -195,6 +264,7 @@ static int parse_class_escape(re_parser_t *q, uint64_t bm[4], uint8_t *out_byte)
     int c = re_get(q);
     switch (c) {
     case 'd': case 'D': case 'w': case 'W': case 's': case 'S':
+    case 'h': case 'H':
         bm_add_special(bm, c);
         return 1;
     case 'n': *out_byte = '\n'; return 0;
@@ -205,6 +275,8 @@ static int parse_class_escape(re_parser_t *q, uint64_t bm[4], uint8_t *out_byte)
     case '0': *out_byte = 0;    return 0;
     case 'a': *out_byte = '\a'; return 0;
     case 'e': *out_byte = 0x1b; return 0;
+    /* Inside a class, `\b` is backspace (0x08), not word-boundary. */
+    case 'b': *out_byte = '\b'; return 0;
     case 'x': {
         if (q->p + 2 > q->end) { re_error(q, "bad \\x"); return 0; }
         char h[3] = { (char)q->p[0], (char)q->p[1], 0 };
@@ -237,6 +309,31 @@ static ire_node_t *parse_class(re_parser_t *q) {
     while (q->p < q->end) {
         int c = re_peek(q);
         if (c == ']' && !first) { q->p++; goto done; }
+
+        /* POSIX bracket class: `[:NAME:]` or `[:^NAME:]`. */
+        if (c == '[' && q->p + 1 < q->end && q->p[1] == ':') {
+            const uint8_t *const save = q->p;
+            q->p += 2;
+            const bool neg = (re_peek(q) == '^');
+            if (neg) q->p++;
+            const uint8_t *const name_start = q->p;
+            while (q->p < q->end && *q->p != ':' && *q->p != ']') q->p++;
+            const size_t name_len = (size_t)(q->p - name_start);
+            if (q->p + 1 < q->end && q->p[0] == ':' && q->p[1] == ']') {
+                uint64_t mask[4];
+                if (bm_posix_class((const char *)name_start, name_len, mask)) {
+                    q->p += 2;  /* consume `:]` */
+                    if (neg) bm_invert(mask);
+                    bm_or(n->u.cls.bm, mask);
+                    first = false;
+                    continue;
+                }
+                re_error(q, "unknown POSIX class");
+                return n;
+            }
+            q->p = save;  /* restore; treat `[` as literal below */
+        }
+
         first = false;
 
         uint8_t byte_val = 0;
@@ -290,6 +387,39 @@ done:
 }
 
 static ire_node_t *parse_quantifier_target(re_parser_t *q);
+static ire_node_t *parse_concat(re_parser_t *q);
+
+/* Append (name, idx) to the parser's names table.  `name` is duped. */
+static void
+re_register_name(re_parser_t *q, const uint8_t *name_start, size_t name_len, int idx)
+{
+    if (q->n_names == q->cap_names) {
+        const int new_cap = q->cap_names ? q->cap_names * 2 : 4;
+        q->names    = (char **)realloc(q->names,    sizeof(char *) * (size_t)new_cap);
+        q->name_idx = (int   *)realloc(q->name_idx, sizeof(int)    * (size_t)new_cap);
+        q->cap_names = new_cap;
+    }
+    char *const dup = (char *)malloc(name_len + 1);
+    memcpy(dup, name_start, name_len);
+    dup[name_len] = '\0';
+    q->names[q->n_names]    = dup;
+    q->name_idx[q->n_names] = idx;
+    q->n_names++;
+}
+
+/* Register a parsed IRE_GROUP for later \g<…> resolution. */
+static void
+re_register_group(re_parser_t *q, int idx, struct ire_node *g)
+{
+    if (idx >= q->cap_groups) {
+        const int new_cap = idx + 8;
+        q->groups_by_idx = (struct ire_node **)realloc(q->groups_by_idx,
+                            sizeof(struct ire_node *) * (size_t)new_cap);
+        for (int i = q->cap_groups; i < new_cap; i++) q->groups_by_idx[i] = NULL;
+        q->cap_groups = new_cap;
+    }
+    q->groups_by_idx[idx] = g;
+}
 
 /* Parse {min,max} or {n} after we've already consumed '{' */
 static bool parse_braces(re_parser_t *q, int32_t *out_min, int32_t *out_max) {
@@ -325,9 +455,13 @@ static ire_node_t *parse_atom(re_parser_t *q) {
         q->p++;
         bool capture = true;
         bool lookahead = false, neg_lookahead = false;
+        bool lookbehind = false, neg_lookbehind = false;
+        bool atomic = false;
         bool nc = false;
         int saved_ci = q->case_insensitive, saved_ml = q->multiline, saved_x = q->extended;
         bool saved_flags = false;
+        const uint8_t *pending_name_start = NULL;
+        const uint8_t *pending_name_end   = NULL;
 
         if (q->p < q->end && *q->p == '?') {
             q->p++;
@@ -337,18 +471,65 @@ static ire_node_t *parse_atom(re_parser_t *q) {
                 q->p++; capture = false; lookahead = true;
             } else if (q->p < q->end && *q->p == '!') {
                 q->p++; capture = false; neg_lookahead = true;
-            } else if (q->p < q->end && *q->p == '<') {
-                /* (?<name>...) named capture (treat as numbered) — or
-                 *  (?<=...) / (?<!...) lookbehind which we don't yet support. */
+            } else if (q->p < q->end && *q->p == '>') {
+                q->p++; capture = false; atomic = true;
+            } else if (q->p < q->end && *q->p == '(') {
+                /* (?(N)YES) / (?(N)YES|NO) / (?(<name>)YES|NO) — conditional. */
                 q->p++;
-                if (q->p < q->end && (*q->p == '=' || *q->p == '!')) {
-                    re_error(q, "lookbehind not supported");
+                int cond_idx = 0;
+                if (q->p < q->end && isdigit(*q->p)) {
+                    while (q->p < q->end && isdigit(*q->p)) {
+                        cond_idx = cond_idx * 10 + (*q->p++ - '0');
+                    }
+                } else if (q->p < q->end && *q->p == '<') {
+                    q->p++;
+                    const uint8_t *const ns = q->p;
+                    while (q->p < q->end && *q->p != '>') q->p++;
+                    const size_t nl = (size_t)(q->p - ns);
+                    if (q->p < q->end) q->p++;
+                    for (int i = 0; i < q->n_names; i++) {
+                        if (strlen(q->names[i]) == nl &&
+                            memcmp(q->names[i], ns, nl) == 0) {
+                            cond_idx = q->name_idx[i];
+                            break;
+                        }
+                    }
+                    if (cond_idx == 0) { re_error(q, "unknown capture name in (?(...))"); return NULL; }
+                } else {
+                    re_error(q, "unsupported conditional form");
                     return NULL;
                 }
-                /* skip name */
-                while (q->p < q->end && *q->p != '>') q->p++;
-                if (q->p < q->end) q->p++;
-                capture = true;
+                if (q->p >= q->end || *q->p != ')') { re_error(q, "expected ) in (?(...))"); return NULL; }
+                q->p++;
+                ire_node_t *yes_branch = parse_concat(q);
+                ire_node_t *no_branch = NULL;
+                if (q->p < q->end && *q->p == '|') {
+                    q->p++;
+                    no_branch = parse_concat(q);
+                } else {
+                    no_branch = ire_new(IRE_EMPTY);
+                }
+                if (q->p >= q->end || *q->p != ')') { re_error(q, "expected ) closing conditional"); return NULL; }
+                q->p++;
+                ire_node_t *cnode = ire_new(IRE_CONDITIONAL);
+                cnode->u.cond.idx = cond_idx;
+                cnode->u.cond.yes = yes_branch;
+                cnode->u.cond.no  = no_branch;
+                return cnode;
+            } else if (q->p < q->end && *q->p == '<') {
+                /* (?<name>...) named capture, (?<=...) / (?<!...) lookbehind. */
+                q->p++;
+                if (q->p < q->end && *q->p == '=') {
+                    q->p++; capture = false; lookbehind = true;
+                } else if (q->p < q->end && *q->p == '!') {
+                    q->p++; capture = false; neg_lookbehind = true;
+                } else {
+                    pending_name_start = q->p;
+                    while (q->p < q->end && *q->p != '>') q->p++;
+                    pending_name_end = q->p;
+                    if (q->p < q->end) q->p++;
+                    capture = true;
+                }
             } else {
                 /* (?ixm-ixm:...) or (?ixm) inline flag setting */
                 saved_flags = true;
@@ -376,7 +557,13 @@ static ire_node_t *parse_atom(re_parser_t *q) {
         }
 
         int idx = 0;
-        if (capture) idx = ++q->n_groups;
+        if (capture) {
+            idx = ++q->n_groups;
+            if (pending_name_start) {
+                re_register_name(q, pending_name_start,
+                                 (size_t)(pending_name_end - pending_name_start), idx);
+            }
+        }
         ire_node_t *body = parse_alt(q);
         if (re_get(q) != ')') re_error(q, "expected )");
 
@@ -390,6 +577,7 @@ static ire_node_t *parse_atom(re_parser_t *q) {
             ire_node_t *g = ire_new(IRE_GROUP);
             g->u.group.idx = idx;
             g->u.group.body = body;
+            re_register_group(q, idx, g);
             return g;
         } else if (lookahead) {
             ire_node_t *g = ire_new(IRE_LOOKAHEAD);
@@ -397,6 +585,18 @@ static ire_node_t *parse_atom(re_parser_t *q) {
             return g;
         } else if (neg_lookahead) {
             ire_node_t *g = ire_new(IRE_NEG_LOOKAHEAD);
+            g->u.nc.body = body;
+            return g;
+        } else if (lookbehind) {
+            ire_node_t *g = ire_new(IRE_LOOKBEHIND);
+            g->u.nc.body = body;
+            return g;
+        } else if (neg_lookbehind) {
+            ire_node_t *g = ire_new(IRE_NEG_LOOKBEHIND);
+            g->u.nc.body = body;
+            return g;
+        } else if (atomic) {
+            ire_node_t *g = ire_new(IRE_ATOMIC);
             g->u.nc.body = body;
             return g;
         } else if (nc) {
@@ -419,21 +619,76 @@ static ire_node_t *parse_atom(re_parser_t *q) {
         case 'Z': return ire_new(IRE_EOS_NL);
         case 'b': return ire_new(IRE_WB);
         case 'B': return ire_new(IRE_NWB);
-        case 'd': case 'D': case 'w': case 'W': case 's': case 'S': {
+        case 'K': return ire_new(IRE_KEEP);
+        case 'G': return ire_new(IRE_LAST_MATCH);
+        case 'd': case 'D': case 'w': case 'W': case 's': case 'S':
+        case 'h': case 'H': {
             ire_node_t *n = ire_new(IRE_CLASS);
             bm_add_special(n->u.cls.bm, e);
             return n;
         }
+        case 'R': {
+            /* Generic newline: `\r\n | [\n\v\f\r]`.  ASCII subset only. */
+            ire_node_t *crlf = ire_new(IRE_LIT);
+            crlf->u.lit.bytes = (char *)malloc(2);
+            crlf->u.lit.bytes[0] = '\r';
+            crlf->u.lit.bytes[1] = '\n';
+            crlf->u.lit.len = 2;
+            crlf->u.lit.ci = false;
+            ire_node_t *cls = ire_new(IRE_CLASS);
+            bm_set(cls->u.cls.bm, '\n'); bm_set(cls->u.cls.bm, '\v');
+            bm_set(cls->u.cls.bm, '\f'); bm_set(cls->u.cls.bm, '\r');
+            ire_node_t *alt = ire_new(IRE_ALT);
+            alt->u.alt.l = crlf;
+            alt->u.alt.r = cls;
+            return alt;
+        }
+        case 'g': {
+            /* \g<name> or \g<N> — subroutine call. */
+            if (q->p >= q->end || *q->p != '<') {
+                re_error(q, "expected `<` after `\\g`");
+                return NULL;
+            }
+            q->p++;
+            int idx = 0;
+            if (q->p < q->end && isdigit(*q->p)) {
+                while (q->p < q->end && isdigit(*q->p)) idx = idx * 10 + (*q->p++ - '0');
+            } else {
+                const uint8_t *const ns = q->p;
+                while (q->p < q->end && *q->p != '>') q->p++;
+                const size_t nl = (size_t)(q->p - ns);
+                for (int i = 0; i < q->n_names; i++) {
+                    if (strlen(q->names[i]) == nl && memcmp(q->names[i], ns, nl) == 0) {
+                        idx = q->name_idx[i];
+                        break;
+                    }
+                }
+            }
+            if (q->p < q->end && *q->p == '>') q->p++;
+            if (idx == 0) { re_error(q, "unknown subroutine target"); return NULL; }
+            ire_node_t *n = ire_new(IRE_SUBROUTINE);
+            n->u.sub.idx = idx;
+            return n;
+        }
         case 'k': {
-            /* \k<name> backref by name — treat all named refs as group 1
-             * since we don't track names; this is a deliberate v1 limitation. */
+            /* \k<name> — named backref.  Resolve via q->names; default
+             * to group 1 if name is unknown. */
+            int idx = 1;
             if (q->p < q->end && *q->p == '<') {
                 q->p++;
+                const uint8_t *const ns = q->p;
                 while (q->p < q->end && *q->p != '>') q->p++;
+                const size_t nl = (size_t)(q->p - ns);
                 if (q->p < q->end) q->p++;
+                for (int i = 0; i < q->n_names; i++) {
+                    if (strlen(q->names[i]) == nl && memcmp(q->names[i], ns, nl) == 0) {
+                        idx = q->name_idx[i];
+                        break;
+                    }
+                }
             }
             ire_node_t *n = ire_new(IRE_BACKREF);
-            n->u.backref.idx = 1;
+            n->u.backref.idx = idx;
             return n;
         }
         case '1': case '2': case '3': case '4': case '5':
@@ -528,6 +783,7 @@ static ire_node_t *parse_quantifier(re_parser_t *q, ire_node_t *atom) {
     re_skip_ws(q);
     int c = re_peek(q);
     int32_t mn, mx; bool greedy = true;
+    bool braces = false;
     if (c == '*')      { q->p++; mn = 0; mx = -1; }
     else if (c == '+') { q->p++; mn = 1; mx = -1; }
     else if (c == '?') { q->p++; mn = 0; mx = 1; }
@@ -538,17 +794,26 @@ static ire_node_t *parse_quantifier(re_parser_t *q, ire_node_t *atom) {
             q->p = save;
             return atom;
         }
+        braces = true;
     } else {
         return atom;
     }
+    bool possessive = false;
     if (re_peek(q) == '?') { q->p++; greedy = false; }
-    else if (re_peek(q) == '+') { q->p++; /* possessive — degrade to greedy v1 */ }
+    /* Onigmo treats `\d{m,n}+` as `(\d{m,n})+` (nested rep), NOT
+     * possessive — only `*+` `++` `?+` are possessive. */
+    else if (!braces && re_peek(q) == '+') { q->p++; possessive = true; }
 
     ire_node_t *r = ire_new(IRE_REP);
     r->u.rep.body = atom;
     r->u.rep.min = mn;
     r->u.rep.max = mx;
     r->u.rep.greedy = greedy;
+    if (possessive) {
+        ire_node_t *atom_g = ire_new(IRE_ATOMIC);
+        atom_g->u.nc.body = r;
+        return atom_g;
+    }
     return r;
 }
 
@@ -560,7 +825,13 @@ static ire_node_t *parse_concat(re_parser_t *q) {
         if (c < 0 || c == '|' || c == ')') break;
         ire_node_t *atom = parse_atom(q);
         if (q->error || !atom) return cat;
-        atom = parse_quantifier(q, atom);
+        /* Loop to allow stacked quantifiers — e.g. `\d{2,4}+` parses
+         * as `(\d{2,4})+` (nested rep), not possessive. */
+        for (;;) {
+            ire_node_t *next_atom = parse_quantifier(q, atom);
+            if (next_atom == atom) break;
+            atom = next_atom;
+        }
         if (atom->kind == IRE_EMPTY) continue;
 
         /* Coalesce consecutive literals (saves nodes and improves locality). */
@@ -662,12 +933,28 @@ ire_collect_first_byte_set(ire_node_t *n, uint8_t *out, int *out_n)
     if (!n) return false;
     switch (n->kind) {
     case IRE_LIT:
-        if (n->u.lit.len == 0 || n->u.lit.ci) return false;
+        if (n->u.lit.len == 0) return false;
         {
-            uint8_t b = (uint8_t)n->u.lit.bytes[0];
-            for (int i = 0; i < *out_n; i++) if (out[i] == b) return true;
-            if (*out_n >= 8) return false;
-            out[(*out_n)++] = b;
+            const uint8_t b = (uint8_t)n->u.lit.bytes[0];
+            /* For /i, the first byte can be either case of the letter
+             * (the lit's stored byte is whatever the user typed; the
+             * lower pass folds it to lowercase later, but we run before
+             * that).  For non-letter bytes /i has no effect, so we add
+             * just the one entry. */
+            uint8_t alt = b;
+            if (n->u.lit.ci) {
+                if (b >= 'a' && b <= 'z')      alt = (uint8_t)(b - 32);
+                else if (b >= 'A' && b <= 'Z') alt = (uint8_t)(b + 32);
+            }
+            const int n_to_add = (alt != b) ? 2 : 1;
+            for (int pass = 0; pass < n_to_add; pass++) {
+                const uint8_t cur = (pass == 0) ? b : alt;
+                bool dup = false;
+                for (int i = 0; i < *out_n; i++) if (out[i] == cur) { dup = true; break; }
+                if (dup) continue;
+                if (*out_n >= 8) return false;
+                out[(*out_n)++] = cur;
+            }
             return true;
         }
     case IRE_ALT:
@@ -681,7 +968,10 @@ ire_collect_first_byte_set(ire_node_t *n, uint8_t *out, int *out_n)
             case IRE_BOL: case IRE_EOL:
             case IRE_WB: case IRE_NWB:
             case IRE_LOOKAHEAD: case IRE_NEG_LOOKAHEAD:
+            case IRE_LOOKBEHIND: case IRE_NEG_LOOKBEHIND:
             case IRE_EMPTY:
+            case IRE_KEEP:
+            case IRE_LAST_MATCH:
                 continue;
             default:
                 return ire_collect_first_byte_set(c, out, out_n);
@@ -689,7 +979,8 @@ ire_collect_first_byte_set(ire_node_t *n, uint8_t *out, int *out_n)
         }
         return false;
     case IRE_GROUP:    return ire_collect_first_byte_set(n->u.group.body, out, out_n);
-    case IRE_NCGROUP:  return ire_collect_first_byte_set(n->u.nc.body, out, out_n);
+    case IRE_NCGROUP:
+    case IRE_ATOMIC:   return ire_collect_first_byte_set(n->u.nc.body, out, out_n);
     case IRE_REP:
         if (n->u.rep.min >= 1) return ire_collect_first_byte_set(n->u.rep.body, out, out_n);
         return false;
@@ -738,6 +1029,202 @@ build_truffle_tables(const uint64_t bm[4], uint64_t out[4])
     }
 }
 
+/* If `n` is an alt-of-single-bytes (or already a single-byte class),
+ * fold its first-byte set into `bm` and return true.  Used by the
+ * IRE optimizer to rewrite `(a|b|c)` and `[a-c]` into a single CLASS
+ * — which then composes with rep+greedy_class for a fast tight-loop.
+ * Captured span semantics survive: each candidate is one byte, the
+ * resulting captured slice is identical whether we ALT-and-LIT or
+ * just CLASS-and-advance. */
+static bool
+ire_alt_byte_set(const ire_node_t *n, uint64_t bm[4], bool ci)
+{
+    if (!n) return false;
+    /* parse_concat wraps even single atoms in an IRE_CONCAT — peek
+     * through.  Multi-element concats can't be class-folded (they'd
+     * consume more than one byte). */
+    if (n->kind == IRE_CONCAT) {
+        if (n->u.cat.n == 1) return ire_alt_byte_set(n->u.cat.xs[0], bm, ci);
+        return false;
+    }
+    switch (n->kind) {
+    case IRE_LIT:
+        if (n->u.lit.len != 1) return false;
+        if (n->u.lit.ci != ci) return false;
+        {
+            const uint8_t b = (uint8_t)n->u.lit.bytes[0];
+            bm[b >> 6] |= (1ULL << (b & 63));
+            if (ci) {
+                if (b >= 'a' && b <= 'z')      { const uint8_t c = (uint8_t)(b - 32); bm[c >> 6] |= (1ULL << (c & 63)); }
+                else if (b >= 'A' && b <= 'Z') { const uint8_t c = (uint8_t)(b + 32); bm[c >> 6] |= (1ULL << (c & 63)); }
+            }
+            return true;
+        }
+    case IRE_CLASS:
+        bm[0] |= n->u.cls.bm[0];
+        bm[1] |= n->u.cls.bm[1];
+        bm[2] |= n->u.cls.bm[2];
+        bm[3] |= n->u.cls.bm[3];
+        return true;
+    case IRE_ALT:
+        return ire_alt_byte_set(n->u.alt.l, bm, ci) &&
+               ire_alt_byte_set(n->u.alt.r, bm, ci);
+    case IRE_NCGROUP:
+        return ire_alt_byte_set(n->u.nc.body, bm, ci);
+    default:
+        /* Capturing groups are also single-byte if their body is, but
+         * they need different IR rewriting (preserve the cap_start/end);
+         * skip for now. */
+        return false;
+    }
+}
+
+/* Walk `n`, replacing alt-of-single-bytes subtrees with IRE_CLASS in
+ * place.  Result: simpler IR that the lower pass can map to a single
+ * class node (and composes with the greedy_class fast path).
+ *
+ * We mutate the tree directly; the union members for IRE_CLASS only
+ * use `bm[4]` so converting LIT/ALT-shaped storage doesn't leak the
+ * old bytes (those allocations leak — acceptable since the IR lives
+ * for the lifetime of the parse anyway).  Captures and their bodies
+ * (IRE_GROUP) are not collapsed: lower keeps them intact. */
+static void
+ire_optimize(ire_node_t *n)
+{
+    if (!n) return;
+    switch (n->kind) {
+    case IRE_ALT: {
+        ire_optimize(n->u.alt.l);
+        ire_optimize(n->u.alt.r);
+        /* Try to fold into a single class. */
+        uint64_t bm[4] = {0};
+        /* Pick `ci` from the first leaf we see — only collapse when all
+         * branches share /i sensitivity (otherwise mixing's incorrect). */
+        const ire_node_t *first_leaf = n->u.alt.l;
+        while (first_leaf && (first_leaf->kind == IRE_NCGROUP)) first_leaf = first_leaf->u.nc.body;
+        const bool ci = (first_leaf && first_leaf->kind == IRE_LIT) ? first_leaf->u.lit.ci : false;
+        const bool ok = ire_alt_byte_set(n, bm, ci);
+        if (ok) {
+            n->kind = IRE_CLASS;
+            memcpy(n->u.cls.bm, bm, sizeof(bm));
+        }
+        break;
+    }
+    case IRE_CONCAT:
+        for (size_t i = 0; i < n->u.cat.n; i++) ire_optimize(n->u.cat.xs[i]);
+        break;
+    case IRE_REP:        ire_optimize(n->u.rep.body);   break;
+    case IRE_GROUP:      ire_optimize(n->u.group.body); break;
+    case IRE_NCGROUP:
+    case IRE_LOOKAHEAD:
+    case IRE_NEG_LOOKAHEAD:
+    case IRE_LOOKBEHIND:
+    case IRE_NEG_LOOKBEHIND:
+    case IRE_ATOMIC:     ire_optimize(n->u.nc.body); break;
+    case IRE_CONDITIONAL:
+        ire_optimize(n->u.cond.yes);
+        ire_optimize(n->u.cond.no);
+        break;
+    default: break;
+    }
+}
+
+/* True iff matching `n` is guaranteed to consume at least one byte on
+ * success.  Conservative: returns false when in doubt, which makes the
+ * caller take the slow (carve-out-tracking) path. */
+static bool
+ire_must_consume(const ire_node_t *n)
+{
+    if (!n) return false;
+    switch (n->kind) {
+    case IRE_LIT:           return n->u.lit.len > 0;
+    case IRE_DOT:
+    case IRE_CLASS:         return true;
+    case IRE_BOS: case IRE_EOS: case IRE_EOS_NL:
+    case IRE_BOL: case IRE_EOL:
+    case IRE_WB: case IRE_NWB:
+    case IRE_LOOKAHEAD: case IRE_NEG_LOOKAHEAD:
+    case IRE_LOOKBEHIND: case IRE_NEG_LOOKBEHIND:
+    case IRE_EMPTY:
+    case IRE_KEEP:
+    case IRE_LAST_MATCH:
+    case IRE_BACKREF:       /* backref of empty group could be 0-byte */
+    case IRE_SUBROUTINE:    /* unknown until expanded — be conservative */
+        return false;
+    case IRE_GROUP:         return ire_must_consume(n->u.group.body);
+    case IRE_NCGROUP:
+    case IRE_ATOMIC:        return ire_must_consume(n->u.nc.body);
+    case IRE_REP:
+        if (n->u.rep.min < 1) return false;
+        return ire_must_consume(n->u.rep.body);
+    case IRE_CONCAT: {
+        for (size_t i = 0; i < n->u.cat.n; i++) {
+            if (ire_must_consume(n->u.cat.xs[i])) return true;
+        }
+        return false;
+    }
+    case IRE_ALT:           return ire_must_consume(n->u.alt.l) && ire_must_consume(n->u.alt.r);
+    case IRE_CONDITIONAL:   return ire_must_consume(n->u.cond.yes) && ire_must_consume(n->u.cond.no);
+    }
+    return false;
+}
+
+/* Statically computed byte-length, or -1 if it varies.  Used for
+ * lookbehind body sizing — we step pos back by this many bytes before
+ * dispatching the body. */
+static int
+ire_fixed_len(const ire_node_t *n, agre_encoding_t enc)
+{
+    if (!n) return 0;
+    switch (n->kind) {
+    case IRE_LIT:           return (int)n->u.lit.len;
+    case IRE_CLASS:         return 1;
+    case IRE_DOT:           return enc == AGRE_ENC_UTF8 ? -1 : 1;
+    case IRE_BACKREF:       return -1;
+    case IRE_BOS: case IRE_EOS: case IRE_EOS_NL:
+    case IRE_BOL: case IRE_EOL:
+    case IRE_WB: case IRE_NWB:
+    case IRE_LOOKAHEAD: case IRE_NEG_LOOKAHEAD:
+    case IRE_LOOKBEHIND: case IRE_NEG_LOOKBEHIND:
+    case IRE_EMPTY:
+    case IRE_KEEP:
+    case IRE_LAST_MATCH:
+        return 0;
+    case IRE_GROUP:         return ire_fixed_len(n->u.group.body, enc);
+    case IRE_NCGROUP:
+    case IRE_ATOMIC:        return ire_fixed_len(n->u.nc.body, enc);
+    case IRE_REP: {
+        if (n->u.rep.min != n->u.rep.max || n->u.rep.min < 0) return -1;
+        const int per = ire_fixed_len(n->u.rep.body, enc);
+        if (per < 0) return -1;
+        return per * n->u.rep.min;
+    }
+    case IRE_CONCAT: {
+        int sum = 0;
+        for (size_t i = 0; i < n->u.cat.n; i++) {
+            const int sub = ire_fixed_len(n->u.cat.xs[i], enc);
+            if (sub < 0) return -1;
+            sum += sub;
+        }
+        return sum;
+    }
+    case IRE_ALT: {
+        const int l = ire_fixed_len(n->u.alt.l, enc);
+        const int r = ire_fixed_len(n->u.alt.r, enc);
+        if (l < 0 || r < 0 || l != r) return -1;
+        return l;
+    }
+    case IRE_CONDITIONAL: {
+        const int y = ire_fixed_len(n->u.cond.yes, enc);
+        const int no = ire_fixed_len(n->u.cond.no, enc);
+        if (y < 0 || no < 0 || y != no) return -1;
+        return y;
+    }
+    case IRE_SUBROUTINE:    return -1;
+    }
+    return -1;
+}
+
 /* If the first thing the IR consumes is an IRE_CLASS, return that
  * class node (so the caller can pick a SIMD-class-scan variant
  * without having to re-walk).  Returns NULL if the first consuming
@@ -758,10 +1245,14 @@ ire_first_class(ire_node_t *n)
             case IRE_BOL: case IRE_EOL:
             case IRE_WB: case IRE_NWB:
             case IRE_LOOKAHEAD: case IRE_NEG_LOOKAHEAD:
+            case IRE_LOOKBEHIND: case IRE_NEG_LOOKBEHIND:
             case IRE_EMPTY:
+            case IRE_KEEP:
+            case IRE_LAST_MATCH:
                 continue;
             case IRE_GROUP:    return ire_first_class(c->u.group.body);
-            case IRE_NCGROUP:  return ire_first_class(c->u.nc.body);
+            case IRE_NCGROUP:
+            case IRE_ATOMIC:   return ire_first_class(c->u.nc.body);
             case IRE_REP:
                 if (c->u.rep.min >= 1) return ire_first_class(c->u.rep.body);
                 return NULL;
@@ -771,7 +1262,8 @@ ire_first_class(ire_node_t *n)
         }
         return NULL;
     case IRE_GROUP:    return ire_first_class(n->u.group.body);
-    case IRE_NCGROUP:  return ire_first_class(n->u.nc.body);
+    case IRE_NCGROUP:
+    case IRE_ATOMIC:   return ire_first_class(n->u.nc.body);
     case IRE_REP:
         if (n->u.rep.min >= 1) return ire_first_class(n->u.rep.body);
         return NULL;
@@ -813,6 +1305,7 @@ ire_collect_prefix(ire_node_t *n, fixed_prefix_t *out, bool *consumes_anything)
     case IRE_GROUP:
         return ire_collect_prefix(n->u.group.body, out, consumes_anything);
     case IRE_NCGROUP:
+    case IRE_ATOMIC:
         return ire_collect_prefix(n->u.nc.body, out, consumes_anything);
 
     case IRE_REP:
@@ -836,7 +1329,10 @@ ire_collect_prefix(ire_node_t *n, fixed_prefix_t *out, bool *consumes_anything)
     case IRE_BOL: case IRE_EOL:
     case IRE_WB: case IRE_NWB:
     case IRE_LOOKAHEAD: case IRE_NEG_LOOKAHEAD:
+    case IRE_LOOKBEHIND: case IRE_NEG_LOOKBEHIND:
     case IRE_EMPTY:
+    case IRE_KEEP:
+    case IRE_LAST_MATCH:
         return false;
 
     /* Everything else: stops prefix accumulation. */
@@ -860,9 +1356,52 @@ typedef struct lower_ctx {
     bool ml;
     agre_encoding_t enc;
     NODE *rep_cont;
+    /* Subroutine references encountered during lower.  After main
+     * lowering, the parser walks this and lowers each referenced
+     * group's body fresh with sub_return tail.  Recursion-safe: the
+     * subroutine_call node looks the chain up via CTX at runtime. */
+    bool *sub_needed;
+    int   sub_needed_cap;
 } lower_ctx_t;
 
 static NODE *lower(lower_ctx_t *L, ire_node_t *n, NODE *tail);
+
+/* Lower (?<=BODY) / (?<!BODY).  Body with statically-known fixed width
+ * uses node_re_lookbehind (steps pos back by `width`); alt-of-fixed
+ * gets per-branch lookbehinds combined via re_alt; everything else
+ * falls back to the variable-width scanner with node_re_lb_check tail. */
+static NODE *
+lower_lookbehind(lower_ctx_t *L, ire_node_t *body, NODE *tail, bool negative)
+{
+    if (!body) return tail;
+    const int w = ire_fixed_len(body, L->enc);
+    if (w >= 0) {
+        NODE *const body_nd = lower(L, body, ALLOC_node_re_succ());
+        return negative
+            ? ALLOC_node_re_neg_lookbehind(body_nd, (uint32_t)w, tail)
+            : ALLOC_node_re_lookbehind   (body_nd, (uint32_t)w, tail);
+    }
+    if (body->kind == IRE_ALT) {
+        if (!negative) {
+            NODE *const l_path = lower_lookbehind(L, body->u.alt.l, tail, false);
+            NODE *const r_path = lower_lookbehind(L, body->u.alt.r, tail, false);
+            return ALLOC_node_re_alt(l_path, r_path);
+        } else {
+            NODE *const inner = lower_lookbehind(L, body->u.alt.r, tail, true);
+            return lower_lookbehind(L, body->u.alt.l, inner, true);
+        }
+    }
+    if (body->kind == IRE_NCGROUP || body->kind == IRE_GROUP) {
+        ire_node_t *const inner = (body->kind == IRE_GROUP)
+            ? body->u.group.body : body->u.nc.body;
+        return lower_lookbehind(L, inner, tail, negative);
+    }
+    /* Variable-width fallback: scan candidate widths from longest. */
+    NODE *const body_nd = lower(L, body, ALLOC_node_re_lb_check(ALLOC_node_re_succ()));
+    return negative
+        ? ALLOC_node_re_neg_lookbehind_var(body_nd, tail)
+        : ALLOC_node_re_lookbehind_var    (body_nd, tail);
+}
 
 static NODE *make_dot(lower_ctx_t *L, NODE *tail) {
     if (L->enc == AGRE_ENC_UTF8) {
@@ -939,9 +1478,107 @@ lower(lower_ctx_t *L, ire_node_t *n, NODE *tail)
         NODE *body = lower(L, n->u.nc.body, ALLOC_node_re_succ());
         return ALLOC_node_re_neg_lookahead(body, tail);
     }
+    case IRE_LOOKBEHIND:
+        return lower_lookbehind(L, n->u.nc.body, tail, /* negative = */ false);
+    case IRE_NEG_LOOKBEHIND:
+        return lower_lookbehind(L, n->u.nc.body, tail, /* negative = */ true);
+    case IRE_ATOMIC: {
+        /* Run body with its own succ tail so backtracking on a failing
+         * outer continuation doesn't reach into body's alternatives. */
+        NODE *body = lower(L, n->u.nc.body, ALLOC_node_re_succ());
+        return ALLOC_node_re_atomic(body, tail);
+    }
+    case IRE_KEEP:          return ALLOC_node_re_keep(tail);
+    case IRE_LAST_MATCH:    return ALLOC_node_re_last_match(tail);
+    case IRE_CONDITIONAL: {
+        NODE *yes_chain = lower(L, n->u.cond.yes, tail);
+        NODE *no_chain  = lower(L, n->u.cond.no,  tail);
+        return ALLOC_node_re_conditional((uint32_t)n->u.cond.idx, yes_chain, no_chain);
+    }
+    case IRE_SUBROUTINE: {
+        const int idx = n->u.sub.idx;
+        if (idx <= 0 || idx >= L->q->cap_groups || L->q->groups_by_idx[idx] == NULL) {
+            re_error(L->q, "subroutine target undefined (forward reference?)");
+            return tail;
+        }
+        if (idx >= L->sub_needed_cap) {
+            const int new_cap = idx + 8;
+            L->sub_needed = (bool *)realloc(L->sub_needed, sizeof(bool) * (size_t)new_cap);
+            for (int i = L->sub_needed_cap; i < new_cap; i++) L->sub_needed[i] = false;
+            L->sub_needed_cap = new_cap;
+        }
+        L->sub_needed[idx] = true;
+        return ALLOC_node_re_subroutine_call((uint32_t)idx, tail);
+    }
     case IRE_REP: {
+        /* Specialised greedy/lazy `.` rep — collapses N rep_cont
+         * sentinel dispatches into a single tight loop, saving most of
+         * the per-byte overhead on /.* / patterns.  Separate ASCII and
+         * UTF-8 variants so backward iteration respects codepoint
+         * boundaries in UTF-8 mode. */
+        if (n->u.rep.body && n->u.rep.body->kind == IRE_DOT) {
+            const uint32_t ml = L->ml ? 1 : 0;
+            if (n->u.rep.greedy) {
+                if (L->enc == AGRE_ENC_UTF8) {
+                    return ALLOC_node_re_greedy_dot_utf8(n->u.rep.min, n->u.rep.max, tail, ml);
+                } else {
+                    return ALLOC_node_re_greedy_dot(n->u.rep.min, n->u.rep.max, tail, ml);
+                }
+            } else if (L->enc != AGRE_ENC_UTF8) {
+                /* Lazy UTF-8 uncommon; fall back to the generic path. */
+                return ALLOC_node_re_lazy_dot(n->u.rep.min, n->u.rep.max, tail, ml);
+            }
+        }
+        /* Specialised greedy/lazy single-class rep — same trick for
+         * `\w+`, `[a-z]*`, `\d+`, `(?:a|b|c)+` (after ire_optimize) etc.
+         * Class members are always one byte (no UTF-8 issue here), so
+         * we don't need a separate encoding-specific variant.  Peek
+         * through any non-capturing wrapper since `(?:[abc])+` and
+         * `[abc]+` should optimise identically.
+         *
+         * Single-capture-group wrappers (`(X)+`, `(X)*`) get the
+         * `_cap` variant: same tight loop, but updates the capture to
+         * the span of the last matched byte on each
+         * forward/backtrack step — matches Ruby's "last iter wins". */
+        const ire_node_t *peeked = n->u.rep.body;
+        int wrap_cap_idx = 0;
+        while (peeked) {
+            if (peeked->kind == IRE_NCGROUP) {
+                peeked = peeked->u.nc.body;
+            } else if (peeked->kind == IRE_GROUP && wrap_cap_idx == 0) {
+                wrap_cap_idx = peeked->u.group.idx;
+                peeked = peeked->u.group.body;
+            } else {
+                break;
+            }
+        }
+        if (peeked && peeked->kind == IRE_CLASS) {
+            const ire_node_t *const cls = peeked;
+            if (n->u.rep.greedy) {
+                if (wrap_cap_idx > 0) {
+                    return ALLOC_node_re_greedy_class_cap(
+                        cls->u.cls.bm[0], cls->u.cls.bm[1],
+                        cls->u.cls.bm[2], cls->u.cls.bm[3],
+                        n->u.rep.min, n->u.rep.max,
+                        (uint32_t)wrap_cap_idx, tail);
+                }
+                return ALLOC_node_re_greedy_class(
+                    cls->u.cls.bm[0], cls->u.cls.bm[1],
+                    cls->u.cls.bm[2], cls->u.cls.bm[3],
+                    n->u.rep.min, n->u.rep.max, tail);
+            } else if (wrap_cap_idx == 0) {
+                /* Lazy + group capture: capture-correctness across
+                 * extension steps is fiddly; defer to generic rep. */
+                return ALLOC_node_re_lazy_class(
+                    cls->u.cls.bm[0], cls->u.cls.bm[1],
+                    cls->u.cls.bm[2], cls->u.cls.bm[3],
+                    n->u.rep.min, n->u.rep.max, tail);
+            }
+        }
         NODE *body = lower(L, n->u.rep.body, L->rep_cont);
-        return ALLOC_node_re_rep(body, tail, n->u.rep.min, n->u.rep.max, n->u.rep.greedy ? 1 : 0);
+        return ALLOC_node_re_rep(body, tail, n->u.rep.min, n->u.rep.max,
+                                 n->u.rep.greedy ? 1 : 0,
+                                 ire_must_consume(n->u.rep.body) ? 1 : 0);
     }
     }
     return tail;
@@ -962,8 +1599,15 @@ static void ire_free(ire_node_t *n) {
         break;
     case IRE_REP: ire_free(n->u.rep.body); break;
     case IRE_GROUP: ire_free(n->u.group.body); break;
-    case IRE_NCGROUP: case IRE_LOOKAHEAD: case IRE_NEG_LOOKAHEAD:
+    case IRE_NCGROUP:
+    case IRE_LOOKAHEAD: case IRE_NEG_LOOKAHEAD:
+    case IRE_LOOKBEHIND: case IRE_NEG_LOOKBEHIND:
+    case IRE_ATOMIC:
         ire_free(n->u.nc.body); break;
+    case IRE_CONDITIONAL:
+        ire_free(n->u.cond.yes);
+        ire_free(n->u.cond.no);
+        break;
     default: break;
     }
     free(n);
@@ -1003,6 +1647,12 @@ astrogre_parse(const char *pat, size_t pat_len, uint32_t prism_flags)
         return NULL;
     }
 
+    /* Pre-lower IR rewrites: alt-of-single-bytes → class, etc.  Cheap
+     * tree walk that lets the lower pass see structural simplifications
+     * (a|b|c) ↦ [abc] without each lower case having to special-case
+     * the alt shape. */
+    ire_optimize(ir);
+
     lower_ctx_t L = {0};
     L.q = &q;
     L.ci = q.case_insensitive;
@@ -1015,6 +1665,50 @@ astrogre_parse(const char *pat, size_t pat_len, uint32_t prism_flags)
      * the final-match span automatically through cap_end. */
     NODE *body = lower(&L, ir, ALLOC_node_re_cap_end(0, succ));
     body = ALLOC_node_re_cap_start(0, body);
+
+    /* Lower may register errors (variable-width lookbehind without
+     * fallback, undefined subroutine target).  Bail before building
+     * the prefilter so the caller sees a clean parse failure. */
+    if (q.error) {
+        fprintf(stderr, "%s\n", q.errbuf);
+        ire_free(ir);
+        free(L.sub_needed);
+        return NULL;
+    }
+
+    /* Build callable subroutine chains for each `\g<…>` reference.
+     * Iterate to closure (mutual recursion may register more). */
+    NODE **sub_chains = NULL;
+    int sub_chains_n = 0;
+    if (L.sub_needed) {
+        sub_chains_n = L.sub_needed_cap;
+        sub_chains = (NODE **)calloc((size_t)sub_chains_n, sizeof(NODE *));
+        bool any_new = true;
+        while (any_new && !q.error) {
+            any_new = false;
+            const int snapshot_cap = L.sub_needed_cap;
+            for (int idx = 1; idx < snapshot_cap; idx++) {
+                if (!L.sub_needed[idx] || sub_chains[idx]) continue;
+                ire_node_t *const target = q.groups_by_idx[idx];
+                if (!target) continue;
+                NODE *const ret = ALLOC_node_re_sub_return();
+                sub_chains[idx] = lower(&L, target, ret);
+                any_new = true;
+            }
+            if (L.sub_needed_cap > sub_chains_n) {
+                sub_chains = (NODE **)realloc(sub_chains, sizeof(NODE *) * (size_t)L.sub_needed_cap);
+                for (int i = sub_chains_n; i < L.sub_needed_cap; i++) sub_chains[i] = NULL;
+                sub_chains_n = L.sub_needed_cap;
+            }
+        }
+        if (q.error) {
+            fprintf(stderr, "%s\n", q.errbuf);
+            free(sub_chains);
+            free(L.sub_needed);
+            ire_free(ir);
+            return NULL;
+        }
+    }
 
     /* Pick the right wrapper based on what the IR analysis turned up.
      * Order from most specific / fastest to least:
@@ -1087,6 +1781,14 @@ astrogre_parse(const char *pat, size_t pat_len, uint32_t prism_flags)
     p->pat = (char *)malloc(pat_len + 1);
     memcpy(p->pat, pat, pat_len);
     p->pat[pat_len] = 0;
+
+    /* Transfer ownership of named-capture table + subroutine chains. */
+    p->group_names    = q.names;
+    p->group_name_idx = q.name_idx;
+    p->n_named        = q.n_names;
+    p->sub_chains     = sub_chains;
+    p->sub_chains_n   = sub_chains_n;
+    free(L.sub_needed);
     return p;
 }
 
@@ -1213,8 +1915,33 @@ astrogre_pattern_free(astrogre_pattern *p)
 {
     if (!p) return;
     free(p->pat);
+    for (int i = 0; i < p->n_named; i++) free(p->group_names[i]);
+    free(p->group_names);
+    free(p->group_name_idx);
+    free(p->sub_chains);  /* node memory owned by framework's side array */
     free(p);
 }
+
+int astrogre_pattern_n_named(const astrogre_pattern *p) { return p ? p->n_named : 0; }
+
+const char *
+astrogre_pattern_named_at(const astrogre_pattern *p, int i, int *out_idx)
+{
+    if (!p || i < 0 || i >= p->n_named) return NULL;
+    if (out_idx) *out_idx = p->group_name_idx[i];
+    return p->group_names[i];
+}
+
+const char *
+astrogre_pattern_source(const astrogre_pattern *p, size_t *out_len)
+{
+    if (!p || !p->pat) { if (out_len) *out_len = 0; return NULL; }
+    if (out_len) *out_len = strlen(p->pat);
+    return p->pat;
+}
+
+bool astrogre_pattern_case_insensitive(const astrogre_pattern *p) { return p && p->case_insensitive; }
+bool astrogre_pattern_multiline(const astrogre_pattern *p)        { return p && p->multiline; }
 
 uint64_t
 astrogre_pattern_hash(astrogre_pattern *p)
