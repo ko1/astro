@@ -17,6 +17,22 @@ engine by default.  An [Onigmo](https://github.com/k-takata/Onigmo)
 backend can be swapped in at runtime with `--backend=onigmo` for
 direct head-to-head comparison.
 
+Two CLIs ship in this directory:
+
+- **`./astrogre`** — the original grep front-end on top of the
+  engine, kept close to GNU grep semantics for benching: explicit
+  PATH required, no recursion default, `-r` to descend, all flags
+  including the lib-internal ones (`--self-test`, `--bench`,
+  `--bench-file`, `--dump`, `--via-prism`, `--plain`, `--aot-compile`,
+  `--backend=`, `--verbose`).  This is the binary used in the
+  benches below.
+- **`./are/are`** — production CLI with modern defaults (recursive
+  by default, `.gitignore`-aware, parallel walking via `-j N`,
+  binary skip, type filter `-t LANG`).  Same regex engine, just a
+  user-facing front end with rg/ag-style ergonomics — see
+  [`are/README.md`](./are/README.md) for its own benches and
+  options.
+
 ## Status
 
 - 44/44 self-tests pass: literals (`/i`), `.` (with `/m`), char classes,
@@ -209,45 +225,49 @@ deliberately chosen for an AOT-favourable shape (long chain, no
 trivial libc memmem available).  Best of 3 ms/iter; bold = row
 winner.
 
-| pattern                                 | interp | +AOT | grep | rg    |
-|-----------------------------------------|---:|---:|---:|---:|
-| `/(QQQ\|RRR)+\d+/`                       | 26 | **14** | 101 | 26 |
-| `/(QQQX\|RRRX\|SSSX)+/`                  | 56 | **25** | 30 | 28 |
-| `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/`   | 1078 | 520 | 762 | **207** |
-| `/[A-Z]{50,}/`                           | 481 | 219 | 1737 | **209** |
-| `/\b(if\|else\|for\|while\|return)\b/`   | 306 | **107** | 929 | 135 |
-| `/[a-z][0-9][a-z][0-9][a-z]/`           | 1144 | 497 | 1105 | **229** |
-| `/(\d+\.\d+\.\d+\.\d+)/`                | 458 | 223 | **97** | 231 |
-| `/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/`    | 7523 | 5364 | 6170 | **215** |
+| pattern                                 | interp | +AOT | +onigmo | grep | rg    |
+|-----------------------------------------|---:|---:|---:|---:|---:|
+| `/(QQQ\|RRR)+\d+/`                       | 25 | **14** | 590 | 104 | 27 |
+| `/(QQQX\|RRRX\|SSSX)+/`                  | 57 | **26** | 608 | 29 | 27 |
+| `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/`   | 1126 | 517 | 611 | 778 | **223** |
+| `/[A-Z]{50,}/`                           | 472 | **206** | 1026 | 1722 | 306 |
+| `/\b(if\|else\|for\|while\|return)\b/`   | 595 | **203** | 2226 | 2241 | 227 |
+| `/[a-z][0-9][a-z][0-9][a-z]/`           | 1141 | 506 | 616 | 1114 | **209** |
+| `/(\d+\.\d+\.\d+\.\d+)/`                | 467 | 229 | 634 | **93** | 274 |
+| `/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/`    | 7694 | 5314 | 13081 | 6170 | **237** |
 
 #### AOT effect
 
-AOT cuts interp time by **1.4×–2.85×** on every row.  Notable wins:
+AOT cuts interp time by **1.4×–2.95×** on every row.  Win count:
 
-- `\b(if|else|for|while|return)\b` — AOT 107 ms beats both grep
-  (929 ms) and ripgrep (135 ms).  Long alt-of-LIT body chain folds
-  into a single specialised function with no per-byte indirect
-  call, exactly the kind of structure AOT was built for.
-- `(QQQ|RRR)+\d+` and `(QQQX|RRRX|SSSX)+` — AOT lands at 14 ms /
-  25 ms, matching ripgrep and beating GNU grep.
-- `[A-Z]{50,}` — AOT 219 ms vs grep 1737 ms (8× faster); ripgrep
-  edges out at 209 ms.
+- **vs Onigmo: 8/8 wins** — usually 3-15× faster.  Onigmo is a
+  bytecode VM dispatching every alt branch, every quantifier
+  iter; AOT folds those into a flat SD with no indirect call.
+- **vs GNU grep: 4/8 wins**.  Notably:
+  - `[A-Z]{50,}`: AOT 206 ms vs grep 1722 ms (8.4×).  The DFA
+    explodes on long uppercase runs; greedy_class fast-path
+    walks them in SIMD.
+  - `\b(if|else|for|while|return)\b`: AOT 203 ms vs grep 2241 ms
+    (11×).  Long alt-of-LIT body chain compiled into one SD.
+  - `(QQQ|RRR)+\d+`, `(QQQX|RRRX|SSSX)+`: byteset prefilter +
+    AOT-folded body match grep / ripgrep.
+- **vs ripgrep: 2/8 wins** (`[A-Z]{50,}`, `\b(if|else|...)\b`).
+  Ripgrep wins or ties the rest 1.05×–25× thanks to lazy DFA +
+  the Aho-Corasick / Teddy multi-pattern literal prefilter in the
+  [`regex-automata`](https://github.com/rust-lang/regex/) crate.
+  The `(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)` row (5314 ms vs rg
+  237 ms) is the worst gap: rg extracts mid-pattern literal
+  anchors (`(`, `,`, `)`) and runs SIMD AC on them; we only
+  extract leading-edge alts of literals.  Tracked in
+  [`docs/todo.md`](./docs/todo.md).
 
-#### What grep / ripgrep still win
+#### What grep still wins
 
-GNU grep wins on `(\d+\.\d+\.\d+\.\d+)` (97 ms): the leading `\d`
-class is rare in code, so grep's `\d`-led DFA scanner skips ahead
-fast — no algorithmic miracle, just a favourable corpus.
-
-Ripgrep wins (or ties) most other rows by 1.5×–25× thanks to its
-lazy DFA + literal-prefix prefilter (the
-[`regex-automata`](https://github.com/rust-lang/regex/) crate).
-Catching it would need DFA-style NFA simulation, a bigger refactor
-than ASTro's current AST-walk model.  The
-`(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)` row (5364 ms vs rg 215 ms) is
-where this matters most: rg uses Aho-Corasick / Teddy on the
-required-literal `(`, `,`, `)` anchors; we don't have multi-literal
-anchor extraction yet (tracked in [`docs/todo.md`](./docs/todo.md)).
+`(\d+\.\d+\.\d+\.\d+)` (93 ms) — the leading `\d` class is rare
+in C source, so grep's `\d`-led DFA + Boyer-Moore-Horspool skip
+ahead by needle length.  Our `greedy_class` walks every byte via
+SIMD — same throughput, but the byte budget is fundamentally
+larger.  Algorithmic miss, not a SIMD one.
 
 See [`docs/perf.md`](./docs/perf.md) and
 [`docs/runtime.md`](./docs/runtime.md) for the architectural lesson

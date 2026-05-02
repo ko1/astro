@@ -144,14 +144,88 @@ and the lib-internal sub-commands stripped.  Consolidating it into a
 shared `lib_grep.c` with two thin entry points (one per binary) is
 on the roadmap.
 
+## Performance
+
+Two distinct workloads, two different stories.  All numbers are
+ms / best-of-3, on a 118 MB C-source corpus or `/usr/include`
+respectively.  Output goes to a regular file, never `/dev/null` —
+GNU grep `fstat`s stdout and short-circuits to first-match-and-exit
+when it sees `/dev/null`, which would skew the comparison wildly.
+See [`../docs/perf.md`](../docs/perf.md) for the full discussion
+and reproduction instructions.
+
+### Single-file scan (`bench/grep_bench.rb`)
+
+`are` is the production CLI on the same engine that powers
+`astrogre`, so its single-file numbers track the engine's directly.
+Notable rows (use `make bench-rg N=5` to reproduce):
+
+| pattern                       | are -j1 | ripgrep | GNU grep |
+|------------------------------ |--------:|--------:|---------:|
+| `/static/`                    | **41**  | 86      | 153      |
+| `/specialized_dispatcher/`    | 23      | **24**  | 36       |
+| `/^static/` anchored          | 86      | **42**  | 78       |
+| `/VALUE/i`                    | 94      | **64**  | 107      |
+| `/static\|extern\|inline/`    | 402     | **69**  | 224      |
+| 12-way alt (uses our AC)      | 428     | **142** | 281      |
+| `/[0-9]{4,}/`                 | 404     | 60      | **96**   |
+| `/[a-z_]+_[a-z]+\(/`          | 2154    | **230** | 2478     |
+| `-c /static/`                 | **24**  | 30      | 77       |
+
+Where `are` wins:
+
+- `-c /static/` (count): 24 ms vs grep 77 ms vs rg 30 ms.  The
+  `node_grep_count_lines_lit` path is a single specialised SD that
+  does SIMD scan + line-skip + count in one tight loop.
+- `/static/` default print: 41 ms vs grep 153 ms vs rg 86 ms.
+  Same scanner + an inlined emit-line action.
+
+Where `are` loses:
+
+- Anchored / `/i` / class-rep: ripgrep's literal-prefix prefilter
+  + lazy DFA wins by 1.5–2×.  Closing this needs DFA-style NFA
+  simulation — a bigger refactor.
+- `[a-z_]+_[a-z]+\(`: rg's lazy DFA gets to 230 ms, we're at
+  2.2 s.  The DFA shape advantage is biggest where prefilter
+  doesn't apply.
+- Multi-literal alt: our AC kicks in for 9+ distinct first bytes,
+  but rg's Aho-Corasick + Teddy SIMD lookup is 2–3× faster
+  per byte.  Engine work tracked in
+  [`../docs/todo.md`](../docs/todo.md).
+
+### Tree walk (`bench/tree_bench.rb`)
+
+Recursive search with `.gitignore`-aware filtering.  This is what
+day-to-day code grep actually looks like.
+
+| pattern              | tree           | are -j4 | ripgrep | grep -r |
+|----------------------|----------------|--------:|--------:|--------:|
+| `/CONFIG/`           | /usr/include   | 49      | **20**  | 88      |
+| `PROT_READ\|PROT_W…` | /usr/include   | 45      | **22**  | 101     |
+| 12-lit alt (AC)      | /usr/include   | 109     | **21**  | 164     |
+| `/verbose_mark/`     | astro tree     | 134     | **37**  | 605     |
+
+`are` consistently beats `grep -r` by 2–5× on tree walk thanks to
+`.gitignore` filtering, parallel file scanning (`-j 4` here), and
+the read-fast-path for small files.  But ripgrep wins by 2–5×
+back, with two reasons stacked:
+
+1. **Parallel directory walking.**  rg's `ignore` crate parallelises
+   the walk itself; our walker is single-threaded producer + N
+   worker scanners.  The producer becomes the bottleneck on big
+   trees with many small files.
+2. **Algorithmic prefilter (engine).**  Same single-file gap shows
+   up here too: rg's Aho-Corasick + Teddy on multi-literal cases.
+
 ## Why use `are` over `rg` or `ag`?
 
-Be honest about it: **for plain literal-search throughput on a big
-checkout, `rg` is currently the king** and that won't change in the
-next few weeks — its DFA, multi-pattern Teddy prefilter, and parallel
-walker have had a decade of optimisation by people who really care.
+Honest version: **for plain `-c` and default-print on a single
+file you probably won't notice a difference vs ripgrep — `are`
+already wins those rows.**  For tree walks on a large repo, `rg`
+is still the king (typically 2–5× ahead) and that won't change
+without the parallel-walker and Teddy work.
 
-Where `are` aims to land:
+Where `are` is the right tool:
 
 1. **Ruby/Onigmo regex semantics out of the box.**  `rg -P` enables
    PCRE2 (close but not identical to Onigmo); `are` is byte-for-byte
@@ -173,10 +247,11 @@ Where `are` aims to land:
 What we have NOT done yet (and where `rg` will keep winning until we
 do):
 
-- **Multi-pattern Aho-Corasick / Teddy literal prefilter** — the
-  engine picks ONE literal anchor and runs `memmem`/`memchr`.  This
-  is the single biggest remaining gap.  Belongs in the astrogre
-  engine itself (so embedders benefit), not in `are`.
+- **Multi-pattern Aho-Corasick / Teddy literal prefilter** for
+  arbitrary positions in the pattern (we have AC for leading
+  alts only).  Belongs in the astrogre engine, not in `are`.
+- **Parallel directory walking.**  Single-threaded producer
+  today; rg uses `rayon` to parallelise the dir walk too.
 
 ## Roadmap
 
