@@ -24,13 +24,8 @@ def test_method_as_block_via_amp
 end
 
 def test_method_object_as_block
-  # NOTE: koruby parser/translator bug — `assert_equal [2, 4, 6],
-  # [1, 2, 3].map(&proc_var)` corrupts the first arg when the second
-  # is `[literal].map(&Proc-typed-var)` (works fine with &:symbol).
-  # Hoisted to local first as workaround; bug ticketed for follow-up.
   doubler = ->(x) { x * 2 }
-  result = [1, 2, 3].map(&doubler)
-  assert_equal [2, 4, 6], result
+  assert_equal [2, 4, 6], [1, 2, 3].map(&doubler)
 end
 
 # ---------- Method#arity ----------

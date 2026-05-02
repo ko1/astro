@@ -89,11 +89,21 @@ static void push_frame(struct transduce_context *tc, pm_constant_id_list_t *loca
 }
 
 static void pop_frame(struct transduce_context *tc) {
-    /* Propagate block's usage up so parent's allocation is big enough. */
+    /* Propagate the child block's max_cnt up so parent's frame is sized
+     * to cover the block's locals/temps.  CRUCIAL: also bump parent's
+     * arg_index to at least child->max_cnt — block slots are
+     * "committed" once the block is created, because the block may be
+     * invoked later (it's a closure).  When invoked later, it writes
+     * to its captured param_base / local slots; if the parent's
+     * arg_index later allocated those same slots for something else,
+     * the yield clobbers it.  This is what made
+     *   `f arg, arr.map(&proc_var)`
+     * silently overwrite arg with the last yielded value. */
     struct frame_context *child = tc->frame;
     struct frame_context *parent = child->prev;
     if (parent && child->is_block) {
         if (child->max_cnt > parent->max_cnt) parent->max_cnt = child->max_cnt;
+        if (child->max_cnt > parent->arg_index) parent->arg_index = child->max_cnt;
     }
     tc->frame = parent;
 }
