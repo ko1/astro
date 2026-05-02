@@ -1301,9 +1301,40 @@ static VALUE korb_inspect_inner(VALUE v, int depth) {
     }
     enum korb_type t = BUILTIN_TYPE(v);
     if (t == T_STRING) {
+        /* Escape control chars so inspect output is re-evalable. */
         struct korb_string *s = (struct korb_string *)v;
         VALUE r = korb_str_new_cstr("\"");
-        korb_str_concat(r, korb_str_new(s->ptr, s->len));
+        long start = 0;
+        for (long i = 0; i < s->len; i++) {
+            unsigned char ch = (unsigned char)s->ptr[i];
+            const char *esc = NULL;
+            char buf[8];
+            switch (ch) {
+                case '\\': esc = "\\\\"; break;
+                case '"':  esc = "\\\""; break;
+                case '\n': esc = "\\n";  break;
+                case '\t': esc = "\\t";  break;
+                case '\r': esc = "\\r";  break;
+                case '\0': esc = "\\0";  break;
+                case '\a': esc = "\\a";  break;
+                case '\b': esc = "\\b";  break;
+                case '\f': esc = "\\f";  break;
+                case '\v': esc = "\\v";  break;
+                case '\x1b': esc = "\\e"; break;
+                default:
+                    if (ch < 0x20 || ch == 0x7f) {
+                        snprintf(buf, sizeof(buf), "\\x%02X", ch);
+                        esc = buf;
+                    }
+                    break;
+            }
+            if (esc) {
+                if (i > start) korb_str_concat(r, korb_str_new(s->ptr + start, i - start));
+                korb_str_concat(r, korb_str_new_cstr(esc));
+                start = i + 1;
+            }
+        }
+        if (start < s->len) korb_str_concat(r, korb_str_new(s->ptr + start, s->len - start));
         korb_str_concat(r, korb_str_new_cstr("\""));
         return r;
     }

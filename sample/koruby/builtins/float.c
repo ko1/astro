@@ -14,10 +14,61 @@ static VALUE flt_div(CTX *c, VALUE self, int argc, VALUE *argv) {
     return korb_float_new(korb_num2dbl(self) / korb_num2dbl(argv[0]));
 }
 static VALUE flt_to_s(CTX *c, VALUE self, int argc, VALUE *argv) {
-    char b[64]; snprintf(b, 64, "%.17g", korb_num2dbl(self));
+    double d = korb_num2dbl(self);
+    /* Ruby uses fixed names for special values, not C's "inf" / "nan". */
+    if (isnan(d)) return korb_str_new_cstr("NaN");
+    if (isinf(d)) return korb_str_new_cstr(d < 0 ? "-Infinity" : "Infinity");
+    char b[64];
+    /* Ruby's Float#to_s appends ".0" for whole-number Floats so the
+     * type is unambiguous: `1.0.to_s == "1.0"` (not "1"). */
+    snprintf(b, 64, "%.17g", d);
+    bool has_dot_or_e = false;
+    for (char *p = b; *p; p++) {
+        if (*p == '.' || *p == 'e' || *p == 'E') { has_dot_or_e = true; break; }
+    }
+    if (!has_dot_or_e) {
+        size_t l = strlen(b);
+        if (l + 2 < sizeof(b)) { b[l] = '.'; b[l+1] = '0'; b[l+2] = 0; }
+    }
     return korb_str_new_cstr(b);
 }
 
+
+/* Numeric#coerce — Float variant.  Integer/Bignum/Float other all
+ * promoted to a Float pair. */
+static VALUE flt_coerce(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1) {
+        VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+        korb_raise(c, (struct korb_class *)eArg, "wrong number of arguments");
+        return Qnil;
+    }
+    VALUE other = argv[0];
+    VALUE pair = korb_ary_new_capa(2);
+    if (FIXNUM_P(other)) {
+        korb_ary_push(pair, korb_float_new((double)FIX2LONG(other)));
+        korb_ary_push(pair, self);
+        return pair;
+    }
+    if (KORB_IS_FLOAT(other)) {
+        korb_ary_push(pair, other);
+        korb_ary_push(pair, self);
+        return pair;
+    }
+    if (!SPECIAL_CONST_P(other) && BUILTIN_TYPE(other) == T_BIGNUM) {
+        korb_ary_push(pair, korb_float_new(korb_num2dbl(other)));
+        korb_ary_push(pair, self);
+        return pair;
+    }
+    VALUE eTyp = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+    korb_raise(c, (struct korb_class *)eTyp, "%s can't be coerced into Float",
+             korb_id_name(korb_class_of_class(other)->name));
+    return Qnil;
+}
+
+static VALUE flt_abs2(CTX *c, VALUE self, int argc, VALUE *argv) {
+    double v = korb_num2dbl(self);
+    return korb_float_new(v * v);
+}
 
 /* ---------- Float methods (extended) ---------- */
 static VALUE flt_floor(CTX *c, VALUE self, int argc, VALUE *argv) {

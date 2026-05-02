@@ -299,6 +299,44 @@ static VALUE int_size(CTX *c, VALUE self, int argc, VALUE *argv) {
     return INT2FIX((long)sizeof(long));
 }
 
+/* Numeric#coerce(other) — returns [other_as_self_type, self_as_other_type]
+ * so binary ops can be performed in a common representation.  Integer
+ * variant: if other is Integer, both stay Integer; if Float, both
+ * promote to Float; otherwise raise TypeError (CRuby). */
+static VALUE int_coerce(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1) {
+        VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+        korb_raise(c, (struct korb_class *)eArg, "wrong number of arguments");
+        return Qnil;
+    }
+    VALUE other = argv[0];
+    VALUE pair = korb_ary_new_capa(2);
+    if (FIXNUM_P(other) || (!SPECIAL_CONST_P(other) && BUILTIN_TYPE(other) == T_BIGNUM)) {
+        korb_ary_push(pair, other);
+        korb_ary_push(pair, self);
+        return pair;
+    }
+    if (KORB_IS_FLOAT(other)) {
+        korb_ary_push(pair, other);
+        korb_ary_push(pair, korb_float_new((double)FIX2LONG(self)));
+        return pair;
+    }
+    VALUE eTyp = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+    korb_raise(c, (struct korb_class *)eTyp, "%s can't be coerced into Integer",
+             korb_id_name(korb_class_of_class(other)->name));
+    return Qnil;
+}
+
+/* Numeric#abs2 — |self|**2 (== self*self for real Numerics). */
+static VALUE int_abs2(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (FIXNUM_P(self)) {
+        long v = FIX2LONG(self);
+        VALUE arg = INT2FIX(v);
+        return korb_int_mul(self, arg);  /* Bignum-aware via mpz_mul */
+    }
+    return korb_int_mul(self, self);
+}
+
 /* Integer#eql? — type-strict: `1.eql?(1.0) == false`.  Object's default
  * eql? falls through to ==, which coerces; that's wrong here. */
 static VALUE int_eql(CTX *c, VALUE self, int argc, VALUE *argv) {

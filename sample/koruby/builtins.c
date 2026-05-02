@@ -265,6 +265,10 @@ void korb_init_builtins(void) {
     DEF(cInt, "div",   int_method_div, 1);
     DEF(cInt, "fdiv",  int_fdiv, 1);
     DEF(cInt, "size",  int_size, 0);
+    DEF(cInt, "coerce", int_coerce, 1);
+    DEF(cInt, "abs2",   int_abs2,   0);
+    DEF(cFlt, "coerce", flt_coerce, 1);
+    DEF(cFlt, "abs2",   flt_abs2,   0);
 
     /* extra Float */
     DEF(cFlt, "floor", flt_floor, -1);
