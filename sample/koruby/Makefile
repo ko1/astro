@@ -11,7 +11,7 @@ CFLAGS = -I$(PRISM_DIR)/include -I. $(optflags) -flto=auto -ggdb3 -Wall -Wno-unu
 LDFLAGS = -L $(PRISM_DIR)/build -Wl,-rpath=$(CURDIR)/$(PRISM_DIR)/build -flto=auto
 LIBS = -lprism -lgc -lgmp -lm
 
-SRCS = main.c node.c parse.c object.c builtins.c code_store.c
+SRCS = main.c node.c parse.c object.c builtins.c code_store.c bootstrap_src.c
 
 koruby: $(SRCS) $(NODE_GENFILES) Makefile
 	$(CC) $(CFLAGS) -rdynamic -o $@ $(SRCS) $(LDFLAGS) $(LIBS) -ldl
@@ -66,6 +66,16 @@ koruby-pgo-aot: koruby-pgo
 # generated files come from node.def via koruby_gen.rb
 $(NODE_GENFILES): node.def koruby_gen.rb ../../lib/astrogen.rb
 	ruby -I ../../lib -r ./koruby_gen -e 'ASTroGen.start([], node_def_class: KoRubyNodeDef)'
+
+# bootstrap_src.c — embedded Ruby source loaded at startup (Enumerable,
+# Comparable wiring, Rational/Complex, helper methods).
+bootstrap_src.c: bootstrap.rb
+	ruby -e 'src = File.binread("bootstrap.rb"); File.open("bootstrap_src.c","w") { |f| \
+	  f.puts "/* Auto-generated from bootstrap.rb \xe2\x80\x94 do not edit. */"; \
+	  f.puts "#include <stddef.h>"; f.puts "const char koruby_bootstrap_src[] = {"; \
+	  src.each_byte.each_slice(20) { |s| f.puts s.map { |b| "0x%02x" % b }.join(",") + "," }; \
+	  f.puts "0x00};"; \
+	  f.puts "const size_t koruby_bootstrap_len = #{src.bytesize};" }'
 
 # specialized.c: empty stub on first build
 node_specialized.c:

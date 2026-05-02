@@ -197,6 +197,22 @@ int main(int argc, char *argv[])
 
     OPTIMIZE(ast);
 
+    /* Bootstrap: load Ruby-side helpers (Enumerable, Comparable include
+     * targets, Rational/Complex, etc.) before running the user program. */
+    {
+        extern const char koruby_bootstrap_src[];
+        extern const size_t koruby_bootstrap_len;
+        VALUE br = korb_eval_string(c, koruby_bootstrap_src,
+                                    koruby_bootstrap_len, "<bootstrap>");
+        (void)br;
+        if (c->state == KORB_RAISE) {
+            VALUE s = korb_inspect(c->state_value);
+            fprintf(stderr, "bootstrap failure: %s\n", korb_str_cstr(s));
+            c->state = KORB_NORMAL;
+            c->state_value = Qnil;
+        }
+    }
+
     /* In compile_only mode (-c), still run the program so that
      * `require_relative` chains parse all source files (registering all
      * methods into code_repo) before we emit node_specialized.c.  Stop
