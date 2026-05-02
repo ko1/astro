@@ -256,6 +256,7 @@ void korb_class_add_method_ast_full_cref(struct korb_class *klass, ID name, stru
     m->u.ast.rest_slot = rest_slot;
     m->u.ast.block_slot = -1;
     m->u.ast.locals_cnt = locals_cnt;
+    m->u.ast.post_params_cnt = 0;
     method_table_set(&klass->methods, name, m);
     if (korb_vm) { korb_vm->method_serial++; korb_g_method_serial = korb_vm->method_serial; }
 }
@@ -266,6 +267,11 @@ void korb_class_add_method_ast_full_cref(struct korb_class *klass, ID name, stru
 void korb_class_set_method_block_slot(struct korb_class *klass, ID name, int slot) {
     struct korb_method *m = korb_class_find_method(klass, name);
     if (m && m->type == KORB_METHOD_AST) m->u.ast.block_slot = slot;
+}
+
+void korb_class_set_method_post_params_cnt(struct korb_class *klass, ID name, uint32_t cnt) {
+    struct korb_method *m = korb_class_find_method(klass, name);
+    if (m && m->type == KORB_METHOD_AST) m->u.ast.post_params_cnt = cnt;
 }
 
 void korb_class_add_method_cfunc(struct korb_class *klass, ID name,
@@ -331,6 +337,25 @@ struct korb_class *korb_singleton_class_of(struct korb_class *klass) {
         return meta;
     }
     return current_meta;
+}
+
+/* Singleton class for an arbitrary value.  Same idea as
+ * `korb_singleton_class_of` but works on T_OBJECT instances too —
+ * lazily allocates a fresh class whose super = current class, then
+ * rewires basic.klass.  Returns NULL for immediate values. */
+struct korb_class *korb_singleton_class_of_value(VALUE v) {
+    if (SPECIAL_CONST_P(v)) return NULL;
+    if (BUILTIN_TYPE(v) == T_CLASS || BUILTIN_TYPE(v) == T_MODULE) {
+        return korb_singleton_class_of((struct korb_class *)v);
+    }
+    /* Generic heap object: rewire klass to a private subclass. */
+    struct korb_object *o = (struct korb_object *)v;
+    struct korb_class *cur = (struct korb_class *)o->basic.klass;
+    if (cur && cur->name == korb_intern("(singleton)")) return cur;
+    struct korb_class *meta = korb_class_new(korb_intern("(singleton)"),
+                                             cur, cur ? cur->instance_type : T_OBJECT);
+    o->basic.klass = (VALUE)meta;
+    return meta;
 }
 
 void korb_module_include(struct korb_class *klass, struct korb_class *mod) {
@@ -1363,19 +1388,38 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
     if (mc->def_cref) c->cref = mc->def_cref;
 
     if (mc->rest_slot >= 0) {
-        long extra = (long)argc - (long)(mc->total_params_cnt - 1);
+        long fixed_pre  = (long)mc->required_params_cnt;
+        long fixed_post = (long)mc->post_params_cnt;
+        long extra = (long)argc - fixed_pre - fixed_post;
         if (extra < 0) extra = 0;
+        /* Snapshot post args (they're currently sitting in the staged
+         * positions fp[fixed_pre + extra .. + fixed_post]) before we
+         * overwrite fp[rest_slot] (= fp[fixed_pre]) with the rest array. */
+        VALUE post_save[16];
+        VALUE *post_buf = post_save;
+        if (fixed_post > 16) post_buf = korb_xmalloc(sizeof(VALUE) * fixed_post);
+        for (long i = 0; i < fixed_post; i++) {
+            post_buf[i] = c->fp[fixed_pre + extra + i];
+        }
         VALUE rest = korb_ary_new_capa(extra);
         for (long i = 0; i < extra; i++) {
-            korb_ary_push(rest, c->fp[mc->total_params_cnt - 1 + i]);
+            korb_ary_push(rest, c->fp[fixed_pre + i]);
         }
         c->fp[mc->rest_slot] = rest;
+        for (long i = 0; i < fixed_post; i++) {
+            c->fp[mc->rest_slot + 1 + i] = post_buf[i];
+        }
     }
 
     uint32_t opt_start = argc;
     if (opt_start < mc->required_params_cnt) opt_start = mc->required_params_cnt;
+    /* Don't clobber post-rest slots (just populated above). */
+    uint32_t post_lo = (mc->rest_slot >= 0 && mc->post_params_cnt)
+                         ? (uint32_t)(mc->rest_slot + 1) : 0;
+    uint32_t post_hi = post_lo + mc->post_params_cnt;
     for (uint32_t i = opt_start; i < mc->total_params_cnt; i++) {
         if ((int)i == mc->rest_slot) continue;
+        if (mc->post_params_cnt && i >= post_lo && i < post_hi) continue;
         c->fp[i] = Qundef;
     }
     for (uint32_t i = mc->total_params_cnt; i < mc->locals_cnt; i++) {
@@ -1430,6 +1474,7 @@ korb_method_cache_fill(struct method_cache *mc, struct korb_class *klass, struct
         mc->total_params_cnt = m->u.ast.total_params_cnt;
         mc->rest_slot = m->u.ast.rest_slot;
         mc->block_slot = m->u.ast.block_slot;
+        mc->post_params_cnt = m->u.ast.post_params_cnt;
         mc->type = 0;
         mc->cfunc = NULL;
         mc->def_cref = m->def_cref;

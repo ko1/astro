@@ -118,6 +118,17 @@ static VALUE module_public(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE module_protected(CTX *c, VALUE self, int argc, VALUE *argv) {
     return module_set_visibility(c, self, argc, argv, KORB_VIS_PROTECTED);
 }
+static VALUE module_const_defined_p(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1 || (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE))
+        return Qfalse;
+    ID name;
+    if (SYMBOL_P(argv[0])) name = korb_sym2id(argv[0]);
+    else if (!SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_STRING)
+        name = korb_intern_n(((struct korb_string *)argv[0])->ptr,
+                             ((struct korb_string *)argv[0])->len);
+    else return Qfalse;
+    return KORB_BOOL(korb_const_has((struct korb_class *)self, name));
+}
 static VALUE module_module_function(CTX *c, VALUE self, int argc, VALUE *argv) { return self; }
 
 /* Struct.new(:a, :b) → returns a new Class with attr_accessor for each */

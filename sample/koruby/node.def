@@ -830,6 +830,35 @@ node_ary_aget(CTX * restrict c, NODE * restrict n, NODE *ary_node, uint32_t idx)
     return korb_ary_aref(a, idx);
 }
 
+/* For multi-assign splat: ary[ary.len - neg_offset]; nil if out of range. */
+NODE_DEF
+node_ary_aget_neg(CTX * restrict c, NODE * restrict n, NODE *ary_node, uint32_t neg_offset)
+{
+    VALUE a = EA(c, ary_node);
+    if (BUILTIN_TYPE(a) != T_ARRAY) return Qnil;
+    long len = korb_ary_len(a);
+    long idx = len - (long)neg_offset;
+    if (idx < 0) return Qnil;
+    return korb_ary_aref(a, idx);
+}
+
+/* For multi-assign middle splat: ary[leading .. (len - trailing - 1)] as a new Array. */
+NODE_DEF
+node_ary_slice_middle(CTX * restrict c, NODE * restrict n, NODE *ary_node, uint32_t leading, uint32_t trailing)
+{
+    VALUE a = EA(c, ary_node);
+    if (BUILTIN_TYPE(a) != T_ARRAY) return korb_ary_new();
+    long len = korb_ary_len(a);
+    long start = (long)leading;
+    long end_excl = len - (long)trailing;
+    if (end_excl < start) end_excl = start;
+    if (start > len) start = len;
+    long n_take = end_excl - start;
+    VALUE r = korb_ary_new_capa(n_take);
+    for (long i = 0; i < n_take; i++) korb_ary_push(r, korb_ary_aref(a, start + i));
+    return r;
+}
+
 NODE_DEF
 node_str_to_sym(CTX * restrict c, NODE * restrict n, NODE *str_node)
 {
@@ -932,6 +961,49 @@ node_singleton_def(CTX * restrict c, NODE * restrict n, ID name, NODE *body, uin
     return korb_id2sym(name);
 }
 
+NODE_DEF @noinline
+node_obj_singleton_def(CTX * restrict c, NODE * restrict n, NODE *recv_expr, ID name, NODE *body, uint32_t params_cnt, uint32_t locals_cnt)
+{
+    /* def obj.foo — install on the value of `recv_expr`'s singleton
+     * class.  For T_OBJECT we lazily allocate one; for T_CLASS /
+     * T_MODULE we use the metaclass via korb_singleton_class_of. */
+    extern struct korb_class *korb_singleton_class_of_value(VALUE v);
+    VALUE recv = EA(c, recv_expr);
+    struct korb_class *meta = korb_singleton_class_of_value(recv);
+    if (!meta) {
+        korb_raise(c, NULL, "cannot define singleton method on this value");
+        return Qnil;
+    }
+    korb_class_add_method_ast_full_cref(meta, name, body, params_cnt, params_cnt, -1, locals_cnt, c->cref);
+    return korb_id2sym(name);
+}
+
+NODE_DEF @noinline
+node_singleton_class_body(CTX * restrict c, NODE * restrict n, NODE *recv_expr, NODE *body)
+{
+    /* `class << obj; body; end` — evaluate body with self set to obj's
+     * singleton class so `def name` lands there. */
+    extern struct korb_class *korb_singleton_class_of_value(VALUE v);
+    VALUE recv = EA(c, recv_expr);
+    struct korb_class *meta = korb_singleton_class_of_value(recv);
+    if (!meta) {
+        korb_raise(c, NULL, "class << invalid receiver");
+        return Qnil;
+    }
+    VALUE prev_self = c->self;
+    struct korb_class *prev_class = c->current_class;
+    struct korb_cref *prev_cref = c->cref;
+    struct korb_cref new_cref = { .klass = meta, .prev = c->cref };
+    c->self = (VALUE)meta;
+    c->current_class = meta;
+    c->cref = &new_cref;
+    VALUE r = EVAL_ARG(c, body);
+    c->self = prev_self;
+    c->current_class = prev_class;
+    c->cref = prev_cref;
+    return r;
+}
+
 NODE_DEF
 node_default_init(CTX * restrict c, NODE * restrict n, uint32_t slot, NODE *default_expr)
 {
@@ -953,6 +1025,18 @@ node_def_full(CTX * restrict c, NODE * restrict n, ID name, NODE *body, uint32_t
     if (block_slot >= 0) korb_class_set_method_block_slot(target, name, block_slot);
     /* If user redefined something on a basic class, EVAL_node_* fast
      * paths must stop short-circuiting through C-side arithmetic. */
+    korb_check_basic_op_redef(target);
+    return korb_id2sym(name);
+}
+
+/* Like node_def_full but with post_params_cnt for `def f(a, *r, b, c)`. */
+NODE_DEF @noinline
+node_def_post(CTX * restrict c, NODE * restrict n, ID name, NODE *body, uint32_t required_cnt, uint32_t total_cnt, int32_t rest_slot, int32_t block_slot, uint32_t locals_cnt, uint32_t post_cnt)
+{
+    struct korb_class *target = c->cref ? c->cref->klass : c->current_class;
+    korb_class_add_method_ast_full_cref(target, name, body, required_cnt, total_cnt, rest_slot, locals_cnt, c->cref);
+    if (block_slot >= 0) korb_class_set_method_block_slot(target, name, block_slot);
+    if (post_cnt > 0)    korb_class_set_method_post_params_cnt(target, name, post_cnt);
     korb_check_basic_op_redef(target);
     return korb_id2sym(name);
 }

@@ -185,9 +185,10 @@ struct method_cache {
     korb_prologue_t prologue;      /* selected at fill time — see above */
     uint32_t locals_cnt;
     uint32_t required_params_cnt;
-    uint32_t total_params_cnt;     /* required + optional + rest(0/1) */
+    uint32_t total_params_cnt;     /* required + optional + rest(0/1) + post */
     int      rest_slot;            /* -1 if no *rest */
     int      block_slot;           /* -1 if no &blk */
+    uint32_t post_params_cnt;      /* params after *rest */
     uint8_t  type;                 /* 0=AST, 1=CFUNC */
     bool     is_simple_frame;      /* method body has no yield/super/block_given/_block — slim prologue */
     VALUE (*cfunc)(struct CTX_struct *, VALUE, int, VALUE *);

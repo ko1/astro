@@ -184,6 +184,7 @@ void korb_init_builtins(void) {
     DEF(cMod, "alias_method",  module_alias_method,  -1);
     DEF(cMod, "const_get",     module_const_get,     -1);
     DEF(cMod, "const_set",     module_const_set,     -1);
+    DEF(cMod, "const_defined?", module_const_defined_p, -1);
     DEF(cMod, "===",           class_eqq,            1);
     /* Class < Module — Class instances inherit Module's methods.
      * No need to mirror module_* onto cCls. */
