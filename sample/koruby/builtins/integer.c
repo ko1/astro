@@ -541,8 +541,25 @@ static VALUE int_downto(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE int_pow(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1 || !FIXNUM_P(self) || !FIXNUM_P(argv[0])) return self;
+    if (argc < 1 || !FIXNUM_P(self)) return self;
+    /* Float exponent: promote to Float arithmetic.  `2 ** 0.5` should
+     * be 1.414, not 2 — CRuby returns a Float. */
+    if (KORB_IS_FLOAT(argv[0])) {
+        return korb_float_new(pow((double)FIX2LONG(self), korb_num2dbl(argv[0])));
+    }
+    if (!FIXNUM_P(argv[0])) return self;
     long base = FIX2LONG(self), exp = FIX2LONG(argv[0]);
+    /* Negative exponent on a non-zero base: result is a Rational
+     * conceptually, but CRuby returns a Float for Integer**negative.
+     * We do the same. */
+    if (exp < 0) {
+        if (base == 0) {
+            VALUE eZ = korb_const_get(korb_vm->object_class, korb_intern("ZeroDivisionError"));
+            korb_raise(c, (struct korb_class *)eZ, "0**-1");
+            return Qnil;
+        }
+        return korb_float_new(pow((double)base, (double)exp));
+    }
     /* Optional second arg = modulus: a.pow(b, m) == (a**b) mod m. */
     long mod = 0;
     bool has_mod = (argc >= 2 && FIXNUM_P(argv[1]));

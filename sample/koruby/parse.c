@@ -1156,6 +1156,51 @@ static NODE *build_pattern_check(struct transduce_context *tc, pm_node_t *pat,
               NODE *sub = build_pattern_check(tc, val_pat, elem_slot);
               combined = ALLOC_node_and(combined, ALLOC_node_seq(bind_subj, sub));
           }
+          /* `**rest` — bind the leftover keys to a fresh local.  We build:
+           *   rest = subj.dup
+           *   rest.delete(:k1); rest.delete(:k2); ...
+           * after the matching steps so any failed match short-circuits
+           * without polluting `rest`. */
+          if (h->rest && PM_NODE_TYPE_P(h->rest, PM_ASSOC_SPLAT_NODE)) {
+              pm_assoc_splat_node_t *as = (pm_assoc_splat_node_t *)h->rest;
+              if (as->value && PM_NODE_TYPE_P(as->value, PM_LOCAL_VARIABLE_TARGET_NODE)) {
+                  pm_local_variable_target_node_t *lvt =
+                      (pm_local_variable_target_node_t *)as->value;
+                  /* lvar_slot takes prism constant_id, not koruby ID. */
+                  int rslot = lvar_slot(tc, lvt->name, lvt->depth);
+                  if (rslot >= 0) {
+                      uint32_t ai_dup = inc_arg_index(tc);
+                      inc_arg_index(tc); rewind_arg_index(tc, ai_dup);
+                      struct method_cache *mc_dup = alloc_method_cache();
+                      NODE *dup_call = ALLOC_node_method_call(
+                          ALLOC_node_lvar_get(subj_slot), korb_intern("dup"),
+                          0, ai_dup, mc_dup);
+                      NODE *bind_rest = ALLOC_node_lvar_set((uint32_t)rslot, dup_call);
+                      /* Then delete each matched key. */
+                      for (uint32_t i = 0; i < cnt; i++) {
+                          pm_node_t *el = h->elements.nodes[i];
+                          if (!PM_NODE_TYPE_P(el, PM_ASSOC_NODE)) continue;
+                          pm_assoc_node_t *as2 = (pm_assoc_node_t *)el;
+                          if (!PM_NODE_TYPE_P(as2->key, PM_SYMBOL_NODE)) continue;
+                          pm_symbol_node_t *sym = (pm_symbol_node_t *)as2->key;
+                          ID kid = korb_intern_n(
+                              (const char *)pm_string_source(&sym->unescaped),
+                              (long)pm_string_length(&sym->unescaped));
+                          uint32_t ai_del = inc_arg_index(tc);
+                          inc_arg_index(tc); rewind_arg_index(tc, ai_del);
+                          struct method_cache *mc_del = alloc_method_cache();
+                          NODE *karg = ALLOC_node_lvar_set(ai_del, ALLOC_node_sym_lit(kid));
+                          NODE *del = ALLOC_node_seq(karg,
+                              ALLOC_node_method_call(ALLOC_node_lvar_get((uint32_t)rslot),
+                                                     korb_intern("delete"), 1, ai_del, mc_del));
+                          bind_rest = ALLOC_node_seq(bind_rest, del);
+                      }
+                      /* Run only after all matching succeeded. */
+                      combined = ALLOC_node_and(combined,
+                                                 ALLOC_node_seq(bind_rest, ALLOC_node_true()));
+                  }
+              }
+          }
           return ALLOC_node_seq(coerce_step, combined);
       }
 
