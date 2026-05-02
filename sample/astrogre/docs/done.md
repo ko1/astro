@@ -118,7 +118,7 @@ v1 で入っているもの、カテゴリ別。[`todo.md`](./todo.md) の対。
   munmap、exit) の wall-clock を `[verbose] tag    elapsed_ms (+delta_ms)`
   形式で stderr に出力。`strace` 無しでどのフェーズが効いてるか確認
   できる。`clock_gettime` × 7 回ぶんなので無効時のオーバヘッドはゼロ。
-- **`bench/grep_bench.sh`** / **`bench/aot_bench.sh`**: 他ツール比較
+- **`bench/grep_bench.rb`** / **`bench/aot_bench.rb`**: 他ツール比較
   ハーネス。grep / ripgrep / astrogre / astrogre+onigmo を同じコーパス
   + パターンで実行、tool ごとの best-of-N を表示。
 
@@ -234,21 +234,27 @@ framework が needle を SD ソースに `static const char NEEDLE[] = ...`
 `memcmp` は固定長で `cmpl/cmpb` に展開される (PCRE2-JIT 風 SIMD-
 fused-verify を AOT bake だけで実現)。
 
-性能 (118 MB warm コーパス、`/static/`、160 k matches):
+性能 (118 MB warm コーパス、`/static/`、160 k matches、出力先は
+regular file — `/dev/null` だと grep の dev_null 短絡 (af6af288) で
+比較不能になる):
 
-| 段階 | `-c` (ms) | default print (ms) |
-|---|---:|---:|
-| 出発点 (memmem + memchr in main.c) | 64 | 66 |
-| stage 1: monolithic `count_lines_lit` | 23 | 66 |
-| stage 2: scanner + action chain (今) | **24** | **28** |
-| ripgrep ref | 27 | 34 |
-| GNU grep ref | 2 | 2 |
+| 段階                                        | `-c` (ms) | default print (ms) |
+|---------------------------------------------|---:|---:|
+| 出発点 (memmem + memchr in main.c)          | 64 | 66 |
+| stage 1: monolithic `count_lines_lit`       | 23 | 66 |
+| stage 2: scanner + action chain (現在)      | **27** | **71** |
+| stage 2 + AOT cached                        | **26** | **40** |
+| ripgrep                                     | 30 | 86 |
+| GNU grep                                    | 71 | 153 |
 
-stage 2 で **default print が 66 → 28 ms (2.4×)** で ripgrep 34 ms を
-**抜いた**。`-c` は同等を保つ (factorize しても hot path は変わらず、
-action chain の dispatch は match 候補時のみで全 byte の数千分の一)。
-GNU grep には依然 1 桁先 (memory-bandwidth-bound、残り差は dynamic
-linker + 118 MB の mmap PTE bookkeeping)。
+`-c /static/` で astrogre interp が **27 ms ─ ripgrep 30 ms / GNU
+grep 71 ms** を抑えて行内最速。default print は AOT 込みで 40 ms と
+ripgrep 86 ms の半分を切る。GNU grep は両方とも我々より遅い (153 /
+71 ms) が、これは grep が `static` のような頻出パターンで毎マッチ
+ごと output (`fname:lineno:line` フォーマット + write) を生成する
+コストが大きいため。`-c` だけなら grep もタイトな count loop で
+済むので 71 ms までは詰まる、それでも我々の AC + scanner
+factorization のほうが速い。
 
 `--verbose` で見える分解:
 

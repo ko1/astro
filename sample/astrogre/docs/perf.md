@@ -25,140 +25,139 @@ search ループそのもの (= 入力中のすべての位置でマッチを試
 
 ## ベンチマーク
 
-### Bench A: grep CLI モード — `bench/grep_bench.sh`
+### 計測上の注意 — `/dev/null` トリック
+
+GNU grep は 2016 年の commit
+[`af6af28`](https://cgit.git.savannah.gnu.org/cgit/grep.git/commit/?id=af6af288)
+("/dev/null output speedup", Paul Eggert) で、stdout を `fstat`
+して `/dev/null` だと判明した場合に **first-match-and-exit
+mode (= `-q` 相当)** へ切り替える最適化が入っている。
+コミットメッセージ曰く `seq 10000000000 | grep . >/dev/null` が
+**380,000× 速くなる**。
+
+つまり、ベンチで `> /dev/null` を使うと grep は「最初の 1
+マッチを見つけたら即終了」していて、118 MB ファイルを最後まで
+舐めていない。astrogre や ripgrep には同じ最適化がないので、両者
+の比較が **桁違いに不公平**になる。
+
+`bench/grep_bench.rb` / `bench/aot_bench.rb` / `bench/tree_bench.rb`
+はすべて **regular file (`/tmp/*.out`) へリダイレクト**して計測
+している。以下の表もそのモード。
+
+### Bench A: grep CLI モード — `bench/grep_bench.rb`
 
 実利用に近い形。1 ファイル (118 MB の C ソースコーパス) を
-`grep PATTERN file` 形式で開き、行ごとに結果を出す。astrogre /
-astrogre+onigmo / GNU grep / ripgrep の 4 つを同条件で動かす。
+`PATTERN file` 形式で開いて行ごとに結果を出す。astrogre interp
+(`--plain`) / astrogre AOT-cached (warm `code_store/`) / GNU grep /
+ripgrep の 4 を同条件で動かす。Onigmo backend は `WITH_ONIGMO=1`
+で再ビルドしたときだけ。
 
-| パターン | astrogre interp | astrogre +AOT | astrogre +onigmo | grep | ripgrep |
-|---|---:|---:|---:|---:|---:|
-| `/static/` literal | **28** | **28** | 94 | 2 | 34 |
-| `/specialized_dispatcher/` rare | **21** | **21** | 36 | 34 | **21** |
-| `/^static/` anchored | 68 | 66 | 95 | **2** | 35 |
-| `/VALUE/i` case-i | 587 | 240 | 129 | **2** | 48 |
-| `/static\|extern\|inline/` alt-3 | 278 | 81 | 903 | **2** | 49 |
-| `/[0-9]{4,}/` class-rep | 458 | 389 | 540 | **2** | 52 |
-| `/[a-z_]+_[a-z]+\(/` ident-call | 3183 | 2387 | 2951 | **2** | 178 |
-| `-c /static/` count | **23** | **23** | 70 | 2 | 28 |
+| パターン                                | astrogre interp | astrogre +AOT/cached | grep | ripgrep |
+|----------------------------------------|---:|---:|---:|---:|
+| `/static/` literal                     | 71 | **40** | 153 | 86 |
+| `/specialized_dispatcher/` rare        | **22** | 25 | 37 | **21** |
+| `/^static/` anchored                   | 77 | 83 | **71** | 41 |
+| `/VALUE/i` case-insens                 | 82 | **76** | 105 | 60 |
+| `/static\|extern\|inline/` alt-3       | 389 | **128** | 204 | 64 |
+| 12-way alt (AC prefilter)              | 418 | 419 | 281 | **147** |
+| `/[0-9]{4,}/` class-rep                | 373 | 177 | **92** | 59 |
+| `/[a-z_]+_[a-z]+\(/` ident-call        | 1911 | 1341 | 2421 | **220** |
+| `-c /static/` count                    | 27 | 26 | 71 | **30** |
 
-ms、5 回実行のうち最速値。ripgrep は `-j1` (並列無効) で動かすので
-シングルスレッドのエンジン比較。太字は行内の最速。
+ms、3 回実行の最速。太字は行内の最速。
 
 #### 読み取り
 
-**astrogre が ripgrep を抜いた行が 3 つある**:
+- **AOT が interp を上回るのは prefilter のあるパターン**で、
+  `/static/` で 71→40 ms (1.78×)、alt-3 で 389→128 ms (3.04×)。
+  両方とも候補位置で動く body chain (cap_start → lit/alt →
+  cap_end → succ) が長く、AOT がそれを 1 個の SD 関数に折り畳む。
+- **`-c /static/` で astrogre が rg / grep を抑えて勝つ** (26 ms
+  vs rg 30 ms vs grep 71 ms)。`node_grep_count_lines_lit` 経由で
+  scan + lineskip + count を 1 ループに融合した結果。
+- **GNU grep は anchored / class-rep の 2 行で勝つ**。`^` 始まりは
+  grep の line-oriented loop と相性が良く、`[0-9]{4,}` は数字
+  リテラルがコードで疎なので grep の Boyer-Moore-Horspool が skip
+  ahead しやすい。
+- **ripgrep は ident-call / 12lit で圧勝**。前者は lazy DFA、
+  後者は AC prefilter (我々と同方式) が SIMD で 1.5× 上手い。
+  どちらも我々が次フェーズで詰める領域 (todo.md)。
 
-- `/static/` の通常表示 (`-c` 無し): 28 ms 対 ripgrep 34 ms
-- `/specialized_dispatcher/` (まれな literal): 21 ms 対 ripgrep 21 ms (同点)
-- `-c /static/` (一致行のカウント): 23 ms 対 ripgrep 28 ms
-
-GNU grep は依然 1 桁速い。grep の memchr は AVX2 で
-メモリ帯域 (~30 GB/s) いっぱいで動くため、`/static/` のような
-1 バイト先頭の literal では原理的に追いつけない。
-
-`/VALUE/i` (case-insensitive) や `/[0-9]{4,}/` (繰り返し) のような
-パターンが遅い理由は、astrogre の前処理 (= prefilter、後述) が
-これらの形に効かないため、行ごとの per-line ループに落ちるから。
-prefilter が刺さらない場合の AOT の効果は次の Bench B でより
-はっきり見える。
-
-#### `/static/` (28 ms) の内訳
-
-`--verbose` フラグでフェーズ別の経過時間が出る:
+#### `/static/` の内訳 — `--verbose` から
 
 ```
-[verbose] after INIT()            0.12 ms      ← 動的リンカ + dlopen
+[verbose] after INIT()            0.12 ms      ← dlopen + 動的リンカ
 [verbose] after pattern compile   0.13 ms      ← 正規表現のパース
-[verbose] after mmap             10.04 ms      ← 118 MB を mmap (約 30 k 個の page table entry を OS が作成)
-[verbose] after scan             18.09 ms      ← SIMD スキャン本体 (~15 GB/s)
-[verbose] after munmap           23.53 ms      ← page table entry の破棄
+[verbose] after mmap             10.04 ms      ← 118 MB の mmap (~30 k PTE 構築)
+[verbose] after scan             18.09 ms      ← SIMD スキャン本体
+[verbose] after munmap           23.53 ms      ← PTE の破棄
 ```
 
-実際のスキャンは 8 ms (= 18.09 - 10.04)、メモリ帯域 30 GB/s の
-約半分。残り 13 ms は OS がページテーブルを作って壊す時間で、
-118 MB ファイルを mmap する以上避けられない物理コスト。
-GNU grep が 2 ms で終わるのは、(1) 起動が軽い、(2) 1 バイト
-literal の専用 SIMD ループが完全にメモリ帯域に張り付く、の合算。
+実スキャンは 8 ms (= 18.09 − 10.04)、約 15 GB/s。残り 13 ms は
+OS のページテーブル構築/破棄で、118 MB を mmap する以上不可避な
+物理コスト。grep が 153 ms と遅いのは output のフォーマット
+(`fname:lineno:line` の sprintf + write) が dominant な行を
+160k 個生成するため。`-c` モードの 71 ms が grep の "scan 専念"
+時間で、その 81 ms 差が format/write の per-match コスト。
 
-`/static/` のスキャンを高速にしているのは、astrogre が
-`-c` モードと通常表示モードのために**入力を行ごとに走査するループ
-そのものを AST ノードとして実装した**こと。`node_scan_lit_dual_byte`
-というスキャナノードが Hyperscan 風の dual-byte filter
-(needle の先頭バイトと末尾バイトを別々に SIMD 比較してから AND を
-取り、64 バイトずつ進める) で候補位置を見つけ、その後ろにつなぐ
+`/static/` のスキャン側を高速にしているのは、astrogre が
+**入力を行ごとに走査するループそのものを AST ノードとして実装した**
+こと。`node_scan_lit_dual_byte` が Hyperscan 風 dual-byte filter
+(needle の先頭バイトと末尾バイトを別々に SIMD 比較してから AND
+を取り、64 バイトずつ進める) で候補位置を見つけ、その後ろにつなぐ
 小さな action ノード列 (count → emit_match_line → lineskip →
-continue) でカウント・行表示・改行までスキップを行う。CLI のモード
-ごとに後ろの action 列だけが入れ替わる構造。
+continue) でカウント・行表示・改行スキップを行う。CLI のモード
+ごとに後ろの action 列だけが入れ替わる構造。AOT 焼き時は scanner
++ action 列が **1 個の SD 関数** に統合される。
 
-### Bench B: エンジン単独ベンチ — `bench/aot_bench.sh`
+### Bench B: エンジン単独ベンチ — `bench/aot_bench.rb`
 
-CLI のオーバーヘッド (起動、mmap、行ごとの I/O) を取り除いて、
+CLI のオーバーヘッド (起動、mmap、行ごとの I/O) を取り除いて
 **マッチャ単独の速度**を測る。astrogre は `--bench-file` モードで
-118 MB のバッファを 1 度メモリに置き、エンジンの search 関数を
-ループ呼び出しして全マッチを数える。grep / ripgrep / Onigmo は
-比較のため `-c` (count モード) を使う。
+118 MB バッファを 1 度メモリに置き、エンジンの search 関数を
+ループ呼び出しして全マッチを数える。grep / ripgrep は比較のため
+`-c` (count モード)。
 
-選んだパターンは「astrogre の prefilter が効かず、かつ chain が長い」
-もの。AOT で indirect call を消した効果が一番見える形。
+選んだパターンは「astrogre の prefilter が効かず、chain が長い」
+もの。AOT が indirect call を消した効果が一番見える形。
 
-| パターン | astrogre interp | astrogre +AOT | astrogre +onigmo | grep | ripgrep |
-|---|---:|---:|---:|---:|---:|
-| `/(QQQ\|RRR)+\d+/` | 18 | **12** ★ | 481 | 74 | 23 |
-| `/(QQQX\|RRRX\|SSSX)+/` | 40 | **20** ★ | 499 | 25 | 25 |
-| `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/` | 893 | **433** ★ | 515 | 486 | 176 |
-| `/[A-Z]{50,}/` | 737 | **624** ★ | 863 | 1431 | 176 |
-| `/\b(if\|else\|for\|while\|return)\b/` | 234 | 76 | 926 | **2** | 118 |
-| `/[a-z][0-9][a-z][0-9][a-z]/` | 900 | 406 | 516 | **4** | 177 |
-| `/(\d+\.\d+\.\d+\.\d+)/` | 537 | 390 | 538 | **4** | 54 |
-| `/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/` | 11944 | 9265 | 12183 | **3** | 189 |
+| パターン                                          | astrogre interp | astrogre +AOT | grep | ripgrep |
+|--------------------------------------------------|---:|---:|---:|---:|
+| `/(QQQ\|RRR)+\d+/`                                | 26 | **14** | 101 | 26 |
+| `/(QQQX\|RRRX\|SSSX)+/`                           | 56 | **25** | 30 | 28 |
+| `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/`           | 1078 | 520 | 762 | **207** |
+| `/[A-Z]{50,}/`                                    | 481 | 219 | 1737 | **209** |
+| `/\b(if\|else\|for\|while\|return)\b/`            | 306 | **107** | 929 | 135 |
+| `/[a-z][0-9][a-z][0-9][a-z]/`                    | 1144 | 497 | 1105 | **229** |
+| `/(\d+\.\d+\.\d+\.\d+)/`                         | 458 | 223 | **97** | 231 |
+| `/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/`             | 7523 | 5364 | 6170 | **215** |
 
-ms/iter、3 回実行の最速。★ は astrogre+AOT が GNU grep AND Onigmo
-の両方を上回った行 (4/8)。
+ms/iter、3 回実行の最速。
 
 #### 読み取り
 
-- **Onigmo には 8/8 全勝**。alt + literal が刺さるパターン
-  (`(QQQ|RRR)+\d+` 40×、`\b(if|else|...)\b` 12×) では桁違い。
-  Onigmo は bytecode VM なので各分岐で dispatch するのに対して、
-  astrogre は AOT 焼きで分岐先が静的展開される。
-- **GNU grep には 4/8 勝**。grep が圧倒する行 (`/[a-z][0-9][a-z][0-9][a-z]/`
-  の 4 ms 等) は、grep の DFA + literal-prefix prefilter が刺さる
-  形のパターン。逆に DFA が状態爆発する `/[A-Z]{50,}/` のような
-  パターンでは astrogre が 2.3× 速い。
-- **astrogre+AOT が interp に対して持つ余地**は per-position の
-  ノード数で決まる。`/[A-Z]{50,}/` は per-position で 2 ノード
-  しかないので 1.18× だが、`/\b(if|else|...)\b/` は 5+ ノードで
-  3.07× 出る。
+- **AOT は interp 比 1.4×–2.85× の高速化**を全行で出す。これが
+  ASTro framework のコア成果。`(if|else|for|while|return)` の
+  alt-of-LIT は 306→107 ms (2.85×) で、grep の 929 ms と
+  ripgrep の 135 ms を抑えて行内最速。
+- **`(QQQ|RRR)+\d+`、`(QQQX|RRRX|SSSX)+`** で astrogre+AOT が
+  GNU grep 以上 + ripgrep と互角。`Q`/`R`/`S` の byteset prefilter
+  が刺さって候補位置がほぼゼロ → 残ったコストが指数的に短縮。
+- **`[A-Z]{50,}` で grep に 8× 勝ち** (219 ms vs 1737 ms)。grep の
+  DFA は連続大文字 50 個以上 (= 100+ 状態) で破裂、astrogre は
+  greedy_class fast-path で `[A-Z]+` を SIMD で進める。
+- **ripgrep は `(\w+)\s*\(...\)` で 25× 速い** (215 ms vs 5364 ms)。
+  rg は AC/Teddy で `(`, `,`, `)` を **任意位置のリテラル anchor**
+  として抽出する。astrogre は先頭リテラルしか見ない (我々の AC
+  実装は `(cat|dog|...)` 形式専用)。これが現在 rg に対する一番
+  大きいギャップ。
 
-#### Onigmo を圧倒している 3 行の解剖
+#### grep が勝つ唯一の行: `(\d+\.\d+\.\d+\.\d+)` の 97 ms
 
-- `/(QQQ|RRR)+\d+/`: AOT 12 ms、Onigmo 481 ms (40×)。
-  astrogre は「`Q`、`R` のいずれかのバイト」を AVX2 で 32 バイト
-  まとめて検出する `node_grep_search_byteset` ノードに lower する。
-  入力にこれらバイトがほぼ無いので、ほとんどのチャンクは 1 命令で
-  飛ばせる。Onigmo は alt の各分岐を VM 命令でぐるぐる回す。
-- `/(QQQX|RRRX|SSSX)+/`: 同じく byteset (`Q`、`R`、`S`) で先頭
-  スキャン。
-- `/\b(if|else|for|while|return)\b/`: 単語境界 (`\b`) と alt の
-  組み合わせ。astrogre は alt 各枝の先頭バイト集合 `{i,e,f,w,r}`
-  を byteset スキャナに渡し、ヒット位置で `\b` と語チェーンを
-  inline 化したコードで検証する。Onigmo は VM で 1 個ずつ。
-
-#### grep が圧倒している 4 行の理由
-
-GNU grep (実体は ugrep) は内部で:
-
-1. **literal-prefix prefilter** で「パターンの先頭リテラル」を memchr 等で skip
-2. **lazy DFA** で残りのマッチを実行
-3. パターンに含まれる**任意位置のリテラル**を anchor に使う
-   Hyperscan 系の multi-pattern スキャン (Teddy / Aho-Corasick)
-
-astrogre は 1 と 2 はそれぞれ別の形で持っているが (後述の prefilter
-ladder と、ノード化された continuation-passing chain)、3 を持って
-いない。`/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/` には強制リテラル
-`(`、`,`、`)` があるけれど、astrogre のパーサは先頭しか見ない。
-これが ugrep に対する最大のギャップで、todo.md に記載がある。
+数字バイト (`0-9`) はコードに疎なので grep の Boyer-Moore-Horspool
+が skip ahead しやすく、scan 量が物理的に少ない。astrogre の
+`greedy_class` は SIMD だが全 byte を舐めるので速度差が出る。
+これは「希少バイトだけ拾えば後段が短い」ケースで、構造的勝負。
 
 ## AOT (specialization) が効くところ・効かないところ
 

@@ -58,18 +58,27 @@ are/are: are/main.c are/types.c are/ignore.c are/work.c \
          $(SRCS) $(NODE_GENFILES) aho_corasick.h are/types.h are/ignore.h are/work.h
 	$(MAKE) -C are
 
-# CLI vs grep / ripgrep on a single 118 MB corpus.
+# All bench harnesses are Ruby scripts so the timing logic, env
+# var handling, and TSV emit live in one readable place.
+# Pass N=<runs> on the make line to override best-of-3.
+N ?= 3
+
+# Per-pattern engine comparison on a single 118 MB corpus.
+# Each pattern lights up grep / ripgrep / astrogre {plain, +onigmo,
+# aot/first, aot/cached} / are -j1 in turn.  RAW=path/to.tsv adds
+# per-run TSV alongside the human summary.
 bench-rg: astrogre are/are
-	./bench/grep_bench.sh
+	cd bench && ruby grep_bench.rb $(N)
 
-# CLI vs grep / ripgrep on recursive tree walks (.gitignore-aware).
+# Recursive tree walk: are -j4 vs ripgrep vs grep -r on /usr/include
+# and the astro tree.  Exercises the .gitignore-aware walker.
 bench-tree: astrogre are/are
-	./bench/tree_bench.sh
+	cd bench && ruby tree_bench.rb $(N)
 
-# Engine variants (interp / aot / +onigmo) vs grep / rg on the same
-# corpus — for measuring the AOT specialiser's effect.
+# In-engine `--bench-file` harness on AOT-favourable patterns —
+# captures the AOT specialiser's effect without grep CLI overhead.
 bench-aot: astrogre
-	./bench/aot_bench.sh
+	cd bench && ruby aot_bench.rb $(N)
 
 # Run everything in one go.
 bench-all: bench bench-rg bench-tree bench-aot

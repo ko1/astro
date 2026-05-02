@@ -105,7 +105,9 @@ make WITH_ONIGMO=1
 ./astrogre --bench                   # in-engine microbench
 ./astrogre --dump '/(a|b)*c/'        # show compiled AST
 ./astrogre --via-prism 'p /\d+/i' input.txt   # extract regex via prism
-bench/grep_bench.sh 3                # cross-tool grep speed comparison
+make bench-rg                        # cross-tool grep comparison
+make bench-tree                      # recursive-walk comparison
+make bench-aot                       # AOT-favourable engine bench
 ```
 
 ## Layout
@@ -120,7 +122,9 @@ backend_onigmo.c      Onigmo engine bound to backend_ops_t (WITH_ONIGMO=1)
 node.c                ASTro framework glue (hash funcs, EVAL, OPTIMIZE)
 selftest.c            engine self-test + microbench
 main.c                grep CLI (file walk, options, color, --backend)
-bench/grep_bench.sh   cross-tool comparison harness
+bench/grep_bench.rb   cross-tool single-file comparison
+bench/aot_bench.rb    engine-internal AOT-favourable bench
+bench/tree_bench.rb   recursive walk vs ripgrep / grep -r
 prism                 symlink to ../naruby/prism (Ruby parser)
 onigmo/               cloned, locally-built Onigmo (build_local.mk)
 ```
@@ -148,71 +152,102 @@ Two layers of optimisation, both expressed as ASTro nodes:
    bytes / 16-byte nibble tables become AVX2 set1 immediates inside
    the SD; the inner loop has no indirect call.
 
-### Bench A — grep CLI (line-by-line, 118 MB corpus, best-of-5 ms)
+### Bench A — grep CLI (118 MB C-source corpus, best-of-3 ms)
 
-| pattern | astrogre interp | astrogre +AOT | astrogre +onigmo | grep | ripgrep |
-|---|---:|---:|---:|---:|---:|
-| `/static/` literal | **28** | **28** | 94 | 2 | 34 |
-| `/specialized_dispatcher/` rare | **21** | **21** | 36 | 34 | **21** |
-| `/^static/` anchored | 68 | 66 | 95 | **2** | 35 |
-| `/VALUE/i` case-i | 587 | 240 | 129 | **2** | 48 |
-| `/static\|extern\|inline/` alt-3 | 278 | 81 | 903 | **2** | 49 |
-| `/[0-9]{4,}/` class-rep | 458 | 389 | 540 | **2** | 52 |
-| `/[a-z_]+_[a-z]+\(/` ident-call | 3183 | 2387 | 2951 | **2** | 178 |
-| `-c /static/` count | **23** | **23** | 70 | 2 | 28 |
+`bench/grep_bench.rb` — see that script for the full setup
+(re-runnable with `make bench-rg`).  Each tool's stdout is
+redirected to a regular file (NOT `/dev/null` — see the pitfall
+note at the bottom of this section).
 
-The whole-file mmap path (used when the pattern has a SIMD/libc
-prefilter) drops literal-led astrogre by 3-10×.  After the case-A
-factorization (per-line iteration folded into AST as scanner +
-action chain — see [`docs/done.md`](./docs/done.md)), **astrogre
-beats ripgrep on the literal/rare/-c rows**:
+| pattern                                | astrogre interp | astrogre +AOT/cached | astrogre +onigmo | grep | ripgrep |
+|----------------------------------------|---:|---:|---:|---:|---:|
+| `/static/` literal                     | 71 | **40** | n/a | 153 | 86 |
+| `/specialized_dispatcher/` rare        | **22** | 25 | n/a | 37 | **21** |
+| `/^static/` anchored                   | 77 | 83 | n/a | **71** | 41 |
+| `/VALUE/i` case-insens                 | 82 | **76** | n/a | 105 | 60 |
+| `/static\|extern\|inline/` alt-3       | 389 | **128** | n/a | 204 | 64 |
+| 12-way alt (AC prefilter)              | 418 | 419 | n/a | 281 | **147** |
+| `/[0-9]{4,}/` class-rep                | 373 | 177 | n/a | **92** | 59 |
+| `/[a-z_]+_[a-z]+\(/` ident-call        | 1911 | 1341 | n/a | 2421 | **220** |
+| `-c /static/` count                    | 27 | 26 | n/a | 71 | **30** |
 
-- `/static/` default print: 28 ms vs ripgrep's 34 ms
-- `/specialized_dispatcher/` rare-literal: 22 ms vs 20 ms (close)
-- `-c /static/`: 24 ms vs 27 ms
+`+onigmo` rows are `n/a` here because this build was made without
+`WITH_ONIGMO=1`; the harness records ERR when the backend isn't
+linked.
 
-GNU grep stays an order of magnitude ahead on common literals
-(memchr at memory-bandwidth).  Run with `--verbose` to see the
-wall-clock split — most of the remaining gap to grep is the
-mmap+munmap of a 118 MB file (PTE bookkeeping), not the scan
-itself.
+#### Headline rows
 
-The `/i`, `class-rep`, `ident-call` rows fall back to per-line
-streaming because the engine has no fast scan for the leading
-`\w` / `[0-9]` / `/i` shape — see Bench B for what AOT does once
-the per-line overhead is gone.
+- **`/static/`**: AOT is 1.8× faster than interp here (71 → 40 ms),
+  closing the gap to ripgrep's 86 ms and beating GNU grep's
+  150 ms.  AOT folds the per-byte alt-of-LIT body chain into the
+  scanner SD; the inner loop has zero indirect calls.
+- **`-c /static/`**: 26 ms — fastest tool on this row, ahead of
+  ripgrep (30 ms) and well ahead of GNU grep (71 ms).
+- **`/[a-z_]+_[a-z]+\(/`** (ident-call): 1.9 s for us, 220 ms for
+  ripgrep, 2.4 s for GNU grep.  Both we and grep miss ripgrep's
+  lazy-DFA optimisation here; AOT shaves ~30 % off interp but the
+  algorithmic gap dominates.
+
+#### Pitfall — DON'T pipe to `/dev/null` while benching grep
+
+GNU grep since
+[commit `af6af28`](https://cgit.git.savannah.gnu.org/cgit/grep.git/commit/?id=af6af288)
+(Paul Eggert, May 2016, "grep: /dev/null output speedup")
+`fstat`s stdout, recognises `/dev/null`, and switches to
+first-match-and-exit mode — `-q`-equivalent — because the output
+won't be visible anyway.  Benches that redirect to `/dev/null`
+look like grep is doing 2 ms over a 118 MB file when in fact it's
+short-circuiting after the first match.  `bench/grep_bench.rb`
+explicitly avoids this.
 
 ### Bench B — engine-level whole-file scan (ms/iter)
 
-`bench/aot_bench.sh` runs the in-engine `--bench-file` path: full
-buffer in memory, full-sweep count to mirror grep `-c` semantics.
-Patterns chosen for the AOT-favourable shape (long chain, prefilter
-applies).  Lower is better; bold = winner per row, ★ = astrogre+AOT
-beats grep AND Onigmo.
+`bench/aot_bench.rb` runs the in-engine `--bench-file` path: the
+118 MB buffer is loaded once, then `astrogre_search` is called N
+times.  Other tools run via their CLI in count mode.  Patterns are
+deliberately chosen for an AOT-favourable shape (long chain, no
+trivial libc memmem available).  Best of 3 ms/iter; bold = row
+winner.
 
-| pattern | astrogre interp | astrogre +AOT | astrogre +onigmo | grep | ripgrep |
-|---|---:|---:|---:|---:|---:|
-| `/(QQQ\|RRR)+\d+/` | 18 | **12** ★ | 481 | 74 | 23 |
-| `/(QQQX\|RRRX\|SSSX)+/` | 40 | **20** ★ | 499 | 25 | 25 |
-| `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/` | 893 | **433** ★ | 515 | 486 | 176 |
-| `/[A-Z]{50,}/` | 737 | **624** ★ | 863 | 1431 | 176 |
-| `/\b(if\|else\|for\|while\|return)\b/` | 234 | 76 | 926 | **2** | 118 |
-| `/[a-z][0-9][a-z][0-9][a-z]/` | 900 | 406 | 516 | **4** | 177 |
-| `/(\d+\.\d+\.\d+\.\d+)/` | 537 | 390 | 538 | **4** | 54 |
-| `/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/` | 11944 | 9265 | 12183 | **3** | 189 |
+| pattern                                 | interp | +AOT | grep | rg    |
+|-----------------------------------------|---:|---:|---:|---:|
+| `/(QQQ\|RRR)+\d+/`                       | 26 | **14** | 101 | 26 |
+| `/(QQQX\|RRRX\|SSSX)+/`                  | 56 | **25** | 30 | 28 |
+| `/[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]/`   | 1078 | 520 | 762 | **207** |
+| `/[A-Z]{50,}/`                           | 481 | 219 | 1737 | **209** |
+| `/\b(if\|else\|for\|while\|return)\b/`   | 306 | **107** | 929 | 135 |
+| `/[a-z][0-9][a-z][0-9][a-z]/`           | 1144 | 497 | 1105 | **229** |
+| `/(\d+\.\d+\.\d+\.\d+)/`                | 458 | 223 | **97** | 231 |
+| `/(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)/`    | 7523 | 5364 | 6170 | **215** |
 
-★ = astrogre + AOT beats grep AND Onigmo.  **4/8 vs grep, 8/8 vs
-Onigmo.**  AOT typically lands a 1.5-3.8× speedup over interp on
-this set (best: 3.77× on `[a-z]\d[A-Z]\d[a-z]\d[A-Z]\d[a-z]`).
-The losses to grep are patterns where the leading char / first-byte
-set is common in source code, so SIMD scan finds candidates
-everywhere and ugrep's Hyperscan-style multi-pattern literal
-anchor extraction (Teddy / FDR) is the only way to win.  That's
-the next addition (see [`docs/todo.md`](./docs/todo.md)).
+#### AOT effect
 
-ripgrep stays a step ahead on most patterns thanks to lazy DFA +
-literal-prefix prefilter; closing that gap would need DFA-style
-NFA simulation, a bigger refactor.
+AOT cuts interp time by **1.4×–2.85×** on every row.  Notable wins:
+
+- `\b(if|else|for|while|return)\b` — AOT 107 ms beats both grep
+  (929 ms) and ripgrep (135 ms).  Long alt-of-LIT body chain folds
+  into a single specialised function with no per-byte indirect
+  call, exactly the kind of structure AOT was built for.
+- `(QQQ|RRR)+\d+` and `(QQQX|RRRX|SSSX)+` — AOT lands at 14 ms /
+  25 ms, matching ripgrep and beating GNU grep.
+- `[A-Z]{50,}` — AOT 219 ms vs grep 1737 ms (8× faster); ripgrep
+  edges out at 209 ms.
+
+#### What grep / ripgrep still win
+
+GNU grep wins on `(\d+\.\d+\.\d+\.\d+)` (97 ms): the leading `\d`
+class is rare in code, so grep's `\d`-led DFA scanner skips ahead
+fast — no algorithmic miracle, just a favourable corpus.
+
+Ripgrep wins (or ties) most other rows by 1.5×–25× thanks to its
+lazy DFA + literal-prefix prefilter (the
+[`regex-automata`](https://github.com/rust-lang/regex/) crate).
+Catching it would need DFA-style NFA simulation, a bigger refactor
+than ASTro's current AST-walk model.  The
+`(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\)` row (5364 ms vs rg 215 ms) is
+where this matters most: rg uses Aho-Corasick / Teddy on the
+required-literal `(`, `,`, `)` anchors; we don't have multi-literal
+anchor extraction yet (tracked in [`docs/todo.md`](./docs/todo.md)).
 
 See [`docs/perf.md`](./docs/perf.md) and
 [`docs/runtime.md`](./docs/runtime.md) for the architectural lesson

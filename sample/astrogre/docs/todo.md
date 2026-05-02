@@ -25,10 +25,22 @@
 パターンスキャナ + バックアップロジック)。
 
 ### scanner + per-match action factorization (案 A) ── 段階 1+2 完了
-`-c PURE_LITERAL` と default print の per-line ループを `node_scan_lit_dual_byte`
-+ action chain に factorize 済 ([done.md](./done.md) の case-A セクション)。
-`/static/` default print が 66 → 28 ms (2.4×) で ripgrep 34 ms を抜いた。
-`-c` は 23 → 24 ms で perf 同等を維持。
+`-c PURE_LITERAL` と default print の per-line ループを
+`node_scan_lit_dual_byte` + action chain に factorize 済
+([done.md](./done.md) の case-A セクション)。
+
+性能 (118 MB warm corpus、`/static/`、出力先 regular file ─ 注:
+GNU grep は af6af28 以降 `/dev/null` を検出して `-q` 等価にする
+ため、`/dev/null` 経由のベンチは比較不能):
+
+| モード        | factorize 前 | 後 (interp) | 後 (+AOT) | rg | grep |
+|--------------|---:|---:|---:|---:|---:|
+| default print | 66 | 71 | **40** | 86 | 153 |
+| `-c`          | 23 | **27** | 26 | 30 | 71 |
+
+default print の AOT cached は **40 ms** (factorize 前 66 ms 比 1.65×、
+ripgrep 86 ms 比 0.47×)。`-c` は interp 27 ms / AOT 26 ms で
+ripgrep 30 ms と GNU grep 71 ms を抑えて行内最速。
 
 残作業:
 
