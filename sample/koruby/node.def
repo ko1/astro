@@ -742,14 +742,35 @@ node_aref(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *idx, uint32_t a
 {
     VALUE r = EA(c, recv);
     VALUE i = EA(c, idx);
-    if (LIKELY(!SPECIAL_CONST_P(r) && !korb_g_basic_op_redefined)) {
-        if (BUILTIN_TYPE(r) == T_ARRAY && FIXNUM_P(i)) return korb_ary_aref(r, FIX2LONG(i));
-        /* Hash fast path is only safe when there's no default_proc — the
-         * inline korb_hash_aref returns default_value on miss but can't
-         * call a Ruby-side block.  Fall through to the cfunc dispatch
-         * (Hash#[]) when a default_proc is registered. */
-        if (BUILTIN_TYPE(r) == T_HASH && NIL_P(((struct korb_hash *)r)->default_proc)) {
-            return korb_hash_aref(r, i);
+    if (LIKELY(!korb_g_basic_op_redefined)) {
+        /* Integer#[bit] — hot in optcarrot's PPU LUT precompute and
+         * pixel-extract paths (`byte[bit]`, `i[15-j]`).  Without this
+         * the call goes through korb_node_aref_slow → cfunc dispatch
+         * → builtins/integer.c:int_aref, which dominated the profile. */
+        if (FIXNUM_P(r) && FIXNUM_P(i)) {
+            long b = FIX2LONG(i);
+            if (b < 0 || b >= 63) return INT2FIX(0);
+            return INT2FIX((FIX2LONG(r) >> b) & 1);
+        }
+        if (LIKELY(!SPECIAL_CONST_P(r))) {
+            if (BUILTIN_TYPE(r) == T_ARRAY && FIXNUM_P(i)) return korb_ary_aref(r, FIX2LONG(i));
+            /* Hash fast path is only safe when there's no default_proc —
+             * korb_hash_aref returns default_value on miss but can't call
+             * a Ruby-side block.  Fall through to cfunc dispatch when a
+             * default_proc is registered. */
+            if (BUILTIN_TYPE(r) == T_HASH && NIL_P(((struct korb_hash *)r)->default_proc)) {
+                return korb_hash_aref(r, i);
+            }
+            /* String#[i] for a single Fixnum index — return a 1-byte
+             * string at i (negative wraps from end), nil if out of range.
+             * Mirrors builtins/string.c:str_aref's argc==1 FIXNUM branch. */
+            if (BUILTIN_TYPE(r) == T_STRING && FIXNUM_P(i)) {
+                struct korb_string *s = (struct korb_string *)r;
+                long pos = FIX2LONG(i);
+                if (pos < 0) pos += s->len;
+                if (pos < 0 || pos >= s->len) return Qnil;
+                return korb_str_new(s->ptr + pos, 1);
+            }
         }
     }
     return korb_node_aref_slow(c, r, i, arg_index);

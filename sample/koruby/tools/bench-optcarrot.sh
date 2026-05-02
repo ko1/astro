@@ -68,6 +68,11 @@ printf "  %-26s %12s %12s %10s\n" "------" "---" "--------" "--------"
 
 run_one "ruby"             "$RUNS" $RUBY
 run_one "ruby --yjit"      "$RUNS" $RUBY --yjit
+
+# Pure-interp run: koruby auto-loads code_store/all.so when it exists,
+# so leaving a stale cache here would silently give AOT numbers under
+# the "interp" label (which I learned the embarrassing way).  Wipe.
+rm -rf code_store
 run_one "koruby (interp)"  "$RUNS" ./koruby
 
 # AOT-first: cold compile + run, single shot — repeating would use
