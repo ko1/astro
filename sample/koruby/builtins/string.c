@@ -1,5 +1,17 @@
 /* String — moved from builtins.c. */
 
+/* String.new(s = "") — start the new string from an optional initial
+ * value.  Class#new's generic path goes through korb_object_new which
+ * doesn't allocate the String storage; we need a real heap String. */
+VALUE str_class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc == 0) return korb_str_new("", 0);
+    if (argc >= 1 && BUILTIN_TYPE(argv[0]) == T_STRING) {
+        struct korb_string *s = (struct korb_string *)argv[0];
+        return korb_str_new(s->ptr, s->len);
+    }
+    return korb_str_new("", 0);
+}
+
 /* ---------- String ---------- */
 static VALUE str_plus(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (BUILTIN_TYPE(argv[0]) != T_STRING) return Qnil;

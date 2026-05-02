@@ -276,16 +276,64 @@ static VALUE kernel_integer(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     if (BUILTIN_TYPE(argv[0]) == T_STRING) {
         const char *s = korb_str_cstr(argv[0]);
+        /* Skip leading sign + whitespace, detect prefix.  When base is
+         * implicit (no second arg), strtol with base=0 auto-detects
+         * 0x / 0 prefixes — same behavior CRuby's Integer(str) gives. */
+        int explicit_base = argc >= 2 && FIXNUM_P(argv[1]) ? (int)FIX2LONG(argv[1]) : 0;
+        int base = explicit_base ? explicit_base : 0;
+        /* CRuby also recognises 0o / 0b as octal / binary prefixes; strtol
+         * doesn't, so handle them up front. */
+        const char *p = s;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '+' || *p == '-') p++;
+        if (!explicit_base && p[0] == '0' && (p[1] == 'o' || p[1] == 'O')) {
+            /* synthesize a string without the o/O so strtol sees octal */
+            base = 8;
+            char *buf = korb_xmalloc_atomic(strlen(s) + 1);
+            long w = 0;
+            for (const char *q = s; *q; q++) {
+                if (q == p + 1) continue; /* skip 'o' */
+                buf[w++] = *q;
+            }
+            buf[w] = 0;
+            char *end;
+            long v = strtol(buf, &end, base);
+            if (end == buf) {
+                VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+                korb_raise(c, (struct korb_class *)eArg, "invalid value for Integer(): %s", s);
+                return Qnil;
+            }
+            return INT2FIX(v);
+        }
+        if (!explicit_base && p[0] == '0' && (p[1] == 'b' || p[1] == 'B')) {
+            base = 2;
+            char *buf = korb_xmalloc_atomic(strlen(s) + 1);
+            long w = 0;
+            for (const char *q = s; *q; q++) {
+                if (q == p + 1) continue;
+                buf[w++] = *q;
+            }
+            buf[w] = 0;
+            char *end;
+            long v = strtol(buf, &end, base);
+            if (end == buf) {
+                VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+                korb_raise(c, (struct korb_class *)eArg, "invalid value for Integer(): %s", s);
+                return Qnil;
+            }
+            return INT2FIX(v);
+        }
         char *end;
-        int base = argc >= 2 && FIXNUM_P(argv[1]) ? (int)FIX2LONG(argv[1]) : 10;
         long v = strtol(s, &end, base);
-        if (end == s) {
-            korb_raise(c, NULL, "invalid value for Integer(): %s", s);
+        if (end == s || (*end != '\0' && *end != ' ' && *end != '\t')) {
+            VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+            korb_raise(c, (struct korb_class *)eArg, "invalid value for Integer(): %s", s);
             return Qnil;
         }
         return INT2FIX(v);
     }
-    korb_raise(c, NULL, "can't convert to Integer");
+    VALUE eTyp = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+    korb_raise(c, (struct korb_class *)eTyp, "can't convert to Integer");
     return Qnil;
 }
 

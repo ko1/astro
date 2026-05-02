@@ -443,6 +443,9 @@ void korb_init_builtins(void) {
         struct korb_class *cAryMeta = korb_class_new(korb_intern("ArrayMeta"),
                                                       korb_vm->class_class, T_CLASS);
         korb_class_add_method_cfunc(cAryMeta, korb_intern("new"), ary_class_new, -1);
+        /* Array[] — class method that returns an Array literal of args. */
+        VALUE ary_class_brackets(CTX *c, VALUE self, int argc, VALUE *argv);
+        korb_class_add_method_cfunc(cAryMeta, korb_intern("[]"), ary_class_brackets, -1);
         cAry->basic.klass = (VALUE)cAryMeta;
     }
 
@@ -503,6 +506,14 @@ void korb_init_builtins(void) {
                                                       korb_vm->class_class, T_CLASS);
         korb_class_add_method_cfunc(cHshMeta, korb_intern("new"), hash_class_new, -1);
         cHsh->basic.klass = (VALUE)cHshMeta;
+    }
+    /* String.new(s = "") — initialize from optional string. */
+    {
+        VALUE str_class_new(CTX *c, VALUE self, int argc, VALUE *argv);
+        struct korb_class *cStrMeta = korb_class_new(korb_intern("StringMeta"),
+                                                      korb_vm->class_class, T_CLASS);
+        korb_class_add_method_cfunc(cStrMeta, korb_intern("new"), str_class_new, -1);
+        cStr->basic.klass = (VALUE)cStrMeta;
     }
     DEF(cHsh, "===",        hash_eqq,        1);
     DEF(cHsh, "dup",        hash_dup,        0);
