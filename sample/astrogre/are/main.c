@@ -239,28 +239,6 @@ backend_by_name(const char *name)
     exit(2);
 }
 
-/* Heuristic binary detection: read up to 8 KiB from `path` and look
- * for a NUL byte.  Same convention as ripgrep / git / GNU grep —
- * faster than chardet, false positives only on actual binary blobs.
- * Returns true if the file is binary (so the caller should skip).
- *
- * Used only when -a / --text is NOT set.  We open the file ourselves
- * here, then close; the caller will reopen for the actual scan.
- * Wasteful in principle but the kernel page cache absorbs it (the
- * scan will re-read the same first 8 KiB out of cache), and skipping
- * a binary saves the whole-file mmap+scan that follows. */
-static bool
-is_binary_file(const char *path)
-{
-    int fd = open(path, O_RDONLY);
-    if (fd < 0) return false;
-    char buf[8192];
-    ssize_t n = read(fd, buf, sizeof(buf));
-    close(fd);
-    if (n <= 0) return false;
-    return memchr(buf, 0, (size_t)n) != NULL;
-}
-
 /* Small-file threshold below which we read() into a heap buffer
  * instead of mmap()ing.  Linux's per-process mmap_lock is a
  * write-exclusive rwsem — every mmap+munmap pair has to acquire it,
@@ -270,41 +248,79 @@ is_binary_file(const char *path)
  * 256 KiB covers ~99% of source files in practice. */
 #define ARE_MMAP_THRESHOLD (256 * 1024)
 
-/* Open `path`, slurp it into memory.  For small files we malloc +
- * read; for large files we mmap with MAP_POPULATE (still preferable
- * because the alternative is multi-MB allocations + memory pressure).
- * On success returns 0 and fills `*out_buf`, `*out_len`,
- * `*out_is_mmap`.  On failure returns -1 and prints to stderr.
+/* Number of bytes peeked at the head of a file to decide "binary or
+ * not" (NUL byte → binary).  Same convention as ripgrep / git / GNU
+ * grep.  These bytes also seed the read() path so we never re-issue
+ * a syscall to re-fetch them. */
+#define ARE_BINARY_PEEK 8192
+
+/* Return codes for `load_text_file`.  Distinct from "load failed"
+ * (which is silent error reporting) so the caller can branch on
+ * "binary skipped" without re-doing the open. */
+#define ARE_LOAD_OK            0
+#define ARE_LOAD_BINARY_SKIP   1
+#define ARE_LOAD_EMPTY         2
+#define ARE_LOAD_ERROR        -1
+
+/* Open `path`, slurp into memory, optionally skip binaries.  Combined
+ * binary check + load — the previous `is_binary_file()` opened the
+ * file once just to peek 8 KiB and then closed it before
+ * `process_file()` reopened it for the real scan; on a 9 k-file
+ * recursive walk that doubled openat / close syscall counts (~30 % of
+ * total CPU per `strace -c`).  Now: open once, peek 8 KiB into a
+ * stack buffer, decide binary, then either return BINARY_SKIP or
+ * fold the peek into the final buffer.
  *
  * Caller MUST release via:
  *   munmap(buf, len)  if is_mmap
  *   free(buf)         otherwise
- */
+ *
+ * `skip_binary` of false acts as -a / --text. */
 static int
-load_file(const char *path, const char **out_buf, size_t *out_len, bool *out_is_mmap)
+load_text_file(const char *path, bool skip_binary,
+               const char **out_buf, size_t *out_len, bool *out_is_mmap)
 {
     int fd = open(path, O_RDONLY);
     if (fd < 0) {
         fprintf(stderr, "are: %s: %s\n", path, strerror(errno));
-        return -1;
+        return ARE_LOAD_ERROR;
     }
     struct stat sb;
     if (fstat(fd, &sb) != 0 || !S_ISREG(sb.st_mode) || sb.st_size <= 0) {
         close(fd);
-        *out_buf = NULL; *out_len = 0; *out_is_mmap = false;
-        return 0;  /* not a regular file or empty — caller will skip */
+        return ARE_LOAD_EMPTY;
+    }
+
+    /* Peek the head into a stack buffer for the binary check.  We
+     * reuse these bytes as the start of the final buffer — no
+     * second read covering the same range. */
+    char peek[ARE_BINARY_PEEK];
+    const size_t peek_cap = sizeof(peek);
+    const size_t to_peek  = (size_t)sb.st_size < peek_cap ? (size_t)sb.st_size : peek_cap;
+    ssize_t pn = 0;
+    while (pn < (ssize_t)to_peek) {
+        ssize_t n = read(fd, peek + pn, to_peek - (size_t)pn);
+        if (n < 0) { if (errno == EINTR) continue; close(fd); return ARE_LOAD_ERROR; }
+        if (n == 0) break;
+        pn += n;
+    }
+    if (pn <= 0) { close(fd); return ARE_LOAD_EMPTY; }
+
+    if (skip_binary && memchr(peek, 0, (size_t)pn) != NULL) {
+        close(fd);
+        return ARE_LOAD_BINARY_SKIP;
     }
 
     if ((size_t)sb.st_size <= ARE_MMAP_THRESHOLD) {
         /* read() path — avoids mmap_lock contention.  Heap allocation
-         * scales with per-thread arenas in glibc malloc, so workers
-         * don't serialise on it the way they would on mmap. */
+         * scales with per-thread arenas in glibc malloc. */
         char *buf = (char *)malloc((size_t)sb.st_size);
-        if (!buf) { close(fd); return -1; }
-        ssize_t got = 0;
+        if (!buf) { close(fd); return ARE_LOAD_ERROR; }
+        memcpy(buf, peek, (size_t)pn);
+        ssize_t got = pn;
         while (got < sb.st_size) {
             ssize_t n = read(fd, buf + got, (size_t)(sb.st_size - got));
-            if (n < 0) { if (errno == EINTR) continue; free(buf); close(fd); return -1; }
+            if (n < 0) { if (errno == EINTR) continue; free(buf); close(fd); return ARE_LOAD_ERROR; }
             if (n == 0) break;  /* short read — file shrunk under us */
             got += n;
         }
@@ -312,17 +328,20 @@ load_file(const char *path, const char **out_buf, size_t *out_len, bool *out_is_
         *out_buf = buf;
         *out_len = (size_t)got;
         *out_is_mmap = false;
-        return 0;
+        return ARE_LOAD_OK;
     }
 
+    /* Big file: mmap from start.  The peek bytes get re-fetched via
+     * the page cache (free), so no need to splice them in.  We seek
+     * isn't necessary because mmap ignores the file offset. */
     void *map = mmap(NULL, (size_t)sb.st_size, PROT_READ,
                       MAP_PRIVATE | MAP_POPULATE, fd, 0);
     close(fd);
-    if (map == MAP_FAILED) return -1;
+    if (map == MAP_FAILED) return ARE_LOAD_ERROR;
     *out_buf = (const char *)map;
     *out_len = (size_t)sb.st_size;
     *out_is_mmap = true;
-    return 0;
+    return ARE_LOAD_OK;
 }
 
 static void
@@ -1013,17 +1032,24 @@ process_file(grep_state_t *st, const char *path)
             }
         }
     }
+    /* Combined binary-skip + load: one open syscall instead of two
+     * (the previous design opened once for is_binary_file then again
+     * for the scan).  ARE_LOAD_BINARY_SKIP takes the early exit. */
+    const bool skip_binary = !go->include_binary;
+
     if (all_pure_literal) {
         const char *buf = NULL;
         size_t len = 0;
         bool is_mmap = false;
-        if (load_file(path, &buf, &len, &is_mmap) == 0 && buf) {
+        const int rc = load_text_file(path, skip_binary, &buf, &len, &is_mmap);
+        if (rc == ARE_LOAD_OK) {
             process_buffer_pure_literal(st, buf, len, path,
                                         pl_needles, pl_needle_lens, st->n_patterns);
             release_file(buf, len, is_mmap);
             return 0;
         }
-        if (buf) release_file(buf, len, is_mmap);
+        if (rc == ARE_LOAD_BINARY_SKIP || rc == ARE_LOAD_EMPTY) return 0;
+        /* ARE_LOAD_ERROR — fall through to fopen path for diagnostic. */
     }
 
     /* Fall through to streaming when context lines are requested
@@ -1037,12 +1063,13 @@ process_file(grep_state_t *st, const char *path)
         const char *buf = NULL;
         size_t len = 0;
         bool is_mmap = false;
-        if (load_file(path, &buf, &len, &is_mmap) == 0 && buf) {
+        const int rc = load_text_file(path, skip_binary, &buf, &len, &is_mmap);
+        if (rc == ARE_LOAD_OK) {
             process_buffer(st, buf, len, path);
             release_file(buf, len, is_mmap);
             return 0;
         }
-        if (buf) release_file(buf, len, is_mmap);
+        if (rc == ARE_LOAD_BINARY_SKIP || rc == ARE_LOAD_EMPTY) return 0;
     }
     FILE *fp = fopen(path, "rb");
     if (!fp) {
@@ -1143,19 +1170,15 @@ process_path(grep_state_t *st, const char *path)
         if (pushed) ignore_stack_pop(&st->ignore);
         return 0;
     }
-    /* Skip binary files unless `-a` (--text) was given.  We probe the
-     * first 8 KiB for a NUL byte; same heuristic as ripgrep / git.
-     *
-     * In parallel mode we hand the path off to the worker pool and
-     * return immediately; the worker re-runs the binary check on its
-     * own thread so the producer doesn't block on the 8 KiB read.
-     * (Open + read + close of one file is faster on the worker than
-     * blocking the dir-walk loop.) */
+    /* Binary detection now happens inside `process_file` ->
+     * `load_text_file`, which folds the 8 KiB peek into the same
+     * open() that loads the file's content.  No upfront probe here.
+     * Parallel mode just enqueues the path; the worker calls
+     * process_file with its own grep_state copy. */
     if (st->pool) {
         work_pool_submit(st->pool, path);
         return 0;
     }
-    if (!st->go->include_binary && is_binary_file(path)) return 0;
     return process_file(st, path);
 }
 
@@ -1254,7 +1277,9 @@ static void
 worker_task_fn(const char *path, void *worker_arg)
 {
     worker_state_t *w = (worker_state_t *)worker_arg;
-    if (!w->st.go->include_binary && is_binary_file(path)) return;
+    /* Binary detection happens inside process_file -> load_text_file.
+     * No separate is_binary_file() peek (that doubled per-file
+     * openat / close traffic). */
 
     /* Per-task memstream so process_file's existing fprintf'/fwrite
      * helpers don't have to know about batching.  The buffer lives
