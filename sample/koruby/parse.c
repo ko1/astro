@@ -701,6 +701,41 @@ T(struct transduce_context *tc, pm_node_t *node)
           pop_frame(tc);
           return ALLOC_node_singleton_class_body(recv, body);
       }
+      case PM_IMAGINARY_NODE: {
+          /* `5i` → `Complex(0, 5)`. */
+          pm_imaginary_node_t *n = (pm_imaginary_node_t *)node;
+          NODE *num = T(tc, n->numeric);
+          uint32_t ai = arg_index(tc);
+          inc_arg_index(tc); inc_arg_index(tc);
+          rewind_arg_index(tc, ai);
+          struct method_cache *mc = alloc_method_cache();
+          NODE *zero_set = ALLOC_node_lvar_set(ai,     ALLOC_node_int_lit(0));
+          NODE *num_set  = ALLOC_node_lvar_set(ai + 1, num);
+          NODE *seq = ALLOC_node_seq(zero_set, num_set);
+          return ALLOC_node_seq(seq, ALLOC_node_func_call(korb_intern("Complex"), 2, ai, mc));
+      }
+      case PM_RATIONAL_NODE: {
+          /* `3r` → `Rational(3, 1)`.  prism stores numerator/denominator
+           * as pm_integer_t — but for the integer literal forms (`Nr`)
+           * we extract via numerator field; non-integer forms (e.g.
+           * `0.5r`) are rare and we approximate by using the value as
+           * numerator and 1 as denominator. */
+          pm_rational_node_t *n = (pm_rational_node_t *)node;
+          /* pm_integer_t may be a "large" int; use the first word as a
+           * proxy.  For typical script values this is fine. */
+          long num_val = (long)n->numerator.value;
+          /* denominator field is also pm_integer_t; default 1. */
+          long den_val = (long)n->denominator.value;
+          if (den_val == 0) den_val = 1;
+          uint32_t ai = arg_index(tc);
+          inc_arg_index(tc); inc_arg_index(tc);
+          rewind_arg_index(tc, ai);
+          struct method_cache *mc = alloc_method_cache();
+          NODE *num_set = ALLOC_node_lvar_set(ai,     ALLOC_node_int_lit(num_val));
+          NODE *den_set = ALLOC_node_lvar_set(ai + 1, ALLOC_node_int_lit(den_val));
+          NODE *seq = ALLOC_node_seq(num_set, den_set);
+          return ALLOC_node_seq(seq, ALLOC_node_func_call(korb_intern("Rational"), 2, ai, mc));
+      }
       case PM_SOURCE_LINE_NODE: {
           /* `__LINE__` — line of this token in the source file.
            * pm_newline_list_line is libprism-internal (not exported),

@@ -185,6 +185,10 @@ static VALUE class_ancestors(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (SPECIAL_CONST_P(self)) return arr;
     struct korb_class *k = (struct korb_class *)self;
     while (k) {
+        /* prepended modules come BEFORE the class itself in MRO. */
+        for (int32_t i = (int32_t)k->prepends_cnt - 1; i >= 0; i--) {
+            korb_ary_push(arr, (VALUE)k->prepends[i]);
+        }
         korb_ary_push(arr, (VALUE)k);
         /* included modules go right after this class, in reverse
          * include order (Ruby semantics: most recent include first). */
@@ -231,16 +235,34 @@ static VALUE obj_extend(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE module_prepend(CTX *c, VALUE self, int argc, VALUE *argv) {
-    /* Simplified: behave like include (insert into ancestors near top).
-     * No method-resolution-order rewiring; enough for tests that just
-     * check the symbolic effect. */
+    /* Real prepend: register the module in `prepends` so the dispatch
+     * walk in korb_class_find_method finds prepended-module methods
+     * BEFORE the class's own.  super from inside the prepended method
+     * resolves to the class's own method via korb_class_find_super_method.
+     * No method-table flattening — must stay symbolic. */
     if (SPECIAL_CONST_P(self)) return self;
+    struct korb_class *klass = (struct korb_class *)self;
     for (int i = 0; i < argc; i++) {
-        if (!SPECIAL_CONST_P(argv[i]) &&
-            (BUILTIN_TYPE(argv[i]) == T_MODULE || BUILTIN_TYPE(argv[i]) == T_CLASS)) {
-            korb_module_include((struct korb_class *)self, (struct korb_class *)argv[i]);
+        if (SPECIAL_CONST_P(argv[i])) continue;
+        if (BUILTIN_TYPE(argv[i]) != T_MODULE && BUILTIN_TYPE(argv[i]) != T_CLASS) continue;
+        struct korb_class *mod = (struct korb_class *)argv[i];
+        bool dup = false;
+        for (uint32_t j = 0; j < klass->prepends_cnt; j++) {
+            if (klass->prepends[j] == mod) { dup = true; break; }
+        }
+        if (dup) continue;
+        if (klass->prepends_cnt >= klass->prepends_capa) {
+            uint32_t nc = klass->prepends_capa ? klass->prepends_capa * 2 : 4;
+            klass->prepends = korb_xrealloc(klass->prepends, nc * sizeof(*klass->prepends));
+            klass->prepends_capa = nc;
+        }
+        klass->prepends[klass->prepends_cnt++] = mod;
+        /* Also propagate the module's constants — module's CONSTS visible. */
+        for (struct korb_const_entry *ce = mod->constants; ce; ce = ce->next) {
+            if (!korb_const_has(klass, ce->name)) korb_const_set(klass, ce->name, ce->value);
         }
     }
+    if (korb_vm) { korb_vm->method_serial++; korb_g_method_serial = korb_vm->method_serial; }
     return self;
 }
 static VALUE module_new_class_func(CTX *c, VALUE self, int argc, VALUE *argv) {

@@ -383,9 +383,48 @@ void korb_module_include(struct korb_class *klass, struct korb_class *mod) {
 
 struct korb_method *korb_class_find_method(const struct korb_class *klass, ID name) {
     while (klass) {
+        /* prepended modules win over the class's own methods.  Walk in
+         * reverse — the most recently prepended module dispatches first. */
+        for (int32_t i = (int32_t)klass->prepends_cnt - 1; i >= 0; i--) {
+            struct korb_method *m = method_table_get(&klass->prepends[i]->methods, name);
+            if (m) return m;
+        }
         struct korb_method *m = method_table_get(&klass->methods, name);
         if (m) return m;
         klass = klass->super;
+    }
+    return NULL;
+}
+
+/* Find the next method in receiver's class MRO after `defining_class`.
+ * Used for `super`: receiver_klass = class of `c->self`,
+ * defining_class = current method's defining_class.
+ *
+ * MRO order at each class level: prepends (last-first), class itself,
+ * then super class (recursively).  Includes are flattened into the
+ * class's own table, so they aren't a separate MRO step here. */
+struct korb_method *korb_class_find_super_method(const struct korb_class *receiver_klass,
+                                                 const struct korb_class *defining_class,
+                                                 ID name) {
+    bool past = false;
+    const struct korb_class *k = receiver_klass;
+    while (k) {
+        for (int32_t i = (int32_t)k->prepends_cnt - 1; i >= 0; i--) {
+            const struct korb_class *p = k->prepends[i];
+            if (past) {
+                struct korb_method *m = method_table_get(&p->methods, name);
+                if (m) return m;
+            } else if (p == defining_class) {
+                past = true;
+            }
+        }
+        if (past) {
+            struct korb_method *m = method_table_get(&k->methods, name);
+            if (m) return m;
+        } else if (k == defining_class) {
+            past = true;
+        }
+        k = k->super;
     }
     return NULL;
 }

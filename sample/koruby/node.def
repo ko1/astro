@@ -875,12 +875,12 @@ node_super(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_inde
         return Qnil;
     }
     struct korb_method *m = c->current_frame->method;
-    struct korb_class *parent = m->defining_class ? m->defining_class->super : NULL;
-    if (!parent) {
-        korb_raise(c, NULL, "no superclass method '%s'", korb_id_name(m->name));
-        return Qnil;
-    }
-    struct korb_method *sm = korb_class_find_method(parent, m->name);
+    /* Walk the receiver's class MRO past the current method's defining
+     * class — handles `super` from a prepended module's method. */
+    struct korb_class *recv_klass = korb_class_of_class(c->self);
+    struct korb_method *sm = m->defining_class
+        ? korb_class_find_super_method(recv_klass, m->defining_class, m->name)
+        : NULL;
     if (!sm) {
         korb_raise(c, NULL, "super: no superclass method '%s'", korb_id_name(m->name));
         return Qnil;
@@ -908,9 +908,10 @@ node_super_forward(CTX * restrict c, NODE * restrict n)
         return Qnil;
     }
     struct korb_method *m = c->current_frame->method;
-    struct korb_class *parent = m->defining_class ? m->defining_class->super : NULL;
-    if (!parent) { korb_raise(c, NULL, "no superclass"); return Qnil; }
-    struct korb_method *sm = korb_class_find_method(parent, m->name);
+    struct korb_class *recv_klass = korb_class_of_class(c->self);
+    struct korb_method *sm = m->defining_class
+        ? korb_class_find_super_method(recv_klass, m->defining_class, m->name)
+        : NULL;
     if (!sm) { korb_raise(c, NULL, "no superclass method"); return Qnil; }
     int argc = (m->type == KORB_METHOD_AST) ? (int)m->u.ast.required_params_cnt : 0;
     VALUE *args = c->fp;

@@ -1,6 +1,28 @@
 /* Integer — moved from builtins.c. */
 
 /* ---------- Integer ---------- */
+
+/* Detect whether `v` is a Rational or Complex (defined in bootstrap.rb).
+ * Returns 1 for Rational, 2 for Complex, 0 otherwise. */
+static int int_op_other_kind(VALUE v) {
+    if (FIXNUM_P(v) || KORB_IS_FLOAT(v)) return 0;
+    if (SPECIAL_CONST_P(v)) return 0;
+    if (BUILTIN_TYPE(v) != T_OBJECT) return 0;
+    struct korb_class *k = korb_class_of_class(v);
+    const char *n = korb_id_name(k->name);
+    if (strcmp(n, "Rational") == 0) return 1;
+    if (strcmp(n, "Complex")  == 0) return 2;
+    return 0;
+}
+
+/* Build a Rational(self, 1) by calling Rational.new(self, 1). */
+static VALUE int_to_rational_obj(CTX *c, VALUE self) {
+    VALUE klass = korb_const_get(korb_vm->object_class, korb_intern("Rational"));
+    VALUE one = INT2FIX(1);
+    VALUE args[2] = {self, one};
+    return korb_funcall(c, klass, korb_intern("new"), 2, args);
+}
+
 #define COERCE_OR_RAISE(c, v, op_name)                                  \
     do {                                                                 \
         if (!FIXNUM_P(v) && BUILTIN_TYPE(v) != T_BIGNUM) {                \
@@ -18,12 +40,20 @@ static VALUE int_plus(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (KORB_IS_FLOAT(argv[0])) {
         return korb_float_new((double)FIX2LONG(self) + korb_num2dbl(argv[0]));
     }
+    if (int_op_other_kind(argv[0])) {
+        /* + is commutative — delegate to Rational#+/Complex#+. */
+        return korb_funcall(c, argv[0], korb_intern("+"), 1, &self);
+    }
     COERCE_OR_RAISE(c, argv[0], "+");
     return korb_int_plus(self, argv[0]);
 }
 static VALUE int_minus(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (KORB_IS_FLOAT(argv[0])) {
         return korb_float_new((double)FIX2LONG(self) - korb_num2dbl(argv[0]));
+    }
+    if (int_op_other_kind(argv[0])) {
+        VALUE r = int_to_rational_obj(c, self);
+        return korb_funcall(c, r, korb_intern("-"), 1, &argv[0]);
     }
     COERCE_OR_RAISE(c, argv[0], "-");
     return korb_int_minus(self, argv[0]);
@@ -32,12 +62,19 @@ static VALUE int_mul(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (KORB_IS_FLOAT(argv[0])) {
         return korb_float_new((double)FIX2LONG(self) * korb_num2dbl(argv[0]));
     }
+    if (int_op_other_kind(argv[0])) {
+        return korb_funcall(c, argv[0], korb_intern("*"), 1, &self);
+    }
     COERCE_OR_RAISE(c, argv[0], "*");
     return korb_int_mul(self, argv[0]);
 }
 static VALUE int_div(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (KORB_IS_FLOAT(argv[0])) {
         return korb_float_new((double)FIX2LONG(self) / korb_num2dbl(argv[0]));
+    }
+    if (int_op_other_kind(argv[0])) {
+        VALUE r = int_to_rational_obj(c, self);
+        return korb_funcall(c, r, korb_intern("/"), 1, &argv[0]);
     }
     COERCE_OR_RAISE(c, argv[0], "/");
     if (FIXNUM_P(argv[0]) && FIX2LONG(argv[0]) == 0) {

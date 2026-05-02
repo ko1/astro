@@ -242,6 +242,9 @@ void korb_class_set_method_block_slot(struct korb_class *klass, ID name, int slo
 void korb_class_set_method_post_params_cnt(struct korb_class *klass, ID name, uint32_t cnt);
 void korb_class_alias_method(struct korb_class *klass, ID new_name, struct korb_method *m);
 struct korb_method *korb_class_find_method(const struct korb_class *klass, ID name);
+struct korb_method *korb_class_find_super_method(const struct korb_class *receiver_klass,
+                                                 const struct korb_class *defining_class,
+                                                 ID name);
 void korb_module_include(struct korb_class *klass, struct korb_class *mod);
 struct korb_class *korb_singleton_class_of(struct korb_class *klass);
 

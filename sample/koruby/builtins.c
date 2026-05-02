@@ -314,6 +314,7 @@ void korb_init_builtins(void) {
     DEF(cStr, "match",       str_match, -1);
     DEF(cStr, "scan",        str_scan, 1);
     DEF(cStr, "sum",         str_sum, -1);
+    DEF(cStr, "unpack",      str_unpack, -1);
 
     /* extra Array */
     DEF(cAry, "sort",       ary_sort,       -1);

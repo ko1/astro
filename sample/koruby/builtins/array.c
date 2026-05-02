@@ -391,20 +391,311 @@ static VALUE ary_eqq(CTX *c, VALUE self, int argc, VALUE *argv) {
     return KORB_BOOL(BUILTIN_TYPE(argv[0]) == T_ARRAY && korb_eq(self, argv[0]));
 }
 
+/* Helpers shared between pack and unpack. */
+static long korb_pack_long(VALUE v) {
+    if (FIXNUM_P(v)) return FIX2LONG(v);
+    return 0;
+}
+static double korb_pack_double(VALUE v) {
+    if (FIXNUM_P(v)) return (double)FIX2LONG(v);
+    if (FLONUM_P(v)) return korb_flonum_to_double(v);
+    if (!SPECIAL_CONST_P(v) && BUILTIN_TYPE(v) == T_FLOAT) {
+        return ((struct korb_float *)v)->value;
+    }
+    return 0.0;
+}
+static int korb_hex_digit(unsigned char ch) {
+    if (ch >= '0' && ch <= '9') return ch - '0';
+    if (ch >= 'a' && ch <= 'f') return 10 + (ch - 'a');
+    if (ch >= 'A' && ch <= 'F') return 10 + (ch - 'A');
+    return 0;
+}
+
+/* Append n bytes (little or big endian write) of `val` to buf. */
+static void korb_pack_int_bytes(char *buf, long pos, long val, int nbytes, int big_endian) {
+    if (big_endian) {
+        for (int i = nbytes - 1; i >= 0; i--) buf[pos + (nbytes - 1 - i)] = (char)((val >> (i * 8)) & 0xff);
+    } else {
+        for (int i = 0; i < nbytes; i++) buf[pos + i] = (char)((val >> (i * 8)) & 0xff);
+    }
+}
+
 static VALUE ary_pack(CTX *c, VALUE self, int argc, VALUE *argv) {
-    /* very limited pack — just "C*" (bytes) */
     if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return korb_str_new("", 0);
     const char *fmt = korb_str_cstr(argv[0]);
+    long fmt_len = (long)strlen(fmt);
     struct korb_array *a = (struct korb_array *)self;
-    if (strcmp(fmt, "C*") == 0) {
-        char *buf = korb_xmalloc_atomic(a->len + 1);
-        for (long i = 0; i < a->len; i++) {
-            buf[i] = FIXNUM_P(a->ptr[i]) ? (char)(FIX2LONG(a->ptr[i]) & 0xff) : 0;
+    /* Build into a growable buffer. */
+    long cap = 32, plen = 0;
+    char *buf = korb_xmalloc_atomic(cap);
+    long src_idx = 0;
+    #define PACK_RESERVE(extra) do { \
+        while (plen + (extra) > cap) { cap *= 2; buf = korb_xrealloc(buf, cap); } \
+    } while (0)
+    long fp = 0;
+    while (fp < fmt_len) {
+        char d = fmt[fp++];
+        long count = 1;
+        bool star = false;
+        if (fp < fmt_len) {
+            if (fmt[fp] == '*') { star = true; fp++; }
+            else if (fmt[fp] >= '0' && fmt[fp] <= '9') {
+                count = 0;
+                while (fp < fmt_len && fmt[fp] >= '0' && fmt[fp] <= '9') {
+                    count = count * 10 + (fmt[fp] - '0'); fp++;
+                }
+            }
         }
-        buf[a->len] = 0;
-        return korb_str_new(buf, a->len);
+        switch (d) {
+          case 'C': case 'c': {
+            long n = star ? (a->len - src_idx) : count;
+            for (long i = 0; i < n; i++) {
+                long v = (src_idx < a->len) ? korb_pack_long(a->ptr[src_idx++]) : 0;
+                PACK_RESERVE(1); buf[plen++] = (char)(v & 0xff);
+            }
+            break;
+          }
+          case 'n': case 'v': case 's': case 'S': {
+            long n = star ? (a->len - src_idx) : count;
+            int big = (d == 'n' || d == 's');  /* 's'/'S' are native, but treat as little-endian here */
+            if (d == 'n') big = 1;
+            else if (d == 'v') big = 0;
+            else big = 0;  /* native LE on x86-64 */
+            for (long i = 0; i < n; i++) {
+                long v = (src_idx < a->len) ? korb_pack_long(a->ptr[src_idx++]) : 0;
+                PACK_RESERVE(2); korb_pack_int_bytes(buf, plen, v, 2, big); plen += 2;
+            }
+            break;
+          }
+          case 'N': case 'V': case 'l': case 'L': case 'i': case 'I': {
+            long n = star ? (a->len - src_idx) : count;
+            int big = (d == 'N');  /* V/l/L/i/I native LE */
+            for (long i = 0; i < n; i++) {
+                long v = (src_idx < a->len) ? korb_pack_long(a->ptr[src_idx++]) : 0;
+                PACK_RESERVE(4); korb_pack_int_bytes(buf, plen, v, 4, big); plen += 4;
+            }
+            break;
+          }
+          case 'q': case 'Q': case 'j': case 'J': {
+            long n = star ? (a->len - src_idx) : count;
+            for (long i = 0; i < n; i++) {
+                long v = (src_idx < a->len) ? korb_pack_long(a->ptr[src_idx++]) : 0;
+                PACK_RESERVE(8); korb_pack_int_bytes(buf, plen, v, 8, 0); plen += 8;
+            }
+            break;
+          }
+          case 'a': case 'A': case 'Z': {
+            VALUE sv = (src_idx < a->len) ? a->ptr[src_idx++] : korb_str_new("", 0);
+            const char *s = NULL; long slen = 0;
+            if (!SPECIAL_CONST_P(sv) && BUILTIN_TYPE(sv) == T_STRING) {
+                s = ((struct korb_string *)sv)->ptr;
+                slen = ((struct korb_string *)sv)->len;
+            }
+            long take;
+            if (star) take = slen + (d == 'Z' ? 1 : 0);
+            else take = count;
+            char pad = (d == 'A') ? ' ' : '\0';
+            PACK_RESERVE(take);
+            for (long i = 0; i < take; i++) {
+                buf[plen++] = (i < slen) ? s[i] : pad;
+            }
+            break;
+          }
+          case 'H': case 'h': {
+            VALUE sv = (src_idx < a->len) ? a->ptr[src_idx++] : korb_str_new("", 0);
+            const char *s = NULL; long slen = 0;
+            if (!SPECIAL_CONST_P(sv) && BUILTIN_TYPE(sv) == T_STRING) {
+                s = ((struct korb_string *)sv)->ptr;
+                slen = ((struct korb_string *)sv)->len;
+            }
+            long n = star ? slen : count;
+            if (n > slen) n = slen;
+            long nbytes = (n + 1) / 2;
+            PACK_RESERVE(nbytes);
+            for (long i = 0; i < nbytes; i++) {
+                int hi = korb_hex_digit((unsigned char)s[2*i]);
+                int lo = (2*i + 1 < n) ? korb_hex_digit((unsigned char)s[2*i + 1]) : 0;
+                if (d == 'H') buf[plen + i] = (char)((hi << 4) | lo);
+                else          buf[plen + i] = (char)((lo << 4) | hi);
+            }
+            plen += nbytes;
+            break;
+          }
+          case 'x': {
+            long n = count;
+            PACK_RESERVE(n);
+            for (long i = 0; i < n; i++) buf[plen++] = '\0';
+            break;
+          }
+          case 'd': case 'D': case 'E': case 'G': {
+            long n = star ? (a->len - src_idx) : count;
+            for (long i = 0; i < n; i++) {
+                double v = (src_idx < a->len) ? korb_pack_double(a->ptr[src_idx++]) : 0.0;
+                PACK_RESERVE(8); memcpy(buf + plen, &v, 8); plen += 8;
+            }
+            break;
+          }
+          case 'f': case 'F': case 'e': case 'g': {
+            long n = star ? (a->len - src_idx) : count;
+            for (long i = 0; i < n; i++) {
+                float v = (src_idx < a->len) ? (float)korb_pack_double(a->ptr[src_idx++]) : 0.0f;
+                PACK_RESERVE(4); memcpy(buf + plen, &v, 4); plen += 4;
+            }
+            break;
+          }
+          case ' ': case '\t': case '\n':
+            break;  /* whitespace ignored */
+          default:
+            /* Unknown directive: skip silently (Ruby raises but we log). */
+            break;
+        }
     }
-    return korb_str_new("", 0);
+    #undef PACK_RESERVE
+    return korb_str_new(buf, plen);
+}
+
+static VALUE str_unpack(CTX *c, VALUE self, int argc, VALUE *argv) {
+    VALUE r = korb_ary_new();
+    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return r;
+    const char *fmt = korb_str_cstr(argv[0]);
+    long fmt_len = (long)strlen(fmt);
+    struct korb_string *s = (struct korb_string *)self;
+    const unsigned char *src = (const unsigned char *)s->ptr;
+    long src_len = s->len;
+    long src_idx = 0;
+    long fp = 0;
+    while (fp < fmt_len) {
+        char d = fmt[fp++];
+        long count = 1;
+        bool star = false;
+        if (fp < fmt_len) {
+            if (fmt[fp] == '*') { star = true; fp++; }
+            else if (fmt[fp] >= '0' && fmt[fp] <= '9') {
+                count = 0;
+                while (fp < fmt_len && fmt[fp] >= '0' && fmt[fp] <= '9') {
+                    count = count * 10 + (fmt[fp] - '0'); fp++;
+                }
+            }
+        }
+        switch (d) {
+          case 'C': case 'c': {
+            long n = star ? (src_len - src_idx) : count;
+            for (long i = 0; i < n && src_idx < src_len; i++) {
+                int b = src[src_idx++];
+                if (d == 'c' && b >= 128) b -= 256;
+                korb_ary_push(r, INT2FIX(b));
+            }
+            break;
+          }
+          case 'n': case 'v': case 's': case 'S': {
+            long n = star ? ((src_len - src_idx) / 2) : count;
+            int big = (d == 'n');
+            for (long i = 0; i < n && src_idx + 2 <= src_len; i++) {
+                long v;
+                if (big) v = ((long)src[src_idx] << 8) | src[src_idx + 1];
+                else     v = src[src_idx] | ((long)src[src_idx + 1] << 8);
+                src_idx += 2;
+                if (d == 's' && v >= 0x8000) v -= 0x10000;
+                korb_ary_push(r, INT2FIX(v));
+            }
+            break;
+          }
+          case 'N': case 'V': case 'l': case 'L': case 'i': case 'I': {
+            long n = star ? ((src_len - src_idx) / 4) : count;
+            int big = (d == 'N');
+            for (long i = 0; i < n && src_idx + 4 <= src_len; i++) {
+                long v;
+                if (big) v = ((long)src[src_idx] << 24) | ((long)src[src_idx + 1] << 16)
+                           | ((long)src[src_idx + 2] << 8)  |  (long)src[src_idx + 3];
+                else     v = (long)src[src_idx] | ((long)src[src_idx + 1] << 8)
+                           | ((long)src[src_idx + 2] << 16) | ((long)src[src_idx + 3] << 24);
+                src_idx += 4;
+                if (d == 'l' && v >= 0x80000000L) v -= 0x100000000L;
+                korb_ary_push(r, INT2FIX(v));
+            }
+            break;
+          }
+          case 'q': case 'Q': case 'j': case 'J': {
+            long n = star ? ((src_len - src_idx) / 8) : count;
+            for (long i = 0; i < n && src_idx + 8 <= src_len; i++) {
+                long v = 0;
+                for (int b = 0; b < 8; b++) v |= ((long)src[src_idx + b]) << (b * 8);
+                src_idx += 8;
+                korb_ary_push(r, INT2FIX(v));
+            }
+            break;
+          }
+          case 'a': case 'A': case 'Z': {
+            long n = star ? (src_len - src_idx) : count;
+            if (n > src_len - src_idx) n = src_len - src_idx;
+            long real = n;
+            if (d == 'A') {
+                while (real > 0 && (src[src_idx + real - 1] == ' ' ||
+                                    src[src_idx + real - 1] == '\0')) real--;
+            } else if (d == 'Z') {
+                long z = 0;
+                while (z < n && src[src_idx + z] != '\0') z++;
+                real = z;
+                /* still consume the null if present */
+                if (z < n) n = z + 1;
+            }
+            korb_ary_push(r, korb_str_new((const char *)(src + src_idx), real));
+            src_idx += n;
+            break;
+          }
+          case 'H': case 'h': {
+            long n = star ? (2 * (src_len - src_idx)) : count;
+            long bytes_needed = (n + 1) / 2;
+            if (bytes_needed > src_len - src_idx) bytes_needed = src_len - src_idx;
+            char *out = korb_xmalloc_atomic(n + 1);
+            long o = 0;
+            for (long i = 0; i < bytes_needed && o < n; i++) {
+                unsigned char b = src[src_idx + i];
+                int hi = (b >> 4) & 0xf, lo = b & 0xf;
+                static const char *hex = "0123456789abcdef";
+                if (d == 'H') {
+                    out[o++] = hex[hi];
+                    if (o < n) out[o++] = hex[lo];
+                } else {
+                    out[o++] = hex[lo];
+                    if (o < n) out[o++] = hex[hi];
+                }
+            }
+            out[o] = 0;
+            korb_ary_push(r, korb_str_new(out, o));
+            src_idx += bytes_needed;
+            break;
+          }
+          case 'x':
+            src_idx += count;
+            break;
+          case 'd': case 'D': case 'E': case 'G': {
+            long n = star ? ((src_len - src_idx) / 8) : count;
+            for (long i = 0; i < n && src_idx + 8 <= src_len; i++) {
+                double v;
+                memcpy(&v, src + src_idx, 8);
+                src_idx += 8;
+                korb_ary_push(r, korb_float_new(v));
+            }
+            break;
+          }
+          case 'f': case 'F': case 'e': case 'g': {
+            long n = star ? ((src_len - src_idx) / 4) : count;
+            for (long i = 0; i < n && src_idx + 4 <= src_len; i++) {
+                float v;
+                memcpy(&v, src + src_idx, 4);
+                src_idx += 4;
+                korb_ary_push(r, korb_float_new((double)v));
+            }
+            break;
+          }
+          case ' ': case '\t': case '\n':
+            break;
+          default:
+            break;
+        }
+    }
+    return r;
 }
 
 static VALUE ary_concat(CTX *c, VALUE self, int argc, VALUE *argv) {
