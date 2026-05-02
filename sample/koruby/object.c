@@ -258,6 +258,7 @@ void korb_class_add_method_ast_full_cref(struct korb_class *klass, ID name, stru
     m->u.ast.block_slot = -1;
     m->u.ast.locals_cnt = locals_cnt;
     m->u.ast.post_params_cnt = 0;
+    m->u.ast.kwh_save_slot = -1;
     method_table_set(&klass->methods, name, m);
     if (korb_vm) { korb_vm->method_serial++; korb_g_method_serial = korb_vm->method_serial; }
 }
@@ -273,6 +274,11 @@ void korb_class_set_method_block_slot(struct korb_class *klass, ID name, int slo
 void korb_class_set_method_post_params_cnt(struct korb_class *klass, ID name, uint32_t cnt) {
     struct korb_method *m = korb_class_find_method(klass, name);
     if (m && m->type == KORB_METHOD_AST) m->u.ast.post_params_cnt = cnt;
+}
+
+void korb_class_set_method_kwh_save_slot(struct korb_class *klass, ID name, int slot) {
+    struct korb_method *m = korb_class_find_method(klass, name);
+    if (m && m->type == KORB_METHOD_AST) m->u.ast.kwh_save_slot = slot;
 }
 
 void korb_class_add_method_cfunc(struct korb_class *klass, ID name,
@@ -1456,11 +1462,6 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
                                   uint32_t argc, uint32_t arg_index,
                                   struct korb_proc *block, struct method_cache *mc)
 {
-    if (UNLIKELY(mc->rest_slot < 0 && argc > mc->total_params_cnt)) {
-        korb_raise(c, NULL, "wrong number of arguments (given %u, expected %u)",
-                   argc, mc->required_params_cnt);
-        return Qnil;
-    }
     VALUE *prev_fp = c->fp;
     VALUE prev_self = c->self;
     struct korb_proc *prev_block = current_block;
@@ -1477,23 +1478,52 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
     if (c->fp + mc->locals_cnt > c->sp) c->sp = c->fp + mc->locals_cnt;
     if (mc->def_cref) c->cref = mc->def_cref;
 
+    /* Kwargs hash peel: when the method declares keyword params and the
+     * caller's last positional is a Hash, treat that hash as kwargs.
+     * We stash it into mc->kwh_save_slot (which the body prelude reads)
+     * and decrement argc so the rest of arg processing ignores it.  If
+     * the caller passed no hash, write {} into kwh_save_slot. */
+    VALUE peeled_kwh = Qundef;
+    if (mc->kwh_save_slot >= 0) {
+        if (argc > 0 && !SPECIAL_CONST_P(c->fp[argc - 1]) &&
+            BUILTIN_TYPE(c->fp[argc - 1]) == T_HASH) {
+            peeled_kwh = c->fp[argc - 1];
+            argc--;
+        } else {
+            peeled_kwh = korb_hash_new();
+        }
+    }
+
+    if (UNLIKELY(mc->rest_slot < 0 && argc > mc->total_params_cnt)) {
+        korb_raise(c, NULL, "wrong number of arguments (given %u, expected %u)",
+                   argc, mc->required_params_cnt);
+        c->fp = prev_fp;
+        c->cref = prev_cref;
+        current_block = prev_block;
+        return Qnil;
+    }
+
     if (mc->rest_slot >= 0) {
         long fixed_pre  = (long)mc->required_params_cnt;
         long fixed_post = (long)mc->post_params_cnt;
-        long extra = (long)argc - fixed_pre - fixed_post;
-        if (extra < 0) extra = 0;
-        /* Snapshot post args (they're currently sitting in the staged
-         * positions fp[fixed_pre + extra .. + fixed_post]) before we
-         * overwrite fp[rest_slot] (= fp[fixed_pre]) with the rest array. */
+        /* total_params_cnt = required + optional + rest(=1) + post.
+         * Solve for optional_cnt. */
+        long optional_cnt = (long)mc->total_params_cnt - fixed_pre - 1 - fixed_post;
+        if (optional_cnt < 0) optional_cnt = 0;
+        long after_required = (long)argc - fixed_pre - fixed_post;
+        if (after_required < 0) after_required = 0;
+        long opt_filled = after_required < optional_cnt ? after_required : optional_cnt;
+        long extra = after_required - opt_filled;  /* leftover for rest */
+        /* Snapshot post args before overwriting fp[rest_slot]. */
         VALUE post_save[16];
         VALUE *post_buf = post_save;
         if (fixed_post > 16) post_buf = korb_xmalloc(sizeof(VALUE) * fixed_post);
         for (long i = 0; i < fixed_post; i++) {
-            post_buf[i] = c->fp[fixed_pre + extra + i];
+            post_buf[i] = c->fp[fixed_pre + opt_filled + extra + i];
         }
         VALUE rest = korb_ary_new_capa(extra);
         for (long i = 0; i < extra; i++) {
-            korb_ary_push(rest, c->fp[fixed_pre + i]);
+            korb_ary_push(rest, c->fp[fixed_pre + opt_filled + i]);
         }
         c->fp[mc->rest_slot] = rest;
         for (long i = 0; i < fixed_post; i++) {
@@ -1522,6 +1552,10 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
      * local reads as nil. */
     if (mc->block_slot >= 0) {
         c->fp[mc->block_slot] = block ? (VALUE)block : Qnil;
+    }
+    /* Stash the peeled kwargs hash where the body prelude can read it. */
+    if (mc->kwh_save_slot >= 0 && !UNDEF_P(peeled_kwh)) {
+        c->fp[mc->kwh_save_slot] = peeled_kwh;
     }
     c->self = recv;
 
@@ -1567,6 +1601,7 @@ korb_method_cache_fill(struct method_cache *mc, struct korb_class *klass, struct
         mc->rest_slot = m->u.ast.rest_slot;
         mc->block_slot = m->u.ast.block_slot;
         mc->post_params_cnt = m->u.ast.post_params_cnt;
+        mc->kwh_save_slot = m->u.ast.kwh_save_slot;
         mc->type = 0;
         mc->cfunc = NULL;
         mc->def_cref = m->def_cref;
@@ -1575,7 +1610,7 @@ korb_method_cache_fill(struct method_cache *mc, struct korb_class *klass, struct
          * shape; for the simple case prefer an argc-specialized variant
          * so the C compiler can fold the argc check + unroll the Qnil
          * fill. */
-        if (mc->rest_slot < 0 && mc->block_slot < 0 &&
+        if (mc->rest_slot < 0 && mc->block_slot < 0 && mc->kwh_save_slot < 0 &&
             mc->total_params_cnt == mc->required_params_cnt) {
             switch (mc->required_params_cnt) {
                 case 0:  mc->prologue = prologue_ast_simple_0; break;
@@ -1602,6 +1637,7 @@ korb_method_cache_fill(struct method_cache *mc, struct korb_class *klass, struct
         mc->required_params_cnt = 0;
         mc->total_params_cnt = 0;
         mc->rest_slot = -1;
+        mc->kwh_save_slot = -1;
         mc->type = 2;
         mc->cfunc = NULL;
         mc->def_cref = NULL;
@@ -1613,6 +1649,7 @@ korb_method_cache_fill(struct method_cache *mc, struct korb_class *klass, struct
         mc->required_params_cnt = 0;
         mc->total_params_cnt = 0;
         mc->rest_slot = -1;
+        mc->kwh_save_slot = -1;
         mc->type = 1;
         mc->cfunc = m->u.cfunc.func;
         mc->def_cref = NULL;

@@ -190,6 +190,7 @@ struct method_cache {
     int      rest_slot;            /* -1 if no *rest */
     int      block_slot;           /* -1 if no &blk */
     uint32_t post_params_cnt;      /* params after *rest */
+    int      kwh_save_slot;        /* slot to stash kwargs hash; -1 if no kwargs */
     uint8_t  type;                 /* 0=AST, 1=CFUNC */
     bool     is_simple_frame;      /* method body has no yield/super/block_given/_block — slim prologue */
     VALUE (*cfunc)(struct CTX_struct *, VALUE, int, VALUE *);

@@ -1284,6 +1284,7 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
           uint32_t total_cnt = 0;
           int rest_slot = -1;
           int block_slot = -1;
+          uint32_t kwh_save_slot = (uint32_t)-1;
           push_frame(tc, &n->locals, false);
 
           NODE *prologue = NULL;  /* default-value initialization */
@@ -1373,50 +1374,11 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                   kwrest_target_slot = tc->frame->fwd_kwh_slot;
               }
               if (pn->keywords.size > 0 || has_kwrest) {
-                  uint32_t kwh_save_slot;
-                  if (rest_slot >= 0) {
-                      /* Method has *rest — peel kwh off rest's tail. The
-                       * prologue puts every caller arg into rest; if the
-                       * last is a Hash, treat it as kwh. */
-                      kwh_save_slot = inc_arg_index(tc);
-                      /* if rest.last.is_a?(Hash) then kwh = rest.pop else kwh = {} */
-                      uint32_t ai_last = inc_arg_index(tc);
-                      rewind_arg_index(tc, ai_last);
-                      struct method_cache *mc_last = alloc_method_cache();
-                      NODE *last_call = ALLOC_node_method_call(
-                          ALLOC_node_lvar_get((uint32_t)rest_slot),
-                          korb_intern("last"), 0, ai_last, mc_last);
-                      uint32_t ai_isa = inc_arg_index(tc);
-                      inc_arg_index(tc); rewind_arg_index(tc, ai_isa);
-                      struct method_cache *mc_isa = alloc_method_cache();
-                      NODE *isa_arg = ALLOC_node_lvar_set(ai_isa,
-                          ALLOC_node_const_get(korb_intern("Hash")));
-                      NODE *isa = ALLOC_node_seq(isa_arg,
-                          ALLOC_node_method_call(last_call, korb_intern("is_a?"),
-                                                  1, ai_isa, mc_isa));
-                      uint32_t ai_pop = inc_arg_index(tc);
-                      rewind_arg_index(tc, ai_pop);
-                      struct method_cache *mc_pop = alloc_method_cache();
-                      NODE *pop_call = ALLOC_node_method_call(
-                          ALLOC_node_lvar_get((uint32_t)rest_slot),
-                          korb_intern("pop"), 0, ai_pop, mc_pop);
-                      NODE *empty_hash = ALLOC_node_hash_new(0, kwh_save_slot);
-                      NODE *if_n = ALLOC_node_if(isa, pop_call, empty_hash);
-                      NODE *peel = ALLOC_node_lvar_set(kwh_save_slot, if_n);
-                      prologue = prologue ? ALLOC_node_seq(prologue, peel) : peel;
-                  } else {
-                      uint32_t kwh_arg_slot = total_cnt;
-                      kwh_save_slot = inc_arg_index(tc);
-                      total_cnt++;
-                      NODE *empty_hash = ALLOC_node_hash_new(0, kwh_save_slot);
-                      NODE *kwh_default = ALLOC_node_default_init(kwh_arg_slot, empty_hash);
-                      prologue = prologue ? ALLOC_node_seq(prologue, kwh_default) : kwh_default;
-                      NODE *snap = ALLOC_node_lvar_set(kwh_save_slot,
-                                                        ALLOC_node_lvar_get(kwh_arg_slot));
-                      prologue = ALLOC_node_seq(prologue, snap);
-                  }
-                  /* For forwarding, also stash kwh in fwd_kwh_slot for the
-                   * call-site `f(...)` to pick up. */
+                  /* Reserve a hidden slot the prologue stashes the peeled
+                   * kwargs hash into.  The body prelude only needs to read
+                   * from this slot — the prologue handles kwh extraction. */
+                  kwh_save_slot = inc_arg_index(tc);
+                  /* For forwarding, also expose kwh slot to the call site. */
                   if (fwd_param) {
                       tc->frame->fwd_kwh_slot = (int)kwh_save_slot;
                   }
@@ -1439,7 +1401,7 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                               ALLOC_node_method_call(ALLOC_node_lvar_get(kwh_save_slot),
                                                      korb_intern("fetch"), 1, ai, mc));
                           NODE *ext = ALLOC_node_lvar_set((uint32_t)slot, fetch);
-                          prologue = ALLOC_node_seq(prologue, ext);
+                          prologue = prologue ? ALLOC_node_seq(prologue, ext) : ext;
                       } else if (PM_NODE_TYPE_P(kp, PM_OPTIONAL_KEYWORD_PARAMETER_NODE)) {
                           pm_optional_keyword_parameter_node_t *ok =
                               (pm_optional_keyword_parameter_node_t *)kp;
@@ -1463,8 +1425,8 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                               ALLOC_node_method_call(ALLOC_node_lvar_get(kwh_save_slot),
                                                      korb_intern("[]"), 1, ai2, mc_aref));
                           NODE *if_n = ALLOC_node_if(hk, aref, def_val);
-                          prologue = ALLOC_node_seq(prologue,
-                              ALLOC_node_lvar_set((uint32_t)slot, if_n));
+                          NODE *set_lv = ALLOC_node_lvar_set((uint32_t)slot, if_n);
+                          prologue = prologue ? ALLOC_node_seq(prologue, set_lv) : set_lv;
                       }
                   }
                   /* **kwrest: copy kwh and delete the named keys.  If no
@@ -1477,7 +1439,7 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                       NODE *dup = ALLOC_node_method_call(ALLOC_node_lvar_get(kwh_save_slot),
                                                         korb_intern("dup"), 0, ai_dup, mc_dup);
                       NODE *bind = ALLOC_node_lvar_set((uint32_t)kwrest_target_slot, dup);
-                      prologue = ALLOC_node_seq(prologue, bind);
+                      prologue = prologue ? ALLOC_node_seq(prologue, bind) : bind;
                       /* For each named kwarg, delete from rest. */
                       for (size_t i = 0; i < pn->keywords.size; i++) {
                           pm_node_t *kp = pn->keywords.nodes[i];
@@ -1494,7 +1456,7 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                           NODE *del = ALLOC_node_seq(karg,
                               ALLOC_node_method_call(ALLOC_node_lvar_get((uint32_t)kwrest_target_slot),
                                                      korb_intern("delete"), 1, aid, mc_del));
-                          prologue = ALLOC_node_seq(prologue, del);
+                          prologue = prologue ? ALLOC_node_seq(prologue, del) : del;
                       }
                   }
               }
@@ -1526,11 +1488,19 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
               pm_parameters_node_t *pn = (pm_parameters_node_t *)n->parameters;
               post_cnt = (uint32_t)pn->posts.size;
           }
+          NODE *def_node;
           if (post_cnt > 0) {
-              return ALLOC_node_def_post(name, body, required_cnt, total_cnt,
-                                         (int32_t)rest_slot, (int32_t)block_slot, locals, post_cnt);
+              def_node = ALLOC_node_def_post(name, body, required_cnt, total_cnt,
+                                              (int32_t)rest_slot, (int32_t)block_slot, locals, post_cnt);
+          } else {
+              def_node = ALLOC_node_def_full(name, body, required_cnt, total_cnt,
+                                              (int32_t)rest_slot, (int32_t)block_slot, locals);
           }
-          return ALLOC_node_def_full(name, body, required_cnt, total_cnt, (int32_t)rest_slot, (int32_t)block_slot, locals);
+          if (kwh_save_slot != (uint32_t)-1) {
+              def_node = ALLOC_node_seq(def_node,
+                                         ALLOC_node_set_kwh_save_slot(name, (int32_t)kwh_save_slot));
+          }
+          return def_node;
       }
 
       case PM_CLASS_NODE: {

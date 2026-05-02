@@ -1053,6 +1053,17 @@ node_def_post(CTX * restrict c, NODE * restrict n, ID name, NODE *body, uint32_t
     return korb_id2sym(name);
 }
 
+/* Set the kwh_save_slot on the most-recently-registered method `name`
+ * on the current cref/class.  Emitted right after node_def_full when
+ * the def declares keyword params. */
+NODE_DEF @noinline
+node_set_kwh_save_slot(CTX * restrict c, NODE * restrict n, ID name, int32_t slot)
+{
+    struct korb_class *target = c->cref ? c->cref->klass : c->current_class;
+    korb_class_set_method_kwh_save_slot(target, name, (int)slot);
+    return Qnil;
+}
+
 /* `alias new_name old_name` — keyword form, lexical scope.  Goes
  * directly to korb_class_alias_method on the cref's class so a
  * redefinition of Module#alias_method has no effect (`alias` is a
