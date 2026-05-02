@@ -764,15 +764,7 @@ void korb_init_builtins(void) {
         DEF(cPrc, "to_proc", obj_itself, 0);
     }
 
-    /* Process / Time stub modules */
-    struct korb_class *cProcess = korb_module_new(korb_intern("Process"));
-    korb_const_set(korb_vm->object_class, korb_intern("Process"), (VALUE)cProcess);
-    {
-        /* Process.clock_gettime, etc. — stubs returning 0.0 */
-        extern VALUE proc_clock_gettime_stub(CTX *c, VALUE self, int argc, VALUE *argv);
-        korb_class_add_method_cfunc(cProcess, korb_intern("clock_gettime"), proc_clock_gettime_stub, -1);
-        korb_const_set(cProcess, korb_intern("CLOCK_MONOTONIC"), INT2FIX(1));
-    }
+    /* Time stub class (Process is set up earlier with proper meta). */
 
     struct korb_class *cTime = korb_class_new(korb_intern("Time"), korb_vm->object_class, T_OBJECT);
     korb_const_set(korb_vm->object_class, korb_intern("Time"), (VALUE)cTime);
