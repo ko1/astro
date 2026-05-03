@@ -1,6 +1,13 @@
 #ifndef NODE_H
 #define NODE_H 1
 
+// String/stdlib funcs are referenced from the generated node_eval.c
+// (find_func_entry uses strcmp, call_check uses exit).  gcc tolerates
+// the implicit decls; clang does not.  Pull them in here so every
+// AOT/PG SD .c that includes node_eval.c sees the right prototypes.
+#include <stdlib.h>
+#include <string.h>
+
 #include "context.h"
 
 typedef struct Node NODE;
