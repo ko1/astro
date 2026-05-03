@@ -95,6 +95,10 @@ node_def(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, const char *n
     struct function_entry *fe = get_func_entry(c, name);
     fe->name = name;
     fe->body = OPTIMIZE(body);
+    // Override OPTIMIZE's AOT-only cs_load with a PGC-aware load: pass
+    // `name` as `file` so cs_load consults the hopt_index for a
+    // profile-baked PGSD_<HOPT>, falling back to SD_<HORG>.
+    (void)astro_cs_load(fe->body, name);
     fe->params_cnt = params_cnt;
     fe->locals_cnt = locals_cnt;
     c->serial++;

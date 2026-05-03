@@ -78,6 +78,26 @@
 | `-q` | quiet | 余計な情報を出さない |
 | `-h` | help | オプション一覧 |
 
+## HOPT / PGSD 投機チェイン (Profile-Guided Specialization)
+
+ASTro framework の HOPT 機構を有効化。`hash_node()` (HORG, sp_body 除外)
+に加えて `hash_node_opt()` (HOPT, sp_body 込み + cycle break) を持つ。
+
+- `node_def` 実行時に `astro_cs_load(body, name)` で body を PGSD に wire up
+- top-level AST も `cs_compile(ast, source_file)` + `cs_load(ast, source_file)`
+  で PGSD として bake / load
+- bodies は AOT(SD_<HORG>) と PGC(PGSD_<HOPT>) の両形を bake
+- `hopt_index.txt` に `(Horg, file, line) → Hopt` のマッピングを永続化
+
+非再帰 call chain で **LTO 併用時 47–84% 高速化**。再帰関数は cycle
+break で HOPT が HORG に潰れるため効果なし。実測は [perf.md](perf.md) の
+「HOPT / PGSD 投機チェイン」セクション。
+
+実装: `naruby_gen.rb` の `:hopt` gen_task、`node.def` の `node_def`
+拡張、`node.h` の `HOPT` / `hash_node_opt` 宣言、`node.c` の実装、
+`naruby_parse.c` の `naruby_current_source_file` グローバル、`main.c` の
+`build_code_store` 拡張。生成: `node_hopt.c`。
+
 ## ASTro framework との接続
 
 - ノード生成: ASTroGen (`../../lib/astrogen.rb`) が `node.def` から

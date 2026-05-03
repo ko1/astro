@@ -224,6 +224,137 @@ fib / ackermann / tak で 5–15× 遅れる原因:
    関数連鎖が SD に inline され、SROA がフレームスロットをレジスタに
    昇格できる。
 
+## HOPT / PGSD 投機チェイン (2026-05-03)
+
+ASTro framework の HOPT (profile-aware hash) / PGSD (profile-guided
+specialized dispatcher) 機構を有効化。**非再帰 call chain では
+LTO 併用で 47–84% 高速化**。
+
+### 仕組み
+
+- **HORG (existing)**: `hash_node()` でキャッシュされる構造ハッシュ。
+  pg_call の `sp_body` は除外 → 同名関数の call site identity として
+  parse-time mutation や redef に対して安定。
+- **HOPT (new)**: `hash_node_opt()` でキャッシュされる profile-aware
+  ハッシュ。`sp_body` を含めて再帰計算 (cycle break 付き) → 投機
+  対象の構造を fingerprint。再帰関数では cycle に入った時点で 0 を
+  返すので、本質的に HORG と同じハッシュに落ちる。
+- **SD_<HORG> / PGSD_<HOPT>**: 同じ body NODE が両方の名前で baked。
+  SD 系は AOT (HORG-keyed)、PGSD 系は PGC (HOPT-keyed)。
+- `cs_load(n, file)` の `file != NULL` 時は `hopt_index.txt` を引いて
+  PGSD_<HOPT> を採用。`file == NULL` または見つからなければ
+  SD_<HORG> へ fall-back。
+- naruby 側では:
+  - `node_def` 実行時に body を `cs_load(body, name)` して body の
+    dispatcher を PGSD に
+  - `main.c` で top-level AST を `cs_load(ast, source_file)` して top も
+    PGSD に
+  - body と top の両方で AOT(SD) と PGC(PGSD) の両形を bake
+    (top-level SD は AOT 側に baked-direct-call を SD_<HORG(body)> で
+    持つので、互換のため SD 形も残す)
+
+### 実測 (2026-05-03)
+
+各ベンチ 5 回 median、単位: 秒。`pg` は `astro_cs_compile(_, file)` で
+PGSD bake (`-Wl,-Bsymbolic`)、`pg+lto` は それ + `-flto`。
+
+#### gcc 13 (default `gcc`) ベース
+
+| bench | plain | pg | pg+lto | pg → pg+lto |
+|-------|-----:|----:|-------:|------------:|
+| fib | 5.61 | 0.55 | 0.56 | 0% (再帰 cycle break) |
+| ackermann | 7.54 | 0.79 | 0.75 | -5% |
+| tak | 1.12 | 0.11 | 0.11 | 0% |
+| gcd | 3.85 | 0.17 | 0.16 | -6% |
+| **call** (10 段尾呼出) | 9.47 | 1.15 | **0.49** | **-57%** |
+| **zero** (1B builtin call) | 15.89 | 2.68 | **0.42** | **-84%** |
+| **chain20** (20 段尾呼出) | 9.67 | 1.23 | **0.65** | **-47%** |
+| **chain_add** (10 段 +1) | 1.33 | 0.11 | **0.05** | **-55%** |
+| **compose** (3 段 f(g(h(x)))) | 1.50 | 0.10 | **0.03** | **-70%** |
+| **branch_dom** (固定分岐) | 1.24 | 0.07 | **0.02** | **-71%** |
+| **deep_const** (10 段 getter) | 3.76 | 1.18 | **0.58** | **-51%** |
+
+#### gcc 16 (`CC=gcc-16` 指定)
+
+gcc-16 は LTO 周りと recursive 関数の inlining が大幅改善されてて、
+非 LTO の段階で fib / ackermann / tak が gcc-13 + LTO を凌ぐ:
+
+| bench | plain | pg(g16) | pg+lto(g16) | gcc-13 pg+lto との差 |
+|-------|-----:|--------:|------------:|---------------------:|
+| fib | 5.38 | **0.47** | 0.48 | -16% |
+| ackermann | 7.44 | **0.46** | 0.47 | -38% (再帰の劇的改善) |
+| tak | 1.13 | **0.05** | 0.05 | -55% |
+| gcd | 3.78 | 0.17 | 0.17 | +6% (誤差) |
+| call | 9.93 | 1.15 | 0.49 | 同 |
+| zero | 16.18 | 0.67 | 0.69 | +64% (gcc-13 で偶然 0.42 だっただけ?) |
+| chain20 | 9.39 | 1.17 | **0.60** | -8% |
+| chain_add | 1.22 | 0.11 | **0.04** | -20% |
+| compose | 1.51 | 0.12 | **0.04** | +33% (誤差) |
+| branch_dom | 1.24 | 0.07 | **0.03** | +50% (誤差) |
+| deep_const | 3.35 | 1.13 | **0.47** | -19% |
+
+★ **gcc-16 の効果**: recursive benches では `pg(g16)` が `pg+lto(g16)` と
+ほぼ同等に速い。LTO なしでも recursive 関数の SROA + frame elimination が
+強くなり、call 境界のオーバーヘッドが大きく減少。
+
+非再帰 chain 系では gcc-13 と gcc-16 で大差なし (LTO の chain inline は
+gcc-13 でも完成済)。
+
+詳細な compiler 比較は git log を参照。
+
+### なぜ非再帰 chain で大きいか
+
+PGSD chain は各 call site の sp_body を HOPT に含めて baked するので、
+**chain 各レベルの SD が下流のすべての構造を符号化したユニークな
+シンボル** になる。LTO 併用時 gcc/clang の inliner はこれらの
+`static inline` を直接呼ぶ前提でクロス TU inline できる:
+
+```
+PGSD_<top>     ─inline→ PGSD_<HOPT(f0_body)>
+                            ─inline→ PGSD_<HOPT(f1_body)>
+                                        ─inline→ ...
+                                                  ─inline→ PGSD_<HOPT(f9_body)>
+                                                              = literal (e.g., n+1)
+```
+
+guard チェック (cc->serial == c->serial) も各レベルで残るが、
+LTO のチェイン inline で hot path 全体が 1 つの関数体にまとめられ、
+ループ本体で 0 〜 数 ns/call まで畳み込まれる。
+
+### なぜ再帰 chain で効かないか
+
+`fib_body → pg_call(fib) → sp_body=fib_body` は cycle。HOPT 計算は
+`is_hashing` フラグでサイクル検出して 0 を返すので、HOPT(fib_body)
+は実質的に HORG と同じ情報量しか持たない (sp_body の構造を識別
+できない)。結果として `PGSD_<HOPT(fib_body)>` ≈ `SD_<HORG(fib_body)>`
+で、LTO inline できる範囲も同じ。
+
+### 実装ファイル
+
+- `node.h`: `HOPT(n)` / `hash_node_opt(n)` 宣言、`HORG = HASH` macro
+- `node.c`: `HOPT` 実装 (kind->hopt_func dispatch + has_hash_opt cache)
+- `node.def`: `node_def` 実行時に `cs_load(body, name)` を追加
+- `naruby_gen.rb`: `:hopt` gen_task 登録、`sp_body` の HORG/HOPT
+  分岐 (`kind: :hopt` で `hash_node_opt`)、build_specializer の
+  PGSD/SD prefix runtime 切替 (`astro_cs_use_hopt_name`)
+- `naruby_parse.c`: `naruby_current_source_file` グローバル
+- `main.c`: top-level の `cs_compile(ast, source_file)` + `cs_load(ast, source_file)`、
+  bodies は AOT + PGC の両形 bake
+- 生成: `node_hopt.c` (per-NODE_DEF `HOPT_<name>` 関数)
+
+### 残課題
+
+- HOPT 計算の cycle break は kind id 等を含めず単に 0 を返す → 再帰
+  関数の HOPT が HORG と区別できない。本来は parent SCC を含む
+  Tarjan ベースの hash で識別したい (将来課題)
+- PGSD と SD を両 bake すると `code_store/all.so` のサイズが約 2 倍。
+  HOPT が AOT bake にしか使われないケースでは PGC bake を skip する
+  最適化余地あり。
+- profile データ (= "実 runtime に観測された body") を反映する仕組みは
+  未実装。現状は parse-time の `code_repo` last-wins を speculation
+  default として使う (= 既存挙動)。redef の頻度が低ければこの
+  default で十分機能する。
+
 ## 過去の主要マイルストーン
 
 > 履歴は git log (`sample/naruby/`) を参照。代表的なものを抜粋:

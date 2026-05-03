@@ -1,6 +1,16 @@
 require 'astrogen'
 
 class NaRubyNodeDef < ASTroGen::NodeDef
+  # Hopt (profile-aware hash) — generates node_hopt.c with HOPT_<name>
+  # functions and a `.hopt_func` slot on each NodeKind.  HORG keeps
+  # sp_body excluded (= stable call-site identity), HOPT recurses into
+  # sp_body so each profile-driven speculation gets its own SD bake.
+  # Used by code_store PGC mode (PGSD_<HOPT>).
+  register_gen_task :hopt,
+    func_typedef: "typedef node_hash_t (*node_hash_func_t)(struct Node *n);",
+    func_prefix: "HOPT_",
+    kind_field: "node_hash_func_t hopt_func"
+
   class Node < ASTroGen::NodeDef::Node
     # All dispatchers return `RESULT` (= VALUE + state bits) so `return`
     # propagates as a non-NORMAL state without setjmp.  Same as castro /
@@ -56,16 +66,23 @@ class NaRubyNodeDef < ASTroGen::NodeDef
       end
 
       # sp_body extern decl, gated on dedup to avoid colliding with an
-      # in-file static-inline emission of the same hash.
+      # in-file static-inline emission of the same hash.  PGC vs AOT
+      # prefix follows the corresponding bake-time selection in
+      # build_specializer below — they must agree per-emission so the
+      # extern declaration matches the constant we bake into the call.
       sp_op = @operands.find{|op| op.node? && op.name == 'sp_body' }
       if sp_op
         field_name = "n->u.#{@name}.#{sp_op.name}"
         decls << <<~C.chomp
               if (#{field_name}) {
-                  node_hash_t _sp_h = hash_node(#{field_name});
+                  node_hash_t _sp_h = astro_cs_use_hopt_name
+                      ? HOPT(#{field_name})
+                      : hash_node(#{field_name});
                   if (!astro_spec_dedup_has(_sp_h)) {
-                      fprintf(fp, "extern #{result_type} SD_%lx(#{@prefix_args.join(', ')});\\n",
-                              (unsigned long)_sp_h);
+                      const char *_sp_prefix =
+                          astro_cs_use_hopt_name ? "PGSD" : "SD";
+                      fprintf(fp, "extern #{result_type} %s_%lx(#{@prefix_args.join(', ')});\\n",
+                              _sp_prefix, (unsigned long)_sp_h);
                   }
               }
         C
@@ -136,14 +153,21 @@ class NaRubyNodeDef < ASTroGen::NodeDef
           end
         when 'NODE *'
           # `sp_body` is a parse-time link to the function body (PG mode).
-          # It's mutated at parse time (callsite_resolve) and again at
-          # runtime if a method is redefined (node_call2_slowpath sets
-          # `n->u.node_call2.sp_body = fe->body`).  Excluding it from the
-          # structural hash keeps HASH stable across these mutations and
-          # also breaks the recursion (`fib_body → call → sp_body=fib_body`)
-          # that would otherwise blow up HASH().
+          #
+          # HORG (kind: :horg) excludes it: keeps the call-site hash stable
+          # under runtime sp_body mutation (slowpath updates fe->body) and
+          # breaks the recursion (`fib_body → call → sp_body=fib_body`)
+          # that would otherwise infinite-loop HASH().  Used as profile
+          # key + AOT SD identity.
+          #
+          # HOPT (kind: :hopt) INCLUDES it via hash_node_opt: each profile-
+          # driven speculation target produces a distinct hash, so the same
+          # call site against different bodies bakes as different PGSD_*.
+          # Cycle break is provided by hash_node_opt's cached-on-entry
+          # convention (returns 0 if re-entered before the outer compute
+          # completes).
           if self.name == 'sp_body'
-            '0'
+            kind == :hopt ? "hash_node_opt(#{val})" : '0'
           else
             super
           end
@@ -219,17 +243,28 @@ class NaRubyNodeDef < ASTroGen::NodeDef
           # declaration in the same generated .c file.
           if self.name == 'sp_body'
             # No cn (no SPECIALIZE recursion into the body — it's a
-            # separate AOT entry compiled by build_code_store).  The
-            # extern decl is emitted by NaRubyNodeDef::Node#build_specializer
-            # in the decls section, gated on `astro_spec_dedup_has` to
-            # avoid colliding with a same-hash child operand.  Here we
-            # only emit the call-site argument: the field reference and
-            # the constant `SD_<hash>` baked from hash_node.
+            # separate AOT/PGC entry compiled by build_code_store).
+            #
+            # PGC vs AOT prefix selection: when we're in HOPT/PGSD mode
+            # (use_hopt_name == 1, set by astro_cs_compile(_, file)),
+            # we must bake `PGSD_<HOPT(sp_body)>` so the chain dispatches
+            # to the speculation-aware dispatcher.  In AOT mode we keep
+            # the legacy `SD_<HORG(sp_body)>` direct call.  Mixing would
+            # break the invariant that a PGSD's compile-time direct calls
+            # form a fully PGC-aware chain (and vice versa).
             #
             # IMPORTANT: do NOT mutate `n->u.<...>.sp_body->head.*`
-            # here — body NODE state belongs to body's own AOT bake.
-            arg = "    fprintf(fp, \"        n->u.#{name}.#{self.name},\\n\");\n" +
-                  "    fprintf(fp, \"        SD_%lx\", (unsigned long)hash_node(n->u.#{name}.#{self.name}));"
+            # here — body NODE state belongs to body's own AOT/PGC bake.
+            arg = <<~C.chomp
+                  fprintf(fp, "        n->u.#{name}.#{self.name},\\n");
+                  if (astro_cs_use_hopt_name) {
+                      fprintf(fp, "        PGSD_%lx",
+                              (unsigned long)HOPT(n->u.#{name}.#{self.name}));
+                  } else {
+                      fprintf(fp, "        SD_%lx",
+                              (unsigned long)hash_node(n->u.#{name}.#{self.name}));
+                  }
+            C
             return nil, arg
           end
           super
@@ -238,5 +273,16 @@ class NaRubyNodeDef < ASTroGen::NodeDef
         end
       end
     end
+  end
+
+  # Generated file for the :hopt task — emits HOPT_<name>(NODE *n)
+  # functions backed by `hash_call(_, kind: :hopt)` per operand.
+  def build_hopt
+    <<~C__
+    // This file is auto-generated from #{@file}.
+    // Hopt (structural + profile) hash functions
+
+    #{@nodes.map{|name, n| n.build_hopt_func}.join("\n")}
+    C__
   end
 end

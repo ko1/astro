@@ -7,6 +7,7 @@
 #include "astro_jit.h"
 
 NODE *PARSE(int argc, char *argv[]);
+extern const char *naruby_current_source_file;
 
 struct naruby_option OPTION = {
     // .static_lang = true,
@@ -190,12 +191,42 @@ create_context(int frames, int funcs)
 static void
 build_code_store(NODE *ast)
 {
-    if (ast) astro_cs_compile(ast, NULL);
+    // Top-level program AST: bake in BOTH AOT and PGC modes.  Without
+    // PGC bake, the top-level SD's compile-time direct calls to body
+    // dispatchers are `SD_<HORG(body)>`, which bypasses the body's
+    // `PGSD_<HOPT(body)>` dispatcher set by cs_load.  With PGC bake,
+    // the chain enters PGSDs naturally — the user-visible perf win
+    // from speculation only kicks in once the entry point itself
+    // dispatches into PGSD.
+    if (ast) {
+        astro_cs_compile(ast, NULL);
+        astro_cs_compile(ast, naruby_current_source_file);
+    }
 
+    // Function bodies: PGC (HOPT, PGSD_<HOPT>) when we want speculation.
+    // The `file` argument is used by astro_cs_compile to decide:
+    //   - non-NULL → PGSD_<HOPT>.c, append (Horg, file, line) → Hopt to
+    //                hopt_index.txt so a future astro_cs_load can find it.
+    //   - NULL     → SD_<HORG>.c (AOT).
+    //
+    // For now we use the function name as the synthetic `file` so each
+    // body has a stable identifier across runs.  When source-line tracking
+    // lands we'd switch to actual file paths.
     for (uint32_t i = 0; i < code_repo.size; i++) {
         if (code_repo.entries[i].skip_specialize) continue;
         NODE *body = code_repo.entries[i].body;
-        if (body) astro_cs_compile(body, NULL);
+        const char *fname = code_repo.entries[i].name;
+        if (body) {
+            // AOT bake (SD_<HORG>): used by HORG-baked chains and as
+            // fallback when no PGC entry exists.  Required even when
+            // PGC is enabled because top-level program SDs (also AOT-
+            // baked) reference these via baked direct calls.
+            astro_cs_compile(body, NULL);
+            // PGC bake (PGSD_<HOPT>): records (Horg, file, line) → Hopt
+            // in hopt_index.txt so cs_load can pick the speculation-
+            // aware variant when the file argument is provided.
+            astro_cs_compile(body, fname);
+        }
     }
 
     // -Wl,-Bsymbolic: SDs in all.so call each other (the recursive
@@ -237,6 +268,15 @@ main(int argc, char *argv[])
 
     if (!OPTION.compile_only) {
         OPTIMIZE(ast);
+        // Override OPTIMIZE's AOT-only cs_load with a PGC-aware one for
+        // the top-level AST.  This lets cs_load consult hopt_index for
+        // a baked PGSD_<HOPT(top)>; once top dispatches as PGSD, its
+        // baked direct calls hit body PGSDs and the entire chain runs
+        // through PGC (HOPT-keyed) variants.  Without this, top stays
+        // at SD_<HORG(top)>, baked direct calls go to SD_<HORG(body)>,
+        // and body's PGSD dispatcher (set by node_def's cs_load) is
+        // bypassed.
+        (void)astro_cs_load(ast, naruby_current_source_file);
         // printf("main dispatcher:%s (h:%lx)\n", ast->head.dispatcher_name, HASH(ast));
         RESULT r = EVAL(c, ast, c->env);
         printf("Result: %ld, node_cnt:%lu\n", r.value, node_cnt);

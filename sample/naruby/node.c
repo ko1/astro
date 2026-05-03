@@ -19,6 +19,12 @@ node_allocate(size_t size)
         fprintf(stderr, "Memory allocation failed\n");
         exit(EXIT_FAILURE);
     }
+    // Zero-init the entire NODE.  Generated ALLOC_<name> sets the operand
+    // fields and most flags explicitly, but `head.flags.has_hash_opt` and
+    // `head.hash_opt` are not in that list, so without zeroing them here
+    // HOPT() can spuriously hit the cache with a garbage uninitialized
+    // value.  abruby does the same.
+    memset(n, 0, size);
     node_cnt++;
     return n;
 }
@@ -138,9 +144,46 @@ SPECIALIZED_SRC(NODE *n)
 #include "node_dispatch.c"
 #include "node_dump.c"
 #include "node_hash.c"
+#include "node_hopt.c"
 #include "node_specialize.c"
 #include "node_replace.c"
 #include "node_alloc.c"
+
+// --- Hopt (profile-aware) hash dispatch + cache wrapper.
+// HORG (= structural HASH) is provided by node_hash.c via the framework;
+// here we expose the per-NodeKind hopt_func as the user-facing HOPT() and
+// the cached hash_node_opt() that pg_call's HOPT_ recurses through.
+
+node_hash_t
+HOPT(NODE *n)
+{
+    if (n == NULL) return 0;
+    if (n->head.flags.has_hash_opt) return n->head.hash_opt;
+    if (n->head.kind->hopt_func) {
+        // Mark first so cyclic recursion (fib_body → pg_call → sp_body=fib_body)
+        // sees has_hash_opt=true and bottoms out at the partially-computed
+        // value instead of recursing forever.
+        //
+        // Pre-seed the cached value with a kind-specific marker so two
+        // mutually-recursive bodies of different shapes don't collapse
+        // to the same HOPT (= 0).  fib_body's pg_call's sp_body is itself
+        // a node_pg_call, so its cycle-break value depends on
+        // dispatcher_name (≈ HORG-derived).  Two distinct recursive
+        // functions thus hash differently.
+        n->head.flags.has_hash_opt = true;
+        n->head.hash_opt = hash_cstr(n->head.kind->default_dispatcher_name);
+        return n->head.hash_opt = (*n->head.kind->hopt_func)(n);
+    }
+    return 0;
+}
+
+node_hash_t
+hash_node_opt(NODE *n)
+{
+    if (!n) return 0;
+    if (n->head.flags.has_hash_opt) return n->head.hash_opt;
+    return HOPT(n);
+}
 
 // --- INIT ---
 

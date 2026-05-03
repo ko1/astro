@@ -1373,10 +1373,16 @@ read_file_all(const char *filename)
     return buffer;
 }
 
+// Latest source file parsed by PARSE().  Used by build_code_store as
+// the `file` argument for top-level astro_cs_compile so the program AST
+// gets a stable PGC identity (PGSD_<HOPT>) keyed off the script path.
+const char *naruby_current_source_file = NULL;
+
 NODE *
 PARSE(int argc, char *argv[])
 {
     const char *fname = parse_option(argc, argv);
+    naruby_current_source_file = fname;
     const char *src = read_file_all(fname);
     pm_parser_t parser;
     pm_options_t options = {0};

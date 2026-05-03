@@ -334,6 +334,99 @@ SD_<call2_hash>(c, n, fp) {
 実測では fib(40) AOT 1.21s → PG 0.91s の高速化が出ている
 (詳細は [perf.md](perf.md))。
 
+#### 5.3.1 HOPT / PGSD chain (Profile-Guided Specialization)
+
+ASTro framework の HOPT/PGSD 機構を利用した投機的チェイン inline。
+非再帰 call chain (`f → g → h → ...`) を LTO で 1 関数に折り畳む
+ことを目的とする。実測 47–84% 高速化 (chain系 bench、詳細
+[perf.md](perf.md))。
+
+##### 二段ハッシュ: HORG / HOPT
+
+- **HORG** = 既存の `HASH(n)` (= `hash_node(n)`)。pg_call 系の
+  `sp_body` は除外 (`naruby_gen.rb` の `hash_call(val, kind: :horg)`)。
+  call site の identity = stable な構造ハッシュ。
+- **HOPT** = `node.c` の `HOPT(n)` / `hash_node_opt(n)`。
+  `naruby_gen.rb` の `hash_call(val, kind: :hopt)` で sp_body も
+  含めて再帰計算。`is_hashing` フラグで cycle 検出時に 0 を返す
+  (再帰関数では sp_body 部分が潰れる → HOPT ≈ HORG)。
+
+各 NODE は `head.hash_value` (HORG cache) と `head.hash_opt`
+(HOPT cache) の 2 つを持つ。`has_hash_value` / `has_hash_opt`
+フラグで lazy compute。`node_allocate` で `memset` 必須
+(`has_hash_opt` が malloc ガベージで true になると HOPT が
+偽キャッシュ 0 を返す事故防止)。
+
+##### SD と PGSD の二系統
+
+同じ body NODE が `SD_<HORG>` と `PGSD_<HOPT>` の 2 つのシンボルで
+all.so にエクスポートされる:
+
+- **SD_<HORG>**: AOT モード (`astro_cs_compile(body, NULL)`)。
+  HORG が同じなら同じ SD。sp_body 違いに鈍感。
+- **PGSD_<HOPT>**: PGC モード (`astro_cs_compile(body, file)`)。
+  sp_body の構造を反映 → 投機チェインごとに固有 SD。
+
+PGSD chain は parent SD が `PGSD_<HOPT(child)>` を baked-direct で呼ぶ
+構造になり、LTO で連鎖貫通 inline ができる。SD chain は
+`SD_<HORG(child)>` で同じだが HORG 共有で同 SD に潰れるため inline
+の余地が小さい。
+
+##### `hopt_index.txt`
+
+framework が `(Horg, file, line) → Hopt` の対応を `code_store/hopt_index.txt`
+に追記永続化。`astro_cs_load(n, file)` は `file != NULL` のとき
+hopt_index を引いて PGSD_<Hopt> を dlsym する。見つからなければ
+SD_<Horg> へ fall-back。
+
+##### naruby 側の wire-up
+
+```c
+/* node_def 実行時 (node.def): body の dispatcher を PGSD に */
+NODE_DEF @noinline node_def(...) {
+    fe->body = OPTIMIZE(body);
+    (void)astro_cs_load(fe->body, name);   // file = function name
+    ...
+}
+
+/* main.c: top-level も PGC bake + load */
+extern const char *naruby_current_source_file;  /* parser 経由 */
+OPTIMIZE(ast);
+(void)astro_cs_load(ast, naruby_current_source_file);
+EVAL(c, ast, c->env);
+...
+build_code_store(ast):
+    astro_cs_compile(ast, NULL);                      // SD_<HORG(top)>
+    astro_cs_compile(ast, naruby_current_source_file); // PGSD_<HOPT(top)>
+    for body in code_repo:
+        astro_cs_compile(body, NULL);                  // SD_<HORG(body)>
+        astro_cs_compile(body, body_name);             // PGSD_<HOPT(body)>
+```
+
+両形 bake する理由: top SD (AOT) は `SD_<HORG(body)>` を baked-direct
+で参照。SD form がないと dlopen の symbol resolution で fail する
+(unresolved symbol in .data)。AOT 版を残すことで AOT chain が成立、
+PGC 版を追加することで PGSD chain も成立。
+
+##### 効果が出る条件
+
+PGSD+LTO で大きく速くなるのは:
+- **非再帰 call chain** (`f0 → f1 → ... → fN`)。各レベルの HOPT が
+  下流の構造を符号化 → ユニークな PGSD → LTO inline 可能。
+- **sp_body が parser-stable** (= def の前方リンク確定)。再帰
+  function は cycle 0 で潰れる → HOPT ≈ HORG → SD と差なし。
+
+実測 (詳細は perf.md):
+
+| bench | pg | pg+lto | 改善 |
+|-------|-----:|-------:|-----:|
+| call (10 段) | 1.15 | 0.49 | -57% |
+| chain20 (20 段) | 1.23 | 0.65 | -47% |
+| zero (1B builtin) | 2.68 | 0.42 | -84% |
+| chain_add (10 段 +1) | 0.11 | 0.05 | -55% |
+| compose (3 段) | 0.10 | 0.03 | -70% |
+| fib (再帰) | 0.55 | 0.56 | 0% |
+
 ### 5.4 JIT (`-j`)
 
 `astro_jit.c` (740 行) が独立した worker (L1 サーバ) と Unix Domain
