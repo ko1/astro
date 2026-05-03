@@ -142,6 +142,43 @@ LDFLAGS="-fno-lto" \
 スクリプトを `sample/koruby/tools/` に commit 済 (cf. `bench-matrix.sh`,
 `bench-summary.sh`, `bench-validate.sh`)。
 
+### 真 PGO (koruby 本体 instrument → optcarrot 60f profile → 再リンク)
+
+`tools/bench-pgo.sh` で `make koruby-pgo` (Makefile に既存) を回した結果、
+RUNS=10 FRAMES=300:
+
+| compiler  | koruby PGO | AOT flags          | best fps | median fps | size  |
+|-----------|------------|--------------------|---------:|-----------:|------:|
+| gcc-15    | -O2 + PGO  | -O2 -march=native  |  107.62  | **106.71** | 3.5MB |
+| gcc-15    | -O3 + PGO  | -O2 -march=native  |  107.00  |   106.51   | 3.5MB |
+| gcc-16    | -O2 + PGO  | -O2 -march=native  |  106.78  |   105.61   | 3.7MB |
+| gcc-13    | -O2 + PGO  | -O2 -march=native  |  102.87  |   102.15   | 3.4MB |
+| gcc-15    | -O2 + PGO  | -O3 -march=native  |  102.36  |   101.38   | 4.0MB |
+
+**PGO 効果**: gcc-15 baseline 比で median **+1.1 fps (+1.0%)**。
+小さいが安定的。 hot dispatch loop の branch hint と inline 判断が
+profile-guided で改善される。 AOT 化されてもなお koruby 本体の dispatch
+コードは大半触られるため効く。
+
+PGO 下でも `-O2 koruby + -O2 -march=native AOT` が最強。 `-O3` は
+ここでも regression、 gcc-13 は -4 fps の大きな差。
+
+### 最終確定 ベスト構成
+
+```sh
+# koruby 本体 (PGO で +1 fps)
+CC=gcc-15 optflags="-O2" make koruby-pgo
+
+# AOT (no LTO は固定ルール)
+CC=gcc-15 \
+CFLAGS="-O2 -march=native -fPIC -fno-plt -fno-semantic-interposition" \
+LDFLAGS="-fno-lto" \
+./koruby --aot-compile <prog>
+```
+
+vs CRuby 4.0 + YJIT (177.97 fps, perf.md 冒頭) との比は **0.60×**。
+AOT 単独 (105) → AOT+PGO (107) で 1.02× 改善。
+
 ---
 
 ## 2026-05-02 現状サマリ (検証付き)
