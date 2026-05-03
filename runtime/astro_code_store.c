@@ -486,7 +486,26 @@ astro_cs_build(const char *extra_cflags)
     }
 
     fprintf(fp, "CC ?= gcc\n");
-    fprintf(fp, "CFLAGS ?= -O3 -fPIC -fno-plt -march=native");
+    // -fno-semantic-interposition: gcc default under -fPIC is to assume
+    // every function in this .so could be interposed by the dynamic
+    // linker, so it routes intra-.so calls through the GOT (= indirect
+    // call per cross-SD dispatch).  We never interpose code_store
+    // symbols at runtime — the .so is loaded once via dlopen and its
+    // SD bodies only call peer SDs in the same .so.  Telling gcc this
+    // turns those into direct calls and lets the optimizer reason
+    // across them; measured -14% on naruby fib at gcc-16, -17% at
+    // gcc-13.  No-op on clang (it already assumes this).
+    //
+    // -march=native: x86 / aarch64 only.  RISC-V gcc/clang don't
+    // implement the "native" detection (they error out or just emit a
+    // warning and ignore it).  Skip it on RISC-V — users who want
+    // ISA extensions can pass `-march=rv64gc_zba_zbb...` via
+    // ASTRO_EXTRA_CFLAGS.  Detection is at runtime-build-time of the
+    // host program; the SD compile uses whatever CC is invoked.
+    fprintf(fp, "CFLAGS ?= -O3 -fPIC -fno-plt -fno-semantic-interposition");
+#if !defined(__riscv)
+    fprintf(fp, " -march=native");
+#endif
     if (extra_cflags && extra_cflags[0]) {
         fprintf(fp, " %s", extra_cflags);
     }
