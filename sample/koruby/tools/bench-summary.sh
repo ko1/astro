@@ -5,7 +5,7 @@ LOGS="$@"
 
 {
   for log in $LOGS; do
-    grep -E "^P[0-9]_" "$log" 2>/dev/null | grep -v "BUILD_FAIL\|NO_FPS"
+    grep -E "^[A-Z][A-Z0-9]*_" "$log" 2>/dev/null | grep -v "BUILD_FAIL\|NO_FPS\|NO_GCDA\|^=="
   done
 } | awk '
 {

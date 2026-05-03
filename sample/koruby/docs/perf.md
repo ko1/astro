@@ -163,21 +163,81 @@ profile-guided で改善される。 AOT 化されてもなお koruby 本体の 
 PGO 下でも `-O2 koruby + -O2 -march=native AOT` が最強。 `-O3` は
 ここでも regression、 gcc-13 は -4 fps の大きな差。
 
-### 最終確定 ベスト構成
+### AOT-level PGO (all.so 自体を profile-guided でリビルド)
+
+`tools/bench-aot-pgo.sh` で 3-pass を実装:
+1. koruby を普通にビルド
+2. all.so を `-fprofile-generate=$DIR` で instrument 付きでビルド
+3. optcarrot 120f 走らせて profile 収集
+4. all.so の `o/*.o` を `rm` → `-fprofile-use=$DIR -fprofile-correction` で再ビルド (.so 再リンク)
+5. 計測
+
+ルール (`-fno-lto` on all.so) は維持。 結果 (RUNS=10 FRAMES=300, 複数 run の median):
+
+| compiler  | koruby PGO | AOT flags          | best fps | median fps | size  |
+|-----------|------------|--------------------|---------:|-----------:|------:|
+| gcc-16    | -          | -O3 -march=native  |  113.11  | **112.04** | 3.0MB | ★
+| gcc-16    | -          | -O2 -march=native  |  112.42  |   111.56   | 2.9MB |
+| gcc-16    | + (-O2)    | -O2 -march=native  |  113.51  |   111.53   | 2.9MB |
+| gcc-15    | -          | -O2 -march=native  |  112.05  |   110.94   | 2.7MB |
+| gcc-15    | -          | -O3 -march=native  |  111.22  |   110.15   | 2.8MB |
+| gcc-15    | + (-O2)    | -O2 -march=native  |  110.93  |   109.75   | 2.7MB |
+| gcc-13    | -          | -O2 -march=native  |  107.27  |   105.87   | 2.7MB |
+
+**AOT-PGO の効果は劇的**:
+- 非 PGO baseline (gcc-15): median 105.61
+- AOT-PGO (gcc-16):         median 112.04 → **+6.4 fps (+6.1%)**
+- koruby-PGO 単独 (gcc-15): median 106.71 → +1.1 fps のみ
+
+ホットコードの大半は AOT-emitted SD_*.c に集中しているので、 そっちを
+profile-guided に並べ替える効果が圧倒的。 koruby 本体の PGO は、 既に
+AOT 化された後だと効きどころが少なく、 AOT-PGO に上乗せしても
+no-op に近い (median 111.53 vs 111.56)。
+
+**追加観察**:
+- AOT-PGO 下では **`-O3` が `-O2` を 0.5 fps 上回る**: 普段は -O3 の
+  bloat が icache を圧迫するが、 PGO で hot block first にレイアウト
+  されると -O3 の追加 inline / unroll が効くようになる。
+- AOT-PGO 下で **gcc-16 が gcc-15 を 1 fps 上回る** (普段は逆)。
+  PGO meta-data 読み込み + register allocation の改善が新世代 gcc で
+  進んでる模様。
+- size: 非 PGO 3.5MB → AOT-PGO 2.9-3.0MB。 cold path が削られて
+  20% 小さくなる (副次効果として配布サイズも改善)。
+- gcc-13 は AOT-PGO でも 105 fps 止まり (-6 fps 差)。 PGO 関連の
+  改善が gcc-15+ で大きく入ったことが伺える。
+
+### 最終確定 ベスト構成 (production)
 
 ```sh
-# koruby 本体 (PGO で +1 fps)
-CC=gcc-15 optflags="-O2" make koruby-pgo
+# 1. koruby 本体は普通にビルド (-O3 -flto=auto, Makefile デフォルト)
+CC=gcc-16 make
 
-# AOT (no LTO は固定ルール)
-CC=gcc-15 \
-CFLAGS="-O2 -march=native -fPIC -fno-plt -fno-semantic-interposition" \
-LDFLAGS="-fno-lto" \
+# 2. AOT を instrument 付きでビルド (PGO pass 1)
+CC=gcc-16 \
+CFLAGS="-O3 -march=native -fPIC -fno-plt -fno-semantic-interposition -fprofile-generate=$PWD/aot-pgo-data" \
+LDFLAGS="-fno-lto -fprofile-generate=$PWD/aot-pgo-data" \
 ./koruby --aot-compile <prog>
+
+# 3. workload を 1 度走らせて profile 収集
+./koruby <prog>
+
+# 4. all.so を profile-use で再ビルド
+rm code_store/o/*.o code_store/all.so
+CC=gcc-16 \
+CFLAGS="-O3 -march=native -fPIC -fno-plt -fno-semantic-interposition -fprofile-use=$PWD/aot-pgo-data -fprofile-correction" \
+LDFLAGS="-fno-lto" \
+make -C code_store all.so
+
+# 5. 本番実行
+taskset -c 0 ./koruby <prog>   # → ~112 fps
 ```
 
-vs CRuby 4.0 + YJIT (177.97 fps, perf.md 冒頭) との比は **0.60×**。
-AOT 単独 (105) → AOT+PGO (107) で 1.02× 改善。
+実装としては `tools/bench-aot-pgo.sh` の `run_aot_pgo_config` がそのまま
+雛形。 Makefile に `koruby-aot-pgo` ターゲットとして組み込めば
+1 コマンドで完結 (今後 todo)。
+
+vs CRuby 4.0 + YJIT (177.97 fps): **0.63×** (旧 0.57× → 改善)。
+AOT 単独 105 → AOT+PGO 112 で **1.07× 改善**。
 
 ---
 
