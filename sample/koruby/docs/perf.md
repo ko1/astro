@@ -63,6 +63,87 @@ checksum: 59662 (ruby と全 koruby ビルド一致 ✅)
 
 ---
 
+## 2026-05-03 拡張スイープ: コンパイラ × フラグ ~100 通り
+
+`tools/bench-matrix.sh` で系統的に全コンパイラ × 主要フラグを総当たり後、
+top の 14 + cross-compiler 8 を `RUNS=10 FRAMES=300` で再測 (validate)。
+checksum 検証付き、 `taskset -c 0`。
+
+**ルール**: AOT all.so は `-fno-lto` 固定 (LTO は実用 PGO とぶつかる)。
+koruby 本体は通常 `optflags=-O3 -flto=auto` (Makefile デフォルト)。
+
+### 最終ランキング (gcc-15 系のフラグ・スイープ, RUNS=10 FRAMES=300)
+
+| AOT 追加フラグ                              | best fps | median fps | size  |
+|---------------------------------------------|---------:|-----------:|------:|
+| `-O2 -march=native` (baseline)              |  106.32  | **105.61** | 3.5MB |
+| `-O2 -march=native -Wl,-O3`                 |  106.24  |   105.17   | 3.5MB |
+| `-O2 -march=native -fipa-cp-clone`          |  106.04  |   105.14   | 3.5MB |
+| `-O2 -march=native -fno-tree-vectorize`     |  106.27  |   105.02   | 3.6MB |
+| `-O2 -march=native -fno-stack-protector`    |  105.92  |   104.82   | 3.5MB |
+| `-O2 -march=native -fuse-ld=gold`           |  105.39  |   104.79   | 3.5MB |
+| `-O2 -march=native --param=max-inline-insns-auto=300` | 105.00 | 104.52 | 3.5MB |
+| `-O2 -march=native -Wl,--gc-sections`       |  105.49  |   104.37   | 3.5MB |
+
+**結論**: ベース `-O2 -march=native` がそのまま最強。 試した advanced
+フラグ (`-fno-tree-vectorize`, `--param=max-inline-insns-auto=*`,
+`-fipa-pta`, `-fipa-cp-clone`, `-funroll-loops`, `--param=inline-unit-growth=*`,
+`-fno-stack-protector`, `-Wl,-O3`, `-Wl,--gc-sections`, `-fuse-ld=gold/lld`,
+`-Wl,--icf=all`, ...) はどれもベース ±1 fps、 median ベースで **全敗**。
+
+### Cross-compiler / -O level (gcc-15 vs 13/14/16, vs clang-21)
+
+| compiler  | AOT flags             | best fps | median fps | size  |
+|-----------|-----------------------|---------:|-----------:|------:|
+| gcc-15    | -O2 -march=native     |  105.72  | **104.79** | 3.5MB |
+| gcc-15    | -O2 (no -march)       |  105.01  |   104.01   | 3.4MB |
+| gcc-13    | -O2 -march=native     |  104.58  |   103.73   | 3.3MB |
+| gcc-14    | -O2 -march=native     |  103.80  |   102.35   | 3.4MB |
+| gcc-15    | -O3 -march=native     |  102.37  |   100.48   | 4.0MB |
+| clang-21  | -O3 -march=native     |   95.50  |    94.41   | 3.8MB |
+| clang-21  | -O2 -march=native     |   95.56  |    93.45   | 3.8MB |
+| gcc-15    | -Os -march=native     |   85.52  |    84.94   | 2.2MB |
+
+(gcc-16 baseline は別 run で 104.31; 今回スイープでは gcc-15 とほぼ同等。)
+
+### 重要な観察
+
+1. **gcc-15 が最強。 gcc-14 で軽い回帰 (-2 fps median)**、 gcc-16 で持ち直すが
+   gcc-15 を超えない。 gcc-13 は gcc-15 の -1 fps 程度。
+2. **AOT は `-O2` が `-O3` より速い**: median で +4 fps、 size 3.5MB → 4.0MB。
+   AOT-emitted SD_*.c は既に手で `@noinline` + 局所 DISPATCH で
+   構造化されており、 `-O3` の追加 inline / vectorize は icache 圧を
+   増やすだけ。
+3. **clang は gcc から ~10 fps 離される** (`-O2`/`-O3` どちらでも)。
+   AOT-emitted の cold/hot dispatch パターンに対する code-gen で
+   gcc が優位 (おそらく switch-table と局所 inline のバランス)。
+4. **`-march=native` の効果は ~1 fps** (gcc-15 比較で 104.01 → 104.79)。
+   tight loop は SSE 程度しか触っていないので AVX も大差ない。
+5. **linker option / advanced -f フラグはほぼ全敗**。 `-Wl,-O3`,
+   `--gc-sections`, `-fuse-ld=gold/lld`, `-Wl,--icf=all` も baseline と
+   同等以内。 `-fno-tree-vectorize` も僅差で負ける (validate run 時点では)。
+6. **-Os は破壊的 (-20 fps)** — size 2.2MB と小さくなるが hot path が
+   inline されず壊滅。
+
+### 採用設定 (推奨)
+
+```sh
+# koruby 本体 (Makefile デフォルトでよい)
+CC=gcc-15 optflags="-O3 -flto=auto" make
+
+# AOT (all.so + 各 SD_*.so)
+CC=gcc-15 \
+CFLAGS="-O2 -march=native -fPIC -fno-plt -fno-semantic-interposition" \
+LDFLAGS="-fno-lto" \
+./koruby --aot-compile <prog>
+```
+
+`tools/bench-matrix.sh` は今後の compiler 探索を再現可能にするため
+スクリプトを `sample/koruby/tools/` に commit 済 (cf. `bench-matrix.sh`,
+`bench-summary.sh`, `bench-validate.sh`)。
+
+---
+
 ## 2026-05-02 現状サマリ (検証付き)
 
 過去の数字は checksum 検証なしで取られていて、optcarrot の rendering loop
