@@ -68,6 +68,38 @@ koruby-pgo-aot: koruby-pgo
 	@echo "==> PGO+AOT build done.  code_store/all.so:"
 	@ls -la code_store/all.so
 
+# AOT-level PGO: profile-guide all.so itself.  This is the bigger win
+# (~+6 fps optcarrot, 105→112).  Three passes on the AOT layer:
+#   1. Build all.so with -fprofile-generate (instrumented .o + linked .so)
+#   2. Run optcarrot once to write .gcda files into AOT_PGO_DIR
+#   3. Rebuild all.so with -fprofile-use using the collected profile
+# koruby itself is built normally.  Project rule (-fno-lto on all.so) is
+# preserved by passing LDFLAGS=-fno-lto to both compile-link steps.
+AOT_PGO_DIR = $(CURDIR)/aot-pgo-data
+AOT_PGO_FRAMES = 120
+koruby-aot-pgo: koruby
+	@echo "==> AOT-PGO pass 1: instrumented all.so build"
+	rm -rf code_store $(AOT_PGO_DIR)
+	mkdir -p $(AOT_PGO_DIR)
+	CC="$(CC)" \
+	CFLAGS="-O3 -march=native -fPIC -fno-plt -fno-semantic-interposition -fprofile-generate=$(AOT_PGO_DIR)" \
+	LDFLAGS="-fno-lto -fprofile-generate=$(AOT_PGO_DIR)" \
+	./koruby --aot-compile $(AOT_BENCH) $(AOT_BENCH_ARGS)
+	@echo "==> AOT-PGO pass 2: collect profile (optcarrot $(AOT_PGO_FRAMES) frames)"
+	./koruby $(AOT_BENCH) --frames $(AOT_PGO_FRAMES) --headless \
+	    --no-print-fps --no-print-video-checksum >/dev/null
+	@n=$$(find $(AOT_PGO_DIR) -name '*.gcda' | wc -l); \
+	  echo "==> .gcda files written: $$n"; \
+	  test "$$n" -gt 0
+	@echo "==> AOT-PGO pass 3: rebuild all.so with -fprofile-use"
+	rm -f code_store/o/*.o code_store/all.so
+	CC="$(CC)" \
+	CFLAGS="-O3 -march=native -fPIC -fno-plt -fno-semantic-interposition -fprofile-use=$(AOT_PGO_DIR) -fprofile-correction" \
+	LDFLAGS="-fno-lto" \
+	$(MAKE) -C code_store -s all.so
+	@echo "==> AOT-PGO build done.  code_store/all.so:"
+	@ls -la code_store/all.so
+
 # generated files come from node.def via koruby_gen.rb
 $(NODE_GENFILES): node.def koruby_gen.rb ../../lib/astrogen.rb
 	ruby -I ../../lib -r ./koruby_gen -e 'ASTroGen.start([], node_def_class: KoRubyNodeDef)'
@@ -119,4 +151,4 @@ test: koruby
 bench-optcarrot: koruby
 	@bash tools/bench-optcarrot.sh
 
-.PHONY: all clean regen run bench-fib bench-optcarrot compiled_koruby test koruby-pgo koruby-aot koruby-pgo-aot
+.PHONY: all clean regen run bench-fib bench-optcarrot compiled_koruby test koruby-pgo koruby-aot koruby-pgo-aot koruby-aot-pgo
