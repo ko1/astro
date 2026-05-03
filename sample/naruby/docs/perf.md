@@ -327,6 +327,48 @@ loop 系で顕著** (gcc が分岐確率を学習してループ unrolling / 命
 
 詳細な compiler 比較は git log を参照。
 
+### asm レベルでの inline 確認
+
+**call (10 段尾呼出)**: gcc-16 + PGO+LTO で生成された SD body 内:
+
+```asm
+;; PGSD_<HOPT(top)> は SD_<HORG(top)> へ jmp で潰れた (LTO)
+;; SD_<HORG(top)> 内で chain がインライン展開:
+26d4: mov 0x68(%rsi),%rsi       ; sp_body 読み込み (= f1's body)
+26dc: cmp 0x58(%rsi),%rax       ; cc check #1 (f0 → f1)
+26e0: jne 2acc <deopt>
+26e6: mov 0x68(%rsi),%rsi       ; (= f2's body)
+26ee: cmp 0x58(%rsi),%rax       ; cc check #2 (f1 → f2)
+... (cc check #3-#10) ...
+2768: cmp 0x58(%rsi),%rax       ; cc check #10 (f9 自体)
+276c: jne 28c7
+2772: mov $0x2a,%ecx            ; ★ 42 を即値ロード (f9 returns n=42)
+... (return packing) ...
+```
+
+10 個の cc 検査 + 即値 42 読込 + return。**chain f0→f1→…→f9→n は
+"10 個の guard + return 42" に折り畳まれた**。
+
+**chain_add (10 段 +1)**: 各 fN が `n+1` を計算するチェイン。
+
+```asm
+;; 9 個の cc check (10 個から最深の最適化で 1 個減)
+2772: mov $0xa,%ecx              ; ★ 10 を即値ロード
+                                 ;   = 0+1+1+1+1+1+1+1+1+1 を constant fold
+```
+
+10 段の `+1` が **コンパイル時 constant folding で literal 10**
+にまで畳み込まれている。これが PGSD chain inline + LTO の真価:
+
+```
+ASTro 観点では「pg_call の sp_body_dispatcher が compile-time const
+SD ポインタとして baked」→ LTO inliner が chain 貫通 → 各 EVAL_node_*
+が inlined → 中間値が constant propagation で消える
+```
+
+ユーザの期待していた「`p f` が `p (guardあたれば) 0` 相当に baked」
+という形が達成されている。
+
 ### まとめ: 推奨ビルド設定
 
 通常用途 (gcc 13 default): `-Wl,-Bsymbolic -flto`
