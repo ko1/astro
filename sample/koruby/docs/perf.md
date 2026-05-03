@@ -10,6 +10,59 @@
 - コンパイラ: gcc 13.3 (-O2 / -O3)
 - Ruby (比較対象): CRuby 3.4 系 (no-JIT / `--yjit`)
 
+## 2026-05-03 コンパイラ別 optcarrot bench (180 frames, best/3)
+
+System: ruby 4.0.2 +PRISM, x86_64 Linux 6.8, koruby HEAD `04553d7`
+optcarrot: `sample/abruby/benchmark/optcarrot/bin/optcarrot-bench`
+checksum: 59662 (ruby と全 koruby ビルド一致 ✅)
+
+### Baseline
+
+| runner | fps |
+|---|---:|
+| ruby (no JIT) | 42.30 |
+| ruby --yjit | 177.97 |
+
+### koruby interp / AOT (compiler matrix)
+
+`-O3 -flto=auto` baseline; AOT additionally compiles each SD_*.c with
+`-O3 -fPIC -fno-plt -fno-semantic-interposition -march=native`.
+
+| compiler | -O2 interp | -O3 interp | AOT (-O3) | AOT speedup |
+|---|---:|---:|---:|---:|
+| gcc-13 | 46.36 | 50.63 | **100.96** | 1.94× |
+| gcc-14 | 48.00 | 50.73 | 99.12 | 1.95× |
+| gcc-15 | 45.43 | 51.62 | 97.21 | 1.94× |
+| gcc-16 | 46.59 | 50.90 | 99.77 | 2.05× |
+| clang-17 | 48.95 | 47.27 | 89.41 | 1.92× |
+| clang-18 | 47.84 | 49.90 | 90.78 | 1.88× |
+| clang-19 | 49.61 | 49.62 | 88.31 | 1.84× |
+| clang-20 | 50.11 | 50.66 | 92.32 | 1.85× |
+| clang-21 | 49.26 | 49.35 | 90.82 | 1.92× |
+
+### gcc-16 PGO 効果
+
+| variant | fps |
+|---|---:|
+| gcc-16 -O3 interp | 50.90 |
+| gcc-16 PGO interp | 52.88 |
+| gcc-16 -O3 AOT | 99.77 |
+| gcc-16 PGO + AOT | 100.75 |
+
+### 観察
+
+- **interp**: clang-20 (-O2: 50.11) と gcc-15 (-O3: 51.62) がほぼ同着
+- **AOT**: gcc 系全員 ~100 fps、 clang は ~90 fps で頭打ち。
+  AOT-emitted SD_*.c には @noinline / 局所 DISPATCH 構造が多く、 gcc の方が
+  アグレッシブに inline + clone してくれているように見える
+- AOT speedup は ~2× (interp の 50 → AOT の 100)
+- PGO 追加効果は ~1 fps と限定的 — AOT 化された SD_*.c がホットパスを
+  取り切るので、 PGO で main 側の dispatch を絞ってもほぼ無関係
+- vs ruby (no JIT): koruby AOT は **2.4× 速い**
+- vs ruby --yjit: yjit が **1.76× 速い** (koruby AOT は yjit の 0.57×)
+
+---
+
 ## 2026-05-02 現状サマリ (検証付き)
 
 過去の数字は checksum 検証なしで取られていて、optcarrot の rendering loop
