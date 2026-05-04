@@ -381,7 +381,7 @@ SROA が各 slot をネイティブ型のレジスタに promote** する。AST 
 | `astocaml` | tagged `int64` | libgc | 自前 lexer + parser | クロージャ環境チェイン, lazy, class/module |
 | `asom` | tagged `intptr_t` | libgc | 自前再帰下降 (`asom_parse.c`) | per-bucket free-list frame pool |
 | `aforth` | `int64_t` (data stack cell) | なし | 自前 tokenizer | DO-loop frame stack 並列, vars[] エリア |
-| `luastro` | tagged `LuaValue` (uint64_t) | 自前 mark-sweep GC | 自前 lexer + Pratt parser | metatable, **ucontext coroutine**, weak table, `__gc` |
+| `luastro` | tagged `LuaValue` (uint64_t) | 自前 mark-sweep GC | 自前 lexer + 再帰下降 + Pratt 式パーサ | metatable, **ucontext coroutine**, weak table, `__gc` |
 | `jstro` | tagged `JsValue` (uint64_t) | 自前 mark-sweep GC + safepoint | 自前 lexer + parser | **hidden class IC, shape transition, closure box** |
 | `castro` | union `{i, d, p}` | leak | tree-sitter-c (Ruby 側で IR 構築) | 1 slot = 8 byte の slot メモリモデル, goto-dispatch |
 | `pascalast` | `int64_t` | libgc | 自前 lexer + parser | display 配列 (nested proc), variant record |
@@ -397,6 +397,10 @@ SROA が各 slot をネイティブ型のレジスタに promote** する。AST 
 - **パーサ**: Prism (`naruby`, `abruby`, `koruby`) を使うのは Ruby 系
   3 つだけ。残り全部は **手書き再帰下降** か (`castro` だけ)
   **tree-sitter-c**。ASTro 自体はパーサに何の制約も置かない。
+  なお `luastro` は中置式の優先順位処理に **Pratt パーサ** (Vaughan Pratt
+  方式の top-down operator-precedence parsing — 各演算子トークンに左/右の
+  結合力を持たせて再帰下降の中で混在させる手法、Lua 本家 `lparser.c` と
+  同じやり方) を併用している。
 - **特殊な runtime**: jstro の hidden class IC (V8 風)、luastro の coroutine、
   asom の frame pool、castro の slot メモリモデル、pascalast の display
   配列 ... と、**フレームワーク本体には何も入っていない言語固有機構** が
