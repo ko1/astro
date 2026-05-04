@@ -5,7 +5,8 @@ node.def 構成** を中心に横断分析した文書。各サンプル個別�
 `sample/<lang>/README.md` および `sample/<lang>/docs/{done,todo,perf,runtime}.md`
 を参照。本書は「16 言語並べて何が分かるか」を整理する。
 
-最後の節 §6 で、これだけサンプルが揃ったところで見えてきた
+§6 で各サンプルの `docs/perf.md` から **定量的な性能まとめ** を出し、
+最後の §7 で、これだけサンプルが揃ったところで見えてきた
 **ASTro フレームワーク自身の Pros / Cons** をまとめる。
 
 ---
@@ -446,12 +447,121 @@ JIT は `naruby` のみ (L0/L1/L2 デーモンの試作)。
 
 ---
 
-## 6. ASTro 自身の Pros / Cons (冷静な分析)
+## 6. 性能まとめ — どこで何にどれだけ勝てているか
+
+各サンプルの `docs/perf.md` から最新の代表値を抜き出して横並びにする。
+**注意点を先に**:
+
+- 比較対象が言語ごとに違う (host JIT / bytecode VM / 同言語の native
+  AOT / 自前 interp baseline)。「速い」が指す相手は表ごとに別もの
+- bench セットも揃っていない (3〜15 本、種類もまちまち)。サンプル間で
+  「何倍」を直接比べるのは意味が薄い
+- 単位混在 (`aforth` `astrogre` `castro` は ms、他は秒)
+- 詳細・methodology は各 `sample/<lang>/docs/perf.md` を参照
+
+### 6.1 ベンチ vs リファレンス エンジン まとめ
+
+| sample | リファレンス | bench 数 | AOT vs リファレンス |
+|---|---|---:|---|
+| `aforth` | gforth (成熟した direct-threaded Forth) | 9 | **9/9 勝**、最大 15× (gcd) / 8× (factorial) / 7× (collatz) |
+| `ascheme` | chibi-scheme 0.12 / guile 3.0 (JIT) | 7 + 11 | **vs chibi 18/18 勝** (1.5–7.5×)、**vs guile 17/18 勝** (matmul のみ 1.2× 負け、最大 27×) |
+| `pystro` | CPython 3.12 | 6 | **6/6 勝**、1.13× (dict) — 19× (while loop) |
+| `asom` | SOM++ (g++ -O3 bytecode VM) / TruffleSOM (Graal JIT) | 12 | **vs SOM++ 11/12 勝**、PG なら **12/12 勝**、最大 10× (Sieve)。Truffle warm peak には 4–28× 負け |
+| `abruby` | CRuby 4.0.2 / YJIT | 15 + optcarrot | **vs CRuby 整数ループ系 4–8×**、optcarrot で +90% (PGC で 86.5 fps vs CRuby 45.6 fps)。YJIT は recursive で 1.5–2× 先 |
+| `koruby` | CRuby 4.0 / YJIT | optcarrot | AOT-PGO で **112 fps** (CRuby 42 fps の 2.65×、YJIT 178 fps の 0.63×) |
+| `naruby` | gcc -O0..-O3 (同等 C) + CRuby/YJIT | 15 | **gcc -O3 と ≤1.1× が 5/15** (gcd, compose, collatz, early_return, prime_count)。fib/ackermann/tak のみ 4–13× 差 |
+| `astocaml` | OCaml 4.14 (toplevel/bytecode/native) | 5 | **toplevel 5/5 勝**、**bytecode 3/5 勝**、native (ocamlopt) は 3.5–20× 先 |
+| `castro` | gcc -O0/-O1/-O3 (同 source) | 11 | **-O0 を 3 本上回り**、crc32 で **-O1 と 1.11× タイ**。-O3 への残ギャップ 3–5× |
+| `wastro` | native gcc -O2 / wasmtime (Cranelift JIT) | 3 | native に 3–6× 負け、wasmtime とはループでタイ・call で負け |
+| `jstro` | node v18 (V8 TurboFan) | 13 | **try/catch 45×、cold-start 53×、Redux 系 2.25×、large sieve 2.45×** で勝ち。fib/mandel/nbody は 3–14× 負け |
+| `astrogre` | ripgrep / GNU grep / Onigmo | 17 | **vs Onigmo 8/8 勝** (3–15×)、**vs grep 6/8 勝** (最大 10×)、ripgrep には 3/8 + 1 タイ (識別子系で 10× 負け) |
+| `pascalast` | (外部 Pascal なし、自 interp との比較のみ) | 4 | interp → AOT で 2× (recursive) 〜 25× (tight loop) |
+| `aforth` ~ `wastro` の interp 列は省略。各 perf.md の表参照。 |
+
+### 6.2 速度をどこで稼げているか (パターン別)
+
+定量数値を縦に見ると、**ASTro の AOT が大きく勝てる場面 / 勝てない場面**
+がはっきりする。
+
+#### (a) 大勝するパターン
+
+- **tight inner loop で型が parser-time に確定**: aforth (gcd 15×),
+  pystro (while_loop 19×), ascheme (sumloop 20× vs guile),
+  asom (Sieve 10×), naruby (loop で C コンパイラがループ自体を消す)
+- **インタプリタ起動が遅い処理系との比較**: jstro vs node は
+  cold-start で **53×** 勝つ (V8 の tier-up が間に合わない領域)
+- **バイトコード VM 全般**: SOM++ / chibi-scheme / gforth のような
+  "成熟したが JIT を持たない" 処理系には全勝に近い
+- **Onigmo に対する astrogre**: AC prefilter + AOT で 12-way alt が
+  特化されると Onigmo を 7× 引き離す
+- **CRuby (no-JIT)**: 整数ループ系で 4–8× — abruby/koruby/naruby
+  全部に共通
+
+#### (b) 互角〜辛勝のパターン
+
+- **ocamlopt / gcc -O3 系 native AOT** との比較: 同じ C ベース AOT 同士
+  なので大きな差は出ない。castro `crc32` が gcc -O1 タイ、naruby が
+  gcc -O3 と 5/15 タイ、astocaml が ocamlc bytecode に 3/5 勝
+- **native code をバイパスできない部分** (heap allocation 集中、
+  GC pause、文字列処理): abruby/koruby は string/binary_trees で
+  CRuby に 1.5–2× 負け
+
+#### (c) 大きく負けるパターン
+
+- **TurboFan の数値最適化**: jstro vs node の mandelbrot/nbody/fib は
+  V8 の type feedback + escape analysis が支配的で 3–14× 差
+- **Graal の partial escape analysis**: asom warm peak は TruffleSOM に
+  4–28× 負ける。Truffle の "全部 inline + escape elision" には届かない
+- **recursive call の deep nest**: 関数呼び出し境界の indirect dispatch が
+  残るので、純 recursive (fib/ack/tak) は naruby/koruby/abruby ともに
+  gcc -O3 / YJIT に水を空けられる
+- **ripgrep の Aho-Corasick / Teddy multi-literal**: アルゴリズム差で
+  astrogre が識別子パターンで 10× 負け (ASTro 関係なく engine 設計の問題)
+
+### 6.3 「ASTro AOT がどこに位置づくか」 1 行サマリ
+
+実測ベンチを横断すると、ASTro AOT の性能ポジションは概ね:
+
+> **「成熟した bytecode VM や non-JIT インタプリタを 2–10× 突き放し、
+> 同言語の C ベース native AOT (ocamlopt / gcc) には 1.5–5× 残ギャップ。
+> 動的言語の本気 JIT (V8 TurboFan / Graal) には 3–28× 負ける」**
+
+そう聞くと地味に響くが:
+
+- **「処理系作成コスト 1/10 で V8/Graal のクラスを目指せる」フレームワーク**
+  ではなく、**「処理系作成コスト 1/10 で bytecode VM クラスの倍速を出せる」
+  フレームワーク** という現実的な位置取り
+- 教科書的な "tree-walking interpreter は遅い" の壁は確実に超えている
+  (interp 比 5–25× が普通)
+- bytecode VM を書いた場合の最適化労力 (peephole / inline cache /
+  super-instruction / 命令ディスパッチ最適化…) と比べると、`node.def`
+  + AOT bake で同等以上が出るのは破格
+
+### 6.4 補足: 実測で気付かれている注意
+
+各 perf.md からの拾い物で、サンプル横断で意識しておきたい点:
+
+- **bench は ~1 秒スケールで取る**。ms 級だと setup-bound でノイズが
+  支配する (memory にも保存済の規律)
+- **`/dev/null` への出力は grep 系の比較を破壊する** (GNU grep の
+  `af6af28` 最適化、380,000× の不公平。astrogre perf.md §A 参照)
+- **dlopen / ccache / sandbox の罠** (`CCACHE_DISABLE=1`、初回 bake と
+  cached run の分離計測、`code_store/` 削除リセット) はサンプル間で
+  共通に踏むので perf.md の前置きを最初に読むこと
+- **JVM bootstrap fixed cost** (~1.5 s): TruffleSOM との比較で warm peak
+  だけ取るために `ITERS=N outer × best-of-3 trials × warmup discard` の
+  方法論が asom にある。長時間 bench と短時間 bench で評価が逆転するので
+  両方並べる必要がある (asom: warm peak は Truffle 圧勝、wall-clock は
+  asom 勝ち)
+
+---
+
+## 7. ASTro 自身の Pros / Cons (冷静な分析)
 
 サンプルが揃ったところで、ASTro フレームワーク自体を評価する。
 論文 (`docs/idea.md`) の主張と、サンプル実装で見えた現実を突き合わせる。
 
-### 6.1 効いている設計 (Pros)
+### 7.1 効いている設計 (Pros)
 
 - **EVAL と DISPATCH の分離が、ノード追加コストを劇的に下げている**。
   どのサンプルも「言語の表現力 × 数十行 / ノード」程度で実装できている
@@ -474,7 +584,7 @@ JIT は `naruby` のみ (L0/L1/L2 デーモンの試作)。
   は ASTro 設計時に想定していたとは思えないが、フレームワークが
   邪魔せず通る。
 
-### 6.2 効きが弱い・運用上のコスト (Cons)
+### 7.2 効きが弱い・運用上のコスト (Cons)
 
 - **動的 dispatch を消す手段が部分評価では不足**。動的型最適化 (jstro,
   luastro, abruby) は結局ユーザが kind swap + IC + `@canonical=` で
@@ -512,7 +622,7 @@ JIT は `naruby` のみ (L0/L1/L2 デーモンの試作)。
   (`hopt_index.txt`)・ascheme 流・jstro 流とそれぞれ実装している。
   共通フレームワーク化されていない。
 
-### 6.3 適性マトリクス (どんな言語に向くか)
+### 7.3 適性マトリクス (どんな言語に向くか)
 
 | 言語タイプ | ASTro との相性 | 根拠サンプル |
 |---|---|---|
@@ -526,7 +636,7 @@ JIT は `naruby` のみ (L0/L1/L2 デーモンの試作)。
 | GC の精度が要る (precise GC) | **△** | jstro/luastro が自前 mark-sweep を書いており、フレームワークは助けない |
 | 短命スクリプト (CLI ツール) | **△** | bake コストと dlopen キャッシュの初期化が見える。プレ bake 推奨 |
 
-### 6.4 まとめ
+### 7.4 まとめ
 
 ASTro は **「AST 解釈で書きやすい × 部分評価 + C コンパイラで AOT 速度」**
 という二点を両立する設計で、サンプル群を見るかぎり想定通り回っている。
