@@ -1,113 +1,110 @@
 # done.md — pystro 実装済み
 
 ASTro 上の Python サブセット。本書は **動く言語機能** を一覧する。
-未実装は [todo.md](./todo.md)、ランタイム解説は [runtime.md](./runtime.md)。
+未実装は [todo.md](./todo.md)、ランタイム解説は [runtime.md](./runtime.md)、
+ベンチ結果は [perf.md](./perf.md)。
 
 ## テストスイート
 
 ```
 $ make test
-  OK  test/00_basic.py
-  OK  test/01_compare.py
-  OK  test/02_control.py
-  OK  test/03_func.py
-  OK  test/04_string.py
-  OK  test/05_recursion.py
-  OK  test/06_bignum.py
-  OK  test/07_containers.py
-  OK  test/08_class.py
-  OK  test/09_exception.py
-  OK  test/10_func.py
----
-passed=11  failed=0  total=11
+... 21 tests OK ...
+passed=21  failed=0  total=21
 ```
 
-AOT モード (`./pystro -c`) でも全 11 件 pass。
+interpreter / AOT cached の両方で 21/21 pass。
 
 ## 言語機能
 
 ### リテラル
-- 整数: 62-bit fixnum + GMP `mpz_t` bignum (自動昇格)
-- 浮動小数: heap-boxed double (inline flonum 化は未着手)
-- 文字列 `"..."` / `'...'`、エスケープ `\n \t \r \\ \' \" \0`
-- f-string `f"x={expr}"` (`{...}` 内は再帰的にトークン化 + parse)
-- リスト `[1, 2, 3]`
+- 整数: 62-bit fixnum + GMP `mpz_t` bignum
+- 浮動小数: **inline flonum** (CRuby 流 3-bit rotate) + heap fallback
+- 文字列 `"..."` / `'...'`、エスケープ + slice の buffer 共有
+- f-string `f"x={expr}"` + format spec `{x:.2f}` `{x:>10}` `{x:05d}` 等
+- リスト `[1, 2, 3]`、内包表記 `[x*x for x in range(10) if x % 2 == 0]`
 - タプル `(1, 2, 3)`、空 `()`、単要素 `(x,)`
-- 辞書 `{"k": v, ...}`
+- 辞書 `{"k": v}`、内包表記 `{k: v for ...}`
+- **集合 `{1, 2, 3}`**、内包表記 `{x*x for x in xs}`、`set()` 組み込み
 - `True` / `False` / `None`
-- `0xFF` / `0b101` / `0o17`、underscore separator (`1_000_000`)
+- `0xFF` / `0b101` / `0o17`、`1_000_000`
 
 ### 演算子
-- 算術 `+ - * // / % ** ` (整数同士は overflow check 付き fixnum fast path、はみ出したら GMP bignum)
-  - `/` は **必ず float**、`//` は floor division
+- 算術 `+ - * / // % **` (整数 fixnum fast path、float inline、mixed → py_make_float)
 - 単項 `+x` / `-x` / `~x`
-- 比較 `< <= > >= == !=`、**比較連鎖** (`a < b < c`)
-- 論理 `and` / `or` / `not` (short-circuit、Python 流に operand を返す)
+- 比較 `< <= > >= == !=`、**比較連鎖** (`a < b < c`)、`is` / `is not`
+- 論理 `and` / `or` / `not` (short-circuit)
 - ビット演算 `& | ^ ~ << >>`
-- `is` / `is not` (オブジェクト identity)
-- `in` / `not in` (list / tuple / dict / str / range)
+- メンバーシップ `in` / `not in` (list / tuple / dict / set / str / range)
 - 拡張代入 `+= -= *= /= //= %= **= &= |= ^= <<= >>=`
 - 条件式 `x if cond else y`
+- **walrus `(x := expr)`**
 
 ### 文
 - `pass` / `break` / `continue`
-- `if/elif/else`
-- `while`
-- `for x in iter:` (list / tuple / dict / str / range)
-  - flat な tuple target (`for k, v in items:`) も対応
-- `def f(p1, p2=default, ...):`、`return`
+- `if / elif / else`
+- `while ... else: ...` (else は break しないとき実行)
+- `for x in iter: ... else: ...` 同上
+- `def f(p, q=default, *args, kwonly=N, **kwargs):`
+- `return [expr]`
 - `lambda x: expr`、`lambda x, y=1: ...`
-- `class Name(Base):` (継承 1 段、`__init__`、メソッド、属性 `self.x`)
-- `try / except / except E as e / finally`
-- `raise expr` / `raise` (再 raise)
-- `global x, y` (関数内 global 宣言)
-- 代入: `x = e`、`a.b = e`、`a[i] = e`
-- 多重代入 (flat tuple unpack): `a, b, c = (1, 2, 3)` / `a, b = b, a`
+- `class Name(Base):` (継承、`__init__`、メソッド、`self.x`)
+- **`@decorator`** (関数 / クラス、複数段、closure 込み)
+- `try / except [E [as e]] / else / finally / raise [expr]` / `raise`
+- **`with EXPR as NAME: ...`** (context manager — `__enter__` / `__exit__`)
+- `yield expr` / `yield from iter` (eager、結果 list)
+- `global x` / `nonlocal x`
+- `x = e`、`a.b = e`、`a[i] = e`
+- **slice 代入**: `a[i:j] = list` (step==1 で伸縮、step!=1 は同じ長さ)
+- **多重代入**: `a = b = expr` (RHS は temp で 1 回だけ評価)
+- 多重 unpack: `a, b, c = (1, 2, 3)`、`a, b = b, a`
 - 式文
 
 ### スコープ
 - トップレベル代入 → global
-- 関数内代入 → local (parser の suite pre-scan で抽出、ネストした def の body はスキップ)
-- `global x` 宣言で local シャドウを抑制
+- 関数内代入 → local (parser の suite pre-scan で判定、ネスト def はスキップ)
+- **closure capture**: ネスト def が外側 local を読める (lref_up depth 経由)
+- `nonlocal x` で外側 local への代入
+- `global x` で local シャドウ抑制
 
-### 組み込み関数
-| 名前 | 機能 |
+### 組み込み関数 (37 個)
+| グループ | 名前 |
 |---|---|
-| `print(*a)` | 空白区切りで各 arg を表示し改行 |
-| `str(x) / repr(x)` | 文字列化 |
-| `int(x) / float(x) / bool(x)` | 数値・真偽変換 |
-| `len(x)` | str / list / tuple / dict 長 |
-| `abs(x)` | 絶対値 (int/bignum/float) |
-| `range([s,] t [,step])` | 整数 range |
-| `list(it) / tuple(it) / dict()` | コンテナ生成 |
-| `type(x)` | 型名文字列 |
-| `isinstance(x, cls)` | 継承チェーン込み判定 |
-| `min / max / sum / sorted` | 集約 |
-| `enumerate / zip` | リスト返し (eager) |
-| `chr / ord / hex / bin` | 文字 / 数値変換 |
-| `input([prompt])` | 1 行読込 |
-| `hash(x)` | ハッシュ値 |
+| 出力 / 変換 | `print` / `str` / `repr` / `int` / `float` / `bool` / `format` |
+| 数値 | `abs` / `divmod` / `round` / `pow` (3-arg modular) |
+| 反復 | `range` / `len` / `enumerate` / `zip` / `reversed` / `sum` / `min` / `max` / `sorted` / `all` / `any` / `map` / `filter` / `iter` / `next` |
+| 構築 | `list` / `tuple` / `dict` / `set` |
+| 型 | `type` / `isinstance` / `hash` |
+| 文字 | `chr` / `ord` / `hex` / `bin` |
+| 入出力 | `input` |
+| descriptor | `staticmethod` / `classmethod` / `property` |
 
 ### 組み込み例外クラス
-`Exception` を頂点として `TypeError / ValueError / NameError /
-IndexError / KeyError / ZeroDivisionError / AttributeError /
-RuntimeError / StopIteration` が登録済み。`raise X("msg")` は自動的に
-`e.args = ("msg",)` と `e.message = "msg"` をセット。`isinstance` で
-継承を辿って except マッチ。
+`Exception` を頂点として `TypeError / ValueError / NameError / IndexError /
+KeyError / ZeroDivisionError / AttributeError / RuntimeError / StopIteration`。
+`raise X("msg")` は `e.args = ("msg",)` と `e.message = "msg"` をセット。
 
 ### 文字列メソッド
-`split / join / upper / lower / strip / startswith / endswith /
-find / replace / count`。すべて `s.method(args)` 構文 (bound method)。
+`split / join / upper / lower / strip / startswith / endswith / find /
+replace / count`
 
 ### リストメソッド
-`append / pop / extend / insert / index / reverse / sort` (in-place)。
+`append / pop / extend / insert / index / reverse / sort`
 
 ### dict メソッド
-`get / keys / values / items / pop`。
+`get / keys / values / items / pop`
+
+### set メソッド
+`add / discard / remove / pop / union / intersection / difference`
+
+### dunder methods
+`__init__` (constructor)、`__add__ / __sub__ / __mul__ / __radd__`、
+`__eq__` / `__lt__`、`__repr__` / `__str__`、`__len__`、`__getitem__` /
+`__setitem__`、`__enter__` / `__exit__` (with)
 
 ### スライス
-- `s[i]`、`s[i:j]`、`s[i:j:k]`、負インデックス、step、`s[::-1]` 反転 OK
+- `s[i]`、`s[i:j]`、`s[i:j:k]`、負インデックス、step、`s[::-1]` 反転
 - str / list / tuple に対応 (slice 結果は元と同型)
+- list には slice 代入も対応
 
 ### 実行モード
 | フラグ | 動作 |
@@ -118,34 +115,20 @@ find / replace / count`。すべて `s.method(args)` 構文 (bound method)。
 | `--no-compile`     | code_store 不使用 (純 interpreter) |
 | `-e <code>`        | コマンドライン文字列を実行 |
 
-## アーキテクチャ的に既に入れてある仕組み
-
-- AST ノードの structural hash → SD 単位の dedup
-- `astro_cs_compile` / `_build` / `_load` / `_reload` の AOT パイプライン
-- `try_stack` で nested try/except を `setjmp` / `longjmp` で正しく捕捉
-- `c->state` ベースの `return / break / continue` 伝播 (longjmp 不要)
-- closure 環境チェイン (`pyframe.parent`) — nested def ランタイム側は対応、parser 側は global lookup に fall back
-
 ## 性能 (vs. CPython 3.12)
 
-`make bench` の結果。詳細・各最適化の解説は [`perf.md`](./perf.md)。
+`make bench` の結果。詳細は [`perf.md`](./perf.md)。
 
-| bench | python3 | pystro AOT | pystro/python3 |
+| bench (~1s on python3) | python3 | pystro AOT | pystro/python3 |
 |---|---:|---:|---:|
-| fib(35) | 1.21 s | 0.65 s | **1.86×** |
-| while_loop 10M | 0.92 s | 0.05 s | **18×** |
-| for_range 15M | 1.00 s | 0.08 s | **12.5×** |
-| list 7M append+sum | 0.93 s | 0.19 s | **4.9×** |
-| string 2M split | 0.59 s | 0.48 s | **1.23×** |
-| dict 3M put+get | 0.78 s | 0.75 s | **1.04×** |
+| while_loop 10M | 0.95 s | 0.05 s | **18×** |
+| for_range 15M | 1.01 s | 0.09 s | **11×** |
+| list 7M append+sum | 0.88 s | 0.19 s | **4.7×** |
+| fib(35) | 1.18 s | 0.62 s | **1.9×** |
+| recursive (tak) | 4.06 s | 2.49 s | **1.6×** |
+| mandel | 0.70 s | 0.63 s | **1.1×** |
+| nqueens | 0.69 s | 0.62 s | **1.1×** |
+| string 2M split | 0.60 s | 0.50 s | **1.2×** |
+| dict 3M put+get | 0.77 s | 0.82 s | 0.94× |
 
-入った最適化 (`perf.md` §1-§8):
-
-1. `gref_cache @ref` (fib 5×)
-2. `globals_serial` を構造変化のみで bump (while 71×)
-3. `node_for_global` 内蔵キャッシュ (for_range 23×)
-4. `method_cache @ref` (list 12×)
-5. `py_apply` を `node.h` に static inline (fib 1.15×)
-6. leaf func の alloca フレーム (fib 1.5×)
-7. dict identity-equal fast path (dict 1.1×)
-8. string slice の buffer 共有 + 小サイズ alloc (string 1.6×)
+8 / 9 の bench で python3 を上回る。

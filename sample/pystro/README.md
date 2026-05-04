@@ -1,9 +1,12 @@
 # pystro — Python subset on ASTro
 
 ASTro フレームワーク上に乗せた **Python サブセット** インタプリタ。
-クラス、例外、bignum (GMP)、リスト・タプル・dict、`for/in`、f-string、
-lambda、デフォルト引数、tuple unpack まで実装し、`./pystro -c` で
-AOT 特化バイナリ (SD 群の `dlopen`) も使える。
+クラス + 多 dunder、例外 (try/except/else/finally)、bignum (GMP) +
+inline flonum、リスト/タプル/辞書/集合 + 内包表記、`for/in/break/
+continue/else`、`with`、closure + decorator、generator (yield、eager)、
+キーワード引数 + `*args/**kwargs`、staticmethod/classmethod/property、
+walrus `:=`、多重代入、slice 代入、f-string + format spec、まで実装し、
+`./pystro -c` で AOT 特化バイナリ (SD 群の `dlopen`) も使える。
 
 実装の詳細は [`docs/runtime.md`](./docs/runtime.md)、
 動く範囲は [`docs/done.md`](./docs/done.md)、
@@ -15,10 +18,10 @@ ASTro 本体は [`../../docs/idea.md`](../../docs/idea.md)。
 
 ```sh
 make            # pystro バイナリ
-make test       # test/*.py 11 件 (interp / AOT 両方が pass)
-make bench      # bench/*.py を python3 / interp / AOT cached の 3 列で best-of-3 比較
+make test       # test/*.py 21 件 (interp / AOT 両方が pass)
+make bench      # bench/*.py を python3 / interp / AOT cached の 3 列で比較
 
-./pystro test/03_func.py            # ファイル実行 (interpreter)
+./pystro test/03_func.py            # ファイル実行
 ./pystro -e 'print(1 + 2)'          # one-liner
 ./pystro -c test/03_func.py         # AOT-bake してから実行
 ./pystro --aot-compile foo.py       # AOT-bake だけして exit
@@ -29,30 +32,42 @@ make bench      # bench/*.py を python3 / interp / AOT cached の 3 列で best
 サンプル:
 
 ```python
-def fact(n):
-    r = 1
-    for i in range(2, n + 1):
-        r *= i
-    return r
+# 内包表記、closure、decorator、generator、dunder 全部入り
+def memoize(f):
+    cache = {}
+    def wrapped(*args):
+        if args not in cache:
+            cache[args] = f(*args)
+        return cache[args]
+    return wrapped
 
-print(fact(50))   # GMP bignum: 30414093201713378043612608166064768844377641568960512000000000000
+@memoize
+def fib(n):
+    if n < 2: return n
+    return fib(n - 1) + fib(n - 2)
 
-class Point:
+print([fib(n) for n in range(20)])
+
+class Vec:
     def __init__(self, x, y):
         self.x, self.y = x, y
-    def manhattan(self):
-        return abs(self.x) + abs(self.y)
+    def __add__(self, other):
+        return Vec(self.x + other.x, self.y + other.y)
+    def __repr__(self):
+        return f"Vec({self.x}, {self.y})"
 
-p = Point(3, -4)
-print(f"|p| = {p.manhattan()}")    # |p| = 7
+print(Vec(1, 2) + Vec(10, 20))     # Vec(11, 22)
 
-def safe_div(a, b):
-    try:
-        return a / b
-    except ZeroDivisionError as e:
-        return None
+def primes(n):
+    sieve = [True] * (n + 1)
+    sieve[0] = sieve[1] = False
+    for i in range(2, n + 1):
+        if sieve[i]:
+            yield i
+            for j in range(i*i, n + 1, i):
+                sieve[j] = False
 
-print(safe_div(10, 0))             # None
+print([p for p in primes(50)])     # [2, 3, 5, 7, ...]
 ```
 
 ## ベンチマーク
@@ -60,19 +75,22 @@ print(safe_div(10, 0))             # None
 `make bench` で `bench/*.py` (各 ~1 秒スケール on python3) を計測。
 詳細は [`docs/perf.md`](./docs/perf.md)。
 
-| bench (~1s on python3) | python3 | pystro interp | pystro AOT cached | **倍率** |
-|---|---:|---:|---:|---:|
-| `fib(35)` (再帰) | 1.21 s | 0.64 s | 0.65 s | **1.86× 速い** |
-| `while_loop` (10M, augassign) | 0.92 s | 0.18 s | 0.05 s | **18× 速い** |
-| `for_range` (15M sum) | 1.00 s | 0.15 s | 0.08 s | **12.5× 速い** |
-| `list_bench` (7M append+sum) | 0.93 s | 0.22 s | 0.19 s | **4.9× 速い** |
-| `string_bench` (2M split) | 0.59 s | 0.51 s | 0.48 s | **1.23× 速い** |
-| `dict_bench` (3M put+get) | 0.78 s | 0.87 s | 0.75 s | **1.04× 速い** |
+| bench (~1s on python3) | python3 | pystro AOT | **倍率** |
+|---|---:|---:|---:|
+| `while_loop` (10M, augassign) | 0.95 s | 0.05 s | **18× 速い** |
+| `for_range` (15M sum) | 1.01 s | 0.09 s | **11× 速い** |
+| `list_bench` (7M append+sum) | 0.88 s | 0.19 s | **4.7× 速い** |
+| `fib(35)` (再帰) | 1.18 s | 0.62 s | **1.9× 速い** |
+| `recursive` (tak) | 4.06 s | 2.49 s | **1.6× 速い** |
+| `string_bench` (2M split) | 0.60 s | 0.50 s | **1.2× 速い** |
+| `mandel` (float-heavy) | 0.70 s | 0.63 s | **1.1× 速い** |
+| `nqueens` (recursion + list) | 0.69 s | 0.62 s | **1.1× 速い** |
+| `dict_bench` (3M put+get) | 0.77 s | 0.82 s | 0.94× |
 
-すべて pystro の勝ち。最大は `while_loop` で **18×**、最小は `dict_bench`
-で 1.04× (CPython の dict は強敵)。
+9 ベンチ中 **8 つで python3 を上回る**。CPython の C 実装 dict は強敵。
+最大は `while_loop` の **18×**。
 
-主な高速化の施策 — 詳しくは [`docs/perf.md`](./docs/perf.md):
+主な最適化 — 詳しくは [`docs/perf.md`](./docs/perf.md):
 
 - §1 `gref_cache @ref`: global lookup の strcmp 線形走査を排除
 - §2 `globals_serial` を構造変化のみで bump (値更新では bump しない)
@@ -82,6 +100,8 @@ print(safe_div(10, 0))             # None
 - §6 leaf func の alloca フレーム (parser が `has_nested_def` で判定)
 - §7 dict identity-equal fast path
 - §8 string slice の buffer 共有 + 小サイズ pyobj alloc
+- §9 inline flonum (CRuby 流 3-bit rotate) + 算術ノードに float-float fast path
+- §10 node_eq / py_eq の fixnum fast path (GMP 経路を回避)
 
 > AOT bake で `astro_cs_build: make failed (exit 512)` のようなエラーが
 > 出る環境では `CCACHE_DISABLE=1` を環境変数で渡すと回避できる
@@ -93,53 +113,35 @@ print(safe_div(10, 0))             # None
 sample/pystro/
 ├── README.md         この文書
 ├── docs/
-│   ├── runtime.md    実装詳細 (VALUE / CTX / フレーム / iter / try)
-│   ├── done.md       実装済み機能
+│   ├── runtime.md    実装詳細
+│   ├── done.md       実装済み機能 (詳細リスト)
 │   ├── todo.md       未実装機能 + 性能 todo
 │   └── perf.md       ベンチ + 最適化の歴史
-├── node.def          AST ノード定義 (~60 種)
+├── node.def          AST ノード定義 (~80 種)
 ├── pystro_gen.rb     ASTroGen 拡張 (`@ref` operands を扱う)
 ├── context.h         VALUE / pyobj / CTX / 公開 API
 ├── node.h            NodeHead + EVAL + py_apply (inline) マクロ
-├── node.c            ランタイム配線 (allocate / OPTIMIZE / 生成ファイル取り込み)
-├── runtime.c         heap / globals / apply_slow / display / numeric / dict /
-│                     list / iter / attr / method / try / builtins
+├── node.c            ランタイム配線
+├── runtime.c         heap / globals / apply / display / numeric / dict /
+│                     list / set / iter / attr / method / try / 37 builtins
 ├── lexer.c           インデント追跡 + f-string + 全演算子トークナイザ
-├── parser.c          recursive-descent parser、scope pre-scan、leaf 判定、
-│                     f-string パース、tuple unpack
+├── parser.c          recursive-descent parser (内包表記 / kwargs / closure /
+│                     decorator / walrus / slice 代入 / 多重代入 込み)
 ├── main.c            driver
 ├── Makefile          build / test / bench / clean
-├── test/             *.py + .expected (11 件)
-├── bench/            *.py (~1 秒スケール、python3 比較用)
+├── test/             *.py + .expected (21 件)
+├── bench/            *.py (~1 秒スケール、python3 比較用、9 件)
 └── code_store/       AOT 生成物 (gitignore)
 ```
 
-## ノード一覧 (抜粋)
-
-| グループ | ノード |
-|---|---|
-| 定数  | `const_int / const_int64 / const_bignum / const_float / const_str / const_none / const_true / const_false` |
-| コンテナ literal | `make_list / make_tuple / make_dict` |
-| 変数  | `lref / lset / gref(@ref) / gset(@ref)` |
-| 単項  | `neg / not / bit_inv` |
-| 算術  | `add / sub / mul / truediv / floordiv / mod / pow` (fixnum fast path inline) |
-| 比較  | `lt / le / gt / ge / eq / ne / is / is_not / in / not_in` |
-| 論理  | `and / or` (short-circuit) |
-| ビット | `bit_and / bit_or / bit_xor / lshift / rshift` |
-| 添字 / 属性 | `subscript_get / subscript_set / slice / attr_get / attr_set` |
-| 制御  | `if / while / for_local / for_global(@ref) / seq / nop / return / break / continue / try / raise / raise_bare` |
-| 関数  | `def / lambda / class / call_0..3 / call_n / method_0..2(@ref) / method_n(@ref) / unpack_assign` |
-
-`@ref` 印は内部 inline cache が付くノード。
-
 ## 制限 (詳細は docs/todo.md)
 
-- ネスト def の closure capture (parser 側のみ未対応)
-- `*args` / `**kwargs` / キーワード引数
-- 内包表記 / generator / `yield`
-- `with` / `else` 節 (for/try)
-- 装飾子 `@dec`
-- 多重継承 / dunder メソッド連動 / `super()`
-- `import` (parser はスキップ、no-op)
-- f-string format spec (`{x:.2f}`)
-- 比較連鎖の中央オペランド単一評価保証
+- **モジュール / import**: parser はスキップ済み (no-op stub)
+- **真の generator**: 現状 eager。無限 generator は不可
+- **多重継承の MRO**: 現状は base 1 段のみ
+- **`*args` / `**dict`** の呼び出し側 unpacking
+- **bytes / bytearray / frozenset / match 文**
+- **`def f(x: int) -> int:`** の type hint
+- **比較連鎖の中央オペランド単一評価保証**
+
+GC は Boehm-Demers-Weiser、bignum は GMP。
