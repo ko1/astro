@@ -18,7 +18,7 @@ ASTro 本体は [`../../docs/idea.md`](../../docs/idea.md)。
 
 ```sh
 make            # pystro バイナリ
-make test       # test/*.py 21 件 (interp / AOT 両方が pass)
+make test       # test/*.py 23 件 (interp / AOT 両方が pass)
 make bench      # bench/*.py を python3 / interp / AOT cached の 3 列で比較
 
 ./pystro test/03_func.py            # ファイル実行
@@ -77,15 +77,15 @@ print([p for p in primes(50)])     # [2, 3, 5, 7, ...]
 
 | bench (~1s on python3) | python3 | pystro AOT | **倍率** |
 |---|---:|---:|---:|
-| `while_loop` (10M, augassign) | 0.95 s | 0.05 s | **18× 速い** |
-| `for_range` (15M sum) | 1.01 s | 0.09 s | **11× 速い** |
-| `list_bench` (7M append+sum) | 0.88 s | 0.19 s | **4.7× 速い** |
-| `fib(35)` (再帰) | 1.18 s | 0.62 s | **1.9× 速い** |
-| `recursive` (tak) | 4.06 s | 2.49 s | **1.6× 速い** |
-| `string_bench` (2M split) | 0.60 s | 0.50 s | **1.2× 速い** |
-| `mandel` (float-heavy) | 0.70 s | 0.63 s | **1.1× 速い** |
-| `nqueens` (recursion + list) | 0.69 s | 0.62 s | **1.1× 速い** |
-| `dict_bench` (3M put+get) | 0.77 s | 0.82 s | 0.94× |
+| `while_loop` (10M, augassign) | 0.91 s | 0.05 s | **18× 速い** |
+| `for_range` (15M sum) | 0.98 s | 0.08 s | **12× 速い** |
+| `list_bench` (7M append+sum) | 0.91 s | 0.19 s | **4.8× 速い** |
+| `fib(35)` (再帰) | 1.20 s | 0.63 s | **1.9× 速い** |
+| `recursive` (tak) | 3.97 s | 2.58 s | **1.5× 速い** |
+| `string_bench` (2M split) | 0.58 s | 0.49 s | **1.2× 速い** |
+| `nqueens` (recursion + list) | 0.68 s | 0.61 s | **1.1× 速い** |
+| `mandel` (float-heavy) | 0.68 s | 0.65 s | **1.05× 速い** |
+| `dict_bench` (3M put+get) | 0.76 s | 0.83 s | 0.92× |
 
 9 ベンチ中 **8 つで python3 を上回る**。CPython の C 実装 dict は強敵。
 最大は `while_loop` の **18×**。

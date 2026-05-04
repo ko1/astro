@@ -8,11 +8,11 @@ ASTro 上の Python サブセット。本書は **動く言語機能** を一覧
 
 ```
 $ make test
-... 21 tests OK ...
-passed=21  failed=0  total=21
+... 23 tests OK ...
+passed=23  failed=0  total=23
 ```
 
-interpreter / AOT cached の両方で 21/21 pass。
+interpreter / AOT cached の両方で 23/23 pass。
 
 ## 言語機能
 
@@ -44,11 +44,12 @@ interpreter / AOT cached の両方で 21/21 pass。
 - `if / elif / else`
 - `while ... else: ...` (else は break しないとき実行)
 - `for x in iter: ... else: ...` 同上
-- `def f(p, q=default, *args, kwonly=N, **kwargs):`
+- `def f(p, q=default, *args, kwonly=N, **kwargs):` + 呼び出し側 `f(*list, **dict)` 展開
+- 型アノテーション `def f(x: int, y: str = "a") -> int:` / `n: int = 5` (parse して破棄)
 - `return [expr]`
 - `lambda x: expr`、`lambda x, y=1: ...`
-- `class Name(Base):` (継承、`__init__`、メソッド、`self.x`)
-- **`@decorator`** (関数 / クラス、複数段、closure 込み)
+- `class Name(Base, ...):` (**多重継承**、`__init__`、メソッド、`self.x`)
+- **`@decorator`** (関数 / クラス、複数段、closure 込み、`@staticmethod` / `@classmethod` / `@property`)
 - `try / except [E [as e]] / else / finally / raise [expr]` / `raise`
 - **`with EXPR as NAME: ...`** (context manager — `__enter__` / `__exit__`)
 - `yield expr` / `yield from iter` (eager、結果 list)
@@ -57,6 +58,8 @@ interpreter / AOT cached の両方で 21/21 pass。
 - **slice 代入**: `a[i:j] = list` (step==1 で伸縮、step!=1 は同じ長さ)
 - **多重代入**: `a = b = expr` (RHS は temp で 1 回だけ評価)
 - 多重 unpack: `a, b, c = (1, 2, 3)`、`a, b = b, a`
+- `assert cond [, msg]` (失敗で AssertionError)
+- `del a[i]` (dict / list / set からの要素削除)
 - 式文
 
 ### スコープ
@@ -121,14 +124,14 @@ replace / count`
 
 | bench (~1s on python3) | python3 | pystro AOT | pystro/python3 |
 |---|---:|---:|---:|
-| while_loop 10M | 0.95 s | 0.05 s | **18×** |
-| for_range 15M | 1.01 s | 0.09 s | **11×** |
-| list 7M append+sum | 0.88 s | 0.19 s | **4.7×** |
-| fib(35) | 1.18 s | 0.62 s | **1.9×** |
-| recursive (tak) | 4.06 s | 2.49 s | **1.6×** |
-| mandel | 0.70 s | 0.63 s | **1.1×** |
-| nqueens | 0.69 s | 0.62 s | **1.1×** |
-| string 2M split | 0.60 s | 0.50 s | **1.2×** |
-| dict 3M put+get | 0.77 s | 0.82 s | 0.94× |
+| while_loop 10M | 0.91 s | 0.05 s | **18×** |
+| for_range 15M | 0.98 s | 0.08 s | **12×** |
+| list 7M append+sum | 0.91 s | 0.19 s | **4.8×** |
+| fib(35) | 1.20 s | 0.63 s | **1.9×** |
+| recursive (tak) | 3.97 s | 2.58 s | **1.5×** |
+| string 2M split | 0.58 s | 0.49 s | **1.2×** |
+| nqueens | 0.68 s | 0.61 s | **1.1×** |
+| mandel | 0.68 s | 0.65 s | **1.05×** |
+| dict 3M put+get | 0.76 s | 0.83 s | 0.92× |
 
-8 / 9 の bench で python3 を上回る。
+**8 / 9 の bench で python3 を上回る。**
