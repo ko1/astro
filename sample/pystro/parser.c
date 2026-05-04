@@ -166,6 +166,8 @@ typedef struct Scope {
     int           nonlocals_capa;
     bool          has_nested_def;    // body contains an inner def/class
                                      // (false ⇒ leaf, frame can be alloca'd)
+    bool          is_generator;      // body contains a `yield` token
+    int           gen_result_slot;   // local slot of the hidden __genr__ list
 } Scope;
 
 static Scope *cur_scope;
@@ -306,6 +308,7 @@ collect_locals_in_range(Scope *s, size_t start_pos, size_t end_pos)
             i = j - 1;     // -1 because the loop increments
             continue;
         }
+        if (t->kind == T_YIELD) { s->is_generator = true; continue; }
         if (t->kind == T_GLOBAL) { in_global_decl = true; continue; }
         if (t->kind == T_NONLOCAL) {
             // collect names until newline/comma stops, like global.
@@ -1438,6 +1441,13 @@ parse_def(void)
     size_t suite_end   = find_suite_end(suite_start);
     collect_locals_in_range(&sc, suite_start, suite_end);
 
+    // Generator: reserve a hidden local for the result list.  Each
+    // `yield E` inside the body becomes `__genr__.append(E)`, and the
+    // implicit final `return __genr__` is appended below.
+    if (sc.is_generator) {
+        sc.gen_result_slot = scope_add_local(&sc, intern_name("__genr__", 8));
+    }
+
     Scope *saved = cur_scope; cur_scope = &sc;
     NODE *body;
     if (peek_tok(0)->kind == T_NEWLINE) {
@@ -1456,6 +1466,15 @@ parse_def(void)
         expect(T_NEWLINE, "newline");
     }
     cur_scope = saved;
+
+    // Generator wrap: prepend `__genr__ = []`, append `return __genr__`.
+    if (sc.is_generator) {
+        size_t empty_idx = node_table_reserve(NULL, 0);
+        NODE *init = ALLOC_node_lset((uint32_t)sc.gen_result_slot,
+                                     ALLOC_node_make_list((uint32_t)empty_idx, 0));
+        NODE *ret  = ALLOC_node_return(ALLOC_node_lref((uint32_t)sc.gen_result_slot));
+        body = ALLOC_node_seq(init, ALLOC_node_seq(body, ret));
+    }
 
     NODE *def_node = ALLOC_node_def(fname, (uint32_t)nparams, (uint32_t)n_pos_named,
                                     (uint32_t)sc.nlocals,
@@ -1584,6 +1603,35 @@ parse_return(void)
     return ALLOC_node_return(v);
 }
 
+// `yield E` (and `yield from E`) — eager v0 implementation: translates
+// to `__genr__.append(E)` (or extend for `yield from`).  The wrapping
+// is set up in parse_def: a hidden local `__genr__` plus a trailing
+// `return __genr__`.
+static NODE *
+parse_yield(void)
+{
+    expect(T_YIELD, "'yield'");
+    if (!cur_scope || !cur_scope->is_generator) {
+        // The pre-scan should have caught this, but be defensive.
+        parse_error("'yield' outside generator function");
+    }
+    NODE *load_r = ALLOC_node_lref((uint32_t)cur_scope->gen_result_slot);
+    // `yield from E` → for each x in E: __genr__.append(x).  v0 hack:
+    // call extend() if it's iterable.  Plain method_1(__genr__, "extend", E).
+    if (peek_tok(0)->kind == T_FROM) {
+        tok_pos++;
+        NODE *e = parse_expr();
+        return ALLOC_node_method_1(load_r, intern_name("extend", 6), e);
+    }
+    NODE *e;
+    if (peek_tok(0)->kind == T_NEWLINE || peek_tok(0)->kind == T_SEMI
+            || peek_tok(0)->kind == T_RPAREN || peek_tok(0)->kind == T_COMMA)
+        e = ALLOC_node_const_none();
+    else
+        e = parse_expr();
+    return ALLOC_node_method_1(load_r, intern_name("append", 6), e);
+}
+
 static NODE *
 parse_raise(void)
 {
@@ -1667,6 +1715,7 @@ parse_simple_stmt(void)
     if (k == T_CONTINUE) { tok_pos++; return ALLOC_node_continue(); }
     if (k == T_RETURN)   return parse_return();
     if (k == T_RAISE)    return parse_raise();
+    if (k == T_YIELD)    return parse_yield();
     if (k == T_GLOBAL)   return parse_global_decl();
     if (k == T_NONLOCAL) return parse_nonlocal_decl();
     if (k == T_IMPORT || k == T_FROM) {
