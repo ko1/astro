@@ -14,7 +14,7 @@ ASTro (AST-based Reusable Optimization Framework) は、AST を辿るインタ�
   - `astro_code_store.{h,c}` — AOT/PG コードストア API (`astro_cs_init` / `astro_cs_compile` / `astro_cs_build` / `astro_cs_load` / `astro_cs_reload`)
 - `sample/` — 各種言語実装サンプル
   - 教育用: `calc` (3 ノード電卓), `pascalast` (Pascal サブセット)
-  - メインストリーム: `naruby` (Ruby サブセット, JIT 対応), `abruby` (Ruby サブセット, CRuby C 拡張), `koruby` (Ruby+, optcarrot 動かすことを目標), `luastro` (Lua サブセット), `ascheme` (Scheme), `wastro` (Wasm), `jstro` (JavaScript), `astocaml` (OCaml サブセット), `castro` (C サブセット), `asom` (SOM), `astrogre` (Ruby/Onigmo 互換 regex エンジン + `are` という grep CLI)
+  - メインストリーム: `naruby` (Ruby サブセット, JIT 対応), `abruby` (Ruby サブセット, CRuby C 拡張), `koruby` (Ruby+, optcarrot 動かすことを目標), `luastro` (Lua サブセット), `pystro` (Python 3 サブセット, GMP bignum + class + try/except), `ascheme` (Scheme), `wastro` (Wasm), `jstro` (JavaScript), `astocaml` (OCaml サブセット), `castro` (C サブセット), `asom` (SOM), `astrogre` (Ruby/Onigmo 互換 regex エンジン + `are` という grep CLI)
 - `docs/`
   - `idea.md` — 設計思想 (ASTro の核心アイデア、JIT 設計、Code Store)
   - `usage.md` — ASTroGen + runtime の利用ガイド (新サンプルを書くとき読む)

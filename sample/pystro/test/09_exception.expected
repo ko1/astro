@@ -1,0 +1,14 @@
+done
+5.0
+done
+None
+caught: oops
+via Exception: base test
+caught: bad
+ok
+z
+v
+cleanup 3
+6
+cleanup -1
+got: neg
