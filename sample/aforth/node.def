@@ -1,0 +1,633 @@
+/* aforth — Forth subset on ASTro
+ *
+ * Each Forth word is a NODE.  Stack ops mutate CTX->dsp directly; control-
+ * flow nodes (IF / BEGIN.. / DO..LOOP) take subtree NODE *operands so the
+ * specializer can fold them into a single SD.  Word definitions are wrapped
+ * in node_word_body (@noinline) so the wrapper provides a stable NODE *
+ * pointer for forward-reference resolution (RECURSE in particular) — the
+ * actual sequence body is patched into wrapper->body @ref at ; time.
+ *
+ * VALUE convention: VALUE = int64_t.  Comparisons return Forth-standard
+ * 0 / -1 (true is all-ones).  Division/mod follow C semantics.
+ */
+
+/* ---------------- literal / sequence ---------------- */
+
+NODE_DEF
+node_lit(CTX *c, NODE *n, int32_t v)
+{
+    aforth_push(c, (VALUE)v);
+    return 0;
+}
+
+NODE_DEF @always_inline
+node_seq(CTX *c, NODE *n, NODE *first, NODE *rest)
+{
+    EVAL_ARG(c, first);
+    return EVAL_ARG(c, rest);
+}
+
+NODE_DEF @always_inline
+node_nop(CTX *c, NODE *n)
+{
+    return 0;
+}
+
+/* ---------------- stack manipulation ---------------- */
+
+NODE_DEF
+node_dup(CTX *c, NODE *n)
+{
+    VALUE v = c->dsp[-1];
+    c->dsp[0] = v;
+    c->dsp++;
+    return 0;
+}
+
+NODE_DEF
+node_qdup(CTX *c, NODE *n)
+{
+    VALUE v = c->dsp[-1];
+    if (v != 0) { c->dsp[0] = v; c->dsp++; }
+    return 0;
+}
+
+NODE_DEF
+node_drop(CTX *c, NODE *n)
+{
+    c->dsp--;
+    return 0;
+}
+
+NODE_DEF
+node_swap(CTX *c, NODE *n)
+{
+    VALUE a = c->dsp[-2];
+    VALUE b = c->dsp[-1];
+    c->dsp[-2] = b;
+    c->dsp[-1] = a;
+    return 0;
+}
+
+NODE_DEF
+node_over(CTX *c, NODE *n)
+{
+    VALUE v = c->dsp[-2];
+    c->dsp[0] = v;
+    c->dsp++;
+    return 0;
+}
+
+NODE_DEF
+node_rot(CTX *c, NODE *n)
+{
+    /* a b c -- b c a */
+    VALUE a = c->dsp[-3];
+    VALUE b = c->dsp[-2];
+    VALUE x = c->dsp[-1];
+    c->dsp[-3] = b;
+    c->dsp[-2] = x;
+    c->dsp[-1] = a;
+    return 0;
+}
+
+NODE_DEF
+node_nip(CTX *c, NODE *n)
+{
+    /* a b -- b */
+    c->dsp[-2] = c->dsp[-1];
+    c->dsp--;
+    return 0;
+}
+
+NODE_DEF
+node_tuck(CTX *c, NODE *n)
+{
+    /* a b -- b a b */
+    VALUE a = c->dsp[-2];
+    VALUE b = c->dsp[-1];
+    c->dsp[-2] = b;
+    c->dsp[-1] = a;
+    c->dsp[0]  = b;
+    c->dsp++;
+    return 0;
+}
+
+NODE_DEF
+node_2dup(CTX *c, NODE *n)
+{
+    VALUE a = c->dsp[-2];
+    VALUE b = c->dsp[-1];
+    c->dsp[0] = a;
+    c->dsp[1] = b;
+    c->dsp += 2;
+    return 0;
+}
+
+NODE_DEF
+node_2drop(CTX *c, NODE *n)
+{
+    c->dsp -= 2;
+    return 0;
+}
+
+NODE_DEF
+node_depth(CTX *c, NODE *n)
+{
+    aforth_push(c, (VALUE)(c->dsp - c->dstack_base));
+    return 0;
+}
+
+/* ---------------- arithmetic ---------------- */
+
+NODE_DEF @always_inline
+node_add(CTX *c, NODE *n)
+{
+    VALUE b = *--c->dsp;
+    c->dsp[-1] += b;
+    return 0;
+}
+
+NODE_DEF @always_inline
+node_sub(CTX *c, NODE *n)
+{
+    VALUE b = *--c->dsp;
+    c->dsp[-1] -= b;
+    return 0;
+}
+
+NODE_DEF @always_inline
+node_mul(CTX *c, NODE *n)
+{
+    VALUE b = *--c->dsp;
+    c->dsp[-1] *= b;
+    return 0;
+}
+
+NODE_DEF
+node_div(CTX *c, NODE *n)
+{
+    VALUE b = *--c->dsp;
+    c->dsp[-1] /= b;
+    return 0;
+}
+
+NODE_DEF
+node_mod(CTX *c, NODE *n)
+{
+    VALUE b = *--c->dsp;
+    c->dsp[-1] %= b;
+    return 0;
+}
+
+NODE_DEF
+node_neg(CTX *c, NODE *n)
+{
+    c->dsp[-1] = -c->dsp[-1];
+    return 0;
+}
+
+NODE_DEF
+node_abs(CTX *c, NODE *n)
+{
+    VALUE v = c->dsp[-1];
+    c->dsp[-1] = v < 0 ? -v : v;
+    return 0;
+}
+
+NODE_DEF @always_inline
+node_inc(CTX *c, NODE *n)
+{
+    c->dsp[-1] += 1;
+    return 0;
+}
+
+NODE_DEF @always_inline
+node_dec(CTX *c, NODE *n)
+{
+    c->dsp[-1] -= 1;
+    return 0;
+}
+
+NODE_DEF
+node_2mul(CTX *c, NODE *n)
+{
+    c->dsp[-1] <<= 1;
+    return 0;
+}
+
+NODE_DEF
+node_2div(CTX *c, NODE *n)
+{
+    c->dsp[-1] >>= 1;
+    return 0;
+}
+
+/* ---------------- comparison (Forth: true = -1) ---------------- */
+
+NODE_DEF @always_inline
+node_eq(CTX *c, NODE *n)
+{
+    VALUE b = *--c->dsp;
+    c->dsp[-1] = (c->dsp[-1] == b) ? -1 : 0;
+    return 0;
+}
+
+NODE_DEF @always_inline
+node_neq(CTX *c, NODE *n)
+{
+    VALUE b = *--c->dsp;
+    c->dsp[-1] = (c->dsp[-1] != b) ? -1 : 0;
+    return 0;
+}
+
+NODE_DEF @always_inline
+node_lt(CTX *c, NODE *n)
+{
+    VALUE b = *--c->dsp;
+    c->dsp[-1] = (c->dsp[-1] < b) ? -1 : 0;
+    return 0;
+}
+
+NODE_DEF @always_inline
+node_gt(CTX *c, NODE *n)
+{
+    VALUE b = *--c->dsp;
+    c->dsp[-1] = (c->dsp[-1] > b) ? -1 : 0;
+    return 0;
+}
+
+NODE_DEF @always_inline
+node_le(CTX *c, NODE *n)
+{
+    VALUE b = *--c->dsp;
+    c->dsp[-1] = (c->dsp[-1] <= b) ? -1 : 0;
+    return 0;
+}
+
+NODE_DEF @always_inline
+node_ge(CTX *c, NODE *n)
+{
+    VALUE b = *--c->dsp;
+    c->dsp[-1] = (c->dsp[-1] >= b) ? -1 : 0;
+    return 0;
+}
+
+NODE_DEF
+node_zeq(CTX *c, NODE *n)
+{
+    c->dsp[-1] = (c->dsp[-1] == 0) ? -1 : 0;
+    return 0;
+}
+
+NODE_DEF
+node_zlt(CTX *c, NODE *n)
+{
+    c->dsp[-1] = (c->dsp[-1] < 0) ? -1 : 0;
+    return 0;
+}
+
+NODE_DEF
+node_zgt(CTX *c, NODE *n)
+{
+    c->dsp[-1] = (c->dsp[-1] > 0) ? -1 : 0;
+    return 0;
+}
+
+/* ---------------- bitwise ---------------- */
+
+NODE_DEF
+node_and(CTX *c, NODE *n)
+{
+    VALUE b = *--c->dsp;
+    c->dsp[-1] &= b;
+    return 0;
+}
+
+NODE_DEF
+node_or(CTX *c, NODE *n)
+{
+    VALUE b = *--c->dsp;
+    c->dsp[-1] |= b;
+    return 0;
+}
+
+NODE_DEF
+node_xor(CTX *c, NODE *n)
+{
+    VALUE b = *--c->dsp;
+    c->dsp[-1] ^= b;
+    return 0;
+}
+
+NODE_DEF
+node_invert(CTX *c, NODE *n)
+{
+    c->dsp[-1] = ~c->dsp[-1];
+    return 0;
+}
+
+NODE_DEF
+node_lshift(CTX *c, NODE *n)
+{
+    VALUE b = *--c->dsp;
+    c->dsp[-1] = (VALUE)((uint64_t)c->dsp[-1] << (b & 63));
+    return 0;
+}
+
+NODE_DEF
+node_rshift(CTX *c, NODE *n)
+{
+    VALUE b = *--c->dsp;
+    c->dsp[-1] = (VALUE)((uint64_t)c->dsp[-1] >> (b & 63));
+    return 0;
+}
+
+/* ---------------- return stack ---------------- */
+
+NODE_DEF
+node_to_r(CTX *c, NODE *n)
+{
+    *c->rsp++ = *--c->dsp;
+    return 0;
+}
+
+NODE_DEF
+node_from_r(CTX *c, NODE *n)
+{
+    *c->dsp++ = *--c->rsp;
+    return 0;
+}
+
+NODE_DEF
+node_r_fetch(CTX *c, NODE *n)
+{
+    *c->dsp++ = c->rsp[-1];
+    return 0;
+}
+
+/* ---------------- IF / ELSE / THEN ---------------- */
+
+NODE_DEF @always_inline
+node_if(CTX *c, NODE *n, NODE *then_branch, NODE *else_branch)
+{
+    VALUE cond = *--c->dsp;
+    if (cond != 0) return EVAL_ARG(c, then_branch);
+    if (else_branch) return EVAL_ARG(c, else_branch);
+    return 0;
+}
+
+NODE_DEF @always_inline
+node_if_only(CTX *c, NODE *n, NODE *then_branch)
+{
+    VALUE cond = *--c->dsp;
+    if (cond != 0) return EVAL_ARG(c, then_branch);
+    return 0;
+}
+
+/* ---------------- BEGIN ... AGAIN / UNTIL / WHILE ... REPEAT ---------------- */
+
+NODE_DEF @always_inline
+node_begin_until(CTX *c, NODE *n, NODE *body)
+{
+    /* BEGIN body UNTIL — exit when top of stack is non-zero. */
+    do {
+        EVAL_ARG(c, body);
+    } while (*--c->dsp == 0);
+    return 0;
+}
+
+NODE_DEF @always_inline
+node_begin_again(CTX *c, NODE *n, NODE *body)
+{
+    /* BEGIN body AGAIN — infinite loop, exited only by LEAVE flag. */
+    while (!c->leave_flag) {
+        EVAL_ARG(c, body);
+    }
+    c->leave_flag = 0;
+    return 0;
+}
+
+NODE_DEF @always_inline
+node_begin_while(CTX *c, NODE *n, NODE *cond, NODE *body)
+{
+    /* BEGIN cond WHILE body REPEAT — cond pushes flag, body runs while flag != 0. */
+    for (;;) {
+        EVAL_ARG(c, cond);
+        VALUE flag = *--c->dsp;
+        if (flag == 0) break;
+        EVAL_ARG(c, body);
+    }
+    return 0;
+}
+
+/* ---------------- DO / LOOP / +LOOP / I / J / LEAVE ---------------- */
+
+NODE_DEF @always_inline
+node_do_loop(CTX *c, NODE *n, NODE *body)
+{
+    /* limit start DO body LOOP — increment by 1 each iteration. */
+    VALUE start = *--c->dsp;
+    VALUE limit = *--c->dsp;
+    c->dop->index = start;
+    c->dop->limit = limit;
+    c->dop++;
+    while (c->dop[-1].index < c->dop[-1].limit && !c->leave_flag) {
+        EVAL_ARG(c, body);
+        c->dop[-1].index++;
+    }
+    if (c->leave_flag) c->leave_flag = 0;
+    c->dop--;
+    return 0;
+}
+
+NODE_DEF @always_inline
+node_do_plus_loop(CTX *c, NODE *n, NODE *body)
+{
+    /* limit start DO body step +LOOP — increment by step (popped each iter). */
+    VALUE start = *--c->dsp;
+    VALUE limit = *--c->dsp;
+    c->dop->index = start;
+    c->dop->limit = limit;
+    c->dop++;
+    for (;;) {
+        if (c->leave_flag) break;
+        VALUE idx = c->dop[-1].index;
+        VALUE lim = c->dop[-1].limit;
+        if ((idx >= lim && start < limit) || (idx <= lim && start > limit)) break;
+        EVAL_ARG(c, body);
+        VALUE step = *--c->dsp;
+        c->dop[-1].index += step;
+    }
+    if (c->leave_flag) c->leave_flag = 0;
+    c->dop--;
+    return 0;
+}
+
+NODE_DEF @always_inline
+node_i(CTX *c, NODE *n)
+{
+    *c->dsp++ = c->dop[-1].index;
+    return 0;
+}
+
+NODE_DEF @always_inline
+node_j(CTX *c, NODE *n)
+{
+    *c->dsp++ = c->dop[-2].index;
+    return 0;
+}
+
+NODE_DEF
+node_leave(CTX *c, NODE *n)
+{
+    c->leave_flag = 1;
+    return 0;
+}
+
+/* ---------------- VARIABLE / CONSTANT / CREATE / @ / ! ---------------- */
+
+/* Push the address of a storage cell in c->vars[var_id].
+ * (We intern the address as a small integer index — see node_fetch / node_store
+ * which dereference through CTX.) */
+NODE_DEF
+node_var_ref(CTX *c, NODE *n, uint32_t var_id)
+{
+    *c->dsp++ = (VALUE)(uintptr_t)&c->vars[var_id];
+    return 0;
+}
+
+NODE_DEF
+node_const(CTX *c, NODE *n, int32_t v)
+{
+    *c->dsp++ = (VALUE)v;
+    return 0;
+}
+
+NODE_DEF
+node_fetch(CTX *c, NODE *n)
+{
+    /* @ : ( addr -- val ) */
+    VALUE addr = *--c->dsp;
+    *c->dsp++ = *(VALUE *)(uintptr_t)addr;
+    return 0;
+}
+
+NODE_DEF
+node_store(CTX *c, NODE *n)
+{
+    /* ! : ( val addr -- ) */
+    VALUE addr = *--c->dsp;
+    VALUE val  = *--c->dsp;
+    *(VALUE *)(uintptr_t)addr = val;
+    return 0;
+}
+
+NODE_DEF
+node_plus_store(CTX *c, NODE *n)
+{
+    /* +! : ( val addr -- ) */
+    VALUE addr = *--c->dsp;
+    VALUE val  = *--c->dsp;
+    *(VALUE *)(uintptr_t)addr += val;
+    return 0;
+}
+
+NODE_DEF
+node_cells(CTX *c, NODE *n)
+{
+    /* CELLS : ( n -- n*sizeof(VALUE) ) — convert cell count to byte count.
+     * Addresses on the data stack are byte addresses; @ / ! / +! treat them
+     * as VALUE *. */
+    c->dsp[-1] *= (VALUE)sizeof(VALUE);
+    return 0;
+}
+
+NODE_DEF
+node_cell_plus(CTX *c, NODE *n)
+{
+    /* CELL+ : ( addr -- addr+1cell ) */
+    c->dsp[-1] += (VALUE)sizeof(VALUE);
+    return 0;
+}
+
+NODE_DEF
+node_plus_cell_index(CTX *c, NODE *n)
+{
+    /* helper: ( addr i -- addr' )  where addr' = addr + i*sizeof(VALUE).
+     * Used by CELLS+SWAP+@ idioms; faster than separate CELLS + SWAP + +. */
+    VALUE i = *--c->dsp;
+    c->dsp[-1] += i * (VALUE)sizeof(VALUE);
+    return 0;
+}
+
+/* ---------------- I/O ---------------- */
+
+NODE_DEF
+node_dot(CTX *c, NODE *n)
+{
+    /* . — print number followed by space */
+    VALUE v = *--c->dsp;
+    printf("%lld ", (long long)v);
+    return 0;
+}
+
+NODE_DEF
+node_dot_nospc(CTX *c, NODE *n)
+{
+    /* internal: print without trailing space (used at end-of-test for clean diff) */
+    VALUE v = *--c->dsp;
+    printf("%lld", (long long)v);
+    return 0;
+}
+
+NODE_DEF
+node_emit(CTX *c, NODE *n)
+{
+    VALUE v = *--c->dsp;
+    putchar((int)v);
+    return 0;
+}
+
+NODE_DEF
+node_cr(CTX *c, NODE *n)
+{
+    putchar('\n');
+    return 0;
+}
+
+NODE_DEF
+node_space(CTX *c, NODE *n)
+{
+    putchar(' ');
+    return 0;
+}
+
+NODE_DEF
+node_dot_quote(CTX *c, NODE *n, const char *s)
+{
+    fputs(s, stdout);
+    return 0;
+}
+
+/* ---------------- word call ----------------
+ *
+ * Word calls use a global word-id index into `aforth_word_table` (declared
+ * in node.h, defined in main.c).  word_id is assigned at parse time when
+ * `: word` is seen; the body NODE * is filled into the table at `;` time.
+ *
+ * Because the body lookup is a runtime load, the call is a real function
+ * call boundary — recursion / mutual recursion are handled trivially (no
+ * cycle break required), at the cost of losing inline-through for non-
+ * recursive callers.  The body itself is registered as an astro_cs_compile
+ * entry, so each word still gets its own specialized SD.
+ *
+ * @noinline keeps the call site as a stable runtime dispatcher, so the
+ * caller's SD doesn't try to inline the table-load.
+ */
+NODE_DEF @noinline
+node_call(CTX *c, NODE *n, const char *name, uint32_t word_id)
+{
+    NODE *body = aforth_word_table[word_id];
+    return EVAL(c, body);
+}
