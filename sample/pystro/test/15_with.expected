@@ -1,0 +1,17 @@
+entering foo
+body foo
+exiting foo
+entering bar
+body bar
+exiting bar
+entering outer
+entering inner
+inside outer inner
+exiting inner
+exiting outer
+entering crash
+exiting crash
+caught: boom
+enter T
+got T
+exit T

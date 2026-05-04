@@ -1,0 +1,16 @@
+pi=3.14
+e=2.7183
+width=   42
+zero-pad=00042
+left=|A    |
+right=|    A|
+center=|  A  |
+hex=ff
+hex-up=FF
+bin=1010
+oct=100
+scientific=1.23e+05
+general=0.000123
+x=7, x*x=49
+sum=45
+set={1, 2, 3}

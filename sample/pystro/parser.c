@@ -176,6 +176,12 @@ static Scope *cur_scope;
 // the method behind a never-read local / global).
 static bool in_class_body;
 
+// AST node producing the lexically-enclosing class's base — captured
+// from `class C(Base):`'s base expression so `super()` inside a method
+// body can resolve the parent without runtime introspection.  NULL
+// outside any class body.
+static NODE *cur_class_base;
+
 static int
 scope_local_index(Scope *s, const char *name)
 {
@@ -498,17 +504,27 @@ parse_fstring_payload(const char *s, size_t len)
                 acc = acc ? ALLOC_node_add(acc, p) : p;
                 lit_len = 0;
             }
-            // Find matching '}', allowing nested braces minimally.
+            // Find matching '}', allowing nested braces minimally.  A
+            // `:` at depth 1 starts the format spec.
             size_t j = i + 1;
+            size_t spec_start = 0;
             int depth = 1;
+            int paren = 0;
             while (j < len && depth > 0) {
                 if (s[j] == '{') depth++;
                 else if (s[j] == '}') depth--;
+                else if (s[j] == '(' || s[j] == '[') paren++;
+                else if (s[j] == ')' || s[j] == ']') paren--;
+                else if (s[j] == ':' && depth == 1 && paren == 0 && spec_start == 0) {
+                    spec_start = j;
+                }
                 if (depth > 0) j++;
             }
             if (j >= len) parse_error("unterminated f-string expression");
-            // Sub-parse: lex the substring and parse a single expression.
-            // Save current lexer/parser state.
+
+            size_t expr_end = spec_start ? spec_start : j;
+
+            // Sub-parse expression.
             const char *saved_buf = src_buf;
             size_t saved_pos = src_pos;
             int    saved_line = src_line;
@@ -517,20 +533,31 @@ parse_fstring_payload(const char *s, size_t len)
             bool   saved_at_line = at_line_start;
             Tok   *saved_tok_arr = tok_arr;
             size_t saved_tok_len = tok_len, saved_tok_capa = tok_capa, saved_tok_pos = tok_pos;
-            // Build a NUL-terminated substring.
-            char *expr_src = (char *)GC_malloc_atomic(j - i);
-            memcpy(expr_src, s + i + 1, j - i - 1);
-            expr_src[j - i - 1] = '\0';
+
+            char *expr_src = (char *)GC_malloc_atomic(expr_end - i);
+            memcpy(expr_src, s + i + 1, expr_end - i - 1);
+            expr_src[expr_end - i - 1] = '\0';
             tokenize(expr_src, src_filename);
             NODE *expr = parse_expr();
-            // Restore lexer/parser state.
+
             src_buf = saved_buf; src_pos = saved_pos; src_line = saved_line;
             indent_top = saved_indent_top; paren_depth = saved_paren;
             at_line_start = saved_at_line;
             tok_arr = saved_tok_arr; tok_len = saved_tok_len; tok_capa = saved_tok_capa;
             tok_pos = saved_tok_pos;
 
-            NODE *p = str_call_of(expr);
+            NODE *p;
+            if (spec_start) {
+                // Build format(expr, "spec") call.
+                char *spec_buf = (char *)GC_malloc_atomic(j - spec_start);
+                memcpy(spec_buf, s + spec_start + 1, j - spec_start - 1);
+                spec_buf[j - spec_start - 1] = '\0';
+                NODE *spec_node = ALLOC_node_const_str(intern_name(spec_buf, j - spec_start - 1));
+                p = ALLOC_node_call_2(ALLOC_node_gref(intern_name("format", 6)),
+                                      expr, spec_node);
+            } else {
+                p = str_call_of(expr);
+            }
             acc = acc ? ALLOC_node_add(acc, p) : p;
             i = j + 1;
         } else if (ch == '}') {
@@ -980,6 +1007,41 @@ parse_dot_trailer(NODE *obj)
 static NODE *
 parse_postfix(void)
 {
+    // `super()` short-circuit: only accepted as `super().METHOD(args)`.
+    // Captures the lexically-enclosing class's base via cur_class_base.
+    if (peek_tok(0)->kind == T_NAME && peek_tok(0)->sval == intern_name("super", 5)
+            && peek_tok(1)->kind == T_LPAREN && peek_tok(2)->kind == T_RPAREN
+            && peek_tok(3)->kind == T_DOT && peek_tok(4)->kind == T_NAME
+            && peek_tok(5)->kind == T_LPAREN) {
+        if (!cur_class_base) parse_error("super() called outside a class body");
+        tok_pos += 3;       // past `super` `(` `)`
+        expect(T_DOT, "'.'");
+        const char *method = peek_tok(0)->sval;
+        tok_pos++;
+        expect(T_LPAREN, "'('");
+        NODE *args[64];
+        int argc = 0;
+        if (peek_tok(0)->kind != T_RPAREN) {
+            for (;;) {
+                if (argc >= 64) parse_error("too many super args");
+                args[argc++] = parse_expr();
+                if (!match_tok(T_COMMA)) break;
+                if (peek_tok(0)->kind == T_RPAREN) break;
+            }
+        }
+        expect(T_RPAREN, "')'");
+        size_t base = node_table_reserve(args, argc);
+        NODE *e = ALLOC_node_super_method(cur_class_base, method, (uint32_t)base, (uint32_t)argc);
+        // continue with possible further trailers
+        for (;;) {
+            int k = peek_tok(0)->kind;
+            if (k == T_LPAREN) e = parse_call_args(e);
+            else if (k == T_LBRACK) e = parse_subscript(e);
+            else if (k == T_DOT)    e = parse_dot_trailer(e);
+            else break;
+        }
+        return e;
+    }
     NODE *e = parse_atom();
     for (;;) {
         int k = peek_tok(0)->kind;
@@ -1421,13 +1483,54 @@ parse_class(void)
         expect(T_RPAREN, "')'");
     }
     bool saved_icb = in_class_body;
+    NODE *saved_base = cur_class_base;
     in_class_body = true;
+    cur_class_base = base;
     NODE *body = parse_suite();
     in_class_body = saved_icb;
+    cur_class_base = saved_base;
     NODE *cls = ALLOC_node_class(cname, base, body);
     // Bind the class object at `cname`.  Same nesting rule as def.
     if (in_class_body) return cls;     // class inside class body — rare, but binds via outer
     return make_store(cname, cls);
+}
+
+// `with EXPR as NAME:` desugars to:
+//   __cm = EXPR
+//   NAME = __cm.__enter__()
+//   try:
+//     body
+//   finally:
+//     __cm.__exit__(None, None, None)
+static NODE *
+parse_with(void)
+{
+    expect(T_WITH, "'with'");
+    NODE *cm_expr = parse_expr();
+    const char *as_name = NULL;
+    if (match_tok(T_AS)) {
+        if (peek_tok(0)->kind != T_NAME) parse_error("expected NAME after 'as'");
+        as_name = peek_tok(0)->sval;
+        tok_pos++;
+    }
+    NODE *body = parse_suite();
+    // Hidden temp.
+    const char *tmp = new_temp_name("__cm");
+    NODE *load_cm;
+    NODE *init = build_temp_init(tmp, cm_expr, &load_cm);
+    NODE *enter_call = ALLOC_node_method_0(load_cm, intern_name("__enter__", 9));
+    NODE *bind = as_name ? make_store(as_name, enter_call)
+                         : enter_call;       // discard returned value
+    NODE *none1 = ALLOC_node_const_none();
+    NODE *none2 = ALLOC_node_const_none();
+    NODE *none3 = ALLOC_node_const_none();
+    // method_n with 3 args
+    NODE *args3[3] = { none1, none2, none3 };
+    size_t base = node_table_reserve(args3, 3);
+    NODE *exit_call = ALLOC_node_method_n(load_cm, intern_name("__exit__", 8), (uint32_t)base, 3);
+    // try body, no except handlers, finally = exit_call
+    NODE *try_node = ALLOC_node_try(body, 0, 0, exit_call);
+    return ALLOC_node_seq(init, ALLOC_node_seq(bind, try_node));
 }
 
 static NODE *
@@ -1742,6 +1845,7 @@ parse_stmt(void)
     if (k == T_WHILE)  return parse_while();
     if (k == T_FOR)    return parse_for();
     if (k == T_TRY)    return parse_try();
+    if (k == T_WITH)   return parse_with();
     NODE *s = parse_simple_stmt();
     // Allow optional ; or NEWLINE
     if (match_tok(T_SEMI)) {

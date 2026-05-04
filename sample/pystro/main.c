@@ -95,6 +95,8 @@ main(int argc, char *argv[])
     CTX *c = (CTX *)GC_malloc(sizeof(CTX));
     c->state = PY_STATE_NORMAL;
     c->current_class = PY_NONE;
+    extern CTX *py_current_ctx;
+    py_current_ctx = c;
     install_builtins(c);
 
     char *src;

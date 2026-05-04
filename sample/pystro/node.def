@@ -958,6 +958,35 @@ node_method_n(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
     return py_apply(c, m, (int)argc, av);
 }
 
+// `super().method(args)` — bound to the lexical class's base.  The
+// parser captures the enclosing class's base expression at parse time
+// and emits this node directly; super() outside a class body / method
+// raises AttributeError when called.
+NODE_DEF @noinline
+node_super_method(CTX * restrict c, NODE * restrict n, NODE *base, const char *method_name, uint32_t args_idx, uint32_t argc)
+{
+    (void)n;
+    extern VALUE py_class_lookup_method_pub(VALUE cls, const char *name);
+    VALUE base_v = EVAL_ARG(c, base);
+    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+    if (!py_is_class(base_v)) py_raise_exc(c, c->EXC_TypeError, "super(): base is not a class");
+    VALUE m = py_class_lookup_method_pub(base_v, method_name);
+    if (m == PY_NONE) py_raise_exc(c, c->EXC_AttributeError,
+                                   "'super' object has no attribute '%s'", method_name);
+    // self is always the first slot of the enclosing method frame.
+    if (!c->env || c->env->nslots < 1)
+        py_raise_exc(c, c->EXC_RuntimeError, "super() outside of method");
+    VALUE self = c->env->slots[0];
+    VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc + 1));
+    av[0] = self;
+    for (uint32_t i = 0; i < argc; i++) {
+        NODE *arg = PYSTRO_NODE_TABLE[args_idx + i];
+        av[i + 1] = (*arg->head.dispatcher)(c, arg);
+        if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+    }
+    return py_apply(c, m, (int)argc + 1, av);
+}
+
 // Tuple/list unpacking assignment: `a, b, c = expr`.  The targets live
 // in PYSTRO_UNPACK_TARGETS[targets_idx..idx+ntargets]; each target
 // records (is_local, slot|name).

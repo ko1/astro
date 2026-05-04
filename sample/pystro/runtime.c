@@ -12,6 +12,11 @@ struct pyobj PY_NONE_OBJ  = { .type = PY_T_NONE };
 struct pyobj PY_TRUE_OBJ  = { .type = PY_T_BOOL, .b = true };
 struct pyobj PY_FALSE_OBJ = { .type = PY_T_BOOL, .b = false };
 
+// Set by main() at startup so the parameterless py_display can call
+// instance __str__ / __repr__ without changing its signature (called
+// from many places, including recursively from list/dict display).
+CTX *py_current_ctx = NULL;
+
 // ---------------------------------------------------------------------------
 // GC + GMP.
 // ---------------------------------------------------------------------------
@@ -253,6 +258,12 @@ py_class_lookup_method(VALUE cls, const char *name)
 }
 
 VALUE
+py_class_lookup_method_pub(VALUE cls, const char *name)
+{
+    return py_class_lookup_method(cls, name);
+}
+
+VALUE
 py_make_instance(VALUE cls)
 {
     struct pyobj *o = py_alloc(PY_T_INSTANCE);
@@ -455,9 +466,30 @@ py_neg(CTX *c, VALUE a)
     py_raise_exc(c, c->EXC_TypeError, "bad operand type for unary -");
 }
 
+// Try a binary dunder hook on an instance operand: returns the result
+// if the dunder exists, else PY_NONE (caller falls through to the
+// regular numeric / type logic).  We use 0 as "method not defined"
+// sentinel since PY_NONE is a valid return.
+static VALUE
+py_try_binop_dunder(CTX *c, const char *name, VALUE a, VALUE b)
+{
+    if (py_is_instance(a)) {
+        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(a)->inst.cls), name);
+        if (m != PY_NONE) {
+            VALUE av[2] = { a, b };
+            return py_apply(c, m, 2, av);
+        }
+    }
+    return (VALUE)0;
+}
+
 VALUE
 py_add(CTX *c, VALUE a, VALUE b)
 {
+    VALUE r = py_try_binop_dunder(c, "__add__", a, b);
+    if (r) return r;
+    r = py_try_binop_dunder(c, "__radd__", b, a);
+    if (r) return r;
     if (py_is_str(a) && py_is_str(b)) {
         size_t la = PY_PTR(a)->str.len, lb = PY_PTR(b)->str.len;
         char *buf = (char *)GC_malloc_atomic(la + lb + 1);
@@ -488,6 +520,8 @@ py_add(CTX *c, VALUE a, VALUE b)
 VALUE
 py_sub(CTX *c, VALUE a, VALUE b)
 {
+    VALUE r = py_try_binop_dunder(c, "__sub__", a, b);
+    if (r) return r;
     if (py_int_or_bool(a) && py_int_or_bool(b)) {
         mpz_t za, zb; py_to_mpz(c, a, za); py_to_mpz(c, b, zb);
         mpz_sub(za, za, zb);
@@ -503,6 +537,8 @@ py_sub(CTX *c, VALUE a, VALUE b)
 VALUE
 py_mul(CTX *c, VALUE a, VALUE b)
 {
+    VALUE r = py_try_binop_dunder(c, "__mul__", a, b);
+    if (r) return r;
     if (py_is_str(a) && py_int_or_bool(b)) {
         int64_t k = PY_IS_FIXNUM(b) ? PY_FIXVAL(b) : (b == PY_TRUE ? 1 : 0);
         if (k <= 0) return py_make_str("", 0);
@@ -700,6 +736,21 @@ py_rshift(CTX *c, VALUE a, VALUE b)
 int
 py_cmp(CTX *c, VALUE a, VALUE b)
 {
+    if (py_is_instance(a)) {
+        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(a)->inst.cls), "__lt__");
+        if (m != PY_NONE) {
+            VALUE av[2] = { a, b };
+            VALUE r = py_apply(c, m, 2, av);
+            if (py_is_truthy(r)) return -1;
+            // try __eq__ for == 0
+            m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(a)->inst.cls), "__eq__");
+            if (m != PY_NONE) {
+                VALUE r2 = py_apply(c, m, 2, av);
+                if (py_is_truthy(r2)) return 0;
+            }
+            return 1;
+        }
+    }
     if (py_is_str(a) && py_is_str(b)) {
         size_t la = PY_PTR(a)->str.len, lb = PY_PTR(b)->str.len;
         size_t n = la < lb ? la : lb;
@@ -732,6 +783,8 @@ py_cmp(CTX *c, VALUE a, VALUE b)
 VALUE
 py_eq(CTX *c, VALUE a, VALUE b)
 {
+    VALUE r = py_try_binop_dunder(c, "__eq__", a, b);
+    if (r) return r;
     if (a == b) return PY_TRUE;
     if (py_int_or_bool(a) && py_int_or_bool(b)) {
         mpz_t za, zb; py_to_mpz(c, a, za); py_to_mpz(c, b, zb);
@@ -992,6 +1045,13 @@ py_int_to_long(CTX *c, VALUE v)
 VALUE
 py_list_get(CTX *c, VALUE seq, VALUE idx)
 {
+    if (py_is_instance(seq)) {
+        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(seq)->inst.cls), "__getitem__");
+        if (m != PY_NONE) {
+            VALUE av[2] = { seq, idx };
+            return py_apply(c, m, 2, av);
+        }
+    }
     if (py_is_list(seq) || py_is_tuple(seq)) {
         int64_t i = py_int_to_long(c, idx);
         int64_t len = (int64_t)PY_PTR(seq)->list.len;
@@ -1015,6 +1075,13 @@ py_list_get(CTX *c, VALUE seq, VALUE idx)
 VALUE
 py_list_set(CTX *c, VALUE seq, VALUE idx, VALUE val)
 {
+    if (py_is_instance(seq)) {
+        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(seq)->inst.cls), "__setitem__");
+        if (m != PY_NONE) {
+            VALUE av[3] = { seq, idx, val };
+            return py_apply(c, m, 3, av);
+        }
+    }
     if (py_is_list(seq)) {
         int64_t i = py_int_to_long(c, idx);
         int64_t len = (int64_t)PY_PTR(seq)->list.len;
@@ -1079,6 +1146,14 @@ py_seq_len(CTX *c, VALUE v)
     if (py_is_str(v))   return PY_PTR(v)->str.len;
     if (py_is_list(v) || py_is_tuple(v)) return PY_PTR(v)->list.len;
     if (py_is_dict(v))  return PY_PTR(v)->dict->used;
+    if (py_is_instance(v)) {
+        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(v)->inst.cls), "__len__");
+        if (m != PY_NONE) {
+            VALUE av[1] = { v };
+            VALUE r = py_apply(c, m, 1, av);
+            if (PY_IS_FIXNUM(r)) return (size_t)PY_FIXVAL(r);
+        }
+    }
     py_raise_exc(c, c->EXC_TypeError, "object has no len()");
 }
 
@@ -1601,9 +1676,27 @@ py_display(FILE *fp, VALUE v, bool repr)
       case PY_T_CLASS:
         fprintf(fp, "<class '%s'>", o->cls.name);
         return;
-      case PY_T_INSTANCE:
+      case PY_T_INSTANCE: {
+        // Defer to __str__ / __repr__ if defined.  We need a CTX to
+        // call methods, but py_display doesn't take one — work around
+        // by stashing it in a TLS-ish "current ctx" pointer set by
+        // bi_print / py_to_str.  For v0, use a simpler approach: just
+        // walk class methods directly via cached ctx.
+        extern CTX *py_current_ctx;
+        if (py_current_ctx) {
+            const char *m_name = repr ? "__repr__" : "__str__";
+            VALUE m = py_class_lookup_method(PY_OBJ_VAL(o->inst.cls), m_name);
+            if (m == PY_NONE && !repr)
+                m = py_class_lookup_method(PY_OBJ_VAL(o->inst.cls), "__repr__");
+            if (m != PY_NONE) {
+                VALUE av[1] = { v };
+                VALUE r = py_apply(py_current_ctx, m, 1, av);
+                if (py_is_str(r)) { fwrite(PY_PTR(r)->str.chars, 1, PY_PTR(r)->str.len, fp); return; }
+            }
+        }
         fprintf(fp, "<%s object>", o->inst.cls->cls.name);
         return;
+      }
       default:
         fputs("<object>", fp);
         return;
@@ -1613,7 +1706,16 @@ py_display(FILE *fp, VALUE v, bool repr)
 VALUE
 py_to_str(CTX *c, VALUE v)
 {
-    (void)c;
+    if (py_is_instance(v)) {
+        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(v)->inst.cls), "__str__");
+        if (m == PY_NONE)
+            m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(v)->inst.cls), "__repr__");
+        if (m != PY_NONE) {
+            VALUE av[1] = { v };
+            VALUE r = py_apply(c, m, 1, av);
+            if (py_is_str(r)) return r;
+        }
+    }
     if (py_is_str(v)) return v;
     char buf[256];
     FILE *mfp = fmemopen(buf, sizeof(buf) - 1, "w");
@@ -1637,7 +1739,14 @@ py_to_str(CTX *c, VALUE v)
 VALUE
 py_to_repr(CTX *c, VALUE v)
 {
-    (void)c;
+    if (py_is_instance(v)) {
+        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(v)->inst.cls), "__repr__");
+        if (m != PY_NONE) {
+            VALUE av[1] = { v };
+            VALUE r = py_apply(c, m, 1, av);
+            if (py_is_str(r)) return r;
+        }
+    }
     char *big = NULL;
     size_t cap = 0;
     FILE *bfp = open_memstream(&big, &cap);
@@ -2423,6 +2532,123 @@ bi_bin(CTX *c, int argc, VALUE *argv)
     free(r); mpz_clear(z); return v;
 }
 
+// Minimal `format(value, spec)` — handles the common f-string format
+// specifications: `[fill][align][0][width][.precision][type]` where
+// type ∈ { d / s / f / g / e / x / X / b / o / "" }.
+//
+// Recognised: width, alignment (`<` / `>` / `^`), zero-pad (`0`),
+// precision for floats, type letter.  Anything else falls back to
+// str(value) without formatting (a documented v0 limitation).
+static VALUE
+bi_format(CTX *c, int argc, VALUE *argv)
+{
+    VALUE v = argv[0];
+    if (argc < 2 || !py_is_str(argv[1]) || PY_PTR(argv[1])->str.len == 0)
+        return py_to_str(c, v);
+    const char *s = PY_PTR(argv[1])->str.chars;
+    size_t n = PY_PTR(argv[1])->str.len;
+    char fill = ' ';
+    char align = 0;            // 0 = unset, '<', '>', '^'
+    bool zero_pad = false;
+    int  width = 0;
+    int  precision = -1;
+    char type_ch = 0;
+    size_t i = 0;
+    // [fill][align]
+    if (n >= 2 && (s[1] == '<' || s[1] == '>' || s[1] == '^')) {
+        fill = s[0]; align = s[1]; i = 2;
+    } else if (n >= 1 && (s[0] == '<' || s[0] == '>' || s[0] == '^')) {
+        align = s[0]; i = 1;
+    }
+    // [0]
+    if (i < n && s[i] == '0') { zero_pad = true; i++; }
+    // [width]
+    while (i < n && s[i] >= '0' && s[i] <= '9') { width = width * 10 + (s[i] - '0'); i++; }
+    // [.precision]
+    if (i < n && s[i] == '.') {
+        i++;
+        precision = 0;
+        while (i < n && s[i] >= '0' && s[i] <= '9') { precision = precision * 10 + (s[i] - '0'); i++; }
+    }
+    // [type]
+    if (i < n) type_ch = s[i++];
+    // Format the value into `body`.
+    char fmt[32];
+    char body[256];
+    body[0] = '\0';
+    if (type_ch == 'd' || type_ch == 'b' || type_ch == 'o' || type_ch == 'x' || type_ch == 'X') {
+        // Integer formatting.  Convert v to int.
+        long long iv;
+        if (PY_IS_FIXNUM(v)) iv = PY_FIXVAL(v);
+        else if (v == PY_TRUE) iv = 1;
+        else if (v == PY_FALSE) iv = 0;
+        else if (py_is_bignum(v)) {
+            char *bs = mpz_get_str(NULL, type_ch == 'b' ? 2 : type_ch == 'o' ? 8 :
+                                          (type_ch == 'x' || type_ch == 'X') ? 16 : 10,
+                                   PY_PTR(v)->mpz);
+            snprintf(body, sizeof(body), "%s", bs);
+            goto pad;
+        }
+        else iv = (long long)py_to_double(c, v);
+        const char *base_fmt = type_ch == 'd' ? "%lld" :
+                               type_ch == 'b' ? "%lld" :     // handled below
+                               type_ch == 'o' ? "%llo" :
+                               type_ch == 'x' ? "%llx" : "%llX";
+        if (type_ch == 'b') {
+            // C has no %b; do it manually.
+            char buf[80]; int p = 0;
+            unsigned long long x = (unsigned long long)(iv < 0 ? -iv : iv);
+            if (x == 0) buf[p++] = '0';
+            while (x) { buf[p++] = (x & 1) + '0'; x >>= 1; }
+            int j = 0;
+            if (iv < 0) body[j++] = '-';
+            for (int k = p - 1; k >= 0; k--) body[j++] = buf[k];
+            body[j] = '\0';
+        } else snprintf(body, sizeof(body), base_fmt, iv);
+    } else if (type_ch == 'f' || type_ch == 'g' || type_ch == 'e' || type_ch == 'E') {
+        double d = py_to_double(c, v);
+        if (precision >= 0) snprintf(fmt, sizeof(fmt), "%%.%d%c", precision, type_ch);
+        else                snprintf(fmt, sizeof(fmt), "%%%c", type_ch);
+        snprintf(body, sizeof(body), fmt, d);
+    } else if (type_ch == 's' || type_ch == 0) {
+        VALUE sv = py_to_str(c, v);
+        if (py_is_str(sv)) {
+            size_t L = PY_PTR(sv)->str.len;
+            if (L >= sizeof(body)) L = sizeof(body) - 1;
+            memcpy(body, PY_PTR(sv)->str.chars, L);
+            body[L] = '\0';
+            if (precision >= 0 && (size_t)precision < L) body[precision] = '\0';
+        }
+    } else {
+        return py_to_str(c, v);    // unknown type — fall back
+    }
+  pad: {
+        size_t bl = strlen(body);
+        if ((int)bl >= width) return py_make_str(body, bl);
+        size_t pad = (size_t)width - bl;
+        char *out = (char *)GC_malloc_atomic(width + 1);
+        char eff_fill = zero_pad ? '0' : fill;
+        if (align == 0) {
+            // Default: numbers right-align, strings left-align.
+            align = (type_ch == 's' || type_ch == 0) ? '<' : '>';
+        }
+        if (align == '<') {
+            memcpy(out, body, bl);
+            for (size_t j = 0; j < pad; j++) out[bl + j] = eff_fill;
+        } else if (align == '^') {
+            size_t left = pad / 2, right = pad - left;
+            for (size_t j = 0; j < left; j++) out[j] = eff_fill;
+            memcpy(out + left, body, bl);
+            for (size_t j = 0; j < right; j++) out[left + bl + j] = eff_fill;
+        } else { // '>'
+            for (size_t j = 0; j < pad; j++) out[j] = eff_fill;
+            memcpy(out + pad, body, bl);
+        }
+        out[width] = '\0';
+        return py_make_str_take(out, (size_t)width);
+    }
+}
+
 static VALUE
 bi_input(CTX *c, int argc, VALUE *argv)
 {
@@ -2470,6 +2696,7 @@ install_builtins(CTX *c)
     py_global_define(c, "bin",        py_make_builtin("bin",        bi_bin,        1,  1));
     py_global_define(c, "input",      py_make_builtin("input",      bi_input,      0,  1));
     py_global_define(c, "hash",       py_make_builtin("hash",       bi_hash,       1,  1));
+    py_global_define(c, "format",     py_make_builtin("format",     bi_format,     1,  2));
 
     // Built-in exception classes.  Hierarchy is BaseException root, but
     // for now everything inherits Exception → no base.
