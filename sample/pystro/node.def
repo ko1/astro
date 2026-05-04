@@ -759,15 +759,15 @@ node_raise_bare(CTX * restrict c, NODE * restrict n)
     return PY_NONE;
 }
 
-// try / except / finally.  Defers to a host function whose frame holds
-// the `setjmp` (EVAL_xxx is `always_inline` so we can't put setjmp
-// directly in a NODE_DEF body).
+// try / except / else / finally.  Defers to a host function whose
+// frame holds the `setjmp` (EVAL_xxx is `always_inline` so we can't
+// put setjmp directly in a NODE_DEF body).
 NODE_DEF @noinline
-node_try(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t handlers_idx, uint32_t nhandlers, NODE *finally_body)
+node_try(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t handlers_idx, uint32_t nhandlers, NODE *else_body, NODE *finally_body)
 {
     (void)n;
-    extern void py_run_try(CTX *c, NODE *body, uint32_t handlers_idx, uint32_t nhandlers, NODE *finally_body);
-    py_run_try(c, body, handlers_idx, nhandlers, finally_body);
+    extern void py_run_try(CTX *c, NODE *body, uint32_t handlers_idx, uint32_t nhandlers, NODE *else_body, NODE *finally_body);
+    py_run_try(c, body, handlers_idx, nhandlers, else_body, finally_body);
     return PY_NONE;
 }
 

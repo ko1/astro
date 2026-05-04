@@ -1927,7 +1927,7 @@ py_exc_matches(CTX *c, VALUE exc, VALUE cls)
 // ---------------------------------------------------------------------------
 
 void
-py_run_try(CTX *c, NODE *body, uint32_t handlers_idx, uint32_t nhandlers, NODE *finally_body)
+py_run_try(CTX *c, NODE *body, uint32_t handlers_idx, uint32_t nhandlers, NODE *else_body, NODE *finally_body)
 {
     jmp_buf jb;
     int saved_top = c->try_top;
@@ -1965,6 +1965,9 @@ py_run_try(CTX *c, NODE *body, uint32_t handlers_idx, uint32_t nhandlers, NODE *
                 goto run_finally;
             }
         }
+    } else if (else_body) {
+        // No exception → run else clause (after body, before finally).
+        EVAL(c, else_body);
     }
   run_finally:
     if (finally_body) {
@@ -2932,6 +2935,154 @@ bi_input(CTX *c, int argc, VALUE *argv)
 static VALUE
 bi_hash(CTX *c, int argc, VALUE *argv) { (void)argc; return PY_FIX((int64_t)(py_hash(c, argv[0]) & 0x7FFFFFFFFFFFFFFFULL)); }
 
+static VALUE
+bi_all(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    struct py_iter it; py_iter_init(c, &it, argv[0]);
+    if (c->state != PY_STATE_NORMAL) return PY_NONE;
+    VALUE x;
+    while (py_iter_next(c, &it, &x)) if (!py_is_truthy(x)) return PY_FALSE;
+    return PY_TRUE;
+}
+
+static VALUE
+bi_any(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    struct py_iter it; py_iter_init(c, &it, argv[0]);
+    if (c->state != PY_STATE_NORMAL) return PY_NONE;
+    VALUE x;
+    while (py_iter_next(c, &it, &x)) if (py_is_truthy(x)) return PY_TRUE;
+    return PY_FALSE;
+}
+
+static VALUE
+bi_divmod(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    VALUE q = py_fdiv(c, argv[0], argv[1]);
+    VALUE r = py_mod (c, argv[0], argv[1]);
+    VALUE pair[2] = { q, r };
+    return py_make_tuple(pair, 2);
+}
+
+static VALUE
+bi_round(CTX *c, int argc, VALUE *argv)
+{
+    int ndig = (argc >= 2) ? (int)py_int_to_long(c, argv[1]) : 0;
+    double d = py_to_double(c, argv[0]);
+    double mul = 1.0;
+    for (int i = 0; i < ndig; i++) mul *= 10.0;
+    for (int i = 0; i > ndig; i--) mul /= 10.0;
+    double r = (d >= 0 ? floor(d * mul + 0.5) : -floor(-d * mul + 0.5)) / mul;
+    // Python: round(x) → int; round(x, n) → same type as x.
+    if (argc < 2) return PY_FIX((int64_t)r);
+    if (PY_IS_FIXNUM(argv[0]) || py_is_bignum(argv[0])) return PY_FIX((int64_t)r);
+    return py_make_float(r);
+}
+
+static VALUE
+bi_pow(CTX *c, int argc, VALUE *argv)
+{
+    if (argc == 3) {
+        // a ** b mod m — only int int int for v0.
+        if (!py_int_or_bool(argv[0]) || !py_int_or_bool(argv[1]) || !py_int_or_bool(argv[2]))
+            py_raise_exc(c, c->EXC_TypeError, "pow() with 3 args needs ints");
+        mpz_t a, b, m, r;
+        py_to_mpz(c, argv[0], a); py_to_mpz(c, argv[1], b); py_to_mpz(c, argv[2], m);
+        mpz_init(r); mpz_powm(r, a, b, m);
+        VALUE rv = py_normalise_int(r);
+        mpz_clear(a); mpz_clear(b); mpz_clear(m); mpz_clear(r);
+        return rv;
+    }
+    return py_pow(c, argv[0], argv[1]);
+}
+
+static VALUE
+bi_reversed(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    VALUE r = py_make_list(NULL, 0);
+    if (py_is_list(argv[0]) || py_is_tuple(argv[0])) {
+        struct pyobj *o = PY_PTR(argv[0]);
+        for (size_t i = o->list.len; i > 0; i--) py_list_append(c, r, o->list.items[i - 1]);
+        return r;
+    }
+    if (py_is_str(argv[0])) {
+        struct pyobj *o = PY_PTR(argv[0]);
+        for (size_t i = o->str.len; i > 0; i--) py_list_append(c, r, py_make_str(o->str.chars + i - 1, 1));
+        return r;
+    }
+    if (py_is_range(argv[0])) {
+        struct pyobj *o = PY_PTR(argv[0]);
+        int64_t s = o->range.start, e = o->range.stop, st = o->range.step;
+        // last element of a positive-step range: s + ((e-s-1)//st) * st
+        int64_t last;
+        if (st > 0 && s < e) last = s + ((e - s - 1) / st) * st;
+        else if (st < 0 && s > e) last = s + ((s - e - 1) / -st) * st;
+        else return r;
+        for (int64_t v = last; (st > 0 ? v >= s : v <= s); v -= st)
+            py_list_append(c, r, py_make_int(v));
+        return r;
+    }
+    py_raise_exc(c, c->EXC_TypeError, "argument to reversed() must be a sequence");
+}
+
+static VALUE
+bi_map(CTX *c, int argc, VALUE *argv)
+{
+    if (argc < 2) py_raise_exc(c, c->EXC_TypeError, "map() needs >=2 args");
+    VALUE r = py_make_list(NULL, 0);
+    int n_iters = argc - 1;
+    struct py_iter *its = (struct py_iter *)alloca(sizeof(struct py_iter) * n_iters);
+    for (int i = 0; i < n_iters; i++) {
+        py_iter_init(c, &its[i], argv[i + 1]);
+        if (c->state != PY_STATE_NORMAL) return PY_NONE;
+    }
+    for (;;) {
+        VALUE *args = (VALUE *)alloca(sizeof(VALUE) * n_iters);
+        for (int i = 0; i < n_iters; i++) {
+            if (!py_iter_next(c, &its[i], &args[i])) return r;
+        }
+        VALUE v = py_apply(c, argv[0], n_iters, args);
+        if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
+        py_list_append(c, r, v);
+    }
+}
+
+static VALUE
+bi_filter(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    VALUE r = py_make_list(NULL, 0);
+    struct py_iter it; py_iter_init(c, &it, argv[1]);
+    if (c->state != PY_STATE_NORMAL) return PY_NONE;
+    VALUE x;
+    while (py_iter_next(c, &it, &x)) {
+        VALUE keep = (argv[0] == PY_NONE) ? (py_is_truthy(x) ? PY_TRUE : PY_FALSE)
+                                          : py_apply(c, argv[0], 1, &x);
+        if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
+        if (py_is_truthy(keep)) py_list_append(c, r, x);
+    }
+    return r;
+}
+
+static VALUE
+bi_iter(CTX *c, int argc, VALUE *argv) { (void)c; (void)argc; return argv[0]; /* iterables in pystro are self-iterators */ }
+
+static VALUE
+bi_next(CTX *c, int argc, VALUE *argv)
+{
+    // pystro doesn't have a separate iterator object — `next()` works
+    // only on lists/tuples/dicts/etc. by treating them as a stream.
+    // We don't currently track iter state across calls, so this is a
+    // no-op stub raising StopIteration on first call.  Use `for` for
+    // real iteration.
+    (void)argc; (void)argv;
+    py_raise_exc(c, c->EXC_StopIteration, "iter object not supported (use for-loop)");
+}
+
 static void
 install_builtins(CTX *c)
 {
@@ -2966,6 +3117,16 @@ install_builtins(CTX *c)
     py_global_define(c, "staticmethod",py_make_builtin("staticmethod",bi_staticmethod, 1, 1));
     py_global_define(c, "classmethod", py_make_builtin("classmethod", bi_classmethod, 1, 1));
     py_global_define(c, "property",    py_make_builtin("property",    bi_property,    1, 1));
+    py_global_define(c, "all",         py_make_builtin("all",         bi_all,        1, 1));
+    py_global_define(c, "any",         py_make_builtin("any",         bi_any,        1, 1));
+    py_global_define(c, "divmod",      py_make_builtin("divmod",      bi_divmod,     2, 2));
+    py_global_define(c, "round",       py_make_builtin("round",       bi_round,      1, 2));
+    py_global_define(c, "pow",         py_make_builtin("pow",         bi_pow,        2, 3));
+    py_global_define(c, "reversed",    py_make_builtin("reversed",    bi_reversed,   1, 1));
+    py_global_define(c, "map",         py_make_builtin("map",         bi_map,        2,-1));
+    py_global_define(c, "filter",      py_make_builtin("filter",      bi_filter,     2, 2));
+    py_global_define(c, "iter",        py_make_builtin("iter",        bi_iter,       1, 1));
+    py_global_define(c, "next",        py_make_builtin("next",        bi_next,       1, 2));
 
     // Built-in exception classes.  Hierarchy is BaseException root, but
     // for now everything inherits Exception → no base.

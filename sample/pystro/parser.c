@@ -1604,7 +1604,7 @@ parse_with(void)
     size_t base = node_table_reserve(args3, 3);
     NODE *exit_call = ALLOC_node_method_n(load_cm, intern_name("__exit__", 8), (uint32_t)base, 3);
     // try body, no except handlers, finally = exit_call
-    NODE *try_node = ALLOC_node_try(body, 0, 0, exit_call);
+    NODE *try_node = ALLOC_node_try(body, 0, 0, ALLOC_node_nop(), exit_call);
     return ALLOC_node_seq(init, ALLOC_node_seq(bind, try_node));
 }
 
@@ -1639,12 +1639,15 @@ parse_try(void)
         if (nh >= 16) parse_error("too many except handlers");
         hs[nh++] = h;
     }
+    NODE *else_body = match_tok(T_ELSE) ? parse_suite() : ALLOC_node_nop();
     NODE *finally_body = NULL;
     if (match_tok(T_FINALLY)) finally_body = parse_suite();
     if (nh == 0 && !finally_body) parse_error("try without except/finally");
 
     size_t hidx = handlers_reserve(hs, nh);
-    return ALLOC_node_try(body, (uint32_t)hidx, (uint32_t)nh, finally_body ? finally_body : ALLOC_node_nop());
+    return ALLOC_node_try(body, (uint32_t)hidx, (uint32_t)nh,
+                          else_body,
+                          finally_body ? finally_body : ALLOC_node_nop());
 }
 
 static NODE *
