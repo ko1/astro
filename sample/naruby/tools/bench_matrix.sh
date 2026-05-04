@@ -3,11 +3,16 @@
 # Outputs TSV: bench, plain, aot-1st, aot-c, pg-1st, pg-c, lto-1st, lto-c.
 #
 #   plain    = ./naruby -i $B            (interpreter, no code store)
-#   aot-1st  = ./naruby --ccs -c $B      (cold AOT bake + run)
+#   aot-1st  = ./naruby --ccs -c $B      (cold AOT bake + run; all.so = SDs only)
 #   aot-c    = ./naruby -b $B            (cached, cs_load SDs, skip bake)
-#   pg-1st   = ./naruby --ccs -c -p $B   (cold AOT + run + PG bake)
+#   pg-1st   = ./naruby --ccs -p $B      (interp run + PGSD bake; all.so = PGSDs only)
 #   pg-c     = ./naruby -p -b $B         (cached PG, cs_load PGSDs, skip bake)
 #   lto-*    = same as pg-* but ASTRO_EXTRA_*=-flto
+#
+# Note: pg-1st intentionally has NO -c.  Mixing -c with -p would put
+# extra AOT SDs (HORG-keyed) into all.so alongside the PGSDs (HOPT-
+# keyed) we actually want.  Without -c, the calibration run is interp-
+# speed but all.so ends up with only the profile-baked PGSDs.
 
 set -eu
 
@@ -61,10 +66,10 @@ for b in "${BENCHES[@]}"; do
     aot1=$(run_cold 0 "-c"    "$b")
     aotc=$(run_cached "-b"    "$b")
 
-    pg1=$(run_cold 0  "-c -p" "$b")
+    pg1=$(run_cold 0  "-p"    "$b")
     pgc=$(run_cached "-p -b"  "$b")
 
-    lto1=$(run_cold 1 "-c -p" "$b")
+    lto1=$(run_cold 1 "-p"    "$b")
     ltoc=$(run_cached "-p -b" "$b")
 
     printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
