@@ -952,6 +952,69 @@ node_call_n(CTX * restrict c, NODE * restrict n, NODE *fn, uint32_t args_idx, ui
     return py_apply(c, f, (int)argc, av);
 }
 
+// Call with `*list` / `**dict` expansion.  Walks PYSTRO_SPREADS,
+// expanding spread entries into the positional / keyword arg lists.
+NODE_DEF @noinline
+node_call_spread(CTX * restrict c, NODE * restrict n, NODE *fn, uint32_t spreads_idx, uint32_t nspreads)
+{
+    (void)n;
+    extern VALUE py_apply_kw(CTX *c, VALUE fn, int argc, VALUE *argv, int kwc, const char **kwnames, VALUE *kwvalues);
+    VALUE f = EVAL_ARG(c, fn);
+    // First pass: count.
+    size_t cap_pos = 4, cap_kw = 4;
+    VALUE *av = (VALUE *)GC_malloc(sizeof(VALUE) * cap_pos);
+    int argc = 0;
+    const char **kn = (const char **)GC_malloc(sizeof(char *) * cap_kw);
+    VALUE       *kv = (VALUE *)GC_malloc(sizeof(VALUE) * cap_kw);
+    int kwc = 0;
+    for (uint32_t i = 0; i < nspreads; i++) {
+        struct pyspread_arg *sa = &PYSTRO_SPREADS[spreads_idx + i];
+        VALUE v = (*sa->node->head.dispatcher)(c, sa->node);
+        if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+        if (sa->kind == 0) {
+            if (argc == (int)cap_pos) { cap_pos *= 2; av = (VALUE *)GC_realloc(av, sizeof(VALUE) * cap_pos); }
+            av[argc++] = v;
+        } else if (sa->kind == 1) {
+            // *iterable
+            struct py_iter it; py_iter_init(c, &it, v);
+            if (c->state != PY_STATE_NORMAL) return PY_NONE;
+            VALUE x;
+            while (py_iter_next(c, &it, &x)) {
+                if (argc == (int)cap_pos) { cap_pos *= 2; av = (VALUE *)GC_realloc(av, sizeof(VALUE) * cap_pos); }
+                av[argc++] = x;
+            }
+        } else if (sa->kind == 2) {
+            if (kwc == (int)cap_kw) {
+                cap_kw *= 2;
+                kn = (const char **)GC_realloc(kn, sizeof(char *) * cap_kw);
+                kv = (VALUE *)GC_realloc(kv, sizeof(VALUE) * cap_kw);
+            }
+            kn[kwc] = sa->name;
+            kv[kwc] = v;
+            kwc++;
+        } else if (sa->kind == 3) {
+            // **dict
+            if (!py_is_dict(v)) py_raise_exc(c, c->EXC_TypeError, "argument after ** must be a dict");
+            struct pydict *d = PY_PTR(v)->dict;
+            for (size_t j = 0; j < d->capa; j++) {
+                if (d->entries[j].state == 1) {
+                    if (!py_is_str(d->entries[j].key))
+                        py_raise_exc(c, c->EXC_TypeError, "** keys must be strings");
+                    if (kwc == (int)cap_kw) {
+                        cap_kw *= 2;
+                        kn = (const char **)GC_realloc(kn, sizeof(char *) * cap_kw);
+                        kv = (VALUE *)GC_realloc(kv, sizeof(VALUE) * cap_kw);
+                    }
+                    kn[kwc] = PY_PTR(d->entries[j].key)->str.chars;
+                    kv[kwc] = d->entries[j].value;
+                    kwc++;
+                }
+            }
+        }
+    }
+    return py_apply_kw(c, f, argc, av, kwc, kn, kv);
+}
+
 // Call with keyword arguments (and possibly positional too).
 // Positional from PYSTRO_NODE_TABLE[args_idx..argc], kwargs from
 // PYSTRO_KWARGS[kwargs_idx..kwc].  No `*list` / `**dict` expansion at

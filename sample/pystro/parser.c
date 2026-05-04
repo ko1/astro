@@ -44,6 +44,23 @@ static size_t kwargs_reserve(struct pykwarg *src, size_t n)
     return base;
 }
 
+// Spread args at call site (positional / kwarg + their `*expr` / `**expr`).
+struct pyspread_arg *PYSTRO_SPREADS = NULL;
+static size_t pystro_spreads_len, pystro_spreads_capa;
+static size_t spreads_reserve(struct pyspread_arg *src, size_t n)
+{
+    if (pystro_spreads_len + n > pystro_spreads_capa) {
+        size_t cap = pystro_spreads_capa ? pystro_spreads_capa * 2 : 16;
+        while (cap < pystro_spreads_len + n) cap *= 2;
+        PYSTRO_SPREADS = (struct pyspread_arg *)GC_realloc(PYSTRO_SPREADS, cap * sizeof(struct pyspread_arg));
+        pystro_spreads_capa = cap;
+    }
+    size_t base = pystro_spreads_len;
+    for (size_t i = 0; i < n; i++) PYSTRO_SPREADS[base + i] = src[i];
+    pystro_spreads_len += n;
+    return base;
+}
+
 // Bag of (slot, NODE *) defaults for node_def / node_lambda.
 struct pydefault *PYSTRO_DEFAULTS = NULL;
 static size_t pystro_defaults_len, pystro_defaults_capa;
@@ -940,25 +957,48 @@ parse_call_args(NODE *fn)
     int argc = 0;
     struct pykwarg kws[32];
     int kwc = 0;
+    struct pyspread_arg spreads[64];
+    int nspreads = 0;
+    bool has_spread = false;
     if (peek_tok(0)->kind != T_RPAREN) {
         for (;;) {
-            // Lookahead for `NAME =` (kwarg).  Plain `=` only — `==` is
-            // a different token.
-            if (peek_tok(0)->kind == T_NAME && peek_tok(1)->kind == T_ASSIGN) {
-                if (kwc >= 32) parse_error("too many kwargs");
-                kws[kwc].name = peek_tok(0)->sval;
+            int k = peek_tok(0)->kind;
+            if (k == T_STAR_STAR) {
+                tok_pos++;
+                NODE *e = parse_expr();
+                spreads[nspreads].kind = 3; spreads[nspreads].name = NULL; spreads[nspreads].node = e;
+                nspreads++;
+                has_spread = true;
+            } else if (k == T_STAR) {
+                tok_pos++;
+                NODE *e = parse_expr();
+                spreads[nspreads].kind = 1; spreads[nspreads].name = NULL; spreads[nspreads].node = e;
+                nspreads++;
+                has_spread = true;
+            } else if (k == T_NAME && peek_tok(1)->kind == T_ASSIGN) {
+                const char *nm = peek_tok(0)->sval;
                 tok_pos += 2;
-                kws[kwc].value = parse_expr();
-                kwc++;
+                NODE *e = parse_expr();
+                if (kwc >= 32) parse_error("too many kwargs");
+                kws[kwc].name = nm; kws[kwc].value = e; kwc++;
+                spreads[nspreads].kind = 2; spreads[nspreads].name = nm; spreads[nspreads].node = e;
+                nspreads++;
             } else {
+                NODE *e = parse_expr();
                 if (argc >= 64) parse_error("too many args");
-                args[argc++] = parse_expr();
+                args[argc++] = e;
+                spreads[nspreads].kind = 0; spreads[nspreads].name = NULL; spreads[nspreads].node = e;
+                nspreads++;
             }
             if (!match_tok(T_COMMA)) break;
             if (peek_tok(0)->kind == T_RPAREN) break;
         }
     }
     expect(T_RPAREN, "')'");
+    if (has_spread) {
+        size_t base = spreads_reserve(spreads, nspreads);
+        return ALLOC_node_call_spread(fn, (uint32_t)base, (uint32_t)nspreads);
+    }
     if (kwc > 0) {
         size_t abase = node_table_reserve(args, argc);
         size_t kbase = kwargs_reserve(kws, kwc);

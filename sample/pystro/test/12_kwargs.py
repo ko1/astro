@@ -50,7 +50,7 @@ def with_global_default(x=GLOBAL):
 print(with_global_default())
 print(with_global_default(42))
 
-# forwarded kwargs (call-site `*args`/`**kw` unpacking not yet supported)
-def relay(a, b, c, **kw):
-    return both(a, b, c, x=kw.get("x", 0))
-print(relay(1, 2, 3, x=99))
+# forwarded kwargs via `*args` / `**kw` call-site unpacking
+def caller(*args, **kw):
+    return both(*args, **kw)
+print(caller(1, 2, 3, x=99))

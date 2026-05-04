@@ -453,6 +453,18 @@ struct pykwarg {
 };
 extern struct pykwarg          *PYSTRO_KWARGS;
 
+// Call-site argument with spread support.  kind:
+//   0 = positional (single value)
+//   1 = `*expr` — expand iterable into positional slots
+//   2 = `name=expr` (single kwarg)
+//   3 = `**expr` — expand dict into kwargs
+struct pyspread_arg {
+    int          kind;
+    const char  *name;
+    struct Node *node;
+};
+extern struct pyspread_arg     *PYSTRO_SPREADS;
+
 // One default-arg entry: a slot index in the param list plus the AST
 // node producing the default value.  Used by node_def / node_lambda.
 struct pydefault {
