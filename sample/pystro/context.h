@@ -24,9 +24,16 @@ extern void  GC_set_free_space_divisor(unsigned);
 #define LIKELY(expr)   __builtin_expect((expr), 1)
 #define UNLIKELY(expr) __builtin_expect((expr), 0)
 
-// VALUE encoding (1-bit fixnum):
-//   xxxx_xxx1 → fixnum (signed 63-bit)
-//   xxxx_xxx0 → ptr to `struct pyobj` (8-byte aligned)
+// VALUE encoding (CRuby / ascheme / luastro family):
+//   xxxx_xxx1 → fixnum (signed 63-bit, shift-left + OR 1)
+//   xxxx_xx10 → flonum (IEEE-754 double encoded inline; 3-bit rotate)
+//   xxxx_x000 → ptr to `struct pyobj` (8-byte aligned)
+//
+// Flonum encoding: doubles whose IEEE-754 exponent top-3-bits ∈ {0b011,
+// 0b100} (magnitudes ~[1e-77, 1e+77]) round-trip through a left-rotate-
+// by-3 + bit-1 tag.  Everything else (0.0, denormals, NaN/inf, very
+// large/small) falls back to the heap PY_T_FLOAT path.  This eliminates
+// per-arithmetic-op heap allocation for the typical numeric workload.
 //
 // True / False / None are static singleton pyobj's; their addresses are
 // the literal VALUE constants PY_TRUE / PY_FALSE / PY_NONE.
@@ -38,9 +45,37 @@ typedef int64_t VALUE;
 #define PY_FIX(n)       (((VALUE)(int64_t)(n) << 1) | 1LL)
 #define PY_FIXVAL(v)    ((int64_t)(v) >> 1)
 
-#define PY_IS_PTR(v)    (((int64_t)(v) & 1LL) == 0)
+#define PY_FLONUM_MASK   3LL
+#define PY_FLONUM_TAG    2LL
+#define PY_IS_FLONUM(v)  (((int64_t)(v) & PY_FLONUM_MASK) == PY_FLONUM_TAG)
+
+#define PY_IS_PTR(v)    (((int64_t)(v) & PY_FLONUM_MASK) == 0)
 #define PY_PTR(v)       ((struct pyobj *)(uintptr_t)(v))
 #define PY_OBJ_VAL(p)   ((VALUE)(uintptr_t)(p))
+
+static inline uint64_t py_rotl64(uint64_t x, int n) { return (x << n) | (x >> (64 - n)); }
+static inline uint64_t py_rotr64(uint64_t x, int n) { return (x >> n) | (x << (64 - n)); }
+
+// Try to inline-encode `d`.  Returns 0 if `d` falls outside the encodable
+// range (caller must heap-box).
+static inline VALUE
+py_try_flonum(double d)
+{
+    union { double d; uint64_t u; } pun;
+    pun.d = d;
+    int bits = (int)((pun.u >> 60) & 0x7);
+    if (__builtin_expect(d == 0.0 || (bits != 3 && bits != 4), 0)) return 0;
+    return (VALUE)((py_rotl64(pun.u, 3) & ~(uint64_t)1) | PY_FLONUM_TAG);
+}
+
+static inline double
+py_flonum_to_double(VALUE v)
+{
+    union { double d; uint64_t u; } pun;
+    uint64_t b63 = ((uint64_t)v >> 63) & 1;
+    pun.u = py_rotr64((2 - b63) | ((uint64_t)v & ~(uint64_t)3), 3);
+    return pun.d;
+}
 
 enum pyobj_type {
     PY_T_NONE = 0,
@@ -234,7 +269,8 @@ extern struct pyobj PY_NONE_OBJ, PY_TRUE_OBJ, PY_FALSE_OBJ;
 static inline bool py_is_none(VALUE v)    { return v == PY_NONE; }
 static inline bool py_is_bool(VALUE v)    { return v == PY_TRUE || v == PY_FALSE; }
 static inline bool py_is_fix(VALUE v)     { return PY_IS_FIXNUM(v); }
-static inline bool py_is_float(VALUE v)   { return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_FLOAT; }
+static inline bool py_is_heap_float(VALUE v) { return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_FLOAT; }
+static inline bool py_is_float(VALUE v)   { return PY_IS_FLONUM(v) || py_is_heap_float(v); }
 static inline bool py_is_bignum(VALUE v)  { return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_BIGNUM; }
 static inline bool py_is_int(VALUE v)     { return py_is_fix(v) || py_is_bignum(v); }
 static inline bool py_is_str(VALUE v)     { return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_STR; }
@@ -257,6 +293,7 @@ py_is_truthy(VALUE v)
 {
     if (v == PY_NONE || v == PY_FALSE) return false;
     if (PY_IS_FIXNUM(v)) return PY_FIXVAL(v) != 0;
+    if (PY_IS_FLONUM(v)) return py_flonum_to_double(v) != 0.0;
     struct pyobj *o = PY_PTR(v);
     switch (o->type) {
       case PY_T_FLOAT:  return o->dbl != 0.0;

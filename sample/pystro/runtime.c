@@ -49,6 +49,8 @@ py_alloc(int type)
 VALUE
 py_make_float(double d)
 {
+    VALUE inline_v = py_try_flonum(d);
+    if (LIKELY(inline_v)) return inline_v;
     struct pyobj *o = py_alloc(PY_T_FLOAT);
     o->dbl = d;
     return PY_OBJ_VAL(o);
@@ -420,11 +422,12 @@ py_raise_exc(CTX *c, VALUE cls, const char *fmt, ...)
 static double
 py_to_double(CTX *c, VALUE v)
 {
-    if (PY_IS_FIXNUM(v)) return (double)PY_FIXVAL(v);
-    if (py_is_float(v))  return PY_PTR(v)->dbl;
-    if (py_is_bignum(v)) return mpz_get_d(PY_PTR(v)->mpz);
-    if (v == PY_TRUE)    return 1.0;
-    if (v == PY_FALSE)   return 0.0;
+    if (PY_IS_FIXNUM(v))    return (double)PY_FIXVAL(v);
+    if (PY_IS_FLONUM(v))    return py_flonum_to_double(v);
+    if (py_is_heap_float(v)) return PY_PTR(v)->dbl;
+    if (py_is_bignum(v))    return mpz_get_d(PY_PTR(v)->mpz);
+    if (v == PY_TRUE)       return 1.0;
+    if (v == PY_FALSE)      return 0.0;
     py_raise_exc(c, c->EXC_TypeError, "expected a number");
 }
 
@@ -453,9 +456,9 @@ py_neg(CTX *c, VALUE a)
         if (!__builtin_sub_overflow((int64_t)0, PY_FIXVAL(a), &r) &&
             r >= PY_FIXNUM_MIN && r <= PY_FIXNUM_MAX)
             return PY_FIX(r);
-        // fall through to bignum
     }
-    if (py_is_float(a)) return py_make_float(-PY_PTR(a)->dbl);
+    if (PY_IS_FLONUM(a)) return py_make_float(-py_flonum_to_double(a));
+    if (py_is_heap_float(a)) return py_make_float(-PY_PTR(a)->dbl);
     if (py_int_or_bool(a)) {
         mpz_t z; py_to_mpz(c, a, z);
         mpz_neg(z, z);
@@ -758,6 +761,10 @@ py_cmp(CTX *c, VALUE a, VALUE b)
         if (r != 0) return r < 0 ? -1 : 1;
         return la < lb ? -1 : la > lb ? 1 : 0;
     }
+    if (PY_IS_FIXNUM(a) && PY_IS_FIXNUM(b)) {
+        int64_t ai = PY_FIXVAL(a), bi = PY_FIXVAL(b);
+        return ai < bi ? -1 : ai > bi ? 1 : 0;
+    }
     if (py_int_or_bool(a) && py_int_or_bool(b)) {
         mpz_t za, zb; py_to_mpz(c, a, za); py_to_mpz(c, b, zb);
         int r = mpz_cmp(za, zb);
@@ -786,16 +793,15 @@ py_eq(CTX *c, VALUE a, VALUE b)
     VALUE r = py_try_binop_dunder(c, "__eq__", a, b);
     if (r) return r;
     if (a == b) return PY_TRUE;
+    if (PY_IS_FIXNUM(a) && PY_IS_FIXNUM(b)) return PY_FALSE;
     if (py_int_or_bool(a) && py_int_or_bool(b)) {
         mpz_t za, zb; py_to_mpz(c, a, za); py_to_mpz(c, b, zb);
         bool eq = (mpz_cmp(za, zb) == 0);
         mpz_clear(za); mpz_clear(zb);
         return eq ? PY_TRUE : PY_FALSE;
     }
-    if ((py_int_or_bool(a) || py_is_float(a)) && (py_int_or_bool(b) || py_is_float(b))) {
-        double ad = py_to_double(c, a), bd = py_to_double(c, b);
-        return ad == bd ? PY_TRUE : PY_FALSE;
-    }
+    if ((py_int_or_bool(a) || py_is_float(a)) && (py_int_or_bool(b) || py_is_float(b)))
+        return py_to_double(c, a) == py_to_double(c, b) ? PY_TRUE : PY_FALSE;
     if (py_is_str(a) && py_is_str(b)) {
         if (PY_PTR(a)->str.len != PY_PTR(b)->str.len) return PY_FALSE;
         return memcmp(PY_PTR(a)->str.chars, PY_PTR(b)->str.chars,
@@ -829,6 +835,12 @@ py_hash(CTX *c, VALUE v)
         uint64_t k = (uint64_t)PY_FIXVAL(v);
         k *= 0x9E3779B97F4A7C15ULL;
         return k ^ (k >> 32);
+    }
+    if (PY_IS_FLONUM(v)) {
+        double d = py_flonum_to_double(v);
+        if (d == (double)(int64_t)d) return py_hash(c, PY_FIX((int64_t)d));
+        union { uint64_t u; double d; } pun = { .d = d == 0 ? 0 : d };
+        return pun.u;
     }
     if (v == PY_NONE)  return 0xDEADBEEFCAFEBABEULL;
     if (v == PY_TRUE)  return 1;
@@ -1588,6 +1600,16 @@ void
 py_display(FILE *fp, VALUE v, bool repr)
 {
     if (PY_IS_FIXNUM(v)) { fprintf(fp, "%ld", (long)PY_FIXVAL(v)); return; }
+    if (PY_IS_FLONUM(v)) {
+        double d = py_flonum_to_double(v);
+        char buf[64]; snprintf(buf, sizeof(buf), "%g", d);
+        bool has_marker = false;
+        for (const char *p = buf; *p; p++)
+            if (*p == '.' || *p == 'e' || *p == 'E' || *p == 'n' || *p == 'i') { has_marker = true; break; }
+        fputs(buf, fp);
+        if (!has_marker) fputs(".0", fp);
+        return;
+    }
     if (v == PY_NONE)  { fputs("None", fp);  return; }
     if (v == PY_TRUE)  { fputs("True", fp);  return; }
     if (v == PY_FALSE) { fputs("False", fp); return; }
@@ -2254,7 +2276,7 @@ bi_int(CTX *c, int argc, VALUE *argv)
     if (v == PY_TRUE)    return PY_FIX(1);
     if (v == PY_FALSE)   return PY_FIX(0);
     if (py_is_float(v)) {
-        double d = PY_PTR(v)->dbl;
+        double d = PY_IS_FLONUM(v) ? py_flonum_to_double(v) : PY_PTR(v)->dbl;
         if (d >= (double)PY_FIXNUM_MIN && d <= (double)PY_FIXNUM_MAX)
             return PY_FIX((int64_t)d);
         mpz_t z; mpz_init(z); mpz_set_d(z, d);
@@ -2314,7 +2336,10 @@ bi_abs(CTX *c, int argc, VALUE *argv)
         mpz_abs(z, z);
         VALUE r = py_normalise_int(z); mpz_clear(z); return r;
     }
-    if (py_is_float(v)) return py_make_float(fabs(PY_PTR(v)->dbl));
+    if (py_is_float(v)) {
+        double d = PY_IS_FLONUM(v) ? py_flonum_to_double(v) : PY_PTR(v)->dbl;
+        return py_make_float(fabs(d));
+    }
     py_raise_exc(c, c->EXC_TypeError, "bad operand type for abs()");
 }
 

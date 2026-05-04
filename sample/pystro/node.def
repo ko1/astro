@@ -254,6 +254,8 @@ node_add(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
                    r >= PY_FIXNUM_MIN && r <= PY_FIXNUM_MAX))
             return PY_FIX(r);
     }
+    if (LIKELY(PY_IS_FLONUM(av) & PY_IS_FLONUM(bv)))
+        return py_make_float(py_flonum_to_double(av) + py_flonum_to_double(bv));
     return py_add(c, av, bv);
 }
 
@@ -270,6 +272,8 @@ node_sub(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
                    r >= PY_FIXNUM_MIN && r <= PY_FIXNUM_MAX))
             return PY_FIX(r);
     }
+    if (LIKELY(PY_IS_FLONUM(av) & PY_IS_FLONUM(bv)))
+        return py_make_float(py_flonum_to_double(av) - py_flonum_to_double(bv));
     return py_sub(c, av, bv);
 }
 
@@ -286,6 +290,8 @@ node_mul(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
                    r >= PY_FIXNUM_MIN && r <= PY_FIXNUM_MAX))
             return PY_FIX(r);
     }
+    if (LIKELY(PY_IS_FLONUM(av) & PY_IS_FLONUM(bv)))
+        return py_make_float(py_flonum_to_double(av) * py_flonum_to_double(bv));
     return py_mul(c, av, bv);
 }
 
@@ -295,6 +301,11 @@ node_truediv(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
     (void)n;
     VALUE av = EVAL_ARG(c, a);
     VALUE bv = EVAL_ARG(c, b);
+    if (LIKELY(PY_IS_FLONUM(av) & PY_IS_FLONUM(bv))) {
+        double d = py_flonum_to_double(bv);
+        if (LIKELY(d != 0.0))
+            return py_make_float(py_flonum_to_double(av) / d);
+    }
     return py_truediv(c, av, bv);
 }
 
@@ -382,6 +393,8 @@ node_lt(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
     VALUE bv = EVAL_ARG(c, b);
     if (LIKELY(PY_IS_FIXNUM(av) & PY_IS_FIXNUM(bv)))
         return ((int64_t)PY_FIXVAL(av) < (int64_t)PY_FIXVAL(bv)) ? PY_TRUE : PY_FALSE;
+    if (LIKELY(PY_IS_FLONUM(av) & PY_IS_FLONUM(bv)))
+        return py_flonum_to_double(av) < py_flonum_to_double(bv) ? PY_TRUE : PY_FALSE;
     return py_cmp(c, av, bv) < 0 ? PY_TRUE : PY_FALSE;
 }
 
@@ -393,6 +406,8 @@ node_le(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
     VALUE bv = EVAL_ARG(c, b);
     if (LIKELY(PY_IS_FIXNUM(av) & PY_IS_FIXNUM(bv)))
         return ((int64_t)PY_FIXVAL(av) <= (int64_t)PY_FIXVAL(bv)) ? PY_TRUE : PY_FALSE;
+    if (LIKELY(PY_IS_FLONUM(av) & PY_IS_FLONUM(bv)))
+        return py_flonum_to_double(av) <= py_flonum_to_double(bv) ? PY_TRUE : PY_FALSE;
     return py_cmp(c, av, bv) <= 0 ? PY_TRUE : PY_FALSE;
 }
 
@@ -404,6 +419,8 @@ node_gt(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
     VALUE bv = EVAL_ARG(c, b);
     if (LIKELY(PY_IS_FIXNUM(av) & PY_IS_FIXNUM(bv)))
         return ((int64_t)PY_FIXVAL(av) > (int64_t)PY_FIXVAL(bv)) ? PY_TRUE : PY_FALSE;
+    if (LIKELY(PY_IS_FLONUM(av) & PY_IS_FLONUM(bv)))
+        return py_flonum_to_double(av) > py_flonum_to_double(bv) ? PY_TRUE : PY_FALSE;
     return py_cmp(c, av, bv) > 0 ? PY_TRUE : PY_FALSE;
 }
 
@@ -415,6 +432,8 @@ node_ge(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
     VALUE bv = EVAL_ARG(c, b);
     if (LIKELY(PY_IS_FIXNUM(av) & PY_IS_FIXNUM(bv)))
         return ((int64_t)PY_FIXVAL(av) >= (int64_t)PY_FIXVAL(bv)) ? PY_TRUE : PY_FALSE;
+    if (LIKELY(PY_IS_FLONUM(av) & PY_IS_FLONUM(bv)))
+        return py_flonum_to_double(av) >= py_flonum_to_double(bv) ? PY_TRUE : PY_FALSE;
     return py_cmp(c, av, bv) >= 0 ? PY_TRUE : PY_FALSE;
 }
 
@@ -424,6 +443,8 @@ node_eq(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
     (void)n;
     VALUE av = EVAL_ARG(c, a);
     VALUE bv = EVAL_ARG(c, b);
+    if (LIKELY(PY_IS_FIXNUM(av) & PY_IS_FIXNUM(bv)))
+        return av == bv ? PY_TRUE : PY_FALSE;
     return py_eq(c, av, bv);
 }
 
@@ -433,6 +454,8 @@ node_ne(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
     (void)n;
     VALUE av = EVAL_ARG(c, a);
     VALUE bv = EVAL_ARG(c, b);
+    if (LIKELY(PY_IS_FIXNUM(av) & PY_IS_FIXNUM(bv)))
+        return av != bv ? PY_TRUE : PY_FALSE;
     return py_eq(c, av, bv) == PY_TRUE ? PY_FALSE : PY_TRUE;
 }
 
