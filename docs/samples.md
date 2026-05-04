@@ -22,13 +22,13 @@ node.def 構成** を中心に横断分析した文書。各サンプル個別�
 | `abruby` | Ruby サブセット | OO, 動的 | 動 | CRuby 互換 | **CRuby C 拡張** (VALUE / Prism / GC を流用) |
 | `koruby` | Ruby サブセット | OO, 動的 | 動 | int + GMP bignum + float | スタンドアロン全機能 Ruby、**optcarrot 完走** |
 | `aforth` | Forth | スタックマシン, 静的 | 動 (cell 単位) | int64 | **すべての word が NODE** |
-| `ascheme` | R5RS Scheme | 関数型 | 動 | 完全数値タワー (GMP 含む) | call/cc, multi-value, port, 完全 TCO |
+| `ascheme` | R5RS Scheme | 関数型 | 動 | 完全数値タワー (GMP 含む) | call/cc, multi-value, port, 完全な末尾呼出最適化 |
 | `asom` | SOM (Smalltalk) | 純 OO, 動的 | 動 | int+double+bignum | AreWeFastYet 16 本完走 / SOM TestSuite 100% |
-| `astocaml` | OCaml サブセット | 関数型, 静的 | 静 | int+float | variant / record / class / module / lazy / TCO |
+| `astocaml` | OCaml サブセット | 関数型, 静的 | 静 | int+float | variant / record / class / module / lazy / 末尾呼出最適化 |
 | `astr` | R サブセット | 関数型, ベクタ | 動 | int+double+vec+str | tagged VALUE + libgc + ベクタ broadcast |
 | `luastro` | Lua 5.4 | 命令型, 動的 | 動 | int + float | metatable / coroutine (ucontext) / weak table / `__gc` |
 | `pystro` | Python 3 サブセット | OO, 動的 | 動 | int + GMP bignum + float | class / try-except / for-in / f-string / lambda |
-| `jstro` | JavaScript (ES2023+) | OO, 動的 | 動 | SMI + inline flonum | **V8 風 hidden class + IC**, Map/Set/Symbol/Proxy/Promise(sync) |
+| `jstro` | JavaScript (ES2023+) | OO, 動的 | 動 | small integer (SMI) + inline flonum | **V8 風 hidden class + inline cache (IC)**, Map/Set/Symbol/Proxy/Promise(sync) |
 | `castro` | C サブセット | 命令型, 静的 | 静 | int64 / double / pointer | tree-sitter-c で型解決 → 1 slot=8byte レイアウト |
 | `wastro` | WebAssembly 1.0+ | スタックマシン, 静的 | 静 | i32/i64/f32/f64 | WAT/WASM 両対応 / spec-test ハーネス |
 | `astrogre` | (Onigmo 互換 regex) | DSL — 正規表現 | — | — | **マッチエンジン自体が AST**、`are` grep CLI 付属 |
@@ -49,9 +49,9 @@ node.def 構成** を中心に横断分析した文書。各サンプル個別�
 - **型なし / DSL**: `calc` / `astrogre`
 
 静的型 4 つはそれぞれ違う方向 — Pascal (古典手続き型 + variant record),
-C (低レベル ABI + ポインタ), OCaml (HM + variant + class), Wasm (typed
-スタックマシン) — を扱っており、§3.1 で見るように **node.def 上の算術
-ノード分裂パターン** が型ごとに異なる形で揃う。
+C (低レベル ABI + ポインタ), OCaml (Hindley-Milner + variant + class),
+Wasm (型付きスタックマシン) — を扱っており、§3.1 で見るように
+**node.def 上の算術ノード分裂パターン** が型ごとに異なる形で揃う。
 
 「ツリー解釈による言語実装フレームワーク」という前提に対して、
 **スタックマシン (aforth/wastro) と DSL 応用 (astrogre)** が乗ったのが面白い。
@@ -126,6 +126,11 @@ SROA が xmm/gpr レジスタに昇格させられる。`wastro perf.md` が報�
 mandelbrot/nbody の inner-loop 性能はこのパターンに依存。
 
 #### (c) 動的型 — fast/slow 二段構え + IC 駆動の kind swap
+
+ここで言う **kind swap** は、AST ノードのディスパッチャ関数ポインタを
+別のノード kind のものに **その場で差し替える** 操作 (`n->head.kind = &kind_node_xxx;`
++ dispatcher 更新)。AST 構造はそのままで、評価ロジックだけが切り替わる。
+動的言語の inline cache 機構の核として全動的言語サンプルが採用している。
 
 `abruby`, `jstro`, `luastro` は値が動的型なので、parser-time には
 「整数だろう」と仮置きし、ミスったら slow path にフォールバックする。
@@ -366,21 +371,21 @@ SROA が各 slot をネイティブ型のレジスタに promote** する。AST 
 
 | sample | 値表現 | GC | パーサ | 特殊機構 |
 |---|---|---|---|---|
-| `calc` | `int64_t` | なし | 自前 RD | — |
+| `calc` | `int64_t` | なし | 自前再帰下降パーサ | — |
 | `naruby` | `int64_t` | leak | Prism (CRuby パーサ) | **L0/L1/L2 JIT デーモン** |
 | `abruby` | CRuby `VALUE` | CRuby GC (Ruby 拡張) | Prism (lib/abruby.rb) | Fiber / require / 完全ライブラリ |
 | `koruby` | CRuby 互換 (FIXNUM/FLONUM/SYMBOL) | libgc (Boehm) | Prism | state-propagation 例外, 共有 fp closure |
-| `astr` | tagged `int64` (low-bit fixnum) | libgc | 自前 RD | ベクタ broadcast |
-| `pystro` | tagged `int64` (low-bit fixnum) | libgc | 自前 lex/parse | GMP bignum, class, try-except |
-| `ascheme` | tagged `int64` | libgc | reader → S-expr → AST | 完全 TCO トランポリン, call/cc, 多値, port |
-| `astocaml` | tagged `int64` | libgc | 自前 lex/parse | クロージャ env チェイン, lazy, class/module |
-| `asom` | tagged `intptr_t` | libgc | 自前 RD (`asom_parse.c`) | per-bucket free-list frame pool |
+| `astr` | tagged `int64` (low-bit fixnum) | libgc | 自前再帰下降パーサ | ベクタ broadcast |
+| `pystro` | tagged `int64` (low-bit fixnum) | libgc | 自前 lexer + parser | GMP bignum, class, try-except |
+| `ascheme` | tagged `int64` | libgc | S 式 reader → 構文ツリー → AST | 完全な末尾呼出最適化トランポリン, call/cc, 多値, port |
+| `astocaml` | tagged `int64` | libgc | 自前 lexer + parser | クロージャ環境チェイン, lazy, class/module |
+| `asom` | tagged `intptr_t` | libgc | 自前再帰下降 (`asom_parse.c`) | per-bucket free-list frame pool |
 | `aforth` | `int64_t` (data stack cell) | なし | 自前 tokenizer | DO-loop frame stack 並列, vars[] エリア |
-| `luastro` | tagged `LuaValue` (uint64_t) | 自前 mark-sweep | 自前 lex/parse + Pratt | metatable, **ucontext coroutine**, weak table, `__gc` |
-| `jstro` | tagged `JsValue` (uint64_t) | 自前 mark-sweep + safepoint | 自前 lex/parse | **hidden class IC, shape transition, closure box** |
-| `castro` | union `{i, d, p}` | leak | tree-sitter-c (Ruby 側 IR build) | 1 slot=8byte slot メモリモデル, goto-dispatch |
-| `pascalast` | `int64_t` | libgc | 自前 lex/parse | display 配列 (nested proc), variant record |
-| `wastro` | `uint64_t` (raw bits) | leak | WAT tokenizer + 二系統 (sexp / stack-style) + .wasm decoder | typed slot union frame, spec-test runner |
+| `luastro` | tagged `LuaValue` (uint64_t) | 自前 mark-sweep GC | 自前 lexer + Pratt parser | metatable, **ucontext coroutine**, weak table, `__gc` |
+| `jstro` | tagged `JsValue` (uint64_t) | 自前 mark-sweep GC + safepoint | 自前 lexer + parser | **hidden class IC, shape transition, closure box** |
+| `castro` | union `{i, d, p}` | leak | tree-sitter-c (Ruby 側で IR 構築) | 1 slot = 8 byte の slot メモリモデル, goto-dispatch |
+| `pascalast` | `int64_t` | libgc | 自前 lexer + parser | display 配列 (nested proc), variant record |
+| `wastro` | `uint64_t` (raw bits) | leak | WAT tokenizer + 2 系統 (S 式 / stack-style) + .wasm decoder | typed slot union frame, spec-test runner |
 | `astrogre` | `int64_t` (内部表現) | leak | 自前 regex parser | Aho-Corasick prefilter, Boyer-Moore-like memmem, scanner ノード |
 
 注目点:
@@ -504,7 +509,7 @@ JIT は `naruby` のみ (L0/L1/L2 デーモンの試作)。
 | 言語タイプ | ASTro との相性 | 根拠サンプル |
 |---|---|---|
 | 静的型 + 単純 ABI (Pascal/C/Wasm) | **◎** | castro, pascalast, wastro が gcc -O0/-O1 に肉薄 |
-| 関数型 (TCO 必須) | **○** | ascheme/astocaml が成立。トランポリン or RESULT 経由でやる |
+| 関数型 (末尾呼出最適化が必須) | **○** | ascheme/astocaml が成立。トランポリン or RESULT 経由でやる |
 | 動的型 OO (Ruby/Lua/JS/Python/Smalltalk) | **△ → ○** | 型 IC ぶん殴り実装は要るが、koruby が optcarrot 完走、jstro が node v18 に勝つケース有 |
 | 純動的 (Scheme) | **○** | ascheme が chibi/guile に並ぶ AOT 性能 |
 | スタック VM (Forth/Wasm) | **○** | aforth が gforth を 8/9 で上回る |
