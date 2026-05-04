@@ -21,7 +21,7 @@ node.def 構成** を中心に横断分析した文書。各サンプル個別�
 | `naruby` | Ruby サブセット | 命令型, 動的 | 動 (整数のみ) | int64 | **論文評価用** — 1 バイナリで 4 モード切替 |
 | `abruby` | Ruby サブセット | OO, 動的 | 動 | CRuby 互換 | **CRuby C 拡張** (VALUE / Prism / GC を流用) |
 | `koruby` | Ruby サブセット | OO, 動的 | 動 | int + GMP bignum + float | スタンドアロン全機能 Ruby、**optcarrot 完走** |
-| `aforth` | Forth | スタックマシン, 静的 | 動 (cell 単位) | int64 | **すべての word が NODE** |
+| `aforth` | Forth | スタックマシン, 静的 | 動 (cell 単位) | int64 | **すべての word (組み込み + ユーザ定義) が AST NODE** — 伝統的な threaded code を使わず ASTro 流に AST で表現 |
 | `ascheme` | R5RS Scheme | 関数型 | 動 | 完全数値タワー (GMP 含む) | call/cc, multi-value, port, 完全な末尾呼出最適化 |
 | `asom` | SOM (Smalltalk) | 純 OO, 動的 | 動 | int+double+bignum | AreWeFastYet 16 本完走 / SOM TestSuite 100% |
 | `astocaml` | OCaml サブセット | 関数型, 静的 | 静 | int+float | variant / record / class / module / lazy / 末尾呼出最適化 |
