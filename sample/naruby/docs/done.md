@@ -18,8 +18,10 @@
 | | `node_scope` | `uint32_t envsize, NODE *body` | `fp + envsize` で body を eval |
 | | `node_return` | `NODE *value` | `RESULT { value, RESULT_RETURN }` を返す |
 | 関数 | `node_def` `@noinline` | `name, body, params_cnt, locals_cnt` | function_entry を登録、`c->serial++` |
-| | `node_call` | `name, argc, arg_index, callcache *cc@ref` | 動的解決 + インラインキャッシュ |
-| | `node_call2` | `name, argc, arg_index, callcache *cc@ref, NODE *sp_body` | `-p`: sp_body を parse 時に link、SD で `SD_<HASH(sp_body)>` を direct call |
+| | `node_call` | `name, argc, arg_index, callcache *cc@ref` | 動的解決 + インラインキャッシュ。argc > 3 fallback |
+| | `node_call_0/1/2/3` | `name, arg_index, locals_cnt, callcache *cc@ref [, a0..aN-1]` | plain/AOT 用 arity-N specialized。explicit arg operands + fresh frame、cc->body indirect |
+| | `node_call2` | `name, argc, arg_index, callcache *cc@ref, NODE *sp_body` | `-p` の argc > 3 fallback。sp_body 経由 direct dispatch |
+| | `node_pg_call_0/1/2/3` | `name, arg_index, locals_cnt, callcache *cc@ref, NODE *sp_body [, a0..aN-1]` | `-p` 用 arity-N specialized。SD で `SD_<HASH(sp_body)>` を direct call |
 | | `node_call_static` | `NODE *body, arg_index` | `-s`: parse 時に body 解決済 |
 | | `node_call_builtin` | `bf, builtin_func_ptr, params_cnt` | C 関数を直接呼ぶ |
 | 算術 | `node_add` `node_sub` `node_mul` `node_div` `node_mod` | `NODE *lhs, NODE *rhs` | 整数演算 |
@@ -72,7 +74,7 @@
 | `-b` | benchmark | bake をスキップ (load は行う)。タイミング測定用 |
 | `-c` | Compile-only | 実行せず SD_ をベイク |
 | `-s` | Static-lang | `node_call_static` を使う (parse 時に body 解決) |
-| `-p` | Profile-Guided | `node_call2` を使う |
+| `-p` | Profile-Guided | `node_pg_call_<N>` (argc ≤ 3) / `node_call2` (argc > 3) を使う |
 | `-a` | Record-all | すべての ALLOC を `code_repo_add` で記録 (specialize 候補を増やす) |
 | `-j` | JIT | `astro_jit_*` (UDS 経由で別プロセスの L1 に compile を投げる) |
 | `-q` | quiet | 余計な情報を出さない |

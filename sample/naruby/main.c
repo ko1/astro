@@ -266,6 +266,19 @@ main(int argc, char *argv[])
         printf("\n");
     }
 
+    // Bake first, EVAL second.  Putting build_code_store before EVAL
+    // means even the 1st run (cold `code_store/`) executes through the
+    // baked SDs — so `aot-1st` measures "compile time + SD-aware run
+    // time", not "compile time + interpreter run time" as it would if
+    // bake happened after EVAL.  build_code_store ends with
+    // astro_cs_reload() so the subsequent OPTIMIZE / cs_load see the
+    // fresh all.so.  `-b` (no_generate_specialized_code) skips the
+    // bake and relies on whatever all.so INIT() opened (= cached run);
+    // `-c` (compile_only) skips the EVAL.
+    if (!OPTION.no_generate_specialized_code) {
+        build_code_store(ast);
+    }
+
     if (!OPTION.compile_only) {
         OPTIMIZE(ast);
         // Override OPTIMIZE's AOT-only cs_load with a PGC-aware one for
@@ -280,10 +293,6 @@ main(int argc, char *argv[])
         // printf("main dispatcher:%s (h:%lx)\n", ast->head.dispatcher_name, HASH(ast));
         RESULT r = EVAL(c, ast, c->env);
         printf("Result: %ld, node_cnt:%lu\n", r.value, node_cnt);
-    }
-
-    if (!OPTION.no_generate_specialized_code) {
-        build_code_store(ast);
     }
 
     return 0;

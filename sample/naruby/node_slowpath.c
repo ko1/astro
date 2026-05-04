@@ -129,3 +129,35 @@ node_pg_call_n_slowpath(CTX * restrict c, NODE * restrict n,
     RESULT r = EVAL(c, fe->body, F);
     return RESULT_OK(r.value);
 }
+
+// node_call_<N> slowpath.  Same shape as `node_pg_call_n_slowpath` but
+// without `sp_body` — these AOT/interp call nodes resolve the body via
+// `cc` only.  Triggered on cc miss.
+RESULT
+node_call_n_slowpath(CTX * restrict c, NODE * restrict n,
+                     const VALUE *args, uint32_t argc,
+                     const char *name,
+                     struct callcache * restrict cc)
+{
+    if (CALL_DEBUG) fprintf(stderr, "name:%s miss1 (call_N)\n", name);
+    bool was_warm = (cc->serial != 0);
+
+    struct function_entry *fe = sp_find_func_entry(c, name);
+    sp_call_check(fe, name, argc);
+    cc->serial = c->serial;
+    cc->body = fe->body;
+
+    if (was_warm && n->head.flags.is_specialized) {
+        n->head.dispatcher = n->head.kind->default_dispatcher;
+        n->head.flags.is_specialized = false;
+    }
+
+    uint32_t lc = code_repo_find_locals_cnt_by_body(fe->body);
+    if (lc < argc) lc = argc;
+    if (lc == 0) lc = 1;
+    VALUE F[lc];
+    for (uint32_t i = 0; i < argc; i++) F[i] = args[i];
+
+    RESULT r = EVAL(c, fe->body, F);
+    return RESULT_OK(r.value);
+}

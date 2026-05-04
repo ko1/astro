@@ -72,7 +72,11 @@ callsite_resolve(void)
             printf("%s is not defined.\n", cs->name);
             exit(1);
         }
-        *cs->target_field = body;
+        // For node_call_<N> we only need to patch locals_cnt — body is
+        // resolved at runtime via cc, so target_field can be NULL.
+        if (cs->target_field) {
+            *cs->target_field = body;
+        }
         if (cs->locals_cnt_field) {
             *cs->locals_cnt_field = code_repo_find_locals_cnt_by_name(cs->name);
         }
@@ -118,6 +122,59 @@ alloc_call(const char *fname, uint32_t args_cnt, uint32_t call_arg_idx)
     else {
         return ALLOC_node_call(fname, args_cnt, call_arg_idx);
     }
+}
+
+// Arity-specialized AOT/interp call construction.  Mirrors
+// `alloc_pg_call_specialized` but emits `node_call_<N>` (no sp_body —
+// body is resolved through cc on every call).  Used in plain/AOT
+// modes for argc ≤ 3 so that AOT and PG share the same arg-eval /
+// fresh-frame shape; the only remaining difference between the two is
+// "cc->body indirect dispatch" vs "sp_body baked direct call", which
+// is exactly the inlining win we want to measure.
+//
+// Returns NULL if this arity isn't supported (caller falls back to
+// lset+seq + alloc_call).
+static NODE *
+alloc_call_specialized(const char *fname, uint32_t call_arg_idx,
+                       uint32_t args_cnt, NODE **arg_nodes)
+{
+    if (args_cnt > 3) return NULL;
+
+    NODE *body = code_repo_find_by_name(fname);
+    uint32_t locals_cnt = body ? code_repo_find_locals_cnt_by_name(fname) : 1;
+    if (locals_cnt < args_cnt) locals_cnt = args_cnt;
+
+    NODE *cn;
+    uint32_t *lc_target;
+    switch (args_cnt) {
+      case 0:
+        cn = ALLOC_node_call_0(fname, call_arg_idx, locals_cnt);
+        lc_target = &cn->u.node_call_0.locals_cnt;
+        break;
+      case 1:
+        cn = ALLOC_node_call_1(fname, call_arg_idx, locals_cnt, arg_nodes[0]);
+        lc_target = &cn->u.node_call_1.locals_cnt;
+        break;
+      case 2:
+        cn = ALLOC_node_call_2(fname, call_arg_idx, locals_cnt,
+                               arg_nodes[0], arg_nodes[1]);
+        lc_target = &cn->u.node_call_2.locals_cnt;
+        break;
+      case 3:
+        cn = ALLOC_node_call_3(fname, call_arg_idx, locals_cnt,
+                               arg_nodes[0], arg_nodes[1], arg_nodes[2]);
+        lc_target = &cn->u.node_call_3.locals_cnt;
+        break;
+      default:
+        return NULL;
+    }
+
+    if (!body) {
+        // Forward ref: only locals_cnt needs patching at parse end
+        // (no sp_body to resolve).
+        callsite_add_full(fname, cn, NULL, lc_target);
+    }
+    return cn;
 }
 
 // Arity-specialized PG call construction.  In pg_mode for argc ≤ 3 we
@@ -464,10 +521,13 @@ transduce(struct transduce_context *tc, pm_node_t *node, int indent) {
               const char *fname = alloc_cstr(tc->parser, n->name);
               uint32_t call_arg_idx = arg_index(tc);
 
-              // pg_mode + arity ≤ 3: fold args into a node_pg_call_<N>
-              // with explicit arg operands.  No node_lset / node_seq
-              // wrapping needed.
-              if (OPTION.pg_mode && args_cnt <= 3) {
+              // arity ≤ 3 (and not static_lang): fold args into an
+              // arity-specialized call node — node_pg_call_<N> in pg_mode,
+              // node_call_<N> otherwise.  Both shapes have explicit arg
+              // operands and a fresh callee frame `F[locals_cnt]`; the
+              // only difference is dispatch (sp_body baked direct vs
+              // cc->body indirect).
+              if (!OPTION.static_lang && args_cnt <= 3) {
                   NODE *arg_nodes[3] = { NULL, NULL, NULL };
                   // Reserve arg_index slots up-front so any temporaries
                   // produced inside the arg expressions (e.g. nested
@@ -479,13 +539,19 @@ transduce(struct transduce_context *tc, pm_node_t *node, int indent) {
                       arg_nodes[i] = TRANSDUCE(args->arguments.nodes[i]);
                   }
                   rewind_arg_index(tc, call_arg_idx);
-                  return alloc_pg_call_specialized(fname, call_arg_idx,
-                                                   args_cnt, arg_nodes);
+                  if (OPTION.pg_mode) {
+                      return alloc_pg_call_specialized(fname, call_arg_idx,
+                                                       args_cnt, arg_nodes);
+                  }
+                  else {
+                      return alloc_call_specialized(fname, call_arg_idx,
+                                                    args_cnt, arg_nodes);
+                  }
               }
 
               // Generic path: emit lset chain that writes args into
               // fp[call_arg_idx + i], then dispatch to alloc_call.  Used
-              // for non-pg modes and pg_mode + arity > 3.
+              // for static_lang and arity > 3.
               if (args != 0) {
                   NODE *nargs = NULL;
 

@@ -187,6 +187,99 @@ node_call(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, const char *
     }
 }
 
+// Arity-specialized AOT/interp call sites.  Mirror `node_pg_call_<N>`
+// but **without** `sp_body` — the body is resolved through `cc` on
+// every call (just like `node_call`).
+//
+// Why these exist:
+//   PG mode's `node_pg_call_<N>` combines two effects — (a) baked
+//   direct call to `SD_<HASH(sp_body)>` (= the inlining win), and
+//   (b) arity-N specialization (explicit arg operands + fresh callee
+//   frame `F[locals_cnt]`, no node_lset chain).  To isolate (a) in
+//   the AOT-vs-PG comparison, the AOT/interp path also needs (b).
+//   These nodes provide it: same arg-eval / fresh-frame shape as
+//   `node_pg_call_<N>`, but dispatch goes through the dynamic
+//   `cc->body` (= the AOT convention).
+//
+// Like `node_pg_call_<N>`, `arg_index` is unused at runtime (we use
+// the fresh frame F, not caller_fp + arg_index) but kept as an
+// operand for parser/locals_cnt patching consistency.
+
+NODE_DEF
+node_call_0(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, const char *name, uint32_t arg_index, uint32_t locals_cnt, struct callcache *cc@ref)
+{
+    (void)arg_index;
+    NODE *body;
+    if (LIKELY(c->serial == cc->serial)) {
+        body = cc->body;
+    }
+    else {
+        return node_call_n_slowpath(c, n, NULL, 0, name, cc);
+    }
+    VALUE F[locals_cnt > 0 ? locals_cnt : 1];
+    return RESULT_OK(EVAL(c, body, F).value);
+}
+
+NODE_DEF
+node_call_1(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, const char *name, uint32_t arg_index, uint32_t locals_cnt, struct callcache *cc@ref, NODE *a0)
+{
+    (void)arg_index;
+    VALUE v0 = UNWRAP(EVAL_ARG(c, a0));
+    NODE *body;
+    if (LIKELY(c->serial == cc->serial)) {
+        body = cc->body;
+    }
+    else {
+        VALUE args[1] = { v0 };
+        return node_call_n_slowpath(c, n, args, 1, name, cc);
+    }
+    VALUE F[locals_cnt];
+    F[0] = v0;
+    return RESULT_OK(EVAL(c, body, F).value);
+}
+
+NODE_DEF
+node_call_2(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, const char *name, uint32_t arg_index, uint32_t locals_cnt, struct callcache *cc@ref, NODE *a0, NODE *a1)
+{
+    (void)arg_index;
+    VALUE v0 = UNWRAP(EVAL_ARG(c, a0));
+    VALUE v1 = UNWRAP(EVAL_ARG(c, a1));
+    NODE *body;
+    if (LIKELY(c->serial == cc->serial)) {
+        body = cc->body;
+    }
+    else {
+        VALUE args[2] = { v0, v1 };
+        return node_call_n_slowpath(c, n, args, 2, name, cc);
+    }
+    VALUE F[locals_cnt];
+    F[0] = v0;
+    F[1] = v1;
+    return RESULT_OK(EVAL(c, body, F).value);
+}
+
+NODE_DEF
+node_call_3(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, const char *name, uint32_t arg_index, uint32_t locals_cnt, struct callcache *cc@ref, NODE *a0, NODE *a1, NODE *a2)
+{
+    (void)arg_index;
+    VALUE v0 = UNWRAP(EVAL_ARG(c, a0));
+    VALUE v1 = UNWRAP(EVAL_ARG(c, a1));
+    VALUE v2 = UNWRAP(EVAL_ARG(c, a2));
+    NODE *body;
+    if (LIKELY(c->serial == cc->serial)) {
+        body = cc->body;
+    }
+    else {
+        VALUE args[3] = { v0, v1, v2 };
+        return node_call_n_slowpath(c, n, args, 3, name, cc);
+    }
+    VALUE F[locals_cnt];
+    F[0] = v0;
+    F[1] = v1;
+    F[2] = v2;
+    return RESULT_OK(EVAL(c, body, F).value);
+}
+
 // Slowpath bodies for `node_call2` / `node_pg_call_<N>` are defined
 // in node_slowpath.c and declared extern in node.h.  Splitting them
 // out of node_eval.c (which is `#include`d by every AOT/PG

@@ -112,5 +112,8 @@ RESULT node_pg_call_slowpath(CTX *c, NODE *n, VALUE *fp,
 RESULT node_pg_call_n_slowpath(CTX *c, NODE *n, const VALUE *args,
                                uint32_t argc, const char *name,
                                struct callcache *cc, NODE **sp_body_p);
+RESULT node_call_n_slowpath(CTX *c, NODE *n, const VALUE *args,
+                            uint32_t argc, const char *name,
+                            struct callcache *cc);
 
 #endif // NODE_H

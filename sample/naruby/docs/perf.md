@@ -73,7 +73,7 @@ p(f(10))         # => 20
 - `def` 走行ごとに `c->serial++` で全 cc を一括無効化
 
 C の `f(x)` はリンク時に固定のシンボル解決 (`addr32 call <f>`) で済み、
-**実行時の検査ゼロ**。chain 系で naruby/lto-c が gcc-O3 に 1.6-3.7×
+**実行時の検査ゼロ**。chain 系で naruby/lto-c が gcc-O3 に 1.7-3.7×
 負ける主因はこの cc check の積み重ね (深度 N で N 個分)。
 
 機構の詳細は [runtime.md §5.3](runtime.md) (callcache + serial + sp_body link) 参照。
@@ -106,7 +106,7 @@ naruby と gcc-O3 の差は概ね **(1) late binding + (2) dispatcher 抽象**
 実ワーク系 (gcd / collatz / early_return / prime_count / compose) で
 naruby/lto-c が **gcc-O3 と ≤ 1.1× の同等水準** に達するのは、
 ループ内側で関数呼び出し回数が少なく、cc check のコストが分散される
-ため。逆に深い chain 系で 1.6-3.7× 負けるのは cc check が線形に
+ため。逆に深い chain 系で 1.7-3.7× 負けるのは cc check が線形に
 積み上がるため (= late binding を保ったまま動的再定義可能性を残した
 代償)。
 
@@ -173,21 +173,21 @@ chain20/chain40 と同じ shape (acc += f0(42)) に統一した。
 
 | bench        |  ruby |  yjit | n/plain | n/aot-1st | n/aot-c | n/pg-1st | n/pg-c | n/lto-1st | n/lto-c | gcc-O0 | gcc-O1 | gcc-O2 | gcc-O3 |
 |--------------|------:|------:|--------:|----------:|--------:|---------:|-------:|----------:|--------:|-------:|-------:|-------:|-------:|
-| fib          |  9.12 |  1.12 |    5.36 |      5.60 |    0.99 |     4.62 |   0.57 |      4.52 |    0.56 |   0.46 |   0.40 |   0.12 |   0.14 |
-| ackermann    |  6.29 |  0.73 |    7.84 |      7.64 |    1.25 |     5.66 |   0.74 |      5.86 |    0.71 |   0.53 |   0.31 |   0.05 |   0.06 |
-| tak          |  1.20 |  0.20 |    1.20 |      1.29 |    0.16 |     0.68 |   0.11 |      0.75 |    0.11 |   0.06 |   0.05 |   0.04 |   0.02 |
-| gcd          |  4.79 |  2.09 |    3.71 |      3.80 |    0.18 |     3.39 |   0.17 |      3.58 |    0.16 |   0.22 |   0.15 |   0.15 |   0.15 |
-| loop         |  0.88 |  0.88 |    0.82 |      0.89 |    0.00 |     0.91 |   0.00 |      0.92 |    0.00 |   0.04 |   0.02 |   0.00 |   0.00 |
-| call         | 18.44 |  5.34 |    9.70 |      9.94 |    2.34 |     6.25 |   1.19 |      6.78 |    0.58 |   1.09 |   1.07 |   0.31 |   0.32 |
-| chain20      | 19.81 |  3.97 |    9.75 |      9.92 |    3.01 |     6.08 |   1.27 |      6.39 |    0.71 |   1.27 |   0.97 |   0.27 |   0.27 |
-| chain40      | 20.80 |  3.83 |    8.89 |     14.55 |    3.91 |     7.29 |   3.01 |      7.60 |    0.92 |   2.49 |   2.24 |   0.25 |   0.25 |
-| chain_add    |  2.11 |  0.65 |    1.29 |      1.52 |    0.25 |     1.13 |   0.11 |      1.23 |    0.07 |   0.11 |   0.10 |   0.03 |   0.03 |
-| compose      |  2.37 |  1.26 |    1.55 |      1.38 |    0.20 |     1.14 |   0.12 |      1.22 |    0.09 |   0.10 |   0.09 |   0.09 |   0.09 |
-| branch_dom   |  2.25 |  1.72 |    1.49 |      1.52 |    0.15 |     1.37 |   0.14 |      1.45 |    0.14 |   0.07 |   0.07 |   0.07 |   0.07 |
-| deep_const   | 17.52 |  5.18 |    3.79 |      4.07 |    1.84 |     4.79 |   1.26 |      4.77 |    0.63 |   1.01 |   0.99 |   0.32 |   0.32 |
-| collatz      |  5.38 |  0.87 |    3.67 |      3.74 |    0.16 |     3.74 |   0.15 |      3.53 |    0.15 |   0.34 |   0.15 |   0.14 |   0.14 |
-| early_return |  5.77 |  0.70 |    4.25 |      4.39 |    0.28 |     4.34 |   0.29 |      4.04 |    0.28 |   0.30 |   0.28 |   0.28 |   0.28 |
-| prime_count  |  9.30 |  3.46 |    6.95 |      7.05 |    0.45 |     7.17 |   0.45 |      7.44 |    0.44 |   0.49 |   0.43 |   0.43 |   0.43 |
+| fib          |  9.12 |  1.12 |    4.58 |      0.77 |    0.71 |     0.65 |   0.55 |      0.72 |    0.56 |   0.46 |   0.40 |   0.12 |   0.14 |
+| ackermann    |  6.29 |  0.73 |    5.20 |      0.89 |    0.82 |     0.82 |   0.75 |      0.86 |    0.73 |   0.53 |   0.31 |   0.05 |   0.06 |
+| tak          |  1.20 |  0.20 |    0.60 |      0.22 |    0.14 |     0.19 |   0.11 |      0.25 |    0.11 |   0.06 |   0.05 |   0.04 |   0.02 |
+| gcd          |  4.79 |  2.09 |    3.70 |      0.26 |    0.18 |     0.25 |   0.17 |      0.29 |    0.17 |   0.22 |   0.15 |   0.15 |   0.15 |
+| loop         |  0.88 |  0.88 |    0.85 |      0.06 |    0.00 |     0.06 |   0.00 |      0.10 |    0.00 |   0.04 |   0.02 |   0.00 |   0.00 |
+| call         | 18.44 |  5.34 |    5.95 |      1.74 |    1.54 |     1.38 |   1.19 |      0.87 |    0.57 |   1.09 |   1.07 |   0.31 |   0.32 |
+| chain20      | 19.81 |  3.97 |    5.66 |      1.98 |    1.76 |     1.53 |   1.24 |      1.24 |    0.72 |   1.27 |   0.97 |   0.27 |   0.27 |
+| chain40      | 20.80 |  3.83 |    6.42 |      3.53 |    3.07 |     3.47 |   2.94 |      1.93 |    0.92 |   2.49 |   2.24 |   0.25 |   0.25 |
+| chain_add    |  2.11 |  0.65 |    0.84 |      0.32 |    0.15 |     0.28 |   0.12 |      0.36 |    0.07 |   0.11 |   0.10 |   0.03 |   0.03 |
+| compose      |  2.37 |  1.26 |    1.18 |      0.22 |    0.13 |     0.22 |   0.12 |      0.24 |    0.09 |   0.10 |   0.09 |   0.09 |   0.09 |
+| branch_dom   |  2.25 |  1.72 |    1.26 |      0.23 |    0.15 |     0.23 |   0.14 |      0.25 |    0.14 |   0.07 |   0.07 |   0.07 |   0.07 |
+| deep_const   | 17.52 |  5.18 |    4.81 |      1.69 |    1.54 |     1.44 |   1.27 |      0.82 |    0.55 |   1.01 |   0.99 |   0.32 |   0.32 |
+| collatz      |  5.38 |  0.87 |    3.63 |      0.24 |    0.16 |     0.23 |   0.15 |      0.27 |    0.15 |   0.34 |   0.15 |   0.14 |   0.14 |
+| early_return |  5.77 |  0.70 |    4.19 |      0.36 |    0.28 |     0.38 |   0.29 |      0.41 |    0.29 |   0.30 |   0.28 |   0.28 |   0.28 |
+| prime_count  |  9.30 |  3.46 |    6.90 |      0.54 |    0.45 |     0.53 |   0.45 |      0.59 |    0.45 |   0.49 |   0.43 |   0.43 |   0.43 |
 
 ### "cold" / "cached" の定義
 
@@ -214,13 +214,20 @@ chain20/chain40 と同じ shape (acc += f0(42)) に統一した。
 | `ruby` | CRuby 4.0.2 で `ruby bench/$B.na.rb` |
 | `yjit` | CRuby 4.0.2 で `ruby --yjit bench/$B.na.rb` |
 | `n/plain` | naruby `-i` (interpreter only、SD load も bake もしない) |
-| `n/aot-1st` | cold 状態で `./naruby $B.na.rb` (interpret 実行 + 終了時に AOT mode で SD bake)。**run 時間 + SD compile 時間込み** |
-| `n/aot-c` | aot-1st 後の cached 状態で `./naruby -b $B.na.rb` (cache を load して実行のみ。compile なし) |
-| `n/pg-1st` | cold 状態で `./naruby -p $B.na.rb` (PG mode で interpret 実行 + 終了時に SD + PGSD bake)。**run 時間 + SD/PGSD compile 時間込み** |
+| `n/aot-1st` | cold 状態で `./naruby $B.na.rb` (**bake → reload → SD-aware EVAL**)。**SD compile + load + run を 1 invocation で含む** |
+| `n/aot-c` | aot-1st 後の cached 状態で `./naruby -b $B.na.rb` (cache を load して実行のみ、compile なし) |
+| `n/pg-1st` | cold 状態で `./naruby -p $B.na.rb` (PG mode で SD + PGSD bake → reload → SD-aware EVAL)。**SD/PGSD compile + load + run** |
 | `n/pg-c` | pg-1st 後の cached 状態で `./naruby -p -b $B.na.rb` |
 | `n/lto-1st` | cold 状態 + LTO env (`ASTRO_EXTRA_CFLAGS=-flto`、`ASTRO_EXTRA_LDFLAGS="-Wl,-Bsymbolic -flto"`) で `./naruby -p $B.na.rb`。LTO は SD compile / link を遅くするので n/pg-1st より遅め |
 | `n/lto-c` | lto-1st 後の cached 状態 (LTO baked all.so) で `./naruby -p -b` |
 | `gcc-O0..-O3` | C 版を gcc-13 で `-O0`/`-O1`/`-O2`/`-O3` ビルドして実行 (host binary 自体は cold/cached の対象外、 ccache は global の `CCACHE_DISABLE=1` で無効) |
+
+> **`*-1st` 列の意味の変更について**: 以前は `EVAL → build_code_store`
+> の順だったため、cold 1st run は実質 interp 実行 + 終了時 bake で、
+> SD は当該 run で全く使われなかった。現在は `build_code_store →
+> reload → EVAL` の順 (`main.c`) なので、cold start でも SD/PGSD で
+> 走る。`*-1st` セルは「compile + reload + SD-aware run」の合計時間
+> で、`*-c` セルとの差がほぼ純粋な compile + dlopen コストになる。
 
 ## 主要観察
 
@@ -230,75 +237,92 @@ cached run の比較 (naruby は最終形 lto-c、gcc は最高設定 -O3)。
 
 | bench | n/lto-c | gcc-O3 | n vs gcc-O3 |
 |-------|------:|------:|------------:|
-| fib          | 0.56 | 0.13 | 4.3× (gcc 勝) |
-| ackermann    | 0.71 | 0.06 | 11.8× (gcc) |
+| fib          | 0.56 | 0.14 | 4.0× (gcc 勝) |
+| ackermann    | 0.73 | 0.06 | 12.2× (gcc) |
 | tak          | 0.11 | 0.02 | 5.5× (gcc) |
-| gcd          | 0.16 | 0.15 | **1.07× ≈ tie** |
+| gcd          | 0.17 | 0.15 | **1.13× ≈ tie** |
 | loop         | 0.00 | 0.00 | DCE で比較不能 |
-| call         | 0.58 | 0.33 | 1.76× (gcc) |
-| chain20      | 0.71 | 0.27 | 2.6× (gcc) |
+| call         | 0.57 | 0.32 | 1.78× (gcc) |
+| chain20      | 0.72 | 0.27 | 2.7× (gcc) |
 | chain40      | 0.92 | 0.25 | 3.7× (gcc) |
 | chain_add    | 0.07 | 0.03 | 2.3× (gcc) |
 | compose      | 0.09 | 0.09 | **1.0× tie** |
 | branch_dom   | 0.14 | 0.07 | 2.0× (gcc) |
-| deep_const   | 0.63 | 0.32 | 2.0× (gcc) |
+| deep_const   | 0.55 | 0.32 | 1.7× (gcc) |
 | collatz      | 0.15 | 0.14 | **1.07× ≈ tie** |
-| early_return | 0.28 | 0.28 | **1.0× tie** |
-| prime_count  | 0.44 | 0.43 | **1.02× ≈ tie** |
+| early_return | 0.29 | 0.28 | **1.04× ≈ tie** |
+| prime_count  | 0.45 | 0.43 | **1.05× ≈ tie** |
 
 ★ **gcc-O3 と同等 (≤ 1.1×)** が gcd / compose / collatz / early_return /
   prime_count の 5 種、つまり **実ワークロード系で gcc-O3 と並ぶ**。
-★ chain 系 / call / branch_dom / deep_const は gcc-O3 に 1.6-3.7× 負けるが、
+★ chain 系 / call / branch_dom / deep_const は gcc-O3 に 1.7-3.7× 負けるが、
   これは callcache check (1 cmp + 1 jcc per inline 段) の固定オーバーヘッド。
 ★ 再帰 3 種 (fib/ackermann/tak) は gcc-O3 に 4-12× 負ける。recursive な
   IPA-SRA / frame elimination が gcc 側でしかできないため。
 
 ### plain → aot → pg → lto の段階差
 
-各ベンチで cached run どうしの段階比 (倍率):
+各ベンチで cached run どうしの段階比 (倍率)。**plain と aot-c は同じ
+arity-N specialized ノード (`node_call_<N>`) を使うので、`→aot-c` 比は
+純粋に「SD baked dispatch + 算術 inline」の効果**、続く `→pg-c` 比は
+**「sp_body baked-direct call (= cc->body 経由を直接呼びに置換)」の効果**、
+最後の `→lto-c` 比が **「クロス TU の貫通 inline (PGSD chain)」の効果**:
 
 | bench | plain | →aot-c | →pg-c | →lto-c | total (plain → lto-c) |
 |-------|-----:|------:|------:|------:|----------------------:|
-| fib          | 5.36  | 5.4×  | 1.7× | 1.0× | **9.6×** |
-| ackermann    | 7.84  | 6.3×  | 1.7× | 1.0× | **11.0×** |
-| tak          | 1.20  | 7.5×  | 1.5× | 1.0× | **10.9×** |
-| gcd          | 3.71  | 20.6× | 1.1× | 1.1× | **23.2×** |
-| loop         | 0.82  | ∞ (DCE) | — | — | (DCE) |
-| call         | 9.70  | 4.1×  | 2.0× | 2.1× | **16.7×** |
-| chain20      | 9.75  | 3.2×  | 2.4× | 1.8× | **13.7×** |
-| chain40      | 8.89  | 2.3×  | 1.3× | 3.3× | **9.7×** |
-| chain_add    | 1.29  | 5.2×  | 2.3× | 1.6× | **18.4×** |
-| compose      | 1.55  | 7.8×  | 1.7× | 1.3× | **17.2×** |
-| branch_dom   | 1.49  | 9.9×  | 1.1× | 1.0× | **10.6×** |
-| deep_const   | 3.79  | 2.1×  | 1.5× | 2.0× | **6.0×** |
-| collatz      | 3.67  | 22.9× | 1.1× | 1.0× | **24.5×** |
-| early_return | 4.25  | 15.2× | 1.0× | 1.0× | **15.2×** |
-| prime_count  | 6.95  | 15.4× | 1.0× | 1.0× | **15.8×** |
+| fib          | 4.58 | 6.5×  | 1.29× | 1.0×  | **8.2×** |
+| ackermann    | 5.20 | 6.3×  | 1.09× | 1.0×  | **7.1×** |
+| tak          | 0.60 | 4.3×  | 1.27× | 1.0×  | **5.5×** |
+| gcd          | 3.70 | 20.6× | 1.06× | 1.0×  | **21.8×** |
+| loop         | 0.85 | ∞ (DCE) | — | — | (DCE) |
+| call         | 5.95 | 3.9×  | 1.29× | 2.09× | **10.4×** |
+| chain20      | 5.66 | 3.2×  | 1.42× | 1.72× | **7.9×** |
+| chain40      | 6.42 | 2.1×  | 1.04× | 3.20× | **7.0×** |
+| chain_add    | 0.84 | 5.6×  | 1.25× | 1.71× | **12.0×** |
+| compose      | 1.18 | 9.1×  | 1.08× | 1.33× | **13.1×** |
+| branch_dom   | 1.26 | 8.4×  | 1.07× | 1.0×  | **9.0×** |
+| deep_const   | 4.81 | 3.1×  | 1.21× | 2.31× | **8.7×** |
+| collatz      | 3.63 | 22.7× | 1.07× | 1.0×  | **24.2×** |
+| early_return | 4.19 | 15.0× | 0.97× | 1.0×  | **14.4×** |
+| prime_count  | 6.90 | 15.3× | 1.0×  | 1.0×  | **15.3×** |
 
-★ **aot-c で 2-23×**、pg-c で更に **1-2×**、lto-c で更に **1-3×**。総じて
-plain から最終形 (lto-c) で **6-25 倍速**。
+★ **aot-c で 2-23×** (SD ベイク + 算術 inline)。
+★ **aot-c → pg-c は 1.0-1.4× の小さな改善** ─ 公平化前 (PG が
+  arity-N specialize で AOT を上回っていた頃) は 1.5-2.4× に見えていたが、
+  AOT 側も `node_call_<N>` 化したので、純粋な「baked-direct call」分は
+  **1.3× 程度** に落ち着く。再帰関数や leaf body は ≈1.0× で差が出ない。
+★ **pg-c → lto-c は chain 系で 1.3-3.2× の大きな改善** ─ クロス TU
+  での PGSD chain 貫通 inline。再帰関数は HOPT cycle break で
+  PGSD ≈ SD なので効果なし (≈1.0×)。
+★ 総じて plain → lto-c で **5-25 倍速**。
 
 ### 1st run コスト (compile 込み) と cached run の差
 
-`*-1st` は `code_store/` 空 + ccache off の状態から始まり、
-インタプリタ実行 + SD/PGSD bake (= make + gcc + dlopen) を全部含む。
+`*-1st` は `code_store/` 空 + ccache off の状態から始まり、SD/PGSD
+bake (= make + gcc + dlopen) → reload → SD-aware EVAL の合計。
+**現在は bake が EVAL より前に走る** (`main.c`、詳細 [runtime.md §5.2](runtime.md))
+ので、cold start でも SD で実行する。`*-1st - *-c` がほぼ純粋な compile
++ dlopen のオーバーヘッド:
 
-| bench | n/aot-1st | n/aot-c | 比 (1st/c) | n/lto-1st | n/lto-c | 比 |
+| bench | n/aot-1st | n/aot-c | 差 (1st - c) | n/lto-1st | n/lto-c | 差 |
 |-------|------:|------:|----:|------:|------:|----:|
-| fib       | 5.60 | 0.99 | 5.7×  | 4.52 | 0.56 | 8.1× |
-| ackermann | 7.64 | 1.25 | 6.1×  | 5.86 | 0.71 | 8.3× |
-| call      | 9.94 | 2.34 | 4.2×  | 6.78 | 0.58 | 11.7× |
-| chain20   | 9.92 | 3.01 | 3.3×  | 6.39 | 0.71 | 9.0× |
-| chain40   | 14.55| 3.91 | 3.7×  | 7.60 | 0.92 | 8.3× |
-| collatz   | 3.74 | 0.16 | 23.4× | 3.53 | 0.15 | 23.5× |
-| prime_count| 7.05| 0.45 | 15.7× | 7.44 | 0.44 | 16.9× |
+| fib       | 0.77 | 0.71 | 0.06 | 0.72 | 0.56 | 0.16 |
+| ackermann | 0.89 | 0.82 | 0.07 | 0.86 | 0.73 | 0.13 |
+| call      | 1.74 | 1.54 | 0.20 | 0.87 | 0.57 | 0.30 |
+| chain20   | 1.98 | 1.76 | 0.22 | 1.24 | 0.72 | 0.52 |
+| chain40   | 3.53 | 3.07 | 0.46 | 1.93 | 0.92 | 1.01 |
+| collatz   | 0.24 | 0.16 | 0.08 | 0.27 | 0.15 | 0.12 |
+| prime_count| 0.54| 0.45 | 0.09 | 0.59 | 0.45 | 0.14 |
 
-aot-1st は 1 度の interpret 走行 (≈ plain に近い) + bake で 4-15 秒。bake
-コストは 1〜数秒、interpret 走行が支配的。
-lto-1st は LTO link が遅いので bake コストが +0.5〜2 秒上乗せ。
+compile + dlopen のコストは **AOT で 0.06-0.5 秒、LTO で 0.1-1.0 秒**。
+chain 系は SD/PGSD の数が多い (chain 各段で別シンボル) ので bake
+コストが大きい。LTO は link 時に各 SD を再走査するので AOT より +0.1-0.5
+秒上乗せ。
 
-実用上は **2 回目以降の起動が速くなる仕組み**。1st run は不可避の cold
-コスト (= compile time) を含む。
+旧設計 (EVAL → bake) の `*-1st` は run の中で SD を一切使っていなかった
+(= cold start = `n/plain` 値 + bake 時間) ので、1st run は実質
+インタプリタ走行が支配的だった。新設計はその死にコストを排除し、
+1st run でも AOT/PG のフル恩恵を受けられる。
 
 ## 推奨ビルド設定
 
@@ -312,28 +336,40 @@ lto-1st は LTO link が遅いので bake コストが +0.5〜2 秒上乗せ。
 
 ### `n/plain` (interpreter-only)
 
-- 名前 `"foo"` で `c->func_set` を線形検索 (`node_call`) + callcache 設定
+- 名前 `"foo"` で `c->func_set` を線形検索 (`node_call_<N>`) + callcache 設定
 - 各 NODE の dispatch は `head.dispatcher` の indirect call
-- 関数引数は `lset` で slot に書き、`node_scope` で fp 移動
+- 関数引数は **explicit operand として call ノードに埋め込まれ** (arity ≤ 3)、
+  fast path は VLA `VALUE F[locals_cnt]` に直接書き込む。argc > 3 は
+  従来通り `node_lset` chain + `node_call` (引数 fp slot 経由)。
 - すべてのオーバーヘッドが指数スケール (再帰時) に乗る
 
 ### `n/aot-c` (cached AOT)
 
 - `code_store/all.so` を `dlopen` し、各 NODE の `head.dispatcher` を
   `SD_<HORG>` 関数ポインタに差し替え
-- 子 NODE への dispatch は **direct call** (linker が `addr32 call`
-  に解決)
+- 子 NODE (算術 etc) への dispatch は **direct call** (linker が
+  `addr32 call` に解決)
+- 関数呼び出しは `node_call_<N>` の SD 内で `EVAL(c, cc->body, F)` の
+  **indirect call** (cc->body は実行時値)。子 NODE への direct call
+  と組み合わさり、本体評価部分は SD で密に inline、関数間境界だけが
+  indirect になる
 - 算術ノードは inline 展開 (`node_add` の `lhs + rhs` 等)
 
 ### `n/pg-c` (Profile-Guided cached)
 
-PG mode は `node_call` を `node_pg_call_<N>` に置き換える:
+PG mode は `node_call_<N>` を `node_pg_call_<N>` に置き換える:
 
 - call site が `sp_body` (= 本体 NODE) を parse 時に link
 - SD は `sp_body_dispatcher = SD_<HORG(sp_body)>` を C 定数として bake
   → ベイクされた all.so 内では `addr32 call <SD_addr>` の direct call
+  (= AOT の indirect dispatch を direct に置き換えた形)
 - `cc->serial == c->serial` を 1 cmp + 1 jcc で fast path 判定
 - 再定義は `node_pg_call_n_slowpath` で sentinel 化
+
+> AOT (`n/aot-c`) と PG (`n/pg-c`) の差は **「関数本体への dispatch が
+> indirect か direct か」その 1 点だけ**。引数の eval、フレーム
+> (`F[locals_cnt]`)、cc check はすべて共通。`pg-c / aot-c` の比は
+> ほぼ純粋に baked-direct call の効果を表す (実測 1.0-1.4×)。
 
 ### `n/lto-c` (PGSD chain + LTO)
 
@@ -390,27 +426,26 @@ SIMD pack の accumulate。深度 10 を **2 個の SD body** に焼き込み、
 本体には **indirect call が 1 つもない**。
 
 **chain_add (10 段で各 +1)**: 各 fN が `n+1` を計算するチェイン。
-Naruby の Fixnum tagging は `(n<<1)|1` で、tagged 加算 `n+1` は `add $2`
-(`((n+1)<<1)|1 = (n<<1)|1 + 2`) になる。10 段は **2 つの SD body** に
-分散して baked される (top SD → SD_f9b… → SD_b98…):
+naruby は `VALUE = int64_t` でタグなしの素の整数。10 段の `+1` は
+**2 つの SD body** に分散して baked される (top SD → SD_f9b… → SD_b98…):
 
 ```asm
 ; SD_f9b… (chain levels 1-5): 5 個の cc check + 5 段分の +1 を畳み込み
 1f10/1f21/1f32/1f43/1f51: cmp 0x58(%rN),%rax  ; cc check #1-5
-1f4d: add  $0x5,%rdx              ; ★ 5 段分の +1 を tagged で畳み込み
+1f4d: add  $0x5,%rdx              ; ★ 5 段分の +1 を 1 命令に畳み込み
 1f6d: call 1590 <SD_b98…>         ; 残り 5 段へ
 ```
 
 ```asm
 ; SD_b98… (chain levels 6-10): 4 個の cc check + さらに +5
 15ae/15bb/15cc/15d9: cmp 0x58(%rN),%rdx  ; cc check #6-9 (#10 は leaf)
-15e3: add  $0x5,%rax              ; ★ 5 段分の +1 を tagged で畳み込み
-160e: ret                          ; 結果 = 0 + 10 (tagged)
+15e3: add  $0x5,%rax              ; ★ 5 段分の +1 を 1 命令に畳み込み
+160e: ret                          ; 結果 = 0 + 10
 ```
 
 ★ 10 段の `+1` が **gcc constant folding によって 2 個の `add $0x5`**
 にまで畳み込まれる (cross-SD では folding できないので `+5 + +5`)。
-`p f0(0)` の最終結果は tagged で `0 + 10`、unwrap 後 10。
+`p f0(0)` の最終結果は 10。
 
 ### 再帰系で chain と同じ効果が出ない理由
 
@@ -420,8 +455,8 @@ Naruby の Fixnum tagging は `(n<<1)|1` で、tagged 加算 `n+1` は `add $2`
 結果として `PGSD_<HOPT>` ≈ `SD_<HORG>` で、LTO inline できる範囲も同じ。
 
 ただし gcc-16 では plain な再帰関数でも IPA-SRA + frame elimination が
-効いて、call 境界のオーバーヘッドが大きく減少する (fib 0.56→0.48、
-ackermann 0.74→0.46)。これは PGSD 機構と独立した cc 側の改善。
+効いて、call 境界のオーバーヘッドが大きく減少する (旧計測で fib /
+ackermann が gcc-13 比 +20-50%)。これは PGSD 機構と独立した cc 側の改善。
 
 ## 主な高速化テクニック
 
