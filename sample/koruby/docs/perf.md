@@ -239,6 +239,12 @@ taskset -c 0 ./koruby <prog>   # → ~112 fps
 vs CRuby 4.0 + YJIT (177.97 fps): **0.63×** (旧 0.57× → 改善)。
 AOT 単独 105 → AOT+PGO 112 で **1.07× 改善**。
 
+> **続編**: ASTro 自前 PGO (`prologue_ast_simple_static_inl` を wire up
+> して call dispatch を直接 call 化) を `koruby_gen.rb` override で
+> 試した。 +2-4 fps の安定 win、 gcc PGO と stack して合計 **median
+> 114 fps** まで届いた。 仕切り直し中で本実装はまだ。 詳細レポート:
+> [`experiments/2026-05-04_pgbake.md`](./experiments/2026-05-04_pgbake.md)
+
 ---
 
 ## 2026-05-02 現状サマリ (検証付き)
