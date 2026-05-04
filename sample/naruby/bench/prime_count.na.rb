@@ -16,10 +16,10 @@ def prime_count(limit)
   count
 end
 
+acc = 0
 i = 0
-while i<100
-  n = 100_000
-  prime_count(n)
-  i+=1
+while i < 100
+  acc = acc + prime_count(100_000)
+  i += 1
 end
-p prime_count(100_000)
+p acc

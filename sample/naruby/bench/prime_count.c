@@ -8,6 +8,7 @@ static bool is_prime(long n) {
     return true;
 }
 
+__attribute__((noinline,noipa))
 long prime_count(long limit) {
     long count = 0;
     for (long n = 2; n <= limit; n++)
@@ -16,10 +17,11 @@ long prime_count(long limit) {
 }
 
 int main(void) {
+    long acc = 0;
     for (int i=0; i<100; i++) {
         const long N = 100000;
-        prime_count(N);
+        acc += prime_count(N);
     }
-    printf("%ld\n", prime_count(100000));
+    printf("%ld\n", acc);
     return 0;
 }
