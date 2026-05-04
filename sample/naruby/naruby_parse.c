@@ -1360,6 +1360,7 @@ show_help(void)
     printf("Bake (orthogonal — combine freely):\n");
     printf("  -c, --aot            AOT-bake SDs before run\n");
     printf("  -p, --pg             PG-bake PGSDs after run (uses cc state)\n");
+    printf("  -b                   skip BOTH bakes (timing-only cached run)\n");
     printf("\n");
     printf("Other:\n");
     printf("  --ccs                clear code_store/ before run\n");
@@ -1413,6 +1414,7 @@ parse_option(int argc, char *argv[])
           case 'i': OPTION.plain         = true; break;
           case 'c': OPTION.compile_first = true; break;
           case 'p': OPTION.pg_at_exit    = true; break;
+          case 'b': OPTION.skip_bake     = true; break;
           case 'q': OPTION.quiet         = true; break;
           case 'j':
             OPTION.jit = true;

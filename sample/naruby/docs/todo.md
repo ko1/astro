@@ -110,6 +110,31 @@ NODE union から取得 + caller の fp で再評価。
 - chain bench は inline 段ぶん 2 段ガードコストが残るので大きな
   改善はないが、SD 自体は引数 marshaling コードが削れた分軽量化。
 
+**Step 6 — option を直交直 + 本物の PGO に再設計** (2026-05-04):
+abruby に揃えて `-c` (AOT bake) と `-p` (PG bake) を独立フラグ化。
+`-p` は **post-EVAL** に PGSDs を bake — `cc->body` (= 実際に観測した
+body) を sp_body に書き戻してから出力するので、これで初めて runtime
+profile に基づいた PGO になる (旧設計は parse-time `code_repo`
+last-def-wins を sp_body に焼くだけで PGO ではなかった)。
+
+- profile.[ch] 削除 (永続化は all.so + hopt_index.txt で十分)。
+- naruby_parse.c に `all_pg_call_nodes` リスト + 専用 helper を追加、
+  build_pgsd の AST walk に使う。
+- node.c の `clear_hash` を has_hash_value / has_hash_opt 両方 invalidate
+  に拡張。
+- `node_call_<N>` と `node_pg_call_<N>` の使い分けを parser で実装:
+  `-p` で pg_call、なしで call (sp_body なし、軽量)。
+- bench は `--ccs -c` (aot-1st)、`-b` (aot-c)、`--ccs -c -p` (pg-1st)、
+  `-p -b` (pg-c) の 4 列体系に。
+
+**残課題 (Step 6 から繰り越し)**:
+- 2 invocation 目で `node_call_<N>` → `node_pg_call_<N>` に自動 swap
+  する仕組み (今は parser が `-p` フラグを見て kind を選ぶので、cached
+  PG run は明示的に `-p -b` が必要)。`(Horg, location) → Hopt` の比較表
+  を作って HOPT が違っても見つけられるようにする、というのが筋。
+- LTO bake 後の cached run でたまに `-flto` 環境差由来らしき不安定値
+  (ackermann lto-c で 0.92 vs 6.23 のばらつき)。再現条件を詰めたい。
+
 ### JIT 統合の現状
 
 `astro_jit.c` の自前 dlopen と `runtime/astro_code_store.c` の dlopen

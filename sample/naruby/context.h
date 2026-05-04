@@ -40,6 +40,7 @@ struct naruby_option {
     bool plain;            // -i / --plain
     bool compile_first;    // -c / --aot      AOT bake before run
     bool pg_at_exit;       // -p / --pg       PG bake after run
+    bool skip_bake;        // -b              skip both bakes (timing-only)
     bool compile_only;     // --aot-compile   compile only (no run)
     bool clear_store;      // --ccs           wipe code_store before run
     bool jit;              // -j              JIT mode

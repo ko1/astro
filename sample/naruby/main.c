@@ -219,18 +219,17 @@ build_code_store_aot(NODE *ast)
 
 // PGSD bake: walk the all_pg_call_nodes list and update each call
 // site's `sp_body` from the just-finished run's `cc->body`, then emit
-// PGSD_<HOPT>.c for the AST and every code_repo body — HOPT now folds
+// PGSD_<HOPT>.c for the AST and every code_repo body.  HOPT now folds
 // in the cc-derived speculation, so each PGSD is keyed on (call site
 // structure × observed body) and a future cs_load matches it via the
 // hopt_index entry written here.
 //
-// HOPT == HORG short-circuit: when an entry's HOPT happens to equal
-// its HORG (= profile didn't change anything observable through HOPT
-// — typically because none of its descendants are pg_call sites with
-// a non-zero cc, or because they all speculate to the same body the
-// parser already assumed), the PGSD bake would emit an SD identical
-// to the AOT one already on disk.  Skip — the existing SD_<Horg>
-// covers it, and we save the disk + link time.
+// We emit a PGSD for every entry, even when HOPT == HORG (= profile
+// didn't refine anything observable through HOPT).  That redundancy
+// is required: a parent PGSD's baked direct call uses
+// `PGSD_<HOPT(child)>` regardless of whether the child's HOPT differs
+// from its HORG, so skipping the HOPT==HORG cases would leave
+// undefined-symbol references at dlopen time.
 //
 // Triggered by `-p`.
 static void
@@ -238,14 +237,13 @@ build_code_store_pgsd(NODE *ast)
 {
     naruby_update_sp_bodies_from_cc();
 
-    if (ast && HOPT(ast) != HORG(ast)) {
+    if (ast) {
         astro_cs_compile(ast, naruby_current_source_file);
     }
     for (uint32_t i = 0; i < code_repo.size; i++) {
         if (code_repo.entries[i].skip_specialize) continue;
         NODE *body = code_repo.entries[i].body;
         if (!body) continue;
-        if (HOPT(body) == HORG(body)) continue;
         const char *fname = code_repo.entries[i].name;
         astro_cs_compile(body, fname);
     }
@@ -284,8 +282,15 @@ main(int argc, char *argv[])
     // skipped, cs_load still runs.
     CTX *c = create_context(10000, 2000);
     global_c = c;
+
+    // PARSE has to inspect argv to find OPTION flags (--ccs, --plain, …),
+    // but it does not touch code_store — we can clear / cs_init around it.
     NODE *ast = PARSE(argc, argv);
 
+    // --ccs takes effect AFTER parse so that any logging through cs_init
+    // sees the post-clear state.  Then INIT() dlopens whatever's left in
+    // code_store/all.so so subsequent cs_load calls (during OPTIMIZE and
+    // node_def's EVAL hook) can bind dispatchers.
     if (OPTION.clear_store) {
         clear_code_store_dir();
     }
@@ -298,7 +303,7 @@ main(int argc, char *argv[])
         printf("\n");
     }
 
-    if (OPTION.compile_first && !OPTION.plain) {
+    if (OPTION.compile_first && !OPTION.plain && !OPTION.skip_bake) {
         build_code_store_aot(ast);
     }
 
@@ -316,7 +321,7 @@ main(int argc, char *argv[])
         printf("Result: %ld, node_cnt:%lu\n", r.value, node_cnt);
     }
 
-    if (OPTION.pg_at_exit && !OPTION.plain) {
+    if (OPTION.pg_at_exit && !OPTION.plain && !OPTION.skip_bake) {
         build_code_store_pgsd(ast);
     }
 

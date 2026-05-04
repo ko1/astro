@@ -64,21 +64,31 @@
 
 ## 実行モード
 
-`./naruby` 1 バイナリで全モードを切り替える。詳細は [runtime.md](runtime.md)
-の §5。
+abruby と揃えた直交フラグモデル。`-c` (AOT) と `-p` (PG) は組み合わせ自由。
+詳細は [runtime.md](runtime.md) の §5。
 
-| フラグ | モード | 動作 |
+| フラグ | 動作 |
+|---|---|
+| (なし) | run、`code_store/all.so` があれば cs_load して dispatcher を bind、bake なし |
+| `-c` / `--aot-first` | run の **前** に AOT bake (`build_code_store_aot`、SDs のみ) |
+| `-p` / `--pg` / `--pg-compile` | run の **後** に PG bake (`build_code_store_pgsd`、AST walk → cc->body から sp_body 派生 → PGSDs)。**parser も `node_pg_call_<N>` (argc ≤ 3) を emit** |
+| `-b` | bake 全部 skip (cached run のタイミング測定用) |
+| `-i` / `--plain` | interpreter only、cs 触らない |
+| `--ccs` / `--clear-code-store` | code_store/ を全消ししてから run |
+| `--aot-compile` | compile-only mode (run しない) |
+| `-s` | static-lang (`node_call_static` 使用、parse 時に body 解決) |
+| `-j` | JIT (`astro_jit_*` worker process via UDS) |
+| `-q` | quiet |
+| `-h` | help |
+
+**bench コマンドの基本 4 列**:
+
+| 列 | コマンド | 内容 |
 |---|---|---|
-| (なし) | Plain + AOT bake | インタプリタで実行し、終了時に `code_store/all.so` に SD_ をベイクする |
-| `-i` | Plain | AOT load も bake もしない |
-| `-b` | benchmark | bake をスキップ (load は行う)。タイミング測定用 |
-| `-c` | Compile-only | 実行せず SD_ をベイク |
-| `-s` | Static-lang | `node_call_static` を使う (parse 時に body 解決) |
-| `-p` | Profile-Guided | `node_pg_call_<N>` (argc ≤ 3) / `node_call2` (argc > 3) を使う |
-| `-a` | Record-all | すべての ALLOC を `code_repo_add` で記録 (specialize 候補を増やす) |
-| `-j` | JIT | `astro_jit_*` (UDS 経由で別プロセスの L1 に compile を投げる) |
-| `-q` | quiet | 余計な情報を出さない |
-| `-h` | help | オプション一覧 |
+| `n/aot-1st` | `./naruby --ccs -c $B` | clear → AOT bake → run。SD のみ |
+| `n/aot-c` | `./naruby -b $B` (after aot-1st) | cached、cs_load で SD |
+| `n/pg-1st` | `./naruby --ccs -c -p $B` | clear → AOT bake → run → **PG bake** (cc-derived sp_body で PGSDs を出力) |
+| `n/pg-c` | `./naruby -p -b $B` (after pg-1st) | cached、cs_load で PGSDs (hopt_index 経由) → 実行は **baked-direct call で PGO 効果** |
 
 ## HOPT / PGSD 投機チェイン (Profile-Guided Specialization)
 
