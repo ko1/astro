@@ -163,20 +163,26 @@ py_make_range(int64_t start, int64_t stop, int64_t step)
 
 VALUE
 py_make_func(struct Node *body, struct pyframe *env,
-             const char *name, int nparams, int nlocals,
-             int ndefaults, VALUE *defaults, bool leaf)
+             const char *name, int nparams, int n_pos_named,
+             int nlocals, VALUE *defaults_per_slot, bool leaf,
+             const char **param_names,
+             bool has_varargs, bool has_kwargs)
 {
     struct pyobj *o = py_alloc(PY_T_FUNC);
     o->func.body = body;
     o->func.env = env;
     o->func.name = name;
     o->func.nparams = nparams;
+    o->func.n_pos_named = n_pos_named;
     o->func.nlocals = nlocals;
-    o->func.ndefaults = ndefaults;
     o->func.leaf = leaf;
-    if (ndefaults > 0 && defaults) {
-        VALUE *d = (VALUE *)GC_malloc(sizeof(VALUE) * ndefaults);
-        memcpy(d, defaults, sizeof(VALUE) * ndefaults);
+    o->func.has_varargs = has_varargs;
+    o->func.has_kwargs = has_kwargs;
+    o->func.param_names = param_names;
+    if (nparams > 0) {
+        VALUE *d = (VALUE *)GC_malloc(sizeof(VALUE) * nparams);
+        if (defaults_per_slot) memcpy(d, defaults_per_slot, sizeof(VALUE) * nparams);
+        else for (int i = 0; i < nparams; i++) d[i] = (VALUE)0;
         o->func.defaults = d;
     } else {
         o->func.defaults = NULL;
@@ -1294,6 +1300,164 @@ py_setattr(CTX *c, VALUE v, const char *name, VALUE val)
 // Apply.
 // ---------------------------------------------------------------------------
 
+// Generic positional + kwarg apply for user-defined functions.
+//
+// Slot layout:
+//   [0 .. n_pos_named)            : positional-or-keyword params
+//   [n_pos_named]                 : *args (if has_varargs)
+//   [n_pos_named + has_va .. *)   : keyword-only params
+//   [..., last slot if has_kw]    : **kwargs
+//
+// `defaults[i]` is the default for slot i; (VALUE)0 means "required".
+// (Real values can never be 0 — fixnums set bit 0; pointers are
+// non-NULL after py_alloc.)
+static VALUE
+py_apply_kw_func(CTX *c, VALUE fn, int argc, VALUE *argv,
+                 int kwc, const char **kwnames, VALUE *kwvalues)
+{
+    struct pyobj *f = PY_PTR(fn);
+    int nparams = f->func.nparams;
+    int n_pos_named = f->func.n_pos_named;
+    bool has_va = f->func.has_varargs;
+    bool has_kw = f->func.has_kwargs;
+    int va_slot = has_va ? n_pos_named : -1;
+    int kwonly_start = n_pos_named + (has_va ? 1 : 0);
+    int n_kwonly = nparams - kwonly_start - (has_kw ? 1 : 0);
+    int kw_slot = has_kw ? (kwonly_start + n_kwonly) : -1;
+
+    struct pyframe *new_env = py_new_frame(f->func.env, f->func.nlocals);
+    bool *filled = (bool *)alloca(sizeof(bool) * (nparams > 0 ? nparams : 1));
+    for (int i = 0; i < nparams; i++) filled[i] = false;
+
+    // Place positional.
+    int pos_into = argc < n_pos_named ? argc : n_pos_named;
+    for (int i = 0; i < pos_into; i++) { new_env->slots[i] = argv[i]; filled[i] = true; }
+
+    // *args.
+    if (has_va) {
+        int n_extra = argc - pos_into;
+        VALUE *items = n_extra > 0 ? (VALUE *)alloca(sizeof(VALUE) * n_extra) : NULL;
+        for (int i = 0; i < n_extra; i++) items[i] = argv[pos_into + i];
+        new_env->slots[va_slot] = py_make_tuple(items, n_extra);
+        filled[va_slot] = true;
+    } else if (argc > n_pos_named) {
+        py_raise_exc(c, c->EXC_TypeError,
+                     "%s() got %d positional arg(s), expected at most %d",
+                     f->func.name ? f->func.name : "<anonymous>", argc, n_pos_named);
+    }
+
+    // **kwargs.
+    if (has_kw) {
+        new_env->slots[kw_slot] = py_make_dict();
+        filled[kw_slot] = true;
+    }
+
+    // Place each kwarg.
+    for (int i = 0; i < kwc; i++) {
+        int slot = -1;
+        if (f->func.param_names) {
+            for (int j = 0; j < n_pos_named; j++) {
+                if (f->func.param_names[j] && strcmp(f->func.param_names[j], kwnames[i]) == 0) {
+                    slot = j; break;
+                }
+            }
+            if (slot < 0) {
+                for (int j = kwonly_start; j < kwonly_start + n_kwonly; j++) {
+                    if (f->func.param_names[j] && strcmp(f->func.param_names[j], kwnames[i]) == 0) {
+                        slot = j; break;
+                    }
+                }
+            }
+        }
+        if (slot >= 0) {
+            if (filled[slot]) {
+                py_raise_exc(c, c->EXC_TypeError,
+                             "%s() got multiple values for argument '%s'",
+                             f->func.name ? f->func.name : "<anonymous>", kwnames[i]);
+            }
+            new_env->slots[slot] = kwvalues[i];
+            filled[slot] = true;
+        } else if (has_kw) {
+            py_dict_set(c, new_env->slots[kw_slot],
+                        py_make_str(kwnames[i], strlen(kwnames[i])), kwvalues[i]);
+        } else {
+            py_raise_exc(c, c->EXC_TypeError,
+                         "%s() got an unexpected keyword argument '%s'",
+                         f->func.name ? f->func.name : "<anonymous>", kwnames[i]);
+        }
+    }
+
+    // Fill defaults / raise on required missing.
+    for (int i = 0; i < nparams; i++) {
+        if (filled[i]) continue;
+        if (i == va_slot || i == kw_slot) continue;
+        VALUE d = f->func.defaults[i];
+        if (d == (VALUE)0) {
+            py_raise_exc(c, c->EXC_TypeError,
+                         "%s() missing required argument '%s'",
+                         f->func.name ? f->func.name : "<anonymous>",
+                         (f->func.param_names && f->func.param_names[i])
+                             ? f->func.param_names[i] : "?");
+        }
+        new_env->slots[i] = d;
+    }
+
+    struct pyframe *saved = c->env;
+    c->env = new_env;
+    EVAL(c, f->func.body);
+    c->env = saved;
+    if (c->state == PY_STATE_RETURN) {
+        VALUE r = c->state_value;
+        c->state = PY_STATE_NORMAL;
+        c->state_value = PY_NONE;
+        return r;
+    }
+    if (c->state == PY_STATE_RAISE) return PY_NONE;
+    return PY_NONE;
+}
+
+// Public entry for kwarg / *args expansion.  Handles bound methods
+// (prepend self) and class calls (instantiate then call __init__);
+// otherwise dispatches to py_apply_kw_func or, when there are no
+// kwargs / varargs, to the regular py_apply slow path.
+VALUE
+py_apply_kw(CTX *c, VALUE fn, int argc, VALUE *argv,
+            int kwc, const char **kwnames, VALUE *kwvalues)
+{
+    if (py_is_bound(fn)) {
+        struct pyobj *bm = PY_PTR(fn);
+        VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc + 1));
+        av[0] = bm->bound.self;
+        for (int i = 0; i < argc; i++) av[i + 1] = argv[i];
+        return py_apply_kw(c, bm->bound.func, argc + 1, av, kwc, kwnames, kwvalues);
+    }
+    if (py_is_class(fn)) {
+        VALUE inst = py_make_instance(fn);
+        if (PY_PTR(fn)->cls.is_exception) {
+            py_setattr(c, inst, "args", py_make_tuple(argv, argc));
+            if (argc >= 1 && py_is_str(argv[0])) py_setattr(c, inst, "message", argv[0]);
+        }
+        VALUE init = py_class_lookup_method(fn, "__init__");
+        if (init != PY_NONE) {
+            VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc + 1));
+            av[0] = inst;
+            for (int i = 0; i < argc; i++) av[i + 1] = argv[i];
+            py_apply_kw(c, init, argc + 1, av, kwc, kwnames, kwvalues);
+            if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
+        }
+        return inst;
+    }
+    if (py_is_func(fn)) return py_apply_kw_func(c, fn, argc, argv, kwc, kwnames, kwvalues);
+    if (py_is_builtin(fn)) {
+        if (kwc > 0) py_raise_exc(c, c->EXC_TypeError,
+                                  "%s() does not accept keyword arguments",
+                                  PY_PTR(fn)->builtin.name);
+        // delegate via py_apply (slow path is fine)
+        return py_apply_slow(c, fn, argc, argv);
+    }
+    py_raise_exc(c, c->EXC_TypeError, "object is not callable");
+}
+
 // Slow-path apply: bound / class / builtin / func-with-defaults / wrong type.
 // The closure-with-matching-arity fast path lives inline in `py_apply` in
 // node.h so SD code folds the call setup directly.
@@ -1324,36 +1488,9 @@ py_apply_slow(CTX *c, VALUE fn, int argc, VALUE *argv)
         return inst;
     }
     if (py_is_func(fn)) {
-        // Mismatched arity / has-defaults case (the inline fast path in
-        // node.h only handles exact-arity).  Same logic as before, just
-        // with arg-count checks in place.
-        struct pyobj *f = PY_PTR(fn);
-        int needed = f->func.nparams;
-        int with_defaults = f->func.ndefaults;
-        if (argc > needed || argc < needed - with_defaults) {
-            py_raise_exc(c, c->EXC_TypeError,
-                         "%s() takes %d positional arguments but %d were given",
-                         f->func.name ? f->func.name : "<anonymous>",
-                         needed, argc);
-        }
-        struct pyframe *new_env = py_new_frame(f->func.env, f->func.nlocals);
-        for (int i = 0; i < argc; i++) new_env->slots[i] = argv[i];
-        for (int i = argc; i < needed; i++) {
-            int di = i - (needed - with_defaults);
-            new_env->slots[i] = f->func.defaults[di];
-        }
-        struct pyframe *saved = c->env;
-        c->env = new_env;
-        EVAL(c, f->func.body);
-        c->env = saved;
-        if (c->state == PY_STATE_RETURN) {
-            VALUE r = c->state_value;
-            c->state = PY_STATE_NORMAL;
-            c->state_value = PY_NONE;
-            return r;
-        }
-        if (c->state == PY_STATE_RAISE) return PY_NONE;
-        return PY_NONE;
+        // All other cases (default args, *args, **kwargs, arity
+        // mismatch) route through the keyword-aware dispatcher.
+        return py_apply_kw_func(c, fn, argc, argv, 0, NULL, NULL);
     }
     if (py_is_builtin(fn)) {
         struct pyobj *f = PY_PTR(fn);

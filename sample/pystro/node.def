@@ -143,6 +143,31 @@ node_lset(CTX * restrict c, NODE * restrict n, uint32_t idx, NODE *val)
     return PY_NONE;
 }
 
+// Closure-captured local reference: walk `depth` parent links to reach
+// the captured outer frame, then index `idx`.  Parser emits this for
+// any NAME reference in a nested function whose binding lives in an
+// enclosing function's scope.
+NODE_DEF
+node_lref_up(CTX * restrict c, NODE * restrict n, uint32_t depth, uint32_t idx)
+{
+    (void)n;
+    struct pyframe *e = c->env;
+    for (uint32_t i = 0; i < depth; i++) e = e->parent;
+    return e->slots[idx];
+}
+
+NODE_DEF
+node_lset_up(CTX * restrict c, NODE * restrict n, uint32_t depth, uint32_t idx, NODE *val)
+{
+    (void)n;
+    VALUE v = EVAL_ARG(c, val);
+    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+    struct pyframe *e = c->env;
+    for (uint32_t i = 0; i < depth; i++) e = e->parent;
+    e->slots[idx] = v;
+    return PY_NONE;
+}
+
 NODE_DEF
 node_gref(CTX * restrict c, NODE * restrict n, const char *name, struct gref_cache *cache@ref)
 {
@@ -694,32 +719,42 @@ node_try(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t handlers_idx,
 // `def` allocates a closure object and stores it as a global by name
 // (or as a method on c->current_class while a class body is running).
 // Default values come from PYSTRO_NODE_TABLE[defaults_idx..idx+ndefaults].
+// Build the function value.  Adds the func to `c->current_class` as a
+// side effect if a class body is being evaluated; the caller (parser)
+// stores the returned value via make_store for top-level / nested-def
+// bindings.
 NODE_DEF @noinline
-node_def(CTX * restrict c, NODE * restrict n, const char *name, uint32_t nparams, uint32_t nlocals, uint32_t ndefaults, uint32_t defaults_idx, uint32_t leaf, NODE *body)
+node_def(CTX * restrict c, NODE * restrict n, const char *name, uint32_t nparams, uint32_t n_pos_named, uint32_t nlocals, uint32_t ndefaults, uint32_t defaults_idx, uint32_t leaf, uint32_t names_idx, uint32_t flags, NODE *body)
 {
     (void)n;
     VALUE *dv = NULL;
-    if (ndefaults > 0) {
-        dv = (VALUE *)alloca(sizeof(VALUE) * ndefaults);
+    if (nparams > 0) {
+        dv = (VALUE *)alloca(sizeof(VALUE) * nparams);
+        for (uint32_t i = 0; i < nparams; i++) dv[i] = (VALUE)0;
         for (uint32_t i = 0; i < ndefaults; i++) {
-            NODE *d = PYSTRO_NODE_TABLE[defaults_idx + i];
-            dv[i] = (*d->head.dispatcher)(c, d);
+            struct pydefault *d = &PYSTRO_DEFAULTS[defaults_idx + i];
+            dv[d->slot] = (*d->expr->head.dispatcher)(c, d->expr);
             if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
         }
     }
-    VALUE fn = py_make_func(body, c->env, name, (int)nparams, (int)nlocals,
-                            (int)ndefaults, dv, leaf != 0);
+    const char **pn = nparams > 0 ? &PYSTRO_NAME_TABLE[names_idx] : NULL;
+    bool has_va = (flags & 1) != 0;
+    bool has_kw = (flags & 2) != 0;
+    VALUE fn = py_make_func(body, c->env, name, (int)nparams, (int)n_pos_named,
+                            (int)nlocals, dv, leaf != 0, pn, has_va, has_kw);
     if (c->current_class != PY_NONE)
         py_class_add_method(c, c->current_class, name, fn);
-    else
-        py_global_define(c, name, fn);
-    return PY_NONE;
+    return fn;
 }
 
 // `class Name(base): body` — body is a sequence of `def` statements (and
 // optional class-level attribute assignments, but parser only emits defs
 // for now).  Setting current_class redirects nested node_def to add into
 // the class instead of globals.
+// Build the class object: evaluate base, allocate the class, evaluate
+// the body with `c->current_class` set so nested `def`s register
+// themselves as methods.  Returns the class object — the caller
+// (parser) emits the surrounding store node for the binding.
 NODE_DEF @noinline
 node_class(CTX * restrict c, NODE * restrict n, const char *name, NODE *base, NODE *body)
 {
@@ -733,25 +768,26 @@ node_class(CTX * restrict c, NODE * restrict n, const char *name, NODE *base, NO
     EVAL_ARG(c, body);
     c->current_class = saved;
     if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
-    py_global_define(c, name, cls);
-    return PY_NONE;
+    return cls;
 }
 
 NODE_DEF @noinline
-node_lambda(CTX * restrict c, NODE * restrict n, uint32_t nparams, uint32_t nlocals, uint32_t ndefaults, uint32_t defaults_idx, uint32_t leaf, NODE *body)
+node_lambda(CTX * restrict c, NODE * restrict n, uint32_t nparams, uint32_t nlocals, uint32_t ndefaults, uint32_t defaults_idx, uint32_t leaf, uint32_t names_idx, NODE *body)
 {
     (void)n;
     VALUE *dv = NULL;
-    if (ndefaults > 0) {
-        dv = (VALUE *)alloca(sizeof(VALUE) * ndefaults);
+    if (nparams > 0) {
+        dv = (VALUE *)alloca(sizeof(VALUE) * nparams);
+        for (uint32_t i = 0; i < nparams; i++) dv[i] = (VALUE)0;
         for (uint32_t i = 0; i < ndefaults; i++) {
-            NODE *d = PYSTRO_NODE_TABLE[defaults_idx + i];
-            dv[i] = (*d->head.dispatcher)(c, d);
+            struct pydefault *d = &PYSTRO_DEFAULTS[defaults_idx + i];
+            dv[d->slot] = (*d->expr->head.dispatcher)(c, d->expr);
             if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
         }
     }
-    return py_make_func(body, c->env, "<lambda>", (int)nparams, (int)nlocals,
-                        (int)ndefaults, dv, leaf != 0);
+    const char **pn = nparams > 0 ? &PYSTRO_NAME_TABLE[names_idx] : NULL;
+    return py_make_func(body, c->env, "<lambda>", (int)nparams, (int)nparams,
+                        (int)nlocals, dv, leaf != 0, pn, false, false);
 }
 
 // ---------------------------------------------------------------------------
@@ -803,7 +839,7 @@ NODE_DEF @noinline
 node_call_n(CTX * restrict c, NODE * restrict n, NODE *fn, uint32_t args_idx, uint32_t argc)
 {
     (void)n;
-VALUE f = EVAL_ARG(c, fn);
+    VALUE f = EVAL_ARG(c, fn);
     VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc ? argc : 1));
     for (uint32_t i = 0; i < argc; i++) {
         NODE *arg = PYSTRO_NODE_TABLE[args_idx + i];
@@ -811,6 +847,33 @@ VALUE f = EVAL_ARG(c, fn);
         if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
     }
     return py_apply(c, f, (int)argc, av);
+}
+
+// Call with keyword arguments (and possibly positional too).
+// Positional from PYSTRO_NODE_TABLE[args_idx..argc], kwargs from
+// PYSTRO_KWARGS[kwargs_idx..kwc].  No `*list` / `**dict` expansion at
+// the call site for v0.
+NODE_DEF @noinline
+node_call_kw(CTX * restrict c, NODE * restrict n, NODE *fn, uint32_t args_idx, uint32_t argc, uint32_t kwargs_idx, uint32_t kwc)
+{
+    (void)n;
+    extern VALUE py_apply_kw(CTX *c, VALUE fn, int argc, VALUE *argv, int kwc, const char **kwnames, VALUE *kwvalues);
+    VALUE f = EVAL_ARG(c, fn);
+    VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc ? argc : 1));
+    for (uint32_t i = 0; i < argc; i++) {
+        NODE *arg = PYSTRO_NODE_TABLE[args_idx + i];
+        av[i] = (*arg->head.dispatcher)(c, arg);
+        if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+    }
+    const char **kwn = (const char **)alloca(sizeof(char *) * (kwc ? kwc : 1));
+    VALUE       *kwv = (VALUE *)alloca(sizeof(VALUE) * (kwc ? kwc : 1));
+    for (uint32_t i = 0; i < kwc; i++) {
+        kwn[i] = PYSTRO_KWARGS[kwargs_idx + i].name;
+        NODE *vn = PYSTRO_KWARGS[kwargs_idx + i].value;
+        kwv[i] = (*vn->head.dispatcher)(c, vn);
+        if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+    }
+    return py_apply_kw(c, f, (int)argc, av, (int)kwc, kwn, kwv);
 }
 
 // Method call: `o.m(args)`.  Inline-cached: when `recv`'s type-tag

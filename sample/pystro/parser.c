@@ -10,6 +10,57 @@ NODE   **PYSTRO_NODE_TABLE = NULL;
 size_t   PYSTRO_NODE_TABLE_LEN = 0;
 size_t   PYSTRO_NODE_TABLE_CAPA = 0;
 
+// Bag of param-name lists indexed by node_def's `names_idx`.
+const char **PYSTRO_NAME_TABLE = NULL;
+static size_t pystro_name_len, pystro_name_capa;
+static size_t name_table_reserve(const char **names, size_t n)
+{
+    if (pystro_name_len + n > pystro_name_capa) {
+        size_t cap = pystro_name_capa ? pystro_name_capa * 2 : 32;
+        while (cap < pystro_name_len + n) cap *= 2;
+        PYSTRO_NAME_TABLE = (const char **)GC_realloc(PYSTRO_NAME_TABLE, cap * sizeof(char *));
+        pystro_name_capa = cap;
+    }
+    size_t base = pystro_name_len;
+    for (size_t i = 0; i < n; i++) PYSTRO_NAME_TABLE[base + i] = names[i];
+    pystro_name_len += n;
+    return base;
+}
+
+// Bag of (name, NODE *) kwargs indexed by node_call_kw's `kwargs_idx`.
+struct pykwarg *PYSTRO_KWARGS = NULL;
+static size_t pystro_kwargs_len, pystro_kwargs_capa;
+static size_t kwargs_reserve(struct pykwarg *src, size_t n)
+{
+    if (pystro_kwargs_len + n > pystro_kwargs_capa) {
+        size_t cap = pystro_kwargs_capa ? pystro_kwargs_capa * 2 : 16;
+        while (cap < pystro_kwargs_len + n) cap *= 2;
+        PYSTRO_KWARGS = (struct pykwarg *)GC_realloc(PYSTRO_KWARGS, cap * sizeof(struct pykwarg));
+        pystro_kwargs_capa = cap;
+    }
+    size_t base = pystro_kwargs_len;
+    for (size_t i = 0; i < n; i++) PYSTRO_KWARGS[base + i] = src[i];
+    pystro_kwargs_len += n;
+    return base;
+}
+
+// Bag of (slot, NODE *) defaults for node_def / node_lambda.
+struct pydefault *PYSTRO_DEFAULTS = NULL;
+static size_t pystro_defaults_len, pystro_defaults_capa;
+static size_t defaults_reserve(struct pydefault *src, size_t n)
+{
+    if (pystro_defaults_len + n > pystro_defaults_capa) {
+        size_t cap = pystro_defaults_capa ? pystro_defaults_capa * 2 : 8;
+        while (cap < pystro_defaults_len + n) cap *= 2;
+        PYSTRO_DEFAULTS = (struct pydefault *)GC_realloc(PYSTRO_DEFAULTS, cap * sizeof(struct pydefault));
+        pystro_defaults_capa = cap;
+    }
+    size_t base = pystro_defaults_len;
+    for (size_t i = 0; i < n; i++) PYSTRO_DEFAULTS[base + i] = src[i];
+    pystro_defaults_len += n;
+    return base;
+}
+
 static size_t
 node_table_reserve(NODE **items, size_t n)
 {
@@ -110,11 +161,20 @@ typedef struct Scope {
     const char  **globals_decls;     // names declared `global` in this scope
     int           nglobals;
     int           globals_capa;
+    const char  **nonlocals_decls;   // names declared `nonlocal` in this scope
+    int           nnonlocals;
+    int           nonlocals_capa;
     bool          has_nested_def;    // body contains an inner def/class
                                      // (false ⇒ leaf, frame can be alloca'd)
 } Scope;
 
 static Scope *cur_scope;
+
+// True while parsing the body of a `class C:` suite.  When set, a
+// nested `def` is added to the class via node_def's side effect and
+// the parser MUST NOT additionally bind the name (which would shadow
+// the method behind a never-read local / global).
+static bool in_class_body;
 
 static int
 scope_local_index(Scope *s, const char *name)
@@ -153,6 +213,24 @@ scope_add_global_decl(Scope *s, const char *name)
         s->globals_decls = (const char **)GC_realloc(s->globals_decls, s->globals_capa * sizeof(char *));
     }
     s->globals_decls[s->nglobals++] = name;
+}
+
+static bool
+scope_is_nonlocal_decl(Scope *s, const char *name)
+{
+    if (!s) return false;
+    for (int i = 0; i < s->nnonlocals; i++) if (s->nonlocals_decls[i] == name) return true;
+    return false;
+}
+
+static void
+scope_add_nonlocal_decl(Scope *s, const char *name)
+{
+    if (s->nnonlocals == s->nonlocals_capa) {
+        s->nonlocals_capa = s->nonlocals_capa ? s->nonlocals_capa * 2 : 4;
+        s->nonlocals_decls = (const char **)GC_realloc(s->nonlocals_decls, s->nonlocals_capa * sizeof(char *));
+    }
+    s->nonlocals_decls[s->nnonlocals++] = name;
 }
 
 // Pre-scan a token range for `NAME =` (assignment LHS), `for NAME in`,
@@ -223,6 +301,16 @@ collect_locals_in_range(Scope *s, size_t start_pos, size_t end_pos)
             continue;
         }
         if (t->kind == T_GLOBAL) { in_global_decl = true; continue; }
+        if (t->kind == T_NONLOCAL) {
+            // collect names until newline/comma stops, like global.
+            size_t j = i + 1;
+            while (j < end_pos && (tok_arr[j].kind == T_NAME || tok_arr[j].kind == T_COMMA)) {
+                if (tok_arr[j].kind == T_NAME) scope_add_nonlocal_decl(s, tok_arr[j].sval);
+                j++;
+            }
+            i = j - 1;
+            continue;
+        }
         if (t->kind == T_NEWLINE) { in_global_decl = false; continue; }
         if (in_global_decl && t->kind == T_NAME) {
             scope_add_global_decl(s, t->sval);
@@ -230,14 +318,16 @@ collect_locals_in_range(Scope *s, size_t start_pos, size_t end_pos)
         }
         if (t->kind == T_FOR && i + 1 < end_pos && tok_arr[i+1].kind == T_NAME) {
             // for NAME in ...
-            if (!scope_is_global_decl(s, tok_arr[i+1].sval))
+            if (!scope_is_global_decl(s, tok_arr[i+1].sval) &&
+                !scope_is_nonlocal_decl(s, tok_arr[i+1].sval))
                 scope_add_local(s, tok_arr[i+1].sval);
             // also handle `for a, b in ...`
             size_t j = i + 2;
             while (j < end_pos && tok_arr[j].kind == T_COMMA) {
                 j++;
                 if (j < end_pos && tok_arr[j].kind == T_NAME) {
-                    if (!scope_is_global_decl(s, tok_arr[j].sval))
+                    if (!scope_is_global_decl(s, tok_arr[j].sval) &&
+                        !scope_is_nonlocal_decl(s, tok_arr[j].sval))
                         scope_add_local(s, tok_arr[j].sval);
                     j++;
                 }
@@ -264,7 +354,8 @@ collect_locals_in_range(Scope *s, size_t start_pos, size_t end_pos)
                 next == T_PERCENT_EQ || next == T_AMP_EQ || next == T_PIPE_EQ ||
                 next == T_CARET_EQ || next == T_LSHIFT_EQ || next == T_RSHIFT_EQ ||
                 next == T_STAR_STAR_EQ) {
-                if (!scope_is_global_decl(s, t->sval))
+                if (!scope_is_global_decl(s, t->sval) &&
+                    !scope_is_nonlocal_decl(s, t->sval))
                     scope_add_local(s, t->sval);
             }
             // Multi-target tuple unpack: `a, b = ...`
@@ -281,7 +372,8 @@ collect_locals_in_range(Scope *s, size_t start_pos, size_t end_pos)
                     size_t k = i;
                     while (k <= j) {
                         if (tok_arr[k].kind == T_NAME &&
-                            !scope_is_global_decl(s, tok_arr[k].sval))
+                            !scope_is_global_decl(s, tok_arr[k].sval) &&
+                            !scope_is_nonlocal_decl(s, tok_arr[k].sval))
                             scope_add_local(s, tok_arr[k].sval);
                         k++;
                     }
@@ -311,22 +403,55 @@ seq_of(NODE **stmts, int n)
     return r;
 }
 
-// Resolve a NAME as a load expression.
+// Resolve a NAME as a load expression.  Walk the scope chain so a
+// nested `def` can read locals from its lexical parents (closure
+// capture).  Returns:
+//   - lref(idx)              : found in current scope
+//   - lref_up(depth, idx)    : found in an ancestor scope
+//   - gref(name)             : not found in any function scope, or
+//                              `global` declared in current scope
 static NODE *
 make_load(const char *name)
 {
     if (cur_scope && !scope_is_global_decl(cur_scope, name)) {
         int idx = scope_local_index(cur_scope, name);
         if (idx >= 0) return ALLOC_node_lref((uint32_t)idx);
+        // Walk parent scopes.
+        Scope *s = cur_scope->parent;
+        uint32_t depth = 1;
+        while (s) {
+            if (scope_is_global_decl(s, name)) break;
+            int up_idx = scope_local_index(s, name);
+            if (up_idx >= 0) return ALLOC_node_lref_up(depth, (uint32_t)up_idx);
+            s = s->parent;
+            depth++;
+        }
     }
     return ALLOC_node_gref(name);
 }
 
-// Store NODE for a NAME (local or global).
+// Store NODE for a NAME.  By default, an assignment in a function body
+// creates / updates a local in the current scope (Python's standard
+// "implicit local" rule).  `nonlocal NAME` would route writes to an
+// outer scope's slot — that requires a separate lookup pass; for v0
+// only `global NAME` is honoured here, sending writes to globals.
 static NODE *
 make_store(const char *name, NODE *rhs)
 {
     if (cur_scope && !scope_is_global_decl(cur_scope, name)) {
+        // `nonlocal` decl: write to an outer scope's existing slot.
+        if (scope_is_nonlocal_decl(cur_scope, name)) {
+            Scope *s = cur_scope->parent;
+            uint32_t depth = 1;
+            while (s) {
+                int up_idx = scope_local_index(s, name);
+                if (up_idx >= 0)
+                    return ALLOC_node_lset_up(depth, (uint32_t)up_idx, rhs);
+                s = s->parent;
+                depth++;
+            }
+            parse_error("nonlocal '%s' has no binding in any enclosing scope", name);
+        }
         int idx = scope_add_local(cur_scope, name);
         return ALLOC_node_lset((uint32_t)idx, rhs);
     }
@@ -457,19 +582,157 @@ parse_paren_or_tuple(void)
     return ALLOC_node_make_tuple((uint32_t)base, (uint32_t)n);
 }
 
+// ---------------------------------------------------------------------------
+// Comprehensions.  Desugared at parse time into a sequence:
+//
+//   [expr for x in xs if cond]   →
+//     seq(__t = [],
+//         seq(for x in xs: if cond: __t.append(expr),
+//             __t))
+//
+//   {k:v for x in xs}            →
+//     seq(__t = {},
+//         seq(for x in xs: __t[k] = v,
+//             __t))
+//
+// Hidden temp `__t` is an auto-allocated local (or global at top level).
+// Multiple `for` / `if` clauses are nested.  Comprehensions don't
+// introduce a new scope (Python 3 does, pystro v0 leaks the loop var
+// to the enclosing scope — minor difference noted in todo.md).
+// ---------------------------------------------------------------------------
+
+static int comp_counter = 0;
+
+static const char *
+new_temp_name(const char *prefix)
+{
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%s%d__", prefix, comp_counter++);
+    return intern_name(buf, strlen(buf));
+}
+
+// Build (store_node, load_node) pair for `tmp = initial_value`.
+static NODE *
+build_temp_init(const char *tmp_name, NODE *initial, NODE **out_load)
+{
+    NODE *store, *load;
+    if (cur_scope && !scope_is_global_decl(cur_scope, tmp_name)) {
+        int idx = scope_add_local(cur_scope, tmp_name);
+        store = ALLOC_node_lset((uint32_t)idx, initial);
+        load = ALLOC_node_lref((uint32_t)idx);
+    } else {
+        store = ALLOC_node_gset(tmp_name, initial);
+        load = ALLOC_node_gref(tmp_name);
+    }
+    *out_load = load;
+    return store;
+}
+
+// Wrap `body` in a `for x in iter:` (target may be a NAME or `a, b`
+// tuple — only NAME for now).
+static NODE *
+build_for_loop(const char *target_name, NODE *iter, NODE *body)
+{
+    if (cur_scope && !scope_is_global_decl(cur_scope, target_name)) {
+        int idx = scope_add_local(cur_scope, target_name);
+        return ALLOC_node_for_local((uint32_t)idx, iter, body);
+    }
+    return ALLOC_node_for_global(target_name, iter, body);
+}
+
+// Parse one or more `for X (, Y)* in EXPR (if EXPR)*` clauses and
+// build the nested loop.  `inner_body` is what the innermost loop body
+// produces.  Returns the outermost for_loop node.  Caller positions
+// tok at `for`.  Tuple targets desugar to `__t = item; X = __t[0]; Y =
+// __t[1]; ...`.
+static NODE *
+parse_comp_clauses(NODE *inner_body)
+{
+    expect(T_FOR, "'for'");
+    if (peek_tok(0)->kind != T_NAME) parse_error("expected target NAME in comprehension");
+    const char *names[16];
+    int nnames = 0;
+    names[nnames++] = peek_tok(0)->sval;
+    tok_pos++;
+    while (match_tok(T_COMMA)) {
+        if (peek_tok(0)->kind != T_NAME) parse_error("expected NAME in tuple target");
+        if (nnames >= 16) parse_error("for tuple target too long");
+        names[nnames++] = peek_tok(0)->sval;
+        tok_pos++;
+    }
+    expect(T_IN, "'in'");
+    NODE *iter = parse_or();
+
+    // Build the body around the (cond, append/setitem) we received.
+    while (peek_tok(0)->kind == T_IF) {
+        tok_pos++;
+        NODE *cond = parse_or();
+        inner_body = ALLOC_node_if(cond, inner_body, ALLOC_node_nop());
+    }
+
+    // Inner `for` clause?
+    if (peek_tok(0)->kind == T_FOR)
+        inner_body = parse_comp_clauses(inner_body);
+
+    if (nnames == 1) return build_for_loop(names[0], iter, inner_body);
+
+    // Tuple target: introduce a hidden temp to hold the current item,
+    // then prepend `name_i = __t[i]` for each name.
+    const char *tmp = new_temp_name("__forT");
+    NODE *load_tmp;
+    NODE *prefix = NULL;
+    if (cur_scope && !scope_is_global_decl(cur_scope, tmp)) {
+        int idx = scope_add_local(cur_scope, tmp);
+        load_tmp = ALLOC_node_lref((uint32_t)idx);
+        // body: assign each name from __t[i], then run inner_body.
+        for (int i = nnames - 1; i >= 0; i--) {
+            NODE *idx_n = ALLOC_node_const_int(i);
+            NODE *el  = ALLOC_node_subscript_get(load_tmp, idx_n);
+            int slot = scope_add_local(cur_scope, names[i]);
+            NODE *as = ALLOC_node_lset((uint32_t)slot, el);
+            prefix = prefix ? ALLOC_node_seq(as, prefix) : as;
+        }
+        NODE *new_body = ALLOC_node_seq(prefix, inner_body);
+        return ALLOC_node_for_local((uint32_t)idx, iter, new_body);
+    }
+    // top-level
+    load_tmp = ALLOC_node_gref(tmp);
+    for (int i = nnames - 1; i >= 0; i--) {
+        NODE *idx_n = ALLOC_node_const_int(i);
+        NODE *el  = ALLOC_node_subscript_get(load_tmp, idx_n);
+        NODE *as = ALLOC_node_gset(names[i], el);
+        prefix = prefix ? ALLOC_node_seq(as, prefix) : as;
+    }
+    NODE *new_body = ALLOC_node_seq(prefix, inner_body);
+    return ALLOC_node_for_global(tmp, iter, new_body);
+}
+
 static NODE *
 parse_list_literal(void)
 {
     expect(T_LBRACK, "'['");
+    if (match_tok(T_RBRACK)) {
+        size_t base = node_table_reserve(NULL, 0);
+        return ALLOC_node_make_list((uint32_t)base, 0);
+    }
+    NODE *first = parse_expr();
+    if (peek_tok(0)->kind == T_FOR) {
+        // List comprehension: [expr for x in xs (if cond)*]+
+        const char *tmp = new_temp_name("__lc");
+        NODE *load_tmp;
+        size_t empty_idx = node_table_reserve(NULL, 0);
+        NODE *init = build_temp_init(tmp, ALLOC_node_make_list((uint32_t)empty_idx, 0), &load_tmp);
+        NODE *append = ALLOC_node_method_1(load_tmp, intern_name("append", 6), first);
+        NODE *loops = parse_comp_clauses(append);
+        expect(T_RBRACK, "']'");
+        return ALLOC_node_seq(init, ALLOC_node_seq(loops, load_tmp));
+    }
     NODE *items[256];
-    int n = 0;
-    if (peek_tok(0)->kind != T_RBRACK) {
+    int n = 0; items[n++] = first;
+    while (match_tok(T_COMMA)) {
+        if (peek_tok(0)->kind == T_RBRACK) break;
+        if (n >= 256) parse_error("list literal too long");
         items[n++] = parse_expr();
-        while (match_tok(T_COMMA)) {
-            if (peek_tok(0)->kind == T_RBRACK) break;
-            if (n >= 256) parse_error("list literal too long");
-            items[n++] = parse_expr();
-        }
     }
     expect(T_RBRACK, "']'");
     size_t base = node_table_reserve(items, n);
@@ -480,20 +743,36 @@ static NODE *
 parse_dict_literal(void)
 {
     expect(T_LBRACE, "'{'");
-    NODE *items[512];        // keys+vals interleaved
+    if (match_tok(T_RBRACE)) {
+        size_t base = node_table_reserve(NULL, 0);
+        return ALLOC_node_make_dict((uint32_t)base, 0);
+    }
+    NODE *first_k = parse_expr();
+    expect(T_COLON, "':'");
+    NODE *first_v = parse_expr();
+    if (peek_tok(0)->kind == T_FOR) {
+        // Dict comprehension: {k:v for x in xs (if cond)*}+
+        const char *tmp = new_temp_name("__dc");
+        NODE *load_tmp;
+        size_t empty_idx = node_table_reserve(NULL, 0);
+        NODE *init = build_temp_init(tmp, ALLOC_node_make_dict((uint32_t)empty_idx, 0), &load_tmp);
+        NODE *set = ALLOC_node_subscript_set(load_tmp, first_k, first_v);
+        NODE *loops = parse_comp_clauses(set);
+        expect(T_RBRACE, "'}'");
+        return ALLOC_node_seq(init, ALLOC_node_seq(loops, load_tmp));
+    }
+    NODE *items[512];
     int npairs = 0;
-    if (peek_tok(0)->kind != T_RBRACE) {
-        for (;;) {
-            NODE *k = parse_expr();
-            expect(T_COLON, "':'");
-            NODE *v = parse_expr();
-            if (npairs * 2 + 2 > 512) parse_error("dict literal too long");
-            items[npairs * 2] = k;
-            items[npairs * 2 + 1] = v;
-            npairs++;
-            if (!match_tok(T_COMMA)) break;
-            if (peek_tok(0)->kind == T_RBRACE) break;
-        }
+    items[0] = first_k; items[1] = first_v; npairs = 1;
+    while (match_tok(T_COMMA)) {
+        if (peek_tok(0)->kind == T_RBRACE) break;
+        NODE *k = parse_expr();
+        expect(T_COLON, "':'");
+        NODE *v = parse_expr();
+        if (npairs * 2 + 2 > 512) parse_error("dict literal too long");
+        items[npairs * 2] = k;
+        items[npairs * 2 + 1] = v;
+        npairs++;
     }
     expect(T_RBRACE, "'}'");
     size_t base = node_table_reserve(items, npairs * 2);
@@ -509,9 +788,11 @@ parse_lambda(void)
     sc.parent = cur_scope;
 
     int nparams = 0;
-    NODE *defaults[16];
+    struct pydefault defs[16];
     int ndefaults = 0;
     bool seen_default = false;
+    const char *names[16];
+    int nnames = 0;
 
     if (peek_tok(0)->kind != T_COLON) {
         for (;;) {
@@ -519,12 +800,16 @@ parse_lambda(void)
             const char *pn = peek_tok(0)->sval;
             tok_pos++;
             scope_add_local(&sc, pn);
+            names[nnames++] = pn;
+            int slot = nparams;
             nparams++;
             if (match_tok(T_ASSIGN)) {
                 seen_default = true;
                 if (ndefaults >= 16) parse_error("too many defaults");
                 Scope *saved = cur_scope; cur_scope = NULL;
-                defaults[ndefaults++] = parse_expr();
+                defs[ndefaults].slot = slot;
+                defs[ndefaults].expr = parse_expr();
+                ndefaults++;
                 cur_scope = saved;
             } else if (seen_default) {
                 parse_error("non-default after default");
@@ -540,11 +825,11 @@ parse_lambda(void)
     cur_scope = saved;
 
     NODE *body = ALLOC_node_return(body_expr);
-    size_t didx = node_table_reserve(defaults, ndefaults);
-    // lambda body is a single expression — never has nested def/class.
+    size_t didx = defaults_reserve(defs, ndefaults);
+    size_t nidx = name_table_reserve(names, nnames);
     return ALLOC_node_lambda((uint32_t)nparams, (uint32_t)sc.nlocals,
                              (uint32_t)ndefaults, (uint32_t)didx,
-                             (uint32_t)1, body);
+                             (uint32_t)1, (uint32_t)nidx, body);
 }
 
 static NODE *
@@ -591,15 +876,33 @@ parse_call_args(NODE *fn)
     expect(T_LPAREN, "'('");
     NODE *args[64];
     int argc = 0;
+    struct pykwarg kws[32];
+    int kwc = 0;
     if (peek_tok(0)->kind != T_RPAREN) {
         for (;;) {
-            if (argc >= 64) parse_error("too many args");
-            args[argc++] = parse_expr();
+            // Lookahead for `NAME =` (kwarg).  Plain `=` only — `==` is
+            // a different token.
+            if (peek_tok(0)->kind == T_NAME && peek_tok(1)->kind == T_ASSIGN) {
+                if (kwc >= 32) parse_error("too many kwargs");
+                kws[kwc].name = peek_tok(0)->sval;
+                tok_pos += 2;
+                kws[kwc].value = parse_expr();
+                kwc++;
+            } else {
+                if (argc >= 64) parse_error("too many args");
+                args[argc++] = parse_expr();
+            }
             if (!match_tok(T_COMMA)) break;
             if (peek_tok(0)->kind == T_RPAREN) break;
         }
     }
     expect(T_RPAREN, "')'");
+    if (kwc > 0) {
+        size_t abase = node_table_reserve(args, argc);
+        size_t kbase = kwargs_reserve(kws, kwc);
+        return ALLOC_node_call_kw(fn, (uint32_t)abase, (uint32_t)argc,
+                                  (uint32_t)kbase, (uint32_t)kwc);
+    }
     switch (argc) {
       case 0: return ALLOC_node_call_0(fn);
       case 1: return ALLOC_node_call_1(fn, args[0]);
@@ -971,38 +1274,86 @@ parse_for(void)
     return ALLOC_node_for_global(target, iter, body);
 }
 
-// Parse params for `def NAME(params):` — returns nparams via *out_nparams,
-// ndefaults via *out_ndefaults, defaults_idx via *out_didx, and adds
-// each param as a local in `sc`.
+// Parse params for `def NAME(params):` — handles default values,
+// `*args`, `**kwargs`, and keyword-only params (after `*args`).
+// Returns slot counts + table indices via out-params.
+//   nparams         total slots
+//   n_pos_named     # of pos-or-keyword params (before *args)
+//   ndefaults       # of (slot, expr) entries pushed to PYSTRO_DEFAULTS
+//   didx            base in PYSTRO_DEFAULTS
+//   nidx            base in PYSTRO_NAME_TABLE
+//   flags           bit0=has_va, bit1=has_kw
 static void
-parse_params(Scope *sc, int *out_nparams, int *out_ndefaults, uint32_t *out_didx)
+parse_params(Scope *sc, int *out_nparams, int *out_n_pos_named, int *out_ndefaults,
+             uint32_t *out_didx, uint32_t *out_nidx, uint32_t *out_flags)
 {
     int nparams = 0;
-    NODE *defaults[16];
+    int n_pos_named = 0;
+    bool saw_star = false;
+    bool has_va = false, has_kw = false;
+    struct pydefault defs[32];
     int ndefaults = 0;
-    bool seen_default = false;
+    bool seen_default_in_pos = false;
+    const char *names[32];
+    int nnames = 0;
+
     if (peek_tok(0)->kind != T_RPAREN) {
         for (;;) {
+            // **kwargs always comes last.
+            if (match_tok(T_STAR_STAR)) {
+                if (peek_tok(0)->kind != T_NAME) parse_error("expected NAME after '**'");
+                const char *pn = peek_tok(0)->sval; tok_pos++;
+                scope_add_local(sc, pn);
+                names[nnames++] = pn;
+                nparams++;
+                has_kw = true;
+                if (!match_tok(T_COMMA)) break;
+                continue;
+            }
+            // *args (and bare `*` could mark "kwonly start" but we
+            // require a name for now).
+            if (match_tok(T_STAR)) {
+                if (peek_tok(0)->kind != T_NAME) parse_error("expected NAME after '*'");
+                const char *pn = peek_tok(0)->sval; tok_pos++;
+                scope_add_local(sc, pn);
+                names[nnames++] = pn;
+                nparams++;
+                has_va = true;
+                saw_star = true;
+                if (!match_tok(T_COMMA)) break;
+                continue;
+            }
             if (peek_tok(0)->kind != T_NAME) parse_error("expected parameter name");
             const char *pn = peek_tok(0)->sval;
             tok_pos++;
             scope_add_local(sc, pn);
+            names[nnames++] = pn;
+            int slot = nparams;
             nparams++;
+            if (!saw_star) n_pos_named++;
             if (match_tok(T_ASSIGN)) {
-                seen_default = true;
-                if (ndefaults >= 16) parse_error("too many defaults");
-                Scope *saved = cur_scope; cur_scope = sc->parent;     // defaults eval in outer scope
-                defaults[ndefaults++] = parse_expr();
+                if (ndefaults >= 32) parse_error("too many defaults");
+                Scope *saved = cur_scope; cur_scope = sc->parent;
+                defs[ndefaults].slot = slot;
+                defs[ndefaults].expr = parse_expr();
+                ndefaults++;
+                if (!saw_star) seen_default_in_pos = true;
                 cur_scope = saved;
-            } else if (seen_default) {
+            } else if (seen_default_in_pos && !saw_star) {
                 parse_error("non-default after default in '%s'", pn);
             }
             if (!match_tok(T_COMMA)) break;
         }
     }
+    if (!has_va) {
+        // n_pos_named already counts everything since saw_star never flipped.
+    }
     *out_nparams = nparams;
+    *out_n_pos_named = n_pos_named;
     *out_ndefaults = ndefaults;
-    *out_didx = (uint32_t)node_table_reserve(defaults, ndefaults);
+    *out_didx = (uint32_t)defaults_reserve(defs, ndefaults);
+    *out_nidx = (uint32_t)name_table_reserve(names, nnames);
+    *out_flags = (has_va ? 1u : 0u) | (has_kw ? 2u : 0u);
 }
 
 static NODE *
@@ -1015,9 +1366,9 @@ parse_def(void)
     expect(T_LPAREN, "'('");
 
     Scope sc = {0}; sc.parent = cur_scope;
-    int nparams, ndefaults;
-    uint32_t didx;
-    parse_params(&sc, &nparams, &ndefaults, &didx);
+    int nparams, n_pos_named, ndefaults;
+    uint32_t didx, nidx, flags;
+    parse_params(&sc, &nparams, &n_pos_named, &ndefaults, &didx, &nidx, &flags);
     expect(T_RPAREN, "')'");
     expect(T_COLON, "':'");
 
@@ -1044,9 +1395,17 @@ parse_def(void)
     }
     cur_scope = saved;
 
-    return ALLOC_node_def(fname, (uint32_t)nparams, (uint32_t)sc.nlocals,
-                          (uint32_t)ndefaults, didx,
-                          (uint32_t)(sc.has_nested_def ? 0 : 1), body);
+    NODE *def_node = ALLOC_node_def(fname, (uint32_t)nparams, (uint32_t)n_pos_named,
+                                    (uint32_t)sc.nlocals,
+                                    (uint32_t)ndefaults, didx,
+                                    (uint32_t)(sc.has_nested_def ? 0 : 1),
+                                    nidx, flags, body);
+    // Class body: node_def's side effect already added the method;
+    // discard the returned value (the method dict is the binding).
+    if (in_class_body) return def_node;
+    // Otherwise bind the function value at fname — local in a function
+    // scope, global at top level.
+    return make_store(fname, def_node);
 }
 
 static NODE *
@@ -1061,8 +1420,14 @@ parse_class(void)
         if (peek_tok(0)->kind != T_RPAREN) base = parse_expr();
         expect(T_RPAREN, "')'");
     }
+    bool saved_icb = in_class_body;
+    in_class_body = true;
     NODE *body = parse_suite();
-    return ALLOC_node_class(cname, base, body);
+    in_class_body = saved_icb;
+    NODE *cls = ALLOC_node_class(cname, base, body);
+    // Bind the class object at `cname`.  Same nesting rule as def.
+    if (in_class_body) return cls;     // class inside class body — rare, but binds via outer
+    return make_store(cname, cls);
 }
 
 static NODE *
@@ -1138,6 +1503,18 @@ parse_global_decl(void)
     return ALLOC_node_nop();
 }
 
+static NODE *
+parse_nonlocal_decl(void)
+{
+    expect(T_NONLOCAL, "'nonlocal'");
+    while (peek_tok(0)->kind == T_NAME) {
+        if (cur_scope) scope_add_nonlocal_decl(cur_scope, peek_tok(0)->sval);
+        tok_pos++;
+        if (!match_tok(T_COMMA)) break;
+    }
+    return ALLOC_node_nop();
+}
+
 // Augmented-assignment desugar helper.  Produces RHS = LHS op RHS.
 static NODE *
 augop_apply(int kind, NODE *lhs, NODE *rhs)
@@ -1188,6 +1565,7 @@ parse_simple_stmt(void)
     if (k == T_RETURN)   return parse_return();
     if (k == T_RAISE)    return parse_raise();
     if (k == T_GLOBAL)   return parse_global_decl();
+    if (k == T_NONLOCAL) return parse_nonlocal_decl();
     if (k == T_IMPORT || k == T_FROM) {
         while (peek_tok(0)->kind != T_NEWLINE && peek_tok(0)->kind != T_EOF) tok_pos++;
         return ALLOC_node_nop();
@@ -1317,10 +1695,47 @@ parse_assignable_target(NODE *rhs)
     return ALLOC_node_subscript_set(cur, trs[last].idx, rhs);
 }
 
+// `@dec` desugars to: parse the def normally, then emit `name = dec(name)`.
+// Multiple decorators stack innermost-first: `@a @b def f` →
+// `def f; f = b(f); f = a(f)`.
+static NODE *
+parse_decorated(void)
+{
+    NODE *decs[16];
+    int ndecs = 0;
+    while (match_tok(T_AT)) {
+        if (ndecs >= 16) parse_error("too many decorators");
+        decs[ndecs++] = parse_or();
+        expect(T_NEWLINE, "newline after decorator");
+        while (match_tok(T_NEWLINE)) {}
+    }
+    NODE *body;
+    const char *target = NULL;
+    if (peek_tok(0)->kind == T_DEF) {
+        // Capture the function name so we can emit `name = dec(name)`.
+        target = tok_arr[tok_pos + 1].sval;
+        body = parse_def();
+    } else if (peek_tok(0)->kind == T_CLASS) {
+        target = tok_arr[tok_pos + 1].sval;
+        body = parse_class();
+    } else {
+        parse_error("expected 'def' or 'class' after decorator");
+    }
+    // Build the wrap chain: load → dec_inner(load) → dec_outer(...)
+    NODE *result = body;
+    for (int i = ndecs - 1; i >= 0; i--) {
+        NODE *load = make_load(target);
+        NODE *call = ALLOC_node_call_1(decs[i], load);
+        result = ALLOC_node_seq(result, make_store(target, call));
+    }
+    return result;
+}
+
 static NODE *
 parse_stmt(void)
 {
     int k = peek_tok(0)->kind;
+    if (k == T_AT)     return parse_decorated();
     if (k == T_DEF)    return parse_def();
     if (k == T_CLASS)  return parse_class();
     if (k == T_IF)     return parse_if();

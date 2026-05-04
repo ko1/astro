@@ -113,12 +113,14 @@ struct pyobj {
             struct Node *body;
             struct pyframe *env;
             const char *name;
-            int nparams;            // total positional params
-            int ndefaults;          // # of trailing params with defaults
-            VALUE *defaults;        // length ndefaults
-            int nlocals;            // params + locals slot count
-            bool leaf;              // body contains no inner def/class →
-                                    // py_apply can alloca the frame
+            int nparams;            // total slots: pos-or-kw + *args + kwonly + **kw
+            int n_pos_named;        // # of pos-or-kw params (before any *args)
+            VALUE *defaults;        // length nparams; (VALUE)0 ⇒ "required" sentinel
+            const char **param_names;
+            int nlocals;
+            bool leaf;
+            bool has_varargs;       // a `*args` slot is present
+            bool has_kwargs;        // a `**kwargs` slot is present
         } func;
         struct {
             py_builtin_fn fn;
@@ -279,8 +281,10 @@ VALUE py_make_tuple (VALUE *items, size_t n);
 VALUE py_make_dict  (void);
 VALUE py_make_range (int64_t start, int64_t stop, int64_t step);
 VALUE py_make_func  (struct Node *body, struct pyframe *env,
-                     const char *name, int nparams, int nlocals,
-                     int ndefaults, VALUE *defaults, bool leaf);
+                     const char *name, int nparams, int n_pos_named,
+                     int nlocals, VALUE *defaults_per_slot, bool leaf,
+                     const char **param_names,
+                     bool has_varargs, bool has_kwargs);
 VALUE py_make_builtin(const char *name, py_builtin_fn fn, int min_argc, int max_argc);
 VALUE py_make_bound (VALUE self, VALUE func);
 VALUE py_make_class (const char *name, VALUE base, bool is_exception);
@@ -392,5 +396,22 @@ struct Node;
 extern struct Node            **PYSTRO_NODE_TABLE;
 extern struct pyhandler        *PYSTRO_HANDLERS;
 extern struct pyunpack_target  *PYSTRO_UNPACK_TARGETS;
+extern const char             **PYSTRO_NAME_TABLE;     // bag of param name lists for node_def
+
+// One kwarg entry: a name and the AST node producing the value.  Both
+// node_call_kw and the `**dict` expansion path share the type.
+struct pykwarg {
+    const char *name;
+    struct Node *value;
+};
+extern struct pykwarg          *PYSTRO_KWARGS;
+
+// One default-arg entry: a slot index in the param list plus the AST
+// node producing the default value.  Used by node_def / node_lambda.
+struct pydefault {
+    int          slot;
+    struct Node *expr;
+};
+extern struct pydefault        *PYSTRO_DEFAULTS;
 
 #endif // PYSTRO_CONTEXT_H

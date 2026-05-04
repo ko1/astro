@@ -76,7 +76,10 @@ py_apply(CTX *c, VALUE fn, int argc, VALUE *argv)
 {
     if (LIKELY(PY_IS_PTR(fn) && PY_PTR(fn)->type == PY_T_FUNC)) {
         struct pyobj *f = PY_PTR(fn);
-        if (LIKELY(argc == f->func.nparams)) {
+        // Fast path only handles plain "exact arity, no varargs/kwargs"
+        // — anything fancier routes through py_apply_slow which delegates
+        // to the keyword-aware dispatcher.
+        if (LIKELY(argc == f->func.nparams && !f->func.has_varargs && !f->func.has_kwargs)) {
             int total = f->func.nlocals;
             struct pyframe *new_env;
             if (LIKELY(f->func.leaf)) {
