@@ -21,14 +21,14 @@ node_lit(CTX *c, NODE *n, int32_t v)
 }
 
 NODE_DEF @always_inline
-node_seq(CTX *c, NODE *n, NODE *first, NODE *rest)
+node_seq(CTX * restrict c, NODE *n, NODE *first, NODE *rest)
 {
     EVAL_ARG(c, first);
     return EVAL_ARG(c, rest);
 }
 
 NODE_DEF @always_inline
-node_nop(CTX *c, NODE *n)
+node_nop(CTX * restrict c, NODE *n)
 {
     return 0;
 }
@@ -226,7 +226,7 @@ node_2div(CTX *c, NODE *n)
 /* ---------------- comparison (Forth: true = -1) ---------------- */
 
 NODE_DEF @always_inline
-node_eq(CTX *c, NODE *n)
+node_eq(CTX * restrict c, NODE *n)
 {
     VALUE b = *--c->dsp;
     c->dsp[-1] = (c->dsp[-1] == b) ? -1 : 0;
@@ -234,7 +234,7 @@ node_eq(CTX *c, NODE *n)
 }
 
 NODE_DEF @always_inline
-node_neq(CTX *c, NODE *n)
+node_neq(CTX * restrict c, NODE *n)
 {
     VALUE b = *--c->dsp;
     c->dsp[-1] = (c->dsp[-1] != b) ? -1 : 0;
@@ -242,7 +242,7 @@ node_neq(CTX *c, NODE *n)
 }
 
 NODE_DEF @always_inline
-node_lt(CTX *c, NODE *n)
+node_lt(CTX * restrict c, NODE *n)
 {
     VALUE b = *--c->dsp;
     c->dsp[-1] = (c->dsp[-1] < b) ? -1 : 0;
@@ -250,7 +250,7 @@ node_lt(CTX *c, NODE *n)
 }
 
 NODE_DEF @always_inline
-node_gt(CTX *c, NODE *n)
+node_gt(CTX * restrict c, NODE *n)
 {
     VALUE b = *--c->dsp;
     c->dsp[-1] = (c->dsp[-1] > b) ? -1 : 0;
@@ -258,7 +258,7 @@ node_gt(CTX *c, NODE *n)
 }
 
 NODE_DEF @always_inline
-node_le(CTX *c, NODE *n)
+node_le(CTX * restrict c, NODE *n)
 {
     VALUE b = *--c->dsp;
     c->dsp[-1] = (c->dsp[-1] <= b) ? -1 : 0;
@@ -266,7 +266,7 @@ node_le(CTX *c, NODE *n)
 }
 
 NODE_DEF @always_inline
-node_ge(CTX *c, NODE *n)
+node_ge(CTX * restrict c, NODE *n)
 {
     VALUE b = *--c->dsp;
     c->dsp[-1] = (c->dsp[-1] >= b) ? -1 : 0;
@@ -274,21 +274,21 @@ node_ge(CTX *c, NODE *n)
 }
 
 NODE_DEF
-node_zeq(CTX *c, NODE *n)
+node_zeq(CTX * restrict c, NODE *n)
 {
     c->dsp[-1] = (c->dsp[-1] == 0) ? -1 : 0;
     return 0;
 }
 
 NODE_DEF
-node_zlt(CTX *c, NODE *n)
+node_zlt(CTX * restrict c, NODE *n)
 {
     c->dsp[-1] = (c->dsp[-1] < 0) ? -1 : 0;
     return 0;
 }
 
 NODE_DEF
-node_zgt(CTX *c, NODE *n)
+node_zgt(CTX * restrict c, NODE *n)
 {
     c->dsp[-1] = (c->dsp[-1] > 0) ? -1 : 0;
     return 0;
@@ -369,7 +369,7 @@ node_r_fetch(CTX *c, NODE *n)
 /* ---------------- IF / ELSE / THEN ---------------- */
 
 NODE_DEF @always_inline
-node_if(CTX *c, NODE *n, NODE *then_branch, NODE *else_branch)
+node_if(CTX * restrict c, NODE *n, NODE *then_branch, NODE *else_branch)
 {
     VALUE cond = *--c->dsp;
     if (cond != 0) return EVAL_ARG(c, then_branch);
@@ -378,7 +378,7 @@ node_if(CTX *c, NODE *n, NODE *then_branch, NODE *else_branch)
 }
 
 NODE_DEF @always_inline
-node_if_only(CTX *c, NODE *n, NODE *then_branch)
+node_if_only(CTX * restrict c, NODE *n, NODE *then_branch)
 {
     VALUE cond = *--c->dsp;
     if (cond != 0) return EVAL_ARG(c, then_branch);
@@ -388,7 +388,7 @@ node_if_only(CTX *c, NODE *n, NODE *then_branch)
 /* ---------------- BEGIN ... AGAIN / UNTIL / WHILE ... REPEAT ---------------- */
 
 NODE_DEF @always_inline
-node_begin_until(CTX *c, NODE *n, NODE *body)
+node_begin_until(CTX * restrict c, NODE *n, NODE *body)
 {
     /* BEGIN body UNTIL — exit when top of stack is non-zero. */
     do {
@@ -398,7 +398,7 @@ node_begin_until(CTX *c, NODE *n, NODE *body)
 }
 
 NODE_DEF @always_inline
-node_begin_again(CTX *c, NODE *n, NODE *body)
+node_begin_again(CTX * restrict c, NODE *n, NODE *body)
 {
     /* BEGIN body AGAIN — infinite loop, exited only by LEAVE flag. */
     while (!c->leave_flag) {
@@ -409,7 +409,7 @@ node_begin_again(CTX *c, NODE *n, NODE *body)
 }
 
 NODE_DEF @always_inline
-node_begin_while(CTX *c, NODE *n, NODE *cond, NODE *body)
+node_begin_while(CTX * restrict c, NODE *n, NODE *cond, NODE *body)
 {
     /* BEGIN cond WHILE body REPEAT — cond pushes flag, body runs while flag != 0. */
     for (;;) {
@@ -424,7 +424,7 @@ node_begin_while(CTX *c, NODE *n, NODE *cond, NODE *body)
 /* ---------------- DO / LOOP / +LOOP / I / J / LEAVE ---------------- */
 
 NODE_DEF @always_inline
-node_do_loop(CTX *c, NODE *n, NODE *body)
+node_do_loop(CTX * restrict c, NODE *n, NODE *body)
 {
     /* limit start DO body LOOP — increment by 1 each iteration. */
     VALUE start = *--c->dsp;
@@ -442,7 +442,7 @@ node_do_loop(CTX *c, NODE *n, NODE *body)
 }
 
 NODE_DEF @always_inline
-node_do_plus_loop(CTX *c, NODE *n, NODE *body)
+node_do_plus_loop(CTX * restrict c, NODE *n, NODE *body)
 {
     /* limit start DO body step +LOOP — increment by step (popped each iter). */
     VALUE start = *--c->dsp;
@@ -472,14 +472,14 @@ node_i(CTX *c, NODE *n)
 }
 
 NODE_DEF @always_inline
-node_j(CTX *c, NODE *n)
+node_j(CTX * restrict c, NODE *n)
 {
     *c->dsp++ = c->dop[-2].index;
     return 0;
 }
 
 NODE_DEF
-node_leave(CTX *c, NODE *n)
+node_leave(CTX * restrict c, NODE *n)
 {
     c->leave_flag = 1;
     return 0;
@@ -505,7 +505,7 @@ node_const(CTX *c, NODE *n, int32_t v)
 }
 
 NODE_DEF
-node_fetch(CTX *c, NODE *n)
+node_fetch(CTX * restrict c, NODE *n)
 {
     /* @ : ( addr -- val ) */
     VALUE addr = *--c->dsp;
@@ -514,7 +514,7 @@ node_fetch(CTX *c, NODE *n)
 }
 
 NODE_DEF
-node_store(CTX *c, NODE *n)
+node_store(CTX * restrict c, NODE *n)
 {
     /* ! : ( val addr -- ) */
     VALUE addr = *--c->dsp;
@@ -524,7 +524,7 @@ node_store(CTX *c, NODE *n)
 }
 
 NODE_DEF
-node_plus_store(CTX *c, NODE *n)
+node_plus_store(CTX * restrict c, NODE *n)
 {
     /* +! : ( val addr -- ) */
     VALUE addr = *--c->dsp;
@@ -534,7 +534,7 @@ node_plus_store(CTX *c, NODE *n)
 }
 
 NODE_DEF
-node_cells(CTX *c, NODE *n)
+node_cells(CTX * restrict c, NODE *n)
 {
     /* CELLS : ( n -- n*sizeof(VALUE) ) — convert cell count to byte count.
      * Addresses on the data stack are byte addresses; @ / ! / +! treat them
@@ -544,7 +544,7 @@ node_cells(CTX *c, NODE *n)
 }
 
 NODE_DEF
-node_cell_plus(CTX *c, NODE *n)
+node_cell_plus(CTX * restrict c, NODE *n)
 {
     /* CELL+ : ( addr -- addr+1cell ) */
     c->dsp[-1] += (VALUE)sizeof(VALUE);
@@ -552,7 +552,7 @@ node_cell_plus(CTX *c, NODE *n)
 }
 
 NODE_DEF
-node_plus_cell_index(CTX *c, NODE *n)
+node_plus_cell_index(CTX * restrict c, NODE *n)
 {
     /* helper: ( addr i -- addr' )  where addr' = addr + i*sizeof(VALUE).
      * Used by CELLS+SWAP+@ idioms; faster than separate CELLS + SWAP + +. */
@@ -564,7 +564,7 @@ node_plus_cell_index(CTX *c, NODE *n)
 /* ---------------- I/O ---------------- */
 
 NODE_DEF
-node_dot(CTX *c, NODE *n)
+node_dot(CTX * restrict c, NODE *n)
 {
     /* . — print number followed by space */
     VALUE v = *--c->dsp;
@@ -573,7 +573,7 @@ node_dot(CTX *c, NODE *n)
 }
 
 NODE_DEF
-node_dot_nospc(CTX *c, NODE *n)
+node_dot_nospc(CTX * restrict c, NODE *n)
 {
     /* internal: print without trailing space (used at end-of-test for clean diff) */
     VALUE v = *--c->dsp;
@@ -582,7 +582,7 @@ node_dot_nospc(CTX *c, NODE *n)
 }
 
 NODE_DEF
-node_emit(CTX *c, NODE *n)
+node_emit(CTX * restrict c, NODE *n)
 {
     VALUE v = *--c->dsp;
     putchar((int)v);
@@ -590,21 +590,21 @@ node_emit(CTX *c, NODE *n)
 }
 
 NODE_DEF
-node_cr(CTX *c, NODE *n)
+node_cr(CTX * restrict c, NODE *n)
 {
     putchar('\n');
     return 0;
 }
 
 NODE_DEF
-node_space(CTX *c, NODE *n)
+node_space(CTX * restrict c, NODE *n)
 {
     putchar(' ');
     return 0;
 }
 
 NODE_DEF
-node_dot_quote(CTX *c, NODE *n, const char *s)
+node_dot_quote(CTX * restrict c, NODE *n, const char *s)
 {
     fputs(s, stdout);
     return 0;
@@ -624,7 +624,13 @@ node_dot_quote(CTX *c, NODE *n, const char *s)
  *
  * @noinline keeps the call site as a stable runtime dispatcher, so the
  * caller's SD doesn't try to inline the table-load.
- */
+ *
+ * (We did experiment with `node_call(name, body)` with a regular NODE *
+ * operand so the specializer could fold the body inline — that gave gcc
+ * the chance to inline cross-word callees into the caller's SD.  The
+ * result was a 5-25 % regression across nearly every bench: the inlined
+ * SD got large enough that gcc's store-merging and scheduling produced
+ * worse inner loops than the simple @noinline boundary.  See perf.md.) */
 NODE_DEF @noinline
 node_call(CTX *c, NODE *n, const char *name, uint32_t word_id)
 {

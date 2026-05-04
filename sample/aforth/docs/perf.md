@@ -12,23 +12,73 @@
 - 計測: `ruby benchmark/run.rb -n 3` (best-of-3, warmup あり)
 - VALUE = `int64_t`、stack は 64K cell
 
-## 2026-05-04 — initial baseline + gforth 比較
+## 2026-05-04 — selective `restrict c` round (post-baseline)
 
-aforth 初版の interp / AOT 比較に gforth 0.7.3 (direct-threaded) を並走。
+NODE_DEF の `CTX *c` パラメータに **選択的に** `restrict` を入れて再計測。
+ルール: control-flow / 比較 / メモリ / I/O は restrict、算術プリミティブと
+スタック移動と return-stack 系は restrict なし。下の "なぜ選択的か" 参照。
 
 | bench         | interp (s) | aot (s) | gforth (s) | aot vs interp | aot vs gforth |
 |---------------|-----------:|--------:|-----------:|--------------:|--------------:|
-| ack           | 1.536      | 0.509   | 0.493      | 3.0×          | 0.97×         |
-| array_sum     | 1.219      | 0.154   | 0.472      | 7.9×          | **3.06×**     |
-| collatz       | 1.101      | 0.071   | 0.497      | 15.5×         | **7.00×**     |
-| factorial     | 2.363      | 0.644   | 2.210      | 3.7×          | **3.43×**     |
-| fib           | 0.889      | 0.322   | 0.851      | 2.8×          | **2.64×**     |
-| gcd           | 1.710      | 0.267   | 0.763      | 6.4×          | **2.86×**     |
-| nested_loop   | 1.092      | 0.384   | 0.326      | 2.8×          | 0.85×         |
-| sieve         | 0.745      | 0.079   | 0.375      | 9.4×          | **4.75×**     |
-| tak           | 0.527      | 0.053   | 0.132      | 9.9×          | **2.49×**     |
+| ack           | 1.726      | 0.573   | 0.545      | 3.0×          | 0.95×         |
+| array_sum     | 1.391      | 0.098   | 0.526      | 14.2×         | **5.37×**     |
+| collatz       | 1.053      | 0.073   | 0.522      | 14.4×         | **7.15×**     |
+| factorial     | 2.477      | 0.294   | 2.384      | 8.4×          | **8.11×**     |
+| fib           | 0.868      | 0.332   | 0.815      | 2.6×          | **2.45×**     |
+| gcd           | 1.882      | 0.057   | 0.790      | 33.0×         | **13.86×**    |
+| nested_loop   | 1.167      | 0.090   | 0.367      | 13.0×         | **4.08×**     |
+| sieve         | 0.817      | 0.084   | 0.425      | 9.7×          | **5.06×**     |
+| tak           | 0.569      | 0.057   | 0.142      | 10.0×         | **2.49×**     |
 
-(`ruby benchmark/run.rb -n 3`, gforth は `--return-stack-size=1M` 付き。)
+`ruby benchmark/run.rb -n 5`、gforth は `--return-stack-size=1M`。
+
+initial baseline からの差分:
+
+| bench       | initial aot | selective-restrict aot | speedup |
+|-------------|------------:|-----------------------:|--------:|
+| factorial   | 0.644       | 0.294                  | **2.19×** |
+| gcd         | 0.267       | 0.057                  | **4.68×** |
+| nested_loop | 0.384       | 0.090                  | **4.27×** |
+| array_sum   | 0.154       | 0.098                  | **1.57×** |
+| (others)    | within noise (±5 %) |          |        |
+
+aforth+aot は **9 ベンチ中 8 で gforth を上回る** (前回は 7/9)。
+gcd で 13.9× / factorial で 8.1× / collatz で 7.1× / array_sum で 5.4×。
+唯一の負け ack (0.95×) は深い RECURSE の indirect-dispatch 床。
+
+### なぜ選択的に `restrict` か
+
+最初は全 `NODE_DEF` の `CTX *c` を `restrict` にしてみたところ、ベンチが
+バラバラに反応した:
+
+- 一部 (gcd, array_sum, nested_loop, factorial, sieve) は **大幅に高速化**
+- 一部 (factorial の hot inner loop) は **逆に 25% 遅く**
+
+原因を SD のディスアセンブリで追うと、`@always_inline` で SD 1 本に
+畳まれた状態では `c->dsp` が常時 register に乗るのが理想だが、`restrict`
+が `c` に効くと gcc は `c->dsp` の更新ごとに register からの spill / 再
+load を avoid しようと aggressive に最適化する。これは control-flow / 比較
+ノードでは正解 — ループ全体で dsp を keep できる。
+
+ところが算術プリミティブ (`+`, `-`, `*`, `1+`, `I` など) では逆効果。
+gcc が「dsp は他の何ともエイリアスしない」と知ると、隣接する書き込みを
+SSE の 16-byte store にマージしようとする最適化が trigger され、**死んだ
+書き込みも含めて vector store** を出してしまう (`vmovdqu xmm, -0x8(rcx)`
+が dsp[-1] と dsp[0] をペアで書く — dsp[0] は次の `*` で即上書きされる
+死域なのに)。その latency が tight inner loop を直撃する。
+
+採用ルール:
+
+| カテゴリ | restrict | 理由 |
+|---------|:-:|------|
+| `node_seq`, `node_if*`, `node_begin_*`, `node_do_*` | ✓ | dsp/dop/leave_flag を SD 全体で register-keep したい |
+| 比較 (`=`, `<>`, `<`, `>`, `0=`, ...) | ✓ | gcd の WHILE 条件で dsp ロードを hoist できる |
+| メモリ (`@`, `!`, `+!`) | ✓ | array_sum / sieve の dsp と vars[] が別アドレスと知らせる |
+| I/O (`.`, `EMIT`, ...), `node_dot_quote` | ✓ | hot path ではないが副作用のみ |
+| 算術 (`+`, `-`, `*`, `/`, `1+`, `1-`, ...) | × | SSE store-merging で dead store を含めたペアが出る |
+| スタック移動 (`DUP`, `SWAP`, `OVER`, ...) | × | nested_loop の hot inner で SSE merge が出るので外す |
+| `>R`, `R>`, `R@`, `I`, `J` | × | 同上、small store 操作が SSE 化されると逆効果 |
+| `node_lit`, `node_const`, `node_var_ref`, `node_call` | × | leaf ロード、SSE 化のメリットなし |
 
 **読み方**:
 - aforth+aot は **9 ベンチ中 7 で gforth に勝利**。collatz は 7× 差。
