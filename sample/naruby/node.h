@@ -107,11 +107,10 @@ EVAL(CTX *c, NODE *n, VALUE *fp)
 struct callcache;
 RESULT node_pg_call_slowpath(CTX *c, NODE *n, VALUE *fp,
                              const char *name, uint32_t params_cnt,
-                             uint32_t arg_index, struct callcache *cc,
-                             NODE **sp_body_p);
+                             uint32_t arg_index, struct callcache *cc);
 RESULT node_pg_call_n_slowpath(CTX *c, NODE *n, const VALUE *args,
                                uint32_t argc, const char *name,
-                               struct callcache *cc, NODE **sp_body_p);
+                               struct callcache *cc);
 RESULT node_call_n_slowpath(CTX *c, NODE *n, const VALUE *args,
                             uint32_t argc, const char *name,
                             struct callcache *cc);

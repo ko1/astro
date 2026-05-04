@@ -65,68 +65,64 @@ sp_call_check(struct function_entry *fe, const char *name, uint32_t params_cnt)
     }
 }
 
-// node_call2 slowpath: caller's args are already in fp[arg_index..],
-// callee's frame aliases that span.  Triggered on cc miss.
+// node_call2 slowpath: triggered when `node_call2`'s two-step guard
+// fails — either cc is stale (serial mismatch) or current body
+// disagrees with sp_body (parse-time speculation).  We refresh cc
+// (only when needed) and dispatch via the resolved body.  We do
+// **not** write back sp_body: it's a parse-time invariant that ties
+// the call site to its baked SD constant.  When sp_body and cc->body
+// disagree persistently (= speculation broken), this slowpath fires
+// every call, but the fast-path `&& cc->body == sp_body` short-circuit
+// catches it cheaply.
 RESULT
 node_pg_call_slowpath(CTX * restrict c, NODE * restrict n,
                       VALUE * restrict fp, const char *name,
                       uint32_t params_cnt, uint32_t arg_index,
-                      struct callcache * restrict cc,
-                      NODE **sp_body_p)
+                      struct callcache * restrict cc)
 {
     if (CALL_DEBUG) fprintf(stderr, "name:%s miss1\n", name);
-    bool was_warm = (cc->serial != 0);
+    (void)n;
 
-    struct function_entry *fe = sp_find_func_entry(c, name);
-    sp_call_check(fe, name, params_cnt);
-    cc->serial = c->serial;
-    *sp_body_p = cc->body = fe->body;
-
-    // On redefinition (was_warm + currently specialized), demote the
-    // dispatcher: the baked SD points at the OLD body's specialized
-    // code, but the cache now holds the NEW body — calling through
-    // the SD would dispatch the new body via the old body's code.
-    if (was_warm && n->head.flags.is_specialized) {
-        n->head.dispatcher = n->head.kind->default_dispatcher;
-        n->head.flags.is_specialized = false;
+    if (c->serial != cc->serial) {
+        struct function_entry *fe = sp_find_func_entry(c, name);
+        sp_call_check(fe, name, params_cnt);
+        cc->serial = c->serial;
+        cc->body = fe->body;
     }
 
-    RESULT r = EVAL(c, fe->body, fp + arg_index);
+    RESULT r = EVAL(c, cc->body, fp + arg_index);
     return RESULT_OK(r.value);  // catch RESULT_RETURN at function boundary
 }
 
-// node_pg_call_<N> slowpath.  Args are passed separately (not via a
-// pre-allocated F): on a cc miss the body may have just been
-// redefined with a different `locals_cnt`, so the caller's
-// VLA-sized F could be too small for the new body.  We size a fresh
-// F here from the resolved body's locals_cnt.
+// node_pg_call_<N> slowpath.  Same logic as `node_pg_call_slowpath`
+// but allocates a fresh F sized from the resolved body's locals_cnt
+// (the call site's `locals_cnt` operand was sized for sp_body, which
+// may be different from cc->body).  Args are passed separately
+// because the caller's VLA-sized F could be too small for the new
+// body.  Like node_call2's slowpath, sp_body is **not** updated.
 RESULT
 node_pg_call_n_slowpath(CTX * restrict c, NODE * restrict n,
                         const VALUE *args, uint32_t argc,
                         const char *name,
-                        struct callcache * restrict cc,
-                        NODE **sp_body_p)
+                        struct callcache * restrict cc)
 {
     if (CALL_DEBUG) fprintf(stderr, "name:%s miss1 (pg_call_N)\n", name);
-    bool was_warm = (cc->serial != 0);
+    (void)n;
 
-    struct function_entry *fe = sp_find_func_entry(c, name);
-    sp_call_check(fe, name, argc);
-    cc->serial = c->serial;
-    *sp_body_p = cc->body = fe->body;
-
-    if (was_warm && n->head.flags.is_specialized) {
-        n->head.dispatcher = n->head.kind->default_dispatcher;
-        n->head.flags.is_specialized = false;
+    if (c->serial != cc->serial) {
+        struct function_entry *fe = sp_find_func_entry(c, name);
+        sp_call_check(fe, name, argc);
+        cc->serial = c->serial;
+        cc->body = fe->body;
     }
 
-    uint32_t lc = code_repo_find_locals_cnt_by_body(fe->body);
+    uint32_t lc = code_repo_find_locals_cnt_by_body(cc->body);
     if (lc < argc) lc = argc;
     if (lc == 0) lc = 1;
     VALUE F[lc];
     for (uint32_t i = 0; i < argc; i++) F[i] = args[i];
 
-    RESULT r = EVAL(c, fe->body, F);
+    RESULT r = EVAL(c, cc->body, F);
     return RESULT_OK(r.value);
 }
 
