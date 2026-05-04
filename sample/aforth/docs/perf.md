@@ -12,6 +12,45 @@
 - 計測: `ruby benchmark/run.rb -n 3` (best-of-3, warmup あり)
 - VALUE = `int64_t`、stack は 64K cell
 
+## 2026-05-04 — `-flto` 全部入り (post-restrict)
+
+`aforth_aot_compile_all` に `setenv("ASTRO_EXTRA_CFLAGS","-flto",0)` /
+`setenv("ASTRO_EXTRA_LDFLAGS","-flto",0)` を仕込んで、`code_store/all.so`
+を LTO 付きでビルド。SD 1 本ごとに別 .c → .o → .so というレイアウトな
+ので、LTO で **cross-TU の inline + LTO 全体の register allocation** が
+効く。前章の selective restrict round からの差分:
+
+| bench       | restrict only | +LTO  | diff   |
+|-------------|--------------:|------:|-------:|
+| ack         | 0.573         | 0.513 | -10 %  |
+| array_sum   | 0.098         | 0.088 | -10 %  |
+| collatz     | 0.073         | 0.069 |  -5 %  |
+| factorial   | 0.294         | 0.286 |  -3 %  |
+| fib         | 0.332         | 0.314 |  -5 %  |
+| gcd         | 0.057         | 0.052 |  -9 %  |
+| nested_loop | 0.090         | 0.086 |  -4 %  |
+| sieve       | 0.084         | 0.077 |  -8 %  |
+| tak         | 0.057         | 0.055 |  -4 %  |
+
+全部の bench で 3-10 % win、平均 ~6 %。restrict tuning (節ごとに 1.6×〜
+4.7× の wins) と違って "薄く全体に効く" タイプ。両方積むと initial
+baseline からの累積:
+
+| bench       | initial aot | restrict + LTO | total speedup |
+|-------------|------------:|---------------:|--------------:|
+| factorial   | 0.644       | 0.286          | **2.25×**     |
+| gcd         | 0.267       | 0.052          | **5.13×**     |
+| nested_loop | 0.384       | 0.086          | **4.47×**     |
+| array_sum   | 0.154       | 0.088          | **1.75×**     |
+| collatz     | 0.071       | 0.069          | 1.03×         |
+| sieve       | 0.079       | 0.077          | 1.03×         |
+| fib         | 0.322       | 0.314          | 1.03×         |
+| ack         | 0.509       | 0.513          | 0.99×         |
+| tak         | 0.053       | 0.055          | 0.96×         |
+
+aforth+aot は 9 ベンチ中 8 で gforth を上回る (唯一の同点 ack 0.96×)。
+最大: gcd **14.8×** / factorial 7.5× / collatz 7.2× / array_sum 6.2×。
+
 ## 2026-05-04 — selective `restrict c` round (post-baseline)
 
 NODE_DEF の `CTX *c` パラメータに **選択的に** `restrict` を入れて再計測。

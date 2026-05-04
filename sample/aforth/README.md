@@ -55,27 +55,29 @@ extension, locals, floats, threads, file I/O.
 
 ## Performance
 
-Sustained-scale (~1 s on interp) bench results, gcc-13 -O2, x86_64 Linux,
-best-of-5, with gforth 0.7.3 (mature direct-threaded Forth) for context:
+Sustained-scale (~1 s on interp) bench results, gcc-13 (SDs at -O3 -flto
+-march=native), x86_64 Linux, best-of-5, with gforth 0.7.3 (mature
+direct-threaded Forth) for context:
 
 | bench         | interp (s) | aot (s) | gforth (s) | aot vs gforth |
 |---------------|-----------:|--------:|-----------:|--------------:|
-| ack           | 1.726      | 0.573   | 0.545      | 0.95×         |
-| array_sum     | 1.391      | 0.098   | 0.526      | **5.37×**     |
-| collatz       | 1.053      | 0.073   | 0.522      | **7.15×**     |
-| factorial     | 2.477      | 0.294   | 2.384      | **8.11×**     |
-| fib           | 0.868      | 0.332   | 0.815      | **2.45×**     |
-| gcd           | 1.882      | 0.057   | 0.790      | **13.86×**    |
-| nested_loop   | 1.167      | 0.090   | 0.367      | **4.08×**     |
-| sieve         | 0.817      | 0.084   | 0.425      | **5.06×**     |
-| tak           | 0.569      | 0.057   | 0.142      | **2.49×**     |
+| ack           | 1.677      | 0.513   | 0.494      | 0.96×         |
+| array_sum     | 1.367      | 0.088   | 0.541      | **6.15×**     |
+| collatz       | 1.212      | 0.069   | 0.494      | **7.16×**     |
+| factorial     | 2.530      | 0.286   | 2.133      | **7.46×**     |
+| fib           | 1.037      | 0.314   | 0.761      | **2.42×**     |
+| gcd           | 1.863      | 0.052   | 0.770      | **14.81×**    |
+| nested_loop   | 1.142      | 0.086   | 0.350      | **4.07×**     |
+| sieve         | 0.920      | 0.077   | 0.395      | **5.13×**     |
+| tak           | 0.561      | 0.055   | 0.131      | **2.38×**     |
 
-`aforth+aot` wins 8/9 against gforth (up to 13.9× on gcd). The single
-loss (ack, 0.95×) is deep `RECURSE` whose `node_call` indirect dispatch
-floor matches gforth's DTC NEXT. Wins concentrate on inner loops where
-the body folds into a single SD that gcc can unroll / hoist; see
-`docs/perf.md` for the `restrict`-tuning round (a couple-line `node.def`
-change that moved 4 benches by 1.6× to 4.7×).
+`aforth+aot` wins 8/9 against gforth (up to 14.8× on gcd). The single
+near-tie (ack, 0.96×) is deep `RECURSE` whose `node_call` indirect
+dispatch floor matches gforth's DTC NEXT. Wins concentrate on inner
+loops where the body folds into a single SD that gcc can unroll /
+hoist; see `docs/perf.md` for two perf rounds: (1) `restrict`-tuning
+that moved 4 benches by 1.6× to 4.7×, and (2) `-flto` on `all.so` for a
+flat 3-10 % across the table.
 
 ## How AOT works (one paragraph)
 

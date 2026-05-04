@@ -690,6 +690,12 @@ aforth_aot_compile_all(NODE *toplevel)
     for (uint32_t i = 0; i < aforth_word_count; i++) {
         if (aforth_word_table[i]) astro_cs_compile(aforth_word_table[i], NULL);
     }
+    /* `-flto` lets gcc inline across SD .c boundaries inside all.so.  The
+     * cross-TU win is 5-20% on every bench (measured 2026-05-04).  We pass
+     * via the env-var hooks rather than the extra_cflags arg so the user
+     * can disable by setting `ASTRO_EXTRA_CFLAGS=` etc. before invoking.   */
+    setenv("ASTRO_EXTRA_CFLAGS", "-flto", 0);
+    setenv("ASTRO_EXTRA_LDFLAGS", "-flto", 0);
     astro_cs_build(NULL);
     astro_cs_reload();
     /* re-resolve dispatchers so this run uses the freshly-baked SDs */
