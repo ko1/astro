@@ -71,7 +71,7 @@ struct Node {
 struct NodeHead {
     struct NodeFlags {
         bool has_hash_value;      // hash_value 有効か
-        bool has_hash_opt;        // hash_opt 有効か (PGC 用、現状 v0 で未使用)
+        bool has_hash_opt;        // hash_opt 有効か (HOPT cache フラグ、PGSD で使用)
         bool is_specialized;      // SD_<hash> に置換済み
         bool is_specializing;     // SPECIALIZE 中 (再帰検出用)
         bool is_dumping;          // DUMP 中 (再帰検出用)
@@ -82,14 +82,14 @@ struct NodeHead {
     struct Node *parent;          // (オプション機能、ASTRO_NODEHEAD_PARENT)
 
     node_hash_t hash_value;       // 構造ハッシュ (HORG)
-    node_hash_t hash_opt;         // プロファイル含むハッシュ (HOPT、現状 == HASH)
+    node_hash_t hash_opt;         // プロファイル含むハッシュ (HOPT、PGSD chain 用)
 
-    const char *dispatcher_name;  // "DISPATCH_node_xxx" or "SD_<hex>"
+    const char *dispatcher_name;  // "DISPATCH_node_xxx" / "SD_<hex>" / "PGSD_<hex>"
     node_dispatcher_func_t dispatcher; // VALUE (*)(CTX *c, NODE *n)
 
     enum jit_status { ... } jit_status;  // JIT 状態 (Querying / Compiling / ...)
     unsigned int dispatch_cnt;
-    int line;                     // 元 .rb の行 (PGC 用、v0 未使用)
+    int line;                     // 元 .rb の行 (hopt_index の (Horg, file, line) → Hopt 引きに使用)
 };
 ```
 
@@ -331,15 +331,16 @@ SD_<call2_hash>(c, n, fp) {
 `cc->body` にはアクセスしないので、`cc` のメモリ参照は serial 1 word
 分で済む。
 
-実測では fib(40) AOT 1.21s → PG 0.91s の高速化が出ている
-(詳細は [perf.md](perf.md))。
+実測 (fib(40), [perf.md](perf.md) より): n/plain 5.36s → n/aot-c 0.99s
+→ n/pg-c 0.57s → n/lto-c 0.56s。AOT で 5.4×、PG で更に 1.7×、LTO で
+更に微増 (再帰系は HOPT cycle break で PGSD ≒ SD なので LTO 効果なし)。
 
 #### 5.3.1 HOPT / PGSD chain (Profile-Guided Specialization)
 
 ASTro framework の HOPT/PGSD 機構を利用した投機的チェイン inline。
 非再帰 call chain (`f → g → h → ...`) を LTO で 1 関数に折り畳む
-ことを目的とする。実測 47–84% 高速化 (chain系 bench、詳細
-[perf.md](perf.md))。
+ことを目的とする。実測 chain 系で **PG → PG+LTO で 36-65% 高速化**
+(詳細 [perf.md](perf.md))。
 
 ##### 二段ハッシュ: HORG / HOPT
 
@@ -418,14 +419,17 @@ PGSD+LTO で大きく速くなるのは:
 
 実測 (詳細は perf.md):
 
-| bench | pg | pg+lto | 改善 |
-|-------|-----:|-------:|-----:|
-| call (10 段) | 1.15 | 0.49 | -57% |
-| chain20 (20 段) | 1.23 | 0.65 | -47% |
-| zero (1B builtin) | 2.68 | 0.42 | -84% |
-| chain_add (10 段 +1) | 0.11 | 0.05 | -55% |
-| compose (3 段) | 0.10 | 0.03 | -70% |
-| fib (再帰) | 0.55 | 0.56 | 0% |
+| bench | n/pg-c | n/lto-c | 改善 |
+|-------|------:|------:|-----:|
+| call (10 段)         | 1.19 | 0.58 | **-51%** |
+| chain20 (20 段)      | 1.27 | 0.71 | **-44%** |
+| chain40 (40 段)      | 3.01 | 0.92 | **-69%** |
+| chain_add (10 段 +1) | 0.11 | 0.07 | **-36%** |
+| compose (3 段)       | 0.12 | 0.09 | **-25%** |
+| deep_const (10 段 0-arg) | 1.26 | 0.63 | **-50%** |
+| branch_dom           | 0.14 | 0.14 | ±0 (1 段なので chain 無効) |
+| fib (再帰)           | 0.57 | 0.56 | ±0 (HOPT cycle break) |
+| ackermann (再帰)     | 0.74 | 0.71 | ±0 (同上) |
 
 ### 5.4 JIT (`-j`)
 
@@ -563,5 +567,15 @@ void INIT(void) { astro_cs_init("code_store", ".", 0); }
 | `astro_cs_reload` | dlopen を新しい all.so に切り替え |
 | `astro_cs_disasm(n)` | (任意) objdump でディスアセンブル |
 
-PGC 用の `(HORG, file, line) → HOPT` 索引は naruby では使っていない
-(`HOPT(n) HASH(n)` にしてある)。
+naruby は `astro_cs_load(n, file)` の 2-arg 形 (file != NULL) を使用し、
+`code_store/hopt_index.txt` の `(HORG, file, line) → HOPT` 索引から
+PGSD_<HOPT> を dlsym する。`HOPT(n)` は `node.c` で本体実装され、
+`naruby_gen.rb` の `:hopt` gen_task が `node_hopt.c` を生成する。
+
+呼び出し箇所:
+
+| 場所 | 呼び出し | 用途 |
+|---|---|---|
+| `node.def` の `node_def` | `astro_cs_load(fe->body, name)` | 各関数 body を PGSD として load (file = function 名) |
+| `main.c` 起動時 | `astro_cs_load(ast, naruby_current_source_file)` | top-level AST を PGSD として load (file = .na.rb のパス) |
+| `main.c` の `build_code_store` | `astro_cs_compile(body, name)` × 全 code_repo | bake で AOT(SD)/PGC(PGSD) 両形を生成 |
