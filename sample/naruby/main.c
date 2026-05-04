@@ -2,9 +2,18 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+#include <sys/stat.h>
 #include "node.h"
 #include "astro_code_store.h"
 #include "astro_jit.h"
+
+// Forward decl from naruby_parse.c — walks the all_pg_call_nodes list
+// (every node_pg_call_<N> allocated this run) and updates each call
+// site's `sp_body` operand from `cc->body`.  Called immediately before
+// build_code_store_pgsd's astro_cs_compile pass so the emitted PGSDs
+// embed profile-derived speculation rather than parse-time guesses.
+void naruby_update_sp_bodies_from_cc(void);
 
 NODE *PARSE(int argc, char *argv[]);
 extern const char *naruby_current_source_file;
@@ -179,120 +188,136 @@ create_context(int frames, int funcs)
     return c;
 }
 
-// AOT compile: emit one SD_<hash>.c per entry into code_store/c/, then
-// `make` the bundle into code_store/all.so.  Subsequent runs auto-load
-// SD_<hash> via OPTIMIZE() → astro_cs_load (in node.c).
-//
-// Entries: the program AST plus every named body in code_repo.  Bodies
-// flagged `skip_specialize` are duplicates already emitted under another
-// entry's hash — astro_cs_compile would still file-dedup them, but we
-// keep the explicit skip to avoid touching the same .c twice.
-
+// Common knobs for both bakes (AOT and PGSD).  -Wl,-Bsymbolic resolves
+// intra-.so SD→SD references at link time so the body bakes a direct
+// `addr32 call` instead of a GOT load.  --param=early-inlining-insns=100
+// bumps gcc's early-inliner budget so the medium-sized EVAL_node_*
+// chain stays inlined into the SD body (default ~14 insns truncates
+// halfway through).
 static void
-build_code_store(NODE *ast)
+common_build_flags_and_link(void)
 {
-    // Top-level program AST: bake in BOTH AOT and PGC modes.  Without
-    // PGC bake, the top-level SD's compile-time direct calls to body
-    // dispatchers are `SD_<HORG(body)>`, which bypasses the body's
-    // `PGSD_<HOPT(body)>` dispatcher set by cs_load.  With PGC bake,
-    // the chain enters PGSDs naturally — the user-visible perf win
-    // from speculation only kicks in once the entry point itself
-    // dispatches into PGSD.
-    if (ast) {
-        astro_cs_compile(ast, NULL);
-        astro_cs_compile(ast, naruby_current_source_file);
-    }
+    setenv("ASTRO_EXTRA_LDFLAGS", "-Wl,-Bsymbolic", 0);
+    astro_cs_build("--param=early-inlining-insns=100");
+    astro_cs_reload();
+}
 
-    // Function bodies: PGC (HOPT, PGSD_<HOPT>) when we want speculation.
-    // The `file` argument is used by astro_cs_compile to decide:
-    //   - non-NULL → PGSD_<HOPT>.c, append (Horg, file, line) → Hopt to
-    //                hopt_index.txt so a future astro_cs_load can find it.
-    //   - NULL     → SD_<HORG>.c (AOT).
-    //
-    // For now we use the function name as the synthetic `file` so each
-    // body has a stable identifier across runs.  When source-line tracking
-    // lands we'd switch to actual file paths.
+// AOT bake: emit SD_<HORG>.c for the program AST and every code_repo
+// body.  No PGSD output here — that's `build_code_store_pgsd`'s job
+// after the run when cc state is available.  Triggered by `-c`.
+static void
+build_code_store_aot(NODE *ast)
+{
+    if (ast) astro_cs_compile(ast, NULL);
     for (uint32_t i = 0; i < code_repo.size; i++) {
         if (code_repo.entries[i].skip_specialize) continue;
         NODE *body = code_repo.entries[i].body;
-        const char *fname = code_repo.entries[i].name;
-        if (body) {
-            // AOT bake (SD_<HORG>): used by HORG-baked chains and as
-            // fallback when no PGC entry exists.  Required even when
-            // PGC is enabled because top-level program SDs (also AOT-
-            // baked) reference these via baked direct calls.
-            astro_cs_compile(body, NULL);
-            // PGC bake (PGSD_<HOPT>): records (Horg, file, line) → Hopt
-            // in hopt_index.txt so cs_load can pick the speculation-
-            // aware variant when the file argument is provided.
-            astro_cs_compile(body, fname);
-        }
+        if (body) astro_cs_compile(body, NULL);
     }
+    common_build_flags_and_link();
+}
 
-    // -Wl,-Bsymbolic: SDs in all.so call each other (the recursive
-    // call site SD calls the body's SD baked as a constant); without
-    // this flag the linker routes those references through the GOT
-    // even though the symbol is defined in the same .so, costing one
-    // extra load per call and disabling tail-call optimisation across
-    // SD boundaries.
-    setenv("ASTRO_EXTRA_LDFLAGS", "-Wl,-Bsymbolic", 0);
+// PGSD bake: walk the all_pg_call_nodes list and update each call
+// site's `sp_body` from the just-finished run's `cc->body`, then emit
+// PGSD_<HOPT>.c for the AST and every code_repo body — HOPT now folds
+// in the cc-derived speculation, so each PGSD is keyed on (call site
+// structure × observed body) and a future cs_load matches it via the
+// hopt_index entry written here.
+//
+// HOPT == HORG short-circuit: when an entry's HOPT happens to equal
+// its HORG (= profile didn't change anything observable through HOPT
+// — typically because none of its descendants are pg_call sites with
+// a non-zero cc, or because they all speculate to the same body the
+// parser already assumed), the PGSD bake would emit an SD identical
+// to the AOT one already on disk.  Skip — the existing SD_<Horg>
+// covers it, and we save the disk + link time.
+//
+// Triggered by `-p`.
+static void
+build_code_store_pgsd(NODE *ast)
+{
+    naruby_update_sp_bodies_from_cc();
 
-    // --param=early-inlining-insns=100: gcc's default early-inliner
-    // budget is ~14 insns; that's enough for leaf nodes but bails out
-    // on the medium-sized EVAL_node_call2 / call_body chain that the
-    // SD wants to inline (cc check + push frame + EVAL + state catch).
-    // Bumping the budget unblocks SROA on the inlined chain.
-    //
-    // (We tried -flto=auto for cross-TU IPA on the recursive call
-    // chain — it removed the post-call state check but didn't fix
-    // the `fp[0]` reload, and slightly regressed call-heavy benches.
-    // Bsymbolic-only direct call already gives us most of the win.)
-    astro_cs_build("--param=early-inlining-insns=100");
+    if (ast && HOPT(ast) != HORG(ast)) {
+        astro_cs_compile(ast, naruby_current_source_file);
+    }
+    for (uint32_t i = 0; i < code_repo.size; i++) {
+        if (code_repo.entries[i].skip_specialize) continue;
+        NODE *body = code_repo.entries[i].body;
+        if (!body) continue;
+        if (HOPT(body) == HORG(body)) continue;
+        const char *fname = code_repo.entries[i].name;
+        astro_cs_compile(body, fname);
+    }
+    common_build_flags_and_link();
+}
 
-    astro_cs_reload();
+// Recursive `rm -rf`-style helper for `--ccs`.  Best-effort: failures
+// are warned but not fatal (e.g. a partial state from a prior crash
+// is acceptable; cs_init will rebuild what it needs).
+static void
+clear_code_store_dir(void)
+{
+    // Use system() for simplicity — code_store/ is naruby-managed and
+    // this only runs when the user explicitly asks via --ccs.
+    int rc = system("rm -rf code_store");
+    if (rc != 0) {
+        fprintf(stderr, "naruby: --ccs: rm -rf code_store failed (rc=%d)\n", rc);
+    }
 }
 
 int
 main(int argc, char *argv[])
 {
-    INIT();
-
+    // Order:
+    //   1. Parse CLI (so we know about --ccs / --plain / -c / -p).
+    //   2. Optionally wipe code_store (--ccs).
+    //   3. INIT (cs_init dlopens any existing all.so) — skipped under --plain.
+    //   4. Parse source.
+    //   5. -c: AOT-bake SDs before EVAL so the run uses them.
+    //   6. cs_load each entry (binds dispatcher → SD/PGSD when found).
+    //   7. EVAL.
+    //   8. -p: PGSD-bake using cc state from this run.
+    //
+    // -c and -p are orthogonal: either, neither, or both.  The default
+    // (no flags) is "use whatever's in code_store" — `make_code_store`
+    // skipped, cs_load still runs.
     CTX *c = create_context(10000, 2000);
     global_c = c;
     NODE *ast = PARSE(argc, argv);
 
-    if (0 && !OPTION.quiet) {
+    if (OPTION.clear_store) {
+        clear_code_store_dir();
+    }
+    if (!OPTION.plain) {
+        INIT();
+    }
+
+    if (!OPTION.quiet && false) {
         DUMP(stdout, ast, true);
         printf("\n");
     }
 
-    // Bake first, EVAL second.  Putting build_code_store before EVAL
-    // means even the 1st run (cold `code_store/`) executes through the
-    // baked SDs — so `aot-1st` measures "compile time + SD-aware run
-    // time", not "compile time + interpreter run time" as it would if
-    // bake happened after EVAL.  build_code_store ends with
-    // astro_cs_reload() so the subsequent OPTIMIZE / cs_load see the
-    // fresh all.so.  `-b` (no_generate_specialized_code) skips the
-    // bake and relies on whatever all.so INIT() opened (= cached run);
-    // `-c` (compile_only) skips the EVAL.
-    if (!OPTION.no_generate_specialized_code) {
-        build_code_store(ast);
+    if (OPTION.compile_first && !OPTION.plain) {
+        build_code_store_aot(ast);
+    }
+
+    if (!OPTION.plain) {
+        OPTIMIZE(ast);
+        // Override OPTIMIZE's plain-AOT cs_load with one that consults
+        // hopt_index for a PGSD_<HOPT(top)>.  That makes top's baked
+        // direct calls go through PGSDs (when present) so the whole
+        // chain inherits profile-derived speculation.
+        (void)astro_cs_load(ast, naruby_current_source_file);
     }
 
     if (!OPTION.compile_only) {
-        OPTIMIZE(ast);
-        // Override OPTIMIZE's AOT-only cs_load with a PGC-aware one for
-        // the top-level AST.  This lets cs_load consult hopt_index for
-        // a baked PGSD_<HOPT(top)>; once top dispatches as PGSD, its
-        // baked direct calls hit body PGSDs and the entire chain runs
-        // through PGC (HOPT-keyed) variants.  Without this, top stays
-        // at SD_<HORG(top)>, baked direct calls go to SD_<HORG(body)>,
-        // and body's PGSD dispatcher (set by node_def's cs_load) is
-        // bypassed.
-        (void)astro_cs_load(ast, naruby_current_source_file);
-        // printf("main dispatcher:%s (h:%lx)\n", ast->head.dispatcher_name, HASH(ast));
         RESULT r = EVAL(c, ast, c->env);
         printf("Result: %ld, node_cnt:%lu\n", r.value, node_cnt);
+    }
+
+    if (OPTION.pg_at_exit && !OPTION.plain) {
+        build_code_store_pgsd(ast);
     }
 
     return 0;

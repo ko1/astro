@@ -41,6 +41,51 @@ struct callsite {
 
 struct callsite *callsites = NULL;
 
+// Permanent list of every `node_pg_call_<N>` allocated (only emitted
+// when -p is passed).  build_code_store_pgsd walks this list at exit
+// to update each call site's `sp_body` operand from the just-finished
+// run's `cc->body`, so PGSDs are baked with profile-derived speculation
+// rather than parse-time last-def-wins.  Plain `node_call_<N>` (without
+// -p) doesn't have an sp_body operand, so we don't track them.
+struct pg_call_link {
+    struct pg_call_link *next;
+    NODE *cn;
+    NODE **sp_body_field;     // points into n->u.node_pg_call<N>.sp_body
+    struct callcache *cc;     // points into n->u.node_pg_call<N>.cc
+};
+static struct pg_call_link *all_pg_call_nodes_head = NULL;
+
+static void
+remember_pg_call_node(NODE *cn, NODE **sp_body_field, struct callcache *cc)
+{
+    struct pg_call_link *link = malloc(sizeof(*link));
+    link->next = all_pg_call_nodes_head;
+    link->cn = cn;
+    link->sp_body_field = sp_body_field;
+    link->cc = cc;
+    all_pg_call_nodes_head = link;
+}
+
+// Walk every tracked pg_call NODE.  For each whose cc has been
+// populated this run (cc->serial != 0 implies cc->body was set by a
+// slowpath), set `sp_body = cc->body` and clear the cached HORG/HOPT
+// hashes so subsequent astro_cs_compile recomputes HOPT against the
+// new sp_body.  Called from main.c immediately before
+// build_code_store_pgsd's astro_cs_compile pass.
+void
+naruby_update_sp_bodies_from_cc(void)
+{
+    for (struct pg_call_link *l = all_pg_call_nodes_head; l; l = l->next) {
+        if (l->cc->serial == 0 || l->cc->body == NULL) continue;
+        // sp_body is excluded from HORG (naruby_gen.rb hash_call kind=horg)
+        // but participates in HOPT — overwrite the slot, then invalidate
+        // both cached hashes up the parent chain so the next HOPT()
+        // recomputes against the cc-derived body.
+        *l->sp_body_field = l->cc->body;
+        clear_hash(l->cn);
+    }
+}
+
 static void
 callsite_add_full(const char *name, NODE *cn, NODE **target_field, uint32_t *locals_cnt_field)
 {
@@ -59,6 +104,17 @@ callsite_add(const char *name, NODE *cn, NODE **target_field)
     callsite_add_full(name, cn, target_field, NULL);
 }
 
+// Resolve forward references at parse-end: each call-site registered
+// via `callsite_add[_full]` (because its target body wasn't yet in
+// code_repo when the parser saw the call) gets its `sp_body` /
+// `locals_cnt` fields patched here once every `def` has been parsed.
+//
+// PGO-aware sp_body selection (= "use the body the previous run
+// observed") is NOT done here.  Instead, that's done at the end of
+// `build_code_store_pgsd` by walking the all_pg_call_nodes list and
+// snapping `sp_body = cc->body` from the just-finished run's cc state.
+// Persistence rides on the SD/PGSD's own HOPT-keyed identity in
+// hopt_index.txt — no separate profile file.
 static void
 callsite_resolve(void)
 {
@@ -72,27 +128,27 @@ callsite_resolve(void)
             printf("%s is not defined.\n", cs->name);
             exit(1);
         }
-        // For node_call_<N> we only need to patch locals_cnt — body is
-        // resolved at runtime via cc, so target_field can be NULL.
         if (cs->target_field) {
             *cs->target_field = body;
         }
         if (cs->locals_cnt_field) {
-            *cs->locals_cnt_field = code_repo_find_locals_cnt_by_name(cs->name);
+            *cs->locals_cnt_field = code_repo_find_locals_cnt_by_body(body);
         }
-        // sp_body is excluded from HASH (see naruby_gen.rb), so the
-        // patch doesn't change the hash; clear_hash is just for the
+        // sp_body is excluded from HORG (see naruby_gen.rb), so the
+        // patch doesn't change HORG; clear_hash is for the
         // static_lang path (where node_call_static.body IS hashed) and
-        // is harmless for the PG path.
+        // is harmless elsewhere.
         clear_hash(cs->cn);
         free(cs);
         cs = cs_prev;
     }
 }
 
-// Build a node_call2 / node_call (arg-less) call site.  Used for
-// arity 0 directly, and as a fallback (after lset+seq arg setup) for
-// arity > 3 in pg_mode.
+// Generic fallback call-node builder.  Used for static_lang (-s) and
+// for argc > 3 (where node_pg_call_<N> isn't available).  Static-lang
+// goes through `node_call_static` (parse-time body resolution); the
+// default path emits the plain `node_call` (cc-indirect dispatch, no
+// sp_body — PGSD bake doesn't apply, only AOT SDs).
 static NODE *
 alloc_call(const char *fname, uint32_t args_cnt, uint32_t call_arg_idx)
 {
@@ -103,21 +159,6 @@ alloc_call(const char *fname, uint32_t args_cnt, uint32_t call_arg_idx)
             callsite_add(fname, body, &body->u.node_call_static.body);
         }
         return body;
-    }
-    else if (OPTION.pg_mode) {
-        // Resolve sp_body at parse time so the SD baked for this call
-        // site sees a stable body identity.  Forward refs (incl. self-
-        // recursion) leave sp_body as a placeholder NODE that
-        // callsite_resolve patches once the def is parsed.
-        NODE *body = code_repo_find_by_name(fname);
-        if (body) {
-            return ALLOC_node_call2(fname, args_cnt, call_arg_idx, body);
-        }
-        else {
-            NODE *cn = ALLOC_node_call2(fname, args_cnt, call_arg_idx, ALLOC_node_num(0));
-            callsite_add(fname, cn, &cn->u.node_call2.sp_body);
-            return cn;
-        }
     }
     else {
         return ALLOC_node_call(fname, args_cnt, call_arg_idx);
@@ -183,13 +224,15 @@ alloc_call_specialized(const char *fname, uint32_t call_arg_idx,
 // gives one EVAL_ function body containing arg evaluation, store, and
 // dispatch — gcc sees the dataflow and can inline the chain better.
 //
-// Returns NULL if pg_mode + this arity isn't supported (caller falls
-// back to lset+seq + alloc_call).
+// Returns NULL if this arity isn't supported (caller falls back to
+// lset+seq + alloc_call).  Used unconditionally for argc≤3 calls in
+// non-static_lang mode — the parser doesn't gate on -p any more.
+// Whether PGSDs actually get baked for these call sites is a runtime
+// decision (`-p`), not a parser decision.
 static NODE *
 alloc_pg_call_specialized(const char *fname, uint32_t call_arg_idx,
                           uint32_t args_cnt, NODE **arg_nodes)
 {
-    if (!OPTION.pg_mode) return NULL;
     if (args_cnt > 3) return NULL;
 
     NODE *body = code_repo_find_by_name(fname);
@@ -202,53 +245,53 @@ alloc_pg_call_specialized(const char *fname, uint32_t call_arg_idx,
     if (locals_cnt < args_cnt) locals_cnt = args_cnt;
 
     NODE *cn;
+    NODE **sp_target;
+    uint32_t *lc_target;
     switch (args_cnt) {
       case 0:
         cn = ALLOC_node_pg_call0(fname, call_arg_idx, locals_cnt, placeholder);
+        sp_target = &cn->u.node_pg_call0.sp_body;
+        lc_target = &cn->u.node_pg_call0.locals_cnt;
         break;
       case 1:
         cn = ALLOC_node_pg_call1(fname, call_arg_idx, locals_cnt, placeholder,
                                  arg_nodes[0]);
+        sp_target = &cn->u.node_pg_call1.sp_body;
+        lc_target = &cn->u.node_pg_call1.locals_cnt;
         break;
       case 2:
         cn = ALLOC_node_pg_call2(fname, call_arg_idx, locals_cnt, placeholder,
                                  arg_nodes[0], arg_nodes[1]);
+        sp_target = &cn->u.node_pg_call2.sp_body;
+        lc_target = &cn->u.node_pg_call2.locals_cnt;
         break;
       case 3:
         cn = ALLOC_node_pg_call3(fname, call_arg_idx, locals_cnt, placeholder,
                                  arg_nodes[0], arg_nodes[1], arg_nodes[2]);
+        sp_target = &cn->u.node_pg_call3.sp_body;
+        lc_target = &cn->u.node_pg_call3.locals_cnt;
         break;
       default:
         return NULL;
     }
 
+    // Forward ref: register for callsite_resolve at parse end.  Already-
+    // resolved calls (body found in code_repo) skip registration — their
+    // sp_body is set above to `placeholder == body`.
     if (!body) {
-        // Forward ref: callsite_resolve patches sp_body and locals_cnt
-        // when the def finishes parsing.  Use &<call>.sp_body / .locals_cnt
-        // so each kind's operand slot is found by direct pointer
-        // regardless of the node's struct layout.
-        NODE **sp_target;
-        uint32_t *lc_target;
-        switch (args_cnt) {
-          case 0:
-            sp_target = &cn->u.node_pg_call0.sp_body;
-            lc_target = &cn->u.node_pg_call0.locals_cnt;
-            break;
-          case 1:
-            sp_target = &cn->u.node_pg_call1.sp_body;
-            lc_target = &cn->u.node_pg_call1.locals_cnt;
-            break;
-          case 2:
-            sp_target = &cn->u.node_pg_call2.sp_body;
-            lc_target = &cn->u.node_pg_call2.locals_cnt;
-            break;
-          case 3:
-            sp_target = &cn->u.node_pg_call3.sp_body;
-            lc_target = &cn->u.node_pg_call3.locals_cnt;
-            break;
-          default: return NULL;
-        }
         callsite_add_full(fname, cn, sp_target, lc_target);
+    }
+    // Track for build_code_store_pgsd: at exit, the bake walks this
+    // list and updates each node's sp_body from cc->body.
+    {
+        struct callcache *cc_ptr = NULL;
+        switch (args_cnt) {
+          case 0: cc_ptr = &cn->u.node_pg_call0.cc; break;
+          case 1: cc_ptr = &cn->u.node_pg_call1.cc; break;
+          case 2: cc_ptr = &cn->u.node_pg_call2.cc; break;
+          case 3: cc_ptr = &cn->u.node_pg_call3.cc; break;
+        }
+        remember_pg_call_node(cn, sp_target, cc_ptr);
     }
     return cn;
 }
@@ -521,17 +564,15 @@ transduce(struct transduce_context *tc, pm_node_t *node, int indent) {
               const char *fname = alloc_cstr(tc->parser, n->name);
               uint32_t call_arg_idx = arg_index(tc);
 
-              // arity ≤ 3 (and not static_lang): fold args into an
-              // arity-specialized call node — node_pg_call_<N> in pg_mode,
-              // node_call_<N> otherwise.  Both shapes have explicit arg
-              // operands and a fresh callee frame `F[locals_cnt]`; the
-              // only difference is dispatch (sp_body baked direct vs
-              // cc->body indirect).
+              // arity ≤ 3 (non-static_lang): fold args into an arity-
+              // specialized call NODE.  With `-p` (= we're going to PG-
+              // bake at exit) emit `node_pg_call_<N>` so the call site
+              // carries an `sp_body` operand that build_code_store_pgsd
+              // updates from cc->body.  Without `-p`, emit the simpler
+              // `node_call_<N>` (sp_body-less, cc-indirect dispatch,
+              // no 2-step guard).
               if (!OPTION.static_lang && args_cnt <= 3) {
                   NODE *arg_nodes[3] = { NULL, NULL, NULL };
-                  // Reserve arg_index slots up-front so any temporaries
-                  // produced inside the arg expressions (e.g. nested
-                  // calls) get fresh indices past ours.
                   for (uint32_t i = 0; i < args_cnt; i++) {
                       increment_arg_index(tc);
                   }
@@ -539,14 +580,12 @@ transduce(struct transduce_context *tc, pm_node_t *node, int indent) {
                       arg_nodes[i] = TRANSDUCE(args->arguments.nodes[i]);
                   }
                   rewind_arg_index(tc, call_arg_idx);
-                  if (OPTION.pg_mode) {
+                  if (OPTION.pg_at_exit) {
                       return alloc_pg_call_specialized(fname, call_arg_idx,
                                                        args_cnt, arg_nodes);
                   }
-                  else {
-                      return alloc_call_specialized(fname, call_arg_idx,
-                                                    args_cnt, arg_nodes);
-                  }
+                  return alloc_call_specialized(fname, call_arg_idx,
+                                                args_cnt, arg_nodes);
               }
 
               // Generic path: emit lset chain that writes args into
@@ -1307,17 +1346,31 @@ transduce(struct transduce_context *tc, pm_node_t *node, int indent) {
 static void
 show_help(void)
 {
-    printf("naruby [script]\n");
+    printf("naruby [options] [script]\n");
     printf("\n");
-    printf("Options:\n");
-    printf("  -h: show help\n");
-    printf("  -q: don't show information\n");
-    printf("  -c: compile given script\n");
-    printf("  -s: static language mode: function is resovled at compile time\n");
-    printf("  -i: plain mode: don't use compiled code\n");
-    printf("  -b: benchmark mode: don't dump specialized code\n");
-    printf("  -p: Profile guided mode: use call2\n");
-    printf("  -a: record all node\n");
+    printf("Default: load any cached SD/PGSD from code_store/ and run.\n");
+    printf("Combine -c and -p to AOT-bake before run + PG-bake after.\n");
+    printf("\n");
+    printf("Run mode:\n");
+    printf("  -i, --plain          interpreter only, ignore code_store\n");
+    printf("  --aot-compile        compile-only (do not run)\n");
+    printf("  -j                   JIT mode (worker process)\n");
+    printf("  -s                   static-lang mode (parse-time call resolution)\n");
+    printf("\n");
+    printf("Bake (orthogonal — combine freely):\n");
+    printf("  -c, --aot            AOT-bake SDs before run\n");
+    printf("  -p, --pg             PG-bake PGSDs after run (uses cc state)\n");
+    printf("\n");
+    printf("Other:\n");
+    printf("  --ccs                clear code_store/ before run\n");
+    printf("  -q                   quiet\n");
+    printf("  -h                   show this help\n");
+}
+
+static bool
+match_long(const char *arg, const char *name)
+{
+    return strcmp(arg, name) == 0;
 }
 
 static const char *
@@ -1332,56 +1385,43 @@ parse_option(int argc, char *argv[])
 
     for (int i = 1; i<argc; i++) {
         const char *arg = argv[i];
-        if (arg[0] == '-') {
-            switch (arg[1]) {
-              case 'h':
-                show_help();
-                exit(0);
-
-              case 's':
-                OPTION.static_lang = true;
-                break;
-
-              case 'c':
-                OPTION.compile_only = true;
-                break;
-
-              case 'a':
-                OPTION.record_all = true;
-                break;
-
-              case 'i':
-                OPTION.no_compiled_code = true;
-                OPTION.no_generate_specialized_code = true;
-                break;
-
-              case 'b':
-                OPTION.no_generate_specialized_code = true;
-                break;
-
-              case 'p':
-                OPTION.pg_mode = true;
-                break;
-
-              case 'q':
-                OPTION.quiet = true;
-                break;
-
-              case 'j':
-                OPTION.jit = true;
-                OPTION.no_generate_specialized_code = true;
-                astro_jit_start("/tmp/astrojit_l1.sock");
-                break;
-
-              default:
-                fprintf(stderr, "unknown option: %s\n", arg);
-                show_help();
-                exit(1);
-            }
-        }
-        else {
+        if (arg[0] != '-') {
             if (fname) fprintf(stderr, "ignore %s with %s\n", fname, arg);
             fname = arg;
+            continue;
+        }
+
+        // Long options first.
+        if (match_long(arg, "--plain"))             { OPTION.plain = true; continue; }
+        if (match_long(arg, "--aot")
+            || match_long(arg, "--aot-compile-first")) { OPTION.compile_first = true; continue; }
+        if (match_long(arg, "--pg")
+            || match_long(arg, "--pg-compile"))     { OPTION.pg_at_exit = true; continue; }
+        if (match_long(arg, "--aot-compile"))       { OPTION.compile_only = true; continue; }
+        if (match_long(arg, "--ccs")
+            || match_long(arg, "--clear-code-store")) { OPTION.clear_store = true; continue; }
+
+        // Short options.  Single char after `-`.
+        if (arg[1] == '\0' || arg[2] != '\0') {
+            fprintf(stderr, "unknown option: %s\n", arg);
+            show_help();
+            exit(1);
+        }
+        switch (arg[1]) {
+          case 'h': show_help(); exit(0);
+          case 's': OPTION.static_lang   = true; break;
+          case 'i': OPTION.plain         = true; break;
+          case 'c': OPTION.compile_first = true; break;
+          case 'p': OPTION.pg_at_exit    = true; break;
+          case 'q': OPTION.quiet         = true; break;
+          case 'j':
+            OPTION.jit = true;
+            astro_jit_start("/tmp/astrojit_l1.sock");
+            break;
+          default:
+            fprintf(stderr, "unknown option: %s\n", arg);
+            show_help();
+            exit(1);
         }
     }
 

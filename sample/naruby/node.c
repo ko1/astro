@@ -80,11 +80,21 @@ hash_builtin_func(builtin_func_t *bf)
 
 // --- naruby-specific helpers ---
 
+// Invalidate cached hashes (HORG via head.hash_value, HOPT via
+// head.hash_opt) for a node and all its ancestors.  Used after an
+// in-place AST mutation that changes hash inputs — most commonly
+// `callsite_resolve` patching `sp_body` (HOPT-only) or
+// `naruby_update_sp_bodies_from_cc` doing the same before the PGSD
+// bake.  Both caches must be invalidated because HOPT depends on
+// HORG of subtree members and HORG depends on HOPT-relevant fields
+// being unchanged — playing safe by clearing both is cheaper than
+// reasoning per-mutation.
 void
 clear_hash(NODE *n)
 {
     while (n) {
         n->head.flags.has_hash_value = false;
+        n->head.flags.has_hash_opt   = false;
         n = n->head.parent;
     }
 }
@@ -94,7 +104,7 @@ clear_hash(NODE *n)
 NODE *
 OPTIMIZE(NODE *n)
 {
-    if (OPTION.no_compiled_code) {
+    if (OPTION.plain) {
         return n;
     }
     else if (OPTION.jit) {

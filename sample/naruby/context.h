@@ -14,17 +14,40 @@
 #include <stdbool.h>
 #include <assert.h>
 
+// Option model (modeled on sample/abruby's CLI; orthogonal AOT and PG
+// flags layered onto a default "run with whatever's in code_store" base):
+//
+//   plain          (-i / --plain)     interpreter only, no code store
+//   compile_first  (-c / --aot)       AOT-bake SDs *before* run
+//   pg_at_exit     (-p / --pg)        PG-bake PGSDs *after* run, using cc
+//   compile_only   (--aot-compile)    bake only, don't run (mode flag)
+//   clear_store    (--ccs)            wipe code_store/ at start
+//
+// `compile_first` and `pg_at_exit` are orthogonal — either, neither, or
+// both.  Default (no flag) = run, cs_load any cached SD/PGSD, no bake.
+//
+// Removed naruby legacy flags:
+//   `pg_mode`  — parser now always emits `node_pg_call_<N>` for argc≤3,
+//                regardless of flag.  PG-bake is gated by `pg_at_exit`.
+//   `no_generate_specialized_code` (-b) — superseded by the orthogonal
+//                model above.  Default already does no bake.
+//   `record_all` — never wired in; dropped.
 struct naruby_option {
     // language
     bool static_lang;
 
     // exec mode
-    bool compile_only;
-    bool pg_mode;
-    bool no_compiled_code;
-    bool no_generate_specialized_code;
+    bool plain;            // -i / --plain
+    bool compile_first;    // -c / --aot      AOT bake before run
+    bool pg_at_exit;       // -p / --pg       PG bake after run
+    bool compile_only;     // --aot-compile   compile only (no run)
+    bool clear_store;      // --ccs           wipe code_store before run
+    bool jit;              // -j              JIT mode
+
+    // No-op stub: referenced by framework-generated ALLOC_ helpers
+    // (lib/astrogen.rb).  Keeping the field as `false` is the cheapest
+    // way to satisfy the reference without forking the framework.
     bool record_all;
-    bool jit;
 
     // misc
     bool quiet;
