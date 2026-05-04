@@ -2967,6 +2967,34 @@ static VALUE
 bi_hash(CTX *c, int argc, VALUE *argv) { (void)argc; return PY_FIX((int64_t)(py_hash(c, argv[0]) & 0x7FFFFFFFFFFFFFFFULL)); }
 
 static VALUE
+bi_pystro_del(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    VALUE container = argv[0], key = argv[1];
+    if (py_is_dict(container)) {
+        if (!py_dict_remove(c, container, key))
+            py_raise_exc(c, c->EXC_KeyError, "del: key not in dict");
+        return PY_NONE;
+    }
+    if (py_is_list(container)) {
+        int64_t i = py_int_to_long(c, key);
+        struct pyobj *o = PY_PTR(container);
+        if (i < 0) i += (int64_t)o->list.len;
+        if (i < 0 || i >= (int64_t)o->list.len)
+            py_raise_exc(c, c->EXC_IndexError, "del: index out of range");
+        for (size_t j = (size_t)i; j + 1 < o->list.len; j++)
+            o->list.items[j] = o->list.items[j + 1];
+        o->list.len--;
+        return PY_NONE;
+    }
+    if (py_is_set(container)) {
+        py_dict_remove(c, container, key);
+        return PY_NONE;
+    }
+    py_raise_exc(c, c->EXC_TypeError, "del: unsupported container type");
+}
+
+static VALUE
 bi_all(CTX *c, int argc, VALUE *argv)
 {
     (void)argc;
@@ -3171,6 +3199,7 @@ install_builtins(CTX *c)
     c->EXC_AttributeError   = py_make_class("AttributeError",   c->EXC_Exception, true);
     c->EXC_RuntimeError     = py_make_class("RuntimeError",     c->EXC_Exception, true);
     c->EXC_StopIteration    = py_make_class("StopIteration",    c->EXC_Exception, true);
+    c->EXC_AssertionError   = py_make_class("AssertionError",   c->EXC_Exception, true);
 
     py_global_define(c, "Exception",        c->EXC_Exception);
     py_global_define(c, "TypeError",        c->EXC_TypeError);
@@ -3182,6 +3211,8 @@ install_builtins(CTX *c)
     py_global_define(c, "AttributeError",   c->EXC_AttributeError);
     py_global_define(c, "RuntimeError",     c->EXC_RuntimeError);
     py_global_define(c, "StopIteration",    c->EXC_StopIteration);
+    py_global_define(c, "AssertionError",   c->EXC_AssertionError);
+    py_global_define(c, "__pystro_del__",   py_make_builtin("__pystro_del__", bi_pystro_del, 2, 2));
 
     c->current_class = PY_NONE;
 }

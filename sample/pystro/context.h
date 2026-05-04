@@ -266,6 +266,7 @@ typedef struct CTX_struct {
     VALUE EXC_AttributeError;
     VALUE EXC_RuntimeError;
     VALUE EXC_StopIteration;
+    VALUE EXC_AssertionError;
 } CTX;
 
 extern struct pyobj PY_NONE_OBJ, PY_TRUE_OBJ, PY_FALSE_OBJ;

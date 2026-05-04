@@ -14,6 +14,7 @@ enum tok_kind {
     T_BREAK, T_CONTINUE, T_AND, T_OR, T_NOT, T_TRUE, T_FALSE, T_NONE,
     T_CLASS, T_TRY, T_EXCEPT, T_FINALLY, T_RAISE, T_AS, T_LAMBDA,
     T_GLOBAL, T_NONLOCAL, T_IS, T_IMPORT, T_FROM, T_WITH, T_YIELD,
+    T_ASSERT, T_DEL,
 
     // Punctuation.
     T_LPAREN, T_RPAREN, T_LBRACK, T_RBRACK, T_LBRACE, T_RBRACE,
@@ -106,6 +107,7 @@ keyword_kind(const char *s, size_t len)
         {"lambda",T_LAMBDA},{"global",T_GLOBAL},{"nonlocal",T_NONLOCAL},
         {"is",T_IS},{"import",T_IMPORT},{"from",T_FROM},
         {"with",T_WITH},{"yield",T_YIELD},
+        {"assert",T_ASSERT},{"del",T_DEL},
     };
     for (size_t i = 0; i < sizeof(kws)/sizeof(kws[0]); i++) {
         size_t kl = strlen(kws[i].kw);

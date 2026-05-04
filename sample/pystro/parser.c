@@ -1487,6 +1487,12 @@ parse_params(Scope *sc, int *out_nparams, int *out_n_pos_named, int *out_ndefaul
             if (peek_tok(0)->kind != T_NAME) parse_error("expected parameter name");
             const char *pn = peek_tok(0)->sval;
             tok_pos++;
+            // Optional `: annotation` — parsed and discarded.
+            if (match_tok(T_COLON)) {
+                Scope *saved = cur_scope; cur_scope = sc->parent;
+                (void)parse_expr();
+                cur_scope = saved;
+            }
             scope_add_local(sc, pn);
             names[nnames++] = pn;
             int slot = nparams;
@@ -1531,6 +1537,12 @@ parse_def(void)
     uint32_t didx, nidx, flags;
     parse_params(&sc, &nparams, &n_pos_named, &ndefaults, &didx, &nidx, &flags);
     expect(T_RPAREN, "')'");
+    // Optional `-> annotation` — parsed and discarded.
+    if (match_tok(T_ARROW)) {
+        Scope *saved = cur_scope; cur_scope = sc.parent;
+        (void)parse_expr();
+        cur_scope = saved;
+    }
     expect(T_COLON, "':'");
 
     size_t suite_start = tok_pos;
@@ -1722,6 +1734,68 @@ parse_return(void)
     return ALLOC_node_return(v);
 }
 
+// `assert cond [, msg]` — desugars to `if not cond: raise AssertionError(msg)`.
+// AssertionError is bound from c->EXC_RuntimeError as a fallback if the
+// builtin isn't installed; for v0 we just use Exception.
+static NODE *
+parse_assert(void)
+{
+    expect(T_ASSERT, "'assert'");
+    NODE *cond = parse_expr();
+    NODE *msg = NULL;
+    if (match_tok(T_COMMA)) msg = parse_expr();
+    NODE *exc_cls = ALLOC_node_gref(intern_name("AssertionError", 14));
+    NODE *raise_call;
+    if (msg) raise_call = ALLOC_node_call_1(exc_cls, msg);
+    else     raise_call = ALLOC_node_call_0(exc_cls);
+    NODE *raise_n = ALLOC_node_raise(raise_call);
+    return ALLOC_node_if(ALLOC_node_not(cond), raise_n, ALLOC_node_nop());
+}
+
+// `del NAME` — currently restricted to deleting an item from a dict /
+// list (`del d[k]`, `del a[i]`).  Naked `del NAME` is a no-op for
+// pystro v0 (Python's behaviour would unbind the name).
+static NODE *
+parse_del(void)
+{
+    expect(T_DEL, "'del'");
+    if (peek_tok(0)->kind != T_NAME) parse_error("del NAME[...] only");
+    const char *base = peek_tok(0)->sval;
+    tok_pos++;
+    NODE *cur = make_load(base);
+    while (peek_tok(0)->kind == T_DOT || peek_tok(0)->kind == T_LBRACK) {
+        if (match_tok(T_DOT)) {
+            if (peek_tok(0)->kind != T_NAME) parse_error("attr name expected");
+            const char *nm = peek_tok(0)->sval;
+            tok_pos++;
+            if (peek_tok(0)->kind == T_DOT || peek_tok(0)->kind == T_LBRACK) {
+                cur = ALLOC_node_attr_get(cur, nm);
+                continue;
+            }
+            // last: `del obj.attr` — no-op for v0
+            return ALLOC_node_nop();
+        }
+        expect(T_LBRACK, "'['");
+        NODE *idx = parse_expr();
+        expect(T_RBRACK, "']'");
+        if (peek_tok(0)->kind == T_DOT || peek_tok(0)->kind == T_LBRACK) {
+            cur = ALLOC_node_subscript_get(cur, idx);
+            continue;
+        }
+        // last: `del cur[idx]` — call __delitem__-equivalent.  For v0
+        // we route through dict.pop / list.pop manually.
+        extern NODE *intern_helper_call(const char *name, NODE *a, NODE *b);
+        // Simpler: emit a method_2 call to "__pystro_del__" which we
+        // implement as a builtin that dispatches by container type.
+        NODE *call_args[2] = { cur, idx };
+        size_t bidx = node_table_reserve(call_args, 2);
+        return ALLOC_node_call_n(ALLOC_node_gref(intern_name("__pystro_del__", 14)),
+                                 (uint32_t)bidx, 2);
+    }
+    // bare `del NAME`: no-op for v0
+    return ALLOC_node_nop();
+}
+
 // `yield E` (and `yield from E`) — eager v0 implementation: translates
 // to `__genr__.append(E)` (or extend for `yield from`).  The wrapping
 // is set up in parse_def: a hidden local `__genr__` plus a trailing
@@ -1835,11 +1909,34 @@ parse_simple_stmt(void)
     if (k == T_RETURN)   return parse_return();
     if (k == T_RAISE)    return parse_raise();
     if (k == T_YIELD)    return parse_yield();
+    if (k == T_ASSERT)   return parse_assert();
+    if (k == T_DEL)      return parse_del();
     if (k == T_GLOBAL)   return parse_global_decl();
     if (k == T_NONLOCAL) return parse_nonlocal_decl();
     if (k == T_IMPORT || k == T_FROM) {
         while (peek_tok(0)->kind != T_NEWLINE && peek_tok(0)->kind != T_EOF) tok_pos++;
         return ALLOC_node_nop();
+    }
+
+    // Annotated assignment / declaration: `NAME : ann (= expr)?`
+    // Discard the annotation; treat the rest as a normal assignment.
+    if (k == T_NAME && peek_tok(1)->kind == T_COLON) {
+        // But avoid swallowing dict literals — only at statement start.
+        // Actually `x: int` at stmt start is unambiguous: the COLON
+        // here can only be an annotation since we are not parsing a
+        // dict literal.
+        size_t save = tok_pos;
+        const char *nm = peek_tok(0)->sval;
+        tok_pos += 2;
+        // Discard annotation.
+        (void)parse_expr();
+        if (match_tok(T_ASSIGN)) {
+            NODE *rhs = parse_expr_list();
+            return make_store(nm, rhs);
+        }
+        // Bare annotation `x: int` — treated as a no-op (just declares).
+        return ALLOC_node_nop();
+        (void)save;
     }
 
     // Multi-target unpack assignment: NAME (',' NAME)+ '=' expr.
