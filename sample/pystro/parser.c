@@ -241,6 +241,10 @@ scope_add_nonlocal_decl(Scope *s, const char *name)
     s->nonlocals_decls[s->nnonlocals++] = name;
 }
 
+// Walrus pre-scan: `NAME := expr` introduces NAME as a local in the
+// enclosing function.  Pick this up so make_load resolves it as lref.
+// Also collect `NAME =` etc. — see existing logic below.
+
 // Pre-scan a token range for `NAME =` (assignment LHS), `for NAME in`,
 // `def NAME(...):`, `class NAME(...):` to seed local names.  Skips over
 // nested function / class bodies.
@@ -355,10 +359,11 @@ collect_locals_in_range(Scope *s, size_t start_pos, size_t end_pos)
             }
             continue;
         }
-        // NAME = | NAME += ... → assignment, treat as local.
+        // NAME = | NAME += ... | NAME := ... → assignment, treat as local.
         if (t->kind == T_NAME && i + 1 < end_pos) {
             int next = tok_arr[i+1].kind;
-            if (next == T_ASSIGN || next == T_PLUS_EQ || next == T_MINUS_EQ ||
+            if (next == T_ASSIGN || next == T_WALRUS ||
+                next == T_PLUS_EQ || next == T_MINUS_EQ ||
                 next == T_STAR_EQ || next == T_SLASH_EQ || next == T_SLASH_SLASH_EQ ||
                 next == T_PERCENT_EQ || next == T_AMP_EQ || next == T_PIPE_EQ ||
                 next == T_CARET_EQ || next == T_LSHIFT_EQ || next == T_RSHIFT_EQ ||
@@ -659,15 +664,16 @@ build_temp_init(const char *tmp_name, NODE *initial, NODE **out_load)
 }
 
 // Wrap `body` in a `for x in iter:` (target may be a NAME or `a, b`
-// tuple — only NAME for now).
+// tuple — only NAME for now).  Comprehensions have no `else` clause.
 static NODE *
 build_for_loop(const char *target_name, NODE *iter, NODE *body)
 {
+    NODE *no_else = ALLOC_node_nop();
     if (cur_scope && !scope_is_global_decl(cur_scope, target_name)) {
         int idx = scope_add_local(cur_scope, target_name);
-        return ALLOC_node_for_local((uint32_t)idx, iter, body);
+        return ALLOC_node_for_local((uint32_t)idx, iter, body, no_else);
     }
-    return ALLOC_node_for_global(target_name, iter, body);
+    return ALLOC_node_for_global(target_name, iter, body, no_else);
 }
 
 // Parse one or more `for X (, Y)* in EXPR (if EXPR)*` clauses and
@@ -723,7 +729,8 @@ parse_comp_clauses(NODE *inner_body)
             prefix = prefix ? ALLOC_node_seq(as, prefix) : as;
         }
         NODE *new_body = ALLOC_node_seq(prefix, inner_body);
-        return ALLOC_node_for_local((uint32_t)idx, iter, new_body);
+        NODE *no_else = ALLOC_node_nop();
+        return ALLOC_node_for_local((uint32_t)idx, iter, new_body, no_else);
     }
     // top-level
     load_tmp = ALLOC_node_gref(tmp);
@@ -734,7 +741,8 @@ parse_comp_clauses(NODE *inner_body)
         prefix = prefix ? ALLOC_node_seq(as, prefix) : as;
     }
     NODE *new_body = ALLOC_node_seq(prefix, inner_body);
-    return ALLOC_node_for_global(tmp, iter, new_body);
+    NODE *no_else2 = ALLOC_node_nop();
+    return ALLOC_node_for_global(tmp, iter, new_body, no_else2);
 }
 
 static NODE *
@@ -1218,8 +1226,31 @@ parse_cond(void)
     return t;
 }
 
+// Walrus: NAME := expr.  Recognised as a primary alternative to a
+// regular expression when the lookahead is `NAME :=`.  The result
+// expression is the assigned value; the binding goes to the local /
+// global the name resolves to.
 static NODE *
-parse_expr(void) { return parse_cond(); }
+parse_walrus(void)
+{
+    if (peek_tok(0)->kind == T_NAME && peek_tok(1)->kind == T_WALRUS) {
+        const char *nm = peek_tok(0)->sval;
+        tok_pos += 2;
+        NODE *val = parse_walrus();
+        // Bind to a temp / direct slot, then return the value.
+        const char *tmp = new_temp_name("__wal");
+        NODE *load_tmp;
+        NODE *init = build_temp_init(tmp, val, &load_tmp);
+        // Side-effect store under nm:
+        NODE *store_nm = make_store(nm, load_tmp);
+        // Result = load_tmp.
+        return ALLOC_node_seq(init, ALLOC_node_seq(store_nm, load_tmp));
+    }
+    return parse_cond();
+}
+
+static NODE *
+parse_expr(void) { return parse_walrus(); }
 
 // expr_list: expr (',' expr)+ → tuple; single → expr.
 static NODE *
@@ -1310,7 +1341,8 @@ parse_while(void)
     expect(T_WHILE, "'while'");
     NODE *c = parse_expr();
     NODE *b = parse_suite();
-    return ALLOC_node_while(c, b);
+    NODE *e = match_tok(T_ELSE) ? parse_suite() : ALLOC_node_nop();
+    return ALLOC_node_while(c, b, e);
 }
 
 static NODE *
@@ -1334,13 +1366,12 @@ parse_for(void)
         }
         expect(T_IN, "'in'");
         NODE *iter = parse_expr();
-        // Desugar: introduce a hidden local `__t` to hold the current item.
         const char *tmp_name = intern_name("__forT__", 8);
         int tmp_idx = -1;
         if (cur_scope) tmp_idx = scope_add_local(cur_scope, tmp_name);
 
         NODE *body = parse_suite();
-        // Build prefix: assign tuple elements to each name.
+        NODE *else_body = match_tok(T_ELSE) ? parse_suite() : ALLOC_node_nop();
         NODE *prefix = NULL;
         for (int i = nnames - 1; i >= 0; i--) {
             NODE *idx = ALLOC_node_const_int(i);
@@ -1350,17 +1381,18 @@ parse_for(void)
         }
         NODE *new_body = ALLOC_node_seq(prefix, body);
         if (cur_scope && tmp_idx >= 0)
-            return ALLOC_node_for_local((uint32_t)tmp_idx, iter, new_body);
-        return ALLOC_node_for_global(tmp_name, iter, new_body);
+            return ALLOC_node_for_local((uint32_t)tmp_idx, iter, new_body, else_body);
+        return ALLOC_node_for_global(tmp_name, iter, new_body, else_body);
     }
     expect(T_IN, "'in'");
     NODE *iter = parse_expr();
     NODE *body = parse_suite();
+    NODE *else_body = match_tok(T_ELSE) ? parse_suite() : ALLOC_node_nop();
     if (cur_scope && !scope_is_global_decl(cur_scope, target)) {
         int idx = scope_add_local(cur_scope, target);
-        return ALLOC_node_for_local((uint32_t)idx, iter, body);
+        return ALLOC_node_for_local((uint32_t)idx, iter, body, else_body);
     }
-    return ALLOC_node_for_global(target, iter, body);
+    return ALLOC_node_for_global(target, iter, body, else_body);
 }
 
 // Parse params for `def NAME(params):` — handles default values,
@@ -1787,13 +1819,41 @@ parse_simple_stmt(void)
     int k2 = peek_tok(0)->kind;
 
     if (k2 == T_ASSIGN) {
-        tok_pos++;
-        NODE *rhs = parse_expr_list();
-        // Re-parse LHS as a target so we emit the right store node.
-        size_t saved = tok_pos; tok_pos = lhs_start;
-        NODE *store = parse_assignable_target(rhs);
-        tok_pos = saved;
-        return store;
+        // Possible chain `a = b = ... = expr` — accumulate target spans
+        // and bind via a hidden temp so the RHS evaluates exactly once.
+        size_t starts[8] = { lhs_start };
+        int    nt = 1;
+        tok_pos++;        // past first '='
+        // We've already parsed `lhs_expr` once and seen `=`; the next
+        // expr is either another LHS (followed by `=`) or the final RHS.
+        for (;;) {
+            size_t s = tok_pos;
+            (void)parse_expr_list();
+            if (peek_tok(0)->kind == T_ASSIGN) {
+                if (nt >= 8) parse_error("too many = chains");
+                starts[nt++] = s;
+                tok_pos++;
+                continue;
+            }
+            // The last parsed expr was the RHS; we need to retain its
+            // NODE *.  Easiest: rewind and re-parse it.
+            size_t rhs_end = tok_pos;
+            tok_pos = s;
+            NODE *rhs = parse_expr_list();
+            (void)rhs_end;
+            const char *tmp = new_temp_name("__ma");
+            NODE *load_tmp;
+            NODE *init = build_temp_init(tmp, rhs, &load_tmp);
+            NODE *result = init;
+            for (int i = nt - 1; i >= 0; i--) {
+                size_t saved2 = tok_pos;
+                tok_pos = starts[i];
+                NODE *store = parse_assignable_target(load_tmp);
+                tok_pos = saved2;
+                result = ALLOC_node_seq(result, store);
+            }
+            return result;
+        }
     }
 
     if (is_aug_assign(k2)) {
@@ -1813,10 +1873,9 @@ parse_simple_stmt(void)
     return lhs_expr;
 }
 
-// Parse an assignment target expression at the current token position
-// and emit a store of `rhs` into it.  Supports NAME, NAME (DOT NAME)*,
-// NAME ('[' subscript ']')*, mixing the two, with the last trailer
-// being the actual assignment site.
+// Parse an assignment target expression and emit a store of `rhs`.
+// Supports NAME, NAME ('.' NAME)*, NAME ('[' subscript ']')*, and a
+// final `[i:j(:k)?]` slice trailer for `a[i:j] = list`.
 static NODE *
 parse_assignable_target(NODE *rhs)
 {
@@ -1824,17 +1883,12 @@ parse_assignable_target(NODE *rhs)
     if (t->kind != T_NAME) parse_error("invalid assignment target");
     const char *base_name = t->sval;
     tok_pos++;
-    // Walk trailers.  We need to know the last trailer to choose between
-    // attr_set / subscript_set; everything before is built as a get chain.
-    // Strategy: collect trailers into an array, build a get for all but
-    // the last, then emit attr_set / subscript_set for the last.
-    enum trailer_kind { TR_DOT, TR_SUB };
+    enum trailer_kind { TR_DOT, TR_SUB, TR_SLICE };
     struct {
         int kind;
-        const char *name;       // TR_DOT
-        NODE *idx;              // TR_SUB (single-index only)
-        NODE *slice_a, *slice_b, *slice_c;  // (unused for store)
-        bool is_slice;
+        const char *name;                  // TR_DOT
+        NODE *idx;                         // TR_SUB
+        NODE *sa, *sb, *sc;                // TR_SLICE
     } trs[16];
     int ntr = 0;
     while (peek_tok(0)->kind == T_DOT || peek_tok(0)->kind == T_LBRACK) {
@@ -1847,28 +1901,45 @@ parse_assignable_target(NODE *rhs)
             ntr++;
         } else {
             expect(T_LBRACK, "'['");
-            // single-index only for assign target
-            trs[ntr].kind = TR_SUB;
-            trs[ntr].idx = parse_expr();
-            trs[ntr].is_slice = false;
+            // index or slice
+            NODE *start = NULL, *stop = NULL, *step = NULL;
+            bool is_slice = false;
+            if (peek_tok(0)->kind == T_COLON) is_slice = true;
+            else                              start = parse_expr();
+            if (match_tok(T_COLON)) {
+                is_slice = true;
+                if (peek_tok(0)->kind != T_COLON && peek_tok(0)->kind != T_RBRACK)
+                    stop = parse_expr();
+                if (match_tok(T_COLON)) {
+                    if (peek_tok(0)->kind != T_RBRACK) step = parse_expr();
+                }
+            }
             expect(T_RBRACK, "']'");
+            if (is_slice) {
+                trs[ntr].kind = TR_SLICE;
+                trs[ntr].sa = start ? start : ALLOC_node_const_none();
+                trs[ntr].sb = stop  ? stop  : ALLOC_node_const_none();
+                trs[ntr].sc = step  ? step  : ALLOC_node_const_none();
+            } else {
+                trs[ntr].kind = TR_SUB;
+                trs[ntr].idx = start;
+            }
             ntr++;
         }
     }
-    if (ntr == 0) {
-        // bare NAME
-        return make_store(base_name, rhs);
-    }
-    // Build get chain up to the last trailer.
+    if (ntr == 0) return make_store(base_name, rhs);
     NODE *cur = make_load(base_name);
     for (int i = 0; i < ntr - 1; i++) {
-        if (trs[i].kind == TR_DOT) cur = ALLOC_node_attr_get(cur, trs[i].name);
-        else                       cur = ALLOC_node_subscript_get(cur, trs[i].idx);
+        if (trs[i].kind == TR_DOT)        cur = ALLOC_node_attr_get(cur, trs[i].name);
+        else if (trs[i].kind == TR_SUB)   cur = ALLOC_node_subscript_get(cur, trs[i].idx);
+        else                              cur = ALLOC_node_slice(cur, trs[i].sa, trs[i].sb, trs[i].sc);
     }
-    // Emit final store.
     int last = ntr - 1;
-    if (trs[last].kind == TR_DOT) return ALLOC_node_attr_set(cur, trs[last].name, rhs);
-    return ALLOC_node_subscript_set(cur, trs[last].idx, rhs);
+    if (trs[last].kind == TR_DOT)
+        return ALLOC_node_attr_set(cur, trs[last].name, rhs);
+    if (trs[last].kind == TR_SUB)
+        return ALLOC_node_subscript_set(cur, trs[last].idx, rhs);
+    return ALLOC_node_slice_set(cur, trs[last].sa, trs[last].sb, trs[last].sc, rhs);
 }
 
 // `@dec` desugars to: parse the def normally, then emit `name = dec(name)`.

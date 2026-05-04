@@ -1173,6 +1173,75 @@ py_list_slice(CTX *c, VALUE seq, VALUE start, VALUE stop, VALUE step)
     return py_is_list(seq) ? py_make_list(items, n) : py_make_tuple(items, n);
 }
 
+// Slice-assign for lists.  For step == 1, supports general resize:
+// `a[i:j] = list` deletes a[i:j] and inserts the items from `val` at i.
+// Other steps require len(val) == len(slice).
+void
+py_list_slice_set(CTX *c, VALUE seq, VALUE start, VALUE stop, VALUE step, VALUE val)
+{
+    if (!py_is_list(seq))
+        py_raise_exc(c, c->EXC_TypeError, "slice assignment requires a list");
+    int64_t st = (step == PY_NONE) ? 1 : py_int_to_long(c, step);
+    if (st == 0) py_raise_exc(c, c->EXC_ValueError, "slice step cannot be zero");
+    int64_t len = (int64_t)PY_PTR(seq)->list.len;
+    int64_t a = (start == PY_NONE) ? (st > 0 ? 0 : len - 1) : py_int_to_long(c, start);
+    int64_t b = (stop  == PY_NONE) ? (st > 0 ? len : -1)    : py_int_to_long(c, stop);
+    if (a < 0) a += len;
+    if (b < 0 && stop != PY_NONE) b += len;
+    if (st > 0) { if (a < 0) a = 0; if (b > len) b = len; }
+    else        { if (a >= len) a = len - 1; }
+
+    // Collect val's elements.
+    VALUE *items = NULL;
+    size_t nval = 0;
+    if (py_is_list(val) || py_is_tuple(val)) {
+        nval = PY_PTR(val)->list.len;
+        items = PY_PTR(val)->list.items;
+    } else {
+        // iterable → buffer
+        struct py_iter it; py_iter_init(c, &it, val);
+        size_t cap = 16; nval = 0;
+        items = (VALUE *)GC_malloc(sizeof(VALUE) * cap);
+        VALUE x;
+        while (py_iter_next(c, &it, &x)) {
+            if (nval == cap) { cap *= 2; items = (VALUE *)GC_realloc(items, sizeof(VALUE) * cap); }
+            items[nval++] = x;
+        }
+    }
+
+    if (st == 1) {
+        // General-purpose case: build a new items array.
+        if (a > len) a = len;
+        if (b > len) b = len;
+        if (b < a)  b = a;
+        size_t prefix = (size_t)a;
+        size_t suffix_off = (size_t)b;
+        size_t suffix_len = (size_t)(len - b);
+        size_t new_len = prefix + nval + suffix_len;
+        size_t cap = new_len < 4 ? 4 : new_len;
+        VALUE *out = (VALUE *)GC_malloc(sizeof(VALUE) * cap);
+        if (prefix) memcpy(out, PY_PTR(seq)->list.items, sizeof(VALUE) * prefix);
+        if (nval)   memcpy(out + prefix, items, sizeof(VALUE) * nval);
+        if (suffix_len) memcpy(out + prefix + nval,
+                               PY_PTR(seq)->list.items + suffix_off,
+                               sizeof(VALUE) * suffix_len);
+        PY_PTR(seq)->list.items = out;
+        PY_PTR(seq)->list.len = new_len;
+        PY_PTR(seq)->list.capa = cap;
+        return;
+    }
+
+    // step != 1: requires matching length.
+    size_t target_n = 0;
+    if (st > 0 && a < b) target_n = (size_t)((b - a + st - 1) / st);
+    else if (st < 0 && a > b) target_n = (size_t)((a - b - st - 1) / -st);
+    if (target_n != nval)
+        py_raise_exc(c, c->EXC_ValueError,
+                     "slice assignment length mismatch (%zu vs %zu)", target_n, nval);
+    for (size_t i = 0; i < nval; i++)
+        PY_PTR(seq)->list.items[a + (int64_t)i * st] = items[i];
+}
+
 size_t
 py_seq_len(CTX *c, VALUE v)
 {

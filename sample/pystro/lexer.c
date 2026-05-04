@@ -20,7 +20,7 @@ enum tok_kind {
     T_COMMA, T_COLON, T_DOT, T_SEMI, T_AT, T_ARROW,
 
     // Assignment.
-    T_ASSIGN,
+    T_ASSIGN, T_WALRUS,
     T_PLUS_EQ, T_MINUS_EQ, T_STAR_EQ, T_SLASH_EQ, T_SLASH_SLASH_EQ,
     T_PERCENT_EQ, T_AMP_EQ, T_PIPE_EQ, T_CARET_EQ,
     T_LSHIFT_EQ, T_RSHIFT_EQ, T_STAR_STAR_EQ,
@@ -357,6 +357,7 @@ tokenize(const char *src, const char *filename)
         if (a == '-' && b == '>') { src_pos += 2; tok_push(T_ARROW, line); continue; }
         if (a == '=' && b == '=') { src_pos += 2; tok_push(T_EQ, line); continue; }
         if (a == '!' && b == '=') { src_pos += 2; tok_push(T_NE, line); continue; }
+        if (a == ':' && b == '=') { src_pos += 2; tok_push(T_WALRUS, line); continue; }
         if (a == '<' && b == '=') { src_pos += 2; tok_push(T_LE, line); continue; }
         if (a == '>' && b == '=') { src_pos += 2; tok_push(T_GE, line); continue; }
         if (a == '+' && b == '=') { src_pos += 2; tok_push(T_PLUS_EQ, line); continue; }

@@ -1,0 +1,15 @@
+5 5 5
+[1] [1]
+got 5
+found
+[1, 99, 88, 77, 4, 5]
+[88, 77, 4, 5]
+[88, 50, 60, 77, 4, 5]
+[1, 20, 2, 40, 3]
+1
+2
+3
+for done
+after for-with-break
+while done 3
+after while-with-break 4
