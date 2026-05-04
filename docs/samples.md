@@ -291,18 +291,35 @@ usage の上位:
 | `pystro`   |  8 |
 | `astocaml` |  7 |
 
-`@ref` は「ノード本体に値を埋め込まず、ポインタ越しに別領域を読む」
-オプション。**Merkle hash には寄与させない** ので、IC が更新されても
-特化キャッシュが無効化されない。
+`@ref` は **ノード struct の inline 領域** に struct を埋め込みつつ、
+EVAL にはそのアドレスを渡す (`T *foo@ref` 宣言 → struct 内は `T foo` で
+領域確保、EVAL 引数は `&n->u.xxx.foo` の pointer) という持ち方をする
+オプション。記憶域はノードに付随するが、**Merkle hash には 0 を寄与
+させる** (per-sample の `hash_call` で `return "0" if ref?`) ので、
+IC のフィールドが更新されても特化キャッシュは無効化されない。
+alloc 時には `memset(0)` で初期化される。
 
 → ascheme の lref キャッシュ、abruby のメソッドキャッシュ、
 jstro の hidden class shape ID、luastro の closure call IC など、
-**「動的に変わるが構造は不変」** な情報の置き場として全動的言語が利用。
+**「ノード自身に紐づくが、構造ハッシュからは隠したい」** mutable 副情報の
+置き場として全動的言語が利用。
 
-### 3.7 continuation-passing 形 AST — astrogre 一例
+### 3.7 「分岐木」ではなく「継続チェーン」の AST — astrogre 一例
 
-通常のサンプルは「ノードを上から下に評価し、結果を親に返す」が、
-`astrogre` のマッチノードは **CPS 風**:
+実は ASTro の通常ノードも `EVAL_ARG(c, child)` で次の評価先を指定して
+いるので、広い意味では全部 continuation-passing と呼べる。`node_if(c, t, e)`
+は「`c` を評価し、結果で `t` か `e` のどちらに継続するかを決める」と
+解釈できる。
+
+`astrogre` が特殊なのは、**AST 形が分岐木ではなく一本鎖** なところ。
+正規表現 `ab` は構造的には `seq(lit("a"), lit("b"))` でも書けるが、
+astrogre は parser-pass で **right-to-left lower** して
+
+```
+lit("a", next = lit("b", next = succ))
+```
+
+という **`next` ポインタ 1 本の chain** に変換する:
 
 ```
 node_re_lit    (lit, next)            ← マッチしたら next を呼ぶ
@@ -314,13 +331,17 @@ node_re_cap_end   (id, next)
 node_re_succ                           ← 終端: マッチ成功
 ```
 
-`next` を operand に持たせることで、**連結を AST 構造で表現** し、
-特化器が body と next を一気に inline できる。さらにスキャナ層
-(`node_grep_search_*`) が body chain を `body` operand で包むので、
-**外側のスキャンループまで 1 つの SD に融合** される。
+何が嬉しいか:
+- 通常の AST だと `seq` ノードを介して 2 段降りるので、特化チェーンが
+  `seq → lit → seq → lit → ...` になる
+- chain 形だと `lit(next=lit(next=...))` で 1 段ずつなので、特化器が
+  **next を末尾まで一気に inline** して 1 つの SD に畳める
+- さらにスキャナ層 (`node_grep_search_*`) も `body` operand で chain を
+  包むので、**スキャンループ自体まで同じ SD に融合** される
 
-regex のような「アクション列を上から実行する」エンジンを ASTro に乗せる
-ときの定石 (CPS チェーン → operand 連結 → 特化器に任せる)。
+regex / VM dispatch / parser combinator のような「**アクション列を上から
+線形に実行する**」エンジンを ASTro に乗せるときの定石。AST 木を
+あえて linked-list に潰すことで、特化単位を稼ぐ。
 
 ### 3.8 typed-slot union frame — wastro 一例
 
