@@ -1,0 +1,578 @@
+// astr — R subset on the ASTro framework.
+//
+// Tagged-VALUE tree-walking interpreter (1-bit fixnum tag, heap-boxed
+// floats / strings / vectors / lists).  Functions are looked up by
+// name in c->func_set with a per-call-site inline cache.  Heap memory
+// is managed by Boehm-Demers-Weiser conservative GC (libgc).
+//
+// `fp` is the caller's frame.  User function calls allocate a fresh
+// VLA `F[ASTR_FRAME_MAX]` frame and pass it as the callee's fp.
+
+// ---------------------------------------------------------------------------
+// Literals.
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+node_int(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, int32_t v)
+{
+    (void)c; (void)n; (void)fp;
+    return RESULT_OK(ASTR_FIX(v));
+}
+
+// 64-bit int literal (when an integer doesn't fit in 32-bit).
+NODE_DEF
+node_int64(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint64_t bits)
+{
+    (void)c; (void)n; (void)fp;
+    return RESULT_OK(astr_make_int((int64_t)bits));
+}
+
+// `bits` is the IEEE-754 bit pattern of the double; we re-pun at eval
+// time so the framework's hash treats two equal-valued literals as
+// structurally identical regardless of source representation.
+NODE_DEF
+node_float(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint64_t bits)
+{
+    (void)c; (void)n; (void)fp;
+    union { uint64_t u; double d; } pun = { .u = bits };
+    return RESULT_OK(astr_make_float(pun.d));
+}
+
+NODE_DEF
+node_str(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, const char *s)
+{
+    (void)c; (void)n; (void)fp;
+    // Heap-allocate a new VALUE on each evaluation — R doesn't share
+    // string-literal VALUEs across uses (they're always fresh objects),
+    // so identity comparisons differ from CharSXP interning.  For our
+    // scalar subset that's fine; equality is content-based via astr_eq.
+    return RESULT_OK(astr_make_string(s, strlen(s)));
+}
+
+NODE_DEF
+node_null(CTX * restrict c, NODE * restrict n, VALUE * restrict fp)
+{
+    (void)c; (void)n; (void)fp;
+    return RESULT_OK(ASTR_NULL);
+}
+
+NODE_DEF
+node_na(CTX * restrict c, NODE * restrict n, VALUE * restrict fp)
+{
+    (void)c; (void)n; (void)fp;
+    return RESULT_OK(ASTR_NA);
+}
+
+// ---------------------------------------------------------------------------
+// Local variables.
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+node_lget(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t index)
+{
+    (void)c; (void)n;
+    return RESULT_OK(fp[index]);
+}
+
+NODE_DEF
+node_lset(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t index, NODE *rhs)
+{
+    (void)n;
+    VALUE v = UNWRAP(EVAL_ARG(c, rhs));
+    fp[index] = v;
+    return RESULT_OK(v);
+}
+
+// ---------------------------------------------------------------------------
+// Sequencing / control flow.
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+node_scope(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t envsize, NODE *body)
+{
+    (void)n; (void)envsize;
+    return EVAL(c, body, fp + envsize);
+}
+
+NODE_DEF
+node_seq(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *head, NODE *tail)
+{
+    (void)n;
+    (void)UNWRAP(EVAL_ARG(c, head));
+    return EVAL_ARG(c, tail);
+}
+
+NODE_DEF
+node_if(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *cond, NODE *then_node, NODE *else_node)
+{
+    (void)n;
+    if (astr_is_truthy(UNWRAP(EVAL_ARG(c, cond)))) {
+        return EVAL_ARG(c, then_node);
+    }
+    return EVAL_ARG(c, else_node);
+}
+
+NODE_DEF
+node_while(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *cond, NODE *body)
+{
+    (void)n;
+    while (astr_is_truthy(UNWRAP(EVAL_ARG(c, cond)))) {
+        RESULT r = EVAL_ARG(c, body);
+        if (UNLIKELY(r.state != RESULT_NORMAL)) return r;
+    }
+    return RESULT_OK(ASTR_FIX(0));
+}
+
+// `for (i in start:stop)` — fast-path integer range form.  Most R code
+// in benchmarks uses this shape; we keep it as its own node so the SD
+// inliner sees the loop variable as a fixnum without going through the
+// vector iterator.
+NODE_DEF
+node_for_range(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t slot, NODE *start, NODE *stop, NODE *body)
+{
+    (void)n;
+    VALUE sv = UNWRAP(EVAL_ARG(c, start));
+    VALUE ev = UNWRAP(EVAL_ARG(c, stop));
+    int64_t s = astr_to_int(sv);
+    int64_t e = astr_to_int(ev);
+    if (s <= e) {
+        for (int64_t i = s; i <= e; i++) {
+            fp[slot] = ASTR_FIX(i);
+            RESULT r = EVAL_ARG(c, body);
+            if (UNLIKELY(r.state != RESULT_NORMAL)) return r;
+        }
+    }
+    else {
+        for (int64_t i = s; i >= e; i--) {
+            fp[slot] = ASTR_FIX(i);
+            RESULT r = EVAL_ARG(c, body);
+            if (UNLIKELY(r.state != RESULT_NORMAL)) return r;
+        }
+    }
+    return RESULT_OK(ASTR_FIX(0));
+}
+
+// `for (i in expr)` — generic iteration over a vector / list.  The
+// iterable is evaluated once; element type drives unboxing.
+NODE_DEF
+node_for_iter(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t slot, NODE *iter, NODE *body)
+{
+    (void)n;
+    VALUE it = UNWRAP(EVAL_ARG(c, iter));
+    if (ASTR_IS_FIX(it)) {
+        // Single fixnum: one iteration.
+        fp[slot] = it;
+        RESULT r = EVAL_ARG(c, body);
+        if (UNLIKELY(r.state != RESULT_NORMAL)) return r;
+        return RESULT_OK(ASTR_FIX(0));
+    }
+    struct astr_obj *o = ASTR_PTR(it);
+    size_t len; double *dv = NULL; int64_t *iv = NULL; VALUE *lv = NULL;
+    switch (o->type) {
+      case ASTR_T_NUM_VEC: dv = o->numvec.items; len = o->numvec.len; break;
+      case ASTR_T_INT_VEC: iv = o->intvec.items; len = o->intvec.len; break;
+      case ASTR_T_LIST:    lv = o->lst.items;    len = o->lst.len;    break;
+      default:             fp[slot] = it; len = 0; break;
+    }
+    for (size_t i = 0; i < len; i++) {
+        VALUE v;
+        if      (dv) v = astr_make_float(dv[i]);
+        else if (iv) v = astr_make_int(iv[i]);
+        else if (lv) v = lv[i];
+        else         v = ASTR_NULL;
+        fp[slot] = v;
+        RESULT r = EVAL_ARG(c, body);
+        if (UNLIKELY(r.state != RESULT_NORMAL)) return r;
+    }
+    return RESULT_OK(ASTR_FIX(0));
+}
+
+// `start:stop` outside a for-header — produces an integer vector.
+NODE_DEF
+node_range(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *start, NODE *stop)
+{
+    (void)n;
+    VALUE sv = UNWRAP(EVAL_ARG(c, start));
+    VALUE ev = UNWRAP(EVAL_ARG(c, stop));
+    return RESULT_OK(astr_make_intvec_range(astr_to_int(sv), astr_to_int(ev)));
+}
+
+NODE_DEF
+node_return(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *value)
+{
+    (void)n;
+    VALUE v = UNWRAP(EVAL_ARG(c, value));
+    return RESULT_RETURN_(v);
+}
+
+// ---------------------------------------------------------------------------
+// Functions.
+// ---------------------------------------------------------------------------
+
+static struct function_entry *
+get_func_entry(CTX * restrict c, const char *name)
+{
+    for (unsigned int i = 0; i < c->func_set_cnt; i++) {
+        if (strcmp(c->func_set[i].name, name) == 0) {
+            return &c->func_set[i];
+        }
+    }
+    return &c->func_set[c->func_set_cnt++];
+}
+
+NODE_DEF @noinline
+node_def(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, const char *name, NODE *body, uint32_t params_cnt, uint32_t locals_cnt)
+{
+    (void)n; (void)fp;
+    struct function_entry *fe = get_func_entry(c, name);
+    fe->name = name;
+    fe->body = OPTIMIZE(body);
+    fe->params_cnt = params_cnt;
+    fe->locals_cnt = locals_cnt;
+    return RESULT_OK(ASTR_FIX(0));
+}
+
+#define ASTR_FRAME_MAX 64
+
+extern NODE *astr_resolve_body(CTX *c, const char *name);
+
+NODE_DEF
+node_call_0(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, const char *name, struct astr_callcache *cc@ref)
+{
+    (void)n; (void)fp;
+    if (UNLIKELY(cc->body == NULL)) cc->body = astr_resolve_body(c, name);
+    VALUE F[ASTR_FRAME_MAX];
+    return RESULT_OK(EVAL(c, cc->body, F).value);
+}
+
+NODE_DEF
+node_call_1(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, const char *name, struct astr_callcache *cc@ref, NODE *a0)
+{
+    (void)n;
+    if (UNLIKELY(cc->body == NULL)) cc->body = astr_resolve_body(c, name);
+    VALUE v0 = UNWRAP(EVAL_ARG(c, a0));
+    VALUE F[ASTR_FRAME_MAX];
+    F[0] = v0;
+    return RESULT_OK(EVAL(c, cc->body, F).value);
+}
+
+NODE_DEF
+node_call_2(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, const char *name, struct astr_callcache *cc@ref, NODE *a0, NODE *a1)
+{
+    (void)n;
+    if (UNLIKELY(cc->body == NULL)) cc->body = astr_resolve_body(c, name);
+    VALUE v0 = UNWRAP(EVAL_ARG(c, a0));
+    VALUE v1 = UNWRAP(EVAL_ARG(c, a1));
+    VALUE F[ASTR_FRAME_MAX];
+    F[0] = v0;
+    F[1] = v1;
+    return RESULT_OK(EVAL(c, cc->body, F).value);
+}
+
+NODE_DEF
+node_call_3(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, const char *name, struct astr_callcache *cc@ref, NODE *a0, NODE *a1, NODE *a2)
+{
+    (void)n;
+    if (UNLIKELY(cc->body == NULL)) cc->body = astr_resolve_body(c, name);
+    VALUE v0 = UNWRAP(EVAL_ARG(c, a0));
+    VALUE v1 = UNWRAP(EVAL_ARG(c, a1));
+    VALUE v2 = UNWRAP(EVAL_ARG(c, a2));
+    VALUE F[ASTR_FRAME_MAX];
+    F[0] = v0;
+    F[1] = v1;
+    F[2] = v2;
+    return RESULT_OK(EVAL(c, cc->body, F).value);
+}
+
+// 4+ arg call: each operand lives in ASTR_NODE_TABLE[args_idx + i].
+// `@noinline` because the variadic loop below isn't worth specialising
+// — its hot loop is bound by argument evaluation, not dispatch.
+NODE_DEF @noinline
+node_call_n(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, const char *name, uint32_t args_idx, uint32_t argc, struct astr_callcache *cc@ref)
+{
+    (void)n;
+    if (UNLIKELY(cc->body == NULL)) cc->body = astr_resolve_body(c, name);
+    VALUE F[ASTR_FRAME_MAX];
+    if (UNLIKELY(argc > ASTR_FRAME_MAX)) {
+        fprintf(stderr, "astr: too many args to %s (%u > %d)\n", name, argc, ASTR_FRAME_MAX);
+        exit(1);
+    }
+    for (uint32_t i = 0; i < argc; i++) {
+        NODE *arg = ASTR_NODE_TABLE[args_idx + i];
+        F[i] = UNWRAP((*arg->head.dispatcher)(c, arg, fp));
+    }
+    return RESULT_OK(EVAL(c, cc->body, F).value);
+}
+
+// ---------------------------------------------------------------------------
+// Builtin calls.  Unlike user calls the body lives in a registered C
+// function pointer; arity-fixed forms inline the call into the SD,
+// while node_call_builtin_n routes through ASTR_NODE_TABLE for varargs.
+// ---------------------------------------------------------------------------
+
+typedef VALUE (*astr_builtin0_t)(void);
+typedef VALUE (*astr_builtin1_t)(VALUE);
+typedef VALUE (*astr_builtin2_t)(VALUE, VALUE);
+typedef VALUE (*astr_builtin3_t)(VALUE, VALUE, VALUE);
+typedef VALUE (*astr_builtin_n_t)(VALUE *args, size_t n);
+
+NODE_DEF
+node_call_builtin0(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, const char *name, void *func_ptr)
+{
+    (void)c; (void)n; (void)fp; (void)name;
+    return RESULT_OK(((astr_builtin0_t)func_ptr)());
+}
+
+NODE_DEF
+node_call_builtin1(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, const char *name, void *func_ptr, NODE *a0)
+{
+    (void)n; (void)name;
+    VALUE v0 = UNWRAP(EVAL_ARG(c, a0));
+    return RESULT_OK(((astr_builtin1_t)func_ptr)(v0));
+}
+
+NODE_DEF
+node_call_builtin2(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, const char *name, void *func_ptr, NODE *a0, NODE *a1)
+{
+    (void)n; (void)name;
+    VALUE v0 = UNWRAP(EVAL_ARG(c, a0));
+    VALUE v1 = UNWRAP(EVAL_ARG(c, a1));
+    return RESULT_OK(((astr_builtin2_t)func_ptr)(v0, v1));
+}
+
+NODE_DEF
+node_call_builtin3(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, const char *name, void *func_ptr, NODE *a0, NODE *a1, NODE *a2)
+{
+    (void)n; (void)name;
+    VALUE v0 = UNWRAP(EVAL_ARG(c, a0));
+    VALUE v1 = UNWRAP(EVAL_ARG(c, a1));
+    VALUE v2 = UNWRAP(EVAL_ARG(c, a2));
+    return RESULT_OK(((astr_builtin3_t)func_ptr)(v0, v1, v2));
+}
+
+NODE_DEF @noinline
+node_call_builtin_n(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, const char *name, void *func_ptr, uint32_t args_idx, uint32_t argc)
+{
+    (void)n; (void)name;
+    VALUE *args = (VALUE *)alloca(sizeof(VALUE) * (argc ? argc : 1));
+    for (uint32_t i = 0; i < argc; i++) {
+        NODE *arg = ASTR_NODE_TABLE[args_idx + i];
+        args[i] = UNWRAP((*arg->head.dispatcher)(c, arg, fp));
+    }
+    return RESULT_OK(((astr_builtin_n_t)func_ptr)(args, (size_t)argc));
+}
+
+// ---------------------------------------------------------------------------
+// Subscript get / set: `v[i]` and `v[i] <- val`.
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+node_index_get(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *seq, NODE *idx)
+{
+    (void)n;
+    VALUE sv = UNWRAP(EVAL_ARG(c, seq));
+    VALUE iv = UNWRAP(EVAL_ARG(c, idx));
+    return RESULT_OK(astr_subscript_get(sv, iv));
+}
+
+// `v[i] <- val` for a local variable `v` at slot `slot`.  Evaluates idx
+// and val, calls astr_subscript_set, and (for pointer-typed seqs) the
+// store happens in place — the slot binding doesn't need updating.
+// For fixnum seqs we promote to a length-1 numeric vector first so the
+// assignment "lifts" the variable, matching R semantics.
+NODE_DEF
+node_index_set_local(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t slot, NODE *idx, NODE *val)
+{
+    (void)n;
+    VALUE iv = UNWRAP(EVAL_ARG(c, idx));
+    VALUE vv = UNWRAP(EVAL_ARG(c, val));
+    VALUE sv = fp[slot];
+    if (ASTR_IS_FIX(sv) || (ASTR_IS_PTR(sv) && ASTR_PTR(sv)->type == ASTR_T_FLOAT)) {
+        // Lift scalar to a 1-element numeric vector before assign.
+        VALUE vec = astr_make_numvec_n(1);
+        ASTR_PTR(vec)->numvec.items[0] = astr_to_double(sv);
+        fp[slot] = vec;
+        sv = vec;
+    }
+    astr_subscript_set(sv, iv, vv);
+    return RESULT_OK(vv);
+}
+
+// ---------------------------------------------------------------------------
+// Arithmetic.  Inline fast path for fix+fix in context.h; helpers in
+// runtime.c for everything else.
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+node_add(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *lhs, NODE *rhs)
+{
+    (void)n;
+    VALUE l = UNWRAP(EVAL_ARG(c, lhs));
+    VALUE r = UNWRAP(EVAL_ARG(c, rhs));
+    return RESULT_OK(astr_add(l, r));
+}
+
+NODE_DEF
+node_sub(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *lhs, NODE *rhs)
+{
+    (void)n;
+    VALUE l = UNWRAP(EVAL_ARG(c, lhs));
+    VALUE r = UNWRAP(EVAL_ARG(c, rhs));
+    return RESULT_OK(astr_sub(l, r));
+}
+
+NODE_DEF
+node_mul(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *lhs, NODE *rhs)
+{
+    (void)n;
+    VALUE l = UNWRAP(EVAL_ARG(c, lhs));
+    VALUE r = UNWRAP(EVAL_ARG(c, rhs));
+    return RESULT_OK(astr_mul(l, r));
+}
+
+NODE_DEF
+node_div(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *lhs, NODE *rhs)
+{
+    (void)n;
+    VALUE l = UNWRAP(EVAL_ARG(c, lhs));
+    VALUE r = UNWRAP(EVAL_ARG(c, rhs));
+    return RESULT_OK(astr_div(l, r));
+}
+
+NODE_DEF
+node_idiv(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *lhs, NODE *rhs)
+{
+    (void)n;
+    VALUE l = UNWRAP(EVAL_ARG(c, lhs));
+    VALUE r = UNWRAP(EVAL_ARG(c, rhs));
+    return RESULT_OK(astr_idiv(l, r));
+}
+
+NODE_DEF
+node_mod(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *lhs, NODE *rhs)
+{
+    (void)n;
+    VALUE l = UNWRAP(EVAL_ARG(c, lhs));
+    VALUE r = UNWRAP(EVAL_ARG(c, rhs));
+    return RESULT_OK(astr_mod(l, r));
+}
+
+NODE_DEF
+node_pow(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *lhs, NODE *rhs)
+{
+    (void)n;
+    VALUE l = UNWRAP(EVAL_ARG(c, lhs));
+    VALUE r = UNWRAP(EVAL_ARG(c, rhs));
+    return RESULT_OK(astr_pow(l, r));
+}
+
+NODE_DEF
+node_neg(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *operand)
+{
+    (void)n;
+    VALUE v = UNWRAP(EVAL_ARG(c, operand));
+    return RESULT_OK(astr_neg(v));
+}
+
+// ---------------------------------------------------------------------------
+// Comparison.  Returns ASTR_FIX(0/1) — R's logical type collapses to
+// integer for our scalar subset.
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+node_lt(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *lhs, NODE *rhs)
+{
+    (void)n;
+    VALUE l = UNWRAP(EVAL_ARG(c, lhs));
+    VALUE r = UNWRAP(EVAL_ARG(c, rhs));
+    if (LIKELY(ASTR_IS_FIX(l) & ASTR_IS_FIX(r))) {
+        return RESULT_OK(ASTR_FIX_VAL(l) < ASTR_FIX_VAL(r) ? ASTR_FIX(1) : ASTR_FIX(0));
+    }
+    return RESULT_OK(astr_cmp(l, r) < 0 ? ASTR_FIX(1) : ASTR_FIX(0));
+}
+
+NODE_DEF
+node_le(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *lhs, NODE *rhs)
+{
+    (void)n;
+    VALUE l = UNWRAP(EVAL_ARG(c, lhs));
+    VALUE r = UNWRAP(EVAL_ARG(c, rhs));
+    if (LIKELY(ASTR_IS_FIX(l) & ASTR_IS_FIX(r))) {
+        return RESULT_OK(ASTR_FIX_VAL(l) <= ASTR_FIX_VAL(r) ? ASTR_FIX(1) : ASTR_FIX(0));
+    }
+    return RESULT_OK(astr_cmp(l, r) <= 0 ? ASTR_FIX(1) : ASTR_FIX(0));
+}
+
+NODE_DEF
+node_gt(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *lhs, NODE *rhs)
+{
+    (void)n;
+    VALUE l = UNWRAP(EVAL_ARG(c, lhs));
+    VALUE r = UNWRAP(EVAL_ARG(c, rhs));
+    if (LIKELY(ASTR_IS_FIX(l) & ASTR_IS_FIX(r))) {
+        return RESULT_OK(ASTR_FIX_VAL(l) > ASTR_FIX_VAL(r) ? ASTR_FIX(1) : ASTR_FIX(0));
+    }
+    return RESULT_OK(astr_cmp(l, r) > 0 ? ASTR_FIX(1) : ASTR_FIX(0));
+}
+
+NODE_DEF
+node_ge(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *lhs, NODE *rhs)
+{
+    (void)n;
+    VALUE l = UNWRAP(EVAL_ARG(c, lhs));
+    VALUE r = UNWRAP(EVAL_ARG(c, rhs));
+    if (LIKELY(ASTR_IS_FIX(l) & ASTR_IS_FIX(r))) {
+        return RESULT_OK(ASTR_FIX_VAL(l) >= ASTR_FIX_VAL(r) ? ASTR_FIX(1) : ASTR_FIX(0));
+    }
+    return RESULT_OK(astr_cmp(l, r) >= 0 ? ASTR_FIX(1) : ASTR_FIX(0));
+}
+
+NODE_DEF
+node_eq(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *lhs, NODE *rhs)
+{
+    (void)n;
+    VALUE l = UNWRAP(EVAL_ARG(c, lhs));
+    VALUE r = UNWRAP(EVAL_ARG(c, rhs));
+    return RESULT_OK(astr_eq(l, r) ? ASTR_FIX(1) : ASTR_FIX(0));
+}
+
+NODE_DEF
+node_neq(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *lhs, NODE *rhs)
+{
+    (void)n;
+    VALUE l = UNWRAP(EVAL_ARG(c, lhs));
+    VALUE r = UNWRAP(EVAL_ARG(c, rhs));
+    return RESULT_OK(astr_eq(l, r) ? ASTR_FIX(0) : ASTR_FIX(1));
+}
+
+// ---------------------------------------------------------------------------
+// Logical.
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+node_and(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *lhs, NODE *rhs)
+{
+    (void)n;
+    VALUE l = UNWRAP(EVAL_ARG(c, lhs));
+    if (!astr_is_truthy(l)) return RESULT_OK(ASTR_FIX(0));
+    VALUE r = UNWRAP(EVAL_ARG(c, rhs));
+    return RESULT_OK(astr_is_truthy(r) ? ASTR_FIX(1) : ASTR_FIX(0));
+}
+
+NODE_DEF
+node_or(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *lhs, NODE *rhs)
+{
+    (void)n;
+    VALUE l = UNWRAP(EVAL_ARG(c, lhs));
+    if (astr_is_truthy(l)) return RESULT_OK(ASTR_FIX(1));
+    VALUE r = UNWRAP(EVAL_ARG(c, rhs));
+    return RESULT_OK(astr_is_truthy(r) ? ASTR_FIX(1) : ASTR_FIX(0));
+}
+
+NODE_DEF
+node_not(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *operand)
+{
+    (void)n;
+    VALUE v = UNWRAP(EVAL_ARG(c, operand));
+    return RESULT_OK(astr_is_truthy(v) ? ASTR_FIX(0) : ASTR_FIX(1));
+}
