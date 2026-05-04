@@ -5,6 +5,37 @@ ASTro 論文評価対象として **「Plain / AOT / Profile-Guided / JIT を 1
 尖らせる方向ではなく、**4 モードの差を比較する** こと、および **CRuby
 (MRI / yjit) や C (gcc) と同 source/同 work で並べる** ことに焦点。
 
+## ⚠️ 重要: CRuby / yjit との比較はフェアではない
+
+このドキュメントの数値表 (`ruby` / `yjit` 列) は **言語処理系として同
+スペックの実装を比較したものではない**。naruby は ASTro framework の
+評価のために Ruby から **大量の機能を削ぎ落とした最小サブセット** で
+あり (詳細は [spec.md](spec.md) — `VALUE = int64_t` のみ、object /
+GC / 例外 / block / Float / String / 配列等すべてなし)、CRuby /
+yjit が払っているコストの大半を「実装していないから払わない」という
+形で回避している。**naruby/lto-c が yjit より速い** という結果は、
+ほぼ自明な帰結 (= 削った機能のコスト) であって、ASTro の framework
+が yjit を上回る JIT を生んでいることを意味しない。
+
+したがって `n/lto-c` が `yjit` を 1.0-14× 上回る数値は、
+「naruby JIT が yjit より優れている」ことを示すのではなく、
+**「Ruby の言語機能 (tagging / type check / method dispatch / 例外
+チェック / GC barrier 等) が CRuby/yjit に課しているコストの大きさ」**
+を示すデータとして読むべきである。
+
+公平性のあるベンチで naruby を評価したい場合の比較対象は:
+
+- **同じ source / 同じ work を C で書いた `gcc-O3` 列** — これが言語
+  実装としての naruby の「上限」(可能な最良コード) の参考値。
+- **naruby の `plain` と `aot/pg/lto` の比 (10-25×)** — ASTro framework
+  そのものの効果を見る軸。これは naruby 内部での比較なので
+  「機能差」のバイアスがかからない。
+
+> 一方で、`yjit` 列を完全に削除しないのは、Ruby を読む人に「同じ
+> ソースを CRuby で動かしたらどのくらいか」のスケール感を与えたいため。
+> 数値は **「Ruby の構文の式が、Ruby の意味論の重みを払うとここまで
+> 重い」** という参照点として読んでほしい。
+
 ## 計測環境
 
 - WSL2 + Linux 6.8、host binary は `gcc-13 -O3 -ggdb3 -march=native`。
@@ -121,29 +152,28 @@ chain20/chain40 と同じ shape (acc += f0(42)) に統一した。
 
 ## 主要観察
 
-### naruby/lto-c vs yjit vs gcc-O3
+### naruby/lto-c vs gcc-O3
 
-cached run の比較 (naruby は最終形 lto-c、それ以外は最高設定どうし):
+cached run の比較 (naruby は最終形 lto-c、gcc は最高設定 -O3)。
 
-| bench | n/lto-c | yjit | gcc-O3 | n vs yjit | n vs gcc-O3 |
-|-------|------:|------:|------:|----------:|------------:|
-| fib          | 0.56 | 1.12 | 0.13 | **2.0× (n 勝)** | 4.3× (gcc 勝) |
-| ackermann    | 0.71 | 0.73 | 0.06 | 1.0× ≈ tie       | 11.8× (gcc) |
-| tak          | 0.11 | 0.20 | 0.02 | **1.8× (n 勝)** | 5.5× (gcc) |
-| gcd          | 0.16 | 2.09 | 0.15 | **13.1× (n 勝)** | **1.07× ≈ tie** |
-| loop         | 0.00 | 0.88 | 0.00 | DCE で比較不能 | DCE で比較不能 |
-| call         | 0.58 | 5.34 | 0.33 | **9.2× (n 勝)** | 1.76× (gcc) |
-| chain20      | 0.71 | 3.97 | 0.27 | **5.6× (n 勝)** | 2.6× (gcc) |
-| chain40      | 0.92 | 3.83 | 0.25 | **4.2× (n 勝)** | 3.7× (gcc) |
-| chain_add    | 0.07 | 0.65 | 0.03 | **9.3× (n 勝)** | 2.3× (gcc) |
-| compose      | 0.09 | 1.26 | 0.09 | **14.0× (n 勝)** | **1.0× tie** |
-| branch_dom   | 0.14 | 1.72 | 0.07 | **12.3× (n 勝)** | 2.0× (gcc) |
-| deep_const   | 0.63 | 5.18 | 0.40 | **8.2× (n 勝)** | 1.6× (gcc) |
-| collatz      | 0.15 | 0.87 | 0.14 | **5.8× (n 勝)** | **1.07× ≈ tie** |
-| early_return | 0.28 | 0.70 | 0.28 | **2.5× (n 勝)** | **1.0× tie** |
-| prime_count  | 0.44 | 3.46 | 0.43 | **7.9× (n 勝)** | **1.02× ≈ tie** |
+| bench | n/lto-c | gcc-O3 | n vs gcc-O3 |
+|-------|------:|------:|------------:|
+| fib          | 0.56 | 0.13 | 4.3× (gcc 勝) |
+| ackermann    | 0.71 | 0.06 | 11.8× (gcc) |
+| tak          | 0.11 | 0.02 | 5.5× (gcc) |
+| gcd          | 0.16 | 0.15 | **1.07× ≈ tie** |
+| loop         | 0.00 | 0.00 | DCE で比較不能 |
+| call         | 0.58 | 0.33 | 1.76× (gcc) |
+| chain20      | 0.71 | 0.27 | 2.6× (gcc) |
+| chain40      | 0.92 | 0.25 | 3.7× (gcc) |
+| chain_add    | 0.07 | 0.03 | 2.3× (gcc) |
+| compose      | 0.09 | 0.09 | **1.0× tie** |
+| branch_dom   | 0.14 | 0.07 | 2.0× (gcc) |
+| deep_const   | 0.63 | 0.40 | 1.6× (gcc) |
+| collatz      | 0.15 | 0.14 | **1.07× ≈ tie** |
+| early_return | 0.28 | 0.28 | **1.0× tie** |
+| prime_count  | 0.44 | 0.43 | **1.02× ≈ tie** |
 
-★ **naruby/lto-c は yjit を全 14 ベンチ (loop は DCE で除外) で上回る** (1.0-14×)。
 ★ **gcc-O3 と同等 (≤ 1.1×)** が gcd / compose / collatz / early_return /
   prime_count の 5 種、つまり **実ワークロード系で gcc-O3 と並ぶ**。
 ★ chain 系 / call / branch_dom / deep_const は gcc-O3 に 1.6-3.7× 負けるが、
