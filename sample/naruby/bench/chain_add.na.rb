@@ -11,9 +11,10 @@ def f7(n) = f8(n + 1)
 def f8(n) = f9(n + 1)
 def f9(n) = n + 1
 
-i=0
-while i<10_000_000
-  f0(0)
+acc = 0
+i = 0
+while i < 10_000_000
+  acc = acc + f0(0)
   i += 1
 end
-p f0(0)
+p acc

@@ -8,9 +8,10 @@ def f(n)
   end
 end
 
-i=0
-while i<50_000_000
-  f(42)
+acc = 0
+i = 0
+while i < 50_000_000
+  acc = acc + f(42)
   i += 1
 end
-p f(42)
+p acc

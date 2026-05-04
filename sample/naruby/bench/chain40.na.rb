@@ -1,4 +1,3 @@
-# 40-deep call chain — stress test for chain inline.
 def f0(n) = f1(n)
 def f1(n) = f2(n)
 def f2(n) = f3(n)
@@ -40,9 +39,10 @@ def f37(n) = f38(n)
 def f38(n) = f39(n)
 def f39(n) = n
 
-i=0
-while i<25_000_000
-  f0(42)
+acc = 0
+i = 0
+while i < 25_000_000
+  acc = acc + f0(42)
   i += 1
 end
-p f0(42)
+p acc

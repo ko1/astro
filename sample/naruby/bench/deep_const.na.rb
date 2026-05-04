@@ -11,9 +11,10 @@ def h = g
 def i = h
 def j = i
 
-k=0
-while k<100_000_000
-  j
+acc = 0
+k = 0
+while k < 100_000_000
+  acc = acc + j
   k += 1
 end
-p j
+p acc

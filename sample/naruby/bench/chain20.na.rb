@@ -19,9 +19,10 @@ def f17(n) = f18(n)
 def f18(n) = f19(n)
 def f19(n) = n
 
-i=0
-while i<50_000_000
-  f0(42)
+acc = 0
+i = 0
+while i < 50_000_000
+  acc = acc + f0(42)
   i += 1
 end
-p f0(42)
+p acc
