@@ -33,16 +33,25 @@ node.def 構成** を中心に横断分析した文書。各サンプル個別�
 | `wastro` | WebAssembly 1.0+ | スタックマシン, 静的 | 静 | i32/i64/f32/f64 | WAT/WASM 両対応 / spec-test ハーネス |
 | `astrogre` | (Onigmo 互換 regex) | DSL — 正規表現 | — | — | **マッチエンジン自体が AST**、`are` grep CLI 付属 |
 
-カテゴリの広がり:
+パラダイム軸での広がり:
 - **教育用最小**: `calc`
-- **古典統合言語**: `pascalast`
+- **命令型 (古典)**: `pascalast` / `castro`
 - **動的言語のメインストリーム**: `naruby` / `abruby` / `koruby` / `luastro` / `pystro` / `jstro`
 - **関数型**: `ascheme` / `astocaml`
 - **OO 純化**: `asom`
 - **データ解析系**: `astr`
 - **スタックマシン**: `aforth` / `wastro`
-- **静的型システム言語**: `castro`
 - **DSL / エンジン応用**: `astrogre`
+
+直交する軸として **型システム** で切ると:
+- **静的型** (parser-time に型確定): `pascalast` / `castro` / `astocaml` / `wastro`
+- **動的型**: 動的言語勢 6 つ + Scheme + Smalltalk + R + Forth (cell 単位 untyped)
+- **型なし / DSL**: `calc` / `astrogre`
+
+静的型 4 つはそれぞれ違う方向 — Pascal (古典手続き型 + variant record),
+C (低レベル ABI + ポインタ), OCaml (HM + variant + class), Wasm (typed
+スタックマシン) — を扱っており、§3.1 で見るように **node.def 上の算術
+ノード分裂パターン** が型ごとに異なる形で揃う。
 
 「ツリー解釈による言語実装フレームワーク」という前提に対して、
 **スタックマシン (aforth/wastro) と DSL 応用 (astrogre)** が乗ったのが面白い。
