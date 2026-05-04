@@ -1,7 +1,8 @@
 #include <stdio.h>
+#include <stdint.h>
 
-int
-fib(int n)
+int64_t
+fib(int64_t n)
 {
     if (n < 2) {
         return 1;
@@ -14,8 +15,8 @@ fib(int n)
 int
 main(int argc, const char *argv[])
 {
-    int r = fib(40);
-    printf("%d\n", r);
+    int64_t r = fib(40);
+    printf("%ld\n", (long)r);
     (void)argc; (void)argv;
     return 0;
 }

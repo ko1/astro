@@ -1,55 +1,56 @@
 #include <stdio.h>
+#include <stdint.h>
 
 #define A __attribute__((noinline,noipa))
 
-static A int f39(int n) { return n; }
-static A int f38(int n) { return f39(n); }
-static A int f37(int n) { return f38(n); }
-static A int f36(int n) { return f37(n); }
-static A int f35(int n) { return f36(n); }
-static A int f34(int n) { return f35(n); }
-static A int f33(int n) { return f34(n); }
-static A int f32(int n) { return f33(n); }
-static A int f31(int n) { return f32(n); }
-static A int f30(int n) { return f31(n); }
-static A int f29(int n) { return f30(n); }
-static A int f28(int n) { return f29(n); }
-static A int f27(int n) { return f28(n); }
-static A int f26(int n) { return f27(n); }
-static A int f25(int n) { return f26(n); }
-static A int f24(int n) { return f25(n); }
-static A int f23(int n) { return f24(n); }
-static A int f22(int n) { return f23(n); }
-static A int f21(int n) { return f22(n); }
-static A int f20(int n) { return f21(n); }
-static A int f19(int n) { return f20(n); }
-static A int f18(int n) { return f19(n); }
-static A int f17(int n) { return f18(n); }
-static A int f16(int n) { return f17(n); }
-static A int f15(int n) { return f16(n); }
-static A int f14(int n) { return f15(n); }
-static A int f13(int n) { return f14(n); }
-static A int f12(int n) { return f13(n); }
-static A int f11(int n) { return f12(n); }
-static A int f10(int n) { return f11(n); }
-static A int f9(int n)  { return f10(n); }
-static A int f8(int n)  { return f9(n); }
-static A int f7(int n)  { return f8(n); }
-static A int f6(int n)  { return f7(n); }
-static A int f5(int n)  { return f6(n); }
-static A int f4(int n)  { return f5(n); }
-static A int f3(int n)  { return f4(n); }
-static A int f2(int n)  { return f3(n); }
-static A int f1(int n)  { return f2(n); }
-static A int f0(int n)  { return f1(n); }
+static A int64_t f39(int64_t n) { return n; }
+static A int64_t f38(int64_t n) { return f39(n); }
+static A int64_t f37(int64_t n) { return f38(n); }
+static A int64_t f36(int64_t n) { return f37(n); }
+static A int64_t f35(int64_t n) { return f36(n); }
+static A int64_t f34(int64_t n) { return f35(n); }
+static A int64_t f33(int64_t n) { return f34(n); }
+static A int64_t f32(int64_t n) { return f33(n); }
+static A int64_t f31(int64_t n) { return f32(n); }
+static A int64_t f30(int64_t n) { return f31(n); }
+static A int64_t f29(int64_t n) { return f30(n); }
+static A int64_t f28(int64_t n) { return f29(n); }
+static A int64_t f27(int64_t n) { return f28(n); }
+static A int64_t f26(int64_t n) { return f27(n); }
+static A int64_t f25(int64_t n) { return f26(n); }
+static A int64_t f24(int64_t n) { return f25(n); }
+static A int64_t f23(int64_t n) { return f24(n); }
+static A int64_t f22(int64_t n) { return f23(n); }
+static A int64_t f21(int64_t n) { return f22(n); }
+static A int64_t f20(int64_t n) { return f21(n); }
+static A int64_t f19(int64_t n) { return f20(n); }
+static A int64_t f18(int64_t n) { return f19(n); }
+static A int64_t f17(int64_t n) { return f18(n); }
+static A int64_t f16(int64_t n) { return f17(n); }
+static A int64_t f15(int64_t n) { return f16(n); }
+static A int64_t f14(int64_t n) { return f15(n); }
+static A int64_t f13(int64_t n) { return f14(n); }
+static A int64_t f12(int64_t n) { return f13(n); }
+static A int64_t f11(int64_t n) { return f12(n); }
+static A int64_t f10(int64_t n) { return f11(n); }
+static A int64_t f9(int64_t n)  { return f10(n); }
+static A int64_t f8(int64_t n)  { return f9(n); }
+static A int64_t f7(int64_t n)  { return f8(n); }
+static A int64_t f6(int64_t n)  { return f7(n); }
+static A int64_t f5(int64_t n)  { return f6(n); }
+static A int64_t f4(int64_t n)  { return f5(n); }
+static A int64_t f3(int64_t n)  { return f4(n); }
+static A int64_t f2(int64_t n)  { return f3(n); }
+static A int64_t f1(int64_t n)  { return f2(n); }
+static A int64_t f0(int64_t n)  { return f1(n); }
 
 int main(void)
 {
-    int sz = 25 * 1000 * 1000;
-    int acc = 0;
-    for (int i = 0; i < sz; i++) {
+    int64_t sz = 25 * 1000 * 1000;
+    int64_t acc = 0;
+    for (int64_t i = 0; i < sz; i++) {
         acc += f0(42);
     }
-    printf("%d\n", acc);
+    printf("%ld\n", (long)acc);
     return 0;
 }
