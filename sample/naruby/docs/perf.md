@@ -63,20 +63,38 @@ branch_dom    2.26    1.70    1.46    1.53    0.14    1.41    0.14    1.42    0.
 deep_const   17.37    5.18    3.82    4.07    1.84    4.60    1.22    4.72    0.55    1.02    0.98    0.33    0.34
 ```
 
-列の意味:
+### "cold" / "cached" の定義
+
+**cold** = 以下を毎 run の前に実施した状態:
+- `rm -rf code_store/` (naruby の SD/PGSD キャッシュ ディレクトリを完全削除、
+  `c/` `o/` `all.so` `hopt_index.txt` `version` 全部消える)
+- `CCACHE_DISABLE=1` (ccache の compile 結果キャッシュを無効化)
+- naruby host binary 自体は事前に `make` 済 (= host binary の compile は
+  測定外、SD compile のみが新規)
+
+→ naruby は SD/PGSD .c を生成 → make で gcc compile → all.so にリンク
+→ dlopen までを毎回頭から実行する。
+
+**cached** = `cold` 1 回走った後、`code_store/` がそのまま残っている
+状態で `-b` flag (= bench mode、bake skip) で run を計測。
+- `code_store/all.so` を dlopen して既存の SD/PGSD を load
+- gcc compile / make は走らない (cs_compile が dedup でファイル既存を
+  検知 → skip。さらに `-b` で build_code_store 自体スキップ)
+
+### 列の意味
 
 | 列 | 内容 |
 |---|---|
 | `ruby` | CRuby 4.0.2 で `ruby bench/$B.na.rb` |
 | `yjit` | CRuby 4.0.2 で `ruby --yjit bench/$B.na.rb` |
-| `n/plain` | naruby `-i` (interpreter only) |
-| `n/aot-1st` | `code_store/` 空 + `CCACHE_DISABLE=1` で `./naruby $B.na.rb` (interpret 実行 + 終了時に SD bake)。実行時間 + bake 時間込み |
-| `n/aot-c` | 上記の cache 状態で `./naruby -b $B.na.rb` (cache を load して実行のみ) |
-| `n/pg-1st` | 同 cold で `./naruby -p $B.na.rb` (PG mode、PGSD bake 込み) |
-| `n/pg-c` | 上記 cache で `./naruby -p -b $B.na.rb` |
-| `n/lto-1st` | 同 cold で `ASTRO_EXTRA_CFLAGS=-flto ASTRO_EXTRA_LDFLAGS="-Wl,-Bsymbolic -flto" ./naruby -p $B.na.rb` |
-| `n/lto-c` | 上記 (LTO baked) cache で `./naruby -p -b` |
-| `gcc-O0..-O3` | C 版を gcc-13 でビルドして実行 |
+| `n/plain` | naruby `-i` (interpreter only、SD load も bake もしない) |
+| `n/aot-1st` | cold 状態で `./naruby $B.na.rb` (interpret 実行 + 終了時に AOT mode で SD bake)。**run 時間 + SD compile 時間込み** |
+| `n/aot-c` | aot-1st 後の cached 状態で `./naruby -b $B.na.rb` (cache を load して実行のみ。compile なし) |
+| `n/pg-1st` | cold 状態で `./naruby -p $B.na.rb` (PG mode で interpret 実行 + 終了時に SD + PGSD bake)。**run 時間 + SD/PGSD compile 時間込み** |
+| `n/pg-c` | pg-1st 後の cached 状態で `./naruby -p -b $B.na.rb` |
+| `n/lto-1st` | cold 状態 + LTO env (`ASTRO_EXTRA_CFLAGS=-flto`、`ASTRO_EXTRA_LDFLAGS="-Wl,-Bsymbolic -flto"`) で `./naruby -p $B.na.rb`。LTO は SD compile / link を遅くするので n/pg-1st より遅め |
+| `n/lto-c` | lto-1st 後の cached 状態 (LTO baked all.so) で `./naruby -p -b` |
+| `gcc-O0..-O3` | C 版を gcc-13 で `-O0`/`-O1`/`-O2`/`-O3` ビルドして実行 (host binary 自体は cold/cached の対象外、 ccache は global の `CCACHE_DISABLE=1` で無効) |
 
 ## 主要観察
 
