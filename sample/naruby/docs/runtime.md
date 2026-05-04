@@ -346,22 +346,34 @@ SD_<call2_hash>(c, n, fp) {
     if (LIKELY(c->serial == cc->serial && cc->body == sp_body)) {
         return SD_<HASH(sp_body)>(c, sp_body, fp + arg_index);  // direct
     }
-    return node_pg_call_slowpath(c, n, fp, name, ..., cc);
+    return node_call2_slowpath(c, n, fp);  // tail-call to main binary
 }
 ```
 
-slowpath:
+slowpath は **call variant ごと** に `node_slowpath.c` で別関数として
+定義される。シグネチャは全部 `(c, n, fp)` 3 つだけで、name / cc /
+sp_body / args は `n->u.<variant>` から取り出す:
 
 ```c
-RESULT node_pg_call_slowpath(c, n, fp, name, ..., cc) {
-    if (c->serial != cc->serial) {
-        fe = sp_find_func_entry(c, name);
-        cc->serial = c->serial;
-        cc->body = fe->body;            // sp_body は触らない
-    }
-    return EVAL(c, cc->body, fp + arg_index);  // indirect dispatch
+// node_slowpath.c (本体 binary 側のみ)
+RESULT node_pg_call0_slowpath(CTX *c, NODE *n, VALUE *fp) {
+    struct callcache *cc = &n->u.node_pg_call0.cc;
+    NODE *body = sp_refresh_cc(c, cc, n->u.node_pg_call0.name, 0);
+    return sp_dispatch_fresh_frame(c, body, NULL, 0);  // cc->body indirect
 }
+RESULT node_pg_call1_slowpath(CTX *c, NODE *n, VALUE *fp) {
+    VALUE v0 = UNWRAP(EVAL(c, n->u.node_pg_call1.a0, fp));
+    struct callcache *cc = &n->u.node_pg_call1.cc;
+    NODE *body = sp_refresh_cc(c, cc, n->u.node_pg_call1.name, 1);
+    VALUE args[1] = { v0 };
+    return sp_dispatch_fresh_frame(c, body, args, 1);  // cc->body indirect
+}
+// ... pg_call2/3、call_0/1/2/3、call、call2 も同型 ...
 ```
+
+slowpath 内で arg を再評価 (UNWRAP の EVAL) するので、SD 側 (= fast
+path) は **failure 時に何もスタック spill しない** で済む。`jne <slowpath>`
+で tail-call するだけ。SD の cold path は thunk 数命令のみ。
 
 ##### 2 段にした理由
 
@@ -416,12 +428,16 @@ p(f(10))             # ← (B) 2 回目 call
 - direct call → ベイクされた `SD_<HASH(body)>`
 - 子の dispatcher load は **不要** (定数ベイク済)
 
-旧 1 段ガードに比べ **+1 load + 1 cmp + 1 jcc** 増えるが、
-recursive bench で実測 +20% 程度の影響。chain bench はほぼノイズ内。
-正しさを担保するために避けられないコスト。
+旧 1 段ガードに比べ **+1 load + 1 cmp + 1 jcc** 増える。
+ただし cold path を本体 binary 側 (`node_slowpath.c`) に集約した
+おかげで SD の cold は thunk 数命令だけになり、I-cache 圧迫が
+減った結果、recursive bench は旧 1 段時代と概ね同等まで戻った
+(fib lto-c 0.59s = 旧 1 段の 0.56s に近い)。chain bench は
+inline 段ぶん 2 段ガードコストが線形に積み上がるので 30-50% の
+regression が残る (call 0.91 vs 旧 0.57)。
 
-実測 (fib(40), [perf.md](perf.md) より): n/plain 4.34s → n/aot-c 0.73s
-→ n/pg-c 0.71s → n/lto-c 0.71s。再帰系は HOPT cycle break で
+実測 (fib(40), [perf.md](perf.md) より): n/plain 4.27s → n/aot-c 0.66s
+→ n/pg-c 0.59s → n/lto-c 0.59s。再帰系は HOPT cycle break で
 PGSD ≒ SD なので LTO 効果なし、AOT vs PG の差も 2 段ガード分で縮む。
 
 #### 5.3.1 HOPT / PGSD chain (Profile-Guided Specialization)

@@ -98,21 +98,24 @@ EVAL(CTX *c, NODE *n, VALUE *fp)
     return (*n->head.dispatcher)(c, n, fp);
 }
 
-// Cold-path slowpaths for `node_call2` / `node_pg_call_<N>`.  Defined
-// in node_slowpath.c (compiled only into the main `naruby` binary).
-// The generated AOT/PG code_store/*.so files reference these as
-// unresolved externs and resolve them via -rdynamic at dlopen — so a
-// single copy lives in the main binary instead of being duplicated
-// into every .so.
-struct callcache;
-RESULT node_pg_call_slowpath(CTX *c, NODE *n, VALUE *fp,
-                             const char *name, uint32_t params_cnt,
-                             uint32_t arg_index, struct callcache *cc);
-RESULT node_pg_call_n_slowpath(CTX *c, NODE *n, const VALUE *args,
-                               uint32_t argc, const char *name,
-                               struct callcache *cc);
-RESULT node_call_n_slowpath(CTX *c, NODE *n, const VALUE *args,
-                            uint32_t argc, const char *name,
-                            struct callcache *cc);
+// Per-variant slowpaths.  Defined in node_slowpath.c, which is
+// compiled only into the main `naruby` binary.  AOT/PG code_store/*.so
+// files reference them as unresolved externs and resolve at dlopen via
+// -rdynamic — exactly one copy lives in the main binary, so each
+// call-site SD adds at most a `jne <slowpath>` to all.so.
+//
+// Uniform signature: every slowpath takes `(c, n, fp)`.  The slowpath
+// reads name / cc / sp_body / arg operands from `n->u.<variant>` and
+// (re-)evaluates args against the caller's `fp`.
+RESULT node_call_slowpath        (CTX *c, NODE *n, VALUE *fp);
+RESULT node_call_0_slowpath      (CTX *c, NODE *n, VALUE *fp);
+RESULT node_call_1_slowpath      (CTX *c, NODE *n, VALUE *fp);
+RESULT node_call_2_slowpath      (CTX *c, NODE *n, VALUE *fp);
+RESULT node_call_3_slowpath      (CTX *c, NODE *n, VALUE *fp);
+RESULT node_call2_slowpath       (CTX *c, NODE *n, VALUE *fp);
+RESULT node_pg_call0_slowpath    (CTX *c, NODE *n, VALUE *fp);
+RESULT node_pg_call1_slowpath    (CTX *c, NODE *n, VALUE *fp);
+RESULT node_pg_call2_slowpath    (CTX *c, NODE *n, VALUE *fp);
+RESULT node_pg_call3_slowpath    (CTX *c, NODE *n, VALUE *fp);
 
 #endif // NODE_H

@@ -106,46 +106,32 @@ node_def(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, const char *n
     return RESULT_OK(0);
 }
 
-static struct function_entry *
-find_func_entry(CTX * restrict c, const char *name)
-{
-    for (int i=0; i < c->func_set_cnt; i++) {
-        struct function_entry *fe = &c->func_set[i];
-        if (strcmp(name, fe->name) == 0) {
-            return fe;
-        }
-    }
-
-    return NULL;
-}
-
-static void
-call_check(struct function_entry *fe, const char *name, uint32_t params_cnt)
-{
-    if (UNLIKELY(fe == NULL)) {
-        fprintf(stderr, "unknown function: %s\n", name);
-        exit(1);
-    }
-    else if (UNLIKELY(fe->params_cnt != params_cnt)) {
-        fprintf(stderr, "wrong parameter count for %s (%u for %u)\n", name, params_cnt, fe->params_cnt);
-    }
-}
-
 #define CALL_DEBUG 0
 
-// Catch RESULT_RETURN at the function boundary.  A `return expr` inside
-// `body` propagates up via RESULT.state until it hits this catch — at
-// which point it converts to RESULT_NORMAL so the caller sees the value
-// as the call's return.  Other states (none yet for naruby) would pass
-// through unchanged.
+// All cold paths (cc refresh, function lookup, error reporting,
+// slow-mode arg eval) live in node_slowpath.c (= main `naruby` binary
+// only).  The fast path here checks gates and either dispatches the
+// hot path or tail-calls the variant's slowpath.  Result: each call
+// site SD adds only `cmp/jne <slowpath>` + the body of the hot path
+// to all.so — no in-SD slowpath setup, no duplicated lookup helpers.
 //
-// `fp` is the caller's frame; the callee's frame is `fp + arg_index`
-// (args were already laid down by the caller's `lset` chain).
-static RESULT
-call_body(CTX * restrict c, VALUE * restrict fp, uint32_t arg_index, NODE *body)
+// `fp` is the caller's frame.  For node_call / node_call2 (argc > 3
+// fallbacks) the callee's frame aliases `fp + arg_index` (args laid
+// down by parser-emitted lset chain).  For arity-N specialised
+// node_call_<N> / node_pg_call_<N>, args are explicit operands and
+// the callee gets a fresh VLA frame `F[locals_cnt]`.
+
+NODE_DEF
+node_call(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, const char *name, uint32_t params_cnt, uint32_t arg_index, struct callcache *cc@ref)
 {
+    (void)name; (void)params_cnt;
+    if (UNLIKELY(c->serial != cc->serial)) {
+        return node_call_slowpath(c, n, fp);
+    }
+    NODE *body = cc->body;
 #ifndef ASTRO_SPECIALIZED
-    // profile
+    // JIT profile counter: only in the unspecialised default dispatcher;
+    // the SD removes this entirely (ifdef'd out at SPECIALIZE time).
     if (OPTION.jit &&
         (body->head.jit_status != JIT_STATUS_Compiled ||
          body->head.jit_status != JIT_STATUS_Compiling)) {
@@ -158,33 +144,12 @@ call_body(CTX * restrict c, VALUE * restrict fp, uint32_t arg_index, NODE *body)
         }
     }
 #endif
-
     RESULT r = EVAL(c, body, fp + arg_index);
-
-    // Unconditional state-clear (≡ `RESULT_OK(r.value)`): naruby's only
-    // non-NORMAL state is RESULT_RETURN, which we want to catch at the
-    // function boundary anyway.  vs the conditional form
-    // `if (state == RETURN) state = NORMAL`, this lets gcc see state
-    // is provably 0 after the call — caller's UNWRAP DCEs to a no-op
-    // and the SD chain inlines deeper.
+    // Unconditional state-clear: naruby's only non-NORMAL state is
+    // RESULT_RETURN, which is caught here at the function boundary.
+    // Letting gcc see state is 0 lets caller's UNWRAP DCE the check
+    // and the SD chain inline deeper.
     return RESULT_OK(r.value);
-}
-
-NODE_DEF
-node_call(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, const char *name, uint32_t params_cnt, uint32_t arg_index, struct callcache *cc@ref)
-{
-    if (LIKELY(c->serial == cc->serial)) {
-        return call_body(c, fp, arg_index, cc->body);
-    }
-    else {
-        struct function_entry *fe = find_func_entry(c, name);
-        call_check(fe, name, params_cnt);
-
-        cc->serial = c->serial;
-        cc->body = fe->body;
-
-        return call_body(c, fp, arg_index, fe->body);
-    }
 }
 
 // Arity-specialized AOT/interp call sites.  Mirror `node_pg_call_<N>`
@@ -205,166 +170,104 @@ node_call(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, const char *
 // the fresh frame F, not caller_fp + arg_index) but kept as an
 // operand for parser/locals_cnt patching consistency.
 
+// Fast paths below are check-first: on guard failure we tail-call the
+// variant's slowpath (defined in node_slowpath.c, main binary only).
+// Args evaluated *after* the gate so a missed gate doesn't have to spill
+// already-computed VALUEs to a stack array.  The slowpath re-evaluates
+// arg operands against the caller's `fp` — a one-time cost on the cold
+// path, never on the hot path.
+
 NODE_DEF
 node_call_0(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, const char *name, uint32_t arg_index, uint32_t locals_cnt, struct callcache *cc@ref)
 {
-    (void)arg_index;
-    NODE *body;
-    if (LIKELY(c->serial == cc->serial)) {
-        body = cc->body;
-    }
-    else {
-        return node_call_n_slowpath(c, n, NULL, 0, name, cc);
+    (void)name; (void)arg_index; (void)fp;
+    if (UNLIKELY(c->serial != cc->serial)) {
+        return node_call_0_slowpath(c, n, fp);
     }
     VALUE F[locals_cnt > 0 ? locals_cnt : 1];
-    return RESULT_OK(EVAL(c, body, F).value);
+    return RESULT_OK(EVAL(c, cc->body, F).value);
 }
 
 NODE_DEF
 node_call_1(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, const char *name, uint32_t arg_index, uint32_t locals_cnt, struct callcache *cc@ref, NODE *a0)
 {
-    (void)arg_index;
+    (void)name; (void)arg_index;
+    if (UNLIKELY(c->serial != cc->serial)) {
+        return node_call_1_slowpath(c, n, fp);
+    }
     VALUE v0 = UNWRAP(EVAL_ARG(c, a0));
-    NODE *body;
-    if (LIKELY(c->serial == cc->serial)) {
-        body = cc->body;
-    }
-    else {
-        VALUE args[1] = { v0 };
-        return node_call_n_slowpath(c, n, args, 1, name, cc);
-    }
     VALUE F[locals_cnt];
     F[0] = v0;
-    return RESULT_OK(EVAL(c, body, F).value);
+    return RESULT_OK(EVAL(c, cc->body, F).value);
 }
 
 NODE_DEF
 node_call_2(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, const char *name, uint32_t arg_index, uint32_t locals_cnt, struct callcache *cc@ref, NODE *a0, NODE *a1)
 {
-    (void)arg_index;
+    (void)name; (void)arg_index;
+    if (UNLIKELY(c->serial != cc->serial)) {
+        return node_call_2_slowpath(c, n, fp);
+    }
     VALUE v0 = UNWRAP(EVAL_ARG(c, a0));
     VALUE v1 = UNWRAP(EVAL_ARG(c, a1));
-    NODE *body;
-    if (LIKELY(c->serial == cc->serial)) {
-        body = cc->body;
-    }
-    else {
-        VALUE args[2] = { v0, v1 };
-        return node_call_n_slowpath(c, n, args, 2, name, cc);
-    }
     VALUE F[locals_cnt];
     F[0] = v0;
     F[1] = v1;
-    return RESULT_OK(EVAL(c, body, F).value);
+    return RESULT_OK(EVAL(c, cc->body, F).value);
 }
 
 NODE_DEF
 node_call_3(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, const char *name, uint32_t arg_index, uint32_t locals_cnt, struct callcache *cc@ref, NODE *a0, NODE *a1, NODE *a2)
 {
-    (void)arg_index;
+    (void)name; (void)arg_index;
+    if (UNLIKELY(c->serial != cc->serial)) {
+        return node_call_3_slowpath(c, n, fp);
+    }
     VALUE v0 = UNWRAP(EVAL_ARG(c, a0));
     VALUE v1 = UNWRAP(EVAL_ARG(c, a1));
     VALUE v2 = UNWRAP(EVAL_ARG(c, a2));
-    NODE *body;
-    if (LIKELY(c->serial == cc->serial)) {
-        body = cc->body;
-    }
-    else {
-        VALUE args[3] = { v0, v1, v2 };
-        return node_call_n_slowpath(c, n, args, 3, name, cc);
-    }
     VALUE F[locals_cnt];
     F[0] = v0;
     F[1] = v1;
     F[2] = v2;
-    return RESULT_OK(EVAL(c, body, F).value);
+    return RESULT_OK(EVAL(c, cc->body, F).value);
 }
-
-// Slowpath bodies for `node_call2` / `node_pg_call_<N>` are defined
-// in node_slowpath.c and declared extern in node.h.  Splitting them
-// out of node_eval.c (which is `#include`d by every AOT/PG
-// code_store/*.c) keeps each generated .so small: the slowpath lives
-// only in the main binary, and dlopen + -rdynamic resolves the
-// extern reference at load time.
-
 
 NODE_DEF
 node_call2(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, const char *name, uint32_t params_cnt, uint32_t arg_index, struct callcache *cc@ref, NODE *sp_body)
 {
-    // Two-step guard.  (1) cc fresh — name → body resolution still valid.
-    // (2) cc->body == sp_body — current body matches the parse-time
-    // speculation that the SD's baked direct call assumes.  Both must
-    // hold to take the fast path; otherwise fall to slowpath, which
-    // dispatches via cc->body (= the current body) and leaves sp_body
-    // alone (it's a parse-time constant tied to the baked SD).
-    if (LIKELY(c->serial == cc->serial && cc->body == sp_body)) {
-        if (CALL_DEBUG) fprintf(stderr, "name:%s hit!\n", name);
-        // Use sp_body_dispatcher (= the framework-supplied
-        // node_dispatcher_func_t parameter for `sp_body`) so the SD
-        // calls the dispatcher that was baked at SPECIALIZE time as a
-        // constant — i.e. SD_<HASH(sp_body)> for the AOT path.  EVAL()
-        // would re-load `sp_body->head.dispatcher` at runtime and lose
-        // the direct call.
-        RESULT r = (*sp_body_dispatcher)(c, sp_body, fp + arg_index);
-        return RESULT_OK(r.value);   // unconditional state-clear: see call_body
+    (void)name; (void)params_cnt;
+    // Two-step guard (PG).  See pg_call_<N> below for the rationale.
+    if (UNLIKELY(c->serial != cc->serial || cc->body != sp_body)) {
+        return node_call2_slowpath(c, n, fp);
     }
-    else {
-        return node_pg_call_slowpath(c, n, fp, name, params_cnt, arg_index, cc);
-    }
+    if (CALL_DEBUG) fprintf(stderr, "name:%s hit!\n", name);
+    // sp_body_dispatcher is the framework-supplied parameter for the
+    // sp_body operand: in the SD it's baked to SD_<HASH(sp_body)> as a
+    // compile-time constant (= direct call), in the default dispatcher
+    // it's loaded from sp_body->head.dispatcher (= indirect).  EVAL()
+    // would always re-load and lose the direct-call form.
+    RESULT r = (*sp_body_dispatcher)(c, sp_body, fp + arg_index);
+    return RESULT_OK(r.value);
 }
 
-// Arity-specialized PG call sites.  Each `node_pg_call_<N>` evaluates
-// its `N` argument operands inline (instead of going through separate
-// `node_lset` writes the parser would otherwise emit), then dispatches
-// to the linked body.
+// Arity-specialised PG call sites.  Each `node_pg_call_<N>` evaluates
+// its `N` argument operands inline and dispatches the speculatively
+// linked body with a fresh VLA frame `F[locals_cnt]`.  The framework's
+// SPECIALIZE recurses into operands so each arg eval, the `F[i] = vi`
+// store, and the body dispatch end up in one SD body — gcc can fuse
+// them together.
 //
-// Why specialize on arity:
+// `locals_cnt` is patched at parse time by `callsite_resolve` to the
+// callee's full frame size (params + temporaries).  `arg_index` is
+// unused at runtime (the callee frame is F, not caller_fp + arg_index)
+// but kept as an operand for the parser's pending-callsite machinery.
 //
-//   - Args are explicit `NODE *` operands of the call node, so the SD's
-//     specializer recurses into them, enabling cross-arg fusion (each
-//     arg evaluation, the `fp[arg_index+i] = ...` store, and the body
-//     dispatch all live in one EVAL_ function body).
-//   - The parser no longer wraps argument evaluation in a node_lset +
-//     node_seq chain — fewer NODE allocations, fewer dispatch hops in
-//     plain mode, smaller AST hash chain in PG mode.
+// `restrict fp` + the alloca-style fresh F let gcc keep the caller's
+// locals in registers across the recursive call instead of reloading
+// after each recursion (jstro pattern).
 //
-// Slowpath is shared with `node_call2_slowpath` since the recovery
-// (look up `name` in func_set, refill `cc`, demote dispatcher on
-// redef) is identical.
-
-// In each pg_call_<N>, fast path allocates the callee's frame as a
-// fresh VLA `VALUE F[locals_cnt]` so it doesn't alias with the
-// caller's `fp` slots (jstro's pattern).  With `restrict fp` on the
-// dispatcher param and the alloca-style fresh allocation, gcc can
-// keep the caller's `fp[0]` (= the caller's parameter, e.g. `n` in
-// fib) in a register across the recursive call instead of reloading
-// it after each recursion.
-//
-// `locals_cnt` is patched at parse time (callsite_resolve) — it's the
-// callee's full frame size including param slots and any temporaries
-// the body uses.  Stored separately from sp_body in the node operand
-// list so SPECIALIZE can bake both as constants.
-//
-// Slowpath path uses caller's `fp[arg_index..]` (unchanged convention)
-// — only fired on cc miss.
-
-// pg_call_<N>: each call site allocates a fresh `VALUE F[locals_cnt]`
-// (callee's frame) and dispatches the body with F as its `fp`.  F is
-// disjoint from the caller's fp slots — `restrict` lets gcc keep the
-// caller's locals in registers across the recursive call.
-//
-// `locals_cnt` is an operand (patched at parse-time / callsite_resolve)
-// so the framework's generic SPECIALIZE machinery bakes it as a literal
-// constant.  EVAL_<name> is `static inline always_inline`, so gcc
-// constant-propagates the literal into the inlined body — the VLA
-// `VALUE F[locals_cnt]` becomes a fixed-size array `VALUE F[<n>]` in
-// the optimized SD, no runtime VLA cost.
-//
-// `arg_index` is unused at runtime here (the callee frame is F, not
-// caller_fp + arg_index).  Kept as an operand only for the legacy
-// `node_pg_call_slowpath` fallback in interpreter mode (arity > 3).
-
-// Two-step guard for `node_pg_call_<N>`:
+// Two-step guard:
 //   (1) `c->serial == cc->serial` — cc is fresh (no def has bumped
 //       serial since cc was last filled).
 //   (2) `cc->body == sp_body` — the current body equals the
@@ -374,76 +277,70 @@ node_call2(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, const char 
 //       — if the actual body has changed (e.g. interleaved def/call)
 //       the baked SD would be invoked with mismatched NODE structure.
 //
-// Both must hold to take the fast (baked-direct) path.  If either
-// fails, fall to slowpath, which dispatches via the resolved body
-// (= cc->body after refresh).  The slowpath does **not** write back
-// `sp_body` — sp_body remains a parse-time invariant so the SD's
-// baked dispatcher constant is always valid for the matched case.
+// Both must hold to take the fast (baked-direct) path.  Otherwise
+// tail-call the variant's slowpath in node_slowpath.c, which
+// dispatches via `cc->body` indirect.  The slowpath never writes
+// `sp_body` — it stays at its parse-time value so the baked SD
+// constant is always valid in the matched case.
 
 NODE_DEF
 node_pg_call0(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, const char *name, uint32_t arg_index, uint32_t locals_cnt, struct callcache *cc@ref, NODE *sp_body)
 {
-    (void)arg_index;
-    if (LIKELY(c->serial == cc->serial && cc->body == sp_body)) {
-        VALUE F[locals_cnt > 0 ? locals_cnt : 1];
-        // Reassign fp = F so EVAL_ARG below dispatches sp_body with F
-        // (the fresh callee frame).  EVAL_ARG uses the baked
-        // sp_body_dispatcher (= constant SD pointer in specialized SD).
-        fp = F;
-        return RESULT_OK(EVAL_ARG(c, sp_body).value);
+    (void)name; (void)arg_index; (void)fp;
+    if (UNLIKELY(c->serial != cc->serial || cc->body != sp_body)) {
+        return node_pg_call0_slowpath(c, n, fp);
     }
-    return node_pg_call_n_slowpath(c, n, NULL, 0, name, cc);
+    VALUE F[locals_cnt > 0 ? locals_cnt : 1];
+    fp = F;
+    return RESULT_OK(EVAL_ARG(c, sp_body).value);
 }
 
 NODE_DEF
 node_pg_call1(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, const char *name, uint32_t arg_index, uint32_t locals_cnt, struct callcache *cc@ref, NODE *sp_body, NODE *a0)
 {
-    (void)arg_index;
-    VALUE v0 = UNWRAP(EVAL_ARG(c, a0));
-    if (LIKELY(c->serial == cc->serial && cc->body == sp_body)) {
-        VALUE F[locals_cnt];
-        F[0] = v0;
-        fp = F;
-        return RESULT_OK(EVAL_ARG(c, sp_body).value);
+    (void)name; (void)arg_index;
+    if (UNLIKELY(c->serial != cc->serial || cc->body != sp_body)) {
+        return node_pg_call1_slowpath(c, n, fp);
     }
-    VALUE args[1] = { v0 };
-    return node_pg_call_n_slowpath(c, n, args, 1, name, cc);
+    VALUE v0 = UNWRAP(EVAL_ARG(c, a0));
+    VALUE F[locals_cnt];
+    F[0] = v0;
+    fp = F;
+    return RESULT_OK(EVAL_ARG(c, sp_body).value);
 }
 
 NODE_DEF
 node_pg_call2(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, const char *name, uint32_t arg_index, uint32_t locals_cnt, struct callcache *cc@ref, NODE *sp_body, NODE *a0, NODE *a1)
 {
-    (void)arg_index;
+    (void)name; (void)arg_index;
+    if (UNLIKELY(c->serial != cc->serial || cc->body != sp_body)) {
+        return node_pg_call2_slowpath(c, n, fp);
+    }
     VALUE v0 = UNWRAP(EVAL_ARG(c, a0));
     VALUE v1 = UNWRAP(EVAL_ARG(c, a1));
-    if (LIKELY(c->serial == cc->serial && cc->body == sp_body)) {
-        VALUE F[locals_cnt];
-        F[0] = v0;
-        F[1] = v1;
-        fp = F;
-        return RESULT_OK(EVAL_ARG(c, sp_body).value);
-    }
-    VALUE args[2] = { v0, v1 };
-    return node_pg_call_n_slowpath(c, n, args, 2, name, cc);
+    VALUE F[locals_cnt];
+    F[0] = v0;
+    F[1] = v1;
+    fp = F;
+    return RESULT_OK(EVAL_ARG(c, sp_body).value);
 }
 
 NODE_DEF
 node_pg_call3(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, const char *name, uint32_t arg_index, uint32_t locals_cnt, struct callcache *cc@ref, NODE *sp_body, NODE *a0, NODE *a1, NODE *a2)
 {
-    (void)arg_index;
+    (void)name; (void)arg_index;
+    if (UNLIKELY(c->serial != cc->serial || cc->body != sp_body)) {
+        return node_pg_call3_slowpath(c, n, fp);
+    }
     VALUE v0 = UNWRAP(EVAL_ARG(c, a0));
     VALUE v1 = UNWRAP(EVAL_ARG(c, a1));
     VALUE v2 = UNWRAP(EVAL_ARG(c, a2));
-    if (LIKELY(c->serial == cc->serial && cc->body == sp_body)) {
-        VALUE F[locals_cnt];
-        F[0] = v0;
-        F[1] = v1;
-        F[2] = v2;
-        fp = F;
-        return RESULT_OK(EVAL_ARG(c, sp_body).value);
-    }
-    VALUE args[3] = { v0, v1, v2 };
-    return node_pg_call_n_slowpath(c, n, args, 3, name, cc);
+    VALUE F[locals_cnt];
+    F[0] = v0;
+    F[1] = v1;
+    F[2] = v2;
+    fp = F;
+    return RESULT_OK(EVAL_ARG(c, sp_body).value);
 }
 
 NODE_DEF
