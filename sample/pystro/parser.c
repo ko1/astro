@@ -1553,8 +1553,17 @@ parse_class(void)
     const char *cname = peek_tok(0)->sval;
     tok_pos++;
     NODE *base = ALLOC_node_const_none();
+    NODE *extra_bases[8];
+    int nextra = 0;
     if (match_tok(T_LPAREN)) {
-        if (peek_tok(0)->kind != T_RPAREN) base = parse_expr();
+        if (peek_tok(0)->kind != T_RPAREN) {
+            base = parse_expr();
+            while (match_tok(T_COMMA)) {
+                if (peek_tok(0)->kind == T_RPAREN) break;
+                if (nextra >= 8) parse_error("too many base classes");
+                extra_bases[nextra++] = parse_expr();
+            }
+        }
         expect(T_RPAREN, "')'");
     }
     bool saved_icb = in_class_body;
@@ -1564,9 +1573,20 @@ parse_class(void)
     NODE *body = parse_suite();
     in_class_body = saved_icb;
     cur_class_base = saved_base;
-    NODE *cls = ALLOC_node_class(cname, base, body);
-    // Bind the class object at `cname`.  Same nesting rule as def.
-    if (in_class_body) return cls;     // class inside class body — rare, but binds via outer
+    NODE *cls;
+    if (nextra == 0) {
+        cls = ALLOC_node_class(cname, base, body);
+    } else {
+        // Multi-base form: pack all bases into PYSTRO_NODE_TABLE and
+        // emit node_class_multi which calls py_class_set_bases after
+        // the base eval.
+        NODE *all_bases[16];
+        all_bases[0] = base;
+        for (int i = 0; i < nextra; i++) all_bases[i + 1] = extra_bases[i];
+        size_t bidx = node_table_reserve(all_bases, nextra + 1);
+        cls = ALLOC_node_class_multi(cname, (uint32_t)bidx, (uint32_t)(nextra + 1), body);
+    }
+    if (in_class_body) return cls;
     return make_store(cname, cls);
 }
 

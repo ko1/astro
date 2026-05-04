@@ -227,7 +227,32 @@ py_make_class(const char *name, VALUE base, bool is_exception)
     o->cls.methods_capa = 0;
     o->cls.is_exception = is_exception;
     o->cls.base = base;
+    if (base == PY_NONE) {
+        o->cls.bases = NULL;
+        o->cls.nbases = 0;
+    } else {
+        o->cls.bases = (VALUE *)GC_malloc(sizeof(VALUE));
+        o->cls.bases[0] = base;
+        o->cls.nbases = 1;
+    }
     return PY_OBJ_VAL(o);
+}
+
+// Used when class C(A, B, ...): multi-inheritance.  Replaces the
+// single-base bases[] array with the full list.  Caller passes the
+// already-built class and its full base list.  Updates `is_exception`
+// if any base is an exception class.
+void
+py_class_set_bases(VALUE cls, VALUE *bases, int n)
+{
+    struct pyclass *cd = &PY_PTR(cls)->cls;
+    cd->bases = n > 0 ? (VALUE *)GC_malloc(sizeof(VALUE) * n) : NULL;
+    for (int i = 0; i < n; i++) cd->bases[i] = bases[i];
+    cd->nbases = n;
+    cd->base = n > 0 ? bases[0] : PY_NONE;
+    for (int i = 0; i < n; i++)
+        if (py_is_class(bases[i]) && PY_PTR(bases[i])->cls.is_exception)
+            cd->is_exception = true;
 }
 
 void
@@ -255,15 +280,19 @@ py_class_add_method(CTX *c, VALUE cls, const char *name, VALUE fn)
     cd->nmethods++;
 }
 
+// Depth-first scan through bases[].  No diamond detection — for v0
+// non-diamond hierarchies this matches Python's MRO.  (Diamond cases
+// would need C3 linearization.)
 static VALUE
 py_class_lookup_method(VALUE cls, const char *name)
 {
-    while (cls != PY_NONE && py_is_class(cls)) {
-        struct pyclass *cd = &PY_PTR(cls)->cls;
-        for (int i = 0; i < cd->nmethods; i++) {
-            if (strcmp(cd->methods[i].name, name) == 0) return cd->methods[i].value;
-        }
-        cls = cd->base;
+    if (cls == PY_NONE || !py_is_class(cls)) return PY_NONE;
+    struct pyclass *cd = &PY_PTR(cls)->cls;
+    for (int i = 0; i < cd->nmethods; i++)
+        if (strcmp(cd->methods[i].name, name) == 0) return cd->methods[i].value;
+    for (int i = 0; i < cd->nbases; i++) {
+        VALUE r = py_class_lookup_method(cd->bases[i], name);
+        if (r != PY_NONE) return r;
     }
     return PY_NONE;
 }
@@ -1905,19 +1934,26 @@ py_to_repr(CTX *c, VALUE v)
 // Exception matching.
 // ---------------------------------------------------------------------------
 
+// Walk class chain (DFS through all bases) checking if `target` is in
+// the ancestor list of `cls`.
+static bool
+class_is_ancestor(VALUE cls, VALUE target)
+{
+    if (cls == target) return true;
+    if (cls == PY_NONE || !py_is_class(cls)) return false;
+    struct pyclass *cd = &PY_PTR(cls)->cls;
+    for (int i = 0; i < cd->nbases; i++)
+        if (class_is_ancestor(cd->bases[i], target)) return true;
+    return false;
+}
+
 bool
 py_exc_matches(CTX *c, VALUE exc, VALUE cls)
 {
     (void)c;
     if (!py_is_instance(exc)) return false;
     if (!py_is_class(cls)) return false;
-    struct pyobj *eo = PY_PTR(exc);
-    VALUE k = PY_OBJ_VAL(eo->inst.cls);
-    while (k != PY_NONE && py_is_class(k)) {
-        if (k == cls) return true;
-        k = PY_PTR(k)->cls.base;
-    }
-    return false;
+    return class_is_ancestor(PY_OBJ_VAL(PY_PTR(exc)->inst.cls), cls);
 }
 
 // ---------------------------------------------------------------------------
@@ -2627,12 +2663,7 @@ bi_isinstance(CTX *c, int argc, VALUE *argv)
     VALUE v = argv[0], cls = argv[1];
     if (!py_is_class(cls)) py_raise_exc(c, c->EXC_TypeError, "isinstance() second arg must be class");
     if (!py_is_instance(v)) return PY_FALSE;
-    VALUE k = PY_OBJ_VAL(PY_PTR(v)->inst.cls);
-    while (k != PY_NONE && py_is_class(k)) {
-        if (k == cls) return PY_TRUE;
-        k = PY_PTR(k)->cls.base;
-    }
-    return PY_FALSE;
+    return class_is_ancestor(PY_OBJ_VAL(PY_PTR(v)->inst.cls), cls) ? PY_TRUE : PY_FALSE;
 }
 
 static VALUE

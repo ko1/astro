@@ -831,6 +831,29 @@ node_class_method_set(CTX * restrict c, NODE * restrict n, const char *name, NOD
     return PY_NONE;
 }
 
+// Multi-base form: bases live in PYSTRO_NODE_TABLE[bases_idx..nbases].
+// Otherwise same shape as node_class.
+NODE_DEF @noinline
+node_class_multi(CTX * restrict c, NODE * restrict n, const char *name, uint32_t bases_idx, uint32_t nbases, NODE *body)
+{
+    (void)n;
+    extern void py_class_set_bases(VALUE cls, VALUE *bases, int n);
+    VALUE *bvs = (VALUE *)alloca(sizeof(VALUE) * (nbases ? nbases : 1));
+    for (uint32_t i = 0; i < nbases; i++) {
+        NODE *bn = PYSTRO_NODE_TABLE[bases_idx + i];
+        bvs[i] = (*bn->head.dispatcher)(c, bn);
+        if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+    }
+    VALUE cls = py_make_class(name, nbases ? bvs[0] : PY_NONE, false);
+    py_class_set_bases(cls, bvs, (int)nbases);
+    VALUE saved = c->current_class;
+    c->current_class = cls;
+    EVAL_ARG(c, body);
+    c->current_class = saved;
+    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+    return cls;
+}
+
 // Build the class object: evaluate base, allocate the class, evaluate
 // the body with `c->current_class` set so nested `def`s register
 // themselves as methods.  Returns the class object — the caller

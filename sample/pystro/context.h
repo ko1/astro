@@ -121,7 +121,9 @@ struct pyclass {
     struct pyclass_method *methods;
     int  nmethods, methods_capa;
     bool is_exception;
-    VALUE base;             // PY_NONE if no base class
+    VALUE base;             // first base, or PY_NONE — kept for super()
+    VALUE *bases;           // all bases (length nbases); points at heap array
+    int   nbases;
 };
 
 // Open-addressed hash dict.  state: 0=empty, 1=used, 2=tombstone.
