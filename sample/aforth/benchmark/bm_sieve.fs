@@ -2,7 +2,7 @@
 \ Counts primes below N.
 
 500000 CONSTANT N
-CREATE flags  N ALLOT             \ N cells, default 0 means "prime"
+CREATE flags  N CELLS ALLOT       \ N cells, default 0 means "prime"
 
 : clear-flags ( -- )
   N 0 DO 0 I CELLS flags + ! LOOP ;
@@ -21,5 +21,8 @@ CREATE flags  N ALLOT             \ N cells, default 0 means "prime"
   LOOP ;
 
 \ Sustained scale: ~1s on interp.  primes below 500000 = 41538.
-20 0 DO clear-flags sieve DROP LOOP
-clear-flags sieve . CR              \ 41538
+\ Wrapped for gforth (DO/LOOP is compile-only at toplevel in standard Forth).
+: main
+  20 0 DO clear-flags sieve DROP LOOP
+  clear-flags sieve . CR ;          \ 41538
+main

@@ -12,28 +12,37 @@
 - 計測: `ruby benchmark/run.rb -n 3` (best-of-3, warmup あり)
 - VALUE = `int64_t`、stack は 64K cell
 
-## 2026-05-04 — initial baseline
+## 2026-05-04 — initial baseline + gforth 比較
 
-aforth 初版の interp / AOT 比較。aforth HEAD initial commit。
+aforth 初版の interp / AOT 比較に gforth 0.7.3 (direct-threaded) を並走。
 
-| bench         | interp (s) | aot (s) | speedup |
-|---------------|-----------:|--------:|--------:|
-| ack           | 1.746      | 0.521   | 3.4×    |
-| array_sum     | 1.200      | 0.152   | 7.9×    |
-| collatz       | 1.324      | 0.074   | 17.9×   |
-| factorial     | 2.506      | 0.656   | 3.8×    |
-| fib           | 1.110      | 0.322   | 3.4×    |
-| gcd           | 1.797      | 0.277   | 6.5×    |
-| nested_loop   | 1.143      | 0.390   | 2.9×    |
-| sieve         | 0.902      | 0.081   | 11.1×   |
-| tak           | 0.572      | 0.055   | 10.4×   |
+| bench         | interp (s) | aot (s) | gforth (s) | aot vs interp | aot vs gforth |
+|---------------|-----------:|--------:|-----------:|--------------:|--------------:|
+| ack           | 1.536      | 0.509   | 0.493      | 3.0×          | 0.97×         |
+| array_sum     | 1.219      | 0.154   | 0.472      | 7.9×          | **3.06×**     |
+| collatz       | 1.101      | 0.071   | 0.497      | 15.5×         | **7.00×**     |
+| factorial     | 2.363      | 0.644   | 2.210      | 3.7×          | **3.43×**     |
+| fib           | 0.889      | 0.322   | 0.851      | 2.8×          | **2.64×**     |
+| gcd           | 1.710      | 0.267   | 0.763      | 6.4×          | **2.86×**     |
+| nested_loop   | 1.092      | 0.384   | 0.326      | 2.8×          | 0.85×         |
+| sieve         | 0.745      | 0.079   | 0.375      | 9.4×          | **4.75×**     |
+| tak           | 0.527      | 0.053   | 0.132      | 9.9×          | **2.49×**     |
+
+(`ruby benchmark/run.rb -n 3`, gforth は `--return-stack-size=1M` 付き。)
 
 **読み方**:
+- aforth+aot は **9 ベンチ中 7 で gforth に勝利**。collatz は 7× 差。
+- 同等 / 負けている 2 つ (ack 0.97× / nested_loop 0.85×) は call または
+  loop dispatch の indirect-dispatch 床に張り付いた bench。gforth の
+  DTC NEXT も `node_call` の table-load + indirect も同程度の下限。
+- aforth interp と gforth interp は 1.5–3× 範囲で競っている (gforth が
+  概ね速いが fib / factorial はほぼ同じ)。aforth interp は AST 探索なので
+  threaded code に対して構造的に不利。AOT で逆転する。
 - 内側ループが SD 1 本に収まる bench (collatz / sieve / tak / array_sum) で
-  10× 級。gcc が basic block 全体を見渡して unroll / hoist できる。
-- 再帰主体の bench (fib / ack / factorial — factorial も実は word call が
-  全工程を占める) は 3× 程度。`node_call` が `@noinline` で table-load
-  + 間接 dispatch なので、call ごとの最低コストでサチる。
+  AOT は 10× 級。gcc が basic block 全体を見渡して unroll / hoist できる。
+- 再帰主体の bench (fib / ack / factorial) は 3× 程度。`node_call` が
+  `@noinline` で table-load + 間接 dispatch なので、call ごとの最低コスト
+  でサチる。
 
 ## 取り入れた最適化 (採用済み)
 

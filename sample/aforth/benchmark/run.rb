@@ -29,7 +29,9 @@ RUNNERS = [
              "#{AFORTH} -q --aot-compile #{bench} >/dev/null 2>&1")
     }},
   { name: 'gforth',
-    cmd:  'gforth %s -e bye',
+    # 1 MiB return stack because bm_ack at depth ~2k overflows the default
+    # 16k-cell return stack (each word call pushes a return address).
+    cmd:  'gforth --return-stack-size=1M --data-stack-size=1M %s -e bye',
     available: -> { system('which gforth >/dev/null 2>&1') } },
 ]
 

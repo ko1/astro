@@ -588,7 +588,22 @@ parse_program(void)
             continue;
         }
 
-        /* `<int|const> ALLOT` — peek pattern, advances vars_used. */
+        /* `<int|const> CELLS ALLOT` — portable form (cells in aforth and
+         * gforth alike).  Use this in benchmarks meant to run under both. */
+        if (parse_const_int(t, &iv)
+            && tok_p + 2 < tok_n
+            && tok_is(&toks[tok_p + 1], "CELLS")
+            && tok_is(&toks[tok_p + 2], "ALLOT")) {
+            extern uint32_t aforth_vars_used_top;
+            if (iv < 0 || iv > AFORTH_VARS_SIZE)
+                fatal("CELLS ALLOT count out of range at line %d", t->line);
+            aforth_vars_used_top += (uint32_t)iv;
+            tok_p += 3;
+            continue;
+        }
+
+        /* `<int|const> ALLOT` — aforth treats this as cells (non-standard;
+         * gforth would treat it as bytes).  Kept for backwards compat. */
         if (parse_const_int(t, &iv)
             && tok_p + 1 < tok_n
             && tok_is(&toks[tok_p + 1], "ALLOT")) {

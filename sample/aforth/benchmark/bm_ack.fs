@@ -15,6 +15,7 @@
     THEN
   THEN ;
 
-\ run a few times for sustained scale (~1s on interp).
-20 0 DO 3 8 ack DROP LOOP
-3 8 ack . CR
+\ Sustained scale (~1s on interp).  Wrapped in `: main ; main` because
+\ gforth treats DO/LOOP as compile-only.
+: main 20 0 DO 3 8 ack DROP LOOP  3 8 ack . CR ;
+main

@@ -56,25 +56,25 @@ extension, locals, floats, threads, file I/O.
 ## Performance
 
 Sustained-scale (~1 s on interp) bench results, gcc-13 -O2, x86_64 Linux,
-best-of-3:
+best-of-3, with gforth 0.7.3 (mature direct-threaded Forth) for context:
 
-| bench         | interp (s) | aot (s) | speedup |
-|---------------|-----------:|--------:|--------:|
-| ack           | 1.746      | 0.521   | 3.4×    |
-| array_sum     | 1.200      | 0.152   | 7.9×    |
-| collatz       | 1.324      | 0.074   | 17.9×   |
-| factorial     | 2.506      | 0.656   | 3.8×    |
-| fib           | 1.110      | 0.322   | 3.4×    |
-| gcd           | 1.797      | 0.277   | 6.5×    |
-| nested_loop   | 1.143      | 0.390   | 2.9×    |
-| sieve         | 0.902      | 0.081   | 11.1×   |
-| tak           | 0.572      | 0.055   | 10.4×   |
+| bench         | interp (s) | aot (s) | gforth (s) | aot vs gforth |
+|---------------|-----------:|--------:|-----------:|--------------:|
+| ack           | 1.536      | 0.509   | 0.493      | 0.97×         |
+| array_sum     | 1.219      | 0.154   | 0.472      | **3.06×**     |
+| collatz       | 1.101      | 0.071   | 0.497      | **7.00×**     |
+| factorial     | 2.363      | 0.644   | 2.210      | **3.43×**     |
+| fib           | 0.889      | 0.322   | 0.851      | **2.64×**     |
+| gcd           | 1.710      | 0.267   | 0.763      | **2.86×**     |
+| nested_loop   | 1.092      | 0.384   | 0.326      | 0.85×         |
+| sieve         | 0.745      | 0.079   | 0.375      | **4.75×**     |
+| tak           | 0.527      | 0.053   | 0.132      | **2.49×**     |
 
-The wins concentrate on inner loops (`collatz`, `sieve`, `tak`,
-`array_sum`) where the body fits in a single SD that gcc's loop-pass can
-fold into a tight basic block. Recursion-bound benches (`fib`, `ack`,
-`factorial`) sit at the floor of the runtime indirect-call cost — see
-`docs/perf.md` for why and what could move further.
+`aforth+aot` wins 7/9 against gforth (up to 7× on collatz). The two ties
+(ack, nested_loop) sit at the indirect-dispatch floor — gforth's DTC NEXT
+and `node_call`'s table-load take comparable cycles. Wins concentrate on
+inner loops where the body folds into a single SD that gcc can unroll /
+hoist; see `docs/perf.md` for why and what could move further.
 
 ## How AOT works (one paragraph)
 
