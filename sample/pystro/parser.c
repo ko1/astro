@@ -770,43 +770,67 @@ parse_list_literal(void)
 }
 
 static NODE *
-parse_dict_literal(void)
+parse_dict_or_set_literal(void)
 {
     expect(T_LBRACE, "'{'");
     if (match_tok(T_RBRACE)) {
+        // {} is an empty dict in Python — there is no empty set literal.
         size_t base = node_table_reserve(NULL, 0);
         return ALLOC_node_make_dict((uint32_t)base, 0);
     }
-    NODE *first_k = parse_expr();
-    expect(T_COLON, "':'");
-    NODE *first_v = parse_expr();
+    NODE *first = parse_expr();
+    // dict literal / dict comprehension if next is `:`
+    if (peek_tok(0)->kind == T_COLON) {
+        tok_pos++;
+        NODE *first_v = parse_expr();
+        if (peek_tok(0)->kind == T_FOR) {
+            const char *tmp = new_temp_name("__dc");
+            NODE *load_tmp;
+            size_t empty_idx = node_table_reserve(NULL, 0);
+            NODE *init = build_temp_init(tmp, ALLOC_node_make_dict((uint32_t)empty_idx, 0), &load_tmp);
+            NODE *set_n = ALLOC_node_subscript_set(load_tmp, first, first_v);
+            NODE *loops = parse_comp_clauses(set_n);
+            expect(T_RBRACE, "'}'");
+            return ALLOC_node_seq(init, ALLOC_node_seq(loops, load_tmp));
+        }
+        NODE *items[512];
+        int npairs = 0;
+        items[0] = first; items[1] = first_v; npairs = 1;
+        while (match_tok(T_COMMA)) {
+            if (peek_tok(0)->kind == T_RBRACE) break;
+            NODE *k = parse_expr();
+            expect(T_COLON, "':'");
+            NODE *v = parse_expr();
+            if (npairs * 2 + 2 > 512) parse_error("dict literal too long");
+            items[npairs * 2] = k;
+            items[npairs * 2 + 1] = v;
+            npairs++;
+        }
+        expect(T_RBRACE, "'}'");
+        size_t base = node_table_reserve(items, npairs * 2);
+        return ALLOC_node_make_dict((uint32_t)base, (uint32_t)npairs);
+    }
+    // Set literal / set comprehension.
     if (peek_tok(0)->kind == T_FOR) {
-        // Dict comprehension: {k:v for x in xs (if cond)*}+
-        const char *tmp = new_temp_name("__dc");
+        const char *tmp = new_temp_name("__sc");
         NODE *load_tmp;
         size_t empty_idx = node_table_reserve(NULL, 0);
-        NODE *init = build_temp_init(tmp, ALLOC_node_make_dict((uint32_t)empty_idx, 0), &load_tmp);
-        NODE *set = ALLOC_node_subscript_set(load_tmp, first_k, first_v);
-        NODE *loops = parse_comp_clauses(set);
+        NODE *init = build_temp_init(tmp, ALLOC_node_make_set((uint32_t)empty_idx, 0), &load_tmp);
+        NODE *add = ALLOC_node_method_1(load_tmp, intern_name("add", 3), first);
+        NODE *loops = parse_comp_clauses(add);
         expect(T_RBRACE, "'}'");
         return ALLOC_node_seq(init, ALLOC_node_seq(loops, load_tmp));
     }
-    NODE *items[512];
-    int npairs = 0;
-    items[0] = first_k; items[1] = first_v; npairs = 1;
+    NODE *items[256];
+    int n = 0; items[n++] = first;
     while (match_tok(T_COMMA)) {
         if (peek_tok(0)->kind == T_RBRACE) break;
-        NODE *k = parse_expr();
-        expect(T_COLON, "':'");
-        NODE *v = parse_expr();
-        if (npairs * 2 + 2 > 512) parse_error("dict literal too long");
-        items[npairs * 2] = k;
-        items[npairs * 2 + 1] = v;
-        npairs++;
+        if (n >= 256) parse_error("set literal too long");
+        items[n++] = parse_expr();
     }
     expect(T_RBRACE, "'}'");
-    size_t base = node_table_reserve(items, npairs * 2);
-    return ALLOC_node_make_dict((uint32_t)base, (uint32_t)npairs);
+    size_t base = node_table_reserve(items, n);
+    return ALLOC_node_make_set((uint32_t)base, (uint32_t)n);
 }
 
 static NODE *
@@ -892,7 +916,7 @@ parse_atom(void)
       case T_NONE:  tok_pos++; return ALLOC_node_const_none();
       case T_LPAREN: return parse_paren_or_tuple();
       case T_LBRACK: return parse_list_literal();
-      case T_LBRACE: return parse_dict_literal();
+      case T_LBRACE: return parse_dict_or_set_literal();
       case T_LAMBDA: return parse_lambda();
       case T_NAME: { tok_pos++; return make_load(t->sval); }
       default:
@@ -1863,8 +1887,8 @@ parse_decorated(void)
     }
     NODE *body;
     const char *target = NULL;
+    bool is_class_method_dec = in_class_body && peek_tok(0)->kind == T_DEF;
     if (peek_tok(0)->kind == T_DEF) {
-        // Capture the function name so we can emit `name = dec(name)`.
         target = tok_arr[tok_pos + 1].sval;
         body = parse_def();
     } else if (peek_tok(0)->kind == T_CLASS) {
@@ -1873,12 +1897,21 @@ parse_decorated(void)
     } else {
         parse_error("expected 'def' or 'class' after decorator");
     }
-    // Build the wrap chain: load → dec_inner(load) → dec_outer(...)
     NODE *result = body;
     for (int i = ndecs - 1; i >= 0; i--) {
-        NODE *load = make_load(target);
-        NODE *call = ALLOC_node_call_1(decs[i], load);
-        result = ALLOC_node_seq(result, make_store(target, call));
+        // For methods inside a class body, the method has been added
+        // to c->current_class by node_def's side effect — load it back
+        // via node_class_method_get / set so the decorator wraps the
+        // class-stored method, not a global / local of the same name.
+        if (is_class_method_dec) {
+            NODE *load = ALLOC_node_class_method_get(target);
+            NODE *call = ALLOC_node_call_1(decs[i], load);
+            result = ALLOC_node_seq(result, ALLOC_node_class_method_set(target, call));
+        } else {
+            NODE *load = make_load(target);
+            NODE *call = ALLOC_node_call_1(decs[i], load);
+            result = ALLOC_node_seq(result, make_store(target, call));
+        }
     }
     return result;
 }

@@ -104,6 +104,20 @@ VALUE *items = (VALUE *)alloca(sizeof(VALUE) * (nitems ? nitems : 1));
     return py_make_tuple(items, nitems);
 }
 
+NODE_DEF @noinline
+node_make_set(CTX * restrict c, NODE * restrict n, uint32_t items_idx, uint32_t nitems)
+{
+    (void)n;
+    VALUE s = py_make_set();
+    for (uint32_t i = 0; i < nitems; i++) {
+        NODE *e = PYSTRO_NODE_TABLE[items_idx + i];
+        VALUE v = (*e->head.dispatcher)(c, e);
+        if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+        py_dict_set(c, s, v, PY_NONE);
+    }
+    return s;
+}
+
 // Dict: `pairs_idx` points to 2*npairs NODE* (key0, val0, key1, val1, ...).
 NODE_DEF @noinline
 node_make_dict(CTX * restrict c, NODE * restrict n, uint32_t pairs_idx, uint32_t npairs)
@@ -774,6 +788,31 @@ node_def(CTX * restrict c, NODE * restrict n, const char *name, uint32_t nparams
 // optional class-level attribute assignments, but parser only emits defs
 // for now).  Setting current_class redirects nested node_def to add into
 // the class instead of globals.
+// Helpers for `@dec`-on-method inside a class body: decorator wraps
+// the just-defined method by reading it back from `c->current_class`
+// and re-storing the wrapped value.
+NODE_DEF
+node_class_method_get(CTX * restrict c, NODE * restrict n, const char *name)
+{
+    (void)n;
+    if (c->current_class == PY_NONE)
+        py_raise_exc(c, c->EXC_RuntimeError, "method get outside class body");
+    extern VALUE py_class_lookup_method_pub(VALUE cls, const char *name);
+    return py_class_lookup_method_pub(c->current_class, name);
+}
+
+NODE_DEF
+node_class_method_set(CTX * restrict c, NODE * restrict n, const char *name, NODE *val)
+{
+    (void)n;
+    if (c->current_class == PY_NONE)
+        py_raise_exc(c, c->EXC_RuntimeError, "method set outside class body");
+    VALUE v = EVAL_ARG(c, val);
+    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+    py_class_add_method(c, c->current_class, name, v);
+    return PY_NONE;
+}
+
 // Build the class object: evaluate base, allocate the class, evaluate
 // the body with `c->current_class` set so nested `def`s register
 // themselves as methods.  Returns the class object — the caller

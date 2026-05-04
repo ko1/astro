@@ -235,6 +235,15 @@ py_class_add_method(CTX *c, VALUE cls, const char *name, VALUE fn)
 {
     (void)c;
     struct pyclass *cd = &PY_PTR(cls)->cls;
+    // Replace if a method with the same name already exists — required
+    // for decorator-wrapped methods (`@classmethod\ndef m`) which first
+    // register the plain func and then re-register the wrapped version.
+    for (int i = 0; i < cd->nmethods; i++) {
+        if (strcmp(cd->methods[i].name, name) == 0) {
+            cd->methods[i].value = fn;
+            return;
+        }
+    }
     if (cd->nmethods == cd->methods_capa) {
         int cap = cd->methods_capa ? cd->methods_capa * 2 : 4;
         cd->methods = (struct pyclass_method *)GC_realloc(
@@ -913,6 +922,18 @@ py_make_dict(void)
     return PY_OBJ_VAL(o);
 }
 
+VALUE
+py_make_set(void)
+{
+    // A set is implemented as a dict-shaped table where only keys are
+    // tracked.  We reuse `pydict` for the storage and ignore values
+    // (always PY_NONE) on reads.  The PY_T_SET tag selects the right
+    // display / dunder behaviour.
+    struct pyobj *o = py_alloc(PY_T_SET);
+    o->dict = pydict_new();
+    return PY_OBJ_VAL(o);
+}
+
 static struct pydict_entry *
 pydict_lookup(CTX *c, struct pydict *d, VALUE key, uint64_t h)
 {
@@ -1157,7 +1178,7 @@ py_seq_len(CTX *c, VALUE v)
 {
     if (py_is_str(v))   return PY_PTR(v)->str.len;
     if (py_is_list(v) || py_is_tuple(v)) return PY_PTR(v)->list.len;
-    if (py_is_dict(v))  return PY_PTR(v)->dict->used;
+    if (py_is_dict(v) || py_is_set(v))  return PY_PTR(v)->dict->used;
     if (py_is_instance(v)) {
         VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(v)->inst.cls), "__len__");
         if (m != PY_NONE) {
@@ -1178,7 +1199,7 @@ py_contains(CTX *c, VALUE container, VALUE v)
             if (py_eq_bool(c, PY_PTR(container)->list.items[i], v)) return true;
         return false;
     }
-    if (py_is_dict(container)) return py_dict_has(c, container, v);
+    if (py_is_dict(container) || py_is_set(container)) return py_dict_has(c, container, v);
     if (py_is_str(container) && py_is_str(v)) {
         return memmem(PY_PTR(container)->str.chars, PY_PTR(container)->str.len,
                       PY_PTR(v)->str.chars, PY_PTR(v)->str.len) != NULL;
@@ -1223,7 +1244,7 @@ py_iter_init(CTX *c, struct py_iter *it, VALUE iterable)
         it->step = PY_PTR(iterable)->range.step;
         return;
     }
-    if (py_is_dict(iterable)) {
+    if (py_is_dict(iterable) || py_is_set(iterable)) {
         it->kind = 3;
         it->end = (int64_t)PY_PTR(iterable)->dict->capa;
         return;
@@ -1278,6 +1299,7 @@ struct type_method { const char *name; py_builtin_fn fn; int min_argc, max_argc;
 static struct type_method str_methods[];
 static struct type_method list_methods[];
 static struct type_method dict_methods[];
+static struct type_method set_methods[];
 
 static VALUE
 make_builtin_bound(VALUE self, struct type_method *tm)
@@ -1293,6 +1315,7 @@ py_builtin_method(CTX *c, VALUE recv, const char *name)
     if (py_is_str(recv))      tbl = str_methods;
     else if (py_is_list(recv)) tbl = list_methods;
     else if (py_is_dict(recv)) tbl = dict_methods;
+    else if (py_is_set(recv))  tbl = set_methods;
     else { (void)c; return PY_NONE; }
     for (int i = 0; tbl[i].name; i++)
         if (strcmp(tbl[i].name, name) == 0) return make_builtin_bound(recv, &tbl[i]);
@@ -1315,6 +1338,7 @@ py_method_resolve(CTX *c, VALUE recv, const char *name, struct method_cache *cac
         if (tag == PY_T_STR)       tbl = str_methods;
         else if (tag == PY_T_LIST) tbl = list_methods;
         else if (tag == PY_T_DICT) tbl = dict_methods;
+        else if (tag == PY_T_SET)  tbl = set_methods;
         if (tbl) {
             for (int i = 0; tbl[i].name; i++) {
                 if (strcmp(tbl[i].name, name) == 0) {
@@ -1347,16 +1371,31 @@ py_getattr(CTX *c, VALUE v, const char *name)
         }
         VALUE m = py_class_lookup_method(PY_OBJ_VAL(o->inst.cls), name);
         if (m != PY_NONE) {
-            // Bind self.
+            // Honor descriptor wrappers.
+            if (PY_IS_PTR(m)) {
+                int t = PY_PTR(m)->type;
+                if (t == PY_T_STATICMETHOD) return PY_PTR(m)->wrap.wrapped;
+                if (t == PY_T_CLASSMETHOD) return py_make_bound(PY_OBJ_VAL(o->inst.cls), PY_PTR(m)->wrap.wrapped);
+                if (t == PY_T_PROPERTY) {
+                    VALUE av[1] = { v };
+                    return py_apply(c, PY_PTR(m)->wrap.wrapped, 1, av);
+                }
+            }
             return py_make_bound(v, m);
         }
         py_raise_exc(c, c->EXC_AttributeError, "'%s' object has no attribute '%s'",
                      o->inst.cls->cls.name, name);
     }
     if (py_is_class(v)) {
-        // class-level attribute / classmethod-like access.
         VALUE m = py_class_lookup_method(v, name);
-        if (m != PY_NONE) return m;
+        if (m != PY_NONE) {
+            if (PY_IS_PTR(m)) {
+                int t = PY_PTR(m)->type;
+                if (t == PY_T_STATICMETHOD) return PY_PTR(m)->wrap.wrapped;
+                if (t == PY_T_CLASSMETHOD)  return py_make_bound(v, PY_PTR(m)->wrap.wrapped);
+            }
+            return m;
+        }
         py_raise_exc(c, c->EXC_AttributeError, "type object '%s' has no attribute '%s'",
                      PY_PTR(v)->cls.name, name);
     }
@@ -1675,6 +1714,20 @@ py_display(FILE *fp, VALUE v, bool repr)
                 py_display(fp, d->entries[i].key, true);
                 fputs(": ", fp);
                 py_display(fp, d->entries[i].value, true);
+            }
+        }
+        fputc('}', fp);
+        return;
+      }
+      case PY_T_SET: {
+        struct pydict *d = o->dict;
+        if (d->used == 0) { fputs("set()", fp); return; }
+        fputc('{', fp);
+        size_t printed = 0;
+        for (size_t i = 0; i < d->capa; i++) {
+            if (d->entries[i].state == 1) {
+                if (printed++) fputs(", ", fp);
+                py_display(fp, d->entries[i].key, true);
             }
         }
         fputc('}', fp);
@@ -2241,6 +2294,84 @@ static struct type_method dict_methods[] = {
     { NULL, NULL, 0, 0 }
 };
 
+// Set methods.
+static VALUE
+sm_add(CTX *c, int argc, VALUE *argv) { (void)argc; py_dict_set(c, argv[0], argv[1], PY_NONE); return PY_NONE; }
+static VALUE
+sm_discard(CTX *c, int argc, VALUE *argv) { (void)argc; py_dict_remove(c, argv[0], argv[1]); return PY_NONE; }
+static VALUE
+sm_remove(CTX *c, int argc, VALUE *argv) {
+    (void)argc;
+    if (!py_dict_remove(c, argv[0], argv[1]))
+        py_raise_exc(c, c->EXC_KeyError, "remove: key not in set");
+    return PY_NONE;
+}
+static VALUE
+sm_set_pop(CTX *c, int argc, VALUE *argv) {
+    (void)argc;
+    struct pydict *d = PY_PTR(argv[0])->dict;
+    for (size_t i = 0; i < d->capa; i++) {
+        if (d->entries[i].state == 1) {
+            VALUE k = d->entries[i].key;
+            d->entries[i].state = 2;
+            d->used--;
+            return k;
+        }
+    }
+    py_raise_exc(c, c->EXC_KeyError, "pop from an empty set");
+}
+static VALUE
+sm_union(CTX *c, int argc, VALUE *argv) {
+    (void)argc;
+    VALUE r = py_make_set();
+    struct pydict *a = PY_PTR(argv[0])->dict;
+    for (size_t i = 0; i < a->capa; i++)
+        if (a->entries[i].state == 1) py_dict_set(c, r, a->entries[i].key, PY_NONE);
+    if (py_is_set(argv[1])) {
+        struct pydict *b = PY_PTR(argv[1])->dict;
+        for (size_t i = 0; i < b->capa; i++)
+            if (b->entries[i].state == 1) py_dict_set(c, r, b->entries[i].key, PY_NONE);
+    } else {
+        struct py_iter it; py_iter_init(c, &it, argv[1]);
+        VALUE x;
+        while (py_iter_next(c, &it, &x)) py_dict_set(c, r, x, PY_NONE);
+    }
+    return r;
+}
+static VALUE
+sm_intersection(CTX *c, int argc, VALUE *argv) {
+    (void)argc;
+    VALUE r = py_make_set();
+    struct pydict *a = PY_PTR(argv[0])->dict;
+    for (size_t i = 0; i < a->capa; i++) {
+        if (a->entries[i].state == 1 && py_contains(c, argv[1], a->entries[i].key))
+            py_dict_set(c, r, a->entries[i].key, PY_NONE);
+    }
+    return r;
+}
+static VALUE
+sm_difference(CTX *c, int argc, VALUE *argv) {
+    (void)argc;
+    VALUE r = py_make_set();
+    struct pydict *a = PY_PTR(argv[0])->dict;
+    for (size_t i = 0; i < a->capa; i++) {
+        if (a->entries[i].state == 1 && !py_contains(c, argv[1], a->entries[i].key))
+            py_dict_set(c, r, a->entries[i].key, PY_NONE);
+    }
+    return r;
+}
+
+static struct type_method set_methods[] = {
+    { "add",          sm_add,          2, 2 },
+    { "discard",      sm_discard,      2, 2 },
+    { "remove",       sm_remove,       2, 2 },
+    { "pop",          sm_set_pop,      1, 1 },
+    { "union",        sm_union,        2, 2 },
+    { "intersection", sm_intersection, 2, 2 },
+    { "difference",   sm_difference,   2, 2 },
+    { NULL, NULL, 0, 0 }
+};
+
 // ---------------------------------------------------------------------------
 // Builtins.
 // ---------------------------------------------------------------------------
@@ -2382,6 +2513,18 @@ bi_dict(CTX *c, int argc, VALUE *argv)
 }
 
 static VALUE
+bi_set(CTX *c, int argc, VALUE *argv)
+{
+    VALUE r = py_make_set();
+    if (argc == 0) return r;
+    struct py_iter it; py_iter_init(c, &it, argv[0]);
+    if (c->state != PY_STATE_NORMAL) return PY_NONE;
+    VALUE x;
+    while (py_iter_next(c, &it, &x)) py_dict_set(c, r, x, PY_NONE);
+    return r;
+}
+
+static VALUE
 bi_type(CTX *c, int argc, VALUE *argv)
 {
     (void)c; (void)argc;
@@ -2396,6 +2539,7 @@ bi_type(CTX *c, int argc, VALUE *argv)
       case PY_T_LIST:  return py_make_str("list", 4);
       case PY_T_TUPLE: return py_make_str("tuple", 5);
       case PY_T_DICT:  return py_make_str("dict", 4);
+      case PY_T_SET:   return py_make_str("set", 3);
       case PY_T_RANGE: return py_make_str("range", 5);
       case PY_T_FUNC: case PY_T_BUILTIN: case PY_T_BOUND_METHOD: return py_make_str("function", 8);
       case PY_T_CLASS: return py_make_str("type", 4);
@@ -2675,6 +2819,33 @@ bi_format(CTX *c, int argc, VALUE *argv)
 }
 
 static VALUE
+bi_staticmethod(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    struct pyobj *o = py_alloc(PY_T_STATICMETHOD);
+    o->wrap.wrapped = argv[0];
+    return PY_OBJ_VAL(o);
+}
+
+static VALUE
+bi_classmethod(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    struct pyobj *o = py_alloc(PY_T_CLASSMETHOD);
+    o->wrap.wrapped = argv[0];
+    return PY_OBJ_VAL(o);
+}
+
+static VALUE
+bi_property(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    struct pyobj *o = py_alloc(PY_T_PROPERTY);
+    o->wrap.wrapped = argv[0];
+    return PY_OBJ_VAL(o);
+}
+
+static VALUE
 bi_input(CTX *c, int argc, VALUE *argv)
 {
     (void)c;
@@ -2707,6 +2878,7 @@ install_builtins(CTX *c)
     py_global_define(c, "list",       py_make_builtin("list",       bi_list,       0,  1));
     py_global_define(c, "tuple",      py_make_builtin("tuple",      bi_tuple,      0,  1));
     py_global_define(c, "dict",       py_make_builtin("dict",       bi_dict,       0,  0));
+    py_global_define(c, "set",        py_make_builtin("set",        bi_set,        0,  1));
     py_global_define(c, "type",       py_make_builtin("type",       bi_type,       1,  1));
     py_global_define(c, "isinstance", py_make_builtin("isinstance", bi_isinstance, 2,  2));
     py_global_define(c, "min",        py_make_builtin("min",        bi_min,        1, -1));
@@ -2722,6 +2894,9 @@ install_builtins(CTX *c)
     py_global_define(c, "input",      py_make_builtin("input",      bi_input,      0,  1));
     py_global_define(c, "hash",       py_make_builtin("hash",       bi_hash,       1,  1));
     py_global_define(c, "format",     py_make_builtin("format",     bi_format,     1,  2));
+    py_global_define(c, "staticmethod",py_make_builtin("staticmethod",bi_staticmethod, 1, 1));
+    py_global_define(c, "classmethod", py_make_builtin("classmethod", bi_classmethod, 1, 1));
+    py_global_define(c, "property",    py_make_builtin("property",    bi_property,    1, 1));
 
     // Built-in exception classes.  Hierarchy is BaseException root, but
     // for now everything inherits Exception → no base.

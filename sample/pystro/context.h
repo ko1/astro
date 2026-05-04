@@ -86,12 +86,16 @@ enum pyobj_type {
     PY_T_LIST,
     PY_T_TUPLE,
     PY_T_DICT,
+    PY_T_SET,
     PY_T_RANGE,
     PY_T_FUNC,
     PY_T_BUILTIN,
     PY_T_BOUND_METHOD,
     PY_T_CLASS,
     PY_T_INSTANCE,
+    PY_T_STATICMETHOD,    // wraps a func; bypasses self binding
+    PY_T_CLASSMETHOD,     // wraps a func; binds the class instead of self
+    PY_T_PROPERTY,        // wraps a getter func; called on attribute read
 };
 
 struct pyobj;
@@ -166,6 +170,8 @@ struct pyobj {
             VALUE self;
             VALUE func;             // a func or builtin
         } bound;
+        // staticmethod / classmethod / property wrap a single func.
+        struct { VALUE wrapped; } wrap;
         struct pyclass cls;
         struct {
             struct pyobj *cls;
@@ -277,6 +283,7 @@ static inline bool py_is_str(VALUE v)     { return PY_IS_PTR(v) && PY_PTR(v)->ty
 static inline bool py_is_list(VALUE v)    { return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_LIST; }
 static inline bool py_is_tuple(VALUE v)   { return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_TUPLE; }
 static inline bool py_is_dict(VALUE v)    { return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_DICT; }
+static inline bool py_is_set(VALUE v)     { return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_SET; }
 static inline bool py_is_range(VALUE v)   { return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_RANGE; }
 static inline bool py_is_func(VALUE v)    { return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_FUNC; }
 static inline bool py_is_builtin(VALUE v) { return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_BUILTIN; }
@@ -316,6 +323,7 @@ VALUE py_make_str_take(char *s, size_t len);      // takes ownership
 VALUE py_make_list  (VALUE *items, size_t n);     // copies items; capa=max(n,4)
 VALUE py_make_tuple (VALUE *items, size_t n);
 VALUE py_make_dict  (void);
+VALUE py_make_set   (void);
 VALUE py_make_range (int64_t start, int64_t stop, int64_t step);
 VALUE py_make_func  (struct Node *body, struct pyframe *env,
                      const char *name, int nparams, int n_pos_named,
