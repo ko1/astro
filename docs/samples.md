@@ -122,8 +122,11 @@ ASTro が想定外でも嵌まる例になっている。
 **parser-time に既に型が決まっている** 場合は別ノードに分ける。
 
 利点: EVAL body が 1 行 (`return l + r`) になり、特化後は C コンパイラの
-SROA が xmm/gpr レジスタに昇格させられる。`wastro perf.md` が報告する
-mandelbrot/nbody の inner-loop 性能はこのパターンに依存。
+**SROA** (Scalar Replacement of Aggregates — struct/union/小配列を、
+アドレスを取らない範囲で個別のスカラ変数に分解する最適化パス) が
+各メンバを浮動小数 (xmm) / 整数 (汎用) レジスタに昇格させられる。
+`wastro perf.md` が報告する mandelbrot/nbody の inner-loop 性能は
+このパターンに依存。
 
 #### (c) 動的型 — fast/slow 二段構え + IC 駆動の kind swap
 
@@ -357,8 +360,9 @@ float f32; double f64; uint64_t raw; }`。
 `_f32` / `_f64` で別ノードを使い分ける。
 
 → EVAL body は `return frame[idx].i32;` の 1 行。SD 化すると **gcc の
-SROA が各 slot をネイティブ型のレジスタに promote** する。AST 解釈なのに
-スタックマシン JIT 風の速度が出るのはこの構造のおかげ。
+SROA (§3.1(b) で説明済) が各 slot を分解してネイティブ型のレジスタに
+promote** する。AST 解釈なのにスタックマシン JIT 風の速度が出るのは
+この構造のおかげ。
 
 `uint64_t[]` + memcpy reinterpret では gcc の alias 解析が躊躇うことが
 あるので、**union を明示する** のがポイント (`docs/perf.md §1`)。
