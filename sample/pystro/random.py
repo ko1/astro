@@ -31,6 +31,28 @@ def randint(a, b):
     return a + (_next64() % span)
 
 
+def randrange(start, stop=None, step=1):
+    # Half-open like range(): [start, stop).
+    if stop is None:
+        start, stop = 0, start
+    if step == 1:
+        if stop <= start:
+            raise ValueError("empty range")
+        return start + (_next64() % (stop - start))
+    width = stop - start
+    if step > 0:
+        n = (width + step - 1) // step
+    else:
+        n = (width + step + 1) // step
+    if n <= 0:
+        raise ValueError("empty range")
+    return start + step * (_next64() % n)
+
+
+def randbytes(n):
+    return bytes((_next64() & 0xff) for _ in range(n))
+
+
 def choice(seq):
     if len(seq) == 0:
         raise IndexError("choice from empty sequence")
@@ -58,4 +80,38 @@ def uniform(a, b):
     return a + (b - a) * random()
 
 
-__all__ = ["seed", "random", "randint", "choice", "shuffle", "sample", "uniform"]
+def gauss(mu=0.0, sigma=1.0):
+    # Box-Muller: two uniforms → one gaussian (we waste one).
+    import math as _math
+    u1 = random() or 1e-10
+    u2 = random()
+    z = _math.sqrt(-2 * _math.log(u1)) * _math.cos(2 * _math.pi * u2)
+    return mu + sigma * z
+
+
+def choices(population, weights=None, k=1):
+    out = []
+    n = len(population)
+    if weights is None:
+        for _ in range(k):
+            out.append(population[randint(0, n - 1)])
+        return out
+    total = 0
+    cum = []
+    for w in weights:
+        total += w
+        cum.append(total)
+    for _ in range(k):
+        x = random() * total
+        # linear scan (binary search would be better)
+        for i, c in enumerate(cum):
+            if x < c:
+                out.append(population[i])
+                break
+        else:
+            out.append(population[-1])
+    return out
+
+
+__all__ = ["seed", "random", "randint", "randrange", "randbytes",
+           "choice", "choices", "shuffle", "sample", "uniform", "gauss"]

@@ -1,0 +1,8 @@
+ok FuncAttrTest test_defaults
+ok FuncAttrTest test_kwdefaults
+ok FuncAttrTest test_no_defaults
+ok FuncAttrTest test_user_attr
+ok ImportlibTest test_dunder_import
+ok ImportlibTest test_import_module
+---
+passed=6 failed=0

@@ -2898,6 +2898,35 @@ py_getattr(CTX *c, VALUE v, const char *name)
         }
         if (strcmp(name, "__module__") == 0) return py_make_str("__main__", 8);
         if (strcmp(name, "__annotations__") == 0) return py_make_dict();
+        if (strcmp(name, "__defaults__") == 0) {
+            // Tuple of trailing defaults for pos-or-kw params, or None.
+            if (!o->func.defaults) return PY_NONE;
+            VALUE buf[32];
+            int n = 0;
+            for (int i = 0; i < o->func.n_pos_named && n < 32; i++) {
+                VALUE d = o->func.defaults[i];
+                if (d) buf[n++] = d;
+            }
+            if (n == 0) return PY_NONE;
+            return py_make_tuple(buf, n);
+        }
+        if (strcmp(name, "__kwdefaults__") == 0) {
+            if (!o->func.defaults) return py_make_dict();
+            VALUE r = py_make_dict();
+            for (int i = o->func.n_pos_named; i < o->func.nparams; i++) {
+                VALUE d = o->func.defaults[i];
+                if (d && o->func.param_names) {
+                    py_dict_set(c, r,
+                                py_make_str(o->func.param_names[i],
+                                            strlen(o->func.param_names[i])), d);
+                }
+            }
+            return r;
+        }
+        if (strcmp(name, "__code__") == 0 || strcmp(name, "__globals__") == 0
+            || strcmp(name, "__closure__") == 0) {
+            return PY_NONE;  // stubs — not modeling code/globals/closure objects
+        }
         if (o->func.attrs) {
             VALUE key = py_make_str(name, strlen(name));
             uint64_t h = py_hash(c, key);
