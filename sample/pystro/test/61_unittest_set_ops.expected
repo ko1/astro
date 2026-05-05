@@ -1,0 +1,10 @@
+ok SetOpTest test_clear_copy_update
+ok SetOpTest test_difference
+ok SetOpTest test_intersection
+ok SetOpTest test_subset_super_disjoint
+ok SetOpTest test_symmetric_difference
+ok SetOpTest test_union
+ok CustomContainerTest test_contains_iter
+ok CustomContainerTest test_delitem
+---
+passed=8 failed=0

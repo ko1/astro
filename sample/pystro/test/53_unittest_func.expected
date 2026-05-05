@@ -1,0 +1,18 @@
+ok FuncTest test_annotation
+ok FuncTest test_basic
+ok FuncTest test_closure
+ok FuncTest test_decorator
+ok FuncTest test_decorator_factory
+ok FuncTest test_default_args
+ok FuncTest test_func_attr
+ok FuncTest test_global
+ok FuncTest test_kwargs
+ok FuncTest test_lambda
+ok FuncTest test_lambda_factory
+ok FuncTest test_mixed
+ok FuncTest test_nested_def
+ok FuncTest test_nonlocal
+ok FuncTest test_spread_call
+ok FuncTest test_starargs
+---
+passed=16 failed=0

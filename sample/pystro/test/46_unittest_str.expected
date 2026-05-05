@@ -1,0 +1,22 @@
+ok StrTest test_case
+ok StrTest test_compare
+ok StrTest test_concat
+ok StrTest test_constructor
+ok StrTest test_find_replace
+ok StrTest test_format
+ok StrTest test_index
+ok StrTest test_iter
+ok StrTest test_join
+ok StrTest test_membership
+ok StrTest test_partition
+ok StrTest test_pct_format
+ok StrTest test_predicates
+ok StrTest test_remove_prefix_suffix
+ok StrTest test_slice
+ok StrTest test_split
+ok StrTest test_starts_ends
+ok StrTest test_strip
+ok StrTest test_type
+ok StrTest test_zfill_just
+---
+passed=20 failed=0

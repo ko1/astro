@@ -49,6 +49,15 @@ node_const_float(CTX * restrict c, NODE * restrict n, uint64_t bits)
 }
 
 NODE_DEF
+node_const_imag(CTX * restrict c, NODE * restrict n, uint64_t bits)
+{
+    (void)c; (void)n;
+    union { uint64_t u; double d; } pun = { .u = bits };
+    extern VALUE py_make_complex(double re, double im);
+    return py_make_complex(0.0, pun.d);
+}
+
+NODE_DEF
 node_const_str(CTX * restrict c, NODE * restrict n, const char *s)
 {
     (void)n;
@@ -574,6 +583,16 @@ node_subscript_set(CTX * restrict c, NODE * restrict n, NODE *seq, NODE *idx, NO
     VALUE sv = EVAL_ARG(c, seq);
     VALUE iv = EVAL_ARG(c, idx);
     VALUE vv = EVAL_ARG(c, val);
+    // Fast path: list[fixnum] = v.
+    if (LIKELY(py_is_list(sv) && PY_IS_FIXNUM(iv))) {
+        struct pyobj *o = PY_PTR(sv);
+        int64_t i = PY_FIXVAL(iv);
+        if (i < 0) i += (int64_t)o->list.len;
+        if (LIKELY(i >= 0 && i < (int64_t)o->list.len)) {
+            o->list.items[i] = vv;
+            return PY_NONE;
+        }
+    }
     py_list_set(c, sv, iv, vv);
     return PY_NONE;
 }
@@ -604,11 +623,49 @@ node_slice_set(CTX * restrict c, NODE * restrict n, NODE *seq, NODE *start, NODE
 }
 
 NODE_DEF
-node_attr_get(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name)
+node_attr_get(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, struct attr_cache *cache@ref)
 {
     (void)n;
     VALUE ov = EVAL_ARG(c, obj);
-    return py_getattr(c, ov, name);
+    // Inline cache fast path: same class + same attrs dict identity →
+    // load the cached entry directly.  The first-time miss / class
+    // change / attrs grow falls through to py_getattr.
+    if (LIKELY(PY_IS_PTR(ov) && PY_PTR(ov)->type == PY_T_INSTANCE)) {
+        struct pyobj *o = PY_PTR(ov);
+        if (LIKELY(o->inst.attrs && cache->cls_ptr == (void *)o->inst.cls
+                   && cache->attrs_id == (uint64_t)(uintptr_t)o->inst.attrs
+                   && cache->eidx >= 0
+                   && (size_t)cache->eidx < o->inst.attrs->elen)) {
+            VALUE k = o->inst.attrs->entries[cache->eidx].key;
+            // Verify the slot still holds the same key (string identity
+            // or pointer-equal — names are interned in the cache).
+            if (LIKELY(k != 0 && k != DICT_DELETED_KEY
+                       && py_is_str(k)
+                       && PY_PTR(k)->str.len == strlen(name)
+                       && memcmp(PY_PTR(k)->str.chars, name, PY_PTR(k)->str.len) == 0))
+                return o->inst.attrs->entries[cache->eidx].value;
+        }
+    }
+    VALUE r = py_getattr(c, ov, name);
+    // Stamp the cache for next time.  Walk the dict's entries[] to
+    // find the index — small overhead, only on miss.
+    if (PY_IS_PTR(ov) && PY_PTR(ov)->type == PY_T_INSTANCE) {
+        struct pyobj *o = PY_PTR(ov);
+        if (o->inst.attrs) {
+            for (size_t i = 0; i < o->inst.attrs->elen; i++) {
+                VALUE k = o->inst.attrs->entries[i].key;
+                if (k != 0 && k != DICT_DELETED_KEY
+                    && py_is_str(k) && PY_PTR(k)->str.len == strlen(name)
+                    && memcmp(PY_PTR(k)->str.chars, name, PY_PTR(k)->str.len) == 0) {
+                    cache->cls_ptr = (void *)o->inst.cls;
+                    cache->eidx = (int32_t)i;
+                    cache->attrs_id = (uint64_t)(uintptr_t)o->inst.attrs;
+                    break;
+                }
+            }
+        }
+    }
+    return r;
 }
 
 NODE_DEF
@@ -766,6 +823,19 @@ node_raise(CTX * restrict c, NODE * restrict n, NODE *exc)
         v = py_apply(c, v, 0, NULL);
         if (UNLIKELY(c->state != PY_STATE_NORMAL && c->state != PY_STATE_RAISE)) return PY_NONE;
     }
+    // Stash a traceback snapshot on the raised instance, if not set yet.
+    if (py_is_instance(v) && c->call_top > 0) {
+        VALUE existing = py_getattr_optional(c, v, "__traceback__");
+        if (!existing || existing == PY_NONE) {
+            c->state = PY_STATE_NORMAL;
+            VALUE *frames = (VALUE *)alloca(sizeof(VALUE) * c->call_top);
+            for (int i = 0; i < c->call_top; i++) {
+                const char *fn = c->call_stack[i] ? c->call_stack[i] : "<anon>";
+                frames[i] = py_make_str(fn, strlen(fn));
+            }
+            py_setattr(c, v, "__traceback__", py_make_list(frames, c->call_top));
+        }
+    }
     c->state = PY_STATE_RAISE;
     c->state_value = v;
     return PY_NONE;
@@ -808,6 +878,21 @@ node_try(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t handlers_idx,
     return PY_NONE;
 }
 
+// `with` runner — evaluates `cm_expr` to get the (already-entered) CM,
+// runs `body`, then calls __exit__ with proper exception protocol
+// (suppressing if __exit__ returns truthy).  __enter__ is called by the
+// surrounding desugar, not here.
+NODE_DEF @noinline
+node_with(CTX * restrict c, NODE * restrict n, NODE *cm_expr, NODE *body, uint32_t as_slot, uint32_t has_as)
+{
+    (void)n; (void)as_slot; (void)has_as;
+    VALUE cm = EVAL_ARG(c, cm_expr);
+    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+    extern void py_run_with(CTX *c, VALUE cm, NODE *body);
+    py_run_with(c, cm, body);
+    return PY_NONE;
+}
+
 // `def` allocates a closure object and stores it as a global by name
 // (or as a method on c->current_class while a class body is running).
 // Default values come from PYSTRO_NODE_TABLE[defaults_idx..idx+ndefaults].
@@ -815,6 +900,9 @@ node_try(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t handlers_idx,
 // side effect if a class body is being evaluated; the caller (parser)
 // stores the returned value via make_store for top-level / nested-def
 // bindings.
+//
+// If the body starts with a bare string literal, capture it as the
+// function's __doc__ (CPython compatibility).
 NODE_DEF @noinline
 node_def(CTX * restrict c, NODE * restrict n, const char *name, uint32_t nparams, uint32_t n_pos_named, uint32_t nlocals, uint32_t ndefaults, uint32_t defaults_idx, uint32_t leaf, uint32_t names_idx, uint32_t flags, uint32_t is_gen, NODE *body)
 {
@@ -835,6 +923,18 @@ node_def(CTX * restrict c, NODE * restrict n, const char *name, uint32_t nparams
     VALUE fn = py_make_func(body, c->env, name, (int)nparams, (int)n_pos_named,
                             (int)nlocals, dv, leaf != 0, pn, has_va, has_kw,
                             is_gen != 0);
+    // Docstring: if body's leftmost-spine leaf is a const_str, stash
+    // it as `__doc__` on the func.
+    {
+        extern const struct NodeKind kind_node_seq;
+        extern const struct NodeKind kind_node_const_str;
+        extern void py_func_set_doc(CTX *c, VALUE fn, const char *s);
+        NODE *first = body;
+        while (first && first->head.kind == &kind_node_seq)
+            first = first->u.node_seq.first;
+        if (first && first->head.kind == &kind_node_const_str)
+            py_func_set_doc(c, fn, first->u.node_const_str.s);
+    }
     if (c->current_class != PY_NONE)
         py_class_add_method(c, c->current_class, name, fn);
     return fn;
@@ -867,6 +967,38 @@ node_class_method_set(CTX * restrict c, NODE * restrict n, const char *name, NOD
     if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
     py_class_add_method(c, c->current_class, name, v);
     return PY_NONE;
+}
+
+// Class-body name load: look up `name` first in the enclosing class
+// (so `@x.setter` after `def x` sees the property), then fall back to
+// the module globals.  Used only in class bodies.
+NODE_DEF
+node_class_body_load(CTX * restrict c, NODE * restrict n, const char *name)
+{
+    (void)n;
+    if (c->current_class != PY_NONE) {
+        extern VALUE py_class_lookup_method_pub(VALUE cls, const char *name);
+        VALUE v = py_class_lookup_method_pub(c->current_class, name);
+        if (v != PY_NONE) return v;
+    }
+    extern int py_global_resolve(CTX *c, const char *name);
+    int idx = py_global_resolve(c, name);
+    return c->globals->entries[idx].value;
+}
+
+// Wrap a class definition with a metaclass: after the inner class body
+// has populated `cls`, collect its methods into a dict and call
+// `metaclass(name, (base,), attrs)` — the standard 3-arg type form.
+NODE_DEF @noinline
+node_class_with_meta(CTX * restrict c, NODE * restrict n, NODE *cls_node, NODE *meta_node, const char *cname)
+{
+    (void)n;
+    extern VALUE py_class_meta_apply(CTX *c, VALUE cls, VALUE meta, const char *name);
+    VALUE cls  = EVAL_ARG(c, cls_node);
+    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+    VALUE meta = EVAL_ARG(c, meta_node);
+    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+    return py_class_meta_apply(c, cls, meta, cname);
 }
 
 // Multi-base form: bases live in PYSTRO_NODE_TABLE[bases_idx..nbases].
@@ -1034,8 +1166,9 @@ node_call_spread(CTX * restrict c, NODE * restrict n, NODE *fn, uint32_t spreads
             // **dict
             if (!py_is_dict(v)) py_raise_exc(c, c->EXC_TypeError, "argument after ** must be a dict");
             struct pydict *d = PY_PTR(v)->dict;
-            for (size_t j = 0; j < d->capa; j++) {
-                if (d->entries[j].state == 1) {
+            for (size_t j = 0; j < d->elen; j++) {
+                VALUE _k_chk = d->entries[j].key;
+                if (_k_chk != 0 && _k_chk != DICT_DELETED_KEY) {
                     if (!py_is_str(d->entries[j].key))
                         py_raise_exc(c, c->EXC_TypeError, "** keys must be strings");
                     if (kwc == (int)cap_kw) {
@@ -1106,15 +1239,18 @@ node_method_1(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
 {
     (void)n;
     VALUE o = EVAL_ARG(c, obj);
+    if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
     if (LIKELY(PY_IS_PTR(o) && PY_PTR(o)->type == cache->type_tag && cache->fn)) {
         VALUE av[2];
         av[0] = o;
         av[1] = EVAL_ARG(c, a0);
+        if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
         return ((py_builtin_fn)cache->fn)(c, 2, av);
     }
     VALUE m = py_method_resolve(c, o, name, cache);
     VALUE av[1];
     av[0] = EVAL_ARG(c, a0);
+    if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
     return py_apply(c, m, 1, av);
 }
 
@@ -1123,17 +1259,22 @@ node_method_2(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
 {
     (void)n;
     VALUE o = EVAL_ARG(c, obj);
+    if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
     if (LIKELY(PY_IS_PTR(o) && PY_PTR(o)->type == cache->type_tag && cache->fn)) {
         VALUE av[3];
         av[0] = o;
         av[1] = EVAL_ARG(c, a0);
+        if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
         av[2] = EVAL_ARG(c, a1);
+        if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
         return ((py_builtin_fn)cache->fn)(c, 3, av);
     }
     VALUE m = py_method_resolve(c, o, name, cache);
     VALUE av[2];
     av[0] = EVAL_ARG(c, a0);
+    if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
     av[1] = EVAL_ARG(c, a1);
+    if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
     return py_apply(c, m, 2, av);
 }
 
@@ -1188,6 +1329,33 @@ node_super_method_explicit(CTX * restrict c, NODE * restrict n, NODE *cls_expr, 
 }
 
 // `super().method(args)` — cooperative MRO walk.  Walks the actual
+// `super()` returning a bound super proxy as a value.
+// Walks the actual instance's class MRO starting just after the
+// lexical defining class (c->method_class).
+NODE_DEF @noinline
+node_super_obj(CTX * restrict c, NODE * restrict n)
+{
+    (void)n;
+    extern VALUE py_make_super(VALUE start_cls, VALUE self);
+    if (!c->env || c->env->nslots < 1)
+        py_raise_exc(c, c->EXC_RuntimeError, "super() outside of method");
+    VALUE self = c->env->slots[0];
+    VALUE start = c->method_class;
+    return py_make_super(start, self);
+}
+
+// `super(C, self)` explicit form returning a proxy.
+NODE_DEF @noinline
+node_super_obj_explicit(CTX * restrict c, NODE * restrict n, NODE *cls_expr, NODE *self_expr)
+{
+    (void)n;
+    extern VALUE py_make_super(VALUE start_cls, VALUE self);
+    VALUE cls = EVAL_ARG(c, cls_expr);
+    VALUE self = EVAL_ARG(c, self_expr);
+    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+    return py_make_super(cls, self);
+}
+
 // instance's class MRO starting just after the lexical defining class
 // (read from c->method_class set by py_apply when entering a method).
 // Falls back to `base_v` only if method_class is not set (e.g. when

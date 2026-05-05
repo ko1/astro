@@ -1,0 +1,18 @@
+ok IterSentinelTest test_basic
+ok IterSentinelTest test_immediate_stop
+ok ParamMarkerTest test_combined
+ok ParamMarkerTest test_kwonly
+ok ParamMarkerTest test_kwonly_with_default
+ok ParamMarkerTest test_posonly
+ok SpreadInLiteralTest test_dict_spread
+ok SpreadInLiteralTest test_list_spread
+ok SpreadInLiteralTest test_set_spread
+ok SpreadInLiteralTest test_tuple_spread
+ok BoundMethodMetaTest test_doc
+ok BoundMethodMetaTest test_self_func
+ok FormatSpecTest test_alt_form
+ok FormatSpecTest test_percent
+ok FormatSpecTest test_sign
+ok FormatSpecTest test_thousands
+---
+passed=16 failed=0

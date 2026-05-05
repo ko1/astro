@@ -1,0 +1,7 @@
+before
+caught ValueError
+after
+retry caught
+caught as Exception
+3.14159
+9

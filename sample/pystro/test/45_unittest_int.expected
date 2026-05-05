@@ -1,0 +1,15 @@
+ok IntTest test_base0_prefix
+ok IntTest test_base16
+ok IntTest test_base2
+ok IntTest test_base8
+ok IntTest test_basic
+ok IntTest test_bignum
+ok IntTest test_bool_is_int
+ok IntTest test_div
+ok IntTest test_invalid
+ok IntTest test_isinstance
+ok IntTest test_negative
+ok IntTest test_pow
+ok IntTest test_type
+---
+passed=13 failed=0

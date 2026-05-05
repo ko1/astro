@@ -7,7 +7,7 @@
 
 enum tok_kind {
     T_EOF = 0, T_NEWLINE, T_INDENT, T_DEDENT,
-    T_INT, T_FLOAT, T_STR, T_FSTR, T_BYTES, T_NAME,
+    T_INT, T_FLOAT, T_IMAG, T_STR, T_FSTR, T_BYTES, T_NAME,
 
     // Keywords.
     T_DEF, T_RETURN, T_IF, T_ELIF, T_ELSE, T_WHILE, T_FOR, T_IN, T_PASS,
@@ -75,7 +75,95 @@ static Tok *tok_last(void) { return &tok_arr[tok_len - 1]; }
 static const char **name_pool;
 static size_t       name_pool_len, name_pool_capa;
 
-static const char *
+// Map a token kind to a human-readable name (for parse error messages).
+const char *
+tok_kind_name(int k)
+{
+    switch (k) {
+      case T_EOF: return "<EOF>";
+      case T_NEWLINE: return "<NEWLINE>";
+      case T_INDENT: return "<INDENT>";
+      case T_DEDENT: return "<DEDENT>";
+      case T_INT: return "<int literal>";
+      case T_FLOAT: return "<float literal>";
+      case T_IMAG: return "<imaginary literal>";
+      case T_STR: return "<str literal>";
+      case T_FSTR: return "<f-string>";
+      case T_BYTES: return "<bytes>";
+      case T_NAME: return "<name>";
+      case T_DEF: return "'def'";
+      case T_RETURN: return "'return'";
+      case T_IF: return "'if'";
+      case T_ELIF: return "'elif'";
+      case T_ELSE: return "'else'";
+      case T_WHILE: return "'while'";
+      case T_FOR: return "'for'";
+      case T_IN: return "'in'";
+      case T_PASS: return "'pass'";
+      case T_BREAK: return "'break'";
+      case T_CONTINUE: return "'continue'";
+      case T_AND: return "'and'";
+      case T_OR: return "'or'";
+      case T_NOT: return "'not'";
+      case T_TRUE: return "'True'";
+      case T_FALSE: return "'False'";
+      case T_NONE: return "'None'";
+      case T_CLASS: return "'class'";
+      case T_TRY: return "'try'";
+      case T_EXCEPT: return "'except'";
+      case T_FINALLY: return "'finally'";
+      case T_RAISE: return "'raise'";
+      case T_AS: return "'as'";
+      case T_LAMBDA: return "'lambda'";
+      case T_GLOBAL: return "'global'";
+      case T_NONLOCAL: return "'nonlocal'";
+      case T_IS: return "'is'";
+      case T_IMPORT: return "'import'";
+      case T_FROM: return "'from'";
+      case T_WITH: return "'with'";
+      case T_YIELD: return "'yield'";
+      case T_ASSERT: return "'assert'";
+      case T_DEL: return "'del'";
+      case T_MATCH: return "'match'";
+      case T_CASE: return "'case'";
+      case T_LPAREN: return "'('";
+      case T_RPAREN: return "')'";
+      case T_LBRACK: return "'['";
+      case T_RBRACK: return "']'";
+      case T_LBRACE: return "'{'";
+      case T_RBRACE: return "'}'";
+      case T_COMMA: return "','";
+      case T_COLON: return "':'";
+      case T_DOT: return "'.'";
+      case T_SEMI: return "';'";
+      case T_AT: return "'@'";
+      case T_ARROW: return "'->'";
+      case T_ASSIGN: return "'='";
+      case T_WALRUS: return "':='";
+      case T_PLUS: return "'+'";
+      case T_MINUS: return "'-'";
+      case T_STAR: return "'*'";
+      case T_SLASH: return "'/'";
+      case T_SLASH_SLASH: return "'//'";
+      case T_PERCENT: return "'%'";
+      case T_STAR_STAR: return "'**'";
+      case T_AMP: return "'&'";
+      case T_PIPE: return "'|'";
+      case T_CARET: return "'^'";
+      case T_TILDE: return "'~'";
+      case T_LSHIFT: return "'<<'";
+      case T_RSHIFT: return "'>>'";
+      case T_EQ: return "'=='";
+      case T_NE: return "'!='";
+      case T_LT: return "'<'";
+      case T_LE: return "'<='";
+      case T_GT: return "'>'";
+      case T_GE: return "'>='";
+    }
+    return "<token>";
+}
+
+const char *
 intern_name(const char *s, size_t len)
 {
     for (size_t i = 0; i < name_pool_len; i++) {
@@ -108,7 +196,9 @@ keyword_kind(const char *s, size_t len)
         {"is",T_IS},{"import",T_IMPORT},{"from",T_FROM},
         {"with",T_WITH},{"yield",T_YIELD},
         {"assert",T_ASSERT},{"del",T_DEL},
-        {"match",T_MATCH},{"case",T_CASE},
+        // match/case are soft keywords in CPython; we keep them as
+        // T_NAME at lex time and recognise them at the statement-start
+        // position in the parser.
     };
     for (size_t i = 0; i < sizeof(kws)/sizeof(kws[0]); i++) {
         size_t kl = strlen(kws[i].kw);
@@ -132,13 +222,23 @@ lex_error(const char *fmt, ...)
 static char
 peek(int off) { return src_buf[src_pos + off]; }
 
+static void read_string_lit_raw(int line, char quote, bool is_fstr);
+
 static void
 read_string_lit(int line, char quote, bool is_fstr)
 {
     src_pos++;
+    // Triple-quoted string: matches `quote quote ...` at start.
+    bool triple = (peek(0) == quote && peek(1) == quote);
+    if (triple) src_pos += 2;
     size_t cap = 32, len = 0;
     char *buf = (char *)GC_malloc_atomic(cap);
-    while (peek(0) != '\0' && peek(0) != quote) {
+    while (peek(0) != '\0') {
+        if (triple) {
+            if (peek(0) == quote && peek(1) == quote && peek(2) == quote) break;
+        } else {
+            if (peek(0) == quote) break;
+        }
         char ch = peek(0);
         if (ch == '\\' && !is_fstr) {
             src_pos++;
@@ -148,10 +248,30 @@ read_string_lit(int line, char quote, bool is_fstr)
               case 'n': ch = '\n'; break;
               case 't': ch = '\t'; break;
               case 'r': ch = '\r'; break;
+              case 'b': ch = '\b'; break;
+              case 'f': ch = '\f'; break;
+              case 'a': ch = '\a'; break;
+              case 'v': ch = '\v'; break;
               case '\\': ch = '\\'; break;
               case '\'': ch = '\''; break;
               case '"': ch = '"'; break;
               case '0': ch = '\0'; break;
+              case 'x': {
+                src_pos++;
+                int hi = peek(0), lo = peek(1);
+                int hh = (hi >= '0' && hi <= '9') ? hi - '0'
+                       : (hi >= 'a' && hi <= 'f') ? hi - 'a' + 10
+                       : (hi >= 'A' && hi <= 'F') ? hi - 'A' + 10 : -1;
+                int ll = (lo >= '0' && lo <= '9') ? lo - '0'
+                       : (lo >= 'a' && lo <= 'f') ? lo - 'a' + 10
+                       : (lo >= 'A' && lo <= 'F') ? lo - 'A' + 10 : -1;
+                if (hh < 0 || ll < 0) lex_error("invalid \\x escape");
+                ch = (char)((hh << 4) | ll);
+                src_pos += 2;        // already past 'x' via outer src_pos++
+                if (len + 2 > cap) { cap *= 2; buf = (char *)GC_realloc(buf, cap); }
+                buf[len++] = ch;
+                continue;
+              }
               default:  ch = esc;
             }
             src_pos++;
@@ -179,7 +299,10 @@ read_string_lit(int line, char quote, bool is_fstr)
             }
             src_pos++;
         } else {
-            if (ch == '\n') lex_error("unterminated string");
+            if (ch == '\n') {
+                if (!triple) lex_error("unterminated string");
+                src_line++;
+            }
             src_pos++;
         }
         if (len + 2 > cap) {
@@ -188,8 +311,62 @@ read_string_lit(int line, char quote, bool is_fstr)
         }
         buf[len++] = ch;
     }
-    if (peek(0) != quote) lex_error("unterminated string");
+    if (triple) {
+        if (peek(0) != quote || peek(1) != quote || peek(2) != quote)
+            lex_error("unterminated triple-quoted string");
+        src_pos += 3;
+    } else {
+        if (peek(0) != quote) lex_error("unterminated string");
+        src_pos++;
+    }
+    buf[len] = '\0';
+    tok_push(is_fstr ? T_FSTR : T_STR, line);
+    tok_last()->sval = buf;
+    tok_last()->slen = len;
+}
+
+// Raw string reader: backslashes are kept literal (no escape sequences).
+// Like Python: `\` followed by anything is two characters in the string,
+// EXCEPT a quote character is still escaped enough to not terminate
+// (consistent with CPython: r"\"" is 2 chars '\\' + '"').
+static void
+read_string_lit_raw(int line, char quote, bool is_fstr)
+{
     src_pos++;
+    bool triple = (peek(0) == quote && peek(1) == quote);
+    if (triple) src_pos += 2;
+    size_t cap = 32, len = 0;
+    char *buf = (char *)GC_malloc_atomic(cap);
+    while (peek(0) != '\0') {
+        if (triple) {
+            if (peek(0) == quote && peek(1) == quote && peek(2) == quote) break;
+        } else {
+            if (peek(0) == quote) break;
+        }
+        char ch = peek(0);
+        if (ch == '\\' && peek(1) != '\0') {
+            // Keep the backslash and the next char.
+            if (len + 2 > cap) { cap *= 2; buf = (char *)GC_realloc(buf, cap); }
+            buf[len++] = '\\';
+            buf[len++] = peek(1);
+            if (peek(1) == '\n') src_line++;
+            src_pos += 2;
+            continue;
+        }
+        if (!triple && ch == '\n') lex_error("unterminated string");
+        if (ch == '\n') src_line++;
+        if (len + 1 > cap) { cap *= 2; buf = (char *)GC_realloc(buf, cap); }
+        buf[len++] = ch;
+        src_pos++;
+    }
+    if (triple) {
+        if (peek(0) != quote || peek(1) != quote || peek(2) != quote)
+            lex_error("unterminated triple-quoted raw string");
+        src_pos += 3;
+    } else {
+        if (peek(0) != quote) lex_error("unterminated raw string");
+        src_pos++;
+    }
     buf[len] = '\0';
     tok_push(is_fstr ? T_FSTR : T_STR, line);
     tok_last()->sval = buf;
@@ -233,6 +410,13 @@ read_number(void)
     for (size_t i = 0; i < len; i++) if (src_buf[start + i] != '_') clean[cl++] = src_buf[start + i];
     clean[cl] = '\0';
 
+    // Imaginary suffix: `1j` / `1.5j` → T_IMAG, value = the float.
+    if (peek(0) == 'j' || peek(0) == 'J') {
+        src_pos++;
+        tok_push(T_IMAG, line);
+        tok_last()->fval = strtod(clean, NULL);
+        return;
+    }
     if (is_float) {
         tok_push(T_FLOAT, line);
         tok_last()->fval = strtod(clean, NULL);
@@ -334,21 +518,40 @@ tokenize(const char *src, const char *filename)
         if (ch == ' ' || ch == '\t' || ch == '\r') { src_pos++; continue; }
         if (ch == '\\' && peek(1) == '\n') { src_pos += 2; src_line++; continue; }
         if (isdigit((unsigned char)ch)) { read_number(); continue; }
-        // f-string prefix: f"..." or f'...'
-        if ((ch == 'f' || ch == 'F') && (peek(1) == '"' || peek(1) == '\'')) {
-            int line = src_line;
-            src_pos++;
-            read_string_lit(line, peek(0), true);
-            continue;
-        }
-        // bytes literal: b"..." or b'...'.  Reuse string reader, then
-        // retag the resulting T_STR as T_BYTES.
-        if ((ch == 'b' || ch == 'B') && (peek(1) == '"' || peek(1) == '\'')) {
-            int line = src_line;
-            src_pos++;
-            read_string_lit(line, peek(0), false);
-            tok_last()->kind = T_BYTES;
-            continue;
+        // String prefix combinations: r/R/u/U + b/B + f/F.  Order is
+        // flexible per Python (rb, br, Rb, etc.).
+        {
+            bool p_raw = false, p_bytes = false, p_fstr = false;
+            int look = 0;
+            char c0 = peek(0), c1 = peek(1), c2 = peek(2);
+            // Try 1-char prefix
+            if ((c0 == 'r' || c0 == 'R') && (c1 == '"' || c1 == '\'')) {
+                p_raw = true; look = 1;
+            } else if ((c0 == 'u' || c0 == 'U') && (c1 == '"' || c1 == '\'')) {
+                look = 1;     // u"..." — same as plain str
+            } else if ((c0 == 'b' || c0 == 'B') && (c1 == '"' || c1 == '\'')) {
+                p_bytes = true; look = 1;
+            } else if ((c0 == 'f' || c0 == 'F') && (c1 == '"' || c1 == '\'')) {
+                p_fstr = true; look = 1;
+            }
+            // Try 2-char prefix combos
+            else if ((c0 == 'r' || c0 == 'R') && (c1 == 'b' || c1 == 'B') && (c2 == '"' || c2 == '\'')) {
+                p_raw = true; p_bytes = true; look = 2;
+            } else if ((c0 == 'b' || c0 == 'B') && (c1 == 'r' || c1 == 'R') && (c2 == '"' || c2 == '\'')) {
+                p_raw = true; p_bytes = true; look = 2;
+            } else if ((c0 == 'r' || c0 == 'R') && (c1 == 'f' || c1 == 'F') && (c2 == '"' || c2 == '\'')) {
+                p_raw = true; p_fstr = true; look = 2;
+            } else if ((c0 == 'f' || c0 == 'F') && (c1 == 'r' || c1 == 'R') && (c2 == '"' || c2 == '\'')) {
+                p_raw = true; p_fstr = true; look = 2;
+            }
+            if (look > 0) {
+                int line = src_line;
+                src_pos += look;
+                if (p_raw) read_string_lit_raw(line, peek(0), p_fstr);
+                else       read_string_lit(line, peek(0), p_fstr);
+                if (p_bytes) tok_last()->kind = T_BYTES;
+                continue;
+            }
         }
         if (isalpha((unsigned char)ch) || ch == '_') { read_name(); continue; }
         if (ch == '\'' || ch == '"') { read_string_lit(src_line, ch, false); continue; }

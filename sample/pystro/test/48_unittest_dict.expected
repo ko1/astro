@@ -1,0 +1,20 @@
+ok DictTest test_clear
+ok DictTest test_comp
+ok DictTest test_construct
+ok DictTest test_copy
+ok DictTest test_del
+ok DictTest test_get_default
+ok DictTest test_get_set
+ok DictTest test_insertion_order
+ok DictTest test_iter
+ok DictTest test_keyerror
+ok DictTest test_keys_values_items
+ok DictTest test_len
+ok DictTest test_membership
+ok DictTest test_pop
+ok DictTest test_popitem
+ok DictTest test_setdefault
+ok DictTest test_type
+ok DictTest test_update
+---
+passed=18 failed=0

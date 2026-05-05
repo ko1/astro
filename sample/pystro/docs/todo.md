@@ -1,67 +1,159 @@
 # todo.md — pystro 残作業
 
 実装済みは [done.md](./done.md)、ベンチは [perf.md](./perf.md)。
-優先度順 (上 = 既存実装のバグ / 看板倒れ、下 = 未着手 / 性能 / 未確証)。
-
-## A. 既存実装のバグ・看板倒れ (4 件)
-
-| # | 項目 | 内容 |
-|---|---|---|
-| A1 | **`arith_cache @ref` が看板倒れ** | 実装したのは `py_try_binop_dunder` の早期 return だけ。ascheme 流の "last-seen types を覚える + override 監視 + invalid 化" の inline cache 本体は未実装 |
-| A2 | **generator + try/except の相互作用** | `yield` を含む `try:` ブロックがあって、caller 側が別の try に入ると `c->try_top` が混線。gen swap 時に try_stack を save/restore してない |
-| A3 | **`del NAME` の local が真の unbind ではない** | スロットに PY_NONE を書くだけ。`del x; print(x)` は None と表示 (Python なら NameError)。フレームスロットに valid bit を持たせるか、特殊な "undefined" sentinel が要る |
-| A4 | **循環参照コンテナの display で stack overflow** | `a = []; a.append(a); print(a)` が無限再帰。`py_display` に visiting set (見ている pyobj* の集合) を持たせて自己参照を `[...]` 表示する |
-
-## B. 部分実装で穴がある機能 (4 件)
-
-| # | 項目 | 不足 |
-|---|---|---|
-| B1 | **`match` パターン** | mapping パターン `{"k": pat}` と class-with-attrs `Point(x=0, y=y)` 未実装。class は isinstance チェックのみで属性照合してない |
-| B2 | **generator のメソッド** | `g.send(value)` / `g.throw(exc)` / `g.close()` 未実装。`next(g)` と `for x in g` のみ |
-| B3 | **`import` 文** | `import a.b.c` (dotted) / `from a.b import c` / `from m import *` 全部未対応。モジュール検索パスは CWD 固定 (`sys.path` のような仕組みなし) |
-| B4 | **bytes / bytearray** | `.decode()` / `.encode()` / `.find()` / `.split()` / `.startswith()` 等の主要メソッドが無い。indexing (→ int) と iter (→ int 列) のみ |
-
-## C. 完全に未着手の言語機能 (5 件)
-
-| # | 項目 | 内容 |
-|---|---|---|
-| C1 | **クラス属性 (非メソッド)** | `class C: x = 5` の `x` を class オブジェクトに保存する仕組みが無い (`def` のみ class.methods に登録)。class body 評価中に `make_store` を class dict に向けるルートが必要 |
-| C2 | **starred target** | `a, *rest = [1, 2, 3, 4]` での `*pat`、関数引数定義側の bare `*` (kwonly 区切り) は OK だが代入側は未対応 |
-| C3 | **f-string conversion** | `{expr!r}` / `{expr!s}` / `{expr!a}` のサフィックス付き変換 |
-| C4 | **文字列フォーマット** | `"%d %s" % args` 演算子と `"...".format(...)` 未実装。f-string と builtin `format(value, spec)` のみ |
-| C5 | **dict 挿入順保持** | Python 3.7+ は挿入順を仕様化。pystro はバケット順 (open-addressing 順) — 順序依存コードは壊れる |
-
-## D. ライブラリ・ランタイム (1 件、規模特大)
-
-| # | 項目 | 内容 |
-|---|---|---|
-| D1 | **標準ライブラリ** | `sys` / `os` / `math` / `json` / `re` / `collections` / `itertools` 等が一切ない。pure-Python で書けるものはユーザモジュールでなんとかなるが、`open` / `os.path` / `re` の後ろ盾は C 側で要実装 |
-
-## E. 性能 — 残ボトルネック (2 件)
-
-| # | 項目 | 期待効果 |
-|---|---|---|
-| E1 | **`dict_bench` 0.92×** | CPython の dict は数十年磨かれた C コード。pystro が並ぶには str-key 専用 layout (`PyDictKeysObject` 風)、PyObject_Hash の専用パス、サイズ別 layout 等が要る |
-| E2 | **真の `arith_cache`** (= A1 の本実装) | hot 数値ループで dunder lookup 経路を完全に排除。AOT 後に SD 内に直接 fixnum/flonum 経路が畳まれるよう @ref で baked-in |
-
-## F. 未テスト・たぶん動くけど確証なし (3 件)
-
-| # | 項目 | 注意 |
-|---|---|---|
-| F1 | **generator の中の generator** (ネスト) | `prev_gen` チェーンは pygen に入れたが、ネスト generator + 互いに `yield from` する経路は踏んだテストが無い |
-| F2 | **`import` 中の例外伝播** | `bi_import` がモジュール body の RAISE を NORMAL に戻して PY_NONE を返す実装。本来は import の caller に再 raise すべき |
-| F3 | **ユーザクラスの `__hash__` override** | `py_hash` の instance ケースは address-based。`__hash__` の dunder lookup → 呼び出し → int 変換のパスを入れる |
 
 ---
 
-合計 **18 項目**。
+## 残課題 (現在)
 
-## 既存の妥協 / 制限 (仕様としての設計判断)
+(空 — R9/R10 で大量の互換性向上)
 
-- GC は Boehm-Demers-Weiser。CPython の refcount + cycle-collector ではない (`__del__` の即時実行は未保証)
-- 例外 traceback は class 名 + message のみ (フレームスタック表示なし)
-- 整数オーバーフロー時に float に逃げない — bignum 昇格 (Python 3 と一致)
-- インデント: スペース推奨。タブは 8 スペース換算 (`tabnanny` 級チェックなし)
-- REPL なし。`-e <code>` か file 実行のみ
-- decorator は `def` / `class` 上にのみ。式 `(a := dec(b))` のような修飾は不可
-- C3 MRO の不整合検出: 厳格に MRO error を投げる代わりに BFS フォールバック (Python は TypeError)
+### deferred (外部 sample 依存)
+
+#### S-12. `re` (正規表現)
+- `sample/astrorge` integrate 待ち (memory: project_regexp_astrorge)。
+- 自前で書かない方針。
+
+### 性能 (要 ASTroGen 改修)
+
+#### BR-5. 全 NODE 型に SD bake
+- 現状 ASTroGen は hot path のみ SD 化。cold path も SD 化すれば PLT hop が減る。
+- pystro 単体では着手できない。
+
+#### BR-6. dict_bench で python3 を抜く
+- 現状 0.49× (本ラウンド全 features 入れて)。
+- 残ボトルネック:
+  - `py_dict_set` / `py_hash` の関数呼び出しコスト
+  - AST dispatcher 自体のオーバーヘッド
+- 改善案: `py_dict_set` / `pydict_find` を `static inline` 化、または
+  CPython 風 string-only dict layout 追加。
+- これ以上は pystro の AST direct dispatch 設計の限界に近い。
+
+---
+
+## 設計上の妥協 (変えない)
+
+- Boehm GC (refcount + cycle collector ではない)
+- インデント = スペース推奨 (タブ = 8 spaces)
+- decorator は `def` / `class` 上のみ
+- C3 MRO 不整合は BFS フォールバック
+- string slice は buffer 共有 (slice borrow)
+- set は (Python 仕様も) unordered
+
+---
+
+## 完了項目アーカイブ
+
+### R9 (2026-05-05)
+
+| 項目 | 内容 |
+|---|---|
+| M-6 完全実装 | `class M(list/dict/str/...)` で built-in operations が継承される。`inst.primary` 持って built-in method dispatch 時に primary に fallback (append/__getitem__/__setitem__/__iter__/len) |
+| property setter | `@x.setter` 完全動作。`prop.setter(fn)` は新 property を返す。class body の name lookup を実装 (`@x.setter` が前の `@property` def を参照可能に) |
+| class body name lookup | `node_class_body_load` 追加。class body 内で `def x` の前後で `x` 参照が可能 |
+| docstring (class/func) | `class C: """..."""` → `C.__doc__`、`def f(): """..."""` → `f.__doc__`。triple-quoted string `"""..."""` の lexer 対応も含む |
+| with CM 完全 protocol | `with` を `node_with` 化。`__exit__(type, val, tb)` が truthy 返したら例外を suppress (assertRaises 等が動く) |
+| pre-scan bug fix | `obj.x = ...` の `x` が outer function の local として誤って登録されていた問題を修正 (T_DOT 直前 NAME を除外) |
+| set operations | `\|`/`&`/`-`/`^` を set でサポート。`symmetric_difference`/`issubset`/`issuperset`/`isdisjoint`/`copy`/`clear`/`update` メソッド追加 |
+| `__contains__` / `__delitem__` | user class の dunder を dispatch。`__iter__` 経由 fallback も実装 |
+| `__neg__` / `__abs__` | user class の `-x` / `abs(x)` で dunder を呼ぶ |
+| stdlib 追加 | `decimal` (固定小数), `fractions` (有理数), `threading` (synchronous stub), `logging` (print-based stub) |
+| enumerate(start) | 第 2 引数 positional 形式対応 |
+| dict `\|` | `dict \| dict` で merge dict (RHS wins) |
+| unittest.assertRaises | 真の context manager として動作 (例外 suppress) |
+| `__bool__` / `__len__` for truthiness | user instance の `if x:` で dunder dispatch (`py_is_truthy_instance`) |
+| isinstance(True, int) | True/False が int の subclass として扱われる |
+| str.format(name=val) | named field の format を実装 |
+| iter(callable, sentinel) | 2-arg form 対応 (kind=4) |
+| kw-only / pos-only marker | `def f(a, *, b)` と `def f(a, /, b)` の parse 対応 |
+| spread in literal | `[*it]` `(*it,)` `{*it}` `{**d}` の parser desugar (list+extend / tuple()変換 / set+update / dict+update) |
+| bound method __doc__/__name__/__self__/__func__ | `c.m.__doc__` 等が underlying func を forward |
+| format spec extras | `:#x`/`:#o`/`:#b` (alt form prefix), `:,` (thousands), `:%` (percent), `:+d` (sign) |
+| 例外クラス追加 | `ImportError` / `ModuleNotFoundError` / `OSError` / `FileNotFoundError` / `IOError` / `ArithmeticError` / `OverflowError` / `NotImplementedError` |
+| import 失敗 → ImportError | `ModuleNotFoundError` を raise (RuntimeError ではなく) |
+| uncaught exception 表示バグ | `setjmp` で longjmp 経由のときに traceback が出ないバグを修正 (main.c) |
+| print(sep, end, file) | kwargs が無視されていたのを修正 |
+| str method 追加 | `capitalize` / `rfind` / `rindex` / `index` (ValueError on miss) / `isnumeric` / `isdecimal` / `isascii` |
+| enumerate / zip / map / filter を lazy 化 | 従来は eager で list 返却 → 無限 generator で hang していた。py_iter に kind=8/9/10/11 を追加して lazy iterator に |
+| cpython port | test 58 (built-in subclass)、59 (property)、60 (decimal/fractions)、61 (set ops + custom container)、62 (dunders)、63 (syntax: iter sentinel/markers/spread/bound meta/format spec)、64 (exception classes / str methods) |
+
+### R8 (2026-05-05)
+
+| 項目 | 内容 |
+|---|---|
+| M-5 拡張 | `int / float / str / list / dict / tuple / set / frozenset / bytes / bytearray / range / type / object / complex / bool` を **真の class object** に。 `isinstance(int, type)` is True、`isinstance(M, type)` for class M も True |
+| M-6 (部分) | `class M(int): pass` 等で base が真の class なので継承の syntax は動作 |
+| pyclass.builtin_ctor | class struct に C 関数ポインタ追加。 py_apply on class with builtin_ctor は直接呼び出し |
+| 副: meta attrs | `f.__name__/__qualname__/__module__/__doc__/__annotations__`、`C.__bases__/__mro__/__dict__/__doc__`、`c.__class__/__dict__` |
+| 副: globals | `__name__` (\"__main__\")、`__import__()` builtin |
+| バグ fix | `bi_type` で flonum を PY_PTR 経由で参照していた SEGV 修正 |
+| cpython port | test_typesys (test 57): type は class、bases/MRO/dict、関数 meta、subclass 構文 |
+
+### R7 (2026-05-05)
+
+| 項目 | 内容 |
+|---|---|
+| B-4 | super proxy as value (`s = super(); s.method()`) — PY_T_SUPER 型追加 |
+| BR-3 | 真の metaclass — `class C(metaclass=M):` で M(name, bases, attrs) を呼び出す。M.__new__ + M.__init__ chain も対応。`type(name, bases, attrs)` 3-arg 形式実装 |
+| 副-A | `py_class_lookup_method` を non-static 化 |
+
+### R6 (2026-05-05)
+
+| 項目 | 内容 |
+|---|---|
+| BR-1 | `asyncio` 同期 stub (`async def` / `await` parse、`run / gather / sleep / Lock / Event / Queue`) |
+| BR-2 | `typing` モジュール (`List/Dict/Optional/Union/Callable/TypeVar` 等 — no-op) |
+| BR-3 (部分) | metaclass kwarg parse |
+| BR-4 | `pickle` (text-based custom format) |
+| S-7 | `hashlib` md5/sha256 (C 実装、known vector 一致) |
+| 副 | bytearray.append/extend、`obj[a, b]` tuple subscript、async/await soft-keyword |
+| cpython port | test 55 (typing/asyncio/pickle/hashlib/dataclass/argparse/enum/collections/functools) |
+
+### R5 (2026-05-05)
+
+| 項目 | 内容 |
+|---|---|
+| B-2 | complex literal `1j` / `1.5j` parse — lexer に T_IMAG token 追加 |
+| M-4 | complex 型 — PY_T_COMPLEX、`+ - * / -` 演算、`==` 比較、`real / imag` 属性、`complex(re, im)` builtin |
+| M-6 (部分) | `class M(list):` などが parse error / SEGV しない |
+| cpython port | test_complex / test_func / test_misc (test 52〜54) |
+
+### R4 (2026-05-05)
+
+| 項目 | 内容 |
+|---|---|
+| M-5 | `type(5) is int` を True に |
+| M-7 | descriptor protocol (`__get__` / `__set__`) |
+| S-5 | `dataclasses` (`@dataclass` + `_fields`、`make_dataclass / asdict / astuple / fields`) |
+| S-11 | `argparse` |
+| 副 | `unittest` mini、dict/set 等価比較、`str.split(maxsplit)`、method state check、CPython test port (test 45〜51) |
+
+### R3 (2026-05-05)
+
+| 項目 | 内容 |
+|---|---|
+| B-1 | except as e: が外側 local を破壊 — py_run_try で env / globals / call_top を save/restore |
+| B-3 | bytes literal `\x` escape |
+| E-1〜8/12 | open/file I/O、id/dir/globals/locals/vars/hasattr/getattr/setattr/delattr/callable、eval/exec、int(s, base)、str/dict methods 多数 |
+| M-1 | `with a, b:` 多重 context manager |
+| M-2 | `raise X from Y` exception chaining |
+| M-3 | f-string `{x=}` debug syntax |
+| S-1〜10 | functools / operator / copy / enum / random / string / pathlib / io |
+| 副 | `__truediv__` dunder dispatch、PY_T_ITER の for-loop、with-as pre-scan、multi-import、method spread |
+
+### R2 (2026-05-05)
+
+dict 0.49→0.78× の改善 (compact dict refactor、attr inline cache、traceback、parser 改善、stdlib 拡充、REPL)。
+
+### R1 (2026-05-05)
+
+A1〜F3 (18 項目): arith_cache、del NAME、循環参照 display、match 拡張、generator method、import dotted、bytes/bytearray、クラス属性、starred target、f-string conversion、% formatting / .format()、dict 挿入順、`__hash__` / Exception 伝播、nested gen テスト等。
+
+---
+
+## 進捗 (cumulative)
+
+- test: 26 → **65** (CPython 互換 unittest 形式 20 ファイル含む)
+- bench: 8/9 で python3 越え → R7 で全機能入れて 6/9 (新機能で dispatch コスト増加)
+- 言語機能: subset → ほぼフル仕様 (super value / metaclass / complex / descriptor / async stub / typing / pickle / property setter / built-in subclass / docstring 等)
+- stdlib: 0 → 21 モジュール (math/sys/os/time/json/collections/itertools/functools/operator/copy/enum/random/string/pathlib/io/typing/asyncio/pickle/hashlib/argparse/dataclasses/unittest/decimal/fractions/threading/logging)

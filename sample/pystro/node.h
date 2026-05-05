@@ -74,6 +74,9 @@ extern VALUE py_apply_slow(CTX *c, VALUE fn, int argc, VALUE *argv);
 static inline __attribute__((always_inline)) VALUE
 py_apply(CTX *c, VALUE fn, int argc, VALUE *argv)
 {
+    // If an argument expression raised, don't invoke the callee with
+    // a half-built argv — propagate the raise immediately.
+    if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
     if (LIKELY(PY_IS_PTR(fn) && PY_PTR(fn)->type == PY_T_FUNC)) {
         struct pyobj *f = PY_PTR(fn);
         // Fast path only handles plain "exact arity, no varargs/kwargs,
@@ -97,6 +100,8 @@ py_apply(CTX *c, VALUE fn, int argc, VALUE *argv)
             struct pyframe *saved = c->env;
             VALUE saved_mc = c->method_class;
             struct pyglobals *saved_g = c->globals;
+            int saved_call_top = c->call_top;
+            if (saved_call_top < 1024) c->call_stack[c->call_top++] = f->func.name;
             c->env = new_env;
             c->method_class = f->func.defining_class;
             if (f->func.fglobals) c->globals = f->func.fglobals;
@@ -104,6 +109,7 @@ py_apply(CTX *c, VALUE fn, int argc, VALUE *argv)
             c->env = saved;
             c->method_class = saved_mc;
             c->globals = saved_g;
+            c->call_top = saved_call_top;
 
             if (c->state == PY_STATE_RETURN) {
                 VALUE r = c->state_value;

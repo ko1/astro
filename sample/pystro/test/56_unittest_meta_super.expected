@@ -1,0 +1,8 @@
+ok SuperProxyTest test_super_as_value
+ok SuperProxyTest test_super_chain
+ok SuperProxyTest test_super_explicit_as_value
+ok MetaclassTest test_marker_via_meta
+ok MetaclassTest test_method_injection
+ok MetaclassTest test_registration
+---
+passed=6 failed=0

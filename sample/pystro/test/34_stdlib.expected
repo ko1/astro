@@ -1,0 +1,40 @@
+3.14
+2.72
+12.0
+True
+1.0
+1
+3
+4
+720
+12
+5.0
+5.0
+5.0
+1.0
+2
+2.718
+True
+True
+{"name": "alice", "age": 30, "items": [1, 2.5, true, null, "x"]}
+alice
+30
+[1, 2.5, True, None, 'x']
+True
+True
+[]
+{}
+[]
+{}
+[1, 2, 3]
+{'a': [{'b': 1}, {'b': 2}]}
+'line1\nline2'
+"with \"quotes\" and \\backslash"
+3.14
+-42
+1000.0
+True
+False
+None
+err1
+err2

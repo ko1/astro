@@ -1,0 +1,23 @@
+ok ListTest test_append_pop
+ok ListTest test_clear
+ok ListTest test_comp
+ok ListTest test_concat
+ok ListTest test_construct
+ok ListTest test_copy
+ok ListTest test_extend
+ok ListTest test_index
+ok ListTest test_index_method
+ok ListTest test_insert
+ok ListTest test_iter
+ok ListTest test_len
+ok ListTest test_membership
+ok ListTest test_mut
+ok ListTest test_nested
+ok ListTest test_remove_count
+ok ListTest test_reverse
+ok ListTest test_slice
+ok ListTest test_slice_assign
+ok ListTest test_sort
+ok ListTest test_type
+---
+passed=21 failed=0

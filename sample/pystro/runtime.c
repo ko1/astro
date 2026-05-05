@@ -3,6 +3,11 @@
 // builtins).  #included from main.c.
 
 #include <math.h>
+#include <time.h>
+#include <unistd.h>
+#include <dirent.h>
+#include <sys/stat.h>
+#include <errno.h>
 
 // ---------------------------------------------------------------------------
 // Singletons.
@@ -54,6 +59,94 @@ py_make_float(double d)
     struct pyobj *o = py_alloc(PY_T_FLOAT);
     o->dbl = d;
     return PY_OBJ_VAL(o);
+}
+
+// Apply a user-supplied metaclass to a class that's already been
+// constructed via py_make_class.  Builds attrs dict from the class's
+// methods, calls metaclass(name, (base,), attrs), and returns the
+// metaclass's result (or the original class if metaclass returns
+// non-class — that's incompatible with Python but pragmatic).
+extern VALUE py_class_lookup_method(VALUE cls, const char *name);
+VALUE
+py_class_meta_apply(CTX *c, VALUE cls, VALUE meta, const char *name)
+{
+    if (!py_is_class(cls)) return cls;
+    if (meta == PY_NONE) return cls;
+    // Build attrs dict from class methods.
+    VALUE attrs = py_make_dict();
+    struct pyclass *cd = &PY_PTR(cls)->cls;
+    for (int i = 0; i < cd->nmethods; i++) {
+        VALUE k = py_make_str(cd->methods[i].name, strlen(cd->methods[i].name));
+        py_dict_set(c, attrs, k, cd->methods[i].value);
+    }
+    // Bases tuple.
+    VALUE *bv = (VALUE *)alloca(sizeof(VALUE) * (cd->nbases ? cd->nbases : 1));
+    for (int i = 0; i < cd->nbases; i++) bv[i] = cd->bases[i];
+    VALUE bases_tuple = py_make_tuple(bv, cd->nbases);
+    VALUE name_v = py_make_str(name, strlen(name));
+
+    // If metaclass is a user class with __new__, call __new__(meta, ...).
+    // The __new__ implementor is expected to return a class (typically by
+    // calling type(name, bases, attrs)).
+    if (py_is_class(meta)) {
+        VALUE new_m = py_class_lookup_method(meta, "__new__");
+        if (new_m != PY_NONE) {
+            VALUE av[4] = { meta, name_v, bases_tuple, attrs };
+            VALUE r = py_apply(c, new_m, 4, av);
+            if (c->state == PY_STATE_RAISE) return PY_NONE;
+            // If __init__ is also defined, call it on the new class.
+            if (py_is_class(r)) {
+                VALUE init_m = py_class_lookup_method(meta, "__init__");
+                if (init_m != PY_NONE) {
+                    VALUE iav[4] = { r, name_v, bases_tuple, attrs };
+                    py_apply(c, init_m, 4, iav);
+                    if (c->state == PY_STATE_RAISE) return PY_NONE;
+                }
+                return r;
+            }
+        }
+    }
+    // Otherwise just call metaclass(name, bases, attrs).  For builtin
+    // `type` this hits the 3-arg form (creates a class).
+    VALUE av[3] = { name_v, bases_tuple, attrs };
+    VALUE result = py_apply(c, meta, 3, av);
+    if (c->state == PY_STATE_RAISE) return PY_NONE;
+    if (py_is_class(result)) return result;
+    return cls;
+}
+
+VALUE
+py_make_super(VALUE start_cls, VALUE self)
+{
+    struct pyobj *o = py_alloc(PY_T_SUPER);
+    o->super_.start_cls = start_cls;
+    o->super_.self = self;
+    return PY_OBJ_VAL(o);
+}
+
+VALUE
+py_make_complex(double re, double im)
+{
+    struct pyobj *o = py_alloc(PY_T_COMPLEX);
+    o->cpx.re = re;
+    o->cpx.im = im;
+    return PY_OBJ_VAL(o);
+}
+
+// Get (re, im) of v if it's a number; for non-complex, im=0.  Returns
+// false if v isn't numeric.
+static bool
+py_to_cpx(CTX *c, VALUE v, double *re, double *im)
+{
+    (void)c;
+    if (py_is_complex(v)) { *re = PY_PTR(v)->cpx.re; *im = PY_PTR(v)->cpx.im; return true; }
+    if (PY_IS_FIXNUM(v)) { *re = (double)PY_FIXVAL(v); *im = 0; return true; }
+    if (v == PY_TRUE)    { *re = 1; *im = 0; return true; }
+    if (v == PY_FALSE)   { *re = 0; *im = 0; return true; }
+    if (PY_IS_FLONUM(v)) { *re = py_flonum_to_double(v); *im = 0; return true; }
+    if (py_is_heap_float(v)) { *re = PY_PTR(v)->dbl; *im = 0; return true; }
+    if (py_is_bignum(v)) { *re = mpz_get_d(PY_PTR(v)->mpz); *im = 0; return true; }
+    return false;
 }
 
 VALUE
@@ -251,7 +344,7 @@ py_make_bound(VALUE self, VALUE func)
 // where merge picks at each step the head of some list that does not
 // appear in the tail of any other list.  If no such head exists, the
 // hierarchy is inconsistent and we fall back to a simple BFS order.
-static void
+void
 py_compute_mro(VALUE cls)
 {
     struct pyclass *cd = &PY_PTR(cls)->cls;
@@ -325,6 +418,25 @@ py_compute_mro(VALUE cls)
 }
 
 VALUE
+py_make_builtin_class(const char *name, py_builtin_fn ctor, int tag)
+{
+    struct pyobj *o = py_alloc(PY_T_CLASS);
+    o->cls.name = name;
+    o->cls.methods = NULL;
+    o->cls.nmethods = 0;
+    o->cls.methods_capa = 0;
+    o->cls.is_exception = false;
+    o->cls.base = PY_NONE;
+    o->cls.bases = NULL;
+    o->cls.nbases = 0;
+    o->cls.builtin_ctor = ctor;
+    o->cls.builtin_tag = tag;
+    extern void py_compute_mro(VALUE cls);
+    py_compute_mro(PY_OBJ_VAL(o));
+    return PY_OBJ_VAL(o);
+}
+
+VALUE
 py_make_class(const char *name, VALUE base, bool is_exception)
 {
     struct pyobj *o = py_alloc(PY_T_CLASS);
@@ -333,6 +445,14 @@ py_make_class(const char *name, VALUE base, bool is_exception)
     o->cls.nmethods = 0;
     o->cls.methods_capa = 0;
     o->cls.is_exception = is_exception;
+    o->cls.builtin_ctor = NULL;
+    o->cls.builtin_tag = -1;
+    // If base is a built-in type constructor (PY_T_BUILTIN named "list",
+    // "int", etc.), pystro can't really do built-in subclassing — drop
+    // the base silently so the class definition at least parses and
+    // the new class can hold its own methods/state.  Real method
+    // delegation requires composition.
+    if (base != PY_NONE && !py_is_class(base)) base = PY_NONE;
     o->cls.base = base;
     if (base == PY_NONE) {
         o->cls.bases = NULL;
@@ -403,7 +523,7 @@ py_class_add_method(CTX *c, VALUE cls, const char *name, VALUE fn)
 // Walk the C3-linearised MRO and return the first matching method.
 // `cls.mro[]` is computed at class creation time and includes self at
 // index 0 + all bases in MRO order.
-static VALUE
+VALUE
 py_class_lookup_method(VALUE cls, const char *name)
 {
     if (cls == PY_NONE || !py_is_class(cls)) return PY_NONE;
@@ -453,7 +573,22 @@ py_make_instance(VALUE cls)
     struct pyobj *o = py_alloc(PY_T_INSTANCE);
     o->inst.cls = PY_PTR(cls);
     o->inst.attrs = NULL;       // lazily allocated when first attr is set
+    o->inst.primary = 0;
     return PY_OBJ_VAL(o);
+}
+
+// Walk a class's MRO and find the first built-in type class (one with
+// builtin_ctor set).  Returns PY_NONE if none found.
+VALUE
+py_class_find_builtin_base(VALUE cls)
+{
+    if (!py_is_class(cls)) return PY_NONE;
+    struct pyclass *cd = &PY_PTR(cls)->cls;
+    for (int i = 0; i < cd->nmro; i++) {
+        if (py_is_class(cd->mro[i]) && PY_PTR(cd->mro[i])->cls.builtin_ctor)
+            return cd->mro[i];
+    }
+    return PY_NONE;
 }
 
 struct pyframe *
@@ -477,7 +612,22 @@ py_new_frame(struct pyframe *parent, int nslots)
 // globals (always true since each AST belongs to its module), the
 // cache stays consistent only when the cached serial equals the
 // current globals' serial — which is exactly what we want.
-static uint64_t SHARED_GLOBALS_SERIAL = 1;
+uint64_t SHARED_GLOBALS_SERIAL = 1;
+
+// Keyword args being passed to a built-in.  py_apply_kw saves/restores
+// these around the call; built-ins (sorted / min / max / enumerate)
+// consult them directly.  Single-threaded, so a single global is fine.
+int    PYSTRO_BI_KWC = 0;
+const char **PYSTRO_BI_KWNAMES = NULL;
+VALUE *PYSTRO_BI_KWVALUES = NULL;
+
+static VALUE
+pystro_bi_kwarg(const char *name)
+{
+    for (int i = 0; i < PYSTRO_BI_KWC; i++)
+        if (strcmp(PYSTRO_BI_KWNAMES[i], name) == 0) return PYSTRO_BI_KWVALUES[i];
+    return (VALUE)0;
+}
 
 struct pyglobals *
 py_globals_new(void)
@@ -596,6 +746,17 @@ py_raise_exc(CTX *c, VALUE cls, const char *fmt, ...)
     VALUE msg = py_make_str(buf, strlen(buf));
     py_setattr(c, inst, "args", py_make_tuple(&msg, 1));
     py_setattr(c, inst, "message", msg);
+    // Capture a snapshot of the active call stack as a list-of-strings
+    // attribute on the exception, so an uncaught exception can show
+    // a traceback even though we longjmp away from this point.
+    if (c->call_top > 0) {
+        VALUE *frames = (VALUE *)alloca(sizeof(VALUE) * c->call_top);
+        for (int i = 0; i < c->call_top; i++) {
+            const char *fn = c->call_stack[i] ? c->call_stack[i] : "<anon>";
+            frames[i] = py_make_str(fn, strlen(fn));
+        }
+        py_setattr(c, inst, "__traceback__", py_make_list(frames, c->call_top));
+    }
     c->state = PY_STATE_RAISE;
     c->state_value = inst;
     if (c->try_top > 0) longjmp(*c->try_stack[c->try_top - 1], 1);
@@ -647,12 +808,20 @@ py_neg(CTX *c, VALUE a)
     }
     if (PY_IS_FLONUM(a)) return py_make_float(-py_flonum_to_double(a));
     if (py_is_heap_float(a)) return py_make_float(-PY_PTR(a)->dbl);
+    if (py_is_complex(a)) return py_make_complex(-PY_PTR(a)->cpx.re, -PY_PTR(a)->cpx.im);
     if (py_int_or_bool(a)) {
         mpz_t z; py_to_mpz(c, a, z);
         mpz_neg(z, z);
         VALUE r = py_normalise_int(z);
         mpz_clear(z);
         return r;
+    }
+    if (py_is_instance(a)) {
+        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(a)->inst.cls), "__neg__");
+        if (m != PY_NONE) {
+            VALUE av[1] = { a };
+            return py_apply(c, m, 1, av);
+        }
     }
     py_raise_exc(c, c->EXC_TypeError, "bad operand type for unary -");
 }
@@ -661,11 +830,14 @@ py_neg(CTX *c, VALUE a)
 // if the dunder exists, else PY_NONE (caller falls through to the
 // regular numeric / type logic).  We use 0 as "method not defined"
 // sentinel since PY_NONE is a valid return.
+//
+// CPython always dispatches arithmetic through type slots (tp_as_number).
+// We mirror that: any user instance with a defined dunder takes priority.
 static inline VALUE
 py_try_binop_dunder(CTX *c, const char *name, VALUE a, VALUE b)
 {
-    // Fast path: neither operand is an instance — no dunder to check.
-    // This covers virtually every arithmetic operation in numeric code.
+    // Only user-defined classes can have a dunder we don't already
+    // know about; for built-in types we know they don't override these.
     if (LIKELY(!(PY_IS_PTR(a) && PY_PTR(a)->type == PY_T_INSTANCE)))
         return (VALUE)0;
     VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(a)->inst.cls), name);
@@ -683,6 +855,10 @@ py_add(CTX *c, VALUE a, VALUE b)
     if (r) return r;
     r = py_try_binop_dunder(c, "__radd__", b, a);
     if (r) return r;
+    // Fallback: __iadd__ (used by `a += b` and tolerated for `a + b` when
+    // only the in-place form is defined — common pystro pattern).
+    r = py_try_binop_dunder(c, "__iadd__", a, b);
+    if (r) return r;
     if (py_is_str(a) && py_is_str(b)) {
         size_t la = PY_PTR(a)->str.len, lb = PY_PTR(b)->str.len;
         char *buf = (char *)GC_malloc_atomic(la + lb + 1);
@@ -690,6 +866,17 @@ py_add(CTX *c, VALUE a, VALUE b)
         memcpy(buf + la, PY_PTR(b)->str.chars, lb);
         buf[la + lb] = '\0';
         return py_make_str_take(buf, la + lb);
+    }
+    if (py_is_byteseq(a) && py_is_byteseq(b)) {
+        size_t la = PY_PTR(a)->str.len, lb = PY_PTR(b)->str.len;
+        char *buf = (char *)GC_malloc_atomic(la + lb + 1);
+        memcpy(buf,      PY_PTR(a)->str.chars, la);
+        memcpy(buf + la, PY_PTR(b)->str.chars, lb);
+        buf[la + lb] = '\0';
+        // Result type: bytearray if either operand is bytearray, else bytes.
+        if (py_is_bytearray(a) || py_is_bytearray(b))
+            return py_make_bytearray(buf, la + lb);
+        return py_make_bytes(buf, la + lb);
     }
     if ((py_is_list(a) && py_is_list(b)) || (py_is_tuple(a) && py_is_tuple(b))) {
         size_t la = PY_PTR(a)->list.len, lb = PY_PTR(b)->list.len;
@@ -707,13 +894,35 @@ py_add(CTX *c, VALUE a, VALUE b)
     }
     if ((py_int_or_bool(a) || py_is_float(a)) && (py_int_or_bool(b) || py_is_float(b)))
         return py_make_float(py_to_double(c, a) + py_to_double(c, b));
+    {
+        double ra, ia, rb, ib;
+        if (py_to_cpx(c, a, &ra, &ia) && py_to_cpx(c, b, &rb, &ib)) {
+            return py_make_complex(ra + rb, ia + ib);
+        }
+    }
     py_raise_exc(c, c->EXC_TypeError, "unsupported operand type(s) for +");
 }
+
+// `py_func_set_doc` definition lives further down (after pydict_new).
+
+// Forward decls used by binop fallthroughs into set methods.
+static VALUE sm_union(CTX *c, int argc, VALUE *argv);
+static VALUE sm_intersection(CTX *c, int argc, VALUE *argv);
+static VALUE sm_difference(CTX *c, int argc, VALUE *argv);
+static bool  pydict_entry_live(const struct pydict *d, size_t i);
 
 VALUE
 py_sub(CTX *c, VALUE a, VALUE b)
 {
+    if (py_is_any_set(a) && py_is_any_set(b)) {
+        VALUE av[2] = { a, b };
+        return sm_difference(c, 2, av);
+    }
     VALUE r = py_try_binop_dunder(c, "__sub__", a, b);
+    if (r) return r;
+    r = py_try_binop_dunder(c, "__rsub__", b, a);
+    if (r) return r;
+    r = py_try_binop_dunder(c, "__isub__", a, b);
     if (r) return r;
     if (py_int_or_bool(a) && py_int_or_bool(b)) {
         mpz_t za, zb; py_to_mpz(c, a, za); py_to_mpz(c, b, zb);
@@ -724,6 +933,11 @@ py_sub(CTX *c, VALUE a, VALUE b)
     }
     if ((py_int_or_bool(a) || py_is_float(a)) && (py_int_or_bool(b) || py_is_float(b)))
         return py_make_float(py_to_double(c, a) - py_to_double(c, b));
+    {
+        double ra, ia, rb, ib;
+        if (py_to_cpx(c, a, &ra, &ia) && py_to_cpx(c, b, &rb, &ib))
+            return py_make_complex(ra - rb, ia - ib);
+    }
     py_raise_exc(c, c->EXC_TypeError, "unsupported operand type(s) for -");
 }
 
@@ -731,6 +945,10 @@ VALUE
 py_mul(CTX *c, VALUE a, VALUE b)
 {
     VALUE r = py_try_binop_dunder(c, "__mul__", a, b);
+    if (r) return r;
+    r = py_try_binop_dunder(c, "__rmul__", b, a);
+    if (r) return r;
+    r = py_try_binop_dunder(c, "__imul__", a, b);
     if (r) return r;
     if (py_is_str(a) && py_int_or_bool(b)) {
         int64_t k = PY_IS_FIXNUM(b) ? PY_FIXVAL(b) : (b == PY_TRUE ? 1 : 0);
@@ -742,6 +960,7 @@ py_mul(CTX *c, VALUE a, VALUE b)
         return py_make_str_take(buf, la * (size_t)k);
     }
     if (py_int_or_bool(a) && py_is_str(b)) return py_mul(c, b, a);
+    if (py_int_or_bool(a) && (py_is_list(b) || py_is_tuple(b))) return py_mul(c, b, a);
     if ((py_is_list(a) || py_is_tuple(a)) && py_int_or_bool(b)) {
         int64_t k = PY_IS_FIXNUM(b) ? PY_FIXVAL(b) : (b == PY_TRUE ? 1 : 0);
         if (k <= 0) return py_is_list(a) ? py_make_list(NULL, 0) : py_make_tuple(NULL, 0);
@@ -761,12 +980,27 @@ py_mul(CTX *c, VALUE a, VALUE b)
     }
     if ((py_int_or_bool(a) || py_is_float(a)) && (py_int_or_bool(b) || py_is_float(b)))
         return py_make_float(py_to_double(c, a) * py_to_double(c, b));
+    {
+        double ra, ia, rb, ib;
+        if (py_to_cpx(c, a, &ra, &ia) && py_to_cpx(c, b, &rb, &ib))
+            return py_make_complex(ra*rb - ia*ib, ra*ib + ia*rb);
+    }
     py_raise_exc(c, c->EXC_TypeError, "unsupported operand type(s) for *");
 }
 
 VALUE
 py_truediv(CTX *c, VALUE a, VALUE b)
 {
+    VALUE r = py_try_binop_dunder(c, "__truediv__", a, b);
+    if (r) return r;
+    if (py_is_complex(a) || py_is_complex(b)) {
+        double ra, ia, rb, ib;
+        if (py_to_cpx(c, a, &ra, &ia) && py_to_cpx(c, b, &rb, &ib)) {
+            double denom = rb*rb + ib*ib;
+            if (denom == 0) py_raise_exc(c, c->EXC_ZeroDivisionError, "complex division by zero");
+            return py_make_complex((ra*rb + ia*ib)/denom, (ia*rb - ra*ib)/denom);
+        }
+    }
     double bd = py_to_double(c, b);
     if (bd == 0.0) py_raise_exc(c, c->EXC_ZeroDivisionError, "division by zero");
     return py_make_float(py_to_double(c, a) / bd);
@@ -775,6 +1009,10 @@ py_truediv(CTX *c, VALUE a, VALUE b)
 VALUE
 py_fdiv(CTX *c, VALUE a, VALUE b)
 {
+    VALUE rd = py_try_binop_dunder(c, "__floordiv__", a, b);
+    if (rd) return rd;
+    rd = py_try_binop_dunder(c, "__rfloordiv__", b, a);
+    if (rd) return rd;
     if (py_int_or_bool(a) && py_int_or_bool(b)) {
         mpz_t za, zb; py_to_mpz(c, a, za); py_to_mpz(c, b, zb);
         if (mpz_sgn(zb) == 0) {
@@ -792,9 +1030,18 @@ py_fdiv(CTX *c, VALUE a, VALUE b)
     return py_make_float(floor(py_to_double(c, a) / bd));
 }
 
+extern VALUE py_str_pct_format(CTX *c, VALUE fmt, VALUE args);  // forward
 VALUE
 py_mod(CTX *c, VALUE a, VALUE b)
 {
+    // String % formatting: `"fmt" % args`.
+    if (py_is_str(a)) return py_str_pct_format(c, a, b);
+    {
+        VALUE rd = py_try_binop_dunder(c, "__mod__", a, b);
+        if (rd) return rd;
+        rd = py_try_binop_dunder(c, "__rmod__", b, a);
+        if (rd) return rd;
+    }
     if (py_int_or_bool(a) && py_int_or_bool(b)) {
         mpz_t za, zb; py_to_mpz(c, a, za); py_to_mpz(c, b, zb);
         if (mpz_sgn(zb) == 0) {
@@ -818,6 +1065,10 @@ py_mod(CTX *c, VALUE a, VALUE b)
 VALUE
 py_pow(CTX *c, VALUE a, VALUE b)
 {
+    VALUE r = py_try_binop_dunder(c, "__pow__", a, b);
+    if (r) return r;
+    r = py_try_binop_dunder(c, "__rpow__", b, a);
+    if (r) return r;
     // int ** non-negative-int → bignum (exact)
     if (py_int_or_bool(a) && py_int_or_bool(b)) {
         mpz_t zb; py_to_mpz(c, b, zb);
@@ -843,6 +1094,16 @@ py_pow(CTX *c, VALUE a, VALUE b)
 VALUE
 py_bit_and(CTX *c, VALUE a, VALUE b)
 {
+    {
+        VALUE rd = py_try_binop_dunder(c, "__and__", a, b);
+        if (rd) return rd;
+        rd = py_try_binop_dunder(c, "__rand__", b, a);
+        if (rd) return rd;
+    }
+    if (py_is_any_set(a) && py_is_any_set(b)) {
+        VALUE av[2] = { a, b };
+        return sm_intersection(c, 2, av);
+    }
     if (!py_int_or_bool(a) || !py_int_or_bool(b))
         py_raise_exc(c, c->EXC_TypeError, "unsupported operand type(s) for &");
     mpz_t za, zb; py_to_mpz(c, a, za); py_to_mpz(c, b, zb);
@@ -855,6 +1116,27 @@ py_bit_and(CTX *c, VALUE a, VALUE b)
 VALUE
 py_bit_or(CTX *c, VALUE a, VALUE b)
 {
+    VALUE rd = py_try_binop_dunder(c, "__or__", a, b);
+    if (rd) return rd;
+    rd = py_try_binop_dunder(c, "__ror__", b, a);
+    if (rd) return rd;
+    if (py_is_any_set(a) && py_is_any_set(b)) {
+        VALUE av[2] = { a, b };
+        return sm_union(c, 2, av);
+    }
+    if (py_is_dict(a) && py_is_dict(b)) {
+        // dict | dict: merge (RHS wins)
+        VALUE r = py_make_dict();
+        struct pydict *src = PY_PTR(a)->dict;
+        for (size_t i = 0; i < src->elen; i++)
+            if (pydict_entry_live(src, i))
+                py_dict_set(c, r, src->entries[i].key, src->entries[i].value);
+        struct pydict *src2 = PY_PTR(b)->dict;
+        for (size_t i = 0; i < src2->elen; i++)
+            if (pydict_entry_live(src2, i))
+                py_dict_set(c, r, src2->entries[i].key, src2->entries[i].value);
+        return r;
+    }
     if (!py_int_or_bool(a) || !py_int_or_bool(b))
         py_raise_exc(c, c->EXC_TypeError, "unsupported operand type(s) for |");
     mpz_t za, zb; py_to_mpz(c, a, za); py_to_mpz(c, b, zb);
@@ -867,6 +1149,23 @@ py_bit_or(CTX *c, VALUE a, VALUE b)
 VALUE
 py_bit_xor(CTX *c, VALUE a, VALUE b)
 {
+    VALUE rd = py_try_binop_dunder(c, "__xor__", a, b);
+    if (rd) return rd;
+    rd = py_try_binop_dunder(c, "__rxor__", b, a);
+    if (rd) return rd;
+    if (py_is_any_set(a) && py_is_any_set(b)) {
+        // Symmetric difference: (a - b) | (b - a)
+        VALUE r = py_make_set();
+        struct pydict *aa = PY_PTR(a)->dict;
+        struct pydict *bb = PY_PTR(b)->dict;
+        for (size_t i = 0; i < aa->elen; i++)
+            if (pydict_entry_live(aa, i) && !py_contains(c, b, aa->entries[i].key))
+                py_dict_set(c, r, aa->entries[i].key, PY_NONE);
+        for (size_t i = 0; i < bb->elen; i++)
+            if (pydict_entry_live(bb, i) && !py_contains(c, a, bb->entries[i].key))
+                py_dict_set(c, r, bb->entries[i].key, PY_NONE);
+        return r;
+    }
     if (!py_int_or_bool(a) || !py_int_or_bool(b))
         py_raise_exc(c, c->EXC_TypeError, "unsupported operand type(s) for ^");
     mpz_t za, zb; py_to_mpz(c, a, za); py_to_mpz(c, b, zb);
@@ -879,6 +1178,13 @@ py_bit_xor(CTX *c, VALUE a, VALUE b)
 VALUE
 py_bit_inv(CTX *c, VALUE a)
 {
+    if (py_is_instance(a)) {
+        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(a)->inst.cls), "__invert__");
+        if (m != PY_NONE) {
+            VALUE av[1] = { a };
+            return py_apply(c, m, 1, av);
+        }
+    }
     if (!py_int_or_bool(a))
         py_raise_exc(c, c->EXC_TypeError, "bad operand type for unary ~");
     mpz_t z; py_to_mpz(c, a, z);
@@ -891,6 +1197,12 @@ py_bit_inv(CTX *c, VALUE a)
 VALUE
 py_lshift(CTX *c, VALUE a, VALUE b)
 {
+    {
+        VALUE rd = py_try_binop_dunder(c, "__lshift__", a, b);
+        if (rd) return rd;
+        rd = py_try_binop_dunder(c, "__rlshift__", b, a);
+        if (rd) return rd;
+    }
     if (!py_int_or_bool(a) || !py_int_or_bool(b))
         py_raise_exc(c, c->EXC_TypeError, "unsupported operand type(s) for <<");
     mpz_t zb; py_to_mpz(c, b, zb);
@@ -910,6 +1222,12 @@ py_lshift(CTX *c, VALUE a, VALUE b)
 VALUE
 py_rshift(CTX *c, VALUE a, VALUE b)
 {
+    {
+        VALUE rd = py_try_binop_dunder(c, "__rshift__", a, b);
+        if (rd) return rd;
+        rd = py_try_binop_dunder(c, "__rrshift__", b, a);
+        if (rd) return rd;
+    }
     if (!py_int_or_bool(a) || !py_int_or_bool(b))
         py_raise_exc(c, c->EXC_TypeError, "unsupported operand type(s) for >>");
     mpz_t zb; py_to_mpz(c, b, zb);
@@ -977,11 +1295,31 @@ py_cmp(CTX *c, VALUE a, VALUE b)
     py_raise_exc(c, c->EXC_TypeError, "incomparable operand types");
 }
 
+// Convenience predicate: true iff entries[i] is a live (non-deleted) slot.
+static inline bool
+pydict_entry_live(const struct pydict *d, size_t i)
+{
+    VALUE k = d->entries[i].key;
+    return k != 0 && k != DICT_DELETED_KEY;
+}
+
 VALUE
 py_eq(CTX *c, VALUE a, VALUE b)
 {
     VALUE r = py_try_binop_dunder(c, "__eq__", a, b);
     if (r) return r;
+    // NaN is special: NaN != NaN, even when stored in the same VALUE.
+    if (py_is_float(a)) {
+        double d = PY_IS_FLONUM(a) ? py_flonum_to_double(a) : PY_PTR(a)->dbl;
+        if (d != d) {  // NaN check
+            if (py_is_float(b)) {
+                double d2 = PY_IS_FLONUM(b) ? py_flonum_to_double(b) : PY_PTR(b)->dbl;
+                if (d2 != d2) return PY_FALSE;   // NaN == NaN → False
+            }
+            // NaN != non-float: still False (NaN equals nothing).
+            return PY_FALSE;
+        }
+    }
     if (a == b) return PY_TRUE;
     if (PY_IS_FIXNUM(a) && PY_IS_FIXNUM(b)) return PY_FALSE;
     if (py_int_or_bool(a) && py_int_or_bool(b)) {
@@ -997,12 +1335,43 @@ py_eq(CTX *c, VALUE a, VALUE b)
         return memcmp(PY_PTR(a)->str.chars, PY_PTR(b)->str.chars,
                       PY_PTR(a)->str.len) == 0 ? PY_TRUE : PY_FALSE;
     }
+    if (py_is_byteseq(a) && py_is_byteseq(b)) {
+        if (PY_PTR(a)->str.len != PY_PTR(b)->str.len) return PY_FALSE;
+        return memcmp(PY_PTR(a)->str.chars, PY_PTR(b)->str.chars,
+                      PY_PTR(a)->str.len) == 0 ? PY_TRUE : PY_FALSE;
+    }
     if ((py_is_list(a) && py_is_list(b)) || (py_is_tuple(a) && py_is_tuple(b))) {
         size_t la = PY_PTR(a)->list.len, lb = PY_PTR(b)->list.len;
         if (la != lb) return PY_FALSE;
         for (size_t i = 0; i < la; i++)
             if (py_eq(c, PY_PTR(a)->list.items[i], PY_PTR(b)->list.items[i]) != PY_TRUE)
                 return PY_FALSE;
+        return PY_TRUE;
+    }
+    if (py_is_dict(a) && py_is_dict(b)) {
+        struct pydict *da = PY_PTR(a)->dict, *db = PY_PTR(b)->dict;
+        if (da->used != db->used) return PY_FALSE;
+        for (size_t i = 0; i < da->elen; i++) {
+            if (!pydict_entry_live(da, i)) continue;
+            VALUE k = da->entries[i].key;
+            if (!py_dict_has(c, b, k)) return PY_FALSE;
+            VALUE vb = py_dict_get(c, b, k);
+            if (py_eq(c, da->entries[i].value, vb) != PY_TRUE) return PY_FALSE;
+        }
+        return PY_TRUE;
+    }
+    if (py_is_complex(a) || py_is_complex(b)) {
+        double ra, ia, rb, ib;
+        if (py_to_cpx(c, a, &ra, &ia) && py_to_cpx(c, b, &rb, &ib))
+            return (ra == rb && ia == ib) ? PY_TRUE : PY_FALSE;
+    }
+    if (py_is_any_set(a) && py_is_any_set(b)) {
+        struct pydict *da = PY_PTR(a)->dict, *db = PY_PTR(b)->dict;
+        if (da->used != db->used) return PY_FALSE;
+        for (size_t i = 0; i < da->elen; i++) {
+            if (!pydict_entry_live(da, i)) continue;
+            if (!py_dict_has(c, b, da->entries[i].key)) return PY_FALSE;
+        }
         return PY_TRUE;
     }
     return PY_FALSE;
@@ -1013,6 +1382,8 @@ py_eq_bool(CTX *c, VALUE a, VALUE b)
 {
     return py_eq(c, a, b) == PY_TRUE;
 }
+
+// (pydict_entry_live moved earlier — see below)
 
 // ---------------------------------------------------------------------------
 // Hash.
@@ -1054,6 +1425,11 @@ py_hash(CTX *c, VALUE v)
         if (mpz_sgn(o->mpz) < 0) h = ~h;
         return h;
       }
+      case PY_T_COMPLEX: {
+        union { uint64_t u; double d; } pr = { .d = o->cpx.re };
+        union { uint64_t u; double d; } pi = { .d = o->cpx.im };
+        return pr.u ^ pi.u;
+      }
       case PY_T_STR: {
         uint64_t h = 0xCBF29CE484222325ULL;
         for (size_t i = 0; i < o->str.len; i++) {
@@ -1073,9 +1449,32 @@ py_hash(CTX *c, VALUE v)
         // XOR-of-hashes — order-independent.
         uint64_t h = 0;
         struct pydict *d = o->dict;
-        for (size_t i = 0; i < d->capa; i++)
-            if (d->entries[i].state == 1) h ^= py_hash(c, d->entries[i].key);
+        for (size_t i = 0; i < d->elen; i++)
+            if (pydict_entry_live(d, i)) h ^= py_hash(c, d->entries[i].key);
         return h ^ 0xC2B2AE3D27D4EB4FULL;
+      }
+      case PY_T_INSTANCE: {
+        // User-defined __hash__: call it and convert to int.
+        VALUE cls = PY_OBJ_VAL(o->inst.cls);
+        VALUE hm = py_class_lookup_method(cls, "__hash__");
+        if (hm != PY_NONE) {
+            VALUE av[1] = { v };
+            VALUE r = py_apply(c, hm, 1, av);
+            if (c->state != PY_STATE_NORMAL) return 0;
+            // Coerce result to a 64-bit hash (signed-truncated, like CPython's PyObject_Hash).
+            if (PY_IS_FIXNUM(r)) {
+                int64_t hv = PY_FIXVAL(r);
+                if (hv == -1) hv = -2;  // CPython convention.
+                return (uint64_t)hv;
+            }
+            if (py_is_int(r)) {
+                int64_t hv = mpz_get_si(PY_PTR(r)->mpz);
+                if (hv == -1) hv = -2;
+                return (uint64_t)hv;
+            }
+            // Non-int return → fall through to identity hash.
+        }
+        return (uint64_t)(uintptr_t)o * 0x9E3779B97F4A7C15ULL;
       }
       default:
         // Use object identity for other types (lists/dicts are unhashable
@@ -1096,10 +1495,14 @@ static struct pydict *
 pydict_new(void)
 {
     struct pydict *d = (struct pydict *)GC_malloc(sizeof(struct pydict));
-    d->capa = DICT_INIT_CAPA;
+    d->icapa = DICT_INIT_CAPA;
+    d->ecapa = DICT_INIT_CAPA;
+    d->elen = 0;
     d->used = 0;
     d->fill = 0;
-    d->entries = (struct pydict_entry *)GC_malloc(sizeof(struct pydict_entry) * d->capa);
+    d->indices = (int32_t *)GC_malloc_atomic(sizeof(int32_t) * d->icapa);
+    for (size_t i = 0; i < d->icapa; i++) d->indices[i] = DICT_EMPTY_IDX;
+    d->entries = (struct pydict_entry *)GC_malloc(sizeof(struct pydict_entry) * d->ecapa);
     return d;
 }
 
@@ -1131,62 +1534,182 @@ py_make_frozenset(void)
     return PY_OBJ_VAL(o);
 }
 
-static struct pydict_entry *
-pydict_lookup(CTX *c, struct pydict *d, VALUE key, uint64_t h)
+// Look up `key` in `d->indices`.  Returns:
+//   - the bucket index in *out_bucket
+//   - the entry index (>=0) in *out_eidx if found, else -1
+// `*out_first_tomb` points at the first tombstone bucket we passed
+// (so an insert can reuse it without further search).
+static inline void
+pydict_indices_lookup(CTX * restrict c, struct pydict * restrict d,
+                      VALUE key, uint64_t h,
+                      size_t *out_bucket, int32_t *out_eidx,
+                      ssize_t *out_first_tomb)
 {
-    size_t mask = d->capa - 1;
+    size_t mask = d->icapa - 1;
     size_t i = (size_t)h & mask;
     size_t step = 0;
-    struct pydict_entry *first_tomb = NULL;
+    ssize_t first_tomb = -1;
     bool key_is_immediate = PY_IS_FIXNUM(key) || key == PY_NONE
                           || key == PY_TRUE  || key == PY_FALSE;
     for (;;) {
-        struct pydict_entry *e = &d->entries[i];
-        if (e->state == 0) return first_tomb ? first_tomb : e;
-        if (e->state == 2) { if (!first_tomb) first_tomb = e; }
-        else if (LIKELY(e->hash == h)) {
-            // Identity match (same fixnum / None / True / False, or
-            // interned-pointer-equal).
-            if (LIKELY(e->key == key)) return e;
-            // Either side immediate but values differ — definitely not equal.
-            if (key_is_immediate ||
-                PY_IS_FIXNUM(e->key) || e->key == PY_NONE
-                || e->key == PY_TRUE || e->key == PY_FALSE) {
-                /* skip py_eq */
+        int32_t idx = d->indices[i];
+        if (idx == DICT_EMPTY_IDX) {
+            *out_bucket = i; *out_eidx = -1; *out_first_tomb = first_tomb; return;
+        }
+        if (idx == DICT_TOMB_IDX) {
+            if (first_tomb < 0) first_tomb = (ssize_t)i;
+        } else {
+            struct pydict_entry *e = &d->entries[idx];
+            if (LIKELY(e->hash == h)) {
+                if (LIKELY(e->key == key)) {
+                    *out_bucket = i; *out_eidx = idx; *out_first_tomb = first_tomb; return;
+                }
+                if (key_is_immediate ||
+                    PY_IS_FIXNUM(e->key) || e->key == PY_NONE
+                    || e->key == PY_TRUE || e->key == PY_FALSE) {
+                    /* skip py_eq */
+                }
+                else if (py_is_str(key) && py_is_str(e->key)) {
+                    size_t l1 = PY_PTR(key)->str.len, l2 = PY_PTR(e->key)->str.len;
+                    if (l1 == l2 && memcmp(PY_PTR(key)->str.chars,
+                                           PY_PTR(e->key)->str.chars, l1) == 0) {
+                        *out_bucket = i; *out_eidx = idx; *out_first_tomb = first_tomb; return;
+                    }
+                }
+                else if (py_eq_bool(c, e->key, key)) {
+                    *out_bucket = i; *out_eidx = idx; *out_first_tomb = first_tomb; return;
+                }
             }
-            // String fast path: same length + memcmp.  Avoids a full
-            // py_eq dispatch (which would also re-check types and
-            // walk dunder methods).
-            else if (py_is_str(key) && py_is_str(e->key)) {
-                size_t l1 = PY_PTR(key)->str.len, l2 = PY_PTR(e->key)->str.len;
-                if (l1 == l2 && memcmp(PY_PTR(key)->str.chars,
-                                       PY_PTR(e->key)->str.chars, l1) == 0)
-                    return e;
-            }
-            else if (py_eq_bool(c, e->key, key)) return e;
         }
         step++;
         i = (i + step) & mask;
     }
 }
 
-static void
-pydict_resize(CTX *c, struct pydict *d, size_t new_capa)
+// Find the entry index for `key`, or -1 if absent.  Fast path: doesn't
+// track the bucket or first-tombstone (read-only path).
+static inline int32_t
+pydict_find(CTX * restrict c, struct pydict * restrict d, VALUE key, uint64_t h)
 {
-    struct pydict_entry *old = d->entries;
-    size_t old_capa = d->capa;
-    d->capa = new_capa;
-    d->entries = (struct pydict_entry *)GC_malloc(sizeof(struct pydict_entry) * new_capa);
-    d->used = 0; d->fill = 0;
-    for (size_t i = 0; i < old_capa; i++) {
-        if (old[i].state == 1) {
-            struct pydict_entry *e = pydict_lookup(c, d, old[i].key, old[i].hash);
-            e->key = old[i].key;
-            e->value = old[i].value;
-            e->hash = old[i].hash;
-            e->state = 1;
-            d->used++; d->fill++;
+    size_t mask = d->icapa - 1;
+    size_t i = (size_t)h & mask;
+    size_t step = 0;
+    bool key_is_immediate = PY_IS_FIXNUM(key) || key == PY_NONE
+                          || key == PY_TRUE  || key == PY_FALSE;
+    for (;;) {
+        int32_t idx = d->indices[i];
+        if (idx == DICT_EMPTY_IDX) return -1;
+        if (idx != DICT_TOMB_IDX) {
+            struct pydict_entry *e = &d->entries[idx];
+            if (LIKELY(e->hash == h)) {
+                if (LIKELY(e->key == key)) return idx;
+                if (key_is_immediate ||
+                    PY_IS_FIXNUM(e->key) || e->key == PY_NONE
+                    || e->key == PY_TRUE || e->key == PY_FALSE) {
+                    /* skip py_eq */
+                }
+                else if (py_is_str(key) && py_is_str(e->key)) {
+                    size_t l1 = PY_PTR(key)->str.len, l2 = PY_PTR(e->key)->str.len;
+                    if (l1 == l2 && memcmp(PY_PTR(key)->str.chars,
+                                           PY_PTR(e->key)->str.chars, l1) == 0) return idx;
+                }
+                else if (py_eq_bool(c, e->key, key)) return idx;
+            }
         }
+        step++;
+        i = (i + step) & mask;
+    }
+}
+
+// Resize indices[] (without touching entries[] in the common case) — or
+// also compact entries[] if we have a lot of deleted entries.
+static void
+pydict_resize(struct pydict *d, size_t new_icapa, bool compact_entries)
+{
+    int32_t *new_indices = (int32_t *)GC_malloc_atomic(sizeof(int32_t) * new_icapa);
+    for (size_t i = 0; i < new_icapa; i++) new_indices[i] = DICT_EMPTY_IDX;
+    size_t mask = new_icapa - 1;
+
+    if (compact_entries) {
+        // Walk old entries[] in insertion order, copy live ones to a
+        // new dense entries[], rebuild indices[].
+        size_t new_ecapa = d->used > DICT_INIT_CAPA ? d->used * 2 : DICT_INIT_CAPA;
+        struct pydict_entry *new_entries = (struct pydict_entry *)GC_malloc(
+            sizeof(struct pydict_entry) * new_ecapa);
+        size_t new_elen = 0;
+        for (size_t i = 0; i < d->elen; i++) {
+            VALUE k = d->entries[i].key;
+            if (k == 0 || k == DICT_DELETED_KEY) continue;
+            new_entries[new_elen] = d->entries[i];
+            // Insert into new_indices[].
+            uint64_t h = d->entries[i].hash;
+            size_t bi = (size_t)h & mask;
+            size_t step = 0;
+            while (new_indices[bi] != DICT_EMPTY_IDX) { step++; bi = (bi + step) & mask; }
+            new_indices[bi] = (int32_t)new_elen;
+            new_elen++;
+        }
+        d->entries = new_entries;
+        d->ecapa = new_ecapa;
+        d->elen = new_elen;
+        d->fill = new_elen;     // no tombstones in indices[] after compact
+    } else {
+        // Just rebuild indices[]; entries[] unchanged.
+        for (size_t i = 0; i < d->elen; i++) {
+            VALUE k = d->entries[i].key;
+            if (k == 0 || k == DICT_DELETED_KEY) continue;
+            uint64_t h = d->entries[i].hash;
+            size_t bi = (size_t)h & mask;
+            size_t step = 0;
+            while (new_indices[bi] != DICT_EMPTY_IDX) { step++; bi = (bi + step) & mask; }
+            new_indices[bi] = (int32_t)i;
+        }
+        d->fill = d->used;
+    }
+    d->indices = new_indices;
+    d->icapa = new_icapa;
+}
+
+static void
+pydict_grow_entries(struct pydict *d)
+{
+    size_t nc = d->ecapa * 2;
+    struct pydict_entry *ne = (struct pydict_entry *)GC_malloc(sizeof(struct pydict_entry) * nc);
+    memcpy(ne, d->entries, sizeof(struct pydict_entry) * d->elen);
+    d->entries = ne;
+    d->ecapa = nc;
+}
+
+// Lower-level set: takes a struct pydict* and a precomputed hash.
+// Used both by py_dict_set and by callers (instance attrs) that hold
+// a struct pydict* directly.
+static void
+pydict_set_h(CTX *c, struct pydict *d, VALUE key, uint64_t h, VALUE val)
+{
+    size_t bucket;
+    int32_t eidx;
+    ssize_t first_tomb;
+    pydict_indices_lookup(c, d, key, h, &bucket, &eidx, &first_tomb);
+    if (eidx >= 0) {
+        d->entries[eidx].value = val;
+        return;
+    }
+    if (d->elen == d->ecapa) pydict_grow_entries(d);
+    int32_t new_idx = (int32_t)d->elen;
+    d->entries[new_idx].key = key;
+    d->entries[new_idx].value = val;
+    d->entries[new_idx].hash = h;
+    d->elen++;
+    d->used++;
+    if (first_tomb >= 0) {
+        d->indices[first_tomb] = new_idx;
+    } else {
+        d->indices[bucket] = new_idx;
+        d->fill++;
+    }
+    if (d->fill * DICT_LOAD_DEN >= d->icapa * DICT_LOAD_NUM) {
+        bool compact = (d->elen - d->used) * 2 >= d->elen;
+        pydict_resize(d, d->icapa * 2, compact);
     }
 }
 
@@ -1195,17 +1718,45 @@ py_dict_set(CTX *c, VALUE dv, VALUE key, VALUE val)
 {
     struct pydict *d = PY_PTR(dv)->dict;
     uint64_t h = py_hash(c, key);
-    struct pydict_entry *e = pydict_lookup(c, d, key, h);
-    if (e->state != 1) {
-        if (e->state == 0) d->fill++;
-        d->used++;
-        e->key = key;
-        e->hash = h;
-        e->state = 1;
+    pydict_set_h(c, d, key, h, val);
+    return;
+}
+
+// Truthiness dispatcher for user instances: tries `__bool__` then
+// `__len__`; defaults to true.  Uses the active context (no CTX
+// argument needed since `py_is_truthy` is called from many places
+// without a CTX in scope).
+bool
+py_is_truthy_instance(VALUE v)
+{
+    extern CTX *py_current_ctx;
+    CTX *c = py_current_ctx;
+    VALUE cls = PY_OBJ_VAL(PY_PTR(v)->inst.cls);
+    VALUE m = py_class_lookup_method(cls, "__bool__");
+    if (m != PY_NONE) {
+        VALUE av[1] = { v };
+        VALUE r = py_apply(c, m, 1, av);
+        if (c->state == PY_STATE_RAISE) return false;
+        return r == PY_TRUE || (PY_IS_FIXNUM(r) && PY_FIXVAL(r) != 0);
     }
-    e->value = val;
-    if (d->fill * DICT_LOAD_DEN >= d->capa * DICT_LOAD_NUM)
-        pydict_resize(c, d, d->capa * 2);
+    VALUE lm = py_class_lookup_method(cls, "__len__");
+    if (lm != PY_NONE) {
+        VALUE av[1] = { v };
+        VALUE r = py_apply(c, lm, 1, av);
+        if (c->state == PY_STATE_RAISE) return false;
+        return PY_IS_FIXNUM(r) ? PY_FIXVAL(r) != 0 : true;
+    }
+    return true;
+}
+
+void
+py_func_set_doc(CTX *c, VALUE fn, const char *s)
+{
+    if (!py_is_func(fn) || !s) return;
+    struct pyobj *o = PY_PTR(fn);
+    if (!o->func.attrs) o->func.attrs = pydict_new();
+    VALUE k = py_make_str("__doc__", 7);
+    pydict_set_h(c, o->func.attrs, k, py_hash(c, k), py_make_str(s, strlen(s)));
 }
 
 VALUE
@@ -1213,9 +1764,10 @@ py_dict_get(CTX *c, VALUE dv, VALUE key)
 {
     struct pydict *d = PY_PTR(dv)->dict;
     uint64_t h = py_hash(c, key);
-    struct pydict_entry *e = pydict_lookup(c, d, key, h);
-    if (e->state != 1) py_raise_exc(c, c->EXC_KeyError, "key not found");
-    return e->value;
+    size_t bucket; int32_t eidx; ssize_t ft;
+    pydict_indices_lookup(c, d, key, h, &bucket, &eidx, &ft);
+    if (eidx < 0) py_raise_exc(c, c->EXC_KeyError, "key not found");
+    return d->entries[eidx].value;
 }
 
 bool
@@ -1223,8 +1775,9 @@ py_dict_has(CTX *c, VALUE dv, VALUE key)
 {
     struct pydict *d = PY_PTR(dv)->dict;
     uint64_t h = py_hash(c, key);
-    struct pydict_entry *e = pydict_lookup(c, d, key, h);
-    return e->state == 1;
+    size_t bucket; int32_t eidx; ssize_t ft;
+    pydict_indices_lookup(c, d, key, h, &bucket, &eidx, &ft);
+    return eidx >= 0;
 }
 
 bool
@@ -1232,9 +1785,12 @@ py_dict_remove(CTX *c, VALUE dv, VALUE key)
 {
     struct pydict *d = PY_PTR(dv)->dict;
     uint64_t h = py_hash(c, key);
-    struct pydict_entry *e = pydict_lookup(c, d, key, h);
-    if (e->state != 1) return false;
-    e->state = 2;
+    size_t bucket; int32_t eidx; ssize_t ft;
+    pydict_indices_lookup(c, d, key, h, &bucket, &eidx, &ft);
+    if (eidx < 0) return false;
+    d->indices[bucket] = DICT_TOMB_IDX;
+    d->entries[eidx].key = DICT_DELETED_KEY;
+    d->entries[eidx].value = PY_NONE;
     d->used--;
     return true;
 }
@@ -1291,6 +1847,8 @@ py_list_get(CTX *c, VALUE seq, VALUE idx)
             VALUE av[2] = { seq, idx };
             return py_apply(c, m, 2, av);
         }
+        // Built-in subclass: forward to primary.
+        if (PY_PTR(seq)->inst.primary) return py_list_get(c, PY_PTR(seq)->inst.primary, idx);
     }
     if (py_is_list(seq) || py_is_tuple(seq)) {
         int64_t i = py_int_to_long(c, idx);
@@ -1313,6 +1871,14 @@ py_list_get(CTX *c, VALUE seq, VALUE idx)
         if (i < 0 || i >= len) py_raise_exc(c, c->EXC_IndexError, "bytes index out of range");
         return PY_FIX((unsigned char)PY_PTR(seq)->str.chars[i]);
     }
+    if (py_is_range(seq)) {
+        struct pyobj *o = PY_PTR(seq);
+        size_t total = py_seq_len(c, seq);
+        int64_t i = py_int_to_long(c, idx);
+        if (i < 0) i += (int64_t)total;
+        if (i < 0 || i >= (int64_t)total) py_raise_exc(c, c->EXC_IndexError, "range index out of range");
+        return py_make_int(o->range.start + i * o->range.step);
+    }
     if (py_is_dict(seq)) {
         return py_dict_get(c, seq, idx);
     }
@@ -1328,6 +1894,7 @@ py_list_set(CTX *c, VALUE seq, VALUE idx, VALUE val)
             VALUE av[3] = { seq, idx, val };
             return py_apply(c, m, 3, av);
         }
+        if (PY_PTR(seq)->inst.primary) return py_list_set(c, PY_PTR(seq)->inst.primary, idx, val);
     }
     if (py_is_list(seq)) {
         int64_t i = py_int_to_long(c, idx);
@@ -1344,10 +1911,33 @@ py_list_set(CTX *c, VALUE seq, VALUE idx, VALUE val)
 VALUE
 py_list_slice(CTX *c, VALUE seq, VALUE start, VALUE stop, VALUE step)
 {
+    // User-class with __getitem__ — call with slice() object.
+    if (py_is_instance(seq)) {
+        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(seq)->inst.cls), "__getitem__");
+        if (m != PY_NONE) {
+            struct pyobj *sl = py_alloc(PY_T_SLICE);
+            sl->slice_.start = start;
+            sl->slice_.stop = stop;
+            sl->slice_.step = step;
+            VALUE av[2] = { seq, PY_OBJ_VAL(sl) };
+            return py_apply(c, m, 2, av);
+        }
+        if (PY_PTR(seq)->inst.primary)
+            return py_list_slice(c, PY_PTR(seq)->inst.primary, start, stop, step);
+    }
     int64_t len;
     bool is_str = py_is_str(seq);
+    bool is_byteseq = py_is_byteseq(seq);
+    bool is_range_seq = py_is_range(seq);
     if (is_str) len = (int64_t)PY_PTR(seq)->str.len;
+    else if (is_byteseq) len = (int64_t)PY_PTR(seq)->str.len;
     else if (py_is_list(seq) || py_is_tuple(seq)) len = (int64_t)PY_PTR(seq)->list.len;
+    else if (is_range_seq) {
+        struct pyobj *o = PY_PTR(seq);
+        len = (o->range.step > 0)
+            ? ((o->range.start >= o->range.stop) ? 0 : (o->range.stop - o->range.start + o->range.step - 1) / o->range.step)
+            : ((o->range.start <= o->range.stop) ? 0 : (o->range.start - o->range.stop + (-o->range.step) - 1) / (-o->range.step));
+    }
     else py_raise_exc(c, c->EXC_TypeError, "object is not sliceable");
 
     int64_t st = (step == PY_NONE) ? 1 : py_int_to_long(c, step);
@@ -1381,6 +1971,22 @@ py_list_slice(CTX *c, VALUE seq, VALUE start, VALUE stop, VALUE step)
         buf[n] = '\0';
         return py_make_str_take(buf, n);
     }
+    if (is_byteseq) {
+        char *buf = (char *)GC_malloc_atomic(n + 1);
+        for (size_t i = 0; i < n; i++) buf[i] = PY_PTR(seq)->str.chars[a + (int64_t)i * st];
+        buf[n] = '\0';
+        return py_is_bytes(seq) ? py_make_bytes(buf, n) : py_make_bytearray(buf, n);
+    }
+    if (is_range_seq) {
+        // Slicing a range returns a range when step is 1, else a list of ints.
+        struct pyobj *o = PY_PTR(seq);
+        VALUE *items = n ? (VALUE *)alloca(sizeof(VALUE) * n) : NULL;
+        for (size_t i = 0; i < n; i++) {
+            int64_t idx = a + (int64_t)i * st;
+            items[i] = py_make_int(o->range.start + idx * o->range.step);
+        }
+        return py_make_list(items, n);
+    }
     VALUE *items = n ? (VALUE *)alloca(sizeof(VALUE) * n) : NULL;
     for (size_t i = 0; i < n; i++)
         items[i] = PY_PTR(seq)->list.items[a + (int64_t)i * st];
@@ -1393,6 +1999,22 @@ py_list_slice(CTX *c, VALUE seq, VALUE start, VALUE stop, VALUE step)
 void
 py_list_slice_set(CTX *c, VALUE seq, VALUE start, VALUE stop, VALUE step, VALUE val)
 {
+    if (py_is_instance(seq)) {
+        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(seq)->inst.cls), "__setitem__");
+        if (m != PY_NONE) {
+            struct pyobj *sl = py_alloc(PY_T_SLICE);
+            sl->slice_.start = start;
+            sl->slice_.stop = stop;
+            sl->slice_.step = step;
+            VALUE av[3] = { seq, PY_OBJ_VAL(sl), val };
+            py_apply(c, m, 3, av);
+            return;
+        }
+        if (PY_PTR(seq)->inst.primary) {
+            py_list_slice_set(c, PY_PTR(seq)->inst.primary, start, stop, step, val);
+            return;
+        }
+    }
     if (!py_is_list(seq))
         py_raise_exc(c, c->EXC_TypeError, "slice assignment requires a list");
     int64_t st = (step == PY_NONE) ? 1 : py_int_to_long(c, step);
@@ -1463,6 +2085,16 @@ py_seq_len(CTX *c, VALUE v)
     if (py_is_byteseq(v)) return PY_PTR(v)->str.len;
     if (py_is_list(v) || py_is_tuple(v)) return PY_PTR(v)->list.len;
     if (py_is_dict(v) || py_is_any_set(v))  return PY_PTR(v)->dict->used;
+    if (py_is_range(v)) {
+        struct pyobj *o = PY_PTR(v);
+        if (o->range.step > 0) {
+            if (o->range.start >= o->range.stop) return 0;
+            return (size_t)((o->range.stop - o->range.start + o->range.step - 1) / o->range.step);
+        } else {
+            if (o->range.start <= o->range.stop) return 0;
+            return (size_t)((o->range.start - o->range.stop + (-o->range.step) - 1) / (-o->range.step));
+        }
+    }
     if (py_is_instance(v)) {
         VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(v)->inst.cls), "__len__");
         if (m != PY_NONE) {
@@ -1470,6 +2102,8 @@ py_seq_len(CTX *c, VALUE v)
             VALUE r = py_apply(c, m, 1, av);
             if (PY_IS_FIXNUM(r)) return (size_t)PY_FIXVAL(r);
         }
+        // Fall back to primary value (built-in subclass instance).
+        if (PY_PTR(v)->inst.primary) return py_seq_len(c, PY_PTR(v)->inst.primary);
     }
     py_raise_exc(c, c->EXC_TypeError, "object has no len()");
 }
@@ -1497,6 +2131,38 @@ py_contains(CTX *c, VALUE container, VALUE v)
         else
             return x <= r->range.start && x > r->range.stop &&
                    ((r->range.start - x) % (-r->range.step) == 0);
+    }
+    if (py_is_instance(container)) {
+        VALUE cls = PY_OBJ_VAL(PY_PTR(container)->inst.cls);
+        VALUE m = py_class_lookup_method(cls, "__contains__");
+        if (m != PY_NONE) {
+            VALUE av[2] = { container, v };
+            VALUE r = py_apply(c, m, 2, av);
+            return py_is_truthy(r);
+        }
+        // Fall back: iterate via __iter__/__next__.
+        VALUE im = py_class_lookup_method(cls, "__iter__");
+        if (im != PY_NONE) {
+            VALUE av[1] = { container };
+            VALUE it = py_apply(c, im, 1, av);
+            if (c->state != PY_STATE_NORMAL) return false;
+            VALUE nx = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(it)->inst.cls), "__next__");
+            if (nx == PY_NONE) {
+                py_raise_exc(c, c->EXC_TypeError, "iter has no __next__");
+            }
+            for (;;) {
+                VALUE av2[1] = { it };
+                VALUE x = py_apply(c, nx, 1, av2);
+                if (c->state == PY_STATE_RAISE) {
+                    if (py_exc_matches(c, c->state_value, c->EXC_StopIteration)) {
+                        c->state = PY_STATE_NORMAL; c->state_value = PY_NONE;
+                        return false;
+                    }
+                    return false;
+                }
+                if (py_eq_bool(c, x, v)) return true;
+            }
+        }
     }
     py_raise_exc(c, c->EXC_TypeError, "argument is not iterable for `in`");
 }
@@ -1535,7 +2201,13 @@ py_iter_init(CTX *c, struct py_iter *it, VALUE iterable)
     }
     if (py_is_dict(iterable) || py_is_any_set(iterable)) {
         it->kind = 3;
-        it->end = (int64_t)PY_PTR(iterable)->dict->capa;
+        it->end = (int64_t)PY_PTR(iterable)->dict->elen;
+        return;
+    }
+    // Already-an-iterator (PY_T_ITER created by `iter(seq)` builtin):
+    // copy its inner state.  This makes `for x in iter(seq)` work.
+    if (PY_IS_PTR(iterable) && PY_PTR(iterable)->type == PY_T_ITER) {
+        *it = *PY_PTR(iterable)->iter_state;
         return;
     }
     if (py_is_instance(iterable)) {
@@ -1545,9 +2217,22 @@ py_iter_init(CTX *c, struct py_iter *it, VALUE iterable)
             VALUE av[1] = { iterable };
             VALUE iter_obj = py_apply(c, im, 1, av);
             if (c->state != PY_STATE_NORMAL) return;
+            // If __iter__ returned a generator object, dispatch via the
+            // generator path (kind 7) rather than the user-iterator
+            // path (which expects __next__ on a class).
+            if (PY_IS_PTR(iter_obj) && PY_PTR(iter_obj)->type == PY_T_GEN) {
+                it->kind = 7;
+                it->container = iter_obj;
+                return;
+            }
             it->kind = 5;       // user iterator
             it->container = iter_obj;
             it->i = 0; it->end = 0; it->step = 0;
+            return;
+        }
+        // Built-in subclass: iterate over primary.
+        if (PY_PTR(iterable)->inst.primary) {
+            py_iter_init(c, it, PY_PTR(iterable)->inst.primary);
             return;
         }
     }
@@ -1601,12 +2286,11 @@ py_iter_next(CTX *c, struct py_iter *it, VALUE *out)
       case 3: {
         struct pydict *d = PY_PTR(it->container)->dict;
         while (it->i < it->end) {
-            if (d->entries[it->i].state == 1) {
-                *out = d->entries[it->i].key;
-                it->i++;
+            size_t i = (size_t)it->i++;
+            if (pydict_entry_live(d, i)) {
+                *out = d->entries[i].key;
                 return true;
             }
-            it->i++;
         }
         return false;
       }
@@ -1632,6 +2316,63 @@ py_iter_next(CTX *c, struct py_iter *it, VALUE *out)
         *out = r;
         return true;
       }
+      case 4: {
+        // iter(callable, sentinel): call container() until result == sentinel.
+        VALUE r = py_apply(c, it->container, 0, NULL);
+        if (c->state == PY_STATE_RAISE) return false;
+        if (py_eq_bool(c, r, it->sentinel)) return false;
+        *out = r;
+        return true;
+      }
+      case 8: {
+        // enumerate: yield (i, v).  inner[0] is the source.
+        VALUE v;
+        if (!py_iter_next(c, &it->inner[0], &v)) return false;
+        VALUE pair[2] = { PY_FIX(it->i++), v };
+        *out = py_make_tuple(pair, 2);
+        return true;
+      }
+      case 9: {
+        // zip: yield tuple of one element from each inner.  Stops when
+        // any inner is exhausted.
+        VALUE *vs = (VALUE *)alloca(sizeof(VALUE) * it->n_inner);
+        for (int k = 0; k < it->n_inner; k++) {
+            if (!py_iter_next(c, &it->inner[k], &vs[k])) return false;
+            if (c->state == PY_STATE_RAISE) return false;
+        }
+        *out = py_make_tuple(vs, it->n_inner);
+        return true;
+      }
+      case 10: {
+        // map(fn, *iters): apply fn to one element from each inner.
+        VALUE *vs = (VALUE *)alloca(sizeof(VALUE) * it->n_inner);
+        for (int k = 0; k < it->n_inner; k++) {
+            if (!py_iter_next(c, &it->inner[k], &vs[k])) return false;
+            if (c->state == PY_STATE_RAISE) return false;
+        }
+        *out = py_apply(c, it->container, it->n_inner, vs);
+        return c->state == PY_STATE_NORMAL;
+      }
+      case 11: {
+        // filter(fn, it): yield v from inner where fn(v) is truthy.
+        // fn==None means yield truthy v.
+        for (;;) {
+            VALUE v;
+            if (!py_iter_next(c, &it->inner[0], &v)) return false;
+            if (c->state == PY_STATE_RAISE) return false;
+            VALUE keep;
+            if (it->container == PY_NONE) keep = v;
+            else {
+                VALUE av[1] = { v };
+                keep = py_apply(c, it->container, 1, av);
+                if (c->state == PY_STATE_RAISE) return false;
+            }
+            if (py_is_truthy(keep)) {
+                *out = v;
+                return true;
+            }
+        }
+      }
     }
     return false;
 }
@@ -1651,6 +2392,12 @@ static struct type_method dict_methods[];
 static struct type_method set_methods[];
 static struct type_method frozenset_methods[];
 static struct type_method gen_methods[];
+static struct type_method bytes_methods[];
+static struct type_method int_methods[];
+static struct type_method float_methods[];
+static struct type_method complex_methods[];
+static struct type_method tuple_methods[];
+static struct type_method range_methods[];
 
 static VALUE
 make_builtin_bound(VALUE self, struct type_method *tm)
@@ -1665,10 +2412,17 @@ py_builtin_method(CTX *c, VALUE recv, const char *name)
     struct type_method *tbl;
     if (py_is_str(recv))      tbl = str_methods;
     else if (py_is_list(recv)) tbl = list_methods;
+    else if (py_is_tuple(recv)) tbl = tuple_methods;
+    else if (py_is_range(recv)) tbl = range_methods;
     else if (py_is_dict(recv)) tbl = dict_methods;
     else if (py_is_set(recv))  tbl = set_methods;
     else if (py_is_frozenset(recv)) tbl = frozenset_methods;
     else if (PY_IS_PTR(recv) && PY_PTR(recv)->type == PY_T_GEN) tbl = gen_methods;
+    else if (py_is_byteseq(recv)) tbl = bytes_methods;
+    else if (py_is_file(recv))    { extern struct type_method file_methods[]; tbl = file_methods; }
+    else if (py_int_or_bool(recv)) tbl = int_methods;
+    else if (py_is_float(recv))    tbl = float_methods;
+    else if (py_is_complex(recv))  tbl = complex_methods;
     else { (void)c; return PY_NONE; }
     for (int i = 0; tbl[i].name; i++)
         if (strcmp(tbl[i].name, name) == 0) return make_builtin_bound(recv, &tbl[i]);
@@ -1694,6 +2448,8 @@ py_method_resolve(CTX *c, VALUE recv, const char *name, struct method_cache *cac
         else if (tag == PY_T_SET)  tbl = set_methods;
         else if (tag == PY_T_FROZENSET) tbl = frozenset_methods;
         else if (tag == PY_T_GEN)  tbl = gen_methods;
+        else if (tag == PY_T_BYTES || tag == PY_T_BYTEARRAY) tbl = bytes_methods;
+        else if (tag == PY_T_FILE) { extern struct type_method file_methods[]; tbl = file_methods; }
         if (tbl) {
             for (int i = 0; tbl[i].name; i++) {
                 if (strcmp(tbl[i].name, name) == 0) {
@@ -1713,9 +2469,72 @@ py_method_resolve(CTX *c, VALUE recv, const char *name, struct method_cache *cac
     return py_getattr(c, recv, name);
 }
 
+// Like py_getattr but returns 0 (not raised) when the attr is missing.
+VALUE
+py_getattr_optional(CTX *c, VALUE v, const char *name)
+{
+    if (py_is_instance(v)) {
+        struct pyobj *o = PY_PTR(v);
+        if (o->inst.attrs) {
+            VALUE key = py_make_str(name, strlen(name));
+            uint64_t h = py_hash(c, key);
+            int32_t eidx = pydict_find(c, o->inst.attrs, key, h);
+            if (eidx >= 0) return o->inst.attrs->entries[eidx].value;
+        }
+    }
+    return 0;
+}
+
+static VALUE bi_property_setter_call(CTX *c, int argc, VALUE *argv);
+
 VALUE
 py_getattr(CTX *c, VALUE v, const char *name)
 {
+    if (py_is_super(v)) {
+        // Walk MRO from start_cls (exclusive) for a method named `name`.
+        extern VALUE py_super_lookup(CTX *c, VALUE self, VALUE start_after_cls, const char *name);
+        VALUE self = PY_PTR(v)->super_.self;
+        VALUE start = PY_PTR(v)->super_.start_cls;
+        VALUE m = py_super_lookup(c, self, start, name);
+        if (m == PY_NONE)
+            py_raise_exc(c, c->EXC_AttributeError,
+                         "'super' object has no attribute '%s'", name);
+        // Return as a bound method on self.
+        return py_make_bound(self, m);
+    }
+    if (PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_SLICE) {
+        if (strcmp(name, "start") == 0) return PY_PTR(v)->slice_.start;
+        if (strcmp(name, "stop") == 0)  return PY_PTR(v)->slice_.stop;
+        if (strcmp(name, "step") == 0)  return PY_PTR(v)->slice_.step;
+        py_raise_exc(c, c->EXC_AttributeError,
+                     "'slice' object has no attribute '%s'", name);
+    }
+    if (py_is_range(v)) {
+        struct pyobj *o = PY_PTR(v);
+        if (strcmp(name, "start") == 0) return py_make_int(o->range.start);
+        if (strcmp(name, "stop") == 0)  return py_make_int(o->range.stop);
+        if (strcmp(name, "step") == 0)  return py_make_int(o->range.step);
+        // Fall through to method lookup
+    }
+    if (PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_PROPERTY) {
+        if (strcmp(name, "fget") == 0) return PY_PTR(v)->wrap.wrapped;
+        if (strcmp(name, "fset") == 0) return PY_PTR(v)->wrap.setter;
+        if (strcmp(name, "setter") == 0) {
+            VALUE fn = py_make_builtin("setter", bi_property_setter_call, 2, 2);
+            return py_make_bound(v, fn);
+        }
+        py_raise_exc(c, c->EXC_AttributeError,
+                     "'property' object has no attribute '%s'", name);
+    }
+    if (py_is_complex(v)) {
+        if (strcmp(name, "real") == 0) return py_make_float(PY_PTR(v)->cpx.re);
+        if (strcmp(name, "imag") == 0) return py_make_float(PY_PTR(v)->cpx.im);
+        if (strcmp(name, "conjugate") == 0) {
+            // Return a bound method-like — but pystro has no easy way
+            // to bind a builtin to a complex.  Inline as a closure:
+            // for v0 just raise (caller can use `complex(c.real, -c.imag)`).
+        }
+    }
     if (py_is_module(v)) {
         struct pyglobals *g = PY_PTR(v)->module.globals;
         for (size_t i = 0; i < g->size; i++)
@@ -1726,15 +2545,25 @@ py_getattr(CTX *c, VALUE v, const char *name)
     }
     if (py_is_instance(v)) {
         struct pyobj *o = PY_PTR(v);
+        if (strcmp(name, "__class__") == 0) return PY_OBJ_VAL(o->inst.cls);
+        if (strcmp(name, "__dict__") == 0) {
+            VALUE d = py_make_dict();
+            if (o->inst.attrs) {
+                struct pydict *src = o->inst.attrs;
+                for (size_t i = 0; i < src->elen; i++)
+                    if (pydict_entry_live(src, i))
+                        py_dict_set(c, d, src->entries[i].key, src->entries[i].value);
+            }
+            return d;
+        }
         if (o->inst.attrs) {
             VALUE key = py_make_str(name, strlen(name));
             uint64_t h = py_hash(c, key);
-            struct pydict_entry *e = pydict_lookup(c, o->inst.attrs, key, h);
-            if (e->state == 1) return e->value;
+            int32_t eidx = pydict_find(c, o->inst.attrs, key, h);
+            if (eidx >= 0) return o->inst.attrs->entries[eidx].value;
         }
         VALUE m = py_class_lookup_method(PY_OBJ_VAL(o->inst.cls), name);
         if (m != PY_NONE) {
-            // Honor descriptor wrappers.
             if (PY_IS_PTR(m)) {
                 int t = PY_PTR(m)->type;
                 if (t == PY_T_STATICMETHOD) return PY_PTR(m)->wrap.wrapped;
@@ -1743,13 +2572,73 @@ py_getattr(CTX *c, VALUE v, const char *name)
                     VALUE av[1] = { v };
                     return py_apply(c, PY_PTR(m)->wrap.wrapped, 1, av);
                 }
+                if (t == PY_T_FUNC || t == PY_T_BUILTIN)
+                    return py_make_bound(v, m);
             }
-            return py_make_bound(v, m);
+            // Otherwise fall through.
+        }
+        // No user-class method found.  If the instance's class has a
+        // built-in base AND the instance has a primary value, look up
+        // the method on the primary's type and bind it.
+        if (m == PY_NONE && o->inst.primary) {
+            extern VALUE py_builtin_method(CTX *c, VALUE recv, const char *name);
+            VALUE bm = py_builtin_method(c, o->inst.primary, name);
+            if (bm != PY_NONE) {
+                // py_builtin_method returns a bound built-in method
+                // bound to the primary; that's exactly what we want.
+                return bm;
+            }
+        }
+        if (m != PY_NONE) {
+            if (PY_IS_PTR(m)) {
+                int t = PY_PTR(m)->type;
+                // User-defined descriptor: if `m` is itself an instance
+                // with a `__get__` method, call it as a descriptor.
+                if (t == PY_T_INSTANCE) {
+                    VALUE get_m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(m)->inst.cls), "__get__");
+                    if (get_m != PY_NONE) {
+                        VALUE av[3] = { m, v, PY_OBJ_VAL(o->inst.cls) };
+                        return py_apply(c, get_m, 3, av);
+                    }
+                }
+                return m;     // class data attribute (str / list / etc.)
+            }
+            return m;         // immediate (fixnum, None, True, False, flonum)
+        }
+        // __getattr__ fallback (only when the regular lookup misses).
+        VALUE getattr_m = py_class_lookup_method(PY_OBJ_VAL(o->inst.cls), "__getattr__");
+        if (getattr_m != PY_NONE) {
+            VALUE av[2] = { v, py_make_str(name, strlen(name)) };
+            return py_apply(c, getattr_m, 2, av);
         }
         py_raise_exc(c, c->EXC_AttributeError, "'%s' object has no attribute '%s'",
                      o->inst.cls->cls.name, name);
     }
     if (py_is_class(v)) {
+        struct pyclass *cd = &PY_PTR(v)->cls;
+        if (strcmp(name, "__name__") == 0)
+            return py_make_str(cd->name, strlen(cd->name));
+        if (strcmp(name, "__doc__") == 0) {
+            VALUE d = py_class_lookup_method(v, "__doc__");
+            return d;        // PY_NONE if absent
+        }
+        if (strcmp(name, "__module__") == 0) return py_make_str("__main__", 8);
+        if (strcmp(name, "__bases__") == 0) {
+            return py_make_tuple(cd->bases, cd->nbases);
+        }
+        if (strcmp(name, "__mro__") == 0) {
+            return py_make_tuple(cd->mro, cd->nmro);
+        }
+        if (strcmp(name, "__dict__") == 0) {
+            VALUE d = py_make_dict();
+            for (int i = 0; i < cd->nmethods; i++) {
+                VALUE k = py_make_str(cd->methods[i].name, strlen(cd->methods[i].name));
+                py_dict_set(c, d, k, cd->methods[i].value);
+            }
+            return d;
+        }
+        if (strcmp(name, "__qualname__") == 0)
+            return py_make_str(cd->name, strlen(cd->name));
         VALUE m = py_class_lookup_method(v, name);
         if (m != PY_NONE) {
             if (PY_IS_PTR(m)) {
@@ -1760,7 +2649,45 @@ py_getattr(CTX *c, VALUE v, const char *name)
             return m;
         }
         py_raise_exc(c, c->EXC_AttributeError, "type object '%s' has no attribute '%s'",
-                     PY_PTR(v)->cls.name, name);
+                     cd->name, name);
+    }
+    if (py_is_func(v)) {
+        struct pyobj *o = PY_PTR(v);
+        if (strcmp(name, "__name__") == 0 || strcmp(name, "__qualname__") == 0) {
+            const char *n = o->func.name ? o->func.name : "<func>";
+            return py_make_str(n, strlen(n));
+        }
+        if (strcmp(name, "__doc__") == 0) {
+            if (o->func.attrs) {
+                VALUE k = py_make_str("__doc__", 7);
+                int32_t e = pydict_find(c, o->func.attrs, k, py_hash(c, k));
+                if (e >= 0) return o->func.attrs->entries[e].value;
+            }
+            return PY_NONE;
+        }
+        if (strcmp(name, "__module__") == 0) return py_make_str("__main__", 8);
+        if (strcmp(name, "__annotations__") == 0) return py_make_dict();
+        if (o->func.attrs) {
+            VALUE key = py_make_str(name, strlen(name));
+            uint64_t h = py_hash(c, key);
+            int32_t eidx = pydict_find(c, o->func.attrs, key, h);
+            if (eidx >= 0) return o->func.attrs->entries[eidx].value;
+        }
+        py_raise_exc(c, c->EXC_AttributeError, "function has no attribute '%s'", name);
+    }
+    if (py_is_builtin(v)) {
+        if (strcmp(name, "__name__") == 0) {
+            const char *n = PY_PTR(v)->builtin.name ? PY_PTR(v)->builtin.name : "<builtin>";
+            return py_make_str(n, strlen(n));
+        }
+    }
+    if (py_is_bound(v)) {
+        // Forward attribute lookup to the underlying func — covers
+        // __doc__, __name__, etc. on bound methods.
+        VALUE inner = PY_PTR(v)->bound.func;
+        if (strcmp(name, "__self__") == 0) return PY_PTR(v)->bound.self;
+        if (strcmp(name, "__func__") == 0) return inner;
+        return py_getattr(c, inner, name);
     }
     VALUE m = py_builtin_method(c, v, name);
     if (m != PY_NONE) return m;
@@ -1772,14 +2699,71 @@ py_setattr(CTX *c, VALUE v, const char *name, VALUE val)
 {
     if (py_is_instance(v)) {
         struct pyobj *o = PY_PTR(v);
+        // Data descriptor on the class (with __set__) intercepts.
+        VALUE m = py_class_lookup_method(PY_OBJ_VAL(o->inst.cls), name);
+        if (m != PY_NONE && PY_IS_PTR(m)) {
+            int t = PY_PTR(m)->type;
+            if (t == PY_T_PROPERTY) {
+                VALUE setter = PY_PTR(m)->wrap.setter;
+                if (setter == PY_NONE)
+                    py_raise_exc(c, c->EXC_AttributeError,
+                                 "property '%s' has no setter", name);
+                VALUE av[2] = { v, val };
+                py_apply(c, setter, 2, av);
+                return;
+            }
+            if (t == PY_T_INSTANCE) {
+                VALUE set_m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(m)->inst.cls), "__set__");
+                if (set_m != PY_NONE) {
+                    VALUE av[3] = { m, v, val };
+                    py_apply(c, set_m, 3, av);
+                    return;
+                }
+            }
+        }
         if (!o->inst.attrs) o->inst.attrs = pydict_new();
         VALUE key = py_make_str(name, strlen(name));
         uint64_t h = py_hash(c, key);
-        struct pydict_entry *e = pydict_lookup(c, o->inst.attrs, key, h);
-        if (e->state != 1) { o->inst.attrs->used++; if (e->state == 0) o->inst.attrs->fill++; }
-        e->key = key; e->value = val; e->hash = h; e->state = 1;
-        if (o->inst.attrs->fill * DICT_LOAD_DEN >= o->inst.attrs->capa * DICT_LOAD_NUM)
-            pydict_resize(c, o->inst.attrs, o->inst.attrs->capa * 2);
+        pydict_set_h(c, o->inst.attrs, key, h, val);
+        return;
+    }
+    if (py_is_class(v)) {
+        extern const char *intern_name(const char *s, size_t len);
+        // Special-case __name__: update the C-level cls.name so
+        // type() / repr / etc. see the new name.
+        if (strcmp(name, "__name__") == 0 && py_is_str(val)) {
+            const char *nn = intern_name(PY_PTR(val)->str.chars, PY_PTR(val)->str.len);
+            PY_PTR(v)->cls.name = nn;
+            return;
+        }
+        // Otherwise, store via method table.
+        py_class_add_method(c, v, intern_name(name, strlen(name)), val);
+        SHARED_GLOBALS_SERIAL++;
+        return;
+    }
+    if (py_is_func(v)) {
+        struct pyobj *o = PY_PTR(v);
+        if (!o->func.attrs) o->func.attrs = pydict_new();
+        VALUE key = py_make_str(name, strlen(name));
+        uint64_t h = py_hash(c, key);
+        pydict_set_h(c, o->func.attrs, key, h, val);
+        return;
+    }
+    if (py_is_module(v)) {
+        struct pyglobals *g = PY_PTR(v)->module.globals;
+        // Find or insert in module globals.
+        for (size_t i = 0; i < g->size; i++) {
+            if (strcmp(g->entries[i].name, name) == 0) {
+                g->entries[i].value = val;
+                g->entries[i].defined = true;
+                return;
+            }
+        }
+        // Append (uses the same growth rules as py_global_define).
+        struct pyglobals *saved = c->globals;
+        c->globals = g;
+        py_global_define(c, name, val);
+        c->globals = saved;
         return;
     }
     py_raise_exc(c, c->EXC_AttributeError, "object does not support attribute assignment");
@@ -1926,7 +2910,31 @@ py_apply_kw(CTX *c, VALUE fn, int argc, VALUE *argv,
         for (int i = 0; i < argc; i++) av[i + 1] = argv[i];
         return py_apply_kw(c, bm->bound.func, argc + 1, av, kwc, kwnames, kwvalues);
     }
+    if (py_is_instance(fn)) {
+        VALUE call = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(fn)->inst.cls), "__call__");
+        if (call != PY_NONE) {
+            VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc + 1));
+            av[0] = fn;
+            for (int i = 0; i < argc; i++) av[i + 1] = argv[i];
+            return py_apply_kw(c, call, argc + 1, av, kwc, kwnames, kwvalues);
+        }
+    }
     if (py_is_class(fn)) {
+        if (PY_PTR(fn)->cls.builtin_ctor) {
+            // Forward kwargs through the thread-local pointers used by
+            // pystro_bi_kwarg().
+            int saved_kwc = PYSTRO_BI_KWC;
+            const char **saved_kn = PYSTRO_BI_KWNAMES;
+            VALUE *saved_kv = PYSTRO_BI_KWVALUES;
+            PYSTRO_BI_KWC = kwc;
+            PYSTRO_BI_KWNAMES = (const char **)kwnames;
+            PYSTRO_BI_KWVALUES = kwvalues;
+            VALUE r = PY_PTR(fn)->cls.builtin_ctor(c, argc, argv);
+            PYSTRO_BI_KWC = saved_kwc;
+            PYSTRO_BI_KWNAMES = saved_kn;
+            PYSTRO_BI_KWVALUES = saved_kv;
+            return r;
+        }
         VALUE inst = py_make_instance(fn);
         if (PY_PTR(fn)->cls.is_exception) {
             py_setattr(c, inst, "args", py_make_tuple(argv, argc));
@@ -1950,9 +2958,26 @@ py_apply_kw(CTX *c, VALUE fn, int argc, VALUE *argv,
         return py_apply_kw_func(c, fn, argc, argv, kwc, kwnames, kwvalues);
     }
     if (py_is_builtin(fn)) {
-        if (kwc > 0) py_raise_exc(c, c->EXC_TypeError,
-                                  "%s() does not accept keyword arguments",
-                                  PY_PTR(fn)->builtin.name);
+        if (kwc > 0) {
+            // A few builtins accept specific keyword arguments
+            // (sorted: key, reverse / min/max: key, default / enumerate: start).
+            // The kwargs are forwarded to the builtin via thread-local
+            // pointers; the builtin itself reads them from there.
+            extern int    PYSTRO_BI_KWC;
+            extern const char **PYSTRO_BI_KWNAMES;
+            extern VALUE *PYSTRO_BI_KWVALUES;
+            int saved_kwc = PYSTRO_BI_KWC;
+            const char **saved_kn = PYSTRO_BI_KWNAMES;
+            VALUE *saved_kv = PYSTRO_BI_KWVALUES;
+            PYSTRO_BI_KWC = kwc;
+            PYSTRO_BI_KWNAMES = (const char **)kwnames;
+            PYSTRO_BI_KWVALUES = kwvalues;
+            VALUE r = py_apply_slow(c, fn, argc, argv);
+            PYSTRO_BI_KWC = saved_kwc;
+            PYSTRO_BI_KWNAMES = saved_kn;
+            PYSTRO_BI_KWVALUES = saved_kv;
+            return r;
+        }
         // delegate via py_apply (slow path is fine)
         return py_apply_slow(c, fn, argc, argv);
     }
@@ -1973,7 +2998,23 @@ py_apply_slow(CTX *c, VALUE fn, int argc, VALUE *argv)
         return py_apply(c, bm->bound.func, argc + 1, av);
     }
     if (py_is_class(fn)) {
+        // Built-in type class (int / list / str / ...): call its
+        // C constructor directly.  Result is a primitive value, not a
+        // PY_T_INSTANCE, since the constructor returns int/list/etc.
+        if (PY_PTR(fn)->cls.builtin_ctor) {
+            return PY_PTR(fn)->cls.builtin_ctor(c, argc, argv);
+        }
         VALUE inst = py_make_instance(fn);
+        // If this class subclasses a built-in type, construct the
+        // underlying primary value via the builtin's ctor and stash
+        // it on the instance.  This makes `m = M(...)` where M(list)
+        // produce an instance whose primary IS a list.
+        VALUE bin_base = py_class_find_builtin_base(fn);
+        if (bin_base != PY_NONE) {
+            VALUE primary = PY_PTR(bin_base)->cls.builtin_ctor(c, argc, argv);
+            if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
+            PY_PTR(inst)->inst.primary = primary;
+        }
         if (PY_PTR(fn)->cls.is_exception) {
             py_setattr(c, inst, "args", py_make_tuple(argv, argc));
             if (argc >= 1 && py_is_str(argv[0])) py_setattr(c, inst, "message", argv[0]);
@@ -2007,6 +3048,16 @@ py_apply_slow(CTX *c, VALUE fn, int argc, VALUE *argv)
                          f->builtin.max_argc, argc);
         return f->builtin.fn(c, argc, argv);
     }
+    // Instance with __call__ — dispatch to it with self prepended.
+    if (py_is_instance(fn)) {
+        VALUE call = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(fn)->inst.cls), "__call__");
+        if (call != PY_NONE) {
+            VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc + 1));
+            av[0] = fn;
+            for (int i = 0; i < argc; i++) av[i + 1] = argv[i];
+            return py_apply(c, call, argc + 1, av);
+        }
+    }
     py_raise_exc(c, c->EXC_TypeError, "object is not callable");
 }
 
@@ -2029,13 +3080,50 @@ py_display_seen(struct pyobj *o)
     return false;
 }
 
+// Format a double using the shortest decimal that round-trips back to
+// the same value (matches CPython's repr).  Tries %.NNg for NN=1..17
+// and picks the smallest NN whose result parses back to the exact d.
+// If the chosen format used scientific notation but |d| is within the
+// "no-exponent" range, redo with %.NNe-derived %f-style.
+static void
+py_fmt_double(char *buf, size_t bufsz, double d)
+{
+    if (d != d) { snprintf(buf, bufsz, "nan"); return; }
+    if (d > 1e308 || d < -1e308) { snprintf(buf, bufsz, d > 0 ? "inf" : "-inf"); return; }
+    int chosen_prec = 17;
+    for (int prec = 1; prec <= 17; prec++) {
+        snprintf(buf, bufsz, "%.*g", prec, d);
+        double back = strtod(buf, NULL);
+        if (back == d) { chosen_prec = prec; break; }
+    }
+    // Detect 'e' in result.  CPython prefers fixed when -4 < exp < 16.
+    // We approximate: if d is finite and |d| in [1e-4, 1e16), force
+    // non-scientific.
+    bool has_exp = false;
+    for (const char *p = buf; *p; p++) if (*p == 'e' || *p == 'E') { has_exp = true; break; }
+    double absd = d < 0 ? -d : d;
+    if (has_exp && absd >= 1e-4 && absd < 1e16 && d != 0.0) {
+        // Compute exponent (integer log10 of |d|).
+        int exp = (int)floor(log10(absd));
+        // The non-scientific form needs (chosen_prec - 1 - exp) decimal places.
+        int after_dot = chosen_prec - 1 - exp;
+        if (after_dot < 0) after_dot = 0;
+        snprintf(buf, bufsz, "%.*f", after_dot, d);
+        // Verify roundtrip; if not, fall back to scientific (already in buf).
+        double back = strtod(buf, NULL);
+        if (back != d) {
+            snprintf(buf, bufsz, "%.*g", chosen_prec, d);
+        }
+    }
+}
+
 void
 py_display(FILE *fp, VALUE v, bool repr)
 {
     if (PY_IS_FIXNUM(v)) { fprintf(fp, "%ld", (long)PY_FIXVAL(v)); return; }
     if (PY_IS_FLONUM(v)) {
         double d = py_flonum_to_double(v);
-        char buf[64]; snprintf(buf, sizeof(buf), "%g", d);
+        char buf[64]; py_fmt_double(buf, sizeof(buf), d);
         bool has_marker = false;
         for (const char *p = buf; *p; p++)
             if (*p == '.' || *p == 'e' || *p == 'E' || *p == 'n' || *p == 'i') { has_marker = true; break; }
@@ -2050,7 +3138,7 @@ py_display(FILE *fp, VALUE v, bool repr)
     switch (o->type) {
       case PY_T_FLOAT: {
         char buf[64];
-        snprintf(buf, sizeof(buf), "%g", o->dbl);
+        py_fmt_double(buf, sizeof(buf), o->dbl);
         bool has_marker = false;
         for (const char *p = buf; *p; p++)
             if (*p == '.' || *p == 'e' || *p == 'E' || *p == 'n' || *p == 'i') {
@@ -2065,18 +3153,37 @@ py_display(FILE *fp, VALUE v, bool repr)
         fputs(s, fp);
         return;
       }
+      case PY_T_COMPLEX: {
+        char re[64], im[64];
+        py_fmt_double(re, sizeof(re), o->cpx.re);
+        py_fmt_double(im, sizeof(im), o->cpx.im);
+        if (o->cpx.re == 0.0) {
+            fprintf(fp, "%sj", im);
+        } else {
+            fprintf(fp, "(%s%s%sj)", re, (o->cpx.im >= 0) ? "+" : "", im);
+        }
+        return;
+      }
       case PY_T_STR:
         if (repr) {
-            fputc('\'', fp);
+            // Pick quote like Python: single, unless the string has
+            // single but no double — then double.
+            bool has_sq = false, has_dq = false;
+            for (size_t i = 0; i < o->str.len; i++) {
+                if (o->str.chars[i] == '\'') has_sq = true;
+                else if (o->str.chars[i] == '"') has_dq = true;
+            }
+            char q = (has_sq && !has_dq) ? '"' : '\'';
+            fputc(q, fp);
             for (size_t i = 0; i < o->str.len; i++) {
                 char ch = o->str.chars[i];
                 if      (ch == '\\') fputs("\\\\", fp);
-                else if (ch == '\'') fputs("\\'", fp);
+                else if (ch == q)    { fputc('\\', fp); fputc(q, fp); }
                 else if (ch == '\n') fputs("\\n", fp);
                 else if (ch == '\t') fputs("\\t", fp);
                 else                 fputc(ch, fp);
             }
-            fputc('\'', fp);
+            fputc(q, fp);
         } else {
             fwrite(o->str.chars, 1, o->str.len, fp);
         }
@@ -2130,13 +3237,12 @@ py_display(FILE *fp, VALUE v, bool repr)
         fputc('{', fp);
         struct pydict *d = o->dict;
         size_t printed = 0;
-        for (size_t i = 0; i < d->capa; i++) {
-            if (d->entries[i].state == 1) {
-                if (printed++) fputs(", ", fp);
-                py_display(fp, d->entries[i].key, true);
-                fputs(": ", fp);
-                py_display(fp, d->entries[i].value, true);
-            }
+        for (size_t i = 0; i < d->elen; i++) {
+            if (!pydict_entry_live(d, i)) continue;
+            if (printed++) fputs(", ", fp);
+            py_display(fp, d->entries[i].key, true);
+            fputs(": ", fp);
+            py_display(fp, d->entries[i].value, true);
         }
         fputc('}', fp);
         py_display_visit_top--;
@@ -2147,11 +3253,10 @@ py_display(FILE *fp, VALUE v, bool repr)
         if (d->used == 0) { fputs("set()", fp); return; }
         fputc('{', fp);
         size_t printed = 0;
-        for (size_t i = 0; i < d->capa; i++) {
-            if (d->entries[i].state == 1) {
-                if (printed++) fputs(", ", fp);
-                py_display(fp, d->entries[i].key, true);
-            }
+        for (size_t i = 0; i < d->elen; i++) {
+            if (!pydict_entry_live(d, i)) continue;
+            if (printed++) fputs(", ", fp);
+            py_display(fp, d->entries[i].key, true);
         }
         fputc('}', fp);
         return;
@@ -2162,11 +3267,10 @@ py_display(FILE *fp, VALUE v, bool repr)
         if (d->used > 0) {
             fputc('{', fp);
             size_t printed = 0;
-            for (size_t i = 0; i < d->capa; i++) {
-                if (d->entries[i].state == 1) {
-                    if (printed++) fputs(", ", fp);
-                    py_display(fp, d->entries[i].key, true);
-                }
+            for (size_t i = 0; i < d->elen; i++) {
+                if (!pydict_entry_live(d, i)) continue;
+                if (printed++) fputs(", ", fp);
+                py_display(fp, d->entries[i].key, true);
             }
             fputc('}', fp);
         }
@@ -2182,11 +3286,44 @@ py_display(FILE *fp, VALUE v, bool repr)
       case PY_T_FUNC:
         fprintf(fp, "<function %s>", o->func.name ? o->func.name : "?");
         return;
-      case PY_T_BUILTIN:
-        fprintf(fp, "<built-in function %s>", o->builtin.name);
+      case PY_T_BUILTIN: {
+        // Built-in type constructors (int, str, list, ...) display as
+        // `<class 'name'>` to match CPython's repr — they are the
+        // canonical type objects for their respective values.
+        const char *nm = o->builtin.name;
+        bool is_type =
+            strcmp(nm, "int") == 0 || strcmp(nm, "float") == 0 ||
+            strcmp(nm, "str") == 0 || strcmp(nm, "bool") == 0 ||
+            strcmp(nm, "list") == 0 || strcmp(nm, "tuple") == 0 ||
+            strcmp(nm, "dict") == 0 || strcmp(nm, "set") == 0 ||
+            strcmp(nm, "frozenset") == 0 || strcmp(nm, "bytes") == 0 ||
+            strcmp(nm, "bytearray") == 0 || strcmp(nm, "range") == 0 ||
+            strcmp(nm, "complex") == 0;
+        if (is_type) fprintf(fp, "<class '%s'>", nm);
+        else         fprintf(fp, "<built-in function %s>", nm);
         return;
+      }
       case PY_T_BOUND_METHOD:
         fprintf(fp, "<bound method>");
+        return;
+      case PY_T_SLICE: {
+        fputs("slice(", fp);
+        py_display(fp, o->slice_.start, true);
+        fputs(", ", fp);
+        py_display(fp, o->slice_.stop, true);
+        fputs(", ", fp);
+        py_display(fp, o->slice_.step, true);
+        fputc(')', fp);
+        return;
+      }
+      case PY_T_ELLIPSIS:
+        fputs("Ellipsis", fp);
+        return;
+      case PY_T_NOTIMPL:
+        fputs("NotImplemented", fp);
+        return;
+      case PY_T_MEMVIEW:
+        fprintf(fp, "<memory>");
         return;
       case PY_T_MODULE:
         fprintf(fp, "<module '%s'>", o->module.name);
@@ -2195,6 +3332,7 @@ py_display(FILE *fp, VALUE v, bool repr)
         fprintf(fp, "<class '%s'>", o->cls.name);
         return;
       case PY_T_INSTANCE: {
+        extern bool class_is_ancestor(VALUE cls, VALUE target);
         // Defer to __str__ / __repr__ if defined.  We need a CTX to
         // call methods, but py_display doesn't take one — work around
         // by stashing it in a TLS-ish "current ctx" pointer set by
@@ -2210,6 +3348,31 @@ py_display(FILE *fp, VALUE v, bool repr)
                 VALUE av[1] = { v };
                 VALUE r = py_apply(py_current_ctx, m, 1, av);
                 if (py_is_str(r)) { fwrite(PY_PTR(r)->str.chars, 1, PY_PTR(r)->str.len, fp); return; }
+            }
+            // Default str() for exception instances: print the message.
+            // (Python's BaseException.__str__ returns args[0] if 1-arg.)
+            if (!repr && py_is_class(PY_OBJ_VAL(o->inst.cls))
+                && py_current_ctx->EXC_Exception
+                && class_is_ancestor(PY_OBJ_VAL(o->inst.cls), py_current_ctx->EXC_Exception)) {
+                VALUE msg = py_getattr(py_current_ctx, v, "message");
+                if (py_current_ctx->state == PY_STATE_NORMAL && py_is_str(msg)) {
+                    fwrite(PY_PTR(msg)->str.chars, 1, PY_PTR(msg)->str.len, fp);
+                    return;
+                }
+                py_current_ctx->state = PY_STATE_NORMAL;
+            }
+            // Default repr() for exception instances: ClassName(message).
+            if (repr && py_is_class(PY_OBJ_VAL(o->inst.cls))
+                && py_current_ctx->EXC_Exception
+                && class_is_ancestor(PY_OBJ_VAL(o->inst.cls), py_current_ctx->EXC_Exception)) {
+                VALUE msg = py_getattr(py_current_ctx, v, "message");
+                if (py_current_ctx->state == PY_STATE_NORMAL && py_is_str(msg)) {
+                    fprintf(fp, "%s(", o->inst.cls->cls.name);
+                    py_display(fp, msg, true);
+                    fputc(')', fp);
+                    return;
+                }
+                py_current_ctx->state = PY_STATE_NORMAL;
             }
         }
         fprintf(fp, "<%s object>", o->inst.cls->cls.name);
@@ -2280,7 +3443,7 @@ py_to_repr(CTX *c, VALUE v)
 // ---------------------------------------------------------------------------
 
 // True if `target` appears in `cls`'s C3 MRO.
-static bool
+bool
 class_is_ancestor(VALUE cls, VALUE target)
 {
     if (cls == PY_NONE || !py_is_class(cls)) return false;
@@ -2292,8 +3455,14 @@ class_is_ancestor(VALUE cls, VALUE target)
 bool
 py_exc_matches(CTX *c, VALUE exc, VALUE cls)
 {
-    (void)c;
     if (!py_is_instance(exc)) return false;
+    // Tuple of classes: match any.
+    if (py_is_tuple(cls)) {
+        size_t n = PY_PTR(cls)->list.len;
+        for (size_t i = 0; i < n; i++)
+            if (py_exc_matches(c, exc, PY_PTR(cls)->list.items[i])) return true;
+        return false;
+    }
     if (!py_is_class(cls)) return false;
     return class_is_ancestor(PY_OBJ_VAL(PY_PTR(exc)->inst.cls), cls);
 }
@@ -2323,6 +3492,7 @@ struct pygen {
     bool       started;
     bool       done;
     VALUE      yield_value;
+    VALUE      return_value;     // value from `return X` in gen body
     // Captured at instantiation:
     VALUE      func;
     int        argc;
@@ -2430,6 +3600,14 @@ gen_entry(void)
 
     EVAL(c, f->func.body);
 
+    // If gen body executed `return X`, capture X for StopIteration.value.
+    if (c->state == PY_STATE_RETURN) {
+        g->return_value = c->state_value;
+        c->state = PY_STATE_NORMAL;
+        c->state_value = PY_NONE;
+    } else {
+        g->return_value = PY_NONE;
+    }
     g->done = true;
     c->current_gen = g->prev_gen;
     swapcontext(&g->body_ctx, &g->caller_ctx);
@@ -2535,8 +3713,13 @@ py_gen_next(CTX *c, VALUE gen_v)
 
     if (raised) { c->state = PY_STATE_RAISE; c->state_value = exc; return PY_NONE; }
     if (was_done) {
+        VALUE si = py_make_instance(c->EXC_StopIteration);
+        py_setattr(c, si, "value", g->return_value);
+        // args = (value,) when value is non-None, else ()
+        if (g->return_value != PY_NONE)
+            py_setattr(c, si, "args", py_make_tuple(&g->return_value, 1));
         c->state = PY_STATE_RAISE;
-        c->state_value = py_make_instance(c->EXC_StopIteration);
+        c->state_value = si;
         return PY_NONE;
     }
     return r;
@@ -2692,8 +3875,8 @@ py_pat_match(CTX *c, int pat_idx, VALUE v)
             if (o->inst.attrs) {
                 VALUE k = py_make_str(p->attrs[i], strlen(p->attrs[i]));
                 uint64_t h = py_hash(c, k);
-                struct pydict_entry *e = pydict_lookup(c, o->inst.attrs, k, h);
-                if (e->state == 1) attr_val = e->value;
+                int32_t eidx = pydict_find(c, o->inst.attrs, k, h);
+                if (eidx >= 0) attr_val = o->inst.attrs->entries[eidx].value;
             }
             if (!attr_val) return false;
             if (!py_pat_match(c, p->first_child + i, attr_val)) return false;
@@ -2727,6 +3910,13 @@ py_run_try(CTX *c, NODE *body, uint32_t handlers_idx, uint32_t nhandlers, NODE *
 {
     jmp_buf jb;
     int saved_top = c->try_top;
+    // Save CTX state that py_apply / others mutate inside the body.
+    // longjmp from py_raise_exc skips their normal restore path, so
+    // we must restore ourselves before running the handler.
+    struct pyframe *saved_env = c->env;
+    VALUE saved_mc = c->method_class;
+    struct pyglobals *saved_g = c->globals;
+    int saved_call_top = c->call_top;
     if (c->try_top < 64) c->try_stack[c->try_top++] = &jb;
 
     bool caught_raise = false;
@@ -2734,6 +3924,12 @@ py_run_try(CTX *c, NODE *body, uint32_t handlers_idx, uint32_t nhandlers, NODE *
         EVAL(c, body);
         if (c->state == PY_STATE_RAISE) caught_raise = true;
     } else {
+        // longjmp'd here from py_raise_exc; CTX may be in an
+        // intermediate state — restore.
+        c->env = saved_env;
+        c->method_class = saved_mc;
+        c->globals = saved_g;
+        c->call_top = saved_call_top;
         caught_raise = true;
     }
     c->try_top = saved_top;
@@ -2752,12 +3948,17 @@ py_run_try(CTX *c, NODE *body, uint32_t handlers_idx, uint32_t nhandlers, NODE *
             }
             if (!h->exc_class || py_exc_matches(c, exc, cls_val)) {
                 c->state = PY_STATE_NORMAL;
-                c->state_value = PY_NONE;
+                // Keep `exc` in state_value so a bare `raise` inside
+                // the handler can re-raise the active exception.
+                c->state_value = exc;
                 if (h->name) {
                     if (h->name_is_global) py_global_set(c, h->name, exc);
                     else                   c->env->slots[h->name_slot] = exc;
                 }
                 EVAL(c, h->body);
+                // If the body did not itself raise, clear the active
+                // exception so it doesn't leak past the handler.
+                if (c->state == PY_STATE_NORMAL) c->state_value = PY_NONE;
                 goto run_finally;
             }
         }
@@ -2774,6 +3975,58 @@ py_run_try(CTX *c, NODE *body, uint32_t handlers_idx, uint32_t nhandlers, NODE *
     }
 }
 
+// `with EXPR as NAME: body` runner.  `cm` is the already-evaluated
+// context manager (its __enter__ has already been called by the desugar).
+// Runs `body` with proper exception protocol: on raise, calls
+// `cm.__exit__(type, value, None)`; if it returns truthy the exception
+// is suppressed.  On normal exit, calls `cm.__exit__(None, None, None)`.
+void
+py_run_with(CTX *c, VALUE cm, NODE *body)
+{
+    jmp_buf jb;
+    int saved_top = c->try_top;
+    struct pyframe *saved_env = c->env;
+    VALUE saved_mc = c->method_class;
+    struct pyglobals *saved_g = c->globals;
+    int saved_call_top = c->call_top;
+    if (c->try_top < 64) c->try_stack[c->try_top++] = &jb;
+
+    bool caught = false;
+    if (setjmp(jb) == 0) {
+        EVAL(c, body);
+        if (c->state == PY_STATE_RAISE) caught = true;
+    } else {
+        c->env = saved_env;
+        c->method_class = saved_mc;
+        c->globals = saved_g;
+        c->call_top = saved_call_top;
+        caught = true;
+    }
+    c->try_top = saved_top;
+
+    if (caught) {
+        VALUE exc = c->state_value;
+        VALUE etype = py_is_instance(exc) ? PY_OBJ_VAL(PY_PTR(exc)->inst.cls) : PY_NONE;
+        VALUE av[3] = { etype, exc, PY_NONE };
+        c->state = PY_STATE_NORMAL;
+        c->state_value = PY_NONE;
+        VALUE exit_m = py_getattr(c, cm, "__exit__");
+        if (c->state != PY_STATE_NORMAL) return;
+        VALUE r = py_apply(c, exit_m, 3, av);
+        if (c->state != PY_STATE_NORMAL) return;
+        if (!py_is_truthy(r)) {
+            // Re-raise the original exception.
+            c->state = PY_STATE_RAISE;
+            c->state_value = exc;
+        }
+    } else {
+        VALUE av[3] = { PY_NONE, PY_NONE, PY_NONE };
+        VALUE exit_m = py_getattr(c, cm, "__exit__");
+        if (c->state != PY_STATE_NORMAL) return;
+        py_apply(c, exit_m, 3, av);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tuple-unpacking assignment (struct pyunpack_target in context.h).
 // ---------------------------------------------------------------------------
@@ -2781,15 +4034,63 @@ py_run_try(CTX *c, NODE *body, uint32_t handlers_idx, uint32_t nhandlers, NODE *
 void
 py_unpack_assign(CTX *c, struct pyunpack_target *targets, uint32_t n, VALUE rhs)
 {
-    if (!(py_is_list(rhs) || py_is_tuple(rhs)))
-        py_raise_exc(c, c->EXC_TypeError, "cannot unpack non-iterable");
-    if (PY_PTR(rhs)->list.len != n)
+    // Materialise rhs into an array.
+    VALUE *items = NULL;
+    size_t nitems = 0;
+    if (py_is_list(rhs) || py_is_tuple(rhs)) {
+        items = PY_PTR(rhs)->list.items;
+        nitems = PY_PTR(rhs)->list.len;
+    } else {
+        // any iterable
+        struct py_iter it; py_iter_init(c, &it, rhs);
+        if (c->state != PY_STATE_NORMAL) return;
+        size_t cap = 8; nitems = 0;
+        items = (VALUE *)GC_malloc(sizeof(VALUE) * cap);
+        VALUE x;
+        while (py_iter_next(c, &it, &x)) {
+            if (nitems == cap) { cap *= 2; items = (VALUE *)GC_realloc(items, sizeof(VALUE) * cap); }
+            items[nitems++] = x;
+        }
+    }
+    // Find a starred target if any (at most one allowed).
+    int star_idx = -1;
+    for (uint32_t i = 0; i < n; i++) if (targets[i].is_starred) { star_idx = (int)i; break; }
+    if (star_idx < 0) {
+        if (nitems != n)
+            py_raise_exc(c, c->EXC_ValueError,
+                         "expected %u values, got %zu", n, nitems);
+        for (uint32_t i = 0; i < n; i++) {
+            VALUE v = items[i];
+            if (targets[i].is_local) c->env->slots[targets[i].slot] = v;
+            else                     py_global_set(c, targets[i].global_name, v);
+        }
+        return;
+    }
+    // Starred form: prefix [0..star_idx), starred [star_idx..len-suffix],
+    // suffix [len-suffix..len) where suffix length = n - star_idx - 1.
+    int n_pre = star_idx;
+    int n_suf = (int)n - star_idx - 1;
+    if ((int)nitems < n_pre + n_suf)
         py_raise_exc(c, c->EXC_ValueError,
-                     "expected %u values, got %zu", n, PY_PTR(rhs)->list.len);
-    for (uint32_t i = 0; i < n; i++) {
-        VALUE v = PY_PTR(rhs)->list.items[i];
+                     "not enough values to unpack (expected at least %d)", n_pre + n_suf);
+    // Pre.
+    for (int i = 0; i < n_pre; i++) {
+        VALUE v = items[i];
         if (targets[i].is_local) c->env->slots[targets[i].slot] = v;
         else                     py_global_set(c, targets[i].global_name, v);
+    }
+    // Starred = list of middle items.
+    int rest_len = (int)nitems - n_pre - n_suf;
+    VALUE *rest_items = rest_len > 0 ? &items[n_pre] : NULL;
+    VALUE rest = py_make_list(rest_items, (size_t)rest_len);
+    if (targets[star_idx].is_local) c->env->slots[targets[star_idx].slot] = rest;
+    else                            py_global_set(c, targets[star_idx].global_name, rest);
+    // Suffix.
+    for (int j = 0; j < n_suf; j++) {
+        VALUE v = items[nitems - n_suf + j];
+        struct pyunpack_target *t = &targets[star_idx + 1 + j];
+        if (t->is_local) c->env->slots[t->slot] = v;
+        else             py_global_set(c, t->global_name, v);
     }
 }
 
@@ -2824,12 +4125,19 @@ sm_split(CTX *c, int argc, VALUE *argv)
     const char *sep = PY_PTR(argv[1])->str.chars;
     size_t slen = PY_PTR(argv[1])->str.len;
     if (slen == 0) py_raise_exc(c, c->EXC_ValueError, "empty separator");
+    int64_t maxsplit = (argc >= 3) ? py_int_to_long(c, argv[2]) : -1;
     size_t i = 0;
+    int64_t splits = 0;
     while (i <= len) {
+        if (maxsplit >= 0 && splits >= maxsplit) {
+            py_list_append(c, result, py_make_str_borrow(s + i, len - i));
+            break;
+        }
         const char *p = i + slen <= len ? memmem(s + i, len - i, sep, slen) : NULL;
         if (!p) { py_list_append(c, result, py_make_str_borrow(s + i, len - i)); break; }
         py_list_append(c, result, py_make_str_borrow(s + i, (size_t)(p - (s + i))));
         i = (size_t)(p - s) + slen;
+        splits++;
     }
     return result;
 }
@@ -2840,23 +4148,36 @@ sm_join(CTX *c, int argc, VALUE *argv)
     (void)argc;
     VALUE self = argv[0];
     VALUE seq  = argv[1];
-    if (!(py_is_list(seq) || py_is_tuple(seq)))
-        py_raise_exc(c, c->EXC_TypeError, "join argument must be iterable");
     const char *sep = PY_PTR(self)->str.chars;
     size_t slen = PY_PTR(self)->str.len;
-    size_t n = PY_PTR(seq)->list.len;
+    // Materialise iterable into a list of strings.
+    VALUE items[256];
+    int n = 0;
+    if (py_is_list(seq) || py_is_tuple(seq)) {
+        size_t sn = PY_PTR(seq)->list.len;
+        if (sn > 256) py_raise_exc(c, c->EXC_RuntimeError, "join: list too long");
+        for (size_t i = 0; i < sn; i++) items[n++] = PY_PTR(seq)->list.items[i];
+    } else {
+        struct py_iter it; py_iter_init(c, &it, seq);
+        if (c->state != PY_STATE_NORMAL) return PY_NONE;
+        VALUE x;
+        while (py_iter_next(c, &it, &x)) {
+            if (n >= 256) py_raise_exc(c, c->EXC_RuntimeError, "join: too many items");
+            items[n++] = x;
+        }
+    }
     size_t total = 0;
-    for (size_t i = 0; i < n; i++) {
-        VALUE e = PY_PTR(seq)->list.items[i];
+    for (int i = 0; i < n; i++) {
+        VALUE e = items[i];
         if (!py_is_str(e)) py_raise_exc(c, c->EXC_TypeError, "join element must be str");
         total += PY_PTR(e)->str.len;
         if (i) total += slen;
     }
     char *buf = (char *)GC_malloc_atomic(total + 1);
     char *p = buf;
-    for (size_t i = 0; i < n; i++) {
+    for (int i = 0; i < n; i++) {
         if (i) { memcpy(p, sep, slen); p += slen; }
-        VALUE e = PY_PTR(seq)->list.items[i];
+        VALUE e = items[i];
         memcpy(p, PY_PTR(e)->str.chars, PY_PTR(e)->str.len);
         p += PY_PTR(e)->str.len;
     }
@@ -2889,11 +4210,21 @@ sm_lower(CTX *c, int argc, VALUE *argv)
 static VALUE
 sm_strip(CTX *c, int argc, VALUE *argv)
 {
-    (void)c; (void)argc;
+    (void)c;
     struct pyobj *o = PY_PTR(argv[0]);
     size_t i = 0, j = o->str.len;
-    while (i < j && (o->str.chars[i] == ' ' || o->str.chars[i] == '\t' || o->str.chars[i] == '\n' || o->str.chars[i] == '\r')) i++;
-    while (j > i && (o->str.chars[j-1] == ' ' || o->str.chars[j-1] == '\t' || o->str.chars[j-1] == '\n' || o->str.chars[j-1] == '\r')) j--;
+    if (argc >= 2 && py_is_str(argv[1])) {
+        // Strip any character in the argument.
+        const char *cs = PY_PTR(argv[1])->str.chars;
+        size_t cn = PY_PTR(argv[1])->str.len;
+        bool in_set[256] = { false };
+        for (size_t k = 0; k < cn; k++) in_set[(unsigned char)cs[k]] = true;
+        while (i < j && in_set[(unsigned char)o->str.chars[i]]) i++;
+        while (j > i && in_set[(unsigned char)o->str.chars[j-1]]) j--;
+    } else {
+        while (i < j && (o->str.chars[i] == ' ' || o->str.chars[i] == '\t' || o->str.chars[i] == '\n' || o->str.chars[i] == '\r')) i++;
+        while (j > i && (o->str.chars[j-1] == ' ' || o->str.chars[j-1] == '\t' || o->str.chars[j-1] == '\n' || o->str.chars[j-1] == '\r')) j--;
+    }
     return py_make_str(o->str.chars + i, j - i);
 }
 
@@ -2902,8 +4233,20 @@ sm_startswith(CTX *c, int argc, VALUE *argv)
 {
     (void)c; (void)argc;
     struct pyobj *s = PY_PTR(argv[0]);
-    if (!py_is_str(argv[1])) py_raise_exc(c, c->EXC_TypeError, "startswith: not str");
-    struct pyobj *p = PY_PTR(argv[1]);
+    VALUE arg = argv[1];
+    if (py_is_tuple(arg)) {
+        size_t n = PY_PTR(arg)->list.len;
+        for (size_t i = 0; i < n; i++) {
+            VALUE p = PY_PTR(arg)->list.items[i];
+            if (!py_is_str(p)) continue;
+            struct pyobj *pp = PY_PTR(p);
+            if (pp->str.len > s->str.len) continue;
+            if (memcmp(s->str.chars, pp->str.chars, pp->str.len) == 0) return PY_TRUE;
+        }
+        return PY_FALSE;
+    }
+    if (!py_is_str(arg)) py_raise_exc(c, c->EXC_TypeError, "startswith: not str/tuple");
+    struct pyobj *p = PY_PTR(arg);
     if (p->str.len > s->str.len) return PY_FALSE;
     return memcmp(s->str.chars, p->str.chars, p->str.len) == 0 ? PY_TRUE : PY_FALSE;
 }
@@ -2913,39 +4256,61 @@ sm_endswith(CTX *c, int argc, VALUE *argv)
 {
     (void)c; (void)argc;
     struct pyobj *s = PY_PTR(argv[0]);
-    if (!py_is_str(argv[1])) py_raise_exc(c, c->EXC_TypeError, "endswith: not str");
-    struct pyobj *p = PY_PTR(argv[1]);
+    VALUE arg = argv[1];
+    if (py_is_tuple(arg)) {
+        size_t n = PY_PTR(arg)->list.len;
+        for (size_t i = 0; i < n; i++) {
+            VALUE p = PY_PTR(arg)->list.items[i];
+            if (!py_is_str(p)) continue;
+            struct pyobj *pp = PY_PTR(p);
+            if (pp->str.len > s->str.len) continue;
+            if (memcmp(s->str.chars + s->str.len - pp->str.len, pp->str.chars, pp->str.len) == 0) return PY_TRUE;
+        }
+        return PY_FALSE;
+    }
+    if (!py_is_str(arg)) py_raise_exc(c, c->EXC_TypeError, "endswith: not str/tuple");
+    struct pyobj *p = PY_PTR(arg);
     if (p->str.len > s->str.len) return PY_FALSE;
     return memcmp(s->str.chars + s->str.len - p->str.len, p->str.chars, p->str.len) == 0 ? PY_TRUE : PY_FALSE;
 }
 
-static VALUE
+VALUE
 sm_find(CTX *c, int argc, VALUE *argv)
 {
-    (void)c; (void)argc;
     struct pyobj *s = PY_PTR(argv[0]);
     if (!py_is_str(argv[1])) py_raise_exc(c, c->EXC_TypeError, "find: not str");
     struct pyobj *p = PY_PTR(argv[1]);
-    if (p->str.len == 0) return PY_FIX(0);
-    void *r = memmem(s->str.chars, s->str.len, p->str.chars, p->str.len);
+    int64_t start = (argc >= 3) ? py_int_to_long(c, argv[2]) : 0;
+    int64_t end   = (argc >= 4) ? py_int_to_long(c, argv[3]) : (int64_t)s->str.len;
+    if (start < 0) start += (int64_t)s->str.len;
+    if (start < 0) start = 0;
+    if (end < 0) end += (int64_t)s->str.len;
+    if (end > (int64_t)s->str.len) end = (int64_t)s->str.len;
+    if (start > end) return PY_FIX(-1);
+    if (p->str.len == 0) return PY_FIX(start);
+    if ((size_t)(end - start) < p->str.len) return PY_FIX(-1);
+    void *r = memmem(s->str.chars + start, (size_t)(end - start),
+                     p->str.chars, p->str.len);
     return r ? PY_FIX((int64_t)((char *)r - s->str.chars)) : PY_FIX(-1);
 }
 
 static VALUE
 sm_replace(CTX *c, int argc, VALUE *argv)
 {
-    (void)argc;
     struct pyobj *s = PY_PTR(argv[0]);
     if (!py_is_str(argv[1]) || !py_is_str(argv[2]))
         py_raise_exc(c, c->EXC_TypeError, "replace args must be str");
     struct pyobj *o = PY_PTR(argv[1]);
     struct pyobj *n = PY_PTR(argv[2]);
+    int64_t max_count = (argc >= 4) ? py_int_to_long(c, argv[3]) : -1;
     if (o->str.len == 0) return argv[0];
     size_t cap = s->str.len + 16, len = 0;
     char *buf = (char *)GC_malloc_atomic(cap + 1);
     size_t i = 0;
+    int64_t cnt = 0;
     while (i < s->str.len) {
-        if (i + o->str.len <= s->str.len &&
+        if ((max_count < 0 || cnt < max_count) &&
+            i + o->str.len <= s->str.len &&
             memcmp(s->str.chars + i, o->str.chars, o->str.len) == 0) {
             if (len + n->str.len + 1 > cap) {
                 while (len + n->str.len + 1 > cap) cap *= 2;
@@ -2954,6 +4319,7 @@ sm_replace(CTX *c, int argc, VALUE *argv)
             memcpy(buf + len, n->str.chars, n->str.len);
             len += n->str.len;
             i += o->str.len;
+            cnt++;
         } else {
             if (len + 2 > cap) { cap *= 2; buf = (char *)GC_realloc(buf, cap + 1); }
             buf[len++] = s->str.chars[i++];
@@ -2980,17 +4346,826 @@ sm_count(CTX *c, int argc, VALUE *argv)
     return PY_FIX(n);
 }
 
+static VALUE
+sm_encode(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    struct pyobj *o = PY_PTR(argv[0]);
+    return py_make_bytes(o->str.chars, o->str.len);
+}
+
+static VALUE bi_format(CTX *c, int argc, VALUE *argv);  // forward
+// `"{} {}".format(a, b)` — auto / positional indices + format spec.
+// Kwargs (`{name}`) are not supported in this v0; use f-strings instead.
+static VALUE
+sm_format(CTX *c, int argc, VALUE *argv)
+{
+    VALUE self = argv[0];
+    const char *src = PY_PTR(self)->str.chars;
+    size_t srclen = PY_PTR(self)->str.len;
+    int auto_idx = 0;
+    size_t out_capa = srclen + 16;
+    char *out = (char *)GC_malloc_atomic(out_capa);
+    size_t out_len = 0;
+#define OUT_CH(ch) do { \
+    if (out_len + 1 > out_capa) { \
+        out_capa *= 2; \
+        char *no = (char *)GC_malloc_atomic(out_capa); \
+        memcpy(no, out, out_len); out = no; \
+    } \
+    out[out_len++] = (ch); \
+} while (0)
+#define OUT_PUT(buf, len) do { \
+    while (out_len + (len) > out_capa) { \
+        out_capa *= 2; \
+        char *no = (char *)GC_malloc_atomic(out_capa); \
+        memcpy(no, out, out_len); out = no; \
+    } \
+    memcpy(out + out_len, (buf), (len)); out_len += (len); \
+} while (0)
+    for (size_t i = 0; i < srclen; i++) {
+        char ch = src[i];
+        if (ch == '{') {
+            if (i + 1 < srclen && src[i+1] == '{') { OUT_CH('{'); i++; continue; }
+            // Find matching `}`, allowing nested in spec.
+            size_t j = i + 1;
+            int depth = 1;
+            while (j < srclen && depth > 0) {
+                if (src[j] == '{') depth++;
+                else if (src[j] == '}') depth--;
+                if (depth > 0) j++;
+            }
+            if (j >= srclen) py_raise_exc(c, c->EXC_ValueError, "unterminated '{' in format");
+            // Inside [i+1..j) is `[N][!conv][:spec]`.
+            const char *body = src + i + 1;
+            size_t bn = j - i - 1;
+            // Field name: positional index, auto (empty), or named kw.
+            int idx = -1;
+            size_t k = 0;
+            VALUE val;
+            if (bn == 0 || body[0] == ':' || body[0] == '!') {
+                // Empty field name → auto-numbered.
+                idx = auto_idx++;
+            } else if (body[0] >= '0' && body[0] <= '9') {
+                idx = 0;
+                while (k < bn && body[k] >= '0' && body[k] <= '9') {
+                    idx = idx * 10 + (body[k] - '0'); k++;
+                }
+            } else {
+                // Named field → look up in kwargs.
+                size_t nm_start = k;
+                while (k < bn && body[k] != ':' && body[k] != '!') k++;
+                size_t nm_len = k - nm_start;
+                extern int    PYSTRO_BI_KWC;
+                extern const char **PYSTRO_BI_KWNAMES;
+                extern VALUE *PYSTRO_BI_KWVALUES;
+                int found = -1;
+                for (int ki = 0; ki < PYSTRO_BI_KWC; ki++) {
+                    const char *nm = PYSTRO_BI_KWNAMES[ki];
+                    if (strlen(nm) == nm_len && memcmp(nm, body + nm_start, nm_len) == 0) {
+                        found = ki; break;
+                    }
+                }
+                if (found < 0) py_raise_exc(c, c->EXC_KeyError, "format: missing kwarg");
+                val = PYSTRO_BI_KWVALUES[found];
+                goto have_val;
+            }
+            if (idx < 0 || idx + 1 > argc - 1)
+                py_raise_exc(c, c->EXC_IndexError, "format: index out of range");
+            val = argv[1 + idx];
+          have_val:;
+            // Optional `!conv`.
+            if (k < bn && body[k] == '!') {
+                k++;
+                if (k >= bn) py_raise_exc(c, c->EXC_ValueError, "expected conversion");
+                char conv = body[k++];
+                if (conv == 'r' || conv == 'a') val = py_to_repr(c, val);
+                else if (conv == 's')           val = py_to_str(c, val);
+                else py_raise_exc(c, c->EXC_ValueError, "bad conversion");
+            }
+            // Optional `:spec`.
+            VALUE spec_val = py_make_str("", 0);
+            if (k < bn && body[k] == ':') {
+                k++;
+                spec_val = py_make_str(body + k, bn - k);
+            }
+            // Apply.
+            VALUE av[2] = { val, spec_val };
+            VALUE rendered = bi_format(c, 2, av);
+            if (!py_is_str(rendered)) rendered = py_to_str(c, rendered);
+            OUT_PUT(PY_PTR(rendered)->str.chars, PY_PTR(rendered)->str.len);
+            i = j;
+        } else if (ch == '}') {
+            if (i + 1 < srclen && src[i+1] == '}') { OUT_CH('}'); i++; continue; }
+            py_raise_exc(c, c->EXC_ValueError, "single '}' in format");
+        } else {
+            OUT_CH(ch);
+        }
+    }
+    return py_make_str(out, out_len);
+#undef OUT_CH
+#undef OUT_PUT
+}
+
+static VALUE
+sm_lstrip(CTX *c, int argc, VALUE *argv)
+{
+    (void)c;
+    struct pyobj *o = PY_PTR(argv[0]);
+    size_t i = 0, j = o->str.len;
+    if (argc >= 2 && py_is_str(argv[1])) {
+        const char *cs = PY_PTR(argv[1])->str.chars;
+        size_t cn = PY_PTR(argv[1])->str.len;
+        bool in_set[256] = { false };
+        for (size_t k = 0; k < cn; k++) in_set[(unsigned char)cs[k]] = true;
+        while (i < j && in_set[(unsigned char)o->str.chars[i]]) i++;
+    } else {
+        while (i < j && (o->str.chars[i] == ' ' || o->str.chars[i] == '\t' ||
+                         o->str.chars[i] == '\n' || o->str.chars[i] == '\r')) i++;
+    }
+    return py_make_str(o->str.chars + i, j - i);
+}
+
+static VALUE
+sm_rstrip(CTX *c, int argc, VALUE *argv)
+{
+    (void)c;
+    struct pyobj *o = PY_PTR(argv[0]);
+    size_t i = 0, j = o->str.len;
+    if (argc >= 2 && py_is_str(argv[1])) {
+        const char *cs = PY_PTR(argv[1])->str.chars;
+        size_t cn = PY_PTR(argv[1])->str.len;
+        bool in_set[256] = { false };
+        for (size_t k = 0; k < cn; k++) in_set[(unsigned char)cs[k]] = true;
+        while (j > i && in_set[(unsigned char)o->str.chars[j-1]]) j--;
+    } else {
+        while (j > i && (o->str.chars[j-1] == ' ' || o->str.chars[j-1] == '\t' ||
+                         o->str.chars[j-1] == '\n' || o->str.chars[j-1] == '\r')) j--;
+    }
+    return py_make_str(o->str.chars + i, j - i);
+}
+
+static VALUE
+sm_zfill(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    struct pyobj *o = PY_PTR(argv[0]);
+    int w = (int)py_int_to_long(c, argv[1]);
+    if ((int)o->str.len >= w) return py_make_str(o->str.chars, o->str.len);
+    int pad = w - (int)o->str.len;
+    char *buf = (char *)GC_malloc_atomic(w + 1);
+    int off = 0;
+    if (o->str.len > 0 && (o->str.chars[0] == '+' || o->str.chars[0] == '-')) {
+        buf[0] = o->str.chars[0]; off = 1;
+        for (int i = 0; i < pad; i++) buf[off + i] = '0';
+        memcpy(buf + off + pad, o->str.chars + 1, o->str.len - 1);
+    } else {
+        for (int i = 0; i < pad; i++) buf[i] = '0';
+        memcpy(buf + pad, o->str.chars, o->str.len);
+    }
+    buf[w] = '\0';
+    return py_make_str_take(buf, w);
+}
+
+static VALUE
+sm_center(CTX *c, int argc, VALUE *argv)
+{
+    struct pyobj *o = PY_PTR(argv[0]);
+    int w = (int)py_int_to_long(c, argv[1]);
+    char fill = (argc >= 3 && py_is_str(argv[2]) && PY_PTR(argv[2])->str.len >= 1) ? PY_PTR(argv[2])->str.chars[0] : ' ';
+    if ((int)o->str.len >= w) return py_make_str(o->str.chars, o->str.len);
+    int pad = w - (int)o->str.len;
+    int left = pad / 2, right = pad - left;
+    char *buf = (char *)GC_malloc_atomic(w + 1);
+    for (int i = 0; i < left; i++) buf[i] = fill;
+    memcpy(buf + left, o->str.chars, o->str.len);
+    for (int i = 0; i < right; i++) buf[left + (int)o->str.len + i] = fill;
+    buf[w] = '\0';
+    return py_make_str_take(buf, w);
+}
+
+static VALUE
+sm_ljust(CTX *c, int argc, VALUE *argv)
+{
+    struct pyobj *o = PY_PTR(argv[0]);
+    int w = (int)py_int_to_long(c, argv[1]);
+    char fill = (argc >= 3 && py_is_str(argv[2]) && PY_PTR(argv[2])->str.len >= 1) ? PY_PTR(argv[2])->str.chars[0] : ' ';
+    if ((int)o->str.len >= w) return py_make_str(o->str.chars, o->str.len);
+    char *buf = (char *)GC_malloc_atomic(w + 1);
+    memcpy(buf, o->str.chars, o->str.len);
+    for (size_t i = o->str.len; i < (size_t)w; i++) buf[i] = fill;
+    buf[w] = '\0';
+    return py_make_str_take(buf, w);
+}
+
+static VALUE
+sm_rjust(CTX *c, int argc, VALUE *argv)
+{
+    struct pyobj *o = PY_PTR(argv[0]);
+    int w = (int)py_int_to_long(c, argv[1]);
+    char fill = (argc >= 3 && py_is_str(argv[2]) && PY_PTR(argv[2])->str.len >= 1) ? PY_PTR(argv[2])->str.chars[0] : ' ';
+    if ((int)o->str.len >= w) return py_make_str(o->str.chars, o->str.len);
+    int pad = w - (int)o->str.len;
+    char *buf = (char *)GC_malloc_atomic(w + 1);
+    for (int i = 0; i < pad; i++) buf[i] = fill;
+    memcpy(buf + pad, o->str.chars, o->str.len);
+    buf[w] = '\0';
+    return py_make_str_take(buf, w);
+}
+
+static VALUE
+sm_title(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    struct pyobj *o = PY_PTR(argv[0]);
+    char *buf = (char *)GC_malloc_atomic(o->str.len + 1);
+    bool prev_alpha = false;
+    for (size_t i = 0; i < o->str.len; i++) {
+        char ch = o->str.chars[i];
+        bool is_alpha = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z');
+        if (is_alpha && !prev_alpha) {
+            if (ch >= 'a' && ch <= 'z') ch -= 32;
+        } else if (is_alpha) {
+            if (ch >= 'A' && ch <= 'Z') ch += 32;
+        }
+        buf[i] = ch;
+        prev_alpha = is_alpha;
+    }
+    buf[o->str.len] = '\0';
+    return py_make_str_take(buf, o->str.len);
+}
+
+static VALUE
+sm_capitalize(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    struct pyobj *o = PY_PTR(argv[0]);
+    if (o->str.len == 0) return py_make_str("", 0);
+    char *buf = (char *)GC_malloc_atomic(o->str.len + 1);
+    for (size_t i = 0; i < o->str.len; i++) {
+        char ch = o->str.chars[i];
+        if (i == 0) {
+            if (ch >= 'a' && ch <= 'z') ch -= 32;
+        } else {
+            if (ch >= 'A' && ch <= 'Z') ch += 32;
+        }
+        buf[i] = ch;
+    }
+    buf[o->str.len] = '\0';
+    return py_make_str_take(buf, o->str.len);
+}
+
+static VALUE
+sm_rfind(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    struct pyobj *o = PY_PTR(argv[0]);
+    if (!py_is_str(argv[1])) return PY_FIX(-1);
+    struct pyobj *needle = PY_PTR(argv[1]);
+    if (needle->str.len == 0) return PY_FIX((int64_t)o->str.len);
+    if (needle->str.len > o->str.len) return PY_FIX(-1);
+    for (ssize_t i = (ssize_t)(o->str.len - needle->str.len); i >= 0; i--) {
+        if (memcmp(o->str.chars + i, needle->str.chars, needle->str.len) == 0)
+            return PY_FIX((int64_t)i);
+    }
+    return PY_FIX(-1);
+}
+
+static VALUE
+sm_rindex(CTX *c, int argc, VALUE *argv)
+{
+    VALUE r = sm_rfind(c, argc, argv);
+    if (PY_IS_FIXNUM(r) && PY_FIXVAL(r) == -1)
+        py_raise_exc(c, c->EXC_ValueError, "substring not found");
+    return r;
+}
+
+static VALUE
+sm_index(CTX *c, int argc, VALUE *argv)
+{
+    extern VALUE sm_find(CTX *c, int argc, VALUE *argv);
+    VALUE r = sm_find(c, argc, argv);
+    if (PY_IS_FIXNUM(r) && PY_FIXVAL(r) == -1)
+        py_raise_exc(c, c->EXC_ValueError, "substring not found");
+    return r;
+}
+
+static VALUE
+sm_isnumeric(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    struct pyobj *o = PY_PTR(argv[0]);
+    if (o->str.len == 0) return PY_FALSE;
+    for (size_t i = 0; i < o->str.len; i++) {
+        char ch = o->str.chars[i];
+        if (!(ch >= '0' && ch <= '9')) return PY_FALSE;
+    }
+    return PY_TRUE;
+}
+
+static VALUE
+sm_isascii(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    struct pyobj *o = PY_PTR(argv[0]);
+    for (size_t i = 0; i < o->str.len; i++)
+        if ((unsigned char)o->str.chars[i] > 127) return PY_FALSE;
+    return PY_TRUE;
+}
+
+static VALUE
+sm_isidentifier(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    struct pyobj *o = PY_PTR(argv[0]);
+    if (o->str.len == 0) return PY_FALSE;
+    char ch = o->str.chars[0];
+    if (!(ch == '_' || (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z')))
+        return PY_FALSE;
+    for (size_t i = 1; i < o->str.len; i++) {
+        ch = o->str.chars[i];
+        if (!(ch == '_' || (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+              (ch >= '0' && ch <= '9')))
+            return PY_FALSE;
+    }
+    return PY_TRUE;
+}
+
+static VALUE
+sm_isprintable(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    struct pyobj *o = PY_PTR(argv[0]);
+    for (size_t i = 0; i < o->str.len; i++) {
+        unsigned char ch = (unsigned char)o->str.chars[i];
+        if (ch < 32 || ch == 127) return PY_FALSE;
+    }
+    return PY_TRUE;
+}
+
+static VALUE
+sm_istitle(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    struct pyobj *o = PY_PTR(argv[0]);
+    bool seen_alpha = false;
+    bool prev_alpha = false;
+    for (size_t i = 0; i < o->str.len; i++) {
+        char ch = o->str.chars[i];
+        bool is_upper = (ch >= 'A' && ch <= 'Z');
+        bool is_lower = (ch >= 'a' && ch <= 'z');
+        bool is_alpha = is_upper || is_lower;
+        if (is_alpha) seen_alpha = true;
+        if (is_upper && prev_alpha) return PY_FALSE;
+        if (is_lower && !prev_alpha) return PY_FALSE;
+        prev_alpha = is_alpha;
+    }
+    return seen_alpha ? PY_TRUE : PY_FALSE;
+}
+
+static VALUE
+sm_swapcase(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    struct pyobj *o = PY_PTR(argv[0]);
+    char *buf = (char *)GC_malloc_atomic(o->str.len + 1);
+    for (size_t i = 0; i < o->str.len; i++) {
+        char ch = o->str.chars[i];
+        if (ch >= 'a' && ch <= 'z') ch -= 32;
+        else if (ch >= 'A' && ch <= 'Z') ch += 32;
+        buf[i] = ch;
+    }
+    buf[o->str.len] = '\0';
+    return py_make_str_take(buf, o->str.len);
+}
+
+static VALUE
+sm_casefold(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    struct pyobj *o = PY_PTR(argv[0]);
+    char *buf = (char *)GC_malloc_atomic(o->str.len + 1);
+    for (size_t i = 0; i < o->str.len; i++) {
+        char ch = o->str.chars[i];
+        if (ch >= 'A' && ch <= 'Z') ch += 32;
+        buf[i] = ch;
+    }
+    buf[o->str.len] = '\0';
+    return py_make_str_take(buf, o->str.len);
+}
+
+static VALUE
+sm_splitlines(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    struct pyobj *o = PY_PTR(argv[0]);
+    VALUE r = py_make_list(NULL, 0);
+    size_t i = 0;
+    while (i < o->str.len) {
+        size_t j = i;
+        while (j < o->str.len && o->str.chars[j] != '\n' && o->str.chars[j] != '\r') j++;
+        py_list_append(c, r, py_make_str(o->str.chars + i, j - i));
+        if (j < o->str.len && o->str.chars[j] == '\r' && j + 1 < o->str.len && o->str.chars[j+1] == '\n') j += 2;
+        else if (j < o->str.len) j++;
+        i = j;
+    }
+    return r;
+}
+
+static VALUE
+sm_removeprefix(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    struct pyobj *o = PY_PTR(argv[0]);
+    if (!py_is_str(argv[1])) return py_make_str(o->str.chars, o->str.len);
+    struct pyobj *p = PY_PTR(argv[1]);
+    if (o->str.len >= p->str.len && memcmp(o->str.chars, p->str.chars, p->str.len) == 0)
+        return py_make_str(o->str.chars + p->str.len, o->str.len - p->str.len);
+    return py_make_str(o->str.chars, o->str.len);
+}
+
+static VALUE
+sm_removesuffix(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    struct pyobj *o = PY_PTR(argv[0]);
+    if (!py_is_str(argv[1])) return py_make_str(o->str.chars, o->str.len);
+    struct pyobj *p = PY_PTR(argv[1]);
+    if (o->str.len >= p->str.len &&
+        memcmp(o->str.chars + o->str.len - p->str.len, p->str.chars, p->str.len) == 0)
+        return py_make_str(o->str.chars, o->str.len - p->str.len);
+    return py_make_str(o->str.chars, o->str.len);
+}
+
+#define _STR_PRED(name, expr) \
+    static VALUE sm_##name(CTX *c, int argc, VALUE *argv) { \
+        (void)c; (void)argc; \
+        struct pyobj *o = PY_PTR(argv[0]); \
+        if (o->str.len == 0) return PY_FALSE; \
+        for (size_t i = 0; i < o->str.len; i++) { \
+            unsigned char ch = (unsigned char)o->str.chars[i]; \
+            if (!(expr)) return PY_FALSE; \
+        } \
+        return PY_TRUE; \
+    }
+_STR_PRED(isdigit, ch >= '0' && ch <= '9')
+_STR_PRED(isalpha, (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z'))
+_STR_PRED(isspace, ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' || ch == '\v' || ch == '\f')
+_STR_PRED(isupper, ch >= 'A' && ch <= 'Z')
+_STR_PRED(islower, ch >= 'a' && ch <= 'z')
+_STR_PRED(isalnum, (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z'))
+#undef _STR_PRED
+
+static VALUE
+sm_partition(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    struct pyobj *o = PY_PTR(argv[0]);
+    if (!py_is_str(argv[1])) py_raise_exc(c, c->EXC_TypeError, "partition needs str");
+    struct pyobj *sep = PY_PTR(argv[1]);
+    if (sep->str.len == 0) py_raise_exc(c, c->EXC_ValueError, "empty separator");
+    const char *p = (const char *)memmem(o->str.chars, o->str.len, sep->str.chars, sep->str.len);
+    if (!p) {
+        VALUE items[3] = {
+            py_make_str(o->str.chars, o->str.len),
+            py_make_str("", 0),
+            py_make_str("", 0),
+        };
+        return py_make_tuple(items, 3);
+    }
+    size_t hl = (size_t)(p - o->str.chars);
+    VALUE items[3] = {
+        py_make_str(o->str.chars, hl),
+        py_make_str(sep->str.chars, sep->str.len),
+        py_make_str(p + sep->str.len, o->str.len - hl - sep->str.len),
+    };
+    return py_make_tuple(items, 3);
+}
+
+static VALUE
+sm_rpartition(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    struct pyobj *o = PY_PTR(argv[0]);
+    if (!py_is_str(argv[1])) py_raise_exc(c, c->EXC_TypeError, "rpartition needs str");
+    struct pyobj *sep = PY_PTR(argv[1]);
+    if (sep->str.len == 0) py_raise_exc(c, c->EXC_ValueError, "empty separator");
+    if (sep->str.len > o->str.len) {
+        VALUE items[3] = {
+            py_make_str("", 0), py_make_str("", 0),
+            py_make_str(o->str.chars, o->str.len),
+        };
+        return py_make_tuple(items, 3);
+    }
+    ssize_t hit = -1;
+    for (ssize_t i = (ssize_t)(o->str.len - sep->str.len); i >= 0; i--) {
+        if (memcmp(o->str.chars + i, sep->str.chars, sep->str.len) == 0) {
+            hit = i; break;
+        }
+    }
+    if (hit < 0) {
+        VALUE items[3] = {
+            py_make_str("", 0), py_make_str("", 0),
+            py_make_str(o->str.chars, o->str.len),
+        };
+        return py_make_tuple(items, 3);
+    }
+    VALUE items[3] = {
+        py_make_str(o->str.chars, (size_t)hit),
+        py_make_str(sep->str.chars, sep->str.len),
+        py_make_str(o->str.chars + hit + sep->str.len,
+                    o->str.len - hit - sep->str.len),
+    };
+    return py_make_tuple(items, 3);
+}
+
+static VALUE
+sm_rsplit(CTX *c, int argc, VALUE *argv)
+{
+    struct pyobj *o = PY_PTR(argv[0]);
+    int maxsplit = (argc >= 3) ? (int)py_int_to_long(c, argv[2]) : -1;
+    VALUE r = py_make_list(NULL, 0);
+    if (argc < 2 || argv[1] == PY_NONE) {
+        // Whitespace split, from right.
+        ssize_t i = (ssize_t)o->str.len;
+        int splits = 0;
+        VALUE pieces[256];
+        int np = 0;
+        while (i > 0) {
+            if (maxsplit >= 0 && splits >= maxsplit) break;
+            // skip trailing whitespace
+            while (i > 0 && (o->str.chars[i-1] == ' ' || o->str.chars[i-1] == '\t' ||
+                             o->str.chars[i-1] == '\n' || o->str.chars[i-1] == '\r'))
+                i--;
+            if (i == 0) break;
+            ssize_t end = i;
+            while (i > 0 && !(o->str.chars[i-1] == ' ' || o->str.chars[i-1] == '\t' ||
+                              o->str.chars[i-1] == '\n' || o->str.chars[i-1] == '\r'))
+                i--;
+            if (np >= 256) py_raise_exc(c, c->EXC_RuntimeError, "rsplit too many parts");
+            pieces[np++] = py_make_str(o->str.chars + i, (size_t)(end - i));
+            splits++;
+        }
+        if (i > 0 && maxsplit >= 0 && splits >= maxsplit) {
+            // remainder
+            // strip trailing ws from index i? Actually keep it.
+            pieces[np++] = py_make_str(o->str.chars, (size_t)i);
+        }
+        // pieces are right-to-left; reverse.
+        for (int k = np - 1; k >= 0; k--) py_list_append(c, r, pieces[k]);
+        return r;
+    }
+    if (!py_is_str(argv[1])) py_raise_exc(c, c->EXC_TypeError, "rsplit sep must be str");
+    struct pyobj *sep = PY_PTR(argv[1]);
+    if (sep->str.len == 0) py_raise_exc(c, c->EXC_ValueError, "empty separator");
+    VALUE pieces[256]; int np = 0;
+    ssize_t i = (ssize_t)o->str.len;
+    int splits = 0;
+    while (i >= (ssize_t)sep->str.len) {
+        if (maxsplit >= 0 && splits >= maxsplit) break;
+        ssize_t hit = -1;
+        for (ssize_t j = i - (ssize_t)sep->str.len; j >= 0; j--) {
+            if (memcmp(o->str.chars + j, sep->str.chars, sep->str.len) == 0) {
+                hit = j; break;
+            }
+        }
+        if (hit < 0) break;
+        if (np >= 256) py_raise_exc(c, c->EXC_RuntimeError, "rsplit too many");
+        pieces[np++] = py_make_str(o->str.chars + hit + sep->str.len,
+                                    (size_t)(i - hit - sep->str.len));
+        i = hit;
+        splits++;
+    }
+    if (np >= 256) py_raise_exc(c, c->EXC_RuntimeError, "rsplit too many");
+    pieces[np++] = py_make_str(o->str.chars, (size_t)i);
+    for (int k = np - 1; k >= 0; k--) py_list_append(c, r, pieces[k]);
+    return r;
+}
+
+static VALUE
+sm_format_map(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    // Reuse sm_format by injecting a dict's items as kwargs is hard;
+    // simpler: implement directly using subscript on the mapping.
+    extern VALUE bi_format(CTX *c, int argc, VALUE *argv);
+    struct pyobj *o = PY_PTR(argv[0]);
+    VALUE map_v = argv[1];
+    const char *src = o->str.chars;
+    size_t srclen = o->str.len;
+    int auto_idx = 0;
+    size_t out_capa = srclen + 16;
+    char *out = (char *)GC_malloc_atomic(out_capa);
+    size_t out_len = 0;
+    for (size_t i = 0; i < srclen; i++) {
+        char ch = src[i];
+        if (ch == '{') {
+            if (i + 1 < srclen && src[i+1] == '{') {
+                if (out_len + 1 > out_capa) { out_capa *= 2; char *no = GC_malloc_atomic(out_capa); memcpy(no, out, out_len); out = no; }
+                out[out_len++] = '{'; i++; continue;
+            }
+            size_t j = i + 1;
+            int depth = 1;
+            while (j < srclen && depth > 0) {
+                if (src[j] == '{') depth++;
+                else if (src[j] == '}') depth--;
+                if (depth > 0) j++;
+            }
+            if (j >= srclen) py_raise_exc(c, c->EXC_ValueError, "unterminated '{'");
+            const char *body = src + i + 1;
+            size_t bn = j - i - 1;
+            size_t k = 0;
+            VALUE val;
+            if (bn == 0 || body[0] == ':' || body[0] == '!') {
+                // auto: use auto_idx
+                py_raise_exc(c, c->EXC_KeyError, "format_map: positional fields not supported");
+                (void)auto_idx;
+            }
+            if (body[0] >= '0' && body[0] <= '9') {
+                py_raise_exc(c, c->EXC_KeyError, "format_map: positional fields not supported");
+            }
+            // Named field: lookup in map_v.
+            size_t nm_start = 0;
+            while (k < bn && body[k] != ':' && body[k] != '!') k++;
+            VALUE key = py_make_str(body + nm_start, k);
+            val = py_dict_get(c, map_v, key);
+            // Optional !conv.
+            if (k < bn && body[k] == '!') {
+                k++;
+                if (k >= bn) py_raise_exc(c, c->EXC_ValueError, "expected conversion");
+                char conv = body[k++];
+                if (conv == 'r' || conv == 'a') val = py_to_repr(c, val);
+                else if (conv == 's')           val = py_to_str(c, val);
+            }
+            VALUE spec_val = py_make_str("", 0);
+            if (k < bn && body[k] == ':') {
+                k++; spec_val = py_make_str(body + k, bn - k);
+            }
+            VALUE av[2] = { val, spec_val };
+            VALUE rendered = bi_format(c, 2, av);
+            if (!py_is_str(rendered)) rendered = py_to_str(c, rendered);
+            size_t rl = PY_PTR(rendered)->str.len;
+            while (out_len + rl > out_capa) { out_capa *= 2; char *no = GC_malloc_atomic(out_capa); memcpy(no, out, out_len); out = no; }
+            memcpy(out + out_len, PY_PTR(rendered)->str.chars, rl);
+            out_len += rl;
+            i = j;
+        } else if (ch == '}') {
+            if (i + 1 < srclen && src[i+1] == '}') {
+                if (out_len + 1 > out_capa) { out_capa *= 2; char *no = GC_malloc_atomic(out_capa); memcpy(no, out, out_len); out = no; }
+                out[out_len++] = '}'; i++; continue;
+            }
+            py_raise_exc(c, c->EXC_ValueError, "single '}' in format");
+        } else {
+            if (out_len + 1 > out_capa) { out_capa *= 2; char *no = GC_malloc_atomic(out_capa); memcpy(no, out, out_len); out = no; }
+            out[out_len++] = ch;
+        }
+    }
+    return py_make_str(out, out_len);
+}
+
+// str.maketrans — classmethod-like (called via str.maketrans(...)).
+// Forms: maketrans(dict) or maketrans(from, to[, drop]).
+static VALUE
+bi_str_maketrans(CTX *c, int argc, VALUE *argv)
+{
+    VALUE r = py_make_dict();
+    if (argc == 1 && py_is_dict(argv[0])) {
+        struct pydict *d = PY_PTR(argv[0])->dict;
+        for (size_t i = 0; i < d->elen; i++) {
+            if (!pydict_entry_live(d, i)) continue;
+            VALUE k = d->entries[i].key;
+            VALUE v = d->entries[i].value;
+            if (py_is_str(k) && PY_PTR(k)->str.len == 1) {
+                VALUE intk = PY_FIX((unsigned char)PY_PTR(k)->str.chars[0]);
+                py_dict_set(c, r, intk, v);
+            } else if (PY_IS_FIXNUM(k)) {
+                py_dict_set(c, r, k, v);
+            }
+        }
+        return r;
+    }
+    if (argc >= 2 && py_is_str(argv[0]) && py_is_str(argv[1])) {
+        struct pyobj *a = PY_PTR(argv[0]);
+        struct pyobj *b = PY_PTR(argv[1]);
+        if (a->str.len != b->str.len)
+            py_raise_exc(c, c->EXC_ValueError, "maketrans: from and to differ in length");
+        for (size_t i = 0; i < a->str.len; i++) {
+            VALUE k = PY_FIX((unsigned char)a->str.chars[i]);
+            VALUE v = PY_FIX((unsigned char)b->str.chars[i]);
+            py_dict_set(c, r, k, v);
+        }
+        if (argc >= 3 && py_is_str(argv[2])) {
+            struct pyobj *d = PY_PTR(argv[2]);
+            for (size_t i = 0; i < d->str.len; i++) {
+                VALUE k = PY_FIX((unsigned char)d->str.chars[i]);
+                py_dict_set(c, r, k, PY_NONE);
+            }
+        }
+        return r;
+    }
+    py_raise_exc(c, c->EXC_TypeError, "maketrans: bad args");
+}
+
+static VALUE
+sm_translate(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    struct pyobj *o = PY_PTR(argv[0]);
+    if (!py_is_dict(argv[1])) py_raise_exc(c, c->EXC_TypeError, "translate: dict required");
+    char *buf = (char *)GC_malloc_atomic(o->str.len + 1);
+    size_t len = 0;
+    for (size_t i = 0; i < o->str.len; i++) {
+        unsigned char ch = (unsigned char)o->str.chars[i];
+        VALUE k = PY_FIX(ch);
+        VALUE v = py_dict_has(c, argv[1], k) ? py_dict_get(c, argv[1], k) : k;
+        if (v == PY_NONE) continue;
+        if (PY_IS_FIXNUM(v)) {
+            int64_t cv = PY_FIXVAL(v);
+            if (cv < 0 || cv > 255) py_raise_exc(c, c->EXC_ValueError, "translate: out of range");
+            buf[len++] = (char)cv;
+        } else if (py_is_str(v)) {
+            struct pyobj *sv = PY_PTR(v);
+            if (len + sv->str.len + 1 > o->str.len + 1) {
+                buf = (char *)GC_realloc(buf, len + sv->str.len + 16);
+            }
+            memcpy(buf + len, sv->str.chars, sv->str.len);
+            len += sv->str.len;
+        }
+    }
+    return py_make_str(buf, len);
+}
+
+static VALUE
+sm_expandtabs(CTX *c, int argc, VALUE *argv)
+{
+    struct pyobj *o = PY_PTR(argv[0]);
+    int w = (argc >= 2) ? (int)py_int_to_long(c, argv[1]) : 8;
+    size_t cap = o->str.len * 2 + 16, len = 0;
+    char *buf = (char *)GC_malloc_atomic(cap);
+    int col = 0;
+    for (size_t i = 0; i < o->str.len; i++) {
+        char ch = o->str.chars[i];
+        if (ch == '\t') {
+            int n = w - (col % w);
+            if (len + n + 1 > cap) { cap = (len + n + 1) * 2; char *nb = (char *)GC_malloc_atomic(cap); memcpy(nb, buf, len); buf = nb; }
+            for (int k = 0; k < n; k++) buf[len++] = ' ';
+            col += n;
+        } else {
+            if (len + 1 > cap) { cap *= 2; char *nb = (char *)GC_malloc_atomic(cap); memcpy(nb, buf, len); buf = nb; }
+            buf[len++] = ch;
+            if (ch == '\n') col = 0; else col++;
+        }
+    }
+    return py_make_str(buf, len);
+}
+
 static struct type_method str_methods[] = {
-    { "split",      sm_split,      1, 2 },
-    { "join",       sm_join,       2, 2 },
-    { "upper",      sm_upper,      1, 1 },
-    { "lower",      sm_lower,      1, 1 },
-    { "strip",      sm_strip,      1, 1 },
-    { "startswith", sm_startswith, 2, 2 },
-    { "endswith",   sm_endswith,   2, 2 },
-    { "find",       sm_find,       2, 2 },
-    { "replace",    sm_replace,    3, 3 },
-    { "count",      sm_count,      2, 2 },
+    { "split",         sm_split,         1, 3 },
+    { "join",          sm_join,          2, 2 },
+    { "upper",         sm_upper,         1, 1 },
+    { "lower",         sm_lower,         1, 1 },
+    { "strip",         sm_strip,         1, 2 },
+    { "lstrip",        sm_lstrip,        1, 2 },
+    { "rstrip",        sm_rstrip,        1, 2 },
+    { "startswith",    sm_startswith,    2, 2 },
+    { "endswith",      sm_endswith,      2, 2 },
+    { "find",          sm_find,          2, 4 },
+    { "replace",       sm_replace,       3, 4 },
+    { "count",         sm_count,         2, 2 },
+    { "encode",        sm_encode,        1, 2 },
+    { "format",        sm_format,        1, -1 },
+    { "zfill",         sm_zfill,         2, 2 },
+    { "center",        sm_center,        2, 3 },
+    { "ljust",         sm_ljust,         2, 3 },
+    { "rjust",         sm_rjust,         2, 3 },
+    { "title",         sm_title,         1, 1 },
+    { "capitalize",    sm_capitalize,    1, 1 },
+    { "swapcase",      sm_swapcase,      1, 1 },
+    { "casefold",      sm_casefold,      1, 1 },
+    { "rfind",         sm_rfind,         2, 2 },
+    { "rindex",        sm_rindex,        2, 2 },
+    { "index",         sm_index,         2, 2 },
+    { "isnumeric",     sm_isnumeric,     1, 1 },
+    { "isdecimal",     sm_isnumeric,     1, 1 },
+    { "isascii",       sm_isascii,       1, 1 },
+    { "isidentifier",  sm_isidentifier,  1, 1 },
+    { "isprintable",   sm_isprintable,   1, 1 },
+    { "istitle",       sm_istitle,       1, 1 },
+    { "splitlines",    sm_splitlines,    1, 1 },
+    { "removeprefix",  sm_removeprefix,  2, 2 },
+    { "removesuffix",  sm_removesuffix,  2, 2 },
+    { "isdigit",       sm_isdigit,       1, 1 },
+    { "isalpha",       sm_isalpha,       1, 1 },
+    { "isspace",       sm_isspace,       1, 1 },
+    { "isupper",       sm_isupper,       1, 1 },
+    { "islower",       sm_islower,       1, 1 },
+    { "isalnum",       sm_isalnum,       1, 1 },
+    { "partition",     sm_partition,     2, 2 },
+    { "rpartition",    sm_rpartition,    2, 2 },
+    { "rsplit",        sm_rsplit,        1, 3 },
+    { "format_map",    sm_format_map,    2, 2 },
+    { "translate",     sm_translate,     2, 2 },
+    { "expandtabs",    sm_expandtabs,    1, 2 },
     { NULL, NULL, 0, 0 }
 };
 
@@ -3047,11 +5222,27 @@ lm_insert(CTX *c, int argc, VALUE *argv)
 static VALUE
 lm_index(CTX *c, int argc, VALUE *argv)
 {
+    struct pyobj *o = PY_PTR(argv[0]);
+    int64_t start = (argc >= 3) ? py_int_to_long(c, argv[2]) : 0;
+    int64_t stop  = (argc >= 4) ? py_int_to_long(c, argv[3]) : (int64_t)o->list.len;
+    if (start < 0) start += (int64_t)o->list.len;
+    if (start < 0) start = 0;
+    if (stop < 0) stop += (int64_t)o->list.len;
+    if (stop > (int64_t)o->list.len) stop = (int64_t)o->list.len;
+    for (int64_t i = start; i < stop; i++)
+        if (py_eq_bool(c, o->list.items[i], argv[1])) return PY_FIX(i);
+    py_raise_exc(c, c->EXC_ValueError, "value not in list");
+}
+
+static VALUE
+lm_count(CTX *c, int argc, VALUE *argv)
+{
     (void)argc;
     struct pyobj *o = PY_PTR(argv[0]);
+    int64_t n = 0;
     for (size_t i = 0; i < o->list.len; i++)
-        if (py_eq_bool(c, o->list.items[i], argv[1])) return PY_FIX((int64_t)i);
-    py_raise_exc(c, c->EXC_ValueError, "value not in list");
+        if (py_eq_bool(c, o->list.items[i], argv[1])) n++;
+    return PY_FIX(n);
 }
 
 static VALUE
@@ -3072,15 +5263,67 @@ lm_sort(CTX *c, int argc, VALUE *argv)
 {
     (void)argc;
     struct pyobj *o = PY_PTR(argv[0]);
-    // Insertion sort (good enough for non-bench code).
-    for (size_t i = 1; i < o->list.len; i++) {
-        VALUE x = o->list.items[i];
-        size_t j = i;
-        while (j > 0 && py_cmp(c, o->list.items[j - 1], x) > 0) {
-            o->list.items[j] = o->list.items[j - 1]; j--;
+    VALUE key_fn = pystro_bi_kwarg("key");
+    VALUE rev_v  = pystro_bi_kwarg("reverse");
+    bool reverse = (rev_v == PY_TRUE);
+    // Pre-compute sort keys when key_fn is set (Schwartzian transform).
+    VALUE *keys = NULL;
+    if (key_fn) {
+        keys = (VALUE *)GC_malloc(sizeof(VALUE) * (o->list.len ? o->list.len : 1));
+        for (size_t i = 0; i < o->list.len; i++) {
+            keys[i] = py_apply(c, key_fn, 1, &o->list.items[i]);
+            if (c->state != PY_STATE_NORMAL) return PY_NONE;
         }
-        o->list.items[j] = x;
     }
+    // Insertion sort over items[] using keys[] for comparison.
+    for (size_t i = 1; i < o->list.len; i++) {
+        VALUE xv = o->list.items[i];
+        VALUE xk = keys ? keys[i] : xv;
+        size_t j = i;
+        while (j > 0) {
+            VALUE prev_k = keys ? keys[j - 1] : o->list.items[j - 1];
+            int cmp = py_cmp(c, prev_k, xk);
+            if (reverse ? (cmp >= 0) : (cmp <= 0)) break;
+            o->list.items[j] = o->list.items[j - 1];
+            if (keys) keys[j] = keys[j - 1];
+            j--;
+        }
+        o->list.items[j] = xv;
+        if (keys) keys[j] = xk;
+    }
+    return PY_NONE;
+}
+
+// list.remove(x) — remove first occurrence of x.
+static VALUE
+lm_remove(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    struct pyobj *o = PY_PTR(argv[0]);
+    for (size_t i = 0; i < o->list.len; i++) {
+        if (py_eq_bool(c, o->list.items[i], argv[1])) {
+            for (size_t j = i; j + 1 < o->list.len; j++)
+                o->list.items[j] = o->list.items[j+1];
+            o->list.len--;
+            return PY_NONE;
+        }
+    }
+    py_raise_exc(c, c->EXC_ValueError, "list.remove(x): not in list");
+}
+
+// list.copy() / list.clear().
+static VALUE
+lm_copy(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    struct pyobj *o = PY_PTR(argv[0]);
+    return py_make_list(o->list.items, o->list.len);
+}
+static VALUE
+lm_clear(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    PY_PTR(argv[0])->list.len = 0;
     return PY_NONE;
 }
 
@@ -3089,9 +5332,13 @@ static struct type_method list_methods[] = {
     { "pop",     lm_pop,     1, 2 },
     { "extend",  lm_extend,  2, 2 },
     { "insert",  lm_insert,  3, 3 },
-    { "index",   lm_index,   2, 2 },
+    { "index",   lm_index,   2, 4 },
+    { "count",   lm_count,   2, 2 },
     { "reverse", lm_reverse, 1, 1 },
     { "sort",    lm_sort,    1, 1 },
+    { "remove",  lm_remove,  2, 2 },
+    { "copy",    lm_copy,    1, 1 },
+    { "clear",   lm_clear,   1, 1 },
     { NULL, NULL, 0, 0 }
 };
 
@@ -3110,8 +5357,10 @@ dm_keys(CTX *c, int argc, VALUE *argv)
     (void)c; (void)argc;
     struct pydict *d = PY_PTR(argv[0])->dict;
     VALUE r = py_make_list(NULL, 0);
-    for (size_t i = 0; i < d->capa; i++)
-        if (d->entries[i].state == 1) py_list_append(c, r, d->entries[i].key);
+    for (size_t i = 0; i < d->elen; i++) {
+        if (!pydict_entry_live(d, i)) continue;
+        py_list_append(c, r, d->entries[i].key);
+    }
     return r;
 }
 
@@ -3121,8 +5370,10 @@ dm_values(CTX *c, int argc, VALUE *argv)
     (void)c; (void)argc;
     struct pydict *d = PY_PTR(argv[0])->dict;
     VALUE r = py_make_list(NULL, 0);
-    for (size_t i = 0; i < d->capa; i++)
-        if (d->entries[i].state == 1) py_list_append(c, r, d->entries[i].value);
+    for (size_t i = 0; i < d->elen; i++) {
+        if (!pydict_entry_live(d, i)) continue;
+        py_list_append(c, r, d->entries[i].value);
+    }
     return r;
 }
 
@@ -3132,11 +5383,11 @@ dm_items(CTX *c, int argc, VALUE *argv)
     (void)c; (void)argc;
     struct pydict *d = PY_PTR(argv[0])->dict;
     VALUE r = py_make_list(NULL, 0);
-    for (size_t i = 0; i < d->capa; i++)
-        if (d->entries[i].state == 1) {
-            VALUE pair[2] = { d->entries[i].key, d->entries[i].value };
-            py_list_append(c, r, py_make_tuple(pair, 2));
-        }
+    for (size_t i = 0; i < d->elen; i++) {
+        if (!pydict_entry_live(d, i)) continue;
+        VALUE pair[2] = { d->entries[i].key, d->entries[i].value };
+        py_list_append(c, r, py_make_tuple(pair, 2));
+    }
     return r;
 }
 
@@ -3153,12 +5404,95 @@ dm_pop(CTX *c, int argc, VALUE *argv)
     py_raise_exc(c, c->EXC_KeyError, "pop: key not found");
 }
 
+static VALUE
+dm_update(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    VALUE dst = argv[0];
+    VALUE src = argv[1];
+    if (py_is_dict(src)) {
+        struct pydict *sd = PY_PTR(src)->dict;
+        for (size_t i = 0; i < sd->elen; i++)
+            if (pydict_entry_live(sd, i))
+                py_dict_set(c, dst, sd->entries[i].key, sd->entries[i].value);
+    } else {
+        // Iterable of (key, value) pairs.
+        struct py_iter it; py_iter_init(c, &it, src);
+        if (c->state != PY_STATE_NORMAL) return PY_NONE;
+        VALUE pair;
+        while (py_iter_next(c, &it, &pair)) {
+            if (!py_is_tuple(pair) && !py_is_list(pair)) py_raise_exc(c, c->EXC_TypeError, "update: pair");
+            if (PY_PTR(pair)->list.len != 2) py_raise_exc(c, c->EXC_ValueError, "update: pair size");
+            py_dict_set(c, dst, PY_PTR(pair)->list.items[0], PY_PTR(pair)->list.items[1]);
+        }
+    }
+    return PY_NONE;
+}
+
+static VALUE
+dm_setdefault(CTX *c, int argc, VALUE *argv)
+{
+    VALUE d = argv[0], k = argv[1];
+    VALUE dflt = (argc >= 3) ? argv[2] : PY_NONE;
+    if (py_dict_has(c, d, k)) return py_dict_get(c, d, k);
+    py_dict_set(c, d, k, dflt);
+    return dflt;
+}
+
+static VALUE
+dm_popitem(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    struct pydict *d = PY_PTR(argv[0])->dict;
+    if (d->used == 0) py_raise_exc(c, c->EXC_KeyError, "popitem: empty dict");
+    // Find the LAST live entry (Python 3.7+ semantic: LIFO).
+    for (size_t i = d->elen; i > 0; ) {
+        i--;
+        if (pydict_entry_live(d, i)) {
+            VALUE pair[2] = { d->entries[i].key, d->entries[i].value };
+            py_dict_remove(c, argv[0], pair[0]);
+            return py_make_tuple(pair, 2);
+        }
+    }
+    py_raise_exc(c, c->EXC_KeyError, "popitem: empty");
+}
+
+static VALUE
+dm_clear(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    struct pydict *d = PY_PTR(argv[0])->dict;
+    // Re-init the dict.
+    d->elen = 0;
+    d->used = 0;
+    d->fill = 0;
+    for (size_t i = 0; i < d->icapa; i++) d->indices[i] = DICT_EMPTY_IDX;
+    return PY_NONE;
+}
+
+static VALUE
+dm_copy(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    struct pydict *d = PY_PTR(argv[0])->dict;
+    VALUE r = py_make_dict();
+    for (size_t i = 0; i < d->elen; i++)
+        if (pydict_entry_live(d, i))
+            py_dict_set(c, r, d->entries[i].key, d->entries[i].value);
+    return r;
+}
+
 static struct type_method dict_methods[] = {
-    { "get",    dm_get,    2, 3 },
-    { "keys",   dm_keys,   1, 1 },
-    { "values", dm_values, 1, 1 },
-    { "items",  dm_items,  1, 1 },
-    { "pop",    dm_pop,    2, 3 },
+    { "get",        dm_get,        2, 3 },
+    { "keys",       dm_keys,       1, 1 },
+    { "values",     dm_values,     1, 1 },
+    { "items",      dm_items,      1, 1 },
+    { "pop",        dm_pop,        2, 3 },
+    { "update",     dm_update,     2, 2 },
+    { "setdefault", dm_setdefault, 2, 3 },
+    { "popitem",    dm_popitem,    1, 1 },
+    { "clear",      dm_clear,      1, 1 },
+    { "copy",       dm_copy,       1, 1 },
     { NULL, NULL, 0, 0 }
 };
 
@@ -3177,12 +5511,12 @@ sm_remove(CTX *c, int argc, VALUE *argv) {
 static VALUE
 sm_set_pop(CTX *c, int argc, VALUE *argv) {
     (void)argc;
-    struct pydict *d = PY_PTR(argv[0])->dict;
-    for (size_t i = 0; i < d->capa; i++) {
-        if (d->entries[i].state == 1) {
+    VALUE sv = argv[0];
+    struct pydict *d = PY_PTR(sv)->dict;
+    for (size_t i = 0; i < d->elen; i++) {
+        if (pydict_entry_live(d, i)) {
             VALUE k = d->entries[i].key;
-            d->entries[i].state = 2;
-            d->used--;
+            py_dict_remove(c, sv, k);
             return k;
         }
     }
@@ -3193,12 +5527,12 @@ sm_union(CTX *c, int argc, VALUE *argv) {
     (void)argc;
     VALUE r = py_make_set();
     struct pydict *a = PY_PTR(argv[0])->dict;
-    for (size_t i = 0; i < a->capa; i++)
-        if (a->entries[i].state == 1) py_dict_set(c, r, a->entries[i].key, PY_NONE);
+    for (size_t i = 0; i < a->elen; i++)
+        if (pydict_entry_live(a, i)) py_dict_set(c, r, a->entries[i].key, PY_NONE);
     if (py_is_set(argv[1])) {
         struct pydict *b = PY_PTR(argv[1])->dict;
-        for (size_t i = 0; i < b->capa; i++)
-            if (b->entries[i].state == 1) py_dict_set(c, r, b->entries[i].key, PY_NONE);
+        for (size_t i = 0; i < b->elen; i++)
+            if (pydict_entry_live(b, i)) py_dict_set(c, r, b->entries[i].key, PY_NONE);
     } else {
         struct py_iter it; py_iter_init(c, &it, argv[1]);
         VALUE x;
@@ -3211,8 +5545,8 @@ sm_intersection(CTX *c, int argc, VALUE *argv) {
     (void)argc;
     VALUE r = py_make_set();
     struct pydict *a = PY_PTR(argv[0])->dict;
-    for (size_t i = 0; i < a->capa; i++) {
-        if (a->entries[i].state == 1 && py_contains(c, argv[1], a->entries[i].key))
+    for (size_t i = 0; i < a->elen; i++) {
+        if (pydict_entry_live(a, i) && py_contains(c, argv[1], a->entries[i].key))
             py_dict_set(c, r, a->entries[i].key, PY_NONE);
     }
     return r;
@@ -3222,29 +5556,670 @@ sm_difference(CTX *c, int argc, VALUE *argv) {
     (void)argc;
     VALUE r = py_make_set();
     struct pydict *a = PY_PTR(argv[0])->dict;
-    for (size_t i = 0; i < a->capa; i++) {
-        if (a->entries[i].state == 1 && !py_contains(c, argv[1], a->entries[i].key))
+    for (size_t i = 0; i < a->elen; i++) {
+        if (pydict_entry_live(a, i) && !py_contains(c, argv[1], a->entries[i].key))
             py_dict_set(c, r, a->entries[i].key, PY_NONE);
     }
     return r;
 }
 
+static VALUE
+sm_symmetric_difference(CTX *c, int argc, VALUE *argv) {
+    (void)argc;
+    VALUE a = argv[0], b = argv[1];
+    VALUE r = py_make_set();
+    struct pydict *aa = PY_PTR(a)->dict;
+    for (size_t i = 0; i < aa->elen; i++)
+        if (pydict_entry_live(aa, i) && !py_contains(c, b, aa->entries[i].key))
+            py_dict_set(c, r, aa->entries[i].key, PY_NONE);
+    if (py_is_set(b)) {
+        struct pydict *bb = PY_PTR(b)->dict;
+        for (size_t i = 0; i < bb->elen; i++)
+            if (pydict_entry_live(bb, i) && !py_contains(c, a, bb->entries[i].key))
+                py_dict_set(c, r, bb->entries[i].key, PY_NONE);
+    } else {
+        struct py_iter it; py_iter_init(c, &it, b);
+        VALUE x;
+        while (py_iter_next(c, &it, &x))
+            if (!py_contains(c, a, x))
+                py_dict_set(c, r, x, PY_NONE);
+    }
+    return r;
+}
+static VALUE
+sm_issubset(CTX *c, int argc, VALUE *argv) {
+    (void)argc;
+    struct pydict *a = PY_PTR(argv[0])->dict;
+    for (size_t i = 0; i < a->elen; i++)
+        if (pydict_entry_live(a, i) && !py_contains(c, argv[1], a->entries[i].key))
+            return PY_FALSE;
+    return PY_TRUE;
+}
+static VALUE
+sm_issuperset(CTX *c, int argc, VALUE *argv) {
+    (void)argc;
+    struct py_iter it; py_iter_init(c, &it, argv[1]);
+    VALUE x;
+    while (py_iter_next(c, &it, &x))
+        if (!py_contains(c, argv[0], x)) return PY_FALSE;
+    return PY_TRUE;
+}
+static VALUE
+sm_isdisjoint(CTX *c, int argc, VALUE *argv) {
+    (void)argc;
+    struct py_iter it; py_iter_init(c, &it, argv[1]);
+    VALUE x;
+    while (py_iter_next(c, &it, &x))
+        if (py_contains(c, argv[0], x)) return PY_FALSE;
+    return PY_TRUE;
+}
+static VALUE
+sm_set_copy(CTX *c, int argc, VALUE *argv) {
+    (void)argc;
+    VALUE r = py_make_set();
+    struct pydict *src = PY_PTR(argv[0])->dict;
+    for (size_t i = 0; i < src->elen; i++)
+        if (pydict_entry_live(src, i))
+            py_dict_set(c, r, src->entries[i].key, PY_NONE);
+    return r;
+}
+static VALUE
+sm_set_clear(CTX *c, int argc, VALUE *argv) {
+    (void)c; (void)argc;
+    PY_PTR(argv[0])->dict = pydict_new();
+    return PY_NONE;
+}
+static VALUE
+sm_set_update(CTX *c, int argc, VALUE *argv) {
+    (void)argc;
+    VALUE a = argv[0], b = argv[1];
+    struct py_iter it; py_iter_init(c, &it, b);
+    VALUE x;
+    while (py_iter_next(c, &it, &x))
+        py_dict_set(c, a, x, PY_NONE);
+    return PY_NONE;
+}
+
 static struct type_method set_methods[] = {
-    { "add",          sm_add,          2, 2 },
-    { "discard",      sm_discard,      2, 2 },
-    { "remove",       sm_remove,       2, 2 },
-    { "pop",          sm_set_pop,      1, 1 },
-    { "union",        sm_union,        2, 2 },
-    { "intersection", sm_intersection, 2, 2 },
-    { "difference",   sm_difference,   2, 2 },
+    { "add",                  sm_add,                  2, 2 },
+    { "discard",              sm_discard,              2, 2 },
+    { "remove",               sm_remove,               2, 2 },
+    { "pop",                  sm_set_pop,              1, 1 },
+    { "clear",                sm_set_clear,            1, 1 },
+    { "copy",                 sm_set_copy,             1, 1 },
+    { "update",               sm_set_update,           2, 2 },
+    { "union",                sm_union,                2, 2 },
+    { "intersection",         sm_intersection,         2, 2 },
+    { "difference",           sm_difference,           2, 2 },
+    { "symmetric_difference", sm_symmetric_difference, 2, 2 },
+    { "issubset",             sm_issubset,             2, 2 },
+    { "issuperset",           sm_issuperset,           2, 2 },
+    { "isdisjoint",           sm_isdisjoint,           2, 2 },
     { NULL, NULL, 0, 0 }
 };
 
 // frozenset: read-only ops only.
 static struct type_method frozenset_methods[] = {
-    { "union",        sm_union,        2, 2 },
-    { "intersection", sm_intersection, 2, 2 },
-    { "difference",   sm_difference,   2, 2 },
+    { "copy",                 sm_set_copy,             1, 1 },
+    { "union",                sm_union,                2, 2 },
+    { "intersection",         sm_intersection,         2, 2 },
+    { "difference",           sm_difference,           2, 2 },
+    { "symmetric_difference", sm_symmetric_difference, 2, 2 },
+    { "issubset",             sm_issubset,             2, 2 },
+    { "issuperset",           sm_issuperset,           2, 2 },
+    { "isdisjoint",           sm_isdisjoint,           2, 2 },
+    { NULL, NULL, 0, 0 }
+};
+
+// bytes / bytearray methods.  Most mirror str methods but operate on
+// raw byte sequences and yield int (0-255) on per-element access.
+static VALUE
+bm_decode(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    // ASCII-equivalent passthrough — pystro doesn't distinguish UTF-8
+    // from raw bytes at the str level.  Encoding arg (if any) ignored.
+    struct pyobj *o = PY_PTR(argv[0]);
+    return py_make_str(o->str.chars, o->str.len);
+}
+
+static VALUE
+bm_encode(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    struct pyobj *o = PY_PTR(argv[0]);
+    return py_make_bytes(o->str.chars, o->str.len);
+}
+
+static VALUE
+bm_find(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    struct pyobj *s = PY_PTR(argv[0]);
+    struct pyobj *p = PY_PTR(argv[1]);
+    if (p->str.len == 0) return PY_FIX(0);
+    void *r = memmem(s->str.chars, s->str.len, p->str.chars, p->str.len);
+    return r ? PY_FIX((int64_t)((char *)r - s->str.chars)) : PY_FIX(-1);
+}
+
+static VALUE
+bm_startswith(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    struct pyobj *s = PY_PTR(argv[0]);
+    struct pyobj *p = PY_PTR(argv[1]);
+    if (p->str.len > s->str.len) return PY_FALSE;
+    return memcmp(s->str.chars, p->str.chars, p->str.len) == 0 ? PY_TRUE : PY_FALSE;
+}
+
+static VALUE
+bm_endswith(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    struct pyobj *s = PY_PTR(argv[0]);
+    struct pyobj *p = PY_PTR(argv[1]);
+    if (p->str.len > s->str.len) return PY_FALSE;
+    return memcmp(s->str.chars + s->str.len - p->str.len,
+                  p->str.chars, p->str.len) == 0 ? PY_TRUE : PY_FALSE;
+}
+
+static VALUE
+bm_split(CTX *c, int argc, VALUE *argv)
+{
+    struct pyobj *s = PY_PTR(argv[0]);
+    VALUE result = py_make_list(NULL, 0);
+    if (argc == 1) {
+        // split on whitespace runs
+        size_t i = 0;
+        while (i < s->str.len) {
+            unsigned char ch;
+            while (i < s->str.len && ((ch = (unsigned char)s->str.chars[i]),
+                   ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r')) i++;
+            if (i >= s->str.len) break;
+            size_t j = i;
+            while (j < s->str.len && ((ch = (unsigned char)s->str.chars[j]),
+                   !(ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r'))) j++;
+            py_list_append(c, result, py_make_bytes(s->str.chars + i, j - i));
+            i = j;
+        }
+        return result;
+    }
+    if (!py_is_byteseq(argv[1])) py_raise_exc(c, c->EXC_TypeError, "bytes.split sep must be bytes");
+    struct pyobj *sep = PY_PTR(argv[1]);
+    if (sep->str.len == 0) py_raise_exc(c, c->EXC_ValueError, "empty separator");
+    size_t i = 0;
+    while (i <= s->str.len) {
+        const char *p = i + sep->str.len <= s->str.len
+            ? memmem(s->str.chars + i, s->str.len - i, sep->str.chars, sep->str.len) : NULL;
+        if (!p) { py_list_append(c, result, py_make_bytes(s->str.chars + i, s->str.len - i)); break; }
+        py_list_append(c, result, py_make_bytes(s->str.chars + i, (size_t)(p - (s->str.chars + i))));
+        i = (size_t)(p - s->str.chars) + sep->str.len;
+    }
+    return result;
+}
+
+static VALUE
+bm_replace(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    struct pyobj *s = PY_PTR(argv[0]);
+    if (!py_is_byteseq(argv[1]) || !py_is_byteseq(argv[2]))
+        py_raise_exc(c, c->EXC_TypeError, "bytes.replace args must be bytes");
+    struct pyobj *o = PY_PTR(argv[1]);
+    struct pyobj *r = PY_PTR(argv[2]);
+    if (o->str.len == 0) return argv[0];
+    size_t cap = s->str.len + 16, len = 0;
+    char *buf = (char *)GC_malloc_atomic(cap + 1);
+    size_t i = 0;
+    while (i < s->str.len) {
+        if (i + o->str.len <= s->str.len &&
+            memcmp(s->str.chars + i, o->str.chars, o->str.len) == 0) {
+            if (len + r->str.len + 1 > cap) {
+                while (len + r->str.len + 1 > cap) cap *= 2;
+                buf = (char *)GC_realloc(buf, cap + 1);
+            }
+            memcpy(buf + len, r->str.chars, r->str.len);
+            len += r->str.len;
+            i += o->str.len;
+        } else {
+            if (len + 2 > cap) { cap *= 2; buf = (char *)GC_realloc(buf, cap + 1); }
+            buf[len++] = s->str.chars[i++];
+        }
+    }
+    buf[len] = '\0';
+    struct pyobj *out = py_alloc(PY_T_BYTES);
+    out->str.chars = buf; out->str.len = len;
+    return PY_OBJ_VAL(out);
+}
+
+static VALUE
+bm_hex(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    struct pyobj *s = PY_PTR(argv[0]);
+    char *buf = (char *)GC_malloc_atomic(s->str.len * 2 + 1);
+    static const char hexd[] = "0123456789abcdef";
+    for (size_t i = 0; i < s->str.len; i++) {
+        unsigned char ch = (unsigned char)s->str.chars[i];
+        buf[i*2] = hexd[ch >> 4];
+        buf[i*2+1] = hexd[ch & 0xf];
+    }
+    buf[s->str.len * 2] = '\0';
+    return py_make_str_take(buf, s->str.len * 2);
+}
+
+static VALUE
+bm_append(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    if (PY_PTR(argv[0])->type != PY_T_BYTEARRAY)
+        py_raise_exc(c, c->EXC_TypeError, "append on bytes (not bytearray)");
+    int64_t b = py_int_to_long(c, argv[1]);
+    if (b < 0 || b > 255) py_raise_exc(c, c->EXC_ValueError, "byte must be 0..255");
+    struct pyobj *o = PY_PTR(argv[0]);
+    size_t L = o->str.len;
+    char *nb = (char *)GC_malloc_atomic(L + 2);
+    if (L > 0) memcpy(nb, o->str.chars, L);
+    nb[L] = (char)b;
+    nb[L + 1] = '\0';
+    o->str.chars = nb;
+    o->str.len = L + 1;
+    return PY_NONE;
+}
+
+static VALUE
+bm_extend(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    if (PY_PTR(argv[0])->type != PY_T_BYTEARRAY)
+        py_raise_exc(c, c->EXC_TypeError, "extend on bytes (not bytearray)");
+    struct pyobj *o = PY_PTR(argv[0]);
+    if (py_is_byteseq(argv[1])) {
+        size_t add = PY_PTR(argv[1])->str.len;
+        size_t L = o->str.len;
+        char *nb = (char *)GC_malloc_atomic(L + add + 1);
+        if (L > 0) memcpy(nb, o->str.chars, L);
+        memcpy(nb + L, PY_PTR(argv[1])->str.chars, add);
+        nb[L + add] = '\0';
+        o->str.chars = nb;
+        o->str.len = L + add;
+        return PY_NONE;
+    }
+    // Iterable of ints.
+    struct py_iter it; py_iter_init(c, &it, argv[1]);
+    if (c->state != PY_STATE_NORMAL) return PY_NONE;
+    VALUE x;
+    while (py_iter_next(c, &it, &x)) {
+        VALUE av[2] = { argv[0], x };
+        bm_append(c, 2, av);
+    }
+    return PY_NONE;
+}
+
+// int methods.  Operate on fixnums and bignums.
+static VALUE
+im_bit_length(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    VALUE v = argv[0];
+    if (PY_IS_FIXNUM(v)) {
+        int64_t x = PY_FIXVAL(v);
+        if (x < 0) x = -x;
+        int n = 0;
+        while (x) { n++; x >>= 1; }
+        return PY_FIX(n);
+    }
+    if (v == PY_TRUE)  return PY_FIX(1);
+    if (v == PY_FALSE) return PY_FIX(0);
+    if (py_is_bignum(v)) {
+        mpz_t z; py_to_mpz(c, v, z);
+        size_t n = mpz_sizeinbase(z, 2);
+        // mpz_sizeinbase returns 1 for 0; CPython returns 0.
+        if (mpz_sgn(z) == 0) n = 0;
+        mpz_clear(z);
+        return PY_FIX((int64_t)n);
+    }
+    py_raise_exc(c, c->EXC_TypeError, "bit_length: int required");
+}
+
+static VALUE
+im_bit_count(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    VALUE v = argv[0];
+    if (PY_IS_FIXNUM(v)) {
+        uint64_t x = (uint64_t)(PY_FIXVAL(v) < 0 ? -PY_FIXVAL(v) : PY_FIXVAL(v));
+        return PY_FIX(__builtin_popcountll(x));
+    }
+    if (v == PY_TRUE)  return PY_FIX(1);
+    if (v == PY_FALSE) return PY_FIX(0);
+    if (py_is_bignum(v)) {
+        mpz_t z; py_to_mpz(c, v, z);
+        if (mpz_sgn(z) < 0) mpz_neg(z, z);
+        mp_bitcnt_t n = mpz_popcount(z);
+        mpz_clear(z);
+        return PY_FIX((int64_t)n);
+    }
+    py_raise_exc(c, c->EXC_TypeError, "bit_count: int required");
+}
+
+static VALUE
+im_to_bytes(CTX *c, int argc, VALUE *argv)
+{
+    // self.to_bytes(length, byteorder='big', signed=False)
+    VALUE self = argv[0];
+    int64_t length = py_int_to_long(c, argv[1]);
+    const char *order = "big";
+    if (argc >= 3) {
+        if (!py_is_str(argv[2])) py_raise_exc(c, c->EXC_TypeError, "byteorder must be str");
+        order = PY_PTR(argv[2])->str.chars;
+    }
+    bool is_signed = false;
+    VALUE sk = pystro_bi_kwarg("signed");
+    if (sk) is_signed = py_is_truthy(sk);
+    VALUE bk = pystro_bi_kwarg("byteorder");
+    if (bk && py_is_str(bk)) order = PY_PTR(bk)->str.chars;
+    bool big = strcmp(order, "big") == 0;
+    if (length < 0) py_raise_exc(c, c->EXC_ValueError, "length must be non-negative");
+    char *buf = (char *)GC_malloc_atomic(length + 1);
+    memset(buf, 0, length);
+    mpz_t z; py_to_mpz(c, self, z);
+    bool neg = mpz_sgn(z) < 0;
+    if (neg) {
+        if (!is_signed) {
+            mpz_clear(z);
+            py_raise_exc(c, c->EXC_OverflowError, "can't convert negative int to unsigned");
+        }
+        // Two's complement: add 2^(8*length).
+        mpz_t mod; mpz_init(mod);
+        mpz_ui_pow_ui(mod, 2, (unsigned long)(8 * length));
+        mpz_add(z, z, mod);
+        mpz_clear(mod);
+    }
+    // Check overflow.
+    {
+        mpz_t cap; mpz_init(cap);
+        mpz_ui_pow_ui(cap, 2, (unsigned long)(8 * length));
+        if (mpz_cmp(z, cap) >= 0) {
+            mpz_clear(cap); mpz_clear(z);
+            py_raise_exc(c, c->EXC_OverflowError, "int too big to convert");
+        }
+        mpz_clear(cap);
+    }
+    for (int64_t i = 0; i < length; i++) {
+        unsigned int b = (unsigned int)mpz_fdiv_ui(z, 256);
+        mpz_fdiv_q_ui(z, z, 256);
+        if (big) buf[length - 1 - i] = (char)b;
+        else     buf[i] = (char)b;
+    }
+    mpz_clear(z);
+    VALUE r = py_make_bytes(buf, (size_t)length);
+    return r;
+}
+
+static VALUE
+im_to_bytes_method(CTX *c, int argc, VALUE *argv) { return im_to_bytes(c, argc, argv); }
+
+static VALUE
+im_int_index(CTX *c, int argc, VALUE *argv) { (void)c; (void)argc; return argv[0]; }
+
+static VALUE
+im_real(CTX *c, int argc, VALUE *argv) { (void)c; (void)argc; return argv[0]; }
+
+static VALUE
+im_imag(CTX *c, int argc, VALUE *argv) { (void)c; (void)argc; return PY_FIX(0); }
+
+static VALUE
+im_numerator(CTX *c, int argc, VALUE *argv) { (void)c; (void)argc; return argv[0]; }
+
+static VALUE
+im_denominator(CTX *c, int argc, VALUE *argv) { (void)c; (void)argc; return PY_FIX(1); }
+
+static VALUE
+im_conjugate(CTX *c, int argc, VALUE *argv) { (void)c; (void)argc; return argv[0]; }
+
+static struct type_method int_methods[] = {
+    { "bit_length",  im_bit_length, 1, 1 },
+    { "bit_count",   im_bit_count,  1, 1 },
+    { "to_bytes",    im_to_bytes_method, 2, 3 },
+    { "__index__",   im_int_index,  1, 1 },
+    { "__int__",     im_int_index,  1, 1 },
+    { "real",        im_real,       1, 1 },
+    { "imag",        im_imag,       1, 1 },
+    { "numerator",   im_numerator,  1, 1 },
+    { "denominator", im_denominator,1, 1 },
+    { "conjugate",   im_conjugate,  1, 1 },
+    { NULL, NULL, 0, 0 }
+};
+
+// float methods
+static VALUE
+fm_is_integer(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    VALUE v = argv[0];
+    double d = PY_IS_FLONUM(v) ? py_flonum_to_double(v) : PY_PTR(v)->dbl;
+    if (d != d) return PY_FALSE;          // NaN
+    if (d == (double)(int64_t)d) return PY_TRUE;
+    return PY_FALSE;
+}
+
+static VALUE
+fm_hex(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    VALUE v = argv[0];
+    double d = PY_IS_FLONUM(v) ? py_flonum_to_double(v) : PY_PTR(v)->dbl;
+    char buf[64];
+    snprintf(buf, sizeof(buf), "%a", d);
+    // CPython uses "0x1.8p+0" form, glibc %a matches.
+    return py_make_str(buf, strlen(buf));
+}
+
+static VALUE
+fm_real_f(CTX *c, int argc, VALUE *argv) { (void)c; (void)argc; return argv[0]; }
+static VALUE
+fm_imag_f(CTX *c, int argc, VALUE *argv) { (void)c; (void)argc; return py_make_float(0.0); }
+static VALUE
+fm_conj_f(CTX *c, int argc, VALUE *argv) { (void)c; (void)argc; return argv[0]; }
+
+static struct type_method float_methods[] = {
+    { "is_integer", fm_is_integer, 1, 1 },
+    { "hex",        fm_hex,        1, 1 },
+    { "real",       fm_real_f,     1, 1 },
+    { "imag",       fm_imag_f,     1, 1 },
+    { "conjugate",  fm_conj_f,     1, 1 },
+    { NULL, NULL, 0, 0 }
+};
+
+// complex methods
+static VALUE
+cm_real(CTX *c, int argc, VALUE *argv) { (void)c; (void)argc; return py_make_float(PY_PTR(argv[0])->cpx.re); }
+static VALUE
+cm_imag(CTX *c, int argc, VALUE *argv) { (void)c; (void)argc; return py_make_float(PY_PTR(argv[0])->cpx.im); }
+static VALUE
+cm_conj(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    return py_make_complex(PY_PTR(argv[0])->cpx.re, -PY_PTR(argv[0])->cpx.im);
+}
+static struct type_method complex_methods[] = {
+    { "real",      cm_real, 1, 1 },
+    { "imag",      cm_imag, 1, 1 },
+    { "conjugate", cm_conj, 1, 1 },
+    { NULL, NULL, 0, 0 }
+};
+
+// tuple methods (read-only)
+static VALUE
+tm_index(CTX *c, int argc, VALUE *argv)
+{
+    struct pyobj *o = PY_PTR(argv[0]);
+    int64_t start = (argc >= 3) ? py_int_to_long(c, argv[2]) : 0;
+    int64_t stop  = (argc >= 4) ? py_int_to_long(c, argv[3]) : (int64_t)o->list.len;
+    if (start < 0) start += (int64_t)o->list.len;
+    if (start < 0) start = 0;
+    if (stop < 0) stop += (int64_t)o->list.len;
+    if (stop > (int64_t)o->list.len) stop = (int64_t)o->list.len;
+    for (int64_t i = start; i < stop; i++)
+        if (py_eq_bool(c, o->list.items[i], argv[1])) return PY_FIX(i);
+    py_raise_exc(c, c->EXC_ValueError, "value not in tuple");
+}
+static VALUE
+tm_count(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    struct pyobj *o = PY_PTR(argv[0]);
+    int64_t n = 0;
+    for (size_t i = 0; i < o->list.len; i++)
+        if (py_eq_bool(c, o->list.items[i], argv[1])) n++;
+    return PY_FIX(n);
+}
+static struct type_method tuple_methods[] = {
+    { "index", tm_index, 2, 4 },
+    { "count", tm_count, 2, 2 },
+    { NULL, NULL, 0, 0 }
+};
+
+// range methods + start/stop/step (also exposed via py_getattr below)
+static VALUE
+rm_index(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    int64_t target = py_int_to_long(c, argv[1]);
+    struct pyobj *o = PY_PTR(argv[0]);
+    int64_t start = o->range.start, stop = o->range.stop, step = o->range.step;
+    if (step > 0) {
+        if (target < start || target >= stop) py_raise_exc(c, c->EXC_ValueError, "not in range");
+        if ((target - start) % step != 0) py_raise_exc(c, c->EXC_ValueError, "not in range");
+        return PY_FIX((target - start) / step);
+    } else {
+        if (target > start || target <= stop) py_raise_exc(c, c->EXC_ValueError, "not in range");
+        if ((start - target) % (-step) != 0) py_raise_exc(c, c->EXC_ValueError, "not in range");
+        return PY_FIX((start - target) / step);
+    }
+}
+static VALUE
+rm_count(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    if (!py_int_or_bool(argv[1])) return PY_FIX(0);
+    int64_t target = py_int_to_long(c, argv[1]);
+    struct pyobj *o = PY_PTR(argv[0]);
+    int64_t start = o->range.start, stop = o->range.stop, step = o->range.step;
+    if (step > 0) {
+        if (target < start || target >= stop) return PY_FIX(0);
+        return ((target - start) % step == 0) ? PY_FIX(1) : PY_FIX(0);
+    } else {
+        if (target > start || target <= stop) return PY_FIX(0);
+        return ((start - target) % (-step) == 0) ? PY_FIX(1) : PY_FIX(0);
+    }
+}
+static struct type_method range_methods[] = {
+    { "index", rm_index, 2, 2 },
+    { "count", rm_count, 2, 2 },
+    { NULL, NULL, 0, 0 }
+};
+
+// Class-level: int.from_bytes(bytes, byteorder='big', signed=False)
+static VALUE
+bi_int_from_bytes(CTX *c, int argc, VALUE *argv)
+{
+    if (argc < 1 || !(py_is_bytes(argv[0]) || py_is_bytearray(argv[0])))
+        py_raise_exc(c, c->EXC_TypeError, "from_bytes: bytes-like required");
+    const char *order = "big";
+    if (argc >= 2 && py_is_str(argv[1])) order = PY_PTR(argv[1])->str.chars;
+    bool is_signed = false;
+    VALUE sk = pystro_bi_kwarg("signed");
+    if (sk) is_signed = py_is_truthy(sk);
+    VALUE bk = pystro_bi_kwarg("byteorder");
+    if (bk && py_is_str(bk)) order = PY_PTR(bk)->str.chars;
+    bool big = strcmp(order, "big") == 0;
+    struct pyobj *o = PY_PTR(argv[0]);
+    size_t n = o->str.len;
+    mpz_t z; mpz_init(z);
+    for (size_t i = 0; i < n; i++) {
+        size_t k = big ? i : (n - 1 - i);
+        unsigned char b = (unsigned char)o->str.chars[k];
+        mpz_mul_ui(z, z, 256);
+        mpz_add_ui(z, z, b);
+    }
+    if (is_signed && n > 0) {
+        unsigned char first = (unsigned char)o->str.chars[big ? 0 : n - 1];
+        if (first & 0x80) {
+            mpz_t cap; mpz_init(cap);
+            mpz_ui_pow_ui(cap, 2, (unsigned long)(8 * n));
+            mpz_sub(z, z, cap);
+            mpz_clear(cap);
+        }
+    }
+    VALUE r = py_normalise_int(z);
+    mpz_clear(z);
+    return r;
+}
+
+// bytes.fromhex(s)
+static VALUE
+bi_bytes_fromhex(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    if (!py_is_str(argv[0])) py_raise_exc(c, c->EXC_TypeError, "fromhex: str required");
+    const char *s = PY_PTR(argv[0])->str.chars;
+    size_t n = PY_PTR(argv[0])->str.len;
+    char *buf = (char *)GC_malloc_atomic(n / 2 + 1);
+    size_t out = 0;
+    int hi = -1;
+    for (size_t i = 0; i < n; i++) {
+        char ch = s[i];
+        if (ch == ' ' || ch == '\t' || ch == '\n') continue;
+        int d = (ch >= '0' && ch <= '9') ? ch - '0'
+              : (ch >= 'a' && ch <= 'f') ? ch - 'a' + 10
+              : (ch >= 'A' && ch <= 'F') ? ch - 'A' + 10 : -1;
+        if (d < 0) py_raise_exc(c, c->EXC_ValueError, "non-hex digit in fromhex");
+        if (hi < 0) hi = d;
+        else { buf[out++] = (char)((hi << 4) | d); hi = -1; }
+    }
+    if (hi >= 0) py_raise_exc(c, c->EXC_ValueError, "odd-length hex string");
+    return py_make_bytes(buf, out);
+}
+
+// float.fromhex(s)
+static VALUE
+bi_float_fromhex(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    if (!py_is_str(argv[0])) py_raise_exc(c, c->EXC_TypeError, "fromhex: str required");
+    char *end;
+    double d = strtod(PY_PTR(argv[0])->str.chars, &end);
+    return py_make_float(d);
+}
+
+// dict.fromkeys(iter, default=None)
+static VALUE
+bi_dict_fromkeys(CTX *c, int argc, VALUE *argv)
+{
+    VALUE def = argc >= 2 ? argv[1] : PY_NONE;
+    VALUE r = py_make_dict();
+    struct py_iter it; py_iter_init(c, &it, argv[0]);
+    if (c->state != PY_STATE_NORMAL) return PY_NONE;
+    VALUE k;
+    while (py_iter_next(c, &it, &k)) {
+        py_dict_set(c, r, k, def);
+    }
+    return r;
+}
+
+static struct type_method bytes_methods[] = {
+    { "decode",     bm_decode,     1, 2 },
+    { "encode",     bm_encode,     1, 2 },
+    { "find",       bm_find,       2, 2 },
+    { "startswith", bm_startswith, 2, 2 },
+    { "endswith",   bm_endswith,   2, 2 },
+    { "split",      bm_split,      1, 2 },
+    { "replace",    bm_replace,    3, 3 },
+    { "hex",        bm_hex,        1, 1 },
+    { "append",     bm_append,     2, 2 },
+    { "extend",     bm_extend,     2, 2 },
     { NULL, NULL, 0, 0 }
 };
 
@@ -3277,11 +6252,26 @@ static VALUE
 bi_print(CTX *c, int argc, VALUE *argv)
 {
     (void)c;
-    for (int i = 0; i < argc; i++) {
-        if (i) fputc(' ', stdout);
-        py_display(stdout, argv[i], false);
+    VALUE sep_v = pystro_bi_kwarg("sep");
+    VALUE end_v = pystro_bi_kwarg("end");
+    VALUE file_v = pystro_bi_kwarg("file");
+    const char *sep = " ";  size_t sep_len = 1;
+    const char *end = "\n"; size_t end_len = 1;
+    if (sep_v && py_is_str(sep_v)) {
+        sep = PY_PTR(sep_v)->str.chars;
+        sep_len = PY_PTR(sep_v)->str.len;
     }
-    fputc('\n', stdout);
+    if (end_v && py_is_str(end_v)) {
+        end = PY_PTR(end_v)->str.chars;
+        end_len = PY_PTR(end_v)->str.len;
+    }
+    FILE *fp = stdout;
+    if (file_v && py_is_file(file_v)) fp = (FILE *)PY_PTR(file_v)->file.fp;
+    for (int i = 0; i < argc; i++) {
+        if (i) fwrite(sep, 1, sep_len, fp);
+        py_display(fp, argv[i], false);
+    }
+    fwrite(end, 1, end_len, fp);
     return PY_NONE;
 }
 
@@ -3311,11 +6301,58 @@ bi_int(CTX *c, int argc, VALUE *argv)
         VALUE r = py_normalise_int(z); mpz_clear(z); return r;
     }
     if (py_is_str(v)) {
+        // String may be a slice-borrow (no NUL-terminator within bounds);
+        // copy into a stack buffer.
+        size_t L = PY_PTR(v)->str.len;
+        char small[64];
+        char *buf = (L < sizeof(small)) ? small : (char *)GC_malloc_atomic(L + 1);
+        memcpy(buf, PY_PTR(v)->str.chars, L);
+        buf[L] = '\0';
+        // strip leading/trailing whitespace.
+        char *p = buf;
+        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+        char *end_p = buf + strlen(buf);
+        while (end_p > p && (end_p[-1] == ' ' || end_p[-1] == '\t' || end_p[-1] == '\n' || end_p[-1] == '\r')) end_p--;
+        *end_p = '\0';
+        int base = 10;
+        VALUE bk = pystro_bi_kwarg("base");
+        if (argc >= 2) {
+            base = (int)py_int_to_long(c, argv[1]);
+            if (base != 0 && (base < 2 || base > 36))
+                py_raise_exc(c, c->EXC_ValueError, "int() base must be 2..36 or 0");
+        } else if (bk) {
+            base = (int)py_int_to_long(c, bk);
+            if (base != 0 && (base < 2 || base > 36))
+                py_raise_exc(c, c->EXC_ValueError, "int() base must be 2..36 or 0");
+        }
+        // Handle 0x / 0b / 0o prefix when base==0 or matches.
+        if (base == 0 || base == 16) {
+            if ((p[0] == '0') && (p[1] == 'x' || p[1] == 'X')) { p += 2; base = 16; }
+        }
+        if (base == 0 || base == 2) {
+            if ((p[0] == '0') && (p[1] == 'b' || p[1] == 'B')) { p += 2; base = 2; }
+        }
+        if (base == 0 || base == 8) {
+            if ((p[0] == '0') && (p[1] == 'o' || p[1] == 'O')) { p += 2; base = 8; }
+        }
+        if (base == 0) base = 10;
+        // Strip embedded underscores (Python allows them as digit
+        // grouping but only between digits; we accept any position).
+        char *q = p;
+        char *w = p;
+        while (*q) { if (*q != '_') *w++ = *q; q++; }
+        *w = '\0';
         mpz_t z; mpz_init(z);
-        if (mpz_set_str(z, PY_PTR(v)->str.chars, 10) != 0) {
+        if (mpz_set_str(z, p, base) != 0) {
             mpz_clear(z); py_raise_exc(c, c->EXC_ValueError, "invalid literal for int()");
         }
         VALUE r = py_normalise_int(z); mpz_clear(z); return r;
+    }
+    if (py_is_instance(v)) {
+        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(v)->inst.cls), "__int__");
+        if (m != PY_NONE) { VALUE av[1] = { v }; return py_apply(c, m, 1, av); }
+        m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(v)->inst.cls), "__index__");
+        if (m != PY_NONE) { VALUE av[1] = { v }; return py_apply(c, m, 1, av); }
     }
     py_raise_exc(c, c->EXC_TypeError, "int() argument type not supported");
 }
@@ -3331,20 +6368,73 @@ bi_float(CTX *c, int argc, VALUE *argv)
     if (v == PY_TRUE)    return py_make_float(1.0);
     if (v == PY_FALSE)   return py_make_float(0.0);
     if (py_is_str(v)) {
+        size_t L = PY_PTR(v)->str.len;
+        char small[64];
+        char *buf = (L < sizeof(small)) ? small : (char *)GC_malloc_atomic(L + 1);
+        memcpy(buf, PY_PTR(v)->str.chars, L);
+        buf[L] = '\0';
+        // strip underscores
+        char *q = buf, *w = buf;
+        while (*q) { if (*q != '_') *w++ = *q; q++; }
+        *w = '\0';
+        // Accept "inf", "Infinity", "nan" (case-insensitive).
         char *end;
-        double d = strtod(PY_PTR(v)->str.chars, &end);
-        if (end == PY_PTR(v)->str.chars) py_raise_exc(c, c->EXC_ValueError, "could not convert string to float");
+        double d = strtod(buf, &end);
+        if (end == buf) py_raise_exc(c, c->EXC_ValueError, "could not convert string to float");
         return py_make_float(d);
+    }
+    if (py_is_instance(v)) {
+        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(v)->inst.cls), "__float__");
+        if (m != PY_NONE) { VALUE av[1] = { v }; return py_apply(c, m, 1, av); }
     }
     py_raise_exc(c, c->EXC_TypeError, "float() argument type not supported");
 }
 
 static VALUE
+bi_complex(CTX *c, int argc, VALUE *argv)
+{
+    if (argc == 0) return py_make_complex(0, 0);
+    double re = 0, im = 0;
+    if (argc >= 1) {
+        if (py_is_complex(argv[0])) {
+            re = PY_PTR(argv[0])->cpx.re;
+            im = PY_PTR(argv[0])->cpx.im;
+        } else {
+            re = py_to_double(c, argv[0]);
+        }
+    }
+    if (argc >= 2) {
+        if (py_is_complex(argv[1])) {
+            im += PY_PTR(argv[1])->cpx.re;
+            re -= PY_PTR(argv[1])->cpx.im;
+        } else {
+            im += py_to_double(c, argv[1]);
+        }
+    }
+    return py_make_complex(re, im);
+}
+
+static VALUE
 bi_bool(CTX *c, int argc, VALUE *argv)
 {
-    (void)c;
     if (argc == 0) return PY_FALSE;
-    return py_is_truthy(argv[0]) ? PY_TRUE : PY_FALSE;
+    VALUE v = argv[0];
+    if (py_is_instance(v)) {
+        VALUE cls = PY_OBJ_VAL(PY_PTR(v)->inst.cls);
+        VALUE m = py_class_lookup_method(cls, "__bool__");
+        if (m != PY_NONE) {
+            VALUE av[1] = { v };
+            VALUE r = py_apply(c, m, 1, av);
+            return py_is_truthy(r) ? PY_TRUE : PY_FALSE;
+        }
+        VALUE lm = py_class_lookup_method(cls, "__len__");
+        if (lm != PY_NONE) {
+            VALUE av[1] = { v };
+            VALUE r = py_apply(c, lm, 1, av);
+            return py_int_to_long(c, r) != 0 ? PY_TRUE : PY_FALSE;
+        }
+    }
+    return py_is_truthy(v) ? PY_TRUE : PY_FALSE;
 }
 
 static VALUE
@@ -3367,6 +6457,18 @@ bi_abs(CTX *c, int argc, VALUE *argv)
     if (py_is_float(v)) {
         double d = PY_IS_FLONUM(v) ? py_flonum_to_double(v) : PY_PTR(v)->dbl;
         return py_make_float(fabs(d));
+    }
+    if (py_is_complex(v)) {
+        double re = PY_PTR(v)->cpx.re;
+        double im = PY_PTR(v)->cpx.im;
+        return py_make_float(sqrt(re*re + im*im));
+    }
+    if (py_is_instance(v)) {
+        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(v)->inst.cls), "__abs__");
+        if (m != PY_NONE) {
+            VALUE av[1] = { v };
+            return py_apply(c, m, 1, av);
+        }
     }
     py_raise_exc(c, c->EXC_TypeError, "bad operand type for abs()");
 }
@@ -3405,8 +6507,69 @@ bi_tuple(CTX *c, int argc, VALUE *argv)
 static VALUE
 bi_dict(CTX *c, int argc, VALUE *argv)
 {
-    (void)c; (void)argc; (void)argv;
-    return py_make_dict();
+    VALUE r = py_make_dict();
+    // dict(another_dict) — copy.
+    if (argc >= 1 && py_is_dict(argv[0])) {
+        struct pydict *src = PY_PTR(argv[0])->dict;
+        for (size_t i = 0; i < src->elen; i++)
+            if (pydict_entry_live(src, i))
+                py_dict_set(c, r, src->entries[i].key, src->entries[i].value);
+    }
+    // dict(mapping_like) — instance with `keys()` method.
+    else if (argc >= 1 && py_is_instance(argv[0])) {
+        VALUE keys_m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(argv[0])->inst.cls), "keys");
+        if (keys_m != PY_NONE) {
+            VALUE av0[1] = { argv[0] };
+            VALUE keys = py_apply(c, keys_m, 1, av0);
+            if (c->state != PY_STATE_NORMAL) return PY_NONE;
+            struct py_iter it; py_iter_init(c, &it, keys);
+            if (c->state != PY_STATE_NORMAL) return PY_NONE;
+            VALUE k;
+            while (py_iter_next(c, &it, &k)) {
+                VALUE v = py_list_get(c, argv[0], k);
+                if (c->state != PY_STATE_NORMAL) return PY_NONE;
+                py_dict_set(c, r, k, v);
+            }
+        } else {
+            // Treat as iterable of (k, v) pairs.
+            struct py_iter it; py_iter_init(c, &it, argv[0]);
+            if (c->state != PY_STATE_NORMAL) return PY_NONE;
+            VALUE x;
+            while (py_iter_next(c, &it, &x)) {
+                if (py_is_tuple(x) || py_is_list(x)) {
+                    if (PY_PTR(x)->list.len != 2)
+                        py_raise_exc(c, c->EXC_ValueError, "dict update: pair must be length 2");
+                    py_dict_set(c, r, PY_PTR(x)->list.items[0], PY_PTR(x)->list.items[1]);
+                } else {
+                    py_raise_exc(c, c->EXC_TypeError, "dict update: not a pair");
+                }
+            }
+        }
+    }
+    // dict([(k, v), ...]) — from iterable of pairs.
+    else if (argc >= 1) {
+        struct py_iter it; py_iter_init(c, &it, argv[0]);
+        if (c->state != PY_STATE_NORMAL) return PY_NONE;
+        VALUE x;
+        while (py_iter_next(c, &it, &x)) {
+            if (py_is_tuple(x) || py_is_list(x)) {
+                if (PY_PTR(x)->list.len != 2)
+                    py_raise_exc(c, c->EXC_ValueError, "dict update: pair must be length 2");
+                py_dict_set(c, r, PY_PTR(x)->list.items[0], PY_PTR(x)->list.items[1]);
+            } else {
+                py_raise_exc(c, c->EXC_TypeError, "dict update: not a pair");
+            }
+        }
+    }
+    // **kwargs from caller.
+    extern int    PYSTRO_BI_KWC;
+    extern const char **PYSTRO_BI_KWNAMES;
+    extern VALUE *PYSTRO_BI_KWVALUES;
+    for (int i = 0; i < PYSTRO_BI_KWC; i++) {
+        VALUE k = py_make_str(PYSTRO_BI_KWNAMES[i], strlen(PYSTRO_BI_KWNAMES[i]));
+        py_dict_set(c, r, k, PYSTRO_BI_KWVALUES[i]);
+    }
+    return r;
 }
 
 static VALUE
@@ -3472,31 +6635,554 @@ bi_frozenset(CTX *c, int argc, VALUE *argv)
     return r;
 }
 
+// Look up a builtin by name and return its VALUE (the same object the
+// user gets via the global name).  Used by `type()` to make
+// `type(5) is int` true.
+static VALUE
+type_lookup_builtin(CTX *c, const char *name)
+{
+    int i = py_global_index(c, name);
+    if (i >= 0 && c->globals->entries[i].defined)
+        return c->globals->entries[i].value;
+    return py_make_str(name, strlen(name));
+}
+
 static VALUE
 bi_type(CTX *c, int argc, VALUE *argv)
 {
-    (void)c; (void)argc;
+    // 3-arg form: type(name, bases, attrs) creates a new class.
+    if (argc == 3) {
+        if (!py_is_str(argv[0])) py_raise_exc(c, c->EXC_TypeError, "type(): name must be str");
+        const char *name = PY_PTR(argv[0])->str.chars;
+        // Bases tuple/list.
+        VALUE bases = argv[1];
+        VALUE first_base = PY_NONE;
+        int nbases = 0;
+        if (py_is_tuple(bases) || py_is_list(bases)) nbases = (int)PY_PTR(bases)->list.len;
+        if (nbases > 0) first_base = PY_PTR(bases)->list.items[0];
+        VALUE cls = py_make_class(name, first_base, false);
+        if (nbases > 1) {
+            VALUE *bv = (VALUE *)alloca(sizeof(VALUE) * nbases);
+            for (int i = 0; i < nbases; i++) bv[i] = PY_PTR(bases)->list.items[i];
+            extern void py_class_set_bases(VALUE cls, VALUE *bases, int n);
+            py_class_set_bases(cls, bv, nbases);
+        }
+        // Pour attrs into the class.
+        if (py_is_dict(argv[2])) {
+            struct pydict *d = PY_PTR(argv[2])->dict;
+            for (size_t i = 0; i < d->elen; i++) {
+                if (!pydict_entry_live(d, i)) continue;
+                VALUE k = d->entries[i].key;
+                if (!py_is_str(k)) continue;
+                extern const char *intern_name(const char *s, size_t len);
+                py_class_add_method(c, cls, intern_name(PY_PTR(k)->str.chars, PY_PTR(k)->str.len),
+                                    d->entries[i].value);
+            }
+        }
+        return cls;
+    }
     VALUE v = argv[0];
-    if (PY_IS_FIXNUM(v) || py_is_bignum(v)) return py_make_str("int", 3);
-    if (v == PY_NONE)  return py_make_str("NoneType", 8);
-    if (v == PY_TRUE || v == PY_FALSE) return py_make_str("bool", 4);
+    if (PY_IS_FIXNUM(v)) return c->TYPE_int;
+    if (PY_IS_FLONUM(v)) return c->TYPE_float;
+    if (v == PY_NONE)  return c->TYPE_NoneType;
+    if (v == PY_TRUE || v == PY_FALSE) return c->TYPE_bool;
+    if (py_is_bignum(v)) return c->TYPE_int;
     struct pyobj *o = PY_PTR(v);
     switch (o->type) {
-      case PY_T_FLOAT: return py_make_str("float", 5);
-      case PY_T_STR:   return py_make_str("str", 3);
-      case PY_T_BYTES: return py_make_str("bytes", 5);
-      case PY_T_BYTEARRAY: return py_make_str("bytearray", 9);
-      case PY_T_LIST:  return py_make_str("list", 4);
-      case PY_T_TUPLE: return py_make_str("tuple", 5);
-      case PY_T_DICT:  return py_make_str("dict", 4);
-      case PY_T_SET:   return py_make_str("set", 3);
-      case PY_T_FROZENSET: return py_make_str("frozenset", 9);
-      case PY_T_RANGE: return py_make_str("range", 5);
-      case PY_T_FUNC: case PY_T_BUILTIN: case PY_T_BOUND_METHOD: return py_make_str("function", 8);
-      case PY_T_CLASS: return py_make_str("type", 4);
-      case PY_T_INSTANCE: return py_make_str(o->inst.cls->cls.name, strlen(o->inst.cls->cls.name));
-      default: return py_make_str("object", 6);
+      case PY_T_FLOAT: return c->TYPE_float;
+      case PY_T_STR:   return c->TYPE_str;
+      case PY_T_BYTES: return c->TYPE_bytes;
+      case PY_T_BYTEARRAY: return c->TYPE_bytearray;
+      case PY_T_LIST:  return c->TYPE_list;
+      case PY_T_TUPLE: return c->TYPE_tuple;
+      case PY_T_DICT:  return c->TYPE_dict;
+      case PY_T_SET:   return c->TYPE_set;
+      case PY_T_FROZENSET: return c->TYPE_frozenset;
+      case PY_T_RANGE: return c->TYPE_range;
+      case PY_T_COMPLEX: return c->TYPE_complex;
+      case PY_T_FUNC: return c->TYPE_function;
+      case PY_T_BUILTIN: return c->TYPE_builtin_function_or_method;
+      case PY_T_BOUND_METHOD: return c->TYPE_method;
+      case PY_T_MODULE: return c->TYPE_module;
+      case PY_T_SLICE: return c->TYPE_slice;
+      case PY_T_ELLIPSIS: return c->TYPE_ellipsis;
+      case PY_T_NOTIMPL: return c->TYPE_NotImplementedType;
+      case PY_T_MEMVIEW: return c->TYPE_memoryview;
+      case PY_T_GEN:   return c->TYPE_generator;
+      case PY_T_PROPERTY: return c->TYPE_property;
+      case PY_T_STATICMETHOD: return c->TYPE_staticmethod;
+      case PY_T_CLASSMETHOD: return c->TYPE_classmethod;
+      case PY_T_SUPER: return c->TYPE_super;
+      case PY_T_CLASS: return c->TYPE_type;
+      case PY_T_INSTANCE: return PY_OBJ_VAL(o->inst.cls);
+      case PY_T_FILE:  return c->TYPE_object;
+      default: return c->TYPE_object;
     }
+}
+
+static VALUE
+bi_id(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    VALUE v = argv[0];
+    int64_t id = PY_IS_PTR(v) ? (int64_t)(uintptr_t)PY_PTR(v) : (int64_t)v;
+    // Return as a (potentially big) int — the high bit is fine for fixnum.
+    return py_make_int(id);
+}
+
+static VALUE
+bi_dir(CTX *c, int argc, VALUE *argv)
+{
+    VALUE r = py_make_list(NULL, 0);
+    if (argc == 0) {
+        // dir() with no args: list current frame's local names.  We
+        // don't track param-names per pyframe well, so return globals.
+        struct pyglobals *g = c->globals;
+        for (size_t i = 0; i < g->size; i++)
+            if (g->entries[i].defined)
+                py_list_append(c, r, py_make_str(g->entries[i].name, strlen(g->entries[i].name)));
+    } else {
+        VALUE v = argv[0];
+        if (py_is_module(v)) {
+            struct pyglobals *g = PY_PTR(v)->module.globals;
+            for (size_t i = 0; i < g->size; i++)
+                if (g->entries[i].defined)
+                    py_list_append(c, r, py_make_str(g->entries[i].name, strlen(g->entries[i].name)));
+        } else if (py_is_class(v)) {
+            struct pyclass *cd = &PY_PTR(v)->cls;
+            for (int i = 0; i < cd->nmethods; i++)
+                py_list_append(c, r, py_make_str(cd->methods[i].name, strlen(cd->methods[i].name)));
+        } else if (py_is_instance(v)) {
+            struct pyobj *o = PY_PTR(v);
+            if (o->inst.attrs) {
+                struct pydict *d = o->inst.attrs;
+                for (size_t i = 0; i < d->elen; i++)
+                    if (pydict_entry_live(d, i) && py_is_str(d->entries[i].key))
+                        py_list_append(c, r, d->entries[i].key);
+            }
+            // Plus class methods.
+            struct pyclass *cd = &PY_PTR(o->inst.cls)->cls;
+            for (int i = 0; i < cd->nmethods; i++)
+                py_list_append(c, r, py_make_str(cd->methods[i].name, strlen(cd->methods[i].name)));
+        }
+    }
+    // Sort the result.
+    VALUE av[1] = { r };
+    lm_sort(c, 1, av);
+    return r;
+}
+
+// Materialise CTX globals as a dict (read-only-ish copy).
+static VALUE
+bi_globals(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc; (void)argv;
+    VALUE d = py_make_dict();
+    struct pyglobals *g = c->globals;
+    for (size_t i = 0; i < g->size; i++) {
+        if (g->entries[i].defined) {
+            VALUE k = py_make_str(g->entries[i].name, strlen(g->entries[i].name));
+            py_dict_set(c, d, k, g->entries[i].value);
+        }
+    }
+    return d;
+}
+
+static VALUE
+bi_locals(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc; (void)argv;
+    // pystro doesn't track names-per-slot, so locals() returns an empty
+    // dict at function scope.  At module scope, fall back to globals.
+    if (!c->env) return bi_globals(c, 0, NULL);
+    return py_make_dict();
+}
+
+static VALUE
+bi_vars(CTX *c, int argc, VALUE *argv)
+{
+    if (argc == 0) return bi_locals(c, 0, NULL);
+    VALUE v = argv[0];
+    if (py_is_module(v)) {
+        struct pyglobals *saved = c->globals;
+        c->globals = PY_PTR(v)->module.globals;
+        VALUE r = bi_globals(c, 0, NULL);
+        c->globals = saved;
+        return r;
+    }
+    if (py_is_instance(v)) {
+        VALUE d = py_make_dict();
+        struct pyobj *o = PY_PTR(v);
+        if (o->inst.attrs) {
+            struct pydict *src = o->inst.attrs;
+            for (size_t i = 0; i < src->elen; i++)
+                if (pydict_entry_live(src, i))
+                    py_dict_set(c, d, src->entries[i].key, src->entries[i].value);
+        }
+        return d;
+    }
+    py_raise_exc(c, c->EXC_TypeError, "vars() argument must be a module or instance");
+}
+
+static VALUE
+bi_hasattr(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    if (!py_is_str(argv[1])) py_raise_exc(c, c->EXC_TypeError, "hasattr name must be str");
+    // Copy out of slice-borrow into NUL-terminated buf.
+    size_t L = PY_PTR(argv[1])->str.len;
+    char *namebuf = (char *)GC_malloc_atomic(L + 1);
+    memcpy(namebuf, PY_PTR(argv[1])->str.chars, L);
+    namebuf[L] = '\0';
+    const char *name = namebuf;
+    // Save state to detect AttributeError.
+    int saved_state = c->state;
+    VALUE saved_value = c->state_value;
+    int saved_top = c->try_top;
+    jmp_buf jb;
+    if (c->try_top < 64) c->try_stack[c->try_top++] = &jb;
+    bool ok = true;
+    if (setjmp(jb) == 0) {
+        py_getattr(c, argv[0], name);
+        if (c->state == PY_STATE_RAISE) ok = false;
+    } else {
+        ok = false;
+    }
+    c->try_top = saved_top;
+    c->state = saved_state;
+    c->state_value = saved_value;
+    return ok ? PY_TRUE : PY_FALSE;
+}
+
+static VALUE
+bi_getattr(CTX *c, int argc, VALUE *argv)
+{
+    if (!py_is_str(argv[1])) py_raise_exc(c, c->EXC_TypeError, "getattr name must be str");
+    size_t L = PY_PTR(argv[1])->str.len;
+    char *namebuf = (char *)GC_malloc_atomic(L + 1);
+    memcpy(namebuf, PY_PTR(argv[1])->str.chars, L);
+    namebuf[L] = '\0';
+    const char *name = namebuf;
+    if (argc < 3) return py_getattr(c, argv[0], name);
+    // With default: try, fall back on AttributeError.
+    int saved_state = c->state;
+    VALUE saved_value = c->state_value;
+    int saved_top = c->try_top;
+    jmp_buf jb;
+    if (c->try_top < 64) c->try_stack[c->try_top++] = &jb;
+    VALUE r = PY_NONE;
+    bool ok = false;
+    if (setjmp(jb) == 0) {
+        r = py_getattr(c, argv[0], name);
+        if (c->state != PY_STATE_RAISE) ok = true;
+    }
+    c->try_top = saved_top;
+    if (!ok) {
+        c->state = saved_state; c->state_value = saved_value;
+        return argv[2];
+    }
+    return r;
+}
+
+static VALUE
+bi_setattr(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    if (!py_is_str(argv[1])) py_raise_exc(c, c->EXC_TypeError, "setattr name must be str");
+    // String may be slice-borrowed (no NUL terminator within bounds);
+    // copy to a small heap buffer so strlen sees the right length.
+    size_t L = PY_PTR(argv[1])->str.len;
+    char *buf = (char *)GC_malloc_atomic(L + 1);
+    memcpy(buf, PY_PTR(argv[1])->str.chars, L);
+    buf[L] = '\0';
+    py_setattr(c, argv[0], buf, argv[2]);
+    return PY_NONE;
+}
+
+// File I/O — `open(path, mode)` returns a PY_T_FILE.  Supports the
+// usual context-manager protocol (`with open(...) as f:` works because
+// __enter__/__exit__ are class methods).
+static VALUE
+bi_open(CTX *c, int argc, VALUE *argv)
+{
+    if (!py_is_str(argv[0])) py_raise_exc(c, c->EXC_TypeError, "open: path must be str");
+    const char *modestr = "r";
+    if (argc >= 2) {
+        if (!py_is_str(argv[1])) py_raise_exc(c, c->EXC_TypeError, "open: mode must be str");
+        modestr = PY_PTR(argv[1])->str.chars;
+    }
+    bool binary = strchr(modestr, 'b') != NULL;
+    char libcmode[8] = {0};
+    int mi = 0;
+    for (const char *p = modestr; *p && mi < 7; p++)
+        if (*p != 't') libcmode[mi++] = *p;
+    libcmode[mi] = '\0';
+    size_t L = PY_PTR(argv[0])->str.len;
+    char *pbuf = (char *)alloca(L + 1);
+    memcpy(pbuf, PY_PTR(argv[0])->str.chars, L); pbuf[L] = '\0';
+    FILE *fp = fopen(pbuf, libcmode);
+    if (!fp) py_raise_exc(c, c->EXC_RuntimeError, "open: cannot open '%s'", pbuf);
+    struct pyobj *o = py_alloc(PY_T_FILE);
+    o->file.fp = fp;
+    o->file.path = (char *)GC_malloc_atomic(L + 1);
+    memcpy(o->file.path, pbuf, L + 1);
+    o->file.binary = binary;
+    o->file.closed = false;
+    return PY_OBJ_VAL(o);
+}
+
+static VALUE
+fm_read(CTX *c, int argc, VALUE *argv)
+{
+    struct pyobj *o = PY_PTR(argv[0]);
+    if (o->type != PY_T_FILE || o->file.closed) py_raise_exc(c, c->EXC_RuntimeError, "read on closed file");
+    FILE *fp = (FILE *)o->file.fp;
+    long limit = -1;
+    if (argc >= 2) limit = (long)py_int_to_long(c, argv[1]);
+    size_t cap = 4096, len = 0;
+    char *buf = (char *)GC_malloc_atomic(cap);
+    while (limit < 0 || (long)len < limit) {
+        size_t want = (limit < 0) ? (cap - len) : ((size_t)limit - len);
+        if (want == 0) break;
+        if (len + want > cap) {
+            cap = (len + want) * 2;
+            char *nb = (char *)GC_malloc_atomic(cap);
+            memcpy(nb, buf, len); buf = nb;
+        }
+        size_t n = fread(buf + len, 1, want, fp);
+        if (n == 0) break;
+        len += n;
+    }
+    if (o->file.binary) {
+        struct pyobj *bo = py_alloc(PY_T_BYTES);
+        bo->str.chars = buf;
+        bo->str.len = len;
+        return PY_OBJ_VAL(bo);
+    }
+    return py_make_str(buf, len);
+}
+
+static VALUE
+fm_readline(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    struct pyobj *o = PY_PTR(argv[0]);
+    if (o->type != PY_T_FILE || o->file.closed) py_raise_exc(c, c->EXC_RuntimeError, "readline on closed file");
+    FILE *fp = (FILE *)o->file.fp;
+    size_t cap = 256, len = 0;
+    char *buf = (char *)GC_malloc_atomic(cap);
+    int ch;
+    while ((ch = fgetc(fp)) != EOF) {
+        if (len + 1 >= cap) {
+            cap *= 2;
+            char *nb = (char *)GC_malloc_atomic(cap);
+            memcpy(nb, buf, len); buf = nb;
+        }
+        buf[len++] = (char)ch;
+        if (ch == '\n') break;
+    }
+    return py_make_str(buf, len);
+}
+
+static VALUE
+fm_readlines(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    VALUE r = py_make_list(NULL, 0);
+    for (;;) {
+        VALUE line = fm_readline(c, 1, argv);
+        if (!py_is_str(line) || PY_PTR(line)->str.len == 0) break;
+        py_list_append(c, r, line);
+    }
+    return r;
+}
+
+static VALUE
+fm_write(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    struct pyobj *o = PY_PTR(argv[0]);
+    if (o->type != PY_T_FILE || o->file.closed) py_raise_exc(c, c->EXC_RuntimeError, "write on closed file");
+    FILE *fp = (FILE *)o->file.fp;
+    VALUE v = argv[1];
+    const char *src; size_t L;
+    if (py_is_str(v) || py_is_byteseq(v)) {
+        src = PY_PTR(v)->str.chars;
+        L = PY_PTR(v)->str.len;
+    } else {
+        VALUE s = py_to_str(c, v);
+        src = PY_PTR(s)->str.chars;
+        L = PY_PTR(s)->str.len;
+    }
+    fwrite(src, 1, L, fp);
+    return py_make_int((int64_t)L);
+}
+
+static VALUE
+fm_close(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    struct pyobj *o = PY_PTR(argv[0]);
+    if (o->type == PY_T_FILE && !o->file.closed) {
+        fclose((FILE *)o->file.fp);
+        o->file.closed = true;
+    }
+    return PY_NONE;
+}
+
+static VALUE
+fm_enter(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    return argv[0];
+}
+static VALUE
+fm_exit(CTX *c, int argc, VALUE *argv)
+{
+    return fm_close(c, argc, argv);
+}
+
+static VALUE
+fm_flush(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    struct pyobj *o = PY_PTR(argv[0]);
+    if (o->type == PY_T_FILE && !o->file.closed) fflush((FILE *)o->file.fp);
+    return PY_NONE;
+}
+
+struct type_method file_methods[] = {
+    { "read",       fm_read,      1, 2 },
+    { "readline",   fm_readline,  1, 1 },
+    { "readlines",  fm_readlines, 1, 1 },
+    { "write",      fm_write,     2, 2 },
+    { "close",      fm_close,     1, 1 },
+    { "flush",      fm_flush,     1, 1 },
+    { "__enter__",  fm_enter,     1, 1 },
+    { "__exit__",   fm_exit,      4, 4 },
+    { NULL, NULL, 0, 0 }
+};
+
+// Re-tokenize + parse expression for eval(); parse program for exec().
+extern void   tokenize(const char *src, const char *filename);
+extern struct Node *parse_program(void);
+extern struct Node *parse_eval_expr(void);  // see parser.c
+
+static VALUE
+bi_eval(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    if (!py_is_str(argv[0])) py_raise_exc(c, c->EXC_TypeError, "eval: code must be str");
+    size_t L = PY_PTR(argv[0])->str.len;
+    char *src = (char *)GC_malloc_atomic(L + 2);
+    memcpy(src, PY_PTR(argv[0])->str.chars, L);
+    src[L] = '\n'; src[L+1] = '\0';
+    tokenize(src, "<eval>");
+    NODE *expr = parse_eval_expr();
+    return EVAL(c, expr);
+}
+
+static VALUE
+bi_exec(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    if (!py_is_str(argv[0])) py_raise_exc(c, c->EXC_TypeError, "exec: code must be str");
+    size_t L = PY_PTR(argv[0])->str.len;
+    char *src = (char *)GC_malloc_atomic(L + 2);
+    memcpy(src, PY_PTR(argv[0])->str.chars, L);
+    src[L] = '\n'; src[L+1] = '\0';
+    tokenize(src, "<exec>");
+    NODE *body = parse_program();
+    EVAL(c, body);
+    return PY_NONE;
+}
+
+static VALUE bi_pystro_delattr(CTX *c, int argc, VALUE *argv);  // fwd
+static VALUE
+bi_delattr(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    return bi_pystro_delattr(c, 2, argv);
+}
+
+static VALUE
+bi_callable(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    VALUE v = argv[0];
+    if (py_is_func(v) || py_is_builtin(v) || py_is_bound(v) || py_is_class(v)) return PY_TRUE;
+    if (py_is_instance(v)) {
+        VALUE call = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(v)->inst.cls), "__call__");
+        return call != PY_NONE ? PY_TRUE : PY_FALSE;
+    }
+    return PY_FALSE;
+}
+
+// issubclass(cls, classinfo) — classinfo can be a class or tuple of classes.
+static VALUE
+bi_issubclass(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    VALUE cls = argv[0], info = argv[1];
+    if (py_is_tuple(info)) {
+        size_t n = PY_PTR(info)->list.len;
+        for (size_t i = 0; i < n; i++) {
+            VALUE av[2] = { cls, PY_PTR(info)->list.items[i] };
+            if (bi_issubclass(c, 2, av) == PY_TRUE) return PY_TRUE;
+        }
+        return PY_FALSE;
+    }
+    if (!py_is_class(cls)) py_raise_exc(c, c->EXC_TypeError, "issubclass() arg 1 must be a class");
+    if (!py_is_class(info)) py_raise_exc(c, c->EXC_TypeError, "issubclass() arg 2 must be a class");
+    return class_is_ancestor(cls, info) ? PY_TRUE : PY_FALSE;
+}
+
+// Match `v`'s Python type against a class.  Handles both built-in
+// type classes (matched via cls.builtin_tag) and user classes
+// (matched via instance.cls's MRO).
+static bool
+py_isinstance_check(CTX *c, VALUE v, VALUE cls)
+{
+    if (!py_is_class(cls)) {
+        py_raise_exc(c, c->EXC_TypeError, "isinstance() second arg must be class");
+    }
+    struct pyclass *cd = &PY_PTR(cls)->cls;
+    // Quick: object accepts everything.
+    if (cls == c->TYPE_object) return true;
+    // Built-in type class — check value's tag.
+    // First find the value's "type class" and walk its MRO.
+    {
+        VALUE av[1] = { v };
+        VALUE vtype = bi_type(c, 1, av);
+        if (py_is_class(vtype) && vtype != cls) {
+            // Walk MRO.
+            struct pyclass *vd = &PY_PTR(vtype)->cls;
+            for (int i = 0; i < vd->nmro; i++) if (vd->mro[i] == cls) return true;
+        } else if (vtype == cls) {
+            return true;
+        }
+    }
+    if (cd->builtin_ctor) {
+        const char *nm = cd->name;
+        if (strcmp(nm, "int")        == 0) return py_is_int(v) || v == PY_TRUE || v == PY_FALSE;
+        if (strcmp(nm, "float")      == 0) return py_is_float(v);
+        if (strcmp(nm, "str")        == 0) return py_is_str(v);
+        if (strcmp(nm, "bool")       == 0) return (v == PY_TRUE || v == PY_FALSE);
+        if (strcmp(nm, "list")       == 0) return py_is_list(v);
+        if (strcmp(nm, "tuple")      == 0) return py_is_tuple(v);
+        if (strcmp(nm, "dict")       == 0) return py_is_dict(v);
+        if (strcmp(nm, "set")        == 0) return py_is_set(v);
+        if (strcmp(nm, "frozenset")  == 0) return py_is_frozenset(v);
+        if (strcmp(nm, "bytes")      == 0) return py_is_bytes(v);
+        if (strcmp(nm, "bytearray")  == 0) return py_is_bytearray(v);
+        if (strcmp(nm, "range")      == 0) return py_is_range(v);
+        if (strcmp(nm, "complex")    == 0) return py_is_complex(v);
+        if (strcmp(nm, "type")       == 0) return py_is_class(v);
+        return false;
+    }
+    // User class — `v` must be an instance whose class has cls in MRO.
+    if (!py_is_instance(v)) return false;
+    return class_is_ancestor(PY_OBJ_VAL(PY_PTR(v)->inst.cls), cls);
 }
 
 static VALUE
@@ -3504,26 +7190,46 @@ bi_isinstance(CTX *c, int argc, VALUE *argv)
 {
     (void)argc;
     VALUE v = argv[0], cls = argv[1];
-    if (!py_is_class(cls)) py_raise_exc(c, c->EXC_TypeError, "isinstance() second arg must be class");
-    if (!py_is_instance(v)) return PY_FALSE;
-    return class_is_ancestor(PY_OBJ_VAL(PY_PTR(v)->inst.cls), cls) ? PY_TRUE : PY_FALSE;
+    if (py_is_tuple(cls)) {
+        size_t n = PY_PTR(cls)->list.len;
+        for (size_t i = 0; i < n; i++) {
+            if (py_isinstance_check(c, v, PY_PTR(cls)->list.items[i])) return PY_TRUE;
+        }
+        return PY_FALSE;
+    }
+    return py_isinstance_check(c, v, cls) ? PY_TRUE : PY_FALSE;
 }
 
 static VALUE
 bi_min(CTX *c, int argc, VALUE *argv)
 {
     if (argc == 0) py_raise_exc(c, c->EXC_TypeError, "min() needs args");
-    VALUE best;
+    VALUE key_fn = pystro_bi_kwarg("key");
+    VALUE deflt  = pystro_bi_kwarg("default");
+    VALUE best, best_key;
+    bool started = false;
     if (argc == 1) {
         struct py_iter it; py_iter_init(c, &it, argv[0]);
         if (c->state != PY_STATE_NORMAL) return PY_NONE;
-        if (!py_iter_next(c, &it, &best)) py_raise_exc(c, c->EXC_ValueError, "min() empty");
         VALUE x;
-        while (py_iter_next(c, &it, &x)) if (py_cmp(c, x, best) < 0) best = x;
+        while (py_iter_next(c, &it, &x)) {
+            VALUE xk = key_fn ? py_apply(c, key_fn, 1, &x) : x;
+            if (!started || py_cmp(c, xk, best_key) < 0) {
+                best = x; best_key = xk; started = true;
+            }
+        }
+        if (!started) {
+            if (deflt) return deflt;
+            py_raise_exc(c, c->EXC_ValueError, "min() empty");
+        }
         return best;
     }
-    best = argv[0];
-    for (int i = 1; i < argc; i++) if (py_cmp(c, argv[i], best) < 0) best = argv[i];
+    for (int i = 0; i < argc; i++) {
+        VALUE xk = key_fn ? py_apply(c, key_fn, 1, &argv[i]) : argv[i];
+        if (!started || py_cmp(c, xk, best_key) < 0) {
+            best = argv[i]; best_key = xk; started = true;
+        }
+    }
     return best;
 }
 
@@ -3531,17 +7237,32 @@ static VALUE
 bi_max(CTX *c, int argc, VALUE *argv)
 {
     if (argc == 0) py_raise_exc(c, c->EXC_TypeError, "max() needs args");
-    VALUE best;
+    VALUE key_fn = pystro_bi_kwarg("key");
+    VALUE deflt  = pystro_bi_kwarg("default");
+    VALUE best, best_key;
+    bool started = false;
     if (argc == 1) {
         struct py_iter it; py_iter_init(c, &it, argv[0]);
         if (c->state != PY_STATE_NORMAL) return PY_NONE;
-        if (!py_iter_next(c, &it, &best)) py_raise_exc(c, c->EXC_ValueError, "max() empty");
         VALUE x;
-        while (py_iter_next(c, &it, &x)) if (py_cmp(c, x, best) > 0) best = x;
+        while (py_iter_next(c, &it, &x)) {
+            VALUE xk = key_fn ? py_apply(c, key_fn, 1, &x) : x;
+            if (!started || py_cmp(c, xk, best_key) > 0) {
+                best = x; best_key = xk; started = true;
+            }
+        }
+        if (!started) {
+            if (deflt) return deflt;
+            py_raise_exc(c, c->EXC_ValueError, "max() empty");
+        }
         return best;
     }
-    best = argv[0];
-    for (int i = 1; i < argc; i++) if (py_cmp(c, argv[i], best) > 0) best = argv[i];
+    for (int i = 0; i < argc; i++) {
+        VALUE xk = key_fn ? py_apply(c, key_fn, 1, &argv[i]) : argv[i];
+        if (!started || py_cmp(c, xk, best_key) > 0) {
+            best = argv[i]; best_key = xk; started = true;
+        }
+    }
     return best;
 }
 
@@ -3568,36 +7289,36 @@ bi_sorted(CTX *c, int argc, VALUE *argv)
 static VALUE
 bi_enumerate(CTX *c, int argc, VALUE *argv)
 {
-    (void)argc;
-    VALUE r = py_make_list(NULL, 0);
-    struct py_iter it; py_iter_init(c, &it, argv[0]);
-    if (c->state != PY_STATE_NORMAL) return PY_NONE;
-    int64_t i = 0;
-    VALUE x;
-    while (py_iter_next(c, &it, &x)) {
-        VALUE pair[2] = { PY_FIX(i++), x };
-        py_list_append(c, r, py_make_tuple(pair, 2));
-    }
-    return r;
+    VALUE start_v = pystro_bi_kwarg("start");
+    int64_t i = start_v ? py_int_to_long(c, start_v)
+                        : (argc >= 2 ? py_int_to_long(c, argv[1]) : 0);
+    struct pyobj *o = py_alloc(PY_T_ITER);
+    o->iter_state = (struct py_iter *)GC_malloc(sizeof(struct py_iter));
+    o->iter_state->kind = 8;
+    o->iter_state->i = i;
+    o->iter_state->inner = (struct py_iter *)GC_malloc(sizeof(struct py_iter));
+    py_iter_init(c, &o->iter_state->inner[0], argv[0]);
+    o->iter_state->n_inner = 1;
+    return PY_OBJ_VAL(o);
 }
 
 static VALUE
 bi_zip(CTX *c, int argc, VALUE *argv)
 {
-    if (argc == 0) return py_make_list(NULL, 0);
-    struct py_iter *its = (struct py_iter *)alloca(sizeof(struct py_iter) * argc);
+    struct pyobj *o = py_alloc(PY_T_ITER);
+    o->iter_state = (struct py_iter *)GC_malloc(sizeof(struct py_iter));
+    o->iter_state->kind = 9;
+    o->iter_state->n_inner = argc;
+    if (argc == 0) {
+        o->iter_state->inner = NULL;
+        return PY_OBJ_VAL(o);
+    }
+    o->iter_state->inner = (struct py_iter *)GC_malloc(sizeof(struct py_iter) * argc);
     for (int i = 0; i < argc; i++) {
-        py_iter_init(c, &its[i], argv[i]);
+        py_iter_init(c, &o->iter_state->inner[i], argv[i]);
         if (c->state != PY_STATE_NORMAL) return PY_NONE;
     }
-    VALUE r = py_make_list(NULL, 0);
-    for (;;) {
-        VALUE *tup = (VALUE *)alloca(sizeof(VALUE) * argc);
-        for (int i = 0; i < argc; i++) {
-            if (!py_iter_next(c, &its[i], &tup[i])) return r;
-        }
-        py_list_append(c, r, py_make_tuple(tup, argc));
-    }
+    return PY_OBJ_VAL(o);
 }
 
 static VALUE
@@ -3647,6 +7368,73 @@ bi_bin(CTX *c, int argc, VALUE *argv)
     free(r); mpz_clear(z); return v;
 }
 
+static VALUE
+bi_oct(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    if (!py_int_or_bool(argv[0])) py_raise_exc(c, c->EXC_TypeError, "oct() needs int");
+    mpz_t z; py_to_mpz(c, argv[0], z);
+    char *s = mpz_get_str(NULL, 8, z);
+    char *r;
+    int an = (s[0] == '-') ? asprintf(&r, "-0o%s", s + 1) : asprintf(&r, "0o%s", s);
+    (void)an;
+    VALUE v = py_make_str(r, strlen(r));
+    free(r); mpz_clear(z); return v;
+}
+
+// slice(stop) / slice(start, stop) / slice(start, stop, step)
+static VALUE
+bi_slice(CTX *c, int argc, VALUE *argv)
+{
+    (void)c;
+    struct pyobj *o = py_alloc(PY_T_SLICE);
+    if (argc == 1) {
+        o->slice_.start = PY_NONE;
+        o->slice_.stop  = argv[0];
+        o->slice_.step  = PY_NONE;
+    } else if (argc == 2) {
+        o->slice_.start = argv[0];
+        o->slice_.stop  = argv[1];
+        o->slice_.step  = PY_NONE;
+    } else {
+        o->slice_.start = argv[0];
+        o->slice_.stop  = argv[1];
+        o->slice_.step  = argv[2];
+    }
+    return PY_OBJ_VAL(o);
+}
+
+static VALUE
+bi_memoryview(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    VALUE v = argv[0];
+    if (!(py_is_bytes(v) || py_is_bytearray(v)))
+        py_raise_exc(c, c->EXC_TypeError, "memoryview: bytes-like required");
+    struct pyobj *o = py_alloc(PY_T_MEMVIEW);
+    o->memview.source = v;
+    o->memview.off = 0;
+    o->memview.len = PY_PTR(v)->str.len;
+    return PY_OBJ_VAL(o);
+}
+
+static VALUE
+bi_breakpoint(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc; (void)argv;
+    // No-op stub; pystro has no debugger.  Honour PYTHONBREAKPOINT=0.
+    return PY_NONE;
+}
+
+// `compile(source, filename, mode)` — pystro doesn't expose a syntax
+// tree object; return the source string for `exec` / `eval` to re-tokenize.
+static VALUE
+bi_compile(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    return argv[0];     // pass-through; eval/exec accept str directly
+}
+
 // Minimal `format(value, spec)` — handles the common f-string format
 // specifications: `[fill][align][0][width][.precision][type]` where
 // type ∈ { d / s / f / g / e / x / X / b / o / "" }.
@@ -3665,20 +7453,31 @@ bi_format(CTX *c, int argc, VALUE *argv)
     char fill = ' ';
     char align = 0;            // 0 = unset, '<', '>', '^'
     bool zero_pad = false;
+    bool alt_form = false;
+    bool comma_sep = false;
+    char sign_ch = 0;
     int  width = 0;
     int  precision = -1;
     char type_ch = 0;
     size_t i = 0;
     // [fill][align]
-    if (n >= 2 && (s[1] == '<' || s[1] == '>' || s[1] == '^')) {
+    if (n >= 2 && (s[1] == '<' || s[1] == '>' || s[1] == '^' || s[1] == '=')) {
         fill = s[0]; align = s[1]; i = 2;
-    } else if (n >= 1 && (s[0] == '<' || s[0] == '>' || s[0] == '^')) {
+    } else if (n >= 1 && (s[0] == '<' || s[0] == '>' || s[0] == '^' || s[0] == '=')) {
         align = s[0]; i = 1;
     }
+    // [sign]
+    if (i < n && (s[i] == '+' || s[i] == '-' || s[i] == ' ')) {
+        sign_ch = s[i++];
+    }
+    // [#]
+    if (i < n && s[i] == '#') { alt_form = true; i++; }
     // [0]
     if (i < n && s[i] == '0') { zero_pad = true; i++; }
     // [width]
     while (i < n && s[i] >= '0' && s[i] <= '9') { width = width * 10 + (s[i] - '0'); i++; }
+    // [,]
+    if (i < n && s[i] == ',') { comma_sep = true; i++; }
     // [.precision]
     if (i < n && s[i] == '.') {
         i++;
@@ -3725,6 +7524,11 @@ bi_format(CTX *c, int argc, VALUE *argv)
         if (precision >= 0) snprintf(fmt, sizeof(fmt), "%%.%d%c", precision, type_ch);
         else                snprintf(fmt, sizeof(fmt), "%%%c", type_ch);
         snprintf(body, sizeof(body), fmt, d);
+    } else if (type_ch == '%') {
+        double d = py_to_double(c, v) * 100.0;
+        if (precision >= 0) snprintf(fmt, sizeof(fmt), "%%.%df%%%%", precision);
+        else                snprintf(fmt, sizeof(fmt), "%%f%%%%");
+        snprintf(body, sizeof(body), fmt, d);
     } else if (type_ch == 's' || type_ch == 0) {
         VALUE sv = py_to_str(c, v);
         if (py_is_str(sv)) {
@@ -3739,6 +7543,57 @@ bi_format(CTX *c, int argc, VALUE *argv)
     }
   pad: {
         size_t bl = strlen(body);
+        // [#] alternate form: prefix with 0x/0o/0b for x/o/b types.
+        if (alt_form && (type_ch == 'x' || type_ch == 'X' || type_ch == 'o' || type_ch == 'b')) {
+            char prefix[4] = "0\0\0\0";
+            prefix[1] = (type_ch == 'X') ? 'X' : type_ch;
+            char tmp[260];
+            int neg = (body[0] == '-');
+            if (neg) {
+                snprintf(tmp, sizeof(tmp), "-%s%s", prefix, body + 1);
+            } else {
+                snprintf(tmp, sizeof(tmp), "%s%s", prefix, body);
+            }
+            strncpy(body, tmp, sizeof(body) - 1);
+            body[sizeof(body) - 1] = '\0';
+            bl = strlen(body);
+        }
+        // [,] thousands separator for d type, or for int values with no type.
+        bool int_like = (type_ch == 'd') ||
+                        (type_ch == 0 && (PY_IS_FIXNUM(v) || py_is_bignum(v) ||
+                                          v == PY_TRUE || v == PY_FALSE));
+        if (comma_sep && int_like) {
+            int neg = (body[0] == '-');
+            int start = neg ? 1 : 0;
+            int dl = (int)bl - start;
+            int commas = (dl - 1) / 3;
+            if (commas > 0) {
+                char tmp[260];
+                int ti = 0;
+                if (neg) tmp[ti++] = '-';
+                int j = start;
+                int first = dl % 3;
+                if (first == 0) first = 3;
+                for (int k = 0; k < first && j < (int)bl; k++) tmp[ti++] = body[j++];
+                while (j < (int)bl) {
+                    tmp[ti++] = ',';
+                    for (int k = 0; k < 3 && j < (int)bl; k++) tmp[ti++] = body[j++];
+                }
+                tmp[ti] = '\0';
+                strncpy(body, tmp, sizeof(body) - 1);
+                body[sizeof(body) - 1] = '\0';
+                bl = strlen(body);
+            }
+        }
+        // [+] sign on positive numbers.
+        if (sign_ch == '+' && (type_ch == 'd' || type_ch == 'f' || type_ch == 'g' ||
+                               type_ch == 'e' || type_ch == 'E') && body[0] != '-') {
+            char tmp[260];
+            snprintf(tmp, sizeof(tmp), "+%s", body);
+            strncpy(body, tmp, sizeof(body) - 1);
+            body[sizeof(body) - 1] = '\0';
+            bl = strlen(body);
+        }
         if ((int)bl >= width) return py_make_str(body, bl);
         size_t pad = (size_t)width - bl;
         char *out = (char *)GC_malloc_atomic(width + 1);
@@ -3762,6 +7617,204 @@ bi_format(CTX *c, int argc, VALUE *argv)
         out[width] = '\0';
         return py_make_str_take(out, (size_t)width);
     }
+}
+
+// `"fmt" % args` — Python-style %-formatting.  Supports:
+//   %d %i — int (signed decimal)
+//   %u    — uint (decimal)
+//   %x %X — hex (lower / upper)
+//   %o    — octal
+//   %b    — binary (Python doesn't have this, but bench/utility friendly)
+//   %f %F %e %E %g %G — float
+//   %s    — str()
+//   %r    — repr()
+//   %c    — single char from int or 1-char str
+//   %%    — literal %
+// Each spec accepts optional flags (-+0 #), width (digits or *), precision
+// (.digits or .*).  `args` may be a tuple (multi-arg) or a single value.
+VALUE
+py_str_pct_format(CTX *c, VALUE fmt, VALUE args)
+{
+    const char *src = PY_PTR(fmt)->str.chars;
+    size_t srclen = PY_PTR(fmt)->str.len;
+    bool args_is_tuple = py_is_tuple(args);
+    size_t nargs = args_is_tuple ? PY_PTR(args)->list.len : 1;
+    size_t argi = 0;
+    size_t out_capa = srclen + 16;
+    char *out = (char *)GC_malloc_atomic(out_capa);
+    size_t out_len = 0;
+#define OUT_RESERVE(extra) do { \
+    if (out_len + (extra) > out_capa) { \
+        out_capa = (out_len + (extra)) * 2; \
+        char *no = (char *)GC_malloc_atomic(out_capa); \
+        memcpy(no, out, out_len); out = no; \
+    } \
+} while (0)
+#define OUT_PUT(buf, len) do { OUT_RESERVE(len); memcpy(out + out_len, (buf), (len)); out_len += (len); } while (0)
+#define OUT_CH(ch) do { OUT_RESERVE(1); out[out_len++] = (ch); } while (0)
+    for (size_t i = 0; i < srclen; i++) {
+        char ch = src[i];
+        if (ch != '%') { OUT_CH(ch); continue; }
+        i++;
+        if (i >= srclen) py_raise_exc(c, c->EXC_ValueError, "incomplete format");
+        // Flags.
+        bool flag_minus = false, flag_plus = false, flag_zero = false, flag_space = false, flag_hash = false;
+        for (;; i++) {
+            if (i >= srclen) py_raise_exc(c, c->EXC_ValueError, "incomplete format");
+            char f = src[i];
+            if      (f == '-') flag_minus = true;
+            else if (f == '+') flag_plus  = true;
+            else if (f == '0') flag_zero  = true;
+            else if (f == ' ') flag_space = true;
+            else if (f == '#') flag_hash  = true;
+            else break;
+        }
+        // Width.
+        int width = 0;
+        if (src[i] == '*') {
+            if (argi >= nargs) py_raise_exc(c, c->EXC_TypeError, "not enough args");
+            VALUE wv = args_is_tuple ? PY_PTR(args)->list.items[argi++] : args;
+            if (!args_is_tuple) argi++;
+            width = (int)py_int_to_long(c, wv);
+            i++;
+        } else {
+            while (i < srclen && src[i] >= '0' && src[i] <= '9') {
+                width = width * 10 + (src[i] - '0'); i++;
+            }
+        }
+        // Precision.
+        int precision = -1;
+        if (i < srclen && src[i] == '.') {
+            i++;
+            if (i < srclen && src[i] == '*') {
+                if (argi >= nargs) py_raise_exc(c, c->EXC_TypeError, "not enough args");
+                VALUE pv = args_is_tuple ? PY_PTR(args)->list.items[argi++] : args;
+                if (!args_is_tuple) argi++;
+                precision = (int)py_int_to_long(c, pv);
+                i++;
+            } else {
+                precision = 0;
+                while (i < srclen && src[i] >= '0' && src[i] <= '9') {
+                    precision = precision * 10 + (src[i] - '0'); i++;
+                }
+            }
+        }
+        if (i >= srclen) py_raise_exc(c, c->EXC_ValueError, "incomplete format");
+        char conv = src[i];
+        if (conv == '%') { OUT_CH('%'); continue; }
+        // Get next arg.
+        VALUE arg;
+        if (args_is_tuple) {
+            if (argi >= nargs) py_raise_exc(c, c->EXC_TypeError, "not enough args");
+            arg = PY_PTR(args)->list.items[argi++];
+        } else {
+            if (argi > 0) py_raise_exc(c, c->EXC_TypeError, "not all args converted");
+            arg = args; argi++;
+        }
+        // Render `arg` into `body`.
+        char body[512];
+        body[0] = '\0';
+        size_t bl = 0;
+        if (conv == 'd' || conv == 'i' || conv == 'u') {
+            if (py_is_bignum(arg)) {
+                char *bs = mpz_get_str(NULL, 10, PY_PTR(arg)->mpz);
+                bl = strlen(bs);
+                if (bl >= sizeof(body)) bl = sizeof(body) - 1;
+                memcpy(body, bs, bl); body[bl] = '\0';
+            } else {
+                long long iv = py_int_to_long(c, arg);
+                if (flag_plus && iv >= 0)       bl = snprintf(body, sizeof(body), "+%lld", iv);
+                else if (flag_space && iv >= 0) bl = snprintf(body, sizeof(body), " %lld", iv);
+                else                            bl = snprintf(body, sizeof(body), "%lld", iv);
+            }
+        } else if (conv == 'x' || conv == 'X' || conv == 'o') {
+            long long iv = py_int_to_long(c, arg);
+            unsigned long long u = (unsigned long long)(iv < 0 ? -iv : iv);
+            char fmtb[16];
+            const char *prefix = "";
+            if (flag_hash) {
+                if (conv == 'x') prefix = "0x";
+                else if (conv == 'X') prefix = "0X";
+                else                  prefix = "0o";
+            }
+            snprintf(fmtb, sizeof(fmtb), "%s%%%s%c", iv < 0 ? "-" : "", prefix, conv);
+            bl = snprintf(body, sizeof(body), fmtb, u);
+        } else if (conv == 'b') {
+            long long iv = py_int_to_long(c, arg);
+            unsigned long long u = (unsigned long long)(iv < 0 ? -iv : iv);
+            char buf[80]; int p = 0;
+            if (u == 0) buf[p++] = '0';
+            while (u) { buf[p++] = (u & 1) + '0'; u >>= 1; }
+            int j = 0;
+            if (iv < 0) body[j++] = '-';
+            for (int k = p - 1; k >= 0; k--) body[j++] = buf[k];
+            body[j] = '\0'; bl = (size_t)j;
+        } else if (conv == 'f' || conv == 'F' || conv == 'e' || conv == 'E' || conv == 'g' || conv == 'G') {
+            double d = py_to_double(c, arg);
+            char fmtb[16];
+            int p = precision < 0 ? 6 : precision;
+            snprintf(fmtb, sizeof(fmtb), "%%%s%s.%d%c",
+                     flag_plus ? "+" : (flag_space ? " " : ""),
+                     flag_hash ? "#" : "", p, conv);
+            bl = snprintf(body, sizeof(body), fmtb, d);
+        } else if (conv == 's') {
+            VALUE sv = py_to_str(c, arg);
+            if (!py_is_str(sv)) sv = py_make_str("?", 1);
+            bl = PY_PTR(sv)->str.len;
+            if (precision >= 0 && (size_t)precision < bl) bl = (size_t)precision;
+            if (bl >= sizeof(body)) bl = sizeof(body) - 1;
+            memcpy(body, PY_PTR(sv)->str.chars, bl);
+            body[bl] = '\0';
+        } else if (conv == 'r' || conv == 'a') {
+            VALUE sv = py_to_repr(c, arg);
+            if (!py_is_str(sv)) sv = py_make_str("?", 1);
+            bl = PY_PTR(sv)->str.len;
+            if (precision >= 0 && (size_t)precision < bl) bl = (size_t)precision;
+            if (bl >= sizeof(body)) bl = sizeof(body) - 1;
+            memcpy(body, PY_PTR(sv)->str.chars, bl);
+            body[bl] = '\0';
+        } else if (conv == 'c') {
+            if (PY_IS_FIXNUM(arg)) {
+                int cv = (int)PY_FIXVAL(arg);
+                body[0] = (char)cv; body[1] = '\0'; bl = 1;
+            } else if (py_is_str(arg) && PY_PTR(arg)->str.len == 1) {
+                body[0] = PY_PTR(arg)->str.chars[0]; body[1] = '\0'; bl = 1;
+            } else py_raise_exc(c, c->EXC_TypeError, "%%c needs int or 1-char str");
+        } else {
+            py_raise_exc(c, c->EXC_ValueError, "unsupported format character '%c'", conv);
+        }
+        // Pad.
+        if ((int)bl < width) {
+            size_t pad = (size_t)width - bl;
+            char eff_fill = (flag_zero && !flag_minus
+                             && (conv == 'd' || conv == 'i' || conv == 'u'
+                                 || conv == 'x' || conv == 'X' || conv == 'o' || conv == 'b'
+                                 || conv == 'f' || conv == 'F' || conv == 'e' || conv == 'E'
+                                 || conv == 'g' || conv == 'G')) ? '0' : ' ';
+            if (flag_minus) {
+                OUT_PUT(body, bl);
+                for (size_t j = 0; j < pad; j++) OUT_CH(eff_fill);
+            } else {
+                // For zero-pad of signed numbers, keep sign in front.
+                if (eff_fill == '0' && bl > 0 && (body[0] == '-' || body[0] == '+' || body[0] == ' ')) {
+                    OUT_CH(body[0]);
+                    for (size_t j = 0; j < pad; j++) OUT_CH('0');
+                    OUT_PUT(body + 1, bl - 1);
+                } else {
+                    for (size_t j = 0; j < pad; j++) OUT_CH(eff_fill);
+                    OUT_PUT(body, bl);
+                }
+            }
+        } else {
+            OUT_PUT(body, bl);
+        }
+    }
+    if (args_is_tuple && argi < nargs)
+        py_raise_exc(c, c->EXC_TypeError, "not all arguments converted");
+    return py_make_str(out, out_len);
+#undef OUT_RESERVE
+#undef OUT_PUT
+#undef OUT_CH
 }
 
 static VALUE
@@ -3788,6 +7841,22 @@ bi_property(CTX *c, int argc, VALUE *argv)
     (void)c; (void)argc;
     struct pyobj *o = py_alloc(PY_T_PROPERTY);
     o->wrap.wrapped = argv[0];
+    o->wrap.setter  = PY_NONE;
+    return PY_OBJ_VAL(o);
+}
+
+// `prop.setter(setter_func)` — returns a new property with the setter installed.
+// Implemented as a built-in method (the property is captured via a bound wrapper).
+static VALUE
+bi_property_setter_call(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    // argv[0] = the property (self), argv[1] = the setter function.
+    struct pyobj *src = PY_PTR(argv[0]);
+    struct pyobj *o = py_alloc(PY_T_PROPERTY);
+    o->wrap.wrapped = src->wrap.wrapped;
+    o->wrap.setter  = argv[1];
+    (void)c;
     return PY_OBJ_VAL(o);
 }
 
@@ -3820,14 +7889,43 @@ bi_pystro_delattr(CTX *c, int argc, VALUE *argv)
         struct pyobj *o = PY_PTR(obj);
         if (o->inst.attrs) {
             uint64_t h = py_hash(c, name);
-            struct pydict_entry *e = pydict_lookup(c, o->inst.attrs, name, h);
-            if (e->state == 1) {
-                e->state = 2;
+            size_t bucket; int32_t eidx; ssize_t ft;
+            pydict_indices_lookup(c, o->inst.attrs, name, h, &bucket, &eidx, &ft);
+            if (eidx >= 0) {
+                o->inst.attrs->indices[bucket] = DICT_TOMB_IDX;
+                o->inst.attrs->entries[eidx].key = DICT_DELETED_KEY;
+                o->inst.attrs->entries[eidx].value = PY_NONE;
                 o->inst.attrs->used--;
                 return PY_NONE;
             }
         }
         py_raise_exc(c, c->EXC_AttributeError, "no such attribute '%s'", PY_PTR(name)->str.chars);
+    }
+    if (py_is_class(obj)) {
+        struct pyclass *cd = &PY_PTR(obj)->cls;
+        const char *cname = PY_PTR(name)->str.chars;
+        for (int i = 0; i < cd->nmethods; i++) {
+            if (strcmp(cd->methods[i].name, cname) == 0) {
+                for (int j = i; j + 1 < cd->nmethods; j++)
+                    cd->methods[j] = cd->methods[j + 1];
+                cd->nmethods--;
+                SHARED_GLOBALS_SERIAL++;
+                return PY_NONE;
+            }
+        }
+        py_raise_exc(c, c->EXC_AttributeError, "no such attribute '%s'", cname);
+    }
+    if (py_is_module(obj)) {
+        struct pyglobals *g = PY_PTR(obj)->module.globals;
+        const char *cname = PY_PTR(name)->str.chars;
+        for (size_t i = 0; i < g->size; i++) {
+            if (strcmp(g->entries[i].name, cname) == 0 && g->entries[i].defined) {
+                g->entries[i].defined = false;
+                g->entries[i].value = PY_NONE;
+                return PY_NONE;
+            }
+        }
+        py_raise_exc(c, c->EXC_AttributeError, "no such attribute '%s'", cname);
     }
     py_raise_exc(c, c->EXC_TypeError, "delattr: object does not support attribute deletion");
 }
@@ -3893,20 +7991,161 @@ bi_import(CTX *c, int argc, VALUE *argv)
     if (py_dict_has(c, mod_dict, argv[0])) return py_dict_get(c, mod_dict, argv[0]);
 
     const char *name = PY_PTR(argv[0])->str.chars;
+    size_t name_len = PY_PTR(argv[0])->str.len;
+    // Translate `a.b.c` into `a/b/c.py` for dotted imports.
+    char relpath[1024];
+    if (name_len + 4 >= sizeof(relpath)) py_raise_exc(c, c->EXC_RuntimeError, "import: name too long");
+    char *p = relpath;
+    for (size_t i = 0; i < name_len; i++) *p++ = (name[i] == '.') ? '/' : name[i];
+    *p++ = '.'; *p++ = 'p'; *p++ = 'y'; *p = '\0';
+    // Search path: CWD first, then sys.path entries (if any), then
+    // PYTHONPATH (env), then the directory of pystro itself (so that
+    // built-in stdlib modules are found regardless of cwd).
     char path[1024];
-    snprintf(path, sizeof(path), "%s.py", name);
-    char *src = read_file_into_buf(path);
+    char *src = NULL;
+    snprintf(path, sizeof(path), "%s", relpath);
+    src = read_file_into_buf(path);
     if (!src) {
-        // Try sample/pystro-relative paths if needed; for v0 just CWD.
-        py_raise_exc(c, c->EXC_RuntimeError, "no module named '%s' (looked at %s)", name, path);
+        const char *pp = getenv("PYTHONPATH");
+        while (pp && *pp && !src) {
+            const char *colon = strchr(pp, ':');
+            size_t plen = colon ? (size_t)(colon - pp) : strlen(pp);
+            if (plen + strlen(relpath) + 2 < sizeof(path)) {
+                memcpy(path, pp, plen);
+                path[plen] = '/';
+                strcpy(path + plen + 1, relpath);
+                src = read_file_into_buf(path);
+            }
+            pp = colon ? colon + 1 : NULL;
+        }
+    }
+    if (!src) {
+        // sys.path equivalent: a static array set at startup.  For now
+        // also try the directory of the running pystro binary (so user
+        // modules adjacent to the binary are findable).
+        extern const char *PYSTRO_BINDIR;
+        if (PYSTRO_BINDIR) {
+            snprintf(path, sizeof(path), "%s/%s", PYSTRO_BINDIR, relpath);
+            src = read_file_into_buf(path);
+        }
+    }
+    if (!src) {
+        py_raise_exc(c, c->EXC_ModuleNotFoundError, "No module named '%s'", name);
     }
 
     // Build a fresh globals namespace and install the same builtins so
-    // user code can call print() etc.
+    // user code can call print() etc.  Save the caller's exception
+    // classes — install_builtins overwrites c->EXC_* with fresh classes,
+    // and we want the imported module to reuse the same exception
+    // classes as the caller (so `except` matches across modules).
     struct pyglobals *new_g = py_globals_new();
     struct pyglobals *saved_g = c->globals;
+    VALUE saved_EXC_Exception        = c->EXC_Exception;
+    VALUE saved_EXC_TypeError        = c->EXC_TypeError;
+    VALUE saved_EXC_ValueError       = c->EXC_ValueError;
+    VALUE saved_EXC_NameError        = c->EXC_NameError;
+    VALUE saved_EXC_IndexError       = c->EXC_IndexError;
+    VALUE saved_EXC_KeyError         = c->EXC_KeyError;
+    VALUE saved_EXC_ZeroDivisionError= c->EXC_ZeroDivisionError;
+    VALUE saved_EXC_AttributeError   = c->EXC_AttributeError;
+    VALUE saved_EXC_RuntimeError     = c->EXC_RuntimeError;
+    VALUE saved_EXC_StopIteration    = c->EXC_StopIteration;
+    VALUE saved_EXC_AssertionError   = c->EXC_AssertionError;
+    VALUE saved_EXC_ImportError      = c->EXC_ImportError;
+    VALUE saved_EXC_ModuleNotFoundError = c->EXC_ModuleNotFoundError;
+    VALUE saved_EXC_NotImplementedError = c->EXC_NotImplementedError;
+    VALUE saved_EXC_ArithmeticError  = c->EXC_ArithmeticError;
+    VALUE saved_EXC_OverflowError    = c->EXC_OverflowError;
+    VALUE saved_EXC_OSError          = c->EXC_OSError;
+    VALUE saved_EXC_FileNotFoundError= c->EXC_FileNotFoundError;
+    // Save TYPE_* so that `int`, `str`, etc. across modules share identity.
+    VALUE saved_TYPE_int       = c->TYPE_int;
+    VALUE saved_TYPE_float     = c->TYPE_float;
+    VALUE saved_TYPE_complex   = c->TYPE_complex;
+    VALUE saved_TYPE_bool      = c->TYPE_bool;
+    VALUE saved_TYPE_str       = c->TYPE_str;
+    VALUE saved_TYPE_bytes     = c->TYPE_bytes;
+    VALUE saved_TYPE_bytearray = c->TYPE_bytearray;
+    VALUE saved_TYPE_list      = c->TYPE_list;
+    VALUE saved_TYPE_tuple     = c->TYPE_tuple;
+    VALUE saved_TYPE_dict      = c->TYPE_dict;
+    VALUE saved_TYPE_set       = c->TYPE_set;
+    VALUE saved_TYPE_frozenset = c->TYPE_frozenset;
+    VALUE saved_TYPE_range     = c->TYPE_range;
+    VALUE saved_TYPE_type      = c->TYPE_type;
+    VALUE saved_TYPE_object    = c->TYPE_object;
     c->globals = new_g;
     install_builtins(c);
+    // Re-bind the imported module's globals to the caller's exception
+    // classes so exceptions raised inside cross module boundary match
+    // by identity.
+    c->EXC_Exception        = saved_EXC_Exception;
+    c->EXC_TypeError        = saved_EXC_TypeError;
+    c->EXC_ValueError       = saved_EXC_ValueError;
+    c->EXC_NameError        = saved_EXC_NameError;
+    c->EXC_IndexError       = saved_EXC_IndexError;
+    c->EXC_KeyError         = saved_EXC_KeyError;
+    c->EXC_ZeroDivisionError= saved_EXC_ZeroDivisionError;
+    c->EXC_AttributeError   = saved_EXC_AttributeError;
+    c->EXC_RuntimeError     = saved_EXC_RuntimeError;
+    c->EXC_StopIteration    = saved_EXC_StopIteration;
+    c->EXC_AssertionError   = saved_EXC_AssertionError;
+    c->EXC_ImportError      = saved_EXC_ImportError;
+    c->EXC_ModuleNotFoundError = saved_EXC_ModuleNotFoundError;
+    c->EXC_NotImplementedError = saved_EXC_NotImplementedError;
+    c->EXC_ArithmeticError  = saved_EXC_ArithmeticError;
+    c->EXC_OverflowError    = saved_EXC_OverflowError;
+    c->EXC_OSError          = saved_EXC_OSError;
+    c->EXC_FileNotFoundError= saved_EXC_FileNotFoundError;
+    c->TYPE_int       = saved_TYPE_int;
+    c->TYPE_float     = saved_TYPE_float;
+    c->TYPE_complex   = saved_TYPE_complex;
+    c->TYPE_bool      = saved_TYPE_bool;
+    c->TYPE_str       = saved_TYPE_str;
+    c->TYPE_bytes     = saved_TYPE_bytes;
+    c->TYPE_bytearray = saved_TYPE_bytearray;
+    c->TYPE_list      = saved_TYPE_list;
+    c->TYPE_tuple     = saved_TYPE_tuple;
+    c->TYPE_dict      = saved_TYPE_dict;
+    c->TYPE_set       = saved_TYPE_set;
+    c->TYPE_frozenset = saved_TYPE_frozenset;
+    c->TYPE_range     = saved_TYPE_range;
+    c->TYPE_type      = saved_TYPE_type;
+    c->TYPE_object    = saved_TYPE_object;
+    py_global_set(c, "int",        c->TYPE_int);
+    py_global_set(c, "float",      c->TYPE_float);
+    py_global_set(c, "complex",    c->TYPE_complex);
+    py_global_set(c, "bool",       c->TYPE_bool);
+    py_global_set(c, "str",        c->TYPE_str);
+    py_global_set(c, "bytes",      c->TYPE_bytes);
+    py_global_set(c, "bytearray",  c->TYPE_bytearray);
+    py_global_set(c, "list",       c->TYPE_list);
+    py_global_set(c, "tuple",      c->TYPE_tuple);
+    py_global_set(c, "dict",       c->TYPE_dict);
+    py_global_set(c, "set",        c->TYPE_set);
+    py_global_set(c, "frozenset",  c->TYPE_frozenset);
+    py_global_set(c, "range",      c->TYPE_range);
+    py_global_set(c, "type",       c->TYPE_type);
+    py_global_set(c, "object",     c->TYPE_object);
+    py_global_set(c, "Exception",        c->EXC_Exception);
+    py_global_set(c, "TypeError",        c->EXC_TypeError);
+    py_global_set(c, "ValueError",       c->EXC_ValueError);
+    py_global_set(c, "NameError",        c->EXC_NameError);
+    py_global_set(c, "IndexError",       c->EXC_IndexError);
+    py_global_set(c, "KeyError",         c->EXC_KeyError);
+    py_global_set(c, "ZeroDivisionError",c->EXC_ZeroDivisionError);
+    py_global_set(c, "AttributeError",   c->EXC_AttributeError);
+    py_global_set(c, "RuntimeError",     c->EXC_RuntimeError);
+    py_global_set(c, "StopIteration",    c->EXC_StopIteration);
+    py_global_set(c, "AssertionError",   c->EXC_AssertionError);
+    py_global_set(c, "ImportError",          c->EXC_ImportError);
+    py_global_set(c, "ModuleNotFoundError",  c->EXC_ModuleNotFoundError);
+    py_global_set(c, "NotImplementedError",  c->EXC_NotImplementedError);
+    py_global_set(c, "ArithmeticError",      c->EXC_ArithmeticError);
+    py_global_set(c, "OverflowError",        c->EXC_OverflowError);
+    py_global_set(c, "OSError",              c->EXC_OSError);
+    py_global_set(c, "FileNotFoundError",    c->EXC_FileNotFoundError);
+    py_global_set(c, "IOError",              c->EXC_OSError);
 
     // tokenize + parse the module file.  The lexer/parser state is
     // reset by tokenize(), and we're being called at runtime so the
@@ -3915,8 +8154,29 @@ bi_import(CTX *c, int argc, VALUE *argv)
     tokenize(src, path);
     NODE *body = parse_program();
 
-    EVAL(c, body);
-    if (c->state == PY_STATE_RAISE) { c->globals = saved_g; free(src); return PY_NONE; }
+    // Wrap module body in a local try-frame so that any exception
+    // inside module init is caught here.  We then restore globals
+    // and re-raise via py_raise_exc so the caller's try/except
+    // (which runs on the *original* globals) sees it.
+    jmp_buf jb;
+    if (c->try_top < 64) c->try_stack[c->try_top++] = &jb;
+    if (setjmp(jb) == 0) {
+        EVAL(c, body);
+    }
+    c->try_top--;
+    if (c->state == PY_STATE_RAISE) {
+        // Module init raised — restore caller's globals first, then
+        // re-raise so the caller's try/except (running on the original
+        // globals) sees it.  Do NOT cache the half-initialised module.
+        VALUE exc = c->state_value;
+        c->globals = saved_g;
+        free(src);
+        c->state = PY_STATE_RAISE;
+        c->state_value = exc;
+        if (c->try_top > 0) longjmp(*c->try_stack[c->try_top - 1], 1);
+        if (c->err_jmp_active) longjmp(c->err_jmp, 1);
+        return PY_NONE;
+    }
     c->state = PY_STATE_NORMAL; c->state_value = PY_NONE;
 
     // Wrap globals into a module pyobj.
@@ -3929,6 +8189,446 @@ bi_import(CTX *c, int argc, VALUE *argv)
     py_dict_set(c, mod_dict, argv[0], mod);
     free(src);
     return mod;
+}
+
+// Synthetic Exception.__init__(self, *args) — sets self.args and
+// self.message (= args[0] if there's exactly one arg).
+VALUE
+bi_exception_init(CTX *c, int argc, VALUE *argv)
+{
+    VALUE self = argv[0];
+    int nargs = argc - 1;
+    VALUE args_tuple = py_make_tuple(argc > 1 ? &argv[1] : NULL, nargs);
+    py_setattr(c, self, "args", args_tuple);
+    if (nargs == 1) {
+        py_setattr(c, self, "message", argv[1]);
+    } else if (nargs == 0) {
+        py_setattr(c, self, "message", py_make_str("", 0));
+    }
+    // StopIteration(value) — expose .value (used by `yield from` /
+    // generator return).  Harmless for other Exception subclasses.
+    py_setattr(c, self, "value", nargs >= 1 ? argv[1] : PY_NONE);
+    return PY_NONE;
+}
+
+// Math primitives surfaced as `__pystro_*__` and wrapped by `math.py`.
+static VALUE
+bi_pystro_sqrt(CTX *c, int argc, VALUE *argv)
+{ (void)argc; double d = py_to_double(c, argv[0]);
+  if (d < 0) py_raise_exc(c, c->EXC_ValueError, "math domain error"); return py_make_float(sqrt(d)); }
+static VALUE
+bi_pystro_sin(CTX *c, int argc, VALUE *argv)
+{ (void)argc; return py_make_float(sin(py_to_double(c, argv[0]))); }
+static VALUE
+bi_pystro_cos(CTX *c, int argc, VALUE *argv)
+{ (void)argc; return py_make_float(cos(py_to_double(c, argv[0]))); }
+static VALUE
+bi_pystro_tan(CTX *c, int argc, VALUE *argv)
+{ (void)argc; return py_make_float(tan(py_to_double(c, argv[0]))); }
+static VALUE
+bi_pystro_log(CTX *c, int argc, VALUE *argv)
+{
+    double x = py_to_double(c, argv[0]);
+    if (x <= 0) py_raise_exc(c, c->EXC_ValueError, "math domain error");
+    if (argc >= 2) {
+        double base = py_to_double(c, argv[1]);
+        if (base <= 0 || base == 1) py_raise_exc(c, c->EXC_ValueError, "math domain error");
+        return py_make_float(log(x) / log(base));
+    }
+    return py_make_float(log(x));
+}
+static VALUE
+bi_pystro_exp(CTX *c, int argc, VALUE *argv)
+{ (void)argc; return py_make_float(exp(py_to_double(c, argv[0]))); }
+static VALUE
+bi_pystro_floor(CTX *c, int argc, VALUE *argv)
+{ (void)argc; return py_make_int((int64_t)floor(py_to_double(c, argv[0]))); }
+static VALUE
+bi_pystro_ceil(CTX *c, int argc, VALUE *argv)
+{ (void)argc; return py_make_int((int64_t)ceil(py_to_double(c, argv[0]))); }
+static VALUE
+bi_pystro_atan2(CTX *c, int argc, VALUE *argv)
+{ (void)argc;
+  return py_make_float(atan2(py_to_double(c, argv[0]), py_to_double(c, argv[1]))); }
+static VALUE
+bi_pystro_pow(CTX *c, int argc, VALUE *argv)
+{ (void)argc;
+  return py_make_float(pow(py_to_double(c, argv[0]), py_to_double(c, argv[1]))); }
+
+// Time / OS primitives surfaced through `time.py` and `os.py`.
+static VALUE
+bi_pystro_time(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc; (void)argv;
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    return py_make_float(ts.tv_sec + ts.tv_nsec / 1e9);
+}
+static VALUE
+bi_pystro_sleep(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    double d = py_to_double(c, argv[0]);
+    if (d <= 0) return PY_NONE;
+    struct timespec req = { (time_t)d, (long)((d - (time_t)d) * 1e9) };
+    nanosleep(&req, NULL);
+    return PY_NONE;
+}
+static VALUE
+bi_pystro_perf_counter(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc; (void)argv;
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return py_make_float(ts.tv_sec + ts.tv_nsec / 1e9);
+}
+static VALUE
+bi_pystro_getenv(CTX *c, int argc, VALUE *argv)
+{
+    if (!py_is_str(argv[0])) py_raise_exc(c, c->EXC_TypeError, "getenv: name must be str");
+    size_t L = PY_PTR(argv[0])->str.len;
+    char *buf = (char *)alloca(L + 1);
+    memcpy(buf, PY_PTR(argv[0])->str.chars, L); buf[L] = '\0';
+    const char *v = getenv(buf);
+    if (v) return py_make_str(v, strlen(v));
+    return argc >= 2 ? argv[1] : PY_NONE;
+}
+static VALUE
+bi_pystro_getcwd(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc; (void)argv;
+    char buf[4096];
+    if (!getcwd(buf, sizeof(buf))) return py_make_str("", 0);
+    return py_make_str(buf, strlen(buf));
+}
+// MD5 — RFC 1321 reference implementation.
+static const uint32_t MD5_K[64] = {
+    0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a, 0xa8304613, 0xfd469501,
+    0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be, 0x6b901122, 0xfd987193, 0xa679438e, 0x49b40821,
+    0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa, 0xd62f105d, 0x02441453, 0xd8a1e681, 0xe7d3fbc8,
+    0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed, 0xa9e3e905, 0xfcefa3f8, 0x676f02d9, 0x8d2a4c8a,
+    0xfffa3942, 0x8771f681, 0x6d9d6122, 0xfde5380c, 0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70,
+    0x289b7ec6, 0xeaa127fa, 0xd4ef3085, 0x04881d05, 0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665,
+    0xf4292244, 0x432aff97, 0xab9423a7, 0xfc93a039, 0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1,
+    0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1, 0xf7537e82, 0xbd3af235, 0x2ad7d2bb, 0xeb86d391,
+};
+static const int MD5_S[64] = {
+    7,12,17,22,7,12,17,22,7,12,17,22,7,12,17,22,
+    5, 9,14,20,5, 9,14,20,5, 9,14,20,5, 9,14,20,
+    4,11,16,23,4,11,16,23,4,11,16,23,4,11,16,23,
+    6,10,15,21,6,10,15,21,6,10,15,21,6,10,15,21,
+};
+static inline uint32_t rotl32(uint32_t x, int n) { return (x << n) | (x >> (32 - n)); }
+
+static VALUE
+bi_pystro_md5(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    if (!py_is_str(argv[0]) && !py_is_byteseq(argv[0]))
+        py_raise_exc(c, c->EXC_TypeError, "md5 needs str or bytes");
+    const unsigned char *src = (const unsigned char *)PY_PTR(argv[0])->str.chars;
+    size_t L = PY_PTR(argv[0])->str.len;
+    // Pad: append 0x80, zeros until length % 64 == 56, then 8-byte length.
+    size_t total = ((L + 9 + 63) / 64) * 64;
+    unsigned char *m = (unsigned char *)GC_malloc_atomic(total);
+    memcpy(m, src, L);
+    m[L] = 0x80;
+    for (size_t i = L + 1; i < total - 8; i++) m[i] = 0;
+    uint64_t bits = (uint64_t)L * 8;
+    for (int i = 0; i < 8; i++) m[total - 8 + i] = (unsigned char)(bits >> (8 * i));
+
+    uint32_t a0 = 0x67452301, b0 = 0xefcdab89, c0 = 0x98badcfe, d0 = 0x10325476;
+    for (size_t off = 0; off < total; off += 64) {
+        uint32_t M[16];
+        for (int i = 0; i < 16; i++)
+            M[i] = (uint32_t)m[off+i*4]
+                 | ((uint32_t)m[off+i*4+1] << 8)
+                 | ((uint32_t)m[off+i*4+2] << 16)
+                 | ((uint32_t)m[off+i*4+3] << 24);
+        uint32_t A = a0, B = b0, C = c0, D = d0;
+        for (int i = 0; i < 64; i++) {
+            uint32_t F; int g;
+            if (i < 16) { F = (B & C) | (~B & D); g = i; }
+            else if (i < 32) { F = (D & B) | (~D & C); g = (5*i + 1) & 15; }
+            else if (i < 48) { F = B ^ C ^ D; g = (3*i + 5) & 15; }
+            else { F = C ^ (B | ~D); g = (7*i) & 15; }
+            uint32_t tmp = D;
+            D = C; C = B;
+            B = B + rotl32(A + F + MD5_K[i] + M[g], MD5_S[i]);
+            A = tmp;
+        }
+        a0 += A; b0 += B; c0 += C; d0 += D;
+    }
+    char hex[33];
+    uint32_t parts[4] = { a0, b0, c0, d0 };
+    for (int i = 0; i < 4; i++) {
+        for (int j = 0; j < 4; j++)
+            sprintf(&hex[i*8 + j*2], "%02x", (parts[i] >> (8*j)) & 0xff);
+    }
+    hex[32] = '\0';
+    return py_make_str(hex, 32);
+}
+
+// SHA-256 — FIPS 180-4 reference impl.
+static const uint32_t SHA256_K[64] = {
+    0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+    0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+    0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+    0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+    0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+    0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+    0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+    0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2,
+};
+
+static VALUE
+bi_pystro_sha256(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    if (!py_is_str(argv[0]) && !py_is_byteseq(argv[0]))
+        py_raise_exc(c, c->EXC_TypeError, "sha256 needs str or bytes");
+    const unsigned char *src = (const unsigned char *)PY_PTR(argv[0])->str.chars;
+    size_t L = PY_PTR(argv[0])->str.len;
+    size_t total = ((L + 9 + 63) / 64) * 64;
+    unsigned char *m = (unsigned char *)GC_malloc_atomic(total);
+    memcpy(m, src, L);
+    m[L] = 0x80;
+    for (size_t i = L + 1; i < total - 8; i++) m[i] = 0;
+    uint64_t bits = (uint64_t)L * 8;
+    for (int i = 0; i < 8; i++) m[total - 8 + i] = (unsigned char)(bits >> (8 * (7 - i)));
+
+    uint32_t H[8] = {
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+        0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+    };
+    for (size_t off = 0; off < total; off += 64) {
+        uint32_t W[64];
+        for (int i = 0; i < 16; i++)
+            W[i] = ((uint32_t)m[off+i*4] << 24)
+                 | ((uint32_t)m[off+i*4+1] << 16)
+                 | ((uint32_t)m[off+i*4+2] << 8)
+                 | (uint32_t)m[off+i*4+3];
+        for (int i = 16; i < 64; i++) {
+            uint32_t s0 = (W[i-15] >> 7 | W[i-15] << 25) ^ (W[i-15] >> 18 | W[i-15] << 14) ^ (W[i-15] >> 3);
+            uint32_t s1 = (W[i-2] >> 17 | W[i-2] << 15) ^ (W[i-2] >> 19 | W[i-2] << 13) ^ (W[i-2] >> 10);
+            W[i] = W[i-16] + s0 + W[i-7] + s1;
+        }
+        uint32_t a=H[0],b=H[1],cc=H[2],d=H[3],e=H[4],f=H[5],g=H[6],h=H[7];
+        for (int i = 0; i < 64; i++) {
+            uint32_t S1 = (e>>6 | e<<26) ^ (e>>11 | e<<21) ^ (e>>25 | e<<7);
+            uint32_t ch = (e & f) ^ (~e & g);
+            uint32_t t1 = h + S1 + ch + SHA256_K[i] + W[i];
+            uint32_t S0 = (a>>2 | a<<30) ^ (a>>13 | a<<19) ^ (a>>22 | a<<10);
+            uint32_t mj = (a & b) ^ (a & cc) ^ (b & cc);
+            uint32_t t2 = S0 + mj;
+            h = g; g = f; f = e; e = d + t1;
+            d = cc; cc = b; b = a; a = t1 + t2;
+        }
+        H[0] += a; H[1] += b; H[2] += cc; H[3] += d;
+        H[4] += e; H[5] += f; H[6] += g; H[7] += h;
+    }
+    char hex[65];
+    for (int i = 0; i < 8; i++) sprintf(&hex[i*8], "%08x", H[i]);
+    hex[64] = '\0';
+    return py_make_str(hex, 64);
+}
+
+static VALUE
+bi_pystro_path_exists(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    if (!py_is_str(argv[0])) py_raise_exc(c, c->EXC_TypeError, "exists: path must be str");
+    size_t L = PY_PTR(argv[0])->str.len;
+    char *buf = (char *)alloca(L + 1);
+    memcpy(buf, PY_PTR(argv[0])->str.chars, L); buf[L] = '\0';
+    return access(buf, F_OK) == 0 ? PY_TRUE : PY_FALSE;
+}
+
+static VALUE
+bi_pystro_listdir(CTX *c, int argc, VALUE *argv)
+{
+    extern int closedir(DIR *);
+    extern DIR *opendir(const char *);
+    extern struct dirent *readdir(DIR *);
+    const char *p = ".";
+    char buf[1024];
+    if (argc >= 1 && py_is_str(argv[0])) {
+        size_t L = PY_PTR(argv[0])->str.len;
+        if (L >= sizeof(buf)) py_raise_exc(c, c->EXC_RuntimeError, "listdir: path too long");
+        memcpy(buf, PY_PTR(argv[0])->str.chars, L); buf[L] = '\0';
+        p = buf;
+    }
+    DIR *d = opendir(p);
+    if (!d) py_raise_exc(c, c->EXC_RuntimeError, "listdir: %s", p);
+    VALUE r = py_make_list(NULL, 0);
+    struct dirent *de;
+    while ((de = readdir(d)) != NULL) {
+        if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0) continue;
+        py_list_append(c, r, py_make_str(de->d_name, strlen(de->d_name)));
+    }
+    closedir(d);
+    return r;
+}
+
+static VALUE
+bi_pystro_remove(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    if (!py_is_str(argv[0])) py_raise_exc(c, c->EXC_TypeError, "remove: path must be str");
+    size_t L = PY_PTR(argv[0])->str.len;
+    char *buf = (char *)alloca(L + 1);
+    memcpy(buf, PY_PTR(argv[0])->str.chars, L); buf[L] = '\0';
+    if (unlink(buf) != 0) py_raise_exc(c, c->EXC_RuntimeError, "remove failed: %s", buf);
+    return PY_NONE;
+}
+
+static VALUE
+bi_pystro_makedirs(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    if (!py_is_str(argv[0])) py_raise_exc(c, c->EXC_TypeError, "makedirs: path must be str");
+    size_t L = PY_PTR(argv[0])->str.len;
+    char *buf = (char *)alloca(L + 1);
+    memcpy(buf, PY_PTR(argv[0])->str.chars, L); buf[L] = '\0';
+    bool exist_ok = (argc >= 2 && argv[1] == PY_TRUE);
+    // Create intermediate dirs.
+    char path[1024];
+    size_t plen = 0;
+    for (size_t i = 0; i <= L; i++) {
+        if (buf[i] == '/' || buf[i] == '\0') {
+            if (plen == 0 && buf[i] == '/') {
+                path[plen++] = '/'; path[plen] = '\0';
+                continue;
+            }
+            if (plen > 0) {
+                path[plen] = '\0';
+                if (mkdir(path, 0755) != 0) {
+                    if (errno == EEXIST && exist_ok) { /* ok */ }
+                    else if (errno != EEXIST) py_raise_exc(c, c->EXC_RuntimeError, "makedirs failed: %s", path);
+                }
+            }
+            if (buf[i] == '/' && plen + 1 < sizeof(path)) {
+                path[plen++] = '/'; path[plen] = '\0';
+            }
+        } else {
+            if (plen + 1 < sizeof(path)) { path[plen++] = buf[i]; path[plen] = '\0'; }
+        }
+    }
+    return PY_NONE;
+}
+
+static VALUE
+bi_pystro_isdir(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    if (!py_is_str(argv[0])) py_raise_exc(c, c->EXC_TypeError, "isdir: path must be str");
+    size_t L = PY_PTR(argv[0])->str.len;
+    char *buf = (char *)alloca(L + 1);
+    memcpy(buf, PY_PTR(argv[0])->str.chars, L); buf[L] = '\0';
+    struct stat st;
+    if (stat(buf, &st) != 0) return PY_FALSE;
+    return S_ISDIR(st.st_mode) ? PY_TRUE : PY_FALSE;
+}
+
+static VALUE
+bi_pystro_isfile(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    if (!py_is_str(argv[0])) py_raise_exc(c, c->EXC_TypeError, "isfile: path must be str");
+    size_t L = PY_PTR(argv[0])->str.len;
+    char *buf = (char *)alloca(L + 1);
+    memcpy(buf, PY_PTR(argv[0])->str.chars, L); buf[L] = '\0';
+    struct stat st;
+    if (stat(buf, &st) != 0) return PY_FALSE;
+    return S_ISREG(st.st_mode) ? PY_TRUE : PY_FALSE;
+}
+
+static VALUE
+bi_pystro_abspath(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    if (!py_is_str(argv[0])) py_raise_exc(c, c->EXC_TypeError, "abspath: path must be str");
+    size_t L = PY_PTR(argv[0])->str.len;
+    char in[1024];
+    if (L >= sizeof(in)) py_raise_exc(c, c->EXC_RuntimeError, "abspath: path too long");
+    memcpy(in, PY_PTR(argv[0])->str.chars, L); in[L] = '\0';
+    char out[4096];
+    if (in[0] == '/') {
+        snprintf(out, sizeof(out), "%s", in);
+    } else {
+        char cwd[2048];
+        if (!getcwd(cwd, sizeof(cwd))) py_raise_exc(c, c->EXC_RuntimeError, "abspath: getcwd");
+        snprintf(out, sizeof(out), "%s/%s", cwd, in);
+    }
+    return py_make_str(out, strlen(out));
+}
+
+// Process info / control surfaced through the `sys` module (sys.py).
+extern int    PYSTRO_ARGC;
+extern char **PYSTRO_ARGV;
+static VALUE
+bi_pystro_argv(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc; (void)argv;
+    VALUE r = py_make_list(NULL, 0);
+    for (int i = 0; i < PYSTRO_ARGC; i++)
+        py_list_append(c, r, py_make_str(PYSTRO_ARGV[i], strlen(PYSTRO_ARGV[i])));
+    return r;
+}
+static VALUE
+bi_pystro_exit(CTX *c, int argc, VALUE *argv)
+{
+    (void)c;
+    int code = 0;
+    if (argc >= 1 && PY_IS_FIXNUM(argv[0])) code = (int)PY_FIXVAL(argv[0]);
+    fflush(stdout); fflush(stderr);
+    exit(code);
+}
+
+// `from m import *` — copy all non-underscore names from the module's
+// globals into the current frame's globals.  If the module defines
+// `__all__` (a list of names), only those are exported.
+static VALUE
+bi_import_star(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    VALUE mod = argv[0];
+    if (!py_is_module(mod)) py_raise_exc(c, c->EXC_TypeError, "import * needs a module");
+    struct pyglobals *g = PY_PTR(mod)->module.globals;
+    // Honour __all__ if present and is a list/tuple of strings.
+    VALUE all = 0;
+    for (size_t i = 0; i < g->size; i++) {
+        if (g->entries[i].defined && strcmp(g->entries[i].name, "__all__") == 0) {
+            all = g->entries[i].value; break;
+        }
+    }
+    if (all != 0 && (py_is_list(all) || py_is_tuple(all))) {
+        size_t n = PY_PTR(all)->list.len;
+        for (size_t i = 0; i < n; i++) {
+            VALUE nm = PY_PTR(all)->list.items[i];
+            if (!py_is_str(nm)) continue;
+            const char *cname = PY_PTR(nm)->str.chars;
+            for (size_t j = 0; j < g->size; j++) {
+                if (g->entries[j].defined && strcmp(g->entries[j].name, cname) == 0) {
+                    py_global_set(c, cname, g->entries[j].value);
+                    break;
+                }
+            }
+        }
+    } else {
+        for (size_t i = 0; i < g->size; i++) {
+            if (!g->entries[i].defined) continue;
+            const char *nm = g->entries[i].name;
+            if (nm[0] == '_') continue;
+            // Skip names that look like our own builtins so we don't
+            // overwrite them (print, str, ...) — built-ins are already
+            // present in the destination via install_builtins.
+            // (The destination's own copies stay; the imported ones
+            // would be identical anyway.)
+            py_global_set(c, nm, g->entries[i].value);
+        }
+    }
+    return PY_NONE;
 }
 
 static VALUE
@@ -3955,6 +8655,13 @@ bi_pystro_del(CTX *c, int argc, VALUE *argv)
     if (py_is_set(container)) {
         py_dict_remove(c, container, key);
         return PY_NONE;
+    }
+    if (py_is_instance(container)) {
+        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(container)->inst.cls), "__delitem__");
+        if (m != PY_NONE) {
+            VALUE av[2] = { container, key };
+            return py_apply(c, m, 2, av);
+        }
     }
     py_raise_exc(c, c->EXC_TypeError, "del: unsupported container type");
 }
@@ -3999,9 +8706,23 @@ bi_round(CTX *c, int argc, VALUE *argv)
     double mul = 1.0;
     for (int i = 0; i < ndig; i++) mul *= 10.0;
     for (int i = 0; i > ndig; i--) mul /= 10.0;
-    double r = (d >= 0 ? floor(d * mul + 0.5) : -floor(-d * mul + 0.5)) / mul;
+    // Banker's rounding (round-half-to-even) — matches Python.
+    double scaled = d * mul;
+    double rounded;
+    double fr = floor(scaled);
+    double diff = scaled - fr;
+    if (diff < 0.5) {
+        rounded = fr;
+    } else if (diff > 0.5) {
+        rounded = fr + 1.0;
+    } else {
+        // Exactly half — round to even.
+        if (fmod(fr, 2.0) == 0.0) rounded = fr;
+        else                       rounded = fr + 1.0;
+    }
+    double r = rounded / mul;
     // Python: round(x) → int; round(x, n) → same type as x.
-    if (argc < 2) return PY_FIX((int64_t)r);
+    if (argc < 2) return PY_FIX((int64_t)rounded);
     if (PY_IS_FIXNUM(argv[0]) || py_is_bignum(argv[0])) return PY_FIX((int64_t)r);
     return py_make_float(r);
 }
@@ -4050,6 +8771,20 @@ bi_reversed(CTX *c, int argc, VALUE *argv)
             py_list_append(c, r, py_make_int(v));
         return r;
     }
+    if (py_is_dict(argv[0])) {
+        struct pydict *d = PY_PTR(argv[0])->dict;
+        // Walk entries in reverse insertion order.
+        for (size_t i = d->elen; i > 0; i--)
+            if (pydict_entry_live(d, i - 1)) py_list_append(c, r, d->entries[i - 1].key);
+        return r;
+    }
+    if (py_is_instance(argv[0])) {
+        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(argv[0])->inst.cls), "__reversed__");
+        if (m != PY_NONE) {
+            VALUE av[1] = { argv[0] };
+            return py_apply(c, m, 1, av);
+        }
+    }
     py_raise_exc(c, c->EXC_TypeError, "argument to reversed() must be a sequence");
 }
 
@@ -4057,45 +8792,47 @@ static VALUE
 bi_map(CTX *c, int argc, VALUE *argv)
 {
     if (argc < 2) py_raise_exc(c, c->EXC_TypeError, "map() needs >=2 args");
-    VALUE r = py_make_list(NULL, 0);
     int n_iters = argc - 1;
-    struct py_iter *its = (struct py_iter *)alloca(sizeof(struct py_iter) * n_iters);
+    struct pyobj *o = py_alloc(PY_T_ITER);
+    o->iter_state = (struct py_iter *)GC_malloc(sizeof(struct py_iter));
+    o->iter_state->kind = 10;
+    o->iter_state->container = argv[0];
+    o->iter_state->inner = (struct py_iter *)GC_malloc(sizeof(struct py_iter) * n_iters);
+    o->iter_state->n_inner = n_iters;
     for (int i = 0; i < n_iters; i++) {
-        py_iter_init(c, &its[i], argv[i + 1]);
+        py_iter_init(c, &o->iter_state->inner[i], argv[i + 1]);
         if (c->state != PY_STATE_NORMAL) return PY_NONE;
     }
-    for (;;) {
-        VALUE *args = (VALUE *)alloca(sizeof(VALUE) * n_iters);
-        for (int i = 0; i < n_iters; i++) {
-            if (!py_iter_next(c, &its[i], &args[i])) return r;
-        }
-        VALUE v = py_apply(c, argv[0], n_iters, args);
-        if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
-        py_list_append(c, r, v);
-    }
+    return PY_OBJ_VAL(o);
 }
 
 static VALUE
 bi_filter(CTX *c, int argc, VALUE *argv)
 {
     (void)argc;
-    VALUE r = py_make_list(NULL, 0);
-    struct py_iter it; py_iter_init(c, &it, argv[1]);
+    struct pyobj *o = py_alloc(PY_T_ITER);
+    o->iter_state = (struct py_iter *)GC_malloc(sizeof(struct py_iter));
+    o->iter_state->kind = 11;
+    o->iter_state->container = argv[0];   // None or callable
+    o->iter_state->inner = (struct py_iter *)GC_malloc(sizeof(struct py_iter));
+    o->iter_state->n_inner = 1;
+    py_iter_init(c, &o->iter_state->inner[0], argv[1]);
     if (c->state != PY_STATE_NORMAL) return PY_NONE;
-    VALUE x;
-    while (py_iter_next(c, &it, &x)) {
-        VALUE keep = (argv[0] == PY_NONE) ? (py_is_truthy(x) ? PY_TRUE : PY_FALSE)
-                                          : py_apply(c, argv[0], 1, &x);
-        if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
-        if (py_is_truthy(keep)) py_list_append(c, r, x);
-    }
-    return r;
+    return PY_OBJ_VAL(o);
 }
 
 static VALUE
 bi_iter(CTX *c, int argc, VALUE *argv)
 {
-    (void)argc;
+    if (argc == 2) {
+        // iter(callable, sentinel)
+        struct pyobj *o = py_alloc(PY_T_ITER);
+        o->iter_state = (struct py_iter *)GC_malloc(sizeof(struct py_iter));
+        o->iter_state->kind = 4;
+        o->iter_state->container = argv[0];
+        o->iter_state->sentinel  = argv[1];
+        return PY_OBJ_VAL(o);
+    }
     if (PY_IS_PTR(argv[0]) && PY_PTR(argv[0])->type == PY_T_GEN) return argv[0];
     if (py_is_instance(argv[0])) {
         VALUE cls = PY_OBJ_VAL(PY_PTR(argv[0])->inst.cls);
@@ -4148,33 +8885,144 @@ void
 install_builtins(CTX *c)
 {
     py_global_define(c, "print",      py_make_builtin("print",      bi_print,      0, -1));
-    py_global_define(c, "str",        py_make_builtin("str",        bi_str,        0,  1));
     py_global_define(c, "repr",       py_make_builtin("repr",       bi_repr,       1,  1));
-    py_global_define(c, "int",        py_make_builtin("int",        bi_int,        0,  1));
-    py_global_define(c, "float",      py_make_builtin("float",      bi_float,      0,  1));
-    py_global_define(c, "bool",       py_make_builtin("bool",       bi_bool,       0,  1));
+    py_global_define(c, "ascii",      py_make_builtin("ascii",      bi_repr,       1,  1));
+    // Built-in type classes — proper class objects whose constructors
+    // are the C bi_* functions.  isinstance(5, int), type(5) is int,
+    // and class M(int): pass all work via these.
+    c->TYPE_int       = py_make_builtin_class("int",       bi_int,       PY_T_BIGNUM);
+    py_class_add_method(c, c->TYPE_int, "from_bytes",
+        py_make_builtin("from_bytes", bi_int_from_bytes, 1, 3));
+    c->TYPE_float     = py_make_builtin_class("float",     bi_float,     PY_T_FLOAT);
+    py_class_add_method(c, c->TYPE_float, "fromhex",
+        py_make_builtin("fromhex", bi_float_fromhex, 1, 1));
+    c->TYPE_complex   = py_make_builtin_class("complex",   bi_complex,   PY_T_COMPLEX);
+    c->TYPE_bool      = py_make_builtin_class("bool",      bi_bool,      -1);
+    c->TYPE_str       = py_make_builtin_class("str",       bi_str,       PY_T_STR);
+    py_class_add_method(c, c->TYPE_str, "maketrans",
+        py_make_builtin("maketrans", bi_str_maketrans, 1, 3));
+    c->TYPE_bytes     = py_make_builtin_class("bytes",     bi_bytes,     PY_T_BYTES);
+    py_class_add_method(c, c->TYPE_bytes, "fromhex",
+        py_make_builtin("fromhex", bi_bytes_fromhex, 1, 1));
+    c->TYPE_bytearray = py_make_builtin_class("bytearray", bi_bytearray, PY_T_BYTEARRAY);
+    py_class_add_method(c, c->TYPE_bytearray, "fromhex",
+        py_make_builtin("fromhex", bi_bytes_fromhex, 1, 1));
+    c->TYPE_list      = py_make_builtin_class("list",      bi_list,      PY_T_LIST);
+    c->TYPE_tuple     = py_make_builtin_class("tuple",     bi_tuple,     PY_T_TUPLE);
+    c->TYPE_dict      = py_make_builtin_class("dict",      bi_dict,      PY_T_DICT);
+    py_class_add_method(c, c->TYPE_dict, "fromkeys",
+        py_make_builtin("fromkeys", bi_dict_fromkeys, 1, 2));
+    c->TYPE_set       = py_make_builtin_class("set",       bi_set,       PY_T_SET);
+    c->TYPE_frozenset = py_make_builtin_class("frozenset", bi_frozenset, PY_T_FROZENSET);
+    c->TYPE_range     = py_make_builtin_class("range",     bi_range,     PY_T_RANGE);
+    c->TYPE_type      = py_make_builtin_class("type",      bi_type,      PY_T_CLASS);
+    c->TYPE_object    = py_make_class("object", PY_NONE, false);
+    // Synthetic type classes for built-in non-constructable types.
+    c->TYPE_NoneType                    = py_make_class("NoneType",                     PY_NONE, false);
+    c->TYPE_function                    = py_make_class("function",                     PY_NONE, false);
+    c->TYPE_builtin_function_or_method  = py_make_class("builtin_function_or_method",   PY_NONE, false);
+    c->TYPE_method                      = py_make_class("method",                       PY_NONE, false);
+    c->TYPE_module                      = py_make_class("module",                       PY_NONE, false);
+    c->TYPE_slice                       = py_make_class("slice",                        PY_NONE, false);
+    c->TYPE_ellipsis                    = py_make_class("ellipsis",                     PY_NONE, false);
+    c->TYPE_NotImplementedType          = py_make_class("NotImplementedType",           PY_NONE, false);
+    c->TYPE_memoryview                  = py_make_class("memoryview",                   PY_NONE, false);
+    c->TYPE_generator                   = py_make_class("generator",                    PY_NONE, false);
+    c->TYPE_property                    = py_make_class("property",                     PY_NONE, false);
+    c->TYPE_staticmethod                = py_make_class("staticmethod",                 PY_NONE, false);
+    c->TYPE_classmethod                 = py_make_class("classmethod",                  PY_NONE, false);
+    c->TYPE_super                       = py_make_class("super",                        PY_NONE, false);
+    // Wire up base classes so issubclass/isinstance walk MRO properly.
+    // bool < int < object; everything else < object.  bytes/bytearray
+    // share an ancestor (object) — pystro doesn't model the C-level
+    // bytes-like protocol.
+    {
+        VALUE base_obj[1] = { c->TYPE_object };
+        VALUE base_int[1] = { c->TYPE_int };
+        py_class_set_bases(c->TYPE_int, base_obj, 1);
+        py_class_set_bases(c->TYPE_float, base_obj, 1);
+        py_class_set_bases(c->TYPE_complex, base_obj, 1);
+        py_class_set_bases(c->TYPE_bool, base_int, 1);     // bool subclasses int
+        py_class_set_bases(c->TYPE_str, base_obj, 1);
+        py_class_set_bases(c->TYPE_bytes, base_obj, 1);
+        py_class_set_bases(c->TYPE_bytearray, base_obj, 1);
+        py_class_set_bases(c->TYPE_list, base_obj, 1);
+        py_class_set_bases(c->TYPE_tuple, base_obj, 1);
+        py_class_set_bases(c->TYPE_dict, base_obj, 1);
+        py_class_set_bases(c->TYPE_set, base_obj, 1);
+        py_class_set_bases(c->TYPE_frozenset, base_obj, 1);
+        py_class_set_bases(c->TYPE_range, base_obj, 1);
+        py_class_set_bases(c->TYPE_type, base_obj, 1);
+        py_class_set_bases(c->TYPE_NoneType, base_obj, 1);
+        py_class_set_bases(c->TYPE_function, base_obj, 1);
+        py_class_set_bases(c->TYPE_builtin_function_or_method, base_obj, 1);
+        py_class_set_bases(c->TYPE_method, base_obj, 1);
+        py_class_set_bases(c->TYPE_module, base_obj, 1);
+        py_class_set_bases(c->TYPE_slice, base_obj, 1);
+        py_class_set_bases(c->TYPE_ellipsis, base_obj, 1);
+        py_class_set_bases(c->TYPE_NotImplementedType, base_obj, 1);
+        py_class_set_bases(c->TYPE_memoryview, base_obj, 1);
+        py_class_set_bases(c->TYPE_generator, base_obj, 1);
+        py_class_set_bases(c->TYPE_property, base_obj, 1);
+        py_class_set_bases(c->TYPE_staticmethod, base_obj, 1);
+        py_class_set_bases(c->TYPE_classmethod, base_obj, 1);
+        py_class_set_bases(c->TYPE_super, base_obj, 1);
+    }
+    py_global_define(c, "int",        c->TYPE_int);
+    py_global_define(c, "float",      c->TYPE_float);
+    py_global_define(c, "complex",    c->TYPE_complex);
+    py_global_define(c, "bool",       c->TYPE_bool);
+    py_global_define(c, "str",        c->TYPE_str);
+    py_global_define(c, "bytes",      c->TYPE_bytes);
+    py_global_define(c, "bytearray",  c->TYPE_bytearray);
+    py_global_define(c, "list",       c->TYPE_list);
+    py_global_define(c, "tuple",      c->TYPE_tuple);
+    py_global_define(c, "dict",       c->TYPE_dict);
+    py_global_define(c, "set",        c->TYPE_set);
+    py_global_define(c, "frozenset",  c->TYPE_frozenset);
+    py_global_define(c, "range",      c->TYPE_range);
+    py_global_define(c, "type",       c->TYPE_type);
+    py_global_define(c, "object",     c->TYPE_object);
+    // int/float/complex/bool/str/bytes/bytearray/list/tuple/dict/set/
+    // frozenset/range/type are registered as TYPE classes above.
     py_global_define(c, "len",        py_make_builtin("len",        bi_len,        1,  1));
     py_global_define(c, "abs",        py_make_builtin("abs",        bi_abs,        1,  1));
-    py_global_define(c, "range",      py_make_builtin("range",      bi_range,      1,  3));
-    py_global_define(c, "list",       py_make_builtin("list",       bi_list,       0,  1));
-    py_global_define(c, "tuple",      py_make_builtin("tuple",      bi_tuple,      0,  1));
-    py_global_define(c, "dict",       py_make_builtin("dict",       bi_dict,       0,  0));
-    py_global_define(c, "set",        py_make_builtin("set",        bi_set,        0,  1));
-    py_global_define(c, "frozenset",  py_make_builtin("frozenset",  bi_frozenset,  0,  1));
-    py_global_define(c, "bytes",      py_make_builtin("bytes",      bi_bytes,      0,  1));
-    py_global_define(c, "bytearray",  py_make_builtin("bytearray",  bi_bytearray,  0,  1));
-    py_global_define(c, "type",       py_make_builtin("type",       bi_type,       1,  1));
     py_global_define(c, "isinstance", py_make_builtin("isinstance", bi_isinstance, 2,  2));
+    py_global_define(c, "issubclass", py_make_builtin("issubclass", bi_issubclass, 2,  2));
+    py_global_define(c, "id",         py_make_builtin("id",         bi_id,         1,  1));
+    py_global_define(c, "dir",        py_make_builtin("dir",        bi_dir,        0,  1));
+    py_global_define(c, "globals",    py_make_builtin("globals",    bi_globals,    0,  0));
+    py_global_define(c, "locals",     py_make_builtin("locals",     bi_locals,     0,  0));
+    py_global_define(c, "vars",       py_make_builtin("vars",       bi_vars,       0,  1));
+    py_global_define(c, "hasattr",    py_make_builtin("hasattr",    bi_hasattr,    2,  2));
+    py_global_define(c, "getattr",    py_make_builtin("getattr",    bi_getattr,    2,  3));
+    py_global_define(c, "setattr",    py_make_builtin("setattr",    bi_setattr,    3,  3));
+    py_global_define(c, "delattr",    py_make_builtin("delattr",    bi_delattr,    2,  2));
+    py_global_define(c, "callable",   py_make_builtin("callable",   bi_callable,   1,  1));
+    py_global_define(c, "open",       py_make_builtin("open",       bi_open,       1,  2));
+    py_global_define(c, "eval",       py_make_builtin("eval",       bi_eval,       1,  1));
+    py_global_define(c, "exec",       py_make_builtin("exec",       bi_exec,       1,  1));
     py_global_define(c, "min",        py_make_builtin("min",        bi_min,        1, -1));
     py_global_define(c, "max",        py_make_builtin("max",        bi_max,        1, -1));
     py_global_define(c, "sum",        py_make_builtin("sum",        bi_sum,        1,  2));
     py_global_define(c, "sorted",     py_make_builtin("sorted",     bi_sorted,     1,  1));
-    py_global_define(c, "enumerate",  py_make_builtin("enumerate",  bi_enumerate,  1,  1));
+    py_global_define(c, "enumerate",  py_make_builtin("enumerate",  bi_enumerate,  1,  2));
     py_global_define(c, "zip",        py_make_builtin("zip",        bi_zip,        0, -1));
     py_global_define(c, "chr",        py_make_builtin("chr",        bi_chr,        1,  1));
     py_global_define(c, "ord",        py_make_builtin("ord",        bi_ord,        1,  1));
     py_global_define(c, "hex",        py_make_builtin("hex",        bi_hex,        1,  1));
     py_global_define(c, "bin",        py_make_builtin("bin",        bi_bin,        1,  1));
+    py_global_define(c, "oct",        py_make_builtin("oct",        bi_oct,        1,  1));
+    py_global_define(c, "slice",      py_make_builtin("slice",      bi_slice,      1,  3));
+    py_global_define(c, "memoryview", py_make_builtin("memoryview", bi_memoryview, 1,  1));
+    py_global_define(c, "breakpoint", py_make_builtin("breakpoint", bi_breakpoint, 0, -1));
+    py_global_define(c, "compile",    py_make_builtin("compile",    bi_compile,    3,  6));
+    {
+        struct pyobj *e = py_alloc(PY_T_ELLIPSIS);
+        py_global_define(c, "Ellipsis",       PY_OBJ_VAL(e));
+        struct pyobj *n = py_alloc(PY_T_NOTIMPL);
+        py_global_define(c, "NotImplemented", PY_OBJ_VAL(n));
+    }
     py_global_define(c, "input",      py_make_builtin("input",      bi_input,      0,  1));
     py_global_define(c, "hash",       py_make_builtin("hash",       bi_hash,       1,  1));
     py_global_define(c, "format",     py_make_builtin("format",     bi_format,     1,  2));
@@ -4189,22 +9037,64 @@ install_builtins(CTX *c)
     py_global_define(c, "reversed",    py_make_builtin("reversed",    bi_reversed,   1, 1));
     py_global_define(c, "map",         py_make_builtin("map",         bi_map,        2,-1));
     py_global_define(c, "filter",      py_make_builtin("filter",      bi_filter,     2, 2));
-    py_global_define(c, "iter",        py_make_builtin("iter",        bi_iter,       1, 1));
+    py_global_define(c, "iter",        py_make_builtin("iter",        bi_iter,       1, 2));
     py_global_define(c, "next",        py_make_builtin("next",        bi_next,       1, 2));
 
+    // Synthetic Exception.__init__: sets self.args and self.message.
+    // Lives as a builtin function on the class so user-defined
+    // exception subclasses can `super().__init__(msg)`.
+    extern VALUE bi_exception_init(CTX *c, int argc, VALUE *argv);
     // Built-in exception classes.  Hierarchy is BaseException root, but
     // for now everything inherits Exception → no base.
-    c->EXC_Exception        = py_make_class("Exception",        PY_NONE, true);
+    c->EXC_BaseException    = py_make_class("BaseException",    PY_NONE, true);
+    {
+        VALUE init = py_make_builtin("__init__", bi_exception_init, 1, -1);
+        py_class_add_method(c, c->EXC_BaseException, "__init__", init);
+    }
+    c->EXC_Exception         = py_make_class("Exception",        c->EXC_BaseException, true);
+    c->EXC_SystemExit        = py_make_class("SystemExit",        c->EXC_BaseException, true);
+    c->EXC_KeyboardInterrupt = py_make_class("KeyboardInterrupt", c->EXC_BaseException, true);
+    c->EXC_GeneratorExit     = py_make_class("GeneratorExit",     c->EXC_BaseException, true);
     c->EXC_TypeError        = py_make_class("TypeError",        c->EXC_Exception, true);
     c->EXC_ValueError       = py_make_class("ValueError",       c->EXC_Exception, true);
     c->EXC_NameError        = py_make_class("NameError",        c->EXC_Exception, true);
-    c->EXC_IndexError       = py_make_class("IndexError",       c->EXC_Exception, true);
-    c->EXC_KeyError         = py_make_class("KeyError",         c->EXC_Exception, true);
-    c->EXC_ZeroDivisionError= py_make_class("ZeroDivisionError",c->EXC_Exception, true);
+    c->EXC_LookupError       = py_make_class("LookupError",       c->EXC_Exception, true);
+    c->EXC_IndexError       = py_make_class("IndexError",       c->EXC_LookupError, true);
+    c->EXC_KeyError         = py_make_class("KeyError",         c->EXC_LookupError, true);
+    c->EXC_ArithmeticError   = py_make_class("ArithmeticError",  c->EXC_Exception, true);
+    c->EXC_ZeroDivisionError= py_make_class("ZeroDivisionError",c->EXC_ArithmeticError, true);
+    c->EXC_OverflowError     = py_make_class("OverflowError",    c->EXC_ArithmeticError, true);
+    c->EXC_FloatingPointError= py_make_class("FloatingPointError",c->EXC_ArithmeticError, true);
     c->EXC_AttributeError   = py_make_class("AttributeError",   c->EXC_Exception, true);
     c->EXC_RuntimeError     = py_make_class("RuntimeError",     c->EXC_Exception, true);
+    c->EXC_NotImplementedError= py_make_class("NotImplementedError", c->EXC_RuntimeError, true);
+    c->EXC_RecursionError    = py_make_class("RecursionError",   c->EXC_RuntimeError, true);
     c->EXC_StopIteration    = py_make_class("StopIteration",    c->EXC_Exception, true);
+    c->EXC_StopAsyncIteration= py_make_class("StopAsyncIteration",c->EXC_Exception, true);
     c->EXC_AssertionError   = py_make_class("AssertionError",   c->EXC_Exception, true);
+    c->EXC_ImportError       = py_make_class("ImportError",       c->EXC_Exception, true);
+    c->EXC_ModuleNotFoundError= py_make_class("ModuleNotFoundError", c->EXC_ImportError, true);
+    c->EXC_OSError           = py_make_class("OSError",          c->EXC_Exception, true);
+    c->EXC_FileNotFoundError = py_make_class("FileNotFoundError",c->EXC_OSError, true);
+    c->EXC_PermissionError   = py_make_class("PermissionError",  c->EXC_OSError, true);
+    c->EXC_NotADirectoryError= py_make_class("NotADirectoryError",c->EXC_OSError, true);
+    c->EXC_IsADirectoryError = py_make_class("IsADirectoryError",c->EXC_OSError, true);
+    c->EXC_TimeoutError      = py_make_class("TimeoutError",     c->EXC_OSError, true);
+    c->EXC_BrokenPipeError   = py_make_class("BrokenPipeError",  c->EXC_OSError, true);
+    c->EXC_InterruptedError  = py_make_class("InterruptedError", c->EXC_OSError, true);
+    c->EXC_ConnectionError   = py_make_class("ConnectionError",  c->EXC_OSError, true);
+    c->EXC_BlockingIOError   = py_make_class("BlockingIOError",  c->EXC_OSError, true);
+    c->EXC_ChildProcessError = py_make_class("ChildProcessError",c->EXC_OSError, true);
+    c->EXC_UnicodeError      = py_make_class("UnicodeError",     c->EXC_ValueError, true);
+    c->EXC_UnicodeDecodeError= py_make_class("UnicodeDecodeError",c->EXC_UnicodeError, true);
+    c->EXC_UnicodeEncodeError= py_make_class("UnicodeEncodeError",c->EXC_UnicodeError, true);
+    c->EXC_MemoryError       = py_make_class("MemoryError",      c->EXC_Exception, true);
+    c->EXC_BufferError       = py_make_class("BufferError",      c->EXC_Exception, true);
+    c->EXC_ReferenceError    = py_make_class("ReferenceError",   c->EXC_Exception, true);
+    c->EXC_SyntaxError       = py_make_class("SyntaxError",      c->EXC_Exception, true);
+    c->EXC_IndentationError  = py_make_class("IndentationError", c->EXC_SyntaxError, true);
+    c->EXC_TabError          = py_make_class("TabError",         c->EXC_IndentationError, true);
+    c->EXC_EOFError          = py_make_class("EOFError",         c->EXC_Exception, true);
 
     py_global_define(c, "Exception",        c->EXC_Exception);
     py_global_define(c, "TypeError",        c->EXC_TypeError);
@@ -4217,10 +9107,76 @@ install_builtins(CTX *c)
     py_global_define(c, "RuntimeError",     c->EXC_RuntimeError);
     py_global_define(c, "StopIteration",    c->EXC_StopIteration);
     py_global_define(c, "AssertionError",   c->EXC_AssertionError);
+    py_global_define(c, "ImportError",          c->EXC_ImportError);
+    py_global_define(c, "ModuleNotFoundError",  c->EXC_ModuleNotFoundError);
+    py_global_define(c, "NotImplementedError",  c->EXC_NotImplementedError);
+    py_global_define(c, "ArithmeticError",      c->EXC_ArithmeticError);
+    py_global_define(c, "OverflowError",        c->EXC_OverflowError);
+    py_global_define(c, "OSError",              c->EXC_OSError);
+    py_global_define(c, "FileNotFoundError",    c->EXC_FileNotFoundError);
+    py_global_define(c, "IOError",              c->EXC_OSError);    // alias
+    py_global_define(c, "EnvironmentError",     c->EXC_OSError);    // alias
+    py_global_define(c, "BaseException",        c->EXC_BaseException);
+    py_global_define(c, "SystemExit",           c->EXC_SystemExit);
+    py_global_define(c, "KeyboardInterrupt",    c->EXC_KeyboardInterrupt);
+    py_global_define(c, "GeneratorExit",        c->EXC_GeneratorExit);
+    py_global_define(c, "LookupError",          c->EXC_LookupError);
+    py_global_define(c, "FloatingPointError",   c->EXC_FloatingPointError);
+    py_global_define(c, "RecursionError",       c->EXC_RecursionError);
+    py_global_define(c, "StopAsyncIteration",   c->EXC_StopAsyncIteration);
+    py_global_define(c, "PermissionError",      c->EXC_PermissionError);
+    py_global_define(c, "NotADirectoryError",   c->EXC_NotADirectoryError);
+    py_global_define(c, "IsADirectoryError",    c->EXC_IsADirectoryError);
+    py_global_define(c, "TimeoutError",         c->EXC_TimeoutError);
+    py_global_define(c, "BrokenPipeError",      c->EXC_BrokenPipeError);
+    py_global_define(c, "InterruptedError",     c->EXC_InterruptedError);
+    py_global_define(c, "ConnectionError",      c->EXC_ConnectionError);
+    py_global_define(c, "BlockingIOError",      c->EXC_BlockingIOError);
+    py_global_define(c, "ChildProcessError",    c->EXC_ChildProcessError);
+    py_global_define(c, "UnicodeError",         c->EXC_UnicodeError);
+    py_global_define(c, "UnicodeDecodeError",   c->EXC_UnicodeDecodeError);
+    py_global_define(c, "UnicodeEncodeError",   c->EXC_UnicodeEncodeError);
+    py_global_define(c, "MemoryError",          c->EXC_MemoryError);
+    py_global_define(c, "BufferError",          c->EXC_BufferError);
+    py_global_define(c, "ReferenceError",       c->EXC_ReferenceError);
+    py_global_define(c, "SyntaxError",          c->EXC_SyntaxError);
+    py_global_define(c, "IndentationError",     c->EXC_IndentationError);
+    py_global_define(c, "TabError",             c->EXC_TabError);
+    py_global_define(c, "EOFError",             c->EXC_EOFError);
     py_global_define(c, "__pystro_del__",   py_make_builtin("__pystro_del__", bi_pystro_del, 2, 2));
     py_global_define(c, "__pystro_delattr__",   py_make_builtin("__pystro_delattr__", bi_pystro_delattr, 2, 2));
     py_global_define(c, "__pystro_delglobal__", py_make_builtin("__pystro_delglobal__", bi_pystro_delglobal, 1, 1));
     py_global_define(c, "__pystro_import__",    py_make_builtin("__pystro_import__", bi_import, 1, 1));
+    py_global_define(c, "__import__",           py_make_builtin("__import__", bi_import, 1, 1));
+    py_global_define(c, "__name__",             py_make_str("__main__", 8));
+    py_global_define(c, "__pystro_import_star__", py_make_builtin("__pystro_import_star__", bi_import_star, 1, 1));
+    // C-level math primitives, surfaced through the `math` module (math.py).
+    py_global_define(c, "__pystro_sqrt__",  py_make_builtin("__pystro_sqrt__",  bi_pystro_sqrt,  1, 1));
+    py_global_define(c, "__pystro_sin__",   py_make_builtin("__pystro_sin__",   bi_pystro_sin,   1, 1));
+    py_global_define(c, "__pystro_cos__",   py_make_builtin("__pystro_cos__",   bi_pystro_cos,   1, 1));
+    py_global_define(c, "__pystro_tan__",   py_make_builtin("__pystro_tan__",   bi_pystro_tan,   1, 1));
+    py_global_define(c, "__pystro_log__",   py_make_builtin("__pystro_log__",   bi_pystro_log,   1, 2));
+    py_global_define(c, "__pystro_exp__",   py_make_builtin("__pystro_exp__",   bi_pystro_exp,   1, 1));
+    py_global_define(c, "__pystro_floor__", py_make_builtin("__pystro_floor__", bi_pystro_floor, 1, 1));
+    py_global_define(c, "__pystro_ceil__",  py_make_builtin("__pystro_ceil__",  bi_pystro_ceil,  1, 1));
+    py_global_define(c, "__pystro_atan2__", py_make_builtin("__pystro_atan2__", bi_pystro_atan2, 2, 2));
+    py_global_define(c, "__pystro_pow__",   py_make_builtin("__pystro_pow__",   bi_pystro_pow,   2, 2));
+    py_global_define(c, "__pystro_argv__",  py_make_builtin("__pystro_argv__",  bi_pystro_argv,  0, 0));
+    py_global_define(c, "__pystro_exit__",  py_make_builtin("__pystro_exit__",  bi_pystro_exit,  0, 1));
+    py_global_define(c, "__pystro_time__",      py_make_builtin("__pystro_time__",      bi_pystro_time,      0, 0));
+    py_global_define(c, "__pystro_sleep__",     py_make_builtin("__pystro_sleep__",     bi_pystro_sleep,     1, 1));
+    py_global_define(c, "__pystro_perf_counter__", py_make_builtin("__pystro_perf_counter__", bi_pystro_perf_counter, 0, 0));
+    py_global_define(c, "__pystro_getenv__",    py_make_builtin("__pystro_getenv__",    bi_pystro_getenv,    1, 2));
+    py_global_define(c, "__pystro_getcwd__",    py_make_builtin("__pystro_getcwd__",    bi_pystro_getcwd,    0, 0));
+    py_global_define(c, "__pystro_path_exists__", py_make_builtin("__pystro_path_exists__", bi_pystro_path_exists, 1, 1));
+    py_global_define(c, "__pystro_md5__",     py_make_builtin("__pystro_md5__",     bi_pystro_md5,     1, 1));
+    py_global_define(c, "__pystro_sha256__",  py_make_builtin("__pystro_sha256__",  bi_pystro_sha256,  1, 1));
+    py_global_define(c, "__pystro_listdir__",     py_make_builtin("__pystro_listdir__",     bi_pystro_listdir,     0, 1));
+    py_global_define(c, "__pystro_remove__",      py_make_builtin("__pystro_remove__",      bi_pystro_remove,      1, 1));
+    py_global_define(c, "__pystro_makedirs__",    py_make_builtin("__pystro_makedirs__",    bi_pystro_makedirs,    1, 2));
+    py_global_define(c, "__pystro_isdir__",       py_make_builtin("__pystro_isdir__",       bi_pystro_isdir,       1, 1));
+    py_global_define(c, "__pystro_isfile__",      py_make_builtin("__pystro_isfile__",      bi_pystro_isfile,      1, 1));
+    py_global_define(c, "__pystro_abspath__",     py_make_builtin("__pystro_abspath__",     bi_pystro_abspath,     1, 1));
 
     c->current_class = PY_NONE;
 }

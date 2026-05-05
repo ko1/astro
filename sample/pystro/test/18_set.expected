@@ -10,6 +10,6 @@ False
 [1, 2]
 [1, 2, 3, 5]
 ['a', 'b', 'c', 'd', 'r']
-dict
-set
+<class 'dict'>
+<class 'set'>
 60

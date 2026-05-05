@@ -1,0 +1,17 @@
+ok ExceptionClassTest test_filenotfound_is_oserror
+ok ExceptionClassTest test_import_error
+ok ExceptionClassTest test_module_not_found
+ok ExceptionClassTest test_module_not_found_is_import
+ok ExceptionClassTest test_overflow_arithmetic
+ok PrintKwargTest test_sep
+ok StrMethodTest test_capitalize
+ok StrMethodTest test_index_value_error
+ok StrMethodTest test_isascii
+ok StrMethodTest test_isnumeric
+ok StrMethodTest test_rfind
+ok LazyIterTest test_enumerate_lazy
+ok LazyIterTest test_filter_lazy
+ok LazyIterTest test_map_lazy
+ok LazyIterTest test_zip_lazy
+---
+passed=15 failed=0

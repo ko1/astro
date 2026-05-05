@@ -1,0 +1,9 @@
+ok BoolDunderTest test_bool_dunder
+ok BoolDunderTest test_len_dunder_for_bool
+ok IsInstanceTest test_bool_is_int
+ok FuncDocstringTest test_doc
+ok FuncDocstringTest test_no_doc
+ok NegAbsTest test_abs
+ok NegAbsTest test_neg
+---
+passed=7 failed=0

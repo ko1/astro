@@ -1,0 +1,26 @@
+ok TypingTest test_aliases
+ok TypingTest test_typevar
+ok AsyncTest test_async_def
+ok AsyncTest test_gather
+ok PickleTest test_bool_none
+ok PickleTest test_dict
+ok PickleTest test_int
+ok PickleTest test_list
+ok PickleTest test_nested
+ok PickleTest test_str
+ok HashlibTest test_md5
+ok HashlibTest test_sha256
+ok HashlibTest test_str_input
+ok DataclassTest test_basic
+ok DataclassTest test_make
+ok ArgparseTest test_basic
+ok ArgparseTest test_flag
+ok EnumTest test_basic
+ok CollectionsTest test_counter
+ok CollectionsTest test_defaultdict
+ok CollectionsTest test_deque
+ok FunctoolsTest test_cache
+ok FunctoolsTest test_partial
+ok FunctoolsTest test_reduce
+---
+passed=24 failed=0

@@ -1,0 +1,24 @@
+ok ScopeTest test_global_in_method
+ok ScopeTest test_lookup_chain
+ok SliceTest test_list_slice
+ok SliceTest test_slice_assign
+ok SliceTest test_str_slice
+ok SliceTest test_tuple_slice
+ok ControlTest test_chained_compare
+ok ControlTest test_conditional_expr
+ok ControlTest test_continue
+ok ControlTest test_for_break
+ok ControlTest test_for_else
+ok ControlTest test_if_chain
+ok ControlTest test_short_circuit
+ok ControlTest test_walrus
+ok ControlTest test_while_break
+ok ControlTest test_while_else
+ok CompTest test_comp_with_conditions
+ok CompTest test_dictcomp
+ok CompTest test_genexp
+ok CompTest test_listcomp
+ok CompTest test_nested_comp
+ok CompTest test_setcomp
+---
+passed=22 failed=0

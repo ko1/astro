@@ -1,0 +1,13 @@
+ok ClassTest test_attr_dynamic
+ok ClassTest test_basic
+ok ClassTest test_call
+ok ClassTest test_class_attr
+ok ClassTest test_counter
+ok ClassTest test_dict_key
+ok ClassTest test_dunders
+ok ClassTest test_inherit
+ok ClassTest test_isinstance_with_tuple
+ok ClassTest test_issubclass
+ok ClassTest test_super_super
+---
+passed=11 failed=0

@@ -83,6 +83,7 @@ enum pyobj_type {
     PY_T_BOOL,
     PY_T_FLOAT,
     PY_T_BIGNUM,            // GMP mpz
+    PY_T_COMPLEX,           // complex (real + imag double pair)
     PY_T_STR,
     PY_T_BYTES,             // immutable byte sequence (b"...")
     PY_T_BYTEARRAY,         // mutable byte sequence
@@ -104,6 +105,12 @@ enum pyobj_type {
     PY_T_PROPERTY,        // wraps a getter func; called on attribute read
     PY_T_ITER,            // built-in iterator wrapper around a struct py_iter
     PY_T_GEN,             // generator (ucontext-backed lazy yield)
+    PY_T_FILE,            // text/binary file object (FILE* under the hood)
+    PY_T_SUPER,           // bound super proxy: (start_class, self)
+    PY_T_SLICE,           // slice(start, stop, step)
+    PY_T_ELLIPSIS,        // ...
+    PY_T_NOTIMPL,         // NotImplemented sentinel
+    PY_T_MEMVIEW,         // memoryview wrapping a bytes/bytearray
 };
 
 struct pyobj;
@@ -135,20 +142,38 @@ struct pyclass {
     int   nbases;
     VALUE *mro;             // C3-linearised MRO including self at [0]
     int   nmro;
+    // For built-in type classes (int / str / list / ...), `builtin_ctor`
+    // is the C constructor function that py_apply calls when this class
+    // is invoked.  NULL for user classes (which use __init__).
+    py_builtin_fn builtin_ctor;
+    // The PY_T_* tag of values produced by this class.  -1 for user classes.
+    int builtin_tag;
 };
 
-// Open-addressed hash dict.  state: 0=empty, 1=used, 2=tombstone.
+// CPython-style "compact" dict.  Indices table is open-addressed and
+// holds dense indices into the entries array; entries[] is appended
+// to in insertion order, so `for k in d` simply walks entries[].
+//
+//   indices[0..icapa)  : int32_t bucket → entry index (DICT_EMPTY=-1, DICT_TOMB=-2)
+//   entries[0..elen)   : (key, value, hash) — dense, append-only on new keys.
+//                        On delete we mark indices[bucket]=DICT_TOMB and zero out
+//                        entries[i].hash → 0 with DICT_DELETED_KEY sentinel as key.
 struct pydict_entry {
-    VALUE     key;
+    VALUE     key;          // 0 or DICT_DELETED_KEY = deleted slot
     VALUE     value;
     uint64_t  hash;
-    uint8_t   state;
 };
+#define DICT_EMPTY_IDX  ((int32_t)-1)
+#define DICT_TOMB_IDX   ((int32_t)-2)
+#define DICT_DELETED_KEY ((VALUE)0xDEADBEEF1)   // never produced by py_make_*
 struct pydict {
+    int32_t  *indices;      // open-addressed bucket → entries index
     struct pydict_entry *entries;
-    size_t used;            // # used (excludes tombstones)
-    size_t fill;            // used + tombstones
-    size_t capa;            // power of 2
+    size_t   icapa;         // power of 2; #buckets in indices[]
+    size_t   elen;          // # of slots in entries[] (incl. deleted)
+    size_t   ecapa;
+    size_t   used;          // live entries (= elen - deleted)
+    size_t   fill;          // indices[] used (= used + tombstones)
 };
 
 struct pyobj {
@@ -179,6 +204,7 @@ struct pyobj {
                                     // (PY_NONE for non-method funcs) —
                                     // used for cooperative super()
             struct pyglobals *fglobals;  // captured globals at def time
+            struct pydict *attrs;   // user-set attributes (`f.x = 5`); lazy
         } func;
         // PY_T_MODULE: name + its globals.
         struct {
@@ -195,15 +221,37 @@ struct pyobj {
             VALUE func;             // a func or builtin
         } bound;
         // staticmethod / classmethod / property wrap a single func.
-        struct { VALUE wrapped; } wrap;
+        // For PY_T_PROPERTY: `wrapped` is the getter; `setter` is the optional setter.
+        struct { VALUE wrapped; VALUE setter; } wrap;
         // PY_T_ITER: holds a `struct py_iter` for stateful iteration.
         struct py_iter *iter_state;
         // PY_T_GEN: lazy generator (ucontext + body func + saved state).
         struct pygen *gen;
+        // PY_T_FILE: a libc FILE* wrapper.
+        struct {
+            void *fp;          // FILE *
+            char *path;        // duplicated for repr/__name
+            bool  binary;
+            bool  closed;
+        } file;
+        // PY_T_COMPLEX: real + imag pair (CPython same).
+        struct { double re; double im; } cpx;
+        // PY_T_SUPER: bound super proxy.  start_cls = the class to walk
+        // FROM (exclusive); self = the bound instance.
+        struct { VALUE start_cls; VALUE self; } super_;
+        // PY_T_SLICE: slice(start, stop, step).  Each VALUE may be PY_NONE.
+        struct { VALUE start; VALUE stop; VALUE step; } slice_;
+        // PY_T_MEMVIEW: borrowed view over bytes/bytearray.
+        struct { VALUE source; size_t off; size_t len; } memview;
         struct pyclass cls;
         struct {
             struct pyobj *cls;
             struct pydict *attrs;
+            // For instances of a class that subclasses a built-in type
+            // (e.g. `class M(list)`), `primary` holds the underlying
+            // built-in value (list/dict/str/etc.).  Method dispatch on
+            // builtin-inherited methods passes `primary` as self.
+            VALUE primary;
         } inst;
     };
 };
@@ -265,6 +313,17 @@ struct method_cache {
     void *fn;              // py_builtin_fn (or NULL for slow-only)
 };
 
+// Inline cache for `o.attr` on instances.  Stamped per node_attr_get
+// site.  Hot path: same class as last time → look at the cached entry
+// index in inst.attrs; if entries[eidx].key matches by pointer, return
+// entries[eidx].value.  Cache miss falls through to py_getattr.
+struct attr_cache {
+    void *cls_ptr;          // PY_PTR(class) of last seen instance, or NULL
+    int32_t eidx;           // index into inst.attrs->entries[]
+    uint64_t attrs_id;      // identity of the attrs dict (pointer cast to int)
+                             // — invalidated when the class's method table changes
+};
+
 typedef struct CTX_struct {
     struct pyframe *env;
 
@@ -312,6 +371,83 @@ typedef struct CTX_struct {
     VALUE EXC_RuntimeError;
     VALUE EXC_StopIteration;
     VALUE EXC_AssertionError;
+    VALUE EXC_ImportError;
+    VALUE EXC_ModuleNotFoundError;
+    VALUE EXC_NotImplementedError;
+    VALUE EXC_OSError;
+    VALUE EXC_FileNotFoundError;
+    VALUE EXC_OverflowError;
+    VALUE EXC_ArithmeticError;
+    VALUE EXC_BaseException;
+    VALUE EXC_SystemExit;
+    VALUE EXC_KeyboardInterrupt;
+    VALUE EXC_GeneratorExit;
+    VALUE EXC_UnicodeError;
+    VALUE EXC_UnicodeDecodeError;
+    VALUE EXC_UnicodeEncodeError;
+    VALUE EXC_LookupError;
+    VALUE EXC_FloatingPointError;
+    VALUE EXC_ZeroDivisionError2;   // alias slot — unused
+    VALUE EXC_RecursionError;
+    VALUE EXC_MemoryError;
+    VALUE EXC_BufferError;
+    VALUE EXC_ReferenceError;
+    VALUE EXC_SyntaxError;
+    VALUE EXC_IndentationError;
+    VALUE EXC_TabError;
+    VALUE EXC_PermissionError;
+    VALUE EXC_NotADirectoryError;
+    VALUE EXC_IsADirectoryError;
+    VALUE EXC_TimeoutError;
+    VALUE EXC_BrokenPipeError;
+    VALUE EXC_InterruptedError;
+    VALUE EXC_ConnectionError;
+    VALUE EXC_BlockingIOError;
+    VALUE EXC_ChildProcessError;
+    VALUE EXC_EOFError;
+    VALUE EXC_StopAsyncIteration;
+    // Synthetic type classes for things that don't have a builtin_ctor:
+    VALUE TYPE_NoneType;
+    VALUE TYPE_function;
+    VALUE TYPE_builtin_function_or_method;
+    VALUE TYPE_method;          // bound method
+    VALUE TYPE_module;
+    VALUE TYPE_slice;
+    VALUE TYPE_ellipsis;
+    VALUE TYPE_NotImplementedType;
+    VALUE TYPE_memoryview;
+    VALUE TYPE_generator;
+    VALUE TYPE_property;
+    VALUE TYPE_staticmethod;
+    VALUE TYPE_classmethod;
+    VALUE TYPE_super;
+
+    // True class objects for built-in types — set by install_builtins.
+    // type(5) returns TYPE_int; isinstance(5, int) compares against
+    // TYPE_int; class M(int): pass takes TYPE_int as its base.  These
+    // are stored both here (for fast access) and in `globals` under
+    // their normal names ("int", "str", ...).
+    VALUE TYPE_type;
+    VALUE TYPE_object;
+    VALUE TYPE_int;
+    VALUE TYPE_float;
+    VALUE TYPE_complex;
+    VALUE TYPE_bool;
+    VALUE TYPE_str;
+    VALUE TYPE_bytes;
+    VALUE TYPE_bytearray;
+    VALUE TYPE_list;
+    VALUE TYPE_tuple;
+    VALUE TYPE_dict;
+    VALUE TYPE_set;
+    VALUE TYPE_frozenset;
+    VALUE TYPE_range;
+
+    // Mini call-stack for traceback on uncaught exception.  py_apply
+    // pushes the function name on entry and pops on exit.  Capped to
+    // 1024 frames; deeper recursion just truncates.
+    const char *call_stack[1024];
+    int         call_top;
 } CTX;
 
 extern struct pyobj PY_NONE_OBJ, PY_TRUE_OBJ, PY_FALSE_OBJ;
@@ -339,6 +475,9 @@ static inline bool py_is_set(VALUE v)     { return PY_IS_PTR(v) && PY_PTR(v)->ty
 static inline bool py_is_frozenset(VALUE v){ return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_FROZENSET; }
 static inline bool py_is_any_set(VALUE v) { return py_is_set(v) || py_is_frozenset(v); }
 static inline bool py_is_range(VALUE v)   { return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_RANGE; }
+static inline bool py_is_file(VALUE v)    { return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_FILE; }
+static inline bool py_is_complex(VALUE v) { return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_COMPLEX; }
+static inline bool py_is_super(VALUE v)   { return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_SUPER; }
 static inline bool py_is_func(VALUE v)    { return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_FUNC; }
 static inline bool py_is_builtin(VALUE v) { return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_BUILTIN; }
 static inline bool py_is_bound(VALUE v)   { return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_BOUND_METHOD; }
@@ -349,6 +488,7 @@ static inline bool py_is_callable(VALUE v) {
 }
 
 // Python truthiness.
+extern bool py_is_truthy_instance(VALUE v);     // dispatches __bool__/__len__
 static inline bool
 py_is_truthy(VALUE v)
 {
@@ -363,6 +503,7 @@ py_is_truthy(VALUE v)
       case PY_T_LIST:
       case PY_T_TUPLE:  return o->list.len != 0;
       case PY_T_DICT:   return o->dict->used != 0;
+      case PY_T_INSTANCE: return py_is_truthy_instance(v);
       default:          return true;
     }
 }
@@ -463,11 +604,16 @@ VALUE py_builtin_method(CTX *c, VALUE recv, const char *name);
 // Iteration: returns an opaque iterator handle; `py_iter_next` returns
 // PY_NONE on stop (and sets *done=true), else the next element.
 struct py_iter {
-    int kind;               // 0=list/tuple, 1=str, 2=range, 3=dict
-    VALUE container;
+    int kind;               // 0=list/tuple, 1=str, 2=range, 3=dict, 4=callable+sentinel,
+                            // 8=enumerate, 9=zip, 10=map, 11=filter
+    VALUE container;        // callable for kind=4; inner func for kind=10/11
     int64_t i;
     int64_t end;
     int64_t step;
+    VALUE sentinel;         // kind=4 only
+    // For wrapping iterators (enumerate/zip/map/filter): inner py_iter array.
+    struct py_iter *inner;  // NULL for non-wrapping kinds
+    int n_inner;            // # of inner iters (zip)
 };
 void py_iter_init(CTX *c, struct py_iter *it, VALUE iterable);
 bool py_iter_next(CTX *c, struct py_iter *it, VALUE *out);
@@ -486,6 +632,7 @@ struct pyhandler {
 // Unpack-assignment target.
 struct pyunpack_target {
     bool        is_local;
+    bool        is_starred;     // `*rest` — captures the slice
     int         slot;
     const char *global_name;
 };

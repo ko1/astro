@@ -1,0 +1,15 @@
+ok BinaryDunderTest test_arith
+ok BinaryDunderTest test_bitwise
+ok BinaryDunderTest test_conversions
+ok BinaryDunderTest test_unary
+ok IsinstanceObjectTest test_object_universal
+ok IsinstanceObjectTest test_subclass_chain
+ok GetattrUserDunderTest test_getattr_fallback
+ok CallableInstanceTest test_call_kwargs
+ok LambdaDefaultScopeTest test_default_uses_outer
+ok CallFromMethodKwargsTest test_method_kwarg_call
+ok JsonIndentTest test_indent
+ok JsonIndentTest test_sort_keys
+ok SysModuleTest test_attrs
+---
+passed=13 failed=0

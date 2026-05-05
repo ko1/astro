@@ -1,0 +1,31 @@
+caught oops
+ok
+caught v
+caught t
+caught k
+caught nameless
+caught base
+hit else
+finally
+no-raise-return
+finally
+caught-return
+outer caught inner
+got original
+propagated deep error
+parent caught specific
+base caught generic
+finally runs even with return
+try-return
+caught either
+caught either 2
+code 500
+assert msg: math broken
+zd
+ae
+ix
+ky
+clean
+okay+else
+clean
+exc

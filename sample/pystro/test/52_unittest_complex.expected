@@ -1,0 +1,13 @@
+ok ComplexTest test_add
+ok ComplexTest test_constructor
+ok ComplexTest test_div
+ok ComplexTest test_eq
+ok ComplexTest test_literal
+ok ComplexTest test_mul
+ok ComplexTest test_neg
+ok ComplexTest test_repr
+ok ComplexTest test_sub
+ok ComplexTest test_type
+ok ComplexTest test_zerodiv
+---
+passed=11 failed=0

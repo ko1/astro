@@ -1,0 +1,21 @@
+ok NumericNanTest test_math_nan
+ok NumericNanTest test_nan
+ok MathNewTest test_constants
+ok MathNewTest test_lcm_comb
+ok MathNewTest test_trig
+ok HeapqTest test_basic
+ok BisectTest test_bisect
+ok TextwrapTest test_dedent
+ok TextwrapTest test_wrap
+ok QueueTest test_fifo
+ok QueueTest test_lifo
+ok DunderArithTest test_full_dunders
+ok DunderArithTest test_iadd_only
+ok CompScopeInLambdaTest test_genexp_in_lambda
+ok CompScopeInLambdaTest test_lambda_default_outer_scope
+ok CompScopeInLambdaTest test_listcomp_in_method
+ok CallSiteKwargRegistrationTest test_int_in_method_with_kwarg_call
+ok FloatNaNComparisonTest test_eq_self
+ok FloatNaNComparisonTest test_in_list
+---
+passed=19 failed=0

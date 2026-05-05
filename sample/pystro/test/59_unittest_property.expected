@@ -1,0 +1,11 @@
+ok PropertyTest test_chained_decorators
+ok PropertyTest test_class_body_name_lookup
+ok PropertyTest test_class_docstring
+ok PropertyTest test_class_no_docstring
+ok PropertyTest test_getter_only
+ok PropertyTest test_getter_setter
+ok PropertyTest test_no_setter_raises
+ok PropertyTest test_property_attrs
+ok PropertyTest test_setter_runs
+---
+passed=9 failed=0

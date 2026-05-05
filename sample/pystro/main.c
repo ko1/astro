@@ -1,5 +1,6 @@
 // pystro — Python subset on the ASTro framework.  See README.md.
 
+#define _GNU_SOURCE
 #include <ctype.h>
 #include <errno.h>
 #include <math.h>
@@ -58,10 +59,34 @@ usage(void)
     exit(2);
 }
 
+// Captured argv so that `sys.argv` (via __pystro_argv__) can return it.
+int    PYSTRO_ARGC = 0;
+char **PYSTRO_ARGV = NULL;
+// Directory of the pystro binary itself; used as a sys.path-like fallback
+// so built-in stdlib modules (math.py / sys.py / json.py / etc.) are
+// importable regardless of cwd.
+const char *PYSTRO_BINDIR = NULL;
+
 int
 main(int argc, char *argv[])
 {
     py_gc_init();
+    // Resolve pystro's own directory once so we can use it as a
+    // stdlib search path.
+    {
+        char buf[4096];
+        ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+        if (n > 0) {
+            buf[n] = '\0';
+            char *slash = strrchr(buf, '/');
+            if (slash) {
+                *slash = '\0';
+                char *dup = (char *)malloc(strlen(buf) + 1);
+                strcpy(dup, buf);
+                PYSTRO_BINDIR = dup;
+            }
+        }
+    }
 
     const char *file = NULL;
     const char *eval_str = NULL;
@@ -82,9 +107,22 @@ main(int argc, char *argv[])
         else if (!strcmp(a, "--")) break;
         else { fprintf(stderr, "pystro: unknown option %s\n", a); usage(); }
     }
+    bool repl_mode = false;
     if (!eval_str) {
-        if (ai >= argc) usage();
-        file = argv[ai++];
+        if (ai >= argc) {
+            // No file and no -e: drop into REPL.
+            repl_mode = true;
+        } else {
+            file = argv[ai++];
+        }
+    }
+    // Record argv from the script-name onwards for sys.argv parity.
+    if (file) {
+        PYSTRO_ARGC = argc - (ai - 1);
+        PYSTRO_ARGV = &argv[ai - 1];
+    } else {
+        PYSTRO_ARGC = argc - ai + 1;
+        PYSTRO_ARGV = &argv[ai - 1];
     }
 
     INIT();
@@ -102,6 +140,75 @@ main(int argc, char *argv[])
     py_current_ctx = c;
     install_builtins(c);
 
+    if (repl_mode) {
+        // Read-eval-print loop.  Each input line is parsed as a
+        // top-level program and executed in the same CTX.
+        printf("pystro REPL — Ctrl+D or `exit()` to quit\n");
+        for (;;) {
+#ifdef USE_READLINE
+            char *line = readline(">>> ");
+            if (!line) break;
+            if (*line) add_history(line);
+#else
+            char buf[4096];
+            fputs(">>> ", stdout); fflush(stdout);
+            if (!fgets(buf, sizeof(buf), stdin)) break;
+            char *line = buf;
+#endif
+            // Continuation: keep reading while the buffer ends with a
+            // colon (open block) or has unbalanced parens/brackets.
+            size_t cap = strlen(line) + 1;
+            char *prog = (char *)malloc(cap + 1024);
+            strcpy(prog, line);
+#ifdef USE_READLINE
+            free(line);
+#endif
+            for (;;) {
+                size_t L = strlen(prog);
+                int depth = 0; bool open = false;
+                for (size_t i = 0; i < L; i++) {
+                    if (prog[i] == '(' || prog[i] == '[' || prog[i] == '{') depth++;
+                    else if (prog[i] == ')' || prog[i] == ']' || prog[i] == '}') depth--;
+                }
+                // Open block heuristic: trailing ':' (after stripping spaces).
+                size_t e = L;
+                while (e > 0 && (prog[e-1] == ' ' || prog[e-1] == '\t' || prog[e-1] == '\n')) e--;
+                if (e > 0 && prog[e-1] == ':') open = true;
+                if (depth <= 0 && !open) break;
+#ifdef USE_READLINE
+                char *more = readline("... ");
+                if (!more) break;
+                size_t ml = strlen(more);
+                prog = (char *)realloc(prog, L + ml + 2);
+                prog[L] = '\n';
+                memcpy(prog + L + 1, more, ml + 1);
+                free(more);
+#else
+                fputs("... ", stdout); fflush(stdout);
+                char buf2[4096];
+                if (!fgets(buf2, sizeof(buf2), stdin)) break;
+                size_t ml = strlen(buf2);
+                prog = (char *)realloc(prog, L + ml + 1);
+                memcpy(prog + L, buf2, ml + 1);
+#endif
+            }
+            tokenize(prog, "<repl>");
+            NODE *body = parse_program();
+            if (setjmp(c->err_jmp) == 0) {
+                c->err_jmp_active = 1;
+                EVAL(c, body);
+                if (c->state == PY_STATE_RAISE) {
+                    VALUE exc = c->state_value;
+                    const char *cls_name = py_is_instance(exc) ? PY_PTR(exc)->inst.cls->cls.name : "Exception";
+                    fprintf(stderr, "%s\n", cls_name);
+                    c->state = PY_STATE_NORMAL; c->state_value = PY_NONE;
+                }
+            }
+            c->err_jmp_active = 0;
+            free(prog);
+        }
+        return 0;
+    }
     char *src;
     const char *src_name;
     if (eval_str) { src = strdup(eval_str); src_name = "<command line>"; }
@@ -122,28 +229,42 @@ main(int argc, char *argv[])
 
     OPTIMIZE(body);
 
-    if (setjmp(c->err_jmp) == 0) {
+    int jmp_status = setjmp(c->err_jmp);
+    if (jmp_status == 0) {
         c->err_jmp_active = 1;
         EVAL(c, body);
-        if (c->state == PY_STATE_RAISE) {
-            VALUE exc = c->state_value;
-            const char *cls_name = "Exception";
-            if (py_is_instance(exc)) cls_name = PY_PTR(exc)->inst.cls->cls.name;
-            fprintf(stderr, "Traceback (most recent call last):\n");
-            fprintf(stderr, "%s: ", cls_name);
-            // Print exception's `message` attribute if present.
-            if (py_is_instance(exc) && PY_PTR(exc)->inst.attrs) {
-                VALUE k = py_make_str("message", 7);
-                struct pydict *d = PY_PTR(exc)->inst.attrs;
-                uint64_t h = py_hash(c, k);
-                struct pydict_entry *e = pydict_lookup(c, d, k, h);
-                if (e->state == 1 && py_is_str(e->value))
-                    fwrite(PY_PTR(e->value)->str.chars, 1, PY_PTR(e->value)->str.len, stderr);
+    }
+    c->err_jmp_active = 0;
+    if (c->state == PY_STATE_RAISE) {
+        VALUE exc = c->state_value;
+        const char *cls_name = "Exception";
+        if (py_is_instance(exc)) cls_name = PY_PTR(exc)->inst.cls->cls.name;
+        fprintf(stderr, "Traceback (most recent call last):\n");
+        if (py_is_instance(exc)) {
+            VALUE tb = py_getattr_optional(c, exc, "__traceback__");
+            if (tb && py_is_list(tb)) {
+                size_t n = PY_PTR(tb)->list.len;
+                for (size_t i = 0; i < n; i++) {
+                    VALUE fn = PY_PTR(tb)->list.items[i];
+                    if (py_is_str(fn))
+                        fprintf(stderr, "  in %.*s\n",
+                                (int)PY_PTR(fn)->str.len, PY_PTR(fn)->str.chars);
+                }
             }
-            fputc('\n', stderr);
-            free(src);
-            return 1;
         }
+        fprintf(stderr, "%s: ", cls_name);
+        if (py_is_instance(exc) && PY_PTR(exc)->inst.attrs) {
+            VALUE k = py_make_str("message", 7);
+            struct pydict *d = PY_PTR(exc)->inst.attrs;
+            uint64_t h = py_hash(c, k);
+            int32_t eidx = pydict_find(c, d, k, h);
+            if (eidx >= 0 && py_is_str(d->entries[eidx].value))
+                fwrite(PY_PTR(d->entries[eidx].value)->str.chars, 1,
+                       PY_PTR(d->entries[eidx].value)->str.len, stderr);
+        }
+        fputc('\n', stderr);
+        free(src);
+        return 1;
     }
     free(src);
     return 0;

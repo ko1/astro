@@ -1,0 +1,22 @@
+ok CollectionsTest test_chainmap
+ok CollectionsTest test_dict_from_defaultdict
+ok CollectionsTest test_namedtuple_asdict
+ok CollectionsTest test_namedtuple_attrs
+ok CollectionsTest test_namedtuple_kwargs
+ok ItertoolsTest test_chain_from_iterable
+ok ItertoolsTest test_combinations_with_replacement
+ok ItertoolsTest test_compress
+ok ItertoolsTest test_filterfalse
+ok ItertoolsTest test_groupby
+ok ItertoolsTest test_pairwise
+ok ItertoolsTest test_starmap
+ok ItertoolsTest test_zip_longest
+ok OperatorIopsTest test_iadd_list
+ok OperatorIopsTest test_index
+ok OperatorIopsTest test_length_hint
+ok HeapqMoreTest test_heapify
+ok HeapqMoreTest test_nlargest
+ok HeapqMoreTest test_nsmallest
+ok TempfileTest test_named_tempfile
+---
+passed=20 failed=0

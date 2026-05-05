@@ -1,0 +1,11 @@
+ok DecimalTest test_arith
+ok DecimalTest test_compare
+ok DecimalTest test_construct
+ok FractionTest test_add_sub
+ok FractionTest test_compare
+ok FractionTest test_construct
+ok FractionTest test_mul_div
+ok FractionTest test_neg_abs
+ok FractionTest test_zero_div
+---
+passed=9 failed=0

@@ -193,7 +193,10 @@ parse_error(const char *fmt, ...)
 static void
 expect(int kind, const char *what)
 {
-    if (!match_tok(kind)) parse_error("expected %s, got token kind %d", what, peek_tok(0)->kind);
+    if (!match_tok(kind)) {
+        extern const char *tok_kind_name(int k);
+        parse_error("expected %s, got %s", what, tok_kind_name(peek_tok(0)->kind));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -332,6 +335,13 @@ collect_locals_in_range(Scope *s, size_t start_pos, size_t end_pos)
         }
         if (skip_until_dedent >= 0) continue;
 
+        // A nested `lambda` makes this scope non-leaf — the lambda
+        // escapes via its closure parent, so this frame must be heap-
+        // allocated rather than alloca'd.  We don't *register* a name
+        // here (lambdas are anonymous).
+        if (t->kind == T_LAMBDA) {
+            s->has_nested_def = true;
+        }
         // Nested def/class: skip its body.  The body starts at the next NEWLINE+INDENT.
         if ((t->kind == T_DEF || t->kind == T_CLASS) && i + 1 < end_pos
                 && tok_arr[i+1].kind == T_NAME) {
@@ -406,37 +416,107 @@ collect_locals_in_range(Scope *s, size_t start_pos, size_t end_pos)
             }
             continue;
         }
+        if (t->kind == T_WITH) {
+            // with EXPR as NAME [, EXPR as NAME]* :
+            // Walk the line, registering every `as NAME` we see at top
+            // level (depth 0).  Stop at the colon.
+            size_t j = i + 1;
+            int paren = 0;
+            while (j < end_pos && tok_arr[j].kind != T_NEWLINE) {
+                int kk = tok_arr[j].kind;
+                if (kk == T_LPAREN || kk == T_LBRACK || kk == T_LBRACE) paren++;
+                else if (kk == T_RPAREN || kk == T_RBRACK || kk == T_RBRACE) paren--;
+                else if (paren == 0 && kk == T_COLON) break;
+                else if (paren == 0 && kk == T_AS && j + 1 < end_pos
+                         && tok_arr[j+1].kind == T_NAME) {
+                    if (!scope_is_global_decl(s, tok_arr[j+1].sval))
+                        scope_add_local(s, tok_arr[j+1].sval);
+                }
+                j++;
+            }
+            continue;
+        }
+        // Starred-only multi-target unpack at stmt head: `*name, ... = ...`.
+        if (t->kind == T_STAR && i + 1 < end_pos && tok_arr[i+1].kind == T_NAME) {
+            size_t j = i;
+            bool ok2 = true;
+            while (j < end_pos) {
+                if (tok_arr[j].kind == T_STAR) j++;
+                if (j >= end_pos || tok_arr[j].kind != T_NAME) { ok2 = false; break; }
+                j++;
+                if (j >= end_pos) { ok2 = false; break; }
+                if (tok_arr[j].kind == T_ASSIGN) break;
+                if (tok_arr[j].kind != T_COMMA) { ok2 = false; break; }
+                j++;
+                if (j < end_pos && tok_arr[j].kind == T_ASSIGN) break;
+            }
+            if (ok2 && j < end_pos && tok_arr[j].kind == T_ASSIGN) {
+                size_t kw = i;
+                while (kw < j) {
+                    if (tok_arr[kw].kind == T_STAR) kw++;
+                    if (kw < j && tok_arr[kw].kind == T_NAME &&
+                        !scope_is_global_decl(s, tok_arr[kw].sval) &&
+                        !scope_is_nonlocal_decl(s, tok_arr[kw].sval))
+                        scope_add_local(s, tok_arr[kw].sval);
+                    kw++;
+                    if (kw < j && tok_arr[kw].kind == T_COMMA) kw++;
+                }
+            }
+        }
         // NAME = | NAME += ... | NAME := ... → assignment, treat as local.
+        // But `obj.x = ...` (preceded by `.`) is an attribute set, not a binding.
+        // And `f(name=val)` (preceded by `,` or `(` inside a call) is a kwarg.
         if (t->kind == T_NAME && i + 1 < end_pos) {
             int next = tok_arr[i+1].kind;
-            if (next == T_ASSIGN || next == T_WALRUS ||
-                next == T_PLUS_EQ || next == T_MINUS_EQ ||
-                next == T_STAR_EQ || next == T_SLASH_EQ || next == T_SLASH_SLASH_EQ ||
-                next == T_PERCENT_EQ || next == T_AMP_EQ || next == T_PIPE_EQ ||
-                next == T_CARET_EQ || next == T_LSHIFT_EQ || next == T_RSHIFT_EQ ||
-                next == T_STAR_STAR_EQ) {
+            int prev = i > start_pos ? tok_arr[i-1].kind : T_NEWLINE;
+            // We accept stmt-start positions: after NEWLINE/INDENT/DEDENT/SEMI,
+            // or chained after `=` (for `a = b = ...`).  Walrus (`:=`) is also
+            // an expression-level assignment so we always honour it.
+            bool stmt_start = (prev == T_NEWLINE || prev == T_INDENT ||
+                               prev == T_DEDENT || prev == T_SEMI || prev == T_ASSIGN);
+            bool is_attr_or_subscript = (prev == T_DOT);
+            bool is_assign_op = (next == T_ASSIGN ||
+                                 next == T_PLUS_EQ || next == T_MINUS_EQ ||
+                                 next == T_STAR_EQ || next == T_SLASH_EQ || next == T_SLASH_SLASH_EQ ||
+                                 next == T_PERCENT_EQ || next == T_AMP_EQ || next == T_PIPE_EQ ||
+                                 next == T_CARET_EQ || next == T_LSHIFT_EQ || next == T_RSHIFT_EQ ||
+                                 next == T_STAR_STAR_EQ);
+            // Only treat as a local binding if this looks like a stmt-start
+            // assignment (avoids registering kwarg names from calls).
+            // Walrus is independent (always a real binding even in expressions).
+            if (!is_attr_or_subscript &&
+                ((stmt_start && is_assign_op) || next == T_WALRUS)) {
                 if (!scope_is_global_decl(s, t->sval) &&
                     !scope_is_nonlocal_decl(s, t->sval))
                     scope_add_local(s, t->sval);
             }
-            // Multi-target tuple unpack: `a, b = ...`
-            if (next == T_COMMA) {
+            // Multi-target tuple unpack: `a, b = ...` or `a, *rest, b = ...`.
+            // Only register if the chain ends with `=`.  Skip when we're
+            // inside a paren/bracket/brace (function call kwargs, etc.).
+            if (next == T_COMMA && stmt_start) {
                 size_t j = i;
-                bool all_names = true;
-                while (j < end_pos && tok_arr[j].kind == T_NAME &&
-                       j + 1 < end_pos && tok_arr[j+1].kind == T_COMMA) {
-                    j += 2;
-                    if (j < end_pos && tok_arr[j].kind != T_NAME) { all_names = false; break; }
+                bool ok = true;
+                while (j < end_pos) {
+                    if (tok_arr[j].kind == T_STAR) j++;
+                    if (j >= end_pos || tok_arr[j].kind != T_NAME) { ok = false; break; }
+                    j++;
+                    if (j >= end_pos) { ok = false; break; }
+                    if (tok_arr[j].kind == T_ASSIGN) break;
+                    if (tok_arr[j].kind != T_COMMA) { ok = false; break; }
+                    j++;
+                    if (j < end_pos && tok_arr[j].kind == T_ASSIGN) break;
                 }
-                if (all_names && j < end_pos && tok_arr[j].kind == T_NAME &&
-                    j + 1 < end_pos && tok_arr[j+1].kind == T_ASSIGN) {
-                    size_t k = i;
-                    while (k <= j) {
-                        if (tok_arr[k].kind == T_NAME &&
-                            !scope_is_global_decl(s, tok_arr[k].sval) &&
-                            !scope_is_nonlocal_decl(s, tok_arr[k].sval))
-                            scope_add_local(s, tok_arr[k].sval);
-                        k++;
+                if (ok && j < end_pos && tok_arr[j].kind == T_ASSIGN) {
+                    // Register names.
+                    size_t kw = i;
+                    while (kw < j) {
+                        if (tok_arr[kw].kind == T_STAR) kw++;
+                        if (kw < j && tok_arr[kw].kind == T_NAME &&
+                            !scope_is_global_decl(s, tok_arr[kw].sval) &&
+                            !scope_is_nonlocal_decl(s, tok_arr[kw].sval))
+                            scope_add_local(s, tok_arr[kw].sval);
+                        kw++;
+                        if (kw < j && tok_arr[kw].kind == T_COMMA) kw++;
                     }
                 }
             }
@@ -488,6 +568,7 @@ make_load(const char *name)
             depth++;
         }
     }
+    if (in_class_body) return ALLOC_node_class_body_load(name);
     return ALLOC_node_gref(name);
 }
 
@@ -499,6 +580,9 @@ make_load(const char *name)
 static NODE *
 make_store(const char *name, NODE *rhs)
 {
+    // Class body: bindings go to c->current_class.methods (which serves
+    // as both the method table and the class attribute namespace).
+    if (in_class_body) return ALLOC_node_class_method_set(name, rhs);
     if (cur_scope && !scope_is_global_decl(cur_scope, name)) {
         // `nonlocal` decl: write to an outer scope's existing slot.
         if (scope_is_nonlocal_decl(cur_scope, name)) {
@@ -559,10 +643,13 @@ parse_fstring_payload(const char *s, size_t len)
                 acc = acc ? ALLOC_node_add(acc, p) : p;
                 lit_len = 0;
             }
-            // Find matching '}', allowing nested braces minimally.  A
-            // `:` at depth 1 starts the format spec.
+            // Find matching '}', allowing nested braces minimally.
+            // `!c` (depth 1) sets a conversion; `:` starts format spec.
+            // expr_end = first of `!`, `:`, `}` at depth 1.
             size_t j = i + 1;
             size_t spec_start = 0;
+            size_t conv_pos = 0;
+            size_t eq_pos = 0;       // position of `=` for debug `{x=}` syntax
             int depth = 1;
             int paren = 0;
             while (j < len && depth > 0) {
@@ -570,6 +657,21 @@ parse_fstring_payload(const char *s, size_t len)
                 else if (s[j] == '}') depth--;
                 else if (s[j] == '(' || s[j] == '[') paren++;
                 else if (s[j] == ')' || s[j] == ']') paren--;
+                else if (s[j] == '=' && depth == 1 && paren == 0 && conv_pos == 0
+                         && spec_start == 0 && eq_pos == 0
+                         && j + 1 < len
+                         && (s[j+1] == '}' || s[j+1] == '!' || s[j+1] == ':')
+                         // Avoid mistaking `==` for the debug =.
+                         && (j == i + 1 || s[j-1] != '=')
+                         && s[j+1] != '=') {
+                    eq_pos = j;
+                }
+                else if (s[j] == '!' && depth == 1 && paren == 0 && conv_pos == 0
+                         && spec_start == 0
+                         && j + 1 < len && (s[j+1] == 'r' || s[j+1] == 's' || s[j+1] == 'a')
+                         && j + 2 < len && (s[j+2] == ':' || s[j+2] == '}')) {
+                    conv_pos = j;
+                }
                 else if (s[j] == ':' && depth == 1 && paren == 0 && spec_start == 0) {
                     spec_start = j;
                 }
@@ -577,7 +679,10 @@ parse_fstring_payload(const char *s, size_t len)
             }
             if (j >= len) parse_error("unterminated f-string expression");
 
-            size_t expr_end = spec_start ? spec_start : j;
+            size_t expr_end = eq_pos ? eq_pos
+                            : conv_pos ? conv_pos
+                            : (spec_start ? spec_start : j);
+            char conv = conv_pos ? s[conv_pos + 1] : 0;
 
             // Sub-parse expression.
             const char *saved_buf = src_buf;
@@ -601,6 +706,17 @@ parse_fstring_payload(const char *s, size_t len)
             tok_arr = saved_tok_arr; tok_len = saved_tok_len; tok_capa = saved_tok_capa;
             tok_pos = saved_tok_pos;
 
+            // For `{x=}` debug syntax: default conversion is repr if no
+            // explicit !r/!s/!a is given.  Also prepend "x=" literal.
+            if (eq_pos && conv == 0 && !spec_start) conv = 'r';
+            // Apply !r / !s / !a conversion (wraps expr).
+            if (conv == 'r') {
+                expr = ALLOC_node_call_1(ALLOC_node_gref(intern_name("repr", 4)), expr);
+            } else if (conv == 'a') {
+                expr = ALLOC_node_call_1(ALLOC_node_gref(intern_name("ascii", 5)), expr);
+            } else if (conv == 's') {
+                expr = ALLOC_node_call_1(ALLOC_node_gref("str"), expr);
+            }
             NODE *p;
             if (spec_start) {
                 // Build format(expr, "spec") call.
@@ -610,8 +726,21 @@ parse_fstring_payload(const char *s, size_t len)
                 NODE *spec_node = ALLOC_node_const_str(intern_name(spec_buf, j - spec_start - 1));
                 p = ALLOC_node_call_2(ALLOC_node_gref(intern_name("format", 6)),
                                       expr, spec_node);
+            } else if (conv) {
+                // Already converted to a str by repr/str/ascii; no further str() wrap.
+                p = expr;
             } else {
                 p = str_call_of(expr);
+            }
+            // Prepend "<expr text>=" for debug syntax.
+            if (eq_pos) {
+                size_t et_len = eq_pos - i - 1;
+                char *et = (char *)GC_malloc_atomic(et_len + 2);
+                memcpy(et, s + i + 1, et_len);
+                et[et_len] = '=';
+                et[et_len + 1] = '\0';
+                NODE *prefix = ALLOC_node_const_str(intern_name(et, et_len + 1));
+                p = ALLOC_node_add(prefix, p);
             }
             acc = acc ? ALLOC_node_add(acc, p) : p;
             i = j + 1;
@@ -639,7 +768,63 @@ parse_fstring_payload(const char *s, size_t len)
 static NODE *parse_or(void);
 static NODE *parse_cond(void);
 
+// Forward decls (these are defined further down).
+static const char *new_temp_name(const char *prefix);
+static NODE *build_temp_init(const char *tmp, NODE *init_expr, NODE **out_load);
+static NODE *parse_comp_clauses(NODE *inner_body);
+
+// Scan tokens for `for NAME[, NAME]*` clauses inside the current
+// brace-balanced region, registering each NAME as a local in cur_scope.
+// Used by comprehension/genexp parsers so the target name resolves
+// inside the body expression — even when the surrounding scope (e.g.
+// a lambda) had no pre-scan.
+static void
+prescan_comp_targets(int close_kind)
+{
+    if (!cur_scope) return;
+    size_t save = tok_pos;
+    int depth = 0;
+    while (peek_tok(0)->kind != T_EOF) {
+        int k = peek_tok(0)->kind;
+        if (k == T_LPAREN || k == T_LBRACK || k == T_LBRACE) depth++;
+        else if (k == T_RPAREN || k == T_RBRACK || k == T_RBRACE) {
+            if (depth == 0 && k == close_kind) break;
+            depth--;
+        } else if (depth == 0 && k == T_FOR) {
+            tok_pos++;
+            // Collect NAME (NAME ',')* until 'in'.
+            while (peek_tok(0)->kind == T_NAME) {
+                if (!scope_is_global_decl(cur_scope, peek_tok(0)->sval) &&
+                    !scope_is_nonlocal_decl(cur_scope, peek_tok(0)->sval))
+                    scope_add_local(cur_scope, peek_tok(0)->sval);
+                tok_pos++;
+                if (peek_tok(0)->kind == T_LPAREN) {
+                    // tuple target like `for (a, b) in ...`: skip and
+                    // collect inner names.
+                    int sub = 1;
+                    tok_pos++;
+                    while (sub > 0 && peek_tok(0)->kind != T_EOF) {
+                        int kk = peek_tok(0)->kind;
+                        if (kk == T_LPAREN) sub++;
+                        else if (kk == T_RPAREN) sub--;
+                        else if (kk == T_NAME && sub == 1) {
+                            if (!scope_is_global_decl(cur_scope, peek_tok(0)->sval))
+                                scope_add_local(cur_scope, peek_tok(0)->sval);
+                        }
+                        tok_pos++;
+                    }
+                }
+                if (!match_tok(T_COMMA)) break;
+            }
+            continue;
+        }
+        tok_pos++;
+    }
+    tok_pos = save;
+}
+
 // `( expr_list )` — single → expr; multi (or trailing comma) → tuple.
+// Also handles `( expr for ... )` generator expression form.
 static NODE *
 parse_paren_or_tuple(void)
 {
@@ -649,7 +834,66 @@ parse_paren_or_tuple(void)
         size_t base = node_table_reserve(NULL, 0);
         return ALLOC_node_make_tuple((uint32_t)base, 0);
     }
+    // Pre-scan for spread.  If found, build a list and convert via tuple().
+    {
+        size_t save = tok_pos;
+        bool has_spread = false;
+        int depth = 0;
+        while (peek_tok(0)->kind != T_EOF) {
+            int k = peek_tok(0)->kind;
+            if (k == T_LPAREN || k == T_LBRACK || k == T_LBRACE) depth++;
+            else if (k == T_RPAREN) {
+                if (depth == 0) break;
+                depth--;
+            } else if (k == T_RBRACK || k == T_RBRACE) depth--;
+            else if (k == T_STAR && depth == 0) {
+                int p = (tok_pos > 0) ? tok_arr[tok_pos - 1].kind : T_NEWLINE;
+                if (p == T_LPAREN || p == T_COMMA) { has_spread = true; break; }
+            }
+            tok_pos++;
+        }
+        tok_pos = save;
+        if (has_spread) {
+            const char *tmp = new_temp_name("__tup");
+            NODE *load_tmp;
+            size_t empty_idx = node_table_reserve(NULL, 0);
+            NODE *init = build_temp_init(tmp, ALLOC_node_make_list((uint32_t)empty_idx, 0), &load_tmp);
+            NODE *result = init;
+            for (;;) {
+                if (peek_tok(0)->kind == T_RPAREN) break;
+                if (match_tok(T_STAR)) {
+                    NODE *e = parse_expr();
+                    NODE *call = ALLOC_node_method_1(load_tmp, intern_name("extend", 6), e);
+                    result = ALLOC_node_seq(result, call);
+                } else {
+                    NODE *e = parse_expr();
+                    NODE *call = ALLOC_node_method_1(load_tmp, intern_name("append", 6), e);
+                    result = ALLOC_node_seq(result, call);
+                }
+                if (!match_tok(T_COMMA)) break;
+            }
+            expect(T_RPAREN, "')'");
+            // Convert list to tuple via builtin.
+            NODE *call_tuple = ALLOC_node_call_1(
+                ALLOC_node_gref(intern_name("tuple", 5)), load_tmp);
+            return ALLOC_node_seq(result, call_tuple);
+        }
+    }
+    prescan_comp_targets(T_RPAREN);
     NODE *first = parse_expr();
+    // Generator expression: (expr for x in xs (if cond)*)+.  Desugar
+    // to a list comprehension — eager, but matches Python's observable
+    // behavior for the vast majority of uses (non-infinite source).
+    if (peek_tok(0)->kind == T_FOR) {
+        const char *tmp = new_temp_name("__ge");
+        NODE *load_tmp;
+        size_t empty_idx = node_table_reserve(NULL, 0);
+        NODE *init = build_temp_init(tmp, ALLOC_node_make_list((uint32_t)empty_idx, 0), &load_tmp);
+        NODE *append = ALLOC_node_method_1(load_tmp, intern_name("append", 6), first);
+        NODE *loops = parse_comp_clauses(append);
+        expect(T_RPAREN, "')'");
+        return ALLOC_node_seq(init, ALLOC_node_seq(loops, load_tmp));
+    }
     if (match_tok(T_RPAREN)) return first;
     // tuple
     NODE *items[64];
@@ -800,6 +1044,50 @@ parse_list_literal(void)
         size_t base = node_table_reserve(NULL, 0);
         return ALLOC_node_make_list((uint32_t)base, 0);
     }
+    // Pre-scan for any `*expr` spread.  If found, desugar to
+    // append/extend on a temp list.
+    bool has_spread = false;
+    {
+        size_t save = tok_pos;
+        int depth = 0;
+        while (peek_tok(0)->kind != T_EOF) {
+            int k = peek_tok(0)->kind;
+            if (k == T_LBRACK || k == T_LPAREN || k == T_LBRACE) depth++;
+            else if (k == T_RBRACK) {
+                if (depth == 0) break;
+                depth--;
+            } else if (k == T_RPAREN || k == T_RBRACE) depth--;
+            else if (k == T_STAR && depth == 0) {
+                int p = (tok_pos > 0) ? tok_arr[tok_pos - 1].kind : T_NEWLINE;
+                if (p == T_LBRACK || p == T_COMMA) { has_spread = true; break; }
+            }
+            tok_pos++;
+        }
+        tok_pos = save;
+    }
+    if (has_spread) {
+        const char *tmp = new_temp_name("__lc");
+        NODE *load_tmp;
+        size_t empty_idx = node_table_reserve(NULL, 0);
+        NODE *init = build_temp_init(tmp, ALLOC_node_make_list((uint32_t)empty_idx, 0), &load_tmp);
+        NODE *result = init;
+        for (;;) {
+            if (peek_tok(0)->kind == T_RBRACK) break;
+            if (match_tok(T_STAR)) {
+                NODE *e = parse_expr();
+                NODE *call = ALLOC_node_method_1(load_tmp, intern_name("extend", 6), e);
+                result = ALLOC_node_seq(result, call);
+            } else {
+                NODE *e = parse_expr();
+                NODE *call = ALLOC_node_method_1(load_tmp, intern_name("append", 6), e);
+                result = ALLOC_node_seq(result, call);
+            }
+            if (!match_tok(T_COMMA)) break;
+        }
+        expect(T_RBRACK, "']'");
+        return ALLOC_node_seq(result, load_tmp);
+    }
+    prescan_comp_targets(T_RBRACK);
     NODE *first = parse_expr();
     if (peek_tok(0)->kind == T_FOR) {
         // List comprehension: [expr for x in xs (if cond)*]+
@@ -833,6 +1121,78 @@ parse_dict_or_set_literal(void)
         size_t base = node_table_reserve(NULL, 0);
         return ALLOC_node_make_dict((uint32_t)base, 0);
     }
+    // Pre-scan for spread (`**d` or `*s`) anywhere within the literal.
+    // If found, decide dict vs set by whether any unspread item has `:`.
+    bool has_dspread = false, has_sspread = false, has_pair = false;
+    {
+        size_t save = tok_pos;
+        int depth = 0;
+        while (peek_tok(0)->kind != T_EOF) {
+            int k = peek_tok(0)->kind;
+            if (k == T_LBRACE || k == T_LBRACK || k == T_LPAREN) depth++;
+            else if (k == T_RBRACE) {
+                if (depth == 0) break;
+                depth--;
+            } else if (k == T_RBRACK || k == T_RPAREN) depth--;
+            else if (depth == 0) {
+                int p = (tok_pos > 0) ? tok_arr[tok_pos - 1].kind : T_NEWLINE;
+                if (k == T_STAR_STAR && (p == T_LBRACE || p == T_COMMA)) has_dspread = true;
+                else if (k == T_STAR && (p == T_LBRACE || p == T_COMMA)) has_sspread = true;
+                else if (k == T_COLON) has_pair = true;
+            }
+            tok_pos++;
+        }
+        tok_pos = save;
+    }
+    if (has_dspread || (has_sspread && has_pair)) {
+        // Dict literal with spread.
+        const char *tmp = new_temp_name("__ds");
+        NODE *load_tmp;
+        size_t empty_idx = node_table_reserve(NULL, 0);
+        NODE *init = build_temp_init(tmp, ALLOC_node_make_dict((uint32_t)empty_idx, 0), &load_tmp);
+        NODE *result = init;
+        for (;;) {
+            if (peek_tok(0)->kind == T_RBRACE) break;
+            if (match_tok(T_STAR_STAR)) {
+                NODE *e = parse_expr();
+                NODE *call = ALLOC_node_method_1(load_tmp, intern_name("update", 6), e);
+                result = ALLOC_node_seq(result, call);
+            } else {
+                NODE *kk = parse_expr();
+                expect(T_COLON, "':'");
+                NODE *vv = parse_expr();
+                NODE *set_n = ALLOC_node_subscript_set(load_tmp, kk, vv);
+                result = ALLOC_node_seq(result, set_n);
+            }
+            if (!match_tok(T_COMMA)) break;
+        }
+        expect(T_RBRACE, "'}'");
+        return ALLOC_node_seq(result, load_tmp);
+    }
+    if (has_sspread) {
+        // Set literal with spread.
+        const char *tmp = new_temp_name("__ss");
+        NODE *load_tmp;
+        size_t empty_idx = node_table_reserve(NULL, 0);
+        NODE *init = build_temp_init(tmp, ALLOC_node_make_set((uint32_t)empty_idx, 0), &load_tmp);
+        NODE *result = init;
+        for (;;) {
+            if (peek_tok(0)->kind == T_RBRACE) break;
+            if (match_tok(T_STAR)) {
+                NODE *e = parse_expr();
+                NODE *call = ALLOC_node_method_1(load_tmp, intern_name("update", 6), e);
+                result = ALLOC_node_seq(result, call);
+            } else {
+                NODE *e = parse_expr();
+                NODE *call = ALLOC_node_method_1(load_tmp, intern_name("add", 3), e);
+                result = ALLOC_node_seq(result, call);
+            }
+            if (!match_tok(T_COMMA)) break;
+        }
+        expect(T_RBRACE, "'}'");
+        return ALLOC_node_seq(result, load_tmp);
+    }
+    prescan_comp_targets(T_RBRACE);
     NODE *first = parse_expr();
     // dict literal / dict comprehension if next is `:`
     if (peek_tok(0)->kind == T_COLON) {
@@ -915,11 +1275,11 @@ parse_lambda(void)
             if (match_tok(T_ASSIGN)) {
                 seen_default = true;
                 if (ndefaults >= 16) parse_error("too many defaults");
-                Scope *saved = cur_scope; cur_scope = NULL;
+                // Default values are evaluated in the *enclosing* scope,
+                // not the lambda's.
                 defs[ndefaults].slot = slot;
                 defs[ndefaults].expr = parse_expr();
                 ndefaults++;
-                cur_scope = saved;
             } else if (seen_default) {
                 parse_error("non-default after default");
             }
@@ -945,6 +1305,18 @@ static NODE *
 parse_atom(void)
 {
     Tok *t = peek_tok(0);
+    // `await EXPR` — pystro has no real awaitable; just evaluate the
+    // expression eagerly.  We treat `await` as a soft keyword.
+    if (t->kind == T_NAME && t->sval == intern_name("await", 5)
+            && peek_tok(1)->kind != T_LPAREN
+            && peek_tok(1)->kind != T_DOT
+            && peek_tok(1)->kind != T_COMMA
+            && peek_tok(1)->kind != T_RPAREN
+            && peek_tok(1)->kind != T_ASSIGN
+            && peek_tok(1)->kind != T_NEWLINE) {
+        tok_pos++;
+        return parse_atom();
+    }
     switch (t->kind) {
       case T_INT: {
         tok_pos++;
@@ -957,6 +1329,11 @@ parse_atom(void)
         tok_pos++;
         union { uint64_t u; double d; } pun = { .d = t->fval };
         return ALLOC_node_const_float(pun.u);
+      }
+      case T_IMAG: {
+        tok_pos++;
+        union { uint64_t u; double d; } pun = { .d = t->fval };
+        return ALLOC_node_const_imag(pun.u);
       }
       case T_STR: {
         tok_pos++;
@@ -979,7 +1356,10 @@ parse_atom(void)
       case T_LAMBDA: return parse_lambda();
       case T_NAME: { tok_pos++; return make_load(t->sval); }
       default:
-        parse_error("unexpected token in expression (kind=%d)", t->kind);
+        {
+            extern const char *tok_kind_name(int k);
+            parse_error("unexpected token in expression: %s", tok_kind_name(t->kind));
+        }
     }
 }
 
@@ -1018,7 +1398,19 @@ parse_call_args(NODE *fn)
                 spreads[nspreads].kind = 2; spreads[nspreads].name = nm; spreads[nspreads].node = e;
                 nspreads++;
             } else {
+                // `f(expr for x in xs)` — implicit gen-expression as
+                // the sole argument.  Pre-scan to register `for` targets.
+                if (argc == 0 && nspreads == 0) prescan_comp_targets(T_RPAREN);
                 NODE *e = parse_expr();
+                if (peek_tok(0)->kind == T_FOR && argc == 0 && nspreads == 0) {
+                    const char *tmp = new_temp_name("__ge");
+                    NODE *load_tmp;
+                    size_t empty_idx = node_table_reserve(NULL, 0);
+                    NODE *init = build_temp_init(tmp, ALLOC_node_make_list((uint32_t)empty_idx, 0), &load_tmp);
+                    NODE *append = ALLOC_node_method_1(load_tmp, intern_name("append", 6), e);
+                    NODE *loops = parse_comp_clauses(append);
+                    e = ALLOC_node_seq(init, ALLOC_node_seq(loops, load_tmp));
+                }
                 if (argc >= 64) parse_error("too many args");
                 args[argc++] = e;
                 spreads[nspreads].kind = 0; spreads[nspreads].name = NULL; spreads[nspreads].node = e;
@@ -1070,6 +1462,19 @@ parse_subscript(NODE *seq)
             if (peek_tok(0)->kind != T_RBRACK) step = parse_expr();
         }
     }
+    // `obj[a, b, c]` — tuple subscript (used by typing generic aliases).
+    if (!is_slice && peek_tok(0)->kind == T_COMMA) {
+        NODE *items[16];
+        int n = 0;
+        items[n++] = start;
+        while (match_tok(T_COMMA)) {
+            if (peek_tok(0)->kind == T_RBRACK) break;
+            if (n >= 16) parse_error("too many tuple items in subscript");
+            items[n++] = parse_expr();
+        }
+        size_t base = node_table_reserve(items, n);
+        start = ALLOC_node_make_tuple((uint32_t)base, (uint32_t)n);
+    }
     expect(T_RBRACK, "']'");
     if (!is_slice) return ALLOC_node_subscript_get(seq, start);
     if (!start) start = ALLOC_node_const_none();
@@ -1087,14 +1492,58 @@ parse_dot_trailer(NODE *obj)
     const char *name = peek_tok(0)->sval;
     tok_pos++;
     if (peek_tok(0)->kind == T_LPAREN) {
-        // method call
-        tok_pos++;
+        // method call.  Look ahead for `NAME = expr` (kwarg) or `*` /
+        // `**` spreads to decide between fast-path method_n and full
+        // call_kw via attr_get.
+        size_t save = tok_pos;
+        tok_pos++;        // consume '('
+        bool has_kwarg = false;
+        bool has_spread = false;
+        {
+            int depth = 1;
+            for (size_t p = tok_pos; depth > 0; p++) {
+                int k = tok_arr[p].kind;
+                if (k == T_EOF || k == T_NEWLINE) break;
+                if (k == T_LPAREN || k == T_LBRACK || k == T_LBRACE) depth++;
+                else if (k == T_RPAREN || k == T_RBRACK || k == T_RBRACE) {
+                    depth--;
+                    if (depth == 0) break;
+                }
+                else if (depth == 1 && k == T_NAME &&
+                         tok_arr[p+1].kind == T_ASSIGN) {
+                    has_kwarg = true; break;
+                }
+                else if (depth == 1 && (k == T_STAR || k == T_STAR_STAR)) {
+                    // Leading * / ** at top level of arg list.
+                    has_spread = true;
+                }
+            }
+        }
+        if (has_kwarg || has_spread) {
+            // Desugar `obj.m(args, kw=val)` to `(obj.m)(args, kw=val)`
+            // by reusing parse_call_args on the attribute-get node.
+            tok_pos = save;       // back up to '(' so parse_call_args consumes it
+            NODE *attr = ALLOC_node_attr_get(obj, name);
+            return parse_call_args(attr);
+        }
         NODE *args[64];
         int argc = 0;
         if (peek_tok(0)->kind != T_RPAREN) {
             for (;;) {
                 if (argc >= 64) parse_error("too many args");
-                args[argc++] = parse_expr();
+                if (argc == 0) prescan_comp_targets(T_RPAREN);
+                NODE *e = parse_expr();
+                // Implicit generator-expression as sole argument.
+                if (peek_tok(0)->kind == T_FOR && argc == 0) {
+                    const char *tmp = new_temp_name("__ge");
+                    NODE *load_tmp;
+                    size_t empty_idx = node_table_reserve(NULL, 0);
+                    NODE *init = build_temp_init(tmp, ALLOC_node_make_list((uint32_t)empty_idx, 0), &load_tmp);
+                    NODE *append = ALLOC_node_method_1(load_tmp, intern_name("append", 6), e);
+                    NODE *loops = parse_comp_clauses(append);
+                    e = ALLOC_node_seq(init, ALLOC_node_seq(loops, load_tmp));
+                }
+                args[argc++] = e;
                 if (!match_tok(T_COMMA)) break;
                 if (peek_tok(0)->kind == T_RPAREN) break;
             }
@@ -1131,8 +1580,12 @@ parse_postfix(void)
             self_expr = parse_expr();
             expect(T_RPAREN, "')'");
         }
-        // Now must be followed by `.METHOD(args)`.
-        if (peek_tok(0)->kind != T_DOT) parse_error("super() must be followed by .method(...)");
+        // If NOT followed by `.METHOD(args)`, return a super proxy
+        // value that the user can bind to a variable.
+        if (peek_tok(0)->kind != T_DOT) {
+            if (bare) return ALLOC_node_super_obj();
+            return ALLOC_node_super_obj_explicit(cls_expr, self_expr);
+        }
         tok_pos++;
         if (peek_tok(0)->kind != T_NAME) parse_error("expected method name after super().");
         const char *method = peek_tok(0)->sval;
@@ -1546,9 +1999,16 @@ parse_params(Scope *sc, int *out_nparams, int *out_n_pos_named, int *out_ndefaul
                 if (!match_tok(T_COMMA)) break;
                 continue;
             }
-            // *args (and bare `*` could mark "kwonly start" but we
-            // require a name for now).
+            // *args, or bare `*` for kw-only marker.
             if (match_tok(T_STAR)) {
+                if (peek_tok(0)->kind == T_COMMA || peek_tok(0)->kind == T_RPAREN) {
+                    // Bare `*` — kw-only marker.  Pystro doesn't enforce
+                    // kw-only-ness; just record that we passed the
+                    // separator so subsequent params don't require defaults.
+                    saw_star = true;
+                    if (!match_tok(T_COMMA)) break;
+                    continue;
+                }
                 if (peek_tok(0)->kind != T_NAME) parse_error("expected NAME after '*'");
                 const char *pn = peek_tok(0)->sval; tok_pos++;
                 scope_add_local(sc, pn);
@@ -1556,6 +2016,11 @@ parse_params(Scope *sc, int *out_nparams, int *out_n_pos_named, int *out_ndefaul
                 nparams++;
                 has_va = true;
                 saw_star = true;
+                if (!match_tok(T_COMMA)) break;
+                continue;
+            }
+            // `/` — positional-only marker.  Pystro doesn't enforce; consume.
+            if (match_tok(T_SLASH)) {
                 if (!match_tok(T_COMMA)) break;
                 continue;
             }
@@ -1625,6 +2090,10 @@ parse_def(void)
     collect_locals_in_range(&sc, suite_start, suite_end);
 
     Scope *saved = cur_scope; cur_scope = &sc;
+    // Method bodies are NOT class-body context; assignments inside
+    // them are local, not class attributes.
+    bool saved_icb = in_class_body;
+    in_class_body = false;
     NODE *body;
     if (peek_tok(0)->kind == T_NEWLINE) {
         tok_pos++;
@@ -1641,6 +2110,7 @@ parse_def(void)
         body = parse_simple_stmt();
         expect(T_NEWLINE, "newline");
     }
+    in_class_body = saved_icb;
     cur_scope = saved;
 
     NODE *def_node = ALLOC_node_def(fname, (uint32_t)nparams, (uint32_t)n_pos_named,
@@ -1668,13 +2138,27 @@ parse_class(void)
     NODE *base = ALLOC_node_const_none();
     NODE *extra_bases[8];
     int nextra = 0;
+    NODE *metaclass = NULL;
     if (match_tok(T_LPAREN)) {
+        bool first = true;
         if (peek_tok(0)->kind != T_RPAREN) {
-            base = parse_expr();
-            while (match_tok(T_COMMA)) {
+            for (;;) {
+                if (peek_tok(0)->kind == T_NAME && peek_tok(1)->kind == T_ASSIGN) {
+                    const char *kw_name = peek_tok(0)->sval;
+                    tok_pos += 2;
+                    NODE *kw_val = parse_expr();
+                    if (strcmp(kw_name, "metaclass") == 0) {
+                        metaclass = kw_val;
+                    }
+                } else if (first) {
+                    base = parse_expr();
+                } else {
+                    if (nextra >= 8) parse_error("too many base classes");
+                    extra_bases[nextra++] = parse_expr();
+                }
+                first = false;
+                if (!match_tok(T_COMMA)) break;
                 if (peek_tok(0)->kind == T_RPAREN) break;
-                if (nextra >= 8) parse_error("too many base classes");
-                extra_bases[nextra++] = parse_expr();
             }
         }
         expect(T_RPAREN, "')'");
@@ -1686,18 +2170,37 @@ parse_class(void)
     NODE *body = parse_suite();
     in_class_body = saved_icb;
     cur_class_base = saved_base;
+    // Class-body docstring: if the first statement is a bare string
+    // literal, route it to `__doc__`.  parse_stmt already consumed it
+    // as an expr stmt; we walk the seq's leftmost spine to its leaf.
+    {
+        extern const struct NodeKind kind_node_seq;
+        extern const struct NodeKind kind_node_const_str;
+        NODE *first = body;
+        NODE *parent = NULL;
+        while (first && first->head.kind == &kind_node_seq) {
+            parent = first;
+            first = first->u.node_seq.first;
+        }
+        if (first && first->head.kind == &kind_node_const_str) {
+            NODE *doc_set = ALLOC_node_class_method_set(
+                intern_name("__doc__", 7), first);
+            if (parent) parent->u.node_seq.first = doc_set;
+            else        body = doc_set;
+        }
+    }
     NODE *cls;
     if (nextra == 0) {
         cls = ALLOC_node_class(cname, base, body);
     } else {
-        // Multi-base form: pack all bases into PYSTRO_NODE_TABLE and
-        // emit node_class_multi which calls py_class_set_bases after
-        // the base eval.
         NODE *all_bases[16];
         all_bases[0] = base;
         for (int i = 0; i < nextra; i++) all_bases[i + 1] = extra_bases[i];
         size_t bidx = node_table_reserve(all_bases, nextra + 1);
         cls = ALLOC_node_class_multi(cname, (uint32_t)bidx, (uint32_t)(nextra + 1), body);
+    }
+    if (metaclass) {
+        cls = ALLOC_node_class_with_meta(cls, metaclass, cname);
     }
     if (in_class_body) return cls;
     return make_store(cname, cls);
@@ -1719,7 +2222,7 @@ parse_pattern_atom(void)
 {
     int k = peek_tok(0)->kind;
     struct pypat p = {0};
-    if (k == T_INT || k == T_FLOAT || k == T_STR
+    if (k == T_INT || k == T_FLOAT || k == T_IMAG || k == T_STR
             || k == T_NONE || k == T_TRUE || k == T_FALSE) {
         p.kind = PYPAT_LITERAL;
         p.literal = parse_atom();
@@ -1862,7 +2365,10 @@ parse_pattern_atom(void)
         p.keys = kn;
         return pat_alloc(p);
     }
-    parse_error("unexpected token in pattern (kind=%d)", k);
+    {
+        extern const char *tok_kind_name(int k_);
+        parse_error("unexpected token in pattern: %s", tok_kind_name(k));
+    }
 }
 
 static int
@@ -1891,14 +2397,16 @@ parse_pattern_or(void)
 static NODE *
 parse_match(void)
 {
-    expect(T_MATCH, "'match'");
+    // Caller already verified peek(0) is the NAME "match".
+    tok_pos++;
     NODE *subject = parse_expr();
     expect(T_COLON, "':'");
     expect(T_NEWLINE, "newline");
     expect(T_INDENT, "indent");
     struct pycase cases[64];
     int nc = 0;
-    while (peek_tok(0)->kind == T_CASE) {
+    while (peek_tok(0)->kind == T_NAME &&
+           peek_tok(0)->sval == intern_name("case", 4)) {
         tok_pos++;
         int pat = parse_pattern_or();
         NODE *guard = NULL;
@@ -1915,42 +2423,48 @@ parse_match(void)
     return ALLOC_node_match(subject, (uint32_t)base, (uint32_t)nc);
 }
 
-// `with EXPR as NAME:` desugars to:
+// `with EXPR as NAME: body` desugars to:
 //   __cm = EXPR
-//   NAME = __cm.__enter__()
-//   try:
-//     body
-//   finally:
-//     __cm.__exit__(None, None, None)
+//   NAME = __cm.__enter__()       (if `as NAME` was given)
+//   <node_with __cm: body>         (handles __exit__ protocol)
 static NODE *
-parse_with(void)
+build_with_one(NODE *cm_expr, const char *as_name, NODE *inner_body)
 {
-    expect(T_WITH, "'with'");
-    NODE *cm_expr = parse_expr();
-    const char *as_name = NULL;
-    if (match_tok(T_AS)) {
-        if (peek_tok(0)->kind != T_NAME) parse_error("expected NAME after 'as'");
-        as_name = peek_tok(0)->sval;
-        tok_pos++;
-    }
-    NODE *body = parse_suite();
-    // Hidden temp.
     const char *tmp = new_temp_name("__cm");
     NODE *load_cm;
     NODE *init = build_temp_init(tmp, cm_expr, &load_cm);
     NODE *enter_call = ALLOC_node_method_0(load_cm, intern_name("__enter__", 9));
-    NODE *bind = as_name ? make_store(as_name, enter_call)
-                         : enter_call;       // discard returned value
-    NODE *none1 = ALLOC_node_const_none();
-    NODE *none2 = ALLOC_node_const_none();
-    NODE *none3 = ALLOC_node_const_none();
-    // method_n with 3 args
-    NODE *args3[3] = { none1, none2, none3 };
-    size_t base = node_table_reserve(args3, 3);
-    NODE *exit_call = ALLOC_node_method_n(load_cm, intern_name("__exit__", 8), (uint32_t)base, 3);
-    // try body, no except handlers, finally = exit_call
-    NODE *try_node = ALLOC_node_try(body, 0, 0, ALLOC_node_nop(), exit_call);
-    return ALLOC_node_seq(init, ALLOC_node_seq(bind, try_node));
+    NODE *bind = as_name ? make_store(as_name, enter_call) : enter_call;
+    NODE *with_node = ALLOC_node_with(load_cm, inner_body, 0, 0);
+    return ALLOC_node_seq(init, ALLOC_node_seq(bind, with_node));
+}
+
+static NODE *
+parse_with(void)
+{
+    expect(T_WITH, "'with'");
+    // Collect (cm_expr, as_name) pairs separated by ','.
+    struct { NODE *expr; const char *as_name; } items[8];
+    int n = 0;
+    for (;;) {
+        if (n >= 8) parse_error("too many with items");
+        items[n].expr = parse_expr();
+        items[n].as_name = NULL;
+        if (match_tok(T_AS)) {
+            if (peek_tok(0)->kind != T_NAME) parse_error("expected NAME after 'as'");
+            items[n].as_name = peek_tok(0)->sval;
+            tok_pos++;
+        }
+        n++;
+        if (!match_tok(T_COMMA)) break;
+    }
+    NODE *body = parse_suite();
+    // Wrap from innermost (last item) to outermost (first item).
+    NODE *result = body;
+    for (int i = n - 1; i >= 0; i--) {
+        result = build_with_one(items[i].expr, items[i].as_name, result);
+    }
+    return result;
 }
 
 static NODE *
@@ -2118,6 +2632,23 @@ parse_raise(void)
     if (peek_tok(0)->kind == T_NEWLINE || peek_tok(0)->kind == T_SEMI)
         return ALLOC_node_raise_bare();
     NODE *e = parse_expr();
+    // `raise X from Y` — desugar to:
+    //   __cause = Y
+    //   __exc   = X (if a class, instantiate)
+    //   __exc.__cause__ = __cause
+    //   raise __exc
+    if (peek_tok(0)->kind == T_FROM) {
+        tok_pos++;
+        NODE *cause = parse_expr();
+        // Desugar: temp_e = X; temp_e.__cause__ = Y; raise temp_e.
+        const char *te = new_temp_name("__rx");
+        NODE *load_e;
+        NODE *init_e = build_temp_init(te, e, &load_e);
+        NODE *set_cause = ALLOC_node_attr_set(load_e, intern_name("__cause__", 9), cause);
+        return ALLOC_node_seq(init_e,
+               ALLOC_node_seq(set_cause,
+               ALLOC_node_raise(load_e)));
+    }
     return ALLOC_node_raise(e);
 }
 
@@ -2200,47 +2731,84 @@ parse_simple_stmt(void)
     if (k == T_GLOBAL)   return parse_global_decl();
     if (k == T_NONLOCAL) return parse_nonlocal_decl();
     if (k == T_IMPORT) {
-        // `import name` (single name only for v0).  Desugars to:
-        //   name = __pystro_import__("name")
+        // `import a.b.c [as x] [, d.e [as y], ...]` — multi-import.
         tok_pos++;
-        if (peek_tok(0)->kind != T_NAME) parse_error("import: name expected");
-        const char *nm = peek_tok(0)->sval;
-        tok_pos++;
-        // optional `as alias`
-        const char *alias = nm;
-        if (match_tok(T_AS)) {
-            if (peek_tok(0)->kind != T_NAME) parse_error("expected NAME after as");
-            alias = peek_tok(0)->sval;
+        NODE *result = NULL;
+        for (;;) {
+            if (peek_tok(0)->kind != T_NAME) parse_error("import: name expected");
+            char dotted[512];
+            size_t dn = 0;
+            const char *first = peek_tok(0)->sval;
+            size_t fn = strlen(first);
+            memcpy(dotted, first, fn); dn = fn;
+            const char *last = first;
             tok_pos++;
+            while (peek_tok(0)->kind == T_DOT) {
+                tok_pos++;
+                if (peek_tok(0)->kind != T_NAME) parse_error("import: name expected after '.'");
+                const char *seg = peek_tok(0)->sval;
+                size_t sn = strlen(seg);
+                if (dn + sn + 1 >= sizeof(dotted)) parse_error("import: name too long");
+                dotted[dn++] = '.';
+                memcpy(dotted + dn, seg, sn); dn += sn;
+                last = seg;
+                tok_pos++;
+            }
+            dotted[dn] = '\0';
+            const char *alias = last;
+            if (match_tok(T_AS)) {
+                if (peek_tok(0)->kind != T_NAME) parse_error("expected NAME after as");
+                alias = peek_tok(0)->sval;
+                tok_pos++;
+            }
+            NODE *call = ALLOC_node_call_1(
+                ALLOC_node_gref(intern_name("__pystro_import__", 17)),
+                ALLOC_node_const_str(intern_name(dotted, dn)));
+            NODE *one = make_store(alias, call);
+            result = result ? ALLOC_node_seq(result, one) : one;
+            if (!match_tok(T_COMMA)) break;
         }
-        NODE *call = ALLOC_node_call_1(
-            ALLOC_node_gref(intern_name("__pystro_import__", 17)),
-            ALLOC_node_const_str(nm));
-        return make_store(alias, call);
+        return result;
     }
     if (k == T_FROM) {
-        // `from name import a, b as c` → run import + bind specific names.
-        // Desugar:
-        //   __m = __pystro_import__("name")
-        //   a = __m.a
-        //   c = __m.b
+        // `from a.b.c import x [as y], z`  or  `from a.b.c import *`
         tok_pos++;
         if (peek_tok(0)->kind != T_NAME) parse_error("from: name expected");
-        const char *modname = peek_tok(0)->sval;
+        char dotted[512];
+        size_t dn = 0;
+        const char *first = peek_tok(0)->sval;
+        size_t fn = strlen(first);
+        memcpy(dotted, first, fn); dn = fn;
         tok_pos++;
+        while (peek_tok(0)->kind == T_DOT) {
+            tok_pos++;
+            if (peek_tok(0)->kind != T_NAME) parse_error("from: name expected after '.'");
+            const char *seg = peek_tok(0)->sval;
+            size_t sn = strlen(seg);
+            if (dn + sn + 1 >= sizeof(dotted)) parse_error("from: name too long");
+            dotted[dn++] = '.';
+            memcpy(dotted + dn, seg, sn); dn += sn;
+            tok_pos++;
+        }
+        dotted[dn] = '\0';
         expect(T_IMPORT, "'import'");
         const char *tmp = new_temp_name("__mod");
         NODE *load_tmp;
         NODE *init = build_temp_init(tmp,
             ALLOC_node_call_1(
                 ALLOC_node_gref(intern_name("__pystro_import__", 17)),
-                ALLOC_node_const_str(modname)),
+                ALLOC_node_const_str(intern_name(dotted, dn))),
             &load_tmp);
         NODE *result = init;
         if (peek_tok(0)->kind == T_STAR) {
-            // from m import *  — not supported yet, just no-op.
+            // `from m import *` — desugar to a builtin call that walks
+            // the module's globals and binds each non-underscore name
+            // into the current globals.
             tok_pos++;
-            return result;
+            NODE *star = ALLOC_node_call_1(
+                ALLOC_node_gref(intern_name("__pystro_import_star__", 22)),
+                load_tmp);
+            return ALLOC_node_seq(result, star);
         }
         for (;;) {
             if (peek_tok(0)->kind != T_NAME) parse_error("from: name expected");
@@ -2280,25 +2848,41 @@ parse_simple_stmt(void)
         (void)save;
     }
 
-    // Multi-target unpack assignment: NAME (',' NAME)+ '=' expr.
-    if (k == T_NAME && peek_tok(1)->kind == T_COMMA) {
+    // Multi-target unpack assignment: TARGET (',' TARGET)+ '=' expr,
+    // where TARGET is NAME or `*NAME` (starred — at most one).
+    if (k == T_NAME || k == T_STAR) {
+        // Lookahead: scan a sequence of (`*`?NAME) separated by `,`,
+        // ending at `=`.  All-or-nothing — restore tok_pos otherwise.
         const char *names[16];
+        bool starred[16];
         int nn = 0;
         size_t p = tok_pos;
-        names[nn++] = tok_arr[p].sval;
-        p++;
         bool ok = true;
-        while (tok_arr[p].kind == T_COMMA) {
-            p++;
+        for (;;) {
+            bool is_star = false;
+            if (tok_arr[p].kind == T_STAR) { is_star = true; p++; }
             if (tok_arr[p].kind != T_NAME || nn >= 16) { ok = false; break; }
-            names[nn++] = tok_arr[p].sval;
+            names[nn] = tok_arr[p].sval;
+            starred[nn] = is_star;
+            nn++;
             p++;
+            if (tok_arr[p].kind == T_ASSIGN) break;
+            if (tok_arr[p].kind != T_COMMA) { ok = false; break; }
+            p++;
+            // Trailing comma: `*name, = ...` is a valid 1-target form.
+            if (tok_arr[p].kind == T_ASSIGN) break;
         }
-        if (ok && tok_arr[p].kind == T_ASSIGN) {
+        // Need >= 2 targets (or 1 starred) for unpack form, AND `=` next.
+        bool starred_present = false;
+        for (int i = 0; i < nn; i++) if (starred[i]) { starred_present = true; break; }
+        if (ok && tok_arr[p].kind == T_ASSIGN && (nn >= 2 || starred_present)) {
             tok_pos = p + 1;
             NODE *rhs = parse_expr_list();
             struct pyunpack_target ts[16];
+            int n_starred = 0;
             for (int i = 0; i < nn; i++) {
+                ts[i].is_starred = starred[i];
+                if (starred[i]) n_starred++;
                 if (cur_scope && !scope_is_global_decl(cur_scope, names[i])) {
                     ts[i].is_local = true;
                     ts[i].slot = scope_add_local(cur_scope, names[i]);
@@ -2309,6 +2893,7 @@ parse_simple_stmt(void)
                     ts[i].global_name = names[i];
                 }
             }
+            if (n_starred > 1) parse_error("at most one starred target");
             size_t idx = unpack_reserve(ts, nn);
             return ALLOC_node_unpack_assign((uint32_t)idx, (uint32_t)nn, rhs);
         }
@@ -2469,21 +3054,41 @@ parse_decorated(void)
     } else {
         parse_error("expected 'def' or 'class' after decorator");
     }
+    if (is_class_method_dec) {
+        // Decorators on a class method must be evaluated BEFORE the def
+        // runs (because the def overwrites the class slot of the same
+        // name — e.g. `@x.setter\ndef x` references the prior `x` from
+        // the @property def).  Evaluate each decorator into a synthetic
+        // class slot first, then run the body, then apply.
+        static int dec_uid = 0;
+        const char *names[16];
+        for (int i = 0; i < ndecs; i++) {
+            char buf[64];
+            snprintf(buf, sizeof(buf), "__pystro_dec$%d$%s__", dec_uid++, target);
+            names[i] = intern_name(buf, strlen(buf));
+        }
+        NODE *result = NULL;
+        // Eval decorators first.
+        for (int i = 0; i < ndecs; i++) {
+            NODE *save = ALLOC_node_class_method_set(names[i], decs[i]);
+            result = result ? ALLOC_node_seq(result, save) : save;
+        }
+        // Then the def body (overwrites target).
+        result = ALLOC_node_seq(result, body);
+        // Then apply each saved decorator innermost-first.
+        for (int i = ndecs - 1; i >= 0; i--) {
+            NODE *load = ALLOC_node_class_method_get(target);
+            NODE *dec  = ALLOC_node_class_method_get(names[i]);
+            NODE *call = ALLOC_node_call_1(dec, load);
+            result = ALLOC_node_seq(result, ALLOC_node_class_method_set(target, call));
+        }
+        return result;
+    }
     NODE *result = body;
     for (int i = ndecs - 1; i >= 0; i--) {
-        // For methods inside a class body, the method has been added
-        // to c->current_class by node_def's side effect — load it back
-        // via node_class_method_get / set so the decorator wraps the
-        // class-stored method, not a global / local of the same name.
-        if (is_class_method_dec) {
-            NODE *load = ALLOC_node_class_method_get(target);
-            NODE *call = ALLOC_node_call_1(decs[i], load);
-            result = ALLOC_node_seq(result, ALLOC_node_class_method_set(target, call));
-        } else {
-            NODE *load = make_load(target);
-            NODE *call = ALLOC_node_call_1(decs[i], load);
-            result = ALLOC_node_seq(result, make_store(target, call));
-        }
+        NODE *load = make_load(target);
+        NODE *call = ALLOC_node_call_1(decs[i], load);
+        result = ALLOC_node_seq(result, make_store(target, call));
     }
     return result;
 }
@@ -2492,6 +3097,15 @@ static NODE *
 parse_stmt(void)
 {
     int k = peek_tok(0)->kind;
+    // `async def` — pystro doesn't have a real coroutine model, so we
+    // just strip `async` and treat the body as a regular function.
+    if (k == T_NAME && peek_tok(0)->sval == intern_name("async", 5)) {
+        int next = peek_tok(1)->kind;
+        if (next == T_DEF || next == T_FOR || next == T_WITH) {
+            tok_pos++;     // skip `async`
+            return parse_stmt();
+        }
+    }
     if (k == T_AT)     return parse_decorated();
     if (k == T_DEF)    return parse_def();
     if (k == T_CLASS)  return parse_class();
@@ -2500,7 +3114,35 @@ parse_stmt(void)
     if (k == T_FOR)    return parse_for();
     if (k == T_TRY)    return parse_try();
     if (k == T_WITH)   return parse_with();
-    if (k == T_MATCH)  return parse_match();
+    // `match EXPR:` — soft keyword.  Recognise when the NAME is
+    // "match" and the line clearly starts a match statement (NAME or
+    // expression followed by `:` at the end of the logical line).
+    if (k == T_NAME && peek_tok(0)->sval == intern_name("match", 5)) {
+        // Heuristic: lookahead until newline; if a top-level `:` is
+        // followed by NEWLINE+INDENT+`case`, treat as match statement.
+        size_t save = tok_pos;
+        tok_pos++;
+        int depth = 0;
+        bool saw_colon = false;
+        while (peek_tok(0)->kind != T_EOF && peek_tok(0)->kind != T_NEWLINE) {
+            int kk = peek_tok(0)->kind;
+            if (kk == T_LPAREN || kk == T_LBRACK || kk == T_LBRACE) depth++;
+            else if (kk == T_RPAREN || kk == T_RBRACK || kk == T_RBRACE) depth--;
+            else if (depth == 0 && kk == T_COLON) { saw_colon = true; break; }
+            tok_pos++;
+        }
+        bool is_match = false;
+        if (saw_colon) {
+            tok_pos++;     // past colon
+            if (peek_tok(0)->kind == T_NEWLINE && peek_tok(1)->kind == T_INDENT
+                && peek_tok(2)->kind == T_NAME
+                && peek_tok(2)->sval == intern_name("case", 4)) {
+                is_match = true;
+            }
+        }
+        tok_pos = save;
+        if (is_match) return parse_match();
+    }
     NODE *s = parse_simple_stmt();
     // Allow optional ; or NEWLINE
     if (match_tok(T_SEMI)) {
@@ -2525,4 +3167,12 @@ parse_program(void)
         while (match_tok(T_NEWLINE)) {}
     }
     return seq_of(stmts, n);
+}
+
+// Used by `eval()` builtin: parse a single expression.
+NODE *
+parse_eval_expr(void)
+{
+    while (match_tok(T_NEWLINE)) {}
+    return parse_expr();
 }

@@ -1,0 +1,21 @@
+ok ExceptionTest test_assert
+ok ExceptionTest test_attr_error
+ok ExceptionTest test_basic
+ok ExceptionTest test_class_hierarchy
+ok ExceptionTest test_else
+ok ExceptionTest test_finally
+ok ExceptionTest test_finally_with_return
+ok ExceptionTest test_index_error
+ok ExceptionTest test_key_error
+ok ExceptionTest test_message
+ok ExceptionTest test_multi_except
+ok ExceptionTest test_nested
+ok ExceptionTest test_raise_from
+ok ExceptionTest test_reraise
+ok ExceptionTest test_traceback_attr
+ok ExceptionTest test_tuple_except
+ok ExceptionTest test_user_exception
+ok ExceptionTest test_user_exception_init
+ok ExceptionTest test_zero_division
+---
+passed=19 failed=0

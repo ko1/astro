@@ -1,0 +1,41 @@
+5.0
+Point(3, 4)
+Point(3, 4)
+Hi, I'm Rex (woof)
+Hi, I'm Whiskers — I'm black
+D->B->C->A
+3
+default default default
+Vec(4, 6)
+Vec(4, 5)
+Vec(3, 6)
+True
+False
+True
+False
+False
+True
+[Box(1), Box(2), Box(3)]
+3
+10
+99
+static
+static
+cls-call
+True
+True
+False
+True
+False
+True
+True
+False
+True
+True
+1 hi
+99
+noy
+base
+base
+sub
+base

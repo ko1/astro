@@ -1,0 +1,21 @@
+ok IterTest test_all_any
+ok IterTest test_custom_iter
+ok IterTest test_dict_iter
+ok IterTest test_enumerate
+ok IterTest test_filter
+ok IterTest test_generator_basic
+ok IterTest test_generator_return
+ok IterTest test_generator_state
+ok IterTest test_genexp
+ok IterTest test_iter_default
+ok IterTest test_iter_next
+ok IterTest test_list_iter
+ok IterTest test_map
+ok IterTest test_nested_generators
+ok IterTest test_range_iter
+ok IterTest test_reversed
+ok IterTest test_str_iter
+ok IterTest test_sum_min_max
+ok IterTest test_zip
+---
+passed=19 failed=0

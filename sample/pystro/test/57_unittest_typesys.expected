@@ -1,0 +1,11 @@
+ok TypeSystemTest test_class_dict
+ok TypeSystemTest test_class_introspection
+ok TypeSystemTest test_class_of_class
+ok TypeSystemTest test_dunder_globals
+ok TypeSystemTest test_function_meta
+ok TypeSystemTest test_import_func
+ok TypeSystemTest test_instance_class
+ok TypeSystemTest test_subclass_of_int
+ok TypeSystemTest test_type_is_class
+---
+passed=9 failed=0

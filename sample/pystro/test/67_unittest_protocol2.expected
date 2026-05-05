@@ -1,0 +1,21 @@
+ok GetattrFallbackTest test_existing_attr_no_fallback
+ok GetattrFallbackTest test_getattr_dunder
+ok StrMethodTest test_find_with_range
+ok StrMethodTest test_isidentifier
+ok StrMethodTest test_isprintable
+ok StrMethodTest test_istitle
+ok StrMethodTest test_join_iterable
+ok StrMethodTest test_replace_count
+ok IsinstanceTest test_object_universal
+ok IsinstanceTest test_subclass_relations
+ok BytesSliceTest test_bytearray_slice
+ok BytesSliceTest test_slice
+ok DictCtorTest test_copy
+ok DictCtorTest test_from_kwargs
+ok DictCtorTest test_from_pairs
+ok FunctoolsPartialTest test_args
+ok FunctoolsPartialTest test_kwargs
+ok CallableInstanceTest test_kwargs_through_call
+ok BytesEqTest test_bytes_eq
+---
+passed=19 failed=0

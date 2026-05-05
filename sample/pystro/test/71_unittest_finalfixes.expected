@@ -1,0 +1,11 @@
+ok SetattrSliceBorrowTest test_class_loop_setattr
+ok SetattrSliceBorrowTest test_setattr_after_split
+ok DunderArithFullTest test_class_with_only_iadd
+ok DunderArithFullTest test_pow_dunder
+ok IsinstanceFullTest test_object_universal
+ok IsinstanceFullTest test_subclass_chain
+ok GetattrFallbackFullTest test_getattr_with_existing_attr
+ok CallableInstanceKwargsTest test_class_method_with_kwargs_call
+ok CallableInstanceKwargsTest test_partial_with_int_kwargs
+---
+passed=9 failed=0

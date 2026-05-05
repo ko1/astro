@@ -1,0 +1,21 @@
+ok DatetimeTest test_date
+ok DatetimeTest test_datetime
+ok DatetimeTest test_timedelta
+ok Base64Test test_known_vector
+ok Base64Test test_roundtrip
+ok BinasciiTest test_crc32
+ok BinasciiTest test_hexlify
+ok StructTest test_calcsize
+ok StructTest test_pack_unpack
+ok ContextlibTest test_contextmanager
+ok ContextlibTest test_suppress
+ok ReTest test_findall
+ok ReTest test_match
+ok ReTest test_search
+ok ReTest test_split
+ok ReTest test_sub
+ok RawStringTest test_raw
+ok MatchSoftKeywordTest test_match_as_var
+ok MatchSoftKeywordTest test_match_method
+---
+passed=19 failed=0

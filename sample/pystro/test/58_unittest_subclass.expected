@@ -1,0 +1,12 @@
+ok ListSubclassTest test_basic
+ok ListSubclassTest test_isinstance
+ok ListSubclassTest test_iter
+ok ListSubclassTest test_methods_inherited
+ok ListSubclassTest test_setitem
+ok ListSubclassTest test_user_method
+ok DictSubclassTest test_basic
+ok DictSubclassTest test_iter
+ok StrSubclassTest test_basic
+ok StrSubclassTest test_user_method
+---
+passed=10 failed=0
