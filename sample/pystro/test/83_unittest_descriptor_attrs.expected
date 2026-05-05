@@ -1,0 +1,9 @@
+ok PropertyDeleterTest test_deleter
+ok CachedPropertyPatternTest test_cached
+ok DunderHooksTest test_delattr
+ok DunderHooksTest test_dict_aliased
+ok DunderHooksTest test_getattr_fallback
+ok DunderHooksTest test_getattribute
+ok DunderHooksTest test_setattr
+---
+passed=7 failed=0

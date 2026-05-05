@@ -638,6 +638,53 @@ py_make_instance(VALUE cls)
     return PY_OBJ_VAL(o);
 }
 
+// object.__getattribute__(self, name) — default attribute lookup that
+// does NOT recursively call __getattribute__.  We implement this by
+// temporarily marking the call so py_getattr skips the user's hook.
+static __thread int py_skip_getattribute_hook = 0;
+
+static VALUE
+bi_object_getattribute(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    if (!py_is_str(argv[1]))
+        py_raise_exc(c, c->EXC_TypeError, "attribute name must be string");
+    py_skip_getattribute_hook++;
+    VALUE r = py_getattr(c, argv[0], PY_PTR(argv[1])->str.chars);
+    py_skip_getattribute_hook--;
+    return r;
+}
+
+// object.__setattr__(self, name, value) — default attribute set.
+static VALUE
+bi_object_setattr(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    if (!py_is_str(argv[1]))
+        py_raise_exc(c, c->EXC_TypeError, "attribute name must be string");
+    py_setattr(c, argv[0], PY_PTR(argv[1])->str.chars, argv[2]);
+    return PY_NONE;
+}
+
+// object.__delattr__(self, name) — default attribute delete.
+static VALUE
+bi_object_delattr(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    if (!py_is_str(argv[1]))
+        py_raise_exc(c, c->EXC_TypeError, "attribute name must be string");
+    if (!py_is_instance(argv[0]))
+        py_raise_exc(c, c->EXC_TypeError, "delattr: not an instance");
+    struct pyobj *o = PY_PTR(argv[0]);
+    if (o->inst.attrs) {
+        // Wrap inst.attrs as a dict VALUE for py_dict_remove.
+        struct pyobj *d = py_alloc(PY_T_DICT);
+        d->dict = o->inst.attrs;
+        py_dict_remove(c, PY_OBJ_VAL(d), argv[1]);
+    }
+    return PY_NONE;
+}
+
 VALUE
 bi_object_new(CTX *c, int argc, VALUE *argv)
 {
@@ -2644,6 +2691,8 @@ py_getattr_optional(CTX *c, VALUE v, const char *name)
 }
 
 static VALUE bi_property_setter_call(CTX *c, int argc, VALUE *argv);
+static VALUE bi_property_deleter_call(CTX *c, int argc, VALUE *argv);
+static VALUE bi_property_getter_call(CTX *c, int argc, VALUE *argv);
 
 VALUE
 py_getattr(CTX *c, VALUE v, const char *name)
@@ -2677,8 +2726,17 @@ py_getattr(CTX *c, VALUE v, const char *name)
     if (PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_PROPERTY) {
         if (strcmp(name, "fget") == 0) return PY_PTR(v)->wrap.wrapped;
         if (strcmp(name, "fset") == 0) return PY_PTR(v)->wrap.setter;
+        if (strcmp(name, "fdel") == 0) return PY_PTR(v)->wrap.deleter;
         if (strcmp(name, "setter") == 0) {
             VALUE fn = py_make_builtin("setter", bi_property_setter_call, 2, 2);
+            return py_make_bound(v, fn);
+        }
+        if (strcmp(name, "deleter") == 0) {
+            VALUE fn = py_make_builtin("deleter", bi_property_deleter_call, 2, 2);
+            return py_make_bound(v, fn);
+        }
+        if (strcmp(name, "getter") == 0) {
+            VALUE fn = py_make_builtin("getter", bi_property_getter_call, 2, 2);
             return py_make_bound(v, fn);
         }
         py_raise_exc(c, c->EXC_AttributeError,
@@ -2705,14 +2763,29 @@ py_getattr(CTX *c, VALUE v, const char *name)
         struct pyobj *o = PY_PTR(v);
         if (strcmp(name, "__class__") == 0) return PY_OBJ_VAL(o->inst.cls);
         if (strcmp(name, "__dict__") == 0) {
-            VALUE d = py_make_dict();
-            if (o->inst.attrs) {
-                struct pydict *src = o->inst.attrs;
-                for (size_t i = 0; i < src->elen; i++)
-                    if (pydict_entry_live(src, i))
-                        py_dict_set(c, d, src->entries[i].key, src->entries[i].value);
+            // Return a live alias dict over inst.attrs so mutations
+            // (`obj.__dict__[k] = v`) actually persist on the instance.
+            if (!o->inst.attrs) o->inst.attrs = pydict_new();
+            struct pyobj *d = py_alloc(PY_T_DICT);
+            d->dict = o->inst.attrs;
+            return PY_OBJ_VAL(d);
+        }
+        // __getattribute__: user-overridable hook called before any
+        // lookup.  Only fires when the user class defines it (we don't
+        // install a default on object) — this prevents infinite
+        // recursion when user code calls object.__getattribute__.
+        if (!py_skip_getattribute_hook
+            && (strncmp(name, "__", 2) != 0 || strcmp(name, "__class__") == 0
+                || strcmp(name, "__dict__") == 0)) {
+            VALUE ga = py_class_lookup_method(PY_OBJ_VAL(o->inst.cls), "__getattribute__");
+            // Skip the default object.__getattribute__ — only user
+            // overrides should fire the hook.
+            if (ga != PY_NONE
+                && !(PY_IS_PTR(ga) && PY_PTR(ga)->type == PY_T_BUILTIN
+                     && PY_PTR(ga)->builtin.fn == bi_object_getattribute)) {
+                VALUE av[2] = { v, py_make_str(name, strlen(name)) };
+                return py_apply(c, ga, 2, av);
             }
-            return d;
         }
         if (o->inst.attrs) {
             VALUE key = py_make_str(name, strlen(name));
@@ -2852,11 +2925,26 @@ py_getattr(CTX *c, VALUE v, const char *name)
     py_raise_exc(c, c->EXC_AttributeError, "object has no attribute '%s'", name);
 }
 
+static __thread int py_skip_setattr_hook = 0;
+
 void
 py_setattr(CTX *c, VALUE v, const char *name, VALUE val)
 {
     if (py_is_instance(v)) {
         struct pyobj *o = PY_PTR(v);
+        // __setattr__ user override
+        if (!py_skip_setattr_hook) {
+            VALUE sm = py_class_lookup_method(PY_OBJ_VAL(o->inst.cls), "__setattr__");
+            if (sm != PY_NONE
+                && !(PY_IS_PTR(sm) && PY_PTR(sm)->type == PY_T_BUILTIN
+                     && PY_PTR(sm)->builtin.fn == bi_object_setattr)) {
+                py_skip_setattr_hook++;
+                VALUE av[3] = { v, py_make_str(name, strlen(name)), val };
+                py_apply(c, sm, 3, av);
+                py_skip_setattr_hook--;
+                return;
+            }
+        }
         // Data descriptor on the class (with __set__) intercepts.
         VALUE m = py_class_lookup_method(PY_OBJ_VAL(o->inst.cls), name);
         if (m != PY_NONE && PY_IS_PTR(m)) {
@@ -8237,21 +8325,43 @@ bi_property(CTX *c, int argc, VALUE *argv)
     struct pyobj *o = py_alloc(PY_T_PROPERTY);
     o->wrap.wrapped = argv[0];
     o->wrap.setter  = PY_NONE;
+    o->wrap.deleter = PY_NONE;
     return PY_OBJ_VAL(o);
 }
 
-// `prop.setter(setter_func)` — returns a new property with the setter installed.
-// Implemented as a built-in method (the property is captured via a bound wrapper).
 static VALUE
 bi_property_setter_call(CTX *c, int argc, VALUE *argv)
 {
-    (void)argc;
-    // argv[0] = the property (self), argv[1] = the setter function.
+    (void)argc; (void)c;
     struct pyobj *src = PY_PTR(argv[0]);
     struct pyobj *o = py_alloc(PY_T_PROPERTY);
     o->wrap.wrapped = src->wrap.wrapped;
     o->wrap.setter  = argv[1];
-    (void)c;
+    o->wrap.deleter = src->wrap.deleter;
+    return PY_OBJ_VAL(o);
+}
+
+static VALUE
+bi_property_deleter_call(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc; (void)c;
+    struct pyobj *src = PY_PTR(argv[0]);
+    struct pyobj *o = py_alloc(PY_T_PROPERTY);
+    o->wrap.wrapped = src->wrap.wrapped;
+    o->wrap.setter  = src->wrap.setter;
+    o->wrap.deleter = argv[1];
+    return PY_OBJ_VAL(o);
+}
+
+static VALUE
+bi_property_getter_call(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc; (void)c;
+    struct pyobj *src = PY_PTR(argv[0]);
+    struct pyobj *o = py_alloc(PY_T_PROPERTY);
+    o->wrap.wrapped = argv[1];
+    o->wrap.setter  = src->wrap.setter;
+    o->wrap.deleter = src->wrap.deleter;
     return PY_OBJ_VAL(o);
 }
 
@@ -8273,6 +8383,8 @@ bi_input(CTX *c, int argc, VALUE *argv)
 static VALUE
 bi_hash(CTX *c, int argc, VALUE *argv) { (void)argc; return PY_FIX((int64_t)(py_hash(c, argv[0]) & 0x7FFFFFFFFFFFFFFFULL)); }
 
+static __thread int py_skip_delattr_hook = 0;
+
 static VALUE
 bi_pystro_delattr(CTX *c, int argc, VALUE *argv)
 {
@@ -8282,6 +8394,31 @@ bi_pystro_delattr(CTX *c, int argc, VALUE *argv)
     if (!py_is_str(name)) py_raise_exc(c, c->EXC_TypeError, "delattr name must be str");
     if (py_is_instance(obj)) {
         struct pyobj *o = PY_PTR(obj);
+        // Property deleter: if a property with fdel matches, call it.
+        VALUE pm = py_class_lookup_method(PY_OBJ_VAL(o->inst.cls), PY_PTR(name)->str.chars);
+        if (pm != PY_NONE && PY_IS_PTR(pm) && PY_PTR(pm)->type == PY_T_PROPERTY) {
+            VALUE deleter = PY_PTR(pm)->wrap.deleter;
+            if (deleter != PY_NONE) {
+                VALUE av[1] = { obj };
+                py_apply(c, deleter, 1, av);
+                return PY_NONE;
+            }
+            py_raise_exc(c, c->EXC_AttributeError,
+                         "property '%s' has no deleter", PY_PTR(name)->str.chars);
+        }
+        // __delattr__ user override.
+        if (!py_skip_delattr_hook) {
+            VALUE dm = py_class_lookup_method(PY_OBJ_VAL(o->inst.cls), "__delattr__");
+            if (dm != PY_NONE
+                && !(PY_IS_PTR(dm) && PY_PTR(dm)->type == PY_T_BUILTIN
+                     && PY_PTR(dm)->builtin.fn == bi_object_delattr)) {
+                py_skip_delattr_hook++;
+                VALUE av[2] = { obj, name };
+                py_apply(c, dm, 2, av);
+                py_skip_delattr_hook--;
+                return PY_NONE;
+            }
+        }
         if (o->inst.attrs) {
             uint64_t h = py_hash(c, name);
             size_t bucket; int32_t eidx; ssize_t ft;
@@ -9284,6 +9421,12 @@ install_builtins(CTX *c)
         extern VALUE bi_object_new(CTX *c, int argc, VALUE *argv);
         py_class_add_method(c, c->TYPE_object, "__new__",
             py_make_builtin("__new__", bi_object_new, 1, -1));
+        py_class_add_method(c, c->TYPE_object, "__getattribute__",
+            py_make_builtin("__getattribute__", bi_object_getattribute, 2, 2));
+        py_class_add_method(c, c->TYPE_object, "__setattr__",
+            py_make_builtin("__setattr__", bi_object_setattr, 3, 3));
+        py_class_add_method(c, c->TYPE_object, "__delattr__",
+            py_make_builtin("__delattr__", bi_object_delattr, 2, 2));
     }
     // Synthetic type classes for built-in non-constructable types.
     c->TYPE_NoneType                    = py_make_class("NoneType",                     PY_NONE, false);

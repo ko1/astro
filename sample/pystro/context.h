@@ -222,7 +222,7 @@ struct pyobj {
         } bound;
         // staticmethod / classmethod / property wrap a single func.
         // For PY_T_PROPERTY: `wrapped` is the getter; `setter` is the optional setter.
-        struct { VALUE wrapped; VALUE setter; } wrap;
+        struct { VALUE wrapped; VALUE setter; VALUE deleter; } wrap;
         // PY_T_ITER: holds a `struct py_iter` for stateful iteration.
         struct py_iter *iter_state;
         // PY_T_GEN: lazy generator (ucontext + body func + saved state).
