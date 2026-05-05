@@ -1,82 +1,95 @@
 /*
- * nuq filter language — AST node definitions.
+ * nuq filter language — AST node definitions (VALUE-return form).
  *
- * Filters are tree-shaped (NOT CPS-chained).  Every filter reads `c->input`
- * and emits zero or more results into `c->emit_buf` (an array).  The
- * dispatcher returns one of:
- *   BR_OK    (0) — normal completion
- *   BR_BREAK (1) — `break $label` propagating up
- *   BR_ERROR (2) — error in flight (c->error holds the error value)
+ * Every NODE_DEF returns a VALUE that is a `nuq_array` of emits.
+ * `EVAL_ARG(c, child)` returns the child's emit array directly — no
+ * shared `c->emit_buf`, no CPS continuation.  Errors propagate via
+ * `c->error` (non-NULL means in flight); break via `c->break_label`.
  *
- * Pipe `f | g` collects f's emits into a temporary buffer, then for each
- * value runs g.  This is simpler than CPS and gives correct semantics at
- * the cost of full streaming (we materialise pipe-stage output as one
- * array).
+ * Pipe `f | g` IS a node (`node_pipe`).  It evaluates `f` ONCE (so
+ * shared sub-expressions don't re-run for every comma branch in `g`),
+ * iterates the emits, and runs `g` per emit with `c->input` set.
+ * This matches jq's "evaluate LHS once, run RHS per emit" semantics.
  *
- * No `@noinline` markers — every node body is just a runtime-helper
- * call, so SD specialisation is free to inline the dispatched call into
- * the parent SD.  The runtime helpers themselves can't be specialised
- * through (they call `EVAL` on child nodes via runtime-resolved
- * `dispatcher`, not via `EVAL_ARG`), so the win is small but cheap.
- * Streaming pipes / per-builtin nodes (todo B-1, B-2) would unlock
- * deeper fold-in.
+ * Most other filter nodes (`length`, `.foo`, `.[]`, etc.) just read
+ * `c->input` — they don't carry an input operand.  Pipe is the
+ * iteration point.
+ *
+ * Comma `f, g`, binops `f + g`, etc. have lhs/rhs sub-chains that
+ * each run with the *outer* `c->input`.
+ *
+ * Array `[body]`, object `{...}`, builtins with a filter argument
+ * (`map(f)`, `select(f)`) have a `body` operand.  Body runs with
+ * c->input set appropriately (outer for `[...]`, per-elem for
+ * `map`).
  */
 
-/* ===== leaves ===== */
+/* ===== identity / literals ===== */
 
+/* `.` — emit the current `c->input`. */
 NODE_DEF
 node_identity(CTX *c, NODE *n)
 {
-    nuq_emit(c, c->input);
-    return BR_OK;
+    VALUE r = nuq_make_array(1);
+    nuq_array_push(r, c->input);
+    return r;
 }
 
+/* `..` — emit input plus all sub-values recursively. */
 NODE_DEF
 node_recurse(CTX *c, NODE *n)
 {
-    return nuq_recurse_emit(c, c->input);
+    VALUE r = nuq_make_array(0);
+    nuq_recurse_collect(r, c->input);
+    return r;
 }
 
 NODE_DEF
 node_null(CTX *c, NODE *n)
 {
-    nuq_emit(c, NUQ_NULL);
-    return BR_OK;
+    VALUE r = nuq_make_array(1);
+    nuq_array_push(r, NUQ_NULL);
+    return r;
 }
 
 NODE_DEF
 node_true(CTX *c, NODE *n)
 {
-    nuq_emit(c, NUQ_TRUE);
-    return BR_OK;
+    VALUE r = nuq_make_array(1);
+    nuq_array_push(r, NUQ_TRUE);
+    return r;
 }
 
 NODE_DEF
 node_false(CTX *c, NODE *n)
 {
-    nuq_emit(c, NUQ_FALSE);
-    return BR_OK;
+    VALUE r = nuq_make_array(1);
+    nuq_array_push(r, NUQ_FALSE);
+    return r;
 }
 
 NODE_DEF
 node_int(CTX *c, NODE *n, int32_t v)
 {
-    nuq_emit(c, NUQ_FIX(v));
-    return BR_OK;
+    VALUE r = nuq_make_array(1);
+    nuq_array_push(r, NUQ_FIX(v));
+    return r;
 }
 
 NODE_DEF
 node_lit(CTX *c, NODE *n, uint32_t lit_id)
 {
-    nuq_emit(c, nuq_lit_get(lit_id));
-    return BR_OK;
+    VALUE r = nuq_make_array(1);
+    nuq_array_push(r, nuq_lit_get(lit_id));
+    return r;
 }
 
 NODE_DEF
 node_str(CTX *c, NODE *n, const char *s)
 {
-    nuq_emit(c, nuq_make_string(s, strlen(s)));
-    return BR_OK;
+    VALUE r = nuq_make_array(1);
+    nuq_array_push(r, nuq_make_string(s, strlen(s)));
+    return r;
 }
 
 NODE_DEF
@@ -97,20 +110,23 @@ NODE_DEF
 node_field(CTX *c, NODE *n, const char *name)
 {
     VALUE v;
-    if (nuq_field_lookup(c->input, name, false, &v)) {
-        nuq_emit(c, v);
-        return BR_OK;
+    if (UNLIKELY(!nuq_field_lookup(c->input, name, false, &v))) {
+        c->error = nuq_make_string("type error", 10);
+        return nuq_make_array(0);
     }
-    c->error = nuq_make_string("type error", 10);
-    return BR_ERROR;
+    VALUE r = nuq_make_array(1);
+    nuq_array_push(r, v);
+    return r;
 }
 
 NODE_DEF
 node_field_opt(CTX *c, NODE *n, const char *name)
 {
     VALUE v;
-    if (nuq_field_lookup(c->input, name, true, &v)) nuq_emit(c, v);
-    return BR_OK;
+    if (!nuq_field_lookup(c->input, name, true, &v)) return nuq_make_array(0);
+    VALUE r = nuq_make_array(1);
+    nuq_array_push(r, v);
+    return r;
 }
 
 NODE_DEF
@@ -128,13 +144,43 @@ node_index_opt(CTX *c, NODE *n, NODE *expr)
 NODE_DEF
 node_iter(CTX *c, NODE *n)
 {
-    return nuq_iter_emit(c, c->input, false);
+    VALUE in = c->input;
+    if (LIKELY(NUQ_IS_PTR(in))) {
+        struct nuq_obj *o = NUQ_PTR(in);
+        if (LIKELY(o->type == NUQ_T_ARRAY)) {
+            VALUE r = nuq_make_array(o->arr.len);
+            for (size_t i = 0; i < o->arr.len; i++) nuq_array_push(r, o->arr.items[i]);
+            return r;
+        }
+        if (o->type == NUQ_T_OBJECT) {
+            VALUE r = nuq_make_array(o->obj.len);
+            for (size_t i = 0; i < o->obj.len; i++) nuq_array_push(r, o->obj.vals[i]);
+            return r;
+        }
+    }
+    fprintf(stderr, "nuq error: Cannot iterate over %s\n", nuq_type_name(in));
+    c->error = nuq_make_string("Cannot iterate", 14);
+    return nuq_make_array(0);
 }
 
 NODE_DEF
 node_iter_opt(CTX *c, NODE *n)
 {
-    return nuq_iter_emit(c, c->input, true);
+    VALUE in = c->input;
+    if (NUQ_IS_PTR(in)) {
+        struct nuq_obj *o = NUQ_PTR(in);
+        if (o->type == NUQ_T_ARRAY) {
+            VALUE r = nuq_make_array(o->arr.len);
+            for (size_t i = 0; i < o->arr.len; i++) nuq_array_push(r, o->arr.items[i]);
+            return r;
+        }
+        if (o->type == NUQ_T_OBJECT) {
+            VALUE r = nuq_make_array(o->obj.len);
+            for (size_t i = 0; i < o->obj.len; i++) nuq_array_push(r, o->obj.vals[i]);
+            return r;
+        }
+    }
+    return nuq_make_array(0);
 }
 
 NODE_DEF
@@ -151,112 +197,190 @@ node_slice_opt(CTX *c, NODE *n, NODE *startn, NODE *stopn, uint32_t flags)
 
 /* ===== composition ===== */
 
+/* pipe `lhs | rhs`: evaluate lhs ONCE, iterate emits, run rhs per
+ * emit with c->input set to that emit.  Result is concat of rhs
+ * outputs. */
 NODE_DEF
 node_pipe(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
 {
-    return nuq_pipe_eval(c, lhs, rhs);
+    VALUE l = EVAL_ARG(c, lhs);
+    if (UNLIKELY(c->error != NUQ_NULL || c->break_label != 0)) return l;
+    struct nuq_obj *lo = NUQ_PTR(l);
+    VALUE r = nuq_make_array(0);
+    VALUE saved = c->input;
+    for (size_t i = 0; i < lo->arr.len; i++) {
+        c->input = lo->arr.items[i];
+        VALUE rv = EVAL_ARG(c, rhs);
+        if (UNLIKELY(c->error != NUQ_NULL || c->break_label != 0)) { c->input = saved; return r; }
+        struct nuq_obj *ro = NUQ_PTR(rv);
+        for (size_t j = 0; j < ro->arr.len; j++) nuq_array_push(r, ro->arr.items[j]);
+    }
+    c->input = saved;
+    return r;
 }
 
+/* comma: both branches run with same outer input; concat outputs. */
 NODE_DEF
 node_comma(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
 {
-    VALUE r = EVAL_ARG(c, lhs);
-    if (UNLIKELY(r != BR_OK)) return r;
-    return EVAL_ARG(c, rhs);
+    VALUE l = EVAL_ARG(c, lhs);
+    if (UNLIKELY(c->error != NUQ_NULL || c->break_label != 0)) return l;
+    VALUE rv = EVAL_ARG(c, rhs);
+    if (UNLIKELY(c->error != NUQ_NULL || c->break_label != 0)) return rv;
+    struct nuq_obj *lo = NUQ_PTR(l);
+    struct nuq_obj *ro = NUQ_PTR(rv);
+    VALUE r = nuq_make_array(lo->arr.len + ro->arr.len);
+    for (size_t i = 0; i < lo->arr.len; i++) nuq_array_push(r, lo->arr.items[i]);
+    for (size_t i = 0; i < ro->arr.len; i++) nuq_array_push(r, ro->arr.items[i]);
+    return r;
 }
 
-/* ===== arithmetic ===== */
+/* ===== arithmetic =====
+ *
+ * Each binop evaluates lhs and rhs (both are sub-chains run with the
+ * outer c->input), then cartesian-products their emits.  The body is
+ * inlined in node.def (rather than dispatching to a runtime helper)
+ * so the SD specializer can fold lhs/rhs's chains directly into this
+ * node's SD via EVAL_ARG.
+ *
+ * `nuq_binop_apply_inline` is `static inline` in node.h — it takes
+ * already-evaluated emit arrays + an op code and produces the cross
+ * product.  gcc folds it through to per-op nuq_op_*. */
 
 NODE_DEF
 node_add(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
 {
-    return nuq_binop_eval(c, lhs, rhs, NUQ_OP_ADD_K);
+    VALUE l = EVAL_ARG(c, lhs);
+    if (UNLIKELY(c->error != NUQ_NULL)) return l;
+    VALUE rv = EVAL_ARG(c, rhs);
+    if (UNLIKELY(c->error != NUQ_NULL)) return rv;
+    return nuq_binop_apply_inline(l, rv, NUQ_OP_ADD_K);
 }
 
 NODE_DEF
 node_sub(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
 {
-    return nuq_binop_eval(c, lhs, rhs, NUQ_OP_SUB_K);
+    VALUE l = EVAL_ARG(c, lhs);
+    if (UNLIKELY(c->error != NUQ_NULL)) return l;
+    VALUE rv = EVAL_ARG(c, rhs);
+    if (UNLIKELY(c->error != NUQ_NULL)) return rv;
+    return nuq_binop_apply_inline(l, rv, NUQ_OP_SUB_K);
 }
 
 NODE_DEF
 node_mul(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
 {
-    return nuq_binop_eval(c, lhs, rhs, NUQ_OP_MUL_K);
+    VALUE l = EVAL_ARG(c, lhs);
+    if (UNLIKELY(c->error != NUQ_NULL)) return l;
+    VALUE rv = EVAL_ARG(c, rhs);
+    if (UNLIKELY(c->error != NUQ_NULL)) return rv;
+    return nuq_binop_apply_inline(l, rv, NUQ_OP_MUL_K);
 }
 
 NODE_DEF
 node_div(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
 {
-    return nuq_binop_eval(c, lhs, rhs, NUQ_OP_DIV_K);
+    VALUE l = EVAL_ARG(c, lhs);
+    if (UNLIKELY(c->error != NUQ_NULL)) return l;
+    VALUE rv = EVAL_ARG(c, rhs);
+    if (UNLIKELY(c->error != NUQ_NULL)) return rv;
+    return nuq_binop_apply_inline(l, rv, NUQ_OP_DIV_K);
 }
 
 NODE_DEF
 node_mod(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
 {
-    return nuq_binop_eval(c, lhs, rhs, NUQ_OP_MOD_K);
+    VALUE l = EVAL_ARG(c, lhs);
+    if (UNLIKELY(c->error != NUQ_NULL)) return l;
+    VALUE rv = EVAL_ARG(c, rhs);
+    if (UNLIKELY(c->error != NUQ_NULL)) return rv;
+    return nuq_binop_apply_inline(l, rv, NUQ_OP_MOD_K);
 }
 
 NODE_DEF
 node_neg(CTX *c, NODE *n, NODE *expr)
 {
-    return nuq_neg_eval(c, expr);
+    VALUE v = EVAL_ARG(c, expr);
+    if (UNLIKELY(c->error != NUQ_NULL)) return v;
+    struct nuq_obj *vo = NUQ_PTR(v);
+    VALUE r = nuq_make_array(vo->arr.len);
+    for (size_t i = 0; i < vo->arr.len; i++) nuq_array_push(r, nuq_op_neg(vo->arr.items[i]));
+    return r;
 }
 
-/* ===== comparisons ===== */
+/* ===== comparisons / logic ===== */
 
 NODE_DEF
 node_eq(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
 {
-    return nuq_cmpop_eval(c, lhs, rhs, NUQ_CMP_EQ_K);
+    VALUE l = EVAL_ARG(c, lhs);
+    if (UNLIKELY(c->error != NUQ_NULL)) return l;
+    VALUE rv = EVAL_ARG(c, rhs);
+    if (UNLIKELY(c->error != NUQ_NULL)) return rv;
+    return nuq_cmpop_apply_inline(l, rv, NUQ_CMP_EQ_K);
 }
 
 NODE_DEF
 node_ne(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
 {
-    return nuq_cmpop_eval(c, lhs, rhs, NUQ_CMP_NE_K);
+    VALUE l = EVAL_ARG(c, lhs);
+    if (UNLIKELY(c->error != NUQ_NULL)) return l;
+    VALUE rv = EVAL_ARG(c, rhs);
+    if (UNLIKELY(c->error != NUQ_NULL)) return rv;
+    return nuq_cmpop_apply_inline(l, rv, NUQ_CMP_NE_K);
 }
 
 NODE_DEF
 node_lt(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
 {
-    return nuq_cmpop_eval(c, lhs, rhs, NUQ_CMP_LT_K);
+    VALUE l = EVAL_ARG(c, lhs);
+    if (UNLIKELY(c->error != NUQ_NULL)) return l;
+    VALUE rv = EVAL_ARG(c, rhs);
+    if (UNLIKELY(c->error != NUQ_NULL)) return rv;
+    return nuq_cmpop_apply_inline(l, rv, NUQ_CMP_LT_K);
 }
 
 NODE_DEF
 node_le(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
 {
-    return nuq_cmpop_eval(c, lhs, rhs, NUQ_CMP_LE_K);
+    VALUE l = EVAL_ARG(c, lhs);
+    if (UNLIKELY(c->error != NUQ_NULL)) return l;
+    VALUE rv = EVAL_ARG(c, rhs);
+    if (UNLIKELY(c->error != NUQ_NULL)) return rv;
+    return nuq_cmpop_apply_inline(l, rv, NUQ_CMP_LE_K);
 }
 
 NODE_DEF
 node_gt(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
 {
-    return nuq_cmpop_eval(c, lhs, rhs, NUQ_CMP_GT_K);
+    VALUE l = EVAL_ARG(c, lhs);
+    if (UNLIKELY(c->error != NUQ_NULL)) return l;
+    VALUE rv = EVAL_ARG(c, rhs);
+    if (UNLIKELY(c->error != NUQ_NULL)) return rv;
+    return nuq_cmpop_apply_inline(l, rv, NUQ_CMP_GT_K);
 }
 
 NODE_DEF
 node_ge(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
 {
-    return nuq_cmpop_eval(c, lhs, rhs, NUQ_CMP_GE_K);
+    VALUE l = EVAL_ARG(c, lhs);
+    if (UNLIKELY(c->error != NUQ_NULL)) return l;
+    VALUE rv = EVAL_ARG(c, rhs);
+    if (UNLIKELY(c->error != NUQ_NULL)) return rv;
+    return nuq_cmpop_apply_inline(l, rv, NUQ_CMP_GE_K);
 }
 
 NODE_DEF
-node_and(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
-{
-    return nuq_andor_eval(c, lhs, rhs, true);
-}
-
+node_and(CTX *c, NODE *n, NODE *lhs, NODE *rhs) { return nuq_andor_eval(c, lhs, rhs, true); }
 NODE_DEF
-node_or(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
-{
-    return nuq_andor_eval(c, lhs, rhs, false);
-}
+node_or(CTX *c, NODE *n, NODE *lhs, NODE *rhs)  { return nuq_andor_eval(c, lhs, rhs, false); }
+
 NODE_DEF
 node_not(CTX *c, NODE *n)
 {
-    nuq_emit(c, nuq_truthy(c->input) ? NUQ_FALSE : NUQ_TRUE);
-    return BR_OK;
+    VALUE r = nuq_make_array(1);
+    nuq_array_push(r, nuq_truthy(c->input) ? NUQ_FALSE : NUQ_TRUE);
+    return r;
 }
 
 NODE_DEF
@@ -265,19 +389,26 @@ node_alt(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
     return nuq_alt_eval(c, lhs, rhs);
 }
 
-/* ===== array / object ===== */
+/* ===== array / object construction ===== */
 
+/* `[body]` — body runs with current c->input; its emits become elements
+ * of the resulting array.  Emits 1 array. */
 NODE_DEF
 node_array(CTX *c, NODE *n, NODE *body)
 {
-    return nuq_array_eval(c, body);
+    VALUE inner = EVAL_ARG(c, body);
+    if (UNLIKELY(c->error != NUQ_NULL)) return inner;
+    VALUE r = nuq_make_array(1);
+    nuq_array_push(r, inner);
+    return r;
 }
 
 NODE_DEF
 node_array_empty(CTX *c, NODE *n)
 {
-    nuq_emit(c, nuq_make_array(0));
-    return BR_OK;
+    VALUE r = nuq_make_array(1);
+    nuq_array_push(r, nuq_make_array(0));
+    return r;
 }
 
 NODE_DEF
@@ -309,18 +440,16 @@ node_as(CTX *c, NODE *n, NODE *src, uint32_t var_id, NODE *body)
 NODE_DEF
 node_var(CTX *c, NODE *n, uint32_t var_id)
 {
-    nuq_emit(c, nuq_var_get(c, var_id));
-    return BR_OK;
+    VALUE r = nuq_make_array(1);
+    nuq_array_push(r, nuq_var_get(c, var_id));
+    return r;
 }
 
 NODE_DEF
 node_label(CTX *c, NODE *n, uint32_t var_id, NODE *body)
 {
     VALUE r = EVAL_ARG(c, body);
-    if (r == BR_BREAK && c->break_label == var_id) {
-        c->break_label = 0;
-        return BR_OK;
-    }
+    if (c->break_label == var_id) c->break_label = 0;
     return r;
 }
 
@@ -328,20 +457,20 @@ NODE_DEF
 node_break(CTX *c, NODE *n, uint32_t var_id)
 {
     c->break_label = var_id;
-    return BR_BREAK;
+    return nuq_make_array(0);
 }
 
 NODE_DEF
 node_empty(CTX *c, NODE *n)
 {
-    return BR_OK;
+    return nuq_make_array(0);
 }
 
 NODE_DEF
 node_error0(CTX *c, NODE *n)
 {
     c->error = c->input;
-    return BR_ERROR;
+    return nuq_make_array(0);
 }
 
 NODE_DEF
@@ -350,30 +479,12 @@ node_error1(CTX *c, NODE *n, NODE *expr)
     return nuq_error_eval(c, expr);
 }
 
-/* ===== function machinery ===== */
+/* ===== user-def calls ===== */
 
 NODE_DEF
-node_call0(CTX *c, NODE *n, uint32_t name_id)
+node_call(CTX *c, NODE *n, uint32_t name_id, uint32_t arity, uint32_t args_id)
 {
-    return nuq_call_eval(c, name_id, 0, NULL);
-}
-
-NODE_DEF
-node_call1(CTX *c, NODE *n, uint32_t name_id, NODE *a0)
-{
-    return nuq_call_eval1(c, name_id, a0);
-}
-
-NODE_DEF
-node_call2(CTX *c, NODE *n, uint32_t name_id, NODE *a0, NODE *a1)
-{
-    return nuq_call_eval2(c, name_id, a0, a1);
-}
-
-NODE_DEF
-node_call3(CTX *c, NODE *n, uint32_t name_id, NODE *a0, NODE *a1, NODE *a2)
-{
-    return nuq_call_eval3(c, name_id, a0, a1, a2);
+    return nuq_user_call(c, name_id, arity, args_id);
 }
 
 NODE_DEF
@@ -394,14 +505,516 @@ node_foreach(CTX *c, NODE *n, NODE *src, uint32_t var_id, NODE *init, NODE *upda
     return nuq_foreach_eval(c, src, var_id, init, update, extract);
 }
 
+/* ============= built-ins as dedicated nodes ====================== */
+
 NODE_DEF
-node_assign(CTX *c, NODE *n, NODE *path, NODE *value)
+node_b_length(CTX *c, NODE *n)
 {
-    return nuq_assign_eval(c, path, value);
+    VALUE r = nuq_make_array(1);
+    nuq_array_push(r, nuq_length(c->input));
+    return r;
 }
 
 NODE_DEF
-node_update_assign(CTX *c, NODE *n, NODE *path, NODE *value, uint32_t op)
+node_b_type(CTX *c, NODE *n)
 {
-    return nuq_update_assign_eval(c, path, value, op);
+    const char *t = nuq_type_name(c->input);
+    VALUE r = nuq_make_array(1);
+    nuq_array_push(r, nuq_make_string(t, strlen(t)));
+    return r;
+}
+
+NODE_DEF
+node_b_keys(CTX *c, NODE *n)
+{
+    VALUE r = nuq_make_array(1);
+    nuq_array_push(r, nuq_keys(c->input, true));
+    return r;
+}
+
+NODE_DEF
+node_b_keys_unsorted(CTX *c, NODE *n)
+{
+    VALUE r = nuq_make_array(1);
+    nuq_array_push(r, nuq_keys(c->input, false));
+    return r;
+}
+
+/* `values` in jq = `select(. != null)`. */
+NODE_DEF
+node_b_values(CTX *c, NODE *n)
+{
+    if (NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_NULL)
+        return nuq_make_array(0);
+    VALUE r = nuq_make_array(1);
+    nuq_array_push(r, c->input);
+    return r;
+}
+
+NODE_DEF
+node_b_to_string(CTX *c, NODE *n)
+{
+    VALUE r = nuq_make_array(1);
+    nuq_array_push(r, nuq_to_json_string(c->input));
+    return r;
+}
+
+NODE_DEF
+node_b_tonumber(CTX *c, NODE *n)
+{
+    VALUE v;
+    if (UNLIKELY(!nuq_to_number(c->input, &v))) {
+        c->error = nuq_make_string("tonumber failed", 16);
+        return nuq_make_array(0);
+    }
+    VALUE r = nuq_make_array(1);
+    nuq_array_push(r, v);
+    return r;
+}
+
+NODE_DEF
+node_b_add(CTX *c, NODE *n)
+{
+    VALUE r = nuq_make_array(1);
+    nuq_array_push(r, nuq_builtin_add(c->input));
+    return r;
+}
+
+NODE_DEF
+node_b_min(CTX *c, NODE *n)
+{
+    VALUE r = nuq_make_array(1);
+    nuq_array_push(r, nuq_builtin_min(c->input));
+    return r;
+}
+
+NODE_DEF
+node_b_max(CTX *c, NODE *n)
+{
+    VALUE r = nuq_make_array(1);
+    nuq_array_push(r, nuq_builtin_max(c->input));
+    return r;
+}
+
+NODE_DEF
+node_b_sort(CTX *c, NODE *n)
+{
+    VALUE r = nuq_make_array(1);
+    nuq_array_push(r, nuq_builtin_sort(c->input));
+    return r;
+}
+
+NODE_DEF
+node_b_reverse(CTX *c, NODE *n)
+{
+    VALUE r = nuq_make_array(1);
+    nuq_array_push(r, nuq_builtin_reverse(c->input));
+    return r;
+}
+
+NODE_DEF
+node_b_unique(CTX *c, NODE *n)
+{
+    VALUE r = nuq_make_array(1);
+    nuq_array_push(r, nuq_builtin_unique(c->input));
+    return r;
+}
+
+NODE_DEF
+node_b_to_entries(CTX *c, NODE *n)
+{
+    VALUE r = nuq_make_array(1);
+    nuq_array_push(r, nuq_builtin_to_entries(c->input));
+    return r;
+}
+
+NODE_DEF
+node_b_from_entries(CTX *c, NODE *n)
+{
+    VALUE r = nuq_make_array(1);
+    nuq_array_push(r, nuq_builtin_from_entries(c->input));
+    return r;
+}
+
+NODE_DEF
+node_b_paths(CTX *c, NODE *n)
+{
+    VALUE r = nuq_make_array(0);
+    nuq_paths_collect(r, c->input);
+    return r;
+}
+
+NODE_DEF
+node_b_floor(CTX *c, NODE *n)
+{
+    VALUE r = nuq_make_array(1);
+    nuq_array_push(r, nuq_builtin_floor(c->input));
+    return r;
+}
+
+NODE_DEF
+node_b_ceil(CTX *c, NODE *n)
+{
+    VALUE r = nuq_make_array(1);
+    nuq_array_push(r, nuq_builtin_ceil(c->input));
+    return r;
+}
+
+NODE_DEF
+node_b_round(CTX *c, NODE *n)
+{
+    VALUE r = nuq_make_array(1);
+    nuq_array_push(r, nuq_builtin_round(c->input));
+    return r;
+}
+
+NODE_DEF
+node_b_fabs(CTX *c, NODE *n)
+{
+    VALUE r = nuq_make_array(1);
+    nuq_array_push(r, nuq_builtin_fabs(c->input));
+    return r;
+}
+
+NODE_DEF
+node_b_sqrt(CTX *c, NODE *n)
+{
+    VALUE r = nuq_make_array(1);
+    nuq_array_push(r, nuq_builtin_sqrt(c->input));
+    return r;
+}
+
+NODE_DEF
+node_b_first0(CTX *c, NODE *n)
+{
+    if (UNLIKELY(!(NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_ARRAY))) {
+        c->error = nuq_make_string("first: not array", 17);
+        return nuq_make_array(0);
+    }
+    struct nuq_obj *o = NUQ_PTR(c->input);
+    VALUE r = nuq_make_array(1);
+    nuq_array_push(r, o->arr.len > 0 ? o->arr.items[0] : NUQ_NULL);
+    return r;
+}
+
+NODE_DEF
+node_b_last0(CTX *c, NODE *n)
+{
+    if (UNLIKELY(!(NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_ARRAY))) {
+        c->error = nuq_make_string("last: not array", 16);
+        return nuq_make_array(0);
+    }
+    struct nuq_obj *o = NUQ_PTR(c->input);
+    VALUE r = nuq_make_array(1);
+    nuq_array_push(r, o->arr.len > 0 ? o->arr.items[o->arr.len - 1] : NUQ_NULL);
+    return r;
+}
+
+NODE_DEF
+node_b_any0(CTX *c, NODE *n)
+{
+    if (UNLIKELY(!(NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_ARRAY))) {
+        c->error = nuq_make_string("any: not array", 15);
+        return nuq_make_array(0);
+    }
+    struct nuq_obj *o = NUQ_PTR(c->input);
+    bool any = false;
+    for (size_t i = 0; i < o->arr.len && !any; i++)
+        if (nuq_truthy(o->arr.items[i])) any = true;
+    VALUE r = nuq_make_array(1);
+    nuq_array_push(r, any ? NUQ_TRUE : NUQ_FALSE);
+    return r;
+}
+
+NODE_DEF
+node_b_all0(CTX *c, NODE *n)
+{
+    if (UNLIKELY(!(NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_ARRAY))) {
+        c->error = nuq_make_string("all: not array", 15);
+        return nuq_make_array(0);
+    }
+    struct nuq_obj *o = NUQ_PTR(c->input);
+    bool all = true;
+    for (size_t i = 0; i < o->arr.len && all; i++)
+        if (!nuq_truthy(o->arr.items[i])) all = false;
+    VALUE r = nuq_make_array(1);
+    nuq_array_push(r, all ? NUQ_TRUE : NUQ_FALSE);
+    return r;
+}
+
+NODE_DEF
+node_b_isnull(CTX *c, NODE *n)
+{
+    bool b = NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_NULL;
+    VALUE r = nuq_make_array(1);
+    nuq_array_push(r, b ? NUQ_TRUE : NUQ_FALSE);
+    return r;
+}
+
+NODE_DEF
+node_b_explode(CTX *c, NODE *n)
+{
+    VALUE r = nuq_make_array(1);
+    nuq_array_push(r, nuq_builtin_explode(c->input));
+    return r;
+}
+
+NODE_DEF
+node_b_implode(CTX *c, NODE *n)
+{
+    VALUE r = nuq_make_array(1);
+    nuq_array_push(r, nuq_builtin_implode(c->input));
+    return r;
+}
+
+NODE_DEF
+node_b_ascii_upcase(CTX *c, NODE *n)
+{
+    VALUE r = nuq_make_array(1);
+    nuq_array_push(r, nuq_builtin_ascii_upcase(c->input));
+    return r;
+}
+
+NODE_DEF
+node_b_ascii_downcase(CTX *c, NODE *n)
+{
+    VALUE r = nuq_make_array(1);
+    nuq_array_push(r, nuq_builtin_ascii_downcase(c->input));
+    return r;
+}
+
+NODE_DEF
+node_b_tojson(CTX *c, NODE *n)
+{
+    VALUE r = nuq_make_array(1);
+    nuq_array_push(r, nuq_to_json_string(c->input));
+    return r;
+}
+
+NODE_DEF
+node_b_fromjson(CTX *c, NODE *n)
+{
+    VALUE v;
+    if (UNLIKELY(!nuq_builtin_fromjson(c->input, &v))) {
+        c->error = nuq_make_string("fromjson failed", 16);
+        return nuq_make_array(0);
+    }
+    VALUE r = nuq_make_array(1);
+    nuq_array_push(r, v);
+    return r;
+}
+
+NODE_DEF
+node_b_recurse0(CTX *c, NODE *n)
+{
+    VALUE r = nuq_make_array(0);
+    nuq_recurse_collect(r, c->input);
+    return r;
+}
+
+/* --- 1-arg built-ins (with sub-expression body) --- */
+
+NODE_DEF
+node_b_select(CTX *c, NODE *n, NODE *body)
+{
+    VALUE bo = EVAL_ARG(c, body);
+    if (UNLIKELY(c->error != NUQ_NULL)) return bo;
+    struct nuq_obj *boo = NUQ_PTR(bo);
+    for (size_t i = 0; i < boo->arr.len; i++) {
+        if (nuq_truthy(boo->arr.items[i])) {
+            VALUE r = nuq_make_array(1);
+            nuq_array_push(r, c->input);
+            return r;
+        }
+    }
+    return nuq_make_array(0);
+}
+
+NODE_DEF
+node_b_map(CTX *c, NODE *n, NODE *body)
+{
+    /* `map(f)` ≡ `[.[] | f]`.  Body inlined here so SD specialiser
+     * can fold `f` into this node's SD. */
+    if (UNLIKELY(!(NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_ARRAY))) {
+        c->error = nuq_make_string("map: not array", 15);
+        return nuq_make_array(0);
+    }
+    struct nuq_obj *o = NUQ_PTR(c->input);
+    VALUE result = nuq_make_array(o->arr.len);
+    VALUE saved = c->input;
+    for (size_t i = 0; i < o->arr.len; i++) {
+        c->input = o->arr.items[i];
+        VALUE bo = EVAL_ARG(c, body);
+        if (UNLIKELY(c->error != NUQ_NULL)) { c->input = saved; return nuq_make_array(0); }
+        struct nuq_obj *bv = NUQ_PTR(bo);
+        for (size_t j = 0; j < bv->arr.len; j++) nuq_array_push(result, bv->arr.items[j]);
+    }
+    c->input = saved;
+    VALUE r = nuq_make_array(1);
+    nuq_array_push(r, result);
+    return r;
+}
+
+NODE_DEF
+node_b_map_values(CTX *c, NODE *n, NODE *body)
+{
+    return nuq_map_values_eval(c, body);
+}
+
+NODE_DEF
+node_b_with_entries(CTX *c, NODE *n, NODE *body)
+{
+    return nuq_with_entries_eval(c, body);
+}
+
+NODE_DEF
+node_b_range1(CTX *c, NODE *n, NODE *to)
+{
+    return nuq_range1_eval(c, to);
+}
+
+NODE_DEF
+node_b_range2(CTX *c, NODE *n, NODE *from, NODE *to)
+{
+    return nuq_range2_eval(c, from, to);
+}
+
+NODE_DEF
+node_b_range3(CTX *c, NODE *n, NODE *from, NODE *to, NODE *step)
+{
+    return nuq_range3_eval(c, from, to, step);
+}
+
+NODE_DEF
+node_b_has(CTX *c, NODE *n, NODE *key)
+{
+    return nuq_has_eval(c, key);
+}
+
+NODE_DEF
+node_b_in(CTX *c, NODE *n, NODE *container)
+{
+    return nuq_in_eval(c, container);
+}
+
+NODE_DEF
+node_b_contains(CTX *c, NODE *n, NODE *rhs)
+{
+    return nuq_contains_eval(c, rhs);
+}
+
+NODE_DEF
+node_b_split(CTX *c, NODE *n, NODE *sep)
+{
+    return nuq_split_eval(c, sep);
+}
+
+NODE_DEF
+node_b_join(CTX *c, NODE *n, NODE *sep)
+{
+    return nuq_join_eval(c, sep);
+}
+
+NODE_DEF
+node_b_startswith(CTX *c, NODE *n, NODE *prefix)
+{
+    return nuq_startswith_eval(c, prefix);
+}
+
+NODE_DEF
+node_b_endswith(CTX *c, NODE *n, NODE *suffix)
+{
+    return nuq_endswith_eval(c, suffix);
+}
+
+NODE_DEF
+node_b_first1(CTX *c, NODE *n, NODE *body)
+{
+    VALUE bo = EVAL_ARG(c, body);
+    if (UNLIKELY(c->error != NUQ_NULL)) return bo;
+    struct nuq_obj *boo = NUQ_PTR(bo);
+    if (boo->arr.len == 0) return nuq_make_array(0);
+    VALUE r = nuq_make_array(1);
+    nuq_array_push(r, boo->arr.items[0]);
+    return r;
+}
+
+NODE_DEF
+node_b_last1(CTX *c, NODE *n, NODE *body)
+{
+    VALUE bo = EVAL_ARG(c, body);
+    if (UNLIKELY(c->error != NUQ_NULL)) return bo;
+    struct nuq_obj *boo = NUQ_PTR(bo);
+    if (boo->arr.len == 0) return nuq_make_array(0);
+    VALUE r = nuq_make_array(1);
+    nuq_array_push(r, boo->arr.items[boo->arr.len - 1]);
+    return r;
+}
+
+NODE_DEF
+node_b_sort_by(CTX *c, NODE *n, NODE *body)
+{
+    return nuq_sort_by_eval(c, body);
+}
+
+NODE_DEF
+node_b_group_by(CTX *c, NODE *n, NODE *body)
+{
+    return nuq_group_by_eval(c, body);
+}
+
+NODE_DEF
+node_b_unique_by(CTX *c, NODE *n, NODE *body)
+{
+    return nuq_unique_by_eval(c, body);
+}
+
+NODE_DEF
+node_b_min_by(CTX *c, NODE *n, NODE *body)
+{
+    return nuq_min_by_eval(c, body);
+}
+
+NODE_DEF
+node_b_max_by(CTX *c, NODE *n, NODE *body)
+{
+    return nuq_max_by_eval(c, body);
+}
+
+NODE_DEF
+node_b_indices(CTX *c, NODE *n, NODE *pat)
+{
+    return nuq_indices_eval(c, pat);
+}
+
+NODE_DEF
+node_b_index1(CTX *c, NODE *n, NODE *pat)
+{
+    return nuq_index1_eval(c, pat);
+}
+
+NODE_DEF
+node_b_test(CTX *c, NODE *n, NODE *pat)
+{
+    return nuq_test_eval(c, pat);
+}
+
+NODE_DEF
+node_b_getpath(CTX *c, NODE *n, NODE *path)
+{
+    return nuq_getpath_eval(c, path);
+}
+
+/* --- 2-arg --- */
+
+NODE_DEF
+node_b_limit(CTX *c, NODE *n, NODE *cnt, NODE *body)
+{
+    return nuq_limit_eval(c, cnt, body);
+}
+
+NODE_DEF
+node_b_nth(CTX *c, NODE *n, NODE *idx, NODE *body)
+{
+    return nuq_nth_eval(c, idx, body);
 }

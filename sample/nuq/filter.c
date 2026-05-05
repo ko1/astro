@@ -1,9 +1,10 @@
 /*
  * filter.c — recursive-descent parser for the jq filter language.
  *
- * Each parse_* function returns the AST tree directly; no continuation
- * threading required.  The tree is then evaluated by the dispatchers
- * generated from node.def.
+ * Tree-shape AST with `pipe` as the iteration node.  Built-in names
+ * (`length`, `map`, `range`, `select`, ...) are resolved at parse time
+ * to dedicated NODEs (`ALLOC_node_b_length`, etc.).  Unknown names
+ * fall through to `ALLOC_node_call` for user `def`s.
  *
  * Operator precedence (low → high):
  *   pipe `|`
@@ -11,9 +12,9 @@
  *   alt `//`
  *   `or`
  *   `and`
- *   compare `==`, `!=`, `<`, `<=`, `>`, `>=`
- *   add/sub `+`, `-`
- *   mul/div/mod `*`, `/`, `%`
+ *   compare `==` `!=` `<` `<=` `>` `>=`
+ *   add/sub
+ *   mul/div/mod
  *   unary minus
  *   postfix `.foo`, `.[...]`, `.[]`, `?`
  *   primary
@@ -48,7 +49,6 @@ typedef struct {
     int64_t i;
     double  d;
     const char *s;
-    /* for TK_INTERP: parts_id is i */
 } token_t;
 
 typedef struct {
@@ -93,7 +93,6 @@ parse_error(lexer_t *L, const char *fmt, ...)
 static void
 lex_string(lexer_t *L)
 {
-    /* `"` already consumed.  Build text and split on \(...) interpolations. */
     typedef enum { P_STR, P_INTERP } pkind_t;
     typedef struct { pkind_t kind; char *text; size_t tlen; const char *isrc; size_t ilen; } part_t;
     part_t parts[64];
@@ -195,7 +194,6 @@ lex_string(lexer_t *L)
         return;
     }
 
-    /* Build interp parts: each P_STR -> node_str; each P_INTERP -> compiled subexpr */
     struct Node **pnodes = (struct Node **)GC_malloc(pcnt * sizeof(*pnodes));
     for (size_t i = 0; i < pcnt; i++) {
         if (parts[i].kind == P_STR) {
@@ -218,10 +216,7 @@ lex_advance(lexer_t *L)
     if (L->p >= L->end) { L->tok.type = TK_END; return; }
     char c = *L->p;
     switch (c) {
-      case '.':
-        L->p++;
-        if (L->p < L->end && *L->p == '.') { L->p++; L->tok.type = TK_DDOT; return; }
-        L->tok.type = TK_DOT; return;
+      case '.': L->p++; if (L->p < L->end && *L->p == '.') { L->p++; L->tok.type = TK_DDOT; return; } L->tok.type = TK_DOT; return;
       case '?': L->p++; L->tok.type = TK_QUEST; return;
       case '(': L->p++; L->tok.type = TK_LP; return;
       case ')': L->p++; L->tok.type = TK_RP; return;
@@ -372,6 +367,104 @@ expect(lexer_t *L, ttype_t t, const char *what)
     take(L);
 }
 
+/* ----- builtin name resolution ---------------------------------------- */
+
+/* Map a (name, arity) pair to a specific NODE constructor, or fall
+ * back to ALLOC_node_call.  Returns NULL when the caller should use
+ * the user-def path. */
+static struct Node *
+build_builtin_call(const char *name, int arity, struct Node **args)
+{
+#define BUILTIN0(NAME, CTOR) if (arity == 0 && strcmp(name, NAME) == 0) return CTOR()
+#define BUILTIN1(NAME, CTOR) if (arity == 1 && strcmp(name, NAME) == 0) return CTOR(args[0])
+#define BUILTIN2(NAME, CTOR) if (arity == 2 && strcmp(name, NAME) == 0) return CTOR(args[0], args[1])
+#define BUILTIN3(NAME, CTOR) if (arity == 3 && strcmp(name, NAME) == 0) return CTOR(args[0], args[1], args[2])
+
+    /* 0-arg */
+    BUILTIN0("length", ALLOC_node_b_length);
+    BUILTIN0("type", ALLOC_node_b_type);
+    BUILTIN0("keys", ALLOC_node_b_keys);
+    BUILTIN0("keys_unsorted", ALLOC_node_b_keys_unsorted);
+    BUILTIN0("values", ALLOC_node_b_values);
+    BUILTIN0("not", ALLOC_node_not);
+    BUILTIN0("tostring", ALLOC_node_b_to_string);
+    BUILTIN0("to_string", ALLOC_node_b_to_string);
+    BUILTIN0("tonumber", ALLOC_node_b_tonumber);
+    BUILTIN0("tojson", ALLOC_node_b_tojson);
+    BUILTIN0("fromjson", ALLOC_node_b_fromjson);
+    BUILTIN0("add", ALLOC_node_b_add);
+    BUILTIN0("min", ALLOC_node_b_min);
+    BUILTIN0("max", ALLOC_node_b_max);
+    BUILTIN0("sort", ALLOC_node_b_sort);
+    BUILTIN0("reverse", ALLOC_node_b_reverse);
+    BUILTIN0("unique", ALLOC_node_b_unique);
+    BUILTIN0("to_entries", ALLOC_node_b_to_entries);
+    BUILTIN0("from_entries", ALLOC_node_b_from_entries);
+    BUILTIN0("paths", ALLOC_node_b_paths);
+    BUILTIN0("floor", ALLOC_node_b_floor);
+    BUILTIN0("ceil", ALLOC_node_b_ceil);
+    BUILTIN0("round", ALLOC_node_b_round);
+    BUILTIN0("fabs", ALLOC_node_b_fabs);
+    BUILTIN0("abs", ALLOC_node_b_fabs);
+    BUILTIN0("sqrt", ALLOC_node_b_sqrt);
+    BUILTIN0("first", ALLOC_node_b_first0);
+    BUILTIN0("last", ALLOC_node_b_last0);
+    BUILTIN0("any", ALLOC_node_b_any0);
+    BUILTIN0("all", ALLOC_node_b_all0);
+    BUILTIN0("isnull", ALLOC_node_b_isnull);
+    BUILTIN0("explode", ALLOC_node_b_explode);
+    BUILTIN0("implode", ALLOC_node_b_implode);
+    BUILTIN0("ascii_upcase", ALLOC_node_b_ascii_upcase);
+    BUILTIN0("ascii_downcase", ALLOC_node_b_ascii_downcase);
+    BUILTIN0("recurse", ALLOC_node_b_recurse0);
+    BUILTIN0("empty", ALLOC_node_empty);
+
+    /* 1-arg */
+    BUILTIN1("select", ALLOC_node_b_select);
+    BUILTIN1("map", ALLOC_node_b_map);
+    BUILTIN1("map_values", ALLOC_node_b_map_values);
+    BUILTIN1("with_entries", ALLOC_node_b_with_entries);
+    BUILTIN1("range", ALLOC_node_b_range1);
+    BUILTIN1("has", ALLOC_node_b_has);
+    BUILTIN1("in", ALLOC_node_b_in);
+    BUILTIN1("contains", ALLOC_node_b_contains);
+    BUILTIN1("split", ALLOC_node_b_split);
+    BUILTIN1("join", ALLOC_node_b_join);
+    BUILTIN1("startswith", ALLOC_node_b_startswith);
+    BUILTIN1("endswith", ALLOC_node_b_endswith);
+    BUILTIN1("first", ALLOC_node_b_first1);
+    BUILTIN1("last", ALLOC_node_b_last1);
+    BUILTIN1("sort_by", ALLOC_node_b_sort_by);
+    BUILTIN1("group_by", ALLOC_node_b_group_by);
+    BUILTIN1("unique_by", ALLOC_node_b_unique_by);
+    BUILTIN1("min_by", ALLOC_node_b_min_by);
+    BUILTIN1("max_by", ALLOC_node_b_max_by);
+    BUILTIN1("indices", ALLOC_node_b_indices);
+    BUILTIN1("index", ALLOC_node_b_index1);
+    BUILTIN1("test", ALLOC_node_b_test);
+    BUILTIN1("getpath", ALLOC_node_b_getpath);
+    BUILTIN1("error", ALLOC_node_error1);
+
+    /* 2-arg */
+    BUILTIN2("range", ALLOC_node_b_range2);
+    BUILTIN2("limit", ALLOC_node_b_limit);
+    BUILTIN2("nth", ALLOC_node_b_nth);
+
+    /* 3-arg */
+    BUILTIN3("range", ALLOC_node_b_range3);
+
+#undef BUILTIN0
+#undef BUILTIN1
+#undef BUILTIN2
+#undef BUILTIN3
+
+    /* Fall back to user-def call */
+    uint32_t name_id = nuq_intern(name);
+    if (arity == 0) return ALLOC_node_call(name_id, 0, 0);
+    uint32_t aid = nuq_args_intern(args, (size_t)arity);
+    return ALLOC_node_call(name_id, (uint32_t)arity, aid);
+}
+
 /* ----- parser ---------------------------------------------------------- */
 
 static struct Node *parse_pipe(lexer_t *L);
@@ -388,13 +481,13 @@ static struct Node *parse_postfix(lexer_t *L);
 static struct Node *parse_primary(lexer_t *L);
 static struct Node *parse_term_for_keyword(lexer_t *L);
 
-/* Wrap-postfix helper: `node?` -> if node has an opt counterpart, use it.
- * For simplicity we wrap with a try-catch swallowing errors. */
 static struct Node *
 wrap_quest(struct Node *body)
 {
     return ALLOC_node_try(body, NULL);
 }
+
+/* ----- primary --------------------------------------------------------- */
 
 static struct Node *
 parse_primary(lexer_t *L)
@@ -403,16 +496,9 @@ parse_primary(lexer_t *L)
     switch (t->type) {
       case TK_DOT: {
         take(L);
-        /* peek for postfix */
         const token_t *p = peek(L);
-        if (p->type == TK_IDENT) {
-            const char *name = take(L).s;
-            return ALLOC_node_field(name);
-        }
-        if (p->type == TK_STR) {
-            const char *name = take(L).s;
-            return ALLOC_node_field(name);
-        }
+        if (p->type == TK_IDENT) { const char *name = take(L).s; return ALLOC_node_field(name); }
+        if (p->type == TK_STR) { const char *name = take(L).s; return ALLOC_node_field(name); }
         return ALLOC_node_identity();
       }
       case TK_DDOT: take(L); return ALLOC_node_recurse();
@@ -424,33 +510,20 @@ parse_primary(lexer_t *L)
         if (tk.i >= INT32_MIN && tk.i <= INT32_MAX) return ALLOC_node_int((int32_t)tk.i);
         return ALLOC_node_lit(nuq_lit_intern(nuq_make_int(tk.i)));
       }
-      case TK_NUM: {
-        token_t tk = take(L);
-        return ALLOC_node_lit(nuq_lit_intern(nuq_make_double(tk.d)));
-      }
-      case TK_STR: {
-        token_t tk = take(L);
-        return ALLOC_node_str(tk.s);
-      }
-      case TK_INTERP: {
-        token_t tk = take(L);
-        return ALLOC_node_interp((uint32_t)tk.i);
-      }
+      case TK_NUM: { token_t tk = take(L); return ALLOC_node_lit(nuq_lit_intern(nuq_make_double(tk.d))); }
+      case TK_STR: { token_t tk = take(L); return ALLOC_node_str(tk.s); }
+      case TK_INTERP: { token_t tk = take(L); return ALLOC_node_interp((uint32_t)tk.i); }
       case TK_AT: {
         const char *name = take(L).s;
         uint32_t fid = nuq_fmt_intern(name);
-        /* @csv "...interp..." -> apply to interp body
-         * @csv             -> standalone, body=NULL */
         const token_t *nx = peek(L);
         if (nx->type == TK_STR) {
             token_t tk = take(L);
-            struct Node *body = ALLOC_node_str(tk.s);
-            return ALLOC_node_format(fid, body);
+            return ALLOC_node_format(fid, ALLOC_node_str(tk.s));
         }
         if (nx->type == TK_INTERP) {
             token_t tk = take(L);
-            struct Node *body = ALLOC_node_interp((uint32_t)tk.i);
-            return ALLOC_node_format(fid, body);
+            return ALLOC_node_format(fid, ALLOC_node_interp((uint32_t)tk.i));
         }
         return ALLOC_node_format(fid, NULL);
       }
@@ -460,12 +533,7 @@ parse_primary(lexer_t *L)
         const char *nm = take(L).s;
         return ALLOC_node_var(nuq_intern(nm));
       }
-      case TK_LP: {
-        take(L);
-        struct Node *e = parse_pipe(L);
-        expect(L, TK_RP, "')'");
-        return e;
-      }
+      case TK_LP: { take(L); struct Node *e = parse_pipe(L); expect(L, TK_RP, "')'"); return e; }
       case TK_LBRK: {
         take(L);
         if (accept(L, TK_RBRK)) return ALLOC_node_array_empty();
@@ -479,10 +547,8 @@ parse_primary(lexer_t *L)
         size_t cnt = 0, capa = 0;
         if (!accept(L, TK_RBRACE)) {
             for (;;) {
-                if (cnt == capa) {
-                    capa = capa ? capa * 2 : 4;
-                    items = (struct nuq_obj_entry *)GC_realloc(items, capa * sizeof(*items));
-                }
+                if (cnt == capa) { capa = capa ? capa * 2 : 4;
+                    items = (struct nuq_obj_entry *)GC_realloc(items, capa * sizeof(*items)); }
                 struct nuq_obj_entry *ie = &items[cnt++];
                 memset(ie, 0, sizeof(*ie));
                 const token_t *kt = peek(L);
@@ -490,7 +556,6 @@ parse_primary(lexer_t *L)
                     ie->kkind = 0;
                     ie->kname = take(L).s;
                 } else if (kt->type == TK_INTERP) {
-                    /* Use a faux NODE expression that emits the interp result */
                     token_t tk = take(L);
                     ie->kkind = 1;
                     ie->kexpr = ALLOC_node_interp((uint32_t)tk.i);
@@ -506,7 +571,6 @@ parse_primary(lexer_t *L)
                     ie->kexpr = parse_pipe(L);
                     expect(L, TK_RP, "')'");
                 } else if (kt->type == TK_AT) {
-                    /* @fmt as a key — treat as literal-format */
                     const char *fnm = take(L).s;
                     if (peek(L)->type == TK_STR) {
                         token_t tk = take(L);
@@ -516,11 +580,8 @@ parse_primary(lexer_t *L)
                         token_t tk = take(L);
                         ie->kkind = 1;
                         ie->kexpr = ALLOC_node_format(nuq_fmt_intern(fnm), ALLOC_node_interp((uint32_t)tk.i));
-                    } else {
-                        parse_error(L, "expected string after @%s", fnm);
-                    }
+                    } else parse_error(L, "expected string after @%s", fnm);
                 } else if (kt->type >= TK_KW_TRUE && kt->type <= TK_KW_LABEL) {
-                    /* keywords used as field-like keys */
                     static const char *kw_names[] = {
                         [TK_KW_TRUE]="true",[TK_KW_FALSE]="false",[TK_KW_NULL]="null",
                         [TK_KW_IF]="if",[TK_KW_THEN]="then",[TK_KW_ELIF]="elif",
@@ -533,11 +594,8 @@ parse_primary(lexer_t *L)
                     ie->kkind = 0;
                     ie->kname = kw_names[kt->type] ? kw_names[kt->type] : "?";
                     take(L);
-                } else {
-                    parse_error(L, "bad key in object");
-                }
+                } else parse_error(L, "bad key in object");
                 if (accept(L, TK_COLON)) {
-                    /* Object value: pipes allowed; comma terminates entry */
                     ie->vexpr = parse_pipe_no_comma(L);
                 } else {
                     ie->vexpr = NULL;
@@ -568,22 +626,10 @@ parse_primary(lexer_t *L)
                 struct Node *c2 = parse_pipe(L);
                 expect(L, TK_KW_THEN, "'then'");
                 struct Node *t2 = parse_pipe(L);
-                /* fold rest into nested if */
-                /* recurse-by-loop: build nested if from inside out */
-                /* Strategy: parse remaining if-else as another `if` body */
-                /* Simpler: peek for elif/else/end and recurse here */
-                /* For now, support only one elif by re-using this loop */
                 struct Node *e3 = NULL;
                 if (accept(L, TK_KW_END)) e3 = NULL;
                 else if (accept(L, TK_KW_ELSE)) { e3 = parse_pipe(L); expect(L, TK_KW_END, "'end'"); }
-                else if (peek(L)->type == TK_KW_ELIF) {
-                    /* recurse */
-                    struct Node *cur = ALLOC_node_if(c2, t2, NULL);
-                    /* fall through complexly — simpler: treat elif as nested if with no else,
-                     * and rely on els=NULL meaning identity */
-                    els = cur;
-                    break;
-                }
+                else parse_error(L, "elif chain too deep");
                 els = ALLOC_node_if(c2, t2, e3);
                 break;
             }
@@ -628,7 +674,6 @@ parse_primary(lexer_t *L)
       }
       case TK_KW_NOT: take(L); return ALLOC_node_not();
       case TK_KW_DEF: {
-        /* parse def chain */
         struct nuq_def_entry items[64];
         size_t cnt = 0;
         while (peek(L)->type == TK_KW_DEF) {
@@ -674,41 +719,28 @@ parse_primary(lexer_t *L)
       }
       case TK_IDENT: {
         const char *name = take(L).s;
-        uint32_t id = nuq_intern(name);
+        struct Node *args[8];
+        int arity = 0;
         if (accept(L, TK_LP)) {
-            struct Node *args[8];
-            int arity = 0;
             for (;;) {
                 args[arity++] = parse_pipe(L);
                 if (!accept(L, TK_SEMI)) break;
             }
             expect(L, TK_RP, "')'");
-            switch (arity) {
-              case 1: return ALLOC_node_call1(id, args[0]);
-              case 2: return ALLOC_node_call2(id, args[0], args[1]);
-              case 3: return ALLOC_node_call3(id, args[0], args[1], args[2]);
-              default:
-                if (arity == 0) return ALLOC_node_call0(id);
-                parse_error(L, "function arity > 3 not supported");
-            }
         }
-        return ALLOC_node_call0(id);
+        return build_builtin_call(name, arity, args);
       }
       default: parse_error(L, "unexpected token type %d", t->type);
     }
 }
 
-/* For `reduce/foreach SRC as $X (...)` we need to parse SRC without
- * letting parse_postfix consume the `as $X | ...` form (which would
- * gobble the whole thing).  Use a hand-rolled "primary + plain
- * postfix" parser here that stops at `as`. */
 static struct Node *
 parse_term_for_keyword(lexer_t *L)
 {
     struct Node *acc = parse_primary(L);
     for (;;) {
         const token_t *t = peek(L);
-        if (t->type == TK_KW_AS) break;             /* hand back to caller */
+        if (t->type == TK_KW_AS) break;
         if (t->type == TK_DOT) {
             take(L);
             const token_t *p = peek(L);
@@ -717,9 +749,8 @@ parse_term_for_keyword(lexer_t *L)
                 acc = ALLOC_node_pipe(acc, ALLOC_node_field(name));
             } else if (p->type == TK_LBRK) {
                 take(L);
-                if (accept(L, TK_RBRK)) {
-                    acc = ALLOC_node_pipe(acc, ALLOC_node_iter());
-                } else {
+                if (accept(L, TK_RBRK)) acc = ALLOC_node_pipe(acc, ALLOC_node_iter());
+                else {
                     struct Node *e1 = NULL;
                     if (peek(L)->type != TK_COLON) e1 = parse_pipe(L);
                     if (accept(L, TK_COLON)) {
@@ -763,7 +794,7 @@ parse_term_for_keyword(lexer_t *L)
     return acc;
 }
 
-/* ----- postfix: .foo, .[...], ?  ---------------------------------------- */
+/* ----- postfix --------------------------------------------------------- */
 
 static struct Node *
 parse_postfix(lexer_t *L)
@@ -772,21 +803,15 @@ parse_postfix(lexer_t *L)
     for (;;) {
         const token_t *t = peek(L);
         if (t->type == TK_DOT) {
-            /* lookahead: `.IDENT` or `.["..."]` or `.[]`/`.[expr]` */
             take(L);
             const token_t *p = peek(L);
-            if (p->type == TK_IDENT) {
-                const char *name = take(L).s;
-                /* compose: acc | .name */
-                acc = ALLOC_node_pipe(acc, ALLOC_node_field(name));
-            } else if (p->type == TK_STR) {
+            if (p->type == TK_IDENT || p->type == TK_STR) {
                 const char *name = take(L).s;
                 acc = ALLOC_node_pipe(acc, ALLOC_node_field(name));
             } else if (p->type == TK_LBRK) {
                 take(L);
-                if (accept(L, TK_RBRK)) {
-                    acc = ALLOC_node_pipe(acc, ALLOC_node_iter());
-                } else {
+                if (accept(L, TK_RBRK)) acc = ALLOC_node_pipe(acc, ALLOC_node_iter());
+                else {
                     struct Node *e1 = NULL;
                     if (peek(L)->type != TK_COLON) e1 = parse_pipe(L);
                     if (accept(L, TK_COLON)) {
@@ -802,15 +827,11 @@ parse_postfix(lexer_t *L)
                         acc = ALLOC_node_pipe(acc, ALLOC_node_index(e1));
                     }
                 }
-            } else {
-                parse_error(L, "expected ident or '[' after '.'");
-            }
+            } else parse_error(L, "expected ident or '[' after '.'");
         } else if (t->type == TK_LBRK) {
-            /* prefix-style index without `.` (only after an ident-call) — jq supports this */
             take(L);
-            if (accept(L, TK_RBRK)) {
-                acc = ALLOC_node_pipe(acc, ALLOC_node_iter());
-            } else {
+            if (accept(L, TK_RBRK)) acc = ALLOC_node_pipe(acc, ALLOC_node_iter());
+            else {
                 struct Node *e1 = NULL;
                 if (peek(L)->type != TK_COLON) e1 = parse_pipe(L);
                 if (accept(L, TK_COLON)) {
@@ -830,7 +851,6 @@ parse_postfix(lexer_t *L)
             take(L);
             acc = wrap_quest(acc);
         } else if (t->type == TK_KW_AS) {
-            /* `expr as $x | body` — handled here so it binds tightly */
             take(L);
             expect(L, TK_DOLLAR, "'$'");
             if (peek(L)->type != TK_IDENT) parse_error(L, "$name");
@@ -838,9 +858,7 @@ parse_postfix(lexer_t *L)
             expect(L, TK_PIPE, "'|' after as $x");
             struct Node *body = parse_pipe(L);
             return ALLOC_node_as(acc, vid, body);
-        } else {
-            break;
-        }
+        } else break;
     }
     return acc;
 }
@@ -862,8 +880,8 @@ parse_muldiv(lexer_t *L)
     for (;;) {
         const token_t *t = peek(L);
         struct Node *(*ctor)(struct Node *, struct Node *) = NULL;
-        if (t->type == TK_STAR)    { take(L); ctor = ALLOC_node_mul; }
-        else if (t->type == TK_SLASH)   { take(L); ctor = ALLOC_node_div; }
+        if (t->type == TK_STAR) { take(L); ctor = ALLOC_node_mul; }
+        else if (t->type == TK_SLASH) { take(L); ctor = ALLOC_node_div; }
         else if (t->type == TK_PERCENT) { take(L); ctor = ALLOC_node_mod; }
         else break;
         lhs = ctor(lhs, parse_unary(L));
@@ -909,9 +927,7 @@ static struct Node *
 parse_and(lexer_t *L)
 {
     struct Node *lhs = parse_compare(L);
-    while (accept(L, TK_KW_AND)) {
-        lhs = ALLOC_node_and(lhs, parse_compare(L));
-    }
+    while (accept(L, TK_KW_AND)) lhs = ALLOC_node_and(lhs, parse_compare(L));
     return lhs;
 }
 
@@ -919,9 +935,7 @@ static struct Node *
 parse_or(lexer_t *L)
 {
     struct Node *lhs = parse_and(L);
-    while (accept(L, TK_KW_OR)) {
-        lhs = ALLOC_node_or(lhs, parse_and(L));
-    }
+    while (accept(L, TK_KW_OR)) lhs = ALLOC_node_or(lhs, parse_and(L));
     return lhs;
 }
 
@@ -929,9 +943,7 @@ static struct Node *
 parse_alt(lexer_t *L)
 {
     struct Node *lhs = parse_or(L);
-    while (accept(L, TK_ALT)) {
-        lhs = ALLOC_node_alt(lhs, parse_or(L));
-    }
+    while (accept(L, TK_ALT)) lhs = ALLOC_node_alt(lhs, parse_or(L));
     return lhs;
 }
 
@@ -939,9 +951,7 @@ static struct Node *
 parse_comma(lexer_t *L)
 {
     struct Node *lhs = parse_alt(L);
-    while (accept(L, TK_COMMA)) {
-        lhs = ALLOC_node_comma(lhs, parse_alt(L));
-    }
+    while (accept(L, TK_COMMA)) lhs = ALLOC_node_comma(lhs, parse_alt(L));
     return lhs;
 }
 
@@ -949,21 +959,15 @@ static struct Node *
 parse_pipe(lexer_t *L)
 {
     struct Node *lhs = parse_comma(L);
-    while (accept(L, TK_PIPE)) {
-        lhs = ALLOC_node_pipe(lhs, parse_comma(L));
-    }
+    while (accept(L, TK_PIPE)) lhs = ALLOC_node_pipe(lhs, parse_comma(L));
     return lhs;
 }
 
-/* Object-value position: allow pipes, but stop at comma so `, b: …`
- * separates entries.  Same as parse_pipe but built on parse_alt. */
 static struct Node *
 parse_pipe_no_comma(lexer_t *L)
 {
     struct Node *lhs = parse_alt(L);
-    while (accept(L, TK_PIPE)) {
-        lhs = ALLOC_node_pipe(lhs, parse_alt(L));
-    }
+    while (accept(L, TK_PIPE)) lhs = ALLOC_node_pipe(lhs, parse_alt(L));
     return lhs;
 }
 
