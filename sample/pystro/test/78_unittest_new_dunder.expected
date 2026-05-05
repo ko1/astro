@@ -1,0 +1,5 @@
+ok NewDunderTest test_built_in_subclass_still_works
+ok NewDunderTest test_class_attr_None
+ok NewDunderTest test_singleton
+---
+passed=3 failed=0

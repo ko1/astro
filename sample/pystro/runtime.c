@@ -584,6 +584,19 @@ py_class_lookup_method(VALUE cls, const char *name)
     return PY_NONE;
 }
 
+bool
+py_class_has_method(VALUE cls, const char *name)
+{
+    if (cls == PY_NONE || !py_is_class(cls)) return false;
+    struct pyclass *cd = &PY_PTR(cls)->cls;
+    for (int i = 0; i < cd->nmro; i++) {
+        struct pyclass *kd = &PY_PTR(cd->mro[i])->cls;
+        for (int j = 0; j < kd->nmethods; j++)
+            if (strcmp(kd->methods[j].name, name) == 0) return true;
+    }
+    return false;
+}
+
 VALUE
 py_class_lookup_method_pub(VALUE cls, const char *name)
 {
@@ -623,6 +636,24 @@ py_make_instance(VALUE cls)
     o->inst.attrs = NULL;       // lazily allocated when first attr is set
     o->inst.primary = 0;
     return PY_OBJ_VAL(o);
+}
+
+VALUE
+bi_object_new(CTX *c, int argc, VALUE *argv)
+{
+    if (argc < 1 || !py_is_class(argv[0]))
+        py_raise_exc(c, c->EXC_TypeError, "object.__new__() needs class");
+    VALUE cls = argv[0];
+    VALUE inst = py_make_instance(cls);
+    // For built-in subclasses, set up primary value from extra args.
+    extern VALUE py_class_find_builtin_base(VALUE cls);
+    VALUE bin_base = py_class_find_builtin_base(cls);
+    if (bin_base != PY_NONE) {
+        VALUE primary = PY_PTR(bin_base)->cls.builtin_ctor(c, argc - 1, argv + 1);
+        if (c->state == PY_STATE_RAISE) return PY_NONE;
+        PY_PTR(inst)->inst.primary = primary;
+    }
+    return inst;
 }
 
 // Walk a class's MRO and find the first built-in type class (one with
@@ -2704,8 +2735,8 @@ py_getattr(CTX *c, VALUE v, const char *name)
         }
         if (strcmp(name, "__qualname__") == 0)
             return py_make_str(cd->name, strlen(cd->name));
-        VALUE m = py_class_lookup_method(v, name);
-        if (m != PY_NONE) {
+        if (py_class_has_method(v, name)) {
+            VALUE m = py_class_lookup_method(v, name);
             if (PY_IS_PTR(m)) {
                 int t = PY_PTR(m)->type;
                 if (t == PY_T_STATICMETHOD) return PY_PTR(m)->wrap.wrapped;
@@ -3000,7 +3031,20 @@ py_apply_kw(CTX *c, VALUE fn, int argc, VALUE *argv,
             PYSTRO_BI_KWVALUES = saved_kv;
             return r;
         }
-        VALUE inst = py_make_instance(fn);
+        // Custom __new__: lets users intercept instance creation (singleton
+        // pattern, immutable types, etc.).  Return value of __new__ becomes
+        // the instance; if it's an instance of cls, __init__ runs on it.
+        VALUE inst;
+        VALUE new_m = py_class_lookup_method(fn, "__new__");
+        if (new_m != PY_NONE) {
+            VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc + 1));
+            av[0] = fn;
+            for (int i = 0; i < argc; i++) av[i + 1] = argv[i];
+            inst = py_apply_kw(c, new_m, argc + 1, av, kwc, kwnames, kwvalues);
+            if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
+        } else {
+            inst = py_make_instance(fn);
+        }
         if (PY_PTR(fn)->cls.is_exception) {
             py_setattr(c, inst, "args", py_make_tuple(argv, argc));
             if (argc >= 1 && py_is_str(argv[0])) py_setattr(c, inst, "message", argv[0]);
@@ -3069,16 +3113,25 @@ py_apply_slow(CTX *c, VALUE fn, int argc, VALUE *argv)
         if (PY_PTR(fn)->cls.builtin_ctor) {
             return PY_PTR(fn)->cls.builtin_ctor(c, argc, argv);
         }
-        VALUE inst = py_make_instance(fn);
-        // If this class subclasses a built-in type, construct the
-        // underlying primary value via the builtin's ctor and stash
-        // it on the instance.  This makes `m = M(...)` where M(list)
-        // produce an instance whose primary IS a list.
-        VALUE bin_base = py_class_find_builtin_base(fn);
-        if (bin_base != PY_NONE) {
-            VALUE primary = PY_PTR(bin_base)->cls.builtin_ctor(c, argc, argv);
+        // __new__ — always defined (object.__new__ is the default).
+        // It returns the new instance and handles built-in subclass
+        // primary value setup.
+        VALUE inst;
+        VALUE new_m = py_class_lookup_method(fn, "__new__");
+        if (new_m != PY_NONE) {
+            VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc + 1));
+            av[0] = fn;
+            for (int i = 0; i < argc; i++) av[i + 1] = argv[i];
+            inst = py_apply(c, new_m, argc + 1, av);
             if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
-            PY_PTR(inst)->inst.primary = primary;
+        } else {
+            inst = py_make_instance(fn);
+            VALUE bin_base = py_class_find_builtin_base(fn);
+            if (bin_base != PY_NONE) {
+                VALUE primary = PY_PTR(bin_base)->cls.builtin_ctor(c, argc, argv);
+                if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
+                PY_PTR(inst)->inst.primary = primary;
+            }
         }
         if (PY_PTR(fn)->cls.is_exception) {
             py_setattr(c, inst, "args", py_make_tuple(argv, argc));
@@ -9138,6 +9191,13 @@ install_builtins(CTX *c)
     c->TYPE_range     = py_make_builtin_class("range",     bi_range,     PY_T_RANGE);
     c->TYPE_type      = py_make_builtin_class("type",      bi_type,      PY_T_CLASS);
     c->TYPE_object    = py_make_class("object", PY_NONE, false);
+    {
+        // object.__new__(cls, *args, **kwargs) — default implementation
+        // that just allocates a new instance of `cls`.
+        extern VALUE bi_object_new(CTX *c, int argc, VALUE *argv);
+        py_class_add_method(c, c->TYPE_object, "__new__",
+            py_make_builtin("__new__", bi_object_new, 1, -1));
+    }
     // Synthetic type classes for built-in non-constructable types.
     c->TYPE_NoneType                    = py_make_class("NoneType",                     PY_NONE, false);
     c->TYPE_function                    = py_make_class("function",                     PY_NONE, false);
