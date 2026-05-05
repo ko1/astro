@@ -19,16 +19,17 @@
 def _build_dataclass(cls, fields):
     typename = cls.__name__ if hasattr(cls, "__name__") else "Dataclass"
 
-    def _init(self, *args):
-        if len(args) > len(fields):
+    def _init(self, *args, **kwargs):
+        if len(args) + len(kwargs) > len(fields):
             raise TypeError(typename + ".__init__: too many args")
         for i, fn in enumerate(fields):
             if i < len(args):
                 setattr(self, fn, args[i])
+            elif fn in kwargs:
+                setattr(self, fn, kwargs[fn])
             elif hasattr(cls, fn):
-                # Default from class attribute.
                 setattr(self, fn, getattr(cls, fn))
-            # else: leave unset; user must set explicitly
+            # else: leave unset
 
     def _repr(self):
         parts = []

@@ -719,18 +719,31 @@ parse_fstring_payload(const char *s, size_t len)
             }
             NODE *p;
             if (spec_start) {
-                // Build format(expr, "spec") call.
-                char *spec_buf = (char *)GC_malloc_atomic(j - spec_start);
-                memcpy(spec_buf, s + spec_start + 1, j - spec_start - 1);
-                spec_buf[j - spec_start - 1] = '\0';
-                NODE *spec_node = ALLOC_node_const_str(intern_name(spec_buf, j - spec_start - 1));
+                // Build format(expr, "spec") call.  Spec may contain
+                // nested {expr} which we recurse into via parse_fstring_payload.
+                size_t spec_len = j - spec_start - 1;
+                char *spec_buf = (char *)GC_malloc_atomic(spec_len + 1);
+                memcpy(spec_buf, s + spec_start + 1, spec_len);
+                spec_buf[spec_len] = '\0';
+                bool has_nested = false;
+                for (size_t k = 0; k < spec_len; k++)
+                    if (spec_buf[k] == '{') { has_nested = true; break; }
+                NODE *spec_node;
+                if (has_nested) {
+                    spec_node = parse_fstring_payload(spec_buf, spec_len);
+                } else {
+                    spec_node = ALLOC_node_const_str(intern_name(spec_buf, spec_len));
+                }
                 p = ALLOC_node_call_2(ALLOC_node_gref(intern_name("format", 6)),
                                       expr, spec_node);
             } else if (conv) {
-                // Already converted to a str by repr/str/ascii; no further str() wrap.
                 p = expr;
             } else {
-                p = str_call_of(expr);
+                // No spec, no conv: use format(expr, "") so user
+                // classes' __format__ is honoured.
+                NODE *empty = ALLOC_node_const_str(intern_name("", 0));
+                p = ALLOC_node_call_2(ALLOC_node_gref(intern_name("format", 6)),
+                                      expr, empty);
             }
             // Prepend "<expr text>=" for debug syntax.
             if (eq_pos) {

@@ -871,6 +871,16 @@ py_try_binop_dunder(CTX *c, const char *name, VALUE a, VALUE b)
     return (VALUE)0;
 }
 
+// For built-in subclasses (`class M(list):`), unwrap to the primary
+// value so binary ops fall through to the built-in path.
+static inline VALUE
+py_unwrap_primary(VALUE v)
+{
+    if (PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_INSTANCE && PY_PTR(v)->inst.primary)
+        return PY_PTR(v)->inst.primary;
+    return v;
+}
+
 VALUE
 py_add(CTX *c, VALUE a, VALUE b)
 {
@@ -878,10 +888,10 @@ py_add(CTX *c, VALUE a, VALUE b)
     if (r) return r;
     r = py_try_binop_dunder(c, "__radd__", b, a);
     if (r) return r;
-    // Fallback: __iadd__ (used by `a += b` and tolerated for `a + b` when
-    // only the in-place form is defined — common pystro pattern).
     r = py_try_binop_dunder(c, "__iadd__", a, b);
     if (r) return r;
+    a = py_unwrap_primary(a);
+    b = py_unwrap_primary(b);
     if (py_is_str(a) && py_is_str(b)) {
         size_t la = PY_PTR(a)->str.len, lb = PY_PTR(b)->str.len;
         char *buf = (char *)GC_malloc_atomic(la + lb + 1);
@@ -947,6 +957,8 @@ py_sub(CTX *c, VALUE a, VALUE b)
     if (r) return r;
     r = py_try_binop_dunder(c, "__isub__", a, b);
     if (r) return r;
+    a = py_unwrap_primary(a);
+    b = py_unwrap_primary(b);
     if (py_int_or_bool(a) && py_int_or_bool(b)) {
         mpz_t za, zb; py_to_mpz(c, a, za); py_to_mpz(c, b, zb);
         mpz_sub(za, za, zb);
@@ -973,6 +985,8 @@ py_mul(CTX *c, VALUE a, VALUE b)
     if (r) return r;
     r = py_try_binop_dunder(c, "__imul__", a, b);
     if (r) return r;
+    a = py_unwrap_primary(a);
+    b = py_unwrap_primary(b);
     if (py_is_str(a) && py_int_or_bool(b)) {
         int64_t k = PY_IS_FIXNUM(b) ? PY_FIXVAL(b) : (b == PY_TRUE ? 1 : 0);
         if (k <= 0) return py_make_str("", 0);
@@ -2163,6 +2177,9 @@ py_contains(CTX *c, VALUE container, VALUE v)
             VALUE r = py_apply(c, m, 2, av);
             return py_is_truthy(r);
         }
+        // Built-in subclass: forward to primary.
+        if (PY_PTR(container)->inst.primary)
+            return py_contains(c, PY_PTR(container)->inst.primary, v);
         // Fall back: iterate via __iter__/__next__.
         VALUE im = py_class_lookup_method(cls, "__iter__");
         if (im != PY_NONE) {
@@ -7616,6 +7633,15 @@ static VALUE
 bi_format(CTX *c, int argc, VALUE *argv)
 {
     VALUE v = argv[0];
+    // User class with __format__ — dispatch to it.
+    if (py_is_instance(v)) {
+        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(v)->inst.cls), "__format__");
+        if (m != PY_NONE) {
+            VALUE spec = (argc >= 2 && py_is_str(argv[1])) ? argv[1] : py_make_str("", 0);
+            VALUE av[2] = { v, spec };
+            return py_apply(c, m, 2, av);
+        }
+    }
     if (argc < 2 || !py_is_str(argv[1]) || PY_PTR(argv[1])->str.len == 0)
         return py_to_str(c, v);
     const char *s = PY_PTR(argv[1])->str.chars;

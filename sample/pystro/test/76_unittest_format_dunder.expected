@@ -1,0 +1,7 @@
+ok FormatDunderTest test_format_default
+ok FormatDunderTest test_nested_spec
+ok FormatDunderTest test_nested_spec_complex
+ok BuiltinSubclassMulTest test_dict_subclass_in
+ok BuiltinSubclassMulTest test_str_subclass_mul
+---
+passed=5 failed=0

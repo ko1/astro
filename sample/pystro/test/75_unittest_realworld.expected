@@ -1,0 +1,7 @@
+ok ExpressionEvaluatorTest test_recursive_descent
+ok TransactionPatternTest test_with_rollback
+ok DataclassWithKwargsTest test_dataclass_kwargs
+ok GeneratorPipelineTest test_dedupe_via_gen
+ok ClassHierarchyTest test_super_chain
+---
+passed=5 failed=0
