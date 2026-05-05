@@ -459,14 +459,26 @@ nuq_user_call(CTX *c, uint32_t name_id, uint32_t arity, uint32_t args_id)
 
     struct nuq_func_def *fd = nuq_func_lookup(c, name_id, (int)arity);
     if (fd) {
-        size_t var_top = c->var_top;
-        size_t func_top = c->func_cnt;
+        /* Evaluate all $-bound args FIRST in the CALLER's context, then
+         * bind them.  Otherwise `f($m-1; $m)` would see the new $m on
+         * the second arg eval (jq evaluates all args in caller scope). */
+        VALUE arg_values[16];
+        if (arity > 16) {
+            fprintf(stderr, "nuq error: too many args (>16)\n");
+            return err_array(c, "too many args");
+        }
         for (uint32_t i = 0; i < arity; i++) {
             if (fd->param_is_value[i]) {
                 VALUE buf = EVAL(c, args[i]);
                 if (c->error != NUQ_NULL) return buf;
-                VALUE v = NUQ_PTR(buf)->arr.len > 0 ? NUQ_PTR(buf)->arr.items[0] : NUQ_NULL;
-                nuq_var_push(c, fd->param_ids[i], v);
+                arg_values[i] = NUQ_PTR(buf)->arr.len > 0 ? NUQ_PTR(buf)->arr.items[0] : NUQ_NULL;
+            }
+        }
+        size_t var_top = c->var_top;
+        size_t func_top = c->func_cnt;
+        for (uint32_t i = 0; i < arity; i++) {
+            if (fd->param_is_value[i]) {
+                nuq_var_push(c, fd->param_ids[i], arg_values[i]);
             } else {
                 struct nuq_func_def *pfd = (struct nuq_func_def *)GC_malloc(sizeof(*pfd));
                 pfd->name_id = fd->param_ids[i];
@@ -1084,6 +1096,7 @@ nuq_endswith_eval(CTX *c, struct Node *suffix)
 
 /* --- *_by builtins ---------------------------------------------------- */
 
+__attribute__((unused))
 static int cmp_natural(const void *a, const void *b) { return nuq_cmp(*(const VALUE *)a, *(const VALUE *)b); }
 
 VALUE

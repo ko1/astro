@@ -1,0 +1,1 @@
+.[0] | [paths] | length

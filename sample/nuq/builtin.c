@@ -23,6 +23,46 @@ nuq_builtin_add(VALUE input)
     }
     struct nuq_obj *o = NUQ_PTR(input);
     if (o->arr.len == 0) return NUQ_NULL;
+
+    /* Fast path: all elements arrays → single concat O(total).
+     * Without this, the iterative pairwise reduction is O(n²) on the
+     * accumulator size and `[.[] | keys] | add` etc. are very slow. */
+    bool all_arrays = true, all_objects = true, all_strings = true;
+    size_t total_arr = 0, total_str = 0;
+    for (size_t i = 0; i < o->arr.len; i++) {
+        VALUE v = o->arr.items[i];
+        if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_ARRAY) {
+            total_arr += NUQ_PTR(v)->arr.len;
+            all_objects = all_strings = false;
+        } else if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_OBJECT) {
+            all_arrays = all_strings = false;
+        } else if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_STRING) {
+            total_str += NUQ_PTR(v)->str.len;
+            all_arrays = all_objects = false;
+        } else {
+            all_arrays = all_objects = all_strings = false;
+        }
+    }
+    if (all_arrays) {
+        VALUE r = nuq_make_array(total_arr);
+        for (size_t i = 0; i < o->arr.len; i++) {
+            struct nuq_obj *e = NUQ_PTR(o->arr.items[i]);
+            for (size_t j = 0; j < e->arr.len; j++) nuq_array_push(r, e->arr.items[j]);
+        }
+        return r;
+    }
+    if (all_strings) {
+        char *buf = (char *)GC_malloc_atomic(total_str + 1);
+        size_t bp = 0;
+        for (size_t i = 0; i < o->arr.len; i++) {
+            struct nuq_obj *e = NUQ_PTR(o->arr.items[i]);
+            memcpy(buf + bp, e->str.bytes, e->str.len);
+            bp += e->str.len;
+        }
+        buf[bp] = '\0';
+        return nuq_make_string_take(buf, bp);
+    }
+    /* Slow path: pairwise add (handles numbers, mixed, objects). */
     VALUE acc = o->arr.items[0];
     for (size_t i = 1; i < o->arr.len; i++) acc = nuq_op_add(acc, o->arr.items[i]);
     return acc;

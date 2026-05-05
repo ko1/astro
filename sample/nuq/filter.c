@@ -458,10 +458,14 @@ build_builtin_call(const char *name, int arity, struct Node **args)
 #undef BUILTIN2
 #undef BUILTIN3
 
-    /* Fall back to user-def call */
+    /* Fall back to user-def call.  Copy `args` to a heap-allocated
+     * array — the side-table holds the pointer for the duration of
+     * the program, so we can't use the parser's stack-local buffer. */
     uint32_t name_id = nuq_intern(name);
     if (arity == 0) return ALLOC_node_call(name_id, 0, 0);
-    uint32_t aid = nuq_args_intern(args, (size_t)arity);
+    struct Node **args_heap = (struct Node **)GC_malloc(arity * sizeof(struct Node *));
+    for (int i = 0; i < arity; i++) args_heap[i] = args[i];
+    uint32_t aid = nuq_args_intern(args_heap, (size_t)arity);
     return ALLOC_node_call(name_id, (uint32_t)arity, aid);
 }
 

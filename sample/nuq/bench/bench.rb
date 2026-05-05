@@ -1,76 +1,96 @@
 #!/usr/bin/env ruby
 #
-# Multi-engine jq benchmark.
+# nuq vs jq/jaq/gojq benchmark.
 #
-# Engines compared:
-#   - jq           — reference implementation (system /usr/bin/jq)
-#   - jaq          — Rust-implemented jq, ~30× faster startup
-#   - gojq         — pure-Go reimplementation (jq-1.7 compat)
-#   - nuq interp   — this project, no Code Store specialisation
-#   - nuq AOT      — this project, with Code Store baked SDs
+# Two suites:
+#   1. real/   — realistic jq workloads on a synthetic JSON dataset
+#                (bench/data/users.json, ~1.9 MB / 10k user objects).
+#                Filters are file paths or stdin pipes — input is a
+#                full JSON file.
+#   2. micro/  — micro-benchmarks borrowed from jaq's examples/benches.
+#                Input is just an integer `n` over stdin.
 #
-# Filters are borrowed from jaq's `examples/benches/` (the de-facto
-# bench suite for the jq language family).  Each filter takes a single
-# integer `n` over stdin and returns a `length`-style scalar so output
-# is small.
+# Each cell measures **whole-process wall time** via Open3.popen3 +
+# Process.wait, including:
+#   - shell spawn / exec
+#   - filter parser
+#   - JSON input parse
+#   - filter evaluation
+#   - output write
+#   - process exit
+#
+# This matches what users care about for command-line jq usage.
 #
 # Usage:
-#   ruby bench/bench.rb              # all benches, default n
-#   ruby bench/bench.rb fib          # only the fib bench
-#   ruby bench/bench.rb fib n=10000  # override n for fib
+#   ruby bench/bench.rb              # both suites
+#   ruby bench/bench.rb real         # real suite only
+#   ruby bench/bench.rb micro        # micro suite only
+#   ruby bench/bench.rb fib          # filter benches by name (substring)
+#   BENCH_DEBUG=1 ruby bench/bench.rb # show cmd lines
 #
-# CCACHE_DISABLE=1 is set automatically (see project memory for the
-# ccache + sandbox flake).
-#
-# Per-cell timeout is 30 s; cells that exceed are reported as `timeout`.
+# Env:
+#   JQ=path/to/jq      override jq binary
+#   JAQ=...            override jaq binary
+#   GOJQ=...           override gojq binary
 
 require 'open3'
 require 'fileutils'
-require 'timeout'
 
 ROOT = File.expand_path('..', __dir__)
 NUQ  = File.join(ROOT, 'nuq')
 abort "nuq binary missing — run `make` first" unless File.executable?(NUQ)
 
-ENGINES = []
-ENGINES << ['jq',       ['/usr/bin/jq', '-c']]                     if File.executable?('/usr/bin/jq')
-ENGINES << ['jaq',      ['/tmp/claude/bin/jaq', '-c']]             if File.executable?('/tmp/claude/bin/jaq')
-ENGINES << ['gojq',     ['/tmp/claude/bin/gojq', '-c']]            if File.executable?('/tmp/claude/bin/gojq')
-ENGINES << ['nuq int',  [NUQ, '-c', '--no-compile']]
-ENGINES << ['nuq AOT',  [NUQ, '-c'], { aot: true }]
+JQ_BIN   = ENV['JQ']   || '/usr/bin/jq'
+JAQ_BIN  = ENV['JAQ']  || '/tmp/claude/bin/jaq'
+GOJQ_BIN = ENV['GOJQ'] || '/tmp/claude/bin/gojq'
 
-# n values are tuned so jq runs in roughly 0.1s..2s.  jaq's defaults
-# go up to 1M; that's tractable for jaq (compiled Rust) but stretches
-# nuq's tree-walker.  We use jaq's defaults where nuq can keep up,
-# and lower them where O(n²) operations (add, reduce) blow up.
-DEFAULT_N = {
+ENGINES = []
+ENGINES << ['jq',      [JQ_BIN, '-c']]                     if File.executable?(JQ_BIN)
+ENGINES << ['jaq',     [JAQ_BIN, '-c']]                    if File.executable?(JAQ_BIN)
+ENGINES << ['gojq',    [GOJQ_BIN, '-c']]                   if File.executable?(GOJQ_BIN)
+ENGINES << ['nuq int', [NUQ, '-c', '--no-compile']]
+ENGINES << ['nuq AOT', [NUQ, '-c'], { aot: true }]
+
+PER_CELL_TIMEOUT = 30
+ATTEMPTS = 3
+
+# n values for micro benches (stdin scalar)
+MICRO_N = {
   'empty'       =>      1,
   'upto'        =>   8192,
   'reverse'     => 1_000_000,
   'sort'        =>  300_000,
-  'add'         =>     2_000,   # O(n²) array-of-array concat: low n
-  'kv'          =>     5_000,   # O(n²) lookup in object_set; jq/jaq do 5k in ~10ms
+  'add'         =>     2_000,
+  'kv'          =>     5_000,
   'min-max'     => 1_000_000,
   'last'        => 1_000_000,
   'try-catch'   =>  500_000,
   'cumsum'      =>  500_000,
   'group-by'    =>  100_000,
-  'pyramid'     =>   8_000,    # recursive multi-emit; nuq is O(n²)
+  'pyramid'     =>   8_000,
   'to-fromjson' =>  100_000,
   'ack'         =>      7,
 }
 
-PER_CELL_TIMEOUT = 30   # seconds
-ATTEMPTS = 3
+# real benches: all use bench/data/users.json by default
+REAL_INPUT = File.join(__dir__, 'data', 'users.json')
 
-def run_with_timeout(cmd, env, stdin_data, timeout: PER_CELL_TIMEOUT)
-  # Use Open3.popen3 so we have the PID for timeout-based kill.
-  $stderr.puts "  RUN: #{cmd.inspect}  env=#{env.inspect}  stdin=#{stdin_data.inspect}" if ENV['BENCH_DEBUG']
+def run_with_timeout(cmd, env, stdin_data: nil, stdin_file: nil, timeout: PER_CELL_TIMEOUT)
+  $stderr.puts "  RUN: #{cmd.inspect}  env=#{env.inspect}  stdin=#{stdin_data ? stdin_data.inspect : "<#{stdin_file}>"}" if ENV['BENCH_DEBUG']
   killed = false
   Open3.popen3(env, *cmd) do |stdin, stdout, stderr, wait_thr|
     pid = wait_thr.pid
-    stdin.write(stdin_data)
-    stdin.close
+    begin
+      if stdin_file
+        File.open(stdin_file, 'rb') { |f| IO.copy_stream(f, stdin) }
+      elsif stdin_data
+        stdin.write(stdin_data)
+      end
+    rescue Errno::EPIPE
+      # child closed stdin before reading all of it (e.g. `.` only
+      # parses one value, then exits) — that's fine.
+    end
+    stdin.close rescue nil
     out_io = Thread.new { stdout.read }
     err_io = Thread.new { stderr.read }
     if wait_thr.join(timeout).nil?
@@ -83,14 +103,14 @@ def run_with_timeout(cmd, env, stdin_data, timeout: PER_CELL_TIMEOUT)
   end
 end
 
-def measure(cmd, env, stdin_data, attempts: ATTEMPTS, timeout: PER_CELL_TIMEOUT)
+def measure(cmd, env, stdin_data: nil, stdin_file: nil, attempts: ATTEMPTS)
   best = nil
   attempts.times do
     t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-    out, err, st, killed = run_with_timeout(cmd, env, stdin_data, timeout: timeout)
+    out, err, st, killed = run_with_timeout(cmd, env, stdin_data: stdin_data, stdin_file: stdin_file)
     t1 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
     if killed
-      return [nil, "timeout (#{timeout}s)", false]
+      return [nil, "timeout (#{PER_CELL_TIMEOUT}s)", false]
     end
     return [t1 - t0, err.lines.first&.chomp, false] unless st && st.success?
     elapsed = t1 - t0
@@ -99,108 +119,147 @@ def measure(cmd, env, stdin_data, attempts: ATTEMPTS, timeout: PER_CELL_TIMEOUT)
   [best, nil, true]
 end
 
-def fmt(t)
-  return '   —    ' if t.nil?
+def fmt_time(t)
+  return '—' if t.nil?
   if t < 0.01
-    sprintf('%4.1f ms ', t * 1000)
+    sprintf('%.1f ms', t * 1000)
   elsif t < 1.0
-    sprintf('%4.0f ms ', t * 1000)
+    sprintf('%.0f ms', t * 1000)
   else
-    sprintf('%4.2f s  ', t)
+    sprintf('%.2f s ', t)
   end
+end
+
+def fmt_speedup(jq_t, t)
+  return '—' if jq_t.nil? || t.nil? || t == 0
+  r = jq_t / t   # > 1 means t is faster than jq
+  sprintf('%.2fx', r)
 end
 
 # ---- arg parsing ------------------------------------------------------
 
-selected_names = []
-override_n = nil
+selected = []
+suites = []
 ARGV.each do |a|
-  if a =~ /\An=(\d+)\z/
-    override_n = $1.to_i
+  if %w[real micro].include?(a)
+    suites << a
   else
-    selected_names << a
+    selected << a
   end
 end
+suites = %w[real micro] if suites.empty?
 
-names = Dir["#{__dir__}/filters/*.jq"].map { |p| File.basename(p, '.jq') }.sort
-names.select! { |n| selected_names.include?(n) } unless selected_names.empty?
-
-# ---- main loop --------------------------------------------------------
+# ---- bench loop -------------------------------------------------------
 
 env_aot     = { 'CCACHE_DISABLE' => '1' }
 env_neutral = {}
 
-# Header
-header_engine_cells = ENGINES.map { |label, _| label.center(8) }
-puts ''
-printf "%-13s %8s   %s\n", 'bench', 'n', header_engine_cells.join('   ')
-puts '-' * (13 + 8 + 3 + ENGINES.length * 11)
+def run_suite(suite, names, default_n, stdin_provider, env_aot, env_neutral)
+  results = []
+  names.each do |name|
+    filter_path = File.join(__dir__, suite, "#{name}.jq")
+    next unless File.exist?(filter_path)
+    filter = File.read(filter_path).strip
+    stdin_data, stdin_file = stdin_provider.call(name)
 
-results = {}
-
-names.each do |name|
-  n = override_n || DEFAULT_N[name] || 1
-  filter_path = File.join(__dir__, 'filters', "#{name}.jq")
-  filter = File.read(filter_path).strip
-  stdin_data = "#{n}\n"
-
-  row = ENGINES.map do |label, cmd, opts|
-    opts ||= {}
-    if opts[:aot]
-      # Wipe code_store before AOT so we measure cached run after first bake.
-      FileUtils.rm_rf(File.join(ROOT, 'code_store'))
-      # Bake (1st run, throw-away timing).
-      _bake_t, _bake_err, _bake_ok = measure(cmd + [filter], env_aot, stdin_data, attempts: 1)
-      # Cached runs (best of 3).
-      t, err, ok = measure(cmd + [filter], env_aot, stdin_data)
-    else
-      t, err, ok = measure(cmd + [filter], env_neutral, stdin_data)
-    end
-    [t, err, ok]
-  end
-
-  results[name] = row
-  cells = row.map { |t, _, _| fmt(t) }
-  printf "%-13s %8d   %s\n", name, n, cells.join('   ')
-
-  # Print first-line errors to stderr so we don't lose them
-  row.each_with_index do |(t, err, ok), i|
-    if !ok && err
-      $stderr.puts "  [#{ENGINES[i][0]}] #{err}"
-    end
-  end
-end
-
-# Print speedup summary relative to jq
-puts ''
-puts "Speedup vs jq (lower is faster; <1.0 means faster than jq):"
-puts ''
-header = "%-13s   %s\n" % ['bench', ENGINES.map { |label, _| label.center(8) }.join('   ')]
-print header
-puts '-' * (13 + 3 + ENGINES.length * 11)
-
-jq_idx = ENGINES.index { |label, _| label == 'jq' }
-results.each do |name, row|
-  ref = jq_idx ? row[jq_idx][0] : nil
-  cells = row.map do |t, _, _|
-    if t.nil? || ref.nil? || ref == 0
-      '   —    '
-    else
-      r = t / ref
-      if r < 1.0
-        sprintf('%5.2fx⬇ ', 1.0 / r)
+    row = [name]
+    row_data = []
+    ENGINES.each do |label, cmd, opts|
+      opts ||= {}
+      if opts[:aot]
+        FileUtils.rm_rf(File.join(ROOT, 'code_store'))
+        # bake (1 attempt, throw-away timing)
+        measure(cmd + [filter], env_aot, stdin_data: stdin_data, stdin_file: stdin_file, attempts: 1)
+        # measure (best of 3 cached runs)
+        t, err, ok = measure(cmd + [filter], env_aot, stdin_data: stdin_data, stdin_file: stdin_file)
       else
-        sprintf('%5.2fx⬆ ', r)
+        t, err, ok = measure(cmd + [filter], env_neutral, stdin_data: stdin_data, stdin_file: stdin_file)
       end
+      row_data << [t, err, ok]
     end
+    results << [name, row_data]
   end
-  printf "%-13s   %s\n", name, cells.join('   ')
+  results
 end
 
+# Real suite: filters apply to bench/data/users.json
+real_names = Dir["#{__dir__}/real/*.jq"].map { |p| File.basename(p, '.jq') }.sort
+real_names.select! { |n| selected.any? { |s| n.include?(s) } } unless selected.empty?
+real_results = []
+if suites.include?('real')
+  real_results = run_suite('real', real_names,
+                           nil,
+                           ->(_name) { [nil, REAL_INPUT] },
+                           env_aot, env_neutral)
+end
+
+# Micro suite: stdin = "n\n" (scalar)
+micro_names = Dir["#{__dir__}/filters/*.jq"].map { |p| File.basename(p, '.jq') }.sort
+micro_names.select! { |n| selected.any? { |s| n.include?(s) } } unless selected.empty?
+micro_results = []
+if suites.include?('micro')
+  micro_results = run_suite('filters', micro_names,
+                            MICRO_N,
+                            ->(name) { ["#{MICRO_N[name] || 1}\n", nil] },
+                            env_aot, env_neutral)
+end
+
+# ---- MD table output --------------------------------------------------
+
+def print_md_table(title, results, n_provider)
+  return if results.empty?
+  puts ''
+  puts "## #{title}"
+  puts ''
+  header = ['bench']
+  header << 'n' if n_provider
+  header += ENGINES.map { |label, _| label }
+  puts '| ' + header.join(' | ') + ' |'
+  puts '|' + (['---'] * header.length).join('|') + '|'
+  results.each do |name, row|
+    cells = [name]
+    cells << n_provider.call(name).to_s if n_provider
+    row.each do |t, _, ok|
+      cells << (ok ? fmt_time(t) : (t.nil? ? '—' : "**err**"))
+    end
+    puts '| ' + cells.join(' | ') + ' |'
+  end
+
+  jq_idx = ENGINES.index { |label, _| label == 'jq' }
+  return unless jq_idx
+
+  # Speedup table relative to jq
+  puts ''
+  puts "### Speedup vs jq (higher = faster than jq)"
+  puts ''
+  header = ['bench']
+  header << 'n' if n_provider
+  header += ENGINES.map { |label, _| label }
+  puts '| ' + header.join(' | ') + ' |'
+  puts '|' + (['---'] * header.length).join('|') + '|'
+  results.each do |name, row|
+    jq_t = row[jq_idx][0]
+    cells = [name]
+    cells << n_provider.call(name).to_s if n_provider
+    row.each do |t, _, ok|
+      cells << (ok ? fmt_speedup(jq_t, t) : '—')
+    end
+    puts '| ' + cells.join(' | ') + ' |'
+  end
+end
+
+puts "# nuq benchmark results"
+print_md_table("Real-world (input: bench/data/users.json, ~1.9 MB / 10k users)",
+               real_results, nil)
+print_md_table("Micro-benchmarks (jaq examples/benches; input = scalar n via stdin)",
+               micro_results, ->(name) { MICRO_N[name] })
+
 puts ''
-puts "Versions:"
+puts "## Versions"
+puts ''
 ENGINES.each do |label, cmd, _|
   v = `#{cmd[0]} --version 2>/dev/null`.lines.first&.chomp || '?'
-  puts "  #{label}: #{cmd[0]}  (#{v})"
+  puts "- **#{label}**: `#{cmd[0]}` (#{v})"
 end
-puts "  CCACHE_DISABLE=1, per-cell timeout #{PER_CELL_TIMEOUT}s, best-of-#{ATTEMPTS}"
+puts "- per-cell timeout: #{PER_CELL_TIMEOUT}s, best-of-#{ATTEMPTS}, CCACHE_DISABLE=1 for AOT cells"
+puts "- whole-process wall time (includes startup, filter parse, JSON parse, eval, output)"

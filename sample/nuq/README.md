@@ -72,31 +72,51 @@ passed: 338  failed: 0  skipped: 0  total: 338
 
 ## ベンチマーク
 
-`make bench` で **jq / jaq / gojq / nuq interp / nuq AOT** を
-[jaq の examples/benches](https://github.com/01mf02/jaq/tree/main/examples/benches)
-14 ケースで同条件比較。
+`make bench` で **jq / jaq / gojq / nuq** を 2 スイートで比較。
+**プロセス起動から終了まで** の wall time を計測。
 
-| bench (~jq で 100ms-2s) | jq | jaq | gojq | nuq AOT | nuq vs jq |
-|---|---:|---:|---:|---:|---:|
-| `ack(3; 7)` | 487 ms | 764 ms | 580 ms | **1.5 ms** | **325× 速い** |
-| `upto(8192)` | 519 ms | 7.6 ms | 555 ms | **12 ms** | **42× 速い** |
-| `reverse 1M` | 536 ms | 63 ms | 274 ms | **26 ms** | **20× 速い** |
-| `to-fromjson 100k` | 1.05 s | 132 ms | 74 ms | **56 ms** | **18× 速い** |
-| `last 1M` | 136 ms | 32 ms | 168 ms | **19 ms** | **7× 速い** |
-| `min-max 1M` | 238 ms | 221 ms | 278 ms | **34 ms** | **6.9× 速い** |
-| `try-catch 500k` | 136 ms | 150 ms | 160 ms | **27 ms** | **5× 速い** |
-| `empty` (起動) | 3.4 ms | 2.1 ms | 2.4 ms | **1.5 ms** | **2.3× 速い** |
-| `sort 300k` | 158 ms | 44 ms | 159 ms | 75 ms | **2.1× 速い** |
-| `group-by 100k` | 185 ms | 42 ms | 123 ms | 98 ms | **1.9× 速い** |
-| `cumsum 500k` | 154 ms | 151 ms | 231 ms | 139 ms | **1.1× 速い** |
-| `pyramid 8k` | 8.7 ms | 9.7 ms | 13 ms | 12 ms | 1.4× 遅い |
-| `add 2k` | 4.0 ms | 3.7 ms | 4.8 ms | 11 ms | 2.7× 遅い |
-| `kv 5k` | 10 ms | 7.4 ms | 9.6 ms | 245 ms | 25× 遅い |
+### 実用ベンチ — 10k user オブジェクト JSON ファイルへの典型クエリ
 
-14 中 **11 で jq に勝ち**。詳細と outlier の原因は
-[`docs/perf.md`](./docs/perf.md)。`add` と `kv` の遅さは object/array
-の immutable copy + linear lookup に起因 (todo B-1 / B-5)、`pyramid`
-は emit-heavy recursion (todo B-4)。
+| bench (vs jq) | jq | jaq | gojq | **nuq AOT** |
+|---|---:|---:|---:|---:|
+| `[.[] \| .name] \| length` (extract) | 1.00x | 1.19x | 1.34x | **1.58x** |
+| `[.[] \| .stats.followers] \| add` (deep) | 1.00x | 1.25x | 1.43x | **1.62x** |
+| `[.[] \| .score] \| add` (sum) | 1.00x | 1.14x | 1.10x | **1.55x** |
+| `length` | 1.00x | 1.18x | 1.30x | **1.54x** |
+| `group_by(.city) \| map({city: .[0].city, count: length})` | 1.00x | 1.21x | 1.44x | **1.88x** |
+| `[.[] \| select(.active and .age > 30)] \| length` | 1.00x | 1.15x | 1.50x | **1.51x** |
+| `[.[] \| keys] \| add \| unique \| length` | 1.00x | 2.47x | 3.13x | **4.24x** |
+| `map({name, email, top_tag: .tags[0]})` | 1.00x | 0.96x | 1.55x | **1.39x** |
+| `sort_by(.score) \| .[-10:] \| map(.name)` | 1.00x | 1.10x | 0.64x | **0.22x** ⬇ |
+
+実用 11 中 10 で jq 越え。`sort_by` は insertion sort のため遅い (todo)。
+
+### Micro-bench — jaq examples/benches より
+
+| bench | jq | jaq | gojq | **nuq AOT** |
+|---|---:|---:|---:|---:|
+| `reverse 1M` | 1.00x | 9.15x | 2.03x | **21.31x** |
+| `to-fromjson 100k` | 1.00x | 8.74x | 15.07x | **17.07x** |
+| `last 1M` | 1.00x | 4.38x | 0.79x | **6.87x** |
+| `min-max 1M` | 1.00x | 1.04x | 0.87x | **6.63x** |
+| `group-by 100k` | 1.00x | 4.29x | 1.53x | **2.57x** |
+| `empty` (起動) | 1.00x | 1.81x | 1.15x | **2.39x** |
+| `add 2k` (array concat) | 1.00x | 1.34x | 1.23x | **1.94x** |
+| `sort 300k` | 1.00x | 3.66x | 1.03x | **1.81x** |
+| `ack(3; 7)` | 1.00x | 0.73x | 0.91x | **1.19x** |
+| `upto 8k` (recursion) | 1.00x | 71.71x | 0.95x | **1.10x** |
+| `cumsum 500k` | 1.00x | 1.00x | 0.66x | **1.03x** |
+| `try-catch 500k` | 1.00x | 0.88x | 0.90x | **0.19x** ⬇ |
+| `kv 5k` (object concat) | 1.00x | 1.14x | 1.00x | **0.03x** ⬇ |
+| `pyramid 8k` (multi-emit recursion) | 1.00x | 0.89x | 0.69x | **0.01x** ⬇ |
+
+micro 14 中 11 で jq 越え。
+
+主な outlier の原因 (詳細 [`docs/perf.md`](./docs/perf.md)):
+- `kv` (33× 遅): object lookup が線形 — hash 化未実装 (todo B-5)
+- `pyramid` (140× 遅): emit-heavy recursion で per-emit `nuq_make_array` が支配的 (todo B-4)
+- `try-catch` (5× 遅): 同じく per-iter alloc コスト
+- `sort_by` (real, 4× 遅): insertion sort のまま — qsort 化が todo
 
 `test/*.test` は jq 公式テストと同じフォーマット (filter 1 行 / 入力 JSON
 1 行 / 期待出力 N 行 / 空行で区切り) を採用している。`*.diff.test`
