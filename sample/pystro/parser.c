@@ -1353,11 +1353,39 @@ parse_atom(void)
       }
       case T_STR: {
         tok_pos++;
-        return ALLOC_node_const_str(t->sval);
+        // Implicit concatenation of adjacent string literals.
+        if (peek_tok(0)->kind != T_STR) return ALLOC_node_const_str(t->sval);
+        size_t total = strlen(t->sval);
+        char buf[8192];
+        size_t bl = 0;
+        if (total + 1 > sizeof(buf)) parse_error("implicit concat string too long");
+        memcpy(buf, t->sval, total); bl = total;
+        while (peek_tok(0)->kind == T_STR) {
+            const char *s = peek_tok(0)->sval;
+            size_t l = strlen(s);
+            if (bl + l + 1 > sizeof(buf)) parse_error("implicit concat string too long");
+            memcpy(buf + bl, s, l); bl += l;
+            tok_pos++;
+        }
+        buf[bl] = '\0';
+        return ALLOC_node_const_str(intern_name(buf, bl));
       }
       case T_BYTES: {
         tok_pos++;
-        return ALLOC_node_const_bytes(t->sval, (uint32_t)t->slen);
+        // Implicit concat of bytes literals.
+        if (peek_tok(0)->kind != T_BYTES)
+            return ALLOC_node_const_bytes(t->sval, (uint32_t)t->slen);
+        char buf[8192];
+        size_t bl = 0;
+        if ((size_t)t->slen > sizeof(buf)) parse_error("bytes concat too long");
+        memcpy(buf, t->sval, t->slen); bl = t->slen;
+        while (peek_tok(0)->kind == T_BYTES) {
+            const Tok *tt = peek_tok(0);
+            if (bl + tt->slen > sizeof(buf)) parse_error("bytes concat too long");
+            memcpy(buf + bl, tt->sval, tt->slen); bl += tt->slen;
+            tok_pos++;
+        }
+        return ALLOC_node_const_bytes(intern_name(buf, bl), (uint32_t)bl);
       }
       case T_FSTR: {
         tok_pos++;
@@ -2331,11 +2359,46 @@ parse_pattern_atom(void)
         tok_pos++;
         int children[64]; int nc = 0;
         if (peek_tok(0)->kind != close) {
-            children[nc++] = parse_pattern_or();
+            // *NAME inside seq pattern — capture rest.
+            if (peek_tok(0)->kind == T_STAR) {
+                tok_pos++;
+                struct pypat sp = {0};
+                sp.kind = PYPAT_STAR;
+                if (peek_tok(0)->kind == T_NAME && strcmp(peek_tok(0)->sval, "_") != 0) {
+                    sp.name = peek_tok(0)->sval;
+                    if (cur_scope && !scope_is_global_decl(cur_scope, sp.name)) {
+                        sp.slot = scope_add_local(cur_scope, sp.name);
+                        sp.name = NULL;
+                    } else sp.slot = -1;
+                    tok_pos++;
+                } else if (peek_tok(0)->kind == T_NAME) {
+                    sp.slot = -1; sp.name = NULL; tok_pos++;
+                } else { sp.slot = -1; sp.name = NULL; }
+                children[nc++] = pat_alloc(sp);
+            } else {
+                children[nc++] = parse_pattern_or();
+            }
             while (match_tok(T_COMMA)) {
                 if (peek_tok(0)->kind == close) break;
                 if (nc >= 64) parse_error("seq pattern too long");
-                children[nc++] = parse_pattern_or();
+                if (peek_tok(0)->kind == T_STAR) {
+                    tok_pos++;
+                    struct pypat sp = {0};
+                    sp.kind = PYPAT_STAR;
+                    if (peek_tok(0)->kind == T_NAME && strcmp(peek_tok(0)->sval, "_") != 0) {
+                        sp.name = peek_tok(0)->sval;
+                        if (cur_scope && !scope_is_global_decl(cur_scope, sp.name)) {
+                            sp.slot = scope_add_local(cur_scope, sp.name);
+                            sp.name = NULL;
+                        } else sp.slot = -1;
+                        tok_pos++;
+                    } else { sp.slot = -1; sp.name = NULL;
+                        if (peek_tok(0)->kind == T_NAME) tok_pos++;
+                    }
+                    children[nc++] = pat_alloc(sp);
+                } else {
+                    children[nc++] = parse_pattern_or();
+                }
             }
         }
         if (close == T_RBRACK) expect(T_RBRACK, "']'");
@@ -2964,6 +3027,53 @@ parse_simple_stmt(void)
     size_t lhs_start = tok_pos;
     NODE *lhs_expr = parse_expr();
     int k2 = peek_tok(0)->kind;
+
+    // Tuple-unpack with arbitrary targets: `t1, t2, ... = rhs`.
+    // (Plain-name unpack handled above; this catches attr/subscript targets.)
+    if (k2 == T_COMMA) {
+        // Lookahead to see if a top-level `=` follows.
+        size_t p = tok_pos;
+        int depth = 0;
+        bool found_assign = false;
+        while (tok_arr[p].kind != T_EOF && tok_arr[p].kind != T_NEWLINE
+               && tok_arr[p].kind != T_SEMI) {
+            int kk = tok_arr[p].kind;
+            if (kk == T_LPAREN || kk == T_LBRACK || kk == T_LBRACE) depth++;
+            else if (kk == T_RPAREN || kk == T_RBRACK || kk == T_RBRACE) depth--;
+            else if (depth == 0 && kk == T_ASSIGN) { found_assign = true; break; }
+            else if (depth == 0 && kk == T_COLON) break;  // dict/slice
+            p++;
+        }
+        if (found_assign) {
+            // Save target start positions.
+            size_t target_starts[16];
+            int    n_targets = 1;
+            target_starts[0] = lhs_start;
+            while (match_tok(T_COMMA)) {
+                if (peek_tok(0)->kind == T_ASSIGN) break;
+                if (n_targets >= 16) parse_error("too many unpack targets");
+                target_starts[n_targets++] = tok_pos;
+                (void)parse_expr();
+            }
+            expect(T_ASSIGN, "'='");
+            NODE *rhs = parse_expr_list();
+            // Unpack via temp tuple subscript: __t = rhs; t_i = __t[i].
+            const char *tmp = new_temp_name("__upk");
+            NODE *load_tmp;
+            NODE *init = build_temp_init(tmp, rhs, &load_tmp);
+            NODE *result = init;
+            for (int i = 0; i < n_targets; i++) {
+                size_t saved = tok_pos;
+                tok_pos = target_starts[i];
+                NODE *elem = ALLOC_node_subscript_get(load_tmp,
+                    ALLOC_node_const_int(i));
+                NODE *store = parse_assignable_target(elem);
+                tok_pos = saved;
+                result = ALLOC_node_seq(result, store);
+            }
+            return result;
+        }
+    }
 
     if (k2 == T_ASSIGN) {
         // Possible chain `a = b = ... = expr` — accumulate target spans

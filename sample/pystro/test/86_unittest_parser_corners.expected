@@ -1,0 +1,9 @@
+ok ImplicitConcatTest test_bytes
+ok ImplicitConcatTest test_in_function_call
+ok ImplicitConcatTest test_three_strs
+ok ImplicitConcatTest test_two_strs
+ok MatchStarTest test_list_star
+ok MatchStarTest test_list_star_middle
+ok ClassPatternTest test_basic
+---
+passed=7 failed=0

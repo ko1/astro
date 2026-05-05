@@ -4169,12 +4169,43 @@ py_pat_match(CTX *c, int pat_idx, VALUE v)
         return false;
       case PYPAT_SEQUENCE: {
         if (!(py_is_list(v) || py_is_tuple(v))) return false;
-        if ((int)PY_PTR(v)->list.len != p->nchildren) return false;
+        // Locate any PYPAT_STAR within the children.
+        int star_idx = -1;
         for (int i = 0; i < p->nchildren; i++)
+            if (PYSTRO_PATTERNS[p->first_child + i].kind == PYPAT_STAR) {
+                if (star_idx >= 0) return false;  // only one star allowed
+                star_idx = i;
+            }
+        size_t len = PY_PTR(v)->list.len;
+        if (star_idx < 0) {
+            if ((int)len != p->nchildren) return false;
+            for (int i = 0; i < p->nchildren; i++)
+                if (!py_pat_match(c, p->first_child + i, PY_PTR(v)->list.items[i]))
+                    return false;
+            return true;
+        }
+        // With star: prefix is star_idx items; suffix is (nchildren-1-star_idx) items.
+        int prefix = star_idx;
+        int suffix = p->nchildren - star_idx - 1;
+        if ((int)len < prefix + suffix) return false;
+        for (int i = 0; i < prefix; i++)
             if (!py_pat_match(c, p->first_child + i, PY_PTR(v)->list.items[i]))
                 return false;
+        for (int i = 0; i < suffix; i++)
+            if (!py_pat_match(c, p->first_child + star_idx + 1 + i,
+                              PY_PTR(v)->list.items[len - suffix + i]))
+                return false;
+        // Bind the star to the rest as a list.
+        struct pypat *sp = &PYSTRO_PATTERNS[p->first_child + star_idx];
+        size_t mid_len = len - prefix - suffix;
+        VALUE rest = py_make_list(PY_PTR(v)->list.items + prefix, mid_len);
+        if (sp->slot >= 0) c->env->slots[sp->slot] = rest;
+        else if (sp->name) py_global_set(c, sp->name, rest);
         return true;
       }
+      case PYPAT_STAR:
+        // Standalone (not inside SEQUENCE) — treat as wildcard.
+        return true;
       case PYPAT_CLASS: {
         VALUE cls = EVAL(c, p->literal);
         if (c->state != PY_STATE_NORMAL) return false;
