@@ -1339,9 +1339,15 @@ parse_cond(void)
 // regular expression when the lookahead is `NAME :=`.  The result
 // expression is the assigned value; the binding goes to the local /
 // global the name resolves to.
+static NODE *parse_yield(void);
+
 static NODE *
 parse_walrus(void)
 {
+    // `yield` / `yield expr` as an expression — most common in
+    // `x = yield ...`.  parse_yield returns a node whose runtime value
+    // is the .send() argument (PY_NONE for plain next()).
+    if (peek_tok(0)->kind == T_YIELD) return parse_yield();
     if (peek_tok(0)->kind == T_NAME && peek_tok(1)->kind == T_WALRUS) {
         const char *nm = peek_tok(0)->sval;
         tok_pos += 2;
@@ -1734,14 +1740,44 @@ parse_pattern_atom(void)
             return pat_alloc(p);
         }
         // Lookahead: NAME (`.` NAME)* `(` ⇒ class pattern; NAME (`.` NAME)+ ⇒ value pattern
-        // For simplicity: capitalized NAME w/o trailer ⇒ class isinstance; else capture.
         if (peek_tok(1)->kind == T_LPAREN) {
-            // class pattern Cls()
+            // class pattern Cls() or Cls(attr=pat, ...)
             NODE *cls_node = parse_atom();
             expect(T_LPAREN, "'('");
+            if (match_tok(T_RPAREN)) {
+                p.kind = PYPAT_CLASS;
+                p.literal = cls_node;
+                return pat_alloc(p);
+            }
+            // class with attribute patterns
+            const char *attrs[16];
+            int child_pats[16];
+            int nargs = 0;
+            for (;;) {
+                if (peek_tok(0)->kind != T_NAME)
+                    parse_error("only attr=pat supported in class pattern");
+                if (peek_tok(1)->kind != T_ASSIGN)
+                    parse_error("only attr=pat supported (positional class pattern needs __match_args__)");
+                attrs[nargs] = peek_tok(0)->sval;
+                tok_pos += 2;
+                child_pats[nargs] = parse_pattern_or();
+                nargs++;
+                if (!match_tok(T_COMMA)) break;
+                if (peek_tok(0)->kind == T_RPAREN) break;
+            }
             expect(T_RPAREN, "')'");
-            p.kind = PYPAT_CLASS;
+            int base = (int)pystro_patterns_len;
+            for (int i = 0; i < nargs; i++) {
+                struct pypat copy = PYSTRO_PATTERNS[child_pats[i]];
+                pat_alloc(copy);
+            }
+            p.kind = PYPAT_CLASS_ARGS;
             p.literal = cls_node;
+            p.first_child = base;
+            p.nchildren = nargs;
+            const char **anames = (const char **)GC_malloc(sizeof(char *) * nargs);
+            for (int i = 0; i < nargs; i++) anames[i] = attrs[i];
+            p.attrs = anames;
             return pat_alloc(p);
         }
         if (peek_tok(1)->kind == T_DOT) {
@@ -1772,7 +1808,6 @@ parse_pattern_atom(void)
     if (k == T_LBRACK || k == T_LPAREN) {
         int close = (k == T_LBRACK) ? T_RBRACK : T_RPAREN;
         tok_pos++;
-        // collect children
         int children[64]; int nc = 0;
         if (peek_tok(0)->kind != close) {
             children[nc++] = parse_pattern_or();
@@ -1784,9 +1819,6 @@ parse_pattern_atom(void)
         }
         if (close == T_RBRACK) expect(T_RBRACK, "']'");
         else                   expect(T_RPAREN, "')'");
-        // Children were allocated; their indices may not be contiguous
-        // because parse_pattern_or recurses.  Repack into a contiguous
-        // run for `first_child`.
         int base = (int)pystro_patterns_len;
         for (int i = 0; i < nc; i++) {
             struct pypat copy = PYSTRO_PATTERNS[children[i]];
@@ -1795,6 +1827,39 @@ parse_pattern_atom(void)
         p.kind = PYPAT_SEQUENCE;
         p.first_child = base;
         p.nchildren = nc;
+        return pat_alloc(p);
+    }
+    if (k == T_LBRACE) {
+        // mapping pattern: {key_expr: pat, ...}
+        tok_pos++;
+        NODE *keys[64];
+        int child_pats[64];
+        int nc = 0;
+        if (peek_tok(0)->kind != T_RBRACE) {
+            for (;;) {
+                NODE *kexpr = parse_expr();
+                expect(T_COLON, "':'");
+                int sub = parse_pattern_or();
+                if (nc >= 64) parse_error("mapping pattern too long");
+                keys[nc] = kexpr;
+                child_pats[nc] = sub;
+                nc++;
+                if (!match_tok(T_COMMA)) break;
+                if (peek_tok(0)->kind == T_RBRACE) break;
+            }
+        }
+        expect(T_RBRACE, "'}'");
+        int base = (int)pystro_patterns_len;
+        for (int i = 0; i < nc; i++) {
+            struct pypat copy = PYSTRO_PATTERNS[child_pats[i]];
+            pat_alloc(copy);
+        }
+        p.kind = PYPAT_MAPPING;
+        p.first_child = base;
+        p.nchildren = nc;
+        NODE **kn = (NODE **)GC_malloc(sizeof(NODE *) * nc);
+        for (int i = 0; i < nc; i++) kn[i] = keys[i];
+        p.keys = kn;
         return pat_alloc(p);
     }
     parse_error("unexpected token in pattern (kind=%d)", k);
@@ -2002,11 +2067,11 @@ parse_del(void)
             ALLOC_node_gref(intern_name("__pystro_del__", 14)),
             (uint32_t)bidx, 2);
     }
-    // bare `del NAME`: undefine global, or write PY_NONE for local.
+    // bare `del NAME`: undefine global, or set sentinel 0 for local.
     if (cur_scope && !scope_is_global_decl(cur_scope, base)) {
         int idx = scope_local_index(cur_scope, base);
         if (idx >= 0)
-            return ALLOC_node_lset((uint32_t)idx, ALLOC_node_const_none());
+            return ALLOC_node_lunbind((uint32_t)idx);
     }
     // global: call __pystro_delglobal__(name_str).
     NODE *args[1] = { ALLOC_node_const_str(base) };

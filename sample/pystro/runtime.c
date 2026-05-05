@@ -1650,6 +1650,7 @@ static struct type_method list_methods[];
 static struct type_method dict_methods[];
 static struct type_method set_methods[];
 static struct type_method frozenset_methods[];
+static struct type_method gen_methods[];
 
 static VALUE
 make_builtin_bound(VALUE self, struct type_method *tm)
@@ -1667,6 +1668,7 @@ py_builtin_method(CTX *c, VALUE recv, const char *name)
     else if (py_is_dict(recv)) tbl = dict_methods;
     else if (py_is_set(recv))  tbl = set_methods;
     else if (py_is_frozenset(recv)) tbl = frozenset_methods;
+    else if (PY_IS_PTR(recv) && PY_PTR(recv)->type == PY_T_GEN) tbl = gen_methods;
     else { (void)c; return PY_NONE; }
     for (int i = 0; tbl[i].name; i++)
         if (strcmp(tbl[i].name, name) == 0) return make_builtin_bound(recv, &tbl[i]);
@@ -1691,6 +1693,7 @@ py_method_resolve(CTX *c, VALUE recv, const char *name, struct method_cache *cac
         else if (tag == PY_T_DICT) tbl = dict_methods;
         else if (tag == PY_T_SET)  tbl = set_methods;
         else if (tag == PY_T_FROZENSET) tbl = frozenset_methods;
+        else if (tag == PY_T_GEN)  tbl = gen_methods;
         if (tbl) {
             for (int i = 0; tbl[i].name; i++) {
                 if (strcmp(tbl[i].name, name) == 0) {
@@ -2011,6 +2014,21 @@ py_apply_slow(CTX *c, VALUE fn, int argc, VALUE *argv)
 // Display + repr.
 // ---------------------------------------------------------------------------
 
+// Visiting set for cycle-safe py_display.  Static because py_display
+// is single-threaded (no concurrent prints) and reentrant — a list
+// item that's the parent list itself would otherwise stack-overflow.
+#define PY_DISPLAY_MAX_DEPTH 64
+static struct pyobj *py_display_visit[PY_DISPLAY_MAX_DEPTH];
+static int           py_display_visit_top = 0;
+
+static inline bool
+py_display_seen(struct pyobj *o)
+{
+    for (int i = 0; i < py_display_visit_top; i++)
+        if (py_display_visit[i] == o) return true;
+    return false;
+}
+
 void
 py_display(FILE *fp, VALUE v, bool repr)
 {
@@ -2081,14 +2099,21 @@ py_display(FILE *fp, VALUE v, bool repr)
         return;
       }
       case PY_T_LIST:
+        if (py_display_seen(o)) { fputs("[...]", fp); return; }
+        if (py_display_visit_top < PY_DISPLAY_MAX_DEPTH)
+            py_display_visit[py_display_visit_top++] = o;
         fputc('[', fp);
         for (size_t i = 0; i < o->list.len; i++) {
             if (i) fputs(", ", fp);
             py_display(fp, o->list.items[i], true);
         }
         fputc(']', fp);
+        py_display_visit_top--;
         return;
       case PY_T_TUPLE:
+        if (py_display_seen(o)) { fputs("(...)", fp); return; }
+        if (py_display_visit_top < PY_DISPLAY_MAX_DEPTH)
+            py_display_visit[py_display_visit_top++] = o;
         fputc('(', fp);
         for (size_t i = 0; i < o->list.len; i++) {
             if (i) fputs(", ", fp);
@@ -2096,8 +2121,12 @@ py_display(FILE *fp, VALUE v, bool repr)
         }
         if (o->list.len == 1) fputc(',', fp);
         fputc(')', fp);
+        py_display_visit_top--;
         return;
       case PY_T_DICT: {
+        if (py_display_seen(o)) { fputs("{...}", fp); return; }
+        if (py_display_visit_top < PY_DISPLAY_MAX_DEPTH)
+            py_display_visit[py_display_visit_top++] = o;
         fputc('{', fp);
         struct pydict *d = o->dict;
         size_t printed = 0;
@@ -2110,6 +2139,7 @@ py_display(FILE *fp, VALUE v, bool repr)
             }
         }
         fputc('}', fp);
+        py_display_visit_top--;
         return;
       }
       case PY_T_SET: {
@@ -2306,9 +2336,15 @@ struct pygen {
     VALUE       gen_method_class;
     int         gen_state;
     VALUE       gen_state_value;
-    // Pending exception payload to re-raise into the body when the
-    // generator is GC'd (close()).  Not used in v0.
-    int         pending_throw;
+    int         gen_try_top;
+    jmp_buf    *gen_try_stack[64];
+    // Send value carried into the body — yield expression evaluates to
+    // it.  Default PY_NONE for plain next().
+    VALUE       send_value;
+    // throw() / close() — when set, yield's swap-back raises this
+    // exception inside the body.
+    VALUE       throw_exc;
+    bool        throw_pending;
     // Back-link to outer enclosing gen (NULL if outermost) so nested
     // gens compose.
     struct pygen *prev_gen;
@@ -2408,6 +2444,9 @@ py_make_gen(CTX *c, VALUE fn, int argc, VALUE *argv, int kwc, const char **kwn, 
     g->stack = GC_malloc(PYGEN_STACK_SZ);
     g->started = false;
     g->done = false;
+    g->send_value = PY_NONE;
+    g->throw_exc = PY_NONE;
+    g->throw_pending = false;
     g->func = fn;
     g->argc = argc;
     g->argv = (VALUE *)GC_malloc(sizeof(VALUE) * (argc ? argc : 1));
@@ -2443,6 +2482,9 @@ py_gen_next(CTX *c, VALUE gen_v)
     VALUE saved_mc = c->method_class;
     struct pyglobals *saved_g = c->globals;
     struct pygen *saved_cg = c->current_gen;
+    int saved_try_top = c->try_top;
+    jmp_buf *saved_try_stack[64];
+    if (saved_try_top > 0) memcpy(saved_try_stack, c->try_stack, saved_try_top * sizeof(jmp_buf *));
 
     if (!g->started) {
         g->started = true;
@@ -2460,9 +2502,21 @@ py_gen_next(CTX *c, VALUE gen_v)
         c->method_class = g->gen_method_class;
         c->globals = g->gen_globals;
         c->current_gen = g;
+        c->try_top = g->gen_try_top;
+        if (g->gen_try_top > 0)
+            memcpy(c->try_stack, g->gen_try_stack, g->gen_try_top * sizeof(jmp_buf *));
     }
     swapcontext(&g->caller_ctx, &g->body_ctx);
-    // Body yielded or finished.
+    // Body yielded or finished.  Save gen-side CTX so resume restores it.
+    g->gen_env = c->env;
+    g->gen_state = c->state;
+    g->gen_state_value = c->state_value;
+    g->gen_method_class = c->method_class;
+    g->gen_globals = c->globals;
+    g->gen_try_top = c->try_top;
+    if (c->try_top > 0)
+        memcpy(g->gen_try_stack, c->try_stack, c->try_top * sizeof(jmp_buf *));
+
     bool was_done = g->done;
     bool raised = (c->state == PY_STATE_RAISE);
     VALUE exc = c->state_value;
@@ -2475,6 +2529,9 @@ py_gen_next(CTX *c, VALUE gen_v)
     c->method_class = saved_mc;
     c->globals = saved_g;
     c->current_gen = saved_cg;
+    c->try_top = saved_try_top;
+    if (saved_try_top > 0)
+        memcpy(c->try_stack, saved_try_stack, saved_try_top * sizeof(jmp_buf *));
 
     if (raised) { c->state = PY_STATE_RAISE; c->state_value = exc; return PY_NONE; }
     if (was_done) {
@@ -2485,20 +2542,87 @@ py_gen_next(CTX *c, VALUE gen_v)
     return r;
 }
 
-void
+// Returns the value passed to .send() / .next() — yield expression
+// evaluates to this.  When throw() was used, sets the pending exc
+// state instead so the EVAL chain unwinds out of the yield site.
+VALUE
 py_gen_yield(CTX *c, VALUE v)
 {
     struct pygen *g = c->current_gen;
     if (!g) py_raise_exc(c, c->EXC_RuntimeError, "yield outside of generator");
     g->yield_value = v;
-    // Save gen state.
-    g->gen_env = c->env;
-    g->gen_state = c->state;
-    g->gen_state_value = c->state_value;
-    g->gen_method_class = c->method_class;
-    g->gen_globals = c->globals;
+    // Reset send_value / throw to defaults; py_gen_send / py_gen_throw
+    // overwrite before swap.
+    g->send_value = PY_NONE;
+    g->throw_pending = false;
+    // py_gen_next() does the save/restore around the swap.
     swapcontext(&g->body_ctx, &g->caller_ctx);
-    // Resumed: next() restored gen-side CTX before swapping back in.
+    // We're back in the body.  If the caller threw, raise inside body.
+    if (g->throw_pending) {
+        g->throw_pending = false;
+        c->state = PY_STATE_RAISE;
+        c->state_value = g->throw_exc;
+        if (c->try_top > 0) longjmp(*c->try_stack[c->try_top - 1], 1);
+        // No try in body — propagate via state; gen_entry sees state
+        // RAISE and exits, marking done.
+        return PY_NONE;
+    }
+    return g->send_value;
+}
+
+VALUE
+py_gen_send(CTX *c, VALUE gen_v, VALUE v)
+{
+    struct pygen *g = PY_PTR(gen_v)->gen;
+    if (!g->started) {
+        // Python: can't send non-None to a fresh generator.  Tolerant
+        // here — pretend the first yield returns v.
+    }
+    g->send_value = v;
+    return py_gen_next(c, gen_v);
+}
+
+VALUE
+py_gen_throw(CTX *c, VALUE gen_v, VALUE exc)
+{
+    struct pygen *g = PY_PTR(gen_v)->gen;
+    if (g->done) {
+        c->state = PY_STATE_RAISE;
+        c->state_value = py_is_class(exc) ? py_make_instance(exc) : exc;
+        return PY_NONE;
+    }
+    g->throw_pending = true;
+    g->throw_exc = py_is_class(exc) ? py_make_instance(exc) : exc;
+    if (!g->started) {
+        // Throw before first yield — body never gets to run; just raise.
+        g->done = true;
+        c->state = PY_STATE_RAISE;
+        c->state_value = g->throw_exc;
+        return PY_NONE;
+    }
+    return py_gen_next(c, gen_v);
+}
+
+VALUE
+py_gen_close(CTX *c, VALUE gen_v)
+{
+    struct pygen *g = PY_PTR(gen_v)->gen;
+    if (g->done) return PY_NONE;
+    if (!g->started) { g->done = true; return PY_NONE; }
+    // Throw GeneratorExit (we don't have a dedicated class — reuse
+    // RuntimeError for v0).
+    g->throw_pending = true;
+    g->throw_exc = py_make_instance(c->EXC_RuntimeError);
+    py_setattr(c, g->throw_exc, "message", py_make_str("GeneratorExit", 13));
+    py_gen_next(c, gen_v);
+    // After close, swallow StopIteration / RuntimeError (caller doesn't
+    // want close() to raise).
+    if (c->state == PY_STATE_RAISE) {
+        c->state = PY_STATE_NORMAL;
+        c->state_value = PY_NONE;
+    }
+    g->done = true;
+    return PY_NONE;
 }
 
 // ---------------------------------------------------------------------------
@@ -2553,6 +2677,40 @@ py_pat_match(CTX *c, int pat_idx, VALUE v)
         if (!py_is_class(cls)) return false;
         if (!py_is_instance(v)) return false;
         return class_is_ancestor(PY_OBJ_VAL(PY_PTR(v)->inst.cls), cls);
+      }
+      case PYPAT_CLASS_ARGS: {
+        VALUE cls = EVAL(c, p->literal);
+        if (c->state != PY_STATE_NORMAL) return false;
+        if (!py_is_class(cls)) return false;
+        if (!py_is_instance(v)) return false;
+        if (!class_is_ancestor(PY_OBJ_VAL(PY_PTR(v)->inst.cls), cls)) return false;
+        for (int i = 0; i < p->nchildren; i++) {
+            // Read attribute via the dict (avoids dunder fall-throughs
+            // which could fail).  If the attr is missing, no match.
+            struct pyobj *o = PY_PTR(v);
+            VALUE attr_val = (VALUE)0;
+            if (o->inst.attrs) {
+                VALUE k = py_make_str(p->attrs[i], strlen(p->attrs[i]));
+                uint64_t h = py_hash(c, k);
+                struct pydict_entry *e = pydict_lookup(c, o->inst.attrs, k, h);
+                if (e->state == 1) attr_val = e->value;
+            }
+            if (!attr_val) return false;
+            if (!py_pat_match(c, p->first_child + i, attr_val)) return false;
+        }
+        return true;
+      }
+      case PYPAT_MAPPING: {
+        if (!py_is_dict(v)) return false;
+        for (int i = 0; i < p->nchildren; i++) {
+            VALUE key = EVAL(c, p->keys[i]);
+            if (c->state != PY_STATE_NORMAL) return false;
+            if (!py_dict_has(c, v, key)) return false;
+            VALUE val = py_dict_get(c, v, key);
+            if (c->state != PY_STATE_NORMAL) return false;
+            if (!py_pat_match(c, p->first_child + i, val)) return false;
+        }
+        return true;
       }
     }
     return false;
@@ -3087,6 +3245,27 @@ static struct type_method frozenset_methods[] = {
     { "union",        sm_union,        2, 2 },
     { "intersection", sm_intersection, 2, 2 },
     { "difference",   sm_difference,   2, 2 },
+    { NULL, NULL, 0, 0 }
+};
+
+// generator methods: send / throw / close + __next__ / __iter__.
+extern VALUE py_gen_next(CTX *c, VALUE g);
+extern VALUE py_gen_send(CTX *c, VALUE g, VALUE v);
+extern VALUE py_gen_throw(CTX *c, VALUE g, VALUE exc);
+extern VALUE py_gen_close(CTX *c, VALUE g);
+
+static VALUE gm_send(CTX *c, int argc, VALUE *argv)  { (void)argc; return py_gen_send(c, argv[0], argv[1]); }
+static VALUE gm_throw(CTX *c, int argc, VALUE *argv) { (void)argc; return py_gen_throw(c, argv[0], argv[1]); }
+static VALUE gm_close(CTX *c, int argc, VALUE *argv) { (void)argc; return py_gen_close(c, argv[0]); }
+static VALUE gm_next(CTX *c, int argc, VALUE *argv)  { (void)argc; return py_gen_next(c, argv[0]); }
+static VALUE gm_iter(CTX *c, int argc, VALUE *argv)  { (void)c; (void)argc; return argv[0]; }
+
+static struct type_method gen_methods[] = {
+    { "send",     gm_send,  2, 2 },
+    { "throw",    gm_throw, 2, 2 },
+    { "close",    gm_close, 1, 1 },
+    { "__next__", gm_next,  1, 1 },
+    { "__iter__", gm_iter,  1, 1 },
     { NULL, NULL, 0, 0 }
 };
 

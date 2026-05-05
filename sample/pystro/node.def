@@ -151,7 +151,23 @@ NODE_DEF
 node_lref(CTX * restrict c, NODE * restrict n, uint32_t idx)
 {
     (void)n;
-    return c->env->slots[idx];
+    VALUE v = c->env->slots[idx];
+    // VALUE 0 is the "deleted" sentinel — `del NAME` writes 0 and a
+    // subsequent read should raise NameError (matches Python's
+    // UnboundLocalError after del).  Real values can never be 0
+    // (fixnums set bit 0; pointers are non-NULL).
+    if (UNLIKELY(v == 0))
+        py_raise_exc(c, c->EXC_NameError, "local variable referenced after del");
+    return v;
+}
+
+// Set slot to the "deleted" sentinel — emitted by parse_del.
+NODE_DEF
+node_lunbind(CTX * restrict c, NODE * restrict n, uint32_t idx)
+{
+    (void)n;
+    c->env->slots[idx] = (VALUE)0;
+    return PY_NONE;
 }
 
 NODE_DEF
@@ -768,16 +784,16 @@ node_raise_bare(CTX * restrict c, NODE * restrict n)
 
 // `yield expr` — stash the value on c->current_gen and swap back to
 // the caller of next() / iter().  The body resumes here when next()
-// is called again.
+// is called again.  Returns the value passed to .send() (or PY_NONE
+// if next()).
 NODE_DEF @noinline
 node_yield(CTX * restrict c, NODE * restrict n, NODE *val)
 {
     (void)n;
-    extern void py_gen_yield(CTX *c, VALUE v);
+    extern VALUE py_gen_yield(CTX *c, VALUE v);
     VALUE v = EVAL_ARG(c, val);
     if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
-    py_gen_yield(c, v);
-    return PY_NONE;
+    return py_gen_yield(c, v);
 }
 
 // try / except / else / finally.  Defers to a host function whose

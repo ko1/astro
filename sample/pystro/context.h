@@ -538,17 +538,19 @@ enum py_pat_kind {
     PYPAT_OR,             // children union — first matching wins
     PYPAT_SEQUENCE,       // [a, b, ...] / (a, b, ...)
     PYPAT_CLASS,          // ClassName() — isinstance check
+    PYPAT_CLASS_ARGS,     // ClassName(attr=pat, ...) — isinstance + attr check
+    PYPAT_MAPPING,        // {"k": pat, ...} — dict with required keys
     PYPAT_VALUE,          // dotted name read at match time (e.g. Color.RED)
 };
 struct pypat {
     int kind;
-    struct Node *literal;       // PYPAT_LITERAL / PYPAT_VALUE: AST node
-                                // (a const_int / const_str etc., or a
-                                // class reference for PYPAT_CLASS).
+    struct Node *literal;       // PYPAT_LITERAL / PYPAT_VALUE / PYPAT_CLASS / PYPAT_CLASS_ARGS
     int slot;                   // PYPAT_CAPTURE: local slot, -1 if global
     const char *name;           // PYPAT_CAPTURE: global name (when slot=-1)
-    int first_child;            // OR / SEQUENCE: index into PYSTRO_PATTERNS
+    int first_child;            // OR / SEQUENCE / CLASS_ARGS / MAPPING: index into PYSTRO_PATTERNS
     int nchildren;
+    struct Node **keys;         // PYPAT_MAPPING: key NODE *exprs, length nchildren
+    const char **attrs;         // PYPAT_CLASS_ARGS: attr name per child
 };
 extern struct pypat *PYSTRO_PATTERNS;
 
