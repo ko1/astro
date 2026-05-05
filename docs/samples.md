@@ -5,8 +5,9 @@ node.def 構成** を中心に横断分析した文書。各サンプル個別�
 `sample/<lang>/README.md` および `sample/<lang>/docs/{done,todo,perf,runtime}.md`
 を参照。本書は「16 言語並べて何が分かるか」を整理する。
 
-§6 で各サンプルの `docs/perf.md` から **定量的な性能まとめ** を出し、
-最後の §7 で、これだけサンプルが揃ったところで見えてきた
+§6 でサンプルバイナリの **コマンドラインオプション** を横断比較、
+§7 で各サンプルの `docs/perf.md` から **定量的な性能まとめ** を出し、
+最後の §8 で、これだけサンプルが揃ったところで見えてきた
 **ASTro フレームワーク自身の Pros / Cons** をまとめる。
 
 ---
@@ -447,7 +448,114 @@ JIT は `naruby` のみ (L0/L1/L2 デーモンの試作)。
 
 ---
 
-## 6. 性能まとめ — どこで何にどれだけ勝てているか
+## 6. コマンドラインオプション横断
+
+各サンプルバイナリの実行モード切替・dump・quiet 等を横並びで見る。
+**フレームワーク標準が無いのでフラグ名は割と不統一**。これも 1 つの
+発見。
+
+### 6.1 共通カテゴリ — どのフラグでどのモードに入れるか
+
+| sample | code store 無効 | AOT bake → run | AOT bake → exit | PG bake | code store クリア | AST dump | quiet |
+|---|---|---|---|---|---|---|---|
+| `calc`      | `--no-compile` | (default) | — | — | — | — | `-q` |
+| `naruby`    | `-i` / `--plain` | `-c` / `--aot` / `--aot-compile-first` | `--aot-compile` | `-p` / `--pg` | `--ccs` | — | `-q` |
+| `abruby`    | `--plain` | `-c` / `--aot-compile-first` | `--aot-compile` (mode) | `-p` / `--pg` | `--clear-code-store` / `--ccs` | `--dump[=MODE]` / `-d` | (none) |
+| `koruby`    | (default 起動で SD 無し) | `--aot-compile` | `-c` (= node_specialized.c 出力) | — | (env のみ) | `--dump` | `-q` |
+| `aforth`    | `--no-compile` | `--aot-compile` (compile→run) | — | — | — | `--dump-ast` | `-q` |
+| `ascheme`   | (default plain) | `-c` / `--compile` | — | `--pg-compile` / `--pg` | `--clear-cs` | — | `-q` |
+| `asom`      | `--plain` | `-c` / `--aot-compile-first` | — | `-p` / `--pg` | (none) | `--dump-ast` | `-q` |
+| `astocaml`  | `--no-compile` | `-c` / `--compile` | — | — | — | — | `-q` |
+| `astr`      | `-i` / `--plain` | `-c` / `--aot` | `--aot-compile` | — | `--ccs` | `--dump-ast` | `-q` |
+| `luastro`   | `--no-compile` | `-c` / `--aot-compile-first` | `--aot-compile` | `-p` / `--pg-compile` | — | `--dump-ast` | `-q` |
+| `pystro`    | `--no-compile` | `-c` | `--aot-compile` | — | — | `--dump-ast` | `-q` |
+| `jstro`     | `--no-compile` | `-c` / `--aot-compile-first` | `--aot-compile` | `-p` / `--pg-compile` (≡ `-c`) | — | `--dump` | `-q` |
+| `castro`    | `--no-compile` | `-c` / `--compile-all` | — | — | — | `--dump` | `-q` |
+| `pascalast` | `--no-compile` | (`-c` のみで bake、走らせない) | `-c` | — | — | `--dump-ast` | `-q` |
+| `wastro`    | `--no-compile` | `-c` (compile→run) | `--aot` / `--aot-compile` | — | `--clear-cs` / `--ccs` | — | `-q` |
+| `astrogre/are` | (default; opt-in `--aot`) | `--aot` | — | — | — | `--dump PATTERN` | `-q` (grep `-q`) |
+
+### 6.2 命名の不統一が見える
+
+同じ意味のフラグがサンプルごとに名前違い:
+
+- **「code store を引かない」**:
+  - `--no-compile` 系: `aforth` / `astocaml` / `castro` / `jstro` / `luastro` / `pascalast` / `pystro` / `wastro` / `calc`
+  - `--plain` 系: `abruby` / `asom`
+  - `-i` / `--plain` 系: `naruby` / `astr`
+  - default off: `ascheme` / `astrogre/are` (opt-in が `--aot`)
+- **`-c` の意味が違う**:
+  - 「bake してから run」: `naruby` / `abruby` / `ascheme` / `asom` / `astocaml` / `astr` / `luastro` / `pystro` / `jstro` / `castro` / `wastro`
+  - 「bake のみで exit」: `pascalast` / `koruby` (後者は `node_specialized.c` を吐く別機構)
+  - 「count マッチ件数」(grep 流): `astrogre/are`
+- **`--aot-compile`** も「compile→run」(aforth) / 「compile→exit」(jstro/luastro/pystro/wastro/abruby) と分かれる
+- **PG モードの呼び名**: 持っているのは 6 サンプル (abruby / ascheme / asom / luastro / jstro / naruby) だけだが、その中でも `--pg-compile` / `--pg` / `-p` のどれが alias でどれが別物かは差がある。`jstro` の `-p` は **現状 `-c` と同等の no-op** とコメントされている
+
+これは「lib/astrogen.rb 側で標準オプションパーサを生やす」案の動機。
+今は各サンプル main.c で argv loop を自前で書いていて、規約が揺れる。
+
+### 6.3 サンプル固有オプション
+
+各サンプルにしかない / その言語の都合で固有に増えたフラグ:
+
+| sample | 固有オプション | 意味 |
+|---|---|---|
+| `naruby` | `-j` | **JIT モード** (L1 デーモンへの UDS 接続) |
+| `naruby` | `-s` | static-lang モード (parse-time call resolution) |
+| `naruby` | `-b` | AOT/PG どちらの bake もスキップ |
+| `asom` | `-cp PATH` / `--classpath` | SOM の `.som` 検索パス |
+| `asom` | `--preload=...` | bake 前に追加クラスを eager load |
+| `asom` | `--pg-threshold=N` | PG bake のディスパッチ回数閾値 (env `ASOM_PG_THRESHOLD`) |
+| `abruby` | `--pg-threshold=N` | 同上 (env `ABRUBY_PG_THRESHOLD`) |
+| `abruby` | `--code-store=DIR` | code store 場所 (env `ABRUBY_CODE_STORE`) |
+| `abruby` | `--compiled-only` | デフォルトディスパッチャに落ちたら abort |
+| `abruby` | `--aot-only` | PGC index 引かず AOT のみロード |
+| `abruby` | `--run` | `--aot-compile` 後に走らせるファイルを区切る |
+| `astocaml` | `-T` / `--check` / `--no-check` | 型検査の on/off |
+| `aforth` | `--no-codegen` | 特化 SD を生成しない (load のみ) |
+| `castro` | `--no-spec` | 同上 |
+| `castro` | `--sx` | **入力を S 式 IR で受ける** (parse.rb をスキップ) |
+| `pascalast` | `--no-run` | parse 後に実行しない (bake 専用パス) |
+| `wastro` | `--test FILE.wast` | wasm spec-test ハーネス |
+| `jstro` | `--show-result` | top-level の最終式を print |
+| `jstro` | `--dump-ic` | exit 時に IC / GC カウンタを出す |
+| `astrogre/are` | `--engine=astrogre|onigmo` | バックエンド差し替え (head-to-head 比較用) |
+| `astrogre/are` | `--encoding=utf-8|ascii` | regex エンコーディング |
+| `astrogre/are` | grep フラグ群 (`-i -n -c -v -w -F -l -L -H -h -o -A -B -C -m -e -f -t -T --include --exclude --hidden --no-ignore -a --no-recursive -j N --color`) | grep 互換 |
+
+### 6.4 入力経路のバリエーション
+
+ファイル/コードの渡し方も微妙にバラバラ:
+
+- **`-e <code>` で文字列実行**: `abruby` / `ascheme` / `koruby` / `luastro` / `pystro` (REPL/one-liner で重宝)
+- **stdin から読む** (`-`): `ascheme` のみ
+- **REPL モード**: `calc` (引数無しで起動)、`ascheme` (script 無しで起動)
+- **クラス名 / モジュール名指定** (file path ではない): `asom` (`asom <ClassName>`)、`wastro` (`wastro module.wat <export> [args...]`)
+- **`--` 末尾 sentinel**: `ascheme` / `luastro` / `pystro` (option 終端、以降は script ARGV)
+
+### 6.5 環境変数
+
+CLI に出ないが環境変数で挙動を変えるもの:
+
+- `ABRUBY_CODE_STORE` / `ASOM_CODE_STORE` / `KORUBY_CODE_STORE` —
+  code store 配置場所
+- `KORUBY_SRC_DIR` — koruby の source 検索場所
+- `ABRUBY_PG_THRESHOLD` / `ASOM_PG_THRESHOLD` — PG bake 閾値
+- `CCACHE_DISABLE=1` — bake 時の ccache 回避 (各サンプル共通の罠)
+
+### 6.6 標準化への余地
+
+サンプル横断で見ると、**フレームワーク側で `--no-compile` / `-c` /
+`-p` / `--clear-cs` / `--dump-ast` / `-q` / `-v` / `-h` は共通フラグ
+として lib 側で生やす** のが筋。今は各 main.c の手書き argv loop で
+微妙にずれている。`koruby gen.rb` 等の per-sample subclass で追加
+フラグだけ載せる形に揃えると、`abruby --plain` と `naruby --plain`
+で意味が一致したり、`-c` の意味揺れが消えたりして、サンプル間の
+学習コストが下がる。
+
+---
+
+## 7. 性能まとめ — どこで何にどれだけ勝てているか
 
 各サンプルの `docs/perf.md` から最新の代表値を抜き出して横並びにする。
 **注意点を先に**:
@@ -459,7 +567,7 @@ JIT は `naruby` のみ (L0/L1/L2 デーモンの試作)。
 - 単位混在 (`aforth` `astrogre` `castro` は ms、他は秒)
 - 詳細・methodology は各 `sample/<lang>/docs/perf.md` を参照
 
-### 6.1 ベンチ vs リファレンス エンジン まとめ
+### 7.1 ベンチ vs リファレンス エンジン まとめ
 
 | sample | リファレンス | bench 数 | AOT vs リファレンス |
 |---|---|---:|---|
@@ -478,7 +586,7 @@ JIT は `naruby` のみ (L0/L1/L2 デーモンの試作)。
 | `pascalast` | (外部 Pascal なし、自 interp との比較のみ) | 4 | interp → AOT で 2× (recursive) 〜 25× (tight loop) |
 | `aforth` ~ `wastro` の interp 列は省略。各 perf.md の表参照。 |
 
-### 6.2 速度をどこで稼げているか (パターン別)
+### 7.2 速度をどこで稼げているか (パターン別)
 
 定量数値を縦に見ると、**ASTro の AOT が大きく勝てる場面 / 勝てない場面**
 がはっきりする。
@@ -518,7 +626,7 @@ JIT は `naruby` のみ (L0/L1/L2 デーモンの試作)。
 - **ripgrep の Aho-Corasick / Teddy multi-literal**: アルゴリズム差で
   astrogre が識別子パターンで 10× 負け (ASTro 関係なく engine 設計の問題)
 
-### 6.3 「ASTro AOT がどこに位置づくか」 1 行サマリ
+### 7.3 「ASTro AOT がどこに位置づくか」 1 行サマリ
 
 実測ベンチを横断すると、ASTro AOT の性能ポジションは概ね:
 
@@ -537,7 +645,7 @@ JIT は `naruby` のみ (L0/L1/L2 デーモンの試作)。
   super-instruction / 命令ディスパッチ最適化…) と比べると、`node.def`
   + AOT bake で同等以上が出るのは破格
 
-### 6.4 補足: 実測で気付かれている注意
+### 7.4 補足: 実測で気付かれている注意
 
 各 perf.md からの拾い物で、サンプル横断で意識しておきたい点:
 
@@ -556,12 +664,12 @@ JIT は `naruby` のみ (L0/L1/L2 デーモンの試作)。
 
 ---
 
-## 7. ASTro 自身の Pros / Cons (冷静な分析)
+## 8. ASTro 自身の Pros / Cons (冷静な分析)
 
 サンプルが揃ったところで、ASTro フレームワーク自体を評価する。
 論文 (`docs/idea.md`) の主張と、サンプル実装で見えた現実を突き合わせる。
 
-### 7.1 効いている設計 (Pros)
+### 8.1 効いている設計 (Pros)
 
 - **EVAL と DISPATCH の分離が、ノード追加コストを劇的に下げている**。
   どのサンプルも「言語の表現力 × 数十行 / ノード」程度で実装できている
@@ -584,7 +692,7 @@ JIT は `naruby` のみ (L0/L1/L2 デーモンの試作)。
   は ASTro 設計時に想定していたとは思えないが、フレームワークが
   邪魔せず通る。
 
-### 7.2 効きが弱い・運用上のコスト (Cons)
+### 8.2 効きが弱い・運用上のコスト (Cons)
 
 - **動的 dispatch を消す手段が部分評価では不足**。動的型最適化 (jstro,
   luastro, abruby) は結局ユーザが kind swap + IC + `@canonical=` で
@@ -622,7 +730,7 @@ JIT は `naruby` のみ (L0/L1/L2 デーモンの試作)。
   (`hopt_index.txt`)・ascheme 流・jstro 流とそれぞれ実装している。
   共通フレームワーク化されていない。
 
-### 7.3 適性マトリクス (どんな言語に向くか)
+### 8.3 適性マトリクス (どんな言語に向くか)
 
 | 言語タイプ | ASTro との相性 | 根拠サンプル |
 |---|---|---|
@@ -636,7 +744,7 @@ JIT は `naruby` のみ (L0/L1/L2 デーモンの試作)。
 | GC の精度が要る (precise GC) | **△** | jstro/luastro が自前 mark-sweep を書いており、フレームワークは助けない |
 | 短命スクリプト (CLI ツール) | **△** | bake コストと dlopen キャッシュの初期化が見える。プレ bake 推奨 |
 
-### 7.4 まとめ
+### 8.4 まとめ
 
 ASTro は **「AST 解釈で書きやすい × 部分評価 + C コンパイラで AOT 速度」**
 という二点を両立する設計で、サンプル群を見るかぎり想定通り回っている。
