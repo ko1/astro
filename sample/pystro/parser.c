@@ -1959,54 +1959,97 @@ parse_while(void)
     return ALLOC_node_while(c, b, e);
 }
 
+// Helper: recursively build assignments for `target = src`.
+// target is parsed at the current tok_pos; on return tok_pos has advanced.
+// Names are registered as locals in cur_scope.  Supports nested
+// (a, (b, c), d) forms.
+static NODE *
+build_for_target_assigns(NODE *src)
+{
+    int k = peek_tok(0)->kind;
+    if (k == T_NAME) {
+        const char *nm = peek_tok(0)->sval;
+        tok_pos++;
+        if (cur_scope && !scope_is_global_decl(cur_scope, nm))
+            scope_add_local(cur_scope, nm);
+        return make_store(nm, src);
+    }
+    if (k == T_LPAREN || k == T_LBRACK) {
+        int close = (k == T_LPAREN) ? T_RPAREN : T_RBRACK;
+        tok_pos++;
+        // src must be subscripted by index for each child target.
+        // Use a temp so src isn't evaluated multiple times.
+        const char *tmp = new_temp_name("__fnt");
+        NODE *load_tmp;
+        NODE *init = build_temp_init(tmp, src, &load_tmp);
+        NODE *result = init;
+        int i = 0;
+        if (peek_tok(0)->kind != close) {
+            for (;;) {
+                NODE *idx = ALLOC_node_const_int(i);
+                NODE *el  = ALLOC_node_subscript_get(load_tmp, idx);
+                NODE *as  = build_for_target_assigns(el);
+                result = ALLOC_node_seq(result, as);
+                i++;
+                if (!match_tok(T_COMMA)) break;
+                if (peek_tok(0)->kind == close) break;
+            }
+        }
+        if (close == T_RPAREN) expect(T_RPAREN, "')'");
+        else                   expect(T_RBRACK, "']'");
+        return result;
+    }
+    parse_error("expected target name");
+}
+
 static NODE *
 parse_for(void)
 {
     expect(T_FOR, "'for'");
-    if (peek_tok(0)->kind != T_NAME) parse_error("expected target name in 'for'");
-    // For now: support only single-name target.  For tuple targets,
-    // we'd need to desugar via a hidden temp.
-    const char *target = peek_tok(0)->sval;
-    tok_pos++;
-    if (peek_tok(0)->kind == T_COMMA) {
-        // Tuple target: collect names, then desugar.
-        const char *names[16];
-        int nnames = 0; names[nnames++] = target;
-        while (match_tok(T_COMMA)) {
-            if (peek_tok(0)->kind != T_NAME) parse_error("expected name in tuple target");
-            if (nnames >= 16) parse_error("for tuple target too long");
-            names[nnames++] = peek_tok(0)->sval;
-            tok_pos++;
-        }
+    int k0 = peek_tok(0)->kind;
+    if (k0 != T_NAME && k0 != T_LPAREN && k0 != T_LBRACK)
+        parse_error("expected target name in 'for'");
+    // Single-name fast path.
+    if (k0 == T_NAME && peek_tok(1)->kind != T_COMMA) {
+        const char *target = peek_tok(0)->sval;
+        tok_pos++;
         expect(T_IN, "'in'");
         NODE *iter = parse_expr();
-        const char *tmp_name = intern_name("__forT__", 8);
-        int tmp_idx = -1;
-        if (cur_scope) tmp_idx = scope_add_local(cur_scope, tmp_name);
-
         NODE *body = parse_suite();
         NODE *else_body = match_tok(T_ELSE) ? parse_suite() : ALLOC_node_nop();
-        NODE *prefix = NULL;
-        for (int i = nnames - 1; i >= 0; i--) {
-            NODE *idx = ALLOC_node_const_int(i);
-            NODE *el  = ALLOC_node_subscript_get(make_load(tmp_name), idx);
-            NODE *as  = make_store(names[i], el);
-            prefix = prefix ? ALLOC_node_seq(as, prefix) : as;
+        if (cur_scope && !scope_is_global_decl(cur_scope, target)) {
+            int idx = scope_add_local(cur_scope, target);
+            return ALLOC_node_for_local((uint32_t)idx, iter, body, else_body);
         }
-        NODE *new_body = ALLOC_node_seq(prefix, body);
-        if (cur_scope && tmp_idx >= 0)
-            return ALLOC_node_for_local((uint32_t)tmp_idx, iter, new_body, else_body);
-        return ALLOC_node_for_global(tmp_name, iter, new_body, else_body);
+        return ALLOC_node_for_global(target, iter, body, else_body);
+    }
+    // Tuple target (with optional nested ()).  Use a top-level temp so
+    // build_for_target_assigns can index into it.
+    const char *tmp_name = intern_name("__forT__", 8);
+    int tmp_idx = -1;
+    if (cur_scope) tmp_idx = scope_add_local(cur_scope, tmp_name);
+    NODE *load_tmp = (cur_scope && tmp_idx >= 0)
+        ? ALLOC_node_lref((uint32_t)tmp_idx) : ALLOC_node_gref(tmp_name);
+    // Parse comma-separated targets — each may be NAME or nested tuple.
+    NODE *prefix = NULL;
+    int i = 0;
+    for (;;) {
+        NODE *idx_n = ALLOC_node_const_int(i);
+        NODE *el = ALLOC_node_subscript_get(load_tmp, idx_n);
+        NODE *as = build_for_target_assigns(el);
+        prefix = prefix ? ALLOC_node_seq(prefix, as) : as;
+        i++;
+        if (!match_tok(T_COMMA)) break;
+        if (peek_tok(0)->kind == T_IN) break;
     }
     expect(T_IN, "'in'");
     NODE *iter = parse_expr();
     NODE *body = parse_suite();
     NODE *else_body = match_tok(T_ELSE) ? parse_suite() : ALLOC_node_nop();
-    if (cur_scope && !scope_is_global_decl(cur_scope, target)) {
-        int idx = scope_add_local(cur_scope, target);
-        return ALLOC_node_for_local((uint32_t)idx, iter, body, else_body);
-    }
-    return ALLOC_node_for_global(target, iter, body, else_body);
+    NODE *new_body = ALLOC_node_seq(prefix, body);
+    if (cur_scope && tmp_idx >= 0)
+        return ALLOC_node_for_local((uint32_t)tmp_idx, iter, new_body, else_body);
+    return ALLOC_node_for_global(tmp_name, iter, new_body, else_body);
 }
 
 // Parse params for `def NAME(params):` — handles default values,

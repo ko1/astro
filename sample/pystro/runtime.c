@@ -3037,6 +3037,27 @@ py_getattr(CTX *c, VALUE v, const char *name)
             }
             return m;
         }
+        // Built-in type class: look up method as unbound function via
+        // type_method tables (e.g. `str.lower`, `list.append`).
+        {
+            int btag = cd->builtin_tag;
+            struct type_method *tbl = NULL;
+            if (btag == PY_T_STR)        tbl = str_methods;
+            else if (btag == PY_T_LIST)  tbl = list_methods;
+            else if (btag == PY_T_DICT)  tbl = dict_methods;
+            else if (btag == PY_T_SET)   tbl = set_methods;
+            else if (btag == PY_T_FROZENSET) tbl = frozenset_methods;
+            else if (btag == PY_T_TUPLE) tbl = tuple_methods;
+            else if (btag == PY_T_BYTES || btag == PY_T_BYTEARRAY) tbl = bytes_methods;
+            if (tbl) {
+                for (int i = 0; tbl[i].name; i++) {
+                    if (strcmp(tbl[i].name, name) == 0) {
+                        return py_make_builtin(tbl[i].name, tbl[i].fn,
+                                               tbl[i].min_argc, tbl[i].max_argc);
+                    }
+                }
+            }
+        }
         py_raise_exc(c, c->EXC_AttributeError, "type object '%s' has no attribute '%s'",
                      cd->name, name);
     }
@@ -4929,9 +4950,10 @@ sm_format(CTX *c, int argc, VALUE *argv)
                     idx = idx * 10 + (body[k] - '0'); k++;
                 }
             } else {
-                // Named field → look up in kwargs.
+                // Named field → look up in kwargs.  Name ends at ':', '!', '.', '['.
                 size_t nm_start = k;
-                while (k < bn && body[k] != ':' && body[k] != '!') k++;
+                while (k < bn && body[k] != ':' && body[k] != '!'
+                       && body[k] != '.' && body[k] != '[') k++;
                 size_t nm_len = k - nm_start;
                 extern int    PYSTRO_BI_KWC;
                 extern const char **PYSTRO_BI_KWNAMES;
@@ -4951,6 +4973,41 @@ sm_format(CTX *c, int argc, VALUE *argv)
                 py_raise_exc(c, c->EXC_IndexError, "format: index out of range");
             val = argv[1 + idx];
           have_val:;
+            // Trailers: .attr or [idx] chains.
+            while (k < bn && (body[k] == '.' || body[k] == '[')) {
+                if (body[k] == '.') {
+                    k++;
+                    size_t s = k;
+                    while (k < bn && body[k] != '.' && body[k] != '['
+                           && body[k] != ':' && body[k] != '!') k++;
+                    char nm[128];
+                    size_t nl = k - s;
+                    if (nl >= sizeof(nm)) nl = sizeof(nm) - 1;
+                    memcpy(nm, body + s, nl); nm[nl] = '\0';
+                    val = py_getattr(c, val, nm);
+                    if (c->state == PY_STATE_RAISE) return PY_NONE;
+                } else {
+                    k++;  // [
+                    size_t s = k;
+                    while (k < bn && body[k] != ']') k++;
+                    if (k >= bn) py_raise_exc(c, c->EXC_ValueError, "unmatched '[' in format");
+                    // Try integer first, else string key.
+                    bool is_int = true;
+                    int64_t iv = 0;
+                    for (size_t p = s; p < k; p++) {
+                        if (body[p] < '0' || body[p] > '9') { is_int = false; break; }
+                        iv = iv * 10 + (body[p] - '0');
+                    }
+                    if (is_int && k > s) {
+                        val = py_list_get(c, val, PY_FIX(iv));
+                    } else {
+                        VALUE key = py_make_str(body + s, k - s);
+                        val = py_list_get(c, val, key);
+                    }
+                    if (c->state == PY_STATE_RAISE) return PY_NONE;
+                    k++;  // ]
+                }
+            }
             // Optional `!conv`.
             if (k < bn && body[k] == '!') {
                 k++;

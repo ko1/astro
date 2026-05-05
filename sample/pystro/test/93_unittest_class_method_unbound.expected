@@ -1,0 +1,11 @@
+ok UnboundBuiltinMethodTest test_dict_get
+ok UnboundBuiltinMethodTest test_list_append
+ok UnboundBuiltinMethodTest test_str_lower_as_key
+ok UnboundBuiltinMethodTest test_str_upper_call
+ok FormatNestedTest test_attr_in_format
+ok FormatNestedTest test_index_in_format
+ok NestedForTargetTest test_nested
+ok MROIncludesObjectTest test_basic
+ok MROIncludesObjectTest test_inherited
+---
+passed=9 failed=0
