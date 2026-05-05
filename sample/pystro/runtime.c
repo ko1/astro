@@ -186,6 +186,7 @@ py_make_func(struct Node *body, struct pyframe *env,
     o->func.has_varargs = has_varargs;
     o->func.has_kwargs = has_kwargs;
     o->func.param_names = param_names;
+    o->func.defining_class = PY_NONE;
     if (nparams > 0) {
         VALUE *d = (VALUE *)GC_malloc(sizeof(VALUE) * nparams);
         if (defaults_per_slot) memcpy(d, defaults_per_slot, sizeof(VALUE) * nparams);
@@ -217,6 +218,84 @@ py_make_bound(VALUE self, VALUE func)
     return PY_OBJ_VAL(o);
 }
 
+// C3 linearization (Python's MRO algorithm).  Builds:
+//   L[C(B1,...,Bn)] = C + merge(L[B1], ..., L[Bn], [B1, ..., Bn])
+// where merge picks at each step the head of some list that does not
+// appear in the tail of any other list.  If no such head exists, the
+// hierarchy is inconsistent and we fall back to a simple BFS order.
+static void
+py_compute_mro(VALUE cls)
+{
+    struct pyclass *cd = &PY_PTR(cls)->cls;
+    if (cd->nbases == 0) {
+        cd->mro = (VALUE *)GC_malloc(sizeof(VALUE) * 1);
+        cd->mro[0] = cls;
+        cd->nmro = 1;
+        return;
+    }
+    // Source lists: each base's MRO + the bases-list itself.
+    int nsrc = cd->nbases + 1;
+    int *idx = (int *)GC_malloc(sizeof(int) * nsrc);
+    int *len = (int *)GC_malloc(sizeof(int) * nsrc);
+    VALUE **list = (VALUE **)GC_malloc(sizeof(VALUE *) * nsrc);
+    for (int i = 0; i < cd->nbases; i++) {
+        struct pyclass *b = &PY_PTR(cd->bases[i])->cls;
+        list[i] = b->mro;
+        len[i]  = b->nmro;
+        idx[i]  = 0;
+    }
+    list[cd->nbases] = cd->bases;
+    len[cd->nbases]  = cd->nbases;
+    idx[cd->nbases]  = 0;
+    int total_max = 1;
+    for (int i = 0; i < nsrc; i++) total_max += len[i];
+    VALUE *out = (VALUE *)GC_malloc(sizeof(VALUE) * total_max);
+    int nout = 0;
+    out[nout++] = cls;
+    for (;;) {
+        // pick head: first non-empty list whose head doesn't appear in
+        // any other list's tail.
+        int picked = -1;
+        for (int i = 0; i < nsrc; i++) {
+            if (idx[i] >= len[i]) continue;
+            VALUE head = list[i][idx[i]];
+            bool in_tail = false;
+            for (int j = 0; j < nsrc && !in_tail; j++) {
+                if (j == i) continue;
+                for (int k = idx[j] + 1; k < len[j]; k++)
+                    if (list[j][k] == head) { in_tail = true; break; }
+            }
+            if (!in_tail) { picked = i; break; }
+        }
+        if (picked < 0) {
+            // Inconsistent — collect remaining in BFS order so things
+            // still work (matches CPython only for simple hierarchies).
+            for (int i = 0; i < nsrc; i++) {
+                while (idx[i] < len[i]) {
+                    VALUE v = list[i][idx[i]++];
+                    bool dup = false;
+                    for (int k = 0; k < nout; k++) if (out[k] == v) { dup = true; break; }
+                    if (!dup) out[nout++] = v;
+                }
+            }
+            break;
+        }
+        VALUE head = list[picked][idx[picked]];
+        bool dup = false;
+        for (int k = 0; k < nout; k++) if (out[k] == head) { dup = true; break; }
+        if (!dup) out[nout++] = head;
+        // remove head from any list whose head matches
+        for (int i = 0; i < nsrc; i++)
+            if (idx[i] < len[i] && list[i][idx[i]] == head) idx[i]++;
+        // done?
+        bool empty = true;
+        for (int i = 0; i < nsrc; i++) if (idx[i] < len[i]) { empty = false; break; }
+        if (empty) break;
+    }
+    cd->mro = out;
+    cd->nmro = nout;
+}
+
 VALUE
 py_make_class(const char *name, VALUE base, bool is_exception)
 {
@@ -235,6 +314,7 @@ py_make_class(const char *name, VALUE base, bool is_exception)
         o->cls.bases[0] = base;
         o->cls.nbases = 1;
     }
+    py_compute_mro(PY_OBJ_VAL(o));
     return PY_OBJ_VAL(o);
 }
 
@@ -253,12 +333,24 @@ py_class_set_bases(VALUE cls, VALUE *bases, int n)
     for (int i = 0; i < n; i++)
         if (py_is_class(bases[i]) && PY_PTR(bases[i])->cls.is_exception)
             cd->is_exception = true;
+    py_compute_mro(cls);
 }
 
 void
 py_class_add_method(CTX *c, VALUE cls, const char *name, VALUE fn)
 {
     (void)c;
+    // Stamp the method's defining class so cooperative super() can
+    // walk MRO from this point.
+    if (PY_IS_PTR(fn) && PY_PTR(fn)->type == PY_T_FUNC)
+        PY_PTR(fn)->func.defining_class = cls;
+    else if (PY_IS_PTR(fn) && (PY_PTR(fn)->type == PY_T_STATICMETHOD
+                            || PY_PTR(fn)->type == PY_T_CLASSMETHOD
+                            || PY_PTR(fn)->type == PY_T_PROPERTY)) {
+        VALUE inner = PY_PTR(fn)->wrap.wrapped;
+        if (PY_IS_PTR(inner) && PY_PTR(inner)->type == PY_T_FUNC)
+            PY_PTR(inner)->func.defining_class = cls;
+    }
     struct pyclass *cd = &PY_PTR(cls)->cls;
     // Replace if a method with the same name already exists — required
     // for decorator-wrapped methods (`@classmethod\ndef m`) which first
@@ -280,19 +372,18 @@ py_class_add_method(CTX *c, VALUE cls, const char *name, VALUE fn)
     cd->nmethods++;
 }
 
-// Depth-first scan through bases[].  No diamond detection — for v0
-// non-diamond hierarchies this matches Python's MRO.  (Diamond cases
-// would need C3 linearization.)
+// Walk the C3-linearised MRO and return the first matching method.
+// `cls.mro[]` is computed at class creation time and includes self at
+// index 0 + all bases in MRO order.
 static VALUE
 py_class_lookup_method(VALUE cls, const char *name)
 {
     if (cls == PY_NONE || !py_is_class(cls)) return PY_NONE;
     struct pyclass *cd = &PY_PTR(cls)->cls;
-    for (int i = 0; i < cd->nmethods; i++)
-        if (strcmp(cd->methods[i].name, name) == 0) return cd->methods[i].value;
-    for (int i = 0; i < cd->nbases; i++) {
-        VALUE r = py_class_lookup_method(cd->bases[i], name);
-        if (r != PY_NONE) return r;
+    for (int i = 0; i < cd->nmro; i++) {
+        struct pyclass *kd = &PY_PTR(cd->mro[i])->cls;
+        for (int j = 0; j < kd->nmethods; j++)
+            if (strcmp(kd->methods[j].name, name) == 0) return kd->methods[j].value;
     }
     return PY_NONE;
 }
@@ -301,6 +392,24 @@ VALUE
 py_class_lookup_method_pub(VALUE cls, const char *name)
 {
     return py_class_lookup_method(cls, name);
+}
+
+// Cooperative super() lookup: walk self.__class__'s MRO; find
+// `start_after_cls`; return the first method found AFTER it.
+VALUE
+py_super_lookup(CTX *c, VALUE self, VALUE start_after_cls, const char *name)
+{
+    (void)c;
+    if (!py_is_instance(self)) return PY_NONE;
+    struct pyclass *cd = &PY_PTR(self)->inst.cls->cls;
+    int i = 0;
+    while (i < cd->nmro && cd->mro[i] != start_after_cls) i++;
+    for (int j = i + 1; j < cd->nmro; j++) {
+        struct pyclass *kd = &PY_PTR(cd->mro[j])->cls;
+        for (int k = 0; k < kd->nmethods; k++)
+            if (strcmp(kd->methods[k].name, name) == 0) return kd->methods[k].value;
+    }
+    return PY_NONE;
 }
 
 VALUE
@@ -917,6 +1026,14 @@ py_hash(CTX *c, VALUE v)
         }
         return h;
       }
+      case PY_T_FROZENSET: {
+        // XOR-of-hashes — order-independent.
+        uint64_t h = 0;
+        struct pydict *d = o->dict;
+        for (size_t i = 0; i < d->capa; i++)
+            if (d->entries[i].state == 1) h ^= py_hash(c, d->entries[i].key);
+        return h ^ 0xC2B2AE3D27D4EB4FULL;
+      }
       default:
         // Use object identity for other types (lists/dicts are unhashable
         // but we fall through here for class/instance/etc.).
@@ -963,6 +1080,14 @@ py_make_set(void)
     return PY_OBJ_VAL(o);
 }
 
+VALUE
+py_make_frozenset(void)
+{
+    struct pyobj *o = py_alloc(PY_T_FROZENSET);
+    o->dict = pydict_new();
+    return PY_OBJ_VAL(o);
+}
+
 static struct pydict_entry *
 pydict_lookup(CTX *c, struct pydict *d, VALUE key, uint64_t h)
 {
@@ -977,15 +1102,25 @@ pydict_lookup(CTX *c, struct pydict *d, VALUE key, uint64_t h)
         if (e->state == 0) return first_tomb ? first_tomb : e;
         if (e->state == 2) { if (!first_tomb) first_tomb = e; }
         else if (LIKELY(e->hash == h)) {
-            // Fast path: identity-equal (same fixnum / None / True /
-            // False, or interned-pointer-equal — very common).
+            // Identity match (same fixnum / None / True / False, or
+            // interned-pointer-equal).
             if (LIKELY(e->key == key)) return e;
-            // If either key is an immediate, identity is equality.
-            if (UNLIKELY(!key_is_immediate &&
-                         !(PY_IS_FIXNUM(e->key) || e->key == PY_NONE
-                           || e->key == PY_TRUE || e->key == PY_FALSE)
-                         && py_eq_bool(c, e->key, key)))
-                return e;
+            // Either side immediate but values differ — definitely not equal.
+            if (key_is_immediate ||
+                PY_IS_FIXNUM(e->key) || e->key == PY_NONE
+                || e->key == PY_TRUE || e->key == PY_FALSE) {
+                /* skip py_eq */
+            }
+            // String fast path: same length + memcmp.  Avoids a full
+            // py_eq dispatch (which would also re-check types and
+            // walk dunder methods).
+            else if (py_is_str(key) && py_is_str(e->key)) {
+                size_t l1 = PY_PTR(key)->str.len, l2 = PY_PTR(e->key)->str.len;
+                if (l1 == l2 && memcmp(PY_PTR(key)->str.chars,
+                                       PY_PTR(e->key)->str.chars, l1) == 0)
+                    return e;
+            }
+            else if (py_eq_bool(c, e->key, key)) return e;
         }
         step++;
         i = (i + step) & mask;
@@ -1276,7 +1411,7 @@ py_seq_len(CTX *c, VALUE v)
 {
     if (py_is_str(v))   return PY_PTR(v)->str.len;
     if (py_is_list(v) || py_is_tuple(v)) return PY_PTR(v)->list.len;
-    if (py_is_dict(v) || py_is_set(v))  return PY_PTR(v)->dict->used;
+    if (py_is_dict(v) || py_is_any_set(v))  return PY_PTR(v)->dict->used;
     if (py_is_instance(v)) {
         VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(v)->inst.cls), "__len__");
         if (m != PY_NONE) {
@@ -1297,7 +1432,7 @@ py_contains(CTX *c, VALUE container, VALUE v)
             if (py_eq_bool(c, PY_PTR(container)->list.items[i], v)) return true;
         return false;
     }
-    if (py_is_dict(container) || py_is_set(container)) return py_dict_has(c, container, v);
+    if (py_is_dict(container) || py_is_any_set(container)) return py_dict_has(c, container, v);
     if (py_is_str(container) && py_is_str(v)) {
         return memmem(PY_PTR(container)->str.chars, PY_PTR(container)->str.len,
                       PY_PTR(v)->str.chars, PY_PTR(v)->str.len) != NULL;
@@ -1342,10 +1477,23 @@ py_iter_init(CTX *c, struct py_iter *it, VALUE iterable)
         it->step = PY_PTR(iterable)->range.step;
         return;
     }
-    if (py_is_dict(iterable) || py_is_set(iterable)) {
+    if (py_is_dict(iterable) || py_is_any_set(iterable)) {
         it->kind = 3;
         it->end = (int64_t)PY_PTR(iterable)->dict->capa;
         return;
+    }
+    if (py_is_instance(iterable)) {
+        VALUE cls = PY_OBJ_VAL(PY_PTR(iterable)->inst.cls);
+        VALUE im = py_class_lookup_method(cls, "__iter__");
+        if (im != PY_NONE) {
+            VALUE av[1] = { iterable };
+            VALUE iter_obj = py_apply(c, im, 1, av);
+            if (c->state != PY_STATE_NORMAL) return;
+            it->kind = 5;       // user iterator
+            it->container = iter_obj;
+            it->i = 0; it->end = 0; it->step = 0;
+            return;
+        }
     }
     py_raise_exc(c, c->EXC_TypeError, "object is not iterable");
 }
@@ -1381,6 +1529,28 @@ py_iter_next(CTX *c, struct py_iter *it, VALUE *out)
         }
         return false;
       }
+      case 5: {
+        // User iterator: call __next__; on StopIteration, clear state
+        // and return false.
+        VALUE iter_obj = it->container;
+        if (!py_is_instance(iter_obj)) return false;
+        VALUE cls = PY_OBJ_VAL(PY_PTR(iter_obj)->inst.cls);
+        VALUE nm = py_class_lookup_method(cls, "__next__");
+        if (nm == PY_NONE) py_raise_exc(c, c->EXC_TypeError, "iter object has no __next__");
+        VALUE av[1] = { iter_obj };
+        VALUE r = py_apply(c, nm, 1, av);
+        if (c->state == PY_STATE_RAISE) {
+            VALUE exc = c->state_value;
+            if (py_exc_matches(c, exc, c->EXC_StopIteration)) {
+                c->state = PY_STATE_NORMAL;
+                c->state_value = PY_NONE;
+                return false;
+            }
+            return false;
+        }
+        *out = r;
+        return true;
+      }
     }
     return false;
 }
@@ -1398,6 +1568,7 @@ static struct type_method str_methods[];
 static struct type_method list_methods[];
 static struct type_method dict_methods[];
 static struct type_method set_methods[];
+static struct type_method frozenset_methods[];
 
 static VALUE
 make_builtin_bound(VALUE self, struct type_method *tm)
@@ -1414,6 +1585,7 @@ py_builtin_method(CTX *c, VALUE recv, const char *name)
     else if (py_is_list(recv)) tbl = list_methods;
     else if (py_is_dict(recv)) tbl = dict_methods;
     else if (py_is_set(recv))  tbl = set_methods;
+    else if (py_is_frozenset(recv)) tbl = frozenset_methods;
     else { (void)c; return PY_NONE; }
     for (int i = 0; tbl[i].name; i++)
         if (strcmp(tbl[i].name, name) == 0) return make_builtin_bound(recv, &tbl[i]);
@@ -1437,6 +1609,7 @@ py_method_resolve(CTX *c, VALUE recv, const char *name, struct method_cache *cac
         else if (tag == PY_T_LIST) tbl = list_methods;
         else if (tag == PY_T_DICT) tbl = dict_methods;
         else if (tag == PY_T_SET)  tbl = set_methods;
+        else if (tag == PY_T_FROZENSET) tbl = frozenset_methods;
         if (tbl) {
             for (int i = 0; tbl[i].name; i++) {
                 if (strcmp(tbl[i].name, name) == 0) {
@@ -1627,9 +1800,12 @@ py_apply_kw_func(CTX *c, VALUE fn, int argc, VALUE *argv,
     }
 
     struct pyframe *saved = c->env;
+    VALUE saved_mc = c->method_class;
     c->env = new_env;
+    c->method_class = f->func.defining_class;
     EVAL(c, f->func.body);
     c->env = saved;
+    c->method_class = saved_mc;
     if (c->state == PY_STATE_RETURN) {
         VALUE r = c->state_value;
         c->state = PY_STATE_NORMAL;
@@ -1831,6 +2007,23 @@ py_display(FILE *fp, VALUE v, bool repr)
         fputc('}', fp);
         return;
       }
+      case PY_T_FROZENSET: {
+        struct pydict *d = o->dict;
+        fputs("frozenset(", fp);
+        if (d->used > 0) {
+            fputc('{', fp);
+            size_t printed = 0;
+            for (size_t i = 0; i < d->capa; i++) {
+                if (d->entries[i].state == 1) {
+                    if (printed++) fputs(", ", fp);
+                    py_display(fp, d->entries[i].key, true);
+                }
+            }
+            fputc('}', fp);
+        }
+        fputc(')', fp);
+        return;
+      }
       case PY_T_RANGE:
         fprintf(fp, "range(%lld, %lld",
                 (long long)o->range.start, (long long)o->range.stop);
@@ -1934,16 +2127,13 @@ py_to_repr(CTX *c, VALUE v)
 // Exception matching.
 // ---------------------------------------------------------------------------
 
-// Walk class chain (DFS through all bases) checking if `target` is in
-// the ancestor list of `cls`.
+// True if `target` appears in `cls`'s C3 MRO.
 static bool
 class_is_ancestor(VALUE cls, VALUE target)
 {
-    if (cls == target) return true;
     if (cls == PY_NONE || !py_is_class(cls)) return false;
     struct pyclass *cd = &PY_PTR(cls)->cls;
-    for (int i = 0; i < cd->nbases; i++)
-        if (class_is_ancestor(cd->bases[i], target)) return true;
+    for (int i = 0; i < cd->nmro; i++) if (cd->mro[i] == target) return true;
     return false;
 }
 
@@ -2480,6 +2670,14 @@ static struct type_method set_methods[] = {
     { NULL, NULL, 0, 0 }
 };
 
+// frozenset: read-only ops only.
+static struct type_method frozenset_methods[] = {
+    { "union",        sm_union,        2, 2 },
+    { "intersection", sm_intersection, 2, 2 },
+    { "difference",   sm_difference,   2, 2 },
+    { NULL, NULL, 0, 0 }
+};
+
 // ---------------------------------------------------------------------------
 // Builtins.
 // ---------------------------------------------------------------------------
@@ -2633,6 +2831,18 @@ bi_set(CTX *c, int argc, VALUE *argv)
 }
 
 static VALUE
+bi_frozenset(CTX *c, int argc, VALUE *argv)
+{
+    VALUE r = py_make_frozenset();
+    if (argc == 0) return r;
+    struct py_iter it; py_iter_init(c, &it, argv[0]);
+    if (c->state != PY_STATE_NORMAL) return PY_NONE;
+    VALUE x;
+    while (py_iter_next(c, &it, &x)) py_dict_set(c, r, x, PY_NONE);
+    return r;
+}
+
+static VALUE
 bi_type(CTX *c, int argc, VALUE *argv)
 {
     (void)c; (void)argc;
@@ -2648,6 +2858,7 @@ bi_type(CTX *c, int argc, VALUE *argv)
       case PY_T_TUPLE: return py_make_str("tuple", 5);
       case PY_T_DICT:  return py_make_str("dict", 4);
       case PY_T_SET:   return py_make_str("set", 3);
+      case PY_T_FROZENSET: return py_make_str("frozenset", 9);
       case PY_T_RANGE: return py_make_str("range", 5);
       case PY_T_FUNC: case PY_T_BUILTIN: case PY_T_BOUND_METHOD: return py_make_str("function", 8);
       case PY_T_CLASS: return py_make_str("type", 4);
@@ -2967,6 +3178,44 @@ static VALUE
 bi_hash(CTX *c, int argc, VALUE *argv) { (void)argc; return PY_FIX((int64_t)(py_hash(c, argv[0]) & 0x7FFFFFFFFFFFFFFFULL)); }
 
 static VALUE
+bi_pystro_delattr(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    VALUE obj = argv[0];
+    VALUE name = argv[1];
+    if (!py_is_str(name)) py_raise_exc(c, c->EXC_TypeError, "delattr name must be str");
+    if (py_is_instance(obj)) {
+        struct pyobj *o = PY_PTR(obj);
+        if (o->inst.attrs) {
+            uint64_t h = py_hash(c, name);
+            struct pydict_entry *e = pydict_lookup(c, o->inst.attrs, name, h);
+            if (e->state == 1) {
+                e->state = 2;
+                o->inst.attrs->used--;
+                return PY_NONE;
+            }
+        }
+        py_raise_exc(c, c->EXC_AttributeError, "no such attribute '%s'", PY_PTR(name)->str.chars);
+    }
+    py_raise_exc(c, c->EXC_TypeError, "delattr: object does not support attribute deletion");
+}
+
+static VALUE
+bi_pystro_delglobal(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    if (!py_is_str(argv[0])) py_raise_exc(c, c->EXC_TypeError, "name must be str");
+    const char *name = PY_PTR(argv[0])->str.chars;
+    int i = py_global_index(c, name);
+    if (i < 0 || !c->globals[i].defined)
+        py_raise_exc(c, c->EXC_NameError, "name '%s' is not defined", name);
+    c->globals[i].defined = false;
+    c->globals[i].value = PY_NONE;
+    c->globals_serial++;        // structural change → invalidate caches
+    return PY_NONE;
+}
+
+static VALUE
 bi_pystro_del(CTX *c, int argc, VALUE *argv)
 {
     (void)argc;
@@ -3128,18 +3377,44 @@ bi_filter(CTX *c, int argc, VALUE *argv)
 }
 
 static VALUE
-bi_iter(CTX *c, int argc, VALUE *argv) { (void)c; (void)argc; return argv[0]; /* iterables in pystro are self-iterators */ }
+bi_iter(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    // For user instances with __iter__, call it directly.
+    if (py_is_instance(argv[0])) {
+        VALUE cls = PY_OBJ_VAL(PY_PTR(argv[0])->inst.cls);
+        VALUE im = py_class_lookup_method(cls, "__iter__");
+        if (im != PY_NONE) {
+            VALUE av[1] = { argv[0] };
+            return py_apply(c, im, 1, av);
+        }
+    }
+    // Built-in iterable: wrap a fresh struct py_iter in a PY_T_ITER pyobj.
+    struct pyobj *o = py_alloc(PY_T_ITER);
+    o->iter_state = (struct py_iter *)GC_malloc(sizeof(struct py_iter));
+    py_iter_init(c, o->iter_state, argv[0]);
+    return PY_OBJ_VAL(o);
+}
 
 static VALUE
 bi_next(CTX *c, int argc, VALUE *argv)
 {
-    // pystro doesn't have a separate iterator object — `next()` works
-    // only on lists/tuples/dicts/etc. by treating them as a stream.
-    // We don't currently track iter state across calls, so this is a
-    // no-op stub raising StopIteration on first call.  Use `for` for
-    // real iteration.
-    (void)argc; (void)argv;
-    py_raise_exc(c, c->EXC_StopIteration, "iter object not supported (use for-loop)");
+    VALUE it = argv[0];
+    if (PY_IS_PTR(it) && PY_PTR(it)->type == PY_T_ITER) {
+        VALUE r;
+        if (py_iter_next(c, PY_PTR(it)->iter_state, &r)) return r;
+        if (argc >= 2) return argv[1];
+        py_raise_exc(c, c->EXC_StopIteration, "iterator exhausted");
+    }
+    if (py_is_instance(it)) {
+        VALUE cls = PY_OBJ_VAL(PY_PTR(it)->inst.cls);
+        VALUE nm = py_class_lookup_method(cls, "__next__");
+        if (nm != PY_NONE) {
+            VALUE av[1] = { it };
+            return py_apply(c, nm, 1, av);
+        }
+    }
+    py_raise_exc(c, c->EXC_TypeError, "next() argument is not an iterator");
 }
 
 static void
@@ -3158,6 +3433,7 @@ install_builtins(CTX *c)
     py_global_define(c, "tuple",      py_make_builtin("tuple",      bi_tuple,      0,  1));
     py_global_define(c, "dict",       py_make_builtin("dict",       bi_dict,       0,  0));
     py_global_define(c, "set",        py_make_builtin("set",        bi_set,        0,  1));
+    py_global_define(c, "frozenset",  py_make_builtin("frozenset",  bi_frozenset,  0,  1));
     py_global_define(c, "type",       py_make_builtin("type",       bi_type,       1,  1));
     py_global_define(c, "isinstance", py_make_builtin("isinstance", bi_isinstance, 2,  2));
     py_global_define(c, "min",        py_make_builtin("min",        bi_min,        1, -1));
@@ -3213,6 +3489,8 @@ install_builtins(CTX *c)
     py_global_define(c, "StopIteration",    c->EXC_StopIteration);
     py_global_define(c, "AssertionError",   c->EXC_AssertionError);
     py_global_define(c, "__pystro_del__",   py_make_builtin("__pystro_del__", bi_pystro_del, 2, 2));
+    py_global_define(c, "__pystro_delattr__",   py_make_builtin("__pystro_delattr__", bi_pystro_delattr, 2, 2));
+    py_global_define(c, "__pystro_delglobal__", py_make_builtin("__pystro_delglobal__", bi_pystro_delglobal, 1, 1));
 
     c->current_class = PY_NONE;
 }

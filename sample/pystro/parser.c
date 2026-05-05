@@ -1192,10 +1192,10 @@ static NODE *parse_bitand(void) { NODE *l = parse_shift();  while (match_tok(T_A
 static NODE *parse_bitxor(void) { NODE *l = parse_bitand(); while (match_tok(T_CARET)) l = ALLOC_node_bit_xor(l, parse_bitand()); return l; }
 static NODE *parse_bitor(void)  { NODE *l = parse_bitxor(); while (match_tok(T_PIPE))  l = ALLOC_node_bit_or (l, parse_bitxor()); return l; }
 
-// Comparison with chaining: `a < b < c` → `(a < b) and (b < c)`.
-// `b` is evaluated TWICE in this v0 — Python semantics specifies a
-// single evaluation, so this is a known caveat for code with
-// side-effecting middle operands.
+// Comparison with chaining: `a < b < c` → `(a < b) and (b < c)` with
+// `b` bound to a hidden temp so it evaluates exactly once (matching
+// Python semantics).  The first and last operands always appear once,
+// only the middle ones get temped.
 static NODE *
 parse_compare(void)
 {
@@ -1222,9 +1222,28 @@ parse_compare(void)
         else break;
 
         NODE *r = parse_bitor();
-        NODE *cmp = op(l, r);
-        result = result ? ALLOC_node_and(result, cmp) : cmp;
-        l = r;
+
+        // If another comparison op follows, this `r` is the middle of
+        // a chain — bind it to a temp so both uses share one eval.
+        int nk = peek_tok(0)->kind;
+        bool another = (nk == T_LT || nk == T_LE || nk == T_GT ||
+                        nk == T_GE || nk == T_EQ || nk == T_NE ||
+                        nk == T_IS || nk == T_IN ||
+                        (nk == T_NOT && peek_tok(1)->kind == T_IN));
+        if (another) {
+            const char *tmp = new_temp_name("__cc");
+            NODE *load_tmp;
+            NODE *init = build_temp_init(tmp, r, &load_tmp);
+            // r-value = seq(init, load_tmp) — eval-and-bind, returns load
+            NODE *r_once = ALLOC_node_seq(init, load_tmp);
+            NODE *cmp = op(l, r_once);
+            result = result ? ALLOC_node_and(result, cmp) : cmp;
+            l = load_tmp;       // re-read of the bound temp for next op
+        } else {
+            NODE *cmp = op(l, r);
+            result = result ? ALLOC_node_and(result, cmp) : cmp;
+            l = r;
+        }
     }
     return result ? result : l;
 }
@@ -1752,14 +1771,16 @@ parse_assert(void)
     return ALLOC_node_if(ALLOC_node_not(cond), raise_n, ALLOC_node_nop());
 }
 
-// `del NAME` — currently restricted to deleting an item from a dict /
-// list (`del d[k]`, `del a[i]`).  Naked `del NAME` is a no-op for
-// pystro v0 (Python's behaviour would unbind the name).
+// `del` — supports `del NAME`, `del obj.attr`, `del a[i]`.  For
+// `del NAME` we emit a builtin call that unbinds the global / writes
+// PY_NONE to the local (Python truly unbinds; pystro's local frame
+// has no per-slot validity bit so the local case is approximate but
+// commonly safe).
 static NODE *
 parse_del(void)
 {
     expect(T_DEL, "'del'");
-    if (peek_tok(0)->kind != T_NAME) parse_error("del NAME[...] only");
+    if (peek_tok(0)->kind != T_NAME) parse_error("del expects a target");
     const char *base = peek_tok(0)->sval;
     tok_pos++;
     NODE *cur = make_load(base);
@@ -1772,8 +1793,12 @@ parse_del(void)
                 cur = ALLOC_node_attr_get(cur, nm);
                 continue;
             }
-            // last: `del obj.attr` — no-op for v0
-            return ALLOC_node_nop();
+            // last: `del obj.attr` — call __pystro_delattr__(obj, "attr")
+            NODE *args[2] = { cur, ALLOC_node_const_str(nm) };
+            size_t bidx = node_table_reserve(args, 2);
+            return ALLOC_node_call_n(
+                ALLOC_node_gref(intern_name("__pystro_delattr__", 18)),
+                (uint32_t)bidx, 2);
         }
         expect(T_LBRACK, "'['");
         NODE *idx = parse_expr();
@@ -1782,18 +1807,24 @@ parse_del(void)
             cur = ALLOC_node_subscript_get(cur, idx);
             continue;
         }
-        // last: `del cur[idx]` — call __delitem__-equivalent.  For v0
-        // we route through dict.pop / list.pop manually.
-        extern NODE *intern_helper_call(const char *name, NODE *a, NODE *b);
-        // Simpler: emit a method_2 call to "__pystro_del__" which we
-        // implement as a builtin that dispatches by container type.
-        NODE *call_args[2] = { cur, idx };
-        size_t bidx = node_table_reserve(call_args, 2);
-        return ALLOC_node_call_n(ALLOC_node_gref(intern_name("__pystro_del__", 14)),
-                                 (uint32_t)bidx, 2);
+        NODE *args[2] = { cur, idx };
+        size_t bidx = node_table_reserve(args, 2);
+        return ALLOC_node_call_n(
+            ALLOC_node_gref(intern_name("__pystro_del__", 14)),
+            (uint32_t)bidx, 2);
     }
-    // bare `del NAME`: no-op for v0
-    return ALLOC_node_nop();
+    // bare `del NAME`: undefine global, or write PY_NONE for local.
+    if (cur_scope && !scope_is_global_decl(cur_scope, base)) {
+        int idx = scope_local_index(cur_scope, base);
+        if (idx >= 0)
+            return ALLOC_node_lset((uint32_t)idx, ALLOC_node_const_none());
+    }
+    // global: call __pystro_delglobal__(name_str).
+    NODE *args[1] = { ALLOC_node_const_str(base) };
+    size_t bidx = node_table_reserve(args, 1);
+    return ALLOC_node_call_n(
+        ALLOC_node_gref(intern_name("__pystro_delglobal__", 20)),
+        (uint32_t)bidx, 1);
 }
 
 // `yield E` (and `yield from E`) — eager v0 implementation: translates

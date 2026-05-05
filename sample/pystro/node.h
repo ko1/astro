@@ -95,9 +95,12 @@ py_apply(CTX *c, VALUE fn, int argc, VALUE *argv)
             for (int i = argc; i < total; i++) new_env->slots[i] = PY_NONE;
 
             struct pyframe *saved = c->env;
+            VALUE saved_mc = c->method_class;
             c->env = new_env;
+            c->method_class = f->func.defining_class;
             EVAL(c, f->func.body);
             c->env = saved;
+            c->method_class = saved_mc;
 
             if (c->state == PY_STATE_RETURN) {
                 VALUE r = c->state_value;

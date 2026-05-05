@@ -87,6 +87,7 @@ enum pyobj_type {
     PY_T_TUPLE,
     PY_T_DICT,
     PY_T_SET,
+    PY_T_FROZENSET,         // immutable + hashable variant of SET
     PY_T_RANGE,
     PY_T_FUNC,
     PY_T_BUILTIN,
@@ -96,6 +97,7 @@ enum pyobj_type {
     PY_T_STATICMETHOD,    // wraps a func; bypasses self binding
     PY_T_CLASSMETHOD,     // wraps a func; binds the class instead of self
     PY_T_PROPERTY,        // wraps a getter func; called on attribute read
+    PY_T_ITER,            // built-in iterator wrapper around a struct py_iter
 };
 
 struct pyobj;
@@ -122,8 +124,10 @@ struct pyclass {
     int  nmethods, methods_capa;
     bool is_exception;
     VALUE base;             // first base, or PY_NONE — kept for super()
-    VALUE *bases;           // all bases (length nbases); points at heap array
+    VALUE *bases;           // direct bases (length nbases)
     int   nbases;
+    VALUE *mro;             // C3-linearised MRO including self at [0]
+    int   nmro;
 };
 
 // Open-addressed hash dict.  state: 0=empty, 1=used, 2=tombstone.
@@ -162,6 +166,9 @@ struct pyobj {
             bool leaf;
             bool has_varargs;       // a `*args` slot is present
             bool has_kwargs;        // a `**kwargs` slot is present
+            VALUE defining_class;   // class this method was defined on
+                                    // (PY_NONE for non-method funcs) —
+                                    // used for cooperative super()
         } func;
         struct {
             py_builtin_fn fn;
@@ -174,6 +181,8 @@ struct pyobj {
         } bound;
         // staticmethod / classmethod / property wrap a single func.
         struct { VALUE wrapped; } wrap;
+        // PY_T_ITER: holds a `struct py_iter` for stateful iteration.
+        struct py_iter *iter_state;
         struct pyclass cls;
         struct {
             struct pyobj *cls;
@@ -246,6 +255,12 @@ typedef struct CTX_struct {
     // instead of globals.  PY_NONE outside class-body scope.
     VALUE  current_class;
 
+    // While executing a method body, `method_class` is the class on
+    // which the method was lexically defined — read by node_super
+    // for cooperative MRO walking.  Saved/restored across nested
+    // method calls.
+    VALUE  method_class;
+
     jmp_buf err_jmp;
     int     err_jmp_active;
 
@@ -287,6 +302,8 @@ static inline bool py_is_list(VALUE v)    { return PY_IS_PTR(v) && PY_PTR(v)->ty
 static inline bool py_is_tuple(VALUE v)   { return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_TUPLE; }
 static inline bool py_is_dict(VALUE v)    { return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_DICT; }
 static inline bool py_is_set(VALUE v)     { return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_SET; }
+static inline bool py_is_frozenset(VALUE v){ return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_FROZENSET; }
+static inline bool py_is_any_set(VALUE v) { return py_is_set(v) || py_is_frozenset(v); }
 static inline bool py_is_range(VALUE v)   { return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_RANGE; }
 static inline bool py_is_func(VALUE v)    { return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_FUNC; }
 static inline bool py_is_builtin(VALUE v) { return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_BUILTIN; }
@@ -327,6 +344,7 @@ VALUE py_make_list  (VALUE *items, size_t n);     // copies items; capa=max(n,4)
 VALUE py_make_tuple (VALUE *items, size_t n);
 VALUE py_make_dict  (void);
 VALUE py_make_set   (void);
+VALUE py_make_frozenset(void);
 VALUE py_make_range (int64_t start, int64_t stop, int64_t step);
 VALUE py_make_func  (struct Node *body, struct pyframe *env,
                      const char *name, int nparams, int n_pos_named,
