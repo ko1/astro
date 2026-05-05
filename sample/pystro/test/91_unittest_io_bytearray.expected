@@ -1,0 +1,9 @@
+ok BytearrayTest test_index
+ok BytearrayTest test_mul
+ok BytearrayTest test_setitem
+ok BytearrayTest test_value_range
+ok FileIterTest test_for_line
+ok StringIOTest test_iter
+ok StringIOTest test_readline
+---
+passed=7 failed=0

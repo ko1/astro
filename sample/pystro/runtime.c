@@ -1164,6 +1164,17 @@ py_mul(CTX *c, VALUE a, VALUE b)
         return py_make_str_take(buf, la * (size_t)k);
     }
     if (py_int_or_bool(a) && py_is_str(b)) return py_mul(c, b, a);
+    if (py_is_byteseq(a) && py_int_or_bool(b)) {
+        int64_t k = PY_IS_FIXNUM(b) ? PY_FIXVAL(b) : (b == PY_TRUE ? 1 : 0);
+        if (k <= 0) return py_make_bytes("", 0);
+        size_t la = PY_PTR(a)->str.len;
+        char *buf = (char *)GC_malloc_atomic(la * (size_t)k + 1);
+        for (int64_t i = 0; i < k; i++) memcpy(buf + i * la, PY_PTR(a)->str.chars, la);
+        VALUE r = py_make_bytes(buf, la * (size_t)k);
+        if (PY_PTR(a)->type == PY_T_BYTEARRAY) PY_PTR(r)->type = PY_T_BYTEARRAY;
+        return r;
+    }
+    if (py_int_or_bool(a) && py_is_byteseq(b)) return py_mul(c, b, a);
     if (py_int_or_bool(a) && (py_is_list(b) || py_is_tuple(b))) return py_mul(c, b, a);
     if ((py_is_list(a) || py_is_tuple(a)) && py_int_or_bool(b)) {
         int64_t k = PY_IS_FIXNUM(b) ? PY_FIXVAL(b) : (b == PY_TRUE ? 1 : 0);
@@ -2166,6 +2177,18 @@ py_list_set(CTX *c, VALUE seq, VALUE idx, VALUE val)
         return PY_NONE;
     }
     if (py_is_dict(seq)) { py_dict_set(c, seq, idx, val); return PY_NONE; }
+    if (PY_IS_PTR(seq) && PY_PTR(seq)->type == PY_T_BYTEARRAY) {
+        int64_t i = py_int_to_long(c, idx);
+        int64_t len = (int64_t)PY_PTR(seq)->str.len;
+        if (i < 0) i += len;
+        if (i < 0 || i >= len)
+            py_raise_exc(c, c->EXC_IndexError, "bytearray index out of range");
+        int64_t b = py_int_to_long(c, val);
+        if (b < 0 || b > 255)
+            py_raise_exc(c, c->EXC_ValueError, "byte must be in range(0, 256)");
+        PY_PTR(seq)->str.chars[i] = (char)b;
+        return PY_NONE;
+    }
     py_raise_exc(c, c->EXC_TypeError, "object does not support item assignment");
 }
 
@@ -2529,6 +2552,11 @@ py_iter_init(CTX *c, struct py_iter *it, VALUE iterable)
         it->container = iterable;
         return;
     }
+    if (PY_IS_PTR(iterable) && PY_PTR(iterable)->type == PY_T_FILE) {
+        it->kind = 12;
+        it->container = iterable;
+        return;
+    }
     py_raise_exc(c, c->EXC_TypeError, "object is not iterable");
 }
 
@@ -2685,6 +2713,16 @@ py_iter_next(CTX *c, struct py_iter *it, VALUE *out)
                 return true;
             }
         }
+      }
+      case 12: {
+        // file: yield each line.
+        VALUE av[1] = { it->container };
+        extern VALUE fm_readline(CTX *c, int argc, VALUE *argv);
+        VALUE line = fm_readline(c, 1, av);
+        if (c->state == PY_STATE_RAISE) return false;
+        if (py_is_str(line) && PY_PTR(line)->str.len == 0) return false;
+        *out = line;
+        return true;
       }
     }
     return false;
@@ -7663,7 +7701,7 @@ fm_read(CTX *c, int argc, VALUE *argv)
     return py_make_str(buf, len);
 }
 
-static VALUE
+VALUE
 fm_readline(CTX *c, int argc, VALUE *argv)
 {
     (void)argc;

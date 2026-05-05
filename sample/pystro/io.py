@@ -4,6 +4,7 @@ class StringIO:
     def __init__(self, initial=""):
         self._chunks = [initial] if initial else []
         self._closed = False
+        self._pos = 0
     def write(self, s):
         if self._closed:
             raise ValueError("write on closed StringIO")
@@ -13,8 +14,43 @@ class StringIO:
         return len(s)
     def getvalue(self):
         return "".join(self._chunks)
-    def read(self):
-        return self.getvalue()
+    def read(self, size=-1):
+        v = self.getvalue()
+        if self._pos >= len(v): return ""
+        if size < 0 or self._pos + size > len(v):
+            r = v[self._pos:]
+            self._pos = len(v)
+        else:
+            r = v[self._pos:self._pos + size]
+            self._pos += size
+        return r
+    def readline(self):
+        v = self.getvalue()
+        if self._pos >= len(v): return ""
+        nl = v.find("\n", self._pos)
+        if nl < 0:
+            r = v[self._pos:]
+            self._pos = len(v)
+        else:
+            r = v[self._pos:nl + 1]
+            self._pos = nl + 1
+        return r
+    def readlines(self):
+        out = []
+        while True:
+            line = self.readline()
+            if not line: break
+            out.append(line)
+        return out
+    def __iter__(self):
+        while True:
+            line = self.readline()
+            if not line: break
+            yield line
+    def seek(self, pos):
+        self._pos = pos
+    def tell(self):
+        return self._pos
     def close(self):
         self._closed = True
     def __enter__(self):

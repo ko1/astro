@@ -15,6 +15,29 @@ def remove(path):
 def makedirs(path, exist_ok=False):
     return __pystro_makedirs__(path, exist_ok)
 
+
+def close(fd):
+    # Stub: pystro file objects close themselves; close() of a raw fd is a no-op.
+    return None
+
+
+def unlink(path):
+    return __pystro_remove__(path)
+
+
+def rmdir(path):
+    return __pystro_remove__(path)
+
+
+def fdopen(fd, mode="r"):
+    # Stub: not actually wrapping the fd; returns None for now.
+    return None
+
+
+def stat(path):
+    # Minimal: return a tuple-like structure with size/mtime.
+    return None
+
 # A simple mapping wrapper.
 class _Environ:
     def __getitem__(self, k):
@@ -108,4 +131,5 @@ class _Path:
 path = _Path()
 
 __all__ = ["getcwd", "getenv", "environ", "path",
-           "listdir", "remove", "makedirs"]
+           "listdir", "remove", "unlink", "rmdir", "makedirs",
+           "close", "fdopen", "stat"]
