@@ -1,0 +1,12 @@
+ok FloatExtrasTest test_as_integer_ratio_half
+ok FloatExtrasTest test_as_integer_ratio_int
+ok FloatExtrasTest test_as_integer_ratio_neg
+ok FloatExtrasTest test_as_integer_ratio_quarter
+ok FloatExtrasTest test_hex_roundtrip
+ok BigIntSliceTest test_huge_slice_start
+ok BigIntSliceTest test_huge_slice_stop
+ok BigIntSliceTest test_neg_huge_slice
+ok NaNIdentityTest test_nan_distinct
+ok NaNIdentityTest test_nan_in_self
+---
+passed=10 failed=0

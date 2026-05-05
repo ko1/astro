@@ -150,10 +150,9 @@ class FloatNaNComparisonTest(unittest.TestCase):
 
     def test_in_list(self):
         n = float("nan")
-        # NaN's `in` uses identity-or-equality; pystro impl compares with
-        # py_eq_bool which returns False for NaN.
-        # Reasonable result: False (NaN doesn't equal anything).
-        self.assertFalse(n in [n])
+        # CPython: `in` does identity-then-equality, so `n in [n]` is True
+        # — the same NaN object is its own match.
+        self.assertTrue(n in [n])
 
 
 unittest.main(globals())

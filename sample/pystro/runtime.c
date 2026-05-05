@@ -2077,9 +2077,26 @@ py_int_to_long(CTX *c, VALUE v)
     if (v == PY_FALSE) return 0;
     if (py_is_bignum(v)) {
         if (mpz_fits_slong_p(PY_PTR(v)->mpz)) return mpz_get_si(PY_PTR(v)->mpz);
-        py_raise_exc(c, c->EXC_IndexError, "index too large");
+        // Bignum out of long range — clamp to long extreme so slice
+        // callers naturally get empty/everything.  CPython does the
+        // same for slice indices.
+        return mpz_sgn(PY_PTR(v)->mpz) < 0 ? INT64_MIN : INT64_MAX;
     }
     py_raise_exc(c, c->EXC_TypeError, "expected an integer index");
+}
+
+// Strict variant: for non-slice indexing, oversized bignum should raise.
+int64_t
+py_int_to_long_strict(CTX *c, VALUE v)
+{
+    if (PY_IS_FIXNUM(v)) return PY_FIXVAL(v);
+    if (v == PY_TRUE) return 1;
+    if (v == PY_FALSE) return 0;
+    if (py_is_bignum(v)) {
+        if (mpz_fits_slong_p(PY_PTR(v)->mpz)) return mpz_get_si(PY_PTR(v)->mpz);
+        py_raise_exc(c, c->EXC_OverflowError, "Python int too large to convert to C long");
+    }
+    py_raise_exc(c, c->EXC_TypeError, "expected an integer");
 }
 
 VALUE
@@ -2369,8 +2386,14 @@ py_contains(CTX *c, VALUE container, VALUE v)
 {
     if (py_is_list(container) || py_is_tuple(container)) {
         size_t n = PY_PTR(container)->list.len;
-        for (size_t i = 0; i < n; i++)
-            if (py_eq_bool(c, PY_PTR(container)->list.items[i], v)) return true;
+        for (size_t i = 0; i < n; i++) {
+            VALUE x = PY_PTR(container)->list.items[i];
+            // Identity-equality short-circuit: handles `nan in [nan]`
+            // (CPython semantics — same object equals itself even if
+            // py_eq returns False due to NaN).
+            if (x == v) return true;
+            if (py_eq_bool(c, x, v)) return true;
+        }
         return false;
     }
     if (py_is_dict(container) || py_is_any_set(container)) return py_dict_has(c, container, v);
@@ -6518,9 +6541,55 @@ fm_imag_f(CTX *c, int argc, VALUE *argv) { (void)c; (void)argc; return py_make_f
 static VALUE
 fm_conj_f(CTX *c, int argc, VALUE *argv) { (void)c; (void)argc; return argv[0]; }
 
+// (a, b) such that float == a/b exactly, with b > 0 and gcd(a, b) == 1.
+// Mirrors CPython's float.as_integer_ratio.
+static VALUE
+fm_as_integer_ratio(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    double d = py_to_double(c, argv[0]);
+    if (d != d || d == d * 0.5)  // NaN or +/-inf (inf == inf*0.5)
+        py_raise_exc(c, c->EXC_OverflowError, "cannot convert non-finite to ratio");
+    int exp;
+    double m = frexp(d, &exp);  // d = m * 2^exp, m in [0.5, 1)
+    // Make m an integer: shift mantissa by 53 bits.
+    for (int i = 0; i < 53 && m != floor(m); i++) {
+        m *= 2.0;
+        exp--;
+    }
+    // Build numerator from m, denominator = 1 << -exp (or scale by 2^exp).
+    mpz_t num, den;
+    mpz_init(num); mpz_init(den);
+    if (m < 0) {
+        mpz_set_d(num, -m);
+        mpz_neg(num, num);
+    } else {
+        mpz_set_d(num, m);
+    }
+    if (exp >= 0) {
+        mpz_mul_2exp(num, num, (unsigned)exp);
+        mpz_set_ui(den, 1);
+    } else {
+        mpz_set_ui(den, 1);
+        mpz_mul_2exp(den, den, (unsigned)(-exp));
+    }
+    // Reduce.
+    mpz_t g; mpz_init(g);
+    mpz_gcd(g, num, den);
+    mpz_divexact(num, num, g);
+    mpz_divexact(den, den, g);
+    mpz_clear(g);
+    VALUE pair[2];
+    pair[0] = py_normalise_int(num);
+    pair[1] = py_normalise_int(den);
+    mpz_clear(num); mpz_clear(den);
+    return py_make_tuple(pair, 2);
+}
+
 static struct type_method float_methods[] = {
     { "is_integer", fm_is_integer, 1, 1 },
     { "hex",        fm_hex,        1, 1 },
+    { "as_integer_ratio", fm_as_integer_ratio, 1, 1 },
     { "real",       fm_real_f,     1, 1 },
     { "imag",       fm_imag_f,     1, 1 },
     { "conjugate",  fm_conj_f,     1, 1 },
