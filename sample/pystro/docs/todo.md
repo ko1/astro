@@ -6,7 +6,28 @@
 
 ## 残課題 (現在)
 
-(空 — R9/R10 で大量の互換性向上)
+R11–R12 で深掘り (test 78–91 追加, 91 unit tests passing)。 [done.md](./done.md) に詳細。
+
+### 残存する仕様上の差分 (低優先)
+
+#### S-13. `__slots__` 強制
+- 現状 `__slots__` 宣言はあっても enforce しない (任意の属性を追加可能)。
+- CPython では宣言外の属性で AttributeError を上げる。
+
+#### S-14. positional-only / keyword-only の強制
+- パラメータの `/` / `*` マーカーは parse するが call 時に違反を検出しない。
+- 例: `def f(a, /, b)` で `f(a=1, b=2)` も通る (本来 TypeError)。
+
+#### S-15. async/await
+- `async def` をパース error とすべきが現状黙って受け入れる。coroutine model なし。
+
+#### S-16. Wide Unicode support
+- `\U` 8-digit エスケープ未対応。`chr(>0xFF)` で multi-byte 不可。
+- `①`.isnumeric() 等の Unicode 系判定が False を返す。
+
+#### S-17. metaclass による class iteration
+- `for m in EnumClass:` が動かない (class object に `__iter__` を作る metaclass パスなし)。
+- workaround: `EnumClass._members_` を使う。
 
 ### deferred (外部 sample 依存)
 

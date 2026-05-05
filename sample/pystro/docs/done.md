@@ -213,3 +213,70 @@ bytecode loop、Boehm GC vs CPython の refcount + cycle collector)。
 - `type` 自体が `class type(object)` ではなく builtin function オブジェクト
   (`isinstance(int, type)` は本来 True だが pystro では別判定)
 - refcount + 即時 `__del__` — pystro は Boehm GC のため `__del__` の即時実行は未保証
+
+---
+
+## R11–R12 (autonomous probe round, test 78–91)
+
+### dict / sequence
+
+- bool/int dict-key collision: `{1: a, True: b}` が 1 entry に collapse (CPython 同一)
+- list/dict/set/bytearray の `hash()` が `TypeError: unhashable type: ...` を上げる
+- `KeyError(missing)` の str が `'missing'` (repr 形式) になる
+- `del L[a:b]`, `del L[::s]` (slice 削除)
+- `str.count(s, start, end)` の slice 引数
+- `str % {key}` mapping 形式
+- `range(0, 5) == range(0, 5, 1)` で True (CPython の sequence equality)
+- `zip(strict=True)` で長さ不一致時に ValueError
+
+### generator / 例外
+
+- `yield from` の戻り値捕捉 (`val = yield from gen()` が StopIteration.value を取る)
+- `g.close()` で本物の `GeneratorExit` を投げる
+- 暗黙の `__context__` 連鎖 (raise inside except)
+- `raise X from Y` で `__suppress_context__ = True`
+- import 時の EXC_* save/restore を全 46 エラークラスに拡張 (PYSTRO_EXC_LIST マクロ)
+
+### parser
+
+- 暗黙文字列連結 (`"a" "b"`, `b"a" b"b"`)
+- match パターンの `*rest` (e.g. `case [a, *mid, z]`)
+- attr/subscript target の tuple-unpack (`self.x, self.y = a, b`)
+
+### 数値
+
+- complex の `**` (exp/log polar form)
+- `int(huge_bignum)` を slice index として渡したとき clamp (例: `xs[10**100:]`)
+- `float.as_integer_ratio` (frexp + 整数化 + GCD reduce)
+- `n in [n]` で NaN identity short-circuit (CPython 仕様)
+
+### attribute access / class
+
+- property: `.deleter` / `.getter`
+- `obj.__dict__` がインスタンス attrs の live alias を返す (mutate が persist)
+- `__getattribute__` / `__setattr__` / `__delattr__` の user-override hook
+- abstract method 強制 (`abc.ABC.__new__` が MRO walk → TypeError)
+- 既定 `object.__init__` (no-op) — `super().__init__()` が built-in subclass で連鎖切れない
+- `super()` が built-in 親 (dict/list/...) の method を primary 経由で resolve
+- built-in subclass で primary 自動 setup (user `__init__` 有無で arg forwarding 切替)
+- 関数の `__defaults__` / `__kwdefaults__`
+
+### bug fixes
+
+- **stale param_names**: PYSTRO_NAME_TABLE が realloc されると古い function の param_names ポインタが破損していた (importlib 後の `unexpected keyword argument` 多発)。py_make_func で param_names を private GC array に copy。
+- NaN == NaN を False に
+- user `__iter__` が built-in iter を返したとき正しく unwrap
+- bytearray `[i] = b` の代入対応
+- bytes/bytearray * int
+
+### stdlib 拡充
+
+- functools.total_ordering, importlib.import_module
+- random: randrange / randbytes / choices / gauss
+- collections.Counter: subtract / total / elements / update
+- collections.deque: maxlen / rotate / extend / extendleft / count / index / remove
+- enum: IntEnum / StrEnum / Flag / IntFlag / unique
+- itertools.product (repeat=)
+- io.StringIO: readline / __iter__ / seek / tell
+- file iter (`for line in f:`)
+- os.close / unlink / rmdir 等の stub
