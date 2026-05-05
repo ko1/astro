@@ -1,0 +1,9 @@
+ok DeepCopyTest test_copy_hook
+ok DeepCopyTest test_deepcopy_hook
+ok DeepCopyTest test_user_class_isolated
+ok StatisticsTest test_mean
+ok StatisticsTest test_median
+ok StatisticsTest test_mode
+ok WeakrefStubTest test_basic
+---
+passed=7 failed=0

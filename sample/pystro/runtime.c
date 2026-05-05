@@ -406,6 +406,16 @@ py_compute_mro(VALUE cls)
 {
     struct pyclass *cd = &PY_PTR(cls)->cls;
     if (cd->nbases == 0) {
+        // Implicit object base, except for object itself.
+        extern CTX *py_current_ctx;
+        VALUE obj_cls = py_current_ctx ? py_current_ctx->TYPE_object : (VALUE)0;
+        if (obj_cls && obj_cls != PY_NONE && py_is_class(obj_cls) && cls != obj_cls) {
+            cd->mro = (VALUE *)GC_malloc(sizeof(VALUE) * 2);
+            cd->mro[0] = cls;
+            cd->mro[1] = obj_cls;
+            cd->nmro = 2;
+            return;
+        }
         cd->mro = (VALUE *)GC_malloc(sizeof(VALUE) * 1);
         cd->mro[0] = cls;
         cd->nmro = 1;
