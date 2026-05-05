@@ -1,0 +1,6 @@
+ok InitSubclassTest test_basic
+ok InitSubclassTest test_inherited
+ok FormatNestedTest test_dynamic_precision
+ok FormatNestedTest test_dynamic_width
+---
+passed=4 failed=0

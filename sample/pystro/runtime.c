@@ -127,15 +127,40 @@ py_class_meta_apply(CTX *c, VALUE cls, VALUE meta, const char *name)
 VALUE
 py_class_inherit_metaclass(CTX *c, VALUE cls, VALUE *bases, int nbases, const char *name)
 {
+    VALUE final_cls = cls;
     for (int i = 0; i < nbases; i++) {
         VALUE b = bases[i];
         if (!py_is_class(b)) continue;
         VALUE meta = py_class_lookup_method(b, "__metaclass__");
         if (meta != PY_NONE && py_is_class(meta)) {
-            return py_class_meta_apply(c, cls, meta, name);
+            final_cls = py_class_meta_apply(c, cls, meta, name);
+            break;
         }
     }
-    return cls;
+    // __init_subclass__ — invoked on a base class when it gets subclassed.
+    // Walk MRO above `cls` itself; first defining class wins.
+    if (py_is_class(final_cls)) {
+        struct pyclass *cd = &PY_PTR(final_cls)->cls;
+        for (int j = 1; j < cd->nmro; j++) {
+            VALUE base = cd->mro[j];
+            if (!py_is_class(base)) continue;
+            struct pyclass *bd = &PY_PTR(base)->cls;
+            VALUE found = PY_NONE;
+            for (int k = 0; k < bd->nmethods; k++) {
+                if (strcmp(bd->methods[k].name, "__init_subclass__") == 0) {
+                    found = bd->methods[k].value;
+                    break;
+                }
+            }
+            if (found != PY_NONE) {
+                VALUE av[1] = { final_cls };
+                py_apply(c, found, 1, av);
+                if (c->state == PY_STATE_RAISE) return PY_NONE;
+                break;
+            }
+        }
+    }
+    return final_cls;
 }
 
 VALUE
