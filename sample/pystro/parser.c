@@ -2653,12 +2653,14 @@ parse_yield(void)
     if (peek_tok(0)->kind == T_FROM) {
         tok_pos++;
         NODE *iter = parse_expr();
-        // Desugar `yield from iter` to `for __yf in iter: yield __yf`.
-        const char *tmp = new_temp_name("__yf");
-        int slot = scope_add_local(cur_scope, tmp);
-        NODE *yld = ALLOC_node_yield(ALLOC_node_lref((uint32_t)slot));
-        NODE *no_else = ALLOC_node_nop();
-        return ALLOC_node_for_local((uint32_t)slot, iter, yld, no_else);
+        // `yield from iter` — call __pystro_yield_from__(iter) which
+        // does the inner-iter loop and returns the StopIteration value
+        // (or None) — making `result = yield from gen()` work.
+        NODE *args[1] = { iter };
+        size_t bidx = node_table_reserve(args, 1);
+        return ALLOC_node_call_n(
+            ALLOC_node_gref(intern_name("__pystro_yield_from__", 21)),
+            (uint32_t)bidx, 1);
     }
     NODE *e;
     if (peek_tok(0)->kind == T_NEWLINE || peek_tok(0)->kind == T_SEMI

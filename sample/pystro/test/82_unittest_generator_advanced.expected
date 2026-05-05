@@ -1,0 +1,9 @@
+ok YieldFromTest test_basic
+ok YieldFromTest test_capture_return_value
+ok YieldFromTest test_nested_yield_from
+ok YieldFromTest test_yield_from_list
+ok GeneratorCloseTest test_close_runs_finally
+ok GeneratorCloseTest test_close_unstarted
+ok StopIterationValueTest test_value
+---
+passed=7 failed=0

@@ -81,4 +81,43 @@ def cmp_to_key(cmp):
     return K
 
 
-__all__ = ["partial", "reduce", "wraps", "cache", "lru_cache", "cmp_to_key"]
+def total_ordering(cls):
+    # Fill in missing rich-comparison methods given __eq__ and one of
+    # __lt__, __le__, __gt__, __ge__.
+    has_lt = hasattr(cls, "__lt__")
+    has_le = hasattr(cls, "__le__")
+    has_gt = hasattr(cls, "__gt__")
+    has_ge = hasattr(cls, "__ge__")
+    if has_lt:
+        if not has_le:
+            cls.__le__ = lambda s, o: s == o or s < o
+        if not has_gt:
+            cls.__gt__ = lambda s, o: not (s < o) and s != o
+        if not has_ge:
+            cls.__ge__ = lambda s, o: not (s < o)
+    elif has_le:
+        if not has_lt:
+            cls.__lt__ = lambda s, o: s != o and s <= o
+        if not has_gt:
+            cls.__gt__ = lambda s, o: not (s <= o)
+        if not has_ge:
+            cls.__ge__ = lambda s, o: s == o or not (s <= o)
+    elif has_gt:
+        if not has_lt:
+            cls.__lt__ = lambda s, o: not (s > o) and s != o
+        if not has_le:
+            cls.__le__ = lambda s, o: not (s > o)
+        if not has_ge:
+            cls.__ge__ = lambda s, o: s == o or s > o
+    elif has_ge:
+        if not has_lt:
+            cls.__lt__ = lambda s, o: not (s >= o)
+        if not has_le:
+            cls.__le__ = lambda s, o: s == o or not (s >= o)
+        if not has_gt:
+            cls.__gt__ = lambda s, o: s != o and s >= o
+    return cls
+
+
+__all__ = ["partial", "reduce", "wraps", "cache", "lru_cache",
+           "cmp_to_key", "total_ordering"]

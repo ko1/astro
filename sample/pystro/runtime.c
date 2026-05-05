@@ -1400,7 +1400,14 @@ VALUE
 py_eq(CTX *c, VALUE a, VALUE b)
 {
     VALUE r = py_try_binop_dunder(c, "__eq__", a, b);
-    if (r) return r;
+    if (r && !(PY_IS_PTR(r) && PY_PTR(r)->type == PY_T_NOTIMPL)) {
+        return py_is_truthy(r) ? PY_TRUE : PY_FALSE;
+    }
+    // a's __eq__ returned NotImplemented (or wasn't defined): try b's.
+    r = py_try_binop_dunder(c, "__eq__", b, a);
+    if (r && !(PY_IS_PTR(r) && PY_PTR(r)->type == PY_T_NOTIMPL)) {
+        return py_is_truthy(r) ? PY_TRUE : PY_FALSE;
+    }
     // NaN is special: NaN != NaN, even when stored in the same VALUE.
     if (py_is_float(a)) {
         double d = PY_IS_FLONUM(a) ? py_flonum_to_double(a) : PY_PTR(a)->dbl;
@@ -3926,6 +3933,30 @@ py_gen_yield(CTX *c, VALUE v)
     return g->send_value;
 }
 
+// `yield from iter` — yield each value from the iterable, return the
+// final StopIteration.value when exhausted.  Used as an expression so
+// the value can be bound: `result = yield from gen()`.
+VALUE
+py_gen_yield_from(CTX *c, VALUE iter)
+{
+    struct py_iter it;
+    py_iter_init(c, &it, iter);
+    if (c->state != PY_STATE_NORMAL) return PY_NONE;
+    VALUE x;
+    VALUE result = PY_NONE;
+    while (py_iter_next(c, &it, &x)) {
+        py_gen_yield(c, x);
+        if (c->state != PY_STATE_NORMAL) return PY_NONE;
+    }
+    // Inner exhausted normally.  If the source is a generator with a
+    // captured return-value, surface it as our expression value.
+    if (PY_IS_PTR(iter) && PY_PTR(iter)->type == PY_T_GEN) {
+        struct pygen *gg = PY_PTR(iter)->gen;
+        if (gg->return_value) result = gg->return_value;
+    }
+    return result;
+}
+
 VALUE
 py_gen_send(CTX *c, VALUE gen_v, VALUE v)
 {
@@ -3965,10 +3996,8 @@ py_gen_close(CTX *c, VALUE gen_v)
     struct pygen *g = PY_PTR(gen_v)->gen;
     if (g->done) return PY_NONE;
     if (!g->started) { g->done = true; return PY_NONE; }
-    // Throw GeneratorExit (we don't have a dedicated class — reuse
-    // RuntimeError for v0).
     g->throw_pending = true;
-    g->throw_exc = py_make_instance(c->EXC_RuntimeError);
+    g->throw_exc = py_make_instance(c->EXC_GeneratorExit);
     py_setattr(c, g->throw_exc, "message", py_make_str("GeneratorExit", 13));
     py_gen_next(c, gen_v);
     // After close, swallow StopIteration / RuntimeError (caller doesn't
@@ -8406,24 +8435,9 @@ bi_import(CTX *c, int argc, VALUE *argv)
     // classes as the caller (so `except` matches across modules).
     struct pyglobals *new_g = py_globals_new();
     struct pyglobals *saved_g = c->globals;
-    VALUE saved_EXC_Exception        = c->EXC_Exception;
-    VALUE saved_EXC_TypeError        = c->EXC_TypeError;
-    VALUE saved_EXC_ValueError       = c->EXC_ValueError;
-    VALUE saved_EXC_NameError        = c->EXC_NameError;
-    VALUE saved_EXC_IndexError       = c->EXC_IndexError;
-    VALUE saved_EXC_KeyError         = c->EXC_KeyError;
-    VALUE saved_EXC_ZeroDivisionError= c->EXC_ZeroDivisionError;
-    VALUE saved_EXC_AttributeError   = c->EXC_AttributeError;
-    VALUE saved_EXC_RuntimeError     = c->EXC_RuntimeError;
-    VALUE saved_EXC_StopIteration    = c->EXC_StopIteration;
-    VALUE saved_EXC_AssertionError   = c->EXC_AssertionError;
-    VALUE saved_EXC_ImportError      = c->EXC_ImportError;
-    VALUE saved_EXC_ModuleNotFoundError = c->EXC_ModuleNotFoundError;
-    VALUE saved_EXC_NotImplementedError = c->EXC_NotImplementedError;
-    VALUE saved_EXC_ArithmeticError  = c->EXC_ArithmeticError;
-    VALUE saved_EXC_OverflowError    = c->EXC_OverflowError;
-    VALUE saved_EXC_OSError          = c->EXC_OSError;
-    VALUE saved_EXC_FileNotFoundError= c->EXC_FileNotFoundError;
+#define SAVE_EXC(name) VALUE saved_EXC_##name = c->EXC_##name;
+    PYSTRO_EXC_LIST(SAVE_EXC)
+#undef SAVE_EXC
     // Save TYPE_* so that `int`, `str`, etc. across modules share identity.
     VALUE saved_TYPE_int       = c->TYPE_int;
     VALUE saved_TYPE_float     = c->TYPE_float;
@@ -8445,24 +8459,9 @@ bi_import(CTX *c, int argc, VALUE *argv)
     // Re-bind the imported module's globals to the caller's exception
     // classes so exceptions raised inside cross module boundary match
     // by identity.
-    c->EXC_Exception        = saved_EXC_Exception;
-    c->EXC_TypeError        = saved_EXC_TypeError;
-    c->EXC_ValueError       = saved_EXC_ValueError;
-    c->EXC_NameError        = saved_EXC_NameError;
-    c->EXC_IndexError       = saved_EXC_IndexError;
-    c->EXC_KeyError         = saved_EXC_KeyError;
-    c->EXC_ZeroDivisionError= saved_EXC_ZeroDivisionError;
-    c->EXC_AttributeError   = saved_EXC_AttributeError;
-    c->EXC_RuntimeError     = saved_EXC_RuntimeError;
-    c->EXC_StopIteration    = saved_EXC_StopIteration;
-    c->EXC_AssertionError   = saved_EXC_AssertionError;
-    c->EXC_ImportError      = saved_EXC_ImportError;
-    c->EXC_ModuleNotFoundError = saved_EXC_ModuleNotFoundError;
-    c->EXC_NotImplementedError = saved_EXC_NotImplementedError;
-    c->EXC_ArithmeticError  = saved_EXC_ArithmeticError;
-    c->EXC_OverflowError    = saved_EXC_OverflowError;
-    c->EXC_OSError          = saved_EXC_OSError;
-    c->EXC_FileNotFoundError= saved_EXC_FileNotFoundError;
+#define RESTORE_EXC(name) c->EXC_##name = saved_EXC_##name;
+    PYSTRO_EXC_LIST(RESTORE_EXC)
+#undef RESTORE_EXC
     c->TYPE_int       = saved_TYPE_int;
     c->TYPE_float     = saved_TYPE_float;
     c->TYPE_complex   = saved_TYPE_complex;
@@ -8493,24 +8492,9 @@ bi_import(CTX *c, int argc, VALUE *argv)
     py_global_set(c, "range",      c->TYPE_range);
     py_global_set(c, "type",       c->TYPE_type);
     py_global_set(c, "object",     c->TYPE_object);
-    py_global_set(c, "Exception",        c->EXC_Exception);
-    py_global_set(c, "TypeError",        c->EXC_TypeError);
-    py_global_set(c, "ValueError",       c->EXC_ValueError);
-    py_global_set(c, "NameError",        c->EXC_NameError);
-    py_global_set(c, "IndexError",       c->EXC_IndexError);
-    py_global_set(c, "KeyError",         c->EXC_KeyError);
-    py_global_set(c, "ZeroDivisionError",c->EXC_ZeroDivisionError);
-    py_global_set(c, "AttributeError",   c->EXC_AttributeError);
-    py_global_set(c, "RuntimeError",     c->EXC_RuntimeError);
-    py_global_set(c, "StopIteration",    c->EXC_StopIteration);
-    py_global_set(c, "AssertionError",   c->EXC_AssertionError);
-    py_global_set(c, "ImportError",          c->EXC_ImportError);
-    py_global_set(c, "ModuleNotFoundError",  c->EXC_ModuleNotFoundError);
-    py_global_set(c, "NotImplementedError",  c->EXC_NotImplementedError);
-    py_global_set(c, "ArithmeticError",      c->EXC_ArithmeticError);
-    py_global_set(c, "OverflowError",        c->EXC_OverflowError);
-    py_global_set(c, "OSError",              c->EXC_OSError);
-    py_global_set(c, "FileNotFoundError",    c->EXC_FileNotFoundError);
+#define SET_EXC_GLOBAL(name) py_global_set(c, #name, c->EXC_##name);
+    PYSTRO_EXC_LIST(SET_EXC_GLOBAL)
+#undef SET_EXC_GLOBAL
     py_global_set(c, "IOError",              c->EXC_OSError);
 
     // tokenize + parse the module file.  The lexer/parser state is
@@ -8995,6 +8979,14 @@ bi_import_star(CTX *c, int argc, VALUE *argv)
         }
     }
     return PY_NONE;
+}
+
+static VALUE
+bi_pystro_yield_from(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    extern VALUE py_gen_yield_from(CTX *c, VALUE iter);
+    return py_gen_yield_from(c, argv[0]);
 }
 
 static VALUE
@@ -9520,6 +9512,7 @@ install_builtins(CTX *c)
     py_global_define(c, "TabError",             c->EXC_TabError);
     py_global_define(c, "EOFError",             c->EXC_EOFError);
     py_global_define(c, "__pystro_del__",   py_make_builtin("__pystro_del__", bi_pystro_del, 2, 2));
+    py_global_define(c, "__pystro_yield_from__", py_make_builtin("__pystro_yield_from__", bi_pystro_yield_from, 1, 1));
     py_global_define(c, "__pystro_delattr__",   py_make_builtin("__pystro_delattr__", bi_pystro_delattr, 2, 2));
     py_global_define(c, "__pystro_delglobal__", py_make_builtin("__pystro_delglobal__", bi_pystro_delglobal, 1, 1));
     py_global_define(c, "__pystro_import__",    py_make_builtin("__pystro_import__", bi_import, 1, 1));

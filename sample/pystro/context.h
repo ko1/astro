@@ -360,6 +360,9 @@ typedef struct CTX_struct {
     struct pygen *current_gen;
 
     // Built-in exception classes (constructed once at install_builtins).
+    // PYSTRO_EXC_LIST(X) below enumerates every EXC_* field — useful for
+    // save/restore across module imports (so caught exceptions match
+    // by identity).
     VALUE EXC_Exception;
     VALUE EXC_TypeError;
     VALUE EXC_ValueError;
@@ -406,6 +409,22 @@ typedef struct CTX_struct {
     VALUE EXC_ChildProcessError;
     VALUE EXC_EOFError;
     VALUE EXC_StopAsyncIteration;
+
+#define PYSTRO_EXC_LIST(X) \
+    X(BaseException) X(Exception) X(SystemExit) X(KeyboardInterrupt) \
+    X(GeneratorExit) X(StopIteration) X(StopAsyncIteration) \
+    X(ArithmeticError) X(OverflowError) X(ZeroDivisionError) \
+    X(FloatingPointError) X(AssertionError) X(AttributeError) \
+    X(BufferError) X(EOFError) X(ImportError) X(ModuleNotFoundError) \
+    X(LookupError) X(IndexError) X(KeyError) X(MemoryError) \
+    X(NameError) X(RuntimeError) X(NotImplementedError) X(RecursionError) \
+    X(SyntaxError) X(IndentationError) X(TabError) \
+    X(TypeError) X(ValueError) X(UnicodeError) X(UnicodeDecodeError) \
+    X(UnicodeEncodeError) X(ReferenceError) X(OSError) X(FileNotFoundError) \
+    X(PermissionError) X(NotADirectoryError) X(IsADirectoryError) \
+    X(TimeoutError) X(BrokenPipeError) X(InterruptedError) \
+    X(ConnectionError) X(BlockingIOError) X(ChildProcessError)
+
     // Synthetic type classes for things that don't have a builtin_ctor:
     VALUE TYPE_NoneType;
     VALUE TYPE_function;
