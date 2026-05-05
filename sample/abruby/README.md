@@ -12,7 +12,7 @@ evaluator itself is a tree-walking interpreter generated from
 [`node.def`](node.def) by ASTroGen.
 
 > Looking for the language reference? See
-> [`docs/abruby_spec.md`](docs/abruby_spec.md). For what is/isn't
+> [`docs/spec.md`](docs/spec.md). For what is/isn't
 > implemented, see [`docs/done.md`](docs/done.md) and
 > [`docs/todo.md`](docs/todo.md).
 

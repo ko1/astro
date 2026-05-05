@@ -2,7 +2,7 @@
 
 ASTro フレームワークを用いた Ruby サブセット言語インタプリタ。CRuby の C extension として実装。
 
-- 言語仕様: [docs/abruby_spec.md](docs/abruby_spec.md)
+- 言語仕様: [docs/spec.md](docs/spec.md)
 - 実装済み機能: [docs/done.md](docs/done.md)
 - 未実装機能: [docs/todo.md](docs/todo.md)
 - ランタイム構造: [docs/runtime.md](docs/runtime.md)
@@ -15,7 +15,7 @@ ASTro フレームワークを用いた Ruby サブセット言語インタプ�
 2. **実装** — コード変更
 3. **テスト** — しつこくテストを書く。境界値、異常系、組み合わせを網羅
 4. **テスト実行** — `make test` で通常テスト、`make debug-test` でデバッグモードテスト。両方通ること
-5. **docs/ 更新** — done.md / todo.md / abruby_spec.md / runtime.md を必要に応じて更新
+5. **docs/ 更新** — done.md / todo.md / spec.md / runtime.md を必要に応じて更新
 6. **コミット**
 
 ## 開発時の注意
@@ -96,7 +96,7 @@ sample/abruby/
 │   ├── test_helper.rb  # assert_eval
 │   └── test_*.rb       # ノード/機能ごとのテスト (27 files, 780 tests)
 ├── docs/
-│   ├── abruby_spec.md  # 言語仕様
+│   ├── spec.md  # 言語仕様
 │   ├── done.md         # 実装済み機能
 │   ├── todo.md         # 未実装機能
 │   └── runtime.md      # ランタイムデータ構造
