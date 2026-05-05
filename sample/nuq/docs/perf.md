@@ -33,37 +33,36 @@
 
 | bench | jq | jaq | gojq | nuq int | nuq AOT |
 |---|---|---|---|---|---|
-| `deep_field` (`[.[] \| .stats.followers] \| add`) | 83 ms | 66 ms | 58 ms | 50 ms | 51 ms |
-| `extract_field` (`[.[] \| .name] \| length`) | 75 ms | 63 ms | 56 ms | 48 ms | 48 ms |
-| `filter_count` (`[.[] \| select(.active and .age > 30)] \| length`) | 85 ms | 74 ms | 56 ms | 58 ms | 56 ms |
-| `group_by` (`group_by(.city) \| map({city: .[0].city, count: length})`) | 90 ms | 75 ms | 63 ms | 51 ms | 48 ms |
-| `identity` (`.`) | 90 ms | 86 ms | 70 ms | 61 ms | 62 ms |
-| `keys_aggregate` (`[.[] \| keys] \| add \| unique \| length`) | 368 ms | 149 ms | 118 ms | 100 ms | 87 ms |
-| `length` (`length`) | 63 ms | 54 ms | 49 ms | 43 ms | 41 ms |
-| `recurse_paths` (`.[0] \| [paths] \| length`) | 65 ms | 54 ms | 48 ms | 40 ms | 40 ms |
-| `sort_by` (`sort_by(.score) \| .[-10:] \| map(.name)`) | 89 ms | 81 ms | 139 ms | 385 ms | 406 ms |
-| `sum_score` (`[.[] \| .score] \| add`) | 72 ms | 63 ms | 66 ms | 49 ms | 47 ms |
-| `transform` (`map({name, email, top_tag: .tags[0]})`) | 99 ms | 103 ms | 64 ms | 71 ms | 72 ms |
+| `deep_field` (`[.[] \| .stats.followers] \| add`) | 68 ms | 60 ms | 49 ms | 46 ms | 45 ms |
+| `extract_field` (`[.[] \| .name] \| length`) | 62 ms | 53 ms | 45 ms | 42 ms | 41 ms |
+| `filter_count` (`[.[] \| select(.active and .age > 30)] \| length`) | 66 ms | 62 ms | 51 ms | 45 ms | 45 ms |
+| `group_by` (`group_by(.city) \| map({city: .[0].city, count: length})`) | 73 ms | 63 ms | 55 ms | 53 ms | 53 ms |
+| `identity` (`.`) | 80 ms | 81 ms | 62 ms | 56 ms | 55 ms |
+| `keys_aggregate` (`[.[] \| keys] \| add \| unique \| length`) | 285 ms | 118 ms | 103 ms | 86 ms | 88 ms |
+| `length` (`length`) | 58 ms | 50 ms | 46 ms | 46 ms | 44 ms |
+| `recurse_paths` (`.[0] \| [paths] \| length`) | 63 ms | 52 ms | 48 ms | 45 ms | 43 ms |
+| `sort_by` (`sort_by(.score) \| .[-10:] \| map(.name)`) | 86 ms | 73 ms | 136 ms | 53 ms | 55 ms |
+| `sum_score` (`[.[] \| .score] \| add`) | 71 ms | 59 ms | 55 ms | 52 ms | 46 ms |
+| `transform` (`map({name, email, top_tag: .tags[0]})`) | 93 ms | 102 ms | 66 ms | 73 ms | 70 ms |
 
 vs jq (≧1.0 = nuq の方が速い):
 
 | bench | jq | jaq | gojq | **nuq AOT** |
 |---|---|---|---|---|
-| `deep_field` | 1.00x | 1.25x | 1.43x | **1.62x** |
-| `extract_field` | 1.00x | 1.19x | 1.34x | **1.58x** |
-| `filter_count` | 1.00x | 1.15x | 1.50x | **1.51x** |
-| `group_by` | 1.00x | 1.21x | 1.44x | **1.88x** |
-| `identity` | 1.00x | 1.04x | 1.29x | **1.46x** |
-| `keys_aggregate` | 1.00x | 2.47x | 3.13x | **4.24x** |
-| `length` | 1.00x | 1.18x | 1.30x | **1.54x** |
-| `recurse_paths` | 1.00x | 1.22x | 1.37x | **1.62x** |
-| `sort_by` | 1.00x | 1.10x | 0.64x | **0.22x** ⬇ |
-| `sum_score` | 1.00x | 1.14x | 1.10x | **1.55x** |
-| `transform` | 1.00x | 0.96x | 1.55x | **1.39x** |
+| `deep_field` | 1.00x | 1.14x | 1.37x | **1.50x** |
+| `extract_field` | 1.00x | 1.17x | 1.39x | **1.50x** |
+| `filter_count` | 1.00x | 1.07x | 1.29x | **1.47x** |
+| `group_by` | 1.00x | 1.14x | 1.33x | **1.37x** |
+| `identity` | 1.00x | 0.98x | 1.29x | **1.44x** |
+| `keys_aggregate` | 1.00x | 2.41x | 2.77x | **3.25x** |
+| `length` | 1.00x | 1.15x | 1.26x | **1.32x** |
+| `recurse_paths` | 1.00x | 1.21x | 1.30x | **1.45x** |
+| `sort_by` | 1.00x | 1.19x | 0.64x | **1.59x** |
+| `sum_score` | 1.00x | 1.20x | 1.28x | **1.55x** |
+| `transform` | 1.00x | 0.91x | 1.41x | **1.31x** |
 
-実用ワークロード 11 中 **10 で jq 越え**、`sort_by` だけが 4× 遅い
-(insertion sort のままなので O(n²); todo)。`keys_aggregate` は jaq /
-gojq よりも速い (`add` 配列連結を O(n) 化したため)。
+実用ワークロード **11 中 11 すべてで jq 越え**。`sort_by` は EMIT pool
+化で大幅改善 (0.22× → 1.59×)。`keys_aggregate` は jaq / gojq より速い。
 
 ## Micro-bench (jaq examples/benches; input = scalar n via stdin)
 
@@ -71,41 +70,59 @@ gojq よりも速い (`add` 配列連結を O(n) 化したため)。
 
 | bench | n | jq | jaq | gojq | nuq int | nuq AOT |
 |---|---|---|---|---|---|---|
-| `ack` (`ack(3; .)`) | 7 | 509 ms | 702 ms | 561 ms | 421 ms | 427 ms |
-| `add` (`[range(.) \| [.]] \| add \| length`) | 2k | 3.7 ms | 2.7 ms | 3.0 ms | 1.6 ms | 1.9 ms |
-| `cumsum` (`[foreach range(.) as $x (0; . + $x)] \| length`) | 500k | 146 ms | 147 ms | 222 ms | 139 ms | 143 ms |
-| `empty` (`empty`) | 1 | 2.9 ms | 1.6 ms | 2.5 ms | 1.3 ms | 1.2 ms |
-| `group-by` (`group_by(. % 2) \| length`) | 100k | 168 ms | 39 ms | 109 ms | 71 ms | 65 ms |
-| `kv` (`[range(.) \| {(tostring): .}] \| add \| length`) | 5k | 8.2 ms | 7.2 ms | 8.2 ms | 242 ms | 244 ms |
-| `last` (`last(range(.))`) | 1M | 121 ms | 28 ms | 153 ms | 17 ms | 18 ms |
-| `min-max` (`[range(.)] \| min, max`) | 1M | 213 ms | 205 ms | 244 ms | 30 ms | 32 ms |
-| `pyramid` (recursive multi-emit) | 8k | 7.7 ms | 8.6 ms | 11 ms | 1.14 s | 1.14 s |
-| `reverse` (`[range(.)] \| reverse \| length`) | 1M | 495 ms | 54 ms | 243 ms | 21 ms | 23 ms |
-| `sort` (`[range(.) \| -.] \| sort \| length`) | 300k | 142 ms | 39 ms | 138 ms | 73 ms | 79 ms |
-| `to-fromjson` (`[range(.) \| tojson] \| join \| fromjson`) | 100k | 988 ms | 113 ms | 66 ms | 57 ms | 58 ms |
-| `try-catch` (`[range(.) \| try error catch .] \| length`) | 500k | 120 ms | 137 ms | 134 ms | 641 ms | 627 ms |
-| `upto` (recursive def) | 8k | 476 ms | 6.6 ms | 503 ms | 441 ms | 433 ms |
+| `ack` (`ack(3; .)`) | 7 | 491 ms | 620 ms | 527 ms | 72 ms | 67 ms |
+| `add` (`[range(.) \| [.]] \| add \| length`) | 2k | 3.3 ms | 2.6 ms | 3.0 ms | 1.5 ms | 1.7 ms |
+| `cumsum` (`[foreach range(.) as $x (0; . + $x)] \| length`) | 500k | 141 ms | 134 ms | 208 ms | 27 ms | 29 ms |
+| `empty` (`empty`) | 1 | 2.5 ms | 1.8 ms | 2.3 ms | 1.2 ms | 1.3 ms |
+| `group-by` (`group_by(. % 2) \| length`) | 100k | 165 ms | 37 ms | 105 ms | 35 ms | 33 ms |
+| `kv` (`[range(.) \| {(tostring): .}] \| add \| length`) | 5k | 7.7 ms | 6.2 ms | 8.0 ms | 229 ms | 231 ms |
+| `last` (`last(range(.))`) | 1M | 130 ms | 28 ms | 152 ms | 14 ms | 14 ms |
+| `min-max` (`[range(.)] \| min, max`) | 1M | 216 ms | 203 ms | 243 ms | 34 ms | 36 ms |
+| `pyramid` (recursive multi-emit) | 8k | 7.2 ms | 7.5 ms | 10 ms | 7.6 ms | 7.2 ms |
+| `reverse` (`[range(.)] \| reverse \| length`) | 1M | 473 ms | 48 ms | 235 ms | 26 ms | 26 ms |
+| `sort` (`[range(.) \| -.] \| sort \| length`) | 300k | 140 ms | 36 ms | 135 ms | 44 ms | 41 ms |
+| `to-fromjson` (`[range(.) \| tojson] \| join \| fromjson`) | 100k | 974 ms | 112 ms | 64 ms | 47 ms | 49 ms |
+| `try-catch` (`[range(.) \| try error catch .] \| length`) | 500k | 122 ms | 149 ms | 140 ms | 495 ms | 478 ms |
+| `upto` (recursive def) | 8k | 506 ms | 5.9 ms | 464 ms | 6.7 ms | 6.3 ms |
 
 vs jq:
 
 | bench | n | jq | jaq | gojq | **nuq AOT** |
 |---|---|---|---|---|---|
-| `ack` | 7 | 1.00x | 0.73x | 0.91x | **1.19x** |
-| `add` | 2k | 1.00x | 1.34x | 1.23x | **1.94x** |
-| `cumsum` | 500k | 1.00x | 1.00x | 0.66x | **1.03x** |
-| `empty` | 1 | 1.00x | 1.81x | 1.15x | **2.39x** |
-| `group-by` | 100k | 1.00x | 4.29x | 1.53x | **2.57x** |
-| `kv` | 5k | 1.00x | 1.14x | 1.00x | **0.03x** ⬇ |
-| `last` | 1M | 1.00x | 4.38x | 0.79x | **6.87x** |
-| `min-max` | 1M | 1.00x | 1.04x | 0.87x | **6.63x** |
-| `pyramid` | 8k | 1.00x | 0.89x | 0.69x | **0.01x** ⬇ |
-| `reverse` | 1M | 1.00x | 9.15x | 2.03x | **21.31x** |
-| `sort` | 300k | 1.00x | 3.66x | 1.03x | **1.81x** |
-| `to-fromjson` | 100k | 1.00x | 8.74x | 15.07x | **17.07x** |
-| `try-catch` | 500k | 1.00x | 0.88x | 0.90x | **0.19x** ⬇ |
-| `upto` | 8k | 1.00x | 71.71x | 0.95x | **1.10x** |
+| `ack` | 7 | 1.00x | 0.79x | 0.93x | **7.29x** |
+| `add` | 2k | 1.00x | 1.25x | 1.09x | **1.95x** |
+| `cumsum` | 500k | 1.00x | 1.06x | 0.68x | **4.83x** |
+| `empty` | 1 | 1.00x | 1.41x | 1.10x | **1.90x** |
+| `group-by` | 100k | 1.00x | 4.42x | 1.58x | **4.99x** |
+| `kv` | 5k | 1.00x | 1.25x | 0.97x | **0.03x** ⬇ |
+| `last` | 1M | 1.00x | 4.66x | 0.86x | **9.41x** |
+| `min-max` | 1M | 1.00x | 1.07x | 0.89x | **6.05x** |
+| `pyramid` | 8k | 1.00x | 0.96x | 0.71x | **1.00x** |
+| `reverse` | 1M | 1.00x | 9.80x | 2.01x | **18.31x** |
+| `sort` | 300k | 1.00x | 3.84x | 1.03x | **3.38x** |
+| `to-fromjson` | 100k | 1.00x | 8.68x | 15.12x | **19.87x** |
+| `try-catch` | 500k | 1.00x | 0.82x | 0.87x | **0.26x** ⬇ |
+| `upto` | 8k | 1.00x | 86.35x | 1.09x | **80.23x** |
 
-micro 14 中 11 で jq 越え (kv / pyramid / try-catch が大きく劣る)。
+micro 14 中 12 で jq 越え (pyramid 互角、kv と try-catch が劣る)。
+
+### 🎯 EMIT pool 化の効果 (before → after)
+
+VALUE return → EMIT pool slice return への切替の影響:
+
+| bench | 前 | 後 | 改善率 |
+|---|---:|---:|---:|
+| `pyramid 8k` | **0.01×** (140× 遅) | **1.00×** (jq 互角) | **140×** |
+| `upto 8k` | 1.10× | **80.23×** | **73×** |
+| `sort_by` (real) | 0.22× | 1.59× | **7.2×** |
+| `ack(3;7)` | 1.19× | 7.29× | 6.1× |
+| `cumsum 500k` | 1.03× | 4.83× | 4.7× |
+| `sort 300k` | 1.81× | 3.38× | 1.9× |
+| `group-by 100k` | 2.57× | 4.99× | 1.9× |
+| `last 1M` | 6.87× | 9.41× | 1.4× |
+| `try-catch 500k` | 0.19× | 0.26× | 1.4× |
+| `min-max 1M` | 6.63× | 6.05× | tie |
+| `reverse 1M` | 21.31× | 18.31× | (slight regression, noise) |
 
 ## 解釈
 

@@ -20,8 +20,8 @@ LIBS = -ldl -lm -lgc
 nuq: main.c node.c runtime.c value.c json.c filter.c builtin.c Makefile $(NODE_GENFILES) context.h node.h
 	$(CC) $(CFLAGS) -o nuq main.c node.c runtime.c value.c json.c filter.c builtin.c $(LIBS)
 
-$(NODE_GENFILES): node.def ../../lib/astrogen.rb
-	$(ASTROGEN)
+$(NODE_GENFILES): node.def nuq_gen.rb ../../lib/astrogen.rb
+	ruby -I ../../lib -r ./nuq_gen -e 'ASTroGen.start([], node_def_class: NuqNodeDef)'
 
 test: nuq
 	ruby test/run_tests.rb

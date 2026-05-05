@@ -36,7 +36,7 @@ node_allocate(size_t size)
 
 /* --- public glue ---------------------------------------------------- */
 
-VALUE
+EMIT
 EVAL(CTX *c, NODE *n)
 {
     return (*n->head.dispatcher)(c, n);

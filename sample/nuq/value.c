@@ -70,10 +70,15 @@ VALUE
 nuq_make_array(size_t cap)
 {
     struct nuq_obj *o = obj_alloc(NUQ_T_ARRAY);
-    if (cap < 4) cap = 4;
-    o->arr.items = (VALUE *)GC_malloc(cap * sizeof(VALUE));
+    if (cap <= NUQ_ARR_INLINE) {
+        /* fast path: inline storage, no second allocation */
+        o->arr.items = o->arr.inline_buf;
+        o->arr.capa  = NUQ_ARR_INLINE;
+    } else {
+        o->arr.items = (VALUE *)GC_malloc(cap * sizeof(VALUE));
+        o->arr.capa  = cap;
+    }
     o->arr.len = 0;
-    o->arr.capa = cap;
     return NUQ_OBJ_VAL(o);
 }
 
@@ -93,9 +98,16 @@ void
 nuq_array_push(VALUE arr, VALUE v)
 {
     struct nuq_obj *o = NUQ_PTR(arr);
-    if (o->arr.len == o->arr.capa) {
+    if (UNLIKELY(o->arr.len == o->arr.capa)) {
         size_t nc = o->arr.capa * 2;
-        o->arr.items = (VALUE *)GC_realloc(o->arr.items, nc * sizeof(VALUE));
+        if (o->arr.items == o->arr.inline_buf) {
+            /* migrate inline → heap */
+            VALUE *heap = (VALUE *)GC_malloc(nc * sizeof(VALUE));
+            memcpy(heap, o->arr.inline_buf, o->arr.capa * sizeof(VALUE));
+            o->arr.items = heap;
+        } else {
+            o->arr.items = (VALUE *)GC_realloc(o->arr.items, nc * sizeof(VALUE));
+        }
         o->arr.capa = nc;
     }
     o->arr.items[o->arr.len++] = v;

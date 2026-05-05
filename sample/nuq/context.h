@@ -54,13 +54,28 @@ enum nuq_type {
     NUQ_T_OBJECT,
 };
 
+/*
+ * Arrays embed a 4-slot inline buffer for the common 0-emit / 1-emit
+ * case in eval results.  `nuq_make_array(N)` with N ≤ 4 sets `items`
+ * to point at `inline_buf` instead of a separately-allocated heap
+ * block — that's 1 allocation saved per emit-array creation, which is
+ * a hot path (every NODE_DEF returns one).  When push grows past 4,
+ * we GC_malloc a fresh items[] and copy out.
+ */
+#define NUQ_ARR_INLINE 4
+
 struct nuq_obj {
     enum nuq_type type;
     union {
         bool b;
         double dbl;
         struct { char *bytes; size_t len; } str;
-        struct { VALUE *items; size_t len; size_t capa; } arr;
+        struct {
+            VALUE *items;          /* points at inline_buf when capa == NUQ_ARR_INLINE */
+            size_t len;
+            size_t capa;
+            VALUE  inline_buf[NUQ_ARR_INLINE];
+        } arr;
         struct { VALUE *keys; VALUE *vals; size_t len; size_t capa; } obj;
     };
 };
@@ -79,12 +94,17 @@ struct nuq_var_slot {
 struct nuq_func_def;
 
 typedef struct CTX_struct {
-    /* Outer input — set by main loop, also by some helpers (e.g. .[]
-     * inside its loop sets c->input per iteration so deeper filters'
-     * `node_identity` see the right value).  Filters that don't take
-     * an `input` operand (comma, binop, body of array_ctor) read
-     * c->input directly. */
+    /* Outer input — set by main loop and by pipe / iter / map etc. */
     VALUE                 input;
+
+    /* Emit pool — flat growable VALUE buffer.  Each NODE_DEF appends
+     * its emits at c->pool_top, returns EMIT { items=pool+start,
+     * count }.  Caller resets c->pool_top after consuming.  This is
+     * the per-call allocation optimization — instead of GC_malloc'ing
+     * a fresh nuq_array per filter call, we slice from one big buffer. */
+    VALUE                *pool;
+    size_t                pool_top;
+    size_t                pool_capa;
 
     /* Variable bindings — `as $x` pushes (id, value), pops after body. */
     struct nuq_var_slot  *var_stack;
@@ -245,54 +265,11 @@ VALUE nuq_builtin_ascii_downcase(VALUE input);
 bool  nuq_builtin_fromjson(VALUE in, VALUE *out);
 void  nuq_recurse_collect(VALUE r, VALUE v);
 
-/* Helpers in runtime.c (called from node.def) — these read c->input
- * directly (the per-emit value set by the enclosing pipe).  They do
- * NOT take an `input` operand. */
+/* Helpers in runtime.c (called from node.def) — return EMIT (pool slice).
+ * Defined in node.h after EMIT typedef. */
 struct Node;
-VALUE nuq_binop_eval (CTX *c, struct Node *lhs, struct Node *rhs, int op);
-VALUE nuq_cmpop_eval (CTX *c, struct Node *lhs, struct Node *rhs, int op);
-VALUE nuq_andor_eval (CTX *c, struct Node *lhs, struct Node *rhs, bool is_and);
-VALUE nuq_alt_eval   (CTX *c, struct Node *lhs, struct Node *rhs);
-VALUE nuq_index_eval (CTX *c, struct Node *expr, bool optional);
-VALUE nuq_slice_eval (CTX *c, struct Node *startn, struct Node *stopn, uint32_t flags, bool optional);
-VALUE nuq_object_eval(CTX *c, uint32_t entries_id);
-VALUE nuq_if_eval    (CTX *c, struct Node *cond, struct Node *thn, struct Node *els);
-VALUE nuq_try_eval   (CTX *c, struct Node *body, struct Node *handler);
-VALUE nuq_as_eval    (CTX *c, struct Node *src, uint32_t var_id, struct Node *body);
-VALUE nuq_error_eval (CTX *c, struct Node *expr);
-VALUE nuq_user_call  (CTX *c, uint32_t name_id, uint32_t arity, uint32_t args_id);
-VALUE nuq_defs_eval  (CTX *c, uint32_t defs_id, struct Node *body);
-VALUE nuq_reduce_eval(CTX *c, struct Node *src, uint32_t var_id, struct Node *init, struct Node *update);
-VALUE nuq_foreach_eval(CTX *c, struct Node *src, uint32_t var_id, struct Node *init, struct Node *update, struct Node *extract);
-VALUE nuq_interp_eval(CTX *c, uint32_t parts_id);
-VALUE nuq_format_eval(CTX *c, uint32_t fmt_id, struct Node *body);
-void  nuq_paths_collect(VALUE r, VALUE v);
-
-/* Built-in 1-arg helpers (with sub-expression body) */
-VALUE nuq_map_eval      (CTX *c, struct Node *body);
-VALUE nuq_map_values_eval(CTX *c, struct Node *body);
-VALUE nuq_with_entries_eval(CTX *c, struct Node *body);
-VALUE nuq_range1_eval   (CTX *c, struct Node *to);
-VALUE nuq_range2_eval   (CTX *c, struct Node *from, struct Node *to);
-VALUE nuq_range3_eval   (CTX *c, struct Node *from, struct Node *to, struct Node *step);
-VALUE nuq_has_eval      (CTX *c, struct Node *key);
-VALUE nuq_in_eval       (CTX *c, struct Node *container);
-VALUE nuq_contains_eval (CTX *c, struct Node *rhs);
-VALUE nuq_split_eval    (CTX *c, struct Node *sep);
-VALUE nuq_join_eval     (CTX *c, struct Node *sep);
-VALUE nuq_startswith_eval(CTX *c, struct Node *prefix);
-VALUE nuq_endswith_eval (CTX *c, struct Node *suffix);
-VALUE nuq_sort_by_eval  (CTX *c, struct Node *body);
-VALUE nuq_group_by_eval (CTX *c, struct Node *body);
-VALUE nuq_unique_by_eval(CTX *c, struct Node *body);
-VALUE nuq_min_by_eval   (CTX *c, struct Node *body);
-VALUE nuq_max_by_eval   (CTX *c, struct Node *body);
-VALUE nuq_indices_eval  (CTX *c, struct Node *pat);
-VALUE nuq_index1_eval   (CTX *c, struct Node *pat);
-VALUE nuq_test_eval     (CTX *c, struct Node *pat);
-VALUE nuq_getpath_eval  (CTX *c, struct Node *path);
-VALUE nuq_limit_eval    (CTX *c, struct Node *cnt, struct Node *body);
-VALUE nuq_nth_eval      (CTX *c, struct Node *idx, struct Node *body);
+typedef struct EMIT EMIT_fwd_;
+/* Forward signatures appear in node.h */
 
 /* Filter parser entry point */
 struct Node *nuq_parse_filter(const char *src);

@@ -79,44 +79,45 @@ passed: 338  failed: 0  skipped: 0  total: 338
 
 | bench (vs jq) | jq | jaq | gojq | **nuq AOT** |
 |---|---:|---:|---:|---:|
-| `[.[] \| .name] \| length` (extract) | 1.00x | 1.19x | 1.34x | **1.58x** |
-| `[.[] \| .stats.followers] \| add` (deep) | 1.00x | 1.25x | 1.43x | **1.62x** |
-| `[.[] \| .score] \| add` (sum) | 1.00x | 1.14x | 1.10x | **1.55x** |
-| `length` | 1.00x | 1.18x | 1.30x | **1.54x** |
-| `group_by(.city) \| map({city: .[0].city, count: length})` | 1.00x | 1.21x | 1.44x | **1.88x** |
-| `[.[] \| select(.active and .age > 30)] \| length` | 1.00x | 1.15x | 1.50x | **1.51x** |
-| `[.[] \| keys] \| add \| unique \| length` | 1.00x | 2.47x | 3.13x | **4.24x** |
-| `map({name, email, top_tag: .tags[0]})` | 1.00x | 0.96x | 1.55x | **1.39x** |
-| `sort_by(.score) \| .[-10:] \| map(.name)` | 1.00x | 1.10x | 0.64x | **0.22x** ⬇ |
+| `[.[] \| .name] \| length` (extract) | 1.00x | 1.17x | 1.39x | **1.50x** |
+| `[.[] \| .stats.followers] \| add` (deep) | 1.00x | 1.14x | 1.37x | **1.50x** |
+| `[.[] \| .score] \| add` (sum) | 1.00x | 1.20x | 1.28x | **1.55x** |
+| `length` | 1.00x | 1.15x | 1.26x | **1.32x** |
+| `group_by(.city) \| map({...})` | 1.00x | 1.14x | 1.33x | **1.37x** |
+| `[.[] \| select(.active and .age > 30)] \| length` | 1.00x | 1.07x | 1.29x | **1.47x** |
+| `[.[] \| keys] \| add \| unique \| length` | 1.00x | 2.41x | 2.77x | **3.25x** |
+| `map({name, email, top_tag: .tags[0]})` | 1.00x | 0.91x | 1.41x | **1.31x** |
+| `sort_by(.score) \| .[-10:] \| map(.name)` | 1.00x | 1.19x | 0.64x | **1.59x** |
 
-実用 11 中 10 で jq 越え。`sort_by` は insertion sort のため遅い (todo)。
+**実用 11 中 11 すべてで jq 越え** (1.3-3.3×)。
 
 ### Micro-bench — jaq examples/benches より
 
 | bench | jq | jaq | gojq | **nuq AOT** |
 |---|---:|---:|---:|---:|
-| `reverse 1M` | 1.00x | 9.15x | 2.03x | **21.31x** |
-| `to-fromjson 100k` | 1.00x | 8.74x | 15.07x | **17.07x** |
-| `last 1M` | 1.00x | 4.38x | 0.79x | **6.87x** |
-| `min-max 1M` | 1.00x | 1.04x | 0.87x | **6.63x** |
-| `group-by 100k` | 1.00x | 4.29x | 1.53x | **2.57x** |
-| `empty` (起動) | 1.00x | 1.81x | 1.15x | **2.39x** |
-| `add 2k` (array concat) | 1.00x | 1.34x | 1.23x | **1.94x** |
-| `sort 300k` | 1.00x | 3.66x | 1.03x | **1.81x** |
-| `ack(3; 7)` | 1.00x | 0.73x | 0.91x | **1.19x** |
-| `upto 8k` (recursion) | 1.00x | 71.71x | 0.95x | **1.10x** |
-| `cumsum 500k` | 1.00x | 1.00x | 0.66x | **1.03x** |
-| `try-catch 500k` | 1.00x | 0.88x | 0.90x | **0.19x** ⬇ |
-| `kv 5k` (object concat) | 1.00x | 1.14x | 1.00x | **0.03x** ⬇ |
-| `pyramid 8k` (multi-emit recursion) | 1.00x | 0.89x | 0.69x | **0.01x** ⬇ |
+| `upto 8k` (recursion) | 1.00x | 86.35x | 1.09x | **80.23x** |
+| `to-fromjson 100k` | 1.00x | 8.68x | 15.12x | **19.87x** |
+| `reverse 1M` | 1.00x | 9.80x | 2.01x | **18.31x** |
+| `last 1M` | 1.00x | 4.66x | 0.86x | **9.41x** |
+| `ack(3; 7)` | 1.00x | 0.79x | 0.93x | **7.29x** |
+| `min-max 1M` | 1.00x | 1.07x | 0.89x | **6.05x** |
+| `group-by 100k` | 1.00x | 4.42x | 1.58x | **4.99x** |
+| `cumsum 500k` | 1.00x | 1.06x | 0.68x | **4.83x** |
+| `sort 300k` | 1.00x | 3.84x | 1.03x | **3.38x** |
+| `add 2k` (array concat) | 1.00x | 1.25x | 1.09x | **1.95x** |
+| `empty` (起動) | 1.00x | 1.41x | 1.10x | **1.90x** |
+| `pyramid 8k` (multi-emit recursion) | 1.00x | 0.96x | 0.71x | **1.00x** |
+| `try-catch 500k` | 1.00x | 0.82x | 0.87x | **0.26x** ⬇ |
+| `kv 5k` (object concat) | 1.00x | 1.25x | 0.97x | **0.03x** ⬇ |
 
-micro 14 中 11 で jq 越え。
+**micro 14 中 12 で jq 越え** (pyramid 互角)。
 
-主な outlier の原因 (詳細 [`docs/perf.md`](./docs/perf.md)):
+`upto` で **jaq (Rust) と互角の 80×** という大健闘。これは EMIT pool
+化 (per-emit `nuq_make_array` を消した) の効果。
+
+残る outlier:
 - `kv` (33× 遅): object lookup が線形 — hash 化未実装 (todo B-5)
-- `pyramid` (140× 遅): emit-heavy recursion で per-emit `nuq_make_array` が支配的 (todo B-4)
-- `try-catch` (5× 遅): 同じく per-iter alloc コスト
-- `sort_by` (real, 4× 遅): insertion sort のまま — qsort 化が todo
+- `try-catch` (4× 遅): エラー伝搬の overhead
 
 `test/*.test` は jq 公式テストと同じフォーマット (filter 1 行 / 入力 JSON
 1 行 / 期待出力 N 行 / 空行で区切り) を採用している。`*.diff.test`
