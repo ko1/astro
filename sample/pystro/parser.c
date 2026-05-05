@@ -2587,13 +2587,39 @@ parse_del(void)
                 (uint32_t)bidx, 2);
         }
         expect(T_LBRACK, "'['");
-        NODE *idx = parse_expr();
+        // index or slice
+        NODE *istart = NULL, *istop = NULL, *istep = NULL;
+        bool is_slice = false;
+        if (peek_tok(0)->kind == T_COLON) is_slice = true;
+        else                              istart = parse_expr();
+        if (match_tok(T_COLON)) {
+            is_slice = true;
+            if (peek_tok(0)->kind != T_COLON && peek_tok(0)->kind != T_RBRACK)
+                istop = parse_expr();
+            if (match_tok(T_COLON)) {
+                if (peek_tok(0)->kind != T_RBRACK) istep = parse_expr();
+            }
+        }
         expect(T_RBRACK, "']'");
         if (peek_tok(0)->kind == T_DOT || peek_tok(0)->kind == T_LBRACK) {
-            cur = ALLOC_node_subscript_get(cur, idx);
+            if (is_slice) {
+                if (!istart) istart = ALLOC_node_const_none();
+                if (!istop)  istop  = ALLOC_node_const_none();
+                if (!istep)  istep  = ALLOC_node_const_none();
+                cur = ALLOC_node_slice(cur, istart, istop, istep);
+            } else cur = ALLOC_node_subscript_get(cur, istart);
             continue;
         }
-        NODE *args[2] = { cur, idx };
+        if (is_slice) {
+            // del x[a:b] → x[a:b] = []
+            if (!istart) istart = ALLOC_node_const_none();
+            if (!istop)  istop  = ALLOC_node_const_none();
+            if (!istep)  istep  = ALLOC_node_const_none();
+            size_t empty_idx = node_table_reserve(NULL, 0);
+            NODE *empty = ALLOC_node_make_list((uint32_t)empty_idx, 0);
+            return ALLOC_node_slice_set(cur, istart, istop, istep, empty);
+        }
+        NODE *args[2] = { cur, istart };
         size_t bidx = node_table_reserve(args, 2);
         return ALLOC_node_call_n(
             ALLOC_node_gref(intern_name("__pystro_del__", 14)),

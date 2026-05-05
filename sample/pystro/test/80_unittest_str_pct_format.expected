@@ -1,0 +1,10 @@
+ok StrPercentFormatTest test_basic
+ok StrPercentFormatTest test_dict_form
+ok StrPercentFormatTest test_dict_missing_key
+ok StrPercentFormatTest test_dynamic_width
+ok StrPercentFormatTest test_hex
+ok StrPercentFormatTest test_width_precision
+ok StrCountSliceTest test_count_empty
+ok StrCountSliceTest test_count_slice
+---
+passed=8 failed=0

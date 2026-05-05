@@ -1,0 +1,11 @@
+ok DictProtocolTest test_bool_int_collision
+ok DictProtocolTest test_custom_hash_eq
+ok DictProtocolTest test_dict_union
+ok DictProtocolTest test_frozenset_key
+ok DictProtocolTest test_keyerror_repr
+ok DictProtocolTest test_setdefault_no_override
+ok DictProtocolTest test_unhashable_dict
+ok DictProtocolTest test_unhashable_list
+ok DictProtocolTest test_unhashable_set
+---
+passed=9 failed=0

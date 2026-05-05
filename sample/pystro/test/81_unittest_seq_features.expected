@@ -1,0 +1,17 @@
+ok DelSliceTest test_del_basic
+ok DelSliceTest test_del_neg_step
+ok DelSliceTest test_del_step
+ok StepSliceAssignTest test_step_assign_match
+ok StepSliceAssignTest test_step_assign_mismatch
+ok RangeEqTest test_eq_empty
+ok RangeEqTest test_eq_same
+ok RangeEqTest test_eq_single
+ok ZipStrictTest test_non_strict_truncates
+ok ZipStrictTest test_strict_equal_lengths
+ok ZipStrictTest test_strict_longer_first
+ok ZipStrictTest test_strict_longer_second
+ok StarUnpackTest test_left
+ok StarUnpackTest test_middle
+ok StarUnpackTest test_right
+---
+passed=15 failed=0

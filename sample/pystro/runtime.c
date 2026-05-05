@@ -1467,6 +1467,18 @@ py_eq(CTX *c, VALUE a, VALUE b)
         }
         return PY_TRUE;
     }
+    if (py_is_range(a) && py_is_range(b)) {
+        // CPython: equal iff same sequence of values.  Two empty ranges
+        // are equal regardless of start/step; otherwise len, start, and
+        // (if len > 1) step must match.
+        struct pyobj *ra = PY_PTR(a), *rb = PY_PTR(b);
+        size_t la = py_seq_len(c, a), lb = py_seq_len(c, b);
+        if (la != lb) return PY_FALSE;
+        if (la == 0) return PY_TRUE;
+        if (ra->range.start != rb->range.start) return PY_FALSE;
+        if (la == 1) return PY_TRUE;
+        return ra->range.step == rb->range.step ? PY_TRUE : PY_FALSE;
+    }
     return PY_FALSE;
 }
 
@@ -1569,9 +1581,20 @@ py_hash(CTX *c, VALUE v)
         }
         return (uint64_t)(uintptr_t)o * 0x9E3779B97F4A7C15ULL;
       }
+      case PY_T_LIST:
+        py_raise_exc(c, c->EXC_TypeError, "unhashable type: 'list'");
+        return 0;
+      case PY_T_DICT:
+        py_raise_exc(c, c->EXC_TypeError, "unhashable type: 'dict'");
+        return 0;
+      case PY_T_SET:
+        py_raise_exc(c, c->EXC_TypeError, "unhashable type: 'set'");
+        return 0;
+      case PY_T_BYTEARRAY:
+        py_raise_exc(c, c->EXC_TypeError, "unhashable type: 'bytearray'");
+        return 0;
       default:
-        // Use object identity for other types (lists/dicts are unhashable
-        // but we fall through here for class/instance/etc.).
+        // Identity hash for class/method/etc.
         return (uint64_t)(uintptr_t)o * 0x9E3779B97F4A7C15ULL;
     }
 }
@@ -1642,8 +1665,7 @@ pydict_indices_lookup(CTX * restrict c, struct pydict * restrict d,
     size_t i = (size_t)h & mask;
     size_t step = 0;
     ssize_t first_tomb = -1;
-    bool key_is_immediate = PY_IS_FIXNUM(key) || key == PY_NONE
-                          || key == PY_TRUE  || key == PY_FALSE;
+    bool key_is_none = (key == PY_NONE);
     for (;;) {
         int32_t idx = d->indices[i];
         if (idx == DICT_EMPTY_IDX) {
@@ -1657,10 +1679,8 @@ pydict_indices_lookup(CTX * restrict c, struct pydict * restrict d,
                 if (LIKELY(e->key == key)) {
                     *out_bucket = i; *out_eidx = idx; *out_first_tomb = first_tomb; return;
                 }
-                if (key_is_immediate ||
-                    PY_IS_FIXNUM(e->key) || e->key == PY_NONE
-                    || e->key == PY_TRUE || e->key == PY_FALSE) {
-                    /* skip py_eq */
+                if (key_is_none || e->key == PY_NONE) {
+                    /* None equals only itself. */
                 }
                 else if (py_is_str(key) && py_is_str(e->key)) {
                     size_t l1 = PY_PTR(key)->str.len, l2 = PY_PTR(e->key)->str.len;
@@ -1687,8 +1707,7 @@ pydict_find(CTX * restrict c, struct pydict * restrict d, VALUE key, uint64_t h)
     size_t mask = d->icapa - 1;
     size_t i = (size_t)h & mask;
     size_t step = 0;
-    bool key_is_immediate = PY_IS_FIXNUM(key) || key == PY_NONE
-                          || key == PY_TRUE  || key == PY_FALSE;
+    bool key_is_none = (key == PY_NONE);
     for (;;) {
         int32_t idx = d->indices[i];
         if (idx == DICT_EMPTY_IDX) return -1;
@@ -1696,9 +1715,8 @@ pydict_find(CTX * restrict c, struct pydict * restrict d, VALUE key, uint64_t h)
             struct pydict_entry *e = &d->entries[idx];
             if (LIKELY(e->hash == h)) {
                 if (LIKELY(e->key == key)) return idx;
-                if (key_is_immediate ||
-                    PY_IS_FIXNUM(e->key) || e->key == PY_NONE
-                    || e->key == PY_TRUE || e->key == PY_FALSE) {
+                // None equals only itself.
+                if (key_is_none || e->key == PY_NONE) {
                     /* skip py_eq */
                 }
                 else if (py_is_str(key) && py_is_str(e->key)) {
@@ -2160,10 +2178,22 @@ py_list_slice_set(CTX *c, VALUE seq, VALUE start, VALUE stop, VALUE step, VALUE 
         return;
     }
 
-    // step != 1: requires matching length.
+    // step != 1: requires matching length, OR nval == 0 (deletion via `del L[::s]`).
     size_t target_n = 0;
     if (st > 0 && a < b) target_n = (size_t)((b - a + st - 1) / st);
     else if (st < 0 && a > b) target_n = (size_t)((a - b - st - 1) / -st);
+    if (nval == 0 && target_n > 0) {
+        // Delete the addressed indices.
+        bool *del = (bool *)GC_malloc_atomic(len);
+        for (size_t i = 0; i < (size_t)len; i++) del[i] = false;
+        for (size_t i = 0; i < target_n; i++) del[a + (int64_t)i * st] = true;
+        size_t w = 0;
+        VALUE *itp = PY_PTR(seq)->list.items;
+        for (size_t r = 0; r < (size_t)len; r++)
+            if (!del[r]) itp[w++] = itp[r];
+        PY_PTR(seq)->list.len = w;
+        return;
+    }
     if (target_n != nval)
         py_raise_exc(c, c->EXC_ValueError,
                      "slice assignment length mismatch (%zu vs %zu)", target_n, nval);
@@ -2430,10 +2460,35 @@ py_iter_next(CTX *c, struct py_iter *it, VALUE *out)
       }
       case 9: {
         // zip: yield tuple of one element from each inner.  Stops when
-        // any inner is exhausted.
+        // any inner is exhausted.  If strict (it->i != 0), raise if
+        // others still produce.
         VALUE *vs = (VALUE *)alloca(sizeof(VALUE) * it->n_inner);
         for (int k = 0; k < it->n_inner; k++) {
-            if (!py_iter_next(c, &it->inner[k], &vs[k])) return false;
+            if (!py_iter_next(c, &it->inner[k], &vs[k])) {
+                if (c->state == PY_STATE_RAISE) return false;
+                if (it->i != 0) {
+                    // Strict.  If k > 0, earlier iters already produced
+                    // — they're "longer". If k == 0, check subsequent
+                    // iters can produce one more — they're "longer".
+                    if (k > 0) {
+                        py_raise_exc(c, c->EXC_ValueError,
+                                     "zip() argument %d is shorter than argument %d",
+                                     k + 1, k);
+                        return false;
+                    }
+                    VALUE dummy;
+                    for (int j = k + 1; j < it->n_inner; j++) {
+                        if (py_iter_next(c, &it->inner[j], &dummy)) {
+                            py_raise_exc(c, c->EXC_ValueError,
+                                         "zip() argument %d is longer than argument %d",
+                                         j + 1, k + 1);
+                            return false;
+                        }
+                        if (c->state == PY_STATE_RAISE) return false;
+                    }
+                }
+                return false;
+            }
             if (c->state == PY_STATE_RAISE) return false;
         }
         *out = py_make_tuple(vs, it->n_inner);
@@ -4450,15 +4505,21 @@ sm_replace(CTX *c, int argc, VALUE *argv)
 static VALUE
 sm_count(CTX *c, int argc, VALUE *argv)
 {
-    (void)c; (void)argc;
+    (void)c;
     struct pyobj *s = PY_PTR(argv[0]);
     if (!py_is_str(argv[1])) py_raise_exc(c, c->EXC_TypeError, "count: not str");
     struct pyobj *p = PY_PTR(argv[1]);
-    if (p->str.len == 0) return PY_FIX((int64_t)s->str.len + 1);
+    int64_t slen = (int64_t)s->str.len;
+    int64_t start = 0, end = slen;
+    if (argc >= 3 && argv[2] != PY_NONE) start = py_int_to_long(c, argv[2]);
+    if (argc >= 4 && argv[3] != PY_NONE) end = py_int_to_long(c, argv[3]);
+    if (start < 0) start += slen; if (start < 0) start = 0; if (start > slen) start = slen;
+    if (end < 0) end += slen; if (end < 0) end = 0; if (end > slen) end = slen;
+    if (p->str.len == 0) return PY_FIX(end > start ? end - start + 1 : 0);
     int64_t n = 0;
-    size_t i = 0;
-    while (i + p->str.len <= s->str.len) {
-        if (memcmp(s->str.chars + i, p->str.chars, p->str.len) == 0) { n++; i += p->str.len; }
+    int64_t i = start;
+    while (i + (int64_t)p->str.len <= end) {
+        if (memcmp(s->str.chars + i, p->str.chars, p->str.len) == 0) { n++; i += (int64_t)p->str.len; }
         else i++;
     }
     return PY_FIX(n);
@@ -5251,7 +5312,7 @@ static struct type_method str_methods[] = {
     { "endswith",      sm_endswith,      2, 2 },
     { "find",          sm_find,          2, 4 },
     { "replace",       sm_replace,       3, 4 },
-    { "count",         sm_count,         2, 2 },
+    { "count",         sm_count,         2, 4 },
     { "encode",        sm_encode,        1, 2 },
     { "format",        sm_format,        1, -1 },
     { "zfill",         sm_zfill,         2, 2 },
@@ -7570,10 +7631,12 @@ bi_enumerate(CTX *c, int argc, VALUE *argv)
 static VALUE
 bi_zip(CTX *c, int argc, VALUE *argv)
 {
+    VALUE strict = pystro_bi_kwarg("strict");
     struct pyobj *o = py_alloc(PY_T_ITER);
     o->iter_state = (struct py_iter *)GC_malloc(sizeof(struct py_iter));
     o->iter_state->kind = 9;
     o->iter_state->n_inner = argc;
+    o->iter_state->i = (strict == PY_TRUE) ? 1 : 0;  // strict flag
     if (argc == 0) {
         o->iter_state->inner = NULL;
         return PY_OBJ_VAL(o);
@@ -7926,11 +7989,34 @@ py_str_pct_format(CTX *c, VALUE fmt, VALUE args)
 } while (0)
 #define OUT_PUT(buf, len) do { OUT_RESERVE(len); memcpy(out + out_len, (buf), (len)); out_len += (len); } while (0)
 #define OUT_CH(ch) do { OUT_RESERVE(1); out[out_len++] = (ch); } while (0)
+    bool args_is_dict = py_is_dict(args);
     for (size_t i = 0; i < srclen; i++) {
         char ch = src[i];
         if (ch != '%') { OUT_CH(ch); continue; }
         i++;
         if (i >= srclen) py_raise_exc(c, c->EXC_ValueError, "incomplete format");
+        // %(name)X — mapping key.
+        VALUE key_arg = PY_NONE;
+        if (src[i] == '(') {
+            if (!args_is_dict)
+                py_raise_exc(c, c->EXC_TypeError, "format requires a mapping");
+            i++;
+            size_t ks = i;
+            int depth = 1;
+            while (i < srclen && depth > 0) {
+                if (src[i] == '(') depth++;
+                else if (src[i] == ')') { depth--; if (depth == 0) break; }
+                i++;
+            }
+            if (i >= srclen) py_raise_exc(c, c->EXC_ValueError, "unmatched '('");
+            VALUE keystr = py_make_str(src + ks, i - ks);
+            i++;  // skip ')'
+            uint64_t kh = py_hash(c, keystr);
+            int32_t kidx = pydict_find(c, PY_PTR(args)->dict, keystr, kh);
+            if (kidx < 0) py_raise_exc(c, c->EXC_KeyError, "%s",
+                                        PY_PTR(keystr)->str.chars);
+            key_arg = PY_PTR(args)->dict->entries[kidx].value;
+        }
         // Flags.
         bool flag_minus = false, flag_plus = false, flag_zero = false, flag_space = false, flag_hash = false;
         for (;; i++) {
@@ -7978,7 +8064,9 @@ py_str_pct_format(CTX *c, VALUE fmt, VALUE args)
         if (conv == '%') { OUT_CH('%'); continue; }
         // Get next arg.
         VALUE arg;
-        if (args_is_tuple) {
+        if (key_arg != PY_NONE || args_is_dict) {
+            arg = key_arg;
+        } else if (args_is_tuple) {
             if (argi >= nargs) py_raise_exc(c, c->EXC_TypeError, "not enough args");
             arg = PY_PTR(args)->list.items[argi++];
         } else {
@@ -8004,15 +8092,19 @@ py_str_pct_format(CTX *c, VALUE fmt, VALUE args)
         } else if (conv == 'x' || conv == 'X' || conv == 'o') {
             long long iv = py_int_to_long(c, arg);
             unsigned long long u = (unsigned long long)(iv < 0 ? -iv : iv);
-            char fmtb[16];
-            const char *prefix = "";
+            char numbuf[64];
+            int nl;
+            if (conv == 'x') nl = snprintf(numbuf, sizeof(numbuf), "%llx", u);
+            else if (conv == 'X') nl = snprintf(numbuf, sizeof(numbuf), "%llX", u);
+            else nl = snprintf(numbuf, sizeof(numbuf), "%llo", u);
+            int j = 0;
+            if (iv < 0) body[j++] = '-';
             if (flag_hash) {
-                if (conv == 'x') prefix = "0x";
-                else if (conv == 'X') prefix = "0X";
-                else                  prefix = "0o";
+                body[j++] = '0';
+                body[j++] = (conv == 'X') ? 'X' : (conv == 'o' ? 'o' : 'x');
             }
-            snprintf(fmtb, sizeof(fmtb), "%s%%%s%c", iv < 0 ? "-" : "", prefix, conv);
-            bl = snprintf(body, sizeof(body), fmtb, u);
+            for (int k = 0; k < nl && j < (int)sizeof(body) - 1; k++) body[j++] = numbuf[k];
+            body[j] = '\0'; bl = (size_t)j;
         } else if (conv == 'b') {
             long long iv = py_int_to_long(c, arg);
             unsigned long long u = (unsigned long long)(iv < 0 ? -iv : iv);
@@ -8911,8 +9003,11 @@ bi_pystro_del(CTX *c, int argc, VALUE *argv)
     (void)argc;
     VALUE container = argv[0], key = argv[1];
     if (py_is_dict(container)) {
-        if (!py_dict_remove(c, container, key))
-            py_raise_exc(c, c->EXC_KeyError, "del: key not in dict");
+        if (!py_dict_remove(c, container, key)) {
+            VALUE r = py_to_repr(c, key);
+            py_raise_exc(c, c->EXC_KeyError, "%s",
+                         py_is_str(r) ? PY_PTR(r)->str.chars : "?");
+        }
         return PY_NONE;
     }
     if (py_is_list(container)) {
