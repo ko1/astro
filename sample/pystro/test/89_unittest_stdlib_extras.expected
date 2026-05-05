@@ -1,0 +1,12 @@
+ok CounterExtrasTest test_elements
+ok CounterExtrasTest test_subtract
+ok CounterExtrasTest test_subtract_dict
+ok CounterExtrasTest test_total
+ok DequeExtrasTest test_extend
+ok DequeExtrasTest test_maxlen
+ok DequeExtrasTest test_rotate
+ok ProductRepeatTest test_repeat
+ok ProductRepeatTest test_repeat3
+ok IntEnumTest test_basic
+---
+passed=10 failed=0

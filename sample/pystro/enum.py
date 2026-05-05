@@ -112,4 +112,48 @@ class _Auto:
     pass
 
 
-__all__ = ["Enum", "_make_enum", "auto"]
+class IntEnum(Enum):
+    pass
+
+
+# IntEnum members compare equal to their int value.
+def _int_eq(self, other):
+    if isinstance(other, _EnumMember):
+        return self.name == other.name and self.value == other.value
+    return self.value == other
+
+# Patch _EnumMember equality for IntEnum-like comparisons (3.x permits this
+# for IntEnum specifically; keep it across all members for simplicity).
+def _flexible_eq(self, other):
+    if isinstance(other, _EnumMember):
+        return self.name == other.name and self.value == other.value
+    # Fall back to value equality (covers IntEnum vs int, StrEnum vs str).
+    return self.value == other
+
+
+_EnumMember.__eq__ = _flexible_eq
+
+
+class StrEnum(Enum):
+    pass
+
+
+class Flag(Enum):
+    pass
+
+
+class IntFlag(Flag):
+    pass
+
+
+def unique(cls):
+    seen = {}
+    for m in cls._members_:
+        if m.value in seen:
+            raise ValueError(f"duplicate values: {m.name} and {seen[m.value]}")
+        seen[m.value] = m.name
+    return cls
+
+
+__all__ = ["Enum", "IntEnum", "StrEnum", "Flag", "IntFlag",
+           "_make_enum", "auto", "unique"]

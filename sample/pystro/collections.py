@@ -70,21 +70,67 @@ class Counter:
         if n is None:
             return items
         return items[:n]
+    def subtract(self, iterable):
+        if hasattr(iterable, "items"):
+            for k, v in iterable.items():
+                self._d[k] = self._d.get(k, 0) - v
+        else:
+            for x in iterable:
+                self._d[x] = self._d.get(x, 0) - 1
+    def update(self, iterable):
+        if hasattr(iterable, "items"):
+            for k, v in iterable.items():
+                self._d[k] = self._d.get(k, 0) + v
+        else:
+            for x in iterable:
+                self._d[x] = self._d.get(x, 0) + 1
+    def total(self):
+        return sum(self._d.values())
+    def elements(self):
+        for k, v in self._d.items():
+            for _ in range(v):
+                yield k
     def __repr__(self):
         return "Counter(" + repr(self._d) + ")"
 
 
 class deque:
-    def __init__(self, iterable=None):
+    def __init__(self, iterable=None, maxlen=None):
         self._items = list(iterable) if iterable is not None else []
+        self.maxlen = maxlen
+        if maxlen is not None and len(self._items) > maxlen:
+            self._items = self._items[-maxlen:]
     def append(self, x):
         self._items.append(x)
+        if self.maxlen is not None and len(self._items) > self.maxlen:
+            self._items.pop(0)
     def appendleft(self, x):
         self._items.insert(0, x)
+        if self.maxlen is not None and len(self._items) > self.maxlen:
+            self._items.pop()
+    def extend(self, xs):
+        for x in xs: self.append(x)
+    def extendleft(self, xs):
+        for x in xs: self.appendleft(x)
     def pop(self):
         return self._items.pop()
     def popleft(self):
         return self._items.pop(0)
+    def rotate(self, n=1):
+        if not self._items: return
+        n = n % len(self._items)
+        if n != 0:
+            self._items = self._items[-n:] + self._items[:-n]
+    def clear(self):
+        self._items.clear()
+    def count(self, x):
+        return self._items.count(x)
+    def index(self, x):
+        return self._items.index(x)
+    def remove(self, x):
+        self._items.remove(x)
+    def reverse(self):
+        self._items.reverse()
     def __len__(self):
         return len(self._items)
     def __iter__(self):

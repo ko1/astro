@@ -93,8 +93,8 @@ def accumulate(iterable, func=None):
         yield total
 
 
-def product(*iterables):
-    pools = [list(it) for it in iterables]
+def product(*iterables, repeat=1):
+    pools = [list(it) for it in iterables] * repeat
     if not pools:
         yield ()
         return
