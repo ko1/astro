@@ -1,0 +1,7 @@
+ok ExceptionChainTest test_context_chain_three_deep
+ok ExceptionChainTest test_explicit_cause
+ok ExceptionChainTest test_from_none
+ok ExceptionChainTest test_implicit_context
+ok ExceptionChainTest test_no_context_outside_handler
+---
+passed=5 failed=0

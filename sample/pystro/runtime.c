@@ -872,6 +872,8 @@ py_raise_exc(CTX *c, VALUE cls, const char *fmt, ...)
     VALUE msg = py_make_str(buf, strlen(buf));
     py_setattr(c, inst, "args", py_make_tuple(&msg, 1));
     py_setattr(c, inst, "message", msg);
+    if (c->current_handling_exc && c->current_handling_exc != PY_NONE)
+        py_setattr(c, inst, "__context__", c->current_handling_exc);
     // Capture a snapshot of the active call stack as a list-of-strings
     // attribute on the exception, so an uncaught exception can show
     // a traceback even though we longjmp away from this point.
@@ -4270,11 +4272,14 @@ py_run_try(CTX *c, NODE *body, uint32_t handlers_idx, uint32_t nhandlers, NODE *
                 // Keep `exc` in state_value so a bare `raise` inside
                 // the handler can re-raise the active exception.
                 c->state_value = exc;
+                VALUE saved_handling = c->current_handling_exc;
+                c->current_handling_exc = exc;
                 if (h->name) {
                     if (h->name_is_global) py_global_set(c, h->name, exc);
                     else                   c->env->slots[h->name_slot] = exc;
                 }
                 EVAL(c, h->body);
+                c->current_handling_exc = saved_handling;
                 // If the body did not itself raise, clear the active
                 // exception so it doesn't leak past the handler.
                 if (c->state == PY_STATE_NORMAL) c->state_value = PY_NONE;

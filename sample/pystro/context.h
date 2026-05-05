@@ -333,6 +333,7 @@ typedef struct CTX_struct {
 
     int    state;
     VALUE  state_value;             // return value / raised exception
+    VALUE  current_handling_exc;    // exception being handled (for __context__ chaining)
     int    raise_line;              // source line of the raise (best-effort)
 
     // While executing a `class C:` body, `current_class` holds the

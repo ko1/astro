@@ -836,6 +836,18 @@ node_raise(CTX * restrict c, NODE * restrict n, NODE *exc)
             py_setattr(c, v, "__traceback__", py_make_list(frames, c->call_top));
         }
     }
+    // Implicit __context__: when raising inside an except handler, the
+    // currently-handled exception becomes the new exception's context
+    // — unless the user already explicitly set __cause__ via 'raise X
+    // from Y' (in which case __suppress_context__ is True).
+    if (py_is_instance(v) && c->current_handling_exc
+        && c->current_handling_exc != PY_NONE && c->current_handling_exc != v) {
+        VALUE existing = py_getattr_optional(c, v, "__context__");
+        if (!existing || existing == PY_NONE) {
+            c->state = PY_STATE_NORMAL;
+            py_setattr(c, v, "__context__", c->current_handling_exc);
+        }
+    }
     c->state = PY_STATE_RAISE;
     c->state_value = v;
     return PY_NONE;

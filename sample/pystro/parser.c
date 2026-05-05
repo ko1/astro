@@ -2691,9 +2691,12 @@ parse_raise(void)
         NODE *load_e;
         NODE *init_e = build_temp_init(te, e, &load_e);
         NODE *set_cause = ALLOC_node_attr_set(load_e, intern_name("__cause__", 9), cause);
+        NODE *set_suppress = ALLOC_node_attr_set(load_e,
+            intern_name("__suppress_context__", 20), ALLOC_node_const_true());
         return ALLOC_node_seq(init_e,
                ALLOC_node_seq(set_cause,
-               ALLOC_node_raise(load_e)));
+               ALLOC_node_seq(set_suppress,
+               ALLOC_node_raise(load_e))));
     }
     return ALLOC_node_raise(e);
 }
