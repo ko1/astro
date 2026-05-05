@@ -2,15 +2,13 @@
 
 ASTro でホスト言語を高速化する際にレイヤ横断で再利用できる知見集。
 **フレームワーク中立な記述** を目指し、効果の数値や具体実装を引用するときは
-どのサンプル言語で観測したか（`luastro` / `abruby` / `asom` / `ascheme` /
-`castro` / `wastro` / `naruby`）を明示している。
+どのサンプル言語で観測したかを明示している。
 
 各言語サンプルの詳細は個別の `sample/<lang>/docs/{done,todo,perf,runtime}.md`
-にある。perf 専用の文書を持っているのは現状 **castro**
-(`sample/castro/docs/perf.md`)、**ascheme** (`sample/ascheme/docs/perf.md`)、
-**wastro** (`sample/wastro/docs/perf.md`)、**abruby**
-(`sample/abruby/docs/perf.md`) の 4 言語。本ドキュメントから
-`castro perf.md §N` のように引用する。
+にある。`perf.md` を持つサンプルは現在 14 種
+(`abruby` / `aforth` / `ascheme` / `asom` / `astocaml` / `astrogre` /
+`castro` / `jstro` / `koruby` / `naruby` / `nuq` / `pascalast` / `pystro` /
+`wastro`)。本ドキュメントから `castro perf.md §N` のように引用する。
 
 本ドキュメントは **「どのレイヤで何を回せば効くか」** の地図として読むことを
 想定している。

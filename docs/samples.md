@@ -3,7 +3,8 @@
 ASTro リポジトリ配下の `sample/*` を **言語特性** と **そこから導かれる
 node.def 構成** を中心に横断分析した文書。各サンプル個別の詳細は
 `sample/<lang>/README.md` および `sample/<lang>/docs/{done,todo,perf,runtime}.md`
-を参照。本書は「16 言語並べて何が分かるか」を整理する。
+を参照。本書は「17 サンプル並べて何が分かるか」を整理する
+(汎用言語 16 + JSON フィルタ DSL の `nuq`)。
 
 §6 でサンプルバイナリの **コマンドラインオプション** を横断比較、
 §7 で各サンプルの `docs/perf.md` から **定量的な性能まとめ** を出し、
@@ -34,6 +35,7 @@ node.def 構成** を中心に横断分析した文書。各サンプル個別�
 | `castro` | C サブセット | 命令型, 静的 | 静 | int64 / double / pointer | tree-sitter-c で型解決 → 1 slot=8byte レイアウト |
 | `wastro` | WebAssembly 1.0+ | スタックマシン, 静的 | 静 | i32/i64/f32/f64 | WAT/WASM 両対応 / spec-test ハーネス |
 | `astrogre` | (Onigmo 互換 regex) | DSL — 正規表現 | — | — | **マッチエンジン自体が AST**、`are` grep CLI 付属 |
+| `nuq` | (jq 互換) | DSL — JSON フィルタ | — | tagged fixnum + `nuq_obj` | pipe / comma fan-out / `try-catch` / `reduce` / `foreach` / 70+ builtin |
 
 パラダイム軸での広がり:
 - **教育用最小**: `calc`
@@ -43,12 +45,12 @@ node.def 構成** を中心に横断分析した文書。各サンプル個別�
 - **OO 純化**: `asom`
 - **データ解析系**: `astr`
 - **スタックマシン**: `aforth` / `wastro`
-- **DSL / エンジン応用**: `astrogre`
+- **DSL / エンジン応用**: `astrogre` / `nuq`
 
 直交する軸として **型システム** で切ると:
 - **静的型** (parser-time に型確定): `pascalast` / `castro` / `astocaml` / `wastro`
 - **動的型**: 動的言語勢 6 つ + Scheme + Smalltalk + R + Forth (cell 単位 untyped)
-- **型なし / DSL**: `calc` / `astrogre`
+- **型なし / DSL**: `calc` / `astrogre` / `nuq`
 
 静的型 4 つはそれぞれ違う方向 — Pascal (古典手続き型 + variant record),
 C (低レベル ABI + ポインタ), OCaml (Hindley-Milner + variant + class),
@@ -68,21 +70,25 @@ ASTro が想定外でも嵌まる例になっている。
 | sample | NODE_DEF 数 | node.def 行数 | C コード行数 (生成除く) | テスト | ベンチ |
 |---|---:|---:|---:|---:|---:|
 | `calc`      |   6 |    36 |    227 |   - |   - |
-| `naruby`    |  32 |   516 |  3,175 |   - |  37 |
+| `naruby`    |  36 |   571 |  3,175 |   - |  37 |
 | `astr`      |  46 |   578 |  2,028 |  18 |   4 |
 | `astrogre`  |  53 | 1,612 |  3,678 |   - |  11 |
 | `ascheme`   |  54 |   778 |  4,341 |  34 |  19 |
+| `nuq`       |  57 |   407 |    -   | 338 |   - |
 | `aforth`    |  68 |   639 |    851 |   7 |  10 |
-| `pystro`    |  72 |   911 |  4,737 |  24 |   6 |
 | `luastro`   |  74 | 1,448 |  5,086 |   9 |  24 |
 | `asom`      |  80 | 1,262 |  5,327 |  29 |   - |
-| `koruby`    |  90 | 1,380 |  8,603 | 175 |  27 |
+| `koruby`    |  90 | 1,402 |  8,603 | 175 |  27 |
+| `pystro`    |  91 | 1,390 |  4,737 |  55 |   6 |
 | `astocaml`  |  91 | 1,196 |  6,540 |  70 |  26 |
 | `castro`    | 101 | 1,019 |  1,245 |   - |   - |
 | `jstro`     | 101 | 1,991 |  9,680 |   5 |  14 |
 | `abruby`    | 107 | 3,910 |  2,888 |  43 | 193 |
 | `pascalast` | 159 | 1,968 |  5,290 |  99 |  17 |
 | `wastro`    | 212 | 2,032 |  5,861 |   - |   - |
+
+(C コード行数列とテスト/ベンチ列は表作成時のスナップショットで、最新値とずれている
+ことがある — node.def の数値だけ保守。)
 
 観察:
 - **「ノード数 ≒ 言語の表現力」ではない**。動的言語は call/算術を 1 つに

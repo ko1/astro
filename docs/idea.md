@@ -49,7 +49,7 @@ ASTro の最も重要な設計判断:
 
 ## 3. ASTroGen ツール
 
-`lib/astrogen.rb` (約580行の Ruby スクリプト) が、`node.def` から以下を自動生成:
+`lib/astrogen.rb` (約 780 行の Ruby スクリプト) が、`node.def` から以下を自動生成:
 
 | 生成ファイル | 内容 |
 |---|---|
@@ -95,18 +95,21 @@ node_name(CTX *c, NODE *n, type1 operand1, type2 operand2, ...)
 struct NodeHead {
     struct NodeFlags {
         bool has_hash_value;
+        bool has_hash_opt;          // PGC: hash_opt が確定している
         bool is_specialized;
-        bool is_specializing;   // 再帰的特化防止
-        bool is_dumping;        // 再帰的ダンプ防止
-        bool no_inline;         // 特化時のインライン抑制
+        bool is_specializing;       // 再帰的特化防止
+        bool is_dumping;            // 再帰的ダンプ防止
+        bool no_inline;             // 特化時のインライン抑制
     } flags;
     const struct NodeKind *kind;
     struct Node *parent;
-    node_hash_t hash_value;
+    node_hash_t hash_value;             // Horg: 構造ハッシュ (AOT)
+    node_hash_t hash_opt;               // Hopt: profile-baked ハッシュ (PGC)
     const char *dispatcher_name;
     node_dispatcher_func_t dispatcher;  // 関数ポインタ
     enum jit_status { ... } jit_status; // JIT 状態管理
     unsigned int dispatch_cnt;          // ディスパッチ回数
+    int line;                           // 診断用ソース行番号
 };
 ```
 
@@ -205,11 +208,22 @@ Unknown → Querying → NotFound → Compiling → Compiled
 - プログラムロード時: 各 AST について `query(h)` を発行（既存キャッシュの利用）
 - ある関数を100回以上実行したとき: `compile` メッセージで特化を要求
 
-## 6. naruby（評価用言語）
+## 6. サンプル言語
 
-"Not A Ruby" — Ruby の文法だが機能を大幅に制限。node.def は約300行。
+ASTro は `sample/` 以下に **17 サンプル** を抱えており、教育用の最小例から
+本格的な動的言語、関数型言語、スタックマシン、DSL までを横断的にカバー
+する。サンプル横断の比較は [`samples.md`](./samples.md) に集約してあるので、
+本節では論文評価で使った **naruby** を代表として要約する。各サンプルの
+実装詳細・性能数値は `sample/<lang>/README.md` と
+`sample/<lang>/docs/{done,todo,perf,runtime}.md` に。
 
-### 6.1 ノード型一覧 (21種)
+### 6.1 naruby — 論文評価用 Ruby サブセット
+
+"Not A Ruby" — Ruby の文法だが機能を大幅に制限。`node.def` は約 570 行、
+36 ノード型。1 バイナリで 4 つの実行モード (interpret / AOT / PG / JIT)
+を切り替えられる、フレームワーク自身の評価用言語。
+
+主なノード分類:
 
 | カテゴリ | ノード |
 |---|---|
@@ -220,7 +234,7 @@ Unknown → Querying → NotFound → Compiling → Compiled
 | 二項演算 | `node_add`, `node_sub`, `node_mul`, `node_div`, `node_mod` |
 | 比較 | `node_eq`, `node_neq`, `node_lt`, `node_le`, `node_gt`, `node_ge` |
 
-### 6.2 ランタイム
+### 6.2 naruby ランタイム
 
 - 値の型は符号付き整数のみ
 - バリュースタック方式（固定サイズフレーム）
@@ -228,7 +242,7 @@ Unknown → Querying → NotFound → Compiling → Compiled
 - インラインキャッシュ: function-table version でキャッシュ有効性を判定
 - フロントエンド: Prism パーサ（Ruby 標準パーサ）を利用し、ALLOC_* で AST を構築
 
-### 6.3 ベンチマーク結果 (x86_64)
+### 6.3 ベンチマーク (VMIL2025 当時, x86_64)
 
 | 構成 | loop | fib | call | prime_count |
 |---|---|---|---|---|
@@ -240,13 +254,29 @@ Unknown → Querying → NotFound → Compiling → Compiled
 
 AOT コンパイルで gcc -O0 に迫る性能。loop ベンチマークではループ自体が最適化で消える。
 
-### 6.4 JIT 予備評価 (prime? ベンチマーク)
+### 6.4 JIT 予備評価 (PPL2026, prime? ベンチマーク)
 
 | 条件 | 実行時間(秒) |
 |---|---|
 | JIT なし | 13.64 |
 | JIT あり（初回） | 1.11 |
 | JIT あり（2回目, キャッシュ済み） | 1.05 |
+
+### 6.5 他のサンプル
+
+| sample | 概要 |
+|---|---|
+| `calc` | 6 ノードの最小チュートリアル |
+| `abruby` | CRuby C 拡張版 Ruby サブセット (VALUE / Prism / GC を流用) |
+| `koruby` | スタンドアロン Ruby、**optcarrot 完走** |
+| `luastro` / `jstro` / `pystro` | Lua 5.4 / JS ES2023 / Python 3 サブセット |
+| `ascheme` / `astocaml` / `asom` | R5RS Scheme / OCaml サブセット / SOM Smalltalk |
+| `pascalast` / `castro` | Pascal / C サブセット (静的型) |
+| `aforth` / `wastro` | Forth / WebAssembly 1.0 (スタックマシン) |
+| `astr` | R サブセット (vectorized) |
+| `astrogre` / `nuq` | DSL: 正規表現エンジン / `jq` クローン |
+
+横断分析と性能ハイライトは [`samples.md`](./samples.md) §1 の言語ラインナップ表を参照。
 
 ## 7. ASTro Code Store
 
@@ -261,30 +291,51 @@ AOT コンパイルで gcc -O0 に迫る性能。loop ベンチマークでは�
 
 ### 7.2 API
 
-```c
-void astro_cs_init(const char *store_dir,       // .c/.so の保存先
-                   const char *include_dir,      // node.h 等の場所 (-I)
-                   const char *runtime_dir);     // astro_code_store.h の場所 (-I)
+実体は `runtime/astro_code_store.h`。
 
-bool astro_cs_load(NODE *n);         // hash で検索 → あれば dispatcher 差し替え
-void astro_cs_compile(NODE *entry);  // エントリの特化 C ソースを生成
-void astro_cs_build(void);           // 全 .c → .o → all.so (make -j)
+```c
+// 初期化: store_dir/all.so があれば dlopen 済みにする。
+//   src_dir : node.h / node_eval.c 等の場所 (生成 .c が #include する)
+//   version : ホストバイナリの mtime 等。前回保存時と異なれば store を破棄
+void astro_cs_init(const char *store_dir, const char *src_dir, uint64_t version);
+
+// hash 検索 → ヒットすれば dispatcher を差し替え true。
+//   file != NULL : PGC ルックアップ (Hopt) を先に試す
+//   file == NULL : AOT のみ (Horg)
+bool astro_cs_load(NODE *n, const char *file);
+
+// 特化 C ソースを生成。
+//   file == NULL : AOT — store_dir/c/SD_<Horg>.c
+//   file != NULL : PGC — store_dir/c/SD_<Hopt>.c + hopt_index.txt 追記
+void astro_cs_compile(NODE *entry, const char *file);
+
+// store_dir 配下の全 .c を make -j → all.tmp.so → all.so atomic rename。
+//   extra_cflags : Ruby 等の追加 -I/-D が必要なら渡す。NULL でも可
+void astro_cs_build(const char *extra_cflags);
+
+// build 後に呼ぶと all.<N>.so を新世代パスで dlopen し直す
+// (dlopen のパス名キャッシュ回避; code_store_quirks.md 罠 1 参照)
+void astro_cs_reload(void);
+
+// 診断: 特化済みノードの dispatcher を objdump で逆アセンブル表示
+void astro_cs_disasm(NODE *n);
 ```
 
 ### 7.3 利用フロー
 
 ```
 [1回目の実行]
-  astro_cs_init("code_store/", ...)   all.so がない → 何もしない
-  ALLOC → OPTIMIZE → astro_cs_load   miss
+  astro_cs_init("code_store", ".", VERSION)   all.so がない → load は miss
+  ALLOC → astro_cs_load (miss)
   ... 実行 ...
-  astro_cs_compile(entry1)            code_store/SD_<hash1>.c 生成
-  astro_cs_compile(entry2)            code_store/SD_<hash2>.c 生成
-  astro_cs_build()                    make -j → all.so
+  astro_cs_compile(entry, NULL)                code_store/c/SD_<Horg>.c 生成
+  astro_cs_build(NULL)                         全 .c → .o → all.so
+  astro_cs_reload()                            新世代 all.<N>.so を dlopen
+  astro_cs_load(entry, NULL)                   hit → dispatcher 差し替え
 
 [2回目の実行]
-  astro_cs_init("code_store/", ...)   all.so を dlopen
-  ALLOC → OPTIMIZE → astro_cs_load   hit → dispatcher 差し替え → 高速実行
+  astro_cs_init(...)                           前回の all.so をそのまま再利用
+  ALLOC → astro_cs_load (hit) → 高速実行
 ```
 
 ### 7.4 モード別の使い分け
@@ -292,8 +343,8 @@ void astro_cs_build(void);           // 全 .c → .o → all.so (make -j)
 | モード | compile | build | load |
 |--------|---------|-------|------|
 | AOT | 実行後にオフライン | 同左 | 次回起動時 |
-| PG | 1回目実行後 | 同左 | 2回目起動時 |
-| JIT | 実行中に非同期 | バックグラウンドで適宜 | コンパイル完了時 |
+| PG | 1回目実行後 (Hopt 込み) | 同左 | 2回目起動時 (file 引数あり) |
+| JIT | 実行中に非同期 | バックグラウンドで適宜 | コンパイル完了時に reload |
 
 JIT の場合は `all.so` に加え、新規コンパイル分を個別 `.so` として `dlopen` することも可能。
 
@@ -301,54 +352,85 @@ JIT の場合は `all.so` に加え、新規コンパイル分を個別 `.so` �
 
 ```
 code_store/
-  SD_<hash1>.c     ← 特化 C ソース（エントリ + 子ノードの static SD_ 関数群）
-  SD_<hash1>.o     ← コンパイル済みオブジェクト
-  SD_<hash2>.c
-  SD_<hash2>.o
-  all.so           ← 全 .o をまとめた共有オブジェクト
-  Makefile         ← astro_cs_build が自動生成
+  c/SD_<hash1>.c     ← 特化 C ソース
+  c/SD_<hash2>.c
+  o/SD_<hash1>.o     ← コンパイル済みオブジェクト
+  o/SD_<hash2>.o
+  all.so             ← 全 .o をまとめた共有オブジェクト (atomic mv で更新)
+  all.<N>.so         ← reload 用の世代別ハードリンク
+  Makefile           ← astro_cs_build が自動生成
+  hopt_index.txt     ← PGC: (Horg, file, line) → Hopt のマップ
 ```
 
 各 `.c` ファイルはサブツリーの特化コードを自己完結で含む。共通する部分木は複数ファイルに重複するが、`static` 関数のためリンク問題は起きない。LTO で重複を最適化することも可能。
 
+dlopen / リンクまわりの罠と暫定対処は [`code_store_quirks.md`](./code_store_quirks.md) を参照。
+
 ### 7.6 言語側の統合
 
+calc など最小サンプルの REPL は、入力ごとにこう呼ぶ:
+
 ```c
-// OPTIMIZE: 言語ごとにカスタマイズ
-NODE *OPTIMIZE(NODE *n) {
-    if (!astro_cs_load(n) && OPTION.jit) {
-        astro_jit_submit_compile(n);  // JIT の場合
-    }
-    return n;
+NODE *ast = parse(line);
+if (!ast->head.flags.is_specialized) {
+    astro_cs_compile(ast, NULL);
+    astro_cs_build(NULL);
+    astro_cs_reload();
+    astro_cs_load(ast, NULL);
 }
+EVAL(c, ast);
 ```
 
-code store はハッシュ→dispatcher マップの管理と `.so` のロードに専念し、「何をエントリとするか」「いつコンパイルするか」のポリシーは言語側に委ねる。
+JIT を持つサンプル (naruby) では、ホットノード検出時に L0 スレッド経由で
+`astro_cs_compile` → `astro_cs_build` → `astro_cs_reload` をバックグラウンドで実行し、
+完了後に `astro_cs_load` を呼ぶ。code store はハッシュ→dispatcher マップの管理と
+`.so` のロードに専念し、「何をエントリとするか」「いつコンパイルするか」の
+ポリシーは言語側に委ねる。
 
 ## 8. 既知の課題と今後の方向
 
-### 独自ローダ
-- 現在は .so ファイルベースだが、ページアライメントにより小さな関数でもメモリ浪費
-- 専用のネイティブコードローダーで密にメモリ上にロードする必要あり
-- ただし計算機環境ごとの実装が必要で、ポータビリティとのトレードオフ
+実装状況は VMIL2025 から PPL2026 (JIT 試作) を経て、本書執筆時点 (2026 春)
+までで進んだ部分・未踏部分が混在している。以下は **現状のステータス**
+と **未踏領域** を区別して整理。
 
-### コードストア上限サイズ
-- 現在は生成コードを削除しない → 実運用では LRU 等で上限管理が必要
+### 8.1 進捗があった項目
 
-### 投機的プリフェッチ
-- L2 への query が h1, h2, h3... と連続する場合、h4, h5... を投機的にプリフェッチ可能
+#### JIT 階層 (L0/L1/L2) — 試作実装済み
+- naruby で L0/L1/L2 すべての層を実装し、PPL2026 で試作評価を発表。
+- prime? ベンチで JIT-on 1.11s vs JIT-off 13.64s (12× speedup)、キャッシュヒット時は 1.05s。
+- L1 デーモン (Ruby) の Unix socket / TCP プロトコルが実用域。
 
-### AOT + JIT の併用
-- 実行時情報なしの AOT（そこそこ速い）+ 実行時情報ありの JIT（さらに速い）を組み合わせ
-- 初回ロード時バーストを AOT が軽減、ホットパスを JIT が最適化
+#### AOT + JIT の併用
+- naruby は AOT (PGC) + JIT を共存。koruby / pystro 等は AOT 中心で
+  起動時に既存 SD をロードして使う運用が確立。
+- 初回ロード時バーストを AOT が吸収、ホットパスを JIT が再最適化、という構図は naruby で実証済み。
 
-### コードサイズ膨張
-- 部分評価を無差別に適用するとコードサイズが爆発
-- ハッシュ関数のカスタマイズで制御可能（例: 大きな定数は固定ハッシュにまとめる）
+#### 例外処理
+- jstro (longjmp `throw`)、pystro (`try`/`except`/`else`/`finally`/`raise`)、pascalast (catchable `try/except/finally`)、astocaml (例外) がそれぞれ別方式で実装済み。
+- 結論: setjmp/longjmp は C で十分扱える。EVAL 本体は触らず、parser-pass + ranges リスト方式で意外と綺麗に書ける ([perf.md](./perf.md) の各サンプル節参照)。
 
-### 例外処理
-- C での例外実装は (1) 毎回エラーフラグチェック or (2) setjmp/longjmp
-- C++ の try/catch も選択肢
+#### 静的型サンプル
+- pascalast (Pascal)、castro (C subset)、astocaml (OCaml subset)、wastro (Wasm 1.0) が静的型側を埋めた。
+- 結論: 静的型情報を活かした **算術ノードの per-type 分裂** + AOT が、`fpc -O3` 等のネイティブコンパイラと張り合えるケースが出ている (pascalast のタイト数値ループ)。
 
-### 静的型システム
-- 現在は動的型付き言語のみ検証。静的型情報を活用した最適化は未探索
+### 8.2 未踏 / 検討中
+
+#### 独自ローダ
+- 現在は .so ファイルベースで、ページアライメントにより小さな関数でもメモリ浪費。
+- 専用のネイティブコードローダ (copy & patch + ELF relocation) で密に mmap する設計が候補。CPython JIT (PEP 744) 同様の方向。
+- 計算機環境ごとの実装が必要で、ポータビリティとのトレードオフ。code_store_quirks.md の 3 つの罠 (パス名キャッシュ・atomic rename・dlclose 不能) もこれで一掃される。
+
+#### コードストア上限サイズ
+- 現在は生成コードを削除しない → 実運用では LRU 等で上限管理が必要。
+
+#### 投機的プリフェッチ
+- L2 への query が h1, h2, h3... と連続する場合、h4, h5... を投機的にプリフェッチ可能。
+
+#### コードサイズ膨張
+- 部分評価を無差別に適用するとコードサイズが爆発。
+- ハッシュ関数のカスタマイズ (`@ref` で副情報をハッシュから外す等) で制御可能。
+- 静的型サンプル (pascalast / wastro) は per-type 分裂でノード数が増えやすく、ここの管理が今後も課題。
+
+#### 統一 GC 基盤
+- 現状は libgc (Boehm) ベースが多数派 (koruby / asom / astr / astocaml 等)、自前 mark-sweep が一部 (luastro)、CRuby GC 流用 (abruby) と分かれている。
+- pluggable GC (例: Bartlett mostly-copying) を `value.def` + frame iterator + AST 不動を前提に共通化する設計案が検討中 (本書では割愛)。

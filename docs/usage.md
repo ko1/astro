@@ -4,7 +4,7 @@ ASTroGen is a code generator that takes AST node definitions (`node.def`) and pr
 
 ## Quick Start: Minimal Calculator
 
-See `sample/calc/` for a complete minimal example (3 nodes, ~150 lines of user code).
+See `sample/calc/` for a complete minimal example (6 nodes, ~150 lines of user code).
 
 Build and run:
 
@@ -615,8 +615,9 @@ ruby -r astrogen -e 'ASTroGen.start ARGV' -- [options]
 
 ### Examples
 
-- `sample/calc/` — Minimal calculator (3 nodes).  Good starting point for understanding the runtime + ASTroGen flow without language-design noise.
+- `sample/calc/` — Minimal calculator (6 nodes).  Good starting point for understanding the runtime + ASTroGen flow without language-design noise.
 - `sample/naruby/` — Ruby subset with functions, variables, operators, JIT support.  Standalone C program; the canonical "real language" example.
 - `sample/abruby/` — Ruby subset as a CRuby C extension.  Classes, methods, blocks, GC integration, builtins.  Demonstrates `register_gen_task` for custom mark function generation and `@ref` operands for inline caches.
-- `sample/luastro/`, `sample/ascheme/`, `sample/wastro/`, `sample/jstro/`, `sample/astocaml/`, `sample/castro/`, `sample/koruby/`, `sample/asom/` — additional language fronts using the same framework.
+- `sample/koruby/`, `sample/luastro/`, `sample/jstro/`, `sample/pystro/`, `sample/ascheme/`, `sample/astocaml/`, `sample/asom/`, `sample/pascalast/`, `sample/castro/`, `sample/aforth/`, `sample/astr/`, `sample/wastro/` — additional language fronts using the same framework. See [`samples.md`](./samples.md) for a cross-sample analysis.
 - `sample/astrogre/` — Ruby/Onigmo-compatible regex engine with a grep CLI (`are`).  Demonstrates entry-node registration for AST shapes that have multiple runtime-indirect dispatch sites (rep continuations, subroutine chains).  Particularly useful when the AST isn't tree-shaped from a single root.
+- `sample/nuq/` — `jq` clone (JSON filter DSL).  Demonstrates how DSL-style frontends with their own pipeline operators (`|`, `,`, `try-catch`, `reduce`, `foreach`) map onto ASTro's tree-walking model.
