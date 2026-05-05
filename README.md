@@ -46,7 +46,7 @@ docs/                   Design notes and papers
 ASTro samples span a wide range of language families to exercise the framework against very different value representations, control-flow shapes, and runtime services. All share a uniform layout (`node.def`, `Makefile`, optional ASTroGen extension, per-sample `docs/`). Each sample's own README has the full language scope, build / run, benchmarks, and design notes; [`docs/samples.md`](./docs/samples.md) is the cross-sample analysis. The entries below are one-liners with the most distinctive flagship result.
 
 **Tutorial.**
-- [`calc`](./sample/calc/) — **toy 3-node calculator REPL**, the smallest end-to-end ASTroGen example.
+- [`calc`](./sample/calc/) — **toy 6-node calculator REPL** (`num` + `+`/`-`/`*`/`/`/`%`), the smallest end-to-end ASTroGen example.
 
 **Ruby family.**
 - [`naruby`](./sample/naruby/) — ***not a Ruby***: integer-only 21-node Ruby subset.
