@@ -93,9 +93,43 @@ read_line(const char *prompt)
 #endif
 }
 
+static void
+usage(const char *progname)
+{
+    fprintf(stderr,
+        "Usage: %s [options] [-e EXPR]\n"
+        "\n"
+        "  -e EXPR        evaluate EXPR once and exit (no REPL)\n"
+        "      --disasm   print x86 disassembly of the specialized code\n"
+        "      --no-compile  skip code-store specialization (pure interpreter)\n"
+        "  -q, --quiet    suppress hit/miss progress messages\n"
+        "  -h, --help     show this help\n"
+        "\n"
+        "With no -e, %s starts an interactive REPL.\n",
+        progname, progname);
+}
+
+static VALUE
+evaluate(CTX *const c, const char *const input)
+{
+    NODE *const ast = parse(input);
+    if (!OPTION.no_compiled_code) {
+        if (!ast->head.flags.is_specialized) {
+            astro_cs_compile(ast, NULL);
+            astro_cs_build(NULL);
+            astro_cs_reload();
+            astro_cs_load(ast, NULL);
+        }
+        if (OPTION.disasm) astro_cs_disasm(ast);
+    }
+    return EVAL(c, ast);
+}
+
 int
 main(int argc, char *argv[])
 {
+    const char *eval_expr = NULL;
+
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-q") == 0 || strcmp(argv[i], "--quiet") == 0) {
             OPTION.quiet = true;
@@ -103,28 +137,38 @@ main(int argc, char *argv[])
         else if (strcmp(argv[i], "--no-compile") == 0) {
             OPTION.no_compiled_code = true;
         }
+        else if (strcmp(argv[i], "--disasm") == 0) {
+            OPTION.disasm = true;
+        }
+        else if (strcmp(argv[i], "-e") == 0) {
+            if (++i >= argc) {
+                fprintf(stderr, "calc: -e requires an argument\n");
+                return 1;
+            }
+            eval_expr = argv[i];
+        }
+        else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+            usage(argv[0]);
+            return 0;
+        }
+        else {
+            fprintf(stderr, "calc: unknown option: %s\n", argv[i]);
+            usage(argv[0]);
+            return 1;
+        }
     }
 
     INIT();
-    CTX *c = malloc(sizeof(CTX));
+    CTX *const c = malloc(sizeof(CTX));
+
+    if (eval_expr) {
+        printf("%ld\n", evaluate(c, eval_expr));
+        return 0;
+    }
+
     char *line;
-
     while ((line = read_line("calc> ")) != NULL) {
-        if (line[0] == '\0') continue;
-
-        NODE *ast = parse(line);
-        if (!OPTION.no_generate_specialized_code) {
-            if (!ast->head.flags.is_specialized) {
-                astro_cs_compile(ast, NULL);
-                astro_cs_build(NULL);
-                astro_cs_reload();
-                astro_cs_load(ast, NULL);
-            }
-            astro_cs_disasm(ast);
-        }
-
-        printf("=> %ld\n", EVAL(c, ast));
-
+        if (line[0] != '\0') printf("=> %ld\n", evaluate(c, line));
 #ifdef USE_READLINE
         free(line);
 #endif

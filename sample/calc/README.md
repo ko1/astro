@@ -1,15 +1,38 @@
 # calc — toy calculator on ASTro
 
-ASTro でいちばん小さい end-to-end サンプル。整数の四則演算 (+ 余り) だけを
-扱う電卓 REPL。`node.def` は 6 ノードのみで、ASTroGen が生成したインタプリタ
-+ ディスパッチャ + 部分評価器をそのまま使う。ASTro 側の機能 (Merkle ハッシュ、
-特化、code store による `.so` 共有) を最小コードで一通り体験できる。
+`calc` は ASTro でいちばん小さい end-to-end サンプル。整数の四則演算 + 余り
+だけを扱う電卓で、`node.def` はわずか 6 ノード。これを 1 本走らせるだけで
+ASTro の主要機構 (Merkle ハッシュ → 部分評価 → C コンパイル → `dlopen` →
+ディスパッチャ差し替え) を一通り体験できる。本 README はそのチュートリアル。
 
-ASTro フレームワーク全体については
-[`../../docs/idea.md`](../../docs/idea.md) を、ASTroGen の使い方は
+設計思想は [`../../docs/idea.md`](../../docs/idea.md)、ASTroGen の使い方は
 [`../../docs/usage.md`](../../docs/usage.md) を参照。
 
-## ノード
+## 1. ビルド & 最初の実行
+
+```sh
+$ make             # ASTroGen を呼んで生成 → ./calc を build
+$ ./calc -e '1 + 2 * 3'
+7
+```
+
+REPL モード:
+
+```
+$ ./calc
+calc> 1 + 2 * 3
+=> 7
+calc> (10 - 3) % 4
+=> 3
+calc> ^D
+```
+
+`readline` がインストールされていれば自動で使う (履歴・行編集つき)。
+無ければ `fgets` にフォールバック。
+
+## 2. 言語
+
+ノード 6 種、演算子 5 つ + 整数リテラル。これが全文法:
 
 | ノード | オペランド | 意味 |
 |---|---|---|
@@ -20,48 +43,97 @@ ASTro フレームワーク全体については
 | `node_div` | `NODE *l, NODE *r` | `l / r` |
 | `node_mod` | `NODE *l, NODE *r` | `l % r` |
 
-## ビルド & 実行
+[`node.def`](./node.def) は ~30 行。各 `NODE_DEF` ブロックがインタプリタ
+本体 (`EVAL_xxx`) と部分評価のテンプレを兼ねている。
 
-```sh
-make            # ./calc を生成
-./calc          # REPL 起動
-calc> 1 + 2 * 3
-=> 7
-calc> (10 - 3) % 4
-=> 3
-```
+## 3. 中を覗く: `--disasm`
 
-CLI:
+`--disasm` を付けると、ASTro が生成した特化コードの逆アセンブルが見える:
 
 ```
--q, --quiet     特化進捗を抑制
---no-compile    code store を一切使わない (純インタプリタ)
+$ ./calc -q --disasm -e '1 + 2 * 3'
+# compiled with GCC: (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+0000000000001100 <SD_dfb75fdabb0d5ef6>:
+    1100:	endbr64
+    1104:	mov    $0x7,%eax
+    1109:	ret
+7
 ```
 
-入力ごとに以下が走る:
+定数式 `1 + 2 * 3` の最外部ディスパッチャが `mov $0x7, %eax; ret` まで
+畳まれているのが見える。生成関数名 `SD_dfb75fdabb0d5ef6` は AST の
+Merkle ハッシュで、同じ AST が再評価されればキャッシュヒットして再
+ビルドはされない。
 
-1. 自前の再帰下降パーサ (`main.c`) が AST を構築
-2. `astro_cs_compile` → `astro_cs_build` → `astro_cs_reload` で
-   `code_store/SD_<hash>.{c,o}` を生成・リンクして `all.so` に投入
-3. `astro_cs_load` でノードのディスパッチャを特化版へ差し替え
-4. `astro_cs_disasm` で生成された機械語を表示
-5. `EVAL` で実行、結果を `=> N` で表示
+`--disasm` を付けないときは、特化と差し替えはバックグラウンドで黙って
+走り、結果だけ表示される。ASTro の特徴である「ユーザコードを書き換えず
+裏で C 化する」がそのまま見える。
 
-部分評価が効くと、たとえば `1 + 2 * 3` の最外部ディスパッチャが
-`mov $0x7, %eax; ret` まで畳まれるのが `astro_cs_disasm` で確認できる。
+## 4. 入力ごとに何が起きているか
 
-## ファイル
+`-e EXPR` あるいは REPL の各行で、内部はこう動いている
+(該当コードは [`main.c`](./main.c) `evaluate()`):
+
+1. 自前の再帰下降パーサ (同じく `main.c`) が AST を構築。
+2. `astro_cs_compile(ast, NULL)` が `code_store/SD_<hash>.c` を吐く。
+   ハッシュはノード種別 + 子のハッシュから決まる Merkle ハッシュなので、
+   同じサブ AST は同じ `.c` を共有する。
+3. `astro_cs_build(NULL)` が新しい `.c` を `gcc` し、`.o` を
+   `code_store/all.so` にまとめる。
+4. `astro_cs_reload()` が `all.so` を `dlopen`。
+5. `astro_cs_load(ast, NULL)` が各ノードの `dispatcher` フィールドを
+   汎用インタプリタから `dlsym("SD_<hash>")` で得た特化版に差し替え。
+6. `EVAL(c, ast)` で 1 回ツリーを歩く。特化済みノードは特化関数を
+   呼ぶだけなので、定数畳み込み済みの式なら 1 命令で答えが返る。
+
+`--no-compile` を付けると 2-5 をスキップして純粋なツリーウォーカに
+戻せる。同じ ASTroGen 出力が「インタプリタ」と「JIT のフロントエンド」
+の両方に使える、というのが ASTro の中心アイデア
+([`docs/idea.md`](../../docs/idea.md))。
+
+## 5. CLI
+
+| オプション | 効果 |
+|---|---|
+| `-e EXPR` | EXPR を 1 回評価して終了 (REPL を立ち上げない) |
+| `--disasm` | 特化コードの逆アセンブルを表示 |
+| `--no-compile` | 特化を一切行わない (純インタプリタ) |
+| `-q`, `--quiet` | hit/miss の進捗メッセージを抑制 |
+| `-h`, `--help` | 使い方を表示 |
+
+## 6. ファイル構成
 
 ```
 sample/calc/
-├── README.md             この文書
-├── Makefile              ASTroGen 起動 + ./calc ビルド
-├── node.def              6 ノード定義
-├── node.h / context.h    NODE / NodeHead / CTX 宣言
-├── node.c                ランタイム配線 (生成 .c の include)
-└── main.c                パーサ + REPL ドライバ
+├── README.md           この文書
+├── Makefile            ASTroGen 起動 + ./calc ビルド
+├── node.def            6 ノードの定義 (=言語仕様)
+├── node.h, context.h   NODE / NodeHead / CTX 宣言
+├── node.c              ランタイム配線 (生成 .c の include)
+└── main.c              パーサ + REPL/-e ドライバ
 ```
 
-`node_alloc.c` / `node_dispatch.c` / `node_eval.c` / `node_hash.c` /
-`node_specialize.c` / `node_dump.c` / `node_replace.c` /
-`node_head.h` は ASTroGen が `node.def` から生成。
+ASTroGen が `node.def` から生成するファイル (すべて `node.c` から
+include される):
+
+| 生成ファイル | 中身 |
+|---|---|
+| `node_alloc.c` | `ALLOC_node_xxx()` コンストラクタ |
+| `node_dispatch.c` | `DISPATCH_xxx` ラッパ (特化対象) |
+| `node_eval.c` | `EVAL_xxx` 評価器本体 (`node.def` のコード) |
+| `node_hash.c` | 各ノード種の Merkle ハッシュ |
+| `node_specialize.c` | 部分評価器 (`SD_<hash>.c` を吐く) |
+| `node_dump.c` | AST テキストダンプ |
+| `node_replace.c` | `NODE *→NODE *` 置換ヘルパ |
+| `node_head.h` | ノード種メタデータ構造体 |
+
+C コンパイラ呼び出し / リンク / `dlopen` 等のランタイムは calc 専用
+ではなく [`runtime/astro_code_store.{h,c}`](../../runtime/) に置かれて
+いて、全サンプルで共有している。
+
+## 7. 次に読むもの
+
+- もう一段大きい例: [`sample/naruby/`](../naruby/) — 同じ仕組みで Ruby
+  サブセット (整数のみ、21 ノード) を動かし、論文では JIT も評価。
+- ASTroGen の DSL 仕様: [`docs/usage.md`](../../docs/usage.md)。
+- 「なぜ AST に対する部分評価か」: [`docs/idea.md`](../../docs/idea.md)。

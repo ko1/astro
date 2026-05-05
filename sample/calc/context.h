@@ -26,6 +26,7 @@ struct calc_option {
 
     // misc
     bool quiet;
+    bool disasm;
 };
 
 extern struct calc_option OPTION;
