@@ -61,6 +61,36 @@ static size_t spreads_reserve(struct pyspread_arg *src, size_t n)
     return base;
 }
 
+struct pypat  *PYSTRO_PATTERNS = NULL;
+static size_t pystro_patterns_len, pystro_patterns_capa;
+static int pat_alloc(struct pypat p)
+{
+    if (pystro_patterns_len == pystro_patterns_capa) {
+        size_t cap = pystro_patterns_capa ? pystro_patterns_capa * 2 : 16;
+        PYSTRO_PATTERNS = (struct pypat *)GC_realloc(PYSTRO_PATTERNS, cap * sizeof(struct pypat));
+        pystro_patterns_capa = cap;
+    }
+    int idx = (int)pystro_patterns_len++;
+    PYSTRO_PATTERNS[idx] = p;
+    return idx;
+}
+
+struct pycase *PYSTRO_CASES = NULL;
+static size_t pystro_cases_len, pystro_cases_capa;
+static size_t cases_reserve(struct pycase *src, size_t n)
+{
+    if (pystro_cases_len + n > pystro_cases_capa) {
+        size_t cap = pystro_cases_capa ? pystro_cases_capa * 2 : 8;
+        while (cap < pystro_cases_len + n) cap *= 2;
+        PYSTRO_CASES = (struct pycase *)GC_realloc(PYSTRO_CASES, cap * sizeof(struct pycase));
+        pystro_cases_capa = cap;
+    }
+    size_t base = pystro_cases_len;
+    for (size_t i = 0; i < n; i++) PYSTRO_CASES[base + i] = src[i];
+    pystro_cases_len += n;
+    return base;
+}
+
 // Bag of (slot, NODE *) defaults for node_def / node_lambda.
 struct pydefault *PYSTRO_DEFAULTS = NULL;
 static size_t pystro_defaults_len, pystro_defaults_capa;
@@ -1588,13 +1618,6 @@ parse_def(void)
     size_t suite_end   = find_suite_end(suite_start);
     collect_locals_in_range(&sc, suite_start, suite_end);
 
-    // Generator: reserve a hidden local for the result list.  Each
-    // `yield E` inside the body becomes `__genr__.append(E)`, and the
-    // implicit final `return __genr__` is appended below.
-    if (sc.is_generator) {
-        sc.gen_result_slot = scope_add_local(&sc, intern_name("__genr__", 8));
-    }
-
     Scope *saved = cur_scope; cur_scope = &sc;
     NODE *body;
     if (peek_tok(0)->kind == T_NEWLINE) {
@@ -1614,20 +1637,13 @@ parse_def(void)
     }
     cur_scope = saved;
 
-    // Generator wrap: prepend `__genr__ = []`, append `return __genr__`.
-    if (sc.is_generator) {
-        size_t empty_idx = node_table_reserve(NULL, 0);
-        NODE *init = ALLOC_node_lset((uint32_t)sc.gen_result_slot,
-                                     ALLOC_node_make_list((uint32_t)empty_idx, 0));
-        NODE *ret  = ALLOC_node_return(ALLOC_node_lref((uint32_t)sc.gen_result_slot));
-        body = ALLOC_node_seq(init, ALLOC_node_seq(body, ret));
-    }
-
     NODE *def_node = ALLOC_node_def(fname, (uint32_t)nparams, (uint32_t)n_pos_named,
                                     (uint32_t)sc.nlocals,
                                     (uint32_t)ndefaults, didx,
                                     (uint32_t)(sc.has_nested_def ? 0 : 1),
-                                    nidx, flags, body);
+                                    nidx, flags,
+                                    (uint32_t)(sc.is_generator ? 1 : 0),
+                                    body);
     // Class body: node_def's side effect already added the method;
     // discard the returned value (the method dict is the binding).
     if (in_class_body) return def_node;
@@ -1679,6 +1695,159 @@ parse_class(void)
     }
     if (in_class_body) return cls;
     return make_store(cname, cls);
+}
+
+// match / case pattern parsing.  Patterns:
+//   _                       wildcard
+//   literal (int / str /
+//     None / True / False)  literal compare
+//   NAME                    capture (binds the subject)
+//   ClassName               class isinstance check
+//   pat | pat               OR
+//   [a, b, ...]             sequence
+//   (a, b, ...)             sequence (tuple form)
+static int parse_pattern_or(void);
+
+static int
+parse_pattern_atom(void)
+{
+    int k = peek_tok(0)->kind;
+    struct pypat p = {0};
+    if (k == T_INT || k == T_FLOAT || k == T_STR
+            || k == T_NONE || k == T_TRUE || k == T_FALSE) {
+        p.kind = PYPAT_LITERAL;
+        p.literal = parse_atom();
+        return pat_alloc(p);
+    }
+    if (k == T_MINUS) {
+        // negative literal
+        p.kind = PYPAT_LITERAL;
+        p.literal = parse_factor();
+        return pat_alloc(p);
+    }
+    if (k == T_NAME) {
+        // _ wildcard, lowercase NAME = capture, ClassName(possibly with .) = value/class
+        const char *nm = peek_tok(0)->sval;
+        if (strcmp(nm, "_") == 0) {
+            tok_pos++;
+            p.kind = PYPAT_WILDCARD;
+            return pat_alloc(p);
+        }
+        // Lookahead: NAME (`.` NAME)* `(` ⇒ class pattern; NAME (`.` NAME)+ ⇒ value pattern
+        // For simplicity: capitalized NAME w/o trailer ⇒ class isinstance; else capture.
+        if (peek_tok(1)->kind == T_LPAREN) {
+            // class pattern Cls()
+            NODE *cls_node = parse_atom();
+            expect(T_LPAREN, "'('");
+            expect(T_RPAREN, "')'");
+            p.kind = PYPAT_CLASS;
+            p.literal = cls_node;
+            return pat_alloc(p);
+        }
+        if (peek_tok(1)->kind == T_DOT) {
+            // value pattern: dotted reference
+            NODE *value_expr = parse_atom();
+            while (peek_tok(0)->kind == T_DOT) {
+                tok_pos++;
+                if (peek_tok(0)->kind != T_NAME) parse_error("expected NAME after '.'");
+                value_expr = ALLOC_node_attr_get(value_expr, peek_tok(0)->sval);
+                tok_pos++;
+            }
+            p.kind = PYPAT_VALUE;
+            p.literal = value_expr;
+            return pat_alloc(p);
+        }
+        // capture
+        tok_pos++;
+        p.kind = PYPAT_CAPTURE;
+        if (cur_scope && !scope_is_global_decl(cur_scope, nm)) {
+            p.slot = scope_add_local(cur_scope, nm);
+            p.name = NULL;
+        } else {
+            p.slot = -1;
+            p.name = nm;
+        }
+        return pat_alloc(p);
+    }
+    if (k == T_LBRACK || k == T_LPAREN) {
+        int close = (k == T_LBRACK) ? T_RBRACK : T_RPAREN;
+        tok_pos++;
+        // collect children
+        int children[64]; int nc = 0;
+        if (peek_tok(0)->kind != close) {
+            children[nc++] = parse_pattern_or();
+            while (match_tok(T_COMMA)) {
+                if (peek_tok(0)->kind == close) break;
+                if (nc >= 64) parse_error("seq pattern too long");
+                children[nc++] = parse_pattern_or();
+            }
+        }
+        if (close == T_RBRACK) expect(T_RBRACK, "']'");
+        else                   expect(T_RPAREN, "')'");
+        // Children were allocated; their indices may not be contiguous
+        // because parse_pattern_or recurses.  Repack into a contiguous
+        // run for `first_child`.
+        int base = (int)pystro_patterns_len;
+        for (int i = 0; i < nc; i++) {
+            struct pypat copy = PYSTRO_PATTERNS[children[i]];
+            pat_alloc(copy);
+        }
+        p.kind = PYPAT_SEQUENCE;
+        p.first_child = base;
+        p.nchildren = nc;
+        return pat_alloc(p);
+    }
+    parse_error("unexpected token in pattern (kind=%d)", k);
+}
+
+static int
+parse_pattern_or(void)
+{
+    int first = parse_pattern_atom();
+    if (peek_tok(0)->kind != T_PIPE) return first;
+    int alts[16]; int n = 0;
+    alts[n++] = first;
+    while (match_tok(T_PIPE)) {
+        if (n >= 16) parse_error("too many | alternatives");
+        alts[n++] = parse_pattern_atom();
+    }
+    int base = (int)pystro_patterns_len;
+    for (int i = 0; i < n; i++) {
+        struct pypat copy = PYSTRO_PATTERNS[alts[i]];
+        pat_alloc(copy);
+    }
+    struct pypat p = {0};
+    p.kind = PYPAT_OR;
+    p.first_child = base;
+    p.nchildren = n;
+    return pat_alloc(p);
+}
+
+static NODE *
+parse_match(void)
+{
+    expect(T_MATCH, "'match'");
+    NODE *subject = parse_expr();
+    expect(T_COLON, "':'");
+    expect(T_NEWLINE, "newline");
+    expect(T_INDENT, "indent");
+    struct pycase cases[64];
+    int nc = 0;
+    while (peek_tok(0)->kind == T_CASE) {
+        tok_pos++;
+        int pat = parse_pattern_or();
+        NODE *guard = NULL;
+        if (match_tok(T_IF)) guard = parse_expr();
+        NODE *body = parse_suite();
+        if (nc >= 64) parse_error("too many cases");
+        cases[nc].pat_idx = pat;
+        cases[nc].guard = guard;
+        cases[nc].body = body;
+        nc++;
+    }
+    expect(T_DEDENT, "dedent");
+    size_t base = cases_reserve(cases, nc);
+    return ALLOC_node_match(subject, (uint32_t)base, (uint32_t)nc);
 }
 
 // `with EXPR as NAME:` desugars to:
@@ -1847,25 +2016,26 @@ parse_del(void)
         (uint32_t)bidx, 1);
 }
 
-// `yield E` (and `yield from E`) — eager v0 implementation: translates
-// to `__genr__.append(E)` (or extend for `yield from`).  The wrapping
-// is set up in parse_def: a hidden local `__genr__` plus a trailing
-// `return __genr__`.
+// `yield E` (and `yield from E`) — true lazy generator implementation.
+// Each `yield` swaps back to the next() caller; the body resumes when
+// next() is called again.  `yield from E` desugars to `for x in E:
+// yield x`.
 static NODE *
 parse_yield(void)
 {
     expect(T_YIELD, "'yield'");
     if (!cur_scope || !cur_scope->is_generator) {
-        // The pre-scan should have caught this, but be defensive.
         parse_error("'yield' outside generator function");
     }
-    NODE *load_r = ALLOC_node_lref((uint32_t)cur_scope->gen_result_slot);
-    // `yield from E` → for each x in E: __genr__.append(x).  v0 hack:
-    // call extend() if it's iterable.  Plain method_1(__genr__, "extend", E).
     if (peek_tok(0)->kind == T_FROM) {
         tok_pos++;
-        NODE *e = parse_expr();
-        return ALLOC_node_method_1(load_r, intern_name("extend", 6), e);
+        NODE *iter = parse_expr();
+        // Desugar `yield from iter` to `for __yf in iter: yield __yf`.
+        const char *tmp = new_temp_name("__yf");
+        int slot = scope_add_local(cur_scope, tmp);
+        NODE *yld = ALLOC_node_yield(ALLOC_node_lref((uint32_t)slot));
+        NODE *no_else = ALLOC_node_nop();
+        return ALLOC_node_for_local((uint32_t)slot, iter, yld, no_else);
     }
     NODE *e;
     if (peek_tok(0)->kind == T_NEWLINE || peek_tok(0)->kind == T_SEMI
@@ -1873,7 +2043,7 @@ parse_yield(void)
         e = ALLOC_node_const_none();
     else
         e = parse_expr();
-    return ALLOC_node_method_1(load_r, intern_name("append", 6), e);
+    return ALLOC_node_yield(e);
 }
 
 static NODE *
@@ -2265,6 +2435,7 @@ parse_stmt(void)
     if (k == T_FOR)    return parse_for();
     if (k == T_TRY)    return parse_try();
     if (k == T_WITH)   return parse_with();
+    if (k == T_MATCH)  return parse_match();
     NODE *s = parse_simple_stmt();
     // Allow optional ; or NEWLINE
     if (match_tok(T_SEMI)) {

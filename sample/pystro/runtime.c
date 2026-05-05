@@ -197,7 +197,8 @@ py_make_func(struct Node *body, struct pyframe *env,
              const char *name, int nparams, int n_pos_named,
              int nlocals, VALUE *defaults_per_slot, bool leaf,
              const char **param_names,
-             bool has_varargs, bool has_kwargs)
+             bool has_varargs, bool has_kwargs,
+             bool is_generator)
 {
     struct pyobj *o = py_alloc(PY_T_FUNC);
     o->func.body = body;
@@ -209,6 +210,7 @@ py_make_func(struct Node *body, struct pyframe *env,
     o->func.leaf = leaf;
     o->func.has_varargs = has_varargs;
     o->func.has_kwargs = has_kwargs;
+    o->func.is_generator = is_generator;
     o->func.param_names = param_names;
     o->func.defining_class = PY_NONE;
     extern CTX *py_current_ctx;
@@ -418,6 +420,13 @@ VALUE
 py_class_lookup_method_pub(VALUE cls, const char *name)
 {
     return py_class_lookup_method(cls, name);
+}
+
+bool
+py_func_is_generator(VALUE fn)
+{
+    return PY_IS_PTR(fn) && PY_PTR(fn)->type == PY_T_FUNC
+        && PY_PTR(fn)->func.is_generator;
 }
 
 // Cooperative super() lookup: walk self.__class__'s MRO; find
@@ -652,15 +661,17 @@ py_neg(CTX *c, VALUE a)
 // if the dunder exists, else PY_NONE (caller falls through to the
 // regular numeric / type logic).  We use 0 as "method not defined"
 // sentinel since PY_NONE is a valid return.
-static VALUE
+static inline VALUE
 py_try_binop_dunder(CTX *c, const char *name, VALUE a, VALUE b)
 {
-    if (py_is_instance(a)) {
-        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(a)->inst.cls), name);
-        if (m != PY_NONE) {
-            VALUE av[2] = { a, b };
-            return py_apply(c, m, 2, av);
-        }
+    // Fast path: neither operand is an instance — no dunder to check.
+    // This covers virtually every arithmetic operation in numeric code.
+    if (LIKELY(!(PY_IS_PTR(a) && PY_PTR(a)->type == PY_T_INSTANCE)))
+        return (VALUE)0;
+    VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(a)->inst.cls), name);
+    if (m != PY_NONE) {
+        VALUE av[2] = { a, b };
+        return py_apply(c, m, 2, av);
     }
     return (VALUE)0;
 }
@@ -1540,6 +1551,11 @@ py_iter_init(CTX *c, struct py_iter *it, VALUE iterable)
             return;
         }
     }
+    if (PY_IS_PTR(iterable) && PY_PTR(iterable)->type == PY_T_GEN) {
+        it->kind = 7;
+        it->container = iterable;
+        return;
+    }
     py_raise_exc(c, c->EXC_TypeError, "object is not iterable");
 }
 
@@ -1562,6 +1578,21 @@ py_iter_next(CTX *c, struct py_iter *it, VALUE *out)
         *out = PY_FIX((unsigned char)PY_PTR(it->container)->str.chars[it->i]);
         it->i++;
         return true;
+      case 7: {
+        extern VALUE py_gen_next(CTX *c, VALUE g);
+        VALUE r = py_gen_next(c, it->container);
+        if (c->state == PY_STATE_RAISE) {
+            VALUE exc = c->state_value;
+            if (py_exc_matches(c, exc, c->EXC_StopIteration)) {
+                c->state = PY_STATE_NORMAL;
+                c->state_value = PY_NONE;
+                return false;
+            }
+            return false;
+        }
+        *out = r;
+        return true;
+      }
       case 2:
         if (it->step > 0 ? it->i >= it->end : it->i <= it->end) return false;
         *out = py_make_int(it->i);
@@ -1908,7 +1939,13 @@ py_apply_kw(CTX *c, VALUE fn, int argc, VALUE *argv,
         }
         return inst;
     }
-    if (py_is_func(fn)) return py_apply_kw_func(c, fn, argc, argv, kwc, kwnames, kwvalues);
+    if (py_is_func(fn)) {
+        extern bool py_func_is_generator(VALUE fn);
+        extern VALUE py_make_gen(CTX *c, VALUE fn, int argc, VALUE *argv, int kwc, const char **kwn, VALUE *kwv);
+        if (py_func_is_generator(fn))
+            return py_make_gen(c, fn, argc, argv, kwc, kwnames, kwvalues);
+        return py_apply_kw_func(c, fn, argc, argv, kwc, kwnames, kwvalues);
+    }
     if (py_is_builtin(fn)) {
         if (kwc > 0) py_raise_exc(c, c->EXC_TypeError,
                                   "%s() does not accept keyword arguments",
@@ -1949,6 +1986,10 @@ py_apply_slow(CTX *c, VALUE fn, int argc, VALUE *argv)
         return inst;
     }
     if (py_is_func(fn)) {
+        extern bool py_func_is_generator(VALUE fn);
+        extern VALUE py_make_gen(CTX *c, VALUE fn, int argc, VALUE *argv, int kwc, const char **kwn, VALUE *kwv);
+        if (py_func_is_generator(fn))
+            return py_make_gen(c, fn, argc, argv, 0, NULL, NULL);
         // All other cases (default args, *args, **kwargs, arity
         // mismatch) route through the keyword-aware dispatcher.
         return py_apply_kw_func(c, fn, argc, argv, 0, NULL, NULL);
@@ -2225,6 +2266,296 @@ py_exc_matches(CTX *c, VALUE exc, VALUE cls)
     if (!py_is_instance(exc)) return false;
     if (!py_is_class(cls)) return false;
     return class_is_ancestor(PY_OBJ_VAL(PY_PTR(exc)->inst.cls), cls);
+}
+
+// ---------------------------------------------------------------------------
+// Generators (ucontext-based lazy yield).
+//
+// A generator function (one whose body contains `yield`) is detected by
+// the parser; calling it does NOT run the body — instead it builds a
+// PY_T_GEN object holding the captured args + a fresh stack + an
+// uninitialised `body_ctx`.  next() / iter().__next__ swap into the
+// body, which runs until it hits `yield expr`; yield stashes the value
+// and swaps back.  The C stack used by the generator is a separate
+// mmap-style allocation (we use GC_malloc atomic; Boehm scans the
+// caller's stack but not pointers ON the gen's stack — to keep VALUEs
+// alive we add the stack region to GC_add_roots before running).
+// ---------------------------------------------------------------------------
+
+#include <sys/mman.h>
+
+#define PYGEN_STACK_SZ (256 * 1024)
+
+struct pygen {
+    ucontext_t caller_ctx;
+    ucontext_t body_ctx;
+    void      *stack;
+    bool       started;
+    bool       done;
+    VALUE      yield_value;
+    // Captured at instantiation:
+    VALUE      func;
+    int        argc;
+    VALUE     *argv;
+    int        kwc;
+    const char **kwnames;
+    VALUE     *kwvalues;
+    // Saved gen-side CTX at every yield/exit:
+    struct pyframe *gen_env;
+    struct pyglobals *gen_globals;
+    VALUE       gen_method_class;
+    int         gen_state;
+    VALUE       gen_state_value;
+    // Pending exception payload to re-raise into the body when the
+    // generator is GC'd (close()).  Not used in v0.
+    int         pending_throw;
+    // Back-link to outer enclosing gen (NULL if outermost) so nested
+    // gens compose.
+    struct pygen *prev_gen;
+};
+
+// makecontext takes only int args; pass the gen pointer through a
+// process-global slot.
+static struct pygen *G_gen_to_start = NULL;
+
+static VALUE py_apply_gen_call(CTX *c, VALUE fn, int argc, VALUE *argv, int kwc, const char **kwn, VALUE *kwv);
+
+static void
+gen_entry(void)
+{
+    extern CTX *py_current_ctx;
+    CTX *c = py_current_ctx;
+    struct pygen *g = G_gen_to_start;
+    G_gen_to_start = NULL;
+
+    // Same setup as py_apply_kw_func: build a frame, fill from argv /
+    // kwargs / defaults, EVAL the body.
+    extern VALUE py_apply_kw_func(CTX *c, VALUE fn, int argc, VALUE *argv,
+                                  int kwc, const char **kwnames, VALUE *kwvalues);
+    // We can't simply call py_apply_kw_func because that would set up
+    // CTX state including saving/restoring c->env around EVAL, but we
+    // want the call-stack to STAY in the gen's context until done.
+    // Instead emulate: build the frame, set CTX, run, set done.
+    struct pyobj *f = PY_PTR(g->func);
+    int needed = f->func.nparams;
+    int n_pos_named = f->func.n_pos_named;
+    bool has_va = f->func.has_varargs;
+    bool has_kw = f->func.has_kwargs;
+    int va_slot = has_va ? n_pos_named : -1;
+    int kwonly_start = n_pos_named + (has_va ? 1 : 0);
+    int n_kwonly = needed - kwonly_start - (has_kw ? 1 : 0);
+    int kw_slot = has_kw ? (kwonly_start + n_kwonly) : -1;
+
+    struct pyframe *new_env = py_new_frame(f->func.env, f->func.nlocals);
+    bool *filled = (bool *)alloca(sizeof(bool) * (needed > 0 ? needed : 1));
+    for (int i = 0; i < needed; i++) filled[i] = false;
+    int pos_into = g->argc < n_pos_named ? g->argc : n_pos_named;
+    for (int i = 0; i < pos_into; i++) { new_env->slots[i] = g->argv[i]; filled[i] = true; }
+    if (has_va) {
+        int n_extra = g->argc - pos_into;
+        VALUE *items = n_extra > 0 ? (VALUE *)alloca(sizeof(VALUE) * n_extra) : NULL;
+        for (int i = 0; i < n_extra; i++) items[i] = g->argv[pos_into + i];
+        new_env->slots[va_slot] = py_make_tuple(items, n_extra);
+        filled[va_slot] = true;
+    }
+    if (has_kw) {
+        new_env->slots[kw_slot] = py_make_dict();
+        filled[kw_slot] = true;
+    }
+    for (int i = 0; i < g->kwc; i++) {
+        int slot = -1;
+        if (f->func.param_names) {
+            for (int j = 0; j < n_pos_named; j++)
+                if (f->func.param_names[j] && strcmp(f->func.param_names[j], g->kwnames[i]) == 0) { slot = j; break; }
+            if (slot < 0)
+                for (int j = kwonly_start; j < kwonly_start + n_kwonly; j++)
+                    if (f->func.param_names[j] && strcmp(f->func.param_names[j], g->kwnames[i]) == 0) { slot = j; break; }
+        }
+        if (slot >= 0) { new_env->slots[slot] = g->kwvalues[i]; filled[slot] = true; }
+        else if (has_kw) py_dict_set(c, new_env->slots[kw_slot],
+                                     py_make_str(g->kwnames[i], strlen(g->kwnames[i])),
+                                     g->kwvalues[i]);
+    }
+    for (int i = 0; i < needed; i++) {
+        if (filled[i] || i == va_slot || i == kw_slot) continue;
+        VALUE d = f->func.defaults[i];
+        if (d == (VALUE)0) {
+            // missing required — set None and let the body misbehave;
+            // gen creation should have caught this.
+            new_env->slots[i] = PY_NONE;
+        } else new_env->slots[i] = d;
+    }
+
+    c->env = new_env;
+    c->globals = f->func.fglobals ? f->func.fglobals : c->globals;
+    c->method_class = f->func.defining_class;
+    g->prev_gen = c->current_gen;
+    c->current_gen = g;
+
+    EVAL(c, f->func.body);
+
+    g->done = true;
+    c->current_gen = g->prev_gen;
+    swapcontext(&g->body_ctx, &g->caller_ctx);
+    // unreachable
+}
+
+VALUE
+py_make_gen(CTX *c, VALUE fn, int argc, VALUE *argv, int kwc, const char **kwn, VALUE *kwv)
+{
+    (void)c;
+    struct pygen *g = (struct pygen *)GC_malloc(sizeof(struct pygen));
+    g->stack = GC_malloc(PYGEN_STACK_SZ);
+    g->started = false;
+    g->done = false;
+    g->func = fn;
+    g->argc = argc;
+    g->argv = (VALUE *)GC_malloc(sizeof(VALUE) * (argc ? argc : 1));
+    for (int i = 0; i < argc; i++) g->argv[i] = argv[i];
+    g->kwc = kwc;
+    if (kwc > 0) {
+        g->kwnames = (const char **)GC_malloc(sizeof(char *) * kwc);
+        g->kwvalues = (VALUE *)GC_malloc(sizeof(VALUE) * kwc);
+        for (int i = 0; i < kwc; i++) { g->kwnames[i] = kwn[i]; g->kwvalues[i] = kwv[i]; }
+    }
+    g->prev_gen = NULL;
+    struct pyobj *o = py_alloc(PY_T_GEN);
+    o->gen = g;
+    return PY_OBJ_VAL(o);
+}
+
+VALUE
+py_gen_next(CTX *c, VALUE gen_v)
+{
+    struct pygen *g = PY_PTR(gen_v)->gen;
+    if (g->done) {
+        // Set RAISE without longjmp so the caller's iter loop can
+        // catch StopIteration without setjmp gymnastics.
+        c->state = PY_STATE_RAISE;
+        c->state_value = py_make_instance(c->EXC_StopIteration);
+        return PY_NONE;
+    }
+
+    // Save caller state on this stack frame.
+    struct pyframe *saved_env = c->env;
+    int saved_state = c->state;
+    VALUE saved_sval = c->state_value;
+    VALUE saved_mc = c->method_class;
+    struct pyglobals *saved_g = c->globals;
+    struct pygen *saved_cg = c->current_gen;
+
+    if (!g->started) {
+        g->started = true;
+        getcontext(&g->body_ctx);
+        g->body_ctx.uc_stack.ss_sp = g->stack;
+        g->body_ctx.uc_stack.ss_size = PYGEN_STACK_SZ;
+        g->body_ctx.uc_link = &g->caller_ctx;
+        G_gen_to_start = g;
+        makecontext(&g->body_ctx, gen_entry, 0);
+    } else {
+        // Restore gen state for resume.
+        c->env = g->gen_env;
+        c->state = g->gen_state;
+        c->state_value = g->gen_state_value;
+        c->method_class = g->gen_method_class;
+        c->globals = g->gen_globals;
+        c->current_gen = g;
+    }
+    swapcontext(&g->caller_ctx, &g->body_ctx);
+    // Body yielded or finished.
+    bool was_done = g->done;
+    bool raised = (c->state == PY_STATE_RAISE);
+    VALUE exc = c->state_value;
+    VALUE r = was_done ? PY_NONE : g->yield_value;
+
+    // Restore caller state.
+    c->env = saved_env;
+    c->state = saved_state;
+    c->state_value = saved_sval;
+    c->method_class = saved_mc;
+    c->globals = saved_g;
+    c->current_gen = saved_cg;
+
+    if (raised) { c->state = PY_STATE_RAISE; c->state_value = exc; return PY_NONE; }
+    if (was_done) {
+        c->state = PY_STATE_RAISE;
+        c->state_value = py_make_instance(c->EXC_StopIteration);
+        return PY_NONE;
+    }
+    return r;
+}
+
+void
+py_gen_yield(CTX *c, VALUE v)
+{
+    struct pygen *g = c->current_gen;
+    if (!g) py_raise_exc(c, c->EXC_RuntimeError, "yield outside of generator");
+    g->yield_value = v;
+    // Save gen state.
+    g->gen_env = c->env;
+    g->gen_state = c->state;
+    g->gen_state_value = c->state_value;
+    g->gen_method_class = c->method_class;
+    g->gen_globals = c->globals;
+    swapcontext(&g->body_ctx, &g->caller_ctx);
+    // Resumed: next() restored gen-side CTX before swapping back in.
+}
+
+// ---------------------------------------------------------------------------
+// match / case pattern matching.
+//
+// Patterns:
+//   PYPAT_LITERAL   value-equality vs the literal expression
+//   PYPAT_CAPTURE   bind the value to a name (always succeeds)
+//   PYPAT_WILDCARD  matches anything, no binding
+//   PYPAT_OR        first matching child wins (bindings from that child)
+//   PYPAT_SEQUENCE  list/tuple of matching length, element-wise
+//   PYPAT_CLASS     isinstance check (no nested attribute matching here)
+//   PYPAT_VALUE     dotted-name lookup at match time (e.g. enum)
+// ---------------------------------------------------------------------------
+
+bool
+py_pat_match(CTX *c, int pat_idx, VALUE v)
+{
+    struct pypat *p = &PYSTRO_PATTERNS[pat_idx];
+    switch (p->kind) {
+      case PYPAT_WILDCARD:
+        return true;
+      case PYPAT_LITERAL: {
+        VALUE lit = EVAL(c, p->literal);
+        if (c->state != PY_STATE_NORMAL) return false;
+        return py_eq(c, v, lit) == PY_TRUE;
+      }
+      case PYPAT_VALUE: {
+        VALUE val = EVAL(c, p->literal);
+        if (c->state != PY_STATE_NORMAL) return false;
+        return v == val;     // identity (Python uses == here, close enough)
+      }
+      case PYPAT_CAPTURE:
+        if (p->slot >= 0) c->env->slots[p->slot] = v;
+        else              py_global_set(c, p->name, v);
+        return true;
+      case PYPAT_OR:
+        for (int i = 0; i < p->nchildren; i++)
+            if (py_pat_match(c, p->first_child + i, v)) return true;
+        return false;
+      case PYPAT_SEQUENCE: {
+        if (!(py_is_list(v) || py_is_tuple(v))) return false;
+        if ((int)PY_PTR(v)->list.len != p->nchildren) return false;
+        for (int i = 0; i < p->nchildren; i++)
+            if (!py_pat_match(c, p->first_child + i, PY_PTR(v)->list.items[i]))
+                return false;
+        return true;
+      }
+      case PYPAT_CLASS: {
+        VALUE cls = EVAL(c, p->literal);
+        if (c->state != PY_STATE_NORMAL) return false;
+        if (!py_is_class(cls)) return false;
+        if (!py_is_instance(v)) return false;
+        return class_is_ancestor(PY_OBJ_VAL(PY_PTR(v)->inst.cls), cls);
+      }
+    }
+    return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -3586,7 +3917,7 @@ static VALUE
 bi_iter(CTX *c, int argc, VALUE *argv)
 {
     (void)argc;
-    // For user instances with __iter__, call it directly.
+    if (PY_IS_PTR(argv[0]) && PY_PTR(argv[0])->type == PY_T_GEN) return argv[0];
     if (py_is_instance(argv[0])) {
         VALUE cls = PY_OBJ_VAL(PY_PTR(argv[0])->inst.cls);
         VALUE im = py_class_lookup_method(cls, "__iter__");
@@ -3595,7 +3926,6 @@ bi_iter(CTX *c, int argc, VALUE *argv)
             return py_apply(c, im, 1, av);
         }
     }
-    // Built-in iterable: wrap a fresh struct py_iter in a PY_T_ITER pyobj.
     struct pyobj *o = py_alloc(PY_T_ITER);
     o->iter_state = (struct py_iter *)GC_malloc(sizeof(struct py_iter));
     py_iter_init(c, o->iter_state, argv[0]);
@@ -3606,6 +3936,18 @@ static VALUE
 bi_next(CTX *c, int argc, VALUE *argv)
 {
     VALUE it = argv[0];
+    if (PY_IS_PTR(it) && PY_PTR(it)->type == PY_T_GEN) {
+        if (argc >= 2 && PY_PTR(it)->gen->done) return argv[1];
+        VALUE r = py_gen_next(c, it);
+        if (c->state == PY_STATE_RAISE && argc >= 2) {
+            VALUE exc = c->state_value;
+            if (py_exc_matches(c, exc, c->EXC_StopIteration)) {
+                c->state = PY_STATE_NORMAL; c->state_value = PY_NONE;
+                return argv[1];
+            }
+        }
+        return r;
+    }
     if (PY_IS_PTR(it) && PY_PTR(it)->type == PY_T_ITER) {
         VALUE r;
         if (py_iter_next(c, PY_PTR(it)->iter_state, &r)) return r;

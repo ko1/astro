@@ -766,6 +766,20 @@ node_raise_bare(CTX * restrict c, NODE * restrict n)
     return PY_NONE;
 }
 
+// `yield expr` — stash the value on c->current_gen and swap back to
+// the caller of next() / iter().  The body resumes here when next()
+// is called again.
+NODE_DEF @noinline
+node_yield(CTX * restrict c, NODE * restrict n, NODE *val)
+{
+    (void)n;
+    extern void py_gen_yield(CTX *c, VALUE v);
+    VALUE v = EVAL_ARG(c, val);
+    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+    py_gen_yield(c, v);
+    return PY_NONE;
+}
+
 // try / except / else / finally.  Defers to a host function whose
 // frame holds the `setjmp` (EVAL_xxx is `always_inline` so we can't
 // put setjmp directly in a NODE_DEF body).
@@ -786,7 +800,7 @@ node_try(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t handlers_idx,
 // stores the returned value via make_store for top-level / nested-def
 // bindings.
 NODE_DEF @noinline
-node_def(CTX * restrict c, NODE * restrict n, const char *name, uint32_t nparams, uint32_t n_pos_named, uint32_t nlocals, uint32_t ndefaults, uint32_t defaults_idx, uint32_t leaf, uint32_t names_idx, uint32_t flags, NODE *body)
+node_def(CTX * restrict c, NODE * restrict n, const char *name, uint32_t nparams, uint32_t n_pos_named, uint32_t nlocals, uint32_t ndefaults, uint32_t defaults_idx, uint32_t leaf, uint32_t names_idx, uint32_t flags, uint32_t is_gen, NODE *body)
 {
     (void)n;
     VALUE *dv = NULL;
@@ -803,7 +817,8 @@ node_def(CTX * restrict c, NODE * restrict n, const char *name, uint32_t nparams
     bool has_va = (flags & 1) != 0;
     bool has_kw = (flags & 2) != 0;
     VALUE fn = py_make_func(body, c->env, name, (int)nparams, (int)n_pos_named,
-                            (int)nlocals, dv, leaf != 0, pn, has_va, has_kw);
+                            (int)nlocals, dv, leaf != 0, pn, has_va, has_kw,
+                            is_gen != 0);
     if (c->current_class != PY_NONE)
         py_class_add_method(c, c->current_class, name, fn);
     return fn;
@@ -897,7 +912,7 @@ node_lambda(CTX * restrict c, NODE * restrict n, uint32_t nparams, uint32_t nloc
     }
     const char **pn = nparams > 0 ? &PYSTRO_NAME_TABLE[names_idx] : NULL;
     return py_make_func(body, c->env, "<lambda>", (int)nparams, (int)nparams,
-                        (int)nlocals, dv, leaf != 0, pn, false, false);
+                        (int)nlocals, dv, leaf != 0, pn, false, false, false);
 }
 
 // ---------------------------------------------------------------------------
@@ -1192,6 +1207,34 @@ node_super_method(CTX * restrict c, NODE * restrict n, NODE *base, const char *m
         if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
     }
     return py_apply(c, m, (int)argc + 1, av);
+}
+
+// `match SUBJECT: case PAT (if GUARD): BODY ...`
+//
+// PYSTRO_CASES[cases_idx..idx+ncases] are the cases; each case carries
+// a root pattern index + optional guard + body.  The pattern tree is
+// in PYSTRO_PATTERNS.  Pattern matching may bind names — those are
+// always evaluated as `make_store` operations during the walk.
+NODE_DEF @noinline
+node_match(CTX * restrict c, NODE * restrict n, NODE *subject, uint32_t cases_idx, uint32_t ncases)
+{
+    (void)n;
+    extern bool py_pat_match(CTX *c, int pat_idx, VALUE v);
+    VALUE sv = EVAL_ARG(c, subject);
+    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+    for (uint32_t i = 0; i < ncases; i++) {
+        struct pycase *cs = &PYSTRO_CASES[cases_idx + i];
+        if (!py_pat_match(c, cs->pat_idx, sv)) continue;
+        if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+        if (cs->guard) {
+            VALUE g = EVAL(c, cs->guard);
+            if (c->state != PY_STATE_NORMAL) return PY_NONE;
+            if (!py_is_truthy(g)) continue;
+        }
+        EVAL(c, cs->body);
+        return PY_NONE;
+    }
+    return PY_NONE;
 }
 
 // Tuple/list unpacking assignment: `a, b, c = expr`.  The targets live

@@ -10,6 +10,7 @@
 #include <assert.h>
 #include <setjmp.h>
 #include <gmp.h>
+#include <ucontext.h>
 
 // Boehm-Demers-Weiser conservative GC.
 extern void *GC_malloc(size_t);
@@ -102,12 +103,14 @@ enum pyobj_type {
     PY_T_CLASSMETHOD,     // wraps a func; binds the class instead of self
     PY_T_PROPERTY,        // wraps a getter func; called on attribute read
     PY_T_ITER,            // built-in iterator wrapper around a struct py_iter
+    PY_T_GEN,             // generator (ucontext-backed lazy yield)
 };
 
 struct pyobj;
 struct pyframe;
 struct pyclass;
 struct pydict;
+struct pygen;
 struct CTX_struct;
 struct Node;
 
@@ -170,6 +173,8 @@ struct pyobj {
             bool leaf;
             bool has_varargs;       // a `*args` slot is present
             bool has_kwargs;        // a `**kwargs` slot is present
+            bool is_generator;      // body contains `yield` — call returns
+                                    // a PY_T_GEN, body runs lazily
             VALUE defining_class;   // class this method was defined on
                                     // (PY_NONE for non-method funcs) —
                                     // used for cooperative super()
@@ -193,6 +198,8 @@ struct pyobj {
         struct { VALUE wrapped; } wrap;
         // PY_T_ITER: holds a `struct py_iter` for stateful iteration.
         struct py_iter *iter_state;
+        // PY_T_GEN: lazy generator (ucontext + body func + saved state).
+        struct pygen *gen;
         struct pyclass cls;
         struct {
             struct pyobj *cls;
@@ -289,6 +296,10 @@ typedef struct CTX_struct {
     jmp_buf *try_stack[64];
     int      try_top;
 
+    // Currently-executing generator (NULL if not inside one).  yield
+    // expressions read this to know which gen to swap back to.
+    struct pygen *current_gen;
+
     // Built-in exception classes (constructed once at install_builtins).
     VALUE EXC_Exception;
     VALUE EXC_TypeError;
@@ -375,7 +386,8 @@ VALUE py_make_func  (struct Node *body, struct pyframe *env,
                      const char *name, int nparams, int n_pos_named,
                      int nlocals, VALUE *defaults_per_slot, bool leaf,
                      const char **param_names,
-                     bool has_varargs, bool has_kwargs);
+                     bool has_varargs, bool has_kwargs,
+                     bool is_generator);
 VALUE py_make_builtin(const char *name, py_builtin_fn fn, int min_argc, int max_argc);
 VALUE py_make_bound (VALUE self, VALUE func);
 VALUE py_make_class (const char *name, VALUE base, bool is_exception);
@@ -516,5 +528,35 @@ struct pydefault {
     struct Node *expr;
 };
 extern struct pydefault        *PYSTRO_DEFAULTS;
+
+// match / case patterns.  The parser packs a tree of patterns into
+// PYSTRO_PATTERNS and gives node_match a starting index per case.
+enum py_pat_kind {
+    PYPAT_LITERAL = 0,    // pre-evaluated literal value
+    PYPAT_CAPTURE,        // name binding (any value matches)
+    PYPAT_WILDCARD,       // `_`
+    PYPAT_OR,             // children union — first matching wins
+    PYPAT_SEQUENCE,       // [a, b, ...] / (a, b, ...)
+    PYPAT_CLASS,          // ClassName() — isinstance check
+    PYPAT_VALUE,          // dotted name read at match time (e.g. Color.RED)
+};
+struct pypat {
+    int kind;
+    struct Node *literal;       // PYPAT_LITERAL / PYPAT_VALUE: AST node
+                                // (a const_int / const_str etc., or a
+                                // class reference for PYPAT_CLASS).
+    int slot;                   // PYPAT_CAPTURE: local slot, -1 if global
+    const char *name;           // PYPAT_CAPTURE: global name (when slot=-1)
+    int first_child;            // OR / SEQUENCE: index into PYSTRO_PATTERNS
+    int nchildren;
+};
+extern struct pypat *PYSTRO_PATTERNS;
+
+struct pycase {
+    int          pat_idx;       // root pattern in PYSTRO_PATTERNS
+    struct Node *guard;         // optional `if guard` (NULL = none)
+    struct Node *body;
+};
+extern struct pycase *PYSTRO_CASES;
 
 #endif // PYSTRO_CONTEXT_H
