@@ -1,0 +1,71 @@
+# String interpolation
+
+"hello \(.)"
+"world"
+"hello world"
+
+"x = \(.x), y = \(.y)"
+{"x":1,"y":2}
+"x = 1, y = 2"
+
+# Combinations
+
+"\(.[0]) and \(.[1])"
+[1,2]
+"1 and 2"
+
+# Format strings
+
+@text
+"abc"
+"abc"
+
+@json
+{"a":1}
+"{\"a\":1}"
+
+@csv
+["a,b","c"]
+"\"a,b\",\"c\""
+
+@tsv
+["a","b","c"]
+"a\tb\tc"
+
+@uri
+"hello world"
+"hello%20world"
+
+@uri
+"a/b"
+"a%2Fb"
+
+@html
+"<b>"
+"&lt;b&gt;"
+
+@base64
+"foo"
+"Zm9v"
+
+@base64d
+"Zm9v"
+"foo"
+
+# String *  (repeat)
+
+"ab" * 3
+null
+"ababab"
+
+# String / (split)
+
+"a,b,c" / ","
+null
+["a","b","c"]
+
+# Concat assoc
+
+"a" + "b" + "c"
+null
+"abc"

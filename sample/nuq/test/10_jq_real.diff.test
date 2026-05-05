@@ -1,0 +1,423 @@
+# Differential against real jq — many of the simple cases from
+# https://github.com/jqlang/jq/blob/master/tests/jq.test
+# (skipping ones that need features not implemented in v0).
+
+# Identity / literals
+
+true
+null
+
+false
+null
+
+null
+42
+
+1
+null
+
+-1
+null
+
+{}
+null
+
+[]
+null
+
+# Basic field access
+
+.foo
+{"foo": 42, "bar": 43}
+
+.foo | .bar
+{"foo": {"bar": 42}, "bar": "badvalue"}
+
+.foo.bar
+{"foo": {"bar": 42}, "bar": "badvalue"}
+
+.foo_bar
+{"foo_bar": 2}
+
+.["foo"].bar
+{"foo": {"bar": 42}, "bar": "badvalue"}
+
+# Array index / iter
+
+.[]
+[1,2,3]
+
+[.[]|.foo?]
+[1,[2],{"foo":3,"bar":4},{},{"foo":5}]
+
+[.[]|.foo?.bar?]
+[1,[2],[],{"foo":3},{"foo":{"bar":4}},{}]
+
+# Comma / pipe
+
+1,1
+[]
+
+1,.
+[]
+
+# Array constructor
+
+[.]
+[2]
+
+[[2]]
+[3]
+
+[{}]
+[2]
+
+[.[]]
+["a"]
+
+# Negative index
+
+[.[-4,-3,-2,-1,0,1,2,3]]
+[1,2,3]
+
+# Range
+
+[range(0;10)]
+null
+
+[range(0;10;3)]
+null
+
+[range(0;-5;-1)]
+null
+
+# Comparisons
+
+. == 1
+1
+
+. == 2
+1
+
+. < 2
+1
+
+. <= 1
+1
+
+# Logic
+
+(true and true) and (false or true)
+null
+
+# Object construction
+
+{a: 1}
+null
+
+{(.d): .a}
+{"a":1, "b":2, "c":3, "d":"foo"}
+
+# String
+
+"hello"
+null
+
+"\("a")"
+null
+
+"\(1+1)"
+null
+
+# Slice
+
+[.[1:3]]
+[0,1,2,3,4,5,6,7]
+
+[.[:3]]
+[0,1,2,3,4,5,6,7]
+
+[.[-3:]]
+[0,1,2,3,4,5,6,7]
+
+# Length
+
+length
+null
+
+length
+"hello"
+
+length
+[1,2,3]
+
+length
+{"a":1,"b":2}
+
+# Type
+
+type
+null
+
+type
+1
+
+type
+"x"
+
+type
+[]
+
+type
+{}
+
+# Keys
+
+keys
+{"b":2,"a":1}
+
+# has
+
+has("a")
+{"a":1,"b":2}
+
+has("c")
+{"a":1,"b":2}
+
+has(0)
+[1,2,3]
+
+has(3)
+[1,2,3]
+
+# add
+
+add
+[1,2,3]
+
+add
+[]
+
+add
+[[1,2],[3,4]]
+
+# min / max
+
+min
+[3,1,2]
+
+max
+[3,1,2]
+
+# unique / sort
+
+unique
+[3,1,2,1,3]
+
+sort
+[3,1,2,1,3]
+
+reverse
+[1,2,3]
+
+# map / select
+
+map(. * 2)
+[1,2,3]
+
+map(select(. > 2))
+[1,2,3,4,5]
+
+# Arithmetic
+
+1+1
+null
+
+1-1
+null
+
+2*3
+null
+
+10/4
+null
+
+7 % 3
+null
+
+-7 % 3
+null
+
+# String
+
+"a"+"b"
+null
+
+# Array
+
+[1,2]+[3,4]
+null
+
+[1,2]-[2]
+null
+
+# Object
+
+{a:1}+{b:2}
+null
+
+# Object multiply (deep merge)
+
+{a:{x:1,y:2}} * {a:{y:3,z:4}}
+null
+
+# String *
+
+"ab" * 3
+null
+
+# String /
+
+"a,b,c" / ","
+null
+
+# Floor / ceil
+
+floor
+1.7
+
+ceil
+1.3
+
+# Recurse
+
+[..]
+[1,[[2]],{"a":[1]}]
+
+# Empty
+
+[empty,1,2]
+null
+
+# Try
+
+try error("a") catch .
+null
+
+# tostring / tonumber
+
+tostring
+123
+
+tostring
+[1,2]
+
+tonumber
+"42.5"
+
+# tojson / fromjson
+
+tojson
+{"a":1}
+
+fromjson
+"{\"a\":1}"
+
+# explode / implode
+
+explode
+"hi"
+
+implode
+[97,98,99]
+
+# split / join
+
+split(",")
+"a,b,c"
+
+join("-")
+["a","b","c"]
+
+# startswith / endswith
+
+startswith("he")
+"hello"
+
+endswith("lo")
+"hello"
+
+# ascii_upcase / downcase
+
+ascii_upcase
+"abc"
+
+ascii_downcase
+"ABC"
+
+# Variables
+
+. as $x | $x + 1
+5
+
+5 as $x | $x * 2
+null
+
+# def
+
+def f: . * 2; f
+3
+
+def f(x): x + 1; f(5)
+null
+
+# reduce
+
+reduce range(5) as $i (0; . + $i)
+null
+
+reduce .[] as $x (0; . + $x)
+[1,2,3,4]
+
+# foreach
+
+[foreach range(5) as $i (0; . + $i)]
+null
+
+# limit
+
+[limit(3; range(10))]
+null
+
+# alt //
+
+null // 5
+null
+
+5 // 10
+null
+
+false // 10
+null
+
+[] // 10
+null
+
+# Equality types
+
+1 == 1.0
+null
+
+null == null
+null
+
+[1,2] == [1,2]
+null
+
+{"a":1} == {"a":1}
+null
+
+# Sorting types
+
+sort
+[null, false, true, 3, "a", [1], {"a":1}]

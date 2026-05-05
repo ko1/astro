@@ -1,0 +1,404 @@
+/*
+ * nuq filter language — AST node definitions.
+ *
+ * Filters are tree-shaped (NOT CPS-chained).  Every filter reads `c->input`
+ * and emits zero or more results into `c->emit_buf` (an array).  The
+ * dispatcher returns one of:
+ *   BR_OK    (0) — normal completion
+ *   BR_BREAK (1) — `break $label` propagating up
+ *   BR_ERROR (2) — error in flight (c->error holds the error value)
+ *
+ * Pipe `f | g` collects f's emits into a temporary buffer, then for each
+ * value runs g.  This is simpler than CPS and gives correct semantics at
+ * the cost of full streaming (we materialise pipe-stage output as one
+ * array).
+ *
+ * `@noinline` is set on most nodes because each calls into runtime.c
+ * helpers that aren't trivially inlinable.  The few inlinable leaves
+ * (literals, identity, field) don't carry the marker so they can be
+ * folded into their callers.
+ */
+
+/* ===== leaves ===== */
+
+NODE_DEF
+node_identity(CTX *c, NODE *n)
+{
+    nuq_emit(c, c->input);
+    return BR_OK;
+}
+
+NODE_DEF
+node_recurse(CTX *c, NODE *n)
+{
+    return nuq_recurse_emit(c, c->input);
+}
+
+NODE_DEF
+node_null(CTX *c, NODE *n)
+{
+    nuq_emit(c, NUQ_NULL);
+    return BR_OK;
+}
+
+NODE_DEF
+node_true(CTX *c, NODE *n)
+{
+    nuq_emit(c, NUQ_TRUE);
+    return BR_OK;
+}
+
+NODE_DEF
+node_false(CTX *c, NODE *n)
+{
+    nuq_emit(c, NUQ_FALSE);
+    return BR_OK;
+}
+
+NODE_DEF
+node_int(CTX *c, NODE *n, int32_t v)
+{
+    nuq_emit(c, NUQ_FIX(v));
+    return BR_OK;
+}
+
+NODE_DEF
+node_lit(CTX *c, NODE *n, uint32_t lit_id)
+{
+    nuq_emit(c, nuq_lit_get(lit_id));
+    return BR_OK;
+}
+
+NODE_DEF
+node_str(CTX *c, NODE *n, const char *s)
+{
+    nuq_emit(c, nuq_make_string(s, strlen(s)));
+    return BR_OK;
+}
+
+NODE_DEF @noinline
+node_interp(CTX *c, NODE *n, uint32_t parts_id)
+{
+    return nuq_interp_eval(c, parts_id);
+}
+
+NODE_DEF @noinline
+node_format(CTX *c, NODE *n, uint32_t fmt_id, NODE *body)
+{
+    return nuq_format_eval(c, fmt_id, body);
+}
+
+/* ===== access ===== */
+
+NODE_DEF
+node_field(CTX *c, NODE *n, const char *name)
+{
+    VALUE v;
+    if (nuq_field_lookup(c->input, name, false, &v)) {
+        nuq_emit(c, v);
+        return BR_OK;
+    }
+    c->error = nuq_make_string("type error", 10);
+    return BR_ERROR;
+}
+
+NODE_DEF
+node_field_opt(CTX *c, NODE *n, const char *name)
+{
+    VALUE v;
+    if (nuq_field_lookup(c->input, name, true, &v)) nuq_emit(c, v);
+    return BR_OK;
+}
+
+NODE_DEF @noinline
+node_index(CTX *c, NODE *n, NODE *expr)
+{
+    return nuq_index_eval(c, expr, false);
+}
+
+NODE_DEF @noinline
+node_index_opt(CTX *c, NODE *n, NODE *expr)
+{
+    return nuq_index_eval(c, expr, true);
+}
+
+NODE_DEF
+node_iter(CTX *c, NODE *n)
+{
+    return nuq_iter_emit(c, c->input, false);
+}
+
+NODE_DEF
+node_iter_opt(CTX *c, NODE *n)
+{
+    return nuq_iter_emit(c, c->input, true);
+}
+
+NODE_DEF @noinline
+node_slice(CTX *c, NODE *n, NODE *startn, NODE *stopn, uint32_t flags)
+{
+    return nuq_slice_eval(c, startn, stopn, flags, false);
+}
+
+NODE_DEF @noinline
+node_slice_opt(CTX *c, NODE *n, NODE *startn, NODE *stopn, uint32_t flags)
+{
+    return nuq_slice_eval(c, startn, stopn, flags, true);
+}
+
+/* ===== composition ===== */
+
+NODE_DEF @noinline
+node_pipe(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
+{
+    return nuq_pipe_eval(c, lhs, rhs);
+}
+
+NODE_DEF
+node_comma(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
+{
+    VALUE r = EVAL_ARG(c, lhs);
+    if (UNLIKELY(r != BR_OK)) return r;
+    return EVAL_ARG(c, rhs);
+}
+
+/* ===== arithmetic ===== */
+
+NODE_DEF @noinline
+node_add(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
+{
+    return nuq_binop_eval(c, lhs, rhs, NUQ_OP_ADD_K);
+}
+
+NODE_DEF @noinline
+node_sub(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
+{
+    return nuq_binop_eval(c, lhs, rhs, NUQ_OP_SUB_K);
+}
+
+NODE_DEF @noinline
+node_mul(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
+{
+    return nuq_binop_eval(c, lhs, rhs, NUQ_OP_MUL_K);
+}
+
+NODE_DEF @noinline
+node_div(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
+{
+    return nuq_binop_eval(c, lhs, rhs, NUQ_OP_DIV_K);
+}
+
+NODE_DEF @noinline
+node_mod(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
+{
+    return nuq_binop_eval(c, lhs, rhs, NUQ_OP_MOD_K);
+}
+
+NODE_DEF @noinline
+node_neg(CTX *c, NODE *n, NODE *expr)
+{
+    return nuq_neg_eval(c, expr);
+}
+
+/* ===== comparisons ===== */
+
+NODE_DEF @noinline
+node_eq(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
+{
+    return nuq_cmpop_eval(c, lhs, rhs, NUQ_CMP_EQ_K);
+}
+
+NODE_DEF @noinline
+node_ne(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
+{
+    return nuq_cmpop_eval(c, lhs, rhs, NUQ_CMP_NE_K);
+}
+
+NODE_DEF @noinline
+node_lt(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
+{
+    return nuq_cmpop_eval(c, lhs, rhs, NUQ_CMP_LT_K);
+}
+
+NODE_DEF @noinline
+node_le(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
+{
+    return nuq_cmpop_eval(c, lhs, rhs, NUQ_CMP_LE_K);
+}
+
+NODE_DEF @noinline
+node_gt(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
+{
+    return nuq_cmpop_eval(c, lhs, rhs, NUQ_CMP_GT_K);
+}
+
+NODE_DEF @noinline
+node_ge(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
+{
+    return nuq_cmpop_eval(c, lhs, rhs, NUQ_CMP_GE_K);
+}
+
+NODE_DEF @noinline
+node_and(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
+{
+    return nuq_andor_eval(c, lhs, rhs, true);
+}
+
+NODE_DEF @noinline
+node_or(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
+{
+    return nuq_andor_eval(c, lhs, rhs, false);
+}
+NODE_DEF
+node_not(CTX *c, NODE *n)
+{
+    nuq_emit(c, nuq_truthy(c->input) ? NUQ_FALSE : NUQ_TRUE);
+    return BR_OK;
+}
+
+NODE_DEF @noinline
+node_alt(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
+{
+    return nuq_alt_eval(c, lhs, rhs);
+}
+
+/* ===== array / object ===== */
+
+NODE_DEF @noinline
+node_array(CTX *c, NODE *n, NODE *body)
+{
+    return nuq_array_eval(c, body);
+}
+
+NODE_DEF
+node_array_empty(CTX *c, NODE *n)
+{
+    nuq_emit(c, nuq_make_array(0));
+    return BR_OK;
+}
+
+NODE_DEF @noinline
+node_object(CTX *c, NODE *n, uint32_t entries_id)
+{
+    return nuq_object_eval(c, entries_id);
+}
+
+/* ===== control ===== */
+
+NODE_DEF @noinline
+node_if(CTX *c, NODE *n, NODE *cond, NODE *thn, NODE *els)
+{
+    return nuq_if_eval(c, cond, thn, els);
+}
+
+NODE_DEF @noinline
+node_try(CTX *c, NODE *n, NODE *body, NODE *handler)
+{
+    return nuq_try_eval(c, body, handler);
+}
+
+NODE_DEF @noinline
+node_as(CTX *c, NODE *n, NODE *src, uint32_t var_id, NODE *body)
+{
+    return nuq_as_eval(c, src, var_id, body);
+}
+
+NODE_DEF
+node_var(CTX *c, NODE *n, uint32_t var_id)
+{
+    nuq_emit(c, nuq_var_get(c, var_id));
+    return BR_OK;
+}
+
+NODE_DEF @noinline
+node_label(CTX *c, NODE *n, uint32_t var_id, NODE *body)
+{
+    VALUE r = EVAL_ARG(c, body);
+    if (r == BR_BREAK && c->break_label == var_id) {
+        c->break_label = 0;
+        return BR_OK;
+    }
+    return r;
+}
+
+NODE_DEF
+node_break(CTX *c, NODE *n, uint32_t var_id)
+{
+    c->break_label = var_id;
+    return BR_BREAK;
+}
+
+NODE_DEF
+node_empty(CTX *c, NODE *n)
+{
+    return BR_OK;
+}
+
+NODE_DEF @noinline
+node_error0(CTX *c, NODE *n)
+{
+    c->error = c->input;
+    return BR_ERROR;
+}
+
+NODE_DEF @noinline
+node_error1(CTX *c, NODE *n, NODE *expr)
+{
+    return nuq_error_eval(c, expr);
+}
+
+/* ===== function machinery ===== */
+
+NODE_DEF @noinline
+node_call0(CTX *c, NODE *n, uint32_t name_id)
+{
+    return nuq_call_eval(c, name_id, 0, NULL);
+}
+
+NODE_DEF @noinline
+node_call1(CTX *c, NODE *n, uint32_t name_id, NODE *a0)
+{
+    return nuq_call_eval1(c, name_id, a0);
+}
+
+NODE_DEF @noinline
+node_call2(CTX *c, NODE *n, uint32_t name_id, NODE *a0, NODE *a1)
+{
+    return nuq_call_eval2(c, name_id, a0, a1);
+}
+
+NODE_DEF @noinline
+node_call3(CTX *c, NODE *n, uint32_t name_id, NODE *a0, NODE *a1, NODE *a2)
+{
+    return nuq_call_eval3(c, name_id, a0, a1, a2);
+}
+
+NODE_DEF @noinline
+node_defs(CTX *c, NODE *n, uint32_t defs_id, NODE *body)
+{
+    return nuq_defs_eval(c, defs_id, body);
+}
+
+NODE_DEF @noinline
+node_reduce(CTX *c, NODE *n, NODE *src, uint32_t var_id, NODE *init, NODE *update)
+{
+    return nuq_reduce_eval(c, src, var_id, init, update);
+}
+
+NODE_DEF @noinline
+node_foreach(CTX *c, NODE *n, NODE *src, uint32_t var_id, NODE *init, NODE *update, NODE *extract)
+{
+    return nuq_foreach_eval(c, src, var_id, init, update, extract);
+}
+
+NODE_DEF @noinline
+node_assign(CTX *c, NODE *n, NODE *path, NODE *value)
+{
+    return nuq_assign_eval(c, path, value);
+}
+
+NODE_DEF @noinline
+node_update_assign(CTX *c, NODE *n, NODE *path, NODE *value, uint32_t op)
+{
+    return nuq_update_assign_eval(c, path, value, op);
+}

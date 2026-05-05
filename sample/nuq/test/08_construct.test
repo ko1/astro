@@ -1,0 +1,67 @@
+# Object construction
+
+{a: 1, b: 2}
+null
+{"a":1,"b":2}
+
+{a: .x, b: .y}
+{"x":1,"y":2}
+{"a":1,"b":2}
+
+# Shorthand: {a} -> {a: .a}
+
+{a, b}
+{"a":1,"b":2,"c":3}
+{"a":1,"b":2}
+
+# String key
+
+{"a-b": 1}
+null
+{"a-b":1}
+
+# Computed key
+
+{(.k): .v}
+{"k":"foo","v":42}
+{"foo":42}
+
+# Object fan-out
+
+[{x: (1,2)}]
+null
+[{"x":1},{"x":2}]
+
+# Array constructors
+
+[1,2,3]
+null
+[1,2,3]
+
+[.[]]
+[1,2,3]
+[1,2,3]
+
+[range(. * 2)]
+3
+[0,1,2,3,4,5]
+
+# Nested
+
+[[1,2],[3,4]]
+null
+[[1,2],[3,4]]
+
+{x: {y: {z: 1}}}
+null
+{"x":{"y":{"z":1}}}
+
+# Pipe inside object value
+
+[{"k":"a","v":1},{"k":"a","v":2},{"k":"b","v":3}] | group_by(.k) | map({key: .[0].k, sum: map(.v) | add})
+null
+[{"key":"a","sum":3},{"key":"b","sum":3}]
+
+{a: (.x | . + 1)}
+{"x":5}
+{"a":6}

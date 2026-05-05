@@ -1,0 +1,87 @@
+# if-then-else
+
+if . > 0 then "pos" else "non-pos" end
+5
+"pos"
+
+if . > 0 then "pos" else "non-pos" end
+-5
+"non-pos"
+
+if . > 0 then "pos" else "non-pos" end
+0
+"non-pos"
+
+# if without else (default = identity)
+
+if . > 0 then "pos" end
+5
+"pos"
+
+if . > 0 then "pos" end
+-5
+-5
+
+# variable bindings
+
+. as $x | $x + 1
+5
+6
+
+[. as $x | $x, $x*2, $x*3]
+4
+[4,8,12]
+
+# def
+
+def double: . * 2; double
+5
+10
+
+def add(x): . + x; add(10)
+5
+15
+
+def f($x): . + $x; f(5)
+3
+8
+
+# reduce
+
+reduce range(5) as $i (0; . + $i)
+null
+10
+
+reduce .[] as $x (0; . + $x)
+[1,2,3,4]
+10
+
+# foreach
+
+[foreach range(5) as $i (0; . + $i)]
+null
+[0,1,3,6,10]
+
+# try/catch
+
+try .[].x catch "fail"
+null
+"fail"
+
+try .a catch "no"
+{"a":1}
+1
+
+[try (1, error("bad"), 3) catch "x"]
+null
+[1,"x"]
+
+# `?` postfix
+
+[.[]?]
+{"a":1}
+[1]
+
+[.foo?]
+"not an obj"
+[]

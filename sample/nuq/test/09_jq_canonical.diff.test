@@ -1,0 +1,209 @@
+# Subset of canonical jq tests — uses jq itself for expected output (.diff.test).
+# Tests fundamental semantics that should match jq exactly.
+
+.
+42
+.
+{"a":1,"b":[1,2,3]}
+.
+"hello"
+
+# Boolean / null
+
+true
+null
+false
+null
+null
+42
+
+# Numeric literals
+
+1
+null
+-1
+null
+3.14
+null
+
+# String
+
+"hello"
+null
+
+# Field access
+
+.foo
+{"foo":42,"bar":"x"}
+
+.foo.bar
+{"foo":{"bar":42}}
+
+# Array literal
+
+[]
+null
+
+# Iter
+
+.[]
+[1,2,3]
+
+.[]
+{"a":1,"b":2}
+
+# Pipe
+
+.foo | .bar
+{"foo":{"bar":42}}
+
+# Comma
+
+.a, .b
+{"a":1,"b":2}
+
+# Array constructor
+
+[.a, .b]
+{"a":1,"b":2}
+
+# Object constructor
+
+{a: 1}
+null
+
+{a: .x}
+{"x":42}
+
+# Length
+
+length
+[1,2,3]
+
+length
+"hello"
+
+length
+{"a":1,"b":2}
+
+# keys
+
+keys
+{"b":2,"a":1}
+
+# values
+
+values
+{"a":1,"b":2}
+
+# has
+
+has("foo")
+{"foo":1}
+
+has("bar")
+{"foo":1}
+
+# range
+
+[range(5)]
+null
+
+[range(2;7)]
+null
+
+# map
+
+map(. * 2)
+[1,2,3]
+
+# select
+
+map(select(. > 2))
+[1,2,3,4,5]
+
+# add
+
+add
+[1,2,3]
+
+add
+["a","b","c"]
+
+# sort / reverse
+
+sort
+[3,1,2]
+
+reverse
+[1,2,3]
+
+# Arithmetic
+
+1+2
+null
+
+10/4
+null
+
+3*4
+null
+
+# Comparison
+
+1 < 2
+null
+
+"a" < "b"
+null
+
+# Logic
+
+true and false
+null
+
+true or false
+null
+
+null | not
+null
+
+# Alt
+
+null // 5
+null
+
+5 // 10
+null
+
+# String split / join
+
+split(",")
+"a,b,c"
+
+join(",")
+["a","b","c"]
+
+# tostring / tonumber
+
+tostring
+42
+
+tonumber
+"3.14"
+
+# explode / implode
+
+explode
+"abc"
+
+implode
+[97,98,99]
+
+# Optional
+
+.foo?
+"not obj"
+
+.[]?
+"not iter"

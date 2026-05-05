@@ -1,0 +1,113 @@
+# Equality
+
+1 == 1
+null
+true
+
+1 == 2
+null
+false
+
+"a" == "a"
+null
+true
+
+null == null
+null
+true
+
+[1,2] == [1,2]
+null
+true
+
+# Not equal
+
+1 != 2
+null
+true
+
+# Ordering
+
+1 < 2
+null
+true
+
+2 < 1
+null
+false
+
+"a" < "b"
+null
+true
+
+# null < false < true < num < str < arr < obj
+
+null < false
+null
+true
+
+false < true
+null
+true
+
+true < 0
+null
+true
+
+0 < ""
+null
+true
+
+"" < []
+null
+true
+
+[] < {}
+null
+true
+
+# Logical
+
+true and false
+null
+false
+
+true and true
+null
+true
+
+true or false
+null
+true
+
+false or false
+null
+false
+
+# not
+
+true | not
+null
+false
+
+null | not
+null
+true
+
+5 | not
+null
+false
+
+# alt //
+
+null // 5
+null
+5
+
+5 // 10
+null
+5
+
+false // 10
+null
+10
