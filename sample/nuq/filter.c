@@ -481,10 +481,24 @@ static struct Node *parse_postfix(lexer_t *L);
 static struct Node *parse_primary(lexer_t *L);
 static struct Node *parse_term_for_keyword(lexer_t *L);
 
+/* For `f?` and bare `try f` (no catch), the handler must still be a
+ * valid NODE for the generated dispatcher (which derefs operand
+ * pointers unconditionally).  Use a sentinel `node_empty` — node_try's
+ * body checks the handler via the c->error path, so node_empty's
+ * dispatcher is never actually invoked when there's no error. */
+static struct Node *g_empty_sentinel = NULL;
+
+static struct Node *
+empty_sentinel(void)
+{
+    if (g_empty_sentinel == NULL) g_empty_sentinel = ALLOC_node_empty();
+    return g_empty_sentinel;
+}
+
 static struct Node *
 wrap_quest(struct Node *body)
 {
-    return ALLOC_node_try(body, NULL);
+    return ALLOC_node_try(body, empty_sentinel());
 }
 
 /* ----- primary --------------------------------------------------------- */
@@ -627,7 +641,7 @@ parse_primary(lexer_t *L)
                 expect(L, TK_KW_THEN, "'then'");
                 struct Node *t2 = parse_pipe(L);
                 struct Node *e3 = NULL;
-                if (accept(L, TK_KW_END)) e3 = NULL;
+                if (accept(L, TK_KW_END)) e3 = ALLOC_node_identity();
                 else if (accept(L, TK_KW_ELSE)) { e3 = parse_pipe(L); expect(L, TK_KW_END, "'end'"); }
                 else parse_error(L, "elif chain too deep");
                 els = ALLOC_node_if(c2, t2, e3);
@@ -635,6 +649,10 @@ parse_primary(lexer_t *L)
             }
             parse_error(L, "expected elif/else/end");
         }
+        /* `if c then t end` ≡ `if c then t else . end` — always provide
+         * a non-NULL else so the generated dispatcher doesn't deref a
+         * NULL operand pointer. */
+        if (els == NULL) els = ALLOC_node_identity();
         return ALLOC_node_if(cond, thn, els);
       }
       case TK_KW_TRY: {
@@ -660,7 +678,13 @@ parse_primary(lexer_t *L)
         struct Node *extract = NULL;
         if (is_for && accept(L, TK_SEMI)) extract = parse_pipe(L);
         expect(L, TK_RP, "')'");
-        if (is_for) return ALLOC_node_foreach(src, var_id, init, update, extract);
+        if (is_for) {
+            /* `foreach SRC as $x (INIT; UPDATE)` (no extract) ≡ extract `.`
+             * — always provide a non-NULL extract so the generated
+             * dispatcher can deref it. */
+            if (extract == NULL) extract = ALLOC_node_identity();
+            return ALLOC_node_foreach(src, var_id, init, update, extract);
+        }
         return ALLOC_node_reduce(src, var_id, init, update);
       }
       case TK_KW_LABEL: {

@@ -132,13 +132,58 @@ node_field_opt(CTX *c, NODE *n, const char *name)
 NODE_DEF
 node_index(CTX *c, NODE *n, NODE *expr)
 {
-    return nuq_index_eval(c, expr, false);
+    VALUE in = c->input;
+    VALUE keys = EVAL_ARG(c, expr);
+    if (UNLIKELY(c->error != NUQ_NULL)) return keys;
+    struct nuq_obj *ko = NUQ_PTR(keys);
+    VALUE r = nuq_make_array(ko->arr.len);
+    for (size_t i = 0; i < ko->arr.len; i++) {
+        VALUE k = ko->arr.items[i];
+        if (NUQ_IS_PTR(in) && NUQ_PTR(in)->type == NUQ_T_NULL) {
+            nuq_array_push(r, NUQ_NULL); continue;
+        }
+        if (NUQ_IS_PTR(in) && NUQ_PTR(in)->type == NUQ_T_OBJECT) {
+            if (NUQ_IS_PTR(k) && NUQ_PTR(k)->type == NUQ_T_STRING)
+                nuq_array_push(r, nuq_object_get(in, k));
+            else { c->error = nuq_make_string("object index must be string", 28); return r; }
+            continue;
+        }
+        if (NUQ_IS_PTR(in) && NUQ_PTR(in)->type == NUQ_T_ARRAY) {
+            int64_t idx;
+            if (NUQ_IS_FIX(k)) idx = NUQ_FIX_VAL(k);
+            else if (NUQ_IS_PTR(k) && NUQ_PTR(k)->type == NUQ_T_DOUBLE) idx = (int64_t)NUQ_PTR(k)->dbl;
+            else { c->error = nuq_make_string("array index must be number", 27); return r; }
+            nuq_array_push(r, nuq_array_get(in, idx));
+            continue;
+        }
+        c->error = nuq_make_string("type error: cannot index", 25);
+        return r;
+    }
+    return r;
 }
 
 NODE_DEF
 node_index_opt(CTX *c, NODE *n, NODE *expr)
 {
-    return nuq_index_eval(c, expr, true);
+    VALUE in = c->input;
+    VALUE keys = EVAL_ARG(c, expr);
+    if (UNLIKELY(c->error != NUQ_NULL)) return keys;
+    struct nuq_obj *ko = NUQ_PTR(keys);
+    VALUE r = nuq_make_array(0);
+    for (size_t i = 0; i < ko->arr.len; i++) {
+        VALUE k = ko->arr.items[i];
+        if (NUQ_IS_PTR(in) && NUQ_PTR(in)->type == NUQ_T_OBJECT) {
+            if (NUQ_IS_PTR(k) && NUQ_PTR(k)->type == NUQ_T_STRING)
+                nuq_array_push(r, nuq_object_get(in, k));
+        } else if (NUQ_IS_PTR(in) && NUQ_PTR(in)->type == NUQ_T_ARRAY) {
+            int64_t idx;
+            if (NUQ_IS_FIX(k)) idx = NUQ_FIX_VAL(k);
+            else if (NUQ_IS_PTR(k) && NUQ_PTR(k)->type == NUQ_T_DOUBLE) idx = (int64_t)NUQ_PTR(k)->dbl;
+            else continue;
+            nuq_array_push(r, nuq_array_get(in, idx));
+        }
+    }
+    return r;
 }
 
 NODE_DEF
@@ -219,14 +264,18 @@ node_pipe(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
     return r;
 }
 
-/* comma: both branches run with same outer input; concat outputs. */
+/* comma: both branches run with same outer input; concat outputs.
+ * When rhs errors mid-stream, we still return the LHS emits — caller
+ * (typically `try`) needs them: `try (1, error, 3) catch h` should
+ * emit 1, then h's output. */
 NODE_DEF
 node_comma(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
 {
     VALUE l = EVAL_ARG(c, lhs);
     if (UNLIKELY(c->error != NUQ_NULL || c->break_label != 0)) return l;
     VALUE rv = EVAL_ARG(c, rhs);
-    if (UNLIKELY(c->error != NUQ_NULL || c->break_label != 0)) return rv;
+    /* Even on rhs error, concat what we have so far with whatever rhs
+     * managed to produce before the error.  This is what jq does. */
     struct nuq_obj *lo = NUQ_PTR(l);
     struct nuq_obj *ro = NUQ_PTR(rv);
     VALUE r = nuq_make_array(lo->arr.len + ro->arr.len);
@@ -371,9 +420,44 @@ node_ge(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
 }
 
 NODE_DEF
-node_and(CTX *c, NODE *n, NODE *lhs, NODE *rhs) { return nuq_andor_eval(c, lhs, rhs, true); }
+node_and(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
+{
+    VALUE l = EVAL_ARG(c, lhs);
+    if (UNLIKELY(c->error != NUQ_NULL)) return l;
+    struct nuq_obj *lo = NUQ_PTR(l);
+    VALUE r = nuq_make_array(0);
+    for (size_t i = 0; i < lo->arr.len; i++) {
+        if (!nuq_truthy(lo->arr.items[i])) {
+            nuq_array_push(r, NUQ_FALSE); continue;
+        }
+        VALUE rv = EVAL_ARG(c, rhs);
+        if (UNLIKELY(c->error != NUQ_NULL)) return rv;
+        struct nuq_obj *ro = NUQ_PTR(rv);
+        for (size_t j = 0; j < ro->arr.len; j++)
+            nuq_array_push(r, nuq_truthy(ro->arr.items[j]) ? NUQ_TRUE : NUQ_FALSE);
+    }
+    return r;
+}
+
 NODE_DEF
-node_or(CTX *c, NODE *n, NODE *lhs, NODE *rhs)  { return nuq_andor_eval(c, lhs, rhs, false); }
+node_or(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
+{
+    VALUE l = EVAL_ARG(c, lhs);
+    if (UNLIKELY(c->error != NUQ_NULL)) return l;
+    struct nuq_obj *lo = NUQ_PTR(l);
+    VALUE r = nuq_make_array(0);
+    for (size_t i = 0; i < lo->arr.len; i++) {
+        if (nuq_truthy(lo->arr.items[i])) {
+            nuq_array_push(r, NUQ_TRUE); continue;
+        }
+        VALUE rv = EVAL_ARG(c, rhs);
+        if (UNLIKELY(c->error != NUQ_NULL)) return rv;
+        struct nuq_obj *ro = NUQ_PTR(rv);
+        for (size_t j = 0; j < ro->arr.len; j++)
+            nuq_array_push(r, nuq_truthy(ro->arr.items[j]) ? NUQ_TRUE : NUQ_FALSE);
+    }
+    return r;
+}
 
 NODE_DEF
 node_not(CTX *c, NODE *n)
@@ -386,7 +470,23 @@ node_not(CTX *c, NODE *n)
 NODE_DEF
 node_alt(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
 {
-    return nuq_alt_eval(c, lhs, rhs);
+    VALUE saved_err = c->error;
+    VALUE l = EVAL_ARG(c, lhs);
+    if (c->error != NUQ_NULL) {
+        c->error = saved_err;
+        return EVAL_ARG(c, rhs);
+    }
+    struct nuq_obj *lo = NUQ_PTR(l);
+    bool any_truthy = false;
+    VALUE r = nuq_make_array(lo->arr.len);
+    for (size_t i = 0; i < lo->arr.len; i++) {
+        if (nuq_truthy(lo->arr.items[i])) {
+            any_truthy = true;
+            nuq_array_push(r, lo->arr.items[i]);
+        }
+    }
+    if (!any_truthy) return EVAL_ARG(c, rhs);
+    return r;
 }
 
 /* ===== array / object construction ===== */
@@ -422,19 +522,74 @@ node_object(CTX *c, NODE *n, uint32_t entries_id)
 NODE_DEF
 node_if(CTX *c, NODE *n, NODE *cond, NODE *thn, NODE *els)
 {
-    return nuq_if_eval(c, cond, thn, els);
+    VALUE cs = EVAL_ARG(c, cond);
+    if (UNLIKELY(c->error != NUQ_NULL)) return cs;
+    struct nuq_obj *co = NUQ_PTR(cs);
+    VALUE r = nuq_make_array(0);
+    for (size_t i = 0; i < co->arr.len; i++) {
+        if (nuq_truthy(co->arr.items[i])) {
+            if (thn) {
+                VALUE bo = EVAL_ARG(c, thn);
+                if (UNLIKELY(c->error != NUQ_NULL)) return bo;
+                struct nuq_obj *bv = NUQ_PTR(bo);
+                for (size_t j = 0; j < bv->arr.len; j++) nuq_array_push(r, bv->arr.items[j]);
+            } else {
+                nuq_array_push(r, c->input);
+            }
+        } else {
+            if (els) {
+                VALUE bo = EVAL_ARG(c, els);
+                if (UNLIKELY(c->error != NUQ_NULL)) return bo;
+                struct nuq_obj *bv = NUQ_PTR(bo);
+                for (size_t j = 0; j < bv->arr.len; j++) nuq_array_push(r, bv->arr.items[j]);
+            } else {
+                nuq_array_push(r, c->input);
+            }
+        }
+    }
+    return r;
 }
 
 NODE_DEF
 node_try(CTX *c, NODE *n, NODE *body, NODE *handler)
 {
-    return nuq_try_eval(c, body, handler);
+    VALUE saved_err = c->error;
+    VALUE bo = EVAL_ARG(c, body);
+    if (c->error != NUQ_NULL) {
+        VALUE err = c->error;
+        c->error = saved_err;
+        VALUE saved = c->input;
+        c->input = err;
+        VALUE rh = EVAL_ARG(c, handler);
+        c->input = saved;
+        /* Concat partial body emits + handler emits (jq semantics). */
+        struct nuq_obj *bv = NUQ_PTR(bo);
+        struct nuq_obj *rv = NUQ_PTR(rh);
+        VALUE r = nuq_make_array(bv->arr.len + rv->arr.len);
+        for (size_t i = 0; i < bv->arr.len; i++) nuq_array_push(r, bv->arr.items[i]);
+        for (size_t i = 0; i < rv->arr.len; i++) nuq_array_push(r, rv->arr.items[i]);
+        return r;
+    }
+    return bo;
 }
 
 NODE_DEF
 node_as(CTX *c, NODE *n, NODE *src, uint32_t var_id, NODE *body)
 {
-    return nuq_as_eval(c, src, var_id, body);
+    VALUE bs = EVAL_ARG(c, src);
+    if (UNLIKELY(c->error != NUQ_NULL)) return bs;
+    struct nuq_obj *bo = NUQ_PTR(bs);
+    VALUE r = nuq_make_array(0);
+    for (size_t i = 0; i < bo->arr.len; i++) {
+        size_t top = c->var_top;
+        nuq_var_push(c, var_id, bo->arr.items[i]);
+        VALUE rv = EVAL_ARG(c, body);
+        nuq_var_pop(c, top);
+        if (UNLIKELY(c->error != NUQ_NULL)) return rv;
+        struct nuq_obj *ro = NUQ_PTR(rv);
+        for (size_t j = 0; j < ro->arr.len; j++) nuq_array_push(r, ro->arr.items[j]);
+    }
+    return r;
 }
 
 NODE_DEF
@@ -496,13 +651,69 @@ node_defs(CTX *c, NODE *n, uint32_t defs_id, NODE *body)
 NODE_DEF
 node_reduce(CTX *c, NODE *n, NODE *src, uint32_t var_id, NODE *init, NODE *update)
 {
-    return nuq_reduce_eval(c, src, var_id, init, update);
+    VALUE init_buf = EVAL_ARG(c, init);
+    if (UNLIKELY(c->error != NUQ_NULL)) return init_buf;
+    VALUE acc = NUQ_PTR(init_buf)->arr.len > 0 ? NUQ_PTR(init_buf)->arr.items[0] : NUQ_NULL;
+
+    VALUE src_buf = EVAL_ARG(c, src);
+    if (UNLIKELY(c->error != NUQ_NULL)) return src_buf;
+    struct nuq_obj *so = NUQ_PTR(src_buf);
+    VALUE saved_input = c->input;
+    for (size_t i = 0; i < so->arr.len; i++) {
+        size_t top = c->var_top;
+        nuq_var_push(c, var_id, so->arr.items[i]);
+        c->input = acc;
+        VALUE up_buf = EVAL_ARG(c, update);
+        nuq_var_pop(c, top);
+        if (UNLIKELY(c->error != NUQ_NULL)) { c->input = saved_input; return up_buf; }
+        struct nuq_obj *uo = NUQ_PTR(up_buf);
+        if (uo->arr.len > 0) acc = uo->arr.items[uo->arr.len - 1];
+    }
+    c->input = saved_input;
+    VALUE r = nuq_make_array(1);
+    nuq_array_push(r, acc);
+    return r;
 }
 
 NODE_DEF
 node_foreach(CTX *c, NODE *n, NODE *src, uint32_t var_id, NODE *init, NODE *update, NODE *extract)
 {
-    return nuq_foreach_eval(c, src, var_id, init, update, extract);
+    VALUE init_buf = EVAL_ARG(c, init);
+    if (UNLIKELY(c->error != NUQ_NULL)) return init_buf;
+    VALUE acc = NUQ_PTR(init_buf)->arr.len > 0 ? NUQ_PTR(init_buf)->arr.items[0] : NUQ_NULL;
+
+    VALUE src_buf = EVAL_ARG(c, src);
+    if (UNLIKELY(c->error != NUQ_NULL)) return src_buf;
+    struct nuq_obj *so = NUQ_PTR(src_buf);
+    VALUE r = nuq_make_array(0);
+    VALUE saved_input = c->input;
+    for (size_t i = 0; i < so->arr.len; i++) {
+        size_t top = c->var_top;
+        nuq_var_push(c, var_id, so->arr.items[i]);
+        c->input = acc;
+        VALUE up_buf = EVAL_ARG(c, update);
+        if (UNLIKELY(c->error != NUQ_NULL)) {
+            nuq_var_pop(c, top); c->input = saved_input; return up_buf;
+        }
+        struct nuq_obj *uo = NUQ_PTR(up_buf);
+        for (size_t j = 0; j < uo->arr.len; j++) {
+            acc = uo->arr.items[j];
+            if (extract) {
+                c->input = acc;
+                VALUE ex_buf = EVAL_ARG(c, extract);
+                if (UNLIKELY(c->error != NUQ_NULL)) {
+                    nuq_var_pop(c, top); c->input = saved_input; return ex_buf;
+                }
+                struct nuq_obj *eo = NUQ_PTR(ex_buf);
+                for (size_t k = 0; k < eo->arr.len; k++) nuq_array_push(r, eo->arr.items[k]);
+            } else {
+                nuq_array_push(r, acc);
+            }
+        }
+        nuq_var_pop(c, top);
+    }
+    c->input = saved_input;
+    return r;
 }
 
 /* ============= built-ins as dedicated nodes ====================== */
@@ -870,19 +1081,65 @@ node_b_with_entries(CTX *c, NODE *n, NODE *body)
 NODE_DEF
 node_b_range1(CTX *c, NODE *n, NODE *to)
 {
-    return nuq_range1_eval(c, to);
+    VALUE buf = EVAL_ARG(c, to);
+    if (UNLIKELY(c->error != NUQ_NULL)) return buf;
+    struct nuq_obj *bo = NUQ_PTR(buf);
+    VALUE r = nuq_make_array(0);
+    for (size_t k = 0; k < bo->arr.len; k++) {
+        VALUE v = bo->arr.items[k];
+        int64_t n_val;
+        if (NUQ_IS_FIX(v)) n_val = NUQ_FIX_VAL(v);
+        else if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_DOUBLE) n_val = (int64_t)NUQ_PTR(v)->dbl;
+        else continue;
+        for (int64_t i = 0; i < n_val; i++) nuq_array_push(r, nuq_make_int(i));
+    }
+    return r;
 }
 
 NODE_DEF
 node_b_range2(CTX *c, NODE *n, NODE *from, NODE *to)
 {
-    return nuq_range2_eval(c, from, to);
+    VALUE m = EVAL_ARG(c, from);
+    if (UNLIKELY(c->error != NUQ_NULL)) return m;
+    VALUE nv = EVAL_ARG(c, to);
+    if (UNLIKELY(c->error != NUQ_NULL)) return nv;
+    struct nuq_obj *mo = NUQ_PTR(m), *no = NUQ_PTR(nv);
+    VALUE r = nuq_make_array(0);
+    for (size_t i = 0; i < mo->arr.len; i++)
+    for (size_t j = 0; j < no->arr.len; j++) {
+        VALUE va = mo->arr.items[i], vb = no->arr.items[j];
+        int64_t lo = NUQ_IS_FIX(va) ? NUQ_FIX_VAL(va) :
+                     (NUQ_IS_PTR(va) && NUQ_PTR(va)->type == NUQ_T_DOUBLE) ? (int64_t)NUQ_PTR(va)->dbl : 0;
+        int64_t hi = NUQ_IS_FIX(vb) ? NUQ_FIX_VAL(vb) :
+                     (NUQ_IS_PTR(vb) && NUQ_PTR(vb)->type == NUQ_T_DOUBLE) ? (int64_t)NUQ_PTR(vb)->dbl : 0;
+        for (int64_t k = lo; k < hi; k++) nuq_array_push(r, nuq_make_int(k));
+    }
+    return r;
 }
 
 NODE_DEF
 node_b_range3(CTX *c, NODE *n, NODE *from, NODE *to, NODE *step)
 {
-    return nuq_range3_eval(c, from, to, step);
+    VALUE m = EVAL_ARG(c, from);
+    if (UNLIKELY(c->error != NUQ_NULL)) return m;
+    VALUE nv = EVAL_ARG(c, to);
+    if (UNLIKELY(c->error != NUQ_NULL)) return nv;
+    VALUE s = EVAL_ARG(c, step);
+    if (UNLIKELY(c->error != NUQ_NULL)) return s;
+    struct nuq_obj *mo = NUQ_PTR(m), *no = NUQ_PTR(nv), *so = NUQ_PTR(s);
+    VALUE r = nuq_make_array(0);
+    for (size_t i = 0; i < mo->arr.len; i++)
+    for (size_t j = 0; j < no->arr.len; j++)
+    for (size_t k = 0; k < so->arr.len; k++) {
+        VALUE va = mo->arr.items[i], vb = no->arr.items[j], vc = so->arr.items[k];
+        int64_t lo = NUQ_IS_FIX(va) ? NUQ_FIX_VAL(va) : (int64_t)NUQ_PTR(va)->dbl;
+        int64_t hi = NUQ_IS_FIX(vb) ? NUQ_FIX_VAL(vb) : (int64_t)NUQ_PTR(vb)->dbl;
+        int64_t st = NUQ_IS_FIX(vc) ? NUQ_FIX_VAL(vc) : (int64_t)NUQ_PTR(vc)->dbl;
+        if (st == 0) continue;
+        if (st > 0) for (int64_t x = lo; x < hi; x += st) nuq_array_push(r, nuq_make_int(x));
+        else        for (int64_t x = lo; x > hi; x += st) nuq_array_push(r, nuq_make_int(x));
+    }
+    return r;
 }
 
 NODE_DEF

@@ -180,7 +180,6 @@ main(int argc, char **argv)
     CTX *c = (CTX *)GC_malloc(sizeof(*c));
     memset(c, 0, sizeof(*c));
     c->error = NUQ_NULL;
-    c->emit_buf = nuq_make_array(0);
 
     int rc = 0;
     if (input_file_cnt == 0) {
