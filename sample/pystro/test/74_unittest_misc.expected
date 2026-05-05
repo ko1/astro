@@ -1,0 +1,15 @@
+ok WalrusInLambdaTest test_walrus_in_listcomp_in_lambda
+ok WalrusInLambdaTest test_walrus_in_method
+ok BytesMethodsTest test_count
+ok BytesMethodsTest test_join
+ok BytesMethodsTest test_strip
+ok BytesMethodsTest test_upper_lower
+ok DictUpdateKwargsTest test_arg_and_kwargs
+ok DictUpdateKwargsTest test_kwargs_only
+ok StrSplitlinesKeepEndsTest test_default
+ok StrSplitlinesKeepEndsTest test_keepends
+ok TypesModuleTest test_function_type
+ok TypesModuleTest test_simple_namespace
+ok BoundedStringFunctionsTest test_find_with_range
+---
+passed=13 failed=0

@@ -4780,16 +4780,18 @@ sm_casefold(CTX *c, int argc, VALUE *argv)
 static VALUE
 sm_splitlines(CTX *c, int argc, VALUE *argv)
 {
-    (void)argc;
+    bool keepends = (argc >= 2) && py_is_truthy(argv[1]);
     struct pyobj *o = PY_PTR(argv[0]);
     VALUE r = py_make_list(NULL, 0);
     size_t i = 0;
     while (i < o->str.len) {
         size_t j = i;
         while (j < o->str.len && o->str.chars[j] != '\n' && o->str.chars[j] != '\r') j++;
-        py_list_append(c, r, py_make_str(o->str.chars + i, j - i));
+        size_t end = j;
         if (j < o->str.len && o->str.chars[j] == '\r' && j + 1 < o->str.len && o->str.chars[j+1] == '\n') j += 2;
         else if (j < o->str.len) j++;
+        size_t out_end = keepends ? j : end;
+        py_list_append(c, r, py_make_str(o->str.chars + i, out_end - i));
         i = j;
     }
     return r;
@@ -5174,7 +5176,7 @@ static struct type_method str_methods[] = {
     { "isidentifier",  sm_isidentifier,  1, 1 },
     { "isprintable",   sm_isprintable,   1, 1 },
     { "istitle",       sm_istitle,       1, 1 },
-    { "splitlines",    sm_splitlines,    1, 1 },
+    { "splitlines",    sm_splitlines,    1, 2 },
     { "removeprefix",  sm_removeprefix,  2, 2 },
     { "removesuffix",  sm_removesuffix,  2, 2 },
     { "isdigit",       sm_isdigit,       1, 1 },
@@ -5430,24 +5432,32 @@ dm_pop(CTX *c, int argc, VALUE *argv)
 static VALUE
 dm_update(CTX *c, int argc, VALUE *argv)
 {
-    (void)argc;
     VALUE dst = argv[0];
-    VALUE src = argv[1];
-    if (py_is_dict(src)) {
-        struct pydict *sd = PY_PTR(src)->dict;
-        for (size_t i = 0; i < sd->elen; i++)
-            if (pydict_entry_live(sd, i))
-                py_dict_set(c, dst, sd->entries[i].key, sd->entries[i].value);
-    } else {
-        // Iterable of (key, value) pairs.
-        struct py_iter it; py_iter_init(c, &it, src);
-        if (c->state != PY_STATE_NORMAL) return PY_NONE;
-        VALUE pair;
-        while (py_iter_next(c, &it, &pair)) {
-            if (!py_is_tuple(pair) && !py_is_list(pair)) py_raise_exc(c, c->EXC_TypeError, "update: pair");
-            if (PY_PTR(pair)->list.len != 2) py_raise_exc(c, c->EXC_ValueError, "update: pair size");
-            py_dict_set(c, dst, PY_PTR(pair)->list.items[0], PY_PTR(pair)->list.items[1]);
+    if (argc >= 2) {
+        VALUE src = argv[1];
+        if (py_is_dict(src)) {
+            struct pydict *sd = PY_PTR(src)->dict;
+            for (size_t i = 0; i < sd->elen; i++)
+                if (pydict_entry_live(sd, i))
+                    py_dict_set(c, dst, sd->entries[i].key, sd->entries[i].value);
+        } else {
+            struct py_iter it; py_iter_init(c, &it, src);
+            if (c->state != PY_STATE_NORMAL) return PY_NONE;
+            VALUE pair;
+            while (py_iter_next(c, &it, &pair)) {
+                if (!py_is_tuple(pair) && !py_is_list(pair)) py_raise_exc(c, c->EXC_TypeError, "update: pair");
+                if (PY_PTR(pair)->list.len != 2) py_raise_exc(c, c->EXC_ValueError, "update: pair size");
+                py_dict_set(c, dst, PY_PTR(pair)->list.items[0], PY_PTR(pair)->list.items[1]);
+            }
         }
+    }
+    // Also pull in kwargs.
+    extern int    PYSTRO_BI_KWC;
+    extern const char **PYSTRO_BI_KWNAMES;
+    extern VALUE *PYSTRO_BI_KWVALUES;
+    for (int i = 0; i < PYSTRO_BI_KWC; i++) {
+        VALUE k = py_make_str(PYSTRO_BI_KWNAMES[i], strlen(PYSTRO_BI_KWNAMES[i]));
+        py_dict_set(c, dst, k, PYSTRO_BI_KWVALUES[i]);
     }
     return PY_NONE;
 }
@@ -5511,7 +5521,7 @@ static struct type_method dict_methods[] = {
     { "values",     dm_values,     1, 1 },
     { "items",      dm_items,      1, 1 },
     { "pop",        dm_pop,        2, 3 },
-    { "update",     dm_update,     2, 2 },
+    { "update",     dm_update,     1, 2 },
     { "setdefault", dm_setdefault, 2, 3 },
     { "popitem",    dm_popitem,    1, 1 },
     { "clear",      dm_clear,      1, 1 },
@@ -6232,17 +6242,151 @@ bi_dict_fromkeys(CTX *c, int argc, VALUE *argv)
     return r;
 }
 
+// bytes.join(iter) — concatenate bytes-like with self as separator.
+static VALUE
+bm_join(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    VALUE self = argv[0];
+    VALUE iter = argv[1];
+    const char *sep = PY_PTR(self)->str.chars;
+    size_t slen = PY_PTR(self)->str.len;
+    VALUE items[256]; int n = 0;
+    if (py_is_list(iter) || py_is_tuple(iter)) {
+        size_t sn = PY_PTR(iter)->list.len;
+        if (sn > 256) py_raise_exc(c, c->EXC_RuntimeError, "bytes.join too many");
+        for (size_t i = 0; i < sn; i++) items[n++] = PY_PTR(iter)->list.items[i];
+    } else {
+        struct py_iter it; py_iter_init(c, &it, iter);
+        if (c->state != PY_STATE_NORMAL) return PY_NONE;
+        VALUE x;
+        while (py_iter_next(c, &it, &x)) {
+            if (n >= 256) py_raise_exc(c, c->EXC_RuntimeError, "bytes.join too many");
+            items[n++] = x;
+        }
+    }
+    size_t total = 0;
+    for (int i = 0; i < n; i++) {
+        if (!py_is_byteseq(items[i]))
+            py_raise_exc(c, c->EXC_TypeError, "bytes.join element must be bytes-like");
+        total += PY_PTR(items[i])->str.len;
+        if (i) total += slen;
+    }
+    char *buf = (char *)GC_malloc_atomic(total + 1);
+    char *p = buf;
+    for (int i = 0; i < n; i++) {
+        if (i) { memcpy(p, sep, slen); p += slen; }
+        memcpy(p, PY_PTR(items[i])->str.chars, PY_PTR(items[i])->str.len);
+        p += PY_PTR(items[i])->str.len;
+    }
+    *p = '\0';
+    return py_is_bytearray(self) ? py_make_bytearray(buf, total) : py_make_bytes(buf, total);
+}
+
+// bytes.count(sub)
+static VALUE
+bm_count(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    struct pyobj *s = PY_PTR(argv[0]);
+    if (!py_is_byteseq(argv[1])) py_raise_exc(c, c->EXC_TypeError, "bytes.count: bytes-like required");
+    struct pyobj *sub = PY_PTR(argv[1]);
+    if (sub->str.len == 0) return PY_FIX((int64_t)s->str.len + 1);
+    int64_t count = 0;
+    size_t i = 0;
+    while (i + sub->str.len <= s->str.len) {
+        if (memcmp(s->str.chars + i, sub->str.chars, sub->str.len) == 0) {
+            count++;
+            i += sub->str.len;
+        } else {
+            i++;
+        }
+    }
+    return PY_FIX(count);
+}
+
+// bytes.upper / lower
+static VALUE
+bm_upper(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    struct pyobj *s = PY_PTR(argv[0]);
+    char *buf = (char *)GC_malloc_atomic(s->str.len + 1);
+    for (size_t i = 0; i < s->str.len; i++) {
+        char ch = s->str.chars[i];
+        if (ch >= 'a' && ch <= 'z') ch -= 32;
+        buf[i] = ch;
+    }
+    buf[s->str.len] = '\0';
+    return py_is_bytearray(argv[0]) ? py_make_bytearray(buf, s->str.len)
+                                    : py_make_bytes(buf, s->str.len);
+}
+
+static VALUE
+bm_lower(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    struct pyobj *s = PY_PTR(argv[0]);
+    char *buf = (char *)GC_malloc_atomic(s->str.len + 1);
+    for (size_t i = 0; i < s->str.len; i++) {
+        char ch = s->str.chars[i];
+        if (ch >= 'A' && ch <= 'Z') ch += 32;
+        buf[i] = ch;
+    }
+    buf[s->str.len] = '\0';
+    return py_is_bytearray(argv[0]) ? py_make_bytearray(buf, s->str.len)
+                                    : py_make_bytes(buf, s->str.len);
+}
+
+// bytes.strip / lstrip / rstrip — whitespace only by default.
+static VALUE
+bm_strip_impl(CTX *c, int argc, VALUE *argv, bool left, bool right)
+{
+    (void)c; (void)argc;
+    struct pyobj *s = PY_PTR(argv[0]);
+    size_t start = 0, end = s->str.len;
+    if (left) {
+        while (start < end) {
+            unsigned char ch = s->str.chars[start];
+            if (ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r') start++;
+            else break;
+        }
+    }
+    if (right) {
+        while (end > start) {
+            unsigned char ch = s->str.chars[end - 1];
+            if (ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r') end--;
+            else break;
+        }
+    }
+    char *buf = (char *)GC_malloc_atomic(end - start + 1);
+    memcpy(buf, s->str.chars + start, end - start);
+    buf[end - start] = '\0';
+    return py_is_bytearray(argv[0]) ? py_make_bytearray(buf, end - start)
+                                    : py_make_bytes(buf, end - start);
+}
+static VALUE bm_strip(CTX *c, int argc, VALUE *argv)  { return bm_strip_impl(c, argc, argv, true, true); }
+static VALUE bm_lstrip(CTX *c, int argc, VALUE *argv) { return bm_strip_impl(c, argc, argv, true, false); }
+static VALUE bm_rstrip(CTX *c, int argc, VALUE *argv) { return bm_strip_impl(c, argc, argv, false, true); }
+
 static struct type_method bytes_methods[] = {
     { "decode",     bm_decode,     1, 2 },
     { "encode",     bm_encode,     1, 2 },
     { "find",       bm_find,       2, 2 },
     { "startswith", bm_startswith, 2, 2 },
     { "endswith",   bm_endswith,   2, 2 },
-    { "split",      bm_split,      1, 2 },
+    { "split",      bm_split,      1, 3 },
     { "replace",    bm_replace,    3, 3 },
     { "hex",        bm_hex,        1, 1 },
     { "append",     bm_append,     2, 2 },
     { "extend",     bm_extend,     2, 2 },
+    { "join",       bm_join,       2, 2 },
+    { "count",      bm_count,      2, 2 },
+    { "upper",      bm_upper,      1, 1 },
+    { "lower",      bm_lower,      1, 1 },
+    { "strip",      bm_strip,      1, 2 },
+    { "lstrip",     bm_lstrip,     1, 2 },
+    { "rstrip",     bm_rstrip,     1, 2 },
     { NULL, NULL, 0, 0 }
 };
 

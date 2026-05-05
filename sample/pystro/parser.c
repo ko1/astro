@@ -773,11 +773,11 @@ static const char *new_temp_name(const char *prefix);
 static NODE *build_temp_init(const char *tmp, NODE *init_expr, NODE **out_load);
 static NODE *parse_comp_clauses(NODE *inner_body);
 
-// Scan tokens for `for NAME[, NAME]*` clauses inside the current
-// brace-balanced region, registering each NAME as a local in cur_scope.
-// Used by comprehension/genexp parsers so the target name resolves
-// inside the body expression — even when the surrounding scope (e.g.
-// a lambda) had no pre-scan.
+// Scan tokens for `for NAME[, NAME]*` clauses and walrus targets
+// (NAME `:=`) inside the current brace-balanced region, registering each
+// NAME as a local in cur_scope.  Used by comprehension/genexp parsers
+// so the target name resolves inside the body expression — even when
+// the surrounding scope (e.g. a lambda) had no pre-scan.
 static void
 prescan_comp_targets(int close_kind)
 {
@@ -799,8 +799,6 @@ prescan_comp_targets(int close_kind)
                     scope_add_local(cur_scope, peek_tok(0)->sval);
                 tok_pos++;
                 if (peek_tok(0)->kind == T_LPAREN) {
-                    // tuple target like `for (a, b) in ...`: skip and
-                    // collect inner names.
                     int sub = 1;
                     tok_pos++;
                     while (sub > 0 && peek_tok(0)->kind != T_EOF) {
@@ -817,6 +815,11 @@ prescan_comp_targets(int close_kind)
                 if (!match_tok(T_COMMA)) break;
             }
             continue;
+        } else if (k == T_NAME && peek_tok(1)->kind == T_WALRUS) {
+            // Walrus expressions bind in the enclosing scope.
+            if (!scope_is_global_decl(cur_scope, peek_tok(0)->sval) &&
+                !scope_is_nonlocal_decl(cur_scope, peek_tok(0)->sval))
+                scope_add_local(cur_scope, peek_tok(0)->sval);
         }
         tok_pos++;
     }
@@ -1804,14 +1807,16 @@ parse_walrus(void)
     if (peek_tok(0)->kind == T_NAME && peek_tok(1)->kind == T_WALRUS) {
         const char *nm = peek_tok(0)->sval;
         tok_pos += 2;
+        // Walrus binds in the enclosing function/lambda scope.  Register
+        // the name as a local of cur_scope so make_store emits an lset.
+        if (cur_scope && !scope_is_global_decl(cur_scope, nm) &&
+            !scope_is_nonlocal_decl(cur_scope, nm))
+            scope_add_local(cur_scope, nm);
         NODE *val = parse_walrus();
-        // Bind to a temp / direct slot, then return the value.
         const char *tmp = new_temp_name("__wal");
         NODE *load_tmp;
         NODE *init = build_temp_init(tmp, val, &load_tmp);
-        // Side-effect store under nm:
         NODE *store_nm = make_store(nm, load_tmp);
-        // Result = load_tmp.
         return ALLOC_node_seq(init, ALLOC_node_seq(store_nm, load_tmp));
     }
     return parse_cond();
