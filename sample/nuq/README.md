@@ -70,6 +70,34 @@ ruby test/run_tests.rb
 passed: 338  failed: 0  skipped: 0  total: 338
 ```
 
+## ベンチマーク
+
+`make bench` で **jq / jaq / gojq / nuq interp / nuq AOT** を
+[jaq の examples/benches](https://github.com/01mf02/jaq/tree/main/examples/benches)
+14 ケースで同条件比較。
+
+| bench (~jq で 100ms-2s) | jq | jaq | gojq | nuq AOT | nuq vs jq |
+|---|---:|---:|---:|---:|---:|
+| `ack(3; 7)` | 487 ms | 764 ms | 580 ms | **1.5 ms** | **325× 速い** |
+| `upto(8192)` | 519 ms | 7.6 ms | 555 ms | **12 ms** | **42× 速い** |
+| `reverse 1M` | 536 ms | 63 ms | 274 ms | **26 ms** | **20× 速い** |
+| `to-fromjson 100k` | 1.05 s | 132 ms | 74 ms | **56 ms** | **18× 速い** |
+| `last 1M` | 136 ms | 32 ms | 168 ms | **19 ms** | **7× 速い** |
+| `min-max 1M` | 238 ms | 221 ms | 278 ms | **34 ms** | **6.9× 速い** |
+| `try-catch 500k` | 136 ms | 150 ms | 160 ms | **27 ms** | **5× 速い** |
+| `empty` (起動) | 3.4 ms | 2.1 ms | 2.4 ms | **1.5 ms** | **2.3× 速い** |
+| `sort 300k` | 158 ms | 44 ms | 159 ms | 75 ms | **2.1× 速い** |
+| `group-by 100k` | 185 ms | 42 ms | 123 ms | 98 ms | **1.9× 速い** |
+| `cumsum 500k` | 154 ms | 151 ms | 231 ms | 139 ms | **1.1× 速い** |
+| `pyramid 8k` | 8.7 ms | 9.7 ms | 13 ms | 12 ms | 1.4× 遅い |
+| `add 2k` | 4.0 ms | 3.7 ms | 4.8 ms | 11 ms | 2.7× 遅い |
+| `kv 5k` | 10 ms | 7.4 ms | 9.6 ms | 245 ms | 25× 遅い |
+
+14 中 **11 で jq に勝ち**。詳細と outlier の原因は
+[`docs/perf.md`](./docs/perf.md)。`add` と `kv` の遅さは object/array
+の immutable copy + linear lookup に起因 (todo B-1 / B-5)、`pyramid`
+は emit-heavy recursion (todo B-4)。
+
 `test/*.test` は jq 公式テストと同じフォーマット (filter 1 行 / 入力 JSON
 1 行 / 期待出力 N 行 / 空行で区切り) を採用している。`*.diff.test`
 ファイルは **system の `jq` を oracle にして期待出力を計算** する

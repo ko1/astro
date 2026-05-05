@@ -201,3 +201,25 @@ passed=338  failed=0  total=338
 - オブジェクト値の中で pipe が使えない問題 (`{a: f | g}`)。最初は
   `parse_alt` で読んでいたが、jq は pipe まで許すので
   `parse_pipe_no_comma` を追加した。
+
+## バグ修正履歴 (v0.1 — bench 駆動)
+
+`make bench` で見えた問題から逆引きで見つけたバグ:
+
+- **CTX を `calloc` で確保していたため、内部の `var_stack` /
+  `funcs` ポインタが Boehm GC からスキャンされず、GC_malloc 側の
+  `var_stack` ブロックが live と認識されないまま回収される**バグ。
+  foreach / reduce で n>=490 ぐらいから `$x undefined` が出ていた。
+  pystro / astr に倣い `GC_malloc(CTX)` に修正。bench 駆動でなければ
+  単発テストでは見つからなかったクラスのバグ (capa を超える alloc
+  pressure が必要) で、修正後 `upto` が 3.4× → 39× / `cumsum` が
+  1.4× 遅 → 1.1× 速になった。
+- `nuq_clone(object)` が `nuq_object_set` 経由で 1 個ずつ insert
+  していたため O(n²) → 全体で O(n³)。ソース側のキーは既に unique なので
+  set のチェック (= 線形 collision 走査) を回避し直接 push に。
+  `kv` n=5000 が 119s → 0.25s。
+- `group_by` の sort が手書き挿入ソート → n=100k で 30s timeout。
+  qsort + per-pair comparator (key は pair の 1 要素目) で O(n log n)。
+  group-by 100k が timeout → 94ms。
+- `node.def` で約 40 ノードに付いていた `@noinline` を整理。runtime
+  helper を呼ぶだけのスタブだったので不要 (むしろ inline を阻害)。
