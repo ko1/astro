@@ -932,6 +932,10 @@ parse_atom(void)
         tok_pos++;
         return ALLOC_node_const_str(t->sval);
       }
+      case T_BYTES: {
+        tok_pos++;
+        return ALLOC_node_const_bytes(t->sval, (uint32_t)t->slen);
+      }
       case T_FSTR: {
         tok_pos++;
         return parse_fstring(t);
@@ -1082,15 +1086,25 @@ parse_dot_trailer(NODE *obj)
 static NODE *
 parse_postfix(void)
 {
-    // `super()` short-circuit: only accepted as `super().METHOD(args)`.
-    // Captures the lexically-enclosing class's base via cur_class_base.
+    // `super()` and `super(C, self)` short-circuit.
     if (peek_tok(0)->kind == T_NAME && peek_tok(0)->sval == intern_name("super", 5)
-            && peek_tok(1)->kind == T_LPAREN && peek_tok(2)->kind == T_RPAREN
-            && peek_tok(3)->kind == T_DOT && peek_tok(4)->kind == T_NAME
-            && peek_tok(5)->kind == T_LPAREN) {
-        if (!cur_class_base) parse_error("super() called outside a class body");
-        tok_pos += 3;       // past `super` `(` `)`
-        expect(T_DOT, "'.'");
+            && peek_tok(1)->kind == T_LPAREN) {
+        // Distinguish bare super() vs super(C, self).
+        bool bare = (peek_tok(2)->kind == T_RPAREN);
+        NODE *cls_expr = NULL, *self_expr = NULL;
+        if (bare) {
+            tok_pos += 3;        // past `super` `(` `)`
+        } else {
+            tok_pos += 2;        // past `super` `(`
+            cls_expr = parse_expr();
+            expect(T_COMMA, "','");
+            self_expr = parse_expr();
+            expect(T_RPAREN, "')'");
+        }
+        // Now must be followed by `.METHOD(args)`.
+        if (peek_tok(0)->kind != T_DOT) parse_error("super() must be followed by .method(...)");
+        tok_pos++;
+        if (peek_tok(0)->kind != T_NAME) parse_error("expected method name after super().");
         const char *method = peek_tok(0)->sval;
         tok_pos++;
         expect(T_LPAREN, "'('");
@@ -1106,8 +1120,14 @@ parse_postfix(void)
         }
         expect(T_RPAREN, "')'");
         size_t base = node_table_reserve(args, argc);
-        NODE *e = ALLOC_node_super_method(cur_class_base, method, (uint32_t)base, (uint32_t)argc);
-        // continue with possible further trailers
+        NODE *e;
+        if (bare) {
+            if (!cur_class_base) parse_error("super() called outside a class body");
+            e = ALLOC_node_super_method(cur_class_base, method, (uint32_t)base, (uint32_t)argc);
+        } else {
+            e = ALLOC_node_super_method_explicit(cls_expr, self_expr, method,
+                                                 (uint32_t)base, (uint32_t)argc);
+        }
         for (;;) {
             int k = peek_tok(0)->kind;
             if (k == T_LPAREN) e = parse_call_args(e);
@@ -1944,9 +1964,64 @@ parse_simple_stmt(void)
     if (k == T_DEL)      return parse_del();
     if (k == T_GLOBAL)   return parse_global_decl();
     if (k == T_NONLOCAL) return parse_nonlocal_decl();
-    if (k == T_IMPORT || k == T_FROM) {
-        while (peek_tok(0)->kind != T_NEWLINE && peek_tok(0)->kind != T_EOF) tok_pos++;
-        return ALLOC_node_nop();
+    if (k == T_IMPORT) {
+        // `import name` (single name only for v0).  Desugars to:
+        //   name = __pystro_import__("name")
+        tok_pos++;
+        if (peek_tok(0)->kind != T_NAME) parse_error("import: name expected");
+        const char *nm = peek_tok(0)->sval;
+        tok_pos++;
+        // optional `as alias`
+        const char *alias = nm;
+        if (match_tok(T_AS)) {
+            if (peek_tok(0)->kind != T_NAME) parse_error("expected NAME after as");
+            alias = peek_tok(0)->sval;
+            tok_pos++;
+        }
+        NODE *call = ALLOC_node_call_1(
+            ALLOC_node_gref(intern_name("__pystro_import__", 17)),
+            ALLOC_node_const_str(nm));
+        return make_store(alias, call);
+    }
+    if (k == T_FROM) {
+        // `from name import a, b as c` → run import + bind specific names.
+        // Desugar:
+        //   __m = __pystro_import__("name")
+        //   a = __m.a
+        //   c = __m.b
+        tok_pos++;
+        if (peek_tok(0)->kind != T_NAME) parse_error("from: name expected");
+        const char *modname = peek_tok(0)->sval;
+        tok_pos++;
+        expect(T_IMPORT, "'import'");
+        const char *tmp = new_temp_name("__mod");
+        NODE *load_tmp;
+        NODE *init = build_temp_init(tmp,
+            ALLOC_node_call_1(
+                ALLOC_node_gref(intern_name("__pystro_import__", 17)),
+                ALLOC_node_const_str(modname)),
+            &load_tmp);
+        NODE *result = init;
+        if (peek_tok(0)->kind == T_STAR) {
+            // from m import *  — not supported yet, just no-op.
+            tok_pos++;
+            return result;
+        }
+        for (;;) {
+            if (peek_tok(0)->kind != T_NAME) parse_error("from: name expected");
+            const char *src = peek_tok(0)->sval;
+            tok_pos++;
+            const char *target = src;
+            if (match_tok(T_AS)) {
+                if (peek_tok(0)->kind != T_NAME) parse_error("expected NAME after as");
+                target = peek_tok(0)->sval;
+                tok_pos++;
+            }
+            NODE *get = ALLOC_node_attr_get(load_tmp, src);
+            result = ALLOC_node_seq(result, make_store(target, get));
+            if (!match_tok(T_COMMA)) break;
+        }
+        return result;
     }
 
     // Annotated assignment / declaration: `NAME : ann (= expr)?`
@@ -2202,7 +2277,7 @@ parse_stmt(void)
     return s;
 }
 
-static NODE *
+NODE *
 parse_program(void)
 {
     NODE *stmts[4096];

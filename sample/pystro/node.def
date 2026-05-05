@@ -56,6 +56,13 @@ node_const_str(CTX * restrict c, NODE * restrict n, const char *s)
 }
 
 NODE_DEF
+node_const_bytes(CTX * restrict c, NODE * restrict n, const char *s, uint32_t len)
+{
+    (void)c; (void)n;
+    return py_make_bytes(s, (size_t)len);
+}
+
+NODE_DEF
 node_const_none(CTX * restrict c, NODE * restrict n)
 {
     (void)c; (void)n;
@@ -187,13 +194,13 @@ node_gref(CTX * restrict c, NODE * restrict n, const char *name, struct gref_cac
 {
     (void)n;
     // Fast path: cache valid → direct array index.
-    if (LIKELY(cache->serial == c->globals_serial))
-        return c->globals[cache->idx].value;
+    if (LIKELY(cache->serial == c->globals->serial))
+        return c->globals->entries[cache->idx].value;
     extern int py_global_resolve(CTX *c, const char *name);
     int idx = py_global_resolve(c, name);
-    cache->serial = c->globals_serial;
+    cache->serial = c->globals->serial;
     cache->idx = idx;
-    return c->globals[idx].value;
+    return c->globals->entries[idx].value;
 }
 
 NODE_DEF
@@ -205,14 +212,14 @@ node_gset(CTX * restrict c, NODE * restrict n, const char *name, NODE *val, stru
     // Cache holds (serial, idx).  Hot path: cache valid → direct write,
     // no serial bump (the bump only fires on structural change inside
     // py_global_define when a new slot is allocated).
-    if (LIKELY(cache->serial == c->globals_serial)) {
-        c->globals[cache->idx].value = v;
+    if (LIKELY(cache->serial == c->globals->serial)) {
+        c->globals->entries[cache->idx].value = v;
         return PY_NONE;
     }
     py_global_define(c, name, v);
     extern int py_global_resolve(CTX *c, const char *name);
     cache->idx = py_global_resolve(c, name);
-    cache->serial = c->globals_serial;
+    cache->serial = c->globals->serial;
     return PY_NONE;
 }
 
@@ -698,17 +705,17 @@ node_for_global(CTX * restrict c, NODE * restrict n, const char *name, NODE *ite
     struct py_iter st;
     py_iter_init(c, &st, it);
     if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
-    if (cache->serial != c->globals_serial) {
+    if (cache->serial != c->globals->serial) {
         extern int py_global_resolve_or_alloc(CTX *c, const char *name);
         cache->idx = py_global_resolve_or_alloc(c, name);
-        cache->serial = c->globals_serial;
+        cache->serial = c->globals->serial;
     }
     int idx = cache->idx;
     VALUE elt;
     while (py_iter_next(c, &st, &elt)) {
         if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
-        c->globals[idx].value = elt;
-        c->globals[idx].defined = true;
+        c->globals->entries[idx].value = elt;
+        c->globals->entries[idx].defined = true;
         EVAL_ARG(c, body);
         if (UNLIKELY(c->state != PY_STATE_NORMAL)) {
             if (c->state == PY_STATE_BREAK)    { c->state = PY_STATE_NORMAL; return PY_NONE; }
@@ -1122,6 +1129,31 @@ node_method_n(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
         if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
     }
     return py_apply(c, m, (int)argc, av);
+}
+
+// `super(C, self).method(args)` — explicit form.  Walks self.__class__'s
+// MRO starting after C.  No reliance on c->method_class.
+NODE_DEF @noinline
+node_super_method_explicit(CTX * restrict c, NODE * restrict n, NODE *cls_expr, NODE *self_expr, const char *method_name, uint32_t args_idx, uint32_t argc)
+{
+    (void)n;
+    extern VALUE py_super_lookup(CTX *c, VALUE self, VALUE start_after_cls, const char *name);
+    VALUE cls = EVAL_ARG(c, cls_expr);
+    VALUE self = EVAL_ARG(c, self_expr);
+    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+    if (!py_is_class(cls))     py_raise_exc(c, c->EXC_TypeError, "super(): first arg must be class");
+    if (!py_is_instance(self)) py_raise_exc(c, c->EXC_TypeError, "super(): second arg must be instance");
+    VALUE m = py_super_lookup(c, self, cls, method_name);
+    if (m == PY_NONE) py_raise_exc(c, c->EXC_AttributeError,
+                                   "'super' object has no attribute '%s'", method_name);
+    VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc + 1));
+    av[0] = self;
+    for (uint32_t i = 0; i < argc; i++) {
+        NODE *arg = PYSTRO_NODE_TABLE[args_idx + i];
+        av[i + 1] = (*arg->head.dispatcher)(c, arg);
+        if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+    }
+    return py_apply(c, m, (int)argc + 1, av);
 }
 
 // `super().method(args)` — cooperative MRO walk.  Walks the actual

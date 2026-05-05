@@ -7,7 +7,7 @@
 
 enum tok_kind {
     T_EOF = 0, T_NEWLINE, T_INDENT, T_DEDENT,
-    T_INT, T_FLOAT, T_STR, T_FSTR, T_NAME,
+    T_INT, T_FLOAT, T_STR, T_FSTR, T_BYTES, T_NAME,
 
     // Keywords.
     T_DEF, T_RETURN, T_IF, T_ELIF, T_ELSE, T_WHILE, T_FOR, T_IN, T_PASS,
@@ -303,7 +303,7 @@ handle_indent_at_line_start(void)
     }
 }
 
-static void
+void
 tokenize(const char *src, const char *filename)
 {
     src_buf = src; src_pos = 0; src_line = 1; src_filename = filename;
@@ -338,6 +338,15 @@ tokenize(const char *src, const char *filename)
             int line = src_line;
             src_pos++;
             read_string_lit(line, peek(0), true);
+            continue;
+        }
+        // bytes literal: b"..." or b'...'.  Reuse string reader, then
+        // retag the resulting T_STR as T_BYTES.
+        if ((ch == 'b' || ch == 'B') && (peek(1) == '"' || peek(1) == '\'')) {
+            int line = src_line;
+            src_pos++;
+            read_string_lit(line, peek(0), false);
+            tok_last()->kind = T_BYTES;
             continue;
         }
         if (isalpha((unsigned char)ch) || ch == '_') { read_name(); continue; }

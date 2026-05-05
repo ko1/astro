@@ -93,6 +93,8 @@ main(int argc, char *argv[])
     // env, EXC_*, state_value, ...) — otherwise those reachable-only-
     // through-CTX heap allocations get reclaimed mid-run.
     CTX *c = (CTX *)GC_malloc(sizeof(CTX));
+    extern struct pyglobals *py_globals_new(void);
+    c->globals = py_globals_new();
     c->state = PY_STATE_NORMAL;
     c->current_class = PY_NONE;
     c->method_class = PY_NONE;

@@ -96,11 +96,14 @@ py_apply(CTX *c, VALUE fn, int argc, VALUE *argv)
 
             struct pyframe *saved = c->env;
             VALUE saved_mc = c->method_class;
+            struct pyglobals *saved_g = c->globals;
             c->env = new_env;
             c->method_class = f->func.defining_class;
+            if (f->func.fglobals) c->globals = f->func.fglobals;
             EVAL(c, f->func.body);
             c->env = saved;
             c->method_class = saved_mc;
+            c->globals = saved_g;
 
             if (c->state == PY_STATE_RETURN) {
                 VALUE r = c->state_value;

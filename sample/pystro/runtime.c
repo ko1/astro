@@ -112,6 +112,30 @@ py_make_str_take(char *s, size_t len)
     return PY_OBJ_VAL(o);
 }
 
+VALUE
+py_make_bytes(const char *s, size_t len)
+{
+    struct pyobj *o = py_alloc(PY_T_BYTES);
+    char *buf = (char *)GC_malloc_atomic(len + 1);
+    if (s && len) memcpy(buf, s, len);
+    buf[len] = '\0';
+    o->str.chars = buf;
+    o->str.len = len;
+    return PY_OBJ_VAL(o);
+}
+
+VALUE
+py_make_bytearray(const char *s, size_t len)
+{
+    struct pyobj *o = py_alloc(PY_T_BYTEARRAY);
+    char *buf = (char *)GC_malloc_atomic(len + 1);
+    if (s && len) memcpy(buf, s, len);
+    buf[len] = '\0';
+    o->str.chars = buf;
+    o->str.len = len;
+    return PY_OBJ_VAL(o);
+}
+
 // Share the buffer of an existing string (e.g. a substring / slice).
 // Boehm's interior-pointer support keeps the parent buffer alive as
 // long as any sub-string holds a pointer into it.  No NUL terminator
@@ -187,6 +211,8 @@ py_make_func(struct Node *body, struct pyframe *env,
     o->func.has_kwargs = has_kwargs;
     o->func.param_names = param_names;
     o->func.defining_class = PY_NONE;
+    extern CTX *py_current_ctx;
+    o->func.fglobals = py_current_ctx ? py_current_ctx->globals : NULL;
     if (nparams > 0) {
         VALUE *d = (VALUE *)GC_malloc(sizeof(VALUE) * nparams);
         if (defaults_per_slot) memcpy(d, defaults_per_slot, sizeof(VALUE) * nparams);
@@ -436,83 +462,89 @@ py_new_frame(struct pyframe *parent, int nslots)
 // Globals.
 // ---------------------------------------------------------------------------
 
+// Process-wide monotone counter so every `pyglobals.serial` is unique
+// across modules.  This is what the inline gref cache compares against:
+// if a gref node is only ever evaluated under one specific module's
+// globals (always true since each AST belongs to its module), the
+// cache stays consistent only when the cached serial equals the
+// current globals' serial — which is exactly what we want.
+static uint64_t SHARED_GLOBALS_SERIAL = 1;
+
+struct pyglobals *
+py_globals_new(void)
+{
+    struct pyglobals *g = (struct pyglobals *)GC_malloc(sizeof(struct pyglobals));
+    g->entries = NULL;
+    g->size = g->capa = 0;
+    g->serial = ++SHARED_GLOBALS_SERIAL;
+    return g;
+}
+
 static int
 py_global_index(CTX *c, const char *name)
 {
-    for (size_t i = 0; i < c->globals_size; i++)
-        if (strcmp(c->globals[i].name, name) == 0) return (int)i;
+    struct pyglobals *g = c->globals;
+    for (size_t i = 0; i < g->size; i++)
+        if (strcmp(g->entries[i].name, name) == 0) return (int)i;
     return -1;
 }
 
 static int
 py_global_alloc(CTX *c, const char *name)
 {
-    if (c->globals_size == c->globals_capa) {
-        size_t cap = c->globals_capa ? c->globals_capa * 2 : 32;
-        c->globals = (struct gentry *)GC_realloc(c->globals, cap * sizeof(struct gentry));
-        c->globals_capa = cap;
+    struct pyglobals *g = c->globals;
+    if (g->size == g->capa) {
+        size_t cap = g->capa ? g->capa * 2 : 32;
+        g->entries = (struct gentry *)GC_realloc(g->entries, cap * sizeof(struct gentry));
+        g->capa = cap;
     }
-    int i = (int)c->globals_size++;
-    c->globals[i].name = name;
-    c->globals[i].value = PY_NONE;
-    c->globals[i].defined = false;
+    int i = (int)g->size++;
+    g->entries[i].name = name;
+    g->entries[i].value = PY_NONE;
+    g->entries[i].defined = false;
     return i;
 }
 
 void
 py_global_define(CTX *c, const char *name, VALUE v)
 {
+    struct pyglobals *g = c->globals;
     int i = py_global_index(c, name);
     bool is_new = (i < 0);
     if (is_new) i = py_global_alloc(c, name);
-    bool was_defined = c->globals[i].defined;
-    c->globals[i].value = v;
-    c->globals[i].defined = true;
-    // Only bump on _structural_ change (new slot or first define of an
-    // existing slot).  Plain value updates would invalidate every other
-    // gref's cache on every assignment — fatal for tight `i += 1` loops.
-    if (is_new || !was_defined) c->globals_serial++;
+    bool was_defined = g->entries[i].defined;
+    g->entries[i].value = v;
+    g->entries[i].defined = true;
+    if (is_new || !was_defined) g->serial = ++SHARED_GLOBALS_SERIAL;
 }
 
 bool
 py_global_has(CTX *c, const char *name)
 {
     int i = py_global_index(c, name);
-    return i >= 0 && c->globals[i].defined;
+    return i >= 0 && c->globals->entries[i].defined;
 }
 
 VALUE
 py_global_ref(CTX *c, const char *name)
 {
     int i = py_global_index(c, name);
-    if (i < 0 || !c->globals[i].defined)
+    if (i < 0 || !c->globals->entries[i].defined)
         py_raise_exc(c, c->EXC_NameError, "name '%s' is not defined", name);
-    return c->globals[i].value;
+    return c->globals->entries[i].value;
 }
 
-// Used by `node_gref`'s @ref-cache path: resolve a name to a globals
-// index (allocating an undefined slot if missing) so subsequent ref
-// reads can index directly without strcmp.
 int
 py_global_resolve(CTX *c, const char *name)
 {
     int i = py_global_index(c, name);
-    if (i < 0) {
-        // Pre-allocate a slot so `idx` stays stable even if the name
-        // hasn't been defined yet (a NameError will be raised via the
-        // `defined` flag check on the read).  But we want the read fast
-        // path NOT to check `defined` on every call — so raise here on
-        // first miss instead.
+    if (i < 0)
         py_raise_exc(c, c->EXC_NameError, "name '%s' is not defined", name);
-    }
-    if (!c->globals[i].defined)
+    if (!c->globals->entries[i].defined)
         py_raise_exc(c, c->EXC_NameError, "name '%s' is not defined", name);
     return i;
 }
 
-// Variant for write-side resolution: allocates the slot if missing
-// (like `py_global_define` would on first set) so for/gset hot loops
-// can skip the linear strcmp after the first iteration.
 int
 py_global_resolve_or_alloc(CTX *c, const char *name)
 {
@@ -1263,6 +1295,13 @@ py_list_get(CTX *c, VALUE seq, VALUE idx)
         if (i < 0 || i >= len) py_raise_exc(c, c->EXC_IndexError, "string index out of range");
         return py_make_str(PY_PTR(seq)->str.chars + i, 1);
     }
+    if (py_is_byteseq(seq)) {
+        int64_t i = py_int_to_long(c, idx);
+        int64_t len = (int64_t)PY_PTR(seq)->str.len;
+        i = clamp_idx(i, len, false);
+        if (i < 0 || i >= len) py_raise_exc(c, c->EXC_IndexError, "bytes index out of range");
+        return PY_FIX((unsigned char)PY_PTR(seq)->str.chars[i]);
+    }
     if (py_is_dict(seq)) {
         return py_dict_get(c, seq, idx);
     }
@@ -1410,6 +1449,7 @@ size_t
 py_seq_len(CTX *c, VALUE v)
 {
     if (py_is_str(v))   return PY_PTR(v)->str.len;
+    if (py_is_byteseq(v)) return PY_PTR(v)->str.len;
     if (py_is_list(v) || py_is_tuple(v)) return PY_PTR(v)->list.len;
     if (py_is_dict(v) || py_is_any_set(v))  return PY_PTR(v)->dict->used;
     if (py_is_instance(v)) {
@@ -1470,6 +1510,11 @@ py_iter_init(CTX *c, struct py_iter *it, VALUE iterable)
         it->end = (int64_t)PY_PTR(iterable)->str.len;
         return;
     }
+    if (py_is_byteseq(iterable)) {
+        it->kind = 6;       // bytes: yield int 0..255
+        it->end = (int64_t)PY_PTR(iterable)->str.len;
+        return;
+    }
     if (py_is_range(iterable)) {
         it->kind = 2;
         it->i    = PY_PTR(iterable)->range.start;
@@ -1510,6 +1555,11 @@ py_iter_next(CTX *c, struct py_iter *it, VALUE *out)
       case 1:
         if (it->i >= it->end) return false;
         *out = py_make_str(PY_PTR(it->container)->str.chars + it->i, 1);
+        it->i++;
+        return true;
+      case 6:
+        if (it->i >= it->end) return false;
+        *out = PY_FIX((unsigned char)PY_PTR(it->container)->str.chars[it->i]);
         it->i++;
         return true;
       case 2:
@@ -1632,6 +1682,14 @@ py_method_resolve(CTX *c, VALUE recv, const char *name, struct method_cache *cac
 VALUE
 py_getattr(CTX *c, VALUE v, const char *name)
 {
+    if (py_is_module(v)) {
+        struct pyglobals *g = PY_PTR(v)->module.globals;
+        for (size_t i = 0; i < g->size; i++)
+            if (strcmp(g->entries[i].name, name) == 0 && g->entries[i].defined)
+                return g->entries[i].value;
+        py_raise_exc(c, c->EXC_AttributeError, "module '%s' has no attribute '%s'",
+                     PY_PTR(v)->module.name, name);
+    }
     if (py_is_instance(v)) {
         struct pyobj *o = PY_PTR(v);
         if (o->inst.attrs) {
@@ -1801,11 +1859,14 @@ py_apply_kw_func(CTX *c, VALUE fn, int argc, VALUE *argv,
 
     struct pyframe *saved = c->env;
     VALUE saved_mc = c->method_class;
+    struct pyglobals *saved_g = c->globals;
     c->env = new_env;
     c->method_class = f->func.defining_class;
+    if (f->func.fglobals) c->globals = f->func.fglobals;
     EVAL(c, f->func.body);
     c->env = saved;
     c->method_class = saved_mc;
+    c->globals = saved_g;
     if (c->state == PY_STATE_RETURN) {
         VALUE r = c->state_value;
         c->state = PY_STATE_NORMAL;
@@ -1961,6 +2022,23 @@ py_display(FILE *fp, VALUE v, bool repr)
             fwrite(o->str.chars, 1, o->str.len, fp);
         }
         return;
+      case PY_T_BYTES:
+      case PY_T_BYTEARRAY: {
+        if (o->type == PY_T_BYTEARRAY) fputs("bytearray(", fp);
+        fputs("b'", fp);
+        for (size_t i = 0; i < o->str.len; i++) {
+            unsigned char ch = (unsigned char)o->str.chars[i];
+            if      (ch == '\\') fputs("\\\\", fp);
+            else if (ch == '\'') fputs("\\'", fp);
+            else if (ch == '\n') fputs("\\n", fp);
+            else if (ch == '\t') fputs("\\t", fp);
+            else if (ch >= 32 && ch < 127) fputc((char)ch, fp);
+            else fprintf(fp, "\\x%02x", ch);
+        }
+        fputc('\'', fp);
+        if (o->type == PY_T_BYTEARRAY) fputc(')', fp);
+        return;
+      }
       case PY_T_LIST:
         fputc('[', fp);
         for (size_t i = 0; i < o->list.len; i++) {
@@ -2038,6 +2116,9 @@ py_display(FILE *fp, VALUE v, bool repr)
         return;
       case PY_T_BOUND_METHOD:
         fprintf(fp, "<bound method>");
+        return;
+      case PY_T_MODULE:
+        fprintf(fp, "<module '%s'>", o->module.name);
         return;
       case PY_T_CLASS:
         fprintf(fp, "<class '%s'>", o->cls.name);
@@ -2831,6 +2912,45 @@ bi_set(CTX *c, int argc, VALUE *argv)
 }
 
 static VALUE
+bi_bytes(CTX *c, int argc, VALUE *argv)
+{
+    if (argc == 0) return py_make_bytes("", 0);
+    VALUE v = argv[0];
+    if (PY_IS_FIXNUM(v)) {
+        int64_t n = PY_FIXVAL(v);
+        if (n < 0) py_raise_exc(c, c->EXC_ValueError, "negative count");
+        char *buf = (char *)GC_malloc_atomic(n + 1);
+        memset(buf, 0, n + 1);
+        struct pyobj *o = py_alloc(PY_T_BYTES);
+        o->str.chars = buf; o->str.len = (size_t)n;
+        return PY_OBJ_VAL(o);
+    }
+    if (py_is_byteseq(v)) return py_make_bytes(PY_PTR(v)->str.chars, PY_PTR(v)->str.len);
+    if (py_is_str(v))     return py_make_bytes(PY_PTR(v)->str.chars, PY_PTR(v)->str.len);
+    // iterable of ints
+    struct py_iter it; py_iter_init(c, &it, v);
+    if (c->state != PY_STATE_NORMAL) return PY_NONE;
+    size_t cap = 16, len = 0;
+    char *buf = (char *)GC_malloc_atomic(cap);
+    VALUE x;
+    while (py_iter_next(c, &it, &x)) {
+        int64_t b = py_int_to_long(c, x);
+        if (b < 0 || b > 255) py_raise_exc(c, c->EXC_ValueError, "byte must be 0..255");
+        if (len == cap) { cap *= 2; buf = (char *)GC_realloc(buf, cap); }
+        buf[len++] = (char)b;
+    }
+    return py_make_bytes(buf, len);
+}
+
+static VALUE
+bi_bytearray(CTX *c, int argc, VALUE *argv)
+{
+    VALUE r = bi_bytes(c, argc, argv);
+    if (py_is_bytes(r)) PY_PTR(r)->type = PY_T_BYTEARRAY;
+    return r;
+}
+
+static VALUE
 bi_frozenset(CTX *c, int argc, VALUE *argv)
 {
     VALUE r = py_make_frozenset();
@@ -2854,6 +2974,8 @@ bi_type(CTX *c, int argc, VALUE *argv)
     switch (o->type) {
       case PY_T_FLOAT: return py_make_str("float", 5);
       case PY_T_STR:   return py_make_str("str", 3);
+      case PY_T_BYTES: return py_make_str("bytes", 5);
+      case PY_T_BYTEARRAY: return py_make_str("bytearray", 9);
       case PY_T_LIST:  return py_make_str("list", 4);
       case PY_T_TUPLE: return py_make_str("tuple", 5);
       case PY_T_DICT:  return py_make_str("dict", 4);
@@ -3207,12 +3329,96 @@ bi_pystro_delglobal(CTX *c, int argc, VALUE *argv)
     if (!py_is_str(argv[0])) py_raise_exc(c, c->EXC_TypeError, "name must be str");
     const char *name = PY_PTR(argv[0])->str.chars;
     int i = py_global_index(c, name);
-    if (i < 0 || !c->globals[i].defined)
+    if (i < 0 || !c->globals->entries[i].defined)
         py_raise_exc(c, c->EXC_NameError, "name '%s' is not defined", name);
-    c->globals[i].defined = false;
-    c->globals[i].value = PY_NONE;
-    c->globals_serial++;        // structural change → invalidate caches
+    c->globals->entries[i].defined = false;
+    c->globals->entries[i].value = PY_NONE;
+    c->globals->serial = ++SHARED_GLOBALS_SERIAL;     // structural change
     return PY_NONE;
+}
+
+extern void install_builtins(CTX *c);
+
+// Cache of already-imported modules (name → module pyobj).
+// Lives in `c->globals` of the main module... actually use a static
+// global so re-import shares the same instance regardless of which
+// module triggers the import.
+static VALUE PYSTRO_MODULES = 0;     // PY_T_DICT — initialised lazily
+
+static VALUE
+modules_dict(CTX *c)
+{
+    if (!PYSTRO_MODULES) PYSTRO_MODULES = py_make_dict();
+    (void)c;
+    return PYSTRO_MODULES;
+}
+
+// Read entire file into a malloc'd buffer.  Caller free's.
+static char *
+read_file_into_buf(const char *path)
+{
+    FILE *fp = fopen(path, "rb");
+    if (!fp) return NULL;
+    fseek(fp, 0, SEEK_END);
+    long sz = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+    char *buf = (char *)malloc(sz + 1);
+    if (fread(buf, 1, sz, fp) != (size_t)sz) { free(buf); fclose(fp); return NULL; }
+    buf[sz] = '\0';
+    fclose(fp);
+    return buf;
+}
+
+// Forward decls — main.c provides PARSE_program (we expose tokenize +
+// parse_program through extern).
+extern void tokenize(const char *src, const char *filename);
+extern struct Node *parse_program(void);
+
+static VALUE
+bi_import(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    if (!py_is_str(argv[0])) py_raise_exc(c, c->EXC_TypeError, "import name must be str");
+    VALUE mod_dict = modules_dict(c);
+    if (py_dict_has(c, mod_dict, argv[0])) return py_dict_get(c, mod_dict, argv[0]);
+
+    const char *name = PY_PTR(argv[0])->str.chars;
+    char path[1024];
+    snprintf(path, sizeof(path), "%s.py", name);
+    char *src = read_file_into_buf(path);
+    if (!src) {
+        // Try sample/pystro-relative paths if needed; for v0 just CWD.
+        py_raise_exc(c, c->EXC_RuntimeError, "no module named '%s' (looked at %s)", name, path);
+    }
+
+    // Build a fresh globals namespace and install the same builtins so
+    // user code can call print() etc.
+    struct pyglobals *new_g = py_globals_new();
+    struct pyglobals *saved_g = c->globals;
+    c->globals = new_g;
+    install_builtins(c);
+
+    // tokenize + parse the module file.  The lexer/parser state is
+    // reset by tokenize(), and we're being called at runtime so the
+    // original program's tokens aren't needed any more (its AST is
+    // already built).
+    tokenize(src, path);
+    NODE *body = parse_program();
+
+    EVAL(c, body);
+    if (c->state == PY_STATE_RAISE) { c->globals = saved_g; free(src); return PY_NONE; }
+    c->state = PY_STATE_NORMAL; c->state_value = PY_NONE;
+
+    // Wrap globals into a module pyobj.
+    struct pyobj *mo = py_alloc(PY_T_MODULE);
+    mo->module.name = py_make_str(name, strlen(name)) ? name : name;
+    mo->module.globals = new_g;
+    VALUE mod = PY_OBJ_VAL(mo);
+
+    c->globals = saved_g;
+    py_dict_set(c, mod_dict, argv[0], mod);
+    free(src);
+    return mod;
 }
 
 static VALUE
@@ -3417,7 +3623,7 @@ bi_next(CTX *c, int argc, VALUE *argv)
     py_raise_exc(c, c->EXC_TypeError, "next() argument is not an iterator");
 }
 
-static void
+void
 install_builtins(CTX *c)
 {
     py_global_define(c, "print",      py_make_builtin("print",      bi_print,      0, -1));
@@ -3434,6 +3640,8 @@ install_builtins(CTX *c)
     py_global_define(c, "dict",       py_make_builtin("dict",       bi_dict,       0,  0));
     py_global_define(c, "set",        py_make_builtin("set",        bi_set,        0,  1));
     py_global_define(c, "frozenset",  py_make_builtin("frozenset",  bi_frozenset,  0,  1));
+    py_global_define(c, "bytes",      py_make_builtin("bytes",      bi_bytes,      0,  1));
+    py_global_define(c, "bytearray",  py_make_builtin("bytearray",  bi_bytearray,  0,  1));
     py_global_define(c, "type",       py_make_builtin("type",       bi_type,       1,  1));
     py_global_define(c, "isinstance", py_make_builtin("isinstance", bi_isinstance, 2,  2));
     py_global_define(c, "min",        py_make_builtin("min",        bi_min,        1, -1));
@@ -3491,6 +3699,7 @@ install_builtins(CTX *c)
     py_global_define(c, "__pystro_del__",   py_make_builtin("__pystro_del__", bi_pystro_del, 2, 2));
     py_global_define(c, "__pystro_delattr__",   py_make_builtin("__pystro_delattr__", bi_pystro_delattr, 2, 2));
     py_global_define(c, "__pystro_delglobal__", py_make_builtin("__pystro_delglobal__", bi_pystro_delglobal, 1, 1));
+    py_global_define(c, "__pystro_import__",    py_make_builtin("__pystro_import__", bi_import, 1, 1));
 
     c->current_class = PY_NONE;
 }

@@ -83,6 +83,10 @@ enum pyobj_type {
     PY_T_FLOAT,
     PY_T_BIGNUM,            // GMP mpz
     PY_T_STR,
+    PY_T_BYTES,             // immutable byte sequence (b"...")
+    PY_T_BYTEARRAY,         // mutable byte sequence
+    PY_T_MODULE,            // imported module (has own globals)
+
     PY_T_LIST,
     PY_T_TUPLE,
     PY_T_DICT,
@@ -169,7 +173,13 @@ struct pyobj {
             VALUE defining_class;   // class this method was defined on
                                     // (PY_NONE for non-method funcs) —
                                     // used for cooperative super()
+            struct pyglobals *fglobals;  // captured globals at def time
         } func;
+        // PY_T_MODULE: name + its globals.
+        struct {
+            const char *name;
+            struct pyglobals *globals;
+        } module;
         struct {
             py_builtin_fn fn;
             const char *name;
@@ -221,6 +231,15 @@ struct gentry {
     bool defined;
 };
 
+// Globals namespace (module-level).  Each module has its own
+// `pyglobals`; functions capture a pointer to the one in scope at
+// def-time, so cross-module calls see the right names.
+struct pyglobals {
+    struct gentry *entries;
+    size_t size, capa;
+    uint64_t serial;
+};
+
 // Inline cache stamped at every node_gref / node_gset call site.  The
 // cache holds (serial, value): hot path is two 8-byte loads + a compare.
 // Mutated by `py_global_set` / `py_global_define` via globals_serial bump.
@@ -242,9 +261,9 @@ struct method_cache {
 typedef struct CTX_struct {
     struct pyframe *env;
 
-    struct gentry *globals;
-    size_t globals_size, globals_capa;
-    uint64_t globals_serial;
+    // Currently-active globals (= the running module's namespace).
+    // Switched on cross-module function call.
+    struct pyglobals *globals;
 
     int    state;
     VALUE  state_value;             // return value / raised exception
@@ -298,6 +317,10 @@ static inline bool py_is_float(VALUE v)   { return PY_IS_FLONUM(v) || py_is_heap
 static inline bool py_is_bignum(VALUE v)  { return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_BIGNUM; }
 static inline bool py_is_int(VALUE v)     { return py_is_fix(v) || py_is_bignum(v); }
 static inline bool py_is_str(VALUE v)     { return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_STR; }
+static inline bool py_is_bytes(VALUE v)   { return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_BYTES; }
+static inline bool py_is_bytearray(VALUE v){ return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_BYTEARRAY; }
+static inline bool py_is_byteseq(VALUE v) { return py_is_bytes(v) || py_is_bytearray(v); }
+static inline bool py_is_module(VALUE v)  { return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_MODULE; }
 static inline bool py_is_list(VALUE v)    { return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_LIST; }
 static inline bool py_is_tuple(VALUE v)   { return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_TUPLE; }
 static inline bool py_is_dict(VALUE v)    { return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_DICT; }
@@ -340,6 +363,8 @@ VALUE py_make_int   (int64_t v);                  // fixnum if fits, else bignum
 VALUE py_make_bignum(mpz_srcptr z);
 VALUE py_make_str   (const char *s, size_t len);
 VALUE py_make_str_take(char *s, size_t len);      // takes ownership
+VALUE py_make_bytes (const char *s, size_t len);
+VALUE py_make_bytearray(const char *s, size_t len);
 VALUE py_make_list  (VALUE *items, size_t n);     // copies items; capa=max(n,4)
 VALUE py_make_tuple (VALUE *items, size_t n);
 VALUE py_make_dict  (void);
