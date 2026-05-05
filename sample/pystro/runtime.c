@@ -85,6 +85,7 @@ py_class_meta_apply(CTX *c, VALUE cls, VALUE meta, const char *name)
     VALUE bases_tuple = py_make_tuple(bv, cd->nbases);
     VALUE name_v = py_make_str(name, strlen(name));
 
+    extern const char *intern_name(const char *s, size_t len);
     // If metaclass is a user class with __new__, call __new__(meta, ...).
     // The __new__ implementor is expected to return a class (typically by
     // calling type(name, bases, attrs)).
@@ -102,6 +103,8 @@ py_class_meta_apply(CTX *c, VALUE cls, VALUE meta, const char *name)
                     py_apply(c, init_m, 4, iav);
                     if (c->state == PY_STATE_RAISE) return PY_NONE;
                 }
+                // Stamp metaclass for inheritance.
+                py_class_add_method(c, r, intern_name("__metaclass__", 13), meta);
                 return r;
             }
         }
@@ -111,7 +114,27 @@ py_class_meta_apply(CTX *c, VALUE cls, VALUE meta, const char *name)
     VALUE av[3] = { name_v, bases_tuple, attrs };
     VALUE result = py_apply(c, meta, 3, av);
     if (c->state == PY_STATE_RAISE) return PY_NONE;
-    if (py_is_class(result)) return result;
+    if (py_is_class(result)) {
+        py_class_add_method(c, result, intern_name("__metaclass__", 13), meta);
+        return result;
+    }
+    return cls;
+}
+
+// If any of `bases` (or their ancestors) has a `__metaclass__` attribute,
+// apply it to `cls` (the freshly-built class).  Returns either `cls` or
+// the metaclass-produced replacement.
+VALUE
+py_class_inherit_metaclass(CTX *c, VALUE cls, VALUE *bases, int nbases, const char *name)
+{
+    for (int i = 0; i < nbases; i++) {
+        VALUE b = bases[i];
+        if (!py_is_class(b)) continue;
+        VALUE meta = py_class_lookup_method(b, "__metaclass__");
+        if (meta != PY_NONE && py_is_class(meta)) {
+            return py_class_meta_apply(c, cls, meta, name);
+        }
+    }
     return cls;
 }
 
@@ -1404,8 +1427,8 @@ py_hash(CTX *c, VALUE v)
         return pun.u;
     }
     if (v == PY_NONE)  return 0xDEADBEEFCAFEBABEULL;
-    if (v == PY_TRUE)  return 1;
-    if (v == PY_FALSE) return 0;
+    if (v == PY_TRUE)  return py_hash(c, PY_FIX(1));
+    if (v == PY_FALSE) return py_hash(c, PY_FIX(0));
     struct pyobj *o = PY_PTR(v);
     switch (o->type) {
       case PY_T_FLOAT: {
@@ -6295,6 +6318,9 @@ bi_int(CTX *c, int argc, VALUE *argv)
     if (v == PY_FALSE)   return PY_FIX(0);
     if (py_is_float(v)) {
         double d = PY_IS_FLONUM(v) ? py_flonum_to_double(v) : PY_PTR(v)->dbl;
+        if (d != d) py_raise_exc(c, c->EXC_ValueError, "cannot convert NaN to int");
+        if (d == 1.0/0.0 || d == -1.0/0.0)
+            py_raise_exc(c, c->EXC_OverflowError, "cannot convert inf to int");
         if (d >= (double)PY_FIXNUM_MIN && d <= (double)PY_FIXNUM_MAX)
             return PY_FIX((int64_t)d);
         mpz_t z; mpz_init(z); mpz_set_d(z, d);

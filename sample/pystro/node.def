@@ -1021,7 +1021,11 @@ node_class_multi(CTX * restrict c, NODE * restrict n, const char *name, uint32_t
     EVAL_ARG(c, body);
     c->current_class = saved;
     if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
-    return cls;
+    // Inherited metaclass: if any base has a `__metaclass__` attribute
+    // (set by an explicit metaclass=M on the base or its ancestors),
+    // apply it now.
+    extern VALUE py_class_inherit_metaclass(CTX *c, VALUE cls, VALUE *bases, int nbases, const char *name);
+    return py_class_inherit_metaclass(c, cls, bvs, (int)nbases, name);
 }
 
 // Build the class object: evaluate base, allocate the class, evaluate
@@ -1041,7 +1045,9 @@ node_class(CTX * restrict c, NODE * restrict n, const char *name, NODE *base, NO
     EVAL_ARG(c, body);
     c->current_class = saved;
     if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
-    return cls;
+    extern VALUE py_class_inherit_metaclass(CTX *c, VALUE cls, VALUE *bases, int nbases, const char *name);
+    VALUE bases1[1] = { base_v };
+    return py_class_inherit_metaclass(c, cls, bases1, base_v != PY_NONE ? 1 : 0, name);
 }
 
 NODE_DEF @noinline

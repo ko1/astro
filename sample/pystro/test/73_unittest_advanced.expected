@@ -1,0 +1,11 @@
+ok MetaclassInheritTest test_metaclass_applied_to_subclass
+ok AnnotationsTest test_class_annotations_dict
+ok AnnotationsTest test_dataclass_via_annotations
+ok EnumProperTest test_enum_class_syntax
+ok HashConsistencyTest test_int_float_bool
+ok IntFromFloatErrorTest test_inf
+ok IntFromFloatErrorTest test_nan
+ok FrozensetUnion test_with_set
+ok ListLambda test_lambda_default_in_listcomp
+---
+passed=9 failed=0

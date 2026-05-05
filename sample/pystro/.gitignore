@@ -11,3 +11,7 @@ node_specialize.c
 # Build artifacts
 pystro
 code_store/
+__pycache__/
+pkg/
+*.pyc
+code_store/

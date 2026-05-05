@@ -52,10 +52,54 @@ def _make_enum(typename, items):
     return cls
 
 
-# `Enum` as a marker base — pystro can't intercept class-definition syntax,
-# so users typically do `MyEnum = _make_enum("MyEnum", {...})`.
-class Enum:
+def _is_dunder(name):
+    return name.startswith("__") and name.endswith("__")
+
+
+class EnumMeta(type):
+    def __new__(meta, name, bases, attrs):
+        # Collect non-dunder, non-method attributes as enum members.
+        items = []
+        for key in list(attrs):
+            if _is_dunder(key): continue
+            v = attrs[key]
+            if callable(v) and not isinstance(v, _Auto): continue
+            items.append((key, v))
+
+        # Auto-assign for _Auto sentinels.
+        next_val = 1
+        for i in range(len(items)):
+            n, v = items[i]
+            if isinstance(v, _Auto):
+                items[i] = (n, next_val)
+                next_val += 1
+            elif isinstance(v, int):
+                next_val = v + 1
+
+        # Build the class with members removed from attrs.
+        for n, _ in items:
+            if n in attrs: del attrs[n]
+        cls = type.__call__(type, name, bases, attrs) if False else type(name, bases, attrs)
+        cls._members_ = []
+        cls._by_name_ = {}
+        for n, v in items:
+            m = _EnumMember(name, n, v)
+            cls._members_.append(m)
+            cls._by_name_[n] = m
+            setattr(cls, n, m)
+        return cls
+
+
+class Enum(metaclass=EnumMeta):
     pass
+
+
+def __iter_enum__(cls):
+    return iter(cls._members_)
+
+
+# Make enum classes iterable.  Since pystro doesn't dispatch __iter__ on
+# class objects directly, users iterate via ClassName._members_.
 
 
 def auto():

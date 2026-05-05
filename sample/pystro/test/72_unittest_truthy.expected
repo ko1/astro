@@ -1,0 +1,19 @@
+ok TruthyValueTest test_bytes_empty_is_false
+ok TruthyValueTest test_bytes_nonempty_is_true
+ok TruthyValueTest test_complex_nonzero_is_true
+ok TruthyValueTest test_complex_zero_is_false
+ok TruthyValueTest test_set_empty_is_false
+ok TruthyValueTest test_set_nonempty_is_true
+ok IfStatementBoolTest test_if_complex_zero
+ok IfStatementBoolTest test_if_empty_bytes
+ok ChainCompareTest test_basic
+ok ChainCompareTest test_mixed
+ok JsonRoundtripTest test_complex
+ok StringPctFormatTest test_format
+ok WalrusTest test_in_if
+ok WalrusTest test_in_listcomp
+ok WalrusTest test_in_while
+ok GeneratorAdvancedTest test_close_runs_finally
+ok GeneratorAdvancedTest test_yield_from_basic
+---
+passed=17 failed=0

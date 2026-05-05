@@ -499,10 +499,15 @@ py_is_truthy(VALUE v)
     switch (o->type) {
       case PY_T_FLOAT:  return o->dbl != 0.0;
       case PY_T_BIGNUM: return mpz_sgn(o->mpz) != 0;
+      case PY_T_COMPLEX: return o->cpx.re != 0.0 || o->cpx.im != 0.0;
       case PY_T_STR:    return o->str.len != 0;
+      case PY_T_BYTES:
+      case PY_T_BYTEARRAY: return o->str.len != 0;
       case PY_T_LIST:
       case PY_T_TUPLE:  return o->list.len != 0;
       case PY_T_DICT:   return o->dict->used != 0;
+      case PY_T_SET:
+      case PY_T_FROZENSET: return o->dict->used != 0;
       case PY_T_INSTANCE: return py_is_truthy_instance(v);
       default:          return true;
     }

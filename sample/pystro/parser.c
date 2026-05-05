@@ -2828,23 +2828,35 @@ parse_simple_stmt(void)
     }
 
     // Annotated assignment / declaration: `NAME : ann (= expr)?`
-    // Discard the annotation; treat the rest as a normal assignment.
     if (k == T_NAME && peek_tok(1)->kind == T_COLON) {
-        // But avoid swallowing dict literals — only at statement start.
-        // Actually `x: int` at stmt start is unambiguous: the COLON
-        // here can only be an annotation since we are not parsing a
-        // dict literal.
         size_t save = tok_pos;
         const char *nm = peek_tok(0)->sval;
         tok_pos += 2;
         // Discard annotation.
         (void)parse_expr();
+        // Inside a class body: track in `__annotations__` so introspection
+        // (e.g. dataclasses, typing) can see field declarations.
+        NODE *track_ann = NULL;
+        if (in_class_body) {
+            // Build: __annotations__ = (__annotations__ or {}); __annotations__[nm] = annotation_value (None placeholder).
+            NODE *get_ann = ALLOC_node_class_method_get(intern_name("__annotations__", 15));
+            NODE *empty = ALLOC_node_make_dict(node_table_reserve(NULL, 0), 0);
+            NODE *or_node = ALLOC_node_or(get_ann, empty);
+            NODE *set_ann = ALLOC_node_class_method_set(intern_name("__annotations__", 15), or_node);
+            // Now subscript-set: __annotations__[nm] = None.
+            NODE *load_ann = ALLOC_node_class_method_get(intern_name("__annotations__", 15));
+            NODE *key = ALLOC_node_const_str(nm);
+            NODE *val = ALLOC_node_const_none();
+            NODE *sset = ALLOC_node_subscript_set(load_ann, key, val);
+            track_ann = ALLOC_node_seq(set_ann, sset);
+        }
         if (match_tok(T_ASSIGN)) {
             NODE *rhs = parse_expr_list();
-            return make_store(nm, rhs);
+            NODE *store = make_store(nm, rhs);
+            return track_ann ? ALLOC_node_seq(track_ann, store) : store;
         }
-        // Bare annotation `x: int` — treated as a no-op (just declares).
-        return ALLOC_node_nop();
+        // Bare annotation `x: int` — track but no value bound.
+        return track_ann ? track_ann : ALLOC_node_nop();
         (void)save;
     }
 

@@ -52,11 +52,37 @@ def _build_dataclass(cls, fields):
     return cls
 
 
-def dataclass(cls):
+def _is_dunder(name):
+    return name.startswith("__") and name.endswith("__")
+
+
+def dataclass(cls=None, **kwargs):
+    # Allow @dataclass and @dataclass(eq=True) forms.
+    if cls is None:
+        # Called with kwargs — return a decorator.
+        def _wrap(c):
+            return dataclass(c)
+        return _wrap
     # Look for `_fields` class attribute giving the explicit order.
     fields = getattr(cls, "_fields", None)
     if fields is None:
-        raise TypeError("@dataclass needs _fields class attr")
+        # Auto-detect: walk dir(cls) for non-method attributes.
+        # First try __annotations__ if present.
+        anns = getattr(cls, "__annotations__", None)
+        if anns:
+            fields = list(anns.keys()) if hasattr(anns, "keys") else list(anns)
+        else:
+            # Fall back: inspect class-level non-callable, non-dunder attrs.
+            fields = []
+            for name in dir(cls):
+                if _is_dunder(name): continue
+                if name.startswith("_"): continue
+                try:
+                    v = getattr(cls, name)
+                except Exception:
+                    continue
+                if callable(v): continue
+                fields.append(name)
     return _build_dataclass(cls, list(fields))
 
 
