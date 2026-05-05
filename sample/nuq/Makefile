@@ -26,6 +26,9 @@ $(NODE_GENFILES): node.def ../../lib/astrogen.rb
 test: nuq
 	ruby test/run_tests.rb
 
+bench: nuq
+	ruby bench/bench.rb
+
 clean:
 	rm -f nuq $(NODE_GENFILES)
 	rm -rf code_store
@@ -33,4 +36,4 @@ clean:
 distclean: clean
 	rm -rf code_store
 
-.PHONY: all test clean distclean
+.PHONY: all test bench clean distclean

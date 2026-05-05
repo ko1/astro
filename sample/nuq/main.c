@@ -171,7 +171,14 @@ main(int argc, char **argv)
         }
     }
 
-    CTX *c = (CTX *)calloc(1, sizeof(*c));
+    /* CTX *must* be GC-allocated: it holds pointers (var_stack,
+     * funcs, emit_buf) into GC-managed memory.  A malloc'd CTX is
+     * invisible to Boehm's scanner, which can then collect those
+     * blocks while CTX still references them — manifests as a
+     * corrupt-`$x` lookup once the foreach loop's emit_buf grows
+     * enough to trigger GC. */
+    CTX *c = (CTX *)GC_malloc(sizeof(*c));
+    memset(c, 0, sizeof(*c));
     c->error = NUQ_NULL;
     c->emit_buf = nuq_make_array(0);
 

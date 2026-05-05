@@ -216,6 +216,15 @@ b_reverse(CTX *c, int a, struct Node **args)
 /* sort by natural comparison */
 static int cmp_for_qsort_natural(const void *a, const void *b) { return nuq_cmp(*(const VALUE *)a, *(const VALUE *)b); }
 
+/* For group_by: each entry is a 2-element array [key, value]; sort by key. */
+static int
+cmp_pair_by_first(const void *a, const void *b)
+{
+    VALUE ka = NUQ_PTR(*(const VALUE *)a)->arr.items[0];
+    VALUE kb = NUQ_PTR(*(const VALUE *)b)->arr.items[0];
+    return nuq_cmp(ka, kb);
+}
+
 static VALUE
 b_sort(CTX *c, int a, struct Node **args)
 {
@@ -1004,21 +1013,9 @@ b_group_by(CTX *c, int a, struct Node **args)
         nuq_array_push(p, o->arr.items[i]);
         nuq_array_push(pairs, p);
     }
-    /* sort by first element */
+    /* sort by first element of each pair (= the computed key) */
     struct nuq_obj *po = NUQ_PTR(pairs);
-    /* Insertion sort (stable) for simplicity */
-    for (size_t i = 1; i < po->arr.len; i++) {
-        VALUE x = po->arr.items[i];
-        size_t j = i;
-        while (j > 0) {
-            VALUE k_a = NUQ_PTR(po->arr.items[j-1])->arr.items[0];
-            VALUE k_b = NUQ_PTR(x)->arr.items[0];
-            if (nuq_cmp(k_a, k_b) <= 0) break;
-            po->arr.items[j] = po->arr.items[j-1];
-            j--;
-        }
-        po->arr.items[j] = x;
-    }
+    qsort(po->arr.items, po->arr.len, sizeof(VALUE), cmp_pair_by_first);
     /* group */
     VALUE r = nuq_make_array(0);
     VALUE cur = NUQ_NULL;

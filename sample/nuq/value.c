@@ -438,9 +438,16 @@ nuq_clone(VALUE v)
         return r;
       }
       case NUQ_T_OBJECT: {
+        /* Source keys are already unique — bypass nuq_object_set's
+         * linear collision check (which would make clone O(n²) and
+         * the surrounding object-add loop O(n³)). */
         VALUE r = nuq_make_object(o->obj.len);
-        for (size_t i = 0; i < o->obj.len; i++)
-            nuq_object_set(r, o->obj.keys[i], o->obj.vals[i]);
+        struct nuq_obj *ro = NUQ_PTR(r);
+        for (size_t i = 0; i < o->obj.len; i++) {
+            ro->obj.keys[ro->obj.len] = o->obj.keys[i];
+            ro->obj.vals[ro->obj.len] = o->obj.vals[i];
+            ro->obj.len++;
+        }
         return r;
       }
     }
