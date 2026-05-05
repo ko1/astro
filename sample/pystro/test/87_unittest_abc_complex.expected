@@ -1,0 +1,8 @@
+ok AbcEnforcementTest test_abstract_cannot_instantiate
+ok AbcEnforcementTest test_concrete_subclass_works
+ok AbcEnforcementTest test_partial_implementation_fails
+ok ComplexPowTest test_basic_pow
+ok ComplexPowTest test_imag_pow
+ok ComplexPowTest test_real_complex_mixed
+---
+passed=6 failed=0

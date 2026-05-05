@@ -352,7 +352,16 @@ py_make_func(struct Node *body, struct pyframe *env,
     o->func.has_varargs = has_varargs;
     o->func.has_kwargs = has_kwargs;
     o->func.is_generator = is_generator;
-    o->func.param_names = param_names;
+    // Copy param_names into a private GC-managed array.  The caller
+    // may pass a pointer into PYSTRO_NAME_TABLE which can be moved by
+    // a later GC_realloc; per-func storage is stable.
+    if (param_names && nparams > 0) {
+        const char **pn = (const char **)GC_malloc(sizeof(char *) * nparams);
+        for (int i = 0; i < nparams; i++) pn[i] = param_names[i];
+        o->func.param_names = pn;
+    } else {
+        o->func.param_names = NULL;
+    }
     o->func.defining_class = PY_NONE;
     extern CTX *py_current_ctx;
     o->func.fglobals = py_current_ctx ? py_current_ctx->globals : NULL;
@@ -1211,6 +1220,21 @@ py_pow(CTX *c, VALUE a, VALUE b)
     if (r) return r;
     r = py_try_binop_dunder(c, "__rpow__", b, a);
     if (r) return r;
+    if (py_is_complex(a) || py_is_complex(b)) {
+        double ra, ia, rb, ib;
+        if (py_to_cpx(c, a, &ra, &ia) && py_to_cpx(c, b, &rb, &ib)) {
+            // (ra+ia*i)^(rb+ib*i) via exp(b * log(a))
+            double mod = sqrt(ra * ra + ia * ia);
+            if (mod == 0.0) return py_make_complex(0, 0);
+            double th = atan2(ia, ra);
+            double lr = log(mod);
+            // b*log(a) = (rb*lr - ib*th) + i*(rb*th + ib*lr)
+            double er = rb * lr - ib * th;
+            double ei = rb * th + ib * lr;
+            double scale = exp(er);
+            return py_make_complex(scale * cos(ei), scale * sin(ei));
+        }
+    }
     // int ** non-negative-int → bignum (exact)
     if (py_int_or_bool(a) && py_int_or_bool(b)) {
         mpz_t zb; py_to_mpz(c, b, zb);
