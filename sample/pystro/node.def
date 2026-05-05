@@ -1336,6 +1336,18 @@ node_super_method_explicit(CTX * restrict c, NODE * restrict n, NODE *cls_expr, 
     VALUE m = py_super_lookup(c, self, cls, method_name);
     if (m == PY_NONE) py_raise_exc(c, c->EXC_AttributeError,
                                    "'super' object has no attribute '%s'", method_name);
+    // If `m` is already a bound built-in method (super_lookup hit a
+    // built-in subclass primary), it carries its own receiver.
+    extern bool py_is_bound_builtin(VALUE v);
+    if (py_is_bound_builtin(m)) {
+        VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc ? argc : 1));
+        for (uint32_t i = 0; i < argc; i++) {
+            NODE *arg = PYSTRO_NODE_TABLE[args_idx + i];
+            av[i] = (*arg->head.dispatcher)(c, arg);
+            if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+        }
+        return py_apply(c, m, (int)argc, av);
+    }
     VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc + 1));
     av[0] = self;
     for (uint32_t i = 0; i < argc; i++) {
@@ -1401,6 +1413,18 @@ node_super_method(CTX * restrict c, NODE * restrict n, NODE *base, const char *m
     }
     if (m == PY_NONE) py_raise_exc(c, c->EXC_AttributeError,
                                    "'super' object has no attribute '%s'", method_name);
+    // If `m` is already a bound built-in method (super_lookup hit a
+    // built-in subclass primary), it carries its own receiver.
+    extern bool py_is_bound_builtin(VALUE v);
+    if (py_is_bound_builtin(m)) {
+        VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc ? argc : 1));
+        for (uint32_t i = 0; i < argc; i++) {
+            NODE *arg = PYSTRO_NODE_TABLE[args_idx + i];
+            av[i] = (*arg->head.dispatcher)(c, arg);
+            if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+        }
+        return py_apply(c, m, (int)argc, av);
+    }
     VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc + 1));
     av[0] = self;
     for (uint32_t i = 0; i < argc; i++) {

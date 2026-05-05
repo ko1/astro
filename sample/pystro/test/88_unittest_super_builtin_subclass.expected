@@ -1,0 +1,7 @@
+ok CountDictTest test_super_setitem
+ok TypedListTest test_typed_append
+ok OrderedDictTest test_iter
+ok UserIterReturnsBuiltinTest test_returns_dict_iter
+ok UserIterReturnsBuiltinTest test_returns_list_iter
+---
+passed=5 failed=0

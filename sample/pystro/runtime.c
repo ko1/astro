@@ -621,6 +621,15 @@ py_func_is_generator(VALUE fn)
 
 // Cooperative super() lookup: walk self.__class__'s MRO; find
 // `start_after_cls`; return the first method found AFTER it.
+// True if `v` is a bound method whose inner is a built-in.  Used by
+// node_super_method to decide whether to prepend `self` (built-in
+// already carries its own receiver via the bound wrapper).
+bool
+py_is_bound_builtin(VALUE v)
+{
+    return py_is_bound(v) && py_is_builtin(PY_PTR(v)->bound.func);
+}
+
 VALUE
 py_super_lookup(CTX *c, VALUE self, VALUE start_after_cls, const char *name)
 {
@@ -633,6 +642,19 @@ py_super_lookup(CTX *c, VALUE self, VALUE start_after_cls, const char *name)
         struct pyclass *kd = &PY_PTR(cd->mro[j])->cls;
         for (int k = 0; k < kd->nmethods; k++)
             if (strcmp(kd->methods[k].name, name) == 0) return kd->methods[k].value;
+    }
+    // Walk past start_after_cls's MRO; if any of the remaining classes
+    // is a built-in subclass-base AND the instance has a primary,
+    // dispatch to the built-in method on the primary.
+    // Returning the already-bound builtin (bound to primary) — the
+    // caller in py_getattr will wrap it again with self via py_make_bound,
+    // which we don't want.  So we unwrap the outer bind below by
+    // returning a sentinel-bound that py_getattr's caller handles.
+    if (PY_PTR(self)->inst.primary) {
+        VALUE prim = PY_PTR(self)->inst.primary;
+        extern VALUE py_builtin_method(CTX *c, VALUE recv, const char *name);
+        VALUE bm = py_builtin_method(c, prim, name);
+        if (bm != PY_NONE) return bm;
     }
     return PY_NONE;
 }
@@ -694,6 +716,16 @@ bi_object_delattr(CTX *c, int argc, VALUE *argv)
     return PY_NONE;
 }
 
+// object.__init__(self, *args, **kwargs) — accepts anything, returns None.
+// Used by 'super().__init__()' from a built-in subclass so the chain
+// terminates cleanly.
+static VALUE
+bi_object_init(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc; (void)argv;
+    return PY_NONE;
+}
+
 VALUE
 bi_object_new(CTX *c, int argc, VALUE *argv)
 {
@@ -701,11 +733,32 @@ bi_object_new(CTX *c, int argc, VALUE *argv)
         py_raise_exc(c, c->EXC_TypeError, "object.__new__() needs class");
     VALUE cls = argv[0];
     VALUE inst = py_make_instance(cls);
-    // For built-in subclasses, set up primary value from extra args.
+    // For built-in subclasses, set up an EMPTY primary value.  If the
+    // caller forwarded constructor args, only forward them when the
+    // class has no user-defined __init__ (so plain `class M(list): pass;
+    // M([1,2,3])` still populates).  Otherwise the user's __init__ is
+    // responsible for calling super().__init__(args).
     extern VALUE py_class_find_builtin_base(VALUE cls);
     VALUE bin_base = py_class_find_builtin_base(cls);
     if (bin_base != PY_NONE) {
-        VALUE primary = PY_PTR(bin_base)->cls.builtin_ctor(c, argc - 1, argv + 1);
+        bool has_user_init = false;
+        struct pyclass *cd = &PY_PTR(cls)->cls;
+        for (int i = 0; i < cd->nmro; i++) {
+            VALUE mc = cd->mro[i];
+            // Stop walking once we reach the built-in base — methods
+            // beyond that are object/builtin defaults.
+            if (mc == bin_base) break;
+            struct pyclass *kd = &PY_PTR(mc)->cls;
+            for (int j = 0; j < kd->nmethods; j++) {
+                if (strcmp(kd->methods[j].name, "__init__") == 0) {
+                    has_user_init = true; break;
+                }
+            }
+            if (has_user_init) break;
+        }
+        int fwd_argc = (has_user_init || argc <= 1) ? 0 : argc - 1;
+        VALUE *fwd_argv = (has_user_init || argc <= 1) ? NULL : argv + 1;
+        VALUE primary = PY_PTR(bin_base)->cls.builtin_ctor(c, fwd_argc, fwd_argv);
         if (c->state == PY_STATE_RAISE) return PY_NONE;
         PY_PTR(inst)->inst.primary = primary;
     }
@@ -2431,6 +2484,12 @@ py_iter_init(CTX *c, struct py_iter *it, VALUE iterable)
                 it->container = iter_obj;
                 return;
             }
+            // If __iter__ returned a built-in iterator (PY_T_ITER),
+            // unwrap and use its state directly.
+            if (PY_IS_PTR(iter_obj) && PY_PTR(iter_obj)->type == PY_T_ITER) {
+                *it = *PY_PTR(iter_obj)->iter_state;
+                return;
+            }
             it->kind = 5;       // user iterator
             it->container = iter_obj;
             it->i = 0; it->end = 0; it->step = 0;
@@ -2732,7 +2791,9 @@ py_getattr(CTX *c, VALUE v, const char *name)
         if (m == PY_NONE)
             py_raise_exc(c, c->EXC_AttributeError,
                          "'super' object has no attribute '%s'", name);
-        // Return as a bound method on self.
+        // If `m` is already a bound method (built-in dispatched via
+        // primary in super_lookup), don't re-bind.
+        if (py_is_bound(m)) return m;
         return py_make_bound(self, m);
     }
     if (PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_SLICE) {
@@ -5877,6 +5938,40 @@ dm_copy(CTX *c, int argc, VALUE *argv)
     return r;
 }
 
+// Dunder dispatchers used so that built-in subclasses can call
+// super().__setitem__ etc. via py_super_lookup → py_builtin_method.
+static VALUE
+dm_setitem(CTX *c, int argc, VALUE *argv)
+{ (void)argc; py_dict_set(c, argv[0], argv[1], argv[2]); return PY_NONE; }
+static VALUE
+dm_getitem(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    if (!py_dict_has(c, argv[0], argv[1])) {
+        VALUE r = py_to_repr(c, argv[1]);
+        py_raise_exc(c, c->EXC_KeyError, "%s",
+                     py_is_str(r) ? PY_PTR(r)->str.chars : "?");
+    }
+    return py_dict_get(c, argv[0], argv[1]);
+}
+static VALUE
+dm_delitem(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    if (!py_dict_remove(c, argv[0], argv[1])) {
+        VALUE r = py_to_repr(c, argv[1]);
+        py_raise_exc(c, c->EXC_KeyError, "%s",
+                     py_is_str(r) ? PY_PTR(r)->str.chars : "?");
+    }
+    return PY_NONE;
+}
+static VALUE
+dm_contains(CTX *c, int argc, VALUE *argv)
+{ (void)argc; return py_dict_has(c, argv[0], argv[1]) ? PY_TRUE : PY_FALSE; }
+static VALUE
+dm_len(CTX *c, int argc, VALUE *argv)
+{ (void)c; (void)argc; return PY_FIX((int64_t)PY_PTR(argv[0])->dict->used); }
+
 static struct type_method dict_methods[] = {
     { "get",        dm_get,        2, 3 },
     { "keys",       dm_keys,       1, 1 },
@@ -5888,6 +5983,11 @@ static struct type_method dict_methods[] = {
     { "popitem",    dm_popitem,    1, 1 },
     { "clear",      dm_clear,      1, 1 },
     { "copy",       dm_copy,       1, 1 },
+    { "__setitem__", dm_setitem,   3, 3 },
+    { "__getitem__", dm_getitem,   2, 2 },
+    { "__delitem__", dm_delitem,   2, 2 },
+    { "__contains__", dm_contains, 2, 2 },
+    { "__len__",     dm_len,       1, 1 },
     { NULL, NULL, 0, 0 }
 };
 
@@ -9516,6 +9616,8 @@ install_builtins(CTX *c)
             py_make_builtin("__setattr__", bi_object_setattr, 3, 3));
         py_class_add_method(c, c->TYPE_object, "__delattr__",
             py_make_builtin("__delattr__", bi_object_delattr, 2, 2));
+        py_class_add_method(c, c->TYPE_object, "__init__",
+            py_make_builtin("__init__", bi_object_init, 1, -1));
     }
     // Synthetic type classes for built-in non-constructable types.
     c->TYPE_NoneType                    = py_make_class("NoneType",                     PY_NONE, false);
