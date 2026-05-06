@@ -9168,18 +9168,55 @@ bi_chr(CTX *c, int argc, VALUE *argv)
 {
     (void)argc;
     int64_t k = py_int_to_long(c, argv[0]);
-    if (k < 0 || k > 255) py_raise_exc(c, c->EXC_ValueError, "chr() out of range (ascii only)");
-    char b[2] = { (char)k, 0 };
-    return py_make_str(b, 1);
+    if (k < 0 || k > 0x10FFFF) py_raise_exc(c, c->EXC_ValueError, "chr() out of range");
+    // Encode as UTF-8.
+    unsigned char b[5];
+    int n;
+    if (k < 0x80) {
+        b[0] = (unsigned char)k; n = 1;
+    } else if (k < 0x800) {
+        b[0] = 0xC0 | (k >> 6);
+        b[1] = 0x80 | (k & 0x3F);
+        n = 2;
+    } else if (k < 0x10000) {
+        b[0] = 0xE0 | (k >> 12);
+        b[1] = 0x80 | ((k >> 6) & 0x3F);
+        b[2] = 0x80 | (k & 0x3F);
+        n = 3;
+    } else {
+        b[0] = 0xF0 | (k >> 18);
+        b[1] = 0x80 | ((k >> 12) & 0x3F);
+        b[2] = 0x80 | ((k >> 6) & 0x3F);
+        b[3] = 0x80 | (k & 0x3F);
+        n = 4;
+    }
+    b[n] = 0;
+    return py_make_str((char *)b, (size_t)n);
 }
 
 static VALUE
 bi_ord(CTX *c, int argc, VALUE *argv)
 {
     (void)argc;
-    if (!py_is_str(argv[0]) || PY_PTR(argv[0])->str.len != 1)
-        py_raise_exc(c, c->EXC_TypeError, "ord() expected length-1 string");
-    return PY_FIX((unsigned char)PY_PTR(argv[0])->str.chars[0]);
+    if (!py_is_str(argv[0]))
+        py_raise_exc(c, c->EXC_TypeError, "ord() expected str");
+    const unsigned char *s = (const unsigned char *)PY_PTR(argv[0])->str.chars;
+    size_t L = PY_PTR(argv[0])->str.len;
+    if (L == 1) return PY_FIX((unsigned char)s[0]);
+    // UTF-8 decode for multi-byte single character.
+    int n = 0; int64_t cp = 0;
+    if ((s[0] & 0x80) == 0) { cp = s[0]; n = 1; }
+    else if ((s[0] & 0xE0) == 0xC0 && L >= 2) {
+        cp = ((s[0] & 0x1F) << 6) | (s[1] & 0x3F); n = 2;
+    } else if ((s[0] & 0xF0) == 0xE0 && L >= 3) {
+        cp = ((s[0] & 0x0F) << 12) | ((s[1] & 0x3F) << 6) | (s[2] & 0x3F); n = 3;
+    } else if ((s[0] & 0xF8) == 0xF0 && L >= 4) {
+        cp = ((s[0] & 0x07) << 18) | ((s[1] & 0x3F) << 12)
+           | ((s[2] & 0x3F) << 6) | (s[3] & 0x3F); n = 4;
+    }
+    if (n == 0 || (size_t)n != L)
+        py_raise_exc(c, c->EXC_TypeError, "ord() expected single character");
+    return py_make_int(cp);
 }
 
 static VALUE

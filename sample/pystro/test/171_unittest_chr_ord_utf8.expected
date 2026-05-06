@@ -1,0 +1,7 @@
+ok ChrOrdUtf8Test test_ascii
+ok ChrOrdUtf8Test test_emoji
+ok ChrOrdUtf8Test test_latin1
+ok ChrOrdUtf8Test test_out_of_range
+ok ChrOrdUtf8Test test_round_trip
+---
+passed=5 failed=0
