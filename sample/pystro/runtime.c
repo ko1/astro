@@ -3199,10 +3199,14 @@ py_getattr(CTX *c, VALUE v, const char *name)
         py_raise_exc(c, c->EXC_AttributeError, "function has no attribute '%s'", name);
     }
     if (py_is_builtin(v)) {
-        if (strcmp(name, "__name__") == 0) {
+        if (strcmp(name, "__name__") == 0
+            || strcmp(name, "__qualname__") == 0) {
             const char *n = PY_PTR(v)->builtin.name ? PY_PTR(v)->builtin.name : "<builtin>";
             return py_make_str(n, strlen(n));
         }
+        if (strcmp(name, "__class__") == 0) return c->TYPE_builtin_function_or_method;
+        if (strcmp(name, "__doc__") == 0) return PY_NONE;
+        if (strcmp(name, "__module__") == 0) return py_make_str("builtins", 8);
     }
     if (py_is_bound(v)) {
         // Forward attribute lookup to the underlying func — covers
@@ -3214,6 +3218,11 @@ py_getattr(CTX *c, VALUE v, const char *name)
     }
     VALUE m = py_builtin_method(c, v, name);
     if (m != PY_NONE) return m;
+    if (strcmp(name, "__class__") == 0) {
+        extern VALUE bi_type(CTX *c, int argc, VALUE *argv);
+        VALUE av[1] = { v };
+        return bi_type(c, 1, av);
+    }
     py_raise_exc(c, c->EXC_AttributeError, "object has no attribute '%s'", name);
 }
 
@@ -4866,47 +4875,65 @@ sm_strip(CTX *c, int argc, VALUE *argv)
 static VALUE
 sm_startswith(CTX *c, int argc, VALUE *argv)
 {
-    (void)c; (void)argc;
+    (void)c;
     struct pyobj *s = PY_PTR(argv[0]);
     VALUE arg = argv[1];
+    int64_t slen = (int64_t)s->str.len;
+    int64_t start = 0, end = slen;
+    if (argc >= 3 && argv[2] != PY_NONE) start = py_int_to_long(c, argv[2]);
+    if (argc >= 4 && argv[3] != PY_NONE) end = py_int_to_long(c, argv[3]);
+    if (start < 0) start += slen; if (start < 0) start = 0; if (start > slen) start = slen;
+    if (end < 0) end += slen; if (end < 0) end = 0; if (end > slen) end = slen;
+    int64_t span = end - start;
+    if (span < 0) span = 0;
+    const char *base = s->str.chars + start;
     if (py_is_tuple(arg)) {
         size_t n = PY_PTR(arg)->list.len;
         for (size_t i = 0; i < n; i++) {
             VALUE p = PY_PTR(arg)->list.items[i];
             if (!py_is_str(p)) continue;
             struct pyobj *pp = PY_PTR(p);
-            if (pp->str.len > s->str.len) continue;
-            if (memcmp(s->str.chars, pp->str.chars, pp->str.len) == 0) return PY_TRUE;
+            if ((int64_t)pp->str.len > span) continue;
+            if (memcmp(base, pp->str.chars, pp->str.len) == 0) return PY_TRUE;
         }
         return PY_FALSE;
     }
     if (!py_is_str(arg)) py_raise_exc(c, c->EXC_TypeError, "startswith: not str/tuple");
     struct pyobj *p = PY_PTR(arg);
-    if (p->str.len > s->str.len) return PY_FALSE;
-    return memcmp(s->str.chars, p->str.chars, p->str.len) == 0 ? PY_TRUE : PY_FALSE;
+    if ((int64_t)p->str.len > span) return PY_FALSE;
+    return memcmp(base, p->str.chars, p->str.len) == 0 ? PY_TRUE : PY_FALSE;
 }
 
 static VALUE
 sm_endswith(CTX *c, int argc, VALUE *argv)
 {
-    (void)c; (void)argc;
+    (void)c;
     struct pyobj *s = PY_PTR(argv[0]);
     VALUE arg = argv[1];
+    int64_t slen = (int64_t)s->str.len;
+    int64_t start = 0, end = slen;
+    if (argc >= 3 && argv[2] != PY_NONE) start = py_int_to_long(c, argv[2]);
+    if (argc >= 4 && argv[3] != PY_NONE) end = py_int_to_long(c, argv[3]);
+    if (start < 0) start += slen; if (start < 0) start = 0; if (start > slen) start = slen;
+    if (end < 0) end += slen; if (end < 0) end = 0; if (end > slen) end = slen;
+    int64_t span = end - start;
+    if (span < 0) span = 0;
+    const char *tail_end = s->str.chars + end;
     if (py_is_tuple(arg)) {
         size_t n = PY_PTR(arg)->list.len;
         for (size_t i = 0; i < n; i++) {
             VALUE p = PY_PTR(arg)->list.items[i];
             if (!py_is_str(p)) continue;
             struct pyobj *pp = PY_PTR(p);
-            if (pp->str.len > s->str.len) continue;
-            if (memcmp(s->str.chars + s->str.len - pp->str.len, pp->str.chars, pp->str.len) == 0) return PY_TRUE;
+            if ((int64_t)pp->str.len > span) continue;
+            if (memcmp(tail_end - pp->str.len, pp->str.chars, pp->str.len) == 0) return PY_TRUE;
         }
         return PY_FALSE;
     }
     if (!py_is_str(arg)) py_raise_exc(c, c->EXC_TypeError, "endswith: not str/tuple");
     struct pyobj *p = PY_PTR(arg);
-    if (p->str.len > s->str.len) return PY_FALSE;
-    return memcmp(s->str.chars + s->str.len - p->str.len, p->str.chars, p->str.len) == 0 ? PY_TRUE : PY_FALSE;
+    if ((int64_t)p->str.len > span) return PY_FALSE;
+    return memcmp(tail_end - p->str.len, p->str.chars, p->str.len) == 0 ? PY_TRUE : PY_FALSE;
 }
 
 VALUE
@@ -5806,8 +5833,8 @@ static struct type_method str_methods[] = {
     { "strip",         sm_strip,         1, 2 },
     { "lstrip",        sm_lstrip,        1, 2 },
     { "rstrip",        sm_rstrip,        1, 2 },
-    { "startswith",    sm_startswith,    2, 2 },
-    { "endswith",      sm_endswith,      2, 2 },
+    { "startswith",    sm_startswith,    2, 4 },
+    { "endswith",      sm_endswith,      2, 4 },
     { "find",          sm_find,          2, 4 },
     { "replace",       sm_replace,       3, 4 },
     { "count",         sm_count,         2, 4 },
@@ -7556,7 +7583,7 @@ type_lookup_builtin(CTX *c, const char *name)
     return py_make_str(name, strlen(name));
 }
 
-static VALUE
+VALUE
 bi_type(CTX *c, int argc, VALUE *argv)
 {
     // 3-arg form: type(name, bases, attrs) creates a new class.

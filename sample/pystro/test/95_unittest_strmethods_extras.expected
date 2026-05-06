@@ -1,0 +1,7 @@
+ok StartsEndsRangeTest test_ends_at
+ok StartsEndsRangeTest test_starts_at
+ok BuiltinAttrTest test_class
+ok BuiltinAttrTest test_name
+ok BuiltinAttrTest test_obj_class
+---
+passed=5 failed=0
