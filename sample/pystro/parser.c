@@ -962,6 +962,7 @@ prescan_comp_targets(int close_kind)
 // Forward decls: implemented below parse_paren_or_tuple.
 static NODE *parse_genexp_lazy(int saved_remap_at_paren);
 static NODE *build_for_loop(const char *target_name, NODE *iter, NODE *body);
+static NODE *parse_assignable_target(NODE *rhs);
 
 // `( expr_list )` — single → expr; multi (or trailing comma) → tuple.
 // Also handles `( expr for ... )` generator expression form.
@@ -1043,6 +1044,9 @@ parse_paren_or_tuple(void)
                 depth--;
             }
             else if (depth == 0 && kk == T_FOR) { is_genexp = true; break; }
+            else if (depth == 0 && kk == T_NAME
+                    && tok_arr[look].sval == intern_name("async", 5)
+                    && tok_arr[look+1].kind == T_FOR) { is_genexp = true; break; }
             look++;
         }
         if (is_genexp) {
@@ -1266,6 +1270,13 @@ build_for_loop(const char *target_name, NODE *iter, NODE *body)
 static NODE *
 parse_comp_clauses(NODE *inner_body)
 {
+    // `[expr async for x in xs]` — pystro treats async-for as plain
+    // for in comprehensions.
+    if (peek_tok(0)->kind == T_NAME
+            && peek_tok(0)->sval == intern_name("async", 5)
+            && peek_tok(1)->kind == T_FOR) {
+        tok_pos++;
+    }
     expect(T_FOR, "'for'");
     // Accept `for X in ...`, `for X, Y in ...`, or `for (X, Y) in ...`.
     bool paren_target = match_tok(T_LPAREN);
@@ -1384,8 +1395,12 @@ parse_list_literal(void)
     int saved_remap_lc = comp_remap_top;
     prescan_comp_targets(T_RBRACK);
     NODE *first = parse_expr();
-    if (peek_tok(0)->kind == T_FOR) {
-        // List comprehension: [expr for x in xs (if cond)*]+
+    bool comp_async_prefix = (peek_tok(0)->kind == T_NAME
+            && peek_tok(0)->sval == intern_name("async", 5)
+            && peek_tok(1)->kind == T_FOR);
+    if (peek_tok(0)->kind == T_FOR || comp_async_prefix) {
+        if (comp_async_prefix) tok_pos++;
+        // List comprehension: [expr (async)? for x in xs (if cond)*]+
         const char *tmp = new_temp_name("__lc");
         NODE *load_tmp;
         size_t empty_idx = node_table_reserve(NULL, 0);
@@ -3353,9 +3368,28 @@ parse_with(void)
         items[n].as_name = NULL;
         items[n].unpack_prefix = NULL;
         if (match_tok(T_AS)) {
-            if (peek_tok(0)->kind == T_NAME) {
+            // Plain NAME (no trailers): the cm value binds directly to it.
+            if (peek_tok(0)->kind == T_NAME
+                    && peek_tok(1)->kind != T_DOT
+                    && peek_tok(1)->kind != T_LBRACK) {
                 items[n].as_name = peek_tok(0)->sval;
                 tok_pos++;
+            } else if (peek_tok(0)->kind == T_NAME) {
+                // `with cm as obj.attr:` / `with cm as a[i]:` —
+                // bind to a synthetic tmp, then assign the
+                // trailer-target from the tmp at body-head.
+                size_t lhs_start = tok_pos;
+                (void)parse_expr();   // consume the LHS expression
+                const char *tmp = new_temp_name("__withT");
+                if (cur_scope && !scope_is_global_decl(cur_scope, tmp))
+                    scope_add_local(cur_scope, tmp);
+                items[n].as_name = tmp;
+                NODE *load_tmp = make_load(tmp);
+                size_t saved = tok_pos;
+                tok_pos = lhs_start;
+                NODE *store = parse_assignable_target(load_tmp);
+                tok_pos = saved;
+                items[n].unpack_prefix = store;
             } else if (peek_tok(0)->kind == T_LPAREN || peek_tok(0)->kind == T_LBRACK) {
                 // `with cm as (a, b):` — desugar to `with cm as __t: a, b = __t; body`.
                 int close = peek_tok(0)->kind == T_LPAREN ? T_RPAREN : T_RBRACK;
