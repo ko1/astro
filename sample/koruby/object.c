@@ -3171,7 +3171,18 @@ static char *read_file(const char *path, size_t *out_len) {
 }
 
 VALUE korb_eval_string(CTX *c, const char *src, size_t len, const char *filename) {
-    NODE *ast = koruby_parse(src, len, filename ? filename : "(eval)");
+    char *err_msg = NULL;
+    extern NODE *koruby_parse_full(const char *src, size_t len, const char *filename, char **err_msg);
+    NODE *ast = koruby_parse_full(src, len, filename ? filename : "(eval)", &err_msg);
+    if (err_msg) {
+        VALUE eSE = korb_const_get(korb_vm->object_class, korb_intern("SyntaxError"));
+        if (eSE && !SPECIAL_CONST_P(eSE) && BUILTIN_TYPE(eSE) == T_CLASS) {
+            korb_raise(c, (struct korb_class *)eSE, "%s", err_msg);
+        } else {
+            korb_raise(c, NULL, "syntax error: %s", err_msg);
+        }
+        return Qnil;
+    }
     if (!ast) return Qnil;
 
     /* Save / push fresh top-level state for the loaded file */

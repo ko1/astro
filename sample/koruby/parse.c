@@ -3390,14 +3390,34 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
     }
 }
 
+NODE *koruby_parse_full(const char *src, size_t len, const char *filename, char **err_msg);
+
 NODE *
 koruby_parse(const char *src, size_t len, const char *filename)
+{
+    return koruby_parse_full(src, len, filename, NULL);
+}
+
+NODE *
+koruby_parse_full(const char *src, size_t len, const char *filename, char **err_msg)
 {
     pm_parser_t parser;
     pm_options_t options = {0};
     if (filename) pm_options_filepath_set(&options, filename);
     pm_parser_init(&parser, (const uint8_t *)src, len, &options);
     pm_node_t *root = pm_parse(&parser);
+
+    /* If caller wants to detect parse errors (e.g. for SyntaxError raise
+     * in eval), stash the first one. */
+    if (err_msg && parser.error_list.size > 0) {
+        pm_diagnostic_t *d = (pm_diagnostic_t *)parser.error_list.head;
+        if (d && d->message) {
+            size_t ml = strlen(d->message);
+            char *m = korb_xmalloc_atomic(ml + 1);
+            memcpy(m, d->message, ml + 1);
+            *err_msg = m;
+        }
+    }
 
     struct transduce_context tc = { 0 };
     tc.parser = &parser;
