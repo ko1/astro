@@ -1145,7 +1145,7 @@ fmt_apply(uint32_t fmt_id, VALUE v)
               case '<': fputs("&lt;", fp); break;
               case '>': fputs("&gt;", fp); break;
               case '&': fputs("&amp;", fp); break;
-              case '\'': fputs("&#39;", fp); break;
+              case '\'': fputs("&#39;", fp); break;     /* HTML5 / jq spec: &#39; */
               case '"': fputs("&quot;", fp); break;
               default: fputc(ch, fp); break;
             }
@@ -2666,6 +2666,7 @@ nuq_delpaths_eval(CTX *c, struct Node *paths_expr)
         VALUE p = paths[i];
         if (!(NUQ_IS_PTR(p) && NUQ_PTR(p)->type == NUQ_T_ARRAY)) continue;
         struct nuq_obj *pp = NUQ_PTR(p);
+        if (pp->arr.len > 10000) return err_emit(c, "Path too deep");
         if (pp->arr.len == 0) { cur = NUQ_NULL; continue; }
         cur = delpath_recurse(cur, pp->arr.items, pp->arr.len);
     }
@@ -3978,6 +3979,8 @@ nuq_getpath_eval(CTX *c, struct Node *path)
     if (!(NUQ_IS_PTR(pv) && NUQ_PTR(pv)->type == NUQ_T_ARRAY))
         return err_emit(c, "getpath: not array");
     struct nuq_obj *po = NUQ_PTR(pv);
+    /* Path-depth guard: jq raises "Path too deep" for paths > 10000 deep. */
+    if (po->arr.len > 10000) return err_emit(c, "Path too deep");
     VALUE v = c->input;
     for (size_t i = 0; i < po->arr.len; i++) {
         VALUE k = po->arr.items[i];
