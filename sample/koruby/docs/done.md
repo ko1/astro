@@ -15,6 +15,21 @@
 CRuby 公式の `test/ruby/test_*.rb` を tu_shim 経由で実行。
 **in-scope 67 ファイル: 1,108,357 / 1,430,888 pass (77.5%)**。
 
+### CRuby spec/ruby/language/ (rubyspec 互換)
+
+CRuby 公式の rubyspec (mspec ベース) を **mspec_shim 経由** で実行。
+`describe`/`it`/`should == / be_nil / be_kind_of / raise_error / etc.`
+を最低限実装した shim を `test/cruby_runner/mspec_shim.rb` に配置。
+
+```sh
+$ ./koruby test/cruby_runner/run_rubyspec.rb \
+    /path/to/cruby/spec/ruby/language/and_spec.rb
+and_spec.rb: pass=14 fail=0 err=0 skip=0
+```
+
+language/* (67 ファイル中 58 が走破): **pass=897 fail=599 err=621**。
+完全 pass: and / comment / loop / not / range / safe / unless。
+
 語義 (language semantics) のテスト群はかなり緑:
 
 | ファイル | pass | total | 備考 |

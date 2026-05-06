@@ -1,0 +1,305 @@
+# mspec_shim.rb — minimal mspec replacement for running CRuby's
+# spec/ruby/language/*_spec.rb files against koruby.
+#
+# Real mspec uses Thread + Regexp + signals + spec_helper machinery.
+# Most language specs only need:
+#   describe "..." do ... end
+#   it "..." do ... end
+#   x.should == y / x.should be_nil / etc
+#   x.should_not ...
+#
+# Counters land in $ms_pass / $ms_fail / $ms_error.
+
+$ms_pass = 0
+$ms_fail = 0
+$ms_error = 0
+$ms_skip = 0
+$ms_current = nil
+
+class MSpecError < StandardError; end
+
+# describe blocks: just run the body in a fresh context.
+def describe(name, *_opts, &blk)
+  $ms_describe = name
+  begin
+    blk.call
+  rescue => e
+    $ms_error += 1
+    puts "  ERR #{$ms_describe} (block-level): #{e.class}: #{e.message}"
+  end
+ensure
+  $ms_describe = nil
+end
+
+# context is an alias for describe in mspec.
+alias_method :context, :describe rescue nil
+
+# it/specify: run the block, count outcomes.
+def it(name, *_opts, &blk)
+  $ms_current = "#{$ms_describe} #{name}"
+  begin
+    blk.call
+  rescue MSpecError => e
+    $ms_fail += 1
+    puts "  FAIL #{$ms_current}: #{e.message}"
+  rescue => e
+    $ms_error += 1
+    puts "  ERR  #{$ms_current}: #{e.class}: #{e.message}"
+  end
+end
+
+alias_method :specify, :it rescue nil
+
+# xit / pending: skip
+def xit(*_args, &_blk); $ms_skip += 1; end
+alias_method :pending, :xit rescue nil
+
+# before / after / before_each blocks — store and run around each `it`.
+# We implement a simplified version: only `before :each` is honored, and
+# we mutate the surrounding state via $ms_before_each/after_each.
+def before(scope = :each, &blk)
+  case scope
+  when :each then ($ms_before_each ||= []) << blk
+  when :all  then blk.call
+  end
+end
+
+def after(scope = :each, &blk)
+  case scope
+  when :each then ($ms_after_each ||= []) << blk
+  when :all  then # ignore
+  end
+end
+
+# Matchers — wrap a value so chained assertions work.
+class MSpecExpectation
+  def initialize(actual)
+    @actual = actual
+  end
+  def ==(expected)
+    if @actual == expected then $ms_pass += 1
+    else
+      $ms_fail += 1
+      raise MSpecError, "expected #{expected.inspect}, got #{@actual.inspect}"
+    end
+  end
+  def !=(expected)
+    if @actual != expected then $ms_pass += 1
+    else
+      $ms_fail += 1
+      raise MSpecError, "expected != #{expected.inspect}"
+    end
+  end
+  def equal(expected)
+    if @actual.equal?(expected) then $ms_pass += 1
+    else
+      raise MSpecError, "expected to equal? #{expected.inspect}, got #{@actual.inspect}"
+    end
+  end
+  def eql(expected)
+    if @actual.eql?(expected) then $ms_pass += 1
+    else
+      raise MSpecError, "expected eql? #{expected.inspect}, got #{@actual.inspect}"
+    end
+  end
+  def be_nil
+    if @actual.nil? then $ms_pass += 1
+    else raise MSpecError, "expected nil, got #{@actual.inspect}"
+    end
+  end
+  def be_true
+    if @actual == true then $ms_pass += 1
+    else raise MSpecError, "expected true, got #{@actual.inspect}"
+    end
+  end
+  def be_false
+    if @actual == false then $ms_pass += 1
+    else raise MSpecError, "expected false, got #{@actual.inspect}"
+    end
+  end
+  def be_truthy
+    if @actual then $ms_pass += 1
+    else raise MSpecError, "expected truthy, got #{@actual.inspect}"
+    end
+  end
+  def be_falsy
+    if !@actual then $ms_pass += 1
+    else raise MSpecError, "expected falsy, got #{@actual.inspect}"
+    end
+  end
+  def be_an_instance_of(klass)
+    if @actual.class == klass then $ms_pass += 1
+    else raise MSpecError, "expected instance_of #{klass}, got #{@actual.class}"
+    end
+  end
+  def be_kind_of(klass)
+    if @actual.kind_of?(klass) then $ms_pass += 1
+    else raise MSpecError, "expected kind_of #{klass}, got #{@actual.class}"
+    end
+  end
+  def be_a(klass); be_kind_of(klass); end
+  def be_an(klass); be_kind_of(klass); end
+  def be_close(target, tol)
+    if (@actual - target).abs <= tol then $ms_pass += 1
+    else raise MSpecError, "expected close to #{target} ± #{tol}, got #{@actual.inspect}"
+    end
+  end
+  def include(*items)
+    items.each do |it|
+      unless @actual.include?(it)
+        raise MSpecError, "expected to include #{it.inspect}, got #{@actual.inspect}"
+      end
+    end
+    $ms_pass += 1
+  end
+  def respond_to(name)
+    if @actual.respond_to?(name) then $ms_pass += 1
+    else raise MSpecError, "expected #{@actual.inspect} to respond_to #{name}"
+    end
+  end
+  def raise_error(klass = StandardError, msg = nil)
+    if !@actual.is_a?(Proc) && !@actual.respond_to?(:call)
+      raise MSpecError, "raise_error needs a callable on .should"
+    end
+    begin
+      @actual.call
+    rescue Exception => e
+      if e.is_a?(klass) && (msg.nil? || msg === e.message)
+        $ms_pass += 1; return
+      end
+      raise MSpecError, "expected #{klass}, got #{e.class}: #{e.message}"
+    end
+    raise MSpecError, "expected #{klass}, no raise"
+  end
+  def <(o); @actual < o ? ($ms_pass += 1) : (raise MSpecError, "expected #{@actual} < #{o}"); end
+  def <=(o); @actual <= o ? ($ms_pass += 1) : (raise MSpecError, "expected #{@actual} <= #{o}"); end
+  def >(o); @actual > o ? ($ms_pass += 1) : (raise MSpecError, "expected #{@actual} > #{o}"); end
+  def >=(o); @actual >= o ? ($ms_pass += 1) : (raise MSpecError, "expected #{@actual} >= #{o}"); end
+end
+
+# Standalone matchers — bareword calls inside `it` blocks like
+# `x.should be_nil` parse as `x.should(be_nil)`, so each matcher needs
+# to exist as a top-level method that returns a tagged Symbol; .should
+# inspects the tag to decide what to assert.
+class MSpecMatcher
+  attr_reader :kind, :arg
+  def initialize(kind, arg = nil) @kind, @arg = kind, arg; end
+end
+
+def be_nil; MSpecMatcher.new(:be_nil); end
+def be_true; MSpecMatcher.new(:be_true); end
+def be_false; MSpecMatcher.new(:be_false); end
+def be_truthy; MSpecMatcher.new(:be_truthy); end
+def be_falsy; MSpecMatcher.new(:be_falsy); end
+def be_close(target, tol); MSpecMatcher.new(:be_close, [target, tol]); end
+def be_an_instance_of(k); MSpecMatcher.new(:be_an_instance_of, k); end
+def be_kind_of(k); MSpecMatcher.new(:be_kind_of, k); end
+def be_a(k); be_kind_of(k); end
+def be_an(k); be_kind_of(k); end
+def equal(o); MSpecMatcher.new(:equal, o); end
+def eql(o); MSpecMatcher.new(:eql, o); end
+def respond_to(name); MSpecMatcher.new(:respond_to, name); end
+def raise_error(klass = StandardError, msg = nil); MSpecMatcher.new(:raise_error, [klass, msg]); end
+def include(*items); MSpecMatcher.new(:include, items); end
+
+class Object
+  def should(matcher = nil)
+    if matcher.nil?
+      MSpecExpectation.new(self)
+    elsif matcher.is_a?(MSpecMatcher)
+      MSpecExpectation.new(self).__apply_matcher(matcher, false)
+    else
+      raise MSpecError, "unsupported should-matcher form"
+    end
+  end
+
+  def should_not(matcher = nil)
+    if matcher.nil?
+      MSpecNegatedExpectation.new(self)
+    elsif matcher.is_a?(MSpecMatcher)
+      MSpecExpectation.new(self).__apply_matcher(matcher, true)
+    else
+      raise MSpecError, "unsupported should_not-matcher form"
+    end
+  end
+end
+
+class MSpecExpectation
+  def __apply_matcher(m, negate)
+    ok = case m.kind
+         when :be_nil then @actual.nil?
+         when :be_true then @actual == true
+         when :be_false then @actual == false
+         when :be_truthy then !!@actual
+         when :be_falsy then !@actual
+         when :be_close then (@actual - m.arg[0]).abs <= m.arg[1]
+         when :be_an_instance_of then @actual.class == m.arg
+         when :be_kind_of then @actual.kind_of?(m.arg)
+         when :equal then @actual.equal?(m.arg)
+         when :eql then @actual.eql?(m.arg)
+         when :respond_to then @actual.respond_to?(m.arg)
+         when :raise_error
+           klass, msg = m.arg
+           ok = false
+           begin
+             @actual.call
+           rescue Exception => e
+             ok = e.is_a?(klass) && (msg.nil? || msg === e.message)
+           end
+           ok
+         when :include then m.arg.all? { |x| @actual.include?(x) }
+         else raise MSpecError, "unknown matcher #{m.kind}"
+         end
+    pass = negate ? !ok : ok
+    if pass then $ms_pass += 1
+    else
+      raise MSpecError, "expected #{negate ? '!' : ''}#{m.kind}(#{m.arg.inspect}), got #{@actual.inspect}"
+    end
+    self
+  end
+end
+
+class MSpecNegatedExpectation < MSpecExpectation
+  def ==(expected)
+    if @actual != expected then $ms_pass += 1
+    else raise MSpecError, "expected != #{expected.inspect}"
+    end
+  end
+  def be_nil
+    if !@actual.nil? then $ms_pass += 1
+    else raise MSpecError, "expected non-nil"
+    end
+  end
+  # ... incomplete; fall back to the matcher's negation
+end
+
+# ruby_version_is "3.0" do ... end — we always run the body (latest ruby).
+def ruby_version_is(_v, &blk); blk.call if blk; end
+def ruby_version_is_not(_v, &blk); end  # skip lower-version-only branches
+def ruby_bug(_id, _v); yield if block_given?; end
+def platform_is(*_opts, &blk); end
+def platform_is_not(*_opts, &blk); blk.call if blk; end
+def quarantine!(*_opts); yield if block_given?; end
+def guard(*_opts, &blk); blk.call if blk; end
+def guard_not(*_opts, &blk); blk.call if blk; end
+def conflicts_with(*_opts, &blk); blk.call if blk; end
+
+# CRuby-specific guards that just yield
+def with_feature(*_opts, &blk); blk.call if blk; end
+def without_feature(*_opts, &blk); end
+
+# Module / Class guards
+def CODE_LOADING_DIR; "/tmp"; end
+SPEC_TEMP_DIR = "/tmp/spec_temp" rescue nil
+
+# Suppress warning helper used in some specs.
+def suppress_warning; old = $VERBOSE; $VERBOSE = nil; yield; ensure $VERBOSE = old; end
+
+# fixture helper — minimal stub.
+def fixture(file, *args)
+  File.expand_path(args.last.to_s, File.dirname(file).to_s)
+end
+
+# Misc constants
+NATFIXNUM_MIN = -(2**62) rescue 0
+NATFIXNUM_MAX = (2**62) - 1 rescue 0
