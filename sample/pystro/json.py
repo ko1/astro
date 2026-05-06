@@ -2,23 +2,54 @@
 # Supports: dict, list, str, int, float, bool, None.
 # Not supported: surrogate pairs, ASCII-only escapes, custom encoders.
 
-def _esc_str(s):
+def _esc_str(s, ensure_ascii=True):
     parts = ['"']
-    for ch in s:
-        c = ord(ch)
-        if   ch == '"':  parts.append('\\"')
-        elif ch == '\\': parts.append('\\\\')
-        elif ch == '\n': parts.append('\\n')
-        elif ch == '\t': parts.append('\\t')
-        elif ch == '\r': parts.append('\\r')
+    # Walk the UTF-8-encoded bytes; decode multi-byte sequences when we
+    # need to emit \uXXXX escapes (ensure_ascii=True).  Otherwise,
+    # pass them through unchanged.
+    b = s.encode("utf-8") if isinstance(s, str) else s
+    i = 0
+    n = len(b)
+    while i < n:
+        c = b[i]
+        if   c == 0x22: parts.append('\\"'); i += 1
+        elif c == 0x5C: parts.append('\\\\'); i += 1
+        elif c == 0x0A: parts.append('\\n'); i += 1
+        elif c == 0x09: parts.append('\\t'); i += 1
+        elif c == 0x0D: parts.append('\\r'); i += 1
         elif c < 0x20:
-            parts.append("\\u%04x" % c)
+            parts.append("\\u%04x" % c); i += 1
+        elif c < 0x80:
+            parts.append(chr(c)); i += 1
         else:
-            parts.append(ch)
+            # Multi-byte UTF-8.
+            if (c & 0xE0) == 0xC0 and i + 1 < n:
+                cp = ((c & 0x1F) << 6) | (b[i+1] & 0x3F); next_i = i + 2
+            elif (c & 0xF0) == 0xE0 and i + 2 < n:
+                cp = ((c & 0x0F) << 12) | ((b[i+1] & 0x3F) << 6) | (b[i+2] & 0x3F); next_i = i + 3
+            elif (c & 0xF8) == 0xF0 and i + 3 < n:
+                cp = (((c & 0x07) << 18) | ((b[i+1] & 0x3F) << 12)
+                      | ((b[i+2] & 0x3F) << 6) | (b[i+3] & 0x3F)); next_i = i + 4
+            else:
+                # Invalid UTF-8 prefix — emit as raw byte escape.
+                parts.append("\\u%04x" % c); i += 1
+                continue
+            if ensure_ascii:
+                if cp <= 0xFFFF:
+                    parts.append("\\u%04x" % cp)
+                else:
+                    # Encode as surrogate pair.
+                    cp -= 0x10000
+                    hi = 0xD800 | (cp >> 10)
+                    lo = 0xDC00 | (cp & 0x3FF)
+                    parts.append("\\u%04x\\u%04x" % (hi, lo))
+            else:
+                parts.append(chr(cp))
+            i = next_i
     parts.append('"')
     return "".join(parts)
 
-def _dump(v, indent=None, depth=0, sort_keys=False, default=None):
+def _dump(v, indent=None, depth=0, sort_keys=False, default=None, ensure_ascii=True):
     if v is None:  return "null"
     if v is True:  return "true"
     if v is False: return "false"
@@ -26,14 +57,14 @@ def _dump(v, indent=None, depth=0, sort_keys=False, default=None):
     if isinstance(v, float):
         if v != v:  return "NaN"
         return repr(v)
-    if isinstance(v, str):   return _esc_str(v)
+    if isinstance(v, str):   return _esc_str(v, ensure_ascii)
     if isinstance(v, list) or isinstance(v, tuple):
         if not v: return "[]"
         if indent is None:
-            return "[" + ", ".join([_dump(x, None, depth+1, sort_keys, default) for x in v]) + "]"
+            return "[" + ", ".join([_dump(x, None, depth+1, sort_keys, default, ensure_ascii) for x in v]) + "]"
         sp = " " * (indent * (depth + 1))
         cl = " " * (indent * depth)
-        parts = [_dump(x, indent, depth+1, sort_keys, default) for x in v]
+        parts = [_dump(x, indent, depth+1, sort_keys, default, ensure_ascii) for x in v]
         return "[\n" + ",\n".join(sp + p for p in parts) + "\n" + cl + "]"
     if isinstance(v, dict):
         if not v: return "{}"
@@ -43,7 +74,7 @@ def _dump(v, indent=None, depth=0, sort_keys=False, default=None):
             for k in keys:
                 if not isinstance(k, str):
                     raise TypeError("json: keys must be str")
-                items.append(_esc_str(k) + ": " + _dump(v[k], None, depth+1, sort_keys, default))
+                items.append(_esc_str(k, ensure_ascii) + ": " + _dump(v[k], None, depth+1, sort_keys, default, ensure_ascii))
             return "{" + ", ".join(items) + "}"
         sp = " " * (indent * (depth + 1))
         cl = " " * (indent * depth)
@@ -51,17 +82,17 @@ def _dump(v, indent=None, depth=0, sort_keys=False, default=None):
         for k in keys:
             if not isinstance(k, str):
                 raise TypeError("json: keys must be str")
-            items.append(sp + _esc_str(k) + ": " + _dump(v[k], indent, depth+1, sort_keys, default))
+            items.append(sp + _esc_str(k, ensure_ascii) + ": " + _dump(v[k], indent, depth+1, sort_keys, default, ensure_ascii))
         return "{\n" + ",\n".join(items) + "\n" + cl + "}"
     if default is not None:
-        return _dump(default(v), indent, depth, sort_keys, default)
+        return _dump(default(v), indent, depth, sort_keys, default, ensure_ascii)
     raise TypeError("json: unsupported type")
 
-def dumps(obj, indent=None, sort_keys=False, default=None, **kwargs):
-    return _dump(obj, indent, 0, sort_keys, default)
+def dumps(obj, indent=None, sort_keys=False, default=None, ensure_ascii=True, **kwargs):
+    return _dump(obj, indent, 0, sort_keys, default, ensure_ascii)
 
-def dump(obj, fp, indent=None, sort_keys=False, default=None, **kwargs):
-    fp.write(dumps(obj, indent=indent, sort_keys=sort_keys, default=default))
+def dump(obj, fp, indent=None, sort_keys=False, default=None, ensure_ascii=True, **kwargs):
+    fp.write(dumps(obj, indent=indent, sort_keys=sort_keys, default=default, ensure_ascii=ensure_ascii))
 
 def load(fp):
     return loads(fp.read())

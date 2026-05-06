@@ -1,0 +1,7 @@
+ok JsonUnicodeTest test_ascii_escape_default
+ok JsonUnicodeTest test_emoji_surrogate_pair
+ok JsonUnicodeTest test_no_ensure_ascii
+ok JsonUnicodeTest test_round_trip_ascii
+ok JsonUnicodeTest test_round_trip_no_ascii
+---
+passed=5 failed=0
