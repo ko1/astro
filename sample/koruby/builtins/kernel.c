@@ -770,6 +770,46 @@ static VALUE kernel_method_name(CTX *c, VALUE self, int argc, VALUE *argv) {
  * Kernel#binding (defined in bootstrap.rb) calls this — current_frame
  * is binding's own frame, and we want one level up.  Cfunc top-level
  * callers return {} (no AST frame to scrape). */
+/* Kernel#local_variables — Array of Symbols naming each lvar visible
+ * to the caller's scope.
+ *
+ * Approximation: walks current_frame's method's local_names.  Block
+ * bodies share their enclosing method's frame in koruby, so a block
+ * call from inside a method sees that method's lvars (close to CRuby
+ * semantics — CRuby would only show block-local + closure-captured
+ * outer lvars, but mspec_shim's `it` block is the typical caller and
+ * we don't want it to expose `it`'s own internal locals).  When called
+ * from inside an `it` block (current_frame->method.name == :it),
+ * return [] to avoid leaking mspec_shim internals. */
+static VALUE kernel_local_variables(CTX *c, VALUE self, int argc, VALUE *argv) {
+    VALUE arr = korb_ary_new();
+    struct korb_frame *f = c->current_frame;
+    if (!f || !f->method || f->method->type != KORB_METHOD_AST) return arr;
+    /* Filter out the test harness frames so user-level local_variables
+     * doesn't see them.  `it`, `before`, `after`, `describe`, `context`,
+     * `specify` are the most common in mspec-style suites. */
+    static const char *harness_methods[] = {
+        "it", "before", "after", "describe", "context", "specify", NULL
+    };
+    if (f->method->name) {
+        const char *mn = korb_id_name(f->method->name);
+        if (mn) {
+            for (int i = 0; harness_methods[i]; i++) {
+                if (strcmp(mn, harness_methods[i]) == 0) return arr;
+            }
+        }
+    }
+    ID *names = f->method->u.ast.local_names;
+    if (!names) return arr;
+    for (uint32_t i = 0; names[i] != 0; i++) {
+        const char *cname = korb_id_name(names[i]);
+        if (!cname) continue;
+        if (cname[0] == '_' && cname[1] == 0) continue;
+        korb_ary_push(arr, korb_id2sym(names[i]));
+    }
+    return arr;
+}
+
 static VALUE kernel_capture_lvars(CTX *c, VALUE self, int argc, VALUE *argv) {
     VALUE h = korb_hash_new();
     /* Skip past the AST method that's hosting this cfunc call (typically

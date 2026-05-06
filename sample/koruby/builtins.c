@@ -307,6 +307,7 @@ void korb_init_builtins(void) {
     DEF(cObj, "__callee__",         kernel_method_name,        0);
     DEF(cObj, "caller",             kernel_caller,            -1);
     DEF(cObj, "__capture_lvars__",  kernel_capture_lvars,      0);
+    DEF(cObj, "local_variables",    kernel_local_variables,    0);
     DEF(cObj, "eval",               kernel_eval_stub,         -1);
     DEF(cObj, "loop",               kernel_loop,               0);
     DEF(cObj, "initialize",         kernel_initialize_default, -1);
