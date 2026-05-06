@@ -58,12 +58,15 @@ def _is_dunder(name):
 
 class EnumMeta(type):
     def __new__(meta, name, bases, attrs):
-        # Collect non-dunder, non-method attributes as enum members.
+        # Collect non-dunder, non-method attributes as enum members; keep methods.
         items = []
+        methods = {}
         for key in list(attrs):
             if _is_dunder(key): continue
             v = attrs[key]
-            if callable(v) and not isinstance(v, _Auto): continue
+            if callable(v) and not isinstance(v, _Auto):
+                methods[key] = v
+                continue
             items.append((key, v))
 
         # Auto-assign for _Auto sentinels.
@@ -79,11 +82,18 @@ class EnumMeta(type):
         # Build the class with members removed from attrs.
         for n, _ in items:
             if n in attrs: del attrs[n]
-        cls = type.__call__(type, name, bases, attrs) if False else type(name, bases, attrs)
+        cls = type(name, bases, attrs)
+        # Build per-enum member class so user methods are available on members.
+        # Use _EnumMember as the per-member class and copy user methods into it.
+        class _Member(_EnumMember):
+            pass
+        _Member.__name__ = name
+        for k, v in methods.items():
+            setattr(_Member, k, v)
         cls._members_ = []
         cls._by_name_ = {}
         for n, v in items:
-            m = _EnumMember(name, n, v)
+            m = _Member(name, n, v)
             cls._members_.append(m)
             cls._by_name_[n] = m
             setattr(cls, n, m)

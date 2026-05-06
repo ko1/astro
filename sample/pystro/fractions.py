@@ -28,6 +28,12 @@ class Fraction:
                     self._n = int(s); self._d = 1
                 self._normalize()
                 return
+            if isinstance(numerator, float):
+                # Use as_integer_ratio.
+                n, d = numerator.as_integer_ratio()
+                self._n = n; self._d = d
+                self._normalize()
+                return
             raise TypeError("Fraction: bad numerator type")
         if not isinstance(numerator, int) or not isinstance(denominator, int):
             raise TypeError("Fraction: int args required")

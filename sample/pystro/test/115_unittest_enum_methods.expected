@@ -1,0 +1,5 @@
+ok EnumMethodsTest test_method_on_member
+ok EnumMethodsTest test_str_method
+ok FractionFromFloatTest test_basic
+---
+passed=3 failed=0
