@@ -1,0 +1,9 @@
+ok MatchLiteralTest test_int_str
+ok MatchSequenceTest test_list_patterns
+ok MatchClassKwargTest test_kwarg_form
+ok MatchMappingTest test_dict_pattern
+ok MatchOrAndGuardTest test_guard
+ok MatchOrAndGuardTest test_or
+ok MatchOrAndGuardTest test_walrus_in_guard
+---
+passed=7 failed=0
