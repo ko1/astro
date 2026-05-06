@@ -347,6 +347,64 @@ def cpython_only(fn):
     return _unittest.skip("cpython-only")(fn)
 
 
+# More stubs that newer CPython tests reach for.
+def skip_wasi_stack_overflow():
+    def deco(fn): return fn
+    return deco
+
+def skip_emscripten_stack_overflow():
+    def deco(fn): return fn
+    return deco
+
+def skip_if_buildbot(reason=None):
+    def deco(fn): return fn
+    return deco
+
+def skip_on_s390x():
+    def deco(fn): return fn
+    return deco
+
+def adjust_int_max_str_digits(n):
+    class _NoOp:
+        def __enter__(self): return self
+        def __exit__(self, *exc): return False
+    return _NoOp()
+
+
+def requires_docstrings(fn):
+    return fn
+
+
+def requires_docstring(fn):
+    return fn
+
+
+def cpython_only(fn):
+    return _unittest.skip("cpython-only")(fn)
+
+
+def has_strftime_extensions():
+    return False
+
+
+def Py_DEBUG_BUILD():
+    return False
+
+
+# Memory thresholds.
+_2G = 2 * 1024 * 1024 * 1024
+_4G = 4 * 1024 * 1024 * 1024
+
+
+# BrokenIter — used by tests that need to assert failure modes.
+class BrokenIter:
+    def __init__(self, **kw):
+        self._behaviour = kw
+    def __iter__(self): return self
+    def __next__(self):
+        raise StopIteration
+
+
 # Eagerly import sub-modules so `test.support.os_helper.X` works.
 from test.support import os_helper
 from test.support import import_helper

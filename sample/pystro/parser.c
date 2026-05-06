@@ -904,6 +904,8 @@ prescan_comp_targets(int close_kind)
             depth--;
         } else if (depth == 0 && k == T_FOR) {
             tok_pos++;
+            // Optional paren-wrapped target: `for (a, b) in ...`.
+            if (peek_tok(0)->kind == T_LPAREN) tok_pos++;
             // Collect NAME (NAME ',')* until 'in'.  Each loop-target
             // gets a synthetic comp-private local so the original name
             // doesn't leak into the enclosing scope.
@@ -1043,11 +1045,11 @@ parse_paren_or_tuple(void)
     comp_remap_top = saved_remap;
     if (match_tok(T_RPAREN)) return first;
     // tuple
-    NODE *items[64];
+    NODE *items[1024];
     int n = 0; items[n++] = first;
     while (match_tok(T_COMMA)) {
         if (peek_tok(0)->kind == T_RPAREN) break;
-        if (n >= 64) parse_error("tuple too long");
+        if (n >= 1024) parse_error("tuple too long");
         items[n++] = parse_expr();
     }
     expect(T_RPAREN, "')'");
@@ -1093,6 +1095,7 @@ parse_genexp_lazy(int saved_remap_at_paren)
     }
 
     expect(T_FOR, "'for'");
+    bool paren_target = match_tok(T_LPAREN);
     if (peek_tok(0)->kind != T_NAME)
         parse_error("expected target NAME in genexp");
     const char *first_var = comp_resolve(peek_tok(0)->sval);
@@ -1105,6 +1108,7 @@ parse_genexp_lazy(int saved_remap_at_paren)
         first_extra[n_first_extra++] = comp_resolve(peek_tok(0)->sval);
         tok_pos++;
     }
+    if (paren_target) expect(T_RPAREN, "')'");
     expect(T_IN, "'in'");
 
     // OUTER iterable: parse in parent scope.
@@ -1252,6 +1256,8 @@ static NODE *
 parse_comp_clauses(NODE *inner_body)
 {
     expect(T_FOR, "'for'");
+    // Accept `for X in ...`, `for X, Y in ...`, or `for (X, Y) in ...`.
+    bool paren_target = match_tok(T_LPAREN);
     if (peek_tok(0)->kind != T_NAME) parse_error("expected target NAME in comprehension");
     const char *names[16];
     int nnames = 0;
@@ -1263,6 +1269,7 @@ parse_comp_clauses(NODE *inner_body)
         names[nnames++] = comp_resolve(peek_tok(0)->sval);
         tok_pos++;
     }
+    if (paren_target) expect(T_RPAREN, "')'");
     expect(T_IN, "'in'");
     NODE *iter = parse_or();
 
@@ -1379,7 +1386,7 @@ parse_list_literal(void)
         return ALLOC_node_seq(init, ALLOC_node_seq(loops, load_tmp));
     }
     comp_remap_top = saved_remap_lc;
-    NODE *items[256];
+    NODE *items[2048];
     int n = 0; items[n++] = first;
     while (match_tok(T_COMMA)) {
         if (peek_tok(0)->kind == T_RBRACK) break;
@@ -1490,7 +1497,7 @@ parse_dict_or_set_literal(void)
             return ALLOC_node_seq(init, ALLOC_node_seq(loops, load_tmp));
         }
         comp_remap_top = saved_remap_dc;
-        NODE *items[512];
+        NODE *items[4096];
         int npairs = 0;
         items[0] = first; items[1] = first_v; npairs = 1;
         while (match_tok(T_COMMA)) {
@@ -1498,7 +1505,7 @@ parse_dict_or_set_literal(void)
             NODE *k = parse_expr();
             expect(T_COLON, "':'");
             NODE *v = parse_expr();
-            if (npairs * 2 + 2 > 512) parse_error("dict literal too long");
+            if (npairs * 2 + 2 > 4096) parse_error("dict literal too long");
             items[npairs * 2] = k;
             items[npairs * 2 + 1] = v;
             npairs++;
@@ -1520,7 +1527,7 @@ parse_dict_or_set_literal(void)
         return ALLOC_node_seq(init, ALLOC_node_seq(loops, load_tmp));
     }
     comp_remap_top = saved_remap_dc;
-    NODE *items[256];
+    NODE *items[2048];
     int n = 0; items[n++] = first;
     while (match_tok(T_COMMA)) {
         if (peek_tok(0)->kind == T_RBRACE) break;
@@ -1687,7 +1694,7 @@ parse_atom(void)
         // Plain runs are concatenated into one literal; f-strings join
         // via runtime + at the AST level.
         size_t total = strlen(t->sval);
-        char buf[8192];
+        char buf[65536];
         size_t bl = 0;
         if (total + 1 > sizeof(buf)) parse_error("implicit concat string too long");
         memcpy(buf, t->sval, total); bl = total;
@@ -1726,7 +1733,7 @@ parse_atom(void)
         // Implicit concat of bytes literals.
         if (peek_tok(0)->kind != T_BYTES)
             return ALLOC_node_const_bytes(t->sval, (uint32_t)t->slen);
-        char buf[8192];
+        char buf[65536];
         size_t bl = 0;
         if ((size_t)t->slen > sizeof(buf)) parse_error("bytes concat too long");
         memcpy(buf, t->sval, t->slen); bl = t->slen;
@@ -1748,7 +1755,7 @@ parse_atom(void)
                 tok_pos++;
                 result = ALLOC_node_add(result, parse_fstring(ft));
             } else {
-                char buf[8192];
+                char buf[65536];
                 size_t bl = 0;
                 while (peek_tok(0)->kind == T_STR) {
                     const char *s = peek_tok(0)->sval;
@@ -1902,7 +1909,7 @@ parse_subscript(NODE *seq)
     }
     // `obj[a, b, c]` — tuple subscript (used by typing generic aliases).
     if (!is_slice && peek_tok(0)->kind == T_COMMA) {
-        NODE *items[16];
+        NODE *items[64];
         int n = 0;
         items[n++] = start;
         while (match_tok(T_COMMA)) {
@@ -2319,7 +2326,7 @@ parse_expr_list(void)
 {
     NODE *first = parse_expr();
     if (peek_tok(0)->kind != T_COMMA) return first;
-    NODE *items[64];
+    NODE *items[1024];
     int n = 0; items[n++] = first;
     bool saw_trailing_comma = false;
     while (match_tok(T_COMMA)) {
@@ -2329,7 +2336,7 @@ parse_expr_list(void)
             saw_trailing_comma = true;
             break;
         }
-        if (n >= 64) parse_error("expr list too long");
+        if (n >= 1024) parse_error("expr list too long");
         items[n++] = parse_expr();
     }
     if (n == 1 && !saw_trailing_comma) return items[0];
@@ -2842,7 +2849,7 @@ parse_class(void)
     // Prepend `__class_kwargs__ = {n1: v1, ...}` to the body so the
     // metaclass / __init_subclass__ path can recover them.
     if (nkw > 0) {
-        NODE *items[16];
+        NODE *items[64];
         for (int i = 0; i < nkw; i++) {
             items[2*i]   = ALLOC_node_const_str(kw_names[i]);
             items[2*i+1] = kw_vals[i];
@@ -4089,7 +4096,7 @@ skip_plain_unpack: ;
         // Lookahead: if next non-trivial token suggests this is just a
         // trailing comma (NEWLINE / ; / EOF after one or more exprs),
         // wrap as tuple statement.
-        NODE *items[16];
+        NODE *items[64];
         int nn = 1;
         items[0] = lhs_expr;
         while (match_tok(T_COMMA)) {
@@ -4344,6 +4351,11 @@ parse_stmt(void)
     NODE *s = parse_simple_stmt();
     // Allow optional ; or NEWLINE
     if (match_tok(T_SEMI)) {
+        // Trailing semicolon: `expr;` followed by NEWLINE is also valid.
+        if (peek_tok(0)->kind == T_NEWLINE) {
+            tok_pos++;
+            return s;
+        }
         // chain another simple stmt
         NODE *more = parse_stmt();
         // if `more` is a stmt that already consumed its newline, just seq.
