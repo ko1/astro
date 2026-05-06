@@ -16,6 +16,12 @@ def makedirs(path, exist_ok=False):
     return __pystro_makedirs__(path, exist_ok)
 
 
+def mkdir(path, mode=0o777):
+    # Pystro's makedirs creates parents as well; mkdir simulates non-existing
+    # parent error (mostly).  For our purposes, just call makedirs.
+    return __pystro_makedirs__(path, False)
+
+
 def close(fd):
     # Stub: pystro file objects close themselves; close() of a raw fd is a no-op.
     return None
@@ -118,6 +124,28 @@ class _Path:
         if i == 0:
             return "/"
         return p[:i]
+
+    @staticmethod
+    def normpath(p):
+        if not p: return "."
+        # Split on '/'.
+        parts = p.split("/")
+        absolute = (parts[0] == "")  # leading '/'
+        out = []
+        for part in parts:
+            if part == "" or part == ".":
+                continue
+            if part == "..":
+                if out and out[-1] != "..":
+                    out.pop()
+                elif not absolute:
+                    out.append("..")
+            else:
+                out.append(part)
+        result = "/".join(out)
+        if absolute:
+            result = "/" + result
+        return result or "."
 
     @staticmethod
     def splitext(p):

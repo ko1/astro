@@ -1,0 +1,7 @@
+ok OSPathTest test_basename_dirname
+ok OSPathTest test_join
+ok OSPathTest test_normpath
+ok OSPathTest test_split
+ok OSPathTest test_splitext
+---
+passed=5 failed=0
