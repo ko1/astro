@@ -1,0 +1,23 @@
+ok ZipMapEnumTest test_enum_start
+ok ZipMapEnumTest test_filter_none
+ok ZipMapEnumTest test_map_multi
+ok ZipMapEnumTest test_map_uneven
+ok ZipMapEnumTest test_zip
+ok ZipMapEnumTest test_zip_strict
+ok SortMinMaxTest test_max_default
+ok SortMinMaxTest test_stable_sort
+ok SortMinMaxTest test_sum_tuple_start
+ok ItertoolsTest test_chain
+ok ItertoolsTest test_chain_from_iter
+ok ItertoolsTest test_compress
+ok ItertoolsTest test_count_islice
+ok ItertoolsTest test_cycle
+ok ItertoolsTest test_filterfalse
+ok ItertoolsTest test_pairwise
+ok ItertoolsTest test_perms_combs
+ok ItertoolsTest test_product
+ok ItertoolsTest test_repeat
+ok ItertoolsTest test_take_drop
+ok ItertoolsTest test_tee
+---
+passed=21 failed=0
