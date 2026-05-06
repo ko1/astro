@@ -4977,6 +4977,7 @@ py_gen_throw(CTX *c, VALUE gen_v, VALUE exc)
 VALUE
 py_gen_close(CTX *c, VALUE gen_v)
 {
+    extern bool class_is_ancestor(VALUE cls, VALUE target);
     struct pygen *g = PY_PTR(gen_v)->gen;
     if (g->done) return PY_NONE;
     if (!g->started) { g->done = true; return PY_NONE; }
@@ -4984,13 +4985,24 @@ py_gen_close(CTX *c, VALUE gen_v)
     g->throw_exc = py_make_instance(c->EXC_GeneratorExit);
     py_setattr(c, g->throw_exc, "message", py_make_str("GeneratorExit", 13));
     py_gen_next(c, gen_v);
-    // After close, swallow StopIteration / RuntimeError (caller doesn't
-    // want close() to raise).
-    if (c->state == PY_STATE_RAISE) {
-        c->state = PY_STATE_NORMAL;
-        c->state_value = PY_NONE;
-    }
     g->done = true;
+    // After close: swallow GeneratorExit / StopIteration (expected); but
+    // any *other* exception raised by the generator (e.g. from a
+    // `finally` block) propagates to the close() caller — matches CPython.
+    if (c->state == PY_STATE_RAISE) {
+        VALUE exc = c->state_value;
+        if (py_is_instance(exc)) {
+            VALUE ec = PY_OBJ_VAL(PY_PTR(exc)->inst.cls);
+            if (class_is_ancestor(ec, c->EXC_GeneratorExit)
+                || class_is_ancestor(ec, c->EXC_StopIteration)) {
+                c->state = PY_STATE_NORMAL;
+                c->state_value = PY_NONE;
+                return PY_NONE;
+            }
+        }
+        // Other exception — propagate.
+        return PY_NONE;
+    }
     return PY_NONE;
 }
 

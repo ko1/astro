@@ -1,0 +1,6 @@
+ok GenCloseRaiseTest test_close_already_closed
+ok GenCloseRaiseTest test_close_finally_raises
+ok GenCloseRaiseTest test_close_normal
+ok GenCloseRaiseTest test_close_swallows_stop_iteration
+---
+passed=4 failed=0
