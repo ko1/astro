@@ -1,0 +1,5 @@
+ok UnaryPosTest test_pos
+ok UnaryPosTest test_pos_pass_through
+ok CustomDivmodTest test_dispatch
+---
+passed=3 failed=0

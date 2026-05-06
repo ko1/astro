@@ -1759,7 +1759,14 @@ static NODE *
 parse_factor(void)
 {
     if (match_tok(T_MINUS)) return ALLOC_node_neg(parse_factor());
-    if (match_tok(T_PLUS))  return parse_factor();
+    if (match_tok(T_PLUS))  {
+        NODE *e = parse_factor();
+        NODE *args[1] = { e };
+        size_t bidx = node_table_reserve(args, 1);
+        return ALLOC_node_call_n(
+            ALLOC_node_gref(intern_name("__pystro_pos__", 14)),
+            (uint32_t)bidx, 1);
+    }
     if (match_tok(T_TILDE)) return ALLOC_node_bit_inv(parse_factor());
     return parse_power();
 }

@@ -9824,6 +9824,18 @@ bi_pystro_yield_from(CTX *c, int argc, VALUE *argv)
     return py_gen_yield_from(c, argv[0]);
 }
 
+// Unary + dispatch: call __pos__ on instances; identity otherwise.
+static VALUE
+bi_pystro_pos(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    if (py_is_instance(argv[0])) {
+        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(argv[0])->inst.cls), "__pos__");
+        if (m != PY_NONE) return py_apply(c, m, 1, argv);
+    }
+    return argv[0];
+}
+
 static VALUE
 bi_pystro_del(CTX *c, int argc, VALUE *argv)
 {
@@ -9888,6 +9900,13 @@ static VALUE
 bi_divmod(CTX *c, int argc, VALUE *argv)
 {
     (void)argc;
+    // Dispatch to __divmod__ on instances.
+    if (py_is_instance(argv[0])) {
+        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(argv[0])->inst.cls), "__divmod__");
+        if (m != PY_NONE) {
+            return py_apply(c, m, 2, argv);
+        }
+    }
     VALUE q = py_fdiv(c, argv[0], argv[1]);
     VALUE r = py_mod (c, argv[0], argv[1]);
     VALUE pair[2] = { q, r };
@@ -10364,6 +10383,7 @@ install_builtins(CTX *c)
     py_global_define(c, "EOFError",             c->EXC_EOFError);
     py_global_define(c, "__pystro_del__",   py_make_builtin("__pystro_del__", bi_pystro_del, 2, 2));
     py_global_define(c, "__pystro_yield_from__", py_make_builtin("__pystro_yield_from__", bi_pystro_yield_from, 1, 1));
+    py_global_define(c, "__pystro_pos__", py_make_builtin("__pystro_pos__", bi_pystro_pos, 1, 1));
     py_global_define(c, "__pystro_delattr__",   py_make_builtin("__pystro_delattr__", bi_pystro_delattr, 2, 2));
     py_global_define(c, "__pystro_delglobal__", py_make_builtin("__pystro_delglobal__", bi_pystro_delglobal, 1, 1));
     py_global_define(c, "__pystro_import__",    py_make_builtin("__pystro_import__", bi_import, 1, 1));
