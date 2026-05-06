@@ -171,6 +171,15 @@ parse_value(const char **pp, const char *end, char **err)
     const char *p = *pp;
     if (p >= end) { *err = fmt_err("unexpected EOF"); return NUQ_NULL; }
     if (*p == '"') return parse_string_raw(pp, end, err);
+    /* jq extends JSON with `Infinity` / `-Infinity` / `NaN` / `-NaN` /
+     * `nan` literals.  Check these before falling into number parsing
+     * so the leading `-` doesn't get consumed by parse_number. */
+    if (*p == '-' && end - p >= 9 && memcmp(p, "-Infinity", 9) == 0) {
+        *pp = p + 9; return nuq_make_double(-INFINITY);
+    }
+    if (*p == '-' && end - p >= 4 && memcmp(p, "-NaN", 4) == 0) {
+        *pp = p + 4; return nuq_make_double(NAN);
+    }
     if (*p == '-' || (*p >= '0' && *p <= '9')) return parse_number(pp, end, err);
     if (*p == 't') {
         if (end - p >= 4 && memcmp(p, "true", 4) == 0) { *pp = p + 4; return NUQ_TRUE; }
