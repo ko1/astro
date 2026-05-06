@@ -705,9 +705,308 @@ static VALUE dir_glob(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 /* ---------- Process ---------- */
 #include <sys/types.h>
+#include <sys/wait.h>
+#include <signal.h>
+#include <unistd.h>
 
 static VALUE process_pid(CTX *c, VALUE self, int argc, VALUE *argv) {
     return INT2FIX((long)getpid());
+}
+
+/* Build a NUL-terminated argv array from `cmd, *args`.  Handles the
+ * shell-form `system("ls -l")` (single string with spaces → /bin/sh -c)
+ * and the exec-form `system("ls", "-l")` (no shell). */
+static char **build_exec_argv(VALUE *strs, int n, bool *use_shell) {
+    *use_shell = false;
+    if (n == 0) return NULL;
+    /* Single-string with shell metachars → shell form. */
+    if (n == 1 && !SPECIAL_CONST_P(strs[0]) && BUILTIN_TYPE(strs[0]) == T_STRING) {
+        const char *s = ((struct korb_string *)strs[0])->ptr;
+        for (long i = 0; s[i]; i++) {
+            char ch = s[i];
+            if (ch == ' ' || ch == '\t' || ch == '*' || ch == '?' ||
+                ch == '$' || ch == '|' || ch == '&' || ch == '<' ||
+                ch == '>' || ch == '(' || ch == ')' || ch == '[' ||
+                ch == ']' || ch == '{' || ch == '}' || ch == '`' ||
+                ch == ';' || ch == '\\' || ch == '"' || ch == '\'' ||
+                ch == '~' || ch == '#') {
+                *use_shell = true;
+                break;
+            }
+        }
+        if (*use_shell) {
+            char **argv = korb_xmalloc(sizeof(char *) * 4);
+            argv[0] = (char *)"/bin/sh";
+            argv[1] = (char *)"-c";
+            argv[2] = (char *)((struct korb_string *)strs[0])->ptr;
+            argv[3] = NULL;
+            return argv;
+        }
+    }
+    /* exec form: each arg is one argv element. */
+    char **argv = korb_xmalloc(sizeof(char *) * (n + 1));
+    for (int i = 0; i < n; i++) {
+        if (SPECIAL_CONST_P(strs[i]) || BUILTIN_TYPE(strs[i]) != T_STRING) {
+            VALUE s = korb_to_s_dispatch(NULL, strs[i]);
+            argv[i] = (char *)((struct korb_string *)s)->ptr;
+        } else {
+            argv[i] = (char *)((struct korb_string *)strs[i])->ptr;
+        }
+    }
+    argv[n] = NULL;
+    return argv;
+}
+
+/* Process::Status — minimal struct exposed via $? after system() etc. */
+static VALUE make_process_status(int wstatus, pid_t pid) {
+    VALUE cStatus = korb_const_get(korb_vm->object_class, korb_intern("Process"));
+    VALUE cs = korb_const_get((struct korb_class *)cStatus, korb_intern("Status"));
+    if (UNDEF_P(cs) || NIL_P(cs)) cs = (VALUE)korb_vm->object_class;
+    VALUE obj = korb_object_new((struct korb_class *)cs);
+    korb_ivar_set(obj, korb_intern("@pid"), INT2FIX((long)pid));
+    int exit_status = WIFEXITED(wstatus) ? WEXITSTATUS(wstatus) : -1;
+    korb_ivar_set(obj, korb_intern("@exitstatus"), INT2FIX((long)exit_status));
+    korb_ivar_set(obj, korb_intern("@success"), KORB_BOOL(exit_status == 0));
+    korb_ivar_set(obj, korb_intern("@signaled"), KORB_BOOL(WIFSIGNALED(wstatus)));
+    if (WIFSIGNALED(wstatus)) {
+        korb_ivar_set(obj, korb_intern("@termsig"), INT2FIX((long)WTERMSIG(wstatus)));
+    }
+    korb_ivar_set(obj, korb_intern("@to_i"), INT2FIX((long)wstatus));
+    return obj;
+}
+
+/* Kernel#system(cmd, *args) — run a subprocess.  Returns true if exit
+ * status is 0, false if non-zero, nil if the process failed to start.
+ * Also sets $? to a Process::Status. */
+static VALUE kernel_system(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1) {
+        VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+        korb_raise(c, (struct korb_class *)eA, "wrong number of arguments");
+        return Qnil;
+    }
+    bool use_shell;
+    char **xargv = build_exec_argv(argv, argc, &use_shell);
+    if (!xargv) return Qnil;
+    pid_t pid = fork();
+    if (pid < 0) return Qnil;
+    if (pid == 0) {
+        execvp(xargv[0], xargv);
+        _exit(127);
+    }
+    int wstatus = 0;
+    waitpid(pid, &wstatus, 0);
+    VALUE st = make_process_status(wstatus, pid);
+    korb_gvar_set(korb_intern("$?"), st);
+    if (WIFEXITED(wstatus)) {
+        return WEXITSTATUS(wstatus) == 0 ? Qtrue : Qfalse;
+    }
+    return Qfalse;
+}
+
+/* Kernel#`cmd` (backtick) — run command, return stdout as a String. */
+static VALUE kernel_xstring(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1 || SPECIAL_CONST_P(argv[0]) || BUILTIN_TYPE(argv[0]) != T_STRING)
+        return korb_str_new_cstr("");
+    int pipefd[2];
+    if (pipe(pipefd) < 0) return korb_str_new_cstr("");
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(pipefd[0]); close(pipefd[1]);
+        return korb_str_new_cstr("");
+    }
+    if (pid == 0) {
+        dup2(pipefd[1], 1);
+        close(pipefd[0]); close(pipefd[1]);
+        const char *cmd = ((struct korb_string *)argv[0])->ptr;
+        execl("/bin/sh", "/bin/sh", "-c", cmd, (char *)NULL);
+        _exit(127);
+    }
+    close(pipefd[1]);
+    char buf[4096];
+    VALUE r = korb_str_new_cstr("");
+    ssize_t n;
+    while ((n = read(pipefd[0], buf, sizeof(buf))) > 0) {
+        korb_str_concat(r, korb_str_new(buf, n));
+    }
+    close(pipefd[0]);
+    int wstatus = 0;
+    waitpid(pid, &wstatus, 0);
+    korb_gvar_set(korb_intern("$?"), make_process_status(wstatus, pid));
+    return r;
+}
+
+/* Kernel#exec — replace the current process. */
+static VALUE kernel_exec(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1) return Qnil;
+    bool use_shell;
+    char **xargv = build_exec_argv(argv, argc, &use_shell);
+    if (!xargv) return Qnil;
+    execvp(xargv[0], xargv);
+    /* Reach here only if exec failed. */
+    VALUE eErrno = korb_const_get(korb_vm->object_class, korb_intern("Errno"));
+    if (!UNDEF_P(eErrno) && !NIL_P(eErrno)) {
+        korb_raise(c, NULL, "exec failed: %s", xargv[0]);
+    }
+    return Qnil;
+}
+
+/* Process.spawn(cmd, *args) — fork + exec, return pid (don't wait). */
+static VALUE process_spawn(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1) return Qnil;
+    bool use_shell;
+    char **xargv = build_exec_argv(argv, argc, &use_shell);
+    if (!xargv) return Qnil;
+    pid_t pid = fork();
+    if (pid < 0) return Qnil;
+    if (pid == 0) {
+        execvp(xargv[0], xargv);
+        _exit(127);
+    }
+    return INT2FIX((long)pid);
+}
+
+/* Process.fork { ... } — fork; in child, run block then exit.  In
+ * parent, return child pid. */
+static VALUE process_fork(CTX *c, VALUE self, int argc, VALUE *argv) {
+    pid_t pid = fork();
+    if (pid < 0) return Qnil;
+    if (pid == 0) {
+        if (korb_block_given()) {
+            korb_yield(c, 0, NULL);
+        }
+        if (c->state == KORB_RAISE) {
+            VALUE s = korb_inspect(c->state_value);
+            fprintf(stderr, "fork child: %s\n", korb_str_cstr(s));
+            _exit(1);
+        }
+        _exit(0);
+    }
+    return INT2FIX((long)pid);
+}
+
+/* Process.wait([pid [, flags]]) — waitpid; sets $? and returns the pid
+ * (or -1 on error). */
+static VALUE process_wait(CTX *c, VALUE self, int argc, VALUE *argv) {
+    pid_t want = -1;
+    int flags = 0;
+    if (argc >= 1 && FIXNUM_P(argv[0])) want = (pid_t)FIX2LONG(argv[0]);
+    if (argc >= 2 && FIXNUM_P(argv[1])) flags = (int)FIX2LONG(argv[1]);
+    int wstatus = 0;
+    pid_t got = waitpid(want, &wstatus, flags);
+    if (got <= 0) return Qnil;
+    korb_gvar_set(korb_intern("$?"), make_process_status(wstatus, got));
+    return INT2FIX((long)got);
+}
+
+static VALUE process_kill(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 2) return INT2FIX(0);
+    int sig = 0;
+    if (FIXNUM_P(argv[0])) {
+        sig = (int)FIX2LONG(argv[0]);
+    } else if (SYMBOL_P(argv[0])) {
+        const char *n = korb_id_name(korb_sym2id(argv[0]));
+        if (!strcmp(n, "INT")) sig = SIGINT;
+        else if (!strcmp(n, "TERM")) sig = SIGTERM;
+        else if (!strcmp(n, "KILL")) sig = SIGKILL;
+        else if (!strcmp(n, "USR1")) sig = SIGUSR1;
+        else if (!strcmp(n, "USR2")) sig = SIGUSR2;
+        else if (!strcmp(n, "HUP")) sig = SIGHUP;
+        else if (!strcmp(n, "QUIT")) sig = SIGQUIT;
+    }
+    int sent = 0;
+    for (int i = 1; i < argc; i++) {
+        if (FIXNUM_P(argv[i])) {
+            if (kill((pid_t)FIX2LONG(argv[i]), sig) == 0) sent++;
+        }
+    }
+    return INT2FIX((long)sent);
+}
+
+/* Process::Status methods. */
+static VALUE pstatus_exitstatus(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return korb_ivar_get(self, korb_intern("@exitstatus"));
+}
+static VALUE pstatus_pid(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return korb_ivar_get(self, korb_intern("@pid"));
+}
+static VALUE pstatus_success_p(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return korb_ivar_get(self, korb_intern("@success"));
+}
+static VALUE pstatus_signaled_p(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return korb_ivar_get(self, korb_intern("@signaled"));
+}
+static VALUE pstatus_termsig(CTX *c, VALUE self, int argc, VALUE *argv) {
+    VALUE v = korb_ivar_get(self, korb_intern("@termsig"));
+    return UNDEF_P(v) ? Qnil : v;
+}
+static VALUE pstatus_to_i(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return korb_ivar_get(self, korb_intern("@to_i"));
+}
+
+/* Signal — minimal: trap (stub: stores handler), list (constant map). */
+static struct {
+    int signum;
+    VALUE handler;
+} g_signal_handlers[32] = {{0}};
+static int g_signal_handlers_cnt = 0;
+
+static int signal_name_to_num(const char *n) {
+    if (!n) return -1;
+    /* Allow "SIGFOO" or "FOO". */
+    if (strncmp(n, "SIG", 3) == 0) n += 3;
+    if (!strcmp(n, "INT")) return SIGINT;
+    if (!strcmp(n, "TERM")) return SIGTERM;
+    if (!strcmp(n, "USR1")) return SIGUSR1;
+    if (!strcmp(n, "USR2")) return SIGUSR2;
+    if (!strcmp(n, "HUP")) return SIGHUP;
+    if (!strcmp(n, "QUIT")) return SIGQUIT;
+    if (!strcmp(n, "PIPE")) return SIGPIPE;
+    if (!strcmp(n, "ALRM")) return SIGALRM;
+    if (!strcmp(n, "CHLD")) return SIGCHLD;
+    return -1;
+}
+
+static VALUE signal_trap(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1) return Qnil;
+    int signum = -1;
+    if (FIXNUM_P(argv[0])) signum = (int)FIX2LONG(argv[0]);
+    else if (SYMBOL_P(argv[0])) signum = signal_name_to_num(korb_id_name(korb_sym2id(argv[0])));
+    else if (!SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_STRING)
+        signum = signal_name_to_num(((struct korb_string *)argv[0])->ptr);
+    if (signum < 0) return Qnil;
+    /* Block argument (if any) is the handler.  Otherwise argv[1] (a
+     * Proc / String like "DEFAULT" / "IGNORE").  We don't actually
+     * install a real signal handler — stub so user code can register
+     * without errors. */
+    VALUE handler = (argc >= 2) ? argv[1]
+                  : (korb_block_given() ? Qnil : Qnil);
+    /* Look up previous handler so we can return it. */
+    VALUE prev = Qnil;
+    for (int i = 0; i < g_signal_handlers_cnt; i++) {
+        if (g_signal_handlers[i].signum == signum) {
+            prev = g_signal_handlers[i].handler;
+            g_signal_handlers[i].handler = handler;
+            return prev;
+        }
+    }
+    if (g_signal_handlers_cnt < (int)(sizeof(g_signal_handlers)/sizeof(g_signal_handlers[0]))) {
+        g_signal_handlers[g_signal_handlers_cnt].signum = signum;
+        g_signal_handlers[g_signal_handlers_cnt].handler = handler;
+        g_signal_handlers_cnt++;
+    }
+    return Qnil;
+}
+
+static VALUE signal_list(CTX *c, VALUE self, int argc, VALUE *argv) {
+    VALUE h = korb_hash_new();
+    korb_hash_aset(h, korb_str_new_cstr("INT"), INT2FIX(SIGINT));
+    korb_hash_aset(h, korb_str_new_cstr("TERM"), INT2FIX(SIGTERM));
+    korb_hash_aset(h, korb_str_new_cstr("USR1"), INT2FIX(SIGUSR1));
+    korb_hash_aset(h, korb_str_new_cstr("USR2"), INT2FIX(SIGUSR2));
+    korb_hash_aset(h, korb_str_new_cstr("HUP"), INT2FIX(SIGHUP));
+    korb_hash_aset(h, korb_str_new_cstr("QUIT"), INT2FIX(SIGQUIT));
+    korb_hash_aset(h, korb_str_new_cstr("KILL"), INT2FIX(SIGKILL));
+    return h;
 }
 
 /* IO (stubbed via STDOUT / $stdout) */

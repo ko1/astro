@@ -779,7 +779,34 @@ void korb_init_builtins(void) {
         struct korb_class *cProcessMeta = korb_class_new(korb_intern("ProcessMeta"), korb_vm->class_class, T_CLASS);
         korb_class_add_method_cfunc(cProcessMeta, korb_intern("pid"), process_pid, 0);
         korb_class_add_method_cfunc(cProcessMeta, korb_intern("clock_gettime"), proc_clock_gettime_stub, -1);
+        korb_class_add_method_cfunc(cProcessMeta, korb_intern("spawn"), process_spawn, -1);
+        korb_class_add_method_cfunc(cProcessMeta, korb_intern("fork"), process_fork, 0);
+        korb_class_add_method_cfunc(cProcessMeta, korb_intern("wait"), process_wait, -1);
+        korb_class_add_method_cfunc(cProcessMeta, korb_intern("waitpid"), process_wait, -1);
+        korb_class_add_method_cfunc(cProcessMeta, korb_intern("kill"), process_kill, -1);
         cProcess->basic.klass = (VALUE)cProcessMeta;
+        /* Process::Status — minimal class with attribute readers. */
+        struct korb_class *cStatus = korb_class_new(korb_intern("Status"), korb_vm->object_class, T_OBJECT);
+        korb_const_set(cProcess, korb_intern("Status"), (VALUE)cStatus);
+        korb_class_add_method_cfunc(cStatus, korb_intern("exitstatus"), pstatus_exitstatus, 0);
+        korb_class_add_method_cfunc(cStatus, korb_intern("pid"), pstatus_pid, 0);
+        korb_class_add_method_cfunc(cStatus, korb_intern("success?"), pstatus_success_p, 0);
+        korb_class_add_method_cfunc(cStatus, korb_intern("signaled?"), pstatus_signaled_p, 0);
+        korb_class_add_method_cfunc(cStatus, korb_intern("termsig"), pstatus_termsig, 0);
+        korb_class_add_method_cfunc(cStatus, korb_intern("to_i"), pstatus_to_i, 0);
+        /* Signal — module with class methods. */
+        struct korb_class *cSignal = korb_module_new(korb_intern("Signal"));
+        korb_const_set(korb_vm->object_class, korb_intern("Signal"), (VALUE)cSignal);
+        struct korb_class *cSignalMeta = korb_singleton_class_of(cSignal);
+        korb_class_add_method_cfunc(cSignalMeta, korb_intern("trap"), signal_trap, -1);
+        korb_class_add_method_cfunc(cSignalMeta, korb_intern("list"), signal_list, 0);
+        /* Kernel#system / `cmd` / exec at top-level (Object). */
+        DEF(cObj, "system", kernel_system, -1);
+        DEF(cObj, "`",      kernel_xstring, 1);
+        DEF(cObj, "exec",   kernel_exec, -1);
+        DEF(cObj, "fork",   process_fork, 0);
+        DEF(cObj, "spawn",  process_spawn, -1);
+        DEF(cObj, "trap",   signal_trap, -1);
         /* CLOCK_MONOTONIC constant on Process — sentinel value, used
          * only by clock_gettime which ignores it. */
         korb_const_set(cProcess, korb_intern("CLOCK_MONOTONIC"), INT2FIX(1));

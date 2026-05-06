@@ -3609,10 +3609,31 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
       case PM_BACK_REFERENCE_READ_NODE:
         return ALLOC_node_nil();
 
-      case PM_X_STRING_NODE:
+      case PM_X_STRING_NODE: {
+          /* `cmd` — call Kernel#`(cmd) which runs the command and
+           * returns stdout as a String. */
+          pm_x_string_node_t *n = (pm_x_string_node_t *)node;
+          long len = (long)pm_string_length(&n->unescaped);
+          const char *src = (const char *)pm_string_source(&n->unescaped);
+          char *buf = korb_xmalloc_atomic(len + 1);
+          memcpy(buf, src, len); buf[len] = 0;
+          NODE *cmd_str = ALLOC_node_str_lit(buf, (uint32_t)len);
+          uint32_t ai = inc_arg_index(tc);
+          rewind_arg_index(tc, ai);
+          struct method_cache *mc = alloc_method_cache();
+          NODE *prep = ALLOC_node_lvar_set(ai, cmd_str);
+          NODE *call = ALLOC_node_func_call(korb_intern("`"), 1, ai, mc);
+          return ALLOC_node_seq(prep, call);
+      }
       case PM_INTERPOLATED_X_STRING_NODE: {
-          /* shell exec — stub */
-          return ALLOC_node_str_lit("", 0);
+          pm_interpolated_x_string_node_t *n = (pm_interpolated_x_string_node_t *)node;
+          NODE *str = build_container(tc, &n->parts, false, false, true);
+          uint32_t ai = inc_arg_index(tc);
+          rewind_arg_index(tc, ai);
+          struct method_cache *mc = alloc_method_cache();
+          NODE *prep = ALLOC_node_lvar_set(ai, str);
+          NODE *call = ALLOC_node_func_call(korb_intern("`"), 1, ai, mc);
+          return ALLOC_node_seq(prep, call);
       }
 
       case PM_REGULAR_EXPRESSION_NODE: {
