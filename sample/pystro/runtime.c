@@ -9564,6 +9564,12 @@ bi_type_call(CTX *c, int argc, VALUE *argv)
     VALUE cls = argv[0];
     int n = argc - 1;
     VALUE *cargv = n > 0 ? &argv[1] : NULL;
+    // Capture kwargs the caller passed via the BI thread-local (set by
+    // py_apply_kw before invoking this builtin).  Forward to __new__ /
+    // __init__ so dataclass-style `cls(a=1, b=2)` gets its kwargs.
+    int kwc = PYSTRO_BI_KWC;
+    const char **kwn = (const char **)PYSTRO_BI_KWNAMES;
+    VALUE *kwv = PYSTRO_BI_KWVALUES;
     if (PY_PTR(cls)->cls.builtin_ctor)
         return PY_PTR(cls)->cls.builtin_ctor(c, n, cargv);
     VALUE inst;
@@ -9572,7 +9578,7 @@ bi_type_call(CTX *c, int argc, VALUE *argv)
         VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (n + 1));
         av[0] = cls;
         for (int i = 0; i < n; i++) av[i + 1] = cargv[i];
-        inst = py_apply(c, new_m, n + 1, av);
+        inst = py_apply_kw(c, new_m, n + 1, av, kwc, kwn, kwv);
         if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
     } else {
         inst = py_make_instance(cls);
@@ -9582,7 +9588,7 @@ bi_type_call(CTX *c, int argc, VALUE *argv)
         VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (n + 1));
         av[0] = inst;
         for (int i = 0; i < n; i++) av[i + 1] = cargv[i];
-        py_apply(c, init, n + 1, av);
+        py_apply_kw(c, init, n + 1, av, kwc, kwn, kwv);
         if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
     }
     return inst;

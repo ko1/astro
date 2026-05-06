@@ -1826,9 +1826,9 @@ parse_call_args(NODE *fn)
     expect(T_LPAREN, "'('");
     NODE *args[64];
     int argc = 0;
-    struct pykwarg kws[32];
+    struct pykwarg kws[256];
     int kwc = 0;
-    struct pyspread_arg spreads[64];
+    struct pyspread_arg spreads[256];
     int nspreads = 0;
     bool has_spread = false;
     if (peek_tok(0)->kind != T_RPAREN) {
@@ -1850,7 +1850,7 @@ parse_call_args(NODE *fn)
                 const char *nm = peek_tok(0)->sval;
                 tok_pos += 2;
                 NODE *e = parse_expr();
-                if (kwc >= 32) parse_error("too many kwargs");
+                if (kwc >= 256) parse_error("too many kwargs");
                 kws[kwc].name = nm; kws[kwc].value = e; kwc++;
                 spreads[nspreads].kind = 2; spreads[nspreads].name = nm; spreads[nspreads].node = e;
                 nspreads++;
