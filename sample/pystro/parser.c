@@ -2527,7 +2527,7 @@ parse_for(void)
         }
     }
     expect(T_IN, "'in'");
-    NODE *iter = parse_expr();
+    NODE *iter = parse_expr_list();
     NODE *body = parse_suite();
     NODE *else_body = match_tok(T_ELSE) ? parse_suite() : ALLOC_node_nop();
     NODE *new_body = ALLOC_node_seq(prefix, body);
@@ -3226,16 +3226,49 @@ parse_with(void)
         }
         if (parens) tok_pos++;  // consume `(`
     }
-    struct { NODE *expr; const char *as_name; } items[8];
+    // Each item: (cm_expr, as_name) where as_name may be NULL OR
+    // a synthesised tmp name when the source has a tuple target — in
+    // that case `unpack_prefix` is the tuple-unpack stmt that goes at
+    // the head of the with-body.
+    struct { NODE *expr; const char *as_name; NODE *unpack_prefix; } items[8];
     int n = 0;
     for (;;) {
         if (n >= 8) parse_error("too many with items");
         items[n].expr = parse_expr();
         items[n].as_name = NULL;
+        items[n].unpack_prefix = NULL;
         if (match_tok(T_AS)) {
-            if (peek_tok(0)->kind != T_NAME) parse_error("expected NAME after 'as'");
-            items[n].as_name = peek_tok(0)->sval;
-            tok_pos++;
+            if (peek_tok(0)->kind == T_NAME) {
+                items[n].as_name = peek_tok(0)->sval;
+                tok_pos++;
+            } else if (peek_tok(0)->kind == T_LPAREN || peek_tok(0)->kind == T_LBRACK) {
+                // `with cm as (a, b):` — desugar to `with cm as __t: a, b = __t; body`.
+                int close = peek_tok(0)->kind == T_LPAREN ? T_RPAREN : T_RBRACK;
+                tok_pos++;
+                const char *names[16]; int nn = 0;
+                while (peek_tok(0)->kind == T_NAME) {
+                    if (nn >= 16) parse_error("with: too many tuple targets");
+                    names[nn++] = peek_tok(0)->sval;
+                    tok_pos++;
+                    if (!match_tok(T_COMMA)) break;
+                }
+                expect(close, close == T_RPAREN ? "')'" : "']'");
+                const char *tmp = new_temp_name("__withT");
+                if (cur_scope && !scope_is_global_decl(cur_scope, tmp))
+                    scope_add_local(cur_scope, tmp);
+                items[n].as_name = tmp;
+                NODE *load_tmp = make_load(tmp);
+                NODE *prefix = NULL;
+                for (int i = 0; i < nn; i++) {
+                    NODE *idx_n = ALLOC_node_const_int(i);
+                    NODE *el = ALLOC_node_subscript_get(load_tmp, idx_n);
+                    NODE *st = make_store(names[i], el);
+                    prefix = prefix ? ALLOC_node_seq(prefix, st) : st;
+                }
+                items[n].unpack_prefix = prefix;
+            } else {
+                parse_error("expected NAME or tuple target after 'as'");
+            }
         }
         n++;
         if (!match_tok(T_COMMA)) break;
@@ -3246,6 +3279,7 @@ parse_with(void)
     // Wrap from innermost (last item) to outermost (first item).
     NODE *result = body;
     for (int i = n - 1; i >= 0; i--) {
+        if (items[i].unpack_prefix) result = ALLOC_node_seq(items[i].unpack_prefix, result);
         result = build_with_one(items[i].expr, items[i].as_name, result);
     }
     return result;
@@ -4048,7 +4082,26 @@ skip_plain_unpack: ;
         return store;
     }
 
-    // Expression statement.
+    // Expression statement — accept a trailing comma (which makes the
+    // statement a tuple-of-one expression).  Some real-world code does
+    // `assertEqual(a, b),` — odd, but valid Python.
+    if (k2 == T_COMMA) {
+        // Lookahead: if next non-trivial token suggests this is just a
+        // trailing comma (NEWLINE / ; / EOF after one or more exprs),
+        // wrap as tuple statement.
+        NODE *items[16];
+        int nn = 1;
+        items[0] = lhs_expr;
+        while (match_tok(T_COMMA)) {
+            int kk = peek_tok(0)->kind;
+            if (kk == T_NEWLINE || kk == T_SEMI || kk == T_EOF) break;
+            if (nn >= 16) parse_error("expression statement too long");
+            items[nn++] = parse_expr();
+        }
+        if (nn == 1) return lhs_expr;
+        size_t base = node_table_reserve(items, nn);
+        return ALLOC_node_make_tuple((uint32_t)base, (uint32_t)nn);
+    }
     return lhs_expr;
 }
 
@@ -4161,6 +4214,12 @@ parse_decorated(void)
     }
     NODE *body;
     const char *target = NULL;
+    // `async def` after decorator — consume `async`, fall through to def.
+    if (peek_tok(0)->kind == T_NAME
+            && peek_tok(0)->sval == intern_name("async", 5)
+            && peek_tok(1)->kind == T_DEF) {
+        tok_pos++;     // consume async
+    }
     bool is_class_method_dec = in_class_body && peek_tok(0)->kind == T_DEF;
     if (peek_tok(0)->kind == T_DEF) {
         target = tok_arr[tok_pos + 1].sval;
@@ -4228,6 +4287,13 @@ parse_stmt(void)
     if (k == T_AT)     return parse_decorated();
     if (k == T_DEF)    return parse_def();
     if (k == T_CLASS)  return parse_class();
+    // PEP 690 lazy imports (experimental, 3.13+): `lazy import x` /
+    // `lazy from x import y`.  Treat as eager import.
+    if (k == T_NAME && peek_tok(0)->sval == intern_name("lazy", 4)
+            && (peek_tok(1)->kind == T_IMPORT || peek_tok(1)->kind == T_FROM)) {
+        tok_pos++;        // consume `lazy`
+        k = peek_tok(0)->kind;
+    }
     // PEP 695 type alias: `type NAME = expr`.  pystro doesn't track
     // type-time-only aliases, so desugar to plain `NAME = expr`.
     if (k == T_NAME && peek_tok(0)->sval == intern_name("type", 4)
