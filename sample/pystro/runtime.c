@@ -109,6 +109,20 @@ py_class_meta_apply(CTX *c, VALUE cls, VALUE meta, const char *name)
             }
         }
     }
+    // No __new__ override on the metaclass.  Just stamp the metaclass
+    // on the original class and return it — this lets subsequent `cls(...)`
+    // calls dispatch to meta.__call__ if defined.
+    if (py_is_class(meta)) {
+        py_class_add_method(c, cls, intern_name("__metaclass__", 13), meta);
+        // Run __init__(cls, name, bases, attrs) if defined.
+        VALUE init_m = py_class_lookup_method(meta, "__init__");
+        if (init_m != PY_NONE) {
+            VALUE iav[4] = { cls, name_v, bases_tuple, attrs };
+            py_apply(c, init_m, 4, iav);
+            if (c->state == PY_STATE_RAISE) return PY_NONE;
+        }
+        return cls;
+    }
     // Otherwise just call metaclass(name, bases, attrs).  For builtin
     // `type` this hits the 3-arg form (creates a class).
     VALUE av[3] = { name_v, bases_tuple, attrs };
@@ -3563,6 +3577,21 @@ py_getattr(CTX *c, VALUE v, const char *name)
                 }
             }
         }
+        // Fall through to the metaclass: class-attr lookup walks
+        // __metaclass__ so SingletonMeta._instances is reachable as
+        // S._instances.
+        VALUE meta_v = py_class_lookup_method(v, "__metaclass__");
+        if (meta_v != PY_NONE && py_is_class(meta_v)) {
+            if (py_class_has_method(meta_v, name)) {
+                VALUE m = py_class_lookup_method(meta_v, name);
+                if (PY_IS_PTR(m)) {
+                    int t = PY_PTR(m)->type;
+                    if (t == PY_T_STATICMETHOD) return PY_PTR(m)->wrap.wrapped;
+                    if (t == PY_T_CLASSMETHOD)  return py_make_bound(v, PY_PTR(m)->wrap.wrapped);
+                }
+                return m;
+            }
+        }
         py_raise_exc(c, c->EXC_AttributeError, "type object '%s' has no attribute '%s'",
                      cd->name, name);
     }
@@ -3930,6 +3959,18 @@ py_apply_kw(CTX *c, VALUE fn, int argc, VALUE *argv,
             PYSTRO_BI_KWVALUES = saved_kv;
             return r;
         }
+        // Metaclass __call__ override: lets a metaclass intercept the
+        // class call (e.g. singleton pattern).  type(cls).__call__(cls, ...)
+        VALUE meta = py_class_lookup_method(fn, "__metaclass__");
+        if (meta != PY_NONE && py_is_class(meta)) {
+            VALUE mc = py_class_lookup_method(meta, "__call__");
+            if (mc != PY_NONE) {
+                VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc + 1));
+                av[0] = fn;
+                for (int i = 0; i < argc; i++) av[i + 1] = argv[i];
+                return py_apply_kw(c, mc, argc + 1, av, kwc, kwnames, kwvalues);
+            }
+        }
         // Custom __new__: lets users intercept instance creation (singleton
         // pattern, immutable types, etc.).  Return value of __new__ becomes
         // the instance; if it's an instance of cls, __init__ runs on it.
@@ -4011,6 +4052,17 @@ py_apply_slow(CTX *c, VALUE fn, int argc, VALUE *argv)
         // PY_T_INSTANCE, since the constructor returns int/list/etc.
         if (PY_PTR(fn)->cls.builtin_ctor) {
             return PY_PTR(fn)->cls.builtin_ctor(c, argc, argv);
+        }
+        // Metaclass __call__ override (singleton, etc.).
+        VALUE meta_s = py_class_lookup_method(fn, "__metaclass__");
+        if (meta_s != PY_NONE && py_is_class(meta_s)) {
+            VALUE mc = py_class_lookup_method(meta_s, "__call__");
+            if (mc != PY_NONE) {
+                VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc + 1));
+                av[0] = fn;
+                for (int i = 0; i < argc; i++) av[i + 1] = argv[i];
+                return py_apply(c, mc, argc + 1, av);
+            }
         }
         // __new__ — always defined (object.__new__ is the default).
         // It returns the new instance and handles built-in subclass
@@ -8653,6 +8705,41 @@ type_lookup_builtin(CTX *c, const char *name)
     return py_make_str(name, strlen(name));
 }
 
+// type.__call__(cls, *args, **kwargs) — default class-call protocol that
+// bypasses metaclass __call__ (so a metaclass __call__ can delegate to
+// the standard new/init flow).
+static VALUE
+bi_type_call(CTX *c, int argc, VALUE *argv)
+{
+    if (argc < 1 || !py_is_class(argv[0]))
+        py_raise_exc(c, c->EXC_TypeError, "type.__call__(cls, ...) needs cls");
+    VALUE cls = argv[0];
+    int n = argc - 1;
+    VALUE *cargv = n > 0 ? &argv[1] : NULL;
+    if (PY_PTR(cls)->cls.builtin_ctor)
+        return PY_PTR(cls)->cls.builtin_ctor(c, n, cargv);
+    VALUE inst;
+    VALUE new_m = py_class_lookup_method(cls, "__new__");
+    if (new_m != PY_NONE) {
+        VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (n + 1));
+        av[0] = cls;
+        for (int i = 0; i < n; i++) av[i + 1] = cargv[i];
+        inst = py_apply(c, new_m, n + 1, av);
+        if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
+    } else {
+        inst = py_make_instance(cls);
+    }
+    VALUE init = py_class_lookup_method(cls, "__init__");
+    if (init != PY_NONE) {
+        VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (n + 1));
+        av[0] = inst;
+        for (int i = 0; i < n; i++) av[i + 1] = cargv[i];
+        py_apply(c, init, n + 1, av);
+        if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
+    }
+    return inst;
+}
+
 VALUE
 bi_type(CTX *c, int argc, VALUE *argv)
 {
@@ -11503,6 +11590,13 @@ install_builtins(CTX *c)
     c->TYPE_frozenset = py_make_builtin_class("frozenset", bi_frozenset, PY_T_FROZENSET);
     c->TYPE_range     = py_make_builtin_class("range",     bi_range,     PY_T_RANGE);
     c->TYPE_type      = py_make_builtin_class("type",      bi_type,      PY_T_CLASS);
+    {
+        // type.__call__(cls, *args) — default construction protocol so
+        // metaclass __call__ overrides can delegate via type.__call__(cls, ...).
+        extern const char *intern_name(const char *s, size_t len);
+        VALUE call = py_make_builtin("__call__", bi_type_call, 1, -1);
+        py_class_add_method(c, c->TYPE_type, intern_name("__call__", 8), call);
+    }
     c->TYPE_object    = py_make_class("object", PY_NONE, false);
     {
         // object.__new__(cls, *args, **kwargs) — default implementation

@@ -1,0 +1,5 @@
+ok MetaclassCallTest test_class_attr_via_metaclass
+ok MetaclassCallTest test_intercepted_args
+ok MetaclassCallTest test_singleton
+---
+passed=3 failed=0
