@@ -1,0 +1,7 @@
+ok StatsExtraTest test_geometric_mean
+ok StatsExtraTest test_harmonic_mean
+ok StatsExtraTest test_harmonic_mean_negative
+ok StatsExtraTest test_multimode_one_winner
+ok StatsExtraTest test_multimode_unique
+---
+passed=5 failed=0

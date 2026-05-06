@@ -98,6 +98,43 @@ class StatisticsError(ValueError):
     pass
 
 
+def multimode(data):
+    counts = {}
+    for x in data:
+        counts[x] = counts.get(x, 0) + 1
+    if not counts:
+        return []
+    mx = max(counts.values())
+    return [x for x, c in counts.items() if c == mx]
+
+
+def harmonic_mean(data):
+    data = list(data)
+    n = len(data)
+    if n == 0:
+        raise StatisticsError("harmonic_mean requires at least one data point")
+    s = 0.0
+    for x in data:
+        if x <= 0:
+            raise StatisticsError("harmonic_mean requires positive numbers")
+        s += 1.0 / x
+    return n / s
+
+
+def geometric_mean(data):
+    data = list(data)
+    n = len(data)
+    if n == 0:
+        raise StatisticsError("geometric_mean requires at least one data point")
+    p = 1.0
+    for x in data:
+        if x <= 0:
+            raise StatisticsError("geometric_mean requires positive numbers")
+        p *= x
+    return p ** (1.0 / n)
+
+
 __all__ = ["mean", "fmean", "median", "median_low", "median_high",
-           "mode", "variance", "pvariance", "stdev", "pstdev",
-           "quantiles", "StatisticsError"]
+           "mode", "multimode", "variance", "pvariance", "stdev", "pstdev",
+           "quantiles", "StatisticsError",
+           "harmonic_mean", "geometric_mean"]
