@@ -48,8 +48,11 @@ static VALUE int_coerce_dispatch(CTX *c, VALUE self, VALUE other, ID op) {
                 /* Try the coerce protocol before giving up. */            \
                 VALUE _coerced = int_coerce_dispatch((c), self, (v), korb_intern((op_name))); \
                 if (!UNDEF_P(_coerced)) return _coerced;                   \
-                korb_raise((c), NULL, "%s expected Integer, got %s",       \
-                           (op_name), korb_id_name(korb_class_of_class((v))->name)); \
+                VALUE _eTy = korb_const_get(korb_vm->object_class,         \
+                                            korb_intern("TypeError"));     \
+                korb_raise((c), (struct korb_class *)_eTy,                 \
+                           "%s can't be coerced into Integer",             \
+                           korb_id_name(korb_class_of_class((v))->name));  \
                 return Qnil;                                               \
             }                                                              \
         }                                                                  \
@@ -97,7 +100,7 @@ static VALUE int_div(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     COERCE_OR_RAISE(c, argv[0], "/");
     if (FIXNUM_P(argv[0]) && FIX2LONG(argv[0]) == 0) {
-        korb_raise(c, NULL, "divided by 0");
+        { VALUE _eZ = korb_const_get(korb_vm->object_class, korb_intern("ZeroDivisionError")); korb_raise(c, (struct korb_class *)_eZ, "divided by 0"); }
         return Qnil;
     }
     return korb_int_div(self, argv[0]);
@@ -105,7 +108,7 @@ static VALUE int_div(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE int_mod(CTX *c, VALUE self, int argc, VALUE *argv) {
     COERCE_OR_RAISE(c, argv[0], "%");
     if (FIXNUM_P(argv[0]) && FIX2LONG(argv[0]) == 0) {
-        korb_raise(c, NULL, "divided by 0");
+        { VALUE _eZ = korb_const_get(korb_vm->object_class, korb_intern("ZeroDivisionError")); korb_raise(c, (struct korb_class *)_eZ, "divided by 0"); }
         return Qnil;
     }
     return korb_int_mod(self, argv[0]);
@@ -116,20 +119,44 @@ static VALUE int_lshift(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE int_rshift(CTX *c, VALUE self, int argc, VALUE *argv) {
     return korb_int_rshift(self, argv[0]);
 }
+/* Bitwise &/|/^ accept any integer-like RHS; for non-integers fall back
+ * to the coerce protocol so user numerics work (CRuby semantics).
+ * Without the guard, to_mpz would cast the RHS to a Bignum pointer and
+ * segfault inside mpz_init_set. */
+#define INT_BITOP_GUARD(c, rhs, op_name) do { \
+    if (!FIXNUM_P(rhs) && \
+        (SPECIAL_CONST_P(rhs) || BUILTIN_TYPE(rhs) != T_BIGNUM)) { \
+        VALUE _coerced = int_coerce_dispatch((c), self, (rhs), korb_intern((op_name))); \
+        if (!UNDEF_P(_coerced)) return _coerced; \
+        VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError")); \
+        korb_raise((c), (struct korb_class *)eT, \
+                   "no implicit conversion to Integer"); \
+        return Qnil; \
+    } \
+} while (0)
 static VALUE int_and(CTX *c, VALUE self, int argc, VALUE *argv) {
+    INT_BITOP_GUARD(c, argv[0], "&");
     return korb_int_and(self, argv[0]);
 }
 static VALUE int_or(CTX *c, VALUE self, int argc, VALUE *argv) {
+    INT_BITOP_GUARD(c, argv[0], "|");
     return korb_int_or(self, argv[0]);
 }
 static VALUE int_xor(CTX *c, VALUE self, int argc, VALUE *argv) {
+    INT_BITOP_GUARD(c, argv[0], "^");
     return korb_int_xor(self, argv[0]);
 }
 /* Numeric comparators: raise ArgumentError on non-numeric RHS instead of
  * segfaulting through to_mpz.  Ruby semantics. */
-#define INT_CMP_GUARD(c, rhs, op) do { \
+/* For comparisons against a non-builtin numeric, try the coerce
+ * protocol (CRuby behavior) before raising.  Returns Qundef when the
+ * fast Integer/Float/Bignum path can proceed; otherwise returns the
+ * result of the coerced comparison or raises. */
+#define INT_CMP_GUARD(c, rhs, op_name) do { \
     if (!FIXNUM_P(rhs) && !FLONUM_P(rhs) && \
         (SPECIAL_CONST_P(rhs) || (BUILTIN_TYPE(rhs) != T_BIGNUM && BUILTIN_TYPE(rhs) != T_FLOAT))) { \
+        VALUE _coerced = int_coerce_dispatch((c), self, (rhs), korb_intern((op_name))); \
+        if (!UNDEF_P(_coerced)) return _coerced; \
         korb_raise((c), NULL, "comparison of Integer with non-numeric failed"); \
         return Qnil; \
     } \
@@ -446,6 +473,12 @@ static VALUE int_abs(CTX *c, VALUE self, int argc, VALUE *argv) {
         long v = FIX2LONG(self);
         return INT2FIX(v < 0 ? -v : v);
     }
+    if (!SPECIAL_CONST_P(self) && BUILTIN_TYPE(self) == T_BIGNUM) {
+        struct korb_bignum *b = (struct korb_bignum *)self;
+        if (mpz_sgn((mpz_ptr)b->mpz) >= 0) return self;
+        /* Negative Bignum: negate via 0 - self. */
+        return korb_int_minus(INT2FIX(0), self);
+    }
     return self;
 }
 
@@ -469,12 +502,19 @@ static VALUE int_bit_length(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     if (!SPECIAL_CONST_P(self) && BUILTIN_TYPE(self) == T_BIGNUM) {
         const struct korb_bignum *bn = (const struct korb_bignum *)self;
-        /* For negatives, GMP's mpz_sizeinbase counts the bits of |n| but
-         * for `bit_length` we want the bits needed to represent the
-         * twos-complement, which for n<0 is `bit_length(~n)`. */
-        size_t bits = mpz_sizeinbase((mpz_ptr)bn->mpz, 2);
-        if (mpz_sgn((mpz_ptr)bn->mpz) == 0) bits = 0;
-        return INT2FIX((long)bits);
+        int sgn = mpz_sgn((mpz_ptr)bn->mpz);
+        if (sgn == 0) return INT2FIX(0);
+        if (sgn > 0) {
+            return INT2FIX((long)mpz_sizeinbase((mpz_ptr)bn->mpz, 2));
+        }
+        /* Negative: bit_length(n) = bit_length(~n) = bit_length(-n - 1). */
+        mpz_t tmp;
+        mpz_init(tmp);
+        mpz_neg(tmp, (mpz_ptr)bn->mpz);
+        mpz_sub_ui(tmp, tmp, 1);
+        long bits = mpz_sgn(tmp) == 0 ? 0 : (long)mpz_sizeinbase(tmp, 2);
+        mpz_clear(tmp);
+        return INT2FIX(bits);
     }
     return INT2FIX(0);
 }
@@ -482,7 +522,7 @@ static VALUE int_bit_length(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE int_divmod(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1 || !FIXNUM_P(self) || !FIXNUM_P(argv[0])) return korb_ary_new();
     long a = FIX2LONG(self), b = FIX2LONG(argv[0]);
-    if (b == 0) { korb_raise(c, NULL, "divided by 0"); return Qnil; }
+    if (b == 0) { { VALUE _eZ = korb_const_get(korb_vm->object_class, korb_intern("ZeroDivisionError")); korb_raise(c, (struct korb_class *)_eZ, "divided by 0"); } return Qnil; }
     long q = a / b, m = a % b;
     if ((a ^ b) < 0 && m != 0) { q--; m += b; }
     VALUE r = korb_ary_new_capa(2);
@@ -566,26 +606,27 @@ static VALUE int_pow(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     if (!FIXNUM_P(argv[0])) return self;
     long base = FIX2LONG(self), exp = FIX2LONG(argv[0]);
-    /* Negative exponent on a non-zero base: result is a Rational
-     * conceptually, but CRuby returns a Float for Integer**negative.
-     * We do the same. */
+    /* Negative exponent on a non-zero base: CRuby returns a Rational.
+     * Compute (base**|exp|) recursively as a positive integer, then
+     * wrap as Rational(1, that). */
     if (exp < 0) {
         if (base == 0) {
             VALUE eZ = korb_const_get(korb_vm->object_class, korb_intern("ZeroDivisionError"));
-            korb_raise(c, (struct korb_class *)eZ, "0**-1");
+            korb_raise(c, (struct korb_class *)eZ, "divided by 0");
             return Qnil;
         }
-        return korb_float_new(pow((double)base, (double)exp));
+        VALUE pos_exp = INT2FIX(-exp);
+        VALUE pos_args[1] = { pos_exp };
+        VALUE den = int_pow(c, self, 1, pos_args);
+        if (c->state == KORB_RAISE) return Qnil;
+        VALUE rk = korb_const_get(korb_vm->object_class, korb_intern("Rational"));
+        VALUE rargs[2] = { INT2FIX(1), den };
+        return korb_funcall(c, rk, korb_intern("new"), 2, rargs);
     }
     /* Optional second arg = modulus: a.pow(b, m) == (a**b) mod m. */
     long mod = 0;
     bool has_mod = (argc >= 2 && FIXNUM_P(argv[1]));
     if (has_mod) mod = FIX2LONG(argv[1]);
-    if (exp < 0) {
-        if (has_mod) return INT2FIX(0);
-        /* a ** -k → Float reciprocal of a ** k. */
-        return korb_float_new(1.0 / pow((double)base, (double)-exp));
-    }
     /* Fixnum-only square-and-multiply, switching to Bignum on overflow. */
     long b = base, e = exp;
     long r = 1;

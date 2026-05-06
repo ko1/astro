@@ -30,7 +30,12 @@ end
 
 def run_test(name)
   $current = name
-  send(name)
+  begin
+    send(name)
+  rescue => e
+    $fail += 1
+    puts "EXCEPT #{name}: #{e.class}: #{e.message}"
+  end
 end
 
 def report(suite)

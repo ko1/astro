@@ -1,16 +1,57 @@
 /* Float — moved from builtins.c. */
 
+/* True iff `v` is a Float (FLONUM or heap T_FLOAT) or Integer. */
+static bool flt_op_native(VALUE v) {
+    if (FIXNUM_P(v) || FLONUM_P(v)) return true;
+    if (SPECIAL_CONST_P(v)) return false;
+    int t = BUILTIN_TYPE(v);
+    return t == T_FLOAT || t == T_BIGNUM;
+}
+
+/* Run the coerce protocol on `other` for Float `self`.  Returns
+ * Qundef if `other` doesn't respond to :coerce or returns an invalid
+ * pair, otherwise returns op(self', other') after coerce. */
+static VALUE flt_coerce_dispatch(CTX *c, VALUE self, VALUE other, ID op) {
+    struct korb_class *ok = korb_class_of_class(other);
+    if (!korb_class_find_method(ok, korb_intern("coerce"))) return Qundef;
+    VALUE pair = korb_funcall(c, other, korb_intern("coerce"), 1, &self);
+    if (c->state != KORB_NORMAL) return Qnil;
+    if (SPECIAL_CONST_P(pair) || BUILTIN_TYPE(pair) != T_ARRAY) return Qundef;
+    struct korb_array *p = (struct korb_array *)pair;
+    if (p->len != 2) return Qundef;
+    return korb_funcall(c, p->ptr[0], op, 1, &p->ptr[1]);
+}
+
+#define FLT_BINOP_COERCE_OR_RAISE(c, v, op_name)                          \
+    do {                                                                   \
+        if (!flt_op_native((v))) {                                          \
+            VALUE _co = flt_coerce_dispatch((c), self, (v),                  \
+                                            korb_intern((op_name)));         \
+            if (!UNDEF_P(_co)) return _co;                                    \
+            VALUE _eTy = korb_const_get(korb_vm->object_class,              \
+                                        korb_intern("TypeError"));            \
+            korb_raise((c), (struct korb_class *)_eTy,                        \
+                       "%s can't be coerced into Float",                       \
+                       korb_id_name(korb_class_of_class((v))->name));          \
+            return Qnil;                                                       \
+        }                                                                      \
+    } while (0)
+
 /* ---------- Float ---------- */
 static VALUE flt_plus(CTX *c, VALUE self, int argc, VALUE *argv) {
+    FLT_BINOP_COERCE_OR_RAISE(c, argv[0], "+");
     return korb_float_new(korb_num2dbl(self) + korb_num2dbl(argv[0]));
 }
 static VALUE flt_minus(CTX *c, VALUE self, int argc, VALUE *argv) {
+    FLT_BINOP_COERCE_OR_RAISE(c, argv[0], "-");
     return korb_float_new(korb_num2dbl(self) - korb_num2dbl(argv[0]));
 }
 static VALUE flt_mul(CTX *c, VALUE self, int argc, VALUE *argv) {
+    FLT_BINOP_COERCE_OR_RAISE(c, argv[0], "*");
     return korb_float_new(korb_num2dbl(self) * korb_num2dbl(argv[0]));
 }
 static VALUE flt_div(CTX *c, VALUE self, int argc, VALUE *argv) {
+    FLT_BINOP_COERCE_OR_RAISE(c, argv[0], "/");
     return korb_float_new(korb_num2dbl(self) / korb_num2dbl(argv[0]));
 }
 /* Format a double using the shortest %.<p>g that round-trips back
@@ -55,6 +96,34 @@ static VALUE flt_step(CTX *c, VALUE self, int argc, VALUE *argv) {
         }
     }
     return has_block ? self : out;
+}
+
+static VALUE flt_nan_p(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return KORB_BOOL(isnan(korb_num2dbl(self)));
+}
+
+/* Float#infinite? — returns 1, -1, or nil (CRuby convention). */
+static VALUE flt_infinite_p(CTX *c, VALUE self, int argc, VALUE *argv) {
+    double d = korb_num2dbl(self);
+    if (!isinf(d)) return Qnil;
+    return INT2FIX(d > 0 ? 1 : -1);
+}
+
+static VALUE flt_finite_p(CTX *c, VALUE self, int argc, VALUE *argv) {
+    double d = korb_num2dbl(self);
+    return KORB_BOOL(!isnan(d) && !isinf(d));
+}
+
+static VALUE flt_zero_p(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return KORB_BOOL(korb_num2dbl(self) == 0.0);
+}
+
+static VALUE flt_positive_p(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return KORB_BOOL(korb_num2dbl(self) > 0.0);
+}
+
+static VALUE flt_negative_p(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return KORB_BOOL(korb_num2dbl(self) < 0.0);
 }
 
 static VALUE flt_to_s(CTX *c, VALUE self, int argc, VALUE *argv) {
@@ -116,11 +185,21 @@ static VALUE flt_abs2(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 /* ---------- Float methods (extended) ---------- */
 static VALUE flt_floor(CTX *c, VALUE self, int argc, VALUE *argv) {
-    /* largest integer <= v.  C's floor() handles negatives correctly. */
-    return INT2FIX((long)floor(korb_num2dbl(self)));
+    double v = korb_num2dbl(self);
+    long n = (argc >= 1 && FIXNUM_P(argv[0])) ? FIX2LONG(argv[0]) : 0;
+    if (n == 0) return INT2FIX((long)floor(v));
+    /* Float#floor(n) returns Float for n > 0, Integer for n < 0. */
+    double m = pow(10.0, (double)n);
+    if (n > 0) return korb_float_new(floor(v * m) / m);
+    return INT2FIX((long)floor(v * m) / (long)m);
 }
 static VALUE flt_ceil(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return INT2FIX((long)ceil(korb_num2dbl(self)));
+    double v = korb_num2dbl(self);
+    long n = (argc >= 1 && FIXNUM_P(argv[0])) ? FIX2LONG(argv[0]) : 0;
+    if (n == 0) return INT2FIX((long)ceil(v));
+    double m = pow(10.0, (double)n);
+    if (n > 0) return korb_float_new(ceil(v * m) / m);
+    return INT2FIX((long)ceil(v * m) / (long)m);
 }
 /* Float#eql? — type-strict.  `1.0.eql?(1) == false` in CRuby; the
  * default Object#eql? falls through to ==, which coerces, so we need

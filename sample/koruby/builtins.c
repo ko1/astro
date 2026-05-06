@@ -33,6 +33,27 @@
     korb_class_add_method_cfunc((klass), korb_intern(name), (fn), (argc))
 
 void korb_init_builtins(void) {
+    /* BasicObject methods — must come first since CRuby's BasicObject
+     * has its own __id__, __send__, ==, !=, !, equal?, instance_eval,
+     * instance_exec.  Without these on cBasic itself, `Class.new(BasicObject)`
+     * subclasses get nothing. */
+    {
+        struct korb_class *cBasic = (struct korb_class *)korb_const_get(korb_vm->object_class, korb_intern("BasicObject"));
+        if (cBasic) {
+            extern VALUE kernel_object_id(CTX *c, VALUE self, int argc, VALUE *argv);
+            extern VALUE kernel_eq(CTX *c, VALUE self, int argc, VALUE *argv);
+            extern VALUE kernel_neq(CTX *c, VALUE self, int argc, VALUE *argv);
+            extern VALUE kernel_not(CTX *c, VALUE self, int argc, VALUE *argv);
+            DEF(cBasic, "__id__", kernel_object_id, 0);
+            DEF(cBasic, "__send__", obj_send, -1);
+            DEF(cBasic, "==", kernel_eq, 1);
+            DEF(cBasic, "!=", kernel_neq, 1);
+            DEF(cBasic, "!", kernel_not, 0);
+            DEF(cBasic, "equal?", kernel_eq, 1);
+            DEF(cBasic, "instance_eval", obj_instance_eval, -1);
+            DEF(cBasic, "instance_exec", obj_instance_exec, -1);
+        }
+    }
     /* Object methods */
     struct korb_class *cObj = korb_vm->object_class;
     DEF(cObj, "p", kernel_p, -1);
@@ -47,6 +68,7 @@ void korb_init_builtins(void) {
     DEF(cObj, "!", kernel_not, 0);
     DEF(cObj, "nil?", kernel_nil_p, 0);
     DEF(cObj, "object_id", kernel_object_id, 0);
+    DEF(cObj, "__id__", kernel_object_id, 0);
     DEF(cObj, "equal?", kernel_eq, 1);  /* same as == for now */
     DEF(cObj, "freeze", kernel_freeze, 0);
     DEF(cObj, "frozen?", kernel_frozen_p, 0);
@@ -54,7 +76,19 @@ void korb_init_builtins(void) {
     DEF(cObj, "is_a?", kernel_is_a_p, 1);
     DEF(cObj, "kind_of?", kernel_is_a_p, 1);
     DEF(cObj, "methods", obj_methods, -1);
+    {
+        VALUE obj_public_methods(CTX *c, VALUE self, int argc, VALUE *argv);
+        VALUE obj_private_methods(CTX *c, VALUE self, int argc, VALUE *argv);
+        VALUE obj_protected_methods(CTX *c, VALUE self, int argc, VALUE *argv);
+        DEF(cObj, "public_methods",    obj_public_methods,    -1);
+        DEF(cObj, "private_methods",   obj_private_methods,   -1);
+        DEF(cObj, "protected_methods", obj_protected_methods, -1);
+    }
     DEF(cObj, "singleton_methods", obj_singleton_methods, -1);
+    {
+        VALUE obj_singleton_class(CTX *c, VALUE self, int argc, VALUE *argv);
+        DEF(cObj, "singleton_class", obj_singleton_class, 0);
+    }
     DEF(cObj, "define_singleton_method", obj_define_singleton_method, -1);
     DEF(cObj, "block_given?", kernel_block_given, 0);
     DEF(cObj, "throw",        kernel_throw,      -1);
@@ -65,6 +99,12 @@ void korb_init_builtins(void) {
     DEF(cObj, "load", kernel_load, -1);
     DEF(cObj, "abort", kernel_abort, -1);
     DEF(cObj, "exit", kernel_exit, -1);
+    {
+        VALUE kernel_exit_bang(CTX *c, VALUE self, int argc, VALUE *argv);
+        VALUE kernel_abort(CTX *c, VALUE self, int argc, VALUE *argv);
+        DEF(cObj, "exit!", kernel_exit_bang, -1);
+        DEF(cObj, "abort", kernel_abort,     -1);
+    }
     DEF(cObj, "sleep", kernel_sleep, -1);
     DEF(cObj, "at_exit", kernel_at_exit, 0);
     DEF(cObj, "rand",    kernel_rand,   -1);
@@ -119,6 +159,12 @@ void korb_init_builtins(void) {
     DEF(cFlt, "/", flt_div, 1);
     DEF(cFlt, "to_s", flt_to_s, 0);
     DEF(cFlt, "step", flt_step, -1);
+    DEF(cFlt, "nan?",      flt_nan_p,      0);
+    DEF(cFlt, "infinite?", flt_infinite_p, 0);
+    DEF(cFlt, "finite?",   flt_finite_p,   0);
+    DEF(cFlt, "zero?",     flt_zero_p,     0);
+    DEF(cFlt, "positive?", flt_positive_p, 0);
+    DEF(cFlt, "negative?", flt_negative_p, 0);
 
     /* String */
     struct korb_class *cStr = korb_vm->string_class;
@@ -180,16 +226,25 @@ void korb_init_builtins(void) {
     DEF(cRng, "each", rng_each, 0);
     DEF(cRng, "first", rng_first, -1);
     DEF(cRng, "last",  rng_last,  -1);
+    DEF(cRng, "begin", rng_first, -1);
+    DEF(cRng, "min",   rng_first, -1);
+    DEF(cRng, "end",   rng_last,  -1);
+    DEF(cRng, "max",   rng_last,  -1);
     DEF(cRng, "to_a", rng_to_a, 0);
 
     /* Class */
     struct korb_class *cCls = korb_vm->class_class;
     DEF(cCls, "new", class_new, -1);
+    {
+        VALUE class_allocate(CTX *c, VALUE self, int argc, VALUE *argv);
+        DEF(cCls, "allocate", class_allocate, 0);
+    }
     DEF(cCls, "name", class_name, 0);
 
     /* Module — applies to both Class and Module */
     struct korb_class *cMod = korb_vm->module_class;
     DEF(cMod, "attr_reader",   module_attr_reader,   -1);
+    DEF(cMod, "attr",          module_attr_reader,   -1);   /* single-arg form */
     DEF(cMod, "attr_writer",   module_attr_writer,   -1);
     DEF(cMod, "attr_accessor", module_attr_accessor, -1);
     DEF(cMod, "include",       module_include,       -1);
@@ -204,6 +259,21 @@ void korb_init_builtins(void) {
     DEF(cMod, "const_get",     module_const_get,     -1);
     DEF(cMod, "const_set",     module_const_set,     -1);
     DEF(cMod, "const_defined?", module_const_defined_p, -1);
+    DEF(cMod, "remove_const",  module_remove_const,  -1);
+    {
+        VALUE mod_class_variable_get(CTX *c, VALUE self, int argc, VALUE *argv);
+        VALUE mod_class_variable_set(CTX *c, VALUE self, int argc, VALUE *argv);
+        VALUE mod_class_variable_defined_p(CTX *c, VALUE self, int argc, VALUE *argv);
+        VALUE mod_class_variables(CTX *c, VALUE self, int argc, VALUE *argv);
+        DEF(cMod, "private_class_method",   module_private_class_method, -1);
+    DEF(cMod, "public_class_method",    module_public_class_method,  -1);
+    DEF(cMod, "private_constant",       module_private_constant,     -1);
+    DEF(cMod, "public_constant",        module_public_constant,      -1);
+    DEF(cMod, "class_variable_get",     mod_class_variable_get,     -1);
+        DEF(cMod, "class_variable_set",     mod_class_variable_set,     -1);
+        DEF(cMod, "class_variable_defined?", mod_class_variable_defined_p, -1);
+        DEF(cMod, "class_variables",        mod_class_variables,        -1);
+    }
     DEF(cMod, "===",           class_eqq,            1);
     /* Class < Module — Class instances inherit Module's methods.
      * No need to mirror module_* onto cCls. */
@@ -228,8 +298,10 @@ void korb_init_builtins(void) {
     DEF(cObj, "__method__",         kernel_method_name,        0);
     DEF(cObj, "__callee__",         kernel_method_name,        0);
     DEF(cObj, "caller",             kernel_caller,            -1);
+    DEF(cObj, "__capture_lvars__",  kernel_capture_lvars,      0);
     DEF(cObj, "eval",               kernel_eval_stub,         -1);
     DEF(cObj, "loop",               kernel_loop,               0);
+    DEF(cObj, "initialize",         kernel_initialize_default, -1);
     DEF(cObj, "lambda",             kernel_lambda,             0);
     DEF(cObj, "proc",               kernel_proc,               0);
     /* Range#exclude_end? */
@@ -346,7 +418,9 @@ void korb_init_builtins(void) {
     DEF(cStr, "sub",         str_sub,         -1);
     DEF(cStr, "sub!",        str_sub_bang,    -1);
     DEF(cStr, "tr",          str_tr,          -1);
+    DEF(cStr, "tr!",         str_tr_bang,     -1);
     DEF(cStr, "tr_s",        str_tr_s,        -1);
+    DEF(cStr, "tr_s!",       str_tr_s_bang,   -1);
     DEF(cStr, "%",           str_percent,     -1);
     DEF(cStr, "bytesize",    str_bytesize,     0);
     DEF(cStr, "inspect",     kernel_inspect,   0);
@@ -452,6 +526,10 @@ void korb_init_builtins(void) {
     DEF(cStr, "insert",        str_insert,        2);
     DEF(cStr, "delete_prefix", str_delete_prefix, 1);
     DEF(cStr, "delete_suffix", str_delete_suffix, 1);
+    DEF(cStr, "byteslice",     str_byteslice,    -1);
+    DEF(cStr, "append_as_bytes", str_append_as_bytes, -1);
+    DEF(cStr, "setbyte",       str_setbyte,       2);
+    DEF(cStr, "getbyte",       str_getbyte,       1);
     /* Numeric eql? — type-strict */
     DEF(cInt, "eql?",          int_eql,           1);
     DEF(cFlt, "eql?",          flt_eql,           1);
@@ -651,6 +729,14 @@ void korb_init_builtins(void) {
         korb_class_add_method_cfunc(cFileMeta, korb_intern("join"), file_join, -1);
         korb_class_add_method_cfunc(cFileMeta, korb_intern("exist?"), file_exist_p, -1);
         korb_class_add_method_cfunc(cFileMeta, korb_intern("exists?"), file_exist_p, -1);
+        korb_class_add_method_cfunc(cFileMeta, korb_intern("directory?"), file_directory_p, -1);
+        korb_class_add_method_cfunc(cFileMeta, korb_intern("file?"),     file_file_p,     -1);
+        korb_class_add_method_cfunc(cFileMeta, korb_intern("size"),      file_size,       -1);
+        korb_class_add_method_cfunc(cFileMeta, korb_intern("unlink"),    file_unlink,     -1);
+        korb_class_add_method_cfunc(cFileMeta, korb_intern("delete"),    file_unlink,     -1);
+        korb_class_add_method_cfunc(cFileMeta, korb_intern("rename"),    file_rename,     -1);
+        korb_class_add_method_cfunc(cFileMeta, korb_intern("chmod"),     file_chmod,      -1);
+        korb_class_add_method_cfunc(cFileMeta, korb_intern("realpath"),  file_realpath,   -1);
         korb_class_add_method_cfunc(cFileMeta, korb_intern("dirname"), file_dirname, -1);
         korb_class_add_method_cfunc(cFileMeta, korb_intern("basename"), file_basename, -1);
         korb_class_add_method_cfunc(cFileMeta, korb_intern("expand_path"), file_expand_path, -1);
@@ -671,6 +757,10 @@ void korb_init_builtins(void) {
         korb_class_add_method_cfunc(cDirMeta, korb_intern("chdir"),   dir_chdir,  -1);
         korb_class_add_method_cfunc(cDirMeta, korb_intern("glob"),    dir_glob,    1);
         korb_class_add_method_cfunc(cDirMeta, korb_intern("[]"),      dir_glob,    1);
+        korb_class_add_method_cfunc(cDirMeta, korb_intern("mkdir"),   dir_mkdir,  -1);
+        korb_class_add_method_cfunc(cDirMeta, korb_intern("rmdir"),   dir_rmdir,  -1);
+        korb_class_add_method_cfunc(cDirMeta, korb_intern("delete"),  dir_rmdir,  -1);
+        korb_class_add_method_cfunc(cDirMeta, korb_intern("unlink"),  dir_rmdir,  -1);
         cDir->basic.klass = (VALUE)cDirMeta;
     }
     {
@@ -707,13 +797,46 @@ void korb_init_builtins(void) {
     g_stderr_obj = stderr_obj;
     korb_const_set(korb_vm->object_class, korb_intern("STDOUT"), stdout_obj);
     korb_const_set(korb_vm->object_class, korb_intern("STDERR"), stderr_obj);
-    korb_const_set(korb_vm->object_class, korb_intern("STDIN"), korb_object_new(cIO));
+    /* STDIN — backed by the real stdin FILE*, so STDIN.gets / .read work. */
+    VALUE stdin_obj = korb_object_new(cIO);
+    korb_ivar_set(stdin_obj, korb_intern("@__fp__"),
+                  INT2FIX((long)(uintptr_t)stdin));
+    korb_const_set(korb_vm->object_class, korb_intern("STDIN"), stdin_obj);
     /* IO#puts / write methods */
     korb_class_add_method_cfunc(cIO, korb_intern("puts"), kernel_puts, -1);
     korb_class_add_method_cfunc(cIO, korb_intern("print"), kernel_print, -1);
     korb_class_add_method_cfunc(cIO, korb_intern("write"), kernel_print, -1);
     korb_class_add_method_cfunc(cIO, korb_intern("flush"), kernel_inspect, 0);
     korb_class_add_method_cfunc(cIO, korb_intern("sync="), kernel_inspect, 1);
+    /* IO instances also need gets/read/each_line/eof?/close — share
+     * the same impls as File. */
+    korb_class_add_method_cfunc(cIO, korb_intern("gets"),      io_gets,     -1);
+    korb_class_add_method_cfunc(cIO, korb_intern("read"),      io_read,     -1);
+    korb_class_add_method_cfunc(cIO, korb_intern("each_line"), io_each_line, 0);
+    korb_class_add_method_cfunc(cIO, korb_intern("each"),      io_each_line, 0);
+    korb_class_add_method_cfunc(cIO, korb_intern("eof?"),      io_eof_p,     0);
+    korb_class_add_method_cfunc(cIO, korb_intern("close"),     io_close,     0);
+    /* IO.pipe / IO.select / IO.popen / IO.copy_stream — class methods on
+     * IO's singleton. */
+    {
+        extern VALUE io_class_pipe(CTX *c, VALUE self, int argc, VALUE *argv);
+        extern VALUE io_class_select(CTX *c, VALUE self, int argc, VALUE *argv);
+        extern VALUE io_class_popen(CTX *c, VALUE self, int argc, VALUE *argv);
+        extern VALUE io_class_copy_stream(CTX *c, VALUE self, int argc, VALUE *argv);
+        struct korb_class *cIOMeta = korb_singleton_class_of(cIO);
+        korb_class_add_method_cfunc(cIOMeta, korb_intern("pipe"),
+                                     io_class_pipe, -1);
+        korb_class_add_method_cfunc(cIOMeta, korb_intern("select"),
+                                     io_class_select, -1);
+        korb_class_add_method_cfunc(cIOMeta, korb_intern("popen"),
+                                     io_class_popen, -1);
+        korb_class_add_method_cfunc(cIOMeta, korb_intern("copy_stream"),
+                                     io_class_copy_stream, -1);
+    }
+    korb_class_add_method_cfunc(cIO, korb_intern("tty?"),    io_tty_p,   0);
+    korb_class_add_method_cfunc(cIO, korb_intern("isatty"),  io_tty_p,   0);
+    korb_class_add_method_cfunc(cIO, korb_intern("fileno"),  io_fileno,  0);
+    korb_class_add_method_cfunc(cIO, korb_intern("to_i"),    io_fileno,  0);
 
     /* gvars */
     korb_gvar_set(korb_intern("$stdout"), stdout_obj);
@@ -747,6 +870,21 @@ void korb_init_builtins(void) {
     DEF(korb_vm->false_class, "to_s", false_to_s, 0);
     DEF(korb_vm->nil_class, "to_s", nil_to_s, 0);
     DEF(korb_vm->nil_class, "inspect", nil_inspect, 0);
+    /* Boolean &/|/^ — Kernel-style coercion to truthy. */
+    DEF(korb_vm->true_class,  "&", true_and,  1);
+    DEF(korb_vm->true_class,  "|", true_or,   1);
+    DEF(korb_vm->true_class,  "^", true_xor,  1);
+    DEF(korb_vm->false_class, "&", false_and, 1);
+    DEF(korb_vm->false_class, "|", false_or,  1);
+    DEF(korb_vm->false_class, "^", false_xor, 1);
+    DEF(korb_vm->nil_class,   "&", nil_and,   1);
+    DEF(korb_vm->nil_class,   "|", nil_or,    1);
+    DEF(korb_vm->nil_class,   "^", nil_xor,   1);
+    DEF(korb_vm->nil_class,   "to_a", nil_to_a, 0);
+    DEF(korb_vm->nil_class,   "to_h", nil_to_h, 0);
+    DEF(korb_vm->nil_class,   "to_f", nil_to_f, 0);
+    DEF(korb_vm->nil_class,   "to_i", nil_to_i, 0);
+    DEF(korb_vm->nil_class,   "nil?", nil_nil_p, 0);
 
     /* Proc */
     struct korb_class *cPrc = korb_vm->proc_class;
@@ -826,16 +964,18 @@ void korb_init_builtins(void) {
     DEF(cObj, "instance_exec",    obj_instance_exec,       -1);
     DEF(cMod, "instance_method",  module_instance_method,   1);
     DEF(cMod, "instance_methods", module_instance_methods, -1);
-    DEF(cMod, "method_defined?",            module_method_defined_p,            1);
-    DEF(cMod, "public_method_defined?",     module_public_method_defined_p,     1);
-    DEF(cMod, "private_method_defined?",    module_private_method_defined_p,    1);
-    DEF(cMod, "protected_method_defined?",  module_protected_method_defined_p,  1);
+    DEF(cMod, "method_defined?",            module_method_defined_p,           -1);
+    DEF(cMod, "public_method_defined?",     module_public_method_defined_p,    -1);
+    DEF(cMod, "private_method_defined?",    module_private_method_defined_p,   -1);
+    DEF(cMod, "protected_method_defined?",  module_protected_method_defined_p, -1);
     DEF(cMod, "private_instance_methods",   module_private_instance_methods,   -1);
     DEF(cMod, "public_instance_methods",    module_public_instance_methods,    -1);
     DEF(cMod, "protected_instance_methods", module_protected_instance_methods, -1);
     DEF(cMod, "constants",        module_constants,         0);
     DEF(cMod, "class_eval",       module_class_eval,       -1);
     DEF(cMod, "module_eval",      module_class_eval,       -1);
+    DEF(cMod, "class_exec",       module_class_exec,       -1);
+    DEF(cMod, "module_exec",      module_class_exec,       -1);
     DEF(cMod, "<",                module_lt,                1);
     DEF(cMod, "<=",               module_le,                1);
     DEF(cMod, "<=>",              module_cmp,               1);
@@ -879,6 +1019,8 @@ void korb_init_builtins(void) {
         struct korb_class *cModMeta = korb_class_new(korb_intern("ModuleMeta"),
                                                      korb_vm->class_class, T_CLASS);
         DEF(cModMeta, "new", module_new_class_func, -1);
+        /* Module.nesting — same metaclass. */
+        DEF(cModMeta, "nesting", module_class_nesting, 0);
         korb_vm->module_class->basic.klass = (VALUE)cModMeta;
     }
 
@@ -893,6 +1035,30 @@ void korb_init_builtins(void) {
             DEF(cExc, "to_s",      exc_to_s,      0);
             DEF(cExc, "inspect",   exc_inspect,   0);
             DEF(cExc, "backtrace", exc_backtrace, 0);
+            DEF(cExc, "cause",     exc_cause,     0);
+            DEF(cExc, "full_message", exc_full_message, -1);
+            DEF(cExc, "detailed_message", exc_detailed_message, -1);
+            DEF(cExc, "exception", exc_exception, -1);
+        }
+        VALUE eNme = korb_const_get(korb_vm->object_class, korb_intern("NoMethodError"));
+        if (eNme && !SPECIAL_CONST_P(eNme) &&
+            (BUILTIN_TYPE(eNme) == T_CLASS || BUILTIN_TYPE(eNme) == T_MODULE)) {
+            struct korb_class *cNme = (struct korb_class *)eNme;
+            DEF(cNme, "receiver", nme_receiver, 0);
+            DEF(cNme, "name",     nme_name,     0);
+        }
+        VALUE eName = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
+        if (eName && !SPECIAL_CONST_P(eName) &&
+            (BUILTIN_TYPE(eName) == T_CLASS || BUILTIN_TYPE(eName) == T_MODULE)) {
+            struct korb_class *cName = (struct korb_class *)eName;
+            DEF(cName, "name", nme_name, 0);
+        }
+        VALUE eSE = korb_const_get(korb_vm->object_class, korb_intern("SystemExit"));
+        if (eSE && !SPECIAL_CONST_P(eSE) &&
+            (BUILTIN_TYPE(eSE) == T_CLASS || BUILTIN_TYPE(eSE) == T_MODULE)) {
+            struct korb_class *cSE = (struct korb_class *)eSE;
+            DEF(cSE, "status",   syx_status,    0);
+            DEF(cSE, "success?", syx_success_p, 0);
         }
     }
 

@@ -264,6 +264,14 @@ struct korb_frame {
     VALUE *fp;
     uint32_t locals_cnt;
     struct korb_proc *block;   /* block passed to this method (NULL if none) */
+    /* Number of times the method's defining_class has already been seen
+     * in the receiver's MRO before reaching this frame's method.  For a
+     * normal dispatch this is 0 (we found the method's first occurrence).
+     * `super` from a frame inside a module that's both prepended AND
+     * included on the same class needs to know which occurrence the
+     * current frame came from — without it, `super` lands back on the
+     * first occurrence and loops forever. */
+    uint16_t super_skip_n;
 };
 
 /* push/pop frame helpers via macro */

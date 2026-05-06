@@ -403,22 +403,55 @@ static VALUE ary_zip(CTX *c, VALUE self, int argc, VALUE *argv) {
     return r;
 }
 
-static void ary_flatten_into(VALUE r, VALUE src, long depth) {
+/* Tracks an in-progress descent through nested arrays to detect cycles
+ * (`a << a; a.flatten`).  CRuby raises ArgumentError once it hits a
+ * subarray it's already descended into. */
+struct ary_flatten_stack {
+    VALUE *items;
+    long len;
+    long capa;
+};
+static bool ary_flatten_stack_contains(const struct ary_flatten_stack *s, VALUE v) {
+    for (long i = 0; i < s->len; i++) if (s->items[i] == v) return true;
+    return false;
+}
+static int ary_flatten_into(CTX *c, VALUE r, VALUE src, long depth,
+                            struct ary_flatten_stack *stack) {
     struct korb_array *a = (struct korb_array *)src;
     for (long i = 0; i < a->len; i++) {
-        if (depth != 0 && BUILTIN_TYPE(a->ptr[i]) == T_ARRAY) {
-            ary_flatten_into(r, a->ptr[i], depth - 1);
+        if (depth != 0 && !SPECIAL_CONST_P(a->ptr[i]) &&
+            BUILTIN_TYPE(a->ptr[i]) == T_ARRAY) {
+            if (ary_flatten_stack_contains(stack, a->ptr[i])) {
+                VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+                korb_raise(c, (struct korb_class *)eA, "tried to flatten recursive array");
+                return -1;
+            }
+            if (stack->len == stack->capa) {
+                long nc = stack->capa ? stack->capa * 2 : 8;
+                VALUE *nb = korb_xmalloc(sizeof(VALUE) * nc);
+                for (long k = 0; k < stack->len; k++) nb[k] = stack->items[k];
+                stack->items = nb; stack->capa = nc;
+            }
+            stack->items[stack->len++] = a->ptr[i];
+            int rc = ary_flatten_into(c, r, a->ptr[i], depth - 1, stack);
+            stack->len--;
+            if (rc != 0) return rc;
         } else {
             korb_ary_push(r, a->ptr[i]);
         }
     }
+    return 0;
 }
 
 static VALUE ary_flatten(CTX *c, VALUE self, int argc, VALUE *argv) {
-    long depth = -1;  /* -1 = infinite */
+    long depth = -1;
     if (argc >= 1 && FIXNUM_P(argv[0])) depth = FIX2LONG(argv[0]);
     VALUE r = korb_ary_new();
-    ary_flatten_into(r, self, depth);
+    struct ary_flatten_stack stack = { NULL, 0, 0 };
+    /* Push self so the immediate `a << a` cycle is caught. */
+    VALUE init[1] = { self };
+    stack.items = init; stack.len = 1; stack.capa = 1;
+    ary_flatten_into(c, r, self, depth, &stack);
     return r;
 }
 
@@ -1679,14 +1712,26 @@ static VALUE ary_flat_map(CTX *c, VALUE self, int argc, VALUE *argv) {
  * array; n > size yields the whole array, n == 0 an empty array. */
 static VALUE ary_first_n(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_array *a = (struct korb_array *)self;
-    if (argc < 1) return a->len == 0 ? Qnil : a->ptr[0];
-    if (!FIXNUM_P(argv[0])) {
-        korb_raise(c, NULL, "first: non-Integer argument");
+    if (argc > 1) {
+        korb_raise_argument_error(c, "wrong number of arguments (given %d, expected 0..1)", argc);
         return Qnil;
     }
-    long n = FIX2LONG(argv[0]);
+    if (argc < 1) return a->len == 0 ? Qnil : a->ptr[0];
+    /* Integer / Bignum: convert to long; out-of-long-range Bignum
+     * counts as a too-big size (CRuby raises RangeError there). */
+    long n;
+    if (FIXNUM_P(argv[0])) {
+        n = FIX2LONG(argv[0]);
+    } else if (!SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_BIGNUM) {
+        /* Treat as too large — return all elements. */
+        n = a->len;
+    } else {
+        korb_raise_type_error(c, "no implicit conversion from %s into Integer",
+                              korb_id_name(korb_class_of_class(argv[0])->name));
+        return Qnil;
+    }
     if (n < 0) {
-        korb_raise(c, NULL, "negative array size");
+        korb_raise_argument_error(c, "negative array size");
         return Qnil;
     }
     if (n > a->len) n = a->len;
@@ -1697,14 +1742,23 @@ static VALUE ary_first_n(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 static VALUE ary_last_n(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_array *a = (struct korb_array *)self;
-    if (argc < 1) return a->len == 0 ? Qnil : a->ptr[a->len - 1];
-    if (!FIXNUM_P(argv[0])) {
-        korb_raise(c, NULL, "last: non-Integer argument");
+    if (argc > 1) {
+        korb_raise_argument_error(c, "wrong number of arguments (given %d, expected 0..1)", argc);
         return Qnil;
     }
-    long n = FIX2LONG(argv[0]);
+    if (argc < 1) return a->len == 0 ? Qnil : a->ptr[a->len - 1];
+    long n;
+    if (FIXNUM_P(argv[0])) {
+        n = FIX2LONG(argv[0]);
+    } else if (!SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_BIGNUM) {
+        n = a->len;
+    } else {
+        korb_raise_type_error(c, "no implicit conversion from %s into Integer",
+                              korb_id_name(korb_class_of_class(argv[0])->name));
+        return Qnil;
+    }
     if (n < 0) {
-        korb_raise(c, NULL, "negative array size");
+        korb_raise_argument_error(c, "negative array size");
         return Qnil;
     }
     if (n > a->len) n = a->len;

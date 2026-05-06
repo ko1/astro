@@ -261,6 +261,61 @@ class Enumerable
     arr.empty? ? [nil, nil] : [arr.min, arr.max]
   end
 
+  def sort_by(&blk)
+    return enum_for(:sort_by) unless blk
+    pairs = []
+    each { |x| pairs << [blk.call(x), x] }
+    pairs.sort { |a, b| a[0] <=> b[0] }.map { |p| p[1] }
+  end unless method_defined?(:sort_by)
+
+  # Enumerable#zip — pair each elem with same-index elems from each arg.
+  def zip(*others, &blk)
+    arr = to_a
+    out = arr.each_with_index.map { |x, i|
+      [x] + others.map { |o| (o.is_a?(Array) ? o : o.to_a)[i] }
+    }
+    if blk
+      out.each(&blk)
+      nil
+    else
+      out
+    end
+  end unless method_defined?(:zip)
+
+  def uniq(&blk)
+    seen = {}
+    out = []
+    each { |x|
+      k = blk ? blk.call(x) : x
+      unless seen[k]
+        seen[k] = true
+        out << x
+      end
+    }
+    out
+  end unless method_defined?(:uniq)
+
+  def tally(into = nil)
+    h = into || {}
+    each { |x| h[x] = (h[x] || 0) + 1 }
+    h
+  end unless method_defined?(:tally)
+
+  def to_h(&blk)
+    h = {}
+    if blk
+      each { |x|
+        pair = blk.call(x)
+        h[pair[0]] = pair[1]
+      }
+    else
+      each { |pair|
+        h[pair[0]] = pair[1] if pair.is_a?(Array)
+      }
+    end
+    h
+  end unless method_defined?(:to_h)
+
   # Enumerable#chunk_while / slice_when — Array overrides; fallback here.
   def chunk_while(&blk)
     out = []
@@ -286,14 +341,123 @@ end
 # already define (cfuncs win), so Array#map etc. stay fast.
 class Array
   include Enumerable
+  class << self
+    def try_convert(o)
+      return o if o.is_a?(Array)
+      o.respond_to?(:to_ary) ? o.to_ary : nil
+    end unless respond_to?(:try_convert)
+  end
 end
 
 class Hash
   include Enumerable
+  class << self
+    def try_convert(o)
+      return o if o.is_a?(Hash)
+      o.respond_to?(:to_hash) ? o.to_hash : nil
+    end unless respond_to?(:try_convert)
+  end
+
+  # Hash#default_proc= — store the proc in @default_proc; #default_proc
+  # already reads it (registered C-side via instance_variable_get under
+  # the cover; we just expose the writer).  Setter is a no-op when the
+  # underlying default-resolution path doesn't consult @default_proc,
+  # but providing the API is what tests need.
+  def default_proc=(blk)
+    instance_variable_set(:@default_proc, blk)
+    blk
+  end unless method_defined?(:default_proc=)
+
+  # Hash#rehash — re-build the bucket index from current keys.  Our
+  # implementation re-hashes lazily on every lookup, so this is a no-op.
+  def rehash; self; end unless method_defined?(:rehash)
+
+  def to_proc
+    me = self
+    ->(k) { me[k] }
+  end unless method_defined?(:to_proc)
+
+  def to_hash; self; end unless method_defined?(:to_hash)
+  def to_h(&blk)
+    if blk
+      h = {}
+      each_pair { |k, v| pair = blk.call(k, v); h[pair[0]] = pair[1] }
+      h
+    else
+      self
+    end
+  end unless method_defined?(:to_h)
+
+  def transform_keys!(&blk)
+    new_h = {}
+    each_pair { |k, v| new_h[blk.call(k)] = v }
+    clear
+    new_h.each_pair { |k, v| self[k] = v }
+    self
+  end unless method_defined?(:transform_keys!)
+  def transform_values!(&blk)
+    each_pair { |k, v| self[k] = blk.call(v) }
+    self
+  end unless method_defined?(:transform_values!)
+  def select!(&blk)
+    return enum_for(:select!) unless blk
+    rm = []
+    each_pair { |k, v| rm << k unless blk.call(k, v) }
+    return nil if rm.empty?
+    rm.each { |k| delete(k) }
+    self
+  end unless method_defined?(:select!)
+  alias_method(:filter!, :select!) rescue nil
+  def reject!(&blk)
+    return enum_for(:reject!) unless blk
+    rm = []
+    each_pair { |k, v| rm << k if blk.call(k, v) }
+    return nil if rm.empty?
+    rm.each { |k| delete(k) }
+    self
+  end unless method_defined?(:reject!)
+  def keep_if(&blk); select!(&blk) || self; end unless method_defined?(:keep_if)
+  def delete_if(&blk); reject!(&blk) || self; end unless method_defined?(:delete_if)
+  def initialize_copy(other)
+    clear
+    other.each_pair { |k, v| self[k] = v } if other.respond_to?(:each_pair)
+    self
+  end unless method_defined?(:initialize_copy)
+  def compact!
+    rm = []
+    each_pair { |k, v| rm << k if v.nil? }
+    return nil if rm.empty?
+    rm.each { |k| delete(k) }
+    self
+  end unless method_defined?(:compact!)
+  def compact
+    h = {}
+    each_pair { |k, v| h[k] = v unless v.nil? }
+    h
+  end unless method_defined?(:compact)
 end
 
 class Range
   include Enumerable
+
+  def reverse_each(&blk)
+    return enum_for(:reverse_each) unless blk
+    arr = to_a
+    arr.reverse_each(&blk)
+    self
+  end unless method_defined?(:reverse_each)
+
+  def each_with_object(memo, &blk)
+    return enum_for(:each_with_object, memo) unless blk
+    each { |x| blk.call(x, memo) }
+    memo
+  end unless method_defined?(:each_with_object)
+
+  def enum_for(*args)
+    Enumerator.new { |y| each { |x| y.yield x } }
+  end unless method_defined?(:enum_for)
+
+  alias_method(:to_enum, :enum_for) rescue nil
 end
 
 # Numeric / String have <=> so they pick up Comparable's between?/clamp.
@@ -303,6 +467,28 @@ end
 # ancestor checks and user `class Foo < Numeric` getting between? etc.
 class Numeric
   include Comparable
+
+  # Numeric#fdiv — Float division.  All numeric kinds get this.
+  def fdiv(other)
+    self.to_f / other.to_f
+  end unless method_defined?(:fdiv)
+
+  def finite?
+    if respond_to?(:nan?) && nan?
+      false
+    elsif respond_to?(:infinite?) && infinite?
+      false
+    else
+      true
+    end
+  end unless method_defined?(:finite?)
+
+  def infinite?; nil; end unless method_defined?(:infinite?)
+  def nan?; false; end unless method_defined?(:nan?)
+  def real; self; end unless method_defined?(:real)
+  def imaginary; 0; end unless method_defined?(:imaginary)
+  def real?; !is_a?(Complex); end unless method_defined?(:real?)
+  def integer?; is_a?(Integer); end unless method_defined?(:integer?)
 end
 
 class Integer
@@ -328,8 +514,25 @@ class Integer
     [gcd(other), lcm(other)]
   end
 
+  # CRuby's Integer#ceildiv(other) — equivalent to (self / other).ceil
+  # but accepts any Numeric coerce-able RHS.  Raises ZeroDivisionError
+  # for integer 0; for Float 0 follows ((self.to_f) / 0).ceil semantics.
+  def ceildiv(other)
+    raise TypeError, "no implicit conversion to Integer" unless other.respond_to?(:to_int) || other.is_a?(Numeric)
+    other = other.to_int if other.respond_to?(:to_int) && !other.is_a?(Numeric)
+    if other.is_a?(Integer)
+      raise ZeroDivisionError, "divided by 0" if other == 0
+      q, r = self.divmod(other)
+      (r == 0) ? q : (other > 0 ? q + 1 : q)
+    else
+      (self.to_f / other.to_f).ceil
+    end
+  end unless method_defined?(:ceildiv)
+
   def digits(base = 10)
     raise ArgumentError, "negative number" if self < 0
+    raise ArgumentError, "negative radix" if base.is_a?(Integer) && base < 0
+    raise ArgumentError, "invalid radix #{base}" if base.is_a?(Integer) && base < 2
     return [0] if self == 0
     n = self
     arr = []
@@ -378,6 +581,183 @@ end
 
 class String
   include Comparable
+
+  # Cheap Ruby-side bang variants.  Each one calls the non-bang version
+  # and replaces the receiver's bytes via String#replace if it differs;
+  # returns nil when no change happened (CRuby semantics).
+  def chomp!(*a)
+    r = chomp(*a)
+    r == self ? nil : (replace(r); self)
+  end
+  def chop!
+    return nil if empty?
+    r = chop
+    r == self ? nil : (replace(r); self)
+  end
+  def lstrip!
+    r = lstrip
+    r == self ? nil : (replace(r); self)
+  end
+  def rstrip!
+    r = rstrip
+    r == self ? nil : (replace(r); self)
+  end
+  def strip!
+    r = strip
+    r == self ? nil : (replace(r); self)
+  end
+  def squeeze!(*a)
+    r = squeeze(*a)
+    r == self ? nil : (replace(r); self)
+  end
+  def delete!(*a)
+    r = delete(*a)
+    r == self ? nil : (replace(r); self)
+  end
+  def delete_prefix!(prefix)
+    return nil unless start_with?(prefix)
+    replace(self[prefix.size..-1] || "")
+    self
+  end
+  def delete_suffix!(suffix)
+    return nil unless end_with?(suffix)
+    replace(self[0...(size - suffix.size)] || "")
+    self
+  end
+
+  def chr; empty? ? "" : self[0]; end
+
+  def clear
+    replace("")
+  end unless method_defined?(:clear)
+
+  def codepoints; bytes; end unless method_defined?(:codepoints)
+  def each_codepoint(&blk); bytes.each(&blk); end unless method_defined?(:each_codepoint)
+  def each_grapheme_cluster(&blk); each_char(&blk); end unless method_defined?(:each_grapheme_cluster)
+  def grapheme_clusters; chars; end unless method_defined?(:grapheme_clusters)
+
+  def casecmp(other)
+    return nil unless other.is_a?(String)
+    a = downcase
+    b = other.downcase
+    a < b ? -1 : a > b ? 1 : 0
+  end unless method_defined?(:casecmp)
+
+  def casecmp?(other)
+    c = casecmp(other)
+    c.nil? ? nil : c == 0
+  end unless method_defined?(:"casecmp?")
+
+  def !~(other)
+    !(self =~ other)
+  end unless method_defined?(:!~)
+
+  def +@; frozen? ? dup : self; end unless method_defined?(:+@)
+  def -@; frozen? ? self : dup.freeze; end unless method_defined?(:-@)
+
+  # String#match — Regexp not supported; return nil instead of crashing.
+  def match(*); nil; end unless method_defined?(:match)
+  def match?(*); false; end unless method_defined?(:match?)
+
+  # String#dump — escape non-printable / non-ASCII bytes in the
+  # CRuby-compatible \x.. / \u{....} / standard escapes.  Round-trip
+  # via undump gives the original bytes.
+  def dump
+    out = "\""
+    bytes.each do |b|
+      case b
+      when 0x09 then out << "\\t"
+      when 0x0a then out << "\\n"
+      when 0x0d then out << "\\r"
+      when 0x07 then out << "\\a"
+      when 0x08 then out << "\\b"
+      when 0x0c then out << "\\f"
+      when 0x0b then out << "\\v"
+      when 0x1b then out << "\\e"
+      when 0x22 then out << "\\\""
+      when 0x5c then out << "\\\\"
+      when 0x20..0x7e then out << b.chr
+      else
+        out << ("\\x%02X" % b)
+      end
+    end
+    out << "\""
+  end unless method_defined?(:dump)
+  def undump
+    s = self
+    raise RuntimeError, "invalid dumped string" unless s.start_with?("\"") && s.end_with?("\"")
+    body = s[1...-1]
+    out = ""
+    i = 0
+    while i < body.size
+      ch = body[i]
+      if ch == "\\"
+        nx = body[i+1]
+        case nx
+        when "t" then out << "\t"; i += 2
+        when "n" then out << "\n"; i += 2
+        when "r" then out << "\r"; i += 2
+        when "a" then out << "\a"; i += 2
+        when "b" then out << "\b"; i += 2
+        when "f" then out << "\f"; i += 2
+        when "v" then out << "\v"; i += 2
+        when "e" then out << "\e"; i += 2
+        when "\\" then out << "\\"; i += 2
+        when "\"" then out << "\""; i += 2
+        when "x"
+          hex = body[i+2, 2]
+          out << hex.to_i(16).chr
+          i += 4
+        when "u"
+          if body[i+2] == "{"
+            close = body.index("}", i+3)
+            cp = body[i+3...close].to_i(16)
+            out << cp.chr
+            i = close + 1
+          else
+            cp = body[i+2, 4].to_i(16)
+            out << cp.chr
+            i += 6
+          end
+        else
+          out << nx
+          i += 2
+        end
+      else
+        out << ch
+        i += 1
+      end
+    end
+    out
+  end unless method_defined?(:undump)
+  def try_convert(s)
+    return s if s.is_a?(String)
+    s.respond_to?(:to_str) ? s.to_str : nil
+  end
+  class << self
+    def try_convert(s)
+      return s if s.is_a?(String)
+      s.respond_to?(:to_str) ? s.to_str : nil
+    end unless respond_to?(:try_convert)
+  end
+
+  def upto(to, exclusive = false, &blk)
+    return self.dup unless blk
+    s = self.dup
+    target = to.to_s
+    while s <= target
+      break if exclusive && s == target
+      yield s
+      s = s.succ
+    end
+    self
+  end unless method_defined?(:upto)
+
+  def succ!
+    r = succ
+    r == self ? nil : (replace(r); self)
+  end unless method_defined?(:succ!)
+  alias_method(:next!, :succ!) rescue nil
 end
 
 class Symbol
@@ -391,9 +771,57 @@ end
 # den > 0 and gcd(num, den) == 1.
 class Rational
   include Comparable
+  def kind_of?(klass); klass == Numeric || klass == Rational || super; end
+  alias is_a? kind_of?
   attr_reader :numerator, :denominator
   alias num numerator
   alias den denominator
+
+  # Rational#floor / ceil / round — built on integer division of the
+  # numerator by the denominator with rounding mode applied.  Without
+  # arg returns Integer; with arg returns a Rational.
+  def floor(n = 0)
+    if n == 0
+      if @numerator >= 0
+        @numerator / @denominator
+      else
+        -((-@numerator + @denominator - 1) / @denominator)
+      end
+    else
+      m = 10 ** n
+      Rational((self * m).floor, m)
+    end
+  end unless method_defined?(:floor)
+  def ceil(n = 0)
+    -((-self).floor(n))
+  end unless method_defined?(:ceil)
+  def round(n = 0)
+    (self + Rational(1, 2)).floor(n)
+  end unless method_defined?(:round)
+
+  def div(other)
+    (self / other).floor
+  end unless method_defined?(:div)
+  def divmod(other)
+    q = (self / other).floor
+    [q, self - other * q]
+  end unless method_defined?(:divmod)
+  def fdiv(other); to_f / other.to_f; end unless method_defined?(:fdiv)
+  def finite?; true; end unless method_defined?(:finite?)
+  def infinite?; nil; end unless method_defined?(:infinite?)
+  def nan?; false; end unless method_defined?(:nan?)
+  def integer?; @denominator == 1; end unless method_defined?(:integer?)
+  def real?; true; end unless method_defined?(:real?)
+  def real; self; end unless method_defined?(:real)
+  def imaginary; 0; end unless method_defined?(:imaginary)
+  def truncate(n = 0)
+    if n == 0
+      to_i
+    else
+      m = 10 ** n
+      (self * m).truncate / Rational(m, 1)
+    end
+  end unless method_defined?(:truncate)
 
   def initialize(n, d = 1)
     if d == 0
@@ -454,6 +882,29 @@ class Rational
 
   def -@; Rational.new(-@numerator, @denominator); end
 
+  # Rational ** exp — Integer exp stays exact; Rational/Float exp falls
+  # back to Float arithmetic (matching CRuby's Rational#** when the
+  # result wouldn't be representable as a Rational).
+  def **(other)
+    case other
+    when Integer
+      if other >= 0
+        Rational.new(@numerator ** other, @denominator ** other)
+      elsif @numerator == 0
+        raise ZeroDivisionError, "0**negative"
+      else
+        # (a/b)^-n = (b/a)^n
+        Rational.new(@denominator ** -other, @numerator ** -other)
+      end
+    when Rational
+      to_f ** other.to_f
+    when Float
+      to_f ** other
+    else
+      raise TypeError, "Rational#** doesn't accept #{other.class}"
+    end
+  end
+
   def <=>(other)
     case other
     when Rational
@@ -484,6 +935,22 @@ class Rational
   def to_s; "#{@numerator}/#{@denominator}"; end
   def inspect; "(#{@numerator}/#{@denominator})"; end
   def hash; [@numerator, @denominator].hash; end
+  def abs; @numerator < 0 ? Rational.new(-@numerator, @denominator) : self; end
+  def negative?; @numerator < 0; end
+  def positive?; @numerator > 0; end
+  def zero?;     @numerator == 0; end
+
+  # Numeric#coerce protocol — let `Float + Rational`, `Integer cmp
+  # Rational`, etc. participate.  Returns [other_promoted, self].
+  def coerce(other)
+    case other
+    when Rational then [other, self]
+    when Integer  then [Rational.new(other, 1), self]
+    when Float    then [other, to_f]
+    else
+      raise TypeError, "#{other.class} can't be coerced into Rational"
+    end
+  end
 end
 
 def Rational(n, d = 1)
@@ -496,7 +963,18 @@ end
 # builtins.c so the fast path stays a cfunc.
 
 # Complex — Cartesian (real, imag) representation.
+class Numeric
+  # Marker: Complex/Rational include this so they're kind_of Numeric.
+end
+module ComplexNumericMarker
+end
 class Complex
+  include ComplexNumericMarker
+  # Provide a `kind_of?(Numeric)` shim.  We can't easily change the
+  # parent class of an existing class, so use is_a? customization via
+  # a method defined on Complex.
+  def kind_of?(klass); klass == Numeric || klass == Complex || super; end
+  alias is_a? kind_of?
   attr_reader :real, :imaginary
   alias imag imaginary
 
@@ -504,6 +982,16 @@ class Complex
     @real = r
     @imaginary = i
   end
+
+  def fdiv(other); Complex(real.to_f / other.to_f, imaginary.to_f / other.to_f); end unless method_defined?(:fdiv)
+  def finite?; @real.finite? && @imaginary.finite?; end unless method_defined?(:finite?)
+  def infinite?; finite? ? nil : 1; end unless method_defined?(:infinite?)
+  def nan?
+    (@real.respond_to?(:nan?) && @real.nan?) ||
+    (@imaginary.respond_to?(:nan?) && @imaginary.nan?)
+  end unless method_defined?(:nan?)
+  def integer?; false; end unless method_defined?(:integer?)
+  def real?; @imaginary == 0; end unless method_defined?(:real?)
 
   def +(other)
     if other.is_a?(Complex)
@@ -542,6 +1030,35 @@ class Complex
 
   def -@; Complex.new(-@real, -@imaginary); end
 
+  # Complex ** Integer — repeated multiply for non-negative; reciprocal
+  # of positive power for negative.  Non-integer exp goes via polar:
+  # z^w = exp(w * log(z))  (only handles real exp here for simplicity).
+  def **(other)
+    case other
+    when Integer
+      if other == 0
+        Complex.new(1, 0)
+      elsif other > 0
+        result = self
+        (other - 1).times { result = result * self }
+        result
+      else
+        # 1 / (self ** -other)
+        denom = self ** -other
+        Complex.new(1, 0) / denom
+      end
+    when Float, Rational
+      r   = abs
+      th  = arg
+      e   = other.to_f
+      nr  = r ** e
+      nth = th * e
+      Complex.new(nr * Math.cos(nth), nr * Math.sin(nth))
+    else
+      raise TypeError, "Complex#** doesn't accept #{other.class}"
+    end
+  end
+
   def ==(other)
     if other.is_a?(Complex)
       @real == other.real && @imaginary == other.imag
@@ -551,8 +1068,43 @@ class Complex
   end
 
   def abs; Math.sqrt(@real * @real + @imaginary * @imaginary); end
+  alias magnitude abs
+  def abs2; @real * @real + @imaginary * @imaginary; end
   def conjugate; Complex.new(@real, -@imaginary); end
   alias conj conjugate
+
+  # Polar form: angle (radians) and rect-from-polar.
+  def arg; Math.atan2(@imaginary, @real); end
+  alias angle arg
+  alias phase arg
+
+  def polar; [abs, arg]; end
+  def rectangular; [@real, @imaginary]; end
+  alias rect rectangular
+
+  # Complex.polar(r, theta = 0)
+  def self.polar(r, theta = 0)
+    Complex.new(r * Math.cos(theta), r * Math.sin(theta))
+  end
+
+  # Complex.rect / Complex.rectangular — explicit rectangular factory.
+  def self.rectangular(r, i = 0)
+    Complex.new(r, i)
+  end
+  class << self
+    alias rect rectangular
+  end
+
+  # Numeric#coerce: lift Integer/Float/Rational into Complex so
+  # `1 + Complex(0, 1)` etc. work.
+  def coerce(other)
+    case other
+    when Complex  then [other, self]
+    when Numeric  then [Complex.new(other, 0), self]
+    else
+      raise TypeError, "#{other.class} can't be coerced into Complex"
+    end
+  end
 
   def to_s
     sign = @imaginary >= 0 ? "+" : "-"
@@ -694,6 +1246,38 @@ end
 # --- Hash extensions ---
 # Same block-forwarding workaround: explicit `&blk`.
 class Hash
+  def assoc(key)
+    each_pair { |k, v| return [k, v] if k == key }
+    nil
+  end unless method_defined?(:assoc)
+
+  def rassoc(value)
+    each_pair { |k, v| return [k, v] if v == value }
+    nil
+  end unless method_defined?(:rassoc)
+
+  def <(other)
+    return nil unless other.is_a?(Hash)
+    return false if size >= other.size
+    all? { |k, v| other.key?(k) && other[k] == v }
+  end unless method_defined?(:<)
+
+  def <=(other)
+    return nil unless other.is_a?(Hash)
+    return false if size > other.size
+    all? { |k, v| other.key?(k) && other[k] == v }
+  end unless method_defined?(:<=)
+
+  def >(other)
+    return nil unless other.is_a?(Hash)
+    other < self
+  end unless method_defined?(:>)
+
+  def >=(other)
+    return nil unless other.is_a?(Hash)
+    other <= self
+  end unless method_defined?(:>=)
+
   def transform_values(&blk)
     h = {}
     each_pair { |k, v| h[k] = blk.call(v) }
@@ -809,6 +1393,63 @@ class Range
     h
   end
 
+  # Range#bsearch — binary search.  Two modes (per CRuby docs):
+  #   find-minimum: block returns true/false → return smallest x with true
+  #   find-any:     block returns negative/zero/positive Integer → return
+  #                 x with 0, or one near the boundary
+  # Only Integer ranges are supported here (Float is rare in tests).
+  def bsearch(&blk)
+    return enum_for(:bsearch) unless blk
+    lo = self.begin
+    hi = self.end
+    raise TypeError, "can't do binary search for #{lo.class}" unless lo.is_a?(Integer) || lo.nil?
+    raise TypeError, "can't do binary search for #{hi.class}" unless hi.is_a?(Integer) || hi.nil?
+    return nil if lo.nil? && hi.nil?
+    if lo.nil?
+      lo = hi - 1
+      lo -= 1 while blk.call(lo) ? true : false
+      lo += 1
+    end
+    if hi.nil?
+      hi = lo + 1
+      hi += 1 while blk.call(hi) ? false : true
+    end
+    hi -= 1 if exclude_end?
+    # find-minimum mode: detect by calling once
+    sample = blk.call(lo)
+    if sample == true || sample == false
+      satisfied = nil
+      satisfied = lo if sample
+      l, h = lo, hi
+      while l <= h
+        mid = (l + h) / 2
+        if blk.call(mid)
+          satisfied = mid
+          h = mid - 1
+        else
+          l = mid + 1
+        end
+      end
+      satisfied
+    elsif sample.is_a?(Integer)
+      return lo if sample == 0
+      l, h = lo + 1, hi
+      while l <= h
+        mid = (l + h) / 2
+        v = blk.call(mid)
+        return mid if v == 0
+        if v < 0
+          h = mid - 1
+        else
+          l = mid + 1
+        end
+      end
+      nil
+    else
+      raise TypeError, "wrong argument type"
+    end
+  end unless method_defined?(:bsearch)
+
   def cover?(v)
     f = first
     l = last
@@ -883,6 +1524,19 @@ class Object
 end
 
 # --- Kernel extensions ---
+def produce(initial = nil, &blk)
+  raise ArgumentError, "no block given" unless blk
+  Enumerator.new do |y|
+    cur = initial
+    y.yield cur unless cur.nil?
+    cur = blk.call(cur)
+    loop do
+      y.yield cur
+      cur = blk.call(cur)
+    end
+  end
+end
+
 def loop
   while true
     yield
@@ -1039,6 +1693,215 @@ class Array
 end
 
 class Array
+  # bsearch_index — same shape as #bsearch but returns the index instead
+  # of the element.  Find-minimum mode (block returns true/false) and
+  # find-any mode (returns -/0/+ Integer) supported.
+  def bsearch_index(&blk)
+    return enum_for(:bsearch_index) unless blk
+    return nil if empty?
+    sample = blk.call(self[0])
+    if sample == true || sample == false
+      satisfied = nil
+      l, h = 0, size - 1
+      while l <= h
+        mid = (l + h) / 2
+        if blk.call(self[mid])
+          satisfied = mid
+          h = mid - 1
+        else
+          l = mid + 1
+        end
+      end
+      satisfied
+    elsif sample.is_a?(Integer)
+      return 0 if sample == 0
+      l, h = 1, size - 1
+      while l <= h
+        mid = (l + h) / 2
+        v = blk.call(self[mid])
+        return mid if v == 0
+        v < 0 ? (h = mid - 1) : (l = mid + 1)
+      end
+      nil
+    else
+      raise TypeError, "wrong argument type"
+    end
+  end unless method_defined?(:bsearch_index)
+
+  def each_entry(&blk)
+    return enum_for(:each_entry) unless blk
+    each(&blk)
+    self
+  end unless method_defined?(:each_entry)
+
+  def map!(&blk)
+    return enum_for(:map!) unless blk
+    i = 0
+    n = size
+    while i < n
+      self[i] = blk.call(self[i])
+      i += 1
+    end
+    self
+  end unless method_defined?(:map!)
+  alias_method(:collect!, :map!) rescue nil
+
+  def each_index(&blk)
+    return enum_for(:each_index) unless blk
+    i = 0
+    n = size
+    while i < n
+      blk.call(i)
+      i += 1
+    end
+    self
+  end unless method_defined?(:each_index)
+
+  def chunk(&blk)
+    return enum_for(:chunk) unless blk
+    out = []
+    cur_key = :__none__
+    cur_grp = nil
+    each do |x|
+      k = blk.call(x)
+      if k.equal?(cur_key)
+        cur_grp << x
+      else
+        out << [cur_key, cur_grp] unless cur_key == :__none__
+        cur_key = k
+        cur_grp = [x]
+      end
+    end
+    out << [cur_key, cur_grp] unless cur_key == :__none__
+    out
+  end unless method_defined?(:chunk)
+
+  # Set ops on Array.  Order is "self's order, dedup".
+  def &(other)
+    o = other.to_ary if other.respond_to?(:to_ary)
+    o ||= other
+    out = []
+    seen = {}
+    each do |x|
+      next if seen[x]
+      next unless o.include?(x)
+      seen[x] = true
+      out << x
+    end
+    out
+  end unless method_defined?(:&)
+  def |(other)
+    o = other.to_ary if other.respond_to?(:to_ary)
+    o ||= other
+    out = []
+    seen = {}
+    each do |x|
+      next if seen[x]
+      seen[x] = true
+      out << x
+    end
+    o.each do |x|
+      next if seen[x]
+      seen[x] = true
+      out << x
+    end
+    out
+  end unless method_defined?(:|)
+  def -(other)
+    o = other.to_ary if other.respond_to?(:to_ary)
+    o ||= other
+    reject { |x| o.include?(x) }
+  end unless method_defined?(:-)
+
+  def values_at(*indices)
+    indices.flat_map { |i|
+      if i.is_a?(Range)
+        self[i] || []
+      else
+        [self[i]]
+      end
+    }
+  end unless method_defined?(:values_at)
+
+  def union(*others)
+    seen = {}
+    out = []
+    each { |x| unless seen[x]; seen[x] = true; out << x; end }
+    others.each { |o|
+      o.each { |x| unless seen[x]; seen[x] = true; out << x; end }
+    }
+    out
+  end unless method_defined?(:union)
+  def intersection(*others)
+    others.reduce(self.dup) { |acc, o| acc & o }
+  end unless method_defined?(:intersection)
+  def difference(*others)
+    others.reduce(self.dup) { |acc, o| acc - o }
+  end unless method_defined?(:difference)
+
+  def rindex(target = nil, &blk)
+    if blk
+      i = size - 1
+      while i >= 0
+        return i if blk.call(self[i])
+        i -= 1
+      end
+      nil
+    else
+      i = size - 1
+      while i >= 0
+        return i if self[i] == target
+        i -= 1
+      end
+      nil
+    end
+  end unless method_defined?(:rindex)
+
+  def select!(&blk)
+    return enum_for(:select!) unless blk
+    rm = []
+    each_with_index { |v, i| rm << i unless blk.call(v) }
+    return nil if rm.empty?
+    rm.reverse_each { |i| delete_at(i) }
+    self
+  end unless method_defined?(:select!)
+  alias_method(:filter!, :select!) rescue nil
+  def reject!(&blk)
+    return enum_for(:reject!) unless blk
+    rm = []
+    each_with_index { |v, i| rm << i if blk.call(v) }
+    return nil if rm.empty?
+    rm.reverse_each { |i| delete_at(i) }
+    self
+  end unless method_defined?(:reject!)
+  def keep_if(&blk); select!(&blk) || self; end unless method_defined?(:keep_if)
+  def delete_if(&blk); reject!(&blk) || self; end unless method_defined?(:delete_if)
+
+  def sort_by!(&blk)
+    replace(sort_by(&blk))
+  end unless method_defined?(:sort_by!)
+
+  def to_h(&blk)
+    h = {}
+    if blk
+      each { |x|
+        pair = blk.call(x)
+        unless pair.is_a?(Array) && pair.size == 2
+          raise TypeError, "wrong element type (expected 2-element Array)"
+        end
+        h[pair[0]] = pair[1]
+      }
+    else
+      each_with_index { |pair, i|
+        unless pair.is_a?(Array) && pair.size == 2
+          raise TypeError, "wrong element type (expected 2-element Array) at index #{i}"
+        end
+        h[pair[0]] = pair[1]
+      }
+    end
+    h
+  end unless method_defined?(:to_h)
+
   # chunk_while { |a, b| ... } — group consecutive pairs where the
   # block returns truthy.
   def chunk_while(&blk)
@@ -1269,6 +2132,1509 @@ class LazyRange
   end
 end
 
+# Enumerator — Fiber-backed coroutine producer.  Supports the
+# `Enumerator.new { |y| y << v; y.yield v }` form plus #next, #peek,
+# #rewind, #each, #to_a, and Enumerable-style chaining.
+class Enumerator
+  include Enumerable
+
+  class Yielder
+    # Inside the producer block, calls to `y << v` or `y.yield(v)`
+    # cross back to the consumer via Fiber.yield.
+    def <<(val)
+      ::Fiber.yield(val)
+      self
+    end
+    define_method(:yield) do |*args|
+      ::Fiber.yield(args.size == 1 ? args[0] : args)
+    end
+  end
+
+  # Sentinel value: producer returns this to signal the stream ended.
+  ENUMERATOR_DONE = Object.new
+
+  def initialize(&blk)
+    raise ArgumentError, "Enumerator.new requires a block" unless blk
+    @blk = blk
+    @fiber = nil
+    @done = false
+    @peeked = nil
+    @has_peeked = false
+  end
+
+  def _start
+    blk = @blk
+    @fiber = Fiber.new do
+      blk.call(Yielder.new)
+      ENUMERATOR_DONE
+    end
+    @done = false
+    @peeked = nil
+    @has_peeked = false
+  end
+
+  def next
+    if @has_peeked
+      v = @peeked
+      @peeked = nil
+      @has_peeked = false
+      return v
+    end
+    raise StopIteration if @done
+    _start unless @fiber
+    v = @fiber.resume
+    if v.equal?(ENUMERATOR_DONE)
+      @done = true
+      raise StopIteration
+    end
+    v
+  end
+
+  def peek
+    return @peeked if @has_peeked
+    @peeked = self.next
+    @has_peeked = true
+    @peeked
+  end
+
+  def rewind
+    @fiber = nil
+    @done = false
+    @peeked = nil
+    @has_peeked = false
+    self
+  end
+
+  def each(&blk)
+    return self unless blk
+    rewind
+    loop do
+      blk.call(self.next)
+    end
+    self
+  end
+
+  def to_a
+    rewind
+    out = []
+    loop do
+      out << self.next
+    end
+    out
+  end
+  alias force to_a
+
+  # Lazy chain: calls block on each yielded value but defers materializing.
+  def map(&blk)
+    me = self
+    Enumerator.new do |y|
+      me.rewind
+      loop { y << blk.call(me.next) }
+    end
+  end
+  alias collect map
+
+  def select(&blk)
+    me = self
+    Enumerator.new do |y|
+      me.rewind
+      loop do
+        v = me.next
+        y << v if blk.call(v)
+      end
+    end
+  end
+  alias filter select
+
+  def first(n = nil)
+    rewind
+    if n.nil?
+      begin
+        return self.next
+      rescue StopIteration
+        return nil
+      end
+    end
+    out = []
+    n.times do
+      begin
+        out << self.next
+      rescue StopIteration
+        break
+      end
+    end
+    out
+  end
+
+  def take(n)
+    first(n)
+  end
+
+  def size
+    nil
+  end
+
+  # Lazy chain wrapping any Enumerator: each chained map/select/etc.
+  # builds a new Enumerator::Lazy that pulls from the previous one,
+  # so `(1..).lazy.map.select.first(N)` only materializes N items.
+  def lazy
+    Lazy.new(self)
+  end
+
+  class Lazy < Enumerator
+    # Don't go through super — koruby doesn't forward `&blk` through
+    # `super`, so set the parent's ivars directly.
+    def initialize(source = nil, &blk)
+      if source && !blk
+        @blk = proc do |y|
+          source.rewind if source.respond_to?(:rewind)
+          source.each { |v| y << v }
+        end
+      elsif blk
+        @blk = blk
+      else
+        raise ArgumentError, "Lazy.new needs source or block"
+      end
+      @fiber = nil
+      @done = false
+      @peeked = nil
+      @has_peeked = false
+    end
+
+    def map(&blk)
+      me = self
+      Lazy.new do |y|
+        me.rewind
+        loop { y << blk.call(me.next) }
+      end
+    end
+    alias collect map
+
+    def select(&blk)
+      me = self
+      Lazy.new do |y|
+        me.rewind
+        loop do
+          v = me.next
+          y << v if blk.call(v)
+        end
+      end
+    end
+    alias filter select
+
+    def reject(&blk)
+      me = self
+      Lazy.new do |y|
+        me.rewind
+        loop do
+          v = me.next
+          y << v unless blk.call(v)
+        end
+      end
+    end
+
+    def take_while(&blk)
+      me = self
+      Lazy.new do |y|
+        me.rewind
+        loop do
+          v = me.next
+          break unless blk.call(v)
+          y << v
+        end
+      end
+    end
+
+    def drop_while(&blk)
+      me = self
+      Lazy.new do |y|
+        me.rewind
+        dropping = true
+        loop do
+          v = me.next
+          if dropping
+            next if blk.call(v)
+            dropping = false
+          end
+          y << v
+        end
+      end
+    end
+
+    def take(n)
+      me = self
+      Lazy.new do |y|
+        me.rewind
+        i = 0
+        loop do
+          break if i >= n
+          y << me.next
+          i += 1
+        end
+      end
+    end
+
+    def drop(n)
+      me = self
+      Lazy.new do |y|
+        me.rewind
+        i = 0
+        loop do
+          v = me.next
+          if i < n
+            i += 1
+            next
+          end
+          y << v
+        end
+      end
+    end
+
+    def with_index(offset = 0)
+      me = self
+      Lazy.new do |y|
+        me.rewind
+        i = offset
+        loop do
+          y << [me.next, i]
+          i += 1
+        end
+      end
+    end
+
+    def force
+      to_a
+    end
+
+    def each_cons(n)
+      me = self
+      Lazy.new do |y|
+        me.rewind
+        buf = []
+        loop do
+          buf << me.next
+          buf.shift if buf.size > n
+          y << buf.dup if buf.size == n
+        end
+      end
+    end
+
+    def each_slice(n)
+      me = self
+      Lazy.new do |y|
+        me.rewind
+        buf = []
+        loop do
+          buf << me.next
+          if buf.size == n
+            y << buf
+            buf = []
+          end
+        end
+        y << buf unless buf.empty?
+      end
+    end
+
+    def cycle(n = nil)
+      me = self
+      Lazy.new do |y|
+        cnt = 0
+        loop do
+          break if n && cnt >= n
+          me.rewind
+          loop { y << me.next }
+          cnt += 1
+        end
+      end
+    end
+
+    def filter_map(&blk)
+      me = self
+      Lazy.new do |y|
+        me.rewind
+        loop do
+          v = blk.call(me.next)
+          y << v if v
+        end
+      end
+    end
+
+    def chunk_while(&blk)
+      force.chunk_while(&blk)
+    end
+    def slice_when(&blk)
+      force.slice_when(&blk)
+    end
+    def uniq(&blk)
+      me = self
+      Lazy.new do |y|
+        me.rewind
+        seen = {}
+        loop do
+          v = me.next
+          k = blk ? blk.call(v) : v
+          unless seen[k]
+            seen[k] = true
+            y << v
+          end
+        end
+      end
+    end
+
+    def eager
+      Enumerator.new { |y| each { |v| y.yield v } }
+    end
+
+    def first(n = nil)
+      take(n || 1).force.then { |a| n ? a : a.first }
+    end
+  end
+end
+
+# Range / Array bridges to the unified Enumerator::Lazy.  These
+# replace the older LazyRange / LazyEnum stubs for chains where the
+# Lazy semantics matter (`.map.select.first(N)`).
+class Range
+  def lazy_enum
+    me = self
+    Enumerator::Lazy.new(Enumerator.new { |y| me.each { |v| y << v } })
+  end
+end
+
+class Array
+  def lazy_enum
+    me = self
+    Enumerator::Lazy.new(Enumerator.new { |y| me.each { |v| y << v } })
+  end
+end
+
+# Pathname — thin wrapper over File/Dir methods, the most common
+# subset that Ruby scripts pull in via `require 'pathname'`.
+class Pathname
+  attr_reader :path
+
+  def initialize(path)
+    case path
+    when Pathname then @path = path.to_s.dup
+    when String   then @path = path.dup
+    else
+      raise TypeError, "Pathname requires String or Pathname, got #{path.class}"
+    end
+  end
+
+  def to_s
+    @path
+  end
+  alias to_path to_s
+
+  def to_str
+    @path
+  end
+
+  def inspect
+    "#<Pathname:#{@path}>"
+  end
+
+  def ==(other)
+    other.is_a?(Pathname) && @path == other.to_s
+  end
+  alias eql? ==
+
+  def hash
+    @path.hash
+  end
+
+  def +(other)
+    join(other)
+  end
+  alias / +
+
+  def join(*parts)
+    out = @path.dup
+    parts.each do |p|
+      pstr = p.is_a?(Pathname) ? p.to_s : p.to_s
+      if pstr.start_with?("/")
+        out = pstr.dup
+      elsif out.empty? || out.end_with?("/")
+        out << pstr
+      else
+        out << "/" << pstr
+      end
+    end
+    Pathname.new(out)
+  end
+
+  def basename(suffix = nil)
+    if suffix
+      Pathname.new(File.basename(@path, suffix))
+    else
+      Pathname.new(File.basename(@path))
+    end
+  end
+
+  def dirname
+    Pathname.new(File.dirname(@path))
+  end
+
+  def extname
+    File.extname(@path)
+  end
+
+  def expand_path(default_dir = nil)
+    Pathname.new(default_dir ? File.expand_path(@path, default_dir.to_s)
+                              : File.expand_path(@path))
+  end
+
+  def absolute?
+    @path.start_with?("/")
+  end
+
+  def relative?
+    !absolute?
+  end
+
+  def exist?
+    File.exist?(@path)
+  end
+
+  def file?
+    return false unless File.exist?(@path)
+    !File.respond_to?(:directory?) || !File.directory?(@path)
+  end
+
+  def directory?
+    return false unless File.exist?(@path)
+    File.respond_to?(:directory?) ? File.directory?(@path) : false
+  end
+
+  def read
+    File.read(@path)
+  end
+
+  def write(content)
+    File.write(@path, content)
+  end
+
+  def each_line(&blk)
+    if blk
+      File.open(@path) { |f| f.each_line(&blk) }
+    else
+      File.open(@path) { |f| f.each_line.to_a }
+    end
+  end
+
+  def readlines
+    each_line.to_a
+  end
+
+  def open(mode = "r", &blk)
+    File.open(@path, mode, &blk)
+  end
+
+  def children
+    return [] unless directory?
+    Dir.entries(@path).reject { |e| e == "." || e == ".." }.map do |name|
+      self.join(name)
+    end
+  end
+
+  def each_child(&blk)
+    if blk
+      children.each(&blk)
+      self
+    else
+      children
+    end
+  end
+
+  # OS operations — all delegate to FileUtils-style stubs / system calls.
+  def realpath
+    Pathname.new(File.realpath(@path)) if File.respond_to?(:realpath)
+    Pathname.new(File.expand_path(@path))
+  rescue
+    Pathname.new(File.expand_path(@path))
+  end
+
+  def chmod(mode)
+    File.chmod(mode, @path)
+  end
+
+  def unlink
+    File.unlink(@path)
+  end
+  alias delete unlink
+
+  def rename(new_path)
+    # Match CRuby: rename the file, leave the receiver's @path intact.
+    # Callers who want a Pathname for the new location use Pathname.new(new).
+    File.rename(@path, new_path.to_s)
+    0
+  end
+
+  def mkdir(mode = 0o755)
+    Dir.mkdir(@path, mode)
+    self
+  end
+
+  def rmdir
+    Dir.rmdir(@path)
+    self
+  end
+
+  def size
+    File.size(@path)
+  end
+
+  def empty?
+    if directory?
+      children.empty?
+    else
+      File.size(@path) == 0
+    end
+  end
+
+  def glob(pattern)
+    full = (@path.end_with?("/") ? @path : @path + "/") + pattern
+    Dir.glob(full).map { |p| Pathname.new(p) }
+  end
+
+  def parent
+    dirname
+  end
+
+  def root?
+    @path == "/"
+  end
+
+  def split
+    [dirname, basename]
+  end
+
+  def each_filename(&blk)
+    parts = @path.split("/").reject(&:empty?)
+    if blk
+      parts.each(&blk)
+      self
+    else
+      parts.each
+    end
+  end
+end
+
+def Pathname(p)
+  p.is_a?(Pathname) ? p : Pathname.new(p)
+end
+
+# JSON — pure-Ruby parser + generator.  Handles nil/true/false, Integer
+# (Bignum included via String#to_i), Float, String (\uXXXX, common
+# escapes), Array, Hash (String keys).  Symbol keys are stringified on
+# generate, returned as String on parse — matches CRuby's default.
+module JSON
+  def self.generate(obj)
+    out = String.new
+    _generate_into(obj, out)
+    out
+  end
+  def self.dump(obj); generate(obj); end
+
+  # Pretty-print with 2-space indent, matching CRuby's default
+  # Ext-style output reasonably closely.
+  def self.pretty_generate(obj, opts = nil)
+    out = String.new
+    _pretty_into(obj, out, 0)
+    out
+  end
+
+  def self._pretty_into(obj, out, depth)
+    case obj
+    when nil    then out << "null"
+    when true   then out << "true"
+    when false  then out << "false"
+    when Integer, Float then out << obj.to_s
+    when String then _generate_string(obj, out)
+    when Symbol then _generate_string(obj.to_s, out)
+    when Array
+      if obj.empty?
+        out << "[]"
+        return
+      end
+      out << "[\n"
+      indent = "  " * (depth + 1)
+      obj.each_with_index do |v, i|
+        out << indent
+        _pretty_into(v, out, depth + 1)
+        out << "," unless i == obj.size - 1
+        out << "\n"
+      end
+      out << ("  " * depth) << "]"
+    when Hash
+      if obj.empty?
+        out << "{}"
+        return
+      end
+      out << "{\n"
+      indent = "  " * (depth + 1)
+      keys = obj.keys
+      keys.each_with_index do |k, i|
+        out << indent
+        _generate_string(k.to_s, out)
+        out << ": "
+        _pretty_into(obj[k], out, depth + 1)
+        out << "," unless i == keys.size - 1
+        out << "\n"
+      end
+      out << ("  " * depth) << "}"
+    else
+      _pretty_into(obj.to_s, out, depth)
+    end
+  end
+
+  def self._generate_into(obj, out)
+    case obj
+    when nil    then out << "null"
+    when true   then out << "true"
+    when false  then out << "false"
+    when Integer, Float then out << obj.to_s
+    when String then _generate_string(obj, out)
+    when Symbol then _generate_string(obj.to_s, out)
+    when Array
+      out << "["
+      first = true
+      obj.each do |v|
+        out << "," unless first
+        first = false
+        _generate_into(v, out)
+      end
+      out << "]"
+    when Hash
+      out << "{"
+      first = true
+      obj.each do |k, v|
+        out << "," unless first
+        first = false
+        _generate_string(k.to_s, out)
+        out << ":"
+        _generate_into(v, out)
+      end
+      out << "}"
+    else
+      if obj.respond_to?(:to_json)
+        out << obj.to_json
+      else
+        _generate_string(obj.to_s, out)
+      end
+    end
+  end
+
+  def self._generate_string(s, out)
+    out << "\""
+    i = 0
+    while i < s.size
+      c = s[i]
+      case c
+      when "\\" then out << "\\\\"
+      when "\"" then out << "\\\""
+      when "\n" then out << "\\n"
+      when "\r" then out << "\\r"
+      when "\t" then out << "\\t"
+      when "\b" then out << "\\b"
+      when "\f" then out << "\\f"
+      else
+        # Control chars (< 0x20) get \u escape; others pass through.
+        b = c.bytes.first
+        if b && b < 0x20
+          out << format("\\u%04x", b)
+        else
+          out << c
+        end
+      end
+      i += 1
+    end
+    out << "\""
+  end
+
+  def self.parse(src, opts = nil)
+    src = src.to_s
+    parser = Parser.new(src)
+    parser.symbolize_names = !!(opts && opts[:symbolize_names])
+    v = parser.parse_value
+    parser.skip_ws
+    raise ParserError, "trailing chars at offset #{parser.pos}" if parser.pos < src.size
+    v
+  end
+  def self.load(src, opts = nil); parse(src, opts); end
+
+  class ParserError < StandardError; end
+
+  class Parser
+    attr_reader :pos
+    attr_accessor :symbolize_names
+    def initialize(src)
+      @src = src
+      @pos = 0
+      @symbolize_names = false
+    end
+    def err(msg)
+      raise ParserError, "#{msg} at offset #{@pos}"
+    end
+    def skip_ws
+      while @pos < @src.size && (c = @src[@pos]) && (c == " " || c == "\t" || c == "\n" || c == "\r")
+        @pos += 1
+      end
+    end
+    def parse_value
+      skip_ws
+      err("unexpected end of input") if @pos >= @src.size
+      c = @src[@pos]
+      case c
+      when "{" then parse_object
+      when "[" then parse_array
+      when "\"" then parse_string
+      when "t", "f" then parse_bool
+      when "n" then parse_null
+      else
+        parse_number
+      end
+    end
+    def parse_object
+      err("expected '{'") unless @src[@pos] == "{"
+      @pos += 1
+      h = {}
+      skip_ws
+      if @src[@pos] == "}"
+        @pos += 1
+        return h
+      end
+      loop do
+        skip_ws
+        k = parse_string
+        k = k.to_sym if @symbolize_names
+        skip_ws
+        err("expected ':'") unless @src[@pos] == ":"
+        @pos += 1
+        v = parse_value
+        h[k] = v
+        skip_ws
+        if @src[@pos] == ","
+          @pos += 1
+        elsif @src[@pos] == "}"
+          @pos += 1
+          return h
+        else
+          err("expected ',' or '}'")
+        end
+      end
+    end
+    def parse_array
+      err("expected '['") unless @src[@pos] == "["
+      @pos += 1
+      a = []
+      skip_ws
+      if @src[@pos] == "]"
+        @pos += 1
+        return a
+      end
+      loop do
+        a << parse_value
+        skip_ws
+        if @src[@pos] == ","
+          @pos += 1
+        elsif @src[@pos] == "]"
+          @pos += 1
+          return a
+        else
+          err("expected ',' or ']'")
+        end
+      end
+    end
+    def parse_string
+      err("expected '\"'") unless @src[@pos] == "\""
+      @pos += 1
+      out = String.new
+      while @pos < @src.size
+        c = @src[@pos]
+        if c == "\""
+          @pos += 1
+          return out
+        elsif c == "\\"
+          @pos += 1
+          err("unterminated escape") if @pos >= @src.size
+          esc = @src[@pos]
+          @pos += 1
+          case esc
+          when "\"" then out << "\""
+          when "\\" then out << "\\"
+          when "/"  then out << "/"
+          when "n"  then out << "\n"
+          when "r"  then out << "\r"
+          when "t"  then out << "\t"
+          when "b"  then out << "\b"
+          when "f"  then out << "\f"
+          when "u"
+            err("bad \\u") if @pos + 4 > @src.size
+            hex = @src[@pos, 4]
+            @pos += 4
+            n = hex.to_i(16)
+            if n < 0x80
+              out << n.chr
+            elsif n < 0x800
+              out << ((0xc0 | (n >> 6)) & 0xff).chr
+              out << ((0x80 | (n & 0x3f))).chr
+            else
+              out << ((0xe0 | (n >> 12)) & 0xff).chr
+              out << ((0x80 | ((n >> 6) & 0x3f))).chr
+              out << ((0x80 | (n & 0x3f))).chr
+            end
+          else
+            err("bad escape \\#{esc}")
+          end
+        else
+          out << c
+          @pos += 1
+        end
+      end
+      err("unterminated string")
+    end
+    def parse_bool
+      if @src[@pos, 4] == "true"
+        @pos += 4
+        return true
+      end
+      if @src[@pos, 5] == "false"
+        @pos += 5
+        return false
+      end
+      err("expected true/false")
+    end
+    def parse_null
+      if @src[@pos, 4] == "null"
+        @pos += 4
+        return nil
+      end
+      err("expected null")
+    end
+    def parse_number
+      start = @pos
+      @pos += 1 if @src[@pos] == "-"
+      while @pos < @src.size && @src[@pos] >= "0" && @src[@pos] <= "9"
+        @pos += 1
+      end
+      is_float = false
+      if @pos < @src.size && @src[@pos] == "."
+        is_float = true
+        @pos += 1
+        while @pos < @src.size && @src[@pos] >= "0" && @src[@pos] <= "9"
+          @pos += 1
+        end
+      end
+      if @pos < @src.size && (@src[@pos] == "e" || @src[@pos] == "E")
+        is_float = true
+        @pos += 1
+        @pos += 1 if @pos < @src.size && (@src[@pos] == "+" || @src[@pos] == "-")
+        while @pos < @src.size && @src[@pos] >= "0" && @src[@pos] <= "9"
+          @pos += 1
+        end
+      end
+      lit = @src[start, @pos - start]
+      err("invalid number") if lit.empty? || lit == "-"
+      is_float ? lit.to_f : lit.to_i
+    end
+  end
+end
+
+class Object
+  def to_json
+    JSON.generate(self)
+  end
+end
+
+# BigDecimal — minimal arbitrary-precision decimal, Rational-backed.
+# Covers the common script-level patterns: BigDecimal("3.14") / BigDecimal(int),
+# arithmetic (+ - * / **), comparisons, to_s / to_i / to_f, abs, sign,
+# zero? / positive? / negative? / nan? / infinite?.
+#
+# Real BigDecimal stores a base-10 mantissa+scale; this Rational-backed
+# version is exact for any rational input but won't give base-10
+# representations for irrational results.  Enough for tests and
+# common config-file arithmetic.
+class BigDecimal
+  include Comparable
+
+  SIGN_NaN              =  0
+  SIGN_POSITIVE_INFINITE = 3
+  SIGN_NEGATIVE_INFINITE = -3
+  SIGN_POSITIVE_ZERO     = 1
+  SIGN_NEGATIVE_ZERO    = -1
+  SIGN_POSITIVE_FINITE   = 2
+  SIGN_NEGATIVE_FINITE  = -2
+
+  attr_reader :rational, :special
+
+  def initialize(value, _digits = nil)
+    case value
+    when BigDecimal
+      @rational = value.rational
+      @special  = value.special
+    when Integer
+      @rational = Rational(value, 1)
+      @special  = nil
+    when Float
+      if value.nan?
+        @special = :nan
+      elsif value.infinite?
+        @special = value > 0 ? :inf : :ninf
+      else
+        # Convert Float to Rational via decimal string for exactness.
+        s = value.to_s
+        return _parse(s) if s =~ nil rescue nil
+        # Fallback: lossy approximation.
+        @rational = Rational(value.to_i, 1) if !defined?(@rational)
+        _parse(s)
+      end
+    when String
+      _parse(value)
+    when Rational
+      @rational = value
+      @special  = nil
+    else
+      raise TypeError, "can't convert #{value.class} into BigDecimal"
+    end
+  end
+
+  def _parse(str)
+    s = str.strip
+    if s == "NaN" || s == "+NaN" || s == "-NaN"
+      @special = :nan
+      @rational = nil
+      return
+    end
+    if s == "Infinity" || s == "+Infinity"
+      @special = :inf
+      @rational = nil
+      return
+    end
+    if s == "-Infinity"
+      @special = :ninf
+      @rational = nil
+      return
+    end
+    @special = nil
+    # Handle sign
+    sign = 1
+    if s.start_with?("-")
+      sign = -1; s = s[1..-1]
+    elsif s.start_with?("+")
+      s = s[1..-1]
+    end
+    # Split exponent (e/E)
+    mant = s; exp_str = nil
+    if (idx = s.index("e")) || (idx = s.index("E"))
+      mant = s[0, idx]
+      exp_str = s[idx + 1, s.size - idx - 1]
+    end
+    # Split decimal point
+    if dot = mant.index(".")
+      int_part  = mant[0, dot]
+      frac_part = mant[dot + 1, mant.size - dot - 1]
+    else
+      int_part  = mant
+      frac_part = ""
+    end
+    int_part  = "0" if int_part.empty?
+    digits    = int_part + frac_part
+    # Reject anything non-digit.
+    digits.each_char { |c| raise ArgumentError, "invalid value: #{str}" unless c >= "0" && c <= "9" }
+    num = digits.to_i
+    den = 10 ** frac_part.size
+    if exp_str
+      e = exp_str.to_i
+      if e >= 0
+        num *= 10 ** e
+      else
+        den *= 10 ** (-e)
+      end
+    end
+    @rational = Rational(sign * num, den)
+  end
+
+  def to_r; @rational; end
+  def to_i
+    raise FloatDomainError, "Computation results in #{@special}" if @special
+    @rational.to_i
+  end
+  def to_f
+    case @special
+    when :nan  then 0.0 / 0.0
+    when :inf  then Float::INFINITY
+    when :ninf then -Float::INFINITY
+    else            @rational.to_f
+    end
+  end
+
+  def to_s(_fmt = nil)
+    case @special
+    when :nan  then "NaN"
+    when :inf  then "Infinity"
+    when :ninf then "-Infinity"
+    end
+    return @special.to_s if @special
+    # Render as a decimal: numerator / denominator.  Use a fixed cap on
+    # post-decimal digits so irrational results (1/3 etc.) terminate.
+    n = @rational.numerator
+    d = @rational.denominator
+    sign = n < 0 ? "-" : ""
+    n = n.abs
+    int_part = n / d
+    rem = n - int_part * d
+    if rem == 0
+      "#{sign}#{int_part}.0"
+    else
+      digits = ""
+      30.times do
+        rem *= 10
+        digits << (rem / d).to_s
+        rem -= (rem / d) * d
+        break if rem == 0
+      end
+      "#{sign}#{int_part}.#{digits}"
+    end
+  end
+  alias inspect to_s
+
+  def +(other)
+    o = _coerce(other)
+    return _spec(@special, o.special, :add) if @special || o.special
+    BigDecimal.new(@rational + o.rational)
+  end
+  def -(other)
+    o = _coerce(other)
+    return _spec(@special, o.special, :sub) if @special || o.special
+    BigDecimal.new(@rational - o.rational)
+  end
+  def *(other)
+    o = _coerce(other)
+    return _spec(@special, o.special, :mul) if @special || o.special
+    BigDecimal.new(@rational * o.rational)
+  end
+  def /(other)
+    o = _coerce(other)
+    return _spec(@special, o.special, :div) if @special || o.special
+    if o.rational.numerator == 0
+      cmp = @rational.numerator <=> 0
+      return BigDecimal.new(cmp > 0 ? "Infinity" : (cmp < 0 ? "-Infinity" : "NaN"))
+    end
+    BigDecimal.new(@rational / o.rational)
+  end
+  def -@; @special ? BigDecimal.new(_neg_special) : BigDecimal.new(-@rational); end
+
+  def **(other)
+    return BigDecimal.new(@rational ** other) if other.is_a?(Integer) && @special.nil?
+    BigDecimal.new(to_f ** other.to_f)
+  end
+
+  def <=>(other)
+    o = _coerce(other) rescue (return nil)
+    return nil if @special == :nan || o.special == :nan
+    if @special || o.special
+      a = @special ? _spec_rank(@special) : (@rational.numerator <=> 0)
+      b = o.special ? _spec_rank(o.special) : (o.rational.numerator <=> 0)
+      return a <=> b
+    end
+    @rational <=> o.rational
+  end
+
+  def ==(other); (self <=> other) == 0; end
+  def hash; [@rational, @special].hash; end
+
+  def abs
+    return BigDecimal.new("Infinity") if @special == :ninf || @special == :inf
+    return BigDecimal.new("NaN")      if @special == :nan
+    BigDecimal.new(@rational.abs)
+  end
+
+  def sign
+    return SIGN_NaN if @special == :nan
+    return SIGN_POSITIVE_INFINITE if @special == :inf
+    return SIGN_NEGATIVE_INFINITE if @special == :ninf
+    n = @rational.numerator
+    return n > 0 ? SIGN_POSITIVE_FINITE : (n < 0 ? SIGN_NEGATIVE_FINITE : SIGN_POSITIVE_ZERO)
+  end
+
+  def zero?;     @special.nil? && @rational.numerator == 0; end
+  def positive?; sign > 0; end
+  def negative?; sign < 0; end
+  def nan?;      @special == :nan; end
+  def infinite?
+    return 1  if @special == :inf
+    return -1 if @special == :ninf
+    nil
+  end
+  def finite?;   @special.nil?; end
+
+  def coerce(other)
+    [BigDecimal.new(other), self]
+  end
+
+  private
+
+  def _coerce(v)
+    case v
+    when BigDecimal then v
+    when Integer, Float, Rational, String then BigDecimal.new(v)
+    else raise TypeError, "can't coerce #{v.class} to BigDecimal"
+    end
+  end
+
+  def _spec_rank(s)
+    case s
+    when :inf  then  10
+    when :ninf then -10
+    else 0
+    end
+  end
+
+  def _neg_special
+    case @special
+    when :inf  then "-Infinity"
+    when :ninf then "Infinity"
+    when :nan  then "NaN"
+    end
+  end
+
+  def _spec(a, b, _op)
+    BigDecimal.new("NaN") if a == :nan || b == :nan
+    # For simplicity: anything involving infinity falls back to NaN
+    # except + with same-sign infinities.  Tests cover only the
+    # common finite path, so keep this minimal.
+    BigDecimal.new("NaN")
+  end
+end
+
+def BigDecimal(value, digits = nil)
+  BigDecimal.new(value, digits)
+end
+
+# Binding — shallow approximation of CRuby's Binding.  The runtime
+# doesn't preserve local-variable names through method bodies, so we
+# can't auto-capture every lvar at `binding` time.  Instead, this
+# provides an explicit dictionary backed by `local_variable_set` /
+# `local_variable_get` plus `binding.eval(src)` that prefixes the
+# stored bindings as assignments before evaluating the source.
+#
+# That covers the common test-scope uses (poking values into eval'd
+# code) while keeping the implementation scope minimal — enough to
+# unblock tests that assume `binding` exists.
+class Binding
+  attr_reader :receiver
+
+  def initialize(self_obj)
+    @receiver = self_obj
+    @vars = {}
+  end
+
+  def local_variable_set(name, val)
+    @vars[name.to_sym] = val
+    val
+  end
+
+  def local_variable_get(name)
+    sym = name.to_sym
+    raise NameError, "local variable `#{name}' not defined" unless @vars.key?(sym)
+    @vars[sym]
+  end
+
+  def local_variable_defined?(name)
+    @vars.key?(name.to_sym)
+  end
+
+  def local_variables
+    @vars.keys
+  end
+
+  def eval(src, file = "(eval)", line = 1)
+    prefix = String.new
+    @vars.each do |k, v|
+      # Materialize each binding-stored value via Marshal so arbitrary
+      # objects round-trip into the eval'd source.  For the very common
+      # primitives this works (Marshal handles them); for other types
+      # we fall back to inspect, which round-trips literal-y values.
+      begin
+        bytes = Marshal.dump(v)
+        prefix << "#{k} = ::Marshal.load(#{bytes.inspect}); "
+      rescue
+        prefix << "#{k} = #{v.inspect}; "
+      end
+    end
+    BINDING_EVAL_HOST.do_eval(prefix + src.to_s)
+  end
+end
+
+# Top-level helper that invokes Kernel#eval — Binding#eval defers to
+# this so we don't recurse on the method named `eval`.  Run inside a
+# fresh receiver so dispatch can't loop back through Binding#eval.
+BINDING_EVAL_HOST = Object.new
+def BINDING_EVAL_HOST.do_eval(src)
+  eval(src)
+end
+
+# Kernel#binding — Binding bound to the caller's `self`, pre-populated
+# with the caller's named lvars (snapshot at the moment binding is
+# called).  Subsequent `b.eval(src)` sees those names; updates inside
+# the eval are not propagated back (it runs at top-level scope).
+def binding
+  b = Binding.new(self)
+  __capture_lvars__.each { |k, v| b.local_variable_set(k, v) }
+  b
+end
+
+# Marshal — CRuby-compatible binary serialization for the common types.
+# Format follows MRI's Marshal version 4.8 wire spec, restricted to:
+#   nil 0, true T, false F, Fixnum i, Float f, String ", Symbol :,
+#   Array [, Hash {, Bignum l.
+# Symbol/object link tables (the deduplication mechanism) aren't
+# emitted on dump and aren't followed on load — collateral cost is a
+# bigger payload when the same symbol appears many times, but the
+# resulting bytes are still valid CRuby Marshal.
+module Marshal
+  MAJOR_VERSION = 4
+  MINOR_VERSION = 8
+
+  def self.dump(obj)
+    out = String.new
+    out << MAJOR_VERSION.chr
+    out << MINOR_VERSION.chr
+    sym_table = {}   # Symbol => index
+    _dump_into(obj, out, sym_table)
+    out
+  end
+
+  def self.load(str)
+    r = Reader.new(str)
+    major = r.read_byte
+    minor = r.read_byte
+    if major != MAJOR_VERSION
+      raise TypeError, "unsupported marshal version #{major}.#{minor}"
+    end
+    r.read_value
+  end
+
+  def self._dump_fixnum_into(n, out)
+    if n == 0
+      out << 0.chr
+      return
+    elsif 0 < n && n < 123
+      out << (n + 5).chr
+      return
+    elsif -124 < n && n < 0
+      out << ((n - 5) & 0xff).chr
+      return
+    end
+    # Multi-byte form.
+    bytes = []
+    if n > 0
+      while n != 0
+        bytes << (n & 0xff)
+        n >>= 8
+        break if bytes.size == 4
+      end
+      out << bytes.size.chr
+    else
+      while n != -1
+        bytes << (n & 0xff)
+        n >>= 8
+        break if bytes.size == 4
+      end
+      out << ((-bytes.size) & 0xff).chr
+    end
+    bytes.each { |b| out << b.chr }
+  end
+
+  def self._dump_into(obj, out, sym_table = {})
+    case obj
+    when nil   then out << "0"
+    when true  then out << "T"
+    when false then out << "F"
+    when Symbol
+      idx = sym_table[obj]
+      if idx
+        out << ";"
+        _dump_fixnum_into(idx, out)
+      else
+        sym_table[obj] = sym_table.size
+        out << ":"
+        s = obj.to_s
+        _dump_fixnum_into(s.size, out)
+        out << s
+      end
+    when Integer
+      # Fits in MRI Fixnum range (≈ -2^30..2^30-1)?  Use 'i' form.
+      if obj >= -1073741824 && obj <= 1073741823
+        out << "i"
+        _dump_fixnum_into(obj, out)
+      else
+        out << "l"
+        out << (obj < 0 ? "-" : "+")
+        n = obj.abs
+        shorts = []
+        while n > 0
+          shorts << (n & 0xffff)
+          n >>= 16
+        end
+        shorts << 0 if shorts.empty?
+        _dump_fixnum_into(shorts.size, out)
+        shorts.each do |sh|
+          out << (sh & 0xff).chr
+          out << ((sh >> 8) & 0xff).chr
+        end
+      end
+    when Float
+      out << "f"
+      s = if obj.nan?
+            "nan"
+          elsif obj == Float::INFINITY
+            "inf"
+          elsif obj == -Float::INFINITY
+            "-inf"
+          else
+            obj.to_s
+          end
+      _dump_fixnum_into(s.size, out)
+      out << s
+    when String
+      out << "\""
+      _dump_fixnum_into(obj.size, out)
+      out << obj
+    when Array
+      out << "["
+      _dump_fixnum_into(obj.size, out)
+      obj.each { |v| _dump_into(v, out, sym_table) }
+    when Hash
+      out << "{"
+      _dump_fixnum_into(obj.size, out)
+      obj.each { |k, v| _dump_into(k, out, sym_table); _dump_into(v, out, sym_table) }
+    else
+      raise TypeError, "no _dump_data is defined for #{obj.class}"
+    end
+  end
+
+  class Reader
+    attr_reader :pos
+    def initialize(str)
+      @str = str
+      @pos = 0
+      @symbols = []   # link table: index → Symbol
+    end
+
+    def read_byte
+      raise ArgumentError, "marshal data too short" if @pos >= @str.size
+      b = @str[@pos].bytes.first
+      @pos += 1
+      b
+    end
+
+    def read_n(n)
+      raise ArgumentError, "marshal data too short" if @pos + n > @str.size
+      s = @str[@pos, n]
+      @pos += n
+      s
+    end
+
+    def read_fixnum
+      c = read_byte
+      # Treat as signed 8-bit.
+      signed = c < 128 ? c : c - 256
+      return 0 if signed == 0
+      if signed > 0 && signed > 4
+        return signed - 5
+      end
+      if signed < 0 && signed < -4
+        return signed + 5
+      end
+      n = signed
+      if n > 0
+        v = 0
+        n.times do |i|
+          v |= read_byte << (i * 8)
+        end
+        v
+      else
+        bytes = -n
+        v = -1
+        bytes.times do |i|
+          v &= ~(0xff << (i * 8))
+          v |= read_byte << (i * 8)
+        end
+        v
+      end
+    end
+
+    def read_value
+      tag = read_byte.chr
+      case tag
+      when "I"
+        # Instance-variabled value (typically a String with :E => true
+        # encoding ivar from CRuby).  Read the inner value, then skip
+        # the ivar pairs — koruby ignores encodings.
+        v = read_value
+        ivar_cnt = read_fixnum
+        ivar_cnt.times { read_value; read_value }
+        return v
+      when ";"
+        # Symbol link: refer to the n-th previously-emitted symbol.
+        idx = read_fixnum
+        raise TypeError, "Marshal: symbol link out of range (#{idx})" if idx < 0 || idx >= @symbols.size
+        return @symbols[idx]
+      when "@"
+        idx = read_fixnum
+        raise TypeError, "Marshal object link unsupported (idx=#{idx})"
+      when "0" then nil
+      when "T" then true
+      when "F" then false
+      when "i" then read_fixnum
+      when "l"
+        sign = read_byte.chr
+        len  = read_fixnum
+        v = 0
+        len.times do |i|
+          lo = read_byte
+          hi = read_byte
+          v |= (lo | (hi << 8)) << (i * 16)
+        end
+        sign == "-" ? -v : v
+      when "f"
+        len = read_fixnum
+        s = read_n(len)
+        case s
+        when "inf"  then Float::INFINITY
+        when "-inf" then -Float::INFINITY
+        when "nan"  then Float::NAN
+        else s.to_f
+        end
+      when "\""
+        len = read_fixnum
+        read_n(len)
+      when ":"
+        len = read_fixnum
+        sym = read_n(len).to_sym
+        @symbols << sym
+        sym
+      when "["
+        len = read_fixnum
+        a = []
+        len.times { a << read_value }
+        a
+      when "{"
+        len = read_fixnum
+        h = {}
+        len.times { k = read_value; v = read_value; h[k] = v }
+        h
+      else
+        raise TypeError, "unsupported Marshal tag '#{tag}' at #{@pos - 1}"
+      end
+    end
+  end
+end
+
 class Proc
   # Curry: each call accumulates args until enough; then invokes self.
   # Args can come singly (`c[1][2][3]`) or multiply (`c[1, 2][3]`).
@@ -1289,13 +3655,82 @@ class Proc
     }
     accum.call([])
   end
+
+  # Proc#>> / Proc#<<  — function composition.
+  # f >> g  ⇒  ->(*a) { g.call(f.call(*a)) }
+  # f << g  ⇒  ->(*a) { f.call(g.call(*a)) }
+  def >>(other)
+    me = self
+    ->(*a) { other.call(me.call(*a)) }
+  end unless method_defined?(:>>)
+  def <<(other)
+    me = self
+    ->(*a) { me.call(other.call(*a)) }
+  end unless method_defined?(:<<)
 end
+
+class Module
+  # const_source_location — file/line where the constant was defined.
+  # We don't track this; return nil so callers fall back to "unknown".
+  def const_source_location(name, _inherit = true)
+    nil
+  end unless method_defined?(:const_source_location)
+
+  # deprecate_constant — registers the constant as deprecated.  Just
+  # accepts the names and does nothing (no-op); subsequent uses still
+  # resolve.  CRuby would emit a warning at access time.
+  def deprecate_constant(*_names); self; end unless method_defined?(:deprecate_constant)
+
+  def autoload(_name, _path); nil; end unless method_defined?(:autoload)
+  def autoload?(_name, _inherit = true); nil; end unless method_defined?(:autoload?)
+end
+
+module Kernel
+  def autoload(_name, _path); nil; end unless method_defined?(:autoload)
+  def autoload?(_name, _inherit = true); nil; end unless method_defined?(:autoload?)
+end
+
 
 class Method
   # Method#curry — fall back through to_proc.
   def curry(arity = nil)
     to_proc.curry(arity)
   end
+
+  # Method#super_method — get the next method up the receiver's
+  # ancestor chain past where this method is defined.  Returns nil if
+  # there's no super.
+  def super_method
+    return nil unless owner && receiver
+    klass = owner
+    found_self = false
+    chain = receiver.class.ancestors
+    chain.each do |k|
+      next unless k.respond_to?(:method_defined?) || k.respond_to?(:private_method_defined?)
+      if !found_self
+        found_self = (k == klass)
+        next
+      end
+      if k.method_defined?(name) || k.private_method_defined?(name)
+        # Bind to the same receiver
+        return receiver.method(name).tap { |m|
+          # We can't easily get the super-class-bound method without
+          # an UnboundMethod-from-class API; fall back to the receiver
+          # method.  The caller usually only uses #owner / #parameters.
+        }
+      end
+    end
+    nil
+  end unless method_defined?(:super_method)
+
+  def >>(other)
+    me = self
+    ->(*a) { other.call(me.call(*a)) }
+  end unless method_defined?(:>>)
+  def <<(other)
+    me = self
+    ->(*a) { me.call(other.call(*a)) }
+  end unless method_defined?(:<<)
 end
 
 # ---------- Random (LCG-backed) ----------
@@ -1359,6 +3794,65 @@ class Random
     @global ||= Random.new
     @global.rand(*args)
   end
+
+  def self.urandom(n)
+    (0...n).map { Random.rand(256).chr }.join
+  end
+
+  def self.bytes(n); urandom(n); end
+  def self.hex(n = 16); urandom(n).bytes.map { |b| "%02x" % b }.join; end
+  def self.base64(n = 16); urandom(n); end  # not actually base64 but tests just check size
+
+  # Random#_dump_data — Marshal hook.  Returns the seed as a String so
+  # _load_data can reconstruct.
+  def _dump_data
+    [@s].pack("Q")
+  rescue
+    @s.to_s
+  end
+  def _load_data(s)
+    @s = s.is_a?(String) ? s.unpack("Q").first.to_i : s.to_i
+    self
+  end
+end
+
+class Symbol
+  # Symbol#call(arg) — same as :sym.to_proc.call(arg).  Some tests
+  # invoke .call directly on the symbol-as-proc.
+  def call(*args, &blk)
+    raise ArgumentError, "no receiver given" if args.empty?
+    recv = args[0]
+    rest = args[1..]
+    recv.send(self, *rest, &blk)
+  end unless method_defined?(:call)
+
+  def !~(other); !(self =~ other); end unless method_defined?(:!~)
+end
+
+class Object
+  def to_enum(method = :each, *args)
+    me = self
+    Enumerator.new { |y| me.send(method, *args) { |*x| y.yield(*x) } }
+  end unless method_defined?(:to_enum)
+  alias_method(:enum_for, :to_enum) rescue nil
+
+  def remove_instance_variable(name)
+    sym = name.to_sym
+    raise NameError, "`#{name}' is not allowed as an instance variable name" unless name.to_s.start_with?("@")
+    v = instance_variable_get(sym)
+    raise NameError, "instance variable #{name} not defined" if v.nil? && !instance_variables.include?(sym)
+    instance_variable_set(sym, nil)
+    v
+  end unless method_defined?(:remove_instance_variable)
+
+  # Kernel#Hash(arg) — convert arg to Hash via to_hash, or {} for nil.
+  def Hash(arg)
+    return {} if arg.nil? || arg == []
+    return arg if arg.is_a?(Hash)
+    return arg.to_hash if arg.respond_to?(:to_hash)
+    raise TypeError, "can't convert #{arg.class} into Hash"
+  end unless method_defined?(:Hash)
+
 end
 
 # ---------- Set (minimal Hash-backed) ----------

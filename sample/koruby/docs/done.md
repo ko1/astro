@@ -3,20 +3,37 @@
 本書は **すでに動く** 言語機能と、**取り入れた性能改善** を一覧する。
 未実装は [todo.md](./todo.md) に分離してある。
 
-## テストスイートの現状 (2026-05-02)
+## テストスイートの現状 (2026-05-06)
 
-`test/ruby/<category>/test_*.rb` に CRuby-スタイルのテストを配置。
+### 自前 test/ruby/
 
-```
-$ for f in $(find test/ruby -name 'test_*.rb' | sort); do
-    out=$(./koruby "$f" 2>&1 | tail -1)
-    echo "$out" | grep -q "OK\|0 failures" && pass=$((pass+1)) || fail=$((fail+1))
-  done
-  echo "pass=$pass fail=$fail"
-pass=124 fail=0
-```
+`test/ruby/<category>/test_*.rb` に koruby 固有テストを配置。
+**24 ファイル, 190 件全 pass**。
 
-**124 / 124 全 pass** (assertion 数 ~2200)。残ってる互換性ギャップは [todo.md](./todo.md) を参照。
+### CRuby test/ruby/ (互換性 sanity)
+
+CRuby 公式の `test/ruby/test_*.rb` を tu_shim 経由で実行。
+**in-scope 67 ファイル: 1,108,357 / 1,430,888 pass (77.5%)**。
+
+語義 (language semantics) のテスト群はかなり緑:
+
+| ファイル | pass | total | 備考 |
+|---|---:|---:|---|
+| test_basicinstructions | 465 | 487 | 95% |
+| test_fixnum | 1003 | 1037 | 96% |
+| test_hash | 1233 | 1497 | 82% |
+| test_eval | 249 | 310 | 80% |
+| test_module | 541 | 758 | 71% |
+| test_proc | 559 | 863 | 64% |
+| test_iterator | 83 | 114 | 73% |
+| test_keyword | 323 | 736 | 43% (kwsplat 系で大量 fail) |
+| test_array | 15250 | 20291 | 75% |
+
+分母を支配するもの (Float / Encoding / Regexp / Random 系で fail):
+- test_integer (372k total), test_integer_comb (992k total), test_literal (29k total) — Float 互換性 / eval 互換性
+- test_array の sample_random_srand0 (~2000 fail) — Random reproducibility
+
+範囲外 (project policy): Regexp / Encoding / Thread / Process / Refinements / Ractor / Fiber Scheduler。これらは [todo.md §範囲外](./todo.md) を参照。
 
 ## 言語機能
 

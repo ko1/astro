@@ -91,6 +91,127 @@ static VALUE obj_instance_variable_set(CTX *c, VALUE self, int argc, VALUE *argv
     return argv[1];
 }
 
+/* Class#class_variable_get / set / defined? / class_variables.
+ * Receiver must be a Class/Module. */
+static ID korb_name_to_id_(VALUE v) {
+    if (SYMBOL_P(v)) return korb_sym2id(v);
+    if (!SPECIAL_CONST_P(v) && BUILTIN_TYPE(v) == T_STRING) {
+        struct korb_string *s = (struct korb_string *)v;
+        return korb_intern_n(s->ptr, s->len);
+    }
+    return 0;
+}
+/* Validate a class-variable name: must start with `@@` followed by at
+ * least one identifier character.  Returns the ID on success, or
+ * raises NameError / TypeError and returns 0. */
+static ID korb_cvar_name_to_id_or_raise(CTX *c, VALUE v) {
+    const char *p; long n;
+    if (SYMBOL_P(v)) {
+        p = korb_id_name(korb_sym2id(v));
+        n = (long)strlen(p);
+    } else if (!SPECIAL_CONST_P(v) && BUILTIN_TYPE(v) == T_STRING) {
+        p = ((struct korb_string *)v)->ptr;
+        n = ((struct korb_string *)v)->len;
+    } else {
+        VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+        korb_raise(c, (struct korb_class *)eT,
+                   "%s is not a symbol nor a string",
+                   "(arg)");
+        return 0;
+    }
+    if (n < 3 || p[0] != '@' || p[1] != '@') {
+        VALUE eN = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
+        korb_raise(c, (struct korb_class *)eN,
+                   "`%.*s' is not allowed as a class variable name",
+                   (int)n, p);
+        return 0;
+    }
+    return korb_intern_n(p, n);
+}
+extern VALUE korb_cvar_names(struct korb_class *k);
+VALUE mod_class_variable_get(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (SPECIAL_CONST_P(self) || (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE)) {
+        korb_raise(c, NULL, "class_variable_get: receiver must be Class/Module");
+        return Qnil;
+    }
+    if (argc < 1) return Qnil;
+    ID name = korb_cvar_name_to_id_or_raise(c, argv[0]);
+    if (!name) return Qnil;
+    /* Walk the receiver's class chain via the existing helper.  We
+     * reuse korb_cvar_get which uses cref/current_class — set those
+     * temporarily so the lookup roots at `self`. */
+    struct korb_class *prev_class = c->current_class;
+    struct korb_cref *prev_cref = c->cref;
+    struct korb_cref tmp_cref = { .klass = (struct korb_class *)self, .prev = NULL };
+    c->cref = &tmp_cref;
+    c->current_class = (struct korb_class *)self;
+    extern VALUE korb_cvar_get(CTX *c, ID name);
+    VALUE v = korb_cvar_get(c, name);
+    c->cref = prev_cref;
+    c->current_class = prev_class;
+    return v;
+}
+
+VALUE mod_class_variable_set(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (SPECIAL_CONST_P(self) || (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE)) return Qnil;
+    if (argc < 2) return Qnil;
+    ID name = korb_cvar_name_to_id_or_raise(c, argv[0]);
+    if (!name) return Qnil;
+    extern void korb_cvar_set(CTX *c, ID name, VALUE val);
+    struct korb_class *prev_class = c->current_class;
+    struct korb_cref *prev_cref = c->cref;
+    struct korb_cref tmp_cref = { .klass = (struct korb_class *)self, .prev = NULL };
+    c->cref = &tmp_cref;
+    c->current_class = (struct korb_class *)self;
+    korb_cvar_set(c, name, argv[1]);
+    c->cref = prev_cref;
+    c->current_class = prev_class;
+    return argv[1];
+}
+
+VALUE mod_class_variable_defined_p(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1) return Qfalse;
+    ID name = korb_cvar_name_to_id_or_raise(c, argv[0]);
+    if (!name) return Qfalse;
+    /* Walk the receiver's chain directly. */
+    if (SPECIAL_CONST_P(self) || (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE)) return Qfalse;
+    for (struct korb_class *cur = (struct korb_class *)self; cur; cur = cur->super) {
+        for (uint32_t i = 0; i < cur->cvar_cnt; i++) {
+            if (cur->cvars[i].name == name) return Qtrue;
+        }
+    }
+    return Qfalse;
+}
+
+/* Object#singleton_class — return the per-instance metaclass,
+ * creating one if needed.  All subsequent define_method on it adds
+ * a method visible only to this object. */
+VALUE obj_singleton_class(CTX *c, VALUE self, int argc, VALUE *argv) {
+    extern struct korb_class *korb_singleton_class_of_value(VALUE v);
+    struct korb_class *meta = korb_singleton_class_of_value(self);
+    if (!meta) {
+        korb_raise(c, NULL, "no singleton class for %s",
+                   korb_id_name(korb_class_of_class(self)->name));
+        return Qnil;
+    }
+    return (VALUE)meta;
+}
+
+/* Class#allocate — create an instance without invoking initialize.
+ * Used for serializers, Marshal.load, etc. */
+VALUE class_allocate(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_CLASS) {
+        korb_raise(c, NULL, "Class#allocate called on non-Class");
+        return Qnil;
+    }
+    return korb_object_new((struct korb_class *)self);
+}
+
+VALUE mod_class_variables(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (SPECIAL_CONST_P(self) || (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE)) return korb_ary_new();
+    return korb_cvar_names((struct korb_class *)self);
+}
+
 static VALUE obj_method(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1) return Qnil;
     ID name;
@@ -119,11 +240,35 @@ static VALUE obj_instance_eval(CTX *c, VALUE self, int argc, VALUE *argv) {
         return korb_eval_string_in_self(c, s->ptr, (size_t)s->len, "(instance_eval)", self);
     }
     if (!current_block) return Qnil;
-    VALUE prev_blk_self = current_block->self;
-    current_block->self = self;
+    struct korb_proc *blk = current_block;
+    /* Symbol-proc / Method-proc shim handling — see obj_instance_exec
+     * for the reasoning.  Without this, `obj.instance_eval(&:to_s)`
+     * crashes inside korb_yield with a NULL body. */
+    if (blk->body == NULL) {
+        if (SYMBOL_P(blk->self)) {
+            return korb_funcall(c, self, korb_sym2id(blk->self), 0, NULL);
+        }
+        if (!SPECIAL_CONST_P(blk->self) &&
+            BUILTIN_TYPE(blk->self) == T_DATA &&
+            ((struct RBasic *)blk->self)->klass == (VALUE)korb_vm->method_class) {
+            struct korb_method_obj *mo = (struct korb_method_obj *)blk->self;
+            return korb_funcall(c, self, mo->name, 0, NULL);
+        }
+        return Qnil;
+    }
+    VALUE prev_blk_self = blk->self;
+    blk->self = self;
+    /* instance_eval semantics: defs land on the receiver's singleton class.
+     * Push that class at the head of the block's lexical cref chain. */
+    extern struct korb_class *korb_singleton_class_of_value(VALUE v);
+    struct korb_class *sing = korb_singleton_class_of_value(self);
+    struct korb_cref *prev_blk_cref = blk->cref;
+    struct korb_cref blk_new_cref = { .klass = sing, .prev = blk->cref };
+    if (sing) blk->cref = &blk_new_cref;
     VALUE av0[1] = { self };
     VALUE r = korb_yield(c, 1, av0);
-    current_block->self = prev_blk_self;
+    blk->cref = prev_blk_cref;
+    blk->self = prev_blk_self;
     return r;
 }
 
@@ -132,10 +277,35 @@ static VALUE obj_instance_eval(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE obj_instance_exec(CTX *c, VALUE self, int argc, VALUE *argv) {
     extern struct korb_proc *current_block;
     if (!current_block) return Qnil;
-    VALUE prev_blk_self = current_block->self;
-    current_block->self = self;
+    struct korb_proc *blk = current_block;
+    /* &m where m is a Method or Symbol creates a "shim" proc whose body
+     * is NULL and whose self points at the underlying Method/Symbol.
+     * Re-binding the self to the instance_exec receiver would lose that
+     * pointer (and dispatch into a NULL body); instead, dispatch to the
+     * shim's call semantics directly with the new self as the receiver. */
+    if (blk->body == NULL) {
+        if (SYMBOL_P(blk->self)) {
+            ID name = korb_sym2id(blk->self);
+            return korb_funcall(c, self, name, (uint32_t)argc, argv);
+        }
+        if (!SPECIAL_CONST_P(blk->self) &&
+            BUILTIN_TYPE(blk->self) == T_DATA &&
+            ((struct RBasic *)blk->self)->klass == (VALUE)korb_vm->method_class) {
+            struct korb_method_obj *mo = (struct korb_method_obj *)blk->self;
+            return korb_funcall(c, self, mo->name, (uint32_t)argc, argv);
+        }
+        return Qnil;
+    }
+    VALUE prev_blk_self = blk->self;
+    blk->self = self;
+    extern struct korb_class *korb_singleton_class_of_value(VALUE v);
+    struct korb_class *sing = korb_singleton_class_of_value(self);
+    struct korb_cref *prev_blk_cref = blk->cref;
+    struct korb_cref blk_new_cref = { .klass = sing, .prev = blk->cref };
+    if (sing) blk->cref = &blk_new_cref;
     VALUE r = korb_yield(c, (uint32_t)argc, argv);
-    current_block->self = prev_blk_self;
+    blk->cref = prev_blk_cref;
+    blk->self = prev_blk_self;
     return r;
 }
 
@@ -198,17 +368,31 @@ static VALUE method_call(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE method_to_proc(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* Method#to_proc — return a shim Proc whose body == NULL and whose
      * self is the Method object.  korb_yield_slow / proc_call detect this
-     * and dispatch as `m.receiver.send(m.name, *args)`. */
+     * and dispatch as `m.receiver.send(m.name, *args)`.  Mirror the
+     * underlying method's arity so Proc#arity / Proc#curry work. */
+    struct korb_method_obj *mo = (struct korb_method_obj *)self;
+    struct korb_method *km = korb_class_find_method(korb_class_of_class(mo->receiver),
+                                                    mo->name);
+    uint32_t pcnt = 1;
+    int32_t  rest = -1;
+    if (km && km->type == KORB_METHOD_AST) {
+        pcnt = km->u.ast.total_params_cnt;
+        rest = km->u.ast.rest_slot >= 0 ? 0 : -1;
+    } else if (km && km->type == KORB_METHOD_CFUNC) {
+        pcnt = (km->u.cfunc.argc < 0) ? 0 : (uint32_t)km->u.cfunc.argc;
+        rest = (km->u.cfunc.argc < 0) ? 0 : -1;
+    }
     struct korb_proc *p = korb_xcalloc(1, sizeof(*p));
     p->basic.flags = T_PROC;
     p->basic.klass = (VALUE)korb_vm->proc_class;
     p->body = NULL;
     p->env = NULL;
     p->env_size = 0;
-    p->params_cnt = 1;
+    p->params_cnt = pcnt;
     p->param_base = 0;
+    p->rest_slot = rest;
     p->self = self;            /* the Method object */
-    p->is_lambda = false;
+    p->is_lambda = true;       /* methods have strict arity, like lambdas */
     return (VALUE)p;
 }
 
@@ -219,8 +403,15 @@ static VALUE method_arity(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (km->type == KORB_METHOD_AST) {
         long req = (long)km->u.ast.required_params_cnt;
         long total = (long)km->u.ast.total_params_cnt;
-        if (km->u.ast.rest_slot >= 0 || total > req) return INT2FIX(-(req + 1));
-        return INT2FIX(req);
+        long post = (long)km->u.ast.post_params_cnt;
+        bool has_rest = km->u.ast.rest_slot >= 0;
+        /* opt count = total - req - post - (rest counted as 1) */
+        long opt = total - req - post - (has_rest ? 1 : 0);
+        bool has_opt = opt > 0;
+        bool has_kwh = km->u.ast.kwh_save_slot >= 0;
+        long req_total = req + post;  /* required = pre + post */
+        if (has_rest || has_opt || has_kwh) return INT2FIX(-(req_total + 1));
+        return INT2FIX(req_total);
     }
     if (km->type == KORB_METHOD_CFUNC && km->u.cfunc.argc < 0) return INT2FIX(-1);
     return INT2FIX(km->type == KORB_METHOD_CFUNC ? km->u.cfunc.argc : 0);
@@ -260,46 +451,47 @@ static VALUE method_params_for_method(struct korb_method *km) {
         return r;
     }
     if (km->type == KORB_METHOD_AST) {
-        long req   = (long)km->u.ast.required_params_cnt;
-        long total = (long)km->u.ast.total_params_cnt;
-        long post  = (long)km->u.ast.post_params_cnt;
-        bool has_rest = km->u.ast.rest_slot >= 0;
+        /* parse.c counts required_params_cnt as the *pre-rest* required
+         * params (post params are tracked separately in post_params_cnt).
+         * total_params_cnt = pre_req + opt + (1 if rest) + post — kwh and
+         * block are NOT counted into total (they live at their own
+         * dedicated slots). */
+        long pre_req = (long)km->u.ast.required_params_cnt;
+        long total   = (long)km->u.ast.total_params_cnt;
+        long post    = (long)km->u.ast.post_params_cnt;
+        long locals_cnt = (long)km->u.ast.locals_cnt;
+        bool has_rest  = km->u.ast.rest_slot >= 0;
         bool has_block = km->u.ast.block_slot >= 0;
-        bool has_kwh = km->u.ast.kwh_save_slot >= 0;
-        long opt_cnt = total - req - post - (has_rest ? 1 : 0) - (has_kwh ? 1 : 0);
+        bool has_kwh   = km->u.ast.kwh_save_slot >= 0;
+        long opt_cnt = total - pre_req - post - (has_rest ? 1 : 0);
         if (opt_cnt < 0) opt_cnt = 0;
-        long pre_req = req - post;
-        if (pre_req < 0) pre_req = 0;
-        for (long i = 0; i < pre_req; i++) {
-            VALUE pair = korb_ary_new_capa(1);
-            korb_ary_push(pair, korb_id2sym(korb_intern("req")));
-            korb_ary_push(r, pair);
-        }
-        for (long i = 0; i < opt_cnt; i++) {
-            VALUE pair = korb_ary_new_capa(1);
-            korb_ary_push(pair, korb_id2sym(korb_intern("opt")));
-            korb_ary_push(r, pair);
-        }
-        if (has_rest) {
-            VALUE pair = korb_ary_new_capa(1);
-            korb_ary_push(pair, korb_id2sym(korb_intern("rest")));
-            korb_ary_push(r, pair);
-        }
-        for (long i = 0; i < post; i++) {
-            VALUE pair = korb_ary_new_capa(1);
-            korb_ary_push(pair, korb_id2sym(korb_intern("req")));
-            korb_ary_push(r, pair);
-        }
-        if (has_kwh) {
-            VALUE pair = korb_ary_new_capa(1);
-            korb_ary_push(pair, korb_id2sym(korb_intern("keyrest")));
-            korb_ary_push(r, pair);
-        }
-        if (has_block) {
-            VALUE pair = korb_ary_new_capa(1);
-            korb_ary_push(pair, korb_id2sym(korb_intern("block")));
-            korb_ary_push(r, pair);
-        }
+        ID *names = km->u.ast.local_names;
+        /* Helper: append [kind] or [kind, name] depending on whether the
+         * slot has a recoverable name in local_names.  CRuby returns the
+         * tagged-name form for ordinary AST defs and the bare-kind form
+         * for synthesized stubs (attr_writer, etc); we can't distinguish
+         * those, so always include a name when one exists. */
+        #define PUSH_PARAM(kind_str, slot)                                  \
+            do {                                                              \
+                VALUE _pair = korb_ary_new_capa(2);                            \
+                korb_ary_push(_pair, korb_id2sym(korb_intern((kind_str))));   \
+                if (names && (slot) >= 0 && (slot) < locals_cnt &&            \
+                    names[(slot)] != 0) {                                     \
+                    const char *_n = korb_id_name(names[(slot)]);             \
+                    if (_n && _n[0] != 0 && !(_n[0] == '_' && _n[1] == 0)) {  \
+                        korb_ary_push(_pair, korb_id2sym(names[(slot)]));     \
+                    }                                                          \
+                }                                                              \
+                korb_ary_push(r, _pair);                                       \
+            } while (0)
+        long slot = 0;
+        for (long i = 0; i < pre_req; i++) { PUSH_PARAM("req", slot); slot++; }
+        for (long i = 0; i < opt_cnt; i++) { PUSH_PARAM("opt", slot); slot++; }
+        if (has_rest) { PUSH_PARAM("rest", km->u.ast.rest_slot); slot++; }
+        for (long i = 0; i < post; i++) { PUSH_PARAM("req", slot); slot++; }
+        if (has_kwh)   { PUSH_PARAM("keyrest", km->u.ast.kwh_save_slot); }
+        if (has_block) { PUSH_PARAM("block",   km->u.ast.block_slot); }
+        #undef PUSH_PARAM
         return r;
     }
     return r;
@@ -348,28 +540,54 @@ VALUE proc_source_location(CTX *c, VALUE self, int argc, VALUE *argv) {
     return r;
 }
 
-/* Proc#parameters — derive from korb_proc fields. */
+/* Proc#parameters — derive from korb_proc fields.  Method-proc shims
+ * (body == NULL, self is a Method object) defer to the underlying
+ * method's #parameters so things like
+ *   "".method(:gsub).to_proc.parameters
+ * report [[:rest]] from the cfunc rather than [].  */
 VALUE proc_parameters(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (BUILTIN_TYPE(self) != T_PROC) return korb_ary_new();
     struct korb_proc *p = (struct korb_proc *)self;
+    if (p->body == NULL && !SPECIAL_CONST_P(p->self) &&
+        BUILTIN_TYPE(p->self) == T_DATA &&
+        ((struct RBasic *)p->self)->klass == (VALUE)korb_vm->method_class) {
+        return korb_funcall(c, p->self, korb_intern("parameters"), 0, NULL);
+    }
     VALUE r = korb_ary_new();
-    /* Required params: params_cnt at param_base. */
-    /* Lambda is strict; proc is lenient.  Same shape either way for
-     * the parameter list — opts/post are not tracked separately on
-     * korb_proc so emit `req` for each. */
+    ID *names = p->body ? korb_body_local_names(p->body) : NULL;
+    const char *kind = p->is_lambda ? "req" : "opt";
     for (uint32_t i = 0; i < p->params_cnt; i++) {
-        VALUE pair = korb_ary_new_capa(1);
-        korb_ary_push(pair, korb_id2sym(korb_intern(p->is_lambda ? "req" : "opt")));
+        VALUE pair = korb_ary_new_capa(2);
+        korb_ary_push(pair, korb_id2sym(korb_intern(kind)));
+        long slot = (long)p->param_base + (long)i;
+        if (names && slot >= 0) {
+            const char *n = korb_id_name(names[slot]);
+            if (n && n[0] != 0 && !(n[0] == '_' && n[1] == 0)) {
+                korb_ary_push(pair, korb_id2sym(names[slot]));
+            }
+        }
         korb_ary_push(r, pair);
     }
     if (p->rest_slot >= 0) {
-        VALUE pair = korb_ary_new_capa(1);
+        VALUE pair = korb_ary_new_capa(2);
         korb_ary_push(pair, korb_id2sym(korb_intern("rest")));
+        if (names) {
+            const char *n = korb_id_name(names[p->rest_slot]);
+            if (n && n[0] != 0 && !(n[0] == '_' && n[1] == 0)) {
+                korb_ary_push(pair, korb_id2sym(names[p->rest_slot]));
+            }
+        }
         korb_ary_push(r, pair);
     }
     if (p->kwh_save_slot >= 0) {
-        VALUE pair = korb_ary_new_capa(1);
+        VALUE pair = korb_ary_new_capa(2);
         korb_ary_push(pair, korb_id2sym(korb_intern("keyrest")));
+        if (names) {
+            const char *n = korb_id_name(names[p->kwh_save_slot]);
+            if (n && n[0] != 0 && !(n[0] == '_' && n[1] == 0)) {
+                korb_ary_push(pair, korb_id2sym(names[p->kwh_save_slot]));
+            }
+        }
         korb_ary_push(r, pair);
     }
     return r;

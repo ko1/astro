@@ -38,7 +38,7 @@ static VALUE cmp_eq(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 static VALUE cmp_between(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 2) {
-        korb_raise(c, NULL, "wrong number of arguments to between? (%d for 2)", argc);
+        korb_raise_argument_error(c, "wrong number of arguments (given %d, expected 2)", argc);
         return Qnil;
     }
     long lo = korb_cmp_call(c, self, argv[0]);
@@ -63,7 +63,7 @@ static VALUE cmp_clamp(CTX *c, VALUE self, int argc, VALUE *argv) {
         lo = argv[0];
         hi = argv[1];
     } else {
-        korb_raise(c, NULL, "wrong number of arguments to clamp (%d for 1..2)", argc);
+        korb_raise_argument_error(c, "wrong number of arguments (given %d, expected 1..2)", argc);
         return Qnil;
     }
     if (!NIL_P(lo) && korb_cmp_call(c, self, lo) < 0) return lo;
@@ -98,7 +98,7 @@ static VALUE module_undef_or_remove_method(CTX *c, VALUE self, int argc, VALUE *
 
 static VALUE module_alias_method(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 2) {
-        korb_raise(c, NULL, "wrong number of arguments to alias_method (%d for 2)", argc);
+        korb_raise_argument_error(c, "wrong number of arguments (given %d, expected 2)", argc);
         return Qnil;
     }
     if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return self;
@@ -143,10 +143,31 @@ static VALUE module_set_visibility(CTX *c, VALUE self, int argc, VALUE *argv,
         if (BUILTIN_TYPE(self) == T_CLASS || BUILTIN_TYPE(self) == T_MODULE) {
             ((struct korb_class *)self)->default_visibility = v;
         }
-    } else {
-        module_set_visibility_for_args(c, self, argc, argv, v);
+        return self;
     }
-    return self;
+    module_set_visibility_for_args(c, self, argc, argv, v);
+    /* Ruby 3.0+: public/private/protected with args returns the symbol
+     * (single arg) or array of symbols (multiple args).  String args
+     * are converted to symbols for the return value. */
+    if (argc == 1) {
+        if (SYMBOL_P(argv[0])) return argv[0];
+        if (!SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_STRING) {
+            return korb_id2sym(korb_intern_n(((struct korb_string *)argv[0])->ptr,
+                                              ((struct korb_string *)argv[0])->len));
+        }
+        return argv[0];
+    }
+    VALUE r = korb_ary_new_capa(argc);
+    for (int i = 0; i < argc; i++) {
+        if (SYMBOL_P(argv[i])) korb_ary_push(r, argv[i]);
+        else if (!SPECIAL_CONST_P(argv[i]) && BUILTIN_TYPE(argv[i]) == T_STRING) {
+            korb_ary_push(r, korb_id2sym(korb_intern_n(((struct korb_string *)argv[i])->ptr,
+                                                       ((struct korb_string *)argv[i])->len)));
+        } else {
+            korb_ary_push(r, argv[i]);
+        }
+    }
+    return r;
 }
 static VALUE module_private(CTX *c, VALUE self, int argc, VALUE *argv) {
     return module_set_visibility(c, self, argc, argv, KORB_VIS_PRIVATE);
@@ -391,7 +412,40 @@ static VALUE module_const_get(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE module_const_set(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return Qnil;
     if (argc < 2) return Qnil;
-    ID name = SYMBOL_P(argv[0]) ? korb_sym2id(argv[0]) : korb_intern_n(((struct korb_string *)argv[0])->ptr, ((struct korb_string *)argv[0])->len);
+    const char *namep = NULL;
+    int namelen = 0;
+    if (SYMBOL_P(argv[0])) {
+        const char *s = korb_id_name(korb_sym2id(argv[0]));
+        namep = s; namelen = (int)strlen(s);
+    } else if (!SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_STRING) {
+        struct korb_string *str = (struct korb_string *)argv[0];
+        namep = str->ptr; namelen = str->len;
+    } else {
+        VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+        VALUE inspv = korb_funcall(c, argv[0], korb_intern("inspect"), 0, NULL);
+        const char *insp = (!SPECIAL_CONST_P(inspv) && BUILTIN_TYPE(inspv) == T_STRING)
+                              ? ((struct korb_string *)inspv)->ptr : "?";
+        korb_raise(c, (struct korb_class *)eT,
+                   "%s is not a symbol nor a string", insp);
+        return Qnil;
+    }
+    /* Constant name must start with an uppercase ASCII letter and consist
+     * of word characters; mirror MRI's rb_is_const_id check. */
+    bool valid = (namelen > 0 && namep[0] >= 'A' && namep[0] <= 'Z');
+    for (int i = 1; valid && i < namelen; i++) {
+        char ch = namep[i];
+        if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+              (ch >= '0' && ch <= '9') || ch == '_' || (unsigned char)ch >= 0x80)) {
+            valid = false;
+        }
+    }
+    if (!valid) {
+        VALUE eN = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
+        korb_raise(c, (struct korb_class *)eN,
+                   "wrong constant name %.*s", namelen, namep);
+        return Qnil;
+    }
+    ID name = korb_intern_n(namep, namelen);
     korb_const_set((struct korb_class *)self, name, argv[1]);
     return argv[1];
 }

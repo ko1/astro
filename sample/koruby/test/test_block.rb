@@ -171,15 +171,13 @@ def test_break_with_nil
   assert_equal nil, r
 end
 
-# Yielding fewer args than the block declares — extras get nil.
+# Lambdas have strict arity — calling with too few args raises.
+# Procs are lenient — extras get nil.
 def test_block_underflow_args
-  r = nil
-  blk = ->(a, b) { r = [a, b] }
-  blk.call(1)
-  # In CRuby this raises ArgumentError for lambdas (strict arity).
-  # If we got here without raise, koruby is either lenient or it raised.
-  # Either is acceptable, so just check the trial completed.
-  assert(true)
+  blk = ->(a, b) { [a, b] }
+  assert_raise(ArgumentError) { blk.call(1) }
+  pr = Proc.new {|a, b| [a, b] }
+  assert_equal [1, nil], pr.call(1)
 end
 
 # Nested break — break from inner block stops only inner iterator

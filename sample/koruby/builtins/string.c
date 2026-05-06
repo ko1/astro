@@ -18,9 +18,100 @@ static VALUE str_plus(CTX *c, VALUE self, int argc, VALUE *argv) {
     VALUE r = korb_str_dup(self);
     return korb_str_concat(r, argv[0]);
 }
+/* Append a single arg to self.  Returns Qfalse on raise (caller stops). */
+static bool str_concat_one(CTX *c, VALUE self, VALUE arg);
 static VALUE str_concat(CTX *c, VALUE self, int argc, VALUE *argv) {
     CHECK_FROZEN_RET(c, self, Qnil);
-    return korb_str_concat(self, argv[0]);
+    /* String#concat accepts variadic args, appending each in order.
+     * Snapshot any String args that alias self up front, so an arg that
+     * happens to be self sees its pre-concat byte content for every
+     * append (CRuby semantics: `b.concat(b, b)` triples, not doubles). */
+    VALUE local[8];
+    VALUE *args = (argc <= 8) ? local : (VALUE *)korb_xmalloc(sizeof(VALUE) * argc);
+    for (int i = 0; i < argc; i++) {
+        VALUE a = argv[i];
+        if (a == self && !SPECIAL_CONST_P(a) && BUILTIN_TYPE(a) == T_STRING) {
+            struct korb_string *s = (struct korb_string *)a;
+            args[i] = korb_str_new(s->ptr, s->len);
+        } else {
+            args[i] = a;
+        }
+    }
+    for (int i = 0; i < argc; i++) {
+        if (!str_concat_one(c, self, args[i])) return Qnil;
+    }
+    return self;
+}
+static bool str_concat_one(CTX *c, VALUE self, VALUE arg) {
+    /* `str << int` appends the codepoint as bytes (CRuby semantics).
+     * koruby is byte-only; reject negatives and out-of-byte values
+     * with RangeError to mirror CRuby for the simple ASCII range, but
+     * fall through to a single-byte append when 0..255. */
+    if (FIXNUM_P(arg)) {
+        long cp = FIX2LONG(arg);
+        if (cp < 0) {
+            VALUE eR = korb_const_get(korb_vm->object_class, korb_intern("RangeError"));
+            korb_raise(c, (struct korb_class *)eR,
+                       "%ld out of char range", cp);
+            return false;
+        }
+        if (cp <= 0x7f) {
+            char ch = (char)cp;
+            VALUE tmp = korb_str_new(&ch, 1);
+            korb_str_concat(self, tmp);
+            return true;
+        }
+        /* Multi-byte: encode as UTF-8. */
+        char buf[6];
+        int len;
+        if (cp <= 0x7ff) {
+            buf[0] = (char)(0xc0 | (cp >> 6));
+            buf[1] = (char)(0x80 | (cp & 0x3f));
+            len = 2;
+        } else if (cp <= 0xffff) {
+            buf[0] = (char)(0xe0 | (cp >> 12));
+            buf[1] = (char)(0x80 | ((cp >> 6) & 0x3f));
+            buf[2] = (char)(0x80 | (cp & 0x3f));
+            len = 3;
+        } else if (cp <= 0x10ffff) {
+            buf[0] = (char)(0xf0 | (cp >> 18));
+            buf[1] = (char)(0x80 | ((cp >> 12) & 0x3f));
+            buf[2] = (char)(0x80 | ((cp >> 6) & 0x3f));
+            buf[3] = (char)(0x80 | (cp & 0x3f));
+            len = 4;
+        } else {
+            VALUE eR = korb_const_get(korb_vm->object_class, korb_intern("RangeError"));
+            korb_raise(c, (struct korb_class *)eR,
+                       "%ld out of char range", cp);
+            return false;
+        }
+        VALUE tmp = korb_str_new(buf, len);
+        korb_str_concat(self, tmp);
+        return true;
+    }
+    if (SPECIAL_CONST_P(arg) || BUILTIN_TYPE(arg) != T_STRING) {
+        /* Try to_s as a fallback. */
+        VALUE s = korb_funcall(c, arg, korb_intern("to_s"), 0, NULL);
+        if (!SPECIAL_CONST_P(s) && BUILTIN_TYPE(s) == T_STRING) {
+            korb_str_concat(self, s);
+            return true;
+        }
+        VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+        korb_raise(c, (struct korb_class *)eT,
+                   "no implicit conversion to String");
+        return false;
+    }
+    /* Snapshot the arg's bytes if it might alias self (e.g. `b.concat(b, b)`
+     * mutates b mid-call; without a snapshot, the second iteration sees
+     * the already-grown buffer and we end up doubling instead of tripling). */
+    if (arg == self) {
+        struct korb_string *src = (struct korb_string *)arg;
+        VALUE snap = korb_str_new(src->ptr, src->len);
+        korb_str_concat(self, snap);
+        return true;
+    }
+    korb_str_concat(self, arg);
+    return true;
 }
 static VALUE str_bytesize(CTX *c, VALUE self, int argc, VALUE *argv) {
     return INT2FIX(((struct korb_string *)self)->len);
@@ -73,6 +164,13 @@ static VALUE str_format_self(CTX *c, VALUE self, int argc, VALUE *argv);
 static VALUE str_split(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_string *s = (struct korb_string *)self;
     VALUE r = korb_ary_new();
+    bool has_block = korb_block_given();
+    /* When a block is given, yield each piece and return self.  CRuby's
+     * String#split{|x|} returns the receiver unchanged. */
+    #define EMIT(v) do { \
+        if (has_block) { VALUE _v_ = (v); korb_yield(c, 1, &_v_); } \
+        else korb_ary_push(r, (v)); \
+    } while (0)
     if (argc == 0 || NIL_P(argv[0])) {
         /* split on whitespace */
         long i = 0;
@@ -81,26 +179,27 @@ static VALUE str_split(CTX *c, VALUE self, int argc, VALUE *argv) {
             if (i >= s->len) break;
             long start = i;
             while (i < s->len && s->ptr[i] != ' ' && s->ptr[i] != '\t' && s->ptr[i] != '\n') i++;
-            korb_ary_push(r, korb_str_new(s->ptr + start, i - start));
+            EMIT(korb_str_new(s->ptr + start, i - start));
         }
-        return r;
+        return has_block ? self : r;
     }
-    if (BUILTIN_TYPE(argv[0]) != T_STRING) return r;
+    if (BUILTIN_TYPE(argv[0]) != T_STRING) return has_block ? self : r;
     struct korb_string *sep = (struct korb_string *)argv[0];
     if (sep->len == 0) {
-        for (long i = 0; i < s->len; i++) korb_ary_push(r, korb_str_new(s->ptr + i, 1));
-        return r;
+        for (long i = 0; i < s->len; i++) EMIT(korb_str_new(s->ptr + i, 1));
+        return has_block ? self : r;
     }
     long start = 0;
     for (long i = 0; i + sep->len <= s->len; ) {
         if (memcmp(s->ptr + i, sep->ptr, sep->len) == 0) {
-            korb_ary_push(r, korb_str_new(s->ptr + start, i - start));
+            EMIT(korb_str_new(s->ptr + start, i - start));
             i += sep->len;
             start = i;
         } else i++;
     }
-    korb_ary_push(r, korb_str_new(s->ptr + start, s->len - start));
-    return r;
+    EMIT(korb_str_new(s->ptr + start, s->len - start));
+    #undef EMIT
+    return has_block ? self : r;
 }
 
 static VALUE str_chomp(CTX *c, VALUE self, int argc, VALUE *argv) {
@@ -128,6 +227,46 @@ static VALUE str_to_i(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 static VALUE str_to_f(CTX *c, VALUE self, int argc, VALUE *argv) {
     return korb_float_new(strtod(((struct korb_string *)self)->ptr, NULL));
+}
+
+/* String#byteslice — byte-indexed slice.  koruby is byte-only so this
+ * is identical to #[] for the integer / range / (idx, len) forms. */
+static VALUE str_byteslice(CTX *c, VALUE self, int argc, VALUE *argv);
+static VALUE str_append_as_bytes(CTX *c, VALUE self, int argc, VALUE *argv) {
+    /* Append each arg's bytes to self.  koruby is byte-only so this is
+     * a glorified concat that ignores Encoding. */
+    for (int i = 0; i < argc; i++) {
+        if (FIXNUM_P(argv[i])) {
+            char ch = (char)(FIX2LONG(argv[i]) & 0xff);
+            VALUE tmp = korb_str_new(&ch, 1);
+            korb_str_concat(self, tmp);
+        } else if (!SPECIAL_CONST_P(argv[i]) && BUILTIN_TYPE(argv[i]) == T_STRING) {
+            korb_str_concat(self, argv[i]);
+        }
+    }
+    return self;
+}
+static VALUE str_setbyte(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 2 || !FIXNUM_P(argv[0]) || !FIXNUM_P(argv[1])) return Qnil;
+    struct korb_string *s = (struct korb_string *)self;
+    long i = FIX2LONG(argv[0]);
+    long b = FIX2LONG(argv[1]);
+    if (i < 0) i += s->len;
+    if (i < 0 || i >= s->len) {
+        VALUE eI = korb_const_get(korb_vm->object_class, korb_intern("IndexError"));
+        korb_raise(c, (struct korb_class *)eI, "index %ld out of string", i);
+        return Qnil;
+    }
+    s->ptr[i] = (char)(b & 0xff);
+    return argv[1];
+}
+static VALUE str_getbyte(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1 || !FIXNUM_P(argv[0])) return Qnil;
+    struct korb_string *s = (struct korb_string *)self;
+    long i = FIX2LONG(argv[0]);
+    if (i < 0) i += s->len;
+    if (i < 0 || i >= s->len) return Qnil;
+    return INT2FIX((unsigned char)s->ptr[i]);
 }
 
 static VALUE str_aref(CTX *c, VALUE self, int argc, VALUE *argv) {
@@ -162,6 +301,11 @@ static VALUE str_aref(CTX *c, VALUE self, int argc, VALUE *argv) {
         return korb_str_new(s->ptr + i, len);
     }
     return Qnil;
+}
+
+/* Body for byteslice — same as aref since koruby is byte-only. */
+static VALUE str_byteslice(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return str_aref(c, self, argc, argv);
 }
 
 static VALUE str_aset(CTX *c, VALUE self, int argc, VALUE *argv) {
@@ -626,6 +770,30 @@ static VALUE str_tr(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 static VALUE str_tr_s(CTX *c, VALUE self, int argc, VALUE *argv) {
     return str_tr_impl(self, argc, argv, true);
+}
+
+/* tr! / tr_s!: in-place.  Return self if changed, nil otherwise. */
+static VALUE str_tr_bang_impl(CTX *c, VALUE self, int argc, VALUE *argv, bool squeeze) {
+    if (BUILTIN_TYPE(self) != T_STRING) return Qnil;
+    CHECK_FROZEN_RET(c, self, Qnil);
+    struct korb_string * const s = (struct korb_string *)self;
+    VALUE replaced = str_tr_impl(self, argc, argv, squeeze);
+    if (BUILTIN_TYPE(replaced) != T_STRING) return Qnil;
+    const struct korb_string * const r = (const struct korb_string *)replaced;
+    if (r->len == s->len && memcmp(r->ptr, s->ptr, s->len) == 0) return Qnil;
+    char * const buf = korb_xmalloc_atomic(r->len + 1);
+    memcpy(buf, r->ptr, r->len); buf[r->len] = 0;
+    s->ptr = buf;
+    s->len = r->len;
+    return self;
+}
+
+static VALUE str_tr_bang(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return str_tr_bang_impl(c, self, argc, argv, false);
+}
+
+static VALUE str_tr_s_bang(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return str_tr_bang_impl(c, self, argc, argv, true);
 }
 
 /* sprintf — limited; supports %d %s %x %o %X %b %f %g %% %c, with width/0pad */

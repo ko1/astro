@@ -176,6 +176,24 @@ struct korb_class *korb_class_new(ID name, struct korb_class *super, enum korb_t
     struct korb_class *k = korb_xmalloc(sizeof(*k));
     k->basic.flags = T_CLASS;
     k->basic.klass = korb_vm ? (VALUE)korb_vm->class_class : 0;
+    /* CRuby model: a subclass's metaclass has the parent's metaclass
+     * as its superclass.  That's how `def self.X` on Parent becomes
+     * callable as Child.X.  Without this, every class shares the
+     * shared `class_class` metaclass and singleton methods don't
+     * propagate down the inheritance chain. */
+    if (super && super->basic.klass &&
+        (struct korb_class *)super->basic.klass != korb_vm->class_class) {
+        struct korb_class *child_meta = korb_xmalloc(sizeof(*child_meta));
+        memset(child_meta, 0, sizeof(*child_meta));
+        child_meta->basic.flags = T_CLASS;
+        child_meta->basic.klass = korb_vm ? (VALUE)korb_vm->class_class : 0;
+        child_meta->name = name;
+        child_meta->super = (struct korb_class *)super->basic.klass;
+        child_meta->instance_type = T_CLASS;
+        method_table_init(&child_meta->methods);
+        child_meta->default_visibility = KORB_VIS_PUBLIC;
+        k->basic.klass = (VALUE)child_meta;
+    }
     k->name = name;
     k->super = super;
     k->instance_type = instance_type;
@@ -191,7 +209,88 @@ struct korb_class *korb_class_new(ID name, struct korb_class *super, enum korb_t
     k->prepends_cnt = 0;
     k->prepends_capa = 0;
     k->default_visibility = KORB_VIS_PUBLIC;
+    k->class_ivars = NULL;
+    k->class_ivar_cnt = 0;
+    k->class_ivar_capa = 0;
+    k->cvars = NULL;
+    k->cvar_cnt = 0;
+    k->cvar_capa = 0;
     return k;
+}
+
+/* Class variables: walk the cref's class up the super chain to find
+ * @@name; return Qundef when not present.  Used by node_cvar_get. */
+static struct korb_class *cvar_owner_(struct korb_class *k, ID name) {
+    for (struct korb_class *cur = k; cur; cur = cur->super) {
+        for (uint32_t i = 0; i < cur->cvar_cnt; i++) {
+            if (cur->cvars[i].name == name) return cur;
+        }
+    }
+    return NULL;
+}
+
+VALUE korb_cvar_get(CTX *c, ID name) {
+    struct korb_class *k = c->cref ? c->cref->klass : c->current_class;
+    /* For instance methods, c->cref is set; cvar lookup uses the
+     * receiver's class.  Outside any class body, fall back to
+     * recv's class via current frame's self. */
+    if (!k && c->current_frame) k = korb_class_of_class(c->current_frame->self);
+    if (!k) k = korb_class_of_class(c->self);
+    struct korb_class *owner = k ? cvar_owner_(k, name) : NULL;
+    if (!owner) {
+        VALUE eName = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
+        korb_raise(c, (struct korb_class *)eName,
+                   "uninitialized class variable %s in %s",
+                   korb_id_name(name),
+                   k ? korb_id_name(k->name) : "(unknown)");
+        return Qnil;
+    }
+    for (uint32_t i = 0; i < owner->cvar_cnt; i++) {
+        if (owner->cvars[i].name == name) return owner->cvars[i].value;
+    }
+    return Qnil;
+}
+
+void korb_cvar_set(CTX *c, ID name, VALUE val) {
+    struct korb_class *k = c->cref ? c->cref->klass : c->current_class;
+    if (!k && c->current_frame) k = korb_class_of_class(c->current_frame->self);
+    if (!k) k = korb_class_of_class(c->self);
+    if (!k) return;
+    struct korb_class *target = cvar_owner_(k, name);
+    if (!target) target = k;
+    for (uint32_t i = 0; i < target->cvar_cnt; i++) {
+        if (target->cvars[i].name == name) { target->cvars[i].value = val; return; }
+    }
+    if (target->cvar_cnt >= target->cvar_capa) {
+        uint32_t nc = target->cvar_capa ? target->cvar_capa * 2 : 4;
+        target->cvars = korb_xrealloc(target->cvars, nc * sizeof(*target->cvars));
+        target->cvar_capa = nc;
+    }
+    target->cvars[target->cvar_cnt].name = name;
+    target->cvars[target->cvar_cnt].value = val;
+    target->cvar_cnt++;
+}
+
+bool korb_cvar_defined(CTX *c, ID name) {
+    struct korb_class *k = c->cref ? c->cref->klass : c->current_class;
+    if (!k && c->current_frame) k = korb_class_of_class(c->current_frame->self);
+    if (!k) k = korb_class_of_class(c->self);
+    return k && cvar_owner_(k, name) != NULL;
+}
+
+VALUE korb_cvar_names(struct korb_class *k) {
+    VALUE arr = korb_ary_new();
+    /* Collect from k and its supers, dedup by name. */
+    for (struct korb_class *cur = k; cur; cur = cur->super) {
+        for (uint32_t i = 0; i < cur->cvar_cnt; i++) {
+            VALUE sym = korb_id2sym(cur->cvars[i].name);
+            bool seen = false;
+            struct korb_array *a = (struct korb_array *)arr;
+            for (long j = 0; j < a->len; j++) if (a->ptr[j] == sym) { seen = true; break; }
+            if (!seen) korb_ary_push(arr, sym);
+        }
+    }
+    return arr;
 }
 
 struct korb_class *korb_module_new(ID name) {
@@ -248,6 +347,10 @@ static bool korb_method_body_is_simple_frame(struct Node *body) {
         strstr(buf, "(node_const_get ")         == NULL &&
         strstr(buf, "(node_const_set ")         == NULL &&
         strstr(buf, "(node_const_path_get ")    == NULL &&
+        /* class variables need cref so the lookup roots at the
+         * defining class, not the surrounding (Object) cref. */
+        strstr(buf, "(node_cvar_get ")          == NULL &&
+        strstr(buf, "(node_cvar_set ")          == NULL &&
         strstr(buf, "(node_raise ")             == NULL &&
         strstr(buf, "block_given?")             == NULL &&
         /* __method__ / __callee__ / caller need a real frame so they
@@ -278,6 +381,7 @@ void korb_class_add_method_ast_full_cref(struct korb_class *klass, ID name, stru
     m->u.ast.locals_cnt = locals_cnt;
     m->u.ast.post_params_cnt = 0;
     m->u.ast.kwh_save_slot = -1;
+    m->u.ast.local_names = NULL;
     method_table_set(&klass->methods, name, m);
     if (korb_vm) { korb_vm->method_serial++; korb_g_method_serial = korb_vm->method_serial; }
 }
@@ -288,6 +392,40 @@ void korb_class_add_method_ast_full_cref(struct korb_class *klass, ID name, stru
 void korb_class_set_method_block_slot(struct korb_class *klass, ID name, int slot) {
     struct korb_method *m = korb_class_find_method(klass, name);
     if (m && m->type == KORB_METHOD_AST) m->u.ast.block_slot = slot;
+}
+
+/* Attach the lvar-name table (slot -> ID) so Kernel#binding can
+ * iterate the active frame and emit each name → value pair.  Caller
+ * owns the array; we just store the pointer. */
+void korb_class_set_method_local_names(struct korb_class *klass, ID name, ID *names) {
+    struct korb_method *m = korb_class_find_method(klass, name);
+    if (m && m->type == KORB_METHOD_AST) m->u.ast.local_names = names;
+}
+
+/* Side table: body NODE pointer → ID array (lvar names by slot).
+ * Populated at parse time by a parse helper, queried at runtime
+ * (after the def NODE has registered the method) so we can stamp
+ * local_names onto m->u.ast.local_names. */
+struct body_to_names_entry {
+    struct Node *body;
+    ID *names;
+    struct body_to_names_entry *next;
+};
+static struct body_to_names_entry *g_body_to_names = NULL;
+
+void korb_register_body_local_names(struct Node *body, ID *names) {
+    struct body_to_names_entry *e = korb_xmalloc(sizeof(*e));
+    e->body = body;
+    e->names = names;
+    e->next = g_body_to_names;
+    g_body_to_names = e;
+}
+
+ID *korb_body_local_names(struct Node *body) {
+    for (struct body_to_names_entry *e = g_body_to_names; e; e = e->next) {
+        if (e->body == body) return e->names;
+    }
+    return NULL;
 }
 
 void korb_class_set_method_post_params_cnt(struct korb_class *klass, ID name, uint32_t cnt) {
@@ -425,12 +563,65 @@ void korb_module_include(struct korb_class *klass, struct korb_class *mod) {
     klass->includes[klass->includes_cnt++] = mod;
 }
 
+/* Visit the linearized MRO of `klass` in the order CRuby uses for method
+ * lookup, calling `cb(klass_or_iclass, ctx)` at each step.  cb returning
+ * non-zero stops the walk (and the return value is propagated).
+ *
+ * Order at each level:
+ *   For each prepended module (most-recent first):
+ *     recurse into the prepended module (its own prepends, then itself)
+ *   The class itself.
+ *   For each included module (most-recent first):
+ *     recurse into the included module (its own prepends, then itself)
+ *   Then super class's expansion.
+ *
+ * Recursive expansion handles `m1.prepend m0; sc.include m1` so that
+ * m0's methods appear between sc and m1 in the lookup order. */
+typedef int (*korb_mro_visit_cb)(const struct korb_class *iclass, void *ctx);
+static int korb_mro_walk_one(const struct korb_class *k, korb_mro_visit_cb cb, void *ctx);
+
+/* Visit a module's own prepends (recursively) then the module itself.
+ * Used for a single iclass entry in the linearized walk. */
+static int korb_mro_visit_module(const struct korb_class *m,
+                                  korb_mro_visit_cb cb, void *ctx) {
+    for (int32_t i = (int32_t)m->prepends_cnt - 1; i >= 0; i--) {
+        int rc = korb_mro_visit_module(m->prepends[i], cb, ctx);
+        if (rc) return rc;
+    }
+    return cb(m, ctx);
+}
+static int korb_mro_walk_one(const struct korb_class *k, korb_mro_visit_cb cb, void *ctx) {
+    while (k) {
+        for (int32_t i = (int32_t)k->prepends_cnt - 1; i >= 0; i--) {
+            int rc = korb_mro_visit_module(k->prepends[i], cb, ctx);
+            if (rc) return rc;
+        }
+        int rc = cb(k, ctx);
+        if (rc) return rc;
+        for (int32_t i = (int32_t)k->includes_cnt - 1; i >= 0; i--) {
+            int rc2 = korb_mro_visit_module(k->includes[i], cb, ctx);
+            if (rc2) return rc2;
+        }
+        k = k->super;
+    }
+    return 0;
+}
+
+/* Method dispatch keeps the original "walk the class chain, prepends
+ * win, includes are already flattened into the class table" behavior.
+ * The MRO walker is for super, where we need to distinguish iclasses. */
 struct korb_method *korb_class_find_method(const struct korb_class *klass, ID name) {
     while (klass) {
-        /* prepended modules win over the class's own methods.  Walk in
-         * reverse — the most recently prepended module dispatches first. */
         for (int32_t i = (int32_t)klass->prepends_cnt - 1; i >= 0; i--) {
-            struct korb_method *m = method_table_get(&klass->prepends[i]->methods, name);
+            const struct korb_class *p = klass->prepends[i];
+            /* Recurse into the prepended module's own prepends.  This
+             * matters when M1.prepend M0 and the host class prepends/
+             * includes M1 — M0's methods need to win. */
+            for (int32_t j = (int32_t)p->prepends_cnt - 1; j >= 0; j--) {
+                struct korb_method *m = method_table_get(&p->prepends[j]->methods, name);
+                if (m) return m;
+            }
+            struct korb_method *m = method_table_get(&p->methods, name);
             if (m) return m;
         }
         struct korb_method *m = method_table_get(&klass->methods, name);
@@ -452,41 +643,158 @@ struct korb_method *korb_class_find_method(const struct korb_class *klass, ID na
  * `methods` table at include-time, the "find within an included module"
  * step also reads from `mod->methods` directly (matching CRuby's own
  * include semantics). */
+/* Walk the receiver's linearized MRO looking for `name`, starting past
+ * the (skip_n + 1)-th occurrence of `defining_class`.
+ *
+ * Linearization order (matches `korb_class_find_method`):
+ *   prepends (most-recent first) → class → includes (most-recent first)
+ *   → super class's same expansion
+ *
+ * `out_skip_n`, when non-null, is set to the number of times the
+ * returned method's defining_class has appeared *before* the position
+ * the method was found at (inclusive).  This is what caller stores in
+ * the new frame's super_skip_n so that the next super walk skips past
+ * exactly the right occurrence — handles `prepend M; include M` where
+ * the same module's body shows up twice in the MRO. */
+struct find_super_ctx {
+    ID name;
+    const struct korb_class *defining_class;
+    uint16_t skip_n;
+    uint16_t seen_def;            /* occurrences of defining_class seen so far */
+    bool past;                    /* set once we've seen (skip_n + 1) of them */
+    struct korb_method *result;
+    uint16_t result_skip_n;       /* occurrences of result's defining_class up to & incl. found pos minus 1 */
+    uint16_t seen_at_result;      /* tracks defining_class occurrences of result.defining_class as we walk */
+};
+static int find_super_cb(const struct korb_class *iclass, void *vctx) {
+    struct find_super_ctx *ctx = vctx;
+    if (iclass == ctx->defining_class) {
+        ctx->seen_def++;
+        if (ctx->seen_def >= (uint32_t)ctx->skip_n + 1) ctx->past = true;
+        return 0;
+    }
+    if (!ctx->past) return 0;
+    struct korb_method *m = method_table_get(&iclass->methods, ctx->name);
+    if (!m) return 0;
+    /* Count occurrences of m's own defining_class encountered up to and
+     * including the iclass we found it on.  For super-from-here to skip
+     * the right occurrence, the new frame's super_skip_n is that count
+     * minus one. */
+    ctx->result = m;
+    /* Re-scan the MRO from the start counting m->defining_class up to
+     * `iclass`.  This is O(MRO size) but only happens once per super. */
+    return 1;  /* stop walk here; caller computes result_skip_n */
+}
+struct count_def_ctx {
+    const struct korb_class *target_def;
+    const struct korb_class *stop_at_iclass;
+    uint16_t count;
+    bool stop;
+};
+static int count_def_cb(const struct korb_class *iclass, void *vctx) {
+    struct count_def_ctx *ctx = vctx;
+    if (iclass == ctx->target_def) ctx->count++;
+    if (iclass == ctx->stop_at_iclass) { ctx->stop = true; return 1; }
+    return 0;
+}
+/* Single-pass MRO walker that finds the first iclass past the (skip_n+1)-th
+ * occurrence of defining_class carrying `name`.  Stores the found method,
+ * the iclass it was found on, and how many times its defining_class had
+ * appeared up through (and including) that iclass — needed because the
+ * same module pointer can appear at multiple MRO positions when
+ * prepended and included on the same class.
+ *
+ * `visited_klasses` / `visit_counts` track per-pointer occurrence so we
+ * can answer "this is the Nth time we've seen X" without re-walking. */
+struct find_super_state {
+    ID name;
+    const struct korb_class *defining_class;
+    uint16_t skip_n;
+    uint16_t seen_def;
+    bool past;
+    struct korb_method *result;
+    const struct korb_class *found_at;
+    uint16_t result_visit_n;     /* visit count of result->defining_class at find time */
+    /* Tiny flat (ptr, count) table.  Real MROs are small; 64 is
+     * comfortably larger than any class's expanded MRO. */
+    const struct korb_class *visited_klasses[64];
+    uint16_t visit_counts[64];
+    uint8_t visit_table_len;
+};
+
+/* Increment and return the visit count for `k` (1 after first visit). */
+static uint16_t visit_inc(struct find_super_state *st, const struct korb_class *k) {
+    for (uint8_t i = 0; i < st->visit_table_len; i++) {
+        if (st->visited_klasses[i] == k) {
+            return ++st->visit_counts[i];
+        }
+    }
+    if (st->visit_table_len < 64) {
+        st->visited_klasses[st->visit_table_len] = k;
+        st->visit_counts[st->visit_table_len] = 1;
+        st->visit_table_len++;
+        return 1;
+    }
+    return 1; /* table full — fall back to assuming first */
+}
+static uint16_t visit_get(struct find_super_state *st, const struct korb_class *k) {
+    for (uint8_t i = 0; i < st->visit_table_len; i++) {
+        if (st->visited_klasses[i] == k) return st->visit_counts[i];
+    }
+    return 0;
+}
+static int find_super_visit_cb(const struct korb_class *iclass, void *vctx) {
+    struct find_super_state *st = vctx;
+    visit_inc(st, iclass);
+    if (iclass == st->defining_class) {
+        st->seen_def++;
+        if (st->seen_def >= (uint32_t)st->skip_n + 1) st->past = true;
+        return 0;
+    }
+    if (!st->past) return 0;
+    struct korb_method *m = method_table_get(&iclass->methods, st->name);
+    if (!m) return 0;
+    /* When `iclass` is a host class that flattened-in the method via
+     * include, m->defining_class points at the original module (not at
+     * iclass).  The MRO walker also visits the original module as its
+     * own iclass, where we'd find the same method object — return that
+     * one (its iclass actually equals defining_class) instead so the
+     * counting math below works. */
+    if (m->defining_class != iclass) return 0;
+    st->result = m;
+    st->found_at = iclass;
+    st->result_visit_n = visit_get(st, m->defining_class);
+    return 1;
+}
+struct korb_method *korb_class_find_super_method_n(const struct korb_class *receiver_klass,
+                                                    const struct korb_class *defining_class,
+                                                    ID name,
+                                                    uint16_t skip_n,
+                                                    uint16_t *out_skip_n) {
+    struct find_super_state st = {
+        .name = name,
+        .defining_class = defining_class,
+        .skip_n = skip_n,
+        .seen_def = 0,
+        .past = false,
+        .result = NULL,
+        .found_at = NULL,
+        .result_visit_n = 0,
+        .visit_table_len = 0,
+    };
+    korb_mro_walk_one(receiver_klass, find_super_visit_cb, &st);
+    if (!st.result) return NULL;
+    if (out_skip_n) {
+        *out_skip_n = st.result_visit_n > 0 ? (uint16_t)(st.result_visit_n - 1) : 0;
+    }
+    return st.result;
+}
+
+/* Backwards-compat shim — assumes skip_n=0 (first occurrence). */
 struct korb_method *korb_class_find_super_method(const struct korb_class *receiver_klass,
                                                  const struct korb_class *defining_class,
                                                  ID name) {
-    bool past = false;
-    const struct korb_class *k = receiver_klass;
-    while (k) {
-        for (int32_t i = (int32_t)k->prepends_cnt - 1; i >= 0; i--) {
-            const struct korb_class *p = k->prepends[i];
-            if (past) {
-                struct korb_method *m = method_table_get(&p->methods, name);
-                if (m) return m;
-            } else if (p == defining_class) {
-                past = true;
-            }
-        }
-        if (past) {
-            struct korb_method *m = method_table_get(&k->methods, name);
-            if (m) return m;
-        } else if (k == defining_class) {
-            past = true;
-        }
-        /* Includes: most-recently-included first.  These come BETWEEN
-         * the class and its super in the MRO. */
-        for (int32_t i = (int32_t)k->includes_cnt - 1; i >= 0; i--) {
-            const struct korb_class *inc = k->includes[i];
-            if (past) {
-                struct korb_method *m = method_table_get(&inc->methods, name);
-                if (m) return m;
-            } else if (inc == defining_class) {
-                past = true;
-            }
-        }
-        k = k->super;
-    }
-    return NULL;
+    return korb_class_find_super_method_n(receiver_klass, defining_class, name, 0, NULL);
 }
 
 /* ---- constants ---- */
@@ -506,6 +814,18 @@ VALUE korb_const_get(struct korb_class *klass, ID name) {
         if (e->name == name) return e->value;
     }
     return Qundef;
+}
+
+bool korb_const_remove(struct korb_class *klass, ID name, VALUE *out) {
+    struct korb_const_entry **prev = &klass->constants;
+    for (struct korb_const_entry *e = klass->constants; e; prev = &e->next, e = e->next) {
+        if (e->name == name) {
+            if (out) *out = e->value;
+            *prev = e->next;
+            return true;
+        }
+    }
+    return false;
 }
 
 bool korb_const_has(struct korb_class *klass, ID name) {
@@ -562,8 +882,23 @@ void korb_gvar_set(ID name, VALUE v) {
 
 /* ---- objects (with class-shape ivars) ---- */
 VALUE korb_object_new(struct korb_class *klass) {
+    int it = klass->instance_type ? klass->instance_type : T_OBJECT;
+    /* Class.allocate / Module.allocate must produce a struct big enough
+     * to hold a class — otherwise field accesses (super, methods,
+     * basic.flags) on the result later read past the malloc'd region.
+     * Mark such an "uninitialized class" by leaving super=NULL; the
+     * .new path below uses that to raise TypeError before dispatching.*/
+    if (it == T_CLASS || it == T_MODULE) {
+        struct korb_class *k = korb_xmalloc(sizeof(*k));
+        memset(k, 0, sizeof(*k));
+        k->basic.flags = it;
+        k->basic.klass = (VALUE)klass;
+        k->name = korb_intern("(uninitialized)");
+        k->instance_type = T_OBJECT;
+        return (VALUE)k;
+    }
     struct korb_object *o = korb_xmalloc(sizeof(*o));
-    o->basic.flags = klass->instance_type ? klass->instance_type : T_OBJECT;
+    o->basic.flags = it;
     o->basic.klass = (VALUE)klass;
     /* Preallocate ivar slots based on the class's known ivar shape, so
      * the inline ivar_set_ic fast path hits on the first write to each
@@ -585,10 +920,24 @@ VALUE korb_object_new(struct korb_class *klass) {
 
 static int ivar_slot(struct korb_class *k, ID name) {
     for (uint32_t i = 0; i < k->ivar_count; i++) if (k->ivar_names[i] == name) return (int)i;
+    /* Singleton-class wrapping (`def self.foo`) re-points basic.klass to
+     * a child class with no ivar shape of its own.  Walk past it to the
+     * original class so reads/writes hit the same slot table. */
+    static ID singleton_id = 0;
+    if (singleton_id == 0) singleton_id = korb_intern("(singleton)");
+    if (k->name == singleton_id && k->super) {
+        return ivar_slot(k->super, name);
+    }
     return -1;
 }
 
 static int ivar_slot_assign(struct korb_class *k, ID name) {
+    /* For singleton-class wrappers (`def self.foo`), the ivar shape lives
+     * on the original class — append there so the slot is shared with
+     * the rest of the class's instances. */
+    static ID singleton_id = 0;
+    if (singleton_id == 0) singleton_id = korb_intern("(singleton)");
+    while (k->name == singleton_id && k->super) k = k->super;
     int s = ivar_slot(k, name);
     if (s >= 0) return s;
     if (k->ivar_count >= k->ivar_capa) {
@@ -809,6 +1158,17 @@ void korb_ary_aset(VALUE av, long i, VALUE v) {
 /* korb_ary_len, korb_ary_aref: now static inline in object.h. */
 
 /* ---- hash ---- */
+/* Tiny in-progress set used to break self-referential array/hash hashing
+ * cycles (CRuby uses rb_exec_recursive; we just track a small stack of
+ * pointers and return a sentinel on second entry). */
+static __thread VALUE korb_hash_recurse_stk[64];
+static __thread int korb_hash_recurse_top = 0;
+static bool korb_hash_recurse_seen(VALUE v) {
+    for (int i = 0; i < korb_hash_recurse_top; i++) {
+        if (korb_hash_recurse_stk[i] == v) return true;
+    }
+    return false;
+}
 uint64_t korb_hash_value(VALUE v) {
     if (FIXNUM_P(v)) return (uint64_t)v * 11400714819323198485ULL;
     if (SYMBOL_P(v)) return (uint64_t)v * 2654435761ULL;
@@ -819,14 +1179,23 @@ uint64_t korb_hash_value(VALUE v) {
     if (BUILTIN_TYPE(v) == T_STRING) {
         return fnv_hash(((struct korb_string *)v)->ptr, ((struct korb_string *)v)->len);
     }
-    /* Arrays hash by content so `h[[1, 2]]` works on a fresh literal. */
+    /* Arrays hash by content so `h[[1, 2]]` works on a fresh literal.
+     * Recursive arrays (`a << a`) get a fixed sentinel for the recursive
+     * leg so the outer hash terminates with a stable code. */
     if (BUILTIN_TYPE(v) == T_ARRAY) {
+        if (korb_hash_recurse_seen(v)) return 0xdeadbeefcafef00dULL;
         struct korb_array *a = (struct korb_array *)v;
         uint64_t h = 0xcbf29ce484222325ULL;
+        if (korb_hash_recurse_top < 64) {
+            korb_hash_recurse_stk[korb_hash_recurse_top++] = v;
+        }
         for (long i = 0; i < a->len; i++) {
             uint64_t eh = korb_hash_value(a->ptr[i]);
             h ^= eh;
             h *= 0x100000001b3ULL;
+        }
+        if (korb_hash_recurse_top > 0 && korb_hash_recurse_stk[korb_hash_recurse_top - 1] == v) {
+            korb_hash_recurse_top--;
         }
         return h;
     }
@@ -1122,14 +1491,56 @@ bool korb_int_eq(VALUE a, VALUE b) { return korb_int_cmp(a, b) == 0; }
  * caller's stack, we have to make a copy or the next stack push will
  * clobber the captured state.  Hot path is no-op (proc not in fp's
  * range), so cheap to call per return. */
-void korb_proc_snapshot_env_if_in_frame(VALUE v, VALUE *fp_lo, VALUE *fp_hi) {
-    if (SPECIAL_CONST_P(v) || BUILTIN_TYPE(v) != T_PROC) return;
-    struct korb_proc *p = (struct korb_proc *)v;
-    if (!p->env) return;
-    if (p->env < fp_lo || p->env >= fp_hi) return;
+/* Detach `v` (or, for a T_OBJECT, every Proc reachable through its
+ * ivars) from a dying stack frame [fp_lo, fp_hi).  Snapshots the env
+ * to heap so subsequent calls see stable values.  No-op when v isn't
+ * a Proc/Object or when env already lives outside the frame.  Hot
+ * path stays cheap (one address-range compare for non-frame procs). */
+static void korb_snapshot_one_proc_(struct korb_proc *p, VALUE *fp_lo, VALUE *fp_hi) {
+    if (!p->env || p->env < fp_lo || p->env >= fp_hi) return;
     VALUE *snap = korb_xmalloc(p->env_size * sizeof(VALUE));
     for (uint32_t i = 0; i < p->env_size; i++) snap[i] = p->env[i];
     p->env = snap;
+    /* Deep-snapshot: any Proc slot inside `snap` whose own env still
+     * points at the dying frame must also be detached.  Curry-style
+     * code keeps an enclosing proc (`accum` / `outer`) in a method
+     * lvar and the inner proc references it through the captured env;
+     * without this walk, the inner proc carries a Proc whose env
+     * dangles after the method returns. */
+    for (uint32_t i = 0; i < p->env_size; i++) {
+        VALUE slot = snap[i];
+        if (SPECIAL_CONST_P(slot)) continue;
+        if (BUILTIN_TYPE(slot) != T_PROC) continue;
+        struct korb_proc *sp = (struct korb_proc *)slot;
+        if (!sp->env || sp->env < fp_lo || sp->env >= fp_hi) continue;
+        VALUE *snap2 = korb_xmalloc(sp->env_size * sizeof(VALUE));
+        for (uint32_t j = 0; j < sp->env_size; j++) snap2[j] = sp->env[j];
+        sp->env = snap2;
+    }
+}
+
+void korb_proc_snapshot_env_if_in_frame(VALUE v, VALUE *fp_lo, VALUE *fp_hi) {
+    if (SPECIAL_CONST_P(v)) return;
+    int t = BUILTIN_TYPE(v);
+    if (t == T_PROC) {
+        korb_snapshot_one_proc_((struct korb_proc *)v, fp_lo, fp_hi);
+        return;
+    }
+    /* Object or class instance carrying a Proc in some ivar — common
+     * for `class Foo; def initialize(&blk); @blk = blk; end; end`
+     * shapes (Enumerator / Enumerator::Lazy etc).  Without this walk,
+     * @blk's env dangles after the constructor returns. */
+    if (t == T_OBJECT) {
+        struct korb_object *obj = (struct korb_object *)v;
+        if (!obj->ivars) return;
+        for (uint32_t i = 0; i < obj->ivar_cnt; i++) {
+            VALUE iv = obj->ivars[i];
+            if (SPECIAL_CONST_P(iv)) continue;
+            if (BUILTIN_TYPE(iv) == T_PROC) {
+                korb_snapshot_one_proc_((struct korb_proc *)iv, fp_lo, fp_hi);
+            }
+        }
+    }
 }
 
 VALUE korb_proc_new(struct Node *body, VALUE *fp, uint32_t env_size,
@@ -1141,14 +1552,26 @@ VALUE korb_proc_new(struct Node *body, VALUE *fp, uint32_t env_size,
     p->env_size = env_size;
     p->env = fp;
     p->params_cnt = params_cnt;
+    p->opt_cnt = 0;
     p->param_base = param_base;
     p->rest_slot = -1;
     p->kwh_save_slot = -1;
+    p->block_slot = -1;
+    p->post_cnt = 0;
     p->enclosing_block = current_block;  /* capture enclosing-method's block */
     p->self = self;
     p->is_lambda = is_lambda;
     p->creates_proc = false;
+    p->cref = NULL;  /* set by korb_proc_new_with_cref or by callers */
     return (VALUE)p;
+}
+
+VALUE korb_proc_new_with_cref(struct Node *body, VALUE *fp, uint32_t env_size,
+                              uint32_t params_cnt, uint32_t param_base, VALUE self,
+                              bool is_lambda, struct korb_cref *cref) {
+    VALUE pv = korb_proc_new(body, fp, env_size, params_cnt, param_base, self, is_lambda);
+    ((struct korb_proc *)pv)->cref = korb_cref_dup(cref);
+    return pv;
 }
 
 /* Block currently active for yield (set by dispatch_call). */
@@ -1196,20 +1619,30 @@ VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv)
     bool fresh_env_path = blk->creates_proc;
     VALUE *fp;
     VALUE *outer_env_ptr = blk->env;
+    /* Generous slack past env_size: when the block calls Ruby methods,
+     * those methods' frames live at fp[arg_index..arg_index+locals],
+     * which can extend past env_size — env_size only reflects what
+     * the block's own body uses.  Without slack, those writes spill
+     * into adjacent heap (corrupting the symbol table etc).  4 KB
+     * worth of slots is overkill but cheap. */
+    enum { FRESH_ENV_SLACK = 512 };
     if (fresh_env_path) {
-        fp = (VALUE *)korb_xmalloc(blk->env_size * sizeof(VALUE));
+        fp = (VALUE *)korb_xmalloc((blk->env_size + FRESH_ENV_SLACK) * sizeof(VALUE));
         /* Copy ALL of env: outer slots so depth-walks/reads see their
          * current values; block-local slots are about to be overwritten
          * by params/destructure anyway. */
         for (uint32_t i = 0; i < blk->env_size; i++) fp[i] = blk->env[i];
+        for (uint32_t i = blk->env_size; i < blk->env_size + FRESH_ENV_SLACK; i++) fp[i] = Qnil;
     } else {
         fp = blk->env;
     }
     VALUE *prev_fp = c->fp;
     VALUE prev_self = c->self;
     /* Auto-destructure: block with N params yielded a single Array of size M
-     * → assign array elements to params (Ruby block calling convention). */
-    if (blk->params_cnt > 1 && argc == 1 &&
+     * → assign array elements to params (Ruby block calling convention).
+     * Skip when the block has a *rest — destructuring would steal the rest's
+     * args. */
+    if (blk->params_cnt > 1 && argc == 1 && blk->rest_slot < 0 &&
         !SPECIAL_CONST_P(args_buf[0]) && BUILTIN_TYPE(args_buf[0]) == T_ARRAY) {
         struct korb_array *a = (struct korb_array *)args_buf[0];
         for (uint32_t i = 0; i < blk->params_cnt; i++) {
@@ -1218,20 +1651,47 @@ VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv)
     }
     /* Auto-pack: 1-param non-lambda block yielded with N>1 args — Ruby
      * packs them into an Array so `|x|` sees `[a, b, ...]`.  Hash#each
-     * { |(k, v)| ... } and { |x| ... } both rely on this. */
-    else if (blk->params_cnt == 1 && argc > 1 && !blk->is_lambda) {
+     * { |(k, v)| ... } and { |x| ... } both rely on this.  Skip when
+     * the block has a *rest (then the user wants explicit rest gather,
+     * not auto-pack). */
+    else if (blk->params_cnt == 1 && argc > 1 && !blk->is_lambda && blk->rest_slot < 0) {
         VALUE pack = korb_ary_new_capa((long)argc);
         for (uint32_t i = 0; i < argc; i++) korb_ary_push(pack, args_buf[i]);
         fp[blk->param_base] = pack;
     } else {
+        /* Required params first.  blk->params_cnt covers req + opt; the
+         * rest is in rest_slot if non-negative. */
         for (uint32_t i = 0; i < blk->params_cnt && i < argc; i++) {
             fp[blk->param_base + i] = args_buf[i];
         }
-        /* fill missing params with nil */
+        /* Missing required → nil; missing optional → Qundef so the body's
+         * default_init prologue substitutes the user-supplied default. */
+        uint32_t req_cnt = (blk->params_cnt > blk->opt_cnt) ? blk->params_cnt - blk->opt_cnt : 0;
         for (uint32_t i = (argc < blk->params_cnt ? argc : blk->params_cnt); i < blk->params_cnt; i++) {
-            fp[blk->param_base + i] = Qnil;
+            fp[blk->param_base + i] = (i < req_cnt) ? Qnil : Qundef;
+        }
+        /* *rest: gather extras into an Array.  When called with a single
+         * Array arg and the block is `|*x|` (params_cnt == 0), CRuby's
+         * convention is to bind the array directly to *x rather than
+         * wrap it in another array — so just pass it through. */
+        if (blk->rest_slot >= 0) {
+            uint32_t start = blk->params_cnt;
+            if (argc <= start) {
+                fp[blk->rest_slot] = korb_ary_new();
+            } else if (blk->params_cnt == 0 && argc == 1 &&
+                       !SPECIAL_CONST_P(args_buf[0]) &&
+                       BUILTIN_TYPE(args_buf[0]) == T_ARRAY) {
+                /* `|*x|` with single Array arg: x = arg (NOT [arg]). */
+                fp[blk->rest_slot] = args_buf[0];
+            } else {
+                VALUE rest = korb_ary_new_capa((long)(argc - start));
+                for (uint32_t i = start; i < argc; i++) korb_ary_push(rest, args_buf[i]);
+                fp[blk->rest_slot] = rest;
+            }
         }
     }
+    /* `&blk` parameter: yield doesn't pass a block, so bind nil. */
+    if (blk->block_slot >= 0) fp[blk->block_slot] = Qnil;
     c->self = blk->self;
     /* Switch fp so block body's lvar_get/set hit the captured frame's slots. */
     c->fp = fp;
@@ -1300,37 +1760,36 @@ VALUE korb_build_backtrace(CTX *c, int raise_line) {
     VALUE arr = korb_ary_new();
     const char *default_file = c->current_file ? c->current_file : "(unknown)";
     char buf[512];
+    /* Trace format per frame: "FILE:LINE:in `METHOD'", where LINE is
+     * where execution was at *inside this frame's body* — i.e., the
+     * call site that pushed the next frame on top.  For the topmost
+     * frame, that's the raise site (raise_line); for all others, it's
+     * the next-up frame's caller_node.  caller_node always points at
+     * the call expression that brought control INTO that frame, so the
+     * line we want for frame F is (F's child).caller_node.line. */
     struct korb_frame *f = c->current_frame;
-    bool first = true;
+    int line = raise_line;
+    if (line == 0 && f && f->caller_node) line = f->caller_node->head.line;
     while (f) {
         const char *name = (f->method && f->method->name)
                              ? korb_id_name(f->method->name) : "<main>";
-        /* Prefer the method body's source_file (set when the def was
-         * parsed) so methods from required files report their own
-         * file, not the entry-point's. */
         const char *file = default_file;
         if (f->method && f->method->type == KORB_METHOD_AST &&
             f->method->u.ast.body && f->method->u.ast.body->head.source_file) {
             file = f->method->u.ast.body->head.source_file;
         }
-        int line;
-        if (first) {
-            line = raise_line;
-            if (line == 0 && f->caller_node) line = f->caller_node->head.line;
-            first = false;
-        } else {
-            line = f->caller_node ? f->caller_node->head.line : 0;
-        }
         snprintf(buf, sizeof(buf), "%s:%d:in `%s'", file, line, name);
         korb_ary_push(arr, korb_str_new_cstr(buf));
+        /* Next iteration's line = where IN the parent's body this call
+         * was made.  That's recorded on f->caller_node. */
+        line = f->caller_node ? f->caller_node->head.line : 0;
         f = f->prev;
     }
-    /* Always include a top-level entry so the trace is non-empty even
-     * for raises from main. */
-    snprintf(buf, sizeof(buf), "%s:%d:in `<main>'", default_file, raise_line);
-    if (((struct korb_array *)arr)->len == 0) {
-        korb_ary_push(arr, korb_str_new_cstr(buf));
-    }
+    /* Always tack on a <main> entry — line is whatever the
+     * outermost-method's caller_node pointed at (i.e. the toplevel
+     * call site), or raise_line when raising directly from main. */
+    snprintf(buf, sizeof(buf), "%s:%d:in `<main>'", default_file, line);
+    korb_ary_push(arr, korb_str_new_cstr(buf));
     return arr;
 }
 
@@ -1360,6 +1819,43 @@ VALUE korb_exc_new(struct korb_class *klass, const char *msg) {
     return obj;
 }
 
+/* Convenience helpers — pick the right exception subclass instead of
+ * the default RuntimeError.  Many CRuby tests pattern-match on the
+ * specific subclass (`assert_raise(TypeError) { ... }`), so getting
+ * this right unblocks a lot of off-the-shelf tests. */
+void korb_raise_type_error(CTX *c, const char *fmt, ...) {
+    char buf[512];
+    va_list ap; va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    VALUE eTy = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+    korb_raise(c, (struct korb_class *)eTy, "%s", buf);
+}
+void korb_raise_argument_error(CTX *c, const char *fmt, ...) {
+    char buf[512];
+    va_list ap; va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+    korb_raise(c, (struct korb_class *)eArg, "%s", buf);
+}
+void korb_raise_range_error(CTX *c, const char *fmt, ...) {
+    char buf[512];
+    va_list ap; va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    VALUE eR = korb_const_get(korb_vm->object_class, korb_intern("RangeError"));
+    korb_raise(c, (struct korb_class *)eR, "%s", buf);
+}
+void korb_raise_index_error(CTX *c, const char *fmt, ...) {
+    char buf[512];
+    va_list ap; va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    VALUE eI = korb_const_get(korb_vm->object_class, korb_intern("IndexError"));
+    korb_raise(c, (struct korb_class *)eI, "%s", buf);
+}
+
 void korb_raise(CTX *c, struct korb_class *klass, const char *fmt, ...) {
     char buf[512];
     va_list ap; va_start(ap, fmt);
@@ -1368,6 +1864,30 @@ void korb_raise(CTX *c, struct korb_class *klass, const char *fmt, ...) {
     VALUE e = korb_exc_new(klass, buf);
     int line = (c->last_cfunc_callsite ? c->last_cfunc_callsite->head.line : 0);
     korb_exc_set_backtrace(c, e, line);
+    /* Exception#cause: when this raise happens inside a rescue body,
+     * $! holds the currently-rescued exception — link it.  Skip if the
+     * exception already has a cause (don't overwrite an explicit one),
+     * skip self, and skip when linking would create a cycle (re-raising
+     * an already-cause-of-current is the canonical cycle case). */
+    VALUE current = korb_gvar_get(korb_intern("$!"));
+    if (!NIL_P(current) && current != e &&
+        !SPECIAL_CONST_P(e) && BUILTIN_TYPE(e) == T_OBJECT) {
+        VALUE existing = korb_ivar_get(e, korb_intern("@cause"));
+        if (UNDEF_P(existing) || NIL_P(existing)) {
+            /* Cycle check: walk current's cause chain — if we encounter e
+             * already, linking would close the loop. */
+            VALUE walk = current;
+            int hops = 0;
+            bool would_cycle = false;
+            while (!NIL_P(walk) && hops++ < 32) {
+                if (walk == e) { would_cycle = true; break; }
+                if (SPECIAL_CONST_P(walk) || BUILTIN_TYPE(walk) != T_OBJECT) break;
+                walk = korb_ivar_get(walk, korb_intern("@cause"));
+                if (UNDEF_P(walk)) break;
+            }
+            if (!would_cycle) korb_ivar_set(e, korb_intern("@cause"), current);
+        }
+    }
     c->state = KORB_RAISE;
     c->state_value = e;
 }
@@ -1904,16 +2424,21 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
     }
     c->self = recv;
 
-    /* Trimmed frame: only fields actually read elsewhere (.prev,
-     * .method for super, .self for backtrace, .block for block_given?,
-     * .caller_node for backtrace lines).  Skipping .fp / .locals_cnt
-     * saves a couple stores per call. */
+    /* Frame: .prev, .method (for super), .self / .caller_node (for
+     * backtrace), .block (for block_given?), and .fp / .locals_cnt
+     * (for Kernel#binding via __capture_lvars__).  Earlier we elided
+     * .fp / .locals_cnt to save two stores; that broke binding from
+     * any method routed through the general prologue (anything with
+     * &blk, *rest, or kwargs). */
     struct korb_frame frame;
     frame.prev = c->current_frame;
     frame.method = mc->method;
     frame.self = recv;
     frame.block = block;
     frame.caller_node = callsite;
+    frame.fp = c->fp;
+    frame.locals_cnt = mc->locals_cnt;
+    frame.super_skip_n = 0;
     c->current_frame = &frame;
     VALUE *frame_lo = c->fp;
     VALUE *frame_hi = c->fp + mc->locals_cnt;
@@ -2043,7 +2568,6 @@ VALUE prologue_proc_method(CTX *c, struct Node *callsite, VALUE recv,
 
 VALUE korb_dispatch_visibility_raise(CTX *c, struct korb_method *m, ID name,
                                      struct korb_class *klass, VALUE recv) {
-    (void)recv;
     const char *kind = (m->visibility == KORB_VIS_PRIVATE) ? "private" : "protected";
     VALUE eNoMethodError = korb_const_get(korb_vm->object_class, korb_intern("NoMethodError"));
     struct korb_class *exc_class = NULL;
@@ -2054,6 +2578,12 @@ VALUE korb_dispatch_visibility_raise(CTX *c, struct korb_method *m, ID name,
     korb_raise(c, exc_class, "%s method '%s' called for %s",
                kind, korb_id_name(name),
                klass && klass->name ? korb_id_name(klass->name) : "?");
+    /* Stash receiver + name on the exception so NoMethodError#receiver
+     * and #name work.  CRuby exposes both. */
+    if (c->state == KORB_RAISE && c->state_value && !SPECIAL_CONST_P(c->state_value)) {
+        korb_ivar_set(c->state_value, korb_intern("@receiver"), recv);
+        korb_ivar_set(c->state_value, korb_intern("@name"), korb_id2sym(name));
+    }
     return Qnil;
 }
 
@@ -2089,6 +2619,10 @@ VALUE korb_dispatch_call(CTX *c, struct Node *callsite, VALUE recv, ID name,
             VALUE eNo = korb_const_get(korb_vm->object_class, korb_intern("NoMethodError"));
             korb_raise(c, (struct korb_class *)eNo, "undefined method '%s' for %s",
                      korb_id_name(name), korb_id_name(klass->name));
+            if (c->state == KORB_RAISE && c->state_value && !SPECIAL_CONST_P(c->state_value)) {
+                korb_ivar_set(c->state_value, korb_intern("@receiver"), recv);
+                korb_ivar_set(c->state_value, korb_intern("@name"), korb_id2sym(name));
+            }
             return Qnil;
         }
         if (mc) {
@@ -2251,6 +2785,19 @@ VALUE korb_dispatch_binop(CTX *c, VALUE recv, ID name, int argc, VALUE *argv) {
         c->self = prev_self;
         return r;
     }
+    /* Proc-method (define_method'd): invoke the captured Proc with
+     * argv (which lives on C stack here, not in fp slots).  proc_call
+     * handles its own slot setup. */
+    if (m->type == KORB_METHOD_PROC) {
+        struct korb_proc *p = m->u.proc.proc;
+        if (!p) return Qnil;
+        extern VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv);
+        VALUE prev_self = c->self;
+        c->self = recv;
+        VALUE r = proc_call(c, (VALUE)p, argc, argv);
+        c->self = prev_self;
+        return r;
+    }
     /* AST: same as korb_dispatch_call but argv is ad-hoc */
     if (m->u.ast.rest_slot < 0 && (unsigned)argc > m->u.ast.total_params_cnt) {
         korb_raise(c, NULL, "wrong arg count for %s", korb_id_name(name));
@@ -2292,6 +2839,13 @@ VALUE korb_dispatch_binop(CTX *c, VALUE recv, ID name, int argc, VALUE *argv) {
     c->fp = new_fp;
     if (c->fp + m->u.ast.locals_cnt > c->sp) c->sp = c->fp + m->u.ast.locals_cnt;
     c->self = recv;
+    /* &blk binding: when the method declares `&name`, copy the current
+     * block into that slot so funcall_with_block delivers it to the
+     * body.  Without this, `Foo.new { ... }`'s block doesn't reach
+     * `def initialize(&blk)`. */
+    if (m->u.ast.block_slot >= 0 && m->u.ast.block_slot < (int)m->u.ast.locals_cnt) {
+        c->fp[m->u.ast.block_slot] = current_block ? (VALUE)current_block : Qnil;
+    }
     struct korb_cref *prev_cref2 = c->cref;
     if (m->def_cref) c->cref = m->def_cref;
     /* push frame for super() / cref  */
@@ -2302,6 +2856,7 @@ VALUE korb_dispatch_binop(CTX *c, VALUE recv, ID name, int argc, VALUE *argv) {
         .self = recv,
         .fp = c->fp,
         .locals_cnt = m->u.ast.locals_cnt,
+        .super_skip_n = 0,
     };
     c->current_frame = &frame2;
     VALUE r = EVAL(c, m->u.ast.body);
@@ -2320,6 +2875,22 @@ VALUE korb_dispatch_binop(CTX *c, VALUE recv, ID name, int argc, VALUE *argv) {
 
 VALUE korb_funcall(CTX *c, VALUE recv, ID mid, int argc, VALUE *argv) {
     return korb_dispatch_binop(c, recv, mid, argc, argv);
+}
+
+/* Same as korb_funcall, but the called method sees `block` as its
+ * implicit block (yield / block_given?).  Used by Class#new to
+ * forward `Foo.new { ... }`'s block into Foo#initialize. */
+VALUE korb_funcall_with_block(CTX *c, VALUE recv, ID mid, int argc, VALUE *argv, VALUE block) {
+    extern struct korb_proc *current_block;
+    struct korb_proc *prev = current_block;
+    if (NIL_P(block) || SPECIAL_CONST_P(block) || BUILTIN_TYPE(block) != T_PROC) {
+        current_block = NULL;
+    } else {
+        current_block = (struct korb_proc *)block;
+    }
+    VALUE r = korb_dispatch_binop(c, recv, mid, argc, argv);
+    current_block = prev;
+    return r;
 }
 
 /* ---- runtime init ---- */
@@ -2491,6 +3062,11 @@ void korb_runtime_init(void) {
         korb_const_set(cObject, korb_intern("FloatDomainError"), (VALUE)k);
         k = korb_class_new(korb_intern("FrozenError"), cRuntimeError, T_OBJECT);
         korb_const_set(cObject, korb_intern("FrozenError"), (VALUE)k);
+        /* SystemExit < Exception (NOT StandardError so it's not caught by
+         * a bare `rescue`).  status / success? are exposed via ivars set
+         * by Kernel#exit. */
+        k = korb_class_new(korb_intern("SystemExit"), cException, T_OBJECT);
+        korb_const_set(cObject, korb_intern("SystemExit"), (VALUE)k);
     }
     /* ScriptError children. */
     {
@@ -2693,6 +3269,12 @@ struct korb_fiber {
     VALUE *resumer_sp;
     VALUE *resumer_stack_base;
     VALUE *resumer_stack_end;
+    struct korb_cref *resumer_cref;     /* save resumer's lexical const ref */
+    struct korb_class *resumer_current_class;
+    struct korb_frame *resumer_current_frame;
+    struct korb_cref *fiber_cref;       /* save fiber's lexical const ref */
+    struct korb_class *fiber_current_class;
+    struct korb_frame *fiber_current_frame;
 
     /* Fiber-side save: stashed on yield, restored on resume.
      * Initialized at fiber creation (or first resume) to point into
@@ -2725,7 +3307,10 @@ static void korb_fiber_entry(unsigned int hi, unsigned int lo) {
         c->self = blk->self;
         struct korb_proc *prev_block = current_block;
         current_block = NULL;
+        struct korb_cref *prev_cref = c->cref;
+        if (blk->cref) c->cref = blk->cref;
         VALUE result = EVAL(c, blk->body);
+        c->cref = prev_cref;
         c->self = prev_self;
         current_block = prev_block;
         fib->result = result;
@@ -2783,6 +3368,12 @@ VALUE korb_fiber_new(struct korb_proc *block) {
     fib->resumer_sp = NULL;
     fib->resumer_stack_base = NULL;
     fib->resumer_stack_end = NULL;
+    fib->resumer_cref = NULL;
+    fib->resumer_current_class = NULL;
+    fib->resumer_current_frame = NULL;
+    fib->fiber_cref = NULL;
+    fib->fiber_current_class = NULL;
+    fib->fiber_current_frame = NULL;
     return (VALUE)fib;
 }
 
@@ -2820,10 +3411,16 @@ VALUE korb_fiber_resume(CTX *c, VALUE fibv, int argc, VALUE *argv) {
     fib->resumer_sp = c->sp;
     fib->resumer_stack_base = c->stack_base;
     fib->resumer_stack_end = c->stack_end;
+    fib->resumer_cref = c->cref;
+    fib->resumer_current_class = c->current_class;
+    fib->resumer_current_frame = c->current_frame;
     c->fp = fib->fiber_fp;
     c->sp = fib->fiber_sp;
     c->stack_base = fib->frame;
     c->stack_end = fib->frame + fib->frame_size;
+    if (fib->fiber_cref) c->cref = fib->fiber_cref;
+    if (fib->fiber_current_class) c->current_class = fib->fiber_current_class;
+    if (fib->fiber_current_frame) c->current_frame = fib->fiber_current_frame;
     fib->state = KF_RUNNING;
 
     /* Boehm walks the current thread's C stack during GC.  Inside a
@@ -2851,6 +3448,9 @@ VALUE korb_fiber_resume(CTX *c, VALUE fibv, int argc, VALUE *argv) {
     c->sp = fib->resumer_sp;
     c->stack_base = fib->resumer_stack_base;
     c->stack_end = fib->resumer_stack_end;
+    c->cref = fib->resumer_cref;
+    c->current_class = fib->resumer_current_class;
+    c->current_frame = fib->resumer_current_frame;
     current_fiber = prev;
     if (fib->state != KF_DEAD) fib->state = KF_SUSPENDED;
     return fib->result;
@@ -2869,10 +3469,16 @@ VALUE korb_fiber_yield(CTX *c, int argc, VALUE *argv) {
      * value-stack. */
     fib->fiber_fp = c->fp;
     fib->fiber_sp = c->sp;
+    fib->fiber_cref = c->cref;
+    fib->fiber_current_class = c->current_class;
+    fib->fiber_current_frame = c->current_frame;
     c->fp = fib->resumer_fp;
     c->sp = fib->resumer_sp;
     c->stack_base = fib->resumer_stack_base;
     c->stack_end = fib->resumer_stack_end;
+    c->cref = fib->resumer_cref;
+    c->current_class = fib->resumer_current_class;
+    c->current_frame = fib->resumer_current_frame;
 
     /* Mirror of resume's GC_disable: re-enable on yield back, disable
      * again when the fiber resumes.  See resume for the full rationale. */
@@ -2884,6 +3490,9 @@ VALUE korb_fiber_yield(CTX *c, int argc, VALUE *argv) {
      * method calls inside the fiber check against the right bounds. */
     c->stack_base = fib->frame;
     c->stack_end = fib->frame + fib->frame_size;
+    if (fib->fiber_cref) c->cref = fib->fiber_cref;
+    if (fib->fiber_current_class) c->current_class = fib->fiber_current_class;
+    if (fib->fiber_current_frame) c->current_frame = fib->fiber_current_frame;
     /* Resumed: restore the fiber's fp/sp (resume already did this from
      * its side, but in a chain of resume->yield->resume the inner ctx
      * comes back here and the resumer's wrapper has overwritten c->fp

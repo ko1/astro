@@ -68,6 +68,7 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
         return Qnil;
     }
     VALUE *prev_fp = c->fp;
+    VALUE *prev_sp = c->sp;
     VALUE prev_self = c->self;
 
     VALUE *new_fp = prev_fp + arg_index;
@@ -79,13 +80,20 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
     struct korb_proc *prev_block = NULL;
     struct korb_cref *prev_cref = NULL;
     /* Always push a minimal frame for backtrace.  Heavy state save
-     * (block/cref/current_block) only when the body actually uses it. */
+     * (block/cref/current_block) only when the body actually uses it.
+     * fp + locals_cnt are recorded too so Kernel#binding /
+     * __capture_lvars__ can read the active method's slots. */
     struct korb_frame frame;
     frame.prev = c->current_frame;
     frame.method = mc->method;
     frame.self = recv;
     frame.block = block;
     frame.caller_node = callsite;
+    frame.fp = new_fp;
+    frame.locals_cnt = mc->locals_cnt;
+    /* Normal call: method's defining_class is hit for the first time.
+     * super-from-here should walk past the FIRST occurrence. */
+    frame.super_skip_n = 0;
     c->current_frame = &frame;
     if (UNLIKELY(!simple)) {
         prev_block = current_block;
@@ -114,6 +122,10 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
         korb_proc_snapshot_env_if_in_frame(c->state_value, new_fp, new_fp + mc->locals_cnt);
     }
     c->fp = prev_fp;
+    /* Always restore sp.  Without this, every method call leaves sp
+     * higher than before — long-running loops with many calls hit
+     * stack_end and false-overflow.  Cheap (one store per call). */
+    c->sp = prev_sp;
     c->self = prev_self;
 
     if (UNLIKELY(c->state == KORB_RETURN || c->state == KORB_BREAK)) {
@@ -145,6 +157,7 @@ prologue_ast_simple_static_inl(CTX *c, struct Node *callsite, VALUE recv,
         return Qnil;
     }
     VALUE *prev_fp = c->fp;
+    VALUE *prev_sp = c->sp;
     VALUE prev_self = c->self;
 
     VALUE *new_fp = prev_fp + arg_index;
@@ -160,6 +173,11 @@ prologue_ast_simple_static_inl(CTX *c, struct Node *callsite, VALUE recv,
     frame.self = recv;
     frame.block = block;
     frame.caller_node = callsite;
+    frame.fp = new_fp;
+    frame.locals_cnt = mc->locals_cnt;
+    /* Normal call: method's defining_class is hit for the first time.
+     * super-from-here should walk past the FIRST occurrence. */
+    frame.super_skip_n = 0;
     c->current_frame = &frame;
     if (UNLIKELY(!simple)) {
         prev_block = current_block;
@@ -188,6 +206,7 @@ prologue_ast_simple_static_inl(CTX *c, struct Node *callsite, VALUE recv,
         korb_proc_snapshot_env_if_in_frame(c->state_value, new_fp, new_fp + mc->locals_cnt);
     }
     c->fp = prev_fp;
+    c->sp = prev_sp;
     c->self = prev_self;
 
     if (UNLIKELY(c->state == KORB_RETURN || c->state == KORB_BREAK)) {

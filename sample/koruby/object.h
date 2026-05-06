@@ -90,6 +90,7 @@ struct korb_method {
             int block_slot;                /* -1 if no &blk */
             uint32_t post_params_cnt;      /* params after *rest (def f(a, *r, b)) */
             int kwh_save_slot;             /* slot to stash peeled kwargs hash (-1 if no kwargs) */
+            ID *local_names;               /* slot index → name ID; len=locals_cnt; NULL when none */
         } ast;
         struct {
             VALUE (*func)(CTX *c, VALUE self, int argc, VALUE *argv);
@@ -159,6 +160,16 @@ struct korb_class {
     } *class_ivars;
     uint32_t class_ivar_cnt;
     uint32_t class_ivar_capa;
+    /* Class variables (@@var).  Shared across the class hierarchy:
+     * lookup walks `super` chain, write targets the highest ancestor
+     * that already has the cvar (else the current class).  Same flat
+     * (name, value) list as class_ivars. */
+    struct korb_class_cvar {
+        ID name;
+        VALUE value;
+    } *cvars;
+    uint32_t cvar_cnt;
+    uint32_t cvar_capa;
 };
 
 struct korb_proc {
@@ -166,10 +177,16 @@ struct korb_proc {
     struct Node *body;
     VALUE *env;             /* shared/captured locals */
     uint32_t env_size;      /* slots covered by env (absolute high-water of body) */
-    uint32_t params_cnt;
+    uint32_t params_cnt;    /* total positional params: required + optional */
+    uint32_t opt_cnt;       /* of params_cnt, how many are optional (have a default).
+                             * proc_call uses this to fill missing optional slots
+                             * with Qundef (vs Qnil for required) so the body
+                             * prologue's node_default_init can detect them. */
     uint32_t param_base;    /* absolute slot where block's params begin */
     int rest_slot;          /* absolute slot for *rest, or -1 */
     int kwh_save_slot;      /* absolute slot for peeled kwargs hash, or -1 */
+    int block_slot;         /* absolute slot for &blk parameter, or -1 */
+    uint32_t post_cnt;      /* required params after *rest (def f(*r, b, c)) */
     /* Enclosing method's block as seen at proc creation time.  When the
      * block's body itself does `yield`, dispatch to this enclosing block
      * rather than the block being currently executed.  Captures the
@@ -183,6 +200,10 @@ struct korb_proc {
      * without the flag, every iteration's captured proc would alias
      * the same env memory and see the last iter's values. */
     bool creates_proc;
+    /* Lexical class nesting captured at proc creation time so constant
+     * lookups inside the body resolve in the enclosing class scope
+     * (CRuby semantics: `class C; X = 1; proc { X }; end` finds C::X). */
+    struct korb_cref *cref;
 };
 
 /* Method object: a bound (receiver, method) pair, callable via #call/#[] */
@@ -273,6 +294,9 @@ void korb_class_add_method_ast_full_cref(struct korb_class *klass, ID name, stru
 struct korb_cref *korb_cref_dup(struct korb_cref *src);
 void korb_class_add_method_cfunc(struct korb_class *klass, ID name, VALUE (*func)(CTX *, VALUE, int, VALUE *), int argc);
 void korb_class_set_method_block_slot(struct korb_class *klass, ID name, int slot);
+void korb_class_set_method_local_names(struct korb_class *klass, ID name, ID *names);
+void korb_register_body_local_names(struct Node *body, ID *names);
+ID *korb_body_local_names(struct Node *body);
 void korb_class_set_method_post_params_cnt(struct korb_class *klass, ID name, uint32_t cnt);
 void korb_class_set_method_kwh_save_slot(struct korb_class *klass, ID name, int slot);
 void korb_class_alias_method(struct korb_class *klass, ID new_name, struct korb_method *m);
@@ -448,6 +472,10 @@ void  korb_p(VALUE v); /* writes to stdout with newline */
 /* errors / exceptions */
 VALUE korb_exc_new(struct korb_class *klass, const char *msg);
 void  korb_raise(CTX *c, struct korb_class *klass, const char *fmt, ...);
+void  korb_raise_type_error(CTX *c, const char *fmt, ...);
+void  korb_raise_argument_error(CTX *c, const char *fmt, ...);
+void  korb_raise_range_error(CTX *c, const char *fmt, ...);
+void  korb_raise_index_error(CTX *c, const char *fmt, ...);
 VALUE korb_build_backtrace(CTX *c, int raise_line);
 void  korb_exc_set_backtrace(CTX *c, VALUE exc, int raise_line);
 
@@ -632,6 +660,7 @@ VALUE korb_range_new(VALUE begin, VALUE end, bool exclude_end);
 
 /* proc */
 VALUE korb_proc_new(struct Node *body, VALUE *fp, uint32_t env_size, uint32_t params_cnt, uint32_t param_base, VALUE self, bool is_lambda);
+VALUE korb_proc_new_with_cref(struct Node *body, VALUE *fp, uint32_t env_size, uint32_t params_cnt, uint32_t param_base, VALUE self, bool is_lambda, struct korb_cref *cref);
 void korb_proc_snapshot_env_if_in_frame(VALUE v, VALUE *fp_lo, VALUE *fp_hi);
 
 /* Builtins init */

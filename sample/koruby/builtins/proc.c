@@ -9,13 +9,21 @@ static VALUE proc_lambda_p(CTX *c, VALUE self, int argc, VALUE *argv) {
     return KORB_BOOL(((struct korb_proc *)self)->is_lambda);
 }
 
-/* Proc#arity — params_cnt; -(required+1) for blocks with *rest. */
+/* Proc#arity — count of required positional args (req + post).
+ * Non-lambda procs: opt-only blocks return non-negative arity (req).
+ * Any *rest makes it negative: -(req + 1).
+ * Lambdas: opt also makes it negative. */
 static VALUE proc_arity(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (BUILTIN_TYPE(self) != T_PROC) return INT2FIX(0);
     struct korb_proc *p = (struct korb_proc *)self;
-    if (!p->body) return INT2FIX(0);
-    if (p->rest_slot >= 0) return INT2FIX(-((long)p->params_cnt + 1));
-    return INT2FIX((long)p->params_cnt);
+    if (!p->body && p->params_cnt == 0 && p->rest_slot < 0) return INT2FIX(0);
+    long required = (long)p->params_cnt - (long)p->opt_cnt + (long)p->post_cnt;
+    if (required < 0) required = 0;
+    bool has_rest = (p->rest_slot >= 0);
+    bool has_opt = (p->opt_cnt > 0);
+    if (has_rest) return INT2FIX(-(required + 1));
+    if (p->is_lambda && has_opt) return INT2FIX(-(required + 1));
+    return INT2FIX(required);
 }
 
 /* Proc#== — same Proc identity. */
@@ -107,9 +115,16 @@ VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
      * prev_fp IS the env (the block is being called from within its
      * defining scope — closure writes propagate naturally) — that
      * case is also where nested-proc curry chains depend on direct
-     * env aliasing for n-deep variable lookup to work. */
-    if (prev_fp && prev_fp != new_fp &&
-        prev_fp >= new_fp && prev_fp <= new_fp + p->env_size) {
+     * env aliasing for n-deep variable lookup to work.
+     *
+     * Additionally clone when env lies outside the current value-stack
+     * range — this happens when a Proc captured outside a Fiber is
+     * called from inside it: fp would jump out of the fiber's stack
+     * and stack_end checks would misfire (false stack-overflow). */
+    bool env_outside_stack = (new_fp < c->stack_base || new_fp >= c->stack_end);
+    bool method_overlaps_env = (prev_fp && prev_fp != new_fp &&
+                                prev_fp >= new_fp && prev_fp <= new_fp + p->env_size);
+    if (method_overlaps_env || env_outside_stack) {
         fresh_env = c->sp;
         for (uint32_t i = 0; i < p->env_size; i++) fresh_env[i] = new_fp[i];
         c->sp = fresh_env + p->env_size;
@@ -131,31 +146,74 @@ VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
      * single Array argument and the block declares >1 param, the array
      * is auto-destructured into individual params (so blk.call([1,2])
      * with `|a, b|` binds a=1, b=2). */
-    if (argc == 1 && p->params_cnt > 1 && p->rest_slot < 0 &&
+    uint32_t total_pos = p->params_cnt + p->post_cnt;
+    if (argc == 1 && total_pos > 1 && p->rest_slot < 0 &&
         !SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_ARRAY) {
         struct korb_array *a = (struct korb_array *)argv[0];
-        for (uint32_t i = 0; i < p->params_cnt; i++) {
-            new_fp[p->param_base + i] = (i < (uint32_t)a->len) ? a->ptr[i] : Qnil;
+        argc = (int)a->len;
+        argv = a->ptr;
+        /* fall through to the regular binding path */
+    }
+    {
+        /* Bind positional params: req → post → (leftover spreads across
+         * opt → *rest).  Posts have higher priority than opt/rest, so
+         * subtract them off the back before deciding how to split the
+         * "middle" between opt and rest. */
+        uint32_t req_cnt = (p->params_cnt > p->opt_cnt) ? p->params_cnt - p->opt_cnt : 0;
+        uint32_t post_cnt = p->post_cnt;
+        uint32_t arg_cur = 0;  /* pointer into argv */
+        uint32_t total_argc = (uint32_t)argc;
+        /* 1) Fill required from front. */
+        uint32_t req_fill = (total_argc < req_cnt) ? total_argc : req_cnt;
+        for (uint32_t i = 0; i < req_fill; i++) {
+            new_fp[p->param_base + i] = argv[arg_cur++];
         }
-    } else {
-        /* Required params first. */
-        for (int i = 0; i < argc && (uint32_t)i < p->params_cnt; i++) {
-            new_fp[p->param_base + i] = argv[i];
-        }
-        for (uint32_t i = (uint32_t)(argc < (int)p->params_cnt ? argc : (int)p->params_cnt);
-             i < p->params_cnt; i++) {
+        for (uint32_t i = req_fill; i < req_cnt; i++) {
             new_fp[p->param_base + i] = Qnil;
         }
-        /* *rest: gather remaining args into rest_slot. */
+        /* 2) Reserve post slots — pulled later from argv tail. */
+        uint32_t remaining = total_argc - arg_cur;  /* args left after req */
+        uint32_t post_take = (remaining < post_cnt) ? remaining : post_cnt;
+        uint32_t middle = remaining - post_take;    /* available to opt + *rest */
+        /* 3) Optional: fill from the front of "middle". */
+        for (uint32_t i = 0; i < p->opt_cnt; i++) {
+            uint32_t opt_slot = p->param_base + req_cnt + i;
+            if (i < middle) {
+                new_fp[opt_slot] = argv[arg_cur++];
+            } else {
+                new_fp[opt_slot] = Qundef;  /* triggers default_init */
+            }
+        }
+        if (middle > p->opt_cnt) middle -= p->opt_cnt; else middle = 0;
+        /* 4) *rest: gather whatever is left in "middle" (after opt). */
         if (p->rest_slot >= 0) {
             VALUE rest = korb_ary_new();
-            for (int i = (int)p->params_cnt; i < argc; i++) korb_ary_push(rest, argv[i]);
+            for (uint32_t i = 0; i < middle; i++) korb_ary_push(rest, argv[arg_cur++]);
             new_fp[p->rest_slot] = rest;
+        } else {
+            /* No rest — just skip the leftover middle args (they're dropped). */
+            arg_cur += middle;
+        }
+        /* 5) Posts: absolute slots = param_base + params_cnt + (rest?1:0). */
+        if (post_cnt > 0) {
+            uint32_t post_base = p->param_base + p->params_cnt + (p->rest_slot >= 0 ? 1 : 0);
+            for (uint32_t i = 0; i < post_take; i++) {
+                new_fp[post_base + i] = argv[arg_cur++];
+            }
+            for (uint32_t i = post_take; i < post_cnt; i++) {
+                new_fp[post_base + i] = Qnil;
+            }
         }
     }
     /* Stash kwh into save slot. */
     if (p->kwh_save_slot >= 0 && !UNDEF_P(peeled_kwh)) {
         new_fp[p->kwh_save_slot] = peeled_kwh;
+    }
+    /* Bind &blk parameter — the caller's current_block (or nil) goes
+     * into the slot the proc declared `&blk` on. */
+    if (p->block_slot >= 0) {
+        extern struct korb_proc *current_block;
+        new_fp[p->block_slot] = current_block ? (VALUE)current_block : Qnil;
     }
     c->fp = new_fp;
     if (c->fp + p->env_size > c->sp) c->sp = c->fp + p->env_size;
@@ -165,7 +223,13 @@ VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
     extern struct korb_proc *current_block;
     struct korb_proc *prev_block = current_block;
     current_block = p->enclosing_block;
+    /* Restore the lexical class nesting captured at block-creation time
+     * so constant lookups and `def` inside the body resolve in the
+     * defining class scope, not the caller's. */
+    struct korb_cref *prev_cref = c->cref;
+    if (p->cref) c->cref = p->cref;
     VALUE r = EVAL(c, p->body);
+    c->cref = prev_cref;
     current_block = prev_block;
     /* Snapshot any returned proc whose env points into our about-to-be-
      * popped frame. */
@@ -180,9 +244,12 @@ VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
         for (uint32_t i = 0; i < p->param_base; i++) {
             p->env[i] = fresh_env[i];
         }
-        c->sp = prev_sp;
     }
+    /* Always restore fp/sp.  Without restoring sp on the no-clone
+     * path, repeated proc.call from a hot loop creeps c->sp upward
+     * (each call's slots stay committed) until stack overflow. */
     c->fp = prev_fp;
+    c->sp = prev_sp;
     c->self = prev_self;
     /* Lambda: `return` inside the body targets the lambda itself, so we
      * consume it here and the caller sees the value as the call's result.

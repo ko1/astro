@@ -234,6 +234,27 @@ int main(int argc, char *argv[])
         VALUE r = EVAL(c, ast);
         (void)r;
         if (c->state == KORB_RAISE) {
+            /* SystemExit short-circuits: exit with @status (CRuby
+             * silent) rather than printing "unhandled exception". */
+            VALUE exc = c->state_value;
+            VALUE eSE = korb_const_get(korb_vm->object_class, korb_intern("SystemExit"));
+            if (eSE && !SPECIAL_CONST_P(eSE) && !SPECIAL_CONST_P(exc) &&
+                BUILTIN_TYPE(exc) == T_OBJECT) {
+                struct korb_class *exc_cls = (struct korb_class *)((struct RBasic *)exc)->klass;
+                struct korb_class *se_cls  = (struct korb_class *)eSE;
+                bool is_se = false;
+                for (struct korb_class *kk = exc_cls; kk; kk = kk->super) {
+                    if (kk == se_cls) { is_se = true; break; }
+                }
+                if (is_se) {
+                    int code = 0;
+                    VALUE st = korb_ivar_get(exc, korb_intern("@status"));
+                    if (FIXNUM_P(st)) code = (int)FIX2LONG(st);
+                    extern void korb_run_at_exit_hooks(CTX *c);
+                    korb_run_at_exit_hooks(c);
+                    return code;
+                }
+            }
             VALUE s = korb_inspect(c->state_value);
             fprintf(stderr, "unhandled exception: %s\n", korb_str_cstr(s));
             if (!OPTION.compile_only) {
