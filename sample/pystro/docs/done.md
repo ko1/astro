@@ -283,6 +283,80 @@ bytecode loop、Boehm GC vs CPython の refcount + cycle collector)。
 
 ---
 
+## R14 (continued autonomous probe — test 109–120, 121 tests passing)
+
+### parser
+
+- `with (cm1, cm2 as x):` 3.10+ parenthesised multi-context (prescan respects outer parens)
+- 'def f(): a; b; c' inline-suite multi-statement with ';'
+- 'yield a, b' yields tuple (a, b)
+- match patterns on built-in types: `case int():` / `case str():` / etc.
+
+### dunder + protocols
+
+- list & list / list | list as set ops (dict_keys-style courtesy)
+- {:,.2f} / {:_d} grouping for floats
+- 'in' identity short-circuit (NaN-safe)
+- format zero-pad with sign: '{-42:05d}' = '-0042'
+- str.startswith/endswith/rfind/rindex/index accept start+end
+- builtin function: __class__ / __qualname__ / __module__ / __doc__
+- generic __class__ fallback to type(v)
+- KeyError on dict lookup carries repr(key)
+- '...' Ellipsis literal
+- __hash__ = None enforces TypeError
+- __set_name__ descriptor hook (called at class def time)
+- cls[...] dispatches to __class_getitem__
+- __index__ for sequence indexing + hex/oct/bin coercion
+- __round__ / __floor__ / __ceil__ / __pos__ / __divmod__ on instances
+- __getitem__ sequence iter protocol (no __iter__ required)
+- raise non-exception → TypeError ("must derive from BaseException")
+
+### class machinery
+
+- `class C(B, name=...)` kwargs forwarded to __init_subclass__
+- dataclass inheritance walks MRO for inherited _fields
+- dataclass __post_init__
+- enum methods on members (per-class _Member subclass)
+- iter() idempotent: iter(it) returns it for iterators
+- vars(cls) returns dict of class methods
+- abc.ABC abstract method enforcement
+
+### parameter kinds
+
+- pos-only / kw-only enforcement at call time
+- __slots__ enforcement (subclass without slots grants __dict__)
+- trailing comma in def, `t = 1,` → (1,)
+- (a, b) = ... / [a, b] = ... paren/bracket unpack
+- lambda *args / **kw / kw-only / pos-only
+- `for i, (a, b) in items:` nested tuple targets
+
+### bug fixes
+
+- list(zip()) infinite loop (n_inner==0 → empty every iter)
+- bool/int dict-key collision → 1 entry
+- complex `**` (polar form)
+- stale param_names after PYSTRO_NAME_TABLE realloc
+
+### stdlib
+
+- functools.cached_property / singledispatch / total_ordering
+- string.Template (substitute / safe_substitute) / capwords
+- bisect with `key=` (3.10+)
+- dataclasses.field(default_factory=...) / is_dataclass / replace / astuple
+- collections.UserDict / UserList / UserString as real classes
+- Counter.subtract / total / elements / update
+- deque maxlen / rotate / extend / extendleft
+- enum.IntEnum / StrEnum / Flag / IntFlag / unique
+- itertools.product(repeat=)
+- random.randrange / randbytes / choices / gauss
+- io.StringIO readline / __iter__ / seek / tell
+- file iter (for line in f)
+- typing.NamedTuple metaclass-based
+- weakref / statistics modules (best-effort)
+- Fraction(float) accepts float
+
+---
+
 ## R13 (continued autonomous probe — test 92–108, 109 tests passing)
 
 ### parser / param kinds
