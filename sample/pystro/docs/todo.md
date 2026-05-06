@@ -6,12 +6,13 @@
 
 ## 残課題 (現在)
 
-R11–R16 で深掘り (test 78–199 追加, **200 unit tests passing**)。 [done.md](./done.md) に詳細。
+R11–R16 で深掘り (test 78–200 追加, **201 unit tests passing**)。 [done.md](./done.md) に詳細。
 
 ### 残存する仕様上の差分 (低優先)
 
-#### S-15. async/await
-- `async def` をパース error とすべきが現状黙って受け入れる。coroutine model なし。
+#### S-15. async/await ✅ (R16)
+- `async def` / `async for` / `async with` / `await` は SyntaxError として
+  弾く (R16 で対応)。coroutine model 自体は無いので asyncio stub が使うだけ。
 
 #### S-16. Wide Unicode support (partial)
 - ✅ (R16) `\u` / `\U` lexer エスケープ → UTF-8 として byte string に展開
