@@ -39,7 +39,7 @@ nuq_make_double(double d)
 }
 
 VALUE
-nuq_make_int(int64_t v)
+nuq_make_int_slow(int64_t v)
 {
     if (LIKELY(v >= NUQ_FIX_MIN && v <= NUQ_FIX_MAX)) return NUQ_FIX(v);
     return nuq_make_double((double)v);
@@ -82,6 +82,70 @@ nuq_make_array(size_t cap)
     return NUQ_OBJ_VAL(o);
 }
 
+/* Object hash-index threshold — below this, plain linear scan is
+ * faster (cache-friendly, no extra alloc).  Past this, build an
+ * open-addressing index keyed by string-hash. */
+#define NUQ_OBJ_HASH_MIN 16
+
+static uint32_t
+nuq_str_hash(const char *bytes, size_t n)
+{
+    /* FNV-1a 32-bit. */
+    uint32_t h = 2166136261u;
+    for (size_t i = 0; i < n; i++) h = (h ^ (uint8_t)bytes[i]) * 16777619u;
+    return h;
+}
+
+static inline uint32_t
+nuq_key_hash(VALUE k)
+{
+    const struct nuq_obj *const ks = NUQ_PTR(k);
+    return nuq_str_hash(ks->str.bytes, ks->str.len);
+}
+
+/* Insert (key_idx_plus_one) into idx[] for hash h, assuming free slot
+ * exists.  Used by rebuild and by set on growth. */
+static void
+obj_idx_put_raw(uint32_t *const idx, uint32_t mask, uint32_t h, uint32_t kpos1)
+{
+    uint32_t pos = h & mask;
+    while (idx[pos] != 0) pos = (pos + 1) & mask;
+    idx[pos] = kpos1;
+}
+
+/* (Re)build idx[] sized for current len.  load factor target 0.5. */
+static void
+obj_idx_rebuild(struct nuq_obj *const o)
+{
+    uint32_t cap = 32;
+    while ((size_t)cap < o->obj.len * 2) cap *= 2;
+    uint32_t *const idx = (uint32_t *)GC_malloc_atomic(cap * sizeof(uint32_t));
+    memset(idx, 0, cap * sizeof(uint32_t));
+    const uint32_t mask = cap - 1;
+    for (size_t i = 0; i < o->obj.len; i++) {
+        obj_idx_put_raw(idx, mask, nuq_key_hash(o->obj.keys[i]), (uint32_t)(i + 1));
+    }
+    o->obj.idx = idx;
+    o->obj.idx_mask = mask;
+}
+
+/* Look up bytes/len in idx; returns keys[]-index or -1 if not found. */
+static int64_t
+obj_idx_lookup(const struct nuq_obj *const o, const char *bytes, size_t n, uint32_t h)
+{
+    const uint32_t *const idx = o->obj.idx;
+    const uint32_t mask = o->obj.idx_mask;
+    uint32_t pos = h & mask;
+    for (;;) {
+        const uint32_t slot = idx[pos];
+        if (slot == 0) return -1;
+        const struct nuq_obj *const ks = NUQ_PTR(o->obj.keys[slot - 1]);
+        if (ks->str.len == n && memcmp(ks->str.bytes, bytes, n) == 0)
+            return (int64_t)(slot - 1);
+        pos = (pos + 1) & mask;
+    }
+}
+
 VALUE
 nuq_make_object(size_t cap)
 {
@@ -91,6 +155,8 @@ nuq_make_object(size_t cap)
     o->obj.vals = (VALUE *)GC_malloc(cap * sizeof(VALUE));
     o->obj.len = 0;
     o->obj.capa = cap;
+    o->obj.idx = NULL;
+    o->obj.idx_mask = 0;
     return NUQ_OBJ_VAL(o);
 }
 
@@ -132,14 +198,35 @@ nuq_array_len(VALUE arr)
 void
 nuq_object_set(VALUE obj, VALUE key, VALUE val)
 {
-    struct nuq_obj *o = NUQ_PTR(obj);
-    /* search */
-    for (size_t i = 0; i < o->obj.len; i++) {
-        if (nuq_eq(o->obj.keys[i], key)) {
-            o->obj.vals[i] = val;
-            return;
+    struct nuq_obj *const o = NUQ_PTR(obj);
+    const struct nuq_obj *const ks = NUQ_PTR(key);
+    uint32_t h = 0;
+    /* All object keys in jq/nuq are strings.  Defensive fallback to
+     * linear nuq_eq for anything else (e.g., number key during a
+     * non-standard construction). */
+    if (UNLIKELY(ks->type != NUQ_T_STRING)) {
+        for (size_t i = 0; i < o->obj.len; i++) {
+            if (nuq_eq(o->obj.keys[i], key)) { o->obj.vals[i] = val; return; }
+        }
+        goto append;
+    }
+    h = nuq_str_hash(ks->str.bytes, ks->str.len);
+    if (o->obj.idx != NULL) {
+        const int64_t pos = obj_idx_lookup(o, ks->str.bytes, ks->str.len, h);
+        if (pos >= 0) { o->obj.vals[pos] = val; return; }
+    } else {
+        /* Linear scan while small. */
+        for (size_t i = 0; i < o->obj.len; i++) {
+            const struct nuq_obj *const ki = NUQ_PTR(o->obj.keys[i]);
+            if (ki->type == NUQ_T_STRING &&
+                ki->str.len == ks->str.len &&
+                memcmp(ki->str.bytes, ks->str.bytes, ks->str.len) == 0) {
+                o->obj.vals[i] = val;
+                return;
+            }
         }
     }
+append:
     if (o->obj.len == o->obj.capa) {
         size_t nc = o->obj.capa * 2;
         o->obj.keys = (VALUE *)GC_realloc(o->obj.keys, nc * sizeof(VALUE));
@@ -149,6 +236,21 @@ nuq_object_set(VALUE obj, VALUE key, VALUE val)
     o->obj.keys[o->obj.len] = key;
     o->obj.vals[o->obj.len] = val;
     o->obj.len++;
+    if (LIKELY(ks->type == NUQ_T_STRING)) {
+        if (o->obj.idx == NULL) {
+            if (o->obj.len > NUQ_OBJ_HASH_MIN) obj_idx_rebuild(o);
+        } else {
+            /* Maintain load factor ≤ 0.5. */
+            if (o->obj.len * 2 > (size_t)o->obj.idx_mask + 1) obj_idx_rebuild(o);
+            else obj_idx_put_raw(o->obj.idx, o->obj.idx_mask, h, (uint32_t)o->obj.len);
+        }
+    } else {
+        /* Non-string key; idx (if any) gets stale.  Easiest: drop it
+         * and rebuild on next reach of the threshold.  These keys are
+         * rare enough that this branch shouldn't matter in practice. */
+        o->obj.idx = NULL;
+        o->obj.idx_mask = 0;
+    }
 }
 
 void
@@ -160,9 +262,25 @@ nuq_object_set_cstr(VALUE obj, const char *key, VALUE val)
 VALUE
 nuq_object_get(VALUE obj, VALUE key)
 {
-    struct nuq_obj *o = NUQ_PTR(obj);
+    const struct nuq_obj *const o = NUQ_PTR(obj);
+    const struct nuq_obj *const ks = NUQ_PTR(key);
+    if (UNLIKELY(ks->type != NUQ_T_STRING)) {
+        for (size_t i = 0; i < o->obj.len; i++) {
+            if (nuq_eq(o->obj.keys[i], key)) return o->obj.vals[i];
+        }
+        return NUQ_NULL;
+    }
+    if (o->obj.idx != NULL) {
+        const uint32_t h = nuq_str_hash(ks->str.bytes, ks->str.len);
+        const int64_t pos = obj_idx_lookup(o, ks->str.bytes, ks->str.len, h);
+        return pos >= 0 ? o->obj.vals[pos] : NUQ_NULL;
+    }
     for (size_t i = 0; i < o->obj.len; i++) {
-        if (nuq_eq(o->obj.keys[i], key)) return o->obj.vals[i];
+        const struct nuq_obj *const ki = NUQ_PTR(o->obj.keys[i]);
+        if (ki->type == NUQ_T_STRING &&
+            ki->str.len == ks->str.len &&
+            memcmp(ki->str.bytes, ks->str.bytes, ks->str.len) == 0)
+            return o->obj.vals[i];
     }
     return NUQ_NULL;
 }
@@ -170,11 +288,17 @@ nuq_object_get(VALUE obj, VALUE key)
 VALUE
 nuq_object_get_cstr(VALUE obj, const char *key)
 {
-    size_t klen = strlen(key);
-    struct nuq_obj *o = NUQ_PTR(obj);
+    const size_t klen = strlen(key);
+    const struct nuq_obj *const o = NUQ_PTR(obj);
+    if (o->obj.idx != NULL) {
+        const uint32_t h = nuq_str_hash(key, klen);
+        const int64_t pos = obj_idx_lookup(o, key, klen, h);
+        return pos >= 0 ? o->obj.vals[pos] : NUQ_NULL;
+    }
     for (size_t i = 0; i < o->obj.len; i++) {
-        struct nuq_obj *ks = NUQ_PTR(o->obj.keys[i]);
-        if (ks->str.len == klen && memcmp(ks->str.bytes, key, klen) == 0)
+        const struct nuq_obj *const ks = NUQ_PTR(o->obj.keys[i]);
+        if (ks->type == NUQ_T_STRING && ks->str.len == klen &&
+            memcmp(ks->str.bytes, key, klen) == 0)
             return o->obj.vals[i];
     }
     return NUQ_NULL;
@@ -183,9 +307,23 @@ nuq_object_get_cstr(VALUE obj, const char *key)
 bool
 nuq_object_has(VALUE obj, VALUE key)
 {
-    struct nuq_obj *o = NUQ_PTR(obj);
+    const struct nuq_obj *const o = NUQ_PTR(obj);
+    const struct nuq_obj *const ks = NUQ_PTR(key);
+    if (UNLIKELY(ks->type != NUQ_T_STRING)) {
+        for (size_t i = 0; i < o->obj.len; i++) {
+            if (nuq_eq(o->obj.keys[i], key)) return true;
+        }
+        return false;
+    }
+    if (o->obj.idx != NULL) {
+        const uint32_t h = nuq_str_hash(ks->str.bytes, ks->str.len);
+        return obj_idx_lookup(o, ks->str.bytes, ks->str.len, h) >= 0;
+    }
     for (size_t i = 0; i < o->obj.len; i++) {
-        if (nuq_eq(o->obj.keys[i], key)) return true;
+        const struct nuq_obj *const ki = NUQ_PTR(o->obj.keys[i]);
+        if (ki->type == NUQ_T_STRING && ki->str.len == ks->str.len &&
+            memcmp(ki->str.bytes, ks->str.bytes, ks->str.len) == 0)
+            return true;
     }
     return false;
 }
@@ -209,10 +347,11 @@ nuq_string_len(VALUE s)
 }
 
 bool
-nuq_eq(VALUE a, VALUE b)
+nuq_eq_slow(VALUE a, VALUE b)
 {
-    if (a == b) return true;
-    if (NUQ_IS_FIX(a) && NUQ_IS_FIX(b)) return false;  /* fast path; same a==b above */
+    /* Inline `nuq_eq` (in node.h) handled the trivial fastpaths
+     * (same VALUE / both fixnum) — anything reaching here is a
+     * heterogeneous or heap-comparison. */
     /* numeric coerce: int <-> double */
     if (NUQ_IS_FIX(a) && NUQ_IS_PTR(b) && NUQ_PTR(b)->type == NUQ_T_DOUBLE)
         return (double)NUQ_FIX_VAL(a) == NUQ_PTR(b)->dbl;
@@ -274,8 +413,9 @@ to_double(VALUE v)
 }
 
 int
-nuq_cmp(VALUE a, VALUE b)
+nuq_cmp_slow(VALUE a, VALUE b)
 {
+    /* Inline `nuq_cmp` (in node.h) folded the both-fixnum case. */
     int ra = nuq_type_rank(a), rb = nuq_type_rank(b);
     if (ra != rb) return ra < rb ? -1 : 1;
 
@@ -326,7 +466,7 @@ nuq_cmp(VALUE a, VALUE b)
 }
 
 bool
-nuq_truthy(VALUE v)
+nuq_truthy_slow(VALUE v)
 {
     if (NUQ_IS_FIX(v)) return true;       /* 0 is truthy in jq */
     struct nuq_obj *o = NUQ_PTR(v);
@@ -451,8 +591,10 @@ nuq_clone(VALUE v)
       }
       case NUQ_T_OBJECT: {
         /* Source keys are already unique — bypass nuq_object_set's
-         * linear collision check (which would make clone O(n²) and
-         * the surrounding object-add loop O(n³)). */
+         * collision check.  If the source has an idx[] (len past the
+         * threshold), rebuild on the clone too so subsequent
+         * `clone(big) + small` (the kv-bench / object-add pattern)
+         * stays O(small) per merge instead of degrading to linear. */
         VALUE r = nuq_make_object(o->obj.len);
         struct nuq_obj *ro = NUQ_PTR(r);
         for (size_t i = 0; i < o->obj.len; i++) {
@@ -460,6 +602,7 @@ nuq_clone(VALUE v)
             ro->obj.vals[ro->obj.len] = o->obj.vals[i];
             ro->obj.len++;
         }
+        if (o->obj.idx != NULL) obj_idx_rebuild(ro);
         return r;
       }
     }
@@ -483,13 +626,14 @@ to_double_v(VALUE v)
 }
 
 VALUE
-nuq_op_add(VALUE a, VALUE b)
+nuq_op_add_slow(VALUE a, VALUE b)
 {
+    /* Inline `nuq_op_add` (in node.h) folded fix+fix without overflow. */
     if (NUQ_IS_PTR(a) && NUQ_PTR(a)->type == NUQ_T_NULL) return b;
     if (NUQ_IS_PTR(b) && NUQ_PTR(b)->type == NUQ_T_NULL) return a;
     if (NUQ_IS_FIX(a) && NUQ_IS_FIX(b)) {
-        int64_t la = NUQ_FIX_VAL(a), lb = NUQ_FIX_VAL(b), r;
-        if (LIKELY(!__builtin_add_overflow(la, lb, &r))) return nuq_make_int(r);
+        /* Reached only on fix+fix overflow (inline path bailed). */
+        int64_t la = NUQ_FIX_VAL(a), lb = NUQ_FIX_VAL(b);
         return nuq_make_double((double)la + (double)lb);
     }
     if (both_numeric(a, b)) return nuq_make_double(to_double_v(a) + to_double_v(b));
@@ -523,11 +667,10 @@ nuq_op_add(VALUE a, VALUE b)
 }
 
 VALUE
-nuq_op_sub(VALUE a, VALUE b)
+nuq_op_sub_slow(VALUE a, VALUE b)
 {
     if (NUQ_IS_FIX(a) && NUQ_IS_FIX(b)) {
-        int64_t la = NUQ_FIX_VAL(a), lb = NUQ_FIX_VAL(b), r;
-        if (LIKELY(!__builtin_sub_overflow(la, lb, &r))) return nuq_make_int(r);
+        int64_t la = NUQ_FIX_VAL(a), lb = NUQ_FIX_VAL(b);
         return nuq_make_double((double)la - (double)lb);
     }
     if (both_numeric(a, b)) return nuq_make_double(to_double_v(a) - to_double_v(b));
@@ -548,11 +691,10 @@ nuq_op_sub(VALUE a, VALUE b)
 }
 
 VALUE
-nuq_op_mul(VALUE a, VALUE b)
+nuq_op_mul_slow(VALUE a, VALUE b)
 {
     if (NUQ_IS_FIX(a) && NUQ_IS_FIX(b)) {
-        int64_t la = NUQ_FIX_VAL(a), lb = NUQ_FIX_VAL(b), r;
-        if (LIKELY(!__builtin_mul_overflow(la, lb, &r))) return nuq_make_int(r);
+        int64_t la = NUQ_FIX_VAL(a), lb = NUQ_FIX_VAL(b);
         return nuq_make_double((double)la * (double)lb);
     }
     if (both_numeric(a, b)) return nuq_make_double(to_double_v(a) * to_double_v(b));
@@ -587,7 +729,7 @@ nuq_op_mul(VALUE a, VALUE b)
 }
 
 VALUE
-nuq_op_div(VALUE a, VALUE b)
+nuq_op_div_slow(VALUE a, VALUE b)
 {
     if (NUQ_IS_PTR(a) && NUQ_PTR(a)->type == NUQ_T_STRING &&
         NUQ_IS_PTR(b) && NUQ_PTR(b)->type == NUQ_T_STRING) {
@@ -624,7 +766,7 @@ nuq_op_div(VALUE a, VALUE b)
 }
 
 VALUE
-nuq_op_mod(VALUE a, VALUE b)
+nuq_op_mod_slow(VALUE a, VALUE b)
 {
     if (NUQ_IS_FIX(a) && NUQ_IS_FIX(b)) {
         int64_t lb = NUQ_FIX_VAL(b);
@@ -642,7 +784,7 @@ nuq_op_mod(VALUE a, VALUE b)
 }
 
 VALUE
-nuq_op_neg(VALUE a)
+nuq_op_neg_slow(VALUE a)
 {
     if (NUQ_IS_FIX(a)) return nuq_make_int(-NUQ_FIX_VAL(a));
     if (NUQ_IS_PTR(a) && NUQ_PTR(a)->type == NUQ_T_DOUBLE)

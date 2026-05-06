@@ -18,7 +18,7 @@ ASTro 本体は [`../../docs/idea.md`](../../docs/idea.md)。
 
 ```sh
 make            # nuq バイナリ
-make test       # test/*.test 338 件 (うち約半分は real jq との差分テスト)
+make test       # test/*.test 338 件 (うち 157 件は real jq との差分テスト)
 
 echo '{"foo": [1,2,3]}'           | ./nuq '.foo | map(. * 2)'
 echo '{"users":[{"a":30},{"a":25}]}' | ./nuq -c '.users | map(select(.a > 27))'
@@ -79,45 +79,51 @@ passed: 338  failed: 0  skipped: 0  total: 338
 
 | bench (vs jq) | jq | jaq | gojq | **nuq AOT** |
 |---|---:|---:|---:|---:|
-| `[.[] \| .name] \| length` (extract) | 1.00x | 1.17x | 1.39x | **1.50x** |
-| `[.[] \| .stats.followers] \| add` (deep) | 1.00x | 1.14x | 1.37x | **1.50x** |
-| `[.[] \| .score] \| add` (sum) | 1.00x | 1.20x | 1.28x | **1.55x** |
-| `length` | 1.00x | 1.15x | 1.26x | **1.32x** |
-| `group_by(.city) \| map({...})` | 1.00x | 1.14x | 1.33x | **1.37x** |
-| `[.[] \| select(.active and .age > 30)] \| length` | 1.00x | 1.07x | 1.29x | **1.47x** |
-| `[.[] \| keys] \| add \| unique \| length` | 1.00x | 2.41x | 2.77x | **3.25x** |
-| `map({name, email, top_tag: .tags[0]})` | 1.00x | 0.91x | 1.41x | **1.31x** |
-| `sort_by(.score) \| .[-10:] \| map(.name)` | 1.00x | 1.19x | 0.64x | **1.59x** |
+| `[.[] \| .name] \| length` (extract) | 1.00x | 1.11x | 1.30x | **1.38x** |
+| `[.[] \| .stats.followers] \| add` (deep) | 1.00x | 1.09x | 1.22x | **1.40x** |
+| `[.[] \| .score] \| add` (sum) | 1.00x | 1.18x | 1.37x | **1.48x** |
+| `length` | 1.00x | 1.20x | 1.29x | **1.33x** |
+| `group_by(.city) \| map({...})` | 1.00x | 1.15x | 1.35x | **1.49x** |
+| `[.[] \| select(.active and .age > 30)] \| length` | 1.00x | 0.99x | 1.22x | **1.39x** |
+| `[.[] \| keys] \| add \| unique \| length` | 1.00x | 2.76x | 3.16x | **3.56x** |
+| `map({name, email, top_tag: .tags[0]})` | 1.00x | 0.92x | 1.47x | **1.47x** |
+| `sort_by(.score) \| .[-10:] \| map(.name)` | 1.00x | 1.16x | 0.63x | **1.50x** |
+| `[.[0] \| paths] \| length` | 1.00x | 1.21x | 1.34x | **1.41x** |
+| `.` (identity) | 1.00x | 1.04x | 1.25x | **1.50x** |
 
-**実用 11 中 11 すべてで jq 越え** (1.3-3.3×)。
+**実用 11 中 11 すべてで jq 越え** (1.3-3.4×)。
 
 ### Micro-bench — jaq examples/benches より
 
 | bench | jq | jaq | gojq | **nuq AOT** |
 |---|---:|---:|---:|---:|
-| `upto 8k` (recursion) | 1.00x | 86.35x | 1.09x | **80.23x** |
-| `to-fromjson 100k` | 1.00x | 8.68x | 15.12x | **19.87x** |
-| `reverse 1M` | 1.00x | 9.80x | 2.01x | **18.31x** |
-| `last 1M` | 1.00x | 4.66x | 0.86x | **9.41x** |
-| `ack(3; 7)` | 1.00x | 0.79x | 0.93x | **7.29x** |
-| `min-max 1M` | 1.00x | 1.07x | 0.89x | **6.05x** |
-| `group-by 100k` | 1.00x | 4.42x | 1.58x | **4.99x** |
-| `cumsum 500k` | 1.00x | 1.06x | 0.68x | **4.83x** |
-| `sort 300k` | 1.00x | 3.84x | 1.03x | **3.38x** |
-| `add 2k` (array concat) | 1.00x | 1.25x | 1.09x | **1.95x** |
-| `empty` (起動) | 1.00x | 1.41x | 1.10x | **1.90x** |
-| `pyramid 8k` (multi-emit recursion) | 1.00x | 0.96x | 0.71x | **1.00x** |
-| `try-catch 500k` | 1.00x | 0.82x | 0.87x | **0.26x** ⬇ |
-| `kv 5k` (object concat) | 1.00x | 1.25x | 0.97x | **0.03x** ⬇ |
+| `upto 8k` (recursion) | 1.00x | 88.56x | 1.05x | **51.87x** |
+| `to-fromjson 100k` | 1.00x | 7.87x | 13.91x | **20.17x** |
+| `reverse 1M` | 1.00x | 8.98x | 2.06x | **17.24x** |
+| `try-catch 500k` | 1.00x | 0.87x | 0.89x | **12.89x** |
+| `min-max 1M` | 1.00x | 1.09x | 0.95x | **10.24x** |
+| `last 1M` | 1.00x | 4.28x | 0.83x | **9.69x** |
+| `ack(3; 7)` | 1.00x | 0.72x | 0.85x | **8.43x** |
+| `group-by 100k` | 1.00x | 4.61x | 1.67x | **7.75x** |
+| `cumsum 500k` | 1.00x | 1.07x | 0.72x | **7.54x** |
+| `sort 300k` | 1.00x | 3.56x | 1.03x | **5.62x** |
+| `add 2k` (array concat) | 1.00x | 1.25x | 1.17x | **2.41x** |
+| `empty` (起動) | 1.00x | 1.93x | 1.48x | **2.31x** |
+| `kv 5k` (object concat) | 1.00x | 1.16x | 0.85x | **1.55x** |
+| `pyramid 8k` (multi-emit recursion) | 1.00x | 0.95x | 0.72x | **0.93x** |
 
-**micro 14 中 12 で jq 越え** (pyramid 互角)。
+**micro 14 中 13 で jq 越え** (pyramid のみ 0.93× で互角ライン)。
 
-`upto` で **jaq (Rust) と互角の 80×** という大健闘。これは EMIT pool
-化 (per-emit `nuq_make_array` を消した) の効果。
+`upto` で **jaq (Rust) と同 50-80× レンジ** (run variance ±20%)。
+適用済みの主要最適化:
+- **EMIT pool**: NODE_DEF が `EMIT { items, count }` を返し、items は CTX 上の flat VALUE buffer のスライス。per-emit GC alloc ゼロ、SD inline と相性良し。
+- **object lookup を hash 化** (open-addressing FNV-1a, threshold 16, lazy build) + `add` の type-aware fast path (all_arrays / all_strings / all_objects)。kv が 25× 遅 → 1.5× 速、`keys_aggregate` 系も伸び。
+- **再帰 def を独立 SD entry に登録** — `nuq_user_call` 経由の `EVAL(c, fd->body)` は runtime resolved なので、各 def 本体を `astro_cs_compile` 個別エントリ化。upto / ack の AOT が interp の 1.2-2.5×。
+- **value 演算 fast path を `static inline`** (context.h): `nuq_op_add / sub / mul / neg`、`nuq_eq`、`nuq_cmp`、`nuq_truthy`、`nuq_make_int` の fixnum 高速路。`min-max / sort / group-by` で 30-60% 縮小。
+- **AST fusion** (parse 時 peephole): `[body] | length` → `emit_count`、`[body] | add` → `emit_fold_add`、`map(F) | map(G)` → `map(F | G)`、`select(F) | select(G)` → `select(F and G)`、+ 右辺エッジ fusion で長 chain も折り畳み。`try-catch 500k` が 0.26× → 12.9×、`cumsum 500k` が 5.0× → 7.5×。
+- `error/0` builtin 登録漏れ修正、object literal の direct-build fast path、EMIT pool の起動時 pre-grow など細かい修正多数。
 
-残る outlier:
-- `kv` (33× 遅): object lookup が線形 — hash 化未実装 (todo B-5)
-- `try-catch` (4× 遅): エラー伝搬の overhead
+詳細は [`docs/done.md`](./docs/done.md) と [`docs/perf.md`](./docs/perf.md)。
 
 `test/*.test` は jq 公式テストと同じフォーマット (filter 1 行 / 入力 JSON
 1 行 / 期待出力 N 行 / 空行で区切り) を採用している。`*.diff.test`
@@ -144,13 +150,13 @@ sample/nuq/
 │   ├── done.md         実装済み機能 + 組み込み一覧
 │   ├── todo.md         未実装機能 + 性能 todo
 │   └── perf.md         測定方針 + ベンチノート
-├── node.def            AST ノード定義 (~50 種)
+├── node.def            AST ノード定義 (114 種)
 ├── context.h           VALUE / nuq_obj / CTX / 公開 API
 ├── node.h              NodeHead + EVAL マクロ
 ├── node.c              ASTroGen 生成ファイルの bridge
 ├── value.c             VALUE 構築 / 等価 / 順序 / JSON 算術ヘルパ
 ├── json.c              JSON parser + pretty-printer
-├── runtime.c           tree-eval helpers (binop / pipe / object ctor / try / interp)
+├── runtime.c           tree-eval helpers (object ctor / interp / def call / side tables)
 ├── filter.c            jq フィルタ言語の lexer + recursive-descent parser
 ├── builtin.c           70+ の組み込み関数 (length, keys, map, select, range, ...)
 ├── main.c              CLI driver
@@ -172,18 +178,19 @@ sample/nuq/
 
 ## 制限 (詳細は docs/todo.md)
 
-- **代入 / 更新代入** (`f = g`、`f |= g`、`+= -= */= //=`) — path 表現が
-  必要で v0 では未着手。
-- **path-aware `del / setpath / delpaths`、`paths(f)`、`leaf_paths`** —
-  上記と同根。
+- **代入 / 更新代入** (`f = g`、`f |= g`、`+= -= */= //=`) — path 表現を
+  返す accessor バリアントが必要で未実装。
+- **path-aware `del / setpath / delpaths` / `leaf_paths`** — 上記と同根
+  (`paths` 自体は実装あり)。
 - **真の正規表現** (`test / match / capture / splits / sub / gsub`) —
   `sample/astrogre` 経由で integrate する方針 (project memory
-  `regexp_astrorge` 参照)。現状 `test` は substring 一致のみ。
-- **streaming pipe** — 現状 `f | g` は `f` の出力を一度配列に集めてから
-  `g` を回す。長大入力では memory 効率が良くない。
+  `regexp_astrorge`)。現状 `test` は substring 一致のみ。
+- **streaming pipe** — 現状 `f | g` は EMIT pool 上に集めてから `g` を
+  回す。長大入力では memory 効率が良くない。
 - **多段 elif chain** — 1 段だけサポート。
 - **`input` / `inputs` / `--seq` / `--arg` / `--argjson`** などの CLI
   入力経路。
+- **`-S` (sort_keys)** — 受け取るが json print に渡してない (no-op)。
 - **モジュール / `import` / `include`** — token は受け付けるが no-op。
 
 GC は Boehm-Demers-Weiser、`VALUE` は 1-bit fixnum タグの 64-bit。

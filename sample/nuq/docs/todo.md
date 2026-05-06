@@ -3,9 +3,22 @@
 実装済みは [done.md](./done.md)、ベンチ結果は [perf.md](./perf.md)、
 ランタイム解説は [runtime.md](./runtime.md)。
 
-おおむねインパクト / 実装コスト順。bench で見えた具体的な outlier を
-解消するもの (B-4, B-5) と、CPS 化で SD specialisation を全面解放する
-もの (B-1〜B-3) が大物。
+おおむねインパクト / 実装コスト順。**B-2 / B-3 / B-5 / B-7 は実装済**
+(`done.md` v0.2 / v0.3 節)。残ってるのは:
+
+- **A 系**: 言語仕様の穴 (代入 / path / regex 等)
+- **B-1**: streaming pipe (alloc pattern 改善、現ベンチ範囲ではほぼ
+  影響無し)
+- **B-4**: pool top の register 常駐化 (pyramid に効く可能性)
+- **B-7 の追加 fusion ルール**: `[X] | unique` など
+- **C 系**: CLI options
+- **D / E**: 内部整理 / 細かい仕様差
+- **F**: JSON 以外の入力 (将来)
+- **G**: テスト / ベンチ拡張
+
+現状での AOT-only 上振れの本筋は **PGO (型 feedback + guard)** で、
+ASTro framework に部品はあるが nuq には未配線。`perf.md` の
+「value 演算 inline」節を参照。
 
 ## A. 機能 — 言語仕様の穴
 
@@ -47,53 +60,82 @@ array subset、object subset の再帰判定が必要。
 
 ## B. パフォーマンス (bench で具体化されたもの)
 
-### B-1. streaming pipe
-`f | g` は LHS 出力を一度配列に集めてから RHS を回す。長 stream
-(`.[]` 経由の large array iteration) で memory 効率が落ちる。
-代替: astrogre 流の continuation chain。少なくとも `.[]` から `g` への
-転送だけ inline 化すれば、典型的な long pipeline のメモリ要件は減る。
+### B-1. streaming pipe (alloc 削減、AOT vs interp には効かない)
+`f | g` は LHS 出力を一度 EMIT pool に集めてから RHS を回す (stack
+discipline で巻き戻しはするが per-stage の slice は確保される)。
+長 stream (`.[]` 経由の large array iteration) で memory 効率が落ちる。
+CPS chain にすれば slice 化を消せる。
+**注意**: これは alloc pattern の話で specialization の話ではない。
+pipe は既に 1 個の `node_pipe(lhs, rhs)` で SD specializer は両側に
+入れている。AOT が interp を引き離す効果は無い (interp も同じ
+alloc を使う)。
 
-### B-2. **全 builtin を node 化** (★ 最優先候補)
-現状: `length`, `map(f)`, `select(f)`, `range(...)` などはすべて
-**`node_call0/1/...` → 線形 builtin table → C 関数呼び出し** の
-チェーンで dispatch される。SD specializer はノード単位で SD を焼くが、
-`node_call*` の中身は `nuq_call_eval` (runtime helper) なので
-inline 先で **builtin table lookup の cmp が定数畳み込みされない**。
+### ~~B-2. 全 builtin を node 化~~ (DONE)
+parser が `BUILTIN0/1/2/3` で各 builtin を専用 NODE allocator に
+振り分けており、`node.def` には `node_b_length` `node_b_keys`
+`node_b_map` ... と 60 個 dedicated NODE がある。runtime の
+linear builtin table は無い。
 
-これを **各 builtin を専用 NODE 化** することで、`length` →
-`node_length`、`map(f)` → `node_map(f)`、`range(M;N)` → `node_range_2`
-等にする。すると:
+### ~~B-3. opaque な value 演算を header inline に~~ (DONE 2026-05-06)
+fast path を `context.h` の `static inline` に切り出し、slow path を
+`value.c` の `_slow` 接尾辞付き関数に。inline 対象:
 
-- builtin 名解決はすべて parse 時に終わる (table lookup ゼロ実行時)
-- SD specializer が `node_length` の本体 (= `nuq_emit(c, nuq_length(c->input)); return BR_OK;`)
-  を親 SD に inline できる
-- 結果として `[range(n)] | reverse | length` が 1 個の SD 関数に
-  fold-in され、range の for ループ・配列 push・reverse のループ・
-  length の読み出し・最後の emit がすべて 1 関数の中で gcc に inline 最適化される
+- `nuq_op_add / sub / mul / neg` (fix+fix overflow check 経由で fix)
+- `nuq_eq` (same-VALUE / fix+fix shortcut)
+- `nuq_cmp` (fix+fix で `(la>lb)-(la<lb)` 1 命令)
+- `nuq_truthy` (fixnum は常に truthy)
+- `nuq_make_int` (range 内なら NUQ_FIX、超えたら _slow)
 
-実装コスト: 中 (~70 builtin × 2-3 行 = 200 行のメカニカルな移植)。
-B-1 と組合せると nuq AOT が interp を引き離せる絵が見える。
+効果 (vs jq):
+- `min-max 1M`: 6.0× → **9.7×** (絶対値 33ms → 21ms)
+- `sort 300k`: 3.5× → **5.6×** (36ms → 24ms)
+- `group-by 100k`: 5.3× → **7.3×** (29ms → 21ms)
+- `cumsum 500k`: 5.0× → **5.6×**
 
-### B-3. SD specialization を pipe stage 越境で
-B-1 + B-2 が前提。pipe を CPS 化すれば連結チェーンが 1 SD になる。
+ただし `static inline` は interp 側からも見える (両者から context.h
+を include) ので、interp と AOT が**両方**同じ程度伸びた。AOT が
+interp を引き離す動きは出ていない (操作の type を SD 側で folded
+する仕組みが今の ASTro にはない)。それでも nuq の絶対性能は確実に
+向上したので、value 表現の C 関数 → header inline 化は
+cross-sample に有効な定石として記録。
 
-### B-4. emit_buf を per-call alloca ベース に
-今は `c->emit_buf` が heap 配列。sub-eval ごとに新しい array を
-`GC_malloc`。pipe stage の hot loop に立つので、固定サイズ alloca +
-spill で大半は GC 不要にできる。pyramid bench (1.4× 遅) などに
-効くはず。
+### B-4. EMIT pool の sub-call 巻き戻しのコスト
+現在 `c->pool_top = top0` を毎 NODE_DEF 終端で書き戻す。stack
+discipline は正しいが、pool_top の load/store が hot loop に立つ。
+per-call で stack 上 (alloca) の固定 buffer + overflow spill にすれば、
+top の状態がレジスタ常駐になる。pyramid bench に効く可能性。
 
-### B-5. **オブジェクト lookup をハッシュに** (★ kv outlier の根本対策)
-`nuq_object_get` / `_set` / `_has` は parallel array を線形走査。
-小規模 object (n < 50 程度) では十分速いが、大型 object (kv bench で
-n=5000 → 250ms vs jq 9.5ms = **25× 遅**) で破綻する。
-- 案 1: object に `key_hashes[]` を持たせ、線形走査で fingerprint
-  比較 → `nuq_eq`。実装コスト: 小、効果は中。
-- 案 2: open-addressing hash table 化。挿入順序を保つために array
-  併設。pystro の dict と同等。実装コスト: 中、効果は大。
+### ~~B-5. オブジェクト lookup をハッシュに~~ (DONE 2026-05-06)
+`nuq_obj.obj` に `uint32_t *idx` を追加、open-addressing (FNV-1a +
+load factor ≤ 0.5)、`NUQ_OBJ_HASH_MIN=16` 超で lazy build。挿入順
+parallel array は維持。`add` builtin にも `all_objects` fast path を
+入れて pairwise `nuq_clone` カスケードを撲滅。kv 5k: 0.04× → 1.65×。
 
-### B-6. ビルトイン dispatch の hash 化
-B-2 で先に解決される (builtin table 自体が消える)。
+<!-- B-6 (ビルトイン dispatch の hash 化) は B-2 が done なので不要 → 削除 -->
+
+### B-7. AST fusion (parse 時の peephole 書き換え)
+ルール (現状 4 つ + 右辺エッジ fusion 実装済 — 詳細は done.md `v0.3` 節):
+
+- ✅ `map(F) | map(G)` → `map(F | G)`
+- ✅ `select(F) | select(G)` → `select(F and G)`
+- ✅ `[body] | length` → `emit_count(body)` (try-catch / cumsum で大効果)
+- ✅ `[body] | add` → `emit_fold_add(body)` (`add` kernel を共有)
+- ✅ 右辺エッジ fusion: 左結合 chain を 1 段ずつ折り畳む
+
+未実装の候補:
+
+- `[body] | unique` → set 状の集約 (中間配列はあっても hash で重複を
+  早期排除)。`unique` は内部で sort するので alloc 削減は限定的。
+- `[body] | sort_by(K)` → in-place sort + key 抽出の合体。
+- `range(N) as $x` の foreach パターンの単純化。
+- `{key: V} | .key` → `V` (path 抽出の peephole)。
+- `node_array(body) | node_b_reverse` → reverse-emit-collect。
+- `add | unique` → 連続 fusion (`emit_fold_add` の出力に直接 unique を
+  適用する形は今でも動くが、unique 側で sort するので大した差なし)。
+
+健全性検証は意味保存が肝。jq との差分テスト 169 件で常時チェック。
+意味判断に迷う rewrite は入れない (副作用、エラータイミング、
+multi-emit 順序、`and`/`or` 短絡を破らない)。
 
 ## C. CLI / I/O
 
@@ -177,8 +219,8 @@ nuq のフィルタ言語が使える。実装コスト大、恩恵が見えな�
 
 - **GC は Boehm-Demers-Weiser**。VALUE が 8-byte aligned ポインタ +
   1-bit fixnum タグで conservative GC で安全。
-- **オブジェクトは順序保持** (現状 parallel array、B-5 で hash 化予定でも
-  順序は保つ)。
+- **オブジェクトは順序保持** (parallel array で挿入順、+ lazy hash idx
+  で lookup O(1))。
 - **string slice はコピー** (jq に揃える、buffer 共有はしない)。
 
 ## 進捗
@@ -202,3 +244,29 @@ nuq のフィルタ言語が使える。実装コスト大、恩恵が見えな�
   ack 329×、upto 39×、reverse 21× ほか大勝。残る 3 outlier (kv 25× 遅、
   add 2.7× 遅、pyramid 1.4× 遅) は B-1/B-2/B-4/B-5 が解けば解消する
   はず。
+- v0.2 (2026-05-06): outlier 撲滅パス。bench 駆動で見つけた / 直したもの:
+  - **`def` 本体を独立 SD entry に登録** (`nuq_compile_all_def_bodies`
+    / `nuq_load_all_def_bodies` in runtime.c)。これが無いと再帰呼び出し
+    は SD 化されない (top-level filter の SD は `EVAL(c, fd->body)`
+    の runtime ポインタを越えられない)。upto 24× → 63× / ack interp
+    比 +20%。
+  - **B-5 完了**: object hash idx (open-addressing FNV-1a, load 0.5,
+    threshold 16)。挿入順 parallel array は維持。
+  - **`add` builtin の `all_objects` fast path**: pairwise `nuq_op_add`
+    → `nuq_clone` カスケードを 1 fresh-object merge に置換 (kv 5k
+    の根本対策、idx と組合せ)。
+  - **`error` (0-arg) builtin 登録漏れ修正** (`filter.c` の BUILTIN0
+    登録に 1 行追加)。pre-existing bug。try-catch 0.26× → 8.75×。
+  - **object literal の fast path**: 全エントリ count==1 の典型ケース
+    では cartesian iteration を skip、pool 直書きで GC_malloc を
+    エントリごとに節約。static key は parser で `nuq_make_string`
+    を 1 度だけ実行 → entry に VALUE で保存。
+  - **EMIT pool の startup pre-grow** (4096 entries)。`nuq_pool_push`
+    の UNLIKELY realloc 分岐がほぼ常に未踏になり、関数全体が分岐
+    予測通りに通る。
+- v0.2 ベンチ結果: micro 14 中 13 で jq 越え (pyramid のみ 0.96×)、
+  実用 11/11 越え。outlier 0 件。`make bench` の出力は perf.md 参照。
+- v0.3 (2026-05-06): value op の `static inline` fast path 化 + AST fusion
+  4 ルール + 右辺エッジ fusion。`min-max 1M` 6.0×→9.7×、`sort 300k`
+  3.5×→5.6×、`group-by 100k` 5.3×→7.3×、`try-catch 500k`
+  8.79×→**12.89×**、`cumsum 500k` 5.0×→**7.5×**。詳細は done.md / perf.md。

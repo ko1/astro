@@ -165,9 +165,11 @@ main(int argc, char **argv)
     if (!OPTION.no_generate_specialized_code && !OPTION.no_compiled_code) {
         if (!filter->head.flags.is_specialized) {
             astro_cs_compile(filter, NULL);
+            nuq_compile_all_def_bodies();
             astro_cs_build(NULL);
             astro_cs_reload();
             astro_cs_load(filter, NULL);
+            nuq_load_all_def_bodies();
         }
     }
 
@@ -180,6 +182,10 @@ main(int argc, char **argv)
     CTX *c = (CTX *)GC_malloc(sizeof(*c));
     memset(c, 0, sizeof(*c));
     c->error = NUQ_NULL;
+    /* Pre-grow the EMIT pool so the UNLIKELY realloc branch in
+     * nuq_pool_push stays cold for typical bench sizes. */
+    c->pool_capa = 4096;
+    c->pool = (VALUE *)GC_malloc(c->pool_capa * sizeof(VALUE));
 
     int rc = 0;
     if (input_file_cnt == 0) {

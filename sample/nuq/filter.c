@@ -401,6 +401,7 @@ build_builtin_call(const char *name, int arity, struct Node **args)
     BUILTIN0("to_entries", ALLOC_node_b_to_entries);
     BUILTIN0("from_entries", ALLOC_node_b_from_entries);
     BUILTIN0("paths", ALLOC_node_b_paths);
+    BUILTIN0("error", ALLOC_node_error0);
     BUILTIN0("floor", ALLOC_node_b_floor);
     BUILTIN0("ceil", ALLOC_node_b_ceil);
     BUILTIN0("round", ALLOC_node_b_round);
@@ -625,6 +626,16 @@ parse_primary(lexer_t *L)
         }
         struct nuq_obj_entry *heap = (struct nuq_obj_entry *)GC_malloc(cnt * sizeof(*heap));
         memcpy(heap, items, cnt * sizeof(*heap));
+        /* Pre-build VALUE for static-string keys so the runtime path
+         * doesn't repeat nuq_make_string per ctor call.  Computed
+         * keys (kkind == 1) and `nuq_eq`-keyed paths still build at
+         * runtime — those are the rare case. */
+        for (size_t i = 0; i < cnt; i++) {
+            if (heap[i].kkind == 0)
+                heap[i].kname_value = nuq_make_string(heap[i].kname, strlen(heap[i].kname));
+            else if (heap[i].kkind == 2)
+                heap[i].kname_value = nuq_make_string(heap[i].kname, strlen(heap[i].kname));
+        }
         return ALLOC_node_object(nuq_obj_ctor_intern(heap, cnt));
       }
       case TK_KW_IF: {
@@ -983,11 +994,126 @@ parse_comma(lexer_t *L)
     return lhs;
 }
 
+/* `const struct NodeKind kind_<name>` symbols live in node_alloc.c
+ * without an extern prototype in any header — they're consumed via
+ * the head.kind pointer set by ALLOC_*.  We compare against them
+ * here to identify node kinds for fusion. */
+extern const struct NodeKind kind_node_pipe;
+extern const struct NodeKind kind_node_b_map;
+extern const struct NodeKind kind_node_b_select;
+extern const struct NodeKind kind_node_array;
+extern const struct NodeKind kind_node_b_length;
+extern const struct NodeKind kind_node_b_add;
+
+/* Parse-time pipe fusion — semantic-preserving rewrites that telescope
+ * common stage chains so they don't materialise intermediate streams.
+ * Applied at parse time, so both interpreter and AOT see the rewritten
+ * tree.  Each rule must preserve:
+ *   - emit ordering and multiplicity
+ *   - error propagation (c->error timing on the first failing stage)
+ *   - side effects on c->input via inner stages (none of these rules
+ *     reorder inner-stage side effects; they only telescope adjacent
+ *     stages whose output goes directly into the next stage's input). */
+
+static struct Node *nuq_make_pipe(struct Node *lhs, struct Node *rhs);
+
+/* Try a single-pair fusion rule.  Returns the rewritten node, or NULL
+ * if no rule matches.  Does NOT recurse — the caller (nuq_make_pipe)
+ * handles right-edge descent for left-leaning pipe chains. */
+static struct Node *
+nuq_try_fuse_pair(struct Node *lhs, struct Node *rhs)
+{
+    /* Rule 1:  map(F) | map(G)   →   map(F | G)
+     * `map(F)` builds [.[] | F] and pipes it to `map(G)` which builds
+     * [.[] | G] of THAT — equivalent to flatmap(G, flatmap(F, .[]))
+     * which is exactly `map(F | G)` since pipe is flatmap.
+     * Multi-emit and error semantics carry through (any error in F
+     * aborts before G runs, same as the non-fused chain). */
+    if (lhs->head.kind == &kind_node_b_map &&
+        rhs->head.kind == &kind_node_b_map) {
+        struct Node *inner = nuq_make_pipe(lhs->u.node_b_map.body,
+                                           rhs->u.node_b_map.body);
+        return ALLOC_node_b_map(inner);
+    }
+
+    /* Rule 2:  select(F) | select(G)   →   select(F and G)
+     * `select(E)` emits . iff any-truthy(E).  Chaining gives
+     * any-truthy(F) ∧ any-truthy(G).  `F and G` evaluates F's stream;
+     * for each truthy value of F, evaluates G's stream pairwise; emits
+     * truthy iff some f-value AND some (corresponding) g-value are
+     * truthy.  Since G doesn't depend on a specific f-value, this
+     * coincides with any-truthy(F) ∧ any-truthy(G).  `and` short-
+     * circuits when F is uniformly falsy, matching the `select |
+     * select` short-circuit (G never runs in that case). */
+    if (lhs->head.kind == &kind_node_b_select &&
+        rhs->head.kind == &kind_node_b_select) {
+        struct Node *body = ALLOC_node_and(lhs->u.node_b_select.body,
+                                           rhs->u.node_b_select.body);
+        return ALLOC_node_b_select(body);
+    }
+
+    /* Rule 3:  [body] | length   →   emit_count(body)
+     * `[E]` always emits an array; `length` of an array is its size,
+     * which equals the count of E's emits.  The intermediate array is
+     * unobservable, so we replace the build-then-measure with a count.
+     * Errors in body still abort before length would have run. */
+    if (lhs->head.kind == &kind_node_array &&
+        rhs->head.kind == &kind_node_b_length) {
+        return ALLOC_node_emit_count(lhs->u.node_array.body);
+    }
+
+    /* Rule 4:  [body] | add   →   emit_fold_add(body)
+     * `add` on an array dispatches by element type (all arrays / all
+     * strings / all objects / pairwise).  Folding directly over body's
+     * pool emits saves the outer array allocation; the dispatch logic
+     * is shared with `nuq_builtin_add` (called via a thin wrapper).
+     * Empty input still returns null (matches `add` on []). */
+    if (lhs->head.kind == &kind_node_array &&
+        rhs->head.kind == &kind_node_b_add) {
+        return ALLOC_node_emit_fold_add(lhs->u.node_array.body);
+    }
+
+    return NULL;
+}
+
+static struct Node *
+nuq_make_pipe(struct Node *lhs, struct Node *rhs)
+{
+    /* Direct fusion at this pair. */
+    struct Node *fused = nuq_try_fuse_pair(lhs, rhs);
+    if (fused) return fused;
+
+    /* Right-edge fusion: parsing is left-associative, so
+     * `f | g | h` becomes `pipe(pipe(f, g), h)`.  For rules that look
+     * at adjacent stages (e.g. `select | select`), the second `g | h`
+     * pair is hidden inside the lhs pipe.  Try fusing rhs against the
+     * RHS of lhs's outermost pipe; if it succeeds, splice the result
+     * back in as the new RHS, leaving lhs's LHS intact.  This makes
+     * chains of arbitrary length collapse left-to-right one stage at
+     * a time, e.g.:
+     *   f | sel(a) | sel(b) | sel(c)
+     *     → pipe(pipe(pipe(f, sel(a)), sel(b)), sel(c))
+     *     → pipe(pipe(f, sel(a)), sel(b and c))             [fuse step 4]
+     *     → pipe(f, sel(a and (b and c)))                    [fuse step 5]
+     * (Each step is invoked once via the parser's while loop; we
+     * recurse here only into the immediate lhs.rhs, not deeper, since
+     * earlier fusion steps already collapsed deeper chains.) */
+    if (lhs->head.kind == &kind_node_pipe) {
+        struct Node *inner_rhs = lhs->u.node_pipe.rhs;
+        struct Node *inner_fused = nuq_try_fuse_pair(inner_rhs, rhs);
+        if (inner_fused) {
+            return ALLOC_node_pipe(lhs->u.node_pipe.lhs, inner_fused);
+        }
+    }
+
+    return ALLOC_node_pipe(lhs, rhs);
+}
+
 static struct Node *
 parse_pipe(lexer_t *L)
 {
     struct Node *lhs = parse_comma(L);
-    while (accept(L, TK_PIPE)) lhs = ALLOC_node_pipe(lhs, parse_comma(L));
+    while (accept(L, TK_PIPE)) lhs = nuq_make_pipe(lhs, parse_comma(L));
     return lhs;
 }
 
@@ -995,7 +1121,7 @@ static struct Node *
 parse_pipe_no_comma(lexer_t *L)
 {
     struct Node *lhs = parse_alt(L);
-    while (accept(L, TK_PIPE)) lhs = ALLOC_node_pipe(lhs, parse_alt(L));
+    while (accept(L, TK_PIPE)) lhs = nuq_make_pipe(lhs, parse_alt(L));
     return lhs;
 }
 

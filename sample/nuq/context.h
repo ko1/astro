@@ -76,7 +76,20 @@ struct nuq_obj {
             size_t capa;
             VALUE  inline_buf[NUQ_ARR_INLINE];
         } arr;
-        struct { VALUE *keys; VALUE *vals; size_t len; size_t capa; } obj;
+        struct {
+            VALUE   *keys;
+            VALUE   *vals;
+            size_t   len;
+            size_t   capa;
+            /* Open-addressing hash index over keys[].  NULL until len
+             * exceeds NUQ_OBJ_HASH_MIN; then idx[h & idx_mask] holds
+             * the keys[]-index PLUS ONE (0 means empty slot).  keys[]
+             * / vals[] still hold values in insertion order, so
+             * jq-visible iteration order is preserved.  Keys are
+             * always strings. */
+            uint32_t *idx;
+            uint32_t  idx_mask;
+        } obj;
     };
 };
 
@@ -143,7 +156,8 @@ extern struct nuq_option OPTION;
 
 /* ---- value.c API ---- */
 VALUE nuq_make_double  (double d);
-VALUE nuq_make_int     (int64_t v);
+/* nuq_make_int — defined as `static inline` below.  The slow case
+ * (out of fixnum range) is `nuq_make_int_slow`. */
 VALUE nuq_make_string  (const char *s, size_t len);
 VALUE nuq_make_string_take(char *s, size_t len);
 VALUE nuq_make_array   (size_t initial_capa);
@@ -163,21 +177,115 @@ size_t nuq_object_len      (VALUE obj);
 const char *nuq_string_cstr(VALUE s);
 size_t      nuq_string_len (VALUE s);
 
-bool nuq_eq        (VALUE a, VALUE b);
-int  nuq_cmp       (VALUE a, VALUE b);
-bool nuq_truthy    (VALUE v);
+/* Slow paths — invoked from `static inline` wrappers in node.h once
+ * the fixnum / pointer-equal fast path didn't apply.  Callers should
+ * use the wrappers (`nuq_eq` etc.); these `_slow` symbols are public
+ * only so the inlines can fall through. */
+bool  nuq_eq_slow      (VALUE a, VALUE b);
+int   nuq_cmp_slow     (VALUE a, VALUE b);
+bool  nuq_truthy_slow  (VALUE v);
+VALUE nuq_make_int_slow(int64_t v);
 const char *nuq_type_name(VALUE v);
 VALUE nuq_length(VALUE v);
 VALUE nuq_keys(VALUE v, bool sorted);
 VALUE nuq_values(VALUE v);
 VALUE nuq_clone(VALUE v);
 
-VALUE nuq_op_add(VALUE a, VALUE b);
-VALUE nuq_op_sub(VALUE a, VALUE b);
-VALUE nuq_op_mul(VALUE a, VALUE b);
-VALUE nuq_op_div(VALUE a, VALUE b);
-VALUE nuq_op_mod(VALUE a, VALUE b);
-VALUE nuq_op_neg(VALUE a);
+VALUE nuq_op_add_slow(VALUE a, VALUE b);
+VALUE nuq_op_sub_slow(VALUE a, VALUE b);
+VALUE nuq_op_mul_slow(VALUE a, VALUE b);
+VALUE nuq_op_div_slow(VALUE a, VALUE b);
+VALUE nuq_op_mod_slow(VALUE a, VALUE b);
+VALUE nuq_op_neg_slow(VALUE a);
+
+/* Fast-path inlines.  Defined here (not in node.h) so value.c —
+ * which only includes context.h — also picks them up.  Each does
+ * the common typed case in registers and tail-calls `_slow` on miss. */
+static inline VALUE
+nuq_make_int(int64_t v)
+{
+    if (LIKELY(v >= NUQ_FIX_MIN && v <= NUQ_FIX_MAX)) return NUQ_FIX(v);
+    return nuq_make_int_slow(v);
+}
+
+static inline bool
+nuq_eq(VALUE a, VALUE b)
+{
+    if (a == b) return true;
+    /* Two distinct fixnums can't be equal (the FIX tag differs only
+     * in the payload bits). */
+    if (NUQ_IS_FIX(a) && NUQ_IS_FIX(b)) return false;
+    return nuq_eq_slow(a, b);
+}
+
+static inline int
+nuq_cmp(VALUE a, VALUE b)
+{
+    if (LIKELY(NUQ_IS_FIX(a) && NUQ_IS_FIX(b))) {
+        int64_t la = NUQ_FIX_VAL(a), lb = NUQ_FIX_VAL(b);
+        return (la > lb) - (la < lb);
+    }
+    return nuq_cmp_slow(a, b);
+}
+
+static inline bool
+nuq_truthy(VALUE v)
+{
+    /* fixnum, double, string, array, object — all truthy.
+     * Only NUQ_NULL_OBJ and NUQ_FALSE_OBJ are falsy. */
+    if (NUQ_IS_FIX(v)) return true;
+    return nuq_truthy_slow(v);
+}
+
+static inline VALUE
+nuq_op_add(VALUE a, VALUE b)
+{
+    if (LIKELY(NUQ_IS_FIX(a) && NUQ_IS_FIX(b))) {
+        int64_t la = NUQ_FIX_VAL(a), lb = NUQ_FIX_VAL(b), r;
+        if (LIKELY(!__builtin_add_overflow(la, lb, &r)))
+            return nuq_make_int(r);
+    }
+    return nuq_op_add_slow(a, b);
+}
+
+static inline VALUE
+nuq_op_sub(VALUE a, VALUE b)
+{
+    if (LIKELY(NUQ_IS_FIX(a) && NUQ_IS_FIX(b))) {
+        int64_t la = NUQ_FIX_VAL(a), lb = NUQ_FIX_VAL(b), r;
+        if (LIKELY(!__builtin_sub_overflow(la, lb, &r)))
+            return nuq_make_int(r);
+    }
+    return nuq_op_sub_slow(a, b);
+}
+
+static inline VALUE
+nuq_op_mul(VALUE a, VALUE b)
+{
+    if (LIKELY(NUQ_IS_FIX(a) && NUQ_IS_FIX(b))) {
+        int64_t la = NUQ_FIX_VAL(a), lb = NUQ_FIX_VAL(b), r;
+        if (LIKELY(!__builtin_mul_overflow(la, lb, &r)))
+            return nuq_make_int(r);
+    }
+    return nuq_op_mul_slow(a, b);
+}
+
+static inline VALUE
+nuq_op_neg(VALUE a)
+{
+    if (LIKELY(NUQ_IS_FIX(a))) {
+        int64_t la = NUQ_FIX_VAL(a);
+        if (LIKELY(la != NUQ_FIX_MIN)) return NUQ_FIX(-la);
+    }
+    return nuq_op_neg_slow(a);
+}
+
+/* div / mod don't get an inline fast path: jq division is double
+ * division (e.g. 5/2 == 2.5 not 2), so the fixnum case still requires
+ * a heap-boxed double on most non-trivial inputs.  Keep them as
+ * calls. */
+static inline VALUE nuq_op_div(VALUE a, VALUE b) { return nuq_op_div_slow(a, b); }
+static inline VALUE nuq_op_mod(VALUE a, VALUE b) { return nuq_op_mod_slow(a, b); }
 
 bool nuq_field_lookup(VALUE in, const char *name, bool optional, VALUE *out);
 bool nuq_to_number(VALUE v, VALUE *out);
@@ -219,6 +327,9 @@ struct nuq_obj_entry {
     uint32_t var_id;
     struct Node *kexpr;      /* expr WITH input chain (for 1-style key) */
     struct Node *vexpr;      /* expr (sub-chain), NULL for shorthand */
+    VALUE    kname_value;    /* pre-interned VALUE for kkind 0/2 — built
+                              * once at parse time so each ctor call
+                              * doesn't redo nuq_make_string. */
 };
 uint32_t nuq_obj_ctor_intern(struct nuq_obj_entry *items, size_t cnt);
 uint32_t nuq_args_intern(struct Node **args, size_t cnt);
@@ -235,6 +346,13 @@ struct nuq_def_entry {
 };
 uint32_t nuq_def_block_intern(struct nuq_def_entry *items, size_t cnt);
 
+/* Each user `def` body is reachable only via runtime dispatch
+ * (`EVAL(c, fd->body)` in node_call), so the SD specialiser on the
+ * top-level filter cannot inline it.  These helpers expose every
+ * def body as its own AOT entry node — see usage.md "Entry nodes". */
+void nuq_compile_all_def_bodies(void);
+void nuq_load_all_def_bodies(void);
+
 /* Operator codes used by node.def */
 enum {
     NUQ_OP_ADD_K = 1, NUQ_OP_SUB_K, NUQ_OP_MUL_K, NUQ_OP_DIV_K, NUQ_OP_MOD_K,
@@ -246,6 +364,7 @@ enum {
 
 /* Built-in value-level helpers (called from per-node EVAL bodies) */
 VALUE nuq_builtin_add(VALUE input);
+VALUE nuq_add_fold_items(const VALUE *items, size_t len);
 VALUE nuq_builtin_min(VALUE input);
 VALUE nuq_builtin_max(VALUE input);
 VALUE nuq_builtin_sort(VALUE input);

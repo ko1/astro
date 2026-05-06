@@ -12,8 +12,9 @@ $ make test
 passed=338  failed=0  total=338
 ```
 
-うち約半数 (`*.diff.test` 群) は **system の `jq` 自体を oracle として
-期待出力を計算** する微分テスト。jq との挙動差はその場で検出される。
+うち 157 件 (`*.diff.test` 群、約 46%) は **system の `jq` 自体を
+oracle として期待出力を計算** する微分テスト。jq との挙動差は
+その場で検出される。
 
 ## 値モデル
 
@@ -22,7 +23,9 @@ passed=338  failed=0  total=338
 - 文字列 / 配列 / オブジェクト: ヒープ box、Boehm GC
 - `null` / `true` / `false`: 静的 singleton (`NUQ_NULL_OBJ` 等)
 - オブジェクトは **挿入順を保持** (parallel `keys[]` / `vals[]`)
-- ハッシュ表ではないので lookup は線形 — n が小さい jq 用途では問題なし
+- 16 keys 超で **lazy hash idx** を build (open-addressing FNV-1a、
+  load factor ≤ 0.5)。lookup は実質 O(1)、挿入順イテレーションは
+  parallel array 側で従来通り
 
 ## フィルタ言語
 
@@ -223,3 +226,56 @@ passed=338  failed=0  total=338
   group-by 100k が timeout → 94ms。
 - `node.def` で約 40 ノードに付いていた `@noinline` を整理。runtime
   helper を呼ぶだけのスタブだったので不要 (むしろ inline を阻害)。
+
+## バグ修正履歴 (v0.2 — outlier 撲滅)
+
+- **`error` (0-arg) が builtin 登録漏れ** — `try error catch .` で
+  `error` が user-call 経路に流れ、未定義関数として stderr に
+  "error/0 is not defined" を吐きつつ catch で握り潰されていた。
+  500k iter で大量の I/O が支配的に。`filter.c` に
+  `BUILTIN0("error", ALLOC_node_error0)` を 1 行追加。
+  try-catch 500k: 0.26× → 8.75×。
+- **object lookup の O(n²)** — `nuq_obj.obj` に `uint32_t *idx` を
+  追加 (open-addressing FNV-1a、load factor ≤ 0.5、threshold 16)。
+  `add` builtin にも `all_objects` fast path (pairwise clone を消した)
+  を追加。kv 5k: 0.04× → 1.5× 速。500k に増やすと jq の 530ms に対し
+  nuq 310ms と linear scaling 確認。
+- **object literal で per-emit の小さい alloc が累積** — 全エントリ
+  count==1 のとき cartesian iteration を skip して pool に直書き。
+  static key (`{a: ...}`) は parser で 1 度 `nuq_make_string` した
+  VALUE を `nuq_obj_entry.kname_value` に格納し、ctor 呼び出し
+  ごとの再 alloc を撲滅。transform 1.31× → 1.50×。
+- **再帰 def が SD specialize されてなかった** — `nuq_user_call` 内の
+  `EVAL(c, fd->body)` は runtime-resolved dispatcher 経由なので、
+  top-level filter の SD からは inline できない。各 def 本体を独立
+  entry として `astro_cs_compile` に登録 (`nuq_compile_all_def_bodies`
+  / `nuq_load_all_def_bodies`)。upto AOT vs interp が 1.0× → 1.1-2.5×
+  (run variance あり)、ack 同 7.5× → 8.4×。usage.md "Entry nodes"
+  の規則に従ったもの。
+
+## 性能改善 (v0.3 — value op inline + AST fusion)
+
+- **value 演算 fast path の `static inline` 化** (`context.h`):
+  `nuq_op_add / sub / mul / neg`、`nuq_eq`、`nuq_cmp`、`nuq_truthy`、
+  `nuq_make_int` の fixnum 高速パスを header inline に。slow path は
+  `_slow` 接尾辞付き関数として `value.c` に残す。
+  `min-max 1M` 6.0× → 9.7× / `sort 300k` 3.5× → 5.6× /
+  `group-by 100k` 5.3× → 7.3× (vs jq、AOT)。
+- **parse-time AST fusion** (`filter.c` の `nuq_make_pipe`):
+  - `map(F) | map(G)` → `map(F | G)` (中間配列消去)
+  - `select(F) | select(G)` → `select(F and G)` (短絡保存)
+  - `[body] | length` → `node_emit_count(body)` (新ノード)
+  - `[body] | add` → `node_emit_fold_add(body)` (新ノード、`add`
+    の type-dispatch kernel `nuq_add_fold_items` を共有)
+  - **右辺エッジ fusion**: parse は左結合なので `f | g | h` は
+    `pipe(pipe(f, g), h)` になり、隣接ペアでない `g | h` は直接
+    マッチしない。`nuq_make_pipe` で lhs が pipe のとき、その rhs
+    と新 rhs を `nuq_try_fuse_pair` に投げ、成功なら splice 戻し。
+    これで `f | sel(a) | sel(b) | sel(c)` のような任意長 chain が
+    左から順に折り畳まる。
+  全ルール意味保存 (jq との差分テスト 169 件 PASS)。代表的な効果:
+  - `try-catch 500k`: 0.26× → **12-14× vs jq** (中間配列を完全消去)
+  - `cumsum 500k`: 5.0× → **7.0× vs jq**
+  - `keys_aggregate` (real): 3.25× → **3.6× vs jq** (`[X] | add`
+    fusion で `add` builtin の dispatch を 1 step 短縮)
+  - `sum_score` (real): 1.55× → 1.48× (誤差圏)

@@ -83,6 +83,9 @@ struct def_block { size_t cnt; struct nuq_def_entry *items; };
 static struct def_block *def_tab = NULL;
 static size_t def_tab_len = 0, def_tab_capa = 0;
 
+/* For nuq_compile_all_def_bodies / nuq_load_all_def_bodies below. */
+#include "astro_code_store.h"
+
 uint32_t
 nuq_def_block_intern(struct nuq_def_entry *items, size_t cnt)
 {
@@ -93,6 +96,31 @@ nuq_def_block_intern(struct nuq_def_entry *items, size_t cnt)
     def_tab[def_tab_len].cnt = cnt;
     def_tab[def_tab_len].items = items;
     return (uint32_t)def_tab_len++;
+}
+
+void
+nuq_compile_all_def_bodies(void)
+{
+    for (size_t i = 0; i < def_tab_len; i++) {
+        const struct def_block *const db = &def_tab[i];
+        for (size_t j = 0; j < db->cnt; j++) {
+            NODE *const body = db->items[j].body;
+            if (!body->head.flags.is_specialized) {
+                astro_cs_compile(body, NULL);
+            }
+        }
+    }
+}
+
+void
+nuq_load_all_def_bodies(void)
+{
+    for (size_t i = 0; i < def_tab_len; i++) {
+        const struct def_block *const db = &def_tab[i];
+        for (size_t j = 0; j < db->cnt; j++) {
+            astro_cs_load(db->items[j].body, NULL);
+        }
+    }
 }
 
 static const char **fmt_tab = NULL;
@@ -222,71 +250,103 @@ nuq_slice_eval(CTX *c, struct Node *startn, struct Node *stopn, uint32_t flags, 
 EMIT
 nuq_object_eval(CTX *c, uint32_t entries_id)
 {
-    struct obj_ctor *e = &obj_tab[entries_id];
+    const struct obj_ctor *const e = &obj_tab[entries_id];
     if (e->cnt > 16) return err_emit(c, "object literal too large");
-    /* Each entry produces a (key-stream, value-stream) pair.  We
-     * collect them all into local arrays first (snapshotted from
-     * pool), then cartesian product onto the result pool. */
+    const size_t outer_top = c->pool_top;
+
+    /* Fast path — emit exactly one object.  Build it directly into
+     * the pool and bail to the cartesian path the first time we hit
+     * a multi-emit (or zero-emit) entry.  This avoids all per-entry
+     * GC_malloc(sizeof(VALUE)) buffers in the common case. */
+    VALUE k_fast[16], v_fast[16];
+    size_t fast_done = 0;
+    for (size_t i = 0; i < e->cnt; i++) {
+        const struct nuq_obj_entry *const ie = &e->items[i];
+        VALUE k, v;
+        if (ie->kkind == 0 || ie->kkind == 2) {
+            k = ie->kname_value;
+        } else {
+            const size_t t0 = c->pool_top;
+            const EMIT ks = EVAL(c, ie->kexpr);
+            if (c->error != NUQ_NULL) return EMIT_EMPTY;
+            if (ks.count != 1) goto cartesian;
+            k = ks.items[0];
+            c->pool_top = t0;
+        }
+        if (ie->vexpr == NULL) {
+            if (ie->kkind == 2) v = nuq_var_get(c, ie->var_id);
+            else                v = nuq_object_get_cstr(c->input, ie->kname);
+        } else {
+            const size_t t0 = c->pool_top;
+            const EMIT vs = EVAL(c, ie->vexpr);
+            if (c->error != NUQ_NULL) return EMIT_EMPTY;
+            if (vs.count != 1) goto cartesian;
+            v = vs.items[0];
+            c->pool_top = t0;
+        }
+        if (UNLIKELY(!(NUQ_IS_PTR(k) && NUQ_PTR(k)->type == NUQ_T_STRING)))
+            return err_emit(c, "object key must be string");
+        k_fast[i] = k;
+        v_fast[i] = v;
+        fast_done++;
+    }
+    {
+        VALUE obj = nuq_make_object(e->cnt);
+        for (size_t i = 0; i < e->cnt; i++)
+            nuq_object_set(obj, k_fast[i], v_fast[i]);
+        nuq_pool_push(c, obj);
+        return nuq_emit_slice(c, outer_top);
+    }
+
+cartesian: {
+    /* Multi-emit (or zero-emit) somewhere — fall back to the
+     * cartesian build.  Restore pool_top so the partial fast-path
+     * EVAL slots become free again. */
+    c->pool_top = outer_top;
     struct stream { VALUE *items; uint32_t count; };
     struct stream kss[16], vss[16];
-    size_t outer_top = c->pool_top;
-
+    /* Re-evaluate from scratch.  This is the rare path. */
     for (size_t i = 0; i < e->cnt; i++) {
-        const struct nuq_obj_entry *ie = &e->items[i];
-        if (ie->kkind == 0) {
-            VALUE *b = (VALUE *)GC_malloc(sizeof(VALUE));
-            
-            b[0] = nuq_make_string(ie->kname, strlen(ie->kname));
-            kss[i].items = b; kss[i].count = 1;
-        } else if (ie->kkind == 2) {
-            VALUE *b = (VALUE *)GC_malloc(sizeof(VALUE));
-            
-            const char *nm = nuq_intern_lookup(ie->var_id);
-            b[0] = nuq_make_string(nm, strlen(nm));
+        const struct nuq_obj_entry *const ie = &e->items[i];
+        if (ie->kkind == 0 || ie->kkind == 2) {
+            VALUE *const b = (VALUE *)GC_malloc(sizeof(VALUE));
+            b[0] = ie->kname_value;
             kss[i].items = b; kss[i].count = 1;
         } else {
-            size_t t0 = c->pool_top;
-            EMIT ks = EVAL(c, ie->kexpr);
+            const size_t t0 = c->pool_top;
+            const EMIT ks = EVAL(c, ie->kexpr);
             if (c->error != NUQ_NULL) return EMIT_EMPTY;
-            VALUE *b = (VALUE *)GC_malloc(ks.count * sizeof(VALUE) + 1);
-            
+            VALUE *const b = (VALUE *)GC_malloc(ks.count * sizeof(VALUE) + 1);
             memcpy(b, ks.items, ks.count * sizeof(VALUE));
             kss[i].items = b; kss[i].count = ks.count;
             c->pool_top = t0;
         }
         if (ie->vexpr == NULL) {
-            VALUE *b = (VALUE *)GC_malloc(sizeof(VALUE));
-            
-            VALUE v;
-            if (ie->kkind == 2) v = nuq_var_get(c, ie->var_id);
-            else v = nuq_object_get_cstr(c->input, ie->kname);
-            b[0] = v;
+            VALUE *const b = (VALUE *)GC_malloc(sizeof(VALUE));
+            b[0] = ie->kkind == 2 ? nuq_var_get(c, ie->var_id)
+                                  : nuq_object_get_cstr(c->input, ie->kname);
             vss[i].items = b; vss[i].count = 1;
         } else {
-            size_t t0 = c->pool_top;
-            EMIT vs = EVAL(c, ie->vexpr);
+            const size_t t0 = c->pool_top;
+            const EMIT vs = EVAL(c, ie->vexpr);
             if (c->error != NUQ_NULL) return EMIT_EMPTY;
-            VALUE *b = (VALUE *)GC_malloc(vs.count * sizeof(VALUE) + 1);
-            
+            VALUE *const b = (VALUE *)GC_malloc(vs.count * sizeof(VALUE) + 1);
             memcpy(b, vs.items, vs.count * sizeof(VALUE));
             vss[i].items = b; vss[i].count = vs.count;
             c->pool_top = t0;
         }
     }
-
-    /* Skip emit if any stream is empty. */
     for (size_t i = 0; i < e->cnt; i++)
         if (kss[i].count == 0 || vss[i].count == 0)
             return EMIT_EMPTY;
 
-    /* Cartesian iteration. */
     size_t kidx[16] = {0}, vidx[16] = {0};
     for (;;) {
         VALUE obj = nuq_make_object(e->cnt);
         for (size_t i = 0; i < e->cnt; i++) {
             VALUE k = kss[i].items[kidx[i]];
             VALUE v = vss[i].items[vidx[i]];
-            if (!(NUQ_IS_PTR(k) && NUQ_PTR(k)->type == NUQ_T_STRING))
+            if (UNLIKELY(!(NUQ_IS_PTR(k) && NUQ_PTR(k)->type == NUQ_T_STRING)))
                 return err_emit(c, "object key must be string");
             nuq_object_set(obj, k, v);
         }
@@ -303,7 +363,9 @@ nuq_object_eval(CTX *c, uint32_t entries_id)
         }
         if (pos < 0) break;
     }
+    (void)fast_done;
     return nuq_emit_slice(c, outer_top);
+}
 }
 
 /* --- error / user-call / def ---------------------------------------- */

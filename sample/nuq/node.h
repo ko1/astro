@@ -36,12 +36,14 @@ void DUMP(FILE *fp, NODE *n, bool oneline);
 NODE *OPTIMIZE(NODE *n);
 void SPECIALIZE(FILE *fp, NODE *n);
 
-/* Pool helpers — emit a single VALUE into the pool, growing if needed. */
+/* Pool helpers — emit a single VALUE into the pool, growing if needed.
+ * The pool is pre-grown at startup (see main.c) so the UNLIKELY path
+ * here is essentially never taken in practice; gcc keeps it cold. */
 static inline __attribute__((always_inline)) void
 nuq_pool_push(CTX *c, VALUE v)
 {
     if (UNLIKELY(c->pool_top == c->pool_capa)) {
-        size_t nc = c->pool_capa ? c->pool_capa * 2 : 256;
+        size_t nc = c->pool_capa ? c->pool_capa * 2 : 4096;
         c->pool = (VALUE *)GC_realloc(c->pool, nc * sizeof(VALUE));
         c->pool_capa = nc;
     }

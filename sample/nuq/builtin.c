@@ -13,24 +13,21 @@
 #include "context.h"
 #include "node.h"
 
+/* Shared kernel of `add` over a flat (items[], len) view.  Used by
+ * both `nuq_builtin_add` (which dereferences a NUQ_T_ARRAY input)
+ * and `node_emit_fold_add` (the fused `[body] | add` node, which
+ * passes the EMIT pool slice directly).  Splitting these saves one
+ * outer array allocation in the fused path. */
 VALUE
-nuq_builtin_add(VALUE input)
+nuq_add_fold_items(const VALUE *items, size_t len)
 {
-    if (!(NUQ_IS_PTR(input) && NUQ_PTR(input)->type == NUQ_T_ARRAY)) {
-        if (NUQ_IS_PTR(input) && NUQ_PTR(input)->type == NUQ_T_NULL) return NUQ_NULL;
-        fprintf(stderr, "nuq error: add requires array\n");
-        return NUQ_NULL;
-    }
-    struct nuq_obj *o = NUQ_PTR(input);
-    if (o->arr.len == 0) return NUQ_NULL;
+    if (len == 0) return NUQ_NULL;
 
-    /* Fast path: all elements arrays → single concat O(total).
-     * Without this, the iterative pairwise reduction is O(n²) on the
-     * accumulator size and `[.[] | keys] | add` etc. are very slow. */
+    /* Type-classify all elements once. */
     bool all_arrays = true, all_objects = true, all_strings = true;
     size_t total_arr = 0, total_str = 0;
-    for (size_t i = 0; i < o->arr.len; i++) {
-        VALUE v = o->arr.items[i];
+    for (size_t i = 0; i < len; i++) {
+        VALUE v = items[i];
         if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_ARRAY) {
             total_arr += NUQ_PTR(v)->arr.len;
             all_objects = all_strings = false;
@@ -45,8 +42,8 @@ nuq_builtin_add(VALUE input)
     }
     if (all_arrays) {
         VALUE r = nuq_make_array(total_arr);
-        for (size_t i = 0; i < o->arr.len; i++) {
-            struct nuq_obj *e = NUQ_PTR(o->arr.items[i]);
+        for (size_t i = 0; i < len; i++) {
+            struct nuq_obj *e = NUQ_PTR(items[i]);
             for (size_t j = 0; j < e->arr.len; j++) nuq_array_push(r, e->arr.items[j]);
         }
         return r;
@@ -54,18 +51,44 @@ nuq_builtin_add(VALUE input)
     if (all_strings) {
         char *buf = (char *)GC_malloc_atomic(total_str + 1);
         size_t bp = 0;
-        for (size_t i = 0; i < o->arr.len; i++) {
-            struct nuq_obj *e = NUQ_PTR(o->arr.items[i]);
+        for (size_t i = 0; i < len; i++) {
+            struct nuq_obj *e = NUQ_PTR(items[i]);
             memcpy(buf + bp, e->str.bytes, e->str.len);
             bp += e->str.len;
         }
         buf[bp] = '\0';
         return nuq_make_string_take(buf, bp);
     }
-    /* Slow path: pairwise add (handles numbers, mixed, objects). */
-    VALUE acc = o->arr.items[0];
-    for (size_t i = 1; i < o->arr.len; i++) acc = nuq_op_add(acc, o->arr.items[i]);
+    if (all_objects) {
+        /* Single fresh object built directly — avoids the pairwise
+         * nuq_op_add → nuq_clone cascade that makes the naive fold
+         * O(n²) (each clone copies the growing accumulator). */
+        size_t total_kv = 0;
+        for (size_t i = 0; i < len; i++) total_kv += NUQ_PTR(items[i])->obj.len;
+        VALUE r = nuq_make_object(total_kv > 4 ? total_kv : 4);
+        for (size_t i = 0; i < len; i++) {
+            struct nuq_obj *e = NUQ_PTR(items[i]);
+            for (size_t j = 0; j < e->obj.len; j++)
+                nuq_object_set(r, e->obj.keys[j], e->obj.vals[j]);
+        }
+        return r;
+    }
+    /* Slow path: pairwise add (handles numbers, mixed). */
+    VALUE acc = items[0];
+    for (size_t i = 1; i < len; i++) acc = nuq_op_add(acc, items[i]);
     return acc;
+}
+
+VALUE
+nuq_builtin_add(VALUE input)
+{
+    if (!(NUQ_IS_PTR(input) && NUQ_PTR(input)->type == NUQ_T_ARRAY)) {
+        if (NUQ_IS_PTR(input) && NUQ_PTR(input)->type == NUQ_T_NULL) return NUQ_NULL;
+        fprintf(stderr, "nuq error: add requires array\n");
+        return NUQ_NULL;
+    }
+    struct nuq_obj *o = NUQ_PTR(input);
+    return nuq_add_fold_items(o->arr.items, o->arr.len);
 }
 
 VALUE

@@ -1,22 +1,24 @@
 # runtime.md — nuq のランタイム解説
 
 nuq は ASTro 上に乗せた **jq サブセットのツリーウォーカー**。各
-NODE_DEF が VALUE (= emit 列を表す nuq_array) を return する形式で、
-SD specializer による AOT inlining と相性のよい構造を取る。
+NODE_DEF が `EMIT { items, count }` 構造体を return する形式で、
+items は CTX 上の flat な VALUE pool に切られたスライス。これにより
+per-emit GC alloc を消しつつ、SD specializer による AOT inlining
+と相性の良い構造を取る。
 
 ファイル構成:
 
 | ファイル | 内容 |
 |---|---|
-| `node.def`  | AST ノード定義 (~75 種、フィルタ言語 + ほぼ全 builtin) |
-| `node.h`    | NodeHead + binop / cmpop の inline 適用 helper |
-| `context.h` | VALUE / nuq_obj / CTX / 公開 API |
+| `node.def`  | AST ノード定義 (114 種、フィルタ言語 + 全 builtin) |
+| `node.h`    | NodeHead + EMIT pool helper (`nuq_pool_push` / `nuq_emit_one` / `nuq_emit_slice`) |
+| `context.h` | VALUE / nuq_obj / CTX / 公開 API + `nuq_op_*` / `nuq_eq` / `nuq_cmp` の `static inline` fast path |
 | `node.c`    | アロケータ + ASTroGen 生成ファイルの `#include` |
-| `value.c`   | VALUE 構築 / 等価 / 順序 / `+ - * / %` |
+| `value.c`   | VALUE 構築 / 等価 / 順序 / `+ - * / %` の slow path |
 | `json.c`    | JSON parser + pretty-printer |
-| `runtime.c` | tree-eval helpers (object_eval / interp / format / def-call ほか) |
-| `filter.c`  | jq フィルタ言語の lexer + recursive-descent parser |
-| `builtin.c` | builtin の VALUE-level 実装 (sort / unique / fromjson 等) |
+| `runtime.c` | tree-eval helpers (object_eval / interp / format / user_call / def_table 走査ほか) |
+| `filter.c`  | jq フィルタ言語の lexer + recursive-descent parser + AST fusion peephole |
+| `builtin.c` | builtin の VALUE-level 実装 (sort / unique / fromjson / `add` の type-dispatch kernel ほか) |
 | `main.c`    | CLI driver |
 
 ## 1. 値モデル (VALUE)
@@ -37,64 +39,104 @@ struct nuq_obj {
         bool b;
         double dbl;
         struct { char *bytes; size_t len; } str;
-        struct { VALUE *items; size_t len; size_t capa; } arr;
-        struct { VALUE *keys; VALUE *vals; size_t len; size_t capa; } obj;
+        struct {
+            VALUE *items; size_t len; size_t capa;
+            VALUE  inline_buf[NUQ_ARR_INLINE];   /* 4-slot inline */
+        } arr;
+        struct {
+            VALUE *keys; VALUE *vals; size_t len; size_t capa;
+            uint32_t *idx; uint32_t idx_mask;    /* lazy hash idx */
+        } obj;
     };
 };
 ```
 
-数値整数は fixnum、`__builtin_*_overflow` で失敗時のみ heap double に
-昇格。bignum なし。オブジェクトは挿入順を保つ flat parallel array
-(`keys[]` / `vals[]`)、lookup は線形 O(n) — 小規模 JSON 用途では十分。
+- 数値整数は fixnum、`__builtin_*_overflow` で失敗時のみ heap double
+  に昇格。bignum なし。
+- 配列は **挿入順 + 4 slot inline buffer**。`nuq_make_array(N)` で
+  N ≤ 4 なら `inline_buf` を使い alloc を節約。
+- オブジェクトは **挿入順 parallel array `keys[]` / `vals[]`**。`len`
+  が `NUQ_OBJ_HASH_MIN` (=16) を超えると lazy で `idx[]`
+  (open-addressing FNV-1a, load factor ≤ 0.5) を build。lookup が
+  O(1) になり、jq 互換の挿入順イテレーションは parallel array 側で
+  そのまま。
 
 ## 2. eval プロトコル
 
-**各 NODE_DEF は VALUE を return する**。その VALUE は emit 列を表す
-nuq_array。`EVAL_ARG(c, child)` は child の emit 配列を直接返す。
+**各 NODE_DEF は `EMIT` 構造体を return する** (16 byte、`{ items,
+count, flags }`)。`items` は **CTX の `pool[]` 上のスライスへの
+ポインタ**、`count` はそのスライスの emit 個数。
 
 ```c
 NODE_DEF
 node_b_length(CTX *c, NODE *n)
 {
-    VALUE r = nuq_make_array(1);
-    nuq_array_push(r, nuq_length(c->input));
-    return r;
+    return nuq_emit_one(c, nuq_length(c->input));
 }
 ```
 
-エラーは `c->error` (NUQ_NULL = OK)、break は `c->break_label` (0 = 無)
-で伝搬。実値はあくまで戻り値経由で、副チャネル (古い `emit_buf`) は
-廃止。
+`nuq_emit_one(c, v)` は内部的に `nuq_pool_push(c, v)` で 1 個積み、
+`nuq_emit_slice` で範囲を取り出す。0 emit を返したいときは
+`EMIT_EMPTY`。
 
-これにより SD specializer が pipe / map / select 等の sub-expression
-operand を **EVAL_ARG 経由で inline** できる:
+呼び出し側の責任で **pool top0 を保存し、必要なら巻き戻す**:
 
 ```c
 NODE_DEF
-node_pipe(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
+node_array(CTX *c, NODE *n, NODE *body)
 {
-    VALUE l = EVAL_ARG(c, lhs);          /* SD inline */
-    if (UNLIKELY(c->error != NUQ_NULL)) return l;
-    struct nuq_obj *lo = NUQ_PTR(l);
-    VALUE r = nuq_make_array(0);
-    VALUE saved = c->input;
-    for (size_t i = 0; i < lo->arr.len; i++) {
-        c->input = lo->arr.items[i];
-        VALUE rv = EVAL_ARG(c, rhs);     /* SD inline */
-        if (UNLIKELY(c->error != NUQ_NULL)) { c->input = saved; return r; }
-        struct nuq_obj *ro = NUQ_PTR(rv);
-        for (size_t j = 0; j < ro->arr.len; j++) nuq_array_push(r, ro->arr.items[j]);
-    }
-    c->input = saved;
-    return r;
+    size_t top0 = c->pool_top;
+    EMIT bo = EVAL_ARG(c, body);                 /* SD inline */
+    if (UNLIKELY(c->error != NUQ_NULL)) return EMIT_EMPTY;
+    VALUE arr = nuq_make_array(bo.count);
+    for (uint32_t i = 0; i < bo.count; i++) nuq_array_push(arr, bo.items[i]);
+    c->pool_top = top0;                           /* slice 解放 */
+    return nuq_emit_one(c, arr);
 }
 ```
+
+エラーは `c->error` (NUQ_NULL = OK) で伝搬、break は `c->break_label`
+(0 = 無)。実値は EMIT 経由のみ。`pool_top = top0` の巻き戻しは
+stack-discipline で sub-expr の emits を解放する hot pattern。
+
+これにより SD specializer は `EVAL_ARG(c, child)` を見つけて child
+dispatcher の本体を親 SD に inline できる。pipe / map / select / array
+ctor などすべてこの形。
+
+## 2.5 value 演算 fast path
+
+`context.h` に `static inline` で `nuq_op_add / sub / mul / neg`、
+`nuq_eq`、`nuq_cmp`、`nuq_truthy`、`nuq_make_int` の fixnum 高速路
+を置き、slow case を `_slow` 接尾辞付き関数として `value.c` に残す。
+
+```c
+static inline VALUE
+nuq_op_add(VALUE a, VALUE b) {
+    if (LIKELY(NUQ_IS_FIX(a) && NUQ_IS_FIX(b))) {
+        int64_t la = NUQ_FIX_VAL(a), lb = NUQ_FIX_VAL(b), r;
+        if (LIKELY(!__builtin_add_overflow(la, lb, &r))) return nuq_make_int(r);
+    }
+    return nuq_op_add_slow(a, b);
+}
+```
+
+`node_add` などが `nuq_op_add` を呼ぶと、fixnum-fixnum の場合は
+inline 展開で関数 call が消える (gcc が分岐予測どおりに通す)。
+`nuq_op_div / mod` は jq 仕様で常に double 演算 (5/2 == 2.5) なので
+fast path がうま味なし、slow に直行。
 
 ## 3. CTX
 
 ```c
 typedef struct CTX_struct {
     VALUE                 input;          /* 現 `.` (pipe が per-emit に設定) */
+
+    /* EMIT pool — flat VALUE buffer。各 NODE_DEF が pool_top を起点に
+     * push してスライスを return、呼出側が `c->pool_top = top0` で
+     * 巻き戻す stack-discipline。startup で 4096 entries pre-grow、
+     * 以降の realloc は UNLIKELY 経路。 */
+    VALUE                *pool;
+    size_t                pool_top, pool_capa;
 
     struct nuq_var_slot  *var_stack;      /* `as $x` 束縛 */
     size_t                var_top, var_capa;
@@ -107,8 +149,10 @@ typedef struct CTX_struct {
 } CTX;
 ```
 
-CTX は **`GC_malloc` で確保** する (重要 — `var_stack` 等の中身ポインタ
-が GC ルートとして見える必要がある)。
+CTX は **`GC_malloc` で確保** する (重要 — `pool` / `var_stack` 等の
+中身ポインタが GC ルートとして見える必要がある。`calloc` だと
+Boehm の保守的 scanner から live と認識されず、内側ブロックが
+回収されて `$x undefined` 等の謎挙動を起こす)。
 
 ## 4. 主要ノードの意味論と AST 例
 
@@ -173,12 +217,15 @@ NODE_DEF
 node_b_map(CTX *c, NODE *n, NODE *body)
 {
     /* ...input 配列を取り出して... */
+    VALUE result = nuq_make_array(o->arr.len);
     for (size_t i = 0; i < o->arr.len; i++) {
         c->input = o->arr.items[i];
-        VALUE bo = EVAL_ARG(c, body);   /* body inline */
-        ...
+        size_t top0 = c->pool_top;
+        EMIT bo = EVAL_ARG(c, body);    /* body SD inline */
+        for (uint32_t j = 0; j < bo.count; j++) nuq_array_push(result, bo.items[j]);
+        c->pool_top = top0;             /* slice 解放 */
     }
-    ...
+    return nuq_emit_one(c, result);
 }
 ```
 
@@ -245,7 +292,9 @@ node_try
 `f?` (= `try f`) は parser が handler に **`node_empty` の sentinel** を
 置く (NULL は generated dispatcher が deref して segfault する)。
 
-## 5. SD specialization の効き方
+## 5. SD specialization と AST fusion
+
+### SD specialization
 
 ASTro の SD specializer は `EVAL_ARG(c, child)` を見つけると child の
 dispatcher を constant-fold して、child の body を親 SD に inline する。
@@ -253,26 +302,51 @@ dispatcher を constant-fold して、child の body を親 SD に inline する
 
 - **runtime helper を経由しない**: 多くの NODE 本体は node.def 直接
   展開で `EVAL_ARG` を子 operand に対して使う。
-- **builtin が個別 NODE**: `length`、`map`、`select`、`range` などは
-  parser が直接対応 NODE を生成 (`node_b_length` 等)。table lookup や
-  関数呼び出しを介さず、本体は node.def に inline。
+- **builtin が個別 NODE**: `length` / `map` / `select` / `range` など 60+
+  の builtin はすべて parser が直接対応 NODE を生成 (`node_b_length`
+  等)。runtime の linear builtin table は無い。
+- **再帰 def 本体を独立 entry に登録**: `nuq_user_call` 内の
+  `EVAL(c, fd->body)` は runtime resolved dispatcher なので top-level
+  filter SD からは inline できない。`nuq_compile_all_def_bodies` が
+  parse 時に集めた `def_tab` を walk して各 body を別 entry として
+  `astro_cs_compile` に渡す (usage.md "Entry nodes")。upto / ack の
+  AOT が伸びるのはこの仕組み。
 
 これで `[range(N)] | map(. * 2) | add` のような典型 chain が **1 SD
 関数** に焼き上がり、tight loop は GC alloc を除いて純 C と区別が
 つかない速度になる。
 
-長 helper は runtime.c に残っている (object_ctor / interp / format /
-user_call / split / join / *_by 等):
+長 helper は runtime.c に残っている (object_eval / interp / user_call
+/ ほか):
 - complex な cartesian や string 処理で実装が長く、inline すると
   per-bench SD が肥大化する
-- これらは「SD inline できなくても困らない」もの (chain hot path に
-  ほぼ出ない or 既に O(n) 以上の本来コストがある)
+- chain hot path に出にくい / 既に O(n) 以上の本来コストがある
 
-将来の改善余地としては:
-- inline 化されていない helper も node.def に展開する (コード量と inline
-  の trade-off)
-- pipe を CPS 化して emit_buf を完全に消す (allocator pressure 削減)
-- per-call `alloca` ベースの emit buffer (todo B-4)
+### AST fusion (parse-time peephole)
+
+`filter.c` の `nuq_make_pipe(lhs, rhs)` が parse 時に意味保存の書き
+換えを適用 (詳細は `perf.md`):
+
+- `map(F) | map(G)` → `map(F | G)`
+- `select(F) | select(G)` → `select(F and G)`
+- `[body] | length` → `node_emit_count(body)` (専用ノード)
+- `[body] | add` → `node_emit_fold_add(body)` (`add` の type-dispatch
+  kernel `nuq_add_fold_items` を共有)
+- 右辺エッジ fusion: `f | sel(a) | sel(b) | sel(c)` のような左結合
+  chain も任意長で折り畳み
+
+これにより SD specialize より前の段階で AST が短縮されるので、
+interp / AOT 両方が恩恵を受ける。
+
+### 残る伸びしろ
+
+- **PGO 的な型 feedback**: ASTro framework に `swap_dispatcher` /
+  `HOPT(n)` / `--pg-compile` などの部品はあるが nuq には未配線。
+  jq は集合演算が重いので AST fusion ほどの効果は期待しにくい
+  (詳細は perf.md)。
+- pipe の CPS 化 (todo B-1) — alloc pattern の改善、AOT vs interp
+  の差にはほぼ効かない。
+- pool top の register 常駐化 (todo B-4) — pyramid に少し効くかも。
 
 ## 6. JSON I/O
 

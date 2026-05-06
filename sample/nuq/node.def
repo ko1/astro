@@ -589,6 +589,41 @@ node_array_empty(CTX *c, NODE *n)
     return nuq_emit_one(c, nuq_make_array(0));
 }
 
+/* Fusion of `[body] | length` — counts body's emits without
+ * materializing the intermediate array.  Semantically equal because
+ * `[E] | length` only inspects |E.emits|; the array is an artifact.
+ * (Errors during body propagate the same way as non-fused: c->error
+ * is set, we abort and emit nothing.) */
+NODE_DEF
+node_emit_count(CTX *c, NODE *n, NODE *body)
+{
+    const size_t top0 = c->pool_top;
+    const EMIT bo = EVAL_ARG(c, body);
+    if (UNLIKELY(c->error != NUQ_NULL)) return EMIT_EMPTY;
+    const uint32_t cnt = bo.count;
+    c->pool_top = top0;
+    return nuq_emit_one(c, nuq_make_int((int64_t)cnt));
+}
+
+/* Fusion of `[body] | add` — runs body's emits straight into the
+ * type-dispatch kernel of `add` (`nuq_add_fold_items`), skipping the
+ * outer array build.  Result identical to `[body] | add`:
+ *   - empty emits → null   (matches `add` of [])
+ *   - all arrays  → flatten concat
+ *   - all strings → byte concat
+ *   - all objects → key-merge (later keys win, matching jq)
+ *   - mixed       → pairwise nuq_op_add fold */
+NODE_DEF
+node_emit_fold_add(CTX *c, NODE *n, NODE *body)
+{
+    const size_t top0 = c->pool_top;
+    const EMIT bo = EVAL_ARG(c, body);
+    if (UNLIKELY(c->error != NUQ_NULL)) return EMIT_EMPTY;
+    const VALUE r = nuq_add_fold_items(bo.items, bo.count);
+    c->pool_top = top0;
+    return nuq_emit_one(c, r);
+}
+
 NODE_DEF
 node_object(CTX *c, NODE *n, uint32_t entries_id)
 {
