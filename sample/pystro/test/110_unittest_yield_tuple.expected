@@ -1,0 +1,4 @@
+ok YieldTupleTest test_basic
+ok YieldTupleTest test_my_enumerate
+---
+passed=2 failed=0

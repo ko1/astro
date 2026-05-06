@@ -2912,7 +2912,7 @@ parse_yield(void)
             || peek_tok(0)->kind == T_RPAREN || peek_tok(0)->kind == T_COMMA)
         e = ALLOC_node_const_none();
     else
-        e = parse_expr();
+        e = parse_expr_list();    // 'yield a, b' yields a tuple (a, b)
     return ALLOC_node_yield(e);
 }
 
