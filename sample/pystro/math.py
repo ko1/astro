@@ -191,4 +191,44 @@ __all__ = [
     "isclose", "isnan", "isinf", "isfinite",
     "copysign", "degrees", "radians",
     "fsum", "fmod", "remainder", "expm1", "log1p", "cbrt",
+    "ldexp", "frexp", "modf", "nextafter", "ulp",
 ]
+
+
+def ldexp(x, i):
+    """x * 2**i."""
+    return x * (2 ** i)
+
+
+def frexp(x):
+    """Return (m, e) such that x == m * 2**e and 0.5 <= |m| < 1."""
+    if x == 0: return (0.0, 0)
+    if isnan(x) or isinf(x): return (x, 0)
+    e = 0
+    m = float(x)
+    if m < 0:
+        sign = -1; m = -m
+    else:
+        sign = 1
+    while m >= 1.0: m *= 0.5; e += 1
+    while m < 0.5: m *= 2.0; e -= 1
+    return (sign * m, e)
+
+
+def modf(x):
+    """Return (frac, int) parts of x as floats."""
+    i = float(int(x))
+    return (x - i, i)
+
+
+def nextafter(x, y, steps=1):
+    if x == y: return y
+    eps = 2.220446049250313e-16
+    if y > x: return x + eps * (1 if x == 0 else abs(x))
+    return x - eps * (1 if x == 0 else abs(x))
+
+
+def ulp(x):
+    if isnan(x) or isinf(x): return x
+    if x == 0: return 5e-324
+    return 2.220446049250313e-16 * abs(x)

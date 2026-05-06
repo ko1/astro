@@ -60,6 +60,58 @@ stderr = _StdStream(2)
 
 modules = __pystro_modules__()
 
+
+# IEEE 754 double float info — pystro uses native C double everywhere.
+class _FloatInfo(tuple):
+    @property
+    def max(self): return self[0]
+    @property
+    def max_exp(self): return self[1]
+    @property
+    def max_10_exp(self): return self[2]
+    @property
+    def min(self): return self[3]
+    @property
+    def min_exp(self): return self[4]
+    @property
+    def min_10_exp(self): return self[5]
+    @property
+    def dig(self): return self[6]
+    @property
+    def mant_dig(self): return self[7]
+    @property
+    def epsilon(self): return self[8]
+    @property
+    def radix(self): return self[9]
+    @property
+    def rounds(self): return self[10]
+
+
+float_info = _FloatInfo((1.7976931348623157e308, 1024, 308,
+                          2.2250738585072014e-308, -1021, -307,
+                          15, 53,
+                          2.220446049250313e-16,
+                          2, 1))
+
+
+class _IntInfo(tuple):
+    @property
+    def bits_per_digit(self): return self[0]
+    @property
+    def sizeof_digit(self): return self[1]
+    @property
+    def default_max_str_digits(self): return self[2]
+    @property
+    def str_digits_check_threshold(self): return self[3]
+
+
+int_info = _IntInfo((30, 4, 4300, 640))
+
+
+# Limit on integer-to-string conversion length (CPython 3.11+).
+def get_int_max_str_digits(): return 4300
+def set_int_max_str_digits(n): pass
+
 def exit(*args):
     # CPython raises SystemExit so `try: sys.exit()` is catchable.  Only
     # uncaught SystemExit actually terminates the process.  No args =>

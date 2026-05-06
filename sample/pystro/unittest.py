@@ -105,29 +105,126 @@ class TestCase:
         with cm:
             args[0](*args[1:])
 
+    def assertRaisesRegex(self, exc_cls, regex, *args):
+        cm = _AssertRaisesCM(exc_cls, regex=regex)
+        if len(args) == 0:
+            return cm
+        with cm:
+            args[0](*args[1:])
+
+    def assertNotHasAttr(self, obj, name, msg=""):
+        if hasattr(obj, name):
+            self.fail(msg or (repr(obj) + " has attribute " + repr(name)))
+
+    def assertHasAttr(self, obj, name, msg=""):
+        if not hasattr(obj, name):
+            self.fail(msg or (repr(obj) + " has no attribute " + repr(name)))
+
+    def assertWarns(self, warn_cls, *args):
+        return _AssertNoOpCM()
+
+    def assertWarnsRegex(self, warn_cls, regex, *args):
+        return _AssertNoOpCM()
+
+    def assertLogs(self, logger=None, level=None):
+        return _AssertNoOpCM()
+
+    def assertNoLogs(self, logger=None, level=None):
+        return _AssertNoOpCM()
+
+    def assertCountEqual(self, a, b, msg=""):
+        if sorted(a, key=lambda x: (str(type(x)), repr(x))) != \
+           sorted(b, key=lambda x: (str(type(x)), repr(x))):
+            self.fail(msg or (repr(a) + " has different elements than " + repr(b)))
+
+    def assertSequenceEqual(self, a, b, msg="", seq_type=None):
+        if list(a) != list(b):
+            self.fail(msg or (repr(a) + " != " + repr(b)))
+
+    def assertListEqual(self, a, b, msg=""):
+        self.assertSequenceEqual(a, b, msg, seq_type=list)
+
+    def assertTupleEqual(self, a, b, msg=""):
+        self.assertSequenceEqual(a, b, msg, seq_type=tuple)
+
+    def assertDictEqual(self, a, b, msg=""):
+        if a != b:
+            self.fail(msg or (repr(a) + " != " + repr(b)))
+
+    def assertSetEqual(self, a, b, msg=""):
+        if set(a) != set(b):
+            self.fail(msg or (repr(a) + " != " + repr(b)))
+
+    def assertRegex(self, text, regex, msg=""):
+        import re as _re
+        if isinstance(regex, str): regex = _re.compile(regex)
+        if not regex.search(text):
+            self.fail(msg or ("regex " + repr(regex) + " not found in " + repr(text)))
+
+    def assertNotRegex(self, text, regex, msg=""):
+        import re as _re
+        if isinstance(regex, str): regex = _re.compile(regex)
+        if regex.search(text):
+            self.fail(msg or ("regex " + repr(regex) + " unexpectedly found in " + repr(text)))
+
+    def subTest(self, *args, **kwargs):
+        return _AssertNoOpCM()
+
+    def addCleanup(self, fn, *args, **kwargs):
+        if not hasattr(self, "_cleanups"):
+            self._cleanups = []
+        self._cleanups.append((fn, args, kwargs))
+
+    def doCleanups(self):
+        if hasattr(self, "_cleanups"):
+            while self._cleanups:
+                fn, a, k = self._cleanups.pop()
+                try: fn(*a, **k)
+                except Exception: pass
+
+    def fail(self, msg=""):
+        raise AssertionError(msg)
+
+    def skipTest(self, reason):
+        raise SkipTest(reason)
+
     def setUp(self):
         pass
 
     def tearDown(self):
         pass
 
+    @classmethod
+    def setUpClass(cls): pass
+
+    @classmethod
+    def tearDownClass(cls): pass
+
+
+class _AssertNoOpCM:
+    def __enter__(self): return self
+    def __exit__(self, *exc): return False
+
 
 class _AssertRaisesCM:
-    def __init__(self, exc_cls):
+    def __init__(self, exc_cls, regex=None):
         self.exc_cls = exc_cls
+        self.regex = regex
         self.exception = None
     def __enter__(self):
         return self
     def __exit__(self, exc_type, exc_value, tb):
-        # No exception → assertRaises failed.
         if exc_type is None:
-            raise AssertionError(
-                str(self.exc_cls) + " not raised")
-        # Match (and any subclass).
+            raise AssertionError(str(self.exc_cls) + " not raised")
         if not issubclass(exc_type, self.exc_cls):
-            return False     # let it propagate
+            return False
+        if self.regex is not None:
+            import re as _re
+            r = self.regex if not isinstance(self.regex, str) else _re.compile(self.regex)
+            if not r.search(str(exc_value)):
+                raise AssertionError("regex " + repr(self.regex) + " not found in " + repr(str(exc_value)))
         self.exception = exc_value
-        return True          # suppress
+        return True
 
 
 # Run all TestCase subclasses' test_* methods declared in the caller's

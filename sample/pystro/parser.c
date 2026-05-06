@@ -3332,10 +3332,23 @@ parse_assert(void)
 // PY_NONE to the local (Python truly unbinds; pystro's local frame
 // has no per-slot validity bit so the local case is approximate but
 // commonly safe).
+static NODE *parse_del_one(void);
+
 static NODE *
 parse_del(void)
 {
     expect(T_DEL, "'del'");
+    NODE *result = parse_del_one();
+    while (match_tok(T_COMMA)) {
+        if (peek_tok(0)->kind == T_NEWLINE || peek_tok(0)->kind == T_SEMI) break;
+        result = ALLOC_node_seq(result, parse_del_one());
+    }
+    return result;
+}
+
+static NODE *
+parse_del_one(void)
+{
     if (peek_tok(0)->kind != T_NAME) parse_error("del expects a target");
     const char *base = peek_tok(0)->sval;
     tok_pos++;
@@ -3799,6 +3812,30 @@ parse_simple_stmt(void)
         }
     }
 
+    // Detect chained assignment with tuple targets: `t1, t2 = ... = expr`.
+    // The plain-name path below only handles a single target group, so
+    // bail out early and let the attr/subscript path (which has chain
+    // support) handle this.
+    if ((k == T_NAME || k == T_STAR)) {
+        size_t pp = tok_pos;
+        int depth_pp = 0;
+        bool saw_eq = false, saw_chain = false, saw_comma = false;
+        while (tok_arr[pp].kind != T_EOF && tok_arr[pp].kind != T_NEWLINE
+               && tok_arr[pp].kind != T_SEMI) {
+            int kk = tok_arr[pp].kind;
+            if (kk == T_LPAREN || kk == T_LBRACK || kk == T_LBRACE) depth_pp++;
+            else if (kk == T_RPAREN || kk == T_RBRACK || kk == T_RBRACE) depth_pp--;
+            else if (depth_pp == 0 && kk == T_COMMA) saw_comma = true;
+            else if (depth_pp == 0 && kk == T_ASSIGN) {
+                if (saw_eq) saw_chain = true;
+                saw_eq = true;
+            }
+            pp++;
+        }
+        // If chain present AND tuple target, fall through to the
+        // attr/subscript path which handles chained groups.
+        if (saw_chain && saw_comma) goto skip_plain_unpack;
+    }
     // Multi-target unpack assignment: TARGET (',' TARGET)+ '=' expr,
     // where TARGET is NAME or `*NAME` (starred — at most one).
     if (k == T_NAME || k == T_STAR) {
@@ -3850,6 +3887,7 @@ parse_simple_stmt(void)
         }
     }
 
+skip_plain_unpack: ;
     // Save start, parse LHS as expression, then peek operator.
     size_t lhs_start = tok_pos;
     NODE *lhs_expr = parse_expr();
@@ -3872,7 +3910,18 @@ parse_simple_stmt(void)
             p++;
         }
         if (found_assign) {
-            // Save target start positions.
+            // First target group: starts at lhs_start.  Could have
+            // multiple comma-separated targets.  Multiple `=` chain
+            // additional target lists.
+            //
+            //   t11, t12 = t21, t22 = ... = expr
+            //
+            // For each target group, recover the starts and replay parse
+            // against a temp holding the RHS.
+            size_t group_starts[8][16];   // [group][target]
+            int    group_counts[8];
+            int    n_groups = 0;
+            // First group from already-consumed targets — re-collect.
             size_t target_starts[16];
             int    n_targets = 1;
             target_starts[0] = lhs_start;
@@ -3882,21 +3931,67 @@ parse_simple_stmt(void)
                 target_starts[n_targets++] = tok_pos;
                 (void)parse_expr();
             }
+            for (int i = 0; i < n_targets; i++) group_starts[0][i] = target_starts[i];
+            group_counts[0] = n_targets;
+            n_groups = 1;
             expect(T_ASSIGN, "'='");
+            // Look for further chained target groups: starts(`=`?stmtish?expr+,`=`)
+            // Heuristic — scan for next top-level `=` before NEWLINE.
+            for (;;) {
+                size_t after_eq = tok_pos;
+                int depth2 = 0;
+                size_t pp = after_eq;
+                bool more_chain = false;
+                while (tok_arr[pp].kind != T_EOF && tok_arr[pp].kind != T_NEWLINE
+                       && tok_arr[pp].kind != T_SEMI) {
+                    int kk2 = tok_arr[pp].kind;
+                    if (kk2 == T_LPAREN || kk2 == T_LBRACK || kk2 == T_LBRACE) depth2++;
+                    else if (kk2 == T_RPAREN || kk2 == T_RBRACK || kk2 == T_RBRACE) depth2--;
+                    else if (depth2 == 0 && kk2 == T_ASSIGN) { more_chain = true; break; }
+                    else if (depth2 == 0 && (kk2 == T_PLUS_EQ || kk2 == T_MINUS_EQ)) break;
+                    pp++;
+                }
+                if (!more_chain) break;
+                if (n_groups >= 8) parse_error("too many chained assign groups");
+                int nt = 0;
+                group_starts[n_groups][nt++] = tok_pos;
+                (void)parse_expr();
+                while (match_tok(T_COMMA)) {
+                    if (peek_tok(0)->kind == T_ASSIGN) break;
+                    if (nt >= 16) parse_error("too many unpack targets");
+                    group_starts[n_groups][nt++] = tok_pos;
+                    (void)parse_expr();
+                }
+                group_counts[n_groups] = nt;
+                n_groups++;
+                expect(T_ASSIGN, "'='");
+            }
             NODE *rhs = parse_expr_list();
             // Unpack via temp tuple subscript: __t = rhs; t_i = __t[i].
             const char *tmp = new_temp_name("__upk");
             NODE *load_tmp;
             NODE *init = build_temp_init(tmp, rhs, &load_tmp);
             NODE *result = init;
-            for (int i = 0; i < n_targets; i++) {
-                size_t saved = tok_pos;
-                tok_pos = target_starts[i];
-                NODE *elem = ALLOC_node_subscript_get(load_tmp,
-                    ALLOC_node_const_int(i));
-                NODE *store = parse_assignable_target(elem);
-                tok_pos = saved;
-                result = ALLOC_node_seq(result, store);
+            for (int g = 0; g < n_groups; g++) {
+                int ng = group_counts[g];
+                if (ng == 1) {
+                    // single target — assign load_tmp directly
+                    size_t saved = tok_pos;
+                    tok_pos = group_starts[g][0];
+                    NODE *store = parse_assignable_target(load_tmp);
+                    tok_pos = saved;
+                    result = ALLOC_node_seq(result, store);
+                } else {
+                    for (int i = 0; i < ng; i++) {
+                        size_t saved = tok_pos;
+                        tok_pos = group_starts[g][i];
+                        NODE *elem = ALLOC_node_subscript_get(load_tmp,
+                            ALLOC_node_const_int(i));
+                        NODE *store = parse_assignable_target(elem);
+                        tok_pos = saved;
+                        result = ALLOC_node_seq(result, store);
+                    }
+                }
             }
             return result;
         }
