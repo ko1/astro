@@ -1,0 +1,8 @@
+ok FrozenTest test_assigning_raises
+ok FrozenTest test_hash_consistent
+ok FrozenTest test_init_works
+ok FrozenTest test_set_dedup
+ok EqFalseTest test_identity_eq
+ok OrderTest test_order
+---
+passed=6 failed=0

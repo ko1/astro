@@ -81,13 +81,21 @@ def _is_dunder(name):
     return name.startswith("__") and name.endswith("__")
 
 
+class FrozenInstanceError(AttributeError):
+    pass
+
+
 def dataclass(cls=None, **kwargs):
     # Allow @dataclass and @dataclass(eq=True) forms.
     if cls is None:
-        # Called with kwargs — return a decorator.
+        # Called with kwargs — return a decorator that re-passes the kwargs.
         def _wrap(c):
-            return dataclass(c)
+            return dataclass(c, **kwargs)
         return _wrap
+    # Honour `frozen=True`: install a __setattr__ that rejects after __init__.
+    frozen = kwargs.get("frozen", False)
+    eq_ = kwargs.get("eq", True)
+    order = kwargs.get("order", False)
     # Walk MRO to collect inherited fields first; own annotations append/override.
     inherited = []
     try:
@@ -124,7 +132,46 @@ def dataclass(cls=None, **kwargs):
                     continue
                 if callable(v): continue
                 fields.append(name)
-    return _build_dataclass(cls, list(fields))
+    result = _build_dataclass(cls, list(fields))
+    if frozen:
+        # Block __setattr__ after __init__.  Set a marker that __init__
+        # checks before going read-only.
+        orig_init = result.__init__
+        def frozen_init(self, *args, **kwargs):
+            object.__setattr__(self, "_dc_init_done", False)
+            orig_init(self, *args, **kwargs)
+            object.__setattr__(self, "_dc_init_done", True)
+        def frozen_setattr(self, name, value):
+            if getattr(self, "_dc_init_done", False):
+                raise FrozenInstanceError("cannot assign to field " + repr(name))
+            object.__setattr__(self, name, value)
+        def frozen_delattr(self, name):
+            raise FrozenInstanceError("cannot delete field " + repr(name))
+        result.__init__ = frozen_init
+        result.__setattr__ = frozen_setattr
+        result.__delattr__ = frozen_delattr
+        # Make hashable by-value when frozen (CPython default).
+        if "_fields" in dir(result):
+            def frozen_hash(self):
+                return hash(tuple(getattr(self, fn) for fn in self._fields))
+            result.__hash__ = frozen_hash
+    if not eq_:
+        # When eq=False, fall back to identity equality.
+        def id_eq(self, o): return self is o
+        result.__eq__ = id_eq
+    if order:
+        # Generate __lt__/__le__/__gt__/__ge__ that compare field tuples.
+        def _cmp_tuple(self):
+            return tuple(getattr(self, fn) for fn in self._fields)
+        def _lt(self, o): return type(self) is type(o) and _cmp_tuple(self) < _cmp_tuple(o)
+        def _le(self, o): return type(self) is type(o) and _cmp_tuple(self) <= _cmp_tuple(o)
+        def _gt(self, o): return type(self) is type(o) and _cmp_tuple(self) > _cmp_tuple(o)
+        def _ge(self, o): return type(self) is type(o) and _cmp_tuple(self) >= _cmp_tuple(o)
+        result.__lt__ = _lt
+        result.__le__ = _le
+        result.__gt__ = _gt
+        result.__ge__ = _ge
+    return result
 
 
 def make_dataclass(typename, fields):
