@@ -841,6 +841,32 @@ static VALUE module_remove_const(CTX *c, VALUE self, int argc, VALUE *argv) {
     return prev;
 }
 
+/* Module#remove_class_variable(:@@name) — remove a cvar from the
+ * module's own table.  Returns the previous value or raises NameError. */
+static VALUE module_remove_class_variable(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return Qnil;
+    if (argc < 1) return Qnil;
+    ID name = SYMBOL_P(argv[0]) ? korb_sym2id(argv[0]) :
+              (BUILTIN_TYPE(argv[0]) == T_STRING ?
+               korb_intern_n(((struct korb_string *)argv[0])->ptr,
+                             ((struct korb_string *)argv[0])->len) : 0);
+    if (!name) return Qnil;
+    struct korb_class *k = (struct korb_class *)self;
+    for (uint32_t i = 0; i < k->cvar_cnt; i++) {
+        if (k->cvars[i].name == name) {
+            VALUE prev = k->cvars[i].value;
+            for (uint32_t j = i + 1; j < k->cvar_cnt; j++) k->cvars[j-1] = k->cvars[j];
+            k->cvar_cnt--;
+            return prev;
+        }
+    }
+    VALUE eName = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
+    korb_raise(c, (struct korb_class *)eName,
+               "class variable %s not defined for %s",
+               korb_id_name(name), korb_id_name(k->name));
+    return Qnil;
+}
+
 /* Module#private_class_method(:foo, ...) — mark singleton method as
  * private.  Stub-level: just set visibility flag.  We keep things
  * simple — return self regardless. */

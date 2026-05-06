@@ -2806,15 +2806,50 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                    * runs.  exc_idx is taken from the FIRST rescue clause,
                    * so secondary clauses with different (or no) names
                    * would otherwise see stale data in their named lvar. */
-                  if (rc->reference && PM_NODE_TYPE_P(rc->reference, PM_LOCAL_VARIABLE_TARGET_NODE)) {
-                      pm_local_variable_target_node_t *lt = (pm_local_variable_target_node_t *)rc->reference;
-                      int ref_slot = lvar_slot(tc, lt->name, lt->depth);
-                      if (ref_slot < 0) ref_slot = lvar_slot_any(tc, lt->name);
-                      if (ref_slot >= 0 && (uint32_t)ref_slot != exc_idx) {
-                          NODE *copy = ALLOC_node_lvar_set((uint32_t)ref_slot,
-                                                            ALLOC_node_lvar_get(exc_idx));
-                          body_for_clause = ALLOC_node_seq(copy, body_for_clause);
+                  if (rc->reference) {
+                      NODE *copy = NULL;
+                      pm_node_t *ref = rc->reference;
+                      NODE *exc_get = ALLOC_node_lvar_get(exc_idx);
+                      if (PM_NODE_TYPE_P(ref, PM_LOCAL_VARIABLE_TARGET_NODE)) {
+                          pm_local_variable_target_node_t *lt = (pm_local_variable_target_node_t *)ref;
+                          int ref_slot = lvar_slot(tc, lt->name, lt->depth);
+                          if (ref_slot < 0) ref_slot = lvar_slot_any(tc, lt->name);
+                          if (ref_slot >= 0 && (uint32_t)ref_slot != exc_idx) {
+                              copy = ALLOC_node_lvar_set((uint32_t)ref_slot, exc_get);
+                          }
+                      } else if (PM_NODE_TYPE_P(ref, PM_INSTANCE_VARIABLE_TARGET_NODE)) {
+                          pm_instance_variable_target_node_t *it = (pm_instance_variable_target_node_t *)ref;
+                          copy = ALLOC_node_ivar_set(intern_constant(tc->parser, it->name), exc_get);
+                      } else if (PM_NODE_TYPE_P(ref, PM_CLASS_VARIABLE_TARGET_NODE)) {
+                          pm_class_variable_target_node_t *cvt = (pm_class_variable_target_node_t *)ref;
+                          copy = ALLOC_node_cvar_set(intern_constant(tc->parser, cvt->name), exc_get);
+                      } else if (PM_NODE_TYPE_P(ref, PM_GLOBAL_VARIABLE_TARGET_NODE)) {
+                          pm_global_variable_target_node_t *gt = (pm_global_variable_target_node_t *)ref;
+                          copy = ALLOC_node_gvar_set(intern_constant(tc->parser, gt->name), exc_get);
+                      } else if (PM_NODE_TYPE_P(ref, PM_CONSTANT_TARGET_NODE)) {
+                          pm_constant_target_node_t *ct = (pm_constant_target_node_t *)ref;
+                          copy = ALLOC_node_const_set(intern_constant(tc->parser, ct->name), exc_get);
+                      } else if (PM_NODE_TYPE_P(ref, PM_CALL_TARGET_NODE)) {
+                          /* obj.attr= : recv.name=(exc) */
+                          pm_call_target_node_t *ct = (pm_call_target_node_t *)ref;
+                          NODE *recv = T(tc, ct->receiver);
+                          ID wname = intern_constant(tc->parser, ct->name);
+                          uint32_t ai = inc_arg_index(tc); rewind_arg_index(tc, ai);
+                          struct method_cache *mc = alloc_method_cache();
+                          NODE *st = ALLOC_node_lvar_set(ai, exc_get);
+                          NODE *call = ALLOC_node_method_call(recv, wname, 1, ai, mc);
+                          copy = ALLOC_node_seq(st, call);
+                      } else if (PM_NODE_TYPE_P(ref, PM_INDEX_TARGET_NODE)) {
+                          pm_index_target_node_t *it = (pm_index_target_node_t *)ref;
+                          if (it->arguments && it->arguments->arguments.size == 1) {
+                              NODE *recv = T(tc, it->receiver);
+                              NODE *idx = T(tc, it->arguments->arguments.nodes[0]);
+                              uint32_t ai = inc_arg_index(tc);
+                              inc_arg_index(tc); inc_arg_index(tc); rewind_arg_index(tc, ai);
+                              copy = ALLOC_node_aset(recv, idx, exc_get, ai);
+                          }
                       }
+                      if (copy) body_for_clause = ALLOC_node_seq(copy, body_for_clause);
                   }
                   /* Build cond: K1 === exc || K2 === exc || ...
                    * If exceptions list is empty, match anything. */

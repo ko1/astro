@@ -268,6 +268,7 @@ void korb_init_builtins(void) {
     DEF(cMod, "const_set",     module_const_set,     -1);
     DEF(cMod, "const_defined?", module_const_defined_p, -1);
     DEF(cMod, "remove_const",  module_remove_const,  -1);
+    DEF(cMod, "remove_class_variable", module_remove_class_variable, -1);
     {
         VALUE mod_class_variable_get(CTX *c, VALUE self, int argc, VALUE *argv);
         VALUE mod_class_variable_set(CTX *c, VALUE self, int argc, VALUE *argv);
