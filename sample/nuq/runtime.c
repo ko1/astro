@@ -766,7 +766,17 @@ nuq_user_call(CTX *c, uint32_t name_id, uint32_t arity, uint32_t args_id)
                 pfd->param_ids = NULL;
                 pfd->param_is_value = NULL;
                 pfd->body = args[i];
+                /* Closure: the param expression's body resolves names
+                 * in the CALLER's scope (where the arg was written),
+                 * NOT in the callee's body.  scope_top = "last visible
+                 * index for caller" = func_cnt - 1 at this point. */
+                pfd->scope_top = c->func_cnt > 0 ? c->func_cnt - 1 : 0;
+                /* If that happens to be 0, set sentinel so
+                 * nuq_func_define's "if zero, default to func_cnt" is
+                 * skipped — we patch back below. */
+                if (pfd->scope_top == 0) pfd->scope_top = (size_t)-1;
                 nuq_func_define(c, pfd);
+                if (pfd->scope_top == (size_t)-1) pfd->scope_top = 0;
             }
         }
         /* Apply lexical scope for the body: the defs added between

@@ -1049,9 +1049,11 @@ nuq_func_define(CTX *c, struct nuq_func_def *fd)
         c->funcs = (struct nuq_func_def **)GC_realloc(
             c->funcs, c->func_capa * sizeof(*c->funcs));
     }
-    /* Capture the lexical scope at def time: any def added LATER won't
-     * be visible from this fd's body. */
-    fd->scope_top = c->func_cnt;
+    /* If the caller hasn't already set scope_top (most defs leave it 0),
+     * capture the lexical scope at define time.  Param-defs can override
+     * by setting scope_top BEFORE calling this — they capture the
+     * caller's scope so the closure body resolves names lexically. */
+    if (fd->scope_top == 0) fd->scope_top = c->func_cnt;
     c->funcs[c->func_cnt++] = fd;
 }
 
