@@ -1,0 +1,29 @@
+ok StrMethodsTest test_count
+ok StrMethodsTest test_expandtabs
+ok StrMethodsTest test_find_with_start
+ok StrMethodsTest test_isascii
+ok StrMethodsTest test_isidentifier
+ok StrMethodsTest test_isprintable
+ok StrMethodsTest test_just
+ok StrMethodsTest test_partition
+ok StrMethodsTest test_removeprefix
+ok StrMethodsTest test_rsplit
+ok StrMethodsTest test_split_default
+ok StrMethodsTest test_split_max
+ok StrMethodsTest test_starts_ends_tuple
+ok StrMethodsTest test_translate
+ok StrMethodsTest test_zfill
+ok StrFormatTest test_format_conversion
+ok StrFormatTest test_format_index
+ok StrFormatTest test_format_kwarg
+ok StrFormatTest test_format_positional
+ok StrFormatTest test_format_spec
+ok PercentFormatTest test_dict
+ok PercentFormatTest test_float
+ok PercentFormatTest test_hex_oct_char
+ok PercentFormatTest test_int
+ok PercentFormatTest test_percent_literal
+ok PercentFormatTest test_repr
+ok PercentFormatTest test_str
+---
+passed=27 failed=0

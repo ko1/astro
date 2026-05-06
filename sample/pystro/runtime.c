@@ -1856,6 +1856,14 @@ py_eq(CTX *c, VALUE a, VALUE b)
         }
         return PY_TRUE;
     }
+    if (py_is_bound(a) && py_is_bound(b)) {
+        // Bound methods compare equal when bound to the same object and
+        // the underlying function is the same.  CPython matches by
+        // self-identity and func-identity.
+        return (PY_PTR(a)->bound.self == PY_PTR(b)->bound.self
+                && PY_PTR(a)->bound.func == PY_PTR(b)->bound.func)
+               ? PY_TRUE : PY_FALSE;
+    }
     if (py_is_range(a) && py_is_range(b)) {
         // CPython: equal iff same sequence of values.  Two empty ranges
         // are equal regardless of start/step; otherwise len, start, and
@@ -2002,6 +2010,13 @@ py_hash(CTX *c, VALUE v)
       case PY_T_BYTEARRAY:
         py_raise_exc(c, c->EXC_TypeError, "unhashable type: 'bytearray'");
         return 0;
+      case PY_T_BOUND_METHOD: {
+        // Hash by (self, func) so equal bound methods hash to the same
+        // bucket — matches the eq rule.
+        uint64_t hs = py_hash(c, o->bound.self);
+        uint64_t hf = py_hash(c, o->bound.func);
+        return hs * 0x100000001B3ULL ^ hf;
+      }
       default:
         // Identity hash for class/method/etc.
         return (uint64_t)(uintptr_t)o * 0x9E3779B97F4A7C15ULL;
@@ -6111,7 +6126,9 @@ sm_expandtabs(CTX *c, int argc, VALUE *argv)
     for (size_t i = 0; i < o->str.len; i++) {
         char ch = o->str.chars[i];
         if (ch == '\t') {
-            int n = w - (col % w);
+            // expandtabs(0) → drop tabs (CPython behaviour: every tab
+            // expands to zero spaces, advancing nothing).
+            int n = (w == 0) ? 0 : w - (col % w);
             if (len + n + 1 > cap) { cap = (len + n + 1) * 2; char *nb = (char *)GC_malloc_atomic(cap); memcpy(nb, buf, len); buf = nb; }
             for (int k = 0; k < n; k++) buf[len++] = ' ';
             col += n;
