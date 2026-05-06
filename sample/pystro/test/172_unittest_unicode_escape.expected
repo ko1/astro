@@ -1,0 +1,7 @@
+ok UnicodeEscapeTest test_U8
+ok UnicodeEscapeTest test_in_fstring
+ok UnicodeEscapeTest test_round_trip_U
+ok UnicodeEscapeTest test_round_trip_u
+ok UnicodeEscapeTest test_u4
+---
+passed=5 failed=0

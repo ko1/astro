@@ -272,6 +272,36 @@ read_string_lit(int line, char quote, bool is_fstr)
                 buf[len++] = ch;
                 continue;
               }
+              case 'u':
+              case 'U': {
+                int n = (esc == 'u') ? 4 : 8;
+                src_pos++;
+                uint32_t cp = 0;
+                for (int i = 0; i < n; i++) {
+                    int dc = peek(0);
+                    int dv = (dc >= '0' && dc <= '9') ? dc - '0'
+                           : (dc >= 'a' && dc <= 'f') ? dc - 'a' + 10
+                           : (dc >= 'A' && dc <= 'F') ? dc - 'A' + 10 : -1;
+                    if (dv < 0) lex_error("invalid \\u/\\U escape");
+                    cp = (cp << 4) | (uint32_t)dv;
+                    src_pos++;
+                }
+                // Encode cp as UTF-8.
+                unsigned char ub[5]; int ulen = 0;
+                if (cp < 0x80)        { ub[0] = (unsigned char)cp; ulen = 1; }
+                else if (cp < 0x800)  { ub[0] = 0xC0 | (cp >> 6);
+                                        ub[1] = 0x80 | (cp & 0x3F); ulen = 2; }
+                else if (cp < 0x10000){ ub[0] = 0xE0 | (cp >> 12);
+                                        ub[1] = 0x80 | ((cp >> 6) & 0x3F);
+                                        ub[2] = 0x80 | (cp & 0x3F); ulen = 3; }
+                else                  { ub[0] = 0xF0 | (cp >> 18);
+                                        ub[1] = 0x80 | ((cp >> 12) & 0x3F);
+                                        ub[2] = 0x80 | ((cp >> 6) & 0x3F);
+                                        ub[3] = 0x80 | (cp & 0x3F); ulen = 4; }
+                while (len + ulen + 1 > cap) { cap *= 2; buf = (char *)GC_realloc(buf, cap); }
+                for (int i = 0; i < ulen; i++) buf[len++] = (char)ub[i];
+                continue;
+              }
               default:  ch = esc;
             }
             src_pos++;
