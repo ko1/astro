@@ -1,0 +1,5 @@
+ok ClassLevelDescriptorTest test_data_descriptor_via_property
+ok ClassLevelDescriptorTest test_get_called_on_class_access
+ok ClassLevelDescriptorTest test_get_called_on_instance
+---
+passed=3 failed=0

@@ -3550,6 +3550,15 @@ py_getattr(CTX *c, VALUE v, const char *name)
                 if (t == PY_T_STATICMETHOD) return PY_PTR(m)->wrap.wrapped;
                 if (t == PY_T_CLASSMETHOD)  return py_make_bound(v, PY_PTR(m)->wrap.wrapped);
             }
+            // If m is an instance whose class defines __get__, invoke
+            // __get__(None, owner) — descriptor protocol at class level.
+            if (py_is_instance(m)) {
+                VALUE getm = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(m)->inst.cls), "__get__");
+                if (getm != PY_NONE) {
+                    VALUE av[3] = { m, PY_NONE, v };
+                    return py_apply(c, getm, 3, av);
+                }
+            }
             return m;
         }
         // Built-in type class: look up method as unbound function via
