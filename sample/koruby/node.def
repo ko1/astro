@@ -226,6 +226,7 @@ node_while(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *body)
         VALUE v = EVAL_ARG(c, cond);
         if (UNLIKELY(c->state != KORB_NORMAL)) return Qnil;
         if (!RTEST(v)) break;
+    redo_while:
         EVAL_ARG(c, body);
         if (UNLIKELY(c->state != KORB_NORMAL)) {
             if (c->state == KORB_BREAK) {
@@ -238,6 +239,12 @@ node_while(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *body)
                 c->state = KORB_NORMAL;
                 c->state_value = Qnil;
                 continue;
+            }
+            else if (c->state == KORB_REDO) {
+                /* redo: re-eval body without re-checking condition. */
+                c->state = KORB_NORMAL;
+                c->state_value = Qnil;
+                goto redo_while;
             }
             return Qnil;
         }
@@ -252,6 +259,7 @@ node_until(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *body)
         VALUE v = EVAL_ARG(c, cond);
         if (UNLIKELY(c->state != KORB_NORMAL)) return Qnil;
         if (RTEST(v)) break;
+    redo_until:
         EVAL_ARG(c, body);
         if (UNLIKELY(c->state != KORB_NORMAL)) {
             if (c->state == KORB_BREAK) {
@@ -264,6 +272,11 @@ node_until(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *body)
                 c->state = KORB_NORMAL;
                 c->state_value = Qnil;
                 continue;
+            }
+            else if (c->state == KORB_REDO) {
+                c->state = KORB_NORMAL;
+                c->state_value = Qnil;
+                goto redo_until;
             }
             return Qnil;
         }

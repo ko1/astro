@@ -228,7 +228,16 @@ VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
      * defining class scope, not the caller's. */
     struct korb_cref *prev_cref = c->cref;
     if (p->cref) c->cref = p->cref;
-    VALUE r = EVAL(c, p->body);
+    VALUE r;
+redo_proc:
+    r = EVAL(c, p->body);
+    /* `redo` inside a proc/lambda body — re-evaluate the body with
+     * the same param bindings (CRuby semantics).  Without this, redo
+     * leaks up and silently exits. */
+    if (c->state == KORB_REDO) {
+        c->state = KORB_NORMAL; c->state_value = Qnil;
+        goto redo_proc;
+    }
     c->cref = prev_cref;
     current_block = prev_block;
     /* Snapshot any returned proc whose env points into our about-to-be-
@@ -289,6 +298,16 @@ VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
             korb_raise(c, (struct korb_class *)eUTE, "%s", buf);
         } else {
             korb_raise(c, NULL, "%s", buf);
+        }
+    } else if (c->state == KORB_RETRY) {
+        /* `retry` outside a rescue is a SyntaxError in CRuby (parse
+         * time) or LocalJumpError at runtime if it escapes scope.
+         * Convert to a SyntaxError-like raise so `rescue` can catch. */
+        VALUE eSE = korb_const_get(korb_vm->object_class, korb_intern("SyntaxError"));
+        if (eSE && !SPECIAL_CONST_P(eSE) && BUILTIN_TYPE(eSE) == T_CLASS) {
+            korb_raise(c, (struct korb_class *)eSE, "Invalid retry");
+        } else {
+            korb_raise(c, NULL, "Invalid retry");
         }
     }
     return r;
