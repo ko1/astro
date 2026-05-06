@@ -6560,6 +6560,47 @@ sm_set_update(CTX *c, int argc, VALUE *argv) {
     return PY_NONE;
 }
 
+static VALUE
+sm_difference_update(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    VALUE a = argv[0], b = argv[1];
+    struct py_iter it; py_iter_init(c, &it, b);
+    VALUE x;
+    while (py_iter_next(c, &it, &x)) py_dict_remove(c, a, x);
+    return PY_NONE;
+}
+static VALUE
+sm_intersection_update(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    VALUE a = argv[0], b = argv[1];
+    // Build a set of keys in `a` that are NOT in b, then remove.
+    struct pydict *aa = PY_PTR(a)->dict;
+    VALUE *to_remove = (VALUE *)alloca(sizeof(VALUE) * aa->elen);
+    int n = 0;
+    for (size_t i = 0; i < aa->elen; i++) {
+        if (!pydict_entry_live(aa, i)) continue;
+        if (!py_contains(c, b, aa->entries[i].key))
+            to_remove[n++] = aa->entries[i].key;
+    }
+    for (int i = 0; i < n; i++) py_dict_remove(c, a, to_remove[i]);
+    return PY_NONE;
+}
+static VALUE
+sm_symmetric_difference_update(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    VALUE a = argv[0], b = argv[1];
+    struct py_iter it; py_iter_init(c, &it, b);
+    VALUE x;
+    while (py_iter_next(c, &it, &x)) {
+        if (py_contains(c, a, x)) py_dict_remove(c, a, x);
+        else py_dict_set(c, a, x, PY_NONE);
+    }
+    return PY_NONE;
+}
+
 static struct type_method set_methods[] = {
     { "add",                  sm_add,                  2, 2 },
     { "discard",              sm_discard,              2, 2 },
@@ -6572,6 +6613,9 @@ static struct type_method set_methods[] = {
     { "intersection",         sm_intersection,         2, 2 },
     { "difference",           sm_difference,           2, 2 },
     { "symmetric_difference", sm_symmetric_difference, 2, 2 },
+    { "intersection_update",  sm_intersection_update,  2, 2 },
+    { "difference_update",    sm_difference_update,    2, 2 },
+    { "symmetric_difference_update", sm_symmetric_difference_update, 2, 2 },
     { "issubset",             sm_issubset,             2, 2 },
     { "issuperset",           sm_issuperset,           2, 2 },
     { "isdisjoint",           sm_isdisjoint,           2, 2 },

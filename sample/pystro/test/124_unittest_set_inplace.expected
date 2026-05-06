@@ -1,0 +1,6 @@
+ok SetInplaceTest test_chain
+ok SetInplaceTest test_difference_update
+ok SetInplaceTest test_intersection_update
+ok SetInplaceTest test_symmetric_difference_update
+---
+passed=4 failed=0
