@@ -2518,6 +2518,46 @@ parse_for(void)
             p++;
         }
     }
+    // Detect plain-name targets with optional `*name`: emit
+    // unpack_assign so starred captures work (`for x, *rest in pairs`).
+    if (k0 == T_NAME || k0 == T_STAR) {
+        size_t pp = tok_pos;
+        const char *names[16];
+        bool starred[16];
+        int nn = 0;
+        bool ok = true;
+        for (;;) {
+            bool s = false;
+            if (tok_arr[pp].kind == T_STAR) { s = true; pp++; }
+            if (tok_arr[pp].kind != T_NAME || nn >= 16) { ok = false; break; }
+            names[nn] = tok_arr[pp].sval;
+            starred[nn] = s;
+            nn++; pp++;
+            if (tok_arr[pp].kind == T_IN) break;
+            if (tok_arr[pp].kind != T_COMMA) { ok = false; break; }
+            pp++;
+            if (tok_arr[pp].kind == T_IN) break;
+        }
+        if (ok && nn >= 2 && tok_arr[pp].kind == T_IN) {
+            tok_pos = pp;
+            struct pyunpack_target ts[16];
+            for (int i = 0; i < nn; i++) {
+                ts[i].is_starred = starred[i];
+                if (cur_scope && !scope_is_global_decl(cur_scope, names[i])) {
+                    ts[i].is_local = true;
+                    ts[i].slot = scope_add_local(cur_scope, names[i]);
+                    ts[i].global_name = NULL;
+                } else {
+                    ts[i].is_local = false;
+                    ts[i].slot = -1;
+                    ts[i].global_name = names[i];
+                }
+            }
+            size_t idx = unpack_reserve(ts, nn);
+            prefix = ALLOC_node_unpack_assign((uint32_t)idx, (uint32_t)nn, load_tmp);
+            goto for_after_target;
+        }
+    }
     if (single_paren) {
         prefix = build_for_target_assigns(load_tmp);
     } else {
@@ -2533,6 +2573,7 @@ parse_for(void)
             if (peek_tok(0)->kind == T_IN) break;
         }
     }
+for_after_target: ;
     expect(T_IN, "'in'");
     NODE *iter = parse_expr_list();
     NODE *body = parse_suite();
