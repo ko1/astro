@@ -57,9 +57,48 @@ def cast(typ, val):
     return val
 
 
+# NamedTuple — when a class subclasses typing.NamedTuple with class-level
+# annotations, build a namedtuple-like class with __init__/__eq__/_fields.
+import collections as _collections
+
+
+class NamedTupleMeta(type):
+    def __new__(mcs, name, bases, ns):
+        if name == "NamedTuple":
+            return type.__new__(mcs, name, bases, ns)
+        # Collect annotated attributes as fields in declaration order.
+        annot = ns.get("__annotations__") or {}
+        field_names = list(annot.keys())
+        defaults = {}
+        for n in field_names:
+            if n in ns:
+                defaults[n] = ns.pop(n)
+        # Build via collections.namedtuple, then layer user methods.
+        nt = _collections.namedtuple(name, field_names) if field_names else None
+        if nt is None:
+            return type.__new__(mcs, name, bases, ns)
+        # Apply defaults (right-aligned).
+        if defaults:
+            try:
+                nt.__defaults__ = tuple(defaults[k] for k in field_names if k in defaults)
+            except Exception:
+                pass
+        # Copy any user-defined methods onto nt.
+        for k, v in ns.items():
+            if k.startswith("__") and k in ("__init__",): continue
+            if callable(v):
+                setattr(nt, k, v)
+        return nt
+
+
+class NamedTuple(metaclass=NamedTupleMeta):
+    pass
+
+
 __all__ = [
     "List", "Tuple", "Dict", "Set", "FrozenSet",
     "Optional", "Union", "Callable", "Iterable", "Iterator", "Generator",
     "Any", "NoReturn", "Protocol", "Final", "ClassVar",
     "TypeVar", "NewType", "runtime_checkable", "get_type_hints", "cast",
+    "NamedTuple",
 ]

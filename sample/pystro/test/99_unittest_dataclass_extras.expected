@@ -1,0 +1,6 @@
+ok DataclassExtrasTest test_astuple
+ok DataclassExtrasTest test_field_factory
+ok DataclassExtrasTest test_is_dataclass
+ok DataclassExtrasTest test_replace
+---
+passed=4 failed=0

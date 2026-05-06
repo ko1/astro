@@ -1,4 +1,15 @@
 # pystro stdlib `dataclasses` (minimal).
+
+class _Field:
+    __slots__ = ("default", "default_factory", "init", "repr_", "compare", "metadata")
+    def __init__(self, default=None, default_factory=None,
+                 init=True, repr_=True, compare=True, metadata=None):
+        self.default = default
+        self.default_factory = default_factory
+        self.init = init
+        self.repr_ = repr_
+        self.compare = compare
+        self.metadata = metadata
 #
 # `@dataclass` synthesizes __init__, __repr__, __eq__ on a class.
 # pystro does not yet expose annotation reflection, so we have a small
@@ -28,7 +39,15 @@ def _build_dataclass(cls, fields):
             elif fn in kwargs:
                 setattr(self, fn, kwargs[fn])
             elif hasattr(cls, fn):
-                setattr(self, fn, getattr(cls, fn))
+                d = getattr(cls, fn)
+                # _Field with default_factory: invoke per-instance.
+                if isinstance(d, _Field):
+                    if d.default_factory is not None:
+                        setattr(self, fn, d.default_factory())
+                    else:
+                        setattr(self, fn, d.default)
+                else:
+                    setattr(self, fn, d)
             # else: leave unset
 
     def _repr(self):
@@ -110,6 +129,50 @@ def astuple(obj):
     return tuple(getattr(obj, fn) for fn in fields)
 
 
+_MISSING = object()
+
+
+def field(default=_MISSING, default_factory=_MISSING, init=True,
+          repr=True, compare=True, metadata=None):
+    return _Field(
+        default=None if default is _MISSING else default,
+        default_factory=None if default_factory is _MISSING else default_factory,
+        init=init, repr_=repr, compare=compare, metadata=metadata,
+    )
+
+
+def fields(class_or_instance):
+    fs = getattr(class_or_instance, "_fields", None)
+    if fs is None:
+        raise TypeError("fields() on non-dataclass")
+    out = []
+    for n in fs:
+        out.append(_Field(default=getattr(class_or_instance, n, None)))
+        out[-1].name = n  # add name attr for convenience
+    return tuple(out)
+
+
+def is_dataclass(obj):
+    return hasattr(obj, "_fields")
+
+
+def replace(obj, **changes):
+    fs = getattr(obj, "_fields", None)
+    if fs is None:
+        raise TypeError("replace() on non-dataclass")
+    new_args = {}
+    for n in fs:
+        new_args[n] = changes.get(n, getattr(obj, n))
+    return type(obj)(**new_args)
+
+
+def astuple(obj):
+    fields = getattr(obj, "_fields", None)
+    if fields is None:
+        raise TypeError("astuple: not a dataclass")
+    return tuple(getattr(obj, fn) for fn in fields)
+
+
 def fields(obj):
     fs = getattr(obj, "_fields", None)
     if fs is None:
@@ -117,4 +180,5 @@ def fields(obj):
     return fs
 
 
-__all__ = ["dataclass", "make_dataclass", "asdict", "astuple", "fields"]
+__all__ = ["dataclass", "make_dataclass", "asdict", "astuple", "fields",
+           "field", "is_dataclass", "replace"]
