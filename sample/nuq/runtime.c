@@ -454,7 +454,12 @@ nuq_field_lookup(VALUE in, const char *name, bool optional, VALUE *out)
         return true;
     }
     if (optional) return false;
-    nuq_helper_error("Cannot index %s with \"%s\"", nuq_type_name(in), name);
+    {
+        VALUE k = nuq_make_string(name, strlen(name));
+        char d[80];
+        nuq_value_descr(k, d, sizeof(d));
+        nuq_helper_error("Cannot index %s with %s", nuq_type_name(in), d);
+    }
     return false;
 }
 
@@ -2498,7 +2503,7 @@ nuq_delpaths_eval(CTX *c, struct Node *paths_expr)
     if (pe.count == 0) { c->pool_top = t0; return EMIT_EMPTY; }
     VALUE pv = pe.items[0];
     if (!(NUQ_IS_PTR(pv) && NUQ_PTR(pv)->type == NUQ_T_ARRAY))
-        return err_emit(c, "delpaths: not array of paths");
+        return err_emit(c, "Paths must be specified as an array");
     struct nuq_obj *po = NUQ_PTR(pv);
     /* Snapshot since we'll re-use pool. */
     size_t cnt = po->arr.len;
@@ -3014,11 +3019,20 @@ path_dfs(CTX *c, struct Node **steps, size_t step_cnt, size_t k,
             return;     /* error already set */
         }
         VALUE child = NUQ_NULL;
-        if (NUQ_IS_FIX(kv) && NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_ARRAY)
-            child = nuq_array_get(v, NUQ_FIX_VAL(kv));
-        else if (NUQ_IS_PTR(kv) && NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_OBJECT)
+        VALUE path_kv = kv;
+        if (NUQ_IS_FIX(kv) && NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_ARRAY) {
+            int64_t idx = NUQ_FIX_VAL(kv);
+            child = nuq_array_get(v, idx);
+            /* Normalize negative array indices in the EMITTED path so
+             * jq-style descending-sort + delete works on the original
+             * array shape (we sort and apply paths to the same array). */
+            if (idx < 0) {
+                int64_t abs_idx = idx + (int64_t)NUQ_PTR(v)->arr.len;
+                if (abs_idx >= 0) path_kv = nuq_make_int(abs_idx);
+            }
+        } else if (NUQ_IS_PTR(kv) && NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_OBJECT)
             child = nuq_object_get(v, kv);
-        path_push(pu, kv);
+        path_push(pu, path_kv);
         path_dfs(c, steps, step_cnt, k + 1, child, pu);
         pu->cur_len--;
         return;
@@ -3164,6 +3178,15 @@ assign_leaf(VALUE v, void *ud, bool *dropped)
     EMIT re = EVAL(al->c, al->rhs);
     al->c->input = saved;
     if (al->c->error != NUQ_NULL) return v;
+    /* `path |= select(...)` style: when the rhs emits nothing, jq's
+     * update semantics is to DROP the entry (dropped=true).  For arith
+     * variants we still need a value, so an empty rhs there falls back
+     * to null. */
+    if (al->op_kind == NUQ_ASSIGN_UPDATE && re.count == 0) {
+        al->c->pool_top = t0;
+        *dropped = true;
+        return v;
+    }
     VALUE rv = re.count > 0 ? re.items[0] : NUQ_NULL;
     al->c->pool_top = t0;
     switch (al->op_kind) {

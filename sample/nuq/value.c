@@ -870,7 +870,10 @@ nuq_op_div_slow(VALUE a, VALUE b)
     if (both_numeric(a, b)) {
         double db = to_double_v(b);
         if (db == 0.0) {
-            nuq_helper_error("");
+            char da_d[80], db_d[80];
+            nuq_value_descr(a, da_d, sizeof(da_d));
+            nuq_value_descr(b, db_d, sizeof(db_d));
+            nuq_helper_error("%s and %s cannot be divided because the divisor is zero", da_d, db_d);
             return NUQ_NULL;
         }
         return nuq_make_double(to_double_v(a) / db);
@@ -889,7 +892,13 @@ nuq_op_mod_slow(VALUE a, VALUE b)
 {
     if (NUQ_IS_FIX(a) && NUQ_IS_FIX(b)) {
         int64_t lb = NUQ_FIX_VAL(b);
-        if (lb == 0) { nuq_helper_error(""); return NUQ_NULL; }
+        if (lb == 0) {
+            char da[80], db[80];
+            nuq_value_descr(a, da, sizeof(da));
+            nuq_value_descr(b, db, sizeof(db));
+            nuq_helper_error("%s and %s cannot be divided (remainder) because the divisor is zero", da, db);
+            return NUQ_NULL;
+        }
         return nuq_make_int(NUQ_FIX_VAL(a) % lb);
     }
     if (both_numeric(a, b)) {
@@ -906,7 +915,13 @@ nuq_op_mod_slow(VALUE a, VALUE b)
         }
         int64_t ia = (int64_t)da;
         int64_t ib = (int64_t)db;
-        if (ib == 0) { nuq_helper_error(""); return NUQ_NULL; }
+        if (ib == 0) {
+            char da[80], db[80];
+            nuq_value_descr(a, da, sizeof(da));
+            nuq_value_descr(b, db, sizeof(db));
+            nuq_helper_error("%s and %s cannot be divided (remainder) because the divisor is zero", da, db);
+            return NUQ_NULL;
+        }
         return nuq_make_int(ia % ib);
     }
     nuq_helper_error("cannot modulo %s by %s", nuq_type_name(a), nuq_type_name(b));

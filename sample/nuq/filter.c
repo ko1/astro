@@ -526,6 +526,7 @@ build_builtin_call(const char *name, int arity, struct Node **args)
     BUILTIN0("mktime", ALLOC_node_b_mktime);
     BUILTIN1("path", ALLOC_node_b_path);
     BUILTIN1("strftime", ALLOC_node_b_strftime);
+    BUILTIN1("strflocaltime", ALLOC_node_b_strflocaltime);
     BUILTIN1("strptime", ALLOC_node_b_strptime);
     BUILTIN0("transpose", ALLOC_node_b_transpose);
     BUILTIN1("isempty", ALLOC_node_b_isempty);

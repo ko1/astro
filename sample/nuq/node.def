@@ -86,7 +86,8 @@ node_field(CTX *c, NODE *n, const char *name)
 {
     VALUE v;
     if (UNLIKELY(!nuq_field_lookup(c->input, name, false, &v))) {
-        c->error = nuq_make_string("type error", 10);
+        /* nuq_field_lookup already sets c->error with a value-aware
+         * message (`Cannot index <type> with "<name>"`).  Don't clobber. */
         return EMIT_EMPTY;
     }
     return nuq_emit_one(c, v);
@@ -1819,17 +1820,13 @@ node_b_mktime(CTX *c, NODE *n)
 NODE_DEF
 node_b_strftime(CTX *c, NODE *n, NODE *fmt_n)
 {
-    /* Input must be broken-down (array) like gmtime output. */
-    if (!(NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_ARRAY)) {
-        c->error = nuq_make_string("strftime: not array", 19);
-        return EMIT_EMPTY;
-    }
+    /* Format string is checked FIRST (jq order), then input shape. */
     size_t t0 = c->pool_top;
     EMIT fb = EVAL_ARG(c, fmt_n);
     if (UNLIKELY(c->error != NUQ_NULL)) return EMIT_EMPTY;
     if (fb.count == 0 || !(NUQ_IS_PTR(fb.items[0]) && NUQ_PTR(fb.items[0])->type == NUQ_T_STRING)) {
         c->pool_top = t0;
-        c->error = nuq_make_string("strftime: format not string", 27);
+        c->error = nuq_make_string("strftime/1 requires a string format", 35);
         return EMIT_EMPTY;
     }
     struct nuq_obj *fo = NUQ_PTR(fb.items[0]);
@@ -1838,6 +1835,11 @@ node_b_strftime(CTX *c, NODE *n, NODE *fmt_n)
     memcpy(fmt_buf, fo->str.bytes, fl);
     fmt_buf[fl] = 0;
     c->pool_top = t0;
+    /* Input must be a broken-down time array. */
+    if (!(NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_ARRAY)) {
+        c->error = nuq_make_string("strftime/1 requires parsed datetime inputs", 42);
+        return EMIT_EMPTY;
+    }
 
     struct nuq_obj *o = NUQ_PTR(c->input);
     struct tm tm = {0};
@@ -1863,6 +1865,53 @@ node_b_strftime(CTX *c, NODE *n, NODE *fmt_n)
     if (o->arr.len >= 8) tm.tm_yday = (int)NUQ_FIX_VAL(o->arr.items[7]);
     /* If only Y/M/D supplied, jq normalizes via mktime — we don't, but
      * for strftime that's fine: the format string controls output. */
+    char out[1024];
+    size_t n_out = strftime(out, sizeof(out), fmt_buf, &tm);
+    return nuq_emit_one(c, nuq_make_string(out, n_out));
+}
+
+/* `strflocaltime(fmt)` — like strftime but format with locale.
+ * We use strftime under the C locale; jq's strflocaltime uses the
+ * current locale.  Behavior is equivalent for the supported tests. */
+NODE_DEF
+node_b_strflocaltime(CTX *c, NODE *n, NODE *fmt_n)
+{
+    size_t t0 = c->pool_top;
+    EMIT fb = EVAL_ARG(c, fmt_n);
+    if (UNLIKELY(c->error != NUQ_NULL)) return EMIT_EMPTY;
+    if (fb.count == 0 || !(NUQ_IS_PTR(fb.items[0]) && NUQ_PTR(fb.items[0])->type == NUQ_T_STRING)) {
+        c->pool_top = t0;
+        c->error = nuq_make_string("strflocaltime/1 requires a string format", 40);
+        return EMIT_EMPTY;
+    }
+    struct nuq_obj *fo = NUQ_PTR(fb.items[0]);
+    char fmt_buf[256];
+    size_t fl = fo->str.len < sizeof(fmt_buf)-1 ? fo->str.len : sizeof(fmt_buf)-1;
+    memcpy(fmt_buf, fo->str.bytes, fl);
+    fmt_buf[fl] = 0;
+    c->pool_top = t0;
+    if (!(NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_ARRAY)) {
+        c->error = nuq_make_string("strflocaltime/1 requires parsed datetime inputs", 47);
+        return EMIT_EMPTY;
+    }
+    struct nuq_obj *o = NUQ_PTR(c->input);
+    struct tm tm = {0};
+    for (size_t i = 0; i < o->arr.len; i++) {
+        VALUE e = o->arr.items[i];
+        if (!(NUQ_IS_FIX(e) || (NUQ_IS_PTR(e) && NUQ_PTR(e)->type == NUQ_T_DOUBLE))) {
+            c->error = nuq_make_string("strflocaltime/1 requires parsed datetime inputs", 47);
+            return EMIT_EMPTY;
+        }
+    }
+    if (o->arr.len >= 1) tm.tm_year = (int)NUQ_FIX_VAL(o->arr.items[0]) - 1900;
+    if (o->arr.len >= 2) tm.tm_mon  = (int)NUQ_FIX_VAL(o->arr.items[1]);
+    if (o->arr.len >= 3) tm.tm_mday = (int)NUQ_FIX_VAL(o->arr.items[2]);
+    if (o->arr.len >= 4) tm.tm_hour = (int)NUQ_FIX_VAL(o->arr.items[3]);
+    if (o->arr.len >= 5) tm.tm_min  = (int)NUQ_FIX_VAL(o->arr.items[4]);
+    if (o->arr.len >= 6) {
+        VALUE sec = o->arr.items[5];
+        tm.tm_sec = (int)(NUQ_IS_FIX(sec) ? NUQ_FIX_VAL(sec) : NUQ_PTR(sec)->dbl);
+    }
     char out[1024];
     size_t n_out = strftime(out, sizeof(out), fmt_buf, &tm);
     return nuq_emit_one(c, nuq_make_string(out, n_out));
@@ -1956,26 +2005,39 @@ NODE_DEF
 node_b_bsearch(CTX *c, NODE *n, NODE *needle_n)
 {
     if (!(NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_ARRAY)) {
-        c->error = nuq_make_string("bsearch: not array", 18);
+        char d[80], msg[160];
+        nuq_value_descr(c->input, d, sizeof(d));
+        int w = snprintf(msg, sizeof(msg), "%s cannot be searched from", d);
+        c->error = nuq_make_string(msg, (size_t)w);
         return EMIT_EMPTY;
     }
-    size_t t0 = c->pool_top;
+    size_t outer = c->pool_top;
     EMIT vs = EVAL_ARG(c, needle_n);
     if (UNLIKELY(c->error != NUQ_NULL)) return EMIT_EMPTY;
-    if (vs.count == 0) { c->pool_top = t0; return EMIT_EMPTY; }
-    VALUE needle = vs.items[0];
-    c->pool_top = t0;
+    uint32_t nc = vs.count;
+    if (nc == 0) { c->pool_top = outer; return EMIT_EMPTY; }
+    /* Snapshot needles — multi-emit support: bsearch(0,1,2) yields three
+     * lookups against the same input. */
+    VALUE small[16];
+    VALUE *needles = (nc <= 16) ? small : (VALUE *)GC_malloc(nc * sizeof(VALUE));
+    memcpy(needles, vs.items, nc * sizeof(VALUE));
+    c->pool_top = outer;
     struct nuq_obj *o = NUQ_PTR(c->input);
-    int64_t lo = 0, hi = (int64_t)o->arr.len;
-    while (lo < hi) {
-        int64_t mid = (lo + hi) / 2;
-        int cmp = nuq_cmp(o->arr.items[mid], needle);
-        if (cmp < 0) lo = mid + 1;
-        else hi = mid;
+    for (uint32_t k = 0; k < nc; k++) {
+        VALUE needle = needles[k];
+        int64_t lo = 0, hi = (int64_t)o->arr.len;
+        while (lo < hi) {
+            int64_t mid = (lo + hi) / 2;
+            int cmp = nuq_cmp(o->arr.items[mid], needle);
+            if (cmp < 0) lo = mid + 1;
+            else hi = mid;
+        }
+        if (lo < (int64_t)o->arr.len && nuq_eq(o->arr.items[lo], needle))
+            nuq_pool_push(c, nuq_make_int(lo));
+        else
+            nuq_pool_push(c, nuq_make_int(-(lo + 1)));
     }
-    if (lo < (int64_t)o->arr.len && nuq_eq(o->arr.items[lo], needle))
-        return nuq_emit_one(c, nuq_make_int(lo));
-    return nuq_emit_one(c, nuq_make_int(-(lo + 1)));
+    return nuq_emit_slice(c, outer);
 }
 
 NODE_DEF

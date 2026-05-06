@@ -202,11 +202,25 @@ nuq_builtin_from_entries(VALUE input)
     for (size_t i = 0; i < o->arr.len; i++) {
         VALUE e = o->arr.items[i];
         if (!(NUQ_IS_PTR(e) && NUQ_PTR(e)->type == NUQ_T_OBJECT)) continue;
-        VALUE k = nuq_object_get_cstr(e, "key");
-        if (NUQ_IS_PTR(k) && NUQ_PTR(k)->type == NUQ_T_NULL) k = nuq_object_get_cstr(e, "k");
-        if (NUQ_IS_PTR(k) && NUQ_PTR(k)->type == NUQ_T_NULL) k = nuq_object_get_cstr(e, "name");
-        VALUE v = nuq_object_get_cstr(e, "value");
-        if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_NULL) v = nuq_object_get_cstr(e, "v");
+        /* jq accepts any of {key|Key|k|name|Name} for the key field
+         * and {value|Value|v} for the value, falling back in that
+         * priority order. */
+        static const char *const k_names[] = { "key", "Key", "k", "name", "Name" };
+        static const char *const v_names[] = { "value", "Value", "v" };
+        VALUE k = NUQ_NULL;
+        for (size_t kn = 0; kn < sizeof(k_names)/sizeof(*k_names); kn++) {
+            VALUE candidate = nuq_object_get_cstr(e, k_names[kn]);
+            if (!(NUQ_IS_PTR(candidate) && NUQ_PTR(candidate)->type == NUQ_T_NULL)) {
+                k = candidate; break;
+            }
+        }
+        VALUE v = NUQ_NULL;
+        for (size_t vn = 0; vn < sizeof(v_names)/sizeof(*v_names); vn++) {
+            VALUE candidate = nuq_object_get_cstr(e, v_names[vn]);
+            if (!(NUQ_IS_PTR(candidate) && NUQ_PTR(candidate)->type == NUQ_T_NULL)) {
+                v = candidate; break;
+            }
+        }
         if (!(NUQ_IS_PTR(k) && NUQ_PTR(k)->type == NUQ_T_STRING)) k = nuq_to_json_string(k);
         nuq_object_set(r, k, v);
     }
@@ -252,7 +266,8 @@ nuq_builtin_fabs(VALUE input)
     }
     if (NUQ_IS_PTR(input) && NUQ_PTR(input)->type == NUQ_T_DOUBLE)
         return nuq_make_double(fabs(NUQ_PTR(input)->dbl));
-    return NUQ_NULL;
+    /* jq: `abs` is identity for non-numeric values. */
+    return input;
 }
 
 VALUE
