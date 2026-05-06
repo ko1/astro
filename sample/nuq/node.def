@@ -62,9 +62,9 @@ node_lit(CTX *c, NODE *n, uint32_t lit_id)
 }
 
 NODE_DEF
-node_str(CTX *c, NODE *n, const char *s)
+node_str(CTX *c, NODE *n, const char *s, uint32_t len)
 {
-    return nuq_emit_one(c, nuq_make_string(s, strlen(s)));
+    return nuq_emit_one(c, nuq_make_string(s, len));
 }
 
 NODE_DEF

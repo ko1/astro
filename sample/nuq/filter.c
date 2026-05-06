@@ -49,6 +49,7 @@ typedef struct {
     int64_t i;
     double  d;
     const char *s;
+    size_t  slen;        /* length of `s` for TK_STR (may contain NUL) */
 } token_t;
 
 typedef struct {
@@ -191,13 +192,14 @@ lex_string(lexer_t *L)
     if (!any_interp) {
         L->tok.type = TK_STR;
         L->tok.s = parts[0].text;
+        L->tok.slen = parts[0].tlen;
         return;
     }
 
     struct Node **pnodes = (struct Node **)GC_malloc(pcnt * sizeof(*pnodes));
     for (size_t i = 0; i < pcnt; i++) {
         if (parts[i].kind == P_STR) {
-            pnodes[i] = ALLOC_node_str(parts[i].text);
+            pnodes[i] = ALLOC_node_str(parts[i].text, (uint32_t)parts[i].tlen);
         } else {
             pnodes[i] = nuq_compile_subexpr(parts[i].isrc, parts[i].ilen);
         }
@@ -790,7 +792,7 @@ parse_primary(lexer_t *L)
         return ALLOC_node_lit(nuq_lit_intern(nuq_make_int(tk.i)));
       }
       case TK_NUM: { token_t tk = take(L); return ALLOC_node_lit(nuq_lit_intern(nuq_make_double(tk.d))); }
-      case TK_STR: { token_t tk = take(L); return ALLOC_node_str(tk.s); }
+      case TK_STR: { token_t tk = take(L); return ALLOC_node_str(tk.s, (uint32_t)tk.slen); }
       case TK_INTERP: { token_t tk = take(L); return ALLOC_node_interp((uint32_t)tk.i); }
       case TK_AT: {
         const char *name = take(L).s;
@@ -798,7 +800,7 @@ parse_primary(lexer_t *L)
         const token_t *nx = peek(L);
         if (nx->type == TK_STR) {
             token_t tk = take(L);
-            return ALLOC_node_format(fid, ALLOC_node_str(tk.s));
+            return ALLOC_node_format(fid, ALLOC_node_str(tk.s, (uint32_t)tk.slen));
         }
         if (nx->type == TK_INTERP) {
             token_t tk = take(L);
@@ -863,7 +865,7 @@ parse_primary(lexer_t *L)
                     if (peek(L)->type == TK_STR) {
                         token_t tk = take(L);
                         ie->kkind = 1;
-                        ie->kexpr = ALLOC_node_format(nuq_fmt_intern(fnm), ALLOC_node_str(tk.s));
+                        ie->kexpr = ALLOC_node_format(nuq_fmt_intern(fnm), ALLOC_node_str(tk.s, (uint32_t)tk.slen));
                     } else if (peek(L)->type == TK_INTERP) {
                         token_t tk = take(L);
                         ie->kkind = 1;

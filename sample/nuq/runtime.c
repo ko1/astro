@@ -2832,7 +2832,7 @@ eval_static_key(struct Node *idx, VALUE *out)
     }
     if (idx->head.kind == &kind_node_str) {
         const char *s = idx->u.node_str.s;
-        *out = nuq_make_string(s, strlen(s));
+        *out = nuq_make_string(s, idx->u.node_str.len);
         return true;
     }
     if (idx->head.kind == &kind_node_var) {
