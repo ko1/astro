@@ -6,7 +6,46 @@
 
 ## 残課題 (現在)
 
-R11–R16 で深掘り (test 78–207 追加, **208 unit tests passing**)。 [done.md](./done.md) に詳細。
+R11–R17 で深掘り (test 78–210 追加, **211 unit tests passing**)。 [done.md](./done.md) に詳細。
+
+### R17 (2026-05-06) で追加した CPython 互換項目
+
+| 項目 | 内容 |
+|---|---|
+| UTF-8 codepoint str | len/index/slice/iter/find/strip/center/ljust/rjust/zfill/reversed が codepoint で動作 |
+| `@` matmul operator | node_matmul + py_matmul (`__matmul__`/`__rmatmul__`); decorator 構文と両立 |
+| async/await sync | `async def` / `await` / `async for` / `async with` を **sync として通す** (R16 の SyntaxError から方針転換) |
+| eval/exec ns dict | `eval(code, globals)`, `exec(code, ns)` が ns dict を inject + 後の writeback まで対応 |
+| PEP 604 unions | `int \| str` を tuple-of-classes として返す (isinstance/issubclass 対応) |
+| paren imports | `from m import (a, b, c,)` の複数行形式 |
+| collections.abc | Iterable / Mapping / Sequence 等を metaclass `__instancecheck__` 経由で動作 |
+| typing.Generic etc | Generic / Literal / Annotated / Mapping / Sequence / TypedDict |
+| metaclass `__instancecheck__` | `isinstance(x, cls)` が cls の metaclass の `__instancecheck__` を dispatch |
+| Warning hierarchy | Warning / Deprecation / User / Future / Runtime / Syntax / Import / Bytes / Resource Warning |
+| memoryview slice | 部分 view + `bytes(view)` chain |
+| MappingProxyType | proper read-only dict wrapper |
+| bytes.maketrans | + bytes.translate w/ delete arg |
+| sys.version_info | (3, 12, 0) + named .major/.minor/.micro fields |
+| os.sep / .linesep / etc | path constants |
+| os.path 拡張 | normcase / split / abspath / realpath / commonprefix / commonpath / relpath |
+| class annotations 値持ち | `x: int` で `__annotations__["x"] == int` (前は None placeholder) |
+| 関数 `__code__` | co_varnames / co_argcount / co_kwonlyargcount / co_name 等 (inspect.signature 用) |
+| Unicode identifier | `α = 5`, `日本 = "Japan"` lexer 対応 (UTF-8 byte ≥ 0x80 を ident byte 扱い) |
+| generator 例外伝播 | gen body の uncaught exception が main()の err_jmp に飛ばず、swap-back 経由で caller へ正しく伝播 |
+| bi_next state-only StopIter | `next(iter)` が longjmp ではなく state=RAISE 設定 — user `__next__` が次の `next()` を呼ぶパターンが動く |
+| __bases__ implicit object | `class C: pass` の `C.__bases__` が `(object,)` を返す |
+| typing.NamedTuple defaults | `y: int = 0` が namedtuple の右側 default として正しく扱われる |
+| IntEnum 算術 | `IF.X + 1` 等 — `_EnumMember` に算術 dunder を追加 |
+| concurrent.futures | Future / ThreadPoolExecutor 等の sync stub |
+| fnmatch / glob / shlex | shell-style ファイル/文字列マッチ + lexer |
+| pprint | pformat / pp / PrettyPrinter |
+| urllib.parse | quote / urlencode / urlparse / urljoin / parse_qs |
+| cmath | complex math (phase/polar/rect/sqrt/exp/log/sin/cos/tan) |
+| itertools.batched | 3.12+ |
+| random.Random class | + getstate/setstate + 各種 variate |
+| inspect.signature | `__code__` から param 名を読んで CPython 風に str() |
+| dataclasses.InitVar | + KW_ONLY / MISSING / FrozenInstanceError exposed |
+| json.JSONEncoder etc | subclass 可能な JSONEncoder / JSONDecoder / JSONDecodeError |
 
 ### 残存する仕様上の差分 (低優先)
 
@@ -34,8 +73,21 @@ R11–R16 で深掘り (test 78–207 追加, **208 unit tests passing**)。 [do
 #### S-18. genexp が eager
 - `(x for x in xs)` は list を返す (本来は generator)。
 - 無限 source を `for x in genexp:` で使うと OOM。
+- `all`/`any` の short-circuit が genexp 引数で効かない (list 化されるため)。
 - 大半の用途 (`list(genexp)`, `sum(genexp)`) は OK。
 - **R16 で comp scope leak は修正済**: `[i for i in xs]; print(i)` → NameError
+- 真の lazy 化 (synthetic gen function) は parser 側で大規模変更必要。
+
+#### S-22. function annotations
+- `def f(x: int) -> bool: ...` の annotations は parse 後 discard。
+- `f.__annotations__` は `{}`。class annotations は値持ちで動作 (R17 修正)。
+- typing.get_type_hints は class には効くが function には効かない。
+
+#### S-23. except* (PEP 654 — exception groups)
+- 未対応。`raise ExceptionGroup(...)` / `except* T:` は parse error。
+
+#### S-24. PEP 695 type alias `type X = int`
+- 未対応。代用に `X = int` を使うか普通の class エイリアス。
 
 #### S-21. parens-form `(a, b)` argument is a tuple, not unpacking
 - `parens-wrapped multi-target with attr/subscript` は `with (cm1, cm2 as x):` 形式の
