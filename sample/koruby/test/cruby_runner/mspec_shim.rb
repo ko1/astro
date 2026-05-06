@@ -105,6 +105,13 @@ class MSpecExpectation
   def initialize(actual)
     @actual = actual
   end
+  def =~(other)
+    if @actual =~ other then $ms_pass += 1
+    else
+      $ms_fail += 1
+      raise MSpecError, "expected #{@actual.inspect} =~ #{other.inspect}"
+    end
+  end
   def ==(expected)
     if @actual == expected then $ms_pass += 1
     else
@@ -215,6 +222,14 @@ class MSpecMatcher
   def initialize(kind, arg = nil) @kind, @arg = kind, arg; end
 end
 
+def have_method(name); MSpecMatcher.new(:have_method, name); end
+def have_instance_method(name); MSpecMatcher.new(:have_instance_method, name); end
+def have_private_method(name); MSpecMatcher.new(:have_private_method, name); end
+def have_public_method(name); MSpecMatcher.new(:have_public_method, name); end
+def have_protected_method(name); MSpecMatcher.new(:have_protected_method, name); end
+def have_constant(name); MSpecMatcher.new(:have_constant, name); end
+def have_class_variable(name); MSpecMatcher.new(:have_class_variable, name); end
+def have_instance_variable(name); MSpecMatcher.new(:have_instance_variable, name); end
 def be_nil; MSpecMatcher.new(:be_nil); end
 def be_true; MSpecMatcher.new(:be_true); end
 def be_false; MSpecMatcher.new(:be_false); end
@@ -265,6 +280,14 @@ class MSpecExpectation
   def __apply_matcher(m, negate)
     ok = case m.kind
          when :complain then true  # don't run the block — has side effects we can't control
+         when :have_method then @actual.method_defined?(m.arg) || @actual.private_method_defined?(m.arg) || @actual.respond_to?(m.arg)
+         when :have_instance_method then @actual.method_defined?(m.arg) || @actual.private_method_defined?(m.arg)
+         when :have_private_method then @actual.private_method_defined?(m.arg)
+         when :have_public_method then @actual.public_method_defined?(m.arg)
+         when :have_protected_method then @actual.protected_method_defined?(m.arg) rescue false
+         when :have_constant then @actual.const_defined?(m.arg)
+         when :have_class_variable then @actual.class_variable_defined?(m.arg) rescue false
+         when :have_instance_variable then @actual.instance_variable_defined?(m.arg) rescue false
          when :be_nil then @actual.nil?
          when :be_true then @actual == true
          when :be_false then @actual == false
