@@ -3457,6 +3457,30 @@ path_dfs(CTX *c, struct Node **steps, size_t step_cnt, size_t k,
             c->error = nuq_make_string(msg, (size_t)w);
         } else {
             struct Node *nxt = steps[k + 1];
+            /* Skip the parser-inserted `as(., $V, body)` wrappers added
+             * for outer-input capture so we report the actual user
+             * accessor (`.foo` / `.[N]` / `.[]`).  `as` body is
+             * `pipe(., index/slice)`; descend into the rhs of that pipe. */
+            while (nxt) {
+                if (nxt->head.kind == &kind_node_as) { nxt = nxt->u.node_as.body; continue; }
+                if (nxt->head.kind == &kind_node_pipe) {
+                    /* If the pipe's lhs is identity, the meaningful step is
+                     * the rhs.  Otherwise lhs is the meaningful step. */
+                    if (nxt->u.node_pipe.lhs->head.kind == &kind_node_identity)
+                        nxt = nxt->u.node_pipe.rhs;
+                    else
+                        nxt = nxt->u.node_pipe.lhs;
+                    continue;
+                }
+                if (nxt->head.kind == &kind_node_identity) { nxt = NULL; }
+                break;
+            }
+            if (!nxt) {
+                int w = snprintf(msg, sizeof(msg),
+                                 "Invalid path expression with result %s", vd);
+                c->error = nuq_make_string(msg, (size_t)w);
+                goto path_dfs_err_done;
+            }
             if (nxt->head.kind == &kind_node_field || nxt->head.kind == &kind_node_field_opt) {
                 const char *name = (nxt->head.kind == &kind_node_field)
                     ? nxt->u.node_field.name : nxt->u.node_field_opt.name;
@@ -3468,13 +3492,23 @@ path_dfs(CTX *c, struct Node **steps, size_t step_cnt, size_t k,
                 struct Node *ix = (nxt->head.kind == &kind_node_index)
                     ? nxt->u.node_index.expr : nxt->u.node_index_opt.expr;
                 VALUE kv;
-                if (eval_static_key(ix, &kv)) {
-                    char kd[40];
+                bool got = false;
+                /* The parser's outer-scope wrap turns `.[N]` into
+                 * `as(., $V, pipe(., index($V | N)))`.  Strip the
+                 * `$V | ` prefix so eval_static_key can fold N. */
+                struct Node *inner_ix = ix;
+                if (inner_ix->head.kind == &kind_node_pipe &&
+                    inner_ix->u.node_pipe.lhs->head.kind == &kind_node_var) {
+                    inner_ix = inner_ix->u.node_pipe.rhs;
+                }
+                if (eval_static_key(inner_ix, &kv)) got = true;
+                if (got) {
+                    char kd[40] = "?";
                     if (NUQ_IS_FIX(kv)) snprintf(kd, sizeof(kd), "%lld", (long long)NUQ_FIX_VAL(kv));
                     else if (NUQ_IS_PTR(kv) && NUQ_PTR(kv)->type == NUQ_T_STRING) {
                         struct nuq_obj *so = NUQ_PTR(kv);
                         snprintf(kd, sizeof(kd), "\"%.*s\"", (int)so->str.len, so->str.bytes);
-                    } else snprintf(kd, sizeof(kd), "?");
+                    }
                     int w = snprintf(msg, sizeof(msg),
                                      "Invalid path expression near attempt to access element %s of %s",
                                      kd, vd);
@@ -3493,6 +3527,7 @@ path_dfs(CTX *c, struct Node **steps, size_t step_cnt, size_t k,
                                  "Invalid path expression with result %s", vd);
                 c->error = nuq_make_string(msg, (size_t)w);
             }
+path_dfs_err_done: ;
         }
     }
 }
