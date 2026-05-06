@@ -66,12 +66,18 @@ class defaultdict:
 
 
 class Counter:
-    def __init__(self, iterable=None):
+    def __init__(self, iterable=None, **kwargs):
         self._d = {}
-        if iterable is None:
-            return
-        for x in iterable:
-            self._d[x] = self._d.get(x, 0) + 1
+        if iterable is not None:
+            if hasattr(iterable, "items") and not hasattr(iterable, "_fields"):
+                # dict-like: copy counts directly
+                for k, v in iterable.items():
+                    self._d[k] = self._d.get(k, 0) + v
+            else:
+                for x in iterable:
+                    self._d[x] = self._d.get(x, 0) + 1
+        for k, v in kwargs.items():
+            self._d[k] = self._d.get(k, 0) + v
     def __getitem__(self, k):
         return self._d.get(k, 0)
     def __setitem__(self, k, v):
@@ -283,6 +289,9 @@ def namedtuple(typename, fields, *, defaults=None):
             return sum(1 for v in self._values if v == x)
         def index(self, x):
             return list(self._values).index(x)
+        @classmethod
+        def _make(cls, iterable):
+            return cls(*iterable)
 
     _NT.__name__ = typename
     return _NT
@@ -321,6 +330,19 @@ class ChainMap:
         return [self[k] for k in self]
     def items(self):
         return [(k, self[k]) for k in self]
+    def __setitem__(self, key, value):
+        self.maps[0][key] = value
+    def __delitem__(self, key):
+        if key not in self.maps[0]:
+            raise KeyError(key)
+        del self.maps[0][key]
+    def pop(self, key, *default):
+        if key in self.maps[0]:
+            return self.maps[0].pop(key)
+        if default: return default[0]
+        raise KeyError(key)
+    def clear(self):
+        self.maps[0].clear()
     def new_child(self, m=None):
         return ChainMap(m if m is not None else {}, *self.maps)
     @property

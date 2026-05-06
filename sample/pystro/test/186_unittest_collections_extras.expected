@@ -1,0 +1,12 @@
+ok ChainMapMutateTest test_new_child_writable
+ok ChainMapMutateTest test_pop
+ok ChainMapMutateTest test_pop_missing_default
+ok ChainMapMutateTest test_setitem
+ok NamedTupleMakeTest test_asdict_make_roundtrip
+ok NamedTupleMakeTest test_make
+ok DequeRotateTest test_rotate
+ok CounterMathTest test_add
+ok CounterMathTest test_intersection
+ok CounterMathTest test_sub
+---
+passed=10 failed=0
