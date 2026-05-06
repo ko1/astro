@@ -163,6 +163,14 @@ void nuq_user_args_bind(struct CTX_struct *c);   /* push all into var_stack */
 extern bool nuq_had_truthy_output;
 extern bool nuq_had_error;
 
+/* When non-zero, suppress the stderr error diagnostics emitted by
+ * value-level helpers ("nuq error: cannot add string and number" etc.).
+ * `try` / `isvalid` increment it before evaluating their body so the
+ * error stays in c->error without polluting stderr.  Saved and
+ * restored across boundaries by the caller — never assigned, only
+ * inc/dec to handle nesting. */
+extern int nuq_suppress_error_print;
+
 /* Pending-input queue for jq-compatible `input` / `inputs`.  main.c
  * fills this with all parsed JSON values up front; nuq_input_pull()
  * returns the next one (advancing the cursor).  Both the main loop

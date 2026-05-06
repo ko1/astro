@@ -664,7 +664,9 @@ node_try(CTX *c, NODE *n, NODE *body, NODE *handler)
 {
     size_t top0 = c->pool_top;
     VALUE saved_err = c->error;
+    nuq_suppress_error_print++;
     (void)EVAL_ARG(c, body);
+    nuq_suppress_error_print--;
     if (c->error != NUQ_NULL) {
         VALUE err = c->error;
         c->error = saved_err;
@@ -1120,6 +1122,63 @@ node_b_inputs(CTX *c, NODE *n)
     VALUE v;
     while (nuq_input_pull(&v)) nuq_pool_push(c, v);
     return nuq_emit_slice(c, outer);
+}
+
+/* `env` — environment variables as an object. */
+NODE_DEF
+node_b_env(CTX *c, NODE *n)
+{
+    return nuq_emit_one(c, nuq_env_object());
+}
+
+/* `isvalid(f)` — true if f doesn't error on input, false otherwise.
+ * jq: `def isvalid(f): . as $i | try (f|true) catch false | . == true`. */
+NODE_DEF
+node_b_isvalid(CTX *c, NODE *n, NODE *body)
+{
+    VALUE saved_err = c->error;
+    c->error = NUQ_NULL;
+    size_t t0 = c->pool_top;
+    nuq_suppress_error_print++;
+    (void)EVAL_ARG(c, body);
+    nuq_suppress_error_print--;
+    bool ok = (c->error == NUQ_NULL);
+    c->error = saved_err;
+    c->pool_top = t0;
+    return nuq_emit_one(c, ok ? NUQ_TRUE : NUQ_FALSE);
+}
+
+/* `IN(values…)` — emit true if input equals any value of the
+ * comma-separated stream.  jq's `IN(s)` is `def IN(s): . as $x | first((s == $x) // false)`. */
+NODE_DEF
+node_b_IN1(CTX *c, NODE *n, NODE *body)
+{
+    VALUE saved = c->input;
+    size_t t0 = c->pool_top;
+    EMIT bo = EVAL_ARG(c, body);
+    if (UNLIKELY(c->error != NUQ_NULL)) return EMIT_EMPTY;
+    bool found = false;
+    for (uint32_t i = 0; i < bo.count; i++) {
+        if (nuq_eq(saved, bo.items[i])) { found = true; break; }
+    }
+    c->pool_top = t0;
+    return nuq_emit_one(c, found ? NUQ_TRUE : NUQ_FALSE);
+}
+
+/* `gsub(s; r)` — replace all non-overlapping occurrences of substring
+ * `s` with `r`.  Without regex this is plain substring replace
+ * (jq's `gsub` is regex-based but our subset stays substring-only;
+ * documented in todo). */
+NODE_DEF
+node_b_gsub(CTX *c, NODE *n, NODE *pat, NODE *repl)
+{
+    return nuq_gsub_eval(c, pat, repl);
+}
+
+NODE_DEF
+node_b_sub(CTX *c, NODE *n, NODE *pat, NODE *repl)
+{
+    return nuq_sub_eval(c, pat, repl);
 }
 
 /* Type-predicate filters: `nulls`, `booleans`, `numbers`, `strings`,

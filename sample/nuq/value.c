@@ -502,7 +502,7 @@ nuq_length(VALUE v)
     switch (o->type) {
       case NUQ_T_NULL:   return NUQ_FIX(0);
       case NUQ_T_BOOL:
-        fprintf(stderr, "nuq error: boolean has no length\n");
+        if (!nuq_suppress_error_print) fprintf(stderr, "nuq error: boolean has no length\n");
         return NUQ_FIX(0);
       case NUQ_T_DOUBLE: {
         double d = o->dbl;
@@ -546,7 +546,7 @@ nuq_keys(VALUE v, bool sorted)
         return r;
     }
   bad:
-    fprintf(stderr, "nuq error: keys requires object or array, got %s\n", nuq_type_name(v));
+    if (!nuq_suppress_error_print) fprintf(stderr, "nuq error: keys requires object or array, got %s\n", nuq_type_name(v));
     return nuq_make_array(0);
 }
 
@@ -568,7 +568,7 @@ nuq_values(VALUE v)
         return r;
     }
   bad:
-    fprintf(stderr, "nuq error: values requires object or array, got %s\n", nuq_type_name(v));
+    if (!nuq_suppress_error_print) fprintf(stderr, "nuq error: values requires object or array, got %s\n", nuq_type_name(v));
     return nuq_make_array(0);
 }
 
@@ -718,7 +718,7 @@ nuq_op_add_slow(VALUE a, VALUE b)
         for (size_t i = 0; i < ob->obj.len; i++) nuq_object_set(r, ob->obj.keys[i], ob->obj.vals[i]);
         return r;
     }
-    fprintf(stderr, "nuq error: cannot add %s and %s\n", nuq_type_name(a), nuq_type_name(b));
+    if (!nuq_suppress_error_print) fprintf(stderr, "nuq error: cannot add %s and %s\n", nuq_type_name(a), nuq_type_name(b));
     return NUQ_NULL;
 }
 
@@ -742,7 +742,7 @@ nuq_op_sub_slow(VALUE a, VALUE b)
         }
         return r;
     }
-    fprintf(stderr, "nuq error: cannot subtract %s from %s\n", nuq_type_name(b), nuq_type_name(a));
+    if (!nuq_suppress_error_print) fprintf(stderr, "nuq error: cannot subtract %s from %s\n", nuq_type_name(b), nuq_type_name(a));
     return NUQ_NULL;
 }
 
@@ -780,7 +780,7 @@ nuq_op_mul_slow(VALUE a, VALUE b)
         buf[L] = '\0';
         return nuq_make_string_take(buf, L);
     }
-    fprintf(stderr, "nuq error: cannot multiply %s and %s\n", nuq_type_name(a), nuq_type_name(b));
+    if (!nuq_suppress_error_print) fprintf(stderr, "nuq error: cannot multiply %s and %s\n", nuq_type_name(a), nuq_type_name(b));
     return NUQ_NULL;
 }
 
@@ -812,12 +812,12 @@ nuq_op_div_slow(VALUE a, VALUE b)
     if (both_numeric(a, b)) {
         double db = to_double_v(b);
         if (db == 0.0) {
-            fprintf(stderr, "nuq error: division by zero\n");
+            if (!nuq_suppress_error_print) fprintf(stderr, "nuq error: division by zero\n");
             return NUQ_NULL;
         }
         return nuq_make_double(to_double_v(a) / db);
     }
-    fprintf(stderr, "nuq error: cannot divide %s by %s\n", nuq_type_name(a), nuq_type_name(b));
+    if (!nuq_suppress_error_print) fprintf(stderr, "nuq error: cannot divide %s by %s\n", nuq_type_name(a), nuq_type_name(b));
     return NUQ_NULL;
 }
 
@@ -826,16 +826,16 @@ nuq_op_mod_slow(VALUE a, VALUE b)
 {
     if (NUQ_IS_FIX(a) && NUQ_IS_FIX(b)) {
         int64_t lb = NUQ_FIX_VAL(b);
-        if (lb == 0) { fprintf(stderr, "nuq error: modulo by zero\n"); return NUQ_NULL; }
+        if (lb == 0) { if (!nuq_suppress_error_print) fprintf(stderr, "nuq error: modulo by zero\n"); return NUQ_NULL; }
         return nuq_make_int(NUQ_FIX_VAL(a) % lb);
     }
     if (both_numeric(a, b)) {
         int64_t ia = (int64_t)to_double_v(a);
         int64_t ib = (int64_t)to_double_v(b);
-        if (ib == 0) { fprintf(stderr, "nuq error: modulo by zero\n"); return NUQ_NULL; }
+        if (ib == 0) { if (!nuq_suppress_error_print) fprintf(stderr, "nuq error: modulo by zero\n"); return NUQ_NULL; }
         return nuq_make_int(ia % ib);
     }
-    fprintf(stderr, "nuq error: cannot modulo %s by %s\n", nuq_type_name(a), nuq_type_name(b));
+    if (!nuq_suppress_error_print) fprintf(stderr, "nuq error: cannot modulo %s by %s\n", nuq_type_name(a), nuq_type_name(b));
     return NUQ_NULL;
 }
 
@@ -845,7 +845,7 @@ nuq_op_neg_slow(VALUE a)
     if (NUQ_IS_FIX(a)) return nuq_make_int(-NUQ_FIX_VAL(a));
     if (NUQ_IS_PTR(a) && NUQ_PTR(a)->type == NUQ_T_DOUBLE)
         return nuq_make_double(-NUQ_PTR(a)->dbl);
-    fprintf(stderr, "nuq error: cannot negate %s\n", nuq_type_name(a));
+    if (!nuq_suppress_error_print) fprintf(stderr, "nuq error: cannot negate %s\n", nuq_type_name(a));
     return NUQ_NULL;
 }
 
@@ -877,7 +877,7 @@ nuq_var_get(CTX *c, uint32_t id)
     for (size_t i = c->var_top; i > 0; i--) {
         if (c->var_stack[i-1].id == id) return c->var_stack[i-1].value;
     }
-    fprintf(stderr, "nuq error: undefined variable $%s\n", nuq_intern_lookup(id));
+    if (!nuq_suppress_error_print) fprintf(stderr, "nuq error: undefined variable $%s\n", nuq_intern_lookup(id));
     return NUQ_NULL;
 }
 

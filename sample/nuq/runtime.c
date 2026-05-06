@@ -1054,6 +1054,108 @@ nuq_recurse_eval(CTX *c, struct Node *body, struct Node *cond)
     return nuq_emit_slice(c, outer);
 }
 
+/* `env` — build an object of environment variables (lazy, once per
+ * call; for hot use the caller can bind it to a variable). */
+extern char **environ;
+VALUE
+nuq_env_object(void)
+{
+    VALUE r = nuq_make_object(16);
+    for (char **p = environ; *p; p++) {
+        const char *eq = strchr(*p, '=');
+        if (!eq) continue;
+        VALUE k = nuq_make_string(*p, eq - *p);
+        VALUE v = nuq_make_string(eq + 1, strlen(eq + 1));
+        nuq_object_set(r, k, v);
+    }
+    return r;
+}
+
+/* gsub(s; r) — replace ALL non-overlapping occurrences of substring s
+ * with r.  Matches jq's gsub when both args are literal (non-regex). */
+EMIT
+nuq_gsub_eval(CTX *c, struct Node *pat_n, struct Node *repl_n)
+{
+    if (!(NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_STRING))
+        return err_emit(c, "gsub: not string");
+    size_t t0 = c->pool_top;
+    EMIT pe = EVAL(c, pat_n);
+    if (c->error != NUQ_NULL) return EMIT_EMPTY;
+    if (pe.count == 0 || !(NUQ_IS_PTR(pe.items[0]) && NUQ_PTR(pe.items[0])->type == NUQ_T_STRING))
+        return err_emit(c, "gsub: pattern not string");
+    VALUE pv = pe.items[0];
+    c->pool_top = t0;
+    EMIT re = EVAL(c, repl_n);
+    if (c->error != NUQ_NULL) return EMIT_EMPTY;
+    if (re.count == 0 || !(NUQ_IS_PTR(re.items[0]) && NUQ_PTR(re.items[0])->type == NUQ_T_STRING))
+        return err_emit(c, "gsub: replacement not string");
+    VALUE rv = re.items[0];
+    c->pool_top = t0;
+    struct nuq_obj *si = NUQ_PTR(c->input);
+    struct nuq_obj *sp = NUQ_PTR(pv);
+    struct nuq_obj *sr = NUQ_PTR(rv);
+    if (sp->str.len == 0) return nuq_emit_one(c, c->input);   /* empty pat: identity */
+    char *out = NULL; size_t on = 0;
+    FILE *fp = open_memstream(&out, &on);
+    size_t i = 0;
+    while (i + sp->str.len <= si->str.len) {
+        if (memcmp(si->str.bytes + i, sp->str.bytes, sp->str.len) == 0) {
+            fwrite(sr->str.bytes, 1, sr->str.len, fp);
+            i += sp->str.len;
+        } else {
+            fputc(si->str.bytes[i], fp);
+            i++;
+        }
+    }
+    while (i < si->str.len) { fputc(si->str.bytes[i], fp); i++; }
+    fclose(fp);
+    VALUE result = nuq_make_string(out, on);
+    free(out);
+    return nuq_emit_one(c, result);
+}
+
+/* sub(s; r) — replace FIRST occurrence only. */
+EMIT
+nuq_sub_eval(CTX *c, struct Node *pat_n, struct Node *repl_n)
+{
+    if (!(NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_STRING))
+        return err_emit(c, "sub: not string");
+    size_t t0 = c->pool_top;
+    EMIT pe = EVAL(c, pat_n);
+    if (c->error != NUQ_NULL) return EMIT_EMPTY;
+    if (pe.count == 0 || !(NUQ_IS_PTR(pe.items[0]) && NUQ_PTR(pe.items[0])->type == NUQ_T_STRING))
+        return err_emit(c, "sub: pattern not string");
+    VALUE pv = pe.items[0];
+    c->pool_top = t0;
+    EMIT re = EVAL(c, repl_n);
+    if (c->error != NUQ_NULL) return EMIT_EMPTY;
+    if (re.count == 0 || !(NUQ_IS_PTR(re.items[0]) && NUQ_PTR(re.items[0])->type == NUQ_T_STRING))
+        return err_emit(c, "sub: replacement not string");
+    VALUE rv = re.items[0];
+    c->pool_top = t0;
+    struct nuq_obj *si = NUQ_PTR(c->input);
+    struct nuq_obj *sp = NUQ_PTR(pv);
+    struct nuq_obj *sr = NUQ_PTR(rv);
+    if (sp->str.len == 0) return nuq_emit_one(c, c->input);
+    /* find first */
+    size_t hit = (size_t)-1;
+    for (size_t i = 0; i + sp->str.len <= si->str.len; i++) {
+        if (memcmp(si->str.bytes + i, sp->str.bytes, sp->str.len) == 0) {
+            hit = i; break;
+        }
+    }
+    if (hit == (size_t)-1) return nuq_emit_one(c, c->input);
+    size_t out_len = si->str.len - sp->str.len + sr->str.len;
+    char *buf = (char *)GC_malloc_atomic(out_len + 1);
+    memcpy(buf, si->str.bytes, hit);
+    memcpy(buf + hit, sr->str.bytes, sr->str.len);
+    memcpy(buf + hit + sr->str.len,
+           si->str.bytes + hit + sp->str.len,
+           si->str.len - hit - sp->str.len);
+    buf[out_len] = '\0';
+    return nuq_emit_one(c, nuq_make_string_take(buf, out_len));
+}
+
 /* Recursively flatten `arr` to `depth` levels into `out`.
  * `depth == 0` ⇒ append elements as-is, no recursion. */
 static void
@@ -2076,6 +2178,8 @@ nuq_nth_eval(CTX *c, struct Node *idx, struct Node *body)
 /* Track whether any truthy output has been emitted across the run —
  * used by `-e` / `--exit-status` to set exit code 5 when none. */
 bool nuq_had_truthy_output = false;
+/* Counter — non-zero suppresses stderr prints in value helpers. */
+int  nuq_suppress_error_print = 0;
 /* Track whether any error has been raised — used to set exit code 1. */
 bool nuq_had_error = false;
 

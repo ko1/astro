@@ -436,6 +436,11 @@ build_builtin_call(const char *name, int arity, struct Node **args)
     BUILTIN0("utf8bytelength", ALLOC_node_b_utf8bytelength);
     BUILTIN0("flatten", ALLOC_node_b_flatten);
     BUILTIN1("flatten", ALLOC_node_b_flatten_n);
+    BUILTIN0("env", ALLOC_node_b_env);
+    BUILTIN1("isvalid", ALLOC_node_b_isvalid);
+    BUILTIN1("IN", ALLOC_node_b_IN1);
+    BUILTIN2("gsub", ALLOC_node_b_gsub);
+    BUILTIN2("sub", ALLOC_node_b_sub);
     BUILTIN0("empty", ALLOC_node_empty);
 
     /* 1-arg */
