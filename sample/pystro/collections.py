@@ -245,16 +245,77 @@ class ChainMap:
         return ChainMap(*self.maps[1:])
 
 
-def UserDict(initial=None):
-    return dict(initial) if initial is not None else {}
+class UserDict:
+    def __init__(self, initial=None):
+        self.data = dict(initial) if initial is not None else {}
+    def __getitem__(self, k): return self.data[k]
+    def __setitem__(self, k, v): self.data[k] = v
+    def __delitem__(self, k): del self.data[k]
+    def __iter__(self): return iter(self.data)
+    def __contains__(self, k): return k in self.data
+    def __len__(self): return len(self.data)
+    def __repr__(self): return type(self).__name__ + "(" + repr(self.data) + ")"
+    def keys(self): return self.data.keys()
+    def values(self): return self.data.values()
+    def items(self): return self.data.items()
+    def get(self, k, default=None): return self.data.get(k, default)
+    def update(self, other=None, **kw):
+        if other is not None:
+            if hasattr(other, "items"):
+                for k, v in other.items(): self[k] = v
+            else:
+                for k, v in other: self[k] = v
+        for k, v in kw.items(): self[k] = v
+    def setdefault(self, k, d=None):
+        if k not in self: self[k] = d
+        return self[k]
+    def pop(self, k, *args):
+        if k in self.data: v = self.data.pop(k); return v
+        if args: return args[0]
+        raise KeyError(k)
+    def clear(self): self.data.clear()
+    def copy(self):
+        c = type(self)()
+        c.data = dict(self.data)
+        return c
 
 
-def UserList(initial=None):
-    return list(initial) if initial is not None else []
+class UserList:
+    def __init__(self, initial=None):
+        self.data = list(initial) if initial is not None else []
+    def __getitem__(self, i): return self.data[i]
+    def __setitem__(self, i, v): self.data[i] = v
+    def __delitem__(self, i): del self.data[i]
+    def __iter__(self): return iter(self.data)
+    def __contains__(self, x): return x in self.data
+    def __len__(self): return len(self.data)
+    def __repr__(self): return type(self).__name__ + "(" + repr(self.data) + ")"
+    def append(self, x): self.data.append(x)
+    def extend(self, xs):
+        for x in xs: self.data.append(x)
+    def insert(self, i, x): self.data.insert(i, x)
+    def pop(self, i=-1): return self.data.pop(i)
+    def remove(self, x): self.data.remove(x)
+    def reverse(self): self.data.reverse()
+    def sort(self, *args, **kw): self.data.sort(*args, **kw)
+    def index(self, x): return self.data.index(x)
+    def count(self, x): return self.data.count(x)
 
 
-def UserString(s):
-    return s
+class UserString:
+    def __init__(self, s):
+        self.data = str(s)
+    def __str__(self): return self.data
+    def __repr__(self): return type(self).__name__ + "(" + repr(self.data) + ")"
+    def __getitem__(self, i): return self.data[i]
+    def __len__(self): return len(self.data)
+    def __iter__(self): return iter(self.data)
+    def __contains__(self, x): return x in self.data
+    def __eq__(self, o): return self.data == (o.data if isinstance(o, UserString) else o)
+    def __add__(self, o): return type(self)(self.data + (o.data if isinstance(o, UserString) else o))
+    def __mul__(self, n): return type(self)(self.data * n)
+    def lower(self): return type(self)(self.data.lower())
+    def upper(self): return type(self)(self.data.upper())
 
 
 __all__ = ["OrderedDict", "defaultdict", "Counter", "deque",

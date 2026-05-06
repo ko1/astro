@@ -1,0 +1,8 @@
+ok UserDictTest test_subclass
+ok TemplateTest test_braced
+ok TemplateTest test_safe
+ok TemplateTest test_strict_missing
+ok TemplateTest test_substitute
+ok BisectKeyTest test_bisect_with_key
+---
+passed=6 failed=0
