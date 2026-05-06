@@ -1,0 +1,11 @@
+ok IntSubclassTest test_int_arith
+ok IntSubclassTest test_int_isinstance
+ok IntSubclassTest test_int_repr
+ok ListSubclassTest test_list_iter
+ok ListSubclassTest test_list_repr
+ok StrSubclassTest test_str_concat
+ok StrSubclassTest test_str_repr
+ok DictSubclassTest test_dict_lookup
+ok DictSubclassTest test_dict_repr
+---
+passed=9 failed=0

@@ -4278,6 +4278,13 @@ py_display(FILE *fp, VALUE v, bool repr)
                 // Fallback: fall through to "<ClassName object>"
             }
         }
+        // Built-in subclass with a primary value: mirror the primary's
+        // display so subclasses of int/list/tuple/etc. don't show as
+        // generic "<MyInt object>".
+        if (o->inst.primary) {
+            py_display(fp, o->inst.primary, repr);
+            return;
+        }
         fprintf(fp, "<%s object>", o->inst.cls->cls.name);
         return;
       }
