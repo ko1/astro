@@ -1,0 +1,7 @@
+ok ExceptionAttrsTest test_cause
+ok ExceptionAttrsTest test_from_none_suppresses
+ok ExceptionAttrsTest test_implicit_context
+ok ExceptionAttrsTest test_traceback_attr_exists
+ok StopIterValueTest test_value
+---
+passed=5 failed=0

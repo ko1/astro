@@ -1091,6 +1091,10 @@ py_raise_exc(CTX *c, VALUE cls, const char *fmt, ...)
             frames[i] = py_make_str(fn, strlen(fn));
         }
         py_setattr(c, inst, "__traceback__", py_make_list(frames, c->call_top));
+    } else {
+        // CPython always exposes __traceback__ on the instance (None
+        // for raises that didn't originate from a call frame).
+        py_setattr(c, inst, "__traceback__", PY_NONE);
     }
     c->state = PY_STATE_RAISE;
     c->state_value = inst;
