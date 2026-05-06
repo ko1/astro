@@ -2471,7 +2471,7 @@ parse_for(void)
         const char *target = peek_tok(0)->sval;
         tok_pos++;
         expect(T_IN, "'in'");
-        NODE *iter = parse_expr();
+        NODE *iter = parse_expr_list();
         NODE *body = parse_suite();
         NODE *else_body = match_tok(T_ELSE) ? parse_suite() : ALLOC_node_nop();
         if (cur_scope && !scope_is_global_decl(cur_scope, target)) {
@@ -2579,6 +2579,13 @@ parse_params(Scope *sc, int *out_nparams, int *out_n_pos_named, int *out_ndefaul
             if (match_tok(T_STAR_STAR)) {
                 if (peek_tok(0)->kind != T_NAME) parse_error("expected NAME after '**'");
                 const char *pn = peek_tok(0)->sval; tok_pos++;
+                // Optional `: annotation` on **kwargs — discard for now
+                // (we collect annotations for `name: T` form only).
+                if (match_tok(T_COLON)) {
+                    Scope *saved = cur_scope; cur_scope = sc->parent;
+                    (void)parse_expr();
+                    cur_scope = saved;
+                }
                 scope_add_local(sc, pn);
                 names[nnames++] = pn;
                 nparams++;
@@ -2598,6 +2605,12 @@ parse_params(Scope *sc, int *out_nparams, int *out_n_pos_named, int *out_ndefaul
                 }
                 if (peek_tok(0)->kind != T_NAME) parse_error("expected NAME after '*'");
                 const char *pn = peek_tok(0)->sval; tok_pos++;
+                // Optional `: annotation` on *args — discard.
+                if (match_tok(T_COLON)) {
+                    Scope *saved = cur_scope; cur_scope = sc->parent;
+                    (void)parse_expr();
+                    cur_scope = saved;
+                }
                 scope_add_local(sc, pn);
                 names[nnames++] = pn;
                 nparams++;
@@ -3599,23 +3612,45 @@ parse_simple_stmt(void)
     }
     if (k == T_FROM) {
         // `from a.b.c import x [as y], z`  or  `from a.b.c import *`
+        // `from .x import y` / `from ..x import y` — relative imports:
+        // each leading dot ascends one package level.  Pystro converts
+        // these to absolute imports at parse time using the current
+        // module's __package__ as the base.
         tok_pos++;
-        if (peek_tok(0)->kind != T_NAME) parse_error("from: name expected");
         char dotted[512];
         size_t dn = 0;
-        const char *first = peek_tok(0)->sval;
-        size_t fn = strlen(first);
-        memcpy(dotted, first, fn); dn = fn;
-        tok_pos++;
-        while (peek_tok(0)->kind == T_DOT) {
+        int n_dots = 0;
+        while (peek_tok(0)->kind == T_DOT) { tok_pos++; n_dots++; }
+        if (n_dots > 0) {
+            // Resolve relative: emit `__pystro_relimport__("dots+name", level)`
+            // — actually simpler: we expect `__name__` of the current
+            // module to be set.  At parse time, prepend ".." * (n_dots - 1)
+            // dots handled at runtime.  For now, prepend the current
+            // module's package via a runtime helper.
+            // Encode the relative spec as `<n_dots>:rest` so the runtime
+            // import helper can resolve it.
+            char buf[8];
+            snprintf(buf, sizeof(buf), "\1%d\1", n_dots);
+            size_t bl = strlen(buf);
+            memcpy(dotted, buf, bl); dn = bl;
+        }
+        if (peek_tok(0)->kind == T_NAME) {
+            const char *first = peek_tok(0)->sval;
+            size_t fn = strlen(first);
+            memcpy(dotted + dn, first, fn); dn += fn;
             tok_pos++;
-            if (peek_tok(0)->kind != T_NAME) parse_error("from: name expected after '.'");
-            const char *seg = peek_tok(0)->sval;
-            size_t sn = strlen(seg);
-            if (dn + sn + 1 >= sizeof(dotted)) parse_error("from: name too long");
-            dotted[dn++] = '.';
-            memcpy(dotted + dn, seg, sn); dn += sn;
-            tok_pos++;
+            while (peek_tok(0)->kind == T_DOT) {
+                tok_pos++;
+                if (peek_tok(0)->kind != T_NAME) parse_error("from: name expected after '.'");
+                const char *seg = peek_tok(0)->sval;
+                size_t sn = strlen(seg);
+                if (dn + sn + 1 >= sizeof(dotted)) parse_error("from: name too long");
+                dotted[dn++] = '.';
+                memcpy(dotted + dn, seg, sn); dn += sn;
+                tok_pos++;
+            }
+        } else if (n_dots == 0) {
+            parse_error("from: name expected");
         }
         dotted[dn] = '\0';
         expect(T_IMPORT, "'import'");
@@ -4133,9 +4168,43 @@ parse_stmt(void)
     return s;
 }
 
+// Save parser state for nested module imports.  bi_import wraps a
+// tokenize+parse_program in calls to lexer_save_state / parser_save_state
+// before re-entering the parser.
+struct parser_state {
+    Scope *cur_scope;
+    int    comp_remap_top;
+    bool   in_class_body;
+    int    g_ann_count;
+};
+
+void *parser_save_alloc(void) {
+    struct parser_state *s = (struct parser_state *)GC_malloc(sizeof(*s));
+    s->cur_scope = cur_scope;
+    s->comp_remap_top = comp_remap_top;
+    s->in_class_body = in_class_body;
+    s->g_ann_count = g_ann_count;
+    return s;
+}
+
+void parser_restore_free(void *p) {
+    struct parser_state *s = (struct parser_state *)p;
+    cur_scope = s->cur_scope;
+    comp_remap_top = s->comp_remap_top;
+    in_class_body = s->in_class_body;
+    g_ann_count = s->g_ann_count;
+}
+
 NODE *
 parse_program(void)
 {
+    // Reset parser state.  bi_import re-enters parse_program for each
+    // imported module; without this, comp_remap leftover from one
+    // tokenize+parse cycle can leak into the next.
+    comp_remap_top = 0;
+    cur_scope = NULL;
+    in_class_body = false;
+    g_ann_count = 0;
     NODE *stmts[4096];
     int n = 0;
     while (match_tok(T_NEWLINE)) {}

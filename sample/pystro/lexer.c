@@ -57,6 +57,46 @@ static int   indent_top;
 static int   paren_depth;
 static bool  at_line_start;
 
+// Save/restore the entire lexer/tokenizer state.  Used by bi_import
+// when parsing one module triggers a nested import (which calls
+// tokenize/parse_program recursively); without this, the outer module's
+// tokens get clobbered by the inner module's.
+struct lexer_state {
+    const char *src_buf;
+    size_t      src_pos;
+    int         src_line;
+    const char *src_filename;
+    Tok        *tok_arr;
+    size_t      tok_len, tok_capa, tok_pos;
+    int         indent_stack[64];
+    int         indent_top;
+    int         paren_depth;
+    bool        at_line_start;
+};
+
+void *lexer_save_alloc(void) {
+    struct lexer_state *s = (struct lexer_state *)GC_malloc(sizeof(*s));
+    s->src_buf = src_buf; s->src_pos = src_pos; s->src_line = src_line;
+    s->src_filename = src_filename;
+    s->tok_arr = tok_arr; s->tok_len = tok_len; s->tok_capa = tok_capa;
+    s->tok_pos = tok_pos;
+    for (int i = 0; i < 64; i++) s->indent_stack[i] = indent_stack[i];
+    s->indent_top = indent_top; s->paren_depth = paren_depth;
+    s->at_line_start = at_line_start;
+    return s;
+}
+
+void lexer_restore_free(void *p) {
+    struct lexer_state *s = (struct lexer_state *)p;
+    src_buf = s->src_buf; src_pos = s->src_pos; src_line = s->src_line;
+    src_filename = s->src_filename;
+    tok_arr = s->tok_arr; tok_len = s->tok_len; tok_capa = s->tok_capa;
+    tok_pos = s->tok_pos;
+    for (int i = 0; i < 64; i++) indent_stack[i] = s->indent_stack[i];
+    indent_top = s->indent_top; paren_depth = s->paren_depth;
+    at_line_start = s->at_line_start;
+}
+
 static void
 tok_push(int kind, int line)
 {
@@ -591,6 +631,10 @@ tokenize(const char *src, const char *filename)
             } else if ((c0 == 'b' || c0 == 'B') && (c1 == '"' || c1 == '\'')) {
                 p_bytes = true; look = 1;
             } else if ((c0 == 'f' || c0 == 'F') && (c1 == '"' || c1 == '\'')) {
+                p_fstr = true; look = 1;
+            } else if ((c0 == 't' || c0 == 'T') && (c1 == '"' || c1 == '\'')) {
+                // t"..." — PEP 750 template strings (3.14+).  Pystro
+                // models them as plain f-strings.
                 p_fstr = true; look = 1;
             }
             // Try 2-char prefix combos

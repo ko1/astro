@@ -11013,11 +11013,12 @@ bi_classmethod(CTX *c, int argc, VALUE *argv)
 static VALUE
 bi_property(CTX *c, int argc, VALUE *argv)
 {
-    (void)c; (void)argc;
+    (void)c;
     struct pyobj *o = py_alloc(PY_T_PROPERTY);
-    o->wrap.wrapped = argv[0];
-    o->wrap.setter  = PY_NONE;
-    o->wrap.deleter = PY_NONE;
+    o->wrap.wrapped = argc >= 1 ? argv[0] : PY_NONE;
+    o->wrap.setter  = argc >= 2 ? argv[1] : PY_NONE;
+    o->wrap.deleter = argc >= 3 ? argv[2] : PY_NONE;
+    // 4th arg = doc; ignored (no slot to store it on PY_T_PROPERTY).
     return PY_OBJ_VAL(o);
 }
 
@@ -11216,43 +11217,102 @@ bi_import(CTX *c, int argc, VALUE *argv)
 
     const char *name = PY_PTR(argv[0])->str.chars;
     size_t name_len = PY_PTR(argv[0])->str.len;
-    // Translate `a.b.c` into `a/b/c.py` for dotted imports.
-    char relpath[1024];
-    if (name_len + 4 >= sizeof(relpath)) py_raise_exc(c, c->EXC_RuntimeError, "import: name too long");
-    char *p = relpath;
-    for (size_t i = 0; i < name_len; i++) *p++ = (name[i] == '.') ? '/' : name[i];
-    *p++ = '.'; *p++ = 'p'; *p++ = 'y'; *p = '\0';
-    // Search path: CWD first, then sys.path entries (if any), then
-    // PYTHONPATH (env), then the directory of pystro itself (so that
-    // built-in stdlib modules are found regardless of cwd).
+    // Relative-import resolution: parser encodes leading-dot count as
+    // `\1<n>\1<rest>` where <n> is the number of dots.  Convert to an
+    // absolute name based on current module's __package__ (a global
+    // string set when the module was loaded).
+    if (name_len > 0 && name[0] == '\1') {
+        const char *p2 = name + 1;
+        int n_dots = 0;
+        while (*p2 >= '0' && *p2 <= '9') { n_dots = n_dots * 10 + (*p2 - '0'); p2++; }
+        if (*p2 == '\1') p2++;
+        // Look up __package__ for the current module.
+        VALUE pkg = PY_NONE;
+        py_global_lookup(c, "__package__", &pkg);
+        const char *pkg_str = (pkg != PY_NONE && py_is_str(pkg)) ? PY_PTR(pkg)->str.chars : "";
+        size_t pkg_len = strlen(pkg_str);
+        // Strip (n_dots - 1) trailing path segments from package.
+        for (int i = 0; i < n_dots - 1; i++) {
+            const char *last = NULL;
+            for (size_t j = 0; j < pkg_len; j++) if (pkg_str[j] == '.') last = pkg_str + j;
+            if (!last) { pkg_len = 0; break; }
+            pkg_len = (size_t)(last - pkg_str);
+        }
+        // Build absolute name: pkg_str[0..pkg_len] + "." + p2 (rest).
+        char abs[1024];
+        size_t al = 0;
+        if (pkg_len > 0) { memcpy(abs, pkg_str, pkg_len); al = pkg_len; }
+        if (*p2) {
+            if (al > 0) abs[al++] = '.';
+            size_t rl = strlen(p2);
+            if (al + rl + 1 >= sizeof(abs))
+                py_raise_exc(c, c->EXC_RuntimeError, "import: name too long");
+            memcpy(abs + al, p2, rl);
+            al += rl;
+        }
+        abs[al] = '\0';
+        VALUE absv = py_make_str(abs, al);
+        VALUE av[1] = { absv };
+        return bi_import(c, 1, av);
+    }
+    // Translate `a.b.c` into `a/b/c.py` for module form, and
+    // `a.b.c/__init__.py` for package form (CPython-style packages).
+    char modpath[1024], pkgpath[1024];
+    if (name_len + 16 >= sizeof(modpath))
+        py_raise_exc(c, c->EXC_RuntimeError, "import: name too long");
+    {
+        char *q = modpath;
+        for (size_t i = 0; i < name_len; i++)
+            *q++ = (name[i] == '.') ? '/' : name[i];
+        *q++ = '.'; *q++ = 'p'; *q++ = 'y'; *q = '\0';
+    }
+    {
+        char *q = pkgpath;
+        for (size_t i = 0; i < name_len; i++)
+            *q++ = (name[i] == '.') ? '/' : name[i];
+        strcpy(q, "/__init__.py");
+    }
+    // Search each base directory for either form (module first, then package).
     char path[1024];
     char *src = NULL;
-    snprintf(path, sizeof(path), "%s", relpath);
-    src = read_file_into_buf(path);
+    #define TRY_BOTH(BASE_FMT, BASE) do { \
+        if (!src) { snprintf(path, sizeof(path), BASE_FMT, BASE, modpath); src = read_file_into_buf(path); } \
+        if (!src) { snprintf(path, sizeof(path), BASE_FMT, BASE, pkgpath); src = read_file_into_buf(path); } \
+    } while (0)
+    // CWD-relative.
+    if (!src) src = read_file_into_buf(modpath);
+    if (!src) src = read_file_into_buf(pkgpath);
+    // PYTHONPATH entries.
     if (!src) {
         const char *pp = getenv("PYTHONPATH");
         while (pp && *pp && !src) {
             const char *colon = strchr(pp, ':');
             size_t plen = colon ? (size_t)(colon - pp) : strlen(pp);
-            if (plen + strlen(relpath) + 2 < sizeof(path)) {
-                memcpy(path, pp, plen);
-                path[plen] = '/';
-                strcpy(path + plen + 1, relpath);
+            if (plen + strlen(modpath) + 2 < sizeof(path)) {
+                memcpy(path, pp, plen); path[plen] = '/';
+                strcpy(path + plen + 1, modpath);
                 src = read_file_into_buf(path);
+                if (!src) {
+                    memcpy(path, pp, plen); path[plen] = '/';
+                    strcpy(path + plen + 1, pkgpath);
+                    src = read_file_into_buf(path);
+                }
             }
             pp = colon ? colon + 1 : NULL;
         }
     }
     if (!src) {
-        // sys.path equivalent: a static array set at startup.  For now
-        // also try the directory of the running pystro binary (so user
-        // modules adjacent to the binary are findable).
         extern const char *PYSTRO_BINDIR;
         if (PYSTRO_BINDIR) {
-            snprintf(path, sizeof(path), "%s/%s", PYSTRO_BINDIR, relpath);
+            snprintf(path, sizeof(path), "%s/%s", PYSTRO_BINDIR, modpath);
             src = read_file_into_buf(path);
+            if (!src) {
+                snprintf(path, sizeof(path), "%s/%s", PYSTRO_BINDIR, pkgpath);
+                src = read_file_into_buf(path);
+            }
         }
     }
+    #undef TRY_BOTH
     if (!src) {
         // For dotted names (os.path), if a file isn't found try to resolve
         // `tail` as an attribute of the parent module (`os.path` → os.path).
@@ -11359,12 +11419,45 @@ bi_import(CTX *c, int argc, VALUE *argv)
 #undef SET_EXC_GLOBAL
     py_global_set(c, "IOError",              c->EXC_OSError);
 
-    // tokenize + parse the module file.  The lexer/parser state is
-    // reset by tokenize(), and we're being called at runtime so the
-    // original program's tokens aren't needed any more (its AST is
-    // already built).
+    // Set __name__ + __package__ in the module's globals so relative
+    // imports work and the module knows its identity.  Package name is
+    // the dotted prefix up to the last dot (or the whole name if the
+    // import was a package itself).
+    py_global_set(c, "__name__", py_make_str(name, strlen(name)));
+    {
+        // Package: parent of the dotted name, OR name itself if loaded
+        // as `<pkg>/__init__.py`.  We approximate by checking whether
+        // the loaded path ends with `__init__.py`.
+        const char *last_dot = NULL;
+        for (size_t i = 0; i < name_len; i++)
+            if (name[i] == '.') last_dot = &name[i];
+        bool is_pkg = false;
+        size_t plen = strlen(path);
+        if (plen >= 11 && strcmp(path + plen - 11, "__init__.py") == 0) is_pkg = true;
+        if (is_pkg) {
+            py_global_set(c, "__package__", py_make_str(name, name_len));
+        } else if (last_dot) {
+            size_t pkg_len = (size_t)(last_dot - name);
+            py_global_set(c, "__package__", py_make_str(name, pkg_len));
+        } else {
+            py_global_set(c, "__package__", py_make_str("", 0));
+        }
+    }
+
+    // tokenize + parse the module file.  Nested imports (one module's
+    // import triggering another's load) re-enter tokenize/parse_program;
+    // both lexer and parser keep state in file-static globals, so we
+    // serialise the whole state via opaque save/restore helpers.
+    extern void *lexer_save_alloc(void);
+    extern void  lexer_restore_free(void *s);
+    extern void *parser_save_alloc(void);
+    extern void  parser_restore_free(void *s);
+    void *lexsave = lexer_save_alloc();
+    void *parsesave = parser_save_alloc();
     tokenize(src, path);
     NODE *body = parse_program();
+    lexer_restore_free(lexsave);
+    parser_restore_free(parsesave);
 
     // Wrap module body in a local try-frame so that any exception
     // inside module init is caught here.  We then restore globals
@@ -12560,7 +12653,7 @@ install_builtins(CTX *c)
     py_global_define(c, "format",     py_make_builtin("format",     bi_format,     1,  2));
     py_global_define(c, "staticmethod",py_make_builtin("staticmethod",bi_staticmethod, 1, 1));
     py_global_define(c, "classmethod", py_make_builtin("classmethod", bi_classmethod, 1, 1));
-    py_global_define(c, "property",    py_make_builtin("property",    bi_property,    1, 1));
+    py_global_define(c, "property",    py_make_builtin("property",    bi_property,    0, 4));
     py_global_define(c, "all",         py_make_builtin("all",         bi_all,        1, 1));
     py_global_define(c, "any",         py_make_builtin("any",         bi_any,        1, 1));
     py_global_define(c, "divmod",      py_make_builtin("divmod",      bi_divmod,     2, 2));
