@@ -231,11 +231,17 @@ static struct korb_class *cvar_owner_(struct korb_class *k, ID name) {
 
 VALUE korb_cvar_get(CTX *c, ID name) {
     struct korb_class *k = c->cref ? c->cref->klass : c->current_class;
-    /* For instance methods, c->cref is set; cvar lookup uses the
-     * receiver's class.  Outside any class body, fall back to
-     * recv's class via current frame's self. */
     if (!k && c->current_frame) k = korb_class_of_class(c->current_frame->self);
     if (!k) k = korb_class_of_class(c->self);
+    /* Top-level read of @@cvar — RuntimeError per CRuby. */
+    /* Top-level access (no enclosing class/module body) — RuntimeError.
+     * Toplevel's cref->prev is NULL and the resolved class is Object's
+     * meta or main. */
+    if (c->cref && !c->cref->prev &&
+        (k == korb_vm->object_class || k == korb_vm->main_obj_class)) {
+        korb_raise(c, NULL, "class variable access from toplevel");
+        return Qnil;
+    }
     struct korb_class *owner = k ? cvar_owner_(k, name) : NULL;
     if (!owner) {
         VALUE eName = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
@@ -256,6 +262,14 @@ void korb_cvar_set(CTX *c, ID name, VALUE val) {
     if (!k && c->current_frame) k = korb_class_of_class(c->current_frame->self);
     if (!k) k = korb_class_of_class(c->self);
     if (!k) return;
+    /* CRuby: `@@cvar = x` at top level (no enclosing class/module) is a
+     * RuntimeError.  Detect "top level" as cref == NULL and current self
+     * is the singleton main object. */
+    if (c->cref && !c->cref->prev &&
+        (k == korb_vm->object_class || k == korb_vm->main_obj_class)) {
+        korb_raise(c, NULL, "class variable access from toplevel");
+        return;
+    }
     struct korb_class *target = cvar_owner_(k, name);
     if (!target) target = k;
     for (uint32_t i = 0; i < target->cvar_cnt; i++) {
