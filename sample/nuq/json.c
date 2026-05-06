@@ -14,6 +14,16 @@
 #include <ctype.h>
 #include <math.h>
 
+/* The printer is hot for output-heavy filters (e.g. `[paths]` on
+ * deeply-nested JSON); using `*_unlocked` variants of stdio funcs
+ * skips the glibc per-call FILE* lock acquire and brings ~30% gain
+ * on `tree_paths` and similar.  Safe because nuq is single-threaded. */
+#define putc_u(c, fp)        fputc_unlocked(c, fp)
+#define puts_u(s, fp)        fputs_unlocked(s, fp)
+#define fwrite_u(p, n, fp)   fwrite_unlocked(p, 1, n, fp)
+#define vfprintf_u           vfprintf
+#define fprintf_u            fprintf
+
 static void
 skip_ws(const char **pp, const char *end)
 {
@@ -368,40 +378,60 @@ nuq_json_parse(const char *src, size_t len, const char **endp, char **errmsg)
 static void
 print_string(FILE *fp, struct nuq_obj *o)
 {
-    fputc('"', fp);
-    for (size_t i = 0; i < o->str.len; i++) {
-        unsigned char c = (unsigned char)o->str.bytes[i];
+    /* Bulk-write the runs of "safe" bytes (printable ASCII, no
+     * escape needed) and only call out for individual escapes — much
+     * cheaper than per-byte fputc when most of the string is plain
+     * ASCII (the common case). */
+    putc_u('"', fp);
+    const char *bytes = o->str.bytes;
+    size_t len = o->str.len;
+    size_t start = 0;
+    for (size_t i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)bytes[i];
+        const char *esc = NULL;
+        char hex[8];
         switch (c) {
-          case '"':  fputs("\\\"", fp); break;
-          case '\\': fputs("\\\\", fp); break;
-          case '\b': fputs("\\b", fp);  break;
-          case '\f': fputs("\\f", fp);  break;
-          case '\n': fputs("\\n", fp);  break;
-          case '\r': fputs("\\r", fp);  break;
-          case '\t': fputs("\\t", fp);  break;
+          case '"':  esc = "\\\""; break;
+          case '\\': esc = "\\\\"; break;
+          case '\b': esc = "\\b";  break;
+          case '\f': esc = "\\f";  break;
+          case '\n': esc = "\\n";  break;
+          case '\r': esc = "\\r";  break;
+          case '\t': esc = "\\t";  break;
           default:
-            if (c < 0x20) fprintf(fp, "\\u%04x", c);
-            else fputc(c, fp);
+            if (c < 0x20) {
+                snprintf(hex, sizeof(hex), "\\u%04x", c);
+                esc = hex;
+            }
             break;
         }
+        if (esc) {
+            if (i > start) fwrite_u(bytes + start, i - start, fp);
+            puts_u(esc, fp);
+            start = i + 1;
+        }
     }
-    fputc('"', fp);
+    if (len > start) fwrite_u(bytes + start, len - start, fp);
+    putc_u('"', fp);
 }
 
 static void
 print_number(FILE *fp, VALUE v)
 {
+    char buf64[32];
     if (NUQ_IS_FIX(v)) {
-        fprintf(fp, "%" PRId64, (int64_t)NUQ_FIX_VAL(v));
+        int n = snprintf(buf64, sizeof(buf64), "%" PRId64, (int64_t)NUQ_FIX_VAL(v));
+        fwrite_u(buf64, n, fp);
         return;
     }
     double d = NUQ_PTR(v)->dbl;
-    if (isnan(d)) { fputs("null", fp); return; }
-    if (isinf(d)) { fputs(d < 0 ? "-1.7976931348623157e+308" : "1.7976931348623157e+308", fp); return; }
+    if (isnan(d)) { puts_u("null", fp); return; }
+    if (isinf(d)) { puts_u(d < 0 ? "-1.7976931348623157e+308" : "1.7976931348623157e+308", fp); return; }
     /* match jq's output: integer-valued doubles as "1234", else use %.17g
      * but try shorter forms first for round-tripping. */
     if (d == (double)(int64_t)d && d >= -1e15 && d <= 1e15) {
-        fprintf(fp, "%" PRId64, (int64_t)d);
+        int n = snprintf(buf64, sizeof(buf64), "%" PRId64, (int64_t)d);
+        fwrite_u(buf64, n, fp);
         return;
     }
     char buf[64];
@@ -459,7 +489,7 @@ print_number(FILE *fp, VALUE v)
         snprintf(buf, sizeof(buf), "%.*g", prec, d);
         if (strtod(buf, NULL) == d) break;
     }
-    fputs(buf, fp);
+    puts_u(buf, fp);
 }
 
 /* jq's tojson refuses to format trees deeper than this — past it,
@@ -467,44 +497,61 @@ print_number(FILE *fp, VALUE v)
  * exactly: 10000-level nesting still prints, 10001 truncates. */
 #define NUQ_JSON_PRINT_MAX_DEPTH 10000
 
+/* Pre-built spaces buffer for indent — written via fwrite once per
+ * level rather than fputc-per-space, which is a measurable win for
+ * pretty-printed output. */
+static const char nuq_indent_spaces[256] = {
+    [0 ... 255] = ' '
+};
+
 static void
 print_value(FILE *fp, VALUE v, int indent, int depth)
 {
     if (NUQ_IS_FIX(v)) { print_number(fp, v); return; }
     struct nuq_obj *o = NUQ_PTR(v);
     switch (o->type) {
-      case NUQ_T_NULL:   fputs("null", fp); return;
-      case NUQ_T_BOOL:   fputs(o->b ? "true" : "false", fp); return;
+      case NUQ_T_NULL:   puts_u("null", fp); return;
+      case NUQ_T_BOOL:   puts_u(o->b ? "true" : "false", fp); return;
       case NUQ_T_DOUBLE: print_number(fp, v); return;
       case NUQ_T_STRING: print_string(fp, o); return;
       case NUQ_T_ARRAY: {
         if (depth > NUQ_JSON_PRINT_MAX_DEPTH) {
-            fputs("\"<skipped: too deep>\"", fp);
+            puts_u("\"<skipped: too deep>\"", fp);
             return;
         }
-        if (o->arr.len == 0) { fputs("[]", fp); return; }
-        fputc('[', fp);
+        if (o->arr.len == 0) { puts_u("[]", fp); return; }
+        putc_u('[', fp);
         for (size_t i = 0; i < o->arr.len; i++) {
-            if (i) fputc(',', fp);
+            if (i) putc_u(',', fp);
             if (indent > 0) {
-                fputc('\n', fp);
-                for (int s = 0; s < (depth+1) * indent; s++) fputc(' ', fp);
+                putc_u('\n', fp);
+                int sp = (depth + 1) * indent;
+                while (sp > 0) {
+                    int n = sp < 256 ? sp : 256;
+                    fwrite_u(nuq_indent_spaces, n, fp);
+                    sp -= n;
+                }
             }
             print_value(fp, o->arr.items[i], indent, depth + 1);
         }
         if (indent > 0) {
-            fputc('\n', fp);
-            for (int s = 0; s < depth * indent; s++) fputc(' ', fp);
+            putc_u('\n', fp);
+            int sp = depth * indent;
+            while (sp > 0) {
+                int n = sp < 256 ? sp : 256;
+                fwrite_u(nuq_indent_spaces, n, fp);
+                sp -= n;
+            }
         }
-        fputc(']', fp);
+        putc_u(']', fp);
         return;
       }
       case NUQ_T_OBJECT: {
         if (depth > NUQ_JSON_PRINT_MAX_DEPTH) {
-            fputs("\"<skipped: too deep>\"", fp);
+            puts_u("\"<skipped: too deep>\"", fp);
             return;
         }
-        if (o->obj.len == 0) { fputs("{}", fp); return; }
+        if (o->obj.len == 0) { puts_u("{}", fp); return; }
         /* Default emit-order is insertion order; with `-S` we emit
          * lexicographic-by-key.  Iteration goes through `order[i]` so
          * the same loop body covers both. */
@@ -539,25 +586,35 @@ print_value(FILE *fp, VALUE v, int indent, int depth)
                 order[j] = x;
             }
         }
-        fputc('{', fp);
+        putc_u('{', fp);
         for (size_t i = 0; i < o->obj.len; i++) {
             size_t ki = order ? order[i] : i;
-            if (i) fputc(',', fp);
+            if (i) putc_u(',', fp);
             if (indent > 0) {
-                fputc('\n', fp);
-                for (int s = 0; s < (depth+1) * indent; s++) fputc(' ', fp);
+                putc_u('\n', fp);
+                int sp = (depth + 1) * indent;
+                while (sp > 0) {
+                    int n = sp < 256 ? sp : 256;
+                    fwrite_u(nuq_indent_spaces, n, fp);
+                    sp -= n;
+                }
             }
             struct nuq_obj *ks = NUQ_PTR(o->obj.keys[ki]);
             print_string(fp, ks);
-            fputc(':', fp);
-            if (indent > 0) fputc(' ', fp);
+            putc_u(':', fp);
+            if (indent > 0) putc_u(' ', fp);
             print_value(fp, o->obj.vals[ki], indent, depth + 1);
         }
         if (indent > 0) {
-            fputc('\n', fp);
-            for (int s = 0; s < depth * indent; s++) fputc(' ', fp);
+            putc_u('\n', fp);
+            int sp = depth * indent;
+            while (sp > 0) {
+                int n = sp < 256 ? sp : 256;
+                fwrite_u(nuq_indent_spaces, n, fp);
+                sp -= n;
+            }
         }
-        fputc('}', fp);
+        putc_u('}', fp);
         if (need_free) free(order);
         return;
       }

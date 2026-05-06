@@ -18,10 +18,82 @@ struct nuq_obj NUQ_NULL_ERR_OBJ  = { .type = NUQ_T_NULL };     /* distinct ptr *
 struct nuq_obj NUQ_TRUE_OBJ  = { .type = NUQ_T_BOOL, .b = true };
 struct nuq_obj NUQ_FALSE_OBJ = { .type = NUQ_T_BOOL, .b = false };
 
+/* ---- per-run arena ---- */
+
+bool  nuq_alloc_perm = true;     /* startup: parse / setup is permanent */
+char *nuq_arena_cur  = NULL;
+char *nuq_arena_end  = NULL;
+
+#define NUQ_ARENA_CHUNK (1u << 20)   /* 1 MiB chunks */
+
+struct nuq_chunk {
+    struct nuq_chunk *next;
+    size_t            capa;        /* size of `data` */
+    char              data[];
+};
+
+static struct nuq_chunk *arena_first   = NULL;
+static struct nuq_chunk *arena_current = NULL;
+
+static struct nuq_chunk *
+arena_new_chunk(size_t bytes)
+{
+    if (bytes < NUQ_ARENA_CHUNK) bytes = NUQ_ARENA_CHUNK;
+    struct nuq_chunk *c = (struct nuq_chunk *)GC_malloc(
+        sizeof(struct nuq_chunk) + bytes);
+    c->next = NULL;
+    c->capa = bytes;
+    return c;
+}
+
+void *
+nuq_arena_alloc_slow(size_t sz)
+{
+    /* Big alloc: dedicated chunk that doesn't share with bump cur. */
+    if (sz > NUQ_ARENA_CHUNK / 2) {
+        struct nuq_chunk *c = arena_new_chunk(sz);
+        c->next = arena_first;
+        arena_first = c;
+        if (!arena_current) arena_current = c;
+        return c->data;
+    }
+    /* Reuse next chunk if previously allocated, else extend. */
+    if (arena_current && arena_current->next) {
+        arena_current = arena_current->next;
+    } else {
+        struct nuq_chunk *c = arena_new_chunk(NUQ_ARENA_CHUNK);
+        if (arena_current) arena_current->next = c;
+        else arena_first = c;
+        arena_current = c;
+    }
+    nuq_arena_cur = arena_current->data;
+    nuq_arena_end = nuq_arena_cur + arena_current->capa;
+    char *p = nuq_arena_cur;
+    nuq_arena_cur += sz;
+    return p;
+}
+
+void
+nuq_arena_reset(void)
+{
+    /* Rewind the bump pointer; reuse chunks across runs.  We don't
+     * memset — Boehm conservative scan may briefly retain prior-run
+     * objects via stale pointers in the unused portion of chunk 0,
+     * but they get overwritten as the next run allocates over them. */
+    arena_current = arena_first;
+    if (arena_first) {
+        nuq_arena_cur = arena_first->data;
+        nuq_arena_end = nuq_arena_cur + arena_first->capa;
+    } else {
+        nuq_arena_cur = NULL;
+        nuq_arena_end = NULL;
+    }
+}
+
 static struct nuq_obj *
 obj_alloc(enum nuq_type t)
 {
-    struct nuq_obj *o = (struct nuq_obj *)GC_malloc(sizeof(*o));
+    struct nuq_obj *o = (struct nuq_obj *)nuq_value_alloc(sizeof(*o));
     o->type = t;
     return o;
 }
@@ -50,7 +122,7 @@ VALUE
 nuq_make_string(const char *s, size_t len)
 {
     struct nuq_obj *o = obj_alloc(NUQ_T_STRING);
-    char *buf = (char *)GC_malloc_atomic(len + 1);
+    char *buf = (char *)nuq_value_alloc_atomic(len + 1);
     memcpy(buf, s, len);
     buf[len] = '\0';
     o->str.bytes = buf;
@@ -76,7 +148,7 @@ nuq_make_array(size_t cap)
         o->arr.items = o->arr.inline_buf;
         o->arr.capa  = NUQ_ARR_INLINE;
     } else {
-        o->arr.items = (VALUE *)GC_malloc(cap * sizeof(VALUE));
+        o->arr.items = (VALUE *)nuq_value_alloc(cap * sizeof(VALUE));
         o->arr.capa  = cap;
     }
     o->arr.len = 0;
@@ -120,7 +192,7 @@ obj_idx_rebuild(struct nuq_obj *const o)
 {
     uint32_t cap = 32;
     while ((size_t)cap < o->obj.len * 2) cap *= 2;
-    uint32_t *const idx = (uint32_t *)GC_malloc_atomic(cap * sizeof(uint32_t));
+    uint32_t *const idx = (uint32_t *)nuq_value_alloc_atomic(cap * sizeof(uint32_t));
     memset(idx, 0, cap * sizeof(uint32_t));
     const uint32_t mask = cap - 1;
     for (size_t i = 0; i < o->obj.len; i++) {
@@ -152,8 +224,8 @@ nuq_make_object(size_t cap)
 {
     struct nuq_obj *o = obj_alloc(NUQ_T_OBJECT);
     if (cap < 4) cap = 4;
-    o->obj.keys = (VALUE *)GC_malloc(cap * sizeof(VALUE));
-    o->obj.vals = (VALUE *)GC_malloc(cap * sizeof(VALUE));
+    o->obj.keys = (VALUE *)nuq_value_alloc(cap * sizeof(VALUE));
+    o->obj.vals = (VALUE *)nuq_value_alloc(cap * sizeof(VALUE));
     o->obj.len = 0;
     o->obj.capa = cap;
     o->obj.idx = NULL;
@@ -161,22 +233,24 @@ nuq_make_object(size_t cap)
     return NUQ_OBJ_VAL(o);
 }
 
+/* Slow path for nuq_array_push — only invoked when the inline fast
+ * path (header) hits capa.  Grows the items[] buffer (with inline→
+ * heap migration on first overflow), then inserts. */
 void
-nuq_array_push(VALUE arr, VALUE v)
+nuq_array_push_slow(VALUE arr, VALUE v)
 {
     struct nuq_obj *o = NUQ_PTR(arr);
-    if (UNLIKELY(o->arr.len == o->arr.capa)) {
-        size_t nc = o->arr.capa * 2;
-        if (o->arr.items == o->arr.inline_buf) {
-            /* migrate inline → heap */
-            VALUE *heap = (VALUE *)GC_malloc(nc * sizeof(VALUE));
-            memcpy(heap, o->arr.inline_buf, o->arr.capa * sizeof(VALUE));
-            o->arr.items = heap;
-        } else {
-            o->arr.items = (VALUE *)GC_realloc(o->arr.items, nc * sizeof(VALUE));
-        }
-        o->arr.capa = nc;
+    size_t nc = o->arr.capa * 2;
+    if (nc < 4) nc = 4;
+    if (o->arr.items == o->arr.inline_buf) {
+        VALUE *heap = (VALUE *)nuq_value_alloc(nc * sizeof(VALUE));
+        memcpy(heap, o->arr.inline_buf, o->arr.capa * sizeof(VALUE));
+        o->arr.items = heap;
+    } else {
+        o->arr.items = (VALUE *)nuq_value_realloc(
+            o->arr.items, o->arr.capa * sizeof(VALUE), nc * sizeof(VALUE));
     }
+    o->arr.capa = nc;
     o->arr.items[o->arr.len++] = v;
 }
 
@@ -230,8 +304,10 @@ nuq_object_set(VALUE obj, VALUE key, VALUE val)
 append:
     if (o->obj.len == o->obj.capa) {
         size_t nc = o->obj.capa * 2;
-        o->obj.keys = (VALUE *)GC_realloc(o->obj.keys, nc * sizeof(VALUE));
-        o->obj.vals = (VALUE *)GC_realloc(o->obj.vals, nc * sizeof(VALUE));
+        size_t old_bytes = o->obj.capa * sizeof(VALUE);
+        size_t new_bytes = nc * sizeof(VALUE);
+        o->obj.keys = (VALUE *)nuq_value_realloc(o->obj.keys, old_bytes, new_bytes);
+        o->obj.vals = (VALUE *)nuq_value_realloc(o->obj.vals, old_bytes, new_bytes);
         o->obj.capa = nc;
     }
     o->obj.keys[o->obj.len] = key;
@@ -776,7 +852,7 @@ nuq_op_add_slow(VALUE a, VALUE b)
         NUQ_IS_PTR(b) && NUQ_PTR(b)->type == NUQ_T_STRING) {
         struct nuq_obj *oa = NUQ_PTR(a), *ob = NUQ_PTR(b);
         size_t ln = oa->str.len + ob->str.len;
-        char *buf = (char *)GC_malloc_atomic(ln + 1);
+        char *buf = (char *)nuq_value_alloc_atomic(ln + 1);
         memcpy(buf, oa->str.bytes, oa->str.len);
         memcpy(buf + oa->str.len, ob->str.bytes, ob->str.len);
         buf[ln] = '\0';
@@ -891,7 +967,7 @@ nuq_op_mul_slow(VALUE a, VALUE b)
                 return NUQ_NULL;
             }
             size_t L = oa->str.len * (size_t)n;
-            char *buf = (char *)GC_malloc_atomic(L + 1);
+            char *buf = (char *)nuq_value_alloc_atomic(L + 1);
             for (int64_t i = 0; i < n; i++) memcpy(buf + i * oa->str.len, oa->str.bytes, oa->str.len);
             buf[L] = '\0';
             return nuq_make_string_take(buf, L);

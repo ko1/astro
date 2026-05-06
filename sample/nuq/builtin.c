@@ -116,7 +116,7 @@ nuq_builtin_max(VALUE input)
     return m;
 }
 
-static int cmp_natural_for_qsort(const void *a, const void *b) { return nuq_cmp(*(const VALUE *)a, *(const VALUE *)b); }
+extern void nuq_value_sort(VALUE *a, size_t n);
 
 VALUE
 nuq_builtin_sort(VALUE input)
@@ -128,8 +128,9 @@ nuq_builtin_sort(VALUE input)
     struct nuq_obj *o = NUQ_PTR(input);
     VALUE r = nuq_make_array(o->arr.len);
     struct nuq_obj *ro = NUQ_PTR(r);
-    for (size_t i = 0; i < o->arr.len; i++) nuq_array_push(r, o->arr.items[i]);
-    qsort(ro->arr.items, ro->arr.len, sizeof(VALUE), cmp_natural_for_qsort);
+    if (o->arr.len > 0) memcpy(ro->arr.items, o->arr.items, o->arr.len * sizeof(VALUE));
+    ro->arr.len = o->arr.len;
+    nuq_value_sort(ro->arr.items, ro->arr.len);
     return r;
 }
 
@@ -163,8 +164,9 @@ nuq_builtin_unique(VALUE input)
     struct nuq_obj *o = NUQ_PTR(input);
     VALUE sorted = nuq_make_array(o->arr.len);
     struct nuq_obj *so = NUQ_PTR(sorted);
-    for (size_t i = 0; i < o->arr.len; i++) nuq_array_push(sorted, o->arr.items[i]);
-    qsort(so->arr.items, so->arr.len, sizeof(VALUE), cmp_natural_for_qsort);
+    if (o->arr.len > 0) memcpy(so->arr.items, o->arr.items, o->arr.len * sizeof(VALUE));
+    so->arr.len = o->arr.len;
+    nuq_value_sort(so->arr.items, so->arr.len);
     VALUE r = nuq_make_array(so->arr.len);
     for (size_t i = 0; i < so->arr.len; i++) {
         if (i == 0 || nuq_cmp(so->arr.items[i], so->arr.items[i-1]) != 0)

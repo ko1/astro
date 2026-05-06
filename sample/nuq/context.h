@@ -21,6 +21,67 @@ extern void  GC_init(void);
 #define LIKELY(expr)   __builtin_expect((expr), 1)
 #define UNLIKELY(expr) __builtin_expect((expr), 0)
 
+/* ---- per-run arena allocator ----
+ *
+ * Most VALUE-bearing allocations during filter evaluation
+ * (`nuq_make_array` / `nuq_make_object` / `nuq_make_string` /
+ * `nuq_clone`, plus container growth) live for one filter
+ * invocation: the intermediate values are printed at end of run and
+ * then dropped.  Routing them through a bump-pointer arena that's
+ * reset after every run drops most GC_malloc / free / sweep traffic.
+ *
+ * The arena chunks themselves are GC_malloc'd so Boehm scans them
+ * conservatively — VALUEs in arena that point into Boehm-managed
+ * objects (e.g. input JSON, interned literals) stay alive.
+ *
+ * Parse-time / module-load / startup paths flip `nuq_alloc_perm` to
+ * route through Boehm-managed memory so the resulting values survive
+ * across runs (literals, AST kname_value, --argjson values, module
+ * data imports). */
+extern bool nuq_alloc_perm;
+
+void *nuq_arena_alloc_slow(size_t sz);
+void  nuq_arena_reset(void);
+
+extern char *nuq_arena_cur;
+extern char *nuq_arena_end;
+
+static inline void *
+nuq_arena_alloc(size_t sz)
+{
+    sz = (sz + 7) & ~(size_t)7;
+    char *p = nuq_arena_cur;
+    char *next = p + sz;
+    if (LIKELY(next <= nuq_arena_end)) {
+        nuq_arena_cur = next;
+        return p;
+    }
+    return nuq_arena_alloc_slow(sz);
+}
+
+static inline void *
+nuq_value_alloc(size_t sz)
+{
+    if (UNLIKELY(nuq_alloc_perm)) return GC_malloc(sz);
+    return nuq_arena_alloc(sz);
+}
+
+static inline void *
+nuq_value_alloc_atomic(size_t sz)
+{
+    if (UNLIKELY(nuq_alloc_perm)) return GC_malloc_atomic(sz);
+    return nuq_arena_alloc(sz);
+}
+
+static inline void *
+nuq_value_realloc(void *p, size_t old_sz, size_t new_sz)
+{
+    if (UNLIKELY(nuq_alloc_perm)) return GC_realloc(p, new_sz);
+    void *q = nuq_arena_alloc(new_sz);
+    if (p && old_sz) memcpy(q, p, old_sz < new_sz ? old_sz : new_sz);
+    return q;
+}
+
 /*
  * VALUE encoding:
  *   xxxx_xxx1 -> 62-bit signed fixnum
@@ -220,7 +281,21 @@ VALUE nuq_make_string_take(char *s, size_t len);
 VALUE nuq_make_array   (size_t initial_capa);
 VALUE nuq_make_object  (size_t initial_capa);
 
-void  nuq_array_push   (VALUE arr, VALUE v);
+void  nuq_array_push_slow (VALUE arr, VALUE v);
+
+/* Fast path inline so hot loops (`[range(N)]`, `map`, sort/group_by
+ * staging arrays) avoid the function-call cost.  Slow path handles
+ * capacity grow + inline→heap migration. */
+static inline void
+nuq_array_push(VALUE arr, VALUE v)
+{
+    struct nuq_obj *o = NUQ_PTR(arr);
+    if (LIKELY(o->arr.len < o->arr.capa)) {
+        o->arr.items[o->arr.len++] = v;
+        return;
+    }
+    nuq_array_push_slow(arr, v);
+}
 VALUE nuq_array_get    (VALUE arr, int64_t idx);
 size_t nuq_array_len   (VALUE arr);
 
@@ -340,12 +415,27 @@ nuq_op_neg(VALUE a)
     return nuq_op_neg_slow(a);
 }
 
-/* div / mod don't get an inline fast path: jq division is double
- * division (e.g. 5/2 == 2.5 not 2), so the fixnum case still requires
- * a heap-boxed double on most non-trivial inputs.  Keep them as
- * calls. */
+/* `/` is jq-double division (5/2 == 2.5) so the fast fixnum path
+ * still has to box.  Skip the inline fast path. */
 static inline VALUE nuq_op_div(VALUE a, VALUE b) { return nuq_op_div_slow(a, b); }
-static inline VALUE nuq_op_mod(VALUE a, VALUE b) { return nuq_op_mod_slow(a, b); }
+
+/* `%` is integer modulo for fixnum operands — common case in
+ * `group_by(. % N)` etc.  Inline `la % lb` for the typical hot loop
+ * (~5× over the function-call slow path). */
+static inline VALUE
+nuq_op_mod(VALUE a, VALUE b)
+{
+    if (LIKELY(NUQ_IS_FIX(a) && NUQ_IS_FIX(b))) {
+        int64_t lb = NUQ_FIX_VAL(b);
+        if (LIKELY(lb != 0)) {
+            int64_t la = NUQ_FIX_VAL(a);
+            /* la == INT64_MIN && lb == -1 would overflow, but fixnum
+             * range is 62-bit so INT64_MIN is unreachable here. */
+            return NUQ_FIX(la % lb);
+        }
+    }
+    return nuq_op_mod_slow(a, b);
+}
 
 bool nuq_field_lookup(VALUE in, const char *name, bool optional, VALUE *out);
 bool nuq_to_number(VALUE v, VALUE *out);
