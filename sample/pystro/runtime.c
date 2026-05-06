@@ -1168,6 +1168,8 @@ py_neg(CTX *c, VALUE a)
 //
 // CPython always dispatches arithmetic through type slots (tp_as_number).
 // We mirror that: any user instance with a defined dunder takes priority.
+// Returns 0 if the dunder isn't defined OR if it returned NotImplemented
+// (so the caller can fall through to reflected ops or built-in paths).
 static inline VALUE
 py_try_binop_dunder(CTX *c, const char *name, VALUE a, VALUE b)
 {
@@ -1178,7 +1180,9 @@ py_try_binop_dunder(CTX *c, const char *name, VALUE a, VALUE b)
     VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(a)->inst.cls), name);
     if (m != PY_NONE) {
         VALUE av[2] = { a, b };
-        return py_apply(c, m, 2, av);
+        VALUE r = py_apply(c, m, 2, av);
+        if (PY_IS_PTR(r) && PY_PTR(r)->type == PY_T_NOTIMPL) return (VALUE)0;
+        return r;
     }
     return (VALUE)0;
 }

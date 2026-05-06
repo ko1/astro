@@ -1,0 +1,8 @@
+ok NotImplementedFallbackTest test_add_falls_through
+ok NotImplementedFallbackTest test_eq_falls_through
+ok TruncProtocolTest test_ceil_dunder
+ok TruncProtocolTest test_floor_dunder
+ok TruncProtocolTest test_trunc_dunder
+ok RoundTest test_round_dunder
+---
+passed=6 failed=0

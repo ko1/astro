@@ -108,6 +108,9 @@ def isfinite(x):
     return not (isnan(x) or isinf(x))
 
 def trunc(x):
+    # CPython prefers __trunc__ when defined.
+    if hasattr(x, "__trunc__"):
+        return x.__trunc__()
     if x >= 0: return floor(x)
     return ceil(x)
 
