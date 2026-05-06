@@ -4492,6 +4492,13 @@ gen_entry(void)
     c->method_class = f->func.defining_class;
     g->prev_gen = c->current_gen;
     c->current_gen = g;
+    // Reset try-stack inside the gen body: caller's jbufs are pointers
+    // into the caller's C stack, but we're now running on a separate
+    // ucontext stack.  Longjmping into them would land in dead frames.
+    // Instead, gen body has its own (initially empty) try-stack — when
+    // an exception escapes the gen, it sets state=RAISE and returns
+    // here; the swapcontext-back path in py_gen_next propagates it.
+    c->try_top = 0;
 
     EVAL(c, f->func.body);
 
@@ -4691,14 +4698,21 @@ py_gen_send(CTX *c, VALUE gen_v, VALUE v)
 VALUE
 py_gen_throw(CTX *c, VALUE gen_v, VALUE exc)
 {
+    // Materialise a class into an instance, invoking the class as a
+    // constructor so .args/.message etc. get properly initialised.
+    if (py_is_class(exc)) {
+        VALUE inst = py_apply(c, exc, 0, NULL);
+        if (c->state != PY_STATE_NORMAL) return PY_NONE;
+        exc = inst;
+    }
     struct pygen *g = PY_PTR(gen_v)->gen;
     if (g->done) {
         c->state = PY_STATE_RAISE;
-        c->state_value = py_is_class(exc) ? py_make_instance(exc) : exc;
+        c->state_value = exc;
         return PY_NONE;
     }
     g->throw_pending = true;
-    g->throw_exc = py_is_class(exc) ? py_make_instance(exc) : exc;
+    g->throw_exc = exc;
     if (!g->started) {
         // Throw before first yield — body never gets to run; just raise.
         g->done = true;

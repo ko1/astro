@@ -22,12 +22,28 @@ class _GeneratorContextManager:
                 return False
             raise RuntimeError("generator didn't stop")
         else:
+            # Throw the actual exception instance so the body sees the
+            # original args / message; fall back to the class if no
+            # value is available.
             try:
-                self._gen.throw(exc_type)
+                if exc_value is None:
+                    self._gen.throw(exc_type)
+                else:
+                    self._gen.throw(exc_value)
             except StopIteration:
+                # Generator handled the exception and exited normally.
                 return True
-            except BaseException:
-                pass
+            except BaseException as e:
+                # Generator raised something different; if it's the
+                # same exception (didn't actually handle it),
+                # propagate as suppressed-False.
+                if e is exc_value:
+                    return False
+                # New exception — let it propagate.
+                raise
+            # Generator yielded again instead of returning — silently
+            # treat as handled (matches CPython's "generator didn't
+            # stop after throw").
             return False
 
 

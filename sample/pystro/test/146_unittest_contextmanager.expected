@@ -1,0 +1,14 @@
+ok ContextManagerTest test_basic
+ok ContextManagerTest test_finally_runs
+ok ContextManagerTest test_handles_exception
+ok ContextManagerTest test_propagates_exception
+ok SuppressTest test_multi
+ok SuppressTest test_no_match
+ok SuppressTest test_one
+ok ExitStackTest test_callback
+ok ExitStackTest test_lifo_order
+ok ClosingTest test_close
+ok NullContextTest test_no_arg
+ok NullContextTest test_value
+---
+passed=12 failed=0
