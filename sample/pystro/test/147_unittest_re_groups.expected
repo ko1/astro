@@ -1,0 +1,17 @@
+ok ReGroupsTest test_anchors
+ok ReGroupsTest test_charclass
+ok ReGroupsTest test_compile
+ok ReGroupsTest test_escape
+ok ReGroupsTest test_findall
+ok ReGroupsTest test_finditer
+ok ReGroupsTest test_fullmatch
+ok ReGroupsTest test_ignorecase
+ok ReGroupsTest test_match_groups
+ok ReGroupsTest test_negated_charclass
+ok ReGroupsTest test_quantifier_question
+ok ReGroupsTest test_search
+ok ReGroupsTest test_split
+ok ReGroupsTest test_sub
+ok ReGroupsTest test_sub_callable
+---
+passed=15 failed=0
