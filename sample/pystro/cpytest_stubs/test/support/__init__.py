@@ -409,3 +409,6 @@ class BrokenIter:
 from test.support import os_helper
 from test.support import import_helper
 from test.support import warnings_helper
+from test.support import threading_helper
+from test.support import socket_helper
+from test.support import script_helper

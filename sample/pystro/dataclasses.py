@@ -275,6 +275,10 @@ class _Missing:
 MISSING = _Missing()
 
 
+# Field — used by dataclasses-aware introspection (typing.dataclass_transform etc).
+Field = _Field
+
+
 __all__ = ["dataclass", "make_dataclass", "asdict", "astuple", "fields",
            "field", "is_dataclass", "replace",
-           "InitVar", "KW_ONLY", "MISSING", "FrozenInstanceError"]
+           "InitVar", "KW_ONLY", "MISSING", "FrozenInstanceError", "Field"]

@@ -189,5 +189,42 @@ def unique(cls):
     return cls
 
 
-__all__ = ["Enum", "IntEnum", "StrEnum", "Flag", "IntFlag",
+def _simple_enum(*args, **kwargs):
+    """3.11+ decorator that builds an Enum from a regular class without
+    going through EnumMeta.  pystro just returns the class unchanged."""
+    def deco(cls):
+        return cls
+    if args and callable(args[0]) and len(args) == 1:
+        return deco(args[0])
+    return deco
+
+
+def _test_simple_enum(*args, **kwargs):
+    """Used by CPython tests to sanity-check _simple_enum's results."""
+    pass
+
+
+def member(value):
+    return value
+
+def nonmember(value):
+    return value
+
+def global_enum(cls):
+    return cls
+
+def property(fn):
+    return fn
+
+# Auto-expose builtin int/bool flag types.
+DynamicClassAttribute = property
+EnumType = EnumMeta
+
+
+IntFlag = Flag    # treat IntFlag as Flag for our purposes
+
+
+__all__ = ["Enum", "IntEnum", "StrEnum", "Flag", "IntFlag", "EnumMeta", "EnumType",
+           "_simple_enum", "_test_simple_enum", "member", "nonmember",
+           "global_enum", "auto", "DynamicClassAttribute",
            "_make_enum", "auto", "unique"]
