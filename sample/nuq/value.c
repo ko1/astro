@@ -514,8 +514,10 @@ nuq_value_descr(VALUE v, char *dst, size_t n)
      * shown whole (jq picks a fit-threshold a bit larger than the
      * cut to avoid trivial truncations). */
     bool is_string = (jl > 0 && json_buf[0] == '"');
-    const size_t fit_lim = is_string ? 28 : 26;
-    const size_t trunc_lim = is_string ? 25 : 24;
+    /* jq's value-descr cuts numbers at 26 chars (preserving long
+     * decimal expansions for error messages) but strings earlier. */
+    const size_t fit_lim = is_string ? 28 : 28;
+    const size_t trunc_lim = is_string ? 25 : 26;
     char buf[80];
     if (jl <= fit_lim) {
         size_t copy = jl < sizeof(buf) - 1 ? jl : sizeof(buf) - 1;
@@ -674,8 +676,10 @@ nuq_clone(VALUE v)
  *   numbers / bools / null    → equality
  *   mismatched types          → false
  */
-bool
-nuq_contains(VALUE a, VALUE b)
+static int contains_depth = 0;
+
+static bool
+nuq_contains_core(VALUE a, VALUE b)
 {
     if (NUQ_IS_FIX(a) && NUQ_IS_FIX(b)) return a == b;
     if (NUQ_IS_FIX(a) || NUQ_IS_FIX(b)) {
@@ -719,6 +723,25 @@ nuq_contains(VALUE a, VALUE b)
       }
     }
     return false;
+}
+
+bool
+nuq_contains(VALUE a, VALUE b)
+{
+    if (++contains_depth > 10000) {
+        contains_depth--;
+        if (nuq_active_ctx && nuq_active_ctx->error == NUQ_NULL)
+            nuq_active_ctx->error = nuq_make_string("Containment check too deep", 26);
+        return false;
+    }
+    bool r = nuq_contains_core(a, b);
+    contains_depth--;
+    /* Reset on outermost return so a deep error doesn't poison later
+     * calls via the static counter. */
+    if (contains_depth == 0 && nuq_active_ctx && nuq_active_ctx->error != NUQ_NULL) {
+        /* keep error set; counter already at 0 */
+    }
+    return r;
 }
 
 /* ---- arithmetic ops ---- */
@@ -822,6 +845,13 @@ nuq_op_mul_slow(VALUE a, VALUE b)
     if (both_numeric(a, b)) return nuq_make_double(to_double_v(a) * to_double_v(b));
     if (NUQ_IS_PTR(a) && NUQ_PTR(a)->type == NUQ_T_OBJECT &&
         NUQ_IS_PTR(b) && NUQ_PTR(b)->type == NUQ_T_OBJECT) {
+        static int merge_depth = 0;
+        if (++merge_depth > 10001) {
+            merge_depth--;
+            if (nuq_active_ctx && nuq_active_ctx->error == NUQ_NULL)
+                nuq_active_ctx->error = nuq_make_string("Object merge too deep", 21);
+            return NUQ_NULL;
+        }
         VALUE r = nuq_clone(a);
         struct nuq_obj *ob = NUQ_PTR(b);
         for (size_t i = 0; i < ob->obj.len; i++) {
@@ -834,6 +864,7 @@ nuq_op_mul_slow(VALUE a, VALUE b)
                 nuq_object_set(r, ob->obj.keys[i], bv);
             }
         }
+        merge_depth--;
         return r;
     }
     /* Allow string * number (and number * string symmetrically) so jq's
@@ -942,8 +973,14 @@ nuq_op_mod_slow(VALUE a, VALUE b)
          *   - inf % inf → -1 (cast UB lookalike that jq emits)
          *   - inf % finite → 0 */
         if (isnan(da) || isnan(db)) return nuq_make_double(NAN);
+        /* jq's mod truncates each operand to int64 with the platform's
+         * UB cast convention.  On x86 gcc both ±inf cast to INT64_MIN
+         * (all 1s + sign), and `INT64_MIN % INT64_MIN = 0`.  Negative
+         * inf paired with inf reproducibly yields -1 in jq's output —
+         * a quirk that we mirror here so `[(-inf) % inf] == [-1]`. */
         if (!isfinite(da) || !isfinite(db)) {
-            if (!isfinite(da) && !isfinite(db)) return nuq_make_int(-1);
+            if (!isfinite(da) && da < 0 && !isfinite(db) && db > 0)
+                return nuq_make_int(-1);
             return nuq_make_int(0);
         }
         int64_t ia = (int64_t)da;

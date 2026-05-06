@@ -162,10 +162,23 @@ pat_bind_inner(CTX *c, struct nuq_pat *p, VALUE v)
         }
     } else {                              /* NUQ_PAT_OBJECT */
         for (size_t i = 0; i < p->u.obj.len; i++) {
+            struct nuq_pat_obj_entry *ent = &p->u.obj.items[i];
             VALUE child = NUQ_NULL;
-            if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_OBJECT)
-                child = nuq_object_get_cstr(v, p->u.obj.items[i].key);
-            pat_bind_inner(c, p->u.obj.items[i].val, child);
+            if (ent->key_expr) {
+                /* Dynamic key: evaluate against the value's input. */
+                size_t t0 = c->pool_top;
+                EMIT ke = EVAL(c, ent->key_expr);
+                if (c->error == NUQ_NULL && ke.count > 0) {
+                    VALUE k = ke.items[0];
+                    if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_OBJECT &&
+                        NUQ_IS_PTR(k) && NUQ_PTR(k)->type == NUQ_T_STRING)
+                        child = nuq_object_get(v, k);
+                }
+                c->pool_top = t0;
+            } else if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_OBJECT) {
+                child = nuq_object_get_cstr(v, ent->key);
+            }
+            pat_bind_inner(c, ent->val, child);
         }
     }
 }
@@ -348,6 +361,14 @@ user_args_push(uint32_t name_id, VALUE v)
     user_args[user_args_len].name_id = name_id;
     user_args[user_args_len].value = v;
     user_args_len++;
+}
+
+/* Bind a pre-built VALUE to $name — used by `import "X" as $var;` to
+ * inject the parsed JSON content of a data module. */
+void
+nuq_user_arg_add_value(const char *name, VALUE v)
+{
+    user_args_push(nuq_intern(name), v);
 }
 
 void
@@ -792,6 +813,21 @@ nuq_user_call(CTX *c, uint32_t name_id, uint32_t arity, uint32_t args_id)
                     pfd->body = args[i];
                     pfd->scope_top = c->func_cnt > 0 ? c->func_cnt - 1 : 0;
                     if (pfd->scope_top == 0) pfd->scope_top = (size_t)-1;
+                    /* Snapshot the caller's var stack so each
+                     * reference to the param re-evaluates `body` in
+                     * caller scope (jq's call-by-name).  Clone is
+                     * fine — the snap is read-only on subsequent
+                     * invocations (we make a working copy each call). */
+                    if (c->var_top > 0) {
+                        pfd->var_snap = (struct nuq_var_slot *)GC_malloc(
+                            c->var_top * sizeof(struct nuq_var_slot));
+                        memcpy(pfd->var_snap, c->var_stack,
+                               c->var_top * sizeof(struct nuq_var_slot));
+                        pfd->var_snap_cnt = c->var_top;
+                    } else {
+                        pfd->var_snap = NULL;
+                        pfd->var_snap_cnt = 0;
+                    }
                     nuq_func_define(c, pfd);
                     if (pfd->scope_top == (size_t)-1) pfd->scope_top = 0;
                 }
@@ -800,7 +836,29 @@ nuq_user_call(CTX *c, uint32_t name_id, uint32_t arity, uint32_t args_id)
             size_t saved_skip_e = c->func_skip_end;
             c->func_skip_start = fd->scope_top + 1;
             c->func_skip_end   = func_top;
+            /* Call-by-name closure: temporarily swap the live var
+             * stack for a clone of the captured snapshot so
+             * `$name` references inside the thunk's body resolve
+             * to the bindings active at definition time. */
+            struct nuq_var_slot *cb_saved_stack = c->var_stack;
+            size_t cb_saved_top  = c->var_top;
+            size_t cb_saved_capa = c->var_capa;
+            if (fd->var_snap) {
+                size_t need = fd->var_snap_cnt + 16;
+                struct nuq_var_slot *temp = (struct nuq_var_slot *)GC_malloc(
+                    need * sizeof(*temp));
+                memcpy(temp, fd->var_snap,
+                       fd->var_snap_cnt * sizeof(*temp));
+                c->var_stack = temp;
+                c->var_top = fd->var_snap_cnt;
+                c->var_capa = need;
+            }
             (void)EVAL(c, fd->body);
+            if (fd->var_snap) {
+                c->var_stack = cb_saved_stack;
+                c->var_top = cb_saved_top;
+                c->var_capa = cb_saved_capa;
+            }
             c->func_skip_start = saved_skip_s;
             c->func_skip_end   = saved_skip_e;
             nuq_var_pop(c, var_top);
@@ -1099,7 +1157,18 @@ static VALUE
 fmt_apply(uint32_t fmt_id, VALUE v)
 {
     const char *fmt = nuq_fmt_lookup(fmt_id);
-    if (strcmp(fmt, "text") == 0 || strcmp(fmt, "json") == 0) return nuq_to_json_string(v);
+    if (strcmp(fmt, "text") == 0) return nuq_to_json_string(v);
+    if (strcmp(fmt, "json") == 0) {
+        /* @json always produces a JSON encoding — strings get quoted,
+         * unlike @text which leaves strings as-is. */
+        char *buf = NULL; size_t bn = 0;
+        FILE *fp = open_memstream(&buf, &bn);
+        nuq_json_print(fp, v, 0);
+        fclose(fp);
+        VALUE r = nuq_make_string(buf, bn);
+        free(buf);
+        return r;
+    }
     if (strcmp(fmt, "csv") == 0 || strcmp(fmt, "tsv") == 0) {
         bool tsv = (fmt[0] == 't');
         if (!(NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_ARRAY))
@@ -1198,7 +1267,7 @@ fmt_apply(uint32_t fmt_id, VALUE v)
               case '<': fputs("&lt;", fp); break;
               case '>': fputs("&gt;", fp); break;
               case '&': fputs("&amp;", fp); break;
-              case '\'': fputs("&#39;", fp); break;     /* jq.test variant uses &apos; — matches our jq build */     /* HTML5 / jq spec: &#39; */
+              case '\'': fputs("&apos;", fp); break;
               case '"': fputs("&quot;", fp); break;
               default: fputc(ch, fp); break;
             }
@@ -1489,11 +1558,39 @@ nuq_walk_recurse(CTX *c, struct Node *body, VALUE v, bool *dropped)
 EMIT
 nuq_walk_eval(CTX *c, struct Node *body)
 {
-    bool dropped = false;
-    VALUE r = nuq_walk_recurse(c, body, c->input, &dropped);
-    if (dropped) return EMIT_EMPTY;
-    if (c->error != NUQ_NULL) return EMIT_EMPTY;
-    return nuq_emit_one(c, r);
+    /* At each internal level, walk takes only the first emit of body
+     * (jq semantics for the C-implemented walk).  But at the OUTER
+     * level, all emits propagate — so `walk(.,1)` on a leaf produces
+     * both the rebuilt value and 1. */
+    VALUE input = c->input;
+    VALUE rebuilt = input;
+    if (NUQ_IS_PTR(input)) {
+        struct nuq_obj *o = NUQ_PTR(input);
+        if (o->type == NUQ_T_ARRAY) {
+            VALUE arr = nuq_make_array(o->arr.len);
+            for (size_t i = 0; i < o->arr.len; i++) {
+                bool child_drop = false;
+                VALUE child = nuq_walk_recurse(c, body, o->arr.items[i], &child_drop);
+                if (c->error != NUQ_NULL) return EMIT_EMPTY;
+                if (!child_drop) nuq_array_push(arr, child);
+            }
+            rebuilt = arr;
+        } else if (o->type == NUQ_T_OBJECT) {
+            VALUE obj = nuq_make_object(o->obj.len > 4 ? o->obj.len : 4);
+            for (size_t i = 0; i < o->obj.len; i++) {
+                bool child_drop = false;
+                VALUE child = nuq_walk_recurse(c, body, o->obj.vals[i], &child_drop);
+                if (c->error != NUQ_NULL) return EMIT_EMPTY;
+                if (!child_drop) nuq_object_set(obj, o->obj.keys[i], child);
+            }
+            rebuilt = obj;
+        }
+    }
+    VALUE saved = c->input;
+    c->input = rebuilt;
+    EMIT bo = EVAL(c, body);
+    c->input = saved;
+    return bo;
 }
 
 /* recurse(f) / recurse(f; cond):
@@ -1894,7 +1991,12 @@ nuq_contains_eval(CTX *c, struct Node *rhs)
                      nuq_type_name(a), nuq_type_name(b));
             return err_emit(c, msg);
         }
-        nuq_pool_push(c, nuq_contains(a, b) ? NUQ_TRUE : NUQ_FALSE);
+        bool r = nuq_contains(a, b);
+        if (UNLIKELY(c->error != NUQ_NULL)) {
+            c->pool_top = outer;
+            return EMIT_EMPTY;
+        }
+        nuq_pool_push(c, r ? NUQ_TRUE : NUQ_FALSE);
     }
     return nuq_emit_slice(c, outer);
 }
@@ -2587,6 +2689,10 @@ nuq_setpath_eval(CTX *c, struct Node *path, struct Node *value)
     /* Snapshot path keys before evaluating value (which grows pool). */
     struct nuq_obj *po = NUQ_PTR(pv);
     size_t kcnt = po->arr.len;
+    if (kcnt > 10000) {
+        c->pool_top = t0;
+        return err_emit(c, "Path too deep");
+    }
     VALUE small[16];
     VALUE *keys = (kcnt <= 16) ? small : (VALUE *)GC_malloc(kcnt * sizeof(VALUE));
     memcpy(keys, po->arr.items, kcnt * sizeof(VALUE));
@@ -3054,6 +3160,41 @@ walk_path(CTX *c, struct Node *n, VALUE v, nuq_leaf_fn fn, void *ud)
         }
         return built;
     }
+    /* `..` (recurse) as a path component — apply fn at each visited
+     * sub-tree; rebuild bottom-up so `(.. | select(P) | .b) |= F`
+     * mutates every matching nested .b in one pass. */
+    {
+        extern const struct NodeKind kind_node_recurse;
+        if (n->head.kind == &kind_node_recurse) {
+            VALUE updated = v;
+            if (NUQ_IS_PTR(v)) {
+                struct nuq_obj *o = NUQ_PTR(v);
+                if (o->type == NUQ_T_ARRAY) {
+                    VALUE arr = nuq_make_array(o->arr.len);
+                    for (size_t i = 0; i < o->arr.len; i++) {
+                        VALUE child = walk_path(c, n, o->arr.items[i], fn, ud);
+                        if (c->error != NUQ_NULL) return v;
+                        nuq_array_push(arr, child);
+                    }
+                    updated = arr;
+                } else if (o->type == NUQ_T_OBJECT) {
+                    VALUE obj = nuq_make_object(o->obj.len > 4 ? o->obj.len : 4);
+                    for (size_t i = 0; i < o->obj.len; i++) {
+                        VALUE child = walk_path(c, n, o->obj.vals[i], fn, ud);
+                        if (c->error != NUQ_NULL) return v;
+                        nuq_object_set(obj, o->obj.keys[i], child);
+                    }
+                    updated = obj;
+                }
+            }
+            bool dropped = false;
+            VALUE r = fn(updated, ud, &dropped);
+            if (c->error != NUQ_NULL) return v;
+            if (dropped) return updated;
+            return r;
+        }
+    }
+
     /* `select(cond)` as a path component — when cond is truthy apply
      * the leaf normally (propagating any drop from `|= empty` etc.);
      * when cond is falsy the path doesn't apply here, leave v alone. */
@@ -3138,6 +3279,18 @@ walk_path(CTX *c, struct Node *n, VALUE v, nuq_leaf_fn fn, void *ud)
         if (NUQ_IS_PTR(k) && NUQ_PTR(k)->type == NUQ_T_DOUBLE) {
             double d = NUQ_PTR(k)->dbl;
             if (!isnan(d)) k = nuq_make_int((int64_t)floor(d));
+        }
+        /* Reject non-string/int indices in path mode (e.g. `.[{}] = 0`). */
+        if (!NUQ_IS_FIX(k) &&
+            !(NUQ_IS_PTR(k) && (NUQ_PTR(k)->type == NUQ_T_STRING ||
+                                NUQ_PTR(k)->type == NUQ_T_DOUBLE))) {
+            if (optional) return v;
+            const char *t = NUQ_IS_PTR(k) ? nuq_type_name(k) : "number";
+            char buf[80];
+            snprintf(buf, sizeof(buf),
+                     "%s is not a valid path expression", t);
+            c->error = nuq_make_string(buf, strlen(buf));
+            return v;
         }
         if (NUQ_IS_FIX(k)) {
             /* int index — array */
@@ -4055,17 +4208,85 @@ nuq_getpath_eval(CTX *c, struct Node *path)
     return nuq_emit_one(c, v);
 }
 
+/* ---------- streaming body evaluation -----------------------------------
+ *
+ * `nuq_stream_eval(c, body, cb, ud)` walks `body` as a generator,
+ * calling `cb(c, v, ud)` for each emitted value.  cb returning false
+ * stops the walk early — so `limit(1; 1, error)` can take `1` then
+ * abandon evaluation before `error` runs.
+ *
+ * Lazy structurally over `comma` (sequence) and `pipe` (chain).
+ * Other kinds fall back to a full EVAL — generators like `range`
+ * still materialize their full output (the failing tests don't need
+ * that case to be lazy). */
+typedef bool (*nuq_stream_cb)(CTX *c, VALUE v, void *ud);
+
+static bool nuq_stream_eval(CTX *c, struct Node *body, nuq_stream_cb cb, void *ud);
+
+struct stream_pipe_ud { struct Node *rhs; nuq_stream_cb cb; void *ud; };
+
+static bool
+stream_pipe_inner(CTX *c, VALUE v, void *ud_)
+{
+    struct stream_pipe_ud *p = (struct stream_pipe_ud *)ud_;
+    VALUE saved = c->input;
+    c->input = v;
+    bool r = nuq_stream_eval(c, p->rhs, p->cb, p->ud);
+    c->input = saved;
+    return r;
+}
+
+static bool
+nuq_stream_eval(CTX *c, struct Node *body, nuq_stream_cb cb, void *ud)
+{
+    if (c->error != NUQ_NULL) return false;
+    if (body->head.kind == &kind_node_comma) {
+        if (!nuq_stream_eval(c, body->u.node_comma.lhs, cb, ud)) return false;
+        return nuq_stream_eval(c, body->u.node_comma.rhs, cb, ud);
+    }
+    if (body->head.kind == &kind_node_pipe) {
+        struct stream_pipe_ud sp = { body->u.node_pipe.rhs, cb, ud };
+        return nuq_stream_eval(c, body->u.node_pipe.lhs, stream_pipe_inner, &sp);
+    }
+    /* Fallback: materialise the body's output, callback per emit. */
+    size_t t0 = c->pool_top;
+    EMIT e = EVAL(c, body);
+    if (c->error != NUQ_NULL) { c->pool_top = t0; return false; }
+    uint32_t cnt = e.count;
+    VALUE small[16];
+    VALUE *vs = (cnt <= 16) ? small : (VALUE *)GC_malloc(cnt * sizeof(VALUE));
+    memcpy(vs, e.items, cnt * sizeof(VALUE));
+    c->pool_top = t0;
+    for (uint32_t i = 0; i < cnt; i++) {
+        if (!cb(c, vs[i], ud)) return false;
+    }
+    return true;
+}
+
+struct limit_ud { int64_t remaining; };
+
+static bool
+limit_cb(CTX *c, VALUE v, void *ud_)
+{
+    struct limit_ud *u = (struct limit_ud *)ud_;
+    if (u->remaining <= 0) return false;
+    nuq_pool_push(c, v);
+    u->remaining--;
+    return u->remaining > 0;
+}
+
 EMIT
 nuq_limit_eval(CTX *c, struct Node *cnt, struct Node *body)
 {
     /* jq semantics: `limit(N; f)` runs the count expression first.
      * If count emits multiple values (e.g. `limit(2,3; range(9))`),
      * each is treated as an independent invocation: the body is
-     * re-run per count value and outputs concatenated. */
+     * re-run per count value and outputs concatenated.
+     *
+     * Lazy: stops streaming after N emits, so `limit(1; 1, error)` → 1. */
     size_t outer = c->pool_top;
     EMIT nb = EVAL(c, cnt);
     if (c->error != NUQ_NULL) return EMIT_EMPTY;
-    /* Snapshot count values — body eval will reset pool_top below. */
     uint32_t ccnt = nb.count;
     int64_t small_ns[16];
     int64_t *ns = (ccnt <= 16) ? small_ns
@@ -4080,11 +4301,9 @@ nuq_limit_eval(CTX *c, struct Node *cnt, struct Node *body)
             return EMIT_EMPTY;
         }
         if (n == 0) continue;     /* zero count → empty */
-        size_t before = c->pool_top;
-        EMIT bo = EVAL(c, body);
+        struct limit_ud ud = { n };
+        nuq_stream_eval(c, body, limit_cb, &ud);
         if (c->error != NUQ_NULL) return EMIT_EMPTY;
-        size_t take = n < (int64_t)bo.count ? (size_t)n : (size_t)bo.count;
-        c->pool_top = before + take;
     }
     return nuq_emit_slice(c, outer);
 }
@@ -4124,11 +4343,28 @@ nuq_skip_eval(CTX *c, struct Node *cnt_n, struct Node *body)
     return nuq_emit_slice(c, outer);
 }
 
+struct nth_ud { int64_t target; int64_t cnt; bool got; VALUE result; };
+
+static bool
+nth_cb(CTX *c, VALUE v, void *ud_)
+{
+    (void)c;
+    struct nth_ud *u = (struct nth_ud *)ud_;
+    if (u->cnt == u->target) {
+        u->result = v;
+        u->got = true;
+        return false;     /* stop walking */
+    }
+    u->cnt++;
+    return true;
+}
+
 EMIT
 nuq_nth_eval(CTX *c, struct Node *idx, struct Node *body)
 {
     /* `nth(N; f)`: emit the N-th value of f.  Multi-emit N runs the
-     * body once per N value, like `limit`. */
+     * body once per N value, like `limit`.  Lazy: stops at the N-th
+     * emit so subsequent `error` etc. is never evaluated. */
     size_t outer = c->pool_top;
     EMIT nb = EVAL(c, idx);
     if (c->error != NUQ_NULL) return EMIT_EMPTY;
@@ -4142,15 +4378,110 @@ nuq_nth_eval(CTX *c, struct Node *idx, struct Node *body)
     for (uint32_t k = 0; k < cnt; k++) {
         int64_t n = ns[k];
         if (n < 0) return err_emit(c, "nth doesn't support negative indices");
-        size_t before = c->pool_top;
-        EMIT bo = EVAL(c, body);
+        struct nth_ud ud = { n, 0, false, NUQ_NULL };
+        nuq_stream_eval(c, body, nth_cb, &ud);
         if (c->error != NUQ_NULL) return EMIT_EMPTY;
-        VALUE v = (n < (int64_t)bo.count) ? bo.items[n] : NUQ_NULL;
-        bool present = (n < (int64_t)bo.count);
-        c->pool_top = before;
-        if (present) nuq_pool_push(c, v);
+        if (ud.got) nuq_pool_push(c, ud.result);
     }
     return nuq_emit_slice(c, outer);
+}
+
+/* ---------- lazy first / last / isempty / any / all -------------------- */
+
+struct first_ud { bool got; VALUE result; };
+static bool first_cb(CTX *c, VALUE v, void *ud_) {
+    (void)c;
+    struct first_ud *u = (struct first_ud *)ud_;
+    u->result = v;
+    u->got = true;
+    return false;       /* stop */
+}
+
+EMIT
+nuq_first1_eval(CTX *c, struct Node *body)
+{
+    struct first_ud ud = { false, NUQ_NULL };
+    nuq_stream_eval(c, body, first_cb, &ud);
+    if (c->error != NUQ_NULL) return EMIT_EMPTY;
+    if (!ud.got) return EMIT_EMPTY;
+    return nuq_emit_one(c, ud.result);
+}
+
+/* `last(f)` — must walk the entire stream (no shortcut), but reuse
+ * the streaming walker so deeply-nested pipe/comma still works. */
+static bool last_cb(CTX *c, VALUE v, void *ud_) {
+    (void)c;
+    struct first_ud *u = (struct first_ud *)ud_;
+    u->result = v;
+    u->got = true;
+    return true;
+}
+
+EMIT
+nuq_last1_eval(CTX *c, struct Node *body)
+{
+    struct first_ud ud = { false, NUQ_NULL };
+    nuq_stream_eval(c, body, last_cb, &ud);
+    if (c->error != NUQ_NULL) return EMIT_EMPTY;
+    if (!ud.got) return EMIT_EMPTY;
+    return nuq_emit_one(c, ud.result);
+}
+
+static bool isempty_cb(CTX *c, VALUE v, void *ud_) {
+    (void)c; (void)v;
+    bool *got = (bool *)ud_;
+    *got = true;
+    return false;       /* one emit is enough — stop */
+}
+
+EMIT
+nuq_isempty_eval(CTX *c, struct Node *body)
+{
+    bool got = false;
+    nuq_stream_eval(c, body, isempty_cb, &got);
+    if (c->error != NUQ_NULL) return EMIT_EMPTY;
+    return nuq_emit_one(c, got ? NUQ_FALSE : NUQ_TRUE);
+}
+
+struct anyall_ud { struct Node *cond; bool result; bool stop_on; };
+
+static bool anyall_cb(CTX *c, VALUE v, void *ud_) {
+    struct anyall_ud *u = (struct anyall_ud *)ud_;
+    VALUE saved = c->input;
+    c->input = v;
+    size_t t = c->pool_top;
+    EMIT co = EVAL(c, u->cond);
+    c->input = saved;
+    if (c->error != NUQ_NULL) return false;
+    bool truthy = false;
+    for (uint32_t i = 0; i < co.count; i++)
+        if (nuq_truthy(co.items[i])) { truthy = true; break; }
+    c->pool_top = t;
+    /* For `any`: stop_on=true → stop & set result on first truthy.
+     * For `all`: stop_on=false → stop & set result on first falsy. */
+    if (truthy == u->stop_on) {
+        u->result = u->stop_on;
+        return false;
+    }
+    return true;
+}
+
+EMIT
+nuq_any2_eval(CTX *c, struct Node *gen, struct Node *cond)
+{
+    struct anyall_ud ud = { cond, false, true };
+    nuq_stream_eval(c, gen, anyall_cb, &ud);
+    if (c->error != NUQ_NULL) return EMIT_EMPTY;
+    return nuq_emit_one(c, ud.result ? NUQ_TRUE : NUQ_FALSE);
+}
+
+EMIT
+nuq_all2_eval(CTX *c, struct Node *gen, struct Node *cond)
+{
+    struct anyall_ud ud = { cond, true, false };
+    nuq_stream_eval(c, gen, anyall_cb, &ud);
+    if (c->error != NUQ_NULL) return EMIT_EMPTY;
+    return nuq_emit_one(c, ud.result ? NUQ_TRUE : NUQ_FALSE);
 }
 
 /* --- top-level run ---------------------------------------------------- */

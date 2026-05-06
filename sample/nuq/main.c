@@ -164,6 +164,15 @@ main(int argc, char **argv)
         if (strcmp(a, "--dump-ast") == 0) { OPTION.dump_ast = true; argi++; continue; }
         if (strcmp(a, "--exit-status") == 0) { OPTION.exit_status = true; argi++; continue; }
         if (strcmp(a, "--seq") == 0) { OPTION.seq_output = true; argi++; continue; }
+        if (strcmp(a, "-L") == 0) {
+            if (argi + 1 >= argc) { fprintf(stderr, "nuq: -L needs a directory\n"); return 2; }
+            const char *dir = argv[argi + 1];
+            OPTION.module_search = (char **)realloc(OPTION.module_search,
+                (OPTION.module_search_cnt + 2) * sizeof(char *));
+            OPTION.module_search[OPTION.module_search_cnt++] = strdup(dir);
+            OPTION.module_search[OPTION.module_search_cnt] = NULL;
+            argi += 2; continue;
+        }
         if (strcmp(a, "--arg") == 0) {
             if (argi + 2 >= argc) { fprintf(stderr, "nuq: --arg needs name and value\n"); return 2; }
             nuq_user_arg_add(argv[argi+1], argv[argi+2], false);

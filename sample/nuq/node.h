@@ -168,6 +168,11 @@ EMIT nuq_test_eval(CTX *c, struct Node *pat);
 EMIT nuq_getpath_eval(CTX *c, struct Node *path);
 EMIT nuq_limit_eval(CTX *c, struct Node *cnt, struct Node *body);
 EMIT nuq_nth_eval(CTX *c, struct Node *idx, struct Node *body);
+EMIT nuq_first1_eval(CTX *c, struct Node *body);
+EMIT nuq_last1_eval(CTX *c, struct Node *body);
+EMIT nuq_isempty_eval(CTX *c, struct Node *body);
+EMIT nuq_any2_eval(CTX *c, struct Node *gen, struct Node *cond);
+EMIT nuq_all2_eval(CTX *c, struct Node *gen, struct Node *cond);
 
 /* recurse / paths into pool */
 void nuq_recurse_collect_pool(CTX *c, VALUE v);

@@ -169,10 +169,16 @@ struct nuq_option {
     bool exit_status;       /* -e: exit 5 if no truthy emit */
     bool seq_output;        /* --seq: RFC 7464 record-separator output */
     int  indent;
+    /* Module search path list (`-L <dir>`).  Searched in order when
+     * resolving `import "X"` / `include "X"` directives.  NULL-
+     * terminated. */
+    char **module_search;
+    size_t module_search_cnt;
 };
 
 /* CLI-supplied bindings: --arg / --argjson / --slurpfile / --rawfile. */
 void nuq_user_arg_add(const char *name, const char *value, bool json);
+void nuq_user_arg_add_value(const char *name, VALUE v);
 bool nuq_user_arg_add_file(const char *name, const char *file, bool raw);
 void nuq_user_args_bind(struct CTX_struct *c);   /* push all into var_stack */
 
@@ -371,6 +377,14 @@ struct nuq_func_def {
      * was compiled against.  Set by nuq_func_define from current
      * func_cnt; 0 means "no constraint" (top-level / dynamic). */
     size_t     scope_top;
+    /* Call-by-name closure: a param-def synthesised from `f(EXPR)`
+     * captures EXPR + the caller's var environment so each reference
+     * to the param re-evaluates EXPR in caller's scope (jq's lazy
+     * thunk semantics).  When `var_snap` is non-NULL, the runtime
+     * masks the live var stack down to `var_snap[0..var_snap_cnt]`
+     * for the duration of the body eval. */
+    struct nuq_var_slot *var_snap;
+    size_t     var_snap_cnt;
 };
 
 void nuq_func_define(CTX *c, struct nuq_func_def *fd);
@@ -416,7 +430,8 @@ uint32_t nuq_def_block_intern(struct nuq_def_entry *items, size_t cnt);
 enum nuq_pat_kind { NUQ_PAT_VAR = 1, NUQ_PAT_ARRAY, NUQ_PAT_OBJECT };
 struct nuq_pat;
 struct nuq_pat_obj_entry {
-    const char *key;            /* literal field name to project from input */
+    const char *key;            /* literal field name (NULL if dynamic) */
+    struct Node *key_expr;      /* dynamic key expression (else NULL) */
     struct nuq_pat *val;
 };
 struct nuq_pat {
@@ -482,6 +497,7 @@ VALUE nuq_builtin_implode(VALUE input);
 VALUE nuq_builtin_ascii_upcase(VALUE input);
 VALUE nuq_builtin_ascii_downcase(VALUE input);
 bool  nuq_builtin_fromjson(VALUE in, VALUE *out);
+bool  nuq_builtin_fromjson_err(VALUE in, VALUE *out, char **err_out);
 void  nuq_recurse_collect(VALUE r, VALUE v);
 
 /* Helpers in runtime.c (called from node.def) — return EMIT (pool slice).

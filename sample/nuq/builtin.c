@@ -387,17 +387,58 @@ nuq_builtin_ascii_downcase(VALUE input)
 bool
 nuq_builtin_fromjson(VALUE input, VALUE *out)
 {
+    return nuq_builtin_fromjson_err(input, out, NULL);
+}
+
+/* Variant that surfaces the parse error string so callers can include
+ * it in the error message (jq emits a detailed `Invalid ...` message). */
+bool
+nuq_builtin_fromjson_err(VALUE input, VALUE *out, char **err_out)
+{
+    if (err_out) *err_out = NULL;
     if (!(NUQ_IS_PTR(input) && NUQ_PTR(input)->type == NUQ_T_STRING)) return false;
     struct nuq_obj *o = NUQ_PTR(input);
     char *err = NULL;
     const char *endp;
     *out = nuq_json_parse(o->str.bytes, o->str.len, &endp, &err);
-    if (err != NULL) return false;
+    if (err != NULL) {
+        if (err_out) *err_out = err;
+        return false;
+    }
     /* Strict: anything past the parsed value (besides whitespace) is
      * an error.  Otherwise `"NaN1"` parses NaN then leaves trailing 1. */
     while (endp < o->str.bytes + o->str.len) {
         char c = *endp;
-        if (c != ' ' && c != '\t' && c != '\n' && c != '\r') return false;
+        if (c != ' ' && c != '\t' && c != '\n' && c != '\r') {
+            if (err_out) {
+                /* jq emits "Invalid numeric literal at EOF at line L,
+                 * column C (while parsing '<input>')". The column
+                 * points at the trailing-garbage offset. */
+                /* jq reports column = length of source — position of
+                 * the last char (1-indexed). */
+                size_t col = o->str.len;
+                if (col == 0) col = 1;
+                char buf[256];
+                /* trim source for the suffix */
+                char head[80];
+                size_t copy = o->str.len < sizeof(head) - 4
+                              ? o->str.len : sizeof(head) - 4;
+                memcpy(head, o->str.bytes, copy);
+                if (copy < o->str.len) {
+                    head[copy++] = '.'; head[copy++] = '.'; head[copy++] = '.';
+                }
+                head[copy] = '\0';
+                snprintf(buf, sizeof(buf),
+                         "Invalid numeric literal at EOF at line 1, column %zu"
+                         " (while parsing '%s')",
+                         col, head);
+                size_t bn = strlen(buf);
+                char *r = (char *)GC_malloc_atomic(bn + 1);
+                memcpy(r, buf, bn + 1);
+                *err_out = r;
+            }
+            return false;
+        }
         endp++;
     }
     return true;

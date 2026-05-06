@@ -42,6 +42,7 @@ typedef enum {
     TK_KW_TRY, TK_KW_CATCH,
     TK_KW_REDUCE, TK_KW_FOREACH,
     TK_KW_LABEL, TK_KW_BREAK,
+    TK_DCOLON,            /* `::` namespace separator */
 } ttype_t;
 
 typedef struct {
@@ -250,7 +251,10 @@ lex_advance(lexer_t *L)
       case '{': L->p++; L->tok.type = TK_LBRACE; return;
       case '}': L->p++; L->tok.type = TK_RBRACE; return;
       case ',': L->p++; L->tok.type = TK_COMMA; return;
-      case ':': L->p++; L->tok.type = TK_COLON; return;
+      case ':':
+        L->p++;
+        if (L->p < L->end && *L->p == ':') { L->p++; L->tok.type = TK_DCOLON; return; }
+        L->tok.type = TK_COLON; return;
       case ';': L->p++; L->tok.type = TK_SEMI; return;
       case '|':
         L->p++;
@@ -471,6 +475,7 @@ build_builtin_call(const char *name, int arity, struct Node **args)
     BUILTIN1("recurse", ALLOC_node_b_recurse1);
     BUILTIN0("input", ALLOC_node_b_input);
     BUILTIN0("inputs", ALLOC_node_b_inputs);
+    BUILTIN0("modulemeta", ALLOC_node_b_modulemeta);
     BUILTIN0("nulls", ALLOC_node_b_nulls);
     BUILTIN0("booleans", ALLOC_node_b_booleans);
     BUILTIN0("numbers", ALLOC_node_b_numbers);
@@ -610,6 +615,7 @@ build_builtin_call(const char *name, int arity, struct Node **args)
 
 static struct Node *parse_pipe(lexer_t *L);
 static struct Node *parse_pipe_no_comma(lexer_t *L);
+const char *nuq_resolve_call_name(const char *alias, const char *name, int arity);
 static struct Node *parse_comma(lexer_t *L);
 static struct Node *parse_assign(lexer_t *L);
 static struct Node *parse_alt(lexer_t *L);
@@ -703,6 +709,7 @@ parse_pattern(lexer_t *L)
                          * realize this by emitting two entries that
                          * share the key. */
                         e->key = name;
+                        e->key_expr = NULL;
                         struct nuq_pat *v = (struct nuq_pat *)GC_malloc(sizeof(*v));
                         v->kind = NUQ_PAT_VAR;
                         v->u.var_id = nuq_intern(name);
@@ -713,15 +720,27 @@ parse_pattern(lexer_t *L)
                         }
                         struct nuq_pat_obj_entry *e2 = &items[cnt++];
                         e2->key = name;
+                        e2->key_expr = NULL;
                         e2->val = parse_pattern(L);
                     } else {
                         /* shorthand: same name for key and var */
                         e->key = name;
+                        e->key_expr = NULL;
                         struct nuq_pat *v = (struct nuq_pat *)GC_malloc(sizeof(*v));
                         v->kind = NUQ_PAT_VAR;
                         v->u.var_id = nuq_intern(name);
                         e->val = v;
                     }
+                } else if (k->type == TK_LP) {
+                    /* `(expr): PAT` — dynamic key. Evaluate expr at
+                     * bind time to get the field name. */
+                    take(L);
+                    struct Node *kex = parse_pipe(L);
+                    expect(L, TK_RP, "')' after pattern key expr");
+                    expect(L, TK_COLON, "':' in object pattern");
+                    e->key = NULL;
+                    e->key_expr = kex;
+                    e->val = parse_pattern(L);
                 } else if (k->type == TK_IDENT || k->type == TK_STR ||
                            is_name_tok(k)) {
                     /* Accept TK_IDENT, TK_STR, and any keyword as a
@@ -729,6 +748,7 @@ parse_pattern(lexer_t *L)
                     const char *name = take(L).s;
                     expect(L, TK_COLON, "':' in object pattern");
                     e->key = name;
+                    e->key_expr = NULL;
                     e->val = parse_pattern(L);
                 } else parse_error(L, "expected pattern field");
                 if (accept(L, TK_COMMA)) continue;
@@ -829,6 +849,17 @@ parse_primary(lexer_t *L)
             nuq_object_set_cstr(obj, "file", nuq_make_string("<top-level>", 11));
             nuq_object_set_cstr(obj, "line", nuq_make_int(1));
             return ALLOC_node_lit(nuq_lit_intern(obj));
+        }
+        /* `$ns::name` — namespaced variable, used by `import "X" as $name;`
+         * to expose the data both as `$name` and `$name::name`.  We
+         * splice the parts together so a single var lookup finds it. */
+        if (peek(L)->type == TK_DCOLON) {
+            take(L);
+            if (!is_name_tok(peek(L))) parse_error(L, "expected name after `::`");
+            const char *nm2 = take(L).s;
+            char buf[160];
+            snprintf(buf, sizeof(buf), "%s::%s", nm, nm2);
+            return ALLOC_node_var(nuq_intern(buf));
         }
         return ALLOC_node_var(nuq_intern(nm));
       }
@@ -1054,6 +1085,16 @@ parse_primary(lexer_t *L)
       }
       case TK_IDENT: {
         const char *name = take(L).s;
+        const char *ns_alias = NULL;
+        /* `alias::name` — namespaced call into a module imported via
+         * `import "X" as alias;` somewhere in the active scope. */
+        if (peek(L)->type == TK_DCOLON) {
+            take(L);
+            if (!is_name_tok(peek(L)))
+                parse_error(L, "expected name after `::`");
+            ns_alias = name;
+            name = take(L).s;
+        }
         struct Node *args[16];
         int arity = 0;
         if (accept(L, TK_LP)) {
@@ -1064,7 +1105,8 @@ parse_primary(lexer_t *L)
             }
             expect(L, TK_RP, "')'");
         }
-        return build_builtin_call(name, arity, args);
+        const char *resolved = nuq_resolve_call_name(ns_alias, name, arity);
+        return build_builtin_call(resolved, arity, args);
       }
       default: parse_error(L, "unexpected token type %d", t->type);
     }
@@ -1481,6 +1523,720 @@ parse_pipe_no_comma(lexer_t *L)
     return lhs;
 }
 
+/* ----- module loader -------------------------------------------------- */
+
+/* Each loaded module gets a unique numeric ns id; defs from that
+ * module are renamed to `<ns>::<def_name>` at parse time so the flat
+ * def table can hold every loaded module's defs without name clashes.
+ *
+ * `import "X" as foo;`  records foo → ns(X) in the parser context,
+ * and the parser rewrites `foo::a` to `<ns(X)>::a` before emitting
+ * the call node.
+ *
+ * `include "X";` makes X's defs visible by their bare name in the
+ * caller's scope — we register each X def under TWO names (qualified
+ * and bare) when emitting the unified def block.
+ *
+ * `import "X" as $var;` reads X.json (or X/X.json) as data and binds
+ * it to $var via the same mechanism as --argjson.
+ *
+ * The `modulemeta` builtin reads its input as a module relpath, loads
+ * the module's metadata + dep list (without injecting its defs) and
+ * returns the resulting JSON object. */
+
+#include <sys/stat.h>
+
+struct mod_alias { uint32_t alias_id; int ns_id; };
+struct mod_local_def { uint32_t name_id; int arity; };
+struct mod_dep_record {
+    char *relpath;            /* as written */
+    char *as_name;            /* alias / var name (no $) */
+    char *search;             /* search override from `{search: "..."}` */
+    bool  is_data;            /* `as $var` form */
+    int   ns_id;              /* of the loaded dep, -1 for data */
+};
+
+struct nuq_module {
+    char *abs_path;           /* canonical resolved path */
+    char *relpath;            /* as the user requested it */
+    int   ns_id;
+    VALUE meta;               /* `module {meta};` value, or NUQ_NULL */
+    struct mod_dep_record *deps;
+    size_t dep_cnt;
+    /* Original def names + arities for modulemeta `defs` listing. */
+    struct mod_local_def *defs;
+    size_t def_cnt;
+    /* Data import: parsed JSON value, no defs. */
+    bool   is_data;
+    VALUE  data_value;
+};
+
+#define MAX_MODULES 256
+static struct nuq_module *module_cache[MAX_MODULES];
+static size_t module_cache_cnt = 0;
+static int next_ns_id = 0;
+
+/* Defs aggregated across all loaded modules, prepended to the user's
+ * def chain at the top of nuq_parse_filter. */
+static struct nuq_def_entry *loaded_defs = NULL;
+static size_t loaded_def_cnt = 0;
+static size_t loaded_def_capa = 0;
+
+/* Per-module / per-top-level parse context.  Always non-NULL while
+ * parsing — `current_pctx` points at the active one. */
+struct parse_ctx {
+    int my_ns_id;             /* -1 for top-level (user filter) */
+    struct mod_alias aliases[32];
+    int alias_cnt;
+    /* ns ids of modules whose defs are visible without prefix. */
+    int includes[16];
+    int include_cnt;
+    /* Local def names declared in this module / top-level (pre-scanned). */
+    struct mod_local_def locals[256];
+    int local_cnt;
+};
+
+static struct parse_ctx *current_pctx = NULL;
+
+static void
+loaded_defs_push(struct nuq_def_entry e)
+{
+    if (loaded_def_cnt == loaded_def_capa) {
+        loaded_def_capa = loaded_def_capa ? loaded_def_capa * 2 : 16;
+        loaded_defs = (struct nuq_def_entry *)
+            GC_realloc(loaded_defs, loaded_def_capa * sizeof(*loaded_defs));
+    }
+    loaded_defs[loaded_def_cnt++] = e;
+}
+
+/* Build a qualified def name "<ns>::<base>" using the GC heap. */
+static const char *
+qualify_name(int ns_id, const char *base)
+{
+    char buf[160];
+    snprintf(buf, sizeof(buf), "%d::%s", ns_id, base);
+    size_t n = strlen(buf);
+    char *r = (char *)GC_malloc_atomic(n + 1);
+    memcpy(r, buf, n + 1);
+    return r;
+}
+
+/* Read a whole file into a freshly-allocated NUL-terminated buffer. */
+static char *
+read_file_all(const char *path, size_t *out_len)
+{
+    FILE *fp = fopen(path, "rb");
+    if (!fp) return NULL;
+    fseek(fp, 0, SEEK_END);
+    long sz = ftell(fp);
+    if (sz < 0) { fclose(fp); return NULL; }
+    fseek(fp, 0, SEEK_SET);
+    char *buf = (char *)GC_malloc(sz + 1);
+    size_t n = fread(buf, 1, sz, fp);
+    fclose(fp);
+    buf[n] = '\0';
+    if (out_len) *out_len = n;
+    return buf;
+}
+
+/* Resolve a module relpath against the search list.  Tries:
+ *   <dir>/<rel>.jq          (single-file form)
+ *   <dir>/<rel>/<basename>.jq (directory form, jq's preferred layout)
+ * for non-data, and `.json` for data imports.  `search_override` (from
+ * `{search: "..."}` meta) is tried first if non-NULL.  Returns a
+ * GC-allocated absolute path, or NULL if not found. */
+static char *
+resolve_module_path(const char *relpath, const char *search_override,
+                    bool is_data, const char *anchor_dir)
+{
+    const char *ext = is_data ? ".json" : ".jq";
+    /* basename of relpath, used for directory-form lookup. */
+    const char *bn = relpath;
+    for (const char *p = relpath; *p; p++) if (*p == '/') bn = p + 1;
+
+    char buf[1024];
+    /* Build a candidate list: search_override → anchor_dir-relative
+     * (for searches in a module's `{search: "./../lib/jq"}`-style
+     * directives) → -L paths. */
+    const char *dirs[16];
+    size_t dn = 0;
+    if (search_override) {
+        /* search may be relative to anchor_dir. */
+        if (anchor_dir && search_override[0] != '/') {
+            snprintf(buf, sizeof(buf), "%s/%s", anchor_dir, search_override);
+            dirs[dn++] = strdup(buf);
+        } else {
+            dirs[dn++] = search_override;
+        }
+    }
+    if (OPTION.module_search) {
+        for (size_t i = 0; i < OPTION.module_search_cnt && dn < 16; i++)
+            dirs[dn++] = OPTION.module_search[i];
+    }
+    /* Always allow CWD as a final fallback (jq does too). */
+    if (dn < 16) dirs[dn++] = ".";
+
+    for (size_t i = 0; i < dn; i++) {
+        const char *d = dirs[i];
+        struct stat st;
+        /* Single-file form */
+        snprintf(buf, sizeof(buf), "%s/%s%s", d, relpath, ext);
+        if (stat(buf, &st) == 0) {
+            char *r = (char *)GC_malloc_atomic(strlen(buf) + 1);
+            strcpy(r, buf);
+            return r;
+        }
+        /* Directory form */
+        snprintf(buf, sizeof(buf), "%s/%s/%s%s", d, relpath, bn, ext);
+        if (stat(buf, &st) == 0) {
+            char *r = (char *)GC_malloc_atomic(strlen(buf) + 1);
+            strcpy(r, buf);
+            return r;
+        }
+    }
+    return NULL;
+}
+
+static char *
+dirname_dup(const char *path)
+{
+    const char *slash = NULL;
+    for (const char *p = path; *p; p++) if (*p == '/') slash = p;
+    if (!slash) {
+        char *r = (char *)GC_malloc_atomic(2);
+        r[0] = '.'; r[1] = '\0';
+        return r;
+    }
+    size_t n = (size_t)(slash - path);
+    char *r = (char *)GC_malloc_atomic(n + 1);
+    memcpy(r, path, n);
+    r[n] = '\0';
+    return r;
+}
+
+/* Forward decls for module-load path. */
+static struct nuq_module *parse_module_src(const char *src, size_t len,
+                                           const char *abs_path,
+                                           const char *relpath);
+
+static struct nuq_module *
+nuq_module_lookup_cache(const char *abs_path)
+{
+    for (size_t i = 0; i < module_cache_cnt; i++)
+        if (strcmp(module_cache[i]->abs_path, abs_path) == 0)
+            return module_cache[i];
+    return NULL;
+}
+
+/* Load a module by relpath, recursing through its imports.  Returns
+ * the cached module on a hit, otherwise parses the file fresh.  For
+ * data imports the returned module has `is_data = true` and
+ * `data_value` populated. */
+static struct nuq_module *
+nuq_module_load(const char *relpath, const char *search_override,
+                bool is_data, const char *anchor_dir)
+{
+    char *abs = resolve_module_path(relpath, search_override, is_data,
+                                    anchor_dir);
+    if (!abs) return NULL;
+    struct nuq_module *cached = nuq_module_lookup_cache(abs);
+    if (cached) return cached;
+
+    size_t len = 0;
+    char *src = read_file_all(abs, &len);
+    if (!src) return NULL;
+
+    if (is_data) {
+        /* JSON data import. */
+        char *err = NULL;
+        const char *endp;
+        VALUE v = nuq_json_parse(src, len, &endp, &err);
+        struct nuq_module *m = (struct nuq_module *)GC_malloc(sizeof(*m));
+        memset(m, 0, sizeof(*m));
+        m->abs_path = abs;
+        m->relpath = strdup(relpath);
+        m->ns_id = -1;
+        m->meta = NUQ_NULL;
+        m->is_data = true;
+        m->data_value = err ? NUQ_NULL : v;
+        if (module_cache_cnt < MAX_MODULES) module_cache[module_cache_cnt++] = m;
+        return m;
+    }
+
+    struct nuq_module *m = parse_module_src(src, len, abs, relpath);
+    if (m && module_cache_cnt < MAX_MODULES) module_cache[module_cache_cnt++] = m;
+    return m;
+}
+
+/* Pre-scan a `def`-chain to collect (name, arity) pairs without
+ * building AST.  Skips bodies by token-level brace/paren tracking.
+ * Restores lexer position before returning so the real parse can
+ * proceed identically. */
+static void
+prescan_local_defs(lexer_t *L, struct mod_local_def *out, int *out_cnt,
+                   int max_cnt)
+{
+    /* Save lexer state. */
+    const char *save_p = L->p;
+    bool save_peeked = L->peeked;
+    token_t save_tok = L->tok;
+    int cnt = 0;
+    while (peek(L)->type == TK_KW_DEF) {
+        take(L);
+        const token_t *tn = peek(L);
+        if (!is_name_tok(tn)) break;
+        const char *name = take(L).s;
+        int arity = 0;
+        if (accept(L, TK_LP)) {
+            for (;;) {
+                if (accept(L, TK_DOLLAR)) { (void)take(L); }
+                else if (is_name_tok(peek(L))) (void)take(L);
+                else break;
+                arity++;
+                if (!accept(L, TK_SEMI)) break;
+            }
+            (void)accept(L, TK_RP);
+        }
+        if (cnt < max_cnt) {
+            out[cnt].name_id = nuq_intern(name);
+            out[cnt].arity = arity;
+            cnt++;
+        }
+        (void)accept(L, TK_COLON);
+        /* Skip body until the matching SEMI at depth 0. */
+        int depth = 0;
+        while (peek(L)->type != TK_END) {
+            const token_t *t = peek(L);
+            if (t->type == TK_LP || t->type == TK_LBRK || t->type == TK_LBRACE)
+                depth++;
+            else if (t->type == TK_RP || t->type == TK_RBRK || t->type == TK_RBRACE)
+                depth--;
+            else if (depth == 0 && t->type == TK_SEMI) { take(L); break; }
+            take(L);
+        }
+    }
+    *out_cnt = cnt;
+    /* Restore. */
+    L->p = save_p;
+    L->peeked = save_peeked;
+    L->tok = save_tok;
+}
+
+/* Parse a constant-only meta object: `{key: value, ...}`.  We only
+ * support string-valued keys and plain literal values (number / string
+ * / bool / null) — enough for jq's `module {whatever};` and the
+ * `{search:"./", as: "d"}` import options. */
+static VALUE
+parse_meta_const(lexer_t *L)
+{
+    if (!accept(L, TK_LBRACE)) parse_error(L, "expected meta object");
+    VALUE obj = nuq_make_object(4);
+    if (accept(L, TK_RBRACE)) return obj;
+    for (;;) {
+        const token_t *kt = peek(L);
+        const char *key = NULL;
+        if (kt->type == TK_STR || kt->type == TK_IDENT || is_name_tok(kt)) {
+            key = take(L).s;
+        } else parse_error(L, "expected meta key");
+        VALUE val = NUQ_NULL;
+        if (accept(L, TK_COLON)) {
+            const token_t *vt = peek(L);
+            if (vt->type == TK_STR) {
+                token_t v = take(L);
+                val = nuq_make_string(v.s, v.slen);
+            } else if (vt->type == TK_INT) {
+                val = nuq_make_int(take(L).i);
+            } else if (vt->type == TK_NUM) {
+                val = nuq_make_double(take(L).d);
+            } else if (vt->type == TK_KW_TRUE) {
+                take(L); val = NUQ_TRUE;
+            } else if (vt->type == TK_KW_FALSE) {
+                take(L); val = NUQ_FALSE;
+            } else if (vt->type == TK_KW_NULL) {
+                take(L); val = NUQ_NULL;
+            } else {
+                /* Unsupported value form — bail with a generic placeholder. */
+                val = NUQ_NULL;
+                /* swallow one token to avoid infinite loop */
+                if (vt->type != TK_RBRACE && vt->type != TK_COMMA) take(L);
+            }
+        }
+        nuq_object_set_cstr(obj, key, val);
+        if (!accept(L, TK_COMMA)) break;
+    }
+    expect(L, TK_RBRACE, "'}' in meta");
+    return obj;
+}
+
+/* Parse top-level directives (`module`, `import`, `include`) into the
+ * supplied module record (or, for top-level user filters, into a
+ * synthetic record so we can still record deps for modulemeta).
+ * Side-effect: appends loaded modules' renamed defs to `loaded_defs`,
+ * updates `pctx`'s alias / include / locals tables. */
+static void
+parse_directives(lexer_t *L, struct parse_ctx *pctx, const char *anchor_dir,
+                 struct nuq_module *self_mod)
+{
+    /* `module {meta};` — only valid at the start of a module file. */
+    if (peek(L)->type == TK_KW_MODULE) {
+        take(L);
+        VALUE meta = parse_meta_const(L);
+        expect(L, TK_SEMI, "';' after module meta");
+        if (self_mod) self_mod->meta = meta;
+    }
+    while (peek(L)->type == TK_KW_IMPORT || peek(L)->type == TK_KW_INCLUDE) {
+        bool is_include = (peek(L)->type == TK_KW_INCLUDE);
+        take(L);
+        if (peek(L)->type != TK_STR) parse_error(L, "expected string after import/include");
+        token_t pt = take(L);
+        const char *relpath = pt.s;
+        bool is_data = false;
+        const char *as_name = NULL;
+        if (!is_include && accept(L, TK_KW_AS)) {
+            if (accept(L, TK_DOLLAR)) {
+                is_data = true;
+                if (!is_name_tok(peek(L))) parse_error(L, "expected $name");
+                as_name = take(L).s;
+            } else {
+                if (!is_name_tok(peek(L))) parse_error(L, "expected import alias");
+                as_name = take(L).s;
+            }
+        }
+        /* Optional metadata block. */
+        VALUE imp_meta = NUQ_NULL;
+        const char *search_override = NULL;
+        if (peek(L)->type == TK_LBRACE) {
+            imp_meta = parse_meta_const(L);
+            VALUE sv = nuq_object_get_cstr(imp_meta, "search");
+            if (NUQ_IS_PTR(sv) && NUQ_PTR(sv)->type == NUQ_T_STRING) {
+                struct nuq_obj *so = NUQ_PTR(sv);
+                char *s = (char *)GC_malloc_atomic(so->str.len + 1);
+                memcpy(s, so->str.bytes, so->str.len);
+                s[so->str.len] = 0;
+                search_override = s;
+            }
+        }
+        (void)imp_meta;
+        expect(L, TK_SEMI, "';' after import/include");
+
+        /* Record dependency for modulemeta. */
+        if (self_mod) {
+            self_mod->deps = (struct mod_dep_record *)GC_realloc(
+                self_mod->deps,
+                (self_mod->dep_cnt + 1) * sizeof(self_mod->deps[0]));
+            struct mod_dep_record *d = &self_mod->deps[self_mod->dep_cnt++];
+            d->relpath = strdup(relpath);
+            d->as_name = as_name ? strdup(as_name) : NULL;
+            d->search = search_override ? strdup(search_override) : NULL;
+            d->is_data = is_data;
+            d->ns_id = -1;
+        }
+
+        struct nuq_module *dep = nuq_module_load(relpath, search_override,
+                                                 is_data, anchor_dir);
+        if (!dep) {
+            parse_error(L, "module not found: %s", relpath);
+        }
+        if (self_mod && self_mod->dep_cnt > 0)
+            self_mod->deps[self_mod->dep_cnt - 1].ns_id = dep->ns_id;
+
+        if (is_data) {
+            /* Bind data value to the named variable at runtime via
+             * --argjson-style mechanism.  Do this only at the top
+             * level (when the user's filter runs) — modules don't
+             * have separate variable scopes.  Also bind `name::name`
+             * (jq exposes data imports as both `$name` and `$name::name`
+             * so qualified accesses like `$d::d[].this` work). */
+            extern void nuq_user_arg_add_value(const char *name, VALUE v);
+            nuq_user_arg_add_value(as_name, dep->data_value);
+            char qbuf[128];
+            snprintf(qbuf, sizeof(qbuf), "%s::%s", as_name, as_name);
+            nuq_user_arg_add_value(qbuf, dep->data_value);
+        } else if (is_include) {
+            /* Include's defs are visible by their bare name in this
+             * scope.  Track its ns_id so unqualified-name resolution
+             * can find them. */
+            if (pctx->include_cnt < 16)
+                pctx->includes[pctx->include_cnt++] = dep->ns_id;
+        } else {
+            /* import "X" as foo;  → foo → dep ns. */
+            if (as_name && pctx->alias_cnt < 32) {
+                pctx->aliases[pctx->alias_cnt].alias_id = nuq_intern(as_name);
+                pctx->aliases[pctx->alias_cnt].ns_id = dep->ns_id;
+                pctx->alias_cnt++;
+            }
+        }
+    }
+}
+
+/* Parse a module file: `module ...?; import/include ...; <defs>`.
+ * No filter body — modules contribute defs only.  The defs are
+ * registered into the global `loaded_defs` table with namespace-
+ * prefixed names. */
+static struct nuq_module *
+parse_module_src(const char *src, size_t len, const char *abs_path,
+                 const char *relpath)
+{
+    struct nuq_module *mod = (struct nuq_module *)GC_malloc(sizeof(*mod));
+    memset(mod, 0, sizeof(*mod));
+    mod->abs_path = abs_path ? strdup(abs_path) : NULL;
+    mod->relpath = relpath ? strdup(relpath) : NULL;
+    mod->ns_id = next_ns_id++;
+    mod->meta = NUQ_NULL;
+    /* Pre-register so circular imports terminate. */
+    if (module_cache_cnt < MAX_MODULES) module_cache[module_cache_cnt++] = mod;
+
+    char *anchor_dir = abs_path ? dirname_dup(abs_path) : strdup(".");
+
+    lexer_t L = {0};
+    L.src = src;
+    L.p = src;
+    L.end = src + len;
+    L.peeked = false;
+
+    struct parse_ctx pctx = {0};
+    pctx.my_ns_id = mod->ns_id;
+
+    /* Save and swap parser context. */
+    struct parse_ctx *outer = current_pctx;
+    current_pctx = &pctx;
+
+    parse_directives(&L, &pctx, anchor_dir, mod);
+
+    /* Pre-scan local defs so body-pass call resolution can rewrite
+     * bare names that refer to this module's own defs. */
+    prescan_local_defs(&L, pctx.locals, &pctx.local_cnt, 256);
+    /* Snapshot before parser consumes them. */
+    mod->def_cnt = pctx.local_cnt;
+    mod->defs = (struct mod_local_def *)GC_malloc(
+        mod->def_cnt * sizeof(*mod->defs));
+    memcpy(mod->defs, pctx.locals, mod->def_cnt * sizeof(*mod->defs));
+
+    /* Parse the def chain (no filter body in a module). */
+    while (peek(&L)->type == TK_KW_DEF) {
+        take(&L);
+        if (!is_name_tok(peek(&L))) parse_error(&L, "def name");
+        const char *name = take(&L).s;
+        int arity = 0;
+        uint32_t pids[16];
+        bool pis_val[16];
+        if (accept(&L, TK_LP)) {
+            for (;;) {
+                if (arity >= 16) parse_error(&L, "too many params (max 16)");
+                if (accept(&L, TK_DOLLAR)) {
+                    if (!is_name_tok(peek(&L))) parse_error(&L, "$name");
+                    pids[arity] = nuq_intern(take(&L).s);
+                    pis_val[arity] = true;
+                } else {
+                    if (!is_name_tok(peek(&L))) parse_error(&L, "param");
+                    pids[arity] = nuq_intern(take(&L).s);
+                    pis_val[arity] = false;
+                }
+                arity++;
+                if (!accept(&L, TK_SEMI)) break;
+            }
+            expect(&L, TK_RP, "')'");
+        }
+        expect(&L, TK_COLON, "':'");
+        struct Node *body = parse_pipe(&L);
+        expect(&L, TK_SEMI, "';' after def body");
+
+        struct nuq_def_entry e = {0};
+        e.name_id = nuq_intern(qualify_name(mod->ns_id, name));
+        e.arity = arity;
+        e.param_ids = (uint32_t *)GC_malloc(arity * sizeof(uint32_t));
+        e.param_is_value = (bool *)GC_malloc(arity * sizeof(bool));
+        for (int i = 0; i < arity; i++) {
+            e.param_ids[i] = pids[i];
+            e.param_is_value[i] = pis_val[i];
+        }
+        e.body = body;
+        loaded_defs_push(e);
+    }
+    if (peek(&L)->type != TK_END)
+        parse_error(&L, "unexpected token in module after defs");
+
+    current_pctx = outer;
+    return mod;
+}
+
+/* Resolve a name + optional namespace alias into a (possibly renamed)
+ * call name.  Returns the original name string when nothing matches
+ * (no module def, no namespace alias). */
+static const char *
+resolve_call_name(struct parse_ctx *pctx, const char *alias, const char *name,
+                  int arity)
+{
+    if (alias) {
+        if (!pctx) return name;
+        uint32_t aid = nuq_intern(alias);
+        /* Reverse scan so a later `import "X" as foo;` shadows an
+         * earlier one (jq semantics — last binding wins). */
+        for (int i = pctx->alias_cnt - 1; i >= 0; i--) {
+            if (pctx->aliases[i].alias_id == aid)
+                return qualify_name(pctx->aliases[i].ns_id, name);
+        }
+        /* unresolved alias — keep raw, runtime will report error */
+        char buf[160];
+        snprintf(buf, sizeof(buf), "%s::%s", alias, name);
+        size_t n = strlen(buf);
+        char *r = (char *)GC_malloc_atomic(n + 1);
+        memcpy(r, buf, n + 1);
+        return r;
+    }
+    if (!pctx) return name;
+    /* Bare name: prefer this module's own def if it matches. */
+    uint32_t nid = nuq_intern(name);
+    for (int i = 0; i < pctx->local_cnt; i++) {
+        if (pctx->locals[i].name_id == nid &&
+            pctx->locals[i].arity == arity) {
+            if (pctx->my_ns_id < 0) return name;   /* top-level user def */
+            return qualify_name(pctx->my_ns_id, name);
+        }
+    }
+    /* Then included modules: scan in REVERSE order so a later include
+     * shadows an earlier one (`include "shadow1"; include "shadow2";`
+     * → shadow2's `e` wins, matching jq's semantics). */
+    for (int i = pctx->include_cnt - 1; i >= 0; i--) {
+        int ns = pctx->includes[i];
+        char qbuf[160];
+        snprintf(qbuf, sizeof(qbuf), "%d::%s", ns, name);
+        uint32_t qid = nuq_intern(qbuf);
+        for (size_t j = 0; j < loaded_def_cnt; j++) {
+            if (loaded_defs[j].name_id == qid &&
+                loaded_defs[j].arity == arity) {
+                return qualify_name(ns, name);
+            }
+        }
+    }
+    return name;
+}
+
+/* Used by parse_primary to consult the active parse_ctx. */
+const char *
+nuq_resolve_call_name(const char *alias, const char *name, int arity)
+{
+    return resolve_call_name(current_pctx, alias, name, arity);
+}
+
+/* ----- modulemeta: metadata-only inspector --------------------------- */
+
+/* Build a JSON object describing the module at `relpath`:
+ *   {<meta>..., "deps":[{relpath, as, is_data, search?}, ...],
+ *               "defs":["name/arity", ...]}
+ * Used by the `modulemeta` builtin.  Reads + lex-scans the module file
+ * for directive structure and def names, but does NOT recursively
+ * load deps (modulemeta reports them, doesn't follow them). */
+VALUE
+nuq_modulemeta(VALUE input)
+{
+    if (!(NUQ_IS_PTR(input) && NUQ_PTR(input)->type == NUQ_T_STRING)) {
+        if (nuq_active_ctx && nuq_active_ctx->error == NUQ_NULL)
+            nuq_active_ctx->error = nuq_make_string(
+                "modulemeta input must be a string", 33);
+        return NUQ_NULL;
+    }
+    struct nuq_obj *so = NUQ_PTR(input);
+    char relpath[256];
+    size_t rl = so->str.len < sizeof(relpath) - 1 ? so->str.len : sizeof(relpath) - 1;
+    memcpy(relpath, so->str.bytes, rl);
+    relpath[rl] = 0;
+
+    char *abs = resolve_module_path(relpath, NULL, false, NULL);
+    if (!abs) {
+        if (nuq_active_ctx && nuq_active_ctx->error == NUQ_NULL) {
+            char buf[300];
+            snprintf(buf, sizeof(buf), "module not found: %s", relpath);
+            nuq_active_ctx->error = nuq_make_string(buf, strlen(buf));
+        }
+        return NUQ_NULL;
+    }
+    size_t flen = 0;
+    char *src = read_file_all(abs, &flen);
+    if (!src) {
+        if (nuq_active_ctx && nuq_active_ctx->error == NUQ_NULL)
+            nuq_active_ctx->error = nuq_make_string("read failed", 11);
+        return NUQ_NULL;
+    }
+
+    lexer_t L = {0};
+    L.src = src; L.p = src; L.end = src + flen; L.peeked = false;
+
+    /* Collect deps + meta + defs. */
+    VALUE meta = NUQ_NULL;
+    VALUE deps = nuq_make_array(0);
+    VALUE defs = nuq_make_array(0);
+
+    /* `module {meta};` */
+    if (peek(&L)->type == TK_KW_MODULE) {
+        take(&L);
+        meta = parse_meta_const(&L);
+        (void)accept(&L, TK_SEMI);
+    }
+    /* import / include directives */
+    while (peek(&L)->type == TK_KW_IMPORT || peek(&L)->type == TK_KW_INCLUDE) {
+        bool is_include = (peek(&L)->type == TK_KW_INCLUDE);
+        take(&L);
+        if (peek(&L)->type != TK_STR) break;
+        token_t pt = take(&L);
+        const char *rel = pt.s;
+        bool is_data = false;
+        const char *as_name = NULL;
+        if (!is_include && accept(&L, TK_KW_AS)) {
+            if (accept(&L, TK_DOLLAR)) {
+                is_data = true;
+                if (is_name_tok(peek(&L))) as_name = take(&L).s;
+            } else if (is_name_tok(peek(&L))) {
+                as_name = take(&L).s;
+            }
+        }
+        const char *search = NULL;
+        if (peek(&L)->type == TK_LBRACE) {
+            VALUE m = parse_meta_const(&L);
+            VALUE sv = nuq_object_get_cstr(m, "search");
+            if (NUQ_IS_PTR(sv) && NUQ_PTR(sv)->type == NUQ_T_STRING) {
+                struct nuq_obj *sso = NUQ_PTR(sv);
+                char *s = (char *)GC_malloc_atomic(sso->str.len + 1);
+                memcpy(s, sso->str.bytes, sso->str.len);
+                s[sso->str.len] = 0;
+                search = s;
+            }
+        }
+        (void)accept(&L, TK_SEMI);
+
+        VALUE d = nuq_make_object(4);
+        if (search) nuq_object_set_cstr(d, "search",
+            nuq_make_string(search, strlen(search)));
+        if (as_name) nuq_object_set_cstr(d, "as",
+            nuq_make_string(as_name, strlen(as_name)));
+        nuq_object_set_cstr(d, "is_data", is_data ? NUQ_TRUE : NUQ_FALSE);
+        nuq_object_set_cstr(d, "relpath",
+            nuq_make_string(rel, strlen(rel)));
+        nuq_array_push(deps, d);
+    }
+    /* defs scan */
+    struct mod_local_def locals[256];
+    int local_cnt = 0;
+    prescan_local_defs(&L, locals, &local_cnt, 256);
+    for (int i = 0; i < local_cnt; i++) {
+        const char *n = nuq_intern_lookup(locals[i].name_id);
+        char buf[64];
+        snprintf(buf, sizeof(buf), "%s/%d", n, locals[i].arity);
+        nuq_array_push(defs, nuq_make_string(buf, strlen(buf)));
+    }
+
+    /* Build the result: meta keys + deps + defs. */
+    VALUE r = nuq_make_object(8);
+    if (NUQ_IS_PTR(meta) && NUQ_PTR(meta)->type == NUQ_T_OBJECT) {
+        struct nuq_obj *mo = NUQ_PTR(meta);
+        for (size_t i = 0; i < mo->obj.len; i++)
+            nuq_object_set(r, mo->obj.keys[i], mo->obj.vals[i]);
+    }
+    nuq_object_set_cstr(r, "deps", deps);
+    nuq_object_set_cstr(r, "defs", defs);
+    return r;
+}
+
 /* ----- entry points ---------------------------------------------------- */
 
 /* Stdlib prelude — jq-compatible defs that wrap the user's filter.
@@ -1513,20 +2269,133 @@ static const char *nuq_prelude =
 struct Node *
 nuq_parse_filter(const char *src)
 {
-    /* Concat prelude + user src so prelude defs scope over the filter. */
-    size_t pl = strlen(nuq_prelude), sl = strlen(src);
-    char *buf = (char *)GC_malloc(pl + sl + 1);
+    /* Reset module-loader state so successive parses don't bleed defs
+     * from an earlier filter (test runners reuse the binary). */
+    loaded_def_cnt = 0;
+    module_cache_cnt = 0;
+    next_ns_id = 0;
+
+    /* User filters can begin with `module {meta}; import "X" as foo;
+     * include "X"; ...` directives.  Detect this with a cheap text
+     * scan first so we don't burn lexer tokens we'd then have to
+     * un-consume — only enter directive parsing when one of the
+     * directive keywords appears at the front of the source. */
+    struct parse_ctx pctx = {0};
+    pctx.my_ns_id = -1;
+    struct parse_ctx *outer = current_pctx;
+    current_pctx = &pctx;
+
+    const char *user_remaining = src;
+    {
+        /* Skip leading whitespace + line comments. */
+        const char *p = src;
+        const char *e = src + strlen(src);
+        while (p < e) {
+            if (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+            else if (*p == '#') { while (p < e && *p != '\n') p++; }
+            else break;
+        }
+        bool starts_directive =
+            (e - p >= 7 && memcmp(p, "module ",  7) == 0) ||
+            (e - p >= 7 && memcmp(p, "module\t", 7) == 0) ||
+            (e - p >= 7 && memcmp(p, "module{",  7) == 0) ||
+            (e - p >= 7 && memcmp(p, "import ",  7) == 0) ||
+            (e - p >= 7 && memcmp(p, "import\t", 7) == 0) ||
+            (e - p >= 7 && memcmp(p, "import\"", 7) == 0) ||
+            (e - p >= 8 && memcmp(p, "include ",  8) == 0) ||
+            (e - p >= 8 && memcmp(p, "include\t", 8) == 0) ||
+            (e - p >= 8 && memcmp(p, "include\"", 8) == 0);
+        if (starts_directive) {
+            lexer_t L0 = {0};
+            L0.src = src;
+            L0.p = src;
+            L0.end = e;
+            L0.peeked = false;
+            parse_directives(&L0, &pctx, ".", NULL);
+            /* parse_directives ends with a successfully-consumed `;`.
+             * After that, the lexer is positioned past the last `;`
+             * and whitespace; the next token (if any) is buffered
+             * via peek.  Take peeking into account so the rebuilt
+             * source for the second pass starts at the un-consumed
+             * filter body. */
+            user_remaining = L0.peeked
+                ? (L0.tok.type == TK_END ? L0.end : NULL)
+                : L0.p;
+            if (!user_remaining) {
+                /* Peeked token isn't END — find its true start by
+                 * walking back to the last whitespace before L0.p. */
+                const char *q = L0.p;
+                while (q > src) {
+                    char c = q[-1];
+                    if (c == ' ' || c == '\t' || c == '\n' || c == '\r' ||
+                        c == ';' || c == '}') break;
+                    q--;
+                }
+                user_remaining = q;
+            }
+        }
+    }
+    size_t pl = strlen(nuq_prelude);
+    size_t rl = (size_t)((src + strlen(src)) - user_remaining);
+    char *buf = (char *)GC_malloc(pl + rl + 1);
     memcpy(buf, nuq_prelude, pl);
-    memcpy(buf + pl, src, sl);
-    buf[pl + sl] = 0;
+    memcpy(buf + pl, user_remaining, rl);
+    buf[pl + rl] = 0;
     lexer_t L;
     L.src = buf;
     L.p = buf;
-    L.end = buf + pl + sl;
+    L.end = buf + pl + rl;
     L.peeked = false;
-    struct Node *r = parse_pipe(&L);
+
+    /* Pre-scan top-level def names so user calls can resolve to them
+     * over `include`d module names. */
+    prescan_local_defs(&L, pctx.locals, &pctx.local_cnt, 256);
+
+    struct Node *body = parse_pipe(&L);
     if (peek(&L)->type != TK_END) parse_error(&L, "trailing tokens");
-    return r;
+
+    current_pctx = outer;
+
+    /* Wrap the body in a defs block holding every loaded module's
+     * defs (with namespace-qualified names) — and also bare-name
+     * aliases for any `include`-style imports. */
+    if (loaded_def_cnt == 0 && pctx.include_cnt == 0) return body;
+
+    /* Build the final def block: loaded defs + bare-name include
+     * aliases.  Each entry is the full nuq_def_entry. */
+    size_t total = loaded_def_cnt;
+    size_t bare_extra = 0;
+    /* Count bare-aliases for include's defs. */
+    for (int i = 0; i < pctx.include_cnt; i++) {
+        int ns = pctx.includes[i];
+        for (size_t j = 0; j < loaded_def_cnt; j++) {
+            const char *qn = nuq_intern_lookup(loaded_defs[j].name_id);
+            char prefix[32];
+            int pn = snprintf(prefix, sizeof(prefix), "%d::", ns);
+            if ((int)strlen(qn) > pn && memcmp(qn, prefix, pn) == 0) {
+                bare_extra++;
+            }
+        }
+    }
+    total += bare_extra;
+    struct nuq_def_entry *all = (struct nuq_def_entry *)GC_malloc(
+        total * sizeof(*all));
+    size_t k = 0;
+    for (size_t j = 0; j < loaded_def_cnt; j++) all[k++] = loaded_defs[j];
+    for (int i = 0; i < pctx.include_cnt; i++) {
+        int ns = pctx.includes[i];
+        char prefix[32];
+        int pn = snprintf(prefix, sizeof(prefix), "%d::", ns);
+        for (size_t j = 0; j < loaded_def_cnt; j++) {
+            const char *qn = nuq_intern_lookup(loaded_defs[j].name_id);
+            if ((int)strlen(qn) > pn && memcmp(qn, prefix, pn) == 0) {
+                struct nuq_def_entry copy = loaded_defs[j];
+                copy.name_id = nuq_intern(qn + pn);
+                all[k++] = copy;
+            }
+        }
+    }
+    return ALLOC_node_defs(nuq_def_block_intern(all, total), body);
 }
 
 struct Node *

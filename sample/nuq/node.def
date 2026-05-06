@@ -263,7 +263,9 @@ node_pipe(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
         (void)EVAL_ARG(c, rhs);   /* pushes rhs emits onto pool */
         if (UNLIKELY(c->error != NUQ_NULL || c->break_label != 0)) {
             c->input = saved;
-            return EMIT_EMPTY;
+            /* Preserve prior emits so the top-level can print partial
+             * output before surfacing the error (jq compat). */
+            return nuq_emit_slice(c, top0);
         }
     }
     c->input = saved;
@@ -1180,8 +1182,10 @@ NODE_DEF
 node_b_fromjson(CTX *c, NODE *n)
 {
     VALUE v;
-    if (UNLIKELY(!nuq_builtin_fromjson(c->input, &v))) {
-        c->error = nuq_make_string("fromjson failed", 15);
+    char *err = NULL;
+    if (UNLIKELY(!nuq_builtin_fromjson_err(c->input, &v, &err))) {
+        c->error = err ? nuq_make_string(err, strlen(err))
+                       : nuq_make_string("fromjson failed", 15);
         return EMIT_EMPTY;
     }
     return nuq_emit_one(c, v);
@@ -1620,16 +1624,11 @@ node_b_transpose(CTX *c, NODE *n)
 }
 
 /* `isempty(f)` — true if `f` emits nothing on input, else false.
- * Note: per jq, errors in `f` propagate (NOT caught). */
+ * Lazy: stops after first emit (so `isempty(1, error)` → false). */
 NODE_DEF
 node_b_isempty(CTX *c, NODE *n, NODE *body)
 {
-    size_t t0 = c->pool_top;
-    EMIT bo = EVAL_ARG(c, body);
-    if (UNLIKELY(c->error != NUQ_NULL)) return EMIT_EMPTY;
-    bool empty = (bo.count == 0);
-    c->pool_top = t0;
-    return nuq_emit_one(c, empty ? NUQ_TRUE : NUQ_FALSE);
+    return nuq_isempty_eval(c, body);
 }
 
 /* `add(f)` — like `add` but applies `f` to each element first.
@@ -1661,29 +1660,7 @@ node_b_add1(CTX *c, NODE *n, NODE *body)
 NODE_DEF
 node_b_all2(CTX *c, NODE *n, NODE *gen, NODE *cond)
 {
-    size_t t0 = c->pool_top;
-    EMIT vs = EVAL_ARG(c, gen);
-    if (UNLIKELY(c->error != NUQ_NULL)) return EMIT_EMPTY;
-    uint32_t cnt = vs.count;
-    VALUE small[16];
-    VALUE *local = (cnt <= 16) ? small : (VALUE *)GC_malloc(cnt * sizeof(VALUE));
-    memcpy(local, vs.items, cnt * sizeof(VALUE));
-    c->pool_top = t0;
-    VALUE saved = c->input;
-    bool all = true;
-    for (uint32_t i = 0; i < cnt && all; i++) {
-        c->input = local[i];
-        size_t tt = c->pool_top;
-        EMIT co = EVAL_ARG(c, cond);
-        if (UNLIKELY(c->error != NUQ_NULL)) { c->input = saved; return EMIT_EMPTY; }
-        bool any_truthy = false;
-        for (uint32_t j = 0; j < co.count; j++)
-            if (nuq_truthy(co.items[j])) { any_truthy = true; break; }
-        c->pool_top = tt;
-        if (!any_truthy) all = false;
-    }
-    c->input = saved;
-    return nuq_emit_one(c, all ? NUQ_TRUE : NUQ_FALSE);
+    return nuq_all2_eval(c, gen, cond);
 }
 
 /* `ltrim` / `rtrim` — one-sided whitespace strip. */
@@ -2148,27 +2125,17 @@ node_b_bsearch(CTX *c, NODE *n, NODE *needle_n)
 NODE_DEF
 node_b_any2(CTX *c, NODE *n, NODE *gen, NODE *cond)
 {
-    size_t t0 = c->pool_top;
-    EMIT vs = EVAL_ARG(c, gen);
-    if (UNLIKELY(c->error != NUQ_NULL)) return EMIT_EMPTY;
-    uint32_t cnt = vs.count;
-    VALUE small[16];
-    VALUE *local = (cnt <= 16) ? small : (VALUE *)GC_malloc(cnt * sizeof(VALUE));
-    memcpy(local, vs.items, cnt * sizeof(VALUE));
-    c->pool_top = t0;
-    VALUE saved = c->input;
-    bool any = false;
-    for (uint32_t i = 0; i < cnt && !any; i++) {
-        c->input = local[i];
-        size_t tt = c->pool_top;
-        EMIT co = EVAL_ARG(c, cond);
-        if (UNLIKELY(c->error != NUQ_NULL)) { c->input = saved; return EMIT_EMPTY; }
-        for (uint32_t j = 0; j < co.count; j++)
-            if (nuq_truthy(co.items[j])) { any = true; break; }
-        c->pool_top = tt;
-    }
-    c->input = saved;
-    return nuq_emit_one(c, any ? NUQ_TRUE : NUQ_FALSE);
+    return nuq_any2_eval(c, gen, cond);
+}
+
+/* `modulemeta` — load the named module's metadata + deps + def list. */
+NODE_DEF
+node_b_modulemeta(CTX *c, NODE *n)
+{
+    extern VALUE nuq_modulemeta(VALUE);
+    VALUE r = nuq_modulemeta(c->input);
+    if (c->error != NUQ_NULL) return EMIT_EMPTY;
+    return nuq_emit_one(c, r);
 }
 
 /* `input` — pull next pending JSON input from the queue.  Errors if
@@ -2539,25 +2506,13 @@ node_b_splits(CTX *c, NODE *n, NODE *sep)
 NODE_DEF
 node_b_first1(CTX *c, NODE *n, NODE *body)
 {
-    size_t top0 = c->pool_top;
-    EMIT bo = EVAL_ARG(c, body);
-    if (UNLIKELY(c->error != NUQ_NULL)) return EMIT_EMPTY;
-    if (bo.count == 0) { c->pool_top = top0; return EMIT_EMPTY; }
-    VALUE first = bo.items[0];
-    c->pool_top = top0;
-    return nuq_emit_one(c, first);
+    return nuq_first1_eval(c, body);
 }
 
 NODE_DEF
 node_b_last1(CTX *c, NODE *n, NODE *body)
 {
-    size_t top0 = c->pool_top;
-    EMIT bo = EVAL_ARG(c, body);
-    if (UNLIKELY(c->error != NUQ_NULL)) return EMIT_EMPTY;
-    if (bo.count == 0) { c->pool_top = top0; return EMIT_EMPTY; }
-    VALUE last = bo.items[bo.count - 1];
-    c->pool_top = top0;
-    return nuq_emit_one(c, last);
+    return nuq_last1_eval(c, body);
 }
 
 NODE_DEF

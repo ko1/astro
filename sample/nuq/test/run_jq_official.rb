@@ -76,7 +76,9 @@ PER_TEST_TIMEOUT = 10
 tests.each_with_index do |t, idx|
   out, err_msg, st, killed = nil, nil, nil, false
   begin
-    Open3.popen3(NUQ, '-c', '--no-compile', t[:filter]) do |stdin, stdout, stderr, wait_thr|
+    Open3.popen3(NUQ, '-c', '--no-compile',
+                 '-L', File.join(ROOT, 'test/modules'),
+                 t[:filter]) do |stdin, stdout, stderr, wait_thr|
       begin stdin.write(t[:input]); rescue Errno::EPIPE; end
       stdin.close rescue nil
       out_thr = Thread.new { stdout.read }
@@ -114,14 +116,24 @@ tests.each_with_index do |t, idx|
     next
   end
 
+  actual = out.lines.map(&:chomp)
   unless exited_ok
-    # Could be a feature gap.  Classify as fail.
+    # Mid-stream errors: jq prints partial output then errors.  The
+    # official run-tests framework only inspects stdout, so we treat
+    # a non-zero exit as PASS when stdout matches expected.
+    begin
+      av = actual.map { |s| JSON.parse(s) }
+      ev = t[:expected].map { |s| JSON.parse(s) }
+      if av == ev
+        pass += 1
+        next
+      end
+    rescue JSON::ParserError
+    end
     fail += 1
     failures << [idx, t, "exit #{st&.exitstatus}: #{err_msg.lines.first&.chomp}"]
     next
   end
-
-  actual = out.lines.map(&:chomp)
   # jq's `--run-tests` compares JSON values, not textual output, so
   # whitespace inside compact-ish forms (`{"a":1, "b":2}` vs
   # `{"a":1,"b":2}`) is irrelevant.  Parse both sides as JSON and

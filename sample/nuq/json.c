@@ -39,13 +39,79 @@ fmt_err(const char *fmt, ...)
     return r;
 }
 
+/* Re-entrant-ish state for jq-style error formatting.  Set by
+ * `nuq_json_parse` so internal helpers can refer back to the start
+ * of the source for line/col + "while parsing 'XXX'" suffix. */
+static const char *json_parse_src   = NULL;
+static const char *json_parse_end   = NULL;
+
+static void
+compute_line_col(const char *p, int *line_out, int *col_out)
+{
+    int line = 1, col = 1;
+    for (const char *q = json_parse_src; q < p; q++) {
+        if (*q == '\n') { line++; col = 1; }
+        else col++;
+    }
+    *line_out = line;
+    *col_out = col;
+}
+
+/* Format "<msg> at line N, column M (while parsing 'SRC')" — the
+ * jq-canonical fromjson error shape. */
+static char *
+fmt_err_loc(const char *p, const char *msg)
+{
+    int line = 1, col = 1;
+    if (json_parse_src) compute_line_col(p, &line, &col);
+    /* trim source for the "while parsing" suffix to a manageable length. */
+    size_t sl = (size_t)(json_parse_end - json_parse_src);
+    char head[80];
+    size_t copy = sl < sizeof(head) - 4 ? sl : sizeof(head) - 4;
+    memcpy(head, json_parse_src, copy);
+    if (copy < sl) {
+        head[copy++] = '.'; head[copy++] = '.'; head[copy++] = '.';
+    }
+    head[copy] = '\0';
+    char buf[256];
+    snprintf(buf, sizeof(buf),
+             "%s at line %d, column %d (while parsing '%s')",
+             msg, line, col, head);
+    size_t n = strlen(buf);
+    char *r = (char *)GC_malloc_atomic(n + 1);
+    memcpy(r, buf, n + 1);
+    return r;
+}
+
 static VALUE parse_value(const char **pp, const char *end, char **err);
+
+/* jq's fromjson rejects nesting deeper than this with a specific
+ * "Exceeds depth limit for parsing" message. */
+#define NUQ_JSON_PARSE_MAX_DEPTH 10000
+
+static int json_parse_depth = 0;
 
 static VALUE
 parse_string_raw(const char **pp, const char *end, char **err)
 {
     const char *p = *pp;
-    if (*p != '"') { *err = fmt_err("expected '\"'"); return NUQ_NULL; }
+    if (*p != '"') {
+        /* jq advances past a would-be `'...'` literal before reporting
+         * the error, so the column points at whatever follows the
+         * closing `'`.  Mirror that position-walk for messages with
+         * leading `'` to match jq's exact message. */
+        const char *err_pos = p;
+        if (*p == '\'') {
+            const char *q = p + 1;
+            while (q < end && *q != '\'') q++;
+            if (q < end) err_pos = q + 1;
+        }
+        char msg[80];
+        snprintf(msg, sizeof(msg),
+                 "Invalid string literal; expected \", but got %c", *p);
+        *err = fmt_err_loc(err_pos, msg);
+        return NUQ_NULL;
+    }
     p++;
 
     /* Worst-case output is len; build a growable buffer. */
@@ -212,45 +278,63 @@ parse_value(const char **pp, const char *end, char **err)
         *pp = p + 4; return nuq_make_double(NAN);
     }
     if (*p == '[') {
+        if (++json_parse_depth > NUQ_JSON_PARSE_MAX_DEPTH) {
+            json_parse_depth--;
+            *err = fmt_err("Exceeds depth limit for parsing");
+            return NUQ_NULL;
+        }
         p++;
         VALUE arr = nuq_make_array(0);
         skip_ws(&p, end);
-        if (p < end && *p == ']') { *pp = p + 1; return arr; }
+        if (p < end && *p == ']') { *pp = p + 1; json_parse_depth--; return arr; }
         for (;;) {
             *pp = p;
             VALUE v = parse_value(pp, end, err);
-            if (*err) return NUQ_NULL;
+            if (*err) { json_parse_depth--; return NUQ_NULL; }
             nuq_array_push(arr, v);
             p = *pp;
             skip_ws(&p, end);
             if (p < end && *p == ',') { p++; skip_ws(&p, end); continue; }
-            if (p < end && *p == ']') { *pp = p + 1; return arr; }
-            *err = fmt_err("expected ',' or ']' in array"); return NUQ_NULL;
+            if (p < end && *p == ']') { *pp = p + 1; json_parse_depth--; return arr; }
+            *err = fmt_err("expected ',' or ']' in array");
+            json_parse_depth--;
+            return NUQ_NULL;
         }
     }
     if (*p == '{') {
+        if (++json_parse_depth > NUQ_JSON_PARSE_MAX_DEPTH) {
+            json_parse_depth--;
+            *err = fmt_err("Exceeds depth limit for parsing");
+            return NUQ_NULL;
+        }
         p++;
         VALUE obj = nuq_make_object(0);
         skip_ws(&p, end);
-        if (p < end && *p == '}') { *pp = p + 1; return obj; }
+        if (p < end && *p == '}') { *pp = p + 1; json_parse_depth--; return obj; }
         for (;;) {
             skip_ws(&p, end);
             *pp = p;
             VALUE key = parse_string_raw(pp, end, err);
-            if (*err) return NUQ_NULL;
+            if (*err) { json_parse_depth--; return NUQ_NULL; }
             p = *pp;
             skip_ws(&p, end);
-            if (p >= end || *p != ':') { *err = fmt_err("expected ':' in object"); return NUQ_NULL; }
+            if (p >= end || *p != ':') {
+                *err = fmt_err("expected ':' in object");
+                json_parse_depth--;
+                return NUQ_NULL;
+            }
             p++;
             *pp = p;
             VALUE val = parse_value(pp, end, err);
-            if (*err) return NUQ_NULL;
+            if (*err) { json_parse_depth--; return NUQ_NULL; }
             nuq_object_set(obj, key, val);
             p = *pp;
             skip_ws(&p, end);
             if (p < end && *p == ',') { p++; continue; }
-            if (p < end && *p == '}') { *pp = p + 1; return obj; }
-            *err = fmt_err("expected ',' or '}' in object"); return NUQ_NULL;
+            if (p < end && *p == '}') { *pp = p + 1; json_parse_depth--; return obj; }
+            *err = fmt_err("expected ',' or '}' in object");
+            json_parse_depth--;
+            return NUQ_NULL;
         }
     }
     *err = fmt_err("unexpected '%c'", *p);
@@ -270,6 +354,9 @@ nuq_json_parse(const char *src, size_t len, const char **endp, char **errmsg)
     const char *p = src;
     const char *end = src + len;
     char *err = NULL;
+    json_parse_depth = 0;
+    json_parse_src = src;
+    json_parse_end = end;
     VALUE v = parse_value(&p, end, &err);
     if (errmsg) *errmsg = err;
     if (endp) *endp = p;
@@ -318,6 +405,55 @@ print_number(FILE *fp, VALUE v)
         return;
     }
     char buf[64];
+    /* For integer-valued doubles outside int64 range but still finite,
+     * jq formats them as the 17-digit %g mantissa shifted into fixed-
+     * point with trailing zeros — i.e. `1.2345678901234568e+29` →
+     * `123456789012345680000000000000` (mantissa keeps 17 digits, the
+     * rest is filled with zeros).  Used by error messages to give a
+     * stable, decnum-flavoured rendering rather than the raw IEEE-754
+     * bits the OS strtod() would print. */
+    if (d == floor(d) && fabs(d) < 1e30) {
+        char src[40];
+        snprintf(src, sizeof(src), "%.17g", d);
+        const char *p = src;
+        int neg = 0;
+        if (*p == '-') { neg = 1; p++; }
+        char mant_int[8] = {0}, mant_frac[40] = {0};
+        int exp = 0;
+        const char *dot = strchr(p, '.');
+        const char *expc = strchr(p, 'e');
+        if (dot && expc) {
+            size_t il = (size_t)(dot - p);
+            memcpy(mant_int, p, il); mant_int[il] = 0;
+            size_t fl = (size_t)(expc - dot - 1);
+            memcpy(mant_frac, dot + 1, fl); mant_frac[fl] = 0;
+            exp = atoi(expc + 1);
+        } else if (expc) {
+            size_t il = (size_t)(expc - p);
+            memcpy(mant_int, p, il); mant_int[il] = 0;
+            mant_frac[0] = 0;
+            exp = atoi(expc + 1);
+        } else {
+            /* `%.0f` shape — no exponent.  Fallback to printf as-is. */
+            snprintf(buf, sizeof(buf), "%.0f", d);
+            fputs(buf, fp);
+            return;
+        }
+        /* Build int_part = mant_int + (exp digits of mant_frac), then
+         * pad the rest with zeros to total length exp + len(mant_int). */
+        int frac_len = (int)strlen(mant_frac);
+        int take_frac = exp < frac_len ? exp : frac_len;
+        int zeros = exp - take_frac;
+        char *q = buf;
+        if (neg) *q++ = '-';
+        size_t mil = strlen(mant_int);
+        memcpy(q, mant_int, mil); q += mil;
+        memcpy(q, mant_frac, take_frac); q += take_frac;
+        for (int i = 0; i < zeros; i++) *q++ = '0';
+        *q = 0;
+        fputs(buf, fp);
+        return;
+    }
     /* try %g with progressively more precision until round-trip */
     for (int prec = 15; prec <= 17; prec++) {
         snprintf(buf, sizeof(buf), "%.*g", prec, d);
@@ -325,6 +461,11 @@ print_number(FILE *fp, VALUE v)
     }
     fputs(buf, fp);
 }
+
+/* jq's tojson refuses to format trees deeper than this — past it,
+ * a `"<skipped: too deep>"` placeholder is emitted instead.  Tested
+ * exactly: 10000-level nesting still prints, 10001 truncates. */
+#define NUQ_JSON_PRINT_MAX_DEPTH 10000
 
 static void
 print_value(FILE *fp, VALUE v, int indent, int depth)
@@ -337,6 +478,10 @@ print_value(FILE *fp, VALUE v, int indent, int depth)
       case NUQ_T_DOUBLE: print_number(fp, v); return;
       case NUQ_T_STRING: print_string(fp, o); return;
       case NUQ_T_ARRAY: {
+        if (depth > NUQ_JSON_PRINT_MAX_DEPTH) {
+            fputs("\"<skipped: too deep>\"", fp);
+            return;
+        }
         if (o->arr.len == 0) { fputs("[]", fp); return; }
         fputc('[', fp);
         for (size_t i = 0; i < o->arr.len; i++) {
@@ -355,6 +500,10 @@ print_value(FILE *fp, VALUE v, int indent, int depth)
         return;
       }
       case NUQ_T_OBJECT: {
+        if (depth > NUQ_JSON_PRINT_MAX_DEPTH) {
+            fputs("\"<skipped: too deep>\"", fp);
+            return;
+        }
         if (o->obj.len == 0) { fputs("{}", fp); return; }
         /* Default emit-order is insertion order; with `-S` we emit
          * lexicographic-by-key.  Iteration goes through `order[i]` so
