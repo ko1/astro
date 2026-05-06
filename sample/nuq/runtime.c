@@ -1759,19 +1759,49 @@ nuq_indices_eval(CTX *c, struct Node *pat)
     if (buf.count == 0) { c->pool_top = t0; return EMIT_EMPTY; }
     VALUE p = buf.items[0];
     c->pool_top = t0;
-    if (!(NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_STRING) ||
-        !(NUQ_IS_PTR(p) && NUQ_PTR(p)->type == NUQ_T_STRING))
-        return err_emit(c, "indices: only string-in-string");
-    struct nuq_obj *io = NUQ_PTR(c->input);
-    struct nuq_obj *po = NUQ_PTR(p);
-    VALUE arr = nuq_make_array(0);
-    if (po->str.len > 0) {
-        for (size_t i = 0; i + po->str.len <= io->str.len; i++) {
-            if (memcmp(io->str.bytes + i, po->str.bytes, po->str.len) == 0)
-                nuq_array_push(arr, nuq_make_int(i));
+    /* string-in-string */
+    if (NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_STRING &&
+        NUQ_IS_PTR(p) && NUQ_PTR(p)->type == NUQ_T_STRING) {
+        struct nuq_obj *io = NUQ_PTR(c->input);
+        struct nuq_obj *po = NUQ_PTR(p);
+        VALUE arr = nuq_make_array(0);
+        if (po->str.len > 0) {
+            for (size_t i = 0; i + po->str.len <= io->str.len; i++) {
+                if (memcmp(io->str.bytes + i, po->str.bytes, po->str.len) == 0)
+                    nuq_array_push(arr, nuq_make_int(i));
+            }
         }
+        return nuq_emit_one(c, arr);
     }
-    return nuq_emit_one(c, arr);
+    /* array input: find positions where p matches.  If p is an array,
+     * search for subarray; otherwise search for element equality. */
+    if (NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_ARRAY) {
+        struct nuq_obj *io = NUQ_PTR(c->input);
+        VALUE arr = nuq_make_array(0);
+        if (NUQ_IS_PTR(p) && NUQ_PTR(p)->type == NUQ_T_ARRAY) {
+            struct nuq_obj *po = NUQ_PTR(p);
+            if (po->arr.len > 0 && po->arr.len <= io->arr.len) {
+                for (size_t i = 0; i + po->arr.len <= io->arr.len; i++) {
+                    bool match = true;
+                    for (size_t j = 0; j < po->arr.len; j++) {
+                        if (!nuq_eq(io->arr.items[i+j], po->arr.items[j])) {
+                            match = false; break;
+                        }
+                    }
+                    if (match) nuq_array_push(arr, nuq_make_int((int64_t)i));
+                }
+            }
+        } else {
+            for (size_t i = 0; i < io->arr.len; i++) {
+                if (nuq_eq(io->arr.items[i], p))
+                    nuq_array_push(arr, nuq_make_int((int64_t)i));
+            }
+        }
+        return nuq_emit_one(c, arr);
+    }
+    if (NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_NULL)
+        return nuq_emit_one(c, NUQ_NULL);
+    return err_emit(c, "indices: input not string or array");
 }
 
 EMIT
@@ -1783,17 +1813,43 @@ nuq_index1_eval(CTX *c, struct Node *pat)
     if (buf.count == 0) { c->pool_top = t0; return EMIT_EMPTY; }
     VALUE p = buf.items[0];
     c->pool_top = t0;
-    if (!(NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_STRING) ||
-        !(NUQ_IS_PTR(p) && NUQ_PTR(p)->type == NUQ_T_STRING))
-        return err_emit(c, "index: only string-in-string");
-    struct nuq_obj *io = NUQ_PTR(c->input);
-    struct nuq_obj *po = NUQ_PTR(p);
-    if (po->str.len == 0) return nuq_emit_one(c, NUQ_NULL);
-    for (size_t i = 0; i + po->str.len <= io->str.len; i++) {
-        if (memcmp(io->str.bytes + i, po->str.bytes, po->str.len) == 0)
-            return nuq_emit_one(c, nuq_make_int(i));
+    if (NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_STRING &&
+        NUQ_IS_PTR(p) && NUQ_PTR(p)->type == NUQ_T_STRING) {
+        struct nuq_obj *io = NUQ_PTR(c->input);
+        struct nuq_obj *po = NUQ_PTR(p);
+        if (po->str.len == 0) return nuq_emit_one(c, NUQ_NULL);
+        for (size_t i = 0; i + po->str.len <= io->str.len; i++) {
+            if (memcmp(io->str.bytes + i, po->str.bytes, po->str.len) == 0)
+                return nuq_emit_one(c, nuq_make_int(i));
+        }
+        return nuq_emit_one(c, NUQ_NULL);
     }
-    return nuq_emit_one(c, NUQ_NULL);
+    if (NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_ARRAY) {
+        struct nuq_obj *io = NUQ_PTR(c->input);
+        if (NUQ_IS_PTR(p) && NUQ_PTR(p)->type == NUQ_T_ARRAY) {
+            struct nuq_obj *po = NUQ_PTR(p);
+            if (po->arr.len > 0 && po->arr.len <= io->arr.len) {
+                for (size_t i = 0; i + po->arr.len <= io->arr.len; i++) {
+                    bool match = true;
+                    for (size_t j = 0; j < po->arr.len; j++) {
+                        if (!nuq_eq(io->arr.items[i+j], po->arr.items[j])) {
+                            match = false; break;
+                        }
+                    }
+                    if (match) return nuq_emit_one(c, nuq_make_int((int64_t)i));
+                }
+            }
+            return nuq_emit_one(c, NUQ_NULL);
+        }
+        for (size_t i = 0; i < io->arr.len; i++) {
+            if (nuq_eq(io->arr.items[i], p))
+                return nuq_emit_one(c, nuq_make_int((int64_t)i));
+        }
+        return nuq_emit_one(c, NUQ_NULL);
+    }
+    if (NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_NULL)
+        return nuq_emit_one(c, NUQ_NULL);
+    return err_emit(c, "index: input not string or array");
 }
 
 /* `rindex(s)` — last position of `s` in input, or null. */

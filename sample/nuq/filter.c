@@ -471,6 +471,10 @@ build_builtin_call(const char *name, int arity, struct Node **args)
     BUILTIN0("y0", ALLOC_node_b_y0);
     BUILTIN0("y1", ALLOC_node_b_y1);
     BUILTIN0("trim", ALLOC_node_b_trim);
+    BUILTIN0("ltrim", ALLOC_node_b_ltrim);
+    BUILTIN0("rtrim", ALLOC_node_b_rtrim);
+    BUILTIN0("toboolean", ALLOC_node_b_toboolean);
+    BUILTIN1("bsearch", ALLOC_node_b_bsearch);
     BUILTIN0("transpose", ALLOC_node_b_transpose);
     BUILTIN1("isempty", ALLOC_node_b_isempty);
     /* `add(f)` left to user-defined `def add(f): ...;` because nuq's

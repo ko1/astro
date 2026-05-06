@@ -1549,6 +1549,77 @@ node_b_all2(CTX *c, NODE *n, NODE *gen, NODE *cond)
     return nuq_emit_one(c, all ? NUQ_TRUE : NUQ_FALSE);
 }
 
+/* `ltrim` / `rtrim` — one-sided whitespace strip. */
+NODE_DEF
+node_b_ltrim(CTX *c, NODE *n)
+{
+    if (!(NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_STRING)) {
+        c->error = nuq_make_string("ltrim: not string", 17);
+        return EMIT_EMPTY;
+    }
+    struct nuq_obj *o = NUQ_PTR(c->input);
+    size_t lo = 0;
+    while (lo < o->str.len && (o->str.bytes[lo] == ' ' || o->str.bytes[lo] == '\t' ||
+                                o->str.bytes[lo] == '\n' || o->str.bytes[lo] == '\r')) lo++;
+    return nuq_emit_one(c, nuq_make_string(o->str.bytes + lo, o->str.len - lo));
+}
+
+NODE_DEF
+node_b_rtrim(CTX *c, NODE *n)
+{
+    if (!(NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_STRING)) {
+        c->error = nuq_make_string("rtrim: not string", 17);
+        return EMIT_EMPTY;
+    }
+    struct nuq_obj *o = NUQ_PTR(c->input);
+    size_t hi = o->str.len;
+    while (hi > 0 && (o->str.bytes[hi-1] == ' ' || o->str.bytes[hi-1] == '\t' ||
+                       o->str.bytes[hi-1] == '\n' || o->str.bytes[hi-1] == '\r')) hi--;
+    return nuq_emit_one(c, nuq_make_string(o->str.bytes, hi));
+}
+
+NODE_DEF
+node_b_toboolean(CTX *c, NODE *n)
+{
+    if (NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_BOOL)
+        return nuq_emit_one(c, c->input);
+    if (NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_STRING) {
+        struct nuq_obj *o = NUQ_PTR(c->input);
+        if (o->str.len == 4 && memcmp(o->str.bytes, "true", 4) == 0)
+            return nuq_emit_one(c, NUQ_TRUE);
+        if (o->str.len == 5 && memcmp(o->str.bytes, "false", 5) == 0)
+            return nuq_emit_one(c, NUQ_FALSE);
+    }
+    c->error = nuq_make_string("toboolean: not boolean nor true/false string", 44);
+    return EMIT_EMPTY;
+}
+
+NODE_DEF
+node_b_bsearch(CTX *c, NODE *n, NODE *needle_n)
+{
+    if (!(NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_ARRAY)) {
+        c->error = nuq_make_string("bsearch: not array", 18);
+        return EMIT_EMPTY;
+    }
+    size_t t0 = c->pool_top;
+    EMIT vs = EVAL_ARG(c, needle_n);
+    if (UNLIKELY(c->error != NUQ_NULL)) return EMIT_EMPTY;
+    if (vs.count == 0) { c->pool_top = t0; return EMIT_EMPTY; }
+    VALUE needle = vs.items[0];
+    c->pool_top = t0;
+    struct nuq_obj *o = NUQ_PTR(c->input);
+    int64_t lo = 0, hi = (int64_t)o->arr.len;
+    while (lo < hi) {
+        int64_t mid = (lo + hi) / 2;
+        int cmp = nuq_cmp(o->arr.items[mid], needle);
+        if (cmp < 0) lo = mid + 1;
+        else hi = mid;
+    }
+    if (lo < (int64_t)o->arr.len && nuq_eq(o->arr.items[lo], needle))
+        return nuq_emit_one(c, nuq_make_int(lo));
+    return nuq_emit_one(c, nuq_make_int(-(lo + 1)));
+}
+
 NODE_DEF
 node_b_any2(CTX *c, NODE *n, NODE *gen, NODE *cond)
 {
