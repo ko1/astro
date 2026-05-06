@@ -1,0 +1,16 @@
+ok BytearraySliceAssignTest test_byte_oor
+ok BytearraySliceAssignTest test_clear
+ok BytearraySliceAssignTest test_eq_len
+ok BytearraySliceAssignTest test_grow
+ok BytearraySliceAssignTest test_insert
+ok BytearraySliceAssignTest test_shrink
+ok BytearraySliceAssignTest test_stepped
+ok BytearraySliceAssignTest test_stepped_mismatch
+ok BytearraySliceAssignTest test_with_iterable
+ok DictViewSetOpsTest test_dict_or
+ok DictViewSetOpsTest test_dict_reversed
+ok DictViewSetOpsTest test_dict_update_iter
+ok DictViewSetOpsTest test_dict_update_kwargs
+ok DictViewSetOpsTest test_keys_set_ops
+---
+passed=14 failed=0

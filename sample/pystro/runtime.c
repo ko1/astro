@@ -2590,6 +2590,68 @@ py_list_slice_set(CTX *c, VALUE seq, VALUE start, VALUE stop, VALUE step, VALUE 
             return;
         }
     }
+    if (PY_IS_PTR(seq) && PY_PTR(seq)->type == PY_T_BYTEARRAY) {
+        // bytearray slice assignment.  Source must be iterable of ints
+        // 0..255 (or another bytes/bytearray).
+        int64_t st = (step == PY_NONE) ? 1 : py_int_to_long(c, step);
+        if (st == 0) py_raise_exc(c, c->EXC_ValueError, "slice step cannot be zero");
+        int64_t len = (int64_t)PY_PTR(seq)->str.len;
+        int64_t a = (start == PY_NONE) ? (st > 0 ? 0 : len - 1) : py_int_to_long(c, start);
+        int64_t b = (stop  == PY_NONE) ? (st > 0 ? len : -1)    : py_int_to_long(c, stop);
+        if (a < 0) a += len;
+        if (b < 0 && stop != PY_NONE) b += len;
+        if (st > 0) { if (a < 0) a = 0; if (b > len) b = len; }
+        else        { if (a >= len) a = len - 1; }
+        // Materialise val as a byte buffer.
+        unsigned char *vbuf;
+        size_t nval;
+        if (py_is_byteseq(val) || py_is_str(val)) {
+            nval = PY_PTR(val)->str.len;
+            vbuf = (unsigned char *)PY_PTR(val)->str.chars;
+        } else {
+            struct py_iter it; py_iter_init(c, &it, val);
+            size_t cap = 16; nval = 0;
+            unsigned char *buf = (unsigned char *)GC_malloc_atomic(cap);
+            VALUE x;
+            while (py_iter_next(c, &it, &x)) {
+                int64_t bv = py_int_to_long(c, x);
+                if (bv < 0 || bv > 255)
+                    py_raise_exc(c, c->EXC_ValueError, "byte must be in range(0, 256)");
+                if (nval == cap) { cap *= 2; buf = (unsigned char *)GC_realloc(buf, cap); }
+                buf[nval++] = (unsigned char)bv;
+            }
+            vbuf = buf;
+        }
+        if (st == 1) {
+            if (a > len) a = len;
+            if (b > len) b = len;
+            if (b < a)  b = a;
+            size_t prefix = (size_t)a;
+            size_t suffix_off = (size_t)b;
+            size_t suffix_len = (size_t)(len - b);
+            size_t new_len = prefix + nval + suffix_len;
+            char *out = (char *)GC_malloc_atomic(new_len + 1);
+            if (prefix) memcpy(out, PY_PTR(seq)->str.chars, prefix);
+            if (nval)   memcpy(out + prefix, vbuf, nval);
+            if (suffix_len) memcpy(out + prefix + nval,
+                                   PY_PTR(seq)->str.chars + suffix_off, suffix_len);
+            out[new_len] = '\0';
+            PY_PTR(seq)->str.chars = out;
+            PY_PTR(seq)->str.len = new_len;
+            return;
+        }
+        // Stepped: require matching length.
+        size_t target_n = 0;
+        if (st > 0 && a < b) target_n = (size_t)((b - a + st - 1) / st);
+        else if (st < 0 && a > b) target_n = (size_t)((a - b - st - 1) / -st);
+        if (target_n != nval)
+            py_raise_exc(c, c->EXC_ValueError,
+                         "attempt to assign bytes of size %zu to extended slice of size %zu",
+                         nval, target_n);
+        for (size_t i = 0; i < nval; i++)
+            PY_PTR(seq)->str.chars[a + (int64_t)i * st] = (char)vbuf[i];
+        return;
+    }
     if (!py_is_list(seq))
         py_raise_exc(c, c->EXC_TypeError, "slice assignment requires a list");
     int64_t st = (step == PY_NONE) ? 1 : py_int_to_long(c, step);
