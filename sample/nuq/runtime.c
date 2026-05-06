@@ -13,6 +13,7 @@
  */
 #include "context.h"
 #include "node.h"
+#include <ctype.h>
 
 /* --- side tables --------------------------------------------------------- */
 
@@ -470,8 +471,15 @@ nuq_to_number(VALUE v, VALUE *out)
     if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_DOUBLE) { *out = v; return true; }
     if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_STRING) {
         struct nuq_obj *o = NUQ_PTR(v);
+        /* jq's tonumber is strict: rejects leading/trailing whitespace
+         * and trailing garbage.  Leading `+` and `-` are accepted. */
+        if (o->str.len == 0) return false;
+        const char *p = o->str.bytes;
+        size_t left = o->str.len;
+        if (*p == '-' || *p == '+') { p++; left--; }
+        if (left == 0 || !(isdigit((unsigned char)*p) || *p == '.')) return false;
         char *e; double d = strtod(o->str.bytes, &e);
-        if (e == o->str.bytes) return false;
+        if ((size_t)(e - o->str.bytes) != o->str.len) return false;
         *out = nuq_make_double(d);
         return true;
     }
@@ -766,12 +774,15 @@ nuq_reduce_eval(CTX *c, struct Node *src, uint32_t var_id, struct Node *init, st
     size_t t0 = c->pool_top;
     EMIT init_e = EVAL(c, init);
     if (c->error != NUQ_NULL) return EMIT_EMPTY;
-    VALUE acc = init_e.count > 0 ? init_e.items[0] : NUQ_NULL;
+    uint32_t ic = init_e.count;
+    if (ic == 0) { c->pool_top = t0; return EMIT_EMPTY; }
+    VALUE inits_small[16];
+    VALUE *inits = (ic <= 16) ? inits_small : (VALUE *)GC_malloc(ic * sizeof(VALUE));
+    memcpy(inits, init_e.items, ic * sizeof(VALUE));
     c->pool_top = t0;
 
     EMIT src_e = EVAL(c, src);
     if (c->error != NUQ_NULL) return EMIT_EMPTY;
-    /* Snapshot src — pool will be reused for update evals. */
     uint32_t sc = src_e.count;
     VALUE small[16];
     VALUE *src_local = (sc <= 16) ? small : (VALUE *)GC_malloc(sc * sizeof(VALUE));
@@ -779,19 +790,23 @@ nuq_reduce_eval(CTX *c, struct Node *src, uint32_t var_id, struct Node *init, st
     c->pool_top = outer_top;
 
     VALUE saved_input = c->input;
-    for (uint32_t i = 0; i < sc; i++) {
-        size_t t1 = c->pool_top;
-        size_t v_top = c->var_top;
-        nuq_var_push(c, var_id, src_local[i]);
-        c->input = acc;
-        EMIT up = EVAL(c, update);
-        nuq_var_pop(c, v_top);
-        if (c->error != NUQ_NULL) { c->input = saved_input; return EMIT_EMPTY; }
-        if (up.count > 0) acc = up.items[up.count - 1];
-        c->pool_top = t1;
+    for (uint32_t k = 0; k < ic; k++) {
+        VALUE acc = inits[k];
+        for (uint32_t i = 0; i < sc; i++) {
+            size_t t1 = c->pool_top;
+            size_t v_top = c->var_top;
+            nuq_var_push(c, var_id, src_local[i]);
+            c->input = acc;
+            EMIT up = EVAL(c, update);
+            nuq_var_pop(c, v_top);
+            if (c->error != NUQ_NULL) { c->input = saved_input; return EMIT_EMPTY; }
+            if (up.count > 0) acc = up.items[up.count - 1];
+            c->pool_top = t1;
+        }
+        nuq_pool_push(c, acc);
     }
     c->input = saved_input;
-    return nuq_emit_one(c, acc);
+    return nuq_emit_slice(c, outer_top);
 }
 
 EMIT
@@ -799,10 +814,17 @@ nuq_foreach_eval(CTX *c, struct Node *src, uint32_t var_id, struct Node *init, s
 {
     size_t outer_top = c->pool_top;
 
+    /* `init` may emit multiple values (jq runs the foreach once per
+     * init).  Snapshot the inits and the source array up front so the
+     * pool is free for body evaluation. */
     size_t t0 = c->pool_top;
     EMIT init_e = EVAL(c, init);
     if (c->error != NUQ_NULL) return EMIT_EMPTY;
-    VALUE acc = init_e.count > 0 ? init_e.items[0] : NUQ_NULL;
+    uint32_t ic = init_e.count;
+    if (ic == 0) { c->pool_top = t0; return EMIT_EMPTY; }
+    VALUE inits_small[16];
+    VALUE *inits = (ic <= 16) ? inits_small : (VALUE *)GC_malloc(ic * sizeof(VALUE));
+    memcpy(inits, init_e.items, ic * sizeof(VALUE));
     c->pool_top = t0;
 
     EMIT src_e = EVAL(c, src);
@@ -814,28 +836,30 @@ nuq_foreach_eval(CTX *c, struct Node *src, uint32_t var_id, struct Node *init, s
     c->pool_top = outer_top;
 
     VALUE saved_input = c->input;
-    for (uint32_t i = 0; i < sc; i++) {
-        size_t v_top = c->var_top;
-        nuq_var_push(c, var_id, src_local[i]);
-        c->input = acc;
-        size_t t1 = c->pool_top;
-        EMIT up = EVAL(c, update);
-        if (c->error != NUQ_NULL) { nuq_var_pop(c, v_top); c->input = saved_input; return EMIT_EMPTY; }
-        /* update may emit multiple — for each, set acc, then extract or just emit. */
-        uint32_t uc = up.count;
-        VALUE usmall[16];
-        VALUE *up_local = (uc <= 16) ? usmall : (VALUE *)GC_malloc(uc * sizeof(VALUE));
-        memcpy(up_local, up.items, uc * sizeof(VALUE));
-        c->pool_top = t1;
-        for (uint32_t j = 0; j < uc; j++) {
-            acc = up_local[j];
+    for (uint32_t k = 0; k < ic; k++) {
+        VALUE acc = inits[k];
+        for (uint32_t i = 0; i < sc; i++) {
+            size_t v_top = c->var_top;
+            nuq_var_push(c, var_id, src_local[i]);
             c->input = acc;
-            (void)EVAL(c, extract);    /* extract pushes onto pool */
-            if (c->error != NUQ_NULL) {
-                nuq_var_pop(c, v_top); c->input = saved_input; return EMIT_EMPTY;
+            size_t t1 = c->pool_top;
+            EMIT up = EVAL(c, update);
+            if (c->error != NUQ_NULL) { nuq_var_pop(c, v_top); c->input = saved_input; return EMIT_EMPTY; }
+            uint32_t uc = up.count;
+            VALUE usmall[16];
+            VALUE *up_local = (uc <= 16) ? usmall : (VALUE *)GC_malloc(uc * sizeof(VALUE));
+            memcpy(up_local, up.items, uc * sizeof(VALUE));
+            c->pool_top = t1;
+            for (uint32_t j = 0; j < uc; j++) {
+                acc = up_local[j];
+                c->input = acc;
+                (void)EVAL(c, extract);
+                if (c->error != NUQ_NULL) {
+                    nuq_var_pop(c, v_top); c->input = saved_input; return EMIT_EMPTY;
+                }
             }
+            nuq_var_pop(c, v_top);
         }
-        nuq_var_pop(c, v_top);
     }
     c->input = saved_input;
     return nuq_emit_slice(c, outer_top);
@@ -3089,7 +3113,77 @@ walk_path(CTX *c, struct Node *n, VALUE v, nuq_leaf_fn fn, void *ud)
         return clone;
     }
 
-    c->error = nuq_make_string("path expression: unsupported node", 33);
+    /* Hit a non-accessor in the path chain (e.g. `map(...)` mid-path).
+     * Format jq's "Invalid path expression" diagnostic with the current
+     * value and, if available, the next step in the chain.  jq reports
+     * the value AFTER the unsupported node ran, so evaluate it once. */
+    VALUE result_v = v;
+    {
+        VALUE saved_in = c->input;
+        c->input = v;
+        size_t t0 = c->pool_top;
+        EMIT pe = EVAL(c, n);
+        c->input = saved_in;
+        if (c->error == NUQ_NULL && pe.count > 0) result_v = pe.items[0];
+        c->pool_top = t0;
+        c->error = NUQ_NULL;
+    }
+    {
+        char *json_buf = NULL; size_t jl = 0;
+        FILE *jfp = open_memstream(&json_buf, &jl);
+        nuq_json_print(jfp, result_v, 0);
+        fclose(jfp);
+        char vd[80], msg[256];
+        size_t lim = sizeof(vd) - 1;
+        size_t copy = jl <= lim ? jl : lim;
+        memcpy(vd, json_buf, copy); vd[copy] = 0;
+        free(json_buf);
+        struct Node *nxt = NULL;
+        if (fn == nested_apply) {
+            nxt = ((struct nested_ud *)ud)->next;
+            /* Skip past pipes / `as` wrappers to the first concrete step. */
+            while (nxt) {
+                if (nxt->head.kind == &kind_node_pipe) { nxt = nxt->u.node_pipe.lhs; continue; }
+                if (nxt->head.kind == &kind_node_as) { nxt = nxt->u.node_as.body; continue; }
+                if (nxt->head.kind == &kind_node_identity) { nxt = NULL; break; }
+                break;
+            }
+        }
+        if (!nxt) {
+            int w = snprintf(msg, sizeof(msg),
+                             "Invalid path expression with result %s", vd);
+            c->error = nuq_make_string(msg, (size_t)w);
+        } else if (nxt->head.kind == &kind_node_field || nxt->head.kind == &kind_node_field_opt) {
+            const char *name = (nxt->head.kind == &kind_node_field)
+                ? nxt->u.node_field.name : nxt->u.node_field_opt.name;
+            int w = snprintf(msg, sizeof(msg),
+                             "Invalid path expression near attempt to access element \"%s\" of %s", name, vd);
+            c->error = nuq_make_string(msg, (size_t)w);
+        } else if (nxt->head.kind == &kind_node_index || nxt->head.kind == &kind_node_index_opt) {
+            struct Node *ix = (nxt->head.kind == &kind_node_index)
+                ? nxt->u.node_index.expr : nxt->u.node_index_opt.expr;
+            VALUE kv;
+            char kd[40] = "?";
+            if (eval_static_key(ix, &kv)) {
+                if (NUQ_IS_FIX(kv)) snprintf(kd, sizeof(kd), "%lld", (long long)NUQ_FIX_VAL(kv));
+                else if (NUQ_IS_PTR(kv) && NUQ_PTR(kv)->type == NUQ_T_STRING) {
+                    struct nuq_obj *so = NUQ_PTR(kv);
+                    snprintf(kd, sizeof(kd), "\"%.*s\"", (int)so->str.len, so->str.bytes);
+                }
+            }
+            int w = snprintf(msg, sizeof(msg),
+                             "Invalid path expression near attempt to access element %s of %s", kd, vd);
+            c->error = nuq_make_string(msg, (size_t)w);
+        } else if (nxt->head.kind == &kind_node_iter || nxt->head.kind == &kind_node_iter_opt) {
+            int w = snprintf(msg, sizeof(msg),
+                             "Invalid path expression near attempt to iterate through %s", vd);
+            c->error = nuq_make_string(msg, (size_t)w);
+        } else {
+            int w = snprintf(msg, sizeof(msg),
+                             "Invalid path expression with result %s", vd);
+            c->error = nuq_make_string(msg, (size_t)w);
+        }
+    }
     return v;
 }
 
