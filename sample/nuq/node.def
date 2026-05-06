@@ -1951,45 +1951,65 @@ node_b_strftime(CTX *c, NODE *n, NODE *fmt_n)
 NODE_DEF
 node_b_strflocaltime(CTX *c, NODE *n, NODE *fmt_n)
 {
-    size_t t0 = c->pool_top;
-    EMIT fb = EVAL_ARG(c, fmt_n);
-    if (UNLIKELY(c->error != NUQ_NULL)) return EMIT_EMPTY;
-    if (fb.count == 0 || !(NUQ_IS_PTR(fb.items[0]) && NUQ_PTR(fb.items[0])->type == NUQ_T_STRING)) {
-        c->pool_top = t0;
-        c->error = nuq_make_string("strflocaltime/1 requires a string format", 40);
-        return EMIT_EMPTY;
+    /* Build the broken-down `tm` from the input (array or epoch) once. */
+    struct tm tm = {0};
+    bool tm_ready = false;
+    if (NUQ_IS_FIX(c->input) || (NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_DOUBLE)) {
+        double d = NUQ_IS_FIX(c->input) ? (double)NUQ_FIX_VAL(c->input)
+                                        : NUQ_PTR(c->input)->dbl;
+        time_t t = (time_t)d;
+        if (localtime_r(&t, &tm)) tm_ready = true;
+    } else if (NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_ARRAY) {
+        struct nuq_obj *o = NUQ_PTR(c->input);
+        for (size_t i = 0; i < o->arr.len; i++) {
+            VALUE e = o->arr.items[i];
+            if (!(NUQ_IS_FIX(e) || (NUQ_IS_PTR(e) && NUQ_PTR(e)->type == NUQ_T_DOUBLE))) {
+                c->error = nuq_make_string("strflocaltime/1 requires parsed datetime inputs", 47);
+                return EMIT_EMPTY;
+            }
+        }
+        if (o->arr.len >= 1) tm.tm_year = (int)NUQ_FIX_VAL(o->arr.items[0]) - 1900;
+        if (o->arr.len >= 2) tm.tm_mon  = (int)NUQ_FIX_VAL(o->arr.items[1]);
+        if (o->arr.len >= 3) tm.tm_mday = (int)NUQ_FIX_VAL(o->arr.items[2]);
+        if (o->arr.len >= 4) tm.tm_hour = (int)NUQ_FIX_VAL(o->arr.items[3]);
+        if (o->arr.len >= 5) tm.tm_min  = (int)NUQ_FIX_VAL(o->arr.items[4]);
+        if (o->arr.len >= 6) {
+            VALUE sec = o->arr.items[5];
+            tm.tm_sec = (int)(NUQ_IS_FIX(sec) ? NUQ_FIX_VAL(sec) : NUQ_PTR(sec)->dbl);
+        }
+        tm_ready = true;
     }
-    struct nuq_obj *fo = NUQ_PTR(fb.items[0]);
-    char fmt_buf[256];
-    size_t fl = fo->str.len < sizeof(fmt_buf)-1 ? fo->str.len : sizeof(fmt_buf)-1;
-    memcpy(fmt_buf, fo->str.bytes, fl);
-    fmt_buf[fl] = 0;
-    c->pool_top = t0;
-    if (!(NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_ARRAY)) {
+    if (!tm_ready) {
         c->error = nuq_make_string("strflocaltime/1 requires parsed datetime inputs", 47);
         return EMIT_EMPTY;
     }
-    struct nuq_obj *o = NUQ_PTR(c->input);
-    struct tm tm = {0};
-    for (size_t i = 0; i < o->arr.len; i++) {
-        VALUE e = o->arr.items[i];
-        if (!(NUQ_IS_FIX(e) || (NUQ_IS_PTR(e) && NUQ_PTR(e)->type == NUQ_T_DOUBLE))) {
-            c->error = nuq_make_string("strflocaltime/1 requires parsed datetime inputs", 47);
+    /* Multi-emit format support. */
+    size_t outer = c->pool_top;
+    EMIT fb = EVAL_ARG(c, fmt_n);
+    if (UNLIKELY(c->error != NUQ_NULL)) return EMIT_EMPTY;
+    uint32_t fc = fb.count;
+    if (fc == 0) { c->pool_top = outer; return EMIT_EMPTY; }
+    VALUE fsmall[16];
+    VALUE *fmts = (fc <= 16) ? fsmall : (VALUE *)GC_malloc(fc * sizeof(VALUE));
+    memcpy(fmts, fb.items, fc * sizeof(VALUE));
+    c->pool_top = outer;
+    for (uint32_t k = 0; k < fc; k++) {
+        VALUE fv = fmts[k];
+        if (!(NUQ_IS_PTR(fv) && NUQ_PTR(fv)->type == NUQ_T_STRING)) {
+            c->pool_top = outer;
+            c->error = nuq_make_string("strflocaltime/1 requires a string format", 40);
             return EMIT_EMPTY;
         }
+        struct nuq_obj *fo = NUQ_PTR(fv);
+        char fmt_buf[256];
+        size_t fl = fo->str.len < sizeof(fmt_buf)-1 ? fo->str.len : sizeof(fmt_buf)-1;
+        memcpy(fmt_buf, fo->str.bytes, fl);
+        fmt_buf[fl] = 0;
+        char out[1024];
+        size_t n_out = strftime(out, sizeof(out), fmt_buf, &tm);
+        nuq_pool_push(c, nuq_make_string(out, n_out));
     }
-    if (o->arr.len >= 1) tm.tm_year = (int)NUQ_FIX_VAL(o->arr.items[0]) - 1900;
-    if (o->arr.len >= 2) tm.tm_mon  = (int)NUQ_FIX_VAL(o->arr.items[1]);
-    if (o->arr.len >= 3) tm.tm_mday = (int)NUQ_FIX_VAL(o->arr.items[2]);
-    if (o->arr.len >= 4) tm.tm_hour = (int)NUQ_FIX_VAL(o->arr.items[3]);
-    if (o->arr.len >= 5) tm.tm_min  = (int)NUQ_FIX_VAL(o->arr.items[4]);
-    if (o->arr.len >= 6) {
-        VALUE sec = o->arr.items[5];
-        tm.tm_sec = (int)(NUQ_IS_FIX(sec) ? NUQ_FIX_VAL(sec) : NUQ_PTR(sec)->dbl);
-    }
-    char out[1024];
-    size_t n_out = strftime(out, sizeof(out), fmt_buf, &tm);
-    return nuq_emit_one(c, nuq_make_string(out, n_out));
+    return nuq_emit_slice(c, outer);
 }
 
 NODE_DEF
