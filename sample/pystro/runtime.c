@@ -5458,15 +5458,21 @@ sm_capitalize(CTX *c, int argc, VALUE *argv)
 static VALUE
 sm_rfind(CTX *c, int argc, VALUE *argv)
 {
-    (void)c; (void)argc;
+    (void)c;
     struct pyobj *o = PY_PTR(argv[0]);
     if (!py_is_str(argv[1])) return PY_FIX(-1);
     struct pyobj *needle = PY_PTR(argv[1]);
-    if (needle->str.len == 0) return PY_FIX((int64_t)o->str.len);
-    if (needle->str.len > o->str.len) return PY_FIX(-1);
-    for (ssize_t i = (ssize_t)(o->str.len - needle->str.len); i >= 0; i--) {
+    int64_t slen = (int64_t)o->str.len;
+    int64_t start = 0, end = slen;
+    if (argc >= 3 && argv[2] != PY_NONE) start = py_int_to_long(c, argv[2]);
+    if (argc >= 4 && argv[3] != PY_NONE) end = py_int_to_long(c, argv[3]);
+    if (start < 0) start += slen; if (start < 0) start = 0; if (start > slen) start = slen;
+    if (end < 0) end += slen; if (end < 0) end = 0; if (end > slen) end = slen;
+    if (needle->str.len == 0) return PY_FIX(end);
+    if ((int64_t)needle->str.len > end - start) return PY_FIX(-1);
+    for (int64_t i = end - (int64_t)needle->str.len; i >= start; i--) {
         if (memcmp(o->str.chars + i, needle->str.chars, needle->str.len) == 0)
-            return PY_FIX((int64_t)i);
+            return PY_FIX(i);
     }
     return PY_FIX(-1);
 }
@@ -5984,9 +5990,9 @@ static struct type_method str_methods[] = {
     { "capitalize",    sm_capitalize,    1, 1 },
     { "swapcase",      sm_swapcase,      1, 1 },
     { "casefold",      sm_casefold,      1, 1 },
-    { "rfind",         sm_rfind,         2, 2 },
-    { "rindex",        sm_rindex,        2, 2 },
-    { "index",         sm_index,         2, 2 },
+    { "rfind",         sm_rfind,         2, 4 },
+    { "rindex",        sm_rindex,        2, 4 },
+    { "index",         sm_index,         2, 4 },
     { "isnumeric",     sm_isnumeric,     1, 1 },
     { "isdecimal",     sm_isnumeric,     1, 1 },
     { "isascii",       sm_isascii,       1, 1 },
@@ -8710,8 +8716,12 @@ bi_format(CTX *c, int argc, VALUE *argv)
             memcpy(out + left, body, bl);
             for (size_t j = 0; j < right; j++) out[left + bl + j] = eff_fill;
         } else { // '>'
-            for (size_t j = 0; j < pad; j++) out[j] = eff_fill;
-            memcpy(out + pad, body, bl);
+            // For zero-pad with sign-leading number, keep the sign first.
+            int sign_skip = 0;
+            if (zero_pad && bl > 0 && (body[0] == '-' || body[0] == '+')) sign_skip = 1;
+            if (sign_skip) out[0] = body[0];
+            for (size_t j = 0; j < pad; j++) out[sign_skip + j] = eff_fill;
+            memcpy(out + sign_skip + pad, body + sign_skip, bl - sign_skip);
         }
         out[width] = '\0';
         return py_make_str_take(out, (size_t)width);

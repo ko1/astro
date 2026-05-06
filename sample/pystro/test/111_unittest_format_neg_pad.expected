@@ -1,0 +1,8 @@
+ok FormatNegPadTest test_normal_pad
+ok FormatNegPadTest test_zero_pad_neg
+ok FormatNegPadTest test_zero_pad_plus
+ok FormatNegPadTest test_zero_pad_pos
+ok StrRfindRangeTest test_rfind_not_found
+ok StrRfindRangeTest test_rfind_with_range
+---
+passed=6 failed=0
