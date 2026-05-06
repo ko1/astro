@@ -7790,14 +7790,25 @@ extern VALUE py_gen_throw(CTX *c, VALUE g, VALUE exc);
 extern VALUE py_gen_close(CTX *c, VALUE g);
 
 static VALUE gm_send(CTX *c, int argc, VALUE *argv)  { (void)argc; return py_gen_send(c, argv[0], argv[1]); }
-static VALUE gm_throw(CTX *c, int argc, VALUE *argv) { (void)argc; return py_gen_throw(c, argv[0], argv[1]); }
+static VALUE
+gm_throw(CTX *c, int argc, VALUE *argv)
+{
+    // Two-arg form: throw(exc) where exc is a class or instance.
+    // Three-arg form: throw(type, value [, traceback]) — instantiate.
+    VALUE exc = argv[1];
+    if (argc >= 3 && py_is_class(exc)) {
+        VALUE av[1] = { argv[2] };
+        exc = py_apply(c, exc, 1, av);
+    }
+    return py_gen_throw(c, argv[0], exc);
+}
 static VALUE gm_close(CTX *c, int argc, VALUE *argv) { (void)argc; return py_gen_close(c, argv[0]); }
 static VALUE gm_next(CTX *c, int argc, VALUE *argv)  { (void)argc; return py_gen_next(c, argv[0]); }
 static VALUE gm_iter(CTX *c, int argc, VALUE *argv)  { (void)c; (void)argc; return argv[0]; }
 
 static struct type_method gen_methods[] = {
     { "send",     gm_send,  2, 2 },
-    { "throw",    gm_throw, 2, 2 },
+    { "throw",    gm_throw, 2, 4 },
     { "close",    gm_close, 1, 1 },
     { "__next__", gm_next,  1, 1 },
     { "__iter__", gm_iter,  1, 1 },

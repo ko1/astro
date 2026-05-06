@@ -1,0 +1,13 @@
+ok GeneratorTest test_basic
+ok GeneratorTest test_close
+ok GeneratorTest test_iter_self
+ok GeneratorTest test_return_value
+ok GeneratorTest test_send
+ok GeneratorTest test_throw_three_arg
+ok GeneratorTest test_throw_two_arg
+ok GeneratorTest test_yield_from
+ok CustomIteratorTest test_counter
+ok CustomIteratorTest test_iter_sentinel
+ok CustomIteratorTest test_next_default
+---
+passed=11 failed=0
