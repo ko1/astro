@@ -3,10 +3,12 @@
 ASTro フレームワーク上に乗せた **jq サブセット** インタプリタ。
 JSON を入力にとって [jq](https://jqlang.github.io/jq/) のフィルタ言語で
 変換する。フィルタ言語のほぼ全カテゴリ (パイプ / コンマ / 算術 / 比較 /
-論理 / `//` / 配列・オブジェクト構築 / `if-then-else-end` / `try-catch` /
-`reduce` / `foreach` / `label/break` / 変数束縛 `as $x` / ユーザ定義
-`def` / 文字列補間 / `@csv` 等のフォーマット) と 70+ の組み込み関数を
-実装。
+論理 / `//` / 配列・オブジェクト構築 / `if-then-else-end` (multi-elif
+chain サポート) / `try-catch` / `reduce` / `foreach` / `label/break` /
+変数束縛 `as $x` / ユーザ定義 `def` / 文字列補間 / `@csv` 等のフォーマット
+/ 代入 `=` `|=` `+=` etc. / path 抽出) と **100+ の組み込み関数**を
+実装。`--arg` / `--slurpfile` / `--seq` / `-e` / `-S` 等の主要 CLI
+オプションと `input` / `inputs` / `env` も動く。
 
 実装の詳細は [`docs/runtime.md`](./docs/runtime.md)、
 動く範囲は [`docs/done.md`](./docs/done.md)、
@@ -178,20 +180,23 @@ sample/nuq/
 
 ## 制限 (詳細は docs/todo.md)
 
-- **代入 / 更新代入** (`f = g`、`f |= g`、`+= -= */= //=`) — path 表現を
-  返す accessor バリアントが必要で未実装。
-- **path-aware `del / setpath / delpaths` / `leaf_paths`** — 上記と同根
-  (`paths` 自体は実装あり)。
-- **真の正規表現** (`test / match / capture / splits / sub / gsub`) —
-  `sample/astrogre` 経由で integrate する方針 (project memory
-  `regexp_astrorge`)。現状 `test` は substring 一致のみ。
+- **真の正規表現** (`match / capture / scan`) — `sample/astrogre`
+  経由で integrate する方針 (project memory `regexp_astrorge`)。
+  現状 `test` / `gsub` / `sub` / `splits` は substring 一致 (literal
+  引数なら jq 互換)。
 - **streaming pipe** — 現状 `f | g` は EMIT pool 上に集めてから `g` を
   回す。長大入力では memory 効率が良くない。
-- **多段 elif chain** — 1 段だけサポート。
-- **`input` / `inputs` / `--seq` / `--arg` / `--argjson`** などの CLI
-  入力経路。
-- **`-S` (sort_keys)** — 受け取るが json print に渡してない (no-op)。
+- **代入 LHS の `.[]` (反復) と slice** — `(.foo[]) = X` のように
+  反復子を含む path 抽出は未対応。`.foo`、`.foo.bar`、`.[N]` の
+  チェーンは動作。
 - **モジュール / `import` / `include`** — token は受け付けるが no-op。
+- **`tostream` / `fromstream`** — 未実装。
+
+これ以外は jq の主要機能 (代入、path 操作、`input` / `inputs`、
+`--arg` / `--argjson` / `--slurpfile` / `--rawfile`、`-e` / `--seq`、
+`del` / `setpath`、`recurse(f)`、`walk(f)`、`contains` 再帰、
+`while` / `until`、型 filter 群、`gsub` / `sub`、`env` / `isvalid` /
+`IN`、multi-elif など) が動作。
 
 GC は Boehm-Demers-Weiser、`VALUE` は 1-bit fixnum タグの 64-bit。
 `struct nuq_obj` の判別共用体で null / bool / double / 文字列 / 配列 /

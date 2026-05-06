@@ -22,41 +22,51 @@ ASTro framework に部品はあるが nuq には未配線。`perf.md` の
 
 ## A. 機能 — 言語仕様の穴
 
-### A-1. `=` / `|=` / `+=` / `-=` / `*=` / `/=` / `%=` / `//=` 代入
-jq の左辺は **path 表現**。`.foo[0].bar` は input から `["foo", 0,
-"bar"]` という path 配列を取り出すフィルタとして振る舞う必要があり、
-あらゆる accessor (`.foo`、`.[i]`、`.[]`、slice、…) が値ではなく path
-を返す mode を持たねばならない。
-**実装コスト**: 大。各 accessor に `path_eval` バリアントを追加 +
-`update` バリアント (元 input + path + 新値 → 新 input)。
+### ~~A-1. `=` / `|=` / `+=` / `-=` / `*=` / `/=` / `%=` / `//=` 代入~~ (DONE 2026-05-06)
+parse_assign + node_assign + extract_path で実装。limited 版だが
+実用上ほぼ困らない範囲をカバー: `.foo`、`.foo.bar`、`.[N]` チェーンが
+LHS なら全 op 動作。LHS が `.[]` (反復) や `.foo[0:].bar` (slice 経由)
+だとまだ "path expression not supported" を返す — full path mode
+(各 accessor の path_eval バリアント) は将来課題。
 
-### A-2. path-aware `del / setpath / delpaths / paths(f) / leaf_paths`
-A-1 と同根。`paths` 自体は実装あり (再帰的に key/index 列を集める)
-だが、`del(.foo)` のように **path 表現を受け取って input を変えて返す**
-やつはまだ無い。
+### A-1b. `.[]` を含む代入の path mode
+`(.foo[]) = X` で配列の各要素に X を入れる、のような jq の機能。
+extract_path を拡張するか、accessor に path_eval バリアントを追加。
+今は使う場面が少ないので未対応。
+
+### ~~A-2. path-aware `del / setpath / delpaths` / `leaf_paths`~~ (DONE 2026-05-06)
+- `setpath(p; v)` / `delpaths(ps)`: 値レベルで実装 (path 配列を受け取る形)
+- `del(path-expr)`: A-1 と同じ extract_path で sugar
+- `leaf_paths`: scalar leaf の path だけを emit する builtin
 
 ### A-3. 真の `test / match / capture / sub / gsub / splits / scan`
 `sample/astrogre` 経由で integrate する方針 (project memory
-`regexp_astrorge`)。今 `test` は substring 一致のみ、それ以外は未実装。
+`regexp_astrorge`)。
+- `test`: substring 一致のみ
+- `gsub(s; r)` / `sub(s; r)`: substring 置換のみ (literal 引数なら
+  jq 互換、regex は未対応)
+- `splits(s)`: literal split (実装済)
+- `match` / `capture` / `scan`: 未実装
 
-### A-4. multi-elif chain
-2 段以上の `elif` でパーサが落ちる。`parse_primary` の `IF` 分岐を
-再帰的に書き直す。実装コスト: 小。
+### ~~A-4. multi-elif chain~~ (DONE 2026-05-06)
+parse_if_tail を再帰化、任意段の elif が動く。
 
-### A-5. `recurse(f)` / `recurse(f; cond)`
-今の `recurse` は 0 引数 (= `..`) だけ。1 引数版は body の
-fixed-point。jaq bench の `from`, `tree-flatten` 系で必要。
+### ~~A-5. `recurse(f)` / `recurse(f; cond)`~~ (DONE 2026-05-06)
+nuq_recurse_eval を実装、DFS の fixed-point emit。
 
-### A-6. その他文字列メソッド
-`ltrimstr / rtrimstr`、`tojson` の indent option、`tostream / fromstream`、
-`ascii_downcase` の Unicode 対応、`tonumber` の base prefix。
+### ~~A-6. 文字列メソッドの穴~~ (主に DONE 2026-05-06)
+- ltrimstr / rtrimstr: 実装済
+- splits(s): 実装済
+- ascii(N): 実装済 (codepoint → UTF-8 文字列)
+- utf8bytelength: 実装済 (nuq の string は byte-based なので length と同じ)
+- 残: tostream / fromstream (要設計)
 
-### A-7. `inside / contains` の再帰版
-今は `==` 等価という超簡略版。jq の `contains` は string-in-string、
-array subset、object subset の再帰判定が必要。
+### ~~A-7. `contains` の再帰版~~ (DONE 2026-05-06)
+nuq_contains で string-in-string、array subset、object subset の
+再帰判定。型ミスマッチで jq 互換の error message。
 
-### A-8. `walk(f)` ほか高階組み込み
-`def walk(f): ...` を builtin に登録するだけ。
+### ~~A-8. `walk(f)`~~ (DONE 2026-05-06)
+nuq_walk_eval を実装。bottom-up transform。
 
 ## B. パフォーマンス (bench で具体化されたもの)
 
@@ -137,25 +147,15 @@ parallel array は維持。`add` builtin にも `all_objects` fast path を
 意味判断に迷う rewrite は入れない (副作用、エラータイミング、
 multi-emit 順序、`and`/`or` 短絡を破らない)。
 
-## C. CLI / I/O
+## C. CLI / I/O — すべて完了
 
-### C-1. `--arg name value` / `--argjson name value`
-ユーザ提供変数。`$name` で参照。
-
-### C-2. `--slurpfile` / `--rawfile`
-ファイル全体を変数に bind。
-
-### C-3. `input` / `inputs` builtin
-multi-document iteration。
-
-### C-4. `--seq` (RFC 7464)
-レコードセパレータ `\x1e` 区切り。
-
-### C-5. `-nc` のような連結 flag
-今は `-n -c` と分けないと駄目。
-
-### C-6. exit コード
-jq は match なしで 1、エラーで 2 等。今は 0/1 だけ。
+- ✅ C-1: `--arg name value` / `--argjson name value`
+- ✅ C-2: `--slurpfile` / `--rawfile`
+- ✅ C-3: `input` / `inputs` (共有 input queue)
+- ✅ C-4: `--seq` (RFC 7464)
+- ✅ C-5: short flag bundle (`-nc` 等)
+- ✅ C-6: exit codes (`-e` / `--exit-status`、no truthy → 5、error → 1)
+- ✅ -S sort_keys を json print に配線
 
 ## D. 構造化 / 内部整理
 
@@ -270,3 +270,23 @@ nuq のフィルタ言語が使える。実装コスト大、恩恵が見えな�
   4 ルール + 右辺エッジ fusion。`min-max 1M` 6.0×→9.7×、`sort 300k`
   3.5×→5.6×、`group-by 100k` 5.3×→7.3×、`try-catch 500k`
   8.79×→**12.89×**、`cumsum 500k` 5.0×→**7.5×**。詳細は done.md / perf.md。
+- v0.4 (2026-05-06): jq 互換性パス。仕様の大穴をまとめて埋めた。
+  - 代入: `=` `|=` `+=` `-=` `*=` `/=` `%=` `//=` (limited path 抽出)
+  - path 操作: `setpath` / `delpaths` / `del` / `leaf_paths`
+  - 制御 / 高階: multi-elif / `recurse(f)` / `recurse(f; cond)` /
+    `walk(f)` / `while(c;u)` / `until(c;u)` / `any(f)` / `all(f)`
+  - 型 filter: `nulls` / `booleans` / `numbers` / `strings` /
+    `arrays` / `objects` / `iterables` / `scalars`
+  - 集合: `contains` 再帰版 / `flatten` / `flatten(N)` /
+    `IN(s)` / `splits(s)`
+  - 文字列: `ltrimstr` / `rtrimstr` / `gsub(s;r)` / `sub(s;r)` /
+    `ascii(N)` / `utf8bytelength`
+  - I/O: `input` / `inputs` / `env` / `isvalid(f)`
+  - CLI: `--arg` / `--argjson` / `--slurpfile` / `--rawfile` /
+    `--seq` / `-e` / `-nc` (combined short) / `-S` (key sort) /
+    multi-elif
+  - bug fix: `node_iter` のエラーメッセージ stderr 直書きを c->error
+    経由に / `nuq_run` の出力順を「emits → error」に / value
+    helpers の "nuq error:" stderr 抑制 flag (`try` / `isvalid`)
+  338/338 tests PASS。残るは A-3 (真 regex、astrogre 待ち) と
+  A-1b (`.[]` を含む path-mode 代入)。

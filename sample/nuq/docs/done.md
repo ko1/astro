@@ -106,18 +106,19 @@ oracle として期待出力を計算** する微分テスト。jq との挙動�
 - `@sh` — シングルクォートで囲んで shell エスケープ
 - `@base64` / `@base64d` — Base64 encode / decode
 
-## 組み込み関数 (70 余り)
+## 組み込み関数 (100+)
 
 ### 0 引数
 | グループ | 名前 |
 |---|---|
-| メタ | `length` `type` `keys` `keys_unsorted` `values` `empty` `not` |
+| メタ | `length` `utf8bytelength` `type` `keys` `keys_unsorted` `values` `empty` `not` |
 | 変換 | `tostring` `to_string` `tonumber` `tojson` `fromjson` `explode` `implode` |
-| 文字列 | `ascii_upcase` `ascii_downcase` `ascii` `reverse` |
-| 集合演算 | `sort` `unique` `add` `min` `max` `to_entries` `from_entries` `paths` |
+| 文字列 | `ascii_upcase` `ascii_downcase` `reverse` |
+| 集合演算 | `sort` `unique` `add` `min` `max` `to_entries` `from_entries` `paths` `leaf_paths` `flatten` |
 | 数値 | `floor` `ceil` `round` `fabs` `abs` `sqrt` |
-| シーケンス | `first` `last` `any` `all` |
+| シーケンス | `first` `last` `any` `all` `input` `inputs` |
 | 判定 | `isnan` `isinfinite` `infinite` `nan` `isnull` |
+| 型 filter | `nulls` `booleans` `numbers` `strings` `arrays` `objects` `iterables` `scalars` |
 | 環境 | `now` `env` `input_filename` |
 | エラー | `error` `recurse` |
 
@@ -128,21 +129,26 @@ oracle として期待出力を計算** する微分テスト。jq との挙動�
 | `map(f)` | `[.[] \| f]` 等価 |
 | `map_values(f)` | 配列・オブジェクトの値を `f` で写像 (構造保持) |
 | `with_entries(f)` | `to_entries \| map(f) \| from_entries` 等価 |
+| `walk(f)` | bottom-up 木変換 |
+| `recurse(f)` | f-fixed-point の DFS emit |
 | `has(k)` | キー存在判定 (object/array 両対応) |
 | `in(o)` | input が o のキーかどうか |
-| `contains(v)` | 等価判定 (再帰版でなく eq ベース、v0 簡略) |
+| `contains(v)` | 再帰判定 (string substring / array subset / object subset) |
+| `IN(s)` | input が s の emit のいずれかに等しいか |
+| `isvalid(f)` | f がエラーなく走るなら true |
 | `range(N)` | `0..N-1` を emit |
-| `split(s)` | 文字列 split |
+| `split(s)` `splits(s)` | 文字列 split (前者は配列、後者は stream) |
 | `join(s)` | 配列 join (null は空文字、非文字列は tostring) |
-| `startswith(s)` `endswith(s)` | 接頭・接尾判定 |
-| `first(f)` `last(f)` | f の最初 / 最後の emit |
-| `sort_by(f)` | 安定ソート、key を `f` で計算 |
-| `group_by(f)` | キー値で groupby |
-| `unique_by(f)` | key で重複除去 |
-| `min_by(f)` `max_by(f)` | キー最小・最大 |
+| `flatten(N)` | 配列を N 段だけ flatten |
+| `ascii(N)` | codepoint → 1 文字 (UTF-8) |
+| `startswith(s)` `endswith(s)` `ltrimstr(s)` `rtrimstr(s)` | 接頭・接尾 |
+| `first(f)` `last(f)` `any(f)` `all(f)` | f を各要素に適用しつつ集約 |
+| `sort_by(f)` `group_by(f)` `unique_by(f)` `min_by(f)` `max_by(f)` | key 関数版 |
 | `getpath(p)` | path 配列で index 連鎖 |
+| `del(path-expr)` | path 削除 (sugar for delpaths) |
+| `delpaths(ps)` | 複数 path をまとめて削除 |
 | `indices(s)` `index(s)` | 文字列内位置の全列挙 / 最初 |
-| `test(s)` | substring 判定 (v0 simplified、real regex は todo) |
+| `test(s)` | substring 判定 (real regex は todo) |
 
 ### 2 引数
 | 名前 | 意味 |
@@ -150,11 +156,27 @@ oracle として期待出力を計算** する微分テスト。jq との挙動�
 | `range(M; N)` | `M..N-1` |
 | `limit(N; f)` | 先頭 N 個まで emit (負の数はエラー) |
 | `nth(N; f)` | N 番目の emit (0-based) |
+| `recurse(f; cond)` | cond truthy の間だけ recurse |
+| `while(cond; update)` | cond の間 emit |
+| `until(cond; update)` | cond truthy になるまで update、最終を emit |
+| `setpath(p; v)` | path に値を設定 |
+| `gsub(s; r)` `sub(s; r)` | substring 置換 (literal 引数なら jq 互換) |
 
 ### 3 引数
 | 名前 | 意味 |
 |------|------|
 | `range(M; N; S)` | step S での range |
+
+### 代入オペレータ
+| 名前 | 意味 |
+|------|------|
+| `path = e`   | path を e で置き換え |
+| `path \|= f` | path に f を適用して置き換え |
+| `path += e` `-=` `*=` `/=` `%=` | path に対応 op を適用 |
+| `path //= e` | path が falsy / null なら e で置き換え |
+
+LHS は `.foo` / `.foo.bar` / `.[N]` チェーンに限定 (`.[]` 反復含みは
+未対応)。
 
 ## CLI
 
@@ -279,3 +301,44 @@ oracle として期待出力を計算** する微分テスト。jq との挙動�
   - `keys_aggregate` (real): 3.25× → **3.6× vs jq** (`[X] | add`
     fusion で `add` builtin の dispatch を 1 step 短縮)
   - `sum_score` (real): 1.55× → 1.48× (誤差圏)
+
+## jq 互換性パス (v0.4)
+
+仕様の大穴をまとめて埋め、341 件 → builtin 100+ 程度に拡張。
+
+### 言語仕様
+- **代入オペレータ**: `=` `|=` `+=` `-=` `*=` `/=` `%=` `//=`
+  (path 抽出 `.foo`、`.foo.bar`、`.[N]` チェーンに対応)
+- **multi-elif chain**: 任意段数サポート (parse_if_tail 再帰)
+- **path 操作**: `setpath(p; v)` / `delpaths(ps)` / `del(path)` /
+  `leaf_paths`
+
+### 高階・制御
+- `recurse(f)` / `recurse(f; cond)` / `walk(f)`
+- `while(cond; update)` / `until(cond; update)`
+- `any(f)` / `all(f)` (1-arg version)
+
+### 型 / 集合演算
+- 型 filter: `nulls` / `booleans` / `numbers` / `strings` /
+  `arrays` / `objects` / `iterables` / `scalars`
+- `flatten` / `flatten(N)` / `IN(s)` / `isvalid(f)` / `splits(s)`
+- `contains` を完全再帰版に + 型ミスマッチで jq 互換 error
+
+### 文字列
+- `ltrimstr` / `rtrimstr` / `gsub(s; r)` / `sub(s; r)` (substring)
+- `ascii(N)` / `utf8bytelength`
+
+### CLI / I/O
+- `--arg` / `--argjson` / `--slurpfile` / `--rawfile`
+- `input` / `inputs` / `env` (環境変数 object)
+- `--seq` (RFC 7464) / `-e` / `--exit-status`
+- short flag bundle (`-nc` 等) / `-S` (sort_keys 配線)
+
+### バグ修正
+- `node_iter` のエラー stderr 直書き → c->error 経由 (try / `?`
+  で stderr 汚染が消える)
+- `nuq_run` の出力順を「emits → error」に (jq compatible)
+- value-helper の "nuq error: ..." stderr print を try / isvalid 中
+  だけ抑制 (`nuq_suppress_error_print` カウンタ)
+
+338/338 tests PASS。
