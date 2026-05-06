@@ -1,0 +1,6 @@
+ok DictViewSetOpsExtraTest test_keys_difference
+ok DictViewSetOpsExtraTest test_keys_xor
+ok NamedtupleDefaultsTest test_basic
+ok NamedtupleDefaultsTest test_kwargs_with_default
+---
+passed=4 failed=0

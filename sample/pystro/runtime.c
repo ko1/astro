@@ -1270,6 +1270,16 @@ py_sub(CTX *c, VALUE a, VALUE b)
         VALUE av[2] = { a, b };
         return sm_difference(c, 2, av);
     }
+    // list - list as set difference (dict_keys-style courtesy).
+    if ((py_is_list(a) || py_is_any_set(a)) && (py_is_list(b) || py_is_any_set(b))) {
+        VALUE r = py_make_set();
+        size_t na = PY_PTR(a)->list.len;
+        for (size_t i = 0; i < na; i++) {
+            VALUE x = PY_PTR(a)->list.items[i];
+            if (!py_contains(c, b, x)) py_dict_set(c, r, x, PY_NONE);
+        }
+        return r;
+    }
     VALUE r = py_try_binop_dunder(c, "__sub__", a, b);
     if (r) return r;
     r = py_try_binop_dunder(c, "__rsub__", b, a);
@@ -1577,6 +1587,22 @@ py_bit_xor(CTX *c, VALUE a, VALUE b)
         for (size_t i = 0; i < bb->elen; i++)
             if (pydict_entry_live(bb, i) && !py_contains(c, a, bb->entries[i].key))
                 py_dict_set(c, r, bb->entries[i].key, PY_NONE);
+        return r;
+    }
+    // list ^ list as set symmetric_difference.
+    if ((py_is_list(a) || py_is_any_set(a)) && (py_is_list(b) || py_is_any_set(b))) {
+        VALUE r = py_make_set();
+        size_t na = PY_PTR(a)->list.len;
+        size_t nb = PY_PTR(b)->list.len;
+        // Use list iteration (works for both list & set internal storage).
+        struct py_iter ita; py_iter_init(c, &ita, a);
+        VALUE x;
+        while (py_iter_next(c, &ita, &x))
+            if (!py_contains(c, b, x)) py_dict_set(c, r, x, PY_NONE);
+        struct py_iter itb; py_iter_init(c, &itb, b);
+        while (py_iter_next(c, &itb, &x))
+            if (!py_contains(c, a, x)) py_dict_set(c, r, x, PY_NONE);
+        (void)na; (void)nb;
         return r;
     }
     if (!py_int_or_bool(a) || !py_int_or_bool(b))

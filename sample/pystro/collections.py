@@ -209,24 +209,38 @@ class deque:
 
 # namedtuple — returns a class that exposes fields both by index and
 # by attribute via __getattr__.
-def namedtuple(typename, fields):
+def namedtuple(typename, fields, *, defaults=None):
     if isinstance(fields, str):
         fields = fields.replace(",", " ").split()
     fields = list(fields)
+    # defaults align right-most; e.g. fields=[a,b,c], defaults=[10,20]
+    # → c=20 default, b=10 default, a required.
+    field_defaults = {}
+    if defaults:
+        defaults = list(defaults)
+        for i, d in enumerate(defaults):
+            field_defaults[fields[len(fields) - len(defaults) + i]] = d
 
     class _NT:
         _fields = tuple(fields)
+        _field_defaults = dict(field_defaults)
         def __init__(self, *args, **kwargs):
             if args and kwargs:
-                raise TypeError("mix args and kwargs not supported")
-            if kwargs:
-                self._values = tuple(kwargs[f] for f in self._fields)
-            else:
-                if len(args) != len(self._fields):
-                    raise TypeError("namedtuple arity mismatch")
-                self._values = args
+                # mix is OK in CPython namedtuple; fill remaining via kwargs
+                pass
+            values = []
+            for i, f in enumerate(self._fields):
+                if i < len(args):
+                    values.append(args[i])
+                elif f in kwargs:
+                    values.append(kwargs[f])
+                elif f in self._field_defaults:
+                    values.append(self._field_defaults[f])
+                else:
+                    raise TypeError(f"missing arg {f}")
+            self._values = tuple(values)
             for i, name in enumerate(self._fields):
-                setattr(self, name, args[i] if args else kwargs[name])
+                setattr(self, name, self._values[i])
         def __getitem__(self, i):
             if isinstance(i, str):
                 idx = self._fields.index(i)
