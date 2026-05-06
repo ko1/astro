@@ -1,0 +1,10 @@
+ok IntParseTest test_empty
+ok IntParseTest test_invalid
+ok IntParseTest test_minus
+ok IntParseTest test_plus
+ok IntParseTest test_signed_with_base
+ok IntParseTest test_underscore
+ok IntParseTest test_whitespace
+ok IntParseTest test_with_base
+---
+passed=8 failed=0

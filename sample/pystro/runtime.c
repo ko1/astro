@@ -7942,6 +7942,12 @@ bi_int(CTX *c, int argc, VALUE *argv)
                 py_raise_exc(c, c->EXC_ValueError, "int() base must be 2..36 or 0");
         }
         // Handle 0x / 0b / 0o prefix when base==0 or matches.
+        // Accept a leading +/- before any prefix (CPython allows this).
+        char sign = 0;
+        if (p[0] == '+' || p[0] == '-') {
+            sign = p[0];
+            p++;
+        }
         if (base == 0 || base == 16) {
             if ((p[0] == '0') && (p[1] == 'x' || p[1] == 'X')) { p += 2; base = 16; }
         }
@@ -7952,6 +7958,11 @@ bi_int(CTX *c, int argc, VALUE *argv)
             if ((p[0] == '0') && (p[1] == 'o' || p[1] == 'O')) { p += 2; base = 8; }
         }
         if (base == 0) base = 10;
+        // Re-attach the sign so mpz_set_str sees a sensible string.
+        if (sign == '-') {
+            p--;
+            *p = '-';
+        }
         // Strip embedded underscores (Python allows them as digit
         // grouping but only between digits; we accept any position).
         char *q = p;
