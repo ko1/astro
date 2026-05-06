@@ -549,6 +549,7 @@ void korb_module_include(struct korb_class *klass, struct korb_class *mod) {
         }
     }
     for (struct korb_const_entry *ce = mod->constants; ce; ce = ce->next) {
+        
         if (!korb_const_has(klass, ce->name)) korb_const_set(klass, ce->name, ce->value);
     }
     /* Record the include for ancestors / is_a?.  Skip duplicates. */

@@ -104,11 +104,25 @@ static VALUE module_attr_accessor(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE module_include(CTX *c, VALUE self, int argc, VALUE *argv) {
+    
+    /* Top-level `include M` forwards to Object — that's how a file's
+     * `include ConstantSpecs::ModuleA` (no enclosing class/module)
+     * makes M's constants reachable as toplevel constants. */
+    if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) {
+        if (!SPECIAL_CONST_P(self) && BUILTIN_TYPE(self) == T_OBJECT &&
+            self == korb_vm->main_obj) {
+            self = (VALUE)korb_vm->object_class;
+        } else {
+            return self;
+        }
+    }
     /* Simplified include: copy module's methods/constants into the class.
      * Real Ruby inserts the module into the ancestor chain; we flatten. */
     if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return self;
     struct korb_class *klass = (struct korb_class *)self;
+    
     for (int i = 0; i < argc; i++) {
+        
         if (BUILTIN_TYPE(argv[i]) != T_MODULE && BUILTIN_TYPE(argv[i]) != T_CLASS) continue;
         korb_module_include(klass, (struct korb_class *)argv[i]);
         /* Fire the module's `included` hook (defined as a class

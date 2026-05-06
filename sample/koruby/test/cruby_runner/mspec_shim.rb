@@ -245,7 +245,28 @@ def eql(o); MSpecMatcher.new(:eql, o); end
 def respond_to(name); MSpecMatcher.new(:respond_to, name); end
 def raise_error(klass = StandardError, msg = nil); MSpecMatcher.new(:raise_error, [klass, msg]); end
 def raise_exception(klass = Exception, msg = nil); MSpecMatcher.new(:raise_error, [klass, msg]); end
-def include(*items); MSpecMatcher.new(:include, items); end
+def __mspec_include_matcher(*items); MSpecMatcher.new(:include, items); end
+# Top-level `include` ambiguous: in mspec test bodies it's a matcher
+# (`arr.should include(1)`), but in Ruby it's the Module-include keyword
+# (`include Foo` makes Foo's constants reachable).  Disambiguate by arg
+# type: a single Module/Class arg means real include; anything else is
+# the matcher form.  Modules and Classes can't be values one wants to
+# match in `include`, so this never actually shadows.
+def include(*items)
+  if items.size >= 1 && items.all? { |i|
+    !i.nil? && (i.class == Module || i.class == Class || (i.is_a?(Class) && (i == Module || i.ancestors.include?(Module))))
+  }
+    # forward to Module#include via the receiver's include
+    if self.is_a?(Module)
+      items.each { |m| self.send(:include, m) }
+      return self
+    else
+      Object.send(:include, *items)
+      return self
+    end
+  end
+  MSpecMatcher.new(:include, items)
+end
 
 class Object
   # mspec mock helpers as no-ops on regular objects.  Tests use these

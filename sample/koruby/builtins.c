@@ -248,6 +248,13 @@ void korb_init_builtins(void) {
     DEF(cMod, "attr_writer",   module_attr_writer,   -1);
     DEF(cMod, "attr_accessor", module_attr_accessor, -1);
     DEF(cMod, "include",       module_include,       -1);
+    /* Toplevel `include M` — main / Object forwards to Object#include.
+     * `extend self` and similar; expose on Object too as a private
+     * method so any context (including main / class bodies of plain
+     * objects) can call it. */
+    DEF(cObj, "include",       module_include,       -1);
+    DEF(cObj, "private",       module_private,       -1);
+    DEF(cObj, "public",        module_public,        -1);
     DEF(cMod, "private",       module_private,       -1);
     DEF(cMod, "public",        module_public,        -1);
     DEF(cMod, "protected",     module_protected,     -1);
