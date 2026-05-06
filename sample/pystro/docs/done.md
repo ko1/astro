@@ -425,7 +425,7 @@ bytecode loop、Boehm GC vs CPython の refcount + cycle collector)。
 
 ## R16 (2026-05-06)
 
-138 → 183 unit tests passing (added 45+ new test files).
+138 → 192 unit tests passing (added 54 new test files).
 
 ### parser
 
@@ -520,3 +520,16 @@ bytecode loop、Boehm GC vs CPython の refcount + cycle collector)。
 - exception __traceback__ attr always exists (None for top-level raises)
 - positional class match patterns via __match_args__: case P(0, 0)
   resolves field names from P.__match_args__ at match time
+- with-stmt __exit__ raise chains __context__ (matches CPython
+  exception chaining)
+- dataclass(frozen|eq|order) kwargs honoured (FrozenInstanceError on
+  assign-after-init; eq=False uses identity; order=True synthesises
+  __lt__/__le__/__gt__/__ge__ from field tuple)
+- statistics.harmonic_mean / geometric_mean / multimode added
+- ChainMap mutators (__setitem__/pop/clear); namedtuple._make
+- Counter(dict) / Counter(**kwargs) initialise via values
+- str.split(None) → whitespace-runs split (was: TypeError)
+- str.format_map uses py_list_get so user mapping subclasses work
+- json.dumps decodes UTF-8 → codepoints, escapes \\uXXXX (with
+  surrogate pairs for U+10000+); ensure_ascii=False emits raw UTF-8
+- complex(str) parses 1+2j / -j / pure / paren forms
