@@ -1394,6 +1394,13 @@ parse_atom(void)
       case T_TRUE:  tok_pos++; return ALLOC_node_const_true();
       case T_FALSE: tok_pos++; return ALLOC_node_const_false();
       case T_NONE:  tok_pos++; return ALLOC_node_const_none();
+      case T_DOT:
+        // `...` ellipsis literal: three dots.
+        if (peek_tok(1)->kind == T_DOT && peek_tok(2)->kind == T_DOT) {
+            tok_pos += 3;
+            return ALLOC_node_gref(intern_name("Ellipsis", 8));
+        }
+        break;
       case T_LPAREN: return parse_paren_or_tuple();
       case T_LBRACK: return parse_list_literal();
       case T_LBRACE: return parse_dict_or_set_literal();

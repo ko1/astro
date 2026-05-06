@@ -1,0 +1,9 @@
+ok EllipsisTest test_in_function_body
+ok EllipsisTest test_literal
+ok EllipsisTest test_type
+ok HashNoneTest test_unhashable_via_None
+ok WalrusTest test_in_comp
+ok WalrusTest test_in_if
+ok WalrusTest test_in_while
+---
+passed=7 failed=0

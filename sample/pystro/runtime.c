@@ -1830,6 +1830,15 @@ py_hash(CTX *c, VALUE v)
       case PY_T_INSTANCE: {
         // User-defined __hash__: call it and convert to int.
         VALUE cls = PY_OBJ_VAL(o->inst.cls);
+        // __hash__ explicitly set to None makes the type unhashable.
+        if (py_class_has_method(cls, "__hash__")) {
+            VALUE hm0 = py_class_lookup_method(cls, "__hash__");
+            if (hm0 == PY_NONE) {
+                py_raise_exc(c, c->EXC_TypeError,
+                             "unhashable type: '%s'", o->inst.cls->cls.name);
+                return 0;
+            }
+        }
         VALUE hm = py_class_lookup_method(cls, "__hash__");
         if (hm != PY_NONE) {
             VALUE av[1] = { v };
