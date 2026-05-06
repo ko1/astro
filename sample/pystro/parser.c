@@ -3964,7 +3964,28 @@ parse_simple_stmt(void)
             NODE *load_ann = ALLOC_node_class_method_get(intern_name("__annotations__", 15));
             NODE *key = ALLOC_node_const_str(nm);
             NODE *sset = ALLOC_node_subscript_set(load_ann, key, ann_expr);
-            track_ann = ALLOC_node_seq(set_ann, sset);
+            // Wrap in try/except NameError, AttributeError, TypeError so
+            // class-body annotations referencing undefined names (common
+            // before `from __future__ import annotations`) don't kill
+            // the class definition.
+            NODE *fallback_key = ALLOC_node_const_str(nm);
+            NODE *fallback = ALLOC_node_subscript_set(
+                ALLOC_node_class_method_get(intern_name("__annotations__", 15)),
+                fallback_key, ALLOC_node_const_str(nm));
+            struct pyhandler hs[1] = {0};
+            // Catch tuple of common issues.
+            NODE *exc_tuple_items[3] = {
+                ALLOC_node_gref(intern_name("NameError", 9)),
+                ALLOC_node_gref(intern_name("AttributeError", 14)),
+                ALLOC_node_gref(intern_name("TypeError", 9)),
+            };
+            size_t etb = node_table_reserve(exc_tuple_items, 3);
+            hs[0].exc_class = ALLOC_node_make_tuple((uint32_t)etb, 3);
+            hs[0].body = fallback;
+            size_t hidx = handlers_reserve(hs, 1);
+            NODE *try_node = ALLOC_node_try(sset, (uint32_t)hidx, 1,
+                                             ALLOC_node_nop(), ALLOC_node_nop());
+            track_ann = ALLOC_node_seq(set_ann, try_node);
         }
         if (match_tok(T_ASSIGN)) {
             NODE *rhs = parse_expr_list();

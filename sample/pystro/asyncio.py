@@ -13,19 +13,30 @@
 import time as _time
 
 
+def _drain(g):
+    """If g is a generator (pystro async def → gen when body has yield),
+    iterate to completion and return the StopIteration.value."""
+    if hasattr(g, "send") and hasattr(g, "close"):
+        try:
+            while True:
+                next(g)
+        except StopIteration as e:
+            return getattr(e, "value", None)
+    return g
+
+
 def run(coro):
     if callable(coro):
-        return coro()
-    return coro
+        coro = coro()
+    return _drain(coro)
 
 
 def gather(*coros):
     out = []
     for c in coros:
         if callable(c):
-            out.append(c())
-        else:
-            out.append(c)
+            c = c()
+        out.append(_drain(c))
     return out
 
 

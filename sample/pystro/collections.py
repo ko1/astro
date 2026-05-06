@@ -455,6 +455,10 @@ class _AbcBase:
 # return True for any instance via metaclass override.
 
 class _AbcMeta(type):
+    # Allow `Mapping[str, str]` subscript form by returning the class
+    # itself (PEP 585-style).
+    def __getitem__(cls, params):
+        return cls
     def __instancecheck__(cls, obj):
         nm = cls.__name__
         if nm == "Iterable":

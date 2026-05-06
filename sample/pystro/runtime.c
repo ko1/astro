@@ -2624,12 +2624,22 @@ py_list_get(CTX *c, VALUE seq, VALUE idx)
     if (py_is_dict(seq)) {
         return py_dict_get(c, seq, idx);
     }
-    // `cls[arg]` — class subscript via __class_getitem__.
+    // `cls[arg]` — class subscript via __class_getitem__ or
+    // metaclass `__getitem__`.
     if (py_is_class(seq)) {
         VALUE m = py_class_lookup_method(seq, "__class_getitem__");
         if (m != PY_NONE) {
             VALUE av[2] = { seq, idx };
             return py_apply(c, m, 2, av);
+        }
+        // Metaclass __getitem__: e.g. _AbcMeta in collections.abc.
+        VALUE meta = py_class_lookup_method(seq, "__metaclass__");
+        if (meta != PY_NONE && py_is_class(meta)) {
+            VALUE mg = py_class_lookup_method(meta, "__getitem__");
+            if (mg != PY_NONE) {
+                VALUE av[2] = { seq, idx };
+                return py_apply(c, mg, 2, av);
+            }
         }
         // PEP 585: built-in container generic alias.  list[int],
         // dict[str, int], tuple[int, ...], set[int], frozenset[int],

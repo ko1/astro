@@ -145,3 +145,21 @@ Warning = Warning
 ZeroDivisionError = ZeroDivisionError
 
 __name__ = "builtins"
+
+# Common typing-module names re-exposed at module-import-time so
+# annotation expressions like `x: ClassVar[T]` don't fail when the
+# user forgot `from typing import ClassVar`.  pystro doesn't enforce
+# annotations at runtime, so these are just no-op subscript-passthrough.
+class _AnnotationPassthrough:
+    def __init__(self, name): self._name = name
+    def __getitem__(self, params): return self
+    def __repr__(self): return self._name
+    def __call__(self, *a, **kw): return self if not a else a[0]
+ClassVar = _AnnotationPassthrough("ClassVar")
+Final = _AnnotationPassthrough("Final")
+Literal = _AnnotationPassthrough("Literal")
+Annotated = _AnnotationPassthrough("Annotated")
+Self = _AnnotationPassthrough("Self")
+TypeAlias = _AnnotationPassthrough("TypeAlias")
+LiteralString = _AnnotationPassthrough("LiteralString")
+NoReturn = _AnnotationPassthrough("NoReturn")

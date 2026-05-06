@@ -74,6 +74,22 @@ def _build_dataclass(cls, fields):
     cls.__repr__ = _repr
     cls.__eq__   = _eq
     cls._fields  = tuple(fields)
+    # CPython stores __dataclass_fields__ as a dict { name: Field }.
+    # Provide it for code that reaches for it (e.g. _colorize).
+    cls.__dataclass_fields__ = {f: _Field() for f in fields}
+    # CPython also exposes __dataclass_params__ and a flag.
+    class _Params:
+        init = True
+        repr = True
+        eq = True
+        order = False
+        unsafe_hash = False
+        frozen = False
+        match_args = True
+        kw_only = False
+        slots = False
+        weakref_slot = False
+    cls.__dataclass_params__ = _Params()
     return cls
 
 
