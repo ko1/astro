@@ -9068,9 +9068,17 @@ static VALUE
 bi_dict(CTX *c, int argc, VALUE *argv)
 {
     VALUE r = py_make_dict();
-    // dict(another_dict) — copy.
+    // dict(dict-subclass-instance) — unwrap primary.
+    VALUE src_dict = (VALUE)0;
     if (argc >= 1 && py_is_dict(argv[0])) {
-        struct pydict *src = PY_PTR(argv[0])->dict;
+        src_dict = argv[0];
+    } else if (argc >= 1 && py_is_instance(argv[0])
+               && PY_PTR(argv[0])->inst.primary
+               && py_is_dict(PY_PTR(argv[0])->inst.primary)) {
+        src_dict = PY_PTR(argv[0])->inst.primary;
+    }
+    if (src_dict) {
+        struct pydict *src = PY_PTR(src_dict)->dict;
         for (size_t i = 0; i < src->elen; i++)
             if (pydict_entry_live(src, i))
                 py_dict_set(c, r, src->entries[i].key, src->entries[i].value);
@@ -9852,6 +9860,42 @@ bi_eval(CTX *c, int argc, VALUE *argv)
     return r;
 }
 
+// Snapshot every defined global name so we can find names newly added
+// (or changed) during exec/eval, and write them back to the user's
+// supplied namespace dict.
+static void
+ns_snapshot(CTX *c, struct pydict **out)
+{
+    *out = NULL;
+    VALUE d = py_make_dict();
+    struct pyglobals *g = c->globals;
+    for (size_t i = 0; i < g->size; i++) {
+        if (!g->entries[i].defined) continue;
+        VALUE k = py_make_str(g->entries[i].name, strlen(g->entries[i].name));
+        py_dict_set(c, d, k, g->entries[i].value);
+    }
+    *out = PY_PTR(d)->dict;
+}
+
+// After exec/eval, copy back into ns_dict any globals that are now
+// defined or whose values changed since the snapshot.
+static void
+ns_writeback(CTX *c, VALUE ns_dict, struct pydict *snapshot)
+{
+    if (ns_dict == PY_NONE || !py_is_dict(ns_dict) || !snapshot) return;
+    struct pyglobals *g = c->globals;
+    for (size_t i = 0; i < g->size; i++) {
+        if (!g->entries[i].defined) continue;
+        VALUE k = py_make_str(g->entries[i].name, strlen(g->entries[i].name));
+        uint64_t h = py_hash(c, k);
+        int32_t prev = pydict_find(c, snapshot, k, h);
+        VALUE prev_v = prev >= 0 ? snapshot->entries[prev].value : (VALUE)0;
+        if (prev < 0 || prev_v != g->entries[i].value) {
+            py_dict_set(c, ns_dict, k, g->entries[i].value);
+        }
+    }
+}
+
 static VALUE
 bi_exec(CTX *c, int argc, VALUE *argv)
 {
@@ -9865,7 +9909,10 @@ bi_exec(CTX *c, int argc, VALUE *argv)
     struct ns_save sg = { 0 }, sl = { 0 };
     if (argc >= 2) ns_inject(c, argv[1], &sg);
     if (argc >= 3) ns_inject(c, argv[2], &sl);
+    struct pydict *snap = NULL;
+    if (argc >= 2 && py_is_dict(argv[1])) ns_snapshot(c, &snap);
     EVAL(c, body);
+    if (snap) ns_writeback(c, argv[1], snap);
     ns_restore(c, &sl);
     ns_restore(c, &sg);
     return PY_NONE;
@@ -12376,7 +12423,17 @@ install_builtins(CTX *c)
     c->EXC_NameError        = py_make_class("NameError",        c->EXC_Exception, true);
     c->EXC_UnboundLocalError = py_make_class("UnboundLocalError", c->EXC_NameError, true);
     c->EXC_SystemError       = py_make_class("SystemError",      c->EXC_Exception, true);
-    c->EXC_PendingDeprecationWarning = py_make_class("PendingDeprecationWarning", c->EXC_Exception, true);
+    c->EXC_Warning           = py_make_class("Warning",           c->EXC_Exception, true);
+    c->EXC_DeprecationWarning = py_make_class("DeprecationWarning", c->EXC_Warning, true);
+    c->EXC_PendingDeprecationWarning = py_make_class("PendingDeprecationWarning", c->EXC_Warning, true);
+    c->EXC_UserWarning       = py_make_class("UserWarning",       c->EXC_Warning, true);
+    c->EXC_FutureWarning     = py_make_class("FutureWarning",     c->EXC_Warning, true);
+    c->EXC_RuntimeWarning    = py_make_class("RuntimeWarning",    c->EXC_Warning, true);
+    c->EXC_SyntaxWarning     = py_make_class("SyntaxWarning",     c->EXC_Warning, true);
+    c->EXC_ImportWarning     = py_make_class("ImportWarning",     c->EXC_Warning, true);
+    c->EXC_UnicodeWarning    = py_make_class("UnicodeWarning",    c->EXC_Warning, true);
+    c->EXC_BytesWarning      = py_make_class("BytesWarning",      c->EXC_Warning, true);
+    c->EXC_ResourceWarning   = py_make_class("ResourceWarning",   c->EXC_Warning, true);
     c->EXC_LookupError       = py_make_class("LookupError",       c->EXC_Exception, true);
     c->EXC_IndexError       = py_make_class("IndexError",       c->EXC_LookupError, true);
     c->EXC_KeyError         = py_make_class("KeyError",         c->EXC_LookupError, true);
@@ -12464,6 +12521,17 @@ install_builtins(CTX *c)
     py_global_define(c, "EOFError",             c->EXC_EOFError);
     py_global_define(c, "UnboundLocalError",    c->EXC_UnboundLocalError);
     py_global_define(c, "SystemError",          c->EXC_SystemError);
+    py_global_define(c, "Warning",              c->EXC_Warning);
+    py_global_define(c, "DeprecationWarning",   c->EXC_DeprecationWarning);
+    py_global_define(c, "PendingDeprecationWarning", c->EXC_PendingDeprecationWarning);
+    py_global_define(c, "UserWarning",          c->EXC_UserWarning);
+    py_global_define(c, "FutureWarning",        c->EXC_FutureWarning);
+    py_global_define(c, "RuntimeWarning",       c->EXC_RuntimeWarning);
+    py_global_define(c, "SyntaxWarning",        c->EXC_SyntaxWarning);
+    py_global_define(c, "ImportWarning",        c->EXC_ImportWarning);
+    py_global_define(c, "UnicodeWarning",       c->EXC_UnicodeWarning);
+    py_global_define(c, "BytesWarning",         c->EXC_BytesWarning);
+    py_global_define(c, "ResourceWarning",      c->EXC_ResourceWarning);
     py_global_define(c, "__pystro_del__",   py_make_builtin("__pystro_del__", bi_pystro_del, 2, 2));
     py_global_define(c, "__pystro_yield_from__", py_make_builtin("__pystro_yield_from__", bi_pystro_yield_from, 1, 1));
     py_global_define(c, "__pystro_pos__", py_make_builtin("__pystro_pos__", bi_pystro_pos, 1, 1));

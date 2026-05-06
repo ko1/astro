@@ -200,6 +200,67 @@ class _Path:
             return (p, "")
         return (p[:i], p[i:])
 
+    @staticmethod
+    def normcase(p):
+        # POSIX: identity (case-sensitive).
+        return p
+
+    @staticmethod
+    def split(p):
+        slash = p.rfind("/")
+        if slash < 0: return ("", p)
+        if slash == 0: return ("/", p[1:])
+        return (p[:slash], p[slash+1:])
+
+    @staticmethod
+    def commonpath(paths):
+        if not paths: return ""
+        parts_list = [p.split("/") for p in paths]
+        out = []
+        for parts in zip(*parts_list):
+            if all(p == parts[0] for p in parts):
+                out.append(parts[0])
+            else:
+                break
+        return "/".join(out)
+
+    @staticmethod
+    def commonprefix(paths):
+        if not paths: return ""
+        s1 = min(paths)
+        s2 = max(paths)
+        for i, c in enumerate(s1):
+            if c != s2[i]:
+                return s1[:i]
+        return s1
+
+    @staticmethod
+    def relpath(path, start="."):
+        # Simple: strip common prefix.
+        path_parts = _split_path(_Path.normpath(path))
+        start_parts = _split_path(_Path.normpath(start))
+        i = 0
+        while i < len(path_parts) and i < len(start_parts) and path_parts[i] == start_parts[i]:
+            i += 1
+        rel = [".."] * (len(start_parts) - i) + path_parts[i:]
+        if not rel: return "."
+        return "/".join(rel)
+
+    @staticmethod
+    def realpath(path):
+        return _Path.abspath(path)
+
+    @staticmethod
+    def abspath(path):
+        if path.startswith("/"): return _Path.normpath(path)
+        return _Path.normpath(__pystro_getcwd__() + "/" + path)
+
+
+def _split_path(p):
+    if not p: return []
+    parts = p.split("/")
+    return [x for x in parts if x and x != "."]
+
 path = _Path()
 
 # Path/separator constants.

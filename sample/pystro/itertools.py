@@ -256,10 +256,24 @@ def permutations(iterable, r=None):
             return
 
 
+def batched(iterable, n):
+    """3.12+ itertools.batched."""
+    if n < 1:
+        raise ValueError("n must be at least one")
+    batch = []
+    for item in iterable:
+        batch.append(item)
+        if len(batch) == n:
+            yield tuple(batch)
+            batch = []
+    if batch:
+        yield tuple(batch)
+
+
 __all__ = [
     "chain", "count", "repeat", "cycle", "islice",
     "takewhile", "dropwhile", "accumulate",
     "product", "combinations", "combinations_with_replacement",
     "permutations", "compress", "filterfalse", "starmap",
-    "zip_longest", "groupby", "tee", "pairwise",
+    "zip_longest", "groupby", "tee", "pairwise", "batched",
 ]

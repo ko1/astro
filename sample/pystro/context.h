@@ -420,6 +420,16 @@ typedef struct CTX_struct {
     VALUE EXC_UnboundLocalError;
     VALUE EXC_SystemError;
     VALUE EXC_PendingDeprecationWarning;
+    VALUE EXC_Warning;
+    VALUE EXC_DeprecationWarning;
+    VALUE EXC_UserWarning;
+    VALUE EXC_FutureWarning;
+    VALUE EXC_RuntimeWarning;
+    VALUE EXC_SyntaxWarning;
+    VALUE EXC_ImportWarning;
+    VALUE EXC_UnicodeWarning;
+    VALUE EXC_BytesWarning;
+    VALUE EXC_ResourceWarning;
 
 #define PYSTRO_EXC_LIST(X) \
     X(BaseException) X(Exception) X(SystemExit) X(KeyboardInterrupt) \
@@ -434,7 +444,10 @@ typedef struct CTX_struct {
     X(UnicodeEncodeError) X(ReferenceError) X(OSError) X(FileNotFoundError) \
     X(PermissionError) X(NotADirectoryError) X(IsADirectoryError) \
     X(TimeoutError) X(BrokenPipeError) X(InterruptedError) \
-    X(ConnectionError) X(BlockingIOError) X(ChildProcessError)
+    X(ConnectionError) X(BlockingIOError) X(ChildProcessError) \
+    X(Warning) X(DeprecationWarning) X(UserWarning) X(FutureWarning) \
+    X(RuntimeWarning) X(SyntaxWarning) X(ImportWarning) X(UnicodeWarning) \
+    X(BytesWarning) X(ResourceWarning)
 
     // Synthetic type classes for things that don't have a builtin_ctor:
     VALUE TYPE_NoneType;
