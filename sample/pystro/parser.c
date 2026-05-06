@@ -4232,6 +4232,19 @@ parse_assignable_target(NODE *rhs)
                     if (peek_tok(0)->kind != T_RBRACK) step = parse_expr();
                 }
             }
+            // `a[i, j]` — tuple subscript; pack into a tuple.
+            if (!is_slice && peek_tok(0)->kind == T_COMMA) {
+                NODE *items[16];
+                int nn = 1;
+                items[0] = start;
+                while (match_tok(T_COMMA)) {
+                    if (peek_tok(0)->kind == T_RBRACK) break;
+                    if (nn >= 16) parse_error("too many tuple subscript items");
+                    items[nn++] = parse_expr();
+                }
+                size_t base = node_table_reserve(items, nn);
+                start = ALLOC_node_make_tuple((uint32_t)base, (uint32_t)nn);
+            }
             expect(T_RBRACK, "']'");
             if (is_slice) {
                 trs[ntr].kind = TR_SLICE;

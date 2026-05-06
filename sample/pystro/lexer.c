@@ -273,11 +273,38 @@ read_string_lit(int line, char quote, bool is_fstr)
     if (triple) src_pos += 2;
     size_t cap = 32, len = 0;
     char *buf = (char *)GC_malloc_atomic(cap);
+    // PEP 701 (3.12+): inside an f-string `{...}` part, the same quote
+    // can appear as a string literal (e.g. `f'{' '.join(x)}'`).  Track
+    // brace depth so we don't treat the inner quote as the f-string
+    // terminator.
+    int brace_depth = 0;
     while (peek(0) != '\0') {
         if (triple) {
             if (peek(0) == quote && peek(1) == quote && peek(2) == quote) break;
         } else {
-            if (peek(0) == quote) break;
+            if (peek(0) == quote && brace_depth == 0) break;
+        }
+        if (is_fstr) {
+            char c = peek(0);
+            if (c == '{') {
+                if (brace_depth == 0 && peek(1) == '{') {
+                    // Escaped `{{` in literal text — keep both bytes;
+                    // f-string body parser collapses to one `{`.
+                    if (len + 2 + 1 > cap) { cap *= 2; buf = (char *)GC_realloc(buf, cap); }
+                    buf[len++] = '{'; buf[len++] = '{';
+                    src_pos += 2;
+                    continue;
+                }
+                brace_depth++;
+            } else if (c == '}') {
+                if (brace_depth == 0 && peek(1) == '}') {
+                    if (len + 2 + 1 > cap) { cap *= 2; buf = (char *)GC_realloc(buf, cap); }
+                    buf[len++] = '}'; buf[len++] = '}';
+                    src_pos += 2;
+                    continue;
+                }
+                if (brace_depth > 0) brace_depth--;
+            }
         }
         char ch = peek(0);
         if (ch == '\\' && !is_fstr) {
