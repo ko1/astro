@@ -1,0 +1,10 @@
+ok GeneratorEdgeTest test_close_runs_finally
+ok GeneratorEdgeTest test_send_unstarted
+ok GeneratorEdgeTest test_yield_from_returns
+ok TryExceptElseTest test_else_runs_only_no_exception
+ok TryExceptElseTest test_else_skipped_when_exception
+ok CustomFormatTest test_dispatch
+ok IterDunderTest test_iter_returns_self
+ok IterDunderTest test_iter_yields_generator
+---
+passed=8 failed=0
