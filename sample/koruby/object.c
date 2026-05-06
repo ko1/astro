@@ -185,7 +185,7 @@ struct korb_class *korb_class_new(ID name, struct korb_class *super, enum korb_t
         (struct korb_class *)super->basic.klass != korb_vm->class_class) {
         struct korb_class *child_meta = korb_xmalloc(sizeof(*child_meta));
         memset(child_meta, 0, sizeof(*child_meta));
-        child_meta->basic.flags = T_CLASS;
+        child_meta->basic.flags = T_CLASS | FL_SINGLETON;
         child_meta->basic.klass = korb_vm ? (VALUE)korb_vm->class_class : 0;
         child_meta->name = name;
         child_meta->super = (struct korb_class *)super->basic.klass;
@@ -496,7 +496,7 @@ struct korb_class *korb_singleton_class_of(struct korb_class *klass) {
     struct korb_class *current_meta = (struct korb_class *)klass->basic.klass;
     if (current_meta == korb_vm->class_class || current_meta == korb_vm->module_class) {
         struct korb_class *meta = korb_class_new(klass->name, current_meta, T_CLASS);
-        meta->basic.flags = T_CLASS;
+        meta->basic.flags = T_CLASS | FL_SINGLETON;
         klass->basic.klass = (VALUE)meta;
         return meta;
     }
@@ -518,6 +518,7 @@ struct korb_class *korb_singleton_class_of_value(VALUE v) {
     if (cur && cur->name == korb_intern("(singleton)")) return cur;
     struct korb_class *meta = korb_class_new(korb_intern("(singleton)"),
                                              cur, cur ? cur->instance_type : T_OBJECT);
+    meta->basic.flags |= FL_SINGLETON;
     o->basic.klass = (VALUE)meta;
     return meta;
 }

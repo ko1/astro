@@ -299,7 +299,17 @@ static VALUE kernel_to_s(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE kernel_class(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return korb_class_of(self);
+    /* Skip past any FL_SINGLETON metaclasses up the chain — `obj.class`
+     * reports the user-facing class (Class for any class object, the
+     * ordinary instance class for ordinary objects), not the lazy
+     * metaclass we synthesize for singleton-method propagation. */
+    VALUE k = korb_class_of(self);
+    while (!SPECIAL_CONST_P(k) && (((struct RBasic *)k)->flags & FL_SINGLETON)) {
+        struct korb_class *kk = (struct korb_class *)k;
+        if (!kk->super) break;
+        k = (VALUE)kk->super;
+    }
+    return k;
 }
 
 static VALUE kernel_eq(CTX *c, VALUE self, int argc, VALUE *argv) {

@@ -692,6 +692,12 @@ char *korb_resolve_relative(const char *current_file, const char *name);
 #define FL_USER_SHIFT 12
 #define FL_USER(n)    ((VALUE)1 << (FL_USER_SHIFT + (n)))
 
+/* FL_SINGLETON marks a metaclass (singleton class) — set on the lazy
+ * child_meta we synthesize in korb_class_new so that `obj.class` can skip
+ * past it to report the user-facing class.  CRuby uses FL_SINGLETON for
+ * the same purpose. */
+#define FL_SINGLETON FL_USER(0)
+
 /* Frozen-object guard.  Inserted at the entry of mutating cfuncs so
  * `frozen_str << "x"` etc. raise FrozenError instead of silently
  * mutating.  Skipped for immediates (Fixnum / Symbol / nil/true/false
