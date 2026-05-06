@@ -1,0 +1,13 @@
+ok BytearrayMethodsTest test_append
+ok BytearrayMethodsTest test_clear
+ok BytearrayMethodsTest test_extend
+ok BytearrayMethodsTest test_insert
+ok BytearrayMethodsTest test_pop
+ok BytearrayMethodsTest test_remove
+ok BytearrayMethodsTest test_remove_missing
+ok BytearrayMethodsTest test_reverse
+ok BytesCompareTest test_eq
+ok BytesCompareTest test_lt
+ok BytesCompareTest test_sorted
+---
+passed=11 failed=0

@@ -1741,6 +1741,13 @@ py_cmp(CTX *c, VALUE a, VALUE b)
         if (r != 0) return r < 0 ? -1 : 1;
         return la < lb ? -1 : la > lb ? 1 : 0;
     }
+    if (py_is_byteseq(a) && py_is_byteseq(b)) {
+        size_t la = PY_PTR(a)->str.len, lb = PY_PTR(b)->str.len;
+        size_t n = la < lb ? la : lb;
+        int r = memcmp(PY_PTR(a)->str.chars, PY_PTR(b)->str.chars, n);
+        if (r != 0) return r < 0 ? -1 : 1;
+        return la < lb ? -1 : la > lb ? 1 : 0;
+    }
     if (PY_IS_FIXNUM(a) && PY_IS_FIXNUM(b)) {
         int64_t ai = PY_FIXVAL(a), bi = PY_FIXVAL(b);
         return ai < bi ? -1 : ai > bi ? 1 : 0;
@@ -7088,6 +7095,105 @@ bm_append(CTX *c, int argc, VALUE *argv)
 }
 
 static VALUE
+bm_insert(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    if (PY_PTR(argv[0])->type != PY_T_BYTEARRAY)
+        py_raise_exc(c, c->EXC_TypeError, "insert on bytes (not bytearray)");
+    int64_t i = py_int_to_long(c, argv[1]);
+    int64_t b = py_int_to_long(c, argv[2]);
+    if (b < 0 || b > 255) py_raise_exc(c, c->EXC_ValueError, "byte must be 0..255");
+    struct pyobj *o = PY_PTR(argv[0]);
+    int64_t L = (int64_t)o->str.len;
+    if (i < 0) i += L;
+    if (i < 0) i = 0;
+    if (i > L) i = L;
+    char *nb = (char *)GC_malloc_atomic(L + 2);
+    if (i > 0) memcpy(nb, o->str.chars, (size_t)i);
+    nb[i] = (char)b;
+    if (L - i > 0) memcpy(nb + i + 1, o->str.chars + i, (size_t)(L - i));
+    nb[L + 1] = '\0';
+    o->str.chars = nb;
+    o->str.len = (size_t)(L + 1);
+    return PY_NONE;
+}
+
+static VALUE
+bm_pop(CTX *c, int argc, VALUE *argv)
+{
+    if (PY_PTR(argv[0])->type != PY_T_BYTEARRAY)
+        py_raise_exc(c, c->EXC_TypeError, "pop on bytes (not bytearray)");
+    struct pyobj *o = PY_PTR(argv[0]);
+    int64_t L = (int64_t)o->str.len;
+    if (L == 0) py_raise_exc(c, c->EXC_IndexError, "pop from empty bytearray");
+    int64_t i = (argc >= 2) ? py_int_to_long(c, argv[1]) : (L - 1);
+    if (i < 0) i += L;
+    if (i < 0 || i >= L) py_raise_exc(c, c->EXC_IndexError, "bytearray pop out of range");
+    int byte = (unsigned char)o->str.chars[i];
+    char *nb = (char *)GC_malloc_atomic(L);
+    if (i > 0) memcpy(nb, o->str.chars, (size_t)i);
+    if (L - i - 1 > 0) memcpy(nb + i, o->str.chars + i + 1, (size_t)(L - i - 1));
+    nb[L - 1] = '\0';
+    o->str.chars = nb;
+    o->str.len = (size_t)(L - 1);
+    return PY_FIX(byte);
+}
+
+static VALUE
+bm_remove(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    if (PY_PTR(argv[0])->type != PY_T_BYTEARRAY)
+        py_raise_exc(c, c->EXC_TypeError, "remove on bytes (not bytearray)");
+    int64_t target = py_int_to_long(c, argv[1]);
+    if (target < 0 || target > 255)
+        py_raise_exc(c, c->EXC_ValueError, "byte must be 0..255");
+    struct pyobj *o = PY_PTR(argv[0]);
+    size_t L = o->str.len;
+    for (size_t i = 0; i < L; i++) {
+        if ((unsigned char)o->str.chars[i] == (unsigned char)target) {
+            char *nb = (char *)GC_malloc_atomic(L);
+            if (i > 0) memcpy(nb, o->str.chars, i);
+            if (L - i - 1 > 0) memcpy(nb + i, o->str.chars + i + 1, L - i - 1);
+            nb[L - 1] = '\0';
+            o->str.chars = nb;
+            o->str.len = L - 1;
+            return PY_NONE;
+        }
+    }
+    py_raise_exc(c, c->EXC_ValueError, "value not in bytearray");
+}
+
+static VALUE
+bm_reverse(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    if (PY_PTR(argv[0])->type != PY_T_BYTEARRAY)
+        py_raise_exc(c, c->EXC_TypeError, "reverse on bytes (not bytearray)");
+    struct pyobj *o = PY_PTR(argv[0]);
+    size_t L = o->str.len;
+    for (size_t i = 0; i < L / 2; i++) {
+        char tmp = o->str.chars[i];
+        o->str.chars[i] = o->str.chars[L - 1 - i];
+        o->str.chars[L - 1 - i] = tmp;
+    }
+    return PY_NONE;
+}
+
+static VALUE
+bm_clear(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    if (PY_PTR(argv[0])->type != PY_T_BYTEARRAY)
+        py_raise_exc(c, c->EXC_TypeError, "clear on bytes (not bytearray)");
+    struct pyobj *o = PY_PTR(argv[0]);
+    o->str.chars = (char *)GC_malloc_atomic(1);
+    o->str.chars[0] = '\0';
+    o->str.len = 0;
+    return PY_NONE;
+}
+
+static VALUE
 bm_extend(CTX *c, int argc, VALUE *argv)
 {
     (void)argc;
@@ -7895,6 +8001,11 @@ static struct type_method bytes_methods[] = {
     { "hex",        bm_hex,        1, 1 },
     { "append",     bm_append,     2, 2 },
     { "extend",     bm_extend,     2, 2 },
+    { "insert",     bm_insert,     3, 3 },
+    { "pop",        bm_pop,        1, 2 },
+    { "remove",     bm_remove,     2, 2 },
+    { "reverse",    bm_reverse,    1, 1 },
+    { "clear",      bm_clear,      1, 1 },
     { "join",       bm_join,       2, 2 },
     { "count",      bm_count,      2, 2 },
     { "upper",      bm_upper,      1, 1 },
