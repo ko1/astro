@@ -3724,6 +3724,19 @@ parse_del_one(void)
                 if (peek_tok(0)->kind != T_RBRACK) istep = parse_expr();
             }
         }
+        // `del d[1, 2]` — tuple-key subscript.
+        if (!is_slice && peek_tok(0)->kind == T_COMMA) {
+            NODE *items[64];
+            int n = 0;
+            items[n++] = istart;
+            while (match_tok(T_COMMA)) {
+                if (peek_tok(0)->kind == T_RBRACK) break;
+                if (n >= 64) parse_error("too many tuple keys in del");
+                items[n++] = parse_expr();
+            }
+            size_t base = node_table_reserve(items, n);
+            istart = ALLOC_node_make_tuple((uint32_t)base, (uint32_t)n);
+        }
         expect(T_RBRACK, "']'");
         if (peek_tok(0)->kind == T_DOT || peek_tok(0)->kind == T_LBRACK) {
             if (is_slice) {
@@ -4522,24 +4535,42 @@ parse_assignable_target(NODE *rhs)
             else                              start = parse_expr();
             if (match_tok(T_COLON)) {
                 is_slice = true;
-                if (peek_tok(0)->kind != T_COLON && peek_tok(0)->kind != T_RBRACK)
+                if (peek_tok(0)->kind != T_COLON && peek_tok(0)->kind != T_RBRACK
+                        && peek_tok(0)->kind != T_COMMA)
                     stop = parse_expr();
                 if (match_tok(T_COLON)) {
-                    if (peek_tok(0)->kind != T_RBRACK) step = parse_expr();
+                    if (peek_tok(0)->kind != T_RBRACK && peek_tok(0)->kind != T_COMMA)
+                        step = parse_expr();
                 }
             }
-            // `a[i, j]` — tuple subscript; pack into a tuple.
-            if (!is_slice && peek_tok(0)->kind == T_COMMA) {
-                NODE *items[16];
-                int nn = 1;
-                items[0] = start;
+            // `a[i, j]` / `a[:i, :, j]` — tuple subscript with possible
+            // slice elements; pack into a tuple of items (slices wrapped
+            // in `slice(...)` calls).
+            if (peek_tok(0)->kind == T_COMMA) {
+                NODE *items[64];
+                int nn = 0;
+                if (is_slice) {
+                    NODE *sa = start ? start : ALLOC_node_const_none();
+                    NODE *sb = stop  ? stop  : ALLOC_node_const_none();
+                    NODE *sc = step  ? step  : ALLOC_node_const_none();
+                    NODE *args[3] = { sa, sb, sc };
+                    size_t bidx = node_table_reserve(args, 3);
+                    items[nn++] = ALLOC_node_call_n(
+                        ALLOC_node_gref(intern_name("slice", 5)),
+                        (uint32_t)bidx, 3);
+                } else {
+                    items[nn++] = start;
+                }
                 while (match_tok(T_COMMA)) {
                     if (peek_tok(0)->kind == T_RBRACK) break;
-                    if (nn >= 16) parse_error("too many tuple subscript items");
-                    items[nn++] = parse_expr();
+                    if (nn >= 64) parse_error("too many tuple subscript items");
+                    bool elem_is_slice;
+                    NODE *e = parse_subscript_elem(&elem_is_slice);
+                    items[nn++] = e ? e : ALLOC_node_const_none();
                 }
                 size_t base = node_table_reserve(items, nn);
                 start = ALLOC_node_make_tuple((uint32_t)base, (uint32_t)nn);
+                is_slice = false;       // tuple-key always becomes subscript_set
             }
             expect(T_RBRACK, "']'");
             if (is_slice) {
