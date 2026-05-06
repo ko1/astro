@@ -6,7 +6,7 @@
 
 ## 残課題 (現在)
 
-R11–R16 で深掘り (test 78–184 追加, **185 unit tests passing**)。 [done.md](./done.md) に詳細。
+R11–R16 で深掘り (test 78–185 追加, **186 unit tests passing**)。 [done.md](./done.md) に詳細。
 
 ### 残存する仕様上の差分 (低優先)
 
