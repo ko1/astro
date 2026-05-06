@@ -1379,11 +1379,30 @@ node_super_method_explicit(CTX * restrict c, NODE * restrict n, NODE *cls_expr, 
     VALUE m = py_super_lookup(c, self, cls, method_name);
     if (m == PY_NONE) py_raise_exc(c, c->EXC_AttributeError,
                                    "'super' object has no attribute '%s'", method_name);
-    // If `m` is already a bound built-in method (super_lookup hit a
-    // built-in subclass primary), it carries its own receiver.
+    // Unwrap @classmethod / @staticmethod descriptors found via the MRO walk.
+    bool was_classmethod = false;
+    bool was_staticmethod = false;
+    if (PY_IS_PTR(m)) {
+        if (PY_PTR(m)->type == PY_T_CLASSMETHOD) {
+            m = PY_PTR(m)->wrap.wrapped; was_classmethod = true;
+        } else if (PY_PTR(m)->type == PY_T_STATICMETHOD) {
+            m = PY_PTR(m)->wrap.wrapped; was_staticmethod = true;
+        }
+    }
     extern bool py_is_bound_builtin(VALUE v);
-    // __new__ is implicitly static — caller passes cls as first explicit arg.
-    bool skip_self_super = (strcmp(method_name, "__new__") == 0);
+    // __new__ is implicitly static; staticmethod also has no implicit self.
+    bool skip_self_super = (strcmp(method_name, "__new__") == 0) || was_staticmethod;
+    if (was_classmethod) {
+        // First arg is the class — derive from self.
+        VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc + 1));
+        av[0] = py_is_class(self) ? self : PY_OBJ_VAL(PY_PTR(self)->inst.cls);
+        for (uint32_t i = 0; i < argc; i++) {
+            NODE *arg = PYSTRO_NODE_TABLE[args_idx + i];
+            av[i + 1] = (*arg->head.dispatcher)(c, arg);
+            if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+        }
+        return py_apply(c, m, (int)argc + 1, av);
+    }
     if (py_is_bound_builtin(m) || skip_self_super) {
         VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc ? argc : 1));
         for (uint32_t i = 0; i < argc; i++) {
@@ -1473,11 +1492,30 @@ node_super_method(CTX * restrict c, NODE * restrict n, NODE *base, const char *m
     }
     if (m == PY_NONE) py_raise_exc(c, c->EXC_AttributeError,
                                    "'super' object has no attribute '%s'", method_name);
-    // If `m` is already a bound built-in method (super_lookup hit a
-    // built-in subclass primary), it carries its own receiver.
+    // Unwrap @classmethod / @staticmethod descriptors found via the MRO walk.
+    bool was_classmethod = false;
+    bool was_staticmethod = false;
+    if (PY_IS_PTR(m)) {
+        if (PY_PTR(m)->type == PY_T_CLASSMETHOD) {
+            m = PY_PTR(m)->wrap.wrapped; was_classmethod = true;
+        } else if (PY_PTR(m)->type == PY_T_STATICMETHOD) {
+            m = PY_PTR(m)->wrap.wrapped; was_staticmethod = true;
+        }
+    }
     extern bool py_is_bound_builtin(VALUE v);
-    // __new__ is implicitly static — caller passes cls as first explicit arg.
-    bool skip_self_super = (strcmp(method_name, "__new__") == 0);
+    // __new__ is implicitly static; staticmethod also has no implicit self.
+    bool skip_self_super = (strcmp(method_name, "__new__") == 0) || was_staticmethod;
+    if (was_classmethod) {
+        // First arg is the class — derive from self.
+        VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc + 1));
+        av[0] = py_is_class(self) ? self : PY_OBJ_VAL(PY_PTR(self)->inst.cls);
+        for (uint32_t i = 0; i < argc; i++) {
+            NODE *arg = PYSTRO_NODE_TABLE[args_idx + i];
+            av[i + 1] = (*arg->head.dispatcher)(c, arg);
+            if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+        }
+        return py_apply(c, m, (int)argc + 1, av);
+    }
     if (py_is_bound_builtin(m) || skip_self_super) {
         VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc ? argc : 1));
         for (uint32_t i = 0; i < argc; i++) {

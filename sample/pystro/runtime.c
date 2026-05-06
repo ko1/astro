@@ -775,8 +775,16 @@ VALUE
 py_super_lookup(CTX *c, VALUE self, VALUE start_after_cls, const char *name)
 {
     (void)c;
-    if (!py_is_instance(self)) return PY_NONE;
-    struct pyclass *cd = &PY_PTR(self)->inst.cls->cls;
+    // self may be an instance OR a class (classmethod context).  Use
+    // the relevant MRO either way.
+    struct pyclass *cd;
+    if (py_is_instance(self)) {
+        cd = &PY_PTR(self)->inst.cls->cls;
+    } else if (py_is_class(self)) {
+        cd = &PY_PTR(self)->cls;
+    } else {
+        return PY_NONE;
+    }
     int i = 0;
     while (i < cd->nmro && cd->mro[i] != start_after_cls) i++;
     for (int j = i + 1; j < cd->nmro; j++) {
@@ -787,11 +795,7 @@ py_super_lookup(CTX *c, VALUE self, VALUE start_after_cls, const char *name)
     // Walk past start_after_cls's MRO; if any of the remaining classes
     // is a built-in subclass-base AND the instance has a primary,
     // dispatch to the built-in method on the primary.
-    // Returning the already-bound builtin (bound to primary) — the
-    // caller in py_getattr will wrap it again with self via py_make_bound,
-    // which we don't want.  So we unwrap the outer bind below by
-    // returning a sentinel-bound that py_getattr's caller handles.
-    if (PY_PTR(self)->inst.primary) {
+    if (py_is_instance(self) && PY_PTR(self)->inst.primary) {
         VALUE prim = PY_PTR(self)->inst.primary;
         extern VALUE py_builtin_method(CTX *c, VALUE recv, const char *name);
         VALUE bm = py_builtin_method(c, prim, name);
@@ -10469,7 +10473,6 @@ bi_pystro_float_to_bits(CTX *c, int argc, VALUE *argv)
     }
     float f = (float)d;
     uint32_t b;
-    memcpy(&f, &f, 4);
     memcpy(&b, &f, 4);
     return py_make_int((int64_t)b);
 }

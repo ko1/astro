@@ -1,0 +1,6 @@
+ok SuperClassmethodTest test_basic
+ok SuperClassmethodTest test_super_via_instance
+ok SuperClassmethodTest test_threelevel
+ok SuperStaticmethodTest test_basic
+---
+passed=4 failed=0
