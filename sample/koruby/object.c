@@ -163,7 +163,7 @@ void korb_method_table_remove(struct korb_method_table *mt, ID name) {
     }
 }
 
-static struct korb_method *method_table_get(const struct korb_method_table *mt, ID name) {
+struct korb_method *method_table_get(const struct korb_method_table *mt, ID name) {
     if (!mt->buckets) return NULL;
     uint32_t b = (uint32_t)(name % mt->bucket_cnt);
     for (struct korb_method_table_entry *e = mt->buckets[b]; e; e = e->next) {

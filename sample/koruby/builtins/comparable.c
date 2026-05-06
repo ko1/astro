@@ -128,6 +128,7 @@ static void module_set_visibility_for_args(CTX *c, VALUE self, int argc, VALUE *
 {
     if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return;
     struct korb_class *k = (struct korb_class *)self;
+    extern struct korb_method *method_table_get(const struct korb_method_table *mt, ID name);
     for (int i = 0; i < argc; i++) {
         ID name;
         if (SYMBOL_P(argv[i])) name = korb_sym2id(argv[i]);
@@ -135,12 +136,28 @@ static void module_set_visibility_for_args(CTX *c, VALUE self, int argc, VALUE *
             name = korb_intern_n(((struct korb_string *)argv[i])->ptr,
                                  ((struct korb_string *)argv[i])->len);
         else continue;
-        struct korb_method *m = korb_class_find_method(k, name);
-        if (m) m->visibility = v;
+        /* `private :foo` on a subclass: if foo is inherited (not in this
+         * class's own table), CLONE it into k's own table so mutating
+         * visibility doesn't affect the parent class.  Without this,
+         * `class H < A; private :foo; end` would also flip A#foo to
+         * private. */
+        struct korb_method *m_local = method_table_get(&k->methods, name);
+        if (m_local) {
+            m_local->visibility = v;
+        } else {
+            struct korb_method *m_inherited = korb_class_find_method(k, name);
+            if (m_inherited) {
+                /* Allocate a fresh korb_method copy so mutating
+                 * visibility doesn't affect the inherited entry on the
+                 * parent class.  korb_class_alias_method shares the
+                 * pointer, so we install our own copy. */
+                struct korb_method *cp = korb_xmalloc(sizeof(*cp));
+                *cp = *m_inherited;
+                cp->visibility = v;
+                korb_class_alias_method(k, name, cp);
+            }
+        }
     }
-    /* No-arg `private` / `public` / `protected` would set the default
-     * visibility for subsequent defs.  We don't track that yet; tests
-     * pass with explicit `private :name` form. */
 }
 static VALUE module_set_visibility(CTX *c, VALUE self, int argc, VALUE *argv,
                                    enum korb_visibility v)
