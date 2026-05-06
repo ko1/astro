@@ -18,7 +18,7 @@ def _esc_str(s):
     parts.append('"')
     return "".join(parts)
 
-def _dump(v, indent=None, depth=0, sort_keys=False):
+def _dump(v, indent=None, depth=0, sort_keys=False, default=None):
     if v is None:  return "null"
     if v is True:  return "true"
     if v is False: return "false"
@@ -30,10 +30,10 @@ def _dump(v, indent=None, depth=0, sort_keys=False):
     if isinstance(v, list) or isinstance(v, tuple):
         if not v: return "[]"
         if indent is None:
-            return "[" + ", ".join([_dump(x, None, depth+1, sort_keys) for x in v]) + "]"
+            return "[" + ", ".join([_dump(x, None, depth+1, sort_keys, default) for x in v]) + "]"
         sp = " " * (indent * (depth + 1))
         cl = " " * (indent * depth)
-        parts = [_dump(x, indent, depth+1, sort_keys) for x in v]
+        parts = [_dump(x, indent, depth+1, sort_keys, default) for x in v]
         return "[\n" + ",\n".join(sp + p for p in parts) + "\n" + cl + "]"
     if isinstance(v, dict):
         if not v: return "{}"
@@ -43,7 +43,7 @@ def _dump(v, indent=None, depth=0, sort_keys=False):
             for k in keys:
                 if not isinstance(k, str):
                     raise TypeError("json: keys must be str")
-                items.append(_esc_str(k) + ": " + _dump(v[k], None, depth+1, sort_keys))
+                items.append(_esc_str(k) + ": " + _dump(v[k], None, depth+1, sort_keys, default))
             return "{" + ", ".join(items) + "}"
         sp = " " * (indent * (depth + 1))
         cl = " " * (indent * depth)
@@ -51,15 +51,17 @@ def _dump(v, indent=None, depth=0, sort_keys=False):
         for k in keys:
             if not isinstance(k, str):
                 raise TypeError("json: keys must be str")
-            items.append(sp + _esc_str(k) + ": " + _dump(v[k], indent, depth+1, sort_keys))
+            items.append(sp + _esc_str(k) + ": " + _dump(v[k], indent, depth+1, sort_keys, default))
         return "{\n" + ",\n".join(items) + "\n" + cl + "}"
+    if default is not None:
+        return _dump(default(v), indent, depth, sort_keys, default)
     raise TypeError("json: unsupported type")
 
-def dumps(obj, indent=None, sort_keys=False, **kwargs):
-    return _dump(obj, indent, 0, sort_keys)
+def dumps(obj, indent=None, sort_keys=False, default=None, **kwargs):
+    return _dump(obj, indent, 0, sort_keys, default)
 
-def dump(obj, fp, indent=None, sort_keys=False, **kwargs):
-    fp.write(dumps(obj, indent=indent, sort_keys=sort_keys))
+def dump(obj, fp, indent=None, sort_keys=False, default=None, **kwargs):
+    fp.write(dumps(obj, indent=indent, sort_keys=sort_keys, default=default))
 
 def load(fp):
     return loads(fp.read())
@@ -187,12 +189,26 @@ def _parse_value(p):
         return _parse_num(p)
     _err(p, "unexpected char")
 
-def loads(s):
+def loads(s, object_hook=None):
     p = _P(s)
+    p._object_hook = object_hook
     v = _parse_value(p)
+    if object_hook is not None:
+        v = _apply_hook(v, object_hook)
     _skip(p)
     if p.i != p.n:
         _err(p, "trailing data")
+    return v
+
+
+def _apply_hook(v, hook):
+    if isinstance(v, dict):
+        new = {}
+        for k, val in v.items():
+            new[k] = _apply_hook(val, hook)
+        return hook(new)
+    if isinstance(v, list):
+        return [_apply_hook(x, hook) for x in v]
     return v
 
 __all__ = ["dumps", "loads"]

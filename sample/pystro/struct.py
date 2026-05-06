@@ -100,13 +100,14 @@ def pack(fmt, *args):
             for _ in range(rep):
                 out.append(0)
         elif ch == "f" or ch == "d":
-            # Float: pystro lacks float-bit packing.  Approximation only.
             for _ in range(rep):
                 v = float(args[ai]); ai += 1
                 if ch == "f":
-                    out += _pack_int(int(v) & 0xffffffff, 4, big, True)
+                    bits = __pystro_float_to_bits__(v, False) & 0xffffffff
+                    out += _pack_int(bits, 4, big, False)
                 else:
-                    out += _pack_int(int(v) & 0xffffffffffffffff, 8, big, True)
+                    bits = __pystro_float_to_bits__(v, True) & 0xffffffffffffffff
+                    out += _pack_int(bits, 8, big, False)
         i += 1
     return bytes(out)
 
@@ -144,10 +145,14 @@ def unpack(fmt, data):
             off += rep
         elif ch == "f":
             for _ in range(rep):
-                out.append(0.0); off += 4
+                bits = _unpack_int(data, off, 4, big, False)
+                out.append(__pystro_bits_to_float__(bits, False))
+                off += 4
         elif ch == "d":
             for _ in range(rep):
-                out.append(0.0); off += 8
+                bits = _unpack_int(data, off, 8, big, False)
+                out.append(__pystro_bits_to_float__(bits, True))
+                off += 8
         i += 1
     return tuple(out)
 

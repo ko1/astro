@@ -1,0 +1,9 @@
+ok StructFloatTest test_double_pack_be
+ok StructFloatTest test_float_lt_round_trip
+ok StructFloatTest test_float_pack_be
+ok StructFloatTest test_float_round_trip
+ok StructFloatTest test_int_round_trip
+ok JsonExtraTest test_default
+ok JsonExtraTest test_object_hook
+---
+passed=7 failed=0

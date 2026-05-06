@@ -10423,6 +10423,74 @@ bi_pystro_current_exc(CTX *c, int argc, VALUE *argv)
     return PY_NONE;
 }
 
+// Reinterpret a float as its IEEE-754 bits.  Returns int (may be a
+// bignum for double's 64-bit pattern).
+static VALUE
+bi_pystro_float_to_bits(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    double d = py_to_double(c, argv[0]);
+    bool is_double = (argc < 2) || py_is_truthy(argv[1]);
+    if (is_double) {
+        uint64_t b;
+        memcpy(&b, &d, 8);
+        // Build via mpz to avoid sign issues with int64_t.
+        struct pyobj *o = py_alloc(PY_T_BIGNUM);
+        mpz_init(o->mpz);
+        // Use two limbs: hi 32 bits, lo 32 bits.
+        mpz_set_ui(o->mpz, (unsigned long)(b >> 32));
+        mpz_mul_2exp(o->mpz, o->mpz, 32);
+        mpz_add_ui(o->mpz, o->mpz, (unsigned long)(b & 0xFFFFFFFFu));
+        return PY_OBJ_VAL(o);
+    }
+    float f = (float)d;
+    uint32_t b;
+    memcpy(&f, &f, 4);
+    memcpy(&b, &f, 4);
+    return py_make_int((int64_t)b);
+}
+
+// Inverse of float_to_bits.
+static VALUE
+bi_pystro_bits_to_float(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    bool is_double = (argc < 2) || py_is_truthy(argv[1]);
+    if (is_double) {
+        // Get the int as a 64-bit pattern.
+        uint64_t b = 0;
+        if (py_is_bignum(argv[0])) {
+            mpz_t tmp; mpz_init(tmp);
+            mpz_set(tmp, PY_PTR(argv[0])->mpz);
+            mpz_t mod; mpz_init(mod);
+            mpz_set_ui(mod, 1); mpz_mul_2exp(mod, mod, 64);
+            mpz_mod(tmp, tmp, mod);
+            // Extract via successive division.
+            mpz_t lo32; mpz_init(lo32);
+            mpz_t hi32; mpz_init(hi32);
+            mpz_set(hi32, tmp);
+            mpz_fdiv_q_2exp(hi32, hi32, 32);
+            mpz_set(lo32, tmp);
+            mpz_set_ui(mod, 0xFFFFFFFFul);
+            mpz_and(lo32, lo32, mod);
+            unsigned long lo = mpz_get_ui(lo32);
+            unsigned long hi = mpz_get_ui(hi32);
+            b = ((uint64_t)hi << 32) | (uint64_t)lo;
+            mpz_clear(tmp); mpz_clear(mod); mpz_clear(lo32); mpz_clear(hi32);
+        } else {
+            int64_t s = py_int_to_long(c, argv[0]);
+            b = (uint64_t)s;
+        }
+        double d;
+        memcpy(&d, &b, 8);
+        return py_make_float(d);
+    }
+    uint32_t b = (uint32_t)py_int_to_long(c, argv[0]);
+    float f;
+    memcpy(&f, &b, 4);
+    return py_make_float((double)f);
+}
+
 // `from m import *` — copy all non-underscore names from the module's
 // globals into the current frame's globals.  If the module defines
 // `__all__` (a list of names), only those are exported.
@@ -11071,6 +11139,10 @@ install_builtins(CTX *c)
     py_global_define(c, "__pystro_exit__",  py_make_builtin("__pystro_exit__",  bi_pystro_exit,  0, 1));
     py_global_define(c, "__pystro_current_exc__",
                      py_make_builtin("__pystro_current_exc__", bi_pystro_current_exc, 0, 0));
+    py_global_define(c, "__pystro_float_to_bits__",
+                     py_make_builtin("__pystro_float_to_bits__", bi_pystro_float_to_bits, 1, 2));
+    py_global_define(c, "__pystro_bits_to_float__",
+                     py_make_builtin("__pystro_bits_to_float__", bi_pystro_bits_to_float, 1, 2));
     py_global_define(c, "__pystro_time__",      py_make_builtin("__pystro_time__",      bi_pystro_time,      0, 0));
     py_global_define(c, "__pystro_sleep__",     py_make_builtin("__pystro_sleep__",     bi_pystro_sleep,     1, 1));
     py_global_define(c, "__pystro_perf_counter__", py_make_builtin("__pystro_perf_counter__", bi_pystro_perf_counter, 0, 0));
