@@ -11612,6 +11612,10 @@ install_builtins(CTX *c)
             py_make_builtin("__delattr__", bi_object_delattr, 2, 2));
         py_class_add_method(c, c->TYPE_object, "__init__",
             py_make_builtin("__init__", bi_object_init, 1, -1));
+        // object.__init_subclass__ — no-op default so `super().__init_subclass__()`
+        // in a __init_subclass__ chain terminates.
+        py_class_add_method(c, c->TYPE_object, "__init_subclass__",
+            py_make_builtin("__init_subclass__", bi_object_init, 1, -1));
     }
     // Synthetic type classes for built-in non-constructable types.
     c->TYPE_NoneType                    = py_make_class("NoneType",                     PY_NONE, false);

@@ -1,0 +1,4 @@
+ok SuperInitSubclassTest test_chain
+ok SuperInitSubclassTest test_with_kwargs
+---
+passed=2 failed=0
