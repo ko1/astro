@@ -6857,11 +6857,13 @@ sm_set_update(CTX *c, int argc, VALUE *argv) {
 static VALUE
 sm_difference_update(CTX *c, int argc, VALUE *argv)
 {
-    (void)argc;
-    VALUE a = argv[0], b = argv[1];
-    struct py_iter it; py_iter_init(c, &it, b);
-    VALUE x;
-    while (py_iter_next(c, &it, &x)) py_dict_remove(c, a, x);
+    VALUE a = argv[0];
+    for (int j = 1; j < argc; j++) {
+        struct py_iter it; py_iter_init(c, &it, argv[j]);
+        if (c->state != PY_STATE_NORMAL) return PY_NONE;
+        VALUE x;
+        while (py_iter_next(c, &it, &x)) py_dict_remove(c, a, x);
+    }
     return PY_NONE;
 }
 static VALUE
@@ -6908,7 +6910,7 @@ static struct type_method set_methods[] = {
     { "difference",           sm_difference,           2, 2 },
     { "symmetric_difference", sm_symmetric_difference, 2, 2 },
     { "intersection_update",  sm_intersection_update,  2, 2 },
-    { "difference_update",    sm_difference_update,    2, 2 },
+    { "difference_update",    sm_difference_update,    1, -1 },
     { "symmetric_difference_update", sm_symmetric_difference_update, 2, 2 },
     { "issubset",             sm_issubset,             2, 2 },
     { "issuperset",           sm_issuperset,           2, 2 },
