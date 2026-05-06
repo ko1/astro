@@ -3392,30 +3392,17 @@ parse_with(void)
                 tok_pos = saved;
                 items[n].unpack_prefix = store;
             } else if (peek_tok(0)->kind == T_LPAREN || peek_tok(0)->kind == T_LBRACK) {
-                // `with cm as (a, b):` — desugar to `with cm as __t: a, b = __t; body`.
-                int close = peek_tok(0)->kind == T_LPAREN ? T_RPAREN : T_RBRACK;
-                tok_pos++;
-                const char *names[16]; int nn = 0;
-                while (peek_tok(0)->kind == T_NAME) {
-                    if (nn >= 16) parse_error("with: too many tuple targets");
-                    names[nn++] = peek_tok(0)->sval;
-                    tok_pos++;
-                    if (!match_tok(T_COMMA)) break;
-                }
-                expect(close, close == T_RPAREN ? "')'" : "']'");
+                // `with cm as (a, b):` / `with cm as (self.x, self.y):`
+                // — bind cm to a tmp, then nested-unpack via the generic
+                // parse_assignable_target which already handles paren
+                // pattern + attr/subscript trailers.
                 const char *tmp = new_temp_name("__withT");
                 if (cur_scope && !scope_is_global_decl(cur_scope, tmp))
                     scope_add_local(cur_scope, tmp);
                 items[n].as_name = tmp;
                 NODE *load_tmp = make_load(tmp);
-                NODE *prefix = NULL;
-                for (int i = 0; i < nn; i++) {
-                    NODE *idx_n = ALLOC_node_const_int(i);
-                    NODE *el = ALLOC_node_subscript_get(load_tmp, idx_n);
-                    NODE *st = make_store(names[i], el);
-                    prefix = prefix ? ALLOC_node_seq(prefix, st) : st;
-                }
-                items[n].unpack_prefix = prefix;
+                NODE *store = parse_assignable_target(load_tmp);
+                items[n].unpack_prefix = store;
             } else {
                 parse_error("expected NAME or tuple target after 'as'");
             }
@@ -3533,6 +3520,19 @@ parse_del(void)
 static NODE *
 parse_del_one(void)
 {
+    // `del(target)` / `del [a, b]` — peel parens, recurse for paren form.
+    if (peek_tok(0)->kind == T_LPAREN) {
+        // If a single target inside parens, just unwrap.
+        // For `del(a, b)`, treat the comma form as multiple targets.
+        tok_pos++;
+        NODE *r = parse_del_one();
+        while (match_tok(T_COMMA)) {
+            if (peek_tok(0)->kind == T_RPAREN) break;
+            r = ALLOC_node_seq(r, parse_del_one());
+        }
+        expect(T_RPAREN, "')'");
+        return r;
+    }
     if (peek_tok(0)->kind != T_NAME) parse_error("del expects a target");
     const char *base = peek_tok(0)->sval;
     tok_pos++;
@@ -4160,16 +4160,16 @@ skip_plain_unpack: ;
             //
             // For each target group, recover the starts and replay parse
             // against a temp holding the RHS.
-            size_t group_starts[8][16];   // [group][target]
+            size_t group_starts[8][64];   // [group][target]
             int    group_counts[8];
             int    n_groups = 0;
             // First group from already-consumed targets — re-collect.
-            size_t target_starts[16];
+            size_t target_starts[64];
             int    n_targets = 1;
             target_starts[0] = lhs_start;
             while (match_tok(T_COMMA)) {
                 if (peek_tok(0)->kind == T_ASSIGN) break;
-                if (n_targets >= 16) parse_error("too many unpack targets");
+                if (n_targets >= 64) parse_error("too many unpack targets");
                 target_starts[n_targets++] = tok_pos;
                 (void)parse_expr();
             }
@@ -4200,7 +4200,7 @@ skip_plain_unpack: ;
                 (void)parse_expr();
                 while (match_tok(T_COMMA)) {
                     if (peek_tok(0)->kind == T_ASSIGN) break;
-                    if (nt >= 16) parse_error("too many unpack targets");
+                    if (nt >= 64) parse_error("too many unpack targets");
                     group_starts[n_groups][nt++] = tok_pos;
                     (void)parse_expr();
                 }

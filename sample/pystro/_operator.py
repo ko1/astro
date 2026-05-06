@@ -30,6 +30,18 @@ def concat(a, b): return a + b
 def iconcat(a, b): a += b; return a
 
 
+def _compare_digest(a, b):
+    if isinstance(a, str) and isinstance(b, str):
+        if len(a) != len(b):
+            return False
+        return all(x == y for x, y in zip(a, b))
+    if isinstance(a, (bytes, bytearray)) and isinstance(b, (bytes, bytearray)):
+        if len(a) != len(b):
+            return False
+        return all(x == y for x, y in zip(a, b))
+    raise TypeError("compare_digest: type mismatch")
+
+
 __all__ = [
     "add", "sub", "mul", "truediv", "floordiv", "mod", "pow", "neg", "pos",
     "abs", "invert", "lshift", "rshift", "and_", "or_", "xor",

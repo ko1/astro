@@ -62,3 +62,23 @@ class NamedTemporaryFile:
 
 class TemporaryFile(NamedTemporaryFile):
     pass
+
+
+_TemporaryFileWrapper = NamedTemporaryFile
+
+
+class SpooledTemporaryFile(NamedTemporaryFile):
+    def __init__(self, max_size=0, mode="w+b", **kw):
+        super().__init__(mode=mode, **kw)
+
+
+class TemporaryDirectory:
+    def __init__(self, suffix="", prefix="tmp", dir=None):
+        self.name = mkdtemp(suffix, prefix, dir)
+    def __enter__(self): return self.name
+    def __exit__(self, *exc):
+        try: os.rmdir(self.name)
+        except Exception: pass
+    def cleanup(self):
+        try: os.rmdir(self.name)
+        except Exception: pass

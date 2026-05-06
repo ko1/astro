@@ -221,6 +221,10 @@ is_emscripten = False
 is_wasi = False
 is_apple_mobile = False
 is_apple = False
+is_wasm32 = False
+WASI = False
+WIN32 = False
+HAVE_DOCSTRINGS = True
 
 # Cached attribute: helpers expect these to exist.
 TESTFN = "@test"
@@ -385,20 +389,16 @@ def force_not_colorized_test_class(cls):
     return cls
 
 
-def is_emscripten():
-    return False
+Py_TRACE_REFS = False
+Py_GIL_DISABLED = False
+Py_DEBUG = False
+HAVE_DOCSTRINGS = True
 
 
-def is_wasi():
-    return False
+def force_colorized(fn): return fn
 
 
-def is_apple_mobile():
-    return False
-
-
-def is_android():
-    return False
+def force_colorized_test_class(cls): return cls
 
 
 def adjust_int_max_str_digits(max_digits):

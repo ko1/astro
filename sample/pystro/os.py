@@ -275,8 +275,17 @@ defpath = ":/bin:/usr/bin"
 devnull = "/dev/null"
 name = "posix"
 
+def _get_exports_list(module):
+    """Mimic the dunder used by `posix` re-export: return module.__all__
+    if defined, else dir() filtered to public names."""
+    if hasattr(module, "__all__"):
+        return module.__all__
+    return [n for n in dir(module) if not n.startswith("_")]
+
+
 __all__ = ["getcwd", "getenv", "environ", "path",
            "listdir", "remove", "unlink", "rmdir", "makedirs",
            "close", "fdopen", "stat",
            "sep", "altsep", "extsep", "pathsep", "linesep",
-           "curdir", "pardir", "defpath", "devnull", "name"]
+           "curdir", "pardir", "defpath", "devnull", "name",
+           "_get_exports_list"]
