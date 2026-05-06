@@ -24,11 +24,22 @@ CRuby 公式の rubyspec (mspec ベース) を **mspec_shim 経由** で実行�
 ```sh
 $ ./koruby test/cruby_runner/run_rubyspec.rb \
     /path/to/cruby/spec/ruby/language/and_spec.rb
-and_spec.rb: pass=14 fail=0 err=0 skip=0
+and_spec.rb: pass=26 fail=0 err=0 skip=0
 ```
 
-language/* (67 ファイル中 58 が走破): **pass=897 fail=599 err=621**。
-完全 pass: and / comment / loop / not / range / safe / unless。
+language/* (67 ファイル中 61 が走破): **pass=1488 fail=1328 err=478**。
+完全 pass spec: and / comment / loop / not / range / safe / unless。
+
+shim が cover している matchers / helpers:
+- `should == / != / equal / eql / be_nil / be_true / be_false / be_truthy / be_falsy`
+- `be_close / be_an_instance_of / be_kind_of / be_a / be_an / respond_to / include`
+- `raise_error / raise_exception` (Class または [Class, ...] 受付)
+- `complain` (block を実行せず常に pass; 副作用回避)
+- `mock(name)` — should_receive / and_return / once / twice / at_least 等
+  を chainable に受ける minimal mock
+- `ScratchPad.record / .recorded / .clear / <<`
+- `ruby_exe / ruby_cmd` (空 string)、 `it_behaves_like` (no-op)
+- `before :each` (記録のみ)、 `silence_warnings`、 `pending`
 
 語義 (language semantics) のテスト群はかなり緑:
 
