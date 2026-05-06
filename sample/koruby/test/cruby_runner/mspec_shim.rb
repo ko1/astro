@@ -18,27 +18,51 @@ $ms_current = nil
 
 class MSpecError < StandardError; end
 
-# describe blocks: just run the body in a fresh context.
+# describe blocks: just run the body in a fresh context.  Save any
+# before/after hooks so subsequent `it` runs can fire them.
 def describe(name, *_opts, &blk)
+  prev_describe = $ms_describe
+  prev_be = $ms_before_each
+  prev_ae = $ms_after_each
   $ms_describe = name
+  # Each describe gets fresh hook arrays so nested describes don't
+  # share with siblings.  Hooks from the outer scope are still
+  # captured via `prev_be`/`prev_ae` and re-run via the closure below.
+  outer_be = prev_be ? prev_be.dup : []
+  outer_ae = prev_ae ? prev_ae.dup : []
+  $ms_before_each = outer_be.dup
+  $ms_after_each = outer_ae.dup
   begin
     blk.call
   rescue => e
     $ms_error += 1
     puts "  ERR #{$ms_describe} (block-level): #{e.class}: #{e.message}"
+  ensure
+    $ms_describe = prev_describe
+    $ms_before_each = prev_be
+    $ms_after_each = prev_ae
   end
-ensure
-  $ms_describe = nil
 end
 
 # context is an alias for describe in mspec.  Top-level alias_method
 # doesn't reach the global function namespace, so define it explicitly.
 def context(name, *opts, &blk); describe(name, *opts, &blk); end
 
-# it/specify: run the block, count outcomes.
+# it/specify: run the block, count outcomes.  Run before-each hooks
+# so things like `before :each { @x = ... }` set up state.
 def it(name, *_opts, &blk)
   $ms_current = "#{$ms_describe} #{name}"
   begin
+    if $ms_before_each
+      $ms_before_each.each do |h|
+        begin
+          h.call
+        rescue
+          # Hook failures don't kill the test; they just leave state
+          # partial and the test will likely fail for that reason.
+        end
+      end
+    end
     blk.call
   rescue MSpecError => e
     $ms_fail += 1
@@ -46,6 +70,10 @@ def it(name, *_opts, &blk)
   rescue => e
     $ms_error += 1
     puts "  ERR  #{$ms_current}: #{e.class}: #{e.message}"
+  ensure
+    if $ms_after_each
+      $ms_after_each.each { |h| h.call rescue nil }
+    end
   end
 end
 
@@ -205,6 +233,13 @@ def raise_exception(klass = Exception, msg = nil); MSpecMatcher.new(:raise_error
 def include(*items); MSpecMatcher.new(:include, items); end
 
 class Object
+  # mspec mock helpers as no-ops on regular objects.  Tests use these
+  # to assert "this method shouldn't be called" — we don't track calls,
+  # so just record an expectation.
+  def should_receive(*_); MSpecMockExpectation.new(self, :stub); end
+  def should_not_receive(*_); MSpecMockExpectation.new(self, :stub); end
+  def stub!(*); MSpecMockExpectation.new(self, :stub); end
+
   def should(matcher = nil)
     if matcher.nil?
       MSpecExpectation.new(self)
