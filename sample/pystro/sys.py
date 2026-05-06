@@ -47,8 +47,22 @@ stderr = _StdStream(2)
 
 modules = {}
 
-def exit(code=0):
-    return __pystro_exit__(code)
+def exit(*args):
+    # CPython raises SystemExit so `try: sys.exit()` is catchable.  Only
+    # uncaught SystemExit actually terminates the process.  No args =>
+    # SystemExit() (e.code is None, exit status 0).
+    if not args:
+        raise SystemExit()
+    raise SystemExit(args[0])
+
+
+def exc_info():
+    # Return (type, value, traceback) for the currently handled exception,
+    # or (None, None, None) if none.
+    e = __pystro_current_exc__()
+    if e is None:
+        return (None, None, None)
+    return (type(e), e, getattr(e, "__traceback__", None))
 
 def getrecursionlimit():
     return 1000
@@ -82,6 +96,6 @@ __all__ = ["argv", "path", "version", "version_info", "platform",
            "maxsize", "maxunicode", "byteorder", "prefix", "exec_prefix",
            "executable", "implementation_name",
            "stdin", "stdout", "stderr", "modules",
-           "exit", "getrecursionlimit", "setrecursionlimit",
+           "exit", "exc_info", "getrecursionlimit", "setrecursionlimit",
            "getsizeof", "getrefcount", "intern", "settrace", "gettrace",
            "displayhook", "excepthook"]

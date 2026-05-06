@@ -10008,6 +10008,10 @@ bi_exception_init(CTX *c, int argc, VALUE *argv)
     // StopIteration(value) — expose .value (used by `yield from` /
     // generator return).  Harmless for other Exception subclasses.
     py_setattr(c, self, "value", nargs >= 1 ? argv[1] : PY_NONE);
+    // SystemExit(code) — CPython exposes .code; for simplicity we set
+    // it on every Exception (matches the .value pattern above and is a
+    // no-op for non-SystemExit subclasses).
+    py_setattr(c, self, "code", nargs >= 1 ? argv[1] : PY_NONE);
     return PY_NONE;
 }
 
@@ -10408,6 +10412,15 @@ bi_pystro_exit(CTX *c, int argc, VALUE *argv)
     if (argc >= 1 && PY_IS_FIXNUM(argv[0])) code = (int)PY_FIXVAL(argv[0]);
     fflush(stdout); fflush(stderr);
     exit(code);
+}
+
+static VALUE
+bi_pystro_current_exc(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc; (void)argv;
+    if (c->current_handling_exc && c->current_handling_exc != PY_NONE)
+        return c->current_handling_exc;
+    return PY_NONE;
 }
 
 // `from m import *` — copy all non-underscore names from the module's
@@ -11056,6 +11069,8 @@ install_builtins(CTX *c)
     py_global_define(c, "__pystro_pow__",   py_make_builtin("__pystro_pow__",   bi_pystro_pow,   2, 2));
     py_global_define(c, "__pystro_argv__",  py_make_builtin("__pystro_argv__",  bi_pystro_argv,  0, 0));
     py_global_define(c, "__pystro_exit__",  py_make_builtin("__pystro_exit__",  bi_pystro_exit,  0, 1));
+    py_global_define(c, "__pystro_current_exc__",
+                     py_make_builtin("__pystro_current_exc__", bi_pystro_current_exc, 0, 0));
     py_global_define(c, "__pystro_time__",      py_make_builtin("__pystro_time__",      bi_pystro_time,      0, 0));
     py_global_define(c, "__pystro_sleep__",     py_make_builtin("__pystro_sleep__",     bi_pystro_sleep,     1, 1));
     py_global_define(c, "__pystro_perf_counter__", py_make_builtin("__pystro_perf_counter__", bi_pystro_perf_counter, 0, 0));

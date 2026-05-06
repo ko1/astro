@@ -1,0 +1,8 @@
+ok SysExitTest test_caught_normally
+ok SysExitTest test_int_arg
+ok SysExitTest test_no_arg
+ok SysExitTest test_str_arg
+ok SysExcInfoTest test_inside_except
+ok SysExcInfoTest test_outside_except
+---
+passed=6 failed=0
