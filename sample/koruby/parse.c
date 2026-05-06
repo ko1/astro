@@ -3348,9 +3348,50 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                                    ALLOC_node_frozen_str_lit("instance-variable", 17),
                                    ALLOC_node_nil());
             }
+            case PM_BACK_REFERENCE_READ_NODE: {
+              /* $& $` $' $+ — defined? returns "global-variable" iff
+               * $~ is non-nil (a regex matched). */
+              uint32_t ai = inc_arg_index(tc);
+              rewind_arg_index(tc, ai);
+              return ALLOC_node_if(ALLOC_node_last_match_get(),
+                                   ALLOC_node_frozen_str_lit("global-variable", 15),
+                                   ALLOC_node_nil());
+              (void)ai;
+            }
+            case PM_NUMBERED_REFERENCE_READ_NODE:
+              /* $1..$9 — defined? returns "global-variable" iff the
+               * capture exists in $~.  We can't introspect captures
+               * (no real Regexp/MatchData), so always nil. */
+              return ALLOC_node_nil();
             case PM_GLOBAL_VARIABLE_READ_NODE: {
               pm_global_variable_read_node_t *gv = (pm_global_variable_read_node_t *)expr;
               ID gname = intern_constant(tc->parser, gv->name);
+              pm_constant_t *gnc = pm_constant_pool_id_to_constant(&tc->parser->constant_pool, gv->name);
+              const char *gn = (const char *)gnc->start;
+              size_t gnl = gnc->length;
+              /* defined?($~) → "global-variable" unconditionally.  CRuby
+               * treats $~ as always defined (the slot exists on the frame). */
+              if (gnl == 2 && gn[0] == '$' && gn[1] == '~') {
+                  return ALLOC_node_frozen_str_lit("global-variable", 15);
+              }
+              /* defined?($&), $`, $', $+ → "global-variable" when $~ is
+               * non-nil (a match exists), else nil.  Same check at runtime. */
+              if (gnl == 2 && gn[0] == '$' && (gn[1] == '&' || gn[1] == '`' ||
+                                                gn[1] == '\'' || gn[1] == '+')) {
+                  uint32_t ai = inc_arg_index(tc);
+                  rewind_arg_index(tc, ai);
+                  /* if $~ != nil then "global-variable" else nil */
+                  return ALLOC_node_if(ALLOC_node_last_match_get(),
+                                       ALLOC_node_frozen_str_lit("global-variable", 15),
+                                       ALLOC_node_nil());
+                  (void)ai;
+              }
+              /* defined?($1).. — capture references; nil unless $~ has
+               * that capture (we can't track captures without real Regexp,
+               * so always nil). */
+              if (gnl >= 2 && gn[0] == '$' && gn[1] >= '0' && gn[1] <= '9') {
+                  return ALLOC_node_nil();
+              }
               /* CRuby: defined?($x) returns "global-variable" iff the
                * gvar was ever assigned (even to nil), else nil. */
               return ALLOC_node_if(ALLOC_node_gvar_defined_p(gname),
@@ -3499,9 +3540,16 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
               NODE *check = ALLOC_node_seq(prep,
                   ALLOC_node_method_call(recv_node, korb_intern("respond_to?"),
                                           rt_argc, ai, mc));
-              return ALLOC_node_if(check,
+              NODE *body = ALLOC_node_if(check,
                                     ALLOC_node_frozen_str_lit("method", 6),
                                     ALLOC_node_nil());
+              /* CRuby: if evaluating the receiver itself raises
+               * (e.g. `defined?(raise.foo)`), defined? returns nil
+               * rather than propagating.  Wrap the whole check in a
+               * rescue. */
+              uint32_t rescue_slot = inc_arg_index(tc);
+              rewind_arg_index(tc, rescue_slot);
+              return ALLOC_node_rescue(body, ALLOC_node_nil(), rescue_slot);
             }
             case PM_CONSTANT_PATH_NODE: {
               /* `defined?(A::B::C)` — resolve the path step-by-step at
