@@ -72,10 +72,6 @@ class _Signature:
         self.fn = fn
         self.parameters = {}
         self.return_annotation = None
-        # Build best-effort parameter list from __defaults__ /
-        # __kwdefaults__.  Names are not directly exposed, so we use
-        # numeric placeholders ("arg0", "arg1", ...) when unknown.
-        kw = {}
         try:
             kw = fn.__kwdefaults__ or {}
         except (AttributeError, TypeError):
@@ -87,14 +83,44 @@ class _Signature:
         except (AttributeError, TypeError):
             defaults = ()
         self._defaults = defaults
+        # Try to extract param names from __code__.
+        names = ()
+        argc = 0
+        try:
+            code = fn.__code__
+            names = tuple(code.co_varnames) if code else ()
+            argc = code.co_argcount if code else 0
+        except (AttributeError, TypeError):
+            pass
+        self._names = names
+        self._argc = argc
+        # Build the parameters dict (CPython exposes signature.parameters
+        # as an OrderedDict — we use a regular dict, which preserves order).
+        params = {}
+        n_def = len(defaults)
+        for i, n in enumerate(names[:argc]):
+            d = defaults[i - (argc - n_def)] if i >= argc - n_def else Parameter.empty
+            params[n] = Parameter(n, Parameter.POSITIONAL_OR_KEYWORD, d)
+        for n in names[argc:]:
+            d = kw.get(n, Parameter.empty)
+            params[n] = Parameter(n, Parameter.KEYWORD_ONLY, d)
+        self.parameters = params
     def __str__(self):
-        # Render '(a, b=2, *, c=3)' style.  Names not introspectable, so
-        # we omit names for positional and just show defaults.
+        n_def = len(self._defaults)
         parts = []
-        for i, d in enumerate(self._defaults):
-            parts.append("arg" + str(i) + "=" + repr(d))
-        for k, v in self._kw.items():
-            parts.append(str(k) + "=" + repr(v))
+        for i, n in enumerate(self._names[:self._argc]):
+            if i >= self._argc - n_def:
+                d = self._defaults[i - (self._argc - n_def)]
+                parts.append(n + "=" + repr(d))
+            else:
+                parts.append(n)
+        if self._argc < len(self._names):
+            parts.append("*")
+            for n in self._names[self._argc:]:
+                if n in self._kw:
+                    parts.append(n + "=" + repr(self._kw[n]))
+                else:
+                    parts.append(n)
         return "(" + ", ".join(parts) + ")"
     def __repr__(self):
         return "<Signature " + str(self) + ">"

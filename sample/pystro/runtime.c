@@ -1653,6 +1653,26 @@ py_bit_or(CTX *c, VALUE a, VALUE b)
         }
         return r;
     }
+    // PEP 604: `int | str` constructs a UnionType.  Pystro doesn't have
+    // a real UnionType class — represent it as a tuple of classes, which
+    // is also accepted by isinstance() / issubclass() / except.
+    if (py_is_class(a) && py_is_class(b)) {
+        VALUE items[2] = { a, b };
+        return py_make_tuple(items, 2);
+    }
+    // tuple | class — extend a Union: if `a` is a tuple of classes (a
+    // prior union), append `b`.
+    if (py_is_tuple(a) && py_is_class(b)) {
+        size_t n = PY_PTR(a)->list.len;
+        bool all_cls = true;
+        for (size_t i = 0; i < n; i++) if (!py_is_class(PY_PTR(a)->list.items[i])) { all_cls = false; break; }
+        if (all_cls) {
+            VALUE *items = (VALUE *)alloca(sizeof(VALUE) * (n + 1));
+            for (size_t i = 0; i < n; i++) items[i] = PY_PTR(a)->list.items[i];
+            items[n] = b;
+            return py_make_tuple(items, n + 1);
+        }
+    }
     if (!py_int_or_bool(a) || !py_int_or_bool(b))
         py_raise_exc(c, c->EXC_TypeError, "unsupported operand type(s) for |");
     mpz_t za, zb; py_to_mpz(c, a, za); py_to_mpz(c, b, zb);
@@ -3737,6 +3757,12 @@ py_getattr(CTX *c, VALUE v, const char *name)
         }
         if (strcmp(name, "__module__") == 0) return py_make_str("__main__", 8);
         if (strcmp(name, "__bases__") == 0) {
+            // CPython: a class with no explicit base has __bases__ ==
+            // (object,).  Pystro stores nbases=0 in that case but the
+            // MRO contains object — surface (object,) here.
+            if (cd->nbases == 0 && v != c->TYPE_object) {
+                return py_make_tuple(&c->TYPE_object, 1);
+            }
             return py_make_tuple(cd->bases, cd->nbases);
         }
         if (strcmp(name, "__mro__") == 0) {
@@ -3862,9 +3888,43 @@ py_getattr(CTX *c, VALUE v, const char *name)
             }
             return r;
         }
-        if (strcmp(name, "__code__") == 0 || strcmp(name, "__globals__") == 0
+        if (strcmp(name, "__code__") == 0) {
+            // Return a minimal code-object-like instance carrying the
+            // names CPython exposes most often: co_varnames, co_argcount,
+            // co_posonlyargcount, co_kwonlyargcount, co_name, co_flags.
+            // We build it from the function's stored param info.
+            VALUE code = py_make_instance(c->TYPE_object);
+            int na = o->func.n_pos_named;
+            int nva = o->func.has_varargs ? 1 : 0;
+            int nkw = o->func.nparams - na - nva - (o->func.has_kwargs ? 1 : 0);
+            VALUE *names = (VALUE *)alloca(sizeof(VALUE) * (o->func.nparams + 1));
+            int nn = 0;
+            if (o->func.param_names) {
+                for (int i = 0; i < o->func.nparams; i++) {
+                    if (o->func.param_names[i])
+                        names[nn++] = py_make_str(o->func.param_names[i],
+                                                  strlen(o->func.param_names[i]));
+                }
+            }
+            py_setattr(c, code, "co_varnames", py_make_tuple(names, nn));
+            py_setattr(c, code, "co_argcount", PY_FIX(na));
+            py_setattr(c, code, "co_posonlyargcount", PY_FIX(0));
+            py_setattr(c, code, "co_kwonlyargcount", PY_FIX(nkw));
+            py_setattr(c, code, "co_name",
+                       py_make_str(o->func.name ? o->func.name : "<lambda>",
+                                   o->func.name ? strlen(o->func.name) : 8));
+            py_setattr(c, code, "co_flags",
+                       PY_FIX((o->func.is_generator ? 0x20 : 0)
+                              | (o->func.has_varargs ? 0x04 : 0)
+                              | (o->func.has_kwargs  ? 0x08 : 0)));
+            py_setattr(c, code, "co_filename",
+                       py_make_str("<pystro>", 8));
+            py_setattr(c, code, "co_firstlineno", PY_FIX(0));
+            return code;
+        }
+        if (strcmp(name, "__globals__") == 0
             || strcmp(name, "__closure__") == 0) {
-            return PY_NONE;  // stubs — not modeling code/globals/closure objects
+            return PY_NONE;
         }
         if (o->func.attrs) {
             VALUE key = py_make_str(name, strlen(name));
@@ -12087,7 +12147,14 @@ bi_next(CTX *c, int argc, VALUE *argv)
         VALUE r;
         if (py_iter_next(c, PY_PTR(it)->iter_state, &r)) return r;
         if (argc >= 2) return argv[1];
-        py_raise_exc(c, c->EXC_StopIteration, "iterator exhausted");
+        // Set RAISE without longjmp so the caller (e.g. user __next__
+        // bridging built-in iterators) can propagate StopIteration via
+        // the standard RAISE state path rather than crossing setjmp
+        // boundaries.
+        VALUE si = py_make_instance(c->EXC_StopIteration);
+        c->state = PY_STATE_RAISE;
+        c->state_value = si;
+        return PY_NONE;
     }
     if (py_is_instance(it)) {
         VALUE cls = PY_OBJ_VAL(PY_PTR(it)->inst.cls);

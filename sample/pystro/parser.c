@@ -3414,7 +3414,13 @@ parse_simple_stmt(void)
                 load_tmp);
             return ALLOC_node_seq(result, star);
         }
+        // Parenthesised import list `from m import (a, b, c)` — strip
+        // the surrounding parens and let trailing-comma + newline-inside
+        // be ignored.  Tokens inside () are already produced normally.
+        bool paren = match_tok(T_LPAREN);
         for (;;) {
+            // Permit a trailing comma before ')'.
+            if (paren && peek_tok(0)->kind == T_RPAREN) break;
             if (peek_tok(0)->kind != T_NAME) parse_error("from: name expected");
             const char *src = peek_tok(0)->sval;
             tok_pos++;
@@ -3428,6 +3434,7 @@ parse_simple_stmt(void)
             result = ALLOC_node_seq(result, make_store(target, get));
             if (!match_tok(T_COMMA)) break;
         }
+        if (paren) expect(T_RPAREN, "')'");
         return result;
     }
 
