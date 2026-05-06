@@ -355,6 +355,7 @@ static bool korb_method_body_is_simple_frame(struct Node *body) {
     fclose(fp);
     bool ok =
         strstr(buf, "(node_yield ")             == NULL &&
+        strstr(buf, "(node_yield_splat ")       == NULL &&
         strstr(buf, "(node_super")              == NULL &&
         strstr(buf, "(node_method_call_block ") == NULL &&
         strstr(buf, "(node_func_call_block ")   == NULL &&
@@ -1783,11 +1784,6 @@ VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv)
             uint32_t start = blk->params_cnt;
             if (argc <= start) {
                 fp[blk->rest_slot] = korb_ary_new();
-            } else if (blk->params_cnt == 0 && argc == 1 &&
-                       !SPECIAL_CONST_P(args_buf[0]) &&
-                       BUILTIN_TYPE(args_buf[0]) == T_ARRAY) {
-                /* `|*x|` with single Array arg: x = arg (NOT [arg]). */
-                fp[blk->rest_slot] = args_buf[0];
             } else {
                 VALUE rest = korb_ary_new_capa((long)(argc - start));
                 for (uint32_t i = start; i < argc; i++) korb_ary_push(rest, args_buf[i]);

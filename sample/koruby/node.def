@@ -717,6 +717,20 @@ node_yield(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_inde
     return korb_yield(c, argc, &c->fp[arg_index]);
 }
 
+/* `yield *arr` (or `yield a, *b, c`) — args were materialized into a
+ * single Array at slot `arr_slot`; call yield with the array's elements
+ * as a variadic argv. */
+NODE_DEF
+node_yield_splat(CTX * restrict c, NODE * restrict n, uint32_t arr_slot)
+{
+    VALUE arr = c->fp[arr_slot];
+    if (SPECIAL_CONST_P(arr) || BUILTIN_TYPE(arr) != T_ARRAY) {
+        return korb_yield(c, 0, NULL);
+    }
+    struct korb_array *a = (struct korb_array *)arr;
+    return korb_yield(c, (uint32_t)a->len, a->ptr);
+}
+
 // ---------------- arithmetic (generic + fixnum fast path) ----------------
 // Each EVAL_node_<binop> records `n` into c->last_cfunc_callsite at the
 // point where it falls into a slow / raise path.  korb_raise reads that

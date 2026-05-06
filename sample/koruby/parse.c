@@ -2574,6 +2574,31 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
       case PM_YIELD_NODE: {
           pm_yield_node_t *n = (pm_yield_node_t *)node;
           uint32_t arg_idx = arg_index(tc);
+          /* Detect splat in args.  If any arg is `*arr`, lower to a
+           * variadic yield via an array (`korb_yield(c, ary.length, ary)`)
+           * — handled by `node_yield_splat`.  Otherwise the simple
+           * `node_yield` with positional slots. */
+          bool has_splat = false;
+          if (n->arguments) {
+              for (uint32_t i = 0; i < n->arguments->arguments.size; i++) {
+                  if (PM_NODE_TYPE_P(n->arguments->arguments.nodes[i], PM_SPLAT_NODE)) {
+                      has_splat = true;
+                      break;
+                  }
+              }
+          }
+          if (has_splat) {
+              /* Build an Array of all args (concatenating splats) using
+               * the existing build_args_array_with_splat helper, then
+               * call korb_yield with that Array as variadic argv. */
+              extern NODE *build_args_array_with_splat(struct transduce_context *tc, pm_node_list_t *args);
+              NODE *args_arr = build_args_array_with_splat(tc, &n->arguments->arguments);
+              uint32_t slot = inc_arg_index(tc);
+              rewind_arg_index(tc, slot);
+              NODE *save = ALLOC_node_lvar_set(slot, args_arr);
+              NODE *y = ALLOC_node_yield_splat(slot);
+              return ALLOC_node_seq(save, y);
+          }
           uint32_t cnt = 0;
           NODE *seq = NULL;
           if (n->arguments) {
