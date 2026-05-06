@@ -1496,6 +1496,12 @@ static const char *nuq_prelude =
     "    if type == \"string\" and (s|type) == \"string\" "
     "    then ltrimstr(s) | rtrimstr(s) "
     "    else . end; "
+    /* jq exposes `have_decnum` to let scripts branch on whether the
+     * runtime supports arbitrary-precision decimals.  nuq doesn't, so
+     * advertise false and let the scripts take the fallback. */
+    "def have_decnum: false; "
+    "def have_decimal: false; "
+    "def have_literal_numbers: false; "
     ;
 
 struct Node *
