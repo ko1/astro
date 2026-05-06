@@ -10901,6 +10901,91 @@ bi_pystro_set_recursion_limit(CTX *c, int argc, VALUE *argv)
     return PY_NONE;
 }
 
+static VALUE
+bi_pystro_localtime(CTX *c, int argc, VALUE *argv)
+{
+    time_t t;
+    if (argc >= 1) {
+        if (PY_IS_FIXNUM(argv[0])) t = (time_t)PY_FIXVAL(argv[0]);
+        else t = (time_t)py_to_double(c, argv[0]);
+    } else {
+        t = time(NULL);
+    }
+    struct tm tm_;
+    localtime_r(&t, &tm_);
+    static VALUE struct_time_cls = (VALUE)0;
+    if (!struct_time_cls) struct_time_cls = py_make_class("struct_time", PY_NONE, false);
+    VALUE inst = py_make_instance(struct_time_cls);
+    py_setattr(c, inst, "tm_year",  py_make_int(tm_.tm_year + 1900));
+    py_setattr(c, inst, "tm_mon",   py_make_int(tm_.tm_mon + 1));
+    py_setattr(c, inst, "tm_mday",  py_make_int(tm_.tm_mday));
+    py_setattr(c, inst, "tm_hour",  py_make_int(tm_.tm_hour));
+    py_setattr(c, inst, "tm_min",   py_make_int(tm_.tm_min));
+    py_setattr(c, inst, "tm_sec",   py_make_int(tm_.tm_sec));
+    py_setattr(c, inst, "tm_wday",  py_make_int((tm_.tm_wday + 6) % 7));
+    py_setattr(c, inst, "tm_yday",  py_make_int(tm_.tm_yday + 1));
+    py_setattr(c, inst, "tm_isdst", py_make_int(tm_.tm_isdst));
+    return inst;
+}
+
+static VALUE
+bi_pystro_gmtime(CTX *c, int argc, VALUE *argv)
+{
+    time_t t;
+    if (argc >= 1) {
+        if (PY_IS_FIXNUM(argv[0])) t = (time_t)PY_FIXVAL(argv[0]);
+        else t = (time_t)py_to_double(c, argv[0]);
+    } else {
+        t = time(NULL);
+    }
+    struct tm tm_;
+    gmtime_r(&t, &tm_);
+    static VALUE struct_time_cls = (VALUE)0;
+    if (!struct_time_cls) struct_time_cls = py_make_class("struct_time", PY_NONE, false);
+    VALUE inst = py_make_instance(struct_time_cls);
+    py_setattr(c, inst, "tm_year",  py_make_int(tm_.tm_year + 1900));
+    py_setattr(c, inst, "tm_mon",   py_make_int(tm_.tm_mon + 1));
+    py_setattr(c, inst, "tm_mday",  py_make_int(tm_.tm_mday));
+    py_setattr(c, inst, "tm_hour",  py_make_int(tm_.tm_hour));
+    py_setattr(c, inst, "tm_min",   py_make_int(tm_.tm_min));
+    py_setattr(c, inst, "tm_sec",   py_make_int(tm_.tm_sec));
+    py_setattr(c, inst, "tm_wday",  py_make_int((tm_.tm_wday + 6) % 7));
+    py_setattr(c, inst, "tm_yday",  py_make_int(tm_.tm_yday + 1));
+    py_setattr(c, inst, "tm_isdst", py_make_int(0));
+    return inst;
+}
+
+static VALUE
+bi_pystro_strftime(CTX *c, int argc, VALUE *argv)
+{
+    if (!py_is_str(argv[0])) py_raise_exc(c, c->EXC_TypeError, "strftime: format must be str");
+    struct tm tm_;
+    memset(&tm_, 0, sizeof(tm_));
+    if (argc >= 2 && py_is_instance(argv[1])) {
+        VALUE t = argv[1];
+        VALUE y = py_getattr(c, t, "tm_year");
+        VALUE m = py_getattr(c, t, "tm_mon");
+        VALUE d = py_getattr(c, t, "tm_mday");
+        VALUE H = py_getattr(c, t, "tm_hour");
+        VALUE M = py_getattr(c, t, "tm_min");
+        VALUE S = py_getattr(c, t, "tm_sec");
+        if (py_int_or_bool(y)) tm_.tm_year = (int)py_int_to_long(c, y) - 1900;
+        if (py_int_or_bool(m)) tm_.tm_mon  = (int)py_int_to_long(c, m) - 1;
+        if (py_int_or_bool(d)) tm_.tm_mday = (int)py_int_to_long(c, d);
+        if (py_int_or_bool(H)) tm_.tm_hour = (int)py_int_to_long(c, H);
+        if (py_int_or_bool(M)) tm_.tm_min  = (int)py_int_to_long(c, M);
+        if (py_int_or_bool(S)) tm_.tm_sec  = (int)py_int_to_long(c, S);
+        time_t tt = mktime(&tm_);
+        if (tt != (time_t)-1) localtime_r(&tt, &tm_);
+    } else {
+        time_t tt = time(NULL);
+        localtime_r(&tt, &tm_);
+    }
+    char buf[256];
+    size_t n = strftime(buf, sizeof(buf), PY_PTR(argv[0])->str.chars, &tm_);
+    return py_make_str(buf, n);
+}
+
 // Reinterpret a float as its IEEE-754 bits.  Returns int (may be a
 // bignum for double's 64-bit pattern).
 static VALUE
@@ -11628,6 +11713,12 @@ install_builtins(CTX *c)
     py_global_define(c, "__pystro_set_recursion_limit__",
                      py_make_builtin("__pystro_set_recursion_limit__",
                                      bi_pystro_set_recursion_limit, 1, 1));
+    py_global_define(c, "__pystro_localtime__",
+                     py_make_builtin("__pystro_localtime__", bi_pystro_localtime, 0, 1));
+    py_global_define(c, "__pystro_gmtime__",
+                     py_make_builtin("__pystro_gmtime__", bi_pystro_gmtime, 0, 1));
+    py_global_define(c, "__pystro_strftime__",
+                     py_make_builtin("__pystro_strftime__", bi_pystro_strftime, 1, 2));
     py_global_define(c, "__pystro_float_to_bits__",
                      py_make_builtin("__pystro_float_to_bits__", bi_pystro_float_to_bits, 1, 2));
     py_global_define(c, "__pystro_bits_to_float__",

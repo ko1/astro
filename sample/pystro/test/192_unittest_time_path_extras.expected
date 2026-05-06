@@ -1,0 +1,10 @@
+ok TimeFormatTest test_localtime_attrs
+ok TimeFormatTest test_strftime_iso_date
+ok TimeFormatTest test_strftime_year
+ok OsPathExpandTest test_expanduser
+ok OsPathExpandTest test_expanduser_no_tilde
+ok OsPathExpandTest test_expandvars
+ok OsPathExpandTest test_expandvars_braces
+ok OsPathExpandTest test_expandvars_unknown
+---
+passed=8 failed=0

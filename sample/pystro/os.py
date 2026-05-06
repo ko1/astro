@@ -126,6 +126,50 @@ class _Path:
         return p[:i]
 
     @staticmethod
+    def expanduser(p):
+        if not p or p[0] != "~": return p
+        # Find first separator after ~
+        i = 1
+        while i < len(p) and p[i] != "/":
+            i += 1
+        if i == 1:
+            home = __pystro_getenv__("HOME", "/")
+        else:
+            # ~user — fall back to /home/user/
+            home = "/home/" + p[1:i]
+        return home + p[i:]
+
+    @staticmethod
+    def expandvars(p):
+        # Simple $VAR / ${VAR} substitution.
+        out = []
+        i = 0
+        while i < len(p):
+            ch = p[i]
+            if ch == "$" and i + 1 < len(p):
+                if p[i + 1] == "{":
+                    j = p.find("}", i + 2)
+                    if j < 0:
+                        out.append(ch); i += 1; continue
+                    name = p[i + 2:j]
+                    val = __pystro_getenv__(name, None)
+                    out.append(val if val is not None else "${" + name + "}")
+                    i = j + 1
+                else:
+                    j = i + 1
+                    while j < len(p) and (p[j].isalnum() or p[j] == "_"):
+                        j += 1
+                    if j == i + 1:
+                        out.append(ch); i += 1; continue
+                    name = p[i + 1:j]
+                    val = __pystro_getenv__(name, None)
+                    out.append(val if val is not None else "$" + name)
+                    i = j
+            else:
+                out.append(ch); i += 1
+        return "".join(out)
+
+    @staticmethod
     def normpath(p):
         if not p: return "."
         # Split on '/'.
