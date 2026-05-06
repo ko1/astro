@@ -1,0 +1,39 @@
+"""pystro stub for `_symtable`."""
+
+USE = 0x01
+DEF_LOCAL = 0x02
+DEF_GLOBAL = 0x04
+DEF_PARAM = 0x08
+DEF_NONLOCAL = 0x10
+DEF_FREE = 0x20
+DEF_FREE_CLASS = 0x40
+DEF_IMPORT = 0x80
+DEF_BOUND = DEF_LOCAL | DEF_PARAM | DEF_IMPORT
+DEF_ANNOT = 0x100
+
+TYPE_FUNCTION = 0
+TYPE_CLASS = 1
+TYPE_MODULE = 2
+TYPE_ANNOTATION = 3
+TYPE_TYPE_VAR_BOUND = 4
+TYPE_TYPE_ALIAS = 5
+TYPE_TYPE_PARAM = 6
+TYPE_COMPREHENSION = 7
+
+SCOPE_OFF = 11
+SCOPE_MASK = 7
+
+LOCAL = 1
+GLOBAL_EXPLICIT = 2
+GLOBAL_IMPLICIT = 3
+FREE = 4
+CELL = 5
+
+
+def symtable(source, filename, compile_type):
+    raise NotImplementedError("_symtable not supported in pystro")
+
+
+__all__ = ["symtable", "USE", "DEF_LOCAL", "DEF_GLOBAL", "TYPE_FUNCTION",
+           "TYPE_CLASS", "TYPE_MODULE", "LOCAL", "GLOBAL_EXPLICIT",
+           "GLOBAL_IMPLICIT", "FREE", "CELL"]

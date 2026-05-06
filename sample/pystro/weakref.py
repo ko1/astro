@@ -29,4 +29,46 @@ class WeakKeyDictionary(dict):
     pass
 
 
-__all__ = ["ref", "proxy", "WeakValueDictionary", "WeakKeyDictionary"]
+ReferenceType = _Ref
+ProxyType = type(None)
+CallableProxyType = type(None)
+
+
+def getweakrefcount(obj):
+    return 0
+
+
+def getweakrefs(obj):
+    return []
+
+
+class WeakSet(set):
+    pass
+
+
+class WeakMethod(_Ref):
+    pass
+
+
+class finalize:
+    def __init__(self, obj, func, *args, **kwargs):
+        self._func = func
+        self._args = args
+        self._kwargs = kwargs
+        self._alive = True
+    def __call__(self):
+        if self._alive:
+            self._alive = False
+            return self._func(*self._args, **self._kwargs)
+    def detach(self):
+        self._alive = False
+        return None
+    @property
+    def alive(self):
+        return self._alive
+
+
+__all__ = ["ref", "proxy", "WeakValueDictionary", "WeakKeyDictionary",
+           "ReferenceType", "ProxyType", "CallableProxyType",
+           "getweakrefcount", "getweakrefs", "WeakSet", "WeakMethod",
+           "finalize"]
