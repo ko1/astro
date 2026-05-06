@@ -4635,8 +4635,15 @@ py_pat_match(CTX *c, int pat_idx, VALUE v)
         VALUE cls = EVAL(c, p->literal);
         if (c->state != PY_STATE_NORMAL) return false;
         if (!py_is_class(cls)) return false;
-        if (!py_is_instance(v)) return false;
-        return class_is_ancestor(PY_OBJ_VAL(PY_PTR(v)->inst.cls), cls);
+        // Built-in type pattern (int, str, float, list, ...): match by type tag.
+        extern VALUE bi_type(CTX *c, int argc, VALUE *argv);
+        VALUE av[1] = { v };
+        VALUE actual_cls = bi_type(c, 1, av);
+        if (c->state != PY_STATE_NORMAL) return false;
+        if (actual_cls == cls) return true;
+        if (py_is_class(actual_cls))
+            return class_is_ancestor(actual_cls, cls);
+        return false;
       }
       case PYPAT_CLASS_ARGS: {
         VALUE cls = EVAL(c, p->literal);

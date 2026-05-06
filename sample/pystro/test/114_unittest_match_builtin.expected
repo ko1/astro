@@ -1,0 +1,5 @@
+ok MatchBuiltinTypeTest test_int_str_float
+ok MatchBuiltinTypeTest test_list_class
+ok MatchBuiltinTypeTest test_with_guard
+---
+passed=3 failed=0
