@@ -8425,6 +8425,7 @@ bi_format(CTX *c, int argc, VALUE *argv)
     bool zero_pad = false;
     bool alt_form = false;
     bool comma_sep = false;
+    char group_ch = 0;     // ',' or '_'
     char sign_ch = 0;
     int  width = 0;
     int  precision = -1;
@@ -8446,8 +8447,10 @@ bi_format(CTX *c, int argc, VALUE *argv)
     if (i < n && s[i] == '0') { zero_pad = true; i++; }
     // [width]
     while (i < n && s[i] >= '0' && s[i] <= '9') { width = width * 10 + (s[i] - '0'); i++; }
-    // [,]
-    if (i < n && s[i] == ',') { comma_sep = true; i++; }
+    // [, or _]
+    if (i < n && (s[i] == ',' || s[i] == '_')) {
+        comma_sep = true; group_ch = s[i]; i++;
+    }
     // [.precision]
     if (i < n && s[i] == '.') {
         i++;
@@ -8528,14 +8531,24 @@ bi_format(CTX *c, int argc, VALUE *argv)
             body[sizeof(body) - 1] = '\0';
             bl = strlen(body);
         }
-        // [,] thousands separator for d type, or for int values with no type.
+        // [,] thousands separator for d type, float types, or for int values with no type.
         bool int_like = (type_ch == 'd') ||
                         (type_ch == 0 && (PY_IS_FIXNUM(v) || py_is_bignum(v) ||
                                           v == PY_TRUE || v == PY_FALSE));
-        if (comma_sep && int_like) {
+        bool float_like = (type_ch == 'f' || type_ch == 'g' || type_ch == 'e'
+                           || type_ch == 'E' || type_ch == 'F'
+                           || (type_ch == 0 && py_is_float(v)));
+        if (comma_sep && (int_like || float_like)) {
             int neg = (body[0] == '-');
             int start = neg ? 1 : 0;
-            int dl = (int)bl - start;
+            // For float, find decimal point or exponent — only group digits before it.
+            int int_end = (int)bl;
+            for (int k = start; k < (int)bl; k++) {
+                if (body[k] == '.' || body[k] == 'e' || body[k] == 'E') {
+                    int_end = k; break;
+                }
+            }
+            int dl = int_end - start;
             int commas = (dl - 1) / 3;
             if (commas > 0) {
                 char tmp[260];
@@ -8544,11 +8557,14 @@ bi_format(CTX *c, int argc, VALUE *argv)
                 int j = start;
                 int first = dl % 3;
                 if (first == 0) first = 3;
-                for (int k = 0; k < first && j < (int)bl; k++) tmp[ti++] = body[j++];
-                while (j < (int)bl) {
-                    tmp[ti++] = ',';
-                    for (int k = 0; k < 3 && j < (int)bl; k++) tmp[ti++] = body[j++];
+                for (int k = 0; k < first && j < int_end; k++) tmp[ti++] = body[j++];
+                char gc = group_ch ? group_ch : ',';
+                while (j < int_end) {
+                    tmp[ti++] = gc;
+                    for (int k = 0; k < 3 && j < int_end; k++) tmp[ti++] = body[j++];
                 }
+                // Append the rest unchanged.
+                while (j < (int)bl) tmp[ti++] = body[j++];
                 tmp[ti] = '\0';
                 strncpy(body, tmp, sizeof(body) - 1);
                 body[sizeof(body) - 1] = '\0';
@@ -9878,6 +9894,7 @@ bi_iter(CTX *c, int argc, VALUE *argv)
         return PY_OBJ_VAL(o);
     }
     if (PY_IS_PTR(argv[0]) && PY_PTR(argv[0])->type == PY_T_GEN) return argv[0];
+    if (PY_IS_PTR(argv[0]) && PY_PTR(argv[0])->type == PY_T_ITER) return argv[0];
     if (py_is_instance(argv[0])) {
         VALUE cls = PY_OBJ_VAL(PY_PTR(argv[0])->inst.cls);
         VALUE im = py_class_lookup_method(cls, "__iter__");

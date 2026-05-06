@@ -1,0 +1,8 @@
+ok FormatGroupingTest test_float_comma
+ok FormatGroupingTest test_int_comma
+ok FormatGroupingTest test_int_underscore
+ok FormatGroupingTest test_neg_float_comma
+ok FormatGroupingTest test_no_grouping_below_1000
+ok IterIdempotentTest test_iter_iter
+---
+passed=6 failed=0
