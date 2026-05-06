@@ -137,12 +137,29 @@ if VERBOSE
     puts "  failure:  #{msg}"
   end
 elsif !failures.empty?
-  # Categorize first 30 to give a sense of the gaps
-  puts "=== sample failures (first 30) ==="
-  failures.first(30).each do |idx, t, msg|
-    puts "##{idx + 1}: #{t[:filter][0, 60]}"
-    puts "    -> #{msg[0, 100]}"
+  # Categorize all failures by gap type
+  puts "=== failure categories ==="
+  cats = Hash.new(0)
+  failures.each do |idx, t, msg|
+    cat = case msg
+          when /(\w+\/\d+) is not defined/ then "missing builtin: #{$1}"
+          when /path expression: dynamic/ then "path-mode: dynamic index"
+          when /path expression: not array/ then "path-mode: type"
+          when /path expression: cannot iterate/ then "path-mode: iter type"
+          when /path expression: unsupported/ then "path-mode: unsupported AST"
+          when /Cannot iterate/ then "iter type error"
+          when /Out of bounds/ then "out of bounds"
+          when /parse error|parse: expected|nuq parse:/ then "parse error"
+          when /Path too deep/ then "path validation"
+          when /Cannot update/ then "setpath validation"
+          when /containment/ then "contains type"
+          when /^expected.*got/ then "value mismatch"
+          when /JSON parse error/ then "non-JSON output"
+          else msg[0, 50]
+          end
+    cats[cat] += 1
   end
+  cats.sort_by { |_, n| -n }.each { |k, n| printf "  %4d  %s\n", n, k }
   puts ""
-  puts "(use --verbose for all #{failures.size} failures)"
+  puts "(use --verbose for full per-test output, --first N to limit)"
 end

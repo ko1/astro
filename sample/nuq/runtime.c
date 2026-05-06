@@ -2400,42 +2400,60 @@ nuq_getpath_eval(CTX *c, struct Node *path)
 EMIT
 nuq_limit_eval(CTX *c, struct Node *cnt, struct Node *body)
 {
-    size_t t0 = c->pool_top;
+    /* jq semantics: `limit(N; f)` runs the count expression first.
+     * If count emits multiple values (e.g. `limit(2,3; range(9))`),
+     * each is treated as an independent invocation: the body is
+     * re-run per count value and outputs concatenated. */
+    size_t outer = c->pool_top;
     EMIT nb = EVAL(c, cnt);
     if (c->error != NUQ_NULL) return EMIT_EMPTY;
-    if (nb.count == 0) { c->pool_top = t0; return EMIT_EMPTY; }
-    int64_t n = to_int64(nb.items[0]);
-    c->pool_top = t0;
-    if (n < 0) return err_emit(c, "limit doesn't support negative count");
-    if (n == 0) return EMIT_EMPTY;
-    EMIT bo = EVAL(c, body);
-    if (c->error != NUQ_NULL) return EMIT_EMPTY;
-    /* Truncate by adjusting pool_top — since bo's slice starts at t0
-     * and goes to pool_top, we just shrink. */
-    size_t take = n < (int64_t)bo.count ? (size_t)n : (size_t)bo.count;
-    c->pool_top = t0 + take;
-    return nuq_emit_slice(c, t0);
+    /* Snapshot count values — body eval will reset pool_top below. */
+    uint32_t ccnt = nb.count;
+    int64_t small_ns[16];
+    int64_t *ns = (ccnt <= 16) ? small_ns
+                               : (int64_t *)GC_malloc(ccnt * sizeof(int64_t));
+    for (uint32_t i = 0; i < ccnt; i++) ns[i] = to_int64(nb.items[i]);
+    c->pool_top = outer;
+
+    for (uint32_t k = 0; k < ccnt; k++) {
+        int64_t n = ns[k];
+        if (n <= 0) continue;     /* jq: non-positive count → empty */
+        size_t before = c->pool_top;
+        EMIT bo = EVAL(c, body);
+        if (c->error != NUQ_NULL) return EMIT_EMPTY;
+        size_t take = n < (int64_t)bo.count ? (size_t)n : (size_t)bo.count;
+        c->pool_top = before + take;
+    }
+    return nuq_emit_slice(c, outer);
 }
 
 EMIT
 nuq_nth_eval(CTX *c, struct Node *idx, struct Node *body)
 {
-    size_t t0 = c->pool_top;
+    /* `nth(N; f)`: emit the N-th value of f.  Multi-emit N runs the
+     * body once per N value, like `limit`. */
+    size_t outer = c->pool_top;
     EMIT nb = EVAL(c, idx);
     if (c->error != NUQ_NULL) return EMIT_EMPTY;
-    if (nb.count == 0) { c->pool_top = t0; return EMIT_EMPTY; }
-    int64_t n = to_int64(nb.items[0]);
-    c->pool_top = t0;
-    if (n < 0) return err_emit(c, "nth doesn't support negative indices");
-    EMIT bo = EVAL(c, body);
-    if (c->error != NUQ_NULL) return EMIT_EMPTY;
-    if (n < (int64_t)bo.count) {
-        VALUE v = bo.items[n];
-        c->pool_top = t0;
-        return nuq_emit_one(c, v);
+    uint32_t cnt = nb.count;
+    int64_t small_ns[16];
+    int64_t *ns = (cnt <= 16) ? small_ns
+                              : (int64_t *)GC_malloc(cnt * sizeof(int64_t));
+    for (uint32_t i = 0; i < cnt; i++) ns[i] = to_int64(nb.items[i]);
+    c->pool_top = outer;
+
+    for (uint32_t k = 0; k < cnt; k++) {
+        int64_t n = ns[k];
+        if (n < 0) return err_emit(c, "nth doesn't support negative indices");
+        size_t before = c->pool_top;
+        EMIT bo = EVAL(c, body);
+        if (c->error != NUQ_NULL) return EMIT_EMPTY;
+        VALUE v = (n < (int64_t)bo.count) ? bo.items[n] : NUQ_NULL;
+        bool present = (n < (int64_t)bo.count);
+        c->pool_top = before;
+        if (present) nuq_pool_push(c, v);
     }
-    c->pool_top = t0;
-    return EMIT_EMPTY;
+    return nuq_emit_slice(c, outer);
 }
 
 /* --- top-level run ---------------------------------------------------- */

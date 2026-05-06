@@ -41,7 +41,7 @@ typedef enum {
     TK_KW_AS, TK_KW_DEF, TK_KW_IMPORT, TK_KW_INCLUDE, TK_KW_MODULE,
     TK_KW_TRY, TK_KW_CATCH,
     TK_KW_REDUCE, TK_KW_FOREACH,
-    TK_KW_LABEL,
+    TK_KW_LABEL, TK_KW_BREAK,
 } ttype_t;
 
 typedef struct {
@@ -329,6 +329,7 @@ lex_advance(lexer_t *L)
         KW("reduce", TK_KW_REDUCE);
         KW("foreach", TK_KW_FOREACH);
         KW("label", TK_KW_LABEL);
+        KW("break", TK_KW_BREAK);
         KW("import", TK_KW_IMPORT);
         KW("include", TK_KW_INCLUDE);
         KW("module", TK_KW_MODULE);
@@ -669,7 +670,7 @@ parse_primary(lexer_t *L)
                         [TK_KW_OR]="or",[TK_KW_NOT]="not",[TK_KW_AS]="as",
                         [TK_KW_DEF]="def",[TK_KW_TRY]="try",[TK_KW_CATCH]="catch",
                         [TK_KW_REDUCE]="reduce",[TK_KW_FOREACH]="foreach",
-                        [TK_KW_LABEL]="label"
+                        [TK_KW_LABEL]="label",[TK_KW_BREAK]="break"
                     };
                     ie->kkind = 0;
                     ie->kname = kw_names[kt->type] ? kw_names[kt->type] : "?";
@@ -753,6 +754,13 @@ parse_primary(lexer_t *L)
         expect(L, TK_PIPE, "'|' after label");
         struct Node *body = parse_pipe(L);
         return ALLOC_node_label(vid, body);
+      }
+      case TK_KW_BREAK: {
+        take(L);
+        expect(L, TK_DOLLAR, "'$' after break");
+        if (peek(L)->type != TK_IDENT) parse_error(L, "$name after break");
+        uint32_t vid = nuq_intern(take(L).s);
+        return ALLOC_node_break(vid);
       }
       case TK_KW_NOT: take(L); return ALLOC_node_not();
       case TK_KW_DEF: {
