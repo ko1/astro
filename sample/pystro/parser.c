@@ -2157,17 +2157,44 @@ parse_for(void)
     if (cur_scope) tmp_idx = scope_add_local(cur_scope, tmp_name);
     NODE *load_tmp = (cur_scope && tmp_idx >= 0)
         ? ALLOC_node_lref((uint32_t)tmp_idx) : ALLOC_node_gref(tmp_name);
-    // Parse comma-separated targets — each may be NAME or nested tuple.
     NODE *prefix = NULL;
-    int i = 0;
-    for (;;) {
-        NODE *idx_n = ALLOC_node_const_int(i);
-        NODE *el = ALLOC_node_subscript_get(load_tmp, idx_n);
-        NODE *as = build_for_target_assigns(el);
-        prefix = prefix ? ALLOC_node_seq(prefix, as) : as;
-        i++;
-        if (!match_tok(T_COMMA)) break;
-        if (peek_tok(0)->kind == T_IN) break;
+    // Special case: the whole LHS is a parenthesised tuple, e.g.
+    //   for (a, b) in pairs:
+    // — treat it as a single pattern unpacking load_tmp directly (not
+    // load_tmp[0]), so we don't get a spurious extra subscription level.
+    bool single_paren = false;
+    if (k0 == T_LPAREN || k0 == T_LBRACK) {
+        int close = (k0 == T_LPAREN) ? T_RPAREN : T_RBRACK;
+        int depth = 1;
+        int p = 1;
+        while (peek_tok(p)->kind != T_EOF) {
+            int tk = peek_tok(p)->kind;
+            if (tk == T_LPAREN || tk == T_LBRACK) depth++;
+            else if (tk == T_RPAREN || tk == T_RBRACK) {
+                depth--;
+                if (depth == 0) {
+                    if (peek_tok(p)->kind == close && peek_tok(p + 1)->kind == T_IN)
+                        single_paren = true;
+                    break;
+                }
+            }
+            p++;
+        }
+    }
+    if (single_paren) {
+        prefix = build_for_target_assigns(load_tmp);
+    } else {
+        // Parse comma-separated targets — each may be NAME or nested tuple.
+        int i = 0;
+        for (;;) {
+            NODE *idx_n = ALLOC_node_const_int(i);
+            NODE *el = ALLOC_node_subscript_get(load_tmp, idx_n);
+            NODE *as = build_for_target_assigns(el);
+            prefix = prefix ? ALLOC_node_seq(prefix, as) : as;
+            i++;
+            if (!match_tok(T_COMMA)) break;
+            if (peek_tok(0)->kind == T_IN) break;
+        }
     }
     expect(T_IN, "'in'");
     NODE *iter = parse_expr();
@@ -3416,6 +3443,30 @@ static NODE *
 parse_assignable_target(NODE *rhs)
 {
     Tok *t = peek_tok(0);
+    // Nested-tuple/list pattern: `(a, b, ...) = rhs` or `[a, b] = rhs`.
+    // Each child becomes `child_i = __t[i]` recursively.
+    if (t->kind == T_LPAREN || t->kind == T_LBRACK) {
+        int close = (t->kind == T_LPAREN) ? T_RPAREN : T_RBRACK;
+        tok_pos++;
+        const char *tmp = new_temp_name("__nupk");
+        NODE *load_tmp;
+        NODE *result = build_temp_init(tmp, rhs, &load_tmp);
+        int i = 0;
+        if (peek_tok(0)->kind != close) {
+            for (;;) {
+                NODE *idx = ALLOC_node_const_int(i);
+                NODE *el  = ALLOC_node_subscript_get(load_tmp, idx);
+                NODE *as  = parse_assignable_target(el);
+                result = ALLOC_node_seq(result, as);
+                i++;
+                if (!match_tok(T_COMMA)) break;
+                if (peek_tok(0)->kind == close) break;
+            }
+        }
+        if (close == T_RPAREN) expect(T_RPAREN, "')'");
+        else                   expect(T_RBRACK, "']'");
+        return result;
+    }
     if (t->kind != T_NAME) parse_error("invalid assignment target");
     const char *base_name = t->sval;
     tok_pos++;

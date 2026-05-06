@@ -1,0 +1,7 @@
+ok NestedUnpackTest test_brack_form
+ok NestedUnpackTest test_deeper
+ok NestedUnpackTest test_for_nested_paren
+ok NestedUnpackTest test_for_paren_target
+ok NestedUnpackTest test_simple_nested
+---
+passed=5 failed=0
