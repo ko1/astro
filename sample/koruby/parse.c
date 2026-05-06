@@ -1760,14 +1760,28 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
       }
       case PM_BREAK_NODE: {
           pm_break_node_t *n = (pm_break_node_t *)node;
-          NODE *v = n->arguments && n->arguments->arguments.size > 0
-              ? T(tc, n->arguments->arguments.nodes[0]) : ALLOC_node_nil();
+          NODE *v;
+          if (!n->arguments || n->arguments->arguments.size == 0) {
+              v = ALLOC_node_nil();
+          } else if (n->arguments->arguments.size == 1) {
+              v = T(tc, n->arguments->arguments.nodes[0]);
+          } else {
+              /* break a, b, c → break [a, b, c] */
+              v = build_container(tc, &n->arguments->arguments, true, false, false);
+          }
           return ALLOC_node_break(v);
       }
       case PM_NEXT_NODE: {
           pm_next_node_t *n = (pm_next_node_t *)node;
-          NODE *v = n->arguments && n->arguments->arguments.size > 0
-              ? T(tc, n->arguments->arguments.nodes[0]) : ALLOC_node_nil();
+          NODE *v;
+          if (!n->arguments || n->arguments->arguments.size == 0) {
+              v = ALLOC_node_nil();
+          } else if (n->arguments->arguments.size == 1) {
+              v = T(tc, n->arguments->arguments.nodes[0]);
+          } else {
+              /* next a, b, c → next [a, b, c] */
+              v = build_container(tc, &n->arguments->arguments, true, false, false);
+          }
           return ALLOC_node_next(v);
       }
       case PM_RETRY_NODE: {
