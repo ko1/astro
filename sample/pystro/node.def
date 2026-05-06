@@ -342,6 +342,16 @@ node_mul(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
 }
 
 NODE_DEF
+node_matmul(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    extern VALUE py_matmul(CTX *c, VALUE a, VALUE b);
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    return py_matmul(c, av, bv);
+}
+
+NODE_DEF
 node_truediv(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
 {
     (void)n;

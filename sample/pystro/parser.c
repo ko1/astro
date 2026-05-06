@@ -1991,6 +1991,7 @@ parse_term(void)
         else if (match_tok(T_SLASH))        l = ALLOC_node_truediv(l, parse_factor());
         else if (match_tok(T_SLASH_SLASH))  l = ALLOC_node_floordiv(l, parse_factor());
         else if (match_tok(T_PERCENT))      l = ALLOC_node_mod(l, parse_factor());
+        else if (match_tok(T_AT))           l = ALLOC_node_matmul(l, parse_factor());
         else break;
     }
     return l;

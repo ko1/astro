@@ -5,10 +5,23 @@ argv = __pystro_argv__()
 # `sys.path` — module search path.
 path = ["", __pystro_getcwd__()]
 
-# Version info.
-version = "pystro 0.1"
-version_info = (0, 1, 0)
-hexversion = 0x000100F0
+# Version info — pystro reports as Python 3.12 to satisfy version-gated
+# stdlib code; pystro's own version is in version_info[3..].
+class _VersionInfo(tuple):
+    """Python's sys.version_info: tuple-like with named fields."""
+    @property
+    def major(self): return self[0]
+    @property
+    def minor(self): return self[1]
+    @property
+    def micro(self): return self[2]
+    @property
+    def releaselevel(self): return self[3]
+    @property
+    def serial(self): return self[4]
+version = "3.12.0 (pystro 0.1)"
+version_info = _VersionInfo((3, 12, 0, "final", 0))
+hexversion = 0x030C00F0
 api_version = 1013
 
 # Platform identifier — pystro is Linux-only in practice.

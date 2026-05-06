@@ -424,6 +424,11 @@ py_make_bytearray(const char *s, size_t len)
 // dominated by the union's biggest member, the func / class struct).
 static const size_t py_str_size = offsetof(struct pyobj, str) + sizeof(((struct pyobj *)0)->str);
 
+// UTF-8 codepoint helpers (defined later in file).
+extern size_t py_str_cp_count(const char *s, size_t bytelen);
+extern size_t py_str_cp_to_byte(const char *s, size_t bytelen, int64_t cp_idx);
+extern size_t py_str_byte_to_cp(const char *s, size_t byte_off);
+
 static VALUE
 py_make_str_borrow(const char *src, size_t len)
 {
@@ -1065,6 +1070,24 @@ py_global_set(CTX *c, const char *name, VALUE v)
     py_global_define(c, name, v);
 }
 
+bool
+py_global_lookup(CTX *c, const char *name, VALUE *out)
+{
+    int i = py_global_index(c, name);
+    if (i < 0 || !c->globals->entries[i].defined) return false;
+    *out = c->globals->entries[i].value;
+    return true;
+}
+
+void
+py_global_undef(CTX *c, const char *name)
+{
+    int i = py_global_index(c, name);
+    if (i < 0) return;
+    c->globals->entries[i].defined = false;
+    c->globals->serial = ++SHARED_GLOBALS_SERIAL;
+}
+
 // ---------------------------------------------------------------------------
 // Errors / raise.
 // ---------------------------------------------------------------------------
@@ -1400,6 +1423,18 @@ py_mul(CTX *c, VALUE a, VALUE b)
             return py_make_complex(ra*rb - ia*ib, ra*ib + ia*rb);
     }
     py_raise_exc(c, c->EXC_TypeError, "unsupported operand type(s) for *");
+}
+
+VALUE
+py_matmul(CTX *c, VALUE a, VALUE b)
+{
+    VALUE r = py_try_binop_dunder(c, "__matmul__", a, b);
+    if (r) return r;
+    r = py_try_binop_dunder(c, "__rmatmul__", b, a);
+    if (r) return r;
+    r = py_try_binop_dunder(c, "__imatmul__", a, b);
+    if (r) return r;
+    py_raise_exc(c, c->EXC_TypeError, "unsupported operand type(s) for @");
 }
 
 VALUE
@@ -2502,11 +2537,24 @@ py_list_get(CTX *c, VALUE seq, VALUE idx)
         return PY_PTR(seq)->list.items[i];
     }
     if (py_is_str(seq)) {
+        // Codepoint-indexed.  Walk UTF-8 to find the i-th codepoint.
+        const char *s = PY_PTR(seq)->str.chars;
+        size_t bytelen = PY_PTR(seq)->str.len;
+        size_t cp_count = py_str_cp_count(s, bytelen);
         int64_t i = py_int_to_long(c, idx);
-        int64_t len = (int64_t)PY_PTR(seq)->str.len;
-        i = clamp_idx(i, len, false);
-        if (i < 0 || i >= len) py_raise_exc(c, c->EXC_IndexError, "string index out of range");
-        return py_make_str(PY_PTR(seq)->str.chars + i, 1);
+        if (i < 0) i += (int64_t)cp_count;
+        if (i < 0 || i >= (int64_t)cp_count)
+            py_raise_exc(c, c->EXC_IndexError, "string index out of range");
+        size_t off = py_str_cp_to_byte(s, bytelen, i);
+        // Determine codepoint byte length.
+        unsigned char b = (unsigned char)s[off];
+        int step;
+        if (b < 0x80)               step = 1;
+        else if ((b & 0xE0) == 0xC0) step = 2;
+        else if ((b & 0xF0) == 0xE0) step = 3;
+        else if ((b & 0xF8) == 0xF0) step = 4;
+        else                          step = 1;
+        return py_make_str(s + off, step);
     }
     if (py_is_byteseq(seq)) {
         int64_t i = py_int_to_long(c, idx);
@@ -2593,7 +2641,9 @@ py_list_slice(CTX *c, VALUE seq, VALUE start, VALUE stop, VALUE step)
     bool is_str = py_is_str(seq);
     bool is_byteseq = py_is_byteseq(seq);
     bool is_range_seq = py_is_range(seq);
-    if (is_str) len = (int64_t)PY_PTR(seq)->str.len;
+    // For str: length is codepoint count, not bytes.
+    if (is_str) len = (int64_t)py_str_cp_count(PY_PTR(seq)->str.chars,
+                                                PY_PTR(seq)->str.len);
     else if (is_byteseq) len = (int64_t)PY_PTR(seq)->str.len;
     else if (py_is_list(seq) || py_is_tuple(seq)) len = (int64_t)PY_PTR(seq)->list.len;
     else if (is_range_seq) {
@@ -2627,13 +2677,44 @@ py_list_slice(CTX *c, VALUE seq, VALUE start, VALUE stop, VALUE step)
     else if (st < 0 && a > b) n = (size_t)((a - b - st - 1) / -st);
 
     if (is_str) {
-        // Step 1 → borrow a contiguous range of the parent buffer.
-        if (st == 1)
-            return py_make_str_borrow(PY_PTR(seq)->str.chars + a, n);
-        char *buf = (char *)GC_malloc_atomic(n + 1);
-        for (size_t i = 0; i < n; i++) buf[i] = PY_PTR(seq)->str.chars[a + (int64_t)i * st];
-        buf[n] = '\0';
-        return py_make_str_take(buf, n);
+        // Codepoint indices a / b — convert to byte ranges.  For step 1
+        // we can borrow a contiguous range of the parent UTF-8 buffer.
+        const char *src = PY_PTR(seq)->str.chars;
+        size_t bytelen = PY_PTR(seq)->str.len;
+        if (st == 1) {
+            size_t boff = py_str_cp_to_byte(src, bytelen, a);
+            size_t eoff = py_str_cp_to_byte(src, bytelen, b);
+            return py_make_str_borrow(src + boff, eoff - boff);
+        }
+        // Stepped: walk codepoint by codepoint, copy each.
+        // Pre-build an array of byte offsets per codepoint up to len.
+        size_t *cp_off = (size_t *)alloca(sizeof(size_t) * ((size_t)len + 1));
+        size_t bi = 0; size_t ci = 0;
+        cp_off[0] = 0;
+        while (bi < bytelen) {
+            unsigned char bb = (unsigned char)src[bi];
+            int step_b;
+            if (bb < 0x80)               step_b = 1;
+            else if ((bb & 0xE0) == 0xC0) step_b = 2;
+            else if ((bb & 0xF0) == 0xE0) step_b = 3;
+            else if ((bb & 0xF8) == 0xF0) step_b = 4;
+            else                          step_b = 1;
+            bi += step_b;
+            ci++;
+            cp_off[ci] = bi;
+        }
+        // Now collect codepoints a, a+st, a+2st, ... → n of them.
+        // Worst-case each codepoint is 4 bytes.
+        char *buf = (char *)GC_malloc_atomic(n * 4 + 1);
+        size_t out = 0;
+        for (size_t i = 0; i < n; i++) {
+            size_t cp = (size_t)(a + (int64_t)i * st);
+            size_t b0 = cp_off[cp];
+            size_t b1 = cp_off[cp + 1];
+            for (size_t k = b0; k < b1; k++) buf[out++] = src[k];
+        }
+        buf[out] = '\0';
+        return py_make_str_take(buf, out);
     }
     if (is_byteseq) {
         char *buf = (char *)GC_malloc_atomic(n + 1);
@@ -2816,15 +2897,62 @@ py_list_slice_set(CTX *c, VALUE seq, VALUE start, VALUE stop, VALUE step, VALUE 
         PY_PTR(seq)->list.items[a + (int64_t)i * st] = items[i];
 }
 
+// UTF-8 helpers.  Pystro strings are UTF-8 byte arrays internally, but
+// CPython-style str semantics expose codepoint indices.
+//
+// Walk a UTF-8 string and count codepoints (number of leading bytes).
+size_t
+py_str_cp_count(const char *s, size_t bytelen)
+{
+    size_t cps = 0;
+    for (size_t i = 0; i < bytelen; ) {
+        unsigned char b = (unsigned char)s[i];
+        int step;
+        if (b < 0x80)               step = 1;
+        else if ((b & 0xE0) == 0xC0) step = 2;
+        else if ((b & 0xF0) == 0xE0) step = 3;
+        else if ((b & 0xF8) == 0xF0) step = 4;
+        else                          step = 1;
+        i += step;
+        cps++;
+    }
+    return cps;
+}
+
+// Convert codepoint index to byte offset.  Negative indices count from
+// the end.  cp_idx may equal cp_count (slice end).
+size_t
+py_str_cp_to_byte(const char *s, size_t bytelen, int64_t cp_idx)
+{
+    if (cp_idx <= 0) return 0;
+    size_t i = 0;
+    int64_t cps = 0;
+    while (i < bytelen && cps < cp_idx) {
+        unsigned char b = (unsigned char)s[i];
+        int step;
+        if (b < 0x80)               step = 1;
+        else if ((b & 0xE0) == 0xC0) step = 2;
+        else if ((b & 0xF0) == 0xE0) step = 3;
+        else if ((b & 0xF8) == 0xF0) step = 4;
+        else                          step = 1;
+        i += step;
+        cps++;
+    }
+    return i;
+}
+
+// Inverse: byte offset → codepoint index.
+size_t
+py_str_byte_to_cp(const char *s, size_t byte_off)
+{
+    return py_str_cp_count(s, byte_off);
+}
+
 size_t
 py_seq_len(CTX *c, VALUE v)
 {
-    if (py_is_str(v))   return PY_PTR(v)->str.len;
-    // NOTE: pystro strings are UTF-8 byte arrays, so len() returns the
-    // BYTE count, not the codepoint count.  Indexing/slicing are also
-    // byte-based.  Making this codepoint-aware would require touching
-    // every string operation; documented as a known divergence in
-    // docs/todo.md S-16.
+    if (py_is_str(v))
+        return py_str_cp_count(PY_PTR(v)->str.chars, PY_PTR(v)->str.len);
     if (py_is_byteseq(v)) return PY_PTR(v)->str.len;
     if (py_is_list(v) || py_is_tuple(v)) return PY_PTR(v)->list.len;
     if (py_is_dict(v) || py_is_any_set(v))  return PY_PTR(v)->dict->used;
@@ -3073,11 +3201,22 @@ py_iter_next(CTX *c, struct py_iter *it, VALUE *out)
         if (it->i >= it->end) return false;
         *out = PY_PTR(it->container)->list.items[it->i++];
         return true;
-      case 1:
+      case 1: {
+        // String: it->i is a byte offset, it->end is the byte length.
+        // Yield one codepoint per step.
         if (it->i >= it->end) return false;
-        *out = py_make_str(PY_PTR(it->container)->str.chars + it->i, 1);
-        it->i++;
+        const char *s = PY_PTR(it->container)->str.chars;
+        unsigned char b = (unsigned char)s[it->i];
+        int step_b;
+        if (b < 0x80)               step_b = 1;
+        else if ((b & 0xE0) == 0xC0) step_b = 2;
+        else if ((b & 0xF0) == 0xE0) step_b = 3;
+        else if ((b & 0xF8) == 0xF0) step_b = 4;
+        else                          step_b = 1;
+        *out = py_make_str(s + it->i, (size_t)step_b);
+        it->i += step_b;
         return true;
+      }
       case 6:
         if (it->i >= it->end) return false;
         *out = PY_FIX((unsigned char)PY_PTR(it->container)->str.chars[it->i]);
@@ -5515,23 +5654,63 @@ sm_lower(CTX *c, int argc, VALUE *argv)
     return py_make_str_take(buf, o->str.len);
 }
 
+// Helper: byte length of UTF-8 codepoint at s[i].  Returns 1 for invalid.
+static inline int py_utf8_step(const char *s, size_t i) {
+    unsigned char b = (unsigned char)s[i];
+    if (b < 0x80) return 1;
+    if ((b & 0xE0) == 0xC0) return 2;
+    if ((b & 0xF0) == 0xE0) return 3;
+    if ((b & 0xF8) == 0xF0) return 4;
+    return 1;
+}
+// Helper: byte length of the UTF-8 codepoint that ends at byte j-1 (i.e.
+// the last codepoint in s[..j]).  j must be > 0.
+static inline int py_utf8_back_step(const char *s, size_t j) {
+    // Walk back over continuation bytes (10xxxxxx).
+    size_t k = j - 1;
+    while (k > 0 && ((unsigned char)s[k] & 0xC0) == 0x80) k--;
+    return (int)(j - k);
+}
+// True if codepoint at cps[ci..ci+nbytes] appears as a codepoint in strip
+// set.  We compare by exact byte match, since UTF-8 is canonical here.
+static bool
+py_strip_set_contains(const char *set, size_t setlen,
+                      const char *cp, int cp_bytes)
+{
+    for (size_t k = 0; k < setlen; ) {
+        int s_bytes = py_utf8_step(set, k);
+        if (s_bytes == cp_bytes &&
+            memcmp(set + k, cp, (size_t)cp_bytes) == 0) return true;
+        k += (size_t)s_bytes;
+    }
+    return false;
+}
+
 static VALUE
 sm_strip(CTX *c, int argc, VALUE *argv)
 {
     (void)c;
     struct pyobj *o = PY_PTR(argv[0]);
     size_t i = 0, j = o->str.len;
+    const char *s = o->str.chars;
     if (argc >= 2 && py_is_str(argv[1])) {
-        // Strip any character in the argument.
         const char *cs = PY_PTR(argv[1])->str.chars;
         size_t cn = PY_PTR(argv[1])->str.len;
-        bool in_set[256] = { false };
-        for (size_t k = 0; k < cn; k++) in_set[(unsigned char)cs[k]] = true;
-        while (i < j && in_set[(unsigned char)o->str.chars[i]]) i++;
-        while (j > i && in_set[(unsigned char)o->str.chars[j-1]]) j--;
+        // Forward: walk codepoints; stop when not in set.
+        while (i < j) {
+            int nb = py_utf8_step(s, i);
+            if (!py_strip_set_contains(cs, cn, s + i, nb)) break;
+            i += (size_t)nb;
+        }
+        // Backward: walk codepoints from end.
+        while (j > i) {
+            int nb = py_utf8_back_step(s, j);
+            if (!py_strip_set_contains(cs, cn, s + j - nb, nb)) break;
+            j -= (size_t)nb;
+        }
     } else {
-        while (i < j && (o->str.chars[i] == ' ' || o->str.chars[i] == '\t' || o->str.chars[i] == '\n' || o->str.chars[i] == '\r')) i++;
-        while (j > i && (o->str.chars[j-1] == ' ' || o->str.chars[j-1] == '\t' || o->str.chars[j-1] == '\n' || o->str.chars[j-1] == '\r')) j--;
+        while (i < j && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r')) i++;
+        while (j > i && (s[j-1] == ' ' || s[j-1] == '\t' || s[j-1] == '\n' || s[j-1] == '\r')) j--;
     }
     return py_make_str(o->str.chars + i, j - i);
 }
@@ -5542,15 +5721,17 @@ sm_startswith(CTX *c, int argc, VALUE *argv)
     (void)c;
     struct pyobj *s = PY_PTR(argv[0]);
     VALUE arg = argv[1];
-    int64_t slen = (int64_t)s->str.len;
-    int64_t start = 0, end = slen;
-    if (argc >= 3 && argv[2] != PY_NONE) start = py_int_to_long(c, argv[2]);
-    if (argc >= 4 && argv[3] != PY_NONE) end = py_int_to_long(c, argv[3]);
-    { if (start < 0) start += slen; if (start < 0) start = 0; if (start > slen) start = slen; }
-    { if (end < 0) end += slen; if (end < 0) end = 0; if (end > slen) end = slen; }
-    int64_t span = end - start;
+    int64_t cp_len = (int64_t)py_str_cp_count(s->str.chars, s->str.len);
+    int64_t cp_start = 0, cp_end = cp_len;
+    if (argc >= 3 && argv[2] != PY_NONE) cp_start = py_int_to_long(c, argv[2]);
+    if (argc >= 4 && argv[3] != PY_NONE) cp_end = py_int_to_long(c, argv[3]);
+    { if (cp_start < 0) cp_start += cp_len; if (cp_start < 0) cp_start = 0; if (cp_start > cp_len) cp_start = cp_len; }
+    { if (cp_end < 0) cp_end += cp_len; if (cp_end < 0) cp_end = 0; if (cp_end > cp_len) cp_end = cp_len; }
+    int64_t bstart = (int64_t)py_str_cp_to_byte(s->str.chars, s->str.len, cp_start);
+    int64_t bend = (int64_t)py_str_cp_to_byte(s->str.chars, s->str.len, cp_end);
+    int64_t span = bend - bstart;
     if (span < 0) span = 0;
-    const char *base = s->str.chars + start;
+    const char *base = s->str.chars + bstart;
     if (py_is_tuple(arg)) {
         size_t n = PY_PTR(arg)->list.len;
         for (size_t i = 0; i < n; i++) {
@@ -5574,15 +5755,17 @@ sm_endswith(CTX *c, int argc, VALUE *argv)
     (void)c;
     struct pyobj *s = PY_PTR(argv[0]);
     VALUE arg = argv[1];
-    int64_t slen = (int64_t)s->str.len;
-    int64_t start = 0, end = slen;
-    if (argc >= 3 && argv[2] != PY_NONE) start = py_int_to_long(c, argv[2]);
-    if (argc >= 4 && argv[3] != PY_NONE) end = py_int_to_long(c, argv[3]);
-    { if (start < 0) start += slen; if (start < 0) start = 0; if (start > slen) start = slen; }
-    { if (end < 0) end += slen; if (end < 0) end = 0; if (end > slen) end = slen; }
-    int64_t span = end - start;
+    int64_t cp_len = (int64_t)py_str_cp_count(s->str.chars, s->str.len);
+    int64_t cp_start = 0, cp_end = cp_len;
+    if (argc >= 3 && argv[2] != PY_NONE) cp_start = py_int_to_long(c, argv[2]);
+    if (argc >= 4 && argv[3] != PY_NONE) cp_end = py_int_to_long(c, argv[3]);
+    { if (cp_start < 0) cp_start += cp_len; if (cp_start < 0) cp_start = 0; if (cp_start > cp_len) cp_start = cp_len; }
+    { if (cp_end < 0) cp_end += cp_len; if (cp_end < 0) cp_end = 0; if (cp_end > cp_len) cp_end = cp_len; }
+    int64_t bstart = (int64_t)py_str_cp_to_byte(s->str.chars, s->str.len, cp_start);
+    int64_t bend = (int64_t)py_str_cp_to_byte(s->str.chars, s->str.len, cp_end);
+    int64_t span = bend - bstart;
     if (span < 0) span = 0;
-    const char *tail_end = s->str.chars + end;
+    const char *tail_end = s->str.chars + bend;
     if (py_is_tuple(arg)) {
         size_t n = PY_PTR(arg)->list.len;
         for (size_t i = 0; i < n; i++) {
@@ -5606,18 +5789,25 @@ sm_find(CTX *c, int argc, VALUE *argv)
     struct pyobj *s = PY_PTR(argv[0]);
     if (!py_is_str(argv[1])) py_raise_exc(c, c->EXC_TypeError, "find: not str");
     struct pyobj *p = PY_PTR(argv[1]);
-    int64_t start = (argc >= 3) ? py_int_to_long(c, argv[2]) : 0;
-    int64_t end   = (argc >= 4) ? py_int_to_long(c, argv[3]) : (int64_t)s->str.len;
-    if (start < 0) start += (int64_t)s->str.len;
-    if (start < 0) start = 0;
-    if (end < 0) end += (int64_t)s->str.len;
-    if (end > (int64_t)s->str.len) end = (int64_t)s->str.len;
-    if (start > end) return PY_FIX(-1);
-    if (p->str.len == 0) return PY_FIX(start);
-    if ((size_t)(end - start) < p->str.len) return PY_FIX(-1);
-    void *r = memmem(s->str.chars + start, (size_t)(end - start),
+    // start / end are codepoint indices; convert to byte offsets.
+    int64_t cp_len = (int64_t)py_str_cp_count(s->str.chars, s->str.len);
+    int64_t cp_start = (argc >= 3) ? py_int_to_long(c, argv[2]) : 0;
+    int64_t cp_end   = (argc >= 4) ? py_int_to_long(c, argv[3]) : cp_len;
+    if (cp_start < 0) cp_start += cp_len;
+    if (cp_start < 0) cp_start = 0;
+    if (cp_end < 0) cp_end += cp_len;
+    if (cp_end > cp_len) cp_end = cp_len;
+    if (cp_start > cp_end) return PY_FIX(-1);
+    size_t boff = py_str_cp_to_byte(s->str.chars, s->str.len, cp_start);
+    size_t eoff = py_str_cp_to_byte(s->str.chars, s->str.len, cp_end);
+    if (p->str.len == 0) return PY_FIX(cp_start);
+    if (eoff - boff < p->str.len) return PY_FIX(-1);
+    void *r = memmem(s->str.chars + boff, eoff - boff,
                      p->str.chars, p->str.len);
-    return r ? PY_FIX((int64_t)((char *)r - s->str.chars)) : PY_FIX(-1);
+    if (!r) return PY_FIX(-1);
+    // Convert byte offset back to codepoint index.
+    return PY_FIX((int64_t)py_str_byte_to_cp(s->str.chars,
+                                              (size_t)((char *)r - s->str.chars)));
 }
 
 static VALUE
@@ -5662,16 +5852,19 @@ sm_count(CTX *c, int argc, VALUE *argv)
     struct pyobj *s = PY_PTR(argv[0]);
     if (!py_is_str(argv[1])) py_raise_exc(c, c->EXC_TypeError, "count: not str");
     struct pyobj *p = PY_PTR(argv[1]);
-    int64_t slen = (int64_t)s->str.len;
-    int64_t start = 0, end = slen;
-    if (argc >= 3 && argv[2] != PY_NONE) start = py_int_to_long(c, argv[2]);
-    if (argc >= 4 && argv[3] != PY_NONE) end = py_int_to_long(c, argv[3]);
-    { if (start < 0) start += slen; if (start < 0) start = 0; if (start > slen) start = slen; }
-    { if (end < 0) end += slen; if (end < 0) end = 0; if (end > slen) end = slen; }
-    if (p->str.len == 0) return PY_FIX(end > start ? end - start + 1 : 0);
+    // start / end are codepoint indices.
+    int64_t cp_len = (int64_t)py_str_cp_count(s->str.chars, s->str.len);
+    int64_t cp_start = 0, cp_end = cp_len;
+    if (argc >= 3 && argv[2] != PY_NONE) cp_start = py_int_to_long(c, argv[2]);
+    if (argc >= 4 && argv[3] != PY_NONE) cp_end = py_int_to_long(c, argv[3]);
+    { if (cp_start < 0) cp_start += cp_len; if (cp_start < 0) cp_start = 0; if (cp_start > cp_len) cp_start = cp_len; }
+    { if (cp_end < 0) cp_end += cp_len; if (cp_end < 0) cp_end = 0; if (cp_end > cp_len) cp_end = cp_len; }
+    int64_t boff = (int64_t)py_str_cp_to_byte(s->str.chars, s->str.len, cp_start);
+    int64_t eoff = (int64_t)py_str_cp_to_byte(s->str.chars, s->str.len, cp_end);
+    if (p->str.len == 0) return PY_FIX(cp_end - cp_start + 1);
     int64_t n = 0;
-    int64_t i = start;
-    while (i + (int64_t)p->str.len <= end) {
+    int64_t i = boff;
+    while (i + (int64_t)p->str.len <= eoff) {
         if (memcmp(s->str.chars + i, p->str.chars, p->str.len) == 0) { n++; i += (int64_t)p->str.len; }
         else i++;
     }
@@ -5841,15 +6034,17 @@ sm_lstrip(CTX *c, int argc, VALUE *argv)
     (void)c;
     struct pyobj *o = PY_PTR(argv[0]);
     size_t i = 0, j = o->str.len;
+    const char *s = o->str.chars;
     if (argc >= 2 && py_is_str(argv[1])) {
         const char *cs = PY_PTR(argv[1])->str.chars;
         size_t cn = PY_PTR(argv[1])->str.len;
-        bool in_set[256] = { false };
-        for (size_t k = 0; k < cn; k++) in_set[(unsigned char)cs[k]] = true;
-        while (i < j && in_set[(unsigned char)o->str.chars[i]]) i++;
+        while (i < j) {
+            int nb = py_utf8_step(s, i);
+            if (!py_strip_set_contains(cs, cn, s + i, nb)) break;
+            i += (size_t)nb;
+        }
     } else {
-        while (i < j && (o->str.chars[i] == ' ' || o->str.chars[i] == '\t' ||
-                         o->str.chars[i] == '\n' || o->str.chars[i] == '\r')) i++;
+        while (i < j && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r')) i++;
     }
     return py_make_str(o->str.chars + i, j - i);
 }
@@ -5860,15 +6055,17 @@ sm_rstrip(CTX *c, int argc, VALUE *argv)
     (void)c;
     struct pyobj *o = PY_PTR(argv[0]);
     size_t i = 0, j = o->str.len;
+    const char *s = o->str.chars;
     if (argc >= 2 && py_is_str(argv[1])) {
         const char *cs = PY_PTR(argv[1])->str.chars;
         size_t cn = PY_PTR(argv[1])->str.len;
-        bool in_set[256] = { false };
-        for (size_t k = 0; k < cn; k++) in_set[(unsigned char)cs[k]] = true;
-        while (j > i && in_set[(unsigned char)o->str.chars[j-1]]) j--;
+        while (j > i) {
+            int nb = py_utf8_back_step(s, j);
+            if (!py_strip_set_contains(cs, cn, s + j - nb, nb)) break;
+            j -= (size_t)nb;
+        }
     } else {
-        while (j > i && (o->str.chars[j-1] == ' ' || o->str.chars[j-1] == '\t' ||
-                         o->str.chars[j-1] == '\n' || o->str.chars[j-1] == '\r')) j--;
+        while (j > i && (s[j-1] == ' ' || s[j-1] == '\t' || s[j-1] == '\n' || s[j-1] == '\r')) j--;
     }
     return py_make_str(o->str.chars + i, j - i);
 }
@@ -5879,9 +6076,11 @@ sm_zfill(CTX *c, int argc, VALUE *argv)
     (void)argc;
     struct pyobj *o = PY_PTR(argv[0]);
     int w = (int)py_int_to_long(c, argv[1]);
-    if ((int)o->str.len >= w) return py_make_str(o->str.chars, o->str.len);
-    int pad = w - (int)o->str.len;
-    char *buf = (char *)GC_malloc_atomic(w + 1);
+    int cp_len = (int)py_str_cp_count(o->str.chars, o->str.len);
+    if (cp_len >= w) return py_make_str(o->str.chars, o->str.len);
+    int pad = w - cp_len;
+    size_t total = o->str.len + (size_t)pad;
+    char *buf = (char *)GC_malloc_atomic(total + 1);
     int off = 0;
     if (o->str.len > 0 && (o->str.chars[0] == '+' || o->str.chars[0] == '-')) {
         buf[0] = o->str.chars[0]; off = 1;
@@ -5891,8 +6090,23 @@ sm_zfill(CTX *c, int argc, VALUE *argv)
         for (int i = 0; i < pad; i++) buf[i] = '0';
         memcpy(buf + pad, o->str.chars, o->str.len);
     }
-    buf[w] = '\0';
-    return py_make_str_take(buf, w);
+    buf[total] = '\0';
+    return py_make_str_take(buf, total);
+}
+
+// Extract fill codepoint (default ' ') as bytes/length pair.
+static inline void
+py_just_fill(int argc, VALUE *argv, const char **fbuf, int *flen)
+{
+    static const char sp[1] = { ' ' };
+    if (argc >= 3 && py_is_str(argv[2]) && PY_PTR(argv[2])->str.len >= 1) {
+        const char *s = PY_PTR(argv[2])->str.chars;
+        *fbuf = s;
+        *flen = py_utf8_step(s, 0);
+    } else {
+        *fbuf = sp;
+        *flen = 1;
+    }
 }
 
 static VALUE
@@ -5900,16 +6114,20 @@ sm_center(CTX *c, int argc, VALUE *argv)
 {
     struct pyobj *o = PY_PTR(argv[0]);
     int w = (int)py_int_to_long(c, argv[1]);
-    char fill = (argc >= 3 && py_is_str(argv[2]) && PY_PTR(argv[2])->str.len >= 1) ? PY_PTR(argv[2])->str.chars[0] : ' ';
-    if ((int)o->str.len >= w) return py_make_str(o->str.chars, o->str.len);
-    int pad = w - (int)o->str.len;
+    int cp_len = (int)py_str_cp_count(o->str.chars, o->str.len);
+    if (cp_len >= w) return py_make_str(o->str.chars, o->str.len);
+    const char *fbuf; int flen;
+    py_just_fill(argc, argv, &fbuf, &flen);
+    int pad = w - cp_len;
     int left = pad / 2, right = pad - left;
-    char *buf = (char *)GC_malloc_atomic(w + 1);
-    for (int i = 0; i < left; i++) buf[i] = fill;
-    memcpy(buf + left, o->str.chars, o->str.len);
-    for (int i = 0; i < right; i++) buf[left + (int)o->str.len + i] = fill;
-    buf[w] = '\0';
-    return py_make_str_take(buf, w);
+    size_t total = (size_t)(left + right) * (size_t)flen + o->str.len;
+    char *buf = (char *)GC_malloc_atomic(total + 1);
+    size_t off = 0;
+    for (int i = 0; i < left; i++) { memcpy(buf + off, fbuf, (size_t)flen); off += (size_t)flen; }
+    memcpy(buf + off, o->str.chars, o->str.len); off += o->str.len;
+    for (int i = 0; i < right; i++) { memcpy(buf + off, fbuf, (size_t)flen); off += (size_t)flen; }
+    buf[off] = '\0';
+    return py_make_str_take(buf, off);
 }
 
 static VALUE
@@ -5917,13 +6135,18 @@ sm_ljust(CTX *c, int argc, VALUE *argv)
 {
     struct pyobj *o = PY_PTR(argv[0]);
     int w = (int)py_int_to_long(c, argv[1]);
-    char fill = (argc >= 3 && py_is_str(argv[2]) && PY_PTR(argv[2])->str.len >= 1) ? PY_PTR(argv[2])->str.chars[0] : ' ';
-    if ((int)o->str.len >= w) return py_make_str(o->str.chars, o->str.len);
-    char *buf = (char *)GC_malloc_atomic(w + 1);
+    int cp_len = (int)py_str_cp_count(o->str.chars, o->str.len);
+    if (cp_len >= w) return py_make_str(o->str.chars, o->str.len);
+    const char *fbuf; int flen;
+    py_just_fill(argc, argv, &fbuf, &flen);
+    int pad = w - cp_len;
+    size_t total = o->str.len + (size_t)pad * (size_t)flen;
+    char *buf = (char *)GC_malloc_atomic(total + 1);
     memcpy(buf, o->str.chars, o->str.len);
-    for (size_t i = o->str.len; i < (size_t)w; i++) buf[i] = fill;
-    buf[w] = '\0';
-    return py_make_str_take(buf, w);
+    size_t off = o->str.len;
+    for (int i = 0; i < pad; i++) { memcpy(buf + off, fbuf, (size_t)flen); off += (size_t)flen; }
+    buf[off] = '\0';
+    return py_make_str_take(buf, off);
 }
 
 static VALUE
@@ -5931,14 +6154,18 @@ sm_rjust(CTX *c, int argc, VALUE *argv)
 {
     struct pyobj *o = PY_PTR(argv[0]);
     int w = (int)py_int_to_long(c, argv[1]);
-    char fill = (argc >= 3 && py_is_str(argv[2]) && PY_PTR(argv[2])->str.len >= 1) ? PY_PTR(argv[2])->str.chars[0] : ' ';
-    if ((int)o->str.len >= w) return py_make_str(o->str.chars, o->str.len);
-    int pad = w - (int)o->str.len;
-    char *buf = (char *)GC_malloc_atomic(w + 1);
-    for (int i = 0; i < pad; i++) buf[i] = fill;
-    memcpy(buf + pad, o->str.chars, o->str.len);
-    buf[w] = '\0';
-    return py_make_str_take(buf, w);
+    int cp_len = (int)py_str_cp_count(o->str.chars, o->str.len);
+    if (cp_len >= w) return py_make_str(o->str.chars, o->str.len);
+    const char *fbuf; int flen;
+    py_just_fill(argc, argv, &fbuf, &flen);
+    int pad = w - cp_len;
+    size_t total = (size_t)pad * (size_t)flen + o->str.len;
+    char *buf = (char *)GC_malloc_atomic(total + 1);
+    size_t off = 0;
+    for (int i = 0; i < pad; i++) { memcpy(buf + off, fbuf, (size_t)flen); off += (size_t)flen; }
+    memcpy(buf + off, o->str.chars, o->str.len); off += o->str.len;
+    buf[off] = '\0';
+    return py_make_str_take(buf, off);
 }
 
 static VALUE
@@ -5990,17 +6217,28 @@ sm_rfind(CTX *c, int argc, VALUE *argv)
     struct pyobj *o = PY_PTR(argv[0]);
     if (!py_is_str(argv[1])) return PY_FIX(-1);
     struct pyobj *needle = PY_PTR(argv[1]);
-    int64_t slen = (int64_t)o->str.len;
-    int64_t start = 0, end = slen;
-    if (argc >= 3 && argv[2] != PY_NONE) start = py_int_to_long(c, argv[2]);
-    if (argc >= 4 && argv[3] != PY_NONE) end = py_int_to_long(c, argv[3]);
-    { if (start < 0) start += slen; if (start < 0) start = 0; if (start > slen) start = slen; }
-    { if (end < 0) end += slen; if (end < 0) end = 0; if (end > slen) end = slen; }
-    if (needle->str.len == 0) return PY_FIX(end);
-    if ((int64_t)needle->str.len > end - start) return PY_FIX(-1);
-    for (int64_t i = end - (int64_t)needle->str.len; i >= start; i--) {
-        if (memcmp(o->str.chars + i, needle->str.chars, needle->str.len) == 0)
-            return PY_FIX(i);
+    int64_t cp_len = (int64_t)py_str_cp_count(o->str.chars, o->str.len);
+    int64_t cp_start = 0, cp_end = cp_len;
+    if (argc >= 3 && argv[2] != PY_NONE) cp_start = py_int_to_long(c, argv[2]);
+    if (argc >= 4 && argv[3] != PY_NONE) cp_end = py_int_to_long(c, argv[3]);
+    { if (cp_start < 0) cp_start += cp_len; if (cp_start < 0) cp_start = 0; if (cp_start > cp_len) cp_start = cp_len; }
+    { if (cp_end < 0) cp_end += cp_len; if (cp_end < 0) cp_end = 0; if (cp_end > cp_len) cp_end = cp_len; }
+    size_t boff = py_str_cp_to_byte(o->str.chars, o->str.len, cp_start);
+    size_t eoff = py_str_cp_to_byte(o->str.chars, o->str.len, cp_end);
+    if (needle->str.len == 0) return PY_FIX(cp_end);
+    if (needle->str.len > eoff - boff) return PY_FIX(-1);
+    // Search backwards in the byte range.  Only match at codepoint
+    // boundaries — but since our needle is also a UTF-8 string, any byte
+    // match starting at a position whose preceding byte is a codepoint
+    // start is fine; here we just scan all byte positions and check.
+    for (int64_t i = (int64_t)eoff - (int64_t)needle->str.len; i >= (int64_t)boff; i--) {
+        if (memcmp(o->str.chars + i, needle->str.chars, needle->str.len) == 0) {
+            // Verify i is at a codepoint boundary (byte at i is not a
+            // UTF-8 continuation 10xxxxxx).
+            unsigned char b = (unsigned char)o->str.chars[i];
+            if ((b & 0xC0) == 0x80) continue;
+            return PY_FIX((int64_t)py_str_byte_to_cp(o->str.chars, (size_t)i));
+        }
     }
     return PY_FIX(-1);
 }
@@ -8232,6 +8470,64 @@ static VALUE bm_strip(CTX *c, int argc, VALUE *argv)  { return bm_strip_impl(c, 
 static VALUE bm_lstrip(CTX *c, int argc, VALUE *argv) { return bm_strip_impl(c, argc, argv, true, false); }
 static VALUE bm_rstrip(CTX *c, int argc, VALUE *argv) { return bm_strip_impl(c, argc, argv, false, true); }
 
+// bytes.maketrans(from, to) → 256-byte translation table.
+static VALUE
+bi_bytes_maketrans(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    if (!py_is_byteseq(argv[0]) || !py_is_byteseq(argv[1]))
+        py_raise_exc(c, c->EXC_TypeError, "bytes.maketrans requires bytes-like args");
+    struct pyobj *a = PY_PTR(argv[0]);
+    struct pyobj *b = PY_PTR(argv[1]);
+    if (a->str.len != b->str.len)
+        py_raise_exc(c, c->EXC_ValueError, "maketrans: from and to differ in length");
+    char *table = (char *)GC_malloc_atomic(256);
+    for (int i = 0; i < 256; i++) table[i] = (char)i;
+    for (size_t i = 0; i < a->str.len; i++) {
+        unsigned char fk = (unsigned char)a->str.chars[i];
+        table[fk] = b->str.chars[i];
+    }
+    return py_make_bytes(table, 256);
+}
+
+// bytes.translate(table[, delete]) — bytes-like translation.
+static VALUE
+bm_translate(CTX *c, int argc, VALUE *argv)
+{
+    struct pyobj *o = PY_PTR(argv[0]);
+    const char *table = NULL;
+    if (argv[1] != PY_NONE) {
+        if (!py_is_byteseq(argv[1]))
+            py_raise_exc(c, c->EXC_TypeError, "translate: table must be bytes-like or None");
+        struct pyobj *t = PY_PTR(argv[1]);
+        if (t->str.len != 256)
+            py_raise_exc(c, c->EXC_ValueError, "translate: table must be 256 bytes");
+        table = t->str.chars;
+    }
+    bool drop[256] = { false };
+    if (argc >= 3 && argv[2] != PY_NONE) {
+        if (!py_is_byteseq(argv[2]))
+            py_raise_exc(c, c->EXC_TypeError, "translate: delete must be bytes-like");
+        struct pyobj *d = PY_PTR(argv[2]);
+        for (size_t i = 0; i < d->str.len; i++)
+            drop[(unsigned char)d->str.chars[i]] = true;
+    }
+    char *buf = (char *)GC_malloc_atomic(o->str.len + 1);
+    size_t out = 0;
+    for (size_t i = 0; i < o->str.len; i++) {
+        unsigned char ch = (unsigned char)o->str.chars[i];
+        if (drop[ch]) continue;
+        buf[out++] = table ? table[ch] : (char)ch;
+    }
+    // Preserve original type (bytes vs bytearray).
+    if (PY_PTR(argv[0])->type == PY_T_BYTEARRAY) {
+        VALUE r = py_make_bytes(buf, out);
+        PY_PTR(r)->type = PY_T_BYTEARRAY;
+        return r;
+    }
+    return py_make_bytes(buf, out);
+}
+
 static struct type_method bytes_methods[] = {
     { "decode",     bm_decode,     1, 2 },
     { "encode",     bm_encode,     1, 2 },
@@ -8268,6 +8564,7 @@ static struct type_method bytes_methods[] = {
     { "index",      bm_index,      2, 4 },
     { "rindex",     bm_rindex,     2, 4 },
     { "endswith",   bm_endswith,   2, 4 },
+    { "translate",  bm_translate,  2, 3 },
     { NULL, NULL, 0, 0 }
 };
 
@@ -9355,10 +9652,53 @@ extern void   tokenize(const char *src, const char *filename);
 extern struct Node *parse_program(void);
 extern struct Node *parse_eval_expr(void);  // see parser.c
 
+extern const char *intern_name(const char *s, size_t len);
+// Inject names from `g` (a dict) into c->globals, returning a list of
+// (name, prev_value, prev_existed) so the binding can be undone.
+struct ns_save_entry {
+    const char *name;
+    VALUE prev;
+    bool existed;
+};
+struct ns_save {
+    struct ns_save_entry *entries;
+    size_t n;
+};
+static void
+ns_inject(CTX *c, VALUE g, struct ns_save *out)
+{
+    out->entries = NULL;
+    out->n = 0;
+    if (g == PY_NONE || !py_is_dict(g)) return;
+    struct pydict *d = PY_PTR(g)->dict;
+    out->entries = (struct ns_save_entry *)
+        GC_malloc(sizeof(struct ns_save_entry) * d->elen);
+    for (size_t i = 0; i < d->elen; i++) {
+        if (!pydict_entry_live(d, i)) continue;
+        VALUE k = d->entries[i].key;
+        if (!py_is_str(k)) continue;
+        const char *name = intern_name(PY_PTR(k)->str.chars, PY_PTR(k)->str.len);
+        VALUE prev = PY_NONE;
+        bool ex = py_global_lookup(c, name, &prev);
+        out->entries[out->n].name = name;
+        out->entries[out->n].prev = prev;
+        out->entries[out->n].existed = ex;
+        py_global_set(c, name, d->entries[i].value);
+        out->n++;
+    }
+}
+static void
+ns_restore(CTX *c, struct ns_save *s)
+{
+    for (size_t i = 0; i < s->n; i++) {
+        if (s->entries[i].existed) py_global_set(c, s->entries[i].name, s->entries[i].prev);
+        else py_global_undef(c, s->entries[i].name);
+    }
+}
+
 static VALUE
 bi_eval(CTX *c, int argc, VALUE *argv)
 {
-    (void)argc;
     if (!py_is_str(argv[0])) py_raise_exc(c, c->EXC_TypeError, "eval: code must be str");
     size_t L = PY_PTR(argv[0])->str.len;
     char *src = (char *)GC_malloc_atomic(L + 2);
@@ -9366,16 +9706,18 @@ bi_eval(CTX *c, int argc, VALUE *argv)
     src[L] = '\n'; src[L+1] = '\0';
     tokenize(src, "<eval>");
     NODE *expr = parse_eval_expr();
-    return EVAL(c, expr);
+    struct ns_save sg = { 0 }, sl = { 0 };
+    if (argc >= 2) ns_inject(c, argv[1], &sg);
+    if (argc >= 3) ns_inject(c, argv[2], &sl);
+    VALUE r = EVAL(c, expr);
+    ns_restore(c, &sl);
+    ns_restore(c, &sg);
+    return r;
 }
 
 static VALUE
 bi_exec(CTX *c, int argc, VALUE *argv)
 {
-    // Accept exec(code [, globals [, locals]]); ignore the dict args (the
-    // current implementation has no real namespace separation, so we just
-    // execute in the current global scope).
-    (void)argc;
     if (!py_is_str(argv[0])) py_raise_exc(c, c->EXC_TypeError, "exec: code must be str");
     size_t L = PY_PTR(argv[0])->str.len;
     char *src = (char *)GC_malloc_atomic(L + 2);
@@ -9383,7 +9725,12 @@ bi_exec(CTX *c, int argc, VALUE *argv)
     src[L] = '\n'; src[L+1] = '\0';
     tokenize(src, "<exec>");
     NODE *body = parse_program();
+    struct ns_save sg = { 0 }, sl = { 0 };
+    if (argc >= 2) ns_inject(c, argv[1], &sg);
+    if (argc >= 3) ns_inject(c, argv[2], &sl);
     EVAL(c, body);
+    ns_restore(c, &sl);
+    ns_restore(c, &sg);
     return PY_NONE;
 }
 
@@ -9435,6 +9782,19 @@ py_isinstance_check(CTX *c, VALUE v, VALUE cls)
 {
     if (!py_is_class(cls)) {
         py_raise_exc(c, c->EXC_TypeError, "isinstance() second arg must be class");
+    }
+    // Dispatch via metaclass __instancecheck__ if defined.
+    {
+        VALUE meta = py_class_lookup_method(cls, "__metaclass__");
+        if (meta != PY_NONE && py_is_class(meta)) {
+            VALUE m = py_class_lookup_method(meta, "__instancecheck__");
+            if (m != PY_NONE) {
+                VALUE av[2] = { cls, v };
+                VALUE r = py_apply(c, m, 2, av);
+                if (c->state != PY_STATE_NORMAL) return false;
+                return py_is_truthy(r);
+            }
+        }
     }
     struct pyclass *cd = &PY_PTR(cls)->cls;
     // Quick: object accepts everything.
@@ -11512,8 +11872,26 @@ bi_reversed(CTX *c, int argc, VALUE *argv)
         return r;
     }
     if (py_is_str(argv[0])) {
+        // Reverse codepoint by codepoint, not byte by byte.
         struct pyobj *o = PY_PTR(argv[0]);
-        for (size_t i = o->str.len; i > 0; i--) py_list_append(c, r, py_make_str(o->str.chars + i - 1, 1));
+        const char *s = o->str.chars;
+        size_t bytelen = o->str.len;
+        // Build forward codepoint table.
+        size_t cp_count = py_str_cp_count(s, bytelen);
+        size_t *off = (size_t *)GC_malloc_atomic(sizeof(size_t) * (cp_count + 1));
+        size_t bi = 0; size_t ci = 0;
+        off[0] = 0;
+        while (bi < bytelen) {
+            int step_b = py_utf8_step(s, bi);
+            bi += (size_t)step_b;
+            ci++;
+            off[ci] = bi;
+        }
+        for (size_t k = cp_count; k > 0; k--) {
+            size_t b0 = off[k - 1];
+            size_t b1 = off[k];
+            py_list_append(c, r, py_make_str(s + b0, b1 - b0));
+        }
         return r;
     }
     if (py_is_byteseq(argv[0])) {
@@ -11668,9 +12046,13 @@ install_builtins(CTX *c)
     c->TYPE_bytes     = py_make_builtin_class("bytes",     bi_bytes,     PY_T_BYTES);
     py_class_add_method(c, c->TYPE_bytes, "fromhex",
         py_make_builtin("fromhex", bi_bytes_fromhex, 1, 1));
+    py_class_add_method(c, c->TYPE_bytes, "maketrans",
+        py_make_builtin("maketrans", bi_bytes_maketrans, 2, 2));
     c->TYPE_bytearray = py_make_builtin_class("bytearray", bi_bytearray, PY_T_BYTEARRAY);
     py_class_add_method(c, c->TYPE_bytearray, "fromhex",
         py_make_builtin("fromhex", bi_bytes_fromhex, 1, 1));
+    py_class_add_method(c, c->TYPE_bytearray, "maketrans",
+        py_make_builtin("maketrans", bi_bytes_maketrans, 2, 2));
     c->TYPE_list      = py_make_builtin_class("list",      bi_list,      PY_T_LIST);
     c->TYPE_tuple     = py_make_builtin_class("tuple",     bi_tuple,     PY_T_TUPLE);
     c->TYPE_dict      = py_make_builtin_class("dict",      bi_dict,      PY_T_DICT);
@@ -11790,7 +12172,7 @@ install_builtins(CTX *c)
     py_global_define(c, "delattr",    py_make_builtin("delattr",    bi_delattr,    2,  2));
     py_global_define(c, "callable",   py_make_builtin("callable",   bi_callable,   1,  1));
     py_global_define(c, "open",       py_make_builtin("open",       bi_open,       1,  2));
-    py_global_define(c, "eval",       py_make_builtin("eval",       bi_eval,       1,  1));
+    py_global_define(c, "eval",       py_make_builtin("eval",       bi_eval,       1,  3));
     py_global_define(c, "exec",       py_make_builtin("exec",       bi_exec,       1,  3));
     py_global_define(c, "min",        py_make_builtin("min",        bi_min,        1, -1));
     py_global_define(c, "max",        py_make_builtin("max",        bi_max,        1, -1));

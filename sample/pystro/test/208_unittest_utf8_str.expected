@@ -1,0 +1,26 @@
+ok UTF8StrTest test_concat_repeat
+ok UTF8StrTest test_count
+ok UTF8StrTest test_find_codepoint
+ok UTF8StrTest test_in_operator
+ok UTF8StrTest test_index_raises
+ok UTF8StrTest test_indexing
+ok UTF8StrTest test_iteration
+ok UTF8StrTest test_iteration_japanese
+ok UTF8StrTest test_join
+ok UTF8StrTest test_len_codepoint
+ok UTF8StrTest test_ljust_rjust_center_codepoint
+ok UTF8StrTest test_min_max
+ok UTF8StrTest test_ord_chr_roundtrip
+ok UTF8StrTest test_replace
+ok UTF8StrTest test_reversed
+ok UTF8StrTest test_rfind_codepoint
+ok UTF8StrTest test_slice_negative
+ok UTF8StrTest test_slice_step1
+ok UTF8StrTest test_sorted
+ok UTF8StrTest test_split
+ok UTF8StrTest test_startswith_endswith
+ok UTF8StrTest test_strip_codepoint
+ok UTF8StrTest test_unicode_escape
+ok UTF8StrTest test_zfill
+---
+passed=24 failed=0

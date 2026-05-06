@@ -14,11 +14,15 @@ R11–R16 で深掘り (test 78–207 追加, **208 unit tests passing**)。 [do
 - `async def` / `async for` / `async with` / `await` は SyntaxError として
   弾く (R16 で対応)。coroutine model 自体は無いので asyncio stub が使うだけ。
 
-#### S-16. Wide Unicode support (partial)
+#### S-16. Wide Unicode support ✅ (R17)
 - ✅ (R16) `\u` / `\U` lexer エスケープ → UTF-8 として byte string に展開
 - ✅ (R16) `chr()` / `ord()` が UTF-8 multi-byte char に対応
-- 残: `len("é")` は byte 単位 (2)。CPython は codepoint 単位 (1)
-- 残: `①`.isnumeric() 等の Unicode 系判定が False を返す
+- ✅ (R17) `len(s)` / `s[i]` / `s[a:b]` / `s[::-1]` / `for ch in s` /
+  `find` / `rfind` / `index` / `rindex` / `count` / `startswith` /
+  `endswith` / `strip` / `lstrip` / `rstrip` / `center` / `ljust` /
+  `rjust` / `zfill` / `reversed(s)` が codepoint 単位で動作
+- 残: `①`.isnumeric() 等の Unicode property 判定 (full Unicode tables 必要)
+- 残: upper/lower/title/swapcase は ASCII のみ (full case mapping data 必要)
 
 #### S-17. metaclass による class iteration ✅ (R16)
 - `len(EnumClass)` / `for m in EnumClass:` / `member in EnumClass`

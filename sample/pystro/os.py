@@ -202,6 +202,20 @@ class _Path:
 
 path = _Path()
 
+# Path/separator constants.
+sep = "/"
+altsep = None
+extsep = "."
+pathsep = ":"
+linesep = "\n"
+curdir = "."
+pardir = ".."
+defpath = ":/bin:/usr/bin"
+devnull = "/dev/null"
+name = "posix"
+
 __all__ = ["getcwd", "getenv", "environ", "path",
            "listdir", "remove", "unlink", "rmdir", "makedirs",
-           "close", "fdopen", "stat"]
+           "close", "fdopen", "stat",
+           "sep", "altsep", "extsep", "pathsep", "linesep",
+           "curdir", "pardir", "defpath", "devnull", "name"]

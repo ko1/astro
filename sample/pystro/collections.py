@@ -442,5 +442,68 @@ class UserString:
     def upper(self): return type(self)(self.data.upper())
 
 
+# collections.abc — minimal classes that classify common types via
+# isinstance.  Pystro doesn't yet support metaclass __instancecheck__
+# fully on user classes, so the actual checks are done by isinstance
+# fallback (each class wraps a concrete builtin type).
+
+class _AbcBase:
+    pass
+
+# Make these concrete classes that isinstance can check with a custom
+# __class__ check.  We use simple "marker" classes; isinstance will
+# return True for any instance via metaclass override.
+
+class _AbcMeta(type):
+    def __instancecheck__(cls, obj):
+        nm = cls.__name__
+        if nm == "Iterable":
+            return hasattr(obj, "__iter__") or isinstance(obj, (list, tuple, dict, set, frozenset, str, bytes, bytearray, range))
+        if nm == "Iterator":
+            return hasattr(obj, "__next__")
+        if nm == "Sized":
+            return hasattr(obj, "__len__") or isinstance(obj, (list, tuple, dict, set, frozenset, str, bytes, bytearray))
+        if nm == "Container":
+            return hasattr(obj, "__contains__") or isinstance(obj, (list, tuple, dict, set, frozenset, str, bytes, bytearray, range))
+        if nm == "Hashable":
+            try:
+                hash(obj); return True
+            except TypeError:
+                return False
+        if nm == "Callable":
+            return callable(obj)
+        if nm == "Mapping" or nm == "MutableMapping":
+            return isinstance(obj, dict)
+        if nm == "Sequence":
+            return isinstance(obj, (list, tuple, str, bytes, bytearray, range))
+        if nm == "MutableSequence":
+            return isinstance(obj, (list, bytearray))
+        if nm == "Set" or nm == "MutableSet":
+            return isinstance(obj, (set, frozenset))
+        if nm == "ByteString":
+            return isinstance(obj, (bytes, bytearray))
+        if nm == "Generator":
+            return hasattr(obj, "send") and hasattr(obj, "throw")
+        return type.__instancecheck__(cls, obj)
+
+
+class _Abc:
+    class Iterable(metaclass=_AbcMeta): pass
+    class Iterator(metaclass=_AbcMeta): pass
+    class Sized(metaclass=_AbcMeta): pass
+    class Container(metaclass=_AbcMeta): pass
+    class Hashable(metaclass=_AbcMeta): pass
+    class Callable(metaclass=_AbcMeta): pass
+    class Mapping(metaclass=_AbcMeta): pass
+    class MutableMapping(metaclass=_AbcMeta): pass
+    class Sequence(metaclass=_AbcMeta): pass
+    class MutableSequence(metaclass=_AbcMeta): pass
+    class Set(metaclass=_AbcMeta): pass
+    class MutableSet(metaclass=_AbcMeta): pass
+    class ByteString(metaclass=_AbcMeta): pass
+    class Generator(metaclass=_AbcMeta): pass
+abc = _Abc
+
 __all__ = ["OrderedDict", "defaultdict", "Counter", "deque",
-           "namedtuple", "ChainMap", "UserDict", "UserList", "UserString"]
+           "namedtuple", "ChainMap", "UserDict", "UserList", "UserString",
+           "abc"]

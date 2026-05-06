@@ -67,6 +67,10 @@ class TestCase:
         if not isinstance(obj, cls):
             self.fail(msg or (repr(obj) + " is not instance of " + repr(cls)))
 
+    def assertNotIsInstance(self, obj, cls, msg=""):
+        if isinstance(obj, cls):
+            self.fail(msg or (repr(obj) + " is instance of " + repr(cls)))
+
     def assertGreater(self, a, b, msg=""):
         if not (a > b):
             self.fail(msg or (repr(a) + " <= " + repr(b)))

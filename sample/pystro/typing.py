@@ -47,6 +47,32 @@ class Protocol: pass
 def runtime_checkable(cls): return cls
 Final     = _GenericAlias(lambda x: x, "typing.Final")
 ClassVar  = _GenericAlias(lambda x: x, "typing.ClassVar")
+Literal   = _GenericAlias(lambda x: x, "typing.Literal")
+Annotated = _GenericAlias(lambda x: x, "typing.Annotated")
+TypeAlias = _GenericAlias(lambda x: x, "typing.TypeAlias")
+
+
+# Generic — at runtime, parameterising a Generic class returns the class
+# itself.  Subclassing Generic[T] is also a no-op (T is just a name).
+class Generic:
+    def __class_getitem__(cls, item):
+        return cls
+
+# AnyStr is a typevar.
+AnyStr = "AnyStr"
+Self = "Self"
+Hashable = _GenericAlias(lambda x: x, "typing.Hashable")
+Sized    = _GenericAlias(lambda x: x, "typing.Sized")
+Container = _GenericAlias(lambda x: x, "typing.Container")
+Mapping  = _GenericAlias(dict, "typing.Mapping")
+MutableMapping = _GenericAlias(dict, "typing.MutableMapping")
+Sequence = _GenericAlias(list, "typing.Sequence")
+MutableSequence = _GenericAlias(list, "typing.MutableSequence")
+Type     = _GenericAlias(type, "typing.Type")
+Awaitable = _GenericAlias(lambda x: x, "typing.Awaitable")
+Coroutine = _GenericAlias(lambda x: x, "typing.Coroutine")
+AsyncIterable = _GenericAlias(lambda x: x, "typing.AsyncIterable")
+AsyncIterator = _GenericAlias(lambda x: x, "typing.AsyncIterator")
 
 
 def get_type_hints(obj):

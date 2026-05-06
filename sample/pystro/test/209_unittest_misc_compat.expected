@@ -1,0 +1,20 @@
+ok MatmulTest test_no_matmul_on_int
+ok MatmulTest test_rmatmul
+ok MatmulTest test_user_matmul
+ok EvalExecTest test_eval_compile
+ok EvalExecTest test_eval_no_globals
+ok EvalExecTest test_eval_with_globals
+ok EvalExecTest test_exec_basic
+ok BytesTranslateTest test_maketrans
+ok BytesTranslateTest test_translate_none
+ok BytesTranslateTest test_translate_with_delete
+ok TypingTest test_generic
+ok TypingTest test_literal_annotated
+ok CollectionsAbcTest test_callable
+ok CollectionsAbcTest test_iterable
+ok CollectionsAbcTest test_mapping
+ok CollectionsAbcTest test_sequence
+ok SysVersionTest test_version_info
+ok OsConstantsTest test_sep_etc
+---
+passed=18 failed=0
