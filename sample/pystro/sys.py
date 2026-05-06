@@ -112,6 +112,59 @@ int_info = _IntInfo((30, 4, 4300, 640))
 def get_int_max_str_digits(): return 4300
 def set_int_max_str_digits(n): pass
 
+
+# Path / install info that some libs reach for.
+base_prefix = prefix
+base_exec_prefix = exec_prefix
+real_prefix = prefix
+flags = type("Flags", (), {
+    "debug": 0, "inspect": 0, "interactive": 0, "optimize": 0,
+    "dont_write_bytecode": 1, "no_user_site": 0, "no_site": 0,
+    "ignore_environment": 0, "verbose": 0, "bytes_warning": 0,
+    "quiet": 0, "hash_randomization": 0, "isolated": 0, "dev_mode": 0,
+    "utf8_mode": 1, "warn_default_encoding": 0, "safe_path": 0,
+    "int_max_str_digits": 4300,
+})()
+abiflags = ""
+dont_write_bytecode = True
+warnoptions = []
+intern = lambda s: s
+getrecursionlimit = lambda: __pystro_get_recursion_limit__()
+setrecursionlimit = lambda n: __pystro_set_recursion_limit__(n)
+getsizeof = lambda obj, default=0: 64
+getrefcount = lambda obj: 1
+gettrace = lambda: None
+settrace = lambda fn: None
+getprofile = lambda: None
+setprofile = lambda fn: None
+exc_info = lambda: (None, None, None)
+exception = lambda: None
+displayhook = lambda v: print(repr(v)) if v is not None else None
+excepthook = lambda *a: None
+ps1 = ">>> "
+ps2 = "... "
+
+def get_coroutine_origin_tracking_depth(): return 0
+def set_coroutine_origin_tracking_depth(n): pass
+def is_finalizing(): return False
+def audit(event, *args): pass
+def addaudithook(hook): pass
+
+def _getframe(depth=0):
+    class _Frame:
+        f_globals = {}
+        f_locals = {}
+        f_lineno = 0
+        f_code = type("Code", (), {"co_name": "<frame>", "co_filename": "<frame>"})()
+        f_back = None
+    return _Frame()
+
+class _ExceptionInfo:
+    pass
+
+def get_asyncgen_hooks(): return type("_Hooks", (), {"firstiter": None, "finalizer": None})()
+def set_asyncgen_hooks(*a, **kw): pass
+
 def exit(*args):
     # CPython raises SystemExit so `try: sys.exit()` is catchable.  Only
     # uncaught SystemExit actually terminates the process.  No args =>

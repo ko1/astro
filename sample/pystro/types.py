@@ -86,6 +86,37 @@ def prepare_class(name, bases=(), kwds=None):
     return (type, {}, {})
 
 
+# GenericAlias — backed by a simple wrapper.  PEP 585 returns this from
+# `list[int]` / `dict[str, int]` etc.  Pystro's runtime returns the
+# class itself for those subscripts, but tests look for `GenericAlias`
+# as a class, so expose a wrapper type.
+class GenericAlias:
+    def __init__(self, origin, args):
+        self.__origin__ = origin
+        self.__args__ = args if isinstance(args, tuple) else (args,)
+    def __getitem__(self, params): return self
+    def __repr__(self):
+        return repr(self.__origin__) + repr(list(self.__args__))
+
+
+# UnionType (PEP 604) — `int | str`.
+class UnionType:
+    def __init__(self, args):
+        self.__args__ = args
+
+
+def coroutine(func):
+    return func
+
+
+def resolve_bases(bases):
+    return bases
+
+
+def get_original_bases(cls):
+    return getattr(cls, "__bases__", ())
+
+
 def resolve_bases(bases):
     return tuple(bases)
 
