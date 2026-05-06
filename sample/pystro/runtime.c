@@ -4388,8 +4388,15 @@ py_apply_slow(CTX *c, VALUE fn, int argc, VALUE *argv)
             }
         }
         if (PY_PTR(fn)->cls.is_exception) {
+            extern bool class_is_ancestor(VALUE cls, VALUE target);
             py_setattr(c, inst, "args", py_make_tuple(argv, argc));
             if (argc >= 1 && py_is_str(argv[0])) py_setattr(c, inst, "message", argv[0]);
+            // ExceptionGroup(msg, [excs]) — also stash the exceptions list
+            // as .exceptions so PEP 654 except* matching can split it.
+            if (class_is_ancestor(fn, c->EXC_BaseExceptionGroup)
+                    && argc >= 2 && (py_is_list(argv[1]) || py_is_tuple(argv[1]))) {
+                py_setattr(c, inst, "exceptions", argv[1]);
+            }
         }
         VALUE init = py_class_lookup_method(fn, "__init__");
         if (init != PY_NONE) {
@@ -5474,6 +5481,74 @@ py_pat_match(CTX *c, int pat_idx, VALUE v)
 }
 
 // ---------------------------------------------------------------------------
+// PEP 654 helper: split an ExceptionGroup `eg` by `type` predicate.
+// Returns the matched and unmatched subgroups in *matched / *unmatched.
+// Either may be set to PY_NONE if empty.  An exception that is itself
+// the type matches; nested ExceptionGroups are recursed.
+static VALUE
+py_eg_make(CTX *c, const char *msg, VALUE excs)
+{
+    VALUE av[2] = {
+        py_make_str(msg, strlen(msg)),
+        excs,
+    };
+    // py_eg_make is called from inside the try-catch path where
+    // c->state == RAISE.  py_apply early-exits when state==RAISE, so
+    // temporarily clear and restore.
+    int sst = c->state; VALUE sv = c->state_value;
+    c->state = PY_STATE_NORMAL; c->state_value = PY_NONE;
+    VALUE r = py_apply(c, c->EXC_ExceptionGroup, 2, av);
+    if (c->state == PY_STATE_NORMAL) { c->state = sst; c->state_value = sv; }
+    return r;
+}
+
+static void
+py_eg_split(CTX *c, VALUE eg, VALUE type, VALUE *matched_out, VALUE *unmatched_out)
+{
+    *matched_out = PY_NONE;
+    *unmatched_out = PY_NONE;
+    if (!py_is_instance(eg)) return;
+    if (!class_is_ancestor(PY_OBJ_VAL(PY_PTR(eg)->inst.cls), c->EXC_BaseExceptionGroup))
+        return;
+    int sst = c->state; VALUE sval = c->state_value;
+    c->state = PY_STATE_NORMAL; c->state_value = PY_NONE;
+    VALUE excs = py_getattr(c, eg, "exceptions");
+    c->state = sst; c->state_value = sval;
+    if (!py_is_list(excs) && !py_is_tuple(excs)) return;
+    VALUE matched_list = py_make_list(NULL, 0);
+    VALUE unmatched_list = py_make_list(NULL, 0);
+    size_t n = PY_PTR(excs)->list.len;
+    for (size_t i = 0; i < n; i++) {
+        VALUE e = PY_PTR(excs)->list.items[i];
+        // Nested group: recurse.
+        if (py_is_instance(e)
+                && class_is_ancestor(PY_OBJ_VAL(PY_PTR(e)->inst.cls), c->EXC_BaseExceptionGroup)) {
+            VALUE sub_m, sub_u;
+            py_eg_split(c, e, type, &sub_m, &sub_u);
+            if (sub_m != PY_NONE) py_list_append(c, matched_list, sub_m);
+            if (sub_u != PY_NONE) py_list_append(c, unmatched_list, sub_u);
+            continue;
+        }
+        if (py_exc_matches(c, e, type)) {
+            py_list_append(c, matched_list, e);
+        } else {
+            py_list_append(c, unmatched_list, e);
+        }
+    }
+    // Read message arg (first arg) if available.
+    int sst2 = c->state; VALUE sval2 = c->state_value;
+    c->state = PY_STATE_NORMAL; c->state_value = PY_NONE;
+    VALUE msg_v = py_getattr(c, eg, "message");
+    c->state = sst2; c->state_value = sval2;
+    const char *msg = (py_is_str(msg_v)) ? PY_PTR(msg_v)->str.chars : "";
+    if (PY_PTR(matched_list)->list.len > 0) {
+        *matched_out = py_eg_make(c, msg, matched_list);
+    }
+    if (PY_PTR(unmatched_list)->list.len > 0) {
+        *unmatched_out = py_eg_make(c, msg, unmatched_list);
+    }
+}
+
 // try/except/finally driver.  Sits behind `node_try` so the setjmp lives
 // in a function the C compiler doesn't try to inline (EVAL_node_try is
 // generated with always_inline by ASTroGen).
@@ -5510,6 +5585,75 @@ py_run_try(CTX *c, NODE *body, uint32_t handlers_idx, uint32_t nhandlers, NODE *
 
     if (caught_raise) {
         VALUE exc = c->state_value;
+        // Detect except* (PEP 654) handlers — if any present, take a
+        // separate path that splits ExceptionGroup by type.
+        bool has_star = false;
+        for (uint32_t i = 0; i < nhandlers; i++)
+            if (PYSTRO_HANDLERS[handlers_idx + i].is_star) { has_star = true; break; }
+        if (has_star) {
+            // CPython: `except* T` only catches BaseExceptionGroup.  A
+            // bare exception falls through to be re-raised.
+            if (!py_is_instance(exc)
+                    || !class_is_ancestor(PY_OBJ_VAL(PY_PTR(exc)->inst.cls),
+                                          c->EXC_BaseExceptionGroup)) {
+                c->state = PY_STATE_RAISE;
+                c->state_value = exc;
+                goto run_finally;
+            }
+            VALUE remaining = exc;
+            bool any_raised = false;
+            VALUE last_raised = PY_NONE;
+            for (uint32_t i = 0; i < nhandlers; i++) {
+                struct pyhandler *h = &PYSTRO_HANDLERS[handlers_idx + i];
+                if (remaining == PY_NONE) break;
+                VALUE cls_val = PY_NONE;
+                if (h->exc_class) {
+                    int sst = c->state; VALUE sval = c->state_value;
+                    c->state = PY_STATE_NORMAL; c->state_value = PY_NONE;
+                    cls_val = EVAL(c, h->exc_class);
+                    if (c->state != PY_STATE_NORMAL) goto run_finally;
+                    c->state = sst; c->state_value = sval;
+                }
+                VALUE matched = PY_NONE, unmatched = PY_NONE;
+                if (h->exc_class) {
+                    py_eg_split(c, remaining, cls_val, &matched, &unmatched);
+                } else {
+                    matched = remaining;
+                }
+                if (matched != PY_NONE) {
+                    c->state = PY_STATE_NORMAL;
+                    c->state_value = matched;
+                    VALUE saved_handling = c->current_handling_exc;
+                    c->current_handling_exc = matched;
+                    if (h->name) {
+                        if (h->name_is_global) py_global_set(c, h->name, matched);
+                        else                   c->env->slots[h->name_slot] = matched;
+                    }
+                    EVAL(c, h->body);
+                    c->current_handling_exc = saved_handling;
+                    if (c->state == PY_STATE_RAISE) {
+                        any_raised = true;
+                        last_raised = c->state_value;
+                    } else if (c->state == PY_STATE_NORMAL) {
+                        c->state_value = PY_NONE;
+                    }
+                }
+                remaining = unmatched;
+            }
+            // After all star handlers: if any handler raised, that
+            // exception propagates.  Otherwise re-raise leftover (if any).
+            if (any_raised) {
+                c->state = PY_STATE_RAISE;
+                c->state_value = last_raised;
+            } else if (remaining != PY_NONE) {
+                c->state = PY_STATE_RAISE;
+                c->state_value = remaining;
+            } else {
+                c->state = PY_STATE_NORMAL;
+                c->state_value = PY_NONE;
+            }
+            goto run_finally;
+        }
         for (uint32_t i = 0; i < nhandlers; i++) {
             struct pyhandler *h = &PYSTRO_HANDLERS[handlers_idx + i];
             VALUE cls_val = PY_NONE;
@@ -12459,6 +12603,8 @@ install_builtins(CTX *c)
     c->EXC_UnicodeWarning    = py_make_class("UnicodeWarning",    c->EXC_Warning, true);
     c->EXC_BytesWarning      = py_make_class("BytesWarning",      c->EXC_Warning, true);
     c->EXC_ResourceWarning   = py_make_class("ResourceWarning",   c->EXC_Warning, true);
+    c->EXC_BaseExceptionGroup = py_make_class("BaseExceptionGroup", c->EXC_BaseException, true);
+    c->EXC_ExceptionGroup    = py_make_class("ExceptionGroup",   c->EXC_BaseExceptionGroup, true);
     c->EXC_LookupError       = py_make_class("LookupError",       c->EXC_Exception, true);
     c->EXC_IndexError       = py_make_class("IndexError",       c->EXC_LookupError, true);
     c->EXC_KeyError         = py_make_class("KeyError",         c->EXC_LookupError, true);
@@ -12557,6 +12703,8 @@ install_builtins(CTX *c)
     py_global_define(c, "UnicodeWarning",       c->EXC_UnicodeWarning);
     py_global_define(c, "BytesWarning",         c->EXC_BytesWarning);
     py_global_define(c, "ResourceWarning",      c->EXC_ResourceWarning);
+    py_global_define(c, "BaseExceptionGroup",   c->EXC_BaseExceptionGroup);
+    py_global_define(c, "ExceptionGroup",       c->EXC_ExceptionGroup);
     py_global_define(c, "__pystro_del__",   py_make_builtin("__pystro_del__", bi_pystro_del, 2, 2));
     py_global_define(c, "__pystro_yield_from__", py_make_builtin("__pystro_yield_from__", bi_pystro_yield_from, 1, 1));
     py_global_define(c, "__pystro_pos__", py_make_builtin("__pystro_pos__", bi_pystro_pos, 1, 1));

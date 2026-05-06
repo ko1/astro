@@ -420,6 +420,8 @@ typedef struct CTX_struct {
     VALUE EXC_UnboundLocalError;
     VALUE EXC_SystemError;
     VALUE EXC_PendingDeprecationWarning;
+    VALUE EXC_BaseExceptionGroup;
+    VALUE EXC_ExceptionGroup;
     VALUE EXC_Warning;
     VALUE EXC_DeprecationWarning;
     VALUE EXC_UserWarning;
@@ -447,7 +449,8 @@ typedef struct CTX_struct {
     X(ConnectionError) X(BlockingIOError) X(ChildProcessError) \
     X(Warning) X(DeprecationWarning) X(UserWarning) X(FutureWarning) \
     X(RuntimeWarning) X(SyntaxWarning) X(ImportWarning) X(UnicodeWarning) \
-    X(BytesWarning) X(ResourceWarning)
+    X(BytesWarning) X(ResourceWarning) \
+    X(BaseExceptionGroup) X(ExceptionGroup)
 
     // Synthetic type classes for things that don't have a builtin_ctor:
     VALUE TYPE_NoneType;
@@ -681,6 +684,7 @@ struct pyhandler {
     const char  *name;          // NULL ⇒ no `as name`
     bool         name_is_global;
     int          name_slot;
+    bool         is_star;       // `except*` — PEP 654 exception group
 };
 
 // Unpack-assignment target.

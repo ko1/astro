@@ -3092,6 +3092,10 @@ parse_try(void)
     while (peek_tok(0)->kind == T_EXCEPT) {
         tok_pos++;
         struct pyhandler h = {0};
+        // PEP 654: `except*` — exception group split-and-handle.
+        if (match_tok(T_STAR)) {
+            h.is_star = true;
+        }
         if (peek_tok(0)->kind != T_COLON) {
             h.exc_class = parse_expr();
             if (match_tok(T_AS)) {
@@ -3913,6 +3917,18 @@ parse_stmt(void)
     if (k == T_AT)     return parse_decorated();
     if (k == T_DEF)    return parse_def();
     if (k == T_CLASS)  return parse_class();
+    // PEP 695 type alias: `type NAME = expr`.  pystro doesn't track
+    // type-time-only aliases, so desugar to plain `NAME = expr`.
+    if (k == T_NAME && peek_tok(0)->sval == intern_name("type", 4)
+            && peek_tok(1)->kind == T_NAME
+            && peek_tok(2)->kind == T_ASSIGN) {
+        tok_pos++;        // consume `type`
+        const char *nm = peek_tok(0)->sval;
+        tok_pos++;        // NAME
+        tok_pos++;        // =
+        NODE *rhs = parse_expr_list();
+        return make_store(nm, rhs);
+    }
     if (k == T_IF)     return parse_if();
     if (k == T_WHILE)  return parse_while();
     if (k == T_FOR)    return parse_for();
