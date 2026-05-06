@@ -823,15 +823,29 @@ nuq_op_mul_slow(VALUE a, VALUE b)
         }
         return r;
     }
-    if (NUQ_IS_PTR(a) && NUQ_PTR(a)->type == NUQ_T_STRING && NUQ_IS_FIX(b)) {
-        int64_t n = NUQ_FIX_VAL(b);
-        if (n <= 0) return NUQ_NULL;
-        struct nuq_obj *oa = NUQ_PTR(a);
-        size_t L = oa->str.len * (size_t)n;
-        char *buf = (char *)GC_malloc_atomic(L + 1);
-        for (int64_t i = 0; i < n; i++) memcpy(buf + i * oa->str.len, oa->str.bytes, oa->str.len);
-        buf[L] = '\0';
-        return nuq_make_string_take(buf, L);
+    /* Allow string * number (and number * string symmetrically) so jq's
+     * `"abc" * 3` semantics work for floats and bool conversions. */
+    {
+        VALUE str = NUQ_NULL, num = NUQ_NULL;
+        if (NUQ_IS_PTR(a) && NUQ_PTR(a)->type == NUQ_T_STRING &&
+            (NUQ_IS_FIX(b) || (NUQ_IS_PTR(b) && NUQ_PTR(b)->type == NUQ_T_DOUBLE))) {
+            str = a; num = b;
+        } else if (NUQ_IS_PTR(b) && NUQ_PTR(b)->type == NUQ_T_STRING &&
+                   (NUQ_IS_FIX(a) || (NUQ_IS_PTR(a) && NUQ_PTR(a)->type == NUQ_T_DOUBLE))) {
+            str = b; num = a;
+        }
+        if (str != NUQ_NULL) {
+            double d = NUQ_IS_FIX(num) ? (double)NUQ_FIX_VAL(num) : NUQ_PTR(num)->dbl;
+            if (isnan(d) || d < 0) return NUQ_NULL;
+            int64_t n = (int64_t)d;     /* jq truncates toward zero */
+            if (n == 0) return nuq_make_string("", 0);
+            struct nuq_obj *oa = NUQ_PTR(str);
+            size_t L = oa->str.len * (size_t)n;
+            char *buf = (char *)GC_malloc_atomic(L + 1);
+            for (int64_t i = 0; i < n; i++) memcpy(buf + i * oa->str.len, oa->str.bytes, oa->str.len);
+            buf[L] = '\0';
+            return nuq_make_string_take(buf, L);
+        }
     }
     {
         char da[80], db[80];

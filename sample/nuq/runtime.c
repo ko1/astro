@@ -1847,16 +1847,20 @@ nuq_join_eval(CTX *c, struct Node *sep)
             if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_NULL) continue;
             if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_STRING) {
                 fwrite(NUQ_PTR(v)->str.bytes, 1, NUQ_PTR(v)->str.len, fp);
+            } else if (NUQ_IS_FIX(v) ||
+                       (NUQ_IS_PTR(v) &&
+                        (NUQ_PTR(v)->type == NUQ_T_DOUBLE ||
+                         NUQ_PTR(v)->type == NUQ_T_BOOL))) {
+                /* numbers / booleans get their JSON string form. */
+                VALUE js = nuq_to_json_string(v);
+                fwrite(NUQ_PTR(js)->str.bytes, 1, NUQ_PTR(js)->str.len, fp);
             } else {
-                /* jq's join only accepts strings/null; for anything else
-                 * raise an error mimicking the failed `+` concat (the
-                 * expected error format includes both descrs). */
+                /* Arrays / objects: jq raises "cannot be added" against
+                 * the partial concatenation of the previously-joined
+                 * strings (with separators). */
                 fclose(fp);
                 free(out);
                 char da[80], db[80], msg[200];
-                nuq_value_descr(s, da, sizeof(da));     /* prefix string... actually jq uses the partial concat as the lhs */
-                /* Build the partial concatenation up to position i with
-                 * separators interspersed — used as the lhs in error. */
                 char *pbuf = NULL; size_t pbn = 0;
                 FILE *pfp = open_memstream(&pbuf, &pbn);
                 for (size_t j = 0; j <= i; j++) {
@@ -1865,8 +1869,6 @@ nuq_join_eval(CTX *c, struct Node *sep)
                     VALUE w = ao->arr.items[j];
                     if (NUQ_IS_PTR(w) && NUQ_PTR(w)->type == NUQ_T_STRING) {
                         fwrite(NUQ_PTR(w)->str.bytes, 1, NUQ_PTR(w)->str.len, pfp);
-                    } else if (!(NUQ_IS_PTR(w) && NUQ_PTR(w)->type == NUQ_T_NULL)) {
-                        /* fall through; partial may be incomplete */
                     }
                 }
                 fclose(pfp);
@@ -3447,7 +3449,22 @@ assign_leaf(VALUE v, void *ud, bool *dropped)
     if (al->op_kind == NUQ_ASSIGN_PLAIN) {
         return al->precomputed;
     }
-    /* Evaluate rhs with `v` as input. */
+    /* For op-assign variants other than `|=` (UPDATE), RHS was
+     * pre-evaluated in the caller scope and stored in `precomputed`.
+     * `|=` still evaluates rhs against the path-element value `v`. */
+    if (al->precomputed_set && al->op_kind != NUQ_ASSIGN_UPDATE) {
+        VALUE rv = al->precomputed;
+        switch (al->op_kind) {
+          case NUQ_ASSIGN_PLUS:   return nuq_op_add(v, rv);
+          case NUQ_ASSIGN_MINUS:  return nuq_op_sub(v, rv);
+          case NUQ_ASSIGN_MUL:    return nuq_op_mul(v, rv);
+          case NUQ_ASSIGN_DIV:    return nuq_op_div(v, rv);
+          case NUQ_ASSIGN_MOD:    return nuq_op_mod(v, rv);
+          case NUQ_ASSIGN_ALT:    return nuq_truthy(v) ? v : rv;
+        }
+        return v;
+    }
+    /* Evaluate rhs with `v` as input (|= path). */
     VALUE saved = al->c->input;
     al->c->input = v;
     size_t t0 = al->c->pool_top;
@@ -3563,6 +3580,24 @@ EMIT
 nuq_assign_eval(CTX *c, struct Node *lhs, struct Node *rhs, uint32_t op_kind)
 {
     struct assign_leaf_ud ud = { c, rhs, (int)op_kind, NUQ_NULL, false };
+
+    /* `+=` / `-=` / `*=` / `/=` / `%=` / `//=` evaluate RHS against the
+     * ORIGINAL input (not the path-element value).  jq compiles
+     * `.a += b` as `. as $o | $o | .a = ($o | .a + ($o | b))` — i.e.
+     * `b` sees `$o` as its input.  Pre-compute the RHS once and reuse
+     * the result at each leaf.
+     * `|=` (UPDATE) is the exception: jq evaluates rhs against the
+     * path-element value, so we keep the per-leaf eval for it. */
+    if (op_kind == NUQ_ASSIGN_PLUS || op_kind == NUQ_ASSIGN_MINUS ||
+        op_kind == NUQ_ASSIGN_MUL  || op_kind == NUQ_ASSIGN_DIV   ||
+        op_kind == NUQ_ASSIGN_MOD  || op_kind == NUQ_ASSIGN_ALT) {
+        size_t t0 = c->pool_top;
+        EMIT re = EVAL(c, rhs);
+        if (c->error != NUQ_NULL) return EMIT_EMPTY;
+        ud.precomputed = re.count > 0 ? re.items[0] : NUQ_NULL;
+        ud.precomputed_set = true;
+        c->pool_top = t0;
+    }
 
     /* For `=` (PLAIN), RHS is evaluated ONCE in the original input
      * scope and stamped at every leaf — so `(.foo[]) = .bar` puts the
