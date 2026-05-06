@@ -1389,8 +1389,9 @@ node_super(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_inde
     frame.super_skip_n = new_skip_n;
     frame.last_line = Qnil;
     frame.last_match = Qnil;
-    c->current_frame = &frame;
     extern struct korb_proc *running_block;
+    frame.caller_running_block = running_block;
+    c->current_frame = &frame;
     struct korb_proc *prev_running = running_block;
     running_block = NULL;
     VALUE r = EVAL(c, sm->u.ast.body);
@@ -1501,8 +1502,9 @@ node_super_forward(CTX * restrict c, NODE * restrict n)
     frame.super_skip_n = fwd_new_skip_n;
     frame.last_line = Qnil;
     frame.last_match = Qnil;
-    c->current_frame = &frame;
     extern struct korb_proc *running_block;
+    frame.caller_running_block = running_block;
+    c->current_frame = &frame;
     struct korb_proc *prev_running = running_block;
     running_block = NULL;
     VALUE r = EVAL(c, sm->u.ast.body);

@@ -105,12 +105,15 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
      * $_ directly. */
     frame.last_line = Qnil;
     frame.last_match = Qnil;
+    /* Capture the block whose body is calling us, so backtrace can
+     * synthesize a "block in <enclosing>" entry above this frame. */
+    extern struct korb_proc *running_block;
+    frame.caller_running_block = running_block;
     c->current_frame = &frame;
     /* Entering a method body — no block is "running" at this point.
      * If we don't reset, a `return` inside a method called from within
      * a block would be interpreted as non-local (target_fp = block's
      * enclosing). */
-    extern struct korb_proc *running_block;
     struct korb_proc *prev_running = running_block;
     running_block = NULL;
     if (UNLIKELY(!simple)) {
@@ -213,12 +216,15 @@ prologue_ast_simple_static_inl(CTX *c, struct Node *callsite, VALUE recv,
      * $_ directly. */
     frame.last_line = Qnil;
     frame.last_match = Qnil;
+    /* Capture the block whose body is calling us, so backtrace can
+     * synthesize a "block in <enclosing>" entry above this frame. */
+    extern struct korb_proc *running_block;
+    frame.caller_running_block = running_block;
     c->current_frame = &frame;
     /* Entering a method body — no block is "running" at this point.
      * If we don't reset, a `return` inside a method called from within
      * a block would be interpreted as non-local (target_fp = block's
      * enclosing). */
-    extern struct korb_proc *running_block;
     struct korb_proc *prev_running = running_block;
     running_block = NULL;
     if (UNLIKELY(!simple)) {

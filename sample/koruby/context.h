@@ -278,6 +278,12 @@ struct korb_frame {
      * these to Qnil. */
     VALUE last_line;
     VALUE last_match;
+    /* The block / proc / lambda that was running when this frame was
+     * pushed (i.e. the block whose body called THIS method).  NULL when
+     * called outside any block.  Used by korb_build_backtrace to
+     * synthesize a "block in <enclosing>" entry between this frame and
+     * its caller, since blocks don't get their own frame in koruby. */
+    void *caller_running_block;
     /* Number of times the method's defining_class has already been seen
      * in the receiver's MRO before reaching this frame's method.  For a
      * normal dispatch this is 0 (we found the method's first occurrence).
@@ -299,6 +305,7 @@ struct korb_frame {
         .locals_cnt = (locals_),                    \
         .last_line = Qnil,                          \
         .last_match = Qnil,                         \
+        .caller_running_block = NULL,               \
     };                                              \
     (c)->current_frame = &_frame_;                  \
     do{}while(0)

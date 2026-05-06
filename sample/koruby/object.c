@@ -1868,16 +1868,26 @@ VALUE korb_build_backtrace(CTX *c, int raise_line) {
     VALUE arr = korb_ary_new();
     const char *default_file = c->current_file ? c->current_file : "(unknown)";
     char buf[512];
-    /* Trace format per frame: "FILE:LINE:in `METHOD'", where LINE is
-     * where execution was at *inside this frame's body* — i.e., the
-     * call site that pushed the next frame on top.  For the topmost
-     * frame, that's the raise site (raise_line); for all others, it's
-     * the next-up frame's caller_node.  caller_node always points at
-     * the call expression that brought control INTO that frame, so the
-     * line we want for frame F is (F's child).caller_node.line. */
+    char nbuf[256];
     struct korb_frame *f = c->current_frame;
     int line = raise_line;
     if (line == 0 && f && f->caller_node) line = f->caller_node->head.line;
+    /* If we're currently inside a block / proc / lambda body, prepend a
+     * "block in <enclosing>" entry — yield/proc.call don't push their
+     * own frame in koruby but CRuby's backtrace shows them. */
+    if (running_block) {
+        const char *enc_name = (f && f->method && f->method->name)
+                                  ? korb_id_name(f->method->name) : "<main>";
+        /* The block's body lives in the lexically-enclosing file; that's
+         * what CRuby reports for "block in <method>" entries. */
+        const char *enc_file = default_file;
+        if (running_block->body && running_block->body->head.source_file) {
+            enc_file = running_block->body->head.source_file;
+        }
+        snprintf(nbuf, sizeof(nbuf), "block in %s", enc_name);
+        snprintf(buf, sizeof(buf), "%s:%d:in '%s'", enc_file, line, nbuf);
+        korb_ary_push(arr, korb_str_new_cstr(buf));
+    }
     while (f) {
         const char *name = (f->method && f->method->name)
                              ? korb_id_name(f->method->name) : "<main>";
@@ -1891,6 +1901,25 @@ VALUE korb_build_backtrace(CTX *c, int raise_line) {
         /* Next iteration's line = where IN the parent's body this call
          * was made.  That's recorded on f->caller_node. */
         line = f->caller_node ? f->caller_node->head.line : 0;
+        /* If THIS frame was called from inside a block (frame.caller_
+         * running_block), insert the block entry between this frame
+         * and its caller — that block's body is what called us. */
+        if (f->caller_running_block) {
+            struct korb_proc *cb = (struct korb_proc *)f->caller_running_block;
+            struct korb_frame *parent = f->prev;
+            const char *enc_name = (parent && parent->method && parent->method->name)
+                                      ? korb_id_name(parent->method->name) : "<main>";
+            const char *enc_file = default_file;
+            if (cb->body && cb->body->head.source_file) {
+                enc_file = cb->body->head.source_file;
+            } else if (parent && parent->method && parent->method->type == KORB_METHOD_AST &&
+                parent->method->u.ast.body && parent->method->u.ast.body->head.source_file) {
+                enc_file = parent->method->u.ast.body->head.source_file;
+            }
+            snprintf(nbuf, sizeof(nbuf), "block in %s", enc_name);
+            snprintf(buf, sizeof(buf), "%s:%d:in '%s'", enc_file, line, nbuf);
+            korb_ary_push(arr, korb_str_new_cstr(buf));
+        }
         f = f->prev;
     }
     /* Always tack on a <main> entry — line is whatever the
@@ -2612,10 +2641,11 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
     frame.super_skip_n = 0;
     frame.last_line = Qnil;
     frame.last_match = Qnil;
+    extern struct korb_proc *running_block;
+    frame.caller_running_block = running_block;
     c->current_frame = &frame;
     /* Reset running_block: a method body is no longer "inside" the
      * caller's block, so a `return` inside it should be method-local. */
-    extern struct korb_proc *running_block;
     struct korb_proc *prev_running = running_block;
     running_block = NULL;
     VALUE *frame_lo = c->fp;
@@ -3054,6 +3084,7 @@ VALUE korb_dispatch_binop(CTX *c, VALUE recv, ID name, int argc, VALUE *argv) {
         .super_skip_n = 0,
         .last_line = Qnil,
         .last_match = Qnil,
+        .caller_running_block = running_block,
     };
     c->current_frame = &frame2;
     VALUE r = EVAL(c, m->u.ast.body);

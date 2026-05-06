@@ -708,7 +708,23 @@ static VALUE kernel_caller(CTX *c, VALUE self, int argc, VALUE *argv) {
      * last_cfunc_callsite by prologue_cfunc_inl. */
     int next_line = c->last_cfunc_callsite ? c->last_cfunc_callsite->head.line : 0;
     char buf[512];
+    char nbuf[256];
+    /* Inside a block / proc / lambda body — prepend a "block in
+     * <enclosing>" entry so caller(0) sees the block as a frame. */
+    if (running_block) {
+        const char *enc_name = (f && f->method && f->method->name)
+                                  ? korb_id_name(f->method->name) : "<main>";
+        const char *enc_file = default_file;
+        if (running_block->body && running_block->body->head.source_file) {
+            enc_file = running_block->body->head.source_file;
+        }
+        snprintf(nbuf, sizeof(nbuf), "block in %s", enc_name);
+        snprintf(buf, sizeof(buf), "%s:%d:in '%s'", enc_file, next_line, nbuf);
+        korb_ary_push(arr, korb_str_new_cstr(buf));
+    }
     while (f) {
+        /* Inserted block-in-<enclosing> for THIS frame's caller block,
+         * mirroring korb_build_backtrace's handling. */
         const char *name = (f->method && f->method->name)
                              ? korb_id_name(f->method->name) : "<main>";
         const char *file = default_file;
@@ -719,6 +735,22 @@ static VALUE kernel_caller(CTX *c, VALUE self, int argc, VALUE *argv) {
         snprintf(buf, sizeof(buf), "%s:%d:in '%s'", file, next_line, name);
         korb_ary_push(arr, korb_str_new_cstr(buf));
         next_line = f->caller_node ? f->caller_node->head.line : 0;
+        if (f->caller_running_block) {
+            struct korb_proc *cb = (struct korb_proc *)f->caller_running_block;
+            struct korb_frame *parent = f->prev;
+            const char *enc_name = (parent && parent->method && parent->method->name)
+                                      ? korb_id_name(parent->method->name) : "<main>";
+            const char *enc_file = default_file;
+            if (cb->body && cb->body->head.source_file) {
+                enc_file = cb->body->head.source_file;
+            } else if (parent && parent->method && parent->method->type == KORB_METHOD_AST &&
+                parent->method->u.ast.body && parent->method->u.ast.body->head.source_file) {
+                enc_file = parent->method->u.ast.body->head.source_file;
+            }
+            snprintf(nbuf, sizeof(nbuf), "block in %s", enc_name);
+            snprintf(buf, sizeof(buf), "%s:%d:in '%s'", enc_file, next_line, nbuf);
+            korb_ary_push(arr, korb_str_new_cstr(buf));
+        }
         f = f->prev;
     }
     /* Append a <main> entry so the chain always ends in main. */
