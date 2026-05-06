@@ -425,7 +425,54 @@ bytecode loop、Boehm GC vs CPython の refcount + cycle collector)。
 
 ## R16 (2026-05-06)
 
-138 → 192 unit tests passing (added 54 new test files).
+138 → 208 unit tests passing (added 70 new test files).
+
+### big semantic / scope fixes (later in R16)
+
+- **Comprehension scope (CPython 3)**: `[i for i in xs]; print(i)` now
+  raises NameError.  Loop targets get synthetic comp-private locals
+  via parser-side name remap.  Lambda / def inside the comp re-enters
+  fresh scope so `lambda x, i=i: ...` per-iteration capture works.
+- **yield-from close/throw protocol**: `outer.close()` / `outer.throw()`
+  while suspended in `yield from inner` propagates to inner — inner's
+  finally / except runs.  Implemented via `pygen.yf_inner` tracking.
+- **Metaclass `__call__` override** (singleton pattern): `cls(...)`
+  walks `__metaclass__.__call__` first.  type.__call__(cls, ...) added
+  as a builtin so override can delegate to default construction.
+- **Class-attr lookup falls through to metaclass**: `cls._instances`
+  reaches `SM._instances` defined on the metaclass.
+- **Lambda nested-closure heap frames**: parse_lambda detects nested
+  lambda / def in the body and forces a heap-allocated frame so the
+  inner closure doesn't read freed alloca'd memory after the outer
+  returns.  Fixes Y-combinator factorial.
+- **async / await as SyntaxError**: pystro has no coroutine model;
+  silently accepting `async def` / `await` was misleading.  Both now
+  parse-error.
+- **Genexp returns iterator**: `(x for x in xs)` is now wrapped in
+  iter() so `next(genexp)` works (previously returned a list).  Still
+  eagerly materialised — true laziness needs a synthesised gen fn.
+- **OrderedDict order-aware __eq__**: `OrderedDict == OrderedDict`
+  compares insertion order; `OrderedDict == dict` remains
+  order-insensitive.
+- **int/float/complex .real/.imag/etc. as @property** (was: methods).
+  type_method gained an is_property flag invoked at access.
+- **descriptor __get__ at class-attr access**: `Cls.x` invokes
+  `desc.__get__(None, Cls)` if x is a non-data descriptor.
+- **super().__init_subclass__()**: object now provides a no-op default
+  so the chain terminates cleanly.
+- **TYPE_method/function/generator/module/NoneType** identity preserved
+  across module imports → `isinstance(x, types.MethodType)` works.
+- **List += iterable** accepts str / range / dict / set / gen / etc.
+- **Bytes hash by content**: `hash(b"abc") == hash(b"abc")`; bytes-as-
+  dict-key works.
+- **bytes + bytearray respects LHS**: result type follows left operand.
+- **bytes.hex(sep[, bytes_per_sep])** (CPython 3.8+).
+- **Nested classes attached to outer**: `Outer.Inner` resolves.
+- **Exception __cause__ / __context__ / __suppress_context__** always
+  exist (None / False) on every exception instance.
+- **gen.close() propagates non-GE/StopIteration exceptions** to caller.
+- **match-stmt `pat as NAME`** pattern (sequence / class / or / guard).
+- **Positional class match patterns via `__match_args__`**.
 
 ### parser
 
