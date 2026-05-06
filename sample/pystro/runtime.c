@@ -2416,8 +2416,19 @@ py_list_get(CTX *c, VALUE seq, VALUE idx)
             VALUE av[2] = { seq, idx };
             return py_apply(c, m, 2, av);
         }
-        // Built-in subclass: forward to primary.
-        if (PY_PTR(seq)->inst.primary) return py_list_get(c, PY_PTR(seq)->inst.primary, idx);
+        // Built-in subclass: forward to primary, then dispatch to
+        // __missing__ on KeyError if defined (dict-subclass protocol).
+        if (PY_PTR(seq)->inst.primary) {
+            VALUE primary = PY_PTR(seq)->inst.primary;
+            if (py_is_dict(primary) && !py_dict_has(c, primary, idx)) {
+                VALUE miss = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(seq)->inst.cls), "__missing__");
+                if (miss != PY_NONE) {
+                    VALUE av[2] = { seq, idx };
+                    return py_apply(c, miss, 2, av);
+                }
+            }
+            return py_list_get(c, primary, idx);
+        }
     }
     // Slice index: convert to py_list_slice call.
     if (PY_IS_PTR(idx) && PY_PTR(idx)->type == PY_T_SLICE) {

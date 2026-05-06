@@ -1,0 +1,5 @@
+ok DictMissingTest test_get_does_not_invoke
+ok DictMissingTest test_in_does_not_invoke
+ok DictMissingTest test_missing_called
+---
+passed=3 failed=0
