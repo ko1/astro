@@ -1,0 +1,8 @@
+ok GetitemIterTest test_in_via_getitem
+ok GetitemIterTest test_seq_protocol
+ok IndexProtocolTest test_index
+ok RoundFloorCeilTest test_floor_ceil
+ok RoundFloorCeilTest test_round
+ok IterContainsViaGenTest test_iter_returns_generator
+---
+passed=6 failed=0

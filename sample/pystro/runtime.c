@@ -2187,6 +2187,15 @@ py_int_to_long(CTX *c, VALUE v)
         // same for slice indices.
         return mpz_sgn(PY_PTR(v)->mpz) < 0 ? INT64_MIN : INT64_MAX;
     }
+    // __index__ protocol.
+    if (py_is_instance(v)) {
+        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(v)->inst.cls), "__index__");
+        if (m != PY_NONE) {
+            VALUE r = py_apply(c, m, 1, &v);
+            if (c->state == PY_STATE_RAISE) return 0;
+            return py_int_to_long(c, r);
+        }
+    }
     py_raise_exc(c, c->EXC_TypeError, "expected an integer index");
 }
 
@@ -2539,29 +2548,18 @@ py_contains(CTX *c, VALUE container, VALUE v)
         // Built-in subclass: forward to primary.
         if (PY_PTR(container)->inst.primary)
             return py_contains(c, PY_PTR(container)->inst.primary, v);
-        // Fall back: iterate via __iter__/__next__.
-        VALUE im = py_class_lookup_method(cls, "__iter__");
-        if (im != PY_NONE) {
-            VALUE av[1] = { container };
-            VALUE it = py_apply(c, im, 1, av);
-            if (c->state != PY_STATE_NORMAL) return false;
-            VALUE nx = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(it)->inst.cls), "__next__");
-            if (nx == PY_NONE) {
-                py_raise_exc(c, c->EXC_TypeError, "iter has no __next__");
-            }
-            for (;;) {
-                VALUE av2[1] = { it };
-                VALUE x = py_apply(c, nx, 1, av2);
-                if (c->state == PY_STATE_RAISE) {
-                    if (py_exc_matches(c, c->state_value, c->EXC_StopIteration)) {
-                        c->state = PY_STATE_NORMAL; c->state_value = PY_NONE;
-                        return false;
-                    }
-                    return false;
-                }
-                if (py_eq_bool(c, x, v)) return true;
-            }
+        // Fall back: route through py_iter_init (handles generators,
+        // built-in iters, __getitem__ protocol, etc.).
+        struct py_iter it;
+        py_iter_init(c, &it, container);
+        if (c->state != PY_STATE_NORMAL) return false;
+        VALUE x;
+        while (py_iter_next(c, &it, &x)) {
+            if (c->state == PY_STATE_RAISE) return false;
+            if (x == v) return true;
+            if (py_eq_bool(c, x, v)) return true;
         }
+        return false;
     }
     py_raise_exc(c, c->EXC_TypeError, "argument is not iterable for `in`");
 }
@@ -2638,6 +2636,14 @@ py_iter_init(CTX *c, struct py_iter *it, VALUE iterable)
         // Built-in subclass: iterate over primary.
         if (PY_PTR(iterable)->inst.primary) {
             py_iter_init(c, it, PY_PTR(iterable)->inst.primary);
+            return;
+        }
+        // Sequence protocol fallback: __getitem__ with integer indices.
+        VALUE gm = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(iterable)->inst.cls), "__getitem__");
+        if (gm != PY_NONE) {
+            it->kind = 13;          // __getitem__-based iterator
+            it->container = iterable;
+            it->i = 0; it->end = 0; it->step = 0;
             return;
         }
     }
@@ -2816,6 +2822,23 @@ py_iter_next(CTX *c, struct py_iter *it, VALUE *out)
         if (c->state == PY_STATE_RAISE) return false;
         if (py_is_str(line) && PY_PTR(line)->str.len == 0) return false;
         *out = line;
+        return true;
+      }
+      case 13: {
+        // __getitem__ sequence protocol.
+        VALUE gm = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(it->container)->inst.cls), "__getitem__");
+        VALUE av[2] = { it->container, PY_FIX(it->i) };
+        VALUE r = py_apply(c, gm, 2, av);
+        if (c->state == PY_STATE_RAISE) {
+            if (py_exc_matches(c, c->state_value, c->EXC_IndexError)
+                || py_exc_matches(c, c->state_value, c->EXC_StopIteration)) {
+                c->state = PY_STATE_NORMAL; c->state_value = PY_NONE;
+                return false;
+            }
+            return false;
+        }
+        it->i++;
+        *out = r;
         return true;
       }
     }
@@ -9222,10 +9245,33 @@ bi_pystro_exp(CTX *c, int argc, VALUE *argv)
 { (void)argc; return py_make_float(exp(py_to_double(c, argv[0]))); }
 static VALUE
 bi_pystro_floor(CTX *c, int argc, VALUE *argv)
-{ (void)argc; return py_make_int((int64_t)floor(py_to_double(c, argv[0]))); }
+{
+    if (py_is_instance(argv[0])) {
+        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(argv[0])->inst.cls), "__floor__");
+        if (m != PY_NONE) return py_apply(c, m, 1, argv);
+    }
+    (void)argc; return py_make_int((int64_t)floor(py_to_double(c, argv[0])));
+}
 static VALUE
 bi_pystro_ceil(CTX *c, int argc, VALUE *argv)
-{ (void)argc; return py_make_int((int64_t)ceil(py_to_double(c, argv[0]))); }
+{
+    if (py_is_instance(argv[0])) {
+        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(argv[0])->inst.cls), "__ceil__");
+        if (m != PY_NONE) return py_apply(c, m, 1, argv);
+    }
+    (void)argc; return py_make_int((int64_t)ceil(py_to_double(c, argv[0])));
+}
+static VALUE
+bi_pystro_trunc_dispatch(CTX *c, int argc, VALUE *argv)
+{
+    if (py_is_instance(argv[0])) {
+        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(argv[0])->inst.cls), "__trunc__");
+        if (m != PY_NONE) return py_apply(c, m, 1, argv);
+    }
+    (void)argc;
+    double d = py_to_double(c, argv[0]);
+    return py_make_int((int64_t)d);
+}
 static VALUE
 bi_pystro_atan2(CTX *c, int argc, VALUE *argv)
 { (void)argc;
@@ -9692,6 +9738,13 @@ bi_divmod(CTX *c, int argc, VALUE *argv)
 static VALUE
 bi_round(CTX *c, int argc, VALUE *argv)
 {
+    // Dispatch to user-class __round__.
+    if (py_is_instance(argv[0])) {
+        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(argv[0])->inst.cls), "__round__");
+        if (m != PY_NONE) {
+            return py_apply(c, m, argc, argv);
+        }
+    }
     int ndig = (argc >= 2) ? (int)py_int_to_long(c, argv[1]) : 0;
     double d = py_to_double(c, argv[0]);
     double mul = 1.0;
