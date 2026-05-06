@@ -3163,6 +3163,14 @@ void korb_runtime_init(void) {
         korb_const_set(cObject, korb_intern("FloatDomainError"), (VALUE)k);
         k = korb_class_new(korb_intern("FrozenError"), cRuntimeError, T_OBJECT);
         korb_const_set(cObject, korb_intern("FrozenError"), (VALUE)k);
+        /* NoMatchingPatternError < StandardError (CRuby) — pattern matching
+         * raises it when no clause matches and no else is present. */
+        k = korb_class_new(korb_intern("NoMatchingPatternError"), cStandardError, T_OBJECT);
+        korb_const_set(cObject, korb_intern("NoMatchingPatternError"), (VALUE)k);
+        struct korb_class *cNMPE = k;
+        /* NoMatchingPatternKeyError < NoMatchingPatternError. */
+        k = korb_class_new(korb_intern("NoMatchingPatternKeyError"), cNMPE, T_OBJECT);
+        korb_const_set(cObject, korb_intern("NoMatchingPatternKeyError"), (VALUE)k);
         /* SystemExit < Exception (NOT StandardError so it's not caught by
          * a bare `rescue`).  status / success? are exposed via ivars set
          * by Kernel#exit. */

@@ -1201,7 +1201,9 @@ node_super(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_inde
                                           c->current_frame->super_skip_n, &new_skip_n)
         : NULL;
     if (!sm) {
-        korb_raise(c, NULL, "super: no superclass method '%s'", korb_id_name(m->name));
+        VALUE eNoMethod = korb_const_get(korb_vm->object_class, korb_intern("NoMethodError"));
+        korb_raise(c, (struct korb_class *)eNoMethod,
+                   "super: no superclass method '%s'", korb_id_name(m->name));
         return Qnil;
     }
     if (sm->type == KORB_METHOD_CFUNC) {
@@ -1250,7 +1252,12 @@ node_super_forward(CTX * restrict c, NODE * restrict n)
         ? korb_class_find_super_method_n(recv_klass, m->defining_class, m->name,
                                           c->current_frame->super_skip_n, &fwd_new_skip_n)
         : NULL;
-    if (!sm) { korb_raise(c, NULL, "no superclass method"); return Qnil; }
+    if (!sm) {
+        VALUE eNoMethod = korb_const_get(korb_vm->object_class, korb_intern("NoMethodError"));
+        korb_raise(c, (struct korb_class *)eNoMethod,
+                   "super: no superclass method '%s'", m && m->name ? korb_id_name(m->name) : "?");
+        return Qnil;
+    }
     /* Forward all positionals: required + (splatted *rest if any) +
      * (kwh hash if both this method and the super accept kwargs). */
     VALUE forward_buf[64];

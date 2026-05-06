@@ -322,12 +322,12 @@ class MSpecExpectation
     ok = case m.kind
          when :complain
            # Run the block so its side effects (assignments etc.) happen.
-           # We don't actually verify a warning is emitted — koruby
-           # doesn't generate the same warnings as CRuby — but tests that
-           # rely on the side-effect of the block (`-> { @h = ... }
-           # .should complain(...); @h.something`) still progress.
+           # We don't actually emit warnings — koruby doesn't track them —
+           # so for `should complain(...)` claim true (the warning was
+           # 'expected') and for `should_not complain` claim false (no
+           # warning was emitted, which is what the spec is asserting).
            @actual.call rescue nil
-           true
+           negate ? false : true
          when :have_method then @actual.method_defined?(m.arg) || @actual.private_method_defined?(m.arg) || @actual.respond_to?(m.arg)
          when :have_instance_method then @actual.method_defined?(m.arg) || @actual.private_method_defined?(m.arg)
          when :have_private_method then @actual.private_method_defined?(m.arg)

@@ -2493,6 +2493,34 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
               return ALLOC_node_not(T(tc, n->receiver));
           }
 
+          /* setter call `recv.foo = val`: name ends in '=', single arg.
+           * CRuby returns `val`, not the setter's return — wrap as
+           * `tmp = val; recv.foo=(tmp); tmp`. */
+          {
+              pm_constant_t *nc = pm_constant_pool_id_to_constant(&tc->parser->constant_pool, n->name);
+              const char *ncstr = (const char *)nc->start;
+              size_t ncstr_len = nc->length;
+              bool is_setter = ncstr_len >= 1 && ncstr[ncstr_len - 1] == '='
+                  && !(ncstr_len >= 2 && (ncstr[ncstr_len - 2] == '!' ||
+                       ncstr[ncstr_len - 2] == '=' || ncstr[ncstr_len - 2] == '<' ||
+                       ncstr[ncstr_len - 2] == '>'));
+              if (is_setter && n->receiver && args_cnt == 1 && !n->block) {
+                  ID setter_name = intern_constant(tc->parser, n->name);
+                  uint32_t val_slot = inc_arg_index(tc);
+                  /* Reserve the call's arg slot adjacent so its arg_index
+                   * lookup hits val_slot for the lone argument. */
+                  rewind_arg_index(tc, val_slot);
+                  inc_arg_index(tc);
+                  struct method_cache *mc = alloc_method_cache();
+                  NODE *recv = T(tc, n->receiver);
+                  NODE *val = T(tc, args->arguments.nodes[0]);
+                  NODE *save = ALLOC_node_lvar_set(val_slot, val);
+                  NODE *call = ALLOC_node_method_call(recv, setter_name, 1, val_slot, mc);
+                  NODE *result = ALLOC_node_seq(save,
+                                  ALLOC_node_seq(call, ALLOC_node_lvar_get(val_slot)));
+                  return result;
+              }
+          }
           /* general call */
           ID name = intern_constant(tc->parser, n->name);
           NODE *recv = n->receiver ? T(tc, n->receiver) : NULL;
@@ -2861,9 +2889,26 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
           NODE *subject = cm->predicate ? T(tc, cm->predicate) : ALLOC_node_nil();
           uint32_t subj_slot = inc_arg_index(tc);
           NODE *prep = ALLOC_node_lvar_set(subj_slot, subject);
-          NODE *else_n = cm->else_clause
-              ? T(tc, (pm_node_t *)cm->else_clause)
-              : ALLOC_node_nil();
+          /* Without an else clause, a non-matching `case ... in ... end`
+           * raises NoMatchingPatternError (CRuby).  Build a synthetic
+           * `Kernel.raise(NoMatchingPatternError, subject)` call. */
+          NODE *else_n;
+          if (cm->else_clause) {
+              else_n = T(tc, (pm_node_t *)cm->else_clause);
+          } else {
+              uint32_t exc_class_slot = inc_arg_index(tc);
+              uint32_t msg_slot = inc_arg_index(tc);
+              rewind_arg_index(tc, exc_class_slot);
+              struct method_cache *mc_raise = alloc_method_cache();
+              NODE *cls = ALLOC_node_const_get(korb_intern("NoMatchingPatternError"));
+              NODE *msg = ALLOC_node_str_lit("", 0);
+              NODE *prep_cls = ALLOC_node_lvar_set(exc_class_slot, cls);
+              NODE *prep_msg = ALLOC_node_lvar_set(msg_slot, msg);
+              else_n = ALLOC_node_seq(prep_cls,
+                        ALLOC_node_seq(prep_msg,
+                          ALLOC_node_func_call(korb_intern("raise"), 2,
+                                               exc_class_slot, mc_raise)));
+          }
           NODE *chain = else_n;
           for (size_t i = cm->conditions.size; i > 0; i--) {
               pm_in_node_t *in_n = (pm_in_node_t *)cm->conditions.nodes[i-1];
@@ -3479,7 +3524,8 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
       }
 
       case PM_CALL_OPERATOR_WRITE_NODE: {
-          /* a.b op= v  ⇒  a.b=(a.b op v) */
+          /* a.b op= v  ⇒  a.b=(a.b op v).  Result is the assigned value
+           * (the combined RHS), not the writer's return value. */
           pm_call_operator_write_node_t *n = (pm_call_operator_write_node_t *)node;
           NODE *recv = T(tc, n->receiver);
           NODE *recv2 = T(tc, n->receiver);
@@ -3491,12 +3537,15 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
           NODE *cur = ALLOC_node_method_call(recv, rname, 0, ai, mc);
           NODE *rhs = T(tc, n->value);
           NODE *combined = alloc_binop(tc, n->binary_operator, cur, rhs);
-          /* call writer with combined */
+          /* call writer with combined; preserve the combined value as
+           * the expression's result (CRuby semantics). */
           NODE *st = ALLOC_node_lvar_set(ai, combined);
           struct method_cache *mc2 = alloc_method_cache();
           NODE *call = ALLOC_node_method_call(recv2, wname, 1, ai, mc2);
+          NODE *result = ALLOC_node_seq(st,
+                          ALLOC_node_seq(call, ALLOC_node_lvar_get(ai)));
           rewind_arg_index(tc, ai);
-          return ALLOC_node_seq(st, call);
+          return result;
       }
       case PM_CALL_OR_WRITE_NODE: {
           pm_call_or_write_node_t *n = (pm_call_or_write_node_t *)node;
@@ -3512,8 +3561,12 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
           struct method_cache *mc2 = alloc_method_cache();
           NODE *st = ALLOC_node_lvar_set(ai, rhs);
           NODE *call = ALLOC_node_method_call(recv2, wname, 1, ai, mc2);
+          /* a.b ||= v: cur || (a.b = v).  The assignment-branch's value
+           * is rhs (the assigned value), not the writer's return. */
+          NODE *assign_branch = ALLOC_node_seq(st,
+                                  ALLOC_node_seq(call, ALLOC_node_lvar_get(ai)));
           rewind_arg_index(tc, ai);
-          return ALLOC_node_or(cur, ALLOC_node_seq(st, call));
+          return ALLOC_node_or(cur, assign_branch);
       }
       case PM_CALL_AND_WRITE_NODE: {
           /* obj.attr &&= rhs  ⇒  obj.attr && (obj.attr = rhs) */
@@ -3530,8 +3583,10 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
           struct method_cache *mc2 = alloc_method_cache();
           NODE *st = ALLOC_node_lvar_set(ai, rhs);
           NODE *call = ALLOC_node_method_call(recv2, wname, 1, ai, mc2);
+          NODE *assign_branch = ALLOC_node_seq(st,
+                                  ALLOC_node_seq(call, ALLOC_node_lvar_get(ai)));
           rewind_arg_index(tc, ai);
-          return ALLOC_node_and(cur, ALLOC_node_seq(st, call));
+          return ALLOC_node_and(cur, assign_branch);
       }
       case PM_INDEX_OR_WRITE_NODE: {
           pm_index_or_write_node_t *n = (pm_index_or_write_node_t *)node;
