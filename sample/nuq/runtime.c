@@ -894,7 +894,11 @@ nuq_foreach_eval(CTX *c, struct Node *src, uint32_t var_id, struct Node *init, s
             c->input = acc;
             size_t t1 = c->pool_top;
             EMIT up = EVAL(c, update);
-            if (c->error != NUQ_NULL) { nuq_var_pop(c, v_top); c->input = saved_input; return EMIT_EMPTY; }
+            if (c->error != NUQ_NULL) { nuq_var_pop(c, v_top); c->input = saved_input; c->pool_top = outer_top; return EMIT_EMPTY; }
+            if (c->break_label != 0) {
+                nuq_var_pop(c, v_top); c->input = saved_input;
+                return nuq_emit_slice(c, outer_top);
+            }
             uint32_t uc = up.count;
             VALUE usmall[16];
             VALUE *up_local = (uc <= 16) ? usmall : (VALUE *)GC_malloc(uc * sizeof(VALUE));
@@ -905,7 +909,11 @@ nuq_foreach_eval(CTX *c, struct Node *src, uint32_t var_id, struct Node *init, s
                 c->input = acc;
                 (void)EVAL(c, extract);
                 if (c->error != NUQ_NULL) {
-                    nuq_var_pop(c, v_top); c->input = saved_input; return EMIT_EMPTY;
+                    nuq_var_pop(c, v_top); c->input = saved_input; c->pool_top = outer_top; return EMIT_EMPTY;
+                }
+                if (c->break_label != 0) {
+                    nuq_var_pop(c, v_top); c->input = saved_input;
+                    return nuq_emit_slice(c, outer_top);
                 }
             }
             nuq_var_pop(c, v_top);
