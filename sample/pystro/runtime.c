@@ -2864,6 +2864,7 @@ py_iter_next(CTX *c, struct py_iter *it, VALUE *out)
         // zip: yield tuple of one element from each inner.  Stops when
         // any inner is exhausted.  If strict (it->i != 0), raise if
         // others still produce.
+        if (it->n_inner == 0) return false;  // zip() with no args is empty
         VALUE *vs = (VALUE *)alloca(sizeof(VALUE) * it->n_inner);
         for (int k = 0; k < it->n_inner; k++) {
             if (!py_iter_next(c, &it->inner[k], &vs[k])) {
