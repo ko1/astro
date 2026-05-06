@@ -807,10 +807,12 @@ node_eq(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_
      * (Note: FLONUM excludes NaN — never encodable, so always heap.) */
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) return KORB_BOOL(l == r);
     if (LIKELY(FLONUM_P(l) && FLONUM_P(r))) return KORB_BOOL(l == r);
-    if ((SPECIAL_CONST_P(l) && !FIXNUM_P(l) && !FLONUM_P(l)) ||
-        (SPECIAL_CONST_P(r) && !FIXNUM_P(r) && !FLONUM_P(r))) {
-        /* one side is a non-numeric special const (Qnil, Qtrue, Qfalse,
-         * Symbol).  Equal iff identical VALUE. */
+    /* When L is a non-numeric special const (nil, true, false, Symbol),
+     * its `==` is identity — short-circuit.  But if L is heap and R is
+     * special-const, L's class may have a custom `==` (e.g.
+     * `MyExpectation == nil` should dispatch the user method) — fall
+     * through to the general dispatch. */
+    if (SPECIAL_CONST_P(l) && !FIXNUM_P(l) && !FLONUM_P(l)) {
         return KORB_BOOL(l == r);
     }
     /* General case: dispatch user-defined `==`.  For built-in types
