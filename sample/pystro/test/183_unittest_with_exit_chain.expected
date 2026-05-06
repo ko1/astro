@@ -1,0 +1,6 @@
+ok WithExitChainTest test_enter_raise_skips_exit
+ok WithExitChainTest test_exit_raises_new_exc_chained
+ok WithExitChainTest test_multi_with_lifo
+ok WithExitChainTest test_suppress
+---
+passed=4 failed=0

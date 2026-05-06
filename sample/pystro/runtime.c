@@ -5125,6 +5125,15 @@ py_run_with(CTX *c, VALUE cm, NODE *body)
         VALUE exit_m = py_getattr(c, cm, "__exit__");
         if (c->state != PY_STATE_NORMAL) return;
         VALUE r = py_apply(c, exit_m, 3, av);
+        if (c->state == PY_STATE_RAISE) {
+            // __exit__ raised — set the new exc's __context__ to the
+            // original (CPython chains exceptions this way).
+            VALUE new_exc = c->state_value;
+            if (py_is_instance(new_exc) && new_exc != exc) {
+                py_setattr(c, new_exc, "__context__", exc);
+            }
+            return;
+        }
         if (c->state != PY_STATE_NORMAL) return;
         if (!py_is_truthy(r)) {
             // Re-raise the original exception.
