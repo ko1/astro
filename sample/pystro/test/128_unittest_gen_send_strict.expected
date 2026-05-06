@@ -1,0 +1,6 @@
+ok GenSendStrictTest test_send_unstarted_non_none
+ok GenSendStrictTest test_send_unstarted_with_none
+ok StopIterValueOnExhaustionTest test_value_after_normal_exhaust
+ok StopIterValueOnExhaustionTest test_value_with_return
+---
+passed=4 failed=0

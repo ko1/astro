@@ -4421,7 +4421,10 @@ py_gen_next(CTX *c, VALUE gen_v)
         // Set RAISE without longjmp so the caller's iter loop can
         // catch StopIteration without setjmp gymnastics.
         c->state = PY_STATE_RAISE;
-        c->state_value = py_make_instance(c->EXC_StopIteration);
+        VALUE si = py_make_instance(c->EXC_StopIteration);
+        py_setattr(c, si, "value",
+                   g->return_value ? g->return_value : PY_NONE);
+        c->state_value = si;
         return PY_NONE;
     }
 
@@ -4553,9 +4556,10 @@ VALUE
 py_gen_send(CTX *c, VALUE gen_v, VALUE v)
 {
     struct pygen *g = PY_PTR(gen_v)->gen;
-    if (!g->started) {
-        // Python: can't send non-None to a fresh generator.  Tolerant
-        // here — pretend the first yield returns v.
+    if (!g->started && v != PY_NONE) {
+        py_raise_exc(c, c->EXC_TypeError,
+                     "can't send non-None value to a just-started generator");
+        return PY_NONE;
     }
     g->send_value = v;
     return py_gen_next(c, gen_v);
