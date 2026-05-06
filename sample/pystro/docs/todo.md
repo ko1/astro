@@ -8,6 +8,68 @@
 
 R11–R17 で深掘り (test 78–212 追加, **213 unit tests passing**)。 [done.md](./done.md) に詳細。
 
+### R18 (2026-05-06) — CPython テスト互換ラン
+
+`cpython/Lib/test/test_*.py` を `PYTHONPATH=cpytest_stubs:cpython/Lib`
+で 1 ファイルずつ実行する sweep を回している。現状:
+
+| 区分 | 数 |
+|---|---|
+| total | 394 |
+| **fully pass** (`failed=0`) | **25** |
+| mixed (test logic ran, ≥1 fail) | 323 |
+| crash / timeout | 14 |
+| parse error | 28 |
+| import error | 4 |
+
+CPython compat の作業として追加した薄い shim 群:
+
+- **stdlib stubs**: `_socket`, `_operator`, `_io`, `_imp`, `_locale`,
+  `_thread`, `_weakref`, `_contextvars`, `_tracemalloc`, `_symtable`,
+  `_lsprof`, `_multibytecodec`, `_opcode`, `atexit`, `pyexpat`,
+  `faulthandler`, `email/{header,message,utils,charset}`, `argparse`
+  (formatter/Action 系)。
+- **test.support shim**: `cpytest_stubs/test/support/{__init__,os_helper,
+  import_helper,warnings_helper,threading_helper,socket_helper,
+  script_helper}.py` + `multibytecodec_support.py`。skip/decorator
+  系を no-op にして、実際のテスト本体は走らせる。
+- **runtime fixes**:
+  - `bi_import` cached re-attach — `from a.b import c` 連鎖で `a.b`
+    が先にロードされて `a` が後で来たケースの parent 属性貼り直し。
+  - module の `__file__` / `__dict__` 公開。
+  - `exec(bytes)` を decode して受理 (`compile(b"...")` pass-through 経由)。
+  - `in` 演算子の generic iterable fallback (generator / dict view 等)。
+- **parser fixes**:
+  - `del(target)` paren form, `del d[1, 2]` tuple key
+  - `super(C)` 1-arg form
+  - `with cm as (a.x, a.y):` 任意 target tuple
+  - `obj[:42, ..., :24:, 24, 100]` multi-element subscript with slice
+    elements (read & write)
+  - `tuple[*Ts]` PEP 646 starred subscript
+  - top-level `*a, *b` starred tuple (paren なし)
+  - `[*rest]` を含む nested unpack (`[[a], *b] = xs`,
+    `(*_, last), x, y = ...`)
+  - `@=` augmented matmul
+  - unpack target buffer 16 → 64
+- **collections.namedtuple** field を non-data descriptor として公開
+  (`Cls.field.__doc__ = ...` を許す, dis.py が要求)。
+
+**まだ blocking している parse error 28 種** (1 ファイルずつ別案件):
+
+- `test_pprint.py:1` — `<INDENT>` (大きな triple-quoted string か?)
+- nested generators / async genexp (`(x async for x in ...)`)
+- nonlocal `__class__` / nonlocal で binding 探索失敗
+- 高度な PEP 695/646 syntax (`class I(*Ts):`)
+- `(1).__class__ = X` (literal の attr に assign)
+- 3+ chain unpack assign + 1+ tuple targets
+
+**次の優先順位**: fully-pass 数を増やすこと自体より、mixed の 1
+file あたり assertion pass / fail バランスを上げること。共通の
+失敗カテゴリは `<class 'TypeError'> not raised` (63), `incomparable
+operand types` (21), `object is not callable / iterable` (39),
+`maximum recursion depth exceeded` (12), `'object' object has no
+attribute '__next__'` (12) など。
+
 ### R17 (2026-05-06) で追加した CPython 互換項目
 
 | 項目 | 内容 |
