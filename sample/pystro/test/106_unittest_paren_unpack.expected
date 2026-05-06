@@ -1,0 +1,6 @@
+ok ParenUnpackTest test_bracket
+ok ParenUnpackTest test_paren
+ok ParenUnpackTest test_paren_star
+ok ParenUnpackTest test_three
+---
+passed=4 failed=0

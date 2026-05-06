@@ -3082,6 +3082,54 @@ parse_simple_stmt(void)
         (void)save;
     }
 
+    // Parens/brackets-wrapped tuple unpack: '(' / '[' NAMES ')' / ']' '=' rhs.
+    // Detection: scan to matching close + `=`; only NAME/`*NAME` inside.
+    if (k == T_LPAREN || k == T_LBRACK) {
+        int open = k;
+        int close = (k == T_LPAREN) ? T_RPAREN : T_RBRACK;
+        size_t p = tok_pos + 1;
+        const char *names[16];
+        bool starred[16];
+        int nn = 0;
+        bool ok = true;
+        for (;;) {
+            bool is_star = false;
+            if (tok_arr[p].kind == T_STAR) { is_star = true; p++; }
+            if (tok_arr[p].kind != T_NAME || nn >= 16) { ok = false; break; }
+            names[nn] = tok_arr[p].sval;
+            starred[nn] = is_star;
+            nn++;
+            p++;
+            if (tok_arr[p].kind == close) { p++; break; }
+            if (tok_arr[p].kind != T_COMMA) { ok = false; break; }
+            p++;
+            if (tok_arr[p].kind == close) { p++; break; }
+        }
+        if (ok && tok_arr[p].kind == T_ASSIGN) {
+            tok_pos = p + 1;
+            NODE *rhs = parse_expr_list();
+            struct pyunpack_target ts[16];
+            int n_starred = 0;
+            for (int i = 0; i < nn; i++) {
+                ts[i].is_starred = starred[i];
+                if (starred[i]) n_starred++;
+                if (cur_scope && !scope_is_global_decl(cur_scope, names[i])) {
+                    ts[i].is_local = true;
+                    ts[i].slot = scope_add_local(cur_scope, names[i]);
+                    ts[i].global_name = NULL;
+                } else {
+                    ts[i].is_local = false;
+                    ts[i].slot = -1;
+                    ts[i].global_name = names[i];
+                }
+            }
+            if (n_starred > 1) parse_error("at most one starred target");
+            size_t idx = unpack_reserve(ts, nn);
+            (void)open;
+            return ALLOC_node_unpack_assign((uint32_t)idx, (uint32_t)nn, rhs);
+        }
+    }
+
     // Multi-target unpack assignment: TARGET (',' TARGET)+ '=' expr,
     // where TARGET is NAME or `*NAME` (starred — at most one).
     if (k == T_NAME || k == T_STAR) {
