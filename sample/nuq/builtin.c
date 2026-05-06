@@ -12,6 +12,7 @@
  */
 #include "context.h"
 #include "node.h"
+#include <math.h>
 
 /* Shared kernel of `add` over a flat (items[], len) view.  Used by
  * both `nuq_builtin_add` (which dereferences a NUQ_T_ARRAY input)
@@ -314,14 +315,30 @@ nuq_builtin_implode(VALUE input)
     FILE *fp = open_memstream(&buf, &bn);
     for (size_t i = 0; i < ao->arr.len; i++) {
         VALUE v = ao->arr.items[i];
-        if (!NUQ_IS_FIX(v)) {
+        int64_t cpv;
+        if (NUQ_IS_FIX(v)) cpv = NUQ_FIX_VAL(v);
+        else if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_DOUBLE) {
+            double d = NUQ_PTR(v)->dbl;
+            if (isnan(d) || isinf(d)) {
+                fclose(fp); free(buf);
+                char dd[80];
+                nuq_value_descr(v, dd, sizeof(dd));
+                nuq_helper_error("%s can't be imploded, unicode codepoint needs to be numeric", dd);
+                return NUQ_NULL;
+            }
+            cpv = (int64_t)d;       /* truncate toward zero */
+        } else {
             fclose(fp); free(buf);
-            char d[80];
-            nuq_value_descr(v, d, sizeof(d));
-            nuq_helper_error("%s can't be imploded, unicode codepoint needs to be numeric", d);
+            char dd[80];
+            nuq_value_descr(v, dd, sizeof(dd));
+            nuq_helper_error("%s can't be imploded, unicode codepoint needs to be numeric", dd);
             return NUQ_NULL;
         }
-        unsigned cp = (unsigned)NUQ_FIX_VAL(v);
+        /* Out-of-range or UTF-16 surrogate halves become U+FFFD. */
+        unsigned cp;
+        if (cpv < 0 || cpv > 0x10FFFF || (cpv >= 0xD800 && cpv <= 0xDFFF))
+            cp = 0xFFFD;
+        else cp = (unsigned)cpv;
         if (cp < 0x80) fputc(cp, fp);
         else if (cp < 0x800) { fputc(0xC0|(cp>>6), fp); fputc(0x80|(cp&0x3F), fp); }
         else if (cp < 0x10000) { fputc(0xE0|(cp>>12), fp); fputc(0x80|((cp>>6)&0x3F), fp); fputc(0x80|(cp&0x3F), fp); }
