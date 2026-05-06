@@ -16,10 +16,10 @@ R11–R17 で深掘り (test 78–212 追加, **213 unit tests passing**)。 [do
 | 区分 | 数 |
 |---|---|
 | total | 394 |
-| **fully pass** (`failed=0`) | **26** |
-| mixed (test logic ran, ≥1 fail) | 319 |
-| crash / timeout | 17 |
-| parse error | 28 |
+| **fully pass** (`failed=0`) | **27** |
+| mixed (test logic ran, ≥1 fail) | 320 |
+| crash / timeout | 19 |
+| parse error | 24 |
 | import error | 4 |
 
 CPython compat の作業として追加した薄い shim 群:
@@ -58,6 +58,10 @@ CPython compat の作業として追加した薄い shim 群:
   が動く, own-only lookup なので `complex < Integral` は False)。
 - **unittest.mock** subnamespace (Mock / MagicMock / patch / sentinel /
   call / mock_open) を unittest.py に同梱。
+- **exec/eval/compile parse error → SyntaxError**: parse_error が
+  `parse_error_jmp` (per-call jmp_buf) があれば longjmp、runtime 側で
+  SyntaxError として raise する。compile() も実際に parse して
+  SyntaxError を上げる (CPython 互換)。
 
 **まだ blocking している parse error 28 種** (1 ファイルずつ別案件):
 
