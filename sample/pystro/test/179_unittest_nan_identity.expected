@@ -1,0 +1,6 @@
+ok NanIdentityInListTest test_count_uses_identity
+ok NanIdentityInListTest test_in_uses_identity
+ok NanIdentityInListTest test_index_uses_identity
+ok NanIdentityInListTest test_nan_eq_nan_still_false
+---
+passed=4 failed=0

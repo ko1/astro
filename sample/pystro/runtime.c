@@ -6401,8 +6401,12 @@ lm_index(CTX *c, int argc, VALUE *argv)
     if (start < 0) start = 0;
     if (stop < 0) stop += (int64_t)o->list.len;
     if (stop > (int64_t)o->list.len) stop = (int64_t)o->list.len;
-    for (int64_t i = start; i < stop; i++)
+    for (int64_t i = start; i < stop; i++) {
+        // Identity short-circuit so `nan in [nan]` / .index(nan) work
+        // (CPython uses PyObject_RichCompareBool which checks identity first).
+        if (o->list.items[i] == argv[1]) return PY_FIX(i);
         if (py_eq_bool(c, o->list.items[i], argv[1])) return PY_FIX(i);
+    }
     py_raise_exc(c, c->EXC_ValueError, "value not in list");
 }
 
@@ -6412,8 +6416,10 @@ lm_count(CTX *c, int argc, VALUE *argv)
     (void)argc;
     struct pyobj *o = PY_PTR(argv[0]);
     int64_t n = 0;
-    for (size_t i = 0; i < o->list.len; i++)
+    for (size_t i = 0; i < o->list.len; i++) {
+        if (o->list.items[i] == argv[1]) { n++; continue; }
         if (py_eq_bool(c, o->list.items[i], argv[1])) n++;
+    }
     return PY_FIX(n);
 }
 
