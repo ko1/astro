@@ -18,13 +18,13 @@ class TypingTest(unittest.TestCase):
         self.assertEqual(T, "T")
 
 
-class AsyncTest(unittest.TestCase):
-    def test_async_def(self):
+class AsyncStubTest(unittest.TestCase):
+    # pystro doesn't support async/await — only the asyncio stub APIs.
+    def test_run_sync(self):
         import asyncio
-        async def fetch():
-            await asyncio.sleep(0)
+        def fetch():
+            asyncio.sleep(0)
             return 42
-        # `await` is a no-op (sync stub).
         result = asyncio.run(fetch)
         self.assertEqual(result, 42)
 

@@ -1,7 +1,7 @@
 ok TypingTest test_aliases
 ok TypingTest test_typevar
-ok AsyncTest test_async_def
-ok AsyncTest test_gather
+ok AsyncStubTest test_gather
+ok AsyncStubTest test_run_sync
 ok PickleTest test_bool_none
 ok PickleTest test_dict
 ok PickleTest test_int
