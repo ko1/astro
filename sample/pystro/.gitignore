@@ -16,3 +16,5 @@ pkg/
 *.pyc
 code_store/
 cpython/
+@test*
+
