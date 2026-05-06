@@ -2286,6 +2286,11 @@ py_list_get(CTX *c, VALUE seq, VALUE idx)
         // Built-in subclass: forward to primary.
         if (PY_PTR(seq)->inst.primary) return py_list_get(c, PY_PTR(seq)->inst.primary, idx);
     }
+    // Slice index: convert to py_list_slice call.
+    if (PY_IS_PTR(idx) && PY_PTR(idx)->type == PY_T_SLICE) {
+        struct pyobj *sl = PY_PTR(idx);
+        return py_list_slice(c, seq, sl->slice_.start, sl->slice_.stop, sl->slice_.step);
+    }
     if (py_is_list(seq) || py_is_tuple(seq)) {
         int64_t i = py_int_to_long(c, idx);
         int64_t len = (int64_t)PY_PTR(seq)->list.len;

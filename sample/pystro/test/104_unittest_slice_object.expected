@@ -1,0 +1,6 @@
+ok SliceObjectTest test_basic
+ok SliceObjectTest test_index_via_slice
+ok SliceObjectTest test_neg_step
+ok SliceObjectTest test_str_index
+---
+passed=4 failed=0
