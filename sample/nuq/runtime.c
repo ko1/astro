@@ -2624,6 +2624,7 @@ extern const struct NodeKind kind_node_b_select;
 extern const struct NodeKind kind_node_b_getpath;
 extern const struct NodeKind kind_node_b_first0;
 extern const struct NodeKind kind_node_b_last0;
+extern const struct NodeKind kind_node_empty;
 
 /* ---------- path-mode walk (used by `=` `|=` `+=` ... and `del`) ---------
  *
@@ -2725,7 +2726,14 @@ static VALUE
 nested_apply(VALUE v, void *ud, bool *dropped)
 {
     struct nested_ud *nu = (struct nested_ud *)ud;
-    return walk_path(nu->c, nu->next, v, nu->next_fn, nu->next_ud);
+    nu->c->path_drop_pending = false;
+    VALUE r = walk_path(nu->c, nu->next, v, nu->next_fn, nu->next_ud);
+    if (nu->c->path_drop_pending) {
+        *dropped = true;
+        nu->c->path_drop_pending = false;
+        return v;
+    }
+    return r;
 }
 
 extern const struct NodeKind kind_node_neg;
@@ -2910,6 +2918,26 @@ walk_path(CTX *c, struct Node *n, VALUE v, nuq_leaf_fn fn, void *ud)
             }
         }
         return built;
+    }
+    /* `select(cond)` as a path component — when cond is truthy apply
+     * the leaf normally (propagating any drop from `|= empty` etc.);
+     * when cond is falsy the path doesn't apply here, leave v alone. */
+    if (n->head.kind == &kind_node_b_select) {
+        VALUE saved = c->input;
+        c->input = v;
+        size_t t0 = c->pool_top;
+        EMIT bo = EVAL(c, n->u.node_b_select.body);
+        c->input = saved;
+        if (c->error != NUQ_NULL) return v;
+        bool any = false;
+        for (uint32_t i = 0; i < bo.count; i++)
+            if (nuq_truthy(bo.items[i])) { any = true; break; }
+        c->pool_top = t0;
+        if (!any) return v;     /* select rejected — keep v unchanged */
+        bool dropped = false;
+        VALUE r = fn(v, ud, &dropped);
+        if (dropped) c->path_drop_pending = true;
+        return r;
     }
     /* `as(src, var, body)` — when used as a path component (which the
      * parser inserts to capture outer-`.` for index/slice args), the
@@ -3400,6 +3428,29 @@ path_dfs(CTX *c, struct Node **steps, size_t step_cnt, size_t k,
         c->pool_top = t0;
         if (!any) return;     /* select dropped this path */
         path_dfs(c, steps, step_cnt, k + 1, v, pu);
+        return;
+    }
+    /* `empty` step — emit no paths. */
+    if (step->head.kind == &kind_node_empty) {
+        return;
+    }
+    /* `comma(a, b)` step — fork: explore each branch as a separate
+     * path, sharing the surrounding steps before/after. */
+    if (step->head.kind == &kind_node_comma) {
+        struct Node *branches[2] = { step->u.node_comma.lhs, step->u.node_comma.rhs };
+        for (int br = 0; br < 2; br++) {
+            struct Node **inner_steps = NULL; size_t inner_cnt = 0, inner_capa = 0;
+            path_flatten(branches[br], &inner_steps, &inner_cnt, &inner_capa);
+            struct Node *combined_small[64]; struct Node **combined;
+            size_t combined_cnt = step_cnt + inner_cnt - 1;
+            combined = (combined_cnt <= 64) ? combined_small
+                                            : (struct Node **)GC_malloc(combined_cnt * sizeof(struct Node *));
+            for (size_t i = 0; i < k; i++) combined[i] = steps[i];
+            for (size_t i = 0; i < inner_cnt; i++) combined[k + i] = inner_steps[i];
+            for (size_t i = k + 1; i < step_cnt; i++) combined[i + inner_cnt - 1] = steps[i];
+            path_dfs(c, combined, combined_cnt, k, v, pu);
+            if (c->error != NUQ_NULL) return;
+        }
         return;
     }
     /* `as(., $V, body)` step — bind $V to current value, descend into

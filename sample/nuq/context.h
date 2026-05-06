@@ -138,6 +138,11 @@ typedef struct CTX_struct {
 
     /* Label-break in flight: 0 = none, otherwise the label's intern id. */
     uint32_t              break_label;
+
+    /* Path-mode "drop" signal — set by `select(cond)` when cond is
+     * false during a path walk; propagates through nested_apply so
+     * the enclosing iter / accessor knows to drop this branch. */
+    bool                  path_drop_pending;
 } CTX;
 
 struct nuq_option {
