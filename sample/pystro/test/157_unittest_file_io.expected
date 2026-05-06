@@ -1,0 +1,9 @@
+ok FileIOTest test_append
+ok FileIOTest test_binary
+ok FileIOTest test_capabilities
+ok FileIOTest test_iter_lines
+ok FileIOTest test_readline
+ok FileIOTest test_seek_tell
+ok FileIOTest test_write_read
+---
+passed=7 failed=0

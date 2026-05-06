@@ -8737,6 +8737,68 @@ fm_flush(CTX *c, int argc, VALUE *argv)
     return PY_NONE;
 }
 
+static VALUE
+fm_tell(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    struct pyobj *o = PY_PTR(argv[0]);
+    if (o->type != PY_T_FILE || o->file.closed)
+        py_raise_exc(c, c->EXC_RuntimeError, "tell on closed file");
+    return py_make_int((int64_t)ftell((FILE *)o->file.fp));
+}
+
+static VALUE
+fm_seek(CTX *c, int argc, VALUE *argv)
+{
+    struct pyobj *o = PY_PTR(argv[0]);
+    if (o->type != PY_T_FILE || o->file.closed)
+        py_raise_exc(c, c->EXC_RuntimeError, "seek on closed file");
+    int64_t off = py_int_to_long(c, argv[1]);
+    int whence = (argc >= 3) ? (int)py_int_to_long(c, argv[2]) : 0;
+    int sw = (whence == 1) ? SEEK_CUR : (whence == 2) ? SEEK_END : SEEK_SET;
+    if (fseek((FILE *)o->file.fp, off, sw) != 0)
+        py_raise_exc(c, c->EXC_OSError, "seek failed");
+    return py_make_int((int64_t)ftell((FILE *)o->file.fp));
+}
+
+static VALUE
+fm_readable(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    struct pyobj *o = PY_PTR(argv[0]);
+    return (o->type == PY_T_FILE && !o->file.closed) ? PY_TRUE : PY_FALSE;
+}
+
+static VALUE
+fm_writable(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    struct pyobj *o = PY_PTR(argv[0]);
+    return (o->type == PY_T_FILE && !o->file.closed) ? PY_TRUE : PY_FALSE;
+}
+
+static VALUE
+fm_seekable(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    return PY_TRUE;
+}
+
+static VALUE
+fm_truncate(CTX *c, int argc, VALUE *argv)
+{
+    struct pyobj *o = PY_PTR(argv[0]);
+    if (o->type != PY_T_FILE || o->file.closed)
+        py_raise_exc(c, c->EXC_RuntimeError, "truncate on closed file");
+    int64_t size = (argc >= 2) ? py_int_to_long(c, argv[1])
+                               : (int64_t)ftell((FILE *)o->file.fp);
+    int fd = fileno((FILE *)o->file.fp);
+    extern int ftruncate(int fd, off_t length);
+    if (ftruncate(fd, (off_t)size) != 0)
+        py_raise_exc(c, c->EXC_OSError, "truncate failed");
+    return py_make_int(size);
+}
+
 struct type_method file_methods[] = {
     { "read",       fm_read,      1, 2 },
     { "readline",   fm_readline,  1, 1 },
@@ -8744,6 +8806,12 @@ struct type_method file_methods[] = {
     { "write",      fm_write,     2, 2 },
     { "close",      fm_close,     1, 1 },
     { "flush",      fm_flush,     1, 1 },
+    { "tell",       fm_tell,      1, 1 },
+    { "seek",       fm_seek,      2, 3 },
+    { "readable",   fm_readable,  1, 1 },
+    { "writable",   fm_writable,  1, 1 },
+    { "seekable",   fm_seekable,  1, 1 },
+    { "truncate",   fm_truncate,  1, 2 },
     { "__enter__",  fm_enter,     1, 1 },
     { "__exit__",   fm_exit,      4, 4 },
     { NULL, NULL, 0, 0 }
