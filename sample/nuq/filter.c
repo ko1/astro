@@ -442,6 +442,43 @@ build_builtin_call(const char *name, int arity, struct Node **args)
     BUILTIN1("IN", ALLOC_node_b_IN1);
     BUILTIN2("gsub", ALLOC_node_b_gsub);
     BUILTIN2("sub", ALLOC_node_b_sub);
+    BUILTIN0("nan", ALLOC_node_b_nan);
+    BUILTIN0("infinite", ALLOC_node_b_infinite);
+    BUILTIN0("isnan", ALLOC_node_b_isnan);
+    BUILTIN0("isinfinite", ALLOC_node_b_isinfinite);
+    BUILTIN0("sin", ALLOC_node_b_sin);
+    BUILTIN0("cos", ALLOC_node_b_cos);
+    BUILTIN0("tan", ALLOC_node_b_tan);
+    BUILTIN0("asin", ALLOC_node_b_asin);
+    BUILTIN0("acos", ALLOC_node_b_acos);
+    BUILTIN0("atan", ALLOC_node_b_atan);
+    BUILTIN0("sinh", ALLOC_node_b_sinh);
+    BUILTIN0("cosh", ALLOC_node_b_cosh);
+    BUILTIN0("tanh", ALLOC_node_b_tanh);
+    BUILTIN0("exp", ALLOC_node_b_exp);
+    BUILTIN0("exp2", ALLOC_node_b_exp2);
+    BUILTIN0("exp10", ALLOC_node_b_exp10);
+    BUILTIN0("log", ALLOC_node_b_log);
+    BUILTIN0("log2", ALLOC_node_b_log2);
+    BUILTIN0("log10", ALLOC_node_b_log10);
+    BUILTIN0("cbrt", ALLOC_node_b_cbrt);
+    BUILTIN0("significand", ALLOC_node_b_significand);
+    BUILTIN0("logb", ALLOC_node_b_logb);
+    BUILTIN0("gamma", ALLOC_node_b_gamma);
+    BUILTIN0("tgamma", ALLOC_node_b_tgamma);
+    BUILTIN0("j0", ALLOC_node_b_j0);
+    BUILTIN0("j1", ALLOC_node_b_j1);
+    BUILTIN0("y0", ALLOC_node_b_y0);
+    BUILTIN0("y1", ALLOC_node_b_y1);
+    BUILTIN0("trim", ALLOC_node_b_trim);
+    BUILTIN0("transpose", ALLOC_node_b_transpose);
+    BUILTIN1("isempty", ALLOC_node_b_isempty);
+    /* `add(f)` left to user-defined `def add(f): ...;` because nuq's
+     * test suite defines it that way and registering as a built-in
+     * here would shadow the user def at parse time. */
+    BUILTIN2("all", ALLOC_node_b_all2);
+    BUILTIN2("any", ALLOC_node_b_any2);
+    BUILTIN2("pow", ALLOC_node_b_pow);
     BUILTIN0("empty", ALLOC_node_empty);
 
     /* 1-arg */

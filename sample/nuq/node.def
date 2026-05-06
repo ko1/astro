@@ -1120,6 +1120,461 @@ node_b_skip(CTX *c, NODE *n, NODE *cnt, NODE *body)
     return nuq_skip_eval(c, cnt, body);
 }
 
+/* Numeric specials. */
+NODE_DEF
+node_b_nan(CTX *c, NODE *n)
+{
+    return nuq_emit_one(c, nuq_make_double(nan("")));
+}
+
+NODE_DEF
+node_b_infinite(CTX *c, NODE *n)
+{
+    return nuq_emit_one(c, nuq_make_double(INFINITY));
+}
+
+NODE_DEF
+node_b_isnan(CTX *c, NODE *n)
+{
+    bool b = NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_DOUBLE
+             && isnan(NUQ_PTR(c->input)->dbl);
+    return nuq_emit_one(c, b ? NUQ_TRUE : NUQ_FALSE);
+}
+
+NODE_DEF
+node_b_isinfinite(CTX *c, NODE *n)
+{
+    bool b = NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_DOUBLE
+             && isinf(NUQ_PTR(c->input)->dbl);
+    return nuq_emit_one(c, b ? NUQ_TRUE : NUQ_FALSE);
+}
+
+/* Math wrappers — input is numeric, output is double of <math.h> fn.
+ * ASTroGen needs each NODE_DEF as its own multi-line block (no macros),
+ * so we generate via a Ruby script and paste; here they're written
+ * out in long form. */
+NODE_DEF
+node_b_sin(CTX *c, NODE *n)
+{
+    double d;
+    if (NUQ_IS_FIX(c->input)) d = (double)NUQ_FIX_VAL(c->input);
+    else if (NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_DOUBLE)
+        d = NUQ_PTR(c->input)->dbl;
+    else { c->error = nuq_make_string("sin: not number", 3+12); return EMIT_EMPTY; }
+    return nuq_emit_one(c, nuq_make_double(sin(d)));
+}
+
+NODE_DEF
+node_b_cos(CTX *c, NODE *n)
+{
+    double d;
+    if (NUQ_IS_FIX(c->input)) d = (double)NUQ_FIX_VAL(c->input);
+    else if (NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_DOUBLE)
+        d = NUQ_PTR(c->input)->dbl;
+    else { c->error = nuq_make_string("cos: not number", 3+12); return EMIT_EMPTY; }
+    return nuq_emit_one(c, nuq_make_double(cos(d)));
+}
+
+NODE_DEF
+node_b_tan(CTX *c, NODE *n)
+{
+    double d;
+    if (NUQ_IS_FIX(c->input)) d = (double)NUQ_FIX_VAL(c->input);
+    else if (NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_DOUBLE)
+        d = NUQ_PTR(c->input)->dbl;
+    else { c->error = nuq_make_string("tan: not number", 3+12); return EMIT_EMPTY; }
+    return nuq_emit_one(c, nuq_make_double(tan(d)));
+}
+
+NODE_DEF
+node_b_asin(CTX *c, NODE *n)
+{
+    double d;
+    if (NUQ_IS_FIX(c->input)) d = (double)NUQ_FIX_VAL(c->input);
+    else if (NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_DOUBLE)
+        d = NUQ_PTR(c->input)->dbl;
+    else { c->error = nuq_make_string("asin: not number", 4+12); return EMIT_EMPTY; }
+    return nuq_emit_one(c, nuq_make_double(asin(d)));
+}
+
+NODE_DEF
+node_b_acos(CTX *c, NODE *n)
+{
+    double d;
+    if (NUQ_IS_FIX(c->input)) d = (double)NUQ_FIX_VAL(c->input);
+    else if (NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_DOUBLE)
+        d = NUQ_PTR(c->input)->dbl;
+    else { c->error = nuq_make_string("acos: not number", 4+12); return EMIT_EMPTY; }
+    return nuq_emit_one(c, nuq_make_double(acos(d)));
+}
+
+NODE_DEF
+node_b_atan(CTX *c, NODE *n)
+{
+    double d;
+    if (NUQ_IS_FIX(c->input)) d = (double)NUQ_FIX_VAL(c->input);
+    else if (NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_DOUBLE)
+        d = NUQ_PTR(c->input)->dbl;
+    else { c->error = nuq_make_string("atan: not number", 4+12); return EMIT_EMPTY; }
+    return nuq_emit_one(c, nuq_make_double(atan(d)));
+}
+
+NODE_DEF
+node_b_sinh(CTX *c, NODE *n)
+{
+    double d;
+    if (NUQ_IS_FIX(c->input)) d = (double)NUQ_FIX_VAL(c->input);
+    else if (NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_DOUBLE)
+        d = NUQ_PTR(c->input)->dbl;
+    else { c->error = nuq_make_string("sinh: not number", 4+12); return EMIT_EMPTY; }
+    return nuq_emit_one(c, nuq_make_double(sinh(d)));
+}
+
+NODE_DEF
+node_b_cosh(CTX *c, NODE *n)
+{
+    double d;
+    if (NUQ_IS_FIX(c->input)) d = (double)NUQ_FIX_VAL(c->input);
+    else if (NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_DOUBLE)
+        d = NUQ_PTR(c->input)->dbl;
+    else { c->error = nuq_make_string("cosh: not number", 4+12); return EMIT_EMPTY; }
+    return nuq_emit_one(c, nuq_make_double(cosh(d)));
+}
+
+NODE_DEF
+node_b_tanh(CTX *c, NODE *n)
+{
+    double d;
+    if (NUQ_IS_FIX(c->input)) d = (double)NUQ_FIX_VAL(c->input);
+    else if (NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_DOUBLE)
+        d = NUQ_PTR(c->input)->dbl;
+    else { c->error = nuq_make_string("tanh: not number", 4+12); return EMIT_EMPTY; }
+    return nuq_emit_one(c, nuq_make_double(tanh(d)));
+}
+
+NODE_DEF
+node_b_exp(CTX *c, NODE *n)
+{
+    double d;
+    if (NUQ_IS_FIX(c->input)) d = (double)NUQ_FIX_VAL(c->input);
+    else if (NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_DOUBLE)
+        d = NUQ_PTR(c->input)->dbl;
+    else { c->error = nuq_make_string("exp: not number", 3+12); return EMIT_EMPTY; }
+    return nuq_emit_one(c, nuq_make_double(exp(d)));
+}
+
+NODE_DEF
+node_b_exp2(CTX *c, NODE *n)
+{
+    double d;
+    if (NUQ_IS_FIX(c->input)) d = (double)NUQ_FIX_VAL(c->input);
+    else if (NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_DOUBLE)
+        d = NUQ_PTR(c->input)->dbl;
+    else { c->error = nuq_make_string("exp2: not number", 4+12); return EMIT_EMPTY; }
+    return nuq_emit_one(c, nuq_make_double(exp2(d)));
+}
+
+NODE_DEF
+node_b_exp10(CTX *c, NODE *n)
+{
+    double d;
+    if (NUQ_IS_FIX(c->input)) d = (double)NUQ_FIX_VAL(c->input);
+    else if (NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_DOUBLE)
+        d = NUQ_PTR(c->input)->dbl;
+    else { c->error = nuq_make_string("exp10: not number", 5+12); return EMIT_EMPTY; }
+    return nuq_emit_one(c, nuq_make_double(exp10(d)));
+}
+
+NODE_DEF
+node_b_log(CTX *c, NODE *n)
+{
+    double d;
+    if (NUQ_IS_FIX(c->input)) d = (double)NUQ_FIX_VAL(c->input);
+    else if (NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_DOUBLE)
+        d = NUQ_PTR(c->input)->dbl;
+    else { c->error = nuq_make_string("log: not number", 3+12); return EMIT_EMPTY; }
+    return nuq_emit_one(c, nuq_make_double(log(d)));
+}
+
+NODE_DEF
+node_b_log2(CTX *c, NODE *n)
+{
+    double d;
+    if (NUQ_IS_FIX(c->input)) d = (double)NUQ_FIX_VAL(c->input);
+    else if (NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_DOUBLE)
+        d = NUQ_PTR(c->input)->dbl;
+    else { c->error = nuq_make_string("log2: not number", 4+12); return EMIT_EMPTY; }
+    return nuq_emit_one(c, nuq_make_double(log2(d)));
+}
+
+NODE_DEF
+node_b_log10(CTX *c, NODE *n)
+{
+    double d;
+    if (NUQ_IS_FIX(c->input)) d = (double)NUQ_FIX_VAL(c->input);
+    else if (NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_DOUBLE)
+        d = NUQ_PTR(c->input)->dbl;
+    else { c->error = nuq_make_string("log10: not number", 5+12); return EMIT_EMPTY; }
+    return nuq_emit_one(c, nuq_make_double(log10(d)));
+}
+
+NODE_DEF
+node_b_cbrt(CTX *c, NODE *n)
+{
+    double d;
+    if (NUQ_IS_FIX(c->input)) d = (double)NUQ_FIX_VAL(c->input);
+    else if (NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_DOUBLE)
+        d = NUQ_PTR(c->input)->dbl;
+    else { c->error = nuq_make_string("cbrt: not number", 4+12); return EMIT_EMPTY; }
+    return nuq_emit_one(c, nuq_make_double(cbrt(d)));
+}
+
+NODE_DEF
+node_b_significand(CTX *c, NODE *n)
+{
+    double d;
+    if (NUQ_IS_FIX(c->input)) d = (double)NUQ_FIX_VAL(c->input);
+    else if (NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_DOUBLE)
+        d = NUQ_PTR(c->input)->dbl;
+    else { c->error = nuq_make_string("significand: not number", 11+12); return EMIT_EMPTY; }
+    return nuq_emit_one(c, nuq_make_double(significand(d)));
+}
+
+NODE_DEF
+node_b_logb(CTX *c, NODE *n)
+{
+    double d;
+    if (NUQ_IS_FIX(c->input)) d = (double)NUQ_FIX_VAL(c->input);
+    else if (NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_DOUBLE)
+        d = NUQ_PTR(c->input)->dbl;
+    else { c->error = nuq_make_string("logb: not number", 4+12); return EMIT_EMPTY; }
+    return nuq_emit_one(c, nuq_make_double(logb(d)));
+}
+
+NODE_DEF
+node_b_gamma(CTX *c, NODE *n)
+{
+    double d;
+    if (NUQ_IS_FIX(c->input)) d = (double)NUQ_FIX_VAL(c->input);
+    else if (NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_DOUBLE)
+        d = NUQ_PTR(c->input)->dbl;
+    else { c->error = nuq_make_string("gamma: not number", 5+12); return EMIT_EMPTY; }
+    return nuq_emit_one(c, nuq_make_double(lgamma(d)));
+}
+
+NODE_DEF
+node_b_tgamma(CTX *c, NODE *n)
+{
+    double d;
+    if (NUQ_IS_FIX(c->input)) d = (double)NUQ_FIX_VAL(c->input);
+    else if (NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_DOUBLE)
+        d = NUQ_PTR(c->input)->dbl;
+    else { c->error = nuq_make_string("tgamma: not number", 6+12); return EMIT_EMPTY; }
+    return nuq_emit_one(c, nuq_make_double(tgamma(d)));
+}
+
+NODE_DEF
+node_b_j0(CTX *c, NODE *n)
+{
+    double d;
+    if (NUQ_IS_FIX(c->input)) d = (double)NUQ_FIX_VAL(c->input);
+    else if (NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_DOUBLE)
+        d = NUQ_PTR(c->input)->dbl;
+    else { c->error = nuq_make_string("j0: not number", 2+12); return EMIT_EMPTY; }
+    return nuq_emit_one(c, nuq_make_double(j0(d)));
+}
+
+NODE_DEF
+node_b_j1(CTX *c, NODE *n)
+{
+    double d;
+    if (NUQ_IS_FIX(c->input)) d = (double)NUQ_FIX_VAL(c->input);
+    else if (NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_DOUBLE)
+        d = NUQ_PTR(c->input)->dbl;
+    else { c->error = nuq_make_string("j1: not number", 2+12); return EMIT_EMPTY; }
+    return nuq_emit_one(c, nuq_make_double(j1(d)));
+}
+
+NODE_DEF
+node_b_y0(CTX *c, NODE *n)
+{
+    double d;
+    if (NUQ_IS_FIX(c->input)) d = (double)NUQ_FIX_VAL(c->input);
+    else if (NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_DOUBLE)
+        d = NUQ_PTR(c->input)->dbl;
+    else { c->error = nuq_make_string("y0: not number", 2+12); return EMIT_EMPTY; }
+    return nuq_emit_one(c, nuq_make_double(y0(d)));
+}
+
+NODE_DEF
+node_b_y1(CTX *c, NODE *n)
+{
+    double d;
+    if (NUQ_IS_FIX(c->input)) d = (double)NUQ_FIX_VAL(c->input);
+    else if (NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_DOUBLE)
+        d = NUQ_PTR(c->input)->dbl;
+    else { c->error = nuq_make_string("y1: not number", 2+12); return EMIT_EMPTY; }
+    return nuq_emit_one(c, nuq_make_double(y1(d)));
+}
+
+
+NODE_DEF
+node_b_pow(CTX *c, NODE *n, NODE *base_n, NODE *exp_n)
+{
+    size_t t0 = c->pool_top;
+    EMIT b = EVAL_ARG(c, base_n);
+    if (UNLIKELY(c->error != NUQ_NULL)) return EMIT_EMPTY;
+    EMIT e = EVAL_ARG(c, exp_n);
+    if (UNLIKELY(c->error != NUQ_NULL)) return EMIT_EMPTY;
+    if (b.count == 0 || e.count == 0) { c->pool_top = t0; return EMIT_EMPTY; }
+    double bv = NUQ_IS_FIX(b.items[0]) ? (double)NUQ_FIX_VAL(b.items[0])
+                                       : NUQ_PTR(b.items[0])->dbl;
+    double ev = NUQ_IS_FIX(e.items[0]) ? (double)NUQ_FIX_VAL(e.items[0])
+                                       : NUQ_PTR(e.items[0])->dbl;
+    c->pool_top = t0;
+    return nuq_emit_one(c, nuq_make_double(pow(bv, ev)));
+}
+
+/* `trim` — strip leading and trailing ASCII whitespace. */
+NODE_DEF
+node_b_trim(CTX *c, NODE *n)
+{
+    if (!(NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_STRING))
+        { c->error = nuq_make_string("trim: not string", 16); return EMIT_EMPTY; }
+    struct nuq_obj *o = NUQ_PTR(c->input);
+    size_t lo = 0, hi = o->str.len;
+    while (lo < hi && (o->str.bytes[lo] == ' ' || o->str.bytes[lo] == '\t' ||
+                       o->str.bytes[lo] == '\n' || o->str.bytes[lo] == '\r')) lo++;
+    while (hi > lo && (o->str.bytes[hi-1] == ' ' || o->str.bytes[hi-1] == '\t' ||
+                       o->str.bytes[hi-1] == '\n' || o->str.bytes[hi-1] == '\r')) hi--;
+    return nuq_emit_one(c, nuq_make_string(o->str.bytes + lo, hi - lo));
+}
+
+/* `transpose` — matrix transpose: `[[1,2],[3,4]] | transpose ⇒ [[1,3],[2,4]]`.
+ * Handles ragged rows by treating missing entries as null. */
+NODE_DEF
+node_b_transpose(CTX *c, NODE *n)
+{
+    if (!(NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_ARRAY))
+        { c->error = nuq_make_string("transpose: not array", 20); return EMIT_EMPTY; }
+    struct nuq_obj *o = NUQ_PTR(c->input);
+    size_t maxlen = 0;
+    for (size_t i = 0; i < o->arr.len; i++) {
+        VALUE row = o->arr.items[i];
+        if (NUQ_IS_PTR(row) && NUQ_PTR(row)->type == NUQ_T_ARRAY) {
+            size_t l = NUQ_PTR(row)->arr.len;
+            if (l > maxlen) maxlen = l;
+        }
+    }
+    VALUE out = nuq_make_array(maxlen);
+    for (size_t j = 0; j < maxlen; j++) {
+        VALUE col = nuq_make_array(o->arr.len);
+        for (size_t i = 0; i < o->arr.len; i++) {
+            VALUE row = o->arr.items[i];
+            if (NUQ_IS_PTR(row) && NUQ_PTR(row)->type == NUQ_T_ARRAY &&
+                j < NUQ_PTR(row)->arr.len)
+                nuq_array_push(col, NUQ_PTR(row)->arr.items[j]);
+            else
+                nuq_array_push(col, NUQ_NULL);
+        }
+        nuq_array_push(out, col);
+    }
+    return nuq_emit_one(c, out);
+}
+
+/* `isempty(f)` — true if `f` emits nothing on input, else false.
+ * Note: per jq, errors in `f` propagate (NOT caught). */
+NODE_DEF
+node_b_isempty(CTX *c, NODE *n, NODE *body)
+{
+    size_t t0 = c->pool_top;
+    EMIT bo = EVAL_ARG(c, body);
+    if (UNLIKELY(c->error != NUQ_NULL)) return EMIT_EMPTY;
+    bool empty = (bo.count == 0);
+    c->pool_top = t0;
+    return nuq_emit_one(c, empty ? NUQ_TRUE : NUQ_FALSE);
+}
+
+/* `add(f)` — like `add` but applies `f` to each element first.
+ * jq def: `def add(f): reduce .[] as $x (null; . + ($x|f))`. */
+NODE_DEF
+node_b_add1(CTX *c, NODE *n, NODE *body)
+{
+    if (!(NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_ARRAY))
+        { c->error = nuq_make_string("add: not array", 14); return EMIT_EMPTY; }
+    struct nuq_obj *o = NUQ_PTR(c->input);
+    VALUE saved = c->input;
+    VALUE acc = NUQ_NULL;
+    for (size_t i = 0; i < o->arr.len; i++) {
+        c->input = o->arr.items[i];
+        size_t t0 = c->pool_top;
+        EMIT bo = EVAL_ARG(c, body);
+        if (UNLIKELY(c->error != NUQ_NULL)) { c->input = saved; return EMIT_EMPTY; }
+        VALUE v = bo.count > 0 ? bo.items[0] : NUQ_NULL;
+        c->pool_top = t0;
+        acc = (i == 0) ? v : nuq_op_add(acc, v);
+        if (UNLIKELY(c->error != NUQ_NULL)) { c->input = saved; return EMIT_EMPTY; }
+    }
+    c->input = saved;
+    return nuq_emit_one(c, acc);
+}
+
+/* `all(gen; cond)` / `any(gen; cond)` — 2-arg variant that runs `gen`
+ * to produce the values, then tests each against `cond`. */
+NODE_DEF
+node_b_all2(CTX *c, NODE *n, NODE *gen, NODE *cond)
+{
+    size_t t0 = c->pool_top;
+    EMIT vs = EVAL_ARG(c, gen);
+    if (UNLIKELY(c->error != NUQ_NULL)) return EMIT_EMPTY;
+    uint32_t cnt = vs.count;
+    VALUE small[16];
+    VALUE *local = (cnt <= 16) ? small : (VALUE *)GC_malloc(cnt * sizeof(VALUE));
+    memcpy(local, vs.items, cnt * sizeof(VALUE));
+    c->pool_top = t0;
+    VALUE saved = c->input;
+    bool all = true;
+    for (uint32_t i = 0; i < cnt && all; i++) {
+        c->input = local[i];
+        size_t tt = c->pool_top;
+        EMIT co = EVAL_ARG(c, cond);
+        if (UNLIKELY(c->error != NUQ_NULL)) { c->input = saved; return EMIT_EMPTY; }
+        bool any_truthy = false;
+        for (uint32_t j = 0; j < co.count; j++)
+            if (nuq_truthy(co.items[j])) { any_truthy = true; break; }
+        c->pool_top = tt;
+        if (!any_truthy) all = false;
+    }
+    c->input = saved;
+    return nuq_emit_one(c, all ? NUQ_TRUE : NUQ_FALSE);
+}
+
+NODE_DEF
+node_b_any2(CTX *c, NODE *n, NODE *gen, NODE *cond)
+{
+    size_t t0 = c->pool_top;
+    EMIT vs = EVAL_ARG(c, gen);
+    if (UNLIKELY(c->error != NUQ_NULL)) return EMIT_EMPTY;
+    uint32_t cnt = vs.count;
+    VALUE small[16];
+    VALUE *local = (cnt <= 16) ? small : (VALUE *)GC_malloc(cnt * sizeof(VALUE));
+    memcpy(local, vs.items, cnt * sizeof(VALUE));
+    c->pool_top = t0;
+    VALUE saved = c->input;
+    bool any = false;
+    for (uint32_t i = 0; i < cnt && !any; i++) {
+        c->input = local[i];
+        size_t tt = c->pool_top;
+        EMIT co = EVAL_ARG(c, cond);
+        if (UNLIKELY(c->error != NUQ_NULL)) { c->input = saved; return EMIT_EMPTY; }
+        for (uint32_t j = 0; j < co.count; j++)
+            if (nuq_truthy(co.items[j])) { any = true; break; }
+        c->pool_top = tt;
+    }
+    c->input = saved;
+    return nuq_emit_one(c, any ? NUQ_TRUE : NUQ_FALSE);
+}
+
 /* `input` — pull next pending JSON input from the queue.  Errors if
  * the queue is empty (jq raises "No more inputs"). */
 NODE_DEF
