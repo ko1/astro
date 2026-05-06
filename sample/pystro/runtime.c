@@ -3186,7 +3186,22 @@ py_contains(CTX *c, VALUE container, VALUE v)
         }
         return false;
     }
-    py_raise_exc(c, c->EXC_TypeError, "argument is not iterable for `in`");
+    // Generic fallback: iterate via the iter protocol (covers generators,
+    // dict/list/tuple iterators, user-iter classes already not caught above,
+    // etc.).
+    struct py_iter it;
+    py_iter_init(c, &it, container);
+    if (c->state != PY_STATE_NORMAL) {
+        c->state = PY_STATE_NORMAL;
+        py_raise_exc(c, c->EXC_TypeError, "argument is not iterable for `in`");
+    }
+    VALUE x;
+    while (py_iter_next(c, &it, &x)) {
+        if (c->state == PY_STATE_RAISE) return false;
+        if (x == v) return true;
+        if (py_eq_bool(c, x, v)) return true;
+    }
+    return false;
 }
 
 // ---------------------------------------------------------------------------
