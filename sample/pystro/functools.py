@@ -119,5 +119,44 @@ def total_ordering(cls):
     return cls
 
 
+def singledispatch(fn):
+    # Minimal: dispatch on type of first arg.
+    registry = {}
+    def dispatch(t):
+        # Walk MRO of t.
+        try:
+            mro = t.__mro__
+        except AttributeError:
+            mro = [t]
+        for c in mro:
+            if c in registry: return registry[c]
+        return fn
+
+    def register(cls=None):
+        # @proc.register or @proc.register(type)
+        if callable(cls) and not isinstance(cls, type):
+            # Used as @proc.register without arg — fn passed in as cls
+            # (no — singledispatch.register requires a type arg in 3.7+;
+            # tolerate both forms anyway)
+            f = cls
+            try: t = list(getattr(f, "__annotations__", {}).values())[0]
+            except (IndexError, AttributeError): t = object
+            registry[t] = f
+            return f
+        # Was called with a type: return a sub-decorator.
+        def inner(f):
+            registry[cls] = f
+            return f
+        return inner
+
+    def wrapper(*args, **kw):
+        if not args: return fn(*args, **kw)
+        return dispatch(type(args[0]))(*args, **kw)
+    wrapper.register = register
+    wrapper.dispatch = dispatch
+    wrapper.registry = registry
+    return wrapper
+
+
 __all__ = ["partial", "reduce", "wraps", "cache", "lru_cache",
-           "cmp_to_key", "total_ordering"]
+           "cmp_to_key", "total_ordering", "singledispatch"]

@@ -1,0 +1,4 @@
+ok SingleDispatchTest test_basic
+ok SingleDispatchTest test_registry
+---
+passed=2 failed=0
