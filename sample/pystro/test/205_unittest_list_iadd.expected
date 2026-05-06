@@ -1,0 +1,7 @@
+ok ListIaddTest test_list_plus_dict_keys
+ok ListIaddTest test_list_plus_gen
+ok ListIaddTest test_list_plus_range
+ok ListIaddTest test_list_plus_set
+ok ListIaddTest test_list_plus_str
+---
+passed=5 failed=0

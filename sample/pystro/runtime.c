@@ -1253,15 +1253,20 @@ py_add(CTX *c, VALUE a, VALUE b)
         return py_is_list(a) ? py_make_list(items, la + lb) : py_make_tuple(items, la + lb);
     }
     // list + iterable (only via __iadd__-style) — Python's list __iadd__
-    // accepts any iterable.  We support `list + iter` here too.
-    if (py_is_list(a) && PY_IS_PTR(b)
-        && (PY_PTR(b)->type == PY_T_ITER || PY_PTR(b)->type == PY_T_GEN)) {
-        VALUE r = py_make_list(PY_PTR(a)->list.items, PY_PTR(a)->list.len);
-        struct py_iter it; py_iter_init(c, &it, b);
-        if (c->state != PY_STATE_NORMAL) return r;
-        VALUE x;
-        while (py_iter_next(c, &it, &x)) py_list_append(c, r, x);
-        return r;
+    // accepts any iterable.  Supports str / range / iter / gen / dict /
+    // set / etc. on the right.
+    if (py_is_list(a) && PY_IS_PTR(b)) {
+        int t = PY_PTR(b)->type;
+        if (t == PY_T_ITER || t == PY_T_GEN || t == PY_T_STR
+            || t == PY_T_BYTES || t == PY_T_BYTEARRAY || t == PY_T_RANGE
+            || t == PY_T_DICT || t == PY_T_SET || t == PY_T_FROZENSET) {
+            VALUE r = py_make_list(PY_PTR(a)->list.items, PY_PTR(a)->list.len);
+            struct py_iter it; py_iter_init(c, &it, b);
+            if (c->state != PY_STATE_NORMAL) return r;
+            VALUE x;
+            while (py_iter_next(c, &it, &x)) py_list_append(c, r, x);
+            return r;
+        }
     }
     if (py_int_or_bool(a) && py_int_or_bool(b)) {
         mpz_t za, zb; py_to_mpz(c, a, za); py_to_mpz(c, b, zb);
