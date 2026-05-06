@@ -1,0 +1,7 @@
+ok DescriptorTest test_non_data_descriptor
+ok DescriptorTest test_set_name
+ok BoundMethodEqTest test_method_in_set
+ok BoundMethodEqTest test_same_method
+ok GetattrFallbackTest test_getattr_called
+---
+passed=5 failed=0
