@@ -1,0 +1,19 @@
+ok LazyGenexpTest test_closure_capture
+ok LazyGenexpTest test_genexp_is_generator
+ok LazyGenexpTest test_infinite_source
+ok LazyGenexpTest test_inner_iter_evaluated_each_time
+ok LazyGenexpTest test_nested_for
+ok LazyGenexpTest test_no_leak_outside
+ok LazyGenexpTest test_outer_iter_evaluated_once
+ok LazyGenexpTest test_short_circuit_all
+ok LazyGenexpTest test_short_circuit_any
+ok LazyGenexpTest test_with_filter
+ok ExceptionGroupTest test_bare_exception_falls_through
+ok ExceptionGroupTest test_basic_construct
+ok ExceptionGroupTest test_except_star_multi_handlers
+ok ExceptionGroupTest test_except_star_single_match
+ok ExceptionGroupTest test_except_star_unmatched_reraises
+ok TypeAliasTest test_generic_alias
+ok TypeAliasTest test_simple_alias
+---
+passed=17 failed=0

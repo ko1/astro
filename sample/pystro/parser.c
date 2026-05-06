@@ -4084,6 +4084,7 @@ parse_stmt(void)
         tok_pos++;        // NAME
         tok_pos++;        // =
         NODE *rhs = parse_expr_list();
+        expect(T_NEWLINE, "newline");
         return make_store(nm, rhs);
     }
     if (k == T_IF)     return parse_if();

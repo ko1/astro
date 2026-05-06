@@ -6,7 +6,7 @@
 
 ## 残課題 (現在)
 
-R11–R17 で深掘り (test 78–211 追加, **212 unit tests passing**)。 [done.md](./done.md) に詳細。
+R11–R17 で深掘り (test 78–212 追加, **213 unit tests passing**)。 [done.md](./done.md) に詳細。
 
 ### R17 (2026-05-06) で追加した CPython 互換項目
 
@@ -50,6 +50,9 @@ R11–R17 で深掘り (test 78–211 追加, **212 unit tests passing**)。 [do
 | PEP 585 `list[int]` etc | built-in container generic alias — annotation 用に subscript 可能 |
 | cls.`__class__` | class 自体の class は metaclass (default `type`) |
 | typing.get_origin/get_args | 簡易実装 |
+| Lazy genexp (S-18) | synthetic gen function に desugar、all/any short-circuit OK |
+| PEP 654 `except*` (S-23) | BaseExceptionGroup / ExceptionGroup + split-and-handle |
+| PEP 695 type alias (S-24) | `type X = int` を plain assignment に desugar |
 
 ### 残存する仕様上の差分 (低優先)
 
@@ -74,24 +77,23 @@ R11–R17 で深掘り (test 78–211 追加, **212 unit tests passing**)。 [do
   動作。py_seq_len / py_iter_init / py_contains が `__metaclass__` 経由
   で `__len__` / `__iter__` / `__contains__` を呼ぶ。
 
-#### S-18. genexp が eager
-- `(x for x in xs)` は list を返す (本来は generator)。
-- 無限 source を `for x in genexp:` で使うと OOM。
-- `all`/`any` の short-circuit が genexp 引数で効かない (list 化されるため)。
-- 大半の用途 (`list(genexp)`, `sum(genexp)`) は OK。
-- **R16 で comp scope leak は修正済**: `[i for i in xs]; print(i)` → NameError
-- 真の lazy 化 (synthetic gen function) は parser 側で大規模変更必要。
+#### S-18. genexp lazy ✅ (R17)
+- `(x for x in xs)` が真の generator (synthetic gen function に desugar)
+- `all`/`any` の short-circuit が effective、無限 source も OOM しない。
+- closure 経由の var capture も動作。outer iter は eager、inner は lazy。
 
 #### S-22. function annotations ✅ (R17)
 - `def f(x: int) -> bool: ...` の `f.__annotations__` が
   `{"x": int, "return": bool}` を返す (R17 で修正)。
 - typing.get_type_hints / inspect.signature ともに function に効く。
 
-#### S-23. except* (PEP 654 — exception groups)
-- 未対応。`raise ExceptionGroup(...)` / `except* T:` は parse error。
+#### S-23. except* (PEP 654 — exception groups) ✅ (R17)
+- BaseExceptionGroup / ExceptionGroup builtin classes。
+- `except* T as v:` syntax — split-and-handle with sub-group binding。
+- 未マッチは ExceptionGroup として再 raise。
 
-#### S-24. PEP 695 type alias `type X = int`
-- 未対応。代用に `X = int` を使うか普通の class エイリアス。
+#### S-24. PEP 695 type alias `type X = int` ✅ (R17)
+- top-level / 関数内ともに `type NAME = expr` を plain assignment へ desugar。
 
 #### S-21. parens-form `(a, b)` argument is a tuple, not unpacking
 - `parens-wrapped multi-target with attr/subscript` は `with (cm1, cm2 as x):` 形式の
