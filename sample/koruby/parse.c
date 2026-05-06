@@ -2793,9 +2793,14 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
       case PM_MULTI_WRITE_NODE: {
           pm_multi_write_node_t *n = (pm_multi_write_node_t *)node;
           NODE *rhs = T(tc, n->value);
-          uint32_t tmp_slot = inc_arg_index(tc);
-          NODE *prep = ALLOC_node_lvar_set(tmp_slot, ALLOC_node_to_ary_for_mlhs(rhs));
-          NODE *chain = prep;
+          /* Save original RHS to a slot — multi-assign returns the
+           * untransformed RHS regardless of how it gets distributed. */
+          uint32_t orig_slot = inc_arg_index(tc);
+          uint32_t tmp_slot  = inc_arg_index(tc);
+          NODE *save_orig = ALLOC_node_lvar_set(orig_slot, rhs);
+          NODE *prep = ALLOC_node_lvar_set(tmp_slot,
+                          ALLOC_node_to_ary_for_mlhs(ALLOC_node_lvar_get(orig_slot)));
+          NODE *chain = ALLOC_node_seq(save_orig, prep);
 
           /* helper macro: build assign for one target given the get-expr */
           #define BUILD_TARGET_ASSIGN(target_node, get_expr) ({                       \
@@ -2867,7 +2872,10 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
               if (assign) chain = ALLOC_node_seq(chain, assign);
           }
           #undef BUILD_TARGET_ASSIGN
-          rewind_arg_index(tc, tmp_slot);
+          /* Append the orig_slot read so the whole multi-assign expr
+           * evaluates to the original RHS (CRuby semantics). */
+          chain = ALLOC_node_seq(chain, ALLOC_node_lvar_get(orig_slot));
+          rewind_arg_index(tc, orig_slot);
           return chain;
       }
 
