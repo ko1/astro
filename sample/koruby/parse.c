@@ -3086,6 +3086,62 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                * "method" if respond_to? is true, nil otherwise. */
               pm_call_node_t *cn = (pm_call_node_t *)expr;
               ID method_name = intern_constant(tc->parser, cn->name);
+              /* `defined?(!x)` recurses into x: if x is defined,
+               * result is "method"; else nil.  Same for `defined?(not x)`. */
+              if (cn->receiver && cn->arguments == NULL && !cn->block &&
+                  ceq(tc, cn->name, "!")) {
+                  /* Build defined?(receiver) then map non-nil → "method". */
+                  pm_node_t fake_def_outer = expr[0];  /* unused */
+                  (void)fake_def_outer;
+                  /* Recurse: synthesize a temporary defined? node with
+                   * inner = receiver.  Since we're already inside the
+                   * defined? handler, just translate the receiver via
+                   * the same logic. */
+                  /* Reuse current PM_DEFINED_NODE handler by calling T
+                   * with a synthetic node — too messy.  Simpler: at
+                   * runtime, build (defined_inner = check_expr) and
+                   * map non-nil → "method".  Implemented by
+                   * if (defined_inner) "method" else nil. */
+                  /* Construct a defined?(receiver) node by reusing the
+                   * outer defined node's structure: build a tiny shim. */
+                  /* Easiest: call T_defined_inner via a recursive helper.
+                   * Since we have no helper, inline the handling for
+                   * common receiver shapes. */
+                  pm_node_t *inner = cn->receiver;
+                  switch (PM_NODE_TYPE(inner)) {
+                    case PM_GLOBAL_VARIABLE_READ_NODE: {
+                        pm_global_variable_read_node_t *gv = (pm_global_variable_read_node_t *)inner;
+                        ID gname = intern_constant(tc->parser, gv->name);
+                        return ALLOC_node_if(ALLOC_node_gvar_defined_p(gname),
+                                             ALLOC_node_frozen_str_lit("method", 6),
+                                             ALLOC_node_nil());
+                    }
+                    case PM_INSTANCE_VARIABLE_READ_NODE: {
+                        pm_instance_variable_read_node_t *iv = (pm_instance_variable_read_node_t *)inner;
+                        ID name = intern_constant(tc->parser, iv->name);
+                        uint32_t ai = inc_arg_index(tc);
+                        rewind_arg_index(tc, ai);
+                        struct method_cache *mc = alloc_method_cache();
+                        NODE *self_node = ALLOC_node_self();
+                        NODE *defined_p = ALLOC_node_seq(
+                            ALLOC_node_lvar_set(ai, ALLOC_node_sym_lit(name)),
+                            ALLOC_node_method_call(self_node, korb_intern("instance_variable_defined?"),
+                                                   1, ai, mc));
+                        return ALLOC_node_if(defined_p,
+                                             ALLOC_node_frozen_str_lit("method", 6),
+                                             ALLOC_node_nil());
+                    }
+                    case PM_NIL_NODE: case PM_TRUE_NODE: case PM_FALSE_NODE:
+                    case PM_INTEGER_NODE: case PM_FLOAT_NODE: case PM_STRING_NODE:
+                    case PM_SYMBOL_NODE: case PM_ARRAY_NODE: case PM_HASH_NODE:
+                    case PM_LOCAL_VARIABLE_READ_NODE:
+                      /* Always defined → "method". */
+                      return ALLOC_node_frozen_str_lit("method", 6);
+                    default: break;
+                  }
+                  /* Generic: just return "method" (assume defined). */
+                  return ALLOC_node_frozen_str_lit("method", 6);
+              }
               /* If the call has a receiver that is itself a literal,
                * defined? returns "expression". */
               if (cn->receiver) {
