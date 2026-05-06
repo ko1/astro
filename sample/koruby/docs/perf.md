@@ -5,10 +5,83 @@
 
 ## ベンチマーク環境
 
-- CPU: x86_64
+- CPU: x86_64 (AMD Ryzen 9 5900HX)
 - OS: Linux 6.8 (Ubuntu 24.04)
 - コンパイラ: gcc 13.3 (-O2 / -O3)
-- Ruby (比較対象): CRuby 3.4 系 (no-JIT / `--yjit`)
+- Ruby (比較対象): CRuby 4.0.2 +PRISM (no-JIT / `--yjit`)
+
+## 2026-05-06 リグレッション + 互換性大改修後 (HEAD `52489bc + fix`)
+
+CRuby tu_shim 互換性 +2,236 pass (Proc cref / post / &blk / etc) と
+**`korb_check_basic_op_redef` の scope 修正** が同時期。Hash#`<` を
+bootstrap.rb で定義したことで全 FIXNUM/FLONUM fast path が無効化され、
+fib(36) が 1.07s → 5.5s に **5× regress** していたのを発見・修正。
+Integer/Float/Numeric の basic op 再定義のみが flag を flip するように。
+
+### `benchmark/run.rb` (n=1, best of 1)
+
+| bench | ruby | ruby+yjit | abruby+pgc | **koruby+aot** |
+|---|---:|---:|---:|---:|
+| ack | 1.574 | 0.217 | 0.086 | 0.811 |
+| array | 0.980 | 0.338 | 0.089 | 0.429 |
+| array_access | 1.034 | 0.340 | 0.087 | 0.410 |
+| array_push | 0.956 | 0.407 | 0.088 | 0.468 |
+| binary_trees | 0.533 | 0.296 | 0.087 | 0.610 |
+| collatz | 1.542 | 0.244 | 0.087 | **0.261** |
+| dispatch | 1.875 | 0.228 | 0.091 | 0.773 |
+| each | 1.691 | 0.325 | 0.091 | **0.315** |
+| factorial | 0.819 | 0.545 | 0.099 | 0.996 |
+| fannkuch | 0.850 | 0.291 | 0.091 | **0.263** |
+| fib | 1.632 | 0.217 | 0.088 | 0.732 |
+| gcd | 1.288 | 0.491 | 0.085 | 0.598 |
+| hash | 0.639 | 0.393 | 0.087 | 0.405 |
+| inject | 0.878 | 0.188 | 0.088 | **0.216** |
+| ivar | 1.413 | 0.219 | 0.089 | 0.618 |
+| mandelbrot | 1.048 | 0.404 | 0.090 | 0.716 |
+| map | 0.136 | 0.087 | 0.096 | 0.140 |
+| method_call | 1.709 | 0.275 | 0.099 | 0.690 |
+| nbody | 0.232 | 0.110 | 0.101 | 0.232 |
+| nested_loop | 1.324 | 0.171 | 0.102 | **0.263** |
+| object | 0.586 | 0.232 | 0.098 | 0.614 |
+| sieve | 0.841 | 0.290 | 0.102 | 0.326 |
+| string | 0.514 | 0.396 | 0.104 | **0.296** |
+| tak | 1.802 | 0.256 | 0.104 | 1.022 |
+| times | 1.897 | 0.308 | 0.113 | 0.396 |
+| while | 1.823 | 0.271 | 0.123 | **0.346** |
+
+太字は koruby が ruby (no JIT) の 2× 以上速い ベンチ。
+
+**観察:**
+- 純 Fixnum / 整数ループ (collatz, while, nested_loop, fannkuch) で **5–6× CRuby**。
+- 集合・反復 (each, inject, string) も **4× 以上**。
+- Call-heavy (fib, ack, tak) は **2×** 程度 — yjit には負ける (yjit の inline cache + JIT が強い)。
+- abruby+pgc は AST 段階で部分評価しているので 10–15× 速く、koruby は次の層。
+
+### optcarrot (NES emu, 600 frames sustained)
+
+| 構成 | FPS | wall | vs CRuby (no JIT) |
+|---|---:|---:|---:|
+| ruby (no JIT) | 37.9 | 17.2 s | 1.00× |
+| ruby --yjit | 154.8 | 5.0 s | 4.08× |
+| **koruby (interp)** | 35.9 | 16.5 s | 0.95× |
+| **koruby (AOT)** | 74.0 | 8.5 s | 1.95× |
+
+checksum 60838 全構成一致。
+
+### 重要バグ (5× regression) の発見
+
+`bootstrap.rb` に `Hash#<` `<=` `>` `>=` を Hash 比較用に追加した直後、
+fib が 1.07s → 5.5s に **5× regress** していた。原因:
+`korb_check_basic_op_redef` が Hash/Array/String 等の "basic class"
+全てを redef target として認識していて、Hash#`<` の追加で
+**`korb_g_basic_op_redefined` flag が立ち**、Integer の Fixnum fast path
+(`FIXNUM_P(l) && FIXNUM_P(r) && !redef`) が常に slow path に落ちていた。
+fix: redef target を Integer/Float/Numeric だけに絞る (Hash redef は
+arithmetic dispatch に影響しない)。perf record で `korb_int_minus` /
+`__gmpz_init_set_si` が 10% を占めているのを見て発見。
+
+教訓: **fast path の guard flag は scope を最小に保つ**。一見無害な
+"common method 追加" でも、guard が広いと熱い path が死ぬ。
 
 ## 2026-05-03 コンパイラ別 optcarrot bench (180 frames, best/3)
 

@@ -2269,16 +2269,16 @@ static bool korb_is_basic_op_id(ID name) {
 
 void korb_check_basic_op_redef(struct korb_class *target, ID name) {
     if (!korb_vm) return;
+    /* Only Integer/Float/Numeric redef trips the global FIXNUM/FLONUM
+     * fast-path off — those are the basic ops the inline fast paths in
+     * node_plus/minus/mul/div etc. care about.  Hash/Array/String/Symbol
+     * redefining their own `<` or `[]` doesn't affect Integer arithmetic
+     * dispatch, so don't set the flag for them (otherwise adding any
+     * helper to bootstrap.rb on those classes would kill the fast path
+     * across the whole VM — fib(36) regressed ~5× from this). */
     if (target != korb_vm->integer_class &&
         target != korb_vm->float_class   &&
-        target != korb_vm->array_class   &&
-        target != korb_vm->hash_class    &&
-        target != korb_vm->string_class  &&
-        target != korb_vm->symbol_class  &&
-        target != korb_vm->numeric_class &&
-        target != korb_vm->true_class    &&
-        target != korb_vm->false_class   &&
-        target != korb_vm->nil_class) return;
+        target != korb_vm->numeric_class) return;
     if (!korb_is_basic_op_id(name)) return;
     korb_g_basic_op_redefined = true;
 }
