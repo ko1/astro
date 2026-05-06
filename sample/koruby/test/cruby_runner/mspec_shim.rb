@@ -438,3 +438,17 @@ def it_behaves_like(*_args, &_blk); end
 
 # Suppress warning helper — runs block with $VERBOSE = nil.
 def silence_warnings; old = $VERBOSE; $VERBOSE = nil; yield; ensure $VERBOSE = old; end
+
+# SpecEvaluate — mspec helper that evaluates a string in different
+# contexts.  We don't need the contexts; just provide a stub.
+class SpecEvaluate
+  def self.desc=(v); @@desc = v; end
+  def self.desc; @@desc rescue ""; end
+end
+
+# `evaluate <<-ruby do; ... end` — runs the heredoc as Ruby in a
+# fresh class context.  We just eval it at top level.
+def evaluate(code, &blk)
+  eval(code)
+  blk.call if blk
+end
