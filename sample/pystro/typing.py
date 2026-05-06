@@ -9,6 +9,9 @@ class _GenericAlias:
     def __init__(self, origin, name):
         self._origin = origin
         self._name = name
+    @property
+    def origin(self):
+        return self._origin
     def __getitem__(self, params):
         return self          # `List[int]` => List itself; type-check not enforced
     def __repr__(self):
@@ -104,6 +107,24 @@ def get_type_hints(obj, globalns=None, localns=None, include_extras=False):
     if ann:
         return dict(ann)
     return {}
+
+
+def get_origin(tp):
+    """Return the unsubscripted origin of a generic alias.  Pystro's
+    PEP 585 returns the class itself for `list[int]`, so we return None
+    in that case (CPython would return `list`).  For typing.List etc
+    return the underlying type."""
+    if isinstance(tp, _GenericAlias):
+        return tp.origin
+    return None
+
+
+def get_args(tp):
+    """Return the tuple of arguments to a generic alias.  Pystro doesn't
+    track these — return ()."""
+    if isinstance(tp, _GenericAlias):
+        return ()
+    return ()
 
 
 def cast(typ, val):

@@ -3759,6 +3759,11 @@ py_getattr(CTX *c, VALUE v, const char *name)
     }
     if (py_is_class(v)) {
         struct pyclass *cd = &PY_PTR(v)->cls;
+        if (strcmp(name, "__class__") == 0) {
+            // Class of a class is its metaclass — typically `type`.
+            VALUE meta = py_class_lookup_method(v, "__metaclass__");
+            return (meta != PY_NONE && py_is_class(meta)) ? meta : c->TYPE_type;
+        }
         if (strcmp(name, "__name__") == 0)
             return py_make_str(cd->name, strlen(cd->name));
         if (strcmp(name, "__doc__") == 0) {

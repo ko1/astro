@@ -1,0 +1,10 @@
+ok FunctionAnnotationsTest test_get_type_hints_function
+ok FunctionAnnotationsTest test_param_annotations
+ok FunctionAnnotationsTest test_signature_carries_annotation
+ok PEP585GenericTest test_generic_in_annotation
+ok PEP585GenericTest test_list_int
+ok ClassClassTest test_class_of_class_is_type
+ok ClassClassTest test_metaclass_is_class_of
+ok TypingExtraTest test_get_origin
+---
+passed=8 failed=0
