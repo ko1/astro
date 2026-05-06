@@ -1,0 +1,8 @@
+ok IntSubtypeCmpTest test_max_min
+ok IntSubtypeCmpTest test_sort
+ok FloatSubtypeTest test_arith
+ok StrSubtypeTest test_methods
+ok ListSubtypeTest test_basic
+ok TupleSubtypeTest test_basic
+---
+passed=6 failed=0

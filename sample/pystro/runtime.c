@@ -1733,7 +1733,12 @@ py_cmp(CTX *c, VALUE a, VALUE b)
             }
             return 1;
         }
+        // Built-in subclass with no __lt__: compare via primary value.
+        if (PY_PTR(a)->inst.primary)
+            a = PY_PTR(a)->inst.primary;
     }
+    if (py_is_instance(b) && PY_PTR(b)->inst.primary)
+        b = PY_PTR(b)->inst.primary;
     if (py_is_str(a) && py_is_str(b)) {
         size_t la = PY_PTR(a)->str.len, lb = PY_PTR(b)->str.len;
         size_t n = la < lb ? la : lb;
@@ -1817,6 +1822,11 @@ py_eq(CTX *c, VALUE a, VALUE b)
     if (r && !(PY_IS_PTR(r) && PY_PTR(r)->type == PY_T_NOTIMPL)) {
         return py_is_truthy(r) ? PY_TRUE : PY_FALSE;
     }
+    // Built-in subclass instances with no override — compare via primary.
+    if (py_is_instance(a) && PY_PTR(a)->inst.primary)
+        a = PY_PTR(a)->inst.primary;
+    if (py_is_instance(b) && PY_PTR(b)->inst.primary)
+        b = PY_PTR(b)->inst.primary;
     // NaN is special: NaN != NaN, even when stored in the same VALUE.
     if (py_is_float(a)) {
         double d = PY_IS_FLONUM(a) ? py_flonum_to_double(a) : PY_PTR(a)->dbl;
