@@ -80,7 +80,7 @@ def it(name, *_opts, &blk)
     # ERR with intentional gaps.  Same treatment for Random which we
     # don't implement.
     out_of_scope = %w(Thread Fiber Ractor Encoding Random TracePoint GC
-                      ObjectSpace RubyVM Process Signal Mutex
+                      ObjectSpace RubyVM Mutex
                       ConditionVariable Queue SizedQueue Refinement)
     if e.is_a?(NameError) && e.message.start_with?("uninitialized constant ") &&
        out_of_scope.any? { |c| e.message.include?(c) }

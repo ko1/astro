@@ -20,8 +20,6 @@
 | Encoding-aware String (`String#encoding`, `force_encoding`, multi-byte succ, m17n) | byte sequence のみ |
 | Thread / Mutex / Queue / ConditionVariable / SizedQueue | single-threaded only |
 | Fiber Scheduler / Async I/O | 範囲外 |
-| Process / fork / spawn / `assert_separately` 等 | excluded |
-| Signal / trap | excluded |
 | ObjectSpace 走査 / 詳細 | excluded |
 | GC.* (start / stress 以外の細部) | runtime 内部依存 |
 | TracePoint / RubyVM | 範囲外 |
@@ -162,7 +160,22 @@ prism のエラーリカバリ次第。
 - `Exception#full_message` の format 詳細
 - `Exception#detailed_message` の color: highlight: kwargs
 
-### B6. Class redefinition の TypeError
+### B6. Process / fork / spawn / system
+
+`Process.fork`、`Process.spawn`、`system`、`exec`、`Process.wait` 等。
+multi-process 系のテスト (rubyspec の `assert_separately` 風 helper、
+test_io / test_process) で必要。
+
+CRuby と完全互換の Process は重いが、 `system("...")` / `\`...\`` /
+`Process.spawn` レベルなら fork+exec で素直に書ける。 `Process.wait` /
+`Process::Status` も含めて段階的に。
+
+### B7. Signal / trap
+
+`Signal.trap(:INT) { ... }`、 `Signal.list`、 `Process.kill`。
+Process と一緒に整備する想定。
+
+### B8. Class redefinition の TypeError
 
 ```ruby
 class C < Object; end
