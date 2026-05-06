@@ -2076,7 +2076,11 @@ obj_with_key(VALUE obj, VALUE k, VALUE new_v, bool drop)
     return clone;
 }
 
-/* Helper: clone array and set/delete one index. */
+/* Helper: clone array and set/delete one index.  Auto-vivifies up to
+ * `idx`; idx beyond a sanity limit (NUQ_PATH_MAX_AUTOVIV) errors via
+ * `nuq_active_ctx->error` instead of trying to grow the array to
+ * billions of slots. */
+#define NUQ_PATH_MAX_AUTOVIV (1u << 24)   /* 16M slots — generous */
 static VALUE
 arr_with_idx(VALUE arr, int64_t idx, VALUE new_v, bool drop)
 {
@@ -2091,7 +2095,18 @@ arr_with_idx(VALUE arr, int64_t idx, VALUE new_v, bool drop)
         co->arr.len--;
         return clone;
     }
-    if (idx < 0) return arr;
+    if (idx < 0) {
+        if (nuq_active_ctx && nuq_active_ctx->error == NUQ_NULL)
+            nuq_active_ctx->error = nuq_make_string(
+                "Out of bounds negative array index", 34);
+        return arr;
+    }
+    if ((size_t)idx > NUQ_PATH_MAX_AUTOVIV) {
+        if (nuq_active_ctx && nuq_active_ctx->error == NUQ_NULL)
+            nuq_active_ctx->error = nuq_make_string(
+                "Array index too large", 21);
+        return arr;
+    }
     VALUE clone = nuq_clone(arr);
     struct nuq_obj *co = NUQ_PTR(clone);
     while ((int64_t)co->arr.len <= idx) nuq_array_push(clone, NUQ_NULL);
@@ -2423,6 +2438,41 @@ nuq_limit_eval(CTX *c, struct Node *cnt, struct Node *body)
         if (c->error != NUQ_NULL) return EMIT_EMPTY;
         size_t take = n < (int64_t)bo.count ? (size_t)n : (size_t)bo.count;
         c->pool_top = before + take;
+    }
+    return nuq_emit_slice(c, outer);
+}
+
+/* `skip(N; f)` — skip first N emits of f, then emit the rest.
+ * Multi-emit N runs body once per N (like limit / nth). */
+EMIT
+nuq_skip_eval(CTX *c, struct Node *cnt_n, struct Node *body)
+{
+    size_t outer = c->pool_top;
+    EMIT nb = EVAL(c, cnt_n);
+    if (c->error != NUQ_NULL) return EMIT_EMPTY;
+    uint32_t cnt = nb.count;
+    int64_t small_ns[16];
+    int64_t *ns = (cnt <= 16) ? small_ns
+                              : (int64_t *)GC_malloc(cnt * sizeof(int64_t));
+    for (uint32_t i = 0; i < cnt; i++) ns[i] = to_int64(nb.items[i]);
+    c->pool_top = outer;
+
+    for (uint32_t k = 0; k < cnt; k++) {
+        int64_t n = ns[k];
+        if (n < 0) return err_emit(c, "skip doesn't support negative count");
+        size_t before = c->pool_top;
+        EMIT bo = EVAL(c, body);
+        if (c->error != NUQ_NULL) return EMIT_EMPTY;
+        size_t skip = (size_t)n;
+        if (skip >= bo.count) {
+            c->pool_top = before;        /* drop everything */
+        } else {
+            /* shift down */
+            size_t kept = bo.count - skip;
+            for (size_t i = 0; i < kept; i++)
+                c->pool[before + i] = c->pool[before + skip + i];
+            c->pool_top = before + kept;
+        }
     }
     return nuq_emit_slice(c, outer);
 }

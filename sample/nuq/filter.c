@@ -480,6 +480,7 @@ build_builtin_call(const char *name, int arity, struct Node **args)
     /* 2-arg */
     BUILTIN2("range", ALLOC_node_b_range2);
     BUILTIN2("recurse", ALLOC_node_b_recurse2);
+    BUILTIN2("skip", ALLOC_node_b_skip);
     BUILTIN2("while", ALLOC_node_b_while);
     BUILTIN2("until", ALLOC_node_b_until);
     BUILTIN2("setpath", ALLOC_node_b_setpath);

@@ -586,7 +586,14 @@ node_array(CTX *c, NODE *n, NODE *body)
 {
     size_t top0 = c->pool_top;
     EMIT bo = EVAL_ARG(c, body);
-    if (UNLIKELY(c->error != NUQ_NULL)) return EMIT_EMPTY;
+    if (UNLIKELY(c->error != NUQ_NULL)) {
+        /* Array construction is atomic: any partial emits in the pool
+         * should be discarded so the surrounding `try` doesn't leak
+         * them.  jq has the same behavior — `try [..., error(..)]`
+         * discards the partial array. */
+        c->pool_top = top0;
+        return EMIT_EMPTY;
+    }
     /* Build a real heap array from the pool slice, release pool, emit. */
     VALUE arr = nuq_make_array(bo.count);
     for (uint32_t i = 0; i < bo.count; i++) nuq_array_push(arr, bo.items[i]);
@@ -1105,6 +1112,12 @@ NODE_DEF
 node_b_recurse2(CTX *c, NODE *n, NODE *body, NODE *cond)
 {
     return nuq_recurse_eval(c, body, cond);
+}
+
+NODE_DEF
+node_b_skip(CTX *c, NODE *n, NODE *cnt, NODE *body)
+{
+    return nuq_skip_eval(c, cnt, body);
 }
 
 /* `input` — pull next pending JSON input from the queue.  Errors if
