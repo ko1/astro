@@ -106,4 +106,71 @@ class BytesIO:
         self.close()
 
 
-__all__ = ["StringIO", "BytesIO"]
+# Many CPython libs reach for io.IOBase / TextIOWrapper / BufferedReader
+# etc as base classes / type-checks.  We expose minimal placeholders.
+class IOBase:
+    def close(self): pass
+    def __enter__(self): return self
+    def __exit__(self, *a): self.close()
+    def readable(self): return False
+    def writable(self): return False
+    def seekable(self): return False
+    def fileno(self): raise OSError("no fileno")
+    def isatty(self): return False
+    def flush(self): pass
+    def closed(self): return False
+
+
+class RawIOBase(IOBase): pass
+class BufferedIOBase(IOBase): pass
+class TextIOBase(IOBase): pass
+
+
+class FileIO(RawIOBase):
+    def __init__(self, *a, **kw): pass
+
+
+class BufferedReader(BufferedIOBase):
+    def __init__(self, raw, buffer_size=8192): self.raw = raw
+class BufferedWriter(BufferedIOBase):
+    def __init__(self, raw, buffer_size=8192): self.raw = raw
+class BufferedRandom(BufferedIOBase):
+    def __init__(self, raw, buffer_size=8192): self.raw = raw
+class BufferedRWPair(BufferedIOBase):
+    def __init__(self, reader, writer): self.reader = reader; self.writer = writer
+
+
+class TextIOWrapper(TextIOBase):
+    def __init__(self, buffer, encoding=None, errors=None, newline=None,
+                 line_buffering=False, write_through=False):
+        self.buffer = buffer
+        self.encoding = encoding or "utf-8"
+        self.errors = errors or "strict"
+        self.newline = newline
+    def read(self, size=-1): return ""
+    def readline(self): return ""
+    def write(self, s): return len(s)
+    def close(self):
+        if self.buffer: self.buffer.close()
+
+
+# Default newline / buffer sizes.
+DEFAULT_BUFFER_SIZE = 8192
+SEEK_SET = 0
+SEEK_CUR = 1
+SEEK_END = 2
+
+
+class UnsupportedOperation(OSError, ValueError):
+    pass
+
+
+# Re-export `open` from builtins so `io.open(...)` works.
+open = open
+
+
+__all__ = ["StringIO", "BytesIO", "IOBase", "RawIOBase", "BufferedIOBase",
+           "TextIOBase", "FileIO", "BufferedReader", "BufferedWriter",
+           "BufferedRandom", "BufferedRWPair", "TextIOWrapper",
+           "DEFAULT_BUFFER_SIZE", "SEEK_SET", "SEEK_CUR", "SEEK_END",
+           "UnsupportedOperation", "open"]

@@ -52,5 +52,25 @@ def forget(modname):
         del sys.modules[modname]
 
 
+def ensure_lazy_imports(*names):
+    pass
+
+
+def modules_setup():
+    return ()
+
+
+def modules_cleanup(*a, **kw):
+    pass
+
+
+def isolated_modules():
+    class _Ctx:
+        def __enter__(self): return self
+        def __exit__(self, *e): return False
+    return _Ctx()
+
+
 __all__ = ["import_module", "import_fresh_module", "unload",
-           "CleanImport", "DirsOnSysPath"]
+           "CleanImport", "DirsOnSysPath", "ensure_lazy_imports",
+           "modules_setup", "modules_cleanup", "isolated_modules"]

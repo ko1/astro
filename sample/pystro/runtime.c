@@ -11846,7 +11846,9 @@ bi_pystro_perf_counter(CTX *c, int argc, VALUE *argv)
 static VALUE
 bi_pystro_getenv(CTX *c, int argc, VALUE *argv)
 {
-    if (!py_is_str(argv[0])) py_raise_exc(c, c->EXC_TypeError, "getenv: name must be str");
+    if (!py_is_str(argv[0])) {
+        return argc >= 2 ? argv[1] : PY_NONE;
+    }
     size_t L = PY_PTR(argv[0])->str.len;
     char *buf = (char *)alloca(L + 1);
     memcpy(buf, PY_PTR(argv[0])->str.chars, L); buf[L] = '\0';

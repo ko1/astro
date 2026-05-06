@@ -191,7 +191,17 @@ def register_error(name, error_handler): pass
 def lookup_error(name): return None
 
 
+def _normalize_encoding(encoding):
+    return encoding.lower().replace("_", "-")
+
+
+def _forget_codec(encoding):
+    if encoding in _codec_cache:
+        del _codec_cache[encoding]
+
+
 __all__ = ["register", "unregister", "lookup", "encode", "decode",
+           "_normalize_encoding", "_forget_codec",
            "ascii_encode", "ascii_decode", "utf_8_encode", "utf_8_decode",
            "latin_1_encode", "latin_1_decode",
            "charmap_encode", "charmap_decode",

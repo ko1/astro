@@ -392,8 +392,68 @@ def Py_DEBUG_BUILD():
 
 
 # Memory thresholds.
+_1G = 1 * 1024 * 1024 * 1024
 _2G = 2 * 1024 * 1024 * 1024
 _4G = 4 * 1024 * 1024 * 1024
+MAX_Py_ssize_t = (2 ** 63) - 1
+PIPE_MAX_SIZE = 4 * 1024 * 1024
+
+
+def python_is_optimized():
+    return False
+
+
+def with_pymalloc():
+    return False
+
+
+def is_resource_enabled(name): return False
+def get_resource_value(name): return 0
+
+
+def force_not_colorized(fn): return fn
+def force_not_colorized_test_class(cls): return cls
+def set_recursion_limit(n):
+    class _Ctx:
+        def __enter__(self): return self
+        def __exit__(self, *e): return False
+    return _Ctx()
+def infinite_recursion(*a, **kw):
+    class _Ctx:
+        def __enter__(self): return self
+        def __exit__(self, *e): return False
+    return _Ctx()
+
+
+def expected_failure_if(condition, reason=None):
+    def deco(fn):
+        if condition:
+            def w(*a, **kw):
+                try: fn(*a, **kw)
+                except Exception: return
+                raise AssertionError("expected failure but didn't fail")
+            return w
+        return fn
+    return deco
+
+
+def os_helper_warning_filter():
+    class _Ctx:
+        def __enter__(self): return self
+        def __exit__(self, *e): return False
+    return _Ctx()
+
+
+def busy_retry(*a, **kw):
+    yield from range(1)
+
+
+def sleeping_retry(*a, **kw):
+    yield from range(1)
+
+
+def has_strftime_extensions():
+    return False
 
 
 # BrokenIter — used by tests that need to assert failure modes.

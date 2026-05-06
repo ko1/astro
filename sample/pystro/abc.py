@@ -1,7 +1,24 @@
 # pystro stdlib `abc` — abstract base classes.
 
 class ABCMeta(type):
-    pass
+    @classmethod
+    def register(cls, subclass):
+        """No-op subclass registration — pystro doesn't track virtual
+        subclasses, so the registered class isn't recognised by
+        isinstance unless it's already a real subclass."""
+        return subclass
+
+    @classmethod
+    def __subclasshook__(cls, C):
+        return NotImplemented
+
+
+def _abc_caches_clear(cls): pass
+def _abc_init(cls): pass
+def _abc_register(cls, sub): return sub
+def _abc_registry(cls): return frozenset()
+def _abc_subclasshook(cls, sub): return NotImplemented
+def update_abstractmethods(cls): return cls
 
 
 class ABC:

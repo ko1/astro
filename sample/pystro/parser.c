@@ -1641,8 +1641,8 @@ parse_lambda(void)
     cur_scope = &sc;
     // Pre-scan: if body contains a nested lambda or def, this lambda
     // can't use an alloca'd frame (the inner would capture our dead
-    // stack memory after we return).  has_nested_def is consulted by
-    // the leaf-flag logic below.
+    // stack memory after we return).  Also detect a `yield` token,
+    // which makes this lambda a generator (`lambda: (yield x)`).
     {
         size_t p = tok_pos;
         int depth = 0;
@@ -1656,8 +1656,8 @@ parse_lambda(void)
                 break;
             else if (k == T_LAMBDA || k == T_DEF) {
                 sc.has_nested_def = true;
-                break;
             }
+            else if (k == T_YIELD) sc.is_generator = true;
             p++;
         }
     }
@@ -1667,8 +1667,9 @@ parse_lambda(void)
     NODE *body = ALLOC_node_return(body_expr);
     size_t didx = defaults_reserve(defs, ndefaults);
     size_t nidx = name_table_reserve(names, nnames);
-    uint32_t leaf_bit = sc.has_nested_def ? 0u : 1u;
+    uint32_t leaf_bit = (sc.has_nested_def || sc.is_generator) ? 0u : 1u;
     uint32_t leaf_flags = leaf_bit
+        | (sc.is_generator ? 2u : 0u)
         | (has_va ? 4u : 0u)
         | (has_kw ? 8u : 0u)
         | ((uint32_t)(n_pos_named & 0xFF) << 16);
