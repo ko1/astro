@@ -10515,8 +10515,14 @@ bi_import(CTX *c, int argc, VALUE *argv)
     VALUE saved_TYPE_range     = c->TYPE_range;
     VALUE saved_TYPE_type      = c->TYPE_type;
     VALUE saved_TYPE_object    = c->TYPE_object;
-    // slice (also non-constructable but isinstance-checkable).
+    // Synthetic non-constructable types whose identity must be preserved
+    // across module boundaries (so isinstance(x, types.MethodType) etc. work).
     VALUE saved_TYPE_slice     = c->TYPE_slice;
+    VALUE saved_TYPE_function  = c->TYPE_function;
+    VALUE saved_TYPE_method    = c->TYPE_method;
+    VALUE saved_TYPE_NoneType  = c->TYPE_NoneType;
+    VALUE saved_TYPE_module    = c->TYPE_module;
+    VALUE saved_TYPE_generator = c->TYPE_generator;
     c->globals = new_g;
     install_builtins(c);
     // Re-bind the imported module's globals to the caller's exception
@@ -10541,6 +10547,11 @@ bi_import(CTX *c, int argc, VALUE *argv)
     c->TYPE_type      = saved_TYPE_type;
     c->TYPE_object    = saved_TYPE_object;
     c->TYPE_slice     = saved_TYPE_slice;
+    c->TYPE_function  = saved_TYPE_function;
+    c->TYPE_method    = saved_TYPE_method;
+    c->TYPE_NoneType  = saved_TYPE_NoneType;
+    c->TYPE_module    = saved_TYPE_module;
+    c->TYPE_generator = saved_TYPE_generator;
     py_global_set(c, "int",        c->TYPE_int);
     py_global_set(c, "float",      c->TYPE_float);
     py_global_set(c, "complex",    c->TYPE_complex);

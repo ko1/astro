@@ -1,0 +1,8 @@
+ok TypesIdentityTest test_function_type
+ok TypesIdentityTest test_generator_type
+ok TypesIdentityTest test_lambda_type
+ok TypesIdentityTest test_method_type
+ok TypesIdentityTest test_module_type
+ok TypesIdentityTest test_none_type
+---
+passed=6 failed=0
