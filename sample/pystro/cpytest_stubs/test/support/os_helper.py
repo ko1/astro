@@ -72,4 +72,64 @@ class FakePath:
     def __fspath__(self): return self.path
 
 
-__all__ = ["TESTFN", "unlink", "rmtree", "can_symlink", "skip_unless_symlink"]
+def create_empty_file(path):
+    open(path, "wb").close()
+
+
+class EnvironmentVarGuard:
+    """Context manager for temporarily setting/unsetting environment vars."""
+    def __init__(self):
+        self._changed = {}
+    def __enter__(self):
+        return self
+    def __exit__(self, *exc):
+        for k, v in self._changed.items():
+            if v is None:
+                if k in os.environ:
+                    del os.environ[k]
+            else:
+                os.environ[k] = v
+    def set(self, key, value):
+        self._changed[key] = os.environ.get(key)
+        os.environ[key] = value
+    def unset(self, key):
+        self._changed[key] = os.environ.get(key)
+        if key in os.environ:
+            del os.environ[key]
+    def __contains__(self, k): return k in os.environ
+    def __getitem__(self, k): return os.environ[k]
+    def __setitem__(self, k, v): self.set(k, v)
+    def __delitem__(self, k): self.unset(k)
+    def keys(self): return os.environ.keys()
+
+
+def can_hardlink():
+    return False
+
+
+def can_xattr():
+    return False
+
+
+def fs_is_case_insensitive(path=None):
+    return False
+
+
+def skip_if_dac_override(fn):
+    return fn
+
+
+def skip_unless_xattr(fn):
+    return unittest.skip("no xattr")(fn)
+
+
+def skip_unless_hardlink(fn):
+    return unittest.skip("no hardlink")(fn)
+
+
+def calling_clean_temp_dir(*a, **kw):
+    pass
+
+
+__all__ = ["TESTFN", "unlink", "rmtree", "can_symlink", "skip_unless_symlink",
+           "create_empty_file", "EnvironmentVarGuard"]

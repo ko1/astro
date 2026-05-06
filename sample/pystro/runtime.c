@@ -11409,7 +11409,35 @@ bi_import(CTX *c, int argc, VALUE *argv)
     (void)argc;
     if (!py_is_str(argv[0])) py_raise_exc(c, c->EXC_TypeError, "import name must be str");
     VALUE mod_dict = modules_dict(c);
-    if (py_dict_has(c, mod_dict, argv[0])) return py_dict_get(c, mod_dict, argv[0]);
+    if (py_dict_has(c, mod_dict, argv[0])) {
+        VALUE cached = py_dict_get(c, mod_dict, argv[0]);
+        // Re-attach to parent if needed: a previous import of `a.b` may
+        // have run before `a` was loaded, so `a.b` was never set on `a`'s
+        // globals.  Now that `a` is in sys.modules (or about to be), wire
+        // the link up.
+        const char *cname = PY_PTR(argv[0])->str.chars;
+        size_t cname_len = PY_PTR(argv[0])->str.len;
+        const char *clast = NULL;
+        for (size_t i = 0; i < cname_len; i++)
+            if (cname[i] == '.') clast = &cname[i];
+        if (clast) {
+            VALUE pname = py_make_str(cname, (size_t)(clast - cname));
+            if (py_dict_has(c, mod_dict, pname)) {
+                VALUE par = py_dict_get(c, mod_dict, pname);
+                if (py_is_module(par) && py_is_module(cached)) {
+                    struct pyglobals *saved = c->globals;
+                    c->globals = PY_PTR(par)->module.globals;
+                    VALUE existing = PY_NONE;
+                    if (!py_global_lookup(c, clast + 1, &existing)
+                        || existing != cached) {
+                        py_global_set(c, clast + 1, cached);
+                    }
+                    c->globals = saved;
+                }
+            }
+        }
+        return cached;
+    }
 
     const char *name = PY_PTR(argv[0])->str.chars;
     size_t name_len = PY_PTR(argv[0])->str.len;
@@ -11620,6 +11648,7 @@ bi_import(CTX *c, int argc, VALUE *argv)
     // the dotted prefix up to the last dot (or the whole name if the
     // import was a package itself).
     py_global_set(c, "__name__", py_make_str(name, strlen(name)));
+    py_global_set(c, "__file__", py_make_str(path, strlen(path)));
     {
         // Package: parent of the dotted name, OR name itself if loaded
         // as `<pkg>/__init__.py`.  We approximate by checking whether

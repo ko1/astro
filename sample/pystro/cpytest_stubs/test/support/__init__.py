@@ -334,6 +334,80 @@ def reap_threads(fn):
     return fn
 
 
+def requires_debug_ranges():
+    def deco(fn):
+        return _unittest.skip("requires debug ranges")(fn)
+    return deco
+
+
+def linked_to_musl():
+    return False
+
+
+def findfile(filename, *, subdir=None):
+    return filename
+
+
+def exceeds_recursion_limit():
+    return 1000
+
+
+class SuppressCrashReport:
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+
+
+_hypothesis_stubs = type("HypothesisStubsModule", (), {
+    "given": lambda *a, **kw: (lambda fn: fn),
+    "settings": lambda *a, **kw: (lambda fn: fn),
+    "example": lambda *a, **kw: (lambda fn: fn),
+    "strategies": type("strategies", (), {
+        "integers": lambda *a, **kw: None,
+        "text": lambda *a, **kw: None,
+        "from_type": lambda t: None,
+    })(),
+})()
+
+
+def with_pymalloc():
+    return False
+
+
+def gc_collect(generations=2):
+    pass
+
+
+def force_not_colorized(fn):
+    return fn
+
+
+def force_not_colorized_test_class(cls):
+    return cls
+
+
+def is_emscripten():
+    return False
+
+
+def is_wasi():
+    return False
+
+
+def is_apple_mobile():
+    return False
+
+
+def is_android():
+    return False
+
+
+def adjust_int_max_str_digits(max_digits):
+    class _CM:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+    return _CM()
+
+
 def check_free_after_iterating(*a, **kw):
     pass
 
