@@ -1,0 +1,6 @@
+ok NestedClassTest test_nested_instance
+ok NestedClassTest test_nested_used_in_outer
+ok NestedClassTest test_nested_with_method
+ok NestedClassTest test_simple_nested
+---
+passed=4 failed=0

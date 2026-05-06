@@ -2537,7 +2537,11 @@ parse_class(void)
     if (metaclass) {
         cls = ALLOC_node_class_with_meta(cls, metaclass, cname);
     }
-    if (in_class_body) return cls;
+    if (in_class_body) {
+        // Nested class — install on the enclosing class so
+        // OuterClass.InnerClass works.
+        return ALLOC_node_class_method_set(intern_name(cname, strlen(cname)), cls);
+    }
     return make_store(cname, cls);
 }
 
