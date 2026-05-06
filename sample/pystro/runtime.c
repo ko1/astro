@@ -1428,6 +1428,19 @@ py_bit_and(CTX *c, VALUE a, VALUE b)
         VALUE av[2] = { a, b };
         return sm_intersection(c, 2, av);
     }
+    // dict_keys / dict_items support set ops in CPython.  Pystro
+    // returns lists from .keys()/.items()/.values(); allow set
+    // intersection between two lists as a courtesy so view-style
+    // code (`d1.keys() & d2.keys()`) works.
+    if ((py_is_list(a) || py_is_any_set(a)) && (py_is_list(b) || py_is_any_set(b))) {
+        VALUE r = py_make_set();
+        size_t na = PY_PTR(a)->list.len;
+        for (size_t i = 0; i < na; i++) {
+            VALUE x = PY_PTR(a)->list.items[i];
+            if (py_contains(c, b, x)) py_dict_set(c, r, x, PY_NONE);
+        }
+        return r;
+    }
     if (!py_int_or_bool(a) || !py_int_or_bool(b))
         py_raise_exc(c, c->EXC_TypeError, "unsupported operand type(s) for &");
     mpz_t za, zb; py_to_mpz(c, a, za); py_to_mpz(c, b, zb);
@@ -1459,6 +1472,24 @@ py_bit_or(CTX *c, VALUE a, VALUE b)
         for (size_t i = 0; i < src2->elen; i++)
             if (pydict_entry_live(src2, i))
                 py_dict_set(c, r, src2->entries[i].key, src2->entries[i].value);
+        return r;
+    }
+    // list | list as set union (for dict_keys-style usage).
+    if ((py_is_list(a) || py_is_any_set(a)) && (py_is_list(b) || py_is_any_set(b))) {
+        VALUE r = py_make_set();
+        size_t na = PY_PTR(a)->list.len;
+        for (size_t i = 0; i < na; i++)
+            py_dict_set(c, r, PY_PTR(a)->list.items[i], PY_NONE);
+        if (py_is_list(b)) {
+            size_t nb = PY_PTR(b)->list.len;
+            for (size_t i = 0; i < nb; i++)
+                py_dict_set(c, r, PY_PTR(b)->list.items[i], PY_NONE);
+        } else {
+            struct pydict *bd = PY_PTR(b)->dict;
+            for (size_t i = 0; i < bd->elen; i++)
+                if (pydict_entry_live(bd, i))
+                    py_dict_set(c, r, bd->entries[i].key, PY_NONE);
+        }
         return r;
     }
     if (!py_int_or_bool(a) || !py_int_or_bool(b))
