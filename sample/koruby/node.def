@@ -1021,6 +1021,8 @@ NODE_DEF
 node_splat_to_ary(CTX * restrict c, NODE * restrict n, NODE *expr)
 {
     VALUE v = EA(c, expr);
+    /* CRuby splat: nil → [] (no elements). */
+    if (NIL_P(v)) return korb_ary_new();
     if (BUILTIN_TYPE(v) == T_ARRAY) return v;
     if (BUILTIN_TYPE(v) == T_RANGE) {
         /* convert Range to Array for splat */
@@ -1032,6 +1034,23 @@ node_splat_to_ary(CTX * restrict c, NODE * restrict n, NODE *expr)
             VALUE a = korb_ary_new_capa(e - b + 1);
             for (long i = b; i <= e; i++) korb_ary_push(a, INT2FIX(i));
             return a;
+        }
+    }
+    /* CRuby: if value responds to to_a, call it.  to_a must return Array.
+     * Use respond_to? (which honors respond_to_missing?) so user mocks
+     * with method_missing-based dispatch are reached. */
+    {
+        VALUE rt = korb_funcall(c, v, korb_intern("respond_to?"), 1,
+                                (VALUE[]){ korb_id2sym(korb_intern("to_a")) });
+        if (c->state != KORB_NORMAL) { c->state = KORB_NORMAL; c->state_value = Qnil; rt = Qfalse; }
+        if (RTEST(rt)) {
+            VALUE r = korb_funcall(c, v, korb_intern("to_a"), 0, NULL);
+            if (c->state != KORB_NORMAL) return Qnil;
+            if (BUILTIN_TYPE(r) == T_ARRAY) return r;
+            VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+            korb_raise(c, (struct korb_class *)eT,
+                       "can't convert to Array (returned non-Array)");
+            return Qnil;
         }
     }
     VALUE a = korb_ary_new_capa(1);
