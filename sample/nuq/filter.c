@@ -791,6 +791,12 @@ parse_primary(lexer_t *L)
       case TK_KW_FALSE: take(L); return ALLOC_node_false();
       case TK_INT: {
         token_t tk = take(L);
+        /* jq stores all numbers as IEEE-754 doubles — match by demoting
+         * literals > 2^53 to doubles too. */
+        const long long jq_int_max = (1LL << 53);
+        if (tk.i < -jq_int_max || tk.i > jq_int_max) {
+            return ALLOC_node_lit(nuq_lit_intern(nuq_make_double((double)tk.i)));
+        }
         if (tk.i >= INT32_MIN && tk.i <= INT32_MAX) return ALLOC_node_int((int32_t)tk.i);
         return ALLOC_node_lit(nuq_lit_intern(nuq_make_int(tk.i)));
       }

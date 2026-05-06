@@ -155,10 +155,14 @@ parse_number(const char **pp, const char *end, char **err)
     if (has_frac || has_exp) {
         return nuq_make_double(strtod(buf, NULL));
     }
-    /* int parse — try strtoll; fall back to double on overflow */
+    /* int parse — try strtoll; fall back to double on overflow.
+     * jq stores all numbers as IEEE-754 doubles, so integers > 2^53
+     * lose precision.  Match that by switching to double here, even
+     * though our fixnum has more range. */
     char *e = NULL;
     long long ll = strtoll(buf, &e, 10);
-    if (e && *e == '\0' && ll >= NUQ_FIX_MIN && ll <= NUQ_FIX_MAX) {
+    const long long jq_int_max = (1LL << 53);
+    if (e && *e == '\0' && ll >= -jq_int_max && ll <= jq_int_max) {
         return NUQ_FIX(ll);
     }
     return nuq_make_double(strtod(buf, NULL));
