@@ -2594,6 +2594,8 @@ extern const struct NodeKind kind_node_call;
 extern const struct NodeKind kind_node_slice;
 extern const struct NodeKind kind_node_comma;
 extern const struct NodeKind kind_node_as;
+extern const struct NodeKind kind_node_b_select;
+extern const struct NodeKind kind_node_b_getpath;
 
 /* ---------- path-mode walk (used by `=` `|=` `+=` ... and `del`) ---------
  *
@@ -2773,6 +2775,114 @@ walk_path(CTX *c, struct Node *n, VALUE v, nuq_leaf_fn fn, void *ud)
         if (fd && fd->body) return walk_path(c, fd->body, v, fn, ud);
     }
 
+    /* `getpath([keys...])` as a path component — descend through each
+     * key with auto-vivify; apply fn at the bottom; rebuild containers. */
+    if (n->head.kind == &kind_node_b_getpath) {
+        size_t t0 = c->pool_top;
+        EMIT pe = EVAL(c, n->u.node_b_getpath.path);
+        if (c->error != NUQ_NULL) return v;
+        if (pe.count == 0) { c->pool_top = t0; return v; }
+        VALUE pv = pe.items[0];
+        if (!(NUQ_IS_PTR(pv) && NUQ_PTR(pv)->type == NUQ_T_ARRAY)) {
+            c->pool_top = t0;
+            c->error = nuq_make_string("path: getpath argument is not array", 35);
+            return v;
+        }
+        struct nuq_obj *po = NUQ_PTR(pv);
+        size_t klen = po->arr.len;
+        VALUE small[16];
+        VALUE *keys = (klen <= 16) ? small : (VALUE *)GC_malloc(klen * sizeof(VALUE));
+        memcpy(keys, po->arr.items, klen * sizeof(VALUE));
+        c->pool_top = t0;
+        /* Walk down recursively; at the leaf apply fn. */
+        VALUE *trail_small[16]; (void)trail_small;
+        VALUE cur = v;
+        VALUE trail[16];
+        if (klen > 16) {
+            c->error = nuq_make_string("path too deep", 13);
+            return v;
+        }
+        trail[0] = cur;
+        /* Descend, recording values at each level. */
+        for (size_t i = 0; i < klen; i++) {
+            VALUE k = keys[i];
+            VALUE child = NUQ_NULL;
+            if (NUQ_IS_PTR(cur) && NUQ_PTR(cur)->type == NUQ_T_OBJECT) {
+                if (!(NUQ_IS_PTR(k) && NUQ_PTR(k)->type == NUQ_T_STRING)) {
+                    char kd[80], msg[160];
+                    nuq_value_descr(k, kd, sizeof(kd));
+                    int w = snprintf(msg, sizeof(msg), "Cannot index object with %s", kd);
+                    c->error = nuq_make_string(msg, (size_t)w);
+                    return v;
+                }
+                child = nuq_object_get(cur, k);
+            } else if (NUQ_IS_PTR(cur) && NUQ_PTR(cur)->type == NUQ_T_ARRAY) {
+                if (!NUQ_IS_FIX(k)) {
+                    char kd[80], msg[160];
+                    nuq_value_descr(k, kd, sizeof(kd));
+                    int w = snprintf(msg, sizeof(msg), "Cannot index array with %s", kd);
+                    c->error = nuq_make_string(msg, (size_t)w);
+                    return v;
+                }
+                int64_t idx = NUQ_FIX_VAL(k);
+                struct nuq_obj *o = NUQ_PTR(cur);
+                int64_t real_i = idx < 0 ? idx + (int64_t)o->arr.len : idx;
+                child = (real_i >= 0 && (size_t)real_i < o->arr.len)
+                        ? o->arr.items[real_i] : NUQ_NULL;
+            } else if (NUQ_IS_PTR(cur) && NUQ_PTR(cur)->type == NUQ_T_NULL) {
+                /* auto-vivify on null along the path */
+                child = NUQ_NULL;
+            } else {
+                /* Cannot descend through scalar — jq error. */
+                char td[80], kd[80], msg[200];
+                nuq_value_descr(cur, td, sizeof(td));
+                nuq_value_descr(k, kd, sizeof(kd));
+                int w = snprintf(msg, sizeof(msg), "Cannot index %s with %s", nuq_type_name(cur), kd);
+                (void)td;
+                c->error = nuq_make_string(msg, (size_t)w);
+                return v;
+            }
+            trail[i + 1] = child;
+            cur = child;
+        }
+        /* Apply fn at the leaf. */
+        bool dropped = false;
+        VALUE new_leaf = fn(cur, ud, &dropped);
+        if (c->error != NUQ_NULL) return v;
+        /* Rebuild from leaf to root using setpath_recurse semantics. */
+        VALUE built = new_leaf;
+        for (ssize_t i = (ssize_t)klen - 1; i >= 0; i--) {
+            VALUE container = trail[i];
+            VALUE k = keys[i];
+            if (NUQ_IS_PTR(container) && NUQ_PTR(container)->type == NUQ_T_NULL) {
+                container = NUQ_IS_FIX(k) ? nuq_make_array(0) : nuq_make_object(4);
+            }
+            if (NUQ_IS_PTR(container) && NUQ_PTR(container)->type == NUQ_T_OBJECT) {
+                VALUE clone = nuq_clone(container);
+                if (dropped && i + 1 == (ssize_t)klen) {
+                    obj_with_key(clone, k, NUQ_NULL, true);
+                    /* obj_with_key returns a new clone; unfortunate. */
+                } else {
+                    nuq_object_set(clone, k, built);
+                }
+                built = clone;
+            } else if (NUQ_IS_PTR(container) && NUQ_PTR(container)->type == NUQ_T_ARRAY) {
+                int64_t idx = NUQ_FIX_VAL(k);
+                struct nuq_obj *o = NUQ_PTR(container);
+                int64_t real_i = idx < 0 ? idx + (int64_t)o->arr.len : idx;
+                if (real_i < 0) { c->error = nuq_make_string("Out of bounds negative array index", 34); return v; }
+                VALUE clone = nuq_clone(container);
+                struct nuq_obj *co = NUQ_PTR(clone);
+                while ((int64_t)co->arr.len <= real_i) nuq_array_push(clone, NUQ_NULL);
+                co->arr.items[real_i] = built;
+                built = clone;
+            } else {
+                /* Scalar — should have errored earlier; fall through. */
+                return v;
+            }
+        }
+        return built;
+    }
     /* `as(src, var, body)` — when used as a path component (which the
      * parser inserts to capture outer-`.` for index/slice args), the
      * src is `.` and we recurse into body with the var bound. */
@@ -3076,27 +3186,35 @@ path_dfs(CTX *c, struct Node **steps, size_t step_cnt, size_t k,
     if (step->head.kind == &kind_node_index || step->head.kind == &kind_node_index_opt) {
         struct Node *idx_expr = (step->head.kind == &kind_node_index)
             ? step->u.node_index.expr : step->u.node_index_opt.expr;
-        VALUE kv;
-        if (!eval_dynamic_key(c, idx_expr, &kv)) {
-            return;     /* error already set */
+        /* Evaluate the index expression — it may emit multiple values
+         * (e.g. `path(.foo[0,1])`).  Each emission spawns a separate
+         * path branch. */
+        size_t t0 = c->pool_top;
+        EMIT ie = EVAL(c, idx_expr);
+        if (c->error != NUQ_NULL) return;
+        uint32_t kc = ie.count;
+        VALUE small[16];
+        VALUE *kvs = (kc <= 16) ? small : (VALUE *)GC_malloc(kc * sizeof(VALUE));
+        memcpy(kvs, ie.items, kc * sizeof(VALUE));
+        c->pool_top = t0;
+        for (uint32_t i = 0; i < kc; i++) {
+            VALUE kv = kvs[i];
+            VALUE child = NUQ_NULL;
+            VALUE path_kv = kv;
+            if (NUQ_IS_FIX(kv) && NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_ARRAY) {
+                int64_t idx = NUQ_FIX_VAL(kv);
+                child = nuq_array_get(v, idx);
+                if (idx < 0) {
+                    int64_t abs_idx = idx + (int64_t)NUQ_PTR(v)->arr.len;
+                    if (abs_idx >= 0) path_kv = nuq_make_int(abs_idx);
+                }
+            } else if (NUQ_IS_PTR(kv) && NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_OBJECT)
+                child = nuq_object_get(v, kv);
+            path_push(pu, path_kv);
+            path_dfs(c, steps, step_cnt, k + 1, child, pu);
+            pu->cur_len--;
+            if (c->error != NUQ_NULL) return;
         }
-        VALUE child = NUQ_NULL;
-        VALUE path_kv = kv;
-        if (NUQ_IS_FIX(kv) && NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_ARRAY) {
-            int64_t idx = NUQ_FIX_VAL(kv);
-            child = nuq_array_get(v, idx);
-            /* Normalize negative array indices in the EMITTED path so
-             * jq-style descending-sort + delete works on the original
-             * array shape (we sort and apply paths to the same array). */
-            if (idx < 0) {
-                int64_t abs_idx = idx + (int64_t)NUQ_PTR(v)->arr.len;
-                if (abs_idx >= 0) path_kv = nuq_make_int(abs_idx);
-            }
-        } else if (NUQ_IS_PTR(kv) && NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_OBJECT)
-            child = nuq_object_get(v, kv);
-        path_push(pu, path_kv);
-        path_dfs(c, steps, step_cnt, k + 1, child, pu);
-        pu->cur_len--;
         return;
     }
     if (step->head.kind == &kind_node_iter || step->head.kind == &kind_node_iter_opt) {
@@ -3147,6 +3265,23 @@ path_dfs(CTX *c, struct Node **steps, size_t step_cnt, size_t k,
         path_push(pu, obj);
         if (k + 1 == step_cnt) path_emit(pu);
         pu->cur_len--;
+        return;
+    }
+    /* `select(cond)` as a path component — keep the path if cond is
+     * truthy on the current value; otherwise drop. */
+    if (step->head.kind == &kind_node_b_select) {
+        VALUE saved = c->input;
+        c->input = v;
+        size_t t0 = c->pool_top;
+        EMIT bo = EVAL(c, step->u.node_b_select.body);
+        c->input = saved;
+        if (c->error != NUQ_NULL) return;
+        bool any = false;
+        for (uint32_t i = 0; i < bo.count; i++)
+            if (nuq_truthy(bo.items[i])) { any = true; break; }
+        c->pool_top = t0;
+        if (!any) return;     /* select dropped this path */
+        path_dfs(c, steps, step_cnt, k + 1, v, pu);
         return;
     }
     /* `as(., $V, body)` step — bind $V to current value, descend into
