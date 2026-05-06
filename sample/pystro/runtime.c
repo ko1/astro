@@ -2796,6 +2796,22 @@ py_contains(CTX *c, VALUE container, VALUE v)
         return memmem(PY_PTR(container)->str.chars, PY_PTR(container)->str.len,
                       PY_PTR(v)->str.chars, PY_PTR(v)->str.len) != NULL;
     }
+    if (py_is_byteseq(container)) {
+        // bytes/bytearray: `b"a" in b"abc"` (substring) or `int in bytes`
+        // (byte-value membership).
+        if (py_is_byteseq(v)) {
+            return memmem(PY_PTR(container)->str.chars, PY_PTR(container)->str.len,
+                          PY_PTR(v)->str.chars, PY_PTR(v)->str.len) != NULL;
+        }
+        if (py_int_or_bool(v)) {
+            int64_t b = py_int_to_long(c, v);
+            if (b < 0 || b > 255) return false;
+            const char *s = PY_PTR(container)->str.chars;
+            size_t n = PY_PTR(container)->str.len;
+            for (size_t i = 0; i < n; i++) if ((unsigned char)s[i] == (unsigned char)b) return true;
+            return false;
+        }
+    }
     if (py_is_range(container) && py_int_or_bool(v)) {
         int64_t x = py_int_to_long(c, v);
         struct pyobj *r = PY_PTR(container);
@@ -10803,6 +10819,12 @@ bi_reversed(CTX *c, int argc, VALUE *argv)
     if (py_is_str(argv[0])) {
         struct pyobj *o = PY_PTR(argv[0]);
         for (size_t i = o->str.len; i > 0; i--) py_list_append(c, r, py_make_str(o->str.chars + i - 1, 1));
+        return r;
+    }
+    if (py_is_byteseq(argv[0])) {
+        struct pyobj *o = PY_PTR(argv[0]);
+        for (size_t i = o->str.len; i > 0; i--)
+            py_list_append(c, r, py_make_int((int64_t)(unsigned char)o->str.chars[i - 1]));
         return r;
     }
     if (py_is_range(argv[0])) {

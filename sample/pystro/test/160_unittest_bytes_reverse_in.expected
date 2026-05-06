@@ -1,0 +1,12 @@
+ok BytesReversedTest test_reversed
+ok BytesReversedTest test_reversed_empty
+ok BytesReversedTest test_reversed_iter
+ok BytesInTest test_int_member
+ok BytesInTest test_substring
+ok StrInTest test_substring
+ok FormatBuiltinTest test_bin_oct_hex
+ok FormatBuiltinTest test_int_width
+ok FormatBuiltinTest test_percent
+ok FormatBuiltinTest test_str_align
+---
+passed=10 failed=0
