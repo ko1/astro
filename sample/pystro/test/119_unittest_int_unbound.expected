@@ -1,0 +1,7 @@
+ok IntUnboundMethodTest test_bit_length
+ok IntUnboundMethodTest test_hasattr
+ok IntUnboundMethodTest test_to_bytes
+ok FloatUnboundMethodTest test_as_integer_ratio
+ok FloatUnboundMethodTest test_is_integer
+---
+passed=5 failed=0

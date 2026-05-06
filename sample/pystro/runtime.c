@@ -3269,6 +3269,10 @@ py_getattr(CTX *c, VALUE v, const char *name)
             else if (btag == PY_T_FROZENSET) tbl = frozenset_methods;
             else if (btag == PY_T_TUPLE) tbl = tuple_methods;
             else if (btag == PY_T_BYTES || btag == PY_T_BYTEARRAY) tbl = bytes_methods;
+            else if (btag == PY_T_BIGNUM) tbl = int_methods;
+            else if (btag == PY_T_FLOAT) tbl = float_methods;
+            else if (btag == PY_T_COMPLEX) tbl = complex_methods;
+            else if (btag == PY_T_RANGE) tbl = range_methods;
             if (tbl) {
                 for (int i = 0; tbl[i].name; i++) {
                     if (strcmp(tbl[i].name, name) == 0) {
