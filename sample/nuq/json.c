@@ -12,6 +12,7 @@
  */
 #include "context.h"
 #include <ctype.h>
+#include <math.h>
 
 static void
 skip_ws(const char **pp, const char *end)
@@ -181,7 +182,21 @@ parse_value(const char **pp, const char *end, char **err)
     }
     if (*p == 'n') {
         if (end - p >= 4 && memcmp(p, "null", 4) == 0) { *pp = p + 4; return NUQ_NULL; }
+        if (end - p >= 3 && memcmp(p, "nan", 3) == 0) { *pp = p + 3; return nuq_make_double(NAN); }
         *err = fmt_err("expected 'null'"); return NUQ_NULL;
+    }
+    /* jq extends JSON with `nan`, `NaN`, `Infinity`, `-Infinity` literals. */
+    if (*p == 'N' && end - p >= 3 && memcmp(p, "NaN", 3) == 0) {
+        *pp = p + 3; return nuq_make_double(NAN);
+    }
+    if (*p == 'I' && end - p >= 8 && memcmp(p, "Infinity", 8) == 0) {
+        *pp = p + 8; return nuq_make_double(INFINITY);
+    }
+    if (*p == '-' && end - p >= 9 && memcmp(p, "-Infinity", 9) == 0) {
+        *pp = p + 9; return nuq_make_double(-INFINITY);
+    }
+    if (*p == '-' && end - p >= 4 && memcmp(p, "-NaN", 4) == 0) {
+        *pp = p + 4; return nuq_make_double(NAN);
     }
     if (*p == '[') {
         p++;
