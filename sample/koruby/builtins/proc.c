@@ -145,14 +145,36 @@ VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* Copy params — Ruby block calling convention: when called with a
      * single Array argument and the block declares >1 param, the array
      * is auto-destructured into individual params (so blk.call([1,2])
-     * with `|a, b|` binds a=1, b=2). */
+     * with `|a, b|` binds a=1, b=2).  Procs (non-lambda) also try
+     * to_ary on a non-Array sole arg. */
     uint32_t total_pos = p->params_cnt + p->post_cnt;
-    if (argc == 1 && total_pos > 1 && p->rest_slot < 0 &&
-        !SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_ARRAY) {
-        struct korb_array *a = (struct korb_array *)argv[0];
-        argc = (int)a->len;
-        argv = a->ptr;
-        /* fall through to the regular binding path */
+    if (argc == 1 && total_pos > 1 && p->rest_slot < 0 && !p->is_lambda) {
+        VALUE arg0 = argv[0];
+        VALUE arr = Qnil;
+        if (!SPECIAL_CONST_P(arg0) && BUILTIN_TYPE(arg0) == T_ARRAY) {
+            arr = arg0;
+        } else if (!SPECIAL_CONST_P(arg0)) {
+            VALUE rt = korb_funcall(c, arg0, korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_ary")) });
+            if (c->state != KORB_NORMAL) { c->state = KORB_NORMAL; c->state_value = Qnil; rt = Qfalse; }
+            if (RTEST(rt)) {
+                VALUE coerced = korb_funcall(c, arg0, korb_intern("to_ary"), 0, NULL);
+                if (c->state != KORB_NORMAL) return Qnil;
+                if (BUILTIN_TYPE(coerced) != T_ARRAY) {
+                    VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+                    korb_raise(c, (struct korb_class *)eT,
+                               "can't convert to Array (#to_ary gave non-Array)");
+                    return Qnil;
+                }
+                arr = coerced;
+            }
+        }
+        if (!NIL_P(arr) && BUILTIN_TYPE(arr) == T_ARRAY) {
+            struct korb_array *a = (struct korb_array *)arr;
+            argc = (int)a->len;
+            argv = a->ptr;
+            /* fall through to regular binding */
+        }
     }
     {
         /* Bind positional params: req → post → (leftover spreads across

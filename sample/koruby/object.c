@@ -1646,13 +1646,41 @@ VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv)
     /* Auto-destructure: block with N params yielded a single Array of size M
      * → assign array elements to params (Ruby block calling convention).
      * Skip when the block has a *rest — destructuring would steal the rest's
-     * args. */
-    if (blk->params_cnt > 1 && argc == 1 && blk->rest_slot < 0 &&
-        !SPECIAL_CONST_P(args_buf[0]) && BUILTIN_TYPE(args_buf[0]) == T_ARRAY) {
-        struct korb_array *a = (struct korb_array *)args_buf[0];
-        for (uint32_t i = 0; i < blk->params_cnt; i++) {
-            fp[blk->param_base + i] = (i < (uint32_t)a->len) ? a->ptr[i] : Qnil;
+     * args.  When the single arg responds to to_ary, call it; if to_ary
+     * returns non-Array, raise TypeError. */
+    bool bound_destructure = false;
+    if (blk->params_cnt > 1 && argc == 1 && blk->rest_slot < 0) {
+        VALUE arg0 = args_buf[0];
+        VALUE arr = Qnil;
+        if (!SPECIAL_CONST_P(arg0) && BUILTIN_TYPE(arg0) == T_ARRAY) {
+            arr = arg0;
+        } else if (!SPECIAL_CONST_P(arg0)) {
+            /* Try to_ary if it responds to it (honors respond_to_missing?). */
+            VALUE rt = korb_funcall(c, arg0, korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_ary")) });
+            if (c->state != KORB_NORMAL) { c->state = KORB_NORMAL; c->state_value = Qnil; rt = Qfalse; }
+            if (RTEST(rt)) {
+                VALUE coerced = korb_funcall(c, arg0, korb_intern("to_ary"), 0, NULL);
+                if (c->state != KORB_NORMAL) return Qnil;
+                if (BUILTIN_TYPE(coerced) != T_ARRAY) {
+                    VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+                    korb_raise(c, (struct korb_class *)eT,
+                               "can't convert to Array (#to_ary gave non-Array)");
+                    return Qnil;
+                }
+                arr = coerced;
+            }
         }
+        if (!NIL_P(arr) && BUILTIN_TYPE(arr) == T_ARRAY) {
+            struct korb_array *a = (struct korb_array *)arr;
+            for (uint32_t i = 0; i < blk->params_cnt; i++) {
+                fp[blk->param_base + i] = (i < (uint32_t)a->len) ? a->ptr[i] : Qnil;
+            }
+            bound_destructure = true;
+        }
+    }
+    if (bound_destructure) {
+        /* destructure path took the bind */
     }
     /* Auto-pack: 1-param non-lambda block yielded with N>1 args — Ruby
      * packs them into an Array so `|x|` sees `[a, b, ...]`.  Hash#each
