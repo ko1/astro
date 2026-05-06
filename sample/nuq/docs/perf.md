@@ -33,36 +33,35 @@
 
 | bench | jq | jaq | gojq | nuq int | nuq AOT |
 |---|---|---|---|---|---|
-| `deep_field` (`[.[] \| .stats.followers] \| add`) | — | — | — | — | — |
-| `extract_field` (`[.[] \| .name] \| length`) | — | — | — | — | — |
-| `filter_count` (`[.[] \| select(.active and .age > 30)] \| length`) | — | — | — | — | — |
-| `group_by` (`group_by(.city) \| map({city: .[0].city, count: length})`) | — | — | — | — | — |
-| `identity` (`.`) | — | — | — | — | — |
-| `keys_aggregate` (`[.[] \| keys] \| add \| unique \| length`) | — | — | — | — | — |
-| `length` (`length`) | — | — | — | — | — |
-| `recurse_paths` (`.[0] \| [paths] \| length`) | — | — | — | — | — |
-| `sort_by` (`sort_by(.score) \| .[-10:] \| map(.name)`) | — | — | — | — | — |
-| `sum_score` (`[.[] \| .score] \| add`) | — | — | — | — | — |
-| `transform` (`map({name, email, top_tag: .tags[0]})`) | — | — | — | — | — |
+| `deep_field` (`[.[] \| .stats.followers] \| add`) | 56 ms | 54 ms | 44 ms | 41 ms | 42 ms |
+| `extract_field` (`[.[] \| .name] \| length`) | 52 ms | 49 ms | 43 ms | 39 ms | 39 ms |
+| `filter_count` (`[.[] \| select(.active and .age > 30)] \| length`) | 59 ms | 58 ms | 45 ms | 43 ms | 46 ms |
+| `group_by` (`group_by(.city) \| map({city: .[0].city, count: length})`) | 71 ms | 61 ms | 50 ms | 43 ms | 47 ms |
+| `identity` (`.`) | 78 ms | 75 ms | 58 ms | 53 ms | 52 ms |
+| `keys_aggregate` (`[.[] \| keys] \| add \| unique \| length`) | 254 ms | 90 ms | 80 ms | 69 ms | 73 ms |
+| `length` (`length`) | 54 ms | 45 ms | 39 ms | 39 ms | 38 ms |
+| `recurse_paths` (`.[0] \| [paths] \| length`) | 52 ms | 43 ms | 39 ms | 40 ms | 38 ms |
+| `sort_by` (`sort_by(.score) \| .[-10:] \| map(.name)`) | 72 ms | 63 ms | 108 ms | 45 ms | 48 ms |
+| `sum_score` (`[.[] \| .score] \| add`) | 63 ms | 54 ms | 50 ms | 44 ms | 45 ms |
+| `transform` (`map({name, email, top_tag: .tags[0]})`) | 80 ms | 90 ms | 59 ms | 59 ms | 55 ms |
 
-(絶対値はランごとの variance が ±10% 程度あるので倍率テーブルだけ
-維持。ms は `make bench` の出力を参照。)
+(ランごとに ±10% 程度の variance あり。倍率テーブルは下。)
 
 vs jq (≧1.0 = nuq の方が速い):
 
 | bench | jq | jaq | gojq | **nuq AOT** |
 |---|---|---|---|---|
-| `deep_field` | 1.00x | 1.09x | 1.22x | **1.40x** |
-| `extract_field` | 1.00x | 1.11x | 1.30x | **1.38x** |
-| `filter_count` | 1.00x | 0.99x | 1.22x | **1.39x** |
-| `group_by` | 1.00x | 1.15x | 1.35x | **1.49x** |
-| `identity` | 1.00x | 1.04x | 1.25x | **1.50x** |
-| `keys_aggregate` | 1.00x | 2.76x | 3.16x | **3.56x** |
-| `length` | 1.00x | 1.20x | 1.29x | **1.33x** |
-| `recurse_paths` | 1.00x | 1.21x | 1.34x | **1.41x** |
-| `sort_by` | 1.00x | 1.16x | 0.63x | **1.50x** |
-| `sum_score` | 1.00x | 1.18x | 1.37x | **1.48x** |
-| `transform` | 1.00x | 0.92x | 1.47x | **1.47x** |
+| `deep_field` | 1.00x | 1.04x | 1.29x | **1.34x** |
+| `extract_field` | 1.00x | 1.07x | 1.21x | **1.35x** |
+| `filter_count` | 1.00x | 1.02x | 1.31x | **1.29x** |
+| `group_by` | 1.00x | 1.16x | 1.43x | **1.51x** |
+| `identity` | 1.00x | 1.05x | 1.35x | **1.51x** |
+| `keys_aggregate` | 1.00x | 2.83x | 3.17x | **3.47x** |
+| `length` | 1.00x | 1.20x | 1.39x | **1.45x** |
+| `recurse_paths` | 1.00x | 1.21x | 1.33x | **1.37x** |
+| `sort_by` | 1.00x | 1.15x | 0.67x | **1.49x** |
+| `sum_score` | 1.00x | 1.17x | 1.26x | **1.42x** |
+| `transform` | 1.00x | 0.89x | 1.35x | **1.45x** |
 
 実用ワークロード **11 中 11 すべてで jq 越え** (1.3-3.4×)。
 `transform` の改善 (1.31→1.50×) は object literal の fast path
