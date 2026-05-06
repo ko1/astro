@@ -156,7 +156,11 @@ class Counter:
             return self._d == other._d
         return False
     def __repr__(self):
-        return "Counter(" + repr(self._d) + ")"
+        # CPython sorts by descending count for the repr — most_common
+        # ordering — so equal Counters always look the same.
+        items = sorted(self._d.items(), key=lambda kv: -kv[1])
+        body = ", ".join(repr(k) + ": " + repr(v) for k, v in items)
+        return "Counter({" + body + "})"
 
 
 class deque:

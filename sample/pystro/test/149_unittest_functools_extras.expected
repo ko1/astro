@@ -1,0 +1,11 @@
+ok WrapsTest test_copies_name_and_doc
+ok LRUCacheTest test_caches
+ok LRUCacheTest test_clear
+ok LRUCacheTest test_eviction
+ok FStringConcatTest test_fstr_fstr
+ok FStringConcatTest test_fstr_str
+ok FStringConcatTest test_paren_split
+ok FStringConcatTest test_str_fstr
+ok CounterReprTest test_descending
+---
+passed=9 failed=0

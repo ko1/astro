@@ -27,8 +27,16 @@ def reduce(fn, iterable, initial=None):
 
 
 def wraps(wrapped):
-    # Simplified: return a no-op decorator.  Real Python copies __name__ etc.
+    # Copy __name__, __doc__, __module__ from `wrapped` onto the
+    # decorated function — same behaviour as CPython's functools.wraps,
+    # though we do not bother with __wrapped__ unwrapping.
     def deco(fn):
+        for attr in ("__name__", "__doc__", "__module__", "__qualname__"):
+            try:
+                setattr(fn, attr, getattr(wrapped, attr))
+            except AttributeError:
+                pass
+        fn.__wrapped__ = wrapped
         return fn
     return deco
 
@@ -50,22 +58,50 @@ def lru_cache(maxsize=128):
     # @lru_cache (no parens), `maxsize` is the function being decorated.
     if callable(maxsize):
         # @lru_cache used directly
-        return cache(maxsize)
+        fn = maxsize
+        return _wrap_lru(fn, 128)
     def deco(fn):
-        memo = {}
-        order = []
-        def wrapper(*args):
-            if args in memo:
-                return memo[args]
-            v = fn(*args)
-            memo[args] = v
-            order.append(args)
-            if maxsize is not None and len(order) > maxsize:
-                old = order.pop(0)
-                del memo[old]
-            return v
-        return wrapper
+        return _wrap_lru(fn, maxsize)
     return deco
+
+
+def _wrap_lru(fn, maxsize):
+    memo = {}
+    order = []
+    stats = {"hits": 0, "misses": 0}
+    def wrapper(*args, **kwargs):
+        key = args if not kwargs else (args, tuple(sorted(kwargs.items())))
+        if key in memo:
+            stats["hits"] += 1
+            return memo[key]
+        v = fn(*args, **kwargs)
+        memo[key] = v
+        order.append(key)
+        stats["misses"] += 1
+        if maxsize is not None and len(order) > maxsize:
+            old = order.pop(0)
+            del memo[old]
+        return v
+    def cache_info():
+        return _CacheInfo(stats["hits"], stats["misses"], maxsize, len(memo))
+    def cache_clear():
+        memo.clear()
+        order.clear()
+        stats["hits"] = 0
+        stats["misses"] = 0
+    wrapper.cache_info = cache_info
+    wrapper.cache_clear = cache_clear
+    wrapper.__wrapped__ = fn
+    return wrapper
+
+
+class _CacheInfo:
+    def __init__(self, hits, misses, maxsize, currsize):
+        self.hits = hits; self.misses = misses
+        self.maxsize = maxsize; self.currsize = currsize
+    def __repr__(self):
+        return (f"CacheInfo(hits={self.hits}, misses={self.misses}, "
+                f"maxsize={self.maxsize}, currsize={self.currsize})")
 
 
 def cmp_to_key(cmp):

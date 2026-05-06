@@ -1413,8 +1413,10 @@ parse_atom(void)
       }
       case T_STR: {
         tok_pos++;
-        // Implicit concatenation of adjacent string literals.
-        if (peek_tok(0)->kind != T_STR) return ALLOC_node_const_str(t->sval);
+        // Implicit concatenation of adjacent string literals — possibly
+        // mixing plain and f-string forms, e.g.  "hi " f"{name}" "!".
+        // Plain runs are concatenated into one literal; f-strings join
+        // via runtime + at the AST level.
         size_t total = strlen(t->sval);
         char buf[8192];
         size_t bl = 0;
@@ -1428,7 +1430,27 @@ parse_atom(void)
             tok_pos++;
         }
         buf[bl] = '\0';
-        return ALLOC_node_const_str(intern_name(buf, bl));
+        NODE *result = ALLOC_node_const_str(intern_name(buf, bl));
+        while (peek_tok(0)->kind == T_FSTR || peek_tok(0)->kind == T_STR) {
+            if (peek_tok(0)->kind == T_FSTR) {
+                Tok *ft = peek_tok(0);
+                tok_pos++;
+                NODE *fnode = parse_fstring(ft);
+                result = ALLOC_node_add(result, fnode);
+            } else {
+                size_t bl2 = 0;
+                while (peek_tok(0)->kind == T_STR) {
+                    const char *s = peek_tok(0)->sval;
+                    size_t l = strlen(s);
+                    if (bl2 + l + 1 > sizeof(buf)) parse_error("implicit concat string too long");
+                    memcpy(buf + bl2, s, l); bl2 += l;
+                    tok_pos++;
+                }
+                buf[bl2] = '\0';
+                result = ALLOC_node_add(result, ALLOC_node_const_str(intern_name(buf, bl2)));
+            }
+        }
+        return result;
       }
       case T_BYTES: {
         tok_pos++;
@@ -1449,7 +1471,28 @@ parse_atom(void)
       }
       case T_FSTR: {
         tok_pos++;
-        return parse_fstring(t);
+        NODE *result = parse_fstring(t);
+        // Implicit concatenation: f"..." f"..." or f"..." "..."
+        while (peek_tok(0)->kind == T_FSTR || peek_tok(0)->kind == T_STR) {
+            if (peek_tok(0)->kind == T_FSTR) {
+                Tok *ft = peek_tok(0);
+                tok_pos++;
+                result = ALLOC_node_add(result, parse_fstring(ft));
+            } else {
+                char buf[8192];
+                size_t bl = 0;
+                while (peek_tok(0)->kind == T_STR) {
+                    const char *s = peek_tok(0)->sval;
+                    size_t l = strlen(s);
+                    if (bl + l + 1 > sizeof(buf)) parse_error("implicit concat string too long");
+                    memcpy(buf + bl, s, l); bl += l;
+                    tok_pos++;
+                }
+                buf[bl] = '\0';
+                result = ALLOC_node_add(result, ALLOC_node_const_str(intern_name(buf, bl)));
+            }
+        }
+        return result;
       }
       case T_TRUE:  tok_pos++; return ALLOC_node_const_true();
       case T_FALSE: tok_pos++; return ALLOC_node_const_false();

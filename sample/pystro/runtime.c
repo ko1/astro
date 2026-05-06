@@ -3445,6 +3445,14 @@ py_getattr(CTX *c, VALUE v, const char *name)
     if (py_is_func(v)) {
         struct pyobj *o = PY_PTR(v);
         if (strcmp(name, "__name__") == 0 || strcmp(name, "__qualname__") == 0) {
+            // If user set __name__ via setattr (e.g. functools.wraps),
+            // honour the override; otherwise fall back to the original
+            // function name.
+            if (o->func.attrs) {
+                VALUE k = py_make_str(name, strlen(name));
+                int32_t e = pydict_find(c, o->func.attrs, k, py_hash(c, k));
+                if (e >= 0) return o->func.attrs->entries[e].value;
+            }
             const char *n = o->func.name ? o->func.name : "<func>";
             return py_make_str(n, strlen(n));
         }
