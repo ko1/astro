@@ -26,8 +26,60 @@ def fabs(x):
     # Always returns float (matches Python's math.fabs).
     return float(-x) if x < 0 else float(x)
 
-def hypot(x, y):
-    return __pystro_sqrt__(x * x + y * y)
+def hypot(*coords):
+    # CPython hypot accepts arbitrarily many coordinates.
+    if len(coords) == 0: return 0.0
+    s = 0.0
+    for c in coords:
+        s += c * c
+    return __pystro_sqrt__(s)
+
+
+def dist(p, q):
+    # Euclidean distance between two points (iterables of equal length).
+    s = 0.0
+    pl = list(p)
+    ql = list(q)
+    if len(pl) != len(ql):
+        raise ValueError("both points must have the same number of dimensions")
+    for i in range(len(pl)):
+        d = pl[i] - ql[i]
+        s += d * d
+    return __pystro_sqrt__(s)
+
+
+def fsum(seq):
+    # Naive accumulation — CPython's math.fsum is O(n) Kahan/Shewchuk; we
+    # approximate with float add (good enough for moderate n).
+    s = 0.0
+    for x in seq:
+        s += x
+    return s
+
+
+def fmod(a, b):
+    # C-style remainder: same sign as `a`.
+    r = a - (int(a / b) * b)
+    return float(r)
+
+
+def remainder(a, b):
+    # IEEE 754 remainder.  Approximation.
+    n = round(a / b)
+    return float(a - n * b)
+
+
+def expm1(x):
+    return exp(x) - 1.0
+
+
+def log1p(x):
+    return log(1.0 + x)
+
+
+def cbrt(x):
+    if x < 0: return -((-x) ** (1.0 / 3.0))
+    return x ** (1.0 / 3.0)
 
 def factorial(n):
     if n < 0:
@@ -131,8 +183,9 @@ __all__ = [
     "sqrt", "sin", "cos", "tan", "asin", "acos", "atan",
     "sinh", "cosh", "tanh",
     "log", "log2", "log10", "exp",
-    "floor", "ceil", "trunc", "atan2", "pow", "fabs", "hypot",
+    "floor", "ceil", "trunc", "atan2", "pow", "fabs", "hypot", "dist",
     "factorial", "gcd", "lcm", "comb", "perm",
     "isclose", "isnan", "isinf", "isfinite",
     "copysign", "degrees", "radians",
+    "fsum", "fmod", "remainder", "expm1", "log1p", "cbrt",
 ]

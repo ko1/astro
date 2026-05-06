@@ -1,0 +1,7 @@
+ok MathExtrasTest test_cbrt
+ok MathExtrasTest test_dist
+ok MathExtrasTest test_expm1_log1p
+ok MathExtrasTest test_fsum
+ok MathExtrasTest test_hypot_n
+---
+passed=5 failed=0
