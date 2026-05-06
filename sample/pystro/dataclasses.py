@@ -255,5 +255,26 @@ def astuple(obj):
     return tuple(getattr(obj, fn) for fn in fields)
 
 
+# InitVar — type-annotation marker for fields that are constructor-only
+# and not stored as instance attrs.  Pystro's dataclass currently keeps
+# them as regular fields; the marker simply parses without error.
+class InitVar:
+    def __class_getitem__(cls, item):
+        return cls
+
+
+# KW_ONLY marker (3.10+) — keyword-only field separator.  No-op here.
+class _KwOnly:
+    pass
+KW_ONLY = _KwOnly
+
+
+# MISSING sentinel.
+class _Missing:
+    def __repr__(self): return "MISSING"
+MISSING = _Missing()
+
+
 __all__ = ["dataclass", "make_dataclass", "asdict", "astuple", "fields",
-           "field", "is_dataclass", "replace"]
+           "field", "is_dataclass", "replace",
+           "InitVar", "KW_ONLY", "MISSING", "FrozenInstanceError"]

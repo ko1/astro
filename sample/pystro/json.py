@@ -242,4 +242,47 @@ def _apply_hook(v, hook):
         return [_apply_hook(x, hook) for x in v]
     return v
 
-__all__ = ["dumps", "loads"]
+# JSONEncoder / JSONDecoder — minimal classes for code that subclasses
+# them to customise serialisation.
+class JSONEncoder:
+    def __init__(self, *, skipkeys=False, ensure_ascii=True, check_circular=True,
+                 allow_nan=True, sort_keys=False, indent=None, separators=None,
+                 default=None):
+        self.skipkeys = skipkeys
+        self.ensure_ascii = ensure_ascii
+        self.sort_keys = sort_keys
+        self.indent = indent
+        self.separators = separators
+        self.default_fn = default
+    def default(self, o):
+        raise TypeError("Object of type " + type(o).__name__ + " is not JSON serializable")
+    def encode(self, o):
+        try:
+            return dumps(o, indent=self.indent, sort_keys=self.sort_keys,
+                         ensure_ascii=self.ensure_ascii)
+        except TypeError:
+            substituted = self.default(o)
+            return dumps(substituted, indent=self.indent, sort_keys=self.sort_keys,
+                         ensure_ascii=self.ensure_ascii)
+    def iterencode(self, o):
+        yield self.encode(o)
+
+
+class JSONDecoder:
+    def __init__(self, *, object_hook=None, object_pairs_hook=None,
+                 parse_float=None, parse_int=None, parse_constant=None,
+                 strict=True):
+        self.object_hook = object_hook
+    def decode(self, s):
+        return loads(s, object_hook=self.object_hook)
+
+
+class JSONDecodeError(ValueError):
+    def __init__(self, msg, doc="", pos=0):
+        super().__init__(msg)
+        self.msg = msg
+        self.doc = doc
+        self.pos = pos
+
+
+__all__ = ["dumps", "loads", "JSONEncoder", "JSONDecoder", "JSONDecodeError"]

@@ -1504,8 +1504,10 @@ static NODE *
 parse_atom(void)
 {
     Tok *t = peek_tok(0);
-    // `await EXPR` is a SyntaxError outside an async def — pystro has
-    // no async, so it's always invalid.
+    // `await EXPR` — pystro has no real coroutine model, so we treat
+    // `await x` as just `x` (the value is whatever the call returned).
+    // This allows `async def f(): await something()` to run as plain
+    // synchronous code.
     if (t->kind == T_NAME && t->sval == intern_name("await", 5)
             && peek_tok(1)->kind != T_LPAREN
             && peek_tok(1)->kind != T_DOT
@@ -1513,7 +1515,8 @@ parse_atom(void)
             && peek_tok(1)->kind != T_RPAREN
             && peek_tok(1)->kind != T_ASSIGN
             && peek_tok(1)->kind != T_NEWLINE) {
-        parse_error("'await' is not supported by pystro (no coroutine model)");
+        tok_pos++;
+        return parse_atom();
     }
     switch (t->kind) {
       case T_INT: {
@@ -3829,12 +3832,15 @@ static NODE *
 parse_stmt(void)
 {
     int k = peek_tok(0)->kind;
-    // `async def` / `async for` / `async with` are SyntaxErrors —
-    // pystro has no real coroutine model.  Use sync code instead.
+    // `async def` / `async for` / `async with` — pystro has no real
+    // coroutine model, but we accept the syntax and treat them as
+    // their plain (sync) counterparts.  This makes `async def f():`
+    // declarations parse and run as ordinary functions.
     if (k == T_NAME && peek_tok(0)->sval == intern_name("async", 5)) {
         int next = peek_tok(1)->kind;
         if (next == T_DEF || next == T_FOR || next == T_WITH) {
-            parse_error("'async' is not supported by pystro (no coroutine model)");
+            tok_pos++;     // consume "async"
+            k = peek_tok(0)->kind;
         }
     }
     if (k == T_AT)     return parse_decorated();

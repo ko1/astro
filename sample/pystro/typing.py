@@ -75,6 +75,26 @@ AsyncIterable = _GenericAlias(lambda x: x, "typing.AsyncIterable")
 AsyncIterator = _GenericAlias(lambda x: x, "typing.AsyncIterator")
 
 
+# TypedDict — runtime no-op; subclasses are just dicts at runtime.
+class _TypedDictMeta(type):
+    def __new__(mcs, name, bases, ns):
+        cls = type.__new__(mcs, name, bases, ns)
+        cls.__total__ = ns.get("__total__", True)
+        return cls
+
+    def __call__(cls, *args, **kwargs):
+        # TypedDict("Name", **kwargs) builds a dict of those values.
+        if not args and kwargs:
+            return dict(kwargs)
+        if len(args) == 1 and isinstance(args[0], dict) and not kwargs:
+            return dict(args[0])
+        return dict(*args, **kwargs)
+
+
+class TypedDict(metaclass=_TypedDictMeta):
+    pass
+
+
 def get_type_hints(obj):
     return {}
 
@@ -100,15 +120,28 @@ class NamedTupleMeta(type):
             if n in ns:
                 defaults[n] = ns.pop(n)
         # Build via collections.namedtuple, then layer user methods.
-        nt = _collections.namedtuple(name, field_names) if field_names else None
-        if nt is None:
+        # Defaults align right-most: pass right-aligned default values.
+        if not field_names:
             return type.__new__(mcs, name, bases, ns)
-        # Apply defaults (right-aligned).
-        if defaults:
-            try:
-                nt.__defaults__ = tuple(defaults[k] for k in field_names if k in defaults)
-            except Exception:
-                pass
+        defaults_list = []
+        for n in field_names:
+            if n in defaults:
+                defaults_list.append(defaults[n])
+            else:
+                defaults_list = []  # break: any non-default after a defaulted is invalid
+        # Defaults must be right-aligned: take the suffix of field_names where
+        # every name has a default.
+        right_default_count = 0
+        for n in reversed(field_names):
+            if n in defaults:
+                right_default_count += 1
+            else:
+                break
+        if right_default_count:
+            d_tuple = tuple(defaults[n] for n in field_names[-right_default_count:])
+            nt = _collections.namedtuple(name, field_names, defaults=d_tuple)
+        else:
+            nt = _collections.namedtuple(name, field_names)
         # Copy any user-defined methods onto nt.
         for k, v in ns.items():
             if k.startswith("__") and k in ("__init__",): continue

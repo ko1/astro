@@ -492,12 +492,25 @@ read_number(void)
     tok_last()->ival = (int64_t)ll;
 }
 
+// Identifier byte test.  ASCII follows isalnum/_ rules; UTF-8 multibyte
+// sequences (any byte >= 0x80) are accepted as identifier bytes — this
+// roughly matches Python's permissive identifier rules without needing
+// a full Unicode property database.
+static inline bool
+is_ident_byte(unsigned char b, bool first)
+{
+    if (b == '_') return true;
+    if (b >= 0x80) return true;     // UTF-8 lead/continuation byte
+    if (first) return isalpha(b) != 0;
+    return isalnum(b) != 0;
+}
+
 static void
 read_name(void)
 {
     int line = src_line;
     size_t start = src_pos;
-    while (isalnum((unsigned char)peek(0)) || peek(0) == '_') src_pos++;
+    while (is_ident_byte((unsigned char)peek(0), false)) src_pos++;
     size_t len = src_pos - start;
     int k = keyword_kind(src_buf + start, len);
     tok_push(k, line);
@@ -599,7 +612,7 @@ tokenize(const char *src, const char *filename)
                 continue;
             }
         }
-        if (isalpha((unsigned char)ch) || ch == '_') { read_name(); continue; }
+        if (is_ident_byte((unsigned char)ch, true)) { read_name(); continue; }
         if (ch == '\'' || ch == '"') { read_string_lit(src_line, ch, false); continue; }
 
         int line = src_line;

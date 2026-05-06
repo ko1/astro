@@ -27,6 +27,24 @@ class _EnumMember:
         return False
     def __hash__(self):
         return hash((self.name, self.value))
+    # Numeric ops — delegate to value, so IntEnum members work as ints.
+    def __int__(self): return int(self.value)
+    def __index__(self): return int(self.value)
+    def __add__(self, o): return self.value + (o.value if isinstance(o, _EnumMember) else o)
+    def __radd__(self, o): return (o.value if isinstance(o, _EnumMember) else o) + self.value
+    def __sub__(self, o): return self.value - (o.value if isinstance(o, _EnumMember) else o)
+    def __rsub__(self, o): return (o.value if isinstance(o, _EnumMember) else o) - self.value
+    def __mul__(self, o): return self.value * (o.value if isinstance(o, _EnumMember) else o)
+    def __rmul__(self, o): return (o.value if isinstance(o, _EnumMember) else o) * self.value
+    def __or__(self, o): return self.value | (o.value if isinstance(o, _EnumMember) else o)
+    def __and__(self, o): return self.value & (o.value if isinstance(o, _EnumMember) else o)
+    def __xor__(self, o): return self.value ^ (o.value if isinstance(o, _EnumMember) else o)
+    def __lt__(self, o): return self.value <  (o.value if isinstance(o, _EnumMember) else o)
+    def __le__(self, o): return self.value <= (o.value if isinstance(o, _EnumMember) else o)
+    def __gt__(self, o): return self.value >  (o.value if isinstance(o, _EnumMember) else o)
+    def __ge__(self, o): return self.value >= (o.value if isinstance(o, _EnumMember) else o)
+    def __bool__(self):
+        return bool(self.value)
 
 
 def _make_enum(typename, items):

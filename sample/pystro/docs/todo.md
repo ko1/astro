@@ -10,9 +10,11 @@ R11–R16 で深掘り (test 78–207 追加, **208 unit tests passing**)。 [do
 
 ### 残存する仕様上の差分 (低優先)
 
-#### S-15. async/await ✅ (R16)
-- `async def` / `async for` / `async with` / `await` は SyntaxError として
-  弾く (R16 で対応)。coroutine model 自体は無いので asyncio stub が使うだけ。
+#### S-15. async/await ✅ (R17)
+- `async def` / `async for` / `async with` / `await` は **sync として通す**
+  (R17 で改修)。R16 では SyntaxError だったが、CPython compat 重視で
+  parse OK にして同期実行する方針へ変更。`asyncio.run(async f())` 等が
+  ちゃんと動く。real coroutine ではないので yield ベースの並行は不可。
 
 #### S-16. Wide Unicode support ✅ (R17)
 - ✅ (R16) `\u` / `\U` lexer エスケープ → UTF-8 として byte string に展開

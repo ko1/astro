@@ -2524,6 +2524,36 @@ py_list_get(CTX *c, VALUE seq, VALUE idx)
             return py_list_get(c, primary, idx);
         }
     }
+    if (PY_IS_PTR(seq) && PY_PTR(seq)->type == PY_T_MEMVIEW) {
+        struct pyobj *mv = PY_PTR(seq);
+        struct pyobj *src = PY_PTR(mv->memview.source);
+        if (PY_IS_PTR(idx) && PY_PTR(idx)->type == PY_T_SLICE) {
+            struct pyobj *sl = PY_PTR(idx);
+            int64_t a, b, st;
+            int64_t len = (int64_t)mv->memview.len;
+            st = (sl->slice_.step == PY_NONE) ? 1 : py_int_to_long(c, sl->slice_.step);
+            if (st != 1) py_raise_exc(c, c->EXC_ValueError, "memoryview: only step=1 slicing");
+            a = (sl->slice_.start == PY_NONE) ? 0 : py_int_to_long(c, sl->slice_.start);
+            b = (sl->slice_.stop == PY_NONE) ? len : py_int_to_long(c, sl->slice_.stop);
+            if (a < 0) { a += len; }
+            if (a < 0) { a = 0; }
+            if (a > len) { a = len; }
+            if (b < 0) { b += len; }
+            if (b < 0) { b = 0; }
+            if (b > len) { b = len; }
+            if (b < a) { b = a; }
+            struct pyobj *r = py_alloc(PY_T_MEMVIEW);
+            r->memview.source = mv->memview.source;
+            r->memview.off = mv->memview.off + (size_t)a;
+            r->memview.len = (size_t)(b - a);
+            return PY_OBJ_VAL(r);
+        }
+        int64_t i = py_int_to_long(c, idx);
+        int64_t len = (int64_t)mv->memview.len;
+        if (i < 0) i += len;
+        if (i < 0 || i >= len) py_raise_exc(c, c->EXC_IndexError, "memoryview index out of range");
+        return PY_FIX((unsigned char)src->str.chars[mv->memview.off + (size_t)i]);
+    }
     // Slice index: convert to py_list_slice call.
     if (PY_IS_PTR(idx) && PY_PTR(idx)->type == PY_T_SLICE) {
         struct pyobj *sl = PY_PTR(idx);
@@ -2636,6 +2666,27 @@ py_list_slice(CTX *c, VALUE seq, VALUE start, VALUE stop, VALUE step)
         }
         if (PY_PTR(seq)->inst.primary)
             return py_list_slice(c, PY_PTR(seq)->inst.primary, start, stop, step);
+    }
+    // memoryview slice → new memoryview onto same buffer.
+    if (PY_IS_PTR(seq) && PY_PTR(seq)->type == PY_T_MEMVIEW) {
+        struct pyobj *mv = PY_PTR(seq);
+        int64_t mlen = (int64_t)mv->memview.len;
+        int64_t st = (step == PY_NONE) ? 1 : py_int_to_long(c, step);
+        if (st != 1) py_raise_exc(c, c->EXC_ValueError, "memoryview: only step=1 slicing");
+        int64_t a = (start == PY_NONE) ? 0 : py_int_to_long(c, start);
+        int64_t b = (stop  == PY_NONE) ? mlen : py_int_to_long(c, stop);
+        if (a < 0) a += mlen;
+        if (a < 0) a = 0;
+        if (a > mlen) a = mlen;
+        if (b < 0) b += mlen;
+        if (b < 0) b = 0;
+        if (b > mlen) b = mlen;
+        if (b < a) b = a;
+        struct pyobj *r = py_alloc(PY_T_MEMVIEW);
+        r->memview.source = mv->memview.source;
+        r->memview.off = mv->memview.off + (size_t)a;
+        r->memview.len = (size_t)(b - a);
+        return PY_OBJ_VAL(r);
     }
     int64_t len;
     bool is_str = py_is_str(seq);
@@ -2954,6 +3005,7 @@ py_seq_len(CTX *c, VALUE v)
     if (py_is_str(v))
         return py_str_cp_count(PY_PTR(v)->str.chars, PY_PTR(v)->str.len);
     if (py_is_byteseq(v)) return PY_PTR(v)->str.len;
+    if (PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_MEMVIEW) return PY_PTR(v)->memview.len;
     if (py_is_list(v) || py_is_tuple(v)) return PY_PTR(v)->list.len;
     if (py_is_dict(v) || py_is_any_set(v))  return PY_PTR(v)->dict->used;
     if (py_is_range(v)) {
@@ -3547,6 +3599,12 @@ py_getattr(CTX *c, VALUE v, const char *name)
         if (strcmp(name, "fget") == 0) return PY_PTR(v)->wrap.wrapped;
         if (strcmp(name, "fset") == 0) return PY_PTR(v)->wrap.setter;
         if (strcmp(name, "fdel") == 0) return PY_PTR(v)->wrap.deleter;
+        if (strcmp(name, "__doc__") == 0) {
+            // Forward to the getter's __doc__ (the @property-decorated function).
+            VALUE fg = PY_PTR(v)->wrap.wrapped;
+            if (fg != PY_NONE && py_is_func(fg)) return py_getattr(c, fg, "__doc__");
+            return PY_NONE;
+        }
         if (strcmp(name, "setter") == 0) {
             VALUE fn = py_make_builtin("setter", bi_property_setter_call, 2, 2);
             return py_make_bound(v, fn);
@@ -4854,8 +4912,22 @@ gen_entry(void)
     // an exception escapes the gen, it sets state=RAISE and returns
     // here; the swapcontext-back path in py_gen_next propagates it.
     c->try_top = 0;
-
-    EVAL(c, f->func.body);
+    // Capture uncaught exceptions inside the gen body via a local
+    // setjmp.  py_raise_exc longjmps to err_jmp when try_top is 0; if
+    // we don't override that, the longjmp would target main()'s err_jmp
+    // — which lives on the main stack, not the gen's ucontext stack.
+    // Save the caller's err_jmp + active flag, install our own, run the
+    // body, then restore.  Either path leaves c->state set so the
+    // caller (py_gen_next) can propagate.
+    jmp_buf saved_err_jmp;
+    int saved_err_active = c->err_jmp_active;
+    memcpy(saved_err_jmp, c->err_jmp, sizeof(jmp_buf));
+    if (setjmp(c->err_jmp) == 0) {
+        c->err_jmp_active = 1;
+        EVAL(c, f->func.body);
+    }
+    c->err_jmp_active = saved_err_active;
+    memcpy(c->err_jmp, saved_err_jmp, sizeof(jmp_buf));
 
     // If gen body executed `return X`, capture X for StopIteration.value.
     if (c->state == PY_STATE_RETURN) {
@@ -9028,6 +9100,11 @@ bi_bytes(CTX *c, int argc, VALUE *argv)
     }
     if (py_is_byteseq(v)) return py_make_bytes(PY_PTR(v)->str.chars, PY_PTR(v)->str.len);
     if (py_is_str(v))     return py_make_bytes(PY_PTR(v)->str.chars, PY_PTR(v)->str.len);
+    if (PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_MEMVIEW) {
+        struct pyobj *mv = PY_PTR(v);
+        const char *p = PY_PTR(mv->memview.source)->str.chars + mv->memview.off;
+        return py_make_bytes(p, mv->memview.len);
+    }
     // iterable of ints
     struct py_iter it; py_iter_init(c, &it, v);
     if (c->state != PY_STATE_NORMAL) return PY_NONE;
