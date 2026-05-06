@@ -1372,6 +1372,35 @@ static NODE *build_pattern_check(struct transduce_context *tc, pm_node_t *pat,
               NODE *sub = build_pattern_check(tc, val_pat, elem_slot);
               combined = ALLOC_node_and(combined, ALLOC_node_seq(bind_subj, sub));
           }
+          /* CRuby hash-pattern semantics (subtle):
+           *   `{}`           — only empty hashes
+           *   `{a:}`         — has key :a (extras allowed)
+           *   `{a:, **rest}` — has key :a, captures extras into rest
+           *   `{a:, **nil}`  — has key :a only (no extras)
+           * Add a size check only when:
+           *   (a) cnt == 0 and no rest      (empty pattern → exact match)
+           *   (b) **nil present              (no extras allowed) */
+          bool no_extra_keys = false;
+          if (cnt == 0 && !h->rest) {
+              no_extra_keys = true;
+          } else if (h->rest && PM_NODE_TYPE_P(h->rest, PM_NO_KEYWORDS_PARAMETER_NODE)) {
+              no_extra_keys = true;
+          }
+          if (no_extra_keys) {
+              uint32_t ai_sz = inc_arg_index(tc);
+              rewind_arg_index(tc, ai_sz);
+              struct method_cache *mc_sz = alloc_method_cache();
+              NODE *sz_call = ALLOC_node_method_call(
+                  ALLOC_node_lvar_get(subj_slot), korb_intern("size"), 0, ai_sz, mc_sz);
+              uint32_t ai_eq = inc_arg_index(tc);
+              inc_arg_index(tc); rewind_arg_index(tc, ai_eq);
+              struct method_cache *mc_eq = alloc_method_cache();
+              NODE *cmp_arg = ALLOC_node_lvar_set(ai_eq, ALLOC_node_num((int32_t)cnt));
+              NODE *eq = ALLOC_node_seq(cmp_arg,
+                  ALLOC_node_method_call(sz_call, korb_intern("=="), 1, ai_eq, mc_eq));
+              combined = ALLOC_node_and(combined, eq);
+          }
+
           /* `**rest` — bind the leftover keys to a fresh local.  We build:
            *   rest = subj.dup
            *   rest.delete(:k1); rest.delete(:k2); ...
