@@ -1240,8 +1240,9 @@ py_add(CTX *c, VALUE a, VALUE b)
         memcpy(buf,      PY_PTR(a)->str.chars, la);
         memcpy(buf + la, PY_PTR(b)->str.chars, lb);
         buf[la + lb] = '\0';
-        // Result type: bytearray if either operand is bytearray, else bytes.
-        if (py_is_bytearray(a) || py_is_bytearray(b))
+        // Result type tracks the LEFT operand (CPython behaviour):
+        //   bytes + bytearray → bytes; bytearray + bytes → bytearray.
+        if (py_is_bytearray(a))
             return py_make_bytearray(buf, la + lb);
         return py_make_bytes(buf, la + lb);
     }
@@ -1988,7 +1989,8 @@ py_hash(CTX *c, VALUE v)
         union { uint64_t u; double d; } pi = { .d = o->cpx.im };
         return pr.u ^ pi.u;
       }
-      case PY_T_STR: {
+      case PY_T_STR:
+      case PY_T_BYTES: {
         uint64_t h = 0xCBF29CE484222325ULL;
         for (size_t i = 0; i < o->str.len; i++) {
             h ^= (unsigned char)o->str.chars[i];

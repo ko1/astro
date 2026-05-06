@@ -1,0 +1,9 @@
+ok BytesHashTest test_bytes_as_dict_key
+ok BytesHashTest test_bytes_set
+ok BytesHashTest test_different_bytes_different_hash
+ok BytesHashTest test_equal_bytes_same_hash
+ok BytesAddResultTest test_bytearray_plus_bytes
+ok BytesAddResultTest test_bytes_plus_bytearray
+ok BytesAddResultTest test_bytes_plus_bytes
+---
+passed=7 failed=0
