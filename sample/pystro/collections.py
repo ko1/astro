@@ -4,13 +4,35 @@
 # alias.  defaultdict / Counter / namedtuple are present but limited:
 # they don't subclass dict (pystro's dict isn't a real class yet).
 
-# OrderedDict — alias to dict (pystro dict preserves insertion order).
-def OrderedDict(*args):
-    d = {}
-    if len(args) == 1:
-        for k, v in args[0]:
-            d[k] = v
-    return d
+# OrderedDict — pystro's dict already insertion-ordered.  Subclass adds
+# the move_to_end and popitem(last=) helpers.
+class OrderedDict(dict):
+    def __init__(self, items=None):
+        super().__init__()
+        if items is not None:
+            if hasattr(items, "items"):
+                for k, v in items.items(): self[k] = v
+            else:
+                for k, v in items: self[k] = v
+    def move_to_end(self, key, last=True):
+        v = self[key]
+        del self[key]
+        if last:
+            self[key] = v
+        else:
+            # Move to start: build a fresh dict, prepend, then refill.
+            saved = list(self.items())
+            super().clear()
+            self[key] = v
+            for k, val in saved:
+                self[k] = val
+    def popitem(self, last=True):
+        if not self: raise KeyError("dict empty")
+        keys = list(self.keys())
+        k = keys[-1] if last else keys[0]
+        v = self[k]
+        del self[k]
+        return (k, v)
 
 
 class defaultdict:

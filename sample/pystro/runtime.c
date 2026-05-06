@@ -3144,6 +3144,10 @@ py_getattr(CTX *c, VALUE v, const char *name)
         }
     }
     if (py_is_module(v)) {
+        const char *mname = PY_PTR(v)->module.name;
+        if (strcmp(name, "__name__") == 0)
+            return py_make_str(mname, strlen(mname));
+        if (strcmp(name, "__doc__") == 0) return PY_NONE;
         struct pyglobals *g = PY_PTR(v)->module.globals;
         for (size_t i = 0; i < g->size; i++)
             if (strcmp(g->entries[i].name, name) == 0 && g->entries[i].defined)
@@ -10211,6 +10215,9 @@ bi_pystro_del(CTX *c, int argc, VALUE *argv)
             VALUE av[2] = { container, key };
             return py_apply(c, m, 2, av);
         }
+        // Built-in subclass (e.g., class OD(dict)): forward to primary.
+        if (PY_PTR(container)->inst.primary)
+            return bi_pystro_del(c, argc, (VALUE[]){PY_PTR(container)->inst.primary, key});
     }
     py_raise_exc(c, c->EXC_TypeError, "del: unsupported container type");
 }

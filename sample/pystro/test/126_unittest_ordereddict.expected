@@ -1,0 +1,8 @@
+ok OrderedDictTest test_basic_order
+ok OrderedDictTest test_move_to_end
+ok OrderedDictTest test_move_to_start
+ok OrderedDictTest test_popitem_first
+ok OrderedDictTest test_popitem_last
+ok ModuleNameTest test_module_name
+---
+passed=6 failed=0
