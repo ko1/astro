@@ -1925,6 +1925,10 @@ parse_subscript_elem(bool *is_slice_out)
     bool is_slice = false;
     int k = peek_tok(0)->kind;
     if (k == T_COLON) is_slice = true;
+    else if (k == T_STAR) {
+        tok_pos++;
+        start = parse_expr();
+    }
     else if (k != T_RBRACK && k != T_COMMA) start = parse_expr();
     if (match_tok(T_COLON)) {
         is_slice = true;
@@ -1960,6 +1964,14 @@ parse_subscript(NODE *seq)
     bool is_slice = false;
 
     if (peek_tok(0)->kind == T_COLON) is_slice = true;
+    else if (peek_tok(0)->kind == T_STAR) {
+        // PEP 646 unpacked subscript element: `tuple[*Ts]`.  Pystro has
+        // no TypeVarTuple semantics; expose `*X` as a runtime tuple-style
+        // marker by wrapping the operand in a list (so the typing module
+        // sees it as iterable).
+        tok_pos++;
+        start = parse_expr();
+    }
     else                              start = parse_expr();
     if (match_tok(T_COLON)) {
         is_slice = true;

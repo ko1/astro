@@ -71,6 +71,14 @@ class TestCase:
         if isinstance(obj, cls):
             self.fail(msg or (repr(obj) + " is instance of " + repr(cls)))
 
+    def assertIsSubclass(self, sub, cls, msg=""):
+        if not issubclass(sub, cls):
+            self.fail(msg or (repr(sub) + " is not subclass of " + repr(cls)))
+
+    def assertNotIsSubclass(self, sub, cls, msg=""):
+        if issubclass(sub, cls):
+            self.fail(msg or (repr(sub) + " is subclass of " + repr(cls)))
+
     def assertGreater(self, a, b, msg=""):
         if not (a > b):
             self.fail(msg or (repr(a) + " <= " + repr(b)))

@@ -1,6 +1,11 @@
 """pystro stub for `_opcode` (CPython bytecode introspection)."""
 
 stack_effect = lambda *a, **k: 0
+
+
+def is_valid(op):
+    return 0 <= op < 256
+
 get_executor = lambda *a, **k: None
 get_specialization_stats = lambda: {}
 
