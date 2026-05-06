@@ -8202,9 +8202,24 @@ bi_dir(CTX *c, int argc, VALUE *argv)
                 if (g->entries[i].defined)
                     py_list_append(c, r, py_make_str(g->entries[i].name, strlen(g->entries[i].name)));
         } else if (py_is_class(v)) {
+            // Walk MRO; collect unique method names.
             struct pyclass *cd = &PY_PTR(v)->cls;
-            for (int i = 0; i < cd->nmethods; i++)
-                py_list_append(c, r, py_make_str(cd->methods[i].name, strlen(cd->methods[i].name)));
+            for (int j = 0; j < cd->nmro; j++) {
+                struct pyclass *kd = &PY_PTR(cd->mro[j])->cls;
+                for (int i = 0; i < kd->nmethods; i++) {
+                    const char *nm = kd->methods[i].name;
+                    bool dup = false;
+                    size_t rl = PY_PTR(r)->list.len;
+                    for (size_t k = 0; k < rl; k++) {
+                        VALUE existing = PY_PTR(r)->list.items[k];
+                        if (py_is_str(existing) &&
+                            strcmp(PY_PTR(existing)->str.chars, nm) == 0) {
+                            dup = true; break;
+                        }
+                    }
+                    if (!dup) py_list_append(c, r, py_make_str(nm, strlen(nm)));
+                }
+            }
         } else if (py_is_instance(v)) {
             struct pyobj *o = PY_PTR(v);
             if (o->inst.attrs) {
@@ -8213,10 +8228,24 @@ bi_dir(CTX *c, int argc, VALUE *argv)
                     if (pydict_entry_live(d, i) && py_is_str(d->entries[i].key))
                         py_list_append(c, r, d->entries[i].key);
             }
-            // Plus class methods.
+            // Plus class methods (walk MRO).
             struct pyclass *cd = &PY_PTR(o->inst.cls)->cls;
-            for (int i = 0; i < cd->nmethods; i++)
-                py_list_append(c, r, py_make_str(cd->methods[i].name, strlen(cd->methods[i].name)));
+            for (int j = 0; j < cd->nmro; j++) {
+                struct pyclass *kd = &PY_PTR(cd->mro[j])->cls;
+                for (int i = 0; i < kd->nmethods; i++) {
+                    const char *nm = kd->methods[i].name;
+                    bool dup = false;
+                    size_t rl = PY_PTR(r)->list.len;
+                    for (size_t k = 0; k < rl; k++) {
+                        VALUE existing = PY_PTR(r)->list.items[k];
+                        if (py_is_str(existing) &&
+                            strcmp(PY_PTR(existing)->str.chars, nm) == 0) {
+                            dup = true; break;
+                        }
+                    }
+                    if (!dup) py_list_append(c, r, py_make_str(nm, strlen(nm)));
+                }
+            }
         }
     }
     // Sort the result.

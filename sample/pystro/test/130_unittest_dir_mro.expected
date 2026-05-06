@@ -1,0 +1,5 @@
+ok DirMROTest test_inherited
+ok DirMROTest test_instance
+ok DirMROTest test_overridden
+---
+passed=3 failed=0
