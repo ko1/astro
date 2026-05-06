@@ -121,6 +121,89 @@ py_class_meta_apply(CTX *c, VALUE cls, VALUE meta, const char *name)
     return cls;
 }
 
+// Walk class methods for `__slots__` and stash the parsed name list on
+// the class.  Called after the class body has finished evaluating so
+// the slots tuple is already on the class.
+void
+py_class_extract_slots(CTX *c, VALUE cls)
+{
+    // Look up __slots__ ONLY on the class itself, not inherited.
+    struct pyclass *cd0 = &PY_PTR(cls)->cls;
+    VALUE sv = PY_NONE;
+    for (int j = 0; j < cd0->nmethods; j++) {
+        if (strcmp(cd0->methods[j].name, "__slots__") == 0) {
+            sv = cd0->methods[j].value;
+            break;
+        }
+    }
+    if (sv == PY_NONE) return;
+    // sv may be tuple/list/str/iterable.  Treat str specially: single name.
+    struct pyclass *cd = &PY_PTR(cls)->cls;
+    if (py_is_str(sv)) {
+        cd->slots = (const char **)GC_malloc(sizeof(char *) * 1);
+        cd->slots[0] = PY_PTR(sv)->str.chars;
+        cd->nslots = 1;
+        return;
+    }
+    if (py_is_list(sv) || py_is_tuple(sv)) {
+        size_t n = PY_PTR(sv)->list.len;
+        cd->slots = (const char **)GC_malloc(sizeof(char *) * (n ? n : 1));
+        size_t k = 0;
+        for (size_t i = 0; i < n; i++) {
+            VALUE v = PY_PTR(sv)->list.items[i];
+            if (py_is_str(v)) cd->slots[k++] = PY_PTR(v)->str.chars;
+        }
+        cd->nslots = (int)k;
+        return;
+    }
+    (void)c;
+}
+
+// True if `cls` (or any ancestor) has __slots__ declared, and `name`
+// isn't in any __slots__ list.  Used by py_setattr to enforce.
+static bool
+py_class_has_slots_anywhere(VALUE cls)
+{
+    if (!py_is_class(cls)) return false;
+    struct pyclass *cd = &PY_PTR(cls)->cls;
+    for (int i = 0; i < cd->nmro; i++) {
+        struct pyclass *kd = &PY_PTR(cd->mro[i])->cls;
+        if (kd->slots) return true;
+    }
+    return false;
+}
+
+static bool
+py_class_slot_allowed(VALUE cls, const char *name)
+{
+    if (!py_is_class(cls)) return true;
+    struct pyclass *cd = &PY_PTR(cls)->cls;
+    bool any_slots = false;
+    for (int i = 0; i < cd->nmro; i++) {
+        struct pyclass *kd = &PY_PTR(cd->mro[i])->cls;
+        if (!kd->slots) continue;
+        any_slots = true;
+        for (int j = 0; j < kd->nslots; j++)
+            if (strcmp(kd->slots[j], name) == 0) return true;
+        // If any base in MRO has no __slots__, instance gets __dict__
+        // so any attr is allowed (CPython rule).
+    }
+    if (!any_slots) return true;
+    // Walk MRO again: if any class in MRO has no slots AND isn't object,
+    // arbitrary attrs are allowed.
+    for (int i = 0; i < cd->nmro; i++) {
+        struct pyclass *kd = &PY_PTR(cd->mro[i])->cls;
+        if (kd->slots) continue;
+        // object/built-in marker classes don't grant a __dict__ for
+        // slot purposes.  Approximation: any user class with no slots
+        // grants __dict__.
+        // For simplicity in pystro: only `object` itself is exempt.
+        if (strcmp(kd->name, "object") == 0) continue;
+        return true;
+    }
+    return false;
+}
+
 // If any of `bases` (or their ancestors) has a `__metaclass__` attribute,
 // apply it to `cls` (the freshly-built class).  Returns either `cls` or
 // the metaclass-produced replacement.
@@ -347,6 +430,7 @@ py_make_func(struct Node *body, struct pyframe *env,
     o->func.name = name;
     o->func.nparams = nparams;
     o->func.n_pos_named = n_pos_named;
+    o->func.n_pos_only = 0;  // overwritten by node_def from flags bits 8-15
     o->func.nlocals = nlocals;
     o->func.leaf = leaf;
     o->func.has_varargs = has_varargs;
@@ -3175,6 +3259,13 @@ py_setattr(CTX *c, VALUE v, const char *name, VALUE val)
                 }
             }
         }
+        // __slots__ enforcement.
+        if (py_class_has_slots_anywhere(PY_OBJ_VAL(o->inst.cls))
+            && !py_class_slot_allowed(PY_OBJ_VAL(o->inst.cls), name)) {
+            py_raise_exc(c, c->EXC_AttributeError,
+                         "'%s' object has no attribute '%s'",
+                         o->inst.cls->cls.name, name);
+        }
         if (!o->inst.attrs) o->inst.attrs = pydict_new();
         VALUE key = py_make_str(name, strlen(name));
         uint64_t h = py_hash(c, key);
@@ -3279,11 +3370,13 @@ py_apply_kw_func(CTX *c, VALUE fn, int argc, VALUE *argv,
         filled[kw_slot] = true;
     }
 
-    // Place each kwarg.
+    // Place each kwarg.  Pos-only slots (j < n_pos_only) are matchable
+    // ONLY via **kwargs (their name belongs to a positional-only param).
+    int n_pos_only = f->func.n_pos_only;
     for (int i = 0; i < kwc; i++) {
         int slot = -1;
         if (f->func.param_names) {
-            for (int j = 0; j < n_pos_named; j++) {
+            for (int j = n_pos_only; j < n_pos_named; j++) {
                 if (f->func.param_names[j] && strcmp(f->func.param_names[j], kwnames[i]) == 0) {
                     slot = j; break;
                 }
@@ -3308,6 +3401,16 @@ py_apply_kw_func(CTX *c, VALUE fn, int argc, VALUE *argv,
             py_dict_set(c, new_env->slots[kw_slot],
                         py_make_str(kwnames[i], strlen(kwnames[i])), kwvalues[i]);
         } else {
+            // Check if name matches a pos-only param: helpful diagnostic.
+            if (f->func.param_names) {
+                for (int j = 0; j < n_pos_only; j++) {
+                    if (f->func.param_names[j] && strcmp(f->func.param_names[j], kwnames[i]) == 0) {
+                        py_raise_exc(c, c->EXC_TypeError,
+                            "%s() got some positional-only arguments passed as keyword arguments: '%s'",
+                            f->func.name ? f->func.name : "<anonymous>", kwnames[i]);
+                    }
+                }
+            }
             py_raise_exc(c, c->EXC_TypeError,
                          "%s() got an unexpected keyword argument '%s'",
                          f->func.name ? f->func.name : "<anonymous>", kwnames[i]);

@@ -2067,7 +2067,9 @@ parse_params(Scope *sc, int *out_nparams, int *out_n_pos_named, int *out_ndefaul
 {
     int nparams = 0;
     int n_pos_named = 0;
+    int n_pos_only = 0;
     bool saw_star = false;
+    bool saw_slash = false;
     bool has_va = false, has_kw = false;
     struct pydefault defs[32];
     int ndefaults = 0;
@@ -2108,8 +2110,10 @@ parse_params(Scope *sc, int *out_nparams, int *out_n_pos_named, int *out_ndefaul
                 if (!match_tok(T_COMMA)) break;
                 continue;
             }
-            // `/` — positional-only marker.  Pystro doesn't enforce; consume.
+            // `/` — positional-only marker: everything BEFORE `/` is pos-only.
             if (match_tok(T_SLASH)) {
+                saw_slash = true;
+                n_pos_only = nparams;  // current count IS the # of pos-only
                 if (!match_tok(T_COMMA)) break;
                 continue;
             }
@@ -2149,7 +2153,10 @@ parse_params(Scope *sc, int *out_nparams, int *out_n_pos_named, int *out_ndefaul
     *out_ndefaults = ndefaults;
     *out_didx = (uint32_t)defaults_reserve(defs, ndefaults);
     *out_nidx = (uint32_t)name_table_reserve(names, nnames);
-    *out_flags = (has_va ? 1u : 0u) | (has_kw ? 2u : 0u);
+    (void)saw_slash;
+    if (n_pos_only > 255) n_pos_only = 255;
+    *out_flags = (has_va ? 1u : 0u) | (has_kw ? 2u : 0u)
+               | ((uint32_t)n_pos_only << 8);
 }
 
 static NODE *

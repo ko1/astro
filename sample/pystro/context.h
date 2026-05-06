@@ -148,6 +148,12 @@ struct pyclass {
     py_builtin_fn builtin_ctor;
     // The PY_T_* tag of values produced by this class.  -1 for user classes.
     int builtin_tag;
+    // __slots__ declared on the class (NULL = no slots; set means an
+    // attempt to set a non-listed attr raises AttributeError).  Walks
+    // MRO at lookup time — class is "slotted" iff this OR any base has
+    // a non-null slots set.
+    const char **slots;
+    int          nslots;
 };
 
 // CPython-style "compact" dict.  Indices table is open-addressed and
@@ -192,6 +198,7 @@ struct pyobj {
             const char *name;
             int nparams;            // total slots: pos-or-kw + *args + kwonly + **kw
             int n_pos_named;        // # of pos-or-kw params (before any *args)
+            int n_pos_only;         // # of pos-only params (before `/`)
             VALUE *defaults;        // length nparams; (VALUE)0 ⇒ "required" sentinel
             const char **param_names;
             int nlocals;

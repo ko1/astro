@@ -1,0 +1,12 @@
+ok KwOnlyTest test_basic
+ok KwOnlyTest test_missing_required
+ok KwOnlyTest test_positional_rejected
+ok PosOnlyTest test_basic
+ok PosOnlyTest test_kwarg_rejected
+ok PosOnlyTest test_kwargs_collects_pos_only_name
+ok SlotsTest test_allowed
+ok SlotsTest test_rejected
+ok SlotsTest test_subclass_inherits
+ok SlotsTest test_subclass_no_slots_allows
+---
+passed=10 failed=0

@@ -932,9 +932,11 @@ node_def(CTX * restrict c, NODE * restrict n, const char *name, uint32_t nparams
     const char **pn = nparams > 0 ? &PYSTRO_NAME_TABLE[names_idx] : NULL;
     bool has_va = (flags & 1) != 0;
     bool has_kw = (flags & 2) != 0;
+    int n_pos_only = (int)((flags >> 8) & 0xFF);
     VALUE fn = py_make_func(body, c->env, name, (int)nparams, (int)n_pos_named,
                             (int)nlocals, dv, leaf != 0, pn, has_va, has_kw,
                             is_gen != 0);
+    PY_PTR(fn)->func.n_pos_only = n_pos_only;
     // Docstring: if body's leftmost-spine leaf is a const_str, stash
     // it as `__doc__` on the func.
     {
@@ -1033,6 +1035,8 @@ node_class_multi(CTX * restrict c, NODE * restrict n, const char *name, uint32_t
     EVAL_ARG(c, body);
     c->current_class = saved;
     if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+    extern void py_class_extract_slots(CTX *c, VALUE cls);
+    py_class_extract_slots(c, cls);
     // Inherited metaclass: if any base has a `__metaclass__` attribute
     // (set by an explicit metaclass=M on the base or its ancestors),
     // apply it now.
@@ -1057,6 +1061,8 @@ node_class(CTX * restrict c, NODE * restrict n, const char *name, NODE *base, NO
     EVAL_ARG(c, body);
     c->current_class = saved;
     if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+    extern void py_class_extract_slots(CTX *c, VALUE cls);
+    py_class_extract_slots(c, cls);
     extern VALUE py_class_inherit_metaclass(CTX *c, VALUE cls, VALUE *bases, int nbases, const char *name);
     VALUE bases1[1] = { base_v };
     return py_class_inherit_metaclass(c, cls, bases1, base_v != PY_NONE ? 1 : 0, name);

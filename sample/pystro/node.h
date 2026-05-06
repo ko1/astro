@@ -82,7 +82,7 @@ py_apply(CTX *c, VALUE fn, int argc, VALUE *argv)
         // Fast path only handles plain "exact arity, no varargs/kwargs,
         // not a generator" — anything fancier routes through
         // py_apply_slow.
-        if (LIKELY(argc == f->func.nparams && !f->func.has_varargs && !f->func.has_kwargs && !f->func.is_generator)) {
+        if (LIKELY(argc == f->func.nparams && argc == f->func.n_pos_named && !f->func.has_varargs && !f->func.has_kwargs && !f->func.is_generator)) {
             int total = f->func.nlocals;
             struct pyframe *new_env;
             if (LIKELY(f->func.leaf)) {
