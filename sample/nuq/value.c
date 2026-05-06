@@ -996,7 +996,15 @@ nuq_var_get(CTX *c, uint32_t id)
     for (size_t i = c->var_top; i > 0; i--) {
         if (c->var_stack[i-1].id == id) return c->var_stack[i-1].value;
     }
-    nuq_helper_error("undefined variable $%s", nuq_intern_lookup(id));
+    /* `$__loc__` is jq's built-in source-location pseudo-var — synthesize. */
+    const char *nm = nuq_intern_lookup(id);
+    if (nm && strcmp(nm, "__loc__") == 0) {
+        VALUE loc = nuq_make_object(2);
+        nuq_object_set_cstr(loc, "file", nuq_make_string("<top-level>", 11));
+        nuq_object_set_cstr(loc, "line", nuq_make_int(1));
+        return loc;
+    }
+    nuq_helper_error("undefined variable $%s", nm);
     return NUQ_NULL;
 }
 

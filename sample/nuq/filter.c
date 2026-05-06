@@ -722,7 +722,10 @@ parse_pattern(lexer_t *L)
                         v->u.var_id = nuq_intern(name);
                         e->val = v;
                     }
-                } else if (k->type == TK_IDENT || k->type == TK_STR) {
+                } else if (k->type == TK_IDENT || k->type == TK_STR ||
+                           is_name_tok(k)) {
+                    /* Accept TK_IDENT, TK_STR, and any keyword as a
+                     * literal key — jq permits `{as: PAT}` etc. */
                     const char *name = take(L).s;
                     expect(L, TK_COLON, "':' in object pattern");
                     e->key = name;
