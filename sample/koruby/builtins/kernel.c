@@ -686,13 +686,13 @@ static VALUE kernel_caller(CTX *c, VALUE self, int argc, VALUE *argv) {
             f->method->u.ast.body && f->method->u.ast.body->head.source_file) {
             file = f->method->u.ast.body->head.source_file;
         }
-        snprintf(buf, sizeof(buf), "%s:%d:in `%s'", file, next_line, name);
+        snprintf(buf, sizeof(buf), "%s:%d:in '%s'", file, next_line, name);
         korb_ary_push(arr, korb_str_new_cstr(buf));
         next_line = f->caller_node ? f->caller_node->head.line : 0;
         f = f->prev;
     }
     /* Append a <main> entry so the chain always ends in main. */
-    snprintf(buf, sizeof(buf), "%s:%d:in `<main>'", default_file, next_line);
+    snprintf(buf, sizeof(buf), "%s:%d:in '<main>'", default_file, next_line);
     korb_ary_push(arr, korb_str_new_cstr(buf));
 
     /* Slice per CRuby: caller(start=1, length=nil) or caller(range). */

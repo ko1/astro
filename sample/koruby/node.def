@@ -1136,8 +1136,9 @@ node_ary_slice_middle(CTX * restrict c, NODE * restrict n, NODE *ary_node, uint3
     long len = korb_ary_len(a);
     long start = (long)leading;
     long end_excl = len - (long)trailing;
-    if (end_excl < start) end_excl = start;
     if (start > len) start = len;
+    if (end_excl > len) end_excl = len;
+    if (end_excl < start) end_excl = start;
     long n_take = end_excl - start;
     VALUE r = korb_ary_new_capa(n_take);
     for (long i = 0; i < n_take; i++) korb_ary_push(r, korb_ary_aref(a, start + i));
@@ -1589,6 +1590,7 @@ node_do_while(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *body)
 {
     /* begin; body; end while cond */
     do {
+    redo_do_while:
         EVAL_ARG(c, body);
         if (UNLIKELY(c->state != KORB_NORMAL)) {
             if (c->state == KORB_BREAK) {
@@ -1601,6 +1603,11 @@ node_do_while(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *body)
                 c->state = KORB_NORMAL;
                 c->state_value = Qnil;
                 /* go back to cond check */
+            }
+            else if (c->state == KORB_REDO) {
+                c->state = KORB_NORMAL;
+                c->state_value = Qnil;
+                goto redo_do_while;
             }
             else return Qnil;
         }
@@ -1615,6 +1622,7 @@ NODE_DEF
 node_do_until(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *body)
 {
     do {
+    redo_do_until:
         EVAL_ARG(c, body);
         if (UNLIKELY(c->state != KORB_NORMAL)) {
             if (c->state == KORB_BREAK) {
@@ -1626,6 +1634,11 @@ node_do_until(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *body)
             else if (c->state == KORB_NEXT) {
                 c->state = KORB_NORMAL;
                 c->state_value = Qnil;
+            }
+            else if (c->state == KORB_REDO) {
+                c->state = KORB_NORMAL;
+                c->state_value = Qnil;
+                goto redo_do_until;
             }
             else return Qnil;
         }

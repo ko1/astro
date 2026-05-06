@@ -604,7 +604,8 @@ static inline __attribute__((always_inline)) VALUE
 korb_yield(CTX *c, uint32_t argc, VALUE *argv) {
     struct korb_proc *blk = current_block;
     if (UNLIKELY(!blk)) {
-        korb_raise(c, NULL, "no block given (yield)");
+        VALUE eLJE = korb_const_get(korb_vm->object_class, korb_intern("LocalJumpError"));
+        korb_raise(c, (struct korb_class *)eLJE, "no block given (yield)");
         return Qnil;
     }
     /* Symbol-proc shim — fall to slow path. */

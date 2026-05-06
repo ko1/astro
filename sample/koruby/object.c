@@ -3090,12 +3090,18 @@ void korb_runtime_init(void) {
         "ArgumentError", "TypeError",
         "ZeroDivisionError", "IOError", "Errno",
         "NotImplementedError", "StopIteration", "LocalJumpError",
-        "SystemCallError", "UncaughtThrowError",
+        "SystemCallError",
         NULL,
     };
     for (int i = 0; std_subs[i]; i++) {
         struct korb_class *k = korb_class_new(korb_intern(std_subs[i]), cStandardError, T_OBJECT);
         korb_const_set(cObject, korb_intern(std_subs[i]), (VALUE)k);
+    }
+    /* UncaughtThrowError < ArgumentError (CRuby). */
+    {
+        struct korb_class *cArg = (struct korb_class *)korb_const_get(cObject, korb_intern("ArgumentError"));
+        struct korb_class *k = korb_class_new(korb_intern("UncaughtThrowError"), cArg, T_OBJECT);
+        korb_const_set(cObject, korb_intern("UncaughtThrowError"), (VALUE)k);
     }
     /* Children of more-specific classes. */
     {

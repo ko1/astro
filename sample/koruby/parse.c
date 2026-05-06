@@ -1869,13 +1869,109 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
           pm_for_node_t *n = (pm_for_node_t *)node;
           NODE *coll = T(tc, n->collection);
           int x_slot = -1;
+          NODE *target_assign_prefix = NULL;
           if (n->index && PM_NODE_TYPE_P(n->index, PM_LOCAL_VARIABLE_TARGET_NODE)) {
               pm_local_variable_target_node_t *lt = (pm_local_variable_target_node_t *)n->index;
               x_slot = lvar_slot(tc, lt->name, lt->depth);
               if (x_slot < 0) x_slot = lvar_slot_any(tc, lt->name);
+          } else if (n->index) {
+              /* Non-local target (ivar/cvar/gvar/const/attr/index/multi):
+               * route through a synthesized scratch slot, then prepend an
+               * assignment in the body that writes it to the actual target
+               * using the same lowering used for the equivalent statement
+               * `target = __scratch`. */
+              x_slot = (int)inc_arg_index(tc);
+              NODE *scratch_get = ALLOC_node_lvar_get((uint32_t)x_slot);
+              if (PM_NODE_TYPE_P(n->index, PM_INSTANCE_VARIABLE_TARGET_NODE)) {
+                  pm_instance_variable_target_node_t *it = (pm_instance_variable_target_node_t *)n->index;
+                  target_assign_prefix = ALLOC_node_ivar_set(intern_constant(tc->parser, it->name), scratch_get);
+              } else if (PM_NODE_TYPE_P(n->index, PM_CLASS_VARIABLE_TARGET_NODE)) {
+                  pm_class_variable_target_node_t *ct = (pm_class_variable_target_node_t *)n->index;
+                  target_assign_prefix = ALLOC_node_cvar_set(intern_constant(tc->parser, ct->name), scratch_get);
+              } else if (PM_NODE_TYPE_P(n->index, PM_GLOBAL_VARIABLE_TARGET_NODE)) {
+                  pm_global_variable_target_node_t *gt = (pm_global_variable_target_node_t *)n->index;
+                  target_assign_prefix = ALLOC_node_gvar_set(intern_constant(tc->parser, gt->name), scratch_get);
+              } else if (PM_NODE_TYPE_P(n->index, PM_CONSTANT_TARGET_NODE)) {
+                  pm_constant_target_node_t *ct = (pm_constant_target_node_t *)n->index;
+                  target_assign_prefix = ALLOC_node_const_set(intern_constant(tc->parser, ct->name), scratch_get);
+              } else if (PM_NODE_TYPE_P(n->index, PM_CALL_TARGET_NODE)) {
+                  /* obj.attr= : recv.name=(scratch). */
+                  pm_call_target_node_t *ct = (pm_call_target_node_t *)n->index;
+                  NODE *recv = T(tc, ct->receiver);
+                  ID wname = intern_constant(tc->parser, ct->name);
+                  uint32_t ai = inc_arg_index(tc); rewind_arg_index(tc, ai);
+                  struct method_cache *mc2 = alloc_method_cache();
+                  NODE *st = ALLOC_node_lvar_set(ai, scratch_get);
+                  NODE *call = ALLOC_node_method_call(recv, wname, 1, ai, mc2);
+                  target_assign_prefix = ALLOC_node_seq(st, call);
+              } else if (PM_NODE_TYPE_P(n->index, PM_INDEX_TARGET_NODE)) {
+                  /* recv[idx...] = scratch */
+                  pm_index_target_node_t *it = (pm_index_target_node_t *)n->index;
+                  if (it->arguments && it->arguments->arguments.size == 1) {
+                      NODE *recv = T(tc, it->receiver);
+                      NODE *idx = T(tc, it->arguments->arguments.nodes[0]);
+                      uint32_t ai = inc_arg_index(tc);
+                      inc_arg_index(tc); inc_arg_index(tc); rewind_arg_index(tc, ai);
+                      target_assign_prefix = ALLOC_node_aset(recv, idx, scratch_get, ai);
+                  }
+              } else if (PM_NODE_TYPE_P(n->index, PM_MULTI_TARGET_NODE)) {
+                  /* `for a, b, *c, d in coll` — synthesize multi-assign
+                   * from scratch slot.  Mirrors PM_MULTI_WRITE_NODE lowering
+                   * but uses scratch_get as the RHS. */
+                  pm_multi_target_node_t *mt = (pm_multi_target_node_t *)n->index;
+                  uint32_t arr_slot = inc_arg_index(tc);
+                  NODE *prep = ALLOC_node_lvar_set(arr_slot,
+                                  ALLOC_node_to_ary_for_mlhs(scratch_get));
+                  NODE *chain = prep;
+                  uint32_t lefts_n = (uint32_t)mt->lefts.size;
+                  uint32_t rights_n = (uint32_t)mt->rights.size;
+                  for (uint32_t i = 0; i < lefts_n; i++) {
+                      NODE *get = ALLOC_node_ary_aget(ALLOC_node_lvar_get(arr_slot), i);
+                      pm_node_t *t = mt->lefts.nodes[i];
+                      NODE *as = NULL;
+                      if (PM_NODE_TYPE_P(t, PM_LOCAL_VARIABLE_TARGET_NODE)) {
+                          pm_local_variable_target_node_t *lt2 = (pm_local_variable_target_node_t *)t;
+                          int s = lvar_slot(tc, lt2->name, lt2->depth);
+                          if (s < 0) s = lvar_slot_any(tc, lt2->name);
+                          if (s >= 0) as = ALLOC_node_lvar_set((uint32_t)s, get);
+                      }
+                      if (as) chain = ALLOC_node_seq(chain, as);
+                  }
+                  if (mt->rest && PM_NODE_TYPE_P(mt->rest, PM_SPLAT_NODE)) {
+                      pm_splat_node_t *sp = (pm_splat_node_t *)mt->rest;
+                      if (sp->expression && PM_NODE_TYPE_P(sp->expression, PM_LOCAL_VARIABLE_TARGET_NODE)) {
+                          pm_local_variable_target_node_t *lt2 = (pm_local_variable_target_node_t *)sp->expression;
+                          int s = lvar_slot(tc, lt2->name, lt2->depth);
+                          if (s < 0) s = lvar_slot_any(tc, lt2->name);
+                          if (s >= 0) {
+                              NODE *slice = ALLOC_node_ary_slice_middle(
+                                  ALLOC_node_lvar_get(arr_slot), lefts_n, rights_n);
+                              chain = ALLOC_node_seq(chain, ALLOC_node_lvar_set((uint32_t)s, slice));
+                          }
+                      }
+                  }
+                  for (uint32_t i = 0; i < rights_n; i++) {
+                      uint32_t neg = rights_n - i;
+                      NODE *get = ALLOC_node_ary_aget_neg(ALLOC_node_lvar_get(arr_slot), neg);
+                      pm_node_t *t = mt->rights.nodes[i];
+                      NODE *as = NULL;
+                      if (PM_NODE_TYPE_P(t, PM_LOCAL_VARIABLE_TARGET_NODE)) {
+                          pm_local_variable_target_node_t *lt2 = (pm_local_variable_target_node_t *)t;
+                          int s = lvar_slot(tc, lt2->name, lt2->depth);
+                          if (s < 0) s = lvar_slot_any(tc, lt2->name);
+                          if (s >= 0) as = ALLOC_node_lvar_set((uint32_t)s, get);
+                      }
+                      if (as) chain = ALLOC_node_seq(chain, as);
+                  }
+                  target_assign_prefix = chain;
+              }
+              /* unsupported target → leave target_assign_prefix NULL; body
+               * runs but the variable simply isn't updated.  Better than
+               * silently misbehaving with a hidden lvar slot. */
           }
           if (x_slot < 0) x_slot = (int)inc_arg_index(tc);  /* fallback */
           NODE *body = n->statements ? transduce_statements(tc, n->statements) : ALLOC_node_nil();
+          if (target_assign_prefix) body = ALLOC_node_seq(target_assign_prefix, body);
           uint32_t env_size = tc->frame->max_cnt;
           NODE *block_node = ALLOC_node_block_literal(body, 1, (uint32_t)x_slot, env_size, 0);
           code_repo_add("<for>", body, false);
