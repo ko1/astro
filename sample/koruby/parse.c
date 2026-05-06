@@ -713,16 +713,20 @@ build_call_simple(struct transduce_context *tc, NODE *recv, ID name,
 
     uint32_t *slots = arg_cnt ? korb_xmalloc(sizeof(uint32_t) * arg_cnt) : NULL;
     for (uint32_t i = 0; i < arg_cnt; i++) slots[i] = inc_arg_index(tc);
-    /* Reserve at least 1 slot at call_arg_idx even when argc=0 — the
-     * callee's frame is positioned at caller_fp + call_arg_idx and may
-     * write its own locals (e.g. `def f(*)`'s rest gather lands there).
-     * Without this, future siblings allocating at the same slot would
-     * read the callee's leftover state.  This is what made
-     *   each() do arr=[] end
-     *   each() do x=true if false; p x end
-     * print [] for x — each's anonymous *rest had been written here. */
-    if (arg_cnt == 0 && tc->frame->arg_index <= call_arg_idx) {
-        inc_arg_index(tc);
+    /* Reserve scratch beyond the staged-args range — the callee's frame
+     * is positioned at caller_fp + call_arg_idx and writes its own
+     * locals (`*rest`, `**kwh`, `&blk`, optional defaults, opt etc.).
+     * Without this, future siblings that allocate at those slots would
+     * read the callee's leftover state.  E.g.
+     *     each() do arr=[] end
+     *     each() do x=true if false; p x end
+     * printed [] for x — each's anonymous *rest had been written here.
+     * Only reserve when there's a block_node — otherwise the call's
+     * scratch is transient and won't collide with future siblings.
+     * 32-slot margin covers methods with moderate body complexity. */
+    if (block_node) {
+        uint32_t scratch_end = call_arg_idx + arg_cnt + 32;
+        while (tc->frame->arg_index < scratch_end) inc_arg_index(tc);
     }
     NODE *seq = recv_set;
     for (uint32_t i = 0; i < arg_cnt; i++) {
