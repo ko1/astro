@@ -1473,6 +1473,14 @@ py_pow(CTX *c, VALUE a, VALUE b)
     if (py_int_or_bool(a) && py_int_or_bool(b)) {
         mpz_t zb; py_to_mpz(c, b, zb);
         if (mpz_sgn(zb) < 0) {
+            // 0 ** negative_int → ZeroDivisionError (CPython behaviour).
+            mpz_t za; py_to_mpz(c, a, za);
+            if (mpz_sgn(za) == 0) {
+                mpz_clear(za); mpz_clear(zb);
+                py_raise_exc(c, c->EXC_ZeroDivisionError,
+                             "0.0 cannot be raised to a negative power");
+            }
+            mpz_clear(za);
             mpz_clear(zb);
             return py_make_float(pow(py_to_double(c, a), py_to_double(c, b)));
         }

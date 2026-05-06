@@ -1,0 +1,11 @@
+ok PowZeroNegTest test_int_neg_int
+ok PowZeroNegTest test_neg_int
+ok PowZeroNegTest test_one_neg
+ok PowZeroNegTest test_zero_neg_int
+ok PowZeroNegTest test_zero_neg_two
+ok PowZeroNegTest test_zero_zero
+ok FloatDivByZeroTest test_float_div
+ok FloatDivByZeroTest test_float_floor_div
+ok FloatDivByZeroTest test_float_mod
+---
+passed=9 failed=0
