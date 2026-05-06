@@ -70,6 +70,28 @@ def get_executor_count():
     return 0
 
 
+def get_nb_ops():
+    return [
+        ("NB_ADD", "+"),
+        ("NB_SUBTRACT", "-"),
+        ("NB_MULTIPLY", "*"),
+        ("NB_TRUE_DIVIDE", "/"),
+        ("NB_FLOOR_DIVIDE", "//"),
+        ("NB_REMAINDER", "%"),
+        ("NB_POWER", "**"),
+        ("NB_AND", "&"),
+        ("NB_OR", "|"),
+        ("NB_XOR", "^"),
+        ("NB_LSHIFT", "<<"),
+        ("NB_RSHIFT", ">>"),
+        ("NB_MATRIX_MULTIPLY", "@"),
+    ]
+
+
+def get_intrinsic_ops():
+    return []
+
+
 def get_special_method_names():
     return [
         "__init__", "__new__", "__del__", "__repr__", "__str__",

@@ -4,6 +4,90 @@
 _dummy_func = lambda: None
 def _dummy_gen(): yield 1
 
+class CodeType:
+    """Stub for `types.CodeType` — no compile target in pystro."""
+    def __init__(self, *a, **kw):
+        for i, n in enumerate(("co_argcount", "co_posonlyargcount",
+                               "co_kwonlyargcount", "co_nlocals",
+                               "co_stacksize", "co_flags", "co_code",
+                               "co_consts", "co_names", "co_varnames",
+                               "co_filename", "co_name", "co_qualname",
+                               "co_firstlineno", "co_lnotab",
+                               "co_exceptiontable", "co_freevars",
+                               "co_cellvars")):
+            setattr(self, n, a[i] if i < len(a) else kw.get(n, None))
+    def replace(self, **kw):
+        return self
+
+
+class CellType:
+    def __init__(self, value=None):
+        self.cell_contents = value
+
+
+class TracebackType:
+    pass
+
+
+class FrameType:
+    pass
+
+
+class ModuleType:
+    def __init__(self, name, doc=None):
+        self.__name__ = name
+        self.__doc__ = doc
+        self.__dict__ = {"__name__": name, "__doc__": doc}
+
+
+class MethodWrapperType:
+    pass
+
+
+class WrapperDescriptorType:
+    pass
+
+
+class MemberDescriptorType:
+    pass
+
+
+class GetSetDescriptorType:
+    pass
+
+
+class ClassMethodDescriptorType:
+    pass
+
+
+class MethodDescriptorType:
+    pass
+
+
+class BuiltinMethodType_:
+    pass
+
+
+class AsyncGeneratorType:
+    pass
+
+
+class CoroutineType:
+    pass
+
+
+class EllipsisType:
+    pass
+
+
+class NoneType:
+    pass
+
+
+class NotImplementedType:
+    pass
+
+
 FunctionType = type(_dummy_func)
 LambdaType = FunctionType
 GeneratorType = type(_dummy_gen())

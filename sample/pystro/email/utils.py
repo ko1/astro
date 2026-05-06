@@ -1,6 +1,18 @@
 """pystro stub for `email.utils`."""
 
 
+def _has_surrogates(s):
+    try:
+        s.encode("ascii")
+        return False
+    except (UnicodeEncodeError, AttributeError):
+        return True
+
+
+def _sanitize(s):
+    return s
+
+
 def quote(s):
     return '"' + str(s).replace('\\', '\\\\').replace('"', '\\"') + '"'
 

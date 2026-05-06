@@ -84,8 +84,60 @@ def requires_subprocess():
     return _unittest.skip("no subprocess")
 
 
-def requires_working_socket():
+def requires_working_socket(*, module=False):
+    if module:
+        raise _unittest.SkipTest("no socket")
     return _unittest.skip("no socket")
+
+
+def check_impl_detail(**guards):
+    if not guards:
+        return False
+    return guards.get("cpython", False)
+
+
+def run_with_locale(catstr, *locales):
+    def deco(fn):
+        return fn
+    return deco
+
+
+def run_with_tz(tz):
+    def deco(fn):
+        return fn
+    return deco
+
+
+def bigmemtest(size, memuse, dry_run=True):
+    def deco(fn):
+        return _unittest.skip("bigmem")(fn)
+    return deco
+
+
+def bigaddrspacetest(fn):
+    return _unittest.skip("bigaddr")(fn)
+
+
+def cpython_only(fn):
+    return _unittest.skip("cpython only")(fn)
+
+
+def is_resource_enabled(name):
+    return False
+
+
+def use_resources(*names):
+    pass
+
+
+def requires_resource(resource):
+    def deco(fn):
+        return _unittest.skip(f"resource {resource}")(fn)
+    return deco
+
+
+def reap_children():
+    pass
 
 
 def requires_remote_subprocess_debugging():

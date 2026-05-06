@@ -268,8 +268,6 @@ def namedtuple(typename, fields, *, defaults=None):
                 else:
                     raise TypeError(f"missing arg {f}")
             self._values = tuple(values)
-            for i, name in enumerate(self._fields):
-                setattr(self, name, self._values[i])
         def __getitem__(self, i):
             if isinstance(i, str):
                 idx = self._fields.index(i)
@@ -313,6 +311,18 @@ def namedtuple(typename, fields, *, defaults=None):
             return cls(*iterable)
 
     _NT.__name__ = typename
+    # Expose each field as a property so `Cls.field.__doc__ = ...` works
+    # the way CPython's collections.namedtuple does.
+    class _NTField:
+        def __init__(self, idx):
+            self._idx = idx
+            self.__doc__ = ""
+        def __get__(self, obj, owner=None):
+            if obj is None:
+                return self
+            return obj._values[self._idx]
+    for _i, _f in enumerate(_NT._fields):
+        setattr(_NT, _f, _NTField(_i))
     return _NT
 
 
