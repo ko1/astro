@@ -511,7 +511,11 @@ nuq_slice_eval(CTX *c, struct Node *startn, struct Node *stopn, uint32_t flags, 
         VALUE v = buf.items[0];
         c->pool_top = top0;
         if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_NULL) start = 0;
-        else start = to_int64(v);
+        else if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_DOUBLE) {
+            double d = NUQ_PTR(v)->dbl;
+            if (isnan(d)) start = 0;
+            else start = (int64_t)floor(d);
+        } else start = to_int64(v);
     }
     if (flags & SLICE_HAS_STOP) {
         size_t top0 = c->pool_top;
@@ -521,7 +525,12 @@ nuq_slice_eval(CTX *c, struct Node *startn, struct Node *stopn, uint32_t flags, 
         VALUE v = buf.items[0];
         c->pool_top = top0;
         if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_NULL) stop = length;
-        else stop = to_int64(v);
+        else if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_DOUBLE) {
+            double d = NUQ_PTR(v)->dbl;
+            /* nan stop → use length (jq behavior). */
+            if (isnan(d)) stop = length;
+            else stop = (int64_t)ceil(d);
+        } else stop = to_int64(v);
     }
     if (start < 0) start += length;
     if (stop  < 0) stop  += length;
@@ -557,7 +566,10 @@ nuq_object_eval(CTX *c, uint32_t entries_id)
     for (size_t i = 0; i < e->cnt; i++) {
         const struct nuq_obj_entry *const ie = &e->items[i];
         VALUE k, v;
-        if (ie->kkind == 0 || ie->kkind == 2) {
+        if (ie->kkind == 2 && ie->vexpr != NULL) {
+            /* `{$x: V}` — key is the variable's VALUE (jq semantics). */
+            k = nuq_var_get(c, ie->var_id);
+        } else if (ie->kkind == 0 || ie->kkind == 2) {
             k = ie->kname_value;
         } else {
             const size_t t0 = c->pool_top;
@@ -602,7 +614,11 @@ cartesian: {
     /* Re-evaluate from scratch.  This is the rare path. */
     for (size_t i = 0; i < e->cnt; i++) {
         const struct nuq_obj_entry *const ie = &e->items[i];
-        if (ie->kkind == 0 || ie->kkind == 2) {
+        if (ie->kkind == 2 && ie->vexpr != NULL) {
+            VALUE *const b = (VALUE *)GC_malloc(sizeof(VALUE));
+            b[0] = nuq_var_get(c, ie->var_id);
+            kss[i].items = b; kss[i].count = 1;
+        } else if (ie->kkind == 0 || ie->kkind == 2) {
             VALUE *const b = (VALUE *)GC_malloc(sizeof(VALUE));
             b[0] = ie->kname_value;
             kss[i].items = b; kss[i].count = 1;
@@ -1900,8 +1916,6 @@ nuq_startswith_eval(CTX *c, struct Node *prefix)
 EMIT
 nuq_ltrimstr_eval(CTX *c, struct Node *prefix)
 {
-    if (!(NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_STRING))
-        return nuq_emit_one(c, c->input);          /* jq: passthrough */
     size_t outer = c->pool_top;
     EMIT buf = EVAL(c, prefix);
     if (c->error != NUQ_NULL) return EMIT_EMPTY;
@@ -1912,9 +1926,12 @@ nuq_ltrimstr_eval(CTX *c, struct Node *prefix)
     c->pool_top = outer;
     for (uint32_t i = 0; i < cnt; i++) {
         VALUE p = local[i];
-        if (!(NUQ_IS_PTR(p) && NUQ_PTR(p)->type == NUQ_T_STRING)) {
-            nuq_pool_push(c, c->input);             /* non-string prefix → passthrough */
-            continue;
+        bool in_is_str = NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_STRING;
+        bool p_is_str  = NUQ_IS_PTR(p) && NUQ_PTR(p)->type == NUQ_T_STRING;
+        if (!in_is_str || !p_is_str) {
+            /* jq's ltrimstr errors when either operand isn't a string. */
+            c->error = nuq_make_string("startswith() requires string inputs", 35);
+            return EMIT_EMPTY;
         }
         struct nuq_obj *po = NUQ_PTR(p);
         struct nuq_obj *io = NUQ_PTR(c->input);
@@ -1933,8 +1950,6 @@ nuq_ltrimstr_eval(CTX *c, struct Node *prefix)
 EMIT
 nuq_rtrimstr_eval(CTX *c, struct Node *suffix)
 {
-    if (!(NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_STRING))
-        return nuq_emit_one(c, c->input);
     size_t outer = c->pool_top;
     EMIT buf = EVAL(c, suffix);
     if (c->error != NUQ_NULL) return EMIT_EMPTY;
@@ -1945,9 +1960,12 @@ nuq_rtrimstr_eval(CTX *c, struct Node *suffix)
     c->pool_top = outer;
     for (uint32_t i = 0; i < cnt; i++) {
         VALUE p = local[i];
-        if (!(NUQ_IS_PTR(p) && NUQ_PTR(p)->type == NUQ_T_STRING)) {
-            nuq_pool_push(c, c->input);
-            continue;
+        bool in_is_str = NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_STRING;
+        bool p_is_str  = NUQ_IS_PTR(p) && NUQ_PTR(p)->type == NUQ_T_STRING;
+        if (!in_is_str || !p_is_str) {
+            /* jq's rtrimstr errors when either operand isn't a string. */
+            c->error = nuq_make_string("endswith() requires string inputs", 33);
+            return EMIT_EMPTY;
         }
         struct nuq_obj *po = NUQ_PTR(p);
         struct nuq_obj *io = NUQ_PTR(c->input);
@@ -2009,7 +2027,17 @@ nuq_sort_by_eval(CTX *c, struct Node *body)
         size_t t0 = c->pool_top;
         EMIT bo = EVAL(c, body);
         if (c->error != NUQ_NULL) { c->input = saved; return EMIT_EMPTY; }
-        VALUE k = bo.count > 0 ? bo.items[0] : NUQ_NULL;
+        /* For multi-key sort like `sort_by(.a, .b)` body emits multiple
+         * values per element — wrap them in an array so the cmp_pair
+         * comparator does a lexicographic tie-break. Single emit is
+         * still wrapped in a 1-element array for uniform handling. */
+        VALUE k;
+        if (bo.count == 0) k = NUQ_NULL;
+        else if (bo.count == 1) k = bo.items[0];
+        else {
+            k = nuq_make_array(bo.count);
+            for (uint32_t j = 0; j < bo.count; j++) nuq_array_push(k, bo.items[j]);
+        }
         c->pool_top = t0;
         VALUE p = nuq_make_array(2);
         nuq_array_push(p, k);
@@ -2346,11 +2374,17 @@ setpath_recurse(VALUE v, VALUE *keys, size_t cnt, VALUE new_val)
     bool key_is_str = NUQ_IS_PTR(k) && NUQ_PTR(k)->type == NUQ_T_STRING;
     bool key_is_int = NUQ_IS_FIX(k);
     if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_NULL) {
-        /* auto-vivify */
         v = key_is_str ? nuq_make_object(4) : nuq_make_array(0);
     }
     if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_OBJECT) {
-        if (!key_is_str) return v;        /* type error → leave v */
+        if (!key_is_str) {
+            char kd[80], msg[160];
+            nuq_value_descr(k, kd, sizeof(kd));
+            int w = snprintf(msg, sizeof(msg), "Cannot index object with %s", kd);
+            if (nuq_active_ctx && nuq_active_ctx->error == NUQ_NULL)
+                nuq_active_ctx->error = nuq_make_string(msg, (size_t)w);
+            return v;
+        }
         VALUE child = nuq_object_get(v, k);
         VALUE updated = setpath_recurse(child, keys + 1, cnt - 1, new_val);
         VALUE clone = nuq_clone(v);
@@ -2358,11 +2392,16 @@ setpath_recurse(VALUE v, VALUE *keys, size_t cnt, VALUE new_val)
         return clone;
     }
     if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_ARRAY) {
-        if (!key_is_int) return v;
+        if (!key_is_int) {
+            if (nuq_active_ctx && nuq_active_ctx->error == NUQ_NULL)
+                nuq_active_ctx->error = nuq_make_string(
+                    "Cannot update field at array index of array", 43);
+            return v;
+        }
         int64_t idx = NUQ_FIX_VAL(k);
         struct nuq_obj *o = NUQ_PTR(v);
         if (idx < 0) idx += (int64_t)o->arr.len;
-        if (idx < 0) return v;            /* out of range below 0 */
+        if (idx < 0) return v;
         VALUE clone = nuq_clone(v);
         struct nuq_obj *co = NUQ_PTR(clone);
         while ((int64_t)co->arr.len <= idx) nuq_array_push(clone, NUQ_NULL);
@@ -2371,7 +2410,7 @@ setpath_recurse(VALUE v, VALUE *keys, size_t cnt, VALUE new_val)
         co->arr.items[idx] = updated;
         return clone;
     }
-    return v;   /* unknown type — leave alone */
+    return v;
 }
 
 /* `setpath(p; v)` — return input with value at path p replaced by v. */
@@ -2502,8 +2541,10 @@ nuq_delpaths_eval(CTX *c, struct Node *paths_expr)
     if (c->error != NUQ_NULL) return EMIT_EMPTY;
     if (pe.count == 0) { c->pool_top = t0; return EMIT_EMPTY; }
     VALUE pv = pe.items[0];
-    if (!(NUQ_IS_PTR(pv) && NUQ_PTR(pv)->type == NUQ_T_ARRAY))
+    if (!(NUQ_IS_PTR(pv) && NUQ_PTR(pv)->type == NUQ_T_ARRAY)) {
+        c->pool_top = t0;
         return err_emit(c, "Paths must be specified as an array");
+    }
     struct nuq_obj *po = NUQ_PTR(pv);
     /* Snapshot since we'll re-use pool. */
     size_t cnt = po->arr.len;
@@ -2786,6 +2827,17 @@ walk_path(CTX *c, struct Node *n, VALUE v, nuq_leaf_fn fn, void *ud)
         if (!eval_dynamic_key(c, idx_expr, &k)) {
             return v;     /* error already set */
         }
+        /* `.[nan] = X` — jq error message. */
+        if (NUQ_IS_PTR(k) && NUQ_PTR(k)->type == NUQ_T_DOUBLE && isnan(NUQ_PTR(k)->dbl)
+            && NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_ARRAY) {
+            c->error = nuq_make_string("Cannot set array element at NaN index", 37);
+            return v;
+        }
+        /* Float-valued indices: jq accepts ints (treats float-as-int via floor). */
+        if (NUQ_IS_PTR(k) && NUQ_PTR(k)->type == NUQ_T_DOUBLE) {
+            double d = NUQ_PTR(k)->dbl;
+            if (!isnan(d)) k = nuq_make_int((int64_t)floor(d));
+        }
         if (NUQ_IS_FIX(k)) {
             /* int index — array */
             int64_t i = NUQ_FIX_VAL(k);
@@ -2868,6 +2920,10 @@ walk_path(CTX *c, struct Node *n, VALUE v, nuq_leaf_fn fn, void *ud)
     if (n->head.kind == &kind_node_slice) {
         struct Node *startn = n->u.node_slice.startn;
         struct Node *stopn  = n->u.node_slice.stopn;
+        if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_STRING) {
+            c->error = nuq_make_string("Cannot update string slices", 27);
+            return v;
+        }
         if (!(NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_ARRAY)) {
             c->error = nuq_make_string("path expression: not array (slice)", 34);
             return v;
@@ -2878,14 +2934,20 @@ walk_path(CTX *c, struct Node *n, VALUE v, nuq_leaf_fn fn, void *ud)
         if (startn) {
             VALUE sv;
             if (!eval_dynamic_key(c, startn, &sv)) return v;
-            if (!NUQ_IS_FIX(sv)) { c->error = nuq_make_string("slice start not int", 19); return v; }
-            lo = NUQ_FIX_VAL(sv);
+            if (NUQ_IS_FIX(sv)) lo = NUQ_FIX_VAL(sv);
+            else if (NUQ_IS_PTR(sv) && NUQ_PTR(sv)->type == NUQ_T_DOUBLE) {
+                double d = NUQ_PTR(sv)->dbl;
+                lo = isnan(d) ? 0 : (int64_t)floor(d);
+            } else { c->error = nuq_make_string("slice start not int", 19); return v; }
         }
         if (stopn) {
             VALUE sv;
             if (!eval_dynamic_key(c, stopn, &sv)) return v;
-            if (!NUQ_IS_FIX(sv)) { c->error = nuq_make_string("slice stop not int", 18); return v; }
-            hi = NUQ_FIX_VAL(sv);
+            if (NUQ_IS_FIX(sv)) hi = NUQ_FIX_VAL(sv);
+            else if (NUQ_IS_PTR(sv) && NUQ_PTR(sv)->type == NUQ_T_DOUBLE) {
+                double d = NUQ_PTR(sv)->dbl;
+                hi = isnan(d) ? total : (int64_t)ceil(d);
+            } else { c->error = nuq_make_string("slice stop not int", 18); return v; }
         }
         if (lo < 0) lo += total;
         if (hi < 0) hi += total;

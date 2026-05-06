@@ -145,10 +145,9 @@ node_index(CTX *c, NODE *n, NODE *expr)
             continue;
         }
         {
-            char id[80], kd[80], msg[180];
-            nuq_value_descr(in, id, sizeof(id));
+            char kd[80], msg[180];
             nuq_value_descr(k, kd, sizeof(kd));
-            int w = snprintf(msg, sizeof(msg), "Cannot index %s with %s", id, kd);
+            int w = snprintf(msg, sizeof(msg), "Cannot index %s with %s", nuq_type_name(in), kd);
             c->error = nuq_make_string(msg, (size_t)w);
         }
         return EMIT_EMPTY;
@@ -1005,7 +1004,7 @@ NODE_DEF
 node_b_first0(CTX *c, NODE *n)
 {
     if (UNLIKELY(!(NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_ARRAY))) {
-        c->error = nuq_make_string("first: not array", 17);
+        c->error = nuq_make_string("first: not array", 16);
         return EMIT_EMPTY;
     }
     struct nuq_obj *o = NUQ_PTR(c->input);
@@ -1016,7 +1015,7 @@ NODE_DEF
 node_b_last0(CTX *c, NODE *n)
 {
     if (UNLIKELY(!(NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_ARRAY))) {
-        c->error = nuq_make_string("last: not array", 16);
+        c->error = nuq_make_string("last: not array", 15);
         return EMIT_EMPTY;
     }
     struct nuq_obj *o = NUQ_PTR(c->input);
@@ -1027,7 +1026,7 @@ NODE_DEF
 node_b_any0(CTX *c, NODE *n)
 {
     if (UNLIKELY(!(NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_ARRAY))) {
-        c->error = nuq_make_string("any: not array", 15);
+        c->error = nuq_make_string("any: not array", 14);
         return EMIT_EMPTY;
     }
     struct nuq_obj *o = NUQ_PTR(c->input);
@@ -1041,7 +1040,7 @@ NODE_DEF
 node_b_all0(CTX *c, NODE *n)
 {
     if (UNLIKELY(!(NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_ARRAY))) {
-        c->error = nuq_make_string("all: not array", 15);
+        c->error = nuq_make_string("all: not array", 14);
         return EMIT_EMPTY;
     }
     struct nuq_obj *o = NUQ_PTR(c->input);
@@ -1172,7 +1171,7 @@ node_b_fromjson(CTX *c, NODE *n)
 {
     VALUE v;
     if (UNLIKELY(!nuq_builtin_fromjson(c->input, &v))) {
-        c->error = nuq_make_string("fromjson failed", 16);
+        c->error = nuq_make_string("fromjson failed", 15);
         return EMIT_EMPTY;
     }
     return nuq_emit_one(c, v);
@@ -2291,7 +2290,7 @@ NODE_DEF
 node_b_map(CTX *c, NODE *n, NODE *body)
 {
     if (UNLIKELY(!(NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_ARRAY))) {
-        c->error = nuq_make_string("map: not array", 15);
+        c->error = nuq_make_string("map: not array", 14);
         return EMIT_EMPTY;
     }
     struct nuq_obj *o = NUQ_PTR(c->input);
