@@ -1041,15 +1041,21 @@ nuq_func_define(CTX *c, struct nuq_func_def *fd)
         c->funcs = (struct nuq_func_def **)GC_realloc(
             c->funcs, c->func_capa * sizeof(*c->funcs));
     }
+    /* Capture the lexical scope at def time: any def added LATER won't
+     * be visible from this fd's body. */
+    fd->scope_top = c->func_cnt;
     c->funcs[c->func_cnt++] = fd;
 }
 
 struct nuq_func_def *
 nuq_func_lookup(CTX *c, uint32_t name_id, int arity)
 {
-    /* later definitions shadow earlier — search top-down */
+    size_t skip_s = c->func_skip_start;
+    size_t skip_e = c->func_skip_end;
     for (size_t i = c->func_cnt; i > 0; i--) {
-        struct nuq_func_def *fd = c->funcs[i-1];
+        size_t idx = i - 1;
+        if (skip_s != skip_e && idx >= skip_s && idx < skip_e) continue;
+        struct nuq_func_def *fd = c->funcs[idx];
         if (fd->name_id == name_id && fd->arity == arity) return fd;
     }
     return NULL;

@@ -769,7 +769,19 @@ nuq_user_call(CTX *c, uint32_t name_id, uint32_t arity, uint32_t args_id)
                 nuq_func_define(c, pfd);
             }
         }
+        /* Apply lexical scope for the body: the defs added between
+         * fd's definition site (`fd->scope_top + 1`, i.e. AFTER fd
+         * itself) and the call site (`func_top`) are hidden so a
+         * later same-named def doesn't shadow what fd was compiled
+         * against.  Params (added above func_top) and inner defs
+         * (added during body execution) remain visible. */
+        size_t saved_skip_s = c->func_skip_start;
+        size_t saved_skip_e = c->func_skip_end;
+        c->func_skip_start = fd->scope_top + 1;
+        c->func_skip_end   = func_top;
         EMIT r = EVAL(c, fd->body);
+        c->func_skip_start = saved_skip_s;
+        c->func_skip_end   = saved_skip_e;
         nuq_var_pop(c, var_top);
         c->func_cnt = func_top;
         return r;

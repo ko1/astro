@@ -143,6 +143,14 @@ typedef struct CTX_struct {
      * false during a path walk; propagates through nested_apply so
      * the enclosing iter / accessor knows to drop this branch. */
     bool                  path_drop_pending;
+
+    /* Lexical-scope skip range for func lookup inside a def body.
+     * Funcs in [skip_start, skip_end) are hidden from name resolution
+     * (the defs that came AFTER the enclosing fd was defined but
+     * BEFORE the call site — they shadow nothing in this body).
+     * skip_start == skip_end means dynamic / top-level scope. */
+    size_t                func_skip_start;
+    size_t                func_skip_end;
 } CTX;
 
 struct nuq_option {
@@ -357,6 +365,12 @@ struct nuq_func_def {
     uint32_t  *param_ids;
     bool      *param_is_value;
     struct Node *body;
+    /* Lexical-scope boundary: at call time, only functions defined
+     * BEFORE this one (i.e. funcs[0..scope_top-1]) are visible — so a
+     * later redefinition of a name doesn't shadow the version this def
+     * was compiled against.  Set by nuq_func_define from current
+     * func_cnt; 0 means "no constraint" (top-level / dynamic). */
+    size_t     scope_top;
 };
 
 void nuq_func_define(CTX *c, struct nuq_func_def *fd);
