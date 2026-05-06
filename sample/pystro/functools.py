@@ -119,6 +119,22 @@ def total_ordering(cls):
     return cls
 
 
+class partialmethod:
+    """Like partial but invokes via descriptor protocol so self is bound."""
+    def __init__(self, fn, *args, **kwargs):
+        self.fn = fn
+        self.args = args
+        self.kwargs = kwargs
+    def __get__(self, obj, owner=None):
+        if obj is None: return self
+        fn = self.fn; args = self.args; kw = self.kwargs
+        def bound(*more_args, **more_kw):
+            merged_kw = dict(kw)
+            merged_kw.update(more_kw)
+            return fn(obj, *args, *more_args, **merged_kw)
+        return bound
+
+
 class cached_property:
     """Descriptor: compute on first access, store on the instance __dict__."""
     def __init__(self, fn):
@@ -172,6 +188,6 @@ def singledispatch(fn):
     return wrapper
 
 
-__all__ = ["partial", "reduce", "wraps", "cache", "lru_cache",
+__all__ = ["partial", "partialmethod", "reduce", "wraps", "cache", "lru_cache",
            "cmp_to_key", "total_ordering", "singledispatch",
            "cached_property"]

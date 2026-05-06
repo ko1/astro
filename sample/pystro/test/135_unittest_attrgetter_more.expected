@@ -1,0 +1,6 @@
+ok AttrgetterChainTest test_dotted
+ok AttrgetterChainTest test_multi
+ok CustomDirTest test_dir_override
+ok PartialMethodTest test_basic
+---
+passed=4 failed=0

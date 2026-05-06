@@ -43,13 +43,16 @@ def itemgetter(*items):
     return g
 
 def attrgetter(*names):
+    def get_one(obj, name):
+        for part in name.split("."):
+            obj = getattr(obj, part)
+        return obj
     if len(names) == 1:
         nm = names[0]
-        # No dotted-attr support in v0; warn at runtime if `.` present.
-        def g(obj): return getattr(obj, nm)
+        def g(obj): return get_one(obj, nm)
         return g
     def g(obj):
-        return tuple(getattr(obj, n) for n in names)
+        return tuple(get_one(obj, n) for n in names)
     return g
 
 def methodcaller(name, *args):

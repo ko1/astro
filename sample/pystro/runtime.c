@@ -8209,6 +8209,19 @@ bi_id(CTX *c, int argc, VALUE *argv)
 static VALUE
 bi_dir(CTX *c, int argc, VALUE *argv)
 {
+    // User-defined __dir__ override.
+    if (argc == 1 && py_is_instance(argv[0])) {
+        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(argv[0])->inst.cls), "__dir__");
+        if (m != PY_NONE) {
+            VALUE result = py_apply(c, m, 1, argv);
+            if (c->state == PY_STATE_RAISE) return PY_NONE;
+            if (py_is_list(result)) {
+                VALUE av[1] = { result };
+                lm_sort(c, 1, av);
+            }
+            return result;
+        }
+    }
     VALUE r = py_make_list(NULL, 0);
     if (argc == 0) {
         // dir() with no args: list current frame's local names.  We
