@@ -119,6 +119,10 @@ def skip_if_dac_override(fn):
     return fn
 
 
+def skip_unless_working_chmod(fn):
+    return unittest.skip("no working chmod")(fn)
+
+
 def skip_unless_xattr(fn):
     return unittest.skip("no xattr")(fn)
 

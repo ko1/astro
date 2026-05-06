@@ -389,6 +389,55 @@ def force_not_colorized_test_class(cls):
     return cls
 
 
+def swap_attr(obj, attr, new_value):
+    class _CM:
+        def __enter__(self_):
+            self_._old = getattr(obj, attr, _UNSET)
+            setattr(obj, attr, new_value)
+            return self_._old
+        def __exit__(self_, *exc):
+            if self_._old is _UNSET:
+                try: delattr(obj, attr)
+                except Exception: pass
+            else:
+                setattr(obj, attr, self_._old)
+    return _CM()
+
+
+def swap_item(mapping, key, new_value):
+    class _CM:
+        def __enter__(self_):
+            self_._old = mapping.get(key, _UNSET)
+            mapping[key] = new_value
+            return self_._old
+        def __exit__(self_, *exc):
+            if self_._old is _UNSET:
+                if key in mapping: del mapping[key]
+            else:
+                mapping[key] = self_._old
+    return _CM()
+
+
+_UNSET = object()
+
+REPO_ROOT = "/"
+SOURCE_DIR = "/"
+TEST_DATA_DIR = "/"
+TEST_HOME_DIR = "/"
+SAVEDCWD = "/"
+
+Py_DEBUG = False
+DEFAULT_BUFFER_SIZE = 8192
+
+
+def captured_stdout():
+    return captured_output("stdout")
+
+
+def captured_stderr():
+    return captured_output("stderr")
+
+
 Py_TRACE_REFS = False
 Py_GIL_DISABLED = False
 Py_DEBUG = False

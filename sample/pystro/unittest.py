@@ -382,5 +382,109 @@ class TextTestRunner:
                 self.run(cls)
 
 
+# unittest.mock — minimal sub-namespace.
+class _MockSentinel:
+    def __init__(self, name): self.name = name
+    def __repr__(self): return f"sentinel.{self.name}"
+
+
+class _MockSentinelFactory:
+    def __getattr__(self, name): return _MockSentinel(name)
+
+
+class _Mock:
+    def __init__(self, *args, **kwargs):
+        self._spec = kwargs.pop("spec", None)
+        self._return_value = kwargs.pop("return_value", None)
+        self._side_effect = kwargs.pop("side_effect", None)
+        self.call_args = None
+        self.call_args_list = []
+        self.call_count = 0
+        self._children = {}
+        for k, v in kwargs.items():
+            setattr(self, k, v)
+    def __call__(self, *args, **kwargs):
+        self.call_args = (args, kwargs)
+        self.call_args_list.append(self.call_args)
+        self.call_count += 1
+        if self._side_effect is not None:
+            if callable(self._side_effect):
+                return self._side_effect(*args, **kwargs)
+            return self._side_effect
+        return self._return_value
+    def __getattr__(self, name):
+        if name in ("_spec", "_return_value", "_side_effect",
+                    "call_args", "call_args_list", "call_count",
+                    "_children"):
+            raise AttributeError(name)
+        if name not in self._children:
+            self._children[name] = _Mock()
+        return self._children[name]
+    @property
+    def return_value(self): return self._return_value
+    @return_value.setter
+    def return_value(self, v): self._return_value = v
+    def reset_mock(self):
+        self.call_args = None
+        self.call_args_list = []
+        self.call_count = 0
+    def assert_called(self):
+        if self.call_count == 0:
+            raise AssertionError("Expected to be called")
+    def assert_called_once(self):
+        if self.call_count != 1:
+            raise AssertionError(f"Expected 1 call, got {self.call_count}")
+    def assert_not_called(self):
+        if self.call_count != 0:
+            raise AssertionError(f"Expected no calls, got {self.call_count}")
+    def assert_called_with(self, *args, **kwargs):
+        if self.call_args != (args, kwargs):
+            raise AssertionError(f"Expected {args}, {kwargs}, got {self.call_args}")
+    def assert_called_once_with(self, *args, **kwargs):
+        self.assert_called_once()
+        self.assert_called_with(*args, **kwargs)
+
+
+def _patch(target, *args, **kwargs):
+    class _PatchCM:
+        def __enter__(self): return _Mock()
+        def __exit__(self, *exc): return False
+        def __call__(self, fn): return fn
+    return _PatchCM()
+
+
+_patch.object = lambda obj, attr, *a, **k: _patch(f"{obj}.{attr}", *a, **k)
+_patch.dict = lambda *a, **k: _patch(*a, **k)
+_patch.multiple = lambda *a, **k: _patch(*a, **k)
+
+
+class _MockModule:
+    Mock = _Mock
+    MagicMock = _Mock
+    NonCallableMock = _Mock
+    NonCallableMagicMock = _Mock
+    PropertyMock = _Mock
+    AsyncMock = _Mock
+    patch = staticmethod(_patch)
+    sentinel = _MockSentinelFactory()
+    DEFAULT = object()
+    ANY = object()
+    @staticmethod
+    def call(*args, **kwargs):
+        return (args, kwargs)
+    @staticmethod
+    def create_autospec(spec, *args, **kwargs):
+        return _Mock()
+    @staticmethod
+    def mock_open(read_data=""):
+        m = _Mock()
+        m.read = _Mock(return_value=read_data)
+        return m
+
+
+mock = _MockModule()
+
+
 __all__ = ["TestCase", "main", "SkipTest", "skip", "skipIf", "skipUnless",
-           "expectedFailure", "TestLoader", "TestSuite", "TextTestRunner"]
+           "expectedFailure", "TestLoader", "TestSuite", "TextTestRunner",
+           "mock"]
