@@ -1115,9 +1115,14 @@ static NODE *build_pattern_check(struct transduce_context *tc, pm_node_t *pat,
               struct method_cache *mc_dc = alloc_method_cache();
               NODE *dc_call = ALLOC_node_method_call(ALLOC_node_lvar_get(subj_slot),
                                                       korb_intern("deconstruct"), 0, ai_dc, mc_dc);
-              NODE *coerced = ALLOC_node_if(isa1,
-                                             ALLOC_node_lvar_get(subj_slot),
-                                             ALLOC_node_if(rt, dc_call, ALLOC_node_nil()));
+              /* CRuby calls #deconstruct first if available — even when
+               * subj is already an Array (e.g. Array with a singleton
+               * deconstruct).  Only fall back to using subj directly
+               * when there's no deconstruct method. */
+              NODE *coerced = ALLOC_node_if(rt, dc_call,
+                                  ALLOC_node_if(isa1,
+                                                ALLOC_node_lvar_get(subj_slot),
+                                                ALLOC_node_nil()));
               coerce_step = ALLOC_node_lvar_set(local_subj_slot, coerced);
           }
           /* Now route all subsequent reads of "subject" through the
@@ -1316,9 +1321,12 @@ static NODE *build_pattern_check(struct transduce_context *tc, pm_node_t *pat,
               NODE *dc_call = ALLOC_node_seq(nil_arg,
                   ALLOC_node_method_call(ALLOC_node_lvar_get(subj_slot),
                                           korb_intern("deconstruct_keys"), 1, ai_dc, mc_dc));
-              NODE *coerced = ALLOC_node_if(isa1,
-                                             ALLOC_node_lvar_get(subj_slot),
-                                             ALLOC_node_if(rt, dc_call, ALLOC_node_nil()));
+              /* Prefer deconstruct_keys even on Hash (singleton override
+               * support — CRuby calls it). */
+              NODE *coerced = ALLOC_node_if(rt, dc_call,
+                                  ALLOC_node_if(isa1,
+                                                ALLOC_node_lvar_get(subj_slot),
+                                                ALLOC_node_nil()));
               coerce_step = ALLOC_node_lvar_set(local_subj_slot, coerced);
           }
           subj_slot = local_subj_slot;
