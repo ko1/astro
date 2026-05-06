@@ -3748,15 +3748,95 @@ nuq_assign_eval(CTX *c, struct Node *lhs, struct Node *rhs, uint32_t op_kind)
         for (uint32_t i = 0; i < rc; i++) {
             ud.precomputed = rs[i];
             VALUE result = walk_path(c, lhs, c->input, assign_leaf, &ud);
-            if (c->error != NUQ_NULL) return EMIT_EMPTY;
-            nuq_pool_push(c, result);
+            if (c->error != NUQ_NULL) {
+                /* Multi-emit path — fallback via path()+setpath. */
+                if (strstr(nuq_string_cstr(c->error), "exactly one") == NULL)
+                    return EMIT_EMPTY;
+                c->error = NUQ_NULL;
+                size_t inner_outer = c->pool_top;
+                EMIT pe = nuq_path_eval(c, lhs);
+                if (c->error != NUQ_NULL) return EMIT_EMPTY;
+                uint32_t pcnt = pe.count;
+                VALUE psmall[64];
+                VALUE *paths = (pcnt <= 64) ? psmall : (VALUE *)GC_malloc(pcnt * sizeof(VALUE));
+                memcpy(paths, pe.items, pcnt * sizeof(VALUE));
+                c->pool_top = inner_outer;
+                for (uint32_t a = 1; a < pcnt; a++) {
+                    VALUE x = paths[a]; uint32_t b = a;
+                    while (b > 0 && nuq_cmp(paths[b-1], x) < 0) { paths[b] = paths[b-1]; b--; }
+                    paths[b] = x;
+                }
+                VALUE cur = c->input;
+                for (uint32_t a = 0; a < pcnt; a++) {
+                    VALUE p = paths[a];
+                    if (!(NUQ_IS_PTR(p) && NUQ_PTR(p)->type == NUQ_T_ARRAY)) continue;
+                    struct nuq_obj *po = NUQ_PTR(p);
+                    if (po->arr.len == 0) continue;
+                    cur = setpath_recurse(cur, po->arr.items, po->arr.len, ud.precomputed);
+                    if (c->error != NUQ_NULL) return EMIT_EMPTY;
+                }
+                nuq_pool_push(c, cur);
+            } else {
+                nuq_pool_push(c, result);
+            }
         }
         return nuq_emit_slice(c, outer);
     }
 
     VALUE result = walk_path(c, lhs, c->input, assign_leaf, &ud);
+    if (c->error == NUQ_NULL) return nuq_emit_one(c, result);
+    /* Multi-emit path index — fall back to path()+per-path setpath.
+     * Only retry on the specific "exactly one" path-index error so we
+     * don't swallow legitimate type errors. */
+    if (strstr(nuq_string_cstr(c->error), "exactly one") == NULL)
+        return EMIT_EMPTY;
+    c->error = NUQ_NULL;
+    size_t outer = c->pool_top;
+    EMIT pe = nuq_path_eval(c, lhs);
     if (c->error != NUQ_NULL) return EMIT_EMPTY;
-    return nuq_emit_one(c, result);
+    uint32_t pcnt = pe.count;
+    VALUE small[64];
+    VALUE *paths = (pcnt <= 64) ? small : (VALUE *)GC_malloc(pcnt * sizeof(VALUE));
+    memcpy(paths, pe.items, pcnt * sizeof(VALUE));
+    c->pool_top = outer;
+    /* Sort descending to keep array indices stable while we update. */
+    for (uint32_t i = 1; i < pcnt; i++) {
+        VALUE x = paths[i];
+        uint32_t j = i;
+        while (j > 0 && nuq_cmp(paths[j-1], x) < 0) { paths[j] = paths[j-1]; j--; }
+        paths[j] = x;
+    }
+    VALUE cur = c->input;
+    for (uint32_t i = 0; i < pcnt; i++) {
+        VALUE p = paths[i];
+        if (!(NUQ_IS_PTR(p) && NUQ_PTR(p)->type == NUQ_T_ARRAY)) continue;
+        struct nuq_obj *po = NUQ_PTR(p);
+        if (po->arr.len == 0) continue;
+        /* Fetch current value at path. */
+        VALUE leaf = cur;
+        for (size_t j = 0; j < po->arr.len; j++) {
+            VALUE k = po->arr.items[j];
+            if (NUQ_IS_PTR(leaf) && NUQ_PTR(leaf)->type == NUQ_T_OBJECT)
+                leaf = nuq_object_get(leaf, k);
+            else if (NUQ_IS_PTR(leaf) && NUQ_PTR(leaf)->type == NUQ_T_ARRAY) {
+                int64_t idx = NUQ_IS_FIX(k) ? NUQ_FIX_VAL(k) : 0;
+                if (idx < 0) idx += (int64_t)NUQ_PTR(leaf)->arr.len;
+                if (idx < 0 || (size_t)idx >= NUQ_PTR(leaf)->arr.len) {
+                    leaf = NUQ_NULL; break;
+                }
+                leaf = NUQ_PTR(leaf)->arr.items[idx];
+            } else { leaf = NUQ_NULL; break; }
+        }
+        bool dropped = false;
+        VALUE new_leaf = assign_leaf(leaf, &ud, &dropped);
+        if (c->error != NUQ_NULL) return EMIT_EMPTY;
+        if (dropped) {
+            cur = delpath_recurse(cur, po->arr.items, po->arr.len);
+        } else {
+            cur = setpath_recurse(cur, po->arr.items, po->arr.len, new_leaf);
+        }
+    }
+    return nuq_emit_one(c, cur);
 }
 
 EMIT

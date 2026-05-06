@@ -2085,7 +2085,7 @@ node_b_input(CTX *c, NODE *n)
 {
     VALUE v;
     if (!nuq_input_pull(&v)) {
-        c->error = nuq_make_string("No more inputs", 14);
+        c->error = nuq_make_string("break", 5);
         return EMIT_EMPTY;
     }
     return nuq_emit_one(c, v);
