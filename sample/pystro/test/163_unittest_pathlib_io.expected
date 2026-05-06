@@ -1,0 +1,13 @@
+ok PathlibTest test_join
+ok PathlibTest test_parts
+ok PathlibTest test_properties
+ok PathlibTest test_unlink_missing_ok
+ok PathlibTest test_with_suffix
+ok PathlibTest test_write_read_text
+ok BytesIOTest test_initial
+ok BytesIOTest test_seek_read
+ok BytesIOTest test_tell
+ok StringIOTest test_read_seek
+ok StringIOTest test_write_get
+---
+passed=11 failed=0

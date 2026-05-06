@@ -63,23 +63,41 @@ class BytesIO:
     def __init__(self, initial=None):
         self._chunks = []
         if initial:
-            self._chunks.append(initial)
+            self._chunks.append(bytes(initial))
         self._closed = False
+        self._pos = 0
     def write(self, b):
         if self._closed:
             raise ValueError("write on closed BytesIO")
-        self._chunks.append(b)
+        self._chunks.append(bytes(b))
         return len(b)
     def getvalue(self):
-        # Concatenate all chunks into one bytes.
         if not self._chunks:
             return b""
         result = b""
         for c in self._chunks:
             result = result + c
         return result
-    def read(self):
-        return self.getvalue()
+    def read(self, size=-1):
+        v = self.getvalue()
+        if self._pos >= len(v): return b""
+        if size < 0 or self._pos + size > len(v):
+            r = v[self._pos:]
+            self._pos = len(v)
+        else:
+            r = v[self._pos:self._pos + size]
+            self._pos += size
+        return r
+    def seek(self, pos, whence=0):
+        if whence == 0:
+            self._pos = pos
+        elif whence == 1:
+            self._pos += pos
+        else:
+            self._pos = len(self.getvalue()) + pos
+        return self._pos
+    def tell(self):
+        return self._pos
     def close(self):
         self._closed = True
     def __enter__(self):

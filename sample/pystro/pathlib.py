@@ -33,12 +33,56 @@ class Path:
     def is_file(self): return _os.path.isfile(self._s)
     def is_absolute(self): return _os.path.isabs(self._s)
     def absolute(self):    return Path(_os.path.abspath(self._s))
+
+    @property
     def parent(self):  return Path(_os.path.dirname(self._s))
+    @property
     def name(self):    return _os.path.basename(self._s)
-    def suffix(self):  return _os.path.splitext(self._s)[1]
+    @property
+    def suffix(self):
+        bn = _os.path.basename(self._s)
+        return _os.path.splitext(bn)[1]
+    @property
     def stem(self):
         bn = _os.path.basename(self._s)
         return _os.path.splitext(bn)[0]
+    @property
+    def parts(self):
+        # Split on '/' returning a tuple of components.
+        s = self._s
+        if not s: return ()
+        out = []
+        if s.startswith("/"):
+            out.append("/")
+            s = s.lstrip("/")
+        for p in s.split("/"):
+            if p: out.append(p)
+        return tuple(out)
+    @property
+    def parents(self):
+        # Tuple of all parents up to root.
+        out = []
+        cur = self
+        while True:
+            par = cur.parent
+            if par._s == cur._s: break
+            out.append(par)
+            cur = par
+        return tuple(out)
+
+    def unlink(self, missing_ok=False):
+        try:
+            _os.remove(self._s)
+        except Exception:
+            if not missing_ok:
+                raise
+
+    def with_suffix(self, suffix):
+        bn, _ext = _os.path.splitext(self._s)
+        return Path(bn + suffix)
+
+    def with_name(self, name):
+        return Path(_os.path.join(_os.path.dirname(self._s), name))
 
     def read_text(self):
         with open(self._s) as f:
