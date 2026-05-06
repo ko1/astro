@@ -1915,8 +1915,43 @@ parse_call_args(NODE *fn)
     }
 }
 
-// `[ subscript ]` — either index or slice.  Returns either a
-// node_subscript_get or node_slice.
+// Parse one subscript element: either a plain expression, or a slice
+// `a:b:c` (any of a/b/c may be missing).  Returns the constructed NODE
+// and sets `*is_slice_out` if a colon was seen.
+static NODE *
+parse_subscript_elem(bool *is_slice_out)
+{
+    NODE *start = NULL, *stop = NULL, *step = NULL;
+    bool is_slice = false;
+    int k = peek_tok(0)->kind;
+    if (k == T_COLON) is_slice = true;
+    else if (k != T_RBRACK && k != T_COMMA) start = parse_expr();
+    if (match_tok(T_COLON)) {
+        is_slice = true;
+        int kk = peek_tok(0)->kind;
+        if (kk != T_COLON && kk != T_RBRACK && kk != T_COMMA)
+            stop = parse_expr();
+        if (match_tok(T_COLON)) {
+            int kk2 = peek_tok(0)->kind;
+            if (kk2 != T_RBRACK && kk2 != T_COMMA) step = parse_expr();
+        }
+    }
+    *is_slice_out = is_slice;
+    if (!is_slice) return start;
+    if (!start) start = ALLOC_node_const_none();
+    if (!stop)  stop  = ALLOC_node_const_none();
+    if (!step)  step  = ALLOC_node_const_none();
+    // Build a Slice as an attribute-call-style: pystro doesn't have a
+    // standalone Slice expression, so use the slice() builtin to create
+    // a runtime slice value for tuple-subscript paths; for single-element
+    // subscript the caller picks ALLOC_node_slice directly.
+    NODE *args[3] = { start, stop, step };
+    size_t bidx = node_table_reserve(args, 3);
+    return ALLOC_node_call_n(
+        ALLOC_node_gref(intern_name("slice", 5)),
+        (uint32_t)bidx, 3);
+}
+
 static NODE *
 parse_subscript(NODE *seq)
 {
@@ -1928,24 +1963,44 @@ parse_subscript(NODE *seq)
     else                              start = parse_expr();
     if (match_tok(T_COLON)) {
         is_slice = true;
-        if (peek_tok(0)->kind != T_COLON && peek_tok(0)->kind != T_RBRACK)
+        if (peek_tok(0)->kind != T_COLON && peek_tok(0)->kind != T_RBRACK
+                && peek_tok(0)->kind != T_COMMA)
             stop = parse_expr();
         if (match_tok(T_COLON)) {
-            if (peek_tok(0)->kind != T_RBRACK) step = parse_expr();
+            if (peek_tok(0)->kind != T_RBRACK && peek_tok(0)->kind != T_COMMA)
+                step = parse_expr();
         }
     }
-    // `obj[a, b, c]` — tuple subscript (used by typing generic aliases).
-    if (!is_slice && peek_tok(0)->kind == T_COMMA) {
+    // `obj[a, b, c]` — tuple subscript (used by typing generic aliases,
+    // numpy, etc).  Each element may itself be a slice.
+    if (peek_tok(0)->kind == T_COMMA) {
         NODE *items[64];
         int n = 0;
-        items[n++] = start;
+        // Promote the first item: slice → slice() call so it can sit in
+        // a tuple value alongside ints / Ellipsis / etc.
+        if (is_slice) {
+            if (!start) start = ALLOC_node_const_none();
+            if (!stop)  stop  = ALLOC_node_const_none();
+            if (!step)  step  = ALLOC_node_const_none();
+            NODE *args[3] = { start, stop, step };
+            size_t bidx = node_table_reserve(args, 3);
+            items[n++] = ALLOC_node_call_n(
+                ALLOC_node_gref(intern_name("slice", 5)),
+                (uint32_t)bidx, 3);
+        } else {
+            items[n++] = start;
+        }
         while (match_tok(T_COMMA)) {
             if (peek_tok(0)->kind == T_RBRACK) break;
-            if (n >= 16) parse_error("too many tuple items in subscript");
-            items[n++] = parse_expr();
+            if (n >= 64) parse_error("too many tuple items in subscript");
+            bool elem_is_slice;
+            NODE *e = parse_subscript_elem(&elem_is_slice);
+            items[n++] = e ? e : ALLOC_node_const_none();
         }
+        expect(T_RBRACK, "']'");
         size_t base = node_table_reserve(items, n);
-        start = ALLOC_node_make_tuple((uint32_t)base, (uint32_t)n);
+        NODE *tup = ALLOC_node_make_tuple((uint32_t)base, (uint32_t)n);
+        return ALLOC_node_subscript_get(seq, tup);
     }
     expect(T_RBRACK, "']'");
     if (!is_slice) return ALLOC_node_subscript_get(seq, start);

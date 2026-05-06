@@ -3835,6 +3835,24 @@ py_getattr(CTX *c, VALUE v, const char *name)
         if (strcmp(name, "__name__") == 0)
             return py_make_str(mname, strlen(mname));
         if (strcmp(name, "__doc__") == 0) return PY_NONE;
+        if (strcmp(name, "__dict__") == 0) {
+            // Snapshot module globals as a dict (live mutation not
+            // supported — CPython exposes the underlying mapping but
+            // pystro's globals layout is private).
+            struct pyglobals *g = PY_PTR(v)->module.globals;
+            struct pydict *d = pydict_new();
+            struct pyobj *dwrap = py_alloc(PY_T_DICT);
+            dwrap->dict = d;
+            VALUE dval = PY_OBJ_VAL(dwrap);
+            for (size_t i = 0; i < g->size; i++) {
+                if (g->entries[i].defined) {
+                    VALUE k = py_make_str(g->entries[i].name,
+                                          strlen(g->entries[i].name));
+                    py_dict_set(c, dval, k, g->entries[i].value);
+                }
+            }
+            return dval;
+        }
         struct pyglobals *g = PY_PTR(v)->module.globals;
         for (size_t i = 0; i < g->size; i++)
             if (strcmp(g->entries[i].name, name) == 0 && g->entries[i].defined)
