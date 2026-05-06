@@ -3,10 +3,58 @@
 class ABCMeta(type):
     @classmethod
     def register(cls, subclass):
-        """No-op subclass registration — pystro doesn't track virtual
-        subclasses, so the registered class isn't recognised by
-        isinstance unless it's already a real subclass."""
+        """Track a virtual subclass relationship.  pystro doesn't have
+        a real ABC machinery, but we maintain a `_abc_registry` set on
+        the class and have `__instancecheck__` / `__subclasscheck__`
+        consult it.  This makes `isinstance(x, ABCSubclass)` /
+        `issubclass(C, ABCBase)` work for the registered virtual
+        relationship even without a real C-level descriptor."""
+        if not hasattr(cls, "_abc_registry"):
+            cls._abc_registry = set()
+        cls._abc_registry.add(subclass)
         return subclass
+
+    @classmethod
+    def __instancecheck__(cls, instance):
+        # Real subclass first.
+        try:
+            if isinstance(instance, type):
+                pass
+            elif type.__instancecheck__(cls, instance):
+                return True
+        except Exception:
+            pass
+        # Walk MRO of (type(instance)) and check virtual registry.
+        return cls.__subclasscheck__(type(instance))
+
+    @classmethod
+    def __subclasscheck__(cls, C):
+        # Real subclass first.
+        try:
+            if type.__subclasscheck__(cls, C):
+                return True
+        except Exception:
+            pass
+        # Virtual registry.
+        if hasattr(cls, "_abc_registry"):
+            if C in cls._abc_registry:
+                return True
+            for reg in cls._abc_registry:
+                try:
+                    if isinstance(reg, type) and issubclass(C, reg):
+                        return True
+                except Exception:
+                    pass
+        # Walk bases recursively.
+        try:
+            bases = getattr(cls, "__bases__", ())
+        except Exception:
+            bases = ()
+        for base in bases:
+            if isinstance(base, ABCMeta):
+                if base.__subclasscheck__(C):
+                    return True
+        return False
 
     @classmethod
     def __subclasshook__(cls, C):

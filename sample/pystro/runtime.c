@@ -10359,7 +10359,31 @@ bi_issubclass(CTX *c, int argc, VALUE *argv)
     }
     if (!py_is_class(cls)) py_raise_exc(c, c->EXC_TypeError, "issubclass() arg 1 must be a class");
     if (!py_is_class(info)) py_raise_exc(c, c->EXC_TypeError, "issubclass() arg 2 must be a class");
-    return class_is_ancestor(cls, info) ? PY_TRUE : PY_FALSE;
+    if (class_is_ancestor(cls, info)) return PY_TRUE;
+    // ABCMeta virtual registry: look up `_abc_registry` on `info` (a set
+    // of registered virtual subclass values).  cls is a virtual subclass
+    // if it equals — or is a real subclass of — anything in the
+    // registry.  Walk `info`'s bases recursively to catch inherited
+    // registries (e.g. Integral inherits Real's registry).
+    VALUE walk = info;
+    while (walk != PY_NONE && py_is_class(walk)) {
+        VALUE reg = py_class_lookup_method(walk, "_abc_registry");
+        if (reg != PY_NONE && py_is_any_set(reg)) {
+            struct pydict *dr = PY_PTR(reg)->dict;
+            for (size_t i = 0; i < dr->ecapa; i++) {
+                if (!pydict_entry_live(dr, i)) continue;
+                VALUE r_cls = dr->entries[i].key;
+                if (py_is_class(r_cls)) {
+                    if (cls == r_cls || class_is_ancestor(cls, r_cls)) return PY_TRUE;
+                }
+            }
+        }
+        // Move up the MRO one step.
+        struct pyclass *cd = &PY_PTR(walk)->cls;
+        if (cd->nbases == 0) break;
+        walk = cd->bases[0];
+    }
+    return PY_FALSE;
 }
 
 // Match `v`'s Python type against a class.  Handles both built-in
@@ -10371,16 +10395,39 @@ py_isinstance_check(CTX *c, VALUE v, VALUE cls)
     if (!py_is_class(cls)) {
         py_raise_exc(c, c->EXC_TypeError, "isinstance() second arg must be class");
     }
-    // Dispatch via metaclass __instancecheck__ if defined.
+    // Dispatch via metaclass __instancecheck__ if defined (and not the
+    // pystro-stub abc.py one — that path's classmethod call mechanics
+    // don't survive py_apply, so for ABCMeta we drop straight into the
+    // _abc_registry walk).
     {
         VALUE meta = py_class_lookup_method(cls, "__metaclass__");
         if (meta != PY_NONE && py_is_class(meta)) {
-            VALUE m = py_class_lookup_method(meta, "__instancecheck__");
-            if (m != PY_NONE) {
-                VALUE av[2] = { cls, v };
-                VALUE r = py_apply(c, m, 2, av);
-                if (c->state != PY_STATE_NORMAL) return false;
-                return py_is_truthy(r);
+            const char *meta_name = PY_PTR(meta)->cls.name;
+            bool is_abcmeta = (meta_name && strcmp(meta_name, "ABCMeta") == 0);
+            if (!is_abcmeta) {
+                VALUE m = py_class_lookup_method(meta, "__instancecheck__");
+                if (m != PY_NONE) {
+                    VALUE av[2] = { cls, v };
+                    VALUE r = py_apply(c, m, 2, av);
+                    if (c->state != PY_STATE_NORMAL) return false;
+                    return py_is_truthy(r);
+                }
+            }
+        }
+    }
+    // ABCMeta virtual subclass: see if `type(v)` is a registered virtual
+    // subclass of `cls`.  Reuses bi_issubclass's MRO + _abc_registry
+    // walk so isinstance(5, numbers.Integral) works.
+    {
+        VALUE av[1] = { v };
+        VALUE vtype = bi_type(c, 1, av);
+        if (py_is_class(vtype) && c->state == PY_STATE_NORMAL) {
+            VALUE iv[2] = { vtype, cls };
+            VALUE r = bi_issubclass(c, 2, iv);
+            if (c->state == PY_STATE_NORMAL && r == PY_TRUE) return true;
+            if (c->state != PY_STATE_NORMAL) {
+                c->state = PY_STATE_NORMAL;
+                c->state_value = PY_NONE;
             }
         }
     }
