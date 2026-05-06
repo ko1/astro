@@ -2773,6 +2773,19 @@ py_seq_len(CTX *c, VALUE v)
         // Fall back to primary value (built-in subclass instance).
         if (PY_PTR(v)->inst.primary) return py_seq_len(c, PY_PTR(v)->inst.primary);
     }
+    // Class object: look up __len__ on its __metaclass__ (matches
+    // metaclass-driven `len(SomeEnum)` etc.).
+    if (py_is_class(v)) {
+        VALUE meta = py_class_lookup_method(v, "__metaclass__");
+        if (meta != PY_NONE && py_is_class(meta)) {
+            VALUE m = py_class_lookup_method(meta, "__len__");
+            if (m != PY_NONE) {
+                VALUE av[1] = { v };
+                VALUE r = py_apply(c, m, 1, av);
+                if (PY_IS_FIXNUM(r)) return (size_t)PY_FIXVAL(r);
+            }
+        }
+    }
     py_raise_exc(c, c->EXC_TypeError, "object has no len()");
 }
 
@@ -2821,6 +2834,17 @@ py_contains(CTX *c, VALUE container, VALUE v)
         else
             return x <= r->range.start && x > r->range.stop &&
                    ((r->range.start - x) % (-r->range.step) == 0);
+    }
+    if (py_is_class(container)) {
+        VALUE meta = py_class_lookup_method(container, "__metaclass__");
+        if (meta != PY_NONE && py_is_class(meta)) {
+            VALUE m = py_class_lookup_method(meta, "__contains__");
+            if (m != PY_NONE) {
+                VALUE av[2] = { container, v };
+                VALUE r = py_apply(c, m, 2, av);
+                return py_is_truthy(r);
+            }
+        }
     }
     if (py_is_instance(container)) {
         VALUE cls = PY_OBJ_VAL(PY_PTR(container)->inst.cls);
@@ -2941,6 +2965,26 @@ py_iter_init(CTX *c, struct py_iter *it, VALUE iterable)
         it->kind = 12;
         it->container = iterable;
         return;
+    }
+    // Class with metaclass __iter__ — used for `for m in EnumClass:`.
+    if (py_is_class(iterable)) {
+        VALUE meta = py_class_lookup_method(iterable, "__metaclass__");
+        if (meta != PY_NONE && py_is_class(meta)) {
+            VALUE m = py_class_lookup_method(meta, "__iter__");
+            if (m != PY_NONE) {
+                VALUE av[1] = { iterable };
+                VALUE iter_obj = py_apply(c, m, 1, av);
+                if (c->state != PY_STATE_NORMAL) return;
+                if (PY_IS_PTR(iter_obj) && PY_PTR(iter_obj)->type == PY_T_ITER) {
+                    *it = *PY_PTR(iter_obj)->iter_state;
+                    return;
+                }
+                it->kind = 5;
+                it->container = iter_obj;
+                it->i = 0; it->end = 0; it->step = 0;
+                return;
+            }
+        }
     }
     py_raise_exc(c, c->EXC_TypeError, "object is not iterable");
 }

@@ -57,6 +57,12 @@ def _is_dunder(name):
 
 
 class EnumMeta(type):
+    def __len__(cls):
+        return len(cls._members_)
+    def __iter__(cls):
+        return iter(cls._members_)
+    def __contains__(cls, member):
+        return member in cls._members_
     def __new__(meta, name, bases, attrs):
         # Collect non-dunder, non-method attributes as enum members; keep methods.
         items = []

@@ -1,0 +1,7 @@
+ok EnumIterTest test_auto
+ok EnumIterTest test_contains
+ok EnumIterTest test_int_enum_value
+ok EnumIterTest test_iter
+ok EnumIterTest test_len
+---
+passed=5 failed=0
