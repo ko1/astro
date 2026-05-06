@@ -1163,7 +1163,15 @@ node_b_ascii_downcase(CTX *c, NODE *n)
 NODE_DEF
 node_b_tojson(CTX *c, NODE *n)
 {
-    return nuq_emit_one(c, nuq_to_json_string(c->input));
+    /* `tojson` always produces the JSON encoding (strings get quoted),
+     * unlike `tostring` which leaves strings as-is. */
+    char *buf = NULL; size_t bn = 0;
+    FILE *fp = open_memstream(&buf, &bn);
+    nuq_json_print(fp, c->input, 0);
+    fclose(fp);
+    VALUE r = nuq_make_string(buf, bn);
+    free(buf);
+    return nuq_emit_one(c, r);
 }
 
 NODE_DEF
