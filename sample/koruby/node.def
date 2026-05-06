@@ -196,12 +196,10 @@ node_const_path_get(CTX * restrict c, NODE * restrict n, NODE *parent, ID name)
 {
     VALUE p = EA(c, parent);
     if (BUILTIN_TYPE(p) == T_CLASS || BUILTIN_TYPE(p) == T_MODULE) {
-        /* Walk super chain — CRuby's `Sub::CONST` finds inherited
-         * constants too. */
-        for (struct korb_class *k = (struct korb_class *)p; k; k = k->super) {
-            VALUE v = korb_const_get(k, name);
-            if (!UNDEF_P(v)) return v;
-        }
+        /* Walk super chain AND includes — CRuby's `Sub::CONST` finds
+         * inherited and module-included constants. */
+        VALUE v = korb_const_get_inherited((struct korb_class *)p, name);
+        if (!UNDEF_P(v)) return v;
         /* const_missing hook: if the class defines a (singleton) method
          * named const_missing, dispatch to it with the missing name as
          * a Symbol — CRuby's protocol for autoload / lazy const lookup. */

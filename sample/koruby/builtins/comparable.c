@@ -213,7 +213,15 @@ static VALUE module_const_defined_p(CTX *c, VALUE self, int argc, VALUE *argv) {
         name = korb_intern_n(((struct korb_string *)argv[0])->ptr,
                              ((struct korb_string *)argv[0])->len);
     else return Qfalse;
-    return KORB_BOOL(korb_const_has((struct korb_class *)self, name));
+    /* Walks includes/super by default; the optional second arg `inherit`
+     * (default true) controls whether to search ancestors.  When false,
+     * only the receiver's own constant table is consulted. */
+    bool inherit = true;
+    if (argc >= 2) inherit = RTEST(argv[1]);
+    extern bool korb_const_has_inherited(struct korb_class *klass, ID name);
+    return KORB_BOOL(inherit
+        ? korb_const_has_inherited((struct korb_class *)self, name)
+        : korb_const_has((struct korb_class *)self, name));
 }
 static VALUE module_module_function(CTX *c, VALUE self, int argc, VALUE *argv) { return self; }
 
@@ -430,8 +438,20 @@ static VALUE module_const_get(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (SYMBOL_P(argv[0])) name = korb_sym2id(argv[0]);
     else if (BUILTIN_TYPE(argv[0]) == T_STRING) name = korb_intern_n(((struct korb_string *)argv[0])->ptr, ((struct korb_string *)argv[0])->len);
     else return Qnil;
-    VALUE v = korb_const_get((struct korb_class *)self, name);
-    if (UNDEF_P(v)) return Qnil;
+    bool inherit = true;
+    if (argc >= 2) inherit = RTEST(argv[1]);
+    extern VALUE korb_const_get_inherited(struct korb_class *klass, ID name);
+    VALUE v = inherit
+        ? korb_const_get_inherited((struct korb_class *)self, name)
+        : korb_const_get((struct korb_class *)self, name);
+    if (UNDEF_P(v)) {
+        VALUE eName = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
+        korb_raise(c, (struct korb_class *)eName,
+                   "uninitialized constant %s::%s",
+                   korb_id_name(((struct korb_class *)self)->name),
+                   korb_id_name(name));
+        return Qnil;
+    }
     return v;
 }
 

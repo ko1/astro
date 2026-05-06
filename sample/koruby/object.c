@@ -549,11 +549,10 @@ void korb_module_include(struct korb_class *klass, struct korb_class *mod) {
             }
         }
     }
-    for (struct korb_const_entry *ce = mod->constants; ce; ce = ce->next) {
-        
-        if (!korb_const_has(klass, ce->name)) korb_const_set(klass, ce->name, ce->value);
-    }
-    /* Record the include for ancestors / is_a?.  Skip duplicates. */
+    /* Constants are NOT flattened — korb_const_get_inherited walks the
+     * include chain at lookup time, so dynamic additions to `mod` after
+     * the include become visible to subclasses (CRuby semantics).
+     * Record the include for ancestors / is_a?.  Skip duplicates. */
     for (uint32_t i = 0; i < klass->includes_cnt; i++) {
         if (klass->includes[i] == mod) return;
     }
@@ -818,6 +817,29 @@ VALUE korb_const_get(struct korb_class *klass, ID name) {
     return Qundef;
 }
 
+/* Walk a class's includes/prepends/super chain looking for a const.
+ * Mirrors the method dispatch MRO so dynamic additions to an included
+ * module are visible to subclasses (CRuby semantics). */
+VALUE korb_const_get_inherited(struct korb_class *klass, ID name) {
+    for (struct korb_class *k = klass; k; k = k->super) {
+        for (int32_t i = (int32_t)k->prepends_cnt - 1; i >= 0; i--) {
+            VALUE v = korb_const_get(k->prepends[i], name);
+            if (!UNDEF_P(v)) return v;
+        }
+        VALUE v = korb_const_get(k, name);
+        if (!UNDEF_P(v)) return v;
+        for (int32_t i = (int32_t)k->includes_cnt - 1; i >= 0; i--) {
+            VALUE v2 = korb_const_get(k->includes[i], name);
+            if (!UNDEF_P(v2)) return v2;
+        }
+    }
+    return Qundef;
+}
+
+bool korb_const_has_inherited(struct korb_class *klass, ID name) {
+    return !UNDEF_P(korb_const_get_inherited(klass, name));
+}
+
 bool korb_const_remove(struct korb_class *klass, ID name, VALUE *out) {
     struct korb_const_entry **prev = &klass->constants;
     for (struct korb_const_entry *e = klass->constants; e; prev = &e->next, e = e->next) {
@@ -838,19 +860,24 @@ bool korb_const_has(struct korb_class *klass, ID name) {
 }
 
 VALUE korb_const_lookup(CTX *c, ID name) {
-    /* Lexical lookup along cref chain, then ancestors of innermost cref. */
+    /* Lexical lookup along cref chain (each cref level checks its own
+     * class plus that class's includes — but NOT super). */
     for (struct korb_cref *cr = c->cref; cr; cr = cr->prev) {
         VALUE v = korb_const_get(cr->klass, name);
         if (!UNDEF_P(v)) return v;
+        for (int32_t i = (int32_t)cr->klass->includes_cnt - 1; i >= 0; i--) {
+            VALUE v2 = korb_const_get(cr->klass->includes[i], name);
+            if (!UNDEF_P(v2)) return v2;
+        }
     }
-    /* Inheritance chain of innermost class */
+    /* Inheritance chain of innermost class — walks includes too. */
     struct korb_class *k = c->cref ? c->cref->klass : c->current_class;
-    for (struct korb_class *kk = k ? k->super : NULL; kk; kk = kk->super) {
-        VALUE v = korb_const_get(kk, name);
+    if (k && k->super) {
+        VALUE v = korb_const_get_inherited(k->super, name);
         if (!UNDEF_P(v)) return v;
     }
-    /* Object as global namespace */
-    VALUE v = korb_const_get(korb_vm->object_class, name);
+    /* Object as global namespace (Object's includes too). */
+    VALUE v = korb_const_get_inherited(korb_vm->object_class, name);
     if (!UNDEF_P(v)) return v;
     {
         VALUE eName = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
