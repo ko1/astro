@@ -609,6 +609,62 @@ nuq_clone(VALUE v)
     return v;
 }
 
+/* jq's `contains(b)` semantics:
+ *   string  contains string  → b is substring of a
+ *   array   contains array   → every b-elem has some matching a-elem
+ *                              (where "matching" recurses through contains)
+ *   object  contains object  → every key in b exists in a AND
+ *                              a[k] contains b[k]
+ *   numbers / bools / null    → equality
+ *   mismatched types          → false
+ */
+bool
+nuq_contains(VALUE a, VALUE b)
+{
+    if (NUQ_IS_FIX(a) && NUQ_IS_FIX(b)) return a == b;
+    if (NUQ_IS_FIX(a) || NUQ_IS_FIX(b)) {
+        /* number-double mixed: defer to nuq_eq's coercion. */
+        return nuq_eq(a, b);
+    }
+    struct nuq_obj *oa = NUQ_PTR(a), *ob = NUQ_PTR(b);
+    if (oa->type != ob->type) return false;
+    switch (oa->type) {
+      case NUQ_T_NULL:
+      case NUQ_T_BOOL:
+      case NUQ_T_DOUBLE:
+        return nuq_eq(a, b);
+      case NUQ_T_STRING: {
+        if (ob->str.len > oa->str.len) return false;
+        if (ob->str.len == 0) return true;
+        for (size_t i = 0; i + ob->str.len <= oa->str.len; i++)
+            if (memcmp(oa->str.bytes + i, ob->str.bytes, ob->str.len) == 0) return true;
+        return false;
+      }
+      case NUQ_T_ARRAY: {
+        for (size_t j = 0; j < ob->arr.len; j++) {
+            bool found = false;
+            for (size_t i = 0; i < oa->arr.len; i++) {
+                if (nuq_contains(oa->arr.items[i], ob->arr.items[j])) {
+                    found = true; break;
+                }
+            }
+            if (!found) return false;
+        }
+        return true;
+      }
+      case NUQ_T_OBJECT: {
+        for (size_t i = 0; i < ob->obj.len; i++) {
+            VALUE bk = ob->obj.keys[i];
+            if (!nuq_object_has(a, bk)) return false;
+            VALUE av = nuq_object_get(a, bk);
+            if (!nuq_contains(av, ob->obj.vals[i])) return false;
+        }
+        return true;
+      }
+    }
+    return false;
+}
+
 /* ---- arithmetic ops ---- */
 
 static bool

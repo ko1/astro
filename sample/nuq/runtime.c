@@ -144,6 +144,127 @@ nuq_fmt_intern(const char *name)
 
 const char *nuq_fmt_lookup(uint32_t id) { return fmt_tab[id]; }
 
+/* --- CLI-supplied bindings (--arg / --argjson / --slurpfile / --rawfile) -- */
+
+struct nuq_user_arg { uint32_t name_id; VALUE value; };
+static struct nuq_user_arg *user_args = NULL;
+static size_t user_args_len = 0, user_args_capa = 0;
+
+static char *
+slurp_file(const char *path, size_t *len_out)
+{
+    FILE *fp = fopen(path, "rb");
+    if (!fp) return NULL;
+    size_t cap = 4096, len = 0;
+    char *buf = (char *)GC_malloc_atomic(cap);
+    for (;;) {
+        if (len + 4096 > cap) { cap *= 2; buf = (char *)GC_realloc(buf, cap); }
+        size_t n = fread(buf + len, 1, cap - len, fp);
+        if (n == 0) break;
+        len += n;
+    }
+    fclose(fp);
+    *len_out = len;
+    return buf;
+}
+
+static void
+user_args_push(uint32_t name_id, VALUE v)
+{
+    if (user_args_len == user_args_capa) {
+        user_args_capa = user_args_capa ? user_args_capa * 2 : 8;
+        user_args = (struct nuq_user_arg *)GC_realloc(
+            user_args, user_args_capa * sizeof(*user_args));
+    }
+    user_args[user_args_len].name_id = name_id;
+    user_args[user_args_len].value = v;
+    user_args_len++;
+}
+
+void
+nuq_user_arg_add(const char *name, const char *value, bool json)
+{
+    VALUE v;
+    if (json) {
+        const char *endp;
+        char *err = NULL;
+        v = nuq_json_parse(value, strlen(value), &endp, &err);
+        if (err) {
+            fprintf(stderr, "nuq: --argjson %s: parse error: %s\n", name, err);
+            exit(2);
+        }
+    } else {
+        v = nuq_make_string(value, strlen(value));
+    }
+    user_args_push(nuq_intern(name), v);
+}
+
+bool
+nuq_user_arg_add_file(const char *name, const char *path, bool raw)
+{
+    size_t L;
+    char *buf = slurp_file(path, &L);
+    if (!buf) {
+        fprintf(stderr, "nuq: cannot open %s\n", path);
+        return false;
+    }
+    VALUE v;
+    if (raw) {
+        v = nuq_make_string(buf, L);
+    } else {
+        /* --slurpfile: parse all JSON values, wrap into a single array. */
+        VALUE arr = nuq_make_array(0);
+        const char *p = buf, *end = buf + L;
+        while (p < end) {
+            while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) p++;
+            if (p >= end) break;
+            const char *np;
+            char *err = NULL;
+            VALUE jv = nuq_json_parse(p, end - p, &np, &err);
+            if (err) {
+                fprintf(stderr, "nuq: --slurpfile %s: parse error: %s\n", path, err);
+                return false;
+            }
+            nuq_array_push(arr, jv);
+            p = np;
+        }
+        v = arr;
+    }
+    user_args_push(nuq_intern(name), v);
+    return true;
+}
+
+void
+nuq_user_args_bind(CTX *c)
+{
+    /* `--arg foo bar` exposes both `$foo` (jq style) and `$ENV.foo`...
+     * We only do `$foo` for now (no $ENV table). */
+    for (size_t i = 0; i < user_args_len; i++) {
+        nuq_var_push(c, user_args[i].name_id, user_args[i].value);
+    }
+}
+
+/* --- input queue (used by `input` / `inputs` builtins) ------------------- */
+
+static VALUE *input_queue = NULL;
+static size_t input_pos = 0, input_cnt = 0;
+
+void
+nuq_input_queue_set(VALUE *items, size_t cnt)
+{
+    input_queue = items;
+    input_pos = 0;
+    input_cnt = cnt;
+}
+
+bool
+nuq_input_pull(VALUE *out)
+{
+    if (input_pos >= input_cnt) return false;
+    *out = input_queue[input_pos++];
+    return true;
+}
+
 /* --- helpers ------------------------------------------------------------- */
 
 static EMIT
@@ -829,6 +950,110 @@ nuq_with_entries_eval(CTX *c, struct Node *body)
     return nuq_emit_one(c, out);
 }
 
+/* Recursively transform input bottom-up: descend into containers,
+ * rebuild with transformed children, then apply body to the rebuilt
+ * value.  Mirrors jq's `walk(f)`. */
+static VALUE
+nuq_walk_recurse(CTX *c, struct Node *body, VALUE v)
+{
+    VALUE rebuilt = v;
+    if (NUQ_IS_PTR(v)) {
+        struct nuq_obj *o = NUQ_PTR(v);
+        if (o->type == NUQ_T_ARRAY) {
+            VALUE arr = nuq_make_array(o->arr.len);
+            for (size_t i = 0; i < o->arr.len; i++) {
+                VALUE child = nuq_walk_recurse(c, body, o->arr.items[i]);
+                if (c->error != NUQ_NULL) return NUQ_NULL;
+                nuq_array_push(arr, child);
+            }
+            rebuilt = arr;
+        } else if (o->type == NUQ_T_OBJECT) {
+            VALUE obj = nuq_make_object(o->obj.len > 4 ? o->obj.len : 4);
+            for (size_t i = 0; i < o->obj.len; i++) {
+                VALUE child = nuq_walk_recurse(c, body, o->obj.vals[i]);
+                if (c->error != NUQ_NULL) return NUQ_NULL;
+                nuq_object_set(obj, o->obj.keys[i], child);
+            }
+            rebuilt = obj;
+        }
+    }
+    /* Apply body to the rebuilt value.  body is a generic filter that
+     * may emit multiple values; jq's walk uses only the first emit
+     * (it's effectively a `.|f` chain).  We follow that convention. */
+    VALUE saved = c->input;
+    c->input = rebuilt;
+    size_t t0 = c->pool_top;
+    EMIT bo = EVAL(c, body);
+    VALUE out = (c->error != NUQ_NULL || bo.count == 0) ? rebuilt : bo.items[0];
+    if (bo.count > 0 && c->error == NUQ_NULL) {
+        /* steal the first emit before pool rewind. */
+        out = bo.items[0];
+    }
+    c->pool_top = t0;
+    c->input = saved;
+    return out;
+}
+
+EMIT
+nuq_walk_eval(CTX *c, struct Node *body)
+{
+    VALUE r = nuq_walk_recurse(c, body, c->input);
+    if (c->error != NUQ_NULL) return EMIT_EMPTY;
+    return nuq_emit_one(c, r);
+}
+
+/* recurse(f) / recurse(f; cond):
+ *
+ *   def recurse(f):    def r: ., (f | r); r;
+ *   def recurse(f;c):  def r: ., (f | select(c) | r); r;
+ *
+ * We hand-roll: emit current, evaluate body, for each emit (filtered
+ * by cond if given), recurse on it.  Iteration is depth-first to
+ * match jq's order. */
+static void
+nuq_recurse_dfs(CTX *c, struct Node *body, struct Node *cond, VALUE v)
+{
+    nuq_pool_push(c, v);
+    VALUE saved = c->input;
+    c->input = v;
+    size_t t0 = c->pool_top;
+    EMIT bo = EVAL(c, body);
+    if (c->error != NUQ_NULL) { c->input = saved; return; }
+    /* Snapshot — recursion below grows the pool so we can't iterate
+     * a live slice. */
+    uint32_t cnt = bo.count;
+    VALUE small[16];
+    VALUE *local = (cnt <= 16) ? small
+                               : (VALUE *)GC_malloc(cnt * sizeof(VALUE));
+    memcpy(local, bo.items, cnt * sizeof(VALUE));
+    c->pool_top = t0;
+    for (uint32_t i = 0; i < cnt; i++) {
+        if (cond != NULL) {
+            c->input = local[i];
+            size_t tt = c->pool_top;
+            EMIT co = EVAL(c, cond);
+            if (c->error != NUQ_NULL) { c->input = saved; return; }
+            bool any = false;
+            for (uint32_t j = 0; j < co.count; j++)
+                if (nuq_truthy(co.items[j])) { any = true; break; }
+            c->pool_top = tt;
+            if (!any) continue;
+        }
+        nuq_recurse_dfs(c, body, cond, local[i]);
+        if (c->error != NUQ_NULL) { c->input = saved; return; }
+    }
+    c->input = saved;
+}
+
+EMIT
+nuq_recurse_eval(CTX *c, struct Node *body, struct Node *cond)
+{
+    size_t outer = c->pool_top;
+    nuq_recurse_dfs(c, body, cond, c->input);
+    if (c->error != NUQ_NULL) return EMIT_EMPTY;
+    return nuq_emit_slice(c, outer);
+}
+
 EMIT
 nuq_range2_eval(CTX *c, struct Node *from, struct Node *to)
 {
@@ -936,8 +1161,28 @@ nuq_contains_eval(CTX *c, struct Node *rhs)
     VALUE *local = (cnt<=16)?small:(VALUE*)GC_malloc(cnt*sizeof(VALUE));
     memcpy(local, buf.items, cnt*sizeof(VALUE));
     c->pool_top = outer;
-    for (uint32_t i = 0; i < cnt; i++)
-        nuq_pool_push(c, nuq_eq(c->input, local[i]) ? NUQ_TRUE : NUQ_FALSE);
+    for (uint32_t i = 0; i < cnt; i++) {
+        /* jq raises an error on type mismatch; we mirror that
+         * to stay compatible.  Booleans / null / numbers are
+         * homogeneous-only, anything mixed is a type error. */
+        VALUE a = c->input, b = local[i];
+        bool a_fix = NUQ_IS_FIX(a), b_fix = NUQ_IS_FIX(b);
+        enum nuq_type ta = a_fix ? NUQ_T_DOUBLE : NUQ_PTR(a)->type;
+        enum nuq_type tb = b_fix ? NUQ_T_DOUBLE : NUQ_PTR(b)->type;
+        if ((a_fix || ta == NUQ_T_DOUBLE) && (b_fix || tb == NUQ_T_DOUBLE)) {
+            /* both numeric: equality */
+            nuq_pool_push(c, nuq_eq(a, b) ? NUQ_TRUE : NUQ_FALSE);
+            continue;
+        }
+        if (ta != tb) {
+            char msg[160];
+            snprintf(msg, sizeof(msg),
+                     "%s and %s cannot have their containment checked",
+                     nuq_type_name(a), nuq_type_name(b));
+            return err_emit(c, msg);
+        }
+        nuq_pool_push(c, nuq_contains(a, b) ? NUQ_TRUE : NUQ_FALSE);
+    }
     return nuq_emit_slice(c, outer);
 }
 
@@ -954,6 +1199,31 @@ nuq_split_eval(CTX *c, struct Node *sep)
     c->pool_top = t0;
     if (!(NUQ_IS_PTR(s) && NUQ_PTR(s)->type == NUQ_T_STRING)) return err_emit(c, "split: sep not string");
     return nuq_emit_one(c, nuq_op_div(c->input, s));
+}
+
+/* `splits(s)` — like split(s) but emits each piece as a separate
+ * value rather than as one array.  jq compatibility. */
+EMIT
+nuq_splits_eval(CTX *c, struct Node *sep)
+{
+    if (!(NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_STRING))
+        return err_emit(c, "splits: not string");
+    size_t t0 = c->pool_top;
+    EMIT buf = EVAL(c, sep);
+    if (c->error != NUQ_NULL) return EMIT_EMPTY;
+    if (buf.count == 0) { c->pool_top = t0; return EMIT_EMPTY; }
+    VALUE s = buf.items[0];
+    c->pool_top = t0;
+    if (!(NUQ_IS_PTR(s) && NUQ_PTR(s)->type == NUQ_T_STRING))
+        return err_emit(c, "splits: sep not string");
+    /* Reuse op_div which returns an array of pieces, then unpack. */
+    VALUE arr = nuq_op_div(c->input, s);
+    if (!(NUQ_IS_PTR(arr) && NUQ_PTR(arr)->type == NUQ_T_ARRAY))
+        return err_emit(c, "splits: internal error");
+    struct nuq_obj *ao = NUQ_PTR(arr);
+    size_t outer = c->pool_top;
+    for (size_t i = 0; i < ao->arr.len; i++) nuq_pool_push(c, ao->arr.items[i]);
+    return nuq_emit_slice(c, outer);
 }
 
 EMIT
@@ -1009,6 +1279,73 @@ nuq_startswith_eval(CTX *c, struct Node *prefix)
         struct nuq_obj *io = NUQ_PTR(c->input);
         bool t = io->str.len >= po->str.len && memcmp(io->str.bytes, po->str.bytes, po->str.len) == 0;
         nuq_pool_push(c, t ? NUQ_TRUE : NUQ_FALSE);
+    }
+    return nuq_emit_slice(c, outer);
+}
+
+/* `ltrimstr(s)`: if input starts with s, strip prefix; else input. */
+EMIT
+nuq_ltrimstr_eval(CTX *c, struct Node *prefix)
+{
+    if (!(NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_STRING))
+        return nuq_emit_one(c, c->input);          /* jq: passthrough */
+    size_t outer = c->pool_top;
+    EMIT buf = EVAL(c, prefix);
+    if (c->error != NUQ_NULL) return EMIT_EMPTY;
+    uint32_t cnt = buf.count;
+    VALUE small[16];
+    VALUE *local = (cnt<=16)?small:(VALUE*)GC_malloc(cnt*sizeof(VALUE));
+    memcpy(local, buf.items, cnt*sizeof(VALUE));
+    c->pool_top = outer;
+    for (uint32_t i = 0; i < cnt; i++) {
+        VALUE p = local[i];
+        if (!(NUQ_IS_PTR(p) && NUQ_PTR(p)->type == NUQ_T_STRING)) {
+            nuq_pool_push(c, c->input);             /* non-string prefix → passthrough */
+            continue;
+        }
+        struct nuq_obj *po = NUQ_PTR(p);
+        struct nuq_obj *io = NUQ_PTR(c->input);
+        if (io->str.len >= po->str.len &&
+            memcmp(io->str.bytes, po->str.bytes, po->str.len) == 0) {
+            nuq_pool_push(c, nuq_make_string(io->str.bytes + po->str.len,
+                                             io->str.len - po->str.len));
+        } else {
+            nuq_pool_push(c, c->input);
+        }
+    }
+    return nuq_emit_slice(c, outer);
+}
+
+/* `rtrimstr(s)`: if input ends with s, strip suffix; else input. */
+EMIT
+nuq_rtrimstr_eval(CTX *c, struct Node *suffix)
+{
+    if (!(NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_STRING))
+        return nuq_emit_one(c, c->input);
+    size_t outer = c->pool_top;
+    EMIT buf = EVAL(c, suffix);
+    if (c->error != NUQ_NULL) return EMIT_EMPTY;
+    uint32_t cnt = buf.count;
+    VALUE small[16];
+    VALUE *local = (cnt<=16)?small:(VALUE*)GC_malloc(cnt*sizeof(VALUE));
+    memcpy(local, buf.items, cnt*sizeof(VALUE));
+    c->pool_top = outer;
+    for (uint32_t i = 0; i < cnt; i++) {
+        VALUE p = local[i];
+        if (!(NUQ_IS_PTR(p) && NUQ_PTR(p)->type == NUQ_T_STRING)) {
+            nuq_pool_push(c, c->input);
+            continue;
+        }
+        struct nuq_obj *po = NUQ_PTR(p);
+        struct nuq_obj *io = NUQ_PTR(c->input);
+        if (io->str.len >= po->str.len &&
+            memcmp(io->str.bytes + io->str.len - po->str.len,
+                   po->str.bytes, po->str.len) == 0) {
+            nuq_pool_push(c, nuq_make_string(io->str.bytes,
+                                             io->str.len - po->str.len));
+        } else {
+            nuq_pool_push(c, c->input);
+        }
     }
     return nuq_emit_slice(c, outer);
 }
@@ -1345,15 +1682,41 @@ nuq_nth_eval(CTX *c, struct Node *idx, struct Node *body)
 
 /* --- top-level run ---------------------------------------------------- */
 
+/* Track whether any truthy output has been emitted across the run —
+ * used by `-e` / `--exit-status` to set exit code 5 when none. */
+bool nuq_had_truthy_output = false;
+/* Track whether any error has been raised — used to set exit code 1. */
+bool nuq_had_error = false;
+
 void
-nuq_run(CTX *c, struct Node *filter, VALUE input)
+nuq_run(CTX *const c, struct Node *const filter, VALUE input)
 {
+    /* Re-bind --arg style variables on each top-level run so they stay
+     * visible after var_top has been used (and trimmed) on prior runs. */
+    c->var_top = 0;
+    nuq_user_args_bind(c);
     c->input = input;
     c->error = NUQ_NULL;
     c->break_label = 0;
     c->pool_top = 0;
     EMIT emits = EVAL(c, filter);
+    /* Even when the filter ultimately errored, jq still prints any
+     * emits that came before the error.  Output them first, then
+     * surface the error. */
+    for (uint32_t i = 0; i < emits.count; i++) {
+        VALUE v = emits.items[i];
+        if (OPTION.seq_output) fputc('\x1e', stdout);  /* RFC 7464 RS */
+        if (OPTION.raw_output && NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_STRING) {
+            struct nuq_obj *o = NUQ_PTR(v);
+            fwrite(o->str.bytes, 1, o->str.len, stdout);
+        } else {
+            nuq_json_print(stdout, v, OPTION.compact_output ? 0 : OPTION.indent);
+        }
+        fputc('\n', stdout);
+        if (nuq_truthy(v)) nuq_had_truthy_output = true;
+    }
     if (c->error != NUQ_NULL) {
+        fflush(stdout);     /* keep stderr after stdout */
         if (NUQ_IS_PTR(c->error) && NUQ_PTR(c->error)->type == NUQ_T_STRING)
             fprintf(stderr, "nuq: error: %s\n", nuq_string_cstr(c->error));
         else {
@@ -1362,17 +1725,7 @@ nuq_run(CTX *c, struct Node *filter, VALUE input)
             fputc('\n', stderr);
         }
         c->error = NUQ_NULL;
-        return;
-    }
-    for (uint32_t i = 0; i < emits.count; i++) {
-        VALUE v = emits.items[i];
-        if (OPTION.raw_output && NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_STRING) {
-            struct nuq_obj *o = NUQ_PTR(v);
-            fwrite(o->str.bytes, 1, o->str.len, stdout);
-        } else {
-            nuq_json_print(stdout, v, OPTION.compact_output ? 0 : OPTION.indent);
-        }
-        fputc('\n', stdout);
+        nuq_had_error = true;
     }
 }
 

@@ -328,24 +328,60 @@ print_value(FILE *fp, VALUE v, int indent, int depth)
       }
       case NUQ_T_OBJECT: {
         if (o->obj.len == 0) { fputs("{}", fp); return; }
+        /* Default emit-order is insertion order; with `-S` we emit
+         * lexicographic-by-key.  Iteration goes through `order[i]` so
+         * the same loop body covers both. */
+        size_t local_order[16];
+        size_t *order = NULL;
+        bool need_free = false;
+        if (OPTION.sort_keys) {
+            if (o->obj.len <= sizeof(local_order)/sizeof(local_order[0])) {
+                order = local_order;
+            } else {
+                order = (size_t *)malloc(o->obj.len * sizeof(size_t));
+                need_free = true;
+            }
+            for (size_t i = 0; i < o->obj.len; i++) order[i] = i;
+            /* insertion sort over the index — fine since object keys
+             * are usually small (n < 50 in jq use), and this only
+             * runs on output. */
+            for (size_t i = 1; i < o->obj.len; i++) {
+                size_t x = order[i];
+                struct nuq_obj *xs = NUQ_PTR(o->obj.keys[x]);
+                size_t j = i;
+                while (j > 0) {
+                    struct nuq_obj *ys = NUQ_PTR(o->obj.keys[order[j-1]]);
+                    size_t ml = xs->str.len < ys->str.len ? xs->str.len : ys->str.len;
+                    int c = memcmp(xs->str.bytes, ys->str.bytes, ml);
+                    if (c == 0) c = (xs->str.len < ys->str.len) ? -1
+                              : (xs->str.len > ys->str.len) ? 1 : 0;
+                    if (c >= 0) break;
+                    order[j] = order[j-1];
+                    j--;
+                }
+                order[j] = x;
+            }
+        }
         fputc('{', fp);
         for (size_t i = 0; i < o->obj.len; i++) {
+            size_t ki = order ? order[i] : i;
             if (i) fputc(',', fp);
             if (indent > 0) {
                 fputc('\n', fp);
                 for (int s = 0; s < (depth+1) * indent; s++) fputc(' ', fp);
             }
-            struct nuq_obj *ks = NUQ_PTR(o->obj.keys[i]);
+            struct nuq_obj *ks = NUQ_PTR(o->obj.keys[ki]);
             print_string(fp, ks);
             fputc(':', fp);
             if (indent > 0) fputc(' ', fp);
-            print_value(fp, o->obj.vals[i], indent, depth + 1);
+            print_value(fp, o->obj.vals[ki], indent, depth + 1);
         }
         if (indent > 0) {
             fputc('\n', fp);
             for (int s = 0; s < depth * indent; s++) fputc(' ', fp);
         }
         fputc('}', fp);
+        if (need_free) free(order);
         return;
       }
     }

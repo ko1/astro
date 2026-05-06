@@ -149,8 +149,26 @@ struct nuq_option {
     bool tab_indent;
     bool sort_keys;
     bool record_all;
+    bool exit_status;       /* -e: exit 5 if no truthy emit */
+    bool seq_output;        /* --seq: RFC 7464 record-separator output */
     int  indent;
 };
+
+/* CLI-supplied bindings: --arg / --argjson / --slurpfile / --rawfile. */
+void nuq_user_arg_add(const char *name, const char *value, bool json);
+bool nuq_user_arg_add_file(const char *name, const char *file, bool raw);
+void nuq_user_args_bind(struct CTX_struct *c);   /* push all into var_stack */
+
+/* Run state for -e / --exit-status. */
+extern bool nuq_had_truthy_output;
+extern bool nuq_had_error;
+
+/* Pending-input queue for jq-compatible `input` / `inputs`.  main.c
+ * fills this with all parsed JSON values up front; nuq_input_pull()
+ * returns the next one (advancing the cursor).  Both the main loop
+ * and the `input` builtin pull from the same cursor. */
+void  nuq_input_queue_set(VALUE *items, size_t cnt);
+bool  nuq_input_pull(VALUE *out);   /* true if a value was returned */
 
 extern struct nuq_option OPTION;
 
@@ -190,6 +208,8 @@ VALUE nuq_length(VALUE v);
 VALUE nuq_keys(VALUE v, bool sorted);
 VALUE nuq_values(VALUE v);
 VALUE nuq_clone(VALUE v);
+
+bool  nuq_contains      (VALUE a, VALUE b);
 
 VALUE nuq_op_add_slow(VALUE a, VALUE b);
 VALUE nuq_op_sub_slow(VALUE a, VALUE b);

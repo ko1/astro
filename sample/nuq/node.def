@@ -182,8 +182,13 @@ node_iter(CTX *c, NODE *n)
             return nuq_emit_slice(c, top0);
         }
     }
-    fprintf(stderr, "nuq error: Cannot iterate over %s\n", nuq_type_name(in));
-    c->error = nuq_make_string("Cannot iterate", 14);
+    /* error message left for `nuq_run` to format from c->error so
+     * `try .[] catch ...` and `?` can swallow it without stderr noise. */
+    {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "Cannot iterate over %s", nuq_type_name(in));
+        c->error = nuq_make_string(msg, strlen(msg));
+    }
     return EMIT_EMPTY;
 }
 
@@ -996,6 +1001,41 @@ node_b_fromjson(CTX *c, NODE *n)
 }
 
 NODE_DEF
+node_b_recurse1(CTX *c, NODE *n, NODE *body)
+{
+    return nuq_recurse_eval(c, body, NULL);
+}
+
+NODE_DEF
+node_b_recurse2(CTX *c, NODE *n, NODE *body, NODE *cond)
+{
+    return nuq_recurse_eval(c, body, cond);
+}
+
+/* `input` — pull next pending JSON input from the queue.  Errors if
+ * the queue is empty (jq raises "No more inputs"). */
+NODE_DEF
+node_b_input(CTX *c, NODE *n)
+{
+    VALUE v;
+    if (!nuq_input_pull(&v)) {
+        c->error = nuq_make_string("No more inputs", 14);
+        return EMIT_EMPTY;
+    }
+    return nuq_emit_one(c, v);
+}
+
+/* `inputs` — emit all remaining pending inputs as a stream. */
+NODE_DEF
+node_b_inputs(CTX *c, NODE *n)
+{
+    size_t outer = c->pool_top;
+    VALUE v;
+    while (nuq_input_pull(&v)) nuq_pool_push(c, v);
+    return nuq_emit_slice(c, outer);
+}
+
+NODE_DEF
 node_b_recurse0(CTX *c, NODE *n)
 {
     size_t top0 = c->pool_top;
@@ -1051,6 +1091,21 @@ NODE_DEF
 node_b_with_entries(CTX *c, NODE *n, NODE *body)
 {
     return nuq_with_entries_eval(c, body);
+}
+
+/* walk(f) — bottom-up transform.  jq defines it as:
+ *   def walk(f):
+ *     . as $in |
+ *     if type == "object" then
+ *       reduce keys[] as $key ({}; . + { ($key): ($in[$key] | walk(f)) }) | f
+ *     elif type == "array" then map(walk(f)) | f
+ *     else f end;
+ * We hand-roll the recursion in C so we don't need to translate
+ * complex jq defs at parse time.  body is invoked once per node. */
+NODE_DEF
+node_b_walk(CTX *c, NODE *n, NODE *body)
+{
+    return nuq_walk_eval(c, body);
 }
 
 NODE_DEF
@@ -1128,6 +1183,24 @@ NODE_DEF
 node_b_endswith(CTX *c, NODE *n, NODE *suffix)
 {
     return nuq_endswith_eval(c, suffix);
+}
+
+NODE_DEF
+node_b_ltrimstr(CTX *c, NODE *n, NODE *prefix)
+{
+    return nuq_ltrimstr_eval(c, prefix);
+}
+
+NODE_DEF
+node_b_rtrimstr(CTX *c, NODE *n, NODE *suffix)
+{
+    return nuq_rtrimstr_eval(c, suffix);
+}
+
+NODE_DEF
+node_b_splits(CTX *c, NODE *n, NODE *sep)
+{
+    return nuq_splits_eval(c, sep);
 }
 
 NODE_DEF

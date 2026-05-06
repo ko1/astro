@@ -418,6 +418,9 @@ build_builtin_call(const char *name, int arity, struct Node **args)
     BUILTIN0("ascii_upcase", ALLOC_node_b_ascii_upcase);
     BUILTIN0("ascii_downcase", ALLOC_node_b_ascii_downcase);
     BUILTIN0("recurse", ALLOC_node_b_recurse0);
+    BUILTIN1("recurse", ALLOC_node_b_recurse1);
+    BUILTIN0("input", ALLOC_node_b_input);
+    BUILTIN0("inputs", ALLOC_node_b_inputs);
     BUILTIN0("empty", ALLOC_node_empty);
 
     /* 1-arg */
@@ -425,6 +428,7 @@ build_builtin_call(const char *name, int arity, struct Node **args)
     BUILTIN1("map", ALLOC_node_b_map);
     BUILTIN1("map_values", ALLOC_node_b_map_values);
     BUILTIN1("with_entries", ALLOC_node_b_with_entries);
+    BUILTIN1("walk", ALLOC_node_b_walk);
     BUILTIN1("range", ALLOC_node_b_range1);
     BUILTIN1("has", ALLOC_node_b_has);
     BUILTIN1("in", ALLOC_node_b_in);
@@ -432,6 +436,9 @@ build_builtin_call(const char *name, int arity, struct Node **args)
     BUILTIN1("split", ALLOC_node_b_split);
     BUILTIN1("join", ALLOC_node_b_join);
     BUILTIN1("startswith", ALLOC_node_b_startswith);
+    BUILTIN1("ltrimstr", ALLOC_node_b_ltrimstr);
+    BUILTIN1("rtrimstr", ALLOC_node_b_rtrimstr);
+    BUILTIN1("splits", ALLOC_node_b_splits);
     BUILTIN1("endswith", ALLOC_node_b_endswith);
     BUILTIN1("first", ALLOC_node_b_first1);
     BUILTIN1("last", ALLOC_node_b_last1);
@@ -448,6 +455,7 @@ build_builtin_call(const char *name, int arity, struct Node **args)
 
     /* 2-arg */
     BUILTIN2("range", ALLOC_node_b_range2);
+    BUILTIN2("recurse", ALLOC_node_b_recurse2);
     BUILTIN2("limit", ALLOC_node_b_limit);
     BUILTIN2("nth", ALLOC_node_b_nth);
 
@@ -485,6 +493,7 @@ static struct Node *parse_unary(lexer_t *L);
 static struct Node *parse_postfix(lexer_t *L);
 static struct Node *parse_primary(lexer_t *L);
 static struct Node *parse_term_for_keyword(lexer_t *L);
+static struct Node *parse_if_tail(lexer_t *L);
 
 /* For `f?` and bare `try f` (no catch), the handler must still be a
  * valid NODE for the generated dispatcher (which derefs operand
@@ -504,6 +513,31 @@ static struct Node *
 wrap_quest(struct Node *body)
 {
     return ALLOC_node_try(body, empty_sentinel());
+}
+
+/* Tail of an `if` form, called after `if cond then thn` is consumed.
+ * Returns the `else` branch (which itself may be a nested if for
+ * elif-chains).  Always returns a non-NULL Node — `if c then t end`
+ * desugars to `if(c, t, .)` so the generated dispatcher never sees
+ * a NULL operand. */
+static struct Node *
+parse_if_tail(lexer_t *L)
+{
+    if (accept(L, TK_KW_END)) return ALLOC_node_identity();
+    if (accept(L, TK_KW_ELSE)) {
+        struct Node *e = parse_pipe(L);
+        expect(L, TK_KW_END, "'end'");
+        return e;
+    }
+    if (accept(L, TK_KW_ELIF)) {
+        struct Node *c = parse_pipe(L);
+        expect(L, TK_KW_THEN, "'then'");
+        struct Node *t = parse_pipe(L);
+        struct Node *e = parse_if_tail(L);
+        return ALLOC_node_if(c, t, e);
+    }
+    parse_error(L, "expected elif/else/end");
+    return NULL;
 }
 
 /* ----- primary --------------------------------------------------------- */
@@ -643,31 +677,13 @@ parse_primary(lexer_t *L)
         struct Node *cond = parse_pipe(L);
         expect(L, TK_KW_THEN, "'then'");
         struct Node *thn = parse_pipe(L);
-        struct Node *els = NULL;
-        for (;;) {
-            if (accept(L, TK_KW_END)) break;
-            if (accept(L, TK_KW_ELSE)) {
-                els = parse_pipe(L);
-                expect(L, TK_KW_END, "'end'");
-                break;
-            }
-            if (accept(L, TK_KW_ELIF)) {
-                struct Node *c2 = parse_pipe(L);
-                expect(L, TK_KW_THEN, "'then'");
-                struct Node *t2 = parse_pipe(L);
-                struct Node *e3 = NULL;
-                if (accept(L, TK_KW_END)) e3 = ALLOC_node_identity();
-                else if (accept(L, TK_KW_ELSE)) { e3 = parse_pipe(L); expect(L, TK_KW_END, "'end'"); }
-                else parse_error(L, "elif chain too deep");
-                els = ALLOC_node_if(c2, t2, e3);
-                break;
-            }
-            parse_error(L, "expected elif/else/end");
-        }
-        /* `if c then t end` ≡ `if c then t else . end` — always provide
-         * a non-NULL else so the generated dispatcher doesn't deref a
-         * NULL operand pointer. */
-        if (els == NULL) els = ALLOC_node_identity();
+        /* Recursive elif-chain build:
+         *   if c then t end                → if(c, t, .)
+         *   if c then t else e end         → if(c, t, e)
+         *   if c then t elif c2 then t2 ...→ if(c, t, parse_if_tail(...))
+         * Each `elif` becomes a nested `if` in the else slot, so chains
+         * of arbitrary length are supported. */
+        struct Node *els = parse_if_tail(L);
         return ALLOC_node_if(cond, thn, els);
       }
       case TK_KW_TRY: {
