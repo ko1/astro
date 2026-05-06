@@ -315,3 +315,39 @@ NATFIXNUM_MAX = (2**62) - 1 rescue 0
 class Module
   def ruby2_keywords(*_names); self; end unless method_defined?(:ruby2_keywords)
 end
+
+# Minimal mock — just records expected method calls.  Each `mock(...)`
+# call returns an Object that responds to `should_receive(name)` and
+# subsequent `.and_return(...)`.  Calling the method on the mock returns
+# the configured value (or nil).  Doesn't enforce call counts.
+class MSpecMock
+  def initialize(name); @name = name; @recv = {}; end
+  def should_receive(method, *_); @recv[method] = MSpecMockExpectation.new(self, method); @recv[method]; end
+  def stub(*); MSpecMockExpectation.new(self, :stub); end
+  def stub!(method, *_); should_receive(method); end
+  def method_missing(name, *args, &blk)
+    e = @recv[name]
+    if e then e.__return_value
+    else nil
+    end
+  end
+  def respond_to?(name, _priv = false); @recv.key?(name); end
+  def respond_to_missing?(_, _); true; end
+  def inspect; "#<mock(#{@name})>"; end
+end
+
+class MSpecMockExpectation
+  def initialize(mock, name); @mock = mock; @name = name; @ret = nil; end
+  def and_return(v); @ret = v; self; end
+  def and_yield(*); self; end
+  def with(*); self; end
+  def once; self; end
+  def twice; self; end
+  def at_least(*); self; end
+  def at_most(*); self; end
+  def __return_value; @ret; end
+end
+
+def mock(name = ""); MSpecMock.new(name); end
+def mock_int(value); value; end
+def stub!(name = ""); MSpecMock.new(name); end
