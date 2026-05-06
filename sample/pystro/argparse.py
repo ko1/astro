@@ -190,4 +190,85 @@ class ArgumentParser:
         return a.type(val_str)
 
 
-__all__ = ["ArgumentParser"]
+class HelpFormatter:
+    def __init__(self, prog, indent_increment=2, max_help_position=24, width=None):
+        self.prog = prog
+    def format_help(self): return ""
+    def add_text(self, text): pass
+    def add_usage(self, usage, actions, groups, prefix=None): pass
+    def add_argument(self, action): pass
+    def add_arguments(self, actions): pass
+    def start_section(self, heading): pass
+    def end_section(self): pass
+
+
+class RawDescriptionHelpFormatter(HelpFormatter): pass
+class RawTextHelpFormatter(HelpFormatter): pass
+class ArgumentDefaultsHelpFormatter(HelpFormatter): pass
+class MetavarTypeHelpFormatter(HelpFormatter): pass
+
+
+class Action:
+    def __init__(self, option_strings=None, dest=None, nargs=None, const=None,
+                 default=None, type=None, choices=None, required=False,
+                 help=None, metavar=None):
+        self.option_strings = option_strings or []
+        self.dest = dest
+        self.nargs = nargs
+        self.const = const
+        self.default = default
+        self.type = type
+        self.choices = choices
+        self.required = required
+        self.help = help
+        self.metavar = metavar
+
+
+class _StoreAction(Action): pass
+class _StoreConstAction(Action): pass
+class _StoreTrueAction(Action): pass
+class _StoreFalseAction(Action): pass
+class _AppendAction(Action): pass
+class _AppendConstAction(Action): pass
+class _CountAction(Action): pass
+class _HelpAction(Action): pass
+class _VersionAction(Action): pass
+class _SubParsersAction(Action): pass
+
+
+class Namespace:
+    def __init__(self, **kwargs):
+        for k, v in kwargs.items():
+            setattr(self, k, v)
+    def __eq__(self, other):
+        return self.__dict__ == getattr(other, "__dict__", None)
+
+
+SUPPRESS = "==SUPPRESS=="
+OPTIONAL = "?"
+ZERO_OR_MORE = "*"
+ONE_OR_MORE = "+"
+PARSER = "A..."
+REMAINDER = "..."
+
+
+class ArgumentError(Exception):
+    pass
+
+
+class ArgumentTypeError(Exception):
+    pass
+
+
+class FileType:
+    def __init__(self, mode="r", bufsize=-1, encoding=None, errors=None):
+        self.mode = mode
+    def __call__(self, string): return open(string, self.mode)
+
+
+__all__ = ["ArgumentParser", "HelpFormatter", "RawDescriptionHelpFormatter",
+           "RawTextHelpFormatter", "ArgumentDefaultsHelpFormatter",
+           "MetavarTypeHelpFormatter", "Action", "Namespace",
+           "ArgumentError", "ArgumentTypeError", "FileType",
+           "SUPPRESS", "OPTIONAL", "ZERO_OR_MORE", "ONE_OR_MORE",
+           "PARSER", "REMAINDER"]
