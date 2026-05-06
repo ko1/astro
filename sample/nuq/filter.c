@@ -401,6 +401,7 @@ build_builtin_call(const char *name, int arity, struct Node **args)
     BUILTIN0("to_entries", ALLOC_node_b_to_entries);
     BUILTIN0("from_entries", ALLOC_node_b_from_entries);
     BUILTIN0("paths", ALLOC_node_b_paths);
+    BUILTIN0("leaf_paths", ALLOC_node_b_leaf_paths);
     BUILTIN0("error", ALLOC_node_error0);
     BUILTIN0("floor", ALLOC_node_b_floor);
     BUILTIN0("ceil", ALLOC_node_b_ceil);
@@ -412,6 +413,9 @@ build_builtin_call(const char *name, int arity, struct Node **args)
     BUILTIN0("last", ALLOC_node_b_last0);
     BUILTIN0("any", ALLOC_node_b_any0);
     BUILTIN0("all", ALLOC_node_b_all0);
+    BUILTIN1("any", ALLOC_node_b_any1);
+    BUILTIN1("all", ALLOC_node_b_all1);
+    BUILTIN1("ascii", ALLOC_node_b_ascii);
     BUILTIN0("isnull", ALLOC_node_b_isnull);
     BUILTIN0("explode", ALLOC_node_b_explode);
     BUILTIN0("implode", ALLOC_node_b_implode);
@@ -421,6 +425,17 @@ build_builtin_call(const char *name, int arity, struct Node **args)
     BUILTIN1("recurse", ALLOC_node_b_recurse1);
     BUILTIN0("input", ALLOC_node_b_input);
     BUILTIN0("inputs", ALLOC_node_b_inputs);
+    BUILTIN0("nulls", ALLOC_node_b_nulls);
+    BUILTIN0("booleans", ALLOC_node_b_booleans);
+    BUILTIN0("numbers", ALLOC_node_b_numbers);
+    BUILTIN0("strings", ALLOC_node_b_strings);
+    BUILTIN0("arrays", ALLOC_node_b_arrays);
+    BUILTIN0("objects", ALLOC_node_b_objects);
+    BUILTIN0("iterables", ALLOC_node_b_iterables);
+    BUILTIN0("scalars", ALLOC_node_b_scalars);
+    BUILTIN0("utf8bytelength", ALLOC_node_b_utf8bytelength);
+    BUILTIN0("flatten", ALLOC_node_b_flatten);
+    BUILTIN1("flatten", ALLOC_node_b_flatten_n);
     BUILTIN0("empty", ALLOC_node_empty);
 
     /* 1-arg */
@@ -451,11 +466,16 @@ build_builtin_call(const char *name, int arity, struct Node **args)
     BUILTIN1("index", ALLOC_node_b_index1);
     BUILTIN1("test", ALLOC_node_b_test);
     BUILTIN1("getpath", ALLOC_node_b_getpath);
+    BUILTIN1("delpaths", ALLOC_node_b_delpaths);
+    BUILTIN1("del", ALLOC_node_b_del);
     BUILTIN1("error", ALLOC_node_error1);
 
     /* 2-arg */
     BUILTIN2("range", ALLOC_node_b_range2);
     BUILTIN2("recurse", ALLOC_node_b_recurse2);
+    BUILTIN2("while", ALLOC_node_b_while);
+    BUILTIN2("until", ALLOC_node_b_until);
+    BUILTIN2("setpath", ALLOC_node_b_setpath);
     BUILTIN2("limit", ALLOC_node_b_limit);
     BUILTIN2("nth", ALLOC_node_b_nth);
 
@@ -483,6 +503,7 @@ build_builtin_call(const char *name, int arity, struct Node **args)
 static struct Node *parse_pipe(lexer_t *L);
 static struct Node *parse_pipe_no_comma(lexer_t *L);
 static struct Node *parse_comma(lexer_t *L);
+static struct Node *parse_assign(lexer_t *L);
 static struct Node *parse_alt(lexer_t *L);
 static struct Node *parse_or(lexer_t *L);
 static struct Node *parse_and(lexer_t *L);
@@ -1002,11 +1023,32 @@ parse_alt(lexer_t *L)
     return lhs;
 }
 
+/* Assignment level — between comma and alt.  Each `op=` is right-
+ * associative single-binding (jq semantics).  Tokens already exist
+ * in the lexer (TK_ASSIGN, TK_UPDEQ, ...). */
+static struct Node *
+parse_assign(lexer_t *L)
+{
+    struct Node *lhs = parse_alt(L);
+    int op_kind = 0;
+    if      (accept(L, TK_ASSIGN))  op_kind = NUQ_ASSIGN_PLAIN;
+    else if (accept(L, TK_UPDEQ))   op_kind = NUQ_ASSIGN_UPDATE;
+    else if (accept(L, TK_PLUSEQ))  op_kind = NUQ_ASSIGN_PLUS;
+    else if (accept(L, TK_MINUSEQ)) op_kind = NUQ_ASSIGN_MINUS;
+    else if (accept(L, TK_MULEQ))   op_kind = NUQ_ASSIGN_MUL;
+    else if (accept(L, TK_DIVEQ))   op_kind = NUQ_ASSIGN_DIV;
+    else if (accept(L, TK_MODEQ))   op_kind = NUQ_ASSIGN_MOD;
+    else if (accept(L, TK_ALTEQ))   op_kind = NUQ_ASSIGN_ALT;
+    else return lhs;
+    struct Node *rhs = parse_alt(L);
+    return ALLOC_node_assign(lhs, rhs, (uint32_t)op_kind);
+}
+
 static struct Node *
 parse_comma(lexer_t *L)
 {
-    struct Node *lhs = parse_alt(L);
-    while (accept(L, TK_COMMA)) lhs = ALLOC_node_comma(lhs, parse_alt(L));
+    struct Node *lhs = parse_assign(L);
+    while (accept(L, TK_COMMA)) lhs = ALLOC_node_comma(lhs, parse_assign(L));
     return lhs;
 }
 
@@ -1136,8 +1178,8 @@ parse_pipe(lexer_t *L)
 static struct Node *
 parse_pipe_no_comma(lexer_t *L)
 {
-    struct Node *lhs = parse_alt(L);
-    while (accept(L, TK_PIPE)) lhs = nuq_make_pipe(lhs, parse_alt(L));
+    struct Node *lhs = parse_assign(L);
+    while (accept(L, TK_PIPE)) lhs = nuq_make_pipe(lhs, parse_assign(L));
     return lhs;
 }
 

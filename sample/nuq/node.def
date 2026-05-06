@@ -865,6 +865,14 @@ node_b_from_entries(CTX *c, NODE *n)
 }
 
 NODE_DEF
+node_b_leaf_paths(CTX *c, NODE *n)
+{
+    size_t outer = c->pool_top;
+    nuq_leaf_paths_collect_pool(c, c->input);
+    return nuq_emit_slice(c, outer);
+}
+
+NODE_DEF
 node_b_paths(CTX *c, NODE *n)
 {
     size_t top0 = c->pool_top;
@@ -952,6 +960,85 @@ node_b_all0(CTX *c, NODE *n)
     return nuq_emit_one(c, all ? NUQ_TRUE : NUQ_FALSE);
 }
 
+/* `any(f)` / `all(f)` — like the 0-arg versions but applying `f` to
+ * each element of the input array, then aggregating. */
+NODE_DEF
+node_b_any1(CTX *c, NODE *n, NODE *body)
+{
+    if (UNLIKELY(!(NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_ARRAY))) {
+        c->error = nuq_make_string("any: not array", 14);
+        return EMIT_EMPTY;
+    }
+    struct nuq_obj *o = NUQ_PTR(c->input);
+    VALUE saved = c->input;
+    bool any = false;
+    for (size_t i = 0; i < o->arr.len && !any; i++) {
+        c->input = o->arr.items[i];
+        size_t t0 = c->pool_top;
+        EMIT bo = EVAL_ARG(c, body);
+        if (UNLIKELY(c->error != NUQ_NULL)) { c->input = saved; return EMIT_EMPTY; }
+        for (uint32_t j = 0; j < bo.count; j++)
+            if (nuq_truthy(bo.items[j])) { any = true; break; }
+        c->pool_top = t0;
+    }
+    c->input = saved;
+    return nuq_emit_one(c, any ? NUQ_TRUE : NUQ_FALSE);
+}
+
+NODE_DEF
+node_b_all1(CTX *c, NODE *n, NODE *body)
+{
+    if (UNLIKELY(!(NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_ARRAY))) {
+        c->error = nuq_make_string("all: not array", 14);
+        return EMIT_EMPTY;
+    }
+    struct nuq_obj *o = NUQ_PTR(c->input);
+    VALUE saved = c->input;
+    bool all = true;
+    for (size_t i = 0; i < o->arr.len && all; i++) {
+        c->input = o->arr.items[i];
+        size_t t0 = c->pool_top;
+        EMIT bo = EVAL_ARG(c, body);
+        if (UNLIKELY(c->error != NUQ_NULL)) { c->input = saved; return EMIT_EMPTY; }
+        bool any_truthy = false;
+        for (uint32_t j = 0; j < bo.count; j++)
+            if (nuq_truthy(bo.items[j])) { any_truthy = true; break; }
+        c->pool_top = t0;
+        if (!any_truthy) all = false;
+    }
+    c->input = saved;
+    return nuq_emit_one(c, all ? NUQ_TRUE : NUQ_FALSE);
+}
+
+/* `ascii(N)` — single-char string from codepoint (ASCII range only). */
+NODE_DEF
+node_b_ascii(CTX *c, NODE *n, NODE *codepoint)
+{
+    size_t t0 = c->pool_top;
+    EMIT bo = EVAL_ARG(c, codepoint);
+    if (UNLIKELY(c->error != NUQ_NULL)) return EMIT_EMPTY;
+    if (bo.count == 0) { c->pool_top = t0; return EMIT_EMPTY; }
+    VALUE v = bo.items[0];
+    c->pool_top = t0;
+    if (!NUQ_IS_FIX(v)) {
+        c->error = nuq_make_string("ascii: not int", 14);
+        return EMIT_EMPTY;
+    }
+    int64_t cp = NUQ_FIX_VAL(v);
+    if (cp < 0 || cp > 0x10FFFF) {
+        c->error = nuq_make_string("ascii: codepoint out of range", 29);
+        return EMIT_EMPTY;
+    }
+    /* Encode as UTF-8 (1-4 bytes). */
+    char buf[5];
+    int n_bytes;
+    if (cp < 0x80)        { buf[0] = (char)cp; n_bytes = 1; }
+    else if (cp < 0x800)  { buf[0] = 0xC0 | (cp >> 6); buf[1] = 0x80 | (cp & 0x3F); n_bytes = 2; }
+    else if (cp < 0x10000){ buf[0] = 0xE0 | (cp >> 12); buf[1] = 0x80 | ((cp >> 6) & 0x3F); buf[2] = 0x80 | (cp & 0x3F); n_bytes = 3; }
+    else                  { buf[0] = 0xF0 | (cp >> 18); buf[1] = 0x80 | ((cp >> 12) & 0x3F); buf[2] = 0x80 | ((cp >> 6) & 0x3F); buf[3] = 0x80 | (cp & 0x3F); n_bytes = 4; }
+    return nuq_emit_one(c, nuq_make_string(buf, n_bytes));
+}
+
 NODE_DEF
 node_b_isnull(CTX *c, NODE *n)
 {
@@ -1033,6 +1120,116 @@ node_b_inputs(CTX *c, NODE *n)
     VALUE v;
     while (nuq_input_pull(&v)) nuq_pool_push(c, v);
     return nuq_emit_slice(c, outer);
+}
+
+/* Type-predicate filters: `nulls`, `booleans`, `numbers`, `strings`,
+ * `arrays`, `objects`, `iterables`, `scalars`.
+ * Each emits `.` iff its type matches, else empty.  Mirrors jq's
+ * `def nulls: select(type=="null")`-style sugar. */
+NODE_DEF
+node_b_nulls(CTX *c, NODE *n)
+{
+    return (NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_NULL)
+        ? nuq_emit_one(c, c->input) : EMIT_EMPTY;
+}
+
+NODE_DEF
+node_b_booleans(CTX *c, NODE *n)
+{
+    return (NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_BOOL)
+        ? nuq_emit_one(c, c->input) : EMIT_EMPTY;
+}
+
+NODE_DEF
+node_b_numbers(CTX *c, NODE *n)
+{
+    if (NUQ_IS_FIX(c->input)) return nuq_emit_one(c, c->input);
+    if (NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_DOUBLE)
+        return nuq_emit_one(c, c->input);
+    return EMIT_EMPTY;
+}
+
+NODE_DEF
+node_b_strings(CTX *c, NODE *n)
+{
+    return (NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_STRING)
+        ? nuq_emit_one(c, c->input) : EMIT_EMPTY;
+}
+
+NODE_DEF
+node_b_arrays(CTX *c, NODE *n)
+{
+    return (NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_ARRAY)
+        ? nuq_emit_one(c, c->input) : EMIT_EMPTY;
+}
+
+NODE_DEF
+node_b_objects(CTX *c, NODE *n)
+{
+    return (NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_OBJECT)
+        ? nuq_emit_one(c, c->input) : EMIT_EMPTY;
+}
+
+NODE_DEF
+node_b_iterables(CTX *c, NODE *n)
+{
+    if (!NUQ_IS_PTR(c->input)) return EMIT_EMPTY;
+    enum nuq_type t = NUQ_PTR(c->input)->type;
+    return (t == NUQ_T_ARRAY || t == NUQ_T_OBJECT)
+        ? nuq_emit_one(c, c->input) : EMIT_EMPTY;
+}
+
+NODE_DEF
+node_b_scalars(CTX *c, NODE *n)
+{
+    if (NUQ_IS_FIX(c->input)) return nuq_emit_one(c, c->input);
+    enum nuq_type t = NUQ_PTR(c->input)->type;
+    return (t == NUQ_T_ARRAY || t == NUQ_T_OBJECT)
+        ? EMIT_EMPTY : nuq_emit_one(c, c->input);
+}
+
+/* `utf8bytelength` — same as length on strings since nuq stores raw bytes.
+ * jq distinguishes char-length (length) from byte-length here, but our
+ * length is already byte-counting. */
+NODE_DEF
+node_b_utf8bytelength(CTX *c, NODE *n)
+{
+    if (NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_STRING)
+        return nuq_emit_one(c, nuq_make_int((int64_t)NUQ_PTR(c->input)->str.len));
+    c->error = nuq_make_string("utf8bytelength: not string", 26);
+    return EMIT_EMPTY;
+}
+
+/* `flatten` — single-level array flatten. */
+NODE_DEF
+node_b_flatten(CTX *c, NODE *n)
+{
+    if (!(NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_ARRAY)) {
+        c->error = nuq_make_string("flatten: not array", 18);
+        return EMIT_EMPTY;
+    }
+    return nuq_emit_one(c, nuq_flatten_eval(c->input, 1));
+}
+
+/* `flatten(N)` — flatten N levels deep (N must be a non-negative int). */
+NODE_DEF
+node_b_flatten_n(CTX *c, NODE *n, NODE *depth)
+{
+    return nuq_flatten1_eval(c, depth);
+}
+
+/* `while(cond; update)` — emit . while cond(.) is truthy, then iterate. */
+NODE_DEF
+node_b_while(CTX *c, NODE *n, NODE *cond, NODE *update)
+{
+    return nuq_while_eval(c, cond, update);
+}
+
+/* `until(cond; update)` — apply update until cond(.) is truthy, emit final. */
+NODE_DEF
+node_b_until(CTX *c, NODE *n, NODE *cond, NODE *update)
+{
+    return nuq_until_eval(c, cond, update);
 }
 
 NODE_DEF
@@ -1279,6 +1476,43 @@ NODE_DEF
 node_b_getpath(CTX *c, NODE *n, NODE *path)
 {
     return nuq_getpath_eval(c, path);
+}
+
+NODE_DEF
+node_b_setpath(CTX *c, NODE *n, NODE *path, NODE *value)
+{
+    return nuq_setpath_eval(c, path, value);
+}
+
+/* Assignment: `lhs OP= rhs`.  op_kind values are NUQ_ASSIGN_*.
+ *   = (PLAIN):   replace value at path-of(lhs) with rhs(.)
+ *   |=  (UPDATE): replace with rhs applied to current value
+ *   += -= *= /= %= //=: corresponding op of current with rhs
+ *
+ * Path of `lhs` is statically extracted at parse time when possible
+ * (chains of `.foo` / `.[i]` / `.[]?` / `.[N:M]`).  Patterns we don't
+ * handle yet (full `.[]` iteration, `.foo[0:].bar`) raise an error
+ * at eval. */
+NODE_DEF
+node_assign(CTX *c, NODE *n, NODE *lhs, NODE *rhs, uint32_t op_kind)
+{
+    return nuq_assign_eval(c, lhs, rhs, op_kind);
+}
+
+NODE_DEF
+node_b_delpaths(CTX *c, NODE *n, NODE *paths)
+{
+    return nuq_delpaths_eval(c, paths);
+}
+
+/* `del(path-expr)` — sugar for `delpaths([path(path-expr)])`.  Since
+ * we don't have generic path mode in accessors yet, we lift the path
+ * statically using `extract_path` (same as for assignments).  Works
+ * for `.foo` / `.foo.bar` / `.[N]` chains. */
+NODE_DEF
+node_b_del(CTX *c, NODE *n, NODE *path_expr)
+{
+    return nuq_del_eval(c, path_expr);
 }
 
 NODE_DEF

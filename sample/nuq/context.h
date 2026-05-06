@@ -379,6 +379,18 @@ enum {
     NUQ_CMP_EQ_K, NUQ_CMP_NE_K, NUQ_CMP_LT_K, NUQ_CMP_LE_K, NUQ_CMP_GT_K, NUQ_CMP_GE_K,
 };
 
+/* Assignment kinds for node_assign. */
+enum {
+    NUQ_ASSIGN_PLAIN = 1,   /* =     */
+    NUQ_ASSIGN_UPDATE,      /* |=    */
+    NUQ_ASSIGN_PLUS,        /* +=    */
+    NUQ_ASSIGN_MINUS,       /* -=    */
+    NUQ_ASSIGN_MUL,         /* *=    */
+    NUQ_ASSIGN_DIV,         /* /=    */
+    NUQ_ASSIGN_MOD,         /* %=    */
+    NUQ_ASSIGN_ALT,         /* //=   */
+};
+
 #define SLICE_HAS_START 1
 #define SLICE_HAS_STOP  2
 
