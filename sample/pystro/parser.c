@@ -2442,9 +2442,83 @@ parse_expr(void) { return parse_walrus(); }
 
 // expr_list: expr (',' expr)+ → tuple; single → expr.
 // Trailing comma creates a 1-tuple (`x,` -> (x,)).
+// Also accepts starred elements: `*a, *b` → tuple(a) + tuple(b).
 static NODE *
 parse_expr_list(void)
 {
+    // Scan ahead for a top-level `*expr` to decide whether to take the
+    // starred-spread path (which builds a list, extends per-spread, and
+    // converts to tuple at the end).
+    //
+    // Tricky: `lambda x, *, k=10: ...` has a top-level `*` separator that
+    // is *not* a spread.  Distinguish by what follows: spread requires an
+    // expression after the `*` (NAME / number / `(` / `[` etc.); the
+    // kw-only marker is followed by `,` / `:` / `=`.  Also skip the
+    // contents of any nested `lambda ... :` so its own internal commas/
+    // stars don't confuse the scan.
+    bool has_spread = false;
+    {
+        size_t p = tok_pos;
+        int depth = 0;
+        int lambda_depth = 0;
+        // Leading `*expr` at the very start (e.g. `*a, *b`).
+        if (tok_arr[p].kind == T_STAR) {
+            int nx = tok_arr[p+1].kind;
+            if (nx != T_COMMA && nx != T_COLON && nx != T_ASSIGN
+                    && nx != T_RPAREN && nx != T_RBRACK)
+                has_spread = true;
+        }
+        while (!has_spread && tok_arr[p].kind != T_EOF
+                && tok_arr[p].kind != T_NEWLINE
+                && !(depth == 0 && lambda_depth == 0
+                     && (tok_arr[p].kind == T_RPAREN
+                         || tok_arr[p].kind == T_RBRACK
+                         || tok_arr[p].kind == T_RBRACE
+                         || tok_arr[p].kind == T_COLON
+                         || tok_arr[p].kind == T_ASSIGN
+                         || tok_arr[p].kind == T_SEMI))) {
+            int kk = tok_arr[p].kind;
+            if (kk == T_LPAREN || kk == T_LBRACK || kk == T_LBRACE) depth++;
+            else if (kk == T_RPAREN || kk == T_RBRACK || kk == T_RBRACE) depth--;
+            else if (kk == T_LAMBDA) lambda_depth++;
+            else if (lambda_depth > 0 && depth == 0 && kk == T_COLON) lambda_depth--;
+            else if (depth == 0 && lambda_depth == 0 && kk == T_STAR
+                     && p > 0 && tok_arr[p-1].kind == T_COMMA) {
+                int nx = tok_arr[p+1].kind;
+                if (nx != T_COMMA && nx != T_COLON && nx != T_ASSIGN
+                        && nx != T_RPAREN && nx != T_RBRACK)
+                    has_spread = true;
+            }
+            p++;
+        }
+    }
+    if (has_spread) {
+        // Build a list, extend with each spread (evaluating non-spread as
+        // single-element appends).
+        const char *tmp = new_temp_name("__tup");
+        NODE *load_tmp;
+        size_t empty_idx = node_table_reserve(NULL, 0);
+        NODE *init = build_temp_init(tmp, ALLOC_node_make_list((uint32_t)empty_idx, 0), &load_tmp);
+        NODE *result = init;
+        for (;;) {
+            if (match_tok(T_STAR)) {
+                NODE *e = parse_expr();
+                NODE *call = ALLOC_node_method_1(load_tmp, intern_name("extend", 6), e);
+                result = ALLOC_node_seq(result, call);
+            } else {
+                NODE *e = parse_expr();
+                NODE *call = ALLOC_node_method_1(load_tmp, intern_name("append", 6), e);
+                result = ALLOC_node_seq(result, call);
+            }
+            if (!match_tok(T_COMMA)) break;
+            int k = peek_tok(0)->kind;
+            if (k == T_NEWLINE || k == T_RPAREN || k == T_RBRACK || k == T_RBRACE
+                    || k == T_COLON || k == T_ASSIGN || k == T_SEMI) break;
+        }
+        NODE *call_tuple = ALLOC_node_call_1(
+            ALLOC_node_gref(intern_name("tuple", 5)), load_tmp);
+        return ALLOC_node_seq(result, call_tuple);
+    }
     NODE *first = parse_expr();
     if (peek_tok(0)->kind != T_COMMA) return first;
     NODE *items[1024];
