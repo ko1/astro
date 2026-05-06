@@ -2596,6 +2596,8 @@ extern const struct NodeKind kind_node_comma;
 extern const struct NodeKind kind_node_as;
 extern const struct NodeKind kind_node_b_select;
 extern const struct NodeKind kind_node_b_getpath;
+extern const struct NodeKind kind_node_b_first0;
+extern const struct NodeKind kind_node_b_last0;
 
 /* ---------- path-mode walk (used by `=` `|=` `+=` ... and `del`) ---------
  *
@@ -3267,6 +3269,26 @@ path_dfs(CTX *c, struct Node **steps, size_t step_cnt, size_t k,
         pu->cur_len--;
         return;
     }
+    /* `first` / `last` as path components — equivalent to `.[0]` / `.[-1]`
+     * with auto-vivify on null. */
+    if (step->head.kind == &kind_node_b_first0 ||
+        step->head.kind == &kind_node_b_last0) {
+        if (!(NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_ARRAY)) {
+            c->error = nuq_make_string("Out of bounds negative array index", 34);
+            return;
+        }
+        struct nuq_obj *o = NUQ_PTR(v);
+        int64_t idx = (step->head.kind == &kind_node_b_first0) ? 0 : (int64_t)o->arr.len - 1;
+        if (idx < 0) {
+            c->error = nuq_make_string("Out of bounds negative array index", 34);
+            return;
+        }
+        VALUE child = o->arr.items[idx];
+        path_push(pu, nuq_make_int(idx));
+        path_dfs(c, steps, step_cnt, k + 1, child, pu);
+        pu->cur_len--;
+        return;
+    }
     /* `select(cond)` as a path component — keep the path if cond is
      * truthy on the current value; otherwise drop. */
     if (step->head.kind == &kind_node_b_select) {
@@ -3319,7 +3341,64 @@ path_dfs(CTX *c, struct Node **steps, size_t step_cnt, size_t k,
             return;
         }
     }
-    c->error = nuq_make_string("path: unsupported node", 22);
+    /* Path traversal hit a non-accessor step.  Format jq's diagnostic
+     * including the current value and (if any) the attempted next step.
+     * jq uses the raw JSON rendering for these messages (no `<type> (..)`
+     * wrapping). */
+    {
+        char *json_buf = NULL; size_t jl = 0;
+        FILE *jfp = open_memstream(&json_buf, &jl);
+        nuq_json_print(jfp, v, 0);
+        fclose(jfp);
+        char vd[80], msg[256];
+        size_t lim = sizeof(vd) - 1;
+        size_t copy = jl <= lim ? jl : lim;
+        memcpy(vd, json_buf, copy); vd[copy] = 0;
+        free(json_buf);
+        if (k + 1 >= step_cnt) {
+            int w = snprintf(msg, sizeof(msg),
+                             "Invalid path expression with result %s", vd);
+            c->error = nuq_make_string(msg, (size_t)w);
+        } else {
+            struct Node *nxt = steps[k + 1];
+            if (nxt->head.kind == &kind_node_field || nxt->head.kind == &kind_node_field_opt) {
+                const char *name = (nxt->head.kind == &kind_node_field)
+                    ? nxt->u.node_field.name : nxt->u.node_field_opt.name;
+                int w = snprintf(msg, sizeof(msg),
+                                 "Invalid path expression near attempt to access element \"%s\" of %s",
+                                 name, vd);
+                c->error = nuq_make_string(msg, (size_t)w);
+            } else if (nxt->head.kind == &kind_node_index || nxt->head.kind == &kind_node_index_opt) {
+                struct Node *ix = (nxt->head.kind == &kind_node_index)
+                    ? nxt->u.node_index.expr : nxt->u.node_index_opt.expr;
+                VALUE kv;
+                if (eval_static_key(ix, &kv)) {
+                    char kd[40];
+                    if (NUQ_IS_FIX(kv)) snprintf(kd, sizeof(kd), "%lld", (long long)NUQ_FIX_VAL(kv));
+                    else if (NUQ_IS_PTR(kv) && NUQ_PTR(kv)->type == NUQ_T_STRING) {
+                        struct nuq_obj *so = NUQ_PTR(kv);
+                        snprintf(kd, sizeof(kd), "\"%.*s\"", (int)so->str.len, so->str.bytes);
+                    } else snprintf(kd, sizeof(kd), "?");
+                    int w = snprintf(msg, sizeof(msg),
+                                     "Invalid path expression near attempt to access element %s of %s",
+                                     kd, vd);
+                    c->error = nuq_make_string(msg, (size_t)w);
+                } else {
+                    int w = snprintf(msg, sizeof(msg),
+                                     "Invalid path expression near attempt to access element of %s", vd);
+                    c->error = nuq_make_string(msg, (size_t)w);
+                }
+            } else if (nxt->head.kind == &kind_node_iter || nxt->head.kind == &kind_node_iter_opt) {
+                int w = snprintf(msg, sizeof(msg),
+                                 "Invalid path expression near attempt to iterate through %s", vd);
+                c->error = nuq_make_string(msg, (size_t)w);
+            } else {
+                int w = snprintf(msg, sizeof(msg),
+                                 "Invalid path expression with result %s", vd);
+                c->error = nuq_make_string(msg, (size_t)w);
+            }
+        }
+    }
 }
 
 EMIT
@@ -3447,9 +3526,37 @@ nuq_del_eval(CTX *c, struct Node *path_expr)
         }
         return nuq_emit_one(c, cur);
     }
+    /* Try the cheap walk_path first — single-clone per container.
+     * If it fails with a multi-emit error inside the path expression
+     * (e.g. `.[nan, nan]`), fall back to path-collection + delpaths. */
+    VALUE saved_err = c->error;
     VALUE result = walk_path(c, path_expr, c->input, delete_leaf, NULL);
+    if (c->error == NUQ_NULL) return nuq_emit_one(c, result);
+    /* Try path()+delpaths fallback. */
+    c->error = saved_err;
+    size_t outer = c->pool_top;
+    EMIT pe = nuq_path_eval(c, path_expr);
     if (c->error != NUQ_NULL) return EMIT_EMPTY;
-    return nuq_emit_one(c, result);
+    uint32_t pcnt = pe.count;
+    VALUE small[64];
+    VALUE *paths = (pcnt <= 64) ? small : (VALUE *)GC_malloc(pcnt * sizeof(VALUE));
+    memcpy(paths, pe.items, pcnt * sizeof(VALUE));
+    c->pool_top = outer;
+    for (uint32_t i = 1; i < pcnt; i++) {
+        VALUE x = paths[i];
+        uint32_t j = i;
+        while (j > 0 && nuq_cmp(paths[j-1], x) < 0) { paths[j] = paths[j-1]; j--; }
+        paths[j] = x;
+    }
+    VALUE cur = c->input;
+    for (uint32_t i = 0; i < pcnt; i++) {
+        VALUE p = paths[i];
+        if (!(NUQ_IS_PTR(p) && NUQ_PTR(p)->type == NUQ_T_ARRAY)) continue;
+        struct nuq_obj *po = NUQ_PTR(p);
+        if (po->arr.len == 0) { cur = NUQ_NULL; continue; }
+        cur = delpath_recurse(cur, po->arr.items, po->arr.len);
+    }
+    return nuq_emit_one(c, cur);
 }
 
 EMIT
