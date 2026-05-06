@@ -2109,7 +2109,7 @@ parse_postfix(void)
     // `super()` and `super(C, self)` short-circuit.
     if (peek_tok(0)->kind == T_NAME && peek_tok(0)->sval == intern_name("super", 5)
             && peek_tok(1)->kind == T_LPAREN) {
-        // Distinguish bare super() vs super(C, self).
+        // Distinguish bare super() vs super(C, self) vs super(C).
         bool bare = (peek_tok(2)->kind == T_RPAREN);
         NODE *cls_expr = NULL, *self_expr = NULL;
         if (bare) {
@@ -2117,9 +2117,16 @@ parse_postfix(void)
         } else {
             tok_pos += 2;        // past `super` `(`
             cls_expr = parse_expr();
-            expect(T_COMMA, "','");
-            self_expr = parse_expr();
+            if (match_tok(T_COMMA)) {
+                self_expr = parse_expr();
+            }
             expect(T_RPAREN, "')'");
+            if (!self_expr) {
+                // `super(C)` — unbound super.  Pystro has no real proxy
+                // semantics; treat like `super()` with the explicit class
+                // (still useful for class-attribute walks via __mro__).
+                bare = true;
+            }
         }
         // If NOT followed by `.METHOD(args)`, return a super proxy
         // value that the user can bind to a variable.
