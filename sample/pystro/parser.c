@@ -186,6 +186,17 @@ parse_error(const char *fmt, ...)
     va_list ap; va_start(ap, fmt);
     vfprintf(stderr, fmt, ap);
     va_end(ap);
+    if (getenv("PYSTRO_DEBUG_PARSE")) {
+        fprintf(stderr, " [tok_pos=%zu", tok_pos);
+        for (int i = -3; i <= 3; i++) {
+            int p = (int)tok_pos + i;
+            if (p < 0 || p >= (int)tok_len) continue;
+            Tok *tt = &tok_arr[p];
+            fprintf(stderr, " %s%d:%d", i==0?"*":"", (int)p, tt->kind);
+            if (tt->kind == T_NAME && tt->sval) fprintf(stderr, ":%s", tt->sval);
+        }
+        fprintf(stderr, "]");
+    }
     fputc('\n', stderr);
     exit(1);
 }
@@ -2037,6 +2048,26 @@ parse_postfix(void)
         if (peek_tok(0)->kind != T_NAME) parse_error("expected method name after super().");
         const char *method = peek_tok(0)->sval;
         tok_pos++;
+        // `super().attr` (no call) — return as attribute-get on the
+        // super proxy, then continue with any postfix trailers.
+        if (peek_tok(0)->kind != T_LPAREN) {
+            NODE *super_obj;
+            if (bare) {
+                if (!cur_class_base) parse_error("super() called outside a class body");
+                super_obj = ALLOC_node_super_obj();
+            } else {
+                super_obj = ALLOC_node_super_obj_explicit(cls_expr, self_expr);
+            }
+            NODE *e = ALLOC_node_attr_get(super_obj, method);
+            for (;;) {
+                int k = peek_tok(0)->kind;
+                if (k == T_LPAREN) e = parse_call_args(e);
+                else if (k == T_LBRACK) e = parse_subscript(e);
+                else if (k == T_DOT)    e = parse_dot_trailer(e);
+                else break;
+            }
+            return e;
+        }
         // Lookahead inside the call args for *spread or **kwarg; if either,
         // fall back to attribute-get + parse_call_args (full kwarg support).
         size_t paren_save = tok_pos;
