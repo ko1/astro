@@ -1,0 +1,6 @@
+ok SetUpdateTest test_multiple
+ok SetUpdateTest test_single
+ok SetUpdateTest test_three_iterables
+ok SetUpdateTest test_with_dict
+---
+passed=4 failed=0

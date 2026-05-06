@@ -6843,12 +6843,14 @@ sm_set_clear(CTX *c, int argc, VALUE *argv) {
 }
 static VALUE
 sm_set_update(CTX *c, int argc, VALUE *argv) {
-    (void)argc;
-    VALUE a = argv[0], b = argv[1];
-    struct py_iter it; py_iter_init(c, &it, b);
-    VALUE x;
-    while (py_iter_next(c, &it, &x))
-        py_dict_set(c, a, x, PY_NONE);
+    VALUE a = argv[0];
+    for (int j = 1; j < argc; j++) {
+        struct py_iter it; py_iter_init(c, &it, argv[j]);
+        if (c->state != PY_STATE_NORMAL) return PY_NONE;
+        VALUE x;
+        while (py_iter_next(c, &it, &x))
+            py_dict_set(c, a, x, PY_NONE);
+    }
     return PY_NONE;
 }
 
@@ -6900,7 +6902,7 @@ static struct type_method set_methods[] = {
     { "pop",                  sm_set_pop,              1, 1 },
     { "clear",                sm_set_clear,            1, 1 },
     { "copy",                 sm_set_copy,             1, 1 },
-    { "update",               sm_set_update,           2, 2 },
+    { "update",               sm_set_update,           1, -1 },
     { "union",                sm_union,                2, 2 },
     { "intersection",         sm_intersection,         2, 2 },
     { "difference",           sm_difference,           2, 2 },
