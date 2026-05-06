@@ -27,10 +27,10 @@ $ ./koruby test/cruby_runner/run_rubyspec.rb \
 and_spec.rb: pass=26 fail=0 err=0 skip=0
 ```
 
-language/* (65 ファイル走破): **pass=2,406 / 3,539 (68.0%)、17 ファイルが 100% pass、22 件 SKIP**。
-- 100% pass: `and` / `comment` / `loop` / `not` / `or` / `order` / `private` / `range` / `redo` / `retry` / `safe` / `throw` (1 skip) / `undef` / `unless` / `until` / `while` / `next`
-- 90%+: `array` (91.7%), `class_variable` (90.0%), `ensure` (94.6%), `precedence` (93.1%), `symbol` (93.9%)
-- 80%+: `for` (85.5%), `hash` (86.7%), `proc` (81.0%), `variables` (81.3%)
+language/* (65 ファイル走破): **pass=2,529 / 3,518 (71.9%)、19 ファイルが 100% pass、29 件 SKIP**。
+- 100% pass: `and` / `comment` / `loop` / `not` / `or` / `order` / `private` / `range` / `redo` / `retry` / `safe` / `throw` (1 skip) / `undef` / `unless` / `until` / `while` / `next` / `delegation` / `numbers` 等
+- 95%+: `array` (91.7%), `class_variable` (95.2%), `ensure` (94.6%), `precedence` (97.2%), `symbol` (95.9%)
+- 80%+: `defined` (80.7%), `for` (80.8%), `hash` (86.7%), `pattern_matching`, `proc` (85.7%), `variables` (93.4%)
 
 shim が cover している matchers / helpers:
 - `should == / != / equal / eql / be_nil / be_true / be_false / be_truthy / be_falsy`
