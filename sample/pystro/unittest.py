@@ -97,20 +97,22 @@ class TestCase:
     # Context-manager assertRaises: usage —
     #   with self.assertRaises(ValueError):
     #       int("xy")
-    def assertRaises(self, exc_cls, *args):
+    def assertRaises(self, exc_cls, *args, **kwargs):
         if len(args) == 0:
             return _AssertRaisesCM(exc_cls)
-        # Direct form: assertRaises(exc, callable, *args).
+        # Direct form: assertRaises(exc, callable, *args, **kwargs).
         cm = _AssertRaisesCM(exc_cls)
         with cm:
-            args[0](*args[1:])
+            args[0](*args[1:], **kwargs)
 
-    def assertRaisesRegex(self, exc_cls, regex, *args):
+    def assertRaisesRegex(self, exc_cls, regex, *args, **kwargs):
         cm = _AssertRaisesCM(exc_cls, regex=regex)
+        # `msg=` kwarg is consumed by the CM, not forwarded to the callable.
+        kwargs.pop("msg", None)
         if len(args) == 0:
             return cm
         with cm:
-            args[0](*args[1:])
+            args[0](*args[1:], **kwargs)
 
     def assertNotHasAttr(self, obj, name, msg=""):
         if hasattr(obj, name):

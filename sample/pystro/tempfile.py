@@ -38,7 +38,9 @@ def mkdtemp(suffix="", prefix="tmp", dir=None):
 
 
 class NamedTemporaryFile:
-    def __init__(self, mode="w+b", suffix="", prefix="tmp", dir=None, delete=True):
+    def __init__(self, mode="w+b", buffering=-1, encoding=None, newline=None,
+                 suffix="", prefix="tmp", dir=None, delete=True, *,
+                 errors=None, delete_on_close=True):
         if dir is None: dir = gettempdir()
         self.name = os.path.join(dir, _make_name(prefix, suffix))
         self._f = open(self.name, mode)

@@ -173,7 +173,7 @@ def perm(n, k=None):
         r *= (n - i)
     return r
 
-def isclose(a, b, rel_tol=1e-9, abs_tol=0.0):
+def isclose(a, b, *, rel_tol=1e-9, abs_tol=0.0):
     diff = a - b
     if diff < 0: diff = -diff
     aa = -a if a < 0 else a
