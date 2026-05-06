@@ -216,7 +216,30 @@ lex_advance(lexer_t *L)
     if (L->p >= L->end) { L->tok.type = TK_END; return; }
     char c = *L->p;
     switch (c) {
-      case '.': L->p++; if (L->p < L->end && *L->p == '.') { L->p++; L->tok.type = TK_DDOT; return; } L->tok.type = TK_DOT; return;
+      case '.':
+        L->p++;
+        if (L->p < L->end && *L->p == '.') { L->p++; L->tok.type = TK_DDOT; return; }
+        /* `.<digit>` — JSON-style decimal-fraction number `.5` etc.
+         * We back up so the digit lexer below sees `0.<digits>...`. */
+        if (L->p < L->end && isdigit((unsigned char)*L->p)) {
+            const char *start = L->p - 1;     /* the `.` */
+            while (L->p < L->end && isdigit((unsigned char)*L->p)) L->p++;
+            if (L->p < L->end && (*L->p == 'e' || *L->p == 'E')) {
+                L->p++;
+                if (L->p < L->end && (*L->p == '+' || *L->p == '-')) L->p++;
+                while (L->p < L->end && isdigit((unsigned char)*L->p)) L->p++;
+            }
+            size_t n = (size_t)(L->p - start);
+            char buf[64];
+            if (n >= sizeof(buf) - 1) parse_error(L, "number too long");
+            buf[0] = '0';
+            memcpy(buf + 1, start, n);     /* "0" + ".5..." */
+            buf[n + 1] = '\0';
+            L->tok.type = TK_NUM;
+            L->tok.d = strtod(buf, NULL);
+            return;
+        }
+        L->tok.type = TK_DOT; return;
       case '?': L->p++; L->tok.type = TK_QUEST; return;
       case '(': L->p++; L->tok.type = TK_LP; return;
       case ')': L->p++; L->tok.type = TK_RP; return;
@@ -539,6 +562,10 @@ build_builtin_call(const char *name, int arity, struct Node **args)
     BUILTIN1("min_by", ALLOC_node_b_min_by);
     BUILTIN1("max_by", ALLOC_node_b_max_by);
     BUILTIN1("indices", ALLOC_node_b_indices);
+    /* `_strindices/1` — jq private builtin that requires string input
+     * and string pat.  We route through indices() but with stricter
+     * type checks via the wrapper NODE_DEF below. */
+    BUILTIN1("_strindices", ALLOC_node_b_strindices);
     BUILTIN1("index", ALLOC_node_b_index1);
     BUILTIN1("rindex", ALLOC_node_b_rindex);
     BUILTIN1("test", ALLOC_node_b_test);
@@ -900,7 +927,7 @@ parse_primary(lexer_t *L)
          * NOT included since it would swallow the catch / following
          * pipe stages. */
         struct Node *body = parse_unary(L);
-        struct Node *handler = NULL;
+        struct Node *handler = empty_sentinel();
         if (accept(L, TK_KW_CATCH)) handler = parse_unary(L);
         return ALLOC_node_try(body, handler);
       }
@@ -1040,6 +1067,52 @@ parse_primary(lexer_t *L)
 
 /* ----- postfix --------------------------------------------------------- */
 
+/* `acc[expr]` and `acc[a:b]` — in jq, the index/slice argument
+ * expressions evaluate against the OUTER input (the input to the
+ * surrounding stage), NOT the value of `acc`.  We model this by
+ * lifting `.` to a fresh `$__ix__N__` binding and wrapping each arg
+ * as `($__ix__N__ | <orig>)`. */
+static uint32_t nuq_outer_ix_counter = 0;
+
+static uint32_t
+fresh_outer_var(void)
+{
+    char buf[32];
+    int n = snprintf(buf, sizeof(buf), "__ix__%u__", nuq_outer_ix_counter++);
+    (void)n;
+    return nuq_intern(buf);
+}
+
+static struct Node *
+wrap_outer(uint32_t var_id, struct Node *e)
+{
+    if (!e) return NULL;
+    return ALLOC_node_pipe(ALLOC_node_var(var_id), e);
+}
+
+static struct Node *
+build_indexlike(struct Node *acc, struct Node *e1, struct Node *e2,
+                bool has_colon, uint32_t flags)
+{
+    if (!e1 && !e2) {
+        /* `[]` — iter, no args; just chain. */
+        if (has_colon) {
+            return ALLOC_node_pipe(acc, ALLOC_node_slice(NULL, NULL, flags));
+        }
+        return ALLOC_node_pipe(acc, ALLOC_node_iter());
+    }
+    /* Bind `.` (current-stage input) to a fresh var, then evaluate the
+     * inner indexer with args qualified by that var. */
+    uint32_t v = fresh_outer_var();
+    struct Node *ww1 = wrap_outer(v, e1);
+    struct Node *ww2 = wrap_outer(v, e2);
+    struct Node *inner = has_colon
+        ? ALLOC_node_slice(ww1, ww2, flags)
+        : ALLOC_node_index(ww1);
+    return ALLOC_node_as(ALLOC_node_identity(), v,
+                         ALLOC_node_pipe(acc, inner));
+}
+
 static struct Node *
 parse_postfix(lexer_t *L)
 {
@@ -1065,10 +1138,10 @@ parse_postfix(lexer_t *L)
                         uint32_t flags = 0;
                         if (e1) flags |= SLICE_HAS_START;
                         if (e2) flags |= SLICE_HAS_STOP;
-                        acc = ALLOC_node_pipe(acc, ALLOC_node_slice(e1, e2, flags));
+                        acc = build_indexlike(acc, e1, e2, true, flags);
                     } else {
                         expect(L, TK_RBRK, "']'");
-                        acc = ALLOC_node_pipe(acc, ALLOC_node_index(e1));
+                        acc = build_indexlike(acc, e1, NULL, false, 0);
                     }
                 }
             } else parse_error(L, "expected ident or '[' after '.'");
@@ -1085,10 +1158,10 @@ parse_postfix(lexer_t *L)
                     uint32_t flags = 0;
                     if (e1) flags |= SLICE_HAS_START;
                     if (e2) flags |= SLICE_HAS_STOP;
-                    acc = ALLOC_node_pipe(acc, ALLOC_node_slice(e1, e2, flags));
+                    acc = build_indexlike(acc, e1, e2, true, flags);
                 } else {
                     expect(L, TK_RBRK, "']'");
-                    acc = ALLOC_node_pipe(acc, ALLOC_node_index(e1));
+                    acc = build_indexlike(acc, e1, NULL, false, 0);
                 }
             }
         } else if (t->type == TK_QUEST) {

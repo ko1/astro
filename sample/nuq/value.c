@@ -507,17 +507,27 @@ nuq_value_descr(VALUE v, char *dst, size_t n)
     FILE *fp = open_memstream(&json_buf, &jl);
     nuq_json_print(fp, v, 0);
     fclose(fp);
-    /* Truncate the json rendering to keep the message short (jq uses ~14). */
-    const size_t lim = 14;
-    char buf[64];
-    if (jl <= lim) {
-        memcpy(buf, json_buf, jl);
-        buf[jl] = 0;
+    /* Truncate the json rendering to keep the message short.  jq cuts
+     * after ~24 bytes of CONTENT (string body / number digits) and
+     * walks back to a UTF-8 codepoint boundary so multi-byte chars
+     * don't break the output.  Strings up to 26 content bytes are
+     * shown whole (jq picks a fit-threshold a bit larger than the
+     * cut to avoid trivial truncations). */
+    bool is_string = (jl > 0 && json_buf[0] == '"');
+    const size_t fit_lim = is_string ? 28 : 26;
+    const size_t trunc_lim = is_string ? 25 : 24;
+    char buf[80];
+    if (jl <= fit_lim) {
+        size_t copy = jl < sizeof(buf) - 1 ? jl : sizeof(buf) - 1;
+        memcpy(buf, json_buf, copy);
+        buf[copy] = 0;
     } else {
-        memcpy(buf, json_buf, lim);
-        memcpy(buf + lim, "...", 3);
-        if (json_buf[0] == '"') { buf[lim + 3] = '"'; buf[lim + 4] = 0; }
-        else buf[lim + 3] = 0;
+        size_t cut = trunc_lim;
+        while (cut > 0 && (((unsigned char)json_buf[cut]) & 0xC0) == 0x80) cut--;
+        memcpy(buf, json_buf, cut);
+        memcpy(buf + cut, "...", 3);
+        if (is_string) { buf[cut + 3] = '"'; buf[cut + 4] = 0; }
+        else buf[cut + 3] = 0;
     }
     free(json_buf);
     int w = snprintf(dst, n, "%s (%s)", tn, buf);
@@ -751,7 +761,12 @@ nuq_op_add_slow(VALUE a, VALUE b)
         for (size_t i = 0; i < ob->obj.len; i++) nuq_object_set(r, ob->obj.keys[i], ob->obj.vals[i]);
         return r;
     }
-    nuq_helper_error("cannot add %s and %s", nuq_type_name(a), nuq_type_name(b));
+    {
+        char da[80], db[80];
+        nuq_value_descr(a, da, sizeof(da));
+        nuq_value_descr(b, db, sizeof(db));
+        nuq_helper_error("%s and %s cannot be added", da, db);
+    }
     return NUQ_NULL;
 }
 
@@ -775,7 +790,12 @@ nuq_op_sub_slow(VALUE a, VALUE b)
         }
         return r;
     }
-    nuq_helper_error("cannot subtract %s from %s", nuq_type_name(b), nuq_type_name(a));
+    {
+        char da[80], db[80];
+        nuq_value_descr(a, da, sizeof(da));
+        nuq_value_descr(b, db, sizeof(db));
+        nuq_helper_error("%s and %s cannot be subtracted", da, db);
+    }
     return NUQ_NULL;
 }
 
@@ -813,7 +833,12 @@ nuq_op_mul_slow(VALUE a, VALUE b)
         buf[L] = '\0';
         return nuq_make_string_take(buf, L);
     }
-    nuq_helper_error("cannot multiply %s and %s", nuq_type_name(a), nuq_type_name(b));
+    {
+        char da[80], db[80];
+        nuq_value_descr(a, da, sizeof(da));
+        nuq_value_descr(b, db, sizeof(db));
+        nuq_helper_error("%s and %s cannot be multiplied", da, db);
+    }
     return NUQ_NULL;
 }
 
@@ -850,7 +875,12 @@ nuq_op_div_slow(VALUE a, VALUE b)
         }
         return nuq_make_double(to_double_v(a) / db);
     }
-    nuq_helper_error("cannot divide %s by %s", nuq_type_name(a), nuq_type_name(b));
+    {
+        char da[80], db[80];
+        nuq_value_descr(a, da, sizeof(da));
+        nuq_value_descr(b, db, sizeof(db));
+        nuq_helper_error("%s and %s cannot be divided", da, db);
+    }
     return NUQ_NULL;
 }
 
@@ -863,8 +893,19 @@ nuq_op_mod_slow(VALUE a, VALUE b)
         return nuq_make_int(NUQ_FIX_VAL(a) % lb);
     }
     if (both_numeric(a, b)) {
-        int64_t ia = (int64_t)to_double_v(a);
-        int64_t ib = (int64_t)to_double_v(b);
+        double da = to_double_v(a);
+        double db = to_double_v(b);
+        /* jq mod truncates operands to int64.  Special cases:
+         *   - nan % x or x % nan → nan  (jq returns nan)
+         *   - inf % inf → -1 (cast UB lookalike that jq emits)
+         *   - inf % finite → 0 */
+        if (isnan(da) || isnan(db)) return nuq_make_double(NAN);
+        if (!isfinite(da) || !isfinite(db)) {
+            if (!isfinite(da) && !isfinite(db)) return nuq_make_int(-1);
+            return nuq_make_int(0);
+        }
+        int64_t ia = (int64_t)da;
+        int64_t ib = (int64_t)db;
         if (ib == 0) { nuq_helper_error(""); return NUQ_NULL; }
         return nuq_make_int(ia % ib);
     }

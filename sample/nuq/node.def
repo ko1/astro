@@ -1787,8 +1787,17 @@ node_b_mktime(CTX *c, NODE *n)
     }
     struct nuq_obj *o = NUQ_PTR(c->input);
     if (o->arr.len < 6) {
-        c->error = nuq_make_string("mktime: array too short", 23);
+        c->error = nuq_make_string("mktime requires parsed datetime inputs", 38);
         return EMIT_EMPTY;
+    }
+    /* Validate every element is numeric — jq emits "mktime requires
+     * parsed datetime inputs" for non-numeric components. */
+    for (size_t i = 0; i < 6 && i < o->arr.len; i++) {
+        VALUE e = o->arr.items[i];
+        if (!(NUQ_IS_FIX(e) || (NUQ_IS_PTR(e) && NUQ_PTR(e)->type == NUQ_T_DOUBLE))) {
+            c->error = nuq_make_string("mktime requires parsed datetime inputs", 38);
+            return EMIT_EMPTY;
+        }
     }
     struct tm tm = {0};
     tm.tm_year = (int)NUQ_FIX_VAL(o->arr.items[0]) - 1900;
@@ -1832,17 +1841,28 @@ node_b_strftime(CTX *c, NODE *n, NODE *fmt_n)
 
     struct nuq_obj *o = NUQ_PTR(c->input);
     struct tm tm = {0};
+    /* Validate: every element must be numeric (jq's "broken down time"
+     * is an array of ints).  Reject string-in-position cases. */
+    for (size_t i = 0; i < o->arr.len; i++) {
+        VALUE e = o->arr.items[i];
+        if (!(NUQ_IS_FIX(e) || (NUQ_IS_PTR(e) && NUQ_PTR(e)->type == NUQ_T_DOUBLE))) {
+            c->error = nuq_make_string("strftime/1 requires parsed datetime inputs", 42);
+            return EMIT_EMPTY;
+        }
+    }
+    if (o->arr.len >= 1) tm.tm_year = (int)NUQ_FIX_VAL(o->arr.items[0]) - 1900;
+    if (o->arr.len >= 2) tm.tm_mon  = (int)NUQ_FIX_VAL(o->arr.items[1]);
+    if (o->arr.len >= 3) tm.tm_mday = (int)NUQ_FIX_VAL(o->arr.items[2]);
+    if (o->arr.len >= 4) tm.tm_hour = (int)NUQ_FIX_VAL(o->arr.items[3]);
+    if (o->arr.len >= 5) tm.tm_min  = (int)NUQ_FIX_VAL(o->arr.items[4]);
     if (o->arr.len >= 6) {
-        tm.tm_year = (int)NUQ_FIX_VAL(o->arr.items[0]) - 1900;
-        tm.tm_mon  = (int)NUQ_FIX_VAL(o->arr.items[1]);
-        tm.tm_mday = (int)NUQ_FIX_VAL(o->arr.items[2]);
-        tm.tm_hour = (int)NUQ_FIX_VAL(o->arr.items[3]);
-        tm.tm_min  = (int)NUQ_FIX_VAL(o->arr.items[4]);
         VALUE sec = o->arr.items[5];
         tm.tm_sec = (int)(NUQ_IS_FIX(sec) ? NUQ_FIX_VAL(sec) : NUQ_PTR(sec)->dbl);
     }
     if (o->arr.len >= 7) tm.tm_wday = (int)NUQ_FIX_VAL(o->arr.items[6]);
     if (o->arr.len >= 8) tm.tm_yday = (int)NUQ_FIX_VAL(o->arr.items[7]);
+    /* If only Y/M/D supplied, jq normalizes via mktime — we don't, but
+     * for strftime that's fine: the format string controls output. */
     char out[1024];
     size_t n_out = strftime(out, sizeof(out), fmt_buf, &tm);
     return nuq_emit_one(c, nuq_make_string(out, n_out));
@@ -2401,6 +2421,33 @@ NODE_DEF
 node_b_max_by(CTX *c, NODE *n, NODE *body)
 {
     return nuq_max_by_eval(c, body);
+}
+
+NODE_DEF
+node_b_strindices(CTX *c, NODE *n, NODE *pat)
+{
+    /* jq's private `_strindices/1`: input must be string, pat must be string. */
+    if (!(NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_STRING)) {
+        char d[80], msg[160];
+        nuq_value_descr(c->input, d, sizeof(d));
+        int w = snprintf(msg, sizeof(msg), "%s cannot be searched, as it is not a string", d);
+        c->error = nuq_make_string(msg, (size_t)w);
+        return EMIT_EMPTY;
+    }
+    size_t outer = c->pool_top;
+    EMIT pe = EVAL(c, pat);
+    if (c->error != NUQ_NULL) return EMIT_EMPTY;
+    if (pe.count == 0) { c->pool_top = outer; return EMIT_EMPTY; }
+    VALUE p = pe.items[0];
+    c->pool_top = outer;
+    if (!(NUQ_IS_PTR(p) && NUQ_PTR(p)->type == NUQ_T_STRING)) {
+        char d[80], msg[160];
+        nuq_value_descr(p, d, sizeof(d));
+        int w = snprintf(msg, sizeof(msg), "%s is not a string", d);
+        c->error = nuq_make_string(msg, (size_t)w);
+        return EMIT_EMPTY;
+    }
+    return nuq_indices_eval(c, pat);
 }
 
 NODE_DEF
