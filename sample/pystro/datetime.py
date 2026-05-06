@@ -59,6 +59,50 @@ class timedelta:
     def __neg__(self):
         return timedelta(days=-self.days, seconds=-self.seconds,
                          microseconds=-self.microseconds)
+    def __mul__(self, n):
+        if not isinstance(n, int):
+            if isinstance(n, float):
+                total_us = (self.days * 86_400_000_000 +
+                            self.seconds * 1_000_000 +
+                            self.microseconds)
+                scaled = int(total_us * n)
+                return timedelta(microseconds=scaled)
+            return NotImplemented
+        return timedelta(days=self.days * n, seconds=self.seconds * n,
+                         microseconds=self.microseconds * n)
+    def __rmul__(self, n):
+        return self.__mul__(n)
+    def __floordiv__(self, n):
+        if isinstance(n, int):
+            total_us = (self.days * 86_400_000_000 +
+                        self.seconds * 1_000_000 + self.microseconds)
+            return timedelta(microseconds=total_us // n)
+        if isinstance(n, timedelta):
+            a = (self.days * 86_400_000_000 +
+                 self.seconds * 1_000_000 + self.microseconds)
+            b = (n.days * 86_400_000_000 +
+                 n.seconds * 1_000_000 + n.microseconds)
+            return a // b
+        return NotImplemented
+    def __truediv__(self, n):
+        if isinstance(n, (int, float)):
+            total_us = (self.days * 86_400_000_000 +
+                        self.seconds * 1_000_000 + self.microseconds)
+            return timedelta(microseconds=int(total_us / n))
+        if isinstance(n, timedelta):
+            a = (self.days * 86_400_000_000 +
+                 self.seconds * 1_000_000 + self.microseconds)
+            b = (n.days * 86_400_000_000 +
+                 n.seconds * 1_000_000 + n.microseconds)
+            return a / b
+        return NotImplemented
+    def __abs__(self):
+        if self.days < 0: return -self
+        return self
+    def __bool__(self):
+        return self.days != 0 or self.seconds != 0 or self.microseconds != 0
+    def __hash__(self):
+        return self.days * 1000000 + self.seconds + self.microseconds
     def __eq__(self, other):
         if not isinstance(other, timedelta): return False
         return (self.days == other.days and self.seconds == other.seconds
@@ -125,6 +169,33 @@ class date:
             d += _month_days(self.year, m)
         d += self.day
         return d
+    @staticmethod
+    def _from_ordinal(o):
+        # Approximate inverse of _ord_days.
+        y = 1
+        while True:
+            yd = 366 if _is_leap(y) else 365
+            if o <= yd: break
+            o -= yd; y += 1
+        m = 1
+        while m <= 12:
+            md = _month_days(y, m)
+            if o <= md: break
+            o -= md; m += 1
+        return date(y, m, o)
+    def __add__(self, other):
+        if isinstance(other, timedelta):
+            o = self._ord_days() + other.days
+            return self._from_ordinal(o)
+        return NotImplemented
+    def __sub__(self, other):
+        if isinstance(other, timedelta):
+            return self.__add__(timedelta(-other.days))
+        if isinstance(other, date):
+            return timedelta(days=self._ord_days() - other._ord_days())
+        return NotImplemented
+    def __hash__(self):
+        return self.year * 10000 + self.month * 100 + self.day
 
 
 class datetime(date):
@@ -187,6 +258,8 @@ class time:
         return h + ":" + m + ":" + s
     def __repr__(self):
         return "datetime.time(" + str(self.hour) + ", " + str(self.minute) + ", " + str(self.second) + ")"
+    def __str__(self):
+        return self.isoformat()
 
 
 # Singleton timezone (UTC only — pystro doesn't have a tz database).

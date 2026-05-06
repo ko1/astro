@@ -1,0 +1,13 @@
+ok DateArithTest test_add_timedelta
+ok DateArithTest test_cross_month
+ok DateArithTest test_cross_year
+ok DateArithTest test_date_diff
+ok DateArithTest test_iso
+ok DateArithTest test_leap_feb
+ok DateArithTest test_sub_timedelta
+ok DateArithTest test_time_str
+ok DateArithTest test_weekday
+ok TimedeltaArithTest test_mul_int
+ok TimedeltaArithTest test_sub
+---
+passed=11 failed=0
