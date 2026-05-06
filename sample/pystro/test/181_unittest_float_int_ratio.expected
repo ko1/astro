@@ -1,0 +1,9 @@
+ok FloatRatioTest test_half
+ok FloatRatioTest test_inf_raises
+ok FloatRatioTest test_int_value
+ok FloatRatioTest test_nan_raises
+ok FloatRatioTest test_zero
+ok IntBitTest test_bit_count
+ok IntBitTest test_bit_length
+---
+passed=7 failed=0

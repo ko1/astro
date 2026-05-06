@@ -7412,8 +7412,13 @@ fm_as_integer_ratio(CTX *c, int argc, VALUE *argv)
 {
     (void)argc;
     double d = py_to_double(c, argv[0]);
-    if (d != d || d == d * 0.5)  // NaN or +/-inf (inf == inf*0.5)
-        py_raise_exc(c, c->EXC_OverflowError, "cannot convert non-finite to ratio");
+    if (d != d) py_raise_exc(c, c->EXC_ValueError, "cannot convert NaN to ratio");
+    if (d != 0.0 && d == d * 0.5)
+        py_raise_exc(c, c->EXC_OverflowError, "cannot convert Infinity to ratio");
+    if (d == 0.0) {
+        VALUE pair[2] = { PY_FIX(0), PY_FIX(1) };
+        return py_make_tuple(pair, 2);
+    }
     int exp;
     double m = frexp(d, &exp);  // d = m * 2^exp, m in [0.5, 1)
     // Make m an integer: shift mantissa by 53 bits.
