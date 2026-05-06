@@ -6,7 +6,7 @@
 
 ## 残課題 (現在)
 
-R11–R16 で深掘り (test 78–162 追加, **163 unit tests passing**)。 [done.md](./done.md) に詳細。
+R11–R16 で深掘り (test 78–164 追加, **165 unit tests passing**)。 [done.md](./done.md) に詳細。
 
 ### 残存する仕様上の差分 (低優先)
 
@@ -17,9 +17,10 @@ R11–R16 で深掘り (test 78–162 追加, **163 unit tests passing**)。 [do
 - `\U` 8-digit エスケープ未対応。`chr(>0xFF)` で multi-byte 不可。
 - `①`.isnumeric() 等の Unicode 系判定が False を返す。
 
-#### S-17. metaclass による class iteration
-- `for m in EnumClass:` が動かない (class object に `__iter__` を作る metaclass パスなし)。
-- workaround: `EnumClass._members_` を使う。
+#### S-17. metaclass による class iteration ✅ (R16)
+- `len(EnumClass)` / `for m in EnumClass:` / `member in EnumClass`
+  動作。py_seq_len / py_iter_init / py_contains が `__metaclass__` 経由
+  で `__len__` / `__iter__` / `__contains__` を呼ぶ。
 
 #### S-18. genexp が eager
 - `(x for x in xs)` は list を返す (本来は generator)。
