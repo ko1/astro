@@ -1921,7 +1921,13 @@ parse_suite(void)
         expect(T_DEDENT, "dedent");
         return seq_of(stmts, n);
     }
+    // Inline suite: simple_stmt (';' simple_stmt)* NEWLINE
     NODE *s = parse_simple_stmt();
+    while (match_tok(T_SEMI)) {
+        if (peek_tok(0)->kind == T_NEWLINE) break;
+        NODE *more = parse_simple_stmt();
+        s = ALLOC_node_seq(s, more);
+    }
     expect(T_NEWLINE, "newline");
     return s;
 }
@@ -2204,6 +2210,10 @@ parse_def(void)
         body = seq_of(stmts, n);
     } else {
         body = parse_simple_stmt();
+        while (match_tok(T_SEMI)) {
+            if (peek_tok(0)->kind == T_NEWLINE) break;
+            body = ALLOC_node_seq(body, parse_simple_stmt());
+        }
         expect(T_NEWLINE, "newline");
     }
     in_class_body = saved_icb;

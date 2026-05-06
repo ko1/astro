@@ -1,0 +1,4 @@
+ok InlineSuiteTest test_inline_def
+ok InlineSuiteTest test_inline_method
+---
+passed=2 failed=0
