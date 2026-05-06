@@ -49,6 +49,10 @@ def _build_dataclass(cls, fields):
                 else:
                     setattr(self, fn, d)
             # else: leave unset
+        # Call __post_init__ if defined.
+        post = getattr(self, "__post_init__", None)
+        if post is not None and post is not _init:
+            post()
 
     def _repr(self):
         parts = []
@@ -83,17 +87,33 @@ def dataclass(cls=None, **kwargs):
         def _wrap(c):
             return dataclass(c)
         return _wrap
+    # Walk MRO to collect inherited fields first; own annotations append/override.
+    inherited = []
+    try:
+        mro = cls.__mro__
+    except AttributeError:
+        mro = [cls]
+    for base in reversed(mro[1:]):  # walk from object up to direct parent
+        bf = getattr(base, "_fields", None)
+        if bf:
+            for f in bf:
+                if f not in inherited: inherited.append(f)
     # Look for `_fields` class attribute giving the explicit order.
-    fields = getattr(cls, "_fields", None)
+    # Use OWN _fields only — inherited ones are already in `inherited`.
+    own_dict = getattr(cls, "__dict__", {})
+    fields = own_dict.get("_fields") if hasattr(own_dict, "get") else None
     if fields is None:
         # Auto-detect: walk dir(cls) for non-method attributes.
         # First try __annotations__ if present.
         anns = getattr(cls, "__annotations__", None)
         if anns:
-            fields = list(anns.keys()) if hasattr(anns, "keys") else list(anns)
+            own = list(anns.keys()) if hasattr(anns, "keys") else list(anns)
+            fields = list(inherited)
+            for f in own:
+                if f not in fields: fields.append(f)
         else:
+            fields = list(inherited)
             # Fall back: inspect class-level non-callable, non-dunder attrs.
-            fields = []
             for name in dir(cls):
                 if _is_dunder(name): continue
                 if name.startswith("_"): continue

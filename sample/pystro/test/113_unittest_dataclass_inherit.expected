@@ -1,0 +1,5 @@
+ok DataclassInheritTest test_basic
+ok DataclassInheritTest test_default_in_inherited
+ok DataclassInheritTest test_post_init
+---
+passed=3 failed=0
