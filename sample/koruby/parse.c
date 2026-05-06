@@ -2960,13 +2960,13 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
           /* Compile-time string for syntactically obvious cases. */
           switch (PM_NODE_TYPE(expr)) {
             case PM_SELF_NODE:
-              return ALLOC_node_str_lit("self", 4);
+              return ALLOC_node_frozen_str_lit("self", 4);
             case PM_NIL_NODE:
-              return ALLOC_node_str_lit("nil", 3);
+              return ALLOC_node_frozen_str_lit("nil", 3);
             case PM_TRUE_NODE:
-              return ALLOC_node_str_lit("true", 4);
+              return ALLOC_node_frozen_str_lit("true", 4);
             case PM_FALSE_NODE:
-              return ALLOC_node_str_lit("false", 5);
+              return ALLOC_node_frozen_str_lit("false", 5);
             /* Any assignment form returns "assignment". */
             case PM_LOCAL_VARIABLE_WRITE_NODE:
             case PM_LOCAL_VARIABLE_OPERATOR_WRITE_NODE:
@@ -2999,7 +2999,7 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
             case PM_CALL_AND_WRITE_NODE:
             case PM_CALL_OR_WRITE_NODE:
             case PM_MULTI_WRITE_NODE:
-              return ALLOC_node_str_lit("assignment", 10);
+              return ALLOC_node_frozen_str_lit("assignment", 10);
             case PM_YIELD_NODE:
               /* "yield" if a block is currently passed to the enclosing
                * method.  Wrap a runtime check via Kernel#block_given?. */
@@ -3009,20 +3009,20 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                   struct method_cache *mc = alloc_method_cache();
                   NODE *check = ALLOC_node_func_call(korb_intern("block_given?"), 0, ai, mc);
                   return ALLOC_node_if(check,
-                                       ALLOC_node_str_lit("yield", 5),
+                                       ALLOC_node_frozen_str_lit("yield", 5),
                                        ALLOC_node_nil());
               }
             case PM_SUPER_NODE:
             case PM_FORWARDING_SUPER_NODE:
               /* "super" — for now always return "super" (proper impl
                * would walk the class chain to verify a super exists). */
-              return ALLOC_node_str_lit("super", 5);
+              return ALLOC_node_frozen_str_lit("super", 5);
             case PM_INTEGER_NODE: case PM_FLOAT_NODE: case PM_STRING_NODE:
             case PM_SYMBOL_NODE: case PM_ARRAY_NODE: case PM_HASH_NODE:
-              return ALLOC_node_str_lit("expression", 10);
+              return ALLOC_node_frozen_str_lit("expression", 10);
             case PM_LOCAL_VARIABLE_READ_NODE:
               /* lvars are scope-resolved at parse time; always defined. */
-              return ALLOC_node_str_lit("local-variable", 14);
+              return ALLOC_node_frozen_str_lit("local-variable", 14);
             case PM_INSTANCE_VARIABLE_READ_NODE: {
               /* "instance-variable" only if @x is set on self. */
               pm_instance_variable_read_node_t *iv = (pm_instance_variable_read_node_t *)expr;
@@ -3036,7 +3036,7 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                   ALLOC_node_method_call(self_node, korb_intern("instance_variable_defined?"),
                                          1, ai, mc));
               return ALLOC_node_if(defined_p,
-                                   ALLOC_node_str_lit("instance-variable", 17),
+                                   ALLOC_node_frozen_str_lit("instance-variable", 17),
                                    ALLOC_node_nil());
             }
             case PM_GLOBAL_VARIABLE_READ_NODE: {
@@ -3045,7 +3045,7 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
               /* CRuby: defined?($x) returns "global-variable" iff the
                * gvar was ever assigned (even to nil), else nil. */
               return ALLOC_node_if(ALLOC_node_gvar_defined_p(gname),
-                                   ALLOC_node_str_lit("global-variable", 15),
+                                   ALLOC_node_frozen_str_lit("global-variable", 15),
                                    ALLOC_node_nil());
             }
             case PM_CONSTANT_READ_NODE: {
@@ -3062,7 +3062,7 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
               NODE *defined_p = ALLOC_node_seq(seq,
                   ALLOC_node_method_call(recv, korb_intern("const_defined?"), 1, ai, mc));
               return ALLOC_node_if(defined_p,
-                                   ALLOC_node_str_lit("constant", 8),
+                                   ALLOC_node_frozen_str_lit("constant", 8),
                                    ALLOC_node_nil());
             }
             case PM_CALL_NODE: {
@@ -3081,7 +3081,7 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                     case PM_ARRAY_NODE:   case PM_HASH_NODE:
                     case PM_TRUE_NODE:    case PM_FALSE_NODE:
                     case PM_NIL_NODE:
-                      return ALLOC_node_str_lit("expression", 10);
+                      return ALLOC_node_frozen_str_lit("expression", 10);
                     default: break;
                   }
               }
@@ -3094,7 +3094,7 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                   ALLOC_node_method_call(recv_node, korb_intern("respond_to?"),
                                           1, ai, mc));
               return ALLOC_node_if(check,
-                                    ALLOC_node_str_lit("method", 6),
+                                    ALLOC_node_frozen_str_lit("method", 6),
                                     ALLOC_node_nil());
             }
             case PM_CONSTANT_PATH_NODE: {
@@ -3109,11 +3109,11 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
               uint32_t ai = inc_arg_index(tc);
               rewind_arg_index(tc, ai);
               NODE *rescue_body = ALLOC_node_nil();
-              NODE *body = ALLOC_node_seq(path, ALLOC_node_str_lit("constant", 8));
+              NODE *body = ALLOC_node_seq(path, ALLOC_node_frozen_str_lit("constant", 8));
               return ALLOC_node_rescue(body, rescue_body, ai);
             }
             default:
-              return ALLOC_node_str_lit("expression", 10);
+              return ALLOC_node_frozen_str_lit("expression", 10);
           }
       }
 
