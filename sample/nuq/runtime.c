@@ -505,7 +505,22 @@ nuq_slice_eval(CTX *c, struct Node *startn, struct Node *stopn, uint32_t flags, 
     if (NUQ_IS_PTR(in) && NUQ_PTR(in)->type == NUQ_T_NULL)
         return nuq_emit_one(c, NUQ_NULL);
     if (NUQ_IS_PTR(in) && NUQ_PTR(in)->type == NUQ_T_ARRAY) length = (int64_t)NUQ_PTR(in)->arr.len;
-    else if (NUQ_IS_PTR(in) && NUQ_PTR(in)->type == NUQ_T_STRING) { length = (int64_t)NUQ_PTR(in)->str.len; is_str = true; }
+    else if (NUQ_IS_PTR(in) && NUQ_PTR(in)->type == NUQ_T_STRING) {
+        /* String slice indices are codepoint offsets, not byte offsets. */
+        struct nuq_obj *o = NUQ_PTR(in);
+        int64_t cp = 0;
+        for (size_t i = 0; i < o->str.len; ) {
+            unsigned char x = (unsigned char)o->str.bytes[i];
+            if (x < 0x80) i += 1;
+            else if ((x & 0xE0) == 0xC0) i += 2;
+            else if ((x & 0xF0) == 0xE0) i += 3;
+            else if ((x & 0xF8) == 0xF0) i += 4;
+            else i += 1;
+            cp++;
+        }
+        length = cp;
+        is_str = true;
+    }
     else {
         if (optional) return EMIT_EMPTY;
         return err_emit(c, "type error: cannot slice");
@@ -547,8 +562,25 @@ nuq_slice_eval(CTX *c, struct Node *startn, struct Node *stopn, uint32_t flags, 
     if (stop  < start) stop = start;
 
     if (is_str) {
+        /* Convert codepoint indices to byte offsets. */
         struct nuq_obj *o = NUQ_PTR(in);
-        return nuq_emit_one(c, nuq_make_string(o->str.bytes + start, (size_t)(stop - start)));
+        size_t bs = 0, be = o->str.len;
+        int64_t cp = 0;
+        for (size_t i = 0; i < o->str.len; ) {
+            if (cp == start) bs = i;
+            if (cp == stop)  { be = i; break; }
+            unsigned char x = (unsigned char)o->str.bytes[i];
+            if (x < 0x80) i += 1;
+            else if ((x & 0xE0) == 0xC0) i += 2;
+            else if ((x & 0xF0) == 0xE0) i += 3;
+            else if ((x & 0xF8) == 0xF0) i += 4;
+            else i += 1;
+            cp++;
+            if (cp == stop) { be = i; break; }
+        }
+        if (start >= length) bs = o->str.len;
+        if (stop  >= length) be = o->str.len;
+        return nuq_emit_one(c, nuq_make_string(o->str.bytes + bs, be - bs));
     }
     struct nuq_obj *o = NUQ_PTR(in);
     VALUE arr = nuq_make_array((size_t)(stop - start));
