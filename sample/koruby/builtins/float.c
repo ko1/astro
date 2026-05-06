@@ -272,6 +272,9 @@ static VALUE flt_to_f(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE flt_uminus(CTX *c, VALUE self, int argc, VALUE *argv) {
     return korb_float_new(-korb_num2dbl(self));
 }
+static VALUE flt_uplus(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return self;
+}
 static VALUE flt_abs(CTX *c, VALUE self, int argc, VALUE *argv) {
     double v = korb_num2dbl(self);
     return korb_float_new(v < 0 ? -v : v);

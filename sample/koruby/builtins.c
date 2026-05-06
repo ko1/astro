@@ -133,6 +133,7 @@ void korb_init_builtins(void) {
     DEF(cInt, "==", int_eq, 1);
     DEF(cInt, "<=>", int_cmp, 1);
     DEF(cInt, "-@", int_uminus, 0);
+    DEF(cInt, "+@", int_uplus,  0);
     DEF(cInt, "to_s", int_to_s, -1);
     DEF(cInt, "to_i", int_to_i, 0);
     DEF(cInt, "to_f", int_to_f, 0);
@@ -386,6 +387,7 @@ void korb_init_builtins(void) {
     DEF(cFlt, "to_i",  flt_to_i, 0);
     DEF(cFlt, "to_f",  flt_to_f, 0);
     DEF(cFlt, "-@",    flt_uminus, 0);
+    DEF(cFlt, "+@",    flt_uplus, 0);
     DEF(cFlt, "abs",   flt_abs, 0);
     DEF(cFlt, "magnitude", flt_abs, 0);
     DEF(cFlt, "ceil",     flt_ceil,    -1);

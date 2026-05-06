@@ -215,6 +215,9 @@ static VALUE int_cmp(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE int_uminus(CTX *c, VALUE self, int argc, VALUE *argv) {
     return korb_int_minus(INT2FIX(0), self);
 }
+static VALUE int_uplus(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return self;
+}
 static VALUE int_format(CTX *c, VALUE self, int argc, VALUE *argv);
 static VALUE int_to_s(CTX *c, VALUE self, int argc, VALUE *argv) {
     return int_format(c, self, argc, argv);

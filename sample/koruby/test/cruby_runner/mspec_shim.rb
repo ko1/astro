@@ -52,6 +52,12 @@ def context(name, *opts, &blk); describe(name, *opts, &blk); end
 # so things like `before :each { @x = ... }` set up state.
 def it(name, *_opts, &blk)
   $ms_current = "#{$ms_describe} #{name}"
+  # `it "name"` (no body) is pending in mspec — count as skip rather
+  # than calling a nil block.
+  unless blk
+    $ms_skip += 1
+    return
+  end
   begin
     if $ms_before_each
       $ms_before_each.each do |h|
