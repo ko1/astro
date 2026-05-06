@@ -72,6 +72,32 @@ class _Signature:
         self.fn = fn
         self.parameters = {}
         self.return_annotation = None
+        # Build best-effort parameter list from __defaults__ /
+        # __kwdefaults__.  Names are not directly exposed, so we use
+        # numeric placeholders ("arg0", "arg1", ...) when unknown.
+        kw = {}
+        try:
+            kw = fn.__kwdefaults__ or {}
+        except (AttributeError, TypeError):
+            kw = {}
+        self._kw = kw
+        defaults = ()
+        try:
+            defaults = fn.__defaults__ or ()
+        except (AttributeError, TypeError):
+            defaults = ()
+        self._defaults = defaults
+    def __str__(self):
+        # Render '(a, b=2, *, c=3)' style.  Names not introspectable, so
+        # we omit names for positional and just show defaults.
+        parts = []
+        for i, d in enumerate(self._defaults):
+            parts.append("arg" + str(i) + "=" + repr(d))
+        for k, v in self._kw.items():
+            parts.append(str(k) + "=" + repr(v))
+        return "(" + ", ".join(parts) + ")"
+    def __repr__(self):
+        return "<Signature " + str(self) + ">"
 
 
 def getsource(o):

@@ -1,0 +1,9 @@
+ok CompScopeTest test_comp_doesnt_clobber_outer
+ok CompScopeTest test_dictcomp_doesnt_leak
+ok CompScopeTest test_lambda_default_capture_in_comp
+ok CompScopeTest test_listcomp_doesnt_leak
+ok CompScopeTest test_nested_comp
+ok CompScopeTest test_setcomp_doesnt_leak
+ok CompScopeTest test_walrus_in_comp_still_leaks
+---
+passed=7 failed=0

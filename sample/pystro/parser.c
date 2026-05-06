@@ -222,6 +222,44 @@ typedef struct Scope {
 
 static Scope *cur_scope;
 
+// Name remap stack used by list/set/dict/genexp comprehensions to give
+// loop targets their own (synthetic) slots, so they don't leak into the
+// enclosing scope.  Pushed by prescan_comp_targets, popped after the
+// comprehension finishes parsing.  Make_load / make_store consult this
+// before resolving names, so references to the loop target inside the
+// comprehension body resolve to the synthetic local.
+typedef struct CompRemap {
+    const char *orig;        // user-visible name
+    const char *synth;       // mangled local name
+    Scope      *scope;       // scope at which the remap was pushed
+} CompRemap;
+static CompRemap comp_remap_stack[64];
+static int comp_remap_top = 0;
+static int comp_remap_uid = 0;
+
+static const char *
+comp_remap_lookup(const char *name)
+{
+    // Only honour remaps whose scope matches the active one.  When a
+    // nested scope (lambda / def) is entered, its own locals take
+    // precedence and the comp's mangled name shouldn't bleed in.
+    for (int i = comp_remap_top - 1; i >= 0; i--) {
+        if (comp_remap_stack[i].scope != cur_scope) continue;
+        if (comp_remap_stack[i].orig == name) return comp_remap_stack[i].synth;
+    }
+    return NULL;
+}
+
+// Resolve `name` through the active comp remap stack — caller uses the
+// returned name when adding/looking up locals.  If no remap, returns
+// `name` unchanged.
+static const char *
+comp_resolve(const char *name)
+{
+    const char *m = comp_remap_lookup(name);
+    return m ? m : name;
+}
+
 // True while parsing the body of a `class C:` suite.  When set, a
 // nested `def` is added to the class via node_def's side effect and
 // the parser MUST NOT additionally bind the name (which would shadow
@@ -392,8 +430,11 @@ collect_locals_in_range(Scope *s, size_t start_pos, size_t end_pos)
             scope_add_global_decl(s, t->sval);
             continue;
         }
-        if (t->kind == T_FOR && i + 1 < end_pos && tok_arr[i+1].kind == T_NAME) {
-            // for NAME in ...
+        if (t->kind == T_FOR && i + 1 < end_pos && tok_arr[i+1].kind == T_NAME
+            && paren_depth == 0) {
+            // for NAME in ... (top-level statement, NOT a comprehension's
+            // `for` clause inside [], (), or {} — those get their own
+            // synthetic comp-private slots via comp_remap).
             if (!scope_is_global_decl(s, tok_arr[i+1].sval) &&
                 !scope_is_nonlocal_decl(s, tok_arr[i+1].sval))
                 scope_add_local(s, tok_arr[i+1].sval);
@@ -592,6 +633,7 @@ seq_of(NODE **stmts, int n)
 static NODE *
 make_load(const char *name)
 {
+    name = comp_resolve(name);
     if (cur_scope && !scope_is_global_decl(cur_scope, name)) {
         int idx = scope_local_index(cur_scope, name);
         if (idx >= 0) return ALLOC_node_lref((uint32_t)idx);
@@ -621,6 +663,7 @@ make_store(const char *name, NODE *rhs)
     // Class body: bindings go to c->current_class.methods (which serves
     // as both the method table and the class attribute namespace).
     if (in_class_body) return ALLOC_node_class_method_set(name, rhs);
+    name = comp_resolve(name);
     if (cur_scope && !scope_is_global_decl(cur_scope, name)) {
         // `nonlocal` decl: write to an outer scope's existing slot.
         if (scope_is_nonlocal_decl(cur_scope, name)) {
@@ -824,6 +867,24 @@ static const char *new_temp_name(const char *prefix);
 static NODE *build_temp_init(const char *tmp, NODE *init_expr, NODE **out_load);
 static NODE *parse_comp_clauses(NODE *inner_body);
 
+// Helper: register a comp loop-target name with a synthetic local slot
+// AND push a (orig → synth) remap so make_load/make_store inside the
+// comp body resolves the user-visible name to the synthetic slot.
+// Returns the index pushed (so the caller can pop later).
+static int
+comp_remap_push(const char *orig)
+{
+    if (comp_remap_top >= 64) parse_error("too many nested comprehension targets");
+    char buf[64];
+    int u = comp_remap_uid++;
+    snprintf(buf, sizeof(buf), "__cmp$%d$%s", u, orig);
+    const char *synth = intern_name(buf, strlen(buf));
+    comp_remap_stack[comp_remap_top].orig = orig;
+    comp_remap_stack[comp_remap_top].synth = synth;
+    comp_remap_stack[comp_remap_top].scope = cur_scope;
+    return comp_remap_top++;
+}
+
 // Scan tokens for `for NAME[, NAME]*` clauses and walrus targets
 // (NAME `:=`) inside the current brace-balanced region, registering each
 // NAME as a local in cur_scope.  Used by comprehension/genexp parsers
@@ -843,11 +904,16 @@ prescan_comp_targets(int close_kind)
             depth--;
         } else if (depth == 0 && k == T_FOR) {
             tok_pos++;
-            // Collect NAME (NAME ',')* until 'in'.
+            // Collect NAME (NAME ',')* until 'in'.  Each loop-target
+            // gets a synthetic comp-private local so the original name
+            // doesn't leak into the enclosing scope.
             while (peek_tok(0)->kind == T_NAME) {
-                if (!scope_is_global_decl(cur_scope, peek_tok(0)->sval) &&
-                    !scope_is_nonlocal_decl(cur_scope, peek_tok(0)->sval))
-                    scope_add_local(cur_scope, peek_tok(0)->sval);
+                const char *orig = peek_tok(0)->sval;
+                if (!scope_is_global_decl(cur_scope, orig) &&
+                    !scope_is_nonlocal_decl(cur_scope, orig)) {
+                    comp_remap_push(orig);
+                    scope_add_local(cur_scope, comp_resolve(orig));
+                }
                 tok_pos++;
                 if (peek_tok(0)->kind == T_LPAREN) {
                     int sub = 1;
@@ -857,8 +923,11 @@ prescan_comp_targets(int close_kind)
                         if (kk == T_LPAREN) sub++;
                         else if (kk == T_RPAREN) sub--;
                         else if (kk == T_NAME && sub == 1) {
-                            if (!scope_is_global_decl(cur_scope, peek_tok(0)->sval))
-                                scope_add_local(cur_scope, peek_tok(0)->sval);
+                            const char *o2 = peek_tok(0)->sval;
+                            if (!scope_is_global_decl(cur_scope, o2)) {
+                                comp_remap_push(o2);
+                                scope_add_local(cur_scope, comp_resolve(o2));
+                            }
                         }
                         tok_pos++;
                     }
@@ -933,6 +1002,7 @@ parse_paren_or_tuple(void)
             return ALLOC_node_seq(result, call_tuple);
         }
     }
+    int saved_remap = comp_remap_top;
     prescan_comp_targets(T_RPAREN);
     NODE *first = parse_expr();
     // Generator expression: (expr for x in xs (if cond)*)+.  Desugar
@@ -946,8 +1016,10 @@ parse_paren_or_tuple(void)
         NODE *append = ALLOC_node_method_1(load_tmp, intern_name("append", 6), first);
         NODE *loops = parse_comp_clauses(append);
         expect(T_RPAREN, "')'");
+        comp_remap_top = saved_remap;
         return ALLOC_node_seq(init, ALLOC_node_seq(loops, load_tmp));
     }
+    comp_remap_top = saved_remap;
     if (match_tok(T_RPAREN)) return first;
     // tuple
     NODE *items[64];
@@ -1033,12 +1105,12 @@ parse_comp_clauses(NODE *inner_body)
     if (peek_tok(0)->kind != T_NAME) parse_error("expected target NAME in comprehension");
     const char *names[16];
     int nnames = 0;
-    names[nnames++] = peek_tok(0)->sval;
+    names[nnames++] = comp_resolve(peek_tok(0)->sval);
     tok_pos++;
     while (match_tok(T_COMMA)) {
         if (peek_tok(0)->kind != T_NAME) parse_error("expected NAME in tuple target");
         if (nnames >= 16) parse_error("for tuple target too long");
-        names[nnames++] = peek_tok(0)->sval;
+        names[nnames++] = comp_resolve(peek_tok(0)->sval);
         tok_pos++;
     }
     expect(T_IN, "'in'");
@@ -1141,6 +1213,7 @@ parse_list_literal(void)
         expect(T_RBRACK, "']'");
         return ALLOC_node_seq(result, load_tmp);
     }
+    int saved_remap_lc = comp_remap_top;
     prescan_comp_targets(T_RBRACK);
     NODE *first = parse_expr();
     if (peek_tok(0)->kind == T_FOR) {
@@ -1152,8 +1225,10 @@ parse_list_literal(void)
         NODE *append = ALLOC_node_method_1(load_tmp, intern_name("append", 6), first);
         NODE *loops = parse_comp_clauses(append);
         expect(T_RBRACK, "']'");
+        comp_remap_top = saved_remap_lc;
         return ALLOC_node_seq(init, ALLOC_node_seq(loops, load_tmp));
     }
+    comp_remap_top = saved_remap_lc;
     NODE *items[256];
     int n = 0; items[n++] = first;
     while (match_tok(T_COMMA)) {
@@ -1246,6 +1321,7 @@ parse_dict_or_set_literal(void)
         expect(T_RBRACE, "'}'");
         return ALLOC_node_seq(result, load_tmp);
     }
+    int saved_remap_dc = comp_remap_top;
     prescan_comp_targets(T_RBRACE);
     NODE *first = parse_expr();
     // dict literal / dict comprehension if next is `:`
@@ -1260,8 +1336,10 @@ parse_dict_or_set_literal(void)
             NODE *set_n = ALLOC_node_subscript_set(load_tmp, first, first_v);
             NODE *loops = parse_comp_clauses(set_n);
             expect(T_RBRACE, "'}'");
+            comp_remap_top = saved_remap_dc;
             return ALLOC_node_seq(init, ALLOC_node_seq(loops, load_tmp));
         }
+        comp_remap_top = saved_remap_dc;
         NODE *items[512];
         int npairs = 0;
         items[0] = first; items[1] = first_v; npairs = 1;
@@ -1288,8 +1366,10 @@ parse_dict_or_set_literal(void)
         NODE *add = ALLOC_node_method_1(load_tmp, intern_name("add", 3), first);
         NODE *loops = parse_comp_clauses(add);
         expect(T_RBRACE, "'}'");
+        comp_remap_top = saved_remap_dc;
         return ALLOC_node_seq(init, ALLOC_node_seq(loops, load_tmp));
     }
+    comp_remap_top = saved_remap_dc;
     NODE *items[256];
     int n = 0; items[n++] = first;
     while (match_tok(T_COMMA)) {
@@ -1568,6 +1648,7 @@ parse_call_args(NODE *fn)
             } else {
                 // `f(expr for x in xs)` — implicit gen-expression as
                 // the sole argument.  Pre-scan to register `for` targets.
+                int saved_remap_ge = comp_remap_top;
                 if (argc == 0 && nspreads == 0) prescan_comp_targets(T_RPAREN);
                 NODE *e = parse_expr();
                 if (peek_tok(0)->kind == T_FOR && argc == 0 && nspreads == 0) {
@@ -1579,6 +1660,7 @@ parse_call_args(NODE *fn)
                     NODE *loops = parse_comp_clauses(append);
                     e = ALLOC_node_seq(init, ALLOC_node_seq(loops, load_tmp));
                 }
+                comp_remap_top = saved_remap_ge;
                 if (argc >= 64) parse_error("too many args");
                 args[argc++] = e;
                 spreads[nspreads].kind = 0; spreads[nspreads].name = NULL; spreads[nspreads].node = e;
@@ -1699,6 +1781,7 @@ parse_dot_trailer(NODE *obj)
         if (peek_tok(0)->kind != T_RPAREN) {
             for (;;) {
                 if (argc >= 64) parse_error("too many args");
+                int saved_remap_mge = comp_remap_top;
                 if (argc == 0) prescan_comp_targets(T_RPAREN);
                 NODE *e = parse_expr();
                 // Implicit generator-expression as sole argument.
@@ -1711,6 +1794,7 @@ parse_dot_trailer(NODE *obj)
                     NODE *loops = parse_comp_clauses(append);
                     e = ALLOC_node_seq(init, ALLOC_node_seq(loops, load_tmp));
                 }
+                comp_remap_top = saved_remap_mge;
                 args[argc++] = e;
                 if (!match_tok(T_COMMA)) break;
                 if (peek_tok(0)->kind == T_RPAREN) break;
