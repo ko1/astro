@@ -4547,6 +4547,10 @@ struct pygen {
     // Back-link to outer enclosing gen (NULL if outermost) so nested
     // gens compose.
     struct pygen *prev_gen;
+    // When this gen is suspended inside `yield from inner_gen`, this is
+    // the inner generator.  Used to propagate close() / throw() through
+    // the yield-from chain (matches CPython's yield-from cleanup).
+    VALUE       yf_inner;
 };
 
 // makecontext takes only int args; pass the gen pointer through a
@@ -4661,6 +4665,7 @@ py_make_gen(CTX *c, VALUE fn, int argc, VALUE *argv, int kwc, const char **kwn, 
     g->send_value = PY_NONE;
     g->throw_exc = PY_NONE;
     g->throw_pending = false;
+    g->yf_inner = PY_NONE;
     g->func = fn;
     g->argc = argc;
     g->argv = (VALUE *)GC_malloc(sizeof(VALUE) * (argc ? argc : 1));
@@ -4784,6 +4789,41 @@ py_gen_yield(CTX *c, VALUE v)
         g->throw_pending = false;
         c->state = PY_STATE_RAISE;
         c->state_value = g->throw_exc;
+        // If we're suspended in `yield from inner`, propagate the
+        // close/throw to the inner gen first (CPython's yield-from
+        // cleanup protocol).  GeneratorExit → inner.close().
+        // Other exceptions → inner.throw(exc); if inner yields a
+        // replacement value, yield that from the outer (the throw
+        // becomes a value).
+        if (g->yf_inner != (VALUE)0 && g->yf_inner != PY_NONE
+            && PY_IS_PTR(g->yf_inner) && PY_PTR(g->yf_inner)->type == PY_T_GEN) {
+            VALUE inner = g->yf_inner;
+            g->yf_inner = PY_NONE;
+            VALUE saved_exc = c->state_value;
+            extern VALUE py_gen_close(CTX *c, VALUE g);
+            extern VALUE py_gen_throw(CTX *c, VALUE g, VALUE exc);
+            extern bool class_is_ancestor(VALUE cls, VALUE target);
+            bool is_gen_exit = py_is_instance(saved_exc) &&
+                class_is_ancestor(PY_OBJ_VAL(PY_PTR(saved_exc)->inst.cls),
+                                  c->EXC_GeneratorExit);
+            c->state = PY_STATE_NORMAL;
+            c->state_value = PY_NONE;
+            if (is_gen_exit) {
+                py_gen_close(c, inner);
+                c->state = PY_STATE_RAISE;
+                c->state_value = saved_exc;
+            } else {
+                VALUE r = py_gen_throw(c, inner, saved_exc);
+                if (c->state == PY_STATE_NORMAL) {
+                    // Inner caught and yielded r — re-yield it from outer.
+                    g->yf_inner = inner;     // restore so further yield
+                                             // chains keep working
+                    return py_gen_yield(c, r);
+                }
+                // Inner raised — already in state RAISE, fall through
+                // and propagate.
+            }
+        }
         if (c->try_top > 0) longjmp(*c->try_stack[c->try_top - 1], 1);
         // No try in body — propagate via state; gen_entry sees state
         // RAISE and exits, marking done.
@@ -4798,15 +4838,26 @@ py_gen_yield(CTX *c, VALUE v)
 VALUE
 py_gen_yield_from(CTX *c, VALUE iter)
 {
+    extern VALUE py_gen_close(CTX *c, VALUE g);
+    extern VALUE py_gen_throw(CTX *c, VALUE g, VALUE exc);
     struct py_iter it;
     py_iter_init(c, &it, iter);
     if (c->state != PY_STATE_NORMAL) return PY_NONE;
     VALUE x;
     VALUE result = PY_NONE;
+    // Mark the active yield-from inner gen on the enclosing generator
+    // so a close() / throw() on the outer can propagate.
+    struct pygen *outer_g = c->current_gen;
+    VALUE saved_yf = outer_g ? outer_g->yf_inner : PY_NONE;
+    if (outer_g) outer_g->yf_inner = iter;
     while (py_iter_next(c, &it, &x)) {
         py_gen_yield(c, x);
-        if (c->state != PY_STATE_NORMAL) return PY_NONE;
+        if (c->state != PY_STATE_NORMAL) {
+            if (outer_g) outer_g->yf_inner = saved_yf;
+            return PY_NONE;
+        }
     }
+    if (outer_g) outer_g->yf_inner = saved_yf;
     // Inner exhausted normally.  If the source is a generator with a
     // captured return-value, surface it as our expression value.
     if (PY_IS_PTR(iter) && PY_PTR(iter)->type == PY_T_GEN) {

@@ -1,0 +1,6 @@
+ok YieldFromCloseTest test_chain_three_levels
+ok YieldFromCloseTest test_inner_finally_runs
+ok YieldFromCloseTest test_inner_only
+ok YieldFromCloseTest test_throw_into_outer_propagates
+---
+passed=4 failed=0
