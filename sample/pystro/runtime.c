@@ -7906,6 +7906,17 @@ bi_vars(CTX *c, int argc, VALUE *argv)
         }
         return d;
     }
+    if (py_is_class(v)) {
+        // Return a dict of {name: value} for all methods on the class.
+        VALUE d = py_make_dict();
+        struct pyclass *cd = &PY_PTR(v)->cls;
+        for (int i = 0; i < cd->nmethods; i++) {
+            py_dict_set(c, d,
+                py_make_str(cd->methods[i].name, strlen(cd->methods[i].name)),
+                cd->methods[i].value);
+        }
+        return d;
+    }
     py_raise_exc(c, c->EXC_TypeError, "vars() argument must be a module or instance");
 }
 
