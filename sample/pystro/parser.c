@@ -2591,18 +2591,25 @@ parse_pattern_atom(void)
                 p.literal = cls_node;
                 return pat_alloc(p);
             }
-            // class with attribute patterns
+            // class with attribute patterns OR positional patterns.
+            // Positional patterns are looked up via the class's __match_args__
+            // at match time; we encode them with attrs[i] = NULL.
             const char *attrs[16];
             int child_pats[16];
             int nargs = 0;
+            bool seen_kw = false;
             for (;;) {
-                if (peek_tok(0)->kind != T_NAME)
-                    parse_error("only attr=pat supported in class pattern");
-                if (peek_tok(1)->kind != T_ASSIGN)
-                    parse_error("only attr=pat supported (positional class pattern needs __match_args__)");
-                attrs[nargs] = peek_tok(0)->sval;
-                tok_pos += 2;
-                child_pats[nargs] = parse_pattern_or();
+                if (peek_tok(0)->kind == T_NAME && peek_tok(1)->kind == T_ASSIGN) {
+                    seen_kw = true;
+                    attrs[nargs] = peek_tok(0)->sval;
+                    tok_pos += 2;
+                    child_pats[nargs] = parse_pattern_or();
+                } else {
+                    if (seen_kw)
+                        parse_error("positional after keyword in class pattern");
+                    attrs[nargs] = NULL;     // positional — resolved at match time
+                    child_pats[nargs] = parse_pattern_or();
+                }
                 nargs++;
                 if (!match_tok(T_COMMA)) break;
                 if (peek_tok(0)->kind == T_RPAREN) break;

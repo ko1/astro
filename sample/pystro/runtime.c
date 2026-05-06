@@ -4963,13 +4963,26 @@ py_pat_match(CTX *c, int pat_idx, VALUE v)
         if (!py_is_class(cls)) return false;
         if (!py_is_instance(v)) return false;
         if (!class_is_ancestor(PY_OBJ_VAL(PY_PTR(v)->inst.cls), cls)) return false;
+        // Positional sub-patterns (attrs[i] == NULL) need __match_args__
+        // resolved against the matched class to map index → attr name.
+        VALUE match_args = py_class_lookup_method(cls, "__match_args__");
         for (int i = 0; i < p->nchildren; i++) {
+            const char *attr_name = p->attrs[i];
+            if (attr_name == NULL) {
+                // Positional → look up __match_args__[i].
+                if (!py_is_tuple(match_args) && !py_is_list(match_args))
+                    return false;
+                if ((size_t)i >= PY_PTR(match_args)->list.len) return false;
+                VALUE n = PY_PTR(match_args)->list.items[i];
+                if (!py_is_str(n)) return false;
+                attr_name = PY_PTR(n)->str.chars;
+            }
             // Read attribute via the dict (avoids dunder fall-throughs
             // which could fail).  If the attr is missing, no match.
             struct pyobj *o = PY_PTR(v);
             VALUE attr_val = (VALUE)0;
             if (o->inst.attrs) {
-                VALUE k = py_make_str(p->attrs[i], strlen(p->attrs[i]));
+                VALUE k = py_make_str(attr_name, strlen(attr_name));
                 uint64_t h = py_hash(c, k);
                 int32_t eidx = pydict_find(c, o->inst.attrs, k, h);
                 if (eidx >= 0) attr_val = o->inst.attrs->entries[eidx].value;
