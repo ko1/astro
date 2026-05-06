@@ -1997,115 +1997,340 @@ extern const struct NodeKind kind_node_pipe;
 extern const struct NodeKind kind_node_field;
 extern const struct NodeKind kind_node_field_opt;
 extern const struct NodeKind kind_node_index;
+extern const struct NodeKind kind_node_index_opt;
+extern const struct NodeKind kind_node_iter;
+extern const struct NodeKind kind_node_iter_opt;
 extern const struct NodeKind kind_node_int;
 extern const struct NodeKind kind_node_str;
 
-static bool
-extract_path(struct Node *n, VALUE path)
+/* ---------- path-mode walk (used by `=` `|=` `+=` ... and `del`) ---------
+ *
+ * Given a path expression (an AST chain of identity / field / index /
+ * iter / pipe), walk the input tree once, applying `leaf_fn(v, ud)`
+ * at each leaf path, and rebuild containers with the new values.
+ * Each container along the path is cloned exactly once; for an
+ * `.foo[]` pattern over an N-element array we do O(2 + N) container
+ * allocs, not O(N * depth) — way better than enumerating paths and
+ * calling setpath once per path.
+ *
+ * The leaf function may signal "drop this entry" by setting
+ * `*dropped = true`; the parent then removes the key/index instead
+ * of replacing.  Used by `del`.  Drop is otherwise silently
+ * ignored at non-leaf positions.
+ *
+ * Errors: if a path step demands a structure that the input doesn't
+ * have (e.g. `.foo` on a number), we set c->error and return v
+ * unchanged.  `_opt` variants (`.foo?`, `.[]?`) treat type errors
+ * as "skip this path" — they leave v unchanged silently. */
+
+typedef VALUE (*nuq_leaf_fn)(VALUE v, void *ud, bool *dropped);
+
+static VALUE walk_path(CTX *c, struct Node *n, VALUE v, nuq_leaf_fn fn, void *ud);
+
+/* Helper: clone object and set/delete one key. */
+static VALUE
+obj_with_key(VALUE obj, VALUE k, VALUE new_v, bool drop)
 {
-    if (n->head.kind == &kind_node_identity) return true;
-    if (n->head.kind == &kind_node_field) {
-        const char *name = n->u.node_field.name;
-        nuq_array_push(path, nuq_make_string(name, strlen(name)));
+    VALUE clone = nuq_clone(obj);
+    if (drop) {
+        struct nuq_obj *co = NUQ_PTR(clone);
+        for (size_t i = 0; i < co->obj.len; i++) {
+            if (nuq_eq(co->obj.keys[i], k)) {
+                for (size_t j = i; j + 1 < co->obj.len; j++) {
+                    co->obj.keys[j] = co->obj.keys[j+1];
+                    co->obj.vals[j] = co->obj.vals[j+1];
+                }
+                co->obj.len--;
+                co->obj.idx = NULL;
+                co->obj.idx_mask = 0;
+                break;
+            }
+        }
+    } else {
+        nuq_object_set(clone, k, new_v);
+    }
+    return clone;
+}
+
+/* Helper: clone array and set/delete one index. */
+static VALUE
+arr_with_idx(VALUE arr, int64_t idx, VALUE new_v, bool drop)
+{
+    struct nuq_obj *o = NUQ_PTR(arr);
+    if (idx < 0) idx += (int64_t)o->arr.len;
+    if (drop) {
+        if (idx < 0 || (size_t)idx >= o->arr.len) return arr;
+        VALUE clone = nuq_clone(arr);
+        struct nuq_obj *co = NUQ_PTR(clone);
+        for (size_t j = (size_t)idx; j + 1 < co->arr.len; j++)
+            co->arr.items[j] = co->arr.items[j+1];
+        co->arr.len--;
+        return clone;
+    }
+    if (idx < 0) return arr;
+    VALUE clone = nuq_clone(arr);
+    struct nuq_obj *co = NUQ_PTR(clone);
+    while ((int64_t)co->arr.len <= idx) nuq_array_push(clone, NUQ_NULL);
+    co->arr.items[idx] = new_v;
+    return clone;
+}
+
+/* Wrapper that bundles "next path step + next leaf fn + next ud" so
+ * the pipe case can keep recursing through the chain. */
+struct nested_ud {
+    CTX        *c;
+    struct Node *next;     /* path expression for the rest of the chain */
+    nuq_leaf_fn  next_fn;  /* leaf fn applied at end of the rest */
+    void       *next_ud;
+};
+
+static VALUE
+nested_apply(VALUE v, void *ud, bool *dropped)
+{
+    struct nested_ud *nu = (struct nested_ud *)ud;
+    return walk_path(nu->c, nu->next, v, nu->next_fn, nu->next_ud);
+}
+
+/* Evaluate a static-int / static-string index expression to get the
+ * key VALUE.  Returns true on success.  We accept literal `node_int`
+ * and `node_str` only — anything else is too dynamic for path mode
+ * (the input scoping for `.[var]` etc. is subtle and rarely used). */
+static bool
+eval_static_key(struct Node *idx, VALUE *out)
+{
+    if (idx->head.kind == &kind_node_int) {
+        *out = nuq_make_int((int64_t)idx->u.node_int.v);
         return true;
     }
-    if (n->head.kind == &kind_node_field_opt) {
-        const char *name = n->u.node_field_opt.name;
-        nuq_array_push(path, nuq_make_string(name, strlen(name)));
+    if (idx->head.kind == &kind_node_str) {
+        const char *s = idx->u.node_str.s;
+        *out = nuq_make_string(s, strlen(s));
         return true;
-    }
-    if (n->head.kind == &kind_node_pipe) {
-        return extract_path(n->u.node_pipe.lhs, path) &&
-               extract_path(n->u.node_pipe.rhs, path);
-    }
-    if (n->head.kind == &kind_node_index) {
-        /* node_index only carries the key expression; the receiver
-         * is propagated via c->input from the surrounding pipe.  The
-         * outer pipe walk pushes parent keys; we just push our own. */
-        struct Node *idx = n->u.node_index.expr;
-        if (idx->head.kind == &kind_node_int) {
-            nuq_array_push(path, nuq_make_int((int64_t)idx->u.node_int.v));
-            return true;
-        }
-        if (idx->head.kind == &kind_node_str) {
-            const char *s = idx->u.node_str.s;
-            nuq_array_push(path, nuq_make_string(s, strlen(s)));
-            return true;
-        }
-        return false;
     }
     return false;
 }
 
-/* `del(path-expr)` — lift path-expr statically and delete that path. */
+static VALUE
+walk_path(CTX *c, struct Node *n, VALUE v, nuq_leaf_fn fn, void *ud)
+{
+    /* identity / `.` — leaf */
+    if (n->head.kind == &kind_node_identity) {
+        bool dropped = false;
+        return fn(v, ud, &dropped);
+    }
+
+    /* pipe(a, b) — recurse into a with "do b then fn" as the leaf */
+    if (n->head.kind == &kind_node_pipe) {
+        struct nested_ud nu = { c, n->u.node_pipe.rhs, fn, ud };
+        return walk_path(c, n->u.node_pipe.lhs, v, nested_apply, &nu);
+    }
+
+    /* field(name) — descend into v.<name> */
+    if (n->head.kind == &kind_node_field || n->head.kind == &kind_node_field_opt) {
+        bool optional = (n->head.kind == &kind_node_field_opt);
+        const char *name = (n->head.kind == &kind_node_field)
+            ? n->u.node_field.name : n->u.node_field_opt.name;
+        VALUE k = nuq_make_string(name, strlen(name));
+        if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_OBJECT) {
+            VALUE child = nuq_object_get(v, k);
+            bool dropped = false;
+            VALUE new_child = fn(child, ud, &dropped);
+            if (c->error != NUQ_NULL) return v;
+            return obj_with_key(v, k, new_child, dropped);
+        }
+        if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_NULL) {
+            /* auto-vivify: treat null as empty object */
+            VALUE empty_obj = nuq_make_object(4);
+            bool dropped = false;
+            VALUE new_child = fn(NUQ_NULL, ud, &dropped);
+            if (c->error != NUQ_NULL) return v;
+            if (dropped) return v;     /* nothing to delete */
+            nuq_object_set(empty_obj, k, new_child);
+            return empty_obj;
+        }
+        if (optional) return v;
+        c->error = nuq_make_string("path expression: not object", 27);
+        return v;
+    }
+
+    /* index(expr) — `.[N]` or `.[<expr>]` (we only support static int / str) */
+    if (n->head.kind == &kind_node_index || n->head.kind == &kind_node_index_opt) {
+        bool optional = (n->head.kind == &kind_node_index_opt);
+        struct Node *idx_expr = (n->head.kind == &kind_node_index)
+            ? n->u.node_index.expr : n->u.node_index_opt.expr;
+        VALUE k;
+        if (!eval_static_key(idx_expr, &k)) {
+            c->error = nuq_make_string("path expression: dynamic index not supported", 45);
+            return v;
+        }
+        if (NUQ_IS_FIX(k)) {
+            /* int index — array */
+            int64_t i = NUQ_FIX_VAL(k);
+            if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_ARRAY) {
+                struct nuq_obj *o = NUQ_PTR(v);
+                int64_t real_i = i < 0 ? i + (int64_t)o->arr.len : i;
+                VALUE child = (real_i >= 0 && (size_t)real_i < o->arr.len)
+                              ? o->arr.items[real_i] : NUQ_NULL;
+                bool dropped = false;
+                VALUE new_child = fn(child, ud, &dropped);
+                if (c->error != NUQ_NULL) return v;
+                return arr_with_idx(v, i, new_child, dropped);
+            }
+            if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_NULL) {
+                bool dropped = false;
+                VALUE new_child = fn(NUQ_NULL, ud, &dropped);
+                if (c->error != NUQ_NULL) return v;
+                if (dropped) return v;
+                VALUE arr = nuq_make_array(0);
+                return arr_with_idx(arr, i, new_child, false);
+            }
+            if (optional) return v;
+            c->error = nuq_make_string("path expression: not array", 26);
+            return v;
+        }
+        /* string index → object */
+        if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_OBJECT) {
+            VALUE child = nuq_object_get(v, k);
+            bool dropped = false;
+            VALUE new_child = fn(child, ud, &dropped);
+            if (c->error != NUQ_NULL) return v;
+            return obj_with_key(v, k, new_child, dropped);
+        }
+        if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_NULL) {
+            bool dropped = false;
+            VALUE new_child = fn(NUQ_NULL, ud, &dropped);
+            if (c->error != NUQ_NULL) return v;
+            if (dropped) return v;
+            VALUE empty = nuq_make_object(4);
+            nuq_object_set(empty, k, new_child);
+            return empty;
+        }
+        if (optional) return v;
+        c->error = nuq_make_string("path expression: not object", 27);
+        return v;
+    }
+
+    /* iter (`.[]`) — for each element, apply fn; rebuild container */
+    if (n->head.kind == &kind_node_iter || n->head.kind == &kind_node_iter_opt) {
+        bool optional = (n->head.kind == &kind_node_iter_opt);
+        if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_ARRAY) {
+            struct nuq_obj *o = NUQ_PTR(v);
+            VALUE result = nuq_make_array(o->arr.len);
+            for (size_t i = 0; i < o->arr.len; i++) {
+                bool dropped = false;
+                VALUE new_v = fn(o->arr.items[i], ud, &dropped);
+                if (c->error != NUQ_NULL) return v;
+                if (!dropped) nuq_array_push(result, new_v);
+                /* dropped → just skip pushing, effectively removing */
+            }
+            return result;
+        }
+        if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_OBJECT) {
+            struct nuq_obj *o = NUQ_PTR(v);
+            VALUE result = nuq_make_object(o->obj.len);
+            for (size_t i = 0; i < o->obj.len; i++) {
+                bool dropped = false;
+                VALUE new_v = fn(o->obj.vals[i], ud, &dropped);
+                if (c->error != NUQ_NULL) return v;
+                if (!dropped) nuq_object_set(result, o->obj.keys[i], new_v);
+            }
+            return result;
+        }
+        if (optional) return v;
+        c->error = nuq_make_string("path expression: cannot iterate", 31);
+        return v;
+    }
+
+    c->error = nuq_make_string("path expression: unsupported node", 33);
+    return v;
+}
+
+/* Leaf functions for the assign-op variants. */
+struct assign_leaf_ud {
+    CTX        *c;
+    struct Node *rhs;
+    int         op_kind;
+    /* For PLAIN, eval rhs once globally (against the original input)
+     * and reuse — `(.foo[]) = X` should put the SAME X at every leaf,
+     * not re-evaluate.  For UPDATE / arith ops we re-evaluate per
+     * leaf with that leaf as input. */
+    VALUE       precomputed;
+    bool        precomputed_set;
+};
+
+static VALUE
+assign_leaf(VALUE v, void *ud, bool *dropped)
+{
+    struct assign_leaf_ud *al = (struct assign_leaf_ud *)ud;
+    *dropped = false;
+    if (al->op_kind == NUQ_ASSIGN_PLAIN) {
+        return al->precomputed;
+    }
+    /* Evaluate rhs with `v` as input. */
+    VALUE saved = al->c->input;
+    al->c->input = v;
+    size_t t0 = al->c->pool_top;
+    EMIT re = EVAL(al->c, al->rhs);
+    al->c->input = saved;
+    if (al->c->error != NUQ_NULL) return v;
+    VALUE rv = re.count > 0 ? re.items[0] : NUQ_NULL;
+    al->c->pool_top = t0;
+    switch (al->op_kind) {
+      case NUQ_ASSIGN_UPDATE: return rv;
+      case NUQ_ASSIGN_PLUS:   return nuq_op_add(v, rv);
+      case NUQ_ASSIGN_MINUS:  return nuq_op_sub(v, rv);
+      case NUQ_ASSIGN_MUL:    return nuq_op_mul(v, rv);
+      case NUQ_ASSIGN_DIV:    return nuq_op_div(v, rv);
+      case NUQ_ASSIGN_MOD:    return nuq_op_mod(v, rv);
+      case NUQ_ASSIGN_ALT:    return nuq_truthy(v) ? v : rv;
+    }
+    return v;
+}
+
+static VALUE
+delete_leaf(VALUE v, void *ud, bool *dropped)
+{
+    (void)v; (void)ud;
+    *dropped = true;
+    return NUQ_NULL;
+}
+
+/* `del(path-expr)` — walk the path tree, dropping each leaf entry.
+ * For `.[]` paths this drops each iterated element, yielding an
+ * empty container.  Single-pass, one clone per container along
+ * the path. */
 EMIT
 nuq_del_eval(CTX *c, struct Node *path_expr)
 {
-    VALUE path = nuq_make_array(4);
-    if (!extract_path(path_expr, path))
-        return err_emit(c, "del: path expression not supported "
-                           "(only static .foo / .[N] chains)");
-    struct nuq_obj *po = NUQ_PTR(path);
-    if (po->arr.len == 0) return nuq_emit_one(c, NUQ_NULL);   /* del(.) → null */
-    return nuq_emit_one(c, delpath_recurse(c->input, po->arr.items, po->arr.len));
+    /* del(.) returns null in jq. */
+    if (path_expr->head.kind == &kind_node_identity)
+        return nuq_emit_one(c, NUQ_NULL);
+    VALUE result = walk_path(c, path_expr, c->input, delete_leaf, NULL);
+    if (c->error != NUQ_NULL) return EMIT_EMPTY;
+    return nuq_emit_one(c, result);
 }
 
 EMIT
 nuq_assign_eval(CTX *c, struct Node *lhs, struct Node *rhs, uint32_t op_kind)
 {
-    /* Step 1: lift the lhs AST into a literal path array. */
-    VALUE path = nuq_make_array(4);
-    if (!extract_path(lhs, path))
-        return err_emit(c, "assignment: path expression not supported "
-                           "(only static .foo / .[N] chains)");
-    struct nuq_obj *po = NUQ_PTR(path);
+    struct assign_leaf_ud ud = { c, rhs, (int)op_kind, NUQ_NULL, false };
 
-    /* Step 2: compute the new value depending on op_kind. */
-    VALUE new_val;
+    /* For `=` (PLAIN), the RHS is evaluated ONCE in the original
+     * input scope and the result is stamped at every leaf — so
+     * `(.foo[]) = .bar` puts the original input's `.bar` value at
+     * every `.foo[i]`, NOT each elem's `.bar`.  jq matches this. */
     if (op_kind == NUQ_ASSIGN_PLAIN) {
-        VALUE saved = c->input;
         size_t t0 = c->pool_top;
         EMIT re = EVAL(c, rhs);
-        if (c->error != NUQ_NULL) { c->input = saved; return EMIT_EMPTY; }
-        if (re.count == 0) { c->pool_top = t0; c->input = saved; return EMIT_EMPTY; }
-        new_val = re.items[0];
-        c->pool_top = t0;
-        c->input = saved;
-    } else {
-        /* Read existing value at path */
-        VALUE cur = c->input;
-        for (size_t i = 0; i < po->arr.len; i++) {
-            VALUE k = po->arr.items[i];
-            if (NUQ_IS_PTR(cur) && NUQ_PTR(cur)->type == NUQ_T_OBJECT)
-                cur = nuq_object_get(cur, k);
-            else if (NUQ_IS_PTR(cur) && NUQ_PTR(cur)->type == NUQ_T_ARRAY && NUQ_IS_FIX(k))
-                cur = nuq_array_get(cur, NUQ_FIX_VAL(k));
-            else { cur = NUQ_NULL; break; }
-        }
-        /* Compute new value from cur and rhs */
-        VALUE saved = c->input;
-        c->input = cur;
-        size_t t0 = c->pool_top;
-        EMIT re = EVAL(c, rhs);
-        c->input = saved;
         if (c->error != NUQ_NULL) return EMIT_EMPTY;
-        VALUE rv = re.count > 0 ? re.items[0] : NUQ_NULL;
+        ud.precomputed = re.count > 0 ? re.items[0] : NUQ_NULL;
+        ud.precomputed_set = true;
         c->pool_top = t0;
-        switch (op_kind) {
-          case NUQ_ASSIGN_UPDATE: new_val = rv; break;
-          case NUQ_ASSIGN_PLUS:   new_val = nuq_op_add(cur, rv); break;
-          case NUQ_ASSIGN_MINUS:  new_val = nuq_op_sub(cur, rv); break;
-          case NUQ_ASSIGN_MUL:    new_val = nuq_op_mul(cur, rv); break;
-          case NUQ_ASSIGN_DIV:    new_val = nuq_op_div(cur, rv); break;
-          case NUQ_ASSIGN_MOD:    new_val = nuq_op_mod(cur, rv); break;
-          case NUQ_ASSIGN_ALT:
-            new_val = nuq_truthy(cur) ? cur : rv; break;
-          default: return err_emit(c, "assignment: unknown op");
-        }
-        if (c->error != NUQ_NULL) return EMIT_EMPTY;
     }
 
-    return nuq_emit_one(c, setpath_recurse(c->input, po->arr.items, po->arr.len, new_val));
+    VALUE result = walk_path(c, lhs, c->input, assign_leaf, &ud);
+    if (c->error != NUQ_NULL) return EMIT_EMPTY;
+    return nuq_emit_one(c, result);
 }
 
 EMIT
