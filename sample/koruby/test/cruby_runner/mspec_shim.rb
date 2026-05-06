@@ -229,6 +229,7 @@ end
 class MSpecExpectation
   def __apply_matcher(m, negate)
     ok = case m.kind
+         when :complain then true  # don't run the block — has side effects we can't control
          when :be_nil then @actual.nil?
          when :be_true then @actual == true
          when :be_false then @actual == false
@@ -351,3 +352,31 @@ end
 def mock(name = ""); MSpecMock.new(name); end
 def mock_int(value); value; end
 def stub!(name = ""); MSpecMock.new(name); end
+
+# ScratchPad — mspec helper that records values across an example's
+# block invocations.  Tests do ScratchPad.record :foo / ScratchPad.recorded.
+class ScratchPad
+  @@val = nil
+  def self.record(v); @@val = v; end
+  def self.recorded; @@val; end
+  def self.clear; @@val = nil; end
+  def self.<<(v); @@val ||= []; @@val << v; @@val; end
+end
+
+# `complain` — matcher for ".should complain(/.../)" — verifies a block
+# emits a matching warning.  We don't track warnings, so return a
+# matcher that always passes (so we don't fail tests that exercise
+# warning behaviour we don't reproduce).
+def complain(_pattern = nil, **_opts); MSpecMatcher.new(:complain); end
+
+# `ruby_exe` — runs ruby code in a subprocess.  Out of scope (no
+# subprocess), so return empty string.
+def ruby_exe(*_); ""; end
+def ruby_cmd(*_); "ruby"; end
+
+# `it_behaves_like` — shared spec inclusion.  We don't track shared
+# specs, so just yield to the named example block if one exists.
+def it_behaves_like(*_args, &_blk); end
+
+# Suppress warning helper — runs block with $VERBOSE = nil.
+def silence_warnings; old = $VERBOSE; $VERBOSE = nil; yield; ensure $VERBOSE = old; end

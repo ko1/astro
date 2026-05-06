@@ -335,7 +335,18 @@ static VALUE kernel_frozen_p(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE kernel_respond_to_p(CTX *c, VALUE self, int argc, VALUE *argv) {
-    ID name = SYMBOL_P(argv[0]) ? korb_sym2id(argv[0]) : korb_intern_n(((struct korb_string *)argv[0])->ptr, ((struct korb_string *)argv[0])->len);
+    if (argc < 1) return Qfalse;
+    ID name;
+    if (SYMBOL_P(argv[0])) {
+        name = korb_sym2id(argv[0]);
+    } else if (!SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_STRING) {
+        struct korb_string *s = (struct korb_string *)argv[0];
+        name = korb_intern_n(s->ptr, s->len);
+    } else {
+        VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+        korb_raise(c, (struct korb_class *)eT, "expected Symbol or String");
+        return Qfalse;
+    }
     struct korb_class *klass = korb_class_of_class(self);
     if (korb_class_find_method(klass, name) != NULL) return Qtrue;
     /* Defer to user-defined respond_to_missing?, but only if the class
