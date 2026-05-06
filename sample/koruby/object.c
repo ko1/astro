@@ -2778,6 +2778,17 @@ VALUE korb_dispatch_binop(CTX *c, VALUE recv, ID name, int argc, VALUE *argv) {
     struct korb_class *klass = korb_class_of_class(recv);
     struct korb_method *m = korb_class_find_method(klass, name);
     if (!m) {
+        /* method_missing fallback — prepend the missing name as a Symbol
+         * to argv and dispatch :method_missing if defined.  Lets user
+         * classes (mocks etc.) intercept all dispatches. */
+        struct korb_method *mm = korb_class_find_method(klass, korb_intern("method_missing"));
+        if (mm) {
+            VALUE *new_argv = korb_xmalloc(sizeof(VALUE) * (argc + 1));
+            new_argv[0] = korb_id2sym(name);
+            for (int i = 0; i < argc; i++) new_argv[i + 1] = argv[i];
+            VALUE r = korb_dispatch_binop(c, recv, korb_intern("method_missing"), argc + 1, new_argv);
+            return r;
+        }
         VALUE eNo = korb_const_get(korb_vm->object_class, korb_intern("NoMethodError"));
         korb_raise(c, (struct korb_class *)eNo, "undefined method '%s' for %s",
                  korb_id_name(name), korb_id_name(klass->name));
