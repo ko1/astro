@@ -4234,30 +4234,40 @@ py_display(FILE *fp, VALUE v, bool repr)
                 VALUE r = py_apply(py_current_ctx, m, 1, av);
                 if (py_is_str(r)) { fwrite(PY_PTR(r)->str.chars, 1, PY_PTR(r)->str.len, fp); return; }
             }
-            // Default str() for exception instances: print the message.
-            // (Python's BaseException.__str__ returns args[0] if 1-arg.)
-            if (!repr && py_is_class(PY_OBJ_VAL(o->inst.cls))
+            // Default str() / repr() for exception instances.  CPython
+            // uses the .args tuple:
+            //   0 args → ""           1 arg → str(args[0])
+            //   N args → repr(args)   (i.e. "(a, b, ...)")
+            // repr always produces ClassName(args...).
+            if (py_is_class(PY_OBJ_VAL(o->inst.cls))
                 && py_current_ctx->EXC_Exception
                 && class_is_ancestor(PY_OBJ_VAL(o->inst.cls), py_current_ctx->EXC_Exception)) {
-                VALUE msg = py_getattr(py_current_ctx, v, "message");
-                if (py_current_ctx->state == PY_STATE_NORMAL && py_is_str(msg)) {
-                    fwrite(PY_PTR(msg)->str.chars, 1, PY_PTR(msg)->str.len, fp);
-                    return;
+                VALUE args = py_getattr(py_current_ctx, v, "args");
+                if (py_current_ctx->state != PY_STATE_NORMAL) {
+                    py_current_ctx->state = PY_STATE_NORMAL;
+                    args = PY_NONE;
                 }
-                py_current_ctx->state = PY_STATE_NORMAL;
-            }
-            // Default repr() for exception instances: ClassName(message).
-            if (repr && py_is_class(PY_OBJ_VAL(o->inst.cls))
-                && py_current_ctx->EXC_Exception
-                && class_is_ancestor(PY_OBJ_VAL(o->inst.cls), py_current_ctx->EXC_Exception)) {
-                VALUE msg = py_getattr(py_current_ctx, v, "message");
-                if (py_current_ctx->state == PY_STATE_NORMAL && py_is_str(msg)) {
+                if (py_is_tuple(args)) {
+                    size_t n = PY_PTR(args)->list.len;
+                    if (!repr) {
+                        if (n == 0) return;
+                        if (n == 1) {
+                            py_display(fp, PY_PTR(args)->list.items[0], false);
+                            return;
+                        }
+                        // Fall through: print tuple repr.
+                        py_display(fp, args, true);
+                        return;
+                    }
                     fprintf(fp, "%s(", o->inst.cls->cls.name);
-                    py_display(fp, msg, true);
+                    for (size_t i = 0; i < n; i++) {
+                        if (i) fputs(", ", fp);
+                        py_display(fp, PY_PTR(args)->list.items[i], true);
+                    }
                     fputc(')', fp);
                     return;
                 }
-                py_current_ctx->state = PY_STATE_NORMAL;
+                // Fallback: fall through to "<ClassName object>"
             }
         }
         fprintf(fp, "<%s object>", o->inst.cls->cls.name);

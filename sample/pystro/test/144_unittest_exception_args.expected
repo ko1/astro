@@ -1,0 +1,13 @@
+ok ExceptionArgsTest test_args_setter
+ok ExceptionArgsTest test_custom_str
+ok ExceptionArgsTest test_custom_three_arg
+ok ExceptionArgsTest test_no_arg
+ok ExceptionArgsTest test_one_arg
+ok ExceptionArgsTest test_two_args
+ok ExceptionChainTest test_finally_returns
+ok ExceptionChainTest test_implicit_context
+ok ExceptionChainTest test_re_raise
+ok WithStmtTest test_propagate
+ok WithStmtTest test_suppress
+---
+passed=11 failed=0
