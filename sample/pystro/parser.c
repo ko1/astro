@@ -2978,9 +2978,23 @@ parse_pattern_atom(void)
             return pat_alloc(p);
         }
         // Lookahead: NAME (`.` NAME)* `(` ⇒ class pattern; NAME (`.` NAME)+ ⇒ value pattern
+        bool is_class_pattern = false;
         if (peek_tok(1)->kind == T_LPAREN) {
-            // class pattern Cls() or Cls(attr=pat, ...)
+            is_class_pattern = true;
+        } else if (peek_tok(1)->kind == T_DOT) {
+            int p = 1;
+            while (peek_tok(p)->kind == T_DOT && peek_tok(p+1)->kind == T_NAME) p += 2;
+            if (peek_tok(p)->kind == T_LPAREN) is_class_pattern = true;
+        }
+        if (is_class_pattern) {
+            // class pattern Cls() / pkg.Cls() / a.b.Cls() — consume the
+            // dotted name then `(`.
             NODE *cls_node = parse_atom();
+            while (peek_tok(0)->kind == T_DOT && peek_tok(1)->kind == T_NAME) {
+                tok_pos++;
+                cls_node = ALLOC_node_attr_get(cls_node, peek_tok(0)->sval);
+                tok_pos++;
+            }
             expect(T_LPAREN, "'('");
             if (match_tok(T_RPAREN)) {
                 p.kind = PYPAT_CLASS;
