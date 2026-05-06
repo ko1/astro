@@ -12490,16 +12490,21 @@ bi_pystro_yield_from(CTX *c, int argc, VALUE *argv)
     return py_gen_yield_from(c, argv[0]);
 }
 
-// Unary + dispatch: call __pos__ on instances; identity otherwise.
+// Unary + dispatch: call __pos__ on instances; identity for numeric;
+// TypeError for str / bytes / None / classes / etc.
 static VALUE
 bi_pystro_pos(CTX *c, int argc, VALUE *argv)
 {
     (void)argc;
-    if (py_is_instance(argv[0])) {
-        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(argv[0])->inst.cls), "__pos__");
+    VALUE v = argv[0];
+    if (py_is_instance(v)) {
+        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(v)->inst.cls), "__pos__");
         if (m != PY_NONE) return py_apply(c, m, 1, argv);
+        // Fall through to type-check on primary if subclass of numeric.
+        if (PY_PTR(v)->inst.primary) v = PY_PTR(v)->inst.primary;
     }
-    return argv[0];
+    if (py_int_or_bool(v) || py_is_float(v) || py_is_complex(v)) return v;
+    py_raise_exc(c, c->EXC_TypeError, "bad operand type for unary +");
 }
 
 static VALUE
