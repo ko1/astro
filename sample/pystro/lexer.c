@@ -389,9 +389,23 @@ read_number(void)
     } else if (peek(0) == '0' && (peek(1) == 'o' || peek(1) == 'O')) {
         base = 8; src_pos += 2;
         while ((peek(0) >= '0' && peek(0) <= '7') || peek(0) == '_') src_pos++;
+    } else if (peek(0) == '.') {
+        // Leading-dot float: '.5'.
+        is_float = true;
+        src_pos++;
+        while (isdigit((unsigned char)peek(0)) || peek(0) == '_') src_pos++;
+        if (peek(0) == 'e' || peek(0) == 'E') {
+            src_pos++;
+            if (peek(0) == '+' || peek(0) == '-') src_pos++;
+            while (isdigit((unsigned char)peek(0))) src_pos++;
+        }
     } else {
         while (isdigit((unsigned char)peek(0)) || peek(0) == '_') src_pos++;
-        if (peek(0) == '.' && isdigit((unsigned char)peek(1))) {
+        // Trailing or middle dot: '5.' or '5.0'.  But don't consume '.'
+        // if followed by a non-digit (could be method call: 5.bit_length).
+        if (peek(0) == '.' && (isdigit((unsigned char)peek(1)) ||
+                               (peek(1) != '_' && peek(1) != '.' &&
+                                !isalpha((unsigned char)peek(1))))) {
             is_float = true;
             src_pos++;
             while (isdigit((unsigned char)peek(0)) || peek(0) == '_') src_pos++;
@@ -518,6 +532,8 @@ tokenize(const char *src, const char *filename)
         if (ch == ' ' || ch == '\t' || ch == '\r') { src_pos++; continue; }
         if (ch == '\\' && peek(1) == '\n') { src_pos += 2; src_line++; continue; }
         if (isdigit((unsigned char)ch)) { read_number(); continue; }
+        // Leading-dot float literal: ".5" → 0.5  (but not "..." Ellipsis).
+        if (ch == '.' && isdigit((unsigned char)peek(1))) { read_number(); continue; }
         // String prefix combinations: r/R/u/U + b/B + f/F.  Order is
         // flexible per Python (rb, br, Rb, etc.).
         {

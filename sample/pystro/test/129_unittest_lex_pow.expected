@@ -1,0 +1,6 @@
+ok FloatLiteralFormsTest test_leading_dot
+ok FloatLiteralFormsTest test_trailing_dot
+ok NegBasePowTest test_int_neg_base
+ok NegBasePowTest test_int_neg_base_int_exp
+---
+passed=4 failed=0

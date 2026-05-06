@@ -1480,7 +1480,20 @@ py_pow(CTX *c, VALUE a, VALUE b)
         mpz_clear(za); mpz_clear(zb); mpz_clear(r);
         return rv;
     }
-    return py_make_float(pow(py_to_double(c, a), py_to_double(c, b)));
+    {
+        // Negative base with non-integer exponent → complex.
+        double da = py_to_double(c, a);
+        double db = py_to_double(c, b);
+        if (da < 0 && db != (double)(int64_t)db) {
+            // (a)^b = exp(b * ln(a)) — a < 0 so use complex formula:
+            // ln(-r) = ln(r) + i*pi, so b*ln(-r) = b*ln(r) + i*b*pi
+            // exp(...) = e^{b*ln(r)} * (cos(b*pi) + i*sin(b*pi))
+            double mag = pow(-da, db);
+            return py_make_complex(mag * cos(db * 3.14159265358979323846),
+                                   mag * sin(db * 3.14159265358979323846));
+        }
+        return py_make_float(pow(da, db));
+    }
 }
 
 VALUE
