@@ -207,3 +207,116 @@ implode
 
 .[]?
 "not iter"
+
+# v0.4 — assignment + path operations
+.a = 99
+{"a":1,"b":2}
+
+.a.b.c = 99
+{"a":{"b":{"c":1}}}
+
+.a |= . + 1
+{"a":5}
+
+.a += 10
+{"a":5}
+
+.a //= 99
+{"a":null,"b":1}
+
+.[1] = 99
+[1,2,3]
+
+del(.a)
+{"a":1,"b":2}
+
+del(.a.b)
+{"a":{"b":1,"c":2}}
+
+setpath(["a","b"]; 99)
+{"a":{"b":1}}
+
+delpaths([["a"],["c"]])
+{"a":1,"b":2,"c":3}
+
+# v0.4 — type filters
+[.[] | strings]
+[1,"a",[1,2],{},null,true]
+
+[.[] | iterables]
+[1,"a",[1,2],{},null,true]
+
+# v0.4 — flatten / utf8bytelength / ascii
+flatten
+[[1,2],[3,[4,5]]]
+
+flatten(2)
+[[1,2],[3,[4,5]]]
+
+utf8bytelength
+"hello"
+
+ascii(65)
+null
+
+# v0.4 — recurse(f) / walk(f) / contains
+[recurse(if . < 5 then . + 1 else empty end)]
+1
+
+[recurse(. + 1; . < 5)]
+1
+
+walk(if type=="number" then .*10 else . end)
+{"a":[1,2],"b":{"c":3}}
+
+contains("ello")
+"hello world"
+
+contains([1,2])
+[1,2,3,4]
+
+contains({"a":[1]})
+{"a":[1,2,3],"b":"x"}
+
+# v0.4 — while / until / IN
+[while(. < 100; . * 2)]
+1
+
+until(. >= 1000; . * 2)
+1
+
+IN(1,2,3,4)
+3
+
+IN(1,2,3,4)
+5
+
+# v0.4 — string methods
+ltrimstr("foo")
+"foobar"
+
+rtrimstr("bar")
+"foobar"
+
+[splits(",")]
+"a,b,c,d"
+
+gsub("foo"; "X")
+"foo bar foo"
+
+sub("foo"; "X")
+"foo bar foo"
+
+# v0.4 — multi-elif chain
+if .==1 then "a" elif .==2 then "b" elif .==3 then "c" elif .==4 then "d" else "z" end
+3
+
+if .==1 then "a" elif .==2 then "b" elif .==3 then "c" elif .==4 then "d" else "z" end
+5
+
+# v0.4 — isvalid
+isvalid(.+1)
+5
+
+isvalid(.+1)
+"hello"

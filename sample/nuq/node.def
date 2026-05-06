@@ -1259,7 +1259,8 @@ node_b_utf8bytelength(CTX *c, NODE *n)
     return EMIT_EMPTY;
 }
 
-/* `flatten` — single-level array flatten. */
+/* `flatten` — full recursive array flatten (matches jq 1.7's `flatten`).
+ * Use `flatten(1)` for single-level. */
 NODE_DEF
 node_b_flatten(CTX *c, NODE *n)
 {
@@ -1267,7 +1268,8 @@ node_b_flatten(CTX *c, NODE *n)
         c->error = nuq_make_string("flatten: not array", 18);
         return EMIT_EMPTY;
     }
-    return nuq_emit_one(c, nuq_flatten_eval(c->input, 1));
+    /* INT_MAX-ish depth = full flatten. */
+    return nuq_emit_one(c, nuq_flatten_eval(c->input, 1<<30));
 }
 
 /* `flatten(N)` — flatten N levels deep (N must be a non-negative int). */
