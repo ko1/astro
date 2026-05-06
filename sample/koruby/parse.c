@@ -1933,7 +1933,9 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
           /* Splat path: build runtime concat chain. */
           NODE *result = NULL;
           /* Group consecutive non-splats into a sub-array literal, then
-           * concat splats in between. */
+           * concat splats in between.  Always start from an empty ary
+           * so `[*x]` returns a fresh Array (CRuby: `[*ary].equal?(ary)`
+           * is false). */
           size_t i = 0;
           while (i < n->elements.size) {
               if (PM_NODE_TYPE_P(n->elements.nodes[i], PM_SPLAT_NODE)) {
@@ -1941,7 +1943,8 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                   NODE *splatted = sn->expression
                       ? ALLOC_node_splat_to_ary(T(tc, sn->expression))
                       : ALLOC_node_ary_new(0, 0);
-                  result = result ? ALLOC_node_ary_concat(result, splatted) : splatted;
+                  if (!result) result = ALLOC_node_ary_new(0, 0);
+                  result = ALLOC_node_ary_concat(result, splatted);
                   i++;
               } else {
                   /* Group consecutive non-splat */

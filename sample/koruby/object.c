@@ -1811,7 +1811,7 @@ VALUE korb_build_backtrace(CTX *c, int raise_line) {
             f->method->u.ast.body && f->method->u.ast.body->head.source_file) {
             file = f->method->u.ast.body->head.source_file;
         }
-        snprintf(buf, sizeof(buf), "%s:%d:in `%s'", file, line, name);
+        snprintf(buf, sizeof(buf), "%s:%d:in '%s'", file, line, name);
         korb_ary_push(arr, korb_str_new_cstr(buf));
         /* Next iteration's line = where IN the parent's body this call
          * was made.  That's recorded on f->caller_node. */
@@ -1821,7 +1821,7 @@ VALUE korb_build_backtrace(CTX *c, int raise_line) {
     /* Always tack on a <main> entry — line is whatever the
      * outermost-method's caller_node pointed at (i.e. the toplevel
      * call site), or raise_line when raising directly from main. */
-    snprintf(buf, sizeof(buf), "%s:%d:in `<main>'", default_file, line);
+    snprintf(buf, sizeof(buf), "%s:%d:in '<main>'", default_file, line);
     korb_ary_push(arr, korb_str_new_cstr(buf));
     return arr;
 }
