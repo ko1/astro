@@ -5141,19 +5141,32 @@ sm_join(CTX *c, int argc, VALUE *argv)
     VALUE seq  = argv[1];
     const char *sep = PY_PTR(self)->str.chars;
     size_t slen = PY_PTR(self)->str.len;
-    // Materialise iterable into a list of strings.
-    VALUE items[256];
+    // Materialise iterable into a (possibly heap-allocated) list of strings.
+    VALUE  fixed[64];
+    VALUE *items = fixed;
+    size_t cap = 64;
     int n = 0;
     if (py_is_list(seq) || py_is_tuple(seq)) {
         size_t sn = PY_PTR(seq)->list.len;
-        if (sn > 256) py_raise_exc(c, c->EXC_RuntimeError, "join: list too long");
+        if (sn > cap) {
+            cap = sn;
+            items = (VALUE *)GC_malloc(sizeof(VALUE) * cap);
+        }
         for (size_t i = 0; i < sn; i++) items[n++] = PY_PTR(seq)->list.items[i];
     } else {
         struct py_iter it; py_iter_init(c, &it, seq);
         if (c->state != PY_STATE_NORMAL) return PY_NONE;
         VALUE x;
         while (py_iter_next(c, &it, &x)) {
-            if (n >= 256) py_raise_exc(c, c->EXC_RuntimeError, "join: too many items");
+            if ((size_t)n >= cap) {
+                cap *= 2;
+                if (items == fixed) {
+                    items = (VALUE *)GC_malloc(sizeof(VALUE) * cap);
+                    memcpy(items, fixed, sizeof(fixed));
+                } else {
+                    items = (VALUE *)GC_realloc(items, sizeof(VALUE) * cap);
+                }
+            }
             items[n++] = x;
         }
     }

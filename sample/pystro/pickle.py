@@ -53,6 +53,25 @@ def _dumps_inner(v, out):
         out.append(";")
         for x in items:
             _dumps_inner(x, out)
+    elif isinstance(v, bytes):
+        out.append("b")
+        out.append(str(len(v)))
+        out.append(":")
+        # Encode each byte as 2-hex chars.
+        for byte in v:
+            hi = byte >> 4
+            lo = byte & 0xf
+            for d in (hi, lo):
+                if d < 10: out.append(chr(48 + d))
+                else: out.append(chr(87 + d))  # 'a'..'f'
+    elif hasattr(v, "__dict__"):
+        # Best-effort user-class serialization: store class name and dict.
+        out.append("C")
+        cls_name = type(v).__name__
+        out.append(str(len(cls_name)))
+        out.append(":")
+        out.append(cls_name)
+        _dumps_inner(v.__dict__, out)
     else:
         raise TypeError("pickle: cannot serialize " + str(type(v)))
 
@@ -110,7 +129,51 @@ def _loads_inner(buf, pos):
         for _ in range(L):
             s.add(_loads_inner(buf, pos))
         return s
+    if tag == "b":
+        L = int(_read_until(buf, pos, ":"))
+        out = bytearray()
+        for _ in range(L):
+            ch1 = buf[pos[0]]; pos[0] += 1
+            ch2 = buf[pos[0]]; pos[0] += 1
+            def _hex(c):
+                if "0" <= c <= "9": return ord(c) - 48
+                return ord(c) - 87
+            out.append(_hex(ch1) * 16 + _hex(ch2))
+        return bytes(out)
+    if tag == "C":
+        L = int(_read_until(buf, pos, ":"))
+        cls_name = buf[pos[0]:pos[0] + L]
+        pos[0] += L
+        d = _loads_inner(buf, pos)
+        # Look up the class in the caller's globals via builtins.
+        # Fallback: synthesise a SimpleNamespace-like wrapper.
+        cls = _find_class_by_name(cls_name)
+        if cls is not None:
+            try:
+                inst = cls.__new__(cls) if hasattr(cls, "__new__") else cls()
+            except Exception:
+                inst = cls()
+        else:
+            class _Loaded: pass
+            _Loaded.__name__ = cls_name
+            inst = _Loaded()
+        for k, v in d.items():
+            setattr(inst, k, v)
+        return inst
     raise ValueError("pickle: unknown tag " + repr(tag))
+
+
+def _find_class_by_name(name):
+    # Walk caller's modules / builtins for a class with that name.  This
+    # is best-effort only — pickle doesn't expose globals to imported
+    # modules in CPython without a custom Unpickler either.
+    import sys as _sys
+    for mod in _sys.modules.values():
+        if mod is None: continue
+        c = getattr(mod, name, None)
+        if c is not None and isinstance(c, type):
+            return c
+    return None
 
 
 def loads(b):

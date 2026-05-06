@@ -1,0 +1,8 @@
+ok PickleBytesTest test_bytes
+ok PickleBytesTest test_empty_bytes
+ok PickleBytesTest test_long_bytes
+ok PickleNestedTest test_floats
+ok PickleNestedTest test_nested
+ok PickleNestedTest test_set
+---
+passed=6 failed=0
