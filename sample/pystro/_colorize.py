@@ -89,6 +89,7 @@ class _Theme:
         self.syntax = Syntax()
         self.traceback = Traceback()
         self.unittest = Unittest()
+        self.timeit = _ThemeSection()
     def copy_with(self, **kw):
         return self
     @classmethod
