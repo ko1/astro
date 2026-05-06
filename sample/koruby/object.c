@@ -1688,6 +1688,30 @@ VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv)
     if (argc > 16) args_buf = korb_xmalloc(sizeof(VALUE) * argc);
     for (uint32_t i = 0; i < argc; i++) args_buf[i] = argv[i];
 
+    /* Lambda strict arity: yield-to-a-lambda must match the lambda's
+     * parameter count exactly (no destructure / pad).  Non-lambda
+     * blocks remain permissive. */
+    if (blk->is_lambda && blk->rest_slot < 0) {
+        uint32_t required = (blk->params_cnt > blk->opt_cnt) ? blk->params_cnt - blk->opt_cnt : 0;
+        if (argc < required || argc > blk->params_cnt) {
+            VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+            korb_raise(c, (struct korb_class *)eArg,
+                       "wrong number of arguments (given %u, expected %u)",
+                       argc, blk->params_cnt);
+            return Qnil;
+        }
+    } else if (blk->is_lambda) {
+        /* Lambda with rest_slot — lower bound only. */
+        uint32_t required = (blk->params_cnt > blk->opt_cnt) ? blk->params_cnt - blk->opt_cnt : 0;
+        if (argc < required) {
+            VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+            korb_raise(c, (struct korb_class *)eArg,
+                       "wrong number of arguments (given %u, expected %u+)",
+                       argc, required);
+            return Qnil;
+        }
+    }
+
     /* Per-iteration capture path: when the block creates inner procs
      * (`(1..3).each { |i| procs << proc { i } }`), allocate a fresh env
      * for THIS yield's block-locals so the captured proc sees its own
