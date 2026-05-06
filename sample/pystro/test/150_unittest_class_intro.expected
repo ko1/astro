@@ -1,0 +1,16 @@
+ok TypeTest test_type_names
+ok TypeTest test_user_class_name
+ok IsinstanceTest test_chain
+ok IsinstanceTest test_tuple
+ok IssubclassTest test_chain
+ok IssubclassTest test_object_root
+ok HasattrTest test_getattr_default
+ok HasattrTest test_hasattr
+ok MROTest test_mro
+ok CallableTest test_basic
+ok CallableTest test_call_method
+ok InitSubclassTest test_collects
+ok InitSubclassTest test_kwargs
+ok BasesTest test_bases
+---
+passed=14 failed=0
