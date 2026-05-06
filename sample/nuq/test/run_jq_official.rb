@@ -65,14 +65,32 @@ err  = 0
 skip = 0
 failures = []
 
+PER_TEST_TIMEOUT = 10
+
 tests.each_with_index do |t, idx|
-  out, err_msg, st = nil, nil, nil
+  out, err_msg, st, killed = nil, nil, nil, false
   begin
-    out, err_msg, st = Open3.capture3(NUQ, '-c', '--no-compile', t[:filter],
-                                      stdin_data: t[:input])
+    Open3.popen3(NUQ, '-c', '--no-compile', t[:filter]) do |stdin, stdout, stderr, wait_thr|
+      begin stdin.write(t[:input]); rescue Errno::EPIPE; end
+      stdin.close rescue nil
+      out_thr = Thread.new { stdout.read }
+      err_thr = Thread.new { stderr.read }
+      if wait_thr.join(PER_TEST_TIMEOUT).nil?
+        Process.kill('KILL', wait_thr.pid) rescue nil
+        wait_thr.value rescue nil
+        killed = true
+      end
+      out_thr.join; err_thr.join
+      out = out_thr.value; err_msg = err_thr.value; st = wait_thr.value
+    end
   rescue => e
     err += 1
     failures << [idx, t, "exception: #{e.message}"]
+    next
+  end
+  if killed
+    fail += 1
+    failures << [idx, t, "timeout (#{PER_TEST_TIMEOUT}s)"]
     next
   end
 
