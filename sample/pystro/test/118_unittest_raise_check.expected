@@ -1,0 +1,6 @@
+ok RaiseTypeCheckTest test_class
+ok RaiseTypeCheckTest test_instance
+ok RaiseTypeCheckTest test_int
+ok RaiseTypeCheckTest test_str
+---
+passed=4 failed=0

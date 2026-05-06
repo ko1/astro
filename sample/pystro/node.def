@@ -822,6 +822,11 @@ node_raise(CTX * restrict c, NODE * restrict n, NODE *exc)
     if (py_is_class(v)) {
         v = py_apply(c, v, 0, NULL);
         if (UNLIKELY(c->state != PY_STATE_NORMAL && c->state != PY_STATE_RAISE)) return PY_NONE;
+    } else if (!py_is_instance(v) || !PY_PTR(v)->inst.cls
+               || !PY_PTR(v)->inst.cls->cls.is_exception) {
+        py_raise_exc(c, c->EXC_TypeError,
+                     "exceptions must derive from BaseException");
+        return PY_NONE;
     }
     // Stash a traceback snapshot on the raised instance, if not set yet.
     if (py_is_instance(v) && c->call_top > 0) {
