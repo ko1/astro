@@ -131,19 +131,48 @@ class _AssertRaisesCM:
 
 
 # Run all TestCase subclasses' test_* methods declared in the caller's
-# module.  Caller passes globals(), or we use sys.modules trick.
-def main(scope=None):
-    if scope is None:
-        scope = {}
+# module.  Caller passes globals(), or we walk sys.modules.__main__.
+def main(scope=None, *args, **kwargs):
+    # CPython's unittest.main accepts module=, exit=, verbosity=, etc.
+    # Pystro's stub ignores them.
+    if isinstance(scope, dict):
+        ns = scope
+    else:
+        # Default: scan all modules that have test cases.  Prefer
+        # __main__ if present.
+        import sys
+        ns = {}
+        try:
+            main_mod = sys.modules.get("__main__")
+            if main_mod is not None:
+                ns = vars(main_mod)
+        except Exception:
+            pass
+        if not ns:
+            # Scan all modules for TestCase subclasses (best effort).
+            for m in list(sys.modules.values()):
+                if m is None: continue
+                try:
+                    md = vars(m)
+                except TypeError:
+                    continue
+                for name in md:
+                    v = md[name]
+                    if isinstance(v, type) and hasattr(v, "_is_test_case_"):
+                        ns[name] = v
 
     cases = []
-    for name in scope:
-        v = scope[name]
-        if hasattr(v, "_is_test_case_"):
+    seen = set()
+    for name in ns:
+        v = ns[name]
+        if isinstance(v, type) and hasattr(v, "_is_test_case_"):
+            if id(v) in seen: continue
+            seen.add(id(v))
             cases.append(v)
 
     passed = 0
     failed = 0
+    skipped = 0
     for cls in cases:
         method_names = []
         for n in dir(cls):
@@ -151,22 +180,100 @@ def main(scope=None):
                 method_names.append(n)
         for mn in method_names:
             inst = cls()
-            inst.setUp()
+            try:
+                inst.setUp()
+            except SkipTest as e:
+                skipped += 1
+                print("skip", cls.__name__, mn, ":", e)
+                continue
             try:
                 m = getattr(inst, mn)
                 m()
                 passed += 1
                 print("ok", cls.__name__ if hasattr(cls, "__name__") else "?", mn)
+            except SkipTest as e:
+                skipped += 1
+                print("skip", cls.__name__, mn, ":", e)
             except Exception as e:
                 failed += 1
                 print("FAIL", cls.__name__ if hasattr(cls, "__name__") else "?", mn, ":", e)
-            inst.tearDown()
+            try: inst.tearDown()
+            except Exception: pass
     print("---")
-    print("passed=" + str(passed) + " failed=" + str(failed))
+    print("passed=" + str(passed) + " failed=" + str(failed) +
+          (" skipped=" + str(skipped) if skipped else ""))
     return 0 if failed == 0 else 1
 
 
 # Mark TestCase as test-case-base (for the main() walker).
 TestCase._is_test_case_ = True
 
-__all__ = ["TestCase", "main"]
+
+# Skip mechanism — when a test raises SkipTest, the runner records skip.
+class SkipTest(Exception):
+    pass
+
+
+def skip(reason):
+    """Decorator: unconditionally skip the decorated test."""
+    def deco(fn):
+        def w(*a, **kw):
+            raise SkipTest(reason)
+        w.__skip__ = True
+        w.__skip_reason__ = reason
+        return w
+    return deco
+
+
+def skipIf(condition, reason):
+    if condition: return skip(reason)
+    def deco(fn): return fn
+    return deco
+
+
+def skipUnless(condition, reason):
+    if not condition: return skip(reason)
+    def deco(fn): return fn
+    return deco
+
+
+def expectedFailure(fn):
+    def w(*a, **kw):
+        try:
+            fn(*a, **kw)
+        except Exception:
+            return
+        raise AssertionError("test was expected to fail but didn't")
+    return w
+
+
+# Test loader / suite / runner — minimal so test.support.run_unittest can
+# instantiate them.
+class TestLoader:
+    def loadTestsFromTestCase(self, cls):
+        return TestSuite([cls])
+
+
+class TestSuite:
+    def __init__(self, cases=()):
+        self.cases = list(cases)
+    def addTest(self, t):
+        self.cases.append(t)
+    def addTests(self, tests):
+        for t in tests: self.cases.append(t)
+
+
+class TextTestRunner:
+    def __init__(self, *args, **kwargs):
+        pass
+    def run(self, suite):
+        for cls in suite.cases:
+            if isinstance(cls, type):
+                main(cls.__dict__)
+            else:
+                # treat as suite
+                self.run(cls)
+
+
+__all__ = ["TestCase", "main", "SkipTest", "skip", "skipIf", "skipUnless",
+           "expectedFailure", "TestLoader", "TestSuite", "TextTestRunner"]

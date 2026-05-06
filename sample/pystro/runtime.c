@@ -3504,6 +3504,146 @@ make_builtin_bound(VALUE self, struct type_method *tm)
     return py_make_bound(self, fn);
 }
 
+// Built-in dunder methods on container types.  Code like
+// `frozenset(xs).__contains__` should yield a bound method.  We
+// implement each dunder via a tiny shim builtin that delegates to the
+// existing C-level operation (py_contains, py_seq_len, etc.).
+static VALUE
+bi_dunder_contains(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    return py_contains(c, argv[0], argv[1]) ? PY_TRUE : PY_FALSE;
+}
+static VALUE
+bi_dunder_len(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    return PY_FIX((int64_t)py_seq_len(c, argv[0]));
+}
+static VALUE
+bi_dunder_iter(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    extern VALUE bi_iter(CTX *c, int argc, VALUE *argv);
+    return bi_iter(c, 1, argv);
+}
+static VALUE
+bi_dunder_getitem(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    return py_list_get(c, argv[0], argv[1]);
+}
+static VALUE
+bi_dunder_setitem(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    return py_list_set(c, argv[0], argv[1], argv[2]);
+}
+static VALUE
+bi_dunder_eq(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    return py_eq_bool(c, argv[0], argv[1]) ? PY_TRUE : PY_FALSE;
+}
+static VALUE
+bi_dunder_ne(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    return py_eq_bool(c, argv[0], argv[1]) ? PY_FALSE : PY_TRUE;
+}
+static VALUE
+bi_dunder_hash(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    return PY_FIX((int64_t)py_hash(c, argv[0]));
+}
+static VALUE
+bi_dunder_repr(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc; (void)c;
+    extern VALUE bi_repr(CTX *c, int argc, VALUE *argv);
+    return bi_repr(c, 1, argv);
+}
+static VALUE
+bi_dunder_str(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    return py_to_str(c, argv[0]);
+}
+static VALUE
+bi_dunder_bool(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc; (void)c;
+    return py_is_truthy(argv[0]) ? PY_TRUE : PY_FALSE;
+}
+static VALUE
+bi_dunder_call(CTX *c, int argc, VALUE *argv)
+{
+    return py_apply(c, argv[0], argc - 1, argv + 1);
+}
+
+VALUE
+py_dunder_bound(CTX *c, VALUE recv, const char *name)
+{
+    (void)c;
+    bool is_container =
+        py_is_list(recv) || py_is_tuple(recv) || py_is_dict(recv) ||
+        py_is_set(recv) || py_is_frozenset(recv) || py_is_str(recv) ||
+        py_is_byteseq(recv) || py_is_range(recv);
+    bool is_sized = is_container;
+    bool is_subscriptable = py_is_list(recv) || py_is_tuple(recv) ||
+        py_is_dict(recv) || py_is_str(recv) || py_is_byteseq(recv) ||
+        py_is_range(recv);
+    bool is_iterable = is_container;
+    bool is_assignable = py_is_list(recv) || py_is_dict(recv) ||
+        (PY_IS_PTR(recv) && PY_PTR(recv)->type == PY_T_BYTEARRAY);
+    bool is_callable = py_is_func(recv) || py_is_builtin(recv) ||
+        py_is_bound(recv) || py_is_class(recv);
+
+    static const struct {
+        const char *name;
+        VALUE (*fn)(CTX *, int, VALUE *);
+        int min_argc, max_argc;
+    } shims[] = {
+        { "__contains__", bi_dunder_contains, 2, 2 },
+        { "__len__",      bi_dunder_len,      1, 1 },
+        { "__iter__",     bi_dunder_iter,     1, 1 },
+        { "__getitem__",  bi_dunder_getitem,  2, 2 },
+        { "__setitem__",  bi_dunder_setitem,  3, 3 },
+        { "__eq__",       bi_dunder_eq,       2, 2 },
+        { "__ne__",       bi_dunder_ne,       2, 2 },
+        { "__hash__",     bi_dunder_hash,     1, 1 },
+        { "__repr__",     bi_dunder_repr,     1, 1 },
+        { "__str__",      bi_dunder_str,      1, 1 },
+        { "__bool__",     bi_dunder_bool,     1, 1 },
+        { "__call__",     bi_dunder_call,     1, -1 },
+    };
+    int idx = -1;
+    for (size_t i = 0; i < sizeof(shims)/sizeof(shims[0]); i++) {
+        if (strcmp(shims[i].name, name) == 0) { idx = (int)i; break; }
+    }
+    if (idx < 0) return PY_NONE;
+    // Type-eligibility filter — return PY_NONE if the operation
+    // doesn't apply, so hasattr() returns False as it should.
+    bool ok = true;
+    switch (idx) {
+      case 0: ok = is_container; break;                 // __contains__
+      case 1: ok = is_sized; break;                     // __len__
+      case 2: ok = is_iterable; break;                  // __iter__
+      case 3: ok = is_subscriptable; break;             // __getitem__
+      case 4: ok = is_assignable; break;                // __setitem__
+      case 5: case 6: ok = true; break;                 // __eq__/__ne__ — universal
+      case 7: ok = true; break;                         // __hash__ — universal
+      case 8: case 9: ok = true; break;                 // __repr__/__str__ — universal
+      case 10: ok = true; break;                        // __bool__ — universal
+      case 11: ok = is_callable; break;                 // __call__
+    }
+    if (!ok) return PY_NONE;
+    VALUE fn = py_make_builtin(name, shims[idx].fn,
+                               shims[idx].min_argc, shims[idx].max_argc);
+    return py_make_bound(recv, fn);
+}
+
 VALUE
 py_builtin_method(CTX *c, VALUE recv, const char *name)
 {
@@ -3984,7 +4124,21 @@ py_getattr(CTX *c, VALUE v, const char *name)
         VALUE av[1] = { v };
         return bi_type(c, 1, av);
     }
-    py_raise_exc(c, c->EXC_AttributeError, "object has no attribute '%s'", name);
+    // Built-in dunders that aren't in the per-type method tables:
+    // expose `__contains__`, `__len__`, `__iter__`, `__getitem__`,
+    // `__eq__`, `__ne__`, `__hash__`, `__repr__`, `__str__` as bound
+    // builtin methods so code like `frozenset(xs).__contains__` works.
+    {
+        extern VALUE py_dunder_bound(CTX *c, VALUE recv, const char *name);
+        VALUE bm = py_dunder_bound(c, v, name);
+        if (bm != PY_NONE) return bm;
+    }
+    extern VALUE bi_type(CTX *c, int argc, VALUE *argv);
+    VALUE av[1] = { v };
+    VALUE t = bi_type(c, 1, av);
+    const char *tname = "?";
+    if (py_is_class(t)) tname = PY_PTR(t)->cls.name;
+    py_raise_exc(c, c->EXC_AttributeError, "'%s' object has no attribute '%s'", tname, name);
 }
 
 static __thread int py_skip_setattr_hook = 0;
@@ -8939,7 +9093,7 @@ bi_str(CTX *c, int argc, VALUE *argv)
     return py_to_str(c, argv[0]);
 }
 
-static VALUE
+VALUE
 bi_repr(CTX *c, int argc, VALUE *argv) { (void)argc; return py_to_repr(c, argv[0]); }
 
 static VALUE
@@ -11207,6 +11361,11 @@ read_file_into_buf(const char *path)
 extern void tokenize(const char *src, const char *filename);
 extern struct Node *parse_program(void);
 
+// Like bi_import but swallows ModuleNotFoundError (returns None).
+// Used by `from a.b import c` desugar where c may be either an
+// attribute or a submodule.
+static VALUE bi_try_import(CTX *c, int argc, VALUE *argv);
+
 static VALUE
 bi_import(CTX *c, int argc, VALUE *argv)
 {
@@ -11459,6 +11618,17 @@ bi_import(CTX *c, int argc, VALUE *argv)
     lexer_restore_free(lexsave);
     parser_restore_free(parsesave);
 
+    // Cache a placeholder module BEFORE executing the body, so a
+    // self-referential import (e.g. test/support/__init__.py doing
+    // `from test.support import os_helper`) finds the in-progress
+    // module in sys.modules instead of re-loading recursively.
+    // (also see bi_try_import below)
+    struct pyobj *placeholder_mo = py_alloc(PY_T_MODULE);
+    placeholder_mo->module.name = name;
+    placeholder_mo->module.globals = new_g;
+    VALUE placeholder = PY_OBJ_VAL(placeholder_mo);
+    py_dict_set(c, mod_dict, argv[0], placeholder);
+
     // Wrap module body in a local try-frame so that any exception
     // inside module init is caught here.  We then restore globals
     // and re-raise via py_raise_exc so the caller's try/except
@@ -11472,7 +11642,9 @@ bi_import(CTX *c, int argc, VALUE *argv)
     if (c->state == PY_STATE_RAISE) {
         // Module init raised — restore caller's globals first, then
         // re-raise so the caller's try/except (running on the original
-        // globals) sees it.  Do NOT cache the half-initialised module.
+        // globals) sees it.  Remove the placeholder so a retry won't
+        // see the half-initialised module.
+        py_dict_remove(c, mod_dict, argv[0]);
         VALUE exc = c->state_value;
         c->globals = saved_g;
         free(src);
@@ -11484,16 +11656,65 @@ bi_import(CTX *c, int argc, VALUE *argv)
     }
     c->state = PY_STATE_NORMAL; c->state_value = PY_NONE;
 
-    // Wrap globals into a module pyobj.
-    struct pyobj *mo = py_alloc(PY_T_MODULE);
-    mo->module.name = py_make_str(name, strlen(name)) ? name : name;
-    mo->module.globals = new_g;
-    VALUE mod = PY_OBJ_VAL(mo);
+    // Reuse the placeholder we cached above (its globals dict is the
+    // same `new_g` that the body just initialised).
+    VALUE mod = placeholder;
 
     c->globals = saved_g;
     py_dict_set(c, mod_dict, argv[0], mod);
+    // For dotted modules `a.b`: set `b` as attribute of `a`'s module so
+    // user code that does `import a.b` then accesses `a.b.foo` works.
+    {
+        const char *last_dot = NULL;
+        for (size_t i = 0; i < name_len; i++)
+            if (name[i] == '.') last_dot = &name[i];
+        if (last_dot) {
+            size_t parent_len = (size_t)(last_dot - name);
+            VALUE parent_name = py_make_str(name, parent_len);
+            if (py_dict_has(c, mod_dict, parent_name)) {
+                VALUE parent = py_dict_get(c, mod_dict, parent_name);
+                if (py_is_module(parent)) {
+                    const char *child = last_dot + 1;
+                    // Set on parent module's globals.
+                    struct pyglobals *saved = c->globals;
+                    c->globals = PY_PTR(parent)->module.globals;
+                    py_global_set(c, child, mod);
+                    c->globals = saved;
+                }
+            }
+        }
+    }
     free(src);
     return mod;
+}
+
+static VALUE
+bi_modules(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc; (void)argv;
+    return modules_dict(c);
+}
+
+// Best-effort submodule import: returns the imported module or None if
+// not found.  Used to auto-load submodules in `from a.b import c`.
+static VALUE
+bi_try_import(CTX *c, int argc, VALUE *argv)
+{
+    int sst = c->state; VALUE sv = c->state_value;
+    int saved_top = c->try_top;
+    jmp_buf jb;
+    if (c->try_top < 64) c->try_stack[c->try_top++] = &jb;
+    VALUE r = PY_NONE;
+    if (setjmp(jb) == 0) {
+        c->state = PY_STATE_NORMAL; c->state_value = PY_NONE;
+        r = bi_import(c, argc, argv);
+        if (c->state == PY_STATE_RAISE) r = PY_NONE;
+    } else {
+        r = PY_NONE;
+    }
+    c->try_top = saved_top;
+    c->state = sst; c->state_value = sv;
+    return r;
 }
 
 // Synthetic Exception.__init__(self, *args) — sets self.args and
@@ -12408,7 +12629,7 @@ bi_filter(CTX *c, int argc, VALUE *argv)
     return PY_OBJ_VAL(o);
 }
 
-static VALUE
+VALUE
 bi_iter(CTX *c, int argc, VALUE *argv)
 {
     if (argc == 2) {
@@ -12805,6 +13026,10 @@ install_builtins(CTX *c)
     py_global_define(c, "__pystro_delglobal__", py_make_builtin("__pystro_delglobal__", bi_pystro_delglobal, 1, 1));
     py_global_define(c, "__pystro_import__",    py_make_builtin("__pystro_import__", bi_import, 1, 1));
     py_global_define(c, "__import__",           py_make_builtin("__import__", bi_import, 1, 1));
+    py_global_define(c, "__pystro_try_import__",
+        py_make_builtin("__pystro_try_import__", bi_try_import, 1, 1));
+    py_global_define(c, "__pystro_modules__",
+        py_make_builtin("__pystro_modules__", bi_modules, 0, 0));
     py_global_define(c, "__name__",             py_make_str("__main__", 8));
     py_global_define(c, "__pystro_import_star__", py_make_builtin("__pystro_import_star__", bi_import_star, 1, 1));
     // C-level math primitives, surfaced through the `math` module (math.py).

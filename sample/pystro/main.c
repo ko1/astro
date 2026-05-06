@@ -140,6 +140,19 @@ main(int argc, char *argv[])
     extern CTX *py_current_ctx;
     py_current_ctx = c;
     install_builtins(c);
+    // Register the running script's globals as `sys.modules["__main__"]`
+    // (CPython's convention).  Lets unittest.main() and similar
+    // introspect the entry-point module by name.
+    {
+        extern VALUE modules_dict(CTX *c);
+        struct pyobj *mo = (struct pyobj *)GC_malloc(
+            offsetof(struct pyobj, module) + sizeof(((struct pyobj *)0)->module));
+        mo->type = PY_T_MODULE;
+        mo->module.name = "__main__";
+        mo->module.globals = c->globals;
+        VALUE mod = PY_OBJ_VAL(mo);
+        py_dict_set(c, modules_dict(c), py_make_str("__main__", 8), mod);
+    }
 
     if (repl_mode) {
         // Read-eval-print loop.  Each input line is parsed as a

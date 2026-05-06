@@ -58,7 +58,7 @@ stdin  = _StdStream(0)
 stdout = _StdStream(1)
 stderr = _StdStream(2)
 
-modules = {}
+modules = __pystro_modules__()
 
 def exit(*args):
     # CPython raises SystemExit so `try: sys.exit()` is catchable.  Only

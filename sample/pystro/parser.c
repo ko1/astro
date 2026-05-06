@@ -3401,6 +3401,15 @@ parse_del(void)
         if (idx >= 0)
             return ALLOC_node_lunbind((uint32_t)idx);
     }
+    // class body: `del _make_binop` should remove the class attribute,
+    // not touch module globals.  Implemented as a class method delete.
+    if (in_class_body) {
+        // Build: class_method_set(name, NULL) — actually we need an
+        // explicit class-method delete.  Approximate by calling
+        // `__pystro_delclassattr__(name)` which we add below.  Until
+        // that exists, set to `None` and accept that the slot lingers.
+        return ALLOC_node_class_method_set(base, ALLOC_node_const_none());
+    }
     // global: call __pystro_delglobal__(name_str).
     NODE *args[1] = { ALLOC_node_const_str(base) };
     size_t bidx = node_table_reserve(args, 1);
@@ -3687,6 +3696,21 @@ parse_simple_stmt(void)
                 if (peek_tok(0)->kind != T_NAME) parse_error("expected NAME after as");
                 target = peek_tok(0)->sval;
                 tok_pos++;
+            }
+            // Auto-import submodule: `from a.b import c` may need to
+            // load `a.b.c` (a submodule) before `mod.c` resolves.  Ignore
+            // any error from this side-import — the subsequent attr_get
+            // either succeeds (regular attr) or raises AttributeError.
+            // Build "dotted.src" string.
+            char sub_path[512];
+            if (dn + strlen(src) + 2 < sizeof(sub_path)) {
+                memcpy(sub_path, dotted, dn);
+                sub_path[dn] = '.';
+                strcpy(sub_path + dn + 1, src);
+                NODE *side = ALLOC_node_call_1(
+                    ALLOC_node_gref(intern_name("__pystro_try_import__", 21)),
+                    ALLOC_node_const_str(intern_name(sub_path, strlen(sub_path))));
+                result = ALLOC_node_seq(result, side);
             }
             NODE *get = ALLOC_node_attr_get(load_tmp, src);
             result = ALLOC_node_seq(result, make_store(target, get));
