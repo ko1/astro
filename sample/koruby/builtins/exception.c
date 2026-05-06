@@ -33,6 +33,51 @@ static VALUE exc_backtrace(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (!UNDEF_P(bt) && !NIL_P(bt)) return bt;
     return korb_ary_new();
 }
+
+/* Exception#set_backtrace(arg) — accepts nil, a String, or an Array of
+ * Strings.  Anything else is TypeError. */
+static VALUE exc_set_backtrace(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1) {
+        VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+        korb_raise(c, (struct korb_class *)eA, "wrong number of arguments (given 0, expected 1)");
+        return Qnil;
+    }
+    VALUE arg = argv[0];
+    VALUE bt;
+    if (NIL_P(arg)) {
+        bt = Qnil;
+    } else if (!SPECIAL_CONST_P(arg) && BUILTIN_TYPE(arg) == T_STRING) {
+        bt = korb_ary_new_capa(1);
+        korb_ary_push(bt, arg);
+    } else if (!SPECIAL_CONST_P(arg) && BUILTIN_TYPE(arg) == T_ARRAY) {
+        struct korb_array *a = (struct korb_array *)arg;
+        for (long i = 0; i < a->len; i++) {
+            VALUE e = a->ptr[i];
+            if (SPECIAL_CONST_P(e) || BUILTIN_TYPE(e) != T_STRING) {
+                VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+                korb_raise(c, (struct korb_class *)eT, "backtrace must be Array of String");
+                return Qnil;
+            }
+        }
+        bt = arg;
+    } else {
+        VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+        korb_raise(c, (struct korb_class *)eT, "backtrace must be Array of String");
+        return Qnil;
+    }
+    korb_ivar_set(self, korb_intern("@__backtrace__"), bt);
+    return arg;
+}
+
+/* Exception#backtrace_locations — koruby doesn't track Thread::Backtrace::
+ * Location objects; for compatibility we return the same array as
+ * #backtrace (or nil if no backtrace).  Tests that probe individual
+ * Location attributes will fail, but the common nil-vs-set check works. */
+static VALUE exc_backtrace_locations(CTX *c, VALUE self, int argc, VALUE *argv) {
+    VALUE bt = korb_ivar_get(self, korb_intern("@__backtrace__"));
+    if (UNDEF_P(bt) || NIL_P(bt)) return Qnil;
+    return bt;
+}
 static VALUE exc_initialize(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc >= 1) {
         VALUE msg = argv[0];

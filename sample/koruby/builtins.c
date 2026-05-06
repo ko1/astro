@@ -1044,6 +1044,8 @@ void korb_init_builtins(void) {
             DEF(cExc, "to_s",      exc_to_s,      0);
             DEF(cExc, "inspect",   exc_inspect,   0);
             DEF(cExc, "backtrace", exc_backtrace, 0);
+            DEF(cExc, "set_backtrace", exc_set_backtrace, 1);
+            DEF(cExc, "backtrace_locations", exc_backtrace_locations, 0);
             DEF(cExc, "cause",     exc_cause,     0);
             DEF(cExc, "full_message", exc_full_message, -1);
             DEF(cExc, "detailed_message", exc_detailed_message, -1);

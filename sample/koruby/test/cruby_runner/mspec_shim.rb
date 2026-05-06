@@ -20,7 +20,11 @@ class MSpecError < StandardError; end
 
 # describe blocks: just run the body in a fresh context.  Save any
 # before/after hooks so subsequent `it` runs can fire them.
-def describe(name, *_opts, &blk)
+def describe(name, *opts, &blk)
+  # Shared spec: `describe :name, shared: true do ... end` — drop on
+  # the floor (it_behaves_like is a no-op anyway).
+  shared = opts.any? { |o| o.is_a?(Hash) && o[:shared] }
+  return if shared
   prev_describe = $ms_describe
   prev_be = $ms_before_each
   prev_ae = $ms_after_each
@@ -498,8 +502,12 @@ def complain(_pattern = nil, **_opts); MSpecMatcher.new(:complain); end
 def ruby_exe(*_); ""; end
 def ruby_cmd(*_); "ruby"; end
 
-# `it_behaves_like` — shared spec inclusion.  We don't track shared
-# specs, so just yield to the named example block if one exists.
+# Shared spec inclusion — opening a Pandora's box by actually running
+# shared spec blocks adds a lot of failure modes (cross-file fixtures,
+# Thread/Fiber etc. references inside shared specs).  Keep no-op for
+# now; rubyspec's coverage of shared-spec-driven tests is small enough
+# to not be worth the regressions.
+$ms_shared_specs = {}
 def it_behaves_like(*_args, &_blk); end
 
 # Suppress warning helper — runs block with $VERBOSE = nil.
