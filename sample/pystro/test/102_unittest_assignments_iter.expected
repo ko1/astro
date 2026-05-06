@@ -1,0 +1,6 @@
+ok TrailingCommaTupleTest test_function_def_trailing
+ok TrailingCommaTupleTest test_one_tuple
+ok ListIaddIterTest test_genexp
+ok ListIaddIterTest test_iter
+---
+passed=4 failed=0

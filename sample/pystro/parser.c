@@ -1874,6 +1874,7 @@ static NODE *
 parse_expr(void) { return parse_walrus(); }
 
 // expr_list: expr (',' expr)+ → tuple; single → expr.
+// Trailing comma creates a 1-tuple (`x,` -> (x,)).
 static NODE *
 parse_expr_list(void)
 {
@@ -1881,14 +1882,18 @@ parse_expr_list(void)
     if (peek_tok(0)->kind != T_COMMA) return first;
     NODE *items[64];
     int n = 0; items[n++] = first;
+    bool saw_trailing_comma = false;
     while (match_tok(T_COMMA)) {
         int k = peek_tok(0)->kind;
         if (k == T_NEWLINE || k == T_RPAREN || k == T_RBRACK || k == T_RBRACE
-                || k == T_COLON || k == T_ASSIGN || k == T_SEMI) break;
+                || k == T_COLON || k == T_ASSIGN || k == T_SEMI) {
+            saw_trailing_comma = true;
+            break;
+        }
         if (n >= 64) parse_error("expr list too long");
         items[n++] = parse_expr();
     }
-    if (n == 1) return items[0];
+    if (n == 1 && !saw_trailing_comma) return items[0];
     size_t base = node_table_reserve(items, n);
     return ALLOC_node_make_tuple((uint32_t)base, (uint32_t)n);
 }
@@ -2092,6 +2097,8 @@ parse_params(Scope *sc, int *out_nparams, int *out_n_pos_named, int *out_ndefaul
 
     if (peek_tok(0)->kind != T_RPAREN) {
         for (;;) {
+            // Trailing comma allowed.
+            if (peek_tok(0)->kind == T_RPAREN) break;
             // **kwargs always comes last.
             if (match_tok(T_STAR_STAR)) {
                 if (peek_tok(0)->kind != T_NAME) parse_error("expected NAME after '**'");

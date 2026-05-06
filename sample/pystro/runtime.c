@@ -1179,6 +1179,17 @@ py_add(CTX *c, VALUE a, VALUE b)
         memcpy(items + la, PY_PTR(b)->list.items, sizeof(VALUE) * lb);
         return py_is_list(a) ? py_make_list(items, la + lb) : py_make_tuple(items, la + lb);
     }
+    // list + iterable (only via __iadd__-style) — Python's list __iadd__
+    // accepts any iterable.  We support `list + iter` here too.
+    if (py_is_list(a) && PY_IS_PTR(b)
+        && (PY_PTR(b)->type == PY_T_ITER || PY_PTR(b)->type == PY_T_GEN)) {
+        VALUE r = py_make_list(PY_PTR(a)->list.items, PY_PTR(a)->list.len);
+        struct py_iter it; py_iter_init(c, &it, b);
+        if (c->state != PY_STATE_NORMAL) return r;
+        VALUE x;
+        while (py_iter_next(c, &it, &x)) py_list_append(c, r, x);
+        return r;
+    }
     if (py_int_or_bool(a) && py_int_or_bool(b)) {
         mpz_t za, zb; py_to_mpz(c, a, za); py_to_mpz(c, b, zb);
         mpz_add(za, za, zb);
