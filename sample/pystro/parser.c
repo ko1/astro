@@ -2387,11 +2387,21 @@ parse_for(void)
 //   ndefaults       # of (slot, expr) entries pushed to PYSTRO_DEFAULTS
 //   didx            base in PYSTRO_DEFAULTS
 //   nidx            base in PYSTRO_NAME_TABLE
+// Parse-time scratch buffer for parameter annotations.  parse_params
+// fills these arrays so the caller (parse_def / parse_lambda) can
+// attach them to the function via `f.__annotations__ = {...}` after
+// the def node is built.  Cleared at parse_params entry.
+#define MAX_ANNS 64
+static const char *g_ann_names[MAX_ANNS];
+static NODE       *g_ann_nodes[MAX_ANNS];
+static int         g_ann_count = 0;
+
 //   flags           bit0=has_va, bit1=has_kw
 static void
 parse_params(Scope *sc, int *out_nparams, int *out_n_pos_named, int *out_ndefaults,
              uint32_t *out_didx, uint32_t *out_nidx, uint32_t *out_flags)
 {
+    g_ann_count = 0;
     int nparams = 0;
     int n_pos_named = 0;
     int n_pos_only = 0;
@@ -2449,11 +2459,19 @@ parse_params(Scope *sc, int *out_nparams, int *out_n_pos_named, int *out_ndefaul
             if (peek_tok(0)->kind != T_NAME) parse_error("expected parameter name");
             const char *pn = peek_tok(0)->sval;
             tok_pos++;
-            // Optional `: annotation` — parsed and discarded.
+            // Optional `: annotation` — capture so the caller can build
+            // an __annotations__ dict.  The annotation expression is
+            // parsed in the parent scope (annotations don't see the
+            // function's own params).
             if (match_tok(T_COLON)) {
                 Scope *saved = cur_scope; cur_scope = sc->parent;
-                (void)parse_expr();
+                NODE *ann = parse_expr();
                 cur_scope = saved;
+                if (g_ann_count < MAX_ANNS) {
+                    g_ann_names[g_ann_count] = pn;
+                    g_ann_nodes[g_ann_count] = ann;
+                    g_ann_count++;
+                }
             }
             scope_add_local(sc, pn);
             names[nnames++] = pn;
@@ -2501,11 +2519,20 @@ parse_def(void)
     int nparams, n_pos_named, ndefaults;
     uint32_t didx, nidx, flags;
     parse_params(&sc, &nparams, &n_pos_named, &ndefaults, &didx, &nidx, &flags);
+    // Snapshot annotations now (parse_params filled g_ann_*).
+    int n_anns = g_ann_count;
+    const char *ann_names[MAX_ANNS];
+    NODE *ann_nodes[MAX_ANNS];
+    for (int i = 0; i < n_anns; i++) {
+        ann_names[i] = g_ann_names[i];
+        ann_nodes[i] = g_ann_nodes[i];
+    }
     expect(T_RPAREN, "')'");
-    // Optional `-> annotation` — parsed and discarded.
+    // Optional `-> annotation` — capture for __annotations__["return"].
+    NODE *ret_ann = NULL;
     if (match_tok(T_ARROW)) {
         Scope *saved = cur_scope; cur_scope = sc.parent;
-        (void)parse_expr();
+        ret_ann = parse_expr();
         cur_scope = saved;
     }
     expect(T_COLON, "':'");
@@ -2549,12 +2576,47 @@ parse_def(void)
                                     nidx, flags,
                                     (uint32_t)(sc.is_generator ? 1 : 0),
                                     body);
-    // Class body: node_def's side effect already added the method;
-    // discard the returned value (the method dict is the binding).
-    if (in_class_body) return def_node;
-    // Otherwise bind the function value at fname — local in a function
-    // scope, global at top level.
-    return make_store(fname, def_node);
+
+    // If the function had any annotations, build a dict at function-
+    // creation time and attach it via `f.__annotations__ = {...}`.
+    NODE *ann_set = NULL;
+    if (n_anns > 0 || ret_ann) {
+        // Build pairs: each as (key_name_str, value_node).  Reserve in
+        // node table.
+        NODE *items[MAX_ANNS * 2 + 2];
+        int ni = 0;
+        for (int i = 0; i < n_anns; i++) {
+            items[ni++] = ALLOC_node_const_str(ann_names[i]);
+            items[ni++] = ann_nodes[i];
+        }
+        if (ret_ann) {
+            items[ni++] = ALLOC_node_const_str(intern_name("return", 6));
+            items[ni++] = ret_ann;
+        }
+        size_t base = node_table_reserve(items, ni);
+        ann_set = ALLOC_node_make_dict((uint32_t)base, (uint32_t)(ni / 2));
+    }
+
+    if (in_class_body) {
+        // Class body: node_def's side effect added the method;
+        // attach annotations onto that method via class_method_set.
+        if (ann_set) {
+            // We can't easily reach the func object here — pystro stores
+            // it in the class's method dict.  Skip for class methods
+            // (less common need than module-level functions).
+        }
+        return def_node;
+    }
+
+    // Module/function-level def: bind, then attach __annotations__ via
+    // attribute set on the bound name.
+    NODE *bind = make_store(fname, def_node);
+    if (ann_set) {
+        NODE *load = make_load(fname);
+        NODE *setann = ALLOC_node_attr_set(load, intern_name("__annotations__", 15), ann_set);
+        return ALLOC_node_seq(bind, setann);
+    }
+    return bind;
 }
 
 static NODE *

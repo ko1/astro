@@ -71,7 +71,6 @@ class _Signature:
     def __init__(self, fn):
         self.fn = fn
         self.parameters = {}
-        self.return_annotation = None
         try:
             kw = fn.__kwdefaults__ or {}
         except (AttributeError, TypeError):
@@ -94,16 +93,22 @@ class _Signature:
             pass
         self._names = names
         self._argc = argc
-        # Build the parameters dict (CPython exposes signature.parameters
-        # as an OrderedDict — we use a regular dict, which preserves order).
+        anns = {}
+        try:
+            anns = fn.__annotations__ or {}
+        except (AttributeError, TypeError):
+            anns = {}
+        self.return_annotation = anns.get("return", Parameter.empty)
         params = {}
         n_def = len(defaults)
         for i, n in enumerate(names[:argc]):
             d = defaults[i - (argc - n_def)] if i >= argc - n_def else Parameter.empty
-            params[n] = Parameter(n, Parameter.POSITIONAL_OR_KEYWORD, d)
+            ann = anns.get(n, Parameter.empty)
+            params[n] = Parameter(n, Parameter.POSITIONAL_OR_KEYWORD, d, ann)
         for n in names[argc:]:
             d = kw.get(n, Parameter.empty)
-            params[n] = Parameter(n, Parameter.KEYWORD_ONLY, d)
+            ann = anns.get(n, Parameter.empty)
+            params[n] = Parameter(n, Parameter.KEYWORD_ONLY, d, ann)
         self.parameters = params
     def __str__(self):
         n_def = len(self._defaults)

@@ -3862,7 +3862,17 @@ py_getattr(CTX *c, VALUE v, const char *name)
             return PY_NONE;
         }
         if (strcmp(name, "__module__") == 0) return py_make_str("__main__", 8);
-        if (strcmp(name, "__annotations__") == 0) return py_make_dict();
+        if (strcmp(name, "__annotations__") == 0) {
+            // Read from func.attrs if user set it (parser emits
+            // `f.__annotations__ = {...}` after def for annotated funcs).
+            if (o->func.attrs) {
+                VALUE key = py_make_str("__annotations__", 15);
+                uint64_t h = py_hash(c, key);
+                int32_t e = pydict_find(c, o->func.attrs, key, h);
+                if (e >= 0) return o->func.attrs->entries[e].value;
+            }
+            return py_make_dict();
+        }
         if (strcmp(name, "__defaults__") == 0) {
             // Tuple of trailing defaults for pos-or-kw params, or None.
             if (!o->func.defaults) return PY_NONE;

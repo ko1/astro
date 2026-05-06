@@ -95,7 +95,14 @@ class TypedDict(metaclass=_TypedDictMeta):
     pass
 
 
-def get_type_hints(obj):
+def get_type_hints(obj, globalns=None, localns=None, include_extras=False):
+    """Return the __annotations__ dict for a function or class."""
+    try:
+        ann = obj.__annotations__
+    except (AttributeError, TypeError):
+        ann = {}
+    if ann:
+        return dict(ann)
     return {}
 
 
