@@ -420,3 +420,59 @@ bytecode loop、Boehm GC vs CPython の refcount + cycle collector)。
 - complex `**` (polar form)
 - bytearray `[i] = b`, bytes/bytearray * int
 - file iter (kind 12)
+
+---
+
+## R16 (2026-05-06)
+
+138 → 157 unit tests passing (added 19 new test files).
+
+### parser
+
+- nested unpack: `(a, b), c = ...` and `[(a, b), c] = ...`
+- `for (a, b) in pairs:` (parens around for-target tuple — single-paren detector)
+- adjacent f-string concatenation: `f"a{1}" f"b{2}"` and mixed f-string / plain str
+- `int("+42")` / `int("-0x1f", 16)` — sign before prefix
+- `expandtabs(0)` no longer SIGFPEs (tabsize=0 → drop tabs)
+
+### runtime
+
+- **gen body try-stack reset** — generators run on a separate ucontext
+  stack, so longjmping into the caller's stale jbufs caused random
+  segfaults whenever a `with` body inside `contextlib.contextmanager`
+  raised.  Now the gen body has its own (initially empty) try-stack;
+  exceptions escaping it propagate via state=RAISE / swapcontext.
+- bound-method __eq__ + __hash__ by (self, func) identity (so `m.f == m.f`
+  is True and `{m.f, m.f}` collapses)
+- Exception str/repr now uses .args (multi-arg shows tuple repr)
+- gen.throw 3-arg form (type, value, tb) materialises type → instance
+- super().method() works in @classmethod / @staticmethod (unwrap CLASSMETHOD
+  / STATICMETHOD descriptors after MRO walk)
+- format default-align numerics — `f"{42:5}"` right-aligns, `{42:05}` zero-pads
+- exec(code, globals[, locals]) accepts the dict args (ignored — single
+  global namespace)
+- bytearray slice assignment supports general resize / step / iterables
+- built-in subclass instances mirror primary repr (MyInt(42) → "42")
+- str.join no longer caps at 256 items
+- struct.pack/unpack "f" / "d" use proper IEEE-754 via new
+  __pystro_float_to_bits__ / __pystro_bits_to_float__ builtins
+
+### stdlib
+
+- os.path.normpath, os.mkdir
+- math.dist, math.hypot(*coords), fsum / fmod / cbrt / expm1 / log1p / remainder
+- datetime: date+timedelta / date-date arithmetic, time.__str__, timedelta * /
+  // / abs / hash; date hashable
+- contextlib.contextmanager passes the actual exception instance and
+  re-raises if the gen didn't catch
+- functools.wraps copies __name__/__doc__/__module__/__qualname__ via
+  setattr-honouring func attr override
+- functools.lru_cache returns CacheInfo with hits/misses/currsize and
+  cache_clear; supports both @lru_cache and @lru_cache(maxsize=N)
+- collections.Counter __repr__ sorts by descending count (CPython-style)
+- json.dumps default= callable, json.loads object_hook=
+- pickle: bytes (hex-encoded) and best-effort user-class instances via
+  __dict__ + sys.modules class lookup
+- re.py: capturing groups (), backrefs in sub, char-class escapes \\d/\\w,
+  lazy quantifiers, IGNORECASE on ranges, subn returning (str, count)
+- sys.exit raises SystemExit (catchable); sys.exc_info() via __pystro_current_exc__
