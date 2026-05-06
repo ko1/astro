@@ -331,6 +331,7 @@ build_call_with_block(struct transduce_context *tc, NODE *recv, ID name,
     uint32_t opt_cnt = 0;
     int block_rest_slot_pre = -1;     /* set below once frame is pushed */
     pm_constant_id_t block_rest_name = 0;
+    bool block_has_anon_rest = false;
     pm_parameters_node_t *block_pn = NULL;
     if (bn->parameters && PM_NODE_TYPE_P(bn->parameters, PM_BLOCK_PARAMETERS_NODE)) {
         pm_block_parameters_node_t *bp = (pm_block_parameters_node_t *)bn->parameters;
@@ -341,7 +342,15 @@ build_call_with_block(struct transduce_context *tc, NODE *recv, ID name,
             opt_cnt = (uint32_t)pn->optionals.size;
             if (pn->rest && PM_NODE_TYPE_P(pn->rest, PM_REST_PARAMETER_NODE)) {
                 pm_rest_parameter_node_t *rp = (pm_rest_parameter_node_t *)pn->rest;
-                if (rp->name) block_rest_name = rp->name;
+                if (rp->name) {
+                    block_rest_name = rp->name;
+                } else {
+                    /* Anonymous splat `|*|` — proc/lambda still needs a
+                     * non-negative rest_slot so arity checks pass and
+                     * extra args are absorbed.  Allocate a discardable
+                     * slot inside the block frame's locals. */
+                    block_has_anon_rest = true;
+                }
             }
         }
     } else if (bn->parameters && PM_NODE_TYPE_P(bn->parameters, PM_NUMBERED_PARAMETERS_NODE)) {
@@ -449,6 +458,11 @@ build_call_with_block(struct transduce_context *tc, NODE *recv, ID name,
     if (block_rest_name) {
         int rs = lvar_slot(tc, block_rest_name, 0);
         if (rs >= 0) block_rest_slot_pre = rs;
+    } else if (block_has_anon_rest) {
+        /* Anonymous splat: allocate a throwaway slot in the block frame
+         * so proc.call writes the gathered Array there and lambda's
+         * arity check sees rest_slot >= 0. */
+        block_rest_slot_pre = (int)inc_arg_index(tc);
     }
     /* kwargs prelude — same shape as PM_LAMBDA_NODE.  Peel the trailing
      * Hash arg into block_kwh_slot; for each declared keyword param
@@ -2357,19 +2371,32 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
       case PM_CLASS_NODE: {
           pm_class_node_t *n = (pm_class_node_t *)node;
           ID name = intern_constant(tc->parser, n->name);
-          NODE *super = n->superclass ? T(tc, n->superclass) : ALLOC_node_const_get(korb_intern("Object"));
           push_frame(tc, &n->locals, false);
           NODE *body = n->body ? T(tc, n->body) : ALLOC_node_nil();
           uint32_t mx = tc->frame->max_cnt;
           pop_frame(tc);
           NODE *body_scope = ALLOC_node_scope(mx, body);
-          /* If constant_path is a ConstantPathNode, attach to parent module */
+          /* When the user wrote `class X < Y`, route through node_class_def
+           * which checks superclass mismatch on reopen.  Without `< Y`,
+           * route through node_class_reopen which is permissive. */
+          if (n->superclass) {
+              NODE *super = T(tc, n->superclass);
+              if (n->constant_path && PM_NODE_TYPE_P(n->constant_path, PM_CONSTANT_PATH_NODE)) {
+                  pm_constant_path_node_t *cp = (pm_constant_path_node_t *)n->constant_path;
+                  NODE *parent = cp->parent ? T(tc, cp->parent) : ALLOC_node_const_get(korb_intern("Object"));
+                  return ALLOC_node_class_def_in(parent, name, super, body_scope);
+              }
+              return ALLOC_node_class_def(name, super, body_scope);
+          }
+          /* No-super reopen: scoped paths still go through class_def_in
+           * (which uses Object as default if super is implicit). */
           if (n->constant_path && PM_NODE_TYPE_P(n->constant_path, PM_CONSTANT_PATH_NODE)) {
               pm_constant_path_node_t *cp = (pm_constant_path_node_t *)n->constant_path;
               NODE *parent = cp->parent ? T(tc, cp->parent) : ALLOC_node_const_get(korb_intern("Object"));
-              return ALLOC_node_class_def_in(parent, name, super, body_scope);
+              NODE *super_default = ALLOC_node_const_get(korb_intern("Object"));
+              return ALLOC_node_class_def_in(parent, name, super_default, body_scope);
           }
-          return ALLOC_node_class_def(name, super, body_scope);
+          return ALLOC_node_class_reopen(name, body_scope);
       }
 
       case PM_MODULE_NODE: {
@@ -2651,7 +2678,19 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                   }
                   chain = ALLOC_node_if(cond, body_for_clause, chain);
               }
-              body = ALLOC_node_rescue(body, chain, exc_idx);
+              /* `begin ... rescue ... else ... end` — else runs only
+               * when no rescue triggered.  CRuby raises SyntaxError if
+               * `else` appears without `rescue`; we simply ignore it
+               * (parser-level check would be cleaner). */
+              if (n->else_clause) {
+                  pm_else_node_t *en = (pm_else_node_t *)n->else_clause;
+                  NODE *eb = en->statements
+                      ? transduce_statements(tc, en->statements)
+                      : ALLOC_node_nil();
+                  body = ALLOC_node_rescue_else(body, chain, eb, exc_idx);
+              } else {
+                  body = ALLOC_node_rescue(body, chain, exc_idx);
+              }
           }
           if (n->ensure_clause) {
               pm_ensure_node_t *en = (pm_ensure_node_t *)n->ensure_clause;

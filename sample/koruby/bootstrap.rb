@@ -4,7 +4,7 @@
 # in Ruby than in C.  Any class included into Enumerable picks up all
 # the iterator helpers below by virtue of needing only `each`.
 
-class Enumerable
+module Enumerable
   # NOTE: every method that yields *inside* an `each { ... }` block
   # takes `&blk` and uses `blk.call(...)` instead.  koruby doesn't yet
   # forward `yield` from within a block to the outer method's block.
@@ -1122,7 +1122,7 @@ end
 # not the outer method's block.  koruby doesn't yet implement
 # block-forwarding, so these helpers take an explicit `&blk` parameter
 # and call `blk.call(...)` to escape the ambiguity.
-class Enumerable
+module Enumerable
   def group_by(&blk)
     h = {}
     each { |x|

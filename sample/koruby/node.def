@@ -437,6 +437,12 @@ node_def(CTX * restrict c, NODE * restrict n, ID name, NODE *body, uint32_t para
 NODE_DEF @noinline
 node_class_def(CTX * restrict c, NODE * restrict n, ID name, NODE *super_expr, NODE *body)
 {
+    /* When parse.c routed `class X` (no super clause) here, super_expr is
+     * still set (to a const_get(:Object)).  For mismatch checks we need
+     * to know whether the user wrote `< Y` explicitly.  The trick: the
+     * is_explicit flag rides on a distinct node kind — `class X` uses
+     * node_class_def_implicit_super (defined below).  Here we always
+     * treat super_expr as user-specified. */
     struct korb_class *super = korb_vm->object_class;
     if (super_expr) {
         VALUE sv = EA(c, super_expr);
@@ -450,12 +456,22 @@ node_class_def(CTX * restrict c, NODE * restrict n, ID name, NODE *super_expr, N
     struct korb_class *host = c->cref ? c->cref->klass : c->current_class;
     struct korb_class *klass;
     VALUE existing = korb_const_get(host, name);
-    /* Reopen an existing Class OR Module (Module is itself a class
-     * but with T_MODULE flags — `class Module ... end` is valid and
-     * adds methods to the existing one). */
     if (!UNDEF_P(existing) && (BUILTIN_TYPE(existing) == T_CLASS ||
                                 BUILTIN_TYPE(existing) == T_MODULE)) {
         klass = (struct korb_class *)existing;
+        if (BUILTIN_TYPE(existing) == T_MODULE) {
+            korb_raise_type_error(c, "%s is not a class", korb_id_name(name));
+            return Qnil;
+        }
+        if (super_expr && klass->super != super) {
+            korb_raise_type_error(c, "superclass mismatch for class %s",
+                                  korb_id_name(name));
+            return Qnil;
+        }
+    }
+    else if (!UNDEF_P(existing)) {
+        korb_raise_type_error(c, "%s is not a class", korb_id_name(name));
+        return Qnil;
     }
     else {
         klass = korb_class_new(name, super, T_OBJECT);
@@ -467,6 +483,51 @@ node_class_def(CTX * restrict c, NODE * restrict n, ID name, NODE *super_expr, N
         if (super_meta && korb_class_find_method(super_meta, korb_intern("inherited"))) {
             VALUE child_v = (VALUE)klass;
             korb_funcall(c, (VALUE)super, korb_intern("inherited"), 1, &child_v);
+            if (c->state == KORB_RAISE) return Qnil;
+        }
+    }
+    struct korb_class *prev_class = c->current_class;
+    VALUE prev_self = c->self;
+    struct korb_cref new_cref = { .klass = klass, .prev = c->cref };
+    struct korb_cref *prev_cref = c->cref;
+    c->current_class = klass;
+    c->self = (VALUE)klass;
+    c->cref = &new_cref;
+    VALUE r = body ? EVAL_ARG(c, body) : Qnil;
+    c->current_class = prev_class;
+    c->self = prev_self;
+    c->cref = prev_cref;
+    return r;
+}
+
+/* `class X` with no `< Super` clause — reopen if exists (any super is
+ * fine), otherwise create with Object as super.  Differs from
+ * node_class_def in that a reopen with mismatched non-Object super is
+ * NOT an error here. */
+NODE_DEF @noinline
+node_class_reopen(CTX * restrict c, NODE * restrict n, ID name, NODE *body)
+{
+    struct korb_class *host = c->cref ? c->cref->klass : c->current_class;
+    struct korb_class *klass;
+    VALUE existing = korb_const_get(host, name);
+    if (!UNDEF_P(existing) && BUILTIN_TYPE(existing) == T_CLASS) {
+        klass = (struct korb_class *)existing;
+    }
+    else if (!UNDEF_P(existing) && BUILTIN_TYPE(existing) == T_MODULE) {
+        korb_raise_type_error(c, "%s is not a class", korb_id_name(name));
+        return Qnil;
+    }
+    else if (!UNDEF_P(existing)) {
+        korb_raise_type_error(c, "%s is not a class", korb_id_name(name));
+        return Qnil;
+    }
+    else {
+        klass = korb_class_new(name, korb_vm->object_class, T_OBJECT);
+        korb_const_set(host, name, (VALUE)klass);
+        struct korb_class *super_meta = korb_class_of_class((VALUE)korb_vm->object_class);
+        if (super_meta && korb_class_find_method(super_meta, korb_intern("inherited"))) {
+            VALUE child_v = (VALUE)klass;
+            korb_funcall(c, (VALUE)korb_vm->object_class, korb_intern("inherited"), 1, &child_v);
             if (c->state == KORB_RAISE) return Qnil;
         }
     }
@@ -1010,6 +1071,46 @@ node_retry(CTX * restrict c, NODE * restrict n)
     c->state = KORB_RETRY;
     c->state_value = Qnil;
     return Qnil;
+}
+
+/* `begin body; rescue ...; else else_body; end` — else runs iff body
+ * completed without raising and no rescue was triggered.  Same retry
+ * semantics as node_rescue. */
+NODE_DEF
+node_rescue_else(CTX * restrict c, NODE * restrict n, NODE *body, NODE *rescue_body, NODE *else_body, uint32_t exception_lvar_index)
+{
+retry_re:;
+    bool rescued = false;
+    VALUE v = EVAL_ARG(c, body);
+    if (c->state == KORB_RAISE && rescue_body) {
+        rescued = true;
+        VALUE exc = c->state_value;
+        c->state = KORB_NORMAL;
+        c->state_value = Qnil;
+        c->fp[exception_lvar_index] = exc;
+        VALUE prev_bang = korb_gvar_get(korb_intern("$!"));
+        korb_gvar_set(korb_intern("$!"), exc);
+        v = EVAL_ARG(c, rescue_body);
+        if (c->state == KORB_RAISE && c->state_value &&
+            !SPECIAL_CONST_P(c->state_value) && c->state_value != exc) {
+            VALUE cur_cause = korb_ivar_get(c->state_value, korb_intern("@cause"));
+            if (UNDEF_P(cur_cause) || NIL_P(cur_cause)) {
+                korb_ivar_set(c->state_value, korb_intern("@cause"), exc);
+            }
+        }
+        if (c->state == KORB_RETRY) {
+            c->state = KORB_NORMAL;
+            c->state_value = Qnil;
+            korb_gvar_set(korb_intern("$!"), prev_bang);
+            goto retry_re;
+        }
+        korb_gvar_set(korb_intern("$!"), prev_bang);
+    }
+    /* No rescue was triggered → else body replaces the result. */
+    if (!rescued && c->state == KORB_NORMAL && else_body) {
+        v = EVAL_ARG(c, else_body);
+    }
+    return v;
 }
 
 NODE_DEF
