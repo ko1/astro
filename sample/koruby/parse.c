@@ -1085,6 +1085,17 @@ static NODE *build_pattern_check(struct transduce_context *tc, pm_node_t *pat,
           uint32_t req_cnt = (uint32_t)a->requireds.size;
           uint32_t post_cnt = (uint32_t)a->posts.size;
           bool has_rest = (a->rest != NULL);
+          /* `Constant[...]` form — must satisfy Constant === subj. */
+          NODE *constant_check = NULL;
+          if (a->constant) {
+              NODE *kclass = T(tc, a->constant);
+              uint32_t ai = inc_arg_index(tc);
+              inc_arg_index(tc); rewind_arg_index(tc, ai);
+              struct method_cache *mc = alloc_method_cache();
+              NODE *karg = ALLOC_node_lvar_set(ai, ALLOC_node_lvar_get(subj_slot));
+              constant_check = ALLOC_node_seq(karg,
+                  ALLOC_node_method_call(kclass, korb_intern("==="), 1, ai, mc));
+          }
 
           /* Coerce subj into an array via deconstruct if needed.  Use a
            * fresh local slot for the coerced view — case-in arms share
@@ -1256,7 +1267,11 @@ static NODE *build_pattern_check(struct transduce_context *tc, pm_node_t *pat,
                   }
               }
           }
-          return ALLOC_node_seq(coerce_step, combined);
+          NODE *result = ALLOC_node_seq(coerce_step, combined);
+          if (constant_check) {
+              result = ALLOC_node_and(constant_check, result);
+          }
+          return result;
       }
 
       case PM_CAPTURE_PATTERN_NODE: {
@@ -1291,6 +1306,17 @@ static NODE *build_pattern_check(struct transduce_context *tc, pm_node_t *pat,
            *   coerced.is_a?(Hash) && coerced.has_key?(k) && pat(coerced[k]) && ... */
           pm_hash_pattern_node_t *h = (pm_hash_pattern_node_t *)pat;
           uint32_t cnt = (uint32_t)h->elements.size;
+          /* `Constant{...}` form — must satisfy Constant === subj. */
+          NODE *constant_check_h = NULL;
+          if (h->constant) {
+              NODE *kclass = T(tc, h->constant);
+              uint32_t ai_cc = inc_arg_index(tc);
+              inc_arg_index(tc); rewind_arg_index(tc, ai_cc);
+              struct method_cache *mc_cc = alloc_method_cache();
+              NODE *karg = ALLOC_node_lvar_set(ai_cc, ALLOC_node_lvar_get(subj_slot));
+              constant_check_h = ALLOC_node_seq(karg,
+                  ALLOC_node_method_call(kclass, korb_intern("==="), 1, ai_cc, mc_cc));
+          }
 
           /* deconstruct_keys coerce step.  Use a fresh local slot so
            * subj_slot survives this arm's coerce attempt — case-in
@@ -1454,7 +1480,11 @@ static NODE *build_pattern_check(struct transduce_context *tc, pm_node_t *pat,
                   }
               }
           }
-          return ALLOC_node_seq(coerce_step, combined);
+          NODE *result_h = ALLOC_node_seq(coerce_step, combined);
+          if (constant_check_h) {
+              result_h = ALLOC_node_and(constant_check_h, result_h);
+          }
+          return result_h;
       }
 
       case PM_ALTERNATION_PATTERN_NODE: {
