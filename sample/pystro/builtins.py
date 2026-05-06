@@ -146,6 +146,22 @@ ZeroDivisionError = ZeroDivisionError
 
 __name__ = "builtins"
 
+
+# 3.14 frozendict (some CPython tests use it without importing).
+class frozendict(dict):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._frozen = True
+    def __setitem__(self, k, v):
+        if getattr(self, "_frozen", False):
+            raise TypeError("frozendict is immutable")
+        super().__setitem__(k, v)
+    def __delitem__(self, k):
+        raise TypeError("frozendict is immutable")
+    def __hash__(self):
+        try: return hash(tuple(sorted(self.items())))
+        except TypeError: return id(self)
+
 # Common typing-module names re-exposed at module-import-time so
 # annotation expressions like `x: ClassVar[T]` don't fail when the
 # user forgot `from typing import ClassVar`.  pystro doesn't enforce

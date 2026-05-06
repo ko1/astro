@@ -12842,6 +12842,8 @@ install_builtins(CTX *c)
     py_global_define(c, "list",       c->TYPE_list);
     py_global_define(c, "tuple",      c->TYPE_tuple);
     py_global_define(c, "dict",       c->TYPE_dict);
+    // 3.14 frozendict (used by some CPython tests).  Aliased to dict.
+    py_global_define(c, "frozendict",  c->TYPE_dict);
     py_global_define(c, "set",        c->TYPE_set);
     py_global_define(c, "frozenset",  c->TYPE_frozenset);
     py_global_define(c, "range",      c->TYPE_range);

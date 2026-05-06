@@ -228,6 +228,9 @@ main(int argc, char *argv[])
     if (eval_str) { src = strdup(eval_str); src_name = "<command line>"; }
     else          { src = read_file(file);  src_name = file; }
 
+    // Bind __file__ to the running script path (CPython convention).
+    py_global_set(c, "__file__", py_make_str(src_name, strlen(src_name)));
+
     tokenize(src, src_name);
     NODE *body = parse_program();
 

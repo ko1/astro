@@ -3537,12 +3537,21 @@ parse_del_one(void)
     const char *base = peek_tok(0)->sval;
     tok_pos++;
     NODE *cur = make_load(base);
-    while (peek_tok(0)->kind == T_DOT || peek_tok(0)->kind == T_LBRACK) {
+    while (peek_tok(0)->kind == T_DOT || peek_tok(0)->kind == T_LBRACK
+            || peek_tok(0)->kind == T_LPAREN) {
+        // `del expr.attr` / `del expr[i]` / `del expr(...)[i]` — accept
+        // intermediate calls; the actual del happens on the last
+        // attr/subscript trailer.
+        if (peek_tok(0)->kind == T_LPAREN) {
+            cur = parse_call_args(cur);
+            continue;
+        }
         if (match_tok(T_DOT)) {
             if (peek_tok(0)->kind != T_NAME) parse_error("attr name expected");
             const char *nm = peek_tok(0)->sval;
             tok_pos++;
-            if (peek_tok(0)->kind == T_DOT || peek_tok(0)->kind == T_LBRACK) {
+            if (peek_tok(0)->kind == T_DOT || peek_tok(0)->kind == T_LBRACK
+                    || peek_tok(0)->kind == T_LPAREN) {
                 cur = ALLOC_node_attr_get(cur, nm);
                 continue;
             }
