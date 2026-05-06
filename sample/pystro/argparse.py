@@ -49,9 +49,24 @@ class _Argument:
 
 
 class ArgumentParser:
-    def __init__(self, prog=None, description=None):
+    def __init__(self, prog=None, usage=None, description=None,
+                 epilog=None, parents=None, formatter_class=None,
+                 prefix_chars="-", fromfile_prefix_chars=None,
+                 argument_default=None, conflict_handler="error",
+                 add_help=True, allow_abbrev=True, exit_on_error=True,
+                 *, color=False, suggest_on_error=False):
         self.prog = prog or "prog"
+        self.usage = usage
         self.description = description or ""
+        self.epilog = epilog
+        self.formatter_class = formatter_class or HelpFormatter
+        self.prefix_chars = prefix_chars
+        self.fromfile_prefix_chars = fromfile_prefix_chars
+        self.argument_default = argument_default
+        self.conflict_handler = conflict_handler
+        self.add_help = add_help
+        self.allow_abbrev = allow_abbrev
+        self.exit_on_error = exit_on_error
         self._args = []          # list of _Argument
 
     def add_argument(self, *names, action=None, default=None, type=None,
