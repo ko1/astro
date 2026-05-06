@@ -852,7 +852,11 @@ VALUE korb_const_lookup(CTX *c, ID name) {
     /* Object as global namespace */
     VALUE v = korb_const_get(korb_vm->object_class, name);
     if (!UNDEF_P(v)) return v;
-    korb_raise(c, NULL, "uninitialized constant %s", korb_id_name(name));
+    {
+        VALUE eName = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
+        korb_raise(c, (struct korb_class *)eName,
+                   "uninitialized constant %s", korb_id_name(name));
+    }
     return Qnil;
 }
 
@@ -2002,9 +2006,54 @@ static VALUE korb_inspect_inner(VALUE v, int depth) {
     if (TRUE_P(v)) return korb_str_new_cstr("true");
     if (FALSE_P(v)) return korb_str_new_cstr("false");
     if (SYMBOL_P(v)) {
-        VALUE s = korb_str_new_cstr(":");
-        korb_str_concat(s, korb_str_new_cstr(korb_id_name(korb_sym2id(v))));
-        return s;
+        const char *name = korb_id_name(korb_sym2id(v));
+        size_t nlen = strlen(name);
+        /* CRuby quotes a symbol's name when it's not a valid bare identifier:
+         * empty, leading non-alpha/underscore, contains spaces/control,
+         * etc.  Approximate: bare identifier must start with [A-Za-z_] and
+         * subsequent chars are alphanumeric or '_'; trailing '?', '!', '='
+         * are also allowed.  Operator symbols (+, -, []=, ==, etc.) are
+         * also displayed bare; we keep a small set. */
+        bool needs_quote = false;
+        if (nlen == 0) needs_quote = true;
+        else {
+            unsigned char c0 = (unsigned char)name[0];
+            bool is_op = false;
+            static const char *ops[] = {
+                "+", "-", "*", "/", "%", "**", "==", "!=", "===",
+                "<", ">", "<=", ">=", "<=>", "<<", ">>", "&", "|", "^",
+                "~", "!", "+@", "-@", "[]", "[]=", "=~", "!~", NULL
+            };
+            for (int oi = 0; ops[oi]; oi++) {
+                if (strcmp(name, ops[oi]) == 0) { is_op = true; break; }
+            }
+            if (!is_op) {
+                if (!(c0 == '_' || (c0 >= 'A' && c0 <= 'Z') || (c0 >= 'a' && c0 <= 'z') || c0 == '@' || c0 == '$')) {
+                    needs_quote = true;
+                } else {
+                    for (size_t i = 1; i < nlen; i++) {
+                        unsigned char ci = (unsigned char)name[i];
+                        bool is_alnum = (ci == '_' || (ci >= 'A' && ci <= 'Z') ||
+                                         (ci >= 'a' && ci <= 'z') || (ci >= '0' && ci <= '9'));
+                        bool is_trailing = (i == nlen - 1) && (ci == '?' || ci == '!' || ci == '=');
+                        if (!is_alnum && !is_trailing) { needs_quote = true; break; }
+                    }
+                }
+            }
+        }
+        if (!needs_quote) {
+            VALUE s = korb_str_new_cstr(":");
+            korb_str_concat(s, korb_str_new(name, (long)nlen));
+            return s;
+        }
+        /* Quoted form: :"...".  Re-use the String inspect path for
+         * escaping by inspecting the name as a String, which yields
+         * a quoted, escaped form, then prepend the colon. */
+        VALUE name_str = korb_str_new(name, (long)nlen);
+        VALUE inspected = korb_inspect_inner(name_str, depth + 1);
+        VALUE r = korb_str_new_cstr(":");
+        korb_str_concat(r, inspected);
+        return r;
     }
     enum korb_type t = BUILTIN_TYPE(v);
     if (t == T_STRING) {
