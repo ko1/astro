@@ -6,7 +6,7 @@
 
 ## 残課題 (現在)
 
-R11–R16 で深掘り (test 78–192 追加, **193 unit tests passing**)。 [done.md](./done.md) に詳細。
+R11–R16 で深掘り (test 78–194 追加, **195 unit tests passing**)。 [done.md](./done.md) に詳細。
 
 ### 残存する仕様上の差分 (低優先)
 
@@ -28,6 +28,7 @@ R11–R16 で深掘り (test 78–192 追加, **193 unit tests passing**)。 [do
 - `(x for x in xs)` は list を返す (本来は generator)。
 - 無限 source を `for x in genexp:` で使うと OOM。
 - 大半の用途 (`list(genexp)`, `sum(genexp)`) は OK。
+- **R16 で comp scope leak は修正済**: `[i for i in xs]; print(i)` → NameError
 
 #### S-21. parens-form `(a, b)` argument is a tuple, not unpacking
 - `parens-wrapped multi-target with attr/subscript` は `with (cm1, cm2 as x):` 形式の
