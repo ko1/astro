@@ -2295,6 +2295,10 @@ parse_class(void)
     NODE *extra_bases[8];
     int nextra = 0;
     NODE *metaclass = NULL;
+    // Collect class-level kwargs (excl. metaclass) for __init_subclass__.
+    const char *kw_names[8];
+    NODE *kw_vals[8];
+    int nkw = 0;
     if (match_tok(T_LPAREN)) {
         bool first = true;
         if (peek_tok(0)->kind != T_RPAREN) {
@@ -2305,6 +2309,10 @@ parse_class(void)
                     NODE *kw_val = parse_expr();
                     if (strcmp(kw_name, "metaclass") == 0) {
                         metaclass = kw_val;
+                    } else if (nkw < 8) {
+                        kw_names[nkw] = kw_name;
+                        kw_vals[nkw] = kw_val;
+                        nkw++;
                     }
                 } else if (first) {
                     base = parse_expr();
@@ -2326,6 +2334,20 @@ parse_class(void)
     NODE *body = parse_suite();
     in_class_body = saved_icb;
     cur_class_base = saved_base;
+    // Prepend `__class_kwargs__ = {n1: v1, ...}` to the body so the
+    // metaclass / __init_subclass__ path can recover them.
+    if (nkw > 0) {
+        NODE *items[16];
+        for (int i = 0; i < nkw; i++) {
+            items[2*i]   = ALLOC_node_const_str(kw_names[i]);
+            items[2*i+1] = kw_vals[i];
+        }
+        size_t bidx = node_table_reserve(items, 2 * nkw);
+        NODE *kwd = ALLOC_node_make_dict((uint32_t)bidx, (uint32_t)nkw);
+        NODE *set_kw = ALLOC_node_class_method_set(
+            intern_name("__class_kwargs__", 16), kwd);
+        body = ALLOC_node_seq(set_kw, body);
+    }
     // Class-body docstring: if the first statement is a bare string
     // literal, route it to `__doc__`.  parse_stmt already consumed it
     // as an expr stmt; we walk the seq's leftmost spine to its leaf.

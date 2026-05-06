@@ -204,6 +204,8 @@ py_class_slot_allowed(VALUE cls, const char *name)
     return false;
 }
 
+static bool  pydict_entry_live(const struct pydict *d, size_t i);
+
 // If any of `bases` (or their ancestors) has a `__metaclass__` attribute,
 // apply it to `cls` (the freshly-built class).  Returns either `cls` or
 // the metaclass-produced replacement.
@@ -236,8 +238,40 @@ py_class_inherit_metaclass(CTX *c, VALUE cls, VALUE *bases, int nbases, const ch
                 }
             }
             if (found != PY_NONE) {
-                VALUE av[1] = { final_cls };
-                py_apply(c, found, 1, av);
+                // Forward class-level kwargs (`class C(B, foo=1)`) as
+                // keyword args to __init_subclass__.
+                struct pyclass *fcd = &PY_PTR(final_cls)->cls;
+                VALUE kw_dict = PY_NONE;
+                for (int kk = 0; kk < fcd->nmethods; kk++) {
+                    if (strcmp(fcd->methods[kk].name, "__class_kwargs__") == 0) {
+                        kw_dict = fcd->methods[kk].value;
+                        break;
+                    }
+                }
+                if (kw_dict != PY_NONE && py_is_dict(kw_dict)) {
+                    struct pydict *dd = PY_PTR(kw_dict)->dict;
+                    int nkw = 0;
+                    const char **kn = NULL; VALUE *kv = NULL;
+                    if (dd->used > 0) {
+                        kn = (const char **)alloca(sizeof(char *) * dd->used);
+                        kv = (VALUE *)alloca(sizeof(VALUE) * dd->used);
+                        for (size_t ii = 0; ii < dd->elen; ii++) {
+                            if (!pydict_entry_live(dd, ii)) continue;
+                            VALUE k = dd->entries[ii].key;
+                            if (!py_is_str(k)) continue;
+                            kn[nkw] = PY_PTR(k)->str.chars;
+                            kv[nkw] = dd->entries[ii].value;
+                            nkw++;
+                        }
+                    }
+                    extern VALUE py_apply_kw(CTX *c, VALUE fn, int argc, VALUE *argv,
+                                             int kwc, const char **kwnames, VALUE *kwvalues);
+                    VALUE av[1] = { final_cls };
+                    py_apply_kw(c, found, 1, av, nkw, kn, kv);
+                } else {
+                    VALUE av[1] = { final_cls };
+                    py_apply(c, found, 1, av);
+                }
                 if (c->state == PY_STATE_RAISE) return PY_NONE;
                 break;
             }
@@ -1224,7 +1258,7 @@ py_add(CTX *c, VALUE a, VALUE b)
 static VALUE sm_union(CTX *c, int argc, VALUE *argv);
 static VALUE sm_intersection(CTX *c, int argc, VALUE *argv);
 static VALUE sm_difference(CTX *c, int argc, VALUE *argv);
-static bool  pydict_entry_live(const struct pydict *d, size_t i);
+// (declaration moved above py_class_inherit_metaclass)
 
 VALUE
 py_sub(CTX *c, VALUE a, VALUE b)

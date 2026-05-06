@@ -1,0 +1,4 @@
+ok ClassKwargsTest test_init_subclass_receives_kwargs
+ok ClassKwargsTest test_register_pattern
+---
+passed=2 failed=0
