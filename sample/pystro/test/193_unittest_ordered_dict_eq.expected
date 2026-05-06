@@ -1,0 +1,6 @@
+ok OrderedDictEqTest test_different_order_ne
+ok OrderedDictEqTest test_same_order_eq
+ok OrderedDictEqTest test_value_diff
+ok OrderedDictEqTest test_vs_plain_dict_order_insensitive
+---
+passed=4 failed=0

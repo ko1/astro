@@ -33,6 +33,25 @@ class OrderedDict(dict):
         v = self[k]
         del self[k]
         return (k, v)
+    def __eq__(self, other):
+        # OrderedDict == OrderedDict: compare values *and* order.
+        # OrderedDict == dict: order-insensitive (CPython behaviour).
+        if isinstance(other, OrderedDict):
+            return list(self.items()) == list(other.items())
+        if isinstance(other, dict):
+            d = {}
+            for k, v in self.items(): d[k] = v
+            return d == other
+        return NotImplemented
+    def __ne__(self, other):
+        r = self.__eq__(other)
+        if r is NotImplemented: return r
+        return not r
+    def __repr__(self):
+        if not self:
+            return "OrderedDict()"
+        items = ", ".join(repr(k) + ": " + repr(v) for k, v in self.items())
+        return "OrderedDict({" + items + "})"
 
 
 class defaultdict:
