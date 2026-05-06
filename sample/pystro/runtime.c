@@ -183,8 +183,11 @@ py_class_slot_allowed(VALUE cls, const char *name)
         struct pyclass *kd = &PY_PTR(cd->mro[i])->cls;
         if (!kd->slots) continue;
         any_slots = true;
-        for (int j = 0; j < kd->nslots; j++)
+        for (int j = 0; j < kd->nslots; j++) {
             if (strcmp(kd->slots[j], name) == 0) return true;
+            // "__dict__" in slots → instance gets a __dict__ (any attr OK).
+            if (strcmp(kd->slots[j], "__dict__") == 0) return true;
+        }
         // If any base in MRO has no __slots__, instance gets __dict__
         // so any attr is allowed (CPython rule).
     }
