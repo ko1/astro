@@ -6655,36 +6655,36 @@ bm_encode(CTX *c, int argc, VALUE *argv)
     return py_make_bytes(o->str.chars, o->str.len);
 }
 
-static VALUE
-bm_find(CTX *c, int argc, VALUE *argv)
-{
-    (void)c; (void)argc;
-    struct pyobj *s = PY_PTR(argv[0]);
-    struct pyobj *p = PY_PTR(argv[1]);
-    if (p->str.len == 0) return PY_FIX(0);
-    void *r = memmem(s->str.chars, s->str.len, p->str.chars, p->str.len);
-    return r ? PY_FIX((int64_t)((char *)r - s->str.chars)) : PY_FIX(-1);
-}
-
+// (find / endswith with start/end defined later in file)
 static VALUE
 bm_startswith(CTX *c, int argc, VALUE *argv)
 {
-    (void)c; (void)argc;
+    (void)c;
     struct pyobj *s = PY_PTR(argv[0]);
-    struct pyobj *p = PY_PTR(argv[1]);
-    if (p->str.len > s->str.len) return PY_FALSE;
-    return memcmp(s->str.chars, p->str.chars, p->str.len) == 0 ? PY_TRUE : PY_FALSE;
-}
-
-static VALUE
-bm_endswith(CTX *c, int argc, VALUE *argv)
-{
-    (void)c; (void)argc;
-    struct pyobj *s = PY_PTR(argv[0]);
-    struct pyobj *p = PY_PTR(argv[1]);
-    if (p->str.len > s->str.len) return PY_FALSE;
-    return memcmp(s->str.chars + s->str.len - p->str.len,
-                  p->str.chars, p->str.len) == 0 ? PY_TRUE : PY_FALSE;
+    int64_t slen = (int64_t)s->str.len;
+    int64_t start = (argc >= 3 && argv[2] != PY_NONE) ? py_int_to_long(c, argv[2]) : 0;
+    int64_t end   = (argc >= 4 && argv[3] != PY_NONE) ? py_int_to_long(c, argv[3]) : slen;
+    if (start < 0) start += slen; if (start < 0) start = 0; if (start > slen) start = slen;
+    if (end < 0) end += slen; if (end < 0) end = 0; if (end > slen) end = slen;
+    int64_t span = end - start;
+    if (span < 0) span = 0;
+    const char *base = s->str.chars + start;
+    VALUE arg = argv[1];
+    if (py_is_tuple(arg)) {
+        size_t n = PY_PTR(arg)->list.len;
+        for (size_t i = 0; i < n; i++) {
+            VALUE p = PY_PTR(arg)->list.items[i];
+            if (!py_is_byteseq(p)) continue;
+            struct pyobj *pp = PY_PTR(p);
+            if ((int64_t)pp->str.len > span) continue;
+            if (memcmp(base, pp->str.chars, pp->str.len) == 0) return PY_TRUE;
+        }
+        return PY_FALSE;
+    }
+    if (!py_is_byteseq(arg)) py_raise_exc(c, c->EXC_TypeError, "startswith: not bytes/tuple");
+    struct pyobj *p = PY_PTR(arg);
+    if ((int64_t)p->str.len > span) return PY_FALSE;
+    return memcmp(base, p->str.chars, p->str.len) == 0 ? PY_TRUE : PY_FALSE;
 }
 
 static VALUE
@@ -7315,6 +7315,250 @@ bm_lower(CTX *c, int argc, VALUE *argv)
                                     : py_make_bytes(buf, s->str.len);
 }
 
+// bytes additional methods.
+static VALUE
+bm_title(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    struct pyobj *s = PY_PTR(argv[0]);
+    char *buf = (char *)GC_malloc_atomic(s->str.len + 1);
+    bool prev_alpha = false;
+    for (size_t i = 0; i < s->str.len; i++) {
+        char ch = s->str.chars[i];
+        bool is_alpha = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z');
+        if (is_alpha && !prev_alpha) {
+            if (ch >= 'a' && ch <= 'z') ch -= 32;
+        } else if (is_alpha) {
+            if (ch >= 'A' && ch <= 'Z') ch += 32;
+        }
+        buf[i] = ch;
+        prev_alpha = is_alpha;
+    }
+    buf[s->str.len] = '\0';
+    return py_is_bytearray(argv[0]) ? py_make_bytearray(buf, s->str.len)
+                                    : py_make_bytes(buf, s->str.len);
+}
+
+static VALUE
+bm_capitalize(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    struct pyobj *s = PY_PTR(argv[0]);
+    if (s->str.len == 0)
+        return py_is_bytearray(argv[0]) ? py_make_bytearray("", 0)
+                                        : py_make_bytes("", 0);
+    char *buf = (char *)GC_malloc_atomic(s->str.len + 1);
+    for (size_t i = 0; i < s->str.len; i++) {
+        char ch = s->str.chars[i];
+        if (i == 0) {
+            if (ch >= 'a' && ch <= 'z') ch -= 32;
+        } else if (ch >= 'A' && ch <= 'Z') ch += 32;
+        buf[i] = ch;
+    }
+    buf[s->str.len] = '\0';
+    return py_is_bytearray(argv[0]) ? py_make_bytearray(buf, s->str.len)
+                                    : py_make_bytes(buf, s->str.len);
+}
+
+static VALUE
+bm_swapcase(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    struct pyobj *s = PY_PTR(argv[0]);
+    char *buf = (char *)GC_malloc_atomic(s->str.len + 1);
+    for (size_t i = 0; i < s->str.len; i++) {
+        char ch = s->str.chars[i];
+        if (ch >= 'a' && ch <= 'z') ch -= 32;
+        else if (ch >= 'A' && ch <= 'Z') ch += 32;
+        buf[i] = ch;
+    }
+    buf[s->str.len] = '\0';
+    return py_is_bytearray(argv[0]) ? py_make_bytearray(buf, s->str.len)
+                                    : py_make_bytes(buf, s->str.len);
+}
+
+static VALUE
+bm_zfill(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    struct pyobj *s = PY_PTR(argv[0]);
+    int64_t w = py_int_to_long(c, argv[1]);
+    if ((int64_t)s->str.len >= w)
+        return py_is_bytearray(argv[0]) ? py_make_bytearray(s->str.chars, s->str.len)
+                                        : py_make_bytes(s->str.chars, s->str.len);
+    char *buf = (char *)GC_malloc_atomic(w + 1);
+    int sign = 0;
+    if (s->str.len > 0 && (s->str.chars[0] == '-' || s->str.chars[0] == '+')) {
+        buf[0] = s->str.chars[0]; sign = 1;
+    }
+    int64_t pad = w - (int64_t)s->str.len;
+    for (int64_t i = 0; i < pad; i++) buf[sign + i] = '0';
+    memcpy(buf + sign + pad, s->str.chars + sign, s->str.len - sign);
+    buf[w] = '\0';
+    return py_is_bytearray(argv[0]) ? py_make_bytearray(buf, w)
+                                    : py_make_bytes(buf, w);
+}
+
+static VALUE
+bm_pad_helper(CTX *c, int argc, VALUE *argv, int align)
+{
+    (void)argc;
+    struct pyobj *s = PY_PTR(argv[0]);
+    int64_t w = py_int_to_long(c, argv[1]);
+    char fill = ' ';
+    if (argc >= 3 && py_is_byteseq(argv[2])
+        && PY_PTR(argv[2])->str.len == 1) fill = PY_PTR(argv[2])->str.chars[0];
+    if ((int64_t)s->str.len >= w)
+        return py_is_bytearray(argv[0]) ? py_make_bytearray(s->str.chars, s->str.len)
+                                        : py_make_bytes(s->str.chars, s->str.len);
+    char *buf = (char *)GC_malloc_atomic(w + 1);
+    int64_t pad = w - (int64_t)s->str.len;
+    if (align == 0) { // ljust
+        memcpy(buf, s->str.chars, s->str.len);
+        memset(buf + s->str.len, fill, pad);
+    } else if (align == 1) { // rjust
+        memset(buf, fill, pad);
+        memcpy(buf + pad, s->str.chars, s->str.len);
+    } else { // center
+        int64_t left = pad / 2, right = pad - left;
+        memset(buf, fill, left);
+        memcpy(buf + left, s->str.chars, s->str.len);
+        memset(buf + left + s->str.len, fill, right);
+    }
+    buf[w] = '\0';
+    return py_is_bytearray(argv[0]) ? py_make_bytearray(buf, w)
+                                    : py_make_bytes(buf, w);
+}
+
+static VALUE bm_ljust(CTX *c, int argc, VALUE *argv)  { return bm_pad_helper(c, argc, argv, 0); }
+static VALUE bm_rjust(CTX *c, int argc, VALUE *argv)  { return bm_pad_helper(c, argc, argv, 1); }
+static VALUE bm_center(CTX *c, int argc, VALUE *argv) { return bm_pad_helper(c, argc, argv, 2); }
+
+static VALUE
+bm_isalpha(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    struct pyobj *s = PY_PTR(argv[0]);
+    if (s->str.len == 0) return PY_FALSE;
+    for (size_t i = 0; i < s->str.len; i++) {
+        char ch = s->str.chars[i];
+        if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z'))) return PY_FALSE;
+    }
+    return PY_TRUE;
+}
+
+static VALUE
+bm_isdigit(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    struct pyobj *s = PY_PTR(argv[0]);
+    if (s->str.len == 0) return PY_FALSE;
+    for (size_t i = 0; i < s->str.len; i++)
+        if (s->str.chars[i] < '0' || s->str.chars[i] > '9') return PY_FALSE;
+    return PY_TRUE;
+}
+
+static VALUE
+bm_isspace(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    struct pyobj *s = PY_PTR(argv[0]);
+    if (s->str.len == 0) return PY_FALSE;
+    for (size_t i = 0; i < s->str.len; i++) {
+        char ch = s->str.chars[i];
+        if (ch != ' ' && ch != '\t' && ch != '\n' && ch != '\r' && ch != '\v' && ch != '\f')
+            return PY_FALSE;
+    }
+    return PY_TRUE;
+}
+
+static VALUE
+bm_find(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    struct pyobj *s = PY_PTR(argv[0]);
+    if (!py_is_byteseq(argv[1])) py_raise_exc(c, c->EXC_TypeError, "find: not bytes");
+    struct pyobj *p = PY_PTR(argv[1]);
+    int64_t slen = (int64_t)s->str.len;
+    int64_t start = (argc >= 3 && argv[2] != PY_NONE) ? py_int_to_long(c, argv[2]) : 0;
+    int64_t end   = (argc >= 4 && argv[3] != PY_NONE) ? py_int_to_long(c, argv[3]) : slen;
+    if (start < 0) start += slen; if (start < 0) start = 0; if (start > slen) start = slen;
+    if (end < 0) end += slen; if (end < 0) end = 0; if (end > slen) end = slen;
+    if (start > end) return PY_FIX(-1);
+    if (p->str.len == 0) return PY_FIX(start);
+    if ((size_t)(end - start) < p->str.len) return PY_FIX(-1);
+    void *r = memmem(s->str.chars + start, (size_t)(end - start), p->str.chars, p->str.len);
+    return r ? PY_FIX((int64_t)((char *)r - s->str.chars)) : PY_FIX(-1);
+}
+
+static VALUE
+bm_rfind(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    struct pyobj *s = PY_PTR(argv[0]);
+    if (!py_is_byteseq(argv[1])) py_raise_exc(c, c->EXC_TypeError, "rfind: not bytes");
+    struct pyobj *p = PY_PTR(argv[1]);
+    int64_t slen = (int64_t)s->str.len;
+    int64_t start = (argc >= 3 && argv[2] != PY_NONE) ? py_int_to_long(c, argv[2]) : 0;
+    int64_t end   = (argc >= 4 && argv[3] != PY_NONE) ? py_int_to_long(c, argv[3]) : slen;
+    if (start < 0) start += slen; if (start < 0) start = 0; if (start > slen) start = slen;
+    if (end < 0) end += slen; if (end < 0) end = 0; if (end > slen) end = slen;
+    if (p->str.len == 0) return PY_FIX(end);
+    if ((int64_t)p->str.len > end - start) return PY_FIX(-1);
+    for (int64_t i = end - (int64_t)p->str.len; i >= start; i--)
+        if (memcmp(s->str.chars + i, p->str.chars, p->str.len) == 0) return PY_FIX(i);
+    return PY_FIX(-1);
+}
+
+static VALUE
+bm_index(CTX *c, int argc, VALUE *argv)
+{
+    VALUE r = bm_find(c, argc, argv);
+    if (PY_IS_FIXNUM(r) && PY_FIXVAL(r) == -1)
+        py_raise_exc(c, c->EXC_ValueError, "subsection not found");
+    return r;
+}
+
+static VALUE
+bm_rindex(CTX *c, int argc, VALUE *argv)
+{
+    VALUE r = bm_rfind(c, argc, argv);
+    if (PY_IS_FIXNUM(r) && PY_FIXVAL(r) == -1)
+        py_raise_exc(c, c->EXC_ValueError, "subsection not found");
+    return r;
+}
+
+static VALUE
+bm_endswith(CTX *c, int argc, VALUE *argv)
+{
+    (void)c;
+    struct pyobj *s = PY_PTR(argv[0]);
+    int64_t slen = (int64_t)s->str.len;
+    int64_t start = (argc >= 3 && argv[2] != PY_NONE) ? py_int_to_long(c, argv[2]) : 0;
+    int64_t end   = (argc >= 4 && argv[3] != PY_NONE) ? py_int_to_long(c, argv[3]) : slen;
+    if (start < 0) start += slen; if (start < 0) start = 0; if (start > slen) start = slen;
+    if (end < 0) end += slen; if (end < 0) end = 0; if (end > slen) end = slen;
+    int64_t span = end - start;
+    if (span < 0) span = 0;
+    const char *tail_end = s->str.chars + end;
+    VALUE arg = argv[1];
+    if (py_is_tuple(arg)) {
+        size_t n = PY_PTR(arg)->list.len;
+        for (size_t i = 0; i < n; i++) {
+            VALUE p = PY_PTR(arg)->list.items[i];
+            if (!py_is_byteseq(p)) continue;
+            struct pyobj *pp = PY_PTR(p);
+            if ((int64_t)pp->str.len > span) continue;
+            if (memcmp(tail_end - pp->str.len, pp->str.chars, pp->str.len) == 0) return PY_TRUE;
+        }
+        return PY_FALSE;
+    }
+    if (!py_is_byteseq(arg)) py_raise_exc(c, c->EXC_TypeError, "endswith: not bytes/tuple");
+    struct pyobj *p = PY_PTR(arg);
+    if ((int64_t)p->str.len > span) return PY_FALSE;
+    return memcmp(tail_end - p->str.len, p->str.chars, p->str.len) == 0 ? PY_TRUE : PY_FALSE;
+}
+
 // bytes.strip / lstrip / rstrip — whitespace only by default.
 static VALUE
 bm_strip_impl(CTX *c, int argc, VALUE *argv, bool left, bool right)
@@ -7349,9 +7593,7 @@ static VALUE bm_rstrip(CTX *c, int argc, VALUE *argv) { return bm_strip_impl(c, 
 static struct type_method bytes_methods[] = {
     { "decode",     bm_decode,     1, 2 },
     { "encode",     bm_encode,     1, 2 },
-    { "find",       bm_find,       2, 2 },
-    { "startswith", bm_startswith, 2, 2 },
-    { "endswith",   bm_endswith,   2, 2 },
+    { "startswith", bm_startswith, 2, 4 },
     { "split",      bm_split,      1, 3 },
     { "replace",    bm_replace,    3, 3 },
     { "hex",        bm_hex,        1, 1 },
@@ -7364,6 +7606,21 @@ static struct type_method bytes_methods[] = {
     { "strip",      bm_strip,      1, 2 },
     { "lstrip",     bm_lstrip,     1, 2 },
     { "rstrip",     bm_rstrip,     1, 2 },
+    { "title",      bm_title,      1, 1 },
+    { "capitalize", bm_capitalize, 1, 1 },
+    { "swapcase",   bm_swapcase,   1, 1 },
+    { "zfill",      bm_zfill,      2, 2 },
+    { "center",     bm_center,     2, 3 },
+    { "ljust",      bm_ljust,      2, 3 },
+    { "rjust",      bm_rjust,      2, 3 },
+    { "isalpha",    bm_isalpha,    1, 1 },
+    { "isdigit",    bm_isdigit,    1, 1 },
+    { "isspace",    bm_isspace,    1, 1 },
+    { "find",       bm_find,       2, 4 },
+    { "rfind",      bm_rfind,      2, 4 },
+    { "index",      bm_index,      2, 4 },
+    { "rindex",     bm_rindex,     2, 4 },
+    { "endswith",   bm_endswith,   2, 4 },
     { NULL, NULL, 0, 0 }
 };
 

@@ -1,0 +1,13 @@
+ok BytesMethodsTest test_capitalize
+ok BytesMethodsTest test_center
+ok BytesMethodsTest test_endswith_with_range
+ok BytesMethodsTest test_find_with_range
+ok BytesMethodsTest test_isalpha
+ok BytesMethodsTest test_isdigit
+ok BytesMethodsTest test_ljust_rjust
+ok BytesMethodsTest test_startswith_tuple
+ok BytesMethodsTest test_swapcase
+ok BytesMethodsTest test_title
+ok BytesMethodsTest test_zfill
+---
+passed=11 failed=0
