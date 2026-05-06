@@ -94,6 +94,13 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
     /* Normal call: method's defining_class is hit for the first time.
      * super-from-here should walk past the FIRST occurrence. */
     frame.super_skip_n = 0;
+    /* $_ / $~ are method-scoped — fresh slot per call.  We always init
+     * because callees (e.g. kernel_print without args, or any method
+     * that gets / =~ s its way into $_) reach for the current frame's
+     * slot, even when the calling method body itself never references
+     * $_ directly. */
+    frame.last_line = Qnil;
+    frame.last_match = Qnil;
     c->current_frame = &frame;
     if (UNLIKELY(!simple)) {
         prev_block = current_block;
@@ -178,6 +185,13 @@ prologue_ast_simple_static_inl(CTX *c, struct Node *callsite, VALUE recv,
     /* Normal call: method's defining_class is hit for the first time.
      * super-from-here should walk past the FIRST occurrence. */
     frame.super_skip_n = 0;
+    /* $_ / $~ are method-scoped — fresh slot per call.  We always init
+     * because callees (e.g. kernel_print without args, or any method
+     * that gets / =~ s its way into $_) reach for the current frame's
+     * slot, even when the calling method body itself never references
+     * $_ directly. */
+    frame.last_line = Qnil;
+    frame.last_match = Qnil;
     c->current_frame = &frame;
     if (UNLIKELY(!simple)) {
         prev_block = current_block;

@@ -131,6 +131,34 @@ node_gvar_defined_p(CTX * restrict c, NODE * restrict n, ID name)
 }
 
 NODE_DEF
+node_last_line_get(CTX * restrict c, NODE * restrict n)
+{
+    return korb_last_line_get(c);
+}
+
+NODE_DEF
+node_last_line_set(CTX * restrict c, NODE * restrict n, NODE *rhs)
+{
+    VALUE v = EA(c, rhs);
+    korb_last_line_set(c, v);
+    return v;
+}
+
+NODE_DEF
+node_last_match_get(CTX * restrict c, NODE * restrict n)
+{
+    return korb_last_match_get(c);
+}
+
+NODE_DEF
+node_last_match_set(CTX * restrict c, NODE * restrict n, NODE *rhs)
+{
+    VALUE v = EA(c, rhs);
+    korb_last_match_set(c, v);
+    return v;
+}
+
+NODE_DEF
 node_cvar_get(CTX * restrict c, NODE * restrict n, ID name)
 {
     /* Class variable: walk the cref's class up its superclass chain
@@ -1227,6 +1255,8 @@ node_super(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_inde
     frame.fp = new_fp;
     frame.locals_cnt = sm->u.ast.locals_cnt;
     frame.super_skip_n = new_skip_n;
+    frame.last_line = Qnil;
+    frame.last_match = Qnil;
     c->current_frame = &frame;
     VALUE r = EVAL(c, sm->u.ast.body);
     c->current_frame = frame.prev;
@@ -1327,6 +1357,8 @@ node_super_forward(CTX * restrict c, NODE * restrict n)
     frame.fp = new_fp;
     frame.locals_cnt = sm->u.ast.locals_cnt;
     frame.super_skip_n = fwd_new_skip_n;
+    frame.last_line = Qnil;
+    frame.last_match = Qnil;
     c->current_frame = &frame;
     VALUE r = EVAL(c, sm->u.ast.body);
     c->current_frame = frame.prev;

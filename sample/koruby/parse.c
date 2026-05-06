@@ -1613,10 +1613,28 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
 
       case PM_GLOBAL_VARIABLE_READ_NODE: {
           pm_global_variable_read_node_t *n = (pm_global_variable_read_node_t *)node;
+          /* $_ / $~ are method-scoped: read from the current frame's
+           * last_line / last_match slot.  Yields/proc.call don't push,
+           * so blocks/lambdas defined inside a method see the same
+           * slot — exactly CRuby's semantics. */
+          pm_constant_t *nc = pm_constant_pool_id_to_constant(&tc->parser->constant_pool, n->name);
+          if (nc->length == 2 && nc->start[0] == '$' && nc->start[1] == '_') {
+              return ALLOC_node_last_line_get();
+          }
+          if (nc->length == 2 && nc->start[0] == '$' && nc->start[1] == '~') {
+              return ALLOC_node_last_match_get();
+          }
           return ALLOC_node_gvar_get(intern_constant(tc->parser, n->name));
       }
       case PM_GLOBAL_VARIABLE_WRITE_NODE: {
           pm_global_variable_write_node_t *n = (pm_global_variable_write_node_t *)node;
+          pm_constant_t *nc = pm_constant_pool_id_to_constant(&tc->parser->constant_pool, n->name);
+          if (nc->length == 2 && nc->start[0] == '$' && nc->start[1] == '_') {
+              return ALLOC_node_last_line_set(T(tc, n->value));
+          }
+          if (nc->length == 2 && nc->start[0] == '$' && nc->start[1] == '~') {
+              return ALLOC_node_last_match_set(T(tc, n->value));
+          }
           return ALLOC_node_gvar_set(intern_constant(tc->parser, n->name), T(tc, n->value));
       }
 

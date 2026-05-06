@@ -82,13 +82,18 @@ static VALUE io_read(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 static VALUE io_gets(CTX *c, VALUE self, int argc, VALUE *argv) {
     FILE *fp = korb_io_fp(self);
-    if (!fp) return Qnil;
+    if (!fp) {
+        /* CRuby: if EOF/closed → $_ = nil. */
+        korb_last_line_set(c, Qnil);
+        return Qnil;
+    }
     char *line = NULL;
     size_t cap = 0;
     ssize_t n = getline(&line, &cap, fp);
-    if (n <= 0) { free(line); return Qnil; }
+    if (n <= 0) { free(line); korb_last_line_set(c, Qnil); return Qnil; }
     VALUE r = korb_str_new(line, n);
     free(line);
+    korb_last_line_set(c, r);
     return r;
 }
 
@@ -102,6 +107,7 @@ static VALUE io_each_line(CTX *c, VALUE self, int argc, VALUE *argv) {
     ssize_t n;
     while ((n = getline(&line, &cap, fp)) > 0) {
         VALUE l = korb_str_new(line, n);
+        korb_last_line_set(c, l);
         if (has_block) {
             korb_yield(c, 1, &l);
             if (c->state != KORB_NORMAL) { free(line); return Qnil; }

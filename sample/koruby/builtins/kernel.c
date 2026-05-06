@@ -149,6 +149,16 @@ static VALUE kernel_puts(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 static VALUE kernel_print(CTX *c, VALUE self, int argc, VALUE *argv) {
     FILE *out = io_stream(self);
+    /* CRuby: `print` with no args prints $_. */
+    if (argc == 0) {
+        VALUE dollar_underscore = korb_last_line_get(c);
+        if (!NIL_P(dollar_underscore)) {
+            VALUE s = korb_to_s_dispatch(c, dollar_underscore);
+            fwrite(((struct korb_string *)s)->ptr, 1,
+                   ((struct korb_string *)s)->len, out);
+        }
+        return Qnil;
+    }
     for (int i = 0; i < argc; i++) {
         VALUE s = korb_to_s_dispatch(c, argv[i]);
         fwrite(((struct korb_string *)s)->ptr, 1, ((struct korb_string *)s)->len, out);

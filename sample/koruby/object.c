@@ -891,6 +891,26 @@ void korb_gvar_set(ID name, VALUE v) {
     gvars.size++;
 }
 
+/* $_ / $~ — method-scoped pseudo-globals.  Stored on the current frame's
+ * last_line / last_match slots (initialized to Qnil on every method-frame
+ * push).  Yields and proc/lambda calls don't push frames, so blocks
+ * naturally share their enclosing method's slots.  Top-level (no frame)
+ * falls back to the regular global table. */
+VALUE korb_last_line_get(CTX *c) {
+    return c->current_frame ? c->current_frame->last_line : korb_gvar_get(korb_intern("$_"));
+}
+void korb_last_line_set(CTX *c, VALUE v) {
+    if (c->current_frame) c->current_frame->last_line = v;
+    else korb_gvar_set(korb_intern("$_"), v);
+}
+VALUE korb_last_match_get(CTX *c) {
+    return c->current_frame ? c->current_frame->last_match : korb_gvar_get(korb_intern("$~"));
+}
+void korb_last_match_set(CTX *c, VALUE v) {
+    if (c->current_frame) c->current_frame->last_match = v;
+    else korb_gvar_set(korb_intern("$~"), v);
+}
+
 /* ---- objects (with class-shape ivars) ---- */
 VALUE korb_object_new(struct korb_class *klass) {
     int it = klass->instance_type ? klass->instance_type : T_OBJECT;
@@ -2523,6 +2543,8 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
     frame.fp = c->fp;
     frame.locals_cnt = mc->locals_cnt;
     frame.super_skip_n = 0;
+    frame.last_line = Qnil;
+    frame.last_match = Qnil;
     c->current_frame = &frame;
     VALUE *frame_lo = c->fp;
     VALUE *frame_hi = c->fp + mc->locals_cnt;
@@ -2952,6 +2974,8 @@ VALUE korb_dispatch_binop(CTX *c, VALUE recv, ID name, int argc, VALUE *argv) {
         .fp = c->fp,
         .locals_cnt = m->u.ast.locals_cnt,
         .super_skip_n = 0,
+        .last_line = Qnil,
+        .last_match = Qnil,
     };
     c->current_frame = &frame2;
     VALUE r = EVAL(c, m->u.ast.body);

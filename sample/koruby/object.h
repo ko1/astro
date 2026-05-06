@@ -654,6 +654,14 @@ VALUE korb_gvar_get(ID name);
 void  korb_gvar_set(ID name, VALUE v);
 bool  korb_gvar_defined(ID name);
 
+/* $_ / $~ — method-scoped pseudo-globals (read/write the current frame's
+ * last_line / last_match slot, falling back to the global table at
+ * top-level).  Use these instead of korb_gvar_{get,set} for $_ and $~. */
+VALUE korb_last_line_get(CTX *c);
+void  korb_last_line_set(CTX *c, VALUE v);
+VALUE korb_last_match_get(CTX *c);
+void  korb_last_match_set(CTX *c, VALUE v);
+
 /* const lookup along current scope (uses CTX->current_class) */
 VALUE korb_const_lookup(CTX *c, ID name);
 

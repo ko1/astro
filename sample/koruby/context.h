@@ -264,6 +264,14 @@ struct korb_frame {
     VALUE *fp;
     uint32_t locals_cnt;
     struct korb_proc *block;   /* block passed to this method (NULL if none) */
+    /* $_ (last_line) and $~ (last_match) are method-scoped pseudo-globals.
+     * Blocks and lambdas defined inside a method share the surrounding
+     * method's $_ — we cooperate by NOT pushing a frame for yields/proc
+     * calls, so c->current_frame->last_line is naturally the enclosing
+     * method's slot.  Method dispatches push a fresh frame and reset
+     * these to Qnil. */
+    VALUE last_line;
+    VALUE last_match;
     /* Number of times the method's defining_class has already been seen
      * in the receiver's MRO before reaching this frame's method.  For a
      * normal dispatch this is 0 (we found the method's first occurrence).
@@ -283,6 +291,8 @@ struct korb_frame {
         .self = (c)->self,                          \
         .fp = (fp_),                                \
         .locals_cnt = (locals_),                    \
+        .last_line = Qnil,                          \
+        .last_match = Qnil,                         \
     };                                              \
     (c)->current_frame = &_frame_;                  \
     do{}while(0)
