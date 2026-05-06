@@ -1,0 +1,12 @@
+ok SplitNoneTest test_explicit_none
+ok SplitNoneTest test_no_arg_same_as_none
+ok SplitNoneTest test_none_with_max
+ok FormatMapTest test_with_dict
+ok FormatMapTest test_with_user_mapping
+ok StrEdgeTest test_count_non_overlapping
+ok StrEdgeTest test_isalnum
+ok StrEdgeTest test_isspace_empty
+ok StrEdgeTest test_partition
+ok StrEdgeTest test_split_same
+---
+passed=10 failed=0

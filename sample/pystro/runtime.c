@@ -5227,17 +5227,22 @@ sm_split(CTX *c, int argc, VALUE *argv)
     const char *s = PY_PTR(self)->str.chars;
     size_t len = PY_PTR(self)->str.len;
     VALUE result = py_make_list(NULL, 0);
-    if (argc == 1) {
-        // Split on runs of whitespace — produce sub-strings that
-        // borrow into the parent buffer.  No char-buffer allocation
-        // per piece; only the pyobj header.
+    // sep=None or absent → split on whitespace runs (CPython behaviour).
+    if (argc == 1 || argv[1] == PY_NONE) {
+        int64_t maxsplit = (argc >= 3) ? py_int_to_long(c, argv[2]) : -1;
+        int64_t splits = 0;
         size_t i = 0;
         while (i < len) {
             while (i < len && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r')) i++;
             if (i >= len) break;
+            if (maxsplit >= 0 && splits >= maxsplit) {
+                py_list_append(c, result, py_make_str_borrow(s + i, len - i));
+                return result;
+            }
             size_t j = i;
             while (j < len && !(s[j] == ' ' || s[j] == '\t' || s[j] == '\n' || s[j] == '\r')) j++;
             py_list_append(c, result, py_make_str_borrow(s + i, j - i));
+            splits++;
             i = j;
         }
         return result;
@@ -6190,7 +6195,7 @@ sm_format_map(CTX *c, int argc, VALUE *argv)
             size_t nm_start = 0;
             while (k < bn && body[k] != ':' && body[k] != '!') k++;
             VALUE key = py_make_str(body + nm_start, k);
-            val = py_dict_get(c, map_v, key);
+            val = py_list_get(c, map_v, key);
             // Optional !conv.
             if (k < bn && body[k] == '!') {
                 k++;
