@@ -1396,41 +1396,48 @@ nuq_with_entries_eval(CTX *c, struct Node *body)
 
 /* Recursively transform input bottom-up: descend into containers,
  * rebuild with transformed children, then apply body to the rebuilt
- * value.  Mirrors jq's `walk(f)`. */
+ * value.  When body emits empty (e.g. via `select(...)`), the entry
+ * is DROPPED from the parent container — this propagates via *dropped. */
 static VALUE
-nuq_walk_recurse(CTX *c, struct Node *body, VALUE v)
+nuq_walk_recurse(CTX *c, struct Node *body, VALUE v, bool *dropped)
 {
     VALUE rebuilt = v;
+    *dropped = false;
     if (NUQ_IS_PTR(v)) {
         struct nuq_obj *o = NUQ_PTR(v);
         if (o->type == NUQ_T_ARRAY) {
             VALUE arr = nuq_make_array(o->arr.len);
             for (size_t i = 0; i < o->arr.len; i++) {
-                VALUE child = nuq_walk_recurse(c, body, o->arr.items[i]);
+                bool child_drop = false;
+                VALUE child = nuq_walk_recurse(c, body, o->arr.items[i], &child_drop);
                 if (c->error != NUQ_NULL) return NUQ_NULL;
-                nuq_array_push(arr, child);
+                if (!child_drop) nuq_array_push(arr, child);
             }
             rebuilt = arr;
         } else if (o->type == NUQ_T_OBJECT) {
             VALUE obj = nuq_make_object(o->obj.len > 4 ? o->obj.len : 4);
             for (size_t i = 0; i < o->obj.len; i++) {
-                VALUE child = nuq_walk_recurse(c, body, o->obj.vals[i]);
+                bool child_drop = false;
+                VALUE child = nuq_walk_recurse(c, body, o->obj.vals[i], &child_drop);
                 if (c->error != NUQ_NULL) return NUQ_NULL;
-                nuq_object_set(obj, o->obj.keys[i], child);
+                if (!child_drop) nuq_object_set(obj, o->obj.keys[i], child);
             }
             rebuilt = obj;
         }
     }
-    /* Apply body to the rebuilt value.  body is a generic filter that
-     * may emit multiple values; jq's walk uses only the first emit
-     * (it's effectively a `.|f` chain).  We follow that convention. */
     VALUE saved = c->input;
     c->input = rebuilt;
     size_t t0 = c->pool_top;
     EMIT bo = EVAL(c, body);
-    VALUE out = (c->error != NUQ_NULL || bo.count == 0) ? rebuilt : bo.items[0];
-    if (bo.count > 0 && c->error == NUQ_NULL) {
-        /* steal the first emit before pool rewind. */
+    if (c->error != NUQ_NULL) {
+        c->pool_top = t0; c->input = saved;
+        return NUQ_NULL;
+    }
+    VALUE out;
+    if (bo.count == 0) {
+        *dropped = true;
+        out = rebuilt;
+    } else {
         out = bo.items[0];
     }
     c->pool_top = t0;
@@ -1441,7 +1448,9 @@ nuq_walk_recurse(CTX *c, struct Node *body, VALUE v)
 EMIT
 nuq_walk_eval(CTX *c, struct Node *body)
 {
-    VALUE r = nuq_walk_recurse(c, body, c->input);
+    bool dropped = false;
+    VALUE r = nuq_walk_recurse(c, body, c->input, &dropped);
+    if (dropped) return EMIT_EMPTY;
     if (c->error != NUQ_NULL) return EMIT_EMPTY;
     return nuq_emit_one(c, r);
 }
