@@ -1,0 +1,5 @@
+ok SetNameTest test_basic
+ok SetNameTest test_validator_uses_name
+ok ClassGetItemTest test_basic
+---
+passed=3 failed=0

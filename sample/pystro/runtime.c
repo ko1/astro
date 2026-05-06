@@ -638,7 +638,6 @@ py_class_set_bases(VALUE cls, VALUE *bases, int n)
 void
 py_class_add_method(CTX *c, VALUE cls, const char *name, VALUE fn)
 {
-    (void)c;
     // Stamp the method's defining class so cooperative super() can
     // walk MRO from this point.
     if (PY_IS_PTR(fn) && PY_PTR(fn)->type == PY_T_FUNC)
@@ -649,6 +648,17 @@ py_class_add_method(CTX *c, VALUE cls, const char *name, VALUE fn)
         VALUE inner = PY_PTR(fn)->wrap.wrapped;
         if (PY_IS_PTR(inner) && PY_PTR(inner)->type == PY_T_FUNC)
             PY_PTR(inner)->func.defining_class = cls;
+    }
+    // __set_name__ — if `fn` is a user instance with __set_name__,
+    // call it now so descriptors can capture their attribute name.
+    if (PY_IS_PTR(fn) && PY_PTR(fn)->type == PY_T_INSTANCE) {
+        VALUE sn = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(fn)->inst.cls), "__set_name__");
+        if (sn != PY_NONE) {
+            VALUE av[3] = { fn, cls, py_make_str(name, strlen(name)) };
+            py_apply(c, sn, 3, av);
+            // Ignore raise — but propagate the state.
+            if (c->state == PY_STATE_RAISE) return;
+        }
     }
     struct pyclass *cd = &PY_PTR(cls)->cls;
     // Replace if a method with the same name already exists — required
@@ -2307,6 +2317,14 @@ py_list_get(CTX *c, VALUE seq, VALUE idx)
     }
     if (py_is_dict(seq)) {
         return py_dict_get(c, seq, idx);
+    }
+    // `cls[arg]` — class subscript via __class_getitem__.
+    if (py_is_class(seq)) {
+        VALUE m = py_class_lookup_method(seq, "__class_getitem__");
+        if (m != PY_NONE) {
+            VALUE av[2] = { seq, idx };
+            return py_apply(c, m, 2, av);
+        }
     }
     py_raise_exc(c, c->EXC_TypeError, "object is not subscriptable");
 }
