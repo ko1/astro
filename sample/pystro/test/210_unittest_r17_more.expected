@@ -1,0 +1,26 @@
+ok UnionTypeTest test_int_str_union
+ok UnionTypeTest test_three_way
+ok ParenImportTest test_paren_imports
+ok ExecWritebackTest test_eval_with_globals
+ok ExecWritebackTest test_exec_modifies_ns
+ok AnnotationValueTest test_class_annotations_have_types
+ok AnnotationValueTest test_dataclass_annotations
+ok MemoryViewTest test_memoryview_basic
+ok MemoryViewTest test_memoryview_slice_chained
+ok MappingProxyTest test_readonly
+ok FnmatchGlobTest test_fnmatch
+ok FnmatchGlobTest test_glob_present
+ok ShlexTest test_quote_join
+ok ShlexTest test_split_quoted
+ok IntEnumArithTest test_intenum_add
+ok AsyncAsSyncTest test_async_def_runs_sync
+ok AsyncAsSyncTest test_await_passthrough
+ok GeneratorExceptionTest test_typeerror_in_yield_from_propagates
+ok GeneratorExceptionTest test_user_iter_with_inner_stopiter
+ok CollectionsAbcMetaTest test_iter_mapping_seq
+ok UrllibParseTest test_quote_unquote
+ok UrllibParseTest test_urlparse
+ok TypingExtraTest test_generic_class
+ok TypingExtraTest test_typeddict
+---
+passed=24 failed=0

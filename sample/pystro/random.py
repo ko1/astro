@@ -113,5 +113,92 @@ def choices(population, weights=None, k=1):
     return out
 
 
+def getstate():
+    return (_state[0],)
+
+def setstate(state):
+    _state[0] = state[0]
+
+
+def betavariate(alpha, beta):
+    """Beta distribution; thin wrapper using gamma."""
+    g1 = gauss(alpha, 1)
+    g2 = gauss(beta, 1)
+    if g1 + g2 == 0: return 0.0
+    return abs(g1) / (abs(g1) + abs(g2))
+
+def expovariate(lambd):
+    import math
+    u = random()
+    while u == 0:
+        u = random()
+    return -math.log(u) / lambd
+
+def lognormvariate(mu, sigma):
+    import math
+    return math.exp(gauss(mu, sigma))
+
+def normalvariate(mu, sigma):
+    return gauss(mu, sigma)
+
+def paretovariate(alpha):
+    import math
+    u = 1.0 - random()
+    return 1.0 / pow(u, 1.0/alpha)
+
+def vonmisesvariate(mu, kappa):
+    return mu  # placeholder
+
+def weibullvariate(alpha, beta):
+    import math
+    u = 1.0 - random()
+    return alpha * pow(-math.log(u), 1.0/beta)
+
+def triangular(low=0.0, high=1.0, mode=None):
+    if mode is None:
+        mode = (low + high) / 2.0
+    u = random()
+    c = (mode - low) / (high - low) if high != low else 0.5
+    if u <= c:
+        return low + ((high - low) * (u * c)) ** 0.5
+    return high - ((high - low) * ((1 - u) * (1 - c))) ** 0.5
+
+
+class Random:
+    """Class that wraps the module-level random state.  Pystro's random
+    is global, so each Random instance shares state."""
+    def __init__(self, seed_=None):
+        if seed_ is not None:
+            seed(seed_)
+    def seed(self, s):
+        seed(s)
+    def random(self):
+        return random()
+    def randint(self, a, b):
+        return randint(a, b)
+    def randrange(self, *args):
+        return randrange(*args)
+    def choice(self, seq):
+        return choice(seq)
+    def shuffle(self, seq):
+        return shuffle(seq)
+    def sample(self, population, k):
+        return sample(population, k)
+    def uniform(self, a, b):
+        return uniform(a, b)
+    def gauss(self, mu=0.0, sigma=1.0):
+        return gauss(mu, sigma)
+    def getstate(self):
+        return getstate()
+    def setstate(self, state):
+        setstate(state)
+
+
+SystemRandom = Random  # placeholder; pystro has no /dev/urandom binding
+
+
 __all__ = ["seed", "random", "randint", "randrange", "randbytes",
-           "choice", "choices", "shuffle", "sample", "uniform", "gauss"]
+           "choice", "choices", "shuffle", "sample", "uniform", "gauss",
+           "getstate", "setstate", "Random", "SystemRandom",
+           "betavariate", "expovariate", "lognormvariate", "normalvariate",
+           "paretovariate", "vonmisesvariate", "weibullvariate", "triangular"]

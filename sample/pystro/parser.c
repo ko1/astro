@@ -3443,22 +3443,20 @@ parse_simple_stmt(void)
         size_t save = tok_pos;
         const char *nm = peek_tok(0)->sval;
         tok_pos += 2;
-        // Discard annotation.
-        (void)parse_expr();
+        NODE *ann_expr = parse_expr();
         // Inside a class body: track in `__annotations__` so introspection
-        // (e.g. dataclasses, typing) can see field declarations.
+        // (e.g. dataclasses, typing) can see field declarations.  Capture
+        // the annotation expression's value (best-effort — some type
+        // forms like `int | str` evaluate at runtime to a tuple-of-classes).
         NODE *track_ann = NULL;
         if (in_class_body) {
-            // Build: __annotations__ = (__annotations__ or {}); __annotations__[nm] = annotation_value (None placeholder).
             NODE *get_ann = ALLOC_node_class_method_get(intern_name("__annotations__", 15));
             NODE *empty = ALLOC_node_make_dict(node_table_reserve(NULL, 0), 0);
             NODE *or_node = ALLOC_node_or(get_ann, empty);
             NODE *set_ann = ALLOC_node_class_method_set(intern_name("__annotations__", 15), or_node);
-            // Now subscript-set: __annotations__[nm] = None.
             NODE *load_ann = ALLOC_node_class_method_get(intern_name("__annotations__", 15));
             NODE *key = ALLOC_node_const_str(nm);
-            NODE *val = ALLOC_node_const_none();
-            NODE *sset = ALLOC_node_subscript_set(load_ann, key, val);
+            NODE *sset = ALLOC_node_subscript_set(load_ann, key, ann_expr);
             track_ann = ALLOC_node_seq(set_ann, sset);
         }
         if (match_tok(T_ASSIGN)) {
