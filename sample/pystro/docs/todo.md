@@ -16,9 +16,9 @@ R11–R17 で深掘り (test 78–212 追加, **213 unit tests passing**)。 [do
 | 区分 | 数 |
 |---|---|
 | total | 394 |
-| **fully pass** (`failed=0`) | **25** |
-| mixed (test logic ran, ≥1 fail) | 323 |
-| crash / timeout | 14 |
+| **fully pass** (`failed=0`) | **26** |
+| mixed (test logic ran, ≥1 fail) | 319 |
+| crash / timeout | 17 |
 | parse error | 28 |
 | import error | 4 |
 
@@ -53,6 +53,11 @@ CPython compat の作業として追加した薄い shim 群:
   - unpack target buffer 16 → 64
 - **collections.namedtuple** field を non-data descriptor として公開
   (`Cls.field.__doc__ = ...` を許す, dis.py が要求)。
+- **numbers module** + ABCMeta `_abc_registry` 経由の virtual subclass
+  (`isinstance(5, numbers.Integral)`, `issubclass(complex, numbers.Complex)`
+  が動く, own-only lookup なので `complex < Integral` は False)。
+- **unittest.mock** subnamespace (Mock / MagicMock / patch / sentinel /
+  call / mock_open) を unittest.py に同梱。
 
 **まだ blocking している parse error 28 種** (1 ファイルずつ別案件):
 
