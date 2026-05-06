@@ -7530,6 +7530,8 @@ bi_abs(CTX *c, int argc, VALUE *argv)
 {
     (void)argc;
     VALUE v = argv[0];
+    if (v == PY_TRUE) return PY_FIX(1);
+    if (v == PY_FALSE) return PY_FIX(0);
     if (PY_IS_FIXNUM(v)) {
         int64_t x = PY_FIXVAL(v);
         return PY_FIX(x < 0 ? -x : x);

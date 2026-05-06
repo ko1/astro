@@ -1,0 +1,4 @@
+ok CachedPropertyTest test_basic
+ok AbsBoolTest test_basic
+---
+passed=2 failed=0

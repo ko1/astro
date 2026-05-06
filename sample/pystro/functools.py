@@ -119,6 +119,20 @@ def total_ordering(cls):
     return cls
 
 
+class cached_property:
+    """Descriptor: compute on first access, store on the instance __dict__."""
+    def __init__(self, fn):
+        self.fn = fn
+        self.attrname = fn.__name__
+    def __set_name__(self, owner, name):
+        self.attrname = name
+    def __get__(self, obj, owner=None):
+        if obj is None: return self
+        v = self.fn(obj)
+        obj.__dict__[self.attrname] = v
+        return v
+
+
 def singledispatch(fn):
     # Minimal: dispatch on type of first arg.
     registry = {}
@@ -159,4 +173,5 @@ def singledispatch(fn):
 
 
 __all__ = ["partial", "reduce", "wraps", "cache", "lru_cache",
-           "cmp_to_key", "total_ordering", "singledispatch"]
+           "cmp_to_key", "total_ordering", "singledispatch",
+           "cached_property"]
