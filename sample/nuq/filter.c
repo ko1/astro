@@ -874,18 +874,11 @@ parse_primary(lexer_t *L)
                         ie->kkind = 1;
                         ie->kexpr = ALLOC_node_format(nuq_fmt_intern(fnm), ALLOC_node_interp((uint32_t)tk.i));
                     } else parse_error(L, "expected string after @%s", fnm);
-                } else if (kt->type >= TK_KW_TRUE && kt->type <= TK_KW_LABEL) {
-                    static const char *kw_names[] = {
-                        [TK_KW_TRUE]="true",[TK_KW_FALSE]="false",[TK_KW_NULL]="null",
-                        [TK_KW_IF]="if",[TK_KW_THEN]="then",[TK_KW_ELIF]="elif",
-                        [TK_KW_ELSE]="else",[TK_KW_END]="end",[TK_KW_AND]="and",
-                        [TK_KW_OR]="or",[TK_KW_NOT]="not",[TK_KW_AS]="as",
-                        [TK_KW_DEF]="def",[TK_KW_TRY]="try",[TK_KW_CATCH]="catch",
-                        [TK_KW_REDUCE]="reduce",[TK_KW_FOREACH]="foreach",
-                        [TK_KW_LABEL]="label",[TK_KW_BREAK]="break"
-                    };
+                } else if (is_name_tok(kt)) {
+                    /* Any keyword can be used as an object key — its
+                     * spelled name comes from the lexer's saved s. */
                     ie->kkind = 0;
-                    ie->kname = kw_names[kt->type] ? kw_names[kt->type] : "?";
+                    ie->kname = kt->s ? kt->s : "?";
                     take(L);
                 } else parse_error(L, "bad key in object");
                 if (accept(L, TK_COLON)) {

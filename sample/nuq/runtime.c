@@ -596,14 +596,14 @@ EMIT
 nuq_object_eval(CTX *c, uint32_t entries_id)
 {
     const struct obj_ctor *const e = &obj_tab[entries_id];
-    if (e->cnt > 16) return err_emit(c, "object literal too large");
+    if (e->cnt > 32) return err_emit(c, "object literal too large");
     const size_t outer_top = c->pool_top;
 
     /* Fast path — emit exactly one object.  Build it directly into
      * the pool and bail to the cartesian path the first time we hit
      * a multi-emit (or zero-emit) entry.  This avoids all per-entry
      * GC_malloc(sizeof(VALUE)) buffers in the common case. */
-    VALUE k_fast[16], v_fast[16];
+    VALUE k_fast[32], v_fast[32];
     size_t fast_done = 0;
     for (size_t i = 0; i < e->cnt; i++) {
         const struct nuq_obj_entry *const ie = &e->items[i];
@@ -652,7 +652,7 @@ cartesian: {
      * EVAL slots become free again. */
     c->pool_top = outer_top;
     struct stream { VALUE *items; uint32_t count; };
-    struct stream kss[16], vss[16];
+    struct stream kss[32], vss[32];
     /* Re-evaluate from scratch.  This is the rare path. */
     for (size_t i = 0; i < e->cnt; i++) {
         const struct nuq_obj_entry *const ie = &e->items[i];
@@ -692,7 +692,7 @@ cartesian: {
         if (kss[i].count == 0 || vss[i].count == 0)
             return EMIT_EMPTY;
 
-    size_t kidx[16] = {0}, vidx[16] = {0};
+    size_t kidx[32] = {0}, vidx[32] = {0};
     for (;;) {
         VALUE obj = nuq_make_object(e->cnt);
         for (size_t i = 0; i < e->cnt; i++) {
