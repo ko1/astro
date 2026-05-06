@@ -1510,7 +1510,46 @@ node_b_pow(CTX *c, NODE *n, NODE *base_n, NODE *exp_n)
     return nuq_emit_one(c, nuq_make_double(pow(bv, ev)));
 }
 
-/* `trim` — strip leading and trailing ASCII whitespace. */
+/* Decode one UTF-8 codepoint at p (length n). Returns codepoint into
+ * `*cp` and bytes consumed.  On invalid sequence returns 0xFFFD and 1. */
+static size_t
+utf8_decode(const char *p, size_t n, uint32_t *cp)
+{
+    unsigned char c0 = (unsigned char)p[0];
+    if (c0 < 0x80) { *cp = c0; return 1; }
+    if (n >= 2 && (c0 & 0xE0) == 0xC0) {
+        unsigned char c1 = (unsigned char)p[1];
+        *cp = ((c0 & 0x1F) << 6) | (c1 & 0x3F);
+        return 2;
+    }
+    if (n >= 3 && (c0 & 0xF0) == 0xE0) {
+        unsigned char c1 = (unsigned char)p[1], c2 = (unsigned char)p[2];
+        *cp = ((c0 & 0x0F) << 12) | ((c1 & 0x3F) << 6) | (c2 & 0x3F);
+        return 3;
+    }
+    if (n >= 4 && (c0 & 0xF8) == 0xF0) {
+        unsigned char c1 = (unsigned char)p[1], c2 = (unsigned char)p[2], c3 = (unsigned char)p[3];
+        *cp = ((c0 & 0x07) << 18) | ((c1 & 0x3F) << 12) | ((c2 & 0x3F) << 6) | (c3 & 0x3F);
+        return 4;
+    }
+    *cp = 0xFFFD;
+    return 1;
+}
+
+/* True if the codepoint is jq's notion of whitespace (Unicode). */
+static bool
+is_ws_cp(uint32_t cp)
+{
+    if (cp == 0x20 || cp == 0x09 || cp == 0x0A || cp == 0x0B ||
+        cp == 0x0C || cp == 0x0D) return true;
+    if (cp == 0x85 || cp == 0xA0 || cp == 0x1680) return true;
+    if (cp >= 0x2000 && cp <= 0x200A) return true;
+    if (cp == 0x2028 || cp == 0x2029 || cp == 0x202F ||
+        cp == 0x205F || cp == 0x3000) return true;
+    return false;
+}
+
+/* `trim` — strip leading and trailing whitespace (Unicode-aware). */
 NODE_DEF
 node_b_trim(CTX *c, NODE *n)
 {
@@ -1518,10 +1557,23 @@ node_b_trim(CTX *c, NODE *n)
         { c->error = nuq_make_string("trim input must be a string", 27); return EMIT_EMPTY; }
     struct nuq_obj *o = NUQ_PTR(c->input);
     size_t lo = 0, hi = o->str.len;
-    while (lo < hi && (o->str.bytes[lo] == ' ' || o->str.bytes[lo] == '\t' ||
-                       o->str.bytes[lo] == '\n' || o->str.bytes[lo] == '\r')) lo++;
-    while (hi > lo && (o->str.bytes[hi-1] == ' ' || o->str.bytes[hi-1] == '\t' ||
-                       o->str.bytes[hi-1] == '\n' || o->str.bytes[hi-1] == '\r')) hi--;
+    /* Forward scan for leading whitespace codepoints. */
+    while (lo < hi) {
+        uint32_t cp;
+        size_t adv = utf8_decode(o->str.bytes + lo, hi - lo, &cp);
+        if (!is_ws_cp(cp)) break;
+        lo += adv;
+    }
+    /* Backward scan: walk back to a codepoint start, decode, check ws. */
+    while (hi > lo) {
+        size_t k = hi - 1;
+        while (k > lo && (((unsigned char)o->str.bytes[k]) & 0xC0) == 0x80) k--;
+        uint32_t cp;
+        size_t adv = utf8_decode(o->str.bytes + k, hi - k, &cp);
+        (void)adv;
+        if (!is_ws_cp(cp)) break;
+        hi = k;
+    }
     return nuq_emit_one(c, nuq_make_string(o->str.bytes + lo, hi - lo));
 }
 
@@ -1633,9 +1685,13 @@ node_b_ltrim(CTX *c, NODE *n)
         return EMIT_EMPTY;
     }
     struct nuq_obj *o = NUQ_PTR(c->input);
-    size_t lo = 0;
-    while (lo < o->str.len && (o->str.bytes[lo] == ' ' || o->str.bytes[lo] == '\t' ||
-                                o->str.bytes[lo] == '\n' || o->str.bytes[lo] == '\r')) lo++;
+    size_t lo = 0, end = o->str.len;
+    while (lo < end) {
+        uint32_t cp;
+        size_t adv = utf8_decode(o->str.bytes + lo, end - lo, &cp);
+        if (!is_ws_cp(cp)) break;
+        lo += adv;
+    }
     return nuq_emit_one(c, nuq_make_string(o->str.bytes + lo, o->str.len - lo));
 }
 
@@ -1648,8 +1704,15 @@ node_b_rtrim(CTX *c, NODE *n)
     }
     struct nuq_obj *o = NUQ_PTR(c->input);
     size_t hi = o->str.len;
-    while (hi > 0 && (o->str.bytes[hi-1] == ' ' || o->str.bytes[hi-1] == '\t' ||
-                       o->str.bytes[hi-1] == '\n' || o->str.bytes[hi-1] == '\r')) hi--;
+    while (hi > 0) {
+        size_t k = hi - 1;
+        while (k > 0 && (((unsigned char)o->str.bytes[k]) & 0xC0) == 0x80) k--;
+        uint32_t cp;
+        size_t adv = utf8_decode(o->str.bytes + k, hi - k, &cp);
+        (void)adv;
+        if (!is_ws_cp(cp)) break;
+        hi = k;
+    }
     return nuq_emit_one(c, nuq_make_string(o->str.bytes, hi));
 }
 

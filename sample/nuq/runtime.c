@@ -2214,6 +2214,8 @@ nuq_max_by_eval(CTX *c, struct Node *body)
 
 /* --- string search builtins ---------------------------------------- */
 
+static int64_t byte_to_cp_index(const char *s, size_t blen, size_t bytepos);
+
 EMIT
 nuq_indices_eval(CTX *c, struct Node *pat)
 {
@@ -2237,7 +2239,7 @@ nuq_indices_eval(CTX *c, struct Node *pat)
             if (po->str.len > 0) {
                 for (size_t i = 0; i + po->str.len <= io->str.len; i++) {
                     if (memcmp(io->str.bytes + i, po->str.bytes, po->str.len) == 0)
-                        nuq_array_push(arr, nuq_make_int(i));
+                        nuq_array_push(arr, nuq_make_int(byte_to_cp_index(io->str.bytes, io->str.len, i)));
                 }
             }
         } else if (NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_ARRAY) {
@@ -2272,6 +2274,26 @@ nuq_indices_eval(CTX *c, struct Node *pat)
     return nuq_emit_slice(c, outer);
 }
 
+/* Convert a byte index into a codepoint index by counting UTF-8 lead
+ * bytes (start of multi-byte) up to that position.  Used so index /
+ * indices / rindex emit codepoint-aligned positions on strings, as
+ * jq does. */
+static int64_t
+byte_to_cp_index(const char *s, size_t blen, size_t bytepos)
+{
+    int64_t cp = 0;
+    for (size_t i = 0; i < bytepos && i < blen; ) {
+        unsigned char x = (unsigned char)s[i];
+        if (x < 0x80) i += 1;
+        else if ((x & 0xE0) == 0xC0) i += 2;
+        else if ((x & 0xF0) == 0xE0) i += 3;
+        else if ((x & 0xF8) == 0xF0) i += 4;
+        else i += 1;
+        cp++;
+    }
+    return cp;
+}
+
 EMIT
 nuq_index1_eval(CTX *c, struct Node *pat)
 {
@@ -2295,7 +2317,8 @@ nuq_index1_eval(CTX *c, struct Node *pat)
             if (po->str.len > 0) {
                 for (size_t i = 0; i + po->str.len <= io->str.len; i++) {
                     if (memcmp(io->str.bytes + i, po->str.bytes, po->str.len) == 0) {
-                        r = nuq_make_int(i); break;
+                        r = nuq_make_int(byte_to_cp_index(io->str.bytes, io->str.len, i));
+                        break;
                     }
                 }
             }
@@ -2354,7 +2377,8 @@ nuq_rindex_eval(CTX *c, struct Node *pat)
             if (po->str.len > 0 && po->str.len <= io->str.len) {
                 for (ssize_t i = (ssize_t)(io->str.len - po->str.len); i >= 0; i--) {
                     if (memcmp(io->str.bytes + i, po->str.bytes, po->str.len) == 0) {
-                        r = nuq_make_int(i); break;
+                        r = nuq_make_int(byte_to_cp_index(io->str.bytes, io->str.len, (size_t)i));
+                        break;
                     }
                 }
             }

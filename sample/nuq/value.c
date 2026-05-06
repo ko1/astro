@@ -551,7 +551,20 @@ nuq_length(VALUE v)
         double d = o->dbl;
         return nuq_make_double(d < 0 ? -d : d);
       }
-      case NUQ_T_STRING: return nuq_make_int((int64_t)o->str.len);
+      case NUQ_T_STRING: {
+        /* jq returns codepoint count, not byte count. */
+        int64_t cp = 0;
+        for (size_t i = 0; i < o->str.len; ) {
+            unsigned char x = (unsigned char)o->str.bytes[i];
+            if (x < 0x80) i += 1;
+            else if ((x & 0xE0) == 0xC0) i += 2;
+            else if ((x & 0xF0) == 0xE0) i += 3;
+            else if ((x & 0xF8) == 0xF0) i += 4;
+            else i += 1;
+            cp++;
+        }
+        return nuq_make_int(cp);
+      }
       case NUQ_T_ARRAY:  return nuq_make_int((int64_t)o->arr.len);
       case NUQ_T_OBJECT: return nuq_make_int((int64_t)o->obj.len);
     }
