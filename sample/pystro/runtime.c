@@ -2631,6 +2631,16 @@ py_list_get(CTX *c, VALUE seq, VALUE idx)
             VALUE av[2] = { seq, idx };
             return py_apply(c, m, 2, av);
         }
+        // PEP 585: built-in container generic alias.  list[int],
+        // dict[str, int], tuple[int, ...], set[int], frozenset[int],
+        // type[T] — pystro doesn't model the alias type, just return the
+        // class itself so annotations parse without error.
+        const char *nm = PY_PTR(seq)->cls.name;
+        if (strcmp(nm, "list") == 0 || strcmp(nm, "dict") == 0 ||
+            strcmp(nm, "tuple") == 0 || strcmp(nm, "set") == 0 ||
+            strcmp(nm, "frozenset") == 0 || strcmp(nm, "type") == 0) {
+            return seq;
+        }
     }
     py_raise_exc(c, c->EXC_TypeError, "object is not subscriptable");
 }
