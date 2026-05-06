@@ -623,6 +623,12 @@ nuq_object_eval(CTX *c, uint32_t entries_id)
         }
         if (ie->vexpr == NULL) {
             if (ie->kkind == 2) v = nuq_var_get(c, ie->var_id);
+            else if (ie->kkind == 1) {
+                /* Computed key with shorthand value — look up `k`
+                 * (already evaluated) in the input object. */
+                v = (NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_OBJECT)
+                    ? nuq_object_get(c->input, k) : NUQ_NULL;
+            }
             else                v = nuq_object_get_cstr(c->input, ie->kname);
         } else {
             const size_t t0 = c->pool_top;
