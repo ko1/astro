@@ -24,7 +24,7 @@ enum tok_kind {
     T_ASSIGN, T_WALRUS,
     T_PLUS_EQ, T_MINUS_EQ, T_STAR_EQ, T_SLASH_EQ, T_SLASH_SLASH_EQ,
     T_PERCENT_EQ, T_AMP_EQ, T_PIPE_EQ, T_CARET_EQ,
-    T_LSHIFT_EQ, T_RSHIFT_EQ, T_STAR_STAR_EQ,
+    T_LSHIFT_EQ, T_RSHIFT_EQ, T_STAR_STAR_EQ, T_AT_EQ,
 
     // Operators.
     T_PLUS, T_MINUS, T_STAR, T_SLASH, T_SLASH_SLASH, T_PERCENT,
@@ -725,7 +725,9 @@ tokenize(const char *src, const char *filename)
           case ':': src_pos++; tok_push(T_COLON, line); continue;
           case '.': src_pos++; tok_push(T_DOT, line); continue;
           case ';': src_pos++; tok_push(T_SEMI, line); continue;
-          case '@': src_pos++; tok_push(T_AT, line); continue;
+          case '@':
+            if (src[src_pos + 1] == '=') { src_pos += 2; tok_push(T_AT_EQ, line); continue; }
+            src_pos++; tok_push(T_AT, line); continue;
           case '+': src_pos++; tok_push(T_PLUS, line); continue;
           case '-': src_pos++; tok_push(T_MINUS, line); continue;
           case '*': src_pos++; tok_push(T_STAR, line); continue;

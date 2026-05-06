@@ -3875,6 +3875,7 @@ augop_apply(int kind, NODE *lhs, NODE *rhs)
       case T_LSHIFT_EQ:      return ALLOC_node_lshift(lhs, rhs);
       case T_RSHIFT_EQ:      return ALLOC_node_rshift(lhs, rhs);
       case T_STAR_STAR_EQ:   return ALLOC_node_pow(lhs, rhs);
+      case T_AT_EQ:          return ALLOC_node_matmul(lhs, rhs);
     }
     return rhs;
 }
@@ -3885,7 +3886,8 @@ is_aug_assign(int k)
     return k == T_PLUS_EQ || k == T_MINUS_EQ || k == T_STAR_EQ
         || k == T_SLASH_EQ || k == T_SLASH_SLASH_EQ || k == T_PERCENT_EQ
         || k == T_AMP_EQ || k == T_PIPE_EQ || k == T_CARET_EQ
-        || k == T_LSHIFT_EQ || k == T_RSHIFT_EQ || k == T_STAR_STAR_EQ;
+        || k == T_LSHIFT_EQ || k == T_RSHIFT_EQ || k == T_STAR_STAR_EQ
+        || k == T_AT_EQ;
 }
 
 // Forward decl.
