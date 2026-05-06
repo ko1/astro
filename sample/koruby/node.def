@@ -1025,6 +1025,47 @@ node_raise(CTX * restrict c, NODE * restrict n, NODE *exc_expr)
 
 // ---------------- multi-assign helpers ----------------
 
+/* Multi-assign RHS coercion: CRuby uses to_ary (NOT to_a) for the
+ * single-RHS-value case `a, b = obj`.  obj.to_ary must return Array
+ * (else TypeError); if obj doesn't respond to to_ary, the RHS is
+ * wrapped in [obj]. */
+NODE_DEF
+node_to_ary_for_mlhs(CTX * restrict c, NODE * restrict n, NODE *expr)
+{
+    VALUE v = EA(c, expr);
+    if (BUILTIN_TYPE(v) == T_ARRAY) return v;
+    if (NIL_P(v)) {
+        VALUE a = korb_ary_new_capa(1);
+        korb_ary_push(a, v);
+        return a;
+    }
+    /* respond_to?(:to_ary)? */
+    VALUE rt = korb_funcall(c, v, korb_intern("respond_to?"), 1,
+                            (VALUE[]){ korb_id2sym(korb_intern("to_ary")) });
+    if (c->state != KORB_NORMAL) { c->state = KORB_NORMAL; c->state_value = Qnil; rt = Qfalse; }
+    if (RTEST(rt)) {
+        VALUE r = korb_funcall(c, v, korb_intern("to_ary"), 0, NULL);
+        if (c->state != KORB_NORMAL) return Qnil;
+        if (NIL_P(r)) {
+            /* CRuby: to_ary returning nil wraps in [v]. */
+            VALUE a = korb_ary_new_capa(1);
+            korb_ary_push(a, v);
+            return a;
+        }
+        if (BUILTIN_TYPE(r) != T_ARRAY) {
+            VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+            korb_raise(c, (struct korb_class *)eT,
+                       "can't convert to Array (#to_ary gave non-Array)");
+            return Qnil;
+        }
+        return r;
+    }
+    /* No to_ary: wrap. */
+    VALUE a = korb_ary_new_capa(1);
+    korb_ary_push(a, v);
+    return a;
+}
+
 NODE_DEF
 node_splat_to_ary(CTX * restrict c, NODE * restrict n, NODE *expr)
 {

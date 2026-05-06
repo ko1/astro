@@ -2794,7 +2794,7 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
           pm_multi_write_node_t *n = (pm_multi_write_node_t *)node;
           NODE *rhs = T(tc, n->value);
           uint32_t tmp_slot = inc_arg_index(tc);
-          NODE *prep = ALLOC_node_lvar_set(tmp_slot, ALLOC_node_splat_to_ary(rhs));
+          NODE *prep = ALLOC_node_lvar_set(tmp_slot, ALLOC_node_to_ary_for_mlhs(rhs));
           NODE *chain = prep;
 
           /* helper macro: build assign for one target given the get-expr */
