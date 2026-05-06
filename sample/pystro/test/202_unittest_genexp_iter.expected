@@ -1,0 +1,8 @@
+ok GenexpIteratorTest test_exhausted
+ok GenexpIteratorTest test_filter
+ok GenexpIteratorTest test_in_for_loop
+ok GenexpIteratorTest test_in_sum
+ok GenexpIteratorTest test_next
+ok GenexpIteratorTest test_to_list
+---
+passed=6 failed=0

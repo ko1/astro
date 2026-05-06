@@ -1009,6 +1009,9 @@ parse_paren_or_tuple(void)
     // to a list comprehension — eager, but matches Python's observable
     // behavior for the vast majority of uses (non-infinite source).
     if (peek_tok(0)->kind == T_FOR) {
+        // Genexp: build a list eagerly, then wrap with iter() so the
+        // result presents as an iterator (true laziness would require a
+        // synthesised generator function).
         const char *tmp = new_temp_name("__ge");
         NODE *load_tmp;
         size_t empty_idx = node_table_reserve(NULL, 0);
@@ -1017,7 +1020,10 @@ parse_paren_or_tuple(void)
         NODE *loops = parse_comp_clauses(append);
         expect(T_RPAREN, "')'");
         comp_remap_top = saved_remap;
-        return ALLOC_node_seq(init, ALLOC_node_seq(loops, load_tmp));
+        NODE *body = ALLOC_node_seq(init, ALLOC_node_seq(loops, load_tmp));
+        NODE *iter_call = ALLOC_node_call_1(
+            ALLOC_node_gref(intern_name("iter", 4)), body);
+        return iter_call;
     }
     comp_remap_top = saved_remap;
     if (match_tok(T_RPAREN)) return first;
