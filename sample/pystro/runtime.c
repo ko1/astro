@@ -1885,6 +1885,17 @@ py_hash(CTX *c, VALUE v)
             if (pydict_entry_live(d, i)) h ^= py_hash(c, d->entries[i].key);
         return h ^ 0xC2B2AE3D27D4EB4FULL;
       }
+      case PY_T_RANGE: {
+        // Hash the (start, stop, step) triple so equal ranges hash same.
+        // Use start, len, last (CPython approximation).
+        size_t L = py_seq_len(c, v);
+        if (L == 0) return 0xCBF29CE484222325ULL;  // empty: fixed
+        int64_t last = o->range.start + (int64_t)(L - 1) * o->range.step;
+        uint64_t h = (uint64_t)L;
+        h = h * 0x9E3779B97F4A7C15ULL ^ (uint64_t)o->range.start;
+        if (L > 1) h = h * 0x100000001B3ULL ^ (uint64_t)last;
+        return h;
+      }
       case PY_T_INSTANCE: {
         // User-defined __hash__: call it and convert to int.
         VALUE cls = PY_OBJ_VAL(o->inst.cls);

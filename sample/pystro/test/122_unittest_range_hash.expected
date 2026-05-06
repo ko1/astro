@@ -1,0 +1,5 @@
+ok RangeHashTest test_as_dict_key
+ok RangeHashTest test_distinct_ranges_diff_hash
+ok RangeHashTest test_eq_ranges_same_hash
+---
+passed=3 failed=0
