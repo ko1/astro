@@ -3045,7 +3045,7 @@ void korb_runtime_init(void) {
         "ArgumentError", "TypeError",
         "ZeroDivisionError", "IOError", "Errno",
         "NotImplementedError", "StopIteration", "LocalJumpError",
-        "SystemCallError",
+        "SystemCallError", "UncaughtThrowError",
         NULL,
     };
     for (int i = 0; std_subs[i]; i++) {

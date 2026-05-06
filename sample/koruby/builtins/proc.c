@@ -264,6 +264,32 @@ VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
         r = c->state_value;
         c->state = KORB_NORMAL;
         c->state_value = Qnil;
+    } else if (c->state == KORB_NEXT) {
+        /* `next` inside a proc/lambda body: consume it as the proc's
+         * return value (CRuby: lambda { next 42 }.call == 42, and
+         * proc { next 42 }.call also == 42).  Otherwise it leaks up
+         * to the enclosing method and silently exits. */
+        r = c->state_value;
+        c->state = KORB_NORMAL;
+        c->state_value = Qnil;
+    } else if (c->state == KORB_THROW) {
+        /* Unhandled throw escaping a proc/lambda — convert to raise of
+         * UncaughtThrowError so it can be caught by `rescue` (matchers
+         * like .should raise_error need to see a raise, not a state). */
+        VALUE eUTE = korb_const_get(korb_vm->object_class, korb_intern("UncaughtThrowError"));
+        VALUE tag = Qnil;
+        if (!SPECIAL_CONST_P(c->state_value) && BUILTIN_TYPE(c->state_value) == T_ARRAY) {
+            struct korb_array *pair = (struct korb_array *)c->state_value;
+            if (pair->len >= 1) tag = pair->ptr[0];
+        }
+        VALUE tag_s = korb_inspect(tag);
+        char buf[256];
+        snprintf(buf, sizeof(buf), "uncaught throw %s", korb_str_cstr(tag_s));
+        if (eUTE && !SPECIAL_CONST_P(eUTE) && BUILTIN_TYPE(eUTE) == T_CLASS) {
+            korb_raise(c, (struct korb_class *)eUTE, "%s", buf);
+        } else {
+            korb_raise(c, NULL, "%s", buf);
+        }
     }
     return r;
 }

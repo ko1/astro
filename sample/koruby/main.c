@@ -233,6 +233,27 @@ int main(int argc, char *argv[])
     {
         VALUE r = EVAL(c, ast);
         (void)r;
+        if (c->state == KORB_THROW) {
+            /* Unhandled throw propagated to top level — convert to
+             * UncaughtThrowError raise so the error message is visible
+             * (CRuby raises UncaughtThrowError; we synthesize a plain
+             * RuntimeError if the class isn't available). */
+            VALUE eUTE = korb_const_get(korb_vm->object_class, korb_intern("UncaughtThrowError"));
+            VALUE tag = Qnil;
+            if (!SPECIAL_CONST_P(c->state_value) && BUILTIN_TYPE(c->state_value) == T_ARRAY) {
+                struct korb_array *pair = (struct korb_array *)c->state_value;
+                if (pair->len >= 1) tag = pair->ptr[0];
+            }
+            VALUE tag_s = korb_inspect(tag);
+            char buf[256];
+            snprintf(buf, sizeof(buf), "uncaught throw %s", korb_str_cstr(tag_s));
+            c->state = KORB_RAISE;
+            if (eUTE && !SPECIAL_CONST_P(eUTE) && BUILTIN_TYPE(eUTE) == T_CLASS) {
+                c->state_value = korb_exc_new((struct korb_class *)eUTE, buf);
+            } else {
+                c->state_value = korb_exc_new(NULL, buf);
+            }
+        }
         if (c->state == KORB_RAISE) {
             /* SystemExit short-circuits: exit with @status (CRuby
              * silent) rather than printing "unhandled exception". */
