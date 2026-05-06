@@ -1,0 +1,7 @@
+ok LambdaVarargsTest test_args
+ok LambdaVarargsTest test_args_in_body
+ok LambdaVarargsTest test_kwargs
+ok LambdaVarargsTest test_kwonly
+ok LambdaVarargsTest test_mixed
+---
+passed=5 failed=0

@@ -1279,8 +1279,39 @@ parse_lambda(void)
     const char *names[16];
     int nnames = 0;
 
+    bool has_va = false, has_kw = false;
+    int n_pos_named = 0;
+    bool saw_star = false;
     if (peek_tok(0)->kind != T_COLON) {
         for (;;) {
+            // *args
+            if (match_tok(T_STAR)) {
+                if (peek_tok(0)->kind == T_COMMA || peek_tok(0)->kind == T_COLON) {
+                    saw_star = true;
+                    if (!match_tok(T_COMMA)) break;
+                    continue;
+                }
+                if (peek_tok(0)->kind != T_NAME) parse_error("expected NAME after '*'");
+                const char *pn = peek_tok(0)->sval; tok_pos++;
+                scope_add_local(&sc, pn);
+                names[nnames++] = pn;
+                nparams++;
+                has_va = true;
+                saw_star = true;
+                if (!match_tok(T_COMMA)) break;
+                continue;
+            }
+            // **kwargs
+            if (match_tok(T_STAR_STAR)) {
+                if (peek_tok(0)->kind != T_NAME) parse_error("expected NAME after '**'");
+                const char *pn = peek_tok(0)->sval; tok_pos++;
+                scope_add_local(&sc, pn);
+                names[nnames++] = pn;
+                nparams++;
+                has_kw = true;
+                if (!match_tok(T_COMMA)) break;
+                continue;
+            }
             if (peek_tok(0)->kind != T_NAME) parse_error("expected parameter");
             const char *pn = peek_tok(0)->sval;
             tok_pos++;
@@ -1288,6 +1319,7 @@ parse_lambda(void)
             names[nnames++] = pn;
             int slot = nparams;
             nparams++;
+            if (!saw_star) n_pos_named++;
             if (match_tok(T_ASSIGN)) {
                 seen_default = true;
                 if (ndefaults >= 16) parse_error("too many defaults");
@@ -1312,9 +1344,13 @@ parse_lambda(void)
     NODE *body = ALLOC_node_return(body_expr);
     size_t didx = defaults_reserve(defs, ndefaults);
     size_t nidx = name_table_reserve(names, nnames);
+    uint32_t leaf_flags = 1u
+        | (has_va ? 4u : 0u)
+        | (has_kw ? 8u : 0u)
+        | ((uint32_t)(n_pos_named & 0xFF) << 16);
     return ALLOC_node_lambda((uint32_t)nparams, (uint32_t)sc.nlocals,
                              (uint32_t)ndefaults, (uint32_t)didx,
-                             (uint32_t)1, (uint32_t)nidx, body);
+                             leaf_flags, (uint32_t)nidx, body);
 }
 
 static NODE *

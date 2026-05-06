@@ -1083,8 +1083,20 @@ node_lambda(CTX * restrict c, NODE * restrict n, uint32_t nparams, uint32_t nloc
         }
     }
     const char **pn = nparams > 0 ? &PYSTRO_NAME_TABLE[names_idx] : NULL;
-    return py_make_func(body, c->env, "<lambda>", (int)nparams, (int)nparams,
-                        (int)nlocals, dv, leaf != 0, pn, false, false, false);
+    bool leaf_b = (leaf & 1) != 0;
+    bool is_gen = (leaf & 2) != 0;
+    bool has_va = (leaf & 4) != 0;
+    bool has_kw = (leaf & 8) != 0;
+    int n_pos_named;
+    if (has_va || has_kw) {
+        // Bits 16..23 hold n_pos_named.  Bit 24 = "n_pos_named was set".
+        n_pos_named = (int)((leaf >> 16) & 0xFF);
+    } else {
+        n_pos_named = (int)nparams;
+    }
+    const char *fname = is_gen ? "<genexpr>" : "<lambda>";
+    return py_make_func(body, c->env, fname, (int)nparams, n_pos_named,
+                        (int)nlocals, dv, leaf_b, pn, has_va, has_kw, is_gen);
 }
 
 // ---------------------------------------------------------------------------
