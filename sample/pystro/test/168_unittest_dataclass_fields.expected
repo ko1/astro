@@ -1,0 +1,8 @@
+ok FieldsTest test_field_default
+ok FieldsTest test_field_objects_have_name
+ok FieldsTest test_is_dataclass
+ok FieldsTest test_replace
+ok AsdictAstupleTest test_asdict
+ok AsdictAstupleTest test_astuple
+---
+passed=6 failed=0

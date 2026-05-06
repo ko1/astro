@@ -1,9 +1,10 @@
 # pystro stdlib `dataclasses` (minimal).
 
 class _Field:
-    __slots__ = ("default", "default_factory", "init", "repr_", "compare", "metadata")
+    __slots__ = ("name", "default", "default_factory", "init", "repr_", "compare", "metadata")
     def __init__(self, default=None, default_factory=None,
                  init=True, repr_=True, compare=True, metadata=None):
+        self.name = ""
         self.default = default
         self.default_factory = default_factory
         self.init = init
@@ -132,13 +133,27 @@ def make_dataclass(typename, fields):
     return _build_dataclass(_DC, list(fields))
 
 
+def _deepcopy_value(v):
+    if isinstance(v, list):
+        return [_deepcopy_value(x) for x in v]
+    if isinstance(v, tuple):
+        return tuple(_deepcopy_value(x) for x in v)
+    if isinstance(v, dict):
+        return {k: _deepcopy_value(x) for k, x in v.items()}
+    if isinstance(v, set):
+        return {_deepcopy_value(x) for x in v}
+    if hasattr(v, "_fields"):
+        return asdict(v)
+    return v
+
+
 def asdict(obj):
     fields = getattr(obj, "_fields", None)
     if fields is None:
         raise TypeError("asdict: not a dataclass")
     out = {}
     for fn in fields:
-        out[fn] = getattr(obj, fn)
+        out[fn] = _deepcopy_value(getattr(obj, fn))
     return out
 
 
@@ -146,7 +161,7 @@ def astuple(obj):
     fields = getattr(obj, "_fields", None)
     if fields is None:
         raise TypeError("astuple: not a dataclass")
-    return tuple(getattr(obj, fn) for fn in fields)
+    return tuple(_deepcopy_value(getattr(obj, fn)) for fn in fields)
 
 
 _MISSING = object()
@@ -191,13 +206,6 @@ def astuple(obj):
     if fields is None:
         raise TypeError("astuple: not a dataclass")
     return tuple(getattr(obj, fn) for fn in fields)
-
-
-def fields(obj):
-    fs = getattr(obj, "_fields", None)
-    if fs is None:
-        raise TypeError("fields: not a dataclass")
-    return fs
 
 
 __all__ = ["dataclass", "make_dataclass", "asdict", "astuple", "fields",
