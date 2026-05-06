@@ -281,6 +281,89 @@ build_args_array_with_splat(struct transduce_context *tc, pm_node_list_t *args)
 static NODE *build_call_simple(struct transduce_context *tc, NODE *recv, ID name,
                                 pm_node_list_t *args, NODE *block_node, bool is_method);
 
+/* Build the destructuring sequence for `lefts, [*rest,] rights = value`
+ * where value_expr is an already-built node.  Recurses through nested
+ * PM_MULTI_TARGET_NODE so `((a, b), c) = ary` works.  The returned NODE
+ * evaluates the destructuring and yields nil. */
+static NODE *
+build_destructure(struct transduce_context *tc,
+                  pm_node_list_t *lefts, pm_node_t *rest, pm_node_list_t *rights,
+                  NODE *value_expr) {
+    uint32_t arr_slot = inc_arg_index(tc);
+    NODE *prep = ALLOC_node_lvar_set(arr_slot,
+                    ALLOC_node_to_ary_for_mlhs(value_expr));
+    NODE *chain = prep;
+    uint32_t lefts_n = (uint32_t)(lefts ? lefts->size : 0);
+    uint32_t rights_n = (uint32_t)(rights ? rights->size : 0);
+
+    #define ASSIGN_TARGET(target_node, get_expr) ({                               \
+        NODE *_assign = NULL;                                                      \
+        pm_node_t *_t = (target_node);                                             \
+        NODE *_g = (get_expr);                                                     \
+        if (PM_NODE_TYPE_P(_t, PM_LOCAL_VARIABLE_TARGET_NODE)) {                   \
+            pm_local_variable_target_node_t *_lt = (pm_local_variable_target_node_t *)_t; \
+            int _slot = lvar_slot(tc, _lt->name, _lt->depth);                      \
+            if (_slot < 0) _slot = lvar_slot_any(tc, _lt->name);                   \
+            if (_slot >= 0) _assign = ALLOC_node_lvar_set(_slot, _g);              \
+        } else if (PM_NODE_TYPE_P(_t, PM_INSTANCE_VARIABLE_TARGET_NODE)) {         \
+            pm_instance_variable_target_node_t *_it = (pm_instance_variable_target_node_t *)_t; \
+            _assign = ALLOC_node_ivar_set(intern_constant(tc->parser, _it->name), _g); \
+        } else if (PM_NODE_TYPE_P(_t, PM_CONSTANT_TARGET_NODE)) {                  \
+            pm_constant_target_node_t *_ct = (pm_constant_target_node_t *)_t;      \
+            _assign = ALLOC_node_const_set(intern_constant(tc->parser, _ct->name), _g); \
+        } else if (PM_NODE_TYPE_P(_t, PM_GLOBAL_VARIABLE_TARGET_NODE)) {           \
+            pm_global_variable_target_node_t *_gt = (pm_global_variable_target_node_t *)_t; \
+            _assign = ALLOC_node_gvar_set(intern_constant(tc->parser, _gt->name), _g); \
+        } else if (PM_NODE_TYPE_P(_t, PM_CALL_TARGET_NODE)) {                      \
+            pm_call_target_node_t *_ct = (pm_call_target_node_t *)_t;              \
+            NODE *_recv = T(tc, _ct->receiver);                                    \
+            ID _wname = intern_constant(tc->parser, _ct->name);                    \
+            uint32_t _ai = inc_arg_index(tc); rewind_arg_index(tc, _ai);           \
+            struct method_cache *_mc = alloc_method_cache();                       \
+            NODE *_st = ALLOC_node_lvar_set(_ai, _g);                              \
+            NODE *_call = ALLOC_node_method_call(_recv, _wname, 1, _ai, _mc);      \
+            _assign = ALLOC_node_seq(_st, _call);                                  \
+        } else if (PM_NODE_TYPE_P(_t, PM_INDEX_TARGET_NODE)) {                     \
+            pm_index_target_node_t *_it = (pm_index_target_node_t *)_t;            \
+            if (_it->arguments && _it->arguments->arguments.size == 1) {           \
+                NODE *_recv = T(tc, _it->receiver);                                \
+                NODE *_idx = T(tc, _it->arguments->arguments.nodes[0]);            \
+                uint32_t _ai = inc_arg_index(tc);                                  \
+                inc_arg_index(tc); inc_arg_index(tc); rewind_arg_index(tc, _ai);   \
+                _assign = ALLOC_node_aset(_recv, _idx, _g, _ai);                   \
+            }                                                                      \
+        } else if (PM_NODE_TYPE_P(_t, PM_MULTI_TARGET_NODE)) {                     \
+            /* Nested grouped LHS — recurse with _g as the inner RHS. */           \
+            pm_multi_target_node_t *_mt = (pm_multi_target_node_t *)_t;            \
+            _assign = build_destructure(tc, &_mt->lefts, _mt->rest, &_mt->rights, _g); \
+        }                                                                          \
+        _assign;                                                                   \
+    })
+
+    for (uint32_t i = 0; i < lefts_n; i++) {
+        NODE *get = ALLOC_node_ary_aget(ALLOC_node_lvar_get(arr_slot), i);
+        NODE *as = ASSIGN_TARGET(lefts->nodes[i], get);
+        if (as) chain = ALLOC_node_seq(chain, as);
+    }
+    if (rest && PM_NODE_TYPE_P(rest, PM_SPLAT_NODE)) {
+        pm_splat_node_t *splat = (pm_splat_node_t *)rest;
+        if (splat->expression) {
+            NODE *slice = ALLOC_node_ary_slice_middle(
+                ALLOC_node_lvar_get(arr_slot), lefts_n, rights_n);
+            NODE *as = ASSIGN_TARGET(splat->expression, slice);
+            if (as) chain = ALLOC_node_seq(chain, as);
+        }
+    }
+    for (uint32_t i = 0; i < rights_n; i++) {
+        NODE *get = ALLOC_node_ary_aget_right(
+            ALLOC_node_lvar_get(arr_slot), lefts_n, rights_n, i);
+        NODE *as = ASSIGN_TARGET(rights->nodes[i], get);
+        if (as) chain = ALLOC_node_seq(chain, as);
+    }
+    #undef ASSIGN_TARGET
+    return chain;
+}
+
 /* Wrapper: build a call where the block is given as a prism node, so we
  * can construct the block AFTER reserving call arg slots — making the
  * block's param_base sit above the staging area. */
@@ -2551,18 +2634,26 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                        ncstr[ncstr_len - 2] == '>'));
               if (is_setter && n->receiver && args_cnt == 1 && !n->block) {
                   ID setter_name = intern_constant(tc->parser, n->name);
+                  /* CRuby evaluation order: receiver first, then RHS.
+                   * Save recv to a slot, then val to the call's arg slot,
+                   * then dispatch.  Reading recv from a slot makes the
+                   * call's recv evaluation a slot-load (no further
+                   * side effects), preserving the user-visible order. */
+                  uint32_t recv_slot = inc_arg_index(tc);
                   uint32_t val_slot = inc_arg_index(tc);
-                  /* Reserve the call's arg slot adjacent so its arg_index
-                   * lookup hits val_slot for the lone argument. */
-                  rewind_arg_index(tc, val_slot);
-                  inc_arg_index(tc);
+                  inc_arg_index(tc);  /* call's spare slot */
+                  rewind_arg_index(tc, recv_slot);
+                  inc_arg_index(tc); inc_arg_index(tc);
                   struct method_cache *mc = alloc_method_cache();
                   NODE *recv = T(tc, n->receiver);
                   NODE *val = T(tc, args->arguments.nodes[0]);
-                  NODE *save = ALLOC_node_lvar_set(val_slot, val);
-                  NODE *call = ALLOC_node_method_call(recv, setter_name, 1, val_slot, mc);
-                  NODE *result = ALLOC_node_seq(save,
-                                  ALLOC_node_seq(call, ALLOC_node_lvar_get(val_slot)));
+                  NODE *save_recv = ALLOC_node_lvar_set(recv_slot, recv);
+                  NODE *save_val = ALLOC_node_lvar_set(val_slot, val);
+                  NODE *call = ALLOC_node_method_call(
+                      ALLOC_node_lvar_get(recv_slot), setter_name, 1, val_slot, mc);
+                  NODE *result = ALLOC_node_seq(save_recv,
+                                  ALLOC_node_seq(save_val,
+                                    ALLOC_node_seq(call, ALLOC_node_lvar_get(val_slot))));
                   return result;
               }
           }
@@ -2998,84 +3089,10 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
           /* Save original RHS to a slot — multi-assign returns the
            * untransformed RHS regardless of how it gets distributed. */
           uint32_t orig_slot = inc_arg_index(tc);
-          uint32_t tmp_slot  = inc_arg_index(tc);
           NODE *save_orig = ALLOC_node_lvar_set(orig_slot, rhs);
-          NODE *prep = ALLOC_node_lvar_set(tmp_slot,
-                          ALLOC_node_to_ary_for_mlhs(ALLOC_node_lvar_get(orig_slot)));
-          NODE *chain = ALLOC_node_seq(save_orig, prep);
-
-          /* helper macro: build assign for one target given the get-expr */
-          #define BUILD_TARGET_ASSIGN(target_node, get_expr) ({                       \
-              NODE *_assign = NULL;                                                    \
-              pm_node_t *_t = (target_node);                                           \
-              NODE *_g = (get_expr);                                                   \
-              if (PM_NODE_TYPE_P(_t, PM_LOCAL_VARIABLE_TARGET_NODE)) {                 \
-                  pm_local_variable_target_node_t *_lt = (pm_local_variable_target_node_t *)_t; \
-                  int _slot = lvar_slot(tc, _lt->name, _lt->depth);                    \
-                  if (_slot < 0) _slot = lvar_slot_any(tc, _lt->name);                 \
-                  if (_slot >= 0) _assign = ALLOC_node_lvar_set(_slot, _g);            \
-              } else if (PM_NODE_TYPE_P(_t, PM_INSTANCE_VARIABLE_TARGET_NODE)) {       \
-                  pm_instance_variable_target_node_t *_it = (pm_instance_variable_target_node_t *)_t; \
-                  _assign = ALLOC_node_ivar_set(intern_constant(tc->parser, _it->name), _g); \
-              } else if (PM_NODE_TYPE_P(_t, PM_CONSTANT_TARGET_NODE)) {                \
-                  pm_constant_target_node_t *_ct = (pm_constant_target_node_t *)_t;    \
-                  _assign = ALLOC_node_const_set(intern_constant(tc->parser, _ct->name), _g); \
-              } else if (PM_NODE_TYPE_P(_t, PM_GLOBAL_VARIABLE_TARGET_NODE)) {         \
-                  pm_global_variable_target_node_t *_gt = (pm_global_variable_target_node_t *)_t; \
-                  _assign = ALLOC_node_gvar_set(intern_constant(tc->parser, _gt->name), _g); \
-              } else if (PM_NODE_TYPE_P(_t, PM_CALL_TARGET_NODE)) {                    \
-                  /* recv.name=(get_expr) — name already includes '='. */              \
-                  pm_call_target_node_t *_ct = (pm_call_target_node_t *)_t;            \
-                  NODE *_recv = T(tc, _ct->receiver);                                  \
-                  ID _wname = intern_constant(tc->parser, _ct->name);                  \
-                  uint32_t _ai = inc_arg_index(tc); rewind_arg_index(tc, _ai);         \
-                  struct method_cache *_mc = alloc_method_cache();                     \
-                  NODE *_st = ALLOC_node_lvar_set(_ai, _g);                            \
-                  NODE *_call = ALLOC_node_method_call(_recv, _wname, 1, _ai, _mc);    \
-                  _assign = ALLOC_node_seq(_st, _call);                                \
-              } else if (PM_NODE_TYPE_P(_t, PM_INDEX_TARGET_NODE)) {                   \
-                  /* recv[args] = get_expr — currently only single-index supported. */ \
-                  pm_index_target_node_t *_it = (pm_index_target_node_t *)_t;          \
-                  if (_it->arguments && _it->arguments->arguments.size == 1) {         \
-                      NODE *_recv = T(tc, _it->receiver);                              \
-                      NODE *_idx = T(tc, _it->arguments->arguments.nodes[0]);          \
-                      uint32_t _ai = inc_arg_index(tc);                                \
-                      inc_arg_index(tc); inc_arg_index(tc); rewind_arg_index(tc, _ai); \
-                      _assign = ALLOC_node_aset(_recv, _idx, _g, _ai);                 \
-                  }                                                                    \
-              }                                                                        \
-              _assign;                                                                 \
-          })
-
-          /* lefts: ary[0..lefts.size-1] */
-          uint32_t lefts_n = (uint32_t)n->lefts.size;
-          uint32_t rights_n = (uint32_t)n->rights.size;
-          for (uint32_t i = 0; i < lefts_n; i++) {
-              NODE *get = ALLOC_node_ary_aget(ALLOC_node_lvar_get(tmp_slot), i);
-              NODE *assign = BUILD_TARGET_ASSIGN(n->lefts.nodes[i], get);
-              if (assign) chain = ALLOC_node_seq(chain, assign);
-          }
-          /* middle splat: ary[lefts_n .. len-rights_n] */
-          if (n->rest && PM_NODE_TYPE_P(n->rest, PM_SPLAT_NODE)) {
-              pm_splat_node_t *splat = (pm_splat_node_t *)n->rest;
-              if (splat->expression) {
-                  NODE *slice = ALLOC_node_ary_slice_middle(
-                      ALLOC_node_lvar_get(tmp_slot), lefts_n, rights_n);
-                  NODE *assign = BUILD_TARGET_ASSIGN(splat->expression, slice);
-                  if (assign) chain = ALLOC_node_seq(chain, assign);
-              }
-              /* `*` with no name: discard. */
-          }
-          /* rights: when len >= lefts + rights, take from end (ary[len-rights+i]);
-           * otherwise CRuby fills from start after lefts (ary[lefts+i]) and
-           * pads with nil at the end. */
-          for (uint32_t i = 0; i < rights_n; i++) {
-              NODE *get = ALLOC_node_ary_aget_right(
-                  ALLOC_node_lvar_get(tmp_slot), lefts_n, rights_n, i);
-              NODE *assign = BUILD_TARGET_ASSIGN(n->rights.nodes[i], get);
-              if (assign) chain = ALLOC_node_seq(chain, assign);
-          }
-          #undef BUILD_TARGET_ASSIGN
+          NODE *destruct = build_destructure(tc, &n->lefts, n->rest, &n->rights,
+                                              ALLOC_node_lvar_get(orig_slot));
+          NODE *chain = ALLOC_node_seq(save_orig, destruct);
           /* Append the orig_slot read so the whole multi-assign expr
            * evaluates to the original RHS (CRuby semantics). */
           chain = ALLOC_node_seq(chain, ALLOC_node_lvar_get(orig_slot));

@@ -2464,12 +2464,30 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
     }
 
     if (UNLIKELY(mc->rest_slot < 0 && argc > mc->total_params_cnt)) {
-        korb_raise(c, NULL, "wrong number of arguments (given %u, expected %u)",
-                   argc, mc->required_params_cnt);
+        VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+        korb_raise(c, (struct korb_class *)eArg,
+                   "wrong number of arguments (given %u, expected %u)",
+                   argc, mc->total_params_cnt);
         c->fp = prev_fp;
         c->cref = prev_cref;
         current_block = prev_block;
         return Qnil;
+    }
+    /* Too few — argc must satisfy required + post (rest absorbs the
+     * middle, optional defaults).  required+post is the floor regardless
+     * of whether rest is present. */
+    {
+        uint32_t min_argc = mc->required_params_cnt + mc->post_params_cnt;
+        if (UNLIKELY(argc < min_argc)) {
+            VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+            korb_raise(c, (struct korb_class *)eArg,
+                       "wrong number of arguments (given %u, expected %u)",
+                       argc, min_argc);
+            c->fp = prev_fp;
+            c->cref = prev_cref;
+            current_block = prev_block;
+            return Qnil;
+        }
     }
 
     if (mc->rest_slot >= 0) {

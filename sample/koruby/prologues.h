@@ -62,8 +62,12 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
                         int PARAMS_KNOWN)
 {
     uint32_t total = (PARAMS_KNOWN >= 0) ? (uint32_t)PARAMS_KNOWN : mc->total_params_cnt;
-    if (UNLIKELY(argc > total)) {
-        korb_raise(c, NULL, "wrong number of arguments (given %u, expected %u)",
+    /* Simple methods have no opt / rest / post / kwargs — argc must
+     * exactly match.  Too-few raises ArgumentError just like too-many. */
+    if (UNLIKELY(argc != total)) {
+        VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+        korb_raise(c, (struct korb_class *)eArg,
+                   "wrong number of arguments (given %u, expected %u)",
                    argc, total);
         return Qnil;
     }
@@ -158,8 +162,12 @@ prologue_ast_simple_static_inl(CTX *c, struct Node *callsite, VALUE recv,
                                korb_dispatcher_t static_disp)
 {
     uint32_t total = (PARAMS_KNOWN >= 0) ? (uint32_t)PARAMS_KNOWN : mc->total_params_cnt;
-    if (UNLIKELY(argc > total)) {
-        korb_raise(c, NULL, "wrong number of arguments (given %u, expected %u)",
+    /* Simple methods have no opt / rest / post / kwargs — argc must
+     * exactly match.  Too-few raises ArgumentError just like too-many. */
+    if (UNLIKELY(argc != total)) {
+        VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+        korb_raise(c, (struct korb_class *)eArg,
+                   "wrong number of arguments (given %u, expected %u)",
                    argc, total);
         return Qnil;
     }
