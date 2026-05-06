@@ -2727,25 +2727,34 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
               if (is_setter && n->receiver && args_cnt == 1 && !n->block) {
                   ID setter_name = intern_constant(tc->parser, n->name);
                   /* CRuby evaluation order: receiver first, then RHS.
-                   * Save recv to a slot, then val to the call's arg slot,
-                   * then dispatch.  Reading recv from a slot makes the
-                   * call's recv evaluation a slot-load (no further
-                   * side effects), preserving the user-visible order. */
+                   * The result of the assignment expression is the RHS
+                   * value, NOT the setter's return.  Layout slots so:
+                   *   - kept_slot — saved RHS, NOT in the call's frame
+                   *     (untouched by the callee's locals/rest writes).
+                   *   - recv_slot — receiver, used as the call's recv.
+                   *   - call_arg_slot — the call's argv[0]; the callee
+                   *     may overwrite this (e.g. \`def foo=(*a)\` writes
+                   *     [arg] back to slot 0).
+                   * After the call we read from kept_slot. */
+                  uint32_t kept_slot = inc_arg_index(tc);
                   uint32_t recv_slot = inc_arg_index(tc);
-                  uint32_t val_slot = inc_arg_index(tc);
-                  inc_arg_index(tc);  /* call's spare slot */
-                  rewind_arg_index(tc, recv_slot);
-                  inc_arg_index(tc); inc_arg_index(tc);
+                  uint32_t call_arg_slot = inc_arg_index(tc);
+                  inc_arg_index(tc);  /* spare for callee's frame */
+                  rewind_arg_index(tc, kept_slot);
+                  inc_arg_index(tc); inc_arg_index(tc); inc_arg_index(tc);
                   struct method_cache *mc = alloc_method_cache();
                   NODE *recv = T(tc, n->receiver);
                   NODE *val = T(tc, args->arguments.nodes[0]);
                   NODE *save_recv = ALLOC_node_lvar_set(recv_slot, recv);
-                  NODE *save_val = ALLOC_node_lvar_set(val_slot, val);
+                  NODE *save_val_kept = ALLOC_node_lvar_set(kept_slot, val);
+                  NODE *save_val_arg = ALLOC_node_lvar_set(call_arg_slot,
+                                          ALLOC_node_lvar_get(kept_slot));
                   NODE *call = ALLOC_node_method_call(
-                      ALLOC_node_lvar_get(recv_slot), setter_name, 1, val_slot, mc);
+                      ALLOC_node_lvar_get(recv_slot), setter_name, 1, call_arg_slot, mc);
                   NODE *result = ALLOC_node_seq(save_recv,
-                                  ALLOC_node_seq(save_val,
-                                    ALLOC_node_seq(call, ALLOC_node_lvar_get(val_slot))));
+                                  ALLOC_node_seq(save_val_kept,
+                                    ALLOC_node_seq(save_val_arg,
+                                      ALLOC_node_seq(call, ALLOC_node_lvar_get(kept_slot)))));
                   return result;
               }
           }
