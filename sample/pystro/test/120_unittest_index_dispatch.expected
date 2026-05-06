@@ -1,0 +1,4 @@
+ok IndexDispatchTest test_hex_negative
+ok IndexDispatchTest test_hex_oct_bin
+---
+passed=2 failed=0

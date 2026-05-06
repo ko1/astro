@@ -8448,42 +8448,64 @@ static VALUE
 bi_hex(CTX *c, int argc, VALUE *argv)
 {
     (void)argc;
-    if (!py_int_or_bool(argv[0])) py_raise_exc(c, c->EXC_TypeError, "hex() needs int");
-    mpz_t z; py_to_mpz(c, argv[0], z);
+    VALUE v = argv[0];
+    // Coerce via __index__ if available.
+    if (py_is_instance(v)) {
+        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(v)->inst.cls), "__index__");
+        if (m != PY_NONE) {
+            VALUE av[1] = { v };
+            v = py_apply(c, m, 1, av);
+            if (c->state == PY_STATE_RAISE) return PY_NONE;
+        }
+    }
+    if (!py_int_or_bool(v)) py_raise_exc(c, c->EXC_TypeError, "hex() needs int");
+    mpz_t z; py_to_mpz(c, v, z);
     char *s = mpz_get_str(NULL, 16, z);
     char *r;
     int an = (s[0] == '-') ? asprintf(&r, "-0x%s", s + 1) : asprintf(&r, "0x%s", s);
     (void)an;
-    VALUE v = py_make_str(r, strlen(r));
-    free(r); mpz_clear(z); return v;
+    VALUE rv = py_make_str(r, strlen(r));
+    free(r); mpz_clear(z); return rv;
 }
 
 static VALUE
 bi_bin(CTX *c, int argc, VALUE *argv)
 {
     (void)argc;
-    if (!py_int_or_bool(argv[0])) py_raise_exc(c, c->EXC_TypeError, "bin() needs int");
-    mpz_t z; py_to_mpz(c, argv[0], z);
+    VALUE v = argv[0];
+    if (py_is_instance(v)) {
+        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(v)->inst.cls), "__index__");
+        if (m != PY_NONE) { VALUE av[1] = { v }; v = py_apply(c, m, 1, av);
+            if (c->state == PY_STATE_RAISE) return PY_NONE; }
+    }
+    if (!py_int_or_bool(v)) py_raise_exc(c, c->EXC_TypeError, "bin() needs int");
+    mpz_t z; py_to_mpz(c, v, z);
     char *s = mpz_get_str(NULL, 2, z);
     char *r;
     int an = (s[0] == '-') ? asprintf(&r, "-0b%s", s + 1) : asprintf(&r, "0b%s", s);
     (void)an;
-    VALUE v = py_make_str(r, strlen(r));
-    free(r); mpz_clear(z); return v;
+    VALUE rv = py_make_str(r, strlen(r));
+    free(r); mpz_clear(z); return rv;
 }
 
 static VALUE
 bi_oct(CTX *c, int argc, VALUE *argv)
 {
     (void)argc;
-    if (!py_int_or_bool(argv[0])) py_raise_exc(c, c->EXC_TypeError, "oct() needs int");
-    mpz_t z; py_to_mpz(c, argv[0], z);
+    VALUE v = argv[0];
+    if (py_is_instance(v)) {
+        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(v)->inst.cls), "__index__");
+        if (m != PY_NONE) { VALUE av[1] = { v }; v = py_apply(c, m, 1, av);
+            if (c->state == PY_STATE_RAISE) return PY_NONE; }
+    }
+    if (!py_int_or_bool(v)) py_raise_exc(c, c->EXC_TypeError, "oct() needs int");
+    mpz_t z; py_to_mpz(c, v, z);
     char *s = mpz_get_str(NULL, 8, z);
     char *r;
     int an = (s[0] == '-') ? asprintf(&r, "-0o%s", s + 1) : asprintf(&r, "0o%s", s);
     (void)an;
-    VALUE v = py_make_str(r, strlen(r));
-    free(r); mpz_clear(z); return v;
+    VALUE rv = py_make_str(r, strlen(r));
+    free(r); mpz_clear(z); return rv;
 }
 
 // slice(stop) / slice(start, stop) / slice(start, stop, step)
