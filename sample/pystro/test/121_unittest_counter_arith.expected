@@ -1,0 +1,7 @@
+ok CounterArithTest test_add
+ok CounterArithTest test_and
+ok CounterArithTest test_or
+ok CounterArithTest test_sub
+ok CounterArithTest test_sub_drops_zero
+---
+passed=5 failed=0

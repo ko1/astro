@@ -90,6 +90,49 @@ class Counter:
         for k, v in self._d.items():
             for _ in range(v):
                 yield k
+    def __add__(self, other):
+        # Counter + Counter — sum counts; drop non-positive results.
+        r = Counter()
+        for k in self._d:
+            v = self._d[k] + (other._d[k] if k in other._d else 0)
+            if v > 0: r._d[k] = v
+        for k in other._d:
+            if k not in self._d and other._d[k] > 0:
+                r._d[k] = other._d[k]
+        return r
+    def __sub__(self, other):
+        # Multiset subtraction; keep only positives.
+        r = Counter()
+        for k in self._d:
+            v = self._d[k] - (other._d[k] if k in other._d else 0)
+            if v > 0: r._d[k] = v
+        return r
+    def __and__(self, other):
+        # Multiset intersection: min of counts.
+        r = Counter()
+        for k in self._d:
+            if k in other._d:
+                v = min(self._d[k], other._d[k])
+                if v > 0: r._d[k] = v
+        return r
+    def __or__(self, other):
+        # Multiset union: max of counts.
+        r = Counter()
+        for k in self._d:
+            v = max(self._d[k], other._d[k] if k in other._d else 0)
+            if v > 0: r._d[k] = v
+        for k in other._d:
+            if k not in self._d and other._d[k] > 0:
+                r._d[k] = other._d[k]
+        return r
+    def __pos__(self):
+        return Counter({k: v for k, v in self._d.items() if v > 0})
+    def __neg__(self):
+        return Counter({k: -v for k, v in self._d.items() if v < 0})
+    def __eq__(self, other):
+        if isinstance(other, Counter):
+            return self._d == other._d
+        return False
     def __repr__(self):
         return "Counter(" + repr(self._d) + ")"
 
