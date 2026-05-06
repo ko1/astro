@@ -1,0 +1,7 @@
+ok LambdaClosureTest test_lambda_in_list
+ok LambdaClosureTest test_returned_lambda_independent_calls
+ok LambdaClosureTest test_simple_capture
+ok LambdaClosureTest test_three_level_nest
+ok LambdaClosureTest test_y_combinator_factorial
+---
+passed=5 failed=0

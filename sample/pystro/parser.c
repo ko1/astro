@@ -1456,13 +1456,36 @@ parse_lambda(void)
 
     Scope *saved = cur_scope;
     cur_scope = &sc;
+    // Pre-scan: if body contains a nested lambda or def, this lambda
+    // can't use an alloca'd frame (the inner would capture our dead
+    // stack memory after we return).  has_nested_def is consulted by
+    // the leaf-flag logic below.
+    {
+        size_t p = tok_pos;
+        int depth = 0;
+        while (tok_arr[p].kind != T_EOF) {
+            int k = tok_arr[p].kind;
+            if (k == T_LPAREN || k == T_LBRACK || k == T_LBRACE) depth++;
+            else if (k == T_RPAREN || k == T_RBRACK || k == T_RBRACE) {
+                if (depth == 0) break;
+                depth--;
+            } else if (k == T_NEWLINE || k == T_SEMI || (depth == 0 && k == T_COMMA))
+                break;
+            else if (k == T_LAMBDA || k == T_DEF) {
+                sc.has_nested_def = true;
+                break;
+            }
+            p++;
+        }
+    }
     NODE *body_expr = parse_expr();
     cur_scope = saved;
 
     NODE *body = ALLOC_node_return(body_expr);
     size_t didx = defaults_reserve(defs, ndefaults);
     size_t nidx = name_table_reserve(names, nnames);
-    uint32_t leaf_flags = 1u
+    uint32_t leaf_bit = sc.has_nested_def ? 0u : 1u;
+    uint32_t leaf_flags = leaf_bit
         | (has_va ? 4u : 0u)
         | (has_kw ? 8u : 0u)
         | ((uint32_t)(n_pos_named & 0xFF) << 16);
