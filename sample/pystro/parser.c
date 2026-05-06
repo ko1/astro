@@ -1508,7 +1508,7 @@ parse_dict_or_set_literal(void)
             return ALLOC_node_seq(init, ALLOC_node_seq(loops, load_tmp));
         }
         comp_remap_top = saved_remap_dc;
-        NODE *items[4096];
+        NODE *items[8192];
         int npairs = 0;
         items[0] = first; items[1] = first_v; npairs = 1;
         while (match_tok(T_COMMA)) {
@@ -1516,7 +1516,7 @@ parse_dict_or_set_literal(void)
             NODE *k = parse_expr();
             expect(T_COLON, "':'");
             NODE *v = parse_expr();
-            if (npairs * 2 + 2 > 4096) parse_error("dict literal too long");
+            if (npairs * 2 + 2 > 8192) parse_error("dict literal too long");
             items[npairs * 2] = k;
             items[npairs * 2 + 1] = v;
             npairs++;
@@ -2762,6 +2762,16 @@ parse_def(void)
     if (peek_tok(0)->kind != T_NAME) parse_error("expected function name");
     const char *fname = peek_tok(0)->sval;
     tok_pos++;
+    // PEP 695: `def f[T](x): ...` — discard type-param list.
+    if (match_tok(T_LBRACK)) {
+        int depth = 1;
+        while (depth > 0 && peek_tok(0)->kind != T_EOF) {
+            int kk = peek_tok(0)->kind;
+            if (kk == T_LBRACK) depth++;
+            else if (kk == T_RBRACK) depth--;
+            tok_pos++;
+        }
+    }
     expect(T_LPAREN, "'('");
 
     Scope sc = {0}; sc.parent = cur_scope;
@@ -2875,6 +2885,18 @@ parse_class(void)
     if (peek_tok(0)->kind != T_NAME) parse_error("expected class name");
     const char *cname = peek_tok(0)->sval;
     tok_pos++;
+    // PEP 695 generic class syntax: `class C[T, U]: ...` — pystro
+    // doesn't track type parameters, so consume and discard the
+    // bracketed type-param list.
+    if (match_tok(T_LBRACK)) {
+        int depth = 1;
+        while (depth > 0 && peek_tok(0)->kind != T_EOF) {
+            int kk = peek_tok(0)->kind;
+            if (kk == T_LBRACK) depth++;
+            else if (kk == T_RBRACK) depth--;
+            tok_pos++;
+        }
+    }
     NODE *base = ALLOC_node_const_none();
     NODE *extra_bases[8];
     int nextra = 0;
@@ -3860,6 +3882,34 @@ parse_simple_stmt(void)
         return result;
     }
 
+    // Annotated attribute / subscript assignment: `obj.attr : ann = val`
+    // (CPython supports this; pystro discards the annotation).
+    if (k == T_NAME) {
+        // Lookahead: NAME ('.' NAME)+ ':' ... '='?
+        size_t pp = tok_pos + 1;
+        bool saw_dot = false;
+        while (tok_arr[pp].kind == T_DOT && tok_arr[pp+1].kind == T_NAME) {
+            saw_dot = true;
+            pp += 2;
+        }
+        if (saw_dot && tok_arr[pp].kind == T_COLON) {
+            // Save lhs; parse and discard ann; require `=` then rhs.
+            size_t lhs_start_pos = tok_pos;
+            (void)parse_expr();   // parse `obj.attr...`
+            expect(T_COLON, "':'");
+            (void)parse_expr();   // discard annotation
+            if (match_tok(T_ASSIGN)) {
+                NODE *rhs = parse_expr_list();
+                size_t saved = tok_pos;
+                tok_pos = lhs_start_pos;
+                NODE *store = parse_assignable_target(rhs);
+                tok_pos = saved;
+                return store;
+            }
+            // Bare annotation on attr — no-op.
+            return ALLOC_node_nop();
+        }
+    }
     // Annotated assignment / declaration: `NAME : ann (= expr)?`
     if (k == T_NAME && peek_tok(1)->kind == T_COLON) {
         size_t save = tok_pos;
@@ -4404,14 +4454,33 @@ parse_stmt(void)
     // type-time-only aliases, so desugar to plain `NAME = expr`.
     if (k == T_NAME && peek_tok(0)->sval == intern_name("type", 4)
             && peek_tok(1)->kind == T_NAME
-            && peek_tok(2)->kind == T_ASSIGN) {
+            && (peek_tok(2)->kind == T_ASSIGN || peek_tok(2)->kind == T_LBRACK)) {
         tok_pos++;        // consume `type`
         const char *nm = peek_tok(0)->sval;
         tok_pos++;        // NAME
-        tok_pos++;        // =
+        // PEP 695 generic type alias `type X[T] = ...`: parse T's as
+        // names and emit assignments `T = "T"` so the RHS can reference
+        // them.  pystro doesn't track real TypeVar.
+        NODE *param_inits = NULL;
+        if (match_tok(T_LBRACK)) {
+            int depth = 1;
+            while (depth > 0 && peek_tok(0)->kind != T_EOF) {
+                int kk = peek_tok(0)->kind;
+                if (kk == T_LBRACK) depth++;
+                else if (kk == T_RBRACK) { depth--; tok_pos++; continue; }
+                if (kk == T_NAME && depth == 1) {
+                    const char *tp = peek_tok(0)->sval;
+                    NODE *binding = make_store(tp, ALLOC_node_const_str(tp));
+                    param_inits = param_inits ? ALLOC_node_seq(param_inits, binding) : binding;
+                }
+                tok_pos++;
+            }
+        }
+        expect(T_ASSIGN, "'='");
         NODE *rhs = parse_expr_list();
         expect(T_NEWLINE, "newline");
-        return make_store(nm, rhs);
+        NODE *store = make_store(nm, rhs);
+        return param_inits ? ALLOC_node_seq(param_inits, store) : store;
     }
     if (k == T_IF)     return parse_if();
     if (k == T_WHILE)  return parse_while();
