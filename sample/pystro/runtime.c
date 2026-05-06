@@ -2210,7 +2210,11 @@ py_dict_get(CTX *c, VALUE dv, VALUE key)
     uint64_t h = py_hash(c, key);
     size_t bucket; int32_t eidx; ssize_t ft;
     pydict_indices_lookup(c, d, key, h, &bucket, &eidx, &ft);
-    if (eidx < 0) py_raise_exc(c, c->EXC_KeyError, "key not found");
+    if (eidx < 0) {
+        VALUE r = py_to_repr(c, key);
+        py_raise_exc(c, c->EXC_KeyError, "%s",
+                     py_is_str(r) ? PY_PTR(r)->str.chars : "?");
+    }
     return d->entries[eidx].value;
 }
 
