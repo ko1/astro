@@ -2962,9 +2962,11 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
             case PM_SELF_NODE:
               return ALLOC_node_str_lit("self", 4);
             case PM_NIL_NODE:
-              return ALLOC_node_str_lit("expression", 10);
-            case PM_TRUE_NODE: case PM_FALSE_NODE:
-              return ALLOC_node_str_lit("expression", 10);
+              return ALLOC_node_str_lit("nil", 3);
+            case PM_TRUE_NODE:
+              return ALLOC_node_str_lit("true", 4);
+            case PM_FALSE_NODE:
+              return ALLOC_node_str_lit("false", 5);
             case PM_INTEGER_NODE: case PM_FLOAT_NODE: case PM_STRING_NODE:
             case PM_SYMBOL_NODE: case PM_ARRAY_NODE: case PM_HASH_NODE:
               return ALLOC_node_str_lit("expression", 10);

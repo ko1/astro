@@ -31,8 +31,9 @@ ensure
   $ms_describe = nil
 end
 
-# context is an alias for describe in mspec.
-alias_method :context, :describe rescue nil
+# context is an alias for describe in mspec.  Top-level alias_method
+# doesn't reach the global function namespace, so define it explicitly.
+def context(name, *opts, &blk); describe(name, *opts, &blk); end
 
 # it/specify: run the block, count outcomes.
 def it(name, *_opts, &blk)
@@ -48,11 +49,11 @@ def it(name, *_opts, &blk)
   end
 end
 
-alias_method :specify, :it rescue nil
+def specify(name, *opts, &blk); it(name, *opts, &blk); end
 
 # xit / pending: skip
 def xit(*_args, &_blk); $ms_skip += 1; end
-alias_method :pending, :xit rescue nil
+def pending(*args, &blk); xit(*args, &blk); end
 
 # before / after / before_each blocks — store and run around each `it`.
 # We implement a simplified version: only `before :each` is honored, and
@@ -200,6 +201,7 @@ def equal(o); MSpecMatcher.new(:equal, o); end
 def eql(o); MSpecMatcher.new(:eql, o); end
 def respond_to(name); MSpecMatcher.new(:respond_to, name); end
 def raise_error(klass = StandardError, msg = nil); MSpecMatcher.new(:raise_error, [klass, msg]); end
+def raise_exception(klass = Exception, msg = nil); MSpecMatcher.new(:raise_error, [klass, msg]); end
 def include(*items); MSpecMatcher.new(:include, items); end
 
 class Object
@@ -244,7 +246,11 @@ class MSpecExpectation
            begin
              @actual.call
            rescue Exception => e
-             ok = e.is_a?(klass) && (msg.nil? || msg === e.message)
+             # klass may be a Class or [Class, ...]
+             classes = klass.is_a?(Array) ? klass : [klass]
+             cls_ok = classes.any? { |c| c.nil? || e.is_a?(c) }
+             msg_ok = msg.nil? || msg === e.message
+             ok = cls_ok && msg_ok
            end
            ok
          when :include then m.arg.all? { |x| @actual.include?(x) }
@@ -303,3 +309,9 @@ end
 # Misc constants
 NATFIXNUM_MIN = -(2**62) rescue 0
 NATFIXNUM_MAX = (2**62) - 1 rescue 0
+
+# ruby2_keywords is out of scope (project policy) — stub on Module so
+# class-level usage doesn't NoMethodError.
+class Module
+  def ruby2_keywords(*_names); self; end unless method_defined?(:ruby2_keywords)
+end
