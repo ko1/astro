@@ -2538,7 +2538,11 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
            * clobber the outer arg into a number. */
           if (!block_pm && n->block && PM_NODE_TYPE_P(n->block, PM_BLOCK_ARGUMENT_NODE)) {
               pm_block_argument_node_t *ba = (pm_block_argument_node_t *)n->block;
-              NODE *expr = ba->expression ? T(tc, ba->expression) : ALLOC_node_nil();
+              /* `&nil` and `&` (no expr) → pass no block at all, like CRuby. */
+              if (!ba->expression || PM_NODE_TYPE_P(ba->expression, PM_NIL_NODE)) {
+                  return build_call_simple(tc, recv, name, args ? &args->arguments : NULL, NULL, recv != NULL);
+              }
+              NODE *expr = T(tc, ba->expression);
               struct method_cache *mc_tp = alloc_method_cache();
               uint32_t tp_slot = inc_arg_index(tc);
               NODE *to_proc = ALLOC_node_method_call(expr, korb_intern("to_proc"), 0, tp_slot, mc_tp);
