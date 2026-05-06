@@ -1,0 +1,7 @@
+ok DottedImportTest test_os_path
+ok DottedImportTest test_os_path_as_alias
+ok FromImportTest test_from_collections
+ok FromImportTest test_from_collections_as
+ok FromImportTest test_from_os
+---
+passed=5 failed=0

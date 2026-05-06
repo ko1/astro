@@ -3182,16 +3182,37 @@ parse_simple_stmt(void)
                 tok_pos++;
             }
             dotted[dn] = '\0';
-            const char *alias = last;
+            // CPython binding rule for `import a.b.c`:
+            //   - no `as` → bind the *top-level* name (`a`) and let the
+            //     user reach `c` via `a.b.c`.
+            //   - `as X` → bind `X` to the leaf module.
+            const char *alias = first;
+            bool has_as = false;
             if (match_tok(T_AS)) {
                 if (peek_tok(0)->kind != T_NAME) parse_error("expected NAME after as");
                 alias = peek_tok(0)->sval;
                 tok_pos++;
+                has_as = true;
             }
+            NODE *imp_arg = ALLOC_node_const_str(intern_name(dotted, dn));
             NODE *call = ALLOC_node_call_1(
                 ALLOC_node_gref(intern_name("__pystro_import__", 17)),
-                ALLOC_node_const_str(intern_name(dotted, dn)));
-            NODE *one = make_store(alias, call);
+                has_as ? imp_arg : ALLOC_node_const_str(intern_name(first, fn)));
+            // For non-aliased dotted: still trigger the leaf import so
+            // the parent's attribute is populated.
+            NODE *one;
+            if (has_as) {
+                one = make_store(alias, call);
+            } else if (dn != fn) {
+                NODE *leaf_import = ALLOC_node_call_1(
+                    ALLOC_node_gref(intern_name("__pystro_import__", 17)),
+                    imp_arg);
+                NODE *bind = make_store(alias, call);
+                one = ALLOC_node_seq(bind, leaf_import);
+            } else {
+                one = make_store(alias, call);
+            }
+            (void)last;
             result = result ? ALLOC_node_seq(result, one) : one;
             if (!match_tok(T_COMMA)) break;
         }

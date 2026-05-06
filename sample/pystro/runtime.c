@@ -9987,6 +9987,24 @@ bi_import(CTX *c, int argc, VALUE *argv)
         }
     }
     if (!src) {
+        // For dotted names (os.path), if a file isn't found try to resolve
+        // `tail` as an attribute of the parent module (`os.path` → os.path).
+        const char *last_dot = NULL;
+        for (size_t i = 0; i < name_len; i++) if (name[i] == '.') last_dot = &name[i];
+        if (last_dot) {
+            size_t parent_len = (size_t)(last_dot - name);
+            VALUE parent_name = py_make_str(name, parent_len);
+            VALUE av[1] = { parent_name };
+            VALUE parent = bi_import(c, 1, av);
+            if (c->state == PY_STATE_NORMAL && parent != PY_NONE) {
+                VALUE attr = py_getattr(c, parent, last_dot + 1);
+                if (c->state == PY_STATE_NORMAL && attr != PY_NONE) {
+                    py_dict_set(c, mod_dict, argv[0], attr);
+                    return attr;
+                }
+                c->state = PY_STATE_NORMAL;
+            }
+        }
         py_raise_exc(c, c->EXC_ModuleNotFoundError, "No module named '%s'", name);
     }
 
