@@ -867,6 +867,11 @@ VALUE korb_gvar_get(ID name) {
     return Qnil;
 }
 
+bool korb_gvar_defined(ID name) {
+    for (uint32_t i = 0; i < gvars.size; i++) if (gvars.keys[i] == name) return true;
+    return false;
+}
+
 void korb_gvar_set(ID name, VALUE v) {
     for (uint32_t i = 0; i < gvars.size; i++) if (gvars.keys[i] == name) { gvars.vals[i] = v; return; }
     if (gvars.size >= gvars.capa) {

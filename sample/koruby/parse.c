@@ -2967,6 +2967,56 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
               return ALLOC_node_str_lit("true", 4);
             case PM_FALSE_NODE:
               return ALLOC_node_str_lit("false", 5);
+            /* Any assignment form returns "assignment". */
+            case PM_LOCAL_VARIABLE_WRITE_NODE:
+            case PM_LOCAL_VARIABLE_OPERATOR_WRITE_NODE:
+            case PM_LOCAL_VARIABLE_AND_WRITE_NODE:
+            case PM_LOCAL_VARIABLE_OR_WRITE_NODE:
+            case PM_INSTANCE_VARIABLE_WRITE_NODE:
+            case PM_INSTANCE_VARIABLE_OPERATOR_WRITE_NODE:
+            case PM_INSTANCE_VARIABLE_AND_WRITE_NODE:
+            case PM_INSTANCE_VARIABLE_OR_WRITE_NODE:
+            case PM_CLASS_VARIABLE_WRITE_NODE:
+            case PM_CLASS_VARIABLE_OPERATOR_WRITE_NODE:
+            case PM_CLASS_VARIABLE_AND_WRITE_NODE:
+            case PM_CLASS_VARIABLE_OR_WRITE_NODE:
+            case PM_GLOBAL_VARIABLE_WRITE_NODE:
+            case PM_GLOBAL_VARIABLE_OPERATOR_WRITE_NODE:
+            case PM_GLOBAL_VARIABLE_AND_WRITE_NODE:
+            case PM_GLOBAL_VARIABLE_OR_WRITE_NODE:
+            case PM_CONSTANT_WRITE_NODE:
+            case PM_CONSTANT_OPERATOR_WRITE_NODE:
+            case PM_CONSTANT_AND_WRITE_NODE:
+            case PM_CONSTANT_OR_WRITE_NODE:
+            case PM_CONSTANT_PATH_WRITE_NODE:
+            case PM_CONSTANT_PATH_OPERATOR_WRITE_NODE:
+            case PM_CONSTANT_PATH_AND_WRITE_NODE:
+            case PM_CONSTANT_PATH_OR_WRITE_NODE:
+            case PM_INDEX_OPERATOR_WRITE_NODE:
+            case PM_INDEX_AND_WRITE_NODE:
+            case PM_INDEX_OR_WRITE_NODE:
+            case PM_CALL_OPERATOR_WRITE_NODE:
+            case PM_CALL_AND_WRITE_NODE:
+            case PM_CALL_OR_WRITE_NODE:
+            case PM_MULTI_WRITE_NODE:
+              return ALLOC_node_str_lit("assignment", 10);
+            case PM_YIELD_NODE:
+              /* "yield" if a block is currently passed to the enclosing
+               * method.  Wrap a runtime check via Kernel#block_given?. */
+              {
+                  uint32_t ai = inc_arg_index(tc);
+                  rewind_arg_index(tc, ai);
+                  struct method_cache *mc = alloc_method_cache();
+                  NODE *check = ALLOC_node_func_call(korb_intern("block_given?"), 0, ai, mc);
+                  return ALLOC_node_if(check,
+                                       ALLOC_node_str_lit("yield", 5),
+                                       ALLOC_node_nil());
+              }
+            case PM_SUPER_NODE:
+            case PM_FORWARDING_SUPER_NODE:
+              /* "super" — for now always return "super" (proper impl
+               * would walk the class chain to verify a super exists). */
+              return ALLOC_node_str_lit("super", 5);
             case PM_INTEGER_NODE: case PM_FLOAT_NODE: case PM_STRING_NODE:
             case PM_SYMBOL_NODE: case PM_ARRAY_NODE: case PM_HASH_NODE:
               return ALLOC_node_str_lit("expression", 10);
@@ -2992,14 +3042,9 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
             case PM_GLOBAL_VARIABLE_READ_NODE: {
               pm_global_variable_read_node_t *gv = (pm_global_variable_read_node_t *)expr;
               ID gname = intern_constant(tc->parser, gv->name);
-              /* nil-check the gvar value (proxy: if nil-or-undef, treat
-               * as undefined). */
-              NODE *get = ALLOC_node_gvar_get(gname);
-              uint32_t ai = inc_arg_index(tc);
-              rewind_arg_index(tc, ai);
-              NODE *seq = ALLOC_node_lvar_set(ai, get);
-              NODE *cond = ALLOC_node_seq(seq, ALLOC_node_lvar_get(ai));
-              return ALLOC_node_if(cond,
+              /* CRuby: defined?($x) returns "global-variable" iff the
+               * gvar was ever assigned (even to nil), else nil. */
+              return ALLOC_node_if(ALLOC_node_gvar_defined_p(gname),
                                    ALLOC_node_str_lit("global-variable", 15),
                                    ALLOC_node_nil());
             }

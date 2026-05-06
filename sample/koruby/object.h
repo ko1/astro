@@ -651,6 +651,7 @@ bool korb_block_given(void);
 /* gvar */
 VALUE korb_gvar_get(ID name);
 void  korb_gvar_set(ID name, VALUE v);
+bool  korb_gvar_defined(ID name);
 
 /* const lookup along current scope (uses CTX->current_class) */
 VALUE korb_const_lookup(CTX *c, ID name);
