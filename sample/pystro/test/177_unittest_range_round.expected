@@ -1,0 +1,7 @@
+ok RangeBoolTest test_empty_falsy
+ok RangeBoolTest test_non_empty_truthy
+ok RoundBankerTest test_half_to_even
+ok RoundBankerTest test_int_args
+ok RoundBankerTest test_negative_ndigits
+---
+passed=5 failed=0

@@ -539,6 +539,10 @@ py_is_truthy(VALUE v)
       case PY_T_DICT:   return o->dict->used != 0;
       case PY_T_SET:
       case PY_T_FROZENSET: return o->dict->used != 0;
+      case PY_T_RANGE: {
+          if (o->range.step > 0) return o->range.start < o->range.stop;
+          return o->range.start > o->range.stop;
+      }
       case PY_T_INSTANCE: return py_is_truthy_instance(v);
       default:          return true;
     }
