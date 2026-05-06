@@ -748,59 +748,76 @@ nuq_user_call(CTX *c, uint32_t name_id, uint32_t arity, uint32_t args_id)
 
     struct nuq_func_def *fd = nuq_func_lookup(c, name_id, (int)arity);
     if (fd) {
-        /* Evaluate value-args FIRST in caller scope (jq semantics). */
-        VALUE arg_values[16];
         if (arity > 16) return err_emit(c, "too many args");
+        /* Pre-evaluate every value-arg into a list (jq semantics:
+         * `f($a; $b)` runs `arg_a as $a | arg_b as $b | body`, which
+         * cartesian-expands multi-emit args).  Expr-args are lazy
+         * (closures), evaluated each time they are referenced. */
+        VALUE *val_lists[16] = {0};
+        uint32_t val_counts[16] = {0};
+        size_t outer_top = c->pool_top;
         for (uint32_t i = 0; i < arity; i++) {
-            if (fd->param_is_value[i]) {
-                size_t t0 = c->pool_top;
-                EMIT buf = EVAL(c, args[i]);
-                if (c->error != NUQ_NULL) return EMIT_EMPTY;
-                arg_values[i] = buf.count > 0 ? buf.items[0] : NUQ_NULL;
-                c->pool_top = t0;
+            if (!fd->param_is_value[i]) continue;
+            size_t t0 = c->pool_top;
+            EMIT buf = EVAL(c, args[i]);
+            if (c->error != NUQ_NULL) { c->pool_top = outer_top; return EMIT_EMPTY; }
+            uint32_t cnt = buf.count;
+            VALUE *list = (VALUE *)GC_malloc((cnt > 0 ? cnt : 1) * sizeof(VALUE));
+            if (cnt == 0) {
+                /* Empty args make the whole call empty. */
+                c->pool_top = outer_top;
+                return EMIT_EMPTY;
             }
+            memcpy(list, buf.items, cnt * sizeof(VALUE));
+            val_lists[i] = list;
+            val_counts[i] = cnt;
+            c->pool_top = t0;
         }
-        size_t var_top = c->var_top;
-        size_t func_top = c->func_cnt;
-        for (uint32_t i = 0; i < arity; i++) {
-            if (fd->param_is_value[i]) {
-                nuq_var_push(c, fd->param_ids[i], arg_values[i]);
-            } else {
-                struct nuq_func_def *pfd = (struct nuq_func_def *)GC_malloc(sizeof(*pfd));
-                pfd->name_id = fd->param_ids[i];
-                pfd->arity = 0;
-                pfd->param_ids = NULL;
-                pfd->param_is_value = NULL;
-                pfd->body = args[i];
-                /* Closure: the param expression's body resolves names
-                 * in the CALLER's scope (where the arg was written),
-                 * NOT in the callee's body.  scope_top = "last visible
-                 * index for caller" = func_cnt - 1 at this point. */
-                pfd->scope_top = c->func_cnt > 0 ? c->func_cnt - 1 : 0;
-                /* If that happens to be 0, set sentinel so
-                 * nuq_func_define's "if zero, default to func_cnt" is
-                 * skipped — we patch back below. */
-                if (pfd->scope_top == 0) pfd->scope_top = (size_t)-1;
-                nuq_func_define(c, pfd);
-                if (pfd->scope_top == (size_t)-1) pfd->scope_top = 0;
+        c->pool_top = outer_top;
+
+        /* Cartesian iteration over value-arg combinations. */
+        uint32_t idx[16] = {0};
+        for (;;) {
+            size_t var_top = c->var_top;
+            size_t func_top = c->func_cnt;
+            for (uint32_t i = 0; i < arity; i++) {
+                if (fd->param_is_value[i]) {
+                    nuq_var_push(c, fd->param_ids[i], val_lists[i][idx[i]]);
+                } else {
+                    struct nuq_func_def *pfd = (struct nuq_func_def *)GC_malloc(sizeof(*pfd));
+                    pfd->name_id = fd->param_ids[i];
+                    pfd->arity = 0;
+                    pfd->param_ids = NULL;
+                    pfd->param_is_value = NULL;
+                    pfd->body = args[i];
+                    pfd->scope_top = c->func_cnt > 0 ? c->func_cnt - 1 : 0;
+                    if (pfd->scope_top == 0) pfd->scope_top = (size_t)-1;
+                    nuq_func_define(c, pfd);
+                    if (pfd->scope_top == (size_t)-1) pfd->scope_top = 0;
+                }
             }
+            size_t saved_skip_s = c->func_skip_start;
+            size_t saved_skip_e = c->func_skip_end;
+            c->func_skip_start = fd->scope_top + 1;
+            c->func_skip_end   = func_top;
+            (void)EVAL(c, fd->body);
+            c->func_skip_start = saved_skip_s;
+            c->func_skip_end   = saved_skip_e;
+            nuq_var_pop(c, var_top);
+            c->func_cnt = func_top;
+            if (c->error != NUQ_NULL) return EMIT_EMPTY;
+            /* Advance cartesian indices. */
+            ssize_t pos = (ssize_t)arity - 1;
+            while (pos >= 0) {
+                if (!fd->param_is_value[pos]) { pos--; continue; }
+                idx[pos]++;
+                if (idx[pos] < val_counts[pos]) break;
+                idx[pos] = 0;
+                pos--;
+            }
+            if (pos < 0) break;
         }
-        /* Apply lexical scope for the body: the defs added between
-         * fd's definition site (`fd->scope_top + 1`, i.e. AFTER fd
-         * itself) and the call site (`func_top`) are hidden so a
-         * later same-named def doesn't shadow what fd was compiled
-         * against.  Params (added above func_top) and inner defs
-         * (added during body execution) remain visible. */
-        size_t saved_skip_s = c->func_skip_start;
-        size_t saved_skip_e = c->func_skip_end;
-        c->func_skip_start = fd->scope_top + 1;
-        c->func_skip_end   = func_top;
-        EMIT r = EVAL(c, fd->body);
-        c->func_skip_start = saved_skip_s;
-        c->func_skip_end   = saved_skip_e;
-        nuq_var_pop(c, var_top);
-        c->func_cnt = func_top;
-        return r;
+        return nuq_emit_slice(c, outer_top);
     }
     fprintf(stderr, "nuq error: %s/%u is not defined\n", nuq_intern_lookup(name_id), arity);
     return err_emit(c, "undefined");
@@ -1181,7 +1198,7 @@ fmt_apply(uint32_t fmt_id, VALUE v)
               case '<': fputs("&lt;", fp); break;
               case '>': fputs("&gt;", fp); break;
               case '&': fputs("&amp;", fp); break;
-              case '\'': fputs("&#39;", fp); break;     /* HTML5 / jq spec: &#39; */
+              case '\'': fputs("&#39;", fp); break;     /* jq.test variant uses &apos; — matches our jq build */     /* HTML5 / jq spec: &#39; */
               case '"': fputs("&quot;", fp); break;
               default: fputc(ch, fp); break;
             }
