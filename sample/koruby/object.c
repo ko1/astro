@@ -1779,16 +1779,7 @@ VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv)
     if (bound_destructure) {
         /* destructure path took the bind */
     }
-    /* Auto-pack: 1-param non-lambda block yielded with N>1 args — Ruby
-     * packs them into an Array so `|x|` sees `[a, b, ...]`.  Hash#each
-     * { |(k, v)| ... } and { |x| ... } both rely on this.  Skip when
-     * the block has a *rest (then the user wants explicit rest gather,
-     * not auto-pack). */
-    else if (blk->params_cnt == 1 && argc > 1 && !blk->is_lambda && blk->rest_slot < 0) {
-        VALUE pack = korb_ary_new_capa((long)argc);
-        for (uint32_t i = 0; i < argc; i++) korb_ary_push(pack, args_buf[i]);
-        fp[blk->param_base] = pack;
-    } else {
+    else {
         /* Required params first.  blk->params_cnt covers req + opt; the
          * rest is in rest_slot if non-negative. */
         for (uint32_t i = 0; i < blk->params_cnt && i < argc; i++) {
