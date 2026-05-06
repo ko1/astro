@@ -8614,6 +8614,9 @@ bi_eval(CTX *c, int argc, VALUE *argv)
 static VALUE
 bi_exec(CTX *c, int argc, VALUE *argv)
 {
+    // Accept exec(code [, globals [, locals]]); ignore the dict args (the
+    // current implementation has no real namespace separation, so we just
+    // execute in the current global scope).
     (void)argc;
     if (!py_is_str(argv[0])) py_raise_exc(c, c->EXC_TypeError, "exec: code must be str");
     size_t L = PY_PTR(argv[0])->str.len;
@@ -9216,8 +9219,13 @@ bi_format(CTX *c, int argc, VALUE *argv)
         char *out = (char *)GC_malloc_atomic(width + 1);
         char eff_fill = zero_pad ? '0' : fill;
         if (align == 0) {
-            // Default: numbers right-align, strings left-align.
-            align = (type_ch == 's' || type_ch == 0) ? '<' : '>';
+            // Default: numbers right-align, strings left-align.  For type_ch==0,
+            // numeric values still right-align (matching CPython).
+            bool numeric_v = PY_IS_FIXNUM(v) || py_is_bignum(v) || py_is_float(v)
+                             || v == PY_TRUE || v == PY_FALSE;
+            if (type_ch == 's') align = '<';
+            else if (type_ch == 0) align = numeric_v ? '>' : '<';
+            else align = '>';
         }
         if (align == '<') {
             memcpy(out, body, bl);
@@ -10748,7 +10756,7 @@ install_builtins(CTX *c)
     py_global_define(c, "callable",   py_make_builtin("callable",   bi_callable,   1,  1));
     py_global_define(c, "open",       py_make_builtin("open",       bi_open,       1,  2));
     py_global_define(c, "eval",       py_make_builtin("eval",       bi_eval,       1,  1));
-    py_global_define(c, "exec",       py_make_builtin("exec",       bi_exec,       1,  1));
+    py_global_define(c, "exec",       py_make_builtin("exec",       bi_exec,       1,  3));
     py_global_define(c, "min",        py_make_builtin("min",        bi_min,        1, -1));
     py_global_define(c, "max",        py_make_builtin("max",        bi_max,        1, -1));
     py_global_define(c, "sum",        py_make_builtin("sum",        bi_sum,        1,  2));

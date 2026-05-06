@@ -1,0 +1,10 @@
+ok FormatZeroPadTest test_default_align_int
+ok FormatZeroPadTest test_fill_char
+ok FormatZeroPadTest test_float_format
+ok FormatZeroPadTest test_thousands
+ok FormatZeroPadTest test_zero_pad_int
+ok FormatZeroPadTest test_zero_pad_with_prefix
+ok ExecKwargTest test_exec_three_args
+ok ExecKwargTest test_exec_with_globals
+---
+passed=8 failed=0
