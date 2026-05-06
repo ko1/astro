@@ -22,7 +22,7 @@ class _Namespace:
 
 
 class _Argument:
-    def __init__(self, names, action, default, type_, required, dest, help_, nargs):
+    def __init__(self, names, action, default, type_, required, dest, help_, nargs, choices, const, metavar):
         self.names = names           # list of strings, e.g. ["-v", "--verbose"]
         self.action = action
         self.default = default
@@ -31,6 +31,9 @@ class _Argument:
         self.dest = dest
         self.help = help_
         self.nargs = nargs
+        self.choices = choices
+        self.const = const
+        self.metavar = metavar
 
     def is_optional(self):
         return any(n.startswith("-") for n in self.names)
@@ -52,10 +55,12 @@ class ArgumentParser:
         self._args = []          # list of _Argument
 
     def add_argument(self, *names, action=None, default=None, type=None,
-                     required=False, dest=None, help=None, nargs=None):
+                     required=False, dest=None, help=None, nargs=None,
+                     choices=None, const=None, metavar=None):
         if not names:
             raise ValueError("add_argument: need a name")
-        arg = _Argument(list(names), action, default, type, required, dest, help, nargs)
+        arg = _Argument(list(names), action, default, type, required, dest, help,
+                        nargs, choices, const, metavar)
         if dest is None:
             n = arg.long_name()
             n = n.replace("-", "_")
@@ -131,6 +136,25 @@ class ArgumentParser:
                 if pos_idx >= len(positionals):
                     raise ValueError("unexpected positional: " + tok)
                 a = positionals[pos_idx]
+                if a.nargs == "+" or a.nargs == "*":
+                    # Greedy: consume all remaining non-option tokens (and
+                    # any explicit numbers) until end or next option.
+                    vals = [tok]
+                    j = i + 1
+                    while j < len(argv):
+                        nx = argv[j]
+                        if nx.startswith("-") and len(nx) > 1 and nx in opt_by_flag:
+                            break
+                        vals.append(nx)
+                        j += 1
+                    typed = [self._convert(a, v) for v in vals]
+                    if a.nargs == "+" and len(typed) == 0:
+                        raise ValueError("expected at least one " + a.names[0])
+                    setattr(ns, a.dest, typed)
+                    seen.add(a.dest)
+                    pos_idx += 1
+                    i = j
+                    continue
                 self._consume_inline(ns, a, tok)
                 seen.add(a.dest)
                 pos_idx += 1
@@ -149,15 +173,21 @@ class ArgumentParser:
         return ns
 
     def _consume_inline(self, ns, a, val_str):
-        if a.type is None or a.type == str:
-            v = val_str
-        elif a.type == int:
-            v = int(val_str)
-        elif a.type == float:
-            v = float(val_str)
-        else:
-            v = a.type(val_str)
+        v = self._convert(a, val_str)
+        if a.choices and v not in a.choices:
+            import sys
+            sys.stderr.write("argparse: invalid choice " + repr(v) + "\n")
+            raise SystemExit(2)
         setattr(ns, a.dest, v)
+
+    def _convert(self, a, val_str):
+        if a.type is None or a.type == str:
+            return val_str
+        if a.type == int:
+            return int(val_str)
+        if a.type == float:
+            return float(val_str)
+        return a.type(val_str)
 
 
 __all__ = ["ArgumentParser"]

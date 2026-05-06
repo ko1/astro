@@ -1,0 +1,10 @@
+ok ArgparseExtrasTest test_basic
+ok ArgparseExtrasTest test_choices
+argparse: invalid choice 'x'
+ok ArgparseExtrasTest test_choices_invalid
+ok ArgparseExtrasTest test_nargs_plus
+ok ArgparseExtrasTest test_nargs_star
+ok ArgparseExtrasTest test_positional
+ok ArgparseExtrasTest test_store_true
+---
+passed=7 failed=0

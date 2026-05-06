@@ -324,6 +324,8 @@ collect_locals_in_range(Scope *s, size_t start_pos, size_t end_pos)
 {
     // Track INDENT/DEDENT depth so we can skip over nested def/class bodies.
     int depth = 0;
+    int paren_depth = 0;               // ( [ { nesting — kwargs inside a
+                                        // call must NOT be registered.
     int skip_until_dedent = -1;        // depth at which we entered nested scope
     bool in_global_decl = false;
     for (size_t i = start_pos; i < end_pos; i++) {
@@ -332,6 +334,10 @@ collect_locals_in_range(Scope *s, size_t start_pos, size_t end_pos)
         if (t->kind == T_DEDENT) {
             if (skip_until_dedent >= 0 && depth == skip_until_dedent) skip_until_dedent = -1;
             depth--; continue;
+        }
+        if (t->kind == T_LPAREN || t->kind == T_LBRACK || t->kind == T_LBRACE) paren_depth++;
+        else if (t->kind == T_RPAREN || t->kind == T_RBRACK || t->kind == T_RBRACE) {
+            if (paren_depth > 0) paren_depth--;
         }
         if (skip_until_dedent >= 0) continue;
 
@@ -508,8 +514,16 @@ collect_locals_in_range(Scope *s, size_t start_pos, size_t end_pos)
             // Only treat as a local binding if this looks like a stmt-start
             // assignment (avoids registering kwarg names from calls).
             // Walrus is independent (always a real binding even in expressions).
-            if (!is_attr_or_subscript &&
+            // Inside parens (a call's argument list, list/dict literal, etc.)
+            // a NAME = expr is a kwarg, NOT a binding.
+            bool inside_parens = (paren_depth > 0);
+            if (!is_attr_or_subscript && !inside_parens &&
                 ((stmt_start && is_assign_op) || next == T_WALRUS)) {
+                if (!scope_is_global_decl(s, t->sval) &&
+                    !scope_is_nonlocal_decl(s, t->sval))
+                    scope_add_local(s, t->sval);
+            } else if (next == T_WALRUS) {
+                // Walrus binds regardless of paren context.
                 if (!scope_is_global_decl(s, t->sval) &&
                     !scope_is_nonlocal_decl(s, t->sval))
                     scope_add_local(s, t->sval);
@@ -517,7 +531,7 @@ collect_locals_in_range(Scope *s, size_t start_pos, size_t end_pos)
             // Multi-target tuple unpack: `a, b = ...` or `a, *rest, b = ...`.
             // Only register if the chain ends with `=`.  Skip when we're
             // inside a paren/bracket/brace (function call kwargs, etc.).
-            if (next == T_COMMA && stmt_start) {
+            if (next == T_COMMA && stmt_start && paren_depth == 0) {
                 size_t j = i;
                 bool ok = true;
                 while (j < end_pos) {
