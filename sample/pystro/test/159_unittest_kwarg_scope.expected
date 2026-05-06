@@ -1,0 +1,7 @@
+ok KwargScopeTest test_int_kwarg_doesnt_shadow
+ok KwargScopeTest test_list_kwarg_doesnt_shadow
+ok KwargScopeTest test_nested_kwargs
+ok KwargScopeTest test_str_kwarg_doesnt_shadow
+ok KwargScopeTest test_walrus_still_works
+---
+passed=5 failed=0
