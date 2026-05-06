@@ -469,6 +469,7 @@ build_builtin_call(const char *name, int arity, struct Node **args)
     BUILTIN1("max_by", ALLOC_node_b_max_by);
     BUILTIN1("indices", ALLOC_node_b_indices);
     BUILTIN1("index", ALLOC_node_b_index1);
+    BUILTIN1("rindex", ALLOC_node_b_rindex);
     BUILTIN1("test", ALLOC_node_b_test);
     BUILTIN1("getpath", ALLOC_node_b_getpath);
     BUILTIN1("delpaths", ALLOC_node_b_delpaths);

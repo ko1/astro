@@ -139,6 +139,7 @@ void nuq_leaf_paths_collect_pool(CTX *c, VALUE v);
 VALUE nuq_env_object(void);
 EMIT nuq_gsub_eval(CTX *c, struct Node *pat, struct Node *repl);
 EMIT nuq_sub_eval(CTX *c, struct Node *pat, struct Node *repl);
+EMIT nuq_rindex_eval(CTX *c, struct Node *pat);
 EMIT nuq_ltrimstr_eval(CTX *c, struct Node *prefix);
 EMIT nuq_rtrimstr_eval(CTX *c, struct Node *suffix);
 EMIT nuq_splits_eval(CTX *c, struct Node *sep);

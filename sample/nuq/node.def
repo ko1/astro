@@ -291,6 +291,7 @@ node_add(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
     for (uint32_t i = 0; i < lc; i++)
         for (uint32_t j = 0; j < rc; j++)
             nuq_pool_push(c, nuq_op_add(local[i], rlocal[j]));
+    if (UNLIKELY(c->error != NUQ_NULL)) { c->pool_top = top0; return EMIT_EMPTY; }
     return nuq_emit_slice(c, top0);
 }
 
@@ -315,6 +316,7 @@ node_sub(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
     for (uint32_t i = 0; i < lc; i++)
         for (uint32_t j = 0; j < rc; j++)
             nuq_pool_push(c, nuq_op_sub(local[i], rlocal[j]));
+    if (UNLIKELY(c->error != NUQ_NULL)) { c->pool_top = top0; return EMIT_EMPTY; }
     return nuq_emit_slice(c, top0);
 }
 
@@ -339,6 +341,7 @@ node_mul(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
     for (uint32_t i = 0; i < lc; i++)
         for (uint32_t j = 0; j < rc; j++)
             nuq_pool_push(c, nuq_op_mul(local[i], rlocal[j]));
+    if (UNLIKELY(c->error != NUQ_NULL)) { c->pool_top = top0; return EMIT_EMPTY; }
     return nuq_emit_slice(c, top0);
 }
 
@@ -363,6 +366,7 @@ node_div(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
     for (uint32_t i = 0; i < lc; i++)
         for (uint32_t j = 0; j < rc; j++)
             nuq_pool_push(c, nuq_op_div(local[i], rlocal[j]));
+    if (UNLIKELY(c->error != NUQ_NULL)) { c->pool_top = top0; return EMIT_EMPTY; }
     return nuq_emit_slice(c, top0);
 }
 
@@ -387,6 +391,7 @@ node_mod(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
     for (uint32_t i = 0; i < lc; i++)
         for (uint32_t j = 0; j < rc; j++)
             nuq_pool_push(c, nuq_op_mod(local[i], rlocal[j]));
+    if (UNLIKELY(c->error != NUQ_NULL)) { c->pool_top = top0; return EMIT_EMPTY; }
     return nuq_emit_slice(c, top0);
 }
 
@@ -402,6 +407,7 @@ node_neg(CTX *c, NODE *n, NODE *expr)
     uint32_t cnt = v.count;
     for (uint32_t i = 0; i < cnt; i++)
         c->pool[top0 + i] = nuq_op_neg(c->pool[top0 + i]);
+    if (UNLIKELY(c->error != NUQ_NULL)) { c->pool_top = top0; return EMIT_EMPTY; }
     return nuq_emit_slice(c, top0);
 }
 
@@ -1525,6 +1531,12 @@ NODE_DEF
 node_b_index1(CTX *c, NODE *n, NODE *pat)
 {
     return nuq_index1_eval(c, pat);
+}
+
+NODE_DEF
+node_b_rindex(CTX *c, NODE *n, NODE *pat)
+{
+    return nuq_rindex_eval(c, pat);
 }
 
 NODE_DEF

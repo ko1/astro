@@ -84,7 +84,7 @@ nuq_builtin_add(VALUE input)
 {
     if (!(NUQ_IS_PTR(input) && NUQ_PTR(input)->type == NUQ_T_ARRAY)) {
         if (NUQ_IS_PTR(input) && NUQ_PTR(input)->type == NUQ_T_NULL) return NUQ_NULL;
-        if (!nuq_suppress_error_print) fprintf(stderr, "nuq error: add requires array\n");
+        nuq_helper_error("");
         return NUQ_NULL;
     }
     struct nuq_obj *o = NUQ_PTR(input);
@@ -121,7 +121,7 @@ VALUE
 nuq_builtin_sort(VALUE input)
 {
     if (!(NUQ_IS_PTR(input) && NUQ_PTR(input)->type == NUQ_T_ARRAY)) {
-        if (!nuq_suppress_error_print) fprintf(stderr, "nuq error: sort requires array\n");
+        nuq_helper_error("");
         return NUQ_NULL;
     }
     struct nuq_obj *o = NUQ_PTR(input);
@@ -148,7 +148,7 @@ nuq_builtin_reverse(VALUE input)
         buf[o->str.len] = '\0';
         return nuq_make_string_take(buf, o->str.len);
     }
-    if (!nuq_suppress_error_print) fprintf(stderr, "nuq error: reverse on %s\n", nuq_type_name(input));
+    nuq_helper_error("reverse on %s", nuq_type_name(input));
     return NUQ_NULL;
 }
 
@@ -156,7 +156,7 @@ VALUE
 nuq_builtin_unique(VALUE input)
 {
     if (!(NUQ_IS_PTR(input) && NUQ_PTR(input)->type == NUQ_T_ARRAY)) {
-        if (!nuq_suppress_error_print) fprintf(stderr, "nuq error: unique requires array\n");
+        nuq_helper_error("");
         return NUQ_NULL;
     }
     struct nuq_obj *o = NUQ_PTR(input);
@@ -176,7 +176,7 @@ VALUE
 nuq_builtin_to_entries(VALUE input)
 {
     if (!(NUQ_IS_PTR(input) && NUQ_PTR(input)->type == NUQ_T_OBJECT)) {
-        if (!nuq_suppress_error_print) fprintf(stderr, "nuq error: to_entries requires object\n");
+        nuq_helper_error("");
         return NUQ_NULL;
     }
     struct nuq_obj *o = NUQ_PTR(input);
@@ -194,7 +194,7 @@ VALUE
 nuq_builtin_from_entries(VALUE input)
 {
     if (!(NUQ_IS_PTR(input) && NUQ_PTR(input)->type == NUQ_T_ARRAY)) {
-        if (!nuq_suppress_error_print) fprintf(stderr, "nuq error: from_entries requires array\n");
+        nuq_helper_error("");
         return NUQ_NULL;
     }
     struct nuq_obj *o = NUQ_PTR(input);
@@ -219,7 +219,7 @@ nuq_builtin_floor(VALUE input)
     if (NUQ_IS_FIX(input)) return input;
     if (NUQ_IS_PTR(input) && NUQ_PTR(input)->type == NUQ_T_DOUBLE)
         return nuq_make_int((int64_t)floor(NUQ_PTR(input)->dbl));
-    if (!nuq_suppress_error_print) fprintf(stderr, "nuq error: floor on %s\n", nuq_type_name(input));
+    nuq_helper_error("floor on %s", nuq_type_name(input));
     return NUQ_NULL;
 }
 
@@ -229,7 +229,7 @@ nuq_builtin_ceil(VALUE input)
     if (NUQ_IS_FIX(input)) return input;
     if (NUQ_IS_PTR(input) && NUQ_PTR(input)->type == NUQ_T_DOUBLE)
         return nuq_make_int((int64_t)ceil(NUQ_PTR(input)->dbl));
-    if (!nuq_suppress_error_print) fprintf(stderr, "nuq error: ceil on %s\n", nuq_type_name(input));
+    nuq_helper_error("ceil on %s", nuq_type_name(input));
     return NUQ_NULL;
 }
 
@@ -239,7 +239,7 @@ nuq_builtin_round(VALUE input)
     if (NUQ_IS_FIX(input)) return input;
     if (NUQ_IS_PTR(input) && NUQ_PTR(input)->type == NUQ_T_DOUBLE)
         return nuq_make_int((int64_t)round(NUQ_PTR(input)->dbl));
-    if (!nuq_suppress_error_print) fprintf(stderr, "nuq error: round on %s\n", nuq_type_name(input));
+    nuq_helper_error("round on %s", nuq_type_name(input));
     return NUQ_NULL;
 }
 
@@ -268,7 +268,7 @@ VALUE
 nuq_builtin_explode(VALUE input)
 {
     if (!(NUQ_IS_PTR(input) && NUQ_PTR(input)->type == NUQ_T_STRING)) {
-        if (!nuq_suppress_error_print) fprintf(stderr, "nuq error: explode requires string\n");
+        nuq_helper_error("");
         return NUQ_NULL;
     }
     struct nuq_obj *o = NUQ_PTR(input);
@@ -291,7 +291,7 @@ VALUE
 nuq_builtin_implode(VALUE input)
 {
     if (!(NUQ_IS_PTR(input) && NUQ_PTR(input)->type == NUQ_T_ARRAY)) {
-        if (!nuq_suppress_error_print) fprintf(stderr, "nuq error: implode requires array\n");
+        nuq_helper_error("");
         return NUQ_NULL;
     }
     struct nuq_obj *ao = NUQ_PTR(input);
@@ -316,7 +316,7 @@ VALUE
 nuq_builtin_ascii_upcase(VALUE input)
 {
     if (!(NUQ_IS_PTR(input) && NUQ_PTR(input)->type == NUQ_T_STRING)) {
-        if (!nuq_suppress_error_print) fprintf(stderr, "nuq error: ascii_upcase requires string\n");
+        nuq_helper_error("");
         return NUQ_NULL;
     }
     struct nuq_obj *o = NUQ_PTR(input);
@@ -333,7 +333,7 @@ VALUE
 nuq_builtin_ascii_downcase(VALUE input)
 {
     if (!(NUQ_IS_PTR(input) && NUQ_PTR(input)->type == NUQ_T_STRING)) {
-        if (!nuq_suppress_error_print) fprintf(stderr, "nuq error: ascii_downcase requires string\n");
+        nuq_helper_error("");
         return NUQ_NULL;
     }
     struct nuq_obj *o = NUQ_PTR(input);

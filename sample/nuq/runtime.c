@@ -1796,6 +1796,30 @@ nuq_index1_eval(CTX *c, struct Node *pat)
     return nuq_emit_one(c, NUQ_NULL);
 }
 
+/* `rindex(s)` — last position of `s` in input, or null. */
+EMIT
+nuq_rindex_eval(CTX *c, struct Node *pat)
+{
+    size_t t0 = c->pool_top;
+    EMIT buf = EVAL(c, pat);
+    if (c->error != NUQ_NULL) return EMIT_EMPTY;
+    if (buf.count == 0) { c->pool_top = t0; return EMIT_EMPTY; }
+    VALUE p = buf.items[0];
+    c->pool_top = t0;
+    if (!(NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_STRING) ||
+        !(NUQ_IS_PTR(p) && NUQ_PTR(p)->type == NUQ_T_STRING))
+        return err_emit(c, "rindex: only string-in-string");
+    struct nuq_obj *io = NUQ_PTR(c->input);
+    struct nuq_obj *po = NUQ_PTR(p);
+    if (po->str.len == 0) return nuq_emit_one(c, NUQ_NULL);
+    if (po->str.len > io->str.len) return nuq_emit_one(c, NUQ_NULL);
+    for (ssize_t i = (ssize_t)(io->str.len - po->str.len); i >= 0; i--) {
+        if (memcmp(io->str.bytes + i, po->str.bytes, po->str.len) == 0)
+            return nuq_emit_one(c, nuq_make_int(i));
+    }
+    return nuq_emit_one(c, NUQ_NULL);
+}
+
 EMIT
 nuq_test_eval(CTX *c, struct Node *pat)
 {
@@ -2091,10 +2115,14 @@ nested_apply(VALUE v, void *ud, bool *dropped)
     return walk_path(nu->c, nu->next, v, nu->next_fn, nu->next_ud);
 }
 
-/* Evaluate a static-int / static-string index expression to get the
- * key VALUE.  Returns true on success.  We accept literal `node_int`
- * and `node_str` only — anything else is too dynamic for path mode
- * (the input scoping for `.[var]` etc. is subtle and rarely used). */
+extern const struct NodeKind kind_node_neg;
+extern const struct NodeKind kind_node_var;
+
+/* Evaluate a static-ish index expression to get the key VALUE.
+ * Accepts `node_int`, `node_neg(node_int)` (so `.[-1]` works),
+ * `node_str`, and `node_var($name)` (looked up in the active CTX —
+ * works for `.[$k]` patterns where `$k` is bound by `as` or
+ * `--arg`).  Returns true on success. */
 static bool
 eval_static_key(struct Node *idx, VALUE *out)
 {
@@ -2102,9 +2130,21 @@ eval_static_key(struct Node *idx, VALUE *out)
         *out = nuq_make_int((int64_t)idx->u.node_int.v);
         return true;
     }
+    if (idx->head.kind == &kind_node_neg) {
+        struct Node *inner = idx->u.node_neg.expr;
+        VALUE iv;
+        if (!eval_static_key(inner, &iv)) return false;
+        if (NUQ_IS_FIX(iv)) { *out = NUQ_FIX(-NUQ_FIX_VAL(iv)); return true; }
+        return false;
+    }
     if (idx->head.kind == &kind_node_str) {
         const char *s = idx->u.node_str.s;
         *out = nuq_make_string(s, strlen(s));
+        return true;
+    }
+    if (idx->head.kind == &kind_node_var) {
+        if (!nuq_active_ctx) return false;
+        *out = nuq_var_get(nuq_active_ctx, idx->u.node_var.var_id);
         return true;
     }
     return false;
@@ -2405,6 +2445,28 @@ nuq_nth_eval(CTX *c, struct Node *idx, struct Node *body)
 bool nuq_had_truthy_output = false;
 /* Counter — non-zero suppresses stderr prints in value helpers. */
 int  nuq_suppress_error_print = 0;
+/* Set by `nuq_run` so value-level helpers can route errors back to
+ * the running CTX.  When NULL, helpers degrade to NUQ_NULL-return. */
+CTX *nuq_active_ctx = NULL;
+
+/* Single error-emit helper for value-level functions in value.c /
+ * builtin.c that don't take a CTX*.  Sets nuq_active_ctx->error so
+ * `try` / `?` / `isvalid` can catch, and prints to stderr unless
+ * suppressed.  Returns NUQ_NULL for chaining. */
+VALUE
+nuq_helper_error(const char *fmt, ...)
+{
+    char buf[160];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    if (nuq_active_ctx && nuq_active_ctx->error == NUQ_NULL)
+        nuq_active_ctx->error = nuq_make_string(buf, strlen(buf));
+    if (!nuq_suppress_error_print)
+        fprintf(stderr, "nuq error: %s\n", buf);
+    return NUQ_NULL;
+}
 /* Track whether any error has been raised — used to set exit code 1. */
 bool nuq_had_error = false;
 
@@ -2419,7 +2481,9 @@ nuq_run(CTX *const c, struct Node *const filter, VALUE input)
     c->error = NUQ_NULL;
     c->break_label = 0;
     c->pool_top = 0;
+    nuq_active_ctx = c;
     EMIT emits = EVAL(c, filter);
+    nuq_active_ctx = NULL;
     /* Even when the filter ultimately errored, jq still prints any
      * emits that came before the error.  Output them first, then
      * surface the error. */

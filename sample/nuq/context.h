@@ -171,6 +171,14 @@ extern bool nuq_had_error;
  * inc/dec to handle nesting. */
 extern int nuq_suppress_error_print;
 
+/* Active CTX for value-level helpers.  `nuq_run` sets this at the top
+ * of each filter invocation so helpers like `nuq_op_add_slow` can
+ * propagate errors via `nuq_active_ctx->error` instead of just
+ * returning NUQ_NULL silently.  This makes `try ("x" + 1) catch ...`
+ * actually catch, matching jq. */
+extern struct CTX_struct *nuq_active_ctx;
+VALUE nuq_helper_error(const char *fmt, ...);
+
 /* Pending-input queue for jq-compatible `input` / `inputs`.  main.c
  * fills this with all parsed JSON values up front; nuq_input_pull()
  * returns the next one (advancing the cursor).  Both the main loop
