@@ -2794,6 +2794,11 @@ size_t
 py_seq_len(CTX *c, VALUE v)
 {
     if (py_is_str(v))   return PY_PTR(v)->str.len;
+    // NOTE: pystro strings are UTF-8 byte arrays, so len() returns the
+    // BYTE count, not the codepoint count.  Indexing/slicing are also
+    // byte-based.  Making this codepoint-aware would require touching
+    // every string operation; documented as a known divergence in
+    // docs/todo.md S-16.
     if (py_is_byteseq(v)) return PY_PTR(v)->str.len;
     if (py_is_list(v) || py_is_tuple(v)) return PY_PTR(v)->list.len;
     if (py_is_dict(v) || py_is_any_set(v))  return PY_PTR(v)->dict->used;
