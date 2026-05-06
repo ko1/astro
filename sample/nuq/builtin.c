@@ -392,7 +392,15 @@ nuq_builtin_fromjson(VALUE input, VALUE *out)
     char *err = NULL;
     const char *endp;
     *out = nuq_json_parse(o->str.bytes, o->str.len, &endp, &err);
-    return err == NULL;
+    if (err != NULL) return false;
+    /* Strict: anything past the parsed value (besides whitespace) is
+     * an error.  Otherwise `"NaN1"` parses NaN then leaves trailing 1. */
+    while (endp < o->str.bytes + o->str.len) {
+        char c = *endp;
+        if (c != ' ' && c != '\t' && c != '\n' && c != '\r') return false;
+        endp++;
+    }
+    return true;
 }
 
 void
