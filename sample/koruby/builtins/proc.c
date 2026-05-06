@@ -282,14 +282,17 @@ redo_proc:
         c->state = KORB_NORMAL;
         c->state_value = Qnil;
     } else if (c->state == KORB_THROW) {
-        /* Unhandled throw escaping a proc/lambda — convert to raise of
-         * UncaughtThrowError so it can be caught by `rescue` (matchers
-         * like .should raise_error need to see a raise, not a state). */
+        /* Throw escaping a proc/lambda — convert to UncaughtThrowError
+         * raise.  catch() already cleared the state if its tag matched,
+         * so reaching here means the throw is uncaught at this level.
+         * Keep the tag on the exception's @tag ivar so re-thrown
+         * conversions can carry it through outer rescue handlers. */
         VALUE eUTE = korb_const_get(korb_vm->object_class, korb_intern("UncaughtThrowError"));
-        VALUE tag = Qnil;
+        VALUE tag = Qnil, val = Qnil;
         if (!SPECIAL_CONST_P(c->state_value) && BUILTIN_TYPE(c->state_value) == T_ARRAY) {
             struct korb_array *pair = (struct korb_array *)c->state_value;
             if (pair->len >= 1) tag = pair->ptr[0];
+            if (pair->len >= 2) val = pair->ptr[1];
         }
         VALUE tag_s = korb_inspect(tag);
         char buf[256];
@@ -298,6 +301,11 @@ redo_proc:
             korb_raise(c, (struct korb_class *)eUTE, "%s", buf);
         } else {
             korb_raise(c, NULL, "%s", buf);
+        }
+        /* Stash tag/value on the exception for catch to re-extract. */
+        if (c->state == KORB_RAISE && !SPECIAL_CONST_P(c->state_value)) {
+            korb_ivar_set(c->state_value, korb_intern("@__throw_tag__"), tag);
+            korb_ivar_set(c->state_value, korb_intern("@__throw_value__"), val);
         }
     } else if (c->state == KORB_RETRY) {
         /* `retry` outside a rescue is a SyntaxError in CRuby (parse

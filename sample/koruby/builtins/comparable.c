@@ -89,6 +89,15 @@ static VALUE module_undef_or_remove_method(CTX *c, VALUE self, int argc, VALUE *
     for (int i = 0; i < argc; i++) {
         ID name = SYMBOL_P(argv[i]) ? korb_sym2id(argv[i])
                                      : korb_intern(korb_str_cstr(argv[i]));
+        /* CRuby: undef on a non-existing method raises NameError. */
+        if (!korb_class_find_method(klass, name)) {
+            VALUE eN = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
+            korb_raise(c, (struct korb_class *)eN,
+                       "undefined method '%s' for class '%s'",
+                       korb_id_name(name),
+                       klass->name ? korb_id_name(klass->name) : "?");
+            return Qnil;
+        }
         korb_method_table_remove(&klass->methods, name);
     }
     /* Bump method serial so cached method-lookup entries invalidate. */

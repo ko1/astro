@@ -413,6 +413,7 @@ static VALUE kernel_catch(CTX *c, VALUE self, int argc, VALUE *argv) {
     VALUE tag = (argc >= 1) ? argv[0] : korb_object_new(korb_vm->object_class);
     VALUE block_arg[1] = { tag };
     VALUE r = korb_yield(c, 1, block_arg);
+    /* state == THROW: tag/value live on c->state_value as a 2-element ary. */
     if (c->state == KORB_THROW && !SPECIAL_CONST_P(c->state_value) &&
         BUILTIN_TYPE(c->state_value) == T_ARRAY) {
         struct korb_array *pair = (struct korb_array *)c->state_value;
@@ -421,6 +422,27 @@ static VALUE kernel_catch(CTX *c, VALUE self, int argc, VALUE *argv) {
             c->state = KORB_NORMAL;
             c->state_value = Qnil;
             return v;
+        }
+    }
+    /* state == RAISE with UncaughtThrowError: proc_call already converted
+     * a throw escaping a lambda body to a raise.  Look for our @__throw_tag__
+     * ivar and re-handle it as a throw if the tag matches. */
+    if (c->state == KORB_RAISE && !SPECIAL_CONST_P(c->state_value)) {
+        VALUE eUTE = korb_const_get(korb_vm->object_class, korb_intern("UncaughtThrowError"));
+        struct korb_class *exc_cls = (struct korb_class *)((struct RBasic *)c->state_value)->klass;
+        bool is_ute = false;
+        for (struct korb_class *kk = exc_cls; kk; kk = kk->super) {
+            if ((VALUE)kk == eUTE) { is_ute = true; break; }
+        }
+        if (is_ute) {
+            VALUE thrown_tag = korb_ivar_get(c->state_value, korb_intern("@__throw_tag__"));
+            if (!UNDEF_P(thrown_tag) && korb_eq(thrown_tag, tag)) {
+                VALUE v = korb_ivar_get(c->state_value, korb_intern("@__throw_value__"));
+                if (UNDEF_P(v)) v = Qnil;
+                c->state = KORB_NORMAL;
+                c->state_value = Qnil;
+                return v;
+            }
         }
     }
     return r;
