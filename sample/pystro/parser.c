@@ -1460,7 +1460,7 @@ parse_atom(void)
             tok_pos += 3;
             return ALLOC_node_gref(intern_name("Ellipsis", 8));
         }
-        break;
+        parse_error("unexpected '.'");
       case T_LPAREN: return parse_paren_or_tuple();
       case T_LBRACK: return parse_list_literal();
       case T_LBRACE: return parse_dict_or_set_literal();

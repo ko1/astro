@@ -5200,8 +5200,8 @@ sm_startswith(CTX *c, int argc, VALUE *argv)
     int64_t start = 0, end = slen;
     if (argc >= 3 && argv[2] != PY_NONE) start = py_int_to_long(c, argv[2]);
     if (argc >= 4 && argv[3] != PY_NONE) end = py_int_to_long(c, argv[3]);
-    if (start < 0) start += slen; if (start < 0) start = 0; if (start > slen) start = slen;
-    if (end < 0) end += slen; if (end < 0) end = 0; if (end > slen) end = slen;
+    { if (start < 0) start += slen; if (start < 0) start = 0; if (start > slen) start = slen; }
+    { if (end < 0) end += slen; if (end < 0) end = 0; if (end > slen) end = slen; }
     int64_t span = end - start;
     if (span < 0) span = 0;
     const char *base = s->str.chars + start;
@@ -5232,8 +5232,8 @@ sm_endswith(CTX *c, int argc, VALUE *argv)
     int64_t start = 0, end = slen;
     if (argc >= 3 && argv[2] != PY_NONE) start = py_int_to_long(c, argv[2]);
     if (argc >= 4 && argv[3] != PY_NONE) end = py_int_to_long(c, argv[3]);
-    if (start < 0) start += slen; if (start < 0) start = 0; if (start > slen) start = slen;
-    if (end < 0) end += slen; if (end < 0) end = 0; if (end > slen) end = slen;
+    { if (start < 0) start += slen; if (start < 0) start = 0; if (start > slen) start = slen; }
+    { if (end < 0) end += slen; if (end < 0) end = 0; if (end > slen) end = slen; }
     int64_t span = end - start;
     if (span < 0) span = 0;
     const char *tail_end = s->str.chars + end;
@@ -5320,8 +5320,8 @@ sm_count(CTX *c, int argc, VALUE *argv)
     int64_t start = 0, end = slen;
     if (argc >= 3 && argv[2] != PY_NONE) start = py_int_to_long(c, argv[2]);
     if (argc >= 4 && argv[3] != PY_NONE) end = py_int_to_long(c, argv[3]);
-    if (start < 0) start += slen; if (start < 0) start = 0; if (start > slen) start = slen;
-    if (end < 0) end += slen; if (end < 0) end = 0; if (end > slen) end = slen;
+    { if (start < 0) start += slen; if (start < 0) start = 0; if (start > slen) start = slen; }
+    { if (end < 0) end += slen; if (end < 0) end = 0; if (end > slen) end = slen; }
     if (p->str.len == 0) return PY_FIX(end > start ? end - start + 1 : 0);
     int64_t n = 0;
     int64_t i = start;
@@ -5648,8 +5648,8 @@ sm_rfind(CTX *c, int argc, VALUE *argv)
     int64_t start = 0, end = slen;
     if (argc >= 3 && argv[2] != PY_NONE) start = py_int_to_long(c, argv[2]);
     if (argc >= 4 && argv[3] != PY_NONE) end = py_int_to_long(c, argv[3]);
-    if (start < 0) start += slen; if (start < 0) start = 0; if (start > slen) start = slen;
-    if (end < 0) end += slen; if (end < 0) end = 0; if (end > slen) end = slen;
+    { if (start < 0) start += slen; if (start < 0) start = 0; if (start > slen) start = slen; }
+    { if (end < 0) end += slen; if (end < 0) end = 0; if (end > slen) end = slen; }
     if (needle->str.len == 0) return PY_FIX(end);
     if ((int64_t)needle->str.len > end - start) return PY_FIX(-1);
     for (int64_t i = end - (int64_t)needle->str.len; i >= start; i--) {
@@ -6823,8 +6823,8 @@ bm_startswith(CTX *c, int argc, VALUE *argv)
     int64_t slen = (int64_t)s->str.len;
     int64_t start = (argc >= 3 && argv[2] != PY_NONE) ? py_int_to_long(c, argv[2]) : 0;
     int64_t end   = (argc >= 4 && argv[3] != PY_NONE) ? py_int_to_long(c, argv[3]) : slen;
-    if (start < 0) start += slen; if (start < 0) start = 0; if (start > slen) start = slen;
-    if (end < 0) end += slen; if (end < 0) end = 0; if (end > slen) end = slen;
+    { if (start < 0) start += slen; if (start < 0) start = 0; if (start > slen) start = slen; }
+    { if (end < 0) end += slen; if (end < 0) end = 0; if (end > slen) end = slen; }
     int64_t span = end - start;
     if (span < 0) span = 0;
     const char *base = s->str.chars + start;
@@ -7641,8 +7641,8 @@ bm_find(CTX *c, int argc, VALUE *argv)
     int64_t slen = (int64_t)s->str.len;
     int64_t start = (argc >= 3 && argv[2] != PY_NONE) ? py_int_to_long(c, argv[2]) : 0;
     int64_t end   = (argc >= 4 && argv[3] != PY_NONE) ? py_int_to_long(c, argv[3]) : slen;
-    if (start < 0) start += slen; if (start < 0) start = 0; if (start > slen) start = slen;
-    if (end < 0) end += slen; if (end < 0) end = 0; if (end > slen) end = slen;
+    { if (start < 0) start += slen; if (start < 0) start = 0; if (start > slen) start = slen; }
+    { if (end < 0) end += slen; if (end < 0) end = 0; if (end > slen) end = slen; }
     if (start > end) return PY_FIX(-1);
     if (p->str.len == 0) return PY_FIX(start);
     if ((size_t)(end - start) < p->str.len) return PY_FIX(-1);
@@ -7660,8 +7660,8 @@ bm_rfind(CTX *c, int argc, VALUE *argv)
     int64_t slen = (int64_t)s->str.len;
     int64_t start = (argc >= 3 && argv[2] != PY_NONE) ? py_int_to_long(c, argv[2]) : 0;
     int64_t end   = (argc >= 4 && argv[3] != PY_NONE) ? py_int_to_long(c, argv[3]) : slen;
-    if (start < 0) start += slen; if (start < 0) start = 0; if (start > slen) start = slen;
-    if (end < 0) end += slen; if (end < 0) end = 0; if (end > slen) end = slen;
+    { if (start < 0) start += slen; if (start < 0) start = 0; if (start > slen) start = slen; }
+    { if (end < 0) end += slen; if (end < 0) end = 0; if (end > slen) end = slen; }
     if (p->str.len == 0) return PY_FIX(end);
     if ((int64_t)p->str.len > end - start) return PY_FIX(-1);
     for (int64_t i = end - (int64_t)p->str.len; i >= start; i--)
@@ -7695,8 +7695,8 @@ bm_endswith(CTX *c, int argc, VALUE *argv)
     int64_t slen = (int64_t)s->str.len;
     int64_t start = (argc >= 3 && argv[2] != PY_NONE) ? py_int_to_long(c, argv[2]) : 0;
     int64_t end   = (argc >= 4 && argv[3] != PY_NONE) ? py_int_to_long(c, argv[3]) : slen;
-    if (start < 0) start += slen; if (start < 0) start = 0; if (start > slen) start = slen;
-    if (end < 0) end += slen; if (end < 0) end = 0; if (end > slen) end = slen;
+    { if (start < 0) start += slen; if (start < 0) start = 0; if (start > slen) start = slen; }
+    { if (end < 0) end += slen; if (end < 0) end = 0; if (end > slen) end = slen; }
     int64_t span = end - start;
     if (span < 0) span = 0;
     const char *tail_end = s->str.chars + end;
@@ -8827,7 +8827,7 @@ bi_min(CTX *c, int argc, VALUE *argv)
     if (argc == 0) py_raise_exc(c, c->EXC_TypeError, "min() needs args");
     VALUE key_fn = pystro_bi_kwarg("key");
     VALUE deflt  = pystro_bi_kwarg("default");
-    VALUE best, best_key;
+    VALUE best = PY_NONE, best_key = PY_NONE;
     bool started = false;
     if (argc == 1) {
         struct py_iter it; py_iter_init(c, &it, argv[0]);
@@ -8860,7 +8860,7 @@ bi_max(CTX *c, int argc, VALUE *argv)
     if (argc == 0) py_raise_exc(c, c->EXC_TypeError, "max() needs args");
     VALUE key_fn = pystro_bi_kwarg("key");
     VALUE deflt  = pystro_bi_kwarg("default");
-    VALUE best, best_key;
+    VALUE best = PY_NONE, best_key = PY_NONE;
     bool started = false;
     if (argc == 1) {
         struct py_iter it; py_iter_init(c, &it, argv[0]);
@@ -9975,7 +9975,9 @@ bi_exception_init(CTX *c, int argc, VALUE *argv)
 static VALUE
 bi_pystro_sqrt(CTX *c, int argc, VALUE *argv)
 { (void)argc; double d = py_to_double(c, argv[0]);
-  if (d < 0) py_raise_exc(c, c->EXC_ValueError, "math domain error"); return py_make_float(sqrt(d)); }
+  if (d < 0) py_raise_exc(c, c->EXC_ValueError, "math domain error");
+  return py_make_float(sqrt(d));
+}
 static VALUE
 bi_pystro_sin(CTX *c, int argc, VALUE *argv)
 { (void)argc; return py_make_float(sin(py_to_double(c, argv[0]))); }

@@ -629,6 +629,7 @@ bool py_contains(CTX *c, VALUE container, VALUE v);
 
 // Attribute access.
 VALUE py_getattr(CTX *c, VALUE v, const char *name);
+VALUE py_getattr_optional(CTX *c, VALUE v, const char *name);
 void  py_setattr(CTX *c, VALUE v, const char *name, VALUE val);
 
 // Method-call support: `o.m(...)` resolves to a callable; for instance
