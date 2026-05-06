@@ -22,11 +22,14 @@
 # This matches what users care about for command-line jq usage.
 #
 # Usage:
-#   ruby bench/bench.rb              # both suites
+#   ruby bench/bench.rb              # real + micro suites (default)
 #   ruby bench/bench.rb real         # real suite only
 #   ruby bench/bench.rb micro        # micro suite only
+#   ruby bench/bench.rb big          # 100MB-diverse-data suite
 #   ruby bench/bench.rb fib          # filter benches by name (substring)
 #   BENCH_DEBUG=1 ruby bench/bench.rb # show cmd lines
+#   BENCH_TIMEOUT=120 ruby bench/bench.rb big   # extend timeout
+#   BENCH_ATTEMPTS=1 ruby bench/bench.rb big    # single shot per cell
 #
 # Env:
 #   JQ=path/to/jq      override jq binary
@@ -51,8 +54,8 @@ ENGINES << ['gojq',    [GOJQ_BIN, '-c']]                   if File.executable?(G
 ENGINES << ['nuq int', [NUQ, '-c', '--no-compile']]
 ENGINES << ['nuq AOT', [NUQ, '-c'], { aot: true }]
 
-PER_CELL_TIMEOUT = 30
-ATTEMPTS = 3
+PER_CELL_TIMEOUT = (ENV['BENCH_TIMEOUT'] || '60').to_i
+ATTEMPTS = (ENV['BENCH_ATTEMPTS'] || '3').to_i
 
 # n values for micro benches (stdin scalar)
 MICRO_N = {
@@ -74,6 +77,26 @@ MICRO_N = {
 
 # real benches: all use bench/data/users.json by default
 REAL_INPUT = File.join(__dir__, 'data', 'users.json')
+
+# big benches: ~25 MB-each diverse-shape JSON files in bench/data/big/.
+# Each filter targets ONE file based on its prefix.
+BIG_DATA_DIR = File.join(__dir__, 'data', 'big')
+BIG_INPUTS = {
+  'extract_users'      => 'users_big.json',
+  'sum_active_score'   => 'users_big.json',
+  'deep_followers'     => 'users_big.json',
+  'group_city'         => 'users_big.json',
+  'bulk_update'        => 'users_big.json',
+  'log_error_paths'    => 'logs_big.json',
+  'log_post_avg'       => 'logs_big.json',
+  'log_request_id'     => 'logs_big.json',
+  'tree_numbers'       => 'tree_big.json',
+  'tree_leaf_sum'      => 'tree_big.json',
+  'tree_paths'         => 'tree_big.json',
+  'table_sum_col0'     => 'table_big.json',
+  'table_flag_count'   => 'table_big.json',
+  'table_unique_colors'=> 'table_big.json',
+}
 
 def run_with_timeout(cmd, env, stdin_data: nil, stdin_file: nil, timeout: PER_CELL_TIMEOUT)
   $stderr.puts "  RUN: #{cmd.inspect}  env=#{env.inspect}  stdin=#{stdin_data ? stdin_data.inspect : "<#{stdin_file}>"}" if ENV['BENCH_DEBUG']
@@ -141,7 +164,7 @@ end
 selected = []
 suites = []
 ARGV.each do |a|
-  if %w[real micro].include?(a)
+  if %w[real micro big].include?(a)
     suites << a
   else
     selected << a
@@ -204,6 +227,25 @@ if suites.include?('micro')
                             env_aot, env_neutral)
 end
 
+# Big suite: ~100MB diverse JSON files (4 shapes × ~25MB each).
+# Each filter is mapped to its shape by BIG_INPUTS; filters that
+# aren't present in BIG_INPUTS are skipped.
+big_names = Dir["#{__dir__}/big/*.jq"].map { |p| File.basename(p, '.jq') }.sort
+big_names.select! { |n| selected.any? { |s| n.include?(s) } } unless selected.empty?
+big_names.select! { |n| BIG_INPUTS.key?(n) }
+big_results = []
+if suites.include?('big')
+  unless Dir.exist?(BIG_DATA_DIR) && !Dir["#{BIG_DATA_DIR}/*.json"].empty?
+    warn "big-data files missing — generating bench/data/big/* (this takes ~30s)…"
+    system('ruby', File.join(__dir__, 'data', 'gen_big.rb')) or
+      abort 'gen_big.rb failed'
+  end
+  big_results = run_suite('big', big_names,
+                          nil,
+                          ->(name) { [nil, File.join(BIG_DATA_DIR, BIG_INPUTS[name])] },
+                          env_aot, env_neutral)
+end
+
 # ---- MD table output --------------------------------------------------
 
 def print_md_table(title, results, n_provider)
@@ -253,6 +295,9 @@ print_md_table("Real-world (input: bench/data/users.json, ~1.9 MB / 10k users)",
                real_results, nil)
 print_md_table("Micro-benchmarks (jaq examples/benches; input = scalar n via stdin)",
                micro_results, ->(name) { MICRO_N[name] })
+print_md_table("Big-data (4 shapes × ~25 MB; total ~100 MB — see bench/data/big/)",
+               big_results,
+               ->(name) { BIG_INPUTS[name].sub('_big.json', '') })
 
 puts ''
 puts "## Versions"
