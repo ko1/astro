@@ -1,0 +1,4 @@
+ok SuperSpreadTest test_args
+ok SuperSpreadTest test_kwargs_passthrough
+---
+passed=2 failed=0

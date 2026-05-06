@@ -1701,6 +1701,48 @@ parse_postfix(void)
         if (peek_tok(0)->kind != T_NAME) parse_error("expected method name after super().");
         const char *method = peek_tok(0)->sval;
         tok_pos++;
+        // Lookahead inside the call args for *spread or **kwarg; if either,
+        // fall back to attribute-get + parse_call_args (full kwarg support).
+        size_t paren_save = tok_pos;
+        bool has_spread_or_kw = false;
+        if (peek_tok(0)->kind == T_LPAREN) {
+            int depth = 0;
+            size_t p = tok_pos;
+            while (tok_arr[p].kind != T_EOF && tok_arr[p].kind != T_NEWLINE) {
+                int kk = tok_arr[p].kind;
+                if (kk == T_LPAREN) depth++;
+                else if (kk == T_RPAREN) {
+                    depth--;
+                    if (depth == 0) break;
+                } else if (depth == 1 && (kk == T_STAR || kk == T_STAR_STAR)) {
+                    has_spread_or_kw = true; break;
+                } else if (depth == 1 && kk == T_NAME && tok_arr[p+1].kind == T_ASSIGN) {
+                    has_spread_or_kw = true; break;
+                }
+                p++;
+            }
+        }
+        if (has_spread_or_kw) {
+            // Build super().attr expression, then parse_call_args.
+            NODE *super_obj;
+            if (bare) {
+                if (!cur_class_base) parse_error("super() called outside a class body");
+                super_obj = ALLOC_node_super_obj();
+            } else {
+                super_obj = ALLOC_node_super_obj_explicit(cls_expr, self_expr);
+            }
+            NODE *attr = ALLOC_node_attr_get(super_obj, method);
+            tok_pos = paren_save;  // back to '('
+            NODE *e = parse_call_args(attr);
+            for (;;) {
+                int k = peek_tok(0)->kind;
+                if (k == T_LPAREN) e = parse_call_args(e);
+                else if (k == T_LBRACK) e = parse_subscript(e);
+                else if (k == T_DOT)    e = parse_dot_trailer(e);
+                else break;
+            }
+            return e;
+        }
         expect(T_LPAREN, "'('");
         NODE *args[64];
         int argc = 0;
