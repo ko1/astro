@@ -1,0 +1,6 @@
+ok RecursionLimitTest test_default_limit
+ok RecursionLimitTest test_low_limit_triggers
+ok RecursionLimitTest test_raises_recursion_error
+ok RecursionLimitTest test_set_get
+---
+passed=4 failed=0

@@ -65,9 +65,10 @@ def exc_info():
     return (type(e), e, getattr(e, "__traceback__", None))
 
 def getrecursionlimit():
-    return 1000
+    return __pystro_get_recursion_limit__()
 
 def setrecursionlimit(n):
+    __pystro_set_recursion_limit__(n)
     return None
 
 def getsizeof(obj, default=0):

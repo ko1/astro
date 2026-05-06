@@ -136,6 +136,7 @@ main(int argc, char *argv[])
     c->state = PY_STATE_NORMAL;
     c->current_class = PY_NONE;
     c->method_class = PY_NONE;
+    c->recursion_limit = 1000;
     extern CTX *py_current_ctx;
     py_current_ctx = c;
     install_builtins(c);

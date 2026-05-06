@@ -10665,6 +10665,23 @@ bi_pystro_current_exc(CTX *c, int argc, VALUE *argv)
     return PY_NONE;
 }
 
+static VALUE
+bi_pystro_get_recursion_limit(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc; (void)argv;
+    return py_make_int((int64_t)c->recursion_limit);
+}
+
+static VALUE
+bi_pystro_set_recursion_limit(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    int64_t n = py_int_to_long(c, argv[0]);
+    if (n < 1) py_raise_exc(c, c->EXC_ValueError, "recursion limit must be >= 1");
+    c->recursion_limit = (int)n;
+    return PY_NONE;
+}
+
 // Reinterpret a float as its IEEE-754 bits.  Returns int (may be a
 // bignum for double's 64-bit pattern).
 static VALUE
@@ -11386,6 +11403,12 @@ install_builtins(CTX *c)
     py_global_define(c, "__pystro_exit__",  py_make_builtin("__pystro_exit__",  bi_pystro_exit,  0, 1));
     py_global_define(c, "__pystro_current_exc__",
                      py_make_builtin("__pystro_current_exc__", bi_pystro_current_exc, 0, 0));
+    py_global_define(c, "__pystro_get_recursion_limit__",
+                     py_make_builtin("__pystro_get_recursion_limit__",
+                                     bi_pystro_get_recursion_limit, 0, 0));
+    py_global_define(c, "__pystro_set_recursion_limit__",
+                     py_make_builtin("__pystro_set_recursion_limit__",
+                                     bi_pystro_set_recursion_limit, 1, 1));
     py_global_define(c, "__pystro_float_to_bits__",
                      py_make_builtin("__pystro_float_to_bits__", bi_pystro_float_to_bits, 1, 2));
     py_global_define(c, "__pystro_bits_to_float__",

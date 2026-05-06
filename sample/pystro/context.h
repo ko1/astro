@@ -478,6 +478,7 @@ typedef struct CTX_struct {
     // 1024 frames; deeper recursion just truncates.
     const char *call_stack[1024];
     int         call_top;
+    int         recursion_limit;       // raises RecursionError when exceeded
 } CTX;
 
 extern struct pyobj PY_NONE_OBJ, PY_TRUE_OBJ, PY_FALSE_OBJ;

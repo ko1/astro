@@ -101,6 +101,10 @@ py_apply(CTX *c, VALUE fn, int argc, VALUE *argv)
             VALUE saved_mc = c->method_class;
             struct pyglobals *saved_g = c->globals;
             int saved_call_top = c->call_top;
+            if (UNLIKELY(saved_call_top >= c->recursion_limit)) {
+                py_raise_exc(c, c->EXC_RecursionError,
+                             "maximum recursion depth exceeded");
+            }
             if (saved_call_top < 1024) c->call_stack[c->call_top++] = f->func.name;
             c->env = new_env;
             c->method_class = f->func.defining_class;
