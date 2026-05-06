@@ -1,0 +1,7 @@
+ok ExceptionDunderTest test_cause_explicit
+ok ExceptionDunderTest test_cause_is_none_by_default
+ok ExceptionDunderTest test_context_implicit
+ok ExceptionDunderTest test_suppress_context_default_false
+ok ExceptionDunderTest test_traceback_attr_exists
+---
+passed=5 failed=0

@@ -1095,6 +1095,11 @@ py_raise_exc(CTX *c, VALUE cls, const char *fmt, ...)
     py_setattr(c, inst, "message", msg);
     if (c->current_handling_exc && c->current_handling_exc != PY_NONE)
         py_setattr(c, inst, "__context__", c->current_handling_exc);
+    // CPython always exposes __cause__ / __suppress_context__ /
+    // __context__ — initialise to None for implicit raises so attribute
+    // access is consistent.
+    py_setattr(c, inst, "__cause__", PY_NONE);
+    py_setattr(c, inst, "__suppress_context__", PY_FALSE);
     // Capture a snapshot of the active call stack as a list-of-strings
     // attribute on the exception, so an uncaught exception can show
     // a traceback even though we longjmp away from this point.
@@ -10706,6 +10711,12 @@ bi_exception_init(CTX *c, int argc, VALUE *argv)
     // it on every Exception (matches the .value pattern above and is a
     // no-op for non-SystemExit subclasses).
     py_setattr(c, self, "code", nargs >= 1 ? argv[1] : PY_NONE);
+    // CPython always exposes __cause__ / __context__ / __traceback__ /
+    // __suppress_context__ — initialise to None / False on construction.
+    py_setattr(c, self, "__cause__", PY_NONE);
+    py_setattr(c, self, "__context__", PY_NONE);
+    py_setattr(c, self, "__traceback__", PY_NONE);
+    py_setattr(c, self, "__suppress_context__", PY_FALSE);
     return PY_NONE;
 }
 
