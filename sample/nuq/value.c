@@ -853,6 +853,12 @@ nuq_op_mul_slow(VALUE a, VALUE b)
             int64_t n = (int64_t)d;     /* jq truncates toward zero */
             if (n == 0) return nuq_make_string("", 0);
             struct nuq_obj *oa = NUQ_PTR(str);
+            /* Guard against pathological sizes (jq raises an error). */
+            if ((oa->str.len > 0 && (size_t)n > (size_t)(SIZE_MAX / oa->str.len)) ||
+                (oa->str.len * (size_t)n) > (size_t)(64 * 1024 * 1024)) {
+                nuq_helper_error("Repeat string result too long");
+                return NUQ_NULL;
+            }
             size_t L = oa->str.len * (size_t)n;
             char *buf = (char *)GC_malloc_atomic(L + 1);
             for (int64_t i = 0; i < n; i++) memcpy(buf + i * oa->str.len, oa->str.bytes, oa->str.len);
