@@ -418,14 +418,38 @@ collect_locals_in_range(Scope *s, size_t start_pos, size_t end_pos)
         }
         if (t->kind == T_WITH) {
             // with EXPR as NAME [, EXPR as NAME]* :
-            // Walk the line, registering every `as NAME` we see at top
-            // level (depth 0).  Stop at the colon.
+            // Walk the line, registering every `as NAME` we see.  For the
+            // 3.10+ parenthesised form `with (cm1, cm2 as x):`, the
+            // outer parens are syntactic — don't count them as nesting.
             size_t j = i + 1;
             int paren = 0;
+            // Detect outer parens (followed by `:` after matching `)`).
+            bool outer_parens = false;
+            if (j < end_pos && tok_arr[j].kind == T_LPAREN) {
+                int d = 0;
+                size_t k = j;
+                while (k < end_pos && tok_arr[k].kind != T_NEWLINE) {
+                    int kk = tok_arr[k].kind;
+                    if (kk == T_LPAREN) d++;
+                    else if (kk == T_RPAREN) {
+                        d--;
+                        if (d == 0) {
+                            if (k + 1 < end_pos && tok_arr[k + 1].kind == T_COLON)
+                                outer_parens = true;
+                            break;
+                        }
+                    }
+                    k++;
+                }
+                if (outer_parens) j++;  // skip outer `(`
+            }
             while (j < end_pos && tok_arr[j].kind != T_NEWLINE) {
                 int kk = tok_arr[j].kind;
                 if (kk == T_LPAREN || kk == T_LBRACK || kk == T_LBRACE) paren++;
-                else if (kk == T_RPAREN || kk == T_RBRACK || kk == T_RBRACE) paren--;
+                else if (kk == T_RPAREN || kk == T_RBRACK || kk == T_RBRACE) {
+                    if (outer_parens && paren == 0 && kk == T_RPAREN) break;
+                    paren--;
+                }
                 else if (paren == 0 && kk == T_COLON) break;
                 else if (paren == 0 && kk == T_AS && j + 1 < end_pos
                          && tok_arr[j+1].kind == T_NAME) {
@@ -2657,6 +2681,30 @@ parse_with(void)
 {
     expect(T_WITH, "'with'");
     // Collect (cm_expr, as_name) pairs separated by ','.
+    // Optional parens (3.10+): `with (cm1, cm2 as x): ...`.
+    bool parens = false;
+    // Heuristic: opening `(` followed by an item that could be a
+    // context manager + `as` or `,` or `)` before `:`.
+    if (peek_tok(0)->kind == T_LPAREN) {
+        // Scan to matching `)` and see what follows; if a `:`, it's the
+        // parenthesised with form.
+        int depth = 0;
+        size_t p = tok_pos;
+        for (;;) {
+            int kk = tok_arr[p].kind;
+            if (kk == T_EOF || kk == T_NEWLINE) break;
+            if (kk == T_LPAREN) depth++;
+            else if (kk == T_RPAREN) {
+                depth--;
+                if (depth == 0) {
+                    if (tok_arr[p + 1].kind == T_COLON) parens = true;
+                    break;
+                }
+            }
+            p++;
+        }
+        if (parens) tok_pos++;  // consume `(`
+    }
     struct { NODE *expr; const char *as_name; } items[8];
     int n = 0;
     for (;;) {
@@ -2670,7 +2718,9 @@ parse_with(void)
         }
         n++;
         if (!match_tok(T_COMMA)) break;
+        if (parens && peek_tok(0)->kind == T_RPAREN) break;
     }
+    if (parens) expect(T_RPAREN, "')'");
     NODE *body = parse_suite();
     // Wrap from innermost (last item) to outermost (first item).
     NODE *result = body;

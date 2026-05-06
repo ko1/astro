@@ -1,0 +1,5 @@
+ok ParenWithTest test_no_as
+ok ParenWithTest test_trailing_comma
+ok ParenWithTest test_two_with_as
+---
+passed=3 failed=0
