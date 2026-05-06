@@ -9056,10 +9056,15 @@ bi_format(CTX *c, int argc, VALUE *argv)
             goto pad;
         }
         else iv = (long long)py_to_double(c, v);
-        const char *base_fmt = type_ch == 'd' ? "%lld" :
-                               type_ch == 'b' ? "%lld" :     // handled below
-                               type_ch == 'o' ? "%llo" :
-                               type_ch == 'x' ? "%llx" : "%llX";
+        // For negative values, %llo / %llx interpret as unsigned, which
+        // is wrong for Python (Python uses '-' sign).  Format the
+        // absolute value and prepend '-' if needed.
+        bool was_neg = iv < 0;
+        unsigned long long uv = was_neg ? (unsigned long long)(-iv) : (unsigned long long)iv;
+        const char *abs_fmt = type_ch == 'd' ? "%llu" :
+                              type_ch == 'b' ? "%llu" :     // handled below
+                              type_ch == 'o' ? "%llo" :
+                              type_ch == 'x' ? "%llx" : "%llX";
         if (type_ch == 'b') {
             // C has no %b; do it manually.
             char buf[80]; int p = 0;
@@ -9070,7 +9075,12 @@ bi_format(CTX *c, int argc, VALUE *argv)
             if (iv < 0) body[j++] = '-';
             for (int k = p - 1; k >= 0; k--) body[j++] = buf[k];
             body[j] = '\0';
-        } else snprintf(body, sizeof(body), base_fmt, iv);
+        } else {
+            char tmp[200];
+            snprintf(tmp, sizeof(tmp), abs_fmt, uv);
+            if (was_neg) snprintf(body, sizeof(body), "-%s", tmp);
+            else         snprintf(body, sizeof(body), "%s", tmp);
+        }
     } else if (type_ch == 'f' || type_ch == 'g' || type_ch == 'e' || type_ch == 'E') {
         double d = py_to_double(c, v);
         if (precision >= 0) snprintf(fmt, sizeof(fmt), "%%.%d%c", precision, type_ch);
@@ -9082,13 +9092,32 @@ bi_format(CTX *c, int argc, VALUE *argv)
         else                snprintf(fmt, sizeof(fmt), "%%f%%%%");
         snprintf(body, sizeof(body), fmt, d);
     } else if (type_ch == 's' || type_ch == 0) {
-        VALUE sv = py_to_str(c, v);
-        if (py_is_str(sv)) {
-            size_t L = PY_PTR(sv)->str.len;
-            if (L >= sizeof(body)) L = sizeof(body) - 1;
-            memcpy(body, PY_PTR(sv)->str.chars, L);
-            body[L] = '\0';
-            if (precision >= 0 && (size_t)precision < L) body[precision] = '\0';
+        // No type AND numeric value with sign/width/precision/comma → use 'd'/'g' path.
+        if (type_ch == 0 && (PY_IS_FIXNUM(v) || py_is_bignum(v) || v == PY_TRUE || v == PY_FALSE)
+            && (sign_ch != 0 || comma_sep)) {
+            // Render as decimal int.
+            long long iv = PY_IS_FIXNUM(v) ? PY_FIXVAL(v)
+                          : v == PY_TRUE ? 1 : v == PY_FALSE ? 0 : 0;
+            if (py_is_bignum(v)) {
+                char *bs = mpz_get_str(NULL, 10, PY_PTR(v)->mpz);
+                snprintf(body, sizeof(body), "%s", bs);
+            } else {
+                snprintf(body, sizeof(body), "%lld", iv);
+            }
+            // sign handled in pad path.
+        } else if (type_ch == 0 && py_is_float(v) && (sign_ch != 0 || comma_sep)) {
+            double d = py_to_double(c, v);
+            int prec = precision < 0 ? 6 : precision;
+            snprintf(body, sizeof(body), "%.*g", prec, d);
+        } else {
+            VALUE sv = py_to_str(c, v);
+            if (py_is_str(sv)) {
+                size_t L = PY_PTR(sv)->str.len;
+                if (L >= sizeof(body)) L = sizeof(body) - 1;
+                memcpy(body, PY_PTR(sv)->str.chars, L);
+                body[L] = '\0';
+                if (precision >= 0 && (size_t)precision < L) body[precision] = '\0';
+            }
         }
     } else {
         return py_to_str(c, v);    // unknown type — fall back
@@ -9151,10 +9180,20 @@ bi_format(CTX *c, int argc, VALUE *argv)
             }
         }
         // [+] sign on positive numbers.
-        if (sign_ch == '+' && (type_ch == 'd' || type_ch == 'f' || type_ch == 'g' ||
-                               type_ch == 'e' || type_ch == 'E') && body[0] != '-') {
+        bool is_numeric = (type_ch == 'd' || type_ch == 'f' || type_ch == 'g' ||
+                          type_ch == 'e' || type_ch == 'E' ||
+                          type_ch == 'x' || type_ch == 'X' || type_ch == 'o' || type_ch == 'b' ||
+                          (type_ch == 0 && (PY_IS_FIXNUM(v) || py_is_bignum(v)
+                                            || py_is_float(v) || v == PY_TRUE || v == PY_FALSE)));
+        if (sign_ch == '+' && is_numeric && body[0] != '-') {
             char tmp[260];
             snprintf(tmp, sizeof(tmp), "+%s", body);
+            strncpy(body, tmp, sizeof(body) - 1);
+            body[sizeof(body) - 1] = '\0';
+            bl = strlen(body);
+        } else if (sign_ch == ' ' && is_numeric && body[0] != '-') {
+            char tmp[260];
+            snprintf(tmp, sizeof(tmp), " %s", body);
             strncpy(body, tmp, sizeof(body) - 1);
             body[sizeof(body) - 1] = '\0';
             bl = strlen(body);
@@ -9176,12 +9215,21 @@ bi_format(CTX *c, int argc, VALUE *argv)
             memcpy(out + left, body, bl);
             for (size_t j = 0; j < right; j++) out[left + bl + j] = eff_fill;
         } else { // '>'
-            // For zero-pad with sign-leading number, keep the sign first.
+            // For zero-pad: keep sign and any 0x/0o/0b prefix at the start,
+            // pad zeros between them and the digits.
             int sign_skip = 0;
-            if (zero_pad && bl > 0 && (body[0] == '-' || body[0] == '+')) sign_skip = 1;
-            if (sign_skip) out[0] = body[0];
-            for (size_t j = 0; j < pad; j++) out[sign_skip + j] = eff_fill;
-            memcpy(out + sign_skip + pad, body + sign_skip, bl - sign_skip);
+            if (zero_pad && bl > 0 && (body[0] == '-' || body[0] == '+' || body[0] == ' '))
+                sign_skip = 1;
+            int prefix_len = 0;
+            if (zero_pad && (size_t)(sign_skip + 1) < bl && body[sign_skip] == '0'
+                && (body[sign_skip + 1] == 'x' || body[sign_skip + 1] == 'X'
+                    || body[sign_skip + 1] == 'o' || body[sign_skip + 1] == 'b')) {
+                prefix_len = 2;
+            }
+            int head = sign_skip + prefix_len;
+            for (int i = 0; i < head; i++) out[i] = body[i];
+            for (size_t j = 0; j < pad; j++) out[head + j] = eff_fill;
+            memcpy(out + head + pad, body + head, bl - head);
         }
         out[width] = '\0';
         return py_make_str_take(out, (size_t)width);

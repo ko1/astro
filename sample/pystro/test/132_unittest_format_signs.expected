@@ -1,0 +1,8 @@
+ok FormatSignTest test_neg_bin
+ok FormatSignTest test_neg_hex
+ok FormatSignTest test_neg_oct
+ok FormatSignTest test_plus
+ok FormatSignTest test_space
+ok FormatSignTest test_zero_pad_with_alt_form
+---
+passed=6 failed=0
