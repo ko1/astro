@@ -10237,13 +10237,42 @@ ns_restore(CTX *c, struct ns_save *s)
 static VALUE
 bi_eval(CTX *c, int argc, VALUE *argv)
 {
-    if (!py_is_str(argv[0])) py_raise_exc(c, c->EXC_TypeError, "eval: code must be str");
-    size_t L = PY_PTR(argv[0])->str.len;
+    const char *code_chars = NULL;
+    size_t L = 0;
+    if (py_is_str(argv[0])) {
+        code_chars = PY_PTR(argv[0])->str.chars;
+        L = PY_PTR(argv[0])->str.len;
+    } else if (py_is_bytes(argv[0]) || py_is_bytearray(argv[0])) {
+        code_chars = PY_PTR(argv[0])->str.chars;
+        L = PY_PTR(argv[0])->str.len;
+    } else {
+        py_raise_exc(c, c->EXC_TypeError, "eval: code must be str or bytes");
+    }
     char *src = (char *)GC_malloc_atomic(L + 2);
-    memcpy(src, PY_PTR(argv[0])->str.chars, L);
+    memcpy(src, code_chars, L);
     src[L] = '\n'; src[L+1] = '\0';
-    tokenize(src, "<eval>");
-    NODE *expr = parse_eval_expr();
+    extern void *lexer_save_alloc(void);
+    extern void  lexer_restore_free(void *s);
+    extern void *parser_save_alloc(void);
+    extern void  parser_restore_free(void *s);
+    extern jmp_buf *parse_error_jmp;
+    extern char parse_error_msg[];
+    void *lexsave = lexer_save_alloc();
+    void *parsesave = parser_save_alloc();
+    jmp_buf jb;
+    jmp_buf *saved_jmp = parse_error_jmp;
+    parse_error_jmp = &jb;
+    NODE *expr = NULL;
+    if (setjmp(jb) == 0) {
+        tokenize(src, "<eval>");
+        expr = parse_eval_expr();
+    }
+    parse_error_jmp = saved_jmp;
+    lexer_restore_free(lexsave);
+    parser_restore_free(parsesave);
+    if (!expr) {
+        py_raise_exc(c, c->EXC_SyntaxError, "%s", parse_error_msg);
+    }
     struct ns_save sg = { 0 }, sl = { 0 };
     if (argc >= 2) ns_inject(c, argv[1], &sg);
     if (argc >= 3) ns_inject(c, argv[2], &sl);
@@ -10308,8 +10337,28 @@ bi_exec(CTX *c, int argc, VALUE *argv)
     char *src = (char *)GC_malloc_atomic(L + 2);
     memcpy(src, code_chars, L);
     src[L] = '\n'; src[L+1] = '\0';
-    tokenize(src, "<exec>");
-    NODE *body = parse_program();
+    extern void *lexer_save_alloc(void);
+    extern void  lexer_restore_free(void *s);
+    extern void *parser_save_alloc(void);
+    extern void  parser_restore_free(void *s);
+    extern jmp_buf *parse_error_jmp;
+    extern char parse_error_msg[];
+    void *lexsave = lexer_save_alloc();
+    void *parsesave = parser_save_alloc();
+    jmp_buf jb;
+    jmp_buf *saved_jmp = parse_error_jmp;
+    parse_error_jmp = &jb;
+    NODE *body = NULL;
+    if (setjmp(jb) == 0) {
+        tokenize(src, "<exec>");
+        body = parse_program();
+    }
+    parse_error_jmp = saved_jmp;
+    lexer_restore_free(lexsave);
+    parser_restore_free(parsesave);
+    if (!body) {
+        py_raise_exc(c, c->EXC_SyntaxError, "%s", parse_error_msg);
+    }
     struct ns_save sg = { 0 }, sl = { 0 };
     if (argc >= 2) ns_inject(c, argv[1], &sg);
     if (argc >= 3) ns_inject(c, argv[2], &sl);

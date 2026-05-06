@@ -176,11 +176,28 @@ match_tok(int kind)
     return false;
 }
 
+// If non-NULL, parse_error longjmps to this jmp_buf instead of exit(1)
+// — used by exec()/eval()/compile() to surface parse errors as
+// SyntaxError exceptions to the calling Python code.
+#include <setjmp.h>
+jmp_buf *parse_error_jmp = NULL;
+char parse_error_msg[1024] = {0};
+int parse_error_line = 0;
+
+
 __attribute__((noreturn,format(printf,1,2)))
 static void
 parse_error(const char *fmt, ...)
 {
     Tok *t = peek_tok(0);
+    if (parse_error_jmp) {
+        // Surface to caller as a SyntaxError.
+        va_list ap; va_start(ap, fmt);
+        vsnprintf(parse_error_msg, sizeof(parse_error_msg), fmt, ap);
+        va_end(ap);
+        parse_error_line = t ? t->line : 0;
+        longjmp(*parse_error_jmp, 1);
+    }
     fprintf(stderr, "pystro: %s:%d: parse error: ",
             src_filename ? src_filename : "<input>", t ? t->line : 0);
     va_list ap; va_start(ap, fmt);
