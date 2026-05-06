@@ -3225,7 +3225,11 @@ py_iter_next(CTX *c, struct py_iter *it, VALUE *out)
 // in a per-type method registry.
 // ---------------------------------------------------------------------------
 
-struct type_method { const char *name; py_builtin_fn fn; int min_argc, max_argc; };
+struct type_method {
+    const char *name; py_builtin_fn fn;
+    int min_argc, max_argc;
+    int is_property;     // 1 → invoke immediately on attr access (no method binding)
+};
 
 // Forward decls.
 static struct type_method str_methods[];
@@ -3266,8 +3270,15 @@ py_builtin_method(CTX *c, VALUE recv, const char *name)
     else if (py_is_float(recv))    tbl = float_methods;
     else if (py_is_complex(recv))  tbl = complex_methods;
     else { (void)c; return PY_NONE; }
-    for (int i = 0; tbl[i].name; i++)
-        if (strcmp(tbl[i].name, name) == 0) return make_builtin_bound(recv, &tbl[i]);
+    for (int i = 0; tbl[i].name; i++) {
+        if (strcmp(tbl[i].name, name) == 0) {
+            if (tbl[i].is_property) {
+                VALUE av[1] = { recv };
+                return tbl[i].fn(c, 1, av);
+            }
+            return make_builtin_bound(recv, &tbl[i]);
+        }
+    }
     return PY_NONE;
 }
 
@@ -7388,17 +7399,17 @@ static VALUE
 im_conjugate(CTX *c, int argc, VALUE *argv) { (void)c; (void)argc; return argv[0]; }
 
 static struct type_method int_methods[] = {
-    { "bit_length",  im_bit_length, 1, 1 },
-    { "bit_count",   im_bit_count,  1, 1 },
-    { "to_bytes",    im_to_bytes_method, 2, 3 },
-    { "__index__",   im_int_index,  1, 1 },
-    { "__int__",     im_int_index,  1, 1 },
-    { "real",        im_real,       1, 1 },
-    { "imag",        im_imag,       1, 1 },
-    { "numerator",   im_numerator,  1, 1 },
-    { "denominator", im_denominator,1, 1 },
-    { "conjugate",   im_conjugate,  1, 1 },
-    { NULL, NULL, 0, 0 }
+    { "bit_length",  im_bit_length, 1, 1, 0 },
+    { "bit_count",   im_bit_count,  1, 1, 0 },
+    { "to_bytes",    im_to_bytes_method, 2, 3, 0 },
+    { "__index__",   im_int_index,  1, 1, 0 },
+    { "__int__",     im_int_index,  1, 1, 0 },
+    { "real",        im_real,       1, 1, 1 },
+    { "imag",        im_imag,       1, 1, 1 },
+    { "numerator",   im_numerator,  1, 1, 1 },
+    { "denominator", im_denominator,1, 1, 1 },
+    { "conjugate",   im_conjugate,  1, 1, 0 },
+    { NULL, NULL, 0, 0, 0 }
 };
 
 // float methods
@@ -7483,13 +7494,13 @@ fm_as_integer_ratio(CTX *c, int argc, VALUE *argv)
 }
 
 static struct type_method float_methods[] = {
-    { "is_integer", fm_is_integer, 1, 1 },
-    { "hex",        fm_hex,        1, 1 },
-    { "as_integer_ratio", fm_as_integer_ratio, 1, 1 },
-    { "real",       fm_real_f,     1, 1 },
-    { "imag",       fm_imag_f,     1, 1 },
-    { "conjugate",  fm_conj_f,     1, 1 },
-    { NULL, NULL, 0, 0 }
+    { "is_integer", fm_is_integer, 1, 1, 0 },
+    { "hex",        fm_hex,        1, 1, 0 },
+    { "as_integer_ratio", fm_as_integer_ratio, 1, 1, 0 },
+    { "real",       fm_real_f,     1, 1, 1 },
+    { "imag",       fm_imag_f,     1, 1, 1 },
+    { "conjugate",  fm_conj_f,     1, 1, 0 },
+    { NULL, NULL, 0, 0, 0 }
 };
 
 // complex methods
@@ -7504,10 +7515,10 @@ cm_conj(CTX *c, int argc, VALUE *argv)
     return py_make_complex(PY_PTR(argv[0])->cpx.re, -PY_PTR(argv[0])->cpx.im);
 }
 static struct type_method complex_methods[] = {
-    { "real",      cm_real, 1, 1 },
-    { "imag",      cm_imag, 1, 1 },
-    { "conjugate", cm_conj, 1, 1 },
-    { NULL, NULL, 0, 0 }
+    { "real",      cm_real, 1, 1, 1 },
+    { "imag",      cm_imag, 1, 1, 1 },
+    { "conjugate", cm_conj, 1, 1, 0 },
+    { NULL, NULL, 0, 0, 0 }
 };
 
 // tuple methods (read-only)

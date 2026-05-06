@@ -4,7 +4,10 @@ ok ComplexParseTest test_paren_form
 ok ComplexParseTest test_pure_imag
 ok ComplexParseTest test_pure_real
 ok ComplexParseTest test_real_imag
+ok IntComplexAttrTest test_complex_real_imag
+ok IntComplexAttrTest test_float_real_imag
 ok IntComplexAttrTest test_int_conjugate
-ok IntComplexAttrTest test_int_real_imag_callable
+ok IntComplexAttrTest test_int_numerator_denominator
+ok IntComplexAttrTest test_int_real_imag_property
 ---
-passed=8 failed=0
+passed=11 failed=0
