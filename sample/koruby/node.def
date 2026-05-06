@@ -1096,6 +1096,13 @@ node_splat_to_ary(CTX * restrict c, NODE * restrict n, NODE *expr)
             VALUE r = korb_funcall(c, v, korb_intern("to_a"), 0, NULL);
             if (c->state != KORB_NORMAL) return Qnil;
             if (BUILTIN_TYPE(r) == T_ARRAY) return r;
+            /* CRuby: if to_a returns nil, treat the value as a single
+             * element array.  Other non-Array results are TypeError. */
+            if (NIL_P(r)) {
+                VALUE a = korb_ary_new_capa(1);
+                korb_ary_push(a, v);
+                return a;
+            }
             VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
             korb_raise(c, (struct korb_class *)eT,
                        "can't convert to Array (returned non-Array)");
@@ -1124,6 +1131,24 @@ node_ary_aget_neg(CTX * restrict c, NODE * restrict n, NODE *ary_node, uint32_t 
     long len = korb_ary_len(a);
     long idx = len - (long)neg_offset;
     if (idx < 0) return Qnil;
+    return korb_ary_aref(a, idx);
+}
+
+/* For multi-assign trailing target with rest: rights[i] = ary[max(lefts + i,
+ * len - rights + i)]; nil if past end.  Matches CRuby semantics where
+ * rights fill from the left (after lefts) when there aren't enough
+ * elements to satisfy lefts + rights.  Without this, `*a, b, c = [1]`
+ * would assign c=1, b=nil — CRuby gives b=1, c=nil. */
+NODE_DEF
+node_ary_aget_right(CTX * restrict c, NODE * restrict n, NODE *ary_node, uint32_t lefts, uint32_t rights, uint32_t i)
+{
+    VALUE a = EA(c, ary_node);
+    if (BUILTIN_TYPE(a) != T_ARRAY) return Qnil;
+    long len = korb_ary_len(a);
+    long left_based = (long)lefts + (long)i;
+    long right_based = len - (long)rights + (long)i;
+    long idx = left_based > right_based ? left_based : right_based;
+    if (idx < 0 || idx >= len) return Qnil;
     return korb_ary_aref(a, idx);
 }
 

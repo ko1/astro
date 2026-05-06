@@ -1951,8 +1951,8 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                       }
                   }
                   for (uint32_t i = 0; i < rights_n; i++) {
-                      uint32_t neg = rights_n - i;
-                      NODE *get = ALLOC_node_ary_aget_neg(ALLOC_node_lvar_get(arr_slot), neg);
+                      NODE *get = ALLOC_node_ary_aget_right(
+                          ALLOC_node_lvar_get(arr_slot), lefts_n, rights_n, i);
                       pm_node_t *t = mt->rights.nodes[i];
                       NODE *as = NULL;
                       if (PM_NODE_TYPE_P(t, PM_LOCAL_VARIABLE_TARGET_NODE)) {
@@ -2960,10 +2960,12 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
               }
               /* `*` with no name: discard. */
           }
-          /* rights: ary[len - rights_n + i] = ary[-(rights_n - i)] */
+          /* rights: when len >= lefts + rights, take from end (ary[len-rights+i]);
+           * otherwise CRuby fills from start after lefts (ary[lefts+i]) and
+           * pads with nil at the end. */
           for (uint32_t i = 0; i < rights_n; i++) {
-              uint32_t neg_offset = rights_n - i;
-              NODE *get = ALLOC_node_ary_aget_neg(ALLOC_node_lvar_get(tmp_slot), neg_offset);
+              NODE *get = ALLOC_node_ary_aget_right(
+                  ALLOC_node_lvar_get(tmp_slot), lefts_n, rights_n, i);
               NODE *assign = BUILD_TARGET_ASSIGN(n->rights.nodes[i], get);
               if (assign) chain = ALLOC_node_seq(chain, assign);
           }
@@ -3139,8 +3141,71 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                * would walk the class chain to verify a super exists). */
               return ALLOC_node_frozen_str_lit("super", 5);
             case PM_INTEGER_NODE: case PM_FLOAT_NODE: case PM_STRING_NODE:
-            case PM_SYMBOL_NODE: case PM_ARRAY_NODE: case PM_HASH_NODE:
+            case PM_SYMBOL_NODE:
               return ALLOC_node_frozen_str_lit("expression", 10);
+            case PM_ARRAY_NODE: case PM_HASH_NODE: {
+              /* Container literal: defined?([a, b]) returns "expression"
+               * iff every element's defined? result is non-nil; otherwise
+               * nil.  Walk elements; the recursive check is approximate —
+               * we treat a CALL_NODE (method call) as defined iff a method
+               * with that name exists on the receiver, otherwise nil.
+               * For other element types we fall back to "expression". */
+              size_t cnt;
+              pm_node_t **elems = NULL;
+              if (PM_NODE_TYPE_P(expr, PM_ARRAY_NODE)) {
+                  pm_array_node_t *an = (pm_array_node_t *)expr;
+                  cnt = an->elements.size; elems = an->elements.nodes;
+              } else {
+                  pm_hash_node_t *hn = (pm_hash_node_t *)expr;
+                  cnt = hn->elements.size; elems = hn->elements.nodes;
+              }
+              /* Cheap pre-scan: if any element is a method-style CALL_NODE
+               * with no receiver and no args (variable-or-method shape),
+               * route through respond_to? on self. */
+              NODE *result = ALLOC_node_frozen_str_lit("expression", 10);
+              for (size_t ei = 0; ei < cnt; ei++) {
+                  pm_node_t *e = elems[ei];
+                  /* Only handle the common variable-or-method-name case;
+                   * other element shapes (literals, defined locals) are
+                   * already-defined and don't change the result. */
+                  if (PM_NODE_TYPE_P(e, PM_CALL_NODE)) {
+                      pm_call_node_t *cn = (pm_call_node_t *)e;
+                      if (!cn->receiver && (!cn->arguments || cn->arguments->arguments.size == 0)
+                          && !cn->block) {
+                          /* defined?(name) on bare identifier: respond_to?(:name, true) */
+                          ID mname = intern_constant(tc->parser, cn->name);
+                          uint32_t ai = inc_arg_index(tc);
+                          inc_arg_index(tc); rewind_arg_index(tc, ai);
+                          struct method_cache *mc = alloc_method_cache();
+                          NODE *self_node = ALLOC_node_self();
+                          NODE *prep = ALLOC_node_seq(
+                              ALLOC_node_lvar_set(ai, ALLOC_node_sym_lit(mname)),
+                              ALLOC_node_lvar_set(ai + 1, ALLOC_node_true()));
+                          NODE *check = ALLOC_node_method_call(self_node,
+                                          korb_intern("respond_to?"), 2, ai, mc);
+                          NODE *guarded = ALLOC_node_seq(prep, check);
+                          result = ALLOC_node_if(guarded, result, ALLOC_node_nil());
+                      }
+                  } else if (PM_NODE_TYPE_P(e, PM_CONSTANT_READ_NODE)) {
+                      pm_constant_read_node_t *cr = (pm_constant_read_node_t *)e;
+                      ID cname = intern_constant(tc->parser, cr->name);
+                      uint32_t ai = inc_arg_index(tc);
+                      rewind_arg_index(tc, ai);
+                      struct method_cache *mc = alloc_method_cache();
+                      /* Object.const_defined?(:Name) — Object is the
+                       * global namespace; lexical-scope checks would
+                       * be more accurate but for rubyspec's array-of-
+                       * constants test this is enough. */
+                      NODE *recv = ALLOC_node_const_get(korb_intern("Object"));
+                      NODE *prep = ALLOC_node_lvar_set(ai, ALLOC_node_sym_lit(cname));
+                      NODE *check = ALLOC_node_method_call(recv,
+                                      korb_intern("const_defined?"), 1, ai, mc);
+                      NODE *guarded = ALLOC_node_seq(prep, check);
+                      result = ALLOC_node_if(guarded, result, ALLOC_node_nil());
+                  }
+              }
+              return result;
+            }
             case PM_LOCAL_VARIABLE_READ_NODE:
               /* lvars are scope-resolved at parse time; always defined. */
               return ALLOC_node_frozen_str_lit("local-variable", 14);
@@ -3244,6 +3309,32 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                     case PM_LOCAL_VARIABLE_READ_NODE:
                       /* Always defined → "method". */
                       return ALLOC_node_frozen_str_lit("method", 6);
+                    case PM_CALL_NODE: {
+                        /* defined?(!undefined_method): receiver-less zero-arg
+                         * call to a name that's not a real method on self
+                         * — should return nil.  Use respond_to?(:name, true)
+                         * at runtime. */
+                        pm_call_node_t *icn = (pm_call_node_t *)inner;
+                        if (!icn->receiver
+                            && (!icn->arguments || icn->arguments->arguments.size == 0)
+                            && !icn->block) {
+                            ID mname = intern_constant(tc->parser, icn->name);
+                            uint32_t ai = inc_arg_index(tc);
+                            inc_arg_index(tc); rewind_arg_index(tc, ai);
+                            struct method_cache *mc = alloc_method_cache();
+                            NODE *self_node = ALLOC_node_self();
+                            NODE *prep = ALLOC_node_seq(
+                                ALLOC_node_lvar_set(ai, ALLOC_node_sym_lit(mname)),
+                                ALLOC_node_lvar_set(ai + 1, ALLOC_node_true()));
+                            NODE *check = ALLOC_node_method_call(self_node,
+                                            korb_intern("respond_to?"), 2, ai, mc);
+                            NODE *guarded = ALLOC_node_seq(prep, check);
+                            return ALLOC_node_if(guarded,
+                                ALLOC_node_frozen_str_lit("method", 6),
+                                ALLOC_node_nil());
+                        }
+                        break;
+                    }
                     default: break;
                   }
                   /* Generic: just return "method" (assume defined). */
@@ -3266,10 +3357,25 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
               uint32_t ai = inc_arg_index(tc);
               inc_arg_index(tc); rewind_arg_index(tc, ai);
               struct method_cache *mc = alloc_method_cache();
-              NODE *karg = ALLOC_node_lvar_set(ai, ALLOC_node_sym_lit(method_name));
-              NODE *check = ALLOC_node_seq(karg,
+              /* For receiver-less calls, defined?(name) sees private and
+               * protected methods on self; pass true as the second arg.
+               * For explicit receivers, only public visibility counts —
+               * respond_to?(name) (default include_private=false). */
+              bool include_priv = (cn->receiver == NULL);
+              NODE *prep;
+              int rt_argc;
+              if (include_priv) {
+                  prep = ALLOC_node_seq(
+                      ALLOC_node_lvar_set(ai, ALLOC_node_sym_lit(method_name)),
+                      ALLOC_node_lvar_set(ai + 1, ALLOC_node_true()));
+                  rt_argc = 2;
+              } else {
+                  prep = ALLOC_node_lvar_set(ai, ALLOC_node_sym_lit(method_name));
+                  rt_argc = 1;
+              }
+              NODE *check = ALLOC_node_seq(prep,
                   ALLOC_node_method_call(recv_node, korb_intern("respond_to?"),
-                                          1, ai, mc));
+                                          rt_argc, ai, mc));
               return ALLOC_node_if(check,
                                     ALLOC_node_frozen_str_lit("method", 6),
                                     ALLOC_node_nil());
