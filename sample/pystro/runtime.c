@@ -10823,11 +10823,56 @@ bi_breakpoint(CTX *c, int argc, VALUE *argv)
 
 // `compile(source, filename, mode)` — pystro doesn't expose a syntax
 // tree object; return the source string for `exec` / `eval` to re-tokenize.
+// We DO try to parse the source so SyntaxError surfaces here (CPython's
+// behaviour) rather than later inside exec/eval.
 static VALUE
 bi_compile(CTX *c, int argc, VALUE *argv)
 {
-    (void)c; (void)argc;
-    return argv[0];     // pass-through; eval/exec accept str directly
+    (void)argc;
+    const char *code_chars = NULL;
+    size_t L = 0;
+    if (py_is_str(argv[0])) {
+        code_chars = PY_PTR(argv[0])->str.chars;
+        L = PY_PTR(argv[0])->str.len;
+    } else if (py_is_bytes(argv[0]) || py_is_bytearray(argv[0])) {
+        code_chars = PY_PTR(argv[0])->str.chars;
+        L = PY_PTR(argv[0])->str.len;
+    } else {
+        return argv[0];        // unknown type — pass through
+    }
+    const char *mode = "exec";
+    if (argc >= 3 && py_is_str(argv[2])) mode = PY_PTR(argv[2])->str.chars;
+    char *src = (char *)GC_malloc_atomic(L + 2);
+    memcpy(src, code_chars, L);
+    src[L] = '\n'; src[L+1] = '\0';
+    extern void *lexer_save_alloc(void);
+    extern void  lexer_restore_free(void *s);
+    extern void *parser_save_alloc(void);
+    extern void  parser_restore_free(void *s);
+    extern jmp_buf *parse_error_jmp;
+    extern char parse_error_msg[];
+    void *lexsave = lexer_save_alloc();
+    void *parsesave = parser_save_alloc();
+    jmp_buf jb;
+    jmp_buf *saved_jmp = parse_error_jmp;
+    parse_error_jmp = &jb;
+    bool ok = false;
+    if (setjmp(jb) == 0) {
+        tokenize(src, "<compile>");
+        if (strcmp(mode, "eval") == 0) {
+            (void)parse_eval_expr();
+        } else {
+            (void)parse_program();
+        }
+        ok = true;
+    }
+    parse_error_jmp = saved_jmp;
+    lexer_restore_free(lexsave);
+    parser_restore_free(parsesave);
+    if (!ok) {
+        py_raise_exc(c, c->EXC_SyntaxError, "%s", parse_error_msg);
+    }
+    return argv[0];
 }
 
 // Minimal `format(value, spec)` — handles the common f-string format
