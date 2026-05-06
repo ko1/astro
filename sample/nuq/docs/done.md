@@ -106,7 +106,26 @@ oracle として期待出力を計算** する微分テスト。jq との挙動�
 - `@sh` — シングルクォートで囲んで shell エスケープ
 - `@base64` / `@base64d` — Base64 encode / decode
 
-## 組み込み関数 (100+)
+## jq 公式テストの compat スコア
+
+```
+$ make jqtest
+total:   526
+pass:    290  (55.1%)
+fail:    236
+```
+
+`tests/jq.test` を JSON 値ベースで比較。残る fail の大半は
+- destructuring pattern (`as {a, b: [$c, {$d}]}`)
+- `?//` alternative pattern
+- 真の regex (`match` / `capture` / `scan`)
+- `$__loc__` / `modulemeta` などの内省系
+- `have_decnum` (decimal 算術) のような niche 機能
+
+文字列フォーマット差 (jq の `` vs nuq の `\r`) も多少あり。
+詳細カテゴリは `make jqtest` 出力末尾参照。
+
+## 組み込み関数 (140+)
 
 ### 0 引数
 | グループ | 名前 |

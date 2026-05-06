@@ -26,6 +26,12 @@ $(NODE_GENFILES): node.def nuq_gen.rb ../../lib/astrogen.rb
 test: nuq
 	ruby test/run_tests.rb
 
+# Run jq's official tests/jq.test against nuq (downloads on first
+# use to /tmp/claude/jq.test or JQ_TESTFILE).  Tells you nuq's
+# compatibility score with jq's master test suite.
+jqtest: nuq
+	ruby test/run_jq_official.rb
+
 bench: nuq
 	ruby bench/bench.rb
 
@@ -36,4 +42,4 @@ clean:
 distclean: clean
 	rm -rf code_store
 
-.PHONY: all test bench clean distclean
+.PHONY: all test jqtest bench clean distclean

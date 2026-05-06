@@ -20,7 +20,8 @@ ASTro 本体は [`../../docs/idea.md`](../../docs/idea.md)。
 
 ```sh
 make            # nuq バイナリ
-make test       # test/*.test 338 件 (うち 157 件は real jq との差分テスト)
+make test       # test/*.test 373 件 (うち 157 件は real jq との差分テスト、3 skip)
+make jqtest     # jq 公式 tests/jq.test を nuq に通す compat スコア
 
 echo '{"foo": [1,2,3]}'           | ./nuq '.foo | map(. * 2)'
 echo '{"users":[{"a":30},{"a":25}]}' | ./nuq -c '.users | map(select(.a > 27))'
