@@ -417,6 +417,9 @@ typedef struct CTX_struct {
     VALUE EXC_ChildProcessError;
     VALUE EXC_EOFError;
     VALUE EXC_StopAsyncIteration;
+    VALUE EXC_UnboundLocalError;
+    VALUE EXC_SystemError;
+    VALUE EXC_PendingDeprecationWarning;
 
 #define PYSTRO_EXC_LIST(X) \
     X(BaseException) X(Exception) X(SystemExit) X(KeyboardInterrupt) \
@@ -425,7 +428,7 @@ typedef struct CTX_struct {
     X(FloatingPointError) X(AssertionError) X(AttributeError) \
     X(BufferError) X(EOFError) X(ImportError) X(ModuleNotFoundError) \
     X(LookupError) X(IndexError) X(KeyError) X(MemoryError) \
-    X(NameError) X(RuntimeError) X(NotImplementedError) X(RecursionError) \
+    X(NameError) X(UnboundLocalError) X(SystemError) X(RuntimeError) X(NotImplementedError) X(RecursionError) \
     X(SyntaxError) X(IndentationError) X(TabError) \
     X(TypeError) X(ValueError) X(UnicodeError) X(UnicodeDecodeError) \
     X(UnicodeEncodeError) X(ReferenceError) X(OSError) X(FileNotFoundError) \

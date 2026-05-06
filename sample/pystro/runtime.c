@@ -10792,6 +10792,9 @@ install_builtins(CTX *c)
     c->EXC_TypeError        = py_make_class("TypeError",        c->EXC_Exception, true);
     c->EXC_ValueError       = py_make_class("ValueError",       c->EXC_Exception, true);
     c->EXC_NameError        = py_make_class("NameError",        c->EXC_Exception, true);
+    c->EXC_UnboundLocalError = py_make_class("UnboundLocalError", c->EXC_NameError, true);
+    c->EXC_SystemError       = py_make_class("SystemError",      c->EXC_Exception, true);
+    c->EXC_PendingDeprecationWarning = py_make_class("PendingDeprecationWarning", c->EXC_Exception, true);
     c->EXC_LookupError       = py_make_class("LookupError",       c->EXC_Exception, true);
     c->EXC_IndexError       = py_make_class("IndexError",       c->EXC_LookupError, true);
     c->EXC_KeyError         = py_make_class("KeyError",         c->EXC_LookupError, true);
@@ -10877,6 +10880,8 @@ install_builtins(CTX *c)
     py_global_define(c, "IndentationError",     c->EXC_IndentationError);
     py_global_define(c, "TabError",             c->EXC_TabError);
     py_global_define(c, "EOFError",             c->EXC_EOFError);
+    py_global_define(c, "UnboundLocalError",    c->EXC_UnboundLocalError);
+    py_global_define(c, "SystemError",          c->EXC_SystemError);
     py_global_define(c, "__pystro_del__",   py_make_builtin("__pystro_del__", bi_pystro_del, 2, 2));
     py_global_define(c, "__pystro_yield_from__", py_make_builtin("__pystro_yield_from__", bi_pystro_yield_from, 1, 1));
     py_global_define(c, "__pystro_pos__", py_make_builtin("__pystro_pos__", bi_pystro_pos, 1, 1));
