@@ -831,7 +831,11 @@ nuq_reduce_eval(CTX *c, struct Node *src, uint32_t var_id, struct Node *init, st
             c->input = acc;
             EMIT up = EVAL(c, update);
             nuq_var_pop(c, v_top);
-            if (c->error != NUQ_NULL) { c->input = saved_input; return EMIT_EMPTY; }
+            if (c->error != NUQ_NULL) {
+                c->input = saved_input;
+                c->pool_top = outer_top;
+                return EMIT_EMPTY;
+            }
             if (up.count > 0) acc = up.items[up.count - 1];
             c->pool_top = t1;
         }
@@ -2456,6 +2460,16 @@ setpath_recurse(VALUE v, VALUE *keys, size_t cnt, VALUE new_val)
     bool key_is_str = NUQ_IS_PTR(k) && NUQ_PTR(k)->type == NUQ_T_STRING;
     bool key_is_int = NUQ_IS_FIX(k);
     if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_NULL) {
+        if (key_is_int) {
+            int64_t idx0 = NUQ_FIX_VAL(k);
+            /* Auto-vivify with negative index is invalid in jq. */
+            if (idx0 < 0) {
+                if (nuq_active_ctx && nuq_active_ctx->error == NUQ_NULL)
+                    nuq_active_ctx->error = nuq_make_string(
+                        "Out of bounds negative array index", 34);
+                return v;
+            }
+        }
         v = key_is_str ? nuq_make_object(4) : nuq_make_array(0);
     }
     if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_OBJECT) {
@@ -3449,22 +3463,26 @@ path_dfs(CTX *c, struct Node **steps, size_t step_cnt, size_t k,
         pu->cur_len--;
         return;
     }
-    /* `first` / `last` as path components — equivalent to `.[0]` / `.[-1]`
-     * with auto-vivify on null. */
+    /* `first` / `last` as path components — equivalent to `.[0]` / `.[-1]`.
+     * jq emits the literal int (0 for first, -1 for last) so a later
+     * setpath of -1 properly errors. */
     if (step->head.kind == &kind_node_b_first0 ||
         step->head.kind == &kind_node_b_last0) {
+        bool is_first = (step->head.kind == &kind_node_b_first0);
+        int64_t lit_idx = is_first ? 0 : -1;
         if (!(NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_ARRAY)) {
+            /* Apply `last` on null/non-array yields error in jq. */
             c->error = nuq_make_string("Out of bounds negative array index", 34);
             return;
         }
         struct nuq_obj *o = NUQ_PTR(v);
-        int64_t idx = (step->head.kind == &kind_node_b_first0) ? 0 : (int64_t)o->arr.len - 1;
-        if (idx < 0) {
+        if (!is_first && o->arr.len == 0) {
             c->error = nuq_make_string("Out of bounds negative array index", 34);
             return;
         }
-        VALUE child = o->arr.items[idx];
-        path_push(pu, nuq_make_int(idx));
+        size_t real_idx = is_first ? 0 : o->arr.len - 1;
+        VALUE child = o->arr.items[real_idx];
+        path_push(pu, nuq_make_int(lit_idx));
         path_dfs(c, steps, step_cnt, k + 1, child, pu);
         pu->cur_len--;
         return;
