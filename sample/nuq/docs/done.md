@@ -111,24 +111,23 @@ oracle として期待出力を計算** する微分テスト。jq との挙動�
 ```
 $ make jqtest
 total:   526
-pass:    477  (90.7%)
-fail:     49
+pass:    490  (93.2%)
+fail:     36
 ```
 
 `tests/jq.test` を JSON 値ベースで比較。残る fail のカテゴリは
 
 - regex 系 (`match` / `capture` / `scan` / `sub` / `gsub`) — 別実装が
   必要 (`sample/astrogre` 完成待ち)
-- `have_decnum` / `9E+999999999` のような任意精度十進演算 (9 件)
 - `import` / `include` / `module` / `modulemeta` (10 件) — module
   loader 未実装
-- 64-bit float 精度限界 (`13911860366432393 - 10`) (5 件)
 - `limit(N; ., error)` / `first(...)` / `nth(...)` / `any` / `all` の
   lazy 評価 — 現在 generator を eager に展開するためエラーが
   伝播してしまう (7 件)
 - `tojson | "<skipped: too deep>"` などの深さ制限マーカー (3 件)
 - 詳細パーサ・エラーメッセージ位置情報 (3 件)
-- jq の独自 `inf%inf` 値などの細部 (2 件)
+- jq の独自 `inf%inf` 値などの細部 / decnum 仕様差 (~5 件)
+- 複雑なネストクロージャ (`def f(x): def g: x; g`) のごく一部 (2 件)
 
 詳細は `make jqtest` 出力末尾の `failure categories` を参照。
 
