@@ -99,7 +99,44 @@ R11–R17 で深掘り (test 78–212 追加, **213 unit tests passing**)。 [do
 - `parens-wrapped multi-target with attr/subscript` は `with (cm1, cm2 as x):` 形式の
   multi-context manager (3.10+) も同じ理由で sup未。
 
-### deferred (外部 sample 依存)
+### CPython テストスイート互換 (R18, 進行中)
+
+`cpython/Lib/test/` (CPython 同梱 394 ファイル) で sweep:
+
+| 結果 | カウント |
+|---|---|
+| 全 pass | 6 |
+| 一部 pass / 一部 fail (mixed — 実際のテストロジックが動く) | 222 |
+| parse error (pystro が不対応の Python 構文) | 76 |
+| ModuleNotFoundError (CPython C 拡張依存) | 85 |
+| crash / timeout | 5 |
+
+実行用の env:
+```sh
+PYTHONPATH=cpytest_stubs:cpython/Lib ./pystro cpython/Lib/test/test_X.py
+```
+
+pystro 用のスタブパッケージ `cpytest_stubs/test/` (test.support 等) を
+PYTHONPATH 先頭に。CPython 純正の test.support は annotationlib 経由で
+`type.__dict__["__annotations__"].__get__` 等の C-level descriptor を
+触るので、stub に逃がす必要あり。
+
+**残 parse error の主要カテゴリ** (stdlib + test):
+- `lambda: (yield)` — lambda 内 yield (無視可、レア)
+- `case ast.Return(value=ast.Call()):` 形式 ✅ (fix済)
+- `for x, *rest in pairs` ✅ (fix済)
+- `for (k, v) in ...` paren-wrapped target ✅ (fix済)
+- `with cm as (a, b):` tuple unpack ✅ (fix済)
+- 巨大 dict/tuple リテラル (パーサ buffer 不足) ✅ (大型化済)
+- `expected '(', got ','` 系 — まだ調査中
+- 一部 f-string 高度形式 (PEP 701) — 未調査
+- `lazy import x` (PEP 690) ✅ (eager 扱いで通す)
+- `t"..."` template (PEP 750) ✅ (f-string 扱いで通す)
+
+**残 ModuleNotFoundError** — pystro が用意していない CPython 内部モジュール:
+`_codecs` / `_locale` / `_opcode` / `_collections` / `_threading_local` /
+`importlib._bootstrap` / `array` / `ctypes` / 他多数。CPython 実装の
+内部 C 拡張に依存しているため、原則 stub では足りない。
 
 #### S-12. `re` (正規表現)
 - `sample/astrorge` integrate 待ち (memory: project_regexp_astrorge)。
