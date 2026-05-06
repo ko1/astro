@@ -280,3 +280,69 @@ bytecode loop、Boehm GC vs CPython の refcount + cycle collector)。
 - io.StringIO: readline / __iter__ / seek / tell
 - file iter (`for line in f:`)
 - os.close / unlink / rmdir 等の stub
+
+---
+
+## R13 (continued autonomous probe — test 92–108, 109 tests passing)
+
+### parser / param kinds
+
+- positional-only / keyword-only 強制 (`/` / `*` markers)
+- `__slots__` 強制 (subclass が slots 持たないなら `__dict__` 容認)
+- `def f(a, b, c,)` trailing comma in def, `t = 1,` で 1-tuple
+- `(a, b) = ...` / `[a, b] = ...` paren/bracket unpack
+- `lambda *args:` / `lambda **kw:` / `lambda x, *, k=10:`
+- inline-suite multi-stmt (`def f(): a; b; return c`)
+- `class C(B, name="x"):` の class kwargs を `__init_subclass__` に forward
+- `for i, (a, b) in items:` nested tuple target
+- `...` Ellipsis literal
+
+### dunder protocols (R13)
+
+- `__set_name__` descriptor hook
+- `cls[...]` → `__class_getitem__`
+- `__index__` for sequence indexing
+- `__round__` / `__floor__` / `__ceil__`
+- `__getitem__` のみで sequence iter protocol (kind 13)
+- iter() idempotent (iter(iter(xs)) is iter(xs))
+- `__hash__ = None` で TypeError
+
+### attribute / format
+
+- builtin function `__class__` (builtin_function_or_method)
+- generic `__class__` fallback to type(v)
+- KeyError carries repr(key) as message
+- str.startswith/endswith with start/end
+- list & list / list | list as set ops (dict_keys-style)
+- {:,.2f} / {:_d} grouping for floats
+- "{p.x}" / "{x[0]}" string.format attr/index trailers
+- list += iterable
+- nan-identity in `n in [n]`
+
+### stdlib 拡充 (R13)
+
+- collections.UserDict/UserList/UserString as real classes
+- string.Template, string.capwords
+- bisect with key=
+- weakref / statistics modules
+- copy.deepcopy recurses through user-class __dict__
+- copy honors __copy__ / __deepcopy__ hooks
+- dataclasses.field(default_factory=...), is_dataclass, replace, astuple
+- itertools.product(repeat=)
+- random: randrange/randbytes/choices/gauss
+- enum.IntEnum/StrEnum/Flag/IntFlag/unique
+
+### class machinery (R13)
+
+- class with no base → MRO includes implicit object
+- super().method() on built-in subclass via primary
+- bi_object_new sets up empty primary; user __init__ owns args
+- object.__init__ no-op default
+- abc.ABC abstract method enforcement
+
+### bug fixes (R13)
+
+- **stale param_names** (NAME_TABLE realloc) → private GC array per func
+- complex `**` (polar form)
+- bytearray `[i] = b`, bytes/bytearray * int
+- file iter (kind 12)

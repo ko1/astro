@@ -6,7 +6,7 @@
 
 ## 残課題 (現在)
 
-R11–R13 で深掘り (test 78–105 追加, 106 unit tests passing)。 [done.md](./done.md) に詳細。
+R11–R13 で深掘り (test 78–108 追加, 109 unit tests passing)。 [done.md](./done.md) に詳細。
 
 ### 残存する仕様上の差分 (低優先)
 
@@ -26,12 +26,9 @@ R11–R13 で深掘り (test 78–105 追加, 106 unit tests passing)。 [done.m
 - 無限 source を `for x in genexp:` で使うと OOM。
 - 大半の用途 (`list(genexp)`, `sum(genexp)`) は OK。
 
-#### S-19. `__init_subclass__` への class kwargs forwarding
-- `class C(Base, name="x"): pass` の `name="x"` が `__init_subclass__` に渡らない。
-- `metaclass=M` のみ捕捉。
-
-#### S-20. `(a, b) = ...` / `[a, b] = ...` 形式の unpack
-- bare `a, b = ...` は OK。`(...)` / `[...]` で囲む形式は parse error。
+#### S-21. parens-form `(a, b)` argument is a tuple, not unpacking
+- `parens-wrapped multi-target with attr/subscript` は `with (cm1, cm2 as x):` 形式の
+  multi-context manager (3.10+) も同じ理由で sup未。
 
 ### deferred (外部 sample 依存)
 
