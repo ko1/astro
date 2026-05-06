@@ -5023,6 +5023,23 @@ py_pat_match(CTX *c, int pat_idx, VALUE v)
         for (int i = 0; i < p->nchildren; i++)
             if (py_pat_match(c, p->first_child + i, v)) return true;
         return false;
+      case PYPAT_AS: {
+        // Inner pattern must match.  If it does, bind the name.
+        if (!py_pat_match(c, p->first_child, v)) return false;
+        const char *name = p->attrs[0];
+        // Look up local slot for `name`.  Slot index isn't pre-stored in
+        // PYPAT_AS so resolve via env walk: walk frame's locals checking
+        // names...  Simpler: try py_global_set as fallback.  Actually
+        // the parser already registered name as a local of cur_scope, so
+        // we need its slot index.
+        // In runtime, c->env points to the executing frame.  We don't
+        // have direct access to "slot for name X", so use a global set.
+        // Wait — PYPAT_CAPTURE works via p->slot.  Let me reuse that.
+        // PYPAT_AS lives alongside; encode the slot in the same field.
+        if (p->slot >= 0) c->env->slots[p->slot] = v;
+        else              py_global_set(c, name, v);
+        return true;
+      }
       case PYPAT_SEQUENCE: {
         if (!(py_is_list(v) || py_is_tuple(v))) return false;
         // Locate any PYPAT_STAR within the children.

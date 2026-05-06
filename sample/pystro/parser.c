@@ -2840,23 +2840,52 @@ static int
 parse_pattern_or(void)
 {
     int first = parse_pattern_atom();
-    if (peek_tok(0)->kind != T_PIPE) return first;
-    int alts[16]; int n = 0;
-    alts[n++] = first;
-    while (match_tok(T_PIPE)) {
-        if (n >= 16) parse_error("too many | alternatives");
-        alts[n++] = parse_pattern_atom();
+    int result;
+    if (peek_tok(0)->kind != T_PIPE) {
+        result = first;
+    } else {
+        int alts[16]; int n = 0;
+        alts[n++] = first;
+        while (match_tok(T_PIPE)) {
+            if (n >= 16) parse_error("too many | alternatives");
+            alts[n++] = parse_pattern_atom();
+        }
+        int base = (int)pystro_patterns_len;
+        for (int i = 0; i < n; i++) {
+            struct pypat copy = PYSTRO_PATTERNS[alts[i]];
+            pat_alloc(copy);
+        }
+        struct pypat p = {0};
+        p.kind = PYPAT_OR;
+        p.first_child = base;
+        p.nchildren = n;
+        result = pat_alloc(p);
     }
-    int base = (int)pystro_patterns_len;
-    for (int i = 0; i < n; i++) {
-        struct pypat copy = PYSTRO_PATTERNS[alts[i]];
+    // `pat as NAME` — bind NAME to the matched subject if pat matches.
+    if (peek_tok(0)->kind == T_AS) {
+        tok_pos++;
+        if (peek_tok(0)->kind != T_NAME) parse_error("expected NAME after 'as'");
+        const char *bind_name = peek_tok(0)->sval;
+        tok_pos++;
+        int slot = -1;
+        if (cur_scope && !scope_is_global_decl(cur_scope, bind_name) &&
+            !scope_is_nonlocal_decl(cur_scope, bind_name))
+            slot = scope_add_local(cur_scope, bind_name);
+        int base = (int)pystro_patterns_len;
+        struct pypat copy = PYSTRO_PATTERNS[result];
         pat_alloc(copy);
+        struct pypat p = {0};
+        p.kind = PYPAT_AS;
+        p.first_child = base;
+        p.nchildren = 1;
+        p.slot = slot;
+        p.name = bind_name;
+        const char **anames = (const char **)GC_malloc(sizeof(char *) * 1);
+        anames[0] = bind_name;
+        p.attrs = anames;
+        result = pat_alloc(p);
     }
-    struct pypat p = {0};
-    p.kind = PYPAT_OR;
-    p.first_child = base;
-    p.nchildren = n;
-    return pat_alloc(p);
+    return result;
 }
 
 static NODE *

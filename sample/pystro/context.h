@@ -730,6 +730,7 @@ enum py_pat_kind {
     PYPAT_MAPPING,        // {"k": pat, ...} — dict with required keys
     PYPAT_VALUE,          // dotted name read at match time (e.g. Color.RED)
     PYPAT_STAR,           // *NAME inside a sequence — captures the rest
+    PYPAT_AS,             // pat as NAME — bind NAME if pat matches
 };
 struct pypat {
     int kind;

@@ -1,0 +1,6 @@
+ok MatchAsTest test_class_as
+ok MatchAsTest test_or_as
+ok MatchAsTest test_sequence_as
+ok MatchAsTest test_with_guard
+---
+passed=4 failed=0
