@@ -1,0 +1,7 @@
+ok BytesHexSepTest test_bytearray
+ok BytesHexSepTest test_empty
+ok BytesHexSepTest test_no_sep
+ok BytesHexSepTest test_sep
+ok BytesHexSepTest test_sep_bps
+---
+passed=5 failed=0

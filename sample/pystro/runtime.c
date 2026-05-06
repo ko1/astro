@@ -7241,17 +7241,40 @@ bm_replace(CTX *c, int argc, VALUE *argv)
 static VALUE
 bm_hex(CTX *c, int argc, VALUE *argv)
 {
-    (void)c; (void)argc;
     struct pyobj *s = PY_PTR(argv[0]);
-    char *buf = (char *)GC_malloc_atomic(s->str.len * 2 + 1);
     static const char hexd[] = "0123456789abcdef";
-    for (size_t i = 0; i < s->str.len; i++) {
-        unsigned char ch = (unsigned char)s->str.chars[i];
-        buf[i*2] = hexd[ch >> 4];
-        buf[i*2+1] = hexd[ch & 0xf];
+    // Optional sep + bytes_per_sep (CPython 3.8+).
+    char sep = 0;
+    int  bps = 1;
+    if (argc >= 2) {
+        if (!py_is_str(argv[1]) || PY_PTR(argv[1])->str.len != 1)
+            py_raise_exc(c, c->EXC_TypeError, "sep must be a 1-char string");
+        sep = PY_PTR(argv[1])->str.chars[0];
     }
-    buf[s->str.len * 2] = '\0';
-    return py_make_str_take(buf, s->str.len * 2);
+    if (argc >= 3) {
+        bps = (int)py_int_to_long(c, argv[2]);
+        if (bps == 0) bps = 1;
+    }
+    size_t L = s->str.len;
+    size_t out_cap = L * 2 + (L > 0 && sep ? L : 0) + 1;
+    char *buf = (char *)GC_malloc_atomic(out_cap);
+    size_t bi = 0;
+    int abs_bps = bps < 0 ? -bps : bps;
+    for (size_t i = 0; i < L; i++) {
+        if (sep && i > 0) {
+            // bps > 0: count groups from the right; bps < 0: from left.
+            int idx_from_right = (int)(L - i);
+            int idx_from_left  = (int)i;
+            int boundary = (bps > 0) ? (idx_from_right % abs_bps == 0)
+                                     : (idx_from_left  % abs_bps == 0);
+            if (boundary) buf[bi++] = sep;
+        }
+        unsigned char ch = (unsigned char)s->str.chars[i];
+        buf[bi++] = hexd[ch >> 4];
+        buf[bi++] = hexd[ch & 0xf];
+    }
+    buf[bi] = '\0';
+    return py_make_str_take(buf, bi);
 }
 
 static VALUE
@@ -8182,7 +8205,7 @@ static struct type_method bytes_methods[] = {
     { "startswith", bm_startswith, 2, 4 },
     { "split",      bm_split,      1, 3 },
     { "replace",    bm_replace,    3, 3 },
-    { "hex",        bm_hex,        1, 1 },
+    { "hex",        bm_hex,        1, 3 },
     { "append",     bm_append,     2, 2 },
     { "extend",     bm_extend,     2, 2 },
     { "insert",     bm_insert,     3, 3 },
