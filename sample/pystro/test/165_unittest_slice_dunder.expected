@@ -1,0 +1,9 @@
+ok SliceClassTest test_attrs
+ok SliceClassTest test_isinstance
+ok GetitemSliceTest test_dispatch
+ok CustomReversedTest test_reversed_dunder
+ok OperatorOverloadTest test_arith
+ok NumKeyEqTest test_bool_int_collide
+ok NumKeyEqTest test_int_float_collide
+---
+passed=7 failed=0

@@ -10078,6 +10078,8 @@ bi_import(CTX *c, int argc, VALUE *argv)
     VALUE saved_TYPE_range     = c->TYPE_range;
     VALUE saved_TYPE_type      = c->TYPE_type;
     VALUE saved_TYPE_object    = c->TYPE_object;
+    // slice (also non-constructable but isinstance-checkable).
+    VALUE saved_TYPE_slice     = c->TYPE_slice;
     c->globals = new_g;
     install_builtins(c);
     // Re-bind the imported module's globals to the caller's exception
@@ -10101,6 +10103,7 @@ bi_import(CTX *c, int argc, VALUE *argv)
     c->TYPE_range     = saved_TYPE_range;
     c->TYPE_type      = saved_TYPE_type;
     c->TYPE_object    = saved_TYPE_object;
+    c->TYPE_slice     = saved_TYPE_slice;
     py_global_set(c, "int",        c->TYPE_int);
     py_global_set(c, "float",      c->TYPE_float);
     py_global_set(c, "complex",    c->TYPE_complex);
@@ -10116,6 +10119,7 @@ bi_import(CTX *c, int argc, VALUE *argv)
     py_global_set(c, "range",      c->TYPE_range);
     py_global_set(c, "type",       c->TYPE_type);
     py_global_set(c, "object",     c->TYPE_object);
+    py_global_set(c, "slice",      c->TYPE_slice);
 #define SET_EXC_GLOBAL(name) py_global_set(c, #name, c->EXC_##name);
     PYSTRO_EXC_LIST(SET_EXC_GLOBAL)
 #undef SET_EXC_GLOBAL
@@ -11069,7 +11073,7 @@ install_builtins(CTX *c)
     c->TYPE_builtin_function_or_method  = py_make_class("builtin_function_or_method",   PY_NONE, false);
     c->TYPE_method                      = py_make_class("method",                       PY_NONE, false);
     c->TYPE_module                      = py_make_class("module",                       PY_NONE, false);
-    c->TYPE_slice                       = py_make_class("slice",                        PY_NONE, false);
+    c->TYPE_slice                       = py_make_builtin_class("slice", bi_slice, PY_T_SLICE);
     c->TYPE_ellipsis                    = py_make_class("ellipsis",                     PY_NONE, false);
     c->TYPE_NotImplementedType          = py_make_class("NotImplementedType",           PY_NONE, false);
     c->TYPE_memoryview                  = py_make_class("memoryview",                   PY_NONE, false);
@@ -11159,7 +11163,7 @@ install_builtins(CTX *c)
     py_global_define(c, "hex",        py_make_builtin("hex",        bi_hex,        1,  1));
     py_global_define(c, "bin",        py_make_builtin("bin",        bi_bin,        1,  1));
     py_global_define(c, "oct",        py_make_builtin("oct",        bi_oct,        1,  1));
-    py_global_define(c, "slice",      py_make_builtin("slice",      bi_slice,      1,  3));
+    py_global_define(c, "slice",      c->TYPE_slice);
     py_global_define(c, "memoryview", py_make_builtin("memoryview", bi_memoryview, 1,  1));
     py_global_define(c, "breakpoint", py_make_builtin("breakpoint", bi_breakpoint, 0, -1));
     py_global_define(c, "compile",    py_make_builtin("compile",    bi_compile,    3,  6));
