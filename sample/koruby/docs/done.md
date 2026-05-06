@@ -27,19 +27,26 @@ $ ./koruby test/cruby_runner/run_rubyspec.rb \
 and_spec.rb: pass=26 fail=0 err=0 skip=0
 ```
 
-language/* (67 ファイル中 61 が走破): **pass=1488 fail=1328 err=478**。
-完全 pass spec: and / comment / loop / not / range / safe / unless。
+language/* (65 ファイル走破): **pass=2,406 / 3,539 (68.0%)、17 ファイルが 100% pass、22 件 SKIP**。
+- 100% pass: `and` / `comment` / `loop` / `not` / `or` / `order` / `private` / `range` / `redo` / `retry` / `safe` / `throw` (1 skip) / `undef` / `unless` / `until` / `while` / `next`
+- 90%+: `array` (91.7%), `class_variable` (90.0%), `ensure` (94.6%), `precedence` (93.1%), `symbol` (93.9%)
+- 80%+: `for` (85.5%), `hash` (86.7%), `proc` (81.0%), `variables` (81.3%)
 
 shim が cover している matchers / helpers:
 - `should == / != / equal / eql / be_nil / be_true / be_false / be_truthy / be_falsy`
 - `be_close / be_an_instance_of / be_kind_of / be_a / be_an / respond_to / include`
-- `raise_error / raise_exception` (Class または [Class, ...] 受付)
-- `complain` (block を実行せず常に pass; 副作用回避)
+- `raise_error / raise_exception` (Class または [Class, ...] 受付; msg が String なら
+  substring + `|` alternation で擬似 Regex マッチ — koruby の Regexp は astrorge 待ち)
+- `complain` / `should_not complain` (block を実行する; warning track はせず常に
+  pass — koruby は warning を発行しない)
 - `mock(name)` — should_receive / and_return / once / twice / at_least 等
   を chainable に受ける minimal mock
 - `ScratchPad.record / .recorded / .clear / <<`
 - `ruby_exe / ruby_cmd` (空 string)、 `it_behaves_like` (no-op)
 - `before :each` (記録のみ)、 `silence_warnings`、 `pending`
+- 空 `it "name"` (block なし) は pending として skip
+- `NameError: uninitialized constant Thread/Fiber/Ractor/Encoding/Random/...` を
+  自動 skip 化 (out-of-scope な constant 参照は test 失敗ではなく skip)
 
 語義 (language semantics) のテスト群はかなり緑:
 
