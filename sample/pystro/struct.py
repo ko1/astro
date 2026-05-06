@@ -170,3 +170,27 @@ def unpack_from(fmt, data, offset=0):
 
 class error(Exception):
     pass
+
+
+class Struct:
+    def __init__(self, fmt):
+        self.format = fmt
+        self.size = calcsize(fmt)
+    def pack(self, *args):
+        return pack(self.format, *args)
+    def unpack(self, data):
+        return unpack(self.format, data)
+    def pack_into(self, buffer, offset, *args):
+        return pack_into(self.format, buffer, offset, *args)
+    def unpack_from(self, data, offset=0):
+        return unpack_from(self.format, data, offset)
+    def iter_unpack(self, data):
+        sz = self.size
+        for i in range(0, len(data), sz):
+            yield unpack(self.format, data[i:i+sz])
+
+
+def iter_unpack(fmt, data):
+    sz = calcsize(fmt)
+    for i in range(0, len(data), sz):
+        yield unpack(fmt, data[i:i+sz])

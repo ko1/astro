@@ -10259,10 +10259,21 @@ ns_writeback(CTX *c, VALUE ns_dict, struct pydict *snapshot)
 static VALUE
 bi_exec(CTX *c, int argc, VALUE *argv)
 {
-    if (!py_is_str(argv[0])) py_raise_exc(c, c->EXC_TypeError, "exec: code must be str");
-    size_t L = PY_PTR(argv[0])->str.len;
+    // Accept str or bytes — `compile(...)` is a pass-through so a code
+    // arg may have been bytes from the start.
+    const char *code_chars = NULL;
+    size_t L = 0;
+    if (py_is_str(argv[0])) {
+        code_chars = PY_PTR(argv[0])->str.chars;
+        L = PY_PTR(argv[0])->str.len;
+    } else if (py_is_bytes(argv[0]) || py_is_bytearray(argv[0])) {
+        code_chars = PY_PTR(argv[0])->str.chars;
+        L = PY_PTR(argv[0])->str.len;
+    } else {
+        py_raise_exc(c, c->EXC_TypeError, "exec: code must be str or bytes");
+    }
     char *src = (char *)GC_malloc_atomic(L + 2);
-    memcpy(src, PY_PTR(argv[0])->str.chars, L);
+    memcpy(src, code_chars, L);
     src[L] = '\n'; src[L+1] = '\0';
     tokenize(src, "<exec>");
     NODE *body = parse_program();

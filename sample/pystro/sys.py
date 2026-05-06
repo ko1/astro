@@ -147,6 +147,8 @@ ps2 = "... "
 def get_coroutine_origin_tracking_depth(): return 0
 def set_coroutine_origin_tracking_depth(n): pass
 def is_finalizing(): return False
+def _is_gil_enabled(): return True
+def _is_immortal(obj): return False
 def audit(event, *args): pass
 def addaudithook(hook): pass
 

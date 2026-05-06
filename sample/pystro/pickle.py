@@ -76,7 +76,7 @@ def _dumps_inner(v, out):
         raise TypeError("pickle: cannot serialize " + str(type(v)))
 
 
-def dumps(v):
+def dumps(v, protocol=None, *, fix_imports=True, buffer_callback=None):
     out = []
     _dumps_inner(v, out)
     return "".join(out).encode()
@@ -176,7 +176,7 @@ def _find_class_by_name(name):
     return None
 
 
-def loads(b):
+def loads(b, *, fix_imports=True, encoding="ASCII", errors="strict", buffers=None):
     if isinstance(b, bytes):
         # Decode bytes back to chars (pystro bytes is byte-array of chars).
         s = ""
@@ -188,12 +188,44 @@ def loads(b):
     return _loads_inner(s, pos)
 
 
-def dump(obj, fp):
+def dump(obj, fp, protocol=None, *, fix_imports=True, buffer_callback=None):
     fp.write(dumps(obj))
 
 
-def load(fp):
+def load(fp, *, fix_imports=True, encoding="ASCII", errors="strict", buffers=None):
     return loads(fp.read())
 
 
-__all__ = ["dumps", "loads", "dump", "load"]
+HIGHEST_PROTOCOL = 5
+DEFAULT_PROTOCOL = 5
+
+
+class PickleError(Exception):
+    pass
+
+
+class PicklingError(PickleError):
+    pass
+
+
+class UnpicklingError(PickleError):
+    pass
+
+
+class Pickler:
+    def __init__(self, file, protocol=None, *, fix_imports=True, buffer_callback=None):
+        self.file = file
+    def dump(self, obj):
+        self.file.write(dumps(obj))
+
+
+class Unpickler:
+    def __init__(self, file, *, fix_imports=True, encoding="ASCII", errors="strict", buffers=None):
+        self.file = file
+    def load(self):
+        return loads(self.file.read())
+
+
+__all__ = ["dumps", "loads", "dump", "load", "HIGHEST_PROTOCOL",
+           "DEFAULT_PROTOCOL", "PickleError", "PicklingError",
+           "UnpicklingError", "Pickler", "Unpickler"]
