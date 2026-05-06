@@ -6,16 +6,18 @@
 
 ## 残課題 (現在)
 
-R11–R16 で深掘り (test 78–167 追加, **168 unit tests passing**)。 [done.md](./done.md) に詳細。
+R11–R16 で深掘り (test 78–172 追加, **173 unit tests passing**)。 [done.md](./done.md) に詳細。
 
 ### 残存する仕様上の差分 (低優先)
 
 #### S-15. async/await
 - `async def` をパース error とすべきが現状黙って受け入れる。coroutine model なし。
 
-#### S-16. Wide Unicode support
-- `\U` 8-digit エスケープ未対応。`chr(>0xFF)` で multi-byte 不可。
-- `①`.isnumeric() 等の Unicode 系判定が False を返す。
+#### S-16. Wide Unicode support (partial)
+- ✅ (R16) `\u` / `\U` lexer エスケープ → UTF-8 として byte string に展開
+- ✅ (R16) `chr()` / `ord()` が UTF-8 multi-byte char に対応
+- 残: `len("é")` は byte 単位 (2)。CPython は codepoint 単位 (1)
+- 残: `①`.isnumeric() 等の Unicode 系判定が False を返す
 
 #### S-17. metaclass による class iteration ✅ (R16)
 - `len(EnumClass)` / `for m in EnumClass:` / `member in EnumClass`
