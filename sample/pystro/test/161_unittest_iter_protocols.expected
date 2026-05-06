@@ -1,0 +1,15 @@
+ok GeneratorPlusYieldFromTest test_yield_from_chain
+ok GeneratorPlusYieldFromTest test_yield_from_raise
+ok DictExtraTest test_dict_equality_order
+ok DictExtraTest test_dict_from_list
+ok DictExtraTest test_dict_from_zip
+ok DictExtraTest test_fromkeys
+ok SliceAssignTest test_del_slice
+ok SliceAssignTest test_simple
+ok SliceAssignTest test_stepped
+ok ListCmpTest test_lex
+ok TupleOpsTest test_concat_repeat
+ok TupleOpsTest test_index_count
+ok FrozensetTest test_hashable
+---
+passed=13 failed=0
