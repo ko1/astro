@@ -1,0 +1,7 @@
+ok SetCompareTest test_set_vs_frozenset
+ok SetCompareTest test_strict_subset
+ok SetCompareTest test_strict_superset
+ok SetCompareTest test_subset
+ok SetCompareTest test_superset
+---
+passed=5 failed=0

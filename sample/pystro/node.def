@@ -441,6 +441,11 @@ node_lt(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
         return ((int64_t)PY_FIXVAL(av) < (int64_t)PY_FIXVAL(bv)) ? PY_TRUE : PY_FALSE;
     if (LIKELY(PY_IS_FLONUM(av) & PY_IS_FLONUM(bv)))
         return py_flonum_to_double(av) < py_flonum_to_double(bv) ? PY_TRUE : PY_FALSE;
+    if (py_is_any_set(av) && py_is_any_set(bv)) {
+        extern int py_set_cmp_partial(CTX *c, VALUE a, VALUE b);
+        int r = py_set_cmp_partial(c, av, bv);
+        return r == -1 ? PY_TRUE : PY_FALSE;
+    }
     return py_cmp(c, av, bv) < 0 ? PY_TRUE : PY_FALSE;
 }
 
@@ -454,6 +459,11 @@ node_le(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
         return ((int64_t)PY_FIXVAL(av) <= (int64_t)PY_FIXVAL(bv)) ? PY_TRUE : PY_FALSE;
     if (LIKELY(PY_IS_FLONUM(av) & PY_IS_FLONUM(bv)))
         return py_flonum_to_double(av) <= py_flonum_to_double(bv) ? PY_TRUE : PY_FALSE;
+    if (py_is_any_set(av) && py_is_any_set(bv)) {
+        extern int py_set_cmp_partial(CTX *c, VALUE a, VALUE b);
+        int r = py_set_cmp_partial(c, av, bv);
+        return (r == -1 || r == 0) ? PY_TRUE : PY_FALSE;
+    }
     return py_cmp(c, av, bv) <= 0 ? PY_TRUE : PY_FALSE;
 }
 
@@ -467,6 +477,11 @@ node_gt(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
         return ((int64_t)PY_FIXVAL(av) > (int64_t)PY_FIXVAL(bv)) ? PY_TRUE : PY_FALSE;
     if (LIKELY(PY_IS_FLONUM(av) & PY_IS_FLONUM(bv)))
         return py_flonum_to_double(av) > py_flonum_to_double(bv) ? PY_TRUE : PY_FALSE;
+    if (py_is_any_set(av) && py_is_any_set(bv)) {
+        extern int py_set_cmp_partial(CTX *c, VALUE a, VALUE b);
+        int r = py_set_cmp_partial(c, av, bv);
+        return r == 1 ? PY_TRUE : PY_FALSE;
+    }
     return py_cmp(c, av, bv) > 0 ? PY_TRUE : PY_FALSE;
 }
 
@@ -480,6 +495,11 @@ node_ge(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
         return ((int64_t)PY_FIXVAL(av) >= (int64_t)PY_FIXVAL(bv)) ? PY_TRUE : PY_FALSE;
     if (LIKELY(PY_IS_FLONUM(av) & PY_IS_FLONUM(bv)))
         return py_flonum_to_double(av) >= py_flonum_to_double(bv) ? PY_TRUE : PY_FALSE;
+    if (py_is_any_set(av) && py_is_any_set(bv)) {
+        extern int py_set_cmp_partial(CTX *c, VALUE a, VALUE b);
+        int r = py_set_cmp_partial(c, av, bv);
+        return (r == 1 || r == 0) ? PY_TRUE : PY_FALSE;
+    }
     return py_cmp(c, av, bv) >= 0 ? PY_TRUE : PY_FALSE;
 }
 

@@ -1747,6 +1747,29 @@ py_cmp(CTX *c, VALUE a, VALUE b)
     py_raise_exc(c, c->EXC_TypeError, "incomparable operand types");
 }
 
+// Set comparison helper.  Returns -1 (a strict subset of b), 0 (equal),
+// 1 (a strict superset), or -2 (incomparable).  The set node_lt/le/gt/ge
+// special-case sets to use this so set-vs-set respects partial ordering.
+int
+py_set_cmp_partial(CTX *c, VALUE a, VALUE b)
+{
+    struct pydict *aa = PY_PTR(a)->dict;
+    struct pydict *bb = PY_PTR(b)->dict;
+    bool a_in_b = true, b_in_a = true;
+    for (size_t i = 0; i < aa->elen; i++) {
+        if (!pydict_entry_live(aa, i)) continue;
+        if (!py_contains(c, b, aa->entries[i].key)) { a_in_b = false; break; }
+    }
+    for (size_t i = 0; i < bb->elen; i++) {
+        if (!pydict_entry_live(bb, i)) continue;
+        if (!py_contains(c, a, bb->entries[i].key)) { b_in_a = false; break; }
+    }
+    if (a_in_b && b_in_a) return 0;
+    if (a_in_b) return -1;
+    if (b_in_a) return 1;
+    return -2;
+}
+
 // Convenience predicate: true iff entries[i] is a live (non-deleted) slot.
 static inline bool
 pydict_entry_live(const struct pydict *d, size_t i)
