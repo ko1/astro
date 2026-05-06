@@ -1145,7 +1145,9 @@ node_b_explode(CTX *c, NODE *n)
 NODE_DEF
 node_b_implode(CTX *c, NODE *n)
 {
-    return nuq_emit_one(c, nuq_builtin_implode(c->input));
+    VALUE r = nuq_builtin_implode(c->input);
+    if (UNLIKELY(c->error != NUQ_NULL)) return EMIT_EMPTY;
+    return nuq_emit_one(c, r);
 }
 
 NODE_DEF

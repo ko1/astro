@@ -306,7 +306,7 @@ VALUE
 nuq_builtin_implode(VALUE input)
 {
     if (!(NUQ_IS_PTR(input) && NUQ_PTR(input)->type == NUQ_T_ARRAY)) {
-        nuq_helper_error("");
+        nuq_helper_error("implode input must be an array");
         return NUQ_NULL;
     }
     struct nuq_obj *ao = NUQ_PTR(input);
@@ -314,7 +314,13 @@ nuq_builtin_implode(VALUE input)
     FILE *fp = open_memstream(&buf, &bn);
     for (size_t i = 0; i < ao->arr.len; i++) {
         VALUE v = ao->arr.items[i];
-        if (!NUQ_IS_FIX(v)) continue;
+        if (!NUQ_IS_FIX(v)) {
+            fclose(fp); free(buf);
+            char d[80];
+            nuq_value_descr(v, d, sizeof(d));
+            nuq_helper_error("%s can't be imploded, unicode codepoint needs to be numeric", d);
+            return NUQ_NULL;
+        }
         unsigned cp = (unsigned)NUQ_FIX_VAL(v);
         if (cp < 0x80) fputc(cp, fp);
         else if (cp < 0x800) { fputc(0xC0|(cp>>6), fp); fputc(0x80|(cp&0x3F), fp); }
