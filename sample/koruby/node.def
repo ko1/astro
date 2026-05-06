@@ -330,6 +330,17 @@ node_return(CTX * restrict c, NODE * restrict n, NODE *value)
     VALUE v = EA(c, value);
     c->state = KORB_RETURN;
     c->state_value = v;
+    /* If we're running inside a non-lambda block / proc, this is a
+     * non-local return targeting the lexically-enclosing method's
+     * frame.  `running_block` is set by korb_yield/proc_call.  Plain
+     * method body return / lambda body return → state_target_frame
+     * stays NULL (consume at any matching boundary). */
+    extern struct korb_proc *running_block;
+    c->state_target_frame = NULL;
+    if (running_block && !running_block->is_lambda &&
+        running_block->return_target_frame) {
+        c->state_target_frame = running_block->return_target_frame;
+    }
     return v;
 }
 
@@ -610,6 +621,14 @@ node_block_literal(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t par
 {
     VALUE p = korb_proc_new_with_cref(body, c->fp, env_size, params_cnt, param_base, c->self, false, c->cref);
     if (creates_proc) ((struct korb_proc *)p)->creates_proc = true;
+    /* Capture enclosing-method's fp for non-local return targeting. */
+    /* Capture the lexically-enclosing method's frame for non-local
+     * `return` targeting.  When this block_literal is itself inside
+     * another block's body (running_block != NULL), inherit that
+     * outer block's target — they share the same lexical method.
+     * Only when no block is running do we capture the current frame. */
+    ((struct korb_proc *)p)->return_target_frame =
+        running_block ? running_block->return_target_frame : c->current_frame;
     return p;
 }
 
@@ -621,6 +640,13 @@ node_block_literal_rest(CTX * restrict c, NODE * restrict n, NODE *body, uint32_
     VALUE p = korb_proc_new_with_cref(body, c->fp, env_size, params_cnt, param_base, c->self, false, c->cref);
     ((struct korb_proc *)p)->rest_slot = rest_slot;
     if (creates_proc) ((struct korb_proc *)p)->creates_proc = true;
+    /* Capture the lexically-enclosing method's frame for non-local
+     * `return` targeting.  When this block_literal is itself inside
+     * another block's body (running_block != NULL), inherit that
+     * outer block's target — they share the same lexical method.
+     * Only when no block is running do we capture the current frame. */
+    ((struct korb_proc *)p)->return_target_frame =
+        running_block ? running_block->return_target_frame : c->current_frame;
     return p;
 }
 
@@ -634,6 +660,13 @@ node_block_literal_kw(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t 
     ((struct korb_proc *)p)->rest_slot = rest_slot;
     ((struct korb_proc *)p)->kwh_save_slot = kwh_save_slot;
     if (creates_proc) ((struct korb_proc *)p)->creates_proc = true;
+    /* Capture the lexically-enclosing method's frame for non-local
+     * `return` targeting.  When this block_literal is itself inside
+     * another block's body (running_block != NULL), inherit that
+     * outer block's target — they share the same lexical method.
+     * Only when no block is running do we capture the current frame. */
+    ((struct korb_proc *)p)->return_target_frame =
+        running_block ? running_block->return_target_frame : c->current_frame;
     return p;
 }
 
@@ -1357,10 +1390,20 @@ node_super(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_inde
     frame.last_line = Qnil;
     frame.last_match = Qnil;
     c->current_frame = &frame;
+    extern struct korb_proc *running_block;
+    struct korb_proc *prev_running = running_block;
+    running_block = NULL;
     VALUE r = EVAL(c, sm->u.ast.body);
     c->current_frame = frame.prev;
+    running_block = prev_running;
     c->fp = prev_fp;
-    if (c->state == KORB_RETURN) { r = c->state_value; c->state = KORB_NORMAL; c->state_value = Qnil; }
+    if (c->state == KORB_RETURN &&
+        (c->state_target_frame == NULL || c->state_target_frame == &frame)) {
+        r = c->state_value;
+        c->state = KORB_NORMAL;
+        c->state_value = Qnil;
+        c->state_target_frame = NULL;
+    }
     return r;
 }
 
@@ -1459,10 +1502,20 @@ node_super_forward(CTX * restrict c, NODE * restrict n)
     frame.last_line = Qnil;
     frame.last_match = Qnil;
     c->current_frame = &frame;
+    extern struct korb_proc *running_block;
+    struct korb_proc *prev_running = running_block;
+    running_block = NULL;
     VALUE r = EVAL(c, sm->u.ast.body);
     c->current_frame = frame.prev;
+    running_block = prev_running;
     c->fp = prev_fp;
-    if (c->state == KORB_RETURN) { r = c->state_value; c->state = KORB_NORMAL; c->state_value = Qnil; }
+    if (c->state == KORB_RETURN &&
+        (c->state_target_frame == NULL || c->state_target_frame == &frame)) {
+        r = c->state_value;
+        c->state = KORB_NORMAL;
+        c->state_value = Qnil;
+        c->state_target_frame = NULL;
+    }
     return r;
 }
 

@@ -1621,6 +1621,7 @@ VALUE korb_proc_new(struct Node *body, VALUE *fp, uint32_t env_size,
     p->is_lambda = is_lambda;
     p->creates_proc = false;
     p->cref = NULL;  /* set by korb_proc_new_with_cref or by callers */
+    p->return_target_frame = NULL;
     return (VALUE)p;
 }
 
@@ -1634,6 +1635,10 @@ VALUE korb_proc_new_with_cref(struct Node *body, VALUE *fp, uint32_t env_size,
 
 /* Block currently active for yield (set by dispatch_call). */
 struct korb_proc *current_block = NULL;
+
+/* Block / proc / lambda currently executing — distinct from current_block
+ * (which is the block PASSED to the current method).  See object.h. */
+struct korb_proc *running_block = NULL;
 
 bool korb_block_given(void) { return current_block != NULL; }
 
@@ -1785,6 +1790,8 @@ VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv)
      * enclosing method's block, not back to this block. */
     struct korb_proc *prev_block = current_block;
     current_block = blk->enclosing_block;
+    struct korb_proc *prev_running = running_block;
+    running_block = blk;
     VALUE r;
 redo_block:
     r = EVAL(c, blk->body);
@@ -1804,6 +1811,7 @@ redo_block:
     c->fp = prev_fp;
     c->self = prev_self;
     current_block = prev_block;
+    running_block = prev_running;
     /* `next` inside a block: yield returns the next value, state cleared.
      * `break` should NOT be cleared here — it propagates to the yielding
      * method, where dispatch_call catches it as that method's return. */
@@ -2591,10 +2599,16 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
     frame.last_line = Qnil;
     frame.last_match = Qnil;
     c->current_frame = &frame;
+    /* Reset running_block: a method body is no longer "inside" the
+     * caller's block, so a `return` inside it should be method-local. */
+    extern struct korb_proc *running_block;
+    struct korb_proc *prev_running = running_block;
+    running_block = NULL;
     VALUE *frame_lo = c->fp;
     VALUE *frame_hi = c->fp + mc->locals_cnt;
     VALUE r = mc->dispatcher(c, mc->body);
     c->current_frame = frame.prev;
+    running_block = prev_running;
     korb_proc_snapshot_env_if_in_frame(r, frame_lo, frame_hi);
     if (UNLIKELY(c->state == KORB_RETURN || c->state == KORB_BREAK)) {
         korb_proc_snapshot_env_if_in_frame(c->state_value, frame_lo, frame_hi);
@@ -2605,9 +2619,14 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
     current_block = prev_block;
 
     if (UNLIKELY(c->state == KORB_RETURN || c->state == KORB_BREAK)) {
-        r = c->state_value;
-        c->state = KORB_NORMAL;
-        c->state_value = Qnil;
+        bool consume_return = (c->state == KORB_RETURN &&
+            (c->state_target_frame == NULL || c->state_target_frame == &frame));
+        if (c->state == KORB_BREAK || consume_return) {
+            r = c->state_value;
+            c->state = KORB_NORMAL;
+            c->state_value = Qnil;
+            c->state_target_frame = NULL;
+        }
     }
     return r;
 }

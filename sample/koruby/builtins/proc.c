@@ -243,8 +243,11 @@ VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* yield inside the proc body targets the enclosing method's block
      * captured at proc creation time. */
     extern struct korb_proc *current_block;
+    extern struct korb_proc *running_block;
     struct korb_proc *prev_block = current_block;
     current_block = p->enclosing_block;
+    struct korb_proc *prev_running = running_block;
+    running_block = p;
     /* Restore the lexical class nesting captured at block-creation time
      * so constant lookups and `def` inside the body resolve in the
      * defining class scope, not the caller's. */
@@ -262,6 +265,7 @@ redo_proc:
     }
     c->cref = prev_cref;
     current_block = prev_block;
+    running_block = prev_running;
     /* Snapshot any returned proc whose env points into our about-to-be-
      * popped frame. */
     korb_proc_snapshot_env_if_in_frame(r, new_fp, new_fp + p->env_size);
@@ -291,10 +295,12 @@ redo_proc:
         r = c->state_value;
         c->state = KORB_NORMAL;
         c->state_value = Qnil;
+        c->state_target_frame = NULL;
     } else if (c->state == KORB_RETURN && p->is_lambda) {
         r = c->state_value;
         c->state = KORB_NORMAL;
         c->state_value = Qnil;
+        c->state_target_frame = NULL;
     } else if (c->state == KORB_NEXT) {
         /* `next` inside a proc/lambda body: consume it as the proc's
          * return value (CRuby: lambda { next 42 }.call == 42, and

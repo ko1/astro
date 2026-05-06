@@ -106,6 +106,13 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
     frame.last_line = Qnil;
     frame.last_match = Qnil;
     c->current_frame = &frame;
+    /* Entering a method body — no block is "running" at this point.
+     * If we don't reset, a `return` inside a method called from within
+     * a block would be interpreted as non-local (target_fp = block's
+     * enclosing). */
+    extern struct korb_proc *running_block;
+    struct korb_proc *prev_running = running_block;
+    running_block = NULL;
     if (UNLIKELY(!simple)) {
         prev_block = current_block;
         prev_cref = c->cref;
@@ -121,6 +128,7 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
     VALUE r = mc->dispatcher(c, mc->body);
 
     c->current_frame = frame.prev;
+    running_block = prev_running;
     if (UNLIKELY(!simple)) {
         c->cref = prev_cref;
         current_block = prev_block;
@@ -140,9 +148,14 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
     c->self = prev_self;
 
     if (UNLIKELY(c->state == KORB_RETURN || c->state == KORB_BREAK)) {
-        r = c->state_value;
-        c->state = KORB_NORMAL;
-        c->state_value = Qnil;
+        bool consume_return = (c->state == KORB_RETURN &&
+            (c->state_target_frame == NULL || c->state_target_frame == &frame));
+        if (c->state == KORB_BREAK || consume_return) {
+            r = c->state_value;
+            c->state = KORB_NORMAL;
+            c->state_value = Qnil;
+            c->state_target_frame = NULL;
+        }
     }
     return r;
 }
@@ -201,6 +214,13 @@ prologue_ast_simple_static_inl(CTX *c, struct Node *callsite, VALUE recv,
     frame.last_line = Qnil;
     frame.last_match = Qnil;
     c->current_frame = &frame;
+    /* Entering a method body — no block is "running" at this point.
+     * If we don't reset, a `return` inside a method called from within
+     * a block would be interpreted as non-local (target_fp = block's
+     * enclosing). */
+    extern struct korb_proc *running_block;
+    struct korb_proc *prev_running = running_block;
+    running_block = NULL;
     if (UNLIKELY(!simple)) {
         prev_block = current_block;
         prev_cref = c->cref;
@@ -219,6 +239,7 @@ prologue_ast_simple_static_inl(CTX *c, struct Node *callsite, VALUE recv,
     VALUE r = static_disp(c, mc->body);
 
     c->current_frame = frame.prev;
+    running_block = prev_running;
     if (UNLIKELY(!simple)) {
         c->cref = prev_cref;
         current_block = prev_block;
@@ -232,9 +253,14 @@ prologue_ast_simple_static_inl(CTX *c, struct Node *callsite, VALUE recv,
     c->self = prev_self;
 
     if (UNLIKELY(c->state == KORB_RETURN || c->state == KORB_BREAK)) {
-        r = c->state_value;
-        c->state = KORB_NORMAL;
-        c->state_value = Qnil;
+        bool consume_return = (c->state == KORB_RETURN &&
+            (c->state_target_frame == NULL || c->state_target_frame == &frame));
+        if (c->state == KORB_BREAK || consume_return) {
+            r = c->state_value;
+            c->state = KORB_NORMAL;
+            c->state_value = Qnil;
+            c->state_target_frame = NULL;
+        }
     }
     return r;
 }

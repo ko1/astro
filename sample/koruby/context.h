@@ -236,6 +236,12 @@ typedef struct CTX_struct {
      * payload (exception object / return value / break value). */
     int   state;
     VALUE state_value;
+    /* For KORB_RETURN: target frame pointer.  When non-NULL, the return
+     * is non-local (block/proc → enclosing method); each method dispatch
+     * checks `state_target_frame == &my_frame` and only consumes when
+     * matched.  NULL for plain method-local return (lambda body, def
+     * body). */
+    void *state_target_frame;
 
     /* for call site & frame info */
     struct korb_frame *current_frame;

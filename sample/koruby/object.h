@@ -204,6 +204,12 @@ struct korb_proc {
      * lookups inside the body resolve in the enclosing class scope
      * (CRuby semantics: `class C; X = 1; proc { X }; end` finds C::X). */
     struct korb_cref *cref;
+    /* The enclosing method's korb_frame pointer at proc creation time.
+     * Non-local `return` from inside a non-lambda proc/block targets
+     * this frame.  Stored as a void* — the frame may be popped by the
+     * time we read it; we only ever compare it to the live frame's
+     * address (the popped frame's address won't match anything live). */
+    void *return_target_frame;
 };
 
 /* Method object: a bound (receiver, method) pair, callable via #call/#[] */
@@ -598,6 +604,13 @@ VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv)
 
 extern struct korb_proc *current_block;
 
+/* The block/proc/lambda whose body is currently executing.  Updated by
+ * korb_yield (set to blk) and proc_call (set to p), restored on return.
+ * Used by node_return to determine whether `return` is non-local
+ * (running_block != NULL && !is_lambda → target enclosing method) or
+ * local (lambda or method body). */
+extern struct korb_proc *running_block;
+
 /* Fast path: hot in `ary.each { |x| ... }` style code (Array#each,
  * Hash#each, etc.) — argc and params_cnt are usually 1, no
  * auto-destructure, no need to copy more than 1 arg.  Inlined into
@@ -630,6 +643,8 @@ korb_yield(CTX *c, uint32_t argc, VALUE *argv) {
         /* Lexical block target: yield inside this block goes to the
          * enclosing method's block, not back to this block itself. */
         current_block = blk->enclosing_block;
+        struct korb_proc *prev_running = running_block;
+        running_block = blk;
         VALUE r;
     redo_yield:
         r = blk->body->head.dispatcher(c, blk->body);
@@ -640,6 +655,7 @@ korb_yield(CTX *c, uint32_t argc, VALUE *argv) {
         c->fp = prev_fp;
         c->self = prev_self;
         current_block = prev_block;
+        running_block = prev_running;
         if (UNLIKELY(c->state == KORB_NEXT)) {
             VALUE nv = c->state_value;
             c->state = KORB_NORMAL; c->state_value = Qnil;
