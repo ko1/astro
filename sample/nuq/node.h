@@ -173,13 +173,15 @@ EMIT nuq_nth_eval(CTX *c, struct Node *idx, struct Node *body);
 void nuq_recurse_collect_pool(CTX *c, VALUE v);
 void nuq_paths_collect_pool(CTX *c, VALUE v);
 
-/* Cartesian binop fan-out: emits |L| × |R| values into the pool. */
+/* Cartesian binop fan-out: emits |L| × |R| values into the pool.
+ * jq's enumeration order is RHS-outer, LHS-inner — so `.[] / .[]` on
+ * [1,2] gives 1/1, 2/1, 1/2, 2/2 (RHS varies slower). */
 static inline __attribute__((always_inline)) EMIT
 nuq_binop_apply_inline(CTX *c, EMIT l, EMIT rv, int op)
 {
     size_t top0 = c->pool_top;
-    for (uint32_t i = 0; i < l.count; i++) {
-        for (uint32_t j = 0; j < rv.count; j++) {
+    for (uint32_t j = 0; j < rv.count; j++) {
+        for (uint32_t i = 0; i < l.count; i++) {
             VALUE a = l.items[i], b = rv.items[j], v;
             switch (op) {
               case NUQ_OP_ADD_K: v = nuq_op_add(a, b); break;
