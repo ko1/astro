@@ -1,0 +1,10 @@
+ok ComplexParseTest test_negative_imag
+ok ComplexParseTest test_negative_real
+ok ComplexParseTest test_paren_form
+ok ComplexParseTest test_pure_imag
+ok ComplexParseTest test_pure_real
+ok ComplexParseTest test_real_imag
+ok IntComplexAttrTest test_int_conjugate
+ok IntComplexAttrTest test_int_real_imag_callable
+---
+passed=8 failed=0

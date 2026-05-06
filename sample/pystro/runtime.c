@@ -8280,6 +8280,62 @@ bi_complex(CTX *c, int argc, VALUE *argv)
         if (py_is_complex(argv[0])) {
             re = PY_PTR(argv[0])->cpx.re;
             im = PY_PTR(argv[0])->cpx.im;
+        } else if (py_is_str(argv[0])) {
+            // Parse "a+bj" / "a-bj" / "bj" / "a" forms.  Strip surrounding
+            // parens and whitespace, then walk the chars.
+            const char *s = PY_PTR(argv[0])->str.chars;
+            size_t L = PY_PTR(argv[0])->str.len;
+            // strip whitespace
+            while (L > 0 && (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r')) { s++; L--; }
+            while (L > 0 && (s[L-1] == ' ' || s[L-1] == '\t' || s[L-1] == '\n' || s[L-1] == '\r')) L--;
+            if (L >= 2 && s[0] == '(' && s[L-1] == ')') { s++; L -= 2; }
+            // Find the j/J at the end.
+            bool ends_j = (L > 0 && (s[L-1] == 'j' || s[L-1] == 'J'));
+            // Find an internal +/- (but not the leading sign or one after e/E).
+            int split = -1;
+            for (size_t i = 1; i < L; i++) {
+                if ((s[i] == '+' || s[i] == '-') && s[i-1] != 'e' && s[i-1] != 'E') {
+                    split = (int)i;
+                }
+            }
+            char *re_str = NULL;
+            char *im_str = NULL;
+            if (ends_j) {
+                if (split > 0) {
+                    re_str = (char *)GC_malloc_atomic(split + 1);
+                    memcpy(re_str, s, split); re_str[split] = '\0';
+                    im_str = (char *)GC_malloc_atomic(L - split);
+                    memcpy(im_str, s + split, L - split - 1);
+                    im_str[L - split - 1] = '\0';  // strip 'j'
+                } else {
+                    // pure imaginary
+                    im_str = (char *)GC_malloc_atomic(L);
+                    memcpy(im_str, s, L - 1); im_str[L - 1] = '\0';
+                    if (im_str[0] == '\0' || (im_str[0] == '+' && im_str[1] == '\0')) {
+                        im = 1.0;
+                    } else if (im_str[0] == '-' && im_str[1] == '\0') {
+                        im = -1.0;
+                    } else {
+                        im = strtod(im_str, NULL);
+                    }
+                    return py_make_complex(0, im);
+                }
+            } else {
+                // pure real
+                re_str = (char *)GC_malloc_atomic(L + 1);
+                memcpy(re_str, s, L); re_str[L] = '\0';
+            }
+            if (re_str) re = strtod(re_str, NULL);
+            if (im_str) {
+                if (im_str[0] == '\0' || (im_str[0] == '+' && im_str[1] == '\0')) {
+                    im = 1.0;
+                } else if (im_str[0] == '-' && im_str[1] == '\0') {
+                    im = -1.0;
+                } else {
+                    im = strtod(im_str, NULL);
+                }
+            }
+            return py_make_complex(re, im);
         } else {
             re = py_to_double(c, argv[0]);
         }
