@@ -9992,6 +9992,11 @@ bi_round(CTX *c, int argc, VALUE *argv)
 static VALUE
 bi_pow(CTX *c, int argc, VALUE *argv)
 {
+    // User class with __pow__: forward all args.
+    if (py_is_instance(argv[0])) {
+        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(argv[0])->inst.cls), "__pow__");
+        if (m != PY_NONE) return py_apply(c, m, argc, argv);
+    }
     if (argc == 3) {
         // a ** b mod m — only int int int for v0.
         if (!py_int_or_bool(argv[0]) || !py_int_or_bool(argv[1]) || !py_int_or_bool(argv[2]))

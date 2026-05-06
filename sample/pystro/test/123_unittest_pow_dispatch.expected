@@ -1,0 +1,4 @@
+ok PowDispatchTest test_user_pow
+ok PowDispatchTest test_user_pow_with_mod
+---
+passed=2 failed=0
