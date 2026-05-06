@@ -123,6 +123,60 @@ nuq_load_all_def_bodies(void)
     }
 }
 
+/* Destructuring pattern interning.  Patterns are heap-allocated and
+ * referenced by id from `node_as_pattern`. */
+static struct nuq_pat **pat_tab = NULL;
+static size_t pat_tab_len = 0, pat_tab_capa = 0;
+
+uint32_t
+nuq_pat_intern(struct nuq_pat *p)
+{
+    if (pat_tab_len == pat_tab_capa) {
+        pat_tab_capa = pat_tab_capa ? pat_tab_capa * 2 : 16;
+        pat_tab = (struct nuq_pat **)GC_realloc(
+            pat_tab, pat_tab_capa * sizeof(*pat_tab));
+    }
+    pat_tab[pat_tab_len] = p;
+    return (uint32_t)pat_tab_len++;
+}
+
+struct nuq_pat *
+nuq_pat_get(uint32_t id)
+{
+    return pat_tab[id];
+}
+
+static void
+pat_bind_inner(CTX *c, struct nuq_pat *p, VALUE v)
+{
+    if (p->kind == NUQ_PAT_VAR) {
+        nuq_var_push(c, p->u.var_id, v);
+    } else if (p->kind == NUQ_PAT_ARRAY) {
+        for (size_t i = 0; i < p->u.arr.len; i++) {
+            VALUE elem = NUQ_NULL;
+            if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_ARRAY &&
+                i < NUQ_PTR(v)->arr.len)
+                elem = NUQ_PTR(v)->arr.items[i];
+            pat_bind_inner(c, p->u.arr.items[i], elem);
+        }
+    } else {                              /* NUQ_PAT_OBJECT */
+        for (size_t i = 0; i < p->u.obj.len; i++) {
+            VALUE child = NUQ_NULL;
+            if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_OBJECT)
+                child = nuq_object_get_cstr(v, p->u.obj.items[i].key);
+            pat_bind_inner(c, p->u.obj.items[i].val, child);
+        }
+    }
+}
+
+size_t
+nuq_pat_bind(CTX *c, struct nuq_pat *p, VALUE v)
+{
+    size_t saved = c->var_top;
+    pat_bind_inner(c, p, v);
+    return saved;
+}
+
 static const char **fmt_tab = NULL;
 static size_t fmt_tab_len = 0, fmt_tab_capa = 0;
 
@@ -2354,6 +2408,131 @@ walk_path(CTX *c, struct Node *n, VALUE v, nuq_leaf_fn fn, void *ud)
 
     c->error = nuq_make_string("path expression: unsupported node", 33);
     return v;
+}
+
+/* `path(f)` — emit each path that `f` would visit on the input.
+ * Supports linear accessor chains: identity / pipe / field /
+ * field_opt / index / index_opt / iter / iter_opt.
+ *
+ * Strategy: linearise the chain (left-leaning or right-leaning pipe
+ * tree → flat array of "step" nodes).  Then DFS-walk: at step k,
+ * push the corresponding key onto cur; if k is the last step, emit
+ * cur as a path; else recurse into the sub-value for step k+1. */
+
+struct path_ud {
+    CTX     *c;
+    VALUE   *cur;
+    size_t   cur_len;
+    size_t   cur_capa;
+};
+
+static void
+path_push(struct path_ud *pu, VALUE k)
+{
+    if (pu->cur_len == pu->cur_capa) {
+        pu->cur_capa = pu->cur_capa ? pu->cur_capa * 2 : 4;
+        pu->cur = (VALUE *)GC_realloc(pu->cur, pu->cur_capa * sizeof(VALUE));
+    }
+    pu->cur[pu->cur_len++] = k;
+}
+
+static void
+path_emit(struct path_ud *pu)
+{
+    VALUE arr = nuq_make_array(pu->cur_len);
+    for (size_t i = 0; i < pu->cur_len; i++) nuq_array_push(arr, pu->cur[i]);
+    nuq_pool_push(pu->c, arr);
+}
+
+/* Flatten a possibly-pipe-nested AST into a linear array of steps. */
+static void
+path_flatten(struct Node *n, struct Node ***steps, size_t *cnt, size_t *capa)
+{
+    if (n->head.kind == &kind_node_pipe) {
+        path_flatten(n->u.node_pipe.lhs, steps, cnt, capa);
+        path_flatten(n->u.node_pipe.rhs, steps, cnt, capa);
+        return;
+    }
+    if (n->head.kind == &kind_node_identity) return;   /* identity: no-op */
+    if (*cnt == *capa) {
+        *capa = *capa ? *capa * 2 : 8;
+        *steps = (struct Node **)GC_realloc(*steps, *capa * sizeof(**steps));
+    }
+    (*steps)[(*cnt)++] = n;
+}
+
+static void
+path_dfs(CTX *c, struct Node **steps, size_t step_cnt, size_t k,
+         VALUE v, struct path_ud *pu)
+{
+    if (k == step_cnt) {
+        path_emit(pu);
+        return;
+    }
+    struct Node *step = steps[k];
+    if (step->head.kind == &kind_node_field || step->head.kind == &kind_node_field_opt) {
+        const char *name = (step->head.kind == &kind_node_field)
+            ? step->u.node_field.name : step->u.node_field_opt.name;
+        VALUE k_str = nuq_make_string(name, strlen(name));
+        VALUE child = NUQ_NULL;
+        if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_OBJECT)
+            child = nuq_object_get(v, k_str);
+        path_push(pu, k_str);
+        path_dfs(c, steps, step_cnt, k + 1, child, pu);
+        pu->cur_len--;
+        return;
+    }
+    if (step->head.kind == &kind_node_index || step->head.kind == &kind_node_index_opt) {
+        struct Node *idx_expr = (step->head.kind == &kind_node_index)
+            ? step->u.node_index.expr : step->u.node_index_opt.expr;
+        VALUE kv;
+        if (!eval_static_key(idx_expr, &kv)) {
+            c->error = nuq_make_string("path: dynamic index", 19);
+            return;
+        }
+        VALUE child = NUQ_NULL;
+        if (NUQ_IS_FIX(kv) && NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_ARRAY)
+            child = nuq_array_get(v, NUQ_FIX_VAL(kv));
+        else if (NUQ_IS_PTR(kv) && NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_OBJECT)
+            child = nuq_object_get(v, kv);
+        path_push(pu, kv);
+        path_dfs(c, steps, step_cnt, k + 1, child, pu);
+        pu->cur_len--;
+        return;
+    }
+    if (step->head.kind == &kind_node_iter || step->head.kind == &kind_node_iter_opt) {
+        if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_ARRAY) {
+            struct nuq_obj *o = NUQ_PTR(v);
+            for (size_t i = 0; i < o->arr.len; i++) {
+                path_push(pu, nuq_make_int((int64_t)i));
+                path_dfs(c, steps, step_cnt, k + 1, o->arr.items[i], pu);
+                pu->cur_len--;
+                if (c->error != NUQ_NULL) return;
+            }
+        } else if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_OBJECT) {
+            struct nuq_obj *o = NUQ_PTR(v);
+            for (size_t i = 0; i < o->obj.len; i++) {
+                path_push(pu, o->obj.keys[i]);
+                path_dfs(c, steps, step_cnt, k + 1, o->obj.vals[i], pu);
+                pu->cur_len--;
+                if (c->error != NUQ_NULL) return;
+            }
+        }
+        return;
+    }
+    c->error = nuq_make_string("path: unsupported node", 22);
+}
+
+EMIT
+nuq_path_eval(CTX *c, struct Node *body)
+{
+    struct Node **steps = NULL; size_t cnt = 0, capa = 0;
+    path_flatten(body, &steps, &cnt, &capa);
+    size_t outer = c->pool_top;
+    struct path_ud pu = { c, NULL, 0, 0 };
+    path_dfs(c, steps, cnt, 0, c->input, &pu);
+    if (c->error != NUQ_NULL) return EMIT_EMPTY;
+    return nuq_emit_slice(c, outer);
 }
 
 /* Leaf functions for the assign-op variants. */

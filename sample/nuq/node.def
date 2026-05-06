@@ -712,6 +712,34 @@ node_as(CTX *c, NODE *n, NODE *src, uint32_t var_id, NODE *body)
     return nuq_emit_slice(c, top0);
 }
 
+/* Destructuring `as` — `EXPR as PAT | BODY`.  PAT is one of:
+ *   $name                    (simple var)
+ *   [PAT, PAT, ...]          (array — index-by-index, missing → null)
+ *   {key: PAT, key2: PAT2}   (object — project field-by-field)
+ *   {$a, $b}                 (shorthand for {a: $a, b: $b})
+ * Pattern is interned at parse time as `pat_id`.  At eval, walk
+ * pattern + value pairwise pushing each $var on var_stack. */
+NODE_DEF
+node_as_pattern(CTX *c, NODE *n, NODE *src, uint32_t pat_id, NODE *body)
+{
+    size_t top0 = c->pool_top;
+    EMIT bs = EVAL_ARG(c, src);
+    if (UNLIKELY(c->error != NUQ_NULL)) return EMIT_EMPTY;
+    uint32_t sc = bs.count;
+    VALUE ssmall[16];
+    VALUE *slocal = (sc <= 16) ? ssmall : (VALUE *)GC_malloc(sc * sizeof(VALUE));
+    memcpy(slocal, bs.items, sc * sizeof(VALUE));
+    c->pool_top = top0;
+    struct nuq_pat *pat = nuq_pat_get(pat_id);
+    for (uint32_t i = 0; i < sc; i++) {
+        size_t var_top = nuq_pat_bind(c, pat, slocal[i]);
+        (void)EVAL_ARG(c, body);
+        nuq_var_pop(c, var_top);
+        if (UNLIKELY(c->error != NUQ_NULL)) return EMIT_EMPTY;
+    }
+    return nuq_emit_slice(c, top0);
+}
+
 NODE_DEF
 node_var(CTX *c, NODE *n, uint32_t var_id)
 {
@@ -1592,6 +1620,246 @@ node_b_toboolean(CTX *c, NODE *n)
     }
     c->error = nuq_make_string("toboolean: not boolean nor true/false string", 44);
     return EMIT_EMPTY;
+}
+
+/* `builtins` — list of all known builtin names with their arity, e.g.
+ * `["length/0", "map/1", ...]`.  We hardcode the list here since nuq's
+ * registration is in filter.c via macros (not introspectable). */
+/* `path(f)` — extracts the path expression `f` would visit.  We
+ * support the static-accessor case (chains of identity / pipe /
+ * field / index / iter); for those we run walk_path with a custom
+ * leaf that records the current path, then emit each path.
+ *
+ * Implementation strategy: maintain a "current path" array as we
+ * descend; at each leaf, push a CLONE of the current path into the
+ * pool slice.  Return the slice. */
+NODE_DEF
+node_b_path(CTX *c, NODE *n, NODE *body)
+{
+    return nuq_path_eval(c, body);
+}
+
+/* Date / time builtins.  All use the host's <time.h>; jq compatibility
+ * for niche cases (timezones, locales) is best-effort. */
+
+NODE_DEF
+node_b_now(CTX *c, NODE *n)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    return nuq_emit_one(c, nuq_make_double((double)ts.tv_sec + ts.tv_nsec / 1e9));
+}
+
+NODE_DEF
+node_b_gmtime(CTX *c, NODE *n)
+{
+    if (!(NUQ_IS_FIX(c->input) ||
+          (NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_DOUBLE))) {
+        c->error = nuq_make_string("gmtime: not number", 18);
+        return EMIT_EMPTY;
+    }
+    double d = NUQ_IS_FIX(c->input) ? (double)NUQ_FIX_VAL(c->input)
+                                    : NUQ_PTR(c->input)->dbl;
+    time_t t = (time_t)d;
+    struct tm tm;
+    if (!gmtime_r(&t, &tm)) {
+        c->error = nuq_make_string("gmtime: out of range", 20);
+        return EMIT_EMPTY;
+    }
+    /* jq returns broken-down array: [Y-1900, M-1, D, H, M, S, wday, yday] */
+    VALUE arr = nuq_make_array(8);
+    nuq_array_push(arr, nuq_make_int(tm.tm_year + 1900));
+    nuq_array_push(arr, nuq_make_int(tm.tm_mon));
+    nuq_array_push(arr, nuq_make_int(tm.tm_mday));
+    nuq_array_push(arr, nuq_make_int(tm.tm_hour));
+    nuq_array_push(arr, nuq_make_int(tm.tm_min));
+    nuq_array_push(arr, nuq_make_double((double)tm.tm_sec + (d - (double)t)));
+    nuq_array_push(arr, nuq_make_int(tm.tm_wday));
+    nuq_array_push(arr, nuq_make_int(tm.tm_yday));
+    return nuq_emit_one(c, arr);
+}
+
+NODE_DEF
+node_b_localtime(CTX *c, NODE *n)
+{
+    if (!(NUQ_IS_FIX(c->input) ||
+          (NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_DOUBLE))) {
+        c->error = nuq_make_string("localtime: not number", 21);
+        return EMIT_EMPTY;
+    }
+    double d = NUQ_IS_FIX(c->input) ? (double)NUQ_FIX_VAL(c->input)
+                                    : NUQ_PTR(c->input)->dbl;
+    time_t t = (time_t)d;
+    struct tm tm;
+    if (!localtime_r(&t, &tm)) {
+        c->error = nuq_make_string("localtime: out of range", 23);
+        return EMIT_EMPTY;
+    }
+    VALUE arr = nuq_make_array(8);
+    nuq_array_push(arr, nuq_make_int(tm.tm_year + 1900));
+    nuq_array_push(arr, nuq_make_int(tm.tm_mon));
+    nuq_array_push(arr, nuq_make_int(tm.tm_mday));
+    nuq_array_push(arr, nuq_make_int(tm.tm_hour));
+    nuq_array_push(arr, nuq_make_int(tm.tm_min));
+    nuq_array_push(arr, nuq_make_double((double)tm.tm_sec + (d - (double)t)));
+    nuq_array_push(arr, nuq_make_int(tm.tm_wday));
+    nuq_array_push(arr, nuq_make_int(tm.tm_yday));
+    return nuq_emit_one(c, arr);
+}
+
+NODE_DEF
+node_b_mktime(CTX *c, NODE *n)
+{
+    /* Input is a broken-down array as from gmtime. */
+    if (!(NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_ARRAY)) {
+        c->error = nuq_make_string("mktime: not array", 17);
+        return EMIT_EMPTY;
+    }
+    struct nuq_obj *o = NUQ_PTR(c->input);
+    if (o->arr.len < 6) {
+        c->error = nuq_make_string("mktime: array too short", 23);
+        return EMIT_EMPTY;
+    }
+    struct tm tm = {0};
+    tm.tm_year = (int)NUQ_FIX_VAL(o->arr.items[0]) - 1900;
+    tm.tm_mon  = (int)NUQ_FIX_VAL(o->arr.items[1]);
+    tm.tm_mday = (int)NUQ_FIX_VAL(o->arr.items[2]);
+    tm.tm_hour = (int)NUQ_FIX_VAL(o->arr.items[3]);
+    tm.tm_min  = (int)NUQ_FIX_VAL(o->arr.items[4]);
+    VALUE sec = o->arr.items[5];
+    double secd = NUQ_IS_FIX(sec) ? (double)NUQ_FIX_VAL(sec) : NUQ_PTR(sec)->dbl;
+    tm.tm_sec = (int)secd;
+    time_t t = timegm(&tm);
+    if (t == (time_t)-1) {
+        c->error = nuq_make_string("mktime: out of range", 20);
+        return EMIT_EMPTY;
+    }
+    return nuq_emit_one(c, nuq_make_double((double)t + (secd - (int)secd)));
+}
+
+NODE_DEF
+node_b_strftime(CTX *c, NODE *n, NODE *fmt_n)
+{
+    /* Input must be broken-down (array) like gmtime output. */
+    if (!(NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_ARRAY)) {
+        c->error = nuq_make_string("strftime: not array", 19);
+        return EMIT_EMPTY;
+    }
+    size_t t0 = c->pool_top;
+    EMIT fb = EVAL_ARG(c, fmt_n);
+    if (UNLIKELY(c->error != NUQ_NULL)) return EMIT_EMPTY;
+    if (fb.count == 0 || !(NUQ_IS_PTR(fb.items[0]) && NUQ_PTR(fb.items[0])->type == NUQ_T_STRING)) {
+        c->pool_top = t0;
+        c->error = nuq_make_string("strftime: format not string", 27);
+        return EMIT_EMPTY;
+    }
+    struct nuq_obj *fo = NUQ_PTR(fb.items[0]);
+    char fmt_buf[256];
+    size_t fl = fo->str.len < sizeof(fmt_buf)-1 ? fo->str.len : sizeof(fmt_buf)-1;
+    memcpy(fmt_buf, fo->str.bytes, fl);
+    fmt_buf[fl] = 0;
+    c->pool_top = t0;
+
+    struct nuq_obj *o = NUQ_PTR(c->input);
+    struct tm tm = {0};
+    if (o->arr.len >= 6) {
+        tm.tm_year = (int)NUQ_FIX_VAL(o->arr.items[0]) - 1900;
+        tm.tm_mon  = (int)NUQ_FIX_VAL(o->arr.items[1]);
+        tm.tm_mday = (int)NUQ_FIX_VAL(o->arr.items[2]);
+        tm.tm_hour = (int)NUQ_FIX_VAL(o->arr.items[3]);
+        tm.tm_min  = (int)NUQ_FIX_VAL(o->arr.items[4]);
+        VALUE sec = o->arr.items[5];
+        tm.tm_sec = (int)(NUQ_IS_FIX(sec) ? NUQ_FIX_VAL(sec) : NUQ_PTR(sec)->dbl);
+    }
+    if (o->arr.len >= 7) tm.tm_wday = (int)NUQ_FIX_VAL(o->arr.items[6]);
+    if (o->arr.len >= 8) tm.tm_yday = (int)NUQ_FIX_VAL(o->arr.items[7]);
+    char out[1024];
+    size_t n_out = strftime(out, sizeof(out), fmt_buf, &tm);
+    return nuq_emit_one(c, nuq_make_string(out, n_out));
+}
+
+NODE_DEF
+node_b_strptime(CTX *c, NODE *n, NODE *fmt_n)
+{
+    /* Input is a string; parse with format. */
+    if (!(NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_STRING)) {
+        c->error = nuq_make_string("strptime: not string", 20);
+        return EMIT_EMPTY;
+    }
+    size_t t0 = c->pool_top;
+    EMIT fb = EVAL_ARG(c, fmt_n);
+    if (UNLIKELY(c->error != NUQ_NULL)) return EMIT_EMPTY;
+    if (fb.count == 0 || !(NUQ_IS_PTR(fb.items[0]) && NUQ_PTR(fb.items[0])->type == NUQ_T_STRING)) {
+        c->pool_top = t0;
+        c->error = nuq_make_string("strptime: format not string", 27);
+        return EMIT_EMPTY;
+    }
+    char fmt_buf[256];
+    struct nuq_obj *fo = NUQ_PTR(fb.items[0]);
+    size_t fl = fo->str.len < sizeof(fmt_buf)-1 ? fo->str.len : sizeof(fmt_buf)-1;
+    memcpy(fmt_buf, fo->str.bytes, fl);
+    fmt_buf[fl] = 0;
+    c->pool_top = t0;
+
+    struct nuq_obj *io = NUQ_PTR(c->input);
+    char in_buf[1024];
+    size_t il = io->str.len < sizeof(in_buf)-1 ? io->str.len : sizeof(in_buf)-1;
+    memcpy(in_buf, io->str.bytes, il);
+    in_buf[il] = 0;
+    struct tm tm = {0};
+    if (!strptime(in_buf, fmt_buf, &tm)) {
+        c->error = nuq_make_string("strptime: parse failed", 22);
+        return EMIT_EMPTY;
+    }
+    VALUE arr = nuq_make_array(8);
+    nuq_array_push(arr, nuq_make_int(tm.tm_year + 1900));
+    nuq_array_push(arr, nuq_make_int(tm.tm_mon));
+    nuq_array_push(arr, nuq_make_int(tm.tm_mday));
+    nuq_array_push(arr, nuq_make_int(tm.tm_hour));
+    nuq_array_push(arr, nuq_make_int(tm.tm_min));
+    nuq_array_push(arr, nuq_make_int(tm.tm_sec));
+    nuq_array_push(arr, nuq_make_int(tm.tm_wday));
+    nuq_array_push(arr, nuq_make_int(tm.tm_yday));
+    return nuq_emit_one(c, arr);
+}
+
+NODE_DEF
+node_b_builtins(CTX *c, NODE *n)
+{
+    static const char *names[] = {
+        "length/0","utf8bytelength/0","type/0","keys/0","keys_unsorted/0",
+        "values/0","empty/0","not/0","tostring/0","to_string/0",
+        "tonumber/0","tojson/0","fromjson/0","add/0","min/0","max/0",
+        "sort/0","reverse/0","unique/0","to_entries/0","from_entries/0",
+        "paths/0","leaf_paths/0","floor/0","ceil/0","round/0","fabs/0",
+        "abs/0","sqrt/0","first/0","last/0","any/0","all/0","input/0",
+        "inputs/0","nulls/0","booleans/0","numbers/0","strings/0",
+        "arrays/0","objects/0","iterables/0","scalars/0","isnan/0",
+        "isinfinite/0","infinite/0","nan/0","isnull/0","now/0","env/0",
+        "input_filename/0","error/0","recurse/0","explode/0","implode/0",
+        "ascii_upcase/0","ascii_downcase/0","tojson/0","trim/0","ltrim/0",
+        "rtrim/0","transpose/0","flatten/0","sin/0","cos/0","tan/0",
+        "asin/0","acos/0","atan/0","sinh/0","cosh/0","tanh/0","exp/0",
+        "exp2/0","exp10/0","log/0","log2/0","log10/0","cbrt/0","gamma/0",
+        "tgamma/0","logb/0","significand/0","j0/0","j1/0","y0/0","y1/0",
+        "toboolean/0","builtins/0",
+        "select/1","map/1","map_values/1","with_entries/1","walk/1",
+        "recurse/1","has/1","in/1","contains/1","range/1","split/1",
+        "splits/1","join/1","startswith/1","endswith/1","ltrimstr/1",
+        "rtrimstr/1","first/1","last/1","any/1","all/1","sort_by/1",
+        "group_by/1","unique_by/1","min_by/1","max_by/1","getpath/1",
+        "delpaths/1","del/1","indices/1","index/1","rindex/1","test/1",
+        "ascii/1","flatten/1","isvalid/1","IN/1","isempty/1","error/1",
+        "bsearch/1",
+        "range/2","limit/2","nth/2","skip/2","recurse/2","while/2",
+        "until/2","setpath/2","gsub/2","sub/2","all/2","any/2","pow/2",
+        "range/3",
+    };
+    size_t cnt = sizeof(names) / sizeof(names[0]);
+    VALUE arr = nuq_make_array(cnt);
+    for (size_t i = 0; i < cnt; i++)
+        nuq_array_push(arr, nuq_make_string(names[i], strlen(names[i])));
+    return nuq_emit_one(c, arr);
 }
 
 NODE_DEF

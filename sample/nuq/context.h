@@ -11,6 +11,7 @@
 #include <math.h>
 #include <stdarg.h>
 #include <inttypes.h>
+#include <time.h>
 
 extern void *GC_malloc(size_t);
 extern void *GC_malloc_atomic(size_t);
@@ -381,6 +382,33 @@ struct nuq_def_entry {
     struct Node *body;
 };
 uint32_t nuq_def_block_intern(struct nuq_def_entry *items, size_t cnt);
+
+/* Destructuring patterns for `as`.  jq syntax:
+ *   . as $x | ...                       — PAT_VAR
+ *   . as [$a, $b] | ...                 — PAT_ARRAY
+ *   . as {a: $x, b: $y} | ...           — PAT_OBJECT
+ *   . as {$a, $b} | ...                 — shorthand (key == varname)
+ *   . as {a: [$b, {c: $d}]} | ...       — nested
+ */
+enum nuq_pat_kind { NUQ_PAT_VAR = 1, NUQ_PAT_ARRAY, NUQ_PAT_OBJECT };
+struct nuq_pat;
+struct nuq_pat_obj_entry {
+    const char *key;            /* literal field name to project from input */
+    struct nuq_pat *val;
+};
+struct nuq_pat {
+    enum nuq_pat_kind kind;
+    union {
+        uint32_t var_id;
+        struct { struct nuq_pat **items; size_t len; } arr;
+        struct { struct nuq_pat_obj_entry *items; size_t len; } obj;
+    } u;
+};
+uint32_t nuq_pat_intern(struct nuq_pat *p);
+struct nuq_pat *nuq_pat_get(uint32_t id);
+/* Walk pattern and value pairwise, pushing each var onto var_stack.
+ * Returns the new var_top before push (caller pops to that). */
+size_t nuq_pat_bind(struct CTX_struct *c, struct nuq_pat *p, VALUE v);
 
 /* Each user `def` body is reachable only via runtime dispatch
  * (`EVAL(c, fd->body)` in node_call), so the SD specialiser on the

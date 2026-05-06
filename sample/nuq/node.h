@@ -141,6 +141,7 @@ EMIT nuq_gsub_eval(CTX *c, struct Node *pat, struct Node *repl);
 EMIT nuq_sub_eval(CTX *c, struct Node *pat, struct Node *repl);
 EMIT nuq_rindex_eval(CTX *c, struct Node *pat);
 EMIT nuq_skip_eval(CTX *c, struct Node *cnt, struct Node *body);
+EMIT nuq_path_eval(CTX *c, struct Node *body);
 EMIT nuq_ltrimstr_eval(CTX *c, struct Node *prefix);
 EMIT nuq_rtrimstr_eval(CTX *c, struct Node *suffix);
 EMIT nuq_splits_eval(CTX *c, struct Node *sep);

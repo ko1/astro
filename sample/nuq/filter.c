@@ -475,6 +475,13 @@ build_builtin_call(const char *name, int arity, struct Node **args)
     BUILTIN0("rtrim", ALLOC_node_b_rtrim);
     BUILTIN0("toboolean", ALLOC_node_b_toboolean);
     BUILTIN1("bsearch", ALLOC_node_b_bsearch);
+    BUILTIN0("builtins", ALLOC_node_b_builtins);
+    BUILTIN0("gmtime", ALLOC_node_b_gmtime);
+    BUILTIN0("localtime", ALLOC_node_b_localtime);
+    BUILTIN0("mktime", ALLOC_node_b_mktime);
+    BUILTIN1("path", ALLOC_node_b_path);
+    BUILTIN1("strftime", ALLOC_node_b_strftime);
+    BUILTIN1("strptime", ALLOC_node_b_strptime);
     BUILTIN0("transpose", ALLOC_node_b_transpose);
     BUILTIN1("isempty", ALLOC_node_b_isempty);
     /* `add(f)` left to user-defined `def add(f): ...;` because nuq's
@@ -585,6 +592,92 @@ wrap_quest(struct Node *body)
     return ALLOC_node_try(body, empty_sentinel());
 }
 
+/* ----- destructuring patterns for `as` ----- */
+static struct nuq_pat *parse_pattern(lexer_t *L);
+
+static struct nuq_pat *
+parse_pattern(lexer_t *L)
+{
+    if (accept(L, TK_DOLLAR)) {
+        if (peek(L)->type != TK_IDENT) parse_error(L, "$name in pattern");
+        const char *name = take(L).s;
+        struct nuq_pat *p = (struct nuq_pat *)GC_malloc(sizeof(*p));
+        p->kind = NUQ_PAT_VAR;
+        p->u.var_id = nuq_intern(name);
+        return p;
+    }
+    if (accept(L, TK_LBRK)) {
+        struct nuq_pat **items = NULL; size_t cnt = 0, capa = 0;
+        if (!accept(L, TK_RBRK)) {
+            for (;;) {
+                if (cnt == capa) {
+                    capa = capa ? capa * 2 : 4;
+                    items = (struct nuq_pat **)GC_realloc(items, capa * sizeof(*items));
+                }
+                items[cnt++] = parse_pattern(L);
+                if (accept(L, TK_COMMA)) continue;
+                break;
+            }
+            expect(L, TK_RBRK, "']' in array pattern");
+        }
+        struct nuq_pat *p = (struct nuq_pat *)GC_malloc(sizeof(*p));
+        p->kind = NUQ_PAT_ARRAY;
+        p->u.arr.items = items;
+        p->u.arr.len = cnt;
+        return p;
+    }
+    if (accept(L, TK_LBRACE)) {
+        struct nuq_pat_obj_entry *items = NULL; size_t cnt = 0, capa = 0;
+        if (!accept(L, TK_RBRACE)) {
+            for (;;) {
+                if (cnt == capa) {
+                    capa = capa ? capa * 2 : 4;
+                    items = (struct nuq_pat_obj_entry *)GC_realloc(items, capa * sizeof(*items));
+                }
+                struct nuq_pat_obj_entry *e = &items[cnt++];
+                /* Three forms:
+                 *   $name              -> shorthand: key="name", val=PAT_VAR("name")
+                 *   key:   PAT         -> key from ident/string, val nested
+                 *   $name: PAT         -> key from var name, val nested (rare)
+                 *   (expr): PAT        -> dynamic key (we only support static
+                 *                        ident/string here for simplicity) */
+                const token_t *k = peek(L);
+                if (k->type == TK_DOLLAR) {
+                    take(L);
+                    if (peek(L)->type != TK_IDENT) parse_error(L, "$name in pattern");
+                    const char *name = take(L).s;
+                    if (accept(L, TK_COLON)) {
+                        e->key = name;
+                        e->val = parse_pattern(L);
+                    } else {
+                        /* shorthand: same name for key and var */
+                        e->key = name;
+                        struct nuq_pat *v = (struct nuq_pat *)GC_malloc(sizeof(*v));
+                        v->kind = NUQ_PAT_VAR;
+                        v->u.var_id = nuq_intern(name);
+                        e->val = v;
+                    }
+                } else if (k->type == TK_IDENT || k->type == TK_STR) {
+                    const char *name = take(L).s;
+                    expect(L, TK_COLON, "':' in object pattern");
+                    e->key = name;
+                    e->val = parse_pattern(L);
+                } else parse_error(L, "expected pattern field");
+                if (accept(L, TK_COMMA)) continue;
+                break;
+            }
+            expect(L, TK_RBRACE, "'}' in object pattern");
+        }
+        struct nuq_pat *p = (struct nuq_pat *)GC_malloc(sizeof(*p));
+        p->kind = NUQ_PAT_OBJECT;
+        p->u.obj.items = items;
+        p->u.obj.len = cnt;
+        return p;
+    }
+    parse_error(L, "expected $name, [..] or {..} pattern");
+    return NULL;
+}
+
 /* Tail of an `if` form, called after `if cond then thn` is consumed.
  * Returns the `else` branch (which itself may be a nested if for
  * elif-chains).  Always returns a non-NULL Node — `if c then t end`
@@ -654,6 +747,15 @@ parse_primary(lexer_t *L)
         take(L);
         if (peek(L)->type != TK_IDENT) parse_error(L, "expected $name");
         const char *nm = take(L).s;
+        /* `$__loc__` is jq's special "current source location" pseudo-var.
+         * jq returns `{file:<source>, line:<n>}`; nuq doesn't track
+         * source positions, so we return a stable placeholder. */
+        if (strcmp(nm, "__loc__") == 0) {
+            VALUE obj = nuq_make_object(2);
+            nuq_object_set_cstr(obj, "file", nuq_make_string("<top-level>", 11));
+            nuq_object_set_cstr(obj, "line", nuq_make_int(1));
+            return ALLOC_node_lit(nuq_lit_intern(obj));
+        }
         return ALLOC_node_var(nuq_intern(nm));
       }
       case TK_LP: { take(L); struct Node *e = parse_pipe(L); expect(L, TK_RP, "')'"); return e; }
@@ -984,12 +1086,35 @@ parse_postfix(lexer_t *L)
             acc = wrap_quest(acc);
         } else if (t->type == TK_KW_AS) {
             take(L);
-            expect(L, TK_DOLLAR, "'$'");
-            if (peek(L)->type != TK_IDENT) parse_error(L, "$name");
-            uint32_t vid = nuq_intern(take(L).s);
-            expect(L, TK_PIPE, "'|' after as $x");
+            /* Two forms: simple `as $x` (existing fast path) or
+             * destructuring `as PAT` where PAT is `$x`, `[..]`, or
+             * `{..}`.  The simple `$x` case stays on the fast path
+             * (`node_as`) to avoid pattern-table indirection. */
+            const token_t *p = peek(L);
+            if (p->type == TK_DOLLAR) {
+                /* Could still be the start of a multi-form pattern
+                 * if followed by something exotic; check by greedy
+                 * parse + look for `|` after `$name`. */
+                lexer_t snap = *L;
+                take(L);
+                if (peek(L)->type == TK_IDENT) {
+                    const char *name = take(L).s;
+                    if (peek(L)->type == TK_PIPE) {
+                        /* Simple as $x | body — fast path */
+                        uint32_t vid = nuq_intern(name);
+                        take(L);                   /* consume | */
+                        struct Node *body = parse_pipe(L);
+                        return ALLOC_node_as(acc, vid, body);
+                    }
+                }
+                /* Not the fast form — rewind and parse as a pattern. */
+                *L = snap;
+            }
+            struct nuq_pat *pat = parse_pattern(L);
+            expect(L, TK_PIPE, "'|' after as PAT");
             struct Node *body = parse_pipe(L);
-            return ALLOC_node_as(acc, vid, body);
+            uint32_t pat_id = nuq_pat_intern(pat);
+            return ALLOC_node_as_pattern(acc, pat_id, body);
         } else break;
     }
     return acc;
