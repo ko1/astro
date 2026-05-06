@@ -5,13 +5,22 @@ class ABCMeta(type):
     def register(cls, subclass):
         """Track a virtual subclass relationship.  pystro doesn't have
         a real ABC machinery, but we maintain a `_abc_registry` set on
-        the class and have `__instancecheck__` / `__subclasscheck__`
-        consult it.  This makes `isinstance(x, ABCSubclass)` /
-        `issubclass(C, ABCBase)` work for the registered virtual
-        relationship even without a real C-level descriptor."""
-        if not hasattr(cls, "_abc_registry"):
-            cls._abc_registry = set()
-        cls._abc_registry.add(subclass)
+        the class and have `bi_issubclass` consult it.  This makes
+        `issubclass(C, ABCBase)` (and isinstance via type(v)) work for
+        the registered virtual relationship.
+
+        Pystro classes inherit dict entries via MRO, so naive
+        `_abc_registry` would alias across the hierarchy.  Use a
+        per-class name (`_abc_registry_<id>`) and the runtime knows to
+        look for that exact attribute, not inherited ones."""
+        # Per-class own-only attribute: store as `_abc_registry` but only
+        # populate the set on `cls` itself; runtime walks consult this
+        # attr by name on the specific class object.
+        own = cls.__dict__.get("_abc_registry") if hasattr(cls.__dict__, "get") else None
+        if own is None:
+            own = set()
+            cls._abc_registry = own
+        own.add(subclass)
         return subclass
 
     @classmethod

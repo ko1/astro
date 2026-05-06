@@ -10360,14 +10360,18 @@ bi_issubclass(CTX *c, int argc, VALUE *argv)
     if (!py_is_class(cls)) py_raise_exc(c, c->EXC_TypeError, "issubclass() arg 1 must be a class");
     if (!py_is_class(info)) py_raise_exc(c, c->EXC_TypeError, "issubclass() arg 2 must be a class");
     if (class_is_ancestor(cls, info)) return PY_TRUE;
-    // ABCMeta virtual registry: look up `_abc_registry` on `info` (a set
-    // of registered virtual subclass values).  cls is a virtual subclass
-    // if it equals — or is a real subclass of — anything in the
-    // registry.  Walk `info`'s bases recursively to catch inherited
-    // registries (e.g. Integral inherits Real's registry).
-    VALUE walk = info;
-    while (walk != PY_NONE && py_is_class(walk)) {
-        VALUE reg = py_class_lookup_method(walk, "_abc_registry");
+    // ABCMeta virtual registry: `info._abc_registry` (a set) lists the
+    // virtual subclasses of `info`.  Look it up *own-only* (not via
+    // MRO) so a base class's registry doesn't leak into the subclass —
+    // complex is registered on Number, but that does NOT make complex a
+    // subclass of Integral.
+    {
+        struct pyclass *icd = &PY_PTR(info)->cls;
+        VALUE reg = PY_NONE;
+        for (int j = 0; j < icd->nmethods; j++)
+            if (strcmp(icd->methods[j].name, "_abc_registry") == 0) {
+                reg = icd->methods[j].value; break;
+            }
         if (reg != PY_NONE && py_is_any_set(reg)) {
             struct pydict *dr = PY_PTR(reg)->dict;
             for (size_t i = 0; i < dr->ecapa; i++) {
@@ -10378,10 +10382,6 @@ bi_issubclass(CTX *c, int argc, VALUE *argv)
                 }
             }
         }
-        // Move up the MRO one step.
-        struct pyclass *cd = &PY_PTR(walk)->cls;
-        if (cd->nbases == 0) break;
-        walk = cd->bases[0];
     }
     return PY_FALSE;
 }
