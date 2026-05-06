@@ -4491,18 +4491,63 @@ parse_assignable_target(NODE *rhs)
         const char *tmp = new_temp_name("__nupk");
         NODE *load_tmp;
         NODE *result = build_temp_init(tmp, rhs, &load_tmp);
+        // First scan to see whether any element is starred — if so we
+        // need to know the total count to compute the rest-slice bounds.
+        int total = 0;
+        int star_pos = -1;
+        {
+            size_t save = tok_pos;
+            int depth = 0;
+            while (tok_arr[tok_pos].kind != T_EOF) {
+                int k = tok_arr[tok_pos].kind;
+                if (depth == 0 && k == close) break;
+                if (k == T_LPAREN || k == T_LBRACK || k == T_LBRACE) depth++;
+                else if (k == T_RPAREN || k == T_RBRACK || k == T_RBRACE) depth--;
+                if (depth == 0 && k == T_STAR) star_pos = total;
+                if (depth == 0 && k == T_COMMA) total++;
+                tok_pos++;
+            }
+            if (peek_tok(0)->kind == close
+                    && tok_arr[save].kind != close) total++;
+            tok_pos = save;
+        }
         int i = 0;
+        bool star_seen = false;
+        int after_star_idx = 0;
         if (peek_tok(0)->kind != close) {
             for (;;) {
-                NODE *idx = ALLOC_node_const_int(i);
-                NODE *el  = ALLOC_node_subscript_get(load_tmp, idx);
-                NODE *as  = parse_assignable_target(el);
+                NODE *as = NULL;
+                if (match_tok(T_STAR)) {
+                    // `*rest` — slice [i : -(total - 1 - i)]; subsequent
+                    // items get negative indices counting from the end.
+                    int after = total - 1 - i;
+                    NODE *istart = ALLOC_node_const_int(i);
+                    NODE *istop;
+                    if (after == 0) istop = ALLOC_node_const_none();
+                    else            istop = ALLOC_node_const_int(-after);
+                    NODE *step = ALLOC_node_const_none();
+                    NODE *el = ALLOC_node_slice(load_tmp, istart, istop, step);
+                    as = parse_assignable_target(el);
+                    star_seen = true;
+                    after_star_idx = -after;
+                } else {
+                    NODE *idx;
+                    if (star_seen) {
+                        idx = ALLOC_node_const_int(after_star_idx);
+                        after_star_idx++;
+                    } else {
+                        idx = ALLOC_node_const_int(i);
+                    }
+                    NODE *el  = ALLOC_node_subscript_get(load_tmp, idx);
+                    as = parse_assignable_target(el);
+                }
                 result = ALLOC_node_seq(result, as);
                 i++;
                 if (!match_tok(T_COMMA)) break;
                 if (peek_tok(0)->kind == close) break;
             }
         }
+        (void)star_pos;
         if (close == T_RPAREN) expect(T_RPAREN, "')'");
         else                   expect(T_RBRACK, "']'");
         return result;
