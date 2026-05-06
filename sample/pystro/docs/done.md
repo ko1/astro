@@ -425,7 +425,7 @@ bytecode loop、Boehm GC vs CPython の refcount + cycle collector)。
 
 ## R16 (2026-05-06)
 
-138 → 157 unit tests passing (added 19 new test files).
+138 → 183 unit tests passing (added 45+ new test files).
 
 ### parser
 
@@ -476,3 +476,47 @@ bytecode loop、Boehm GC vs CPython の refcount + cycle collector)。
 - re.py: capturing groups (), backrefs in sub, char-class escapes \\d/\\w,
   lazy quantifiers, IGNORECASE on ranges, subn returning (str, count)
 - sys.exit raises SystemExit (catchable); sys.exc_info() via __pystro_current_exc__
+- sys.setrecursionlimit / getrecursionlimit; CTX gains recursion_limit
+  field (default 1000); call dispatcher raises RecursionError instead
+  of segfaulting on infinite recursion
+
+### later in R16
+
+- **kwarg shadowing fix** (parser bug): `f(type=int)` previously made
+  `int` a local of the caller because the prescan didn't track paren
+  depth; now kwarg names inside calls don't get registered as locals
+- argparse: choices=, nargs='+'/'*', const=, metavar=
+- file methods: seek/tell/readable/writable/seekable/truncate
+- file IO regression test (157)
+- pathlib: name/parent/suffix/stem/parts/parents @property; with_suffix,
+  with_name, unlink(missing_ok=)
+- io.BytesIO seek/tell, normalises chunks via bytes()
+- enum class supports len/iter/'in' via metaclass __len__/__iter__/__contains__
+  on the metaclass; py_seq_len/py_iter_init/py_contains walk
+  __metaclass__ for class objects
+- slice is now a class (TYPE_slice = builtin class with bi_slice ctor),
+  isinstance(slice(1, 5), slice) is True; TYPE_slice saved/restored
+  across module imports
+- dict subclass __missing__ dispatch
+- NotImplemented from __op__ falls through to reflected op (was: returned
+  the NotImplemented sentinel)
+- math.trunc/floor/ceil dispatch __trunc__/__floor__/__ceil__ dunders
+- 0 ** negative_int raises ZeroDivisionError (was: returned inf)
+- int() accepts +/- before 0x/0o/0b prefixes
+- chr() / ord() handle full Unicode via UTF-8 encoding (was: ASCII-only)
+- \\u / \\U escape sequences in string literals → UTF-8 bytes
+- import os.path now binds the top-level name (os) and uses parent-attr
+  lookup when no module file matches the dotted path
+- reversed(bytes), bytes substring/byte 'in' membership
+- bytes ordered comparison (memcmp + length tiebreak)
+- bytearray gets list-like mutators: insert/pop/remove/reverse/clear
+- set.update / set.difference_update accept multiple iterables
+- bool(range) reflects emptiness
+- list .index/.count use identity short-circuit (so [nan].count(nan) is 1)
+- nested classes: Outer.Inner now installed as attr of Outer
+- built-in subclass cmp/eq via primary (MyInt(3) == 3 etc.)
+- float.as_integer_ratio handles 0.0 (was: OverflowError) and raises
+  cleanly on NaN/Infinity
+- exception __traceback__ attr always exists (None for top-level raises)
+- positional class match patterns via __match_args__: case P(0, 0)
+  resolves field names from P.__match_args__ at match time
