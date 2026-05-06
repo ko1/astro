@@ -14,7 +14,7 @@ optflags = -O2
 CC = gcc
 ASTROGEN = ruby -I ../../lib -r astrogen -e 'ASTroGen.start []'
 
-CFLAGS = -I. -I$(RUNTIME) $(optflags) -ggdb3 -Wall -rdynamic
+CFLAGS = -I. -I$(RUNTIME) $(optflags) -ggdb3 -Wall -rdynamic -D_GNU_SOURCE
 LIBS = -ldl -lm -lgc
 
 nuq: main.c node.c runtime.c value.c json.c filter.c builtin.c Makefile $(NODE_GENFILES) context.h node.h

@@ -120,18 +120,36 @@ node_index(CTX *c, NODE *n, NODE *expr)
         if (NUQ_IS_PTR(in) && NUQ_PTR(in)->type == NUQ_T_OBJECT) {
             if (NUQ_IS_PTR(k) && NUQ_PTR(k)->type == NUQ_T_STRING)
                 nuq_pool_push(c, nuq_object_get(in, k));
-            else { c->error = nuq_make_string("object index must be string", 28); return EMIT_EMPTY; }
+            else {
+                char kd[80], msg[120];
+                nuq_value_descr(k, kd, sizeof(kd));
+                int w = snprintf(msg, sizeof(msg), "Object index must be a string, got %s", kd);
+                c->error = nuq_make_string(msg, (size_t)w);
+                return EMIT_EMPTY;
+            }
             continue;
         }
         if (NUQ_IS_PTR(in) && NUQ_PTR(in)->type == NUQ_T_ARRAY) {
             int64_t idx;
             if (NUQ_IS_FIX(k)) idx = NUQ_FIX_VAL(k);
             else if (NUQ_IS_PTR(k) && NUQ_PTR(k)->type == NUQ_T_DOUBLE) idx = (int64_t)NUQ_PTR(k)->dbl;
-            else { c->error = nuq_make_string("array index must be number", 27); return EMIT_EMPTY; }
+            else {
+                char kd[80], msg[120];
+                nuq_value_descr(k, kd, sizeof(kd));
+                int w = snprintf(msg, sizeof(msg), "Array index must be a number, got %s", kd);
+                c->error = nuq_make_string(msg, (size_t)w);
+                return EMIT_EMPTY;
+            }
             nuq_pool_push(c, nuq_array_get(in, idx));
             continue;
         }
-        c->error = nuq_make_string("type error: cannot index", 25);
+        {
+            char id[80], kd[80], msg[180];
+            nuq_value_descr(in, id, sizeof(id));
+            nuq_value_descr(k, kd, sizeof(kd));
+            int w = snprintf(msg, sizeof(msg), "Cannot index %s with %s", id, kd);
+            c->error = nuq_make_string(msg, (size_t)w);
+        }
         return EMIT_EMPTY;
     }
     return nuq_emit_slice(c, top0);
@@ -185,9 +203,10 @@ node_iter(CTX *c, NODE *n)
     /* error message left for `nuq_run` to format from c->error so
      * `try .[] catch ...` and `?` can swallow it without stderr noise. */
     {
-        char msg[64];
-        snprintf(msg, sizeof(msg), "Cannot iterate over %s", nuq_type_name(in));
-        c->error = nuq_make_string(msg, strlen(msg));
+        char descr[80], msg[128];
+        nuq_value_descr(in, descr, sizeof(descr));
+        int w = snprintf(msg, sizeof(msg), "Cannot iterate over %s", descr);
+        c->error = nuq_make_string(msg, (size_t)w);
     }
     return EMIT_EMPTY;
 }
@@ -740,6 +759,13 @@ node_as_pattern(CTX *c, NODE *n, NODE *src, uint32_t pat_id, NODE *body)
     return nuq_emit_slice(c, top0);
 }
 
+/* `lhs as PAT1 ?// PAT2 ?// ... | body` — try alternatives in order. */
+NODE_DEF
+node_as_alt_pattern(CTX *c, NODE *n, NODE *lhs, uint32_t alt_id, NODE *body)
+{
+    return nuq_as_alt_eval(c, lhs, alt_id, body);
+}
+
 NODE_DEF
 node_var(CTX *c, NODE *n, uint32_t var_id)
 {
@@ -771,7 +797,10 @@ node_empty(CTX *c, NODE *n)
 NODE_DEF
 node_error0(CTX *c, NODE *n)
 {
-    c->error = c->input;
+    /* `null` raised as error must still trip the c->error gate, so we
+     * use a distinct null-typed sentinel.  catch handlers see a value
+     * that compares/serialises identically to null. */
+    c->error = (c->input == NUQ_NULL) ? NUQ_NULL_ERR : c->input;
     return EMIT_EMPTY;
 }
 
@@ -805,6 +834,21 @@ NODE_DEF
 node_foreach(CTX *c, NODE *n, NODE *src, uint32_t var_id, NODE *init, NODE *update, NODE *extract)
 {
     return nuq_foreach_eval(c, src, var_id, init, update, extract);
+}
+
+/* `reduce SRC as PAT (INIT; UPDATE)` / `foreach SRC as PAT (INIT;
+ * UPDATE; EXTRACT)` — destructuring variants.  Pattern walks the
+ * value and binds vars before each iteration's UPDATE / EXTRACT. */
+NODE_DEF
+node_reduce_pat(CTX *c, NODE *n, NODE *src, uint32_t pat_id, NODE *init, NODE *update)
+{
+    return nuq_reduce_pat_eval(c, src, pat_id, init, update);
+}
+
+NODE_DEF
+node_foreach_pat(CTX *c, NODE *n, NODE *src, uint32_t pat_id, NODE *init, NODE *update, NODE *extract)
+{
+    return nuq_foreach_pat_eval(c, src, pat_id, init, update, extract);
 }
 
 /* ============= built-ins as dedicated nodes ====================== */
@@ -853,7 +897,10 @@ node_b_tonumber(CTX *c, NODE *n)
 {
     VALUE v;
     if (UNLIKELY(!nuq_to_number(c->input, &v))) {
-        c->error = nuq_make_string("tonumber failed", 16);
+        char d[80], msg[160];
+        nuq_value_descr(c->input, d, sizeof(d));
+        int w = snprintf(msg, sizeof(msg), "%s cannot be parsed as a number", d);
+        c->error = nuq_make_string(msg, (size_t)w);
         return EMIT_EMPTY;
     }
     return nuq_emit_one(c, v);
@@ -1468,7 +1515,7 @@ NODE_DEF
 node_b_trim(CTX *c, NODE *n)
 {
     if (!(NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_STRING))
-        { c->error = nuq_make_string("trim: not string", 16); return EMIT_EMPTY; }
+        { c->error = nuq_make_string("trim input must be a string", 27); return EMIT_EMPTY; }
     struct nuq_obj *o = NUQ_PTR(c->input);
     size_t lo = 0, hi = o->str.len;
     while (lo < hi && (o->str.bytes[lo] == ' ' || o->str.bytes[lo] == '\t' ||
@@ -1582,7 +1629,7 @@ NODE_DEF
 node_b_ltrim(CTX *c, NODE *n)
 {
     if (!(NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_STRING)) {
-        c->error = nuq_make_string("ltrim: not string", 17);
+        c->error = nuq_make_string("trim input must be a string", 27);
         return EMIT_EMPTY;
     }
     struct nuq_obj *o = NUQ_PTR(c->input);
@@ -1596,7 +1643,7 @@ NODE_DEF
 node_b_rtrim(CTX *c, NODE *n)
 {
     if (!(NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_STRING)) {
-        c->error = nuq_make_string("rtrim: not string", 17);
+        c->error = nuq_make_string("trim input must be a string", 27);
         return EMIT_EMPTY;
     }
     struct nuq_obj *o = NUQ_PTR(c->input);
@@ -1618,7 +1665,12 @@ node_b_toboolean(CTX *c, NODE *n)
         if (o->str.len == 5 && memcmp(o->str.bytes, "false", 5) == 0)
             return nuq_emit_one(c, NUQ_FALSE);
     }
-    c->error = nuq_make_string("toboolean: not boolean nor true/false string", 44);
+    {
+        char d[80], msg[160];
+        nuq_value_descr(c->input, d, sizeof(d));
+        int w = snprintf(msg, sizeof(msg), "%s cannot be parsed as a boolean", d);
+        c->error = nuq_make_string(msg, (size_t)w);
+    }
     return EMIT_EMPTY;
 }
 
@@ -1637,6 +1689,24 @@ NODE_DEF
 node_b_path(CTX *c, NODE *n, NODE *body)
 {
     return nuq_path_eval(c, body);
+}
+
+/* `debug` — print `["DEBUG:", input]` to stderr and pass input through. */
+NODE_DEF
+node_b_debug(CTX *c, NODE *n)
+{
+    fprintf(stderr, "[\"DEBUG:\",");
+    nuq_json_print(stderr, c->input, 0);
+    fprintf(stderr, "]\n");
+    return nuq_emit_one(c, c->input);
+}
+
+/* `stderr` — print input to stderr (no newline) in jq form, pass through. */
+NODE_DEF
+node_b_stderr(CTX *c, NODE *n)
+{
+    nuq_json_print(stderr, c->input, 0);
+    return nuq_emit_one(c, c->input);
 }
 
 /* Date / time builtins.  All use the host's <time.h>; jq compatibility
@@ -2068,7 +2138,12 @@ node_b_utf8bytelength(CTX *c, NODE *n)
 {
     if (NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_STRING)
         return nuq_emit_one(c, nuq_make_int((int64_t)NUQ_PTR(c->input)->str.len));
-    c->error = nuq_make_string("utf8bytelength: not string", 26);
+    {
+        char d[80], msg[160];
+        nuq_value_descr(c->input, d, sizeof(d));
+        int w = snprintf(msg, sizeof(msg), "%s only strings have UTF-8 byte length", d);
+        c->error = nuq_make_string(msg, (size_t)w);
+    }
     return EMIT_EMPTY;
 }
 

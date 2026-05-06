@@ -310,6 +310,7 @@ lex_advance(lexer_t *L)
         while (L->p < L->end && (isalnum((unsigned char)*L->p) || *L->p == '_')) L->p++;
         size_t n = (size_t)(L->p - start);
         char *id = strdup_n(start, n);
+        L->tok.s = id;          /* keep name even for keyword tokens */
 #define KW(name, t) if (n == sizeof(name)-1 && memcmp(id, name, n) == 0) { L->tok.type = t; return; }
         KW("true", TK_KW_TRUE);
         KW("false", TK_KW_FALSE);
@@ -366,6 +367,25 @@ expect(lexer_t *L, ttype_t t, const char *what)
 {
     if (peek(L)->type != t) parse_error(L, "expected %s (got token %d)", what, peek(L)->type);
     take(L);
+}
+
+/* Identifier-position token check: TK_IDENT or any TK_KW_* (keywords
+ * are still valid as `$name`, def-param names, def names, label names).
+ * jq permits this — `$then`, `$or`, `def f(then; else): ...` etc. */
+static bool
+is_name_tok(const token_t *t)
+{
+    return t->type == TK_IDENT
+        || t->type == TK_KW_IF || t->type == TK_KW_THEN || t->type == TK_KW_ELIF
+        || t->type == TK_KW_ELSE || t->type == TK_KW_END || t->type == TK_KW_AND
+        || t->type == TK_KW_OR || t->type == TK_KW_NOT || t->type == TK_KW_AS
+        || t->type == TK_KW_DEF || t->type == TK_KW_TRY || t->type == TK_KW_CATCH
+        || t->type == TK_KW_REDUCE || t->type == TK_KW_FOREACH
+        || t->type == TK_KW_LABEL || t->type == TK_KW_BREAK
+        || t->type == TK_KW_IMPORT || t->type == TK_KW_INCLUDE
+        || t->type == TK_KW_MODULE
+        || t->type == TK_KW_TRUE || t->type == TK_KW_FALSE || t->type == TK_KW_NULL
+        ;
 }
 
 /* ----- builtin name resolution ---------------------------------------- */
@@ -476,6 +496,8 @@ build_builtin_call(const char *name, int arity, struct Node **args)
     BUILTIN0("toboolean", ALLOC_node_b_toboolean);
     BUILTIN1("bsearch", ALLOC_node_b_bsearch);
     BUILTIN0("builtins", ALLOC_node_b_builtins);
+    BUILTIN0("debug", ALLOC_node_b_debug);
+    BUILTIN0("stderr", ALLOC_node_b_stderr);
     BUILTIN0("gmtime", ALLOC_node_b_gmtime);
     BUILTIN0("localtime", ALLOC_node_b_localtime);
     BUILTIN0("mktime", ALLOC_node_b_mktime);
@@ -569,7 +591,6 @@ static struct Node *parse_muldiv(lexer_t *L);
 static struct Node *parse_unary(lexer_t *L);
 static struct Node *parse_postfix(lexer_t *L);
 static struct Node *parse_primary(lexer_t *L);
-static struct Node *parse_term_for_keyword(lexer_t *L);
 static struct Node *parse_if_tail(lexer_t *L);
 
 /* For `f?` and bare `try f` (no catch), the handler must still be a
@@ -599,7 +620,7 @@ static struct nuq_pat *
 parse_pattern(lexer_t *L)
 {
     if (accept(L, TK_DOLLAR)) {
-        if (peek(L)->type != TK_IDENT) parse_error(L, "$name in pattern");
+        if (!is_name_tok(peek(L))) parse_error(L, "$name in pattern");
         const char *name = take(L).s;
         struct nuq_pat *p = (struct nuq_pat *)GC_malloc(sizeof(*p));
         p->kind = NUQ_PAT_VAR;
@@ -644,11 +665,25 @@ parse_pattern(lexer_t *L)
                 const token_t *k = peek(L);
                 if (k->type == TK_DOLLAR) {
                     take(L);
-                    if (peek(L)->type != TK_IDENT) parse_error(L, "$name in pattern");
+                    if (!is_name_tok(peek(L))) parse_error(L, "$name in pattern");
                     const char *name = take(L).s;
                     if (accept(L, TK_COLON)) {
+                        /* `{$name: PAT}` — both bind $name AND descend
+                         * with PAT at the same key (jq semantics). We
+                         * realize this by emitting two entries that
+                         * share the key. */
                         e->key = name;
-                        e->val = parse_pattern(L);
+                        struct nuq_pat *v = (struct nuq_pat *)GC_malloc(sizeof(*v));
+                        v->kind = NUQ_PAT_VAR;
+                        v->u.var_id = nuq_intern(name);
+                        e->val = v;
+                        if (cnt == capa) {
+                            capa = capa ? capa * 2 : 4;
+                            items = (struct nuq_pat_obj_entry *)GC_realloc(items, capa * sizeof(*items));
+                        }
+                        struct nuq_pat_obj_entry *e2 = &items[cnt++];
+                        e2->key = name;
+                        e2->val = parse_pattern(L);
                     } else {
                         /* shorthand: same name for key and var */
                         e->key = name;
@@ -745,7 +780,7 @@ parse_primary(lexer_t *L)
       }
       case TK_DOLLAR: {
         take(L);
-        if (peek(L)->type != TK_IDENT) parse_error(L, "expected $name");
+        if (!is_name_tok(peek(L))) parse_error(L, "expected $name");
         const char *nm = take(L).s;
         /* `$__loc__` is jq's special "current source location" pseudo-var.
          * jq returns `{file:<source>, line:<n>}`; nuq doesn't track
@@ -786,7 +821,7 @@ parse_primary(lexer_t *L)
                     ie->kexpr = ALLOC_node_interp((uint32_t)tk.i);
                 } else if (kt->type == TK_DOLLAR) {
                     take(L);
-                    if (peek(L)->type != TK_IDENT) parse_error(L, "$name in obj key");
+                    if (!is_name_tok(peek(L))) parse_error(L, "$name in obj key");
                     ie->kkind = 2;
                     ie->kname = take(L).s;
                     ie->var_id = nuq_intern(ie->kname);
@@ -860,20 +895,52 @@ parse_primary(lexer_t *L)
       }
       case TK_KW_TRY: {
         take(L);
-        struct Node *body = parse_postfix(L);
+        /* try / catch bodies bind unary-minus and postfix; `try -.` and
+         * `catch -.` are valid jq.  Anything looser (arithmetic, |) is
+         * NOT included since it would swallow the catch / following
+         * pipe stages. */
+        struct Node *body = parse_unary(L);
         struct Node *handler = NULL;
-        if (accept(L, TK_KW_CATCH)) handler = parse_postfix(L);
+        if (accept(L, TK_KW_CATCH)) handler = parse_unary(L);
         return ALLOC_node_try(body, handler);
       }
       case TK_KW_REDUCE:
       case TK_KW_FOREACH: {
         bool is_for = (t->type == TK_KW_FOREACH);
         take(L);
-        struct Node *src = parse_term_for_keyword(L);
+        /* The source expression of `reduce` / `foreach` extends up
+         * through `//` (alternative) precedence — `as` is the sentinel
+         * that ends it.  Earlier we used a postfix-only parser which
+         * rejected `[foreach .[] / .[] as $i ...]` (jq accepts it). */
+        struct Node *src = parse_alt(L);
         expect(L, TK_KW_AS, "'as'");
-        expect(L, TK_DOLLAR, "'$'");
-        if (peek(L)->type != TK_IDENT) parse_error(L, "$name");
-        uint32_t var_id = nuq_intern(take(L).s);
+        /* `as PAT` — fast path for `$name`, otherwise pattern. */
+        bool is_pat = false;
+        uint32_t var_id = 0;
+        uint32_t pat_id = 0;
+        if (peek(L)->type == TK_DOLLAR) {
+            lexer_t snap = *L;
+            take(L);
+            if (peek(L)->type == TK_IDENT) {
+                const char *name = take(L).s;
+                if (peek(L)->type == TK_LP) {
+                    var_id = nuq_intern(name);
+                } else {
+                    /* Could be `$name` standalone (var) — both LP and
+                     * non-LP terminate fine for foreach/reduce. */
+                    var_id = nuq_intern(name);
+                }
+            } else {
+                *L = snap;
+                struct nuq_pat *pat = parse_pattern(L);
+                pat_id = nuq_pat_intern(pat);
+                is_pat = true;
+            }
+        } else {
+            struct nuq_pat *pat = parse_pattern(L);
+            pat_id = nuq_pat_intern(pat);
+            is_pat = true;
+        }
         expect(L, TK_LP, "'('");
         struct Node *init = parse_pipe(L);
         expect(L, TK_SEMI, "';'");
@@ -882,18 +949,19 @@ parse_primary(lexer_t *L)
         if (is_for && accept(L, TK_SEMI)) extract = parse_pipe(L);
         expect(L, TK_RP, "')'");
         if (is_for) {
-            /* `foreach SRC as $x (INIT; UPDATE)` (no extract) ≡ extract `.`
-             * — always provide a non-NULL extract so the generated
-             * dispatcher can deref it. */
             if (extract == NULL) extract = ALLOC_node_identity();
+            if (is_pat)
+                return ALLOC_node_foreach_pat(src, pat_id, init, update, extract);
             return ALLOC_node_foreach(src, var_id, init, update, extract);
         }
+        if (is_pat)
+            return ALLOC_node_reduce_pat(src, pat_id, init, update);
         return ALLOC_node_reduce(src, var_id, init, update);
       }
       case TK_KW_LABEL: {
         take(L);
         expect(L, TK_DOLLAR, "'$'");
-        if (peek(L)->type != TK_IDENT) parse_error(L, "$name");
+        if (!is_name_tok(peek(L))) parse_error(L, "$name");
         uint32_t vid = nuq_intern(take(L).s);
         expect(L, TK_PIPE, "'|' after label");
         struct Node *body = parse_pipe(L);
@@ -902,7 +970,7 @@ parse_primary(lexer_t *L)
       case TK_KW_BREAK: {
         take(L);
         expect(L, TK_DOLLAR, "'$' after break");
-        if (peek(L)->type != TK_IDENT) parse_error(L, "$name after break");
+        if (!is_name_tok(peek(L))) parse_error(L, "$name after break");
         uint32_t vid = nuq_intern(take(L).s);
         return ALLOC_node_break(vid);
       }
@@ -912,19 +980,20 @@ parse_primary(lexer_t *L)
         size_t cnt = 0;
         while (peek(L)->type == TK_KW_DEF) {
             take(L);
-            if (peek(L)->type != TK_IDENT) parse_error(L, "def name");
+            if (!is_name_tok(peek(L))) parse_error(L, "def name");
             const char *name = take(L).s;
             int arity = 0;
-            uint32_t pids[8];
-            bool pis_val[8];
+            uint32_t pids[16];
+            bool pis_val[16];
             if (accept(L, TK_LP)) {
                 for (;;) {
+                    if (arity >= 16) parse_error(L, "too many params (max 16)");
                     if (accept(L, TK_DOLLAR)) {
-                        if (peek(L)->type != TK_IDENT) parse_error(L, "$name");
+                        if (!is_name_tok(peek(L))) parse_error(L, "$name");
                         pids[arity] = nuq_intern(take(L).s);
                         pis_val[arity] = true;
                     } else {
-                        if (peek(L)->type != TK_IDENT) parse_error(L, "param");
+                        if (!is_name_tok(peek(L))) parse_error(L, "param");
                         pids[arity] = nuq_intern(take(L).s);
                         pis_val[arity] = false;
                     }
@@ -953,10 +1022,11 @@ parse_primary(lexer_t *L)
       }
       case TK_IDENT: {
         const char *name = take(L).s;
-        struct Node *args[8];
+        struct Node *args[16];
         int arity = 0;
         if (accept(L, TK_LP)) {
             for (;;) {
+                if (arity >= 16) parse_error(L, "too many call args (max 16)");
                 args[arity++] = parse_pipe(L);
                 if (!accept(L, TK_SEMI)) break;
             }
@@ -966,66 +1036,6 @@ parse_primary(lexer_t *L)
       }
       default: parse_error(L, "unexpected token type %d", t->type);
     }
-}
-
-static struct Node *
-parse_term_for_keyword(lexer_t *L)
-{
-    struct Node *acc = parse_primary(L);
-    for (;;) {
-        const token_t *t = peek(L);
-        if (t->type == TK_KW_AS) break;
-        if (t->type == TK_DOT) {
-            take(L);
-            const token_t *p = peek(L);
-            if (p->type == TK_IDENT || p->type == TK_STR) {
-                const char *name = take(L).s;
-                acc = ALLOC_node_pipe(acc, ALLOC_node_field(name));
-            } else if (p->type == TK_LBRK) {
-                take(L);
-                if (accept(L, TK_RBRK)) acc = ALLOC_node_pipe(acc, ALLOC_node_iter());
-                else {
-                    struct Node *e1 = NULL;
-                    if (peek(L)->type != TK_COLON) e1 = parse_pipe(L);
-                    if (accept(L, TK_COLON)) {
-                        struct Node *e2 = NULL;
-                        if (peek(L)->type != TK_RBRK) e2 = parse_pipe(L);
-                        expect(L, TK_RBRK, "']'");
-                        uint32_t flags = 0;
-                        if (e1) flags |= SLICE_HAS_START;
-                        if (e2) flags |= SLICE_HAS_STOP;
-                        acc = ALLOC_node_pipe(acc, ALLOC_node_slice(e1, e2, flags));
-                    } else {
-                        expect(L, TK_RBRK, "']'");
-                        acc = ALLOC_node_pipe(acc, ALLOC_node_index(e1));
-                    }
-                }
-            } else parse_error(L, "expected ident or '['");
-        } else if (t->type == TK_LBRK) {
-            take(L);
-            if (accept(L, TK_RBRK)) acc = ALLOC_node_pipe(acc, ALLOC_node_iter());
-            else {
-                struct Node *e1 = NULL;
-                if (peek(L)->type != TK_COLON) e1 = parse_pipe(L);
-                if (accept(L, TK_COLON)) {
-                    struct Node *e2 = NULL;
-                    if (peek(L)->type != TK_RBRK) e2 = parse_pipe(L);
-                    expect(L, TK_RBRK, "']'");
-                    uint32_t flags = 0;
-                    if (e1) flags |= SLICE_HAS_START;
-                    if (e2) flags |= SLICE_HAS_STOP;
-                    acc = ALLOC_node_pipe(acc, ALLOC_node_slice(e1, e2, flags));
-                } else {
-                    expect(L, TK_RBRK, "']'");
-                    acc = ALLOC_node_pipe(acc, ALLOC_node_index(e1));
-                }
-            }
-        } else if (t->type == TK_QUEST) {
-            take(L);
-            acc = wrap_quest(acc);
-        } else break;
-    }
-    return acc;
 }
 
 /* ----- postfix --------------------------------------------------------- */
@@ -1084,37 +1094,6 @@ parse_postfix(lexer_t *L)
         } else if (t->type == TK_QUEST) {
             take(L);
             acc = wrap_quest(acc);
-        } else if (t->type == TK_KW_AS) {
-            take(L);
-            /* Two forms: simple `as $x` (existing fast path) or
-             * destructuring `as PAT` where PAT is `$x`, `[..]`, or
-             * `{..}`.  The simple `$x` case stays on the fast path
-             * (`node_as`) to avoid pattern-table indirection. */
-            const token_t *p = peek(L);
-            if (p->type == TK_DOLLAR) {
-                /* Could still be the start of a multi-form pattern
-                 * if followed by something exotic; check by greedy
-                 * parse + look for `|` after `$name`. */
-                lexer_t snap = *L;
-                take(L);
-                if (peek(L)->type == TK_IDENT) {
-                    const char *name = take(L).s;
-                    if (peek(L)->type == TK_PIPE) {
-                        /* Simple as $x | body — fast path */
-                        uint32_t vid = nuq_intern(name);
-                        take(L);                   /* consume | */
-                        struct Node *body = parse_pipe(L);
-                        return ALLOC_node_as(acc, vid, body);
-                    }
-                }
-                /* Not the fast form — rewind and parse as a pattern. */
-                *L = snap;
-            }
-            struct nuq_pat *pat = parse_pattern(L);
-            expect(L, TK_PIPE, "'|' after as PAT");
-            struct Node *body = parse_pipe(L);
-            uint32_t pat_id = nuq_pat_intern(pat);
-            return ALLOC_node_as_pattern(acc, pat_id, body);
         } else break;
     }
     return acc;
@@ -1204,6 +1183,56 @@ parse_alt(lexer_t *L)
     return lhs;
 }
 
+/* `LHS as PAT | body` — `as` sits between `|` and `,` in precedence,
+ * so it binds tighter than `,` and looser than arithmetic / `=` / etc.
+ * The body of `as` is parsed at full pipe precedence, so the chain
+ * `a as $x | b as $y | c` builds a right-leaning AS tree.
+ *
+ * `LHS as PAT1 ?// PAT2 ?// ... | body` — alternative destructuring.
+ * Each alternative is tried in order; the first whose top-level
+ * shape matches the value is used. */
+static struct Node *
+parse_as_postfix(lexer_t *L, struct Node *lhs)
+{
+    if (peek(L)->type != TK_KW_AS) return lhs;
+    take(L);
+    /* Try the fast path `$x` (no destructuring, no alternation) before
+     * falling back to the generic pattern parser. */
+    if (peek(L)->type == TK_DOLLAR) {
+        lexer_t snap = *L;
+        take(L);
+        if (is_name_tok(peek(L))) {
+            const char *name = take(L).s;
+            if (peek(L)->type == TK_PIPE) {
+                uint32_t vid = nuq_intern(name);
+                take(L);                          /* consume | */
+                struct Node *body = parse_pipe(L);
+                return ALLOC_node_as(lhs, vid, body);
+            }
+        }
+        *L = snap;
+    }
+    struct nuq_pat *pat = parse_pattern(L);
+    /* Look for `?//` (TK_QUEST followed by TK_ALT). */
+    uint32_t pids[16];
+    size_t pcnt = 0;
+    pids[pcnt++] = nuq_pat_intern(pat);
+    while (peek(L)->type == TK_QUEST) {
+        lexer_t snap = *L;
+        take(L);                              /* consume `?` */
+        if (peek(L)->type != TK_ALT) { *L = snap; break; }
+        take(L);                              /* consume `//` */
+        if (pcnt >= 16) parse_error(L, "too many ?// alternatives");
+        struct nuq_pat *p2 = parse_pattern(L);
+        pids[pcnt++] = nuq_pat_intern(p2);
+    }
+    expect(L, TK_PIPE, "'|' after as PAT");
+    struct Node *body = parse_pipe(L);
+    if (pcnt == 1) return ALLOC_node_as_pattern(lhs, pids[0], body);
+    uint32_t alt_id = nuq_pat_alt_intern(pids, pcnt);
+    return ALLOC_node_as_alt_pattern(lhs, alt_id, body);
+}
+
 /* Assignment level — between comma and alt.  Each `op=` is right-
  * associative single-binding (jq semantics).  Tokens already exist
  * in the lexer (TK_ASSIGN, TK_UPDEQ, ...). */
@@ -1225,11 +1254,21 @@ parse_assign(lexer_t *L)
     return ALLOC_node_assign(lhs, rhs, (uint32_t)op_kind);
 }
 
+/* Each comma element can be followed by an `as PAT | body` clause.
+ * `as` thus sits between assign (`= |= += ...`) and `,` in precedence:
+ * `1 + 2 as $x | -$x` parses as `(1 + 2) as $x | -$x = -3` (jq behavior). */
+static struct Node *
+parse_assign_with_as(lexer_t *L)
+{
+    struct Node *lhs = parse_assign(L);
+    return parse_as_postfix(L, lhs);
+}
+
 static struct Node *
 parse_comma(lexer_t *L)
 {
-    struct Node *lhs = parse_assign(L);
-    while (accept(L, TK_COMMA)) lhs = ALLOC_node_comma(lhs, parse_assign(L));
+    struct Node *lhs = parse_assign_with_as(L);
+    while (accept(L, TK_COMMA)) lhs = ALLOC_node_comma(lhs, parse_assign_with_as(L));
     return lhs;
 }
 
@@ -1366,13 +1405,40 @@ parse_pipe_no_comma(lexer_t *L)
 
 /* ----- entry points ---------------------------------------------------- */
 
+/* Stdlib prelude — jq-compatible defs that wrap the user's filter.
+ * User-level `def name: ...;` shadows these (lookup walks innermost-first).
+ * Keep this list small and avoid recursion that would loop without
+ * tail-call optimization.  Items here unblock direct jq compatibility
+ * for builtins that jq itself implements as defs in its stdlib. */
+static const char *nuq_prelude =
+    "def add(f): reduce f as $x (null; . + $x); "
+    "def pick(f): . as $v | reduce path(f) as $p (null; setpath($p; $v|getpath($p))); "
+    "def IN(s): any(s == .; .); "
+    "def IN(src; s): any(src == s; .); "
+    "def INDEX(stream; idx): reduce stream as $row ({}; .[$row|idx|tostring] = $row); "
+    "def INDEX(idx): INDEX(.[]; idx); "
+    "def JOIN($idx; idx_expr): [.[] | [., $idx[idx_expr]?]]; "
+    "def JOIN($idx; stream; idx_expr; join_expr): "
+    "    [stream | [., $idx[idx_expr]?] | join_expr]; "
+    "def trimstr(s): "
+    "    if type == \"string\" and (s|type) == \"string\" "
+    "    then ltrimstr(s) | rtrimstr(s) "
+    "    else . end; "
+    ;
+
 struct Node *
 nuq_parse_filter(const char *src)
 {
+    /* Concat prelude + user src so prelude defs scope over the filter. */
+    size_t pl = strlen(nuq_prelude), sl = strlen(src);
+    char *buf = (char *)GC_malloc(pl + sl + 1);
+    memcpy(buf, nuq_prelude, pl);
+    memcpy(buf + pl, src, sl);
+    buf[pl + sl] = 0;
     lexer_t L;
-    L.src = src;
-    L.p = src;
-    L.end = src + strlen(src);
+    L.src = buf;
+    L.p = buf;
+    L.end = buf + pl + sl;
     L.peeked = false;
     struct Node *r = parse_pipe(&L);
     if (peek(&L)->type != TK_END) parse_error(&L, "trailing tokens");

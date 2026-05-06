@@ -13,7 +13,8 @@
  */
 #include "context.h"
 
-struct nuq_obj NUQ_NULL_OBJ  = { .type = NUQ_T_NULL };
+struct nuq_obj NUQ_NULL_OBJ      = { .type = NUQ_T_NULL };
+struct nuq_obj NUQ_NULL_ERR_OBJ  = { .type = NUQ_T_NULL };     /* distinct ptr */
 struct nuq_obj NUQ_TRUE_OBJ  = { .type = NUQ_T_BOOL, .b = true };
 struct nuq_obj NUQ_FALSE_OBJ = { .type = NUQ_T_BOOL, .b = false };
 
@@ -491,6 +492,38 @@ nuq_type_name(VALUE v)
     return "unknown";
 }
 
+/* Render `<type> (<json-truncated>)` into `dst` (size `n`).
+ * Used for jq-style error messages such as:
+ *   "Cannot iterate over <descr>"
+ *   "Cannot index <type-of-container> with <descr>"
+ * jq truncates long renderings with '...'.
+ */
+size_t
+nuq_value_descr(VALUE v, char *dst, size_t n)
+{
+    extern void nuq_json_print(FILE *, VALUE, int);
+    const char *tn = nuq_type_name(v);
+    char *json_buf = NULL; size_t jl = 0;
+    FILE *fp = open_memstream(&json_buf, &jl);
+    nuq_json_print(fp, v, 0);
+    fclose(fp);
+    /* Truncate the json rendering to keep the message short (jq uses ~14). */
+    const size_t lim = 14;
+    char buf[64];
+    if (jl <= lim) {
+        memcpy(buf, json_buf, jl);
+        buf[jl] = 0;
+    } else {
+        memcpy(buf, json_buf, lim);
+        memcpy(buf + lim, "...", 3);
+        if (json_buf[0] == '"') { buf[lim + 3] = '"'; buf[lim + 4] = 0; }
+        else buf[lim + 3] = 0;
+    }
+    free(json_buf);
+    int w = snprintf(dst, n, "%s (%s)", tn, buf);
+    return (w < 0) ? 0 : (size_t)w;
+}
+
 VALUE
 nuq_length(VALUE v)
 {
@@ -845,7 +878,10 @@ nuq_op_neg_slow(VALUE a)
     if (NUQ_IS_FIX(a)) return nuq_make_int(-NUQ_FIX_VAL(a));
     if (NUQ_IS_PTR(a) && NUQ_PTR(a)->type == NUQ_T_DOUBLE)
         return nuq_make_double(-NUQ_PTR(a)->dbl);
-    nuq_helper_error("cannot negate %s", nuq_type_name(a));
+    {
+        char d[80]; nuq_value_descr(a, d, sizeof(d));
+        nuq_helper_error("%s cannot be negated", d);
+    }
     return NUQ_NULL;
 }
 

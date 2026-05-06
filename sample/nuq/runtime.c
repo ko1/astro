@@ -177,6 +177,120 @@ nuq_pat_bind(CTX *c, struct nuq_pat *p, VALUE v)
     return saved;
 }
 
+/* `?//` alt-pattern support.  Each alt's pattern is tried in order;
+ * the first whose top-level shape matches the value is used to bind.
+ * Variables referenced by the body but not bound in the chosen alt
+ * default to null — so we pre-bind every var seen across all alts
+ * to null, then layer the chosen alt's bindings on top.  Last-binding
+ * wins in nuq_var_get's top-down scan. */
+
+/* Collect all var_ids referenced by a pattern into out[] (no dedup). */
+static void
+pat_collect_vars(const struct nuq_pat *p, uint32_t *out, size_t *cnt, size_t cap)
+{
+    if (p->kind == NUQ_PAT_VAR) {
+        if (*cnt < cap) out[(*cnt)++] = p->u.var_id;
+    } else if (p->kind == NUQ_PAT_ARRAY) {
+        for (size_t i = 0; i < p->u.arr.len; i++)
+            pat_collect_vars(p->u.arr.items[i], out, cnt, cap);
+    } else {
+        for (size_t i = 0; i < p->u.obj.len; i++)
+            pat_collect_vars(p->u.obj.items[i].val, out, cnt, cap);
+    }
+}
+
+/* Does this pattern's top-level shape match the value's type?
+ * Variable patterns always match.  Array patterns require array.
+ * Object patterns require object.  We don't recurse — jq only needs
+ * a single-level type check to choose between alternatives. */
+static bool
+pat_fits(const struct nuq_pat *p, VALUE v)
+{
+    if (p->kind == NUQ_PAT_VAR) return true;
+    if (p->kind == NUQ_PAT_ARRAY)
+        return NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_ARRAY;
+    return NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_OBJECT;
+}
+
+/* Side table: each entry holds an array of pat_ids forming an alt set. */
+struct pat_alt { uint32_t *pids; size_t cnt; };
+static struct pat_alt *pat_alt_tab = NULL;
+static size_t pat_alt_len = 0, pat_alt_capa = 0;
+
+uint32_t
+nuq_pat_alt_intern(uint32_t *pids, size_t cnt)
+{
+    if (pat_alt_len == pat_alt_capa) {
+        pat_alt_capa = pat_alt_capa ? pat_alt_capa * 2 : 8;
+        pat_alt_tab = (struct pat_alt *)GC_realloc(
+            pat_alt_tab, pat_alt_capa * sizeof(*pat_alt_tab));
+    }
+    uint32_t *copy = (uint32_t *)GC_malloc(cnt * sizeof(uint32_t));
+    memcpy(copy, pids, cnt * sizeof(uint32_t));
+    pat_alt_tab[pat_alt_len].pids = copy;
+    pat_alt_tab[pat_alt_len].cnt = cnt;
+    return (uint32_t)pat_alt_len++;
+}
+
+EMIT
+nuq_as_alt_eval(CTX *c, struct Node *lhs, uint32_t alt_id, struct Node *body)
+{
+    struct pat_alt *pa = &pat_alt_tab[alt_id];
+    size_t outer_top = c->pool_top;
+    EMIT le = EVAL(c, lhs);
+    if (c->error != NUQ_NULL) return EMIT_EMPTY;
+    uint32_t lc = le.count;
+    VALUE small[16];
+    VALUE *lhs_local = (lc <= 16) ? small : (VALUE *)GC_malloc(lc * sizeof(VALUE));
+    memcpy(lhs_local, le.items, lc * sizeof(VALUE));
+    c->pool_top = outer_top;
+
+    /* Collect union of all var_ids across alternatives so unbound
+     * vars referenced by `body` resolve to null. */
+    uint32_t all_vars[64]; size_t all_cnt = 0;
+    for (size_t i = 0; i < pa->cnt; i++) {
+        struct nuq_pat *p = nuq_pat_get(pa->pids[i]);
+        pat_collect_vars(p, all_vars, &all_cnt, sizeof(all_vars)/sizeof(all_vars[0]));
+    }
+
+    VALUE saved_input = c->input;
+    for (uint32_t i = 0; i < lc; i++) {
+        VALUE v = lhs_local[i];
+        size_t v_top = c->var_top;
+        for (size_t j = 0; j < all_cnt; j++) nuq_var_push(c, all_vars[j], NUQ_NULL);
+        bool bound = false;
+        for (size_t j = 0; j < pa->cnt; j++) {
+            struct nuq_pat *p = nuq_pat_get(pa->pids[j]);
+            if (pat_fits(p, v)) {
+                pat_bind_inner(c, p, v);
+                bound = true;
+                break;
+            }
+        }
+        if (!bound) {
+            /* No alternative matched — jq raises an error.  We mimic. */
+            char d[80], msg[160];
+            nuq_value_descr(v, d, sizeof(d));
+            int w = snprintf(msg, sizeof(msg), "%s could not be matched against any alternative", d);
+            c->error = nuq_make_string(msg, (size_t)w);
+            nuq_var_pop(c, v_top);
+            c->input = saved_input;
+            return EMIT_EMPTY;
+        }
+        c->input = v;
+        EMIT be = EVAL(c, body);
+        if (c->error != NUQ_NULL) {
+            nuq_var_pop(c, v_top); c->input = saved_input;
+            return EMIT_EMPTY;
+        }
+        (void)be;     /* body pushes onto pool — slice below captures it */
+        nuq_var_pop(c, v_top);
+    }
+    c->input = saved_input;
+    return nuq_emit_slice(c, outer_top);
+}
+
+
 static const char **fmt_tab = NULL;
 static size_t fmt_tab_len = 0, fmt_tab_capa = 0;
 
@@ -340,7 +454,7 @@ nuq_field_lookup(VALUE in, const char *name, bool optional, VALUE *out)
         return true;
     }
     if (optional) return false;
-    fprintf(stderr, "nuq error: cannot index %s with \"%s\"\n", nuq_type_name(in), name);
+    nuq_helper_error("Cannot index %s with \"%s\"", nuq_type_name(in), name);
     return false;
 }
 
@@ -706,6 +820,87 @@ nuq_foreach_eval(CTX *c, struct Node *src, uint32_t var_id, struct Node *init, s
     return nuq_emit_slice(c, outer_top);
 }
 
+EMIT
+nuq_reduce_pat_eval(CTX *c, struct Node *src, uint32_t pat_id,
+                    struct Node *init, struct Node *update)
+{
+    size_t outer_top = c->pool_top;
+    size_t t0 = c->pool_top;
+    EMIT init_e = EVAL(c, init);
+    if (c->error != NUQ_NULL) return EMIT_EMPTY;
+    VALUE acc = init_e.count > 0 ? init_e.items[0] : NUQ_NULL;
+    c->pool_top = t0;
+
+    EMIT src_e = EVAL(c, src);
+    if (c->error != NUQ_NULL) return EMIT_EMPTY;
+    uint32_t sc = src_e.count;
+    VALUE small[16];
+    VALUE *src_local = (sc <= 16) ? small : (VALUE *)GC_malloc(sc * sizeof(VALUE));
+    memcpy(src_local, src_e.items, sc * sizeof(VALUE));
+    c->pool_top = outer_top;
+
+    struct nuq_pat *pat = nuq_pat_get(pat_id);
+    VALUE saved_input = c->input;
+    for (uint32_t i = 0; i < sc; i++) {
+        size_t t1 = c->pool_top;
+        size_t v_top = nuq_pat_bind(c, pat, src_local[i]);
+        c->input = acc;
+        EMIT up = EVAL(c, update);
+        nuq_var_pop(c, v_top);
+        if (c->error != NUQ_NULL) { c->input = saved_input; return EMIT_EMPTY; }
+        if (up.count > 0) acc = up.items[up.count - 1];
+        c->pool_top = t1;
+    }
+    c->input = saved_input;
+    return nuq_emit_one(c, acc);
+}
+
+EMIT
+nuq_foreach_pat_eval(CTX *c, struct Node *src, uint32_t pat_id,
+                     struct Node *init, struct Node *update, struct Node *extract)
+{
+    size_t outer_top = c->pool_top;
+    size_t t0 = c->pool_top;
+    EMIT init_e = EVAL(c, init);
+    if (c->error != NUQ_NULL) return EMIT_EMPTY;
+    VALUE acc = init_e.count > 0 ? init_e.items[0] : NUQ_NULL;
+    c->pool_top = t0;
+
+    EMIT src_e = EVAL(c, src);
+    if (c->error != NUQ_NULL) return EMIT_EMPTY;
+    uint32_t sc = src_e.count;
+    VALUE small[16];
+    VALUE *src_local = (sc <= 16) ? small : (VALUE *)GC_malloc(sc * sizeof(VALUE));
+    memcpy(src_local, src_e.items, sc * sizeof(VALUE));
+    c->pool_top = outer_top;
+
+    struct nuq_pat *pat = nuq_pat_get(pat_id);
+    VALUE saved_input = c->input;
+    for (uint32_t i = 0; i < sc; i++) {
+        size_t v_top = nuq_pat_bind(c, pat, src_local[i]);
+        c->input = acc;
+        size_t t1 = c->pool_top;
+        EMIT up = EVAL(c, update);
+        if (c->error != NUQ_NULL) { nuq_var_pop(c, v_top); c->input = saved_input; return EMIT_EMPTY; }
+        uint32_t uc = up.count;
+        VALUE usmall[16];
+        VALUE *up_local = (uc <= 16) ? usmall : (VALUE *)GC_malloc(uc * sizeof(VALUE));
+        memcpy(up_local, up.items, uc * sizeof(VALUE));
+        c->pool_top = t1;
+        for (uint32_t j = 0; j < uc; j++) {
+            acc = up_local[j];
+            c->input = acc;
+            (void)EVAL(c, extract);
+            if (c->error != NUQ_NULL) {
+                nuq_var_pop(c, v_top); c->input = saved_input; return EMIT_EMPTY;
+            }
+        }
+        nuq_var_pop(c, v_top);
+    }
+    c->input = saved_input;
+    return nuq_emit_slice(c, outer_top);
+}
+
 /* --- string interp ----------------------------------------------------- */
 
 EMIT
@@ -829,6 +1024,33 @@ fmt_apply(uint32_t fmt_id, VALUE v)
         buf[bl] = '\0';
         return nuq_make_string_take(buf, bl);
     }
+    if (strcmp(fmt, "urid") == 0) {
+        if (!(NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_STRING)) v = nuq_to_json_string(v);
+        struct nuq_obj *so = NUQ_PTR(v);
+        char *buf = (char *)GC_malloc_atomic(so->str.len + 1);
+        size_t bl = 0;
+        for (size_t i = 0; i < so->str.len; i++) {
+            unsigned char ch = (unsigned char)so->str.bytes[i];
+            if (ch == '%' && i + 2 < so->str.len) {
+                int hi = -1, lo = -1;
+                char c1 = so->str.bytes[i + 1], c2 = so->str.bytes[i + 2];
+                if (c1 >= '0' && c1 <= '9') hi = c1 - '0';
+                else if (c1 >= 'A' && c1 <= 'F') hi = c1 - 'A' + 10;
+                else if (c1 >= 'a' && c1 <= 'f') hi = c1 - 'a' + 10;
+                if (c2 >= '0' && c2 <= '9') lo = c2 - '0';
+                else if (c2 >= 'A' && c2 <= 'F') lo = c2 - 'A' + 10;
+                else if (c2 >= 'a' && c2 <= 'f') lo = c2 - 'a' + 10;
+                if (hi >= 0 && lo >= 0) {
+                    buf[bl++] = (char)((hi << 4) | lo);
+                    i += 2;
+                    continue;
+                }
+            }
+            buf[bl++] = (char)ch;
+        }
+        buf[bl] = '\0';
+        return nuq_make_string_take(buf, bl);
+    }
     if (strcmp(fmt, "html") == 0) {
         if (!(NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_STRING)) v = nuq_to_json_string(v);
         struct nuq_obj *so = NUQ_PTR(v);
@@ -917,11 +1139,84 @@ fmt_apply(uint32_t fmt_id, VALUE v)
     return v;
 }
 
+/* `@fmt str_with_interp` — only the interpolated parts are formatted;
+ * the literal string parts of the template pass through unchanged.
+ * jq semantics: `@html "<b>\(.)</b>"` keeps `<b>` and `</b>` raw and
+ * @html-escapes only `\(.)`'s output. */
+extern const struct NodeKind kind_node_interp;
+extern const struct NodeKind kind_node_str;
+
 EMIT
 nuq_format_eval(CTX *c, uint32_t fmt_id, struct Node *body)
 {
     if (body == NULL) {
         return nuq_emit_one(c, fmt_apply(fmt_id, c->input));
+    }
+    /* Per-part formatting when body is an interp node. */
+    if (body->head.kind == &kind_node_interp) {
+        uint32_t parts_id = body->u.node_interp.parts_id;
+        struct interp_entry *e = &interp_tab[parts_id];
+        if (e->cnt > 16) return err_emit(c, "interp too long");
+        struct { VALUE *items; uint32_t count; } parts[16];
+        for (size_t i = 0; i < e->cnt; i++) {
+            size_t t0 = c->pool_top;
+            EMIT pe = EVAL(c, e->parts[i]);
+            if (c->error != NUQ_NULL) return EMIT_EMPTY;
+            uint32_t pc = pe.count;
+            VALUE *b = (VALUE *)GC_malloc(pc * sizeof(VALUE) + 1);
+            bool is_literal = (e->parts[i]->head.kind == &kind_node_str);
+            for (uint32_t j = 0; j < pc; j++) {
+                /* Literal pieces of the template: emit verbatim string;
+                 * everything else: feed through @fmt so we get the
+                 * formatted-and-quoted representation, then if it's a
+                 * string strip the surrounding "" so we can splice
+                 * directly. (fmt_apply for non-string types always
+                 * wraps in quotes; we want the inner text.) */
+                if (is_literal) {
+                    b[j] = nuq_to_json_string(pe.items[j]);
+                } else {
+                    VALUE fv = fmt_apply(fmt_id, pe.items[j]);
+                    /* Strip leading/trailing " from the json-encoded
+                     * formatted string so it concats as text content. */
+                    struct nuq_obj *fo = NUQ_PTR(fv);
+                    if (fo->str.len >= 2 && fo->str.bytes[0] == '"' &&
+                        fo->str.bytes[fo->str.len-1] == '"') {
+                        b[j] = nuq_make_string(fo->str.bytes + 1, fo->str.len - 2);
+                    } else {
+                        b[j] = fv;
+                    }
+                }
+            }
+            parts[i].items = b;
+            parts[i].count = pc;
+            c->pool_top = t0;
+            if (pc == 0) return EMIT_EMPTY;
+        }
+        size_t outer_top = c->pool_top;
+        size_t idx[16] = {0};
+        for (;;) {
+            size_t total = 0; size_t lens[16]; VALUE strs[16];
+            for (size_t i = 0; i < e->cnt; i++) {
+                VALUE s = parts[i].items[idx[i]];
+                strs[i] = s; lens[i] = NUQ_PTR(s)->str.len; total += lens[i];
+            }
+            char *buf = (char *)GC_malloc_atomic(total + 1);
+            char *p = buf;
+            for (size_t i = 0; i < e->cnt; i++) {
+                memcpy(p, NUQ_PTR(strs[i])->str.bytes, lens[i]);
+                p += lens[i];
+            }
+            buf[total] = '\0';
+            nuq_pool_push(c, nuq_make_string_take(buf, total));
+            ssize_t pos = (ssize_t)e->cnt - 1;
+            for (; pos >= 0; pos--) {
+                idx[pos]++;
+                if (idx[pos] < parts[pos].count) break;
+                idx[pos] = 0;
+            }
+            if (pos < 0) break;
+        }
+        return nuq_emit_slice(c, outer_top);
     }
     size_t top0 = c->pool_top;
     EMIT bo = EVAL(c, body);
@@ -1247,7 +1542,7 @@ nuq_flatten1_eval(CTX *c, struct Node *depth_expr)
     c->pool_top = t0;
     if (!NUQ_IS_FIX(dv)) return err_emit(c, "flatten: depth not int");
     int64_t d = NUQ_FIX_VAL(dv);
-    if (d < 0) return err_emit(c, "flatten: negative depth");
+    if (d < 0) return err_emit(c, "flatten depth must not be negative");
     return nuq_emit_one(c, nuq_flatten_eval(c->input, (int)d));
 }
 
@@ -2018,12 +2313,40 @@ nuq_setpath_eval(CTX *c, struct Node *path, struct Node *value)
     return nuq_emit_one(c, setpath_recurse(c->input, keys, kcnt, nv));
 }
 
-/* delpath_recurse: return v with `keys[start..]` deleted. */
+/* delpath_recurse: return v with `keys[start..]` deleted.
+ * Slice-paths look like `{"start":i, "end":j}`. */
+static bool
+is_slice_path_key(VALUE k, int64_t *lo, int64_t *hi)
+{
+    if (!(NUQ_IS_PTR(k) && NUQ_PTR(k)->type == NUQ_T_OBJECT)) return false;
+    VALUE start_v = nuq_object_get_cstr(k, "start");
+    VALUE end_v = nuq_object_get_cstr(k, "end");
+    if (!NUQ_IS_FIX(start_v) || !NUQ_IS_FIX(end_v)) return false;
+    *lo = NUQ_FIX_VAL(start_v);
+    *hi = NUQ_FIX_VAL(end_v);
+    return true;
+}
+
 static VALUE
 delpath_recurse(VALUE v, VALUE *keys, size_t cnt)
 {
     if (cnt == 0) return NUQ_NULL;     /* shouldn't reach: caller handles */
     VALUE k = keys[0];
+    int64_t slo, shi;
+    if (cnt == 1 && is_slice_path_key(k, &slo, &shi)) {
+        if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_ARRAY) {
+            struct nuq_obj *o = NUQ_PTR(v);
+            int64_t total = (int64_t)o->arr.len;
+            if (slo < 0) slo = 0;
+            if (shi > total) shi = total;
+            if (slo >= shi) return v;
+            VALUE clone = nuq_make_array(total - (shi - slo));
+            for (int64_t i = 0; i < slo; i++) nuq_array_push(clone, o->arr.items[i]);
+            for (int64_t i = shi; i < total; i++) nuq_array_push(clone, o->arr.items[i]);
+            return clone;
+        }
+        return v;
+    }
     if (cnt == 1) {
         if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_OBJECT) {
             VALUE clone = nuq_clone(v);
@@ -2057,8 +2380,11 @@ delpath_recurse(VALUE v, VALUE *keys, size_t cnt)
         }
         return v;
     }
-    /* descend, splice updated child back. */
+    /* descend, splice updated child back.  If the key isn't present in
+     * the container, jq's delpaths is a no-op for that path — we must
+     * NOT auto-vivify like setpath does. */
     if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_OBJECT) {
+        if (!nuq_object_has(v, k)) return v;
         VALUE child = nuq_object_get(v, k);
         VALUE updated = delpath_recurse(child, keys + 1, cnt - 1);
         VALUE clone = nuq_clone(v);
@@ -2136,6 +2462,9 @@ extern const struct NodeKind kind_node_iter;
 extern const struct NodeKind kind_node_iter_opt;
 extern const struct NodeKind kind_node_int;
 extern const struct NodeKind kind_node_str;
+extern const struct NodeKind kind_node_call;
+extern const struct NodeKind kind_node_slice;
+extern const struct NodeKind kind_node_comma;
 
 /* ---------- path-mode walk (used by `=` `|=` `+=` ... and `del`) ---------
  *
@@ -2275,6 +2604,30 @@ eval_static_key(struct Node *idx, VALUE *out)
     return false;
 }
 
+/* Evaluate a path-expression's index sub-AST against the current
+ * outer input (`c->input`).  Used as a fallback when `eval_static_key`
+ * can't constant-fold (e.g. `.[$i|tostring]`, `.[range(3)]`).  Only the
+ * first emit is taken — single-output path semantics.  Returns false
+ * (and sets c->error) on multi-output / error.  Path mode keeps
+ * c->input == outer for the duration of walk_path, so EVAL here sees
+ * the same input the caller's filter sees. */
+static bool
+eval_dynamic_key(CTX *c, struct Node *idx, VALUE *out)
+{
+    if (eval_static_key(idx, out)) return true;
+    size_t t0 = c->pool_top;
+    EMIT e = EVAL(c, idx);
+    if (c->error != NUQ_NULL) { c->pool_top = t0; return false; }
+    if (e.count != 1) {
+        c->pool_top = t0;
+        c->error = nuq_make_string("path expression: index must produce exactly one value", 53);
+        return false;
+    }
+    *out = e.items[0];
+    c->pool_top = t0;
+    return true;
+}
+
 static VALUE
 walk_path(CTX *c, struct Node *n, VALUE v, nuq_leaf_fn fn, void *ud)
 {
@@ -2282,6 +2635,13 @@ walk_path(CTX *c, struct Node *n, VALUE v, nuq_leaf_fn fn, void *ud)
     if (n->head.kind == &kind_node_identity) {
         bool dropped = false;
         return fn(v, ud, &dropped);
+    }
+
+    /* 0-arity user-def call — inline the def body so e.g. `del(f)`
+     * inside `def x(f): ...` traverses f's static path. */
+    if (n->head.kind == &kind_node_call && n->u.node_call.arity == 0) {
+        struct nuq_func_def *fd = nuq_func_lookup(c, n->u.node_call.name_id, 0);
+        if (fd && fd->body) return walk_path(c, fd->body, v, fn, ud);
     }
 
     /* pipe(a, b) — recurse into a with "do b then fn" as the leaf */
@@ -2324,9 +2684,8 @@ walk_path(CTX *c, struct Node *n, VALUE v, nuq_leaf_fn fn, void *ud)
         struct Node *idx_expr = (n->head.kind == &kind_node_index)
             ? n->u.node_index.expr : n->u.node_index_opt.expr;
         VALUE k;
-        if (!eval_static_key(idx_expr, &k)) {
-            c->error = nuq_make_string("path expression: dynamic index not supported", 45);
-            return v;
+        if (!eval_dynamic_key(c, idx_expr, &k)) {
+            return v;     /* error already set */
         }
         if (NUQ_IS_FIX(k)) {
             /* int index — array */
@@ -2406,6 +2765,55 @@ walk_path(CTX *c, struct Node *n, VALUE v, nuq_leaf_fn fn, void *ud)
         return v;
     }
 
+    /* slice (`.[i:j]`) — apply fn to the sliced sub-array, splice back. */
+    if (n->head.kind == &kind_node_slice) {
+        struct Node *startn = n->u.node_slice.startn;
+        struct Node *stopn  = n->u.node_slice.stopn;
+        if (!(NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_ARRAY)) {
+            c->error = nuq_make_string("path expression: not array (slice)", 34);
+            return v;
+        }
+        struct nuq_obj *o = NUQ_PTR(v);
+        int64_t total = (int64_t)o->arr.len;
+        int64_t lo = 0, hi = total;
+        if (startn) {
+            VALUE sv;
+            if (!eval_dynamic_key(c, startn, &sv)) return v;
+            if (!NUQ_IS_FIX(sv)) { c->error = nuq_make_string("slice start not int", 19); return v; }
+            lo = NUQ_FIX_VAL(sv);
+        }
+        if (stopn) {
+            VALUE sv;
+            if (!eval_dynamic_key(c, stopn, &sv)) return v;
+            if (!NUQ_IS_FIX(sv)) { c->error = nuq_make_string("slice stop not int", 18); return v; }
+            hi = NUQ_FIX_VAL(sv);
+        }
+        if (lo < 0) lo += total;
+        if (hi < 0) hi += total;
+        if (lo < 0) lo = 0;
+        if (hi > total) hi = total;
+        if (lo > hi) lo = hi;
+        VALUE sub = nuq_make_array(hi - lo);
+        for (int64_t i = lo; i < hi; i++) nuq_array_push(sub, o->arr.items[i]);
+        bool dropped = false;
+        VALUE new_sub = fn(sub, ud, &dropped);
+        if (c->error != NUQ_NULL) return v;
+        VALUE clone = nuq_make_array(total);
+        for (int64_t i = 0; i < lo; i++) nuq_array_push(clone, o->arr.items[i]);
+        if (!dropped) {
+            if (NUQ_IS_PTR(new_sub) && NUQ_PTR(new_sub)->type == NUQ_T_ARRAY) {
+                struct nuq_obj *no = NUQ_PTR(new_sub);
+                for (size_t i = 0; i < no->arr.len; i++)
+                    nuq_array_push(clone, no->arr.items[i]);
+            } else {
+                /* non-array replacement: append as single value (rare). */
+                nuq_array_push(clone, new_sub);
+            }
+        }
+        for (int64_t i = hi; i < total; i++) nuq_array_push(clone, o->arr.items[i]);
+        return clone;
+    }
+
     c->error = nuq_make_string("path expression: unsupported node", 33);
     return v;
 }
@@ -2454,6 +2862,17 @@ path_flatten(struct Node *n, struct Node ***steps, size_t *cnt, size_t *capa)
         return;
     }
     if (n->head.kind == &kind_node_identity) return;   /* identity: no-op */
+    /* User-def call to a 0-arity expr-param (e.g. `path(f)` inside a
+     * `def pick(f): ...` where `f` is `.a.b.c`): inline the def's body
+     * so static-path traversal sees the actual accessors. */
+    if (n->head.kind == &kind_node_call && n->u.node_call.arity == 0) {
+        struct nuq_func_def *fd = nuq_func_lookup(nuq_active_ctx,
+                                                  n->u.node_call.name_id, 0);
+        if (fd && fd->body) {
+            path_flatten(fd->body, steps, cnt, capa);
+            return;
+        }
+    }
     if (*cnt == *capa) {
         *capa = *capa ? *capa * 2 : 8;
         *steps = (struct Node **)GC_realloc(*steps, *capa * sizeof(**steps));
@@ -2486,9 +2905,8 @@ path_dfs(CTX *c, struct Node **steps, size_t step_cnt, size_t k,
         struct Node *idx_expr = (step->head.kind == &kind_node_index)
             ? step->u.node_index.expr : step->u.node_index_opt.expr;
         VALUE kv;
-        if (!eval_static_key(idx_expr, &kv)) {
-            c->error = nuq_make_string("path: dynamic index", 19);
-            return;
+        if (!eval_dynamic_key(c, idx_expr, &kv)) {
+            return;     /* error already set */
         }
         VALUE child = NUQ_NULL;
         if (NUQ_IS_FIX(kv) && NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_ARRAY)
@@ -2520,12 +2938,72 @@ path_dfs(CTX *c, struct Node **steps, size_t step_cnt, size_t k,
         }
         return;
     }
+    if (step->head.kind == &kind_node_slice) {
+        if (!(NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_ARRAY)) return;
+        struct nuq_obj *o = NUQ_PTR(v);
+        int64_t total = (int64_t)o->arr.len;
+        int64_t lo = 0, hi = total;
+        if (step->u.node_slice.startn) {
+            VALUE sv;
+            if (!eval_dynamic_key(c, step->u.node_slice.startn, &sv)) return;
+            if (NUQ_IS_FIX(sv)) lo = NUQ_FIX_VAL(sv);
+        }
+        if (step->u.node_slice.stopn) {
+            VALUE sv;
+            if (!eval_dynamic_key(c, step->u.node_slice.stopn, &sv)) return;
+            if (NUQ_IS_FIX(sv)) hi = NUQ_FIX_VAL(sv);
+        }
+        if (lo < 0) lo += total;
+        if (hi < 0) hi += total;
+        if (lo < 0) lo = 0;
+        if (hi > total) hi = total;
+        if (lo > hi) lo = hi;
+        /* Emit a single slice-path object: {"start":lo,"end":hi}.
+         * jq represents slices in path output exactly this way. */
+        VALUE obj = nuq_make_object(2);
+        nuq_object_set(obj, nuq_make_string("start", 5), nuq_make_int(lo));
+        nuq_object_set(obj, nuq_make_string("end", 3), nuq_make_int(hi));
+        path_push(pu, obj);
+        if (k + 1 == step_cnt) path_emit(pu);
+        pu->cur_len--;
+        return;
+    }
+    /* 0-arity user-def call — inline. */
+    if (step->head.kind == &kind_node_call && step->u.node_call.arity == 0) {
+        struct nuq_func_def *fd = nuq_func_lookup(c, step->u.node_call.name_id, 0);
+        if (fd && fd->body) {
+            struct Node **inner_steps = NULL; size_t inner_cnt = 0, inner_capa = 0;
+            path_flatten(fd->body, &inner_steps, &inner_cnt, &inner_capa);
+            /* Splice inner_steps in place of this step. */
+            struct Node *combined_small[64]; struct Node **combined;
+            size_t combined_cnt = step_cnt + inner_cnt - 1;
+            combined = (combined_cnt <= 64) ? combined_small : (struct Node **)GC_malloc(combined_cnt * sizeof(struct Node *));
+            for (size_t i = 0; i < k; i++) combined[i] = steps[i];
+            for (size_t i = 0; i < inner_cnt; i++) combined[k + i] = inner_steps[i];
+            for (size_t i = k + 1; i < step_cnt; i++) combined[i + inner_cnt - 1] = steps[i];
+            path_dfs(c, combined, combined_cnt, k, v, pu);
+            return;
+        }
+    }
     c->error = nuq_make_string("path: unsupported node", 22);
 }
 
 EMIT
 nuq_path_eval(CTX *c, struct Node *body)
 {
+    /* Comma at the top splits into multiple independent paths — handle
+     * each branch separately so the path-flattening machinery doesn't
+     * choke on the comma node. */
+    if (body->head.kind == &kind_node_comma) {
+        size_t outer = c->pool_top;
+        EMIT a = nuq_path_eval(c, body->u.node_comma.lhs);
+        if (c->error != NUQ_NULL) return EMIT_EMPTY;
+        (void)a;     /* slice already on pool */
+        EMIT b = nuq_path_eval(c, body->u.node_comma.rhs);
+        if (c->error != NUQ_NULL) return EMIT_EMPTY;
+        (void)b;
+        return nuq_emit_slice(c, outer);
+    }
     struct Node **steps = NULL; size_t cnt = 0, capa = 0;
     path_flatten(body, &steps, &cnt, &capa);
     size_t outer = c->pool_top;
@@ -2595,6 +3073,37 @@ nuq_del_eval(CTX *c, struct Node *path_expr)
     /* del(.) returns null in jq. */
     if (path_expr->head.kind == &kind_node_identity)
         return nuq_emit_one(c, NUQ_NULL);
+    /* `del(p1, p2, ...)` — collect paths from each comma branch, sort
+     * descending, delete one-by-one (array-index shift safe).  Use
+     * `nuq_path_eval` to handle each branch (which gives us the same
+     * path normalization as path()). */
+    if (path_expr->head.kind == &kind_node_comma) {
+        size_t outer = c->pool_top;
+        EMIT pe = nuq_path_eval(c, path_expr);
+        if (c->error != NUQ_NULL) return EMIT_EMPTY;
+        uint32_t pcnt = pe.count;
+        VALUE small[64];
+        VALUE *paths = (pcnt <= 64) ? small : (VALUE *)GC_malloc(pcnt * sizeof(VALUE));
+        memcpy(paths, pe.items, pcnt * sizeof(VALUE));
+        c->pool_top = outer;
+        for (uint32_t i = 1; i < pcnt; i++) {
+            VALUE x = paths[i];
+            uint32_t j = i;
+            while (j > 0 && nuq_cmp(paths[j-1], x) < 0) {
+                paths[j] = paths[j-1]; j--;
+            }
+            paths[j] = x;
+        }
+        VALUE cur = c->input;
+        for (uint32_t i = 0; i < pcnt; i++) {
+            VALUE p = paths[i];
+            if (!(NUQ_IS_PTR(p) && NUQ_PTR(p)->type == NUQ_T_ARRAY)) continue;
+            struct nuq_obj *po = NUQ_PTR(p);
+            if (po->arr.len == 0) { cur = NUQ_NULL; continue; }
+            cur = delpath_recurse(cur, po->arr.items, po->arr.len);
+        }
+        return nuq_emit_one(c, cur);
+    }
     VALUE result = walk_path(c, path_expr, c->input, delete_leaf, NULL);
     if (c->error != NUQ_NULL) return EMIT_EMPTY;
     return nuq_emit_one(c, result);
@@ -2667,7 +3176,11 @@ nuq_limit_eval(CTX *c, struct Node *cnt, struct Node *body)
 
     for (uint32_t k = 0; k < ccnt; k++) {
         int64_t n = ns[k];
-        if (n <= 0) continue;     /* jq: non-positive count → empty */
+        if (n < 0) {
+            c->error = nuq_make_string("limit doesn't support negative count", 36);
+            return EMIT_EMPTY;
+        }
+        if (n == 0) continue;     /* zero count → empty */
         size_t before = c->pool_top;
         EMIT bo = EVAL(c, body);
         if (c->error != NUQ_NULL) return EMIT_EMPTY;

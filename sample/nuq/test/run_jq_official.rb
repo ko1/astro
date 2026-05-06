@@ -27,10 +27,15 @@ abort "nuq missing — run `make`" unless File.executable?(NUQ)
 abort "test file missing: #{TEST}" unless File.file?(TEST)
 
 # Parse the file into [{filter, input, expected, fail_expected}, ...]
+# `# Runtime error: "..."` comments inside a block also flag fail_expected
+# (jq.test uses this convention for tests that should error, alongside
+# the explicit `%%FAIL` prefix).
 def parse_tests(path)
   tests = []
   File.read(path).split(/\n\n+/).each do |block|
-    lines = block.lines.map(&:chomp).reject { |l| l.lstrip.start_with?('#') || l.strip.empty? }
+    raw_lines = block.lines.map(&:chomp)
+    runtime_err = raw_lines.any? { |l| l =~ /^\s*#\s*Runtime\s+error/i }
+    lines = raw_lines.reject { |l| l.lstrip.start_with?('#') || l.strip.empty? }
     next if lines.empty?
     filter = lines.shift
     fail_expected = false
@@ -39,6 +44,7 @@ def parse_tests(path)
       filter.sub!(/\A%%FAIL(?:\s+IGNORE\s+MSG)?\s*/, '')
       next if filter.empty?
     end
+    fail_expected ||= runtime_err
     next if lines.empty?
     input = lines.shift
     expected = lines

@@ -94,8 +94,11 @@ struct nuq_obj {
     };
 };
 
-extern struct nuq_obj NUQ_NULL_OBJ, NUQ_TRUE_OBJ, NUQ_FALSE_OBJ;
+extern struct nuq_obj NUQ_NULL_OBJ, NUQ_TRUE_OBJ, NUQ_FALSE_OBJ, NUQ_NULL_ERR_OBJ;
 #define NUQ_NULL  NUQ_OBJ_VAL(&NUQ_NULL_OBJ)
+/* Distinct null-typed sentinel used as `c->error` when `error/0` is
+ * raised on a null input (since NUQ_NULL itself means "no error"). */
+#define NUQ_NULL_ERR  NUQ_OBJ_VAL(&NUQ_NULL_ERR_OBJ)
 #define NUQ_TRUE  NUQ_OBJ_VAL(&NUQ_TRUE_OBJ)
 #define NUQ_FALSE NUQ_OBJ_VAL(&NUQ_FALSE_OBJ)
 
@@ -221,6 +224,7 @@ int   nuq_cmp_slow     (VALUE a, VALUE b);
 bool  nuq_truthy_slow  (VALUE v);
 VALUE nuq_make_int_slow(int64_t v);
 const char *nuq_type_name(VALUE v);
+size_t nuq_value_descr(VALUE v, char *dst, size_t n);
 VALUE nuq_length(VALUE v);
 VALUE nuq_keys(VALUE v, bool sorted);
 VALUE nuq_values(VALUE v);
@@ -409,6 +413,7 @@ struct nuq_pat *nuq_pat_get(uint32_t id);
 /* Walk pattern and value pairwise, pushing each var onto var_stack.
  * Returns the new var_top before push (caller pops to that). */
 size_t nuq_pat_bind(struct CTX_struct *c, struct nuq_pat *p, VALUE v);
+uint32_t nuq_pat_alt_intern(uint32_t *pids, size_t cnt);
 
 /* Each user `def` body is reachable only via runtime dispatch
  * (`EVAL(c, fd->body)` in node_call), so the SD specialiser on the

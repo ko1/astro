@@ -121,6 +121,9 @@ EMIT nuq_user_call  (CTX *c, uint32_t name_id, uint32_t arity, uint32_t args_id)
 EMIT nuq_defs_eval  (CTX *c, uint32_t defs_id, struct Node *body);
 EMIT nuq_reduce_eval(CTX *c, struct Node *src, uint32_t var_id, struct Node *init, struct Node *update);
 EMIT nuq_foreach_eval(CTX *c, struct Node *src, uint32_t var_id, struct Node *init, struct Node *update, struct Node *extract);
+EMIT nuq_reduce_pat_eval(CTX *c, struct Node *src, uint32_t pat_id, struct Node *init, struct Node *update);
+EMIT nuq_foreach_pat_eval(CTX *c, struct Node *src, uint32_t pat_id, struct Node *init, struct Node *update, struct Node *extract);
+EMIT nuq_as_alt_eval(CTX *c, struct Node *lhs, uint32_t alt_id, struct Node *body);
 EMIT nuq_interp_eval(CTX *c, uint32_t parts_id);
 EMIT nuq_format_eval(CTX *c, uint32_t fmt_id, struct Node *body);
 EMIT nuq_map_values_eval(CTX *c, struct Node *body);
