@@ -946,6 +946,10 @@ prescan_comp_targets(int close_kind)
     tok_pos = save;
 }
 
+// Forward decls: implemented below parse_paren_or_tuple.
+static NODE *parse_genexp_lazy(int saved_remap_at_paren);
+static NODE *build_for_loop(const char *target_name, NODE *iter, NODE *body);
+
 // `( expr_list )` — single → expr; multi (or trailing comma) → tuple.
 // Also handles `( expr for ... )` generator expression form.
 static NODE *
@@ -1003,28 +1007,39 @@ parse_paren_or_tuple(void)
         }
     }
     int saved_remap = comp_remap_top;
+    // Detect generator expression: scan forward past first expr looking
+    // for top-level `for` before the closing `)`.  If we find one, take
+    // the lazy-genexp path that synthesises a generator function with
+    // `(expr) for x in OUTER` desugared as
+    //   def __genexp$N(.0):
+    //       for x in .0:
+    //           yield expr
+    //   __genexp$N(iter(OUTER))
+    // so the source is consumed lazily (matches CPython).  Inner clauses
+    // (nested for / if) and the expr live in the synthesised function's
+    // scope; the outermost iterable is captured eagerly in the parent.
+    {
+        size_t look = tok_pos;
+        int depth = 0;
+        bool is_genexp = false;
+        while (tok_arr[look].kind != T_EOF) {
+            int kk = tok_arr[look].kind;
+            if (kk == T_LPAREN || kk == T_LBRACK || kk == T_LBRACE) depth++;
+            else if (kk == T_RPAREN || kk == T_RBRACK || kk == T_RBRACE) {
+                if (depth == 0) break;
+                depth--;
+            }
+            else if (depth == 0 && kk == T_FOR) { is_genexp = true; break; }
+            look++;
+        }
+        if (is_genexp) {
+            NODE *r = parse_genexp_lazy(saved_remap);
+            expect(T_RPAREN, "')'");
+            return r;
+        }
+    }
     prescan_comp_targets(T_RPAREN);
     NODE *first = parse_expr();
-    // Generator expression: (expr for x in xs (if cond)*)+.  Desugar
-    // to a list comprehension — eager, but matches Python's observable
-    // behavior for the vast majority of uses (non-infinite source).
-    if (peek_tok(0)->kind == T_FOR) {
-        // Genexp: build a list eagerly, then wrap with iter() so the
-        // result presents as an iterator (true laziness would require a
-        // synthesised generator function).
-        const char *tmp = new_temp_name("__ge");
-        NODE *load_tmp;
-        size_t empty_idx = node_table_reserve(NULL, 0);
-        NODE *init = build_temp_init(tmp, ALLOC_node_make_list((uint32_t)empty_idx, 0), &load_tmp);
-        NODE *append = ALLOC_node_method_1(load_tmp, intern_name("append", 6), first);
-        NODE *loops = parse_comp_clauses(append);
-        expect(T_RPAREN, "')'");
-        comp_remap_top = saved_remap;
-        NODE *body = ALLOC_node_seq(init, ALLOC_node_seq(loops, load_tmp));
-        NODE *iter_call = ALLOC_node_call_1(
-            ALLOC_node_gref(intern_name("iter", 4)), body);
-        return iter_call;
-    }
     comp_remap_top = saved_remap;
     if (match_tok(T_RPAREN)) return first;
     // tuple
@@ -1038,6 +1053,135 @@ parse_paren_or_tuple(void)
     expect(T_RPAREN, "')'");
     size_t base = node_table_reserve(items, n);
     return ALLOC_node_make_tuple((uint32_t)base, (uint32_t)n);
+}
+
+// Lazy generator expression: `(expr for x in xs (if cond)* (for y in ys ...)*)`.
+// Synthesises a generator function bound to a fresh scope.  The OUTERMOST
+// iterable is parsed in the parent scope (eagerly evaluated when the
+// genexp value is constructed); everything else lives in the synth scope.
+static int genexp_fn_uid = 0;
+static NODE *
+parse_genexp_lazy(int saved_remap_at_paren)
+{
+    Scope *parent_scope = cur_scope;
+    Scope sc = {0};
+    sc.parent = parent_scope;
+    sc.is_generator = true;
+    cur_scope = &sc;
+    // The parent scope hosts a synthesised generator function (the
+    // genexp).  That generator escapes the parent's call (callers can
+    // hold the genexp value), so the parent's frame must live on the
+    // heap, not alloca.  Pre-scan token-walk doesn't see synthesised
+    // defs, so flip has_nested_def explicitly here.
+    if (parent_scope) parent_scope->has_nested_def = true;
+
+    // Slot 0: synthesised parameter ".0" — receives iter(OUTER_ITER).
+    const char *p0 = intern_name(".0", 2);
+    int p0_slot = scope_add_local(&sc, p0);
+    (void)p0_slot;
+
+    // prescan auto-allocates `__cmp$N$x` style synth names as locals in
+    // the (currently active) synth scope.
+    prescan_comp_targets(T_RPAREN);
+
+    NODE *first = parse_expr();
+    if (peek_tok(0)->kind != T_FOR) {
+        // Should not happen — caller verified genexp lookahead.
+        cur_scope = parent_scope;
+        comp_remap_top = saved_remap_at_paren;
+        return first;
+    }
+
+    expect(T_FOR, "'for'");
+    if (peek_tok(0)->kind != T_NAME)
+        parse_error("expected target NAME in genexp");
+    const char *first_var = comp_resolve(peek_tok(0)->sval);
+    tok_pos++;
+    // Tuple targets: collect names.  `for a, b in xs` → unpack.
+    const char *first_extra[16]; int n_first_extra = 0;
+    while (match_tok(T_COMMA)) {
+        if (peek_tok(0)->kind != T_NAME) break;
+        if (n_first_extra >= 16) parse_error("tuple target too long");
+        first_extra[n_first_extra++] = comp_resolve(peek_tok(0)->sval);
+        tok_pos++;
+    }
+    expect(T_IN, "'in'");
+
+    // OUTER iterable: parse in parent scope.
+    Scope *saved = cur_scope;
+    cur_scope = parent_scope;
+    NODE *outer_iter = parse_or();
+    cur_scope = saved;
+
+    // Build inner_body = yield first.
+    NODE *body = ALLOC_node_yield(first);
+
+    // Trailing if-conditions on the outermost for-clause.
+    while (peek_tok(0)->kind == T_IF) {
+        tok_pos++;
+        NODE *cond = parse_or();
+        body = ALLOC_node_if(cond, body, ALLOC_node_nop());
+    }
+
+    // Inner `for` clauses — parse_comp_clauses handles them in synth
+    // scope (their iterables are evaluated lazily inside the generator).
+    if (peek_tok(0)->kind == T_FOR) {
+        body = parse_comp_clauses(body);
+    }
+
+    // Caller (parse_paren_or_tuple or parse_call_args) consumes the ')'.
+    comp_remap_top = saved_remap_at_paren;
+
+    // Build the outer for-loop: `for first_var in .0: body`.
+    NODE *load_p0 = ALLOC_node_lref(0);
+    NODE *outer_loop;
+    if (n_first_extra == 0) {
+        outer_loop = build_for_loop(first_var, load_p0, body);
+    } else {
+        // Tuple target — desugar to `tmp = item; first_var = tmp[0]; ...`.
+        const char *tmp = new_temp_name("__forT");
+        int tmp_slot = scope_add_local(&sc, tmp);
+        NODE *prefix = NULL;
+        const char *all_names[17];
+        all_names[0] = first_var;
+        for (int i = 0; i < n_first_extra; i++) all_names[i+1] = first_extra[i];
+        for (int i = n_first_extra; i >= 0; i--) {
+            NODE *idx_n = ALLOC_node_const_int(i);
+            NODE *load_tmp = ALLOC_node_lref((uint32_t)tmp_slot);
+            NODE *el = ALLOC_node_subscript_get(load_tmp, idx_n);
+            int s = scope_add_local(&sc, all_names[i]);
+            NODE *st = ALLOC_node_lset((uint32_t)s, el);
+            prefix = prefix ? ALLOC_node_seq(st, prefix) : st;
+        }
+        NODE *combined = ALLOC_node_seq(prefix, body);
+        outer_loop = ALLOC_node_for_local((uint32_t)tmp_slot, load_p0, combined,
+                                           ALLOC_node_nop());
+    }
+
+    // Reserve the param-name table.
+    const char *param_names[1] = { p0 };
+    uint32_t nidx = (uint32_t)name_table_reserve(param_names, 1);
+    uint32_t didx = (uint32_t)defaults_reserve(NULL, 0);
+
+    char buf[32];
+    snprintf(buf, sizeof(buf), "__genexp$%d__", genexp_fn_uid++);
+    const char *fname = intern_name(buf, strlen(buf));
+
+    // is_generator=1, leaf=0 (yield is non-leaf).
+    NODE *def_node = ALLOC_node_def(fname, 1, 1,
+                                    (uint32_t)sc.nlocals,
+                                    0, didx,
+                                    0,                       // leaf
+                                    nidx, 0,                 // flags
+                                    1,                       // is_gen
+                                    outer_loop);
+
+    // Restore parent scope for the call site.
+    cur_scope = parent_scope;
+
+    NODE *iter_call = ALLOC_node_call_1(
+        ALLOC_node_gref(intern_name("iter", 4)), outer_iter);
+    return ALLOC_node_call_1(def_node, iter_call);
 }
 
 // ---------------------------------------------------------------------------
@@ -1677,19 +1821,32 @@ parse_call_args(NODE *fn)
                 spreads[nspreads].kind = 2; spreads[nspreads].name = nm; spreads[nspreads].node = e;
                 nspreads++;
             } else {
-                // `f(expr for x in xs)` — implicit gen-expression as
-                // the sole argument.  Pre-scan to register `for` targets.
+                // `f(expr for x in xs)` — implicit lazy gen-expression
+                // as the sole argument.  Lookahead for top-level `for`
+                // before `)` to detect; if found, take the same lazy
+                // synth-def path used by `(expr for x in xs)`.
                 int saved_remap_ge = comp_remap_top;
-                if (argc == 0 && nspreads == 0) prescan_comp_targets(T_RPAREN);
-                NODE *e = parse_expr();
-                if (peek_tok(0)->kind == T_FOR && argc == 0 && nspreads == 0) {
-                    const char *tmp = new_temp_name("__ge");
-                    NODE *load_tmp;
-                    size_t empty_idx = node_table_reserve(NULL, 0);
-                    NODE *init = build_temp_init(tmp, ALLOC_node_make_list((uint32_t)empty_idx, 0), &load_tmp);
-                    NODE *append = ALLOC_node_method_1(load_tmp, intern_name("append", 6), e);
-                    NODE *loops = parse_comp_clauses(append);
-                    e = ALLOC_node_seq(init, ALLOC_node_seq(loops, load_tmp));
+                NODE *e;
+                bool inline_genexp = false;
+                if (argc == 0 && nspreads == 0) {
+                    size_t look = tok_pos;
+                    int depth = 0;
+                    while (tok_arr[look].kind != T_EOF) {
+                        int kk = tok_arr[look].kind;
+                        if (kk == T_LPAREN || kk == T_LBRACK || kk == T_LBRACE) depth++;
+                        else if (kk == T_RPAREN || kk == T_RBRACK || kk == T_RBRACE) {
+                            if (depth == 0) break;
+                            depth--;
+                        }
+                        else if (depth == 0 && kk == T_COMMA) break;  // not a sole arg
+                        else if (depth == 0 && kk == T_FOR) { inline_genexp = true; break; }
+                        look++;
+                    }
+                }
+                if (inline_genexp) {
+                    e = parse_genexp_lazy(saved_remap_ge);
+                } else {
+                    e = parse_expr();
                 }
                 comp_remap_top = saved_remap_ge;
                 if (argc >= 64) parse_error("too many args");
