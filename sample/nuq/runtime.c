@@ -562,13 +562,16 @@ nuq_slice_eval(CTX *c, struct Node *startn, struct Node *stopn, uint32_t flags, 
     if (stop  < start) stop = start;
 
     if (is_str) {
-        /* Convert codepoint indices to byte offsets. */
+        /* Convert codepoint indices to byte offsets in a single pass. */
         struct nuq_obj *o = NUQ_PTR(in);
         size_t bs = 0, be = o->str.len;
+        bool bs_set = false, be_set = false;
         int64_t cp = 0;
-        for (size_t i = 0; i < o->str.len; ) {
-            if (cp == start) bs = i;
-            if (cp == stop)  { be = i; break; }
+        size_t i = 0;
+        while (i <= o->str.len) {
+            if (!bs_set && cp == start) { bs = i; bs_set = true; }
+            if (!be_set && cp == stop)  { be = i; be_set = true; break; }
+            if (i == o->str.len) break;
             unsigned char x = (unsigned char)o->str.bytes[i];
             if (x < 0x80) i += 1;
             else if ((x & 0xE0) == 0xC0) i += 2;
@@ -576,10 +579,9 @@ nuq_slice_eval(CTX *c, struct Node *startn, struct Node *stopn, uint32_t flags, 
             else if ((x & 0xF8) == 0xF0) i += 4;
             else i += 1;
             cp++;
-            if (cp == stop) { be = i; break; }
         }
-        if (start >= length) bs = o->str.len;
-        if (stop  >= length) be = o->str.len;
+        if (!bs_set) bs = o->str.len;
+        if (!be_set) be = o->str.len;
         return nuq_emit_one(c, nuq_make_string(o->str.bytes + bs, be - bs));
     }
     struct nuq_obj *o = NUQ_PTR(in);
