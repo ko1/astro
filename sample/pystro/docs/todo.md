@@ -6,7 +6,7 @@
 
 ## 残課題 (現在)
 
-R11–R17 で深掘り (test 78–210 追加, **211 unit tests passing**)。 [done.md](./done.md) に詳細。
+R11–R17 で深掘り (test 78–211 追加, **212 unit tests passing**)。 [done.md](./done.md) に詳細。
 
 ### R17 (2026-05-06) で追加した CPython 互換項目
 
@@ -46,6 +46,10 @@ R11–R17 で深掘り (test 78–210 追加, **211 unit tests passing**)。 [do
 | inspect.signature | `__code__` から param 名を読んで CPython 風に str() |
 | dataclasses.InitVar | + KW_ONLY / MISSING / FrozenInstanceError exposed |
 | json.JSONEncoder etc | subclass 可能な JSONEncoder / JSONDecoder / JSONDecodeError |
+| 関数 `__annotations__` | `def f(x: int) -> bool` 等を `{"x": int, "return": bool}` に格納 |
+| PEP 585 `list[int]` etc | built-in container generic alias — annotation 用に subscript 可能 |
+| cls.`__class__` | class 自体の class は metaclass (default `type`) |
+| typing.get_origin/get_args | 簡易実装 |
 
 ### 残存する仕様上の差分 (低優先)
 
@@ -78,10 +82,10 @@ R11–R17 で深掘り (test 78–210 追加, **211 unit tests passing**)。 [do
 - **R16 で comp scope leak は修正済**: `[i for i in xs]; print(i)` → NameError
 - 真の lazy 化 (synthetic gen function) は parser 側で大規模変更必要。
 
-#### S-22. function annotations
-- `def f(x: int) -> bool: ...` の annotations は parse 後 discard。
-- `f.__annotations__` は `{}`。class annotations は値持ちで動作 (R17 修正)。
-- typing.get_type_hints は class には効くが function には効かない。
+#### S-22. function annotations ✅ (R17)
+- `def f(x: int) -> bool: ...` の `f.__annotations__` が
+  `{"x": int, "return": bool}` を返す (R17 で修正)。
+- typing.get_type_hints / inspect.signature ともに function に効く。
 
 #### S-23. except* (PEP 654 — exception groups)
 - 未対応。`raise ExceptionGroup(...)` / `except* T:` は parse error。
