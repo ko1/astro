@@ -1654,22 +1654,43 @@ py_bit_or(CTX *c, VALUE a, VALUE b)
         return r;
     }
     // PEP 604: `int | str` constructs a UnionType.  Pystro doesn't have
-    // a real UnionType class — represent it as a tuple of classes, which
-    // is also accepted by isinstance() / issubclass() / except.
-    if (py_is_class(a) && py_is_class(b)) {
+    // a real UnionType class — represent it as a tuple of classes (and
+    // None, for `T | None` Optional form), which is also accepted by
+    // isinstance() / issubclass() / except.
+    bool a_is_class_or_none = py_is_class(a) || a == PY_NONE;
+    bool b_is_class_or_none = py_is_class(b) || b == PY_NONE;
+    if (a_is_class_or_none && b_is_class_or_none && (a != PY_NONE || b != PY_NONE)) {
         VALUE items[2] = { a, b };
         return py_make_tuple(items, 2);
     }
     // tuple | class — extend a Union: if `a` is a tuple of classes (a
     // prior union), append `b`.
-    if (py_is_tuple(a) && py_is_class(b)) {
+    if (py_is_tuple(a) && b_is_class_or_none) {
         size_t n = PY_PTR(a)->list.len;
         bool all_cls = true;
-        for (size_t i = 0; i < n; i++) if (!py_is_class(PY_PTR(a)->list.items[i])) { all_cls = false; break; }
+        for (size_t i = 0; i < n; i++) {
+            VALUE el = PY_PTR(a)->list.items[i];
+            if (!(py_is_class(el) || el == PY_NONE)) { all_cls = false; break; }
+        }
         if (all_cls) {
             VALUE *items = (VALUE *)alloca(sizeof(VALUE) * (n + 1));
             for (size_t i = 0; i < n; i++) items[i] = PY_PTR(a)->list.items[i];
             items[n] = b;
+            return py_make_tuple(items, n + 1);
+        }
+    }
+    // class | tuple-of-classes (right-side accumulation).
+    if (a_is_class_or_none && py_is_tuple(b)) {
+        size_t n = PY_PTR(b)->list.len;
+        bool all_cls = true;
+        for (size_t i = 0; i < n; i++) {
+            VALUE el = PY_PTR(b)->list.items[i];
+            if (!(py_is_class(el) || el == PY_NONE)) { all_cls = false; break; }
+        }
+        if (all_cls) {
+            VALUE *items = (VALUE *)alloca(sizeof(VALUE) * (n + 1));
+            items[0] = a;
+            for (size_t i = 0; i < n; i++) items[i + 1] = PY_PTR(b)->list.items[i];
             return py_make_tuple(items, n + 1);
         }
     }
