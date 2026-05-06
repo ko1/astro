@@ -1,0 +1,11 @@
+ok LoopCornerTest test_continue_in_finally
+ok LoopCornerTest test_for_else_no_break
+ok LoopCornerTest test_for_else_raise
+ok LoopCornerTest test_for_else_with_break
+ok LoopCornerTest test_try_in_for
+ok DictConstructorTest test_dict_from_pairs
+ok DictConstructorTest test_dict_kwargs
+ok DictConstructorTest test_dict_mixed
+ok DictConstructorTest test_fromkeys
+---
+passed=9 failed=0
