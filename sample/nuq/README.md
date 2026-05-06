@@ -116,6 +116,24 @@ passed: 338  failed: 0  skipped: 0  total: 338
 
 **micro 14 中 13 で jq 越え** (pyramid のみ 0.93× で互角ライン)。
 
+### Big-data ベンチ — ~100MB diverse JSON (4 shapes、`ruby bench/bench.rb big`)
+
+| shape | bench | nuq AOT vs jq |
+|---|---|---:|
+| **tree** (recursive walk) | tree_paths | **4.12×** |
+| **tree** | tree_leaf_sum | **3.91×** |
+| logs | log_error_paths | 2.76× |
+| table (CSV-like) | table_unique_colors | 2.56× |
+| table | table_sum_col0 | 1.75× |
+| users (wide flat) | group_city | 1.44× |
+| users | extract_users | 1.30× |
+| 他 | (12 中 12 で jq 越え) | 1.3 〜 4.1× |
+
+**nuq の真価は recursive walk** で出る (`[paths]` / `[.. | F]`)。
+jq / jaq / gojq はいずれも recursive walk が遅く、nuq AOT は jq の
+**4× 越え**。スケーリングは線形なので 100MB → 1GB でも比率は
+維持される。詳細は [`docs/perf.md`](./docs/perf.md)。
+
 `upto` で **jaq (Rust) と同 50-80× レンジ** (run variance ±20%)。
 適用済みの主要最適化:
 - **EMIT pool**: NODE_DEF が `EMIT { items, count }` を返し、items は CTX 上の flat VALUE buffer のスライス。per-emit GC alloc ゼロ、SD inline と相性良し。

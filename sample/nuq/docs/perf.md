@@ -111,6 +111,54 @@ vs jq:
 micro 14 中 13 で jq 越え (pyramid のみ 0.93× で互角ライン、それ以外
 はすべて 1.5× 〜 50×+)。
 
+## Big-data bench (~100MB diverse JSON、4 shapes)
+
+`bench/data/big/` に 4 種の ~25MB JSON を生成して running (`ruby
+bench/bench.rb big`):
+
+- **users_big.json** (~25MB) — 130k user-record (wide flat、address ネスト)
+- **logs_big.json** (~25MB) — 120k HTTP-log (object with nested headers)
+- **tree_big.json** (~25MB) — depth=4 branching=20 の recursive tree
+- **table_big.json** (~44MB) — 800k row arrays (CSV-like flat)
+
+vs jq (best-of-1、AOT 列):
+
+| bench (shape) | jq | jaq | gojq | nuq int | nuq AOT |
+|---|---:|---:|---:|---:|---:|
+| extract_users (users) | 1.00× | 1.23× | 1.18× | 1.25× | **1.30×** |
+| sum_active_score (users) | 1.00× | 1.21× | 1.22× | 1.39× | **1.26×** |
+| deep_followers (users) | 1.00× | 1.24× | 1.13× | 1.41× | **1.37×** |
+| group_city (users) | 1.00× | 1.35× | 1.32× | 1.58× | **1.44×** |
+| bulk_update (users, path-mode) | 1.00× | 1.54× | 1.29× | 1.56× | 0.96× |
+| log_error_paths (logs) | 1.00× | 1.09× | 1.71× | 2.41× | **2.76×** |
+| log_post_avg (logs) | 1.00× | 0.95× | 1.28× | 1.11× | 0.65× |
+| log_request_id (logs) | 1.00× | 1.10× | 1.30× | 1.46× | **1.46×** |
+| tree_numbers (tree, recursive) | 1.00× | 0.61× | 0.70× | 1.51× | **1.52×** |
+| tree_leaf_sum (tree) | 1.00× | 0.73× | 0.78× | 2.47× | **3.91×** |
+| tree_paths (tree, all paths) | 1.00× | 1.55× | 0.67× | 2.91× | **4.12×** |
+| table_sum_col0 (table) | 1.00× | 1.33× | 1.20× | 1.68× | **1.75×** |
+| table_flag_count (table) | 1.00× | 1.24× | 1.48× | 1.74× | **1.68×** |
+| table_unique_colors (table) | 1.00× | 3.95× | 4.77× | 4.52× | 2.56× |
+
+**14 中 12 で jq 越え** (1.3-4.1×)。**tree (recursive walk)** で
+最強 (`[paths]` で **4.12×**、`[.. | objects | select(.type=="leaf") | .value]
+| add` で **3.91×**) — jq は libjq の値ハンドリングが重く、jaq /
+gojq も recursive walk は苦手。
+
+**AOT が劣化する 3 ケース** (要調査):
+- `bulk_update` (1.56× interp → 0.96× AOT) — path-mode `(.[].active) |= true`
+  の SD bake コストが run 全体を超えてる可能性
+- `log_post_avg` (1.11× interp → 0.65× AOT) — `if length > 0 then add/length else null end`
+  の SD-side branch + division が変な動きをしている可能性
+- `table_unique_colors` (4.52× interp → 2.56× AOT) — `unique` の qsort
+  が dispatcher に乗らないので AOT で得るものがない、bake オーバーヘッドだけ残る
+
+実用ベンチ (1.9MB) と big bench (100MB) の対比:
+- 1.9MB: nuq 1.3-3.4× vs jq、scale ms 単位。
+- 100MB: nuq 1.3-4.1× vs jq、scale 秒単位。**スケールしても比率
+  維持** (むしろ tree は更に伸びる)。jq の overhead が線形なので
+  予想通り。
+
 ## 解釈
 
 ### 大勝の構造
