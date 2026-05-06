@@ -1,0 +1,4 @@
+ok SuperNewTest test_basic
+ok SuperNewTest test_inherited
+---
+passed=2 failed=0

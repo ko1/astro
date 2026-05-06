@@ -1382,7 +1382,9 @@ node_super_method_explicit(CTX * restrict c, NODE * restrict n, NODE *cls_expr, 
     // If `m` is already a bound built-in method (super_lookup hit a
     // built-in subclass primary), it carries its own receiver.
     extern bool py_is_bound_builtin(VALUE v);
-    if (py_is_bound_builtin(m)) {
+    // __new__ is implicitly static — caller passes cls as first explicit arg.
+    bool skip_self_super = (strcmp(method_name, "__new__") == 0);
+    if (py_is_bound_builtin(m) || skip_self_super) {
         VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc ? argc : 1));
         for (uint32_t i = 0; i < argc; i++) {
             NODE *arg = PYSTRO_NODE_TABLE[args_idx + i];
@@ -1446,6 +1448,21 @@ node_super_method(CTX * restrict c, NODE * restrict n, NODE *base, const char *m
     VALUE m = PY_NONE;
     if (start != PY_NONE && py_is_instance(self)) {
         m = py_super_lookup(c, self, start, method_name);
+    } else if (start != PY_NONE && py_is_class(self)) {
+        // self is a class (e.g. __new__ / classmethod): walk past start
+        // in self's own MRO and look for the method.
+        struct pyclass *cd = &PY_PTR(self)->cls;
+        int i = 0;
+        while (i < cd->nmro && cd->mro[i] != start) i++;
+        for (int j = i + 1; j < cd->nmro; j++) {
+            struct pyclass *kd = &PY_PTR(cd->mro[j])->cls;
+            for (int k = 0; k < kd->nmethods; k++) {
+                if (strcmp(kd->methods[k].name, method_name) == 0) {
+                    m = kd->methods[k].value; break;
+                }
+            }
+            if (m != PY_NONE) break;
+        }
     }
     if (m == PY_NONE) {
         // Fallback: use the parser-captured base.
@@ -1459,7 +1476,9 @@ node_super_method(CTX * restrict c, NODE * restrict n, NODE *base, const char *m
     // If `m` is already a bound built-in method (super_lookup hit a
     // built-in subclass primary), it carries its own receiver.
     extern bool py_is_bound_builtin(VALUE v);
-    if (py_is_bound_builtin(m)) {
+    // __new__ is implicitly static — caller passes cls as first explicit arg.
+    bool skip_self_super = (strcmp(method_name, "__new__") == 0);
+    if (py_is_bound_builtin(m) || skip_self_super) {
         VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc ? argc : 1));
         for (uint32_t i = 0; i < argc; i++) {
             NODE *arg = PYSTRO_NODE_TABLE[args_idx + i];
