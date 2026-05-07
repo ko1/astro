@@ -20,7 +20,7 @@
 |---|---:|---:|---:|---:|
 | `while_loop` (10M, augassign) | 0.94 s | 0.20 s | **0.06 s** | **0.06× (16× 速い)** |
 | `for_range` (15M sum, C range) | 1.06 s | 0.15 s | **0.08 s** | **0.08× (13× 速い)** |
-| `for_range_pyrange` (Py iter) | 2.24 s | 0.87 s | **0.40 s** | **0.18× (5.6× 速い)** |
+| `for_range_pyrange` (Py iter) | 2.24 s | 0.87 s | **0.34 s** | **0.15× (6.6× 速い)** |
 | `list_bench` (7M append+sum) | 0.97 s | 0.23 s | **0.19 s** | **0.20× (5× 速い)** |
 | `mandel` (float-heavy) | 0.69 s | 0.68 s | **0.26 s** | **0.38× (2.7× 速い)** |
 | `recursive` (tak(30,20,10)) | 3.93 s | 2.87 s | **1.42 s** | **0.36× (2.8× 速い)** |
@@ -73,10 +73,10 @@ fib / recursive / mandel / nqueens は AOT でも tree-walking interp と
 mandel なら ~3) に。 mandel が 2.6× 速くなったのは関数 body が
 inline flonum 演算ノードと共に SD 化されたため。
 
-#### Python iterator の高速化 (16bf5a3 + a7326de + 43a7e83 + c3d7170)
+#### Python iterator の高速化 (16bf5a3 + a7326de + 43a7e83 + c3d7170 + cfbc026)
 
 `class PyRange` のような pure-Python iterator (`__iter__` / `__next__`)
-で AOT が python3 と同等止まりだったのを 4.6× → **5.6× 速い** まで
+で AOT が python3 と同等止まりだったのを 4.6× → **6.6× 速い** まで
 持ってきた:
 
 1. **`node_attr_set` に attr_cache を追加**: `self.i = x` の毎反復に
@@ -93,6 +93,10 @@ inline flonum 演算ノードと共に SD 化されたため。
    蓄積するので out-of-line のまま。
 4. **struct py_iter に `next_m` キャッシュ**: kind=5 の `__next__`
    lookup を init で 1 回だけに。
+5. **`py_iter_next_user` に `no_stack_protector`**: alloca が
+   `-fstack-protector-strong` を triggers し canary 読み書き check が
+   毎 call ~5 cycle 入っていた。 untrusted index で stack array に
+   書く処理は無いので canary 不要 → 0.40s → 0.34s (15% 改善)。
 
 副作用: ASTroGen-generated node_eval.c で `extern VALUE` 宣言なしの
 関数呼出が int 戻り値扱いで高位 32 bit 切り捨てる compiler バグを
@@ -111,9 +115,9 @@ inline flonum 演算ノードと共に SD 化されたため。
 `mandel` / `nqueens`
 - 関数 body が SD 化された (R18 fix)。 gref_cache + leaf-func alloca、
   `py_apply` inline で PLT hop 排除、 inline flonum で heap-box 消失。
-- `for x in PyRange(N)` のような Python iterator が **5.6× 速い**。
+- `for x in PyRange(N)` のような Python iterator が **6.6× 速い**。
   attr_get / attr_set 両方 inline cache + fast path から strlen+memcmp
-  除去 + `__next__` キャッシュ。
+  除去 + `__next__` キャッシュ + hot 関数の canary 除去。
 - mandel は float fast path がループ内で完全 SD 化されるので 2.7×。
 
 **僅差で速い (1.04×)** — `string_bench`
