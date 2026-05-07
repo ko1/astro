@@ -1,0 +1,25 @@
+###
+# ASTroGen rules
+ASTROGEN = ruby -I ../../lib -r ./arjsv_gen -e 'ASTroGen.start([], node_def_class: ArjsvNodeDef)'
+GENERATED = node_eval.c node_dispatch.c node_hash.c node_dump.c node_alloc.c node_specialize.c node_head.h node_replace.c node_mark.c
+
+node_eval.c: node.def ../../lib/astrogen.rb arjsv_gen.rb
+	$(ASTROGEN)
+
+arjsv.o: node_eval.c context.h node.h node_head.h
+node.o: node_eval.c context.h node.h node_head.h
+
+run: all
+	ruby -Ilib -rarjsv -e 'p Arjsv.schema({"type"=>"integer"}).valid?(42)'
+
+test: all
+	ruby -Ilib test/run_all.rb
+
+bench: all
+	ruby -Ilib benchmark/run.rb
+
+clean: clean-generated
+
+clean-generated:
+	$(Q)$(RM) $(GENERATED)
+	$(Q)$(RM_RF) code_store

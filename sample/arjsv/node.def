@@ -1,0 +1,534 @@
+// arjsv — JSON Schema (draft-07) validator nodes (Tier 1 / MVP).
+//
+// Result convention: 1 = valid, 0 = invalid.
+//
+// Each node returns int.  AND semantics across siblings is encoded as
+// `node_seq(head, tail)` chains.  Property / required / enum lists are
+// also chains terminated by `node_pass` (always-valid) or `node_fail`
+// (always-invalid).
+//
+// `c->data` is the JSON value currently under examination.  Container
+// nodes (property, items_uniform) save/restore around sub-schema
+// recursion.  Number / string / type checks read it directly.
+
+// ---- Structural ----------------------------------------------------------
+
+// Top-level entry.  body is the lowered schema; receives initial c->data.
+// NOT @noinline: validate_root is the SD specialisation root — the
+// public-extern SD that astro_cs_load patches into head.dispatcher.
+NODE_DEF
+node_validate_root(CTX *c, NODE *n, NODE *body)
+{
+    return EVAL_ARG(c, body);
+}
+
+// Always-valid terminator (used as the tail of property / required / enum
+// chains and as the body of `{}` / `true`-schemas).
+NODE_DEF
+node_pass(CTX *c, NODE *n)
+{
+    (void)c; (void)n;
+    return 1;
+}
+
+// Always-invalid (used for `false`-schema and as the not-found tail of
+// enum chains).
+NODE_DEF
+node_fail(CTX *c, NODE *n)
+{
+    (void)c; (void)n;
+    return 0;
+}
+
+// AND.  Both children must validate.
+NODE_DEF
+node_seq(CTX *c, NODE *n, NODE *head, NODE *tail)
+{
+    if (!EVAL_ARG(c, head)) return 0;
+    return EVAL_ARG(c, tail);
+}
+
+// ---- Type check ----------------------------------------------------------
+
+// `type` keyword.  Mask is OR of ARJSV_T_* bits.  An integer-valued Float
+// satisfies ARJSV_T_INTEGER (per draft-07: integers are JSON numbers with
+// zero fractional part).
+NODE_DEF
+node_type_check(CTX *c, NODE *n, uint32_t mask)
+{
+    return (arjsv_value_types(c->data) & mask) != 0;
+}
+
+// ---- Object keywords -----------------------------------------------------
+
+// One required-property check; recurses into `next` for the rest.
+// If c->data is not a Hash, type-error responsibility lies with type_check
+// (a parallel sibling); we return 1 here so the chain doesn't double-fail.
+//
+// The `key` C-string operand is content-hashed (FNV) so two `node_required`
+// nodes with different keys produce distinct SDs.  The runtime lookup uses
+// `c->consts[key_idx]` — a frozen Ruby string interned at schema-build time
+// — so no `rb_str_new_cstr` allocation per call.
+NODE_DEF
+node_required(CTX *c, NODE *n, const char *key, uint32_t key_idx, NODE *next)
+{
+    (void)key;
+    if (RB_TYPE_P(c->data, T_HASH)) {
+        if (rb_hash_lookup2(c->data, c->consts[key_idx], Qundef) == Qundef) return 0;
+    }
+    return EVAL_ARG(c, next);
+}
+
+// One property's sub-schema check; recurses into `next`.  If the key is
+// absent, skip (per JSON Schema: properties only constrain present keys).
+// See node_required for the (key, key_idx) split rationale.
+NODE_DEF
+node_property(CTX *c, NODE *n, const char *key, uint32_t key_idx, NODE *schema, NODE *next)
+{
+    (void)key;
+    if (RB_TYPE_P(c->data, T_HASH)) {
+        VALUE prop = rb_hash_lookup2(c->data, c->consts[key_idx], Qundef);
+        if (prop != Qundef) {
+            VALUE saved = c->data;
+            c->data = prop;
+            int ok = EVAL_ARG(c, schema);
+            c->data = saved;
+            if (!ok) return 0;
+        }
+    }
+    return EVAL_ARG(c, next);
+}
+
+// ---- Array keywords ------------------------------------------------------
+
+// Single sub-schema applied to every array element.  No-op for non-arrays.
+NODE_DEF
+node_items_uniform(CTX *c, NODE *n, NODE *schema)
+{
+    if (!RB_TYPE_P(c->data, T_ARRAY)) return 1;
+    long len = RARRAY_LEN(c->data);
+    VALUE saved = c->data;
+    for (long i = 0; i < len; i++) {
+        c->data = RARRAY_AREF(saved, i);
+        if (!EVAL_ARG(c, schema)) {
+            c->data = saved;
+            return 0;
+        }
+    }
+    c->data = saved;
+    return 1;
+}
+
+// One step in tuple-form `items: [s0, s1, ...]`.  Validates data[index]
+// against schema (if present); recurses to next step.
+NODE_DEF
+node_items_tuple(CTX *c, NODE *n, uint32_t index, NODE *schema, NODE *next)
+{
+    if (RB_TYPE_P(c->data, T_ARRAY)) {
+        long len = RARRAY_LEN(c->data);
+        if ((long)index < len) {
+            VALUE saved = c->data;
+            c->data = RARRAY_AREF(saved, index);
+            int ok = EVAL_ARG(c, schema);
+            c->data = saved;
+            if (!ok) return 0;
+        }
+    }
+    return EVAL_ARG(c, next);
+}
+
+// `additionalItems: <schema>` — applies schema to data[start..end].
+NODE_DEF
+node_additional_items(CTX *c, NODE *n, uint32_t start, NODE *schema)
+{
+    if (!RB_TYPE_P(c->data, T_ARRAY)) return 1;
+    long len = RARRAY_LEN(c->data);
+    VALUE saved = c->data;
+    for (long i = start; i < len; i++) {
+        c->data = RARRAY_AREF(saved, i);
+        if (!EVAL_ARG(c, schema)) {
+            c->data = saved;
+            return 0;
+        }
+    }
+    c->data = saved;
+    return 1;
+}
+
+// `additionalItems: false` — array length must be <= prefix.
+NODE_DEF
+node_no_additional_items(CTX *c, NODE *n, uint32_t prefix_len)
+{
+    if (!RB_TYPE_P(c->data, T_ARRAY)) return 1;
+    return RARRAY_LEN(c->data) <= (long)prefix_len;
+}
+
+NODE_DEF
+node_min_items(CTX *c, NODE *n, int32_t min)
+{
+    if (!RB_TYPE_P(c->data, T_ARRAY)) return 1;
+    return RARRAY_LEN(c->data) >= min;
+}
+
+NODE_DEF
+node_max_items(CTX *c, NODE *n, int32_t max)
+{
+    if (!RB_TYPE_P(c->data, T_ARRAY)) return 1;
+    return RARRAY_LEN(c->data) <= max;
+}
+
+// `uniqueItems: true` — every pair must compare unequal under JSON
+// equality.  O(N²) deep compare; acceptable for the small arrays
+// typical in JSON Schema use.
+NODE_DEF
+node_unique_items(CTX *c, NODE *n)
+{
+    if (!RB_TYPE_P(c->data, T_ARRAY)) return 1;
+    long len = RARRAY_LEN(c->data);
+    for (long i = 0; i < len; i++) {
+        VALUE a = RARRAY_AREF(c->data, i);
+        for (long j = i + 1; j < len; j++) {
+            VALUE b = RARRAY_AREF(c->data, j);
+            // Per JSON Schema: bool != number, even if numerically equal.
+            if (rb_equal(a, b) == Qtrue && rb_obj_class(a) == rb_obj_class(b)) {
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+
+// ---- Number keywords -----------------------------------------------------
+
+NODE_DEF
+node_minimum(CTX *c, NODE *n, double threshold, uint32_t exclusive)
+{
+    if (!arjsv_value_is_number(c->data)) return 1;
+    double d = arjsv_value_to_double(c->data);
+    return exclusive ? (d > threshold) : (d >= threshold);
+}
+
+NODE_DEF
+node_maximum(CTX *c, NODE *n, double threshold, uint32_t exclusive)
+{
+    if (!arjsv_value_is_number(c->data)) return 1;
+    double d = arjsv_value_to_double(c->data);
+    return exclusive ? (d < threshold) : (d <= threshold);
+}
+
+// `multipleOf: divisor` — value / divisor must be an integer.
+NODE_DEF
+node_multiple_of(CTX *c, NODE *n, double divisor)
+{
+    if (!arjsv_value_is_number(c->data)) return 1;
+    if (divisor == 0.0) return 0;
+    double v = arjsv_value_to_double(c->data);
+    double q = v / divisor;
+    return q == floor(q) && isfinite(q);
+}
+
+// ---- String keywords -----------------------------------------------------
+
+NODE_DEF
+node_min_length(CTX *c, NODE *n, int32_t min)
+{
+    if (!RB_TYPE_P(c->data, T_STRING)) return 1;
+    return rb_str_strlen(c->data) >= min;
+}
+
+NODE_DEF
+node_max_length(CTX *c, NODE *n, int32_t max)
+{
+    if (!RB_TYPE_P(c->data, T_STRING)) return 1;
+    return rb_str_strlen(c->data) <= max;
+}
+
+// `pattern: <regex>` — applies a precompiled Ruby Regexp (stored in
+// consts) to the string.  Non-strings pass.
+NODE_DEF
+node_pattern(CTX *c, NODE *n, const char *pattern, uint32_t consts_idx)
+{
+    (void)pattern;
+    if (!RB_TYPE_P(c->data, T_STRING)) return 1;
+    return rb_reg_match(c->consts[consts_idx], c->data) != Qnil;
+}
+
+// ---- enum / const --------------------------------------------------------
+
+// `const v`.  consts_idx points into the schema's constants array; the
+// `canonical` C-string captures content for hashing (so two `const` nodes
+// with different values get distinct SDs even though both go through the
+// same consts indirection at runtime).
+NODE_DEF
+node_const(CTX *c, NODE *n, const char *canonical, uint32_t consts_idx)
+{
+    (void)canonical;
+    return rb_equal(c->data, c->consts[consts_idx]) == Qtrue;
+}
+
+// One enum candidate; recurses into `next` if no match.  Chain terminates
+// with `node_fail` (= no match found, invalid).
+NODE_DEF
+node_enum(CTX *c, NODE *n, const char *canonical, uint32_t consts_idx, NODE *next)
+{
+    (void)canonical;
+    if (rb_equal(c->data, c->consts[consts_idx]) == Qtrue) return 1;
+    return EVAL_ARG(c, next);
+}
+
+// ---- Object size --------------------------------------------------------
+
+NODE_DEF
+node_min_properties(CTX *c, NODE *n, int32_t min)
+{
+    if (!RB_TYPE_P(c->data, T_HASH)) return 1;
+    return (int32_t)RHASH_SIZE(c->data) >= min;
+}
+
+NODE_DEF
+node_max_properties(CTX *c, NODE *n, int32_t max)
+{
+    if (!RB_TYPE_P(c->data, T_HASH)) return 1;
+    return (int32_t)RHASH_SIZE(c->data) <= max;
+}
+
+// ---- Combinators --------------------------------------------------------
+
+// `not`.
+NODE_DEF
+node_not(CTX *c, NODE *n, NODE *schema)
+{
+    return !EVAL_ARG(c, schema);
+}
+
+// `if/then/else`.  if-fail does not propagate as failure; the else branch
+// (or pass when else is absent) takes over.
+NODE_DEF
+node_if_then_else(CTX *c, NODE *n, NODE *if_schema, NODE *then_schema, NODE *else_schema)
+{
+    if (EVAL_ARG(c, if_schema)) {
+        return EVAL_ARG(c, then_schema);
+    } else {
+        return EVAL_ARG(c, else_schema);
+    }
+}
+
+// `anyOf` chain step — short-circuit success.  Chain terminates with
+// `node_fail` (no branch matched).
+NODE_DEF
+node_any_of(CTX *c, NODE *n, NODE *branch, NODE *next)
+{
+    if (EVAL_ARG(c, branch)) return 1;
+    return EVAL_ARG(c, next);
+}
+
+// `oneOf` is implemented as a counter walk.  `node_one_of` is the root
+// that resets / restores the counter; `node_one_of_step` walks each branch
+// and increments on match (no early exit so we can detect 2+ matches and
+// fail).  Chain terminates with `node_pass` (counter check happens in the root).
+NODE_DEF
+node_one_of(CTX *c, NODE *n, NODE *chain)
+{
+    int saved = c->one_of_count;
+    int saved_active = c->one_of_active;
+    c->one_of_count = 0;
+    c->one_of_active = 1;
+    EVAL_ARG(c, chain);
+    int ok = (c->one_of_count == 1);
+    c->one_of_count = saved;
+    c->one_of_active = saved_active;
+    return ok;
+}
+
+NODE_DEF
+node_one_of_step(CTX *c, NODE *n, NODE *branch, NODE *next)
+{
+    if (EVAL_ARG(c, branch)) {
+        c->one_of_count++;
+        // Two matches already → can early-exit (chain still walked but no
+        // more increments matter; keeping it simple — full walk).
+    }
+    return EVAL_ARG(c, next);
+}
+
+// ---- patternProperties / additionalProperties --------------------------
+//
+// These nodes iterate the data Hash via `rb_hash_foreach`, which only takes
+// a `VALUE arg` user pointer.  We pass the necessary context (CTX *,
+// dispatchers, regex / consts pointers) through that arg via small structs.
+
+struct arjsv_pp_iter_ctx {
+    CTX *c;
+    VALUE regex;
+    NODE *schema;
+    node_dispatcher_func_t schema_dispatcher;
+    int valid;
+};
+
+static int
+arjsv_pp_iter(VALUE key, VALUE val, VALUE arg)
+{
+    struct arjsv_pp_iter_ctx *pc = (struct arjsv_pp_iter_ctx *)arg;
+    if (!RB_TYPE_P(key, T_STRING)) return ST_CONTINUE;
+    if (rb_reg_match(pc->regex, key) == Qnil) return ST_CONTINUE;
+    VALUE saved = pc->c->data;
+    pc->c->data = val;
+    int ok = (*pc->schema_dispatcher)(pc->c, pc->schema);
+    pc->c->data = saved;
+    if (!ok) {
+        pc->valid = 0;
+        return ST_STOP;
+    }
+    return ST_CONTINUE;
+}
+
+// `patternProperties`: one (regex, schema) entry; chain via `next`.
+NODE_DEF
+node_pattern_property(CTX *c, NODE *n, uint32_t regex_idx, NODE *schema, NODE *next)
+{
+    if (RB_TYPE_P(c->data, T_HASH)) {
+        struct arjsv_pp_iter_ctx pc = {
+            .c = c,
+            .regex = c->consts[regex_idx],
+            .schema = schema,
+            .schema_dispatcher = schema_dispatcher,
+            .valid = 1,
+        };
+        rb_hash_foreach(c->data, arjsv_pp_iter, (VALUE)&pc);
+        if (!pc.valid) return 0;
+    }
+    return EVAL_ARG(c, next);
+}
+
+struct arjsv_ap_iter_ctx {
+    CTX *c;
+    const VALUE *known_keys;
+    uint32_t known_keys_count;
+    const VALUE *known_patterns;
+    uint32_t known_patterns_count;
+    NODE *additional_schema;
+    node_dispatcher_func_t additional_dispatcher;
+    int valid;
+};
+
+static int
+arjsv_ap_iter(VALUE key, VALUE val, VALUE arg)
+{
+    struct arjsv_ap_iter_ctx *ap = (struct arjsv_ap_iter_ctx *)arg;
+    for (uint32_t i = 0; i < ap->known_keys_count; i++) {
+        if (rb_equal(key, ap->known_keys[i]) == Qtrue) return ST_CONTINUE;
+    }
+    if (RB_TYPE_P(key, T_STRING)) {
+        for (uint32_t i = 0; i < ap->known_patterns_count; i++) {
+            if (rb_reg_match(ap->known_patterns[i], key) != Qnil) return ST_CONTINUE;
+        }
+    }
+    // Unknown key.
+    if (ap->additional_schema == NULL) {
+        ap->valid = 0;
+        return ST_STOP;
+    }
+    VALUE saved = ap->c->data;
+    ap->c->data = val;
+    int ok = (*ap->additional_dispatcher)(ap->c, ap->additional_schema);
+    ap->c->data = saved;
+    if (!ok) {
+        ap->valid = 0;
+        return ST_STOP;
+    }
+    return ST_CONTINUE;
+}
+
+// `additionalProperties: <schema>` — applies schema to keys not covered by
+// `properties` (known_keys) and `patternProperties` (known_patterns).
+NODE_DEF
+node_additional_properties_schema(CTX *c, NODE *n, uint32_t known_keys_idx, uint32_t known_keys_count, uint32_t known_patterns_idx, uint32_t known_patterns_count, NODE *additional_schema)
+{
+    if (!RB_TYPE_P(c->data, T_HASH)) return 1;
+    struct arjsv_ap_iter_ctx ap = {
+        .c = c,
+        .known_keys = known_keys_count ? &c->consts[known_keys_idx] : NULL,
+        .known_keys_count = known_keys_count,
+        .known_patterns = known_patterns_count ? &c->consts[known_patterns_idx] : NULL,
+        .known_patterns_count = known_patterns_count,
+        .additional_schema = additional_schema,
+        .additional_dispatcher = additional_schema_dispatcher,
+        .valid = 1,
+    };
+    rb_hash_foreach(c->data, arjsv_ap_iter, (VALUE)&ap);
+    return ap.valid;
+}
+
+// `additionalProperties: false` — fails on any key not covered.  No
+// schema operand → no separate-entry registration needed.
+NODE_DEF
+node_no_additional_properties(CTX *c, NODE *n, uint32_t known_keys_idx, uint32_t known_keys_count, uint32_t known_patterns_idx, uint32_t known_patterns_count)
+{
+    if (!RB_TYPE_P(c->data, T_HASH)) return 1;
+    struct arjsv_ap_iter_ctx ap = {
+        .c = c,
+        .known_keys = known_keys_count ? &c->consts[known_keys_idx] : NULL,
+        .known_keys_count = known_keys_count,
+        .known_patterns = known_patterns_count ? &c->consts[known_patterns_idx] : NULL,
+        .known_patterns_count = known_patterns_count,
+        .additional_schema = NULL,
+        .additional_dispatcher = NULL,
+        .valid = 1,
+    };
+    rb_hash_foreach(c->data, arjsv_ap_iter, (VALUE)&ap);
+    return ap.valid;
+}
+
+// `propertyNames: <schema>` — every key (as a string) must validate
+// against schema.
+struct arjsv_pn_iter_ctx {
+    CTX *c;
+    NODE *schema;
+    node_dispatcher_func_t schema_dispatcher;
+    int valid;
+};
+
+static int
+arjsv_pn_iter(VALUE key, VALUE val, VALUE arg)
+{
+    (void)val;
+    struct arjsv_pn_iter_ctx *pc = (struct arjsv_pn_iter_ctx *)arg;
+    VALUE saved = pc->c->data;
+    pc->c->data = key;
+    int ok = (*pc->schema_dispatcher)(pc->c, pc->schema);
+    pc->c->data = saved;
+    if (!ok) {
+        pc->valid = 0;
+        return ST_STOP;
+    }
+    return ST_CONTINUE;
+}
+
+NODE_DEF
+node_property_names(CTX *c, NODE *n, NODE *schema)
+{
+    if (!RB_TYPE_P(c->data, T_HASH)) return 1;
+    struct arjsv_pn_iter_ctx pc = {
+        .c = c,
+        .schema = schema,
+        .schema_dispatcher = schema_dispatcher,
+        .valid = 1,
+    };
+    rb_hash_foreach(c->data, arjsv_pn_iter, (VALUE)&pc);
+    return pc.valid;
+}
+
+// ---- $ref --------------------------------------------------------------
+
+// `$ref: "#/$defs/<name>"`.  The target is an independently-compiled entry
+// node; its wrapper VALUE lives in consts so the Schema's GC mark keeps it
+// alive.  We dispatch through `target->head.dispatcher` (runtime read) so
+// SPECIALIZE doesn't recurse into the target — astro_cs_load patches the
+// target's head.dispatcher independently.
+NODE_DEF
+node_ref(CTX *c, NODE *n, const char *defs_name, uint32_t consts_idx)
+{
+    (void)defs_name;
+    NODE *target = arjsv_unwrap_node(c->consts[consts_idx]);
+    return (*target->head.dispatcher)(c, target);
+}
