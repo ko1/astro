@@ -171,7 +171,10 @@ shim が cover している matchers / helpers:
 - `__method__` / `__callee__`
 - `loop` (StopIteration を swallow)
 - `lambda` / `proc`
-- `eval` (string)、`instance_eval(string)`
+- `eval` (string、 with optional Binding / file / line — caller の lvars 参照、
+  block 内では param_base 分シフト、 nested eval も outer 範囲を継承)、
+  `instance_eval(string)`
+- `binding` (Kernel + Kernel.binding 両方対応)
 - `catch` / `throw` (任意の tag で unwind)
 - `Kernel#Integer / Float / String / Array` (型変換、Array は Range/Hash を to_a で展開)
 
@@ -271,6 +274,21 @@ shim が cover している matchers / helpers:
 #### Comparable mixin
 - include した class が `<=>` を定義すれば `< <= > >= == between? clamp` が自動的に来る
 - `clamp(min, max)` / `clamp(range)` 両 form
+
+#### Binding (T_DATA、 builtins/binding.c)
+- `local_variable_get(name)` / `local_variable_set(name, val)` /
+  `local_variable_defined?(name)` (Symbol/String、 不正名で NameError)
+- `local_variables` — innermost-first 順 (set-introduced → primary →
+  lexical-parent)。 `_` / `__*` は filter
+- `receiver` (= self)
+- `eval(src [, file [, line]])` — caller の lvars を参照、 新規 lvar は
+  binding に取り込み (write-through to live frame)、 `__LINE__` は line offset を honor
+- `source_location` — binding 作成位置 (file, line)
+- `dup` / `clone` (names + extras を deep copy)
+- `Proc#binding` — proc 捕捉 env から Binding 構築
+- 寿命: caller frame epilogue で fp スロットを heap snapshot
+  (CRuby の heap-promote 相当)。 `bind = binding; b = 1; bind` の
+  binding が b の最終値を見る
 
 #### Symbol
 - `to_s` / `to_sym` / `===`、`inspect`
