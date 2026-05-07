@@ -42,7 +42,20 @@ jq 本体も decnum ビルドでないと通らない領域。
 - arena は **Cheney 式 stop-the-world copying GC** で mid-run 回収:
   16 MB しきい値で trigger、live 値だけ to-space にコピーして
   from-space を解放。`reduce ([]; . + [$i])` 系の累積 mutation で
-  O(N²) → O(N) memory に。詳細は [`runtime.md`](./runtime.md) §5
+  メモリは O(N²) → O(N) (上限なしで膨らんで OOM していたのが頭打ち)。
+  詳細は [`runtime.md`](./runtime.md) §5
+- **線形性 / エスケープ解析** (`linearity.c`): parse 直後に AST を walk
+  して、各 *dot-scope* (pipe RHS / reduce update / foreach update,extract
+  が境界) で `.` の syntactic 参照数 (alias 含む) を数え、`node_add(., RHS)`
+  がその scope の唯一の dot 消費者なら `node_add_inplace` にカインド書換。
+  runtime の `nuq_op_add_inplace` は `in_arena` ガードで Boehm 上の
+  入力 JSON を誤って mutate しないようにしつつ、acc を `nuq_array_push`
+  で in-place 拡張。`reduce range(N) as $i ([]; . + [$i])` の時間が
+  **O(N²) → O(N)** に降格、N=1e6 で 0.09 s (jq 0.34 s より速い)
+- **scratch arena** (per-run bump、Cheney 非対象): NODE_DEF / runtime の
+  snapshot ターナリ (`(cnt <= 16) ? small : (VALUE *)nuq_scratch_alloc(...)`)
+  全 57 サイトの heap 分岐をここに流す。run 終了で wholesale reset、
+  個別 free 不要。valgrind で per-input \"definitely lost\" がゼロ
 
 ## フィルタ言語
 
