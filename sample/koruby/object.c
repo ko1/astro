@@ -131,7 +131,11 @@ static void method_table_resize(struct korb_method_table *mt) {
     mt->bucket_cnt = newcap;
 }
 
+void korb_method_table_set(struct korb_method_table *mt, ID name, struct korb_method *m);
 static void method_table_set(struct korb_method_table *mt, ID name, struct korb_method *m) {
+    korb_method_table_set(mt, name, m);
+}
+void korb_method_table_set(struct korb_method_table *mt, ID name, struct korb_method *m) {
     if (mt->size * 2 > mt->bucket_cnt) method_table_resize(mt);
     uint32_t b = (uint32_t)(name % mt->bucket_cnt);
     for (struct korb_method_table_entry *e = mt->buckets[b]; e; e = e->next) {
@@ -685,13 +689,24 @@ struct korb_method *korb_class_find_method(const struct korb_class *klass, ID na
              * includes M1 — M0's methods need to win. */
             for (int32_t j = (int32_t)p->prepends_cnt - 1; j >= 0; j--) {
                 struct korb_method *m = method_table_get(&p->prepends[j]->methods, name);
-                if (m) return m;
+                if (m) {
+                    if (m->type == KORB_METHOD_UNDEF) return NULL;
+                    return m;
+                }
             }
             struct korb_method *m = method_table_get(&p->methods, name);
-            if (m) return m;
+            if (m) {
+                if (m->type == KORB_METHOD_UNDEF) return NULL;
+                return m;
+            }
         }
         struct korb_method *m = method_table_get(&klass->methods, name);
-        if (m) return m;
+        if (m) {
+            /* `undef` marker: hide the method here AND block ancestor
+             * lookup.  The marker pretends "no method here". */
+            if (m->type == KORB_METHOD_UNDEF) return NULL;
+            return m;
+        }
         klass = klass->super;
     }
     return NULL;
@@ -827,6 +842,13 @@ static int find_super_visit_cb(const struct korb_class *iclass, void *vctx) {
      * one (its iclass actually equals defining_class) instead so the
      * counting math below works. */
     if (m->defining_class != iclass) return 0;
+    /* `undef` marker — blocks ancestor lookup.  Stop the walk and
+     * report "no super method available". */
+    if (m->type == KORB_METHOD_UNDEF) {
+        st->result = NULL;
+        st->found_at = NULL;
+        return 1;
+    }
     st->result = m;
     st->found_at = iclass;
     st->result_visit_n = visit_get(st, m->defining_class);

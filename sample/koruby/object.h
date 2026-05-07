@@ -74,6 +74,7 @@ struct korb_method {
         KORB_METHOD_AST,
         KORB_METHOD_CFUNC,
         KORB_METHOD_PROC,        /* `define_method(:n) { ... }` — body is a proc */
+        KORB_METHOD_UNDEF,       /* `undef name` — blocks ancestor lookup */
     } type;
     ID name;
     struct korb_class *defining_class;

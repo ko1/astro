@@ -82,15 +82,15 @@ static VALUE cmp_clamp(CTX *c, VALUE self, int argc, VALUE *argv) {
  * doesn't override a super method this still raises NoMethodError
  * because Object doesn't define the name either. */
 extern void korb_method_table_remove(struct korb_method_table *mt, ID name);
-static VALUE module_undef_or_remove_method(CTX *c, VALUE self, int argc, VALUE *argv) {
+static VALUE module_undef_or_remove_method_impl(CTX *c, VALUE self, int argc, VALUE *argv, bool is_undef) {
     if (argc < 1) return self;
     if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return self;
     struct korb_class *klass = (struct korb_class *)self;
     for (int i = 0; i < argc; i++) {
         ID name = SYMBOL_P(argv[i]) ? korb_sym2id(argv[i])
                                      : korb_intern(korb_str_cstr(argv[i]));
-        /* CRuby: undef on a non-existing method raises NameError. */
-        if (!korb_class_find_method(klass, name)) {
+        struct korb_method *m = korb_class_find_method(klass, name);
+        if (!m) {
             VALUE eN = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
             korb_raise(c, (struct korb_class *)eN,
                        "undefined method '%s' for class '%s'",
@@ -99,10 +99,33 @@ static VALUE module_undef_or_remove_method(CTX *c, VALUE self, int argc, VALUE *
             return Qnil;
         }
         korb_method_table_remove(&klass->methods, name);
+        if (is_undef) {
+            struct korb_method *um = korb_xmalloc(sizeof(*um));
+            um->type = KORB_METHOD_UNDEF;
+            um->name = name;
+            um->defining_class = klass;
+            um->def_cref = NULL;
+            um->is_simple_frame = false;
+            um->visibility = KORB_VIS_PUBLIC;
+            extern void korb_method_table_set(struct korb_method_table *, ID, struct korb_method *);
+            korb_method_table_set(&klass->methods, name, um);
+        }
     }
-    /* Bump method serial so cached method-lookup entries invalidate. */
     if (korb_vm) { korb_vm->method_serial++; korb_g_method_serial = korb_vm->method_serial; }
     return self;
+}
+
+static VALUE module_undef_method(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return module_undef_or_remove_method_impl(c, self, argc, argv, true);
+}
+
+static VALUE module_remove_method(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return module_undef_or_remove_method_impl(c, self, argc, argv, false);
+}
+
+static VALUE module_undef_or_remove_method(CTX *c, VALUE self, int argc, VALUE *argv) {
+    /* Backwards-compat shim — old binding.  Treat as remove_method semantics. */
+    return module_undef_or_remove_method_impl(c, self, argc, argv, false);
 }
 
 static VALUE module_alias_method(CTX *c, VALUE self, int argc, VALUE *argv) {

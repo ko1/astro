@@ -1899,6 +1899,15 @@ node_super_forward(CTX * restrict c, NODE * restrict n)
                                           c->current_frame->super_skip_n, &fwd_new_skip_n)
         : NULL;
     if (!sm) {
+        /* CRuby: when super misses (no ancestor method, or blocked by
+         * undef), dispatch method_missing on the receiver if it has
+         * a user-defined one — receiving the original method's name
+         * as the first arg. */
+        struct korb_method *mm = korb_class_find_method(recv_klass, korb_intern("method_missing"));
+        if (mm && mm->defining_class != korb_vm->object_class) {
+            VALUE name_sym = korb_id2sym(m->name);
+            return korb_funcall(c, c->self, korb_intern("method_missing"), 1, &name_sym);
+        }
         VALUE eNoMethod = korb_const_get(korb_vm->object_class, korb_intern("NoMethodError"));
         korb_raise(c, (struct korb_class *)eNoMethod,
                    "super: no superclass method '%s'", m && m->name ? korb_id_name(m->name) : "?");
