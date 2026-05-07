@@ -197,8 +197,9 @@ node_const_path_get(CTX * restrict c, NODE * restrict n, NODE *parent, ID name)
     VALUE p = EA(c, parent);
     if (BUILTIN_TYPE(p) == T_CLASS || BUILTIN_TYPE(p) == T_MODULE) {
         /* private_constant enforcement: explicit `Mod::FOO` from
-         * outside Mod's lexical scope is a NameError.  We allow it
-         * iff cref's class chain contains `p`. */
+         * outside Mod's lexical scope is a NameError — but if Mod
+         * defines const_missing, dispatch to that first (CRuby gives
+         * the metaprogramming hook precedence over visibility error). */
         extern bool korb_const_is_private(const struct korb_class *, ID);
         if (korb_const_is_private((struct korb_class *)p, name)) {
             bool in_scope = false;
@@ -206,6 +207,11 @@ node_const_path_get(CTX * restrict c, NODE * restrict n, NODE *parent, ID name)
                 if ((VALUE)cr->klass == p) { in_scope = true; break; }
             }
             if (!in_scope) {
+                struct korb_class *p_meta = korb_singleton_class_of((struct korb_class *)p);
+                if (p_meta && korb_class_find_method(p_meta, korb_intern("const_missing"))) {
+                    VALUE sym = korb_id2sym(name);
+                    return korb_funcall(c, p, korb_intern("const_missing"), 1, &sym);
+                }
                 VALUE eName = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
                 korb_raise(c, (struct korb_class *)eName,
                            "private constant %s::%s referenced",
