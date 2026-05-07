@@ -269,6 +269,7 @@ void korb_init_builtins(void) {
 
     /* Module — applies to both Class and Module */
     struct korb_class *cMod = korb_vm->module_class;
+    DEF(cMod, "name", class_name, 0);
     DEF(cMod, "attr_reader",   module_attr_reader,   -1);
     DEF(cMod, "attr",          module_attr_reader,   -1);   /* single-arg form */
     DEF(cMod, "attr_writer",   module_attr_writer,   -1);

@@ -857,6 +857,16 @@ struct korb_method *korb_class_find_super_method(const struct korb_class *receiv
 
 /* ---- constants ---- */
 void korb_const_set(struct korb_class *klass, ID name, VALUE value) {
+    /* If the value is a Class/Module that hasn't been "named" yet
+     * (was created anonymously, e.g. `M = Module.new`), give it the
+     * constant's name as its permanent name (CRuby naming rule). */
+    if (!SPECIAL_CONST_P(value) &&
+        (BUILTIN_TYPE(value) == T_CLASS || BUILTIN_TYPE(value) == T_MODULE)) {
+        struct korb_class *target = (struct korb_class *)value;
+        if (!target->name || target->name == korb_intern("(anon)")) {
+            target->name = name;
+        }
+    }
     for (struct korb_const_entry *e = klass->constants; e; e = e->next) {
         if (e->name == name) { e->value = value; return; }
     }
