@@ -2003,8 +2003,11 @@ NODE_DEF
 node_default_init(CTX * restrict c, NODE * restrict n, uint32_t slot, NODE *default_expr)
 {
     /* If c->fp[slot] is Qundef (= caller did not supply this optional arg),
-     * evaluate the default and store it. */
+     * evaluate the default and store it.  Pre-init the slot to Qnil so a
+     * circular self-reference (`|a=a|`) sees nil instead of Qundef leaking
+     * into user code (CRuby 3.4+ semantics). */
     if (c->fp[slot] == Qundef) {
+        c->fp[slot] = Qnil;
         VALUE v = EVAL_ARG(c, default_expr);
         if (UNLIKELY(c->state != KORB_NORMAL)) return Qnil;
         c->fp[slot] = v;
