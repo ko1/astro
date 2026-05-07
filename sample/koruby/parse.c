@@ -1401,13 +1401,19 @@ static NODE *build_pattern_check(struct transduce_context *tc, pm_node_t *pat,
               uint32_t ai_dc = inc_arg_index(tc);
               inc_arg_index(tc); rewind_arg_index(tc, ai_dc);
               struct method_cache *mc_dc = alloc_method_cache();
-              /* Build the keys-list arg.  CRuby passes [:k1, :k2, ...]
-               * for `in {k1:, k2:, ...}` (so deconstruct_keys can return
-               * just those keys), or nil if there's a `**rest` capture
-               * (caller wants all keys). */
-              bool has_kwrest = (h->rest != NULL);
+              /* Build the keys-list arg.  CRuby:
+               *   `**rest` (named): pass nil → caller returns all keys.
+               *   `**` (anonymous): pass [:k1, :k2, ...] (just declared).
+               *   `**nil` (PM_NO_KEYWORDS_PARAMETER_NODE): pass [:k1, ...].
+               *   no rest:           pass [:k1, :k2, ...].
+               *   cnt == 0 + no rest: pass nil (legacy). */
+              bool named_kwrest = false;
+              if (h->rest && PM_NODE_TYPE_P(h->rest, PM_ASSOC_SPLAT_NODE)) {
+                  pm_assoc_splat_node_t *sp = (pm_assoc_splat_node_t *)h->rest;
+                  if (sp->value) named_kwrest = true;  /* `**rest` */
+              }
               NODE *keys_arg;
-              if (has_kwrest || cnt == 0) {
+              if (named_kwrest || cnt == 0) {
                   keys_arg = ALLOC_node_nil();
               } else {
                   /* Build [k1, k2, ...] as an Array literal. */
