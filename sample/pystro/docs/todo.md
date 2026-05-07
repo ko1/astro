@@ -16,10 +16,10 @@ R11–R17 で深掘り (test 78–212 追加, **213 unit tests passing**)。 [do
 | 区分 | 数 |
 |---|---|
 | total | 394 |
-| **fully pass** (`failed=0`) | **27** |
-| mixed (test logic ran, ≥1 fail) | 320 |
-| crash / timeout | 19 |
-| parse error | 24 |
+| **fully pass** (`failed=0`) | **28** |
+| mixed (test logic ran, ≥1 fail) | 322 |
+| crash / timeout | 18 |
+| parse error | 22 |
 | import error | 4 |
 
 CPython compat の作業として追加した薄い shim 群:
@@ -62,6 +62,29 @@ CPython compat の作業として追加した薄い shim 群:
   `parse_error_jmp` (per-call jmp_buf) があれば longjmp、runtime 側で
   SyntaxError として raise する。compile() も実際に parse して
   SyntaxError を上げる (CPython 互換)。
+- **types.MethodType** を constructible class 化 (`types.MethodType(fn, inst)`
+  で bound method を作れる)。metaclass `_MethodTypeMeta` で
+  isinstance() が pystro 内蔵 bound-method type と新 wrapper の両方を
+  認識する。
+- **for target attr/subscript**: `for st.lineno, line in enumerate(...):`
+  / `for d[k], y in pairs:` を許容 (build_for_target_assigns が NAME
+  trailer 後に parse_assignable_target に流す)。
+- **del multi-element subscript with slice**: `del obj[:42, ..., 24]`
+- **comparison TypeError 表記** が CPython 互換に
+  (`'<' not supported between instances of 'X' and 'Y'`)。
+- **`in` TypeError 表記** が CPython 互換 (`argument of type 'X' is
+  not a container or iterable`)。
+- **__getitem__ iteration が IndexError を catch**: kind 13 ハンドラに
+  local jmp_buf を立てて、 user の `__getitem__` 内で raise された
+  IndexError / StopIteration を try frame で受けて iteration 終了。
+- **dict.fromkeys を instance method 経由でも呼べる**: dict_methods に
+  bridge エントリ追加。
+- **bytes.decode / str.encode が errors 引数受理** (1-2 → 1-3)。
+- **list literal cap 256 → 2048**, **chain assign / unpack 8 → 256**
+  groups。
+- **PEP 646 `class C(*Ts):` starred class base**.
+- **math.fmax / fmin / isqrt / prod**, **operator.{concat, iconcat,
+  call, indexOf, countOf}**, **tempfile.mktemp**.
 
 **まだ blocking している parse error 28 種** (1 ファイルずつ別案件):
 
