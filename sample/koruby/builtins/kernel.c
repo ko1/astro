@@ -1113,7 +1113,9 @@ static VALUE kernel_loop(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE kernel_lambda(CTX *c, VALUE self, int argc, VALUE *argv) {
     extern struct korb_proc *current_block;
     if (!current_block) {
-        korb_raise(c, NULL, "tried to create Proc object without a block");
+        VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+        korb_raise(c, (struct korb_class *)eA,
+                   "tried to create Proc object without a block");
         return Qnil;
     }
     /* Mark as lambda so Proc#call's `return` becomes local. */
@@ -1123,7 +1125,9 @@ static VALUE kernel_lambda(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE kernel_proc(CTX *c, VALUE self, int argc, VALUE *argv) {
     extern struct korb_proc *current_block;
     if (!current_block) {
-        korb_raise(c, NULL, "tried to create Proc object without a block");
+        VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+        korb_raise(c, (struct korb_class *)eA,
+                   "tried to create Proc object without a block");
         return Qnil;
     }
     return (VALUE)current_block;
