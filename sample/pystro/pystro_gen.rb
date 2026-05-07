@@ -22,6 +22,17 @@ class PystroNodeDef < ASTroGen::NodeDef
           arg = "    fprintf(fp, \"        &n->u.#{name}.#{self.name}\");"
           return nil, arg
         end
+        # Override `const char *` to reference NODE's stored field instead
+        # of emitting a C string literal.  The literal would land in the
+        # SD's .rodata and be a different pointer from the parser's
+        # `intern_name` pool — pointer-compare-first lookups
+        # (py_class_lookup_method) would all miss.  Sharing the NODE
+        # pointer means SD passes the interned pointer and lookups can
+        # short-circuit strcmp.
+        if @type == 'const char *'
+          arg = "    fprintf(fp, \"        n->u.#{name}.#{self.name}\");"
+          return nil, arg
+        end
         super
       end
     end

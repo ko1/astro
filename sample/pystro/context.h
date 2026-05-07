@@ -154,6 +154,24 @@ struct pyclass {
     // a non-null slots set.
     const char **slots;
     int          nslots;
+
+    // Pre-resolved common dunder slots — populated by `pyclass_refresh_slots`
+    // at class-creation time and after every `py_class_add_method`.  The
+    // value is the result of an MRO walk for the corresponding name, or
+    // PY_NONE if no class along the MRO defines it.  Replaces the per-call
+    // strcmp-through-MRO scan with one pointer compare + one load.
+    //
+    // Subclass invalidation: a method add on a base class doesn't auto-
+    // refresh subclasses (pystro classes are normally write-once at module
+    // load).  If users mutate base methods at runtime they must trigger
+    // a refresh — TODO if it becomes an issue.
+    VALUE slot_init, slot_new, slot_eq, slot_lt, slot_hash;
+    VALUE slot_bool, slot_len, slot_getitem, slot_setitem, slot_contains;
+    VALUE slot_iter, slot_next, slot_call, slot_get;
+    VALUE slot_getattr, slot_getattribute, slot_setattr;
+    VALUE slot_index, slot_invert, slot_neg;
+    VALUE slot_repr, slot_str, slot_metaclass, slot_set_name;
+    bool  slots_initialized;
 };
 
 // CPython-style "compact" dict.  Indices table is open-addressed and

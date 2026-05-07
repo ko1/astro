@@ -750,7 +750,8 @@ node_attr_set(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
             VALUE cls = PY_OBJ_VAL(o->inst.cls);
             extern VALUE py_class_lookup_method_pub(VALUE cls, const char *name);
             extern bool py_class_has_slots_anywhere(VALUE cls);
-            VALUE sm = py_class_lookup_method_pub(cls, "__setattr__");
+            extern const char *PYSTRO_INTERN_setattr;
+            VALUE sm = py_class_lookup_method_pub(cls, PYSTRO_INTERN_setattr);
             bool has_setattr_override = (sm != PY_NONE
                 && !(PY_IS_PTR(sm) && PY_PTR(sm)->type == PY_T_BUILTIN));
             if (!has_setattr_override

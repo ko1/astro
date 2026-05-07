@@ -67,6 +67,16 @@ py_make_float(double d)
 // metaclass's result (or the original class if metaclass returns
 // non-class — that's incompatible with Python but pragmatic).
 extern VALUE py_class_lookup_method(VALUE cls, const char *name);
+
+// Pre-interned dunder names (filled by install_builtins).
+extern const char *PYSTRO_INTERN_init, *PYSTRO_INTERN_new, *PYSTRO_INTERN_eq,
+    *PYSTRO_INTERN_lt, *PYSTRO_INTERN_hash, *PYSTRO_INTERN_setattr,
+    *PYSTRO_INTERN_getattr, *PYSTRO_INTERN_getattribute, *PYSTRO_INTERN_bool,
+    *PYSTRO_INTERN_len, *PYSTRO_INTERN_getitem, *PYSTRO_INTERN_setitem,
+    *PYSTRO_INTERN_index, *PYSTRO_INTERN_invert, *PYSTRO_INTERN_neg,
+    *PYSTRO_INTERN_metaclass, *PYSTRO_INTERN_set_name, *PYSTRO_INTERN_iter,
+    *PYSTRO_INTERN_next, *PYSTRO_INTERN_call, *PYSTRO_INTERN_get,
+    *PYSTRO_INTERN_repr, *PYSTRO_INTERN_str, *PYSTRO_INTERN_contains;
 VALUE
 py_class_meta_apply(CTX *c, VALUE cls, VALUE meta, const char *name)
 {
@@ -90,14 +100,14 @@ py_class_meta_apply(CTX *c, VALUE cls, VALUE meta, const char *name)
     // The __new__ implementor is expected to return a class (typically by
     // calling type(name, bases, attrs)).
     if (py_is_class(meta)) {
-        VALUE new_m = py_class_lookup_method(meta, "__new__");
+        VALUE new_m = py_class_lookup_method(meta, PYSTRO_INTERN_new);
         if (new_m != PY_NONE) {
             VALUE av[4] = { meta, name_v, bases_tuple, attrs };
             VALUE r = py_apply(c, new_m, 4, av);
             if (c->state == PY_STATE_RAISE) return PY_NONE;
             // If __init__ is also defined, call it on the new class.
             if (py_is_class(r)) {
-                VALUE init_m = py_class_lookup_method(meta, "__init__");
+                VALUE init_m = py_class_lookup_method(meta, PYSTRO_INTERN_init);
                 if (init_m != PY_NONE) {
                     VALUE iav[4] = { r, name_v, bases_tuple, attrs };
                     py_apply(c, init_m, 4, iav);
@@ -115,7 +125,7 @@ py_class_meta_apply(CTX *c, VALUE cls, VALUE meta, const char *name)
     if (py_is_class(meta)) {
         py_class_add_method(c, cls, intern_name("__metaclass__", 13), meta);
         // Run __init__(cls, name, bases, attrs) if defined.
-        VALUE init_m = py_class_lookup_method(meta, "__init__");
+        VALUE init_m = py_class_lookup_method(meta, PYSTRO_INTERN_init);
         if (init_m != PY_NONE) {
             VALUE iav[4] = { cls, name_v, bases_tuple, attrs };
             py_apply(c, init_m, 4, iav);
@@ -233,7 +243,7 @@ py_class_inherit_metaclass(CTX *c, VALUE cls, VALUE *bases, int nbases, const ch
     for (int i = 0; i < nbases; i++) {
         VALUE b = bases[i];
         if (!py_is_class(b)) continue;
-        VALUE meta = py_class_lookup_method(b, "__metaclass__");
+        VALUE meta = py_class_lookup_method(b, PYSTRO_INTERN_metaclass);
         if (meta != PY_NONE && py_is_class(meta)) {
             final_cls = py_class_meta_apply(c, cls, meta, name);
             break;
@@ -628,6 +638,7 @@ py_compute_mro(VALUE cls)
     }
     cd->mro = out;
     cd->nmro = nout;
+    cd->slots_initialized = false;       // lazy fill on first lookup
 }
 
 VALUE
@@ -714,7 +725,7 @@ py_class_add_method(CTX *c, VALUE cls, const char *name, VALUE fn)
     // __set_name__ — if `fn` is a user instance with __set_name__,
     // call it now so descriptors can capture their attribute name.
     if (PY_IS_PTR(fn) && PY_PTR(fn)->type == PY_T_INSTANCE) {
-        VALUE sn = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(fn)->inst.cls), "__set_name__");
+        VALUE sn = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(fn)->inst.cls), PYSTRO_INTERN_set_name);
         if (sn != PY_NONE) {
             VALUE av[3] = { fn, cls, py_make_str(name, strlen(name)) };
             py_apply(c, sn, 3, av);
@@ -729,6 +740,7 @@ py_class_add_method(CTX *c, VALUE cls, const char *name, VALUE fn)
     for (int i = 0; i < cd->nmethods; i++) {
         if (strcmp(cd->methods[i].name, name) == 0) {
             cd->methods[i].value = fn;
+            cd->slots_initialized = false;     // lazy refresh on next lookup
             return;
         }
     }
@@ -741,22 +753,120 @@ py_class_add_method(CTX *c, VALUE cls, const char *name, VALUE fn)
     cd->methods[cd->nmethods].name = name;
     cd->methods[cd->nmethods].value = fn;
     cd->nmethods++;
+    cd->slots_initialized = false;       // lazy refresh on next lookup
 }
 
 // Walk the C3-linearised MRO and return the first matching method.
 // `cls.mro[]` is computed at class creation time and includes self at
 // index 0 + all bases in MRO order.
-VALUE
-py_class_lookup_method(VALUE cls, const char *name)
+// Pointer-compare-first lookup.  All method names added via
+// `py_class_add_method` are interned (caller passes intern_name(...)),
+// so when the lookup name is also interned we avoid strcmp entirely on
+// the hit path.  Fall back to strcmp for safety when names happen not
+// to be interned (e.g., a few literal-string call sites in runtime.c).
+// Slow path: actual MRO walk + (pointer-or-strcmp) compare.  Used by
+// the public lookup as a fallback for non-dunder names, and by
+// `pyclass_refresh_slots` to populate the dunder slots.
+static VALUE
+py_class_lookup_method_slow(VALUE cls, const char *name)
 {
     if (cls == PY_NONE || !py_is_class(cls)) return PY_NONE;
     struct pyclass *cd = &PY_PTR(cls)->cls;
     for (int i = 0; i < cd->nmro; i++) {
         struct pyclass *kd = &PY_PTR(cd->mro[i])->cls;
-        for (int j = 0; j < kd->nmethods; j++)
-            if (strcmp(kd->methods[j].name, name) == 0) return kd->methods[j].value;
+        for (int j = 0; j < kd->nmethods; j++) {
+            const char *mn = kd->methods[j].name;
+            if (mn == name || strcmp(mn, name) == 0)
+                return kd->methods[j].value;
+        }
     }
     return PY_NONE;
+}
+
+// Recompute the dunder-slot fields from the current MRO + method tables.
+// Called on class creation (after py_compute_mro), every py_class_add_method,
+// and when MRO is recomputed.  All names compared by interned-pointer
+// equality (PYSTRO_INTERN_*).
+void
+pyclass_refresh_slots(VALUE cls)
+{
+    if (cls == PY_NONE || !py_is_class(cls)) return;
+    struct pyclass *cd = &PY_PTR(cls)->cls;
+    cd->slot_init          = py_class_lookup_method_slow(cls, PYSTRO_INTERN_init);
+    cd->slot_new           = py_class_lookup_method_slow(cls, PYSTRO_INTERN_new);
+    cd->slot_eq            = py_class_lookup_method_slow(cls, PYSTRO_INTERN_eq);
+    cd->slot_lt            = py_class_lookup_method_slow(cls, PYSTRO_INTERN_lt);
+    cd->slot_hash          = py_class_lookup_method_slow(cls, PYSTRO_INTERN_hash);
+    cd->slot_bool          = py_class_lookup_method_slow(cls, PYSTRO_INTERN_bool);
+    cd->slot_len           = py_class_lookup_method_slow(cls, PYSTRO_INTERN_len);
+    cd->slot_getitem       = py_class_lookup_method_slow(cls, PYSTRO_INTERN_getitem);
+    cd->slot_setitem       = py_class_lookup_method_slow(cls, PYSTRO_INTERN_setitem);
+    cd->slot_contains      = py_class_lookup_method_slow(cls, PYSTRO_INTERN_contains);
+    cd->slot_iter          = py_class_lookup_method_slow(cls, PYSTRO_INTERN_iter);
+    cd->slot_next          = py_class_lookup_method_slow(cls, PYSTRO_INTERN_next);
+    cd->slot_call          = py_class_lookup_method_slow(cls, PYSTRO_INTERN_call);
+    cd->slot_get           = py_class_lookup_method_slow(cls, PYSTRO_INTERN_get);
+    cd->slot_getattr       = py_class_lookup_method_slow(cls, PYSTRO_INTERN_getattr);
+    cd->slot_getattribute  = py_class_lookup_method_slow(cls, PYSTRO_INTERN_getattribute);
+    cd->slot_setattr       = py_class_lookup_method_slow(cls, PYSTRO_INTERN_setattr);
+    cd->slot_index         = py_class_lookup_method_slow(cls, PYSTRO_INTERN_index);
+    cd->slot_invert        = py_class_lookup_method_slow(cls, PYSTRO_INTERN_invert);
+    cd->slot_neg           = py_class_lookup_method_slow(cls, PYSTRO_INTERN_neg);
+    cd->slot_repr          = py_class_lookup_method_slow(cls, PYSTRO_INTERN_repr);
+    cd->slot_str           = py_class_lookup_method_slow(cls, PYSTRO_INTERN_str);
+    cd->slot_metaclass     = py_class_lookup_method_slow(cls, PYSTRO_INTERN_metaclass);
+    cd->slot_set_name      = py_class_lookup_method_slow(cls, PYSTRO_INTERN_set_name);
+    cd->slots_initialized  = true;
+}
+
+// Public lookup: short-circuit through pre-resolved slots when `name` is
+// one of the known dunders, falling back to the slow MRO walk otherwise.
+// Pointer-compare on `name` against PYSTRO_INTERN_* succeeds when the
+// caller passed a global PYSTRO_INTERN_* directly (the common path from
+// runtime.c) or when the SD-baked code's `n->u.X.name` has been interned
+// to the same pool entry.
+VALUE
+py_class_lookup_method(VALUE cls, const char *name)
+{
+    if (cls == PY_NONE || !py_is_class(cls)) return PY_NONE;
+    struct pyclass *cd = &PY_PTR(cls)->cls;
+    // Lazy initialise (paranoia — install_builtins paths construct
+    // classes before slots may have been populated).
+    if (UNLIKELY(!cd->slots_initialized)) pyclass_refresh_slots(cls);
+    // Skip the 24-way slot scan unless `name` looks like a dunder
+    // (`__xxx__`).  All non-dunder names — the bulk of richards's
+    // / deltablue's lookups (e.g. "weakest_of") — go straight to the
+    // slow path and avoid 24 pointer-equality checks.
+    if (UNLIKELY(name[0] != '_' || name[1] != '_'))
+        return py_class_lookup_method_slow(cls, name);
+    // Dunder slot fast path.  Linear pointer-compare scan over the
+    // ~24 known names; on hit, return the pre-resolved MRO value.
+    if (name == PYSTRO_INTERN_init)         return cd->slot_init;
+    if (name == PYSTRO_INTERN_eq)           return cd->slot_eq;
+    if (name == PYSTRO_INTERN_lt)           return cd->slot_lt;
+    if (name == PYSTRO_INTERN_hash)         return cd->slot_hash;
+    if (name == PYSTRO_INTERN_new)          return cd->slot_new;
+    if (name == PYSTRO_INTERN_bool)         return cd->slot_bool;
+    if (name == PYSTRO_INTERN_len)          return cd->slot_len;
+    if (name == PYSTRO_INTERN_getitem)      return cd->slot_getitem;
+    if (name == PYSTRO_INTERN_setitem)      return cd->slot_setitem;
+    if (name == PYSTRO_INTERN_contains)     return cd->slot_contains;
+    if (name == PYSTRO_INTERN_iter)         return cd->slot_iter;
+    if (name == PYSTRO_INTERN_next)         return cd->slot_next;
+    if (name == PYSTRO_INTERN_call)         return cd->slot_call;
+    if (name == PYSTRO_INTERN_get)          return cd->slot_get;
+    if (name == PYSTRO_INTERN_getattr)      return cd->slot_getattr;
+    if (name == PYSTRO_INTERN_getattribute) return cd->slot_getattribute;
+    if (name == PYSTRO_INTERN_setattr)      return cd->slot_setattr;
+    if (name == PYSTRO_INTERN_index)        return cd->slot_index;
+    if (name == PYSTRO_INTERN_invert)       return cd->slot_invert;
+    if (name == PYSTRO_INTERN_neg)          return cd->slot_neg;
+    if (name == PYSTRO_INTERN_repr)         return cd->slot_repr;
+    if (name == PYSTRO_INTERN_str)          return cd->slot_str;
+    if (name == PYSTRO_INTERN_metaclass)    return cd->slot_metaclass;
+    if (name == PYSTRO_INTERN_set_name)     return cd->slot_set_name;
+    // Non-dunder: slow path.
+    return py_class_lookup_method_slow(cls, name);
 }
 
 bool
@@ -766,8 +876,11 @@ py_class_has_method(VALUE cls, const char *name)
     struct pyclass *cd = &PY_PTR(cls)->cls;
     for (int i = 0; i < cd->nmro; i++) {
         struct pyclass *kd = &PY_PTR(cd->mro[i])->cls;
-        for (int j = 0; j < kd->nmethods; j++)
-            if (strcmp(kd->methods[j].name, name) == 0) return true;
+        for (int j = 0; j < kd->nmethods; j++) {
+            const char *mn = kd->methods[j].name;
+            if (mn == name || strcmp(mn, name) == 0)
+                return true;
+        }
     }
     return false;
 }
@@ -1204,7 +1317,7 @@ py_neg(CTX *c, VALUE a)
         return r;
     }
     if (py_is_instance(a)) {
-        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(a)->inst.cls), "__neg__");
+        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(a)->inst.cls), PYSTRO_INTERN_neg);
         if (m != PY_NONE) {
             VALUE av[1] = { a };
             return py_apply(c, m, 1, av);
@@ -1758,7 +1871,7 @@ VALUE
 py_bit_inv(CTX *c, VALUE a)
 {
     if (py_is_instance(a)) {
-        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(a)->inst.cls), "__invert__");
+        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(a)->inst.cls), PYSTRO_INTERN_invert);
         if (m != PY_NONE) {
             VALUE av[1] = { a };
             return py_apply(c, m, 1, av);
@@ -1827,13 +1940,13 @@ int
 py_cmp(CTX *c, VALUE a, VALUE b)
 {
     if (py_is_instance(a)) {
-        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(a)->inst.cls), "__lt__");
+        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(a)->inst.cls), PYSTRO_INTERN_lt);
         if (m != PY_NONE) {
             VALUE av[2] = { a, b };
             VALUE r = py_apply(c, m, 2, av);
             if (py_is_truthy(r)) return -1;
             // try __eq__ for == 0
-            m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(a)->inst.cls), "__eq__");
+            m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(a)->inst.cls), PYSTRO_INTERN_eq);
             if (m != PY_NONE) {
                 VALUE r2 = py_apply(c, m, 2, av);
                 if (py_is_truthy(r2)) return 0;
@@ -2127,14 +2240,14 @@ py_hash(CTX *c, VALUE v)
         VALUE cls = PY_OBJ_VAL(o->inst.cls);
         // __hash__ explicitly set to None makes the type unhashable.
         if (py_class_has_method(cls, "__hash__")) {
-            VALUE hm0 = py_class_lookup_method(cls, "__hash__");
+            VALUE hm0 = py_class_lookup_method(cls, PYSTRO_INTERN_hash);
             if (hm0 == PY_NONE) {
                 py_raise_exc(c, c->EXC_TypeError,
                              "unhashable type: '%s'", o->inst.cls->cls.name);
                 return 0;
             }
         }
-        VALUE hm = py_class_lookup_method(cls, "__hash__");
+        VALUE hm = py_class_lookup_method(cls, PYSTRO_INTERN_hash);
         if (hm != PY_NONE) {
             VALUE av[1] = { v };
             VALUE r = py_apply(c, hm, 1, av);
@@ -2423,14 +2536,14 @@ py_is_truthy_instance(VALUE v)
     extern CTX *py_current_ctx;
     CTX *c = py_current_ctx;
     VALUE cls = PY_OBJ_VAL(PY_PTR(v)->inst.cls);
-    VALUE m = py_class_lookup_method(cls, "__bool__");
+    VALUE m = py_class_lookup_method(cls, PYSTRO_INTERN_bool);
     if (m != PY_NONE) {
         VALUE av[1] = { v };
         VALUE r = py_apply(c, m, 1, av);
         if (c->state == PY_STATE_RAISE) return false;
         return r == PY_TRUE || (PY_IS_FIXNUM(r) && PY_FIXVAL(r) != 0);
     }
-    VALUE lm = py_class_lookup_method(cls, "__len__");
+    VALUE lm = py_class_lookup_method(cls, PYSTRO_INTERN_len);
     if (lm != PY_NONE) {
         VALUE av[1] = { v };
         VALUE r = py_apply(c, lm, 1, av);
@@ -2535,7 +2648,7 @@ py_int_to_long(CTX *c, VALUE v)
     }
     // __index__ protocol.
     if (py_is_instance(v)) {
-        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(v)->inst.cls), "__index__");
+        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(v)->inst.cls), PYSTRO_INTERN_index);
         if (m != PY_NONE) {
             VALUE r = py_apply(c, m, 1, &v);
             if (c->state == PY_STATE_RAISE) return 0;
@@ -2563,7 +2676,7 @@ VALUE
 py_list_get(CTX *c, VALUE seq, VALUE idx)
 {
     if (py_is_instance(seq)) {
-        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(seq)->inst.cls), "__getitem__");
+        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(seq)->inst.cls), PYSTRO_INTERN_getitem);
         if (m != PY_NONE) {
             VALUE av[2] = { seq, idx };
             return py_apply(c, m, 2, av);
@@ -2676,9 +2789,9 @@ py_list_get(CTX *c, VALUE seq, VALUE idx)
             return py_apply(c, m, 2, av);
         }
         // Metaclass __getitem__: e.g. _AbcMeta in collections.abc.
-        VALUE meta = py_class_lookup_method(seq, "__metaclass__");
+        VALUE meta = py_class_lookup_method(seq, PYSTRO_INTERN_metaclass);
         if (meta != PY_NONE && py_is_class(meta)) {
-            VALUE mg = py_class_lookup_method(meta, "__getitem__");
+            VALUE mg = py_class_lookup_method(meta, PYSTRO_INTERN_getitem);
             if (mg != PY_NONE) {
                 VALUE av[2] = { seq, idx };
                 return py_apply(c, mg, 2, av);
@@ -2702,7 +2815,7 @@ VALUE
 py_list_set(CTX *c, VALUE seq, VALUE idx, VALUE val)
 {
     if (py_is_instance(seq)) {
-        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(seq)->inst.cls), "__setitem__");
+        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(seq)->inst.cls), PYSTRO_INTERN_setitem);
         if (m != PY_NONE) {
             VALUE av[3] = { seq, idx, val };
             return py_apply(c, m, 3, av);
@@ -2738,7 +2851,7 @@ py_list_slice(CTX *c, VALUE seq, VALUE start, VALUE stop, VALUE step)
 {
     // User-class with __getitem__ — call with slice() object.
     if (py_is_instance(seq)) {
-        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(seq)->inst.cls), "__getitem__");
+        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(seq)->inst.cls), PYSTRO_INTERN_getitem);
         if (m != PY_NONE) {
             struct pyobj *sl = py_alloc(PY_T_SLICE);
             sl->slice_.start = start;
@@ -2879,7 +2992,7 @@ void
 py_list_slice_set(CTX *c, VALUE seq, VALUE start, VALUE stop, VALUE step, VALUE val)
 {
     if (py_is_instance(seq)) {
-        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(seq)->inst.cls), "__setitem__");
+        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(seq)->inst.cls), PYSTRO_INTERN_setitem);
         if (m != PY_NONE) {
             struct pyobj *sl = py_alloc(PY_T_SLICE);
             sl->slice_.start = start;
@@ -3102,7 +3215,7 @@ py_seq_len(CTX *c, VALUE v)
         }
     }
     if (py_is_instance(v)) {
-        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(v)->inst.cls), "__len__");
+        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(v)->inst.cls), PYSTRO_INTERN_len);
         if (m != PY_NONE) {
             VALUE av[1] = { v };
             VALUE r = py_apply(c, m, 1, av);
@@ -3114,9 +3227,9 @@ py_seq_len(CTX *c, VALUE v)
     // Class object: look up __len__ on its __metaclass__ (matches
     // metaclass-driven `len(SomeEnum)` etc.).
     if (py_is_class(v)) {
-        VALUE meta = py_class_lookup_method(v, "__metaclass__");
+        VALUE meta = py_class_lookup_method(v, PYSTRO_INTERN_metaclass);
         if (meta != PY_NONE && py_is_class(meta)) {
-            VALUE m = py_class_lookup_method(meta, "__len__");
+            VALUE m = py_class_lookup_method(meta, PYSTRO_INTERN_len);
             if (m != PY_NONE) {
                 VALUE av[1] = { v };
                 VALUE r = py_apply(c, m, 1, av);
@@ -3174,9 +3287,9 @@ py_contains(CTX *c, VALUE container, VALUE v)
                    ((r->range.start - x) % (-r->range.step) == 0);
     }
     if (py_is_class(container)) {
-        VALUE meta = py_class_lookup_method(container, "__metaclass__");
+        VALUE meta = py_class_lookup_method(container, PYSTRO_INTERN_metaclass);
         if (meta != PY_NONE && py_is_class(meta)) {
-            VALUE m = py_class_lookup_method(meta, "__contains__");
+            VALUE m = py_class_lookup_method(meta, PYSTRO_INTERN_contains);
             if (m != PY_NONE) {
                 VALUE av[2] = { container, v };
                 VALUE r = py_apply(c, m, 2, av);
@@ -3186,7 +3299,7 @@ py_contains(CTX *c, VALUE container, VALUE v)
     }
     if (py_is_instance(container)) {
         VALUE cls = PY_OBJ_VAL(PY_PTR(container)->inst.cls);
-        VALUE m = py_class_lookup_method(cls, "__contains__");
+        VALUE m = py_class_lookup_method(cls, PYSTRO_INTERN_contains);
         if (m != PY_NONE) {
             VALUE av[2] = { container, v };
             VALUE r = py_apply(c, m, 2, av);
@@ -3277,7 +3390,7 @@ py_iter_init(CTX *c, struct py_iter *it, VALUE iterable)
     }
     if (py_is_instance(iterable)) {
         VALUE cls = PY_OBJ_VAL(PY_PTR(iterable)->inst.cls);
-        VALUE im = py_class_lookup_method(cls, "__iter__");
+        VALUE im = py_class_lookup_method(cls, PYSTRO_INTERN_iter);
         if (im != PY_NONE) {
             VALUE av[1] = { iterable };
             VALUE iter_obj = py_apply(c, im, 1, av);
@@ -3302,7 +3415,7 @@ py_iter_init(CTX *c, struct py_iter *it, VALUE iterable)
             // Resolve __next__ once so the hot loop doesn't re-scan.
             if (py_is_instance(iter_obj)) {
                 VALUE icls = PY_OBJ_VAL(PY_PTR(iter_obj)->inst.cls);
-                it->next_m = py_class_lookup_method(icls, "__next__");
+                it->next_m = py_class_lookup_method(icls, PYSTRO_INTERN_next);
             }
             return;
         }
@@ -3312,7 +3425,7 @@ py_iter_init(CTX *c, struct py_iter *it, VALUE iterable)
             return;
         }
         // Sequence protocol fallback: __getitem__ with integer indices.
-        VALUE gm = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(iterable)->inst.cls), "__getitem__");
+        VALUE gm = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(iterable)->inst.cls), PYSTRO_INTERN_getitem);
         if (gm != PY_NONE) {
             it->kind = 13;          // __getitem__-based iterator
             it->container = iterable;
@@ -3332,9 +3445,9 @@ py_iter_init(CTX *c, struct py_iter *it, VALUE iterable)
     }
     // Class with metaclass __iter__ — used for `for m in EnumClass:`.
     if (py_is_class(iterable)) {
-        VALUE meta = py_class_lookup_method(iterable, "__metaclass__");
+        VALUE meta = py_class_lookup_method(iterable, PYSTRO_INTERN_metaclass);
         if (meta != PY_NONE && py_is_class(meta)) {
-            VALUE m = py_class_lookup_method(meta, "__iter__");
+            VALUE m = py_class_lookup_method(meta, PYSTRO_INTERN_iter);
             if (m != PY_NONE) {
                 VALUE av[1] = { iterable };
                 VALUE iter_obj = py_apply(c, m, 1, av);
@@ -3379,7 +3492,7 @@ py_iter_next_user(CTX *c, struct py_iter *it, VALUE *out)
     if (UNLIKELY(nm == 0 || nm == PY_NONE)) {
         if (py_is_instance(iter_obj)) {
             VALUE cls = PY_OBJ_VAL(PY_PTR(iter_obj)->inst.cls);
-            nm = py_class_lookup_method(cls, "__next__");
+            nm = py_class_lookup_method(cls, PYSTRO_INTERN_next);
             if (nm == PY_NONE)
                 py_raise_exc(c, c->EXC_TypeError, "iter object has no __next__");
             it->next_m = nm;
@@ -3561,7 +3674,7 @@ py_iter_next(CTX *c, struct py_iter *it, VALUE *out)
         // StopIteration from inside the user-defined __getitem__ via a
         // local try frame, otherwise the longjmp-based raise
         // would unwind past us.
-        VALUE gm = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(it->container)->inst.cls), "__getitem__");
+        VALUE gm = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(it->container)->inst.cls), PYSTRO_INTERN_getitem);
         VALUE av[2] = { it->container, PY_FIX(it->i) };
         jmp_buf jb;
         int saved_top = c->try_top;
@@ -4019,7 +4132,7 @@ py_getattr(CTX *c, VALUE v, const char *name)
         if (!py_skip_getattribute_hook
             && (strncmp(name, "__", 2) != 0 || strcmp(name, "__class__") == 0
                 || strcmp(name, "__dict__") == 0)) {
-            VALUE ga = py_class_lookup_method(PY_OBJ_VAL(o->inst.cls), "__getattribute__");
+            VALUE ga = py_class_lookup_method(PY_OBJ_VAL(o->inst.cls), PYSTRO_INTERN_getattribute);
             // Skip the default object.__getattribute__ — only user
             // overrides should fire the hook.
             if (ga != PY_NONE
@@ -4068,7 +4181,7 @@ py_getattr(CTX *c, VALUE v, const char *name)
                 // User-defined descriptor: if `m` is itself an instance
                 // with a `__get__` method, call it as a descriptor.
                 if (t == PY_T_INSTANCE) {
-                    VALUE get_m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(m)->inst.cls), "__get__");
+                    VALUE get_m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(m)->inst.cls), PYSTRO_INTERN_get);
                     if (get_m != PY_NONE) {
                         VALUE av[3] = { m, v, PY_OBJ_VAL(o->inst.cls) };
                         return py_apply(c, get_m, 3, av);
@@ -4079,7 +4192,7 @@ py_getattr(CTX *c, VALUE v, const char *name)
             return m;         // immediate (fixnum, None, True, False, flonum)
         }
         // __getattr__ fallback (only when the regular lookup misses).
-        VALUE getattr_m = py_class_lookup_method(PY_OBJ_VAL(o->inst.cls), "__getattr__");
+        VALUE getattr_m = py_class_lookup_method(PY_OBJ_VAL(o->inst.cls), PYSTRO_INTERN_getattr);
         if (getattr_m != PY_NONE) {
             VALUE av[2] = { v, py_make_str(name, strlen(name)) };
             return py_apply(c, getattr_m, 2, av);
@@ -4091,7 +4204,7 @@ py_getattr(CTX *c, VALUE v, const char *name)
         struct pyclass *cd = &PY_PTR(v)->cls;
         if (strcmp(name, "__class__") == 0) {
             // Class of a class is its metaclass — typically `type`.
-            VALUE meta = py_class_lookup_method(v, "__metaclass__");
+            VALUE meta = py_class_lookup_method(v, PYSTRO_INTERN_metaclass);
             return (meta != PY_NONE && py_is_class(meta)) ? meta : c->TYPE_type;
         }
         if (strcmp(name, "__name__") == 0)
@@ -4133,7 +4246,7 @@ py_getattr(CTX *c, VALUE v, const char *name)
             // If m is an instance whose class defines __get__, invoke
             // __get__(None, owner) — descriptor protocol at class level.
             if (py_is_instance(m)) {
-                VALUE getm = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(m)->inst.cls), "__get__");
+                VALUE getm = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(m)->inst.cls), PYSTRO_INTERN_get);
                 if (getm != PY_NONE) {
                     VALUE av[3] = { m, PY_NONE, v };
                     return py_apply(c, getm, 3, av);
@@ -4169,7 +4282,7 @@ py_getattr(CTX *c, VALUE v, const char *name)
         // Fall through to the metaclass: class-attr lookup walks
         // __metaclass__ so SingletonMeta._instances is reachable as
         // S._instances.
-        VALUE meta_v = py_class_lookup_method(v, "__metaclass__");
+        VALUE meta_v = py_class_lookup_method(v, PYSTRO_INTERN_metaclass);
         if (meta_v != PY_NONE && py_is_class(meta_v)) {
             if (py_class_has_method(meta_v, name)) {
                 VALUE m = py_class_lookup_method(meta_v, name);
@@ -4340,7 +4453,7 @@ py_setattr(CTX *c, VALUE v, const char *name, VALUE val)
         struct pyobj *o = PY_PTR(v);
         // __setattr__ user override
         if (!py_skip_setattr_hook) {
-            VALUE sm = py_class_lookup_method(PY_OBJ_VAL(o->inst.cls), "__setattr__");
+            VALUE sm = py_class_lookup_method(PY_OBJ_VAL(o->inst.cls), PYSTRO_INTERN_setattr);
             if (sm != PY_NONE
                 && !(PY_IS_PTR(sm) && PY_PTR(sm)->type == PY_T_BUILTIN
                      && PY_PTR(sm)->builtin.fn == bi_object_setattr)) {
@@ -4582,7 +4695,7 @@ py_apply_kw(CTX *c, VALUE fn, int argc, VALUE *argv,
         return py_apply_kw(c, bm->bound.func, argc + 1, av, kwc, kwnames, kwvalues);
     }
     if (py_is_instance(fn)) {
-        VALUE call = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(fn)->inst.cls), "__call__");
+        VALUE call = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(fn)->inst.cls), PYSTRO_INTERN_call);
         if (call != PY_NONE) {
             VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc + 1));
             av[0] = fn;
@@ -4608,9 +4721,9 @@ py_apply_kw(CTX *c, VALUE fn, int argc, VALUE *argv,
         }
         // Metaclass __call__ override: lets a metaclass intercept the
         // class call (e.g. singleton pattern).  type(cls).__call__(cls, ...)
-        VALUE meta = py_class_lookup_method(fn, "__metaclass__");
+        VALUE meta = py_class_lookup_method(fn, PYSTRO_INTERN_metaclass);
         if (meta != PY_NONE && py_is_class(meta)) {
-            VALUE mc = py_class_lookup_method(meta, "__call__");
+            VALUE mc = py_class_lookup_method(meta, PYSTRO_INTERN_call);
             if (mc != PY_NONE) {
                 VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc + 1));
                 av[0] = fn;
@@ -4622,7 +4735,7 @@ py_apply_kw(CTX *c, VALUE fn, int argc, VALUE *argv,
         // pattern, immutable types, etc.).  Return value of __new__ becomes
         // the instance; if it's an instance of cls, __init__ runs on it.
         VALUE inst;
-        VALUE new_m = py_class_lookup_method(fn, "__new__");
+        VALUE new_m = py_class_lookup_method(fn, PYSTRO_INTERN_new);
         if (new_m != PY_NONE) {
             VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc + 1));
             av[0] = fn;
@@ -4636,7 +4749,7 @@ py_apply_kw(CTX *c, VALUE fn, int argc, VALUE *argv,
             py_setattr(c, inst, "args", py_make_tuple(argv, argc));
             if (argc >= 1 && py_is_str(argv[0])) py_setattr(c, inst, "message", argv[0]);
         }
-        VALUE init = py_class_lookup_method(fn, "__init__");
+        VALUE init = py_class_lookup_method(fn, PYSTRO_INTERN_init);
         if (init != PY_NONE) {
             VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc + 1));
             av[0] = inst;
@@ -4697,9 +4810,9 @@ py_apply_slow(CTX *c, VALUE fn, int argc, VALUE *argv)
             return PY_PTR(fn)->cls.builtin_ctor(c, argc, argv);
         }
         // Metaclass __call__ override (singleton, etc.).
-        VALUE meta_s = py_class_lookup_method(fn, "__metaclass__");
+        VALUE meta_s = py_class_lookup_method(fn, PYSTRO_INTERN_metaclass);
         if (meta_s != PY_NONE && py_is_class(meta_s)) {
-            VALUE mc = py_class_lookup_method(meta_s, "__call__");
+            VALUE mc = py_class_lookup_method(meta_s, PYSTRO_INTERN_call);
             if (mc != PY_NONE) {
                 VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc + 1));
                 av[0] = fn;
@@ -4720,7 +4833,7 @@ py_apply_slow(CTX *c, VALUE fn, int argc, VALUE *argv)
         // It returns the new instance and handles built-in subclass
         // primary value setup.
         VALUE inst;
-        VALUE new_m = py_class_lookup_method(fn, "__new__");
+        VALUE new_m = py_class_lookup_method(fn, PYSTRO_INTERN_new);
         if (new_m != PY_NONE) {
             VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc + 1));
             av[0] = fn;
@@ -4747,7 +4860,7 @@ py_apply_slow(CTX *c, VALUE fn, int argc, VALUE *argv)
                 py_setattr(c, inst, "exceptions", argv[1]);
             }
         }
-        VALUE init = py_class_lookup_method(fn, "__init__");
+        VALUE init = py_class_lookup_method(fn, PYSTRO_INTERN_init);
         if (init != PY_NONE) {
             VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc + 1));
             av[0] = inst;
@@ -4778,7 +4891,7 @@ py_apply_slow(CTX *c, VALUE fn, int argc, VALUE *argv)
     }
     // Instance with __call__ — dispatch to it with self prepended.
     if (py_is_instance(fn)) {
-        VALUE call = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(fn)->inst.cls), "__call__");
+        VALUE call = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(fn)->inst.cls), PYSTRO_INTERN_call);
         if (call != PY_NONE) {
             VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc + 1));
             av[0] = fn;
@@ -5071,7 +5184,7 @@ py_display(FILE *fp, VALUE v, bool repr)
             const char *m_name = repr ? "__repr__" : "__str__";
             VALUE m = py_class_lookup_method(PY_OBJ_VAL(o->inst.cls), m_name);
             if (m == PY_NONE && !repr)
-                m = py_class_lookup_method(PY_OBJ_VAL(o->inst.cls), "__repr__");
+                m = py_class_lookup_method(PY_OBJ_VAL(o->inst.cls), PYSTRO_INTERN_repr);
             if (m != PY_NONE) {
                 VALUE av[1] = { v };
                 VALUE r = py_apply(py_current_ctx, m, 1, av);
@@ -5133,9 +5246,9 @@ VALUE
 py_to_str(CTX *c, VALUE v)
 {
     if (py_is_instance(v)) {
-        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(v)->inst.cls), "__str__");
+        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(v)->inst.cls), PYSTRO_INTERN_str);
         if (m == PY_NONE)
-            m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(v)->inst.cls), "__repr__");
+            m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(v)->inst.cls), PYSTRO_INTERN_repr);
         if (m != PY_NONE) {
             VALUE av[1] = { v };
             VALUE r = py_apply(c, m, 1, av);
@@ -5166,7 +5279,7 @@ VALUE
 py_to_repr(CTX *c, VALUE v)
 {
     if (py_is_instance(v)) {
-        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(v)->inst.cls), "__repr__");
+        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(v)->inst.cls), PYSTRO_INTERN_repr);
         if (m != PY_NONE) {
             VALUE av[1] = { v };
             VALUE r = py_apply(c, m, 1, av);
@@ -9374,7 +9487,7 @@ bi_int(CTX *c, int argc, VALUE *argv)
     if (py_is_instance(v)) {
         VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(v)->inst.cls), "__int__");
         if (m != PY_NONE) { VALUE av[1] = { v }; return py_apply(c, m, 1, av); }
-        m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(v)->inst.cls), "__index__");
+        m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(v)->inst.cls), PYSTRO_INTERN_index);
         if (m != PY_NONE) { VALUE av[1] = { v }; return py_apply(c, m, 1, av); }
     }
     py_raise_exc(c, c->EXC_TypeError, "int() argument type not supported");
@@ -9500,13 +9613,13 @@ bi_bool(CTX *c, int argc, VALUE *argv)
     VALUE v = argv[0];
     if (py_is_instance(v)) {
         VALUE cls = PY_OBJ_VAL(PY_PTR(v)->inst.cls);
-        VALUE m = py_class_lookup_method(cls, "__bool__");
+        VALUE m = py_class_lookup_method(cls, PYSTRO_INTERN_bool);
         if (m != PY_NONE) {
             VALUE av[1] = { v };
             VALUE r = py_apply(c, m, 1, av);
             return py_is_truthy(r) ? PY_TRUE : PY_FALSE;
         }
-        VALUE lm = py_class_lookup_method(cls, "__len__");
+        VALUE lm = py_class_lookup_method(cls, PYSTRO_INTERN_len);
         if (lm != PY_NONE) {
             VALUE av[1] = { v };
             VALUE r = py_apply(c, lm, 1, av);
@@ -9761,7 +9874,7 @@ bi_type_call(CTX *c, int argc, VALUE *argv)
     if (PY_PTR(cls)->cls.builtin_ctor)
         return PY_PTR(cls)->cls.builtin_ctor(c, n, cargv);
     VALUE inst;
-    VALUE new_m = py_class_lookup_method(cls, "__new__");
+    VALUE new_m = py_class_lookup_method(cls, PYSTRO_INTERN_new);
     if (new_m != PY_NONE) {
         VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (n + 1));
         av[0] = cls;
@@ -9771,7 +9884,7 @@ bi_type_call(CTX *c, int argc, VALUE *argv)
     } else {
         inst = py_make_instance(cls);
     }
-    VALUE init = py_class_lookup_method(cls, "__init__");
+    VALUE init = py_class_lookup_method(cls, PYSTRO_INTERN_init);
     if (init != PY_NONE) {
         VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (n + 1));
         av[0] = inst;
@@ -10526,7 +10639,7 @@ bi_callable(CTX *c, int argc, VALUE *argv)
     VALUE v = argv[0];
     if (py_is_func(v) || py_is_builtin(v) || py_is_bound(v) || py_is_class(v)) return PY_TRUE;
     if (py_is_instance(v)) {
-        VALUE call = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(v)->inst.cls), "__call__");
+        VALUE call = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(v)->inst.cls), PYSTRO_INTERN_call);
         return call != PY_NONE ? PY_TRUE : PY_FALSE;
     }
     return PY_FALSE;
@@ -10589,7 +10702,7 @@ py_isinstance_check(CTX *c, VALUE v, VALUE cls)
     // don't survive py_apply, so for ABCMeta we drop straight into the
     // _abc_registry walk).
     {
-        VALUE meta = py_class_lookup_method(cls, "__metaclass__");
+        VALUE meta = py_class_lookup_method(cls, PYSTRO_INTERN_metaclass);
         if (meta != PY_NONE && py_is_class(meta)) {
             const char *meta_name = PY_PTR(meta)->cls.name;
             bool is_abcmeta = (meta_name && strcmp(meta_name, "ABCMeta") == 0);
@@ -10860,7 +10973,7 @@ bi_hex(CTX *c, int argc, VALUE *argv)
     VALUE v = argv[0];
     // Coerce via __index__ if available.
     if (py_is_instance(v)) {
-        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(v)->inst.cls), "__index__");
+        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(v)->inst.cls), PYSTRO_INTERN_index);
         if (m != PY_NONE) {
             VALUE av[1] = { v };
             v = py_apply(c, m, 1, av);
@@ -10883,7 +10996,7 @@ bi_bin(CTX *c, int argc, VALUE *argv)
     (void)argc;
     VALUE v = argv[0];
     if (py_is_instance(v)) {
-        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(v)->inst.cls), "__index__");
+        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(v)->inst.cls), PYSTRO_INTERN_index);
         if (m != PY_NONE) { VALUE av[1] = { v }; v = py_apply(c, m, 1, av);
             if (c->state == PY_STATE_RAISE) return PY_NONE; }
     }
@@ -10903,7 +11016,7 @@ bi_oct(CTX *c, int argc, VALUE *argv)
     (void)argc;
     VALUE v = argv[0];
     if (py_is_instance(v)) {
-        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(v)->inst.cls), "__index__");
+        VALUE m = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(v)->inst.cls), PYSTRO_INTERN_index);
         if (m != PY_NONE) { VALUE av[1] = { v }; v = py_apply(c, m, 1, av);
             if (c->state == PY_STATE_RAISE) return PY_NONE; }
     }
@@ -13045,7 +13158,7 @@ bi_iter(CTX *c, int argc, VALUE *argv)
     if (PY_IS_PTR(argv[0]) && PY_PTR(argv[0])->type == PY_T_ITER) return argv[0];
     if (py_is_instance(argv[0])) {
         VALUE cls = PY_OBJ_VAL(PY_PTR(argv[0])->inst.cls);
-        VALUE im = py_class_lookup_method(cls, "__iter__");
+        VALUE im = py_class_lookup_method(cls, PYSTRO_INTERN_iter);
         if (im != PY_NONE) {
             VALUE av[1] = { argv[0] };
             return py_apply(c, im, 1, av);
@@ -13088,7 +13201,7 @@ bi_next(CTX *c, int argc, VALUE *argv)
     }
     if (py_is_instance(it)) {
         VALUE cls = PY_OBJ_VAL(PY_PTR(it)->inst.cls);
-        VALUE nm = py_class_lookup_method(cls, "__next__");
+        VALUE nm = py_class_lookup_method(cls, PYSTRO_INTERN_next);
         if (nm != PY_NONE) {
             VALUE av[1] = { it };
             return py_apply(c, nm, 1, av);
@@ -13097,9 +13210,71 @@ bi_next(CTX *c, int argc, VALUE *argv)
     py_raise_exc(c, c->EXC_TypeError, "next() argument is not an iterator");
 }
 
+// Pre-interned dunder names.  Filled by install_builtins() so all
+// py_class_lookup_method calls in runtime.c can pass these globals
+// instead of raw string literals.  Pointer equality with the names
+// stored in pyclass_method (which the parser interns) makes the
+// hot-loop comparison strcmp-free on hits.
+const char *PYSTRO_INTERN_init;
+const char *PYSTRO_INTERN_new;
+const char *PYSTRO_INTERN_eq;
+const char *PYSTRO_INTERN_lt;
+const char *PYSTRO_INTERN_hash;
+const char *PYSTRO_INTERN_setattr;
+const char *PYSTRO_INTERN_getattr;
+const char *PYSTRO_INTERN_getattribute;
+const char *PYSTRO_INTERN_bool;
+const char *PYSTRO_INTERN_len;
+const char *PYSTRO_INTERN_getitem;
+const char *PYSTRO_INTERN_setitem;
+const char *PYSTRO_INTERN_index;
+const char *PYSTRO_INTERN_invert;
+const char *PYSTRO_INTERN_neg;
+const char *PYSTRO_INTERN_metaclass;
+const char *PYSTRO_INTERN_set_name;
+const char *PYSTRO_INTERN_iter;
+const char *PYSTRO_INTERN_next;
+const char *PYSTRO_INTERN_call;
+const char *PYSTRO_INTERN_get;
+const char *PYSTRO_INTERN_repr;
+const char *PYSTRO_INTERN_str;
+const char *PYSTRO_INTERN_contains;
+
+extern const char *intern_name(const char *s, size_t len);
+
+static void
+install_interned_names(void)
+{
+    PYSTRO_INTERN_init        = intern_name("__init__", 8);
+    PYSTRO_INTERN_new         = intern_name("__new__", 7);
+    PYSTRO_INTERN_eq          = intern_name("__eq__", 6);
+    PYSTRO_INTERN_lt          = intern_name("__lt__", 6);
+    PYSTRO_INTERN_hash        = intern_name("__hash__", 8);
+    PYSTRO_INTERN_setattr     = intern_name("__setattr__", 11);
+    PYSTRO_INTERN_getattr     = intern_name("__getattr__", 11);
+    PYSTRO_INTERN_getattribute = intern_name("__getattribute__", 16);
+    PYSTRO_INTERN_bool        = intern_name("__bool__", 8);
+    PYSTRO_INTERN_len         = intern_name("__len__", 7);
+    PYSTRO_INTERN_getitem     = intern_name("__getitem__", 11);
+    PYSTRO_INTERN_setitem     = intern_name("__setitem__", 11);
+    PYSTRO_INTERN_index       = intern_name("__index__", 9);
+    PYSTRO_INTERN_invert      = intern_name("__invert__", 10);
+    PYSTRO_INTERN_neg         = intern_name("__neg__", 7);
+    PYSTRO_INTERN_metaclass   = intern_name("__metaclass__", 13);
+    PYSTRO_INTERN_set_name    = intern_name("__set_name__", 12);
+    PYSTRO_INTERN_iter        = intern_name("__iter__", 8);
+    PYSTRO_INTERN_next        = intern_name("__next__", 8);
+    PYSTRO_INTERN_call        = intern_name("__call__", 8);
+    PYSTRO_INTERN_get         = intern_name("__get__", 7);
+    PYSTRO_INTERN_repr        = intern_name("__repr__", 8);
+    PYSTRO_INTERN_str         = intern_name("__str__", 7);
+    PYSTRO_INTERN_contains    = intern_name("__contains__", 12);
+}
+
 void
 install_builtins(CTX *c)
 {
+    install_interned_names();
     py_global_define(c, "print",      py_make_builtin("print",      bi_print,      0, -1));
     py_global_define(c, "repr",       py_make_builtin("repr",       bi_repr,       1,  1));
     py_global_define(c, "ascii",      py_make_builtin("ascii",      bi_repr,       1,  1));
