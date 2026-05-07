@@ -3305,6 +3305,17 @@ VALUE prologue_proc_method(CTX *c, struct Node *callsite, VALUE recv,
 
 VALUE korb_dispatch_visibility_raise(CTX *c, struct korb_method *m, ID name,
                                      struct korb_class *klass, VALUE recv) {
+    /* CRuby semantics: explicit-receiver call to a private/protected
+     * method routes through method_missing if user has defined one
+     * (default method_missing raises NoMethodError).  This lets a mock
+     * with `def method_missing(...)` intercept calls to `obj.lambda`
+     * where Kernel#lambda exists but is private.  We detect "user
+     * override" by walking up to but excluding BasicObject's default. */
+    struct korb_method *mm = klass ? korb_class_find_method(klass, korb_intern("method_missing")) : NULL;
+    if (mm) {
+        VALUE av[1] = { korb_id2sym(name) };
+        return korb_dispatch_binop(c, recv, korb_intern("method_missing"), 1, av);
+    }
     const char *kind = (m->visibility == KORB_VIS_PRIVATE) ? "private" : "protected";
     VALUE eNoMethodError = korb_const_get(korb_vm->object_class, korb_intern("NoMethodError"));
     struct korb_class *exc_class = NULL;

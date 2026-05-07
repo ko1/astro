@@ -377,8 +377,8 @@ void korb_init_builtins(void) {
     DEF(cObj, "eval",               kernel_eval_stub,         -1);
     DEF(cObj, "loop",               kernel_loop,               0);
     DEF(cObj, "initialize",         kernel_initialize_default, -1);
-    DEF(cObj, "lambda",             kernel_lambda,             0);
-    DEF(cObj, "proc",               kernel_proc,               0);
+    DEF_PRIV(cObj, "lambda",        kernel_lambda,             0);
+    DEF_PRIV(cObj, "proc",          kernel_proc,               0);
     /* Range#exclude_end? */
     DEF(cRng, "exclude_end?",       rng_exclude_end_p,         0);
     /* Class ancestors / Module#prepend */
