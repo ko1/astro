@@ -2282,24 +2282,51 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
           return ALLOC_node_seq(seq, ALLOC_node_func_call(korb_intern("Complex"), 2, ai, mc));
       }
       case PM_RATIONAL_NODE: {
-          /* `3r` → `Rational(3, 1)`.  prism stores numerator/denominator
-           * as pm_integer_t — but for the integer literal forms (`Nr`)
-           * we extract via numerator field; non-integer forms (e.g.
-           * `0.5r`) are rare and we approximate by using the value as
-           * numerator and 1 as denominator. */
+          /* `3r` → `Rational(3, 1)`; `-3r` parses with negative numerator;
+           * `0.5r` (decimal fraction) → `Rational(1, 2)`.  prism stores
+           * numerator/denominator as pm_integer_t with a `negative` flag —
+           * honor that.  Big values use multi-word storage; we serialize
+           * via integer_to_string and emit a bignum literal so values that
+           * don't fit a long aren't truncated. */
           pm_rational_node_t *n = (pm_rational_node_t *)node;
-          /* pm_integer_t may be a "large" int; use the first word as a
-           * proxy.  For typical script values this is fine. */
-          long num_val = (long)n->numerator.value;
-          /* denominator field is also pm_integer_t; default 1. */
-          long den_val = (long)n->denominator.value;
-          if (den_val == 0) den_val = 1;
+          NODE *num_node, *den_node;
+          /* numerator: prefer the small-value path when it fits. */
+          if (n->numerator.values == NULL && n->numerator.value <= INT32_MAX) {
+              long v = (long)n->numerator.value;
+              if (n->numerator.negative) v = -v;
+              num_node = ALLOC_node_int_lit(v);
+          } else {
+              char *s = integer_to_string(&n->numerator);
+              if (n->numerator.negative) {
+                  size_t len = strlen(s);
+                  char *t = korb_xmalloc_atomic(len + 2);
+                  t[0] = '-'; memcpy(t + 1, s, len + 1);
+                  s = t;
+              }
+              num_node = ALLOC_node_bignum_lit(s);
+          }
+          /* denominator. */
+          if (n->denominator.values == NULL && n->denominator.value <= INT32_MAX) {
+              long d = (long)n->denominator.value;
+              if (d == 0) d = 1;
+              if (n->denominator.negative) d = -d;
+              den_node = ALLOC_node_int_lit(d);
+          } else {
+              char *s = integer_to_string(&n->denominator);
+              if (n->denominator.negative) {
+                  size_t len = strlen(s);
+                  char *t = korb_xmalloc_atomic(len + 2);
+                  t[0] = '-'; memcpy(t + 1, s, len + 1);
+                  s = t;
+              }
+              den_node = ALLOC_node_bignum_lit(s);
+          }
           uint32_t ai = arg_index(tc);
           inc_arg_index(tc); inc_arg_index(tc);
           rewind_arg_index(tc, ai);
           struct method_cache *mc = alloc_method_cache();
-          NODE *num_set = ALLOC_node_lvar_set(ai,     ALLOC_node_int_lit(num_val));
-          NODE *den_set = ALLOC_node_lvar_set(ai + 1, ALLOC_node_int_lit(den_val));
+          NODE *num_set = ALLOC_node_lvar_set(ai,     num_node);
+          NODE *den_set = ALLOC_node_lvar_set(ai + 1, den_node);
           NODE *seq = ALLOC_node_seq(num_set, den_set);
           return ALLOC_node_seq(seq, ALLOC_node_func_call(korb_intern("Rational"), 2, ai, mc));
       }
