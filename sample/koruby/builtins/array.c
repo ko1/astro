@@ -1599,6 +1599,13 @@ static VALUE ary_class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     if (size < 0) size = 0;
     VALUE arr = korb_ary_new_capa(size);
+    /* For subclass calls (`class A < Array; end; A.new`) reroute the
+     * allocation's basic.klass to `self` so the result inspects /
+     * dispatches as the subclass. */
+    if (!SPECIAL_CONST_P(self) && BUILTIN_TYPE(self) == T_CLASS &&
+        (struct korb_class *)self != korb_vm->array_class) {
+        ((struct korb_array *)arr)->basic.klass = self;
+    }
     extern struct korb_proc *current_block;
     if (current_block) {
         for (long i = 0; i < size; i++) {
