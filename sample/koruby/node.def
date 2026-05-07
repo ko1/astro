@@ -1482,23 +1482,40 @@ node_super_forward(CTX * restrict c, NODE * restrict n)
                    "super: no superclass method '%s'", m && m->name ? korb_id_name(m->name) : "?");
         return Qnil;
     }
-    /* Forward all positionals: required + (splatted *rest if any) +
-     * (kwh hash if both this method and the super accept kwargs). */
+    /* Forward all positionals: required + optional + (splatted *rest if
+     * any) + post + (kwh hash if both this method and the super accept
+     * kwargs).  The slot layout is:
+     *   [req] [opt] [*rest] [post]   (kwh elsewhere)
+     * Where rest_slot, when present, sits at required+optional. */
     VALUE forward_buf[64];
     int argc = 0;
     if (m->type == KORB_METHOD_AST) {
         uint32_t req = m->u.ast.required_params_cnt;
+        uint32_t post = m->u.ast.post_params_cnt;
+        int rs = m->u.ast.rest_slot;
+        /* opt count = total - req - post - (1 if rest else 0).  Don't
+         * subtract kwh — kwh_save_slot is outside total_params_cnt. */
+        long total = (long)m->u.ast.total_params_cnt;
+        long opt = total - (long)req - (long)post - (rs >= 0 ? 1 : 0);
+        if (opt < 0) opt = 0;
         for (uint32_t i = 0; i < req && argc < 64; i++) {
             forward_buf[argc++] = c->fp[i];
         }
-        if (m->u.ast.rest_slot >= 0) {
-            VALUE rest = c->fp[m->u.ast.rest_slot];
+        for (long i = 0; i < opt && argc < 64; i++) {
+            forward_buf[argc++] = c->fp[req + i];
+        }
+        if (rs >= 0) {
+            VALUE rest = c->fp[rs];
             if (BUILTIN_TYPE(rest) == T_ARRAY) {
                 struct korb_array *a = (struct korb_array *)rest;
                 for (long i = 0; i < a->len && argc < 64; i++) {
                     forward_buf[argc++] = a->ptr[i];
                 }
             }
+        }
+        /* Post params live at the very end of the params region. */
+        for (uint32_t i = 0; i < post && argc < 64; i++) {
+            forward_buf[argc++] = c->fp[total - post + i];
         }
         /* If this method captured kwargs and super accepts them, append
          * the kwh hash as the last positional — the super's prologue
@@ -1526,15 +1543,69 @@ node_super_forward(CTX * restrict c, NODE * restrict n)
     }
     for (int i = 0; i < argc; i++) new_fp[i] = forward_buf[i];
     for (uint32_t i = argc; i < sm->u.ast.locals_cnt; i++) new_fp[i] = Qnil;
-    /* If the super method itself has *rest, gather extras. */
+    /* If the super method itself has *rest, gather extras and shift
+     * post args to their proper slots (right after rest_slot). */
     if (sm->u.ast.rest_slot >= 0) {
         long fixed_pre  = (long)sm->u.ast.required_params_cnt;
         long fixed_post = (long)sm->u.ast.post_params_cnt;
-        long extra = (long)argc - fixed_pre - fixed_post;
+        long total      = (long)sm->u.ast.total_params_cnt;
+        long opt        = total - fixed_pre - fixed_post - 1;
+        if (opt < 0) opt = 0;
+        long after_required = (long)argc - fixed_pre - fixed_post;
+        if (after_required < 0) after_required = 0;
+        long opt_filled = after_required < opt ? after_required : opt;
+        long extra = after_required - opt_filled;
         if (extra < 0) extra = 0;
+        /* Post sits at the tail of forward_buf — snapshot before any
+         * slot reshuffling. */
+        VALUE post_buf[16];
+        VALUE *post_ptr = post_buf;
+        VALUE *post_heap = NULL;
+        if (fixed_post > 16) {
+            post_heap = korb_xmalloc(sizeof(VALUE) * fixed_post);
+            post_ptr = post_heap;
+        }
+        for (long i = 0; i < fixed_post; i++) {
+            post_ptr[i] = forward_buf[argc - fixed_post + i];
+        }
         VALUE rest_arr = korb_ary_new_capa(extra);
-        for (long i = 0; i < extra; i++) korb_ary_push(rest_arr, new_fp[fixed_pre + i]);
+        for (long i = 0; i < extra; i++) {
+            korb_ary_push(rest_arr, forward_buf[fixed_pre + opt_filled + i]);
+        }
         new_fp[sm->u.ast.rest_slot] = rest_arr;
+        /* Clear unfilled opt slots so the body's default_init runs. */
+        for (long i = opt_filled; i < opt; i++) {
+            new_fp[fixed_pre + i] = Qundef;
+        }
+        for (long i = 0; i < fixed_post; i++) {
+            new_fp[sm->u.ast.rest_slot + 1 + i] = post_ptr[i];
+        }
+        if (post_heap) korb_xfree(post_heap);
+    } else if (sm->u.ast.post_params_cnt > 0) {
+        /* No rest in super, but post params present.  After the straight
+         * copy, post args sit at [argc-post..argc); the body expects
+         * them at [total-post..total). */
+        long fixed_pre  = (long)sm->u.ast.required_params_cnt;
+        long fixed_post = (long)sm->u.ast.post_params_cnt;
+        long total = (long)sm->u.ast.total_params_cnt;
+        long opt = total - fixed_pre - fixed_post;
+        long after_required = (long)argc - fixed_pre - fixed_post;
+        if (after_required < 0) after_required = 0;
+        long opt_filled = after_required < opt ? after_required : opt;
+        VALUE post_buf[16];
+        VALUE *post_ptr = post_buf;
+        VALUE *post_heap = NULL;
+        if (fixed_post > 16) {
+            post_heap = korb_xmalloc(sizeof(VALUE) * fixed_post);
+            post_ptr = post_heap;
+        }
+        for (long i = 0; i < fixed_post; i++) {
+            post_ptr[i] = forward_buf[fixed_pre + opt_filled + i];
+        }
+        for (long i = 0; i < fixed_post; i++) {
+            new_fp[total - fixed_post + i] = post_ptr[i];
+        }
+        if (post_heap) korb_xfree(post_heap);
     }
     if (sm->u.ast.kwh_save_slot >= 0 && !UNDEF_P(peeled_kwh)) {
         new_fp[sm->u.ast.kwh_save_slot] = peeled_kwh;
