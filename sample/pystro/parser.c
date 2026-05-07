@@ -2644,11 +2644,23 @@ build_for_target_assigns(NODE *src)
 {
     int k = peek_tok(0)->kind;
     if (k == T_NAME) {
-        const char *nm = peek_tok(0)->sval;
-        tok_pos++;
-        if (cur_scope && !scope_is_global_decl(cur_scope, nm))
-            scope_add_local(cur_scope, nm);
-        return make_store(nm, src);
+        // Plain NAME target — fast path.  But if the NAME is followed by
+        // an attribute (.) or subscript ([) trailer, fall through to the
+        // general parse_assignable_target.
+        if (peek_tok(1)->kind != T_DOT && peek_tok(1)->kind != T_LBRACK) {
+            const char *nm = peek_tok(0)->sval;
+            tok_pos++;
+            if (cur_scope && !scope_is_global_decl(cur_scope, nm))
+                scope_add_local(cur_scope, nm);
+            return make_store(nm, src);
+        }
+        // attr/subscript target: bind src to a temp so the trailer
+        // expression sees the value once, then run parse_assignable_target.
+        const char *tmp = new_temp_name("__fat");
+        NODE *load_tmp;
+        NODE *init = build_temp_init(tmp, src, &load_tmp);
+        NODE *store = parse_assignable_target(load_tmp);
+        return ALLOC_node_seq(init, store);
     }
     if (k == T_LPAREN || k == T_LBRACK) {
         int close = (k == T_LPAREN) ? T_RPAREN : T_RBRACK;
@@ -2685,8 +2697,8 @@ parse_for(void)
     int k0 = peek_tok(0)->kind;
     if (k0 != T_NAME && k0 != T_LPAREN && k0 != T_LBRACK)
         parse_error("expected target name in 'for'");
-    // Single-name fast path.
-    if (k0 == T_NAME && peek_tok(1)->kind != T_COMMA) {
+    // Single-name fast path: `for x in iter:` (no comma, no trailers).
+    if (k0 == T_NAME && peek_tok(1)->kind == T_IN) {
         const char *target = peek_tok(0)->sval;
         tok_pos++;
         expect(T_IN, "'in'");
