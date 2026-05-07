@@ -54,6 +54,17 @@ class NamedTemporaryFile:
     def read(self, n=-1): return self._f.read(n) if n >= 0 else self._f.read()
     def readline(self): return self._f.readline()
     def seek(self, n): return self._f.seek(n) if hasattr(self._f, "seek") else None
+    def tell(self): return self._f.tell() if hasattr(self._f, "tell") else 0
+    def flush(self): return self._f.flush() if hasattr(self._f, "flush") else None
+    def truncate(self, *a): return self._f.truncate(*a) if hasattr(self._f, "truncate") else None
+    def __iter__(self): return iter(self._f)
+    def __next__(self):
+        line = self.readline()
+        if not line: raise StopIteration
+        return line
+    def fileno(self): return self._f.fileno() if hasattr(self._f, "fileno") else -1
+    @property
+    def file(self): return self._f
     def close(self):
         try: self._f.close()
         except Exception: pass
