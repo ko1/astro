@@ -2805,19 +2805,23 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                   }
                   /* Post params (after *rest): each post[i] lives at
                    * locals_cnt - post_n + i in CRuby terms, but here we
-                   * just consult lvar_slot. */
+                   * just consult lvar_slot.  MULTI_TARGET in posts gets
+                   * a synth slot past locals (same as required-side mt). */
                   for (size_t i = 0; i < pn->posts.size; i++) {
                       pm_node_t *p = pn->posts.nodes[i];
-                      ID nm = 0;
-                      if (PM_NODE_TYPE_P(p, PM_REQUIRED_PARAMETER_NODE)) {
-                          nm = ((pm_required_parameter_node_t *)p)->name;
-                      }
-                      if (nm) {
-                          int s = lvar_slot(tc, nm, 0);
-                          uint32_t pp = required_cnt + opt_n + has_rest_pos + (uint32_t)i;
-                          if (s >= 0 && (uint32_t)s != pp) {
-                              param_holder_slots[pp] = s;
-                              any_remap = true;
+                      uint32_t pp = required_cnt + opt_n + has_rest_pos + (uint32_t)i;
+                      if (PM_NODE_TYPE_P(p, PM_MULTI_TARGET_NODE)) {
+                          int synth = (int)inc_arg_index(tc);
+                          param_holder_slots[pp] = synth;
+                          any_remap = true;
+                      } else if (PM_NODE_TYPE_P(p, PM_REQUIRED_PARAMETER_NODE)) {
+                          ID nm = ((pm_required_parameter_node_t *)p)->name;
+                          if (nm) {
+                              int s = lvar_slot(tc, nm, 0);
+                              if (s >= 0 && (uint32_t)s != pp) {
+                                  param_holder_slots[pp] = s;
+                                  any_remap = true;
+                              }
                           }
                       }
                   }
@@ -2883,9 +2887,13 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                       }
                   }
               }
-              /* post-rest required params (def f(a, *r, b, c)). */
+              /* post-rest params (def f(a, *r, b, c)).  Count both
+               * REQUIRED and MULTI_TARGET positions: each consumes one
+               * caller arg slot, regardless of whether the value is
+               * destructured later. */
               for (size_t i = 0; i < pn->posts.size; i++) {
-                  if (PM_NODE_TYPE_P(pn->posts.nodes[i], PM_REQUIRED_PARAMETER_NODE)) {
+                  if (PM_NODE_TYPE_P(pn->posts.nodes[i], PM_REQUIRED_PARAMETER_NODE) ||
+                      PM_NODE_TYPE_P(pn->posts.nodes[i], PM_MULTI_TARGET_NODE)) {
                       total_cnt++;
                   }
               }
@@ -3116,6 +3124,28 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                   /* Use the recursive destructure helper so nested
                    * `def m((a, (b, c)))` patterns and rest/right parts
                    * all bind correctly. */
+                  NODE *bound = destructure_into_targets(tc, arr_slot, mt);
+                  if (bound) destructure_pre = ALLOC_node_seq(destructure_pre, bound);
+              }
+              /* Same for multi_target params in posts (e.g.
+               * `def m(a=1, (b, c), d)` — prism puts `(b, c), d` in
+               * posts because they follow an optional). */
+              uint32_t opt_n = (uint32_t)pn->optionals.size;
+              uint32_t has_rest_pos = (pn->rest && PM_NODE_TYPE_P(pn->rest, PM_REST_PARAMETER_NODE)) ? 1 : 0;
+              for (size_t i = 0; i < pn->posts.size; i++) {
+                  pm_node_t *p = pn->posts.nodes[i];
+                  if (!PM_NODE_TYPE_P(p, PM_MULTI_TARGET_NODE)) continue;
+                  pm_multi_target_node_t *mt = (pm_multi_target_node_t *)p;
+                  uint32_t pp = required_cnt + opt_n + has_rest_pos + (uint32_t)i;
+                  uint32_t holder_slot = param_holder_slots
+                      ? (uint32_t)param_holder_slots[pp]
+                      : pp;
+                  uint32_t arr_slot = inc_arg_index(tc);
+                  NODE *coerce = ALLOC_node_lvar_set(arr_slot,
+                                    ALLOC_node_to_ary_for_mlhs(
+                                        ALLOC_node_lvar_get(holder_slot)));
+                  destructure_pre = destructure_pre
+                      ? ALLOC_node_seq(destructure_pre, coerce) : coerce;
                   NODE *bound = destructure_into_targets(tc, arr_slot, mt);
                   if (bound) destructure_pre = ALLOC_node_seq(destructure_pre, bound);
               }
