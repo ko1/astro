@@ -226,10 +226,28 @@ node_const_path_get(CTX * restrict c, NODE * restrict n, NODE *parent, ID name)
             VALUE sym = korb_id2sym(name);
             return korb_funcall(c, p, korb_intern("const_missing"), 1, &sym);
         }
+        /* Build the error message via mod.name (or .inspect for an
+         * anonymous module).  CRuby allows user code to override these
+         * to customize error output. */
         VALUE eName = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
+        VALUE name_v = korb_funcall(c, p, korb_intern("name"), 0, NULL);
+        if (c->state != KORB_NORMAL) { c->state = KORB_NORMAL; c->state_value = Qnil; name_v = Qnil; }
+        VALUE prefix;
+        if (NIL_P(name_v) || (BUILTIN_TYPE(name_v) == T_STRING &&
+                              ((struct korb_string *)name_v)->len == 0)) {
+            prefix = korb_funcall(c, p, korb_intern("inspect"), 0, NULL);
+            if (c->state != KORB_NORMAL) {
+                c->state = KORB_NORMAL; c->state_value = Qnil;
+                prefix = korb_str_new_cstr("<anonymous>");
+            }
+        } else {
+            prefix = name_v;
+        }
+        const char *prefix_str = (BUILTIN_TYPE(prefix) == T_STRING)
+                                   ? ((struct korb_string *)prefix)->ptr : "?";
         korb_raise(c, (struct korb_class *)eName,
                    "uninitialized constant %s::%s",
-                   korb_id_name(((struct korb_class *)p)->name), korb_id_name(name));
+                   prefix_str, korb_id_name(name));
         return Qnil;
     }
     korb_raise_type_error(c, "%s is not a class/module",
