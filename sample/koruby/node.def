@@ -709,6 +709,11 @@ node_class_def(CTX * restrict c, NODE * restrict n, ID name, NODE *super_expr, N
                                   korb_id_name(korb_class_of_class(sv)->name));
             return Qnil;
         }
+        /* Cannot inherit from a singleton class. */
+        if (((struct korb_class *)sv)->basic.flags & FL_SINGLETON) {
+            korb_raise_type_error(c, "can't make subclass of singleton class");
+            return Qnil;
+        }
         super = (struct korb_class *)sv;
     }
     struct korb_class *host = c->cref ? c->cref->klass : c->current_class;
@@ -2386,6 +2391,10 @@ node_class_def_in_strict(CTX * restrict c, NODE * restrict n, NODE *parent_expr,
     if (super_expr) {
         VALUE sv = EA(c, super_expr);
         if (BUILTIN_TYPE(sv) == T_CLASS) {
+            if (((struct korb_class *)sv)->basic.flags & FL_SINGLETON) {
+                korb_raise_type_error(c, "can't make subclass of singleton class");
+                return Qnil;
+            }
             super = (struct korb_class *)sv;
         } else if (enforce_super_match) {
             korb_raise_type_error(c, "superclass must be a Class (%s given)",
