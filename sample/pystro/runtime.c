@@ -1877,7 +1877,18 @@ py_cmp(CTX *c, VALUE a, VALUE b)
         }
         return la < lb ? -1 : la > lb ? 1 : 0;
     }
-    py_raise_exc(c, c->EXC_TypeError, "incomparable operand types");
+    {
+        extern VALUE bi_type(CTX *c, int argc, VALUE *argv);
+        VALUE av_a[1] = { a };
+        VALUE av_b[1] = { b };
+        VALUE ta = bi_type(c, 1, av_a);
+        VALUE tb = bi_type(c, 1, av_b);
+        const char *na = (py_is_class(ta)) ? PY_PTR(ta)->cls.name : "?";
+        const char *nb = (py_is_class(tb)) ? PY_PTR(tb)->cls.name : "?";
+        py_raise_exc(c, c->EXC_TypeError,
+                     "'<' not supported between instances of '%s' and '%s'",
+                     na, nb);
+    }
 }
 
 // Set comparison helper.  Returns -1 (a strict subset of b), 0 (equal),
