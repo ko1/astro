@@ -16,20 +16,57 @@
 `bench/*.py` は python3 で約 1 秒かかる規模に揃えてある。
 `make bench` で同じ 3 列が出る (CCACHE_DISABLE=1 で AOT bake)。
 
+### micro (`bench/*.py`)
+
 | ベンチ | python3 | pystro interp | pystro AOT cached | **AOT/python3** |
 |---|---:|---:|---:|---:|
-| `while_loop` (10M, augassign) | 0.94 s | 0.20 s | **0.06 s** | **0.06× (16× 速い)** |
-| `for_range` (15M sum, C range) | 1.06 s | 0.15 s | **0.08 s** | **0.08× (13× 速い)** |
-| `for_range_pyrange` (Py iter) | 2.24 s | 0.87 s | **0.34 s** | **0.15× (6.6× 速い)** |
-| `list_bench` (7M append+sum) | 0.97 s | 0.23 s | **0.19 s** | **0.20× (5× 速い)** |
-| `mandel` (float-heavy) | 0.69 s | 0.68 s | **0.26 s** | **0.38× (2.7× 速い)** |
-| `recursive` (tak(30,20,10)) | 3.93 s | 2.87 s | **1.42 s** | **0.36× (2.8× 速い)** |
-| `fib(35)` (再帰) | 1.31 s | 0.69 s | **0.44 s** | **0.34× (3.0× 速い)** |
-| `nqueens` (recursion + list) | 0.69 s | 0.65 s | **0.42 s** | **0.61× (1.6× 速い)** |
-| `string_bench` (2M split) | 0.57 s | 0.55 s | **0.55 s** | **0.96× (1.04× 速い)** |
-| `dict_bench` (3M put+get) | 0.81 s | 1.07 s | 0.99 s | 1.22× (22% 遅い) |
+| `while_loop` (10M, augassign) | 0.92 s | 0.18 s | **0.05 s** | **0.06× (19× 速い)** |
+| `for_range` (15M sum, C range) | 0.96 s | 0.14 s | **0.07 s** | **0.07× (14× 速い)** |
+| `for_range_pyrange` (Py iter) | 2.12 s | 0.79 s | **0.35 s** | **0.17× (6.1× 速い)** |
+| `list_bench` (7M append+sum) | 0.88 s | 0.22 s | **0.18 s** | **0.20× (5× 速い)** |
+| `mandel` (float-heavy) | 0.65 s | 0.65 s | **0.25 s** | **0.39× (2.6× 速い)** |
+| `recursive` (tak(30,20,10)) | 3.89 s | 2.69 s | **1.41 s** | **0.36× (2.8× 速い)** |
+| `fib(35)` (再帰) | 1.15 s | 0.69 s | **0.39 s** | **0.34× (3.0× 速い)** |
+| `nqueens` (recursion + list) | 0.67 s | 0.64 s | **0.40 s** | **0.60× (1.7× 速い)** |
+| `string_bench` (2M split) | 0.58 s | 0.57 s | **0.54 s** | **0.93× (1.07× 速い)** |
+| `dict_bench` (3M put+get) | 0.75 s | 1.06 s | 0.99 s | 1.32× (32% 遅い) |
 
-best-of-3。**9 ベンチ中 8 で python3 を上回る** (dict_bench は遅い)。
+best-of-3。**10 micro 中 9 で python3 を上回る** (dict_bench のみ遅い)。
+
+### macro (`bench/macro/*.py`) — pyperformance 由来の実アプリ寄り
+
+```
+make -C bench/macro bench
+```
+で全部回る (要 `CCACHE_DISABLE=1` for AOT bake)。
+
+| ベンチ | python3 | pystro interp | pystro AOT cached | **AOT/python3** |
+|---|---:|---:|---:|---:|
+| `richards` (OS sched sim, ~400 行) | 1.09 s | 7.45 s | 6.83 s | 6.27× (6.3× 遅い) |
+| `deltablue` (constraint solver, ~600 行) | 0.16 s | 2.55 s | 2.27 s | 14.2× (14× 遅い) |
+| `raytrace` (簡易 raytracer, ~400 行) | 0.88 s | 6.35 s | 6.19 s | 7.0× (7× 遅い) |
+| `crypto_pyaes` (pure-Py AES-CTR) | 0.53 s | 2.76 s | 2.58 s | 4.87× (4.9× 遅い) |
+
+micro で 5-19× 速い同じ実装が、 method dispatch + 多態 class が
+heavy な実アプリでは **逆に 5-14× 遅い**。
+ここがチューニングの伸びしろ。
+
+#### 解釈 — micro と macro でなぜ逆転するか
+
+- micro はホットループが小さく、 PEP-659 風の inline cache (gref_cache /
+  attr_cache / method_cache) が SD-baked code に完全に inline 展開できる。
+  ループ 1 反復 = 数十命令まで畳まれる。
+- macro は **多数の小メソッド × 多態 dispatch** が支配。 1 method call
+  あたり SD は十分小さいが、 (a) 呼び出し先の class shape が反復ごとに
+  変わるとキャッシュが効かない、 (b) `super().__init__()` 連鎖や
+  classmethod、 MRO walking のオーバーヘッドが残る、 (c) 関数間の
+  dispatcher 経由 indirect call は SD-baked でも PLT 1 hop は払う。
+- CPython 3.12 は specializing interp + adaptive ICs で `LOAD_ATTR` /
+  `CALL` を per-bytecode-inst 特殊化していて、 **この種のワーク
+  ロードは python3 が圧倒的に強い**。 pystro の AST-based SD は逆に
+  monomorphic な hot-loop に強く、 polymorphic dispatch は弱い。
+
+具体的な優先項目は本文末「## 大きく負け」項を参照。
 
 ### R10 → R18 の比較
 
@@ -129,6 +166,36 @@ inline flonum 演算ノードと共に SD 化されたため。
   線形 hash + identity-eq fast path のみ。 加えて R18 で metaclass
   __call__ ディスパッチに `PYSTRO_BI_KWC` save/restore を入れたぶん
   class 呼び出しが少し重くなった。
+
+**大きく負け (4-14×)** — macro (richards / deltablue / raytrace / pyaes)
+- `perf stat ./pystro bench/macro/deltablue.py` vs python3 で:
+
+  |   | python3 | pystro AOT |
+  |---|---:|---:|
+  | 経過時間 | 0.18 s | 2.42 s |
+  | 命令数 | 2.0 B | **18.6 B (9.3× 多い)** |
+  | IPC | 2.95 | **1.92 (1.5× 低い)** |
+  | LLC miss / refs | n/a | **20.7%** |
+
+  内訳:
+  - **命令数 9× 増** が主因。 AST-based dispatcher 経由なので 1 method
+    call = (env 切り替え + frame alloca + dispatch) で 30-50 命令の
+    fixed overhead。 micro はループ本体に inline 展開できるので
+    効くが、 macro は呼び出しが入れ子で展開先が無い。
+  - **IPC 低下** = stalled cycles。 LLC miss 20% で memory bound 気味。
+    GC で object ばら撒くので class instance + dict entry が cache に
+    乗りきらない。 CPython は 2-word PyObject header + 専用 small-obj
+    arena でこの帯域を稼いでる。
+  - polymorphic な call site で attr_cache (monomorphic) が miss して
+    毎回 `py_class_lookup_method` の MRO walk + strcmp に落ちる。
+
+これからの優先項目:
+1. attr_cache の polymorphic 拡張 (現状 monomorphic、 cls_ptr 1 個のみ)
+2. `super().method()` の MRO 解決を per-call site で cache
+3. AST 融合: 同一 receiver の連続 attr_get (`self.x; self.y; self.z`) を
+   1 つの multi-key get にまとめる
+4. instance dict layout を CPython 風 hidden-class に
+5. small-object arena で cache locality 改善
 
 ## 投入した最適化 (時系列)
 
