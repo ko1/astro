@@ -1828,11 +1828,17 @@ VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv)
      * args.  When the single arg responds to to_ary, call it; if to_ary
      * returns non-Array, raise TypeError. */
     bool bound_destructure = false;
-    /* Total positional params include post params (req-after-rest in
-     * `|a=5, b, c|` shape).  Auto-destructure also when post params
-     * make total > 1 even if params_cnt is just 1. */
+    /* CRuby auto-destructures when:
+     *   - exactly one arg is yielded
+     *   - block has > 1 named param OR has rest with required around it
+     *   - the single arg is an Array (or coerces via #to_ary)
+     * We extend the trigger to cover *rest cases too: `|a, *b, c|`. */
     uint32_t total_pos = blk->params_cnt + blk->post_cnt;
-    if (total_pos > 1 && argc == 1 && blk->rest_slot < 0) {
+    bool has_rest = blk->rest_slot >= 0;
+    bool destruct_trigger = (argc == 1) &&
+        ((total_pos > 1 && !has_rest) ||
+         (has_rest && (total_pos >= 1 || blk->post_cnt > 0)));
+    if (destruct_trigger) {
         VALUE arg0 = args_buf[0];
         VALUE arr = Qnil;
         if (!SPECIAL_CONST_P(arg0) && BUILTIN_TYPE(arg0) == T_ARRAY) {
@@ -1861,34 +1867,37 @@ VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv)
             uint32_t arr_len = (uint32_t)a->len;
             uint32_t opt_cnt = blk->opt_cnt;
             uint32_t post_cnt = blk->post_cnt;
-            /* CRuby's destructure layout: required (left) — optional —
-             * (rest, but rest_slot<0 here) — post (required-right).  Each
-             * batch fills greedily, defaulting/Qundef'ing what's missing.
-             * arr is consumed left-to-right for req+opt, then right-to-left
-             * for post (so post-most params take the tail of arr). */
+            /* CRuby's destructure layout: required-left, optional, *rest,
+             * post (required-right).  arr fills req left-to-right, then opt
+             * (reserving post_cnt for post), then *rest gets the middle, then
+             * post left-to-right with trailing nils. */
             uint32_t taken_left = 0;
-            /* Required (left). */
             for (uint32_t i = 0; i < req_cnt; i++) {
                 fp[blk->param_base + i] = (taken_left < arr_len)
                     ? a->ptr[taken_left++] : Qnil;
             }
-            /* Optional. */
+            uint32_t opt_taken = 0;
             for (uint32_t i = 0; i < opt_cnt; i++) {
-                uint32_t reserved_for_post = (post_cnt > arr_len - taken_left)
-                                              ? 0 : (uint32_t)0;
-                /* Don't steal from post — leave post_cnt elements in arr if
-                 * possible.  This means take optional only if remaining
-                 * arr has more than post_cnt elements. */
-                (void)reserved_for_post;
-                if (taken_left < arr_len &&
-                    arr_len - taken_left > post_cnt) {
+                if (taken_left < arr_len && arr_len - taken_left > post_cnt) {
                     fp[blk->param_base + req_cnt + i] = a->ptr[taken_left++];
+                    opt_taken++;
                 } else {
                     fp[blk->param_base + req_cnt + i] = Qundef;
                 }
             }
-            /* Post params: fill left-to-right from remaining, trailing nils.
-             * (No rest_slot here, so posts pick up after req+opt.) */
+            (void)opt_taken;
+            /* *rest: gather elements between optionals and posts. */
+            if (blk->rest_slot >= 0) {
+                uint32_t rest_room = (arr_len > taken_left + post_cnt)
+                                       ? arr_len - taken_left - post_cnt : 0;
+                VALUE rest = korb_ary_new_capa((long)rest_room);
+                for (uint32_t i = 0; i < rest_room; i++) {
+                    korb_ary_push(rest, a->ptr[taken_left + i]);
+                }
+                fp[blk->rest_slot] = rest;
+                taken_left += rest_room;
+            }
+            /* Post params: left-to-right from remaining, trailing nils. */
             uint32_t post_base = blk->param_base + blk->params_cnt
                                   + (blk->rest_slot >= 0 ? 1 : 0);
             uint32_t remaining = arr_len - taken_left;
