@@ -1700,6 +1700,8 @@ py_pow(CTX *c, VALUE a, VALUE b)
 VALUE
 py_bit_and(CTX *c, VALUE a, VALUE b)
 {
+    if (LIKELY(PY_IS_FIXNUM(a) & PY_IS_FIXNUM(b)))
+        return PY_FIX(PY_FIXVAL(a) & PY_FIXVAL(b));
     {
         VALUE rd = py_try_binop_dunder(c, "__and__", a, b);
         if (rd) return rd;
@@ -1735,6 +1737,8 @@ py_bit_and(CTX *c, VALUE a, VALUE b)
 VALUE
 py_bit_or(CTX *c, VALUE a, VALUE b)
 {
+    if (LIKELY(PY_IS_FIXNUM(a) & PY_IS_FIXNUM(b)))
+        return PY_FIX(PY_FIXVAL(a) | PY_FIXVAL(b));
     VALUE rd = py_try_binop_dunder(c, "__or__", a, b);
     if (rd) return rd;
     rd = py_try_binop_dunder(c, "__ror__", b, a);
@@ -1827,6 +1831,8 @@ py_bit_or(CTX *c, VALUE a, VALUE b)
 VALUE
 py_bit_xor(CTX *c, VALUE a, VALUE b)
 {
+    if (LIKELY(PY_IS_FIXNUM(a) & PY_IS_FIXNUM(b)))
+        return PY_FIX(PY_FIXVAL(a) ^ PY_FIXVAL(b));
     VALUE rd = py_try_binop_dunder(c, "__xor__", a, b);
     if (rd) return rd;
     rd = py_try_binop_dunder(c, "__rxor__", b, a);
@@ -1891,6 +1897,15 @@ py_bit_inv(CTX *c, VALUE a)
 VALUE
 py_lshift(CTX *c, VALUE a, VALUE b)
 {
+    if (LIKELY(PY_IS_FIXNUM(a) & PY_IS_FIXNUM(b))) {
+        int64_t x = PY_FIXVAL(a), y = PY_FIXVAL(b);
+        if (LIKELY(y >= 0 && y < 62)) {
+            int64_t r = x << y;
+            if (LIKELY((r >> y) == x &&
+                       r >= PY_FIXNUM_MIN && r <= PY_FIXNUM_MAX))
+                return PY_FIX(r);
+        }
+    }
     {
         VALUE rd = py_try_binop_dunder(c, "__lshift__", a, b);
         if (rd) return rd;
@@ -1916,6 +1931,11 @@ py_lshift(CTX *c, VALUE a, VALUE b)
 VALUE
 py_rshift(CTX *c, VALUE a, VALUE b)
 {
+    if (LIKELY(PY_IS_FIXNUM(a) & PY_IS_FIXNUM(b))) {
+        int64_t x = PY_FIXVAL(a), y = PY_FIXVAL(b);
+        if (LIKELY(y >= 0 && y < 63))
+            return PY_FIX(x >> y);
+    }
     {
         VALUE rd = py_try_binop_dunder(c, "__rshift__", a, b);
         if (rd) return rd;

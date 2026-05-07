@@ -423,12 +423,21 @@ node_pow(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
     return py_pow(c, av, bv);
 }
 
+// Fixnum fast paths for bit ops.  Without these, every `a & b` /
+// `a ^ b` etc. went through py_bit_xor → py_to_mpz → mpz_xor →
+// py_normalise_int even when both sides fit in a single fixnum.
+// pyaes (AES bytes XOR / AND on 8-bit values) had `py_bit_xor` 1.5%
+// + `py_bit_and` 1.4% + GMP `__gmpz_init_set_si` 3% in the profile.
+// fixnum path: inline single instruction, GMP path 撤去。
+
 NODE_DEF
 node_bit_and(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
 {
     (void)n;
     VALUE av = EVAL_ARG(c, a);
     VALUE bv = EVAL_ARG(c, b);
+    if (LIKELY(PY_IS_FIXNUM(av) & PY_IS_FIXNUM(bv)))
+        return PY_FIX(PY_FIXVAL(av) & PY_FIXVAL(bv));
     return py_bit_and(c, av, bv);
 }
 
@@ -438,6 +447,8 @@ node_bit_or(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
     (void)n;
     VALUE av = EVAL_ARG(c, a);
     VALUE bv = EVAL_ARG(c, b);
+    if (LIKELY(PY_IS_FIXNUM(av) & PY_IS_FIXNUM(bv)))
+        return PY_FIX(PY_FIXVAL(av) | PY_FIXVAL(bv));
     return py_bit_or(c, av, bv);
 }
 
@@ -447,6 +458,8 @@ node_bit_xor(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
     (void)n;
     VALUE av = EVAL_ARG(c, a);
     VALUE bv = EVAL_ARG(c, b);
+    if (LIKELY(PY_IS_FIXNUM(av) & PY_IS_FIXNUM(bv)))
+        return PY_FIX(PY_FIXVAL(av) ^ PY_FIXVAL(bv));
     return py_bit_xor(c, av, bv);
 }
 
@@ -456,6 +469,18 @@ node_lshift(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
     (void)n;
     VALUE av = EVAL_ARG(c, a);
     VALUE bv = EVAL_ARG(c, b);
+    if (LIKELY(PY_IS_FIXNUM(av) & PY_IS_FIXNUM(bv))) {
+        int64_t x = PY_FIXVAL(av);
+        int64_t y = PY_FIXVAL(bv);
+        // `<< 0..62` での fixnum 内 overflow をチェック (符号付き 63 bit)
+        if (LIKELY(y >= 0 && y < 62)) {
+            int64_t r = x << y;
+            // overflow detect: ((x << y) >> y) == x で確認
+            if (LIKELY((r >> y) == x &&
+                       r >= PY_FIXNUM_MIN && r <= PY_FIXNUM_MAX))
+                return PY_FIX(r);
+        }
+    }
     return py_lshift(c, av, bv);
 }
 
@@ -465,6 +490,12 @@ node_rshift(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
     (void)n;
     VALUE av = EVAL_ARG(c, a);
     VALUE bv = EVAL_ARG(c, b);
+    if (LIKELY(PY_IS_FIXNUM(av) & PY_IS_FIXNUM(bv))) {
+        int64_t x = PY_FIXVAL(av);
+        int64_t y = PY_FIXVAL(bv);
+        if (LIKELY(y >= 0 && y < 63))
+            return PY_FIX(x >> y);
+    }
     return py_rshift(c, av, bv);
 }
 
