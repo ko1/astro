@@ -52,10 +52,10 @@ operator overload が支配的。
 
 | ベンチ | python3 | pystro interp | pystro AOT | **AOT/python3** |
 |---|---:|---:|---:|---:|
-| `richards` (OS sched sim, ~400 行)        | 1.04 s | 4.78 s | **0.48 s** | **0.46× (2.1× FASTER)** |
-| `deltablue` (constraint solver, ~600 行)  | 0.17 s | 1.20 s | 0.80 s | 4.71× |
-| `raytrace` (簡易 raytracer, ~400 行)      | 0.87 s | 4.05 s | 2.48 s | 2.85× |
-| `crypto_pyaes` (pure-Py AES-CTR, ~900 行) | 0.55 s | 4.07 s | 2.74 s | 4.99× |
+| `richards` (OS sched sim, ~400 行)        | 1.05 s | 4.78 s | **0.51 s** | **0.48× (2.1× FASTER)** |
+| `deltablue` (constraint solver, ~600 行)  | 0.18 s | 1.20 s | **0.65 s** | 3.61× |
+| `raytrace` (簡易 raytracer, ~400 行)      | 0.88 s | 4.05 s | **2.06 s** | 2.34× |
+| `crypto_pyaes` (pure-Py AES-CTR, ~900 行) | 0.60 s | 4.07 s | 2.80 s | 4.67× |
 
 richards は **python3 の 2 倍速い**。 method dispatch overhead を
 完全に潰した結果、 small-class polymorphic な OS scheduler simulation
@@ -111,7 +111,45 @@ dispatch していた → 関数 body は AOT で SD 化されない。
 - `py_iter_next_user` に `no_stack_protector` (alloca が triggers する
   canary check を撤去、 0.40 → 0.34 s)
 
-### Phase 4: macro 最適化 (今 session、 IC 系の積み重ね)
+### Phase 5: 計測ベース細粒度 IC (続き、 今 session)
+
+`PYSTRO_DBG_NAMES` を一時的に runtime.c に仕込んで、 slow lookup
+される名前を頻度順で集計したら以下の発見:
+
+- raytrace: `y` 2.75M 回 / `z` 2.75M 回 (!)
+- deltablue: `weakest_of` 40K / `weaker` 60K / `stronger` 35K /
+  `WEAKEST` 15K / `REQUIRED` 10K / `strength` 30K / `name` 30K / ...
+
+raytrace の `y/z` 2.75M は **新 instance の attr_set slow path** から
+の descriptor 確認だった (新 Vector の __init__ で attrs が空、
+fast path の eidx<elen check 失敗 → slow path → 毎回
+`py_class_lookup_method_pub(cls, "y")` で MRO walk + strcmp)。
+
+deltablue の class methods/attrs (`Strength.WEAKEST` 等) は
+**class object に対する attr_get** で、 attr_cache の fast path が
+PY_T_INSTANCE only だったので毎回 slow path。
+
+3 段階の追加 IC:
+
+| commit | 改善 | 内容 |
+|---|---|---|
+| `d849a47` | raytrace -3% | node_add/sub/mul に per-call-site binop_cache を追加。 Vector の `+/-/*` で IC 命中 → MRO+strcmp 削除 |
+| `3e7f1b4` | raytrace -19.6% | attr_set の cache stamp を冪等化。 既存 (cls, sv) スロットがあれば descriptor 確認を skip |
+| `8af7ef6` | deltablue -10% | attr_cache に class-data attr の monomorphic IC (`cls_recv`, `class_value`, `cls_recv_sv`) 追加 |
+
+ベンチ (best-of-5):
+
+|   | Phase 4 後 | Phase 5 後 | 改善 |
+|---|---:|---:|---:|
+| richards    | 0.48 s | 0.51 s | +5% (微 regression、 struct 拡大の副作用) |
+| deltablue   | 0.71 s | 0.65 s | **-10%** |
+| raytrace    | 2.48 s | 2.06 s | **-19.6%** |
+| crypto_pyaes | 2.73 s | 2.80 s | +3% (noise) |
+
+raytrace の strcmp 22% → 15% に低下、 absolute サンプル数 9.7G →
+7.77G。 `py_class_lookup_method_slow` 9.7% → 5.9%。
+
+### Phase 4: macro 最適化 (前 session、 IC 系の積み重ね)
 
 実アプリ寄り benchmark で perf record すると **`__strcmp_avx2` が
 27-29% + `py_class_lookup_method` が 13-15% = 合計 40-45%** を占有。
