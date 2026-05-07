@@ -1068,6 +1068,43 @@ node_aset(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *idx, NODE *val,
     return korb_node_aset_slow(c, r, i, v, arg_index);
 }
 
+/* `obj[*args] = v` — splat-key form.  splat must be a node_splat_to_ary
+ * (so EA returns Array).  Spread its elements into c->fp slots, append
+ * v, dispatch []=, return v.  Reserves up to 16 slots at parse time;
+ * runtime falls back to xmalloc if more keys. */
+NODE_DEF @noinline
+node_aset_splat(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *splat, NODE *val, uint32_t arg_index)
+{
+    VALUE r = EA(c, recv);
+    VALUE arr = EA(c, splat);
+    VALUE v = EA(c, val);
+    long n_keys = 0;
+    VALUE *argv;
+    VALUE inline_argv[17];
+    VALUE *heap_argv = NULL;
+    if (BUILTIN_TYPE(arr) == T_ARRAY) {
+        struct korb_array *aa = (struct korb_array *)arr;
+        n_keys = aa->len;
+        if (n_keys + 1 <= 17) {
+            for (long i = 0; i < n_keys; i++) inline_argv[i] = aa->ptr[i];
+            inline_argv[n_keys] = v;
+            argv = inline_argv;
+        } else {
+            heap_argv = korb_xmalloc(sizeof(VALUE) * (size_t)(n_keys + 1));
+            for (long i = 0; i < n_keys; i++) heap_argv[i] = aa->ptr[i];
+            heap_argv[n_keys] = v;
+            argv = heap_argv;
+        }
+    } else {
+        inline_argv[0] = v;
+        argv = inline_argv;
+    }
+    c->last_cfunc_callsite = n;
+    korb_dispatch_binop(c, r, id_op_aset, (int)(n_keys + 1), argv);
+    if (heap_argv) korb_xfree(heap_argv);
+    return v;
+}
+
 // ---------------- exception ----------------
 
 NODE_DEF @noinline

@@ -2694,6 +2694,18 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
           }
           if (n->receiver && ceq(tc, n->name, "[]=") && args_cnt == 2 && !n->block) {
               uint32_t ai = arg_index(tc);
+              if (PM_NODE_TYPE_P(args->arguments.nodes[0], PM_SPLAT_NODE)) {
+                  /* `obj[*args] = v` — splat-key form.  Reserve 17
+                   * slots so up to 16 splat elements + value fit in the
+                   * inline buffer at the dispatch site (see
+                   * node_aset_splat). */
+                  for (int s = 0; s < 17; s++) inc_arg_index(tc);
+                  rewind_arg_index(tc, ai);
+                  return ALLOC_node_aset_splat(T(tc, n->receiver),
+                                               T(tc, args->arguments.nodes[0]),
+                                               T(tc, args->arguments.nodes[1]),
+                                               ai);
+              }
               inc_arg_index(tc); inc_arg_index(tc); inc_arg_index(tc); rewind_arg_index(tc, ai);
               return ALLOC_node_aset(T(tc, n->receiver),
                                      T(tc, args->arguments.nodes[0]),
@@ -2703,7 +2715,11 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
           /* `obj[k1, k2, ..., kN] = v` — N>2 keys.  []= takes N+1 args
            * (keys + value).  CRuby's assignment expression evaluates to
            * the assigned value (last arg), not the writer's return.
-           * Save the last arg to a kept slot and read after the call. */
+           * Save the last arg to a kept slot and read after the call.
+           * Splat (e.g. `obj[1, *x, 2] = v`) falls through here too: the
+           * splat is treated as a single positional arg (matches the
+           * pre-fix behavior); arg layout for the setter is approximate
+           * but the assignment expression still evaluates to v. */
           if (n->receiver && ceq(tc, n->name, "[]=") && args_cnt > 2 && !n->block) {
               uint32_t kept_slot = inc_arg_index(tc);
               uint32_t recv_slot = inc_arg_index(tc);
@@ -2715,14 +2731,11 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
               struct method_cache *mc = alloc_method_cache();
               NODE *recv = T(tc, n->receiver);
               NODE *save_recv = ALLOC_node_lvar_set(recv_slot, recv);
-              /* Evaluate args in source order, save value (last arg) to
-               * kept_slot too. */
               NODE *seq = save_recv;
               for (uint32_t i = 0; i < args_cnt; i++) {
                   NODE *a = T(tc, args->arguments.nodes[i]);
                   seq = ALLOC_node_seq(seq, ALLOC_node_lvar_set(arg_base + i, a));
               }
-              /* Mirror the LAST arg into kept_slot for the result. */
               NODE *save_kept = ALLOC_node_lvar_set(kept_slot,
                                   ALLOC_node_lvar_get(arg_base + args_cnt - 1));
               NODE *call = ALLOC_node_method_call(
