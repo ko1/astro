@@ -381,6 +381,17 @@ void korb_class_add_method_ast_full_cref(struct korb_class *klass, ID name, stru
                                           uint32_t required_params, uint32_t total_params,
                                           int rest_slot, uint32_t locals_cnt,
                                           struct korb_cref *def_cref) {
+    if (klass && korb_obj_frozen_p((VALUE)klass)) {
+        VALUE eF = korb_const_get(korb_vm->object_class, korb_intern("FrozenError"));
+        if (eF && !SPECIAL_CONST_P(eF) && BUILTIN_TYPE(eF) == T_CLASS) {
+            korb_raise(korb_vm->current_ctx, (struct korb_class *)eF,
+                       "can't modify frozen %s",
+                       klass->name ? korb_id_name(klass->name) : "Class");
+        } else {
+            korb_raise(korb_vm->current_ctx, NULL, "can't modify frozen Class");
+        }
+        return;
+    }
     struct korb_method *m = korb_xmalloc(sizeof(*m));
     m->type = KORB_METHOD_AST;
     m->name = name;
