@@ -4299,41 +4299,91 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                                   ALLOC_node_seq(call, ALLOC_node_lvar_get(ai)));
           return ALLOC_node_seq(save, ALLOC_node_and(cur, assign_branch));
       }
-      case PM_INDEX_OR_WRITE_NODE: {
-          /* a[i] ||= v ⇒ r = a; k = i; r[k] || (r[k] = v).
-           * receiver and index are evaluated once. */
-          pm_index_or_write_node_t *n = (pm_index_or_write_node_t *)node;
-          if (!n->arguments || n->arguments->arguments.size != 1) return ALLOC_node_nil();
-          uint32_t recv_slot = inc_arg_index(tc);
-          uint32_t idx_slot  = inc_arg_index(tc);
-          uint32_t ai = inc_arg_index(tc);
-          inc_arg_index(tc); inc_arg_index(tc); rewind_arg_index(tc, recv_slot);
-          NODE *save_recv = ALLOC_node_lvar_set(recv_slot, T(tc, n->receiver));
-          NODE *save_idx  = ALLOC_node_lvar_set(idx_slot, T(tc, n->arguments->arguments.nodes[0]));
-          NODE *cur = ALLOC_node_aref(ALLOC_node_lvar_get(recv_slot),
-                                       ALLOC_node_lvar_get(idx_slot), ai);
-          NODE *rhs = T(tc, n->value);
-          NODE *set = ALLOC_node_aset(ALLOC_node_lvar_get(recv_slot),
-                                       ALLOC_node_lvar_get(idx_slot), rhs, ai);
-          return ALLOC_node_seq(save_recv,
-                   ALLOC_node_seq(save_idx, ALLOC_node_or(cur, set)));
-      }
+      case PM_INDEX_OR_WRITE_NODE:
       case PM_INDEX_AND_WRITE_NODE: {
-          pm_index_and_write_node_t *n = (pm_index_and_write_node_t *)node;
-          if (!n->arguments || n->arguments->arguments.size != 1) return ALLOC_node_nil();
+          /* a[i] ||= v / a[i] &&= v.  Generic shape: receiver and
+           * indices evaluated once.  Splat indices (`a[*x]`) and
+           * multi-arg indices (`a[i, j]`) route through method_call
+           * dispatch via runtime args Array. */
+          bool is_or = PM_NODE_TYPE_P(node, PM_INDEX_OR_WRITE_NODE);
+          pm_node_t *recv_pm, *value_pm;
+          pm_node_list_t *args_list;
+          if (is_or) {
+              pm_index_or_write_node_t *n = (pm_index_or_write_node_t *)node;
+              recv_pm = n->receiver;
+              value_pm = n->value;
+              args_list = n->arguments ? &n->arguments->arguments : NULL;
+          } else {
+              pm_index_and_write_node_t *n = (pm_index_and_write_node_t *)node;
+              recv_pm = n->receiver;
+              value_pm = n->value;
+              args_list = n->arguments ? &n->arguments->arguments : NULL;
+          }
+          if (!args_list || args_list->size < 1) return ALLOC_node_nil();
+          uint32_t idx_cnt = (uint32_t)args_list->size;
+          bool has_splat = false;
+          for (uint32_t k = 0; k < idx_cnt; k++) {
+              if (PM_NODE_TYPE_P(args_list->nodes[k], PM_SPLAT_NODE)) { has_splat = true; break; }
+          }
+          if (idx_cnt == 1 && !has_splat) {
+              /* Fast path: single-key, no splat.  Use node_aref/aset
+               * which inlines for Hash/Array. */
+              uint32_t recv_slot = inc_arg_index(tc);
+              uint32_t idx_slot  = inc_arg_index(tc);
+              uint32_t ai = inc_arg_index(tc);
+              inc_arg_index(tc); inc_arg_index(tc); rewind_arg_index(tc, recv_slot);
+              NODE *save_recv = ALLOC_node_lvar_set(recv_slot, T(tc, recv_pm));
+              NODE *save_idx  = ALLOC_node_lvar_set(idx_slot, T(tc, args_list->nodes[0]));
+              NODE *cur = ALLOC_node_aref(ALLOC_node_lvar_get(recv_slot),
+                                           ALLOC_node_lvar_get(idx_slot), ai);
+              NODE *rhs = T(tc, value_pm);
+              NODE *set = ALLOC_node_aset(ALLOC_node_lvar_get(recv_slot),
+                                           ALLOC_node_lvar_get(idx_slot), rhs, ai);
+              NODE *combo = is_or ? ALLOC_node_or(cur, set) : ALLOC_node_and(cur, set);
+              return ALLOC_node_seq(save_recv, ALLOC_node_seq(save_idx, combo));
+          }
+          /* General path: build the indices Array at runtime.  splat
+           * args expand into the array; the [] / []= dispatch then
+           * spreads from this saved array. */
           uint32_t recv_slot = inc_arg_index(tc);
-          uint32_t idx_slot  = inc_arg_index(tc);
-          uint32_t ai = inc_arg_index(tc);
-          inc_arg_index(tc); inc_arg_index(tc); rewind_arg_index(tc, recv_slot);
-          NODE *save_recv = ALLOC_node_lvar_set(recv_slot, T(tc, n->receiver));
-          NODE *save_idx  = ALLOC_node_lvar_set(idx_slot, T(tc, n->arguments->arguments.nodes[0]));
-          NODE *cur = ALLOC_node_aref(ALLOC_node_lvar_get(recv_slot),
-                                       ALLOC_node_lvar_get(idx_slot), ai);
-          NODE *rhs = T(tc, n->value);
-          NODE *set = ALLOC_node_aset(ALLOC_node_lvar_get(recv_slot),
-                                       ALLOC_node_lvar_get(idx_slot), rhs, ai);
-          return ALLOC_node_seq(save_recv,
-                   ALLOC_node_seq(save_idx, ALLOC_node_and(cur, set)));
+          uint32_t arr_slot  = inc_arg_index(tc);
+          uint32_t apply_idx = inc_arg_index(tc);
+          for (uint32_t s = 1; s < 16; s++) inc_arg_index(tc);
+          NODE *save_recv = ALLOC_node_lvar_set(recv_slot, T(tc, recv_pm));
+          NODE *args_arr = build_args_array_with_splat(tc, args_list);
+          NODE *save_arr  = ALLOC_node_lvar_set(arr_slot, args_arr);
+          struct method_cache *mc_get = alloc_method_cache();
+          NODE *cur = ALLOC_node_apply_call(ALLOC_node_lvar_get(recv_slot),
+                                             korb_intern("[]"),
+                                             ALLOC_node_lvar_get(arr_slot),
+                                             apply_idx, ALLOC_node_nil(), 1, mc_get);
+          /* For set: build a new Array = idx_arr + [rhs], dispatch []= apply. */
+          NODE *rhs = T(tc, value_pm);
+          uint32_t rhs_slot = inc_arg_index(tc);
+          NODE *save_rhs = ALLOC_node_lvar_set(rhs_slot, rhs);
+          /* Build set_arr = [*idx_arr, rhs] using ary_concat. */
+          uint32_t one_ai = inc_arg_index(tc);
+          uint32_t set_arr_slot = inc_arg_index(tc);
+          uint32_t apply_idx_set = inc_arg_index(tc);
+          for (uint32_t s = 1; s < 16; s++) inc_arg_index(tc);
+          struct method_cache *mc_set = alloc_method_cache();
+          NODE *one_ary = ALLOC_node_seq(
+                              ALLOC_node_lvar_set(one_ai, ALLOC_node_lvar_get(rhs_slot)),
+                              ALLOC_node_ary_new(1, one_ai));
+          NODE *combined_arr = ALLOC_node_ary_concat(ALLOC_node_lvar_get(arr_slot), one_ary);
+          NODE *save_set_arr = ALLOC_node_lvar_set(set_arr_slot, combined_arr);
+          NODE *call_set = ALLOC_node_apply_call(ALLOC_node_lvar_get(recv_slot),
+                                                  korb_intern("[]="),
+                                                  ALLOC_node_lvar_get(set_arr_slot),
+                                                  apply_idx_set, ALLOC_node_nil(), 1, mc_set);
+          /* For ||= the result should be rhs (when the set fires);
+           * for &&= it's also rhs.  apply_call returns the setter's
+           * return — we want the assigned value, so wrap. */
+          NODE *set_seq = ALLOC_node_seq(save_rhs,
+                              ALLOC_node_seq(save_set_arr,
+                                  ALLOC_node_seq(call_set, ALLOC_node_lvar_get(rhs_slot))));
+          NODE *combo = is_or ? ALLOC_node_or(cur, set_seq) : ALLOC_node_and(cur, set_seq);
+          return ALLOC_node_seq(save_recv, ALLOC_node_seq(save_arr, combo));
       }
       /* PM_SOURCE_FILE_NODE / PM_SOURCE_LINE_NODE handled earlier with
        * proper line lookup via prism's newline_list. */
