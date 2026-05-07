@@ -945,6 +945,10 @@ void korb_init_builtins(void) {
     struct korb_class *cPrc = korb_vm->proc_class;
     DEF(cPrc, "call", proc_call, -1);
     DEF(cPrc, "[]", proc_call, -1);
+    /* Proc#=== — same as #call.  Used by case/when with a proc value
+     * pattern (`case x; when ->(...) { ... }`) and by pattern matching
+     * (`case x; in ->(...) { ... }`). */
+    DEF(cPrc, "===", proc_call, -1);
     DEF(cPrc, "lambda?", proc_lambda_p, 0);
     DEF(cPrc, "arity", proc_arity, 0);
     {
