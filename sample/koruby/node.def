@@ -1341,7 +1341,12 @@ retry:;
             korb_gvar_set(korb_intern("$!"), prev_bang);
             goto retry;
         }
-        korb_gvar_set(korb_intern("$!"), prev_bang);
+        /* If rescue body re-raised (or raised a new exception), $! is
+         * the new exception — leave it as-is.  Only restore prev_bang
+         * when rescue completed normally. */
+        if (c->state != KORB_RAISE) {
+            korb_gvar_set(korb_intern("$!"), prev_bang);
+        }
     }
     return v;
 }
@@ -1385,7 +1390,9 @@ retry_re:;
             korb_gvar_set(korb_intern("$!"), prev_bang);
             goto retry_re;
         }
-        korb_gvar_set(korb_intern("$!"), prev_bang);
+        if (c->state != KORB_RAISE) {
+            korb_gvar_set(korb_intern("$!"), prev_bang);
+        }
     }
     /* No rescue was triggered → else body replaces the result. */
     if (!rescued && c->state == KORB_NORMAL && else_body) {
