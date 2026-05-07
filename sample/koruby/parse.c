@@ -3036,22 +3036,25 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
       }
 
       case PM_INDEX_OPERATOR_WRITE_NODE: {
-          /* a[i] op= v: rewrite as a[i] = a[i] op v */
+          /* a[i] op= v: r = a; idx = i; r[idx] = r[idx] op v.  Both
+           * receiver and index are evaluated once. */
           pm_index_operator_write_node_t *n = (pm_index_operator_write_node_t *)node;
           if (!n->arguments || n->arguments->arguments.size != 1) {
               fprintf(stderr, "INDEX_OPERATOR_WRITE: only 1-arg supported\n");
               return ALLOC_node_nil();
           }
-          uint32_t ai = arg_index(tc);
-          inc_arg_index(tc); inc_arg_index(tc); inc_arg_index(tc); rewind_arg_index(tc, ai);
-          NODE *recv = T(tc, n->receiver);
-          NODE *idx  = T(tc, n->arguments->arguments.nodes[0]);
-          /* Note: this evaluates recv twice — not strictly correct but minimal */
-          NODE *idx2 = T(tc, n->arguments->arguments.nodes[0]);
-          NODE *recv2 = T(tc, n->receiver);
-          NODE *cur = ALLOC_node_aref(recv, idx, ai);
+          uint32_t recv_slot = inc_arg_index(tc);
+          uint32_t idx_slot  = inc_arg_index(tc);
+          uint32_t ai = inc_arg_index(tc);
+          inc_arg_index(tc); inc_arg_index(tc); rewind_arg_index(tc, recv_slot);
+          NODE *save_recv = ALLOC_node_lvar_set(recv_slot, T(tc, n->receiver));
+          NODE *save_idx  = ALLOC_node_lvar_set(idx_slot, T(tc, n->arguments->arguments.nodes[0]));
+          NODE *cur = ALLOC_node_aref(ALLOC_node_lvar_get(recv_slot),
+                                       ALLOC_node_lvar_get(idx_slot), ai);
           NODE *combined = alloc_binop(tc, n->binary_operator, cur, T(tc, n->value));
-          return ALLOC_node_aset(recv2, idx2, combined, ai);
+          NODE *set = ALLOC_node_aset(ALLOC_node_lvar_get(recv_slot),
+                                       ALLOC_node_lvar_get(idx_slot), combined, ai);
+          return ALLOC_node_seq(save_recv, ALLOC_node_seq(save_idx, set));
       }
 
       case PM_LAMBDA_NODE: {
@@ -3938,98 +3941,99 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
       }
 
       case PM_CALL_OPERATOR_WRITE_NODE: {
-          /* a.b op= v  ⇒  a.b=(a.b op v).  Result is the assigned value
-           * (the combined RHS), not the writer's return value. */
+          /* a.b op= v  ⇒  recv = a; recv.b=(recv.b op v).  recv is
+           * evaluated once.  Result is the assigned value (the combined
+           * RHS), not the writer's return value. */
           pm_call_operator_write_node_t *n = (pm_call_operator_write_node_t *)node;
-          NODE *recv = T(tc, n->receiver);
-          NODE *recv2 = T(tc, n->receiver);
           ID rname = intern_constant(tc->parser, n->read_name);
           ID wname = intern_constant(tc->parser, n->write_name);
-          uint32_t ai = arg_index(tc);
-          inc_arg_index(tc); inc_arg_index(tc); rewind_arg_index(tc, ai);
+          uint32_t recv_slot = inc_arg_index(tc);
+          uint32_t ai = inc_arg_index(tc);
+          inc_arg_index(tc); rewind_arg_index(tc, recv_slot);
+          NODE *save = ALLOC_node_lvar_set(recv_slot, T(tc, n->receiver));
           struct method_cache *mc = alloc_method_cache();
-          NODE *cur = ALLOC_node_method_call(recv, rname, 0, ai, mc);
+          NODE *cur = ALLOC_node_method_call(ALLOC_node_lvar_get(recv_slot), rname, 0, ai, mc);
           NODE *rhs = T(tc, n->value);
           NODE *combined = alloc_binop(tc, n->binary_operator, cur, rhs);
-          /* call writer with combined; preserve the combined value as
-           * the expression's result (CRuby semantics). */
           NODE *st = ALLOC_node_lvar_set(ai, combined);
           struct method_cache *mc2 = alloc_method_cache();
-          NODE *call = ALLOC_node_method_call(recv2, wname, 1, ai, mc2);
-          NODE *result = ALLOC_node_seq(st,
-                          ALLOC_node_seq(call, ALLOC_node_lvar_get(ai)));
-          rewind_arg_index(tc, ai);
+          NODE *call = ALLOC_node_method_call(ALLOC_node_lvar_get(recv_slot), wname, 1, ai, mc2);
+          NODE *result = ALLOC_node_seq(save,
+                          ALLOC_node_seq(st,
+                            ALLOC_node_seq(call, ALLOC_node_lvar_get(ai))));
           return result;
       }
       case PM_CALL_OR_WRITE_NODE: {
           pm_call_or_write_node_t *n = (pm_call_or_write_node_t *)node;
-          NODE *recv = T(tc, n->receiver);
-          NODE *recv2 = T(tc, n->receiver);
           ID rname = intern_constant(tc->parser, n->read_name);
           ID wname = intern_constant(tc->parser, n->write_name);
-          uint32_t ai = arg_index(tc);
-          inc_arg_index(tc); inc_arg_index(tc); rewind_arg_index(tc, ai);
+          uint32_t recv_slot = inc_arg_index(tc);
+          uint32_t ai = inc_arg_index(tc);
+          inc_arg_index(tc); rewind_arg_index(tc, recv_slot);
+          NODE *save = ALLOC_node_lvar_set(recv_slot, T(tc, n->receiver));
           struct method_cache *mc = alloc_method_cache();
-          NODE *cur = ALLOC_node_method_call(recv, rname, 0, ai, mc);
+          NODE *cur = ALLOC_node_method_call(ALLOC_node_lvar_get(recv_slot), rname, 0, ai, mc);
           NODE *rhs = T(tc, n->value);
           struct method_cache *mc2 = alloc_method_cache();
           NODE *st = ALLOC_node_lvar_set(ai, rhs);
-          NODE *call = ALLOC_node_method_call(recv2, wname, 1, ai, mc2);
-          /* a.b ||= v: cur || (a.b = v).  The assignment-branch's value
-           * is rhs (the assigned value), not the writer's return. */
+          NODE *call = ALLOC_node_method_call(ALLOC_node_lvar_get(recv_slot), wname, 1, ai, mc2);
           NODE *assign_branch = ALLOC_node_seq(st,
                                   ALLOC_node_seq(call, ALLOC_node_lvar_get(ai)));
-          rewind_arg_index(tc, ai);
-          return ALLOC_node_or(cur, assign_branch);
+          return ALLOC_node_seq(save, ALLOC_node_or(cur, assign_branch));
       }
       case PM_CALL_AND_WRITE_NODE: {
-          /* obj.attr &&= rhs  ⇒  obj.attr && (obj.attr = rhs) */
           pm_call_and_write_node_t *n = (pm_call_and_write_node_t *)node;
-          NODE *recv = T(tc, n->receiver);
-          NODE *recv2 = T(tc, n->receiver);
           ID rname = intern_constant(tc->parser, n->read_name);
           ID wname = intern_constant(tc->parser, n->write_name);
-          uint32_t ai = arg_index(tc);
-          inc_arg_index(tc); inc_arg_index(tc); rewind_arg_index(tc, ai);
+          uint32_t recv_slot = inc_arg_index(tc);
+          uint32_t ai = inc_arg_index(tc);
+          inc_arg_index(tc); rewind_arg_index(tc, recv_slot);
+          NODE *save = ALLOC_node_lvar_set(recv_slot, T(tc, n->receiver));
           struct method_cache *mc = alloc_method_cache();
-          NODE *cur = ALLOC_node_method_call(recv, rname, 0, ai, mc);
+          NODE *cur = ALLOC_node_method_call(ALLOC_node_lvar_get(recv_slot), rname, 0, ai, mc);
           NODE *rhs = T(tc, n->value);
           struct method_cache *mc2 = alloc_method_cache();
           NODE *st = ALLOC_node_lvar_set(ai, rhs);
-          NODE *call = ALLOC_node_method_call(recv2, wname, 1, ai, mc2);
+          NODE *call = ALLOC_node_method_call(ALLOC_node_lvar_get(recv_slot), wname, 1, ai, mc2);
           NODE *assign_branch = ALLOC_node_seq(st,
                                   ALLOC_node_seq(call, ALLOC_node_lvar_get(ai)));
-          rewind_arg_index(tc, ai);
-          return ALLOC_node_and(cur, assign_branch);
+          return ALLOC_node_seq(save, ALLOC_node_and(cur, assign_branch));
       }
       case PM_INDEX_OR_WRITE_NODE: {
+          /* a[i] ||= v ⇒ r = a; k = i; r[k] || (r[k] = v).
+           * receiver and index are evaluated once. */
           pm_index_or_write_node_t *n = (pm_index_or_write_node_t *)node;
-          /* a[i] ||= v ⇒ a[i] || a[i] = v */
           if (!n->arguments || n->arguments->arguments.size != 1) return ALLOC_node_nil();
-          uint32_t ai = arg_index(tc);
-          inc_arg_index(tc); inc_arg_index(tc); inc_arg_index(tc); rewind_arg_index(tc, ai);
-          NODE *recv = T(tc, n->receiver);
-          NODE *idx = T(tc, n->arguments->arguments.nodes[0]);
-          NODE *cur = ALLOC_node_aref(recv, idx, ai);
-          NODE *recv2 = T(tc, n->receiver);
-          NODE *idx2 = T(tc, n->arguments->arguments.nodes[0]);
+          uint32_t recv_slot = inc_arg_index(tc);
+          uint32_t idx_slot  = inc_arg_index(tc);
+          uint32_t ai = inc_arg_index(tc);
+          inc_arg_index(tc); inc_arg_index(tc); rewind_arg_index(tc, recv_slot);
+          NODE *save_recv = ALLOC_node_lvar_set(recv_slot, T(tc, n->receiver));
+          NODE *save_idx  = ALLOC_node_lvar_set(idx_slot, T(tc, n->arguments->arguments.nodes[0]));
+          NODE *cur = ALLOC_node_aref(ALLOC_node_lvar_get(recv_slot),
+                                       ALLOC_node_lvar_get(idx_slot), ai);
           NODE *rhs = T(tc, n->value);
-          NODE *set = ALLOC_node_aset(recv2, idx2, rhs, ai);
-          return ALLOC_node_or(cur, set);
+          NODE *set = ALLOC_node_aset(ALLOC_node_lvar_get(recv_slot),
+                                       ALLOC_node_lvar_get(idx_slot), rhs, ai);
+          return ALLOC_node_seq(save_recv,
+                   ALLOC_node_seq(save_idx, ALLOC_node_or(cur, set)));
       }
       case PM_INDEX_AND_WRITE_NODE: {
           pm_index_and_write_node_t *n = (pm_index_and_write_node_t *)node;
           if (!n->arguments || n->arguments->arguments.size != 1) return ALLOC_node_nil();
-          uint32_t ai = arg_index(tc);
-          inc_arg_index(tc); inc_arg_index(tc); inc_arg_index(tc); rewind_arg_index(tc, ai);
-          NODE *recv = T(tc, n->receiver);
-          NODE *idx = T(tc, n->arguments->arguments.nodes[0]);
-          NODE *cur = ALLOC_node_aref(recv, idx, ai);
-          NODE *recv2 = T(tc, n->receiver);
-          NODE *idx2 = T(tc, n->arguments->arguments.nodes[0]);
+          uint32_t recv_slot = inc_arg_index(tc);
+          uint32_t idx_slot  = inc_arg_index(tc);
+          uint32_t ai = inc_arg_index(tc);
+          inc_arg_index(tc); inc_arg_index(tc); rewind_arg_index(tc, recv_slot);
+          NODE *save_recv = ALLOC_node_lvar_set(recv_slot, T(tc, n->receiver));
+          NODE *save_idx  = ALLOC_node_lvar_set(idx_slot, T(tc, n->arguments->arguments.nodes[0]));
+          NODE *cur = ALLOC_node_aref(ALLOC_node_lvar_get(recv_slot),
+                                       ALLOC_node_lvar_get(idx_slot), ai);
           NODE *rhs = T(tc, n->value);
-          NODE *set = ALLOC_node_aset(recv2, idx2, rhs, ai);
-          return ALLOC_node_and(cur, set);
+          NODE *set = ALLOC_node_aset(ALLOC_node_lvar_get(recv_slot),
+                                       ALLOC_node_lvar_get(idx_slot), rhs, ai);
+          return ALLOC_node_seq(save_recv,
+                   ALLOC_node_seq(save_idx, ALLOC_node_and(cur, set)));
       }
       /* PM_SOURCE_FILE_NODE / PM_SOURCE_LINE_NODE handled earlier with
        * proper line lookup via prism's newline_list. */
