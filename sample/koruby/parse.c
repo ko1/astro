@@ -400,16 +400,21 @@ build_call_with_block(struct transduce_context *tc, NODE *recv, ID name,
                 real_args.nodes = buf;
                 /* Convert `&expr` to a block via __to_block_arg helper:
                  * nil → no block (Qnil); else expr.to_proc.  Reserve a
-                 * fresh slot for the helper's argv. */
+                 * fresh slot for the helper's argv ABOVE the call's
+                 * arg slots — block nodes are evaluated AFTER args, so
+                 * if tp_slot collided with an arg slot the block's
+                 * lvar_set would clobber the just-evaluated arg. */
                 NODE *expr = ba->expression ? T(tc, ba->expression) : ALLOC_node_nil();
                 struct method_cache *mc = alloc_method_cache();
+                /* tp_slot lives above the args region; permanently
+                 * advanced (no rewind to before tp_slot) so the call's
+                 * arg-staging area doesn't reach into it. */
                 uint32_t tp_slot = inc_arg_index(tc);
-                inc_arg_index(tc); rewind_arg_index(tc, tp_slot);
+                inc_arg_index(tc);  /* spare for callee's frame */
                 NODE *prep = ALLOC_node_lvar_set(tp_slot, expr);
                 NODE *to_proc = ALLOC_node_seq(prep,
                     ALLOC_node_func_call(korb_intern("__to_block_arg"), 1, tp_slot, mc));
                 NODE *r = build_call_simple(tc, recv, name, &real_args, to_proc, is_method);
-                rewind_arg_index(tc, tp_slot);
                 return r;
             }
         }
@@ -2770,12 +2775,11 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                   NODE *expr = ba->expression ? T(tc, ba->expression) : ALLOC_node_nil();
                   struct method_cache *mc_tp = alloc_method_cache();
                   uint32_t tp_slot = inc_arg_index(tc);
-                  inc_arg_index(tc); rewind_arg_index(tc, tp_slot);
+                  inc_arg_index(tc);  /* spare for callee's frame */
                   NODE *prep = ALLOC_node_lvar_set(tp_slot, expr);
                   NODE *to_proc = ALLOC_node_seq(prep,
                       ALLOC_node_func_call(korb_intern("__to_block_arg"), 1, tp_slot, mc_tp));
                   call = build_call_simple(tc, recv_get, name, args ? &args->arguments : NULL, to_proc, true);
-                  rewind_arg_index(tc, tp_slot);
               } else {
                   call = build_call_with_block(tc, recv_get, name, args ? &args->arguments : NULL, block_pm, true);
               }
@@ -3000,17 +3004,19 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                   return build_call_simple(tc, recv, name, args ? &args->arguments : NULL, NULL, recv != NULL);
               }
               /* Use __to_block_arg helper which converts nil → no block,
-               * else delegates to expr.to_proc.  This makes runtime-nil
-               * `&b` (with b == nil) match CRuby's "no block" behavior. */
+               * else delegates to expr.to_proc.  Reserve tp_slot ABOVE
+               * the call's arg slots: the block expression is evaluated
+               * after the args, so a colliding tp_slot would clobber
+               * the just-staged arg (e.g. `m('a', &lambda)` would put
+               * the lambda into 'a's slot). */
               NODE *expr = T(tc, ba->expression);
               struct method_cache *mc_tp = alloc_method_cache();
               uint32_t tp_slot = inc_arg_index(tc);
-              inc_arg_index(tc); rewind_arg_index(tc, tp_slot);
+              inc_arg_index(tc);  /* spare for callee's frame */
               NODE *prep = ALLOC_node_lvar_set(tp_slot, expr);
               NODE *to_proc = ALLOC_node_seq(prep,
                   ALLOC_node_func_call(korb_intern("__to_block_arg"), 1, tp_slot, mc_tp));
               NODE *r = build_call_simple(tc, recv, name, args ? &args->arguments : NULL, to_proc, recv != NULL);
-              rewind_arg_index(tc, tp_slot);
               return r;
           }
           return build_call_with_block(tc, recv, name, args ? &args->arguments : NULL, block_pm, recv != NULL);
