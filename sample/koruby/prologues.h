@@ -131,11 +131,17 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
      * enclosing). */
     struct korb_proc *prev_running = running_block;
     running_block = NULL;
+    /* cref must always reflect the method's definition site so cref-
+     * dependent operations (Kernel#binding, class-variable access,
+     * `class C` keyword in nested blocks) see the lexical class
+     * rather than the dynamic caller's.  Save+restore unconditionally;
+     * the simple-frame flag now only avoids the block / current_block
+     * stash, which is genuinely cheap to skip. */
+    prev_cref = c->cref;
+    if (mc->def_cref) c->cref = mc->def_cref;
     if (UNLIKELY(!simple)) {
         prev_block = current_block;
-        prev_cref = c->cref;
         current_block = block;
-        if (mc->def_cref) c->cref = mc->def_cref;
     }
 
     for (uint32_t i = total; i < mc->locals_cnt; i++) {
@@ -147,8 +153,8 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
 
     c->current_frame = frame.prev;
     running_block = prev_running;
+    c->cref = prev_cref;
     if (UNLIKELY(!simple)) {
-        c->cref = prev_cref;
         current_block = prev_block;
     }
     /* If we're returning a Proc whose env points into the about-to-be-
@@ -258,11 +264,17 @@ prologue_ast_simple_static_inl(CTX *c, struct Node *callsite, VALUE recv,
      * enclosing). */
     struct korb_proc *prev_running = running_block;
     running_block = NULL;
+    /* cref must always reflect the method's definition site so cref-
+     * dependent operations (Kernel#binding, class-variable access,
+     * `class C` keyword in nested blocks) see the lexical class
+     * rather than the dynamic caller's.  Save+restore unconditionally;
+     * the simple-frame flag now only avoids the block / current_block
+     * stash, which is genuinely cheap to skip. */
+    prev_cref = c->cref;
+    if (mc->def_cref) c->cref = mc->def_cref;
     if (UNLIKELY(!simple)) {
         prev_block = current_block;
-        prev_cref = c->cref;
         current_block = block;
-        if (mc->def_cref) c->cref = mc->def_cref;
     }
 
     for (uint32_t i = total; i < mc->locals_cnt; i++) {
@@ -277,8 +289,8 @@ prologue_ast_simple_static_inl(CTX *c, struct Node *callsite, VALUE recv,
 
     c->current_frame = frame.prev;
     running_block = prev_running;
+    c->cref = prev_cref;
     if (UNLIKELY(!simple)) {
-        c->cref = prev_cref;
         current_block = prev_block;
     }
     korb_proc_snapshot_env_if_in_frame(r, new_fp, new_fp + mc->locals_cnt);
