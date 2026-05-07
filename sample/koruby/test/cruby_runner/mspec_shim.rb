@@ -86,8 +86,12 @@ def it(name, *_opts, &blk)
     out_of_scope = %w(Thread Fiber Ractor Encoding Random TracePoint GC
                       ObjectSpace RubyVM Mutex
                       ConditionVariable Queue SizedQueue Refinement)
-    if e.is_a?(NameError) && e.message.start_with?("uninitialized constant ") &&
-       out_of_scope.any? { |c| e.message.include?(c) }
+    is_refinement = e.is_a?(NoMethodError) &&
+                    (e.message.include?("'refine'") ||
+                     e.message.include?("'using'"))
+    if (e.is_a?(NameError) && e.message.start_with?("uninitialized constant ") &&
+        out_of_scope.any? { |c| e.message.include?(c) }) ||
+       is_refinement
       $ms_skip += 1
     else
       $ms_error += 1
