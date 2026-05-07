@@ -1828,7 +1828,11 @@ VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv)
      * args.  When the single arg responds to to_ary, call it; if to_ary
      * returns non-Array, raise TypeError. */
     bool bound_destructure = false;
-    if (blk->params_cnt > 1 && argc == 1 && blk->rest_slot < 0) {
+    /* Total positional params include post params (req-after-rest in
+     * `|a=5, b, c|` shape).  Auto-destructure also when post params
+     * make total > 1 even if params_cnt is just 1. */
+    uint32_t total_pos = blk->params_cnt + blk->post_cnt;
+    if (total_pos > 1 && argc == 1 && blk->rest_slot < 0) {
         VALUE arg0 = args_buf[0];
         VALUE arr = Qnil;
         if (!SPECIAL_CONST_P(arg0) && BUILTIN_TYPE(arg0) == T_ARRAY) {
@@ -1852,8 +1856,48 @@ VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv)
         }
         if (!NIL_P(arr) && BUILTIN_TYPE(arr) == T_ARRAY) {
             struct korb_array *a = (struct korb_array *)arr;
-            for (uint32_t i = 0; i < blk->params_cnt; i++) {
-                fp[blk->param_base + i] = (i < (uint32_t)a->len) ? a->ptr[i] : Qnil;
+            uint32_t req_cnt = (blk->params_cnt > blk->opt_cnt)
+                                 ? blk->params_cnt - blk->opt_cnt : 0;
+            uint32_t arr_len = (uint32_t)a->len;
+            uint32_t opt_cnt = blk->opt_cnt;
+            uint32_t post_cnt = blk->post_cnt;
+            /* CRuby's destructure layout: required (left) — optional —
+             * (rest, but rest_slot<0 here) — post (required-right).  Each
+             * batch fills greedily, defaulting/Qundef'ing what's missing.
+             * arr is consumed left-to-right for req+opt, then right-to-left
+             * for post (so post-most params take the tail of arr). */
+            uint32_t taken_left = 0;
+            /* Required (left). */
+            for (uint32_t i = 0; i < req_cnt; i++) {
+                fp[blk->param_base + i] = (taken_left < arr_len)
+                    ? a->ptr[taken_left++] : Qnil;
+            }
+            /* Optional. */
+            for (uint32_t i = 0; i < opt_cnt; i++) {
+                uint32_t reserved_for_post = (post_cnt > arr_len - taken_left)
+                                              ? 0 : (uint32_t)0;
+                /* Don't steal from post — leave post_cnt elements in arr if
+                 * possible.  This means take optional only if remaining
+                 * arr has more than post_cnt elements. */
+                (void)reserved_for_post;
+                if (taken_left < arr_len &&
+                    arr_len - taken_left > post_cnt) {
+                    fp[blk->param_base + req_cnt + i] = a->ptr[taken_left++];
+                } else {
+                    fp[blk->param_base + req_cnt + i] = Qundef;
+                }
+            }
+            /* Post params: fill left-to-right from remaining, trailing nils.
+             * (No rest_slot here, so posts pick up after req+opt.) */
+            uint32_t post_base = blk->param_base + blk->params_cnt
+                                  + (blk->rest_slot >= 0 ? 1 : 0);
+            uint32_t remaining = arr_len - taken_left;
+            uint32_t post_filled = (remaining < post_cnt) ? remaining : post_cnt;
+            for (uint32_t i = 0; i < post_filled; i++) {
+                fp[post_base + i] = a->ptr[taken_left + i];
+            }
+            for (uint32_t i = post_filled; i < post_cnt; i++) {
+                fp[post_base + i] = Qnil;
             }
             bound_destructure = true;
         }

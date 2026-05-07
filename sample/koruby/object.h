@@ -640,8 +640,9 @@ korb_yield(CTX *c, uint32_t argc, VALUE *argv) {
      * (via the slow path's fresh-env-with-writeback) so each captured
      * proc has its own block-locals. */
     if (UNLIKELY(blk->creates_proc)) return korb_yield_slow(c, blk, argc, argv);
-    /* Common case: single arg, single param, no destructure.  Inline. */
-    if (LIKELY(argc == 1 && blk->params_cnt == 1)) {
+    /* Common case: single arg, single param, no destructure.  Inline.
+     * Skip when post params are present — those need destructure. */
+    if (LIKELY(argc == 1 && blk->params_cnt == 1 && blk->post_cnt == 0)) {
         VALUE arg = argv[0];  /* snapshot before fp swap */
         VALUE *prev_fp = c->fp;
         VALUE prev_self = c->self;
