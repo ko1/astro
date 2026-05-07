@@ -649,6 +649,15 @@ def complain(_pattern = nil, **_opts); MSpecMatcher.new(:complain); end
 def ruby_exe(*_); ""; end
 def ruby_cmd(*_); "ruby"; end
 
+# `tmp(name)` — return a path under /tmp for spec scratch files.
+# `rm_r(path)` — recursive delete (single file is enough for specs).
+def tmp(name = "_spec_tmp")
+  "/tmp/koruby-spec-#{Process.pid rescue 0}-#{name}"
+end
+def rm_r(*paths)
+  paths.flatten.each { |p| File.delete(p) rescue nil }
+end
+
 # Shared spec inclusion — opening a Pandora's box by actually running
 # shared spec blocks adds a lot of failure modes (cross-file fixtures,
 # Thread/Fiber etc. references inside shared specs).  Keep no-op for

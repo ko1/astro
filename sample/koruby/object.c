@@ -3820,6 +3820,16 @@ VALUE korb_eval_string(CTX *c, const char *src, size_t len, const char *filename
     OPTIMIZE(ast);
     VALUE r = EVAL(c, ast);
 
+    /* Top-level `return` in a load'd file just stops *this* file —
+     * not an error and not a propagating return.  CRuby allows this
+     * (load returns true, requiring the file proceeds normally). */
+    if (c->state == KORB_RETURN) {
+        r = c->state_value;
+        c->state = KORB_NORMAL;
+        c->state_value = Qnil;
+        c->state_target_frame = NULL;
+    }
+
     c->fp = prev_fp;
     c->self = prev_self;
     c->current_class = prev_class;
@@ -4166,7 +4176,7 @@ VALUE korb_fiber_resume_cfunc(CTX *c, VALUE self, int argc, VALUE *argv) {
     return korb_fiber_resume(c, self, argc, argv);
 }
 
-VALUE korb_load_file(CTX *c, const char *path) {
+VALUE korb_require_file(CTX *c, const char *path) {
     if (already_loaded(path)) return Qfalse;
     size_t len;
     char *src = read_file(path, &len);
@@ -4175,6 +4185,20 @@ VALUE korb_load_file(CTX *c, const char *path) {
         return Qnil;
     }
     mark_loaded(path);
+    korb_eval_string(c, src, len, path);
+    return Qtrue;
+}
+
+VALUE korb_load_file(CTX *c, const char *path) {
+    /* `load` runs the file unconditionally — does NOT consult the
+     * already_loaded set, and does NOT mark it loaded.  Only `require`
+     * dedupes (via korb_require_file). */
+    size_t len;
+    char *src = read_file(path, &len);
+    if (!src) {
+        korb_raise(c, NULL, "no such file: %s", path);
+        return Qnil;
+    }
     korb_eval_string(c, src, len, path);
     return Qtrue;
 }

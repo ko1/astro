@@ -693,7 +693,8 @@ static VALUE kernel_require_relative(CTX *c, VALUE self, int argc, VALUE *argv) 
         korb_raise(c, NULL, "cannot load such file -- %s", name);
         return Qnil;
     }
-    return korb_load_file(c, resolved);
+    extern VALUE korb_require_file(CTX *c, const char *path);
+    return korb_require_file(c, resolved);
 }
 
 static VALUE kernel_require(CTX *c, VALUE self, int argc, VALUE *argv) {
@@ -702,14 +703,15 @@ static VALUE kernel_require(CTX *c, VALUE self, int argc, VALUE *argv) {
         return Qnil;
     }
     const char *name = korb_str_cstr(argv[0]);
+    extern VALUE korb_require_file(CTX *c, const char *path);
     /* Bare path: try as is, then as .rb in cwd */
-    if (korb_file_exists(name)) return korb_load_file(c, name);
+    if (korb_file_exists(name)) return korb_require_file(c, name);
     long nl = strlen(name);
     bool has_rb = nl >= 3 && strcmp(name + nl - 3, ".rb") == 0;
     if (!has_rb) {
         char *with = korb_xmalloc_atomic(nl + 4);
         sprintf(with, "%s.rb", name);
-        if (korb_file_exists(with)) return korb_load_file(c, with);
+        if (korb_file_exists(with)) return korb_require_file(c, with);
     }
     /* Stub: pretend stdlib gems aren't available, return false */
     if (strcmp(name, "stackprof") == 0) return Qfalse;
