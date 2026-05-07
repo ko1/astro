@@ -685,6 +685,16 @@ build_call_with_block(struct transduce_context *tc, NODE *recv, ID name,
      * reserved staging slots. */
     push_frame(tc, &bn->locals, true);
     uint32_t param_base = tc->frame->slot_base;
+    /* If params_cnt exceeds locals.size (multi_target params have no
+     * own local), the param-holder area extends past locals into what
+     * would otherwise be the temp/arg-index region.  Bump arg_index so
+     * snap-tmp slots are allocated AFTER the holder area; otherwise
+     * snap[0]'s tmp slot would collide with mt's holder slot and
+     * destroy autosplat-written values. */
+    if (param_base + params_cnt > tc->frame->arg_index) {
+        tc->frame->arg_index = param_base + params_cnt;
+        if (tc->frame->arg_index > tc->frame->max_cnt) tc->frame->max_cnt = tc->frame->arg_index;
+    }
     /* Build a param-dispatch prelude.
      *
      * Block param positions don't always line up with prism's locals
@@ -730,7 +740,14 @@ build_call_with_block(struct transduce_context *tc, NODE *recv, ID name,
                     NODE *snap = ALLOC_node_lvar_set(tmp_slot, ALLOC_node_lvar_get(holder_slot));
                     destructure_pre = destructure_pre ? ALLOC_node_seq(destructure_pre, snap) : snap;
                 }
-                /* Phase 2: dispatch each snapshot to its real target. */
+                /* Phase 2: dispatch each snapshot to its real target.
+                 *
+                 * Track destination slots already written so duplicate
+                 * names like `|_, _|` keep the FIRST yield arg (CRuby
+                 * semantics: only the first `_` is bound; later ones
+                 * are silently swallowed). */
+                int written_slots[64];
+                int written_cnt = 0;
                 for (size_t i = 0; i < nreq; i++) {
                     pm_node_t *req = pn->requireds.nodes[i];
                     uint32_t tmp_slot = saved_tmp[i];
@@ -754,6 +771,12 @@ build_call_with_block(struct transduce_context *tc, NODE *recv, ID name,
                         pm_required_parameter_node_t *rp = (pm_required_parameter_node_t *)req;
                         int slot = lvar_slot_any(tc, rp->name);
                         if (slot < 0) continue;
+                        bool seen = false;
+                        for (int w = 0; w < written_cnt; w++) {
+                            if (written_slots[w] == slot) { seen = true; break; }
+                        }
+                        if (seen) continue;
+                        if (written_cnt < 64) written_slots[written_cnt++] = slot;
                         NODE *set = ALLOC_node_lvar_set((uint32_t)slot, ALLOC_node_lvar_get(tmp_slot));
                         destructure_pre = ALLOC_node_seq(destructure_pre, set);
                     }
