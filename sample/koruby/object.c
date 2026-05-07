@@ -3602,6 +3602,15 @@ void korb_runtime_init(void) {
         korb_gvar_set(korb_intern("$\""), korb_ary_new());
         korb_gvar_set(korb_intern("$LOADED_FEATURES"), korb_gvar_get(korb_intern("$\"")));
     }
+    /* $VERBOSE / $DEBUG / aliases — false by default (no -v/-d). */
+    {
+        korb_gvar_set(korb_intern("$VERBOSE"), Qfalse);
+        korb_gvar_set(korb_intern("$-v"), Qfalse);
+        korb_gvar_set(korb_intern("$-w"), Qfalse);
+        korb_gvar_set(korb_intern("$-W"), Qfalse);
+        korb_gvar_set(korb_intern("$DEBUG"), Qfalse);
+        korb_gvar_set(korb_intern("$-d"), Qfalse);
+    }
     /* Common predefined constants to satisfy code that probes for them. */
     {
         korb_const_set(cObject, korb_intern("RUBY_VERSION"),       korb_str_new_cstr("3.4.0"));

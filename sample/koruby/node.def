@@ -209,6 +209,23 @@ node_gvar_set(CTX * restrict c, NODE * restrict n, ID name, NODE *rhs)
         } else if (nm[1] == '-' && nm[2] == '0' && !nm[3]) {
             korb_gvar_set(korb_intern("$/"), v);
         }
+        /* $VERBOSE: nil/false/true (truthy → true).  $-v / $-w aliases. */
+        if (strcmp(nm, "$VERBOSE") == 0 || strcmp(nm, "$-v") == 0 ||
+            strcmp(nm, "$-w") == 0 || strcmp(nm, "$-W") == 0) {
+            VALUE canon = NIL_P(v) ? Qnil : (RTEST(v) ? Qtrue : Qfalse);
+            korb_gvar_set(korb_intern("$VERBOSE"), canon);
+            korb_gvar_set(korb_intern("$-v"),      canon);
+            korb_gvar_set(korb_intern("$-w"),      canon);
+            korb_gvar_set(korb_intern("$-W"),      canon);
+            return canon;
+        }
+        /* $DEBUG / $-d aliases. */
+        if (strcmp(nm, "$DEBUG") == 0 || strcmp(nm, "$-d") == 0) {
+            VALUE canon = RTEST(v) ? Qtrue : Qfalse;
+            korb_gvar_set(korb_intern("$DEBUG"), canon);
+            korb_gvar_set(korb_intern("$-d"),    canon);
+            return canon;
+        }
     }
     korb_gvar_set(name, v);
     return v;
