@@ -1890,6 +1890,8 @@ node_super_block(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t ar
     frame.last_match = Qnil;
     extern struct korb_proc *running_block;
     frame.caller_running_block = running_block;
+    extern uint64_t korb_g_next_frame_id;
+    frame.frame_id = ++korb_g_next_frame_id;
     c->current_frame = &frame;
     struct korb_proc *prev_running = running_block;
     running_block = NULL;
@@ -1907,6 +1909,33 @@ node_super_block(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t ar
         c->state_value = Qnil;
         c->state_target_frame = NULL;
     }
+    return r;
+}
+
+/* `super { block }` (forwarding form): evaluate the block, swap
+ * current_block, then route through DISPATCH_node_super_forward
+ * (a lightweight wrapper around EVAL_node_super_forward that has
+ * external linkage so we can call it across the TU boundary).
+ * The dispatcher reads from `n` so we synthesize a node-shaped
+ * argument by reusing our own node — node_super_forward doesn't
+ * read any specific fields, only `c->current_frame`. */
+NODE_DEF @noinline
+node_super_forward_block(CTX * restrict c, NODE * restrict n, NODE *blk_expr)
+{
+    extern struct korb_proc *current_block;
+    VALUE blk_v = blk_expr ? EA(c, blk_expr) : Qnil;
+    struct korb_proc *blk_proc = (!NIL_P(blk_v) && !SPECIAL_CONST_P(blk_v) &&
+                                   BUILTIN_TYPE(blk_v) == T_PROC)
+                                  ? (struct korb_proc *)blk_v : NULL;
+    /* Allocate a synthetic node_super_forward and dispatch into it so
+     * we don't have to copy 100 lines of forward logic.  We do this
+     * via the public ALLOC_node_super_forward entry. */
+    extern struct Node *ALLOC_node_super_forward(void);
+    struct Node *fwd = ALLOC_node_super_forward();
+    struct korb_proc *prev = current_block;
+    current_block = blk_proc;
+    VALUE r = ((korb_dispatcher_t)fwd->head.dispatcher)(c, fwd);
+    current_block = prev;
     return r;
 }
 

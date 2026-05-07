@@ -4840,12 +4840,44 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
               rewind_arg_index(tc, arg_idx);
               return seq ? ALLOC_node_seq(seq, sup) : sup;
           }
+          /* Block literal form `super { ... }` — minimal: only no-param
+           * blocks (common: `super { ... }` to wrap the yield).  Build
+           * a node_block_literal for the body and route through
+           * node_super_block. */
+          if (n->block && PM_NODE_TYPE_P(n->block, PM_BLOCK_NODE)) {
+              pm_block_node_t *bn = (pm_block_node_t *)n->block;
+              push_frame(tc, &bn->locals, true);
+              uint32_t param_base = tc->frame->slot_base;
+              NODE *body = bn->body ? T(tc, bn->body) : ALLOC_node_nil();
+              uint32_t env_size = tc->frame->max_cnt;
+              uint32_t l_creates_proc = tc->frame->has_inner_block ? 1 : 0;
+              pop_frame(tc);
+              NODE *blk_expr = ALLOC_node_block_literal(body, /*params_cnt*/0,
+                                                        param_base, env_size, l_creates_proc);
+              NODE *sup = ALLOC_node_super_block(cnt, arg_idx, blk_expr);
+              rewind_arg_index(tc, arg_idx);
+              return seq ? ALLOC_node_seq(seq, sup) : sup;
+          }
           NODE *sup = ALLOC_node_super(cnt, arg_idx);
           rewind_arg_index(tc, arg_idx);
           return seq ? ALLOC_node_seq(seq, sup) : sup;
       }
       case PM_FORWARDING_SUPER_NODE: {
-          /* zero-arg super (no parens) — pass current method's args */
+          /* zero-arg super (no parens) — pass current method's args.
+           * Optional block literal: `super { body }`. */
+          pm_forwarding_super_node_t *fs = (pm_forwarding_super_node_t *)node;
+          if (fs->block) {
+              pm_block_node_t *bn = (pm_block_node_t *)fs->block;
+              push_frame(tc, &bn->locals, true);
+              uint32_t param_base = tc->frame->slot_base;
+              NODE *body = bn->body ? T(tc, bn->body) : ALLOC_node_nil();
+              uint32_t env_size = tc->frame->max_cnt;
+              uint32_t l_creates_proc = tc->frame->has_inner_block ? 1 : 0;
+              pop_frame(tc);
+              NODE *blk_expr = ALLOC_node_block_literal(body, /*params_cnt*/0,
+                                                         param_base, env_size, l_creates_proc);
+              return ALLOC_node_super_forward_block(blk_expr);
+          }
           return ALLOC_node_super_forward();
       }
 
