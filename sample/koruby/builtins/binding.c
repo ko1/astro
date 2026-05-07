@@ -80,16 +80,19 @@ static struct korb_binding *binding_alloc_from(CTX *c, VALUE recv) {
     struct korb_binding *b = korb_xcalloc(1, sizeof(*b));
     b->basic.flags = T_DATA;
     b->basic.klass = korb_vm ? (VALUE)korb_vm->binding_class : 0;
-    /* Binding's self should be the caller's self (the one who
+    /* Binding's self should be the caller's lexical self (the one who
      * SYNTACTICALLY called `binding`), not the cfunc receiver.  When
      * called via `obj.send(:binding)`, the receiver is `obj` but the
-     * caller's self may be something else.  Use the active method
-     * frame's self if available, else the running block's lexical
-     * self, else the top-level main object. */
-    if (c->current_frame && c->current_frame->method) {
-        b->self = c->current_frame->self;
-    } else if (running_block) {
+     * caller's self may be something else.  Priority:
+     *   1. running_block.self — closest lexical scope; for
+     *      Class.new { ... } the block's self is the new class (not
+     *      the method's caller).
+     *   2. current_frame->self — calling AST method's self.
+     *   3. main_obj — top-level fallback. */
+    if (running_block) {
         b->self = running_block->self;
+    } else if (c->current_frame && c->current_frame->method) {
+        b->self = c->current_frame->self;
     } else if (korb_vm) {
         b->self = korb_vm->main_obj;
     } else {
