@@ -1101,9 +1101,19 @@ static VALUE kernel_eval_stub(CTX *c, VALUE self, int argc, VALUE *argv) {
         korb_raise(c, NULL, "eval: argument must be a String");
         return Qnil;
     }
-    if (argc >= 2 && !SPECIAL_CONST_P(argv[1]) &&
-        BUILTIN_TYPE(argv[1]) == T_DATA &&
-        ((struct RBasic *)argv[1])->klass == (VALUE)korb_vm->binding_class) {
+    if (argc >= 2 && argv[1] != Qnil) {
+        /* Second arg must be a Binding (or nil).  CRuby raises TypeError
+         * for anything else (e.g. a Proc). */
+        bool is_binding = !SPECIAL_CONST_P(argv[1]) &&
+            BUILTIN_TYPE(argv[1]) == T_DATA &&
+            ((struct RBasic *)argv[1])->klass == (VALUE)korb_vm->binding_class;
+        if (!is_binding) {
+            VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+            korb_raise(c, (struct korb_class *)eT,
+                       "wrong argument type %s (expected Binding)",
+                       korb_id_name(korb_class_of_class(argv[1])->name));
+            return Qnil;
+        }
         struct korb_binding *b = (struct korb_binding *)argv[1];
         /* Forward [string, file, line] to binding's eval implementation. */
         VALUE forward[3];
