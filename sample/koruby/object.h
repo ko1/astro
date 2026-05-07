@@ -210,6 +210,11 @@ struct korb_proc {
      * time we read it; we only ever compare it to the live frame's
      * address (the popped frame's address won't match anything live). */
     void *return_target_frame;
+    /* `super` inside a block dispatches to the LEXICALLY enclosing
+     * method's super (CRuby semantics).  Capture the method seen at
+     * proc creation time; super inside the block reads this instead
+     * of c->current_frame->method. */
+    struct korb_method *defining_method;
 };
 
 /* Method object: a bound (receiver, method) pair, callable via #call/#[] */

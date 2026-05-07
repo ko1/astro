@@ -493,6 +493,10 @@ void korb_class_add_method_proc(struct korb_class *klass, ID name, struct korb_p
     m->is_simple_frame = false;
     m->visibility = klass ? klass->default_visibility : KORB_VIS_PUBLIC;
     m->u.proc.proc = snap;
+    /* Bind defining_method so `super` inside the proc body dispatches
+     * via the registered method's defining_class (instead of whatever
+     * outer method was active when the proc literal was created). */
+    snap->defining_method = m;
     method_table_set(&klass->methods, name, m);
     if (korb_vm) { korb_vm->method_serial++; korb_g_method_serial = korb_vm->method_serial; }
 }
@@ -1662,6 +1666,9 @@ VALUE korb_proc_new(struct Node *body, VALUE *fp, uint32_t env_size,
     p->creates_proc = false;
     p->cref = NULL;  /* set by korb_proc_new_with_cref or by callers */
     p->return_target_frame = NULL;
+    /* defining_method gets filled in by the proc-literal evaluator
+     * (node_proc_set_def_method) once it has the active CTX. */
+    p->defining_method = NULL;
     return (VALUE)p;
 }
 
@@ -2857,7 +2864,14 @@ VALUE prologue_proc_method(CTX *c, struct Node *callsite, VALUE recv,
     VALUE *argv = &c->fp[arg_index];
     VALUE prev_self = c->self;
     c->self = recv;
+    /* Temporarily rebind the proc's `self` to the dispatch receiver:
+     * define_method'd procs run with self = the call receiver, not the
+     * class body's self captured at proc creation.  We restore after
+     * so a later call (or other dispatch site) sees the original. */
+    VALUE prev_p_self = p->self;
+    p->self = recv;
     VALUE r = proc_call(c, (VALUE)p, (int)argc, argv);
+    p->self = prev_p_self;
     c->self = prev_self;
     return r;
 }

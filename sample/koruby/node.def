@@ -630,6 +630,13 @@ node_block_literal(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t par
      * Only when no block is running do we capture the current frame. */
     ((struct korb_proc *)p)->return_target_frame =
         running_block ? running_block->return_target_frame : c->current_frame;
+    /* Lexical method capture: the method active when this block is
+     * created.  super inside the block uses this method's
+     * defining_class.  When this block_literal is itself inside another
+     * block, inherit the outer's defining_method. */
+    ((struct korb_proc *)p)->defining_method =
+        running_block ? running_block->defining_method
+                      : (c->current_frame ? c->current_frame->method : NULL);
     return p;
 }
 
@@ -641,13 +648,11 @@ node_block_literal_rest(CTX * restrict c, NODE * restrict n, NODE *body, uint32_
     VALUE p = korb_proc_new_with_cref(body, c->fp, env_size, params_cnt, param_base, c->self, false, c->cref);
     ((struct korb_proc *)p)->rest_slot = rest_slot;
     if (creates_proc) ((struct korb_proc *)p)->creates_proc = true;
-    /* Capture the lexically-enclosing method's frame for non-local
-     * `return` targeting.  When this block_literal is itself inside
-     * another block's body (running_block != NULL), inherit that
-     * outer block's target — they share the same lexical method.
-     * Only when no block is running do we capture the current frame. */
     ((struct korb_proc *)p)->return_target_frame =
         running_block ? running_block->return_target_frame : c->current_frame;
+    ((struct korb_proc *)p)->defining_method =
+        running_block ? running_block->defining_method
+                      : (c->current_frame ? c->current_frame->method : NULL);
     return p;
 }
 
@@ -661,13 +666,11 @@ node_block_literal_kw(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t 
     ((struct korb_proc *)p)->rest_slot = rest_slot;
     ((struct korb_proc *)p)->kwh_save_slot = kwh_save_slot;
     if (creates_proc) ((struct korb_proc *)p)->creates_proc = true;
-    /* Capture the lexically-enclosing method's frame for non-local
-     * `return` targeting.  When this block_literal is itself inside
-     * another block's body (running_block != NULL), inherit that
-     * outer block's target — they share the same lexical method.
-     * Only when no block is running do we capture the current frame. */
     ((struct korb_proc *)p)->return_target_frame =
         running_block ? running_block->return_target_frame : c->current_frame;
+    ((struct korb_proc *)p)->defining_method =
+        running_block ? running_block->defining_method
+                      : (c->current_frame ? c->current_frame->method : NULL);
     return p;
 }
 
@@ -1393,11 +1396,20 @@ node_str_to_sym(CTX * restrict c, NODE * restrict n, NODE *str_node)
 NODE_DEF
 node_super(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_index)
 {
-    if (!c->current_frame || !c->current_frame->method) {
+    /* When `super` runs inside a block body, the lexically-enclosing
+     * method drives the super lookup — not whichever method called
+     * `yield` to invoke the block.  running_block->defining_method
+     * was captured at proc creation time. */
+    extern struct korb_proc *running_block;
+    struct korb_method *m = (running_block && running_block->defining_method)
+                              ? running_block->defining_method
+                              : (c->current_frame ? c->current_frame->method : NULL);
+    if (!m) {
         korb_raise(c, NULL, "super called outside of method");
         return Qnil;
     }
-    struct korb_method *m = c->current_frame->method;
+    uint16_t super_skip_n = (c->current_frame && c->current_frame->method == m)
+                              ? c->current_frame->super_skip_n : 0;
     /* Walk the receiver's class MRO past the current method's defining
      * class — handles `super` from a prepended module's method.  Pass
      * the calling frame's super_skip_n so that when a module is both
@@ -1410,7 +1422,7 @@ node_super(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_inde
     uint16_t new_skip_n = 0;
     struct korb_method *sm = m->defining_class
         ? korb_class_find_super_method_n(recv_klass, m->defining_class, m->name,
-                                          c->current_frame->super_skip_n, &new_skip_n)
+                                          super_skip_n, &new_skip_n)
         : NULL;
     if (!sm) {
         VALUE eNoMethod = korb_const_get(korb_vm->object_class, korb_intern("NoMethodError"));
@@ -1420,6 +1432,12 @@ node_super(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_inde
     }
     if (sm->type == KORB_METHOD_CFUNC) {
         return sm->u.cfunc.func(c, c->self, argc, &c->fp[arg_index]);
+    }
+    if (sm->type == KORB_METHOD_PROC) {
+        /* Super to a define_method'd proc — dispatch via proc_call so
+         * its env / closure is preserved. */
+        extern VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv);
+        return proc_call(c, (VALUE)sm->u.proc.proc, (int)argc, &c->fp[arg_index]);
     }
     VALUE *prev_fp = c->fp;
     VALUE *new_fp = prev_fp + arg_index;
@@ -1468,11 +1486,14 @@ node_super(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_inde
 NODE_DEF @noinline
 node_super_block(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_index, NODE *blk_expr)
 {
-    if (!c->current_frame || !c->current_frame->method) {
+    extern struct korb_proc *running_block;
+    struct korb_method *m = (running_block && running_block->defining_method)
+                              ? running_block->defining_method
+                              : (c->current_frame ? c->current_frame->method : NULL);
+    if (!m) {
         korb_raise(c, NULL, "super called outside of method");
         return Qnil;
     }
-    struct korb_method *m = c->current_frame->method;
     struct korb_class *recv_klass = korb_class_of_class(c->self);
     extern struct korb_method *korb_class_find_super_method_n(
         const struct korb_class *, const struct korb_class *, ID,
@@ -1546,7 +1567,12 @@ node_super_forward(CTX * restrict c, NODE * restrict n)
         korb_raise(c, NULL, "super called outside of method");
         return Qnil;
     }
-    struct korb_method *m = c->current_frame->method;
+    /* Inside a block body, `super` targets the block's lexical method
+     * (captured at proc creation), not the dynamic frame's method. */
+    extern struct korb_proc *running_block;
+    struct korb_method *m = (running_block && running_block->defining_method)
+                              ? running_block->defining_method
+                              : c->current_frame->method;
     struct korb_class *recv_klass = korb_class_of_class(c->self);
     extern struct korb_method *korb_class_find_super_method_n(
         const struct korb_class *, const struct korb_class *, ID,
