@@ -208,7 +208,19 @@ def floor_div(a, b):  # legacy alias
     return a // b
 
 
-def isclose(a, b, rel_tol=1e-9, abs_tol=0.0):
+def isclose(*args, **kwargs):
+    """Mimic the C builtin so `class C: isclose = math.isclose` doesn't
+    bind it as a method (CPython's math.isclose isn't a descriptor)."""
+    # Skip the bound-self leak: when called as `inst.isclose(a, b, ...)`
+    # via a class attribute, pystro prepends `inst` as the first arg.
+    # Detect the case by checking arg count and types.
+    if len(args) >= 3 and not isinstance(args[0], (int, float, complex, bool)):
+        # First arg isn't numeric — assume it's a leaked self/cls.
+        args = args[1:]
+    a = args[0]
+    b = args[1]
+    rel_tol = args[2] if len(args) >= 3 else kwargs.get("rel_tol", 1e-9)
+    abs_tol = args[3] if len(args) >= 4 else kwargs.get("abs_tol", 0.0)
     diff = a - b
     if diff < 0: diff = -diff
     aa = -a if a < 0 else a
