@@ -1023,6 +1023,31 @@ static int ivar_slot_assign(struct korb_class *k, ID name) {
     return s;
 }
 
+/* True iff this specific object has assigned the named ivar at least
+ * once.  Distinguishes "never set" from "set to nil" for defined?. */
+bool korb_ivar_defined(VALUE obj, ID name) {
+    if (SPECIAL_CONST_P(obj)) return false;
+    if (BUILTIN_TYPE(obj) == T_CLASS || BUILTIN_TYPE(obj) == T_MODULE) {
+        struct korb_class *k = (struct korb_class *)obj;
+        for (uint32_t i = 0; i < k->class_ivar_cnt; i++) {
+            if (k->class_ivars[i].name == name) return true;
+        }
+        return false;
+    }
+    if (BUILTIN_TYPE(obj) != T_OBJECT) return false;
+    struct korb_object *o = (struct korb_object *)obj;
+    struct korb_class *k = (struct korb_class *)o->basic.klass;
+    static ID singleton_id = 0;
+    if (singleton_id == 0) singleton_id = korb_intern("(singleton)");
+    while (k->name == singleton_id && k->super) k = k->super;
+    for (uint32_t i = 0; i < k->ivar_count; i++) {
+        if (k->ivar_names[i] == name) {
+            return i < o->ivar_cnt;
+        }
+    }
+    return false;
+}
+
 VALUE korb_ivar_get(VALUE obj, ID name) {
     if (SPECIAL_CONST_P(obj)) return Qnil;
     if (BUILTIN_TYPE(obj) == T_CLASS || BUILTIN_TYPE(obj) == T_MODULE) {

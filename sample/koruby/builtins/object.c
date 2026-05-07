@@ -712,7 +712,9 @@ static VALUE obj_ivar_defined_p(CTX *c, VALUE self, int argc, VALUE *argv) {
         name = korb_intern_n(((struct korb_string *)argv[0])->ptr,
                              ((struct korb_string *)argv[0])->len);
     else return Qfalse;
-    VALUE v = korb_ivar_get(self, name);
-    return KORB_BOOL(!UNDEF_P(v) && !NIL_P(v));
+    /* CRuby: ivar is "defined" once it has been set, even to nil.
+     * korb_ivar_get returns Qnil for both unset and set-to-nil — use
+     * korb_ivar_defined directly so we don't lose that distinction. */
+    return KORB_BOOL(korb_ivar_defined(self, name));
 }
 

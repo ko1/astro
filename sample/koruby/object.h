@@ -325,6 +325,7 @@ bool korb_const_has(struct korb_class *klass, ID name);
 VALUE korb_object_new(struct korb_class *klass);
 VALUE korb_ivar_get(VALUE obj, ID name);
 void  korb_ivar_set(VALUE obj, ID name, VALUE value);
+bool  korb_ivar_defined(VALUE obj, ID name);
 VALUE korb_ivar_get_ic_slow(VALUE obj, ID name, struct ivar_cache *cache);
 void  korb_ivar_set_ic_slow(VALUE obj, ID name, VALUE val, struct ivar_cache *cache);
 
