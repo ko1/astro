@@ -123,6 +123,9 @@ struct korb_const_entry {
     ID name;
     VALUE value;
     struct korb_const_entry *next;
+    bool is_private;  /* set by Module#private_constant; lookup raises
+                       * NameError when accessed via explicit qualifier
+                       * from outside the defining module. */
 };
 
 struct korb_class {

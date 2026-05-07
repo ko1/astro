@@ -825,8 +825,18 @@ void korb_const_set(struct korb_class *klass, ID name, VALUE value) {
     struct korb_const_entry *e = korb_xmalloc(sizeof(*e));
     e->name = name;
     e->value = value;
+    e->is_private = false;
     e->next = klass->constants;
     klass->constants = e;
+}
+
+/* True iff `klass` has a constant named `name` directly (not inherited)
+ * that is marked private_constant. */
+bool korb_const_is_private(const struct korb_class *klass, ID name) {
+    for (struct korb_const_entry *e = klass->constants; e; e = e->next) {
+        if (e->name == name) return e->is_private;
+    }
+    return false;
 }
 
 VALUE korb_const_get(struct korb_class *klass, ID name) {

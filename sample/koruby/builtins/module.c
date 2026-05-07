@@ -902,13 +902,43 @@ static VALUE module_public_class_method(CTX *c, VALUE self, int argc, VALUE *arg
     return self;
 }
 
-/* Module#private_constant / public_constant — visibility on constants.
- * Stub: just record the names but don't enforce.  Many tests only
- * check the method exists / returns self. */
+/* Module#private_constant / public_constant — visibility on constants. */
 static VALUE module_private_constant(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return self;
+    struct korb_class *k = (struct korb_class *)self;
+    for (int i = 0; i < argc; i++) {
+        ID name = SYMBOL_P(argv[i]) ? korb_sym2id(argv[i]) :
+                  (BUILTIN_TYPE(argv[i]) == T_STRING ?
+                   korb_intern_n(((struct korb_string *)argv[i])->ptr,
+                                  ((struct korb_string *)argv[i])->len) : 0);
+        if (!name) continue;
+        bool found = false;
+        for (struct korb_const_entry *e = k->constants; e; e = e->next) {
+            if (e->name == name) { e->is_private = true; found = true; break; }
+        }
+        if (!found) {
+            VALUE eN = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
+            korb_raise(c, (struct korb_class *)eN,
+                       "constant %s::%s not defined",
+                       k->name ? korb_id_name(k->name) : "?", korb_id_name(name));
+            return Qnil;
+        }
+    }
     return self;
 }
 static VALUE module_public_constant(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return self;
+    struct korb_class *k = (struct korb_class *)self;
+    for (int i = 0; i < argc; i++) {
+        ID name = SYMBOL_P(argv[i]) ? korb_sym2id(argv[i]) :
+                  (BUILTIN_TYPE(argv[i]) == T_STRING ?
+                   korb_intern_n(((struct korb_string *)argv[i])->ptr,
+                                  ((struct korb_string *)argv[i])->len) : 0);
+        if (!name) continue;
+        for (struct korb_const_entry *e = k->constants; e; e = e->next) {
+            if (e->name == name) { e->is_private = false; break; }
+        }
+    }
     return self;
 }
 

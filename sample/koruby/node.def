@@ -196,6 +196,23 @@ node_const_path_get(CTX * restrict c, NODE * restrict n, NODE *parent, ID name)
 {
     VALUE p = EA(c, parent);
     if (BUILTIN_TYPE(p) == T_CLASS || BUILTIN_TYPE(p) == T_MODULE) {
+        /* private_constant enforcement: explicit `Mod::FOO` from
+         * outside Mod's lexical scope is a NameError.  We allow it
+         * iff cref's class chain contains `p`. */
+        extern bool korb_const_is_private(const struct korb_class *, ID);
+        if (korb_const_is_private((struct korb_class *)p, name)) {
+            bool in_scope = false;
+            for (struct korb_cref *cr = c->cref; cr; cr = cr->prev) {
+                if ((VALUE)cr->klass == p) { in_scope = true; break; }
+            }
+            if (!in_scope) {
+                VALUE eName = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
+                korb_raise(c, (struct korb_class *)eName,
+                           "private constant %s::%s referenced",
+                           korb_id_name(((struct korb_class *)p)->name), korb_id_name(name));
+                return Qnil;
+            }
+        }
         /* Walk super chain AND includes — CRuby's `Sub::CONST` finds
          * inherited and module-included constants. */
         VALUE v = korb_const_get_inherited((struct korb_class *)p, name);
