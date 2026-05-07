@@ -768,6 +768,8 @@ node_class_def(CTX * restrict c, NODE * restrict n, ID name, NODE *super_expr, N
     }
     else {
         klass = korb_class_new(name, super, T_OBJECT);
+        /* Mark anon so korb_const_set composes "Parent::name" path. */
+        klass->name = 0;
         korb_const_set(host, name, (VALUE)klass);
         /* Fire the `inherited` hook on `super` (defined as a class
          * method on the parent).  CRuby calls this when a new
@@ -816,6 +818,7 @@ node_class_reopen(CTX * restrict c, NODE * restrict n, ID name, NODE *body)
     }
     else {
         klass = korb_class_new(name, korb_vm->object_class, T_OBJECT);
+        klass->name = 0;
         korb_const_set(host, name, (VALUE)klass);
         struct korb_class *super_meta = korb_class_of_class((VALUE)korb_vm->object_class);
         if (super_meta && korb_class_find_method(super_meta, korb_intern("inherited"))) {
@@ -855,6 +858,7 @@ node_module_def(CTX * restrict c, NODE * restrict n, ID name, NODE *body)
     }
     else {
         mod = korb_module_new(name);
+        mod->name = 0;
         korb_const_set(host, name, (VALUE)mod);
     }
     struct korb_class *prev_class = c->current_class;
@@ -940,6 +944,7 @@ node_block_literal(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t par
     ((struct korb_proc *)p)->defining_method =
         running_block ? running_block->defining_method
                       : (c->current_frame ? c->current_frame->method : NULL);
+    ((struct korb_proc *)p)->lexical_parent_block = running_block;
     return p;
 }
 
@@ -959,6 +964,7 @@ node_block_literal_rest(CTX * restrict c, NODE * restrict n, NODE *body, uint32_
     ((struct korb_proc *)p)->defining_method =
         running_block ? running_block->defining_method
                       : (c->current_frame ? c->current_frame->method : NULL);
+    ((struct korb_proc *)p)->lexical_parent_block = running_block;
     return p;
 }
 
@@ -980,6 +986,7 @@ node_block_literal_kw(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t 
     ((struct korb_proc *)p)->defining_method =
         running_block ? running_block->defining_method
                       : (c->current_frame ? c->current_frame->method : NULL);
+    ((struct korb_proc *)p)->lexical_parent_block = running_block;
     return p;
 }
 
@@ -2584,6 +2591,7 @@ node_class_def_in_strict(CTX * restrict c, NODE * restrict n, NODE *parent_expr,
         return Qnil;
     } else {
         klass = korb_class_new(name, super, T_OBJECT);
+        klass->name = 0;
         korb_const_set(parent, name, (VALUE)klass);
     }
     struct korb_class *prev_class = c->current_class;
@@ -2642,6 +2650,7 @@ node_class_def_in(CTX * restrict c, NODE * restrict n, NODE *parent_expr, ID nam
         klass = (struct korb_class *)existing;
     } else {
         klass = korb_class_new(name, super, T_OBJECT);
+        klass->name = 0;
         korb_const_set(parent, name, (VALUE)klass);
     }
     struct korb_class *prev_class = c->current_class;
@@ -2696,6 +2705,7 @@ node_module_def_in(CTX * restrict c, NODE * restrict n, NODE *parent_expr, ID na
         return Qnil;
     } else {
         mod = korb_module_new(name);
+        mod->name = 0;
         korb_const_set(parent, name, (VALUE)mod);
     }
     struct korb_class *prev_class = c->current_class;
