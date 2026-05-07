@@ -35,65 +35,80 @@ best-of-3。**10 micro 中 9 で python3 を上回る** (dict_bench のみ遅い
 
 ### macro (`bench/macro/*.py`) — pyperformance 由来の実アプリ寄り
 
-```
-make -C bench/macro bench
-```
-で全部回る (要 `CCACHE_DISABLE=1` for AOT bake)。
-
 | ベンチ | python3 | pystro interp | pystro AOT cached | **AOT/python3** |
 |---|---:|---:|---:|---:|
-| `richards` (OS sched sim, ~400 行) | 1.09 s | 7.45 s | 6.83 s | 6.27× (6.3× 遅い) |
-| `deltablue` (constraint solver, ~600 行) | 0.16 s | 2.55 s | 2.27 s | 14.2× (14× 遅い) |
-| `raytrace` (簡易 raytracer, ~400 行) | 0.88 s | 6.35 s | 6.19 s | 7.0× (7× 遅い) |
-| `crypto_pyaes` (pure-Py AES-CTR) | 0.53 s | 2.76 s | 2.58 s | 4.87× (4.9× 遅い) |
+| `richards` (OS sched sim, ~400 行) | 1.09 s | 7.45 s | 4.83 s | 4.43× (4.4× 遅い) |
+| `deltablue` (constraint solver, ~600 行) | 0.16 s | 2.55 s | 1.82 s | 11.4× (11× 遅い) |
+| `raytrace` (簡易 raytracer, ~400 行) | 0.88 s | 6.35 s | 5.46 s | 6.20× (6.2× 遅い) |
+| `crypto_pyaes` (pure-Py AES-CTR) | 0.53 s | 2.76 s | 2.67 s | 5.04× (5× 遅い) |
 
 micro で 5-19× 速い同じ実装が、 method dispatch + 多態 class が
-heavy な実アプリでは **逆に 5-14× 遅い**。
-ここがチューニングの伸びしろ。
+heavy な実アプリでは **逆に 4-11× 遅い**。
+
+`ae87e35` で user class instance method の inline cache を入れて
+richards -29% / deltablue -20% / raytrace -12% 改善。 詳細は下記。
 
 #### 計測結果 — どこで時間を食ってるか
 
-`perf record -F 4000 ./pystro bench/macro/<name>.py` の上位サンプル
-(2026-05-07、 `code_store/all.so` baked、 best-of-3 run):
+`perf record -F 4000 ./pystro bench/macro/<name>.py` の上位サンプル。
 
-**deltablue** (2.25s, 8.7G samples):
+**deltablue (after `ae87e35` user-class IC、 1.82s、 7.06G samples)**:
 
-| 関数 | 占有 |
-|---|---:|
-| `__strcmp_avx2` (libc) | **27.2%** |
-| `py_class_lookup_method` | **12.8%** |
-| `py_getattr` | 4.95% |
-| `py_apply_slow` | 4.80% |
-| `strcmp@plt` | 4.69% |
-| `GC_malloc_kind` (Boehm) | 4.39% |
-| 他 (libgc / py_hash / lm_pop など) | 各 1-2% |
-| baked SD (`SD_*`) | **合計 1.4%** |
+| 関数 | 占有 (after) | (before) |
+|---|---:|---:|
+| `__strcmp_avx2` (libc) | 27.6% | 27.2% |
+| `py_class_lookup_method` | 13.6% | 12.8% |
+| `py_getattr` | 6.66% | 4.95% |
+| `strcmp@plt` | 5.90% | 4.69% |
+| `GC_malloc_kind` | 2.56% | **4.39%** |
+| `py_apply_slow` | 削除 | 4.80% |
 
-**richards** (7.34s, 26.8G samples):
+**richards (before IC、 7.34s、 26.8G samples)**:
 
 | 関数 | 占有 |
 |---|---:|
-| `__strcmp_avx2` | **28.8%** |
-| `py_class_lookup_method` | **15.1%** |
+| `__strcmp_avx2` | 28.8% |
+| `py_class_lookup_method` | 15.1% |
 | `strcmp@plt` | 6.47% |
 | `GC_malloc_kind` | 5.03% |
 | `py_hash` | 4.55% |
 | `py_getattr` | 4.32% |
 
-両方とも **strcmp + py_class_lookup_method** で 40-45% を占める。
-`py_class_lookup_method` (runtime.c:750) は MRO を線形 walk して
-`strcmp(method.name, target_name)` する。 つまり毎 call の method
-解決が strcmp 線形走査。
-
-**根本原因**: pystro の `method_cache` は **builtin type 専用**で、
-user class のインスタンスメソッドには inline cache が無い。
-`py_method_resolve` (runtime.c:3833) のコメントが言ってる:
+**根本原因 (発覚時)**: pystro の `method_cache` は **builtin type
+専用**で、 user class のインスタンスメソッドには inline cache が
+無かった。 `py_method_resolve` (runtime.c:3833) のコメント:
 
 > // Instance / class method (no inline-cache-able fast path).
 
 つまり `self.recalculate()` のような user-class method 呼び出し
 は SD-baked code でも毎回 `py_getattr` → `py_class_lookup_method`
-→ MRO walk + strcmp に落ちる。
+→ MRO walk + strcmp に落ちていた。
+
+**修正 `ae87e35`**: `struct method_cache` を拡張 (`cls_ptr` 追加)、
+user-class instance method を per-call-site で stamp。 fast path
+で `cls_ptr == PY_PTR(o)->inst.cls` チェックして hit すれば
+`py_apply` を直接呼ぶ (bound 確保 + MRO walk + strcmp 全回避)。
+
+ベンチ:
+- richards: 6.83 → 4.83 s (**-29%**)
+- deltablue: 2.27 → 1.82 s (**-20%**)
+- raytrace: 6.19 → 5.46 s (**-12%**)
+- crypto_pyaes: 2.58 → 2.67 s (+3.5%、 noise の範囲)
+- micro 全般: +5-9% 微 regression (cls_ptr load + branch のオーバーヘッド)
+
+profile 上 `__strcmp_avx2` の占有率は変わってないが (27% → 28%)、
+absolute サンプル数は減ってる (deltablue で 8.7G → 7.06G、 strcmp
+の絶対値も 19% 減)。 また `GC_malloc_kind` が 4.39% → 2.56% に
+半減した — 毎 call の `py_make_bound` 確保が消えた効果。
+
+`py_class_lookup_method` がまだ 13.6% を占めるのは、 method_cache
+が無い経路 (`__init__` / `__new__` / `__hash__` / 演算子 dunder
+など special method lookup) からも呼ばれるから (runtime.c に
+20 箇所超 call site あり)。 次の最適化は:
+
+- method 名を intern (string 値 → 専用 ID) して strcmp → ポインタ
+  比較に。 これで **全** lookup 経路が高速化。
+- それで足りなければ per-class method dict (現状 array+strcmp)。
 
 **crypto_pyaes** (2.74s, 10.1G samples) は profile が違う:
 
@@ -131,13 +146,12 @@ deltablue/richards より少ない (polymorphism 少なく monomorphic
 
 #### これからの優先項目 (上の計測結果に基づく)
 
-1. **user class instance method の inline cache** が最優先。
-   monomorphic でいいので `(cls_ptr, method_value)` を caller-site
-   で stamp し、 `cls_ptr` 一致なら strcmp 経由しない。 これだけで
-   richards / deltablue の 40-45% が消える見込み。
-2. `py_class_lookup_method` 自体の高速化 — name を `intern` 済み
-   ポインタで比較すれば strcmp 不要 (現状文字列値で比較)。
-3. instance allocation pattern の改善 (Boehm 頻度 5-8%)。
+1. ~~user class instance method の inline cache~~ → **`ae87e35` で実装済**。
+2. `py_class_lookup_method` 自体の高速化 — method 名を intern して
+   strcmp 撤去。 special method lookup (operator dunder / __init__ /
+   __hash__ など) も込みで効く。
+3. instance allocation pattern の改善 (Boehm 頻度 2-8%、 small obj
+   arena か frame reuse)。
 
 ### R10 → R18 の比較
 
