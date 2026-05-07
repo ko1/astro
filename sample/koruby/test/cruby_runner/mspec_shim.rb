@@ -453,19 +453,26 @@ class MSpecExpectation
                           stripped = stripped[0..-3] if stripped.end_with?("\\z")
                           # Wildcard `.*` (matches any chars).  Split
                           # into segments; each must appear in order.
+                          # CRuby pre-3.4 used `\`name'` quote style in
+                          # error messages; 3.4+ uses `'name'`.  Specs
+                          # often hard-code the old style — normalize
+                          # both pattern and message to single quotes
+                          # so substring match succeeds on either.
+                          msg_norm = e.message.tr('`', "'")
+                          stripped = stripped.tr('`', "'")
                           if stripped.include?('.*')
                             parts = stripped.split('.*')
                             pos = 0
                             parts.all? { |part|
                               if part.empty? then true
                               else
-                                idx = e.message.index(part, pos)
+                                idx = msg_norm.index(part, pos)
                                 if idx then pos = idx + part.length; true
                                 else false; end
                               end
                             }
                           else
-                            e.message.include?(stripped)
+                            msg_norm.include?(stripped)
                           end
                         }
                       else msg === e.message

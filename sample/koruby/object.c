@@ -3353,8 +3353,28 @@ VALUE korb_dispatch_call(CTX *c, struct Node *callsite, VALUE recv, ID name,
                 }
             }
             VALUE eNo = korb_const_get(korb_vm->object_class, korb_intern("NoMethodError"));
-            korb_raise(c, (struct korb_class *)eNo, "undefined method '%s' for %s",
-                     korb_id_name(name), korb_id_name(klass->name));
+            /* Implicit-self bareword call (vcall): when recv is self
+             * and the missing name looks like an identifier (no `?`,
+             * `!`, `=`, `[]`, etc.), CRuby raises NameError with
+             * "undefined local variable or method `name'" because the
+             * resolver couldn't decide between local var and method.
+             * NoMethodError is-a NameError, so this just adjusts the
+             * message wording. */
+            const char *nm = korb_id_name(name);
+            bool bareword = nm[0] != '\0';
+            for (const char *p = nm; *p; p++) {
+                char ch = *p;
+                if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+                      (ch >= '0' && ch <= '9') || ch == '_')) { bareword = false; break; }
+            }
+            if (recv == c->self && bareword) {
+                korb_raise(c, (struct korb_class *)eNo,
+                           "undefined local variable or method '%s' for %s",
+                           nm, korb_id_name(klass->name));
+            } else {
+                korb_raise(c, (struct korb_class *)eNo, "undefined method '%s' for %s",
+                           nm, korb_id_name(klass->name));
+            }
             if (c->state == KORB_RAISE && c->state_value && !SPECIAL_CONST_P(c->state_value)) {
                 korb_ivar_set(c->state_value, korb_intern("@receiver"), recv);
                 korb_ivar_set(c->state_value, korb_intern("@name"), korb_id2sym(name));
