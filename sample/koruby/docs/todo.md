@@ -7,7 +7,7 @@
 - koruby 自前 test/ruby/ 全 pass (24 ファイル, 190 件)
 - optcarrot は CRuby と一致 (動作・出力)
 - CRuby `test/ruby/` (in-scope 67 ファイル): **1,108,357 pass / 77.5%**
-- CRuby `spec/ruby/language/` (rubyspec, 65 ファイル): **3,039 pass / 92.7%、
+- CRuby `spec/ruby/language/` (rubyspec, 65 ファイル): **3,148 pass / 92.9%、
   35 ファイルが 100%**
 
 ## §0 範囲外 (project policy / user 指定)
