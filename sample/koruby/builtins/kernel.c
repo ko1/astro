@@ -575,12 +575,12 @@ static VALUE kernel_respond_to_p(CTX *c, VALUE self, int argc, VALUE *argv) {
     bool include_private = (argc >= 2) && RTEST(argv[1]);
     struct korb_method *m = korb_class_find_method(klass, name);
     if (m != NULL) {
-        /* CRuby: private methods are excluded unless include_private=true.
-         * Protected: included only when receiver is self in the calling
-         * scope; we don't track call-site visibility here, so treat them
-         * as included (matches CRuby for `respond_to?(:m, true)` and
-         * close enough for the common `respond_to?(:m)` test). */
-        if (m->visibility == KORB_VIS_PRIVATE && !include_private) return Qfalse;
+        /* CRuby: respond_to? excludes private and protected methods
+         * unless `include_private=true` is passed.  (Protected actually
+         * has nuanced semantics around same-class call sites, but the
+         * common rubyspec usage is the boolean form, where excluding
+         * both is correct.) */
+        if (m->visibility != KORB_VIS_PUBLIC && !include_private) return Qfalse;
         return Qtrue;
     }
     /* Defer to user-defined respond_to_missing?, but only if the class
