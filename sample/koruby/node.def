@@ -1897,6 +1897,11 @@ node_super_block(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t ar
     running_block = NULL;
     struct korb_proc *prev_current_block = current_block;
     current_block = blk_proc;
+    /* Bind the &block parameter (if any) to the explicit block — the
+     * normal prologue would do this but we skipped it. */
+    if (sm->u.ast.block_slot >= 0) {
+        new_fp[sm->u.ast.block_slot] = blk_proc ? (VALUE)blk_proc : Qnil;
+    }
     VALUE r = EVAL(c, sm->u.ast.body);
     current_block = prev_current_block;
     c->current_frame = frame.prev;
@@ -2103,6 +2108,12 @@ node_super_forward(CTX * restrict c, NODE * restrict n)
     }
     if (sm->u.ast.kwh_save_slot >= 0 && !UNDEF_P(peeled_kwh)) {
         new_fp[sm->u.ast.kwh_save_slot] = peeled_kwh;
+    }
+    /* Bind the &block parameter on sm to current_block (= the caller's
+     * block we're forwarding through super).  Without this, sm's body
+     * sees its &block lvar as nil even though current_block is set. */
+    if (sm->u.ast.block_slot >= 0) {
+        new_fp[sm->u.ast.block_slot] = current_block ? (VALUE)current_block : Qnil;
     }
     c->fp = new_fp;
     if (c->fp + sm->u.ast.locals_cnt > c->sp) c->sp = c->fp + sm->u.ast.locals_cnt;
