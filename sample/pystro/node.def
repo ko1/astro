@@ -666,9 +666,6 @@ node_attr_get(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
 {
     (void)n;
     VALUE ov = EVAL_ARG(c, obj);
-    // Propagate raise from the receiver expression — without this,
-    // chained `raiser().attr` would silently consult `None.attr`.
-    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
     // Inline cache fast path: same class + same attrs dict identity →
     // load the cached entry directly.  attrs_id encodes the backing-
     // storage identity (realloc bumps it via the new pointer cast), so
@@ -676,6 +673,11 @@ node_attr_get(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
     // cached name.  Only check the key isn't DELETED; the previous
     // `is_str + strlen + memcmp` was redundant since the cache was
     // only stamped after py_getattr resolved the name.
+    //
+    // Note: the cache match itself proves obj evaluated cleanly — a
+    // raised call would have left ov == PY_NONE which can never match
+    // a class-matching cls_ptr.  So the state check is only needed on
+    // cache miss (slow path).
     if (LIKELY(PY_IS_PTR(ov) && PY_PTR(ov)->type == PY_T_INSTANCE)) {
         struct pyobj *o = PY_PTR(ov);
         if (LIKELY(o->inst.attrs && cache->cls_ptr == (void *)o->inst.cls
@@ -687,6 +689,9 @@ node_attr_get(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
                 return o->inst.attrs->entries[cache->eidx].value;
         }
     }
+    // Propagate raise from the receiver expression — without this,
+    // chained `raiser().attr` would silently consult `None.attr`.
+    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
     VALUE r = py_getattr(c, ov, name);
     // Stamp the cache for next time.  Walk the dict's entries[] to
     // find the index — small overhead, only on miss.
@@ -714,14 +719,12 @@ node_attr_set(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
 {
     (void)n;
     VALUE ov = EVAL_ARG(c, obj);
-    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
     VALUE vv = EVAL_ARG(c, val);
-    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
     // Fast path: same class + same attrs dict + cached entry index +
     // class has no __setattr__/data-descriptor/__slots__ overrides.
-    // The cache's `eidx` is bit-OR'd with 0x80000000 to encode "no
-    // overrides" so we don't need a separate bit and so cls_ptr alone
-    // can validate the class shape.
+    // The cache match proves both ov and vv evaluated cleanly — a
+    // raise would have left them as PY_NONE which can't match.  So
+    // state check is deferred to slow path.
     if (LIKELY(PY_IS_PTR(ov) && PY_PTR(ov)->type == PY_T_INSTANCE)) {
         struct pyobj *o = PY_PTR(ov);
         if (LIKELY(o->inst.attrs && cache->cls_ptr == (void *)o->inst.cls
@@ -735,6 +738,7 @@ node_attr_set(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
             }
         }
     }
+    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
     py_setattr(c, ov, name, vv);
     // Stamp the cache only if the class has none of the overrides that
     // the fast path skips (__setattr__, data descriptor for `name`,
