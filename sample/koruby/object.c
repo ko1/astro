@@ -859,12 +859,26 @@ struct korb_method *korb_class_find_super_method(const struct korb_class *receiv
 void korb_const_set(struct korb_class *klass, ID name, VALUE value) {
     /* If the value is a Class/Module that hasn't been "named" yet
      * (was created anonymously, e.g. `M = Module.new`), give it the
-     * constant's name as its permanent name (CRuby naming rule). */
+     * constant's name as its permanent name.  For nested constants
+     * (Outer::Inner), prefix with the parent's name unless the parent
+     * is itself anonymous or is Object. */
     if (!SPECIAL_CONST_P(value) &&
         (BUILTIN_TYPE(value) == T_CLASS || BUILTIN_TYPE(value) == T_MODULE)) {
         struct korb_class *target = (struct korb_class *)value;
         if (!target->name || target->name == korb_intern("(anon)")) {
-            target->name = name;
+            if (klass != korb_vm->object_class && klass->name &&
+                klass->name != korb_intern("(anon)")) {
+                /* Compose "Parent::Name". */
+                size_t plen = strlen(korb_id_name(klass->name));
+                size_t nlen = strlen(korb_id_name(name));
+                char *combined = korb_xmalloc_atomic(plen + 2 + nlen + 1);
+                memcpy(combined, korb_id_name(klass->name), plen);
+                memcpy(combined + plen, "::", 2);
+                memcpy(combined + plen + 2, korb_id_name(name), nlen + 1);
+                target->name = korb_intern(combined);
+            } else {
+                target->name = name;
+            }
         }
     }
     for (struct korb_const_entry *e = klass->constants; e; e = e->next) {
