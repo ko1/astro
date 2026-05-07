@@ -66,6 +66,18 @@ jq 本体も decnum ビルドでないと通らない領域。
   `node_pipe` / `node_if` / `node_as[_pattern]` / reduce / foreach /
   sort_by / group_by / unique / paths walker / json parser まで
   audit 済み (`linearity.c` 経由の write-back も含む)
+- **GC stress test infra** (`make gctest`): `-DNUQ_GC_DEBUG_MPROTECT=1
+  -DNUQ_GC_DEBUG_STRESS=1` の debug build で
+  - 全 arena chunk を `mmap` で確保し、from-space は GC 終了時に
+    `mprotect(PROT_NONE) + madvise(MADV_DONTNEED)` で deny。stale
+    arena pointer の deref が即 segfault する。
+  - 全 `nuq_arena_alloc` を slow path 経由にして、毎 alloc で Cheney
+    GC を強制。production の 16 MB threshold まで届かない latent な
+    pin 漏れを表面化させる。
+
+  通常 build と stress build の両方で `make test` 370/370 PASS を
+  維持。pin 抜けが新たに混入したらこの mode で即座に局所化できる。
+  実装詳細は [runtime.md §5.5](./runtime.md#55-debug-build-stale-pointer-を即-segfault-にする)。
 
 ## フィルタ言語
 

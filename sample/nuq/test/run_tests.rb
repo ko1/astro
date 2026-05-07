@@ -17,8 +17,8 @@ require 'open3'
 require 'json'
 
 ROOT = File.expand_path('..', __dir__)
-NUQ  = File.join(ROOT, 'nuq')
-abort "nuq binary missing — run `make` first" unless File.executable?(NUQ)
+NUQ  = ENV['NUQ'] || File.join(ROOT, 'nuq')
+abort "nuq binary missing (#{NUQ}) — run `make` first" unless File.executable?(NUQ)
 
 def parse_test_file(path)
   src = File.read(path)

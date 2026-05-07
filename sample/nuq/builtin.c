@@ -88,8 +88,20 @@ nuq_builtin_add(VALUE input)
         nuq_helper_error("");
         return NUQ_NULL;
     }
+    /* Pin input across the fold so the items[] buffer stays
+     * addressable; pass the always-current pointer to the kernel. */
+    NUQ_GC_PIN1(input);
+    /* Defer GC across the kernel call: nuq_add_fold_items walks
+     * items[] directly and keeps cached `struct nuq_obj *e` pointers
+     * across nuq_array_push / nuq_object_set / nuq_op_add allocs.
+     * Suppressing GC for the duration is safer than refactoring the
+     * kernel to repin every cached pointer. */
+    NUQ_GC_DEFER_BEGIN();
     struct nuq_obj *o = NUQ_PTR(input);
-    return nuq_add_fold_items(o->arr.items, o->arr.len);
+    VALUE r = nuq_add_fold_items(o->arr.items, o->arr.len);
+    NUQ_GC_DEFER_END();
+    NUQ_GC_UNPIN(1);
+    return r;
 }
 
 VALUE
@@ -125,12 +137,15 @@ nuq_builtin_sort(VALUE input)
         nuq_helper_error("");
         return NUQ_NULL;
     }
-    struct nuq_obj *o = NUQ_PTR(input);
-    VALUE r = nuq_make_array(o->arr.len);
-    struct nuq_obj *ro = NUQ_PTR(r);
-    if (o->arr.len > 0) memcpy(ro->arr.items, o->arr.items, o->arr.len * sizeof(VALUE));
-    ro->arr.len = o->arr.len;
-    nuq_value_sort(ro->arr.items, ro->arr.len);
+    NUQ_GC_PIN1(input);
+    size_t len = NUQ_PTR(input)->arr.len;
+    VALUE r = nuq_make_array(len);
+    if (len > 0) {
+        memcpy(NUQ_PTR(r)->arr.items, NUQ_PTR(input)->arr.items, len * sizeof(VALUE));
+        NUQ_PTR(r)->arr.len = len;
+    }
+    nuq_value_sort(NUQ_PTR(r)->arr.items, len);
+    NUQ_GC_UNPIN(1);
     return r;
 }
 
@@ -138,17 +153,27 @@ VALUE
 nuq_builtin_reverse(VALUE input)
 {
     if (NUQ_IS_PTR(input) && NUQ_PTR(input)->type == NUQ_T_ARRAY) {
-        struct nuq_obj *o = NUQ_PTR(input);
-        VALUE r = nuq_make_array(o->arr.len);
-        for (size_t i = o->arr.len; i > 0; i--) nuq_array_push(r, o->arr.items[i-1]);
+        NUQ_GC_PIN1(input);
+        size_t len = NUQ_PTR(input)->arr.len;
+        VALUE r = nuq_make_array(len);
+        NUQ_GC_PIN1(r);
+        for (size_t i = len; i > 0; i--)
+            nuq_array_push(r, NUQ_PTR(input)->arr.items[i-1]);
+        NUQ_GC_UNPIN(2);
         return r;
     }
     if (NUQ_IS_PTR(input) && NUQ_PTR(input)->type == NUQ_T_STRING) {
-        struct nuq_obj *o = NUQ_PTR(input);
-        char *buf = (char *)GC_malloc_atomic(o->str.len + 1);
-        for (size_t i = 0; i < o->str.len; i++) buf[i] = o->str.bytes[o->str.len - 1 - i];
-        buf[o->str.len] = '\0';
-        return nuq_make_string_take(buf, o->str.len);
+        NUQ_GC_PIN1(input);
+        NUQ_GC_DEFER_BEGIN();
+        const struct nuq_obj *o = NUQ_PTR(input);
+        size_t len = o->str.len;
+        char *buf = (char *)GC_malloc_atomic(len + 1);
+        for (size_t i = 0; i < len; i++) buf[i] = o->str.bytes[len - 1 - i];
+        buf[len] = '\0';
+        VALUE v = nuq_make_string_take(buf, len);
+        NUQ_GC_DEFER_END();
+        NUQ_GC_UNPIN(1);
+        return v;
     }
     nuq_helper_error("reverse on %s", nuq_type_name(input));
     return NUQ_NULL;
@@ -192,14 +217,19 @@ nuq_builtin_to_entries(VALUE input)
         nuq_helper_error("");
         return NUQ_NULL;
     }
-    struct nuq_obj *o = NUQ_PTR(input);
-    VALUE r = nuq_make_array(o->obj.len);
-    for (size_t i = 0; i < o->obj.len; i++) {
+    NUQ_GC_PIN1(input);
+    size_t len = NUQ_PTR(input)->obj.len;
+    VALUE r = nuq_make_array(len);
+    NUQ_GC_PIN1(r);
+    for (size_t i = 0; i < len; i++) {
         VALUE e = nuq_make_object(2);
-        nuq_object_set_cstr(e, "key", o->obj.keys[i]);
-        nuq_object_set_cstr(e, "value", o->obj.vals[i]);
+        /* Refetch via pinned `input` — keys[i] / vals[i] may have moved
+         * since the loop started; nuq_object_set_cstr can also GC. */
+        nuq_object_set_cstr(e, "key", NUQ_PTR(input)->obj.keys[i]);
+        nuq_object_set_cstr(e, "value", NUQ_PTR(input)->obj.vals[i]);
         nuq_array_push(r, e);
     }
+    NUQ_GC_UNPIN(2);
     return r;
 }
 
@@ -210,10 +240,12 @@ nuq_builtin_from_entries(VALUE input)
         nuq_helper_error("");
         return NUQ_NULL;
     }
-    struct nuq_obj *o = NUQ_PTR(input);
-    VALUE r = nuq_make_object(o->arr.len);
-    for (size_t i = 0; i < o->arr.len; i++) {
-        VALUE e = o->arr.items[i];
+    NUQ_GC_PIN1(input);
+    size_t len = NUQ_PTR(input)->arr.len;
+    VALUE r = nuq_make_object(len);
+    NUQ_GC_PIN1(r);
+    for (size_t i = 0; i < len; i++) {
+        VALUE e = NUQ_PTR(input)->arr.items[i];
         if (!(NUQ_IS_PTR(e) && NUQ_PTR(e)->type == NUQ_T_OBJECT)) continue;
         /* jq accepts any of {key|Key|k|name|Name} for the key field
          * and {value|Value|v} for the value, falling back in that
@@ -237,6 +269,7 @@ nuq_builtin_from_entries(VALUE input)
         if (!(NUQ_IS_PTR(k) && NUQ_PTR(k)->type == NUQ_T_STRING)) k = nuq_to_json_string(k);
         nuq_object_set(r, k, v);
     }
+    NUQ_GC_UNPIN(2);
     return r;
 }
 
@@ -299,19 +332,24 @@ nuq_builtin_explode(VALUE input)
         nuq_helper_error("");
         return NUQ_NULL;
     }
-    struct nuq_obj *o = NUQ_PTR(input);
-    VALUE arr = nuq_make_array(o->str.len);
-    const unsigned char *s = (const unsigned char *)o->str.bytes;
+    NUQ_GC_PIN1(input);
+    size_t slen = NUQ_PTR(input)->str.len;
+    VALUE arr = nuq_make_array(slen);
+    NUQ_GC_PIN1(arr);
     size_t i = 0;
-    while (i < o->str.len) {
+    while (i < slen) {
+        /* Refetch via pinned `input` — nuq_array_push can GC and move
+         * the input string's bytes buffer. */
+        const unsigned char *s = (const unsigned char *)NUQ_PTR(input)->str.bytes;
         unsigned cp;
         if (s[i] < 0x80) { cp = s[i]; i++; }
-        else if ((s[i] & 0xE0) == 0xC0 && i+1 < o->str.len) { cp = ((s[i]&0x1F)<<6) | (s[i+1]&0x3F); i += 2; }
-        else if ((s[i] & 0xF0) == 0xE0 && i+2 < o->str.len) { cp = ((s[i]&0x0F)<<12) | ((s[i+1]&0x3F)<<6) | (s[i+2]&0x3F); i += 3; }
-        else if ((s[i] & 0xF8) == 0xF0 && i+3 < o->str.len) { cp = ((s[i]&0x07)<<18) | ((s[i+1]&0x3F)<<12) | ((s[i+2]&0x3F)<<6) | (s[i+3]&0x3F); i += 4; }
+        else if ((s[i] & 0xE0) == 0xC0 && i+1 < slen) { cp = ((s[i]&0x1F)<<6) | (s[i+1]&0x3F); i += 2; }
+        else if ((s[i] & 0xF0) == 0xE0 && i+2 < slen) { cp = ((s[i]&0x0F)<<12) | ((s[i+1]&0x3F)<<6) | (s[i+2]&0x3F); i += 3; }
+        else if ((s[i] & 0xF8) == 0xF0 && i+3 < slen) { cp = ((s[i]&0x07)<<18) | ((s[i+1]&0x3F)<<12) | ((s[i+2]&0x3F)<<6) | (s[i+3]&0x3F); i += 4; }
         else { cp = s[i]; i++; }
         nuq_array_push(arr, nuq_make_int(cp));
     }
+    NUQ_GC_UNPIN(2);
     return arr;
 }
 

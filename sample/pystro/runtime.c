@@ -4065,9 +4065,38 @@ py_method_resolve(CTX *c, VALUE recv, const char *name, struct method_cache *cac
                         cache->u_fn[found] = (void *)(intptr_t)m;
                     }
                     cache->type_tag = PY_T_INSTANCE;
+                    cache->fn = NULL;     // discriminator: not primary-builtin
                     // Slow path (this call) returns a bound to satisfy
                     // existing callers; from next call we hit the IC.
                     return py_make_bound(recv, m);
+                }
+                // Primary-builtin case: instance is a built-in subclass
+                // (e.g. `class OrderedCollection(list): pass`).  Look up
+                // in the primary's method tbl and stamp cache so the
+                // hot path can dispatch via primary as recv.  deltablue
+                // had OrderedCollection.append/pop = 350K slow lookups.
+                if (m == PY_NONE && o->inst.primary) {
+                    VALUE primary = o->inst.primary;
+                    if (PY_IS_PTR(primary)) {
+                        int pt = PY_PTR(primary)->type;
+                        struct type_method *ptbl = NULL;
+                        if (pt == PY_T_LIST)            ptbl = list_methods;
+                        else if (pt == PY_T_DICT)       ptbl = dict_methods;
+                        else if (pt == PY_T_SET)        ptbl = set_methods;
+                        else if (pt == PY_T_FROZENSET)  ptbl = frozenset_methods;
+                        else if (pt == PY_T_STR)        ptbl = str_methods;
+                        else if (pt == PY_T_BYTES || pt == PY_T_BYTEARRAY) ptbl = bytes_methods;
+                        if (ptbl) {
+                            for (int i = 0; ptbl[i].name; i++) {
+                                if (strcmp(ptbl[i].name, name) == 0) {
+                                    cache->type_tag = PY_T_INSTANCE;
+                                    cache->fn = (void *)ptbl[i].fn;   // discriminator
+                                    cache->u_cls[0] = (void *)o->inst.cls;
+                                    return make_builtin_bound(primary, &ptbl[i]);
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

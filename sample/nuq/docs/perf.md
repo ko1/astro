@@ -31,47 +31,47 @@
 
 ## Real-world bench (input: users.json, ~1.9 MB / 10k users)
 
-絶対値:
-
-| bench | jq | jaq | gojq | nuq int | nuq AOT |
-|---|---:|---:|---:|---:|---:|
-| `deep_field` (`[.[] \| .stats.followers] \| add`) | 60 ms | 54 ms | 46 ms | 35 ms | 35 ms |
-| `extract_field` (`[.[] \| .name] \| length`) | 55 ms | 52 ms | 44 ms | 33 ms | 32 ms |
-| `filter_count` (`[.[] \| select(.active and .age > 30)] \| length`) | 59 ms | 59 ms | 47 ms | 34 ms | 34 ms |
-| `group_by` (`group_by(.city) \| map(...)`) | 68 ms | 60 ms | 50 ms | 35 ms | 35 ms |
-| `identity` (`.`) | 79 ms | 76 ms | 59 ms | 43 ms | 42 ms |
-| `keys_aggregate` (`[.[] \| keys] \| add \| unique \| length`) | 252 ms | 91 ms | 83 ms | 63 ms | 64 ms |
-| `length` (`length`) | 52 ms | 46 ms | 40 ms | 31 ms | 31 ms |
-| `recurse_paths` (`.[0] \| [paths] \| length`) | 55 ms | 45 ms | 39 ms | 32 ms | 30 ms |
-| `sort_by` (`sort_by(.score) \| .[-10:] \| map(.name)`) | 70 ms | 63 ms | 109 ms | 35 ms | 37 ms |
-| `sum_score` (`[.[] \| .score] \| add`) | 61 ms | 54 ms | 44 ms | 32 ms | 33 ms |
-| `transform` (`map({name, email, top_tag: .tags[0]})`) | 75 ms | 83 ms | 55 ms | 40 ms | 41 ms |
-
-vs jq:
+vs jq (best-of-3):
 
 | bench | jq | jaq | gojq | **nuq AOT** |
 |---|---:|---:|---:|---:|
-| `deep_field` | 1.00× | 1.06× | 1.32× | **1.70×** |
-| `extract_field` | 1.00× | 1.09× | 1.27× | **1.72×** |
-| `filter_count` | 1.00× | 1.01× | 1.32× | **1.79×** |
-| `group_by` | 1.00× | 1.11× | 1.30× | **1.83×** |
-| `identity` | 1.00× | 1.06× | 1.39× | **1.91×** |
-| `keys_aggregate` | 1.00× | 2.52× | 2.81× | **3.57×** |
-| `length` | 1.00× | 1.10× | 1.27× | **1.66×** |
-| `recurse_paths` | 1.00× | 1.13× | 1.35× | **1.78×** |
-| `sort_by` | 1.00× | 1.10× | 0.69× | **1.78×** |
-| `sum_score` | 1.00× | 1.00× | 1.20× | **1.59×** |
-| `transform` | 1.00× | 0.91× | 1.42× | **1.85×** |
+| `deep_field` (`[.[] \| .stats.followers] \| add`) | 1.00× | 1.10× | 1.38× | **3.13×** |
+| `extract_field` (`[.[] \| .name] \| length`) | 1.00× | 1.17× | 1.33× | **2.95×** |
+| `filter_count` (`[.[] \| select(.active and .age > 30)] \| length`) | 1.00× | 1.08× | 1.39× | **3.23×** |
+| `group_by` (`group_by(.city) \| map({...})`) | 1.00× | 1.14× | 1.34× | **3.65×** |
+| `identity` (`.`) | 1.00× | 1.21× | 1.12× | **2.65×** |
+| `keys_aggregate` (`[.[] \| keys] \| add \| unique \| length`) | 1.00× | 2.71× | 3.51× | **4.99×** |
+| `length` (`length`) | 1.00× | 1.15× | 1.30× | **2.58×** |
+| `recurse_paths` (`.[0] \| [paths] \| length`) | 1.00× | 1.11× | 1.22× | **2.64×** |
+| `sort_by` (`sort_by(.score) \| .[-10:] \| map(.name)`) | 1.00× | 1.17× | 0.70× | **3.43×** |
+| `sum_score` (`[.[] \| .score] \| add`) | 1.00× | 1.07× | 1.25× | **2.84×** |
+| `transform` (`map({name, email, top_tag: .tags[0]})`) | 1.00× | 0.88× | 1.49× | **2.89×** |
 
-実用 11/11 すべてで jq 越え (**1.6-3.6×**)。最近の進捗:
-- **Cheney copying GC** 導入で mid-run reclaim、alloc バンドル分の
-  メモリ局所性が向上 (`transform` +25%、`group_by` +12% など)。
-- **線形性解析** (`linearity.c`) で `acc + [$i]` 系を in-place mutation に
-  降格 — 実用ベンチには直接該当 pattern が少ないが Q3 系が桁違いに
-  改善 ([§GC + 線形性解析](#cheney-gc--線形性解析--acc---i-系クエリの実測))。
-- **libgc 依存除去** (このコミット) で 8 MB 常駐 heap + per-alloc の
-  lookup/sweep コストが消えて、実用ベンチが一律 +20-40% 速くなった
-  (`identity` +25%、`length` +24%、`sort_by` AOT は安定)。
+実用 11/11 すべてで **2.6-5.0× vs jq**。直前世代 (1.6-3.6×) からの追加
+高速化要因:
+
+- **GC scan ループの早期 break バグ修正** (`gc_arena_collect`): `for(;;)`
+  の頭で 1 回 cache していた `chunk_end` を毎反復で再評価。chunk
+  transition 直前に書き込まれた obj が scan されず stale ptr が残る
+  silent corruption を解消、ついでに `transform` / `keys_aggregate` の
+  10K-scale segfault も消滅 (詳細は本ファイル末尾)。
+- **`in_arena` を O(N chunks) → O(log N)**: GC 開始時に from-space
+  chunks を address でソートした index を作って binary search +
+  min/max range pre-check。`tree_paths` で 80% CPU を食っていた
+  ホットスポット消滅 (3.27 s → 0.93 s で回るように)。
+- **GC threshold を入力サイズに連動**: `nuq_run` 開始時に
+  `arena_gc_threshold = max(2 × arena_total, 16 MB)` で初期値を
+  bump。1.9 MB JSON が ~17 MB の内部表現に膨らんで 16 MB 閾値で
+  即 GC 発火するムダを回避 — real bench 一律 +30%。
+- **JSON parser fast path**: `parse_string_raw` の no-escape 分岐
+  (closing quote まで scan して 1 回の alloc + memcpy で済ます) と
+  `parse_number` の int fast path (`strtoll` + 中間 buffer 回避)。
+  parse 比率が大きい real / big の全 cell に効く。
+- **静的キー distinct な object literal で `nuq_object_set` →
+  `nuq_object_append`**: parser が intern 時に kkind / kname を見て
+  全 entry が distinct な静的 cstring と判定できれば
+  `all_distinct_static` フラグを立て、runtime の fast path で
+  dedup-scan + PIN3 を skip。`transform` / `reshape` 系で効く。
 
 ## Micro-bench (jaq examples/benches; input = scalar n via stdin)
 
@@ -129,29 +129,30 @@ micro 14 中 13 で jq 越え。`pyramid` のみ 0.84× — deep recursion (8000
 
 | bench (shape) | jq | jaq | gojq | nuq int | nuq AOT | **nuq vs jq** |
 |---|---:|---:|---:|---:|---:|---:|
-| `bulk_update` (users) | 1.43 s | 983 ms | 1.09 s | 874 ms | 830 ms | **1.73×** |
-| `deep_followers` (users) | 1.07 s | 931 ms | 791 ms | 818 ms | 814 ms | **1.32×** |
-| `extract_users` (users) | 1.09 s | 883 ms | 763 ms | 793 ms | 806 ms | **1.36×** |
-| `group_city` (users) | 1.40 s | 1.10 s | 936 ms | 965 ms | 899 ms | **1.55×** |
-| `log_error_paths` (logs) | 828 ms | 808 ms | 562 ms | 654 ms | 623 ms | **1.33×** |
-| `log_post_avg` (logs) | 709 ms | 762 ms | 520 ms | 597 ms | 602 ms | **1.18×** |
-| `log_request_id` (logs) | 728 ms | 706 ms | 484 ms | 593 ms | 632 ms | **1.15×** |
-| `sum_active_score` (users) | 1.10 s | 935 ms | 777 ms | 771 ms | 777 ms | **1.41×** |
-| `table_flag_count` (table) | 1.47 s | 1.40 s | 1.16 s | 1.01 s | 996 ms | **1.48×** |
-| `table_sum_col0` (table) | 1.56 s | 1.26 s | 1.14 s | 995 ms | 1.01 s | **1.55×** |
-| `table_unique_colors` (table) | 3.53 s | 1.65 s | 1.30 s | 1.54 s | 1.43 s | **2.48×** |
-| `tree_leaf_sum` (tree) | 1.87 s | 2.74 s | 2.28 s | 881 ms | 874 ms | **2.14×** |
-| `tree_numbers` (tree) | 1.86 s | 2.73 s | 2.27 s | 655 ms | 657 ms | **2.83×** |
-| `tree_paths` (tree) | 2.73 s | 1.99 s | 3.54 s | 1.46 s | 1.44 s | **1.89×** |
+| `bulk_update` (users) | 1.43 s | 974 ms | 1.10 s | 393 ms | 401 ms | **3.56×** |
+| `deep_followers` (users) | 1.07 s | 893 ms | 754 ms | 341 ms | 343 ms | **3.11×** |
+| `extract_users` (users) | 1.05 s | 875 ms | 739 ms | 343 ms | 354 ms | **2.96×** |
+| `group_city` (users) | 1.35 s | 1.03 s | 851 ms | 370 ms | 371 ms | **3.65×** |
+| `log_error_paths` (logs) | 837 ms | 793 ms | 546 ms | 259 ms | 257 ms | **3.25×** |
+| `log_post_avg` (logs) | 759 ms | 728 ms | 495 ms | 230 ms | 230 ms | **3.30×** |
+| `log_request_id` (logs) | 706 ms | 691 ms | 469 ms | 216 ms | 211 ms | **3.34×** |
+| `sum_active_score` (users) | 1.04 s | 916 ms | 756 ms | 337 ms | 338 ms | **3.09×** |
+| `table_flag_count` (table) | 1.45 s | 1.38 s | 1.13 s | 472 ms | 459 ms | **3.17×** |
+| `table_sum_col0` (table) | 1.53 s | 1.24 s | 1.12 s | 466 ms | 469 ms | **3.26×** |
+| `table_unique_colors` (table) | 3.37 s | 1.57 s | 1.25 s | 811 ms | 787 ms | **4.28×** |
+| `tree_leaf_sum` (tree) | 1.77 s | 2.61 s | 2.21 s | 364 ms | 359 ms | **4.94×** |
+| `tree_numbers` (tree) | 1.69 s | 2.66 s | 2.10 s | 277 ms | 272 ms | **6.23×** |
+| `tree_paths` (tree) | 2.49 s | 1.82 s | 3.22 s | 933 ms | 934 ms | **2.66×** |
 
-big 14/14 すべて jq 越え (1.2-2.8×)。**tree (recursive walk)** で
-jaq / gojq に対しても圧倒 — jq / jaq / gojq はいずれも recursive walk
-が苦手で、nuq は 2-4× 速。
+big 14/14 すべて jq 越え (**2.7-6.2×**)。**tree (recursive walk)** で
+jaq / gojq に対しても圧倒 — `tree_numbers` 6.2×、`tree_leaf_sum` 4.9×。
+パス収集が必要な `tree_paths` (~2M paths を集める) は 100MB 級
+arena への scan が支配項なので 2.7×、それでも他エンジン全敗。
 
 実用ベンチ (1.9MB) と big bench (100MB) の比較:
-- 1.9MB: nuq 1.2-3.2× vs jq、scale ms 単位
-- 100MB: nuq 1.2-2.8× vs jq、scale 秒単位 — **スケールしても比率
-  維持** (jq の overhead が線形なので予想通り)
+- 1.9MB: nuq 2.6-5.0× vs jq、scale ms 単位
+- 100MB: nuq 2.7-6.2× vs jq、scale 秒単位 — **スケールするほど比率
+  伸びる** (in_arena binary search のお陰で GC scan が O(N²) → O(N log N) に)
 
 ## JSONL/NDJSON bench (実 GitHub Archive データ、~100 MB / 30k events)
 
@@ -446,6 +447,90 @@ pool 直書きで per-entry alloc を節約。static key は parser で
 array-only の fast path で全部の長さを先に集めて単一 alloc + copy で
 O(n)。pairwise reduction で O(n²) になっていたバグを撲滅。
 `keys_aggregate` 11× 遅 → 3.2× 速。
+
+### GC scan ループの早期 break バグ修正 (correctness + perf)
+
+`gc_arena_collect` の Cheney scan 内側 `for(;;)` で、毎反復頭で 1 回
+`chunk_end = (scan_chunk == gc_to_current) ? gc_to_cur : ... + used`
+を読んで while で消費していたが、scan 中に gc_to_alloc が新規
+chunk に transition すると、`scan_chunk` は元 chunk を指したまま
+gc_to_current が次 chunk に移る。inner while は古い `chunk_end`
+(transition 直前の gc_to_cur) で止まり、`if (scan_chunk ==
+gc_to_current ...)` も false で抜けて次 chunk に移ってしまう。結果、
+transition 直前まで現 chunk に積まれた obj が scan されず、それらの
+keys / vals 等の VALUE が forward されないまま from-space recycle
+で stale ptr 化。10K-scale `transform` / `keys_aggregate` で
+intermittent segfault を出していた根本原因。
+
+修正: 内側ループを `if (scan_ptr >= chunk_end) break;` の単純形に
+書き直し、毎反復で chunk_end を再評価。副作用として
+`make gctest` (毎 alloc で GC を強制) でも 370/370 PASS。
+
+### `in_arena` を O(N chunks) → O(log N)
+
+`gc_forward_value` が呼ぶ `in_arena()` は arena chunk リストを
+linear scan していた。`tree_paths` のように from-space が数百
+chunk になるワークロードでは、`gc_forward_value` の per-call
+in_arena が GC 全体時間の 80% を占める dominant hot spot に
+(`perf record`)。
+
+GC 開始時に from-space chunks を `[lo, hi)` ペアに展開して address
+順で qsort、`gc_from_min` / `gc_from_max` で envelope pre-check +
+binary search に。GC 終了時に index を tear-down (out-of-GC は
+arena_first 経由の linear fallback)。`tree_paths`: 3.27 s → 0.93 s
+で 14/14 全 big bench 完走 (前は err)。
+
+### GC threshold を入力サイズに連動
+
+`nuq_run` 開始時に `arena_gc_threshold = max(2 × arena_total,
+NUQ_GC_THRESHOLD)` で初期値を bump。Cheney は GC 終了時に閾値を
+`2 × live` に再設定する適応型なので、起動時にも同じプロパティを
+持たせる形。1.9 MB JSON が ~17 MB の内部表現に膨らんで 16 MB 閾値で
+即 GC を踏むのを回避 (filter 開始直後の GC は live = 入力全体で
+全コピー、純粋な overhead)。real bench 全 11 件で +30% 程度。
+
+### JSON parser fast path
+
+- **`parse_string_raw`**: 開き quote の次から閉じ quote までを一度
+  scan、`'\\'` も控制文字も無ければ入力 span の長さが確定する → 1
+  回の `nuq_make_string(p, len)` で済む (alloc + memcpy 各 1 回)。
+  従来は 32-byte growable buffer + 段階 realloc + 最後にもう 1 度
+  `nuq_make_string_take` で copy していたので alloc 2 回 + copy 2 回。
+- **`parse_number`**: `[-]?[0-9]+` を inline accumulate して `'.'` /
+  `'e'` / overflow が無ければ `NUQ_FIX(ll)` を直に返す。`strtoll` +
+  中間 buffer copy が消える。
+
+`transform`: 50 ms → 30 ms → 20 ms と 2 段で改善 (上が threshold 修正、
+下が parser fast path)。
+
+### object literal の dedup-skip 化
+
+parse 時 (`nuq_obj_ctor_intern`) に entry を見て、全 entry が
+`kkind == 0` (静的 cstring key) かつ kname が pairwise distinct な
+ら `all_distinct_static = true` を立てる。runtime の object literal
+fast path がこれを見て `nuq_object_set` の dedup linear scan + PIN3
+を skip し、専用の `nuq_object_append` で keys[len] / vals[len]
+直書き + len++ + lazy hash idx update のみ。`{a, b, top_tag: ...}`
+のような typical jq literal が 9-key user 入力で 30K 回呼ばれる
+シナリオで効く。
+
+### nuq_make_string / nuq_make_string_take を `NUQ_GC_DEFER` で囲う
+
+caller が arena 内 byte ptr (例: 既存 string の slice) を
+`s` 引数で渡すパターンが頻出 (`nuq_op_div_slow` の string split,
+`nuq_slice_eval` の string slice 等)。`s` は VALUE ではないので
+pin できないが、make_string の alloc が GC を起こすと from-space
+が動いて s が stale 化、memcpy で segfault する。alloc + memcpy
+の対を `NUQ_GC_DEFER_BEGIN/END` で囲って GC を suppress すると
+`s` は移動しない。compaction が要るほど大きい alloc を含むケースは
+parse 時のみで、deferr 中も alloc 自体は普通に進む。
+
+### debug build (`make gctest`)
+
+[done.md の GC stress test infra](./done.md) 参照。production
+threshold (16 MB) では届かない latent な pin 漏れを表面化させる。
+本ファイルで列挙した builtin / runtime の pin 修正はほぼ全て、この
+mode で初めて表面化したケース。
 
 ## 設計上の妥協
 

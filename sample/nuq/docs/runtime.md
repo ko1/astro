@@ -382,6 +382,83 @@ GC 完了で from-space chunk は `arena_spare` に移し、再利用に備え�
 する系の高速化は未実装。Q3 N=50k で nuq 1.0 s vs jq 0.01 s の
 100× 差はこれが原因。memory は完全解決。
 
+### 5.5 Debug build (stale pointer を即 segfault にする)
+
+`make gctest` で `-DNUQ_GC_DEBUG_MPROTECT=1 -DNUQ_GC_DEBUG_STRESS=1`
+の二段構成で build する `nuq-gcdebug` を回せる:
+
+- **`NUQ_GC_DEBUG_MPROTECT`**: chunk を `malloc` ではなく
+  page-aligned `mmap` で確保。Cheney 終了時に from-space chunk を
+  spare に戻す代わりに `mprotect(PROT_NONE) + madvise(MADV_DONTNEED)`
+  で物理ページを解放しつつ仮想アドレスを reserve したまま deny に。
+  ピン抜けで stale arena ptr を deref した瞬間に SEGV になる。
+  通常 build は recycled chunk が後続 alloc に上書きされて corrupt
+  が観測まで持ち越されるが、この build なら deref 場所が直接
+  特定できる。
+- **`NUQ_GC_DEBUG_STRESS`**: `nuq_arena_alloc` が常に slow path に
+  落ちる + slow path の threshold check を skip → 毎 alloc で
+  Cheney GC を強制発火。production の 16 MB threshold まで届かない
+  latent な pin 漏れを表面化。
+
+production build と stress+mprotect build の両方で `make test`
+370/370 PASS を維持。pin 抜けが新たに混入したら 1 cell 落ちる
+ところで止めれば deref 行が gdb で即見える。重い (毎 alloc で full
+GC) ので CI と debug 専用、production には混ぜない。
+
+実装は `value.c` (mprotect は `arena_take_chunk` / GC 終了 / 
+`nuq_arena_reset` の 3 箇所、`#if NUQ_GC_DEBUG_MPROTECT` で分岐) と
+`context.h` (`nuq_arena_alloc` の inline で `NUQ_GC_DEBUG_STRESS` 時
+slow path 直行)。
+
+### 5.6 Cheney scan ループの subtle bug (修正済み、参考)
+
+旧実装は inner walker を:
+
+```c
+for (;;) {
+    char *chunk_end = (scan_chunk == gc_to_current) ? gc_to_cur
+                                                    : ... + used;
+    while (scan_ptr < chunk_end) { gc_scan_obj(o); scan_ptr += sz; }
+    if (scan_chunk == gc_to_current && scan_ptr < gc_to_cur) continue;
+    break;
+}
+```
+
+と書いていた。`chunk_end` を `for(;;)` 頭で 1 度だけ捕捉、while で
+消費、足りなければ `continue` で再評価、という意図。問題は scan
+中に `gc_to_alloc` が新規 chunk を allocate して transition すると
+発生する:
+
+1. `scan_chunk` は元 chunk のまま、`gc_to_current` は次 chunk へ。
+2. 元 chunk の `used` は transition で確定 (gc_to_alloc 内で seal)。
+3. 元 chunk にはまだ `chunk_end` (= 旧 gc_to_cur) と `used` の間に
+   未 scan obj が残る — transition 直前の最後のひと押しで積まれた
+   ぶん。
+4. ところが `if (scan_chunk == gc_to_current && ...)` が false なので
+   `break` してしまい、scan は次 chunk に進む。間の obj は
+   forward されない。
+
+forward されない obj の keys/vals は from-space を指したまま。GC
+終了で from-space chunk は spare に戻るが、後続の `arena_take_chunk`
+で再利用されると別データで上書きされ、stale ptr deref が segv に
+化ける。10K-scale `transform` / `keys_aggregate` で intermittent
+segfault が出ていた根本原因。
+
+修正は inner を素朴な single-step に戻す:
+
+```c
+for (;;) {
+    char *chunk_end = (scan_chunk == gc_to_current) ? gc_to_cur
+                                                    : ... + used;
+    if (scan_ptr >= chunk_end) break;
+    /* one obj */
+}
+```
+
+毎反復で chunk_end を再評価するので transition 後も chunk の最終
+fill を正しく踏める。debug build (§5.5) と組み合わせると、こうした
+silent corruption は SEGV まで一気に縮退するので発見が早い。
+
 ## 6. 主要ノードの意味論
 
 `./nuq --dump-ast` で実 AST を確認できる。

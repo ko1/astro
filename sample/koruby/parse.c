@@ -5360,6 +5360,7 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
 NODE *koruby_parse_full(const char *src, size_t len, const char *filename, char **err_msg);
 NODE *koruby_parse_with_scope(const char *src, size_t len, const char *filename,
                               const char **scope_locals, size_t scope_locals_n,
+                              uint32_t scope_slot_base,
                               char **err_msg);
 
 NODE *

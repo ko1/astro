@@ -1587,6 +1587,15 @@ node_method_0(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
                 VALUE av[1] = { o };
                 return py_apply(c, fn, 1, av);
             }
+            // Primary-builtin case (e.g. OrderedCollection.append):
+            // checked after user-class PIC so common path stays cheap.
+            if (cache->fn && cache->u_cls[0] == (void *)PY_PTR(o)->inst.cls) {
+                VALUE primary = PY_PTR(o)->inst.primary;
+                if (LIKELY(primary)) {
+                    VALUE av[1] = { primary };
+                    return ((py_builtin_fn)cache->fn)(c, 1, av);
+                }
+            }
         } else if (t == PY_T_MODULE) {
             VALUE fn = pystro_pic_lookup(cache, (void *)PY_PTR(o));
             if (LIKELY(fn)) return py_apply(c, fn, 0, NULL);
@@ -1615,6 +1624,16 @@ node_method_1(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
                 av[1] = EVAL_ARG(c, a0);
                 if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
                 return py_apply(c, fn, 2, av);
+            }
+            if (cache->fn && cache->u_cls[0] == (void *)PY_PTR(o)->inst.cls) {
+                VALUE primary = PY_PTR(o)->inst.primary;
+                if (LIKELY(primary)) {
+                    VALUE av[2];
+                    av[0] = primary;
+                    av[1] = EVAL_ARG(c, a0);
+                    if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
+                    return ((py_builtin_fn)cache->fn)(c, 2, av);
+                }
             }
         } else if (t == PY_T_MODULE) {
             // Module method (e.g., `math.sqrt(x)`): no self prepend.
@@ -1660,6 +1679,18 @@ node_method_2(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
                 av[2] = EVAL_ARG(c, a1);
                 if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
                 return py_apply(c, fn, 3, av);
+            }
+            if (cache->fn && cache->u_cls[0] == (void *)PY_PTR(o)->inst.cls) {
+                VALUE primary = PY_PTR(o)->inst.primary;
+                if (LIKELY(primary)) {
+                    VALUE av[3];
+                    av[0] = primary;
+                    av[1] = EVAL_ARG(c, a0);
+                    if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
+                    av[2] = EVAL_ARG(c, a1);
+                    if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
+                    return ((py_builtin_fn)cache->fn)(c, 3, av);
+                }
             }
         } else if (t == PY_T_MODULE) {
             VALUE fn = pystro_pic_lookup(cache, (void *)PY_PTR(o));
@@ -1709,6 +1740,19 @@ node_method_n(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
                     if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
                 }
                 return py_apply(c, fn, (int)argc + 1, av);
+            }
+            if (cache->fn && cache->u_cls[0] == (void *)PY_PTR(o)->inst.cls) {
+                VALUE primary = PY_PTR(o)->inst.primary;
+                if (LIKELY(primary)) {
+                    VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc + 1));
+                    av[0] = primary;
+                    for (uint32_t i = 0; i < argc; i++) {
+                        NODE *arg = PYSTRO_NODE_TABLE[args_idx + i];
+                        av[i + 1] = (*arg->head.dispatcher)(c, arg);
+                        if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+                    }
+                    return ((py_builtin_fn)cache->fn)(c, (int)argc + 1, av);
+                }
             }
         } else if (t == PY_T_MODULE) {
             VALUE fn = pystro_pic_lookup(cache, (void *)PY_PTR(o));

@@ -14,6 +14,10 @@
 #include <ctype.h>
 #include <math.h>
 
+#if defined(__x86_64__) || defined(_M_X64)
+#include <emmintrin.h>          /* SSE2 — baseline on x86_64 */
+#endif
+
 /* The printer is hot for output-heavy filters (e.g. `[paths]` on
  * deeply-nested JSON); using `*_unlocked` variants of stdio funcs
  * skips the glibc per-call FILE* lock acquire and brings ~30% gain
@@ -23,6 +27,49 @@
 #define fwrite_u(p, n, fp)   fwrite_unlocked(p, 1, n, fp)
 #define vfprintf_u           vfprintf
 #define fprintf_u            fprintf
+
+/* Scan bytes [p, end) for the first occurrence of `"`, `\\`, or any
+ * control char (< 0x20).  Returns p+offset.  This is the hot inner
+ * loop of both the JSON parser (parse_string_raw) and the JSON
+ * printer (print_string) — both want runs of "boring" bytes that can
+ * be bulk-copied/written, with breakouts on the bytes needing escape.
+ *
+ * SSE2 gives a 16x byte-rate over the per-byte loop on long ASCII
+ * runs (typical JSON keys/values).  SSE2 is part of the x86_64 ABI
+ * baseline so no compile flag needed.  Caller handles UTF-8
+ * continuation bytes (>= 0x80) — none of our criteria match them so
+ * they pass through unchanged. */
+static inline size_t
+scan_string_special(const char *p, const char *end)
+{
+    const char *const start = p;
+#if defined(__x86_64__) || defined(_M_X64)
+    if (end - p >= 16) {
+        const __m128i quote    = _mm_set1_epi8('"');
+        const __m128i bslash   = _mm_set1_epi8('\\');
+        const __m128i ctrl_max = _mm_set1_epi8(0x1F);
+        while (end - p >= 16) {
+            __m128i v = _mm_loadu_si128((const __m128i *)p);
+            __m128i a = _mm_cmpeq_epi8(v, quote);
+            __m128i b = _mm_cmpeq_epi8(v, bslash);
+            /* min_epu8(v, 0x1F) == v  ⇔  v <= 0x1F  ⇔  v < 0x20.
+             * Works correctly for high bytes (0x80+) too: their unsigned
+             * min with 0x1F is 0x1F, which doesn't match v. */
+            __m128i c = _mm_cmpeq_epi8(_mm_min_epu8(v, ctrl_max), v);
+            __m128i mask = _mm_or_si128(_mm_or_si128(a, b), c);
+            int m = _mm_movemask_epi8(mask);
+            if (m) return (size_t)(p - start) + (size_t)__builtin_ctz((unsigned)m);
+            p += 16;
+        }
+    }
+#endif
+    while (p < end) {
+        unsigned char ch = (unsigned char)*p;
+        if (ch == '"' || ch == '\\' || ch < 0x20) break;
+        p++;
+    }
+    return (size_t)(p - start);
+}
 
 static void
 skip_ws(const char **pp, const char *end)
@@ -124,6 +171,23 @@ parse_string_raw(const char **pp, const char *end, char **err)
     }
     p++;
 
+    /* Fast path: scan ahead for the closing quote; if no '\\' or
+     * control-char appears between, allocate the final nuq_obj string
+     * directly from the input span — one alloc, one memcpy, no
+     * growable buffer.  Most JSON keys/values are short ASCII fields
+     * with no escapes.  scan_string_special uses SSE2 16-byte stride
+     * on x86_64. */
+    {
+        size_t off = scan_string_special(p, end);
+        const char *q = p + off;
+        if (q < end && *q == '"') {
+            VALUE v = nuq_make_string(p, (size_t)(q - p));
+            *pp = q + 1;
+            return v;
+        }
+        /* Else fall through to escape-aware loop, starting at p. */
+    }
+
     /* Worst-case output is len; build a growable buffer. */
     size_t cap = 32, len = 0;
     char *buf = (char *)GC_malloc_atomic(cap);
@@ -207,40 +271,45 @@ parse_number(const char **pp, const char *end, char **err)
 {
     const char *p = *pp;
     const char *start = p;
-    if (*p == '-') p++;
-    bool has_frac = false, has_exp = false;
-    while (p < end && isdigit((unsigned char)*p)) p++;
-    if (p < end && *p == '.') {
-        has_frac = true;
+    bool neg = false;
+    if (*p == '-') { neg = true; p++; }
+    /* Integer fast path: accumulate digits inline; bail to strtod on
+     * frac/exp or overflow risk.  Most JSON numbers in real-world data
+     * are small ints (ages, counts, ids); the strtoll + intermediate
+     * buffer in the slow path is pure overhead for those. */
+    const long long jq_int_max = (1LL << 53);
+    long long ll = 0;
+    bool overflow_risk = false;
+    while (p < end && *p >= '0' && *p <= '9') {
+        if (UNLIKELY(ll > (jq_int_max - 9) / 10)) { overflow_risk = true; break; }
+        ll = ll * 10 + (*p - '0');
         p++;
-        while (p < end && isdigit((unsigned char)*p)) p++;
+    }
+    if (UNLIKELY(p == start || (neg && p == start + 1))) {
+        *err = fmt_err("expected digit"); return NUQ_NULL;
+    }
+    bool has_frac_or_exp = (p < end) && (*p == '.' || *p == 'e' || *p == 'E');
+    if (LIKELY(!overflow_risk && !has_frac_or_exp)) {
+        *pp = p;
+        return NUQ_FIX(neg ? -ll : ll);
+    }
+    /* Slow path: walk remaining digits, then strtod. */
+    while (p < end && *p >= '0' && *p <= '9') p++;
+    if (p < end && *p == '.') {
+        p++;
+        while (p < end && *p >= '0' && *p <= '9') p++;
     }
     if (p < end && (*p == 'e' || *p == 'E')) {
-        has_exp = true;
         p++;
         if (p < end && (*p == '+' || *p == '-')) p++;
-        while (p < end && isdigit((unsigned char)*p)) p++;
+        while (p < end && *p >= '0' && *p <= '9') p++;
     }
     char buf[64];
     size_t n = (size_t)(p - start);
     if (n >= sizeof(buf)) { *err = fmt_err("number too long"); return NUQ_NULL; }
     memcpy(buf, start, n);
     buf[n] = '\0';
-
     *pp = p;
-    if (has_frac || has_exp) {
-        return nuq_make_double(strtod(buf, NULL));
-    }
-    /* int parse — try strtoll; fall back to double on overflow.
-     * jq stores all numbers as IEEE-754 doubles, so integers > 2^53
-     * lose precision.  Match that by switching to double here, even
-     * though our fixnum has more range. */
-    char *e = NULL;
-    long long ll = strtoll(buf, &e, 10);
-    const long long jq_int_max = (1LL << 53);
-    if (e && *e == '\0' && ll >= -jq_int_max && ll <= jq_int_max) {
-        return NUQ_FIX(ll);
-    }
     return nuq_make_double(strtod(buf, NULL));
 }
 
@@ -390,37 +459,35 @@ print_string(FILE *fp, struct nuq_obj *o)
     /* Bulk-write the runs of "safe" bytes (printable ASCII, no
      * escape needed) and only call out for individual escapes — much
      * cheaper than per-byte fputc when most of the string is plain
-     * ASCII (the common case). */
+     * ASCII (the common case).  scan_string_special uses SSE2 to
+     * find the next break in 16-byte strides. */
     putc_u('"', fp);
     const char *bytes = o->str.bytes;
-    size_t len = o->str.len;
-    size_t start = 0;
-    for (size_t i = 0; i < len; i++) {
-        unsigned char c = (unsigned char)bytes[i];
-        const char *esc = NULL;
-        char hex[8];
+    const char *const end = bytes + o->str.len;
+    const char *p = bytes;
+    while (p < end) {
+        size_t off = scan_string_special(p, end);
+        const char *brk = p + off;
+        if (brk > p) fwrite_u(p, (size_t)(brk - p), fp);
+        if (brk == end) break;
+        unsigned char c = (unsigned char)*brk;
         switch (c) {
-          case '"':  esc = "\\\""; break;
-          case '\\': esc = "\\\\"; break;
-          case '\b': esc = "\\b";  break;
-          case '\f': esc = "\\f";  break;
-          case '\n': esc = "\\n";  break;
-          case '\r': esc = "\\r";  break;
-          case '\t': esc = "\\t";  break;
-          default:
-            if (c < 0x20) {
-                snprintf(hex, sizeof(hex), "\\u%04x", c);
-                esc = hex;
-            }
+          case '"':  puts_u("\\\"", fp); break;
+          case '\\': puts_u("\\\\", fp); break;
+          case '\b': puts_u("\\b",  fp); break;
+          case '\f': puts_u("\\f",  fp); break;
+          case '\n': puts_u("\\n",  fp); break;
+          case '\r': puts_u("\\r",  fp); break;
+          case '\t': puts_u("\\t",  fp); break;
+          default: { /* c < 0x20, generic \uXXXX */
+            char hex[8];
+            int n = snprintf(hex, sizeof(hex), "\\u%04x", c);
+            fwrite_u(hex, (size_t)n, fp);
             break;
+          }
         }
-        if (esc) {
-            if (i > start) fwrite_u(bytes + start, i - start, fp);
-            puts_u(esc, fp);
-            start = i + 1;
-        }
+        p = brk + 1;
     }
-    if (len > start) fwrite_u(bytes + start, len - start, fp);
     putc_u('"', fp);
 }
 

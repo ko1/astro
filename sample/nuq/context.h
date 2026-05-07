@@ -78,10 +78,22 @@ extern char *nuq_arena_end;
  * `nuq_scratch_alloc` and is reclaimed at `nuq_arena_reset`. */
 void *nuq_scratch_alloc(size_t sz);
 
+/* NUQ_GC_DEBUG_STRESS — every arena alloc routes to the slow path,
+ * which forces a GC if not already in progress.  Combined with
+ * NUQ_GC_DEBUG_MPROTECT (in value.c), every missing pin produces an
+ * immediate SEGV at the access site instead of silently corrupting.
+ * Heavy slowdown — debug-only. */
+#ifndef NUQ_GC_DEBUG_STRESS
+#define NUQ_GC_DEBUG_STRESS 0
+#endif
+
 static inline void *
 nuq_arena_alloc(size_t sz)
 {
     sz = (sz + 7) & ~(size_t)7;
+#if NUQ_GC_DEBUG_STRESS
+    return nuq_arena_alloc_slow(sz);
+#else
     char *p = nuq_arena_cur;
     char *next = p + sz;
     if (LIKELY(next <= nuq_arena_end)) {
@@ -89,6 +101,7 @@ nuq_arena_alloc(size_t sz)
         return p;
     }
     return nuq_arena_alloc_slow(sz);
+#endif
 }
 
 static inline void *
@@ -403,6 +416,11 @@ VALUE nuq_array_get    (VALUE arr, int64_t idx);
 size_t nuq_array_len   (VALUE arr);
 
 void  nuq_object_set       (VALUE obj, VALUE key, VALUE val);
+/* Append (key, val) without dedup-scan against existing keys.  Caller
+ * MUST guarantee the key is not already present.  Faster than
+ * nuq_object_set when building a fresh object from a known-unique
+ * source (parser, distinct-static-key object literals). */
+void  nuq_object_append    (VALUE obj, VALUE key, VALUE val);
 void  nuq_object_set_cstr  (VALUE obj, const char *key, VALUE val);
 VALUE nuq_object_get       (VALUE obj, VALUE key);
 VALUE nuq_object_get_cstr  (VALUE obj, const char *key);

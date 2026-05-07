@@ -48,7 +48,12 @@ nuq_interp_intern(struct Node **parts, size_t cnt)
     return (uint32_t)interp_len++;
 }
 
-struct obj_ctor { size_t cnt; struct nuq_obj_entry *items; };
+/* `all_distinct_static`: every entry has kkind==0 (static cstring key)
+ * and no two entries share a kname.  When true, the fast-path builder
+ * uses nuq_object_append (skip dedup) — safe by construction.  Set
+ * once at parse-intern time so runtime literal builds pay no per-call
+ * check. */
+struct obj_ctor { size_t cnt; struct nuq_obj_entry *items; bool all_distinct_static; };
 static struct obj_ctor *obj_tab = NULL;
 static size_t obj_tab_len = 0, obj_tab_capa = 0;
 
@@ -61,6 +66,16 @@ nuq_obj_ctor_intern(struct nuq_obj_entry *items, size_t cnt)
     }
     obj_tab[obj_tab_len].cnt = cnt;
     obj_tab[obj_tab_len].items = items;
+    /* O(n²) at parse time; n is the literal's entry count (almost always
+     * tiny — typical jq literals are 2–5 fields). */
+    bool distinct = true;
+    for (size_t i = 0; i < cnt && distinct; i++) {
+        if (items[i].kkind != 0) { distinct = false; break; }
+        for (size_t j = 0; j < i; j++) {
+            if (strcmp(items[i].kname, items[j].kname) == 0) { distinct = false; break; }
+        }
+    }
+    obj_tab[obj_tab_len].all_distinct_static = distinct;
     return (uint32_t)obj_tab_len++;
 }
 
@@ -612,11 +627,17 @@ to_int64(VALUE v)
 EMIT
 nuq_slice_eval(CTX *c, struct Node *startn, struct Node *stopn, uint32_t flags, bool optional)
 {
+    /* Pin input across child evals (which can trigger GC) and the
+     * final nuq_make_array / nuq_array_push.  Without the pin, `in`
+     * would be a stale C local after the first alloc that fires Cheney. */
     VALUE in = c->input;
+    NUQ_GC_PIN1(in);
     int64_t length;
     bool is_str = false;
-    if (NUQ_IS_PTR(in) && NUQ_PTR(in)->type == NUQ_T_NULL)
+    if (NUQ_IS_PTR(in) && NUQ_PTR(in)->type == NUQ_T_NULL) {
+        NUQ_GC_UNPIN(1);
         return nuq_emit_one(c, NUQ_NULL);
+    }
     if (NUQ_IS_PTR(in) && NUQ_PTR(in)->type == NUQ_T_ARRAY) length = (int64_t)NUQ_PTR(in)->arr.len;
     else if (NUQ_IS_PTR(in) && NUQ_PTR(in)->type == NUQ_T_STRING) {
         /* String slice indices are codepoint offsets, not byte offsets. */
@@ -635,6 +656,7 @@ nuq_slice_eval(CTX *c, struct Node *startn, struct Node *stopn, uint32_t flags, 
         is_str = true;
     }
     else {
+        NUQ_GC_UNPIN(1);
         if (optional) return EMIT_EMPTY;
         return err_emit(c, "type error: cannot slice");
     }
@@ -642,24 +664,23 @@ nuq_slice_eval(CTX *c, struct Node *startn, struct Node *stopn, uint32_t flags, 
     if (flags & SLICE_HAS_START) {
         size_t top0 = c->pool_top;
         EMIT buf = EVAL(c, startn);
-        if (c->error != NUQ_NULL) return EMIT_EMPTY;
-        if (buf.count == 0) { c->pool_top = top0; return EMIT_EMPTY; }
+        if (c->error != NUQ_NULL) { NUQ_GC_UNPIN(1); return EMIT_EMPTY; }
+        if (buf.count == 0) { c->pool_top = top0; NUQ_GC_UNPIN(1); return EMIT_EMPTY; }
         VALUE v = buf.items[0];
-        c->pool_top = top0;
         if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_NULL) start = 0;
         else if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_DOUBLE) {
             double d = NUQ_PTR(v)->dbl;
             if (isnan(d)) start = 0;
             else start = (int64_t)floor(d);
         } else start = to_int64(v);
+        c->pool_top = top0;
     }
     if (flags & SLICE_HAS_STOP) {
         size_t top0 = c->pool_top;
         EMIT buf = EVAL(c, stopn);
-        if (c->error != NUQ_NULL) return EMIT_EMPTY;
-        if (buf.count == 0) { c->pool_top = top0; return EMIT_EMPTY; }
+        if (c->error != NUQ_NULL) { NUQ_GC_UNPIN(1); return EMIT_EMPTY; }
+        if (buf.count == 0) { c->pool_top = top0; NUQ_GC_UNPIN(1); return EMIT_EMPTY; }
         VALUE v = buf.items[0];
-        c->pool_top = top0;
         if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_NULL) stop = length;
         else if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_DOUBLE) {
             double d = NUQ_PTR(v)->dbl;
@@ -667,6 +688,7 @@ nuq_slice_eval(CTX *c, struct Node *startn, struct Node *stopn, uint32_t flags, 
             if (isnan(d)) stop = length;
             else stop = (int64_t)ceil(d);
         } else stop = to_int64(v);
+        c->pool_top = top0;
     }
     if (start < 0) start += length;
     if (stop  < 0) stop  += length;
@@ -675,7 +697,9 @@ nuq_slice_eval(CTX *c, struct Node *startn, struct Node *stopn, uint32_t flags, 
     if (stop  < start) stop = start;
 
     if (is_str) {
-        /* Convert codepoint indices to byte offsets in a single pass. */
+        /* Convert codepoint indices to byte offsets in a single pass.
+         * `in` is pinned so re-fetching NUQ_PTR(in) is safe even after
+         * the EVAL calls above. */
         struct nuq_obj *o = NUQ_PTR(in);
         size_t bs = 0, be = o->str.len;
         bool bs_set = false, be_set = false;
@@ -695,11 +719,17 @@ nuq_slice_eval(CTX *c, struct Node *startn, struct Node *stopn, uint32_t flags, 
         }
         if (!bs_set) bs = o->str.len;
         if (!be_set) be = o->str.len;
-        return nuq_emit_one(c, nuq_make_string(o->str.bytes + bs, be - bs));
+        VALUE r = nuq_make_string(o->str.bytes + bs, be - bs);
+        NUQ_GC_UNPIN(1);
+        return nuq_emit_one(c, r);
     }
-    struct nuq_obj *o = NUQ_PTR(in);
+    /* Array case: nuq_make_array can GC, then o is stale; refetch via
+     * pinned `in` each iter, and pin `arr` so its slow-path grow doesn't
+     * leave the caller-side reference stale. */
     VALUE arr = nuq_make_array((size_t)(stop - start));
-    for (int64_t i = start; i < stop; i++) nuq_array_push(arr, o->arr.items[i]);
+    NUQ_GC_PIN1(arr);
+    for (int64_t i = start; i < stop; i++) nuq_array_push(arr, NUQ_PTR(in)->arr.items[i]);
+    NUQ_GC_UNPIN(2);
     return nuq_emit_one(c, arr);
 }
 
@@ -715,8 +745,15 @@ nuq_object_eval(CTX *c, uint32_t entries_id)
     /* Fast path — emit exactly one object.  Build it directly into
      * the pool and bail to the cartesian path the first time we hit
      * a multi-emit (or zero-emit) entry.  This avoids all per-entry
-     * GC_malloc(sizeof(VALUE)) buffers in the common case. */
+     * GC_malloc(sizeof(VALUE)) buffers in the common case.
+     *
+     * GC: a child EVAL or nuq_make_object below can trigger Cheney
+     * GC, which moves arena values.  k_fast / v_fast are stack-local
+     * arrays the GC doesn't otherwise see, so PIN_ARR them. */
     VALUE k_fast[32], v_fast[32];
+    for (size_t i = 0; i < e->cnt; i++) k_fast[i] = v_fast[i] = NUQ_NULL;
+    NUQ_GC_PIN_ARR(k_fast, e->cnt);
+    NUQ_GC_PIN_ARR(v_fast, e->cnt);
     size_t fast_done = 0;
     for (size_t i = 0; i < e->cnt; i++) {
         const struct nuq_obj_entry *const ie = &e->items[i];
@@ -729,38 +766,65 @@ nuq_object_eval(CTX *c, uint32_t entries_id)
         } else {
             const size_t t0 = c->pool_top;
             const EMIT ks = EVAL(c, ie->kexpr);
-            if (c->error != NUQ_NULL) return EMIT_EMPTY;
-            if (ks.count != 1) goto cartesian;
+            if (c->error != NUQ_NULL) { NUQ_GC_UNPIN_ARR(); NUQ_GC_UNPIN_ARR(); return EMIT_EMPTY; }
+            if (ks.count != 1) { NUQ_GC_UNPIN_ARR(); NUQ_GC_UNPIN_ARR(); goto cartesian; }
             k = ks.items[0];
             c->pool_top = t0;
         }
+        k_fast[i] = k;
         if (ie->vexpr == NULL) {
             if (ie->kkind == 2) v = nuq_var_get(c, ie->var_id);
             else if (ie->kkind == 1) {
                 /* Computed key with shorthand value — look up `k`
                  * (already evaluated) in the input object. */
-                v = (NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_OBJECT)
-                    ? nuq_object_get(c->input, k) : NUQ_NULL;
+                if (NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_OBJECT) {
+                    v = nuq_object_get(c->input, k);
+                } else if (NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_NULL) {
+                    v = NUQ_NULL;
+                } else {
+                    NUQ_GC_UNPIN_ARR(); NUQ_GC_UNPIN_ARR();
+                    return err_emit(c, "Cannot index input with string");
+                }
             }
-            else                v = nuq_object_get_cstr(c->input, ie->kname);
+            else {
+                if (NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_OBJECT) {
+                    v = nuq_object_get_cstr(c->input, ie->kname);
+                } else if (NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_NULL) {
+                    v = NUQ_NULL;
+                } else {
+                    NUQ_GC_UNPIN_ARR(); NUQ_GC_UNPIN_ARR();
+                    return err_emit(c, "Cannot index input with string");
+                }
+            }
         } else {
             const size_t t0 = c->pool_top;
             const EMIT vs = EVAL(c, ie->vexpr);
-            if (c->error != NUQ_NULL) return EMIT_EMPTY;
-            if (vs.count != 1) goto cartesian;
+            if (c->error != NUQ_NULL) { NUQ_GC_UNPIN_ARR(); NUQ_GC_UNPIN_ARR(); return EMIT_EMPTY; }
+            if (vs.count != 1) { NUQ_GC_UNPIN_ARR(); NUQ_GC_UNPIN_ARR(); goto cartesian; }
             v = vs.items[0];
             c->pool_top = t0;
         }
-        if (UNLIKELY(!(NUQ_IS_PTR(k) && NUQ_PTR(k)->type == NUQ_T_STRING)))
+        if (UNLIKELY(!(NUQ_IS_PTR(k_fast[i]) && NUQ_PTR(k_fast[i])->type == NUQ_T_STRING))) {
+            NUQ_GC_UNPIN_ARR(); NUQ_GC_UNPIN_ARR();
             return err_emit(c, "object key must be string");
-        k_fast[i] = k;
+        }
         v_fast[i] = v;
         fast_done++;
     }
     {
         VALUE obj = nuq_make_object(e->cnt);
-        for (size_t i = 0; i < e->cnt; i++)
-            nuq_object_set(obj, k_fast[i], v_fast[i]);
+        if (e->all_distinct_static) {
+            /* Parser proved every key is a distinct static cstring →
+             * the dedup scan in nuq_object_set can never match.  Skip
+             * straight to append. */
+            for (size_t i = 0; i < e->cnt; i++)
+                nuq_object_append(obj, k_fast[i], v_fast[i]);
+        } else {
+            for (size_t i = 0; i < e->cnt; i++)
+                nuq_object_set(obj, k_fast[i], v_fast[i]);
+        }
+        NUQ_GC_UNPIN_ARR();
+        NUQ_GC_UNPIN_ARR();
         nuq_pool_push(c, obj);
         return nuq_emit_slice(c, outer_top);
     }
@@ -1580,33 +1644,37 @@ nuq_map_values_eval(CTX *c, struct Node *body)
 {
     VALUE in = c->input;
     if (NUQ_IS_PTR(in) && NUQ_PTR(in)->type == NUQ_T_ARRAY) {
-        struct nuq_obj *o = NUQ_PTR(in);
-        VALUE out = nuq_make_array(o->arr.len);
+        size_t len = NUQ_PTR(in)->arr.len;
+        VALUE out = nuq_make_array(len);
         VALUE saved = c->input;
-        for (size_t i = 0; i < o->arr.len; i++) {
-            c->input = o->arr.items[i];
+        NUQ_GC_PIN2(saved, out);
+        for (size_t i = 0; i < len; i++) {
+            c->input = NUQ_PTR(saved)->arr.items[i];
             size_t t0 = c->pool_top;
             EMIT bo = EVAL(c, body);
-            if (c->error != NUQ_NULL) { c->input = saved; return EMIT_EMPTY; }
+            if (c->error != NUQ_NULL) { c->input = saved; NUQ_GC_UNPIN(2); return EMIT_EMPTY; }
             if (bo.count > 0) nuq_array_push(out, bo.items[0]);
             c->pool_top = t0;
         }
         c->input = saved;
+        NUQ_GC_UNPIN(2);
         return nuq_emit_one(c, out);
     }
     if (NUQ_IS_PTR(in) && NUQ_PTR(in)->type == NUQ_T_OBJECT) {
-        struct nuq_obj *o = NUQ_PTR(in);
-        VALUE out = nuq_make_object(o->obj.len);
+        size_t len = NUQ_PTR(in)->obj.len;
+        VALUE out = nuq_make_object(len);
         VALUE saved = c->input;
-        for (size_t i = 0; i < o->obj.len; i++) {
-            c->input = o->obj.vals[i];
+        NUQ_GC_PIN2(saved, out);
+        for (size_t i = 0; i < len; i++) {
+            c->input = NUQ_PTR(saved)->obj.vals[i];
             size_t t0 = c->pool_top;
             EMIT bo = EVAL(c, body);
-            if (c->error != NUQ_NULL) { c->input = saved; return EMIT_EMPTY; }
-            if (bo.count > 0) nuq_object_set(out, o->obj.keys[i], bo.items[0]);
+            if (c->error != NUQ_NULL) { c->input = saved; NUQ_GC_UNPIN(2); return EMIT_EMPTY; }
+            if (bo.count > 0) nuq_object_set(out, NUQ_PTR(saved)->obj.keys[i], bo.items[0]);
             c->pool_top = t0;
         }
         c->input = saved;
+        NUQ_GC_UNPIN(2);
         return nuq_emit_one(c, out);
     }
     return err_emit(c, "map_values: not array/object");
@@ -1617,17 +1685,18 @@ nuq_with_entries_eval(CTX *c, struct Node *body)
 {
     if (!(NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_OBJECT))
         return err_emit(c, "with_entries: not object");
-    struct nuq_obj *o = NUQ_PTR(c->input);
-    VALUE out = nuq_make_object(o->obj.len);
+    size_t len = NUQ_PTR(c->input)->obj.len;
+    VALUE out = nuq_make_object(len);
     VALUE saved = c->input;
-    for (size_t i = 0; i < o->obj.len; i++) {
+    NUQ_GC_PIN2(saved, out);
+    for (size_t i = 0; i < len; i++) {
         VALUE e = nuq_make_object(2);
-        nuq_object_set_cstr(e, "key", o->obj.keys[i]);
-        nuq_object_set_cstr(e, "value", o->obj.vals[i]);
+        nuq_object_set_cstr(e, "key", NUQ_PTR(saved)->obj.keys[i]);
+        nuq_object_set_cstr(e, "value", NUQ_PTR(saved)->obj.vals[i]);
         c->input = e;
         size_t t0 = c->pool_top;
         EMIT bo = EVAL(c, body);
-        if (c->error != NUQ_NULL) { c->input = saved; return EMIT_EMPTY; }
+        if (c->error != NUQ_NULL) { c->input = saved; NUQ_GC_UNPIN(2); return EMIT_EMPTY; }
         for (uint32_t j = 0; j < bo.count; j++) {
             VALUE ne = bo.items[j];
             if (!(NUQ_IS_PTR(ne) && NUQ_PTR(ne)->type == NUQ_T_OBJECT)) continue;
@@ -1639,6 +1708,7 @@ nuq_with_entries_eval(CTX *c, struct Node *body)
         c->pool_top = t0;
     }
     c->input = saved;
+    NUQ_GC_UNPIN(2);
     return nuq_emit_one(c, out);
 }
 
@@ -1652,33 +1722,43 @@ nuq_walk_recurse(CTX *c, struct Node *body, VALUE v, bool *dropped)
     VALUE rebuilt = v;
     *dropped = false;
     if (NUQ_IS_PTR(v)) {
-        struct nuq_obj *o = NUQ_PTR(v);
-        if (o->type == NUQ_T_ARRAY) {
-            VALUE arr = nuq_make_array(o->arr.len);
-            for (size_t i = 0; i < o->arr.len; i++) {
+        int t = NUQ_PTR(v)->type;
+        if (t == NUQ_T_ARRAY) {
+            NUQ_GC_PIN1(v);
+            size_t len = NUQ_PTR(v)->arr.len;
+            VALUE arr = nuq_make_array(len);
+            NUQ_GC_PIN1(arr);
+            for (size_t i = 0; i < len; i++) {
                 bool child_drop = false;
-                VALUE child = nuq_walk_recurse(c, body, o->arr.items[i], &child_drop);
-                if (c->error != NUQ_NULL) return NUQ_NULL;
+                VALUE child = nuq_walk_recurse(c, body, NUQ_PTR(v)->arr.items[i], &child_drop);
+                if (c->error != NUQ_NULL) { NUQ_GC_UNPIN(2); return NUQ_NULL; }
                 if (!child_drop) nuq_array_push(arr, child);
             }
+            NUQ_GC_UNPIN(2);
             rebuilt = arr;
-        } else if (o->type == NUQ_T_OBJECT) {
-            VALUE obj = nuq_make_object(o->obj.len > 4 ? o->obj.len : 4);
-            for (size_t i = 0; i < o->obj.len; i++) {
+        } else if (t == NUQ_T_OBJECT) {
+            NUQ_GC_PIN1(v);
+            size_t len = NUQ_PTR(v)->obj.len;
+            VALUE obj = nuq_make_object(len > 4 ? len : 4);
+            NUQ_GC_PIN1(obj);
+            for (size_t i = 0; i < len; i++) {
                 bool child_drop = false;
-                VALUE child = nuq_walk_recurse(c, body, o->obj.vals[i], &child_drop);
-                if (c->error != NUQ_NULL) return NUQ_NULL;
-                if (!child_drop) nuq_object_set(obj, o->obj.keys[i], child);
+                VALUE child = nuq_walk_recurse(c, body, NUQ_PTR(v)->obj.vals[i], &child_drop);
+                if (c->error != NUQ_NULL) { NUQ_GC_UNPIN(2); return NUQ_NULL; }
+                if (!child_drop) nuq_object_set(obj, NUQ_PTR(v)->obj.keys[i], child);
             }
+            NUQ_GC_UNPIN(2);
             rebuilt = obj;
         }
     }
     VALUE saved = c->input;
+    NUQ_GC_PIN2(saved, rebuilt);
     c->input = rebuilt;
     size_t t0 = c->pool_top;
     EMIT bo = EVAL(c, body);
     if (c->error != NUQ_NULL) {
         c->pool_top = t0; c->input = saved;
+        NUQ_GC_UNPIN(2);
         return NUQ_NULL;
     }
     VALUE out;
@@ -1690,6 +1770,7 @@ nuq_walk_recurse(CTX *c, struct Node *body, VALUE v, bool *dropped)
     }
     c->pool_top = t0;
     c->input = saved;
+    NUQ_GC_UNPIN(2);
     return out;
 }
 
@@ -1703,31 +1784,41 @@ nuq_walk_eval(CTX *c, struct Node *body)
     VALUE input = c->input;
     VALUE rebuilt = input;
     if (NUQ_IS_PTR(input)) {
-        struct nuq_obj *o = NUQ_PTR(input);
-        if (o->type == NUQ_T_ARRAY) {
-            VALUE arr = nuq_make_array(o->arr.len);
-            for (size_t i = 0; i < o->arr.len; i++) {
+        int t = NUQ_PTR(input)->type;
+        if (t == NUQ_T_ARRAY) {
+            NUQ_GC_PIN1(input);
+            size_t len = NUQ_PTR(input)->arr.len;
+            VALUE arr = nuq_make_array(len);
+            NUQ_GC_PIN1(arr);
+            for (size_t i = 0; i < len; i++) {
                 bool child_drop = false;
-                VALUE child = nuq_walk_recurse(c, body, o->arr.items[i], &child_drop);
-                if (c->error != NUQ_NULL) return EMIT_EMPTY;
+                VALUE child = nuq_walk_recurse(c, body, NUQ_PTR(input)->arr.items[i], &child_drop);
+                if (c->error != NUQ_NULL) { NUQ_GC_UNPIN(2); return EMIT_EMPTY; }
                 if (!child_drop) nuq_array_push(arr, child);
             }
+            NUQ_GC_UNPIN(2);
             rebuilt = arr;
-        } else if (o->type == NUQ_T_OBJECT) {
-            VALUE obj = nuq_make_object(o->obj.len > 4 ? o->obj.len : 4);
-            for (size_t i = 0; i < o->obj.len; i++) {
+        } else if (t == NUQ_T_OBJECT) {
+            NUQ_GC_PIN1(input);
+            size_t len = NUQ_PTR(input)->obj.len;
+            VALUE obj = nuq_make_object(len > 4 ? len : 4);
+            NUQ_GC_PIN1(obj);
+            for (size_t i = 0; i < len; i++) {
                 bool child_drop = false;
-                VALUE child = nuq_walk_recurse(c, body, o->obj.vals[i], &child_drop);
-                if (c->error != NUQ_NULL) return EMIT_EMPTY;
-                if (!child_drop) nuq_object_set(obj, o->obj.keys[i], child);
+                VALUE child = nuq_walk_recurse(c, body, NUQ_PTR(input)->obj.vals[i], &child_drop);
+                if (c->error != NUQ_NULL) { NUQ_GC_UNPIN(2); return EMIT_EMPTY; }
+                if (!child_drop) nuq_object_set(obj, NUQ_PTR(input)->obj.keys[i], child);
             }
+            NUQ_GC_UNPIN(2);
             rebuilt = obj;
         }
     }
     VALUE saved = c->input;
+    NUQ_GC_PIN2(saved, rebuilt);
     c->input = rebuilt;
     EMIT bo = EVAL(c, body);
     c->input = saved;
+    NUQ_GC_UNPIN(2);
     return bo;
 }
 
@@ -1886,26 +1977,34 @@ nuq_sub_eval(CTX *c, struct Node *pat_n, struct Node *repl_n)
 }
 
 /* Recursively flatten `arr` to `depth` levels into `out`.
- * `depth == 0` ⇒ append elements as-is, no recursion. */
+ * `depth == 0` ⇒ append elements as-is, no recursion.
+ * Pinned by caller; uses NUQ_PTR(arr) refetch each iter so the
+ * arr.items buffer stays valid across nuq_array_push allocs. */
 static void
 flatten_into(VALUE arr, int depth, VALUE out)
 {
-    struct nuq_obj *o = NUQ_PTR(arr);
-    for (size_t i = 0; i < o->arr.len; i++) {
-        VALUE v = o->arr.items[i];
+    NUQ_GC_PIN2(arr, out);
+    size_t len = NUQ_PTR(arr)->arr.len;
+    for (size_t i = 0; i < len; i++) {
+        VALUE v = NUQ_PTR(arr)->arr.items[i];
         if (depth > 0 && NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_ARRAY) {
             flatten_into(v, depth - 1, out);
         } else {
             nuq_array_push(out, v);
         }
     }
+    NUQ_GC_UNPIN(2);
 }
 
 VALUE
 nuq_flatten_eval(VALUE arr, int depth)
 {
-    VALUE out = nuq_make_array(NUQ_PTR(arr)->arr.len);
+    NUQ_GC_PIN1(arr);
+    size_t len = NUQ_PTR(arr)->arr.len;
+    VALUE out = nuq_make_array(len);
+    NUQ_GC_PIN1(out);
     flatten_into(arr, depth, out);
+    NUQ_GC_UNPIN(2);
     return out;
 }
 
@@ -2149,9 +2248,18 @@ nuq_split_eval(CTX *c, struct Node *sep)
     if (c->error != NUQ_NULL) return EMIT_EMPTY;
     if (buf.count == 0) { c->pool_top = t0; return EMIT_EMPTY; }
     VALUE s = buf.items[0];
+    /* Defer the pool_top reset and pin `s` — nuq_op_div allocates a new
+     * array (and may GC) and the caller-supplied separator must survive. */
+    NUQ_GC_PIN1(s);
+    if (!(NUQ_IS_PTR(s) && NUQ_PTR(s)->type == NUQ_T_STRING)) {
+        NUQ_GC_UNPIN(1);
+        c->pool_top = t0;
+        return err_emit(c, "split: sep not string");
+    }
+    VALUE r = nuq_op_div(c->input, s);
+    NUQ_GC_UNPIN(1);
     c->pool_top = t0;
-    if (!(NUQ_IS_PTR(s) && NUQ_PTR(s)->type == NUQ_T_STRING)) return err_emit(c, "split: sep not string");
-    return nuq_emit_one(c, nuq_op_div(c->input, s));
+    return nuq_emit_one(c, r);
 }
 
 /* `splits(s)` — like split(s) but emits each piece as a separate
@@ -2166,16 +2274,24 @@ nuq_splits_eval(CTX *c, struct Node *sep)
     if (c->error != NUQ_NULL) return EMIT_EMPTY;
     if (buf.count == 0) { c->pool_top = t0; return EMIT_EMPTY; }
     VALUE s = buf.items[0];
-    c->pool_top = t0;
-    if (!(NUQ_IS_PTR(s) && NUQ_PTR(s)->type == NUQ_T_STRING))
+    NUQ_GC_PIN1(s);
+    if (!(NUQ_IS_PTR(s) && NUQ_PTR(s)->type == NUQ_T_STRING)) {
+        NUQ_GC_UNPIN(1);
+        c->pool_top = t0;
         return err_emit(c, "splits: sep not string");
+    }
     /* Reuse op_div which returns an array of pieces, then unpack. */
     VALUE arr = nuq_op_div(c->input, s);
+    NUQ_GC_UNPIN(1);
+    c->pool_top = t0;
     if (!(NUQ_IS_PTR(arr) && NUQ_PTR(arr)->type == NUQ_T_ARRAY))
         return err_emit(c, "splits: internal error");
-    struct nuq_obj *ao = NUQ_PTR(arr);
+    NUQ_GC_PIN1(arr);
     size_t outer = c->pool_top;
-    for (size_t i = 0; i < ao->arr.len; i++) nuq_pool_push(c, ao->arr.items[i]);
+    size_t alen = NUQ_PTR(arr)->arr.len;
+    for (size_t i = 0; i < alen; i++)
+        nuq_pool_push(c, NUQ_PTR(arr)->arr.items[i]);
+    NUQ_GC_UNPIN(1);
     return nuq_emit_slice(c, outer);
 }
 
@@ -2575,16 +2691,18 @@ nuq_group_by_eval(CTX *c, struct Node *body)
     NUQ_GC_PIN2(cur_group, cur_key);
     bool has = false;
     for (size_t i = 0; i < N; i++) {
-        VALUE k = keys_pin[kvs[i].idx];
-        VALUE v = NUQ_PTR(input_arr)->arr.items[kvs[i].idx]; /* refetch */
-        if (!has || nuq_cmp(k, cur_key) != 0) {
+        /* Read k / v fresh each iter (don't cache into a stack local
+         * across allocs).  keys_pin is PIN_ARR'd and input_arr is
+         * pinned, so both lookups always see current addresses. */
+        size_t ix = kvs[i].idx;
+        if (!has || nuq_cmp(keys_pin[ix], cur_key) != 0) {
             cur_group = nuq_make_array(0);
-            cur_key = k;
+            cur_key = keys_pin[ix];
             has = true;
-            nuq_array_push(cur_group, v);
+            nuq_array_push(cur_group, NUQ_PTR(input_arr)->arr.items[ix]);
             nuq_array_push(result, cur_group);
         } else {
-            nuq_array_push(cur_group, v);
+            nuq_array_push(cur_group, NUQ_PTR(input_arr)->arr.items[ix]);
         }
     }
     NUQ_GC_UNPIN(3);   /* cur_group, cur_key, result */
@@ -2915,10 +3033,15 @@ setpath_recurse(VALUE v, VALUE *keys, size_t cnt, VALUE new_val)
                 nuq_active_ctx->error = nuq_make_string(msg, (size_t)w);
             return v;
         }
+        /* Pin v + k across the recursion (which allocates) and across
+         * nuq_clone + nuq_object_set so neither moves underneath us. */
+        NUQ_GC_PIN2(v, k);
         VALUE child = nuq_object_get(v, k);
         VALUE updated = setpath_recurse(child, keys + 1, cnt - 1, new_val);
+        NUQ_GC_PIN1(updated);
         VALUE clone = nuq_clone(v);
         nuq_object_set(clone, k, updated);
+        NUQ_GC_UNPIN(3);
         return clone;
     }
     if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_ARRAY) {
@@ -2929,15 +3052,16 @@ setpath_recurse(VALUE v, VALUE *keys, size_t cnt, VALUE new_val)
             return v;
         }
         int64_t idx = NUQ_FIX_VAL(k);
-        struct nuq_obj *o = NUQ_PTR(v);
-        if (idx < 0) idx += (int64_t)o->arr.len;
+        if (idx < 0) idx += (int64_t)NUQ_PTR(v)->arr.len;
         if (idx < 0) return v;
+        NUQ_GC_PIN1(v);
         VALUE clone = nuq_clone(v);
-        struct nuq_obj *co = NUQ_PTR(clone);
-        while ((int64_t)co->arr.len <= idx) nuq_array_push(clone, NUQ_NULL);
-        VALUE child = co->arr.items[idx];
+        NUQ_GC_PIN1(clone);
+        while ((int64_t)NUQ_PTR(clone)->arr.len <= idx) nuq_array_push(clone, NUQ_NULL);
+        VALUE child = NUQ_PTR(clone)->arr.items[idx];
         VALUE updated = setpath_recurse(child, keys + 1, cnt - 1, new_val);
-        co->arr.items[idx] = updated;
+        NUQ_PTR(clone)->arr.items[idx] = updated;
+        NUQ_GC_UNPIN(2);
         return clone;
     }
     return v;
@@ -2954,23 +3078,28 @@ nuq_setpath_eval(CTX *c, struct Node *path, struct Node *value)
     VALUE pv = pe.items[0];
     if (!(NUQ_IS_PTR(pv) && NUQ_PTR(pv)->type == NUQ_T_ARRAY))
         return err_emit(c, "setpath: path not array");
-    /* Snapshot path keys before evaluating value (which grows pool). */
-    struct nuq_obj *po = NUQ_PTR(pv);
-    size_t kcnt = po->arr.len;
+    /* Snapshot path keys before evaluating value (which grows pool +
+     * may GC). */
+    size_t kcnt = NUQ_PTR(pv)->arr.len;
     if (kcnt > 10000) {
         c->pool_top = t0;
         return err_emit(c, "Path too deep");
     }
     VALUE small[16];
     VALUE *keys = (kcnt <= 16) ? small : (VALUE *)nuq_scratch_alloc(kcnt * sizeof(VALUE));
-    memcpy(keys, po->arr.items, kcnt * sizeof(VALUE));
+    memcpy(keys, NUQ_PTR(pv)->arr.items, kcnt * sizeof(VALUE));
+    NUQ_GC_PIN_ARR(keys, kcnt);
     c->pool_top = t0;
     EMIT ve = EVAL(c, value);
-    if (c->error != NUQ_NULL) return EMIT_EMPTY;
-    if (ve.count == 0) { c->pool_top = t0; return EMIT_EMPTY; }
+    if (c->error != NUQ_NULL) { NUQ_GC_UNPIN_ARR(); return EMIT_EMPTY; }
+    if (ve.count == 0) { c->pool_top = t0; NUQ_GC_UNPIN_ARR(); return EMIT_EMPTY; }
     VALUE nv = ve.items[0];
+    NUQ_GC_PIN1(nv);
     c->pool_top = t0;
-    return nuq_emit_one(c, setpath_recurse(c->input, keys, kcnt, nv));
+    VALUE r = setpath_recurse(c->input, keys, kcnt, nv);
+    NUQ_GC_UNPIN(1);
+    NUQ_GC_UNPIN_ARR();
+    return nuq_emit_one(c, r);
 }
 
 /* delpath_recurse: return v with `keys[start..]` deleted.
@@ -3009,29 +3138,34 @@ delpath_recurse(VALUE v, VALUE *keys, size_t cnt)
     }
     if (cnt == 1) {
         if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_OBJECT) {
+            NUQ_GC_PIN2(v, k);
             VALUE clone = nuq_clone(v);
-            struct nuq_obj *co = NUQ_PTR(clone);
-            for (size_t i = 0; i < co->obj.len; i++) {
-                if (nuq_eq(co->obj.keys[i], k)) {
-                    /* shift down */
+            /* nuq_clone forwarded v/k; clone is fresh.  Pin the clone
+             * across the linear scan since nuq_eq's slow path can GC. */
+            NUQ_GC_PIN1(clone);
+            for (size_t i = 0; i < NUQ_PTR(clone)->obj.len; i++) {
+                if (nuq_eq(NUQ_PTR(clone)->obj.keys[i], k)) {
+                    struct nuq_obj *co = NUQ_PTR(clone);
                     for (size_t j = i; j + 1 < co->obj.len; j++) {
                         co->obj.keys[j] = co->obj.keys[j+1];
                         co->obj.vals[j] = co->obj.vals[j+1];
                     }
                     co->obj.len--;
-                    co->obj.idx = NULL;     /* invalidate hash idx */
+                    co->obj.idx = NULL;
                     co->obj.idx_mask = 0;
                     break;
                 }
             }
+            NUQ_GC_UNPIN(3);
             return clone;
         }
         if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_ARRAY && NUQ_IS_FIX(k)) {
             int64_t idx = NUQ_FIX_VAL(k);
-            struct nuq_obj *o = NUQ_PTR(v);
-            if (idx < 0) idx += (int64_t)o->arr.len;
-            if (idx < 0 || (size_t)idx >= o->arr.len) return v;
+            if (idx < 0) idx += (int64_t)NUQ_PTR(v)->arr.len;
+            if (idx < 0 || (size_t)idx >= NUQ_PTR(v)->arr.len) return v;
+            NUQ_GC_PIN1(v);
             VALUE clone = nuq_clone(v);
+            NUQ_GC_UNPIN(1);
             struct nuq_obj *co = NUQ_PTR(clone);
             for (size_t j = (size_t)idx; j + 1 < co->arr.len; j++)
                 co->arr.items[j] = co->arr.items[j+1];
@@ -3045,21 +3179,26 @@ delpath_recurse(VALUE v, VALUE *keys, size_t cnt)
      * NOT auto-vivify like setpath does. */
     if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_OBJECT) {
         if (!nuq_object_has(v, k)) return v;
+        NUQ_GC_PIN2(v, k);
         VALUE child = nuq_object_get(v, k);
         VALUE updated = delpath_recurse(child, keys + 1, cnt - 1);
+        NUQ_GC_PIN1(updated);
         VALUE clone = nuq_clone(v);
         nuq_object_set(clone, k, updated);
+        NUQ_GC_UNPIN(3);
         return clone;
     }
     if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_ARRAY && NUQ_IS_FIX(k)) {
         int64_t idx = NUQ_FIX_VAL(k);
-        struct nuq_obj *o = NUQ_PTR(v);
-        if (idx < 0) idx += (int64_t)o->arr.len;
-        if (idx < 0 || (size_t)idx >= o->arr.len) return v;
-        VALUE child = o->arr.items[idx];
+        if (idx < 0) idx += (int64_t)NUQ_PTR(v)->arr.len;
+        if (idx < 0 || (size_t)idx >= NUQ_PTR(v)->arr.len) return v;
+        NUQ_GC_PIN1(v);
+        VALUE child = NUQ_PTR(v)->arr.items[idx];
         VALUE updated = delpath_recurse(child, keys + 1, cnt - 1);
+        NUQ_GC_PIN1(updated);
         VALUE clone = nuq_clone(v);
         NUQ_PTR(clone)->arr.items[idx] = updated;
+        NUQ_GC_UNPIN(2);
         return clone;
     }
     return v;
@@ -3079,12 +3218,12 @@ nuq_delpaths_eval(CTX *c, struct Node *paths_expr)
         c->pool_top = t0;
         return err_emit(c, "Paths must be specified as an array");
     }
-    struct nuq_obj *po = NUQ_PTR(pv);
     /* Snapshot since we'll re-use pool. */
-    size_t cnt = po->arr.len;
+    size_t cnt = NUQ_PTR(pv)->arr.len;
     VALUE small[64];
     VALUE *paths = (cnt <= 64) ? small : (VALUE *)nuq_scratch_alloc(cnt * sizeof(VALUE));
-    memcpy(paths, po->arr.items, cnt * sizeof(VALUE));
+    memcpy(paths, NUQ_PTR(pv)->arr.items, cnt * sizeof(VALUE));
+    NUQ_GC_PIN_ARR(paths, cnt);
     c->pool_top = t0;
     /* Sort paths descending lex order so deeper / later paths are
      * removed first (avoids index shift in arrays). */
@@ -3098,14 +3237,27 @@ nuq_delpaths_eval(CTX *c, struct Node *paths_expr)
         paths[j] = x;
     }
     VALUE cur = c->input;
+    NUQ_GC_PIN1(cur);
     for (size_t i = 0; i < cnt; i++) {
         VALUE p = paths[i];
         if (!(NUQ_IS_PTR(p) && NUQ_PTR(p)->type == NUQ_T_ARRAY)) continue;
-        struct nuq_obj *pp = NUQ_PTR(p);
-        if (pp->arr.len > 10000) return err_emit(c, "Path too deep");
-        if (pp->arr.len == 0) { cur = NUQ_NULL; continue; }
-        cur = delpath_recurse(cur, pp->arr.items, pp->arr.len);
+        size_t plen = NUQ_PTR(p)->arr.len;
+        if (plen > 10000) { NUQ_GC_UNPIN(1); NUQ_GC_UNPIN_ARR(); return err_emit(c, "Path too deep"); }
+        if (plen == 0) { cur = NUQ_NULL; continue; }
+        /* Pin p across the recursion since delpath_recurse allocates;
+         * pp->arr.items only lives inside the call so we copy items[]
+         * via the NUQ_PTR(p) refetch. */
+        NUQ_GC_PIN1(p);
+        VALUE pcopy_small[16];
+        VALUE *pcopy = (plen <= 16) ? pcopy_small : (VALUE *)nuq_scratch_alloc(plen * sizeof(VALUE));
+        memcpy(pcopy, NUQ_PTR(p)->arr.items, plen * sizeof(VALUE));
+        NUQ_GC_PIN_ARR(pcopy, plen);
+        cur = delpath_recurse(cur, pcopy, plen);
+        NUQ_GC_UNPIN_ARR();
+        NUQ_GC_UNPIN(1);
     }
+    NUQ_GC_UNPIN(1);
+    NUQ_GC_UNPIN_ARR();
     return nuq_emit_one(c, cur);
 }
 
@@ -4822,6 +4974,14 @@ nuq_run(CTX *const c, struct Node *const filter, VALUE input)
     c->break_label = 0;
     c->pool_top = 0;
     nuq_active_ctx = c;
+    /* The input has been parsed into the arena (perm=false in main)
+     * already; bump the GC threshold to ~2x the current arena size so
+     * a large input (e.g. 17 MB internal repr from a 1.9 MB JSON) does
+     * not immediately trigger a full Cheney pass on its first transient
+     * alloc.  Same "GC fires when live doubles" behavior the post-GC
+     * adaptive threshold already maintains, applied before run start. */
+    void nuq_gc_set_threshold_from_live(void);
+    nuq_gc_set_threshold_from_live();
     /* Per-run arena: route VALUE allocs through the bump pointer so
      * intermediate values from this run can be dropped en masse after
      * print.  Permanent state (AST, literals, --argjson, --slurpfile,

@@ -100,9 +100,15 @@ driver) は揃っていて luastro / naruby が実用してる。nuq には未�
 ただし jq は集合演算が中心で AST level の hot loop が薄いので、PGO
 よりも AST fusion / 線形性解析の方が相性がいい — done.md / perf.md 参照。
 
-`tree_paths` (現在 jq の 0.18×、唯一の big-data 大敗) のような
-path-walk 系は型 feedback でなく allocator 周りの改善 (path-array の
-arena 配置、prefix sharing) の方が効きそう。
+### B-6. tree_paths のさらなる改善 (現状 jq の 2.7×)
+
+`in_arena` を O(log N) にしたことで 0.91× → 2.66× まで来たが、
+Cheney scan の per-obj overhead がまだ支配的。path-walk 系で更に
+効きそうなのは:
+- **path 配列の prefix sharing** (CoW): jq は path を share する
+- **path-array の arena 配置** で memory locality 向上
+- **`[paths] | length` のような fusion**: count だけが要るなら配列を
+  実体化しなくてよい (B-4 candidate)
 
 ## C. 内部整理
 

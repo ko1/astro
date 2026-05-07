@@ -13,6 +13,25 @@
  */
 #include "context.h"
 
+/* NUQ_GC_DEBUG_MPROTECT — debug build option to catch stale arena
+ * pointers.  When set (CFLAGS += -DNUQ_GC_DEBUG_MPROTECT=1):
+ *   - chunks are page-aligned mmap'd (not malloc'd) so mprotect works.
+ *   - from-space chunks after GC get mprotect(PROT_NONE) +
+ *     madvise(MADV_DONTNEED) — physical pages returned, virtual range
+ *     reserved.  Any stale pointer dereference SEGVs at the deref
+ *     site instead of silently reading garbage from a recycled chunk.
+ *   - chunks are not reused; arena_spare stays empty.
+ * Pair with NUQ_GC_DEBUG_STRESS=1 (in context.h) to fire GC on every
+ * arena alloc and flush out missing NUQ_GC_PIN sites.  Slow — debug
+ * only; production builds leave both off. */
+#ifndef NUQ_GC_DEBUG_MPROTECT
+#define NUQ_GC_DEBUG_MPROTECT 0
+#endif
+#if NUQ_GC_DEBUG_MPROTECT
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
+
 struct nuq_obj NUQ_NULL_OBJ      = { .type = NUQ_T_NULL };
 struct nuq_obj NUQ_NULL_ERR_OBJ  = { .type = NUQ_T_NULL };     /* distinct ptr */
 struct nuq_obj NUQ_TRUE_OBJ  = { .type = NUQ_T_BOOL, .b = true };
@@ -87,6 +106,22 @@ static bool              gc_in_progress = false;
 
 extern struct CTX_struct *nuq_active_ctx;
 
+/* nuq_gc_set_threshold_from_live() — call once at start of each run,
+ * after input parse, to set the next-GC trigger to ~2x current arena
+ * size.  Without this, a 17+ MB input (real bench: 1.9 MB JSON expands
+ * to ~17 MB internal repr) immediately trips the 16 MB default and
+ * triggers a Cheney pass that copies the entire input — pure overhead
+ * since nothing is dead yet.  After the first GC the threshold is
+ * dynamically maintained at ~2x live; this gives the same property at
+ * run start. */
+void
+nuq_gc_set_threshold_from_live(void)
+{
+    size_t want = arena_total * 2;
+    if (want < NUQ_GC_THRESHOLD) want = NUQ_GC_THRESHOLD;
+    arena_gc_threshold = want;
+}
+
 static struct nuq_chunk *
 arena_take_chunk(size_t bytes)
 {
@@ -106,6 +141,24 @@ arena_take_chunk(size_t bytes)
         }
         slot = &(*slot)->next;
     }
+#if NUQ_GC_DEBUG_MPROTECT
+    /* Page-aligned mmap so we can mprotect from-space after GC.  The
+     * chunk header is part of the mapping; mprotect-ed regions cover
+     * header + data alike, since the from-space header is also stale
+     * data the user shouldn't deref. */
+    size_t total = sizeof(struct nuq_chunk) + bytes;
+    long ps = sysconf(_SC_PAGESIZE);
+    if (ps <= 0) ps = 4096;
+    total = (total + (size_t)ps - 1) & ~((size_t)ps - 1);
+    void *p = mmap(NULL, total, PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (p == MAP_FAILED) abort();
+    struct nuq_chunk *c = (struct nuq_chunk *)p;
+    c->next = NULL;
+    c->capa = total - sizeof(struct nuq_chunk);
+    c->used = 0;
+    return c;
+#else
     /* Plain malloc — Boehm doesn't need to see arena contents.  All
      * Boehm-managed values (literals, --arg*, module data, AST) stay
      * reachable from their own GC-rooted side tables.  Our copying GC
@@ -118,9 +171,11 @@ arena_take_chunk(size_t bytes)
     c->capa = bytes;
     c->used = 0;
     return c;
+#endif
 }
 
 #define NUQ_SPARE_KEEP 3
+#if !NUQ_GC_DEBUG_MPROTECT
 static void
 arena_trim_spare(void)
 {
@@ -140,14 +195,71 @@ arena_trim_spare(void)
     for (int i = 0; cur && i < NUQ_SPARE_KEEP - 1; i++) cur = cur->next;
     if (cur) cur->next = NULL;
 }
+#endif
+
+/* Sorted from-space chunk index used during a GC cycle to make
+ * in_arena() O(log N) instead of O(N).  Built once at GC entry; large
+ * inputs can have hundreds of chunks and gc_forward_value calls
+ * in_arena() millions of times during a Cheney pass — that O(N²) was
+ * the dominant hot spot in big-tree workloads (`tree_paths`,
+ * `tree_leaf_sum`). */
+struct gc_chunk_range { const char *lo, *hi; };
+static struct gc_chunk_range *gc_from_idx = NULL;
+static size_t gc_from_idx_cnt = 0;
+static const char *gc_from_min = NULL;
+static const char *gc_from_max = NULL;
+
+static int
+gc_chunk_range_cmp(const void *a, const void *b)
+{
+    const struct gc_chunk_range *ra = a, *rb = b;
+    if (ra->lo < rb->lo) return -1;
+    if (ra->lo > rb->lo) return 1;
+    return 0;
+}
+
+static void
+gc_build_from_idx(struct nuq_chunk *first)
+{
+    size_t n = 0;
+    for (struct nuq_chunk *c = first; c; c = c->next) n++;
+    gc_from_idx = (struct gc_chunk_range *)realloc(
+        gc_from_idx, n * sizeof(*gc_from_idx));
+    gc_from_idx_cnt = n;
+    if (n == 0) { gc_from_min = gc_from_max = NULL; return; }
+    size_t i = 0;
+    for (struct nuq_chunk *c = first; c; c = c->next, i++) {
+        gc_from_idx[i].lo = c->data;
+        gc_from_idx[i].hi = c->data + c->capa;
+    }
+    qsort(gc_from_idx, n, sizeof(*gc_from_idx), gc_chunk_range_cmp);
+    gc_from_min = gc_from_idx[0].lo;
+    gc_from_max = gc_from_idx[n - 1].hi;
+}
 
 static bool
 in_arena(const void *p)
 {
     if (!p) return false;
-    /* During GC, `arena_first` points at from-space. */
+    const char *cp = (const char *)p;
+    if (gc_from_idx_cnt) {
+        /* Range pre-check: most non-arena pointers (Boehm/static
+         * singletons) are far outside the from-space envelope. */
+        if (cp < gc_from_min || cp >= gc_from_max) return false;
+        size_t lo = 0, hi = gc_from_idx_cnt;
+        while (lo < hi) {
+            size_t mid = lo + (hi - lo) / 2;
+            const struct gc_chunk_range *r = &gc_from_idx[mid];
+            if (cp < r->lo) hi = mid;
+            else if (cp >= r->hi) lo = mid + 1;
+            else return true;
+        }
+        return false;
+    }
+    /* No idx (e.g. called outside GC): linear fallback against the
+     * live arena list.  arena_first points at from-space during GC,
+     * to-space otherwise. */
     for (struct nuq_chunk *c = arena_first; c; c = c->next) {
-        const char *cp = (const char *)p;
         if (cp >= c->data && cp < c->data + c->capa) return true;
     }
     return false;
@@ -162,8 +274,13 @@ nuq_arena_alloc_slow(size_t sz)
     /* Trigger GC if from-space crossed threshold — checked BEFORE the
      * big-alloc branch so deeply-recursive `acc + [$i]` style code
      * with growing arrays doesn't bypass the GC trigger by always
-     * taking the dedicated-chunk path. */
-    if (!gc_in_progress && nuq_gc_defer == 0 && nuq_active_ctx && arena_total > arena_gc_threshold) {
+     * taking the dedicated-chunk path.  In stress-debug mode, fire on
+     * every call regardless of threshold. */
+    if (!gc_in_progress && nuq_gc_defer == 0 && nuq_active_ctx
+#if !NUQ_GC_DEBUG_STRESS
+        && arena_total > arena_gc_threshold
+#endif
+    ) {
         nuq_arena_collect();
         char *p = nuq_arena_cur;
         char *next = p + sz;
@@ -281,6 +398,23 @@ scratch_reset(void)
 void
 nuq_arena_reset(void)
 {
+#if NUQ_GC_DEBUG_MPROTECT
+    /* Debug: mprotect end-of-run chunks too — any stale pointer that
+     * survived past the run boundary stays just as obvious. */
+    {
+        struct nuq_chunk *cur = arena_first;
+        while (cur) {
+            struct nuq_chunk *next = cur->next;
+            size_t total = sizeof(struct nuq_chunk) + cur->capa;
+            long ps = sysconf(_SC_PAGESIZE);
+            if (ps <= 0) ps = 4096;
+            total = (total + (size_t)ps - 1) & ~((size_t)ps - 1);
+            (void)madvise(cur, total, MADV_DONTNEED);
+            (void)mprotect(cur, total, PROT_NONE);
+            cur = next;
+        }
+    }
+#else
     /* End-of-run wholesale reset: chunks become spares. */
     if (arena_first) {
         struct nuq_chunk *tail = arena_first;
@@ -288,6 +422,7 @@ nuq_arena_reset(void)
         tail->next = arena_spare;
         arena_spare = arena_first;
     }
+#endif
     arena_first = NULL;
     arena_current = NULL;
     nuq_arena_cur = NULL;
@@ -477,6 +612,13 @@ nuq_arena_collect(void)
     gc_to_end = NULL;
     gc_to_total = 0;
 
+    /* Index the from-space chunks for O(log N) in_arena() during the
+     * forwarding phase.  Without this, gc_forward_value's per-call
+     * in_arena() walked the chunk list linearly — O(N²) total during a
+     * single Cheney pass — which was the dominant hot spot for big-tree
+     * workloads (~80% CPU on `tree_paths`). */
+    gc_build_from_idx(from_first);
+
     struct CTX_struct *c = nuq_active_ctx;
 
     /* Roots: CTX. */
@@ -504,7 +646,14 @@ nuq_arena_collect(void)
             gc_forward_value(&a->base[j]);
     }
 
-    /* Cheney scan. */
+    /* Cheney scan.  Re-evaluate `chunk_end` every step: gc_scan_obj
+     * may forward children whose allocs transition off the current
+     * chunk (gc_to_current advances to a new chunk, and the previous
+     * chunk's `used` is finalized at that transition).  A loop that
+     * caches chunk_end at iteration entry would stop at an early
+     * high-water mark and skip objects placed after it but before the
+     * transition — leaving forwarding incomplete and stale arena→arena
+     * pointers behind once from-space chunks get recycled. */
     struct nuq_chunk *scan_chunk = gc_to_first;
     char *scan_ptr = scan_chunk ? scan_chunk->data : NULL;
     while (scan_chunk) {
@@ -512,20 +661,36 @@ nuq_arena_collect(void)
             char *chunk_end = (scan_chunk == gc_to_current)
                               ? gc_to_cur
                               : scan_chunk->data + scan_chunk->used;
-            while (scan_ptr < chunk_end) {
-                struct nuq_obj *o = (struct nuq_obj *)scan_ptr;
-                size_t sz = gc_obj_total_size(o);
-                sz = (sz + 7) & ~(size_t)7;
-                gc_scan_obj(o);
-                scan_ptr += sz;
-            }
-            if (scan_chunk == gc_to_current && scan_ptr < gc_to_cur) continue;
-            break;
+            if (scan_ptr >= chunk_end) break;
+            struct nuq_obj *o = (struct nuq_obj *)scan_ptr;
+            size_t sz = gc_obj_total_size(o);
+            sz = (sz + 7) & ~(size_t)7;
+            gc_scan_obj(o);
+            scan_ptr += sz;
         }
         scan_chunk = scan_chunk->next;
         scan_ptr = scan_chunk ? scan_chunk->data : NULL;
     }
 
+#if NUQ_GC_DEBUG_MPROTECT
+    /* Debug build: mprotect from-space PROT_NONE + madvise DONTNEED so
+     * any stale arena pointer dereference SEGVs immediately.  Don't
+     * reuse — keep address ranges reserved.  Memory grows
+     * monotonically; meant for catching GC bugs, not production. */
+    {
+        struct nuq_chunk *cur = from_first;
+        while (cur) {
+            struct nuq_chunk *next = cur->next;
+            size_t total = sizeof(struct nuq_chunk) + cur->capa;
+            long ps = sysconf(_SC_PAGESIZE);
+            if (ps <= 0) ps = 4096;
+            total = (total + (size_t)ps - 1) & ~((size_t)ps - 1);
+            (void)madvise(cur, total, MADV_DONTNEED);
+            (void)mprotect(cur, total, PROT_NONE);
+            cur = next;
+        }
+    }
+#else
     /* Recycle from-space chunks back to spare; trim oversized list
      * after each GC so growing-acc workloads don't pile up unused
      * chunks of stale sizes. */
@@ -536,6 +701,7 @@ nuq_arena_collect(void)
         arena_spare = from_first;
     }
     arena_trim_spare();
+#endif
 
     /* Promote to-space. */
     arena_first = gc_to_first;
@@ -552,6 +718,10 @@ nuq_arena_collect(void)
 
     gc_to_first = NULL;
     gc_to_current = NULL;
+    /* Tear down the from-space index — out of GC, in_arena() falls
+     * back to walking arena_first which now points at to-space. */
+    gc_from_idx_cnt = 0;
+    gc_from_min = gc_from_max = NULL;
     gc_in_progress = false;
 }
 
@@ -594,6 +764,12 @@ nuq_make_int_slow(int64_t v)
 VALUE
 nuq_make_string(const char *s, size_t len)
 {
+    /* `s` is a raw byte pointer the caller can't pin.  If it points
+     * into arena memory (e.g. a slice of an existing string) and our
+     * alloc fires GC, the source bytes get moved to to-space and the
+     * old buffer is stale (mprotect'd in debug builds).  Defer GC
+     * across the alloc + memcpy pair so `s` stays valid. */
+    NUQ_GC_DEFER_BEGIN();
     size_t buf_sz = (len + 1 + 7) & ~(size_t)7;
     char *block = (char *)nuq_value_alloc(NUQ_HDR_SZ + buf_sz);
     struct nuq_obj *o = (struct nuq_obj *)block;
@@ -602,6 +778,7 @@ nuq_make_string(const char *s, size_t len)
     o->str.len = len;
     memcpy(o->str.bytes, s, len);
     o->str.bytes[len] = '\0';
+    NUQ_GC_DEFER_END();
     return NUQ_OBJ_VAL(o);
 }
 
@@ -610,10 +787,9 @@ nuq_make_string_take(char *s, size_t len)
 {
     /* `s` is presumed to already live in the same arena as the obj
      * we're about to allocate.  After the alloc, s may be stale (GC
-     * could fire and not have known to update it).  To stay safe,
-     * copy s into the obj's combined buffer.  Marginal cost — repeat
-     * / fmt callers that build a buffer up front already alloc
-     * separately.  The combined-alloc path is the new contract. */
+     * could fire and not have known to update it).  Defer GC across
+     * the alloc + memcpy so the caller-supplied bytes stay valid. */
+    NUQ_GC_DEFER_BEGIN();
     size_t buf_sz = (len + 1 + 7) & ~(size_t)7;
     char *block = (char *)nuq_value_alloc(NUQ_HDR_SZ + buf_sz);
     struct nuq_obj *o = (struct nuq_obj *)block;
@@ -622,6 +798,7 @@ nuq_make_string_take(char *s, size_t len)
     o->str.len = len;
     memcpy(o->str.bytes, s, len);
     o->str.bytes[len] = '\0';
+    NUQ_GC_DEFER_END();
     return NUQ_OBJ_VAL(o);
 }
 
@@ -850,6 +1027,53 @@ append:
         o->obj.idx_mask = 0;
     }
     NUQ_GC_UNPIN(3);
+}
+
+/* nuq_object_append — append a (key, val) pair without scanning for
+ * an existing key.  Caller must guarantee the key is not already
+ * present (e.g. parser building a fresh object, or object literal
+ * builder where the parser has verified keys are statically distinct).
+ * Cheaper than nuq_object_set's O(len) dedup pass + PIN3. */
+void
+nuq_object_append(VALUE obj, VALUE key, VALUE val)
+{
+    struct nuq_obj *o = NUQ_PTR(obj);
+    if (UNLIKELY(o->obj.len == o->obj.capa)) {
+        NUQ_GC_PIN3(obj, key, val);
+        size_t old_capa = o->obj.capa;
+        size_t nc = old_capa ? old_capa * 2 : 4;
+        VALUE *new_keys = (VALUE *)nuq_value_alloc(nc * sizeof(VALUE));
+        o = NUQ_PTR(obj);
+        memcpy(new_keys, o->obj.keys, old_capa * sizeof(VALUE));
+        o->obj.keys = new_keys;
+        VALUE *new_vals = (VALUE *)nuq_value_alloc(nc * sizeof(VALUE));
+        o = NUQ_PTR(obj);
+        memcpy(new_vals, o->obj.vals, old_capa * sizeof(VALUE));
+        o->obj.vals = new_vals;
+        o->obj.capa = nc;
+        NUQ_GC_UNPIN(3);
+    }
+    o->obj.keys[o->obj.len] = key;
+    o->obj.vals[o->obj.len] = val;
+    o->obj.len++;
+    /* Maintain hash-idx contract: caller-guaranteed unique key means
+     * we can put_raw without re-scan. */
+    const struct nuq_obj *ks = NUQ_IS_PTR(key) ? NUQ_PTR(key) : NULL;
+    if (LIKELY(ks && ks->type == NUQ_T_STRING)) {
+        if (o->obj.idx == NULL) {
+            if (o->obj.len > NUQ_OBJ_HASH_MIN) obj_idx_rebuild_v(obj);
+        } else {
+            if (o->obj.len * 2 > (size_t)o->obj.idx_mask + 1) {
+                obj_idx_rebuild_v(obj);
+            } else {
+                uint32_t h = nuq_str_hash(ks->str.bytes, ks->str.len);
+                obj_idx_put_raw(o->obj.idx, o->obj.idx_mask, h, (uint32_t)o->obj.len);
+            }
+        }
+    } else {
+        o->obj.idx = NULL;
+        o->obj.idx_mask = 0;
+    }
 }
 
 void
@@ -1179,11 +1403,15 @@ VALUE
 nuq_keys(VALUE v, bool sorted)
 {
     if (!NUQ_IS_PTR(v)) goto bad;
-    struct nuq_obj *o = NUQ_PTR(v);
-    if (o->type == NUQ_T_OBJECT) {
-        VALUE r = nuq_make_array(o->obj.len);
-        for (size_t i = 0; i < o->obj.len; i++)
-            nuq_array_push(r, o->obj.keys[i]);
+    if (NUQ_PTR(v)->type == NUQ_T_OBJECT) {
+        /* Pin v across nuq_make_array (which can GC); refetch via
+         * NUQ_PTR(v) each iter so the keys array is valid post-GC. */
+        NUQ_GC_PIN1(v);
+        size_t len = NUQ_PTR(v)->obj.len;
+        VALUE r = nuq_make_array(len);
+        NUQ_GC_PIN1(r);
+        for (size_t i = 0; i < len; i++)
+            nuq_array_push(r, NUQ_PTR(v)->obj.keys[i]);
         if (sorted) {
             /* simple insertion sort, n is usually small */
             struct nuq_obj *ro = NUQ_PTR(r);
@@ -1197,12 +1425,16 @@ nuq_keys(VALUE v, bool sorted)
                 ro->arr.items[j] = x;
             }
         }
+        NUQ_GC_UNPIN(2);
         return r;
     }
-    if (o->type == NUQ_T_ARRAY) {
-        VALUE r = nuq_make_array(o->arr.len);
-        for (size_t i = 0; i < o->arr.len; i++)
+    if (NUQ_PTR(v)->type == NUQ_T_ARRAY) {
+        size_t len = NUQ_PTR(v)->arr.len;
+        VALUE r = nuq_make_array(len);
+        NUQ_GC_PIN1(r);
+        for (size_t i = 0; i < len; i++)
             nuq_array_push(r, nuq_make_int((int64_t)i));
+        NUQ_GC_UNPIN(1);
         return r;
     }
   bad:
@@ -1619,24 +1851,42 @@ nuq_op_div_slow(VALUE a, VALUE b)
 {
     if (NUQ_IS_PTR(a) && NUQ_PTR(a)->type == NUQ_T_STRING &&
         NUQ_IS_PTR(b) && NUQ_PTR(b)->type == NUQ_T_STRING) {
-        struct nuq_obj *oa = NUQ_PTR(a), *ob = NUQ_PTR(b);
+        /* Pin both inputs across the build loop so neither the source
+         * `a` (which we read bytes from) nor `b` (the separator we
+         * memcmp against) gets relocated mid-walk by Cheney compaction
+         * triggered from nuq_make_array / nuq_make_string / push. */
+        NUQ_GC_PIN2(a, b);
         VALUE r = nuq_make_array(0);
-        if (ob->str.len == 0) {
-            for (size_t i = 0; i < oa->str.len; i++)
+        NUQ_GC_PIN1(r);
+        if (NUQ_PTR(b)->str.len == 0) {
+            size_t alen = NUQ_PTR(a)->str.len;
+            for (size_t i = 0; i < alen; i++) {
+                /* Refetch oa each push since make_string may move it. */
+                struct nuq_obj *oa = NUQ_PTR(a);
                 nuq_array_push(r, nuq_make_string(oa->str.bytes + i, 1));
+            }
+            NUQ_GC_UNPIN(3);
             return r;
         }
         size_t i = 0, last = 0;
-        while (i + ob->str.len <= oa->str.len) {
-            if (memcmp(oa->str.bytes + i, ob->str.bytes, ob->str.len) == 0) {
+        size_t alen = NUQ_PTR(a)->str.len;
+        size_t blen = NUQ_PTR(b)->str.len;
+        while (i + blen <= alen) {
+            const struct nuq_obj *oa = NUQ_PTR(a);
+            const struct nuq_obj *ob = NUQ_PTR(b);
+            if (memcmp(oa->str.bytes + i, ob->str.bytes, blen) == 0) {
                 nuq_array_push(r, nuq_make_string(oa->str.bytes + last, i - last));
-                i += ob->str.len;
+                i += blen;
                 last = i;
             } else {
                 i++;
             }
         }
-        nuq_array_push(r, nuq_make_string(oa->str.bytes + last, oa->str.len - last));
+        {
+            const struct nuq_obj *oa = NUQ_PTR(a);
+            nuq_array_push(r, nuq_make_string(oa->str.bytes + last, alen - last));
+        }
+        NUQ_GC_UNPIN(3);
         return r;
     }
     if (both_numeric(a, b)) {

@@ -835,7 +835,10 @@ parse_primary(lexer_t *L)
             token_t tk = take(L);
             return ALLOC_node_format(fid, ALLOC_node_interp((uint32_t)tk.i));
         }
-        return ALLOC_node_format(fid, NULL);
+        /* Bare `@fmt` applies to current input.  Auto-generated
+         * dispatcher unconditionally derefs body->head.dispatcher, so
+         * substitute identity (which emits c->input) for NULL. */
+        return ALLOC_node_format(fid, ALLOC_node_identity());
       }
       case TK_DOLLAR: {
         take(L);
@@ -1153,8 +1156,13 @@ build_indexlike(struct Node *acc, struct Node *e1, struct Node *e2,
     uint32_t v = fresh_outer_var();
     struct Node *ww1 = wrap_outer(v, e1);
     struct Node *ww2 = wrap_outer(v, e2);
+    /* Auto-generated dispatcher dereferences both startn->head.dispatcher
+     * and stopn->head.dispatcher unconditionally; pass a node_null
+     * placeholder (which evaluates to NUQ_NULL, matching jq's "missing
+     * end → array length / 0" semantics handled in nuq_slice_eval). */
     struct Node *inner = has_colon
-        ? ALLOC_node_slice(ww1, ww2, flags)
+        ? ALLOC_node_slice(ww1 ? ww1 : ALLOC_node_null(),
+                           ww2 ? ww2 : ALLOC_node_null(), flags)
         : ALLOC_node_index(ww1);
     return ALLOC_node_as(ALLOC_node_identity(), v,
                          ALLOC_node_pipe(acc, inner));
@@ -1402,6 +1410,8 @@ extern const struct NodeKind kind_node_b_select;
 extern const struct NodeKind kind_node_array;
 extern const struct NodeKind kind_node_b_length;
 extern const struct NodeKind kind_node_b_add;
+extern const struct NodeKind kind_node_b_inputs;
+extern const struct NodeKind kind_node_b_inputs_pipe;
 
 /* Parse-time pipe fusion — semantic-preserving rewrites that telescope
  * common stage chains so they don't materialise intermediate streams.
@@ -1454,10 +1464,17 @@ nuq_try_fuse_pair(struct Node *lhs, struct Node *rhs)
      * `[E]` always emits an array; `length` of an array is its size,
      * which equals the count of E's emits.  The intermediate array is
      * unobservable, so we replace the build-then-measure with a count.
-     * Errors in body still abort before length would have run. */
+     * Errors in body still abort before length would have run.
+     *
+     * Sub-rule:  body == inputs_pipe(F)   →   count_inputs(F)
+     * (i.e. `[inputs | F] | length`).  Drops the per-iter pool accum
+     * of F's matches — we only need the count. */
     if (lhs->head.kind == &kind_node_array &&
         rhs->head.kind == &kind_node_b_length) {
-        return ALLOC_node_emit_count(lhs->u.node_array.body);
+        struct Node *body = lhs->u.node_array.body;
+        if (body->head.kind == &kind_node_b_inputs_pipe)
+            return ALLOC_node_b_count_inputs(body->u.node_b_inputs_pipe.body);
+        return ALLOC_node_emit_count(body);
     }
 
     /* Rule 4:  [body] | add   →   emit_fold_add(body)
@@ -1469,6 +1486,27 @@ nuq_try_fuse_pair(struct Node *lhs, struct Node *rhs)
     if (lhs->head.kind == &kind_node_array &&
         rhs->head.kind == &kind_node_b_add) {
         return ALLOC_node_emit_fold_add(lhs->u.node_array.body);
+    }
+
+    /* Rule 5:  inputs | F   →   inputs_pipe(F)
+     * Stream input records one at a time through F instead of pulling
+     * the whole queue into the pool first.  Big win for `[inputs | F]`
+     * patterns at JSONL scale: memory becomes O(F's surviving emits)
+     * not O(total input count). */
+    if (lhs->head.kind == &kind_node_b_inputs) {
+        return ALLOC_node_b_inputs_pipe(rhs);
+    }
+
+    /* Rule 5':  inputs_pipe(F) | G   →   inputs_pipe(F | G)
+     * Multi-stage chain absorption.  Without this, only the first
+     * stage of `inputs | F | G` is streaming; G sees F's full pool.
+     * Semantically `(inputs | F) | G == inputs | (F | G)` — pipe is
+     * associative.  Keeps the per-input loop a single eval through
+     * the entire stage chain.  Recursion via `nuq_make_pipe(F, G)` so
+     * F-side fusions still apply (e.g. `select | select`, `map | map`). */
+    if (lhs->head.kind == &kind_node_b_inputs_pipe) {
+        return ALLOC_node_b_inputs_pipe(
+            nuq_make_pipe(lhs->u.node_b_inputs_pipe.body, rhs));
     }
 
     return NULL;

@@ -26,6 +26,17 @@ $(NODE_GENFILES): node.def nuq_gen.rb ../../lib/astrogen.rb
 test: nuq
 	ruby test/run_tests.rb
 
+# GC bug catcher: every arena alloc forces a Cheney pass, and
+# from-space pages are mprotect(PROT_NONE)+madvise(DONTNEED) so any
+# stale arena pointer SEGVs at the deref site instead of silently
+# reading garbage from a recycled chunk.  Slow.  Use to flush out
+# missing NUQ_GC_PIN sites the production builds wouldn't catch.
+nuq-gcdebug: main.c node.c runtime.c value.c json.c filter.c builtin.c linearity.c Makefile $(NODE_GENFILES) context.h node.h
+	$(CC) $(CFLAGS) -DNUQ_GC_DEBUG_MPROTECT=1 -DNUQ_GC_DEBUG_STRESS=1 -O0 -o nuq-gcdebug main.c node.c runtime.c value.c json.c filter.c builtin.c linearity.c $(LIBS)
+
+gctest: nuq-gcdebug
+	NUQ=$(PWD)/nuq-gcdebug ruby test/run_tests.rb
+
 # Run jq's official tests/jq.test against nuq (downloads on first
 # use to /tmp/claude/jq.test or JQ_TESTFILE).  Tells you nuq's
 # compatibility score with jq's master test suite.
@@ -57,4 +68,4 @@ clean-bench-data:
 distclean: clean clean-bench-data
 	rm -rf code_store
 
-.PHONY: all test jqtest bench bench-data-jsonl bench-jsonl clean clean-bench-data distclean
+.PHONY: all test gctest jqtest bench bench-data-jsonl bench-jsonl clean clean-bench-data distclean
