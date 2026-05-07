@@ -1091,9 +1091,50 @@ static VALUE kernel_eval_stub(CTX *c, VALUE self, int argc, VALUE *argv) {
      * lexical context: cref / current_frame stay; def lands on the
      * caller's class.  korb_eval_string normally resets these to
      * top-level — for the with-binding case we preserve them. */
-    extern NODE *koruby_parse_full(const char *src, size_t len, const char *filename, char **err_msg);
+    extern NODE *koruby_parse_with_scope(const char *src, size_t len, const char *filename,
+                                          const char **scope_locals, size_t scope_locals_n,
+                                          char **err_msg);
     char *err_msg = NULL;
-    NODE *ast = koruby_parse_full(s->ptr, (size_t)s->len, filename, &err_msg);
+    /* Collect caller's lvar names so prism resolves bare-name refs in
+     * the eval body to local variables (CRuby eval-with-binding).
+     * Caller is c->current_frame (kernel_eval is a cfunc — cfunc
+     * prologue does NOT push its own frame, so current_frame is the
+     * caller's AST method frame). */
+    const char **scope_locals = NULL;
+    size_t scope_locals_n = 0;
+    /* Order of preference for locating caller's lvars:
+     *   1. running_block — eval inside a block sees the block's own
+     *      locals (which include any params).  Block locals shadow
+     *      enclosing method locals; we use the block's table so eval'd
+     *      `a` in `[1].each { |a| eval('a') }` resolves to the block's
+     *      a, not the method's.
+     *   2. c->current_frame->method — eval directly inside a method
+     *      body (cfunc prologue doesn't push a frame, so current_frame
+     *      is the caller's AST method).
+     */
+    extern struct korb_proc *running_block;
+    extern ID *korb_body_local_names(struct Node *body);
+    ID *names = NULL;
+    if (running_block && running_block->body) {
+        names = korb_body_local_names(running_block->body);
+    }
+    if (!names && c->current_frame && c->current_frame->method &&
+        c->current_frame->method->type == KORB_METHOD_AST) {
+        names = c->current_frame->method->u.ast.local_names;
+    }
+    if (names) {
+        size_t n = 0;
+        while (names[n] != 0) n++;
+        if (n > 0) {
+            scope_locals = (const char **)korb_xmalloc(sizeof(char *) * n);
+            for (size_t i = 0; i < n; i++) {
+                scope_locals[i] = korb_id_name(names[i]);
+            }
+            scope_locals_n = n;
+        }
+    }
+    NODE *ast = koruby_parse_with_scope(s->ptr, (size_t)s->len, filename,
+                                         scope_locals, scope_locals_n, &err_msg);
     if (err_msg) {
         VALUE eSE = korb_const_get(korb_vm->object_class, korb_intern("SyntaxError"));
         if (eSE && !SPECIAL_CONST_P(eSE) && BUILTIN_TYPE(eSE) == T_CLASS) {

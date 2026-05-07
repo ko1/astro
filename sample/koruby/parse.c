@@ -57,6 +57,12 @@ struct transduce_context {
 
 static NODE *T(struct transduce_context *tc, pm_node_t *n);
 
+/* eval-with-binding: when set, transduce_root skips the node_scope
+ * wrapper around PM_PROGRAM_NODE so the body runs in caller's frame.
+ * Defined globally; toggled by koruby_parse_with_scope around the
+ * transduce call. */
+static bool g_skip_program_scope = false;
+
 static const char *
 alloc_cstr(pm_parser_t *parser, pm_constant_id_t cid) {
     pm_constant_t *c = pm_constant_pool_id_to_constant(&parser->constant_pool, cid);
@@ -955,6 +961,18 @@ build_call_with_block(struct transduce_context *tc, NODE *recv, ID name,
      * (interpreter), and the hot work inside `iters.times { ... }` —
      * the `while` loop, ivar set, method call — never gets specialized. */
     code_repo_add("<block>", body, false);
+    /* Capture the block's slot→name table so binding / eval-with-binding
+     * called from inside this block can iterate the live env and find
+     * each named lvar.  Stored on the body NODE via the same registry
+     * that AST methods use. */
+    if (bn->locals.size > 0) {
+        ID *blk_names = korb_xmalloc(sizeof(ID) * (bn->locals.size + 1));
+        for (size_t i = 0; i < bn->locals.size; i++) {
+            blk_names[i] = intern_constant(tc->parser, bn->locals.ids[i]);
+        }
+        blk_names[bn->locals.size] = 0;
+        korb_register_body_local_names(body, blk_names);
+    }
 
     /* Restore arg_index to original; build_call_simple will re-reserve. */
     rewind_arg_index(tc, saved_arg_index);
@@ -2062,6 +2080,12 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
           NODE *body = transduce_statements(tc, n->statements);
           uint32_t mx = tc->frame->max_cnt;
           pop_frame(tc);
+          /* eval-with-binding mode: caller passed scope_locals that got
+           * merged into n->locals.  We must NOT shift fp (node_scope
+           * does fp += envsize + zeros), because eval body's slot 0
+           * IS the caller's lvar slot 0.  Return body unwrapped — runs
+           * in caller's frame directly. */
+          if (g_skip_program_scope) return body;
           return ALLOC_node_scope(mx, body);
       }
       case PM_STATEMENTS_NODE:
@@ -5318,6 +5342,9 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
 }
 
 NODE *koruby_parse_full(const char *src, size_t len, const char *filename, char **err_msg);
+NODE *koruby_parse_with_scope(const char *src, size_t len, const char *filename,
+                              const char **scope_locals, size_t scope_locals_n,
+                              char **err_msg);
 
 NODE *
 koruby_parse(const char *src, size_t len, const char *filename)
@@ -5328,9 +5355,43 @@ koruby_parse(const char *src, size_t len, const char *filename)
 NODE *
 koruby_parse_full(const char *src, size_t len, const char *filename, char **err_msg)
 {
+    return koruby_parse_with_scope(src, len, filename, NULL, 0, err_msg);
+}
+
+NODE *
+koruby_parse_with_scope(const char *src, size_t len, const char *filename,
+                        const char **scope_locals, size_t scope_locals_n,
+                        char **err_msg)
+{
     pm_parser_t parser;
     pm_options_t options = {0};
     if (filename) pm_options_filepath_set(&options, filename);
+    /* Eval-with-binding: declare caller's locals as a single outer
+     * scope so prism resolves bare-name references like `a` in
+     * `eval('a + 1')` to LOCAL_VARIABLE_READ_NODE rather than method
+     * calls.  Prism merges the outer scope with the program's own
+     * scope, so the resulting ProgramNode.locals contains both
+     * caller's lvars (at their original indices) and any new locals
+     * introduced inside the eval body. */
+    bool eval_mode = (scope_locals != NULL && scope_locals_n > 0);
+    if (eval_mode) {
+        pm_options_scopes_init(&options, 1);
+        pm_options_scope_t *scope = (pm_options_scope_t *)pm_options_scope_get(&options, 0);
+        if (scope) {
+            pm_options_scope_init(scope, scope_locals_n);
+            for (size_t i = 0; i < scope_locals_n; i++) {
+                pm_string_t *s = (pm_string_t *)pm_options_scope_local_get(scope, i);
+                if (s && scope_locals[i]) {
+                    /* Direct struct fill — pm_string_constant_init isn't
+                     * exported from libprism.  PM_STRING_CONSTANT means
+                     * "don't own / don't free the buffer". */
+                    s->source = (const uint8_t *)scope_locals[i];
+                    s->length = strlen(scope_locals[i]);
+                    s->type   = PM_STRING_CONSTANT;
+                }
+            }
+        }
+    }
     pm_parser_init(&parser, (const uint8_t *)src, len, &options);
     pm_node_t *root = pm_parse(&parser);
 
@@ -5356,10 +5417,14 @@ koruby_parse_full(const char *src, size_t len, const char *filename, char **err_
         memcpy(buf, filename, fl + 1);
         tc.source_file = buf;
     }
+    bool prev_skip_scope = g_skip_program_scope;
+    g_skip_program_scope = eval_mode;
     NODE *r = T(&tc, root);
+    g_skip_program_scope = prev_skip_scope;
 
     pm_node_destroy(&parser, root);
     pm_parser_free(&parser);
+    pm_options_free(&options);
 
     return r;
 }
