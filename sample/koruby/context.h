@@ -254,6 +254,11 @@ typedef struct CTX_struct {
      * — Kernel#local_variables / __method__ / etc. consult this to
      * report the binding's view rather than the caller frame's. */
     void *current_eval_binding;
+    /* When non-NULL, the currently-executing code is an eval body (with
+     * or without binding).  Holds the parsed program node so `binding`
+     * inside the eval body can pick up eval-introduced lvars.  Distinct
+     * from current_eval_binding, which is only set for Binding#eval. */
+    struct Node *current_eval_program_body;
 
     /* Most-recent callsite of a cfunc dispatch — set by prologue_cfunc_inl
      * before calling the cfunc, so cfunc bodies (e.g. kernel_raise) can

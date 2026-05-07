@@ -1183,6 +1183,8 @@ static VALUE kernel_eval_stub(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (!ast) return Qnil;
     const char *prev_file = c->current_file;
     c->current_file = filename;
+    struct Node *prev_eval_body = c->current_eval_program_body;
+    c->current_eval_program_body = ast;
     extern void OPTIMIZE_decl(void);
     extern struct Node *OPTIMIZE(struct Node *n);
     OPTIMIZE(ast);
@@ -1205,6 +1207,7 @@ static VALUE kernel_eval_stub(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     VALUE r = EVAL(c, ast);
     c->cref = prev_cref;
+    c->current_eval_program_body = prev_eval_body;
     c->current_file = prev_file;
     return r;
 }

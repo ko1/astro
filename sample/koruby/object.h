@@ -296,6 +296,17 @@ struct korb_binding {
     /* For new-local extension via local_variable_set / eval: when fp
      * may not have free slots, we fall back to this Hash. */
     VALUE extra_vars;
+    /* Lexical-parent storage: lvars from outer block / method scopes
+     * that are visible to the binding but live in their own frames.
+     * Stored separately from extra_vars because extras (set-introduced)
+     * appear at the FRONT of local_variables, while these outer names
+     * appear at the END (CRuby orders innermost-first). */
+    VALUE outer_vars;
+    /* Number of names at the END of names[] that are lexical-parent
+     * (outer) entries.  names[0..names_cnt-outer_names_cnt) are
+     * primary (scope_locals); names[names_cnt-outer_names_cnt..]
+     * are outer parent names. */
+    uint32_t outer_names_cnt;
     /* Linkage for the per-frame "bindings created here" list.  At
      * frame epilogue we walk this list and snapshot the live fp into
      * each binding's heap so the binding survives the frame return. */
