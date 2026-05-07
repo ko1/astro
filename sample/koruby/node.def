@@ -2041,8 +2041,62 @@ node_apply_call(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, NODE *
 }
 
 NODE_DEF @noinline
+node_class_def_in_strict(CTX * restrict c, NODE * restrict n, NODE *parent_expr, ID name, NODE *super_expr, NODE *body, uint32_t enforce_super_match)
+{
+    VALUE parent_v = EA(c, parent_expr);
+    if (BUILTIN_TYPE(parent_v) != T_CLASS && BUILTIN_TYPE(parent_v) != T_MODULE) {
+        korb_raise_type_error(c, "%s is not a class/module",
+                              korb_id_name(korb_class_of_class(parent_v)->name));
+        return Qnil;
+    }
+    struct korb_class *parent = (struct korb_class *)parent_v;
+    struct korb_class *super = korb_vm->object_class;
+    if (super_expr) {
+        VALUE sv = EA(c, super_expr);
+        if (BUILTIN_TYPE(sv) == T_CLASS) {
+            super = (struct korb_class *)sv;
+        } else if (enforce_super_match) {
+            korb_raise_type_error(c, "superclass must be a Class (%s given)",
+                                  korb_id_name(korb_class_of_class(sv)->name));
+            return Qnil;
+        }
+    }
+    struct korb_class *klass;
+    VALUE existing = korb_const_get(parent, name);
+    if (!UNDEF_P(existing) && BUILTIN_TYPE(existing) == T_CLASS) {
+        klass = (struct korb_class *)existing;
+        if (enforce_super_match && klass->super != super) {
+            korb_raise_type_error(c, "superclass mismatch for class %s",
+                                  korb_id_name(name));
+            return Qnil;
+        }
+    } else if (!UNDEF_P(existing) && enforce_super_match) {
+        korb_raise_type_error(c, "%s is not a class", korb_id_name(name));
+        return Qnil;
+    } else {
+        klass = korb_class_new(name, super, T_OBJECT);
+        korb_const_set(parent, name, (VALUE)klass);
+    }
+    struct korb_class *prev_class = c->current_class;
+    VALUE prev_self = c->self;
+    struct korb_cref new_cref = { .klass = klass, .prev = c->cref };
+    struct korb_cref *prev_cref = c->cref;
+    c->current_class = klass;
+    c->self = (VALUE)klass;
+    c->cref = &new_cref;
+    VALUE r = body ? EVAL_ARG(c, body) : Qnil;
+    c->current_class = prev_class;
+    c->self = prev_self;
+    c->cref = prev_cref;
+    return r;
+}
+
+NODE_DEF @noinline
 node_class_def_in(CTX * restrict c, NODE * restrict n, NODE *parent_expr, ID name, NODE *super_expr, NODE *body)
 {
+    /* Non-strict variant: same shape as _strict with enforce_super_match
+     * = 0.  Inlined here to avoid the per-arg dispatcher plumbing the
+     * generated EVAL wrappers expect. */
     VALUE parent_v = EA(c, parent_expr);
     if (BUILTIN_TYPE(parent_v) != T_CLASS && BUILTIN_TYPE(parent_v) != T_MODULE) {
         korb_raise_type_error(c, "%s is not a class/module",

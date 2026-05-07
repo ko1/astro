@@ -2775,7 +2775,7 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
               if (n->constant_path && PM_NODE_TYPE_P(n->constant_path, PM_CONSTANT_PATH_NODE)) {
                   pm_constant_path_node_t *cp = (pm_constant_path_node_t *)n->constant_path;
                   NODE *parent = cp->parent ? T(tc, cp->parent) : ALLOC_node_const_get(korb_intern("Object"));
-                  return ALLOC_node_class_def_in(parent, name, super, body_scope);
+                  return ALLOC_node_class_def_in_strict(parent, name, super, body_scope, 1);
               }
               return ALLOC_node_class_def(name, super, body_scope);
           }
