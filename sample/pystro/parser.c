@@ -3747,21 +3747,39 @@ parse_del_one(void)
         else                              istart = parse_expr();
         if (match_tok(T_COLON)) {
             is_slice = true;
-            if (peek_tok(0)->kind != T_COLON && peek_tok(0)->kind != T_RBRACK)
+            if (peek_tok(0)->kind != T_COLON && peek_tok(0)->kind != T_RBRACK
+                    && peek_tok(0)->kind != T_COMMA)
                 istop = parse_expr();
             if (match_tok(T_COLON)) {
-                if (peek_tok(0)->kind != T_RBRACK) istep = parse_expr();
+                if (peek_tok(0)->kind != T_RBRACK && peek_tok(0)->kind != T_COMMA)
+                    istep = parse_expr();
             }
         }
-        // `del d[1, 2]` — tuple-key subscript.
-        if (!is_slice && peek_tok(0)->kind == T_COMMA) {
+        // `del d[1, 2]` / `del d[:42, ..., :24:, 24, 100]` — multi-element
+        // subscript with slice elements; pack into a tuple of items
+        // (slices wrapped in `slice(...)` calls).
+        if (peek_tok(0)->kind == T_COMMA) {
             NODE *items[64];
             int n = 0;
-            items[n++] = istart;
+            if (is_slice) {
+                NODE *sa = istart ? istart : ALLOC_node_const_none();
+                NODE *sb = istop  ? istop  : ALLOC_node_const_none();
+                NODE *sc = istep  ? istep  : ALLOC_node_const_none();
+                NODE *args[3] = { sa, sb, sc };
+                size_t bidx = node_table_reserve(args, 3);
+                items[n++] = ALLOC_node_call_n(
+                    ALLOC_node_gref(intern_name("slice", 5)),
+                    (uint32_t)bidx, 3);
+                is_slice = false;
+            } else {
+                items[n++] = istart;
+            }
             while (match_tok(T_COMMA)) {
                 if (peek_tok(0)->kind == T_RBRACK) break;
                 if (n >= 64) parse_error("too many tuple keys in del");
-                items[n++] = parse_expr();
+                bool elem_is_slice;
+                NODE *e = parse_subscript_elem(&elem_is_slice);
+                items[n++] = e ? e : ALLOC_node_const_none();
             }
             size_t base = node_table_reserve(items, n);
             istart = ALLOC_node_make_tuple((uint32_t)base, (uint32_t)n);
