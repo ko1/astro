@@ -3880,6 +3880,31 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                                    ALLOC_node_nil());
               (void)ai;
             }
+            case PM_CLASS_VARIABLE_READ_NODE: {
+              /* `defined?(@@x)` — "class variable" iff @@x is set on
+               * the lexically-enclosing class.  Use class_variable_defined?
+               * via self.class. */
+              pm_class_variable_read_node_t *cv = (pm_class_variable_read_node_t *)expr;
+              ID name = intern_constant(tc->parser, cv->name);
+              uint32_t ai = inc_arg_index(tc);
+              inc_arg_index(tc); rewind_arg_index(tc, ai);
+              struct method_cache *mc = alloc_method_cache();
+              NODE *cls_node = ALLOC_node_method_call(ALLOC_node_self(),
+                                                       korb_intern("class"), 0, ai, mc);
+              uint32_t ai2 = inc_arg_index(tc);
+              inc_arg_index(tc); rewind_arg_index(tc, ai2);
+              struct method_cache *mc2 = alloc_method_cache();
+              NODE *defined_p = ALLOC_node_seq(
+                  ALLOC_node_lvar_set(ai2, ALLOC_node_sym_lit(name)),
+                  ALLOC_node_method_call(cls_node, korb_intern("class_variable_defined?"),
+                                         1, ai2, mc2));
+              uint32_t rescue_slot = inc_arg_index(tc);
+              rewind_arg_index(tc, rescue_slot);
+              NODE *body = ALLOC_node_if(defined_p,
+                                   ALLOC_node_frozen_str_lit("class variable", 14),
+                                   ALLOC_node_nil());
+              return ALLOC_node_rescue(body, ALLOC_node_nil(), rescue_slot);
+            }
             case PM_NUMBERED_REFERENCE_READ_NODE:
               /* $1..$9 — defined? returns "global-variable" iff the
                * capture exists in $~.  We can't introspect captures
