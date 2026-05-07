@@ -4374,8 +4374,8 @@ skip_plain_unpack: ;
             //
             // For each target group, recover the starts and replay parse
             // against a temp holding the RHS.
-            size_t group_starts[8][64];   // [group][target]
-            int    group_counts[8];
+            size_t group_starts[256][64]; // [group][target]
+            int    group_counts[256];
             int    n_groups = 0;
             // First group from already-consumed targets — re-collect.
             size_t target_starts[64];
@@ -4408,7 +4408,7 @@ skip_plain_unpack: ;
                     pp++;
                 }
                 if (!more_chain) break;
-                if (n_groups >= 8) parse_error("too many chained assign groups");
+                if (n_groups >= 256) parse_error("too many chained assign groups");
                 int nt = 0;
                 group_starts[n_groups][nt++] = tok_pos;
                 (void)parse_expr();
@@ -4456,7 +4456,7 @@ skip_plain_unpack: ;
     if (k2 == T_ASSIGN) {
         // Possible chain `a = b = ... = expr` — accumulate target spans
         // and bind via a hidden temp so the RHS evaluates exactly once.
-        size_t starts[8] = { lhs_start };
+        size_t starts[256] = { lhs_start };
         int    nt = 1;
         tok_pos++;        // past first '='
         // We've already parsed `lhs_expr` once and seen `=`; the next
@@ -4465,7 +4465,7 @@ skip_plain_unpack: ;
             size_t s = tok_pos;
             (void)parse_expr_list();
             if (peek_tok(0)->kind == T_ASSIGN) {
-                if (nt >= 8) parse_error("too many = chains");
+                if (nt >= 256) parse_error("too many = chains");
                 starts[nt++] = s;
                 tok_pos++;
                 continue;
