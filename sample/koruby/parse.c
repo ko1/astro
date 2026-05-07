@@ -3569,6 +3569,10 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                       if (rp->name) lambda_rest_name = rp->name;
                   }
               }
+          } else if (n->parameters && PM_NODE_TYPE_P(n->parameters, PM_NUMBERED_PARAMETERS_NODE)) {
+              /* `-> { _1 }` — numbered parameters in a lambda. */
+              pm_numbered_parameters_node_t *np = (pm_numbered_parameters_node_t *)n->parameters;
+              params_cnt = (uint32_t)np->maximum;
           }
           push_frame(tc, &n->locals, true);
           uint32_t param_base = tc->frame->slot_base;
