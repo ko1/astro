@@ -128,9 +128,18 @@ node_gvar_set(CTX * restrict c, NODE * restrict n, ID name, NODE *rhs)
         if (!nm[2]) {
             char c2 = nm[1];
             if (c2 == '/' || c2 == '\\' || c2 == ',' || c2 == ';') string_only = true;
-            if (c2 == ':' || c2 == '"' || c2 == '!') read_only = true;
+            if (c2 == ':' || c2 == '"' || c2 == '!' || c2 == '?' ||
+                c2 == '<') read_only = true;
         } else if (nm[1] == '-' && nm[2] == '0' && !nm[3]) {
             string_only = true;
+        } else if (nm[1] == '-' && (nm[2] == 'a' || nm[2] == 'l' ||
+                                     nm[2] == 'p' || nm[2] == 'i' ||
+                                     nm[2] == 'F') && !nm[3]) {
+            read_only = true;
+        } else if (strcmp(nm, "$LOAD_PATH") == 0 ||
+                   strcmp(nm, "$LOADED_FEATURES") == 0 ||
+                   strcmp(nm, "$FILENAME") == 0) {
+            read_only = true;
         }
         if (read_only) {
             VALUE eN = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
