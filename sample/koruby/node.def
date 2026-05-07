@@ -1962,10 +1962,23 @@ node_singleton_def(CTX * restrict c, NODE * restrict n, ID name, NODE *body, uin
     /* def self.foo — install on c->self's singleton class. */
     struct korb_class *target;
     if (BUILTIN_TYPE(c->self) == T_CLASS || BUILTIN_TYPE(c->self) == T_MODULE) {
+        if (korb_obj_frozen_p(c->self)) {
+            VALUE eF = korb_const_get(korb_vm->object_class, korb_intern("FrozenError"));
+            korb_raise(c, (struct korb_class *)eF,
+                       "can't modify frozen %s",
+                       ((struct korb_class *)c->self)->name
+                         ? korb_id_name(((struct korb_class *)c->self)->name) : "Class");
+            return Qnil;
+        }
         target = korb_singleton_class_of((struct korb_class *)c->self);
     } else if (!SPECIAL_CONST_P(c->self) && BUILTIN_TYPE(c->self) == T_OBJECT) {
         /* Top-level `def self.foo`: target the receiver's singleton
          * class.  CRuby installs on main's singleton at top level. */
+        if (korb_obj_frozen_p(c->self)) {
+            VALUE eF = korb_const_get(korb_vm->object_class, korb_intern("FrozenError"));
+            korb_raise(c, (struct korb_class *)eF, "can't modify frozen object");
+            return Qnil;
+        }
         extern struct korb_class *korb_singleton_class_of_value(VALUE v);
         struct korb_class *meta = korb_singleton_class_of_value(c->self);
         target = meta ? meta : korb_class_of_class(c->self);
@@ -2012,6 +2025,14 @@ node_obj_singleton_def(CTX * restrict c, NODE * restrict n, NODE *recv_expr, ID 
      * T_MODULE we use the metaclass via korb_singleton_class_of. */
     extern struct korb_class *korb_singleton_class_of_value(VALUE v);
     VALUE recv = EA(c, recv_expr);
+    if (!SPECIAL_CONST_P(recv) && korb_obj_frozen_p(recv)) {
+        VALUE eF = korb_const_get(korb_vm->object_class, korb_intern("FrozenError"));
+        const char *kind = "object";
+        if (BUILTIN_TYPE(recv) == T_CLASS) kind = "Class";
+        else if (BUILTIN_TYPE(recv) == T_MODULE) kind = "Module";
+        korb_raise(c, (struct korb_class *)eF, "can't modify frozen %s", kind);
+        return Qnil;
+    }
     struct korb_class *meta = korb_singleton_class_of_value(recv);
     if (!meta) {
         korb_raise(c, NULL, "cannot define singleton method on this value");
@@ -2030,6 +2051,14 @@ node_obj_singleton_def_post(CTX * restrict c, NODE * restrict n, NODE *recv_expr
 {
     extern struct korb_class *korb_singleton_class_of_value(VALUE v);
     VALUE recv = EA(c, recv_expr);
+    if (!SPECIAL_CONST_P(recv) && korb_obj_frozen_p(recv)) {
+        VALUE eF = korb_const_get(korb_vm->object_class, korb_intern("FrozenError"));
+        const char *kind = "object";
+        if (BUILTIN_TYPE(recv) == T_CLASS) kind = "Class";
+        else if (BUILTIN_TYPE(recv) == T_MODULE) kind = "Module";
+        korb_raise(c, (struct korb_class *)eF, "can't modify frozen %s", kind);
+        return Qnil;
+    }
     struct korb_class *meta = korb_singleton_class_of_value(recv);
     if (!meta) {
         korb_raise(c, NULL, "cannot define singleton method on this value");
