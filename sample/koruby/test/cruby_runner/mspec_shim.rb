@@ -134,9 +134,19 @@ class MSpecExpectation
   end
   def =~(other)
     # See raise_error matcher for the rationale: /regex/ literals are
-    # Strings in koruby, so use substring matching as the proxy.
+    # Strings in koruby, so use substring matching as the proxy.  Strip
+    # common backslash escapes (\. \[ \] \( \) \? \+ \* \^ \$ \|) and
+    # ignore $ / ^ anchors so patterns like /begin_file\.rb$/ still
+    # match the actual filename ending with begin_file.rb.
     matched = if other.is_a?(String) && @actual.is_a?(String)
-                other.split('|').any? { |alt| @actual.include?(alt) }
+                other.split('|').any? { |alt|
+                  s = alt.dup
+                  %w(\\. \\[ \\] \\( \\) \\? \\+ \\* \\^ \\$ \\| \\\\).each do |esc|
+                    s = s.gsub(esc, esc[1])
+                  end
+                  s = s.delete('$^')
+                  @actual.include?(s)
+                }
               else
                 @actual =~ other
               end
@@ -652,13 +662,31 @@ def complain(_pattern = nil, **_opts); MSpecMatcher.new(:complain); end
 # or a temp file containing the source.  Stdout is returned; the
 # subprocess exit status updates `$?` so `ruby_exe(code); $?.exitstatus`
 # works.
-KORUBY_BIN = ENV['KORUBY_BIN'] || File.expand_path('../../koruby', __dir__)
+def __mspec_normalize_path(p)
+  # Make absolute by prepending Dir.pwd if not already, then resolve `..`.
+  p = File.join(Dir.pwd, p) unless p.start_with?('/')
+  parts = p.split('/').reject { |s| s.empty? || s == '.' }
+  out = []
+  parts.each do |s|
+    if s == '..' && !out.empty? && out.last != '..'
+      out.pop
+    else
+      out << s
+    end
+  end
+  '/' + out.join('/')
+end
+KORUBY_BIN = ENV['KORUBY_BIN'] ||
+             __mspec_normalize_path(File.join(__dir__, '..', '..', 'koruby'))
 $ms_ruby_exe_seq = 0
 def ruby_exe(code = nil, options: nil, args: nil, escape: nil, env: nil)
   return "" if code.nil?
   path = nil
   written = nil
-  if code.is_a?(String) && File.exist?(code) && (code.end_with?('.rb') || !code.include?("\n"))
+  # Single-line `.rb` paths are treated as files (relative or absolute);
+  # multi-line input is real source.
+  looks_like_path = code.is_a?(String) && !code.include?("\n") && code.end_with?('.rb')
+  if looks_like_path
     path = code
   else
     $ms_ruby_exe_seq += 1
