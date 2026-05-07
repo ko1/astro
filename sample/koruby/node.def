@@ -1593,13 +1593,22 @@ node_splat_to_ary(CTX * restrict c, NODE * restrict n, NODE *expr)
         }
     }
     /* CRuby: if value responds to to_a, call it.  to_a must return Array.
-     * Use respond_to? (which honors respond_to_missing?) so user mocks
-     * with method_missing-based dispatch are reached. */
+     * For BasicObject (which has no #respond_to?) and similar minimal
+     * classes, fall back to a direct method-table lookup so a singleton
+     * `def obj.to_a` is still detected. */
     {
-        VALUE rt = korb_funcall(c, v, korb_intern("respond_to?"), 1,
-                                (VALUE[]){ korb_id2sym(korb_intern("to_a")) });
-        if (c->state != KORB_NORMAL) { c->state = KORB_NORMAL; c->state_value = Qnil; rt = Qfalse; }
-        if (RTEST(rt)) {
+        bool has_to_a = false;
+        if (!SPECIAL_CONST_P(v)) {
+            struct korb_class *vk = (struct korb_class *)((struct RBasic *)v)->klass;
+            has_to_a = vk && korb_class_find_method(vk, korb_intern("to_a")) != NULL;
+        }
+        VALUE rt = Qfalse;
+        if (!has_to_a) {
+            rt = korb_funcall(c, v, korb_intern("respond_to?"), 1,
+                              (VALUE[]){ korb_id2sym(korb_intern("to_a")) });
+            if (c->state != KORB_NORMAL) { c->state = KORB_NORMAL; c->state_value = Qnil; rt = Qfalse; }
+        }
+        if (has_to_a || RTEST(rt)) {
             VALUE r = korb_funcall(c, v, korb_intern("to_a"), 0, NULL);
             if (c->state != KORB_NORMAL) return Qnil;
             if (BUILTIN_TYPE(r) == T_ARRAY) return r;
