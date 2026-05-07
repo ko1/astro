@@ -206,14 +206,10 @@ VALUE kernel_kwsplat_to_hash_lenient(CTX *c, VALUE self, int argc, VALUE *argv) 
 }
 
 VALUE kernel_kwsplat_to_hash(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1) return korb_hash_new();
-    VALUE v = argv[0];
-    if (NIL_P(v)) {
-        VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-        korb_raise(c, (struct korb_class *)eT, "no implicit conversion of nil into Hash");
-        return Qnil;
-    }
-    return kwsplat_convert(c, v);
+    /* Ruby 3.4+: `{**nil}` evaluates to {}.  Earlier versions raised
+     * TypeError; we follow current CRuby (≥ 3.4). */
+    if (argc < 1 || NIL_P(argv[0])) return korb_hash_new();
+    return kwsplat_convert(c, argv[0]);
 }
 
 static VALUE kernel_p(CTX *c, VALUE self, int argc, VALUE *argv) {
