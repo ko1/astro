@@ -2135,24 +2135,39 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                               ALLOC_node_seq(set_a1, call)));
       }
       case PM_CONSTANT_PATH_OR_WRITE_NODE: {
-          /* Foo::BAR ||= rhs  ⇒  evaluate Foo once, save in slot, then
-           * (saved::BAR rescue nil) || saved.const_set(:BAR, rhs).
-           * Read failure (uninitialized const) flips to nil so ||=
-           * proceeds with the assignment. */
+          /* Foo::BAR ||= rhs  ⇒  evaluate Foo once into a slot, then
+           *   if Foo.const_defined?(:BAR, false) and saved::BAR
+           *     saved::BAR
+           *   else
+           *     saved.const_set(:BAR, rhs)
+           *   end
+           * Using `const_defined?` (instead of read+rescue) avoids
+           * triggering `const_missing`, which would return a truthy
+           * value and short-circuit the assign even when the const
+           * was actually undefined. */
           pm_constant_path_or_write_node_t *n = (pm_constant_path_or_write_node_t *)node;
           pm_constant_path_node_t *cp = n->target;
           ID name = intern_constant(tc->parser, cp->name);
           uint32_t parent_slot = inc_arg_index(tc);
           uint32_t a0 = inc_arg_index(tc);
           uint32_t a1 = inc_arg_index(tc);
-          uint32_t rescue_slot = inc_arg_index(tc);
           rewind_arg_index(tc, parent_slot);
           NODE *parent_e = cp->parent ? T(tc, cp->parent)
                                        : ALLOC_node_const_get(korb_intern("Object"));
           rewind_arg_index(tc, a0);
           NODE *save_parent = ALLOC_node_lvar_set(parent_slot, parent_e);
+          /* defined = saved.const_defined?(:BAR, false) */
+          struct method_cache *mc_cd = alloc_method_cache();
+          NODE *cd_sym = ALLOC_node_lvar_set(a0, ALLOC_node_sym_lit(name));
+          NODE *cd_inh = ALLOC_node_lvar_set(a1, ALLOC_node_false());
+          NODE *cd_call = ALLOC_node_method_call(
+              ALLOC_node_lvar_get(parent_slot),
+              korb_intern("const_defined?"), 2, a0, mc_cd);
+          NODE *defined_p = ALLOC_node_seq(cd_sym, ALLOC_node_seq(cd_inh, cd_call));
+          /* cur = saved::BAR (only when defined; safe since defined check
+           * ran first via &&). */
           NODE *cur = ALLOC_node_const_path_get(ALLOC_node_lvar_get(parent_slot), name);
-          NODE *cur_or_nil = ALLOC_node_rescue(cur, ALLOC_node_nil(), rescue_slot);
+          NODE *defined_and_cur = ALLOC_node_and(defined_p, cur);
           NODE *val = T(tc, n->value);
           NODE *set_a0 = ALLOC_node_lvar_set(a0, ALLOC_node_sym_lit(name));
           NODE *set_a1 = ALLOC_node_lvar_set(a1, val);
@@ -2161,23 +2176,24 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                                                korb_intern("const_set"),
                                                2, a0, mc);
           NODE *do_set = ALLOC_node_seq(set_a0, ALLOC_node_seq(set_a1, call));
-          return ALLOC_node_seq(save_parent, ALLOC_node_or(cur_or_nil, do_set));
+          return ALLOC_node_seq(save_parent, ALLOC_node_or(defined_and_cur, do_set));
       }
       case PM_CONSTANT_PATH_AND_WRITE_NODE: {
+          /* Foo::BAR &&= val — read Foo::BAR (must succeed; raises
+           * NameError on undefined per CRuby semantics; does NOT
+           * rescue the way ||= does), and if truthy, assign val. */
           pm_constant_path_and_write_node_t *n = (pm_constant_path_and_write_node_t *)node;
           pm_constant_path_node_t *cp = n->target;
           ID name = intern_constant(tc->parser, cp->name);
           uint32_t parent_slot = inc_arg_index(tc);
           uint32_t a0 = inc_arg_index(tc);
           uint32_t a1 = inc_arg_index(tc);
-          uint32_t rescue_slot = inc_arg_index(tc);
           rewind_arg_index(tc, parent_slot);
           NODE *parent_e = cp->parent ? T(tc, cp->parent)
                                        : ALLOC_node_const_get(korb_intern("Object"));
           rewind_arg_index(tc, a0);
           NODE *save_parent = ALLOC_node_lvar_set(parent_slot, parent_e);
           NODE *cur = ALLOC_node_const_path_get(ALLOC_node_lvar_get(parent_slot), name);
-          NODE *cur_or_nil = ALLOC_node_rescue(cur, ALLOC_node_nil(), rescue_slot);
           NODE *val = T(tc, n->value);
           NODE *set_a0 = ALLOC_node_lvar_set(a0, ALLOC_node_sym_lit(name));
           NODE *set_a1 = ALLOC_node_lvar_set(a1, val);
@@ -2186,7 +2202,7 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                                                korb_intern("const_set"),
                                                2, a0, mc);
           NODE *do_set = ALLOC_node_seq(set_a0, ALLOC_node_seq(set_a1, call));
-          return ALLOC_node_seq(save_parent, ALLOC_node_and(cur_or_nil, do_set));
+          return ALLOC_node_seq(save_parent, ALLOC_node_and(cur, do_set));
       }
       case PM_CONSTANT_PATH_OPERATOR_WRITE_NODE: {
           pm_constant_path_operator_write_node_t *n = (pm_constant_path_operator_write_node_t *)node;
