@@ -80,7 +80,21 @@ static struct korb_binding *binding_alloc_from(CTX *c, VALUE recv) {
     struct korb_binding *b = korb_xcalloc(1, sizeof(*b));
     b->basic.flags = T_DATA;
     b->basic.klass = korb_vm ? (VALUE)korb_vm->binding_class : 0;
-    b->self = recv;
+    /* Binding's self should be the caller's self (the one who
+     * SYNTACTICALLY called `binding`), not the cfunc receiver.  When
+     * called via `obj.send(:binding)`, the receiver is `obj` but the
+     * caller's self may be something else.  Use the active method
+     * frame's self if available, else the running block's lexical
+     * self, else the top-level main object. */
+    if (c->current_frame && c->current_frame->method) {
+        b->self = c->current_frame->self;
+    } else if (running_block) {
+        b->self = running_block->self;
+    } else if (korb_vm) {
+        b->self = korb_vm->main_obj;
+    } else {
+        b->self = recv;
+    }
     b->extra_vars = Qnil;
 
     /* The cfunc is one step above the user's frame (cfunc prologue
@@ -382,20 +396,14 @@ static VALUE binding_local_variables_cfunc(CTX *c, VALUE self, int argc, VALUE *
     return arr;
 }
 
-/* Binding#eval(src [, file [, line]]) — parse src with the binding's
- * names in scope, then run the resulting AST with c->fp set to the
- * binding's fp and self / cref restored.  Updates to caller's lvars
- * propagate via direct fp writes; new locals introduced inside the
- * eval body are added to the binding's name table after parse so the
- * caller can read them later via local_variable_get. */
-static VALUE binding_eval_cfunc(CTX *c, VALUE self, int argc, VALUE *argv) {
+/* Binding#eval implementation factored out so Kernel#eval can call
+ * it directly when given a Binding as the second arg. */
+VALUE binding_eval_via(CTX *c, struct korb_binding *b, VALUE *argv, int argc) {
     if (argc < 1) return Qnil;
-    if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_DATA) return Qnil;
     if (SPECIAL_CONST_P(argv[0]) || BUILTIN_TYPE(argv[0]) != T_STRING) {
         korb_raise(c, NULL, "binding.eval: argument must be a String");
         return Qnil;
     }
-    struct korb_binding *b = (struct korb_binding *)self;
     struct korb_string *s = (struct korb_string *)argv[0];
     const char *filename = "(eval)";
     if (argc >= 2 && !SPECIAL_CONST_P(argv[1]) && BUILTIN_TYPE(argv[1]) == T_STRING) {
@@ -529,6 +537,12 @@ static VALUE binding_source_location(CTX *c, VALUE self, int argc, VALUE *argv) 
     korb_ary_push(arr, korb_str_new_cstr("(eval)"));
     korb_ary_push(arr, INT2FIX(0));
     return arr;
+}
+
+/* Method dispatch for Binding#eval — receiver-bound wrapper. */
+static VALUE binding_eval_cfunc(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_DATA) return Qnil;
+    return binding_eval_via(c, (struct korb_binding *)self, argv, argc);
 }
 
 /* Binding#dup / Binding#clone — deep-copy the names list and extras

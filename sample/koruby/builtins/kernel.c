@@ -1091,16 +1091,26 @@ static VALUE kernel_capture_lvars(CTX *c, VALUE self, int argc, VALUE *argv) {
     return h;
 }
 extern VALUE korb_eval_string(CTX *c, const char *src, size_t len, const char *filename);
+extern VALUE binding_eval_via(CTX *c, struct korb_binding *b, VALUE *args, int argc);
 static VALUE kernel_eval_stub(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* eval(string [, binding [, filename [, line]]]).
-     * Binding-aware semantics aren't supported (no real binding); the
-     * string is parsed + evaluated at the top level — which means it
-     * sees globals / constants but not the caller's local variables.
-     * Enough for tests that just `eval "1 + 2"`. */
+     * If a Binding is supplied, delegate to Binding#eval so the
+     * eval'd code sees the binding's lvars / self / cref. */
     if (argc < 1) return Qnil;
     if (SPECIAL_CONST_P(argv[0]) || BUILTIN_TYPE(argv[0]) != T_STRING) {
         korb_raise(c, NULL, "eval: argument must be a String");
         return Qnil;
+    }
+    if (argc >= 2 && !SPECIAL_CONST_P(argv[1]) &&
+        BUILTIN_TYPE(argv[1]) == T_DATA &&
+        ((struct RBasic *)argv[1])->klass == (VALUE)korb_vm->binding_class) {
+        struct korb_binding *b = (struct korb_binding *)argv[1];
+        /* Forward [string, file, line] to binding's eval implementation. */
+        VALUE forward[3];
+        forward[0] = argv[0];
+        forward[1] = (argc >= 3) ? argv[2] : korb_str_new_cstr("(eval)");
+        forward[2] = (argc >= 4) ? argv[3] : INT2FIX(1);
+        return binding_eval_via(c, b, forward, 3);
     }
     struct korb_string *s = (struct korb_string *)argv[0];
     /* CRuby's __FILE__ inside `eval(str)` is just "(eval)" (until
