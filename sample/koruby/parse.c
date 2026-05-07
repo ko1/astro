@@ -640,6 +640,7 @@ build_call_with_block(struct transduce_context *tc, NODE *recv, ID name,
     int block_rest_slot_pre = -1;     /* set below once frame is pushed */
     pm_constant_id_t block_rest_name = 0;
     bool block_has_anon_rest = false;
+    bool block_has_implicit_rest = false;
     pm_parameters_node_t *block_pn = NULL;
     if (bn->parameters && PM_NODE_TYPE_P(bn->parameters, PM_BLOCK_PARAMETERS_NODE)) {
         pm_block_parameters_node_t *bp = (pm_block_parameters_node_t *)bn->parameters;
@@ -660,10 +661,13 @@ build_call_with_block(struct transduce_context *tc, NODE *recv, ID name,
                     block_has_anon_rest = true;
                 }
             } else if (pn->rest && PM_NODE_TYPE_P(pn->rest, PM_IMPLICIT_REST_NODE)) {
-                /* Trailing comma `|a,|` — implicit (unnamed) rest.
-                 * Same effect as anonymous `|a, *|`: triggers autosplat
-                 * of a single Array yield arg and absorbs extras. */
+                /* Trailing comma `|a,|` — implicit (unnamed) rest.  For
+                 * proc/yield this blocks autosplat (same as `|a, *|`),
+                 * but for lambda the arity is STRICT (no extras allowed
+                 * — `lambda { |a, | }.call(1, 2)` raises ArgumentError).
+                 * Mark separately so the arity check can distinguish. */
                 block_has_anon_rest = true;
+                block_has_implicit_rest = true;
             }
         }
     } else if (bn->parameters && PM_NODE_TYPE_P(bn->parameters, PM_NUMBERED_PARAMETERS_NODE)) {
@@ -942,6 +946,9 @@ build_call_with_block(struct transduce_context *tc, NODE *recv, ID name,
     }
     if (block_pn && block_pn->posts.size > 0) {
         block_node = ALLOC_node_proc_set_post_cnt(block_node, (uint32_t)block_pn->posts.size);
+    }
+    if (block_has_implicit_rest) {
+        block_node = ALLOC_node_proc_set_implicit_rest(block_node);
     }
     /* Register block body so AOT (--aot-compile) emits an SD for it.
      * Without this, the block dispatcher stays at DISPATCH_node_*
@@ -3890,6 +3897,8 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
           uint32_t params_cnt = 0;
           pm_constant_id_t lambda_rest_name = 0;
           pm_parameters_node_t *pn_l = NULL;
+          bool lambda_has_anon_rest = false;
+          bool lambda_has_implicit_rest = false;
           if (n->parameters && PM_NODE_TYPE_P(n->parameters, PM_BLOCK_PARAMETERS_NODE)) {
               pm_block_parameters_node_t *bp = (pm_block_parameters_node_t *)n->parameters;
               if (bp->parameters) {
@@ -3898,6 +3907,10 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                   if (pn_l->rest && PM_NODE_TYPE_P(pn_l->rest, PM_REST_PARAMETER_NODE)) {
                       pm_rest_parameter_node_t *rp = (pm_rest_parameter_node_t *)pn_l->rest;
                       if (rp->name) lambda_rest_name = rp->name;
+                      else lambda_has_anon_rest = true;
+                  } else if (pn_l->rest && PM_NODE_TYPE_P(pn_l->rest, PM_IMPLICIT_REST_NODE)) {
+                      lambda_has_anon_rest = true;
+                      lambda_has_implicit_rest = true;
                   }
               }
           } else if (n->parameters && PM_NODE_TYPE_P(n->parameters, PM_NUMBERED_PARAMETERS_NODE)) {
@@ -3911,6 +3924,12 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
           if (lambda_rest_name) {
               int rs = lvar_slot(tc, lambda_rest_name, 0);
               if (rs >= 0) lambda_rest_slot = rs;
+          } else if (lambda_has_anon_rest) {
+              /* Allocate a discardable slot so the proc has a non-negative
+               * rest_slot (lets autosplat / proc absorb extras work).
+               * For implicit_rest we set the flag below to enforce strict
+               * lambda arity anyway. */
+              lambda_rest_slot = (int)inc_arg_index(tc);
           }
           /* kwargs prelude — peel handled by proc_call into kwh_slot. */
           int lambda_kwh_slot = -1;
@@ -4049,6 +4068,9 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
           }
           if (pn_l && pn_l->posts.size > 0) {
               blk = ALLOC_node_proc_set_post_cnt(blk, (uint32_t)pn_l->posts.size);
+          }
+          if (lambda_has_implicit_rest) {
+              blk = ALLOC_node_proc_set_implicit_rest(blk);
           }
           /* `-> { ... }` produces a *lambda* — same as a block literal
            * except is_lambda=true.  Flip the flag directly so the literal

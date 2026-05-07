@@ -1917,6 +1917,7 @@ VALUE korb_proc_new(struct Node *body, VALUE *fp, uint32_t env_size,
     p->enclosing_block = current_block;  /* capture enclosing-method's block */
     p->self = self;
     p->is_lambda = is_lambda;
+    p->implicit_rest = false;
     p->creates_proc = false;
     p->cref = NULL;  /* set by korb_proc_new_with_cref or by callers */
     p->return_target_frame = NULL;
@@ -1977,7 +1978,7 @@ VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv)
     /* Lambda strict arity: yield-to-a-lambda must match the lambda's
      * parameter count exactly (no destructure / pad).  Non-lambda
      * blocks remain permissive. */
-    if (blk->is_lambda && blk->rest_slot < 0) {
+    if (blk->is_lambda && (blk->rest_slot < 0 || blk->implicit_rest)) {
         uint32_t required = (blk->params_cnt > blk->opt_cnt) ? blk->params_cnt - blk->opt_cnt : 0;
         if (argc < required || argc > blk->params_cnt) {
             VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));

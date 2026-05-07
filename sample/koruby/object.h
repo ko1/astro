@@ -219,6 +219,13 @@ struct korb_proc {
     struct korb_proc *enclosing_block;
     VALUE self;
     bool is_lambda;
+    /* `|a, |` trailing comma is `PM_IMPLICIT_REST_NODE` in prism, with
+     * the same autosplat-blocking effect as anonymous `*` (proc) but
+     * NO actual rest absorption — for lambda arity it must be strict.
+     * We allocate rest_slot anyway (so autosplat / proc-style absorb
+     * still work), and use this flag to make lambda's arity check
+     * treat the block as if rest_slot < 0. */
+    bool implicit_rest;
     /* Set at parse time when the body contains a `proc { }`/lambda/`->()`
      * literal.  Yield uses this to switch to a fresh-env-with-writeback
      * path so each iteration captures its own block-local slots —

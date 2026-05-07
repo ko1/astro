@@ -1024,6 +1024,21 @@ node_proc_set_post_cnt(CTX * restrict c, NODE * restrict n, NODE *blk_node, uint
     return p;
 }
 
+/* Mark a Proc as having `|a, |` style implicit-rest (trailing comma).
+ * Lambda arity check uses this to enforce strict arity even though
+ * rest_slot is non-negative (we still allocate a discardable slot to
+ * absorb extras for proc-style autosplat / yield). */
+NODE_DEF @noinline
+node_proc_set_implicit_rest(CTX * restrict c, NODE * restrict n, NODE *blk_node)
+{
+    VALUE p = EVAL_ARG(c, blk_node);
+    if (UNLIKELY(c->state != KORB_NORMAL)) return Qnil;
+    if (LIKELY(!SPECIAL_CONST_P(p) && BUILTIN_TYPE(p) == T_PROC)) {
+        ((struct korb_proc *)p)->implicit_rest = true;
+    }
+    return p;
+}
+
 /* Flip a freshly-created Proc into a lambda.  Used by `-> { ... }` so
  * the literal becomes a lambda without dispatching Kernel#lambda
  * (which a class inheriting from BasicObject can't reach). */

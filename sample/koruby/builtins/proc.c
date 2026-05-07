@@ -71,7 +71,7 @@ VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
      * Exception: when the lambda accepts kwargs (kwh_save_slot >= 0),
      * an extra trailing Hash is consumed as kwargs and doesn't count
      * toward the positional arity check. */
-    if (p->is_lambda && p->rest_slot < 0) {
+    if (p->is_lambda && (p->rest_slot < 0 || p->implicit_rest)) {
         int eff_argc = argc;
         if (p->kwh_save_slot >= 0 && argc > 0 &&
             !SPECIAL_CONST_P(argv[argc - 1]) &&
