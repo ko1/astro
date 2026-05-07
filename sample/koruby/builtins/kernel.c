@@ -1078,7 +1078,31 @@ static VALUE kernel_eval_stub(CTX *c, VALUE self, int argc, VALUE *argv) {
     int line = (c->last_cfunc_callsite ? c->last_cfunc_callsite->head.line : 0);
     snprintf(filename, sizeof(filename), "(eval at %s:%d)",
              c->current_file ? c->current_file : "(unknown)", line);
-    return korb_eval_string(c, s->ptr, (size_t)s->len, filename);
+    /* `eval(str)` (without explicit binding) runs in the caller's
+     * lexical context: cref / current_frame stay; def lands on the
+     * caller's class.  korb_eval_string normally resets these to
+     * top-level — for the with-binding case we preserve them. */
+    extern NODE *koruby_parse_full(const char *src, size_t len, const char *filename, char **err_msg);
+    char *err_msg = NULL;
+    NODE *ast = koruby_parse_full(s->ptr, (size_t)s->len, filename, &err_msg);
+    if (err_msg) {
+        VALUE eSE = korb_const_get(korb_vm->object_class, korb_intern("SyntaxError"));
+        if (eSE && !SPECIAL_CONST_P(eSE) && BUILTIN_TYPE(eSE) == T_CLASS) {
+            korb_raise(c, (struct korb_class *)eSE, "%s", err_msg);
+        } else {
+            korb_raise(c, NULL, "syntax error: %s", err_msg);
+        }
+        return Qnil;
+    }
+    if (!ast) return Qnil;
+    const char *prev_file = c->current_file;
+    c->current_file = filename;
+    extern void OPTIMIZE_decl(void);
+    extern struct Node *OPTIMIZE(struct Node *n);
+    OPTIMIZE(ast);
+    VALUE r = c->cref ? EVAL(c, ast) : EVAL(c, ast);
+    c->current_file = prev_file;
+    return r;
 }
 /* Default Object#initialize — accepts any args and returns self.
  * Lets `super` from an overridden initialize at the top of the chain
